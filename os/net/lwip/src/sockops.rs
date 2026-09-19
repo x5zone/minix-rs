@@ -366,7 +366,19 @@ pub fn open_socket(
         domain::INET | domain::INET6 => internet_family(req.sock_type, is_root)?,
         _ => return Err(minix_types::EAFNOSUPPORT),
     };
-    let stack_socket = stack.open(family)?;
+    // RAW 建户的协议号校验照 C（rawsock.c:312-313——负数与超 u8 拒绝）
+    // 后随协议值入栈（过滤面）。TCP/UDP 不消费协议号。
+    let raw_protocol = match family {
+        StackFamily::Raw => {
+            if req.protocol < 0 || req.protocol > u8::MAX as i32 {
+                return Err(minix_types::EPROTONOSUPPORT);
+            }
+            Some(req.protocol as u8)
+        }
+        _ => None,
+    };
+    let stack_socket = stack.open(family, raw_protocol)?;
+
     let id = class_base_of(family)
         .and_then(sockid::SockClass::from_base)
         .and_then(|c| SockId::from_class(c, stack_socket.index() as u32));
@@ -974,6 +986,7 @@ pub fn translate(
     {
         Some(StackFamily::Udp) => translate_udp(stack, copy, table, pending, caller, msg),
         Some(StackFamily::Tcp) => translate_tcp(stack, copy, pending, caller, msg),
+        Some(StackFamily::Raw) => translate_raw(stack, copy, msg),
         _ => Some(simple_reply(0, -(minix_types::ENOSYS))),
     }
 }
@@ -1200,6 +1213,49 @@ pub fn translate_tcp(
         };
     }
     Some(simple_reply(0, -(minix_types::ENOSYS)))
+}
+
+/// RAW 路的翻译入口：Send（写全报文）与 Receive（读全报文）。数据面
+/// 是 grant 与栈缓冲间的直接搬运——全报文语义（含 IP 头，HDRINCL）。
+pub fn translate_raw(
+    stack: &mut dyn Stack,
+    copy: &mut dyn CopyTransport,
+    msg: &Message,
+) -> Option<Message> {
+    let Some(req) = decode_sendrecv(msg) else {
+        return Some(simple_reply(0, -(minix_types::EINVAL)));
+    };
+    let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+        return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+    };
+    let sending = msg.m_type == SdevRequest::Send as i32;
+    if sending {
+        let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
+        if copy
+            .safecopy_from(req.user_endpt, req.data_grant, 0, &mut data)
+            .is_err()
+        {
+            return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+        }
+        return match stack.send_raw(stack_socket, &data) {
+            Ok(n) => Some(simple_reply(req.req_id, n as i32)),
+            Err(e) => Some(simple_reply(req.req_id, wire(e))),
+        };
+    }
+    // 接收：拷给用户。
+    let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
+    match stack.recv_raw(stack_socket, &mut data) {
+        Ok(n) => {
+            if copy
+                .safecopy_to(req.user_endpt, req.data_grant, 0, &data[..n])
+                .is_err()
+            {
+                return Some(recv_reply(req.req_id, -(minix_types::EFAULT), 0, 0));
+            }
+            Some(recv_reply(req.req_id, n as i32, 0, 0))
+        }
+        Err(e) => Some(recv_reply(req.req_id, wire(e), 0, 0)),
+    }
 }
 
 /// 就绪扫描（C `sockevent_process` 的"事件唤醒续答"半）：每趟推进后

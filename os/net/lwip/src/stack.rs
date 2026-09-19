@@ -208,7 +208,7 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
     /// `lwipopts.h:267`/`:282`）；UDP 与 RAW 的包环按同一份契约的量级
     /// 取整块；ICMP 面随第 07 篇的批次接线（C 侧 ICMP 走 RAW 协议口，
     /// 本特性集未编入 smoltcp 的独立 ICMP 套接字），先以通用错误回答。
-    fn open(&mut self, family: StackFamily) -> Result<StackSocket, i32> {
+    fn open(&mut self, family: StackFamily, protocol: Option<u8>) -> Result<StackSocket, i32> {
         let handle = match family {
             StackFamily::Tcp => {
                 // SocketBuffer 是托管切片（环形缓冲的构造参数），自有
@@ -229,8 +229,8 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
                 self.sockets.add(smoltcp::socket::udp::Socket::new(rx, tx))
             }
             StackFamily::Raw => {
-                // 版本与协议留白（通配）：rawsock 模块在自己的批次里按
-                // 建户域收窄（第 10 篇）。
+                // 协议在建户时收下（Minix 第三参，rawsock.c:314 的
+                // `raw_new_ip_type` 同位）；None = 通配（收面过滤全放）。
                 let rx = raw::PacketBuffer::new(
                     vec![raw::PacketMetadata::EMPTY; 8],
                     vec![0u8; TCP_WINDOW],
@@ -239,7 +239,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
                     vec![raw::PacketMetadata::EMPTY; 8],
                     vec![0u8; TCP_SEND_BUFFER],
                 );
-                self.sockets.add(raw::Socket::new(Some(IpVersion::Ipv4), None, rx, tx))
+                let ip_protocol = protocol.map(smoltcp::wire::IpProtocol::from);
+                self.sockets
+                    .add(raw::Socket::new(Some(IpVersion::Ipv4), ip_protocol, rx, tx))
             }
             StackFamily::Icmp => return Err(util::ERR_GENERIC),
         };
@@ -536,6 +538,31 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         }
     }
 
+    // -- RAW 半（第 10 篇的栈面；全报文语义 = HDRINCL）--
+
+    fn send_raw(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32> {
+        let slot = self
+            .slot(socket)
+            .filter(|slot| slot.family == StackFamily::Raw)
+            .ok_or(util::ERR_GENERIC)?;
+        self.sockets
+            .get_mut::<raw::Socket>(slot.handle)
+            .send_slice(data)
+            .map(|_| data.len())
+            .map_err(|_| util::ERR_NO_BUFFERS)
+    }
+
+    fn recv_raw(&mut self, socket: StackSocket, data: &mut [u8]) -> Result<usize, i32> {
+        let slot = self
+            .slot(socket)
+            .filter(|slot| slot.family == StackFamily::Raw)
+            .ok_or(util::ERR_GENERIC)?;
+        self.sockets
+            .get_mut::<raw::Socket>(slot.handle)
+            .recv_slice(data)
+            .map_err(|_| util::ERR_WOULD_BLOCK)
+    }
+
     fn remote_endpoint_tcp(
         &self,
         socket: StackSocket,
@@ -759,24 +786,24 @@ mod tests {
     #[test]
     fn test_open_close_roundtrip_reuses_slot() {
         let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
-        let first = stack.open(StackFamily::Tcp).expect("TCP 建户");
+        let first = stack.open(StackFamily::Tcp, None).expect("TCP 建户");
         assert_eq!(first.index(), 0, "首户占 0 号槽");
         stack.close(first).expect("关闭");
-        let second = stack.open(StackFamily::Tcp).expect("再开");
+        let second = stack.open(StackFamily::Tcp, None).expect("再开");
         assert_eq!(second.index(), first.index(), "槽位回收复用");
     }
 
     #[test]
     fn test_open_families_get_distinct_slots() {
         let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
-        let t = stack.open(StackFamily::Tcp).unwrap();
-        let u = stack.open(StackFamily::Udp).unwrap();
-        let r = stack.open(StackFamily::Raw).unwrap();
+        let t = stack.open(StackFamily::Tcp, None).unwrap();
+        let u = stack.open(StackFamily::Udp, None).unwrap();
+        let r = stack.open(StackFamily::Raw, None).unwrap();
         assert_ne!(t.index(), u.index());
         assert_ne!(u.index(), r.index());
         // ICMP 面未接：诚实回答通用错误，不发假句柄。
         assert_eq!(
-            stack.open(StackFamily::Icmp).unwrap_err(),
+            stack.open(StackFamily::Icmp, None).unwrap_err(),
             util::ERR_GENERIC,
             "ICMP 面随第 07 篇批次接线"
         );
@@ -794,7 +821,7 @@ mod tests {
         // 用 UDP 验证在役位：无连接状态、包环有余量即可发（TCP 的
         // `can_send` 依赖连接建立后的 MSS 协商，新套接字两个位都是假，
         // 与缺省值不可区分，锁不出这个断言）。
-        let socket = stack.open(StackFamily::Udp).unwrap();
+        let socket = stack.open(StackFamily::Udp, None).unwrap();
         assert!(!stack.readiness(socket).readable);
         assert!(stack.readiness(socket).writable);
         stack.close(socket).unwrap();
@@ -804,7 +831,7 @@ mod tests {
     #[test]
     fn test_close_guards_family_and_double_close() {
         let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
-        let tcp = stack.open(StackFamily::Tcp).unwrap();
+        let tcp = stack.open(StackFamily::Tcp, None).unwrap();
         // 家族对不上的句柄按"已关闭"回答（不动栈内套接字）。
         let wrong_family = StackSocket::new(StackFamily::Udp, tcp.index());
         assert!(stack.close(wrong_family).is_err());
@@ -820,7 +847,7 @@ mod tests {
         let mut stack: SmoltcpStack<LoopDevice> =
             SmoltcpStack::with_device(0x5EED, LoopDevice::new(), 0);
         stack.add_address_v4([127, 0, 0, 1], 8, 0);
-        let socket = stack.open(StackFamily::Udp).expect("UDP 建户");
+        let socket = stack.open(StackFamily::Udp, None).expect("UDP 建户");
         stack
             .bind_udp(
                 socket,
@@ -877,7 +904,7 @@ mod tests {
         stack.add_address_v4([127, 0, 0, 1], 8, 0);
 
         // 服务端：绑 7777 → 监听。
-        let server = stack.open(StackFamily::Tcp).expect("服务端建户");
+        let server = stack.open(StackFamily::Tcp, None).expect("服务端建户");
         stack
             .bind_tcp(
                 server,
@@ -887,7 +914,7 @@ mod tests {
         stack.listen_tcp(server, 1).expect("监听");
 
         // 客户端：连 127.0.0.1:7777（本地端口走临时分配）。
-        let client = stack.open(StackFamily::Tcp).expect("客户端建户");
+        let client = stack.open(StackFamily::Tcp, None).expect("客户端建户");
         stack
             .connect_tcp(
                 client,
@@ -922,7 +949,7 @@ mod tests {
             stack.readiness(server).writable == false && !stack.readiness(server).readable,
             "换上的新监听者回到等待态"
         );
-        let client2 = stack.open(StackFamily::Tcp).expect("第二客户端建户");
+        let client2 = stack.open(StackFamily::Tcp, None).expect("第二客户端建户");
         stack
             .connect_tcp(
                 client2,

@@ -213,8 +213,15 @@ pub trait Stack {
     /// 查询一个 socket 的当前就绪位；句柄已关闭时返回缺省值（无事件）。
     fn readiness(&self, socket: StackSocket) -> Readiness;
 
-    /// 打开一个指定家族的 socket，返回栈侧句柄。
-    fn open(&mut self, family: StackFamily) -> Result<StackSocket, i32>;
+    /// 打开一个指定家族的 socket，返回栈侧句柄。`protocol` 只有 RAW
+    /// 家族消费（Minix 建户的第三参，`raw_new_ip_type` 的过滤协议，
+    /// rawsock.c:314——u8 值域，如 ICMP=1）。
+    fn open(&mut self, family: StackFamily, protocol: Option<u8>) -> Result<StackSocket, i32>;
+
+    /// RAW 收发（第 10 篇的栈面）：全报文语义（含 IP 头，HDRINCL）。
+    fn send_raw(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32>;
+
+    fn recv_raw(&mut self, socket: StackSocket, data: &mut [u8]) -> Result<usize, i32>;
 
     /// 关闭一个 socket；此后它的句柄失效。
     fn close(&mut self, socket: StackSocket) -> Result<(), i32>;
@@ -475,11 +482,21 @@ mod wall_tests {
             Readiness { readable, writable: live }
         }
 
-        fn open(&mut self, family: StackFamily) -> Result<StackSocket, i32> {
+        fn open(&mut self, family: StackFamily, _protocol: Option<u8>) -> Result<StackSocket, i32> {
             let socket = StackSocket::new(family, self.next_index);
             self.next_index += 1;
             self.opened.push(socket);
             Ok(socket)
+        }
+
+        fn send_raw(&mut self, _socket: StackSocket, data: &[u8]) -> Result<usize, i32> {
+            Ok(data.len())
+        }
+
+        fn recv_raw(&mut self, _socket: StackSocket, data: &mut [u8]) -> Result<usize, i32> {
+            let n = data.len().min(2);
+            data[..n].copy_from_slice(&[7, 7][..n]);
+            Ok(n)
         }
 
         fn close(&mut self, socket: StackSocket) -> Result<(), i32> {
@@ -526,7 +543,7 @@ mod wall_tests {
         );
         assert_eq!(hooks.gateway_v4(0, [10, 0, 0, 2]), Some([192, 0, 2, 1]));
 
-        let socket = stack.open(StackFamily::Tcp).expect("open");
+        let socket = stack.open(StackFamily::Tcp, None).expect("open");
         assert_eq!(socket.family(), StackFamily::Tcp);
         assert!(stack.readiness(socket).writable, "新开即写就绪");
         assert_eq!(stack.poll(1_000), PollWhen::Never);
