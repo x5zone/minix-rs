@@ -15,6 +15,7 @@ minix-types = { workspace = true }
 # 约定加回实际消费的依赖。real-trap 由 boot image 构建开启（宿主构建保持
 # -EIO fail-closed，与 minix-rt DirectTrapSource 同款门控）。
 minix-sys = { workspace = true }
+minix-sef = { workspace = true }
 
 [lib]
 name = "minix_is"

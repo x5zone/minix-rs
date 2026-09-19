@@ -699,3 +699,9 @@ MAP/UNMAP/EVENTS 三命令 + `TTY_FKEY_CONTROL` 消息格式 + TTY 侧
   IS 用消息类型分类——§2.3 FIXME 差异点）
 - `draft/tmp_main.c.md`：逐行素材（§2 底料；其 Rust 对比块已废弃，§3.0）
 - `plan.md` §1.2/§4(A-9/A-10/A-11)/§5.3(01 条目)/§5.4(排除项)
+
+---
+
+## 接线（S23 片 1/2）：SEF 与 fkey 传输真装
+
+原先"IS 现在运行即 panic"的三个 fail-closed 占位里，本批换装两件。`SysSefTransport`（`sef.rs`）把 `SefTransport` 六方法接到生产：`receive` 走 `minix-sef` 的 `sef_receive_status`（ping 透明不变量 A-11 由库层保证，分类器永不见 ping），`send` 走 trap 传输的阻塞 `send`（C `ipc_send`，main.c:143），三条 `warn_*`（main.c:60-61、dmp.c:63-65、dmp.c:84-86 的三处 printf 文案）与 `diag_out` 统一走 A-6 诊断缝——`SYS_DIAGCTL` code 1 的控制台通道（`sys_diagctl_write`，rs 的 diag 缝同出口；`DiagWriter` 是 `fmt::Write` 汇聚点，printf 的面貌）。`SysFkeyCtl`（`tty_fkey.rs`）把 `FkeyCtlTransport::fkey_ctl` 接到 minix-sys 新增的 `fkey_ctl_via`——C libsys `fkey_ctl`（fkey_ctl.c:11-28）的 `_taskcall(TTY, TTY_FKEY_CONTROL)` 直译，返回 `(status, leftover_fkeys, leftover_sfkeys)` 三元组（TTY 未消费位随回复带回）。`main.rs` 装配随之换装两件；`UnimplementedAcquires`（16 方法的内核取数六通道）留作 S23 片 3——它只在对应 dump 请求到达时触达，启动与主循环已可真实运转。hosted 构建下 trap 传输诚实回 EIO（E1 通电前不伪造成功），真机验收面在 E5。

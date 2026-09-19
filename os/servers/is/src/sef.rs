@@ -10,6 +10,7 @@
 //! consumes. Production wiring is a forward reference (see
 //! [`UnimplementedTransport`]).
 
+use minix_sys::ipc::IpcTransport as _;
 use core::fmt;
 use minix_types::{Endpoint, Errno, Message};
 
@@ -131,6 +132,115 @@ pub trait SefTransport {
     fn diag_out(&mut self) -> &mut dyn fmt::Write;
 }
 
+/// 生产 SEF 传输(S23):`receive` 经 `minix-sef` 的
+/// `sef_receive_status`(ping 透明不变量 A-11 由库层保证),`send` 走
+/// trap 传输的阻塞 `send`(C `ipc_send`),三条 `warn_*` 与
+/// [`SefTransport::diag_out`] 走 A-6 诊断缝——`SYS_DIAGCTL` code 1
+/// 的控制台通道(minix-sys `sys_diagctl_write`,rs 的 diag 缝同出口)。
+pub struct SysSefTransport {
+    ipc: SefIpcAdapter,
+    diag: DiagWriter,
+}
+
+impl SysSefTransport {
+    pub const fn new() -> Self {
+        Self {
+            ipc: SefIpcAdapter { inner: minix_sys::ipc::DirectTrapTransport },
+            diag: DiagWriter,
+        }
+    }
+}
+
+impl Default for SysSefTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// `minix-sef` 的 `SefIpc` 动词适配(trap 直连;RS/VM 同形先例)。
+struct SefIpcAdapter {
+    inner: minix_sys::ipc::DirectTrapTransport,
+}
+
+impl minix_sef::SefIpc for SefIpcAdapter {
+    fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        let sts = self.inner.receive(src, msg).map_err(|t| t.0)?;
+        Ok(sts.0 as i32)
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        self.inner.notify(dest).map_err(|t| t.0)
+    }
+}
+
+/// 诊断输出的 `fmt::Write` 汇聚点(A-6):每次 `write_str` 直送内核
+/// 诊断台(printf 的面貌——片段化无害,内核逐段打)。
+pub struct DiagWriter;
+
+impl fmt::Write for DiagWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let _ = minix_sys::syscall::sys_diagctl_write(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            s,
+        );
+        Ok(())
+    }
+}
+
+impl SefTransport for SysSefTransport {
+    fn startup(&mut self) {
+        // C sef_startup()(main.c:88)触发 init 回调;Rust 的 init 面由
+        // IsServer::startup 显式调 init_fresh(lib.rs:151-155),此处无需
+        // 额外动作——保留 C 的调用点形状。
+    }
+
+    fn receive(&mut self, inbox: &mut Message) -> Result<(Endpoint, i32), i32> {
+        // C main.c:125-129 — sef_receive(ANY, &m_in);ping 在 SEF 层
+        // 拦截并作答(A-11:分类器永不见 ping)。
+        let recv = minix_sef::sef_receive_status(
+            &mut self.ipc,
+            Endpoint::ANY,
+            inbox,
+            &mut |_sig| {
+                // C IS 的 SYSTEM 通知面:未注册 signal handler 的默认
+                // 忽略(与 VFS 同款处置)。
+            },
+        )?;
+        Ok((recv.source, recv.message.m_type))
+    }
+
+    fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32> {
+        use minix_sys::ipc::IpcTransport as _;
+        self.ipc.inner.send(dest, reply).map_err(|t| t.0)
+    }
+
+    fn warn_illegal(&mut self, call_nr: i32, sender: Endpoint) {
+        // C main.c:60-61 文案。
+        use core::fmt::Write as _;
+        let _ = writeln!(
+            self.diag,
+            "IS: warning, got illegal request {} from {}",
+            call_nr, sender.0
+        );
+    }
+
+    fn warn_fkey_events(&mut self, status: i32) {
+        // C dmp.c:84-86 文案。
+        use core::fmt::Write as _;
+        let _ = writeln!(self.diag, "IS: warning, fkey_events failed: {}", status);
+    }
+
+    fn warn_fkey_ctl(&mut self, status: i32) {
+        // C dmp.c:63-65 文案。
+        use core::fmt::Write as _;
+        let _ = writeln!(self.diag, "IS: warning, fkey_ctl failed: {}", status);
+    }
+
+    fn diag_out(&mut self) -> &mut dyn fmt::Write {
+        &mut self.diag
+    }
+}
+
 /// Fail-closed transport until the `minix-sef`/`minix-sys` wiring lands.
 ///
 /// Mirrors `os/servers/rs/src/boot.rs` (`UnimplementedKernelApi`): every
@@ -171,6 +281,27 @@ impl SefTransport for UnimplementedTransport {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_sys_sef_transport_hosted_is_eio() {
+        // hosted 构建的 trap 直连诚实回 EIO(E1 通电前不伪造成功);
+        // S23 片 1 的真装面。
+        let mut t = super::SysSefTransport::new();
+        let mut inbox = Message::default();
+        assert_eq!(t.receive(&mut inbox), Err(minix_types::EIO));
+    }
+
+    #[test]
+    fn test_sys_sef_diag_out_writable_and_warns_do_not_panic() {
+        // A-6 缝:write_str 直送 sys_diagctl_write——hosted 下内核回
+        // EIO 被吞(warn 是尽力而为),writeln! 仍 Ok;三条 warn 同面。
+        use core::fmt::Write as _;
+        let mut t = super::SysSefTransport::new();
+        assert!(writeln!(t.diag_out(), "IS: warning, got illegal request {} from {}", 65, 9).is_ok());
+        t.warn_illegal(65, Endpoint(9));
+        t.warn_fkey_events(-5);
+        t.warn_fkey_ctl(-5);
+    }
+
     use super::*;
     use minix_types::OK;
 

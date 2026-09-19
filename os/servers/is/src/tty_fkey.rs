@@ -170,6 +170,22 @@ pub trait FkeyCtlTransport {
     fn fkey_ctl(&mut self, req: FkeyReq, fkeys: u32, sfkeys: u32) -> (i32, u32, u32);
 }
 
+/// 生产 fkey 传输(S23 片 2):`fkey_ctl` 经 minix-sys 的
+/// `fkey_ctl_via`——C libsys `fkey_ctl`(fkey_ctl.c:11-28)的
+/// `_taskcall(TTY, TTY_FKEY_CONTROL)` 直译,回复带回 TTY 未消费的位。
+pub struct SysFkeyCtl;
+
+impl FkeyCtlTransport for SysFkeyCtl {
+    fn fkey_ctl(&mut self, req: FkeyReq, fkeys: u32, sfkeys: u32) -> (i32, u32, u32) {
+        minix_sys::tty::fkey_ctl_via(
+            &minix_sys::ipc::DirectTrapTransport,
+            req.code(),
+            fkeys,
+            sfkeys,
+        )
+    }
+}
+
 /// Fail-closed transport until the `minix-sys` wiring lands (01 `sef.rs`
 /// `UnimplementedTransport` pattern).
 #[derive(Debug, Default)]
@@ -225,6 +241,17 @@ pub fn pull_events<C: FkeyCtlTransport>(client: &mut C) -> (i32, u32, u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_sys_fkey_ctl_hosted_is_eio() {
+        // hosted:SysFkeyCtl 经 trap 直连,CannedTransport 缺席时诚实回
+        // (EIO, 入参原样);S23 片 2 的真装面。
+        use super::{FkeyCtlTransport, FkeyReq, SysFkeyCtl};
+        let mut c = SysFkeyCtl;
+        let (status, fk, sfk) = c.fkey_ctl(FkeyReq::Map, 0x3, 0x1);
+        assert_eq!(status, minix_types::EIO);
+        assert_eq!((fk, sfk), (0x3, 0x1));
+    }
+
     use super::*;
 
     /// Mirror of the TTY observer state machine (keyboard.c:439-526,532-585).
