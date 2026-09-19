@@ -94,6 +94,16 @@ pub struct PairState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerCont {
+    /// 块设备 ioctl 的对话半（`BDEV_IOCTL`）：回复是
+    /// `mess_lblockdriver_lbdev_reply { int status; int id; }`（状态在首字）；
+    /// 续接体撤销 grant、清 `filp_ioctl_fp` 守卫并把状态回给用户。
+    /// C `bdev_ioctl`（bdev.c:144-186）。
+    BdevIoctl {
+        /// 已发给驱动的 magic grant（收尾时撤销）。
+        grant: i32,
+        /// 被 ioctl 占着的 filp（收尾时清 `ioctl_holder`）。
+        filp: usize,
+    },
     /// 字符设备 ioctl 的对话半（`CDEV_IOCTL`）：回复是
     /// `mess_lchardriver_vfs_reply { int status; uint32_t id; }`，续接体撤销
     /// ioctl 的 magic grant 并把状态回给用户。C `cdev_io`（cdev.c:277-340）。

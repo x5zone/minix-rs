@@ -1060,7 +1060,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             }
             // C `do_chmod:88-93`：`get_filp(rfd, VNODE_WRITE)`——只要 fd 有效，
             // 不查打开模式（与 ftruncate 的 W 位门不同）。
-            let vnode_idx = {
+            let (filp_idx, vnode_idx) = {
                 let fp = match state.fproc_table.get(fp_slot) {
                     Some(fp) => fp,
                     None => return SyscallResult::Error(minix_types::EINVAL),
@@ -1074,7 +1074,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     .get(crate::filp::FilpId(filp_idx))
                     .and_then(|f| f.vnode)
                 {
-                    Some(v) => v,
+                    Some(v) => (filp_idx, v),
                     None => return SyscallResult::Error(minix_types::EBADF),
                 }
             };
@@ -2202,7 +2202,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             if fd < 0 {
                 return SyscallResult::Error(minix_types::EBADF);
             }
-            let vnode_idx = {
+            let (filp_idx, vnode_idx) = {
                 let fp = match state.fproc_table.get(fp_slot) {
                     Some(fp) => fp,
                     None => return SyscallResult::Error(minix_types::EINVAL),
@@ -2216,7 +2216,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     .get(crate::filp::FilpId(filp_idx))
                     .and_then(|f| f.vnode)
                 {
-                    Some(v) => v,
+                    Some(v) => (filp_idx, v),
                     None => return SyscallResult::Error(minix_types::EBADF),
                 }
             };
@@ -2408,10 +2408,82 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                         Err(e) => SyscallResult::Error(e),
                     };
                 }
-                // 块设备（`bdev_ioctl` + `filp_ioctl_fp` 守卫）：要 BDEV_IOCTL
-                // 的载荷与那个守卫（防止 ioctl 期间改同一设备节点），本批未接
-                // ——登记缺口，不假装支持。
-                _ => SyscallResult::Error(minix_types::ENOSYS),
+                crate::device_map::IoctlTarget::Block => {
+                    // C `do_ioctl` 的 `S_IFBLK` 支（device.c:36-42）→
+                    // `bdev_ioctl(dev, who_e, request, arg)`（bdev.c:144-186）：
+                    // dmap 按 major 找驱动（没有 → ENXIO）→ `make_ioctl_grant`
+                    // → `BDEV_IOCTL` → **worker 等待**（块驱动的回复通常很快）。
+                    // C 还在调用前后置/清 `filp_ioctl_fp`（防 ioctl 期间改同一
+                    // 设备节点导致死锁）——本模型里是 `Filp::ioctl_holder`。
+                    let major = ((vnode_sdev & 0x000fff00) >> 8) as u32;
+                    let minor = (((vnode_sdev & 0xfff0_0000) >> 12) | (vnode_sdev & 0xff)) as u32;
+                    let drv_e = match crate::device_map::get_by_major(&state.dmap_table, major)
+                        .and_then(|row| row.driver)
+                    {
+                        Some(e) => e,
+                        None => return SyscallResult::Error(minix_types::ENXIO),
+                    };
+                    let Some(worker) = state.current_worker else {
+                        return SyscallResult::Error(minix_types::EAGAIN);
+                    };
+                    let user_e = state
+                        .fproc_table
+                        .get(fp_slot)
+                        .map(|fp| fp.endpoint)
+                        .unwrap_or(minix_types::Endpoint::NONE);
+                    let access = minix_types::CpFlags::from_bits_truncate(
+                        crate::device_map::ioctl_access(req),
+                    );
+                    let size = crate::device_map::ioctl_size(req);
+                    let grant = if size > 0 && arg != 0 {
+                        match state.grant_user_buffer(drv_e, user_e, arg, size, access) {
+                            Ok(g) => g,
+                            Err(_) => return SyscallResult::Error(minix_types::EIO),
+                        }
+                    } else {
+                        minix_types::GRANT_INVALID
+                    };
+                    // C `f->filp_ioctl_fp = fp`：记下"这个 filp 正被谁的 ioctl
+                    // 占着"（`copyfd` 用它挡死锁）。
+                    if let Some(f) = state.filp_table.get_mut(crate::filp::FilpId(filp_idx)) {
+                        f.ioctl_holder = Some(fp_slot);
+                    }
+                    let mut m = minix_types::Message {
+                        m_type: crate::bdev::BdevOp::Ioctl.msg_type() as i32,
+                        ..minix_types::Message::default()
+                    };
+                    // SAFETY: `mess_lbdev_lblockdriver_msg { int minor@0; int
+                    // id@4; int access@8; int count@12; cp_grant_id_t grant@16;
+                    // int flags@20; endpoint_t user@24; unsigned long
+                    // request@32 }`（ipc.h:331-353）。
+                    unsafe {
+                        let raw = &mut m.m_u.raw;
+                        raw[0..4].copy_from_slice(&(minor as i32).to_le_bytes());
+                        raw[16..20].copy_from_slice(&grant.to_le_bytes());
+                        raw[24..28].copy_from_slice(&user_e.0.to_le_bytes());
+                        raw[32..40].copy_from_slice(&req.to_le_bytes());
+                    }
+                    if let Some(wp) = state.worker_pool.get_mut(worker) {
+                        wp.cont = Some(crate::worker::WorkerCont::BdevIoctl {
+                            grant,
+                            filp: filp_idx,
+                        });
+                    }
+                    return match state.send_drv_for_slot(worker, Some(fp_slot), drv_e, &m) {
+                        Ok(()) => SyscallResult::Suspend,
+                        Err(e) => {
+                            if grant != minix_types::GRANT_INVALID {
+                                let _ = state.revoke_grant(grant);
+                            }
+                            if let Some(f) =
+                                state.filp_table.get_mut(crate::filp::FilpId(filp_idx))
+                            {
+                                f.ioctl_holder = None;
+                            }
+                            SyscallResult::Error(e)
+                        }
+                    };
+                }
             }
         }
 
@@ -7002,14 +7074,45 @@ mod tests {
             "套接字要有 smap 行"
         );
 
-        // ⑥ 块设备：`BDEV_IOCTL` 的载荷与 `filp_ioctl_fp` 守卫未接 →
-        // ENOSYS（登记缺口）。
-        let (mut state, _fid) = setup(crate::open::S_IFBLK | 0o644);
+        // ⑥ 块设备：dmap 里没驱动 → ENXIO（C `bdev_ioctl` 的 "no driver for
+        // major" 面）；有驱动则真发 `BDEV_IOCTL`（宿主下发送失败 → EIO），
+        // 且 `filp_ioctl_fp` 守卫在失败路径上要清掉。
+        let (mut state, fid) = setup(crate::open::S_IFBLK | 0o644);
         state.current_message = ioctl_msg(3, 0x5401);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Ioctl),
-            SyscallResult::Error(minix_types::ENOSYS),
-            "块设备那条分支待接"
+            SyscallResult::Error(minix_types::ENXIO),
+            "块设备要有 dmap 驱动"
+        );
+        {
+            let vid = state
+                .vnode_table
+                .find_by_ino(Endpoint::MFS, 0x42)
+                .expect("刚建的 vnode");
+            state.vnode_table.get_mut(vid).unwrap().sdev = (4 << 8) | 2;
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            let mut row = crate::device_map::DmapEntry::empty();
+            row.driver = Some(Endpoint::from_generation_slot(0, 13));
+            state.dmap_table.set(4, row);
+        }
+        state.current_message = ioctl_msg(3, 0x5401);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+            SyscallResult::Error(minix_types::EIO),
+            "有驱动就真发（宿主下发送失败）"
+        );
+        assert_eq!(
+            state.filp_table.get(fid).unwrap().ioctl_holder,
+            None,
+            "发送失败要清掉 filp 的 ioctl 守卫"
         );
     }
 
