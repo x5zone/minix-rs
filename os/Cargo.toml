@@ -65,7 +65,8 @@ members = [
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-aarch64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-topo-riscv64",
     "qemu-tests/test-kernels/kernel/bootstrap/test-smp-ipi-riscv64",
-    
+    "qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64",
+
     # 用户态命令 - bin
     "commands/bin/fileops",
     "commands/bin/shell",

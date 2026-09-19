@@ -144,7 +144,7 @@ impl KerninfoSource for DirectTrapSource {
         // register; the header fields are read from that page. Hosted
         // test builds keep the explicit EIO — there is no kernel behind
         // the trap there (the CannedSource is the test seam).
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(any(target_arch = "x86_64", target_arch = "riscv64"), feature = "real-trap"))]
         {
             use minix_sys::ipc::{DirectTrapTransport, IpcTransport as _};
             let page = DirectTrapTransport
@@ -164,7 +164,10 @@ impl KerninfoSource for DirectTrapSource {
                 user_info_address: info.kuserinfo,
             });
         }
-        #[cfg(not(all(target_arch = "x86_64", feature = "real-trap")))]
+        #[cfg(not(all(
+            any(target_arch = "x86_64", target_arch = "riscv64"),
+            feature = "real-trap"
+        )))]
         {
             Err(minix_types::EIO)
         }

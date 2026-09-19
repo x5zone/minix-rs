@@ -64,6 +64,12 @@ pub mod dm_coverage;
 pub mod vm_handoff;
 
 pub mod irq_manager;
+// The trap dispatcher consumes the x86 IDT TrapFrame shape and the
+// interrupt/trap-gate conventions of the x86 lane (vector-33 gate, LSTAR
+// syscall leg). aarch64/riscv64 have no production dispatch entry yet —
+// their bootstrap lanes (K12b) carry carrier-local handlers until the
+// arch-generic dispatch lands.
+#[cfg(target_arch = "x86_64")]
 pub mod trap_dispatch;
 pub mod syscall;
 pub mod memmap;
@@ -844,6 +850,9 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     // stack-local bases. Rebuild them from the final addresses before
     // ltr; otherwise the first CPL3→CPL0 transition (user-mode entry)
     // reads a dead TSS (sp0 = 0 → page fault at VA -8 on the frame push).
+    // x86-only: the TSS descriptor rebuild + lgdt are GDT/TSS semantics
+    // (aarch64/riscv64 keep register-state protection).
+    #[cfg(target_arch = "x86_64")]
     with_protection_mut(|prot| prot.refresh_tss_descriptors());
     with_protection(|prot| prot.load());
 
@@ -883,6 +892,11 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     use minix_arch::{install_trap_stubs, syscall_entry_va, register_trap_dispatchers};
     install_trap_stubs(&mut trap);
     trap.configure_syscall(syscall_entry_va());
+    // The x86 dispatch bodies exist only on x86_64 (they consume the IDT
+    // TrapFrame shape); aarch64/riscv64 have no production dispatch entry
+    // yet (K12b lane) and register nothing — their `register_trap_
+    // dispatchers` is a no-op there.
+    #[cfg(target_arch = "x86_64")]
     register_trap_dispatchers(
         trap_dispatch::x86_trap_dispatch_body,
         trap_dispatch::x86_syscall_dispatch_body,
@@ -929,7 +943,10 @@ pub(crate) fn with_protection<R>(
 
 /// Mutable variant for boot-time fixes that must run against the live
 /// tables (E1: the TSS descriptor rebuild after the instance moved into
-/// the global). Single-threaded boot only.
+/// the global). Single-threaded boot only. x86-only: the live-image
+/// statics and the TSS fix-ups are x86 semantics (aarch64/riscv64 keep
+/// register-state protection — nothing mutable is stored).
+#[cfg(target_arch = "x86_64")]
 pub(crate) fn with_protection_mut<R>(
     f: impl FnOnce(&mut minix_arch::x86_64::protection::X86_64Protection) -> R,
 ) -> R {
@@ -949,6 +966,9 @@ pub(crate) fn with_trap_entry<R>(
 }
 
 #[cfg(not(target_arch = "x86_64"))]
+use minix_arch::{CurrentProtection, CurrentTrapEntry};
+
+#[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn store_protection(prot: CurrentProtection) {
     let _ = prot; // aarch64/riscv64: register-state protection, nothing to keep
 }
@@ -958,10 +978,12 @@ pub(crate) fn store_trap_entry(trap: CurrentTrapEntry) {
 }
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn with_protection<R>(f: impl FnOnce(&CurrentProtection) -> R) -> R {
+    use minix_arch::arch::protection::ProtectionArch as _;
     f(&CurrentProtection::init(0, minix_types::VirBytes::new(0)))
 }
 #[cfg(not(target_arch = "x86_64"))]
 pub(crate) fn with_trap_entry<R>(f: impl FnOnce(&mut CurrentTrapEntry) -> R) -> R {
+    use minix_arch::arch::trap_entry::TrapEntryArch as _;
     f(&mut CurrentTrapEntry::init())
 }
 

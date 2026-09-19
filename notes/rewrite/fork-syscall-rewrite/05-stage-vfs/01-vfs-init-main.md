@@ -529,3 +529,11 @@ pub fn run() -> ! {
 - `minix3/minix/include/minix/com.h` — VFS_PM_INIT 协议面（513-551）
 - `minix3/minix/servers/vfs/const.h` — SYS_UID/SYS_GID（16-17）
 - `draft/10-main-loop.md` — 旧素材（启动部分）
+
+---
+
+## 9 SEF 接线与启动握手真实化(S13 W4)
+
+C 的启动序在 `main.c:54-118`:`sef_local_startup`(64 行,注册 init_fresh/init_restart 与三 LU 回调)→ `sef_cb_init_fresh` 的握手阻塞循环(`main.c:410-436`:`sef_receive(PM_PROC_NR)` 逐条收 `VFS_PM_INIT` 填 fproc 槽,endpoint==NONE 终止,随后 `ipc_send(PM, OK)` 屏障)→ `sef_receive(ANY)` 主循环(`main.c:601`)。VFS 未注册 signal handler(`main.c:374-388` 全文无 `sef_setcb_signal`)——SYSTEM 通知走库默认忽略面。
+
+Rust 的 `run()`(`main_loop.rs`)由 mock 循环升级为 SEF 驱动:`VfsIpc`(trap 直连)实现 `minix-sef` 的 `SefIpc` 两动词,`sef_receive_status` 承担 ping 拦截与 SYSTEM/RS 分类;握手循环逐条 `VfsPmInit::decode` 后喂既有 `pm_handshake_step`(NONE 终止符在 step 内完成 PmHandshake→InitTables 转换);主循环 `SefEvent::Call` 进 `run_once`,`Signal` 走 C 同款的默认忽略,`Init` 映 `init_fresh`(init_restart ≡ init_fresh 已文档化;LU prepare/rollback 决策函数就位,RS 推进面挂通电),`PingInvalid` 落空。DS 订阅(`main.c:441` 的 `ds_subscribe("drv\.[bc]..\..*", DSF_INITIAL|DSF_OVERWRITE)`)在启动段执行一次;事件排空经 `misc.rs` 的 `ds_drain`(决策链已备,`dmap_endpt_up`/`smap_endpt_up` 执行体归 19/14 级联接线)。

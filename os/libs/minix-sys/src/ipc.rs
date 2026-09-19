@@ -644,8 +644,20 @@ impl IpcTransport for DirectTrapTransport {
     }
     fn query_kerninfo_page(&self) -> Result<u64, TrapStatus> {
         // MINIX_KERNINFO: the page address comes back through the
-        // secondary return register (RBX) — see set_secondary_ipc_return.
+        // secondary return register (RBX on x86, a1 on riscv64) — see
+        // set_secondary_ipc_return.
         #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        {
+            let (ret, page) =
+                unsafe { crate::arch_trap::ipc_trap(crate::arch_trap::KERNINFO_NR, 0, 0) };
+            if ret == 0 {
+                return Ok(page as u64);
+            }
+            return Err(TrapStatus(ret));
+        }
+        // K12b riscv64 leg: same query through the ecall boundary
+        // (a7 = KERNINFO_NR, secondary return in a1).
+        #[cfg(all(target_arch = "riscv64", feature = "real-trap"))]
         {
             let (ret, page) =
                 unsafe { crate::arch_trap::ipc_trap(crate::arch_trap::KERNINFO_NR, 0, 0) };

@@ -246,7 +246,11 @@ fn birth_fail() -> ! {
 /// The real birth function the entry stub calls with the `ps_strings`
 /// pointer (see the module-level entry ABI). Runs the named stages and
 /// never returns.
-#[cfg(all(not(test), not(feature = "std"), target_arch = "x86_64"))]
+#[cfg(all(
+    not(test),
+    not(feature = "std"),
+    any(target_arch = "x86_64", target_arch = "riscv64")
+))]
 unsafe extern "C" fn rt_birth(ps_strings: u64) -> ! {
     use crate::init::{initialize_runtime, DirectTrapSource, IpcTableSelection};
 
@@ -338,6 +342,27 @@ pub extern "C" fn _start() -> ! {
         "mov rdi, rbx",
         "call {birth}",
         "ud2",
+        birth = sym rt_birth,
+    );
+}
+
+// ── Entry stub (riscv64) ────────────────────────────────────────────────
+//
+// K12b riscv64 leg. Established by the kernel's `build_cpu_context`
+// (arch/src/riscv64/boot.rs): `sp` is the initial stack pointer and `a0`
+// (x10) carries the `ps_strings` pointer — the register IS the birth
+// function's first argument per the RISC-V ABI, so the stub is a bare
+// call (no marshalling; the x86 RBX→RDI hop has no equivalent here).
+
+#[cfg(all(not(test), not(feature = "std"), target_arch = "riscv64"))]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+pub extern "C" fn _start() -> ! {
+    // SAFETY: naked entry — sp and a0 are the kernel-established process
+    // state (build_cpu_context); no Rust prologue has run.
+    core::arch::naked_asm!(
+        "call {birth}",
+        "unimp",
         birth = sym rt_birth,
     );
 }

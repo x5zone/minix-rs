@@ -91,9 +91,28 @@ impl ClockArch for Riscv64ClockArch {
     }
 
     fn read_ticks(&self) -> u64 {
+        // The S-mode time read goes through the `time` CSR (the privileged
+        // spec's S-mode view of mtime), NOT the MMIO register: under
+        // OpenSBI the CLINT/ACLINT-MTIMER frame is PMP-protected M-mode
+        // memory (QEMU virt Domain0 Region00: S/U access ()), so an MMIO
+        // read takes an access fault (live: scause=5, stval=0x200bff8 in
+        // the first riscv64 scheduler run). The `time` CSR — 0xC01, the
+        // `rdtime` instruction's target — reads the same counter and is
+        // S-mode legal. The MMIO address stays in the descriptor for the
+        // M-mode-only timer-programming paths (which under OpenSBI must
+        // use the SBI SetTimer ecall instead — future leg).
+        let ticks: u64;
+        // SAFETY: reading the `time` CSR is a side-effect-free S-mode
+        // operation (Time extension, RV64); nomem/nostack per the usual
+        // CSR-read contract.
         unsafe {
-            core::ptr::read_volatile(self.mtime_addr as *const u64)
+            core::arch::asm!(
+                "csrr {}, time",
+                out(reg) ticks,
+                options(nomem, nostack)
+            );
         }
+        ticks
     }
 
     fn stop_local_timer(&mut self, cpu_id: u32) {

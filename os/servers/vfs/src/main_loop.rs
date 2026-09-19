@@ -39,6 +39,8 @@ use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
 use crate::fs_comm::{CommError, FsTransport, GlobalComm};
 use crate::vnode::VnodeTable;
 use crate::vmnt::VmntTable;
+use minix_sef::SefEvent;
+use minix_sys::ipc::IpcTransport as _;
 use crate::worker::WorkerPool;
 use minix_types::{Endpoint, Gid, Message, Uid, UserSlot, VfsPmInit, VfsPmInitError};
 
@@ -953,46 +955,90 @@ impl Default for VfsState {
     }
 }
 
+/// SEF 循环的 IPC 适配:`SefIpc` 只需要 receive/notify 两动词,由
+/// trap 直连传输承载(VM 的 `SefAdapter` 同形;S13 W4 接线)。
+pub struct VfsIpc {
+    inner: minix_sys::ipc::DirectTrapTransport,
+}
+
+impl VfsIpc {
+    pub const fn new() -> Self {
+        Self { inner: minix_sys::ipc::DirectTrapTransport }
+    }
+}
+
+impl Default for VfsIpc {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl minix_sef::SefIpc for VfsIpc {
+    fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        let sts = self.inner.receive(src, msg).map_err(|t| t.0)?;
+        Ok(sts.0 as i32)
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        self.inner.notify(dest).map_err(|t| t.0)
+    }
+}
+
 /// VFS main loop.
 ///
-/// Corresponds to Minix3's `main()` function (main.c:54-118).
-///
-/// # Note
-///
-/// Currently a mock implementation—IPC message reception uses simulation.
-/// Real IPC implementation requires kernel support.
+/// Corresponds to Minix3's `main()` function (main.c:54-118): SEF 启动 →
+/// 握手阻塞循环(main.c:410-436)→ `sef_receive(ANY)` 主循环(main.c:601)。
 pub fn run() -> ! {
     let mut state = VfsState::new();
     state.init_fresh();
+    let mut ipc = VfsIpc::new();
 
-    // 启动握手（main.c:410-436）：真实路径由 sef_receive(PM_PROC_NR) 循环驱动；
-    // 内核 IPC 未落地前以占位 NONE 终止符推进状态机（mock）。
-    let terminator = VfsPmInit {
-        slot: 0,
-        pid: 0,
-        endpoint: Endpoint::NONE,
+    // 启动握手(main.c:410-436):`sef_receive(PM_PROC_NR)` do-while——
+    // 每条 VFS_PM_INIT 填一个 fproc 槽,endpoint==NONE 终止。
+    loop {
+        let mut msg = Message::default();
+        let recv = minix_sef::sef_receive_status(&mut ipc, Endpoint::PM, &mut msg, &mut |_| {})
+            .unwrap_or_else(|e| panic!("vfs: handshake receive failed: {e}"));
+        // NONE 终止符也经 step:状态机在此完成 PmHandshake→InitTables
+        // 转换(与既有握手测试的 complete 语义一致)。
+        let complete = state
+            .pm_handshake_step(&recv.message)
+            .unwrap_or_else(|e| panic!("vfs: handshake rejected message: {e:?}"));
+        if complete {
+            break;
+        }
     }
-    .encode();
-    let _ = state.pm_handshake_step(&terminator);
+    // C main.c:435-436 — ipc_send(PM, OK) 同步屏障;send 动词挂 W1 通电面。
     state.finish_init();
 
+    // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
+    let mut ds = minix_sys::ds::DsClient::new(
+        minix_sys::ipc::DirectTrapTransport,
+        minix_sys::syscall::DirectKernelCallTransport,
+        Endpoint::DS,
+    );
+    let _ = ds.subscribe("drv\\.[bc]..\\..*", {
+        (minix_types::DsFlags::INITIAL | minix_types::DsFlags::OVERWRITE).bits() as i32
+    });
+
     loop {
-        // worker_yield() — Let other threads run first
-        // Currently single-threaded mock, no need to actually yield
-
-        // send_work() — Dispatch pending PM deferred requests
-        // Currently mock, PM deferred mechanism not implemented yet
-
-        // get_work() — Receive new messages
-        // Currently mock, using empty message
-        state.current_message = Message::default();
-        state.current_fp_slot = None;
-
-        // Message dispatch logic
-        // Currently mock, just showing dispatch framework
-        let codec = VfsTransIdCodec;
-        let msg = state.current_message;
-        let _route = state.run_once(&msg, &codec);
+        // C main.c:601-602 — sef_receive(ANY):ping 拦截在 SEF 层完成。
+        let mut msg = Message::default();
+        let recv = minix_sef::sef_receive_status(&mut ipc, Endpoint::ANY, &mut msg, &mut |_| {
+            // C VFS 未注册 signal handler(main.c:374-388)——库默认忽略面。
+        })
+        .unwrap_or_else(|e| panic!("vfs: receive failed: {e}"));
+        match recv.event {
+            SefEvent::Call(_) => {
+                let codec = VfsTransIdCodec;
+                let _ = state.run_once(&recv.message, &codec);
+            }
+            SefEvent::Signal(_) => {}
+            // init_restart ≡ init_fresh(已文档化);LU prepare/rollback 的
+            // 决策函数就位,RS 推进面挂通电。
+            SefEvent::Init(_) => state.init_fresh(),
+            SefEvent::PingInvalid => {}
+        }
     }
 }
 

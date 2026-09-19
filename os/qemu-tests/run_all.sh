@@ -62,7 +62,7 @@ for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 tes
 done
 
 # ── riscv64 (OpenSBI, bare-metal) ──
-for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64; do
+for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64 test-rt-birth-riscv64; do
     echo "--- riscv64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target riscv64gc-unknown-none-elf --release 2>&1 || echo "(build failed)"
 done
@@ -163,6 +163,16 @@ if command -v qemu-system-riscv64 &>/dev/null; then
         echo "(test-smp-ipi-riscv64: binary not found, skip)"
         SKIP=$((SKIP + 1))
     fi
+
+    # ── Special-protocol script (edge1 K12b): the riscv64 birth-chain
+    # carrier builds the rt-birth user image itself and judges PASS from
+    # the serial markers.
+    echo "--- Running: test-rt-birth-riscv64 (special: birth-chain serial markers) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-rt-birth-riscv64.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-rt-birth-riscv64: skipped)"
+    else FAIL=$((FAIL + 1)); fi
 fi
 
 echo ""
