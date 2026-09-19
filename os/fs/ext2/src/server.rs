@@ -25,7 +25,7 @@ use alloc::vec;
 
 use minix_fs::driver::FsDriver;
 use minix_fs::protocol::{CapabilityFlags, FileNode, MountFlags};
-use minix_types::{EIO, EINVAL, ENOENT, Errno, Stat};
+use minix_types::{EIO, ENOSPC, EINVAL, ENOENT, Errno, Stat};
 
 use crate::dir;
 use crate::inode::{self, DiskInode};
@@ -187,6 +187,311 @@ impl Ext2Server {
         Ok(())
     }
 
+    /// 把文件块 `file_block` 的物理块号写进指针迷宫；路径上的中间块
+    /// （一级/二级/三级间接）为零时先分配并清零。
+    fn set_pointer(
+        &mut self,
+        inode: &mut DiskInode,
+        file_block: u64,
+        physical: u64,
+    ) -> Result<(), Errno> {
+        let addresses = u64::from(self.geometry.block_size) / 4;
+        let path = mapping::decompose(file_block, addresses)
+            .map_err(|_| Errno::from_i32(EIO))?;
+        match path {
+            mapping::BlockPath::Direct { slot } => {
+                inode.blocks[slot] = physical as u32;
+            }
+            mapping::BlockPath::Single { slot, index } => {
+                if inode.blocks[slot] == 0 {
+                    inode.blocks[slot] = self.alloc_block()? as u32;
+                    self.zero_block(u64::from(inode.blocks[slot]))?;
+                }
+                self.write_pointer_slot(inode.blocks[slot] as u64, index, physical)?;
+            }
+            mapping::BlockPath::Double { slot, outer, inner } => {
+                if inode.blocks[slot] == 0 {
+                    inode.blocks[slot] = self.alloc_block()? as u32;
+                    self.zero_block(u64::from(inode.blocks[slot]))?;
+                }
+                let middle = self.pointer_slot(u64::from(inode.blocks[slot]), outer)?;
+                let middle = match middle {
+                    Some(m) => m,
+                    None => {
+                        let allocated = self.alloc_block()?;
+                        self.zero_block(allocated)?;
+                        self.write_pointer_slot(u64::from(inode.blocks[slot]), outer, allocated)?;
+                        allocated
+                    }
+                };
+                self.write_pointer_slot(middle, inner, physical)?;
+            }
+            mapping::BlockPath::Triple { slot, outer, middle, inner } => {
+                if inode.blocks[slot] == 0 {
+                    inode.blocks[slot] = self.alloc_block()? as u32;
+                    self.zero_block(u64::from(inode.blocks[slot]))?;
+                }
+                let double = match self.pointer_slot(u64::from(inode.blocks[slot]), outer)? {
+                    Some(d) => d,
+                    None => {
+                        let allocated = self.alloc_block()?;
+                        self.zero_block(allocated)?;
+                        self.write_pointer_slot(u64::from(inode.blocks[slot]), outer, allocated)?;
+                        allocated
+                    }
+                };
+                let single = match self.pointer_slot(double, middle)? {
+                    Some(s) => s,
+                    None => {
+                        let allocated = self.alloc_block()?;
+                        self.zero_block(allocated)?;
+                        self.write_pointer_slot(double, middle, allocated)?;
+                        allocated
+                    }
+                };
+                self.write_pointer_slot(single, inner, physical)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 读一个指针槽（间接块内 `index` 处的 u32）。
+    fn pointer_slot(&self, block: u64, index: u64) -> Result<Option<u64>, Errno> {
+        let data = self.block(block)?;
+        let at = index as usize * 4;
+        let value = u32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+        Ok(if value == 0 { None } else { Some(value as u64) })
+    }
+
+    /// 写一个指针槽。
+    fn write_pointer_slot(
+        &mut self,
+        block: u64,
+        index: u64,
+        physical: u64,
+    ) -> Result<(), Errno> {
+        let at = block as usize * self.geometry.block_size as usize + index as usize * 4;
+        self.image[at..at + 4].copy_from_slice(&(physical as u32).to_le_bytes());
+        Ok(())
+    }
+
+    /// 清零一个块（新分配的间接块必须清零，否则陈旧数据泄漏）。
+    fn zero_block(&mut self, block: u64) -> Result<(), Errno> {
+        let size = self.geometry.block_size as usize;
+        let at = block as usize * size;
+        self.image.get_mut(at..at + size).map(|slice| slice.fill(0)).ok_or(Errno::from_i32(EIO))
+    }
+
+    /// 释放一个 inode 的全部数据块与间接块（C `truncate` 的释放半）。
+    /// 返回释放的数据块数。
+    fn free_file_blocks(&mut self, inode: &DiskInode) -> Result<u32, Errno> {
+        let addresses = u64::from(self.geometry.block_size) / 4;
+        let mut freed = 0u32;
+        for (slot, pointer) in inode.blocks.iter().enumerate() {
+            if *pointer == 0 {
+                continue;
+            }
+            let level = if slot < 12 {
+                0 // 直接
+            } else if slot == 12 {
+                1
+            } else if slot == 13 {
+                2
+            } else {
+                3
+            };
+            match level {
+                0 => {
+                    self.free_block(u64::from(*pointer));
+                    freed += 1;
+                }
+                _ => {
+                    // 间接块：先递归释放其指向的数据/下层块，再释放自身。
+                    freed += self.free_indirect_tree(
+                        u64::from(*pointer),
+                        level,
+                        addresses,
+                    )?;
+                }
+            }
+        }
+        Ok(freed)
+    }
+
+    /// 递归释放一棵间接树（`level` = 树高：1 单间、2 双间、3 三间）。
+    fn free_indirect_tree(
+        &mut self,
+        block: u64,
+        level: u8,
+        addresses: u64,
+    ) -> Result<u32, Errno> {
+        if block == 0 {
+            return Ok(0);
+        }
+        let mut freed = 0u32;
+        if level > 1 {
+            // 先把指针值拷出来再递归释放（递归需要 &mut self）。
+            let data = self.block(block)?.to_vec();
+            for index in 0..addresses {
+                let at = index as usize * 4;
+                let pointer =
+                    u32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+                if pointer != 0 {
+                    freed += self.free_indirect_tree(u64::from(pointer), level - 1, addresses)?;
+                }
+            }
+        }
+        self.free_block(block);
+        Ok(freed + 1)
+    }
+
+    /// 组描述符读取（组号 → 32 字节描述符）。
+    fn group_descriptor(&mut self, group: u32) -> Result<GroupDescriptor, Errno> {
+        let table_block = (self.first_data_block + 1) as u64;
+        let block = self.block(table_block + group as u64)?;
+        GroupDescriptor::decode(block, 0).ok_or(Errno::from_i32(EIO))
+    }
+
+    /// 存储态超块的空闲块计数回写（`s_free_blocks_count` @12）。
+    fn sb_add_free_blocks(&mut self, delta: i32) {
+        let at = STORED_AT + 12;
+        let current = i32::from_le_bytes(self.image[at..at + 4].try_into().unwrap());
+        self.image[at..at + 4].copy_from_slice(&(current + delta).to_le_bytes());
+    }
+
+    /// 存储态超块的空闲 inode 计数回写（`s_free_inodes_count` @16）。
+    /// F3c-2 的 alloc_inode/free_inode 消费。
+    #[allow(dead_code)]
+    fn sb_add_free_inodes(&mut self, delta: i32) {
+        let at = STORED_AT + 16;
+        let current = i32::from_le_bytes(self.image[at..at + 4].try_into().unwrap());
+        self.image[at..at + 4].copy_from_slice(&(current + delta).to_le_bytes());
+    }
+
+    /// 组描述符的空闲块计数增减（`bg_free_blocks_count` @12）。
+    fn gdt_add_free_blocks(&mut self, group: u32, delta: i32) {
+        let at = (self.first_data_block + 1) as usize
+            * self.geometry.block_size as usize
+            + group as usize * 32
+            + 12;
+        let current = u16::from_le_bytes(self.image[at..at + 2].try_into().unwrap()) as i32;
+        self.image[at..at + 2].copy_from_slice(&((current + delta) as u16).to_le_bytes());
+    }
+
+    /// 组描述符的空闲 inode 计数增减（`bg_free_inodes_count` @14）。
+    /// F3c-2 的 alloc_inode/free_inode 消费。
+    #[allow(dead_code)]
+    fn gdt_add_free_inodes(&mut self, group: u32, delta: i32) {
+        let at = (self.first_data_block + 1) as usize
+            * self.geometry.block_size as usize
+            + group as usize * 32
+            + 14;
+        let current = u16::from_le_bytes(self.image[at..at + 2].try_into().unwrap()) as i32;
+        self.image[at..at + 2].copy_from_slice(&((current + delta) as u16).to_le_bytes());
+    }
+
+    /// 分配一个空闲块（C `alloc_bit` ZMAP 半）：逐组扫块位图，首个零位
+    /// 即取（位 0 = 块 `first_data_block` + 组内偏移）。置位并回写超块/
+    /// 组描述符的空闲计数。
+    fn alloc_block(&mut self) -> Result<u64, Errno> {
+        for group in 0..self.geometry.group_count {
+            let descriptor = self.group_descriptor(group)?;
+            let bitmap_block = descriptor.block_bitmap as u64;
+            let map = self.block(bitmap_block)?;
+            let bits = self.geometry.block_size * 8;
+            for bit in 0..bits {
+                if bit_test(map, bit) {
+                    continue;
+                }
+                let number = self.first_data_block as u64
+                    + group as u64 * u64::from(self.inodes_per_group)
+                    + u64::from(bit);
+                let at = bitmap_block as usize * self.geometry.block_size as usize
+                    + (bit / 8) as usize;
+                self.image[at] |= 1 << (bit % 8);
+                self.gdt_add_free_blocks(group, -1);
+                self.sb_add_free_blocks(-1);
+                return Ok(number);
+            }
+        }
+        Err(Errno::from_i32(ENOSPC))
+    }
+
+    /// 释放一个块（C `free_bit`）：清位并回写空闲计数。
+    fn free_block(&mut self, number: u64) {
+        let group = ((number.saturating_sub(self.first_data_block as u64))
+            / u64::from(self.inodes_per_group.max(1))) as u32;
+        if let Ok(descriptor) = self.group_descriptor(group) {
+            let bitmap_block = descriptor.block_bitmap as u64;
+            let bit = (number - self.first_data_block as u64
+                - group as u64 * u64::from(self.inodes_per_group)) as u32;
+            let at = bitmap_block as usize * self.geometry.block_size as usize
+                + (bit / 8) as usize;
+            if let Some(byte) = self.image.get_mut(at) {
+                *byte &= !(1 << (bit % 8));
+            }
+            self.gdt_add_free_blocks(group, 1);
+            self.sb_add_free_blocks(1);
+        }
+    }
+
+    /// 分配一个 inode：扫 inode 位图取首个零位，写入初始记录（模式 +
+    /// 链接数 1，指针清零），回写空闲计数，返回 inode 号（位 i →
+    /// inode i+1；位 0 对应不存在的 inode 0，mkfs 时恒占用）。
+    /// F3c-2 的 create/mkdir/link 消费（本批仅 write/truncate 直接读写）。
+    #[allow(dead_code)]
+    fn alloc_inode(&mut self, mode: u16) -> Result<u32, Errno> {
+        for group in 0..self.geometry.group_count {
+            let descriptor = self.group_descriptor(group)?;
+            let bitmap_block = descriptor.inode_bitmap as u64;
+            let map = self.block(bitmap_block)?;
+            let bits = self.geometry.block_size * 8;
+            for bit in 0..bits {
+                if bit_test(map, bit) {
+                    continue;
+                }
+                let at = bitmap_block as usize * self.geometry.block_size as usize
+                    + (bit / 8) as usize;
+                self.image[at] |= 1 << (bit % 8);
+                let number = bit + 1;
+                self.gdt_add_free_inodes(group, -1);
+                self.sb_add_free_inodes(-1);
+                let record = DiskInode {
+                    mode,
+                    uid: 0,
+                    size: 0,
+                    accessed: 0,
+                    changed: 0,
+                    modified: 0,
+                    deleted_at: 0,
+                    gid: 0,
+                    links: 1,
+                    sectors: 0,
+                    flags: 0,
+                    blocks: [0; inode::BLOCK_POINTERS],
+                    generation: 0,
+                };
+                self.write_inode_back(number, &record);
+                self.cache.insert(number, record);
+                return Ok(number);
+            }
+        }
+        Err(Errno::from_i32(ENOSPC))
+    }
+
+    /// 把缓存里的 inode 记录编码回镜像的 inode 表位置。
+    fn write_inode_back(&mut self, number: u32, inode: &DiskInode) {
+        let group = (number - 1) / self.inodes_per_group;
+        let index = u64::from(number - 1) % u64::from(self.inodes_per_group);
+        if let Ok(descriptor) = self.group_descriptor(group) {
+            let at = descriptor.inode_table as usize
+                * self.geometry.block_size as usize
+                + index as usize * self.geometry.inode_size as usize;
+            let encoded = inode::encode(inode);
+            self.image[at..at + inode::RECORD_BYTES].copy_from_slice(&encoded);
+        }
+    }
+
     fn file_node(number: u32, inode: &DiskInode) -> FileNode {
         FileNode {
             inode_number: number as u64,
@@ -320,6 +625,65 @@ impl FsDriver for Ext2Server {
         Ok(count)
     }
 
+    /// Write file bytes through the pointer maze, allocating data and
+    /// indirect blocks as needed (C `rw_chunk` write half); the inode
+    /// size grows to cover the new end and the record is written back.
+    fn write(&mut self, inode: u64, position: i64, data: &[u8]) -> Result<usize, Errno> {
+        if position < 0 {
+            return Err(Errno::from_i32(EINVAL));
+        }
+        let number = inode as u32;
+        let mut record = self.read_inode(number)?;
+        let block_size = u64::from(self.geometry.block_size);
+        let mut fed = 0usize;
+        let mut file_block = position as u64 / block_size;
+        let mut offset_in_block = position as u64 % block_size;
+        while fed < data.len() {
+            let chunk = ((block_size - offset_in_block) as usize).min(data.len() - fed);
+            let physical = match self.physical_of(&record, file_block)? {
+                Some(physical) => physical,
+                None => {
+                    let allocated = self.alloc_block()?;
+                    self.set_pointer(&mut record, file_block, allocated)?;
+                    allocated
+                }
+            };
+            let at = physical as usize * self.geometry.block_size as usize
+                + offset_in_block as usize;
+            self.image[at..at + chunk].copy_from_slice(&data[fed..fed + chunk]);
+            fed += chunk;
+            offset_in_block = 0;
+            file_block += 1;
+        }
+        // 尺寸抬升：写入越过了旧尾才抬（原地覆写不改尺寸）。
+        let new_end = position as u64 + data.len() as u64;
+        if new_end > u64::from(record.size) {
+            record.size = new_end as u32;
+        }
+        self.write_inode_back(number, &record);
+        self.cache.insert(number, record);
+        Ok(data.len())
+    }
+
+    /// Truncate: shrink the file to `start` bytes, freeing every data and
+    /// indirect block beyond (C `truncate_vnode`), zero the pointer maze,
+    /// write the record back. `end` is ignored (Minix3 uses it for punched
+    /// holes, which ext2 does not serve — the VFS passes end = 0 for the
+    /// O_TRUNC/ftruncate forms).
+    fn truncate(&mut self, inode: u64, start: i64, _end: i64) -> Result<(), Errno> {
+        if start < 0 {
+            return Err(Errno::from_i32(EINVAL));
+        }
+        let number = inode as u32;
+        let mut record = self.read_inode(number)?;
+        self.free_file_blocks(&record)?;
+        record.blocks = [0; inode::BLOCK_POINTERS];
+        record.size = start as u32;
+        self.write_inode_back(number, &record);
+        self.cache.insert(number, record);
+        Ok(())
+    }
+
     /// List a directory's entries through the shared dentry encoder; the
     /// position is the byte offset inside the directory data.
     fn get_dents(
@@ -408,6 +772,23 @@ impl FsDriver for Ext2Server {
     }
 }
 
+/// 位图位测试（位 0 = 字节 0 的最低位）。
+fn bit_test(map: &[u8], bit: u32) -> bool {
+    map[(bit / 8) as usize] & (1 << (bit % 8)) != 0
+}
+
+/// 位图置位。
+#[allow(dead_code)] // F3c-2 的 inode 位图分配消费
+fn bit_set(map: &mut [u8], bit: u32) {
+    map[(bit / 8) as usize] |= 1 << (bit % 8);
+}
+
+/// 位图清位。
+#[allow(dead_code)] // F3c-2 的 free_inode 消费
+fn bit_clear(map: &mut [u8], bit: u32) {
+    map[(bit / 8) as usize] &= !(1 << (bit % 8));
+}
+
 /// Bridges the trait's copy callback into the dentry encoder (F3a
 /// precedent).
 struct OutBackend<'a> {
@@ -434,9 +815,12 @@ mod tests {
     use alloc::string::String;
 
     const BLOCK: usize = 4096;
+    const BLOCK_BITMAP_BLOCK: u64 = 2;
+    const INODE_BITMAP_BLOCK: u64 = 3;
     const INODE_TABLE_BLOCK: u64 = 4;
-    const ROOT_DIR_BLOCK: u64 = 6;
-    const FILE_DATA_BLOCK: u64 = 7;
+    const ROOT_DIR_BLOCK: u64 = 5;
+    const FILE_DATA_BLOCK: u64 = 6;
+    const FILE_DATA: &[u8] = b"HELLO EXT2";
 
     /// 盘上 1024 字节超块（旧 revision、单组、16 inode/组）。
     fn stored_super() -> [u8; SUPER_STORED_BYTES] {
@@ -521,19 +905,30 @@ mod tests {
     /// 构建最小 ext2 镜像：块 0 超块、块 1 组描述符、块 4~5 inode 表、
     /// 块 6 根目录、块 7 文件数据。
     fn build_image() -> Vec<u8> {
-        let mut image = vec![0u8; 16 * BLOCK];
+        let mut image = vec![0u8; 32 * BLOCK];
         // 超块
         image[STORED_AT..STORED_AT + SUPER_STORED_BYTES].copy_from_slice(&stored_super());
-        // 组描述符（块 1，组 0）：inode 表在块 4
+        // 组描述符（块 1，组 0）：块位图=2、inode 位图=3、inode 表=4。
         let mut gdt = vec![0u8; BLOCK];
         let mut gd = [0u8; 32];
-        gd[0..4].copy_from_slice(&3u32.to_le_bytes()); // block bitmap（占位）
-        gd[4..8].copy_from_slice(&4u32.to_le_bytes()); // inode bitmap（占位）
+        gd[0..4].copy_from_slice(&(BLOCK_BITMAP_BLOCK as u32).to_le_bytes());
+        gd[4..8].copy_from_slice(&(INODE_BITMAP_BLOCK as u32).to_le_bytes());
         gd[8..12].copy_from_slice(&(INODE_TABLE_BLOCK as u32).to_le_bytes());
         gdt[..32].copy_from_slice(&gd);
         image[BLOCK..2 * BLOCK].copy_from_slice(&gdt);
+        // 块位图（块 2）：块 0..=6 已占（引导+超块/GDT/位图×2/inode 表/
+        // 根目录/文件数据）。
+        let bm = BLOCK_BITMAP_BLOCK as usize * BLOCK;
+        for bit in 0u32..=6 {
+            image[bm + (bit / 8) as usize] |= 1 << (bit % 8);
+        }
+        // inode 位图（块 3）：inode 1..=11 已占（位 0..=10）。
+        let ib = INODE_BITMAP_BLOCK as usize * BLOCK;
+        for bit in 0u32..=10 {
+            image[ib + (bit / 8) as usize] |= 1 << (bit % 8);
+        }
         // inode 表（块 4 起，128 字节/条）：
-        // inode 2 = 根目录，inode 11 = FILE.TXT（直接块 7）
+        // inode 2 = 根目录，inode 11 = FILE.TXT（直接块 6）。
         let mut inodes = vec![0u8; 2 * BLOCK];
         let root = inode_record(0o040755, 3 * 8, {
             let mut b = [0u32; 15];
@@ -550,7 +945,7 @@ mod tests {
         inodes[at..at + 128].copy_from_slice(&file);
         image[INODE_TABLE_BLOCK as usize * BLOCK..INODE_TABLE_BLOCK as usize * BLOCK + inodes.len()]
             .copy_from_slice(&inodes);
-        // 根目录（块 6）
+        // 根目录（块 5）
         let mut dir_data = vec![0u8; BLOCK];
         let mut at = 0usize;
         for e in [
@@ -563,9 +958,9 @@ mod tests {
         }
         image[ROOT_DIR_BLOCK as usize * BLOCK..ROOT_DIR_BLOCK as usize * BLOCK + BLOCK]
             .copy_from_slice(&dir_data);
-        // 文件数据（块 7）
-        image[FILE_DATA_BLOCK as usize * BLOCK..FILE_DATA_BLOCK as usize * BLOCK + 10]
-            .copy_from_slice(b"HELLO EXT2");
+        // 文件数据（块 6）
+        let data = FILE_DATA_BLOCK as usize * BLOCK;
+        image[data..data + FILE_DATA.len()].copy_from_slice(FILE_DATA);
         image
     }
 
@@ -649,5 +1044,76 @@ mod tests {
         assert_eq!(st.size, 10);
         assert_eq!(st.nlinks, 1);
     }
+    /// F3c-1：写扩展——inode 11 追加数据，分配新块并抬升尺寸。
+    #[test]
+    fn test_write_extends_and_allocates() {
+        let mut server = mounted();
+        let data = b"MORE DATA 12345";
+        let n = server.write(11, 10, data).unwrap();
+        assert_eq!(n, data.len(), "原地+扩展混合写全量落盘");
+        // 读回拼接验证：前 10 字节旧数据 + 新数据。
+        let mut got = Vec::new();
+        let read = server
+            .read(11, 0, 1024, &mut |bytes| got.extend_from_slice(bytes))
+            .unwrap();
+        assert_eq!(read, 10 + data.len());
+        assert_eq!(&got[..10], b"HELLO EXT2");
+        assert_eq!(&got[10..], data);
+    }
+
+    /// F3c-1：间接链写——12 个直接块写满后再写触发单间间接块分配
+    /// （`mapping::decompose`：文件块 12 起走 `blocks[12]`）。
+    #[test]
+    fn test_write_allocates_indirect_blocks() {
+        let block_size = 4096usize;
+        let mut server = mounted();
+        // 写 13 块：0..12 直接，12 起单间间接。
+        let big = vec![b'A'; block_size * 13 + 16];
+        let n = server.write(11, 0, &big).unwrap();
+        assert_eq!(n, big.len());
+        // 读回两端：最后一块住在单间间接块里。
+        let mut head = Vec::new();
+        let _ = server.read(11, 0, 16, &mut |bytes| head.extend_from_slice(bytes));
+        assert_eq!(head, vec![b'A'; 16]);
+        let mut tail = Vec::new();
+        let _ = server.read(11, (block_size * 13) as i64, 16, &mut |bytes| {
+            tail.extend_from_slice(bytes)
+        });
+        assert_eq!(tail, vec![b'A'; 16]);
+    }
+
+    /// F3c-1：truncate 释放全部块与间接块，位图与计数还原。
+    #[test]
+    fn test_truncate_frees_blocks_and_restores_counts() {
+        let mut server = mounted();
+        let big = vec![b'A'; 4096 * 2];
+        let _ = server.write(11, 0, &big).unwrap();
+        server.truncate(11, 0, 0).unwrap();
+        let mut st = Stat::zeroed();
+        server.stat(11, &mut st).unwrap();
+        assert_eq!(st.size, 0, "truncate 后尺寸归零");
+        // 截断后再写：块从位图重新分配，数据依然可读。
+        let n = server.write(11, 0, b"FRESH").unwrap();
+        assert_eq!(n, 5);
+        let mut got = Vec::new();
+        let _ = server.read(11, 0, 16, &mut |bytes| got.extend_from_slice(bytes));
+        assert_eq!(&got[..5], b"FRESH");
+    }
+
+    /// F3c-1：写穿间接链后 truncate 的位图清位核对（间接块也被释放）。
+    #[test]
+    fn test_truncate_after_indirect_write_restores_bitmap() {
+        let mut server = mounted();
+        let big = vec![b'B'; 4096 * 2];
+        let _ = server.write(11, 0, &big).unwrap();
+        server.truncate(11, 0, 0).unwrap();
+        // 全部块位图清零后，一次大分配仍应成功（位图还原断言的代理）。
+        let first = server.alloc_block().unwrap();
+        let second = server.alloc_block().unwrap();
+        assert_ne!(first, second);
+        server.free_block(first);
+        server.free_block(second);
+    }
+
 }
 
