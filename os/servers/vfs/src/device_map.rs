@@ -585,6 +585,72 @@ pub fn classify_vanish(is_blk: bool, is_sock: bool) -> VanishNotice {
     }
 }
 
+/// 驱动死亡级联的编排产出(S15)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CascadeOutcome {
+    /// 家族分类(classify_vanish)。
+    pub notice: VanishNotice,
+    /// 死驱动在 dmap 表占的 major(字符家族;`None` = 无行/不适用)。
+    pub char_major: Option<u32>,
+    /// 死驱动在 smap 表占的一基行号(socket 家族;`None` = 无行)。
+    pub sock_num: Option<u32>,
+    /// 已失效的 filp 数(字符 + socket 两面)。
+    pub invalidated: usize,
+}
+
+/// 驱动死亡级联的统一入口(S15;05-stage todo P1-2 的三面合成)。
+///
+/// C 的三处入口——`map_driver(label, major, NONE)` 的失效支
+/// (dmap.c:82-85)、`dmap_endpt_down` 的 `worker_stop + invalidate`
+/// 支(dmap.c:305-311)、smap 侧的 `invalidate_filp_by_sock_drv`
+/// (smap.c:119/160/186 传 `sp->smap_num` 一基号)——在 Rust 汇成
+/// 一个编排:身份扫描(dmap 表按端点找 major、smap 表按端点找行)→
+/// 字符/socket 失效执行(经 filedes 的失效族)→ 家族分类出
+/// [`VanishNotice`] 供调用方续派(块→`bdev_up` 路径归
+/// 20-bdev.md;字符/socket 的挂起槽 stop 与 select 唤醒归
+/// sdev/select 的消费面,本函数只做失效与分类)。
+pub fn driver_death_cascade(
+    dmap: &DmapTable,
+    smap: &SmapTable,
+    filp_table: &mut crate::filp::FilpTable,
+    vnode_table: &crate::vnode::VnodeTable,
+    dead: Endpoint,
+    is_blk: bool,
+    is_sock: bool,
+) -> CascadeOutcome {
+    let notice = classify_vanish(is_blk, is_sock);
+    let mut char_major = None;
+    let mut sock_num = None;
+    let mut invalidated = 0;
+
+    if !is_blk && !is_sock {
+        // 字符家族:死驱动占的 dmap 行 → major → 全量字符 filp 失效。
+        if let Some(major) = get_by_endpt(dmap, dead) {
+            char_major = Some(major);
+            invalidated +=
+                crate::filedes::invalidate_by_char_major(filp_table, vnode_table, major);
+        }
+    }
+    if is_sock {
+        // socket 家族:C 传 `sp->smap_num`(一基号,init_smap 的
+        // `smap_num = i + 1`,smap.c:22-37)。
+        if let Some(row) = smap_by_endpt(smap, dead)
+            && let Some(entry) = smap.entries.get(row as usize)
+        {
+            sock_num = Some(entry.num);
+            invalidated +=
+                crate::filedes::invalidate_by_sock_drv(filp_table, vnode_table, entry.num);
+        }
+    }
+    // 块家族:失效不适用——走 `bdev_up` 恢复路径(执行归 20)。
+    CascadeOutcome {
+        notice,
+        char_major,
+        sock_num,
+        invalidated,
+    }
+}
+
 /// ioctl dispatch target (`do_ioctl` switch, `device.c:34-54`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoctlTarget {
@@ -938,5 +1004,96 @@ use crate::open::FileType;
         for (err, errno) in cases {
             assert_eq!(err.to_errno(), errno, "{err:?}");
         }
+    }
+
+    #[test]
+    fn test_death_cascade_char_invalidates_by_major() {
+        // 字符驱动死亡:身份扫描(dmap 表)→ 失效族执行 → notice。
+        use crate::filp::FilpTable;
+        use crate::vnode::VnodeTable;
+        use crate::vnode::VnodeId;
+
+        let mut dmap = DmapTable::new();
+        let dead = Endpoint(20);
+        let mut row = DmapEntry::empty();
+        row.driver = Some(dead);
+        dmap.set(4, row); // major 4 = TTY(C dmap.h:21-51)
+        let mut smap = SmapTable::new();
+        let mut tbl = FilpTable::new();
+        let mut vtbl = VnodeTable::new();
+        let f = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(f);
+        tbl.get_mut(f).unwrap().vnode = Some(1);
+        vtbl.get_mut(VnodeId(1)).unwrap().mode = crate::open::S_IFCHR | 0o600;
+        vtbl.get_mut(VnodeId(1)).unwrap().sdev = crate::mount::DevCodec::make(4, 0);
+
+        let out = driver_death_cascade(&dmap, &smap, &mut tbl, &vtbl, dead, false, false);
+        assert_eq!(out.notice, VanishNotice::InvalidateChar);
+        assert_eq!(out.char_major, Some(4));
+        assert_eq!(out.sock_num, None);
+        assert_eq!(out.invalidated, 1);
+        assert_eq!(tbl.get(f).unwrap().mode, crate::filp::FILP_CLOSED);
+    }
+
+    #[test]
+    fn test_death_cascade_sock_invalidates_by_num() {
+        use crate::filp::FilpTable;
+        use crate::vnode::VnodeTable;
+        use crate::vnode::VnodeId;
+
+        let dmap = DmapTable::new();
+        let mut smap = SmapTable::new();
+        let dead = Endpoint(21);
+        // 行 1(一基号 2)归死驱动。
+        smap.entries[1].endpt = Some(dead);
+        let mut tbl = FilpTable::new();
+        let mut vtbl = VnodeTable::new();
+        let f = tbl.alloc_filp(0o644).unwrap();
+        tbl.inc_count(f);
+        tbl.get_mut(f).unwrap().vnode = Some(1);
+        vtbl.get_mut(VnodeId(1)).unwrap().mode = crate::open::S_IFSOCK | 0o600;
+        vtbl.get_mut(VnodeId(1)).unwrap().sdev = make_smap_dev(2, 7);
+
+        let out = driver_death_cascade(&dmap, &smap, &mut tbl, &vtbl, dead, false, true);
+        assert_eq!(out.notice, VanishNotice::InvalidateSock);
+        assert_eq!(out.sock_num, Some(2)); // smap_num = row+1
+        assert_eq!(out.char_major, None);
+        assert_eq!(out.invalidated, 1);
+        assert_eq!(tbl.get(f).unwrap().mode, crate::filp::FILP_CLOSED);
+    }
+
+    #[test]
+    fn test_death_cascade_block_is_recover_notice() {
+        // 块驱动:C 走 bdev_up 恢复路径——级联不失效,只出 notice。
+        use crate::filp::FilpTable;
+        use crate::vnode::VnodeTable;
+
+        let dmap = DmapTable::new();
+        let smap = SmapTable::new();
+        let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let out = driver_death_cascade(&dmap, &smap, &mut tbl, &vtbl, Endpoint(22), true, false);
+        assert_eq!(out.notice, VanishNotice::RecoverBlock);
+        assert_eq!(out.invalidated, 0);
+        assert_eq!(out.char_major, None);
+    }
+
+    #[test]
+    fn test_death_cascade_no_row_is_inert() {
+        // 死驱动不在任何表:身份扫描空 → 零失效(fail-safe)。
+        use crate::filp::FilpTable;
+        use crate::vnode::VnodeTable;
+
+        let dmap = DmapTable::new();
+        let smap = SmapTable::new();
+        let mut tbl = FilpTable::new();
+        let vtbl = VnodeTable::new();
+        let out = driver_death_cascade(&dmap, &smap, &mut tbl, &vtbl, Endpoint(99), false, false);
+        assert_eq!(out.notice, VanishNotice::InvalidateChar);
+        assert_eq!(out.char_major, None);
+        assert_eq!(out.invalidated, 0);
+        let out2 = driver_death_cascade(&dmap, &smap, &mut tbl, &vtbl, Endpoint(99), false, true);
+        assert_eq!(out2.sock_num, None);
+        assert_eq!(out2.invalidated, 0);
     }
 }

@@ -15,6 +15,7 @@
 //!   with the main loop (09), drivers (21/22), and select (23)
 //! - unreachable C panics become defensive errors (ARCH hardening)
 
+use minix_types::{Endpoint, UserSlot};
 use minix_types::VirBytes;
 
 use crate::fproc::{PipeBlock, PipeIo};
@@ -485,6 +486,42 @@ pub enum DriverWake {
     /// Select waiters are scattered separately (`pipe.c:354`); anything
     /// else is none of this function's business.
     Ignore,
+}
+
+/// `unsuspend_by_endpt`(pipe.c:335-357)的 fproc 扫描编排(S15)。
+///
+/// 对每个活 fproc 按挂起面分类:Cdev 挂起且 `cdev.endpt == dead` →
+/// [`DriverWake::ReviveEio`](pipe.c:344-346 的 `revive(rp->fp_endpoint,
+/// EIO)`);Sdev 挂起且 `get_smap_by_dev` 的行归死驱动 → 
+/// [`DriverWake::StopSdev`](pipe.c:347-350 的 `sdev_stop(rp)`)。第三面
+/// (`select_unsuspend_by_endpt`,pipe.c:354)归 select 模块的消费面,
+/// 本函数只产出前两面的计划。
+///
+/// 产出计划而非执行——复活/停尸的执行(revive 入队、sdev 槽收尾)属
+/// 事件循环层的编排,S15 交付的是"谁被扫到、按哪面收"的决策序。
+pub fn driver_vanish_plan(
+    fproc_table: &crate::fproc::FProcTable,
+    smap_table: &crate::device_map::SmapTable,
+    dead: Endpoint,
+) -> Vec<(UserSlot, DriverWake)> {
+    use crate::fproc::{BlockedOn, PID_FREE};
+    let mut plan = Vec::new();
+    for (idx, fp) in fproc_table.slots().iter().enumerate() {
+        if fp.pid == PID_FREE {
+            continue; // pipe.c:341 `fp_pid == PID_FREE` 跳过
+        }
+        let wake = match &fp.blocked_on {
+            BlockedOn::Cdev(c) => classify_driver_waiter(c.endpt == dead, false),
+            BlockedOn::Sdev(s) => {
+                classify_driver_waiter(false, crate::sdev::stop_matches(s.dev, smap_table, dead))
+            }
+            _ => DriverWake::Ignore,
+        };
+        if wake != DriverWake::Ignore {
+            plan.push((UserSlot::new(idx), wake));
+        }
+    }
+    plan
 }
 
 /// Classify one waiter for driver-vanish scattering.
@@ -1156,6 +1193,59 @@ mod tests {
         assert_eq!(classify_driver_waiter(false, false), DriverWake::Ignore);
         // Char match wins ties (checked first, `pipe.c:344`).
         assert_eq!(classify_driver_waiter(true, true), DriverWake::ReviveEio);
+    }
+
+    #[test]
+    fn test_driver_vanish_plan_scans_cdev_and_sdev() {
+        // C unsuspend_by_endpt(pipe.c:335-357)的 fproc 扫描:
+        // Cdev 端点匹配 → ReviveEio;Sdev 经 smap 行匹配 → StopSdev;
+        // 无关与 PID_FREE 槽不产计划。
+        use crate::fproc::{CdevBlock, FProcTable, SdevBlock, SdevCall, PID_FREE};
+        use crate::device_map::{make_smap_dev, SmapTable};
+        use minix_types::UserSlot;
+
+        let dead = Endpoint(30);
+        let mut table = FProcTable::new();
+        let mut smap = SmapTable::new();
+        smap.entries[0].endpt = Some(dead); // smap_num = 1
+
+        // 槽 1:CDEV 挂起,端点即死驱动。
+        let fp = table.get_mut(UserSlot::new(1)).unwrap();
+        fp.pid = 11;
+        fp.endpoint = dead;
+        fp.blocked_on = crate::fproc::BlockedOn::Cdev(CdevBlock {
+            dev: 0,
+            endpt: dead,
+            grant: None,
+        });
+        // 槽 2:SDEV 挂起,设备属死驱动的 smap 行。
+        let fp = table.get_mut(UserSlot::new(2)).unwrap();
+        fp.pid = 12;
+        fp.blocked_on = crate::fproc::BlockedOn::Sdev(SdevBlock {
+            dev: make_smap_dev(1, 3),
+            call: SdevCall::Read,
+            grants: [None; 3],
+            aux: crate::fproc::SdevAux::None,
+        });
+        // 槽 3:CDEV 挂起但端点无关。
+        let fp = table.get_mut(UserSlot::new(3)).unwrap();
+        fp.pid = 13;
+        fp.blocked_on = crate::fproc::BlockedOn::Cdev(CdevBlock {
+            dev: 0,
+            endpt: Endpoint(31),
+            grant: None,
+        });
+        // 槽 4:PID_FREE 不产计划。
+        table.get_mut(UserSlot::new(4)).unwrap().pid = PID_FREE;
+
+        let plan = driver_vanish_plan(&table, &smap, dead);
+        assert_eq!(
+            plan,
+            vec![
+                (UserSlot::new(1), DriverWake::ReviveEio),
+                (UserSlot::new(2), DriverWake::StopSdev),
+            ]
+        );
     }
 
     #[test]

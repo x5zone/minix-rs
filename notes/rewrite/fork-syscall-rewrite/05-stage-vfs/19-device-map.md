@@ -271,3 +271,11 @@ os/servers/vfs/src/
 - 阶段文档：`18-mount.md`（标签来源）、`06-vmnt-table.md`（表语义类比）、`01-vfs-init-main.md`（启动调用点）、`20-bdev.md` / `21-cdev.md` / `22-sdev.md`（驱动执行）、`09-main-loop.md`（`SUSPEND` 路由）
 - Rust 实现：`os/servers/vfs/src/device_map.rs:1`（本篇判定层）、`os/servers/vfs/src/open.rs:1`（`FileType` 复用）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（标签拷贝语义）
+
+---
+
+## 9 驱动死亡级联编排(S15)
+
+C 的"驱动消失"没有单一入口,是三处同族动作的合集:`map_driver` 的 unmap 支先做字符失效再清行(`dmap.c:82-85`)、`dmap_endpt_down` 的 `worker_stop + invalidate`(`dmap.c:305-311`)、smap 侧的 `invalidate_filp_by_sock_drv(sp->smap_num)`(`smap.c:119/160/186`);挂起面的散射在 `unsuspend_by_endpt`(`pipe.c:335-357`):Cdev 挂起点端点匹配即 `revive(EIO)`、Sdev 挂起经 smap 行匹配即 `sdev_stop`、select 等待者另有 `select_unsuspend_by_endpt` 一面。
+
+Rust 在 S15 把决策面收成两个编排函数。`driver_death_cascade`(`device_map.rs`)做"身份扫描 + 失效执行 + 家族分类":按端点扫 dmap 表拿 major、扫 smap 表拿一基行号,字符家族经 `invalidate_by_char_major`、socket 家族经 `invalidate_by_sock_drv`(FIXED 失效族),产出 `CascadeOutcome { notice, char_major, sock_num, invalidated }`;块家族不出失效,`notice = RecoverBlock` 提示调用方走 `bdev_up` 恢复路径(执行归 20-bdev.md)。`driver_vanish_plan`(`pipe.rs`)做 fproc 扫描:活槽按挂起面分类,Cdev 端点匹配 → `ReviveEio`、Sdev 经 `stop_matches` → `StopSdev`,产出 `(UserSlot, DriverWake)` 计划供事件循环消费;第三面 select 归 select 模块。两个函数都是"计划/决策"位,复活入队与 sdev 槽收尾的运行时编排属事件循环层。
