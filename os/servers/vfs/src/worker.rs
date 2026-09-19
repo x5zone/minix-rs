@@ -248,6 +248,17 @@ pub enum WorkerCont {
         /// 要回给用户的原始状态。
         status: i32,
     },
+    /// `F_FREESP` 的对话半（`REQ_FTRUNC` 到 FS）：回复只有状态；零长
+    /// （`l_len == 0`）在成功后把 vnode 的 `v_size` 收到 `start`
+    /// （C misc.c:236-237 的 `f->filp_vno->v_size = start`）。
+    Freesp {
+        /// 被截的 vnode。
+        vnode: usize,
+        /// `l_len == 0`（截到 start）才动 size。
+        zero_len: bool,
+        /// 新大小。
+        start: i64,
+    },
     /// `pipe2` 的对话半（`REQ_NEWNODE`）：回复带新节点的 `node_details`，续接体
     /// 要用它填 vnode 与两个 filp，并把 `m_vfs_lc_fdpair { fd0, fd1 }` 作为
     /// **回复载荷**发回（用户拿到的就是这两个 fd）。C `create_pipe`

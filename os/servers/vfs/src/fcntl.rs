@@ -671,6 +671,105 @@ pub fn revive_all(procs: &[SuspendedProc]) -> Vec<u32> {
         .collect()
 }
 
+/// `struct flock` 的解码（LP64 布局，`minix_types::flock_off`）。
+/// 返回 `(l_start, l_len, l_pid, l_type, l_whence)`。
+pub fn decode_flock(raw: &[u8; minix_types::FLOCK_SIZE]) -> (i64, i64, i32, i32, i16) {
+    let rd64 = |at: usize| -> i64 {
+        i64::from_le_bytes(raw[at..at + 8].try_into().unwrap())
+    };
+    let rd32 = |at: usize| -> i32 { i32::from_le_bytes(raw[at..at + 4].try_into().unwrap()) };
+    let rd16 = |at: usize| -> i16 { i16::from_le_bytes(raw[at..at + 2].try_into().unwrap()) };
+    (
+        rd64(minix_types::flock_off::START),
+        rd64(minix_types::flock_off::LEN),
+        rd32(minix_types::flock_off::PID),
+        rd32(minix_types::flock_off::TYPE),
+        rd16(minix_types::flock_off::WHENCE),
+    )
+}
+
+/// `struct flock` 的编码（GETLK 的报告面：冲突锁回填或 `F_UNLCK`）。
+pub fn encode_flock(
+    raw: &mut [u8; minix_types::FLOCK_SIZE],
+    l_start: i64,
+    l_len: i64,
+    l_pid: i32,
+    l_type: i32,
+    l_whence: i16,
+) {
+    let mut wr = |at: usize, b: &[u8]| raw[at..at + b.len()].copy_from_slice(b);
+    wr(minix_types::flock_off::START, &l_start.to_le_bytes());
+    wr(minix_types::flock_off::LEN, &l_len.to_le_bytes());
+    wr(minix_types::flock_off::PID, &l_pid.to_le_bytes());
+    wr(minix_types::flock_off::TYPE, &l_type.to_le_bytes());
+    wr(minix_types::flock_off::WHENCE, &l_whence.to_le_bytes());
+}
+
+/// `struct flock` 的取/存缝（C `lock_op:37-39` 与 `:147-149` 的两向
+/// `sys_datacopy_wrapper`）——与 `socket::MsgHdrFetcher` 同一套路：生产件
+/// 走跨空间拷贝（宿主不可达），脚本替身让锁臂的门与三个结局在宿主可测。
+pub trait FlockIo {
+    /// 从用户内存取 24 字节（`EINVAL` 失败面）。
+    fn fetch(&self, addr: u64) -> Result<[u8; minix_types::FLOCK_SIZE], i32>;
+    /// 把 24 字节存回用户内存。
+    fn store(&self, addr: u64, bytes: &[u8; minix_types::FLOCK_SIZE]) -> Result<(), i32>;
+}
+
+/// 生产实现：跨空间 `sys_datacopy`。
+#[derive(Debug, Clone, Copy)]
+pub struct SysFlockIo {
+    /// 调用方端点（C 的 `who_e`）。
+    pub who: minix_types::Endpoint,
+}
+
+impl FlockIo for SysFlockIo {
+    fn fetch(&self, addr: u64) -> Result<[u8; minix_types::FLOCK_SIZE], i32> {
+        let mut buf = [0u8; minix_types::FLOCK_SIZE];
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            self.who.0,
+            addr,
+            minix_types::Endpoint::SELF.0,
+            buf.as_mut_ptr() as u64,
+            minix_types::FLOCK_SIZE as u64,
+        )
+        .map_err(|e| -e)?;
+        Ok(buf)
+    }
+    fn store(&self, addr: u64, bytes: &[u8; minix_types::FLOCK_SIZE]) -> Result<(), i32> {
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            minix_types::Endpoint::SELF.0,
+            bytes.as_ptr() as u64,
+            self.who.0,
+            addr,
+            minix_types::FLOCK_SIZE as u64,
+        )
+        .map_err(|e| -e)
+    }
+}
+
+/// 内存替身：把"用户内存"放进一个 24 字节缓冲（测试用；与生产件
+/// `SysFlockIo` 行为不同——脚本化 vs 跨空间拷贝——满足 trait 的
+/// 双实现规则）。
+#[derive(Debug, Default, Clone)]
+pub struct MemoryFlockIo {
+    /// 取方向的"用户内存"。
+    pub source: core::cell::RefCell<[u8; minix_types::FLOCK_SIZE]>,
+    /// 存储日志（地址 + 字节）。
+    pub stored: core::cell::RefCell<alloc::vec::Vec<(u64, [u8; minix_types::FLOCK_SIZE])>>,
+}
+
+impl FlockIo for MemoryFlockIo {
+    fn fetch(&self, _addr: u64) -> Result<[u8; minix_types::FLOCK_SIZE], i32> {
+        Ok(*self.source.borrow())
+    }
+    fn store(&self, addr: u64, bytes: &[u8; minix_types::FLOCK_SIZE]) -> Result<(), i32> {
+        self.stored.borrow_mut().push((addr, *bytes));
+        Ok(())
+    }
+}
+
 /// What `F_FREESP` truncates (`do_fcntl:222-234`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FreespSpan {

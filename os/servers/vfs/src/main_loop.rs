@@ -4280,6 +4280,16 @@ impl VfsState {
                 crate::worker::WorkerCont::Status => {
                     // 纯状态：无载荷、无副作用——收尾的默认路径就够了。
                 }
+                crate::worker::WorkerCont::Freesp { vnode, zero_len, start } => {
+                    // C misc.c:236-237：`F_FREESP` 的零长（`l_len == 0`）
+                    // 在 `req_ftrunc` 成功后把 `v_size` 收到 `start`。
+                    if status == 0 && zero_len
+                        && let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode))
+                        && (start < 0 || (start as u64) <= v.size)
+                    {
+                        v.size = if start < 0 { 0 } else { start as u64 };
+                    }
+                }
                 crate::worker::WorkerCont::InhibRead { offset } => {
                     // 位置已在臂里改好（C `actual_lseek:640`）；这里只把新位置
                     // 填进回复载荷（C `do_lseek` 的 `m_vfs_lc_lseek.offset`）。

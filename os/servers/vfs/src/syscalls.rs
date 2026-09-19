@@ -2520,9 +2520,8 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // C `do_fcntl`（misc.c:127-300）：载荷 `mess_lc_vfs_fcntl`
             // （fd@0、cmd@4、arg_int@8、arg_ptr@16）。未知 cmd → EINVAL
             // （C 的 `default: r = EINVAL`）。
-            // `arg_ptr` 是锁类命令的 `struct flock *`（本批未接线，见下面
-            // 的分支）；解析出来但不用，前缀下划线明示。
-            let (fd, cmd_raw, arg_int, _arg_ptr) = {
+            // `arg_ptr` 是锁类命令与 `F_FREESP` 的 `struct flock *`。
+            let (fd, cmd_raw, arg_int, arg_ptr) = {
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
@@ -2706,10 +2705,26 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     });
                     return SyscallResult::Suspend;
                 }
-                // 锁类（`lock_op`）与 `F_FREESP` 都要跨空间拷用户的
-                // `struct flock`（进/出两个方向），本批未接线 → 诚实拒绝。
-                C::GetLk | C::SetLk | C::SetLkw | C::FreeSp => {
-                    return SyscallResult::Error(minix_types::ENOSYS);
+                // ── 锁类（C `lock_op` lock.c:21-154）──
+                C::GetLk | C::SetLk | C::SetLkw => {
+                    let flock_io = crate::fcntl::SysFlockIo {
+                        who: state
+                            .fproc_table
+                            .get(fp_slot)
+                            .map(|fp| fp.endpoint)
+                            .unwrap_or(minix_types::Endpoint::NONE),
+                    };
+                    do_fcntl_lock(state, fp_slot, fd as usize, cmd, arg_ptr, &flock_io)
+                }
+                // ── `F_FREESP`（C misc.c:184-239）──
+                C::FreeSp => {
+                    let who = state
+                        .fproc_table
+                        .get(fp_slot)
+                        .map(|fp| fp.endpoint)
+                        .unwrap_or(minix_types::Endpoint::NONE);
+                    let flock_io = crate::fcntl::SysFlockIo { who };
+                    do_fcntl_freesp(state, fp_slot, fd as usize, arg_ptr, &flock_io)
                 }
             }
         }
@@ -4571,6 +4586,226 @@ impl crate::select::PipeProbe for VfsPipeProbe {
     }
 }
 
+/// Fcntl 的**锁类**臂（C `lock_op` lock.c:21-154）：取 `struct flock` →
+/// 门 → 区域算术 → [`LockTable::lock_op_decision`] → 四种结局。
+fn do_fcntl_lock(
+    state: &mut VfsState,
+    fp_slot: minix_types::UserSlot,
+    fd: usize,
+    cmd: crate::fcntl::FcntlCmd,
+    arg_ptr: u64,
+    io: &impl crate::fcntl::FlockIo,
+) -> crate::call_table::SyscallResult {
+    use crate::call_table::SyscallResult;
+    let raw = match io.fetch(arg_ptr) {
+        Ok(b) => b,
+        Err(_) => return SyscallResult::Error(minix_types::EINVAL),
+    };
+    let (l_start, l_len, _l_pid, l_type_raw, l_whence_raw) = crate::fcntl::decode_flock(&raw);
+    let Some(ltype) = crate::fcntl::LockType::from_raw(l_type_raw as u32) else {
+        return SyscallResult::Error(minix_types::EINVAL);
+    };
+    if cmd == crate::fcntl::FcntlCmd::GetLk && ltype == crate::fcntl::LockType::Unlock {
+        return SyscallResult::Error(minix_types::EINVAL);
+    }
+    let filp_idx = {
+        let Some(fp) = state.fproc_table.get(fp_slot) else {
+            return SyscallResult::Error(minix_types::EINVAL);
+        };
+        match fp.filps.get(fd).copied().flatten() {
+            Some(idx) => idx,
+            None => return SyscallResult::Error(minix_types::EBADF),
+        }
+    };
+    let (filp_mode, filp_pos, vnode_idx) = {
+        let Some(f) = state.filp_table.get(crate::filp::FilpId(filp_idx)) else {
+            return SyscallResult::Error(minix_types::EBADF);
+        };
+        match f.vnode {
+            Some(vi) => (f.mode, f.pos, vi),
+            None => return SyscallResult::Error(minix_types::EBADF),
+        }
+    };
+    let (v_size, v_fs, v_ino) = {
+        let Some(v) = state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) else {
+            return SyscallResult::Error(minix_types::EBADF);
+        };
+        (v.size as i64, v.fs, v.ino)
+    };
+    let ft = crate::open::FileType::from(state
+        .vnode_table
+        .get(crate::vnode::VnodeId(vnode_idx))
+        .map(|v| v.mode)
+        .unwrap_or(0));
+    if ft != crate::open::FileType::Regular && ft != crate::open::FileType::Block {
+        return SyscallResult::Error(minix_types::EINVAL);
+    }
+    if cmd != crate::fcntl::FcntlCmd::GetLk {
+        if ltype == crate::fcntl::LockType::Read
+            && filp_mode & crate::open::R_BIT == 0
+        {
+            return SyscallResult::Error(minix_types::EBADF);
+        }
+        if ltype == crate::fcntl::LockType::Write
+            && filp_mode & crate::open::W_BIT == 0
+        {
+            return SyscallResult::Error(minix_types::EBADF);
+        }
+    }
+    let Some(whence) = crate::fcntl::Whence::from_raw(l_whence_raw as u32) else {
+        return SyscallResult::Error(minix_types::EINVAL);
+    };
+    let base = whence.base(filp_pos, v_size);
+    let region = match crate::fcntl::compute_region(base, l_start, l_len) {
+        Ok(r) => r,
+        Err(e) => return SyscallResult::Error(e.to_errno()),
+    };
+    let pid = state
+        .fproc_table
+        .get(fp_slot)
+        .map(|fp| fp.pid as u32)
+        .unwrap_or(0);
+    let vnode_key = crate::fcntl::VnodeKey { fs: v_fs, ino: v_ino };
+    let Some(op) = crate::fcntl::LockOp::from_req(cmd, ltype) else {
+        return SyscallResult::Error(minix_types::EINVAL);
+    };
+    let outcome = match state.lock_table.lock_op_decision(op, pid, vnode_key, region, fd) {
+        Ok(o) => o,
+        Err(e) => return SyscallResult::Error(e.to_errno()),
+    };
+    match outcome {
+        crate::fcntl::LockOutcome::Granted => SyscallResult::Ok(0),
+        crate::fcntl::LockOutcome::QueryMiss => {
+            let mut raw = [0u8; minix_types::FLOCK_SIZE];
+            crate::fcntl::encode_flock(&mut raw, 0, 0, 0, minix_types::F_UNLCK, 0);
+            match io.store(arg_ptr, &raw) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+        crate::fcntl::LockOutcome::QueryHit(ans) => {
+            let mut raw = [0u8; minix_types::FLOCK_SIZE];
+            let ty = match ans.lock_type {
+                crate::fcntl::LockType::Read => minix_types::F_RDLCK,
+                crate::fcntl::LockType::Write => minix_types::F_WRLCK,
+                crate::fcntl::LockType::Unlock => minix_types::F_UNLCK,
+            };
+            crate::fcntl::encode_flock(&mut raw, ans.first, ans.len, ans.pid as i32, ty, 0);
+            match io.store(arg_ptr, &raw) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+        crate::fcntl::LockOutcome::Wait(w) => {
+            // C lock.c:93-97：`fp_u.u_flock = {fd, cmd, arg}` + 挂起；模型里
+            // 等待现场由 `BlockedOn::Flock` 承载，进程级挂起（worker 释放）。
+            if let Some(fp) = state.fproc_table.get_mut(fp_slot) {
+                fp.blocked_on = crate::fproc::BlockedOn::Flock(crate::fproc::FlockBlock {
+                    fd: w.fd,
+                    cmd: crate::fproc::FlockCmd::SetLkw,
+                    arg: minix_types::VirBytes::new(arg_ptr),
+                });
+            }
+            if let Some(idx) = state.current_worker {
+                state.worker_pool.release(idx);
+                state.current_worker = None;
+            }
+            SyscallResult::Suspend
+        }
+        crate::fcntl::LockOutcome::Unlocked { revive } => {
+            // C lock.c:133：动了表就 `lock_revive()`——所有等锁进程复活
+            // （唤醒面归 17 号的重跑路）。
+            let _ = revive;
+            SyscallResult::Ok(0)
+        }
+    }
+}
+
+/// Fcntl 的 `F_FREESP` 臂（C misc.c:184-239）：REG 门 → W_BIT 门 → 取
+/// flock → [`crate::fcntl::freesp_span`] → `REQ_FTRUNC`；零长在回复落地
+/// 后把 `v_size = start`（misc.c:236-237，续接体 [`crate::worker::WorkerCont::Freesp`]）。
+fn do_fcntl_freesp(
+    state: &mut VfsState,
+    fp_slot: minix_types::UserSlot,
+    fd: usize,
+    arg_ptr: u64,
+    io: &impl crate::fcntl::FlockIo,
+) -> crate::call_table::SyscallResult {
+    use crate::call_table::SyscallResult;
+    let raw = match io.fetch(arg_ptr) {
+        Ok(b) => b,
+        Err(_) => return SyscallResult::Error(minix_types::EINVAL),
+    };
+    let (l_start, l_len, _, _, l_whence_raw) = crate::fcntl::decode_flock(&raw);
+    let filp_idx = {
+        let Some(fp) = state.fproc_table.get(fp_slot) else {
+            return SyscallResult::Error(minix_types::EINVAL);
+        };
+        match fp.filps.get(fd).copied().flatten() {
+            Some(idx) => idx,
+            None => return SyscallResult::Error(minix_types::EBADF),
+        }
+    };
+    let (filp_mode, filp_pos, vnode_idx) = {
+        let Some(f) = state.filp_table.get(crate::filp::FilpId(filp_idx)) else {
+            return SyscallResult::Error(minix_types::EBADF);
+        };
+        match f.vnode {
+            Some(vi) => (f.mode, f.pos, vi),
+            None => return SyscallResult::Error(minix_types::EBADF),
+        }
+    };
+    let (v_mode, v_size, fs_e, ino) = {
+        let Some(v) = state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) else {
+            return SyscallResult::Error(minix_types::EBADF);
+        };
+        (v.mode, v.size as i64, v.fs, v.ino)
+    };
+    if crate::open::FileType::from(v_mode) != crate::open::FileType::Regular {
+        return SyscallResult::Error(minix_types::EINVAL);
+    }
+    if filp_mode & crate::open::W_BIT == 0 {
+        return SyscallResult::Error(minix_types::EBADF);
+    }
+    let Some(whence) = crate::fcntl::Whence::from_raw(l_whence_raw as u32) else {
+        return SyscallResult::Error(minix_types::EINVAL);
+    };
+    let base = whence.base(filp_pos, v_size);
+    let (start, end) = match crate::fcntl::freesp_span(v_size, base, l_start, l_len) {
+        Ok(crate::fcntl::FreespSpan::TruncateTo { start, end }) => (start, end),
+        Ok(crate::fcntl::FreespSpan::TruncateSize(start)) => (start, 0),
+        Err(e) => return SyscallResult::Error(e.to_errno()),
+    };
+    let Some(worker) = state.current_worker else {
+        return SyscallResult::Error(minix_types::EAGAIN);
+    };
+    let user = state
+        .fproc_table
+        .get(fp_slot)
+        .map(|fp| fp.endpoint)
+        .unwrap_or(minix_types::Endpoint::NONE);
+    let vmnt = match state.vmnt_table.find_by_fs(fs_e) {
+        Some(v) => v.0,
+        None => return SyscallResult::Error(minix_types::EIO),
+    };
+    if let Some(wp) = state.worker_pool.get_mut(worker) {
+        wp.cont = Some(crate::worker::WorkerCont::Freesp {
+            vnode: vnode_idx,
+            zero_len: l_len == 0,
+            start,
+        });
+    }
+    state.pending_fs = Some(crate::main_loop::PendingFs {
+        vmnt,
+        fs_e,
+        worker,
+        grant: 0,
+        user,
+        req: crate::request::encode_ftrunc(ino, start, end),
+    });
+    SyscallResult::Suspend
+}
+
 /// 调用方端点（超时结构体的跨空间取要用）。
 fn io_who(state: &VfsState, fp_slot: minix_types::UserSlot) -> i32 {
     state
@@ -6211,6 +6446,246 @@ mod tests {
             state.pending_puts.as_slice(),
             [crate::vnode::PutNodeReq { fs_e: Endpoint::MFS, ino: 0x34, count: 1 }],
             "last close 的 put_vnode 排队投递"
+        );
+    }
+
+    /// Fcntl 锁类的臂级测试（C `lock_op`）：SETLK 拿锁 → 他人 GETLK 报
+    /// 冲突 → 他人 SETLKW 挂起 → 本人解锁放表。flock 的进出经 Memory 版
+    /// `FlockIo` 直调 `do_fcntl_lock`（dispatch 的载荷面由既有门测覆盖）。
+    #[test]
+    fn test_fcntl_lock_ops_end_to_end() {
+        use crate::fcntl::MemoryFlockIo;
+        use minix_types::Endpoint;
+
+        let mk = |pid: i32| -> (VfsState, minix_types::UserSlot) {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let slot = minix_types::UserSlot::new(0);
+            {
+                let fp = state.fproc_table.get_mut(slot).unwrap();
+                fp.endpoint = Endpoint::from_generation_slot(1, 0);
+                fp.pid = pid;
+            }
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x40;
+                v.mode = crate::open::S_IFREG | 0o600;
+                v.ref_count = 1;
+            }
+            let fid = state
+                .filp_table
+                .alloc_filp(crate::open::R_BIT | crate::open::W_BIT)
+                .unwrap();
+            state.filp_table.inc_count(fid);
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            state.fproc_table.get_mut(slot).unwrap().filps[3] = Some(fid.get());
+            (state, slot)
+        };
+        let mut io = MemoryFlockIo::default();
+        let call = |state: &mut VfsState,
+                    slot: minix_types::UserSlot,
+                    fd: usize,
+                    cmd: crate::fcntl::FcntlCmd,
+                    ty: i32,
+                    pid: i32,
+                    io: &MemoryFlockIo| {
+            let mut src = [0u8; minix_types::FLOCK_SIZE];
+            crate::fcntl::encode_flock(&mut src, 10, 20, pid, ty, 0);
+            *io.source.borrow_mut() = src;
+            do_fcntl_lock(state, slot, fd, cmd, 0x9000, io)
+        };
+
+        // ① 进程 100：F_SETLK 写锁 [10, 30) → 成功进表。
+        let (mut state, slot0) = mk(100);
+        assert_eq!(
+            call(&mut state, slot0, 3, crate::fcntl::FcntlCmd::SetLk, minix_types::F_WRLCK, 100, &io),
+            SyscallResult::Ok(0)
+        );
+        assert_eq!(state.lock_table.nr, 1, "锁进表");
+
+        // ② 进程 200（同一 vnode 的另一 fd）：F_GETLK → 报冲突。
+        let filp3 = state
+            .fproc_table
+            .get(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3];
+        {
+            let slot1 = minix_types::UserSlot::new(1);
+            let fp = state.fproc_table.get_mut(slot1).unwrap();
+            fp.endpoint = Endpoint::from_generation_slot(1, 1);
+            fp.pid = 200;
+            fp.filps[4] = filp3;
+        }
+        state.current_fp_slot = Some(minix_types::UserSlot::new(1));
+        assert_eq!(
+            call(&mut state, minix_types::UserSlot::new(1), 4, crate::fcntl::FcntlCmd::GetLk,
+                 minix_types::F_RDLCK, 200, &io),
+            SyscallResult::Ok(0),
+            "GETLK 走 fd 4"
+        );
+        {
+            let stored = io.stored.borrow();
+            let (addr, last) = stored.last().expect("GETLK 要拷回");
+            let (_s, len, pid, ty, _w) = crate::fcntl::decode_flock(last);
+            assert_eq!(*addr, 0x9000);
+            assert_eq!(ty, minix_types::F_WRLCK, "报告冲突者的类型");
+            assert_eq!(pid, 100, "报告冲突者的 pid");
+            assert_eq!(len, 20);
+        }
+
+        // ③ 进程 200：F_SETLKW 同区间写锁 → 挂起（BlockedOn::Flock）。
+        {
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(1),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .unwrap();
+            state.current_worker = Some(idx);
+            assert_eq!(
+                call(&mut state, minix_types::UserSlot::new(1), 4, crate::fcntl::FcntlCmd::SetLkw,
+                     minix_types::F_WRLCK, 200, &io),
+                SyscallResult::Suspend
+            );
+            let fp = state.fproc_table.get(minix_types::UserSlot::new(1)).unwrap();
+            assert!(matches!(
+                fp.blocked_on,
+                crate::fproc::BlockedOn::Flock(crate::fproc::FlockBlock {
+                    cmd: crate::fproc::FlockCmd::SetLkw,
+                    ..
+                })
+            ));
+        }
+
+        // ④ 进程 100：F_SETLK 解锁同区间 → 表清空。
+        state.current_fp_slot = Some(minix_types::UserSlot::new(0));
+        assert_eq!(
+            call(&mut state, minix_types::UserSlot::new(0), 3, crate::fcntl::FcntlCmd::SetLk,
+                 minix_types::F_UNLCK, 100, &io),
+            SyscallResult::Ok(0)
+        );
+        assert_eq!(state.lock_table.nr, 0, "解锁放表");
+    }
+
+    /// `F_FREESP` 臂：非零长 → `REQ_FTRUNC(start, end)`；零长 →
+    /// `REQ_FTRUNC(start, 0)` 且回复落地后 `v_size = start`。
+    #[test]
+    fn test_fcntl_freesp_arm_and_zero_len_resume() {
+        use minix_types::Endpoint;
+
+        let mk = |v_size: u64| -> (VfsState, minix_types::UserSlot, usize, usize) {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let slot = minix_types::UserSlot::new(0);
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x50;
+                v.mode = crate::open::S_IFREG | 0o600;
+                v.size = v_size;
+                v.ref_count = 1;
+            }
+            let fid = state
+                .filp_table
+                .alloc_filp(crate::open::R_BIT | crate::open::W_BIT)
+                .unwrap();
+            state.filp_table.inc_count(fid);
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            state.fproc_table.get_mut(slot).unwrap().filps[3] = Some(fid.get());
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            state.current_worker = Some(idx);
+            (state, slot, vid.get(), idx)
+        };
+        let mut io = crate::fcntl::MemoryFlockIo::default();
+        {
+            let mut src = [0u8; minix_types::FLOCK_SIZE];
+            crate::fcntl::encode_flock(&mut src, 5, 10, 0, minix_types::F_WRLCK, 0);
+            *io.source.borrow_mut() = src;
+        }
+
+        // ① 非零长：start = 5（SEEK_SET）、end = 15。
+        let (mut state, slot, vid, idx) = mk(100);
+        assert_eq!(
+            do_fcntl_freesp(&mut state, slot, 3, 0x9000, &io),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.expect("FTRUNC 对话挂起");
+        assert_eq!(p.req.m_type, minix_types::REQ_FTRUNC);
+        // SAFETY(test): 按 ftrunc_req_off 读回（inode 在首格）。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            assert_eq!(
+                i64::from_le_bytes(
+                    raw[minix_types::ftrunc_req_off::TRC_START
+                        ..minix_types::ftrunc_req_off::TRC_START + 8]
+                        .try_into()
+                        .unwrap()
+                ),
+                5,
+                "trc_start"
+            );
+            assert_eq!(
+                i64::from_le_bytes(
+                    raw[minix_types::ftrunc_req_off::TRC_END
+                        ..minix_types::ftrunc_req_off::TRC_END + 8]
+                        .try_into()
+                        .unwrap()
+                ),
+                15,
+                "trc_end"
+            );
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(crate::worker::WorkerCont::Freesp {
+                vnode: vid,
+                zero_len: false,
+                start: 5,
+            });
+            wp.sendrec = Some(Message { m_type: minix_types::OK, ..Message::default() });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.vnode_table.get(crate::vnode::VnodeId(vid)).unwrap().size,
+            100,
+            "非零长不动 size"
+        );
+
+        // ② 零长：截到 start，回复后 size = start。
+        let (mut state, slot, vid, idx) = mk(100);
+        {
+            let mut src = [0u8; minix_types::FLOCK_SIZE];
+            crate::fcntl::encode_flock(&mut src, 40, 0, 0, minix_types::F_WRLCK, 0);
+            *io.source.borrow_mut() = src;
+        }
+        assert_eq!(
+            do_fcntl_freesp(&mut state, slot, 3, 0x9000, &io),
+            SyscallResult::Suspend
+        );
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(crate::worker::WorkerCont::Freesp {
+                vnode: vid,
+                zero_len: true,
+                start: 40,
+            });
+            wp.sendrec = Some(Message { m_type: minix_types::OK, ..Message::default() });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.vnode_table.get(crate::vnode::VnodeId(vid)).unwrap().size,
+            40,
+            "零长截断把 size 收到 start"
         );
     }
 
