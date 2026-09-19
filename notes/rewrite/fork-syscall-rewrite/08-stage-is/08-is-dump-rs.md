@@ -69,8 +69,13 @@ const.h:18）**不进快照**（输出层直读源缓冲，§3 D1）。`[ARCH: A
 
 ### 3.1 D1：双快照（A-4）+ r_args 排除
 
-`RprocpubSnap`（4 字段）+ `RprocSnap`（5 字段），C 序，`#[repr(C)]`，
-待办 TODO。r_args 512B 不进快照（注释存证）。
+`RprocpubSnap`（6 字段：in_use/sys_flags/endpoint/dev_nr/label/vm_call_mask）
++ `RprocSnap`（6 字段：r_pid/r_restarts/r_flags/r_period/r_alive_tm/r_args），
+C 序，`#[repr(C)]`。**权威位置**：`minix_types`（`types/rs_snap.rs`）——RS
+侧的三个 copy-out 按它序列化，IS 这里只重导出。两处字段集的来源：IS 的
+dump 要 label/endpoint/dev_nr/sys_flags 与私有表的六个字段，VM 的 `RS_INIT`
+握手还要 `in_use`/`vm_call_mask`，快照取两读者的并集（`ProcInfoStruct`
+的多读者先例）。`r_args` 512B 仍在快照内——它是 dump 的尾列（`%s`）。
 
 ### 3.2 D2：双源编码 const fn
 

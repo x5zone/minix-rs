@@ -1664,7 +1664,10 @@ fn ipc_call_rs_init(server: &mut VmServer, rproctab_gid: i32) -> Result<RprocTab
     //   4. map_service(&rprocpub[i]) per in_use entry — the ACL loop in
     //      `rs_handshake` (main.c:249-255).
     const ENTRIES: usize = minix_types::NR_BOOT_PROCS;
-    const ENTRY_SIZE: usize = minix_types::ipc::rprocpub_off::SIZE;
+    // 行宽是共享快照 `RprocpubSnap`（`[ARCH: A-4]` 单一权威）：RS 的公共表
+    // 按 `rproctab_gid` 授权读出的就是这一行列，C 的 `struct rprocpub`
+    // 字节镜像（`rprocpub_off`）随对齐退役。
+    const ENTRY_SIZE: usize = core::mem::size_of::<minix_types::RprocpubSnap>();
     let mut buf = alloc::vec![0u8; ENTRIES * ENTRY_SIZE];
     {
         let mut gateway = server.ctx.gateway.borrow_mut();
@@ -1674,9 +1677,10 @@ fn ipc_call_rs_init(server: &mut VmServer, rproctab_gid: i32) -> Result<RprocTab
     }
     let mut tab = RprocTab::EMPTY;
     for (i, entry) in tab.entries.iter_mut().enumerate() {
-        let img = &buf[i * ENTRY_SIZE..(i + 1) * ENTRY_SIZE];
-        let w = minix_types::ipc::decode_rproc_pub(img)
-            .map_err(|_| VmError::InvalidParam)?;
+        // SAFETY(读取): 快照行是 repr(C) POD，从授权捞回的字节位逐行读；
+        // `read_unaligned` 不假设缓冲对齐（内核 safecopy 写的是字节流）。
+        let w: minix_types::RprocpubSnap =
+            unsafe { core::ptr::read_unaligned(buf[i * ENTRY_SIZE..].as_ptr().cast()) };
         let endpoint = Endpoint(w.endpoint);
         // C rs.h:188 — IS_RPUB_BOOT_USR(rpub) is (endpoint == INIT_PROC_NR).
         *entry = RprocEntry {
@@ -3193,7 +3197,8 @@ mod tests {
             vfs_pre.init_page_table().expect("vfs pt");
             vfs_pre.init_regions();
 
-            let entry_size = minix_types::ipc::rprocpub_off::SIZE;
+            // 授权捞回的是 `NR_BOOT_PROCS` 行共享快照（A-4 行宽）。
+            let entry_size = core::mem::size_of::<minix_types::RprocpubSnap>();
             let table_bytes = minix_types::NR_BOOT_PROCS * entry_size;
             *mock.borrow_mut().safecopy_payload.borrow_mut() =
                 vfs_rprocpub_entry_image();
@@ -3356,27 +3361,35 @@ mod tests {
         assert!(!e.is_user);
     }
 
-    /// Builds one genuine VFS rprocpub wire image (in_use, endpoint=VFS,
-    /// 64-bit call_mask 0x300_0000_00ff) for the handshake test — same
-    /// offsets the decode-witness test in minix-types pins.
+    /// Builds one genuine VFS rprocpub snapshot row (in_use, endpoint=VFS,
+    /// 64-bit call_mask 0x300_0000_00ff) for the handshake test — the row
+    /// kept is the shared `RprocpubSnap` layout (A-4).
     fn vfs_rprocpub_entry_image() -> alloc::vec::Vec<u8> {
-        use minix_types::ipc::rprocpub_off;
-        let mut img = alloc::vec![0u8; rprocpub_off::SIZE];
-        let put32 = |img: &mut [u8], o: usize, v: u32| {
-            img[o..o + 4].copy_from_slice(&v.to_le_bytes())
+        let mut label = [0u8; minix_types::RS_MAX_LABEL_LEN];
+        label[..4].copy_from_slice(b"vfs\0");
+        let row = minix_types::RprocpubSnap {
+            in_use: 1,
+            sys_flags: 0,
+            endpoint: Endpoint::VFS.0,
+            dev_nr: 0,
+            label,
+            vm_call_mask: 0x0000_0300_0000_00ff,
         };
-        img[0..2].copy_from_slice(&1i16.to_le_bytes()); // in_use
-        put32(&mut img, rprocpub_off::ENDPOINT, Endpoint::VFS.0 as u32);
-        img[rprocpub_off::LABEL..rprocpub_off::LABEL + 4].copy_from_slice(b"vfs\0");
-        put32(&mut img, rprocpub_off::VM_CALL_MASK, 0x0000_00ff);
-        put32(&mut img, rprocpub_off::VM_CALL_MASK + 4, 0x0000_0300);
-        img
+        // SAFETY(test): 行是 repr(C) POD，取其字节视图拼进缓冲。
+        unsafe {
+            core::slice::from_raw_parts(
+                (&row as *const minix_types::RprocpubSnap).cast::<u8>(),
+                core::mem::size_of::<minix_types::RprocpubSnap>(),
+            )
+            .to_vec()
+        }
     }
 
     fn vfs_rprocpub_call_mask() -> u64 {
         let img = vfs_rprocpub_entry_image();
-        let w = minix_types::ipc::decode_rproc_pub(&img).expect("decode");
-        w.vm_call_mask
+        // SAFETY(test): 行字节位按同一结构读回。
+        unsafe { core::ptr::read_unaligned(img.as_ptr().cast::<minix_types::RprocpubSnap>()) }
+            .vm_call_mask
     }
     // ── V11/T29: SIGKMEM signal seam + do_memory drain loop ──────────
 

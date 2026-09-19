@@ -1232,6 +1232,13 @@ mod signal_handler_tests {
         assert!(entry.eval_buff.is_none(), "no EVAL state");
     }
 
+    /// 从镜像字节里按行拷出一个快照行（行是 repr(C) POD，可能未对齐）。
+    fn row_at<T: Copy>(bytes: &[u8], i: usize) -> T {
+        let row = core::mem::size_of::<T>();
+        // SAFETY(test): 镜像由生产者的行字节拼成，逐行 read_unaligned 取行。
+        unsafe { core::ptr::read_unaligned(bytes[i * row..].as_ptr().cast::<T>()) }
+    }
+
     #[test]
     fn test_getsysinfo_procpub_copyout_serves_table() {
         // 14/R7 wiring: SI_PROCPUB_TAB (request.c:1119-1121) — every row of
@@ -1253,7 +1260,7 @@ mod signal_handler_tests {
                 .insert(crate::service_slot::SysFlags::CORE_SRV);
             s.pub_.dev_nr = 3;
         }
-        let size = (table.len() * minix_types::rprocpub_off::SIZE) as u64;
+        let size = (table.len() * core::mem::size_of::<minix_types::RprocpubSnap>()) as u64;
         let r = crate::shell_request::copy_out_procpub_table(
             &mut mock,
             &table,
@@ -1266,15 +1273,10 @@ mod signal_handler_tests {
         let (dest, addr, bytes) = &mock.sent_copies[0];
         assert_eq!(*dest, Endpoint::PM);
         assert_eq!(*addr, 0x5000);
-        assert_eq!(
-            bytes.len() as u64,
-            size,
-            "one pinned struct rprocpub per row"
-        );
+        assert_eq!(bytes.len() as u64, size, "one snapshot row per slot");
         // Row 0 carries the live service: in_use, endpoint, label, sys
-        // flags, dev_nr.
-        use minix_types::rprocpub_off as o;
-        let w0 = minix_types::decode_rproc_pub(&bytes[..o::SIZE]).expect("row 0 decodes");
+        // flags, dev_nr, vm_call_mask（共享快照行的字段集，A-4）。
+        let w0: minix_types::RprocpubSnap = row_at(bytes, 0);
         assert_eq!(w0.in_use, 1);
         assert_eq!(w0.endpoint, Endpoint::VFS.get());
         assert_eq!(&w0.label[..4], b"vfs\0");
@@ -1283,11 +1285,13 @@ mod signal_handler_tests {
             crate::service_slot::SysFlags::CORE_SRV.bits() as u32
         );
         assert_eq!(w0.dev_nr, 3);
-        // Row 1 is vacant: endpoint NONE (the unset sentinel), zero label.
-        let w1 =
-            minix_types::decode_rproc_pub(&bytes[o::SIZE..2 * o::SIZE]).expect("row 1 decodes");
+        // Row 1 is vacant: the whole row is zero — C's `rprocpub[]` is a
+        // static array whose unallocated slots stay BSS-zero (`in_use` is
+        // the validity marker, rs.h:166; the 0 sentinel is not `NONE`).
+        let w1: minix_types::RprocpubSnap = row_at(bytes, 1);
+        assert_eq!(w1, minix_types::RprocpubSnap::default());
         assert_eq!(w1.in_use, 0);
-        assert_eq!(w1.endpoint, Endpoint::NONE.get());
+        assert_eq!(w1.endpoint, 0);
     }
 
     #[test]
@@ -1296,7 +1300,7 @@ mod signal_handler_tests {
         // table's byte length → EINVAL, nothing copied.
         let mut mock = crate::testutil::MockKernelApi::new(60);
         let table = RProcTable::new();
-        let size = (table.len() * minix_types::rprocpub_off::SIZE) as u64 + 1;
+        let size = (table.len() * core::mem::size_of::<minix_types::RprocpubSnap>()) as u64 + 1;
         let r = crate::shell_request::copy_out_procpub_table(
             &mut mock,
             &table,
@@ -1310,9 +1314,8 @@ mod signal_handler_tests {
 
     #[test]
     fn test_do_getsysinfo_procpub_tab_roundtrip() {
-        // Through the handler: the live arm returns OK; the internal-table
-        // arm stays fail-closed (struct rproc pinning is the E-RSWIRE
-        // remainder — see the do_getsysinfo doc note).
+        // Through the handler: both table arms serve the shared snapshot
+        // rows (A-4) and answer OK.
         let mut server = booted_vfs_labeled(b"vfs", b"vfs");
         let mut m = minix_types::Message {
             m_source: Endpoint::PM,
@@ -1321,18 +1324,20 @@ mod signal_handler_tests {
         };
         m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROCPUB_TAB;
         m.m_u.m_lsys_getsysinfo.where_ = 0x5000;
-        m.m_u.m_lsys_getsysinfo.size = 64 * minix_types::rprocpub_off::SIZE as u64;
+        m.m_u.m_lsys_getsysinfo.size =
+            64 * core::mem::size_of::<minix_types::RprocpubSnap>() as u64;
         assert_eq!(server.do_getsysinfo(&m), Ok(0));
         m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
-        m.m_u.m_lsys_getsysinfo.size = 64 * minix_types::rproc_off::SIZE as u64;
+        m.m_u.m_lsys_getsysinfo.size =
+            64 * core::mem::size_of::<minix_types::RprocSnap>() as u64;
         assert_eq!(server.do_getsysinfo(&m), Ok(0), "rproc table copy-out live");
     }
 
     #[test]
     fn test_getsysinfo_rproc_copyout_serves_table() {
         // R12: SI_PROC_TAB (request.c:1113-1115) — every row serializes to
-        // the pinned `struct rproc` layout (witness-derived offsets in
-        // `minix_types::rproc_off`); the exact-size gate at :1134-1136.
+        // the shared `RprocSnap` layout (A-4 使用字段子集); the exact-size
+        // gate at :1134-1136.
         let mut mock = crate::testutil::MockKernelApi::new(60);
         let mut table = RProcTable::new();
         let id = table.alloc_slot().unwrap();
@@ -1350,7 +1355,7 @@ mod signal_handler_tests {
             s.priv_.id = crate::privilege::PrivId(7);
             s.priv_.flags.insert(crate::privilege::PrivFlags::SYS_PROC);
         }
-        let size = (table.len() * minix_types::rproc_off::SIZE) as u64;
+        let size = (table.len() * core::mem::size_of::<minix_types::RprocSnap>()) as u64;
         let r = crate::shell_request::copy_out_rproc_table(
             &mut mock,
             &table,
@@ -1364,30 +1369,18 @@ mod signal_handler_tests {
         assert_eq!(*addr, 0x6000);
         assert_eq!(bytes.len() as u64, size);
 
-        // Field spot-checks at the witness-derived offsets: the C-visible
-        // identity and scheduling facts land byte-exact.
-        use minix_types::rproc_off::{self as o, priv_off};
-        let rd32 =
-            |b: &[u8], off: usize| i32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]]);
-        assert_eq!(rd32(bytes, o::R_PID), 700);
-        assert_eq!(rd32(bytes, o::R_RESTARTS), 2);
-        assert_eq!(rd32(bytes, o::R_SCHEDULER), Endpoint::SCHED.get());
-        assert_eq!(rd32(bytes, o::R_PRIORITY), 4);
-        assert_eq!(rd32(bytes, o::R_QUANTUM), 100);
-        let pr = o::R_PRIV;
-        let s_flags = i16::from_le_bytes([bytes[pr + 6], bytes[pr + 7]]);
-        assert!(
-            s_flags & (crate::privilege::PrivFlags::SYS_PROC.bits() as i16) != 0,
-            "SYS_PROC lands in s_flags"
-        );
-        // s_id is a 2-byte short (priv.h:23) followed by s_flags — read the
-        // 2-byte field, not a 4-byte word.
-        let s_id = i16::from_le_bytes([bytes[pr + 4], bytes[pr + 5]]);
-        assert_eq!(s_id, 7);
+        // Field spot-checks on the shared row: the dump-visible identity
+        // and state facts land where the consumer reads them.
+        let r0: minix_types::RprocSnap = row_at(bytes, 0);
+        assert_eq!(r0.r_pid, 700);
+        assert_eq!(r0.r_restarts, 2);
         assert_eq!(
-            rd32(bytes, pr + priv_off::S_K_CALL_MASK),
-            table.get(id).priv_.k_call_mask.0 as i32
+            r0.r_flags & crate::service_slot::RFlags::IN_USE.bits() as u32,
+            1
         );
+        let vacant: minix_types::RprocSnap = row_at(bytes, 1);
+        assert_eq!(vacant.r_flags, 0, "vacant slot renders all-zero");
+        assert_eq!(vacant.r_pid, 0);
     }
 
     #[test]
@@ -1397,8 +1390,8 @@ mod signal_handler_tests {
         // half alone exceeds the declared size (request.c:1116-1118).
         let mut mock = crate::testutil::MockKernelApi::new(60);
         let table = RProcTable::new();
-        let proc_len = table.len() * minix_types::rproc_off::SIZE;
-        let pub_len = table.len() * minix_types::rprocpub_off::SIZE;
+        let proc_len = table.len() * core::mem::size_of::<minix_types::RprocSnap>();
+        let pub_len = table.len() * core::mem::size_of::<minix_types::RprocpubSnap>();
         let r = crate::shell_request::copy_out_procall_table(
             &mut mock,
             &table,
@@ -1778,7 +1771,8 @@ mod signal_handler_tests {
         assert_eq!(server.do_getsysinfo(&m), Err(Errno::EINVAL));
 
         m.m_u.m_lsys_getsysinfo.what = crate::query::SI_PROC_TAB;
-        m.m_u.m_lsys_getsysinfo.size = 64 * minix_types::rproc_off::SIZE as u64;
+        m.m_u.m_lsys_getsysinfo.size =
+            64 * core::mem::size_of::<minix_types::RprocSnap>() as u64;
         assert_eq!(
             server.do_getsysinfo(&m),
             Ok(0),

@@ -204,11 +204,11 @@ lib.rs 接线测试（I3a/I3b）：
 1. `test_do_lookup_resolves_label_into_reply_payload`：已知 label → `Ok(0)` 且载荷中端点 = VFS；未知 label → `ESRCH`；`len=1` → `EINVAL`（request.c:1151-1174 三分支）。
 2. `test_do_fi_injects_crash_request`：已知 label → `Ok(0)`（asynsend 缝接受发送）；未知 label → `ESRCH`。目标槽须 `SYS_PROC`（minix3/minix/servers/rs/manager.c:rproc（L103，工具生成） 门）。
 3. `test_do_getsysinfo_permission_and_classification`：未知 `what` → `EINVAL`；`SI_PROC_TAB` → `ENOSYS`（rproc 内部表 pinning 为 E-RSWIRE 余件的诚实 fail-closed）。
-4. **接线测试（R7，Fix #85）**：`test_getsysinfo_procpub_copyout_serves_table`（全表
-   64 行 × 420 字节经 safecopy 缝、活跃行 in_use/endpoint/label/sys_flags/dev_nr
-   逐字段、空行 endpoint=NONE）、`test_getsysinfo_size_gate_einval`（尺寸不符
-   → EINVAL 且零拷出）、`test_do_getsysinfo_procpub_tab_roundtrip`（handler 往返
-   + PROC_TAB 臂保持 ENOSYS）。
+4. **接线测试（R7；A-4 对齐后重写）**：`test_getsysinfo_procpub_copyout_serves_table`
+   （全表 64 行 × `sizeof(RprocpubSnap)` 经 safecopy 缝、活跃行
+   in_use/endpoint/label/sys_flags/dev_nr 逐字段、空行整行零）、
+   `test_getsysinfo_size_gate_einval`（尺寸不符 → EINVAL 且零拷出）、
+   `test_do_getsysinfo_procpub_tab_roundtrip`（handler 往返，两个表臂都应答 OK）。
 4. `test_do_sysctl_dispatch_and_update_arms`：未知子型 → `EINVAL`；打印臂 → `OK`；`UPD_STOP` 清链 → `OK`；`UPD_RUN` → 链尾 `LATEREPLY`+caller+`RS_UPDATE` 且应答 `EDONTREPLY`；已 UPDATING 再 prepare → `EINVAL`。
 
 minix-types（`cargo test -p minix-types`）：

@@ -6,74 +6,11 @@
 //! A-6 output channel; this module delivers snapshots, encoders, and
 //! format constants.
 //!
-//! `[ARCH: A-4]`: snapshots are wire-contract proposals (`#[repr(C)]`,
-//! used-fields subsets); the RS-side GETSYSINFO producer aligns to them
-//! (pending RS-crate work, explicit TODO below).
-
-// TODO(P1): [code] [factual] Align RS-crate GETSYSINFO producers with the
-// snapshots below — see 08 §4. (current state: IS-side wire proposals)
-// (fix: RS `do_getsysinfo` SI_PROCPUB_TAB/SI_PROC_TAB payloads match; A-4).
-
-/// RS public-entry snapshot (used fields only).
-///
-/// C: `struct rprocpub` — `minix3/minix/include/minix/rs.h:165-184` (subset).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct RprocpubSnap {
-    /// C: `sys_flags` (rs.h:167).
-    pub sys_flags: u32,
-    /// C: `endpoint` (rs.h:168).
-    pub endpoint: i32,
-    /// C: `dev_nr` (rs.h:172).
-    pub dev_nr: i32,
-    /// C: `label[RS_MAX_LABEL_LEN]`, 16 (rs.h:58,177).
-    pub label: [u8; 16],
-}
-
-/// RS private-entry snapshot (used fields only).
-///
-/// C: `struct rproc` — `minix3/minix/servers/rs/type.h:63-79` (subset;
-/// `r_args[512]` excluded: streams through the output layer, see 08 §3 D1).
-#[derive(Debug, Clone, Copy)]
-#[repr(C)]
-pub struct RprocSnap {
-    /// C: `r_pid` (type.h:63).
-    pub r_pid: i32,
-    /// C: `r_restarts` (type.h:66).
-    pub r_restarts: i32,
-    /// C: `r_flags` (type.h:68).
-    pub r_flags: u32,
-    /// C: `r_period` (type.h:71).
-    pub r_period: i32,
-    /// C: `r_alive_tm` (type.h:73).
-    pub r_alive_tm: u32,
-    /// C: `r_args[MAX_COMMAND_LEN]` (type.h:79, rs/const.h:18 = 512) —
-    /// the NUL-separated raw command; rproc_dmp prints it verbatim as the
-    /// trailing `%s` column (dmp_rs.c:64). (V1-P1-3: field added with the
-    /// execution face — the args column is the dump's raison d'être.)
-    pub r_args: [u8; RS_MAX_COMMAND],
-}
-
-/// C: `MAX_COMMAND_LEN 512` — rs/const.h:18.
-pub const RS_MAX_COMMAND: usize = 512;
-/// C: `rprocpub[NR_SYS_PROCS]` / `rproc[NR_SYS_PROCS]` — dmp_rs.c:21-22
-/// (`NR_SYS_PROCS 64`, sys_config.h:9).
-pub const RS_TABLE_LEN: usize = 64;
-
-impl Default for RprocSnap {
-    // Manual: `[u8; 512]` has no `Default` (ds.rs neighbouring-payload
-    // convention) — all-zero bytes are the C BSS initialiser.
-    fn default() -> Self {
-        Self {
-            r_pid: 0,
-            r_restarts: 0,
-            r_flags: 0,
-            r_period: 0,
-            r_alive_tm: 0,
-            r_args: [0; RS_MAX_COMMAND],
-        }
-    }
-}
+//! `[ARCH: A-4]`: the two table rows are [`minix_types::RprocpubSnap`] /
+//! [`minix_types::RprocSnap`] — the single authority shared with the RS-side
+//! `SI_PROCPUB_TAB`/`SI_PROC_TAB` producer (`os/servers/rs/src/shell_request.rs`
+//! 的三个 copy-out)；本模块只重导出（同一行也服务 VM 的 `RS_INIT` 握手）。
+pub use minix_types::{RprocSnap, RprocpubSnap, RS_MAX_COMMAND, RS_TABLE_LEN};
 
 /// In-use filter. C: `rp->r_flags & RS_IN_USE` (`RS_IN_USE 0x001` —
 /// rs/const.h:28; dmp_rs.c:44).

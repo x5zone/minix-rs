@@ -459,7 +459,7 @@ struct RprocTab { entries: [RprocEntry; 32] }
 
 - **32 槽**：握手 stub 的占位容量——与 C 的 `rprocpub[NR_SYS_PROCS]=64`（main.c:63，minix3/minix/include/minix/sys_config.h:_NR_SYS_PROCS）及 minix-rs 的 `NR_PROCS=256`（minix-types types/com.rs:36，`VM_PROC_COUNT=NR_PROCS+1=257`，vmproc/table.rs:41）均不同源；常量表只用于握手 stub 的条目形态，真实解码落地时以 minix-rs 的进程表容量为准（差异诚实标注）。
 - `is_user` 字段：C 的判定是 `IS_RPUB_BOOT_USR`（endpoint==INIT_PROC_NR）；Rust 由未来握手解码填充（当前 stub 恒 false）。
-- `rs_handshake`（os/servers/vm/src/vm_server.rs:const SIGKMEM（L972，工具生成））复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init(gid)` 取表 → 逐条 `acl_set`。**V11/T9 step 3 更正与诚实化**：①方向/源 P0-fact 修正——RS_INIT 由 RS 发往 VM（main.c:149），grant 经 `RsInit::decode_message`（minix-types，`m_rs_init` union 成员）从消息解出，safecopy 源是 `RS_PROC_NR`（main.c:246）而非 SELF；②`ipc_call_rs_init` 原返回 `Ok(RprocTab::empty())` 是**假成功**（每此握手静默注册零 ACL），现为诚实 `NotImplemented`——rprocpub 字节 ABI 解码挂 **edge E-RSWIRE**（本仓 minix3 子树缺 devmajor_t/bitchunk_t/rs_pci 定义，无法 pinning）；③握手失败在 P2 分支 fail-closed（drop+计数+审计，C 是 panic），pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`。
+- `rs_handshake`（os/servers/vm/src/vm_server.rs:const SIGKMEM（L972，工具生成））复刻 `sef_cb_init_fresh` 两步：`ipc_call_rs_init(gid)` 取表 → 逐条 `acl_set`。**V11/T9 step 3 更正与诚实化**：①方向/源 P0-fact 修正——RS_INIT 由 RS 发往 VM（main.c:149），grant 经 `RsInit::decode_message`（minix-types，`m_rs_init` union 成员）从消息解出，safecopy 源是 `RS_PROC_NR`（main.c:246）而非 SELF；②`ipc_call_rs_init` 原返回 `Ok(RprocTab::empty())` 是**假成功**（每此握手静默注册零 ACL），现按 `NR_BOOT_PROCS` 行共享快照解码——行是 `minix_types::RprocpubSnap`（`[ARCH: A-4]`）的 `in_use`/`endpoint`/`vm_call_mask` 三字段面，RS 侧的授权镜像与 IS 的 `getsysinfo` 用同一行（C 的 `struct rprocpub` 字节镜像退役）；③握手失败在 P2 分支 fail-closed（drop+计数+审计，C 是 panic），pin 测试 `test_run_once_rs_init_fails_closed_until_erswire`。
 
 ### 3.10 差异清单
 

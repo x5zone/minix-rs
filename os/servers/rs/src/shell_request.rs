@@ -9,73 +9,71 @@ use super::*;
 /// C: `RS_VM_DEFAULT_MAP_PREALLOC_LEN` — const.h:83 (8 MiB).
 const RS_VM_DEFAULT_MAP_PREALLOC_LEN: i64 = 1024 * 1024 * 8;
 
-/// Serializes one [`crate::service_slot::ServiceSlot`] row into C
-/// `struct rprocpub` wire bytes (rs.h:165-183; offsets pinned by
-/// `minix_types::rprocpub_off`). Field mappings:
-/// - `old_endpoint`/`new_endpoint`: `None` → `Endpoint::NONE` — the
-///   crate's established "unset" sentinel (the `InitMessage` encode,
-///   Fix #73, maps the same way).
-/// - `vm_call_mask`: the `CallMask(u64)` splits back into C's
-///   `bitchunk_t[2]` little-endian chunks — bit *i* of the u64 is call *i*
-///   exactly as C's chunk layout defines.
-/// - `devman_id`: `None` → 0 (C's memset-zero vacancy, rs.h:182).
-pub(crate) fn serialize_rprocpub_row(slot: &crate::service_slot::ServiceSlot, out: &mut [u8]) {
-    use minix_types::rprocpub_off as off;
-    fn put16(out: &mut [u8], o: usize, v: u16) {
-        out[o..o + 2].copy_from_slice(&v.to_le_bytes());
-    }
-    fn put32(out: &mut [u8], o: usize, v: u32) {
-        out[o..o + 4].copy_from_slice(&v.to_le_bytes());
-    }
+/// 一行快照的字节视图（行是 `#[repr(C)]` POD，wire 就是它的字节）。
+///
+/// # Safety
+/// `rows` 的元素类型由生产者保证为 repr(C) 无填充语义依赖 POD；视图只在
+/// 本次 safecopy 期间借用。
+fn row_bytes<T>(rows: &[T]) -> &[u8] {
+    // SAFETY: 见上；`size_of_val` 给出切片整体的字节数。
+    unsafe { core::slice::from_raw_parts(rows.as_ptr().cast::<u8>(), core::mem::size_of_val(rows)) }
+}
+
+/// 单个服务槽 → 公共表快照行（`[ARCH: A-4]` 单一权威，见
+/// [`minix_types::RprocpubSnap`]）。字段映射：
+/// - `in_use`：`bool → 0/1`（C 的 i16 语义，取值为真值面）；
+/// - `sys_flags`/`vm_call_mask`：位容器取裸值（`vm_call_mask` 的两块在 C
+///   是 `bitchunk_t[2]` 小端相接，树内以 u64 位 *i* 记调用号 *i*，同位）；
+/// - `label`：16 字节 NUL 结尾（`Label` 保证）。
+pub(crate) fn serialize_rprocpub_snap(slot: &crate::service_slot::ServiceSlot) -> minix_types::RprocpubSnap {
     let pub_ = &slot.pub_;
-    out[off::IN_USE..off::IN_USE + 2].copy_from_slice(&(pub_.in_use as i16).to_le_bytes());
-    put32(out, off::SYS_FLAGS, pub_.sys_flags.bits() as u32);
-    put32(out, off::ENDPOINT, pub_.endpoint.get() as u32);
-    put32(
-        out,
-        off::OLD_ENDPOINT,
-        pub_.old_endpoint.unwrap_or(Endpoint::NONE).get() as u32,
-    );
-    put32(
-        out,
-        off::NEW_ENDPOINT,
-        pub_.new_endpoint.unwrap_or(Endpoint::NONE).get() as u32,
-    );
-    put32(out, off::DEV_NR, pub_.dev_nr);
-    put32(out, off::NR_DOMAIN, pub_.nr_domain as i32 as u32);
-    for (i, d) in pub_.domain.iter().enumerate() {
-        put32(out, off::DOMAIN + i * 4, *d as u32);
+    if !pub_.in_use {
+        // 空槽出全零行：C 的 `rprocpub[]` 是静态数组，未分配槽保持 BSS 零
+        // （`in_use` 即有效性判据）；消费者按 `in_use` 过滤。
+        return minix_types::RprocpubSnap::default();
     }
-    out[off::LABEL..off::LABEL + 16].copy_from_slice(pub_.label.as_bytes());
-    out[off::PROC_NAME..off::PROC_NAME + 16].copy_from_slice(pub_.proc_name.as_bytes());
-    put32(
-        out,
-        off::VM_CALL_MASK,
-        (pub_.vm_call_mask.0 & 0xffff_ffff) as u32,
-    );
-    put32(
-        out,
-        off::VM_CALL_MASK + 4,
-        (pub_.vm_call_mask.0 >> 32) as u32,
-    );
-    let pci = off::PCI_ACL;
-    out[pci + off::PCI_LABEL..pci + off::PCI_LABEL + 16]
-        .copy_from_slice(pub_.pci_acl.label.as_bytes());
-    put32(out, pci + off::PCI_ENDPOINT, pub_.pci_acl.endpoint as u32);
-    put32(out, pci + off::PCI_NR_DEVICE, pub_.pci_acl.nr_device as u32);
-    for (i, d) in pub_.pci_acl.device.iter().enumerate() {
-        let o = pci + off::PCI_DEVICE + i * 8;
-        put16(out, o, d.vid);
-        put16(out, o + 2, d.did);
-        put16(out, o + 4, d.sub_vid);
-        put16(out, o + 6, d.sub_did);
+    minix_types::RprocpubSnap {
+        in_use: pub_.in_use as i32,
+        sys_flags: pub_.sys_flags.bits() as u32,
+        endpoint: pub_.endpoint.get(),
+        dev_nr: pub_.dev_nr as i32,
+        label: *pub_.label.as_bytes(),
+        vm_call_mask: pub_.vm_call_mask.0,
     }
-    put32(out, pci + off::PCI_NR_CLASS, pub_.pci_acl.nr_class as u32);
-    for (i, c) in pub_.pci_acl.class.iter().enumerate() {
-        put32(out, pci + off::PCI_CLASS + i * 8, c.pciclass);
-        put32(out, pci + off::PCI_CLASS + i * 8 + 4, c.mask);
+}
+
+/// 单个服务槽 → 私有表快照行（`[ARCH: A-4]`）。字段映射：
+/// - `r_pid`：`None`（无进程）→ `-1`（C 的 `r_pid` 无进程即 -1）；
+/// - `r_period`：树内 `period: i64` → C 的 `int r_period`（dump 列宽 4）；
+/// - `r_alive_tm`：树内 `Clock = i64` 原样；
+/// - `r_args`：NUL 分隔命令行原样 512 字节（dump 尾列逐字节打印）。
+pub(crate) fn serialize_rproc_snap(slot: &crate::service_slot::ServiceSlot) -> minix_types::RprocSnap {
+    if !slot.flags.contains(crate::service_slot::RFlags::IN_USE) {
+        // 空槽出全零行（同 PM/DS 生产者纪律）：C 的 `rproc[]` 未分配槽是
+        // BSS 零，`RS_IN_USE` 为有效性判据——不把"无进程"的 -1 哨兵写进
+        // 空槽（那是**在用**服务无 pid 时的取值）。
+        return minix_types::RprocSnap::default();
     }
-    put32(out, off::DEVMAN_ID, pub_.devman_id.unwrap_or(0) as u32);
+    minix_types::RprocSnap {
+        r_pid: slot.pid.unwrap_or(-1),
+        r_restarts: slot.restarts,
+        r_flags: slot.flags.bits() as u32,
+        r_period: slot.period as i32,
+        r_alive_tm: slot.alive_tm,
+        r_args: slot.args,
+    }
+}
+
+/// 整表快照（槽数 × 行宽；空槽同样出行，C 拷的是整数组）。
+fn snap_table<T: Copy + Default>(
+    table: &crate::process_table::RProcTable,
+    one: impl Fn(&crate::service_slot::ServiceSlot) -> T,
+) -> alloc::vec::Vec<T> {
+    let mut rows = alloc::vec![T::default(); table.len()];
+    for (i, (_, slot)) in table.iter_all().enumerate() {
+        rows[i] = one(slot);
+    }
+    rows
 }
 
 /// The `SI_PROCPUB_TAB` copy-out (request.c:1119-1121 + :1134-1136):
@@ -90,185 +88,15 @@ pub(crate) fn copy_out_procpub_table(
     addr: usize,
     size: u64,
 ) -> Result<(), Errno> {
-    let row_len = minix_types::rprocpub_off::SIZE;
-    let rows = table.len();
-    let mut img = alloc::vec![0u8; rows * row_len];
-    for (i, (_, slot)) in table.iter_all().enumerate() {
-        serialize_rprocpub_row(slot, &mut img[i * row_len..(i + 1) * row_len]);
-    }
+    let rows = snap_table(table, serialize_rprocpub_snap);
+    let img = row_bytes(&rows);
     // C: request.c:1134-1136 — `len != size` → EINVAL.
     if img.len() as u64 != size {
         return Err(Errno::EINVAL);
     }
-    kernel.safecopy_to(dest, addr, &img)
+    kernel.safecopy_to(dest, addr, img)
 }
 
-/// Serializes one [`crate::service_slot::ServiceSlot`] row into C
-/// `struct rproc` wire bytes (type.h:56-108; offsets derived from the
-/// repr(C) witness in `minix_types::rproc_off`). Field mapping:
-/// - the four chain fields and the `r_upd`/`r_argv`/`r_exec` pointer fields
-///   serialize as 0 — they are RS-address-space pointers in C (opaque to
-///   any receiver) and the A-3 index model holds no raw addresses;
-/// - `struct priv` is written from the authority copy (`slot.priv_`,
-///   Fix #62); kernel-runtime fields RS never models (async table, pending
-///   maps, timers, grant/state tables) serialize as zero — their C in-RS
-///   copies are equally zero or stale;
-/// - `r_io_tab`/`s_io_tab` write C's `ior_base`/`ior_limit` =
-///   `base + len - 1` (type.h:135-136, edit_slot manager.c:1516-1518);
-/// - `r_upd` writes the live descriptor (`slot.upd`) minus its pointers.
-///
-/// Unmodeled-field zeros are design-documented, not accidents: everything a
-/// dump-face consumer (08-stage-is) reads — labels, names, flags, endpoints,
-/// period/heartbeat timestamps, restart counters — is byte-exact.
-pub(crate) fn serialize_rproc_row(slot: &crate::service_slot::ServiceSlot, out: &mut [u8]) {
-    use minix_types::rproc_off as off;
-    use minix_types::rproc_off::{priv_off, upd};
-
-    fn put32(out: &mut [u8], o: usize, v: u32) {
-        out[o..o + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    fn put64(out: &mut [u8], o: usize, v: u64) {
-        out[o..o + 8].copy_from_slice(&v.to_le_bytes());
-    }
-    fn put_i32(out: &mut [u8], o: usize, v: i32) {
-        put32(out, o, v as u32);
-    }
-    fn put_i64(out: &mut [u8], o: usize, v: i64) {
-        put64(out, o, v as u64);
-    }
-
-    let priv_ = &slot.priv_;
-
-    // r_upd descriptor (type.h:31-45) — pointers stay 0.
-    if let Some(u) = &slot.upd {
-        let b = off::R_UPD;
-        put_i32(out, b + upd::LU_FLAGS, u.lu_flags.bits() as i32);
-        put32(out, b + upd::INIT_FLAGS, u.init_flags);
-        put_i32(out, b + upd::PREPARE_STATE, u.prepare_state);
-        put_i32(out, b + upd::STATE_ENDPOINT, u.state_endpoint.get());
-        put_i64(out, b + upd::PREPARE_TM, u.prepare_tm);
-        put_i64(out, b + upd::PREPARE_MAXTIME, u.prepare_maxtime);
-        let sd = b + upd::PREPARE_STATE_DATA;
-        put64(out, sd, u.prepare_state_data.size as u64);
-        put64(out, sd + 8, u.prepare_state_data.ipcf_els_addr);
-        put64(out, sd + 16, u.prepare_state_data.ipcf_els_size as u64);
-        put_i32(
-            out,
-            sd + 24,
-            u.prepare_state_data
-                .ipcf_els_gid
-                .map(|g| g as i32)
-                .unwrap_or(-1),
-        );
-        put64(out, sd + 32, u.prepare_state_data.eval_addr);
-        put64(out, sd + 40, u.prepare_state_data.eval_len as u64);
-        put_i32(
-            out,
-            sd + 48,
-            u.prepare_state_data
-                .eval_gid
-                .map(|g| g as i32)
-                .unwrap_or(-1),
-        );
-    }
-
-    put_i32(out, off::R_PID, slot.pid.unwrap_or(-1));
-    put_i32(out, off::R_ASR_COUNT, slot.asr_count);
-    put_i32(out, off::R_RESTARTS, slot.restarts);
-    put_i64(out, off::R_BACKOFF, slot.backoff);
-    put32(out, off::R_FLAGS, slot.flags.bits() as u32);
-    put_i32(out, off::R_INIT_ERR, slot.init_err);
-    put_i64(out, off::R_PERIOD, slot.period);
-    put_i64(out, off::R_CHECK_TM, slot.check_tm);
-    put_i64(out, off::R_ALIVE_TM, slot.alive_tm);
-    put_i64(out, off::R_STOP_TM, slot.stop_tm);
-    put_i32(out, off::R_CALLER, slot.caller.get());
-    put_i32(out, off::R_CALLER_REQUEST, slot.caller_request);
-    out[off::R_CMD..off::R_CMD + 512].copy_from_slice(&slot.cmd);
-    out[off::R_ARGS..off::R_ARGS + 512].copy_from_slice(&slot.args);
-    // r_argv: 12 opaque pointers — zero (unmodeled).
-    put_i32(out, off::R_ARGC, slot.argc);
-    out[off::R_SCRIPT..off::R_SCRIPT + 256].copy_from_slice(&slot.script);
-    // r_exec: 0 (opaque); r_exec_len carries the image length.
-    put64(
-        out,
-        off::R_EXEC_LEN,
-        slot.exec.as_ref().map(|b| b.len()).unwrap_or(0) as u64,
-    );
-
-    // struct priv — authority copy.
-    let p = off::R_PRIV;
-    put_i32(out, p + priv_off::S_PROC_NR, slot.pub_.endpoint.slot());
-    put_i32(out, p + priv_off::S_ID, priv_.id.0);
-    let sf = priv_.flags.bits() as i16;
-    out[p + priv_off::S_FLAGS..p + priv_off::S_FLAGS + 2].copy_from_slice(&sf.to_le_bytes());
-    put32(out, p + priv_off::S_INIT_FLAGS, priv_.init_flags);
-    let tm = priv_.trap_mask.bits() as i16;
-    out[p + priv_off::S_TRAP_MASK..p + priv_off::S_TRAP_MASK + 2]
-        .copy_from_slice(&tm.to_le_bytes());
-    put32(
-        out,
-        p + priv_off::S_IPC_TO,
-        (priv_.ipc_to.0 & 0xffff_ffff) as u32,
-    );
-    put32(
-        out,
-        p + priv_off::S_IPC_TO + 4,
-        (priv_.ipc_to.0 >> 32) as u32,
-    );
-    put32(
-        out,
-        p + priv_off::S_K_CALL_MASK,
-        (priv_.k_call_mask.0 & 0xffff_ffff) as u32,
-    );
-    put32(
-        out,
-        p + priv_off::S_K_CALL_MASK + 4,
-        (priv_.k_call_mask.0 >> 32) as u32,
-    );
-    put_i32(out, p + priv_off::S_SIG_MGR, priv_.sig_mgr.get());
-    put_i32(out, p + priv_off::S_BAK_SIG_MGR, priv_.bak_sig_mgr.get());
-    put_i32(out, p + priv_off::S_NR_IO_RANGE, priv_.nr_io_range);
-    for (i, r) in priv_.io_ranges.iter().enumerate() {
-        let o = p + priv_off::S_IO_TAB + i * 8;
-        // type.h:135-136 — limit is INCLUSIVE: base + len - 1.
-        let limit = if r.len == 0 { 0 } else { r.base + r.len - 1 };
-        put32(out, o, r.base);
-        put32(out, o + 4, limit);
-    }
-    put_i32(out, p + priv_off::S_NR_MEM_RANGE, priv_.nr_mem_range);
-    for (i, m) in priv_.mem_ranges.iter().enumerate() {
-        let o = p + priv_off::S_MEM_TAB + i * 16;
-        put64(out, o, m.base);
-        put64(out, o + 8, m.len);
-    }
-    put_i32(out, p + priv_off::S_NR_IRQ, priv_.nr_irq);
-    for (i, q) in priv_.irqs.iter().enumerate() {
-        put_i32(out, p + priv_off::S_IRQ_TAB + i * 4, *q);
-    }
-
-    put32(out, off::R_UID, slot.uid);
-    put_i32(out, off::R_SCHEDULER, slot.scheduler.get());
-    put_i32(out, off::R_PRIORITY, slot.priority);
-    put_i32(out, off::R_QUANTUM, slot.quantum);
-    put_i32(out, off::R_CPU, slot.cpu);
-    put64(out, off::R_MAP_PREALLOC_ADDR, slot.map_prealloc_addr);
-    put64(out, off::R_MAP_PREALLOC_LEN, slot.map_prealloc_len as u64);
-    for (i, q) in slot.irq_tab.iter().enumerate() {
-        put_i32(out, off::R_IRQ_TAB + i * 4, *q);
-    }
-    put_i32(out, off::R_NR_IRQ, slot.nr_irq);
-    out[off::R_IPC_LIST..off::R_IPC_LIST + 256].copy_from_slice(&slot.ipc_list);
-    put_i32(out, off::R_NR_CONTROL, slot.nr_control);
-    for (i, l) in slot.control.iter().enumerate() {
-        let o = off::R_CONTROL + i * 16;
-        out[o..o + 16].copy_from_slice(l.as_bytes());
-    }
-}
-
-/// The `SI_PROC_TAB` copy-out (request.c:1113-1115): the whole internal
-/// table (`sizeof(struct rproc) * NR_SYS_PROCS` raw bytes) through the
-/// exact-size gate. Free function for direct-drive tests.
 pub(crate) fn copy_out_procall_table(
     kernel: &mut dyn crate::boot::KernelApi,
     table: &crate::process_table::RProcTable,
@@ -276,26 +104,21 @@ pub(crate) fn copy_out_procall_table(
     addr: usize,
     size: u64,
 ) -> Result<(), Errno> {
-    let proc_len = table.len() * minix_types::rproc_off::SIZE;
-    let pub_len = table.len() * minix_types::rprocpub_off::SIZE;
+    let proc_rows = snap_table(table, serialize_rproc_snap);
+    let pub_rows = snap_table(table, serialize_rprocpub_snap);
+    let proc_img = row_bytes(&proc_rows);
+    let pub_img = row_bytes(&pub_rows);
     // C: request.c:1116-1118 — the rproc half alone must fit.
-    if proc_len as u64 > size {
+    if proc_img.len() as u64 > size {
         return Err(Errno::EINVAL);
     }
     // C: request.c:1134-1136 — rproc + rprocpub must fill the request.
-    if (proc_len + pub_len) as u64 != size {
+    if (proc_img.len() + pub_img.len()) as u64 != size {
         return Err(Errno::EINVAL);
     }
-    let mut img = alloc::vec![0u8; proc_len + pub_len];
-    let row_rproc = minix_types::rproc_off::SIZE;
-    let row_pub = minix_types::rprocpub_off::SIZE;
-    for (i, (_, slot)) in table.iter_all().enumerate() {
-        serialize_rproc_row(slot, &mut img[i * row_rproc..(i + 1) * row_rproc]);
-        serialize_rprocpub_row(
-            slot,
-            &mut img[proc_len + i * row_pub..proc_len + (i + 1) * row_pub],
-        );
-    }
+    let mut img = alloc::vec::Vec::with_capacity(size as usize);
+    img.extend_from_slice(proc_img);
+    img.extend_from_slice(pub_img);
     kernel.safecopy_to(dest, addr, &img)
 }
 
@@ -306,16 +129,12 @@ pub(crate) fn copy_out_rproc_table(
     addr: usize,
     size: u64,
 ) -> Result<(), Errno> {
-    let row_len = minix_types::rproc_off::SIZE;
-    let rows = table.len();
-    let mut img = alloc::vec![0u8; rows * row_len];
-    for (i, (_, slot)) in table.iter_all().enumerate() {
-        serialize_rproc_row(slot, &mut img[i * row_len..(i + 1) * row_len]);
-    }
+    let rows = snap_table(table, serialize_rproc_snap);
+    let img = row_bytes(&rows);
     if img.len() as u64 != size {
         return Err(Errno::EINVAL);
     }
-    kernel.safecopy_to(dest, addr, &img)
+    kernel.safecopy_to(dest, addr, img)
 }
 
 /// Assembles the post-copy [`crate::slot::RsStart`] from the decoded wire
