@@ -128,6 +128,25 @@ pub enum Effect {
         /// The wire message, ready to send.
         message: Message,
     },
+    /// Answer the IS F-key control request: `m_type = result`, the
+    /// leftover/pending bitmaps in the reply arm, one `ipc_sendnb`
+    /// (`keyboard.c:523-526`).
+    FkeyControlReply {
+        /// The requesting server (IS).
+        caller: Endpoint,
+        /// The result code (OK / EPERM / EINVAL).
+        result: i32,
+        /// F-bank bitmap in the reply arm.
+        fkeys: i32,
+        /// Shift-F-bank bitmap in the reply arm.
+        sfkeys: i32,
+    },
+    /// Wake a registered F-key observer: `ipc_notify(proc_nr)`
+    /// (`func_key` tail, `keyboard.c:566-568`).
+    NotifyFkeyObserver {
+        /// The observer's endpoint.
+        target: Endpoint,
+    },
 }
 
 impl Effect {

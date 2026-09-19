@@ -63,6 +63,10 @@ pub struct Server {
     pub table: InputTable,
     /// Minors opened since the last restart (document 02).
     pub opened: OpenDeviceSet,
+    /// F-key observer registry (C `fkey_obs`/`sfkey_obs`,
+    /// `keyboard.c:72-73`). Starts gated off — the `debug_fkeys` boot flag
+    /// comes from the environment the server does not parse yet.
+    pub fkeys: crate::fkey::FkeyTable,
 }
 
 impl Server {
@@ -71,6 +75,7 @@ impl Server {
         Server {
             table: InputTable::fresh(),
             opened: OpenDeviceSet::new(),
+            fkeys: crate::fkey::FkeyTable::new(false),
         }
     }
 
@@ -172,6 +177,18 @@ pub enum Arrival {
     /// happens here, not in the transport: accepting or ignoring a sender
     /// is a decision (A-10), not mechanics.
     TerminalSetleds { source: Endpoint, mask: u32 },
+    /// The IS debug-dump registry request (`TTY_FKEY_CONTROL`,
+    /// `com.h:874`, decoded from `m_lsys_tty_fkey_ctl`).
+    FkeyControl {
+        /// Who asked (the IS server).
+        source: Endpoint,
+        /// `FKEY_MAP`/`FKEY_UNMAP`/`FKEY_EVENTS`.
+        request: i32,
+        /// F1..F12 bitmap, bits 1..=12 (bit 0 unused).
+        fkeys: i32,
+        /// Shift F1..F12 bitmap.
+        sfkeys: i32,
+    },
     /// A character-device request for one minor.
     Request(CdevCall),
 }
@@ -293,8 +310,15 @@ impl CdevCall {
 pub enum Outcome {
     /// State is final; perform the effects in order.
     Done(Vec<Effect>),
-    /// Copy the planned events through the grant, then complete.
-    GrantCopy(GrantCopy),
+    /// Copy the planned events through the grant, then complete. The
+    /// leading effects run before the copy (an F-key trap on the same
+    /// press must notify before the reader's answer matters).
+    GrantCopy {
+        /// The copy plan itself.
+        copy: GrantCopy,
+        /// Effects that precede the copy.
+        leading: Vec<Effect>,
+    },
 }
 
 /// A grant copy standing between decision and completion.
@@ -331,6 +355,12 @@ pub fn handle_arrival(server: &mut Server, arrival: Arrival) -> Outcome {
         Arrival::TerminalSetleds { source, mask } => {
             Outcome::Done(terminal_setleds(server, source, mask))
         }
+        Arrival::FkeyControl {
+            source,
+            request,
+            fkeys,
+            sfkeys,
+        } => Outcome::Done(fkey_control(server, source, request, fkeys, sfkeys)),
         Arrival::Request(call) => handle_request(server, call),
     }
 }
@@ -373,7 +403,19 @@ fn handle_report(
     value: i32,
     flags: i32,
 ) -> Outcome {
-    match route_event(&server.table, id, source) {
+    // The F-key trap fires on key presses only (C: `if (scode &
+    // RELEASE_BIT) return FALSE` — keyboard.c:539-541; `INPUT_PRESS = 1`).
+    let mut fkey_notify = None;
+    if value == 1
+        && let Some(target) = server.fkeys.key_press(page, code)
+    {
+        fkey_notify = Some(target);
+    }
+    let mut leading = Vec::new();
+    if let Some(target) = fkey_notify {
+        leading.push(Effect::NotifyFkeyObserver { target });
+    }
+    let outcome = match route_event(&server.table, id, source) {
         crate::produce::EventIntake::Drop(_) => Outcome::Done(Vec::new()),
         crate::produce::EventIntake::ForwardToTerminal => Outcome::Done(vec![Effect::tty_event(
             forward_to_terminal(id, page, code, value, flags),
@@ -385,14 +427,17 @@ fn handle_report(
                     caller,
                     request_id,
                     plan,
-                } => Outcome::GrantCopy(GrantCopy {
-                    slot: target,
-                    plan,
-                    grant: server.table.devices[target.0].grant,
-                    caller,
-                    request_id,
-                    unpark: true,
-                }),
+                } => Outcome::GrantCopy {
+                    copy: GrantCopy {
+                        slot: target,
+                        plan,
+                        grant: server.table.devices[target.0].grant,
+                        caller,
+                        request_id,
+                        unpark: true,
+                    },
+                    leading: core::mem::take(&mut leading),
+                },
                 WakeAction::AnswerReaderFailed {
                     caller,
                     request_id,
@@ -404,10 +449,45 @@ fn handle_report(
                 WakeAction::Nobody => Outcome::Done(Vec::new()),
             }
         }
+    };
+    // The F-key notification precedes whatever the report itself produced
+    // (the IS dump runs before the reader's answer matters).
+    match outcome {
+        Outcome::Done(mut effects) => {
+            let mut all = core::mem::take(&mut leading);
+            all.append(&mut effects);
+            Outcome::Done(all)
+        }
+        other => other,
     }
 }
 
-/// Applies a terminal light request, or ignores a non-terminal sender.
+/// Applies a terminal light request, or ignores a non-terminal sender./// Runs the IS F-key registry request and shapes the reply effect.
+///
+/// The registry decision is all [`crate::fkey::FkeyTable::control`]; this
+/// wrapper only carries its result into the reply effect (C `do_fkey_ctl`
+/// answers via one sendnb with `m_type = result`,
+/// `keyboard.c:523-526`).
+fn fkey_control(
+    server: &mut Server,
+    source: Endpoint,
+    request: i32,
+    fkeys: i32,
+    sfkeys: i32,
+) -> Vec<Effect> {
+    let (result, leftover_fkeys, leftover_sfkeys) =
+        server
+            .fkeys
+            .control(source, request, fkeys, sfkeys);
+    vec![Effect::FkeyControlReply {
+        caller: source,
+        result,
+        fkeys: leftover_fkeys,
+        sfkeys: leftover_sfkeys,
+    }]
+}
+
+
 ///
 /// C: `input.c:630-635` accepts `INPUT_SETLEDS` only from the terminal and
 /// falls through to the unexpected-message log otherwise (A-10); then
@@ -507,14 +587,17 @@ fn handle_request(server: &mut Server, call: CdevCall) -> Outcome {
                 Outcome::Done(Vec::new())
             }
             ReadVerdict::Serve { event_count } => match plan_read_copy(device, event_count) {
-                Ok(plan) => Outcome::GrantCopy(GrantCopy {
-                    slot,
-                    plan,
-                    grant,
-                    caller,
-                    request_id,
-                    unpark: false,
-                }),
+                Ok(plan) => Outcome::GrantCopy {
+                    copy: GrantCopy {
+                        slot,
+                        plan,
+                        grant,
+                        caller,
+                        request_id,
+                        unpark: false,
+                    },
+                    leading: Vec::new(),
+                },
                 Err(error) => Outcome::Done(vec![Effect::reply_error(caller, request_id, error)]),
             },
         },
@@ -720,7 +803,7 @@ mod tests {
         stored(&mut server, 1, 42);
         let outcome = handle_arrival(&mut server, read_call(1, 40));
         let copy = match outcome {
-            Outcome::GrantCopy(copy) => copy,
+            Outcome::GrantCopy { copy, .. } => copy,
             _ => panic!("expected GrantCopy"),
         };
         assert_eq!(copy.slot, DeviceIndex(1));
@@ -766,7 +849,7 @@ mod tests {
             },
         );
         let copy = match outcome {
-            Outcome::GrantCopy(copy) => copy,
+            Outcome::GrantCopy { copy, .. } => copy,
             _ => panic!("expected GrantCopy"),
         };
         assert!(copy.unpark);

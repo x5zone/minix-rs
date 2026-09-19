@@ -45,6 +45,7 @@ pub mod connect;
 pub mod dispatcher;
 pub mod effects;
 pub mod error;
+pub mod fkey;
 pub mod eventbuf;
 pub mod handlers;
 pub mod init;

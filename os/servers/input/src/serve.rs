@@ -43,6 +43,12 @@ pub trait Transport {
     fn receive(&mut self, msg: &mut Message) -> Result<(), i32>;
     /// Blocking send (terminal-facing effects). C: `send`.
     fn send(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;
+    /// Non-blocking send. C: `ipc_sendnb` — the F-key control reply
+    /// (keyboard.c:525) where the caller sits in sendrec.
+    fn sendnb(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;
+    /// One-shot notification. C: `ipc_notify(proc_nr)` — `func_key`'s wake
+    /// for a registered F-key observer (keyboard.c:566-568).
+    fn notify(&mut self, dst: Endpoint) -> Result<(), i32>;
     /// Non-blocking `asynsend3(AMF_NOREPLY)` (reader replies). C:
     /// `chardriver_reply_task:146`.
     fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;
@@ -77,6 +83,23 @@ impl Transport for KernelTransport {
 
     fn send(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
         minix_sys::send(dst, msg).map_err(|_| -minix_types::EIO)
+    }
+
+    /// Non-blocking send. C: `ipc_sendnb` — used for the F-key control
+    /// reply (keyboard.c:525) where the caller sits in sendrec.
+    fn sendnb(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
+        use minix_sys::ipc::IpcTransport as _;
+        minix_sys::ipc::DirectTrapTransport
+            .sendnb(dst, msg)
+            .map_err(|t| t.0)
+    }
+
+    fn notify(&mut self, dst: Endpoint) -> Result<(), i32> {
+        use minix_sys::ipc::IpcTransport as _;
+        minix_sys::ipc::DirectTrapTransport
+            .notify(dst)
+            .map(|_| ())
+            .map_err(|t| t.0)
     }
 
     fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
@@ -157,6 +180,18 @@ pub fn classify(msg: &Message) -> Option<Arrival> {
         ),
         INPUT_SETLEDS => decode_setleds(msg)
             .map(|mask| Arrival::TerminalSetleds { source: msg.m_source, mask }),
+        minix_types::TTY_FKEY_CONTROL => {
+            // SAFETY: `m_lsys_tty_fkey_ctl` is the active arm for the
+            // F-key control request (request/fkeys/sfkeys, C
+            // ipc.h:1447-1454).
+            let m = unsafe { &msg.m_u.m_lsys_tty_fkey_ctl };
+            Some(Arrival::FkeyControl {
+                source: msg.m_source,
+                request: m.request,
+                fkeys: m.fkeys,
+                sfkeys: m.sfkeys,
+            })
+        }
         _ => None,
     }
 }
@@ -235,6 +270,32 @@ pub fn perform(effect: &Effect, t: &mut dyn Transport, self_ep: Endpoint) {
             m.m_source = self_ep;
             let _ = t.send(Endpoint::TTY, &mut m);
         }
+        Effect::FkeyControlReply {
+            caller,
+            result,
+            fkeys,
+            sfkeys,
+        } => {
+            // C `do_fkey_ctl` tail: `m_type = result`, the leftover/pending
+            // bitmaps ride the reply arm, one `ipc_sendnb` back
+            // (keyboard.c:523-526).
+            let mut m = Message {
+                m_type: *result,
+                m_source: self_ep,
+                ..Message::default()
+            };
+            // Union-field writes are safe (only reads are unsafe); the
+            // reply arm is `m_tty_lsys_fkey_ctl` (ipc.h:1925-1931) — the
+            // client reads it right back (`fkey_ctl_via`).
+            m.m_u.m_tty_lsys_fkey_ctl.fkeys = *fkeys;
+            m.m_u.m_tty_lsys_fkey_ctl.sfkeys = *sfkeys;
+            let _ = t.sendnb(*caller, &mut m);
+        }
+        Effect::NotifyFkeyObserver { target } => {
+            // C `func_key` tail: `ipc_notify(proc_nr)` when a registered
+            // observer's key was pressed (keyboard.c:566-568).
+            let _ = t.notify(*target);
+        }
     }
 }
 
@@ -262,7 +323,8 @@ pub fn serve(t: &mut dyn Transport, self_ep: Endpoint, server: &mut crate::dispa
         };
         match outcome {
             Outcome::Done(effects) => perform_all(&effects, t, self_ep),
-            Outcome::GrantCopy(grant_copy) => {
+            Outcome::GrantCopy { copy: grant_copy, leading } => {
+                perform_all(&leading, t, self_ep);
                 // Move the planned events through the reader's grant, then
                 // let the completion decide commit vs. discard.
                 let device = &server.table.devices[grant_copy.slot.0];
@@ -314,6 +376,94 @@ mod serve_tests {
                 assert_eq!((source.0, id, page, code, value, flags), (9, 3, 1, 30, 2, 1));
             }
             other => panic!("expected DriverReport, got {other:?}"),
+        }
+    }
+
+    /// 分类：TTY_FKEY_CONTROL → FkeyControl（三字段解码）。
+    #[test]
+    fn test_classify_fkey_control() {
+        let mut msg = Message {
+            m_type: minix_types::TTY_FKEY_CONTROL,
+            m_source: Endpoint(9),
+            ..Message::default()
+        };
+        // union 字段写是 safe 的（只有读才 unsafe）；请求臂
+        // `m_lsys_tty_fkey_ctl`（ipc.h:1447-1454）。
+        msg.m_u.m_lsys_tty_fkey_ctl.request = minix_types::FKEY_MAP;
+        msg.m_u.m_lsys_tty_fkey_ctl.fkeys = 0b10;
+        msg.m_u.m_lsys_tty_fkey_ctl.sfkeys = 0;
+        match classify(&msg) {
+            Some(Arrival::FkeyControl {
+                source,
+                request,
+                fkeys,
+                sfkeys,
+            }) => {
+                assert_eq!((source.0, request, fkeys, sfkeys), (9, minix_types::FKEY_MAP, 0b10, 0));
+            }
+            other => panic!("expected FkeyControl, got {other:?}"),
+        }
+    }
+
+    /// 回路：MAP 注册 → 回复效果（result=OK、位图清零）→
+    /// EVENTS 拉取带回 pending 位。C `do_fkey_ctl` 的三动词经
+    /// `handle_arrival` 的观察者语义。
+    #[test]
+    fn test_fkey_control_map_then_events_roundtrip() {
+        let mut server = crate::dispatcher::Server::fresh();
+        server.fkeys.enabled = true;
+        let mk = |request: i32, fkeys: i32, sfkeys: i32| {
+            let mut msg = Message {
+                m_type: minix_types::TTY_FKEY_CONTROL,
+                m_source: Endpoint(9),
+                ..Message::default()
+            };
+            // SAFETY(test): 请求臂 `m_lsys_tty_fkey_ctl`（ipc.h:1447-1454）。
+            unsafe {
+                msg.m_u.m_lsys_tty_fkey_ctl.request = request;
+                msg.m_u.m_lsys_tty_fkey_ctl.fkeys = fkeys;
+                msg.m_u.m_lsys_tty_fkey_ctl.sfkeys = sfkeys;
+            }
+            msg
+        };
+        // MAP F1：回复 OK、位图清零。
+        match handle_arrival(&mut server, classify(&mk(minix_types::FKEY_MAP, 0b10, 0)).unwrap()) {
+            Outcome::Done(effects) => match &effects[..] {
+                [Effect::FkeyControlReply { caller, result, fkeys, sfkeys }] => {
+                    assert_eq!((caller.0, *result, *fkeys, *sfkeys), (9, minix_types::OK, 0, 0));
+                }
+                other => panic!("expected one reply effect, got {other:?}"),
+            },
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // 事件域 F1 按下 → 注册者收到 notify。
+        match handle_arrival(
+            &mut server,
+            Arrival::DriverReport {
+                source: Endpoint(3),
+                id: 0,
+                page: 0x0007,
+                code: 0x003A,
+                value: 1,
+                flags: 0,
+            },
+        ) {
+            Outcome::Done(effects) => {
+                assert!(effects.iter().any(
+                    |e| matches!(e, Effect::NotifyFkeyObserver { target } if *target == Endpoint(9))
+                ));
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // EVENTS：pending 位回到 IS 手里，计数清零。
+        match handle_arrival(&mut server, classify(&mk(minix_types::FKEY_EVENTS, 0, 0)).unwrap()) {
+            Outcome::Done(effects) => match &effects[..] {
+                [Effect::FkeyControlReply { result, fkeys, sfkeys, .. }] => {
+                    assert_eq!((*result, *fkeys, *sfkeys), (minix_types::OK, 0b10, 0));
+                }
+                other => panic!("expected one reply effect, got {other:?}"),
+            },
+            other => panic!("expected Done, got {other:?}"),
         }
     }
 
