@@ -55,6 +55,7 @@ pub mod signal;
 pub mod stat;
 pub mod flock;
 pub mod statvfs;
+pub mod termios;
 mod sysctl;
 mod sysctl_abi;
 pub mod vm_cache;
@@ -92,6 +93,7 @@ pub use signal::*;
 // 经 `types::stat::Stat` 路径取用（minix-sys 再导出为 `minix_sys::Stat`）。
 pub use flock::*;
 pub use statvfs::*;
+pub use termios::*;
 pub use vm_cache::*;
 pub use sysctl::*;
 pub use sysctl_abi::*;

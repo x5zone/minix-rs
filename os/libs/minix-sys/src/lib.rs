@@ -236,6 +236,56 @@ pub fn open(path: &str, flags: i32, mode: u32) -> Result<Fd, Errno> {
     )
 }
 
+/// Terminal ioctl request: get the `struct termios`
+/// (`ttycom.h:88`, `_IOR('t', 19, struct termios)` — `IOC_OUT` 0x4000_0000,
+/// 44-byte argument in the length field, group `'t'`, number 19).
+pub const TIOCGETA: u64 = 0x4000_0000 | (44 << 16) | (0x74 << 8) | 19;
+
+/// Terminal ioctl request: set the `struct termios` immediately
+/// (`ttycom.h:89`, `_IOW('t', 20, struct termios)` — `IOC_IN` 0x8000_0000).
+pub const TIOCSETA: u64 = 0x8000_0000 | (44 << 16) | (0x74 << 8) | 20;
+
+/// Fetches the terminal attributes of `fd` (`termios.h` `tcgetattr`
+/// face over `TIOCGETA`).
+pub fn tcgetattr(fd: Fd, termios: &mut minix_types::types::termios::Termios) -> Result<(), Errno> {
+    let mut bytes = [0u8; 44];
+    let result = vfs::ioctl_via(
+        &ipc::DirectTrapTransport,
+        fd,
+        TIOCGETA,
+        bytes.as_mut_ptr() as u64,
+    );
+    match result {
+        Ok(_) => match minix_types::types::termios::Termios::from_bytes(&bytes) {
+            Some(parsed) => {
+                *termios = parsed;
+                Ok(())
+            }
+            None => Err(Errno::EINVAL),
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// Applies the terminal attributes to `fd` immediately (`termios.h`
+/// `tcsetattr(fd, TCSANOW, …)` face over `TIOCSETA`).
+pub fn tcsetattr(
+    fd: Fd,
+    termios: &minix_types::types::termios::Termios,
+) -> Result<(), Errno> {
+    let mut bytes = [0u8; 44];
+    if termios.to_bytes(&mut bytes).is_none() {
+        return Err(Errno::EINVAL);
+    }
+    vfs::ioctl_via(
+        &ipc::DirectTrapTransport,
+        fd,
+        TIOCSETA,
+        bytes.as_ptr() as u64,
+    )
+    .map(|_| ())
+}
+
 /// Closes a file.
 pub fn close(fd: Fd) -> Result<(), Errno> {
     vfs::close_via(&ipc::DirectTrapTransport, fd)
@@ -379,4 +429,19 @@ mod tests {
         // the shared type (todo §11 N4).
         assert_eq!(Errno::ENOSYS.to_i32(), 78);
     }
+}
+
+/// `TIOCGETA`/`TIOCSETA` 请求号按 `ttycom.h:88-89` 的 `_IOR/_IOW('t', …,
+/// struct termios)` 编码钉值：44 字节参数长度进第 16 到 27 位，组 `'t'`
+/// 在第 8 到 15 位，方向位（`IOC_OUT`/`IOC_IN`）在最高两位。
+#[test]
+fn test_tty_ioctl_requests_match_ttycom() {
+    assert_eq!(TIOCGETA, 0x4000_0000 | (44 << 16) | (0x74 << 8) | 19);
+    assert_eq!(TIOCSETA, 0x8000_0000 | (44 << 16) | (0x74 << 8) | 20);
+    // 长度域：IOCPARM_LEN 语义 ((x >> 16) & 0x1fff) == sizeof(termios)。
+    assert_eq!((TIOCGETA >> 16) & 0x1fff, 44);
+    // 组与序号。
+    assert_eq!((TIOCGETA >> 8) & 0xff, b't' as u64);
+    assert_eq!(TIOCGETA & 0xff, 19);
+    assert_eq!(TIOCSETA & 0xff, 20);
 }

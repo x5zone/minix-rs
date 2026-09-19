@@ -125,6 +125,185 @@ pub fn parse_args<'a>(args: &[&'a str]) -> Result<([SttyOp<'a>; 16], usize), Ter
     Ok((ops, count))
 }
 
+/// (name, group, bit) 三元组：`FLAGS` 里每个字的落位（`termios.h`
+/// 各旗标 define；`cs8` 特殊——置位时先清 `CSIZE` 掩码再上 `CS8`）。
+const FLAG_BITS: [(&str, FlagGroup, u32); 16] = [
+    ("parenb", FlagGroup::Control, minix_types::PARENB),
+    ("parodd", FlagGroup::Control, minix_types::PARODD),
+    ("cs8", FlagGroup::Control, minix_types::CS8),
+    ("hupcl", FlagGroup::Control, minix_types::HUPCL),
+    ("istrip", FlagGroup::Input, minix_types::ISTRIP),
+    ("ixon", FlagGroup::Input, minix_types::IXON),
+    ("ixoff", FlagGroup::Input, minix_types::IXOFF),
+    ("icrnl", FlagGroup::Input, minix_types::ICRNL),
+    ("icanon", FlagGroup::Local, minix_types::ICANON),
+    ("echo", FlagGroup::Local, minix_types::ECHO),
+    ("echoe", FlagGroup::Local, minix_types::ECHOE),
+    ("echok", FlagGroup::Local, minix_types::ECHOK),
+    ("isig", FlagGroup::Local, minix_types::ISIG),
+    ("iexten", FlagGroup::Local, minix_types::IEXTEN),
+    ("opost", FlagGroup::Output, minix_types::OPOST),
+    ("onlcr", FlagGroup::Output, minix_types::ONLCR),
+];
+
+/// Apply parsed operations to a terminal attribute record (`modeset`,
+/// `stty.c:208` 的搜索次序在解析层已定，这里只做落位）。
+///
+/// `cs8` 的置位先清 `CSIZE` 掩码（字符大小是域不是位）；清除则只清
+/// `CS8` 位值。速度同时写两个方向（C 的 `cfsetispeed`/`cfsetospeed`
+/// 成对面）。
+pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_types::Termios) {
+    for op in &ops[..count.min(ops.len())] {
+        match *op {
+            SttyOp::Speed(baud) => {
+                t.c_ispeed = baud as i32;
+                t.c_ospeed = baud as i32;
+            }
+            SttyOp::ControlChar(slot, value) => {
+                if (slot as usize) < minix_types::NCCS {
+                    t.c_cc[slot as usize] = value;
+                }
+            }
+            SttyOp::Flag(group, name, set) => {
+                let Some((_, _, bit)) =
+                    FLAG_BITS.iter().find(|(known, g, _)| *g == group && *known == name)
+                else {
+                    continue;
+                };
+                let word = match group {
+                    FlagGroup::Control => &mut t.c_cflag,
+                    FlagGroup::Input => &mut t.c_iflag,
+                    FlagGroup::Local => &mut t.c_lflag,
+                    FlagGroup::Output => &mut t.c_oflag,
+                };
+                if name == "cs8" && set {
+                    // 置八位：清大小域再上 CS8（termios.h:131-135）。
+                    *word &= !minix_types::CSIZE;
+                    *word |= minix_types::CS8;
+                } else if set {
+                    *word |= bit;
+                } else {
+                    *word &= !bit;
+                }
+            }
+        }
+    }
+}
+
+/// `-a` 显示面：速度行、四组旗标（清除的名字带负号）、控制字符行。
+///
+/// C 的 `stty -a` 还有 rows/columns 与 line discipline 两个域——本模型
+/// 的属性记录没有这两个面，显示里省略（13-terminal-termios.md §5 声明）。
+/// 旗标清单就是决定半认识的十六个字。
+pub fn display_a(t: &minix_types::Termios, out: &mut [u8]) -> Result<usize, TermError> {
+    let mut at = 0usize;
+    let put = |out: &mut [u8], at: &mut usize, bytes: &[u8]| -> Result<(), TermError> {
+        if *at + bytes.len() > out.len() {
+            return Err(TermError::InvalidArgument);
+        }
+        out[*at..*at + bytes.len()].copy_from_slice(bytes);
+        *at += bytes.len();
+        Ok(())
+    };
+    let number = |out: &mut [u8], at: &mut usize, value: u32| -> Result<(), TermError> {
+        let mut digits = [0u8; 10];
+        let mut count = 0;
+        let mut v = value;
+        if v == 0 {
+            digits[0] = b'0';
+            count = 1;
+        }
+        while v > 0 {
+            digits[count] = b'0' + (v % 10) as u8;
+            count += 1;
+            v /= 10;
+        }
+        while count > 0 {
+            count -= 1;
+            put(out, at, &digits[count..count + 1])?;
+        }
+        Ok(())
+    };
+
+    put(out, &mut at, b"speed ")?;
+    number(out, &mut at, t.c_ospeed as u32)?;
+    put(out, &mut at, b" baud;\n")?;
+
+    // 控制字符行：恒显的七个槽位（intr/quit/erase/kill/eof/eol 对齐
+    // C 的显示序；undef 打 `<undef>`）。
+    let named = [
+        ("intr = ", VINTR_SLOT),
+        ("quit = ", VQUIT_SLOT),
+        ("erase = ", VERASE_SLOT),
+        ("kill = ", VKILL_SLOT),
+        ("eof = ", VEOF_SLOT),
+        ("eol = ", VEOL_SLOT),
+    ];
+    for (index, (label, slot)) in named.iter().enumerate() {
+        if index > 0 {
+            put(out, &mut at, b"; ")?;
+        }
+        put(out, &mut at, label.as_bytes())?;
+        let value = t.c_cc[*slot];
+        if value == crate::cchar::DISABLED || value == 0 {
+            // 0 即 `_POSIX_VDISABLE`（Minix 的禁用值）——同 `<undef>`。
+            put(out, &mut at, b"<undef>")?;
+        } else {
+            put(out, &mut at, b"^")?;
+            let letter = if value >= 128 {
+                value & 0x1f
+            } else {
+                value ^ 0x40
+            };
+            put(out, &mut at, &[letter])?;
+        }
+    }
+    put(out, &mut at, b";\n")?;
+
+    // 四组旗标：置位裸名、清除带负号（C `stty -a` 的分组打印序）。
+    for (group, gap) in [
+        (FlagGroup::Control, true),
+        (FlagGroup::Input, false),
+        (FlagGroup::Local, false),
+        (FlagGroup::Output, false),
+    ] {
+        if gap {
+            put(out, &mut at, b"\n")?;
+        }
+        let mut first = true;
+        for (name, g, bit) in FLAG_BITS.iter() {
+            if *g != group {
+                continue;
+            }
+            let word = match group {
+                FlagGroup::Control => t.c_cflag,
+                FlagGroup::Input => t.c_iflag,
+                FlagGroup::Local => t.c_lflag,
+                FlagGroup::Output => t.c_oflag,
+            };
+            let set = word & bit != 0;
+            if !first {
+                put(out, &mut at, b" ")?;
+            }
+            first = false;
+            if !set {
+                put(out, &mut at, b"-")?;
+            }
+            put(out, &mut at, name.as_bytes())?;
+        }
+        put(out, &mut at, b";\n")?;
+    }
+    Ok(at)
+}
+
+/// `CONTROL_CHARS` 表里的槽位常量名对齐（`termios.h:44-74` 的槽位号）。
+const VINTR_SLOT: usize = 8;
+const VQUIT_SLOT: usize = 9;
+const VERASE_SLOT: usize = 3;
+const VKILL_SLOT: usize = 5;
+const VEOF_SLOT: usize = 0;
+const VEOL_SLOT: usize = 1;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,3 +347,49 @@ mod tests {
         assert_eq!(parse_args(&["-bogus"]), Err(TermError::InvalidArgument));
     }
 }
+    #[test]
+    fn test_apply_flag_bits_and_cs8_domain() {
+        use super::*;
+        let mut t = minix_types::Termios::new();
+        // 四组各一位：置位落对字，清除清对位。
+        let (ops, count) = parse_args(&["echo", "-icrnl", "parenb", "-onlcr"]).unwrap();
+        apply_ops(&ops, count, &mut t);
+        assert!(t.c_lflag & minix_types::ECHO != 0);
+        assert!(t.c_iflag & minix_types::ICRNL == 0);
+        assert!(t.c_cflag & minix_types::PARENB != 0);
+        assert!(t.c_oflag & minix_types::ONLCR == 0);
+        // cs8 置位：清 CSIZE 域再上 CS8（termios.h:131-135）。
+        t.c_cflag |= 0x100; // 人为置 CS7 位（CSIZE 域内）
+        let (ops, count) = parse_args(&["cs8"]).unwrap();
+        apply_ops(&ops, count, &mut t);
+        assert!(t.c_cflag & minix_types::CSIZE == minix_types::CS8);
+    }
+
+    #[test]
+    fn test_apply_speed_and_control_char() {
+        use super::*;
+        let mut t = minix_types::Termios::new();
+        let (ops, count) = parse_args(&["115200", "intr", "^C"]).unwrap();
+        apply_ops(&ops, count, &mut t);
+        assert_eq!(t.c_ispeed, 115200);
+        assert_eq!(t.c_ospeed, 115200);
+        assert_eq!(t.c_cc[8], 0x03, "VINTR 槽位 8 得 ^C");
+    }
+
+    #[test]
+    fn test_display_a_shape() {
+        use super::*;
+        let mut t = minix_types::Termios::new();
+        t.c_ospeed = 9600;
+        t.c_ispeed = 9600;
+        t.c_lflag |= minix_types::ICANON | minix_types::ECHO;
+        t.c_cflag |= minix_types::CS8;
+        t.c_cc[minix_types::VINTR] = 0x03;
+        let mut out = [0u8; 512];
+        let used = display_a(&t, &mut out).unwrap();
+        let text = core::str::from_utf8(&out[..used]).unwrap();
+        assert!(text.starts_with("speed 9600 baud;\n"), "{text:?}");
+        assert!(text.contains("icanon echo"), "置位裸名并列");
+        assert!(text.contains("-opost -onlcr;"), "清除带负号");
+        assert!(text.contains("intr = ^C"), "控制字符 caret 记法");
+    }

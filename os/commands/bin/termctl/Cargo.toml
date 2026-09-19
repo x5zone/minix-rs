@@ -8,3 +8,11 @@ license.workspace = true
 [lib]
 name = "minix_termctl"
 path = "src/lib.rs"
+
+[dependencies]
+minix-types = { workspace = true }
+minix-sys = { workspace = true }
+
+[[bin]]
+name = "stty"
+path = "src/bin/stty.rs"

@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的触觉层——用户在屏幕上看到的一切都经终端之手
 > **源码**: `minix3/bin/stty/`（`stty.c` 速度设置第 137 行、`cchar.c` 控制字符表、`modes.c` 四标志表第 65 到 175 行、`key.c` 第 258 行、`print.c` 第 71 到 73 行）、`minix3/usr.bin/tput/`、`minix3/usr.bin/tic/`、`minix3/usr.bin/infocmp/`、`minix3/minix/commands/term/`、`minix3/minix/commands/tget/`、`minix3/minix/commands/loadfont/`、`minix3/minix/commands/loadkeys/`、`minix3/minix/commands/screendump/`、`minix3/etc/termcap`、`minix3/etc/termcap.big`、`minix3/etc/fonts/`、`minix3/sys/sys/termios.h`（控制字符槽位第 50 到 79 行）、`minix3/sys/sys/ttydefaults.h`（默认值：退格为 Control-H 等）
-> **Rust 模块**: `os/commands/bin/termctl`（库包 `minix-termctl`：`baud.rs`、`cchar.rs`、`stty.rs`、`caps.rs`，19 个测试通过）
+> **Rust 模块**: `os/commands/bin/termctl`（库包 `minix-termctl`：`baud.rs`、`caps.rs`、`cchar.rs`、`stty.rs`（含 apply/display 执行半）加 `stty` 薄壳，22 个测试通过；termios wire 权威在 minix-types `types/termios.rs`，tty ioctl 面在 minix-sys——C-23）
 > **前置依赖**: `12-process-tools.md`（看护在先）、`14-stage-runtime` 的终端属性接口（执行层）
 > **不覆盖（移交）**: 终端驱动（见 `16-stage-drivers` 的终端部分）、行规程实现（见运行时阶段）、terminfo 数据装船决策的实施（见 3.5 节悬置）
 
@@ -116,6 +116,7 @@
 | `baud.rs` | `minix3/bin/stty/stty.c:main（L137，工具生成）`、`print.c:71-73` 思想 | 19 档常量表与双向解析 |
 | `cchar.rs` | `cchar.c` 全表、`termios.h` 槽、`ttydefaults.h` 值 | 21 项三元组、插入符、`undef` |
 | `stty.rs` | `stty.c` 参数面、`modes.c` 分组思想 | 参数解析（`parse_args`） |
+| `bin/stty.rs` | `stty.c` 主流程 | `-a` 全显、无参速度行、操作数应用（取属性→apply→设属性） |
 | `caps.rs` | `termcap` 格式 | 条目解析与 `TermcapSource` 接口 |
 
 ### 4.2 关键类型与不变量
@@ -138,7 +139,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-termctl`：**19 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-termctl`：**22 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/termctl` 复现）：
 
@@ -147,7 +148,7 @@
 - **参数**（`stty.rs`，5 个）：`test_speed_operand`（速度操作数）、`test_control_char_assignment`（控制字符赋值，槽位 8 与 3）、`test_flag_set_and_clear`（标志置清）、`test_mixed_command_line`（混合命令行）、`test_unknown_words_rejected`（未知词、缺值、未知标志）。
 - **能力库**（`caps.rs`，5 个）：`test_minix_entry`（真实条目：别名、标志、数字、字符串、误命中拦截）、`test_comment_and_blank_skipped`（注释空行）、`test_missing_parts_rejected`（缺分隔缺能力）、`test_lookup_by_alias`（别名命中与落空）、`test_empty_db_misses`（空库）。
 
-尚未覆盖、随后续阶段补齐的：完整标志大表（执行层生成）、设置应用（终端属性接口）、terminfo 数据装船（A-2 落定）、键盘字体屏幕执行（驱动接口）。命名层是全覆盖的，执行层是显式留白的。
+**执行批后的接线与留白**：`stty` 已接线——决定半新增 `apply_ops`（十六旗标落位：`cs8` 置位先清 `CSIZE` 域、速度双向同写、控制字符按槽位入 `c_cc`）与 `display_a`（速度行加四组旗标加控制字符 caret 行；`0` 与 `0xFF` 都按 `<undef>` 显示）；termios 44 字节 wire 权威落 minix-types（C-23，逐位钉值），`TIOCGETA`/`TIOCSETA` 请求号与 `tcgetattr`/`tcsetattr` 封装落 minix-sys。留白：`-g` 单行格式、完整标志大表（执行层生成）、rows/columns 与 line discipline 两个显示域（属性记录无此面）、terminfo 数据装船（A-2 落定）、键盘字体屏幕执行（驱动接口）。23 篇 term-games 需原始终端模式，归终端驱动阶段。`stty` 是 POSIX.1-2017 条目，本实现以 `stty.c` 与 `termios.h` 为准绳。
 
 ---
 
