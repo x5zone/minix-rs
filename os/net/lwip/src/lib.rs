@@ -34,6 +34,7 @@ pub mod rawsock;
 pub mod route;
 pub mod rtsock;
 pub mod server;
+pub mod sockops;
 pub mod stack;
 pub mod startup;
 pub mod tcpsock;

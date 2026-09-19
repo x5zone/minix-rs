@@ -16,6 +16,8 @@
 //! pattern of the IPC server's event loop, servers/ipc-server/src/server.rs).
 
 use crate::startup::Startup;
+use alloc::vec::Vec;
+
 use minix_netdriver::socktable::SockTable;
 use minix_sef::{sef_receive_status, SefIpc};
 use minix_types::{Endpoint, Message};
@@ -62,6 +64,12 @@ pub trait NetHandler {
     /// Unexpected arrival: C prints and drops (`lwip.c:341`, `:376`), so
     /// no reply leaves for it.
     fn unexpected(&mut self, msg: &Message, is_notify: bool);
+
+    /// 排空挂起续答的待发回执（C 的 `reply` 可在事件处理的任意点发出
+    /// ——定时器到点、套接字事件唤醒；本模型的每条路只回一条，挂起
+    /// 续答的回执由此口在每趟循环尾统一发出）。实现方返回自上次排空
+    /// 以来积累的 `(调用方, 回复)` 对。
+    fn take_wake_replies(&mut self) -> Vec<(Endpoint, Message)>;
 }
 
 /// How many consecutive transport failures the loop tolerates before it
@@ -185,6 +193,11 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
         };
         if let Some(reply) = reply {
             ipc.send_reply(source, &reply)?;
+        }
+        // 挂起续答的回执在每趟循环尾发出（C 的 `reply` 非阻塞发送，
+        // 失败仅 printf 后继续——对端已死不是服务的错误面）。
+        for (dest, wake_reply) in handler.take_wake_replies() {
+            let _ = ipc.send_reply(dest, &wake_reply);
         }
     }
 }
@@ -335,6 +348,10 @@ mod tests {
         fn unexpected(&mut self, _msg: &Message, is_notify: bool) {
             self.roads.push(if is_notify { "unexpected-notify" } else { "unexpected" });
             self.served += 1;
+        }
+
+        fn take_wake_replies(&mut self) -> Vec<(Endpoint, Message)> {
+            Vec::new()
         }
     }
 
