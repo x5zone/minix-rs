@@ -505,6 +505,98 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_LOOKUP` 请求（C `req_lookup` — request.c:430-500）。
+///
+/// 载荷是 `mess_vfs_fs_lookup`：路径 grant（**`CPF_READ|CPF_WRITE`** ——
+/// FS 要把"剩余路径"写回来，这是 `EENTERMOUNT`/`ESYMLINK` 报告进度的方法）、
+/// 路径长度与窗口、起目录 ino 与 chroot 边界 ino；凭证 grant 在
+/// `ngroups > 0` 时才带（本编码器把 `grant_ucred`/`ucred_size` 留给调用方传 0，
+/// 凭证面随 Open 族一并接）。
+///
+/// 偏移取共享权威 `minix_types::lookup_req_off`（FS 侧解码用同一张表）。
+pub fn encode_lookup(
+    grant_path: i32,
+    path_len: usize,
+    dir_ino: u64,
+    root_ino: u64,
+) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_LOOKUP,
+        ..Message::default()
+    };
+    // SAFETY: REQ_LOOKUP 的载荷按 LP64 域序写在消息负载区。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::lookup_req_off::DIR_INO..minix_types::lookup_req_off::DIR_INO + 8]
+            .copy_from_slice(&dir_ino.to_le_bytes());
+        raw[minix_types::lookup_req_off::ROOT_INO..minix_types::lookup_req_off::ROOT_INO + 8]
+            .copy_from_slice(&root_ino.to_le_bytes());
+        raw[minix_types::lookup_req_off::PATH_LEN..minix_types::lookup_req_off::PATH_LEN + 8]
+            .copy_from_slice(&(path_len as u64).to_le_bytes());
+        raw[minix_types::lookup_req_off::PATH_SIZE..minix_types::lookup_req_off::PATH_SIZE + 8]
+            .copy_from_slice(&(crate::path::PATH_MAX as u64).to_le_bytes());
+        raw[minix_types::lookup_req_off::GRANT_PATH..minix_types::lookup_req_off::GRANT_PATH + 4]
+            .copy_from_slice(&grant_path.to_le_bytes());
+        // ucred_size = 0（不带凭证，见上）。
+    }
+    msg
+}
+
+/// 解一条 `REQ_LOOKUP` 回复（C `req_lookup` 的收尾 — request.c:500-521）。
+///
+/// `status` 是剥掉 transid 后的 `m_type`：`OK` 时字节区是 `node_details`
+/// 的前四域（ino/mode/size/dev），三个特殊码
+/// （`EENTERMOUNT`/`ELEAVEMOUNT`/`ESYMLINK`）只有 `offset`/`inode`/`symloop`
+/// 有意义；其余（含负 errno）由调用方按错误处理（本函数返回 `None`）。
+pub fn decode_lookup_reply(status: i32, msg: &Message) -> Option<crate::path::LookupRes> {
+    use minix_types::lookup_reply_off as off;
+    // SAFETY: 回复载荷按上述域序写在负载区。
+    let raw = unsafe { &msg.m_u.raw };
+    let rd8 = |at: usize| -> u64 {
+        let mut b = [0u8; 8];
+        if at + 8 <= raw.len() {
+            b.copy_from_slice(&raw[at..at + 8]);
+        }
+        u64::from_le_bytes(b)
+    };
+    let rd4 = |at: usize| -> u32 {
+        let mut b = [0u8; 4];
+        if at + 4 <= raw.len() {
+            b.copy_from_slice(&raw[at..at + 4]);
+        }
+        u32::from_le_bytes(b)
+    };
+    let rd2 = |at: usize| -> u8 {
+        let mut b = [0u8; 2];
+        if at + 2 <= raw.len() {
+            b.copy_from_slice(&raw[at..at + 2]);
+        }
+        u16::from_le_bytes(b) as u8
+    };
+    match status {
+        minix_types::OK => Some(crate::path::LookupRes::Ok {
+            ino: rd8(off::INODE),
+            mode: rd4(off::MODE),
+            size: rd8(off::FILE_SIZE),
+            dev: rd8(off::DEVICE),
+        }),
+        minix_types::EENTERMOUNT => Some(crate::path::LookupRes::EnterMount {
+            ino: rd8(off::INODE),
+            offset: rd8(off::OFFSET) as i64 as i32,
+            symloop: rd2(off::SYMLOOP),
+        }),
+        minix_types::ELEAVEMOUNT => Some(crate::path::LookupRes::LeaveMount {
+            offset: rd8(off::OFFSET) as i64 as i32,
+            symloop: rd2(off::SYMLOOP),
+        }),
+        minix_types::ESYMLINK => Some(crate::path::LookupRes::Symlink {
+            offset: rd8(off::OFFSET) as i64 as i32,
+            symloop: rd2(off::SYMLOOP),
+        }),
+        _ => None,
+    }
+}
+
 /// `REQ_STAT` 请求（C `req_stat_actual` — request.c:1087-1096）：载荷只有
 /// `{inode, grant}` 两域，FS 把 `struct stat` 直接写进 grant 指向的用户缓冲。
 ///
@@ -908,6 +1000,94 @@ mod tests {
     }
 
     #[test]
+    /// `REQ_LOOKUP` 请求编码：grant/长度/起目录/chroot 边界四个域落在共享
+    /// 偏移表上；`path_size` 恒为 `PATH_MAX`（C 的窗口大小）。
+    #[test]
+    fn test_encode_lookup_fields() {
+        let m = encode_lookup(7, 12, 0x33, 0x11);
+        assert_eq!(m.m_type, minix_types::REQ_LOOKUP);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::lookup_req_off::DIR_INO..minix_types::lookup_req_off::DIR_INO + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x33);
+        b8.copy_from_slice(
+            &raw[minix_types::lookup_req_off::ROOT_INO..minix_types::lookup_req_off::ROOT_INO + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x11);
+        b8.copy_from_slice(
+            &raw[minix_types::lookup_req_off::PATH_LEN..minix_types::lookup_req_off::PATH_LEN + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 12);
+        b8.copy_from_slice(
+            &raw[minix_types::lookup_req_off::PATH_SIZE..minix_types::lookup_req_off::PATH_SIZE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), crate::path::PATH_MAX as u64);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::lookup_req_off::GRANT_PATH
+                ..minix_types::lookup_req_off::GRANT_PATH + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 7);
+    }
+
+    /// `REQ_LOOKUP` 回复解码（C `req_lookup` 收尾 — request.c:500-521）：
+    /// `OK` → 四域 `node_details`；三个特殊码 → offset/ino/symloop；其余
+    /// 状态（含负 errno）→ `None` 交错误面。
+    #[test]
+    fn test_decode_lookup_reply_variants() {
+        use minix_types::lookup_reply_off as off;
+        let mk = |status: i32, off_v: i64, ino: u64, symloop: u16, mode: u32, size: u64, dev: u64| {
+            let mut m = Message { m_type: status, ..Message::default() };
+            // SAFETY(test): 按共享偏移表填回复。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[off::OFFSET..off::OFFSET + 8].copy_from_slice(&off_v.to_le_bytes());
+                raw[off::FILE_SIZE..off::FILE_SIZE + 8].copy_from_slice(&size.to_le_bytes());
+                raw[off::DEVICE..off::DEVICE + 4].copy_from_slice(&(dev as u32).to_le_bytes());
+                raw[off::INODE..off::INODE + 8].copy_from_slice(&ino.to_le_bytes());
+                raw[off::MODE..off::MODE + 4].copy_from_slice(&mode.to_le_bytes());
+                raw[off::SYMLOOP..off::SYMLOOP + 2].copy_from_slice(&symloop.to_le_bytes());
+            }
+            m
+        };
+
+        assert_eq!(
+            decode_lookup_reply(minix_types::OK, &mk(minix_types::OK, 0, 0x55, 0, 0o100644, 12, 3)),
+            Some(crate::path::LookupRes::Ok {
+                ino: 0x55,
+                mode: 0o100644,
+                size: 12,
+                dev: 3
+            })
+        );
+        assert_eq!(
+            decode_lookup_reply(
+                minix_types::EENTERMOUNT,
+                &mk(minix_types::EENTERMOUNT, 5, 0x77, 2, 0, 0, 0)
+            ),
+            Some(crate::path::LookupRes::EnterMount { ino: 0x77, offset: 5, symloop: 2 })
+        );
+        assert_eq!(
+            decode_lookup_reply(
+                minix_types::ELEAVEMOUNT,
+                &mk(minix_types::ELEAVEMOUNT, 2, 0, 1, 0, 0, 0)
+            ),
+            Some(crate::path::LookupRes::LeaveMount { offset: 2, symloop: 1 })
+        );
+        assert_eq!(
+            decode_lookup_reply(minix_types::ESYMLINK, &mk(minix_types::ESYMLINK, 7, 0, 0, 0, 0, 0)),
+            Some(crate::path::LookupRes::Symlink { offset: 7, symloop: 0 })
+        );
+        assert_eq!(
+            decode_lookup_reply(-minix_types::ENOENT, &mk(-minix_types::ENOENT, 0, 0, 0, 0, 0, 0)),
+            None,
+            "普通错误交错误面"
+        );
+    }
+
     /// `REQ_STAT` 编码：inode/grant 落在共享偏移表的两个域上。
     #[test]
     fn test_encode_stat_fields() {

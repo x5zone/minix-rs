@@ -204,6 +204,39 @@ pub mod transfer_req_off {
     pub const BYTES: usize = 24;
 }
 
+/// C: `EENTERMOUNT (-301)` — vfsif.h:26（FS→VFS 的"进入挂载点"特殊码，
+/// 走回复的 `m_type`，不是错误）。
+pub const EENTERMOUNT: i32 = -301;
+/// C: `ELEAVEMOUNT (-302)` — vfsif.h:27（"离开挂载点"）。
+pub const ELEAVEMOUNT: i32 = -302;
+/// C: `ESYMLINK (-303)` — vfsif.h:28（"这是符号链接"）。
+pub const ESYMLINK: i32 = -303;
+
+/// `REQ_LOOKUP` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+///
+/// C: `mess_fs_vfs_lookup`（ipc.h:163-176）字段序
+/// `offset / file_size / device / inode / mode / uid / gid / symloop`。
+/// 三个特殊码（[`EENTERMOUNT`]/[`ELEAVEMOUNT`]/[`ESYMLINK`]）时只有
+/// `offset`（与 `inode`、`symloop`）有意义；`Ok` 时其余字段填 `node_details`。
+pub mod lookup_reply_off {
+    /// `off_t offset`（FS 已消费的字节数 / 剩余路径偏移）。
+    pub const OFFSET: usize = 0;
+    /// `off_t file_size`。
+    pub const FILE_SIZE: usize = 8;
+    /// `dev_t device`。
+    pub const DEVICE: usize = 16;
+    /// `ino_t inode`（8 对齐，故 20..24 是垫）。
+    pub const INODE: usize = 24;
+    /// `mode_t mode`。
+    pub const MODE: usize = 32;
+    /// `uid_t uid`。
+    pub const UID: usize = 36;
+    /// `gid_t gid`。
+    pub const GID: usize = 40;
+    /// `uint16_t symloop`。
+    pub const SYMLOOP: usize = 44;
+}
+
 /// `REQ_STAT` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_stat { ino_t inode; cp_grant_id_t grant; }`
@@ -326,6 +359,15 @@ mod tests {
         // read 回复：seek_pos/nbytes 两个域（与请求的 transfer_req_off 分开）。
         assert_eq!(transfer_reply_off::SEEK_POS, 0);
         assert_eq!(transfer_reply_off::NBYTES, 8);
+        // lookup 回复：八个域（特殊码只看 offset/inode/symloop）。
+        assert_eq!(lookup_reply_off::OFFSET, 0);
+        assert_eq!(lookup_reply_off::FILE_SIZE, 8);
+        assert_eq!(lookup_reply_off::DEVICE, 16);
+        assert_eq!(lookup_reply_off::INODE, 24);
+        assert_eq!(lookup_reply_off::MODE, 32);
+        assert_eq!(lookup_reply_off::UID, 36);
+        assert_eq!(lookup_reply_off::GID, 40);
+        assert_eq!(lookup_reply_off::SYMLOOP, 44);
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
@@ -334,6 +376,14 @@ mod tests {
         assert_eq!(readsuper_req_off::FLAGS, 8);
         assert_eq!(readsuper_req_off::PATH_LEN, 16);
         assert_eq!(readsuper_req_off::GRANT, 24);
+    }
+
+    /// 三个特殊码的值 pin（vfsif.h:26-28，负值走回复的 m_type）。
+    #[test]
+    fn test_special_lookup_codes() {
+        assert_eq!(EENTERMOUNT, -301);
+        assert_eq!(ELEAVEMOUNT, -302);
+        assert_eq!(ESYMLINK, -303);
     }
 
     /// transid 三式互为逆（vfsif.h:79-81）：合成/取回/剥离，含负结果值
