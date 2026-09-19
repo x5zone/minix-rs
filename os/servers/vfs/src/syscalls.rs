@@ -231,7 +231,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Vmcall
         | VfsCallNum::Copyfd
         | VfsCallNum::Socketpath
-        | VfsCallNum::Ioctl
         | VfsCallNum::GcovFlush => {
             // FS/驱动对话——W1 transport 通电后经 fs_comm 窗口接入
             // （plan.md §8 W3 尾注）。
@@ -1359,6 +1358,66 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── getvfsstat（多挂载序列 + 用户缓冲按 i*sizeof 偏移 + 返回个数）──
         // ── mapdriver（只有 RS 能调；标签 → 端点 → dmap/smap 登记）──
         // ── fcntl（大部分是本地 fd 表操作；锁与 F_FREESP 要跨空间拷 flock）──
+        // ── ioctl（按文件类型分派；设备对话管线未接线，见下面的注记）──
+        VfsCallNum::Ioctl => {
+            // C `do_ioctl`（device.c:18-58）：载荷 `mess_lc_vfs_ioctl`
+            // （fd@0、req@8、arg@16）。取 filp/vnode 后按**文件类型**分派：
+            // 块设备走 `bdev_ioctl`、字符设备走 `cdev_io(CDEV_IOCTL, ...)`、
+            // 套接字走 `sdev_ioctl`，其余一律 `ENOTTY`（C 的 `default`）。
+            let (fd, req, arg) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let req = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                (fd, req, u64::from_le_bytes(b8))
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            let vnode_idx = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                match state
+                    .filp_table
+                    .get(crate::filp::FilpId(filp_idx))
+                    .and_then(|f| f.vnode)
+                {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                }
+            };
+            let mode = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                Some(v) => v.mode,
+                None => return SyscallResult::Error(minix_types::EBADF),
+            };
+            // 类型分派（决策函数 `device_map::ioctl_route`）：非设备文件
+            // `ENOTTY`——这条是**本地判定**，与设备对话无关，所以先接上。
+            let target = match crate::device_map::ioctl_route(crate::open::FileType::from(mode)) {
+                Ok(t) => t,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // 三种设备各自要一次**驱动对话**（块：`bdev_ioctl`；字符：
+            // `cdev_io(CDEV_IOCTL, ...)` + `make_ioctl_grant` 的魔 grant；
+            // 套接字：`sdev_ioctl`），而驱动对话管线（dmap 取端点 + 发送 +
+            // 回复落槽）本批还没接线——**登记在案的缺口**，不假装支持。
+            // 已备的部分：请求里的 access/size 解码（`ioctl_access`/
+            // `ioctl_size`）与路由分派（上面这一步）。
+            let _ = (req, arg, target);
+            SyscallResult::Error(minix_types::ENOSYS)
+        }
+
         VfsCallNum::Fcntl => {
             // C `do_fcntl`（misc.c:127-300）：载荷 `mess_lc_vfs_fcntl`
             // （fd@0、cmd@4、arg_int@8、arg_ptr@16）。未知 cmd → EINVAL
@@ -3700,6 +3759,94 @@ mod tests {
             let uid = u32::from_le_bytes(raw[8..12].try_into().unwrap());
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
+        }
+    }
+
+    /// `Ioctl` 臂的类型分派（C `do_ioctl` device.c:18-58）：fd/vnode 门 →
+    /// 按**文件类型**分派——非设备文件一律 `ENOTTY`（C 的 `default`，这条是
+    /// 本地判定，已经真装）；三种设备各要一次驱动对话，管线未接线 → 诚实回
+    /// ENOSYS 并登记缺口。
+    #[test]
+    fn test_dispatch_ioctl_type_dispatch() {
+        use minix_types::Endpoint;
+
+        let setup = |mode: u32| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x42;
+                v.mode = mode;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            (state, fid)
+        };
+        let ioctl_msg = |fd: i32, req: u64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Ioctl as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_ioctl：fd@0、req@8、arg@16。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&req.to_le_bytes());
+                raw[16..24].copy_from_slice(&0x6000u64.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 负 fd / 空槽 → EBADF。
+        let (mut state, _fid) = setup(crate::open::S_IFCHR | 0o644);
+        state.current_message = ioctl_msg(-1, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        state.current_message = ioctl_msg(9, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // ② 常规文件与目录 → ENOTTY（C 的 `default`，本地判定）。
+        for mode in [
+            crate::open::S_IFREG | 0o644,
+            crate::open::S_IFDIR | 0o755,
+            crate::open::S_IFIFO | 0o644,
+        ] {
+            let (mut state, _fid) = setup(mode);
+            state.current_message = ioctl_msg(3, 0x5401);
+            assert_eq!(
+                dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+                SyscallResult::Error(minix_types::ENOTTY),
+                "mode {mode:o} 不是设备文件"
+            );
+        }
+
+        // ③ 三种设备：分派认得，但驱动对话管线未接线 → ENOSYS（登记缺口）。
+        for mode in [
+            crate::open::S_IFCHR | 0o644,
+            crate::open::S_IFBLK | 0o644,
+            crate::open::S_IFSOCK | 0o644,
+        ] {
+            let (mut state, _fid) = setup(mode);
+            state.current_message = ioctl_msg(3, 0x5401);
+            assert_eq!(
+                dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+                SyscallResult::Error(minix_types::ENOSYS),
+                "mode {mode:o} 要驱动对话，管线未接线"
+            );
         }
     }
 
