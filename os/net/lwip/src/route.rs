@@ -117,8 +117,9 @@ pub struct RouteTable {
     entries: Vec<RouteEntry>,
 }
 
-/// 按族与前缀长度造掩码（大端位序：位 0 是第 0 字节最高位，19 篇 §1.2）。
-fn prefix_mask(version: IpVersion, prefix: u8) -> [u8; 16] {
+/// 按族与前缀长度造掩码（大端位序：位 0 是第 0 字节最高位，19 篇 §1.2；
+/// 导出帧的掩码槽复用同一函数）。
+pub(crate) fn prefix_mask(version: IpVersion, prefix: u8) -> [u8; 16] {
     let mut mask = [0u8; 16];
     let bits = match version {
         IpVersion::V4 => prefix.min(32) as usize,
@@ -156,6 +157,11 @@ impl RouteTable {
     /// 是否为空。
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// 在册条目（rtsock 的 read 导出面按插入序逐条取）。
+    pub fn entries(&self) -> &[RouteEntry] {
+        &self.entries
     }
 
     /// 增或改：同键（族、网络、前缀）条目被替换（C 的增删改查里的

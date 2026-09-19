@@ -60,15 +60,22 @@
 |------------|----------|---------------|------|
 | 发送上限 512 | 第 2.2 节 | `os/net/lwip/src/rtsock.rs` 的上限常量与长度函数 | 已覆盖 |
 | 接收区间 0 到 65536 与默认 16384 | 第 2.2 节 | `os/net/lwip/src/rtsock.rs` 的三个常量与区间函数 | 已覆盖 |
-| 版本 5 前置检查 | 第 2.2 节 | `os/net/lwip/src/rtsock.rs` 的版本常量与判断函数 | 已覆盖 |
-| 压缩展开与消息分发 | 第 2.3 节 | 服务主程序（需要地址结构） | 已记录 |
+| 版本 4 前置检查 | 第 2.2 节 | `os/net/lwip/src/rtsock.rs` 的版本常量与判断函数 | 已覆盖 |
+| RTM 帧头与地址数组走查（`rtsock.c:528-570`） | 第 2.3 节 | `os/net/lwip/src/rtsock.rs` 的 `parse_frame`（检查序、`RT_ROUNDUP` 步进、界检查）与 `encode_entry_frame`（导出面） | 已覆盖 |
+| 掩码压缩形态展开（`rtsock.c:598-605`） | 第 2.3 节 | `os/net/lwip/src/rtsock.rs` 的 `mask_prefix`（完整形态与压缩形态两收，前缀折算） | 已覆盖 |
+| 类型与根身份门（`rtsock.c:535-556`） | 第 2.3 节 | `os/net/lwip/src/sockops.rs` 的 `rt_road`（ADD/DELETE/CHANGE 根门，GET 任意） | 已覆盖 |
+| 表更新（`route_process` 的增删改半） | 第 2.3 节 | `os/net/lwip/src/sockops.rs` 的 `rt_road` 写半调 `RouteTable::add`/`remove` | 已覆盖 |
+| read 的通告队列（`sop_recv` 单条拉取） | 第 2.3 节 | `os/net/lwip/src/sockops.rs` 的 `rt_road` 读半（表快照导出，差异登记） | 差异登记 |
 
 ### 2.5 与 C 语言 1912 行的差异说明
 
 | 差异内容 | C 语言做法 | Rust 做法 | 分类 |
 |----------|------------|-----------|------|
-| 消息解析与表更新 | 解析、分发、更新一次实现 | 工具库只保留版本与边界判断 | 设计决策：判断与执行分离 |
-| 地址压缩展开 | 压缩展开一次实现 | 服务主程序实现，规则已文档化 | 设计决策：结构操作留在服务侧 |
+| 消息解析与表更新 | 解析、分发、更新一次实现 | 帧编解码在本模块（`parse_frame`/`encode_entry_frame`），表更新在服务路（`rt_road`）调路由表 | 设计决策：判断与执行分离 |
+| 地址压缩展开 | 压缩展开一次实现 | 压缩与完整两种形态都在 `mask_prefix` 收下；导出面发完整形态（同一语义的未压缩表达） | 设计决策：形态收敛一处 |
+| read 的数据来源 | 每个路由套接字一条通告队列，表变化广播入队，一次读一条 | read 从路由表导出快照帧，缓冲装得下几条发几条（与 sysctl 出口的导出循环同构，`rtsock.c:1473-1476`） | 行为差异：无通告生产者前先立导出面 |
+| RTM_GET 的答案 | 写回执捎单条查询结果入队 | 写半收下成功，答案由 read 导出面给出 | 行为差异：同上 |
+| CHANGE 与 LOCK | `route_process` 支持改旗标与 metric 锁定 | CHANGE 走表的同键替换；LOCK 如实回 EOPNOTSUPP（metric 面未建模） | 行为差异：登记 |
 
 ---
 
@@ -95,6 +102,18 @@
 | 发送只留上限 | 第 1.2 节、第 2.2 节 | 照搬三档 | 虚构不存在语义 |
 | 接收保留三档 | 第 1.2 节、第 2.2 节 | 只留上限 | 无法表达创建语义 |
 | 版本常量判断 | 第 1.1 节、第 2.2 节 | 手写数字 | 含义不清，重构易错 |
+| 帧编解码住本模块 | 第 2.3 节、第 2.4 节 | 散在服务路里 | 头与地址结构是本模块独有资产（第 1.3 节隔离规则），散出去即破界 |
+| 掩码两形态一处收 | 第 2.3 节 | 只收完整形态 | C 路由守护发的是压缩形态，拒收即断真实调用方 |
+| 导出面先立、通告队登记 | 第 2.5 节 | 先做通告广播面 | 通告的生产者（表变化扇出）与多套接字排队都在服务编排层，最小闭环先保证"写入路由、读能查到" |
+
+### 3.5 选项面与 ioctl 面的诚实回答
+
+路由套接字在 C 里有自己的选项处理（`rtsock_setsockopt` 收 `SO_USELOOPBACK`
+与 `SO_RCVBUF`，`rtsock.c`），两者消费面都在通告队列与回环开关上；ioctl 面
+在 C 里缺席（操作表无 `sop_ioctl` 项，框架折 ENOTTY）。本模型的选项统一
+按 ENOPROTOOPT 诚实拒绝（`sockopt_road` 的服务侧类分支），ioctl 按 ENOTTY
+回答——与 C 的框架出口同形。两处的补齐随通告队列批一并评估，不在导出面
+批内假装支持。
 
 ---
 
@@ -102,9 +121,14 @@
 
 | 场景 | C 语言行为 | Rust 表达 | 说明 |
 |------|------------|-----------|------|
-| 版本非 5 | 类型分发前拒绝 | 版本函数返回假 | 版本不对不解析 |
-| 发送超过 512 | 预发送拒绝 | 长度函数返回假 | 超出不发送 |
+| 版本非 5 | 类型分发前拒绝 | 版本函数返回假；`parse_frame` 同位回 EPROTONOSUPPORT | 版本不对不解析 |
+| 发送超过 512 | 预发送拒绝 | 长度函数返回假；写半回 EMSGSIZE | 超出不发送 |
 | 接收尺寸超出 0 到 65536 | 选项拒绝 | 区间函数返回假 | 界外不接受 |
+| 消息长度与 `rtm_msglen` 不符 | 返回 EINVAL | `parse_frame` 同位回 EINVAL | 不按长度读就是误读 |
+| 类型非增删改查 | 返回 EOPNOTSUPP | `rt_road` 同位回 EOPNOTSUPP | 未知类型不猜 |
+| 非根发增删改 | 返回 EPERM | `rt_road` 的身份门同位回 EPERM | 根门先于表操作 |
+| 删不存在的路由 | 查表未中报错 | `rt_road` 回 ESRCH | 删除必须真实发生在册条目 |
+| 空表读 | 通告队列挂起等待 | 立即回 EAGAIN（无通告队列，登记差异） | 不假装有数据可等 |
 
 ---
 
@@ -116,13 +140,21 @@
 |----------|----------|----------|
 | `test_buffer_bounds_match_socket_source` | 发送 512 通过，513 拒绝，接收 0 与 65536 通过，65537 拒绝，默认 16384 | 第 2.2 节缓冲区 |
 | `test_message_version_is_checked_first` | 版本 4 通过，3 与 5 拒绝 | 第 2.2 节版本检查 |
+| `test_parse_frame_walks_sockaddrs_and_checks_first` | 帧头域解析、三地址槽走查、长度不符与版本不对的检查序 | 第 2.4 节帧面 |
+| `test_compressed_netmask_and_no_mask_host_route` | 压缩掩码折前缀、非连续掩码拒绝、掩码缺席即主机条目 | 第 2.4 节掩码 |
+| `test_encode_entry_frame_roundtrips_through_parse` | 导出帧可回解析、旗标与接口行号、缓冲不足拒绝 | 第 2.4 节导出面 |
+| `test_rtsock_route_message_surface_through_road` | 服务路端到端：写 ADD 落表、read 查到、非根拒绝、双删回 ESRCH、空读回 EAGAIN | 第 2.5 节与第 3.5 节 |
 
-### 5.2 测试统计（截至 2026-09-06）
+### 5.2 测试统计
 
-- 本篇直接相关：2 个测试函数，全部通过。
+- 本篇直接相关：6 个测试函数（`rg "fn test_" os/net/lwip/src/rtsock.rs`
+  的 5 个，加服务路端到端的
+  `test_rtsock_route_message_surface_through_road`，住
+  `os/net/lwip/src/main.rs`），全部通过。
 - 复现命令（工作目录为 `os/`）：`cargo test -p minix-net-lwip --lib rtsock`
 - 完整测试清单：`rg "fn test_" os/net/lwip/src/rtsock.rs`
-- 全量测试结果：`cargo test -p minix-net-lwip --lib` 共 84 个测试通过，包含本篇 2 个。
+- 全量测试结果：`cargo test -p minix-net-lwip` 库 125 个测试、服务二
+  进制 10 个测试全部通过，包含本篇 6 个。
 
 ---
 

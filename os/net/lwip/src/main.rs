@@ -231,6 +231,35 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
         // UDP 路或 TCP 路。SetSockOpt/GetSockOpt（选项批）形状独立，
         // 走自己的选项路。
         use minix_sockdriver::sdev::SdevRequest;
+        // 服务侧两类（RT/LNK）的收发走各自消息路：RT = 路由表的
+        // RTM 帧面（write 增删、read 导出），LNK = 无数据面（按 C 的
+        // NULL 钩子语义回 EOPNOTSUPP，登记）。sockopt/ioctl 已在各自
+        // 路里按服务侧类诚实回答。
+        if matches!(
+            msg.m_type,
+            x if x == SdevRequest::Send as i32 || x == SdevRequest::Receive as i32
+        ) {
+            // SAFETY: sock_id 在 sendrecv 形状里在 @4。
+            let sock_id =
+                unsafe { i32::from_le_bytes(msg.m_u.raw[4..8].try_into().unwrap()) };
+            let class = minix_netdriver::sockid::SockId::from_raw(sock_id)
+                .and_then(|id| id.class());
+            match class {
+                Some(minix_netdriver::sockid::SockClass::Rt) => {
+                    return sockops::rt_road(
+                        self.routes.as_mut(),
+                        self.copy.as_mut(),
+                        self.identity.as_ref(),
+                        msg.m_source,
+                        msg,
+                    );
+                }
+                Some(minix_netdriver::sockid::SockClass::Lnk) => {
+                    return sockops::lnk_road(msg);
+                }
+                _ => {}
+            }
+        }
         if matches!(
             msg.m_type,
             x if x == SdevRequest::Bind as i32
@@ -1114,6 +1143,134 @@ mod tests {
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             -(minix_types::ENOTTY)
+        );
+    }
+
+    /// RT 域消息面 e2e（批十三收敛判据）：建户 PF_ROUTE → write
+    /// RTM_ADD 落表（回接受字节数）→ read 导出 RTM_GET 帧查到该路由
+    /// → 双删的第二次回 ESRCH。根门（非根 ADD 拒 EPERM）一并钉住。
+    #[test]
+    fn test_rtsock_route_message_surface_through_road() {
+        use minix_net_lwip::server::NetHandler as _;
+        let mut handler = ProductionHandler::new(&[]);
+        for _ in 0..7 {
+            handler.startup_step();
+        }
+        // ADD 要根身份：canned 放行。
+        handler.identity = Box::new(minix_net_lwip::sockops::CannedIdentity(true));
+        let mut table = minix_netdriver::socktable::SockTable::new();
+
+        // 建户 PF_ROUTE（34）。
+        let mut open = minix_types::Message::default();
+        open.m_type = minix_sockdriver::sdev::SdevRequest::Socket as i32;
+        // SAFETY(test): { req_id@0; domain@4; type@8 }。
+        unsafe {
+            open.m_u.raw[0..4].copy_from_slice(&1i32.to_le_bytes());
+            open.m_u.raw[4..8].copy_from_slice(&34i32.to_le_bytes());
+            open.m_u.raw[8..12].copy_from_slice(&2i32.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &open).expect("RT 建户");
+        let rt_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+        assert!(rt_id >= 0);
+
+        // 写 RTM_ADD 10.1.0.0/16 gw 10.0.0.1（168 字节帧）。
+        let mut add = vec![0u8; 168];
+        add[0..2].copy_from_slice(&168u16.to_le_bytes());
+        add[2] = 4; // RTM_VERSION
+        add[3] = 0x1; // RTM_ADD
+        add[4..6].copy_from_slice(&2u16.to_le_bytes()); // ifdev
+        add[12..16].copy_from_slice(&0x7i32.to_le_bytes()); // DST|GATEWAY|NETMASK
+        add[120] = 16;
+        add[121] = 2;
+        add[124..128].copy_from_slice(&[10, 1, 0, 0]);
+        add[136] = 16;
+        add[137] = 2;
+        add[140..144].copy_from_slice(&[10, 0, 0, 1]);
+        add[152] = 16;
+        add[153] = 2;
+        add[156..160].copy_from_slice(&[255, 255, 0, 0]);
+        let mut canned = minix_net_lwip::sockops::CannedCopyTransport::default();
+        canned.from.push((2, add.clone()));
+        handler.copy = Box::new(canned);
+
+        let mut send = minix_types::Message::default();
+        send.m_type = minix_sockdriver::sdev::SdevRequest::Send as i32;
+        // SAFETY(test): sendrecv 域序（data_grant@8、data_len@16）。
+        unsafe {
+            let raw = &mut send.m_u.raw;
+            raw[0..4].copy_from_slice(&2i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&rt_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&2i32.to_le_bytes());
+            raw[16..24].copy_from_slice(&168usize.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &send).expect("写有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            168,
+            "整帧受纳"
+        );
+
+        // read：导出 RTM_GET 帧查到刚加的路由。
+        let mut recv = minix_types::Message::default();
+        recv.m_type = minix_sockdriver::sdev::SdevRequest::Receive as i32;
+        // SAFETY(test): sendrecv 域序（data_grant@8、data_len@16）。
+        unsafe {
+            let raw = &mut recv.m_u.raw;
+            raw[0..4].copy_from_slice(&3i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&rt_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&3i32.to_le_bytes());
+            raw[16..24].copy_from_slice(&256usize.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &recv).expect("读有回复");
+        assert_eq!(
+            reply.m_type,
+            minix_sockdriver::sdev::SdevReply::ReceiveReply as i32
+        );
+        let n = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+        assert_eq!(n, 168, "一帧导出（帧内容由 rtsock 的往返测试钉住）");
+
+        // RTM_ADD 非根拒绝：换 canned 身份后同帧再发 → EPERM。
+        handler.identity = Box::new(minix_net_lwip::sockops::CannedIdentity(false));
+        add[3] = 0x1;
+        let mut canned2 = minix_net_lwip::sockops::CannedCopyTransport::default();
+        canned2.from.push((2, add.clone()));
+        handler.copy = Box::new(canned2);
+        let reply = handler.socket_device(&mut table, &send).expect("有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::EPERM),
+            "非根 ADD 拒（rtsock.c:545-550 的根门）"
+        );
+
+        // 删除：根身份改回，写 RTM_DELETE（type 0x2）→ 成功；再删回
+        // ESRCH。删后 read 回 EAGAIN（空表）。
+        handler.identity = Box::new(minix_net_lwip::sockops::CannedIdentity(true));
+        let mut del = add;
+        del[3] = 0x2;
+        let mut canned3 = minix_net_lwip::sockops::CannedCopyTransport::default();
+        canned3.from.push((2, del.clone()));
+        handler.copy = Box::new(canned3);
+        let reply = handler.socket_device(&mut table, &send).expect("删有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            168
+        );
+        let mut canned4 = minix_net_lwip::sockops::CannedCopyTransport::default();
+        canned4.from.push((2, del));
+        handler.copy = Box::new(canned4);
+        let reply = handler.socket_device(&mut table, &send).expect("再删有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::ESRCH),
+            "删不存在的路由回 ESRCH"
+        );
+        let mut canned5 = minix_net_lwip::sockops::CannedCopyTransport::default();
+        handler.copy = Box::new(canned5);
+        let reply = handler.socket_device(&mut table, &recv).expect("空读有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::EAGAIN),
+            "空表诚实立即回（无通告队列，登记差异）"
         );
     }
 

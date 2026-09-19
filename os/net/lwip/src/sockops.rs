@@ -1176,6 +1176,155 @@ pub fn ioctl_road(
     }
 }
 
+// ---------------------------------------------------------------------------
+// rtsock/lnksock 消息路（第 20/11 篇的 sdev 面收尾）。RT 域的读写 =
+// 路由表的增删查消息：write 解析一条 RTM 帧落表（增/删/改），read 从
+// 表导出 RTM_GET 帧。C 的 read 拉"路由变化通告队列"（表变化广播给所
+// 有路由套接字）、一次一条；本模型的 read 是表快照导出、能装几条装
+// 几条——与 C sysctl 出口的导出循环同构（rtsock.c:1473-1476），通告
+// 队列差异登记。LNK 域无对端半关、无数据面：读写按 C 的 NULL 钩子
+// 语义回 EOPNOTSUPP（登记；close 已随批八闭环）。
+// ---------------------------------------------------------------------------
+
+/// 线上 sockaddr 到路由表行的族与 16 字节目的表示；族不是版本 4/6
+/// 回 `None`（调用方折 EAFNOSUPPORT）。
+fn route_address(sa: crate::rtsock::RtSockaddr) -> Option<(crate::route::IpVersion, [u8; 16])> {
+    match sa.family {
+        2 => {
+            let mut dest = [0u8; 16];
+            dest[..4].copy_from_slice(&sa.addr[..4]);
+            Some((crate::route::IpVersion::V4, dest))
+        }
+        24 => Some((crate::route::IpVersion::V6, sa.addr)),
+        _ => None,
+    }
+}
+
+/// RT 域的消息路。Send = 写一条 RTM 帧落表；Receive = 导出表快照。
+/// 类型与身份门照 C rtsock_put：ADD/DELETE/CHANGE 要根身份
+/// （rtsock.c:545-550，`is_root` 走身份缝）；GET 收下成功——查询的
+/// 答案就是 read 导出面（登记差异：C 在写回执里捎单条查询结果）；
+/// LOCK 与其余类型 EOPNOTSUPP（metric 锁定面未接，登记）。
+pub fn rt_road(
+    routes: Option<&mut crate::route::RouteTable>,
+    copy: &mut dyn CopyTransport,
+    identity: &dyn IdentitySource,
+    caller: Endpoint,
+    msg: &Message,
+) -> Option<Message> {
+    let Some(req) = decode_sendrecv(msg) else {
+        return Some(simple_reply(0, -(minix_types::EINVAL)));
+    };
+    let receiving = msg.m_type == SdevRequest::Receive as i32;
+    let Some(routes) = routes else {
+        // 启动链步 9（路由表建账）未到：还不能服务。
+        return Some(if receiving {
+            recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0)
+        } else {
+            simple_reply(req.req_id, -(minix_types::EAGAIN))
+        });
+    };
+    if receiving {
+        // 空表：最小模型没有通告队列可等，诚实立即回（登记）。
+        if routes.is_empty() {
+            return Some(recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0));
+        }
+        let cap = req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER);
+        let mut data = alloc::vec![0u8; cap];
+        let mut off = 0usize;
+        for entry in routes.entries() {
+            let Some(n) =
+                crate::rtsock::encode_entry_frame(entry, req.user_endpt, 0, &mut data[off..])
+            else {
+                break;
+            };
+            off += n;
+        }
+        if off == 0 {
+            // 连一帧都装不下（用户缓冲小于最小帧 168 字节）：拒绝截断
+            // ——截断会破坏帧边界。
+            return Some(recv_reply(req.req_id, -(minix_types::EMSGSIZE), 0, 0));
+        }
+        return match copy.safecopy_to(req.user_endpt, req.data_grant, 0, &data[..off]) {
+            Ok(()) => Some(recv_reply(req.req_id, off as i32, 0, 0)),
+            Err(code) => Some(recv_reply(req.req_id, wire(code), 0, 0)),
+        };
+    }
+    // 写半：消息上限 512（`rtsock_pre_send`，rtsock.c:634-651）。
+    if req.data_len > crate::rtsock::SEND_BUFFER_MAX {
+        return Some(simple_reply(req.req_id, -(minix_types::EMSGSIZE)));
+    }
+    let mut data = alloc::vec![0u8; req.data_len];
+    if copy
+        .safecopy_from(req.user_endpt, req.data_grant, 0, &mut data)
+        .is_err()
+    {
+        return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+    }
+    let frame = match crate::rtsock::parse_frame(&data) {
+        Ok(frame) => frame,
+        Err(e) => return Some(simple_reply(req.req_id, wire(e))),
+    };
+    use crate::rtsock::{RTM_ADD, RTM_CHANGE, RTM_DELETE, RTM_GET};
+    if matches!(frame.msg_type, t if t == RTM_ADD || t == RTM_DELETE || t == RTM_CHANGE)
+        && !identity.is_root(caller)
+    {
+        return Some(simple_reply(req.req_id, -(minix_types::EPERM)));
+    }
+    let applied = match frame.msg_type {
+        RTM_GET => Ok(()),
+        t if t == RTM_ADD || t == RTM_CHANGE || t == RTM_DELETE => {
+            let Some(dst) = frame.dst else {
+                return Some(simple_reply(req.req_id, -(minix_types::EINVAL)));
+            };
+            let Some((version, dest)) = route_address(dst) else {
+                return Some(simple_reply(req.req_id, -(minix_types::EAFNOSUPPORT)));
+            };
+            // 掩码位不在场 = 主机条目（C 同语义）。
+            let prefix = frame.prefix.unwrap_or(match version {
+                crate::route::IpVersion::V4 => 32,
+                crate::route::IpVersion::V6 => 128,
+            });
+            if t == RTM_DELETE {
+                if routes.remove(version, dest, prefix) {
+                    Ok(())
+                } else {
+                    Err(minix_types::ESRCH)
+                }
+            } else {
+                // ADD 与 CHANGE 同走"增或同键替换"（表的改半）。
+                routes.add(crate::route::RouteEntry {
+                    version,
+                    dest,
+                    prefix,
+                    gateway: frame.gateway.map(|g| g.addr),
+                    ifdev: frame.index,
+                })
+            }
+        }
+        _ => return Some(simple_reply(req.req_id, -(minix_types::EOPNOTSUPP))),
+    };
+    Some(match applied {
+        Ok(()) => simple_reply(req.req_id, req.data_len as i32),
+        Err(e) => simple_reply(req.req_id, wire(e)),
+    })
+}
+
+/// LNK 域的消息路：无数据面（第 11 篇）。C 的 lnksock 操作表只有
+/// `sop_ioctl`/`sop_free` 两项（lnksock.c:75-76），读写的 NULL 钩子在
+/// 框架折 EOPNOTSUPP（sockdriver.c:745-746）——按同一错误回答（登记；
+/// close 已随批八闭环）。
+pub fn lnk_road(msg: &Message) -> Option<Message> {
+    let Some(req) = decode_sendrecv(msg) else {
+        return Some(simple_reply(0, -(minix_types::EINVAL)));
+    };
+    if msg.m_type == SdevRequest::Receive as i32 {
+        Some(recv_reply(req.req_id, -(minix_types::EOPNOTSUPP), 0, 0))
+    } else {
+        Some(simple_reply(req.req_id, -(minix_types::EOPNOTSUPP)))
+    }
+}
+
 /// 统一分派：按线上套接字的类把请求交给 UDP 路或 TCP 路。未知类
 /// （route/link 两域的消息面随后批）按未接线回答。
 #[allow(clippy::too_many_arguments)]
