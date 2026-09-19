@@ -505,6 +505,23 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_FLUSH` 请求（C `req_flush` — request.c:219-229）。
+///
+/// 载荷只有 `device`：让 FS 把该设备上的块刷下去（`fcntl(F_FLUSH_FS_CACHE)`
+/// 与 `bdev` 的刷盘路径都用它）。回复只有状态。
+pub fn encode_flush(dev: u64) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_FLUSH,
+        ..Message::default()
+    };
+    // SAFETY: REQ_FLUSH 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[0..8].copy_from_slice(&dev.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_STATVFS` 请求（C `req_statvfs` — request.c:232-247）。
 ///
 /// 载荷只有 `grant`：FS 按 C 的 `struct statvfs` 布局**整块写进** VFS 侧的
@@ -1694,6 +1711,16 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_flush`：载荷只有 `device`。
+    #[test]
+    fn test_encode_flush_device_only() {
+        let m = encode_flush(0x0301);
+        assert_eq!(m.m_type, minix_types::REQ_FLUSH);
+        // SAFETY(test): device 在负载区首字（mess_vfs_fs_flush）。
+        let raw = unsafe { &m.m_u.raw };
+        assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), 0x0301);
+    }
+
     /// `encode_statvfs`：载荷只有 `grant`（FS 整块回填 `struct statvfs`）。
     #[test]
     fn test_encode_statvfs_grant_only() {

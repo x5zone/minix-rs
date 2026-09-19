@@ -232,7 +232,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Copyfd
         | VfsCallNum::Socketpath
         | VfsCallNum::Ioctl
-        | VfsCallNum::Fcntl
         | VfsCallNum::GcovFlush => {
             // FS/驱动对话——W1 transport 通电后经 fs_comm 窗口接入
             // （plan.md §8 W3 尾注）。
@@ -1359,6 +1358,203 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── statvfs 族（Statvfs1 / Fstatvfs1）：取挂载行 → fill_statvfs ──
         // ── getvfsstat（多挂载序列 + 用户缓冲按 i*sizeof 偏移 + 返回个数）──
         // ── mapdriver（只有 RS 能调；标签 → 端点 → dmap/smap 登记）──
+        // ── fcntl（大部分是本地 fd 表操作；锁与 F_FREESP 要跨空间拷 flock）──
+        VfsCallNum::Fcntl => {
+            // C `do_fcntl`（misc.c:127-300）：载荷 `mess_lc_vfs_fcntl`
+            // （fd@0、cmd@4、arg_int@8、arg_ptr@16）。未知 cmd → EINVAL
+            // （C 的 `default: r = EINVAL`）。
+            let (fd, cmd_raw, arg_int, arg_ptr) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let cmd = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+                let arg_int = i32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[16..24]);
+                (fd, cmd, arg_int, u64::from_le_bytes(b8))
+            };
+            let Some(cmd) = crate::fcntl::FcntlCmd::from_raw(cmd_raw) else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            // C misc.c:141-143 —— fd 门（锁类命令要写锁，其余读锁）。
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            let filp_idx = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                }
+            };
+            use crate::fcntl::FcntlCmd as C;
+            match cmd {
+                // C misc.c:147-163 —— `dup` 家族的替代：floor 门 → 拿新 fd →
+                // `filp_count++` → 写 fd 表（CLOEXEC 变体顺带置位）。
+                C::DupFd | C::DupFdCloexec => {
+                    if let Err(e) = crate::fcntl::dupfd_arg_check(arg_int) {
+                        return SyscallResult::Error(e.to_errno());
+                    }
+                    // 与 open 不同：dup 家族**共用**同一个 filp（C 的
+                    // `f->filp_count++` + `fp_filp[new_fd] = f`），所以只占一个
+                    // fd 槽、不再分配 filp——直接问分配策略要最低空闲槽。
+                    let (new_fd, _) = {
+                        let Some(fp) = state.fproc_table.get_mut(fp_slot) else {
+                            return SyscallResult::Error(minix_types::EINVAL);
+                        };
+                        use crate::filedes::FdAllocPolicy;
+                        let idx = match crate::filedes::LowestFree
+                            .allocate(&fp.filps, arg_int as usize)
+                        {
+                            Some(i) => i,
+                            None => return SyscallResult::Error(minix_types::EMFILE),
+                        };
+                        let fd = match crate::filedes::Fd::new(idx) {
+                            Some(f) => f,
+                            None => return SyscallResult::Error(minix_types::EMFILE),
+                        };
+                        fp.filps[idx] = Some(filp_idx);
+                        if matches!(cmd, C::DupFdCloexec) {
+                            fp.cloexec_set.set(idx, true);
+                        }
+                        (fd, idx)
+                    };
+                    state.filp_table.inc_count(crate::filp::FilpId(filp_idx));
+                    let _ = new_fd;
+                    return SyscallResult::Ok(new_fd.get() as i32);
+                }
+                // C misc.c:165-172 —— 读/写 close-on-exec 位。
+                C::GetFd => {
+                    let set = state
+                        .fproc_table
+                        .get(fp_slot)
+                        .map(|fp| fp.cloexec_set.get(fd as usize))
+                        .unwrap_or(false);
+                    return SyscallResult::Ok(crate::fcntl::cloexec_get(set) as i32);
+                }
+                C::SetFd => {
+                    if let Some(fp) = state.fproc_table.get_mut(fp_slot) {
+                        fp.cloexec_set
+                            .set(fd as usize, crate::fcntl::cloexec_apply(arg_int as u32));
+                    }
+                    return SyscallResult::Ok(0);
+                }
+                // C misc.c:174-187 —— 状态字（只让 `O_NONBLOCK|O_APPEND|O_ACCMODE`
+                // 这类位过门）。
+                C::GetFl => {
+                    let flags = state
+                        .filp_table
+                        .get(crate::filp::FilpId(filp_idx))
+                        .map(|f| f.flags as u32)
+                        .unwrap_or(0);
+                    return SyscallResult::Ok(crate::fcntl::status_get(flags) as i32);
+                }
+                C::SetFl => {
+                    if let Some(f) = state.filp_table.get_mut(crate::filp::FilpId(filp_idx)) {
+                        f.flags = crate::fcntl::status_set(f.flags as u32, arg_int as u32) as i32;
+                    }
+                    return SyscallResult::Ok(0);
+                }
+                // C misc.c:250-256 —— `O_NOSIGPIPE` 哨兵。
+                C::GetNoSigPipe => {
+                    let flags = state
+                        .filp_table
+                        .get(crate::filp::FilpId(filp_idx))
+                        .map(|f| f.flags as u32)
+                        .unwrap_or(0);
+                    return SyscallResult::Ok(crate::fcntl::nosigpipe_get(flags) as i32);
+                }
+                C::SetNoSigPipe => {
+                    if let Some(f) = state.filp_table.get_mut(crate::filp::FilpId(filp_idx)) {
+                        f.flags = crate::fcntl::nosigpipe_set(f.flags as u32, arg_int as u32) as i32;
+                    }
+                    return SyscallResult::Ok(0);
+                }
+                // C misc.c:258-275 —— 只有超级用户能刷缓存；目标由文件类型定
+                // （块设备刷自己的设备块、常规/目录刷宿主 FS）。
+                C::FlushFsCache => {
+                    let (is_root, mode) = {
+                        let fp = match state.fproc_table.get(fp_slot) {
+                            Some(fp) => fp,
+                            None => return SyscallResult::Error(minix_types::EINVAL),
+                        };
+                        let vnode_idx = match state
+                            .filp_table
+                            .get(crate::filp::FilpId(filp_idx))
+                            .and_then(|f| f.vnode)
+                        {
+                            Some(v) => v,
+                            None => return SyscallResult::Error(minix_types::EBADF),
+                        };
+                        let mode = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                            Some(v) => v.mode,
+                            None => return SyscallResult::Error(minix_types::EBADF),
+                        };
+                        (fp.eff_uid == crate::link::SU_UID, mode)
+                    };
+                    let ft = crate::open::FileType::from(mode);
+                    let target = match crate::fcntl::flush_target(is_root, ft) {
+                        Ok(t) => t,
+                        Err(e) => return SyscallResult::Error(e.to_errno()),
+                    };
+                    // 目标端点与设备号：块设备走 `v_bfs_e`/`v_sdev`（块驱动
+                    // 的 FS 与设备），常规/目录走 `v_fs_e`/`v_dev`（宿主 FS）。
+                    let (fs_e, dev) = {
+                        let vnode_idx = match state
+                            .filp_table
+                            .get(crate::filp::FilpId(filp_idx))
+                            .and_then(|f| f.vnode)
+                        {
+                            Some(v) => v,
+                            None => return SyscallResult::Error(minix_types::EBADF),
+                        };
+                        let v = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                            Some(v) => v,
+                            None => return SyscallResult::Error(minix_types::EBADF),
+                        };
+                        match target {
+                            crate::fcntl::FlushTarget::BlockDev => (v.bfs, v.sdev),
+                            crate::fcntl::FlushTarget::HostingFs => (v.fs, v.dev),
+                        }
+                    };
+                    let Some(vmnt_id) = state.vmnt_table.find_by_fs(fs_e) else {
+                        return SyscallResult::Error(minix_types::EIO);
+                    };
+                    let Some(worker) = state.current_worker else {
+                        return SyscallResult::Error(minix_types::EAGAIN);
+                    };
+                    let user_e = state
+                        .fproc_table
+                        .get(fp_slot)
+                        .map(|fp| fp.endpoint)
+                        .unwrap_or(minix_types::Endpoint::NONE);
+                    if let Some(wp) = state.worker_pool.get_mut(worker) {
+                        wp.cont = Some(crate::worker::WorkerCont::Status);
+                    }
+                    state.pending_fs = Some(crate::main_loop::PendingFs {
+                        vmnt: vmnt_id.0,
+                        fs_e,
+                        worker,
+                        grant: 0, // 无数据面
+                        user: user_e,
+                        req: crate::request::encode_flush(dev),
+                    });
+                    return SyscallResult::Suspend;
+                }
+                // 锁类（`lock_op`）与 `F_FREESP` 都要跨空间拷用户的
+                // `struct flock`（进/出两个方向），本批未接线 → 诚实拒绝。
+                C::GetLk | C::SetLk | C::SetLkw | C::FreeSp => {
+                    return SyscallResult::Error(minix_types::ENOSYS);
+                }
+            }
+        }
+
         VfsCallNum::Mapdriver => {
             // C `do_mapdriver`（dmap.c:106-177）：载荷
             // `mess_lsys_vfs_mapdriver`（major@0、labellen@8、label@16、
@@ -3503,6 +3699,165 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Fcntl` 臂的本地子集（C `do_fcntl` misc.c:127-300）：`F_DUPFD` 家族
+    /// 共用同一个 filp（`filp_count++`，**不**新分配 filp）、`F_GETFD`/`F_SETFD`
+    /// 读写 close-on-exec 位、`F_GETFL`/`F_SETFL` 读写状态字（窄门）、
+    /// `F_GETNOSIGPIPE`/`F_SETNOSIGPIPE` 读写哨兵位；未知 cmd → EINVAL。
+    #[test]
+    fn test_dispatch_fcntl_local_commands() {
+        use minix_types::Endpoint;
+
+        let setup = || {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            {
+                let f = state.filp_table.get_mut(fid).unwrap();
+                f.flags = (crate::open::O_RDONLY | crate::fcntl::O_APPEND) as i32;
+            }
+            // 生产里 fd 表上的 filp 计数至少是 1（open 时认领的）——测试补上，
+            // 否则"dup 之后计数 +1"这条断言看不出差别。
+            state.filp_table.inc_count(fid);
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            (state, fid)
+        };
+        let fcntl_msg = |fd: i32, cmd: u32, arg: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Fcntl as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_fcntl：fd@0、cmd@4、arg_int@8、arg_ptr@16。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[4..8].copy_from_slice(&cmd.to_le_bytes());
+                raw[8..12].copy_from_slice(&arg.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 未知 cmd → EINVAL（C 的 `default`）。
+        let (mut state, _fid) = setup();
+        state.current_message = fcntl_msg(3, 0x7fff, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // ② 负 fd / 空槽 → EBADF。
+        let (mut state, _fid) = setup();
+        state.current_message = fcntl_msg(-1, crate::fcntl::F_GETFD, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        state.current_message = fcntl_msg(9, crate::fcntl::F_GETFD, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // ③ `F_DUPFD`：floor 门（负数/越界 → EINVAL）；合法时拿到最低空闲 fd
+        // 且**共用同一个 filp**（计数 +1、不新增 filp）。
+        let (mut state, fid) = setup();
+        state.current_message = fcntl_msg(3, crate::fcntl::F_DUPFD, -1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+        state.current_message = fcntl_msg(3, crate::fcntl::F_DUPFD, 0);
+        let r = dispatch_syscall(&mut state, VfsCallNum::Fcntl);
+        assert_eq!(r, SyscallResult::Ok(0), "fd 0 是第一个空闲槽");
+        {
+            let fp = state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap();
+            assert_eq!(fp.filps[0], Some(fid.get()), "新 fd 指向同一个 filp");
+            assert!(!fp.cloexec_set.get(0), "F_DUPFD 不置 cloexec");
+        }
+        assert_eq!(
+            state.filp_table.get(fid).unwrap().count,
+            2,
+            "共用 filp：计数 +1"
+        );
+        // "没有新分配 filp"：fd 表里两个槽指向**同一个** filp id（上面已断言
+        // fd 0 的指向），再加上计数 +1——`FilpTable::len` 是表容量（NR_FILPS），
+        // 不是已用数，别拿它当判据。
+        assert_eq!(
+            state.filp_table.get(fid).unwrap().count,
+            2,
+            "仍然只有这一个 filp 在服务两个 fd"
+        );
+
+        // ④ `F_DUPFD_CLOEXEC`：顺带置 cloexec 位。
+        let (mut state, _fid) = setup();
+        state.current_message = fcntl_msg(3, crate::fcntl::F_DUPFD_CLOEXEC, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Ok(0)
+        );
+        assert!(
+            state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap()
+                .cloexec_set
+                .get(0),
+            "CLOEXEC 变体置位"
+        );
+
+        // ⑤ `F_GETFD`/`F_SETFD`：读写同一位。
+        let (mut state, _fid) = setup();
+        state.current_message = fcntl_msg(3, crate::fcntl::F_GETFD, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Ok(0),
+            "未置位时回 0"
+        );
+        state.current_message = fcntl_msg(3, crate::fcntl::F_SETFD, crate::fcntl::FD_CLOEXEC as i32);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Ok(0)
+        );
+        state.current_message = fcntl_msg(3, crate::fcntl::F_GETFD, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Ok(crate::fcntl::FD_CLOEXEC as i32),
+            "置位后回 FD_CLOEXEC"
+        );
+
+        // ⑥ `F_GETFL`/`F_SETFL`：状态字读回与窄门写入（只放 O_NONBLOCK|O_APPEND）。
+        let (mut state, fid) = setup();
+        state.current_message = fcntl_msg(3, crate::fcntl::F_GETFL, 0);
+        let r = dispatch_syscall(&mut state, VfsCallNum::Fcntl);
+        assert_eq!(
+            r,
+            SyscallResult::Ok((crate::open::O_RDONLY | crate::fcntl::O_APPEND) as i32)
+        );
+        // 试着塞一个不在窄门里的位（O_TRUNC）：不该进去。
+        state.current_message = fcntl_msg(
+            3,
+            crate::fcntl::F_SETFL,
+            crate::open::OpenFlags::TRUNC.bits() as i32,
+        );
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fcntl),
+            SyscallResult::Ok(0)
+        );
+        let flags = state.filp_table.get(fid).unwrap().flags as u32;
+        assert_eq!(
+            flags & crate::open::OpenFlags::TRUNC.bits(),
+            0,
+            "窄门外的位进不来"
+        );
     }
 
     /// `Mapdriver` 臂（C `do_mapdriver` dmap.c:106-177）：三道门在任何查表
