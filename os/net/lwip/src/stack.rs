@@ -496,6 +496,28 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         ))
     }
 
+    fn send_tcp(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32> {
+        self.tcp_mut(socket)
+            .ok_or(util::ERR_GENERIC)?
+            .send_slice(data)
+            .map_err(|_| util::ERR_NOT_CONNECTED)
+    }
+
+    fn recv_tcp(
+        &mut self,
+        socket: StackSocket,
+        data: &mut [u8],
+    ) -> Result<(usize, bool), i32> {
+        use smoltcp::socket::tcp::RecvError;
+        match self.tcp_mut(socket).ok_or(util::ERR_GENERIC)?.recv_slice(data) {
+            // 语义三分：有数据；EOF（对端关且取尽）；连接未开。
+            Ok(0) => Err(util::ERR_WOULD_BLOCK),
+            Ok(n) => Ok((n, false)),
+            Err(RecvError::Finished) => Ok((0, true)),
+            Err(_) => Err(util::ERR_NOT_CONNECTED),
+        }
+    }
+
     fn remote_endpoint_tcp(
         &self,
         socket: StackSocket,

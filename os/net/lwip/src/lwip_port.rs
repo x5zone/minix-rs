@@ -274,6 +274,17 @@ pub trait Stack {
 
     /// 查询对端端点（getpeername 的栈半）。
     fn remote_endpoint_tcp(&self, socket: StackSocket) -> Result<StackEndpoint, i32>;
+
+    /// 流式发送（write 的栈半）：把数据入栈缓冲，返回**实际入队**
+    /// 字节数——流语义允许部分发送，缓冲满时返回 0（调用方决定挂起
+    /// 还是以 EAGAIN 回）；连接未建按错误回答。
+    fn send_tcp(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32>;
+
+    /// 流式接收（read 的栈半）：返回 `(字节数, 对端已关闭)`。空且连接
+    /// 仍开按阻塞类错误回答；对端关闭且数据取尽返回 `(0, true)`——
+    /// C 的 read 返回 0 即 EOF。
+    fn recv_tcp(&mut self, socket: StackSocket, data: &mut [u8])
+        -> Result<(usize, bool), i32>;
 }
 
 #[cfg(test)]
@@ -428,6 +439,20 @@ mod wall_tests {
                 addr: Some(StackIpAddr::V4([127, 0, 0, 1])),
                 port: 5,
             })
+        }
+
+        fn send_tcp(&mut self, _socket: StackSocket, data: &[u8]) -> Result<usize, i32> {
+            Ok(data.len())
+        }
+
+        fn recv_tcp(
+            &mut self,
+            _socket: StackSocket,
+            data: &mut [u8],
+        ) -> Result<(usize, bool), i32> {
+            let n = data.len().min(2);
+            data[..n].copy_from_slice(&[7, 7][..n]);
+            Ok((n, false))
         }
 
         fn poll(&mut self, now_millis: u64) -> PollWhen {

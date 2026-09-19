@@ -484,6 +484,30 @@ pub struct PendingConnect {
     pub req_id: i32,
 }
 
+/// TCP 发送的留言条：缓冲满时挂起，可写后重新拷数据再试（数据在
+/// 用户内存里，每次尝试都要重拷）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingTcpSend {
+    pub sock_id: i32,
+    pub caller: Endpoint,
+    pub req_id: i32,
+    pub data_grant: i32,
+    pub data_len: usize,
+    pub user_endpt: i32,
+}
+
+/// TCP 接收的留言条：无数据时挂起，可读后续答（EOF 回 0，即 C 的
+/// read 返回 0）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingTcpRecv {
+    pub sock_id: i32,
+    pub caller: Endpoint,
+    pub req_id: i32,
+    pub data_grant: i32,
+    pub data_len: usize,
+    pub user_endpt: i32,
+}
+
 /// TCP accept 的留言条：等待受纳完成后回新套接字号与对端地址。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PendingAccept {
@@ -499,12 +523,16 @@ pub struct PendingAccept {
 /// 与超时摘条都在这本账上做）。
 #[derive(Debug, Default)]
 pub struct PendingTables {
-    /// UDP/TCP 接收挂起。
+    /// UDP 接收挂起（带对端地址出向面）。
     pub recvs: Vec<PendingRecv>,
     /// TCP 连接挂起。
     pub connects: Vec<PendingConnect>,
     /// TCP 受纳挂起。
     pub accepts: Vec<PendingAccept>,
+    /// TCP 发送挂起（缓冲满）。
+    pub tcp_sends: Vec<PendingTcpSend>,
+    /// TCP 接收挂起（无数据）。
+    pub tcp_recvs: Vec<PendingTcpRecv>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -853,6 +881,75 @@ pub fn translate_tcp(
             }
         };
     }
+    if m_type == SdevRequest::Send as i32 || m_type == SdevRequest::Receive as i32 {
+        let Some(req) = decode_sendrecv(msg) else {
+            return Some(simple_reply(0, -(minix_types::EINVAL)));
+        };
+        let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+            return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+        };
+        let nonblock = req.flags & minix_sockdriver::sdev::MSG_DONTWAIT != 0;
+        let _ = req.ctl_grant;
+        let _ = req.ctl_len;
+        let _ = req.addr_grant;
+        let _ = req.addr_len;
+        if m_type == SdevRequest::Send as i32 {
+            // 流式发送：入多少回多少（部分发送合法）；缓冲满且阻塞
+            // 挂起，非阻塞回 EAGAIN。
+            let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
+            if copy
+                .safecopy_from(req.user_endpt, req.data_grant, 0, &mut data)
+                .is_err()
+            {
+                return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+            }
+            return match stack.send_tcp(stack_socket, &data) {
+                Ok(n) if n > 0 => Some(simple_reply(req.req_id, n as i32)),
+                Ok(_) => {
+                    if nonblock {
+                        Some(simple_reply(req.req_id, -(minix_types::EAGAIN)))
+                    } else {
+                        pending.tcp_sends.push(PendingTcpSend {
+                            sock_id: req.sock_id,
+                            caller,
+                            req_id: req.req_id,
+                            data_grant: req.data_grant,
+                            data_len: req.data_len,
+                            user_endpt: req.user_endpt,
+                        });
+                        None
+                    }
+                }
+                Err(e) => Some(simple_reply(req.req_id, wire(e))),
+            };
+        }
+        // 流式接收：有数据拷给用户；EOF（对端关且取尽）回 0；空且
+        // 阻塞挂起，非阻塞回 EAGAIN；连接未开按错误回答。
+        let mut data = alloc::vec![0u8; req.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
+        let outcome = stack.recv_tcp(stack_socket, &mut data);
+        return match outcome {
+            // EOF 与真错误先行（栈把"空"折成阻塞类错误，归入挂起半）。
+            Ok((0, true)) => Some(recv_reply(req.req_id, 0, 0, 0)),
+            Err(e) if e != crate::util::ERR_WOULD_BLOCK => {
+                Some(recv_reply(req.req_id, wire(e), 0, 0))
+            }
+            // 空（阻塞类错误或空读）：非阻塞回 EAGAIN，阻塞挂起记账。
+            _ => {
+                if nonblock {
+                    return Some(recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0));
+                }
+                pending.tcp_recvs.push(PendingTcpRecv {
+                    sock_id: req.sock_id,
+                    caller,
+                    req_id: req.req_id,
+                    data_grant: req.data_grant,
+                    data_len: req.data_len,
+                    user_endpt: req.user_endpt,
+                });
+                None
+            }
+        }
+    }
     if m_type == SdevRequest::GetPeerName as i32 {
         let Some(req) = decode_addr(msg) else {
             return Some(simple_reply(0, -(minix_types::EINVAL)));
@@ -948,6 +1045,82 @@ pub fn ready_scan(
             pending.connects.remove(i);
         } else {
             i += 1;
+        }
+    }
+    // TCP 发送：可写后重拷数据再试（部分发送即回实际入队量）。
+    let mut i = 0;
+    while i < pending.tcp_sends.len() {
+        let note = pending.tcp_sends[i];
+        let writable = stack_socket_of(note.sock_id)
+            .map(|s| stack.readiness(s))
+            .map(|r| r.writable)
+            .unwrap_or(false);
+        if !writable {
+            i += 1;
+            continue;
+        }
+        let Some(stack_socket) = stack_socket_of(note.sock_id) else {
+            pending.tcp_sends.remove(i);
+            continue;
+        };
+        let mut data = alloc::vec![0u8; note.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
+        if copy
+            .safecopy_from(note.user_endpt, note.data_grant, 0, &mut data)
+            .is_err()
+        {
+            replies.push((note.caller, simple_reply(note.req_id, -(minix_types::EFAULT))));
+            pending.tcp_sends.remove(i);
+            continue;
+        }
+        match stack.send_tcp(stack_socket, &data) {
+            Ok(n) if n > 0 => {
+                replies.push((note.caller, simple_reply(note.req_id, n as i32)));
+                pending.tcp_sends.remove(i);
+            }
+            Ok(_) => i += 1,
+            Err(e) => {
+                replies.push((note.caller, simple_reply(note.req_id, wire(e))));
+                pending.tcp_sends.remove(i);
+            }
+        }
+    }
+    // TCP 接收：可读后续答；EOF 回 0（C read 的文件尾语义）。
+    let mut i = 0;
+    while i < pending.tcp_recvs.len() {
+        let note = pending.tcp_recvs[i];
+        let readable = stack_socket_of(note.sock_id)
+            .map(|s| stack.readiness(s))
+            .map(|r| r.readable)
+            .unwrap_or(false);
+        if !readable {
+            i += 1;
+            continue;
+        }
+        let Some(stack_socket) = stack_socket_of(note.sock_id) else {
+            pending.tcp_recvs.remove(i);
+            continue;
+        };
+        let mut data = alloc::vec![0u8; note.data_len.min(crate::lwip_port::TCP_SEND_BUFFER)];
+        match stack.recv_tcp(stack_socket, &mut data) {
+            Ok((n, _eof)) if n > 0 => {
+                if copy
+                    .safecopy_to(note.user_endpt, note.data_grant, 0, &data[..n])
+                    .is_err()
+                {
+                    replies.push((
+                        note.caller,
+                        recv_reply(note.req_id, -(minix_types::EFAULT), 0, 0),
+                    ));
+                } else {
+                    replies.push((note.caller, recv_reply(note.req_id, n as i32, 0, 0)));
+                }
+                pending.tcp_recvs.remove(i);
+            }
+            Ok((0, true)) => {
+                replies.push((note.caller, recv_reply(note.req_id, 0, 0, 0)));
+                pending.tcp_recvs.remove(i);
+            }
+            _ => i += 1,
         }
     }
     // TCP accept：监听者可读即受纳，回新套接字号与对端地址。
