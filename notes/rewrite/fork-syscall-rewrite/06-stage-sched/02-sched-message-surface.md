@@ -150,6 +150,12 @@ Rust 改写不照抄 `main.c` 的 switch 写法，而是参考 Linux 的表驱�
 - **Rust**：`IpcTransport`（收、发两个方法）加 `KernelApi`（五个内核调用方法）双 trait（`os/servers/sched/src/kernel_api/transport.rs:fn trap_errno（L66，工具生成）,132`）；真实端按最终形态委托 minix-sys 的直接传输——真实 trap 层（edge E1）落地前，调用诚实地返回 `EIO`。
 - **为什么**：两半的 mock 形态不同——测循环只需要"给一条消息、收一条回复"的脚本，测内核调用只需要"记录参数、按序回答"的账本；合成一个 trait，每个测试都得同时写两半。`sys_getmachine` 还有一层指针契约要兑现：GETMINFO 传的是缓冲区指针，内核把 `struct machine` 原样拷进来（`type.h:122-131`；内核侧对端 `os/kernel/src/misc.rs:fn getinfo_randomness_bin（L1038，工具生成）`），所以缓冲区必须与 C 结构逐字节同布局。还有一处诚实的偏离要写明：C 的 `schedule_process` 每次下发前都重新 `pick_cpu`（`schedule.c:302`），重选会改私有字段还会重复记账；Rust 的就地下发不再重选——LOCAL 掩码下 CPU 根本不上线，重选改变不了内核看到的任何东西，只多记一次账，那是 C 的意外不是 C 的约定（10 篇 D3 的配对语义：一次选中配一次释放）。备选方案（单 trait、七个方法一锅端）被否决了：接口的宽度应该跟着 mock 的形状走。
 
+### D10 接收的门口装着 SEF 层（`sef_receive_status`，不是裸 `ipc_receive`）
+
+- **C**：主循环等消息的那一行写的是 `sef_receive_status(ANY)`（`main.c:39`），不是裸的 `ipc_receive`。这层在库内拦下两类消息：RS 的探活通知（ping——应答一个通知即 pong，然后吞掉，`sef.c:208-214` 与 `sef_ping.c:21-38`）和 SYSTEM 发来的信号请求（`sef.c:232-237`，处理结果为 OK 就继续等下一条）。SCHED 没有注册信号处理程序（`main.c:118` "No signal callbacks for now"），无处理程序的默认处理返回 OK，所以信号请求同样被吞。
+- **Rust**：`KernelIpcTransport::receive`（`os/servers/sched/src/kernel_api/transport.rs:impl IpcTransport for KernelIpcTransport`）把 trap 直连接在 `minix-sef` 的 `sef_receive_status` 内侧——ping 在层内被 pong 一次并吞掉，信号请求被吞掉，普通调用与通知带着状态字原样上浮（`sef_filtered_receive`，同文件）。被吞的启动请求（`SefEvent::Init`）是启动链共用面（S29）的占位。
+- **为什么**：漏装这一层的后果具体且可观测——RS 用 ping 探活，答不上 pong 的服务会被当成死的；落到分发表里的信号请求会换来一次 `no_sys` 回复，而 C 从不回复它。备选方案（主循环里自己判断来源）被否决：拦截语义是所有系统服务共用的一份（IS、MIB、devman 同款），各服务自判等于把一份语义抄三遍。
+
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
@@ -175,7 +181,7 @@ os/libs/minix-types/src/ipc/
 └── message.rs            — 四个消息体加联合体成员（02/06/13 篇复用）
 ```
 
-> 设计决策：§3 D1（消息枚举）/ D2（通知调用分流）/ D4（回复规则）/ D6（消息体位置）/ D7（一轮一步）/ D8（单一所有者）/ D9（两条线分开接）。
+> 设计决策：§3 D1（消息枚举）/ D2（通知调用分流）/ D4（回复规则）/ D6（消息体位置）/ D7（一轮一步）/ D8（单一所有者）/ D9（两条线分开接）/ D10（SEF 层接收）。
 
 ### 4.2 核心符号表
 

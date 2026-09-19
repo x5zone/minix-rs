@@ -102,17 +102,62 @@ impl Default for KernelIpcTransport {
 
 impl IpcTransport for KernelIpcTransport {
     fn receive(&self) -> Result<(Message, IpcStatus), i32> {
-        // C: sef_receive_status(ANY, &m_in, &ipc_status) — main.c:39.
-        let mut message = blank_message();
-        match self.inner.receive(Endpoint::ANY, &mut message) {
-            Ok(status) => Ok((message, status)),
-            Err(status) => Err(trap_errno(status)),
-        }
+        // C: sef_receive_status(ANY, &m_in, &ipc_status) — main.c:39. The
+        // raw trap is only the innermost leg: the SEF layer on top answers
+        // RS pings in place (pong, swallow — sef.c:208-214) so a liveness
+        // probe never lands in the dispatch table, and swallows SYSTEM
+        // signal requests (SCHED registers no handler, main.c:118; the
+        // no-handler default is OK, so sef.c:232-237 `continue`s). A
+        // surfaced signal would earn a no_sys reply C never sends.
+        let mut sef = SefIpcAdapter { inner: self.inner };
+        sef_filtered_receive(&mut sef)
     }
 
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
         // C: ipc_send(who_e, m_ptr) — main.c:103.
         self.inner.send(to, message).map_err(trap_errno)
+    }
+}
+
+/// `minix-sef` 的动词适配（trap 直连）：`receive` 带回状态字（通知与内核
+/// 封印都从它读），`notify` 是 ping 的应答通道（C `do_sef_ping_request` 的
+/// `ipc_notify`，sef_ping.c:21-38）。
+struct SefIpcAdapter {
+    inner: DirectTrapTransport,
+}
+
+impl minix_sef::SefIpc for SefIpcAdapter {
+    fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        let sts = self.inner.receive(src, msg).map_err(trap_errno)?;
+        Ok(sts.0 as i32)
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        self.inner.notify(dest).map_err(trap_errno)
+    }
+}
+
+/// 经 SEF 层的接收循环（C `sef_receive_status` 的主循环契约）：普通调用与
+/// 通知原样上浮（状态字随之走，02 的 classify 与 `noquantum_trust` 消费两
+/// 个半边）；信号与启动请求被吞掉、继续等下一条。
+///
+/// `SefEvent::Signal` 在这里吞掉，因为 SCHED 没有注册信号处理程序——C 的
+/// `sef_receive_status` 对无处理程序的服务同样是吞（处理结果 OK →
+/// `continue`）。`SefEvent::Init` 今天不可达（minix-sef 尚不拦截启动请求）；
+/// 吞掉是对 RS_INIT 到达时"不以 no_sys 回 RS"的占位，真正的握手面是启动链
+/// 条目的共用面（edge3 拆分卡 D / S29），落地时从这里接。
+fn sef_filtered_receive<S: minix_sef::SefIpc>(sef: &mut S) -> Result<(Message, IpcStatus), i32> {
+    loop {
+        let mut message = blank_message();
+        let recv = minix_sef::sef_receive_status(sef, Endpoint::ANY, &mut message, &mut |_| {})?;
+        match recv.event {
+            // 普通消息与"不是 ping 的 RS 通知"（C 的 `break` 路径）照常上浮。
+            minix_sef::SefEvent::Call(_) | minix_sef::SefEvent::PingInvalid => {
+                return Ok((recv.message, IpcStatus(recv.status as u32)));
+            }
+            // 无处理程序的信号请求与启动请求：吞掉，继续等（C sef.c:232-237）。
+            minix_sef::SefEvent::Signal(_) | minix_sef::SefEvent::Init(_) => continue,
+        }
     }
 }
 
@@ -289,6 +334,89 @@ impl KernelApi for SysKernelApi {
                 _padding: [0; 28],
             };
         })
+    }
+}
+
+#[cfg(test)]
+mod sef_filter_tests {
+    //! `sef_filtered_receive` 的拦截契约（宿主可重复）：ping 在层内应答
+    //! （pong）并吞掉、无处理程序的信号请求吞掉、真调用与通知原样上浮。
+    //! C 对应物：sef.c:208-214（ping）与 sef.c:232-237（信号）。
+
+    use super::*;
+    use core::cell::RefCell;
+
+    /// 脚本化的 SEF 动词：按剧本吐消息、记下每次 notify（pong 的证据）。
+    struct ScriptedSef {
+        script: RefCell<std::vec::Vec<(i32, Message)>>,
+        notified: RefCell<std::vec::Vec<Endpoint>>,
+    }
+
+    impl ScriptedSef {
+        fn new(script: Vec<(i32, Message)>) -> Self {
+            Self { script: RefCell::new(script), notified: RefCell::new(std::vec::Vec::new()) }
+        }
+    }
+
+    impl minix_sef::SefIpc for ScriptedSef {
+        fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+            let mut script = self.script.borrow_mut();
+            if script.is_empty() {
+                return Err(minix_types::EIO);
+            }
+            let (status, m) = script.remove(0);
+            *msg = m;
+            Ok(status)
+        }
+
+        fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+            self.notified.borrow_mut().push(dest);
+            Ok(())
+        }
+    }
+
+    fn arrival(source: Endpoint, m_type: i32, notify: bool) -> (i32, Message) {
+        let mut m = Message { m_source: source, m_type, ..Message::default() };
+        let _ = &mut m;
+        let status = if notify {
+            IpcStatus::from_call(minix_sys::ipc::CALL_NOTIFY)
+        } else {
+            IpcStatus::from_call(minix_sys::ipc::CALL_RECEIVE)
+        };
+        (status.0 as i32, m)
+    }
+
+    #[test]
+    fn ping_is_ponged_and_swallowed_signal_swallowed_call_surfaces() {
+        // 剧本：RS ping（RS 用它探活，不答 pong 就当服务死了）→ SYSTEM 信号
+        // 请求 → 真调用。只有第三个浮出；pong 恰好一次、发给 RS。
+        let script = vec![
+            arrival(Endpoint::RS, minix_sef::SEF_PING_REQUEST_TYPE, true),
+            arrival(
+                minix_sef::SYSTEM_ENDPOINT,
+                minix_sef::SEF_SIGNAL_REQUEST_TYPE,
+                true,
+            ),
+            arrival(Endpoint::from_generation_slot(1, 2), minix_types::SCHEDULING_START, false),
+        ];
+        let mut sef = ScriptedSef::new(script);
+        let (message, _status) = sef_filtered_receive(&mut sef).expect("真调用浮出");
+        assert_eq!(message.m_type, minix_types::SCHEDULING_START);
+        assert_eq!(
+            sef.notified.borrow().as_slice(),
+            [Endpoint::RS],
+            "ping 在层内被 pong 一次，从不到达分发表"
+        );
+    }
+
+    #[test]
+    fn exhausted_script_reports_the_transport_error() {
+        // 底座断链（宿主 trap 恒 EIO）→ Err 原样上浮，循环不伪造成功。
+        let mut sef = ScriptedSef::new(std::vec::Vec::new());
+        assert!(
+            matches!(sef_filtered_receive(&mut sef), Err(e) if e == minix_types::EIO),
+            "底座断链 → Err 原样上浮"
+        );
     }
 }
 

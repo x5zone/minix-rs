@@ -624,6 +624,60 @@ mod tests {
         (row.state, row.priority.get(), row.time_slice_ms)
     }
 
+    /// 参战场景的序列断言（卡 B / S27 的宿主冒烟）：一台 server 连吃四轮，
+    /// 按 C `main.c:35-96` 的世界顺序——PM 交接（回 OK）、内核耗尽（静默降
+    /// 级）、时钟通知（整理 + 重上铃）、野调用（ENOSYS）。逐件行为各有专项
+    /// 测试，这里锁的是**顺序与总账**：四个回合跑完，回复恰好两条、内核调用
+    /// 恰好三类、槽位账本与负载账本自洽。
+    #[test]
+    fn test_participation_sequence_end_to_end() {
+        let mut s = server(2);
+        let mut kernel = MockKernel::new(2, 0);
+        s.init_scheduling(&mut kernel).expect("bell armed");
+        let ipc = MockIpc::default();
+
+        // 回合 1：PM 把 fork 出的孩子交接给 SCHED → 回 OK，槽位就位。
+        ipc.deliver(start_message(CHILD, 50, 8, 100), status_call());
+        assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
+        assert_eq!(slot_state(&s, CHILD as usize), (SlotState::InUse, 8, 100));
+        assert_eq!(ipc.sent.borrow().len(), 1);
+        assert_eq!(ipc.sent.borrow()[0].1.m_type, 0, "START 回 OK");
+
+        // 回合 2：内核报告孩子量子耗尽（带内核封印）→ 降一阶 + 扇出，不回复
+        //（START 的交接扇出在前，账上现在是两条内核下发）。
+        ipc.deliver(noquantum_message(CHILD), status_kernel());
+        assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
+        assert_eq!(
+            ipc.sent.borrow().len(),
+            1,
+            "内核耗尽消息从不答复（C 73-77）"
+        );
+        assert_eq!(kernel.schedule_calls.borrow().len(), 2, "交接 + 降级两条");
+        assert_eq!(s.procs[CHILD as usize].priority.get(), 9, "8 降一阶到 9");
+
+        // 回合 3：CLOCK 打铃 → 升一阶 + 重上铃，仍然不回复。
+        let mut clock = blank(0);
+        clock.m_source = Endpoint::CLOCK;
+        ipc.deliver(clock, status_notify());
+        assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
+        assert_eq!(kernel.setalarm_calls.borrow().len(), 2, "铃重新上好");
+        assert_eq!(kernel.schedule_calls.borrow().len(), 3, "整理的扇出");
+        assert_eq!(s.procs[CHILD as usize].priority.get(), 8, "9 升一阶到 8");
+        assert_eq!(ipc.sent.borrow().len(), 1);
+
+        // 回合 4：来路不明的调用号 → ENOSYS（C 85-86 + utility.c:18-23）。
+        ipc.deliver(blank(0x777), status_call());
+        assert_eq!(s.run_once(&ipc, &mut kernel), Step::Handled);
+        let sent = ipc.sent.borrow();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].1.m_type, minix_types::ENOSYS);
+        assert_eq!(
+            s.loads.iter().filter(|l| l.is_some_and(|n| n > 0)).count(),
+            1,
+            "负载账本：恰好一个座位载着交接来的进程"
+        );
+    }
+
     #[test]
     fn test_init_scheduling_arms_bell() {
         // C 334-342: five seconds times the clock rate, armed once.
