@@ -204,6 +204,17 @@ pub mod transfer_req_off {
     pub const BYTES: usize = 24;
 }
 
+/// C: `PATH_RET_SYMLINK (010)` — vfsif.h:12（`REQ_LOOKUP` 的 `flags` 位：
+/// 最后一个组件是符号链接时**不要**解析它，把链接本身带回）。
+///
+/// 这个位的语义在 FS 侧实现（`libfsdriver/lookup.c:249-251`），VFS 只负责
+/// 原样发过去。
+pub const PATH_RET_SYMLINK: u32 = 0o10;
+
+/// C: `PATH_GET_UCRED (020)` — vfsif.h:16（请求里带凭证 grant，FS 用它做
+/// 权限判断）。Rust 侧凭证面还没接线，见 `encode_lookup` 的断言。
+pub const PATH_GET_UCRED: u32 = 0o20;
+
 /// C: `EENTERMOUNT (-301)` — vfsif.h:26（FS→VFS 的"进入挂载点"特殊码，
 /// 走回复的 `m_type`，不是错误）。
 pub const EENTERMOUNT: i32 = -301;
@@ -504,6 +515,14 @@ mod tests {
         assert_eq!(readsuper_req_off::FLAGS, 8);
         assert_eq!(readsuper_req_off::PATH_LEN, 16);
         assert_eq!(readsuper_req_off::GRANT, 24);
+    }
+
+    /// lookup 的 `flags` 两位 pin（vfsif.h:12,16）——FS 侧按同一张表判
+    /// `PATH_RET_SYMLINK`，发错字就等于让 FS 一路跟进符号链接。
+    #[test]
+    fn test_lookup_flag_bits() {
+        assert_eq!(PATH_RET_SYMLINK, 0o10);
+        assert_eq!(PATH_GET_UCRED, 0o20);
     }
 
     /// 三个特殊码的值 pin（vfsif.h:26-28，负值走回复的 m_type）。

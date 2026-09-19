@@ -1001,13 +1001,20 @@ impl VfsState {
             .and_then(|s| self.fproc_table.get(s))
             .map(|fp| fp.endpoint)
             .unwrap_or(Endpoint::NONE);
-        let (grant, path_len) = {
+        let (grant, path_len, flags) = {
             let wp = self.worker_pool.get_mut(idx).ok_or(minix_types::EIO)?;
             let walk_path = wp
                 .path
                 .as_ref()
                 .map(|p| p.walk.resolve().path.clone())
                 .unwrap_or_default();
+            // `PATH_RET_SYMLINK` 等位要原样发给 FS（语义在 FS 侧，
+            // libfsdriver/lookup.c:249-251）——漏发等于让 FS 跟进末组件符号链接。
+            let flags = wp
+                .path
+                .as_ref()
+                .map(|p| p.walk.resolve().flags.bits())
+                .unwrap_or(0);
             let bytes = walk_path.as_bytes();
             let n = bytes.len().min(crate::path::PATH_MAX - 1);
             wp.path_scratch[..n].copy_from_slice(&bytes[..n]);
@@ -1024,7 +1031,7 @@ impl VfsState {
                     minix_types::CpFlags::READ,
                 )
                 .map_err(|_| minix_types::EIO)?;
-            (grant, len)
+            (grant, len, flags)
         };
         // 现场里记录新 grant（回复后 revoke）。
         if let Some(wp) = self.worker_pool.get_mut(idx)
@@ -1038,7 +1045,7 @@ impl VfsState {
             worker: idx,
             grant,
             user,
-            req: crate::request::encode_lookup(grant, path_len, dir_ino, root_ino),
+            req: crate::request::encode_lookup(grant, path_len, dir_ino, root_ino, flags),
         });
         Ok(())
     }
@@ -3239,7 +3246,7 @@ mod tests {
             .expect("空闲槽");
         // 发送半之后的槽态：sendrec 里是**请求**（`REQ_LOOKUP` 的码），
         // 状态是 `WaitingForFs`（`fs_sendrec` → `set_waiting`）。
-        let req = crate::request::encode_lookup(3, 2, 1, 1);
+        let req = crate::request::encode_lookup(3, 2, 1, 1, 0);
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.cont = Some(WorkerCont::Fstat { grant: 4 });

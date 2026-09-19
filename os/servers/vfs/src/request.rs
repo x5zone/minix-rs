@@ -536,7 +536,8 @@ pub fn encode_getdents(ino: u64, pos: i64, grant: i32, mem_size: usize) -> Messa
 ///
 /// 载荷是 `mess_vfs_fs_lookup`：路径 grant（**`CPF_READ|CPF_WRITE`** ——
 /// FS 要把"剩余路径"写回来，这是 `EENTERMOUNT`/`ESYMLINK` 报告进度的方法）、
-/// 路径长度与窗口、起目录 ino 与 chroot 边界 ino；凭证 grant 在
+/// 路径长度与窗口、起目录 ino 与 chroot 边界 ino、以及 `flags`
+/// （`PATH_RET_SYMLINK`/`PATH_GET_UCRED` — vfsif.h）；凭证 grant 在
 /// `ngroups > 0` 时才带（本编码器把 `grant_ucred`/`ucred_size` 留给调用方传 0，
 /// 凭证面随 Open 族一并接）。
 ///
@@ -546,7 +547,17 @@ pub fn encode_lookup(
     path_len: usize,
     dir_ino: u64,
     root_ino: u64,
+    flags: u32,
 ) -> Message {
+    // `PATH_RET_SYMLINK` 的语义在 **FS 侧**实现（libfsdriver/lookup.c:249-251：
+    // "最后一个组件是符号链接且 VFS 要求不解析时不解析"），所以这个字必须
+    // 真的发过去——少发就等于让 FS 一路跟进符号链接。
+    // `PATH_GET_UCRED` 需要随请求带凭证 grant，本编码器还不带（ucred_size=0）：
+    // 谁先打开这条面，谁在这里补 grant 并把断言换成实现。
+    debug_assert!(
+        flags & minix_types::PATH_GET_UCRED == 0,
+        "lookup 的凭证面未接线（req_lookup 的 ucred grant）"
+    );
     let mut msg = Message {
         m_type: minix_types::REQ_LOOKUP,
         ..Message::default()
@@ -560,6 +571,8 @@ pub fn encode_lookup(
             .copy_from_slice(&root_ino.to_le_bytes());
         raw[minix_types::lookup_req_off::PATH_LEN..minix_types::lookup_req_off::PATH_LEN + 8]
             .copy_from_slice(&(path_len as u64).to_le_bytes());
+        raw[minix_types::lookup_req_off::FLAGS..minix_types::lookup_req_off::FLAGS + 4]
+            .copy_from_slice(&flags.to_le_bytes());
         raw[minix_types::lookup_req_off::PATH_SIZE..minix_types::lookup_req_off::PATH_SIZE + 8]
             .copy_from_slice(&(crate::path::PATH_MAX as u64).to_le_bytes());
         raw[minix_types::lookup_req_off::GRANT_PATH..minix_types::lookup_req_off::GRANT_PATH + 4]
@@ -1160,7 +1173,7 @@ mod tests {
     /// 偏移表上；`path_size` 恒为 `PATH_MAX`（C 的窗口大小）。
     #[test]
     fn test_encode_lookup_fields() {
-        let m = encode_lookup(7, 12, 0x33, 0x11);
+        let m = encode_lookup(7, 12, 0x33, 0x11, minix_types::PATH_RET_SYMLINK);
         assert_eq!(m.m_type, minix_types::REQ_LOOKUP);
         // SAFETY(test): 按共享偏移表读回。
         let raw = unsafe { &m.m_u.raw };
@@ -1182,6 +1195,14 @@ mod tests {
         );
         assert_eq!(u64::from_le_bytes(b8), crate::path::PATH_MAX as u64);
         let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::lookup_req_off::FLAGS..minix_types::lookup_req_off::FLAGS + 4],
+        );
+        assert_eq!(
+            u32::from_le_bytes(b4),
+            minix_types::PATH_RET_SYMLINK,
+            "flags 必须真的发到 FS（RET_SYMLINK 的语义在 FS 侧）"
+        );
         b4.copy_from_slice(
             &raw[minix_types::lookup_req_off::GRANT_PATH
                 ..minix_types::lookup_req_off::GRANT_PATH + 4],
