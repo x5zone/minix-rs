@@ -555,6 +555,172 @@ pub fn recvmsg_update(ctl_len: u32, flags: u32, addr_len: u32) -> RecvmsgUpdate 
     }
 }
 
+/// 用户 `struct msghdr` 的字段（C `sys/socket.h` 的 `msghdr`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MsgHdr {
+    /// `void *msg_name`（对端地址缓冲）。
+    pub name: u64,
+    /// `socklen_t msg_namelen`。
+    pub namelen: u32,
+    /// `struct iovec *msg_iov`。
+    pub iov: u64,
+    /// `size_t msg_iovlen`。
+    pub iovlen: usize,
+    /// `void *msg_control`（控制消息缓冲）。
+    pub control: u64,
+    /// `socklen_t msg_controllen`。
+    pub controllen: u32,
+    /// `int msg_flags`。
+    pub flags: i32,
+}
+
+/// 单个 `struct iovec`。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct IoVec {
+    /// `void *iov_base`。
+    pub base: u64,
+    /// `size_t iov_len`。
+    pub len: u64,
+}
+
+/// 用户 `msghdr`/`iovec` 的取数缝（C `do_sockmsg` 的两处 `sys_datacopy`，
+/// socket.c:552-553/573-575）。生产实现走跨空间拷贝（宿主不可达），测试用
+/// 脚本替身——这样"取到之后"的 iov 门与请求形状在宿主下也能测。
+pub trait MsgHdrFetcher {
+    /// 取用户的 `struct msghdr`。
+    fn fetch_msghdr(&self, addr: u64) -> Result<MsgHdr, SockError>;
+    /// 取用户的单个 `struct iovec`。
+    fn fetch_iov(&self, addr: u64) -> Result<IoVec, SockError>;
+}
+
+/// 生产取数件：两次 `sys_datacopy`（C `sys_datacopy_wrapper(who_e, ...)`）。
+///
+/// 宿主构建下内核调用不可达 → `EINVAL`（与 C 把拷贝失败原样上浮同值）。
+#[derive(Debug, Clone, Copy)]
+pub struct SysMsgHdrFetcher {
+    /// 调用方端点（C 的 `who_e`）。
+    pub who: minix_types::Endpoint,
+}
+
+impl MsgHdrFetcher for SysMsgHdrFetcher {
+    fn fetch_msghdr(&self, addr: u64) -> Result<MsgHdr, SockError> {
+        // 生产面：把用户的 `struct msghdr` 拷进 VFS。宿主下不可达 → Inval
+        // （C 的 `sys_datacopy_wrapper != OK → return r`）。
+        let mut raw = [0u8; MSGHDR_SIZE];
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            self.who.0,
+            addr,
+            minix_types::Endpoint::SELF.0,
+            raw.as_mut_ptr() as u64,
+            MSGHDR_SIZE as u64,
+        )
+        .map_err(|_| SockError::Inval)?;
+        Ok(decode_msghdr(&raw))
+    }
+
+    fn fetch_iov(&self, addr: u64) -> Result<IoVec, SockError> {
+        let mut raw = [0u8; IOVEC_SIZE];
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            self.who.0,
+            addr,
+            minix_types::Endpoint::SELF.0,
+            raw.as_mut_ptr() as u64,
+            IOVEC_SIZE as u64,
+        )
+        .map_err(|_| SockError::Inval)?;
+        Ok(decode_iovec(&raw))
+    }
+}
+
+/// 脚本替身：直接给出 msghdr/iovec（测试用，两种行为不同的实现之一）。
+#[cfg(test)]
+#[derive(Debug, Clone, Copy)]
+pub struct ScriptedMsgHdr {
+    /// 这条替身要回的 `msghdr`。
+    pub msghdr: MsgHdr,
+    /// 这条替身要回的 `iovec`。
+    pub iovec: IoVec,
+}
+
+#[cfg(test)]
+impl MsgHdrFetcher for ScriptedMsgHdr {
+    fn fetch_msghdr(&self, _addr: u64) -> Result<MsgHdr, SockError> {
+        Ok(self.msghdr)
+    }
+    fn fetch_iov(&self, _addr: u64) -> Result<IoVec, SockError> {
+        Ok(self.iovec)
+    }
+}
+
+/// 一律拒绝的替身（第二种行为不同的实现）。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RefusingMsgHdr;
+
+impl MsgHdrFetcher for RefusingMsgHdr {
+    fn fetch_msghdr(&self, _addr: u64) -> Result<MsgHdr, SockError> {
+        Err(SockError::Inval)
+    }
+    fn fetch_iov(&self, _addr: u64) -> Result<IoVec, SockError> {
+        Err(SockError::Inval)
+    }
+}
+
+/// `sizeof(struct msghdr)`（LP64：3 个指针 + socklen_t + size_t + socklen_t +
+/// int，含对齐）。
+pub const MSGHDR_SIZE: usize = 56;
+/// `sizeof(struct iovec)`（两个指针）。
+pub const IOVEC_SIZE: usize = 16;
+
+/// 按 LP64 域序解 `struct msghdr`（与 C 编译器布局一致）。
+pub fn decode_msghdr(raw: &[u8; MSGHDR_SIZE]) -> MsgHdr {
+    let rd8 = |at: usize| -> u64 {
+        let mut b = [0u8; 8];
+        b.copy_from_slice(&raw[at..at + 8]);
+        u64::from_le_bytes(b)
+    };
+    let rd4 = |at: usize| -> u32 {
+        let mut b = [0u8; 4];
+        b.copy_from_slice(&raw[at..at + 4]);
+        u32::from_le_bytes(b)
+    };
+    MsgHdr {
+        name: rd8(0),
+        namelen: rd4(8),
+        iov: rd8(16),
+        iovlen: rd8(24) as usize,
+        control: rd8(32),
+        controllen: rd4(40),
+        flags: rd4(44) as i32,
+    }
+}
+
+/// 按 LP64 域序**编回** `struct msghdr`（`resume_recvmsg` 要把它拷回用户）。
+pub fn encode_msghdr(mh: &MsgHdr) -> [u8; MSGHDR_SIZE] {
+    let mut raw = [0u8; MSGHDR_SIZE];
+    raw[0..8].copy_from_slice(&mh.name.to_le_bytes());
+    raw[8..12].copy_from_slice(&mh.namelen.to_le_bytes());
+    raw[16..24].copy_from_slice(&mh.iov.to_le_bytes());
+    raw[24..32].copy_from_slice(&(mh.iovlen as u64).to_le_bytes());
+    raw[32..40].copy_from_slice(&mh.control.to_le_bytes());
+    raw[40..44].copy_from_slice(&mh.controllen.to_le_bytes());
+    raw[44..48].copy_from_slice(&mh.flags.to_le_bytes());
+    raw
+}
+
+/// 按 LP64 域序解 `struct iovec`。
+pub fn decode_iovec(raw: &[u8; IOVEC_SIZE]) -> IoVec {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&raw[0..8]);
+    let base = u64::from_le_bytes(b);
+    b.copy_from_slice(&raw[8..16]);
+    IoVec {
+        base,
+        len: u64::from_le_bytes(b),
+    }
+}
+
 /// `iovec` plan (`do_sockmsg:566-587`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IovPlan {

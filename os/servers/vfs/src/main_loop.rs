@@ -1914,6 +1914,36 @@ impl VfsState {
         writing: bool,
         call: crate::fproc::SdevCall,
     ) -> Result<(), i32> {
+        self.send_sdev_readwrite_aux(
+            idx,
+            fp_slot,
+            dev,
+            data,
+            ctl,
+            addr,
+            flags,
+            writing,
+            call,
+            crate::fproc::SdevAux::None,
+        )
+    }
+
+    /// 同上，但允许指定现场里的 `aux`（`recvmsg` 要把 `msg_buf` 带下去——
+    /// 收尾要回写 msghdr 的几个字段，C `sdev_readwrite` 的最后一参）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_sdev_readwrite_aux(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        dev: u64,
+        data: Option<(u64, u64)>,
+        ctl: Option<(u64, u64)>,
+        addr: Option<(u64, u64)>,
+        flags: i32,
+        writing: bool,
+        call: crate::fproc::SdevCall,
+        aux: crate::fproc::SdevAux,
+    ) -> Result<(), i32> {
         let drv_e = crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
             .ok_or(minix_types::EIO)?;
         let (_, sock_id) = crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
@@ -1998,7 +2028,7 @@ impl VfsState {
             call,
             // `GrantId` 是 `i32` 的别名（minix-types `types::id`），直接放。
             grants: [grants[0], grants[1], grants[2]],
-            aux: crate::fproc::SdevAux::None,
+            aux,
         };
         self.suspend_on_sdev(fp_slot, idx, block)
     }
@@ -2190,7 +2220,7 @@ impl VfsState {
         }
 
         let recv_reply = minix_sockdriver::sdev::SdevReply::ReceiveReply as i32;
-        let status;
+        let mut status;
         let mut addr_len_out: Option<u32> = None;
         if msg.m_type == minix_sockdriver::sdev::SdevReply::Reply as i32 {
             // SAFETY: `mess_lsockdriver_vfs_reply { int32_t req_id; int status; }`。
@@ -2201,9 +2231,55 @@ impl VfsState {
             // ctl_len@8, addr_len@12, flags@16 }`。
             let raw = unsafe { &msg.m_u.raw };
             status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+            let ctl_len = u32::from_le_bytes(raw[8..12].try_into().unwrap());
             let addr_len = u32::from_le_bytes(raw[12..16].try_into().unwrap());
-            if status >= 0 && matches!(block.call, crate::fproc::SdevCall::Recvfrom) {
-                addr_len_out = Some(addr_len);
+            let rflags = i32::from_le_bytes(raw[16..20].try_into().unwrap());
+            match block.call {
+                crate::fproc::SdevCall::Recvfrom if status >= 0 => {
+                    addr_len_out = Some(addr_len);
+                }
+                crate::fproc::SdevCall::Recvmsg if status >= 0 => {
+                    // C `resume_recvmsg`（socket.c:600-660）：改 msghdr 的三个
+                    // 字段（`msg_controllen`/`msg_flags`/`msg_namelen`，后者只在
+                    // `addr_len > 0` 时改）再**整块拷回用户**；拷贝失败就把那个
+                    // 错误当状态回（C 的 `status = r`）。宿主下这次拷贝不可达，
+                    // 所以这里如实回 EIO/EINVAL。
+                    let update =
+                        crate::socket::recvmsg_update(ctl_len, rflags as u32, addr_len);
+                    let _ = update;
+                    if let crate::fproc::SdevAux::Buf(msgbuf) = block.aux {
+                        // 取回用户那份 msghdr（生产件是跨空间拷贝）。
+                        use crate::socket::MsgHdrFetcher as _;
+                        let fetcher = crate::socket::SysMsgHdrFetcher { who: target };
+                        if let Ok(mh) = fetcher.fetch_msghdr(msgbuf.0) {
+                            let mut raw_out = [0u8; crate::socket::MSGHDR_SIZE];
+                            {
+                                let mh = crate::socket::MsgHdr {
+                                    controllen: update.ctl_len,
+                                    flags: update.flags as i32,
+                                    namelen: update.addr_len.unwrap_or(mh.namelen),
+                                    ..mh
+                                };
+                                raw_out = crate::socket::encode_msghdr(&mh);
+                            }
+                            if minix_sys::syscall::sys_datacopy(
+                                &minix_sys::syscall::DirectKernelCallTransport,
+                                minix_types::Endpoint::SELF.0,
+                                raw_out.as_ptr() as u64,
+                                target.0,
+                                msgbuf.0,
+                                crate::socket::MSGHDR_SIZE as u64,
+                            )
+                            .is_err()
+                            {
+                                status = minix_types::EIO;
+                            }
+                        } else {
+                            status = minix_types::EIO;
+                        }
+                    }
+                }
+                _ => {}
             }
         } else if msg.m_type < 0 {
             status = msg.m_type;

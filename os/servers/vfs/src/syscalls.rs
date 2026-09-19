@@ -211,8 +211,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Mount
         | VfsCallNum::Umount
         | VfsCallNum::Select
-        | VfsCallNum::Sendmsg
-        | VfsCallNum::Recvmsg
         | VfsCallNum::Svrctl
         | VfsCallNum::Vmcall
         | VfsCallNum::Socketpath
@@ -1580,6 +1578,56 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
 
         // ── bind / connect（**进程级挂起**：C 的 sdev_suspend 形状）──
         // ── sendto / recvfrom（数据 + 地址两张 grant，进程级挂起）──
+        // ── sendmsg / recvmsg（msghdr + 单个 iovec；与 sendto/recvfrom 同一
+        //    条 sdev_readwrite，多一个控制缓冲与 msg_buf）──
+        VfsCallNum::Sendmsg | VfsCallNum::Recvmsg => {
+            // C `do_sockmsg`（socket.c:538-595）：载荷 `mess_lc_vfs_sockmsg`
+            // （fd@0、msgbuf@8、flags@16）。取用户 `struct msghdr`（跨空间）→
+            // iov 门（多元素向量不支持，> 1 即 EMSGSIZE；libc 会合并）→ 单条
+            // `iovec` → `sdev_readwrite(dev, data, ctl, addr, flags, ...)`。
+            let (fd, msgbuf, flags) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let msgbuf = u64::from_le_bytes(b8);
+                let flags = i32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]);
+                (fd, msgbuf, flags)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (dev, filp_flags) = match state.get_sock(fp_slot, fd) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e),
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // 取用户 msghdr（生产件是跨空间拷贝；宿主下 → EINVAL）。
+            let fetcher = crate::socket::SysMsgHdrFetcher { who: user_e };
+            match do_sockmsg(
+                state,
+                worker,
+                Some(fp_slot),
+                dev,
+                filp_flags,
+                msgbuf,
+                flags,
+                matches!(call, VfsCallNum::Recvmsg),
+                &fetcher,
+            ) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
         VfsCallNum::Sendto | VfsCallNum::Recvfrom => {
             // C `do_sendto`/`do_recvfrom`（socket.c:483-518）+ `sdev_readwrite`
             // （sdev.c:336-410）：载荷 `mess_lc_vfs_sendrecv`
@@ -3724,6 +3772,79 @@ fn f_pos_of(f: &crate::filp::Filp) -> i64 {
 
 // `OPEN_MAX` 由 `fproc.rs` 定义；表本地臂的 fd 边界经 `Fd::new` 检查。
 #[allow(unused_imports)]
+/// `do_sockmsg` 的共用体（C `do_sockmsg` socket.c:538-595）：取用户
+/// `struct msghdr`（经 `MsgHdrFetcher` 缝）→ iov 门（`> 1` 即 `EMSGSIZE`）→
+/// 单条 `iovec` 的长度门（`> SSIZE_MAX` → `EINVAL`）→ 与 sendto/recvfrom 同一条
+/// `send_sdev_readwrite`（`recvmsg` 还要把 `msg_buf` 带下去——收尾要回写
+/// msghdr 的几个字段）。
+///
+/// 抽成自由函数是为了**可注入取数件**：宿主下生产件取不到 msghdr，但"取到之后"
+/// 的 iov 门与请求形状可以用脚本替身测。
+#[allow(clippy::too_many_arguments)]
+fn do_sockmsg(
+    state: &mut VfsState,
+    worker: usize,
+    fp_slot: Option<minix_types::UserSlot>,
+    dev: u64,
+    filp_flags: i32,
+    msgbuf: u64,
+    flags: i32,
+    recv: bool,
+    fetcher: &impl crate::socket::MsgHdrFetcher,
+) -> Result<(), i32> {
+    let mh = fetcher.fetch_msghdr(msgbuf).map_err(|e| e.to_errno())?;
+    let (data_buf, data_len) = match crate::socket::iov_gate(mh.iovlen) {
+        Ok(crate::socket::IovPlan::Empty) => (0, 0),
+        Ok(crate::socket::IovPlan::One) => {
+            let iov = fetcher.fetch_iov(mh.iov).map_err(|e| e.to_errno())?;
+            crate::socket::check_iov_len(iov.len).map_err(|e| e.to_errno())?;
+            if iov.len > 0 {
+                (iov.base, iov.len)
+            } else {
+                (0, 0)
+            }
+        }
+        Err(e) => return Err(e.to_errno()),
+    };
+    let extra = minix_sockdriver::sdev::sock_msg_flags(
+        filp_flags & (crate::fcntl::O_NONBLOCK as i32) != 0,
+        !recv && filp_flags & (crate::fcntl::O_NOSIGPIPE as i32) != 0,
+    ) as i32;
+    let call_kind = if recv {
+        crate::fproc::SdevCall::Recvmsg
+    } else {
+        crate::fproc::SdevCall::Sendmsg
+    };
+    // `recvmsg` 的收尾要回写 msghdr，所以 `msg_buf` 随现场带下去
+    // （C `sdev_readwrite(..., user_buf)` 的最后一参）。
+    let aux = if recv {
+        crate::fproc::SdevAux::Buf(minix_types::VirBytes(msgbuf))
+    } else {
+        crate::fproc::SdevAux::None
+    };
+    let result = state.send_sdev_readwrite_aux(
+        worker,
+        fp_slot,
+        dev,
+        if data_buf != 0 { Some((data_buf, data_len)) } else { None },
+        if mh.control != 0 {
+            Some((mh.control, mh.controllen as u64))
+        } else {
+            None
+        },
+        if mh.name != 0 {
+            Some((mh.name, mh.namelen as u64))
+        } else {
+            None
+        },
+        flags | extra,
+        !recv,
+        call_kind,
+        aux,
+    );
+    result
+}
+
 use crate::fproc::OPEN_MAX;
 
 
@@ -4733,6 +4854,164 @@ mod tests {
             ),
             "发不出去就不该挂起"
         );
+    }
+
+    /// `Sendmsg`/`Recvmsg`：门同 socket 族；取用户 `struct msghdr`（生产件是
+    /// 跨空间拷贝，宿主不可达 → EINVAL）。取到之后的门与请求形状用**脚本替身**
+    /// 走 `do_sockmsg` 测：iov 多元素 → `EMSGSIZE`、`iov_len > SSIZE_MAX` →
+    /// `EINVAL`、单元素 → 数据/控制/地址三张 grant。
+    #[test]
+    fn test_sendmsg_recvmsg_iov_gates_and_shape() {
+        use crate::socket::{IoVec, MsgHdr, ScriptedMsgHdr};
+        use minix_types::Endpoint;
+
+        let setup = || {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let drv = Endpoint::from_generation_slot(0, 11);
+            state.smap_table.entries[0].endpt = Some(drv);
+            let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT | crate::open::W_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::PFS;
+                v.ino = 0x11;
+                v.mode = crate::open::S_IFSOCK | 0o777;
+                v.sdev = dev;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx)
+        };
+        let sockmsg_msg = |call: VfsCallNum, fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: call as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_sockmsg：fd@0、msgbuf@8、flags@16。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&0x6000u64.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 门：负 fd → EBADF；宿主下取 msghdr 不可达 → EINVAL。
+        let (mut state, _idx) = setup();
+        state.current_message = sockmsg_msg(VfsCallNum::Sendmsg, -1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Sendmsg),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        state.current_message = sockmsg_msg(VfsCallNum::Sendmsg, 3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Sendmsg),
+            SyscallResult::Error(minix_types::EINVAL),
+            "宿主下取不到用户的 msghdr"
+        );
+
+        // ② 脚本替身走 `do_sockmsg`：多元素向量 → EMSGSIZE。
+        let (mut state, idx) = setup();
+        let scripted = ScriptedMsgHdr {
+            msghdr: MsgHdr {
+                name: 0x7000,
+                namelen: 16,
+                iov: 0x8000,
+                iovlen: 2,
+                control: 0,
+                controllen: 0,
+                flags: 0,
+            },
+            iovec: IoVec { base: 0x9000, len: 8 },
+        };
+        let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+        let e = do_sockmsg(
+            &mut state,
+            idx,
+            Some(minix_types::UserSlot::new(0)),
+            dev,
+            0,
+            0x6000,
+            0,
+            false,
+            &scripted,
+        );
+        assert_eq!(e, Err(minix_types::EMSGSIZE), "多元素向量不支持");
+
+        // ③ 单元素但 `iov_len > SSIZE_MAX` → EINVAL。
+        let (mut state, idx) = setup();
+        let scripted = ScriptedMsgHdr {
+            msghdr: MsgHdr {
+                iovlen: 1,
+                ..scripted.msghdr
+            },
+            iovec: IoVec {
+                base: 0x9000,
+                len: u64::MAX,
+            },
+        };
+        let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+        let e = do_sockmsg(
+            &mut state,
+            idx,
+            Some(minix_types::UserSlot::new(0)),
+            dev,
+            0,
+            0x6000,
+            0,
+            false,
+            &scripted,
+        );
+        assert_eq!(e, Err(minix_types::EINVAL), "iov_len 越界");
+
+        // ④ `iovlen == 0`（空数据）：合法，照常给驱动发请求（宿主下发送失败
+        // → EIO），且**不建数据 grant**（C 对零缓冲不建 grant）。
+        let (mut state, idx) = setup();
+        let scripted = ScriptedMsgHdr {
+            msghdr: MsgHdr {
+                iovlen: 0,
+                ..scripted.msghdr
+            },
+            iovec: IoVec::default(),
+        };
+        let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+        let e = do_sockmsg(
+            &mut state,
+            idx,
+            Some(minix_types::UserSlot::new(0)),
+            dev,
+            0,
+            0x6000,
+            0,
+            true,
+            &scripted,
+        );
+        assert_eq!(e, Err(minix_types::EIO), "宿主下发送失败");
+        assert!(matches!(
+            state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap()
+                .blocked_on,
+            crate::fproc::BlockedOn::None
+        ));
     }
 
     /// `Accept`：门同 socket 族 + `check_sock_fds(1)`（新套接字要占一个 fd 槽）
