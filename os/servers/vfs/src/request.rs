@@ -471,6 +471,26 @@ pub fn encode_readsuper(
 /// device@8(dev_t)、inode@16(ino_t)、flags@24(u32 = fs_flags)、
 /// mode@28、uid@32、gid@36、con_reqs@40(u16,ipc.h:198-211)。
 /// `fs_e` 由调用方给(即 `m_source`,C 的 `res->fs_e = m.m_source`)。
+/// `REQ_STAT` 请求（C `req_stat_actual` — request.c:1087-1096）：载荷只有
+/// `{inode, grant}` 两域，FS 把 `struct stat` 直接写进 grant 指向的用户缓冲。
+///
+/// 偏移取共享权威 `minix_types::stat_req_off`（FS 侧解码用同一张表）。
+pub fn encode_stat(ino: u64, grant: i32) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_STAT,
+        ..Message::default()
+    };
+    // SAFETY: REQ_STAT 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::stat_req_off::INODE..minix_types::stat_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::stat_req_off::GRANT..minix_types::stat_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+    }
+    msg
+}
+
 pub fn decode_readsuper_reply(msg: &Message, fs_e: Endpoint) -> FsResp {
     // SAFETY: 同 encode_readsuper——按字节读回复载荷。
     let raw = unsafe { &msg.m_u.raw };

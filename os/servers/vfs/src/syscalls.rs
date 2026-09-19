@@ -162,7 +162,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Chown
         | VfsCallNum::Fchown
         | VfsCallNum::Stat
-        | VfsCallNum::Fstat
         | VfsCallNum::Lstat
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
@@ -204,6 +203,105 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // FS/驱动对话——W1 transport 通电后经 fs_comm 窗口接入
             // （plan.md §8 W3 尾注）。
             SyscallResult::Nosys
+        }
+
+        // ── 对话臂模板：fstat（fd 版 stat）──
+        VfsCallNum::Fstat => {
+            // C `do_fstat`（stadir.c:173-192）：`fd`/`buf` 取用户载荷 →
+            // `get_filp(fd, VNODE_READ)`（fd 有效 + 可读门）→
+            // `req_stat(v_fs_e, v_inode_nr, who_e, buf)`：
+            // magic grant 把用户 `struct stat` 缓冲授权给 FS 直写
+            // （`cpf_grant_magic(fs_e, user_e, buf, sizeof(struct stat),
+            // CPF_WRITE|CPF_TRY)` — request.c:1087）→ `fs_sendrec` 挂起。
+            // 用户载荷（minix-sys `fstat_via` 的编码面：fd@0、buf@8 —
+            // C `mess_lc_vfs_fstat` 的 LP64 换算）。
+            let (fd, statbuf) = {
+                // SAFETY: 该调用号的载荷按上述两域写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                (fd, u64::from_le_bytes(b8))
+            };
+            // 用户载荷里没有 fd 时（`fd < 0`）C 的 `get_filp` 走 EBADF。
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            // filp → vnode → (fs_e, ino)；顺带过 fd 有效性与可读门
+            // （C `get_filp(..., VNODE_READ)`）。
+            let target = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let filp = match state.filp_table.get(crate::filp::FilpId(filp_idx)) {
+                    Some(f) => f,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode_idx = match filp.vnode {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                (filp_idx, vnode.fs, vnode.ino)
+            };
+            let (filp_idx, fs_e, ino) = target;
+            let _ = filp_idx;
+            let vmnt = match state.vmnt_table.find_by_fs(fs_e) {
+                Some(v) => v.0,
+                // C `find_vmnt` 失败即 EIO（comm.c:137-140）。
+                None => return SyscallResult::Error(minix_types::EIO),
+            };
+            let Some(worker) = state.current_worker else {
+                // 无槽（非 run_once 路径或已被释放）——按 C 的
+                // `worker_available()==0` 同面回 EAGAIN。
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // magic grant：FS 往用户 stat 缓冲写（`CPF_WRITE | CPF_TRY`）。
+            const STRUCT_STAT_SIZE: u64 = 88; // sys/stat.h 的 LP64 struct stat
+            let grant = match state.grant_user_buffer(
+                fs_e,
+                user_e,
+                statbuf,
+                STRUCT_STAT_SIZE,
+                minix_types::CpFlags::WRITE | minix_types::CpFlags::TRY,
+            ) {
+                Ok(g) => g,
+                // C 在这里 panic（"cpf_grant_* failed"，request.c:1090）；
+                // Rust 按 EIO 回用户（内部错误的对外面）。
+                Err(_) => return SyscallResult::Error(minix_types::EIO),
+            };
+            let req = crate::request::encode_stat(ino, grant);
+            // 登记续接 + 待发（发送由主循环的 flush_pending_fs 做）。
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Fstat { grant });
+            }
+            state.pending_fs = Some(crate::main_loop::PendingFs {
+                vmnt,
+                fs_e,
+                worker,
+                grant,
+                user: user_e,
+                req,
+            });
+            // C 的 `worker_wait()`：单线程模型里＝臂返回 Suspend、槽停在
+            // WaitingForFs（由 flush_pending_fs 经 fs_sendrec 置位）。
+            SyscallResult::Suspend
         }
 
         // ── 服务器自用臂：getsysinfo（VFS_GETSYSINFO = +48）──
@@ -286,6 +384,72 @@ mod tests {
         state.current_fp_slot = Some(slot);
         state.initialized = true;
         state
+    }
+
+    /// `Fstat` 臂（对话臂模板）：fd 无效/空槽在**任何 I/O 之前**就回
+    /// EBADF（C `get_filp` 的门）；挂载窗口缺失回 EIO（C `find_vmnt`）；
+    /// 门全过才走 grant（宿主构建下 `grant_magic` 不可达 → 诚实回 EIO，
+    /// 与 C 在 grant 失败处 panic 的"内部错误对外面"同值）。
+    #[test]
+    fn test_dispatch_fstat_gates_then_grant() {
+        use minix_types::Endpoint;
+
+        let fstat_msg = |fd: i32, buf: u64| {
+            let mut m = Message::default();
+            m.m_source = Endpoint::from_generation_slot(1, 0);
+            m.m_type = VfsCallNum::Fstat as i32;
+            // SAFETY: fstat 载荷 fd@0、buf@8（minix-sys fstat_via 同布局）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&buf.to_le_bytes());
+            }
+            m
+        };
+
+        // 负 fd：C 的 `get_filp` 走 EBADF。
+        let mut state = seeded(100);
+        state.current_message = fstat_msg(-1, 0x5000);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fstat),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // fd 没有对应 filp → EBADF。
+        state.current_message = fstat_msg(3, 0x5000);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fstat),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // 有 filp 但 vnode 为空 → EBADF（C 的 filp 总有 vnode；这里对应
+        // "fd 指向的东西已失效"）。
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        state.current_message = fstat_msg(3, 0x5000);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fstat),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // filp + vnode 齐：走到挂载窗口与 grant —— 无 vmnt 时 EIO。
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 0x1234;
+        }
+        state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap().vnode = Some(vid.get());
+        state.current_message = fstat_msg(3, 0x5000);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fstat),
+            SyscallResult::Error(minix_types::EIO),
+            "无 vmnt → C find_vmnt 失败的 EIO"
+        );
     }
 
     /// `VFS_GETSYSINFO` 臂（W3 回复半的服务器自用臂）：三段与 C

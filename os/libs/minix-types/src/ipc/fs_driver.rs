@@ -204,6 +204,17 @@ pub mod transfer_req_off {
     pub const BYTES: usize = 24;
 }
 
+/// `REQ_STAT` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_stat { ino_t inode; cp_grant_id_t grant; }`
+/// (ipc.h:…… 由 `request.c:1087-1096` 的 `req_stat_actual` 填充)。
+pub mod stat_req_off {
+    /// `ino_t inode`。
+    pub const INODE: usize = 0;
+    /// `cp_grant_id_t grant`（FS 往用户 `struct stat` 写的 magic grant）。
+    pub const GRANT: usize = 8;
+}
+
 /// `REQ_READSUPER` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_readsuper`（ipc.h:2112-2119）：`dev_t device`、
@@ -300,6 +311,9 @@ mod tests {
         assert_eq!(transfer_req_off::SEEK_POS, 8);
         assert_eq!(transfer_req_off::GRANT, 16);
         assert_eq!(transfer_req_off::BYTES, 24);
+        // stat：inode/grant 两个域。
+        assert_eq!(stat_req_off::INODE, 0);
+        assert_eq!(stat_req_off::GRANT, 8);
         // reads超級：device/flags/path_len/grant。
         assert_eq!(readsuper_req_off::DEVICE, 0);
         assert_eq!(readsuper_req_off::FLAGS, 8);

@@ -335,6 +335,9 @@ pub struct VfsState {
     /// 槽指针；臂用它登记续接、发送 FS 请求）。`None` = 未绑（非 syscall
     /// 路径或已释放）。
     pub current_worker: Option<usize>,
+    /// 臂登记、待主循环发出的 FS 对话（单线程模型：臂只碰状态，I/O 归
+    /// 循环——C 的 `fs_sendrec` 在同一处既登记又发送，这里拆成两半）。
+    pub pending_fs: Option<PendingFs>,
     /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
     /// `(调用方, m_type)` 入队，`run()` 在每轮循环尾用
     /// [`send_reply`] 发出（C `reply(who_e, result)` 的位置）。
@@ -368,6 +371,7 @@ impl VfsState {
             pending_reply: None,
             grants: minix_sys::grant::GrantTable::new(),
             current_worker: None,
+            pending_fs: None,
         }
     }
 
@@ -725,6 +729,43 @@ impl VfsState {
         route
     }
 
+    /// 把臂登记的 FS 对话发出去（C `fs_sendrec` 的发送半；臂里做不到，
+    /// 因为臂没有 transport 句柄）。
+    ///
+    /// 成功：`fs_sendrec` 把 worker 槽置 `WaitingForFs` 并投递，作业挂起
+    /// 等回复（由 [`Self::handle_fs_reply`] 落地、[`Self::run_worker_continuations`]
+    /// 收尾）。
+    /// 失败：C 的臂会走错误回复并结束作业——这里照做：撤 grant、清续接、
+    /// 释放槽、回错误给用户。
+    pub fn flush_pending_fs(&mut self, transport: &mut impl crate::fs_comm::FsTransport) {
+        let Some(p) = self.pending_fs.take() else {
+            return;
+        };
+        match self.fs_sendrec(transport, p.vmnt, p.fs_e, p.worker, &p.req) {
+            Ok(()) => {}
+            Err(e) => {
+                if let Some(wp) = self.worker_pool.get_mut(p.worker) {
+                    wp.cont = None;
+                    wp.sendrec = None;
+                    wp.task = None;
+                }
+                let _ = self.revoke_grant(p.grant);
+                self.worker_pool.release(p.worker);
+                if self.current_worker == Some(p.worker) {
+                    self.current_worker = None;
+                }
+                // C 的错误面：comm.c 的 `find_vmnt` 失败给 EIO、自死锁给
+                // EDEADLK；本原语把两者都折成 EIO（对用户可观测的都是
+                // "这次对话没成"）。
+                let _ = e;
+                self.queue_reply(
+                    p.user,
+                    crate::call_table::SyscallResult::Error(minix_types::EIO),
+                );
+            }
+        }
+    }
+
     /// 跑所有"回复已到、续接未跑"的作业。
     ///
     /// 判定：槽上有续接标识（`cont`）且回复已落在 `sendrec`（由
@@ -781,6 +822,9 @@ impl VfsState {
                 wp.task = None;
             }
             self.worker_pool.release(idx);
+            if self.current_worker == Some(idx) {
+                self.current_worker = None;
+            }
             if let Some(fp_slot) = fp_slot
                 && let Some(fp) = self.fproc_table.get(fp_slot)
             {
@@ -1149,6 +1193,23 @@ impl Default for VfsState {
     }
 }
 
+/// 一条待发的 FS 对话（见 [`VfsState::flush_pending_fs`]）。
+#[derive(Debug, Clone, Copy)]
+pub struct PendingFs {
+    /// 目标挂载窗口（`vmnt` 下标）。
+    pub vmnt: usize,
+    /// 目标文件系统端点。
+    pub fs_e: Endpoint,
+    /// 该作业占用的 worker 槽下标。
+    pub worker: usize,
+    /// 已发给 FS 的 magic grant（发送失败时由循环撤销）。
+    pub grant: i32,
+    /// 用户端点（回复目的地）。
+    pub user: Endpoint,
+    /// 请求消息（`REQ_*`）。
+    pub req: Message,
+}
+
 /// SEF 循环的 IPC 适配:`SefIpc` 只需要 receive/notify 两动词,由
 /// trap 直连传输承载(VM 的 `SefAdapter` 同形;S13 W4 接线)。
 pub struct VfsIpc {
@@ -1252,6 +1313,12 @@ pub fn run() -> ! {
                 if let Some((target, code)) = state.take_reply() {
                     send_reply(target, code);
                 }
+                // 臂登记的 FS 对话在这一段发出（生产传输：trap 直连 +
+                // grant 已由臂发出）。发送失败在 flush 内部收尾。
+                let mut fs_ipc = crate::fs_comm::IpcFsTransport {
+                    transport: minix_sys::ipc::DirectTrapTransport,
+                };
+                state.flush_pending_fs(&mut fs_ipc);
             }
             SefEvent::Signal(_) => {}
             // init_restart ≡ init_fresh(已文档化);LU prepare/rollback 的
@@ -1287,6 +1354,58 @@ mod tests {
         let mut m = Message { m_type: crate::fs_comm::TransId::add(req, slot) as i32, ..Message::default() };
         m.m_source = source;
         m
+    }
+
+    /// 续接层（`run_worker_continuations`）：回复已落槽的作业按续接标识
+    /// 收尾——Fstat 只撤 grant 并把状态回给用户；`ERESTART` 折 `EIO`
+    /// （C comm.c:161-163）；槽被释放。
+    #[test]
+    fn test_worker_continuation_fstat_completes_job() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        // 手工摆出"臂挂起后回复已到"的槽态：cont + sendrec + WaitingForFs。
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .expect("空闲槽");
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Fstat { grant: 7 });
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply(),
+            Some((user, 0)),
+            "Fstat 成功：状态 0 回用户"
+        );
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+
+        // ERESTART 折 EIO（C comm.c:161-163）。
+        let idx2 = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        {
+            let wp = state.worker_pool.get_mut(idx2).unwrap();
+            wp.cont = Some(WorkerCont::Fstat { grant: 8 });
+            wp.sendrec = Some(Message {
+                m_type: minix_types::ERESTART,
+                ..Message::default()
+            });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(state.take_reply(), Some((user, minix_types::EIO)));
     }
 
     /// W3 回复半：`SyscallResult` → 回复入队的映射（C `do_work` 尾部
