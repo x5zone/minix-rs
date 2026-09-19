@@ -213,7 +213,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Rename
         | VfsCallNum::Symlink
         | VfsCallNum::Truncate
-        | VfsCallNum::Fchmod
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
@@ -1097,6 +1096,56 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 路径臂模板：unlink / rmdir（父目录遍历 + 粘滞位子遍历）──
         // ── chown / fchown（C `do_chown`，protect.c:24-110，两条调用号共用
         // 一个函数体：path 半走遍历，fd 半从 filp 取 vnode）──
+        // ── fchmod（C `do_chmod`，protect.c:62-133 的 fd 半：从 filp 取
+        // vnode，之后与 path 半共用同一个体）──
+        VfsCallNum::Fchmod => {
+            // 载荷 `mess_lc_vfs_fchmod`（ipc.h:647-652）：fd@0、mode@8。
+            let (fd, mode) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mode = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                (fd, mode)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            // C `do_chmod:88-93`：`get_filp(rfd, VNODE_WRITE)`——只要 fd 有效，
+            // 不查打开模式（与 ftruncate 的 W 位门不同）。
+            let vnode_idx = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                match state
+                    .filp_table
+                    .get(crate::filp::FilpId(filp_idx))
+                    .and_then(|f| f.vnode)
+                {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                }
+            };
+            let (fs_e, ino, node_uid, node_gid) =
+                match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => (v.fs, v.ino, v.uid, v.gid),
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+            state.finish_chmod(worker, Some(fp_slot), fs_e, ino, node_uid, node_gid, mode, vnode_idx);
+            // 共用体自己决定挂起还是收尾，统一报挂起（同 Fchown）。
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Chown | VfsCallNum::Fchown => {
             // 载荷 `mess_lc_vfs_chown`（ipc.h:611-619）：name@0、len@8、fd@16、
             // owner@20、group@24——path 半用 name/len，fd 半用 fd。
@@ -2491,6 +2540,163 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Fchmod` 臂（fd 半）：fd 门（只要 fd 有效，**不查打开模式**——与
+    /// ftruncate 的 W 位门不同，C `do_chmod:88-93`）→ 属主门（EPERM）→
+    /// 只读门（EROFS）→ setgid 清位 → `REQ_CHMOD`；回复带整字模式并写回缓存。
+    #[test]
+    fn test_dispatch_fchmod_gates_request_and_cache() {
+        use minix_types::Endpoint;
+
+        let fchmod_msg = |fd: i32, mode: u32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Fchmod as i32,
+                ..Message::default()
+            };
+            // SAFETY: fchmod 载荷 fd@0、mode@8（ipc.h:647-652）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..12].copy_from_slice(&mode.to_le_bytes());
+            }
+            m
+        };
+        let user_e = Endpoint::from_generation_slot(1, 0);
+        // 现场：fd 3 → filp（只读打开）→ vnode（属主 1000、属组 100、0644）。
+        let setup = |eff_uid: u32, eff_gid: u32, readonly_fs: bool| {
+            let mut state = seeded(100);
+            {
+                let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+                v.fs = Endpoint::MFS;
+                v.dev = 1;
+                if readonly_fs {
+                    v.flags = crate::vmnt::VmntFlags::READONLY;
+                }
+            }
+            let _ = state.grants.grant_direct(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                Endpoint::MFS.get(),
+                0x1000,
+                8,
+                minix_types::CpFlags::READ,
+            );
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x21;
+                v.mode = crate::open::S_IFREG | 0o644;
+                v.uid = 1000;
+                v.gid = 100;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            {
+                let fp = state
+                    .fproc_table
+                    .get_mut(minix_types::UserSlot::new(0))
+                    .unwrap();
+                fp.eff_uid = eff_uid;
+                fp.eff_gid = eff_gid;
+            }
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, vid, idx)
+        };
+
+        // ① 负 fd 与空槽 → EBADF。
+        let (mut state, _vid, _idx) = setup(1000, 100, false);
+        state.current_message = fchmod_msg(-1, 0o600);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchmod),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        state.current_message = fchmod_msg(9, 0o600);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchmod),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // ② 非属主 → EPERM（收尾路径统一报挂起，回复已入队）。
+        let (mut state, _vid, _idx) = setup(2000, 100, false);
+        state.current_message = fchmod_msg(3, 0o600);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchmod),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user_e, minix_types::EPERM))
+        );
+
+        // ③ 属主但只读挂载 → EROFS。
+        let (mut state, _vid, _idx) = setup(1000, 100, true);
+        state.current_message = fchmod_msg(3, 0o600);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchmod),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user_e, minix_types::EROFS))
+        );
+
+        // ④ 属主 + 可写：setgid 位被清（文件组 100 == 有效组 100 → **不清**，
+        // 这里让有效组不同才清）。
+        let (mut state, vid, idx) = setup(1000, 999, false);
+        state.current_message = fchmod_msg(3, 0o2664);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchmod),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_CHMOD");
+        assert_eq!(p.req.m_type, minix_types::REQ_CHMOD);
+        // SAFETY(test): 按 chmod_req_off 读回 inode/mode。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let mode = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            assert_eq!(ino, 0x21);
+            assert_eq!(mode, 0o664, "不同组 → setgid 被清");
+        }
+
+        // 回复带整字模式（含类型位）→ 写回缓存。
+        state.pending_fs = None;
+        let mut reply = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 按 chmod_reply_off 填新模式。
+        unsafe {
+            reply.m_u.raw[0..4]
+                .copy_from_slice(&(crate::open::S_IFREG | 0o600).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(reply);
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(state.take_reply().map(|(t, m)| (t, m.m_type)), Some((user_e, 0)));
+        assert_eq!(
+            state.vnode_table.get(vid).unwrap().mode,
+            crate::open::S_IFREG | 0o600
+        );
     }
 
     /// `Readlink` 臂的窗口门（C link.c:486）：`bufsize > SSIZE_MAX` 即

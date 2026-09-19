@@ -1191,6 +1191,75 @@ impl VfsState {
         });
     }
 
+    /// `do_chmod` 的**共用体**（C protect.c:62-133 的 path 与 fd 两半只差
+    /// vnode 的来源）：属主/超级用户门（EPERM）→ 只读门（EROFS）→ setgid
+    /// 清位（`protect::strip_setgid`）→ `REQ_CHMOD`；回复带**整字模式**，
+    /// 续接体写回 vnode 缓存。
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_chmod(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+        ino: u64,
+        node_uid: u32,
+        node_gid: u32,
+        mode: u32,
+        vnode: usize,
+    ) {
+        let (eff_uid, eff_gid) = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+            Some(fp) => (fp.eff_uid, fp.eff_gid),
+            None => {
+                self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                return;
+            }
+        };
+        // C `do_chmod:112-114`：只有属主或超级用户能改模式。
+        if node_uid != eff_uid && eff_uid != crate::link::SU_UID {
+            self.finish_worker_job(idx, fp_slot, minix_types::EPERM);
+            return;
+        }
+        let readonly_fs = self
+            .vmnt_table
+            .find_by_fs(fs_e)
+            .and_then(|v| self.vmnt_table.get(v))
+            .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+            .unwrap_or(false);
+        if readonly_fs {
+            self.finish_worker_job(idx, fp_slot, minix_types::EROFS);
+            return;
+        }
+        // 非超级用户且文件不在自己的组里就清 setgid（protect.c:120-121）。
+        let new_mode = crate::protect::strip_setgid(
+            eff_uid == crate::link::SU_UID,
+            node_gid,
+            eff_gid,
+            mode,
+        );
+        let vmnt = match self.vmnt_table.find_by_fs(fs_e) {
+            Some(v) => v.0,
+            None => {
+                self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                return;
+            }
+        };
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Chmod { vnode });
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt,
+            fs_e,
+            worker: idx,
+            grant: 0, // 无数据面
+            user,
+            req: crate::request::encode_chmod(ino, new_mode),
+        });
+    }
+
     /// 收尾一个挂起的作业并回用户（错误路径与相位 2 之后的统一出口）。
     pub fn finish_worker_job(
         &mut self,
@@ -1671,65 +1740,17 @@ impl VfsState {
                                 );
                                 continue;
                             }
-                            crate::worker::PathFollow::Chmod { user, mode } => {
-                                // C `do_chmod` 的本地半（protect.c:112-124）：
-                                // 只有属主或超级用户能改模式（否则 EPERM），
-                                // 只读挂载上谁都不能（EROFS）；非超级用户且
-                                // 文件的组不是自己的有效组时**清掉 setgid 位**
-                                // （protect.c:120-121）。
-                                let (eff_uid, eff_gid) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (fp.eff_uid, fp.eff_gid),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
-                                if node.uid != eff_uid && eff_uid != crate::link::SU_UID {
-                                    self.finish_worker_job(idx, fp_slot, minix_types::EPERM);
-                                    continue;
-                                }
-                                let readonly_fs = self
-                                    .vmnt_table
-                                    .find_by_fs(node.fs_e)
-                                    .and_then(|v| self.vmnt_table.get(v))
-                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
-                                    .unwrap_or(false);
-                                if readonly_fs {
-                                    self.finish_worker_job(idx, fp_slot, minix_types::EROFS);
-                                    continue;
-                                }
-                                // 非超级用户且文件不在自己的组里就清 setgid
-                                // （protect.c:120-121）——决策函数已有。
-                                let new_mode = crate::protect::strip_setgid(
-                                    eff_uid == crate::link::SU_UID,
-                                    node.gid,
-                                    eff_gid,
-                                    mode,
-                                );
+                            crate::worker::PathFollow::Chmod { user: _u, mode } => {
+                                // C `do_chmod` 的路径半：走完并表 vnode，然后进
+                                // 共用体（属主门 + 只读门 + setgid 清位 + 发请求）。
                                 let Some(vnode) = self.intern_vnode(&node) else {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
                                     continue;
                                 };
-                                let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
-                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
-                                    continue;
-                                };
-                                if let Some(wp) = self.worker_pool.get_mut(idx) {
-                                    wp.cont = Some(crate::worker::WorkerCont::Chmod { vnode });
-                                }
-                                self.pending_fs = Some(PendingFs {
-                                    vmnt: vmnt.0,
-                                    fs_e: node.fs_e,
-                                    worker: idx,
-                                    grant: 0, // 无数据面
-                                    user,
-                                    req: crate::request::encode_chmod(node.ino, new_mode),
-                                });
+                                self.finish_chmod(
+                                    idx, fp_slot, node.fs_e, node.ino, node.uid, node.gid, mode,
+                                    vnode,
+                                );
                                 continue;
                             }
                             crate::worker::PathFollow::Rdlink { user, buf, buf_size } => {
