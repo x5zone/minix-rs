@@ -964,8 +964,120 @@ fn translate_udp_data(
     }
 }
 
+// ---------------------------------------------------------------------------
+// 选项路（SDEV_SETSOCKOPT/SDEV_GETSOCKOPT，第 08/09 篇的 sdev 面收尾）：
+// C 侧的选项处理分两层——libsockevent 框架半管 SOL_SOCKET 的开关型与
+// 容量型选项（sockevent.c:1823-1966），各套接字模块的 sop_setsockopt
+// 管协议级选项（tcpsock.c:2123/udpsock.c:580）。本模型两层都在服务：
+// SOL_SOCKET 的已支持名单走墙方法，其余名字与协议级选项按 C 框架的
+// "驱动必须对不认识的选项回 ENOPROTOOPT"契约（sockdriver.c:843-844 的
+// 对偶注记）诚实拒绝——已登记差异见 FIXLOG 与 25 篇 §3。
+// ---------------------------------------------------------------------------
+
+/// `SDEV_SETSOCKOPT`/`SDEV_GETSOCKOPT` 的载荷：
+/// `mess_vfs_lsockdriver_getset { req_id@0; sock_id@4; level@8; name@12;
+/// grant@16; len@20 }`（ipc.h:2270-2281）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GetSetRequest {
+    pub req_id: i32,
+    pub sock_id: i32,
+    pub level: i32,
+    pub name: i32,
+    pub grant: i32,
+    pub len: u32,
+}
+
+/// 解码 `mess_vfs_lsockdriver_getset` 载荷。
+pub fn decode_getset(msg: &Message) -> Option<GetSetRequest> {
+    // SAFETY: 载荷按上述域序写在消息负载区。
+    let raw = unsafe { &msg.m_u.raw };
+    let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
+    Some(GetSetRequest {
+        req_id: word(0),
+        sock_id: word(4),
+        level: word(8),
+        name: word(12),
+        grant: word(16),
+        len: word(20) as u32,
+    })
+}
+
+/// 选项路：设置方向拷入选项值、落墙；查询方向读当前值拷回用户 grant、
+/// 回复成功码就是拷出的字节数（C `do_getsockopt` 的"主回复码即长度"
+/// 契约，sockdriver.c:852-861；设置成功回 0，sockdriver.c:827-834）。
+pub fn sockopt_road(
+    stack: &mut dyn Stack,
+    copy: &mut dyn CopyTransport,
+    caller: Endpoint,
+    msg: &Message,
+) -> Option<Message> {
+    let Some(req) = decode_getset(msg) else {
+        return Some(simple_reply(0, -(minix_types::EINVAL)));
+    };
+    let setting = msg.m_type == SdevRequest::SetSockOpt as i32;
+    // 只有 SOL_SOCKET 层进墙：协议级选项（IPPROTO_TCP/IPPROTO_IP 的
+    // NODELAY、组播族等）在 C 由各模块的 sop_setsockopt 承接，本模型
+    // 尚未接——统一按 ENOPROTOOPT 诚实拒绝（登记差异）。
+    if req.level != crate::lwip_port::SOL_SOCKET {
+        return Some(simple_reply(req.req_id, wire(minix_types::ENOPROTOOPT)));
+    }
+    // RT/LNK 是服务侧类，无选项面语义（C rtsock_setsockopt 的
+    // USELOOPBACK/RCVBUF 随通告队列批一并评估，登记）。
+    let service_class = SockId::from_raw(req.sock_id)
+        .and_then(|id| id.class())
+        .is_some_and(|class| matches!(class, sockid::SockClass::Rt | sockid::SockClass::Lnk));
+    if service_class {
+        return Some(simple_reply(req.req_id, wire(minix_types::ENOPROTOOPT)));
+    }
+    let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+        return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+    };
+    // 设置方向的值拷入：C `sockdriver_copyin_opt` 要求长度恰为
+    // sizeof(int)（sockdriver.c:184-194，不等即 EINVAL）。
+    let requested = if setting {
+        if req.len != 4 {
+            return Some(simple_reply(req.req_id, -(minix_types::EINVAL)));
+        }
+        let mut bytes = [0u8; 4];
+        if copy
+            .safecopy_from(caller.0, req.grant, 0, &mut bytes)
+            .is_err()
+        {
+            return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+        }
+        Some(i32::from_le_bytes(bytes))
+    } else {
+        None
+    };
+    let outcome = match stack_socket.family() {
+        StackFamily::Tcp => stack.sockopt_tcp(stack_socket, req.name, requested),
+        StackFamily::Udp => stack.sockopt_udp(stack_socket, req.name, requested),
+        // RAW 的选项面随 HDRINCL 选项批（跨线挂账维持登记）。
+        _ => Err(crate::util::STACK_BAD_ARGUMENT),
+    };
+    Some(match outcome {
+        // 墙不认识的名字：诚实的"选项未支持"。
+        Err(e) if e == crate::util::STACK_BAD_ARGUMENT => {
+            simple_reply(req.req_id, wire(minix_types::ENOPROTOOPT))
+        }
+        Err(e) => simple_reply(req.req_id, wire(e)),
+        Ok(None) => simple_reply(req.req_id, 0),
+        Ok(Some(value)) => {
+            // 查询方向：值拷回用户 grant，按用户 optlen 截（C
+            // `sockdriver_copyout_opt` 的截断语义，sockdriver.c:201-212），
+            // 回复成功码 = 拷出长度。
+            let bytes = value.to_le_bytes();
+            let out_len = (req.len as usize).min(bytes.len());
+            match copy.safecopy_to(caller.0, req.grant, 0, &bytes[..out_len]) {
+                Ok(()) => simple_reply(req.req_id, out_len as i32),
+                Err(code) => simple_reply(req.req_id, wire(code)),
+            }
+        }
+    })
+}
+
 /// 统一分派：按线上套接字的类把请求交给 UDP 路或 TCP 路。未知类
-/// （route/link 两域的模块随后批）按未接线回答。
+/// （route/link 两域的消息面随后批）按未接线回答。
 #[allow(clippy::too_many_arguments)]
 pub fn translate(
     stack: &mut dyn Stack,
@@ -1616,5 +1728,148 @@ mod tests {
         // SAFETY(test): { req_id@0; status@4 }。
         let raw = unsafe { &reply.m_u.raw };
         assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), -(minix_types::ENOSYS));
+    }
+
+    /// getset 请求的构造助手（ipc.h:2270-2281 域序）。
+    fn getset_msg(set: bool, req_id: i32, sock_id: i32, level: i32, name: i32, grant: i32, len: u32) -> Message {
+        let mut msg = Message::default();
+        msg.m_type = if set {
+            SdevRequest::SetSockOpt as i32
+        } else {
+            SdevRequest::GetSockOpt as i32
+        };
+        // SAFETY(test): 按 mess_vfs_lsockdriver_getset 域序填。
+        unsafe {
+            let raw = &mut msg.m_u.raw;
+            raw[0..4].copy_from_slice(&req_id.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&level.to_le_bytes());
+            raw[12..16].copy_from_slice(&name.to_le_bytes());
+            raw[16..20].copy_from_slice(&grant.to_le_bytes());
+            raw[20..24].copy_from_slice(&(len as i32).to_le_bytes());
+        }
+        msg
+    }
+
+    #[test]
+    fn test_sockopt_road_tcp_roundtrip_and_honest_refusals() {
+        use crate::lwip_port::{SO_KEEPALIVE, SO_SNDBUF, SOL_SOCKET};
+        let (mut stack, mut _table) = fixture();
+        let req = SocketRequest {
+            req_id: 1, domain: domain::INET, sock_type: sock_type::STREAM,
+            protocol: 0, user_endpt: 100,
+        };
+        let id = open_socket(&mut stack, &mut _table, &req, false).unwrap();
+        let mut copy = CannedCopyTransport::default();
+        let caller = Endpoint(100);
+
+        // 设置：值经 grant 拷入（4 字节恰长），成功回 0。
+        copy.from.push((7, 1i32.to_le_bytes().to_vec()));
+        let reply = sockopt_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &getset_msg(true, 5, id, SOL_SOCKET, SO_KEEPALIVE, 7, 4),
+        )
+        .unwrap();
+        // SAFETY(test): { req_id@0; status@4 }。
+        let raw = unsafe { &reply.m_u.raw };
+        assert_eq!(reply.m_type, SdevReply::Reply as i32);
+        assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 5);
+        assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 0, "设置成功");
+
+        // 查询：当前值拷回 grant（写入账），回复成功码 = 拷出长度 4。
+        let reply = sockopt_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &getset_msg(false, 6, id, SOL_SOCKET, SO_KEEPALIVE, 9, 4),
+        )
+        .unwrap();
+        let raw = unsafe { &reply.m_u.raw };
+        assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 4, "回 4 字节");
+        assert!(
+            copy.written
+                .iter()
+                .any(|(g, b)| *g == 9 && b.as_slice() == [1, 0, 0, 0]),
+            "使能值已拷进用户缓冲"
+        );
+
+        // 非法名与非法层：ENOPROTOOPT（诚实拒绝）。
+        let reply = sockopt_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &getset_msg(true, 8, id, SOL_SOCKET, 0x2000, 7, 4),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::ENOPROTOOPT),
+            "SOL_SOCKET 未知名拒绝"
+        );
+        let reply = sockopt_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &getset_msg(true, 9, id, 6 /* IPPROTO_TCP */, 0x2000, 7, 4),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::ENOPROTOOPT),
+            "协议级选项未接（登记差异）"
+        );
+
+        // 设置长度非 4：EINVAL（C copyin_opt 的恰长契约）。
+        let reply = sockopt_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &getset_msg(true, 10, id, SOL_SOCKET, SO_SNDBUF, 7, 8),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::EINVAL)
+        );
+    }
+
+    #[test]
+    fn test_sockopt_road_service_classes_and_bad_fd() {
+        use crate::lwip_port::{SO_KEEPALIVE, SOL_SOCKET};
+        let (mut stack, mut table) = fixture();
+        let mut copy = CannedCopyTransport::default();
+        let caller = Endpoint(100);
+
+        // RT 类（服务侧对象）：选项面无语义 → ENOPROTOOPT。
+        let rt_id = open_service_socket(&mut table, sockid::SockClass::Rt).unwrap();
+        let reply = sockopt_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &getset_msg(true, 1, rt_id, SOL_SOCKET, SO_KEEPALIVE, 1, 4),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::ENOPROTOOPT),
+            "RT 类无选项面"
+        );
+
+        // 负号（线上错误通道的保留区）：EBADF。非负的良构号落在已关
+        // 槽位时与其他路一致走墙的通用错误（-204）。
+        let ghost = -1i32;
+        let reply = sockopt_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &getset_msg(false, 2, ghost, SOL_SOCKET, SO_KEEPALIVE, 1, 4),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::EBADF)
+        );
     }
 }

@@ -82,6 +82,28 @@ smoltcp 的独立 ICMP 套接字不在本特性集里，等第 07 篇批次裁�
 换算出毫秒送进 `Stack::poll`，栈报回的下次交付时刻也是毫秒。两种实现
 （smoltcp 或回退的 FFI 栈）都吃同一个时间形状。
 
+**选项半（SDEV_SETSOCKOPT/SDEV_GETSOCKOPT 的墙方法，选项批补充）。**
+C 的选项处理分两层：libsockevent 框架半承接 SOL_SOCKET 的开关型与容量型
+选项（`sockevent.c:1823-1966`），各套接字模块的 `sop_setsockopt` 承接协议级
+选项（`tcpsock.c:2123`、`udpsock.c:580`）。本模型两层都在服务，墙上只开一个
+收拢口子：`Stack::sockopt_tcp` 与 `Stack::sockopt_udp`，形状是
+`(socket, name, Option<i32>) -> Result<Option<i32>, i32>`——带值即设置
+（回 `Ok(None)`），`None` 即查询（回当前值）。收拢形 vs 逐选项一个墙方法
+的取舍：后者会让墙随选项清单膨胀且每加一项都动特征，收拢后墙上只有两个
+方法，名字的"已支持名单"作为策略留在服务路（sockopt_road），墙只认名单
+内的名字并落效果，不认识的名字按栈参数错误回答、由路折成 ENOPROTOOPT
+（C 框架对驱动不认识的选项同样要求 ENOPROTOOPT，`sockdriver.c:843-844`
+的对偶契约）。已落名单与效果：SO_KEEPALIVE（TCP，使能取 C pcb 缺省空闲值
+`TCP_KEEPIDLE_DEFAULT` = 7200000 毫秒，`tcp_priv.h:138-139`）、SO_SNDBUF/
+SO_RCVBUF（TCP/UDP 各按 `tcpsock.c:86-91`/`udpsock.c:29-34` 的三档契约
+界内改记、查询回当前值）、SO_BROADCAST（UDP；smoltcp 无对位 API，广播
+收发是栈内行为 `udp.rs:483`，旗标记在服务侧槽位上，查询语义保留——发送
+面的差异在此登记）。**已登记差异**：物理缓冲维持 lwipopts 契约尺寸、不随
+SO_SNDBUF/SO_RCVBUF 改（smoltcp 缓冲构造后定容）；协议级选项（NODELAY、
+KEEPIDLE 族、组播族）与框架开关族的其余名字（REUSEADDR、LINGER、
+LOWAT/TIMEO 等，`sockevent.c:1857-1966`）统一按 ENOPROTOOPT 诚实拒绝，
+随各自后续批次评估。
+
 ## 4. 定时器的合成
 
 C 的定时器面是三件套：主定时器布防（`init_timer(&lwip_timer)` 加
@@ -113,7 +135,8 @@ C 的定时器面是三件套：主定时器布防（`init_timer(&lwip_timer)` �
 
 - **垫片自身**（`stack.rs`）：开户回收槽位、三家族各占一槽且 ICMP 如实报
   错、失效句柄回缺省就绪位、空栈推进报"睡到下个消息"、关闭未打开句柄按
-  错误回答。
+  错误回答、选项半的保活与容量往返（`sockopt_tcp`/`sockopt_udp` 的界检查
+  与旗标位）。
 - **启动链**（服务二进制）：七步走满后栈已构造且定时器已布防；时钟响铃
   路推进栈。
 - **逐家族批次追加**：每个套接字家族落地时补该家族的操作往返测试（宿主

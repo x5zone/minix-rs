@@ -51,7 +51,10 @@ pub struct SmoltcpStack<D: Device = TrunkDevice> {
 }
 
 /// 一个在役槽位：栈内句柄、开户家族、UDP 默认对端（connect 语义）、
-/// TCP 预绑端点与监听旗标。
+/// TCP 预绑端点与监听旗标，外加选项面的记录半（收发缓冲容量按
+/// lwipopts 契约的缺省档起账，SO_SNDBUF/SO_RCVBUF 选项在界内改记；
+/// SO_BROADCAST 与非阻塞旗标各占一位。物理缓冲尺寸不随选项改——
+/// smoltcp 的缓冲构造后定容，登记差异见 `25-smoltcp-shim.md` §3）。
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     handle: smoltcp::iface::SocketHandle,
@@ -59,6 +62,10 @@ struct Slot {
     udp_peer: Option<crate::lwip_port::StackEndpoint>,
     tcp_local: Option<crate::lwip_port::StackEndpoint>,
     tcp_listener: bool,
+    sndbuf: usize,
+    rcvbuf: usize,
+    broadcast: bool,
+    nonblock: bool,
 }
 
 impl<D: Device + 'static> SmoltcpStack<D> {
@@ -95,6 +102,15 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         (slot.family == socket.family()).then_some(slot)
     }
 
+    /// 取槽位的可变引用；越界、空槽、家族对不上为 `None`。
+    fn slot_mut(&mut self, socket: StackSocket) -> Option<&mut Slot> {
+        let idx = socket.index() as usize;
+        match self.slots.get_mut(idx) {
+            Some(Some(slot)) if slot.family == socket.family() => Some(slot),
+            _ => None,
+        }
+    }
+
     /// 取 UDP 套接字的栈内可变引用；句柄失效或家族不符为 `None`。
     fn udp_mut(
         &mut self,
@@ -124,19 +140,33 @@ impl<D: Device + 'static> SmoltcpStack<D> {
         }
     }
 
-    /// 新开一个 TCP 槽位指向既有句柄（受纳套接字的登记）。
+    /// 新开一个 TCP 槽位指向既有句柄（受纳套接字的登记）。选项记录半
+    /// 从监听者槽位继承（C `ipsock_clone` 把 sndbuf/rcvbuf 抄给克隆体，
+    /// `ipsock.c:157-158`；旗标位同源 `sockevent_clone`）。
     fn push_slot_for(
         &mut self,
         family: StackFamily,
         handle: smoltcp::iface::SocketHandle,
+        inherit: Option<Slot>,
     ) -> Option<StackSocket> {
-        let slot = Some(Slot {
+        let mut slot = Slot {
             handle,
             family,
             udp_peer: None,
             tcp_local: None,
             tcp_listener: false,
-        });
+            sndbuf: crate::lwip_port::TCP_SNDBUF_DEF,
+            rcvbuf: crate::lwip_port::TCP_RCVBUF_DEF,
+            broadcast: false,
+            nonblock: false,
+        };
+        if let Some(from) = inherit {
+            slot.sndbuf = from.sndbuf;
+            slot.rcvbuf = from.rcvbuf;
+            slot.broadcast = from.broadcast;
+            slot.nonblock = from.nonblock;
+        }
+        let slot = Some(slot);
         let index = match self.slots.iter().position(|s| s.is_none()) {
             Some(free) => {
                 self.slots[free] = slot;
@@ -245,12 +275,27 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             }
             StackFamily::Icmp => return Err(util::ERR_GENERIC),
         };
+        // 收发容量的缺省档随家族取（tcpsock.c:87/:90、udpsock.c:30/:33）。
+        let (sndbuf, rcvbuf) = match family {
+            StackFamily::Tcp => (
+                crate::lwip_port::TCP_SNDBUF_DEF,
+                crate::lwip_port::TCP_RCVBUF_DEF,
+            ),
+            _ => (
+                crate::lwip_port::UDP_SNDBUF_DEF,
+                crate::lwip_port::UDP_RCVBUF_DEF,
+            ),
+        };
         let slot = Some(Slot {
             handle,
             family,
             udp_peer: None,
             tcp_local: None,
             tcp_listener: false,
+            sndbuf,
+            rcvbuf,
+            broadcast: false,
+            nonblock: false,
         });
         let index = match self.slots.iter().position(|s| s.is_none()) {
             Some(free) => {
@@ -486,8 +531,9 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             .map_err(|_| util::ERR_ADDRESS_IN_USE)?;
         let established = self.sockets.remove(slot.handle);
         let accepted_handle = self.sockets.add(established);
+        // 受纳槽位继承监听者的选项记录半（C ipsock_clone 同位）。
         let accepted = self
-            .push_slot_for(StackFamily::Tcp, accepted_handle)
+            .push_slot_for(StackFamily::Tcp, accepted_handle, Some(slot))
             .ok_or(util::ERR_GENERIC)?;
         Ok((
             accepted,
@@ -535,6 +581,129 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
             }
             SHUT_RD => Err(util::ERR_INVALID),
             _ => Err(util::ERR_INVALID),
+        }
+    }
+
+    // -- 选项半（SDEV_SETSOCKOPT/SDEV_GETSOCKOPT 的栈面）--
+
+    fn sockopt_tcp(
+        &mut self,
+        socket: StackSocket,
+        name: i32,
+        value: Option<i32>,
+    ) -> Result<Option<i32>, i32> {
+        match name {
+            // 保活：使能按 C 的 SOF_KEEPALIVE 语义（setsockmask，
+            // tcpsock.c:2096-2100）——smoltcp 的间隔型 API 取 C pcb 的
+            // 缺省空闲值（TCP_KEEPIDLE_DEFAULT，tcp_priv.h:139）。
+            crate::lwip_port::SO_KEEPALIVE => {
+                let s = self.tcp_mut(socket).ok_or(util::ERR_GENERIC)?;
+                match value {
+                    Some(v) => {
+                        s.set_keep_alive(
+                            (v != 0).then(|| {
+                                smoltcp::time::Duration::from_millis(
+                                    crate::lwip_port::TCP_KEEPALIVE_IDLE_MS,
+                                )
+                            }),
+                        );
+                        Ok(None)
+                    }
+                    None => Ok(Some(i32::from(s.keep_alive().is_some()))),
+                }
+            }
+            // 收发容量：界内改记（C ipsock_setsockopt:482-510 的界检查
+            // 加记账半）；物理缓冲维持 lwipopts 契约尺寸，登记差异。
+            crate::lwip_port::SO_SNDBUF => match value {
+                Some(v) => {
+                    if v <= 0
+                        || (v as usize) < crate::lwip_port::TCP_SNDBUF_MIN
+                        || (v as usize) > crate::lwip_port::TCP_SNDBUF_MAX
+                    {
+                        return Err(util::ERR_INVALID);
+                    }
+                    self.slot_mut(socket).ok_or(util::ERR_GENERIC)?.sndbuf = v as usize;
+                    Ok(None)
+                }
+                None => {
+                    let sndbuf = self.slot(socket).ok_or(util::ERR_GENERIC)?.sndbuf;
+                    Ok(Some(sndbuf as i32))
+                }
+            },
+            crate::lwip_port::SO_RCVBUF => match value {
+                Some(v) => {
+                    if v <= 0
+                        || (v as usize) < crate::lwip_port::TCP_RCVBUF_MIN
+                        || (v as usize) > crate::lwip_port::TCP_RCVBUF_MAX
+                    {
+                        return Err(util::ERR_INVALID);
+                    }
+                    self.slot_mut(socket).ok_or(util::ERR_GENERIC)?.rcvbuf = v as usize;
+                    Ok(None)
+                }
+                None => {
+                    let rcvbuf = self.slot(socket).ok_or(util::ERR_GENERIC)?.rcvbuf;
+                    Ok(Some(rcvbuf as i32))
+                }
+            },
+            _ => Err(util::STACK_BAD_ARGUMENT),
+        }
+    }
+
+    fn sockopt_udp(
+        &mut self,
+        socket: StackSocket,
+        name: i32,
+        value: Option<i32>,
+    ) -> Result<Option<i32>, i32> {
+        match name {
+            // 广播放行：C 在 setsockmask 置 SOF_BROADCAST（udpsock.c:553-
+            // 557）；smoltcp 的广播收发是栈内行为（无对位 API），旗标记
+            // 在服务侧槽位上——查询语义保留，发送面的差异已登记。
+            crate::lwip_port::SO_BROADCAST => match value {
+                Some(v) => {
+                    self.slot_mut(socket).ok_or(util::ERR_GENERIC)?.broadcast = v != 0;
+                    Ok(None)
+                }
+                None => {
+                    let broadcast = self.slot(socket).ok_or(util::ERR_GENERIC)?.broadcast;
+                    Ok(Some(i32::from(broadcast)))
+                }
+            },
+            // 容量面与 TCP 同形，界取 UDP 三档。
+            crate::lwip_port::SO_SNDBUF => match value {
+                Some(v) => {
+                    if v <= 0
+                        || (v as usize) < crate::lwip_port::UDP_SNDBUF_MIN
+                        || (v as usize) > crate::lwip_port::UDP_SNDBUF_MAX
+                    {
+                        return Err(util::ERR_INVALID);
+                    }
+                    self.slot_mut(socket).ok_or(util::ERR_GENERIC)?.sndbuf = v as usize;
+                    Ok(None)
+                }
+                None => {
+                    let sndbuf = self.slot(socket).ok_or(util::ERR_GENERIC)?.sndbuf;
+                    Ok(Some(sndbuf as i32))
+                }
+            },
+            crate::lwip_port::SO_RCVBUF => match value {
+                Some(v) => {
+                    if v <= 0
+                        || (v as usize) < crate::lwip_port::UDP_RCVBUF_MIN
+                        || (v as usize) > crate::lwip_port::UDP_RCVBUF_MAX
+                    {
+                        return Err(util::ERR_INVALID);
+                    }
+                    self.slot_mut(socket).ok_or(util::ERR_GENERIC)?.rcvbuf = v as usize;
+                    Ok(None)
+                }
+                None => {
+                    let rcvbuf = self.slot(socket).ok_or(util::ERR_GENERIC)?.rcvbuf;
+                    Ok(Some(rcvbuf as i32))
+                }
+            },
+            _ => Err(util::STACK_BAD_ARGUMENT),
         }
     }
 
@@ -977,5 +1146,87 @@ mod tests {
         // 空栈无定时器无待办：推进后睡到下一个消息到来。
         assert_eq!(stack.poll(0), PollWhen::Never);
         assert_eq!(stack.poll(10_000), PollWhen::Never);
+    }
+
+    #[test]
+    fn test_tcp_sockopt_keepalive_and_buffer_bounds() {
+        use crate::lwip_port::{SO_KEEPALIVE, SO_RCVBUF, SO_SNDBUF};
+        let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
+        let socket = stack.open(StackFamily::Tcp, None).unwrap();
+
+        // 保活：缺省关；使能后查询为开（间隔取 C 的缺省空闲值）。
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_KEEPALIVE, None).unwrap(),
+            Some(0),
+            "新套接字保活缺省关"
+        );
+        assert_eq!(stack.sockopt_tcp(socket, SO_KEEPALIVE, Some(1)), Ok(None));
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_KEEPALIVE, None).unwrap(),
+            Some(1),
+            "使能后查询为开"
+        );
+        assert_eq!(stack.sockopt_tcp(socket, SO_KEEPALIVE, Some(0)), Ok(None));
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_KEEPALIVE, None).unwrap(),
+            Some(0),
+            "清位后查询为关"
+        );
+
+        // 容量：缺省档（tcpsock.c:87/:90），界内改记，界外 EINVAL。
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_SNDBUF, None).unwrap(),
+            Some(crate::lwip_port::TCP_SNDBUF_DEF as i32)
+        );
+        assert_eq!(stack.sockopt_tcp(socket, SO_SNDBUF, Some(65536)), Ok(None));
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_SNDBUF, None).unwrap(),
+            Some(65536)
+        );
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_SNDBUF, Some(0)).unwrap_err(),
+            util::ERR_INVALID,
+            "零容量拒（C val <= 0 同判）"
+        );
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_SNDBUF, Some(131073)).unwrap_err(),
+            util::ERR_INVALID,
+            "超上界拒（tcpsock.c:88）"
+        );
+        assert_eq!(
+            stack.sockopt_tcp(socket, SO_RCVBUF, Some(16383)).unwrap_err(),
+            util::ERR_INVALID,
+            "低于接收窗拒（tcpsock.c:89：接收缓冲必须不小于窗口）"
+        );
+        // 未支持的名字：墙按栈参数错误回答（路上折 ENOPROTOOPT）。
+        assert_eq!(
+            stack.sockopt_tcp(socket, 0x2000, Some(1)).unwrap_err(),
+            util::STACK_BAD_ARGUMENT
+        );
+    }
+
+    #[test]
+    fn test_udp_sockopt_broadcast_and_capacity() {
+        use crate::lwip_port::{SO_BROADCAST, SO_RCVBUF};
+        let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
+        let socket = stack.open(StackFamily::Udp, None).unwrap();
+
+        // 广播放行：缺省关，置位后查询为开。
+        assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, None).unwrap(), Some(0));
+        assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, Some(1)), Ok(None));
+        assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, None).unwrap(), Some(1));
+
+        // 接收容量：缺省 32768（udpsock.c:33），下界 512（MEMPOOL_BUFSIZE）。
+        assert_eq!(
+            stack.sockopt_udp(socket, SO_RCVBUF, None).unwrap(),
+            Some(crate::lwip_port::UDP_RCVBUF_DEF as i32)
+        );
+        assert_eq!(
+            stack.sockopt_udp(socket, SO_RCVBUF, Some(511)).unwrap_err(),
+            util::ERR_INVALID
+        );
+        assert_eq!(stack.sockopt_udp(socket, SO_RCVBUF, Some(512)), Ok(None));
+        // 选项互不串槽：广播位仍在。
+        assert_eq!(stack.sockopt_udp(socket, SO_BROADCAST, None).unwrap(), Some(1));
     }
 }

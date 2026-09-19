@@ -228,7 +228,8 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
         }
         // 家族操作八条过墙（bind/connect/getsockname/send/receive/
         // listen/accept/getpeername）；按线上套接字的类内部分派到
-        // UDP 路或 TCP 路。
+        // UDP 路或 TCP 路。SetSockOpt/GetSockOpt（选项批）形状独立，
+        // 走自己的选项路。
         use minix_sockdriver::sdev::SdevRequest;
         if matches!(
             msg.m_type,
@@ -246,6 +247,18 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
                 self.copy.as_mut(),
                 table,
                 &mut self.pending,
+                msg.m_source,
+                msg,
+            );
+        }
+        if matches!(
+            msg.m_type,
+            x if x == SdevRequest::SetSockOpt as i32
+                || x == SdevRequest::GetSockOpt as i32
+        ) {
+            return sockops::sockopt_road(
+                stack.as_mut(),
+                self.copy.as_mut(),
                 msg.m_source,
                 msg,
             );
@@ -351,11 +364,12 @@ mod tests {
         let id = minix_netdriver::sockid::SockId::from_raw(sock_id).unwrap();
         assert_eq!(id.class_base(), minix_netdriver::sockid::SOCKID_TCP, "流类型归 TCP 类");
         assert!(table.contains(id), "服务表已登记");
-        // 未接线的请求族（SetSockOpt 随选项批）：通用形状 + ENOSYS
-        // （诚实拒绝，不装成功）。已接线的 Connect/Listen 不再用作
-        // 反例——它们走翻译与拷贝缝/栈错误，各有真实答案。
+        // 未接线的请求族（SocketPair 随成对语义批）：通用形状 +
+        // ENOSYS（诚实拒绝，不装成功）。已接线的 Connect/Listen 不再
+        // 用作反例——它们走翻译与拷贝缝/栈错误，各有真实答案；
+        // SetSockOpt/GetSockOpt 随选项批接线，走自己的选项路。
         let mut other = minix_types::Message::default();
-        other.m_type = minix_sockdriver::sdev::SdevRequest::SetSockOpt as i32;
+        other.m_type = minix_sockdriver::sdev::SdevRequest::SocketPair as i32;
         // SAFETY(test): req_id 在两形状里都在首格。
         unsafe {
             other.m_u.raw[0..4].copy_from_slice(&99i32.to_le_bytes());
@@ -967,6 +981,73 @@ mod tests {
         let raw = unsafe { &replies[0].1.m_u.raw };
         assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 8, "req_id 原样");
         assert_eq!(i32::from_le_bytes(raw[4..8].try_into().unwrap()), 4, "收到 4 字节");
+    }
+
+    /// 选项路过墙 e2e：建户 TCP → SetSockOpt(SO_KEEPALIVE) 回 0 →
+    /// GetSockOpt(SO_KEEPALIVE) 回长度 4 且值拷进 canned 写入账。
+    #[test]
+    fn test_sockopt_road_roundtrip_through_socket_device() {
+        use minix_net_lwip::server::NetHandler as _;
+        let mut handler = ProductionHandler::new(&[]);
+        for _ in 0..7 {
+            handler.startup_step();
+        }
+        let mut table = minix_netdriver::socktable::SockTable::new();
+        let mut canned = minix_net_lwip::sockops::CannedCopyTransport::default();
+        canned.from.push((1, 1i32.to_le_bytes().to_vec()));
+        handler.copy = Box::new(canned);
+
+        // 建户 TCP。
+        let mut open = minix_types::Message::default();
+        open.m_type = minix_sockdriver::sdev::SdevRequest::Socket as i32;
+        // SAFETY(test): { req_id@0; domain@4; type@8 }。
+        unsafe {
+            open.m_u.raw[0..4].copy_from_slice(&1i32.to_le_bytes());
+            open.m_u.raw[4..8].copy_from_slice(&2i32.to_le_bytes());
+            open.m_u.raw[8..12].copy_from_slice(&1i32.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &open).expect("建户");
+        let sock_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+
+        // SetSockOpt(SOL_SOCKET, SO_KEEPALIVE, 1)：成功回 0。
+        let mut set = minix_types::Message::default();
+        set.m_type = minix_sockdriver::sdev::SdevRequest::SetSockOpt as i32;
+        // SAFETY(test): { req_id@0; sock_id@4; level@8; name@12; grant@16; len@20 }。
+        unsafe {
+            let raw = &mut set.m_u.raw;
+            raw[0..4].copy_from_slice(&2i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&0xffffi32.to_le_bytes());
+            raw[12..16].copy_from_slice(&0x0008i32.to_le_bytes());
+            raw[16..20].copy_from_slice(&1i32.to_le_bytes());
+            raw[20..24].copy_from_slice(&4i32.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &set).expect("设置有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            0,
+            "保活使能成功"
+        );
+
+        // GetSockOpt：回拷出长度 4，值 1 在 canned 写入账。
+        let mut get = minix_types::Message::default();
+        get.m_type = minix_sockdriver::sdev::SdevRequest::GetSockOpt as i32;
+        // SAFETY(test): getset 域序（grant 2 = 出向缓冲）。
+        unsafe {
+            let raw = &mut get.m_u.raw;
+            raw[0..4].copy_from_slice(&3i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..12].copy_from_slice(&0xffffi32.to_le_bytes());
+            raw[12..16].copy_from_slice(&0x0008i32.to_le_bytes());
+            raw[16..20].copy_from_slice(&2i32.to_le_bytes());
+            raw[20..24].copy_from_slice(&4i32.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &get).expect("查询有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            4,
+            "回复成功码 = 拷出长度（值面由 sockops 单元测试钉住）"
+        );
     }
 
     /// select 双型回复 e2e：UDP 套接字 select(读) 无数据 → 挂起 →

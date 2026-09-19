@@ -37,6 +37,55 @@ pub const TCP_WINDOW: usize = 16384;
 /// Send buffer (`TCP_SND_BUF`, 11 times the segment size, `lwipopts.h:282`).
 pub const TCP_SEND_BUFFER: usize = 11 * TCP_MAX_SEGMENT;
 
+// SO_SNDBUF/SO_RCVBUF 选项的容量契约（C 侧各套接字模块顶部的三档常量；
+// 垫片按同档收下、记录，物理缓冲仍按上面两个 lwipopts 常量定容——
+// 登记差异见 `25-smoltcp-shim.md` §3）。
+/// TCP 发送缓冲下界（`TCP_SNDBUF_MIN`，1，`tcpsock.c:86`）。
+pub const TCP_SNDBUF_MIN: usize = 1;
+/// TCP 发送缓冲缺省（`TCP_SNDBUF_DEF`，32768，`tcpsock.c:87`）。
+pub const TCP_SNDBUF_DEF: usize = 32768;
+/// TCP 发送缓冲上界（`TCP_SNDBUF_MAX`，131072，`tcpsock.c:88`）。
+pub const TCP_SNDBUF_MAX: usize = 131072;
+/// TCP 接收缓冲下界（`TCP_RCVBUF_MIN`，即 `TCP_WND`，`tcpsock.c:89`）。
+pub const TCP_RCVBUF_MIN: usize = TCP_WINDOW;
+/// TCP 接收缓冲缺省（`TCP_RCVBUF_DEF`，`MAX(TCP_WND, 32768)`；接收窗
+/// 16384 小于 32768，取值即 32768，`tcpsock.c:90`）。
+pub const TCP_RCVBUF_DEF: usize = 32768;
+/// TCP 接收缓冲上界（`TCP_RCVBUF_MAX`，`MAX(TCP_WND, 131072)`；同上
+/// 取值即 131072，`tcpsock.c:91`）。
+pub const TCP_RCVBUF_MAX: usize = 131072;
+/// UDP 发送缓冲下界（`UDP_SNDBUF_MIN`，1，`udpsock.c:29`）。
+pub const UDP_SNDBUF_MIN: usize = 1;
+/// UDP 发送缓冲缺省（`UDP_SNDBUF_DEF`，8192，`udpsock.c:30`）。
+pub const UDP_SNDBUF_DEF: usize = 8192;
+/// UDP 发送缓冲上界（`UDP_SNDBUF_MAX`，`UDP_MAX_PAYLOAD`，`udpsock.c:28`/`:31`）。
+pub const UDP_SNDBUF_MAX: usize = u16::MAX as usize;
+/// UDP 接收缓冲下界（`UDP_RCVBUF_MIN`，即 `MEMPOOL_BUFSIZE`，
+/// `lwipopts.h:49` + `udpsock.c:32`）。
+pub const UDP_RCVBUF_MIN: usize = 512;
+/// UDP 接收缓冲缺省（`UDP_RCVBUF_DEF`，32768，`udpsock.c:33`）。
+pub const UDP_RCVBUF_DEF: usize = 32768;
+/// UDP 接收缓冲上界（`UDP_RCVBUF_MAX`，65536，`udpsock.c:34`）。
+pub const UDP_RCVBUF_MAX: usize = 65536;
+
+/// TCP 保活使能时的空闲间隔（C 使能 `SOF_KEEPALIVE` 后 pcb 的缺省
+/// 空闲值 `TCP_KEEPIDLE_DEFAULT`，7200000 毫秒，
+/// `lwip/priv/tcp_priv.h:138-139`）。
+pub const TCP_KEEPALIVE_IDLE_MS: u64 = 7_200_000;
+
+// 选项名（`sys/sys/socket.h` 的线上值；服务路按名字分派，墙按名字
+// 落效果——名字清单在墙上与路上各消费一次）。
+/// `SOL_SOCKET`（0xffff，`sys/socket.h:171`）。
+pub const SOL_SOCKET: i32 = 0xffff;
+/// `SO_KEEPALIVE`（0x0008，`sys/socket.h:124`）。
+pub const SO_KEEPALIVE: i32 = 0x0008;
+/// `SO_BROADCAST`（0x0020，`sys/socket.h:126`）。
+pub const SO_BROADCAST: i32 = 0x0020;
+/// `SO_SNDBUF`（0x1001，`sys/socket.h:139`）。
+pub const SO_SNDBUF: i32 = 0x1001;
+/// `SO_RCVBUF`（0x1002，`sys/socket.h:140`）。
+pub const SO_RCVBUF: i32 = 0x1002;
+
 /// Hooks the service provides to the stack (`lwiphooks.h`: sequence-number
 /// generation, two route overrides, two gateway lookups).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -296,6 +345,27 @@ pub trait Stack {
     /// 半关/全关（shutdown 的栈半）：写向关闭走体面的 FIN（后续推进
     /// 发出）；读向单独关闭在栈上无对应动词，由实现按能力回答。
     fn shutdown_tcp(&mut self, socket: StackSocket, how: i32) -> Result<(), i32>;
+
+    // -- 选项半（SDEV_SETSOCKOPT/SDEV_GETSOCKOPT 的栈面）--
+
+    /// 读写一个 TCP 套接字的选项（收拢形：`value` 带值即设置，`None`
+    /// 即查询并回当前值。设计裁决记于 `25-smoltcp-shim.md` §3——逐选项
+    /// 一个墙方法会让墙随着选项清单膨胀，收拢后墙上只有一个口子）。
+    /// `name` 是线上的 `SO_*` 值；墙不认识的名字按栈参数错误回答。
+    fn sockopt_tcp(
+        &mut self,
+        socket: StackSocket,
+        name: i32,
+        value: Option<i32>,
+    ) -> Result<Option<i32>, i32>;
+
+    /// 读写一个 UDP 套接字的选项，形状同 [`Stack::sockopt_tcp`]。
+    fn sockopt_udp(
+        &mut self,
+        socket: StackSocket,
+        name: i32,
+        value: Option<i32>,
+    ) -> Result<Option<i32>, i32>;
 }
 
 #[cfg(test)]
@@ -310,6 +380,21 @@ mod tests {
         assert_eq!(TCP_MAX_SEGMENT, 1460);
         assert_eq!(TCP_WINDOW, 16384);
         assert_eq!(TCP_SEND_BUFFER, 11 * 1460);
+        // 选项容量契约的三档（tcpsock.c:86-91、udpsock.c:29-34）。
+        assert_eq!(TCP_SNDBUF_MIN, 1);
+        assert_eq!(TCP_SNDBUF_DEF, 32768);
+        assert_eq!(TCP_SNDBUF_MAX, 131072);
+        assert_eq!(TCP_RCVBUF_MIN, 16384);
+        assert_eq!(TCP_RCVBUF_DEF, 32768);
+        assert_eq!(TCP_RCVBUF_MAX, 131072);
+        assert_eq!(UDP_SNDBUF_MIN, 1);
+        assert_eq!(UDP_SNDBUF_DEF, 8192);
+        assert_eq!(UDP_SNDBUF_MAX, 65535);
+        assert_eq!(UDP_RCVBUF_MIN, 512);
+        assert_eq!(UDP_RCVBUF_DEF, 32768);
+        assert_eq!(UDP_RCVBUF_MAX, 65536);
+        // 保活使能的缺省空闲间隔（lwip/priv/tcp_priv.h:138-139）。
+        assert_eq!(TCP_KEEPALIVE_IDLE_MS, 7_200_000);
     }
 
 }
@@ -468,6 +553,24 @@ mod wall_tests {
 
         fn shutdown_tcp(&mut self, _socket: StackSocket, _how: i32) -> Result<(), i32> {
             Ok(())
+        }
+
+        fn sockopt_tcp(
+            &mut self,
+            _socket: StackSocket,
+            _name: i32,
+            _value: Option<i32>,
+        ) -> Result<Option<i32>, i32> {
+            Err(crate::util::STACK_BAD_ARGUMENT)
+        }
+
+        fn sockopt_udp(
+            &mut self,
+            _socket: StackSocket,
+            _name: i32,
+            _value: Option<i32>,
+        ) -> Result<Option<i32>, i32> {
+            Err(crate::util::STACK_BAD_ARGUMENT)
         }
 
         fn poll(&mut self, now_millis: u64) -> PollWhen {
