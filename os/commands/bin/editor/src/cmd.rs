@@ -47,10 +47,32 @@ pub enum Command {
     Join,
     /// `g` / `v`: global (or inverse global) command over a subcommand.
     Global,
+    /// `G` / `V`: interactive global (asks per line); execution needs the
+    /// input loop, so the executor reports it as unwired.
+    GlobalInteractive,
     /// `u`: undo the last change.
     Undo,
     /// `=`: print the addressed line number.
     LineNumber,
+    /// `h`: print the last error message (`main.c:575`).
+    Help,
+    /// `H`: toggle error explanations on every error (`main.c:583`).
+    HelpMode,
+    /// `f`: print or set the default file name (`main.c:541`).
+    Filename,
+    /// `P`: toggle the command prompt (`main.c:668`, `prompt ? NULL : dps`).
+    PromptToggle,
+    /// `E`: edit unconditionally, discarding changes (`main.c:510`).
+    EditForce,
+    /// `W`: append the addressed lines to the file (`main.c:803`).
+    WriteAppend,
+    /// `x`: DES encryption key (`main.c:837`); without DES the C editor
+    /// errors with "crypt unavailable", and so does the executor.
+    Crypt,
+    /// `z`: scroll through the buffer (`main.c:848`).
+    Scroll,
+    /// `!`: run a shell line (`main.c:868`).
+    Shell,
 }
 
 /// Modifiers trailing a command letter.
@@ -64,6 +86,10 @@ pub struct Modifiers {
     pub list: bool,
     /// `n`: enumerate after the command.
     pub number: bool,
+    /// `q` / `Q` glued onto `w` (`wq`): quit after writing. The C editor
+    /// reads the letter right after `w` inside the write case
+    /// (`main.c:804-807`), so this is one command, not two.
+    pub quit_after: bool,
 }
 
 /// Parse the command letter at `text[pos]` plus its `!pln` modifiers.
@@ -92,12 +118,28 @@ pub fn parse_command(text: &str, pos: usize) -> Result<(Command, Modifiers, usiz
         b't' => Command::Transfer,
         b'j' => Command::Join,
         b'g' | b'v' => Command::Global,
+        b'G' | b'V' => Command::GlobalInteractive,
         b'u' => Command::Undo,
         b'=' => Command::LineNumber,
+        b'h' => Command::Help,
+        b'H' => Command::HelpMode,
+        b'f' => Command::Filename,
+        b'P' => Command::PromptToggle,
+        b'E' => Command::EditForce,
+        b'W' => Command::WriteAppend,
+        b'x' => Command::Crypt,
+        b'z' => Command::Scroll,
+        b'!' => Command::Shell,
         _ => return Err(EditorError::InvalidArgument),
     };
     let mut modifiers = Modifiers::default();
     let mut cursor = pos + 1;
+    // `wq`/`wQ` is one command in C: the write case reads the glued letter
+    // and turns it into quit-after-write (`main.c:804-807`).
+    if command == Command::Write && matches!(bytes.get(cursor), Some(b'q') | Some(b'Q')) {
+        modifiers.quit_after = true;
+        cursor += 1;
+    }
     while cursor < bytes.len() {
         match bytes[cursor] {
             b'!' => modifiers.force = true,
@@ -116,6 +158,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_wq_glues_quit_onto_write() {
+        // `wq` is ONE command in C: the write case reads the glued letter
+        // and turns it into quit-after-write (`main.c:804-807`), so the
+        // parse reports Write plus the quit flag, not two commands.
+        let (command, modifiers, used) = parse_command("wq", 0).unwrap();
+        assert_eq!(command, Command::Write);
+        assert!(modifiers.quit_after);
+        assert_eq!(used, 2);
+        // A glued letter that is not `q`/`Q` stays unconsumed (`wx` is
+        // `w` followed by the file name `x`).
+        let (command, modifiers, used) = parse_command("wx", 0).unwrap();
+        assert_eq!(command, Command::Write);
+        assert!(!modifiers.quit_after);
+        assert_eq!(used, 1);
+    }
+
+    #[test]
     fn test_letters_parse() {
         let (command, modifiers, used) = parse_command("d", 0).unwrap();
         assert_eq!(command, Command::Delete);
@@ -124,12 +183,28 @@ mod tests {
     }
 
     #[test]
-    fn test_no_wq_command() {
-        // `ed` has no `wq` command: `w` parses, and the trailing `q`
-        // starts the next command (used == 1 proves the split).
-        let (command, _, used) = parse_command("wq", 0).unwrap();
-        assert_eq!(command, Command::Write);
-        assert_eq!(used, 1);
+    fn test_remaining_c_letters_parse() {
+        // The full C letter set (`main.c:481-895`): each dispatch case has
+        // a variant, including the ones execution reports as unwired.
+        let cases = [
+            (b'h', Command::Help),
+            (b'H', Command::HelpMode),
+            (b'f', Command::Filename),
+            (b'P', Command::PromptToggle),
+            (b'E', Command::EditForce),
+            (b'W', Command::WriteAppend),
+            (b'x', Command::Crypt),
+            (b'z', Command::Scroll),
+            (b'!', Command::Shell),
+            (b'G', Command::GlobalInteractive),
+            (b'V', Command::GlobalInteractive),
+        ];
+        for (letter, expected) in cases {
+            let text = [letter as char, ' '].iter().collect::<String>();
+            let (command, _, used) = parse_command(&text, 0).unwrap();
+            assert_eq!(command, expected, "letter {}", letter as char);
+            assert_eq!(used, 1);
+        }
     }
 
     #[test]
@@ -151,8 +226,10 @@ mod tests {
 
     #[test]
     fn test_unknown_letter_rejected() {
+        // `x` parses (crypt, `main.c:837`); genuinely unknown letters do
+        // not (`y` has no dispatch case in C either).
         assert_eq!(
-            parse_command("x", 0).map(|_| ()),
+            parse_command("y", 0).map(|_| ()),
             Err(EditorError::InvalidArgument)
         );
         assert_eq!(

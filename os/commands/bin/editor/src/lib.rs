@@ -27,15 +27,22 @@
 //!   line, numbers, marks, offsets, ranges with `,` and `;`).
 //! - [`cmd`]: `ed` command letter parsing (append, change, delete, insert,
 //!   print, substitute, write, quit, ...).
+//! - [`exec`]: the session and the effect of every command letter — one
+//!   step per input line, with display and file traffic injected through
+//!   the [`exec::EditorIo`] seam so the decision logic stays testable.
 //!
-//! Screen handling, file input/output, and regular expression matching stay
-//! outside: the screen belongs to the terminal stage, files to the file
-//! system layer, and patterns reuse the stage's search crate. Everything
+//! Screen handling and regular-expression matching stay outside: the
+//! screen belongs to the terminal stage, and patterns reuse the stage's
+//! search crate (`s`/`g` answer "not wired" through the `?` channel for
+//! now — 09-editors.md §5 declares the boundary). File input/output also
+//! stays outside the pure logic: [`exec::EditorIo`] carries the seam, and
+//! the `ed` binary supplies the `minix_sys` production half. Everything
 //! here borrows from the input and uses fixed size buffers: no heap,
 //! `no_std` throughout.
 
 pub mod addr;
 pub mod cmd;
+pub mod exec;
 pub mod store;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.

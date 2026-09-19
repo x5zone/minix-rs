@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的改写起点——`sed` 一次改一行，整文件改写是编辑器的事
 > **源码**: `minix3/bin/ed/`（行编辑器：`main.c` 1433 行，地址提取第 285 行、下一地址第 314 行、命令执行第 465 行、命令分支第 481 行起、地址范围检查第 898 行、匹配行查找第 917 行、行操作第 1051 到 1242 行、标记第 1271 到 1297 行；`buf.c` 319 行、`cbc.c` 460 行、`glbl.c` 227 行、`io.c` 358 行、`re.c` 146 行、`sub.c` 262 行、`undo.c` 158 行、`ed.h` 294 行：错误码第 47 到 49 行、缓冲下限与分组上限第 55 到 56 行、全局标志第 64 到 68 行、撤销操作第 84 到 87 行）、`minix3/minix/usr.bin/mined/`（全屏编辑器：`mined1.c` 1774 行、`mined2.c` 1666 行、`mined.h` 337 行）
-> **Rust 模块**: `os/commands/bin/editor`（库包 `minix-editor`：`store.rs`、`addr.rs`、`cmd.rs`，22 个测试通过）
+> **Rust 模块**: `os/commands/bin/editor`（库包 `minix-editor`：`store.rs`、`addr.rs`、`cmd.rs`、`exec.rs` 加 `ed` 薄壳，47 个测试通过）
 > **前置依赖**: `08-grep-sed.md`（共享正则语法）、`05-shell-family.md`（行编辑面在 shell 侧）
 > **不覆盖（移交）**: shell 行编辑（见 `05` 篇边界）、终端控制（见 `13-terminal-termios.md`）、屏幕绘制与按键处理（后续终端交互阶段）、`vi` 补齐决策的具体实施（见 3.5 节悬置）
 
@@ -55,7 +55,7 @@ Minix 3 自带 `mined` 而无 `vi`（`usr.bin` 下无 `vi` 目录，`which vi` �
 
 ### 2.1 命令执行：`main.c` 第 465 行起的分派
 
-`exec_command`（第 465 行）是全篇心脏：地址范围已由 `extract_addr_range`（第 285 行）与 `next_addr`（第 314 行）备好，函数按命令字母分派（第 481 行起：附加 481、删除 496、打印 650、退出 666、替换 698、写入 803……），标记处理在第 618 行（`k` 命令设标记）。`check_addr_range`（第 898 行）守门：逆序、越界在此拒绝。Rust 侧 `cmd.rs` 的字母表与之一一对应（19 种命令），`addr.rs` 的求值规则与之逐项对应（见第 4.2 节）。
+`exec_command`（第 465 行）是全篇心脏：地址范围已由 `extract_addr_range`（第 285 行）与 `next_addr`（第 314 行）备好，函数按命令字母分派（第 481 行起：附加 481、删除 496、打印 650、退出 666、替换 698、写入 803……），标记处理在第 618 行（`k` 命令设标记）。`check_addr_range`（第 898 行）守门：逆序、越界在此拒绝。Rust 侧 `cmd.rs` 的字母表与之一一对应（三十个命令字母全量，`exec.rs` 按同一分派执行），`addr.rs` 的求值规则与之逐项对应（见第 4.2 节）。
 
 ### 2.2 行操作：`main.c` 第 1051 到 1242 行
 
@@ -95,20 +95,23 @@ Minix 3 自带 `mined` 而无 `vi`（`usr.bin` 下无 `vi` 目录，`which vi` �
 
 ### 4.1 模块结构
 
-`os/commands/bin/editor`（库包名 `minix-editor`）共 4 个源文件：
+`os/commands/bin/editor`（库包名 `minix-editor`）持决定半（5 个源文件），`ed`
+薄壳在 `src/bin/ed.rs` 持执行半：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
 | `lib.rs` | — | 错误类型（`EditorError`，22 对应参数无效、12 对应缓冲不足）与模块组织 |
 | `store.rs` | `buf.c`、`main.c:1051-1242` 思想 | `TextStore` 接口、`GapStore` 与 `LineTable` |
-| `addr.rs` | `main.c:285-314`（提取）、`:898`（检查） | 地址解析（`parse_range`）与求值（`evaluate`、`evaluate_range`） |
-| `cmd.rs` | `main.c:465-803`（分派） | 命令字母与修饰解析（`parse_command`） |
+| `addr.rs` | `main.c:285-314`（提取）、`:898`（检查） | 地址解析（`parse_range`，含 `%` 整缓冲简写）与求值（`evaluate`、`evaluate_range`） |
+| `cmd.rs` | `main.c:465-803`（分派） | 命令字母与修饰解析（`parse_command`，三十个字母全量，含 `wq` 粘连） |
+| `exec.rs` | `exec_command`（`main.c:465-895`）、`display_lines`（`:1242`）、`put_tty_line`（`io.c:307`）、`get_filename`（`:941`） | 会话状态与命令执行：一步一行，显示与文件流量经 `EditorIo` 缝注入 |
+| `bin/ed.rs` | `main`（`main.c:117-280`） | 执行半：argv 解析、逐行读入、`?` 错误通道、`minix_sys` 文件与输出 |
 
 ### 4.2 关键类型与不变量
 
 - **地址 `Address{基址, 偏移}`**：七种基址（当前、末行、数字、标记、前搜、后搜）加累积偏移。不变量：数字零非法；标记越界（非小写）非法；搜索界定未闭合非法；求值越界非法；逆序范围非法。
 - **地址范围 `AddressRange`**：可选首尾加分号标志。不变量：前导逗号首地址缺省（首行为 1）；分号先落当前行；尾部偏移归第二地址（或唯一地址）。
-- **命令 `Command` 加 `Modifiers`**：19 种命令，四种修饰。不变量：未知字母即错；修饰只认感叹号与打印三变体；`wq` 不存在（写后退分两次解析）。
+- **命令 `Command` 加 `Modifiers`**：三十个命令字母全量（`main.c:481-895` 的每个分派支各有一个变体）。不变量：未知字母即错；修饰只认感叹号与打印三变体；`wq`/`wQ` 是**一条命令**——C 在写支内读走粘连的字母转为写后退出（`main.c:804-807`），解析据此带 `quit_after` 位（早先"写后退分两次解析"的说法与 C 不符，已随执行批校正）。
 - **存储 `TextStore`**：计数、读行、插入、删除。不变量：行号 1 起始；零号非法；插入缺省换行自动补；删除越界非法；超容即错。
 
 ### 4.3 函数一览
@@ -120,26 +123,49 @@ Minix 3 自带 `mined` 而无 `vi`（`usr.bin` 下无 `vi` 目录，`which vi` �
 | `evaluate_range(范围, 上下文, 缺省)` | 范围与缺省 | 首尾行号 | 范围检查语义 |
 | `parse_command(文本, 位置)` | 字母位置 | 命令、修饰、消耗长度 | 命令分派语义 |
 | 存储四方法 | 行号与文本 | 行内容或状态 | 行操作语义 |
+| `step(存储, 会话, 行, io)` | 一行输入 | 流向决定（续读/退出/退出警告）或 `errmsg` | `exec_command` 加主循环收尾语义 |
+| `display(首, 尾, 旗标)` | 行段与 `p`/`l`/`n` 位 | 逐行输出（`l` 转义与 72 列折叠、`n` 编号） | `display_lines` 加 `put_tty_line`；显示把当前行推进到末行 |
+| `take_filename(尾, 会话, 缓冲)` | 命令余部 | 文件名（反斜杠转义剥除） | `get_filename` 去壳支 |
+| `bin/ed` 主循环 | argv 与标准输入 | 调 `step`、发 `?`、按流向退出 | `main` 的读算循环与初始文件读入 |
 
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-editor`：**22 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-editor`：**47 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/editor` 复现）：
 
 - **存储**（`store.rs`，7 个）：`test_gap_insert_and_read`（插入读回）、`test_gap_implicit_newline`（缺省换行自动补）、`test_gap_delete_middle`（中段删除）、`test_gap_bad_addresses_rejected`（零号、越界、空删）、`test_table_load_and_read`（装载读回）、`test_table_insert_delete`（插删）、`test_stores_agree`（双后端一致）。
-- **地址**（`addr.rs`，9 个）：`test_bare_addresses`（七基址加减界）、`test_range_parsing`（逗号分号与消耗长度）、`test_comma_defaults`（前导逗号）、`test_trailing_offsets`（尾部偏移归属）、`test_chained_offsets`（链式合并）、`test_search_shapes_accepted`（搜索两形）、`test_range_evaluation`（三求值）、`test_reversed_range_rejected`（逆序）、`test_semicolon_moves_current`（分号移当前行）。
-- **命令**（`cmd.rs`，6 个）：`test_letters_parse`（字母）、`test_modifiers_parse`（修饰）、`test_no_wq_command`（写退分两次）、`test_global_both_spellings`（全局两种写法）、`test_unknown_letter_rejected`（未知字母与空串）、`test_parse_at_offset`（偏移起解析）。
+- **地址**（`addr.rs`，10 个）：`test_bare_addresses`（七基址加减界）、`test_range_parsing`（逗号分号与消耗长度）、`test_percent_names_whole_buffer`（`%` 整缓冲简写）、`test_comma_defaults`（前导逗号）、`test_trailing_offsets`（尾部偏移归属）、`test_chained_offsets`（链式合并）、`test_search_shapes_accepted`（搜索两形）、`test_range_evaluation`（三求值）、`test_reversed_range_rejected`（逆序）、`test_semicolon_moves_current`（分号移当前行）。
+- **命令**（`cmd.rs`，8 个）：`test_letters_parse`（字母）、`test_remaining_c_letters_parse`（三十个字母全量）、`test_wq_glues_quit_onto_write`（`wq` 一条命令带退出位）、`test_modifiers_parse`（修饰）、`test_global_both_spellings`（全局两种写法）、`test_unknown_letter_rejected`（未知字母与空串）、`test_parse_at_offset`（偏移起解析）。
+- **执行**（`exec.rs`，22 个）：`test_append_collects_until_dot_and_prints`（`a` 收集到 `.`、显示推进当前行）、`test_print_list_formats_match_put_tty_line`（`l` 转义加行尾 `$`、`n` 编号且不转义）、`test_delete_readvances_with_inc_mod`（`INC_MOD` 再推进）、`test_change_replaces_range_in_place`、`test_insert_before_line_one_of_empty_is_rejected`（零地址拒绝）、`test_move_reorders_and_rejects_inside_destination`（搬移与界内目标拒绝、no-op 形状）、`test_transfer_duplicates_block`（`t0` 复制到首）、`test_join_merges_range_into_one_line`（无分隔拼合）、`test_marks_survive_and_die_with_their_line`（标记随删亡）、`test_line_number_prints_second_or_last`、`test_quit_modified_then_quiet_quit`（`q` 的警告一舞蹈）、`test_wq_quits_after_whole_write_only`（整缓冲才静默退出）、`test_write_reports_and_clears_modified`、`test_read_inserts_after_address_and_names_the_file`（首个 `r` 命名文件）、`test_edit_swaps_buffer_and_reports_newlines_added`（补尾换行告知加字节数）、`test_edit_refuses_modified_softly`、`test_filename_prints_and_sets`、`test_help_reads_the_saved_message`、`test_declared_gaps_answer_through_the_question_channel`（s/g/u/`!`/`x` 各自的拒答语）、`test_suffix_rules_follow_get_command_suffix`（`!` 后缀非法、`dp` 删后打印）、`test_percent_and_bare_addresses_navigate`、`test_scroll_walks_a_window`（`z` 窗口 23 行）、`test_double_backend_agreement_through_exec`（同一脚本双后端同誊）。
 
-尚未覆盖、随后续阶段补齐的：搜索求值（待搜索库接入）、屏幕绘制与按键（待终端交互阶段）、文件读写与 shell 转义（待文件系统与进程原语）、`vi` 子集（待选型落定）。地址命令存储三层是全覆盖的，执行与交互层是显式留白的。
+**执行批后的声明性留白**（每一处都经 `?` 通道明说，不装成功）：
+
+- `s`（替换）与 `g`/`v`/`G`/`V`（全局）等搜索类命令回答 "search commands not wired"——搜索地址在决定半只解析不求值（`addr.rs` 的 `Base::SearchForward`/`SearchBackward`），接搜索库后一并补。
+- `u`（撤销）回答 "undo not wired"——`undo.c` 的撤销栈未移植。
+- `!`（shell 逃逸）在 `-S` 或以 `red` 名调用时按 C 语义拒绝（"shell access restricted"，`main.c:141` 与 `is_legal_filename`），其余回答 "shell access not wired"——fork/exec 面属进程原语阶段。
+- `x`（加密）按 C 的无 DES 构建回答 "crypt unavailable"（`main.c:843-845`），逐字一致。
+- 标记表按**行号**跟随（插入/删除上方行时平移，删中即亡）；C 把标记挂在行节点上，搬移的行带着标记走——已声明的语义边界。
+- 存储与文件名是 `&str` 世界：非 UTF-8 的输入或文件经 `?` 通道报 "invalid content"，C 是字节无关的。
+- `l` 折叠列与 `z` 窗高用 C 的缺省值 72/22（`main.c:460`/`:1409`）；C 会按 `TIOCGWINSZ` 收窄，宿主无终端应答。
+- `ed` 薄壳的输入行上限 8192 字节、文件上限等于存储容量（4096 字节）；C 的行缓冲动态增长。
+
+### 5.1 命令契约与 Requires（ed）
+
+| 命令 | Requires（执行面） | 现状 |
+|------|--------------------|------|
+| `ed` | `read`/`write`（缓冲与显示）、`exit`、argv 交接；`r`/`e`/`w` 另需 `open`/`close`（L10 既有路） | 已接线；搜索类与 shell 逃逸按上表留白 |
+| `mined` | 终端交互面（按键、屏幕绘制） | 未接线（归终端阶段，`ed` 之外的本篇第二命令） |
+
+POSIX 基准：`ed` 见 POSIX.1-2017 Shell & Utilities 的 ed 条目（C 实现以此为准绳，地址文法与命令集逐条对应）；`mined` 是 Minix 特有命令，无 POSIX 条目，行为以 `minix3/minix/usr.bin/mined` 为准。
 
 ---
 
 ## 6. 过渡：能改行之后，去排版面
 
-本篇走完了改写：地址命名行、命令动手、存储承载、撤销兜底。`ed` 与 `mined` 的决策核心就位，屏幕与文件只剩执行层。
+本篇走完了改写：地址命名行、命令动手、存储承载、执行闭环——`ed` 的薄壳已接上文件与显示（搜索类、撤销与 shell 逃逸按第 5 节留白），`mined` 的屏幕面仍待终端阶段。
 
 但改完的文字还要变成能看的文档：分页、断行、编号、排版、手册查询——这是 `10-doc-man-tools.md` 的职责（排版工具、手册面、开发辅助）。请沿因果链继续向下走：先会"改文字"，再会"印文字"。
 

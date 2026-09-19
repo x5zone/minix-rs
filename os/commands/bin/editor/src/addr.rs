@@ -76,7 +76,16 @@ pub fn parse_range(text: &str) -> Result<(AddressRange, usize), EditorError> {
     let mut second = None;
     let mut semicolon = false;
     // A leading address, if the next byte can open one.
-    if opens_address(bytes, pos) {
+    if bytes.get(pos) == Some(&b'%') {
+        // `%` as the first character names the whole buffer: the C
+        // extractor turns it into first = 1, second = `$`
+        // (`main.c:365-373`, the `case '%'` arm shares the `,`/`;` body
+        // with `second_addr = 1; addr = addr_last`). Only offsets may
+        // follow; a separator would re-open the range.
+        pos += 1;
+        first = Some(Address { base: Base::Number(1), offset: 0 });
+        second = Some(Address { base: Base::Last, offset: 0 });
+    } else if opens_address(bytes, pos) {
         let (address, next) = parse_address(text, pos)?;
         first = Some(address);
         pos = next;
@@ -383,6 +392,19 @@ mod tests {
         assert_eq!(range.first, Some(address(Base::Last, -3)));
         assert_eq!(range.second, Some(address(Base::Last, 0)));
         assert!(range.semicolon);
+    }
+
+    #[test]
+    fn test_percent_names_whole_buffer() {
+        // `%` as the first character is the whole buffer: the C extractor
+        // turns it into first = 1, second = `$` (`main.c:365-373`).
+        let (range, used) = parse_range("%n").unwrap();
+        assert_eq!(range.first, Some(address(Base::Number(1), 0)));
+        assert_eq!(range.second, Some(address(Base::Last, 0)));
+        assert_eq!(used, 1);
+        let mut context = context();
+        context.line_count = 7;
+        assert_eq!(evaluate_range(&range, &context, (1, 1)), Ok((1, 7)));
     }
 
     #[test]

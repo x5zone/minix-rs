@@ -8,3 +8,10 @@ license.workspace = true
 [lib]
 name = "minix_editor"
 path = "src/lib.rs"
+
+[[bin]]
+name = "ed"
+path = "src/bin/ed.rs"
+
+[dependencies]
+minix-sys = { workspace = true }
