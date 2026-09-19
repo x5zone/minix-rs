@@ -139,6 +139,17 @@ pub enum WorkerCont {
         vnode: usize,
         /// 套接字设备号（写进 vnode 的 `v_sdev`）。
         dev: u64,
+        /// `accept` 的收尾还要把**对端地址长度**放进回复载荷
+        /// （`m_vfs_lc_socklen { len }`，C `resume_accept` 的末段）；其余调用
+        /// 为 `None`。
+        addr_len_out: Option<u32>,
+    },
+    /// `accept` 失败但**驱动已建了新套接字**时（C 的 case #2 与 case #1 的
+    /// `make_sock_fd` 失败）：先给驱动发 `SDEV_CLOSE` 把那个套接字关掉，再回
+    /// **原来的错误**（C 的 `(void)sdev_close(dev, ...)` 不看它的状态）。
+    SdevCloseThenReply {
+        /// 要回给用户的原始状态。
+        status: i32,
     },
     /// `pipe2` 的对话半（`REQ_NEWNODE`）：回复带新节点的 `node_details`，续接体
     /// 要用它填 vnode 与两个 filp，并把 `m_vfs_lc_fdpair { fd0, fd1 }` 作为

@@ -211,7 +211,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Mount
         | VfsCallNum::Umount
         | VfsCallNum::Select
-        | VfsCallNum::Accept
         | VfsCallNum::Sendmsg
         | VfsCallNum::Recvmsg
         | VfsCallNum::Svrctl
@@ -1633,6 +1632,118 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 writing,
                 call_kind,
             ) {
+                Ok(()) => SyscallResult::Suspend,
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
+        // ── accept（进程级挂起 + 三态收尾；见 `finish_sdev_blocked`）──
+        VfsCallNum::Accept => {
+            // C `do_accept`（socket.c:363-378）：`get_sock` → `check_sock_fds(1)`
+            // → `sdev_accept(dev, addr, addr_len, flags, fd)`（socket.c 的
+            // `sdev_accept` 用与 bind/connect 同一条 `mess_vfs_lsockdriver_addr`
+            // 载荷，但地址 grant 是 `CPF_WRITE`——驱动要写对端地址回来）。
+            let (fd, addr, addr_len) = {
+                // SAFETY: mess_lc_vfs_sockaddr：fd@0、addr@8、addr_len@16。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                (fd, addr, u64::from_le_bytes(b8) as u32)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (dev, filp_flags) = match state.get_sock(fp_slot, fd) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e),
+            };
+            // C socket.c:373-374 —— 新套接字要占一个 fd 槽，先确认有。
+            let enough = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| crate::filedes::check_fds(fp, 1).is_ok())
+                .unwrap_or(false);
+            if !enough {
+                return SyscallResult::Error(minix_types::EMFILE);
+            }
+            let drv_e = match crate::device_map::smap_endpt_by_dev(&state.smap_table, dev) {
+                Some(e) => e,
+                None => return SyscallResult::Error(minix_types::EIO),
+            };
+            let (_, sock_id) = match crate::device_map::split_smap_dev(dev) {
+                Some(p) => p,
+                None => return SyscallResult::Error(minix_types::EIO),
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // C `sdev_accept`：地址缓冲**非零**才建 grant（`CPF_WRITE`）。
+            let grant = if addr != 0 {
+                match state.grant_user_buffer(
+                    drv_e,
+                    user_e,
+                    addr,
+                    addr_len as u64,
+                    minix_types::CpFlags::WRITE,
+                ) {
+                    Ok(g) => g,
+                    Err(_) => return SyscallResult::Error(minix_types::EIO),
+                }
+            } else {
+                minix_types::GRANT_INVALID
+            };
+            let mut req = minix_types::Message {
+                m_type: minix_sockdriver::sdev::SdevRequest::Accept as i32,
+                ..minix_types::Message::default()
+            };
+            // SAFETY: `mess_vfs_lsockdriver_addr`（与 bind/connect 同一条）。
+            unsafe {
+                let raw = &mut req.m_u.raw;
+                raw[0..4].copy_from_slice(&user_e.0.to_le_bytes());
+                raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+                raw[8..12].copy_from_slice(&grant.to_le_bytes());
+                raw[12..16].copy_from_slice(&addr_len.to_le_bytes());
+                raw[16..20].copy_from_slice(&user_e.0.to_le_bytes());
+                let sflags = if filp_flags & (crate::fcntl::O_NONBLOCK as i32) != 0 {
+                    minix_sockdriver::sdev::SDEV_NONBLOCK as i32
+                } else {
+                    0
+                };
+                raw[20..24].copy_from_slice(&sflags.to_le_bytes());
+            }
+            if minix_sys::ipc::IpcTransport::send(&minix_sys::ipc::DirectTrapTransport, drv_e, &req)
+                .is_err()
+            {
+                if grant != minix_types::GRANT_INVALID {
+                    let _ = state.revoke_grant(grant);
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            let block = crate::fproc::SdevBlock {
+                dev,
+                call: crate::fproc::SdevCall::Accept,
+                grants: [
+                    if grant != minix_types::GRANT_INVALID {
+                        Some(grant)
+                    } else {
+                        None
+                    },
+                    None,
+                    None,
+                ],
+                // C `sdev_suspend(dev, grant, GRANT_INVALID, GRANT_INVALID,
+                // listen_fd, 0)`：监听 fd 随现场带下去（收尾要读它的标志）。
+                aux: crate::fproc::SdevAux::Fd(fd as usize),
+            };
+            match state.suspend_on_sdev(Some(fp_slot), worker, block) {
                 Ok(()) => SyscallResult::Suspend,
                 Err(e) => SyscallResult::Error(e),
             }
@@ -4621,6 +4732,193 @@ mod tests {
                 crate::fproc::BlockedOn::None
             ),
             "发不出去就不该挂起"
+        );
+    }
+
+    /// `Accept`：门同 socket 族 + `check_sock_fds(1)`（新套接字要占一个 fd 槽）
+    /// → 给驱动发 `SDEV_ACCEPT`（地址 grant 是 `CPF_WRITE`——驱动写对端地址
+    /// 回来）→ 进程级挂起（现场带上监听 fd）。
+    ///
+    /// 收尾三态（C `resume_accept` socket.c:367-465）：① 失败且没建套接字 →
+    /// 只回错误；② 失败但驱动已建套接字 → 关掉它再回错误；③ 成功 → 现场**再开
+    /// 一个 worker** 做 `make_sock_fd`（PFS 建节点 + 装配 fd），回 fd + 对端
+    /// 地址长度。
+    #[test]
+    fn test_dispatch_accept_and_three_state_resume() {
+        use minix_types::Endpoint;
+
+        let setup = || {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let drv = Endpoint::from_generation_slot(0, 11);
+            state.smap_table.entries[0].endpt = Some(drv);
+            let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+            // PFS 挂载行（收尾要 `REQ_NEWNODE`）。
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+            v.fs = Endpoint::PFS;
+            v.dev = 9;
+            // 监听套接字：fd 3。
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::PFS;
+                v.ino = 0x11;
+                v.mode = crate::open::S_IFSOCK | 0o777;
+                v.sdev = dev;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            // 监听套接字带 `O_NONBLOCK`（要被新套接字继承）。
+            state.filp_table.get_mut(fid).unwrap().flags = crate::fcntl::O_NONBLOCK as i32;
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx, drv, dev)
+        };
+        let accept_msg = |fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Accept as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_sockaddr：fd@0、addr@8、addr_len@16。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&0x6000u64.to_le_bytes());
+                raw[16..24].copy_from_slice(&16u64.to_le_bytes());
+            }
+            m
+        };
+        let accept_reply = |drv: Endpoint, sock_id: i32, status: i32, addr_len: u32| {
+            let mut r = Message {
+                m_type: minix_sockdriver::sdev::SdevReply::AcceptReply as i32,
+                ..Message::default()
+            };
+            r.m_source = drv;
+            // SAFETY(test): `mess_lsockdriver_vfs_accept_reply { req_id@0;
+            // sock_id@4; status@8; len@12 }`。
+            unsafe {
+                let raw = &mut r.m_u.raw;
+                raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+                raw[8..12].copy_from_slice(&status.to_le_bytes());
+                raw[12..16].copy_from_slice(&addr_len.to_le_bytes());
+            }
+            r
+        };
+
+        // ① 门：负 fd → EBADF；非套接字 → ENOTSOCK。
+        let (mut state, _idx, _drv, _dev) = setup();
+        state.current_message = accept_msg(-1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Accept),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        // 宿主下 trap 不可达 → 发送失败 → EIO，且不挂起（监听 fd 正常）。
+        state.current_message = accept_msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Accept),
+            SyscallResult::Error(minix_types::EIO)
+        );
+
+        // ② 收尾 case ①：失败且**没建套接字**（sock_id < 0）→ 只回错误。
+        let (mut state, _idx, drv, dev) = setup();
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            fp.blocked_on = crate::fproc::BlockedOn::Sdev(crate::fproc::SdevBlock {
+                dev,
+                call: crate::fproc::SdevCall::Accept,
+                grants: [None, None, None],
+                aux: crate::fproc::SdevAux::Fd(3),
+            });
+        }
+        assert!(state.finish_sdev_blocked(&accept_reply(drv, -1, -minix_types::EAGAIN, 0)));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::EAGAIN)),
+            "没建套接字就只回错误"
+        );
+
+        // ③ 收尾 case ③：成功（sock_id ≥ 0）→ 现场开 worker 做 make_sock_fd：
+        // 先给 PFS 发 `REQ_NEWNODE`（设备号 = make_smap_dev(行号, sock_id)）。
+        let (mut state, _idx, drv, dev) = setup();
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            fp.blocked_on = crate::fproc::BlockedOn::Sdev(crate::fproc::SdevBlock {
+                dev,
+                call: crate::fproc::SdevCall::Accept,
+                grants: [None, None, None],
+                aux: crate::fproc::SdevAux::Fd(3),
+            });
+        }
+        assert!(state.finish_sdev_blocked(&accept_reply(drv, 0x77, 0, 16)));
+        let p = state.pending_fs.as_ref().expect("收尾里给 PFS 发了 REQ_NEWNODE");
+        assert_eq!(p.req.m_type, minix_types::REQ_NEWNODE);
+        assert_eq!(p.fs_e, Endpoint::PFS);
+        // SAFETY(test): `mess_vfs_fs_newnode`：device@0、mode@8。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let new_dev = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let mode = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            let row = state.smap_table.entries[0].num;
+            assert_eq!(new_dev, crate::device_map::make_smap_dev(row, 0x77));
+            assert_eq!(mode & crate::open::S_IFMT, crate::open::S_IFSOCK);
+        }
+        // 回复到达 → 回 fd + **对端地址长度**（`m_vfs_lc_socklen`）。
+        let pfs_worker = p.worker;
+        state.pending_fs = None;
+        let mut reply = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 新节点 details（与 lookup_reply_off 前六域同序）。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&0x88u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFSOCK | 0o777).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(pfs_worker).unwrap();
+            wp.sendrec = Some(reply);
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, Endpoint::from_generation_slot(1, 0));
+        let fd = reply.m_type;
+        assert!(fd >= 0, "成功回新套接字的 fd（这里是 {fd}）");
+        // SAFETY(test): `mess_vfs_lc_socklen { unsigned int len; }`。
+        let len = unsafe { u32::from_le_bytes(reply.m_u.raw[0..4].try_into().unwrap()) };
+        assert_eq!(len, 16, "对端地址长度进回复载荷");
+        // 新 fd 上挂着套接字 vnode，且**继承了监听套接字的 O_NONBLOCK**。
+        let fp = state
+            .fproc_table
+            .get(minix_types::UserSlot::new(0))
+            .unwrap();
+        let new_filp = fp.filps[fd as usize].expect("新 fd 有 filp");
+        let f = state.filp_table.get(crate::filp::FilpId(new_filp)).unwrap();
+        assert_eq!(
+            f.flags as u32 & crate::fcntl::O_NONBLOCK,
+            crate::fcntl::O_NONBLOCK,
+            "打开标志按 C 的 `flags &= O_CLOEXEC|O_NONBLOCK|O_NOSIGPIPE` 继承"
         );
     }
 

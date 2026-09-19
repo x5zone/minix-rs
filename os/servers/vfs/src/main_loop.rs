@@ -1352,6 +1352,7 @@ impl VfsState {
         fp_slot: Option<minix_types::UserSlot>,
         dev: u64,
         flags: u32,
+        addr_len_out: Option<u32>,
     ) -> Result<(), i32> {
         let Some(slot) = fp_slot else {
             return Err(minix_types::EINVAL);
@@ -1399,6 +1400,7 @@ impl VfsState {
                 flags,
                 vnode: vnode.get(),
                 dev,
+                addr_len_out,
             });
         }
         self.pending_fs = Some(PendingFs {
@@ -2072,6 +2074,121 @@ impl VfsState {
         // - 接收方向（`VFS_RECVFROM`）用 `SDEV_RECV_REPLY`，载荷里还有
         //   `ctl_len`/`addr_len`/`flags`——`recvfrom` 要把 **addr_len 放进
         //   回复载荷**（`m_vfs_lc_socklen { len }`，C `resume_recvfrom`）。
+        // `accept` 有**自己的三态收尾**（C `resume_accept` socket.c:367-465）：
+        // ① 失败且没建套接字 → 只回错误；② 失败但驱动已建套接字 → 关掉它再回
+        // 错误；③ 成功 → 现场**再开一个 worker** 去做 `make_sock_fd`（C 注释：
+        // 收尾里还要阻塞调用，主线程不能做），成功回 fd + 对端地址长度。
+        if msg.m_type == minix_sockdriver::sdev::SdevReply::AcceptReply as i32 {
+            // SAFETY: `mess_lsockdriver_vfs_accept_reply { int32_t req_id@0;
+            // int32_t sock_id@4; int status@8; unsigned int len@12 }`。
+            let raw = unsafe { &msg.m_u.raw };
+            let sock_id = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+            let status = i32::from_le_bytes(raw[8..12].try_into().unwrap());
+            let addr_len = u32::from_le_bytes(raw[12..16].try_into().unwrap());
+            // `split_smap_dev` 给 `(num, sockid)`——这里要的是**行号**。
+            let smap_num = match crate::device_map::split_smap_dev(block.dev) {
+                Some((num, _)) => num,
+                None => {
+                    self.queue_reply(
+                        target,
+                        crate::call_table::SyscallResult::Error(minix_types::EIO),
+                    );
+                    return true;
+                }
+            };
+            if sock_id < 0 {
+                // case ①：没建套接字，只回错误。
+                self.queue_reply(
+                    target,
+                    crate::call_table::SyscallResult::Error(if status != 0 {
+                        status
+                    } else {
+                        minix_types::EIO
+                    }),
+                );
+                return true;
+            }
+            let dev = crate::device_map::make_smap_dev(smap_num, sock_id as u32);
+            // case ②/③ 都要一个 worker（收尾里可能要再发驱动请求 / PFS 请求）。
+            let Some(new_idx) = self.worker_pool.assign_first_fit(
+                slot,
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            ) else {
+                // 槽位耗尽：C 在这里会尽力而为；本模型里诚实回 EAGAIN 并记
+                // 缺口（新套接字由驱动侧留着，等驱动死亡回收）。
+                self.queue_reply(
+                    target,
+                    crate::call_table::SyscallResult::Error(minix_types::EAGAIN),
+                );
+                return true;
+            };
+            self.current_worker = Some(new_idx);
+            // 监听套接字还在吗？它的打开标志要被新套接字继承（C `resume_accept`
+            // 的 `get_sock(listen_fd, &ldev, &flags)`）。
+            let listen_fd = match block.aux {
+                crate::fproc::SdevAux::Fd(fd) => fd as i32,
+                _ => -1,
+            };
+            let (_, listen_flags) = match self.get_sock(slot, listen_fd) {
+                Ok(pair) => pair,
+                Err(_) => {
+                    self.queue_reply(
+                        target,
+                        crate::call_table::SyscallResult::Error(minix_types::EIO),
+                    );
+                    self.finish_worker_job(new_idx, Some(slot), minix_types::EIO);
+                    return true;
+                }
+            };
+            if status != 0 {
+                // case ②：驱动建了套接字但整体失败 → 关掉它，回错误。
+                if let Some(wp) = self.worker_pool.get_mut(new_idx) {
+                    wp.cont = Some(crate::worker::WorkerCont::SdevCloseThenReply { status });
+                }
+                if self
+                    .send_sdev_simple(
+                        new_idx,
+                        Some(slot),
+                        dev,
+                        minix_sockdriver::sdev::SdevRequest::Close as i32,
+                        0,
+                    )
+                    .is_err()
+                {
+                    // 关不掉也要把错误回给用户（C 是 `(void)sdev_close`）。
+                    self.finish_worker_job(new_idx, Some(slot), status);
+                }
+                return true;
+            }
+            // case ③：继承监听套接字的三个标志位（C 的 `flags &=
+            // O_CLOEXEC | O_NONBLOCK | O_NOSIGPIPE`）。
+            let inherit = (crate::open::OpenFlags::CLOEXEC.bits()
+                | crate::fcntl::O_NONBLOCK
+                | crate::fcntl::O_NOSIGPIPE)
+                & (listen_flags as u32);
+            if let Err(e) = self.begin_make_sock_fd(new_idx, Some(slot), dev, inherit, Some(addr_len))
+            {
+                // 建 fd 失败 → 也要关掉新套接字（C 的同一个分支）。
+                if let Some(wp) = self.worker_pool.get_mut(new_idx) {
+                    wp.cont = Some(crate::worker::WorkerCont::SdevCloseThenReply { status: e });
+                }
+                if self
+                    .send_sdev_simple(
+                        new_idx,
+                        Some(slot),
+                        dev,
+                        minix_sockdriver::sdev::SdevRequest::Close as i32,
+                        0,
+                    )
+                    .is_err()
+                {
+                    self.finish_worker_job(new_idx, Some(slot), e);
+                }
+            }
+            return true;
+        }
+
         let recv_reply = minix_sockdriver::sdev::SdevReply::ReceiveReply as i32;
         let status;
         let mut addr_len_out: Option<u32> = None;
@@ -2884,7 +3001,7 @@ impl VfsState {
                         self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
                         continue;
                     }
-                    if let Err(e) = self.begin_make_sock_fd(idx, fp_slot, dev, flags) {
+                    if let Err(e) = self.begin_make_sock_fd(idx, fp_slot, dev, flags, None) {
                         self.finish_worker_job(idx, fp_slot, e);
                     }
                     continue;
@@ -2895,6 +3012,7 @@ impl VfsState {
                     flags,
                     vnode,
                     dev,
+                    addr_len_out,
                 } => {
                     // C `make_sock_fd` 的后半（socket.c:140-176）：用回复的
                     // `node_details` 填 vnode（`v_sdev` 是套接字设备号）与 filp，
@@ -2941,7 +3059,34 @@ impl VfsState {
                     {
                         fp.cloexec_set.set(fd as usize, true);
                     }
+                    if let Some(len) = addr_len_out {
+                        // `accept` 的收尾：fd 是状态、**对端地址长度在载荷里**
+                        // （C `resume_accept` 末段的 `m_vfs_lc_socklen.len`）。
+                        let mut m = Message {
+                            m_type: fd as i32,
+                            ..Message::default()
+                        };
+                        // SAFETY: `mess_vfs_lc_socklen { unsigned int len; }`。
+                        unsafe {
+                            m.m_u.raw[0..4].copy_from_slice(&len.to_le_bytes());
+                        }
+                        self.queue_reply_msg(
+                            fp_slot
+                                .and_then(|s| self.fproc_table.get(s))
+                                .map(|fp| fp.endpoint)
+                                .unwrap_or(Endpoint::NONE),
+                            m,
+                        );
+                        self.finish_worker_job(idx, fp_slot, fd as i32);
+                        continue;
+                    }
                     self.finish_worker_job(idx, fp_slot, fd as i32);
+                    continue;
+                }
+                crate::worker::WorkerCont::SdevCloseThenReply { status } => {
+                    // 关掉那个"多出来的"套接字之后，回**原来的错误**
+                    // （C `resume_accept` 的 `(void)sdev_close(dev, ...)`）。
+                    self.finish_worker_job(idx, fp_slot, status);
                     continue;
                 }
                 crate::worker::WorkerCont::Pipe2 {
