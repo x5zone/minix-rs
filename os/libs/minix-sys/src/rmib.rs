@@ -824,6 +824,21 @@ pub trait RmibIo {
     fn copyout(&mut self, src: &[u8], grant: i32, off: usize) -> Result<(), i32>;
 }
 
+/// 函数驱动节点的服务回调(C: `rnode->rnode_func(&call, rnode, oldp,
+/// newp)`,rmib.h:18-21 + rmib.c:809-811——C 以函数指针挂在节点上,
+/// Rust 的 [`RmibNode`] 只带 `func: bool` 标志,handler 由服务侧经本
+/// trait 注入)。返回拷出字节数(`Ok`)或负 errno(`Err`)。
+pub trait RmibFuncHandler {
+    fn call_func(
+        &mut self,
+        node: &RmibNode,
+        call: &RmibCall,
+        oldp: Option<&RmibOldp>,
+        newp: Option<&RmibNewp>,
+        io: &mut dyn RmibIo,
+    ) -> Result<usize, i32>;
+}
+
 /// 注册簿记产出的待发消息(C: `rmib_send_reg` 组装的
 /// `MIB_REGISTER`/`MIB_DEREGISTER`——m_type 与 m_lsys_mib_register 载荷)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1110,12 +1125,18 @@ fn rmib_readwrite(
 /// CREATE/DESTROY 仅静态子树 → EPERM;其余 EOPNOTSUPP);正 id 查子
 /// 节点(PRIVATE 无授权 EPERM;叶节点后还有名字分量 ENOTDIR;叶+新值
 /// 须 READWRITE 且[ANYWRITE 或授权]);函数驱动节点此版返回 EOPNOTSUPP
-/// (handler 由服务自派,接 RmibNode::func 的服务回调后替换);普通叶走
-/// readwrite。名字耗尽在非叶节点 → EISDIR(名字指向节点数组)。
+/// (handler 由服务自派,经 `func` 回调注入);普通叶走 readwrite。名字
+/// 耗尽在非叶节点 → EISDIR(名字指向节点数组)。
+///
+/// `func` 是函数驱动节点的回调(C-12):`Some` 时 func 节点交由
+/// [`RmibFuncHandler::call_func`](C `rnode->rnode_func(&call, rnode,
+/// oldp, newp)` 的返回值语义同 `Ok(字节数)/Err(errno)`),`None` 时维持
+/// 既有 EOPNOTSUPP。
 pub fn rmib_call(
     table: &mut SubtreeTable,
     req: &RmibCallReq,
     io: &mut dyn RmibIo,
+    func: Option<&mut dyn RmibFuncHandler>,
 ) -> Result<usize, i32> {
     // C rmib.c:688-695 — 未注册子树返回 ERESTART(MIB 应注销其以为的挂载)。
     let slot = match req.root_id as usize >= RMIB_MAX_SUBTREES {
@@ -1222,10 +1243,13 @@ pub fn rmib_call(
             }
         }
 
-        // C rmib.c:809-811 — 函数驱动节点交 handler(Rust 侧由服务自派,
-        // 本版返回 EOPNOTSUPP 并登记)。
+        // C rmib.c:809-811 — 函数驱动节点交 handler;返回值即结果
+        // (`Ok(字节数)`/`Err(负 errno)`)。无回调注入时维持 EOPNOTSUPP。
         if has_func {
-            return Err(minix_types::EOPNOTSUPP);
+            return match func {
+                Some(h) => h.call_func(rnode, &call_ctx, oldp.as_ref(), newp.as_ref(), io),
+                None => Err(minix_types::EOPNOTSUPP),
+            };
         }
 
         // C rmib.c:813-815 — 常规数据叶:通用读写。
@@ -1283,5 +1307,159 @@ fn iter_children(rnode: &RmibNode) -> Vec<(u32, &RmibNode)> {
             .map(|(i, n)| (i as u32, n))
             .collect(),
         RmibChildren::Sparse(v) => v.iter().map(|(i, n)| (*i, n)).collect(),
+    }
+}
+
+// ── rmib_call 函数节点派发(C-12;C rmib.c:809-811)──
+
+#[cfg(test)]
+mod func_tests {
+    use super::*;
+    use alloc::{string::String, vec::Vec};
+    use minix_types::{CTLTYPE_INT, CTLTYPE_NODE, EFAULT, EINVAL};
+
+    /// 内存 grant 通道:copyout 追加记录,copyin 按 grant 读。
+    struct MemIo {
+        grants: Vec<(i32, Vec<u8>)>,
+        written: Vec<(i32, Vec<u8>)>,
+    }
+    impl MemIo {
+        fn new(grants: Vec<(i32, Vec<u8>)>) -> Self {
+            Self { grants, written: Vec::new() }
+        }
+    }
+    impl RmibIo for MemIo {
+        fn copyin(&mut self, dst: &mut [u8], grant: i32, off: usize) -> Result<(), i32> {
+            let data = self
+                .grants
+                .iter()
+                .find(|(g, _)| *g == grant)
+                .map(|(_, d)| d.clone())
+                .ok_or(EFAULT)?;
+            if off + dst.len() > data.len() {
+                return Err(EFAULT);
+            }
+            dst.copy_from_slice(&data[off..off + dst.len()]);
+            Ok(())
+        }
+        fn copyout(&mut self, src: &[u8], grant: i32, off: usize) -> Result<(), i32> {
+            let mut data = self
+                .grants
+                .iter()
+                .find(|(g, _)| *g == grant)
+                .map(|(_, d)| d.clone())
+                .ok_or(EFAULT)?;
+            if off + src.len() > data.len() {
+                return Err(EFAULT);
+            }
+            data[off..off + src.len()].copy_from_slice(src);
+            self.written.push((grant, data[off..off + src.len()].to_vec()));
+            Ok(())
+        }
+    }
+
+    /// 探针 handler:记录节点名与剩余名字长度,按脚本返回。
+    struct Probe {
+        seen: Option<(String, usize)>,
+        ret: Result<usize, i32>,
+    }
+    impl RmibFuncHandler for Probe {
+        fn call_func(
+            &mut self,
+            node: &RmibNode,
+            call: &RmibCall,
+            _oldp: Option<&RmibOldp>,
+            _newp: Option<&RmibNewp>,
+            io: &mut dyn RmibIo,
+        ) -> Result<usize, i32> {
+            self.seen = Some((node.name.clone(), call.namelen));
+            match self.ret {
+                Ok(n) => {
+                    io.copyout(&vec![0xABu8; n], 7, 0)?;
+                    Ok(n)
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    fn node(flags: u32, name: &str) -> RmibNode {
+        RmibNode { flags, name: String::from(name), ..RmibNode::default() }
+    }
+
+    /// 根 NODE(子:[0]=func 节点,[1]=int 叶),挂载名 [0, 82]。
+    fn fixture() -> SubtreeTable {
+        let mut root = node(CTLTYPE_NODE, "ipc");
+        let mut info = node(CTLTYPE_NODE, "info");
+        info.func = true;
+        let mut leaf = node(CTLTYPE_INT | minix_types::CTLFLAG_READWRITE, "count");
+        leaf.data = Some(alloc::vec![0, 0, 0, 0]);
+        root.children = RmibChildren::Dense(alloc::vec![info, leaf]);
+        let mut table = SubtreeTable::new();
+        let (_id, _msg) = table.register(&[0, 82], root).expect("register");
+        table
+    }
+
+    fn req(name_len: usize, name_grant: i32) -> RmibCallReq {
+        RmibCallReq {
+            root_id: 0,
+            name_len,
+            name_grant,
+            oldp_grant: 7,
+            oldp_len: 8,
+            newp_grant: -1,
+            newp_len: 0,
+            user_endpt: 20,
+            flags: 0,
+            root_ver: 0,
+            tree_ver: 0,
+        }
+    }
+
+    #[test]
+    fn test_func_node_dispatches_to_handler() {
+        // C rmib.c:809-811 — name=[1] 走到 func 节点,handler 收到
+        // namelen=0(名字在节点处耗尽),返回值即结果。
+        let mut table = fixture();
+        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
+        let mut probe = Probe { seen: None, ret: Ok(4) };
+        let r = rmib_call(&mut table, &req(1, 5), &mut io, Some(&mut probe));
+        assert_eq!(r, Ok(4));
+        assert_eq!(probe.seen, Some(("info".into(), 0)));
+        assert_eq!(io.written, vec![(7, alloc::vec![0xAB; 4])]);
+    }
+
+    #[test]
+    fn test_func_node_handler_errno_passthrough() {
+        // handler 的 Err 原样上抛(C 的返回负 errno)。
+        let mut table = fixture();
+        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
+        let mut probe = Probe { seen: None, ret: Err(EINVAL) };
+        assert_eq!(
+            rmib_call(&mut table, &req(1, 5), &mut io, Some(&mut probe)),
+            Err(EINVAL)
+        );
+    }
+
+    #[test]
+    fn test_func_node_without_handler_is_eopnotsupp() {
+        // C-12 前的既有行为保持:None 回调 → EOPNOTSUPP。
+        let mut table = fixture();
+        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![0, 0, 0, 0]), (7, alloc::vec![0; 16])]);
+        assert_eq!(
+            rmib_call(&mut table, &req(1, 5), &mut io, None),
+            Err(minix_types::EOPNOTSUPP)
+        );
+    }
+
+    #[test]
+    fn test_data_leaf_bypasses_handler() {
+        // name=[2] 是普通 int 叶:不走 handler,走通用 readwrite。
+        let mut table = fixture();
+        let mut io = MemIo::new(alloc::vec![(5, alloc::vec![1, 0, 0, 0]), (7, alloc::vec![0; 16])]);
+        let mut probe = Probe { seen: None, ret: Ok(0) };
+        let r = rmib_call(&mut table, &req(1, 5), &mut io, Some(&mut probe));
+        assert!(r.is_ok());
+        assert!(probe.seen.is_none(), "数据叶不得派发 handler");
     }
 }
