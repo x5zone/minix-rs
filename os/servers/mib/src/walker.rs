@@ -54,6 +54,15 @@ pub struct MibCtx<'a, K: MibKernel, S: MibServices> {
     pub kernel: &'a mut K,
     /// Peer-service verbs (PM/DS/VM).
     pub svc: &'a mut S,
+    /// The process-table snapshots (16): pulled once per clock tick,
+    /// shared by the kern.lwp/proc2/proc_args formats. C: the
+    /// `proc_tab`/`mproc_tab`/`fproc_tab` statics (proc.c:18-20).
+    pub tables: &'a mut crate::proc::Tables,
+    /// This server's own endpoint — the "blocked on MIB" decor lane
+    /// (proc.c:338-342) compares against it. `NONE` until the server
+    /// models its endpoint (the lane then cannot fire; C is aesthetics
+    /// only).
+    pub self_endpt: Endpoint,
     /// Who is asking.
     pub caller: Endpoint,
     /// The auth cache; `Unknown` resolves on first use.
@@ -191,7 +200,7 @@ pub fn sysctl<K: MibKernel, S: MibServices>(
                 cur = child;
                 idx += 1;
             }
-            LevelVerdict::CallFunc => return func_exec(ctx, child, req),
+            LevelVerdict::CallFunc => return func_exec(ctx, child, req, idx),
             LevelVerdict::Readwrite { verify } => return readwrite_exec(ctx, child, verify, req),
             LevelVerdict::RemoteCall { can_restart } => {
                 match remote_exec(ctx, child, can_restart, remaining, req) {
@@ -676,6 +685,8 @@ fn remote_exec<K: MibKernel, S: MibServices>(
         budget: _,
         kernel,
         svc,
+        tables: _,
+        self_endpt: _,
         caller,
         auth: _,
     } = &mut *ctx;
@@ -807,11 +818,16 @@ fn func_exec<K: MibKernel, S: MibServices>(
     ctx: &mut MibCtx<K, S>,
     node: NodeId,
     req: &mut Request,
+    depth: usize,
 ) -> SysctlOutcome {
     let key = match ctx.tree.slot(node).func {
         Some(k) => k,
         None => return SysctlOutcome::err(EINVAL),
     };
+    // The call's own name tail: C advances `call_name` as dispatch descends,
+    // so the handler sees the components past the function node
+    // (tree.c:1446-1452; mib_kern_lwp reads name[0..2] from there).
+    let args: &[i32] = &req.name[depth + 1..];
     // Answer length first: the copy helper reports the full size.
     match key {
         FuncKey::Kern(KernFunc::HardclockTicks) => {
@@ -849,10 +865,14 @@ fn func_exec<K: MibKernel, S: MibServices>(
         FuncKey::Kern(KernFunc::Profiling) => {
             SysctlOutcome::err(EOPNOTSUPP) // A-9: kern.c:64-71
         }
-        // Cross-service pulls: wired to their verbs, live when E1/E2
-        // land (cp_time/cpuavg, drivers/VFS dmap, proc tables — P1-5,
-        // root_device/PMGETPARAM, boottime/getuptime, ipc mock until
-        // the IPC service mounts over it).
+        // KERN_LWP runs the full chain now (16's pull + 17's verdicts +
+        // the row views); the remaining cross-service pulls keep the
+        // honest touch-and-refuse (cp_time/cpuavg, drivers/VFS dmap,
+        // root_device/PMGETPARAM, boottime/getuptime, ipc mock until the
+        // IPC service mounts over it).
+        FuncKey::Kern(KernFunc::Lwp) => {
+            crate::proc::lwp_exec::kern_lwp(ctx, args, req.oldp.as_ref())
+        }
         FuncKey::Kern(KernFunc::Ccpu)
         | FuncKey::Kern(KernFunc::CpTime)
         | FuncKey::Kern(KernFunc::Consdev)
@@ -862,7 +882,6 @@ fn func_exec<K: MibKernel, S: MibServices>(
         | FuncKey::Kern(KernFunc::IpcInfo)
         | FuncKey::Kern(KernFunc::Proc2)
         | FuncKey::Kern(KernFunc::ProcArgs)
-        | FuncKey::Kern(KernFunc::Lwp)
         | FuncKey::Vm(_)
         | FuncKey::Hw(_) => {
             let _ = ctx.svc.vm_info(0, &mut []); // touch the transport honestly
@@ -906,11 +925,15 @@ mod tests {
         let budget: &'static mut MibBudget = Box::leak(Box::new(MibBudget::new()));
         let kernel: &'static mut Recorder = Box::leak(Box::new(Recorder::default()));
         let svc: &'static mut Recorder = Box::leak(Box::new(Recorder::default()));
+        let tables: &'static mut crate::proc::Tables =
+            Box::leak(Box::new(crate::proc::Tables::new()));
         MibCtx {
             tree,
             budget,
             kernel,
             svc,
+            tables,
+            self_endpt: Endpoint::NONE,
             caller: Endpoint::PM,
             auth: CallAuth::Yes,
         }

@@ -81,7 +81,8 @@ pub trait MibIpc {
 /// transport error loses a turn, a broken seam dies at 64).
 pub const MAX_CONSECUTIVE_RECV_FAILURES: u32 = 64;
 
-/// The MIB server: tree, budget, and the remote slot table.
+/// The MIB server: tree, budget, the remote slot table, and the
+/// process-table snapshots the kern.lwp/proc2 formats pull.
 pub struct MibServer {
     /// The sysctl tree.
     pub tree: MibTree,
@@ -89,6 +90,9 @@ pub struct MibServer {
     pub budget: MibBudget,
     /// Remote subtree slots. C: `endpts[32]` — remote.c:24-35.
     pub slots: Vec<EndptSlot>,
+    /// Pulled kernel/PM/VFS-light tables (16). C: the
+    /// `proc_tab`/`mproc_tab`/`fproc_tab` statics — proc.c:18-20.
+    pub tables: crate::proc::Tables,
 }
 
 impl Default for MibServer {
@@ -104,6 +108,7 @@ impl MibServer {
             tree: MibTree::init(),
             budget: MibBudget::new(),
             slots: (0..MIB_ENDPTS).map(|_| EndptSlot::default()).collect(),
+            tables: crate::proc::Tables::new(),
         }
     }
 }
@@ -253,6 +258,8 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             budget: &mut self.server.budget,
             kernel: &mut self.kernel,
             svc: &mut self.services,
+            tables: &mut self.server.tables,
+            self_endpt: Endpoint::NONE,
             caller,
             auth: CallAuth::Unknown,
         };

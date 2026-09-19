@@ -7,9 +7,11 @@
 //! 16-mib-proc-tables.md + companions.
 
 pub mod lwp;
+pub mod lwp_exec;
 pub mod minix_proc;
 pub mod proc2;
 pub mod proc_args;
+pub mod rows;
 pub mod tables;
 
 pub use minix_proc::{
@@ -36,8 +38,11 @@ pub use lwp::{
     wchan_with_class,
 };
 
+pub use rows::{
+    build_pid_hash, write_wmesg_named, KernelRows, LightRows, PmRows,
+};
 pub use tables::{
     EXTRA_PROCS, EndptLane, MP_MAGIC, NO_SLOT, PMAGIC, PULL_ORDER, PullSource, PullVerdict,
     chain_lookup, hash_slot, hash_slots, judge_pull, magic_ok, paren_direct, ticks_to_timeval,
-    wmesg_lane,
+    wmesg_lane, Tables,
 };

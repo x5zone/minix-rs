@@ -11,6 +11,7 @@
 //! 16-mib-proc-tables.md.
 
 /// Slots no PID maps to. C: `NO_SLOT (-1)` — proc.c:34.
+use alloc::vec;
 use alloc::vec::Vec;
 
 pub const NO_SLOT: i32 = -1;
@@ -280,10 +281,31 @@ pub struct Tables {
     /// Failure latch: true from the first failed pull until reboot.
     /// C: `tabs_valid = FALSE` — proc.c:106-108.
     pub latched: bool,
+    /// Cross-server scratch: the kernel copy lands here first so a
+    /// transport failure mid-row cannot corrupt the live snapshot.
+    /// C keeps the tables themselves as the destination (`sys_getproctab`
+    /// writes proc_tab directly); the copy-out discipline is A-6.
+    scratch_kern: Vec<u8>,
+    /// See [`Tables::scratch_kern`].
+    scratch_pm: Vec<u8>,
+    /// See [`Tables::scratch_kern`].
+    scratch_vfs: Vec<u8>,
 }
 
+/// 每槽行宽（字节）：内核行 [`minix_types::ProcInfoStruct`]（104）、PM 行
+/// [`minix_types::MProcSnap`]（88，C-21）、VFS light 行（C `struct
+/// fproc_light`，fproc.h:111-115：dev_t + int + endpoint_t = 16）。
+pub const KERN_ROW: usize = core::mem::size_of::<minix_types::ProcInfoStruct>();
+/// See [`KERN_ROW`].
+pub const PM_ROW: usize = core::mem::size_of::<minix_types::MProcSnap>();
+/// light 行宽按 C `fproc_light` 定；wire 权威（VFS 生产者）落地时由
+/// minix-types 的 Snap 类型接管（C-21 后半），不一致时钉值测试爆。
+pub const LIGHT_ROW: usize = 16;
+
 impl Tables {
-    /// Fresh state: nothing pulled, latch open. C: statics start zero.
+    /// Fresh state: nothing pulled, latch open, scratch pre-sized from
+    /// the producer row counts. C: statics start zero (the arrays are
+    /// BSS-sized at link time — `proc.c:18-20`).
     pub fn new() -> Self {
         Self {
             kernel_tab: Vec::new(),
@@ -291,6 +313,9 @@ impl Tables {
             vfs_tab: Vec::new(),
             last_tick: 0,
             latched: false,
+            scratch_kern: vec![0; (minix_types::NR_TASKS + minix_types::NR_PROCS) * KERN_ROW],
+            scratch_pm: vec![0; minix_types::NR_PROCS * PM_ROW],
+            scratch_vfs: vec![0; minix_types::NR_PROCS * LIGHT_ROW],
         }
     }
 
@@ -299,18 +324,23 @@ impl Tables {
     /// buffers, latch on any failure. Returns `true` when the tables
     /// hold a current snapshot.
     ///
-    /// C: `update_tables` — proc.c:46-217. `scratch_*` are server-owned
-    /// buffers (sized once from the producer row counts at startup);
-    /// the pulled bytes are copied into the snapshot fields so a later
-    /// transport failure cannot corrupt the live snapshot.
+    /// C: `update_tables` — proc.c:46-217. The scratch buffers are owned
+    /// here (sized once from the producer row counts); the pulled bytes
+    /// are copied into the snapshot fields so a later transport failure
+    /// cannot corrupt the live snapshot.
+    ///
+    /// `[ARCH: A-7]` VFS light 半的**缺席降级**：C 里三表任一失败即
+    /// `tabs_valid = FALSE`（latch 到重启）；本实现的 VFS 生产者尚是
+    /// fail-closed（vfs/misc.rs 的 `ProcLightTab` 臂，等 C-21 后半的 wire
+    /// 权威），按 C 语义 latch 会让 MIB 自第一次调用起永久不可用。故
+    /// light 拉取失败降级为"空表继续"，fill 半对 light 维度（cdev/sdev
+    /// 阻塞的 wchan/wmesg）如实退化——内核/PM 半不受影响。生产者落地后
+    /// 本分支自然消失。
     pub fn update<K: crate::transport::MibKernel, S: crate::transport::MibServices>(
         &mut self,
         now_tick: u64,
         kernel: &mut K,
         services: &mut S,
-        scratch_kern: &mut [u8],
-        scratch_pm: &mut [u8],
-        scratch_vfs: &mut [u8],
     ) -> bool {
         if self.latched {
             return false;
@@ -321,35 +351,45 @@ impl Tables {
             PullVerdict::Pull => {}
         }
         // Kernel first (proc.c:75).
-        if kernel.getproctab(scratch_kern).is_err() {
+        if kernel.getproctab(&mut self.scratch_kern).is_err() {
             self.latched = true;
             return false;
         }
-        self.kernel_tab = scratch_kern.to_vec();
+        self.kernel_tab = self.scratch_kern.clone();
         // PM table (proc.c:90: SI_PROC_TAB).
         if services
-            .getsysinfo(minix_types::Endpoint::PM, minix_types::SI_PROC_TAB, scratch_pm)
-            .is_err()
-        {
-            self.latched = true;
-            return false;
-        }
-        self.pm_tab = scratch_pm.to_vec();
-        // VFS light table (proc.c:106: SI_PROCLIGHT_TAB).
-        if services
             .getsysinfo(
-                minix_types::Endpoint::VFS,
-                minix_types::SI_PROCLIGHT_TAB,
-                scratch_vfs,
+                minix_types::Endpoint::PM,
+                minix_types::SI_PROC_TAB,
+                &mut self.scratch_pm,
             )
             .is_err()
         {
             self.latched = true;
             return false;
         }
-        self.vfs_tab = scratch_vfs.to_vec();
+        self.pm_tab = self.scratch_pm.clone();
+        // VFS light table (proc.c:106: SI_PROCLIGHT_TAB) — 缺席降级，
+        // 见上方 [ARCH: A-7] 注记。
+        match services.getsysinfo(
+            minix_types::Endpoint::VFS,
+            minix_types::SI_PROCLIGHT_TAB,
+            &mut self.scratch_vfs,
+        ) {
+            Ok(()) => self.vfs_tab = self.scratch_vfs.clone(),
+            Err(_) => self.vfs_tab.clear(),
+        }
         self.last_tick = now_tick;
         true
+    }
+}
+
+impl Tables {
+    /// Scratch capacities as `(kernel, pm, light)` byte lengths — the
+    /// pull always fills whole-table copies, so the snapshot lengths
+    /// equal these when the sources answer.
+    pub fn scratch_len(&self) -> (usize, usize, usize) {
+        (self.scratch_kern.len(), self.scratch_pm.len(), self.scratch_vfs.len())
     }
 }
 
@@ -405,11 +445,16 @@ mod pull_tests {
         fn getnuid(&mut self, _who: Endpoint) -> Result<u32, i32> {
             Ok(0)
         }
-        fn getsysinfo(&mut self, _t: Endpoint, _w: i32, buf: &mut [u8]) -> Result<(), i32> {
-            if self.fail_pm {
+        fn getsysinfo(&mut self, t: Endpoint, _w: i32, buf: &mut [u8]) -> Result<(), i32> {
+            if self.fail_pm && t == Endpoint::PM {
                 return Err(EPERM);
             }
-            buf[..2].copy_from_slice(&[0xAA, 0xBB]);
+            if self.fail_vfs && t == Endpoint::VFS {
+                return Err(EPERM);
+            }
+            if !buf.is_empty() {
+                buf[..2].copy_from_slice(&[0xAA, 0xBB]);
+            }
             Ok(())
         }
         fn ds_retrieve_label_name(&mut self, _w: Endpoint, _b: &mut [u8]) -> Result<usize, i32> {
@@ -449,13 +494,11 @@ mod pull_tests {
         let mut tables = Tables::new();
         let mut kernel = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
         let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
-        let mut kbuf = [0u8; 16];
-        let mut pbuf = [0u8; 8];
-        let mut vbuf = [0u8; 8];
-        let ok = tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf);
+        let ok = tables.update(5, &mut kernel, &mut services);
         assert!(ok);
-        assert_eq!(tables.kernel_tab, kbuf.to_vec());
-        assert_eq!(tables.pm_tab, pbuf.to_vec());
+        assert_eq!(tables.kernel_tab.len(), tables.scratch_len().0);
+        assert_eq!(tables.pm_tab.len(), tables.scratch_len().1);
+        assert_eq!(tables.vfs_tab.len(), tables.scratch_len().2);
         assert_eq!(tables.last_tick, 5);
         assert!(!tables.latched);
         let _ = Endpoint::PM;
@@ -469,14 +512,11 @@ mod pull_tests {
         let mut tables = Tables::new();
         let mut kernel = MockPull { fail_kernel: true, fail_pm: false, fail_vfs: false };
         let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
-        let mut kbuf = [0u8; 16];
-        let mut pbuf = [0u8; 8];
-        let mut vbuf = [0u8; 8];
-        assert!(!tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
+        assert!(!tables.update(5, &mut kernel, &mut services));
         assert!(tables.latched);
         // Latched: a later healthy transport still refuses.
         kernel.fail_kernel = false;
-        assert!(!tables.update(50, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
+        assert!(!tables.update(50, &mut kernel, &mut services));
         let _ = Endpoint::PM;
     }
 
@@ -487,15 +527,26 @@ mod pull_tests {
         let mut tables = Tables::new();
         let mut kernel = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
         let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: false };
-        let mut kbuf = [0u8; 16];
-        let mut pbuf = [0u8; 8];
-        let mut vbuf = [0u8; 8];
-        assert!(tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
-        let calls_before = 0; // judge_pull refuses before any verb runs
-        let _ = calls_before;
+        assert!(tables.update(5, &mut kernel, &mut services));
         // Same tick: reuse — no re-pull, the snapshot survives.
-        assert!(tables.update(5, &mut kernel, &mut services, &mut kbuf, &mut pbuf, &mut vbuf));
-        assert_eq!(tables.kernel_tab.len(), 16);
+        assert!(tables.update(5, &mut kernel, &mut services));
+        assert_eq!(tables.kernel_tab.len(), tables.scratch_len().0);
+    }
+
+    /// VFS light 缺席（生产者 fail-closed）不 latch：内核/PM 半照常落，
+    /// light 置空（[ARCH: A-7] 的降级语义，tables.rs 头注）。
+    #[test]
+    fn test_vfs_light_absent_degrades() {
+        let mut tables = Tables::new();
+        let mut kernel = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: true };
+        let mut services = MockPull { fail_kernel: false, fail_pm: false, fail_vfs: true };
+        assert!(tables.update(7, &mut kernel, &mut services));
+        assert_eq!(tables.kernel_tab.len(), tables.scratch_len().0);
+        assert_eq!(tables.pm_tab.len(), tables.scratch_len().1);
+        assert!(tables.vfs_tab.is_empty());
+        assert!(!tables.latched);
+        // 下一 tick 照常重拉（不锁死）。
+        assert!(tables.update(8, &mut kernel, &mut services));
     }
 
     /// PM failure latches mid-pull: the kernel snapshot stays, PM/VFS
@@ -536,14 +587,11 @@ mod pull_tests {
         let mut tables = Tables::new();
         let mut kernel = PmFails;
         let mut services = PmFailsSvc;
-        let mut kb = [0u8; 16];
-        let mut pb = [0u8; 8];
-        let mut vb = [0u8; 8];
         // PM failure = the pull failed (update returns false), but the
         // kernel snapshot still landed — C copies per-source (:75-103).
-        assert!(!tables.update(1, &mut kernel, &mut services, &mut kb, &mut pb, &mut vb));
-        assert_eq!(tables.kernel_tab.len(), 16);
+        assert!(!tables.update(1, &mut kernel, &mut services));
+        assert_eq!(tables.kernel_tab.len(), tables.scratch_len().0);
         // The latch holds on the next tick.
-        assert!(!tables.update(2, &mut kernel, &mut services, &mut kb, &mut pb, &mut vb));
+        assert!(!tables.update(2, &mut kernel, &mut services));
     }
 }
