@@ -213,9 +213,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
         | VfsCallNum::Umount
-        | VfsCallNum::Chdir
-        | VfsCallNum::Fchdir
-        | VfsCallNum::Chroot
         | VfsCallNum::Pipe2
         | VfsCallNum::Select
         | VfsCallNum::Socket
@@ -1199,6 +1196,115 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 路径臂模板：symlink（父目录遍历 + 名字 direct grant + 目标 magic grant）──
         // ── 路径臂模板：link（**两段遍历**：先源文件、再新名的父目录）──
         // ── sync / fsync（多挂载序列：每个匹配挂载一条 REQ_SYNC）──
+        // ── 路径臂模板：chdir / chroot / fchdir（走完本地改目录）──
+        VfsCallNum::Chdir | VfsCallNum::Chroot | VfsCallNum::Fchdir => {
+            // C `do_chdir`/`do_chroot`（stadir.c:48-107）与 `do_fchdir`
+            // （stadir.c:32-46）：都归结到 `change_into`（走完即判即改，
+            // **没有 FS 往返**）。chroot 多一道"只有超级用户"的门。
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let into_root = matches!(call, VfsCallNum::Chroot);
+            if into_root {
+                let eff_uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+                if eff_uid != crate::link::SU_UID {
+                    return SyscallResult::Error(minix_types::EPERM);
+                }
+            }
+            if matches!(call, VfsCallNum::Fchdir) {
+                // C stadir.c:38-42：fd → filp → vnode，然后同一个 `change_into`。
+                let fd = {
+                    // SAFETY: `mess_lc_vfs_fchdir { int fd; }`（ipc.h:640-644）。
+                    let raw = unsafe { &msg.m_u.raw };
+                    i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]])
+                };
+                if fd < 0 {
+                    return SyscallResult::Error(minix_types::EBADF);
+                }
+                let vnode_idx = {
+                    let fp = match state.fproc_table.get(fp_slot) {
+                        Some(fp) => fp,
+                        None => return SyscallResult::Error(minix_types::EINVAL),
+                    };
+                    let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                        Some(idx) => idx,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                    match state
+                        .filp_table
+                        .get(crate::filp::FilpId(filp_idx))
+                        .and_then(|f| f.vnode)
+                    {
+                        Some(v) => v,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    }
+                };
+                let status = state.change_into(Some(fp_slot), vnode_idx, false);
+                return SyscallResult::Ok(status);
+            }
+            // path 半：与 access/chmod 同形（内联路径），走完本地改目录。
+            let (name_len, inline) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                (u64::from_le_bytes(b8), raw[24..].to_vec())
+            };
+            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                let n = (name_len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => p,
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            } else {
+                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            };
+            // C stadir.c:65 的 `lookup_init(..., PATH_NOFLAGS, ...)`。
+            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Chdir { into_root },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Sync | VfsCallNum::Fsync => {
             // C `do_sync`（misc.c:276-296，全部挂载）与 `do_fsync`
             // （misc.c:229-267，按文件所在设备的 `v_dev` 过滤）。
@@ -3067,6 +3173,127 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Chdir`/`Chroot`/`Fchdir` 臂（C stadir.c:32-107，都归结到
+    /// `change_into`）：chroot 只有超级用户；fchdir 走 fd 取 vnode；
+    /// 换目录的三道（同一个 vnode 直接成功 / 非目录 ENOTDIR / 不可搜索
+    /// EACCES）在本地判定，**没有 FS 往返**。
+    #[test]
+    fn test_dispatch_chdir_fchdir_chroot() {
+        use minix_types::Endpoint;
+
+        let setup = |eff_uid: u32, dir_mode: u32, dir_uid: u32| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            {
+                let fp = state
+                    .fproc_table
+                    .get_mut(minix_types::UserSlot::new(0))
+                    .unwrap();
+                fp.eff_uid = eff_uid;
+                fp.eff_gid = 100;
+                fp.real_uid = eff_uid;
+                fp.real_gid = 100;
+            }
+            // fd 3 → 目标目录 vnode。
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x77;
+                v.mode = dir_mode;
+                v.uid = dir_uid;
+                v.gid = 100;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            (state, vid)
+        };
+        let fchdir_msg = |fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Fchdir as i32,
+                ..Message::default()
+            };
+            // SAFETY: `mess_lc_vfs_fchdir { int fd; }`（ipc.h:640-644）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+            }
+            m
+        };
+
+        // ① chroot 非超级用户 → EPERM（在任何取路径之前）。
+        let (mut state, _vid) = setup(1000, crate::open::S_IFDIR | 0o755, 1000);
+        state.current_message = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Chroot as i32,
+            ..Message::default()
+        };
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Chroot),
+            SyscallResult::Error(minix_types::EPERM)
+        );
+
+        // ② fchdir 负 fd / 空槽 → EBADF。
+        let (mut state, _vid) = setup(1000, crate::open::S_IFDIR | 0o755, 1000);
+        state.current_message = fchdir_msg(-1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchdir),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        state.current_message = fchdir_msg(9);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchdir),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // ③ fchdir 指向常规文件 → ENOTDIR（`change_into` 的类型门）。
+        let (mut state, _vid) = setup(1000, crate::open::S_IFREG | 0o644, 1000);
+        state.current_message = fchdir_msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchdir),
+            SyscallResult::Ok(minix_types::ENOTDIR)
+        );
+
+        // ④ fchdir 指向 0700 的目录、调用方是属主 → 换成功，wd 指向新 vnode。
+        let (mut state, vid) = setup(1000, crate::open::S_IFDIR | 0o700, 1000);
+        state.current_message = fchdir_msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchdir),
+            SyscallResult::Ok(0)
+        );
+        assert_eq!(
+            state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap()
+                .work_dir,
+            Some(vid.get()),
+            "当前目录已换"
+        );
+
+        // ⑤ 同一个目录再来一次 → 直接成功（C 的 `if (*result == vp)`）。
+        state.current_message = fchdir_msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchdir),
+            SyscallResult::Ok(0)
+        );
+
+        // ⑥ fchdir 指向**别人的** 0700 目录 → EACCES（搜索位门）。
+        let (mut state, _vid) = setup(2000, crate::open::S_IFDIR | 0o700, 1000);
+        state.current_message = fchdir_msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fchdir),
+            SyscallResult::Ok(minix_types::EACCES)
+        );
     }
 
     /// `Sync`/`Fsync` 臂（C `do_sync` misc.c:276-296 / `do_fsync`

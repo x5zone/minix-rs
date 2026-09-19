@@ -243,6 +243,12 @@ pub enum PathFollow {
         /// 目标串长度（**不含**结尾 NUL，C 传 `vname1_length - 1`）。
         target_len: u64,
     },
+    /// `chdir(path)` / `chroot(path)`：走完改**本进程**的当前目录/根目录
+    /// （`change_into`，stadir.c:120-140）——没有 FS 往返，走完即判即改。
+    Chdir {
+        /// `true` 改根目录（`fp_rd`），`false` 改当前目录（`fp_wd`）。
+        into_root: bool,
+    },
     /// `utimens(path, times, flags)`：走完过门后发 `REQ_UTIME`；时间里的
     /// `UTIME_NOW`/`UTIME_OMIT` 哨兵在走完之后才折算（要先知道节点的属主）。
     /// C `do_utimens`（time.c:44-160）。

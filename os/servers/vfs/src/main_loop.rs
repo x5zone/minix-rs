@@ -1050,6 +1050,93 @@ impl VfsState {
         Ok(())
     }
 
+    /// `change_into`（C stadir.c:120-140）：把 `fp_wd`/`fp_rd` 换成新 vnode。
+    /// 同一个 vnode 直接成功；不是目录 → ENOTDIR；不可搜索 → EACCES；都过了
+    /// 才换（旧目录 `put_vnode`、新目录 `dup_vnode`）。
+    ///
+    /// 旧目录的释放走 `VnodeTable::put` 的**快速路径**（`ref>1 → ref--`）；
+    /// 慢路径（`ref==1` → `req_putnode`）与 `filp.rs` 里 `close_filp` 的同一处
+    /// 待办一样**还没接线**，`DeferredPutNode` 把那条 FS 通知留空——这是登记
+    /// 在案的缺口，不是"已完成"。
+    pub fn change_into(
+        &mut self,
+        fp_slot: Option<minix_types::UserSlot>,
+        new_vnode: usize,
+        into_root: bool,
+    ) -> i32 {
+        let Some(slot) = fp_slot else {
+            return minix_types::EINVAL;
+        };
+        let old = match self.fproc_table.get(slot) {
+            Some(fp) => {
+                if into_root {
+                    fp.root_dir
+                } else {
+                    fp.work_dir
+                }
+            }
+            None => return minix_types::EINVAL,
+        };
+        if old == Some(new_vnode) {
+            return 0; // C `if (*result == vp) return(OK);`
+        }
+        let (mode, uid, gid) = match self.vnode_table.get(crate::vnode::VnodeId(new_vnode)) {
+            Some(v) => (v.mode, v.uid, v.gid),
+            None => return minix_types::EINVAL,
+        };
+        // C `change_into`：目录类型门 → `forbidden(fp, vp, X_BIT)`。
+        if mode & crate::open::S_IFMT != crate::open::S_IFDIR {
+            return minix_types::ENOTDIR;
+        }
+        let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+            match self.fproc_table.get(slot) {
+                Some(fp) => (
+                    fp.real_uid,
+                    fp.real_gid,
+                    fp.eff_uid,
+                    fp.eff_gid,
+                    fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                ),
+                None => return minix_types::EINVAL,
+            };
+        let readonly_fs = self
+            .vmnt_table
+            .find_by_fs(self.vnode_table.get(crate::vnode::VnodeId(new_vnode)).map(|v| v.fs).unwrap_or(Endpoint::NONE))
+            .and_then(|v| self.vmnt_table.get(v))
+            .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+            .unwrap_or(false);
+        let forbid = crate::protect::forbidden_decision(&crate::protect::ForbidInput {
+            real_uid,
+            real_gid,
+            eff_uid,
+            eff_gid,
+            is_access_call: false,
+            file_uid: uid,
+            file_gid: gid,
+            mode,
+            access: crate::open::X_BIT as u8,
+            is_dir: true,
+            supp: &supp,
+            readonly_fs,
+        });
+        if let Err(e) = forbid {
+            return e.to_errno();
+        }
+        // 换：旧目录 put（快速路径）、新目录已经 dup 过（`intern_vnode`）。
+        if let Some(old_id) = old {
+            let mut fs_ctl = DeferredPutNode;
+            let _ = self.vnode_table.put(crate::vnode::VnodeId(old_id), &mut fs_ctl);
+        }
+        if let Some(fp) = self.fproc_table.get_mut(slot) {
+            if into_root {
+                fp.root_dir = Some(new_vnode);
+            } else {
+                fp.work_dir = Some(new_vnode);
+            }
+        }
+        0
+    }
+
     /// 扫出 `sync`/`fsync` 要通知的挂载（C `do_sync`/`do_fsync` 的循环过滤）：
     /// `m_dev != NO_DEV && m_fs_e != NONE && m_root_node != NULL`；`dev` 给了
     /// 就再按设备号过滤（fsync 用文件的 `v_dev`）。
@@ -2030,6 +2117,18 @@ impl VfsState {
                                 ) {
                                     self.finish_worker_job(idx, fp_slot, e);
                                 }
+                                continue;
+                            }
+                            crate::worker::PathFollow::Chdir { into_root } => {
+                                // C `do_chdir`/`do_chroot` 的收尾：走完就
+                                // `change_into`（本地改本进程的当前/根目录，
+                                // 没有 FS 往返）。
+                                let Some(vnode) = self.intern_vnode(&node) else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                                    continue;
+                                };
+                                let status = self.change_into(fp_slot, vnode, into_root);
+                                self.finish_worker_job(idx, fp_slot, status);
                                 continue;
                             }
                             crate::worker::PathFollow::LinkSrc { dst_path } => {
@@ -3659,6 +3758,22 @@ pub fn run() -> ! {
             SefEvent::Init(_) => state.init_fresh(),
             SefEvent::PingInvalid => {}
         }
+    }
+}
+
+/// 生产 `FsCtl` 占位：`VnodeTable::put` 的**慢路径**（`ref==1` →
+/// `req_putnode`）还没接线（与 `filp.rs` 里 `close_filp` 的同一处待办），
+/// 这里只让快速路径（`ref>1 → ref--`）生效，慢路径的 FS 通知留空。
+struct DeferredPutNode;
+
+impl crate::vnode::FsCtl for DeferredPutNode {
+    fn put_node(
+        &mut self,
+        _fs: Endpoint,
+        _ino: u64,
+        _count: usize,
+    ) -> Result<(), crate::vnode::VnodeError> {
+        Ok(())
     }
 }
 
