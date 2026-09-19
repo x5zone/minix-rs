@@ -2356,7 +2356,7 @@ impl VfsState {
                     // device/inode/mode/uid/gid）——字段序与 `lookup_reply_off`
                     // 的前六域一致，复用那张表。
                     let node = crate::request::decode_lookup_reply(status, &reply);
-                    let Some(crate::path::LookupRes::Ok { ino, mode, dev, .. }) = node else {
+                    let Some(crate::path::LookupRes::Ok { ino, mode, .. }) = node else {
                         self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                         continue;
                     };
