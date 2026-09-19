@@ -229,7 +229,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Shutdown
         | VfsCallNum::Svrctl
         | VfsCallNum::Vmcall
-        | VfsCallNum::Mapdriver
         | VfsCallNum::Copyfd
         | VfsCallNum::Socketpath
         | VfsCallNum::Ioctl
@@ -1359,6 +1358,87 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 路径臂模板：rename（**三段链**：旧父目录 → [粘滞位子遍历] → 新父目录）──
         // ── statvfs 族（Statvfs1 / Fstatvfs1）：取挂载行 → fill_statvfs ──
         // ── getvfsstat（多挂载序列 + 用户缓冲按 i*sizeof 偏移 + 返回个数）──
+        // ── mapdriver（只有 RS 能调；标签 → 端点 → dmap/smap 登记）──
+        VfsCallNum::Mapdriver => {
+            // C `do_mapdriver`（dmap.c:106-177）：载荷
+            // `mess_lsys_vfs_mapdriver`（major@0、labellen@8、label@16、
+            // ndomains@24、domains@28..，NR_DOMAIN = 8）。三道门在任何查表
+            // 之前：只有 RS 能调（EPERM）、标签放得下（EINVAL）、标签以 NUL
+            // 结尾（EINVAL）。
+            let caller = msg.m_source;
+            if crate::device_map::check_mapper(caller).is_err() {
+                return SyscallResult::Error(minix_types::EPERM);
+            }
+            let (major, label_len, label_addr, ndomains, domains) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let major = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let label_len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let label_addr = u64::from_le_bytes(b8);
+                let ndomains = i32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]);
+                // 域数组从 28 起，本重写的载荷区是 56 字节（`MESSAGE_PAYLOAD_SIZE`，
+                // 与 32 位 Minix 的 message 对齐）——只能放 7 个 `int`，而 C 的
+                // `NR_DOMAIN` 是 8。多出来的域读不到，所以 `ndomains > 7` 一律
+                // EINVAL（**不静默丢域**：少注册一个域会让驱动半残）。
+                let mut doms = [0i32; 7];
+                for (i, d) in doms.iter_mut().enumerate() {
+                    let at = 28 + i * 4;
+                    *d = i32::from_le_bytes([raw[at], raw[at + 1], raw[at + 2], raw[at + 3]]);
+                }
+                (major, label_len, label_addr, ndomains, doms)
+            };
+            // C dmap.c:129-133 —— 标签放不下即 EINVAL（`LABEL_MAX` = 16）。
+            if label_len as usize > crate::device_map::LABEL_MAX {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            // 载荷区容量门（见上面域数组的注记）：C 允许到 `NR_DOMAIN` = 8，
+            // 本重写的 56 字节载荷区只放得下 7 个域——多的拒掉而不是丢。
+            if ndomains > 7 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            // 本臂**不需要 worker 槽**：登记全是本地表操作（dmap/smap），没有
+            // FS/驱动往返，所以不像别的对话臂那样要等回复。
+            // C dmap.c:134-139 —— `sys_vircopy(who_e, label_vir, SELF, label,
+            // label_len, CP_FLAG_TRY)`：标签在**调用方内存**里（跨空间取，
+            // 宿主不可达 → EINVAL，与 C 的 `r != OK → EINVAL` 同值）。
+            let mut label = [0u8; crate::device_map::LABEL_MAX];
+            let n = (label_len as usize).min(crate::device_map::LABEL_MAX);
+            match minix_sys::syscall::sys_datacopy(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                caller.0,
+                label_addr,
+                minix_types::Endpoint::SELF.0,
+                label.as_mut_ptr() as u64,
+                n as u64,
+            ) {
+                Ok(()) => {}
+                Err(_) => return SyscallResult::Error(minix_types::EINVAL),
+            }
+            // C dmap.c:140-144 —— 必须以 NUL 结尾。
+            if n == 0 || label[n - 1] != 0 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let end = label.iter().position(|&b| b == 0).unwrap_or(n);
+            let label_str = match core::str::from_utf8(&label[..end]) {
+                Ok(s) => s,
+                Err(_) => return SyscallResult::Error(minix_types::EINVAL),
+            };
+            let doms = if ndomains > 0 {
+                &domains[..(ndomains as usize).min(7)]
+            } else {
+                &domains[..0]
+            };
+            let status = state.finish_mapdriver(caller, label_str, major, doms);
+            if status == 0 {
+                SyscallResult::Ok(0)
+            } else {
+                SyscallResult::Error(status)
+            }
+        }
+
         VfsCallNum::Getvfsstat => {
             // C `do_getvfsstat`（stadir.c:330-403）：载荷
             // `mess_lc_vfs_getvfsstat { buf@0, len@8, flags@16 }`。`buf == 0`
@@ -3423,6 +3503,139 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Mapdriver` 臂（C `do_mapdriver` dmap.c:106-177）：三道门在任何查表
+    /// 之前（只有 RS 能调 EPERM / 标签放得下 EINVAL / 标签以 NUL 结尾
+    /// EINVAL）；标签 → 端点走本地目录（生产缺口见 `LabelDir`），命中后标成
+    /// 服务进程并写 dmap/smap。
+    ///
+    /// 标签在**调用方内存**里（C 的 `sys_vircopy`），宿主下取不到 → EINVAL
+    /// ——所以"取标签之后"的半在 `test_finish_mapdriver_*` 那两条里直接调
+    /// 主体覆盖。
+    #[test]
+    fn test_dispatch_mapdriver_gates() {
+        use minix_types::Endpoint;
+
+        let mapdriver_msg = |major: u32, label_len: u64| {
+            let mut m = Message {
+                m_source: Endpoint::RS, // 只有 RS 能调
+                m_type: VfsCallNum::Mapdriver as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lsys_vfs_mapdriver：major@0、labellen@8、label@16、
+            // ndomains@24、domains@28..。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&major.to_le_bytes());
+                raw[8..16].copy_from_slice(&label_len.to_le_bytes());
+                raw[16..24].copy_from_slice(&0x6000u64.to_le_bytes());
+                raw[24..28].copy_from_slice(&0i32.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 非 RS 调用 → EPERM。
+        let mut state = seeded(100);
+        state.current_message = mapdriver_msg(3, 4);
+        state.current_message.m_source = Endpoint::PM;
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Mapdriver),
+            SyscallResult::Error(minix_types::EPERM)
+        );
+
+        // ② 标签超过 LABEL_MAX → EINVAL。
+        state.current_message = mapdriver_msg(3, crate::device_map::LABEL_MAX as u64 + 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Mapdriver),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // ③ 标签长度合法但跨空间取不到（宿主）→ EINVAL（与 C 的
+        // `sys_vircopy` 失败同值）。
+        state.current_message = mapdriver_msg(3, 4);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Mapdriver),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+    }
+
+    /// `finish_mapdriver` 的主体（取标签之后那半）：标签未登记 → EINVAL；
+    /// 登记了 → 标成服务进程 + 写 dmap 行（major 有效时）+ 写 smap 行与
+    /// `pfmap`（有域时）；smap 失败要**撤销** dmap。
+    #[test]
+    fn test_finish_mapdriver_registers_and_undoes() {
+        use minix_types::Endpoint;
+
+        let mut state = seeded(100);
+        let drv = Endpoint::from_generation_slot(0, 9);
+        // 驱动进程占一个 fproc 槽（`isokendpt` 那一跳）。
+        let drv_slot = drv.to_user_slot().expect("用户槽");
+        state.driver_labels.push(("mydrv".to_string(), drv));
+
+        // ① 标签没登记 → EINVAL（fail-closed，不假装解析成功）。
+        assert_eq!(
+            state.finish_mapdriver(Endpoint::RS, "unknown", 3, &[]),
+            minix_types::EINVAL
+        );
+
+        // ② 非 RS 调用 → EPERM。
+        assert_eq!(
+            state.finish_mapdriver(Endpoint::PM, "mydrv", 3, &[]),
+            minix_types::EPERM
+        );
+
+        // ③ 只给 major：写 dmap 行 + 标服务进程。
+        assert_eq!(
+            state.finish_mapdriver(Endpoint::RS, "mydrv", 3, &[]),
+            0
+        );
+        assert_eq!(
+            state.dmap_table.get(3).and_then(|r| r.driver),
+            Some(drv),
+            "dmap 行已登记"
+        );
+        assert!(
+            state
+                .fproc_table
+                .get(drv_slot)
+                .map(|fp| fp.flags.contains(crate::fproc::FpFlags::SRV_PROC))
+                .unwrap_or(false),
+            "驱动进程被标成服务进程"
+        );
+
+        // ④ 给域：写 smap 行 + `pfmap[domain]`。
+        assert_eq!(
+            state.finish_mapdriver(Endpoint::RS, "mydrv", 3, &[1, 2]),
+            0
+        );
+        let row = state
+            .smap_table
+            .entries
+            .iter()
+            .position(|e| e.endpt == Some(drv))
+            .expect("smap 行");
+        assert_eq!(state.smap_table.pfmap[1], Some(row as u8));
+        assert_eq!(state.smap_table.pfmap[2], Some(row as u8));
+        assert_eq!(
+            &state.smap_table.entries[row].label[..6],
+            b"mydrv\0",
+            "标签写进 smap 行"
+        );
+
+        // ⑤ 域被**别的**驱动占了 → EBUSY，且 dmap 的登记要撤销。
+        let other = Endpoint::from_generation_slot(0, 10);
+        state.driver_labels.push(("other".to_string(), other));
+        assert_eq!(
+            state.finish_mapdriver(Endpoint::RS, "other", 5, &[1]),
+            minix_types::EBUSY,
+            "域 1 已被 mydrv 占"
+        );
+        assert_eq!(
+            state.dmap_table.get(5).and_then(|r| r.driver),
+            None,
+            "smap 失败要把刚写的 dmap 行撤销（C 的 undo）"
+        );
     }
 
     /// `Getvfsstat` 臂（C `do_getvfsstat` stadir.c:330-403）：`buf == 0` 只数

@@ -245,7 +245,15 @@ pub struct LookupWalk {
     root_ino: u64,
     symloop: u32,
     resolve: Lookup,
+    /// 调用方的有效 uid/gid（C `lookup:400-421` 的 `uid`/`gid` 参数）。
+    ///
+    /// C 用它们给 `REQ_LOOKUP` 附**凭证 grant**（`PATH_GET_UCRED`）让 FS 做
+    /// 权限判断；本重写的凭证面还没接线（`encode_lookup` 用 debug_assert 挡住
+    /// 了 `PATH_GET_UCRED`），所以这两个字段目前**只是随行走**、还没被读——
+    /// 凭证面接通时它们是输入。见 `encode_lookup` 的注记。
+    #[allow(dead_code)]
     uid: u32,
+    #[allow(dead_code)]
     gid: u32,
 }
 

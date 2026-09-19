@@ -343,6 +343,11 @@ pub struct VfsState {
     /// statvfs buf`）：FS 经 direct grant 整块回填它，VFS 补本地字段后再整块
     /// 拷给用户。放在状态里而不是栈上，是因为 grant 要指向一个**稳定地址**。
     pub statvfs_buf: minix_types::StatvfsBuf,
+    /// 驱动标签 → 端点的**本地目录**（C `do_mapdriver` 的
+    /// `ds_retrieve_label_endpt` 那一跳）。生产填充面（DS 事件里带标签时写入）
+    /// 还没接线——见 `LabelDir` 的注记；空表下 `mapdriver` 对任何标签都回
+    /// EINVAL（fail-closed，不假装解析成功）。
+    pub driver_labels: alloc::vec::Vec<(alloc::string::String, Endpoint)>,
     pub pending_fs: Option<PendingFs>,
     /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
     /// `(调用方, 回复消息)` 入队，`run()` 在每轮循环尾发出（C `reply(who_e,
@@ -378,6 +383,7 @@ impl VfsState {
             pending_reply: None,
             grants: minix_sys::grant::GrantTable::new(),
             current_worker: None,
+            driver_labels: alloc::vec::Vec::new(),
             statvfs_buf: minix_types::StatvfsBuf::new(),
             pending_fs: None,
         }
@@ -1328,6 +1334,118 @@ impl VfsState {
             user_buf,
             ([0usize; crate::vmnt::NR_MNTS], 0, 0),
         )
+    }
+
+    /// `do_mapdriver` 的**主体**（C dmap.c:106-177 的取标签之后那半）：
+    /// 标签 → 端点（`resolve_driver`）→ 标成服务进程（`FP_SRV_PROC`）→
+    /// `map_driver`（major 有效时）→ `smap_map`（有域时；失败要**撤销** dmap）。
+    ///
+    /// `caller` 是消息来源（C 的 `who_e`）：只有 RS 能映射驱动
+    /// （`check_mapper`）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_mapdriver(
+        &mut self,
+        caller: Endpoint,
+        label: &str,
+        major: u32,
+        domains: &[i32],
+    ) -> i32 {
+        if crate::device_map::check_mapper(caller).is_err() {
+            return minix_types::EPERM;
+        }
+        // C dmap.c:148-152 —— 标签 → 端点（DS 那一跳；见 `LabelDir` 的缺口注记）。
+        let dir = LabelDir(&self.driver_labels);
+        let endpoint = match crate::device_map::resolve_driver(&dir, label) {
+            Ok(e) => e,
+            Err(e) => return e.to_errno(),
+        };
+        // C dmap.c:154-158 —— 端点必须是已知进程（`isokendpt`），并标成服务。
+        let Some(slot) = endpoint.to_user_slot() else {
+            return minix_types::EINVAL;
+        };
+        if self.fproc_table.get(slot).is_none() {
+            return minix_types::EINVAL;
+        }
+        if let Some(fp) = self.fproc_table.get_mut(slot) {
+            fp.flags |= crate::fproc::FpFlags::SRV_PROC;
+        }
+        // C dmap.c:161-165 —— major 有效就写 dmap 行。
+        if major != minix_types::NO_DEV as u32 {
+            if let Err(e) = crate::device_map::map_driver(
+                &mut self.dmap_table,
+                Some(label.as_bytes()),
+                major,
+                Some(endpoint),
+            ) {
+                return e.to_errno();
+            }
+        }
+        // C dmap.c:166-173 —— 有域就写 smap；失败要把刚才的 dmap 撤销。
+        if !domains.is_empty() {
+            let ndomains = domains.len();
+            if ndomains > 8 {
+                // `NR_DOMAIN`（config.h:61 = 8）。
+                if major != minix_types::NO_DEV as u32 {
+                    let _ = crate::device_map::map_driver(
+                        &mut self.dmap_table,
+                        None,
+                        major,
+                        None,
+                    );
+                }
+                return minix_types::EINVAL;
+            }
+            // 逐域检查（C smap.c:74-84）：越界/UNSPEC → EINVAL、被别人占了 → EBUSY。
+            let existing = crate::device_map::find_slot_by_label(&self.smap_table, label.as_bytes());
+            let free = crate::device_map::find_free_slot(&self.smap_table);
+            let checks: alloc::vec::Vec<crate::device_map::DomainCheck> = domains
+                .iter()
+                .map(|d| crate::device_map::check_domain(&self.smap_table, *d, existing))
+                .collect();
+            let old_endpt = existing
+                .and_then(|s| self.smap_table.entries[s as usize].endpt);
+            let plan = match crate::device_map::register_plan(
+                existing,
+                free,
+                &checks,
+                old_endpt,
+                endpoint,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    if major != minix_types::NO_DEV as u32 {
+                        let _ = crate::device_map::map_driver(
+                            &mut self.dmap_table,
+                            None,
+                            major,
+                            None,
+                        );
+                    }
+                    return e.to_errno();
+                }
+            };
+            // 应用：写行（标签 + 端点）与 `pfmap[domain] = 行`。
+            let slot = plan.slot as usize;
+            {
+                let row = &mut self.smap_table.entries[slot];
+                row.endpt = Some(endpoint);
+                let n = label.len().min(crate::device_map::LABEL_MAX - 1);
+                row.label = [0u8; crate::device_map::LABEL_MAX];
+                row.label[..n].copy_from_slice(&label.as_bytes()[..n]);
+            }
+            // 替换时先解掉旧实例的域映射（C smap.c:105-118 的 unmap 段）。
+            for d in 0..crate::device_map::PF_MAX {
+                if self.smap_table.pfmap[d] == Some(plan.slot) {
+                    self.smap_table.pfmap[d] = None;
+                }
+            }
+            for d in domains {
+                if (*d as usize) < crate::device_map::PF_MAX {
+                    self.smap_table.pfmap[*d as usize] = Some(plan.slot);
+                }
+            }
+        }
+        0
     }
 
     /// `getvfsstat` 的**入口**（C `do_getvfsstat` stadir.c:330-403）：`buf == 0`
@@ -4384,6 +4502,23 @@ pub fn run() -> ! {
             SefEvent::Init(_) => state.init_fresh(),
             SefEvent::PingInvalid => {}
         }
+    }
+}
+
+/// `EndpointDirectory` 的生产实现：读 `VfsState::driver_labels`。
+///
+/// C 的对应物是 `ds_retrieve_label_endpt`（dmap.c:148-152）——一次 **DS 往返**。
+/// 单线程模型里那需要新的路由面（DS 回复的落槽与续接），本批没接；所以这里先
+/// 用本地表，**表由谁填**（DS 事件里带标签时写入 / 或把 DS 往返接起来）是登记
+/// 在案的缺口。空表语义与 C 的"标签未知"一致：EINVAL。
+struct LabelDir<'a>(&'a [(alloc::string::String, Endpoint)]);
+
+impl crate::device_map::EndpointDirectory for LabelDir<'_> {
+    fn lookup(&self, label: &str) -> Option<Endpoint> {
+        self.0
+            .iter()
+            .find(|(name, _)| name == label)
+            .map(|(_, e)| *e)
     }
 }
 
