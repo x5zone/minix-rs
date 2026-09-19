@@ -19,6 +19,7 @@ pub mod link;
 pub mod maint;
 pub mod meta;
 pub mod mfs_cache;
+pub mod mkfs;
 pub mod mount;
 pub mod open;
 pub mod read;
