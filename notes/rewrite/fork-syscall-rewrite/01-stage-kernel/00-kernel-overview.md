@@ -296,6 +296,7 @@ GRUB 跳转到 cstart(magic, ebx)
 | 29 | [kernel-debug](29-kernel-debug.md) | debug.c | 调试基础设施——runqueues_ok/rtsflagstr/BKL timing（Partial+：runqueues_ok/print_proc 已实现，BKL timing 用 debug_assert! 替代） |
 | 30 | [kernel-profile](30-kernel-profile.md) | profile.c | 统计 profile——采样时钟 + NMI profiling（Partial+：clock interface + sample collection 已实现，NMI WONTFIX） |
 | 31 | [fpu-context-switching](31-fpu-context-switching.md) | arch/i386/arch_system.c（fpu 函数族）+ proc.c（copr_not_available_handler）+ exception.c + mpx.S + do_sigsend.c | FPU 上下文切换——lazy 模型 + CR0.TS/#NM 陷阱路径 + fpu_owner 协议（完整覆盖；FpuTrap 分发已实现，lazy-restore 主体与信号路径保存为显式缺口） |
+| 33 | [syscall-caller-api](33-syscall-caller-api.md) | system/do_schedule.c + system.c（p_delivermsg_vir）+ proc.c（do_ipc 的当前进程取法）+ system/do_privctl.c + proc.h（proc_addr） | 系统调用层的 caller-by-nr 接口——"调用者是进程表里的一行"如何从进程引用降级为进程号，含调用图、残余 laundering 清单与真机验证 |
 
 ### 3.10 补充：全局概念
 
