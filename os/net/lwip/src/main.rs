@@ -263,6 +263,14 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
                 msg,
             );
         }
+        if msg.m_type == SdevRequest::Ioctl as i32 {
+            return sockops::ioctl_road(
+                stack.as_mut(),
+                self.copy.as_mut(),
+                msg.m_source,
+                msg,
+            );
+        }
         if msg.m_type == SdevRequest::Close as i32 {
             return sockops::close_socket(stack.as_mut(), table, msg);
         }
@@ -1047,6 +1055,65 @@ mod tests {
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             4,
             "回复成功码 = 拷出长度（值面由 sockops 单元测试钉住）"
+        );
+    }
+
+    /// ioctl 路分派 e2e：FIONBIO 置位回 0（旗标真实落墙）、未知命令
+    /// 回 ENOTTY——分派线与请求形状都对路。
+    #[test]
+    fn test_ioctl_road_dispatched_through_socket_device() {
+        use minix_net_lwip::server::NetHandler as _;
+        let mut handler = ProductionHandler::new(&[]);
+        for _ in 0..7 {
+            handler.startup_step();
+        }
+        let mut table = minix_netdriver::socktable::SockTable::new();
+        let mut canned = minix_net_lwip::sockops::CannedCopyTransport::default();
+        canned.from.push((1, 1i32.to_le_bytes().to_vec()));
+        handler.copy = Box::new(canned);
+
+        // 建户 TCP。
+        let mut open = minix_types::Message::default();
+        open.m_type = minix_sockdriver::sdev::SdevRequest::Socket as i32;
+        // SAFETY(test): { req_id@0; domain@4; type@8 }。
+        unsafe {
+            open.m_u.raw[0..4].copy_from_slice(&1i32.to_le_bytes());
+            open.m_u.raw[4..8].copy_from_slice(&2i32.to_le_bytes());
+            open.m_u.raw[8..12].copy_from_slice(&1i32.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &open).expect("建户");
+        let sock_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+
+        // FIONBIO（0x8004667E，_IOW('f',126,int)）置位：回 0。
+        let mut ioctl = minix_types::Message::default();
+        ioctl.m_type = minix_sockdriver::sdev::SdevRequest::Ioctl as i32;
+        // SAFETY(test): { req_id@0; sock_id@4; request@8(8B); grant@16 }。
+        unsafe {
+            let raw = &mut ioctl.m_u.raw;
+            raw[0..4].copy_from_slice(&2i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..16].copy_from_slice(&0x8004_667Eu64.to_le_bytes());
+            raw[16..20].copy_from_slice(&1i32.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &ioctl).expect("ioctl 有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            0,
+            "FIONBIO 置位成功"
+        );
+
+        // 同一套接字上的未知命令：ENOTTY。
+        let mut bogus = ioctl;
+        // SAFETY(test): req_id 与 request 域。
+        unsafe {
+            let raw = &mut bogus.m_u.raw;
+            raw[0..4].copy_from_slice(&3i32.to_le_bytes());
+            raw[8..16].copy_from_slice(&0x2000_7466u64.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &bogus).expect("有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::ENOTTY)
         );
     }
 

@@ -707,6 +707,41 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         }
     }
 
+    // -- ioctl 半（SDEV_IOCTL 的栈面）--
+
+    fn pending_recv_udp(&mut self, socket: StackSocket) -> Option<usize> {
+        // peek 不消费：队首包的载荷长度（C pktsock_test_recv 的首包
+        // 语义，pktsock.c:886-899）。
+        self.udp_mut(socket)?.peek().ok().map(|(payload, _)| payload.len())
+    }
+
+    fn pending_recv_tcp(&self, socket: StackSocket) -> usize {
+        match self.slot(socket) {
+            Some(slot) if slot.family == StackFamily::Tcp => {
+                self.sockets.get::<tcp::Socket>(slot.handle).recv_queue()
+            }
+            _ => 0,
+        }
+    }
+
+    fn pending_recv_raw(&self, socket: StackSocket) -> Option<usize> {
+        let slot = self.slot(socket)?;
+        if slot.family != StackFamily::Raw {
+            return None;
+        }
+        let queue = self.sockets.get::<raw::Socket>(slot.handle).recv_queue();
+        (queue > 0).then_some(queue)
+    }
+
+    fn set_nonblock(&mut self, socket: StackSocket, nonblock: bool) -> Result<(), i32> {
+        self.slot_mut(socket).ok_or(util::ERR_GENERIC)?.nonblock = nonblock;
+        Ok(())
+    }
+
+    fn is_nonblock(&self, socket: StackSocket) -> bool {
+        self.slot(socket).map(|slot| slot.nonblock).unwrap_or(false)
+    }
+
     // -- RAW 半（第 10 篇的栈面；全报文语义 = HDRINCL）--
 
     fn send_raw(&mut self, socket: StackSocket, data: &[u8]) -> Result<usize, i32> {

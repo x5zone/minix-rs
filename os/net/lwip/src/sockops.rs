@@ -927,7 +927,11 @@ fn translate_udp_data(
                 Some(recv_reply(req.req_id, n as i32, 0, addr_len as u32))
             }
             Err(_) => {
-                if req.flags & minix_sockdriver::sdev::MSG_DONTWAIT != 0 {
+                // 非阻塞判定：请求旗标（MSG_DONTWAIT）或套接字上的
+                // FIONBIO 旗标（ioctl 批）任一在场即立即回。
+                if req.flags & minix_sockdriver::sdev::MSG_DONTWAIT != 0
+                    || stack.is_nonblock(stack_socket)
+                {
                     return Some(recv_reply(req.req_id, -(minix_types::EAGAIN), 0, 0));
                 }
                 // 挂起：唤醒事件 = 可读或对端关闭；无超时（SO_RCVTIMEO
@@ -1074,6 +1078,102 @@ pub fn sockopt_road(
             }
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// ioctl 路（SDEV_IOCTL）：FIONREAD 是 C 的框架半行为（`sockevent_ioctl`
+// 的 `sop_test_recv` 出口，sockevent.c:1779-1793），FIONBIO 在 C 由 libc
+// 改写为 fcntl(O_NONBLOCK)（`libc/sys/ioctl.c:296`/`:330`），本模型在
+// 服务侧补同一语义的旗标位；其余请求按 C 的服务侧 ENOTTY 出口回答
+// （sockevent.c:1765-1769 + ifconf_ioctl 的 default 分支）。
+// ---------------------------------------------------------------------------
+
+/// `FIONREAD`（`_IOR('f', 127, int)` = 0x4004667F，`sys/filio.h:47`）。
+pub const FIONREAD: u64 = 0x4004_667F;
+/// `FIONBIO`（`_IOW('f', 126, int)` = 0x8004667E，`sys/filio.h:48`；
+/// 方向位是 `IOC_IN`）。
+pub const FIONBIO: u64 = 0x8004_667E;
+
+/// `SDEV_IOCTL` 的载荷：`mess_vfs_lsockdriver_ioctl { req_id@0;
+/// sock_id@4; request@8(8B); grant@16; user_endpt@24; sflags@28 }`
+/// （ipc.h:2283-2294；`request` 是 unsigned long，LP64 下占 8 字节）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IoctlRequest {
+    pub req_id: i32,
+    pub sock_id: i32,
+    pub request: u64,
+    pub grant: i32,
+    pub user_endpt: i32,
+    pub sflags: u32,
+}
+
+/// 解码 `mess_vfs_lsockdriver_ioctl` 载荷。
+pub fn decode_ioctl(msg: &Message) -> Option<IoctlRequest> {
+    // SAFETY: 载荷按上述域序写在消息负载区；只有 request 是 8 字节。
+    let raw = unsafe { &msg.m_u.raw };
+    let word = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
+    Some(IoctlRequest {
+        req_id: word(0),
+        sock_id: word(4),
+        request: u64::from_le_bytes(raw[8..16].try_into().unwrap()),
+        grant: word(16),
+        user_endpt: word(24),
+        sflags: word(28) as u32,
+    })
+}
+
+/// ioctl 路：FIONREAD 查待收量拷回用户 grant（回复 0，值走缓冲——C
+/// `sockevent_ioctl` 的 `copyout` 加 `reply_generic(OK)` 形状）；FIONBIO
+/// 置/清套接字的非阻塞旗标；其余命令 ENOTTY。
+pub fn ioctl_road(
+    stack: &mut dyn Stack,
+    copy: &mut dyn CopyTransport,
+    caller: Endpoint,
+    msg: &Message,
+) -> Option<Message> {
+    let Some(req) = decode_ioctl(msg) else {
+        return Some(simple_reply(0, -(minix_types::EINVAL)));
+    };
+    // RT/LNK 是服务侧类：无 ioctl 语义（C rtsock/lnksock 的 sop_ioctl
+    // 缺席，框架折 ENOTTY）。
+    let service_class = SockId::from_raw(req.sock_id)
+        .and_then(|id| id.class())
+        .is_some_and(|class| matches!(class, sockid::SockClass::Rt | sockid::SockClass::Lnk));
+    if service_class {
+        return Some(simple_reply(req.req_id, -(minix_types::ENOTTY)));
+    }
+    let Some(stack_socket) = stack_socket_of(req.sock_id) else {
+        return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+    };
+    match req.request {
+        FIONREAD => {
+            let val: i32 = match stack_socket.family() {
+                StackFamily::Tcp => stack.pending_recv_tcp(stack_socket) as i32,
+                StackFamily::Udp => stack.pending_recv_udp(stack_socket).unwrap_or(0) as i32,
+                StackFamily::Raw => stack.pending_recv_raw(stack_socket).unwrap_or(0) as i32,
+                StackFamily::Icmp => 0,
+            };
+            Some(match copy.safecopy_to(caller.0, req.grant, 0, &val.to_le_bytes()) {
+                Ok(()) => simple_reply(req.req_id, 0),
+                Err(code) => simple_reply(req.req_id, wire(code)),
+            })
+        }
+        FIONBIO => {
+            let mut bytes = [0u8; 4];
+            if copy
+                .safecopy_from(caller.0, req.grant, 0, &mut bytes)
+                .is_err()
+            {
+                return Some(simple_reply(req.req_id, -(minix_types::EFAULT)));
+            }
+            let nonblock = i32::from_le_bytes(bytes) != 0;
+            Some(match stack.set_nonblock(stack_socket, nonblock) {
+                Ok(()) => simple_reply(req.req_id, 0),
+                Err(e) => simple_reply(req.req_id, wire(e)),
+            })
+        }
+        _ => Some(simple_reply(req.req_id, -(minix_types::ENOTTY))),
+    }
 }
 
 /// 统一分派：按线上套接字的类把请求交给 UDP 路或 TCP 路。未知类
@@ -1240,7 +1340,9 @@ pub fn translate_tcp(
         let Some(stack_socket) = stack_socket_of(req.sock_id) else {
             return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
         };
-        let nonblock = req.flags & minix_sockdriver::sdev::MSG_DONTWAIT != 0;
+        // 非阻塞判定：请求旗标或 FIONBIO 旗标任一在场即立即回。
+        let nonblock = req.flags & minix_sockdriver::sdev::MSG_DONTWAIT != 0
+            || stack.is_nonblock(stack_socket);
         let _ = req.ctl_grant;
         let _ = req.ctl_len;
         let _ = req.addr_grant;
@@ -1870,6 +1972,191 @@ mod tests {
         assert_eq!(
             i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
             -(minix_types::EBADF)
+        );
+    }
+
+    /// ioctl 请求的构造助手（ipc.h:2283-2294 域序；request 8 字节）。
+    fn ioctl_msg(req_id: i32, sock_id: i32, request: u64, grant: i32) -> Message {
+        let mut msg = Message::default();
+        msg.m_type = SdevRequest::Ioctl as i32;
+        // SAFETY(test): 按 mess_vfs_lsockdriver_ioctl 域序填。
+        unsafe {
+            let raw = &mut msg.m_u.raw;
+            raw[0..4].copy_from_slice(&req_id.to_le_bytes());
+            raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+            raw[8..16].copy_from_slice(&request.to_le_bytes());
+            raw[16..20].copy_from_slice(&grant.to_le_bytes());
+        }
+        msg
+    }
+
+    #[test]
+    fn test_ioctl_road_fionbio_sets_flag_and_unknown_enotty() {
+        use minix_sockdriver::sdev::MSG_DONTWAIT;
+        let (mut stack, mut table) = fixture();
+        let mut copy = CannedCopyTransport::default();
+        let caller = Endpoint(100);
+        let req = SocketRequest {
+            req_id: 1, domain: domain::INET, sock_type: sock_type::DGRAM,
+            protocol: 0, user_endpt: 100,
+        };
+        let id = open_socket(&mut stack, &mut table, &req, false).unwrap();
+
+        // FIONBIO 置位：值 1 经 grant 拷入，成功回 0。
+        copy.from.push((3, 1i32.to_le_bytes().to_vec()));
+        let reply = ioctl_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &ioctl_msg(2, id, FIONBIO, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            0,
+            "置非阻塞成功"
+        );
+
+        // 旗标消费：非阻塞 UDP 空收立即回 EAGAIN（不走挂起，无留言条）。
+        let mut recv = Message::default();
+        recv.m_type = SdevRequest::Receive as i32;
+        // SAFETY(test): sendrecv 域序（data@8/16，flags@44=0）。
+        unsafe {
+            let raw = &mut recv.m_u.raw;
+            raw[0..4].copy_from_slice(&4i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&id.to_le_bytes());
+            raw[8..12].copy_from_slice(&5i32.to_le_bytes());
+            raw[16..24].copy_from_slice(&64usize.to_le_bytes());
+        }
+        let reply = translate_udp(&mut stack, &mut copy, &mut table, &mut PendingTables::default(), caller, &recv).unwrap();
+        // SAFETY(test): recv_reply { req_id@0; status@4 }。
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::EAGAIN),
+            "FIONBIO 置位后空收立即回（旗标被收发路消费）"
+        );
+        // 对照：旗标等价的 MSG_DONTWAIT 也立即回（两车道合流正确）。
+        // 先清旗标再验请求旗标车道。
+        // SAFETY(test): flags@44。
+        unsafe {
+            recv.m_u.raw[44..48].copy_from_slice(&(MSG_DONTWAIT as i32).to_le_bytes());
+        }
+        stack
+            .set_nonblock(stack_socket_of(id).unwrap(), false)
+            .unwrap();
+        let reply = translate_udp(&mut stack, &mut copy, &mut table, &mut PendingTables::default(), caller, &recv).unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::EAGAIN),
+            "MSG_DONTWAIT 车道同样立即回"
+        );
+
+        // 未知命令：ENOTTY。
+        let reply = ioctl_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &ioctl_msg(6, id, 0x2000_7466, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::ENOTTY),
+            "未知命令按 C 服务侧 ENOTTY 出口"
+        );
+    }
+
+    #[test]
+    fn test_ioctl_road_fionread_udp_and_service_classes() {
+        use crate::lwip_port::{StackEndpoint, StackIpAddr};
+        let (mut stack, mut table) = fixture();
+        let req = SocketRequest {
+            req_id: 1, domain: domain::INET, sock_type: sock_type::DGRAM,
+            protocol: 0, user_endpt: 100,
+        };
+        let id = open_socket(&mut stack, &mut table, &req, false).unwrap();
+        let mut copy = CannedCopyTransport::default();
+        let caller = Endpoint(100);
+
+        // 空环的 FIONREAD：0。值经 grant 拷出，回复 0（值走缓冲）。
+        let reply = ioctl_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &ioctl_msg(2, id, FIONREAD, 7),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            0,
+            "FIONREAD 回复码是成功，不是字节数"
+        );
+        let (_, written) = copy.written.last().expect("值已拷出");
+        assert_eq!(i32::from_le_bytes(written[..4].try_into().unwrap()), 0);
+
+        // 有包后：peek 出队首包长度（不消费）。回环设备喂一个包。
+        let mut loop_stack = crate::stack::SmoltcpStack::<crate::stack::LoopDevice>::with_device(
+            0x5EED,
+            crate::stack::LoopDevice::new(),
+            0,
+        );
+        loop_stack.add_address_v4([127, 0, 0, 1], 8, 0);
+        let lreq = SocketRequest {
+            req_id: 3, domain: domain::INET, sock_type: sock_type::DGRAM,
+            protocol: 0, user_endpt: 100,
+        };
+        // 新栈配新表：槽位下标从 0 重排，与上一半的表互不相干。
+        let mut ltable = SockTable::new();
+        let lid = open_socket(&mut loop_stack, &mut ltable, &lreq, false).unwrap();
+        let sock = stack_socket_of(lid).unwrap();
+        loop_stack
+            .bind_udp(
+                sock,
+                Some(StackEndpoint { addr: Some(StackIpAddr::V4([127, 0, 0, 1])), port: 7777 }),
+            )
+            .unwrap();
+        loop_stack
+            .send_udp(
+                sock,
+                &[1, 2, 3, 4, 5],
+                Some(StackEndpoint { addr: Some(StackIpAddr::V4([127, 0, 0, 1])), port: 7777 }),
+            )
+            .unwrap();
+        for tick in 1..=8u64 {
+            loop_stack.poll(tick * 100);
+        }
+        let mut lcopy = CannedCopyTransport::default();
+        let reply = ioctl_road(
+            &mut loop_stack,
+            &mut lcopy,
+            caller,
+            &ioctl_msg(4, lid, FIONREAD, 7),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            0
+        );
+        let (_, written) = lcopy.written.last().expect("值已拷出");
+        assert_eq!(
+            i32::from_le_bytes(written[..4].try_into().unwrap()),
+            5,
+            "队首包载荷长度（peek 不消费，C pktsock_test_recv 同语义）"
+        );
+        assert_eq!(loop_stack.pending_recv_udp(sock), Some(5), "包仍在环上");
+
+        // RT 类：ENOTTY（C rtsock 无 sop_ioctl）。
+        let rt_id = open_service_socket(&mut table, sockid::SockClass::Rt).unwrap();
+        let reply = ioctl_road(
+            &mut stack,
+            &mut copy,
+            caller,
+            &ioctl_msg(5, rt_id, FIONREAD, 7),
+        )
+        .unwrap();
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::ENOTTY)
         );
     }
 }

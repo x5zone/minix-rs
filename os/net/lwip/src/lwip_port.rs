@@ -366,6 +366,29 @@ pub trait Stack {
         name: i32,
         value: Option<i32>,
     ) -> Result<Option<i32>, i32>;
+
+    // -- ioctl 半（SDEV_IOCTL 的栈面）--
+
+    /// 查询待收首包的载荷长度（FIONREAD 的 UDP 半：C `pktsock_test_recv`
+    /// 取队首包的 tot_len，`pktsock.c:886-899`）。空环回 `None`。
+    fn pending_recv_udp(&mut self, socket: StackSocket) -> Option<usize>;
+
+    /// 查询接收缓冲的排队字节数（FIONREAD 的 TCP 半：C
+    /// `tcpsock_test_recv` 的 `tr_len` 语义，`tcpsock.c:1969`）。
+    fn pending_recv_tcp(&self, socket: StackSocket) -> usize;
+
+    /// 查询 RAW 接收环的排队字节数（FIONREAD 的 RAW 半；smoltcp 的
+    /// raw 包环只报总量，与 C 的首包语义差异登记）。
+    fn pending_recv_raw(&self, socket: StackSocket) -> Option<usize>;
+
+    /// 置/清非阻塞旗标（FIONBIO 的栈半；旗标存服务侧槽位，收发路把它
+    /// 折进 MSG_DONTWAIT 判定——C 里 FIONBIO 由 libc 改写为
+    /// fcntl(O_NONBLOCK)，`libc/sys/ioctl.c:296`/`:330`，服务侧本模型
+    /// 补此位作为同一语义的补充）。
+    fn set_nonblock(&mut self, socket: StackSocket, nonblock: bool) -> Result<(), i32>;
+
+    /// 查询非阻塞旗标。
+    fn is_nonblock(&self, socket: StackSocket) -> bool;
 }
 
 #[cfg(test)]
@@ -571,6 +594,26 @@ mod wall_tests {
             _value: Option<i32>,
         ) -> Result<Option<i32>, i32> {
             Err(crate::util::STACK_BAD_ARGUMENT)
+        }
+
+        fn pending_recv_udp(&mut self, _socket: StackSocket) -> Option<usize> {
+            None
+        }
+
+        fn pending_recv_tcp(&self, _socket: StackSocket) -> usize {
+            0
+        }
+
+        fn pending_recv_raw(&self, _socket: StackSocket) -> Option<usize> {
+            None
+        }
+
+        fn set_nonblock(&mut self, _socket: StackSocket, _nonblock: bool) -> Result<(), i32> {
+            Err(crate::util::STACK_BAD_VALUE)
+        }
+
+        fn is_nonblock(&self, _socket: StackSocket) -> bool {
+            false
         }
 
         fn poll(&mut self, now_millis: u64) -> PollWhen {
