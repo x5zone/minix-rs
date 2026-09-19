@@ -9,9 +9,9 @@
 //! ProcFS semantics (unlike the CTL_KERN nodes): a negative PID names a
 //! kernel task, a positive one a user process, and PID 0 is nothing.
 //!
-//! `[ARCH: A-7]` `mpd_kipc_cycles`/`mpd_kcall_cycles` answer 0: the kernel
-//! GET_PROCTAB row does not carry `p_kipc_cycles`/`p_kcall_cycles` yet
-//! (edge4 §2 C-22 first half, edge1's producer).
+//! `[ARCH: A-7]` **已消解（C-25，2026-09-20）**：内核 GET_PROCTAB 行扩面后
+//! `p_kipc_cycles`/`p_kcall_cycles` 到场，两列直接读行（C `proc.c:1278-1279`）；
+//! 内核侧的 IPC 记账（`kbill_ipc` 标记）同批接上，值不再是恒零。
 //!
 //! 20-mib-proc-minix.md.
 
@@ -181,10 +181,9 @@ fn proc_data<K: MibKernel, S: MibServices>(
         mpd_user_time: kp.p_user_time as u32,
         mpd_sys_time: kp.p_sys_time as u32,
         mpd_cycles: kp.p_cycles,
-        // A-7: the kernel row lacks these two counters until C-22's first
-        // half (edge1's producer); they answer 0, matching a zeroed row.
-        mpd_kipc_cycles: 0,
-        mpd_kcall_cycles: 0,
+        // C `proc.c:1278-1279`：两列直接读内核行的周期账（C-25 行扩面后到场）。
+        mpd_kipc_cycles: kp.p_kipc_cycles,
+        mpd_kcall_cycles: kp.p_kcall_cycles,
         mpd_nice: 0,
         mpd_name: [0; 16],
     };

@@ -7,12 +7,14 @@
 //! exactly like C. What C reads from its static tables, the views in
 //! [`super::rows`] decode here.
 //!
-//! `[ARCH: A-7]` two fields cannot be produced yet because the kernel
-//! GET_PROCTAB row (edge1's producer) does not carry `p_dequeued` and
-//! `p_cpuavg` yet (edge4 §2 C-21 first half): `l_slptime`, `l_pctcpu` and
-//! `l_cpticks` answer 0 — registered incompleteness, not silent divergence.
-//! The VFS light table degrades to "idle" the same way (its producer is
-//! fail-closed), so the cdev/sdev sleep lanes never fire.
+//! `[ARCH: A-7]` **已消解（C-25，2026-09-20）**：内核 GET_PROCTAB 行扩面后
+//! `p_dequeued`/`p_cpuavg` 到场，`l_slptime`（出队时刻差）与
+//! `l_pctcpu`/`l_cpticks`（`cpuavg_getstats`）都按 C 的公式出真值。
+//! **余项**：内核侧的 cpuavg 记账目前只覆盖 `KERNEL` 伪进程（C 的三个
+//! `context_stop(proc_addr(KERNEL))` 站点），用户进程那一半在 C 走汇编中断
+//! 入口（`mpx.S:77-90`），Rust 模型尚无对应站点——用户行的 `l_pctcpu` 因此
+//! 仍为 0，登记在 FIXLOG（C-25 余项）。VFS light 表仍按 fail-closed 降级
+//! 为 "idle"，cdev/sdev 睡眠车道不触发。
 //!
 //! 17-mib-proc-lwp.md.
 
@@ -305,19 +307,19 @@ fn fill_user_row(
 }
 
 /// `fill_lwp_common` — proc.c:399-456. `started` is `None` for kernel tasks
-/// (their swtime is raw uptime, proc.c:430-433); `p_dequeued`/`p_cpuavg`
-/// ride the kernel row once C-21's first half lands, until then
-/// `l_slptime`/`l_pctcpu`/`l_cpticks` answer 0 — the registered A-7
-/// incompleteness.
+/// (their swtime is raw uptime, proc.c:430-433)。
+///
+/// C-25（2026-09-20）：`p_dequeued`/`p_cpuavg` 已随内核行扩面到场，A-7 的
+/// "如实回 0"随之撤换——`l_slptime` 用行里的出队时刻算（C `proc.c:438`），
+/// `l_pctcpu`/`l_cpticks` 走 [`minix_types::types::cpuavg::getstats`]
+/// （C `proc.c:453` 调 `cpuavg_getstats`）。
 fn fill_common(l: &mut KinfoLwp, kp: &ProcInfoStruct, started: Option<u64>, now: u64, hz: u32) {
     l.l_lid = kp.p_endpoint;
-    // p_dequeued 缺席：传 now 让 slptime 为 0（"此刻未睡"），比编造一个
-    // uptime/hz 的假值诚实——A-7 锚点。
     let (swtime, slptime) = judge_times(
         started.is_none(),
         now,
         started.unwrap_or(0),
-        now,
+        kp.p_dequeued,
         hz,
     );
     l.l_swtime = swtime;
@@ -329,8 +331,14 @@ fn fill_common(l: &mut KinfoLwp, kp: &ProcInfoStruct, started: Option<u64>, now:
         super::tables::ticks_to_timeval(kp.p_user_time.saturating_add(kp.p_sys_time), hz as u64);
     l.l_rtime_sec = sec as u32;
     l.l_rtime_usec = usec as u32;
-    // l_pctcpu / l_cpticks: p_cpuavg lands with C-21's first half; 0 until
-    // then (A-7).
+    // C `proc.c:447-454`：三个处理器用量一次算出来——均值进 l_pctcpu、本秒
+    // 滴答数进 l_cpticks、短期估计只用于 C 的局部 estcpu（无对外字段）。
+    // `hz == 0` 是建模护栏（`sys_hz` 保证非零）。
+    if hz != 0 {
+        let stats = minix_types::types::cpuavg::getstats(&kp.p_cpuavg, now, hz as u64);
+        l.l_pctcpu = stats.avg;
+        l.l_cpticks = stats.cpticks;
+    }
 }
 
 /// `P_BLOCKEDON` + the special-endpoint lanes, judged into a
@@ -478,7 +486,8 @@ mod tests {
         // 40 ticks at hz 50 = 0.8s.
         assert_eq!(l.l_rtime_sec, 0);
         assert_eq!(l.l_rtime_usec, 800_000);
-        // A-7: pctcpu/cpticks stay 0 until the kernel row grows them.
+        // 任务行的 cpuavg 账恒零：内核只给 KERNEL 伪进程记账（C 的三个
+        // `context_stop(proc_addr(KERNEL))` 站点），任务行拿到的就是零结构。
         assert_eq!(l.l_pctcpu, 0);
         assert_eq!(l.l_cpticks, 0);
     }
@@ -514,6 +523,60 @@ mod tests {
         assert_eq!(&l.l_name[..3], b"ps\0");
         // swtime = (1000-400)/50 = 12 (proc.c:430-433, user half).
         assert_eq!(l.l_swtime, 12);
+    }
+
+    /// C-25：`l_slptime` 用行里的出队时刻算、`l_pctcpu`/`l_cpticks` 走
+    /// `cpuavg_getstats`（C `proc.c:438` / `:453`）——不再是恒零的 A-7 形。
+    #[test]
+    fn test_user_row_uses_dequeued_and_cpuavg() {
+        let mut tab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * core::mem::size_of::<ProcInfoStruct>()];
+        // 行：1000 时刻的 uptime、出队于 600、cpuavg 里上一秒跑了 25 个滴答
+        // （hz=50，故 estcpu = 50%）。
+        let kp = ProcInfoStruct {
+            p_nr: 5,
+            p_endpoint: 5,
+            p_name: name_bytes("ps"),
+            p_dequeued: 600,
+            p_cpuavg: minix_types::CpuAvgSnap {
+                ca_base: 1000,
+                ca_run: 0,
+                ca_last: 25 * minix_types::types::cpuavg::FSCALE,
+                ca_avg: minix_types::types::cpuavg::FSCALE,
+                _padding: 0,
+            },
+            ..ProcInfoStruct::default()
+        };
+        // SAFETY(test): repr(C) POD write into the slot window.
+        unsafe {
+            core::ptr::write_unaligned(
+                tab.as_mut_ptr()
+                    .add((minix_types::NR_TASKS + 5) * core::mem::size_of::<ProcInfoStruct>())
+                    as *mut ProcInfoStruct,
+                kp,
+            );
+        }
+        let kern = KernelRows::new(&tab);
+        let row = MProcSnap {
+            mp_pid: 100,
+            mp_started: 400,
+            mp_flags: mp_flags::IN_USE,
+            mp_name: name_bytes("ps"),
+            ..MProcSnap::default()
+        };
+        let mut l = zeroed_lwp();
+        let pm_tab = vec![0u8; minix_types::NR_PROCS * core::mem::size_of::<MProcSnap>()];
+        let pm = PmRows::new(&pm_tab);
+        // now = 1000（与 ca_base 同一秒，update 不推进时间轴）。
+        fill_user_row(&mut l, &kern, &pm, None, 5, &row, 1000, 50, Endpoint::NONE);
+        // slptime = (1000 - 600) / 50 = 8（C proc.c:438）。
+        assert_eq!(l.l_slptime, 8, "出队时刻差换算成秒");
+        // l_pctcpu 是 FSCALE 单位的衰减均值，不是百分比：C 的公式展开
+        //   avg = (ccpu*avg)>>FSHIFT + ((FSCALE-ccpu)*(last/hz))>>FSHIFT
+        //       = (1948*2048)>>11 + (100*1024)>>11 = 1948 + 50 = 1998
+        // （≈97.5% FSCALE；本秒未推进时间轴故只有衰减 + 并入两步）。
+        assert_eq!(l.l_pctcpu, 1998, "l_pctcpu 按 cpuavg_getstats 的均值出");
+        // 本行 ca_run = 0 → 本秒滴答数为 0（cpticks = ca_run >> FSHIFT）。
+        assert_eq!(l.l_cpticks, 0);
     }
 
     #[test]
