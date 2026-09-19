@@ -215,6 +215,18 @@ pub mod stat_req_off {
     pub const GRANT: usize = 8;
 }
 
+/// `REQ_READ`/`REQ_WRITE` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+///
+/// C: `mess_fs_vfs_readwrite { off_t seek_pos; size_t nbytes; }`
+/// (ipc.h:214-220) —— 与请求载荷是两套结构，别混用（请求是
+/// [`transfer_req_off`]）。
+pub mod transfer_reply_off {
+    /// `off_t seek_pos`（传输后的新位置）。
+    pub const SEEK_POS: usize = 0;
+    /// `size_t nbytes`（实际传输的字节数）。
+    pub const NBYTES: usize = 8;
+}
+
 /// `REQ_READSUPER` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_readsuper`（ipc.h:2112-2119）：`dev_t device`、
@@ -311,6 +323,9 @@ mod tests {
         assert_eq!(transfer_req_off::SEEK_POS, 8);
         assert_eq!(transfer_req_off::GRANT, 16);
         assert_eq!(transfer_req_off::BYTES, 24);
+        // read 回复：seek_pos/nbytes 两个域（与请求的 transfer_req_off 分开）。
+        assert_eq!(transfer_reply_off::SEEK_POS, 0);
+        assert_eq!(transfer_reply_off::NBYTES, 8);
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);

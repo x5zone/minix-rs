@@ -797,15 +797,22 @@ impl VfsState {
                 crate::worker::WorkerCont::Read { grant, filp, orig_pos } => {
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
-                        // C read.c —— 回复给 `seek_pos`/`nbytes`：位置按
-                        // 实际读到的字节推进（64 位位置从回复的第二个字读）。
-                        // SAFETY: REQ_READ 的回复按 VFS↔FS 的 LP64 布局
-                        // 放在负载区（首字 = nbytes、次字 = seek_pos）。
+                        // C `req_readwrite_actual` 的成功半：从**回复**取
+                        // `seek_pos`/`nbytes`（`mess_fs_vfs_readwrite` —
+                        // ipc.h:214-220，偏移取共享权威表），位置写回 filp，
+                        // 状态给用户的是"实际读到的字节数"（C 的 `cum_io`）。
+                        // SAFETY: 回复载荷按 LP64 域序写在负载区。
                         let raw = unsafe { &reply.m_u.raw };
                         let mut b8 = [0u8; 8];
-                        b8.copy_from_slice(&raw[8..16]);
+                        b8.copy_from_slice(
+                            &raw[minix_types::transfer_reply_off::SEEK_POS
+                                ..minix_types::transfer_reply_off::SEEK_POS + 8],
+                        );
                         let new_pos = i64::from_le_bytes(b8);
-                        b8.copy_from_slice(&raw[0..8]);
+                        b8.copy_from_slice(
+                            &raw[minix_types::transfer_reply_off::NBYTES
+                                ..minix_types::transfer_reply_off::NBYTES + 8],
+                        );
                         let nbytes = i64::from_le_bytes(b8);
                         if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
                             f.pos = new_pos;
