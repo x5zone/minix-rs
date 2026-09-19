@@ -244,19 +244,26 @@ impl KcallResult {
 /// the methods they support.
 pub trait ArchSyscall {
     /// SYS_DEVIO — port I/O (x86-only). C: do_devio.c
-    fn dispatch_devio(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
-        let _ = (caller, msg, priv_table);
+    ///
+    /// K20: carries `proc_table` (uniform second slot).
+    fn dispatch_devio(
+        caller: &mut KProcess,
+        proc_table: &mut ProcessTable,
+        msg: &mut Message,
+        priv_table: &PrivTable,
+    ) -> KcallResult {
+        let _ = (caller, proc_table, msg, priv_table);
         KcallResult::BadCall
     }
 
     /// SYS_SDEVIO — sequential port I/O (x86-only). C: do_sdevio.c
     fn dispatch_sdevio(
         caller: &mut KProcess,
+        proc_table: &mut ProcessTable,
         msg: &Message,
         priv_table: &PrivTable,
-        proc_table: &mut ProcessTable,
     ) -> KcallResult {
-        let _ = (caller, msg, priv_table, proc_table);
+        let _ = (caller, proc_table, msg, priv_table);
         KcallResult::BadCall
     }
 
@@ -277,10 +284,10 @@ pub trait ArchSyscall {
     /// SYS_IOPENABLE — enable user I/O privilege (x86-only). C: do_iopenable.c
     fn dispatch_iopenable(
         caller: &mut KProcess,
-        msg: &Message,
         proc_table: &mut ProcessTable,
+        msg: &Message,
     ) -> KcallResult {
-        let _ = (caller, msg, proc_table);
+        let _ = (caller, proc_table, msg);
         KcallResult::BadCall
     }
 
@@ -318,17 +325,22 @@ pub trait ArchSyscall {
 pub struct X86_64Syscall;
 
 impl ArchSyscall for X86_64Syscall {
-    fn dispatch_devio(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
+    fn dispatch_devio(
+        caller: &mut KProcess,
+        proc_table: &mut ProcessTable,
+        msg: &mut Message,
+        priv_table: &PrivTable,
+    ) -> KcallResult {
         // C: do_devio.c — SYS_DEVIO (x86-only)
         let port_io = minix_plat::CurrentPortIo::new();
-        crate::syscall_device::dispatch_devio(caller, msg, &port_io, priv_table)
+        crate::syscall_device::dispatch_devio(caller.p_nr, proc_table, msg, &port_io, priv_table)
     }
 
     fn dispatch_sdevio(
         caller: &mut KProcess,
+        proc_table: &mut ProcessTable,
         msg: &Message,
         priv_table: &PrivTable,
-        proc_table: &mut ProcessTable,
     ) -> KcallResult {
         // C: do_sdevio.c — SYS_SDEVIO (x86-only)
         // Full implementation: parameter extraction, endpoint validation,
@@ -336,7 +348,7 @@ impl ArchSyscall for X86_64Syscall {
         // check, and batch I/O transfer (SAFE path: verify_grant +
         // data_copy_vmcheck; unsafe path: copy_from_user/copy_to_user).
         let port_io = minix_plat::CurrentPortIo::new();
-        crate::syscall_device::dispatch_sdevio(caller, msg, &port_io, priv_table, proc_table)
+        crate::syscall_device::dispatch_sdevio(caller.p_nr, proc_table, msg, &port_io, priv_table)
     }
 
     fn dispatch_vdevio(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &PrivTable) -> KcallResult {
@@ -349,13 +361,13 @@ impl ArchSyscall for X86_64Syscall {
 
     fn dispatch_iopenable(
         caller: &mut KProcess,
-        msg: &Message,
         proc_table: &mut ProcessTable,
+        msg: &Message,
     ) -> KcallResult {
         // C: do_iopenable.c — SYS_IOPENABLE (x86-only)
         // SELF endpoint resolution + IOPL enable via
         // CurrentCpuContextArch::enable_user_io (kernel-layer abstraction).
-        crate::syscall_device::dispatch_iopenable(caller, msg, proc_table)
+        crate::syscall_device::dispatch_iopenable(caller.p_nr, proc_table, msg)
     }
 
     fn dispatch_readbios(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult {
@@ -600,17 +612,17 @@ fn kernel_call_dispatch_inner(
         Syscall::Physcopy => dispatch_physcopy(caller, msg, proc_table),
         Syscall::UmapRemote => dispatch_umap_remote(caller, msg, proc_table, priv_table),
         Syscall::Vumap => dispatch_vumap(caller, msg, proc_table, priv_table),
-        Syscall::Irqctl => dispatch_irqctl(caller, msg, priv_table, bkl_section),
+        Syscall::Irqctl => dispatch_irqctl(caller, proc_table, msg, priv_table, bkl_section),
         // D6: x86-specific syscalls — return BadCall on other architectures.
-        Syscall::Devio => CurrentArchSyscall::dispatch_devio(caller, msg, priv_table),
-        Syscall::Sdevio => CurrentArchSyscall::dispatch_sdevio(caller, msg, priv_table, proc_table),
+        Syscall::Devio => CurrentArchSyscall::dispatch_devio(caller, proc_table, msg, priv_table),
+        Syscall::Sdevio => CurrentArchSyscall::dispatch_sdevio(caller, proc_table, msg, priv_table),
         // D6: VDEVIO is also x86-specific (system.c:215-216: #if defined(__i386__))
         Syscall::Vdevio => CurrentArchSyscall::dispatch_vdevio(caller, proc_table, msg, priv_table),
         Syscall::Setalarm => dispatch_setalarm(caller.p_nr, msg, priv_table, clock_state, proc_table),
         Syscall::Times => dispatch_times(caller.p_nr, msg, proc_table),
         Syscall::Getinfo => dispatch_getinfo(caller, msg, priv_table, proc_table, clock_state),
         Syscall::Abort => dispatch_abort(caller, msg),
-        Syscall::Iopenable => CurrentArchSyscall::dispatch_iopenable(caller, msg, proc_table),
+        Syscall::Iopenable => CurrentArchSyscall::dispatch_iopenable(caller, proc_table, msg),
         Syscall::SafecopyFrom => dispatch_safecopy_from(caller, msg, proc_table, priv_table),
         Syscall::SafecopyTo => dispatch_safecopy_to(caller, msg, proc_table, priv_table),
         Syscall::Vsafecopy => dispatch_vsafecopy(caller, msg, proc_table, priv_table),
@@ -1948,6 +1960,7 @@ fn dispatch_umap_remote(caller: &mut KProcess, msg: &mut Message, proc_table: &m
 fn dispatch_vumap(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_vumap(caller, msg, proc_table, priv_table) }
 fn dispatch_irqctl(
     caller: &mut KProcess,
+    proc_table: &mut crate::proc_table::ProcessTable,
     msg: &mut Message,
     priv_table: &mut PrivTable,
     bkl_section: &crate::smp::BklSection<'_>,
@@ -1963,7 +1976,7 @@ fn dispatch_irqctl(
     //
     // C: do_irqctl.c — full IRQ control handler.
     let irq_mgr = crate::irq_manager_with(bkl_section);
-    crate::syscall_device::dispatch_irqctl(caller, msg, irq_mgr, priv_table)
+    crate::syscall_device::dispatch_irqctl(caller.p_nr, proc_table, msg, irq_mgr, priv_table)
 }
 fn dispatch_setalarm(caller_nr: crate::proc::ProcNr, msg: &mut Message, priv_table: &mut PrivTable, clock_state: &mut ClockState, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_setalarm(caller_nr, msg, priv_table, clock_state, proc_table) }
 fn dispatch_times(caller_nr: crate::proc::ProcNr, msg: &mut Message, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_times(caller_nr, msg, proc_table) }
