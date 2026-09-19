@@ -1200,6 +1200,22 @@ impl VfsState {
                     }
                     reply_payload = Some(m);
                 }
+                crate::worker::WorkerCont::Rdlink { grant } => {
+                    // C `req_rdlink_actual`（request.c:743-747）：撤销 grant，
+                    // 然后**从载荷取字节数**（`mess_fs_vfs_rdlink.nbytes`），
+                    // `m_type` 只是 OK——用户拿到的长度不是状态字。
+                    let _ = self.revoke_grant(grant);
+                    if status == 0 {
+                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        let raw = unsafe { &reply.m_u.raw };
+                        let mut b8 = [0u8; 8];
+                        b8.copy_from_slice(
+                            &raw[minix_types::rdlink_reply_off::NBYTES
+                                ..minix_types::rdlink_reply_off::NBYTES + 8],
+                        );
+                        status = i64::from_le_bytes(b8) as i32;
+                    }
+                }
                 crate::worker::WorkerCont::Getdents { grant, filp } => {
                     // C `req_getdents_actual` 的收尾（request.c:330-336）：
                     // 回复的 `seek_pos` 是下一趟的位置、`nbytes` 是本次写出
@@ -1287,6 +1303,51 @@ impl VfsState {
                             continue;
                         }
                         Ok(crate::path::WalkStep::Done(node)) => match follow {
+                            crate::worker::PathFollow::Rdlink { user, buf, buf_size } => {
+                                // C `do_rdlink`（link.c:496-506）：不是符号链接
+                                // 就是 EINVAL（`PATH_RET_SYMLINK` 已经让 FS 不
+                                // 跟进末组件，所以这里拿到的是链接本身），是
+                                // 符号链接才发 `REQ_RDLINK`。
+                                if node.mode & crate::open::S_IFMT != crate::open::S_IFLNK {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                    continue;
+                                }
+                                let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    continue;
+                                };
+                                // magic grant：FS 往用户缓冲写链接文本。
+                                // C 的首趟带 `CPF_TRY`（request.c:760-761）。
+                                let grant = match self.grant_user_buffer(
+                                    node.fs_e,
+                                    user,
+                                    buf,
+                                    buf_size,
+                                    minix_types::CpFlags::WRITE | minix_types::CpFlags::TRY,
+                                ) {
+                                    Ok(g) => g,
+                                    Err(_) => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    }
+                                };
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont = Some(crate::worker::WorkerCont::Rdlink { grant });
+                                }
+                                self.pending_fs = Some(PendingFs {
+                                    vmnt: vmnt.0,
+                                    fs_e: node.fs_e,
+                                    worker: idx,
+                                    grant,
+                                    user,
+                                    req: crate::request::encode_rdlink(
+                                        node.ino,
+                                        grant,
+                                        buf_size as usize,
+                                    ),
+                                });
+                                continue;
+                            }
                             crate::worker::PathFollow::Access { user: _acc_user, access } => {
                                 // C `do_access`（protect.c:216-231）的本地半：
                                 // 走完就判权限——`forbidden` 用**真实** uid/gid
@@ -2604,6 +2665,139 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::Rdlink` 与 `WorkerCont::Rdlink`：`readlink` 的两段。
+    /// 走完先过"是不是符号链接"的门（C link.c:496-501 的 `S_ISLNK`，否则
+    /// EINVAL），是链接才发 `REQ_RDLINK`；回复的**字节数在载荷里**而不是
+    /// 状态字（C request.c:745），续接体要从 `rdlink_reply_off::NBYTES` 取。
+    #[test]
+    fn test_path_follow_rdlink_gates_and_continuation() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::RET_SYMLINK)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (slot, idx, walk)
+        };
+        let done_reply = |mode: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&9u64.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&mode.to_le_bytes());
+            }
+            reply
+        };
+
+        // 不是符号链接（常规文件）→ EINVAL，不发任何 FS 请求。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk: walk.clone(),
+                grant: 9,
+                follow: PathFollow::Rdlink { user, buf: 0x5000, buf_size: 128 },
+            });
+            wp.sendrec = Some(done_reply(crate::open::S_IFREG | 0o644));
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none(), "非符号链接不该发 REQ_RDLINK");
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EINVAL))
+        );
+
+        // 是符号链接：宿主下 grant 不可达 → EIO（诚实边界；真机上这里会
+        // 变成 pending_fs 里的 REQ_RDLINK）。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Rdlink { user, buf: 0x5000, buf_size: 128 },
+            });
+            wp.sendrec = Some(done_reply(crate::open::S_IFLNK | 0o777));
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EIO))
+        );
+
+        // 续接体：状态 OK 时长度取自载荷的 nbytes（不是状态字 0）。
+        let idx2 = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        // SAFETY(test): 按 rdlink_reply_off 填 nbytes。
+        unsafe {
+            reply.m_u.raw[0..8].copy_from_slice(&12u64.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx2).unwrap();
+            wp.cont = Some(WorkerCont::Rdlink { grant: 5 });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 12)),
+            "用户拿到的是链接文本长度"
+        );
+
+        // 续接体：FS 报错时错误原样回（不读载荷）。
+        let idx3 = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        {
+            let wp = state.worker_pool.get_mut(idx3).unwrap();
+            wp.cont = Some(WorkerCont::Rdlink { grant: 6 });
+            wp.sendrec = Some(Message { m_type: minix_types::ENOENT, ..Message::default() });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::ENOENT))
+        );
     }
 
     /// `PathFollow::Access`：走完即判权限，**没有 FS 往返**——`forbidden`

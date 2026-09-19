@@ -214,7 +214,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Rename
         | VfsCallNum::Rmdir
         | VfsCallNum::Symlink
-        | VfsCallNum::Readlink
         | VfsCallNum::Truncate
         | VfsCallNum::Chmod
         | VfsCallNum::Fchmod
@@ -1078,6 +1077,99 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 服务器自用臂：getsysinfo（VFS_GETSYSINFO = +48）──
         // ── 对话臂模板：getdents（目录读；只有目录能过类型门）──
         // ── 路径臂模板：access（走完即判，无 FS 往返）──
+        // ── 路径臂模板：readlink（走末组件符号链接本身，不跟进）──
+        VfsCallNum::Readlink => {
+            // C `do_rdlink`（link.c:473-507）：载荷
+            // `mess_lc_vfs_readlink { name, namelen, buf, bufsize }` →
+            // `bufsize > SSIZE_MAX` 即 EINVAL → 带 `PATH_RET_SYMLINK` 走路径
+            // → 不是符号链接即 EINVAL → `REQ_RDLINK`（grant 往用户缓冲写）。
+            let (name_len, buf, buf_size, inline) = {
+                // 用户载荷：name@0、namelen@8、buf@16、bufsize@24（ipc.h:785-792）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let name_len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let buf = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                let buf_size = u64::from_le_bytes(b8);
+                (name_len, buf, buf_size, raw[32..].to_vec())
+            };
+            // C link.c:486 —— 窗口大于 SSIZE_MAX 即 EINVAL。
+            if buf_size > i64::MAX as u64 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                let n = (name_len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => p,
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            } else {
+                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            };
+            // C link.c:489 —— `PATH_RET_SYMLINK`：末组件是符号链接就带回
+            // 链接本身（该位的语义在 FS 侧，见 `encode_lookup`）。
+            let resolve = match crate::path::Lookup::new(
+                path,
+                crate::path::LookupFlags::RET_SYMLINK,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Rdlink {
+                        user: user_e,
+                        buf,
+                        buf_size,
+                    },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Access => {
             // C `do_access`（protect.c:199-233）：先验 mode（只允许
             // `R_OK|W_OK|X_OK` 的组合或 `F_OK`）→ `copy_path` → `eat_path`
@@ -1903,6 +1995,56 @@ mod tests {
         state.current_message = getdents_msg(3, 0x5000, 16, 0);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EIO)
+        );
+    }
+
+    /// `Readlink` 臂的窗口门（C link.c:486）：`bufsize > SSIZE_MAX` 即
+    /// EINVAL，且这条门在取路径与走遍历之前生效。
+    #[test]
+    fn test_dispatch_readlink_buffer_gate() {
+        use minix_types::Endpoint;
+
+        let readlink_msg = |name_len: u64, buf_size: u64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Readlink as i32,
+                ..Message::default()
+            };
+            // SAFETY: readlink 载荷 name@0、namelen@8、buf@16、bufsize@24
+            // （ipc.h:785-792）——内联路径从 @32 起。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[8..16].copy_from_slice(&name_len.to_le_bytes());
+                raw[16..24].copy_from_slice(&0x5000u64.to_le_bytes());
+                raw[24..32].copy_from_slice(&buf_size.to_le_bytes());
+                raw[32] = b'/';
+                raw[33] = b'x';
+                raw[34] = 0;
+            }
+            m
+        };
+
+        let mut state = seeded(100);
+        state.current_message = readlink_msg(3, u64::MAX);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Readlink),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+        // 窗口合法则过门；宿主下走路径的 grant 不可达 → EIO。先绑 worker 槽
+        // ——没槽时臂回 EAGAIN（C handle_work:150-151），那是另一条门。
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+        state.current_message = readlink_msg(3, 128);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Readlink),
             SyscallResult::Error(minix_types::EIO)
         );
     }

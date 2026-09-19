@@ -505,6 +505,29 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_RDLINK` 请求（C `req_rdlink_actual` — request.c:717-748）。
+///
+/// 载荷 `{inode, grant, mem_size}`；数据面由 FS 经 grant 把链接文本写进
+/// **用户**缓冲（`CPF_WRITE` 的 magic grant）。回复的字节数在载荷里
+/// （`rdlink_reply_off::NBYTES`），`m_type` 只是 `OK`。
+pub fn encode_rdlink(ino: u64, grant: i32, mem_size: usize) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_RDLINK,
+        ..Message::default()
+    };
+    // SAFETY: REQ_RDLINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::rdlink_req_off::INODE..minix_types::rdlink_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::rdlink_req_off::GRANT..minix_types::rdlink_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+        raw[minix_types::rdlink_req_off::MEM_SIZE..minix_types::rdlink_req_off::MEM_SIZE + 8]
+            .copy_from_slice(&(mem_size as u64).to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_GETDENTS` 请求（C `req_getdents_actual` — request.c:288-336）。
 ///
 /// 载荷 `{inode, seek_pos, grant, mem_size}`；数据面由 FS 经 grant 往用户
@@ -1419,6 +1442,31 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_rdlink` 的三个域落位；回复侧只有 `nbytes` 一域（见
+    /// `rdlink_reply_off`）——别把回复表拿来写请求。
+    #[test]
+    fn test_encode_rdlink_fields() {
+        let m = encode_rdlink(0x42, 11, 256);
+        assert_eq!(m.m_type, minix_types::REQ_RDLINK);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::rdlink_req_off::INODE..minix_types::rdlink_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x42);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::rdlink_req_off::GRANT..minix_types::rdlink_req_off::GRANT + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 11);
+        b8.copy_from_slice(
+            &raw[minix_types::rdlink_req_off::MEM_SIZE
+                ..minix_types::rdlink_req_off::MEM_SIZE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 256);
+    }
+
     #[test]
     fn test_encode_getdents_fields() {
         let m = encode_getdents(0x77, 0x800, 9, 4096);

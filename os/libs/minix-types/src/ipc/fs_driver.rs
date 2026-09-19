@@ -340,6 +340,31 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_RDLINK` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_rdlink { ino_t inode; cp_grant_id_t grant; size_t
+/// mem_size; }`（ipc.h:2101-2108，`request.c:717-748` 的
+/// `req_rdlink_actual`）。`grant` 是 FS 往**用户**缓冲写链接文本的 magic
+/// grant（`CPF_WRITE`）；`mem_size` 是用户给的窗口。
+pub mod rdlink_req_off {
+    /// `ino_t inode`（符号链接节点）。
+    pub const INODE: usize = 0;
+    /// `cp_grant_id_t grant`。
+    pub const GRANT: usize = 8;
+    /// `size_t mem_size`。
+    pub const MEM_SIZE: usize = 16;
+}
+
+/// `REQ_RDLINK` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+///
+/// C: `mess_fs_vfs_rdlink { size_t nbytes; }`（ipc.h:191-195）——链接文本的
+/// 字节数在**载荷**里，`m_type` 只是 `OK`（`request.c:745`：
+/// `if (r == OK) r = m.m_fs_vfs_rdlink.nbytes;`）。
+pub mod rdlink_reply_off {
+    /// `size_t nbytes`。
+    pub const NBYTES: usize = 0;
+}
+
 /// `REQ_GETDENTS` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_getdents { ino_t inode; off_t seek_pos; cp_grant_id_t
@@ -503,6 +528,11 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // rdlink：请求三域 + 回复一域（字节数在载荷里，m_type 只是 OK）。
+        assert_eq!(rdlink_req_off::INODE, 0);
+        assert_eq!(rdlink_req_off::GRANT, 8);
+        assert_eq!(rdlink_req_off::MEM_SIZE, 16);
+        assert_eq!(rdlink_reply_off::NBYTES, 0);
         // getdents：请求四域（inode/seek_pos/grant/mem_size）+ 回复两域。
         assert_eq!(getdents_req_off::INODE, 0);
         assert_eq!(getdents_req_off::SEEK_POS, 8);

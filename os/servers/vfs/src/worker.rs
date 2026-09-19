@@ -89,6 +89,13 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `readlink` 的对话半（`REQ_RDLINK`）：C `req_rdlink_actual`
+    /// （request.c:741-747）——回复的 `m_type` 只是 `OK`，**字节数在载荷里**
+    /// （`mess_fs_vfs_rdlink { size_t nbytes; }`），所以不能复用 `Status`。
+    Rdlink {
+        /// 已发给 FS 的 magic grant（收尾时撤销）。
+        grant: i32,
+    },
     /// `getdents` 的对话半（`REQ_GETDENTS`）：C `do_getdents`（read.c:282-317）
     /// 的回复处理与 read/write 不同——**只有 `nbytes > 0` 才推进 filp 位置**
     /// （C `if (r > 0) rfilp->filp_pos = new_pos;`），也不动 vnode 大小，
@@ -172,6 +179,17 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `readlink(path, buf, bufsize)`：走完（**不跟进末组件符号链接**，
+    /// `PATH_RET_SYMLINK`）后发 `REQ_RDLINK`，链接文本由 FS 经 magic grant
+    /// 写进用户缓冲。C `do_rdlink`（link.c:473-507）。
+    Rdlink {
+        /// 调用方端点（magic grant 的 `who_from` 与回复目的地）。
+        user: Endpoint,
+        /// 用户缓冲地址。
+        buf: u64,
+        /// 用户给的窗口大小。
+        buf_size: u64,
+    },
     /// `access(path, mode)`：走完就结束——权限判断全在本地
     /// （C `do_access`，protect.c:199-233：`eat_path` 之后只剩一次
     /// `forbidden`），**没有 FS 往返**，所以这个 follow 的续接体直接回状态。
