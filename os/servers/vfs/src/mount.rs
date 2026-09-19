@@ -143,6 +143,22 @@ pub struct SuperInfo {
     pub fs_e: i32,
     /// Whether the FS is multithreaded (`RES_THREADED`, `vfsif.h:21`).
     pub threaded: bool,
+    /// FS-declared concurrent request count (回复的 `con_reqs`,
+    /// ipc.h:206)。C 侧无消费者——窗口上限由 `max_reqs` 决定,保留
+    /// 字段对齐协议面。
+    pub con_reqs: u16,
+}
+
+impl SuperInfo {
+    /// 挂载窗口的 `c_max_reqs` 规则(mount.c:307-312):
+    /// `RES_THREADED` → `NR_WTHREADS`(9),否则 1(串行 FS)。
+    pub fn max_reqs(&self) -> usize {
+        if self.threaded {
+            NR_WTHREADS as usize
+        } else {
+            1
+        }
+    }
 }
 
 /// File-server hook for superblock reads (`req_readsuper`, `mount.c:272`).
@@ -151,7 +167,11 @@ pub struct SuperInfo {
 /// without a live file server.
 pub trait SuperblockReader {
     /// Read the superblock of `dev`; map FS errors to [`MountError`].
-    fn read_super(&self, dev: u64, readonly: bool, is_root: bool) -> Result<SuperInfo, MountError>;
+    ///
+    /// `&mut self`:生产实现要经 [`crate::request::FsClient`] 发请求
+    /// (S14 接线;测试替身无需状态)。
+    fn read_super(&mut self, dev: u64, readonly: bool, is_root: bool)
+        -> Result<SuperInfo, MountError>;
 }
 
 /// Reader whose superblock read always succeeds (test double).
@@ -163,7 +183,7 @@ pub struct MemSuperblock {
 
 impl SuperblockReader for MemSuperblock {
     fn read_super(
-        &self,
+        &mut self,
         _dev: u64,
         _readonly: bool,
         _is_root: bool,
@@ -171,6 +191,7 @@ impl SuperblockReader for MemSuperblock {
         Ok(SuperInfo {
             fs_e: 3,
             threaded: self.threaded,
+            con_reqs: 1,
         })
     }
 }
@@ -184,12 +205,52 @@ pub struct FailSuperblock;
 
 impl SuperblockReader for FailSuperblock {
     fn read_super(
-        &self,
+        &mut self,
         _dev: u64,
         _readonly: bool,
         _is_root: bool,
     ) -> Result<SuperInfo, MountError> {
         Err(MountError::Io)
+    }
+}
+
+/// `req_readsuper` 的生产读者(S14):经 [`FsClient`] 的
+/// `send_with_retry` 发 [`FsReq::ReadSuper`],回复按 ipc.h:198-211
+/// 的布局解出 `node_details + fs_flags`(request.c:780-833)。
+pub struct FsSuperblock<'a, C: crate::request::FsClient + ?Sized> {
+    /// `REQ_*` 类型化传输(W1 对话原语的调用面)。
+    pub client: &'a mut C,
+    /// 目标文件服务器端点(C mount_fs 的 rpub 端点,`fs_e`)。
+    pub fs_e: minix_types::Endpoint,
+    /// 挂载标签(grant 内容的类型化视图,C 的 `mount_fs` 传 fstype)。
+    pub label: String,
+}
+
+impl<C: crate::request::FsClient + ?Sized> SuperblockReader for FsSuperblock<'_, C> {
+    fn read_super(
+        &mut self,
+        dev: u64,
+        readonly: bool,
+        is_root: bool,
+    ) -> Result<SuperInfo, MountError> {
+        use crate::request::{FsReq, FsResp};
+        let req = FsReq::ReadSuper {
+            fs_e: self.fs_e,
+            label: self.label.clone(),
+            dev,
+            readonly,
+            isroot: is_root,
+        };
+        match self.client.send_with_retry(req) {
+            Ok(FsResp::ReadSuper { node, fs_flags, con_reqs }) => Ok(SuperInfo {
+                fs_e: node.fs_e.0,
+                threaded: fs_flags.contains(crate::request::FsFlags::THREADED),
+                con_reqs,
+            }),
+            // 回复臂不匹配或 FS 错误:统一 EIO(C mount_fs 对
+            // req_readsuper 失败的 errno 原样上抛;类型化面收敛 Io)。
+            Err(_) | Ok(_) => Err(MountError::Io),
+        }
     }
 }
 
@@ -586,19 +647,23 @@ mod tests {
     #[test]
     fn test_superblock_factories_differ() {
         // Gate D: the two `SuperblockReader` impls behave differently.
-        let mem = MemSuperblock { threaded: true };
+        let mut mem = MemSuperblock { threaded: true };
         let info = mem.read_super(0x801, false, true).unwrap();
         assert_eq!(info.fs_e, 3);
         assert!(info.threaded);
+        assert_eq!(info.max_reqs(), NR_WTHREADS as usize); // mount.c:310-312
         assert_eq!(
             FailSuperblock.read_super(0x801, false, true).unwrap_err(),
             MountError::Io
         );
-        fn via<R: SuperblockReader>(r: &R) -> bool {
+        fn via<R: SuperblockReader>(r: &mut R) -> bool {
             r.read_super(0, false, false).is_ok()
         }
-        assert!(via(&mem));
-        assert!(!via(&FailSuperblock));
+        assert!(via(&mut mem));
+        assert!(!via(&mut FailSuperblock));
+        // 串行 FS 的窗口上限固定 1(mount.c:309-310 的 else 支)。
+        let mut serial = MemSuperblock { threaded: false };
+        assert_eq!(serial.read_super(0, false, false).unwrap().max_reqs(), 1);
         // Threading flag fans out to worker allowance (`mount.c:309-313`).
         assert_eq!(thread_allowance(true), NR_WTHREADS);
         assert_eq!(thread_allowance(false), 1);
@@ -779,4 +844,58 @@ mod tests {
         assert_eq!(plan.label, "pfs");
         assert_eq!(plan.mount_path, "pipe");
         assert_eq!(plan.mount_dev, "none");
+    
+    #[test]
+    fn test_fs_superblock_roundtrip_via_client() {
+        // S14 核心往返:FsSuperblock → FsReq::ReadSuper → 回复
+        // (fs_flags/con_reqs)→ SuperInfo。
+        use crate::request::{FsClient, FsError, FsFlags, FsResp, GrantScope, NodeDetails};
+
+        /// 脚本化 client:记录请求,回一个 threaded=1、con_reqs=2 的
+        /// readsuper 应答(ipc.h:198-211 语义的形状化回复)。
+        struct ScriptedClient {
+            seen: Vec<crate::request::FsReq>,
+        }
+        impl FsClient for ScriptedClient {
+            fn send(&mut self, req: crate::request::FsReq, _scope: GrantScope) -> Result<FsResp, FsError> {
+                self.seen.push(req);
+                Ok(FsResp::ReadSuper {
+                    node: NodeDetails {
+                        fs_e: minix_types::Endpoint::MFS,
+                        ino: 1,
+                        mode: 0o040755,
+                        size: 8192,
+                        uid: 0,
+                        gid: 0,
+                        dev: 0x801,
+                    },
+                    fs_flags: FsFlags::THREADED,
+                    con_reqs: 2,
+                })
+            }
+        }
+
+        let mut client = ScriptedClient { seen: Vec::new() };
+        let mut reader = FsSuperblock {
+            client: &mut client,
+            fs_e: minix_types::Endpoint::MFS,
+            label: String::from("mfs"),
+        };
+        let info = reader.read_super(0x801, true, true).unwrap();
+        assert_eq!(info.fs_e, 4); // Endpoint::MFS.0(实际值由类型决定)
+        assert!(info.threaded);
+        assert_eq!(info.con_reqs, 2);
+        assert_eq!(info.max_reqs(), NR_WTHREADS as usize);
+        // 发出的请求形状:fs_e/dev/readonly/isroot 都在。
+        match &client.seen[0] {
+            crate::request::FsReq::ReadSuper { fs_e, label, dev, readonly, isroot } => {
+                assert_eq!(*fs_e, minix_types::Endpoint::MFS);
+                assert_eq!(label, "mfs");
+                assert_eq!(*dev, 0x801);
+                assert!(*readonly);
+                assert!(*isroot);
+            }
+            other => panic!("wrong req: {other:?}"),
+        }
     }
+}

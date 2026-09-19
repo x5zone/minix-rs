@@ -470,9 +470,13 @@ impl VfsState {
         // main.c:503 — worker_allow(FALSE)：挂载期间拒绝新请求（含 init(8)）。
         self.set_accept_requests(false);
 
-        // main.c:505 — mount_pfs()（DEFERRED，归 18）。
+        // main.c:505 — mount_pfs()（执行编排归 18，决策件 mount.rs 已备）。
         // main.c:508-518 — mount_fs(DEV_IMGRD, "bootramdisk", "/", MFS_PROC_NR,
-        //                   0, "mfs", "fs_imgrd")（DEFERRED，归 18）。
+        //                   0, "mfs", "fs_imgrd")：req_readsuper 往返件已备
+        //                   (S14:FsSuperblock 经 FsClient 的
+        //                   send_with_retry,SuperInfo.con_reqs 与
+        //                   max_reqs 窗口规则 mount.c:307-312);挂启动段
+        //                   执行归通电面。
 
         // main.c:525 — worker_allow(TRUE)：根文件系统就绪，恢复接受请求。
         self.set_accept_requests(true);

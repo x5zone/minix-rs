@@ -17,7 +17,7 @@
 //! module: they guard what VFS actually puts on the wire.
 
 use minix_types::{
-    is_fs_rq, Endpoint, REQ_BREAD, REQ_BPEEK, REQ_BWRITE, REQ_CHMOD, REQ_CHOWN, REQ_CREATE,
+    is_fs_rq, Endpoint, Message, REQ_BREAD, REQ_BPEEK, REQ_BWRITE, REQ_CHMOD, REQ_CHOWN, REQ_CREATE,
     REQ_FLUSH, REQ_FTRUNC, REQ_GETDENTS, REQ_GETNODE, REQ_INHIBREAD, REQ_LINK, REQ_LOOKUP,
     REQ_MKDIR, REQ_MKNOD, REQ_MOUNTPOINT, REQ_NEWNODE, REQ_NEW_DRIVER, REQ_PEEK, REQ_PUTNODE,
     REQ_RDLINK, REQ_READ, REQ_READSUPER, REQ_RENAME, REQ_RMDIR, REQ_SLINK, REQ_STAT,
@@ -87,6 +87,11 @@ pub struct VfsUCred {
 
 /// Typed `REQ_*` request — 32 variants, one per live `REQ_*` type (no
 /// `GetNode`; `vfsif.h` defines 33 constants of which `REQ_GETNODE` is dead).
+/// `REQ_RDONLY` / `REQ_ISROOT` — `readsuper` 的请求 flags
+/// (vfsif.h:8-9;S14 挂载先行批的 wire 编码面)。
+pub const REQ_RDONLY: u32 = 0o1;
+pub const REQ_ISROOT: u32 = 0o2;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FsReq {
     PutNode {
@@ -390,6 +395,15 @@ impl FsReq {
 pub enum FsResp {
     Node(NodeDetails),
     Lookup(LookupRes),
+    /// `readsuper` 回复(req_readsuper,request.c:818):
+    /// `node_details` + `fs_flags`(RES_*)+ `con_reqs`
+    /// (ipc.h:198-211;con_reqs 在 C 侧无消费者,mount.c 的 max_reqs
+    /// 由 RES_THREADED 决定——见 `mount.rs::SuperInfo::max_reqs`)。
+    ReadSuper {
+        node: NodeDetails,
+        fs_flags: FsFlags,
+        con_reqs: u16,
+    },
     Ok,
     Count(i32),
     Size(usize),
@@ -419,6 +433,61 @@ impl FsError {
             Self::GrantFaulted => minix_types::ERESTART,
             Self::Io(e) => e,
         }
+    }
+}
+
+/// `req_readsuper` 的请求编码(C request.c:780-813):device@0(dev_t)、
+/// flags@8(REQ_RDONLY/ISROOT)、path_len@16(size_t)、grant@24
+/// (cp_grant_id_t,ipc.h:2111-2119 的 LP64 布局)。
+pub fn encode_readsuper(
+    device: u64,
+    path_len: usize,
+    grant: i32,
+    readonly: bool,
+    isroot: bool,
+) -> Message {
+    let mut msg = Message {
+        m_type: REQ_READSUPER,
+        ..Message::default()
+    };
+    let mut flags = 0u32;
+    if readonly {
+        flags |= REQ_RDONLY;
+    }
+    if isroot {
+        flags |= REQ_ISROOT;
+    }
+    // SAFETY: raw 臂按字节写——无专属 union 成员的 wire 面
+    // (前例:pm 的 decode.rs raw 模式)。
+    let raw = unsafe { &mut msg.m_u.raw };
+    raw[0..8].copy_from_slice(&device.to_le_bytes());
+    raw[8..12].copy_from_slice(&flags.to_le_bytes());
+    raw[16..24].copy_from_slice(&(path_len as u64).to_le_bytes());
+    raw[24..28].copy_from_slice(&grant.to_le_bytes());
+    msg
+}
+
+/// `readsuper` 回复解码(C request.c:818-825):file_size@0(off_t)、
+/// device@8(dev_t)、inode@16(ino_t)、flags@24(u32 = fs_flags)、
+/// mode@28、uid@32、gid@36、con_reqs@40(u16,ipc.h:198-211)。
+/// `fs_e` 由调用方给(即 `m_source`,C 的 `res->fs_e = m.m_source`)。
+pub fn decode_readsuper_reply(msg: &Message, fs_e: Endpoint) -> FsResp {
+    // SAFETY: 同 encode_readsuper——按字节读回复载荷。
+    let raw = unsafe { &msg.m_u.raw };
+    let u64_at = |o: usize| u64::from_le_bytes(raw[o..o + 8].try_into().unwrap());
+    let u32_at = |o: usize| u32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
+    FsResp::ReadSuper {
+        node: NodeDetails {
+            fs_e,
+            ino: u64_at(16),
+            mode: u32_at(28),
+            size: u64_at(0),
+            uid: u32_at(32),
+            gid: u32_at(36),
+            dev: u64_at(8),
+        },
+        fs_flags: FsFlags::from_bits_truncate(u32_at(24)),
+        con_reqs: u16::from_le_bytes(raw[40..42].try_into().unwrap()),
     }
 }
 
@@ -459,6 +528,11 @@ impl FsClient for BlockingFsClient {
             FsReq::Create { .. } | FsReq::NewNode { .. } => {
                 Ok(FsResp::Node(NodeDetails::default()))
             }
+            FsReq::ReadSuper { .. } => Ok(FsResp::ReadSuper {
+                node: NodeDetails::default(),
+                fs_flags: FsFlags::empty(),
+                con_reqs: 1,
+            }),
             _ => Ok(FsResp::Ok),
         }
     }
@@ -777,6 +851,56 @@ mod tests {
                 .unwrap_err(),
             FsError::InvalidOff
         );
+    }
+
+    #[test]
+    fn test_encode_readsuper_wire_layout() {
+        // ipc.h:2111-2119:device@0/flags@8/path_len@16/grant@24。
+        let msg = encode_readsuper(0x0401, 5, 7, true, true);
+        assert_eq!(msg.m_type, REQ_READSUPER);
+        // SAFETY: 断言侧按编码域序读。
+        let raw = unsafe { &msg.m_u.raw };
+        assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), 0x0401);
+        assert_eq!(u32::from_le_bytes(raw[8..12].try_into().unwrap()), REQ_RDONLY | REQ_ISROOT);
+        assert_eq!(u64::from_le_bytes(raw[16..24].try_into().unwrap()), 5);
+        assert_eq!(i32::from_le_bytes(raw[24..28].try_into().unwrap()), 7);
+        // 非 root 非只读:flags = 0。
+        let msg2 = encode_readsuper(1, 0, 0, false, false);
+        let raw2 = unsafe { &msg2.m_u.raw };
+        assert_eq!(u32::from_le_bytes(raw2[8..12].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn test_decode_readsuper_reply_roundtrip() {
+        // ipc.h:198-211:file_size@0/device@8/inode@16/flags@24/
+        // mode@28/uid@32/gid@36/con_reqs@40。
+        let mut msg = Message::default();
+        {
+            // SAFETY: 测试构造——按回复域序写 raw。
+            let raw = unsafe { &mut msg.m_u.raw };
+            raw[0..8].copy_from_slice(&4096u64.to_le_bytes()); // file_size
+            raw[8..16].copy_from_slice(&0x0401u64.to_le_bytes()); // device
+            raw[16..24].copy_from_slice(&42u64.to_le_bytes()); // inode
+            raw[24..28].copy_from_slice(&FsFlags::THREADED.bits().to_le_bytes());
+            raw[28..32].copy_from_slice(&0o040755u32.to_le_bytes());
+            raw[32..36].copy_from_slice(&1000u32.to_le_bytes());
+            raw[36..40].copy_from_slice(&100u32.to_le_bytes());
+            raw[40..42].copy_from_slice(&3u16.to_le_bytes());
+        }
+        match decode_readsuper_reply(&msg, Endpoint::MFS) {
+            FsResp::ReadSuper { node, fs_flags, con_reqs } => {
+                assert_eq!(node.fs_e, Endpoint::MFS);
+                assert_eq!(node.size, 4096);
+                assert_eq!(node.dev, 0x0401);
+                assert_eq!(node.ino, 42);
+                assert_eq!(node.mode, 0o040755);
+                assert_eq!(node.uid, 1000);
+                assert_eq!(node.gid, 100);
+                assert_eq!(fs_flags, FsFlags::THREADED);
+                assert_eq!(con_reqs, 3);
+            }
+            other => panic!("wrong arm: {other:?}"),
+        }
     }
 
     #[test]

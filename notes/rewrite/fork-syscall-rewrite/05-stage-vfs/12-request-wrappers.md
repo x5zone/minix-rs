@@ -251,3 +251,14 @@ os/servers/vfs/src/
 - Rust 实现：`os/servers/vfs/src/request.rs:1`（`FsReq(32)/FsResp(NodeDetails/LookupRes)/FsFlags/GrantScope` + `FsClient` trait (Blocking vs Mock + Try vs NoTry)）、`os/servers/vfs/src/fs_comm.rs:1`（`GlobalComm` 的 `sendmsg` 对端与 `TransId` 编码）、`os/libs/minix-types/src/types/endpoint.rs:1`（`Endpoint` 与 `UserSlot`）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（`cpf_grant_magic/direct` 的 `safecopy` 原语）
 
+---
+
+## 9 readsuper 往返接线(S14 挂载先行批)
+
+`req_readsuper`(`request.c:780-833`)是绑定层里第一个接上真实往返的包装——`mount_fs` 的挂载次序把 Superblock 读放在 Glue 之后、Commit 之前(`mount.c:240-291`,先接挂载是 plan §8 的顺序裁决)。Rust 侧的三件在 S14 落地:
+
+**请求编码**(`request.rs::encode_readsuper`)。C 的请求臂是 `mess_vfs_fs_readsuper { device; flags; path_len; grant }`(ipc.h:2111-2119,LP64 布局 `device@0/flags@8/path_len@16/grant@24`);flags 由 `REQ_RDONLY(001)` 与 `REQ_ISROOT(002)`(vfsif.h:8-9)按位或出。`FsReq::ReadSuper` 的类型化字段(readonly/isroot)在此落到 wire 位。
+
+**回复解码**(`request.rs::decode_readsuper_reply`)。回复臂 `mess_fs_vfs_readsuper { file_size; device; inode; flags; mode; uid; gid; con_reqs }`(ipc.h:198-211)解出 `FsResp::ReadSuper { node, fs_flags, con_reqs }`;`fs_e` 由调用方给(就是 `m_source`,C 的 `res->fs_e = m.m_source`)。`flags` 字段装的是 **fs_flags**(RES_THREADED/HASPEEK/IS64BIT),不是请求 flags——两端同名字段不同含义,是这一对结构最容易读错的地方。
+
+**生产读者**(`mount.rs::FsSuperblock`)。持 `&mut FsClient`(W1 的类型化传输面)与目标 `fs_e`/标签,经 `send_with_retry`(带 `CPF_TRY → ERESTART → 重放` 语义)取回 `SuperInfo`。窗口上限规则随回复落地:`max_reqs` = `RES_THREADED ? NR_WTHREADS(9) : 1`(mount.c:307-312)——回复里的 `con_reqs` 字段在 C 侧没有消费者,Rust 保留它对齐协议面但不参与窗口计算。
