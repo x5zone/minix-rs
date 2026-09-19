@@ -10,6 +10,8 @@ name = "minix-net-lwip"
 path = "src/main.rs"
 
 [dependencies]
+managed = { workspace = true }
+smoltcp = { workspace = true }
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
 minix-sef = { workspace = true }

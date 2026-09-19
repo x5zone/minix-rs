@@ -236,6 +236,25 @@ minix-usb = { path = "libs/minix-usb" }
 # 外部依赖
 bitflags = "2.4"
 
+# 协议栈本体（17-stage-net N1-P1-3 裁决：smoltcp 一族 + 自研语义垫片）。
+# 显式最小特性集：消费库 minix-net-lwip 是 no_std + alloc 面，栈按同一
+# 形状编（宿主时间由服务器侧换算成毫秒数送入，不需要栈的 std 助手）；
+# 介质取三层（以太帧归 16-stage 接缝再加 medium-ethernet）；协议面按
+# Minix lwIP 的使用面取 IPv4+IPv6 与 TCP/UDP/RAW 三类套接字——async/
+# DHCPv4/6LoWPAN/mDNS 等 default 成员一律不取（C 的 lwIP 侧也没有这些面）。
+# smoltcp 的缓冲切片助手（栈的 SocketBuffer/包环构造参数是它的
+# ManagedSlice；smoltcp 不再导出该类型，消费方须同名直接依赖）。
+managed = "0.8"
+smoltcp = { version = "0.14", default-features = false, features = [
+  "alloc",
+  "medium-ip",
+  "proto-ipv4",
+  "proto-ipv6",
+  "socket-tcp",
+  "socket-udp",
+  "socket-raw",
+] }
+
 # Device Tree Blob parser (no_std, zero-copy) — used by minix-platform
 # for DTB-based hardware discovery on ARM64/RISC-V.
 fdt = "0.1"
