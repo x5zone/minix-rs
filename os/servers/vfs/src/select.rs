@@ -68,6 +68,25 @@ impl SelOps {
     pub fn is_empty_real(self) -> bool {
         self.real().is_empty()
     }
+    /// 线上状态字（`CDEV_SEL1_REPLY`/`SDEV_SELECT_REPLY` 载荷里的 `ops`
+    /// 位图就是 `SEL_*` 位，低位一致）。
+    pub fn to_status(self) -> i32 {
+        self.bits() as i32
+    }
+    /// 从线上状态字取就绪位（丢弃 `NOTIFY` 一类非就绪位）。
+    pub fn from_status(status: i32) -> SelOps {
+        SelOps::from_bits_truncate(status as u8) & (SelOps::RD | SelOps::WR | SelOps::ERR)
+    }
+}
+
+/// 一个被选中的 fd 与其 filp 的关联（C 的 `se->filps[fd]` + `se->type[fd]`
+/// 两列并成一行的记录）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FdEntry {
+    /// filp 表下标。
+    pub filp: usize,
+    /// 该 fd 的类型（决定请求半走哪条路）。
+    pub kind: FdKind,
 }
 
 /// The four fd temperaments (`fdtypes[]`, `select.c:81-90`).
@@ -159,6 +178,47 @@ pub fn ops2tab_apply(
     ReadyMark { newly }
 }
 
+/// 读位图的一位（`FD_ISSET` 的字节版；越界 = 未设）。
+pub fn bit_of(set: &[u8], fd: usize) -> bool {
+    let (byte, mask) = (fd / 8, 1u8 << (fd % 8));
+    set.get(byte).is_some_and(|b| b & mask != 0)
+}
+
+/// `ops2tab`（select.c:631-651）的执行半：把就绪位写进一个槽的三张结果集。
+///
+/// C 的三个条件都在：该方向用户给了指针（`vir_* != 0`）、用户在该方向
+/// 设了这一位、且尚未记过就绪。`nready` 按新置位的位数递增。
+/// `want` 是"该方向用户是否感兴趣"的三元组；`sets` 是三张结果集。
+pub fn ops2tab_store(
+    ops: SelOps,
+    fd: usize,
+    want: (bool, bool, bool),
+    sets: (&mut alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>, &mut alloc::vec::Vec<u8>),
+    nready: &mut usize,
+) {
+    let set_bit = |v: &mut alloc::vec::Vec<u8>, fd: usize| -> bool {
+        let (byte, mask) = (fd / 8, 1u8 << (fd % 8));
+        if byte >= v.len() {
+            return false;
+        }
+        if v[byte] & mask != 0 {
+            return false; // 已就绪，不重复计数
+        }
+        v[byte] |= mask;
+        true
+    };
+    let (rd, wr, er) = want;
+    if ops.contains(SelOps::RD) && rd && set_bit(sets.0, fd) {
+        *nready += 1;
+    }
+    if ops.contains(SelOps::WR) && wr && set_bit(sets.1, fd) {
+        *nready += 1;
+    }
+    if ops.contains(SelOps::ERR) && er && set_bit(sets.2, fd) {
+        *nready += 1;
+    }
+}
+
 /// 一个挂起的 `select` 请求（C `struct selectentry`，select.c:14-45）。
 #[derive(Debug, Clone, Default)]
 pub struct SelectSlot {
@@ -184,6 +244,21 @@ pub struct SelectSlot {
     pub nready: usize,
     /// 出错码（非零即中止整个 select）。
     pub error: i32,
+    /// 初始化期（`se->starting`，select.c:183/314）：fd 循环还没走完，
+    /// 期间的驱动回复不许提前收尾整个调用。
+    pub starting: bool,
+    /// 超时剩余 ticks（`se->expiry`，0 = 没设定时器）。
+    pub expiry: u64,
+    /// 参与本次 select 的 fd → (filp, 类型) 关联，下标即 fd 号
+    /// （C 的 `se->filps[fd]` + `se->type[fd]`）。
+    pub filps: alloc::vec::Vec<Option<FdEntry>>,
+    /// 就绪读集（`ready_readfds`，`ops2tab` 的落点、`copy_fdsets(TO_PROC)`
+    /// 的源）。
+    pub ready_readfds: alloc::vec::Vec<u8>,
+    /// 就绪写集（`ready_writefds`）。
+    pub ready_writefds: alloc::vec::Vec<u8>,
+    /// 就绪错误集（`ready_errorfds`）。
+    pub ready_errorfds: alloc::vec::Vec<u8>,
 }
 
 impl SelectSlot {

@@ -749,6 +749,13 @@ impl VfsState {
                 // （C 里是 printf + return，主循环继续）。
                 let _ = self.handle_drv_reply(msg);
             }
+            Route::Notify { source, .. } => {
+                // CLOCK 通知 = select 的超时闹钟到点（单闹钟近似，见
+                // `select_timeout_check`）；其余通知（DS/KERNEL）暂不消费。
+                if source == Endpoint::CLOCK {
+                    self.select_timeout_check();
+                }
+            }
             Route::FsReply { .. } => {
                 // C main.c:80-89 — do_reply 无应答对象；软失败（typed
                 // `FsReplyError`）即 C 的 printf+return，主循环继续。
@@ -2738,6 +2745,772 @@ impl VfsState {
         true
     }
 
+    // ───────────────────────── select 的等待半 ─────────────────────────
+    // C select.c 的回复/超时/重启机械（do_select 的请求半在 syscalls.rs）。
+    // 查询是 `asynsend` 一发不等（`cdev_select`/`sdev_select`），所以这半
+    // 不经 worker 槽：回复按 dmap/smap 的 `sel_busy` 认领，超时按 CLOCK
+    // 通知收尾，进程级挂起（`BlockedOn::Select`）与 bind/accept 同模式。
+
+    /// 发一张 select 查询（C `cdev_select` cdev.c:350-377 /
+    /// `sdev_select` sdev.c:647-668）：`asynsend` 一发不等。
+    ///
+    /// 消息形状：字符 `mess_vfs_lchardriver_select { devminor_t minor@0;
+    /// int ops@4 }`（ipc.h，`minor` 是 4 字节域）；套接字
+    /// `mess_vfs_lsockdriver_select { int32 sock_id@0; int ops@4 }`。
+    pub fn send_select_query(
+        &mut self,
+        is_char: bool,
+        dev: u64,
+        rops: crate::select::SelOps,
+    ) -> Result<(), i32> {
+        let mut m = Message {
+            m_type: if is_char {
+                minix_chardriver::protocol::CdevRequest::Select as i32
+            } else {
+                minix_sockdriver::sdev::SdevRequest::Select as i32
+            },
+            ..Message::default()
+        };
+        // SAFETY: 两族 select 请求的前两格都是 `int32 id/minor@0; int
+        // ops@4`（ipc.h:2216-2222 / lsockdriver_select）。
+        unsafe {
+            let raw = &mut m.m_u.raw;
+            let id = if is_char {
+                (((dev & 0xfff0_0000) >> 12) | (dev & 0xff)) as u32
+            } else {
+                match crate::device_map::split_smap_dev(dev) {
+                    Some((_, sock_id)) => sock_id as u32,
+                    None => return Err(minix_types::EIO),
+                }
+            };
+            raw[0..4].copy_from_slice(&id.to_le_bytes());
+            raw[4..8].copy_from_slice(&(rops.to_status()).to_le_bytes());
+        }
+        let drv_e = if is_char {
+            let major = ((dev & 0x000fff00) >> 8) as u32;
+            crate::device_map::get_by_major(&self.dmap_table, major)
+                .map(|row| row.driver)
+                .unwrap_or(None)
+                .ok_or(minix_types::ENXIO)?
+        } else {
+            crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
+                .ok_or(minix_types::EIO)?
+        };
+        // C `asynsend3(dmap_driver, &mess, AMF_NOREPLY)`（失败 panic——
+        // 模型里传输失败折 EIO，调用方记进 `se->error`）。
+        use minix_sys::ipc::IpcTransport as _;
+        minix_sys::ipc::DirectTrapTransport
+            .sendnb(drv_e, &m)
+            .map_err(|_| minix_types::EIO)
+    }
+
+    /// `select_request_char`/`select_request_sock` 的共用体
+    /// （select.c:459-565）：`/dev/tty` 重映射 → `filp_select_dev` 冲突门 →
+    /// `select_filter`（决策件）→ 驱动 busy 门 → 发查询 → 记账。
+    ///
+    /// 返回 `Ok(ready)` = 本轮就绪位（空 = 在途或暂无）；`Err(e)` =
+    /// C 的 `r != OK && r != SUSPEND`（记进 `se->error` 的那类）。
+    pub(crate) fn select_request_driver(
+        &mut self,
+        fp_slot: Option<minix_types::UserSlot>,
+        filp_idx: usize,
+        is_char: bool,
+        want: crate::select::SelOps,
+        block: bool,
+    ) -> Result<crate::select::SelOps, i32> {
+        use crate::select::{filter_step, FilterOutcome, SelOps as SO};
+        let sdev = {
+            let filp = self
+                .filp_table
+                .get(crate::filp::FilpId(filp_idx))
+                .ok_or(minix_types::EIO)?;
+            let vnode_idx = filp.vnode.ok_or(minix_types::EIO)?;
+            let v = self
+                .vnode_table
+                .get(crate::vnode::VnodeId(vnode_idx))
+                .ok_or(minix_types::EIO)?;
+            v.sdev
+        };
+        // C `cdev_map`（select_request_char:470-473）：字符族做 `/dev/tty`
+        // 重映射；套接字族原样（select.c:539）。
+        let dev = if is_char {
+            let major = ((sdev & 0x000fff00) >> 8) as u32;
+            let is_ctty = major == crate::device_map::CTTY_MAJOR;
+            let fp_tty = fp_slot
+                .and_then(|sl| self.fproc_table.get(sl))
+                .map(|fp| fp.tty)
+                .filter(|t| *t != minix_types::NO_DEV);
+            let major_valid = (major as usize) < crate::device_map::NR_DEVICES;
+            match crate::cdev::tty_redirect(sdev, is_ctty, fp_tty, major_valid) {
+                crate::cdev::RedirectVerdict::Keep(d)
+                | crate::cdev::RedirectVerdict::Substitute(d) => d,
+                crate::cdev::RedirectVerdict::NoDev => return Err(minix_types::ENXIO),
+            }
+        } else {
+            sdev
+        };
+        let (old_dev, flags, held_ops) = {
+            let filp = self
+                .filp_table
+                .get(crate::filp::FilpId(filp_idx))
+                .ok_or(minix_types::EIO)?;
+            (
+                filp.select_dev,
+                crate::filp::FsfFlags::from_bits_truncate(filp.select_flags as u32),
+                crate::select::SelOps::from_bits_truncate(filp.select_ops),
+            )
+        };
+        // C select.c:475-487：一张 filp 挂了两个控制终端的错乱门。
+        if old_dev != 0 && old_dev != dev {
+            return Err(minix_types::EIO);
+        }
+        {
+            let filp = self
+                .filp_table
+                .get_mut(crate::filp::FilpId(filp_idx))
+                .ok_or(minix_types::EIO)?;
+            filp.select_dev = dev; // set before possibly suspending
+        }
+        match filter_step(flags, want, block) {
+            FilterOutcome::ReadyNone | FilterOutcome::Suspend => {
+                // 空手而回（0 就绪位）——filter 判"现在没得问"或在途。
+                Ok(SO::empty())
+            }
+            FilterOutcome::Query { rops, clear_update, set_busy, set_block, .. } => {
+                // 驱动 busy 门（select.c:508-510/547-549）：同一驱动同一
+                // 时刻只许一张查询在途。
+                let busy = if is_char {
+                    let major = ((dev & 0x000fff00) >> 8) as u32;
+                    self.dmap_table.get(major).map(|r| r.sel_busy).unwrap_or(true)
+                } else {
+                    let (num, _) = crate::device_map::split_smap_dev(dev)
+                        .ok_or(minix_types::EIO)?;
+                    self.smap_table
+                        .entries
+                        .iter()
+                        .find(|r| r.num == num)
+                        .map(|r| r.sel_busy)
+                        .unwrap_or(true)
+                };
+                if busy {
+                    return Ok(SO::empty());
+                }
+                if clear_update {
+                    let filp = self
+                        .filp_table
+                        .get_mut(crate::filp::FilpId(filp_idx))
+                        .ok_or(minix_types::EIO)?;
+                    filp.select_flags &= !(crate::filp::FsfFlags::UPDATE.bits() as u8);
+                }
+                match self.send_select_query(is_char, dev, rops) {
+                    Ok(()) => {
+                        // 成功：标驱动在途 + filp 的 BUSY/阻塞监视位
+                        // （C select.c:519-522/555-558 的三连义务）。
+                        let block_bits = if set_block.contains(SO::RD) {
+                            crate::filp::FsfFlags::RD_BLOCK.bits()
+                        } else {
+                            0
+                        } | if set_block.contains(SO::WR) {
+                            crate::filp::FsfFlags::WR_BLOCK.bits()
+                        } else {
+                            0
+                        } | if set_block.contains(SO::ERR) {
+                            crate::filp::FsfFlags::ERR_BLOCK.bits()
+                        } else {
+                            0
+                        };
+                        let filp = self
+                            .filp_table
+                            .get_mut(crate::filp::FilpId(filp_idx))
+                            .ok_or(minix_types::EIO)?;
+                        filp.select_flags |=
+                            (block_bits | if set_busy { crate::filp::FsfFlags::BUSY.bits() } else { 0 })
+                                as u8;
+                        if is_char {
+                            let major = ((dev & 0x000fff00) >> 8) as u32;
+                            if let Some(row) = self.dmap_table.get_mut(major) {
+                                row.sel_busy = true;
+                                row.sel_owner = Some(filp_idx);
+                            }
+                        } else {
+                            let (num, _) = crate::device_map::split_smap_dev(dev)
+                                .ok_or(minix_types::EIO)?;
+                            if let Some(row) =
+                                self.smap_table.entries.iter_mut().find(|r| r.num == num)
+                            {
+                                row.sel_busy = true;
+                                row.sel_owner = Some(filp_idx);
+                            }
+                        }
+                        let _ = held_ops;
+                        Ok(SO::empty())
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+        }
+    }
+
+    /// 槽的"有 fd 在等驱动答复吗"（`is_deferred` 的第二参：任何参与 filp
+    /// 带 `FSF_UPDATE | FSF_BUSY`）。
+    pub(crate) fn select_any_update_or_busy(&self, s: usize) -> bool {
+        let Some(se) = self.select_table.get(s) else { return false };
+        se.filps.iter().flatten().any(|e| {
+            self.filp_table
+                .get(crate::filp::FilpId(e.filp))
+                .map(|f| {
+                    crate::filp::FsfFlags::from_bits_truncate(f.select_flags as u32)
+                        .intersects(crate::filp::FsfFlags::UPDATE | crate::filp::FsfFlags::BUSY)
+                })
+                .unwrap_or(false)
+        })
+    }
+
+    /// `restart_proc`（select.c:1303-1312）：有结果且不再 deferred 就收尾。
+    fn select_restart_proc(&mut self, s: usize) {
+        let Some(se) = self.select_table.get(s) else { return };
+        let (nready, error, block) = (se.nready, se.error, se.block);
+        let deferred = self.select_any_update_or_busy(s);
+        if crate::select::should_return(nready, error != 0, block, deferred) {
+            self.select_return(s);
+        }
+    }
+
+    /// `select_cancel_all`（select.c:712-738）：逐 filp 释放选择账
+    /// （`cancel_one` 决策件），最后一任清 stale 的 dmap/smap 归属
+    /// （busy **保持**——查询还在途，回复落地时只清状态），清超时，放槽，
+    /// 清进程挂起态。
+    fn select_cancel_all(&mut self, s: usize) {
+        let filps: alloc::vec::Vec<usize> = self
+            .select_table
+            .get(s)
+            .map(|se| se.filps.iter().flatten().map(|e| e.filp).collect())
+            .unwrap_or_default();
+        for filp_idx in filps {
+            let stale = {
+                let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp_idx)) else {
+                    continue;
+                };
+                let mut sel = crate::select::FilpSel {
+                    selectors: f.selectors as u32,
+                    ops: crate::select::SelOps::from_bits_truncate(f.select_ops),
+                    flags: crate::filp::FsfFlags::from_bits_truncate(f.select_flags as u32),
+                    pipe_ops: crate::select::SelOps::from_bits_truncate(f.pipe_select_ops),
+                    dev: if f.select_dev != 0 { Some(f.select_dev) } else { None },
+                };
+                let out = crate::select::cancel_one(&mut sel);
+                f.selectors = sel.selectors as u8;
+                f.select_ops = sel.ops.bits();
+                f.select_flags = sel.flags.bits() as u8;
+                f.pipe_select_ops = sel.pipe_ops.bits();
+                f.select_dev = sel.dev.unwrap_or(0);
+                out
+            };
+            if let Some(dev) = stale {
+                let major = ((dev & 0x000fff00) >> 8) as u32;
+                if let Some(row) = self.dmap_table.get_mut(major)
+                    && row.sel_owner == Some(filp_idx)
+                {
+                    row.sel_owner = None; // leave _busy set（C select.c:763）
+                }
+                if let Some((num, _)) = crate::device_map::split_smap_dev(dev)
+                    && let Some(row) =
+                        self.smap_table.entries.iter_mut().find(|r| r.num == num)
+                    && row.sel_owner == Some(filp_idx)
+                {
+                    row.sel_owner = None;
+                }
+            }
+        }
+        let requestor = self.select_table.get(s).and_then(|se| se.requestor);
+        if let Some(se) = self.select_table.get_mut(s) {
+            se.expiry = 0;
+            se.filps.clear();
+        }
+        self.select_table.release(s);
+        // 清进程挂起态（C 由 revive 的唤醒机制承担）。
+        if let Some(slot) = requestor
+            && let Some(fp) = self.fproc_table.get_mut(slot)
+            && fp.blocked_on == crate::fproc::BlockedOn::Select
+        {
+            fp.blocked_on = crate::fproc::BlockedOn::None;
+        }
+    }
+
+    /// `select_return`（select.c:1090-1107）：取消 → 结果集拷回 →
+    /// `revive(req_endpt, r)`（模型里 = queue_reply + 清挂起态，见
+    /// [`Self::select_cancel_all`] 尾部）。
+    fn select_return(&mut self, s: usize) {
+        // CLOCK/回复路径没有可注入的 io——构造生产件（宿主下 store 不可
+        // 达时按错误收尾，簿记仍完整）。
+        let who = self
+            .select_table
+            .get(s)
+            .and_then(|se| se.requestor)
+            .and_then(|sl| self.fproc_table.get(sl))
+            .map(|fp| fp.endpoint);
+        if let Some(who) = who {
+            use crate::call_table::SyscallResult;
+            let io = crate::select::SysFdSetIo { who };
+            let r = self.select_finish(s, &io);
+            self.queue_reply(
+                who,
+                match r {
+                    Ok(v) => SyscallResult::Ok(v),
+                    Err(e) => SyscallResult::Error(e),
+                },
+            );
+        }
+    }
+
+    /// 超时布防 + 进程级挂起（C `do_select:319-335` 的 `set_timer` +
+    /// `suspend(FP_BLOCKED_ON_SELECT)`）。`Until` 计划经 `sys_setalarm`
+    /// 设**一个**内核闹钟（多 select 并存时重设为最早到期——全表近似
+    /// 见 [`Self::select_timeout_check`]）。
+    pub(crate) fn select_arm_and_suspend(
+        &mut self,
+        slot_idx: usize,
+        fp_slot: minix_types::UserSlot,
+        plan: crate::select::TimeoutPlan,
+    ) -> Result<(), i32> {
+        if let crate::select::TimeoutPlan::Until { ticks } = plan {
+            if let Some(se) = self.select_table.get_mut(slot_idx) {
+                se.expiry = ticks;
+            }
+            // 单闹钟：有并存 select 时重设为最早到期。
+            let next = (0..crate::select::MAXSELECTS)
+                .filter_map(|s| self.select_table.get(s))
+                .filter(|se| se.requestor.is_some() && se.expiry > 0)
+                .map(|se| se.expiry)
+                .min()
+                .unwrap_or(ticks);
+            let _ = minix_sys::syscall::sys_setalarm(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                next,
+                false,
+            );
+        }
+        let fp = self.fproc_table.get_mut(fp_slot).ok_or(minix_types::EINVAL)?;
+        fp.blocked_on = crate::fproc::BlockedOn::Select;
+        // 释放 worker 槽（进程级挂起；与 `suspend_on_sdev` 同模式——
+        // C 的 `suspend()` 之后 worker 作业即告终）。
+        if let Some(idx) = self.current_worker {
+            self.worker_pool.release(idx);
+            self.current_worker = None;
+        }
+        Ok(())
+    }
+
+    /// `select_return` 的可注入 io 版（do_select 的立即返回路径用它，
+    /// 拿臂的 FdSetIo 缝让宿主可测）。返回用户拿到的那只值。
+    pub(crate) fn select_finish(
+        &mut self,
+        s: usize,
+        io: &impl crate::select::FdSetIo,
+    ) -> Result<i32, i32> {
+        // 释放前取走收尾要的数据（cancel 会放掉槽）。
+        let (error, nready, vir, sets) = {
+            let Some(se) = self.select_table.get(s) else { return Ok(0) };
+            (
+                se.error,
+                se.nready,
+                (se.vir_readfds, se.vir_writefds, se.vir_errorfds),
+                (
+                    se.ready_readfds.clone(),
+                    se.ready_writefds.clone(),
+                    se.ready_errorfds.clone(),
+                ),
+            )
+        };
+        let (vir_read, vir_write, vir_err) = vir;
+        let (rd, wr, er) = sets;
+        self.select_cancel_all(s);
+        // C：error 时**不拷**结果集，直接回错误（select.c:1101-1105）。
+        // C：error 时**不拷**结果集，直接回错误（select.c:1101-1105）。
+        if error != 0 {
+            return Err(error);
+        }
+        // C `copy_fdsets(se, se->nfds, TO_PROC)`：只拷回用户预期的
+        // 字节数——三张集就是按这个字节数分配的，整集拷回。
+        if vir_read != 0
+            && let Err(e) = io.store(vir_read, &rd)
+        {
+            return Err(e);
+        }
+        if vir_write != 0
+            && let Err(e) = io.store(vir_write, &wr)
+        {
+            return Err(e);
+        }
+        if vir_err != 0
+            && let Err(e) = io.store(vir_err, &er)
+        {
+            return Err(e);
+        }
+        Ok(nready as i32)
+    }
+
+    /// `filp_status`（select.c:1283-1301）：把一个 filp 的新状态广播给
+    /// 所有选它的槽。`status < 0` 记错；否则记就绪位。
+    fn select_filp_status(&mut self, filp_idx: usize, status: i32) {
+        let mut found = alloc::vec::Vec::new();
+        for s in 0..crate::select::MAXSELECTS {
+            let Some(se) = self.select_table.get(s) else { continue };
+            if se.requestor.is_none() {
+                continue;
+            }
+            for fd in 0..se.filps.len() {
+                if se.filps[fd].map(|e| e.filp) != Some(filp_idx) {
+                    continue;
+                }
+                if status < 0 {
+                    let se = self.select_table.get_mut(s).unwrap();
+                    se.error = status;
+                } else {
+                    let ops = crate::select::SelOps::from_status(status);
+                    let se = self.select_table.get_mut(s).unwrap();
+                    let nfds = se.nfds;
+                    if fd < nfds {
+                        let want = (
+                            se.vir_readfds != 0
+                                && crate::select::bit_of(&se.readfds, fd),
+                            se.vir_writefds != 0
+                                && crate::select::bit_of(&se.writefds, fd),
+                            se.vir_errorfds != 0
+                                && crate::select::bit_of(&se.errorfds, fd),
+                        );
+                        let (a, b, c, mut n) = (&mut se.ready_readfds, &mut se.ready_writefds, &mut se.ready_errorfds, se.nready);
+                        crate::select::ops2tab_store(ops, fd, want, (a, b, c), &mut n);
+                        se.nready = n;
+                    }
+                }
+                found.push(s);
+                break;
+            }
+        }
+        for s in found {
+            self.select_restart_proc(s);
+        }
+    }
+
+    /// `select_cdev_reply1`（select.c:1004-1070）：字符驱动的一型回复。
+    /// 设备不匹配时**保持**在途标记（C 同款：等真正的回复）。
+    pub fn select_cdev_reply1(&mut self, driver_e: Endpoint, minor: u32, status: i32) {
+        let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e)
+        else {
+            return;
+        };
+        let dev = (((major as u64) << 8) & 0x000fff00) | ((minor as u64) & 0xff);
+        let Some(row) = self.dmap_table.get(major) else { return };
+        if !row.sel_busy {
+            return; // 没人等这张回复
+        }
+        let owner = row.sel_owner;
+        if let Some(filp_idx) = owner {
+            let ok = self
+                .filp_table
+                .get(crate::filp::FilpId(filp_idx))
+                .map(|f| f.select_dev == dev)
+                .unwrap_or(false);
+            if !ok {
+                return; // 驱动答非所问：保持在途
+            }
+        }
+        if let Some(row) = self.dmap_table.get_mut(major) {
+            row.sel_busy = false;
+            row.sel_owner = None;
+        }
+        if let Some(filp_idx) = owner {
+            self.select_reply1(filp_idx, status);
+        }
+        self.select_restart_filps();
+    }
+
+    /// `select_sdev_reply1`（select.c:1072-1107）：套接字驱动的一型回复。
+    pub fn select_sdev_reply1(&mut self, dev: u64, status: i32) {
+        let (num, _) = match crate::device_map::split_smap_dev(dev) {
+            Some(p) => p,
+            None => return,
+        };
+        let Some(row) = self.smap_table.entries.iter().find(|r| r.num == num) else {
+            return;
+        };
+        if !row.sel_busy {
+            return;
+        }
+        let owner = row.sel_owner;
+        if let Some(filp_idx) = owner {
+            let ok = self
+                .filp_table
+                .get(crate::filp::FilpId(filp_idx))
+                .map(|f| f.select_dev == dev)
+                .unwrap_or(false);
+            if !ok {
+                return;
+            }
+        }
+        let _ = status;
+        if let Some(row) = self.smap_table.entries.iter_mut().find(|r| r.num == num) {
+            row.sel_busy = false;
+            row.sel_owner = None;
+        }
+        if let Some(filp_idx) = owner {
+            self.select_reply1(filp_idx, status);
+        }
+        self.select_restart_filps();
+    }
+
+    /// `select_reply1`（select.c:956-999）：一型回复的 filp 记账 +
+    /// 广播（`reply1_step` 决策件）。
+    fn select_reply1(&mut self, filp_idx: usize, status: i32) {
+        let (flags, ops) = {
+            let Some(f) = self.filp_table.get(crate::filp::FilpId(filp_idx)) else {
+                return;
+            };
+            (
+                crate::filp::FsfFlags::from_bits_truncate(f.select_flags as u32),
+                crate::select::SelOps::from_bits_truncate(f.select_ops),
+            )
+        };
+        let out = crate::select::reply1_step(flags, ops, status);
+        if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp_idx)) {
+            f.select_ops = out.ops.bits();
+            f.select_flags = out.flags.bits() as u8;
+        }
+        let broadcast = if status < 0 { status } else { out.broadcast.to_status() };
+        self.select_filp_status(filp_idx, broadcast);
+    }
+
+    /// `select_cdev_reply2`（select.c:1160-1192）+ `select_reply2`
+    /// （select.c:1109-1158）：二型（就绪通知）回复，扫全部槽里盯着这个
+    /// 设备的 fd。
+    pub fn select_cdev_reply2(&mut self, driver_e: Endpoint, minor: u32, status: i32) {
+        if status == 0 {
+            return; // C：weird status
+        }
+        let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e)
+        else {
+            return;
+        };
+        let dev = (((major as u64) << 8) & 0x000fff00) | ((minor as u64) & 0xff);
+        self.select_reply2(dev, status);
+    }
+
+    /// `select_sdev_reply2`（select.c:1194-1210）。
+    pub fn select_sdev_reply2(&mut self, dev: u64, status: i32) {
+        if status == 0 {
+            return;
+        }
+        self.select_reply2(dev, status);
+    }
+
+    fn select_reply2(&mut self, dev: u64, status: i32) {
+        for s in 0..crate::select::MAXSELECTS {
+            // 拷出本槽的 fd 关联（后面要对表做可变借用，不跨写持借用）。
+            let filps = match self.select_table.get(s) {
+                Some(se) if se.requestor.is_some() => se.filps.clone(),
+                _ => continue,
+            };
+            let mut found = false;
+            for (fd, e) in filps.iter().enumerate() {
+                let Some(e) = e else { continue };
+                let dev_hit = self
+                    .filp_table
+                    .get(crate::filp::FilpId(e.filp))
+                    .map(|f| f.select_dev == dev)
+                    .unwrap_or(false);
+                if !dev_hit {
+                    continue;
+                }
+                let (flags, ops) = {
+                    let f = self.filp_table.get(crate::filp::FilpId(e.filp)).unwrap();
+                    (
+                        crate::filp::FsfFlags::from_bits_truncate(f.select_flags as u32),
+                        crate::select::SelOps::from_bits_truncate(f.select_ops),
+                    )
+                };
+                let hit = crate::select::reply2_hit(flags, ops, true, status);
+                if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(e.filp)) {
+                    f.select_ops = hit.ops.bits();
+                    f.select_flags = hit.flags.bits() as u8;
+                }
+                let se = self.select_table.get_mut(s).unwrap();
+                if let Some(err) = hit.error {
+                    se.error = err;
+                } else if !hit.ready.is_empty_real() {
+                    let nfds = se.nfds;
+                    if fd < nfds {
+                        let want = (
+                            se.vir_readfds != 0
+                                && crate::select::bit_of(&se.readfds, fd),
+                            se.vir_writefds != 0
+                                && crate::select::bit_of(&se.writefds, fd),
+                            se.vir_errorfds != 0
+                                && crate::select::bit_of(&se.errorfds, fd),
+                        );
+                        let (a, b, c, mut n) = (
+                            &mut se.ready_readfds,
+                            &mut se.ready_writefds,
+                            &mut se.ready_errorfds,
+                            se.nready,
+                        );
+                        crate::select::ops2tab_store(hit.ready, fd, want, (a, b, c), &mut n);
+                        se.nready = n;
+                    }
+                }
+                found = true;
+            }
+            if found {
+                self.select_restart_proc(s);
+            }
+        }
+        self.select_restart_filps();
+    }
+
+    /// `select_restart_filps`（select.c:1212-1260）：重启 deferred 的
+    /// 查询（INIT 拆两张卡的更新态 filp——SUSPEND 期间先答一个，回复
+    /// 落地后再问下一个）。
+    pub fn select_restart_filps(&mut self) {
+        for s in 0..crate::select::MAXSELECTS {
+            let (filps, block, requestor) = match self.select_table.get(s) {
+                Some(se) if se.requestor.is_some() => {
+                    (se.filps.clone(), se.block, se.requestor)
+                }
+                _ => continue,
+            };
+            let deferred = self.select_any_update_or_busy(s);
+            if !deferred {
+                continue;
+            }
+            for (fd, e) in filps.iter().enumerate() {
+                let Some(e) = e else { continue };
+                let (busy, update, ops, kind) = {
+                    let Some(f) = self.filp_table.get(crate::filp::FilpId(e.filp)) else {
+                        continue;
+                    };
+                    let fl = crate::filp::FsfFlags::from_bits_truncate(f.select_flags as u32);
+                    (
+                        fl.contains(crate::filp::FsfFlags::BUSY),
+                        fl.contains(crate::filp::FsfFlags::UPDATE),
+                        crate::select::SelOps::from_bits_truncate(f.select_ops),
+                        e.kind,
+                    )
+                };
+                if busy || !update {
+                    continue;
+                }
+                if !matches!(kind, crate::select::FdKind::Char | crate::select::FdKind::Sock) {
+                    // C 断言只处理字符/套接字（select.c:1237-1240）。
+                    continue;
+                }
+                let is_char = kind == crate::select::FdKind::Char;
+                match self.select_request_driver(
+                    requestor,
+                    e.filp,
+                    is_char,
+                    ops,
+                    block,
+                ) {
+                    Ok(ready) => {
+                        if !ready.is_empty_real() {
+                            let se = self.select_table.get_mut(s).unwrap();
+                            let want = (
+                                se.vir_readfds != 0
+                                    && crate::select::bit_of(&se.readfds, fd),
+                                se.vir_writefds != 0
+                                    && crate::select::bit_of(&se.writefds, fd),
+                                se.vir_errorfds != 0
+                                    && crate::select::bit_of(&se.errorfds, fd),
+                            );
+                            let (a, b, c, mut n) = (
+                                &mut se.ready_readfds,
+                                &mut se.ready_writefds,
+                                &mut se.ready_errorfds,
+                                se.nready,
+                            );
+                            crate::select::ops2tab_store(ready, fd, want, (a, b, c), &mut n);
+                            se.nready = n;
+                        }
+                    }
+                    Err(err) => {
+                        let se = self.select_table.get_mut(s).unwrap();
+                        se.error = err;
+                        self.select_restart_proc(s);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    /// `select_timeout_check`（select.c:861-880）的单闹钟近似：CLOCK 通知
+    /// 到点时取**最早到期**的槽收尾；其余槽的 expiry 同减这段时间；还
+    /// 有挂着的就重设闹钟。
+    ///
+    /// [ARCH: select 单闹钟近似] C 的每槽 `timer`（set_timer 链）在这里
+    /// 收敛成"一个内核闹钟 + 到点全表扫描"：同一到期时刻的槽一起收尾，
+    /// 数学与 timer 链一致，省掉 per-slot 内核闹钟面。三处一致标注随
+    /// 本批 doc 同步。
+    pub fn select_timeout_check(&mut self) -> bool {
+        // 找最小非零 expiry。
+        let mut min: Option<(usize, u64)> = None;
+        for s in 0..crate::select::MAXSELECTS {
+            let Some(se) = self.select_table.get(s) else { continue };
+            if se.requestor.is_none() || se.expiry == 0 {
+                continue;
+            }
+            if min.map(|(_, t)| se.expiry < t).unwrap_or(true) {
+                min = Some((s, se.expiry));
+            }
+        }
+        let Some((_, elapsed)) = min else { return false };
+        // 其余槽同减这段时间；到期的槽（expiry == elapsed）收尾。
+        let mut fired = alloc::vec::Vec::new();
+        for s in 0..crate::select::MAXSELECTS {
+            let Some(se) = self.select_table.get(s) else { continue };
+            if se.requestor.is_none() || se.expiry == 0 {
+                continue;
+            }
+            let left = se.expiry.saturating_sub(elapsed);
+            let se = self.select_table.get_mut(s).unwrap();
+            se.expiry = left;
+            if left == 0 {
+                fired.push(s);
+            }
+        }
+        for s in fired {
+            let Some(se) = self.select_table.get(s) else { continue };
+            if se.requestor.is_none() {
+                continue;
+            }
+            let se = self.select_table.get_mut(s).unwrap();
+            se.expiry = 0;
+            let deferred = self.select_any_update_or_busy(s);
+            if deferred {
+                // 定时器来得太早：转非阻塞重试（C 同款）。
+                let se = self.select_table.get_mut(s).unwrap();
+                se.block = false;
+                self.select_restart_proc(s);
+            } else {
+                self.select_return(s);
+            }
+        }
+        // 还有挂着的就重设闹钟。
+        let next = (0..crate::select::MAXSELECTS)
+            .filter_map(|s| self.select_table.get(s))
+            .filter(|se| se.requestor.is_some() && se.expiry > 0)
+            .map(|se| se.expiry)
+            .min();
+        if let Some(ticks) = next {
+            let _ = minix_sys::syscall::sys_setalarm(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                ticks,
+                false,
+            );
+        }
+        true
+    }
+
     /// 驱动回复落槽（C `sdev_reply`/`cdev_reply`/`bdev_reply` 的公共前半）：
     /// 找到**正在等这个驱动**的 worker 槽，把回复落进它的 `sendrec` 并唤醒
     /// （状态转 `Busy`，与 FS 回复同一套续接机制）。
@@ -2745,6 +3518,49 @@ impl VfsState {
     /// 找不到等它的槽就按"没有 worker 在等"忽略（`device_map::check_reply`
     /// 的 `ReplyIgnore::NoWorker` 语义）——软失败，主循环继续。
     pub fn handle_drv_reply(&mut self, msg: &Message) -> Result<usize, FsReplyError> {
+        // select 的两型回复没有 worker 在等（查询是 asynsend 一发不等），
+        // 先于 worker 槽匹配拦截（C 在 cdev_reply/sdev_reply 里各自分派
+        // SEL1/SEL2——cdev.c:494-503）。`usize::MAX` = 已由 select 层收尾。
+        // SAFETY: 一型 `mess_lchardriver_vfs_sel1 { int status@0; int32
+        // minor@4 }`；套接字两型 `mess_lsockdriver_vfs_select_reply {
+        // int32 sock_id@0; int status@4 }`（ipc.h）。
+        let raw = unsafe { &msg.m_u.raw };
+        match msg.m_type {
+            t if t == minix_chardriver::protocol::CdevReplyKind::SelectImmediate
+                as i32 =>
+            {
+                let status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                let minor = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+                self.select_cdev_reply1(msg.m_source, minor, status);
+                return Ok(usize::MAX);
+            }
+            t if t == minix_chardriver::protocol::CdevReplyKind::SelectNotify as i32 => {
+                let status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                let minor = u32::from_le_bytes(raw[4..8].try_into().unwrap());
+                self.select_cdev_reply2(msg.m_source, minor, status);
+                return Ok(usize::MAX);
+            }
+            t if t == minix_sockdriver::sdev::SdevReply::SelectReply1 as i32
+                || t == minix_sockdriver::sdev::SdevReply::SelectReply2 as i32 => {
+                // C sdev.c:1017-1028：先按来源找 smap 行（`sp`），再拼
+                // `make_smap_dev(sp->smap_num, sock_id)`——注意用行的
+                // **一基 num 字段**，`smap_by_endpt` 给的是数组位置。
+                let sock_id = u32::from_le_bytes(raw[0..4].try_into().unwrap());
+                let status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+                let sdev_dev = crate::device_map::smap_by_endpt(&self.smap_table, msg.m_source)
+                    .and_then(|pos| self.smap_table.entries.get(pos as usize))
+                    .map(|row| crate::device_map::make_smap_dev(row.num, sock_id));
+                if let Some(dev) = sdev_dev {
+                    if msg.m_type == minix_sockdriver::sdev::SdevReply::SelectReply1 as i32 {
+                        self.select_sdev_reply1(dev, status);
+                    } else {
+                        self.select_sdev_reply2(dev, status);
+                    }
+                }
+                return Ok(usize::MAX);
+            }
+            _ => {}
+        }
         let slot = (0..crate::worker::NR_WTHREADS).find(|i| {
             self.worker_pool
                 .get(*i)

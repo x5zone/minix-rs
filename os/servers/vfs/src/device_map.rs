@@ -90,6 +90,12 @@ pub struct DmapEntry {
     /// 终端。它是 `cdev_opcl` 里"要不要扫全表找控制终端"的性能开关
     /// （`cdev.c:196-201`：只有为真时才扫 `fproc[]`）。
     pub seen_tty: bool,
+    /// `dmap_sel_busy`：这个驱动有一张 **select 查询**在途（`dmap.h`）。
+    /// select 的查询是 `asynsend` 一发不等，回复落地时按这一位认领。
+    pub sel_busy: bool,
+    /// `dmap_sel_filp`：在途查询的主人 filp（`None` = 请求方已走，回复
+    /// 只清状态不再记账）。
+    pub sel_owner: Option<usize>,
 }
 
 impl DmapEntry {
@@ -101,6 +107,8 @@ impl DmapEntry {
             recovering: false,
             servicing: false,
             seen_tty: false,
+            sel_busy: false,
+            sel_owner: None,
         }
     }
 
@@ -336,6 +344,10 @@ pub struct SmapEntry {
     pub endpt: Option<Endpoint>,
     /// Driver label, NUL-padded.
     pub label: [u8; LABEL_MAX],
+    /// `smap_sel_busy`：这个套接字驱动有一张 select 查询在途（`smap.c`）。
+    pub sel_busy: bool,
+    /// `smap_sel_filp`：在途查询的主人 filp（`None` = 请求方已走）。
+    pub sel_owner: Option<usize>,
 }
 
 impl SmapEntry {
@@ -345,6 +357,8 @@ impl SmapEntry {
             num,
             endpt: None,
             label: [0; LABEL_MAX],
+            sel_busy: false,
+            sel_owner: None,
         }
     }
 }
