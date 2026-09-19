@@ -78,7 +78,7 @@
 | edge3 S17 RS 换装（枢纽） | edge3 | edge3 内部链 + edge4 E5 全族（RS 启动各服务器） | ✅ 2026-09-19（S17 主体 0e33c276c 起多批收口,edge3.md 已 ✅） |
 | edge3 S19 A-6 裁决 | edge3 | edge3 S23（IS main 替换） | ✅ 2026-09-19 1f72d8ffe（diag 缝 = sys_diagctl code1 单汇点） |
 | edge3 S27 sched 通电 | edge3 | edge3 S7/S10（PM 调度臂）+ edge4 E5(e) | ✅ 2026-09-20（通电半：接收半装 SEF 层 + 参战场景宿主断言，84 passed；真机参战半移交 E5(e)——S7/S10 解锁，PM 侧臂按 sched 消息面契约开工） |
-| edge3 S29 通用 startup 框架 | edge3 | edge3 S31（lwip/uds） | ☐ |
+| edge3 S29 通用 startup 框架 | edge3 | edge3 S30/S31/S25 余件（fs-rt 共享面：生产 FsTransport + RS_INIT 出生 + serve 装配） | ✅ 2026-09-20 卡D（minix-fs-rt；S30/S31/S25-K 可开工） |
 | edge1 K9 向量表 | edge1 | edge1 K12b（三架构用户态）、edge4 T5 | ☐ |
 | edge1 K1/K2/K3 SMP 面 | edge1 | edge4 E5(e)/E5 SMP 冒烟 | ☐ |
 

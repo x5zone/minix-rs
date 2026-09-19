@@ -103,6 +103,7 @@ members = [
     "xtask",
 
     # 文件系统服务器（占位，镜像 minix3/minix/fs）
+    "fs/fs-rt",
     "fs/mfs",
     "fs/pfs",
     "fs/procfs",
@@ -214,6 +215,7 @@ minix-regex = { path = "commands/usr-bin/regex" }
 minix-elf = { path = "libs/minix-elf" }
 minix-platform = { path = "libs/minix-platform" }
 minix-fs = { path = "libs/minix-fs" }
+minix-fs-rt = { path = "fs/fs-rt" }
 minix-arch = { path = "arch", default-features = false }
 minix-plat = { path = "plat" }
 minix-kernel = { path = "kernel", default-features = false }

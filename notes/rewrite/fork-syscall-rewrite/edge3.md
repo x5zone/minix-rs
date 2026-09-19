@@ -67,7 +67,7 @@
 
 | 编号 | 条目 | 来源 | 要点 | 前置 | 状态 |
 |---|---|---|---|---|---|
-| S29 | E-FSRUNTIME：8 个 fs server bin 启动握手 | [15-stage-fs/todo.md](15-stage-fs/todo.md) ｜ [edge_todo.md](edge_todo.md) E-FSRUNTIME | mfs 第一个接（V1-P0-1 装配产物直接可用），pfs 第二个（boot 链需要）：SEF 回调注册 + RS_INIT 握手 + 参数解析 + 信号循环，沿 E-ISBOOT/E-INWIRE 先例的通用 startup 面 | 无 | ☐ |
+| S29 | E-FSRUNTIME：8 个 fs server bin 启动握手 | [15-stage-fs/todo.md](15-stage-fs/todo.md) ｜ [edge_todo.md](edge_todo.md) E-FSRUNTIME | mfs 第一个接（V1-P0-1 装配产物直接可用），pfs 第二个（boot 链需要）：SEF 回调注册 + RS_INIT 握手 + 参数解析 + 信号循环，沿 E-ISBOOT/E-INWIRE 先例的通用 startup 面 | 无 | ✅ 2026-09-20 卡D（**minix-fs-rt 新 crate**（os/fs/fs-rt，C-21 登记）＝通用 startup 面：生产 `FsTransport`（SEF 接收循环 + `driver::classify` 分类 + 共享偏移表 decode/encode + safecopy 数据面）+ **RS_INIT 出生面**（fresh 跑回调回 `RS_INIT+result`；LU/RESTART 诚实拒 ENOSYS）+ `serve` 共享装配（两 bin 各 3 行，grep 复用证据）；mfs/pfs bin 已接通（131+12+13+13 测试）。**余项**：SIGTERM 优雅关停（signal-manager 拉取的 sys_getkenv/endksig wrapper 缺，挂 minix-sys）；块源 fail-closed（E-FSBDEV 接真盘）；pfs 时钟 FixedClock；参数解析（env）挂运行时 boot 批 |
 | S30 | V1-P2-10：ext2/isofs/sffs/vbfs/hgfs 覆盖面 + procfs/ptyfs 批 6/7 | [15-stage-fs/todo.md](15-stage-fs/todo.md) | DEFERRED 大件：先补 21~24 篇缺失章节，再随 mfs 装配模式逐 server 复用；procfs/ptyfs 消费 TreeServer 走批 6/7 | S29 | ☐ |
 | S31 | E-NETSTART：lwip/uds 双 server 真实 main | [17-stage-net/todo.md](17-stage-net/todo.md) ｜ [edge_todo.md](edge_todo.md) E-NETSTART | 跟随 S29 落地的通用 SEF/RS start 框架接入，startup.rs 8 态粗粒度沿用 | ⏸ S29（通用框架） | ☐ |
 | S32 | E-FSCMDS：fsck/mkfs 命令认领 | [15-stage-fs/todo.md](15-stage-fs/todo.md) ｜ [edge_todo.md](edge_todo.md) E-FSCMDS | 等盘上结构层稳定（V1-P2-10 排期）后由命令轨道认领，复用 minix-fs-mfs/ext2 解析写入函数。真机制作根镜像（装机面）依赖此条 | ⏸ S30 | ☐ |
