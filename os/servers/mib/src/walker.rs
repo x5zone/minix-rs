@@ -879,6 +879,9 @@ fn func_exec<K: MibKernel, S: MibServices>(
         FuncKey::Kern(KernFunc::ProcArgs) => {
             crate::proc::proc_args_exec::proc_args_exec(ctx, args, req.oldp.as_ref())
         }
+        FuncKey::ProcDoor(door) => {
+            crate::proc::minix_proc_exec::proc_door_exec(ctx, args, door, req.oldp.as_ref())
+        }
         FuncKey::Kern(KernFunc::Ccpu)
         | FuncKey::Kern(KernFunc::CpTime)
         | FuncKey::Kern(KernFunc::Consdev)
@@ -891,7 +894,6 @@ fn func_exec<K: MibKernel, S: MibServices>(
             let _ = ctx.svc.vm_info(0, &mut []); // touch the transport honestly
             SysctlOutcome::err(EIO)
         }
-        FuncKey::ProcDoor(_) => SysctlOutcome::err(EIO), // P1-5 tables
     }
 }
 

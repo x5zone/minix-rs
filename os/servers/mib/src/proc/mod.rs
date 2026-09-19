@@ -9,6 +9,7 @@
 pub mod lwp;
 pub mod lwp_exec;
 pub mod minix_proc;
+pub mod minix_proc_exec;
 pub mod proc2;
 pub mod proc2_exec;
 pub mod proc_args;

@@ -203,7 +203,7 @@ pub fn proc_args_exec<K: MibKernel, S: MibServices>(
             // Split at the terminator; without one, the whole fragment is
             // string and it continues on the next page (proc.c:1114-1121).
             let nul_at = frag.iter().position(|b| *b == 0).map(|p| p as u64);
-            let (mut bytes, mut ended) = fragment_split(frag.len() as u64, nul_at);
+            let (mut bytes, ended) = fragment_split(frag.len() as u64, nul_at);
 
             // Cap to the caller's length (proc.c:1124-1125).
             bytes = cap_fragment(off, olen as u64, bytes, oldlen);
