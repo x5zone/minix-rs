@@ -505,6 +505,32 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_UTIME` 请求（C `req_utime` — request.c:1180-1199）。
+///
+/// 载荷 `{inode, actime, modtime, acnsec, modnsec}`：秒与纳秒分开带，
+/// `acnsec`/`modnsec` 可能是 `UTIME_OMIT`（"这一项不动"）。回复只有状态。
+pub fn encode_utime(ino: u64, actime: i64, modtime: i64, acnsec: u32, modnsec: u32) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_UTIME,
+        ..Message::default()
+    };
+    // SAFETY: REQ_UTIME 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::utime_req_off::INODE..minix_types::utime_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::utime_req_off::ACTIME..minix_types::utime_req_off::ACTIME + 8]
+            .copy_from_slice(&actime.to_le_bytes());
+        raw[minix_types::utime_req_off::MODTIME..minix_types::utime_req_off::MODTIME + 8]
+            .copy_from_slice(&modtime.to_le_bytes());
+        raw[minix_types::utime_req_off::ACNSEC..minix_types::utime_req_off::ACNSEC + 4]
+            .copy_from_slice(&acnsec.to_le_bytes());
+        raw[minix_types::utime_req_off::MODNSEC..minix_types::utime_req_off::MODNSEC + 4]
+            .copy_from_slice(&modnsec.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_MKNOD` 请求（C `req_mknod` — request.c:567-601）。
 ///
 /// 载荷七域：`device`（字符/块设备号）、父目录 `inode`、已收窄的 `mode`、
@@ -1553,6 +1579,38 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_utime` 的五个域落位（inode/actime/modtime/acnsec/modnsec）——
+    /// 秒与纳秒分开带，纳秒可能是 `UTIME_OMIT` 哨兵。
+    #[test]
+    fn test_encode_utime_fields() {
+        let m = encode_utime(0x66, 1700000000, 1700000001, 123, 456);
+        assert_eq!(m.m_type, minix_types::REQ_UTIME);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::utime_req_off::INODE..minix_types::utime_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x66);
+        b8.copy_from_slice(
+            &raw[minix_types::utime_req_off::ACTIME..minix_types::utime_req_off::ACTIME + 8],
+        );
+        assert_eq!(i64::from_le_bytes(b8), 1700000000);
+        b8.copy_from_slice(
+            &raw[minix_types::utime_req_off::MODTIME..minix_types::utime_req_off::MODTIME + 8],
+        );
+        assert_eq!(i64::from_le_bytes(b8), 1700000001);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::utime_req_off::ACNSEC..minix_types::utime_req_off::ACNSEC + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 123);
+        b4.copy_from_slice(
+            &raw[minix_types::utime_req_off::MODNSEC..minix_types::utime_req_off::MODNSEC + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 456);
+    }
+
     /// `encode_mknod` 的七个域落位（device@0、inode@8、mode@16、uid@20、
     /// gid@24、grant@28、path_len@32）。
     #[test]

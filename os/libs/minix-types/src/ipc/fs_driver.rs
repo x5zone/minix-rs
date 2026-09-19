@@ -340,6 +340,25 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_UTIME` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_utime { ino_t inode; time_t actime; time_t modtime;
+/// uint32_t acnsec; uint32_t modnsec; }`（ipc.h:2186-2195，
+/// `request.c:1180-1199` 的 `req_utime`）。`acnsec`/`modnsec` 可能是
+/// `UTIME_OMIT`（"这一项不动"），VFS 已把它原样带下来。
+pub mod utime_req_off {
+    /// `ino_t inode`。
+    pub const INODE: usize = 0;
+    /// `time_t actime`。
+    pub const ACTIME: usize = 8;
+    /// `time_t modtime`。
+    pub const MODTIME: usize = 16;
+    /// `uint32_t acnsec`。
+    pub const ACNSEC: usize = 24;
+    /// `uint32_t modnsec`。
+    pub const MODNSEC: usize = 28;
+}
+
 /// `REQ_MKNOD` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_mknod { dev_t device; ino_t inode; mode_t mode; uid_t uid;
@@ -613,6 +632,12 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // utime：请求五域（inode/actime/modtime/acnsec/modnsec）。
+        assert_eq!(utime_req_off::INODE, 0);
+        assert_eq!(utime_req_off::ACTIME, 8);
+        assert_eq!(utime_req_off::MODTIME, 16);
+        assert_eq!(utime_req_off::ACNSEC, 24);
+        assert_eq!(utime_req_off::MODNSEC, 28);
         // mknod：请求七域（device/inode/mode/uid/gid/grant/path_len）。
         assert_eq!(mknod_req_off::DEVICE, 0);
         assert_eq!(mknod_req_off::INODE, 8);

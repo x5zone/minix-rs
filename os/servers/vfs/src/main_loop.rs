@@ -1254,6 +1254,152 @@ impl VfsState {
         Ok(true)
     }
 
+    /// `do_utimens` 的**共用体**（C time.c:44-160 的 path 与 fd 两半只差
+    /// vnode 的来源）：属主/超级用户门（EPERM，**但两个纳秒都是 `UTIME_NOW`
+    /// 时退化为写权限检查**）→ 只读门（EROFS）→ 纳秒折算（`UTIME_NOW` 取
+    /// 当前时间、`UTIME_OMIT` 原样带下、其余校验 < 1e9 否则 EINVAL）→
+    /// `REQ_UTIME`。
+    ///
+    /// 时钟：C 的 `clock_time` 读 kerninfo 页（不会失败），Rust 侧同源数据走
+    /// 内核调用（`clock_time_via`）——宿主构建下取不到，这里**诚实上浮
+    /// EIO**，不用 0 当"现在"（写进文件系统的是 1970 时间戳，比报错更难查）。
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_utimens(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+        ino: u64,
+        node_uid: u32,
+        node_gid: u32,
+        node_mode: u32,
+        atime: (i64, i64),
+        mtime: (i64, i64),
+    ) {
+        let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+            match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                Some(fp) => (
+                    fp.real_uid,
+                    fp.real_gid,
+                    fp.eff_uid,
+                    fp.eff_gid,
+                    fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                ),
+                None => {
+                    self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                    return;
+                }
+            };
+        let readonly_fs = self
+            .vmnt_table
+            .find_by_fs(fs_e)
+            .and_then(|v| self.vmnt_table.get(v))
+            .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+            .unwrap_or(false);
+        // C `time.c:123-130` 的三条（顺序即优先级：属主门 → 写权限退化门 →
+        // 只读门覆盖一切）。
+        let mut verdict: Result<(), i32> =
+            if node_uid == eff_uid || eff_uid == crate::link::SU_UID {
+                Ok(())
+            } else {
+                Err(minix_types::EPERM)
+            };
+        if verdict.is_err()
+            && atime.1 == crate::open::UTIME_NOW
+            && mtime.1 == crate::open::UTIME_NOW
+        {
+            // 两个都是"现在"＝touch：退化成写权限检查（C `time.c:126-128`
+            // 的 `forbidden(fp, vp, W_BIT)`——用的是节点的真实模式与属组，
+            // 不是"只判权限位"）。
+            let forbid = crate::protect::forbidden_decision(&crate::protect::ForbidInput {
+                real_uid,
+                real_gid,
+                eff_uid,
+                eff_gid,
+                is_access_call: false,
+                file_uid: node_uid,
+                file_gid: node_gid,
+                mode: node_mode,
+                access: crate::open::W_BIT as u8,
+                is_dir: node_mode & crate::open::S_IFMT == crate::open::S_IFDIR,
+                supp: &supp,
+                readonly_fs: false,
+            });
+            verdict = forbid.map_err(|e| e.to_errno());
+        }
+        if readonly_fs {
+            verdict = Err(minix_types::EROFS);
+        }
+        if let Err(e) = verdict {
+            self.finish_worker_job(idx, fp_slot, e);
+            return;
+        }
+        // C `time.c:135-158`：需要"现在"时取一次时钟（只在有 NOW 时取）。
+        let needs_now = |nsec: i64| nsec == crate::open::UTIME_NOW;
+        let now = if needs_now(atime.1) || needs_now(mtime.1) {
+            match minix_sys::syscall::clock_time_via(&minix_sys::syscall::DirectKernelCallTransport)
+            {
+                Ok(sec) => sec as i64,
+                Err(_) => {
+                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                    return;
+                }
+            }
+        } else {
+            0
+        };
+        let resolve_one = |sec: i64, nsec: i64, now: i64| -> Result<(i64, i64), i32> {
+            match nsec {
+                n if n == crate::open::UTIME_NOW => Ok((now, 0)),
+                n if n == crate::open::UTIME_OMIT => Ok((now, n)),
+                n if (n as u64) < 1_000_000_000 => Ok((sec, n)),
+                _ => Err(minix_types::EINVAL),
+            }
+        };
+        let (actime, acnsec) = match resolve_one(atime.0, atime.1, now) {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.finish_worker_job(idx, fp_slot, e);
+                return;
+            }
+        };
+        let (modtime, modnsec) = match resolve_one(mtime.0, mtime.1, now) {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.finish_worker_job(idx, fp_slot, e);
+                return;
+            }
+        };
+        let vmnt = match self.vmnt_table.find_by_fs(fs_e) {
+            Some(v) => v.0,
+            None => {
+                self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                return;
+            }
+        };
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Status);
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt,
+            fs_e,
+            worker: idx,
+            grant: 0, // 无数据面
+            user,
+            req: crate::request::encode_utime(
+                ino,
+                actime,
+                modtime,
+                acnsec as u32,
+                modnsec as u32,
+            ),
+        });
+    }
+
     /// `do_chmod` 的**共用体**（C protect.c:62-133 的 path 与 fd 两半只差
     /// vnode 的来源）：属主/超级用户门（EPERM）→ 只读门（EROFS）→ setgid
     /// 清位（`protect::strip_setgid`）→ `REQ_CHMOD`；回复带**整字模式**，
@@ -1781,6 +1927,25 @@ impl VfsState {
                                 ) {
                                     self.finish_worker_job(idx, fp_slot, e);
                                 }
+                                continue;
+                            }
+                            crate::worker::PathFollow::Utimens { atime, mtime, flags } => {
+                                // C `do_utimens` 的路径半（time.c:74-96）：未知
+                                // 标志在入口就拒（这里再核一次，防 follow 被
+                                // 别处构造）；`AT_SYMLINK_NOFOLLOW` 的遍历语义
+                                // 已在入口用于选 flags。
+                                let _ = flags;
+                                self.finish_utimens(
+                                    idx,
+                                    fp_slot,
+                                    node.fs_e,
+                                    node.ino,
+                                    node.uid,
+                                    node.gid,
+                                    node.mode,
+                                    atime,
+                                    mtime,
+                                );
                                 continue;
                             }
                             crate::worker::PathFollow::Mknod { entry, mode_bits, dev } => {

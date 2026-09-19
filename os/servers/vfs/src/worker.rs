@@ -196,6 +196,18 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `utimens(path, times, flags)`：走完过门后发 `REQ_UTIME`；时间里的
+    /// `UTIME_NOW`/`UTIME_OMIT` 哨兵在走完之后才折算（要先知道节点的属主）。
+    /// C `do_utimens`（time.c:44-160）。
+    Utimens {
+        /// 用户给的 atime（秒, 纳秒）。
+        atime: (i64, i64),
+        /// 用户给的 mtime（秒, 纳秒）。
+        mtime: (i64, i64),
+        /// `AT_SYMLINK_NOFOLLOW` 等标志（遍历标志在入口就用了，这里只做
+        /// "未知标志即 EINVAL"的判定）。
+        flags: u32,
+    },
     /// `mknod(path, mode, dev)`：走完**父目录**（`last_dir`）过门后发
     /// `REQ_MKNOD`。C `do_mknod`（open.c:514-556）。
     Mknod {

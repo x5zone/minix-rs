@@ -238,7 +238,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Getpeername
         | VfsCallNum::Shutdown
         | VfsCallNum::Svrctl
-        | VfsCallNum::Utimens
         | VfsCallNum::Vmcall
         | VfsCallNum::Mapdriver
         | VfsCallNum::Copyfd
@@ -1200,6 +1199,147 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         }
 
         // ── 路径臂模板：mknod（父目录遍历 + 名字 direct grant）──
+        // ── 路径臂模板：utimens（path/fd 两半共用一个体）──
+        VfsCallNum::Utimens => {
+            // C `do_utimens`（time.c:44-160）：载荷 `mess_vfs_utimens`
+            // （atime@0、mtime@8、ansec@16、mnsec@24、len@32、name@40、
+            // fd@48、flags@52）。`name != NULL` 走路径半（此时 flags 只允许
+            // `AT_SYMLINK_NOFOLLOW`），否则走 fd 半（flags 必须为 0）。
+            let (atime, mtime, ansec, mnsec, name_len, name_addr, fd, flags) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let atime = i64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let mtime = i64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let ansec = i64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                let mnsec = i64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[32..40]);
+                let name_len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[40..48]);
+                let name_addr = u64::from_le_bytes(b8);
+                let fd = i32::from_le_bytes([raw[48], raw[49], raw[50], raw[51]]);
+                let flags = u32::from_le_bytes([raw[52], raw[53], raw[54], raw[55]]);
+                (atime, mtime, ansec, mnsec, name_len, name_addr, fd, flags)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if name_addr == 0 {
+                // fd 半（C time.c:98-108）：flags 必须为 0。
+                if flags != 0 {
+                    return SyscallResult::Error(minix_types::EINVAL);
+                }
+                if fd < 0 {
+                    return SyscallResult::Error(minix_types::EBADF);
+                }
+                let vnode_idx = {
+                    let fp = match state.fproc_table.get(fp_slot) {
+                        Some(fp) => fp,
+                        None => return SyscallResult::Error(minix_types::EINVAL),
+                    };
+                    let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                        Some(idx) => idx,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                    match state
+                        .filp_table
+                        .get(crate::filp::FilpId(filp_idx))
+                        .and_then(|f| f.vnode)
+                    {
+                        Some(v) => v,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    }
+                };
+                let (fs_e, ino, node_uid, node_gid, node_mode) =
+                    match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                        Some(v) => (v.fs, v.ino, v.uid, v.gid, v.mode),
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                state.finish_utimens(
+                    worker,
+                    Some(fp_slot),
+                    fs_e,
+                    ino,
+                    node_uid,
+                    node_gid,
+                    node_mode,
+                    (atime, ansec),
+                    (mtime, mnsec),
+                );
+                return SyscallResult::Suspend;
+            }
+            // 路径半（C time.c:76-96）：未知标志即 EINVAL；`AT_SYMLINK_NOFOLLOW`
+            // 选遍历标志（不跟进末组件符号链接）。
+            if flags & !crate::open::AT_SYMLINK_NOFOLLOW != 0 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            let path = match fetcher.fetch(name_addr, name_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let lookup_flags = if flags & crate::open::AT_SYMLINK_NOFOLLOW != 0 {
+                crate::path::LookupFlags::RET_SYMLINK
+            } else {
+                crate::path::LookupFlags::NOFLAGS
+            };
+            let resolve = match crate::path::Lookup::new(path, lookup_flags) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Utimens {
+                        atime: (atime, ansec),
+                        mtime: (mtime, mnsec),
+                        flags,
+                    },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Mknod => {
             // C `do_mknod`（open.c:514-556）：载荷 `mess_lc_vfs_mknod`
             // （device@0、name@8、len@16、mode@24）→ 只有超级用户能建非 FIFO
@@ -2695,6 +2835,174 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Utimens` 臂的门与时间折算（C `do_utimens` time.c:44-160）：
+    /// fd 半要求 flags 为 0、路径半只认 `AT_SYMLINK_NOFOLLOW`；属主门
+    /// （EPERM）在两个纳秒都是 `UTIME_NOW` 时**退化成写权限检查**；
+    /// 纳秒 >= 1e9 即 EINVAL（`UTIME_NOW`/`UTIME_OMIT` 哨兵除外）。
+    #[test]
+    fn test_dispatch_utimens_gates_and_nsec_validation() {
+        use minix_types::Endpoint;
+
+        let utimens_msg = |fd: i32, name: u64, flags: u32, ansec: i64, mnsec: i64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Utimens as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_vfs_utimens：atime@0、mtime@8、ansec@16、mnsec@24、
+            // len@32、name@40、fd@48、flags@52。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&1000i64.to_le_bytes());
+                raw[8..16].copy_from_slice(&2000i64.to_le_bytes());
+                raw[16..24].copy_from_slice(&ansec.to_le_bytes());
+                raw[24..32].copy_from_slice(&mnsec.to_le_bytes());
+                raw[40..48].copy_from_slice(&name.to_le_bytes());
+                raw[48..52].copy_from_slice(&fd.to_le_bytes());
+                raw[52..56].copy_from_slice(&flags.to_le_bytes());
+            }
+            m
+        };
+        // 现场：fd 3 → filp → vnode（属主 1000）。
+        let setup = |eff_uid: u32, umask: u32| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let fid = state.filp_table.alloc_filp(crate::open::W_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x99;
+                v.mode = crate::open::S_IFREG | 0o644;
+                v.uid = 1000;
+                v.gid = 100;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            {
+                let fp = state
+                    .fproc_table
+                    .get_mut(minix_types::UserSlot::new(0))
+                    .unwrap();
+                fp.eff_uid = eff_uid;
+                fp.eff_gid = 100;
+                fp.umask = umask;
+            }
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx)
+        };
+
+        // ① fd 半 + flags 非 0 → EINVAL（C time.c:103-104）。
+        let (mut state, _idx) = setup(1000, 0);
+        state.current_message = utimens_msg(3, 0, 1, 0, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Utimens),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // ② 属主 + 显式时间 → REQ_UTIME（秒/纳秒分开带）。
+        let (mut state, idx) = setup(1000, 0);
+        state.current_message = utimens_msg(3, 0, 0, 111, 222);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Utimens),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_UTIME");
+        assert_eq!(p.req.m_type, minix_types::REQ_UTIME);
+        // SAFETY(test): 按 utime_req_off 读回五域。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let actime = i64::from_le_bytes(raw[8..16].try_into().unwrap());
+            let modtime = i64::from_le_bytes(raw[16..24].try_into().unwrap());
+            let acnsec = u32::from_le_bytes(raw[24..28].try_into().unwrap());
+            let modnsec = u32::from_le_bytes(raw[28..32].try_into().unwrap());
+            assert_eq!((ino, actime, modtime), (0x99, 1000, 2000));
+            assert_eq!((acnsec, modnsec), (111, 222));
+        }
+        // 回复只有状态。
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), 0))
+        );
+
+        // ③ 非属主 + 两个显式时间 → EPERM（只有属主或超级用户能改时间）。
+        let (mut state, _idx) = setup(2000, 0);
+        state.current_message = utimens_msg(3, 0, 0, 111, 222);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Utimens),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), minix_types::EPERM))
+        );
+
+        // ④ 纳秒越界（>= 1e9 且不是哨兵）→ EINVAL。
+        let (mut state, _idx) = setup(1000, 0);
+        state.current_message = utimens_msg(3, 0, 0, 1_000_000_000, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Utimens),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), minix_types::EINVAL))
+        );
+
+        // ⑤ 非属主 + 两个 UTIME_NOW（touch）→ 退化成写权限检查：0644 的
+        // other 无写位 → EACCES（不是 EPERM）。
+        let (mut state, _idx) = setup(2000, 0);
+        state.current_message = utimens_msg(
+            3,
+            0,
+            0,
+            crate::open::UTIME_NOW,
+            crate::open::UTIME_NOW,
+        );
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Utimens),
+            SyscallResult::Suspend
+        );
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), minix_types::EACCES)),
+            "touch 的门是写权限，不是属主"
+        );
+
+        // ⑥ 路径半 + 未知标志 → EINVAL（C time.c:78-79）。
+        let (mut state, _idx) = setup(1000, 0);
+        state.current_message = utimens_msg(3, 0x5000, 0x4, 0, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Utimens),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
     }
 
     /// `Mknod` 臂的门与模式收窄（C `do_mknod` open.c:514-556）：

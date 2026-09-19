@@ -44,6 +44,15 @@ pub const S_ISVTX: Mode = 0o1000;
 /// See [`S_IFMT`].
 pub const S_IFSOCK: Mode = 0o140000;
 
+/// `UTIME_NOW` (`sys/stat.h:235` = `(1 << 30) - 1`)——`utimens` 的"用当前
+/// 时间"哨兵值（放在 `tv_nsec` 里）。
+pub const UTIME_NOW: i64 = (1 << 30) - 1;
+/// `UTIME_OMIT` (`sys/stat.h:236` = `(1 << 30) - 2`)——"这一项不动"。
+pub const UTIME_OMIT: i64 = (1 << 30) - 2;
+/// `AT_SYMLINK_NOFOLLOW` (`sys/fcntl.h:299`)——`utimensat` 不跟进末组件
+/// 符号链接（对应遍历的 `PATH_RET_SYMLINK`）。
+pub const AT_SYMLINK_NOFOLLOW: u32 = 0x200;
+
 /// `O_ACCMODE` mask (`minix3/sys/sys/fcntl.h:67`): bottom two bits.
 pub const O_ACCMODE: u32 = 0x00000003;
 /// `O_RDONLY` (`fcntl.h:64`): zero, i.e. absence of write intent.
