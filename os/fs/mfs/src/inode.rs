@@ -767,14 +767,14 @@ impl InodeIo {
 mod tests {
     use super::*;
     use minix_fs::bio::RamDisk;
-    use minix_fs::cache::NoSecondLevel;
+    use crate::second_level::MfsSecondLevel;
 
     const DEVICE: u64 = 0x301;
 
-    fn test_cache() -> BlockCache<RamDisk> {
+    fn test_cache() -> BlockCache<RamDisk, MfsSecondLevel> {
         // Sixty-four inode blocks starting at block four need sixty-eight
         // blocks total; one hundred twenty-eight leaves headroom.
-        BlockCache::with_pool(RamDisk::new(128, 512).unwrap(), NoSecondLevel, 8).unwrap()
+        BlockCache::with_pool(RamDisk::new(128, 512).unwrap(), MfsSecondLevel::off(), 8).unwrap()
     }
 
     fn test_params() -> InodeIo {
@@ -787,7 +787,7 @@ mod tests {
     }
 
     fn write_disk_inode(
-        cache: &mut BlockCache<RamDisk>,
+        cache: &mut BlockCache<RamDisk, MfsSecondLevel>,
         params: &InodeIo,
         number: u64,
         record: &DiskInode,

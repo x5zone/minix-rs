@@ -20,6 +20,9 @@
 //! - [`dentry`] — directory entry listing encoder (document 03).
 //! - [`lookup`] — path resolution walk (document 03).
 //! - [`cache`] — hashed least-recently-used block cache (document 04).
+//! - [`vm_cache`] — the virtual-memory second level behind the block pool:
+//!   flags word, block tags, page-backed memory, the four wire calls
+//!   (document 04, section on the second level).
 //! - [`bio`] — raw block transfer, prefetch, driver binding, ramdisk
 //!   (document 05).
 //! - [`memfs`] — in-memory file server proving the trait (documents 01-03).
@@ -46,3 +49,4 @@ pub mod lookup;
 pub mod memfs;
 pub mod protocol;
 pub mod task;
+pub mod vm_cache;

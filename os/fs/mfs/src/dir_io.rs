@@ -24,11 +24,12 @@ use alloc::vec::Vec;
 
 use minix_types::{EIO, EINVAL, Errno};
 
-use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, NoSecondLevel};
+use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource};
 
 use crate::inode::TOTAL_ZONES;
 use crate::mfs_cache::{alloc_zone, mfs_get_block, ZoneSpace};
 use crate::read::{map_file_block, MapParams, ZoneRange};
+use crate::second_level::MfsSecondLevel;
 use crate::write::write_map;
 
 /// Load a directory's content from the cache into ordered block images.
@@ -39,7 +40,7 @@ use crate::write::write_map;
 /// The images are plain copies: the cache slots are released before the
 /// walk sees them, so a long directory cannot pin the whole pool.
 pub fn load_dir_blocks<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     zones: &[u64; TOTAL_ZONES],
     params: MapParams,
@@ -95,7 +96,7 @@ pub fn load_dir_blocks<S: BlockSource>(
 /// around `search_dir`.
 #[allow(clippy::too_many_arguments)]
 pub fn store_dir_blocks<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     zones: &mut [u64; TOTAL_ZONES],
     params: MapParams,
@@ -194,8 +195,8 @@ mod tests {
         slot.to_bytes()
     }
 
-    fn cache_over(disk: RamDisk) -> BlockCache<RamDisk, NoSecondLevel> {
-        BlockCache::with_pool(disk, NoSecondLevel, 8).unwrap()
+    fn cache_over(disk: RamDisk) -> BlockCache<RamDisk, MfsSecondLevel> {
+        BlockCache::with_pool(disk, MfsSecondLevel::off(), 8).unwrap()
     }
 
     fn space() -> ZoneSpace {

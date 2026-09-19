@@ -17,11 +17,12 @@
 
 use minix_types::{EBUSY, EINVAL, EIO, ENOTDIR, Errno};
 
-use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, NoSecondLevel};
+use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource};
 use minix_fs::protocol::{FileNode, MountFlags};
 
 use crate::inode::{InodeError, InodeTable, ReleaseOutcome, TYPE_BLOCK, TYPE_CHARACTER};
 use crate::mfs_cache::ZoneSpace;
+use crate::second_level::MfsSecondLevel;
 use crate::superblock::{
     Bitmap, DiskSuperblock, FLAG_CLEAN, ROOT_INODE_NUMBER, START_BLOCK, SUPER_BLOCK_OFFSET,
     SuperError, Superblock, parse_superblock,
@@ -88,7 +89,7 @@ impl From<InodeError> for MountError {
 pub struct MountedFs<S: BlockSource> {
     device: u64,
     superblock: Superblock,
-    cache: BlockCache<S, NoSecondLevel>,
+    cache: BlockCache<S, MfsSecondLevel>,
     inodes: InodeTable,
     /// Live allocation-policy state (search hints move as zones allocate).
     space: ZoneSpace,
@@ -123,12 +124,12 @@ impl<S: BlockSource> MountedFs<S> {
     }
 
     /// Shared cache access.
-    pub const fn cache(&self) -> &BlockCache<S, NoSecondLevel> {
+    pub const fn cache(&self) -> &BlockCache<S, MfsSecondLevel> {
         &self.cache
     }
 
     /// Exclusive cache access (write-back, invalidation, tests).
-    pub fn cache_mut(&mut self) -> &mut BlockCache<S, NoSecondLevel> {
+    pub fn cache_mut(&mut self) -> &mut BlockCache<S, MfsSecondLevel> {
         &mut self.cache
     }
 
@@ -253,7 +254,7 @@ impl<S: BlockSource> MountedFs<S> {
     /// marked dirty. The flush carries it to disk, the same point where the
     /// C code's dirty bitmap blocks land.
     fn store_map(
-        cache: &mut BlockCache<S, NoSecondLevel>,
+        cache: &mut BlockCache<S, MfsSecondLevel>,
         map: &Bitmap,
         device: u64,
         block: u64,
@@ -302,7 +303,7 @@ impl<S: BlockSource> MountedFs<S> {
 
     /// Read one map block into the map slice `[base, base + block bits)`.
     fn load_map(
-        cache: &mut BlockCache<S, NoSecondLevel>,
+        cache: &mut BlockCache<S, MfsSecondLevel>,
         map: &mut Bitmap,
         device: u64,
         block: u64,
@@ -339,8 +340,26 @@ pub fn mount<S: BlockSource>(
     flags: MountFlags,
     pool_buffers: usize,
 ) -> Result<(MountedFs<S>, FileNode), MountError> {
-    let mut cache =
-        BlockCache::with_pool(source, NoSecondLevel, pool_buffers).map_err(MountError::from)?;
+    mount_with_second_level(source, device, flags, pool_buffers, MfsSecondLevel::off())
+}
+
+/// Mount with an explicit second level (C: the pool's `vmcache`
+/// configuration, settled before the first block is fetched,
+/// `cache.c:1236-1239`).
+///
+/// The level lives in the mounted file system for as long as the mount does:
+/// the cache consults it on every acquire and release, and unmount's
+/// device-invalidate is what clears the device in the page cache
+/// (`fsdriver_unmount`, `minix3/minix/lib/libfsdriver/call.c:83-84`).
+pub fn mount_with_second_level<S: BlockSource>(
+    source: S,
+    device: u64,
+    flags: MountFlags,
+    pool_buffers: usize,
+    second_level: MfsSecondLevel,
+) -> Result<(MountedFs<S>, FileNode), MountError> {
+    let mut cache = BlockCache::with_pool(source, second_level, pool_buffers)
+        .map_err(MountError::from)?;
     let requested_read_only = flags.is_read_only();
 
     // Fetch block zero and parse at the superblock offset (`rw_super` read
@@ -433,7 +452,7 @@ pub fn mount<S: BlockSource>(
 /// image; out-of-range tail bits read set by construction.
 pub fn count_free_bits<S: BlockSource>(
     superblock: &Superblock,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     map: u32,
 ) -> Result<u64, MountError> {
     let zone_map = match map {
@@ -482,7 +501,7 @@ pub fn count_free_bits<S: BlockSource>(
 /// offset, marks dirty, and flushes — the write half of `rw_super` plus the
 /// `write_super` guard, with the read-only refusal as an error.
 pub fn store_superblock<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     superblock: &Superblock,
 ) -> Result<(), MountError> {
@@ -574,7 +593,7 @@ pub fn unmount<S: BlockSource>(
 /// path.
 pub fn check_mountpoint<S: BlockSource>(
     inodes: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     io: &crate::inode::InodeIo,
     device: u64,
     number: u64,
@@ -615,7 +634,7 @@ pub fn zone_space(superblock: &Superblock) -> ZoneSpace {
 mod tests {
     use super::*;
     use minix_fs::bio::RamDisk;
-    use minix_fs::cache::MIN_POOL_SIZE;
+    use minix_fs::cache::{MIN_POOL_SIZE, SecondLevelCache};
 
     use crate::inode::{DiskInode, InodeIo};
     use crate::superblock::{Bitmap, MAGIC_V3};
@@ -733,6 +752,71 @@ mod tests {
         } else {
             MountFlags::EMPTY
         }
+    }
+
+    #[test]
+    fn test_page_cache_mount_hands_blocks_over_and_clears_on_unmount() {
+        // A 4096-byte file system: blocks fill whole pages, so the second
+        // level is in play (C's `vmcache` is on exactly for such a size,
+        // `cache.c:1236-1239`).
+        let image = build_image();
+        let (wire, log) = crate::second_level::double::MemoryVm::new();
+        let level = crate::second_level::MfsSecondLevel::vm(alloc::boxed::Box::new(wire));
+        let (mut mounted, _node) =
+            mount_with_second_level(image.disk, DEVICE, flags(false), MIN_POOL_SIZE, level).unwrap();
+        assert!(mounted.cache().second_level().is_enabled());
+        // The mount's block traffic went through the pool, and every released
+        // block was offered to the page cache at its byte offset
+        // (`vm_set_cacheblock`, cache.c:562-587).
+        assert!(
+            log.saw(crate::second_level::double::Call::Set {
+                dev: DEVICE,
+                dev_offset: 0,
+                tag: None,
+                once: false,
+            }),
+            "the superblock's page reached the page cache"
+        );
+        assert!(
+            log.saw(crate::second_level::double::Call::Map { dev: DEVICE, dev_offset: 0 }),
+            "the pool asked the page cache before reading storage"
+        );
+        // A file read tags its blocks with the inode and the block's file
+        // offset: the root directory's first block is inode one, offset zero
+        // (`lmfs_get_block_ino(..., rip->i_num, position)`, read.c:180).
+        {
+            let parts = mounted.parts();
+            let params = crate::read::FileParams {
+                map: parts.map,
+                range: parts.range,
+                block_size: parts.block_size,
+                read_only: parts.read_only,
+            };
+            let mut sink = |_bytes: &[u8]| {};
+            crate::read::read_file(
+                parts.inodes, parts.cache, DEVICE, 1, 0, 32, params, &mut sink,
+            )
+            .unwrap();
+        }
+        assert!(
+            log.calls().iter().any(|call| matches!(
+                call,
+                crate::second_level::double::Call::Set {
+                    dev: DEVICE,
+                    tag: Some(tag),
+                    ..
+                } if tag.inode == 1 && tag.inode_offset == 0
+            )),
+            "the directory's block reached the page cache tagged with its inode"
+        );
+        let (_report, _source) = unmount(mounted, &mut |_| {}).unwrap();
+        // Unmount clears the device in the page cache — the C server does
+        // this from its unmount handler (`libfsdriver/call.c:83-84`) and the
+        // library does it unconditionally on invalidate (`cache.c:803-807`).
+        assert!(
+            log.saw(crate::second_level::double::Call::Clear { dev: DEVICE }),
+            "unmount cleared the device in the page cache"
+        );
     }
 
     #[test]

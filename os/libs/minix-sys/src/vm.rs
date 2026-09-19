@@ -94,6 +94,21 @@ pub const MAP_PROTECTION_EXECUTE: u32 = 0x04;
 /// `mmap.c:36-38`).
 pub const MAP_FLAG_THIRD_PARTY: u32 = 0x800000;
 
+/// Anonymous memory, not backed by a file.
+///
+/// C: `MAP_ANONYMOUS 0x1000` (`minix3/sys/sys/mman.h:97-98`). The block
+/// cache's block memory uses it: libminixfs allocates every buffer with
+/// `MAP_PREALLOC|MAP_ANON` (`minix3/minix/lib/libminixfs/cache.c:200-201`),
+/// and the page cache only accepts pages of that kind
+/// (`mem_cache.c:257-261`).
+pub const MAP_FLAG_ANON: u32 = 0x1000;
+
+/// Reserve the whole range up front instead of faulting pages in.
+///
+/// C: `MAP_PREALLOC 0x080000` (`minix3/sys/sys/mman.h:120`), the other half
+/// of the block cache's allocation flags (cache.c:200-201).
+pub const MAP_FLAG_PREALLOC: u32 = 0x080000;
+
 /// Returns the memory server endpoint.
 pub const fn vm_endpoint() -> Endpoint {
     Endpoint(VM_ENDPOINT_NUMBER)
@@ -769,6 +784,8 @@ mod tests {
         assert_eq!(MAP_PROTECTION_WRITE, 0x02);
         assert_eq!(MAP_PROTECTION_EXECUTE, 0x04);
         assert_eq!(MAP_FLAG_THIRD_PARTY, 0x800000);
+        assert_eq!(MAP_FLAG_ANON, 0x1000);
+        assert_eq!(MAP_FLAG_PREALLOC, 0x080000);
     }
 
     #[test]

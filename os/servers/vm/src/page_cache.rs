@@ -39,13 +39,17 @@ use crate::region::{PageFrames, PfnAllocator};
 
 /// Sentinel inode value for device files without an associated inode.
 /// C: `#define VMC_NO_INODE 0` (minix3/minix/include/minix/vm.h:90).
-pub(crate) const VMC_NO_INODE: u64 = 0;
+///
+/// The value is re-exported from `minix-types`: the file-system buffer pool
+/// carries the same sentinel in its block tags, and one header serves both
+/// sides (`libminixfs.h:26-30`), so one Rust module must too.
+pub(crate) use minix_types::vm_cache::VMC_NO_INODE;
 
 /// One-shot block flag. C: `#define VMSF_ONCE 0x01` (vm.h:93).
 /// The FS marks a block as usable once: `do_mapcache` refuses it
 /// (mem_cache.c:149), file-mapping faults force a VFS round-trip
 /// (mem_file.c:120-131).
-pub(crate) const VMSF_ONCE: u32 = 0x01;
+pub(crate) use minix_types::vm_cache::VMSF_ONCE;
 
 /// A read-only view of a cached page, returned by the lookup methods.
 ///

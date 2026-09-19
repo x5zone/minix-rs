@@ -128,15 +128,16 @@ mod tests {
     extern crate alloc;
 
     use super::*;
+    use crate::second_level::MfsSecondLevel;
     use alloc::vec::Vec;
     use minix_fs::bio::RamDisk;
 
     const DEVICE: u64 = 0x301;
 
-    fn cache() -> BlockCache<RamDisk> {
+    fn cache() -> BlockCache<RamDisk, MfsSecondLevel> {
         BlockCache::with_pool(
             RamDisk::new(16, 64).unwrap(),
-            minix_fs::cache::NoSecondLevel,
+            MfsSecondLevel::off(),
             8,
         )
         .unwrap()
@@ -179,8 +180,8 @@ mod tests {
                 Err(Errno::from_i32(EIO))
             }
         }
-        let mut missing_cache: BlockCache<Missing> =
-            BlockCache::with_pool(Missing, minix_fs::cache::NoSecondLevel, 8).unwrap();
+        let mut missing_cache: BlockCache<Missing, MfsSecondLevel> =
+            BlockCache::with_pool(Missing, MfsSecondLevel::off(), 8).unwrap();
         assert_eq!(
             mfs_get_block(&mut missing_cache, key, AcquireMode::Normal)
                 .unwrap_err()

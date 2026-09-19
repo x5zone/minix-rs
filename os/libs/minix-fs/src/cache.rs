@@ -15,16 +15,25 @@
 //! Two deliberate adaptations to Rust:
 //! - Storage input and output goes through a [`BlockSource`] trait instead
 //!   of direct block driver calls, so the cache is testable without a disk.
-//! - The virtual memory second-level cache (the `vmcache` flag and the
-//!   `vm_*` calls in the C code) is a [`SecondLevelCache`] trait with a
-//!   disabled implementation. Wiring it to the virtual memory page cache is
-//!   future work owned by the virtual memory stage; the hooks are already in
-//!   the acquire and release paths.
+//! - The virtual-memory second level (the `vmcache` flag and the four `vm_*`
+//!   calls in the C code) is the [`SecondLevelCache`] face from
+//!   [`crate::vm_cache`]: the pool asks it for a block's page before touching
+//!   storage, hands its page over when a block leaves, and keeps the C per
+//!   buffer flags word ([`BufferFlags`]) that travels on that wire. A pool
+//!   built with [`NoSecondLevel`] behaves as if the page cache did not exist.
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use minix_types::{EAGAIN, EBUSY, EINVAL, ENOENT, Errno};
+
+// 二级缓存的面（trait 与两个实现）住在 `crate::vm_cache`；这里再导出，
+// 让消费方沿用 `minix_fs::cache::*` 这一条路径，也让本模块的文档链接
+// （[`SecondLevelCache`]、[`NoSecondLevel`]）指向唯一定义处。
+pub use crate::vm_cache::{
+    BlockMemory, BlockTag, BufferFlags, MappedPage, NoSecondLevel, PAGE_SIZE, SecondLevelCache,
+    VmCacheFault, VmCacheWire, VmSecondLevel, is_page_multiple, page_round_up,
+};
 
 /// Smallest pool the cache accepts.
 ///
@@ -121,53 +130,27 @@ pub trait BlockSource {
     }
 }
 
-/// Optional second-level cache in virtual memory.
-///
-/// C: the `vmcache` flag with `vm_map_cacheblock` / `vm_set_cacheblock` /
-/// `vm_forget_cacheblock` / `vm_clear_cache` (`cache.c:443-451`,
-/// `cache.c:562-587`, `cache.c:630-634`). Disabled by default; enabling is
-/// future work tied to the virtual memory page cache. The two
-/// implementations here are the disabled production default and a recording
-/// test double proving the hooks run.
-pub trait SecondLevelCache {
-    /// Whether the second level is active.
-    fn is_enabled(&self) -> bool;
-    /// Offer a released block to the second level.
-    fn offer(&mut self, key: BlockKey, data: &[u8]);
-    /// Forget every block of a device.
-    fn forget_device(&mut self, device: u64);
-    /// Forget one block that the file system just freed on storage.
-    ///
-    /// C: `vm_forget_cacheblock` inside `lmfs_free_block`
-    /// (`cache.c:630-634`). Empty by default; real implementations drop the
-    /// single entry instead of a whole device.
-    fn forget_block(&mut self, _key: BlockKey) {}
-}
-
-/// Second level disabled: every hook is a no-op.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct NoSecondLevel;
-
-impl SecondLevelCache for NoSecondLevel {
-    fn is_enabled(&self) -> bool {
-        false
-    }
-
-    fn offer(&mut self, _key: BlockKey, _data: &[u8]) {}
-
-    fn forget_device(&mut self, _device: u64) {}
-}
-
 /// One pooled buffer: the cached bytes plus the bookkeeping the C `struct
 /// buf` header carries (`libminixfs.h:15-31`).
 #[derive(Debug)]
 struct Buffer {
     /// Which block is stored, if any. `None` means a free slot.
     key: Option<BlockKey>,
-    /// Cached bytes; empty for a free slot.
-    data: Vec<u8>,
-    /// Whether the cached bytes differ from storage and must be written back.
-    dirty: bool,
+    /// Which inode the block belongs to (`lmfs_inode` /
+    /// `lmfs_inode_offset`, `libminixfs.h:26-30`); `None` is C's
+    /// `VMC_NO_INODE`. Tags are what the page cache keys its own entries by,
+    /// so a change of tag has to travel back (`need_set_cache`).
+    tag: Option<BlockTag>,
+    /// Whether the second level still has to be told which inode this block
+    /// belongs to (`lmfs_needsetcache`, `libminixfs.h:22`). Set when the
+    /// memory is allocated and when the tag changes under a cached block;
+    /// cleared by the hand-over itself.
+    need_set_cache: bool,
+    /// The flags word shared with virtual memory (`lmfs_flags`): dirty,
+    /// block-locked, evicted.
+    flags: BufferFlags,
+    /// The block's bytes: heap memory or a page the second level owns.
+    memory: BlockMemory,
     /// Current users; pinned while above zero.
     users: usize,
     /// Free-list links: previous and next slot in the free chain
@@ -182,8 +165,10 @@ impl Buffer {
     fn free() -> Self {
         Self {
             key: None,
-            data: Vec::new(),
-            dirty: false,
+            tag: None,
+            need_set_cache: false,
+            flags: BufferFlags::empty(),
+            memory: BlockMemory::empty(),
             users: 0,
             prev: NO_SLOT,
             next: NO_SLOT,
@@ -227,10 +212,13 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
     /// Build a cache with `pool_size` free slots (at least
     /// [`MIN_POOL_SIZE`], mirroring the `lmfs_buf_pool` assertion,
     /// `cache.c:1250`).
-    pub fn with_pool(source: S, second_level: V, pool_size: usize) -> Result<Self, Errno> {
+    pub fn with_pool(source: S, mut second_level: V, pool_size: usize) -> Result<Self, Errno> {
         if pool_size < MIN_POOL_SIZE {
             return Err(Errno::from_i32(EINVAL));
         }
+        // The second level learns the block size here, which is where C
+        // settles the enable decision (`lmfs_set_blocksize`, cache.c:1226-1240).
+        second_level.set_block_size(source.block_size());
         let mut slots = Vec::with_capacity(pool_size);
         for _slot in 0..pool_size {
             slots.push(Buffer::free());
@@ -272,7 +260,12 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
 
     /// Take the backing source back (unmount hands the device to the
     /// server so a later mount can reuse it).
-    pub fn into_source(self) -> S {
+    ///
+    /// Every block's memory goes back to the second level first, so a
+    /// page-backed pool leaves no mapping behind when the device is handed
+    /// over (C's `lmfs_buf_pool` unmaps the same way, cache.c:1259-1268).
+    pub fn into_source(mut self) -> S {
+        self.release_block_memory();
         self.source
     }
 
@@ -281,40 +274,105 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         self.pinned
     }
 
+    /// The second level, for inspection (unmount bookkeeping, tests).
+    pub fn second_level(&self) -> &V {
+        &self.second_level
+    }
+
+    /// The second level, for the server's own wiring.
+    pub fn second_level_mut(&mut self) -> &mut V {
+        &mut self.second_level
+    }
+
     /// Acquire a block: return its slot number, pinned for the caller.
     ///
-    /// C: `get_block_ino` (`cache.c:298-489`). Cache hit: unqueue from the
-    /// free ordering, pin, and return. Cache miss: evict the
-    /// least-recently-used free buffer (writing it back first when dirty,
-    /// exactly like `freeblock`, `cache.c:252-272`), then handle the mode:
-    /// `Peek` gives up with "not present", `NoRead` hands over an empty
-    /// buffer, `Normal` reads from storage.
+    /// C: `get_block_ino` (`cache.c:298-489`) with no inode tag
+    /// (`lmfs_get_block`, cache.c:216-219). See [`BlockCache::acquire_tagged`].
     pub fn acquire(&mut self, key: BlockKey, mode: AcquireMode) -> Result<usize, Errno> {
+        self.acquire_tagged(key, mode, None)
+    }
+
+    /// Acquire a block and record which inode it belongs to.
+    ///
+    /// C: `get_block_ino` (`cache.c:298-489`). Cache hit: a block the page
+    /// cache has evicted is thrown away and re-fetched
+    /// (`VMMC_EVICTED`, cache.c:345,377-388); a hit whose inode tag changed
+    /// is re-identified to virtual memory on release (`needsetcache`,
+    /// cache.c:365-375). Cache miss: the least-recently-used free buffer is
+    /// recycled (writing a dirty victim back first, `freeblock`,
+    /// cache.c:252-272), then the mode decides: `Peek` gives up with "not
+    /// present", `Normal` asks the second level for the block's page before
+    /// reading storage, `NoRead` hands over an empty buffer.
+    pub fn acquire_tagged(
+        &mut self,
+        key: BlockKey,
+        mode: AcquireMode,
+        tag: Option<BlockTag>,
+    ) -> Result<usize, Errno> {
         if let Some(&slot) = self.index.get(&key) {
-            // The C header stores the use count in a `char`
-            // (`libminixfs.h:21`); pinning past its ceiling would wrap, so
-            // treat saturation as a programming error in debug builds.
-            debug_assert!(self.slots[slot].users < i8::MAX as usize);
-            if self.slots[slot].users == 0 {
-                self.list_unlink(slot);
-                self.pinned += 1;
+            if self.slots[slot].flags.is_evicted() {
+                // Virtual memory dropped the page under us: the cached copy
+                // no longer names the block (`cache.c:377-388`).
+                self.discard_slot(slot);
+            } else {
+                // The C header stores the use count in a `char`
+                // (`libminixfs.h:21`); pinning past its ceiling would wrap,
+                // so treat saturation as a programming error in debug builds.
+                debug_assert!(self.slots[slot].users < i8::MAX as usize);
+                if self.slots[slot].users == 0 {
+                    self.list_unlink(slot);
+                    self.pinned += 1;
+                    self.slots[slot].flags.lock();
+                }
+                self.slots[slot].users += 1;
+                self.retag(slot, tag);
+                return Ok(slot);
             }
-            self.slots[slot].users += 1;
-            return Ok(slot);
         }
 
         if mode == AcquireMode::Peek {
             return Err(Errno::from_i32(ENOENT));
         }
 
+        let block_size = self.source.block_size();
         let slot = self.evict_one()?;
+
+        // The page cache may already hold the block: a hit hands back the
+        // page itself, so the caller reads it with no storage traffic and no
+        // copy (`cache.c:437-451`).
+        if mode != AcquireMode::NoRead && self.second_level.is_enabled() {
+            let mut flags = BufferFlags::empty();
+            let mapped = {
+                let second = &mut self.second_level;
+                second.map_block(key, tag, block_size, &mut flags)
+            };
+            if let Ok(Some(memory)) = mapped {
+                let buffer = &mut self.slots[slot];
+                buffer.key = Some(key);
+                buffer.tag = tag;
+                buffer.need_set_cache = false;
+                buffer.memory = memory;
+                buffer.flags = flags;
+                buffer.flags.lock();
+                buffer.users = 1;
+                self.pinned += 1;
+                self.index.insert(key, slot);
+                return Ok(slot);
+            }
+        }
+
+        let memory = self.second_level.alloc_block(block_size)?;
         {
-            let block_size = self.source.block_size();
             let buffer = &mut self.slots[slot];
             buffer.key = Some(key);
-            buffer.data.clear();
-            buffer.data.resize(block_size, 0);
-            buffer.dirty = false;
+            buffer.tag = tag;
+            // C allocates through `mmap` and marks the block as needing
+            // identification to virtual memory right away
+            // (`lmfs_alloc_block`, cache.c:210).
+            buffer.need_set_cache = true;
+            buffer.memory = memory;
+            buffer.flags = BufferFlags::empty();
+            buffer.flags.lock();
             buffer.users = 1;
         }
         self.pinned += 1;
@@ -323,13 +381,16 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         if mode == AcquireMode::Normal {
             // 存储源与槽位是不相交的字段借用：驱动直读进缓冲，
             // 不经过暂存分配（对齐 C 驱动直写缓冲的行为）。
-            let slot_data = &mut self.slots[slot].data;
+            let slot_memory = &mut self.slots[slot].memory;
             let source = &self.source;
-            if let Err(error) = source.read_block(key, slot_data) {
+            if let Err(error) = source.read_block(key, slot_memory.as_mut_slice(block_size)) {
+                // The block must not reach virtual memory nor stay a cache
+                // entry. C invalidates it inside `read_block` (the device
+                // number is dropped, cache.c:773-775) *before* `put_block`
+                // runs, which is what keeps the hand-over from firing on a
+                // block no one managed to read.
+                self.discard_slot(slot);
                 self.release_slot(slot);
-                self.index.remove(&key);
-                self.slots[slot].key = None;
-                self.slots[slot].data.clear();
                 return Err(error);
             }
         }
@@ -338,7 +399,31 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
 
     /// Read the bytes of an acquired slot.
     pub fn slot_data(&self, slot: usize) -> &[u8] {
-        &self.slots[slot].data
+        self.slots[slot].memory.as_slice(self.source.block_size())
+    }
+
+    /// Whether a slot's bytes live in a page the second level owns.
+    ///
+    /// The distinction is observable: only page-backed memory can be handed
+    /// to virtual memory, and it is what a zero-copy pool is made of.
+    pub fn slot_is_page_backed(&self, slot: usize) -> bool {
+        self.slots[slot].memory.is_mapped()
+    }
+
+    /// The page behind a slot, when its bytes are page-backed.
+    pub fn slot_memory(&self, slot: usize) -> Option<MappedPage> {
+        self.slots[slot].memory.mapped()
+    }
+
+    /// The inode tag a slot's block carries, if any.
+    pub fn slot_tag(&self, slot: usize) -> Option<BlockTag> {
+        self.slots[slot].tag
+    }
+
+    /// Whether a slot's bytes carry unwritten changes
+    /// (C: `lmfs_isclean`, `cache.c:174-177`, inverted).
+    pub fn is_dirty(&self, slot: usize) -> bool {
+        self.slots[slot].flags.is_dirty()
     }
 
     /// Overwrite the bytes of an acquired slot (marks it dirty, like a
@@ -352,38 +437,45 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         if buffer.key.is_none() {
             return Err(Errno::from_i32(EINVAL));
         }
-        buffer.data.copy_from_slice(data);
-        buffer.dirty = true;
+        buffer.flags.set_dirty();
+        buffer.memory.as_mut_slice(block_size).copy_from_slice(data);
         Ok(())
-    }
-
-    /// Whether a slot holds unwritten changes. C: `lmfs_isclean`
-    /// (`cache.c:174-177`), inverted.
-    pub fn is_dirty(&self, slot: usize) -> bool {
-        self.slots[slot].dirty
     }
 
     /// Mark a slot dirty without writing (for callers that modify the
     /// buffer in place through [`BlockCache::slot_data_mut`]).
     /// C: `lmfs_markdirty` (`cache.c:164-167`).
     pub fn mark_dirty(&mut self, slot: usize) {
-        self.slots[slot].dirty = true;
+        self.slots[slot].flags.set_dirty();
     }
 
     /// Clear the dirty flag without writing. C: `lmfs_markclean`
     /// (`cache.c:169-172`).
     pub fn mark_clean(&mut self, slot: usize) {
-        self.slots[slot].dirty = false;
+        self.slots[slot].flags.clear_dirty();
+    }
+
+    /// Note that virtual memory evicted the slot's page; the contents are
+    /// stale and the next acquire re-fetches the block.
+    ///
+    /// The word this sets is the one whose address travels to virtual memory
+    /// in the `flags_ptr` lane (`VMMC_EVICTED`); C only ever reads it
+    /// (cache.c:345), so this setter exists for the wire's other direction
+    /// and for tests of the acquire rule.
+    pub fn mark_evicted(&mut self, slot: usize) {
+        self.slots[slot].flags.mark_evicted();
     }
 
     /// Mutable bytes of an acquired slot for in-place modification.
     pub fn slot_data_mut(&mut self, slot: usize) -> &mut [u8] {
-        &mut self.slots[slot].data
+        let block_size = self.source.block_size();
+        self.slots[slot].memory.as_mut_slice(block_size)
     }
 
     /// Release a pinned slot back to the free ordering (most-recent end,
-    /// "may be needed again", `put_block`, `cache.c:512-596`). Offers the
-    /// block to the second level when one is enabled.
+    /// "may be needed again", `put_block`, `cache.c:512-596`). Hands the
+    /// block's page to the second level when one is enabled and the block
+    /// still has to be identified (`needsetcache`, cache.c:562-587).
     ///
     /// Releasing a slot the caller does not hold is refused instead of
     /// silently corrupting the pin count.
@@ -403,7 +495,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         // Collect first: writing needs `&mut self` while iterating slots.
         let mut dirty_slots = Vec::new();
         for (slot, buffer) in self.slots.iter().enumerate() {
-            if buffer.dirty
+            if buffer.flags.is_dirty()
                 && buffer.users == 0
                 && let Some(key) = buffer.key
                 && key.device == device
@@ -414,9 +506,11 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         let mut written = 0u64;
         for slot in dirty_slots {
             let key = self.slots[slot].key.expect("dirty slot has a key");
-            let bytes = self.slots[slot].data.len() as u64;
-            self.source.write_block(key, &self.slots[slot].data)?;
-            self.slots[slot].dirty = false;
+            let block_size = self.source.block_size();
+            let bytes = block_size as u64;
+            let data = self.slots[slot].memory.as_slice(block_size);
+            self.source.write_block(key, data)?;
+            self.slots[slot].flags.clear_dirty();
             written += bytes;
         }
         self.note_written(written);
@@ -453,6 +547,9 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             return Err(Errno::from_i32(EINVAL));
         }
         self.flush_all()?;
+        // C unmaps every pooled block before rebuilding the pool
+        // (`lmfs_buf_pool`, cache.c:1259-1268).
+        self.release_block_memory();
         self.slots.clear();
         self.index.clear();
         for _slot in 0..new_size {
@@ -469,16 +566,24 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
 
     /// Release a block that will not be needed again (`ONE_SHOT` blocks):
     /// it goes to the FRONT of the free list, so the next eviction picks it
-    /// before any block likely to be reused (`cache.c:533-544`).
+    /// before any block likely to be reused, and it stops being a cache
+    /// entry — C drops the block's device number (`cache.c:533-544`,
+    /// cache.c:594-596). A one-shot block is handed to virtual memory with
+    /// the `VMSF_ONCE` setflag so the page cache discards it after one use.
     pub fn release_one_shot(&mut self, slot: usize) -> Result<(), Errno> {
         if slot >= self.slots.len() || self.slots[slot].users == 0 {
             return Err(Errno::from_i32(EINVAL));
         }
         self.slots[slot].users -= 1;
         self.pinned -= 1;
-        if self.slots[slot].users == 0 {
-            self.list_push_front(slot);
+        if self.slots[slot].users != 0 {
+            return Ok(());
         }
+        self.hand_over(slot, true);
+        // 一次性块用完即不再是缓存条目：C 把设备号作废（`cache.c:595`），
+        // 防止它刚报备完又被立刻拿回来、造成同一块二次报备的麻烦。
+        self.discard_slot(slot);
+        self.list_push_front(slot);
         Ok(())
     }
 
@@ -538,7 +643,7 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
     pub fn flush_all(&mut self) -> Result<(), Errno> {
         let mut devices = Vec::new();
         for buffer in &self.slots {
-            if buffer.dirty
+            if buffer.flags.is_dirty()
                 && let Some(key) = buffer.key
                 && !devices.contains(&key.device)
             {
@@ -554,24 +659,33 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
     /// Release one block back to the free pool: the file system just freed
     /// it on storage, so any cached copy is stale.
     ///
-    /// C: `lmfs_free_block` (`cache.c:613-650`). The cached copy is marked
-    /// clean and detached from its key even when pinned: the owner may still
-    /// hold the slot, but its contents no longer name a stored block. The
-    /// second level is told to forget the single block when one is enabled.
+    /// C: `lmfs_free_block` (`cache.c:613-650`). Virtual memory is told to
+    /// forget the block first — the block number may be re-used for a
+    /// different file later, and a stale inode association would make a hole
+    /// map to the old contents (`cache.c:616-623`). The cached copy is then
+    /// marked clean and detached from its key even when pinned: the owner
+    /// may still hold the slot, but its contents no longer name a stored
+    /// block.
     pub fn free_block(&mut self, key: BlockKey) {
-        if self.second_level.is_enabled() {
-            self.second_level.forget_block(key);
-        }
+        let block_size = self.source.block_size();
+        self.second_level.forget_block(key, block_size);
         if let Some(&slot) = self.index.get(&key) {
             self.index.remove(&key);
             let buffer = &mut self.slots[slot];
             buffer.key = None;
-            buffer.dirty = false;
+            buffer.tag = None;
+            buffer.need_set_cache = false;
+            buffer.flags.clear_dirty();
         }
     }
 
     /// Drop every cached block of a device and tell the second level to
     /// forget it. C: `lmfs_invalidate` (`cache.c:782-808`).
+    ///
+    /// The device's pages go back to the second level, and the forget-all
+    /// call goes out even when the second level is switched off: an error
+    /// may have switched it off while blocks were still registered there
+    /// (C's own reasoning, `cache.c:803-807`).
     pub fn invalidate_device(&mut self, device: u64) {
         // 空闲链上的同设备槽位先摘除（保持链结构），再清各槽位内容。
         let mut link = self.free_head;
@@ -585,17 +699,15 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
             }
             link = next;
         }
-        for buffer in self.slots.iter_mut() {
-            if let Some(key) = buffer.key
-                && key.device == device
-            {
-                self.index.remove(&key);
-                buffer.key = None;
-                buffer.data.clear();
-                buffer.dirty = false;
+        for slot in 0..self.slots.len() {
+            let on_device = self.slots[slot]
+                .key
+                .is_some_and(|key| key.device == device);
+            if on_device {
+                self.clear_slot(slot);
             }
         }
-        self.second_level.forget_device(device);
+        self.second_level.clear_device(device);
     }
 
     /// Record file system usage for the sizing heuristic.
@@ -663,14 +775,15 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         let slot = self.list_pop_front().ok_or(Errno::from_i32(EAGAIN))?;
         let (old_key, was_dirty) = {
             let buffer = &mut self.slots[slot];
-            (buffer.key.take(), buffer.dirty)
+            (buffer.key.take(), buffer.flags.is_dirty())
         };
         if let Some(key) = old_key {
             self.index.remove(&key);
             if was_dirty {
                 // 直接把缓存的字节写回存储：源与槽位是不相交的借用，
                 // 不需要克隆整块（旧实现为绕借用检查克隆过一次）。
-                let data = &self.slots[slot].data;
+                let block_size = self.source.block_size();
+                let data = self.slots[slot].memory.as_slice(block_size);
                 self.source
                     .write_block(key, data)
                     .inspect_err(|_| {
@@ -679,15 +792,103 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
                         // dropped.
                         let buffer = &mut self.slots[slot];
                         buffer.key = Some(key);
-                        buffer.dirty = true;
+                        buffer.flags.set_dirty();
                         self.index.insert(key, slot);
                         self.list_push_front(slot);
                     })?;
             }
-            self.slots[slot].dirty = false;
-            self.slots[slot].data.clear();
         }
+        self.clear_slot(slot);
         Ok(slot)
+    }
+
+    /// Drop one slot's block identity: the memory goes back to the second
+    /// level, the flags word is cleared, and the tag with it.
+    ///
+    /// C's `freeblock` does the same three things (`munmap_t`, `MARKCLEAN`,
+    /// device number dropped, cache.c:252-272).
+    fn clear_slot(&mut self, slot: usize) {
+        if let Some(key) = self.slots[slot].key.take() {
+            self.index.remove(&key);
+        }
+        let buffer = &mut self.slots[slot];
+        let memory = core::mem::replace(&mut buffer.memory, BlockMemory::empty());
+        buffer.tag = None;
+        buffer.need_set_cache = false;
+        buffer.flags = BufferFlags::empty();
+        self.second_level.free_block(memory);
+    }
+
+    /// Invalidate a slot that is no longer a cache entry while keeping its
+    /// memory for the next block that recycles it (C drops the device
+    /// number and leaves the mapping in place, cache.c:377-388,
+    /// cache.c:594-596).
+    fn discard_slot(&mut self, slot: usize) {
+        if let Some(key) = self.slots[slot].key.take() {
+            self.index.remove(&key);
+        }
+        self.slots[slot].tag = None;
+        self.slots[slot].need_set_cache = false;
+        self.slots[slot].flags = BufferFlags::empty();
+    }
+
+    /// Update a hit slot's inode tag, marking the block for re-identification
+    /// to virtual memory when the tag moved (`cache.c:365-375`).
+    fn retag(&mut self, slot: usize, tag: Option<BlockTag>) {
+        if tag.is_none() {
+            // C only touches the tag when the caller named an inode
+            // (`if(ino != VMC_NO_INODE)`, cache.c:366).
+            return;
+        }
+        let buffer = &mut self.slots[slot];
+        if buffer.tag != tag {
+            buffer.tag = tag;
+            buffer.need_set_cache = true;
+        }
+    }
+
+    /// Hand a released block's page to the second level when it still owes
+    /// an introduction: the block was allocated here (`needsetcache` set at
+    /// allocation, cache.c:210) or its inode tag changed while cached
+    /// (cache.c:365-375). `once` is the `VMSF_ONCE` setflag of one-shot
+    /// blocks (`put_block`, cache.c:562-587).
+    ///
+    /// Failures are the second level's policy (it disables itself on a wire
+    /// that is gone); the block stays valid in this pool either way.
+    fn hand_over(&mut self, slot: usize, once: bool) {
+        if !self.second_level.is_enabled() {
+            return;
+        }
+        let block_size = self.source.block_size();
+        let buffer = &mut self.slots[slot];
+        // C checks the device too: a block whose device was dropped (freed,
+        // one-shot) is not identified to virtual memory
+        // (`dev != NO_DEV`, cache.c:566).
+        let (Some(key), true) = (buffer.key, buffer.need_set_cache) else {
+            return;
+        };
+        let memory = &buffer.memory;
+        let tag = buffer.tag;
+        let outcome = self
+            .second_level
+            .set_block(memory, key, tag, block_size, once, &mut buffer.flags);
+        buffer.need_set_cache = false;
+        let _ = outcome;
+    }
+
+    /// Give every block's memory back to the second level, for pools that
+    /// are about to be rebuilt or dropped (C: `lmfs_buf_pool`,
+    /// cache.c:1259-1268).
+    ///
+    /// A pool dropped without this call leaves its page mappings to the
+    /// address space's teardown: the server exits, the memory server
+    /// reclaims them then. C relies on the same backstop for a buffer pool
+    /// released at process end.
+    pub fn release_block_memory(&mut self) {
+        for slot in 0..self.slots.len() {
+            self.clear_slot(slot);
+        }
+        self.index.clear();
     }
 
     /// Push one slot at the head of the free list: the "needed again soon"
@@ -753,12 +954,11 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
         let users = self.slots[slot].users - 1;
         self.slots[slot].users = users;
         if users == 0 {
-            if self.second_level.is_enabled()
-                && let Some(key) = self.slots[slot].key
-            {
-                let data = &self.slots[slot].data;
-                self.second_level.offer(key, data);
-            }
+            // C clears the block-locked bit before the hand-over
+            // (`put_block`, cache.c:558-559) and identifies the block to
+            // virtual memory on the way out (cache.c:562-587).
+            self.slots[slot].flags.unlock();
+            self.hand_over(slot, false);
             self.list_push_tail(slot);
         }
     }
@@ -849,26 +1049,14 @@ mod tests {
         }
     }
 
-    /// Recording second level proving the acquire/release hooks run.
-    #[derive(Debug, Default)]
-    struct RecordingSecondLevel {
-        enabled: bool,
-        offered: Vec<BlockKey>,
-        forgotten: Vec<u64>,
-    }
-
-    impl SecondLevelCache for RecordingSecondLevel {
-        fn is_enabled(&self) -> bool {
-            self.enabled
-        }
-
-        fn offer(&mut self, key: BlockKey, _data: &[u8]) {
-            self.offered.push(key);
-        }
-
-        fn forget_device(&mut self, device: u64) {
-            self.forgotten.push(device);
-        }
+    /// A pool over the memory source with the page cache switched on.
+    ///
+    /// The block size is a whole page so the alignment gate lets the second
+    /// level through (a smaller block would be handled exactly like
+    /// [`NoSecondLevel`], which other tests cover).
+    fn vm_cache() -> BlockCache<MemSource, VmSecondLevel<crate::vm_cache::mock::MockVm>> {
+        let source = MemSource::with_blocks(16, PAGE_SIZE);
+        BlockCache::with_pool(source, VmSecondLevel::new(Default::default()), 8).unwrap()
     }
 
     fn cache() -> BlockCache<MemSource> {
@@ -1190,22 +1378,206 @@ mod tests {
     }
 
     #[test]
-    fn test_second_level_hooks_run() {
+    fn test_second_level_serves_the_block_without_storage() {
+        let mut cache = vm_cache();
+        let key = BlockKey::new(1, 3);
+        // Virtual memory already holds the block (some process mapped the
+        // file, say): the pool must take the page instead of reading.
+        cache.second_level.wire_mut().seed(1, 3 * PAGE_SIZE as u64, 0x5A, PAGE_SIZE);
+        let slot = cache.acquire(key, AcquireMode::Normal).unwrap();
+        assert_eq!(cache.source.reads.get(), 0, "no storage traffic on a page-cache hit");
+        assert_eq!(cache.slot_data(slot)[0], 0x5A);
+        assert!(cache.slot_is_page_backed(slot), "the block is the page cache's own page");
+        cache.release(slot).unwrap();
+    }
+
+    #[test]
+    fn test_second_level_hands_over_a_freshly_read_block() {
+        let mut cache = vm_cache();
+        let key = BlockKey::new(1, 7);
+        // Storage holds 0x07 in every byte; the pool reads it and then hands
+        // the page to virtual memory.
+        let slot = cache.acquire(key, AcquireMode::Normal).unwrap();
+        assert_eq!(cache.source.reads.get(), 1);
+        assert_eq!(cache.slot_data(slot)[0], 0x07);
+        cache.release(slot).unwrap();
+        assert_eq!(
+            cache.second_level.wire().cached(1, 7 * PAGE_SIZE as u64, 4),
+            Some(&[0x07; 4][..]),
+            "the page cache now holds the block's bytes"
+        );
+    }
+
+    #[test]
+    fn test_hand_over_is_gated_by_the_inode_tag() {
+        let mut cache = vm_cache();
+        let key = BlockKey::new(1, 4);
+        let tag_a = Some(BlockTag::new(11, 3 * PAGE_SIZE as u64));
+        let tag_b = Some(BlockTag::new(11, 5 * PAGE_SIZE as u64));
+        // First acquire allocates the block: the tag goes out with the page.
+        let slot = cache.acquire_tagged(key, AcquireMode::Normal, tag_a).unwrap();
+        cache.release(slot).unwrap();
+        // Second acquire is a hit with the same tag: nothing to re-identify.
+        let before = cache.second_level.wire().calls.len();
+        let slot = cache.acquire_tagged(key, AcquireMode::Normal, tag_a).unwrap();
+        cache.release(slot).unwrap();
+        assert_eq!(cache.second_level.wire().calls.len(), before, "same tag: no second hand-over");
+        assert_eq!(cache.slot_tag(slot), tag_a, "the hit kept its tag");
+
+        // Third acquire is a hit whose tag moved: virtual memory must learn
+        // the new inode association (C's `needsetcache`, cache.c:365-375).
+        let slot = cache.acquire_tagged(key, AcquireMode::Normal, tag_b).unwrap();
+        assert_eq!(cache.slot_tag(slot), tag_b);
+        cache.release(slot).unwrap();
+        assert_eq!(cache.second_level.wire().calls.len(), before + 1);
+        assert_eq!(
+            cache.second_level.wire().calls.last(),
+            Some(&crate::vm_cache::mock::MockCall::Set {
+                dev: 1,
+                dev_offset: 4 * PAGE_SIZE as u64,
+                tag: tag_b,
+                once: false,
+                page: cache.slot_memory(slot).expect("a page-backed block"),
+            })
+        );
+    }
+
+    #[test]
+    fn test_unaligned_block_size_keeps_the_page_cache_out() {
+        // 64-byte blocks cannot be mapped into pages: the second level never
+        // consults virtual memory (C: `cache.c:1236-1239`). Its own memory
+        // is still page-backed, exactly as C's `mmap` blocks are.
         let mut cache = BlockCache::with_pool(
             MemSource::with_blocks(8, 64),
-            RecordingSecondLevel {
-                enabled: true,
-                ..RecordingSecondLevel::default()
-            },
+            VmSecondLevel::new(crate::vm_cache::mock::MockVm::default()),
             8,
         )
         .unwrap();
-        let key = BlockKey::new(1, 1);
+        assert!(!cache.second_level.is_enabled());
+        let slot = cache.acquire(BlockKey::new(1, 1), AcquireMode::Normal).unwrap();
+        assert_eq!(cache.slot_data(slot)[0], 1, "storage still serves the block");
+        cache.release(slot).unwrap();
+        assert!(cache.second_level.wire().calls.is_empty());
+    }
+
+    #[test]
+    fn test_evicted_slot_is_re_fetched() {
+        let mut cache = vm_cache();
+        let key = BlockKey::new(2, 2);
         let slot = cache.acquire(key, AcquireMode::Normal).unwrap();
         cache.release(slot).unwrap();
-        assert!(cache.second_level.offered.contains(&key));
-        cache.invalidate_device(1);
-        assert!(cache.second_level.forgotten.contains(&1));
+        // Virtual memory drops the page and reports it through the flags
+        // word; the pool's copy no longer names the block.
+        cache.second_level.wire_mut().evict(2, 2 * PAGE_SIZE as u64);
+        cache.mark_evicted(slot);
+        let reads_before = cache.source.reads.get();
+        let again = cache.acquire(key, AcquireMode::Normal).unwrap();
+        assert_eq!(cache.source.reads.get(), reads_before + 1, "the stale copy is not reused");
+        assert!(!cache.is_dirty(again));
+        assert_eq!(cache.slot_data(again)[0], 2);
+        cache.release(again).unwrap();
+    }
+
+    #[test]
+    fn test_free_block_forgets_the_block_in_the_page_cache() {
+        let mut cache = vm_cache();
+        let key = BlockKey::new(3, 5);
+        let slot = cache.acquire(key, AcquireMode::Normal).unwrap();
+        cache.release(slot).unwrap();
+        assert!(cache.second_level.wire().cached(3, 5 * PAGE_SIZE as u64, 1).is_some());
+        cache.free_block(key);
+        assert!(cache.second_level.wire().cached(3, 5 * PAGE_SIZE as u64, 1).is_none());
+    }
+
+    #[test]
+    fn test_invalidate_releases_pages_and_clears_the_device() {
+        let mut cache = vm_cache();
+        let slot = cache.acquire(BlockKey::new(4, 1), AcquireMode::Normal).unwrap();
+        cache.release(slot).unwrap();
+        let other = cache.acquire(BlockKey::new(5, 1), AcquireMode::Normal).unwrap();
+        cache.release(other).unwrap();
+        cache.invalidate_device(4);
+        // The device's own pages came back and the forget-all went out;
+        // another device's page cache entries stay untouched.
+        assert!(cache.second_level.wire().cached(4, PAGE_SIZE as u64, 1).is_none());
+        assert!(cache.second_level.wire().cached(5, PAGE_SIZE as u64, 1).is_some());
+        assert!(cache.second_level.wire().calls.iter().any(|call| matches!(
+            call,
+            crate::vm_cache::mock::MockCall::Clear { dev: 4 }
+        )));
+    }
+
+    #[test]
+    fn test_failed_read_is_not_handed_over() {
+        let mut cache = vm_cache();
+        let key = BlockKey::new(1, 9);
+        cache.source.fail_reads = true;
+        let sets_before = cache
+            .second_level
+            .wire()
+            .calls
+            .iter()
+            .filter(|call| matches!(call, crate::vm_cache::mock::MockCall::Set { .. }))
+            .count();
+        assert!(cache.acquire(key, AcquireMode::Normal).is_err());
+        let sets_after = cache
+            .second_level
+            .wire()
+            .calls
+            .iter()
+            .filter(|call| matches!(call, crate::vm_cache::mock::MockCall::Set { .. }))
+            .count();
+        assert_eq!(
+            sets_after, sets_before,
+            "a block no one managed to read is never handed over"
+        );
+        assert!(cache.second_level.wire().cached(1, 9 * PAGE_SIZE as u64, 1).is_none());
+        // The slot is free again: the next acquire reads storage and works.
+        cache.source.fail_reads = false;
+        let slot = cache.acquire(key, AcquireMode::Normal).unwrap();
+        assert_eq!(cache.slot_data(slot)[0], 9);
+        cache.release(slot).unwrap();
+    }
+
+    #[test]
+    fn test_unmount_returns_every_page() {
+        let mut cache = vm_cache();
+        for block in 0..3u64 {
+            let slot = cache.acquire(BlockKey::new(6, block), AcquireMode::Normal).unwrap();
+            cache.release(slot).unwrap();
+        }
+        let source = cache.into_source();
+        assert_eq!(source.block_size(), PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_one_shot_release_invalidates_and_marks_the_hand_over() {
+        let mut cache = vm_cache();
+        let key = BlockKey::new(8, 1);
+        let slot = cache.acquire(key, AcquireMode::NoRead).unwrap();
+        cache.release_one_shot(slot).unwrap();
+        // The block stops being a cache entry (C drops its device number)
+        // and the page cache is told the page is good for one use.
+        assert!(!cache.index.contains_key(&key));
+        let once = cache.second_level.wire().calls.iter().any(|call| matches!(
+            call,
+            crate::vm_cache::mock::MockCall::Set { once: true, .. }
+        ));
+        assert!(once, "a one-shot block is handed over with VMSF_ONCE");
+    }
+
+    #[test]
+    fn test_invalidate_leaves_no_pages_behind() {
+        let mut cache = vm_cache();
+        let slot = cache.acquire(BlockKey::new(9, 2), AcquireMode::Normal).unwrap();
+        cache.release(slot).unwrap();
+        let pages_before = cache.second_level.wire().live_pages();
+        assert!(pages_before > 0);
+        cache.invalidate_device(9);
+        assert!(
+            cache.second_level.wire().live_pages() < pages_before,
+            "the device's page came back to the second level"
+        );
     }
 
     #[test]

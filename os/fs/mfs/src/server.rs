@@ -20,10 +20,11 @@
 //! the geometry as separate parameters, and the split hands them out from
 //! one `&mut MountedFs` without aliasing.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use minix_fs::bio::{bio_transfer, TransferDirection};
-use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, NoSecondLevel};
+use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, VmCacheWire};
 use minix_fs::bio::DeviceInfo;
 use minix_fs::data::{DataChannel, MemoryBackend};
 use minix_fs::driver::FsDriver;
@@ -36,6 +37,7 @@ use crate::dir::DirError;
 use crate::link::LinkCtx;
 use crate::dir_io::{load_dir_blocks, store_dir_blocks};
 use crate::inode::{InodeIo, InodeTable, TABLE_SLOTS};
+use crate::second_level::MfsSecondLevel;
 
 use crate::mfs_cache::ZoneSpace;
 use crate::mount::{check_mountpoint, MountedFs};
@@ -92,7 +94,7 @@ pub struct Parts<'a, S: BlockSource> {
     /// Superblock (search hints move as allocation runs).
     pub superblock: &'a mut crate::superblock::Superblock,
     /// Block cache.
-    pub cache: &'a mut BlockCache<S, NoSecondLevel>,
+    pub cache: &'a mut BlockCache<S, MfsSecondLevel>,
     /// Inode table.
     pub inodes: &'a mut InodeTable,
     /// Inode allocation map.
@@ -142,6 +144,14 @@ pub struct MfsServer<S: BlockSource> {
     pool_buffers: usize,
     /// Wall-clock source for timestamp decisions.
     clock: Clock,
+    /// How a mount reaches the virtual-memory page cache, or `None` to keep
+    /// the page cache out (C's `may_use_vmcache(0)`; the MFS start-up grants
+    /// it with `lmfs_may_use_vmcache(1)`,
+    /// `minix3/minix/fs/mfs/main.c:52`).
+    ///
+    /// A factory rather than a value because a wire carries the channel to
+    /// the memory server and a mount consumes it: every mount builds its own.
+    vm_wire: Option<fn() -> Box<dyn VmCacheWire>>,
 }
 
 impl<S: BlockSource> MfsServer<S> {
@@ -150,13 +160,43 @@ impl<S: BlockSource> MfsServer<S> {
         Self::with_pool(source, crate::startup::DEFAULT_POOL_BUFFERS, zero_clock)
     }
 
-    /// A server with an explicit buffer pool size and clock.
+    /// A server with an explicit buffer pool size and clock, page cache off.
     pub const fn with_pool(source: S, pool_buffers: usize, clock: Clock) -> Self {
         Self {
             source: Some(source),
             fs: None,
             pool_buffers,
             clock,
+            vm_wire: None,
+        }
+    }
+
+    /// A server whose mounts use the virtual-memory page cache.
+    ///
+    /// The boot configuration's `use_vmcache` decides
+    /// ([`crate::startup::BootConfig`]); the pool turns the second level off
+    /// again by itself when its block size is not a whole page
+    /// (`cache.c:1236-1239`).
+    pub const fn with_vm_cache(
+        source: S,
+        pool_buffers: usize,
+        clock: Clock,
+        vm_wire: fn() -> Box<dyn VmCacheWire>,
+    ) -> Self {
+        Self {
+            source: Some(source),
+            fs: None,
+            pool_buffers,
+            clock,
+            vm_wire: Some(vm_wire),
+        }
+    }
+
+    /// The second level a mount starts from.
+    fn mount_second_level(&self) -> MfsSecondLevel {
+        match self.vm_wire {
+            Some(wire) => MfsSecondLevel::vm(wire()),
+            None => MfsSecondLevel::off(),
         }
     }
 
@@ -288,7 +328,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         capabilities: &mut CapabilityFlags,
     ) -> Result<FileNode, Errno> {
         let source = self.source.take().ok_or_else(|| Errno::from_i32(EBUSY))?;
-        match crate::mount::mount(source, device, flags, self.pool_buffers) {
+        let second_level = self.mount_second_level();
+        match crate::mount::mount_with_second_level(source, device, flags, self.pool_buffers, second_level) {
             Ok((fs, node)) => {
                 // MFS declares a peek entry point in C (`table.c:20`
                 // `.fdr_peek = fs_readwrite`), so the framework's

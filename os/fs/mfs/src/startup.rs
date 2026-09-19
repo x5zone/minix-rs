@@ -8,7 +8,9 @@
 
 use minix_types::{EINVAL, Errno};
 
-use minix_fs::cache::{BlockCache, BlockSource, NoSecondLevel};
+use minix_fs::cache::{BlockCache, BlockSource, SecondLevelCache};
+
+use crate::second_level::MfsSecondLevel;
 
 /// Default pool size in blocks.
 ///
@@ -47,24 +49,31 @@ impl BootConfig {
 /// stage owns: the pool and the flag. Wiring grows as later documents land.
 #[derive(Debug)]
 pub struct ServerCore<S: BlockSource> {
-    cache: BlockCache<S>,
+    cache: BlockCache<S, MfsSecondLevel>,
     use_vmcache: bool,
 }
 
 impl<S: BlockSource> ServerCore<S> {
     /// Shared access to the buffer pool.
-    pub fn cache(&self) -> &BlockCache<S> {
+    pub fn cache(&self) -> &BlockCache<S, MfsSecondLevel> {
         &self.cache
     }
 
     /// Exclusive access to the buffer pool.
-    pub fn cache_mut(&mut self) -> &mut BlockCache<S> {
+    pub fn cache_mut(&mut self) -> &mut BlockCache<S, MfsSecondLevel> {
         &mut self.cache
     }
 
     /// Whether virtual-memory caching may be used.
     pub const fn uses_vmcache(&self) -> bool {
         self.use_vmcache
+    }
+
+    /// Whether the second level is actually in play: the flag above, and a
+    /// block size that fills whole pages (the pool's own decision,
+    /// `cache.c:1236-1239`).
+    pub fn vmcache_active(&self) -> bool {
+        self.cache.second_level().is_enabled()
     }
 }
 
@@ -74,11 +83,21 @@ impl<S: BlockSource> ServerCore<S> {
 /// C: `sef_cb_init_fresh` (`main.c:47-65`) minus the inode steps, which the
 /// inode stage owns. Order matters: the flag first (later steps consult
 /// it), the pool second. A pool below the cache minimum is refused.
+///
+/// The second level follows the flag: with `use_vmcache` set, blocks come
+/// from the memory server and are offered to its page cache; the pool
+/// switches the level off by itself when the block size is not a whole page
+/// (cache.c:1236-1239).
 pub fn prepare<S: BlockSource>(source: S, config: BootConfig) -> Result<ServerCore<S>, Errno> {
     if config.pool_buffers < minix_fs::cache::MIN_POOL_SIZE {
         return Err(Errno::from_i32(EINVAL));
     }
-    let cache = BlockCache::with_pool(source, NoSecondLevel, config.pool_buffers)?;
+    let second_level = if config.use_vmcache {
+        MfsSecondLevel::vm(crate::second_level::production_wire())
+    } else {
+        MfsSecondLevel::off()
+    };
+    let cache = BlockCache::with_pool(source, second_level, config.pool_buffers)?;
     Ok(ServerCore {
         cache,
         use_vmcache: config.use_vmcache,

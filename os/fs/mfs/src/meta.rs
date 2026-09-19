@@ -13,9 +13,10 @@
 
 use minix_types::{EINVAL, EROFS, Errno};
 
-use minix_fs::cache::{BlockCache, BlockKey, BlockSource, NoSecondLevel};
+use minix_fs::cache::{BlockCache, BlockKey, BlockSource};
 
 use crate::inode::{InodeTable, TYPE_BLOCK, TYPE_CHARACTER, TYPE_MASK};
+use crate::second_level::MfsSecondLevel;
 
 /// Permission bits preserved across mode changes (`ALL_MODES`,
 /// `const.h:115`, octal `0007777`).
@@ -92,7 +93,7 @@ impl MetaError {
 /// back.
 pub fn change_mode<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     io: &crate::inode::InodeIo,
     device: u64,
     number: u64,
@@ -121,7 +122,7 @@ pub fn change_mode<S: BlockSource>(
 /// bit clearing).
 pub fn change_owner<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     io: &crate::inode::InodeIo,
     device: u64,
     number: u64,
@@ -151,7 +152,7 @@ pub fn change_owner<S: BlockSource>(
 /// switch.
 pub fn update_times<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     io: &crate::inode::InodeIo,
     device: u64,
     number: u64,
@@ -225,7 +226,7 @@ pub struct FileStat {
 #[allow(clippy::too_many_arguments)]
 pub fn read_stat<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     io: &crate::inode::InodeIo,
     device: u64,
     number: u64,
@@ -323,7 +324,7 @@ pub struct VolumeStat {
 /// bitmap (fresh, not cached). No reserve pool exists, so available equals
 /// free on both axes.
 pub fn read_volume_stat<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     superblock: &crate::superblock::Superblock,
     zone_total: u64,
     zone_used: u64,
@@ -347,7 +348,7 @@ pub fn read_volume_stat<S: BlockSource>(
 
 /// Count clear bits across the inode bitmap blocks.
 fn count_clear_bits<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     superblock: &crate::superblock::Superblock,
 ) -> Result<u64, MetaError> {
     let total_bits = superblock.inode_count as u64 + 1;
@@ -388,7 +389,7 @@ pub const fn convert_word(native: bool, word: u32) -> u32 {
 /// back when dirty.
 fn find_open<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     io: &crate::inode::InodeIo,
     device: u64,
     number: u64,
@@ -401,7 +402,7 @@ fn find_open<S: BlockSource>(
 /// Release a slot after metadata work.
 fn release<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     io: &crate::inode::InodeIo,
     slot: usize,
 ) {
@@ -414,7 +415,7 @@ mod tests {
     use crate::inode::{InodeIo, InodeTable, TYPE_DIRECTORY, TYPE_REGULAR};
     use crate::superblock::{Bitmap, Superblock};
     use minix_fs::bio::RamDisk;
-    use minix_fs::cache::{BlockCache, NoSecondLevel};
+    use minix_fs::cache::{BlockCache};
 
     extern crate alloc;
 
@@ -423,7 +424,7 @@ mod tests {
 
     struct Fixture {
         table: InodeTable,
-        cache: BlockCache<RamDisk>,
+        cache: BlockCache<RamDisk, MfsSecondLevel>,
         superblock: Superblock,
         bitmap: Bitmap,
         io: InodeIo,
@@ -453,7 +454,7 @@ mod tests {
         };
         Fixture {
             table: InodeTable::new(),
-            cache: BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), NoSecondLevel, 8)
+            cache: BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), MfsSecondLevel::off(), 8)
                 .unwrap(),
             bitmap: Bitmap::new(65),
             io: InodeIo::from_superblock(&superblock),

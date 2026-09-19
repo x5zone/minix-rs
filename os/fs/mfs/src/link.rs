@@ -26,6 +26,7 @@ use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource};
 
 use crate::dir::{DirError, SearchOp, lookup_name, search_blocks};
 use crate::inode::{InodeError, InodeIo, InodeTable, ReleaseOutcome, TYPE_DIRECTORY, TYPE_MASK};
+use crate::second_level::MfsSecondLevel;
 use crate::superblock::ROOT_INODE_NUMBER;
 
 /// Same-name marker: old and new name one file (`SAME`, `link.c:11`, one thousand).
@@ -139,7 +140,7 @@ pub struct LinkCtx<'a, S: BlockSource> {
     /// Inode table.
     pub table: &'a mut InodeTable,
     /// Block cache (read-link target bytes).
-    pub cache: &'a mut BlockCache<S, minix_fs::cache::NoSecondLevel>,
+    pub cache: &'a mut BlockCache<S, MfsSecondLevel>,
     /// Device being served.
     pub device: u64,
     /// Inode geometry for disk transfers.
@@ -1115,7 +1116,7 @@ mod tests {
     use crate::inode::{InodeTable, TYPE_SYMLINK};
     use crate::superblock::{Bitmap, Superblock};
     use minix_fs::bio::RamDisk;
-    use minix_fs::cache::{BlockCache, NoSecondLevel};
+    use minix_fs::cache::{BlockCache};
 
     extern crate alloc;
     use alloc::vec::Vec;
@@ -1125,7 +1126,7 @@ mod tests {
 
     struct Fixture {
         table: InodeTable,
-        cache: BlockCache<RamDisk>,
+        cache: BlockCache<RamDisk, MfsSecondLevel>,
         superblock: Superblock,
         bitmap: Bitmap,
         io: crate::inode::InodeIo,
@@ -1133,7 +1134,7 @@ mod tests {
 
     fn fixture() -> Fixture {
         let cache =
-            BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), NoSecondLevel, 8).unwrap();
+            BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), MfsSecondLevel::off(), 8).unwrap();
         let superblock = Superblock {
             inode_count: 64,
             inode_map_blocks: 1,

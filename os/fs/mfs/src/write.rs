@@ -16,11 +16,12 @@ use alloc::vec::Vec;
 
 use minix_types::{EFBIG, EINVAL, EIO, EROFS, Errno};
 
-use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, NoSecondLevel};
+use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, BlockTag};
 
 use crate::inode::{InodeTable, TYPE_DIRECTORY, TYPE_MASK, TYPE_REGULAR};
 use crate::mfs_cache::{ZoneSpace, alloc_zone, free_zone};
 use crate::read::{MapParams, ZoneRange};
+use crate::second_level::MfsSecondLevel;
 
 /// Free-mode flag: free instead of storing (`WMAP_FREE`, `const.h:40`).
 pub const WRITE_FREE: u32 = 1;
@@ -69,7 +70,7 @@ pub fn write_map<S: BlockSource>(
     space: &mut ZoneSpace,
     alloc_bit: &mut dyn FnMut(u64) -> Option<u64>,
     free_bit: &mut dyn FnMut(u64),
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     range: ZoneRange,
     position: u64,
@@ -182,7 +183,7 @@ pub fn write_map<S: BlockSource>(
 
 /// Read one indirect block as validated zone numbers.
 fn read_indirect_entries<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     zone: u64,
     range: ZoneRange,
@@ -213,7 +214,7 @@ fn read_indirect_entries<S: BlockSource>(
 /// Bounds-checked: the C code aborts on a null block, which cannot happen
 /// here (blocks arrive validated), and indexes stay inside by construction.
 fn write_indirect_entry<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     zone: u64,
     index: u64,
@@ -242,7 +243,7 @@ pub fn indirect_is_empty(entries: &[u64]) -> bool {
 }
 
 /// Zero a whole cache slot and mark it dirty (`zero_block`).
-pub fn zero_slot<S: BlockSource>(cache: &mut BlockCache<S, NoSecondLevel>, slot: usize) {
+pub fn zero_slot<S: BlockSource>(cache: &mut BlockCache<S, MfsSecondLevel>, slot: usize) {
     cache.slot_data_mut(slot).fill(0);
     cache.mark_dirty(slot);
 }
@@ -260,7 +261,7 @@ pub fn zero_slot<S: BlockSource>(cache: &mut BlockCache<S, NoSecondLevel>, slot:
 #[allow(clippy::too_many_arguments)]
 pub fn ensure_block<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     space: &mut ZoneSpace,
     alloc_bit: &mut dyn FnMut(u64) -> Option<u64>,
     free_bit: &mut dyn FnMut(u64),
@@ -272,6 +273,7 @@ pub fn ensure_block<S: BlockSource>(
     position: u64,
     skip_read: bool,
 ) -> Result<usize, WriteError> {
+    let inode_number = table.slot(slot).number;
     let zones = table.slot(slot).zones;
     let file_block = position / block_size as u64;
     if let Some(device_block) =
@@ -285,8 +287,12 @@ pub fn ensure_block<S: BlockSource>(
         } else {
             AcquireMode::Normal
         };
+        // File data: tag the block with the inode and the file offset of
+        // the block (`rw_chunk`'s tagged acquisition,
+        // `minix3/minix/fs/mfs/read.c:180`).
+        let tag = Some(BlockTag::new(inode_number, position / block_size as u64 * block_size as u64));
         return cache
-            .acquire(BlockKey::new(device, device_block), mode)
+            .acquire_tagged(BlockKey::new(device, device_block), mode, tag)
             .map_err(|_| WriteError::Io);
     }
     // Miss: seed the hint like the C code, allocate, and map it in.
@@ -319,8 +325,12 @@ pub fn ensure_block<S: BlockSource>(
         inode.zone_hint = zone;
         inode.dirty = true;
     }
+    // A freshly allocated block belongs to this file at this offset
+    // (`alloc_zone` → `lmfs_get_block_ino(..., NO_READ, rip->i_num,
+    // rounddown(position, block_size))`, `minix3/minix/fs/mfs/write.c:299`).
+    let tag = Some(BlockTag::new(inode_number, position / block_size as u64 * block_size as u64));
     let cache_slot = cache
-        .acquire(BlockKey::new(device, zone), AcquireMode::NoRead)
+        .acquire_tagged(BlockKey::new(device, zone), AcquireMode::NoRead, tag)
         .map_err(|_| WriteError::Io)?;
     zero_slot(cache, cache_slot);
     Ok(cache_slot)
@@ -338,7 +348,7 @@ pub fn ensure_block<S: BlockSource>(
 #[allow(clippy::too_many_arguments)]
 pub fn write_file<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     space: &mut ZoneSpace,
     alloc_bit: &mut dyn FnMut(u64) -> Option<u64>,
     free_bit: &mut dyn FnMut(u64),
@@ -427,7 +437,7 @@ pub fn write_file<S: BlockSource>(
 #[allow(clippy::too_many_arguments)]
 pub fn truncate_file<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     space: &mut ZoneSpace,
     alloc_bit: &mut dyn FnMut(u64) -> Option<u64>,
     free_bit: &mut dyn FnMut(u64),
@@ -527,7 +537,7 @@ mod tests {
     use crate::inode::{InodeTable, TYPE_REGULAR};
     use crate::superblock::{Bitmap, Superblock};
     use minix_fs::bio::RamDisk;
-    use minix_fs::cache::{BlockCache, NoSecondLevel};
+    use minix_fs::cache::{BlockCache};
 
     extern crate alloc;
     use alloc::vec::Vec;
@@ -537,7 +547,7 @@ mod tests {
 
     struct Fixture {
         table: InodeTable,
-        cache: BlockCache<RamDisk>,
+        cache: BlockCache<RamDisk, MfsSecondLevel>,
         space: ZoneSpace,
         bitmap: Bitmap,
         superblock: Superblock,
@@ -570,7 +580,7 @@ mod tests {
         };
         Fixture {
             table: InodeTable::new(),
-            cache: BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), NoSecondLevel, 8)
+            cache: BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), MfsSecondLevel::off(), 8)
                 .unwrap(),
             space: ZoneSpace {
                 first_data_zone: 4,
@@ -764,7 +774,7 @@ mod tests {
                 inner: disk,
                 reads: alloc::rc::Rc::clone(&reads),
             },
-            NoSecondLevel,
+            MfsSecondLevel::off(),
             8,
         )
         .unwrap();

@@ -17,11 +17,12 @@ use alloc::vec::Vec;
 
 use minix_types::{EINVAL, EIO, ENOENT, Errno};
 
-use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, NoSecondLevel};
+use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, BlockTag};
 use minix_fs::data::{DataChannel, MemoryBackend};
 use minix_fs::dentry::{DentryEncoder, DirentType};
 
 use crate::inode::{InodeTable, TYPE_MASK, InodeIo};
+use crate::second_level::MfsSecondLevel;
 
 /// Minimum prefetch on sequential reads (`BLOCKS_MINIMUM`, `read.c:344`,
 /// thirty-two), skipped after a seek.
@@ -77,7 +78,7 @@ impl ReadError {
 /// in indirect blocks report an input-output error (the C code aborts the
 /// server here: a forged pointer on disk).
 pub fn map_file_block<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     zones: &[u64; crate::inode::TOTAL_ZONES],
     params: MapParams,
@@ -127,7 +128,7 @@ pub fn map_file_block<S: BlockSource>(
 
 /// Read one indirect block as zone numbers, validated.
 fn read_indirect<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     zone: u64,
     range: ZoneRange,
@@ -173,7 +174,7 @@ fn entry_to_block(
 #[allow(clippy::too_many_arguments)]
 pub fn read_file<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     number: u64,
     position: i64,
@@ -214,8 +215,13 @@ pub fn read_file<S: BlockSource>(
                 readahead_file(table, cache, device, slot, &params, position, remaining);
                 first_block = false;
             }
+            // The block is file data: tag it with the inode and the file
+            // offset of the block, so the page cache can key it by inode
+            // (`lmfs_get_block_ino(&bp, dev, b, n, ino, ino_off)`,
+            // `minix3/minix/fs/mfs/read.c:180`).
+            let tag = Some(BlockTag::new(number, position / block_size as u64 * block_size as u64));
             let cache_slot = cache
-                .acquire(BlockKey::new(device, device_block), AcquireMode::Normal)
+                .acquire_tagged(BlockKey::new(device, device_block), AcquireMode::Normal, tag)
                 .map_err(|_| ReadError::Io)?;
             let bytes = cache.slot_data(cache_slot).to_vec();
             let _ = cache.release(cache_slot);
@@ -259,7 +265,7 @@ pub struct FileParams {
 /// Map one file block through the slot's zones.
 fn map_position<S: BlockSource>(
     table: &InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     slot: usize,
     params: &FileParams,
@@ -283,7 +289,7 @@ fn map_position<S: BlockSource>(
 /// across sparse regions instead of stopping.
 fn readahead_file<S: BlockSource>(
     table: &InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     slot: usize,
     params: &FileParams,
@@ -341,7 +347,7 @@ fn readahead_file<S: BlockSource>(
 
 /// Map one file block without a table borrow (readahead helper).
 fn map_one<S: BlockSource>(
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     zones: &[u64; crate::inode::TOTAL_ZONES],
     params: MapParams,
@@ -365,7 +371,7 @@ fn map_one<S: BlockSource>(
 #[allow(clippy::too_many_arguments)]
 pub fn list_dir_entries<S: BlockSource>(
     table: &mut InodeTable,
-    cache: &mut BlockCache<S, NoSecondLevel>,
+    cache: &mut BlockCache<S, MfsSecondLevel>,
     device: u64,
     number: u64,
     position: &mut u64,
@@ -512,7 +518,7 @@ mod tests {
     use crate::inode::{InodeIo, InodeTable, TYPE_DIRECTORY, TYPE_REGULAR};
     use crate::superblock::{Bitmap, Superblock};
     use minix_fs::bio::RamDisk;
-    use minix_fs::cache::{BlockCache, NoSecondLevel};
+    use minix_fs::cache::{BlockCache};
 
     extern crate alloc;
 
@@ -521,7 +527,7 @@ mod tests {
 
     struct Fixture {
         table: InodeTable,
-        cache: BlockCache<CountingDisk>,
+        cache: BlockCache<CountingDisk, MfsSecondLevel>,
         superblock: Superblock,
         bitmap: Bitmap,
         io: InodeIo,
@@ -592,7 +598,7 @@ mod tests {
                     inner: RamDisk::new(64, BLOCK_SIZE).unwrap(),
                     reads: core::cell::Cell::new(0),
                 },
-                NoSecondLevel,
+                MfsSecondLevel::off(),
                 8,
             )
             .unwrap(),

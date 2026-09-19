@@ -26,6 +26,7 @@ use crate::inode::{
     InodeError, InodeIo, InodeTable, LINK_CEILING, NO_LINK, TYPE_DIRECTORY, TYPE_MASK, TYPE_SYMLINK,
 };
 use crate::mfs_cache::{ZoneSpace, alloc_zone, free_zone, mfs_get_block};
+use crate::second_level::MfsSecondLevel;
 
 /// Why a creation failed. Each variant maps to the wire code the C
 /// functions return at the same decision point; table exhaustion and
@@ -120,7 +121,7 @@ pub struct CreateCtx<'a, S: BlockSource> {
     /// Inode table.
     pub table: &'a mut InodeTable,
     /// Block cache.
-    pub cache: &'a mut BlockCache<S, minix_fs::cache::NoSecondLevel>,
+    pub cache: &'a mut BlockCache<S, MfsSecondLevel>,
     /// Superblock (search hints, read-only flag).
     pub superblock: &'a mut crate::superblock::Superblock,
     /// Inode bitmap.
@@ -598,7 +599,7 @@ mod tests {
     use crate::inode::InodeTable;
     use crate::superblock::{Bitmap, Superblock};
     use minix_fs::bio::RamDisk;
-    use minix_fs::cache::{BlockCache, NoSecondLevel};
+    use minix_fs::cache::{BlockCache};
 
     extern crate alloc;
     use alloc::vec::Vec;
@@ -608,7 +609,7 @@ mod tests {
 
     struct Fixture {
         table: InodeTable,
-        cache: BlockCache<RamDisk>,
+        cache: BlockCache<RamDisk, MfsSecondLevel>,
         superblock: Superblock,
         bitmap: Bitmap,
         io: InodeIo,
@@ -620,7 +621,7 @@ mod tests {
     /// bitmap and hints stay consistent.
     fn fixture() -> Fixture {
         let mut cache =
-            BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), NoSecondLevel, 8).unwrap();
+            BlockCache::with_pool(RamDisk::new(64, BLOCK_SIZE).unwrap(), MfsSecondLevel::off(), 8).unwrap();
         let mut superblock = Superblock {
             inode_count: 64,
             inode_map_blocks: 1,
