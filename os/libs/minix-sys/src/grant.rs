@@ -178,6 +178,39 @@ impl GrantTable {
         Ok(grant_id(g as u32, seq as u32))
     }
 
+    /// Grant one process access into another's memory (magic grant).
+    ///
+    /// C: `cpf_grant_magic` — safecopies.c:198-220. 与
+    /// [`Self::grant_direct`] 的唯一差别是**转账方与收方分离**：
+    /// `who_from` 是缓冲的所有者、`who_to` 是被授权读写它的进程。VFS 用它
+    /// 把**用户进程**的缓冲直接交给 FS 写（`cpf_grant_magic(fs_e, user_e,
+    /// user_addr, len, CPF_WRITE|cpflag)` — request.c:844/1087）。
+    ///
+    /// 提交纪律同 direct：先填槽，最后写 `flags`（USED|MAGIC|VALID|access）
+    /// 作为内核认可的提交点。
+    pub fn grant_magic(
+        &mut self,
+        transport: &impl KernelCallTransport,
+        who_to: i32,
+        who_from: i32,
+        start: u64,
+        len: u64,
+        access: CpFlags,
+    ) -> Result<i32, i32> {
+        if !access_check(access) {
+            return Err(minix_types::EINVAL);
+        }
+        let g = self.new_grantslot(transport)?;
+        let seq = self.slots[g].seq;
+        // SAFETY(test-shape): g < slots.len() by new_grantslot's contract.
+        let slot = unsafe { self.slots.get_unchecked_mut(g) };
+        slot.u.magic = minix_types::CpGrantMagic { who_from, who_to, start, len };
+        slot.faulted = GRANT_INVALID;
+        // Commit point: flags word last (C's __insn_barrier + flags store).
+        slot.flags = (access | CpFlags::MAGIC | CpFlags::USED | CpFlags::VALID).bits() as i32;
+        Ok(grant_id(g as u32, seq as u32))
+    }
+
     /// Revoke a grant (C: `cpf_revoke` — safecopies.c:218-263). Returns
     /// `Ok(GRANT_FAULTED)` when a CPF_TRY grant saw a soft fault, `Ok(0)`
     /// on success, `Err(EINVAL)` for an unknown/unused ID.
@@ -242,6 +275,28 @@ mod tests {
     }
 
     #[test]
+    fn test_grant_magic_lays_out_c_slot() {
+        // C: cpf_grant_magic fills who_from/who_to/start/len, then commits
+        // via the flags word (access | MAGIC | USED | VALID).
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0); // sys_setgrant OK
+        canned.reply(0);
+
+        let mut table = GrantTable::new();
+        let gid = table
+            .grant_magic(&canned, 1 /* FS */, 5 /* user */, 0x4000, 128, CpFlags::WRITE)
+            .expect("first grant");
+        assert_eq!(grant_idx(gid), 0);
+        // SAFETY(test): MAGIC was just set on this slot.
+        let slot = unsafe { table.slots[0].cp_magic() };
+        assert_eq!(
+            (slot.who_to, slot.who_from, slot.start, slot.len),
+            (1, 5, 0x4000, 128)
+        );
+        let flags = table.slots[0].cp_flags();
+        assert!(flags.contains(CpFlags::WRITE | CpFlags::MAGIC | CpFlags::USED | CpFlags::VALID));
+    }
+
     fn test_grant_revoke_recycles_slot_with_sequence_bump() {
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
