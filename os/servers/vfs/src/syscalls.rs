@@ -132,9 +132,61 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 None => return SyscallResult::Error(minix_types::EBADF),
             };
             match seek_pos(whence, cur, size, offset, is_fifo) {
-                Ok((new_pos, _inhibit)) => {
+                Ok((new_pos, inhibit)) => {
                     filp.pos = new_pos;
-                    SyscallResult::Ok(0)
+                    // C `do_lseek` 把新位置写进回复载荷
+                    // （`m_vfs_lc_lseek.offset`，open.c:665-666）——两条
+                    // 出口（发不发抑制预读）都要带。
+                    let mut reply = minix_types::Message {
+                        m_type: minix_types::OK,
+                        ..minix_types::Message::default()
+                    };
+                    // SAFETY: `mess_vfs_lc_lseek { off_t offset; }`
+                    // （ipc.h:2206-2210）在负载区首字。
+                    unsafe {
+                        reply.m_u.raw[0..8].copy_from_slice(&new_pos.to_le_bytes());
+                    }
+                    let target = state
+                        .fproc_table
+                        .get(fp_slot)
+                        .map(|fp| fp.endpoint)
+                        .unwrap_or(minix_types::Endpoint::NONE);
+                    if !inhibit {
+                        // 位置没变：不打扰 FS（C open.c:639）。
+                        state.queue_reply_msg(target, reply);
+                        return SyscallResult::Ok(0);
+                    }
+                    // 位置变了：发 `REQ_INHIBREAD`（抑制预读）后回信——
+                    // 续接体 `InhibRead` 负责把新位置带上（C :642-645）。
+                    let fs_e = match state
+                        .vnode_table
+                        .get(VnodeId(
+                            state.filp_table.get(crate::filp::FilpId(filp_idx)).unwrap().vnode.unwrap(),
+                        ))
+                        .map(|v| (v.fs, v.ino))
+                    {
+                        Some(pair) => pair,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                    let vmnt_id = match state.vmnt_table.find_by_fs(fs_e.0) {
+                        Some(v) => v,
+                        None => return SyscallResult::Error(minix_types::EIO),
+                    };
+                    let Some(worker) = state.current_worker else {
+                        return SyscallResult::Error(minix_types::EAGAIN);
+                    };
+                    if let Some(wp) = state.worker_pool.get_mut(worker) {
+                        wp.cont = Some(crate::worker::WorkerCont::InhibRead { offset: new_pos });
+                    }
+                    state.pending_fs = Some(crate::main_loop::PendingFs {
+                        vmnt: vmnt_id.0,
+                        fs_e: fs_e.0,
+                        worker,
+                        grant: 0, // 无数据面
+                        user: target,
+                        req: crate::request::encode_inhibread(fs_e.1),
+                    });
+                    SyscallResult::Suspend
                 }
                 Err(e) => SyscallResult::Error(e.to_errno()),
             }
@@ -1014,7 +1066,10 @@ mod tests {
         }
         state.run_worker_continuations();
         assert_eq!(state.vnode_table.get(vid).unwrap().size, 10, "成功即更新大小");
-        assert_eq!(state.take_reply(), Some((user, 0)));
+        assert_eq!(
+            state.take_reply().map(|(t, msg)| (t, msg.m_type)),
+            Some((user, 0))
+        );
 
         // 失败：大小不动。
         let idx2 = state
@@ -1032,7 +1087,10 @@ mod tests {
         }
         state.run_worker_continuations();
         assert_eq!(state.vnode_table.get(vid).unwrap().size, 10, "失败不动大小");
-        assert_eq!(state.take_reply(), Some((user, minix_types::EACCES)));
+        assert_eq!(
+            state.take_reply().map(|(t, msg)| (t, msg.m_type)),
+            Some((user, minix_types::EACCES))
+        );
     }
 
     /// `Read` 臂（模板的第二个）：门序照 C `read_write` —— 负 fd / 无 filp
@@ -1283,11 +1341,20 @@ mod tests {
             let v = state.vnode_table.get_mut(VnodeId(0)).unwrap();
             v.mode = 0o100644;
             v.size = 1000;
+            v.fs = Endpoint::MFS;
         }
         {
             let f = state.filp_table.get_mut(fid).unwrap();
             f.vnode = Some(0);
             f.pos = 10;
+        }
+        // 抑制预读要经挂载窗口：给该 vnode 的 FS 建一行 vmnt（dev 必须是
+        // 真设备号——`NO_DEV` 行按空行处理）。
+        let vmnt = state.vmnt_table.alloc().unwrap();
+        {
+            let m = state.vmnt_table.get_mut(vmnt).unwrap();
+            m.fs = Endpoint::MFS;
+            m.dev = 7;
         }
         let call = VfsCallNum::Lseek;
         // SEEK_SET(0) 到 40。
@@ -1304,9 +1371,119 @@ mod tests {
                 },
             },
         };
-        dispatch_syscall(&mut state, call);
+        // 本测试是首个走到**挂起阶段**的臂级测试：直调 dispatch 时没有
+        // run_once 的绑槽层，故手工绑一个槽（C 的作业总在槽上跑）。
+        let worker = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &state.current_message,
+            )
+            .unwrap();
+        state.current_worker = Some(worker);
+        let r = dispatch_syscall(&mut state, call);
         let f = state.filp_table.get(fid).unwrap();
-        assert_eq!(f.pos, 40);
+        assert_eq!(f.pos, 40, "位置已改（C actual_lseek:640）");
+        // 位置变了 → 发 `REQ_INHIBREAD` 并挂起（C :642-645 的 req_inhibread）。
+        assert_eq!(r, SyscallResult::Suspend);
+        let pending = state.pending_fs.expect("抑制预读已登记");
+        assert_eq!(pending.req.m_type, minix_types::REQ_INHIBREAD);
+        assert_eq!(pending.user, Endpoint::from_generation_slot(1, 0));
+
+        // 位置**不变**的对照：不发 FS、直接回带新位置的回复（C open.c:639）。
+        let mut state2 = seeded(100);
+        let fid2 = state2.filp_table.alloc_filp(0o644).unwrap();
+        state2
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[4] = Some(fid2.get());
+        {
+            let v = state2.vnode_table.get_mut(VnodeId(0)).unwrap();
+            v.mode = 0o100644;
+            v.size = 1000;
+        }
+        {
+            let f = state2.filp_table.get_mut(fid2).unwrap();
+            f.vnode = Some(0);
+            f.pos = 40;
+        }
+        state2.current_message = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: call as i32,
+            m_u: MessageUnion {
+                // SEEK_CUR(1) + offset 0 → newpos == cur（位置不变）。
+                m_m7: MessageM7 { m7i1: 0, m7i2: 0, m7i3: 4, m7i4: 1, ..Default::default() },
+            },
+        };
+        assert_eq!(dispatch_syscall(&mut state2, call), SyscallResult::Ok(0));
+        assert!(state2.pending_fs.is_none(), "位置没变不打扰 FS");
+        let (target, reply) = state2.take_reply().expect("回复已入队");
+        assert_eq!(target, Endpoint::from_generation_slot(1, 0));
+        assert_eq!(reply.m_type, minix_types::OK);
+        // SAFETY(test): 回复载荷首字是新位置。
+        let off = unsafe {
+            let raw = &reply.m_u.raw;
+            let mut b8 = [0u8; 8];
+            b8.copy_from_slice(&raw[0..8]);
+            i64::from_le_bytes(b8)
+        };
+        assert_eq!(off, 40, "回复带新位置（C do_lseek:665-666）");
+    }
+
+    /// `InhibRead` 续接：抑制预读的回复到达后，把新位置带上回给用户；
+    /// 请求失败则按错误回（位置已改，C 的语义如此）。
+    #[test]
+    fn test_worker_continuation_inhibread_replies_with_offset() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::InhibRead { offset: 0x99 });
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, user);
+        assert_eq!(reply.m_type, 0);
+        // SAFETY(test): 首字即新位置。
+        let off = unsafe {
+            let raw = &reply.m_u.raw;
+            let mut b8 = [0u8; 8];
+            b8.copy_from_slice(&raw[0..8]);
+            i64::from_le_bytes(b8)
+        };
+        assert_eq!(off, 0x99);
+
+        // 失败：状态透传（不带载荷）。
+        let idx2 = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        {
+            let wp = state.worker_pool.get_mut(idx2).unwrap();
+            wp.cont = Some(WorkerCont::InhibRead { offset: 0x99 });
+            wp.sendrec = Some(Message { m_type: minix_types::EIO, ..Message::default() });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EIO))
+        );
     }
 
     #[test]

@@ -597,6 +597,20 @@ pub fn decode_lookup_reply(status: i32, msg: &Message) -> Option<crate::path::Lo
     }
 }
 
+/// `REQ_INHIBREAD` 请求（C `req_inhibread` — request.c:374-384）：载荷只有
+/// `{inode}`，让 FS 丢掉该 inode 的预读状态（`lseek` 改了位置时发）。
+pub fn encode_inhibread(ino: u64) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_INHIBREAD,
+        ..Message::default()
+    };
+    // SAFETY: 载荷只有 `ino_t inode` 一个域，写在负载区首字。
+    unsafe {
+        msg.m_u.raw[0..8].copy_from_slice(&ino.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_FTRUNC` 请求（C `req_ftrunc` — request.c:261-282）。
 ///
 /// VFS 的 `truncate_vnode` 只发一种形状：`req_ftrunc(fs_e, ino, newsize, 0)`

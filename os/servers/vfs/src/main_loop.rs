@@ -341,10 +341,11 @@ pub struct VfsState {
     /// 循环——C 的 `fs_sendrec` 在同一处既登记又发送，这里拆成两半）。
     pub pending_fs: Option<PendingFs>,
     /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
-    /// `(调用方, m_type)` 入队，`run()` 在每轮循环尾用
-    /// [`send_reply`] 发出（C `reply(who_e, result)` 的位置）。
+    /// `(调用方, 回复消息)` 入队，`run()` 在每轮循环尾发出（C `reply(who_e,
+    /// result)` 的位置，`job_m_out` 就是那条消息）。多数回复只有 `m_type`
+    /// （状态字）；带载荷的（如 `lseek` 的新位置）由 `queue_reply_msg` 入队。
     /// `Suspend` 的臂不入队——它们的回复在 FS 应答落地时发。
-    pub pending_reply: Option<(Endpoint, i32)>,
+    pub pending_reply: Option<(Endpoint, Message)>,
 }
 
 impl VfsState {
@@ -941,9 +942,30 @@ impl VfsState {
             if status == minix_types::ERESTART {
                 status = minix_types::EIO;
             }
+            // 带载荷的回复（少数臂需要，如 lseek 的新位置）：臂把它填进
+            // 这里，由下面的统一收尾发出——**不能**在臂里直接
+            // `queue_reply_msg`，否则会被收尾的裸回复覆盖。
+            let mut reply_payload: Option<Message> = None;
             match cont {
                 crate::worker::WorkerCont::Fstat { grant } => {
                     let _ = self.revoke_grant(grant);
+                }
+                crate::worker::WorkerCont::InhibRead { offset } => {
+                    // 位置已在臂里改好（C `actual_lseek:640`）；这里只把新位置
+                    // 填进回复载荷（C `do_lseek` 的 `m_vfs_lc_lseek.offset`）。
+                    // 请求失败时按 C 返回错误（位置仍已改动）。
+                    let mut m = Message {
+                        m_type: status,
+                        ..Message::default()
+                    };
+                    if status == 0 {
+                        // SAFETY: `mess_vfs_lc_lseek { off_t offset; }`
+                        // （ipc.h:2206-2210）在负载区首字。
+                        unsafe {
+                            m.m_u.raw[0..8].copy_from_slice(&offset.to_le_bytes());
+                        }
+                    }
+                    reply_payload = Some(m);
                 }
                 crate::worker::WorkerCont::Ftrunc { vnode, newsize } => {
                     // 成功时更新 vnode 大小（C `truncate_vnode` 尾部的
@@ -1106,12 +1128,17 @@ impl VfsState {
                 && let Some(fp) = self.fproc_table.get(fp_slot)
             {
                 let target = fp.endpoint;
-                let result = if status == 0 {
-                    crate::call_table::SyscallResult::Ok(0)
-                } else {
-                    crate::call_table::SyscallResult::Error(status)
-                };
-                self.queue_reply(target, result);
+                match reply_payload {
+                    Some(m) => self.queue_reply_msg(target, m),
+                    None => {
+                        let result = if status == 0 {
+                            crate::call_table::SyscallResult::Ok(0)
+                        } else {
+                            crate::call_table::SyscallResult::Error(status)
+                        };
+                        self.queue_reply(target, result);
+                    }
+                }
             }
         }
     }
@@ -1257,11 +1284,20 @@ impl VfsState {
             SyscallResult::Nosys => minix_types::ENOSYS,
             SyscallResult::Suspend => return,
         };
-        self.pending_reply = Some((target, code));
+        self.queue_reply_msg(target, Message { m_type: code, ..Message::default() });
+    }
+
+    /// 入队一条**带载荷**的回复（C 的 `job_m_out` 在返回前被臂填字段，
+    /// 如 `lseek` 把新位置写进 `m_vfs_lc_lseek.offset`）。
+    pub fn queue_reply_msg(&mut self, target: Endpoint, msg: Message) {
+        if target == Endpoint::NONE || target.to_user_slot().is_none() {
+            return;
+        }
+        self.pending_reply = Some((target, msg));
     }
 
     /// 取走待发回复（`run()` 每轮循环尾调用）。
-    pub fn take_reply(&mut self) -> Option<(Endpoint, i32)> {
+    pub fn take_reply(&mut self) -> Option<(Endpoint, Message)> {
         self.pending_reply.take()
     }
 
@@ -1545,9 +1581,8 @@ impl minix_sef::SefIpc for VfsIpc {
 /// 应答只带 `m_type`（C 的 `reply` 同样是 `memset(&m, 0, sizeof(m));
 /// m.m_type = result` 的裸回复）——数据面早已由各臂自己拷出或经
 /// FS 应答落地。
-fn send_reply(target: Endpoint, code: i32) {
+fn send_reply(target: Endpoint, reply: Message) {
     use minix_sys::ipc::IpcTransport;
-    let reply = Message { m_type: code, ..Message::default() };
     // 非阻塞发（C `ipc_sendnb`）：调用方在 sendrec 里等着，不会拒绝接收。
     let _ = minix_sys::ipc::DirectTrapTransport.sendnb(target, &reply);
 }
@@ -1575,7 +1610,10 @@ pub fn run() -> ! {
     // C main.c:435-436 — `mess.m_type = OK; ipc_send(PM_PROC_NR, &mess)`：
     // 进程表收齐后把成功回给 PM（PM 侧 `vfs_init_sync` 的末条是 sendrec
     // 屏障，等的就是这一条——不发则 PM 启动链停在这里）。
-    send_reply(Endpoint::PM, minix_types::OK);
+    send_reply(
+        Endpoint::PM,
+        Message { m_type: minix_types::OK, ..Message::default() },
+    );
     state.finish_init();
 
     // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
@@ -1607,8 +1645,8 @@ pub fn run() -> ! {
                 let _ = state.run_once(&recv.message, &codec);
                 // W3 回复半：本轮分发的回复在循环尾发出（C `do_work`
                 // 尾部的 `reply(who_e, result)`）。
-                if let Some((target, code)) = state.take_reply() {
-                    send_reply(target, code);
+                if let Some((target, reply)) = state.take_reply() {
+                    send_reply(target, reply);
                 }
                 // 臂登记的 FS 对话在这一段发出（生产传输：trap 直连 +
                 // grant 已由臂发出）。发送失败在 flush 内部收尾。
@@ -1757,7 +1795,7 @@ mod tests {
         state.run_worker_continuations();
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
         assert_eq!(
-            state.take_reply(),
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, minix_types::EIO)),
             "相位 2 的 grant 在宿主不可达 → EIO 收尾（不悬挂）"
         );
@@ -1818,7 +1856,7 @@ mod tests {
             "写方向：新位置越过旧大小 → 抬高 vnode 大小（C read.c:255-259）"
         );
         assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x140);
-        assert_eq!(state.take_reply(), Some((user, 0x40)));
+        assert_eq!(state.take_reply().map(|(t, m)| (t, m.m_type)), Some((user, 0x40)));
 
         // 反向对照：新位置**未**越过旧大小 → 大小不动。
         let idx2 = state
@@ -1907,7 +1945,7 @@ mod tests {
             "位置按回复的 seek_pos 推进"
         );
         assert_eq!(
-            state.take_reply(),
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, 0x20)),
             "状态＝实际读到的字节数（C cum_io）"
         );
@@ -1942,7 +1980,7 @@ mod tests {
         }
         state.run_worker_continuations();
         assert_eq!(
-            state.take_reply(),
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, 0)),
             "Fstat 成功：状态 0 回用户"
         );
@@ -1963,7 +2001,10 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
-        assert_eq!(state.take_reply(), Some((user, minix_types::EIO)));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EIO))
+        );
     }
 
     /// W3 回复半：`SyscallResult` → 回复入队的映射（C `do_work` 尾部
@@ -1976,19 +2017,28 @@ mod tests {
         let mut state = VfsState::new();
 
         state.queue_reply(user, SyscallResult::Ok(7));
-        assert_eq!(state.take_reply(), Some((user, 7)));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 7))
+        );
 
         state.queue_reply(user, SyscallResult::Error(minix_types::EINVAL));
-        assert_eq!(state.take_reply(), Some((user, minix_types::EINVAL)));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EINVAL))
+        );
 
         state.queue_reply(user, SyscallResult::Nosys);
-        assert_eq!(state.take_reply(), Some((user, minix_types::ENOSYS)));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::ENOSYS))
+        );
 
         state.queue_reply(user, SyscallResult::Suspend);
-        assert_eq!(state.take_reply(), None, "Suspend 的回复在 FS 应答时发");
+        assert!(state.take_reply().is_none(), "Suspend 的回复在 FS 应答时发");
 
         state.queue_reply(Endpoint::NONE, SyscallResult::Ok(0));
-        assert_eq!(state.take_reply(), None, "无调用方不发");
+        assert!(state.take_reply().is_none(), "无调用方不发");
     }
 
     #[test]

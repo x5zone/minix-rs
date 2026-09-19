@@ -89,6 +89,12 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `Lseek` 的"抑制预读"请求（`REQ_INHIBREAD`）：位置已改，回复到达后
+    /// 把新位置写进回复载荷（C `do_lseek` 的 `job_m_out.m_vfs_lc_lseek`）。
+    InhibRead {
+        /// 新的文件位置（回给用户）。
+        offset: i64,
+    },
     /// `Ftruncate`（`REQ_FTRUNC`）：回复只有状态，但成功时要按 C
     /// `truncate_vnode:382` 把 vnode 大小改成新长度。
     Ftrunc {
