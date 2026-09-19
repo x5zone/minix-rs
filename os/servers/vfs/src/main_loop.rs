@@ -2380,9 +2380,19 @@ impl VfsState {
             wp.state = crate::worker::WorkerState::WaitingForFs;
         }
         let _ = fp_slot;
-        minix_sys::ipc::DirectTrapTransport
-            .send(drv_e, req)
-            .map_err(|_| minix_types::EIO)
+        // C `drv_sendrec` 失败后的分类（bdev.c:60-68）：死端点
+        // （`EDEADSRCDST`/`EDEADEPT`）先 `dmap_unmap_by_endpt` 解映射，
+        // 一切类别统一折 EIO。内核状态在 TrapStatus 里（正号域），宿主
+        // 传输恒 EIO(5) → `Fatal` 类 → 不解映射（不误伤活表）。
+        match minix_sys::ipc::DirectTrapTransport.send(drv_e, req) {
+            Ok(()) => Ok(()),
+            Err(st) => {
+                if crate::bdev::classify_send(st.0) == crate::bdev::SendFault::Dead {
+                    crate::device_map::unmap_by_endpt(&mut self.dmap_table, drv_e);
+                }
+                Err(minix_types::EIO)
+            }
+        }
     }
 
     /// 套接字读写的驱动请求（C `sdev_readwrite` sdev.c:336-410）：三张可选的

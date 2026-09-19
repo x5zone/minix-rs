@@ -6689,6 +6689,35 @@ mod tests {
         );
     }
 
+    /// `send_drv_for_slot` 的死驱动分类面：宿主传输恒 `EIO`（`Fatal` 类）
+    /// → **不**解映射（不误伤活表）；`Dead` 类（202/215，真机内核状态）
+    /// 才解映射——分类判据由 `bdev::classify_send` 的钉值测试锁死。
+    #[test]
+    fn test_send_drv_fatal_class_keeps_dmap() {
+        let mut state = VfsState::new();
+        let drv = Endpoint::from_generation_slot(0, 11);
+        state.dmap_table.get_mut(4).unwrap().driver = Some(drv);
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .unwrap();
+        let r = state.send_drv_for_slot(
+            idx,
+            None,
+            drv,
+            &Message { m_type: 0x406, ..Message::default() },
+        );
+        assert_eq!(r, Err(minix_types::EIO), "宿主传输失败折 EIO");
+        assert!(
+            state.dmap_table.get(4).unwrap().driver.is_some(),
+            "Fatal 类（宿主 EIO）不解映射——只有真机的 Dead 类才动表"
+        );
+    }
+
     /// `ds_fill_label` 的失败半：DS 不可达（宿主 trap 必败）时返回
     /// `None` 且**不污染** `driver_labels`——本地表保持原样，fail-closed
     /// 链（空表 → EINVAL）不变。
