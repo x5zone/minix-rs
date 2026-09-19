@@ -2320,9 +2320,97 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                         }
                     };
                 }
-                // 块设备（`bdev_ioctl` + `filp_ioctl_fp` 守卫）与套接字
-                // （`sdev_ioctl`）两条分支要各自的请求编码（BDEV_IOCTL /
-                // SDEV_IOCTL 的载荷与守卫），本批未接——登记缺口，不假装支持。
+                crate::device_map::IoctlTarget::Sock => {
+                    // C `do_ioctl` 的 `S_IFSOCK` 支（device.c:48-50）→
+                    // `sdev_ioctl(dev, request, buf, filp_flags)`
+                    // （sdev.c:415-448）：smap 按设备号找驱动 → `make_ioctl_grant`
+                    // → `SDEV_IOCTL` 消息 → **进程级挂起**（套接字调用可能等）。
+                    let drv_e = match crate::device_map::smap_endpt_by_dev(&state.smap_table, vnode_sdev)
+                    {
+                        Some(e) => e,
+                        None => return SyscallResult::Error(minix_types::EIO),
+                    };
+                    let (_, sock_id) = match crate::device_map::split_smap_dev(vnode_sdev) {
+                        Some(p) => p,
+                        None => return SyscallResult::Error(minix_types::EIO),
+                    };
+                    let Some(worker) = state.current_worker else {
+                        return SyscallResult::Error(minix_types::EAGAIN);
+                    };
+                    let user_e = state
+                        .fproc_table
+                        .get(fp_slot)
+                        .map(|fp| fp.endpoint)
+                        .unwrap_or(minix_types::Endpoint::NONE);
+                    // C `make_ioctl_grant`（与字符设备那条同一套解码）。
+                    let access = minix_types::CpFlags::from_bits_truncate(
+                        crate::device_map::ioctl_access(req),
+                    );
+                    let size = crate::device_map::ioctl_size(req);
+                    let grant = if size > 0 && arg != 0 {
+                        match state.grant_user_buffer(drv_e, user_e, arg, size, access) {
+                            Ok(g) => g,
+                            Err(_) => return SyscallResult::Error(minix_types::EIO),
+                        }
+                    } else {
+                        minix_types::GRANT_INVALID
+                    };
+                    let mut m = minix_types::Message {
+                        m_type: minix_sockdriver::sdev::SdevRequest::Ioctl as i32,
+                        ..minix_types::Message::default()
+                    };
+                    // SAFETY: `mess_vfs_lsockdriver_ioctl { int32_t req_id@0;
+                    // int32_t sock_id@4; unsigned long request@8;
+                    // cp_grant_id_t grant@16; endpoint_t user_endpt@20;
+                    // int sflags@24 }`（ipc.h:2284-2293）。
+                    unsafe {
+                        let raw = &mut m.m_u.raw;
+                        raw[0..4].copy_from_slice(&user_e.0.to_le_bytes());
+                        raw[4..8].copy_from_slice(&sock_id.to_le_bytes());
+                        raw[8..16].copy_from_slice(&req.to_le_bytes());
+                        raw[16..20].copy_from_slice(&grant.to_le_bytes());
+                        raw[20..24].copy_from_slice(&user_e.0.to_le_bytes());
+                        let sflags = if filp_flags & (crate::fcntl::O_NONBLOCK as i32) != 0 {
+                            minix_sockdriver::sdev::SDEV_NONBLOCK as i32
+                        } else {
+                            0
+                        };
+                        raw[24..28].copy_from_slice(&sflags.to_le_bytes());
+                    }
+                    if minix_sys::ipc::IpcTransport::send(
+                        &minix_sys::ipc::DirectTrapTransport,
+                        drv_e,
+                        &m,
+                    )
+                    .is_err()
+                    {
+                        if grant != minix_types::GRANT_INVALID {
+                            let _ = state.revoke_grant(grant);
+                        }
+                        return SyscallResult::Error(minix_types::EIO);
+                    }
+                    let block = crate::fproc::SdevBlock {
+                        dev: vnode_sdev,
+                        call: crate::fproc::SdevCall::Ioctl,
+                        grants: [
+                            if grant != minix_types::GRANT_INVALID {
+                                Some(grant)
+                            } else {
+                                None
+                            },
+                            None,
+                            None,
+                        ],
+                        aux: crate::fproc::SdevAux::None,
+                    };
+                    return match state.suspend_on_sdev(Some(fp_slot), worker, block) {
+                        Ok(()) => SyscallResult::Suspend,
+                        Err(e) => SyscallResult::Error(e),
+                    };
+                }
+                // 块设备（`bdev_ioctl` + `filp_ioctl_fp` 守卫）：要 BDEV_IOCTL
+                // 的载荷与那个守卫（防止 ioctl 期间改同一设备节点），本批未接
+                // ——登记缺口，不假装支持。
                 _ => SyscallResult::Error(minix_types::ENOSYS),
             }
         }
@@ -5212,6 +5300,115 @@ mod tests {
         );
     }
 
+    /// `Ioctl` 的套接字分支（C `do_ioctl` 的 `S_IFSOCK` 支 + `sdev_ioctl`）：
+    /// smap 按设备号找驱动 → `make_ioctl_grant`（access/size 解码 + magic grant）
+    /// → `SDEV_IOCTL` → **进程级挂起**；回复走通用 `SDEV_REPLY`（状态在载荷
+    /// 第二格），由 `finish_sdev_blocked` 收尾。
+    #[test]
+    fn test_ioctl_socket_branch_and_reply() {
+        use minix_types::Endpoint;
+
+        let mut state = seeded(100);
+        crate::main_loop::seed_ready_state(&mut state);
+        let drv = Endpoint::from_generation_slot(0, 11);
+        state.smap_table.entries[0].endpt = Some(drv);
+        let dev = crate::device_map::make_smap_dev(state.smap_table.entries[0].num, 0x42);
+        // fd 3 → 套接字 vnode（`v_sdev` = 那个设备号）。
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT | crate::open::W_BIT).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::PFS;
+            v.ino = 0x11;
+            v.mode = crate::open::S_IFSOCK | 0o777;
+            v.sdev = dev;
+            v.ref_count = 1;
+        }
+        state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+
+        // `ioctl(fd, FIONBIO 一类)`：宿主下发送失败 → EIO，且**不挂起**、
+        // 不留悬空 grant。
+        let mut m = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Ioctl as i32,
+            ..Message::default()
+        };
+        // SAFETY: mess_lc_vfs_ioctl：fd@0、req@8、arg@16。请求位带 IOC_IN
+        // （`_IOW`：驱动读用户缓冲），size 位非零 → 会建 grant。
+        unsafe {
+            let raw = &mut m.m_u.raw;
+            raw[0..4].copy_from_slice(&3i32.to_le_bytes());
+            raw[8..16].copy_from_slice(&(0x8000_0000u64 | (4u64 << 16)).to_le_bytes());
+            raw[16..24].copy_from_slice(&0x6000u64.to_le_bytes());
+        }
+        state.current_message = m;
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+            SyscallResult::Error(minix_types::EIO)
+        );
+        assert!(matches!(
+            state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap()
+                .blocked_on,
+            crate::fproc::BlockedOn::None
+        ));
+
+        // 手工摆出"已挂起"的现场，喂通用 `SDEV_REPLY` → 用户拿到载荷里的
+        // status（第二格），挂起态清掉。
+        let grant = state
+            .grant_user_buffer(
+                drv,
+                Endpoint::from_generation_slot(1, 0),
+                0x6000,
+                4,
+                minix_types::CpFlags::READ,
+            )
+            .expect("grant 表已热身");
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            fp.blocked_on = crate::fproc::BlockedOn::Sdev(crate::fproc::SdevBlock {
+                dev,
+                call: crate::fproc::SdevCall::Ioctl,
+                grants: [Some(grant), None, None],
+                aux: crate::fproc::SdevAux::None,
+            });
+        }
+        let mut reply = Message {
+            m_type: minix_sockdriver::sdev::SdevReply::Reply as i32,
+            ..Message::default()
+        };
+        reply.m_source = drv;
+        // SAFETY(test): `mess_lsockdriver_vfs_reply { req_id@0; status@4; }`。
+        unsafe {
+            reply.m_u.raw[4..8].copy_from_slice(&(-minix_types::ENOTTY).to_le_bytes());
+        }
+        assert!(state.finish_sdev_blocked(&reply));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), -minix_types::ENOTTY)),
+            "ioctl 的状态在通用回复的第二格"
+        );
+    }
+
     /// `Socketpair` 的成对编排（C `do_socketpair` socket.c:224-266）：驱动回复
     /// 带回**两个**套接字号 → 串行建两个 `make_sock_fd`（第一半带着"另一半的
     /// 设备号"、第二半带着"第一个 fd"）→ 最后回 `m_vfs_lc_fdpair { fd0, fd1 }`。
@@ -6794,17 +6991,26 @@ mod tests {
             "有驱动就真发（宿主下发送失败）"
         );
 
-        // ⑤ 块设备与套接字：各自的请求编码（`BDEV_IOCTL`/`SDEV_IOCTL` 的载荷
-        // 与守卫）未接 → ENOSYS（登记缺口）。
-        for mode in [crate::open::S_IFBLK | 0o644, crate::open::S_IFSOCK | 0o644] {
-            let (mut state, _fid) = setup(mode);
-            state.current_message = ioctl_msg(3, 0x5401);
-            assert_eq!(
-                dispatch_syscall(&mut state, VfsCallNum::Ioctl),
-                SyscallResult::Error(minix_types::ENOSYS),
-                "mode {mode:o} 的两条分支待接"
-            );
-        }
+        // ⑤ 套接字：smap 里没这个设备号的驱动 → EIO（C `sdev_ioctl` 的
+        // `get_smap_by_dev` 失败面）；有驱动则真发 `SDEV_IOCTL`（宿主下发送
+        // 失败 → EIO）。
+        let (mut state, _fid) = setup(crate::open::S_IFSOCK | 0o644);
+        state.current_message = ioctl_msg(3, 0x5401);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+            SyscallResult::Error(minix_types::EIO),
+            "套接字要有 smap 行"
+        );
+
+        // ⑥ 块设备：`BDEV_IOCTL` 的载荷与 `filp_ioctl_fp` 守卫未接 →
+        // ENOSYS（登记缺口）。
+        let (mut state, _fid) = setup(crate::open::S_IFBLK | 0o644);
+        state.current_message = ioctl_msg(3, 0x5401);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ioctl),
+            SyscallResult::Error(minix_types::ENOSYS),
+            "块设备那条分支待接"
+        );
     }
 
     /// `Fcntl` 臂的本地子集（C `do_fcntl` misc.c:127-300）：`F_DUPFD` 家族
