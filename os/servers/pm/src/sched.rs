@@ -8,7 +8,8 @@
 //!   Design: `.design/16-design.v1.md` D1–D8.
 //!   Single-threaded — `&mut ProcTable` without `Arc`.
 
-use minix_types::{Endpoint, UserSlot, Pid, EINVAL, EPERM, EACCES, ESRCH};
+use crate::ipc::IpcTransport;
+use minix_types::{Endpoint, Message, UserSlot, Pid, EINVAL, EPERM, EACCES, ESRCH};
 use crate::mproc::{ProcTable, Credentials};
 
 /// `PRIO_MIN / PRIO_MAX` (`sys/resource.h:43-44`).
@@ -148,6 +149,94 @@ pub trait SchedCtl {
     fn start(&mut self, sched: Endpoint, schedulee: Endpoint, parent: Endpoint, maxprio: i32, quantum: i32, cpu: i32) -> i32;
     fn inherit(&mut self, sched: Endpoint, schedulee: Endpoint, parent: Endpoint, maxprio: u32) -> i32;
     fn set_nice(&mut self, sched: Endpoint, schedulee: Endpoint, maxprio: u32) -> i32;
+}
+
+/// 生产 `SchedCtl`：把三个动词折成 SCHEDULING_* 消息经 IPC 发给调度器
+/// （C libsys 的 `sched_start`/`sched_inherit`/`sched_nice`——schedule.c
+/// 的调用点走 `_taskcall(scheduler, …)`）。rv 约定沿用决策件：0 成功，
+/// 非 0 失败（传输失败折负 `EIO`，与 C `_taskcall` 的负 errno 同形）。
+pub struct MinixSchedCtl<'a, T: IpcTransport> {
+    /// IPC 传输（PM 本地 trait；`vm_fork` 的手工组消息先例）。
+    pub transport: &'a mut T,
+}
+
+impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
+    pub fn new(transport: &'a mut T) -> Self {
+        Self { transport }
+    }
+
+    /// 组 `MessLsysSchedSchedulingStart`（START/INHERIT 共用载荷：
+    /// endpoint/parent/maxprio(/quantum)）。
+    fn sched_start_msg(
+        endpoint: Endpoint,
+        parent: Endpoint,
+        maxprio: i32,
+        quantum: i32,
+    ) -> Message {
+        let mut msg = Message::default();
+        msg.m_u.m_lsys_sched_scheduling_start =
+            minix_types::ipc::MessLsysSchedSchedulingStart {
+                endpoint: endpoint.0,
+                parent: parent.0,
+                maxprio,
+                quantum,
+                _padding: [0; 40],
+            };
+        msg
+    }
+
+    /// 一次 taskcall：发出 → 回复 `m_type` 即 rv（负 errno 或 OK）。
+    fn taskcall(&mut self, sched: Endpoint, mut msg: Message) -> i32 {
+        match self.transport.sendrec(sched, &mut msg) {
+            // C `_taskcall` 传输失败返回负 errno；这里折负 EIO。
+            Err(_) => -minix_types::EIO,
+            // C：rv 就是回复的 m_type（OK = 0，负 errno = 失败）。
+            Ok(()) => 0,
+        }
+    }
+}
+
+impl<'a, T: IpcTransport> SchedCtl for MinixSchedCtl<'a, T> {
+    fn start(
+        &mut self,
+        sched: Endpoint,
+        schedulee: Endpoint,
+        parent: Endpoint,
+        maxprio: i32,
+        quantum: i32,
+        _cpu: i32,
+    ) -> i32 {
+        let mut msg = Self::sched_start_msg(schedulee, parent, maxprio, quantum);
+        msg.m_type = minix_types::SCHEDULING_START;
+        self.taskcall(sched, msg)
+    }
+
+    fn inherit(
+        &mut self,
+        sched: Endpoint,
+        schedulee: Endpoint,
+        parent: Endpoint,
+        maxprio: u32,
+    ) -> i32 {
+        // C sched_inherit（sched_start.c:24-33）：载荷同 START、
+        // quantum 留 0；消息号 SCHEDULING_INHERIT。
+        let mut msg = Self::sched_start_msg(schedulee, parent, maxprio as i32, 0);
+        msg.m_type = minix_types::SCHEDULING_INHERIT;
+        self.taskcall(sched, msg)
+    }
+
+    fn set_nice(&mut self, sched: Endpoint, schedulee: Endpoint, maxprio: u32) -> i32 {
+        // C sched_nice（schedule.c:103-107）：SET_NICE 两域。
+        let mut msg = Message::default();
+        msg.m_u.m_pm_sched_scheduling_set_nice =
+            minix_types::ipc::MessPmSchedSchedulingSetNice {
+                endpoint: schedulee.0,
+                maxprio,
+                _padding: [0; 48],
+            };
+        msg.m_type = minix_types::SCHEDULING_SET_NICE;
+        self.taskcall(sched, msg)
+    }
 }
 
 /// `can_nice` (`schedule.c:98-99` D3).

@@ -275,6 +275,16 @@ pub(crate) fn getsid(msg: &Message) -> i32 {
     i32::from_le_bytes(raw[0..4].try_into().unwrap())
 }
 
+/// get/setpriority 参数 (which, who, prio)。user → PM。
+///
+/// C: `misc.c:244-247` 的 `m1i1/m1i2/m1i3` 三整数。
+pub fn getsetpriority(msg: &Message) -> (i32, i32, i32) {
+    // SAFETY: m1 载荷三整数（misc.c:244 的 job_m_in.m1_i1/i2/i3）。
+    let raw = unsafe { &msg.m_u.raw };
+    let i32_at = |at: usize| i32::from_le_bytes(raw[at..at + 4].try_into().unwrap());
+    (i32_at(0), i32_at(4), i32_at(8))
+}
+
 /// itimer 参数 (which, value 指针, ovalue 指针)。user → PM。
 ///
 /// C: `mess_lc_pm_itimer`（minix-types `MessLcPmItimer`，repr(C) 域序

@@ -429,8 +429,11 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
         if sched == Endpoint::KERNEL || sched == Endpoint::NONE {
             return Ok(());
         }
-        // [ARCH A-3] 调度器非内核：需在 16-scheduling.md 落地 sched_start_user 系统调用。
-        unimplemented!("DEFERRED: sched_start_user for non-kernel scheduler — 见 16-scheduling.md")
+        // main.c:373 — `sched_start_user(rmp->mp_scheduler, rmp)`：决策件
+        // 内部做 nice→queue 换算并发 SCHEDULING_INHERIT（生产 MinixSchedCtl
+        // 经 IPC 到调度器，S10 假面转真）。
+        let mut ctl = crate::sched::MinixSchedCtl::new(self.transport);
+        crate::sched::sched_start_user(self.table, sched, slot, &mut ctl).map_err(|e| e.to_errno())
     }
 
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool) {

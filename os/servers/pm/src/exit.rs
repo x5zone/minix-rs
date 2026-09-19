@@ -478,8 +478,26 @@ pub fn exit_restart<T: crate::ipc::IpcTransport + ?Sized>(
     kern: &mut dyn KernelGateway,
 ) {
     let scheduler = table.procs[slot.get()].resources.scheduler;
-    // 1. sched_stop (425, 16-scheduling.md) — [DEFERRED: D-17] SCHED 服务器（16-stage，A-8）不存在，无对端可通话；C 对失败仅 printf，no-op 与 C 可观测行为一致
-    let _ = scheduler;
+    // 1. sched_stop (forkexit.c:425-441)：用户态调度器在管才发
+    //    SCHEDULING_STOP；调度器拒绝只 printf（C 的可观测面），进程照常
+    //    交还内核调度。
+    if scheduler != Endpoint::KERNEL && scheduler != Endpoint::NONE {
+        let mut msg = Message::default();
+        msg.m_u.m_lsys_sched_scheduling_stop =
+            minix_types::ipc::MessLsysSchedSchedulingStop {
+                endpoint: table.procs[slot.get()].endpoint().0,
+                _padding: [0; 52],
+            };
+        msg.m_type = minix_types::SCHEDULING_STOP;
+        let rv = match transport.sendrec(scheduler, &mut msg) {
+            Ok(()) => msg.m_type,
+            Err(_) => -minix_types::EIO,
+        };
+        if rv != 0 {
+            // C forkexit.c:429-433：只 printf，继续走僵尸化。
+            // 宿主构建下传输不可达时同样走这里（-EIO），行为一致。
+        }
+    }
     // 2. scheduler = NONE (441)
     table.procs[slot.get()].resources.scheduler = Endpoint::NONE;
 

@@ -239,6 +239,25 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
             }
         }
+        // C: do_getsetpriority（misc.c:239-286）——GET 返回 nice-PRIO_MIN，
+        // SET 过权限门后调 sched_nice 通知调度者并回 0。SchedCtl 走生产
+        // MinixSchedCtl（SCHEDULING_SET_NICE 到 mp_scheduler）。
+        PmCall::GetPriority | PmCall::SetPriority => {
+            let (which, who, prio) = super::decode::getsetpriority(msg);
+            let mut ctl = crate::sched::MinixSchedCtl::new(transport);
+            match crate::sched::do_getsetpriority(
+                table,
+                caller,
+                which,
+                who,
+                prio,
+                call == PmCall::GetPriority,
+                &mut ctl,
+            ) {
+                Ok(v) => ReplyIntent::Reply(v),
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // C: do_exit（forkexit.c:246-266）——返回 SUSPEND 且**永不回复**
         //（进程已消亡，"beyond the grave"），plan.md §7.3 的 NoReply 子情形。
         PmCall::Exit => {
@@ -1195,6 +1214,53 @@ fn positive_errno(e: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    /// `setpriority` 的 dispatch 级接线（卡C/S10）：SET 过权限门后经生产
+    /// `MinixSchedCtl` 向进程的调度器发 `SCHEDULING_SET_NICE`（两域
+    /// endpoint/maxprio），用户回 0。
+    #[test]
+    fn test_setpriority_sends_set_nice_to_scheduler() {
+        use minix_types::{Endpoint, Message};
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        // 调度器设为用户态调度器（非 KERNEL/NONE——KERNEL/NONE 会跳过）。
+        let sched = Endpoint::from_generation_slot(0, 4);
+        table.procs[3].resources.scheduler = sched;
+        let mut msg = Message { m_type: 27, ..Message::default() };
+        msg.m_source = ep;
+        // m1i1=which(PRIO_PROCESS=0)、m1i2=who(0=自己)、m1i3=prio(5)。
+        // SAFETY(test): m1 载荷三整数按 misc.c:244 的域序写。
+        unsafe {
+            let raw = &mut msg.m_u.raw;
+            raw[0..4].copy_from_slice(&0i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&0i32.to_le_bytes());
+            raw[8..12].copy_from_slice(&5i32.to_le_bytes());
+        }
+        let intent = dispatch_pm_call(
+            PmCall::SetPriority,
+            &mut table,
+            &mut events,
+            &mut transport,
+            &mut NoopKernel,
+            &mut leak_timers(),
+            UserSlot::new(3),
+            &msg,
+        );
+        assert_eq!(intent, ReplyIntent::Reply(0), "SET 成功回 0");
+        // 生产 ctl 经 sendrec 发了 SCHEDULING_SET_NICE（两域）。
+        let hit = transport
+            .sent()
+            .iter()
+            .find(|(e, m)| *e == sched && m.m_type == minix_types::SCHEDULING_SET_NICE)
+            .expect("SET 要向调度器发 SET_NICE");
+        // SAFETY(test): endpoint@0、maxprio@4（MessPmSchedSchedulingSetNice）。
+        let raw = unsafe { &hit.1.m_u.raw };
+        assert_eq!(
+            i32::from_le_bytes(raw[0..4].try_into().unwrap()),
+            ep.0,
+            "SET_NICE 带目标端点"
+        );
+    }
+
     use super::*;
     use crate::ipc::TestIpcTransport;
     use minix_types::Endpoint;

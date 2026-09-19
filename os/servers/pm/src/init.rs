@@ -45,6 +45,9 @@ pub const NR_SCHED_QUEUES: i32 = 16;
 pub const MAX_USER_Q: i32 = 0;
 /// C: `MIN_USER_Q` — include/minix/config.h:71（= NR_SCHED_QUEUES - 1）。
 pub const MIN_USER_Q: i32 = NR_SCHED_QUEUES - 1;
+
+/// C: `USER_QUANTUM` — include/minix/config.h:74（用户进程时间片）。
+pub const USER_QUANTUM: i32 = 200;
 /// C: `USER_Q` — include/minix/config.h:69（默认用户队列）。
 pub const USER_Q: i32 = (MIN_USER_Q - MAX_USER_Q) / 2 + MAX_USER_Q;
 /// C: `USR_Q` — include/minix/priv.h:95（用户进程，= USER_Q）。
@@ -718,12 +721,25 @@ impl<T: IpcTransport> PmServer<T> {
         }
     }
 
-    /// `sched_start` 调用点（DEFERRED 占位）。
-    ///
-    /// C: `sched_start` — libsys/sched_start.c:46。成功时返回调度器 endpoint
-    /// （SCHED_PROC_NR）；当前返回 `Ok(Endpoint::SCHED)` 占位，真实传输归 16。
-    fn sched_start(&mut self, _schedulee: Endpoint, _parent: Endpoint) -> Result<Endpoint, ()> {
-        Ok(Endpoint::SCHED)
+    /// `sched_start` 调用点（C libsys/sched_start.c:46-88：SCHEDULING_START，
+    /// 四域 endpoint/parent/maxprio/quantum；成功时调度器可能经回复转交，
+    /// 模型取**发去的调度器**——INIT 的调度器就是 SCHED，无转交场景）。
+    fn sched_start(&mut self, schedulee: Endpoint, parent: Endpoint) -> Result<Endpoint, ()> {
+        let mut msg = Message::default();
+        msg.m_u.m_lsys_sched_scheduling_start =
+            minix_types::ipc::MessLsysSchedSchedulingStart {
+                endpoint: schedulee.0,
+                parent: parent.0,
+                maxprio: USER_Q,
+                quantum: USER_QUANTUM,
+                _padding: [0; 40],
+            };
+        msg.m_type = minix_types::SCHEDULING_START;
+        match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
+            Ok(()) => Ok(Endpoint::SCHED),
+            // C 的启动路径 taskcall 失败即 panic（sef_startup 同级 fatal）。
+            Err(_) => Err(()),
+        }
     }
 }
 
@@ -1109,10 +1125,15 @@ mod tests {
         server.init();
         assert!(server.initialized);
 
-        // VFS 同步：4 条逐条 send + 1 条 sendrec（也记录在 sent）。
+        // VFS 同步：4 条逐条 send + 1 条 sendrec（也记录在 sent）；
+        // S29 卡C 转真后 `init_scheduling` 再发一条 SCHEDULING_START 给
+        // SCHED（boot 链真接：INIT 的调度启动不再占位）。
         let sent = server.transport.sent();
-        assert_eq!(sent.len(), 5);
+        assert_eq!(sent.len(), 6);
         assert_eq!(sent[0].0, Endpoint::VFS);
         assert_eq!(sent[0].1.m_type, VFS_PM_INIT);
+        let (sched_e, sched_m) = sent.last().expect("SCHEDULING_START 已发");
+        assert_eq!(*sched_e, Endpoint::SCHED);
+        assert_eq!(sched_m.m_type, minix_types::SCHEDULING_START);
     }
 }
