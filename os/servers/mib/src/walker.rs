@@ -891,7 +891,7 @@ fn func_exec<K: MibKernel, S: MibServices>(
         | FuncKey::Kern(KernFunc::IpcInfo)
         | FuncKey::Vm(_)
         | FuncKey::Hw(_) => {
-            let _ = ctx.svc.vm_info(0, &mut []); // touch the transport honestly
+            let _ = ctx.svc.vm_info(0, Endpoint::NONE, &mut []); // touch the transport honestly
             SysctlOutcome::err(EIO)
         }
     }

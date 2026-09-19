@@ -7,7 +7,6 @@
 
 #![cfg(test)]
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 use minix_types::Endpoint;
@@ -82,6 +81,9 @@ impl MibKernel for FakeKernel {
 pub(crate) struct FakeServices {
     /// Whole `SI_PROC_TAB` image (rows × [`minix_types::MProcSnap`]).
     pub pm_tab: Vec<u8>,
+    /// Whole `SI_PROCLIGHT_TAB` image (rows × 16 B)——C-22 后半的 VFS
+    /// light 行；测试里缺省给空表（A-7 降级路径）。
+    pub light_tab: Vec<u8>,
 }
 
 impl MibServices for FakeServices {
@@ -91,7 +93,13 @@ impl MibServices for FakeServices {
 
     fn getsysinfo(&mut self, target: Endpoint, what: i32, buf: &mut [u8]) -> Result<(), i32> {
         if target == Endpoint::VFS {
-            return Err(minix_types::EIO); // 生产者缺席（A-7 降级路径）
+            if what != minix_types::SI_PROCLIGHT_TAB {
+                return Err(minix_types::EINVAL);
+            }
+            // C-22 后半：light 表按需服务（空表仍在=生产者缺席的降级面）。
+            let n = buf.len().min(self.light_tab.len());
+            buf[..n].copy_from_slice(&self.light_tab[..n]);
+            return Ok(());
         }
         assert_eq!((target, what), (Endpoint::PM, minix_types::SI_PROC_TAB));
         let n = buf.len().min(self.pm_tab.len());
@@ -116,7 +124,7 @@ impl MibServices for FakeServices {
         Err(minix_types::EIO)
     }
 
-    fn vm_info(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> {
+    fn vm_info(&mut self, _: i32, _: Endpoint, _: &mut [u8]) -> Result<(), i32> {
         Err(minix_types::EIO) // VM usage 生产者未接（C 忽略失败，语义不变）
     }
 

@@ -137,14 +137,23 @@ impl<'a> PmRows<'a> {
     }
 }
 
-/// A view over the VFS light table.
-///
-/// `[ARCH: A-7]` the producer is fail-closed today (C-21 second half), so
-/// every slot answers "idle" — `get_lwp_stat`'s VFS lane then never fires,
-/// exactly as if `fpl_blocked_on` were `FP_BLOCKED_ON_NONE`. When the wire
-/// authority lands ([`LIGHT_ROW`] rows), this view decodes them here.
+/// One decoded light row: the block kind and the blocking driver's
+/// endpoint. C: `fpl_blocked_on`/`fpl_task` — proc.c:295-322 consumers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LightRow {
+    /// Raw `FP_BLOCKED_ON_*` discriminator (vfs/const.h:19-25).
+    pub blocked_on: u8,
+    /// Blocking driver endpoint (`NONE` when none).
+    pub task_ep: i32,
+    /// Controlling terminal device (`NO_DEV` when none). C: `fpl_tty`.
+    pub tty: u64,
+}
+
+/// A view over the VFS light table. C: `fproc_tab` — proc.c:20, filled by
+/// VFS's `SI_PROCLIGHT_TAB` producer (C-22 后半已接：`FprocLightSnap`
+/// 16 B/槽)。An empty table (the A-7 degrade path when the producer is
+/// dark) answers "idle" per slot.
 pub struct LightRows<'a> {
-    #[allow(dead_code)]
     bytes: &'a [u8],
 }
 
@@ -162,6 +171,25 @@ impl<'a> LightRows<'a> {
     /// Whether the buffer holds no rows.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Decode one row. `None` = slot past the table (or the whole table
+    /// absent — the caller treats that as "idle", never as an error).
+    pub fn row(&self, mslot: usize) -> Option<LightRow> {
+        if mslot >= self.len() {
+            return None;
+        }
+        let off = mslot * LIGHT_ROW;
+        let fpl_tty = u64::from_le_bytes(self.bytes[off..off + 8].try_into().unwrap());
+        let fpl_blocked_on =
+            u32::from_le_bytes(self.bytes[off + 8..off + 12].try_into().unwrap());
+        let fpl_task =
+            i32::from_le_bytes(self.bytes[off + 12..off + 16].try_into().unwrap());
+        Some(LightRow {
+            blocked_on: fpl_blocked_on as u8,
+            task_ep: fpl_task,
+            tty: fpl_tty,
+        })
     }
 }
 

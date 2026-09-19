@@ -96,7 +96,7 @@ pub trait MibServices {
 
     /// Pull VM statistics (14's CTL_VM handlers).
     /// C: `vm_info_stats`/`vm_info_usage` — vm.c:30-50 一带.
-    fn vm_info(&mut self, what: i32, buf: &mut [u8]) -> Result<(), i32>;
+    fn vm_info(&mut self, what: i32, ep: Endpoint, buf: &mut [u8]) -> Result<(), i32>;
 
     /// Relay a remote subtree call to its owning service (12).
     /// C: `ipc_sendrec(peer, &m_mib_lsys_call)` — remote.c:422-436;
@@ -218,7 +218,7 @@ impl MibServices for SysServices {
         Err(EIO)
     }
 
-    fn vm_info(&mut self, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
+    fn vm_info(&mut self, _what: i32, _ep: Endpoint, _buf: &mut [u8]) -> Result<(), i32> {
         Err(EIO)
     }
 
@@ -422,7 +422,7 @@ pub(crate) mod recording {
             }
         }
 
-        fn vm_info(&mut self, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
+        fn vm_info(&mut self, _what: i32, _ep: Endpoint, _buf: &mut [u8]) -> Result<(), i32> {
             Err(minix_types::EIO)
         }
 

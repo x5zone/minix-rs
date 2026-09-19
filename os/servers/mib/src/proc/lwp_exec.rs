@@ -72,9 +72,9 @@ pub fn kern_lwp<K: MibKernel, S: MibServices>(
 
     let kern = KernelRows::new(&tables.kernel_tab);
     let pm = PmRows::new(&tables.pm_tab);
-    // The light view is A-7 idle until C-21's second half; the lane stays
-    // silent in the fill below.
-    let _light = LightRows::new(&tables.vfs_tab);
+    // C-22 后半：light 表随 VFS 生产者接通——cdev/sdev 阻塞的 wchan/
+    // wmesg 车道由此点亮；表缺席时（A-7 降级）每槽退化为 idle。
+    let light_view = LightRows::new(&tables.vfs_tab);
 
     let old_len = oldp.map(|o| o.left);
     let mut elmax = elmax;
@@ -132,9 +132,12 @@ pub fn kern_lwp<K: MibKernel, S: MibServices>(
         }
         if in_range(old_len, off) && elmax > 0 {
             let mut lwp = zeroed_lwp();
+            let light = light_view.row(mslot as usize);
             fill_user_row(
                 &mut lwp,
                 &kern,
+                &pm,
+                light,
                 mslot as usize,
                 &row,
                 now,
@@ -216,6 +219,11 @@ pub(super) struct RowState {
     pub wmesg: SleepWmesg,
     /// `L_SINTR` accumulation. C: `*flag |= L_SINTR`.
     pub sinter: bool,
+    /// The endpoint `DriverName`/`EndpointName` words name: the blocking
+    /// driver's endpoint (no parens) for the former, the `P_BLOCKEDON`
+    /// peer (parens) for the latter. C: `fill_wmesg` 的 `endpt` 实参
+    /// （proc.c:318-321/:382）。
+    pub wmesg_ep: i32,
 }
 
 /// Judge one user row through the awake-precedence and sleep-reason chain.
@@ -223,6 +231,7 @@ pub(super) struct RowState {
 pub(super) fn judge_row_state(
     kp: &ProcInfoStruct,
     row: &MProcSnap,
+    light: Option<super::rows::LightRow>,
     self_endpt: Endpoint,
 ) -> RowState {
     let zombie = PmRows::is_zombie(row);
@@ -237,17 +246,29 @@ pub(super) fn judge_row_state(
             wchan: 0,
             wmesg: SleepWmesg::Unknown,
             sinter: false,
+            wmesg_ep: 0,
         },
         _ => {
-            // VFS light rows are absent until C-22's second half: the whole
-            // VFS lane is idle (module note) — task_nr rides along unused.
+            // The VFS lane lights up only through the light row (C-22):
+            // blocked_on feeds the lane decode, fpl_task feeds the
+            // cdev/sdev wchan word and the driver-name endpoint.
+            let (lane, task_ep) = match light {
+                Some(l) => (super::lwp::decode_blocked_on(l.blocked_on), l.task_ep),
+                None => (VfsLane::Idle, 0),
+            };
             let target = block_target(kp, self_endpt);
-            let v = judge_sleep(waiting, sigsuspended, VfsLane::Idle, 0, target);
+            let v = judge_sleep(waiting, sigsuspended, lane, task_ep as u32, target);
+            let wmesg_ep = match v.wmesg {
+                SleepWmesg::DriverName => task_ep,
+                SleepWmesg::EndpointName => KernelRows::blocked_on(kp),
+                _ => 0,
+            };
             RowState {
                 stat: LSSLEEP,
                 wchan: v.wchan,
                 wmesg: v.wmesg,
                 sinter: v.sinter,
+                wmesg_ep,
             }
         }
     }
@@ -258,6 +279,8 @@ pub(super) fn judge_row_state(
 fn fill_user_row(
     l: &mut KinfoLwp,
     kern: &KernelRows,
+    pm: &PmRows,
+    light: Option<super::rows::LightRow>,
     mslot: usize,
     row: &MProcSnap,
     now: u64,
@@ -266,12 +289,12 @@ fn fill_user_row(
 ) {
     let kp = kern.row(minix_types::NR_TASKS + mslot).unwrap_or_default();
     l.l_flag = L_INMEM as i32;
-    let st = judge_row_state(&kp, row, self_endpt);
+    let st = judge_row_state(&kp, row, light, self_endpt);
     l.l_stat = st.stat as i8;
     if st.stat == LSSLEEP {
         l.l_wchan = st.wchan;
         l.l_flag = user_flag(st.sinter) as i32;
-        render_wmesg(l, kern, st.wmesg, &kp);
+        render_wmesg(l, kern, pm, st.wmesg, st.wmesg_ep);
     }
     l.l_pid = row.mp_pid as u32;
     put_name(&mut l.l_name, &row.mp_name);
@@ -337,15 +360,23 @@ fn block_target(kp: &ProcInfoStruct, self_endpt: Endpoint) -> BlockTarget {
 }
 
 /// Render the sleep word into `l_wmesg`. C: the literal lanes plus the two
-/// `fill_wmesg` calls (proc.c:287-386). `DriverName` cannot fire while the
-/// light table is absent (A-7); it renders through the same name path as
-/// `EndpointName` when it ever does.
-fn render_wmesg(l: &mut KinfoLwp, kern: &KernelRows, wmesg: SleepWmesg, kp: &ProcInfoStruct) {
+/// `fill_wmesg` calls (proc.c:287-386) — `DriverName` names the driver
+/// without parens（cdev/sdev 车道，C-22 后半点亮）, `EndpointName` names
+/// the `P_BLOCKEDON` peer with parens.
+fn render_wmesg(
+    l: &mut KinfoLwp,
+    kern: &KernelRows,
+    pm: &PmRows,
+    wmesg: SleepWmesg,
+    wmesg_ep: i32,
+) {
     let mut buf = [0u8; KI_WMESGLEN];
     match wmesg {
-        SleepWmesg::DriverName | SleepWmesg::EndpointName => {
-            let endpt = KernelRows::blocked_on(kp);
-            write_wmesg_named(&mut buf, kern, &PmRows::new(&[]), endpt, true);
+        SleepWmesg::DriverName => {
+            write_wmesg_named(&mut buf, kern, pm, wmesg_ep, false);
+        }
+        SleepWmesg::EndpointName => {
+            write_wmesg_named(&mut buf, kern, pm, wmesg_ep, true);
         }
         other => {
             let word: &str = match other {
@@ -363,23 +394,12 @@ fn render_wmesg(l: &mut KinfoLwp, kern: &KernelRows, wmesg: SleepWmesg, kp: &Pro
                 SleepWmesg::Sched => "sched",
                 SleepWmesg::Kflag => "kflag",
                 SleepWmesg::Unknown => "???",
-                SleepWmesg::DriverName | SleepWmesg::EndpointName => {
-                    debug_unreachable()
-                }
+                SleepWmesg::DriverName | SleepWmesg::EndpointName => unreachable!(),
             };
             put_name(&mut buf, word.as_bytes());
         }
     }
     l.l_wmesg = buf;
-}
-
-/// `debug_unreachable` without a dependency: this arm is statically
-/// excluded by the arm above (the pair is matched together); a release
-/// build prints "unknown" like C's future-flag shrug.
-#[inline(never)]
-#[cold]
-fn debug_unreachable() -> &'static str {
-    "???"
 }
 
 /// `strlcpy` a NUL-terminated name into a fixed buffer. C:
@@ -483,7 +503,9 @@ mod tests {
             ..MProcSnap::default()
         };
         let mut l = zeroed_lwp();
-        fill_user_row(&mut l, &kern, 5, &row, 1000, 50, Endpoint::NONE);
+        let pm_tab = vec![0u8; minix_types::NR_PROCS * core::mem::size_of::<MProcSnap>()];
+        let pm = PmRows::new(&pm_tab);
+        fill_user_row(&mut l, &kern, &pm, None, 5, &row, 1000, 50, Endpoint::NONE);
         // Runnable: LSRUN, no wchan/word (proc.c:252-253).
         assert_eq!(l.l_stat, minix_types::LSRUN as i8);
         assert_eq!(l.l_wchan, 0);
@@ -524,7 +546,9 @@ mod tests {
             ..MProcSnap::default()
         };
         let mut l = zeroed_lwp();
-        fill_user_row(&mut l, &kern, 6, &row, 1000, 50, Endpoint::NONE);
+        let pm_tab = vec![0u8; minix_types::NR_PROCS * core::mem::size_of::<MProcSnap>()];
+        let pm = PmRows::new(&pm_tab);
+        fill_user_row(&mut l, &kern, &pm, None, 6, &row, 1000, 50, Endpoint::NONE);
         // PM WAITING wins first (proc.c:287-290): wchan 0x102, "wait",
         // interruptible.
         assert_eq!(l.l_wchan, 0x102);
@@ -536,7 +560,7 @@ mod tests {
     // ── walker 级端到端：producer（mock 双 seam）→ Tables 拉取 →
     // 真实 `sysctl()` 走 CTL_KERN/KERN_LWP → 拷出字节逐行解码断言。──
 
-    use crate::proc::test_mocks as mocks;
+    use crate::proc::test_mocks::{self as mocks, put_row};
     use crate::auth::CallAuth;
     use crate::heap::MibBudget;
     use crate::io::copy::{Newp, Oldp};
@@ -544,10 +568,11 @@ mod tests {
     use crate::tree::arena::MibTree;
     use crate::walker::{self, Request};
     use alloc::string::String;
-    use minix_types::{Endpoint, KI_LNAMELEN, KI_WMESGLEN, SI_PROC_TAB};
+    use minix_types::{Endpoint, KI_LNAMELEN, KI_WMESGLEN};
 
     /// 场景：任务 1 名 "memory"；用户槽 5 = 可运行 "ps"(pid 100)、
-    /// 槽 6 = WAITING 挂起 "sh"(pid 101)、槽 7 = 僵尸(pid 103, 不进列表)。
+    /// 槽 6 = WAITING 挂起 "sh"(pid 101)、槽 7 = 僵尸(pid 103, 不进列表)、
+    /// 槽 8 = cdev 阻塞 "tty-read"(pid 104, light 表给 TTY 端点)。
     fn fixture() -> (mocks::FakeKernel, mocks::FakeServices) {
         let krow = core::mem::size_of::<ProcInfoStruct>();
         let mut proctab = vec![0u8; (minix_types::NR_TASKS + minix_types::NR_PROCS) * krow];
@@ -565,6 +590,12 @@ mod tests {
             p_endpoint: -1,
             p_user_time: 30,
             p_sys_time: 10,
+            ..ProcInfoStruct::default()
+        });
+        put_k(&mut proctab, minix_types::NR_TASKS + 4, &ProcInfoStruct {
+            p_nr: 4,
+            p_endpoint: 4,
+            p_name: name_bytes("ttydrv"),
             ..ProcInfoStruct::default()
         });
         put_k(&mut proctab, minix_types::NR_TASKS + 5, &ProcInfoStruct {
@@ -595,6 +626,12 @@ mod tests {
                 );
             }
         };
+        put_m(&mut pm, 4, &MProcSnap {
+            mp_pid: 90,
+            mp_flags: mp_flags::IN_USE,
+            mp_name: name_bytes("ttydrv"),
+            ..MProcSnap::default()
+        });
         put_m(&mut pm, 5, &MProcSnap {
             mp_pid: 100,
             mp_flags: mp_flags::IN_USE,
@@ -615,6 +652,34 @@ mod tests {
             mp_name: name_bytes("dead"),
             ..MProcSnap::default()
         });
+        // 内核行：槽 8 cdev 阻塞在 TTY 驱动（端点 -1 之外的普通端点 4）。
+        put_row(
+            &mut proctab,
+            minix_types::NR_TASKS + 8,
+            &ProcInfoStruct {
+                p_nr: 8,
+                p_rts_flags: RTS_SENDING,
+                p_sendto_e: 4,
+                p_getfrom_e: Endpoint::NONE.0,
+                p_name: name_bytes("tty-read"),
+                ..ProcInfoStruct::default()
+            },
+        );
+        // light 表（C-22 后半）：槽 8 blocked_on=CDEV(5)、task=端点 4。
+        let mut light = vec![0u8; minix_types::NR_PROCS * 16];
+        let put_l = |v: &mut Vec<u8>, mslot: usize, tty: u64, blocked: u32, task: i32| {
+            v[mslot * 16..mslot * 16 + 8].copy_from_slice(&tty.to_le_bytes());
+            v[mslot * 16 + 8..mslot * 16 + 12].copy_from_slice(&blocked.to_le_bytes());
+            v[mslot * 16 + 12..mslot * 16 + 16].copy_from_slice(&task.to_le_bytes());
+        };
+        // tty-read 的 PM 行（pid 104, IN_USE）——list 的行来源。
+        put_m(&mut pm, 8, &MProcSnap {
+            mp_pid: 104,
+            mp_flags: mp_flags::IN_USE,
+            mp_name: name_bytes("tty-read"),
+            ..MProcSnap::default()
+        });
+        put_l(&mut light, 8, 0, 5, 4); // blocked=CDEV, task=端点 4（ttydrv）
         (
             mocks::FakeKernel {
                 proctab,
@@ -625,7 +690,7 @@ mod tests {
                 target_base: 0,
                 target_mem: Vec::new(),
             },
-            mocks::FakeServices { pm_tab: pm },
+            mocks::FakeServices { pm_tab: pm, light_tab: light },
         )
     }
 
@@ -662,8 +727,8 @@ mod tests {
                 newp: None,
             },
         );
-        // 5 个任务槽 + 2 个在用用户槽（僵尸被过滤）——off = 7 × elsz。
-        assert_eq!(out, SysctlOutcome::Done(7 * lsz as u64));
+        // 5 个任务槽 + 4 个在用用户槽（僵尸被过滤）——off = 9 × elsz。
+        assert_eq!(out, SysctlOutcome::Done(9 * lsz as u64));
 
         let sink = c.kernel.sink.borrow();
         let read = |i: usize| -> KinfoLwp {
@@ -681,8 +746,14 @@ mod tests {
         assert_eq!(t1.l_rtime_sec, 0);
         assert_eq!(t1.l_rtime_usec, 800_000);
 
-        // 用户槽 5（元素 5）："ps" 可运行 → LSRUN，无 wchan。
-        let u5 = read(minix_types::NR_TASKS);
+        // 用户槽 4（元素 5）："ttydrv" 可运行。
+        let u4 = read(minix_types::NR_TASKS);
+        assert_eq!(u4.l_pid, 90);
+        assert_eq!(u4.l_stat, minix_types::LSRUN as i8);
+        assert_eq!(&u4.l_name[..7], b"ttydrv\0");
+
+        // 用户槽 5（元素 6）："ps" 可运行 → LSRUN，无 wchan。
+        let u5 = read(minix_types::NR_TASKS + 1);
         assert_eq!(u5.l_pid, 100);
         assert_eq!(u5.l_stat, minix_types::LSRUN as i8);
         assert_eq!(&u5.l_name[..3], b"ps\0");
@@ -691,17 +762,30 @@ mod tests {
         assert_eq!(u5.l_lid, 5);
         assert_eq!(u5.l_priority, 2);
 
-        // 用户槽 6（元素 6）："sh" 在 PM WAITING、内核 SENDING 到 5 →
+        // 用户槽 6（元素 7）："sh" 在 PM WAITING、内核 SENDING 到 4 →
         // PM 词保留（Direct 不覆盖）：wchan 0x102、"wait"、可中断。
-        let u6 = read(minix_types::NR_TASKS + 1);
+        let u6 = read(minix_types::NR_TASKS + 2);
         assert_eq!(u6.l_pid, 101);
         assert_eq!(u6.l_stat, minix_types::LSSLEEP as i8);
         assert_eq!(u6.l_wchan, 0x102);
         assert_eq!(&u6.l_wmesg[..5], b"wait\0");
         assert_eq!(u6.l_flag, (minix_types::L_INMEM | minix_types::L_SINTR) as i32);
 
+        // 用户槽 8（元素 8）："tty-read" cdev 阻塞——light 表在（C-22
+        // 后半）→ wchan = (task_ep<<16)|(5<<8)|0x03，wmesg 是**驱动名**
+        // 无括号（DriverName 车道）。
+        let u8 = read(minix_types::NR_TASKS + 3);
+        assert_eq!(u8.l_pid, 104);
+        assert_eq!(u8.l_stat, minix_types::LSSLEEP as i8);
+        assert_eq!(u8.l_wchan, (4u64 << 16) | (5u64 << 8) | 0x03);
+        assert_eq!(&u8.l_wmesg[..7], b"ttydrv\0");
+        assert_eq!(u8.l_flag, (minix_types::L_INMEM | minix_types::L_SINTR) as i32);
+
+        // 僵尸（槽 7）不进列表：缓冲区到元素 8 为止（9 行）。
+        assert_eq!(sink.len(), 9 * core::mem::size_of::<KinfoLwp>());
+
         // 7 个元素（任务 0~4 + 用户 5、6），僵尸没有第 8 个。
-        assert_eq!(sink.len(), 7 * core::mem::size_of::<KinfoLwp>());
+        assert_eq!(sink.len(), 9 * core::mem::size_of::<KinfoLwp>());
     }
 
     #[test]
@@ -778,7 +862,9 @@ mod tests {
             ..MProcSnap::default()
         };
         let mut l = zeroed_lwp();
-        fill_user_row(&mut l, &kern, 7, &row, 1000, 50, Endpoint::NONE);
+        let pm_tab = vec![0u8; minix_types::NR_PROCS * core::mem::size_of::<MProcSnap>()];
+        let pm = PmRows::new(&pm_tab);
+        fill_user_row(&mut l, &kern, &pm, None, 7, &row, 1000, 50, Endpoint::NONE);
         // Direct send: wchan (endpt<<8)|0xff, "(5)" — the peer row is not in
         // the PM table so the raw number is the name (proc.c:213-214,
         // :380-382).

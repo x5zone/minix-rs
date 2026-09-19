@@ -82,6 +82,9 @@ pub fn proc2_exec<K: MibKernel, S: MibServices>(
 
     let kern = KernelRows::new(&tables.kernel_tab);
     let pm = PmRows::new(&tables.pm_tab);
+    // C-22 后半：light 表接通——proc2 的 tty 列（p_tdev/eflag/P_CONTROLT）
+    // 由此点亮；表缺席时 A-7 降级为 NO_DEV。
+    let light_rows = super::rows::LightRows::new(&tables.vfs_tab);
     let old_len = oldp.map(|o| o.left);
     let mut elmax = elmax;
     let mut off: u64 = 0;
@@ -107,10 +110,14 @@ pub fn proc2_exec<K: MibKernel, S: MibServices>(
         if row.mp_flags & mp_flags::IN_USE == 0 {
             continue; // proc.c:859-860
         }
-        // A-7: the light table is absent, so every row's terminal reads
-        // NO_DEV; zombies own none anyway (proc.c:707).
+        // C-22 后半：light 表接通——fpl_tty 即进程的控制终端；僵尸不读
+        // 文件槽（proc.c:707 的 `(!zombie) ? fpl_tty : NO_DEV`）。
         let zombie = super::rows::PmRows::is_zombie(&row);
-        let tty = zombie_tty(zombie, minix_types::NO_DEV as i64, minix_types::NO_DEV as i64);
+        let tty = zombie_tty(
+            zombie,
+            light_rows.row(mslot).map(|l| l.tty as i64).unwrap_or(minix_types::NO_DEV as i64),
+            minix_types::NO_DEV as i64,
+        );
         let parent_pid = pm
             .row(row.mp_parent.max(0) as usize)
             .filter(|_| row.mp_parent >= 0 && (row.mp_parent as usize) < minix_types::NR_PROCS)
@@ -133,10 +140,12 @@ pub fn proc2_exec<K: MibKernel, S: MibServices>(
         }
         if in_range(old_len, off) && elmax > 0 {
             let mut p = zeroed_proc2();
+            let light = light_rows.row(mslot);
             fill_user_row(
                 &mut p,
                 &kern,
                 &pm,
+                light,
                 mslot,
                 &row,
                 tty,
@@ -223,6 +232,7 @@ fn fill_user_row<K: MibServices>(
     p: &mut KinfoProc2,
     kern: &KernelRows,
     pm: &PmRows,
+    light: Option<super::rows::LightRow>,
     mslot: usize,
     row: &MProcSnap,
     tty: i64,
@@ -284,7 +294,7 @@ fn fill_user_row<K: MibServices>(
     p.p_svgid = row.mp_svgid;
 
     // The state chain is 17's — identical to the LWP fill (proc.c:755-757).
-    let st: RowState = judge_row_state(&kp, row, self_endpt);
+    let st: RowState = judge_row_state(&kp, row, light, self_endpt);
     p.p_stat = st.stat as i8;
     if st.stat == LSSLEEP {
         p.p_wchan = st.wchan;
@@ -351,7 +361,10 @@ fn fill_common<K: MibServices>(
     // `(void)vm_info_usage(...)`), so a dead VM producer answers zeroed
     // columns, byte-for-byte C's dead-VM behavior.
     let mut vui = [0u8; 64];
-    let _ = svc.vm_info(VMIW_USAGE, &mut vui);
+    // C `vm_info_usage(kp->p_endpoint, &vui)`——ep 是被查进程。VM 的
+    // 回复内联编码仍是登记缺口（26-vm-queries §3.7），失败按 C 语义
+    // 折零列。
+    let _ = svc.vm_info(VMIW_USAGE, Endpoint(kp.p_endpoint), &mut vui);
     let word = |i: usize| -> u64 {
         u64::from_le_bytes(vui[i * 8..i * 8 + 8].try_into().unwrap())
     };
@@ -462,7 +475,7 @@ mod tests {
             fn ds_retrieve_label_name(&mut self, _: Endpoint, _: &mut [u8]) -> Result<usize, i32> { Err(minix_types::EIO) }
             fn remote_info(&mut self, _: Endpoint, _: &mut [u8], _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
             fn remote_call(&mut self, _: Endpoint, _: crate::io::relay::RemoteCall, _: &mut crate::io::relay::RemoteReplyWire) -> Result<(), i32> { Err(minix_types::EIO) }
-            fn vm_info(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
+            fn vm_info(&mut self, _: i32, _: Endpoint, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
             fn pm_getparam(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
         }
         let mut svc = NoVm;
@@ -554,7 +567,7 @@ mod tests {
                 target_base: 0,
                 target_mem: Vec::new(),
             },
-            FakeServices { pm_tab: pm },
+            FakeServices { pm_tab: pm, light_tab: Vec::new() },
         )
     }
 
@@ -702,15 +715,15 @@ mod tests {
             fn ds_retrieve_label_name(&mut self, _: Endpoint, _: &mut [u8]) -> Result<usize, i32> { Err(minix_types::EIO) }
             fn remote_info(&mut self, _: Endpoint, _: &mut [u8], _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
             fn remote_call(&mut self, _: Endpoint, _: crate::io::relay::RemoteCall, _: &mut crate::io::relay::RemoteReplyWire) -> Result<(), i32> { Err(minix_types::EIO) }
-            fn vm_info(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
+            fn vm_info(&mut self, _: i32, _: Endpoint, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
             fn pm_getparam(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(minix_types::EIO) }
         }
         let mut svc = NoVm;
         let row = pm.row(0).unwrap();
         let mut p = zeroed_proc2();
         fill_user_row(
-            &mut p, &kern, &pm, 0, &row,
-            minix_types::NO_DEV as i64, // A-7：light 表缺席 → 无控制终端
+            &mut p, &kern, &pm, None, 0, &row,
+            minix_types::NO_DEV as i64, // A-7 前状态遗留：light 行未给 → 无终端
             0, // 根进程无父
             1000, 50, 86400 * 2, Endpoint::NONE, &mut svc,
         );
