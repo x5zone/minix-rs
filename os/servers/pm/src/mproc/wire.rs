@@ -1,7 +1,7 @@
 //! PM 进程表 → `SI_PROC_TAB` 快照行（`[ARCH: A-4]` 单一权威）。
 //!
 //! C ground truth: `servers/pm/mproc.h` `mproc[NR_PROCS]`；wire 行是
-//! [`minix_types::MProcSnap`]（88 字节/槽，布局见证在其 `layout` 测试）。
+//! [`minix_types::MProcSnap`]（184 字节/槽，布局见证在其 `layout` 测试）。
 //! 消费方（IS `dump_pm` 的两个 dump、MIB `proc/tables` 的取表半）按名读
 //! 字段——C 的逐行 `MP_MAGIC` 漂移校验由共享类型取代（见该结构文档）。
 //!
@@ -17,6 +17,9 @@
 //! | mp_ignore/catch/sigmask/sigpending `__bits[0]` | signals | 低位字；dump 只打这一字 |
 //! | mp_timer_exp | resources.timer | `tmr_exp_time`（无 timer 时为 0）|
 //! | mp_started | resources.started | fork 时置的 uptime（C-21 新槽，MIB swtime 消费）|
+//! | mp_svuid/svgid | credentials 的 IdSet saved 位 | KERN_PROC2 的 p_svuid/svgid（C-22）|
+//! | mp_child_utime/stime | resources.child_* | KERN_PROC2 的 p_uctime（C-22）|
+//! | mp_ngroups/sgroups | credentials 的 ngroups/supplemental_groups | KERN_PROC2 的 p_groups（C-22）|
 //! | 其余 C 字段（mp_reply[64]、mp_sigact、mp_sgroups、mp_wpid…）| 不进快照 | A-4 裁定：无人读或跨 wire 无意义 |
 //!
 //! `mp_flags` 的位值权威在 `minix_types::mp_flags`（C-21 上收），本 crate
@@ -150,6 +153,17 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
     // 同一时刻值）——MIB 的 swtime（`uptime - mp_started`）消费它。
     w.mp_started = p.resources.started as u64;
 
+    // ── 凭证尾段 + 子进程时钟（C-22；KERN_PROC2 的 p_svuid/svgid、
+    // p_groups、p_uctime 消费）──
+    if let crate::mproc::Privilege::User(cred) = &p.resources.privilege {
+        w.mp_svuid = cred.user.saved;
+        w.mp_svgid = cred.group.saved;
+        w.mp_ngroups = cred.ngroups as u32;
+        w.mp_sgroups = cred.supplemental_groups;
+    }
+    w.mp_child_utime = p.resources.child_utime as u64;
+    w.mp_child_stime = p.resources.child_stime as u64;
+
     w.mp_flags = flags_for(p);
     w
 }
@@ -193,8 +207,8 @@ mod tests {
     /// 跟随之（旧 C-ABI 464 B 行退役）。
     #[test]
     fn test_row_width_follows_shared_snapshot() {
-        assert_eq!(core::mem::size_of::<MProcSnap>(), 88);
-        assert_eq!(core::mem::size_of::<MProcSnap>() * 256, 22_528);
+        assert_eq!(core::mem::size_of::<MProcSnap>(), 184);
+        assert_eq!(core::mem::size_of::<MProcSnap>() * 256, 47_104);
         assert_eq!(core::mem::offset_of!(MProcSnap, mp_name), 12);
         assert_eq!(core::mem::offset_of!(MProcSnap, mp_started), 80);
     }

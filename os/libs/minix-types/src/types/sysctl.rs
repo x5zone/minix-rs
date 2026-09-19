@@ -546,6 +546,14 @@ pub const KERN_PROC_PGRP: i32 = 2;
 pub const KERN_PROC_SESSION: i32 = 3;
 /// By controlling tty. C: `KERN_PROC_TTY 4` — sysctl.h:387.
 pub const KERN_PROC_TTY: i32 = 4;
+
+/// TTY 过滤哨兵：请求"没有控制终端"的行。C（NetBSD sysctl.h）：
+/// `KERN_PROC_TTY_NODEV ((dev_t)-1)`——以 i64 携带时与 (dev_t)(-1) 的
+/// 位形一致，比较语义不变（C-22）。
+pub const KERN_PROC_TTY_NODEV: i64 = -1;
+/// TTY 过滤哨兵：revoke(2) 的占位（C 未实现，匹配恒空）。
+/// C: `KERN_PROC_TTY_REVOKE ((dev_t)-2)`。
+pub const KERN_PROC_TTY_REVOKE: i64 = -2;
 /// By effective uid. C: `KERN_PROC_UID 5` — sysctl.h:388.
 pub const KERN_PROC_UID: i32 = 5;
 /// By real uid. C: `KERN_PROC_RUID 6` — sysctl.h:389.

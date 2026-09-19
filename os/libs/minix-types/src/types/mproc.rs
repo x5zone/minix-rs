@@ -64,6 +64,20 @@ pub struct MProcSnap {
     /// 与 `dump_pm` 的运行时长都读它——C 快照本就携带，C-21 随 MIB 取表半
     /// 补进 wire。追加在**尾部**：既有 15 槽 + name 的偏移不变。
     pub mp_started: u64,
+    /// C: `mp_svuid`（mproc.h；setuid 语义的保存位）。
+    pub mp_svuid: u32,
+    /// C: `mp_svgid`。
+    pub mp_svgid: u32,
+    /// C: `mp_child_utime`（mproc.h；已收养子进程的用户态时钟）。
+    pub mp_child_utime: u64,
+    /// C: `mp_child_stime`。
+    pub mp_child_stime: u64,
+    /// C: `mp_ngroups`（mproc.h；补充组个数，≤ NGROUPS_MAX）。
+    pub mp_ngroups: u32,
+    /// C: `mp_sgroups[NGROUPS_MAX]`（补充组表——`ps` 的 GROUPS 列与
+    /// KERN_PROC2 的 `p_groups` 消费；此前"无人读"的裁定随 MIB 取表半
+    /// 失效，C-22 扩进 wire）。
+    pub mp_sgroups: [u32; NGROUPS_MAX],
 }
 
 /// C `mp_flags` 的位值（mproc.h:86-104）——wire 权威（C-21）。
@@ -117,11 +131,11 @@ mod mproc_snap_layout_tests {
     use super::*;
     use core::mem::offset_of;
 
-    /// 布局见证：15 个 4 字节槽 + name[16] = 76 字节 + 4 对齐垫 +
-    /// mp_started(u64) = 88 字节（C-21 追加在尾部，既有偏移不动）。
+    /// 布局见证：88 字节（C-21 的 mp_started）+ C-22 尾段
+    /// （svuid/svgid/child 双时刻/ngroups/sgroups[16]）= 184 字节。
     #[test]
     fn test_mproc_snap_size() {
-        assert_eq!(size_of::<MProcSnap>(), 88);
+        assert_eq!(size_of::<MProcSnap>(), 184);
     }
 
     /// 字段偏移（生产者逐槽写、消费方按名读的同一份契约）。
@@ -144,6 +158,12 @@ mod mproc_snap_layout_tests {
         assert_eq!(offset_of!(MProcSnap, mp_sigpending0), 68);
         assert_eq!(offset_of!(MProcSnap, mp_timer_exp), 72);
         assert_eq!(offset_of!(MProcSnap, mp_started), 80);
+        assert_eq!(offset_of!(MProcSnap, mp_svuid), 88);
+        assert_eq!(offset_of!(MProcSnap, mp_svgid), 92);
+        assert_eq!(offset_of!(MProcSnap, mp_child_utime), 96);
+        assert_eq!(offset_of!(MProcSnap, mp_child_stime), 104);
+        assert_eq!(offset_of!(MProcSnap, mp_ngroups), 112);
+        assert_eq!(offset_of!(MProcSnap, mp_sgroups), 116);
     }
 
     /// mp_flags 位值（wire 权威的钉值；与 C mproc.h:86-104 逐位对照）。
