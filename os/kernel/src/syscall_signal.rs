@@ -152,9 +152,9 @@ fn msg_sigcalls(msg: &Message) -> MessSigcalls {
 /// Cause a signal to be sent to a process. Adds to pending signal map
 /// and informs the signal manager.
 pub fn dispatch_kill(
-    _caller: &mut KProcess,
-    msg: &Message,
+    _caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
     priv_table: &mut PrivTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
@@ -391,9 +391,9 @@ pub(crate) fn cause_signal(
 /// 4. `RTS_UNSET(rp, RTS_SIGNALED)`, clear `rp->p_pending`
 /// 5. If no process found: `m_sigcalls.endpt = NONE`
 pub fn dispatch_getksig(
-    caller: &mut KProcess,
-    msg: &mut Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &mut Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     // C: do_getksig.c:27-40 — scan all user processes
@@ -413,7 +413,7 @@ pub fn dispatch_getksig(
         }
         // C: do_getksig.c:29 — if (caller->p_endpoint != priv(rp)->s_sig_mgr) continue
         let sig_mgr = proc_table.sig_mgr(rp.p_nr, priv_table);
-        if sig_mgr != Some(caller.p_endpoint) {
+        if sig_mgr != proc_table.get(caller_nr).map(|p| p.p_endpoint) {
             continue;
         }
 
@@ -473,9 +473,9 @@ pub fn dispatch_getksig(
 /// 3. `!RTS_ISSET(rp, RTS_SIG_PENDING)` — no pending signal → EINVAL
 /// 4. `!RTS_ISSET(rp, RTS_SIGNALED)` — no new signal → clear SIG_PENDING
 pub fn dispatch_endksig(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
@@ -492,7 +492,7 @@ pub fn dispatch_endksig(
     // Step 2: Check caller is the signal manager for the target.
     // C: do_endksig.c:31 — if (caller->p_endpoint != priv(rp)->s_sig_mgr) return EPERM
     let sig_mgr = proc_table.sig_mgr(target_nr, priv_table);
-    if sig_mgr != Some(caller.p_endpoint) {
+    if sig_mgr != proc_table.get(caller_nr).map(|p| p.p_endpoint) {
         return KcallResult::Ok(EPERM);
     }
 
@@ -562,9 +562,9 @@ pub struct SigMsg {
 /// 5. Copy `SigFrame` to target's user stack (C: do_sigsend.c:120-124)
 /// 6. Modify target's `CpuContext` for handler entry (C: do_sigsend.c:133-135)
 pub fn dispatch_sigsend(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
     // C: do_sigsend.c:31,37 — m_sigcalls.endpt / m_sigcalls.sigctx
@@ -603,8 +603,14 @@ pub fn dispatch_sigsend(
         let smsg_phys = CurrentDirectMap::virt_to_phys(VirBytes(
             &smsg as *const SigMsg as u64,
         ));
-        let caller_endpt = caller.p_endpoint;
-        let caller_cr3 = caller.p_seg.phys_root;
+        let caller_endpt = proc_table
+            .get(caller_nr)
+            .map(|p| p.p_endpoint)
+            .expect("dispatch_sigreturn: caller slot must exist");
+        let caller_cr3 = proc_table
+            .get(caller_nr)
+            .map(|p| p.p_seg.phys_root)
+            .expect("dispatch_sigreturn: caller slot must exist");
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
@@ -620,7 +626,7 @@ pub fn dispatch_sigsend(
         };
         let dst = AddressRef::Physical(smsg_phys);
         match data_copy_vmcheck(
-            caller.p_nr, proc_table,
+            caller_nr, proc_table,
             src,
             dst,
             core::mem::size_of::<SigMsg>(),
@@ -674,8 +680,14 @@ pub fn dispatch_sigsend(
         let frame_phys = CurrentDirectMap::virt_to_phys(VirBytes(
             &frame as *const _ as u64,
         ));
-        let caller_endpt = caller.p_endpoint;
-        let caller_cr3 = caller.p_seg.phys_root;
+        let caller_endpt = proc_table
+            .get(caller_nr)
+            .map(|p| p.p_endpoint)
+            .expect("dispatch_sigreturn: caller slot must exist");
+        let caller_cr3 = proc_table
+            .get(caller_nr)
+            .map(|p| p.p_seg.phys_root)
+            .expect("dispatch_sigreturn: caller slot must exist");
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
@@ -691,7 +703,7 @@ pub fn dispatch_sigsend(
             offset: VirBytes(frame_addr),
         };
         match data_copy_vmcheck(
-            caller.p_nr, proc_table,
+            caller_nr, proc_table,
             src,
             dst,
             CurrentSignalContext::sigframe_size(),
@@ -754,9 +766,9 @@ pub fn dispatch_sigsend(
 ///    and re-record the validated style (C: arch_system.c:563)
 /// 5. Check magic integrity (C: do_sigreturn.c:83)
 pub fn dispatch_sigreturn(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
     let sc = msg_sigcalls(msg);
     // C: do_sigreturn.c:28,33 — m_sigcalls.endpt / m_sigcalls.sigctx
@@ -785,8 +797,14 @@ pub fn dispatch_sigreturn(
         let sctx_phys = CurrentDirectMap::virt_to_phys(VirBytes(
             &sctx as *const _ as u64,
         ));
-        let caller_endpt = caller.p_endpoint;
-        let caller_cr3 = caller.p_seg.phys_root;
+        let caller_endpt = proc_table
+            .get(caller_nr)
+            .map(|p| p.p_endpoint)
+            .expect("dispatch_sigreturn: caller slot must exist");
+        let caller_cr3 = proc_table
+            .get(caller_nr)
+            .map(|p| p.p_seg.phys_root)
+            .expect("dispatch_sigreturn: caller slot must exist");
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
@@ -801,7 +819,7 @@ pub fn dispatch_sigreturn(
             offset: VirBytes(sigctx_addr),
         };
         let dst = AddressRef::Physical(sctx_phys);
-        match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, sctx_size, proc_cr3) {
+        match data_copy_vmcheck(caller_nr, proc_table, src, dst, sctx_size, proc_cr3) {
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Completed(Ok(())) => {}
@@ -895,7 +913,7 @@ mod tests {
         msg.m_type = Syscall::Sigsend as i32;
         // Invalid endpoint → EINVAL
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_sigsend(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -908,7 +926,7 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         // Kernel processes have negative proc_nr, but endpoint_to_nr
         // won't find them in the table, so we get EINVAL.
-        let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_sigsend(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -918,7 +936,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigreturn as i32;
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let result = dispatch_sigreturn(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_sigreturn(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -942,7 +960,7 @@ mod tests {
         msg.m_u.m_sigcalls.endpt = target_endpoint.0;
         msg.m_u.m_sigcalls.sigctx = 0x7000;
 
-        let result = dispatch_sigsend(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_sigsend(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1151,11 +1169,13 @@ mod tests {
             t.p_rts_flags.set(RtsFlagsBits::SIGNALED);
             t.p_pending.add(SIGTRAP as u8);
         }
-        let mut caller = KProcess::new(ProcNr(1), manager_ep);
+        // K20 caller-by-nr: the caller is slot ProcNr(1); its endpoint must
+        // live on the slot (the standalone handle no longer applies).
+        procs.get_mut(ProcNr(1)).unwrap().p_endpoint = manager_ep;
         let mut msg = Message::default();
         msg.m_type = Syscall::Getksig as i32;
 
-        let result = dispatch_getksig(&mut caller, &mut msg, &mut procs, &privs);
+        let result = dispatch_getksig(ProcNr(1), &mut procs, &mut msg, &privs);
         assert_eq!(result, KcallResult::Ok(OK));
         // SAFETY: 回填变体由 dispatch_getksig 写入；测试侧 unsafe 读。
         let (got_endpt, got_map) = unsafe { (msg.m_u.m_sigcalls.endpt, msg.m_u.m_sigcalls.map) };
@@ -1170,7 +1190,7 @@ mod tests {
         // 第二次调用：无 SIGNALED 目标 → endpt = NONE（C do_getksig.c:40）
         let mut msg2 = Message::default();
         msg2.m_type = Syscall::Getksig as i32;
-        let result2 = dispatch_getksig(&mut caller, &mut msg2, &mut procs, &privs);
+        let result2 = dispatch_getksig(ProcNr(1), &mut procs, &mut msg2, &privs);
         assert_eq!(result2, KcallResult::Ok(OK));
         let none_endpt = unsafe { msg2.m_u.m_sigcalls.endpt };
         assert_eq!(none_endpt, Endpoint::NONE.get());
@@ -1185,13 +1205,15 @@ mod tests {
         privs.get_mut(0).unwrap().signals.s_sig_mgr = manager_ep;
         procs.get_mut(ProcNr(0)).unwrap()
             .p_rts_flags.set(RtsFlagsBits::SIG_PENDING);
-        let mut caller = KProcess::new(ProcNr(1), manager_ep);
+        // K20 caller-by-nr: the caller is slot ProcNr(1); its endpoint must
+        // live on the slot (the standalone handle no longer applies).
+        procs.get_mut(ProcNr(1)).unwrap().p_endpoint = manager_ep;
         let mut msg = Message::default();
         msg.m_type = Syscall::Endksig as i32;
         // SAFETY: m_type set above; test-only union write (msg_sigcalls 读侧同款).
         unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
 
-        let result = dispatch_endksig(&mut caller, &msg, &mut procs, &privs);
+        let result = dispatch_endksig(ProcNr(1), &mut procs, &msg, &privs);
         assert_eq!(result, KcallResult::Ok(OK));
         assert!(!procs.get(ProcNr(0)).unwrap()
             .p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING),
@@ -1210,13 +1232,15 @@ mod tests {
             t.p_rts_flags.set(RtsFlagsBits::SIG_PENDING);
             t.p_rts_flags.set(RtsFlagsBits::SIGNALED);
         }
-        let mut caller = KProcess::new(ProcNr(1), manager_ep);
+        // K20 caller-by-nr: the caller is slot ProcNr(1); its endpoint must
+        // live on the slot (the standalone handle no longer applies).
+        procs.get_mut(ProcNr(1)).unwrap().p_endpoint = manager_ep;
         let mut msg = Message::default();
         msg.m_type = Syscall::Endksig as i32;
         // SAFETY: m_type set above; test-only union write (msg_sigcalls 读侧同款).
         unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
 
-        let result = dispatch_endksig(&mut caller, &msg, &mut procs, &privs);
+        let result = dispatch_endksig(ProcNr(1), &mut procs, &msg, &privs);
         assert_eq!(result, KcallResult::Ok(OK));
         assert!(procs.get(ProcNr(0)).unwrap()
             .p_rts_flags.is_set(RtsFlagsBits::SIG_PENDING),
@@ -1231,7 +1255,7 @@ mod tests {
         // 目标必须有已记录的内核入口（NoEntry → EINVAL，到不了拷贝）
         procs.get_mut(ProcNr(0)).unwrap().trap_style =
             minix_arch::TrapStyle::IntHard;
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(200));
+        procs.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigsend as i32;
         // SAFETY: m_type set above; test-only union write.
@@ -1240,7 +1264,7 @@ mod tests {
             msg.m_u.m_sigcalls.sigctx = 0x1000; // 未映射
         }
 
-        let result = dispatch_sigsend(&mut caller, &msg, &mut procs);
+        let result = dispatch_sigsend(ProcNr(0), &mut procs, &msg);
         assert_eq!(result, KcallResult::VmSuspend,
             "未映射 sigctx 的拷贝必须挂起等待 VM 协助");
     }
@@ -1251,7 +1275,7 @@ mod tests {
         // sigctx 未映射 → VmSuspend（Rust 统一用 data_copy_vmcheck，
         // 用户栈可页失败——doc 注释明示与 C data_copy 的差异）。
         let (target_ep, _, mut procs, _privs) = occupy_two_slots(ProcNr(0), ProcNr(1));
-        let mut caller = KProcess::new(ProcNr(1), Endpoint(200));
+        procs.get_mut(ProcNr(1)).unwrap().p_endpoint = Endpoint(200);
         let mut msg = Message::default();
         msg.m_type = Syscall::Sigreturn as i32;
         // SAFETY: m_type set above; test-only union write.
@@ -1260,7 +1284,7 @@ mod tests {
             msg.m_u.m_sigcalls.sigctx = 0x1000; // 未映射
         }
 
-        let result = dispatch_sigreturn(&mut caller, &msg, &mut procs);
+        let result = dispatch_sigreturn(ProcNr(0), &mut procs, &msg);
         assert_eq!(result, KcallResult::VmSuspend,
             "未映射 sigctx 的 sigcontext 拷回必须挂起等待 VM 协助");
     }

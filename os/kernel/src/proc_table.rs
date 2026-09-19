@@ -1091,12 +1091,13 @@ impl ProcessTable {
                 // clock_state + proc_table access. This split is a Rust
                 // design deviation from C (documented in 10-switch-to-user.md
                 // §4.2), caused by Rust's borrow checker: process_misc_flags
-                // holds &mut self, so it can't also pass self as proc_table
-                // to syscall::kernel_call_resume.
-                let result = match self.get_mut(nr) {
-                    Some(p) => crate::vm::kernel_call_resume(p),
-                    None => break,
-                };
+                // holds &mut self — with K20 (caller-by-nr) the resume now
+                // takes (nr, &mut table) and re-borrows the slot itself, so
+                // the old "cannot pass self as proc_table" limitation is gone.
+                if self.get(nr).is_none() {
+                    break;
+                }
+                let result = crate::vm::kernel_call_resume(nr, self);
                 // vm::kernel_call_resume clears MF_KCALL_RESUME + returns
                 // VmCheckResult. If the VM result indicates an error (VM
                 // confirmed the address is genuinely invalid), the process

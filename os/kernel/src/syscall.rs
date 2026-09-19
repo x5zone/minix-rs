@@ -589,11 +589,11 @@ fn kernel_call_dispatch_inner(
         Syscall::Schedule => dispatch_schedule(caller, msg, proc_table, priv_table),
         Syscall::Privctl => dispatch_privctl(caller, msg, proc_table, priv_table, clock_state),
         Syscall::Trace => dispatch_trace(caller, msg, proc_table, priv_table),
-        Syscall::Kill => dispatch_kill(caller, msg, proc_table, priv_table),
-        Syscall::Getksig => dispatch_getksig(caller, msg, proc_table, priv_table),
-        Syscall::Endksig => dispatch_endksig(caller, msg, proc_table, priv_table),
-        Syscall::Sigsend => dispatch_sigsend(caller, msg, proc_table),
-        Syscall::Sigreturn => dispatch_sigreturn(caller, msg, proc_table),
+        Syscall::Kill => dispatch_kill(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::Getksig => dispatch_getksig(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::Endksig => dispatch_endksig(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::Sigsend => dispatch_sigsend(caller.p_nr, proc_table, msg),
+        Syscall::Sigreturn => dispatch_sigreturn(caller.p_nr, proc_table, msg),
         Syscall::Memset => dispatch_memset(caller, msg, proc_table),
         Syscall::Umap => dispatch_umap(caller, msg, proc_table, priv_table),
         Syscall::Vircopy => dispatch_vircopy(caller, msg, proc_table),
@@ -1925,20 +1925,20 @@ fn privctl_update_sys(
     }
 }
 fn dispatch_trace(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult { crate::misc::dispatch_trace(caller, msg, proc_table, priv_table) }
-fn dispatch_kill(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut PrivTable) -> KcallResult {
-    crate::syscall_signal::dispatch_kill(caller, msg, proc_table, priv_table)
+fn dispatch_kill(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut PrivTable) -> KcallResult {
+    crate::syscall_signal::dispatch_kill(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_getksig(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult {
-    crate::syscall_signal::dispatch_getksig(caller, msg, proc_table, priv_table)
+fn dispatch_getksig(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
+    crate::syscall_signal::dispatch_getksig(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_endksig(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult {
-    crate::syscall_signal::dispatch_endksig(caller, msg, proc_table, priv_table)
+fn dispatch_endksig(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &PrivTable) -> KcallResult {
+    crate::syscall_signal::dispatch_endksig(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_sigsend(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult {
-    crate::syscall_signal::dispatch_sigsend(caller, msg, proc_table)
+fn dispatch_sigsend(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult {
+    crate::syscall_signal::dispatch_sigsend(caller_nr, proc_table, msg)
 }
-fn dispatch_sigreturn(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult {
-    crate::syscall_signal::dispatch_sigreturn(caller, msg, proc_table)
+fn dispatch_sigreturn(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult {
+    crate::syscall_signal::dispatch_sigreturn(caller_nr, proc_table, msg)
 }
 fn dispatch_memset(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_copy::dispatch_memset(caller, msg, proc_table) }
 fn dispatch_umap(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_umap(caller, msg, proc_table, priv_table) }

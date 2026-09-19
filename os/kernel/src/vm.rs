@@ -944,21 +944,44 @@ impl VmRequestHandler {
 /// - `p_vm_suspend` contains a `Completed` state context
 ///
 /// Design decision: §3.6 (MF_KCALL_RESUME retained as flag), §4.9.
-pub fn kernel_call_resume(caller: &mut KProcess) -> VmCheckResult {
-    debug_assert!(caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
-    debug_assert!(!caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST));
+pub fn kernel_call_resume(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+) -> VmCheckResult {
+    // K20 caller-by-nr: the caller slot is re-borrowed at each use — a
+    // short read for the state, then a short write to clear the flag.
+    let (kcall_resume, vmrequest, completed) = {
+        let caller = proc_table
+            .get(caller_nr)
+            .expect("kernel_call_resume: caller slot must exist");
+        let completed = match caller
+            .p_vm_suspend
+            .as_ref()
+            .expect("MF_KCALL_RESUME set but no VmSuspendContext")
+            .state
+        {
+            VmSuspendState::Completed(result) => Some(result),
+            VmSuspendState::Pending | VmSuspendState::Fetched => None,
+        };
+        (
+            caller.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME),
+            caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
+            completed,
+        )
+    };
+    debug_assert!(kcall_resume);
+    debug_assert!(!vmrequest);
 
-    let ctx = caller.p_vm_suspend.as_ref()
-        .expect("MF_KCALL_RESUME set but no VmSuspendContext");
-
-    match ctx.state {
-        VmSuspendState::Completed(result) => {
-            caller.p_misc_flags.clear(MiscFlagsBits::KCALL_RESUME);
+    match completed {
+        Some(result) => {
+            proc_table
+                .get_mut(caller_nr)
+                .expect("kernel_call_resume: caller slot must exist")
+                .p_misc_flags
+                .clear(MiscFlagsBits::KCALL_RESUME);
             result
         }
-        VmSuspendState::Pending | VmSuspendState::Fetched => {
-            panic!("kernel_call_resume with non-completed state");
-        }
+        None => panic!("kernel_call_resume with non-completed state"),
     }
 }
 
@@ -1352,27 +1375,62 @@ mod tests {
 
     #[test]
     fn kernel_call_resume_returns_ok_on_success() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
-        let ctx = proc.p_vm_suspend.as_mut().unwrap();
-        ctx.state = VmSuspendState::Completed(VmCheckResult::Ok);
-        proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
-        proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
+        // K20 caller-by-nr: build the suspended state directly on the
+        // caller's table slot (the standalone handle no longer applies).
+        let mut table = crate::test_helpers::test_proc_table();
+        {
+            let proc = table.get_mut(ProcNr(0)).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            proc.suspend_for_vm(
+                VmSuspendType::KernelCall,
+                Endpoint::from_generation_slot(1, 99),
+                VmCheckParams {
+                    start: VirBytes::new(0x1000),
+                    length: VirBytes::new(0x100),
+                    write_flag: true,
+                },
+                None,
+            );
+            // The reply path cleared RTS_VMREQUEST before the resume.
+            proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
+            let ctx = proc.p_vm_suspend.as_mut().unwrap();
+            ctx.state = VmSuspendState::Completed(VmCheckResult::Ok);
+            proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        }
 
-        let result = kernel_call_resume(&mut proc);
+        let result = kernel_call_resume(ProcNr(0), &mut table);
         assert_eq!(result, VmCheckResult::Ok);
-        assert!(!proc.p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
+        assert!(!table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
     }
 
     #[test]
     fn kernel_call_resume_returns_fault_on_failure() {
-        let mut proc = make_vm_suspended_proc(ProcNr(0),VmSuspendType::KernelCall);
-        let ctx = proc.p_vm_suspend.as_mut().unwrap();
-        ctx.state = VmSuspendState::Completed(VmCheckResult::Fault);
-        proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
-        proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
+        // K20 caller-by-nr: build the suspended state directly on the
+        // caller's table slot (the standalone handle no longer applies).
+        let mut table = crate::test_helpers::test_proc_table();
+        {
+            let proc = table.get_mut(ProcNr(0)).unwrap();
+            proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            proc.suspend_for_vm(
+                VmSuspendType::KernelCall,
+                Endpoint::from_generation_slot(1, 99),
+                VmCheckParams {
+                    start: VirBytes::new(0x1000),
+                    length: VirBytes::new(0x100),
+                    write_flag: true,
+                },
+                None,
+            );
+            // The reply path cleared RTS_VMREQUEST before the resume.
+            proc.p_rts_flags.clear(RtsFlagsBits::VMREQUEST);
+            let ctx = proc.p_vm_suspend.as_mut().unwrap();
+            ctx.state = VmSuspendState::Completed(VmCheckResult::Fault);
+            proc.p_misc_flags.set(MiscFlagsBits::KCALL_RESUME);
+        }
 
-        let result = kernel_call_resume(&mut proc);
+        let result = kernel_call_resume(ProcNr(0), &mut table);
         assert_eq!(result, VmCheckResult::Fault);
+        assert!(!table.get(ProcNr(0)).unwrap().p_misc_flags.is_set(MiscFlagsBits::KCALL_RESUME));
     }
 
     #[test]
