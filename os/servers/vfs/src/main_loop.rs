@@ -3038,6 +3038,18 @@ impl VfsState {
                         }
                     }
                 }
+                crate::worker::WorkerCont::CdevIoctl { grant } => {
+                    // C `cdev_io` 的收尾：撤 grant → 状态取
+                    // `mess_lchardriver_vfs_reply.status`（**首字**，这个回复
+                    // 结构体的第一格就是状态，不是 `req_id`）。
+                    let _ = self.revoke_grant(grant);
+                    if status == 0 {
+                        // SAFETY: `mess_lchardriver_vfs_reply { int status;
+                        // uint32_t id; }`（ipc.h:943-948）——状态在首字。
+                        let raw = unsafe { &reply.m_u.raw };
+                        status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    }
+                }
                 crate::worker::WorkerCont::SdevSimple => {
                     // C `sdev_simple` 的收尾：回复号必须是 `SDEV_REPLY`，
                     // 状态在**载荷**里（`mess_lsockdriver_vfs_reply.status`）。

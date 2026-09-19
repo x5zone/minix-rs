@@ -94,6 +94,13 @@ pub struct PairState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerCont {
+    /// 字符设备 ioctl 的对话半（`CDEV_IOCTL`）：回复是
+    /// `mess_lchardriver_vfs_reply { int status; uint32_t id; }`，续接体撤销
+    /// ioctl 的 magic grant 并把状态回给用户。C `cdev_io`（cdev.c:277-340）。
+    CdevIoctl {
+        /// 已发给驱动的 magic grant（收尾时撤销）。
+        grant: i32,
+    },
     /// `Fstat`（`do_fstat` → `REQ_STAT`）：回复只有状态字，续接就是把
     /// 用户的 grant 撤掉再把状态回给用户。
     Fstat {
