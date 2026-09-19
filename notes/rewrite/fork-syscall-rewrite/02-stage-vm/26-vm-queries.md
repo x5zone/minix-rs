@@ -80,7 +80,7 @@ C 路径：handle_memory_once 钉住目标页 → sys_datacopy 复制 → 安全
 Rust 路径：结果编码进 IPC 消息 → 无跨地址空间复制 → 死锁窗口不存在
 ```
 
-Rust 的 IPC 消息模型里，结果以 `VmReply` 枚举返回、由传输层编码——不存在"往调用者地址空间写"这一步，因此 `handle_memory_once` 前置检查被**结构性消除**（[ARCH: 26-D1]）。代价是：**region 数组不能随消息内联**（M1 只有 3 指针 + 3 整型槽），`VmReply::InfoRegion` 的数组负载要等 `sys_datacopy` 传输接线后才能送达（见 §3.7 与 §4.8 的 transport 缺口）。
+Rust 的 IPC 消息模型里，结果以 `VmReply` 枚举返回、由传输层编码——不存在"往调用者地址空间写"这一步，因此 `handle_memory_once` 前置检查被**结构性消除**（[ARCH: 26-D1]）。代价是：**region 数组不能随消息内联**（M1 只有 3 指针 + 3 整型槽），`VmReply::InfoRegion` 的数组由**值通道分批**送达（每包 2 条紧凑条目 + 游标，见 §3.7 的 26-D7 小节），不需要往调用者地址空间写。
 
 ### 1.5 小结
 
@@ -470,7 +470,7 @@ pub(crate) struct RegionInfo {
 - handler 内固定数组 `[RegionInfo; 64]`（栈上 64×16B，无分配）；
 - BTreeMap 按 vaddr 升序迭代天然等价 AVL 中序；`vr.vaddr < next` 过滤等价 `AVL_GREATER_EQUAL`。
 
-**transport 缺口（诚实标注）**：`VmReply::InfoRegion.regions` 是**栈上 inline 数组** `[VmRegionInfo; 64]`（minix-types vm.rs:709-718）——`VmReply` 整体因此保持 `Copy`（minix-types vm.rs:634-651 注释解释 inline 比 Box 更优：变体 ~1.5 KiB 小到足以放栈，`VmRegionInfo` 自身 `Copy`，且 boxing 会引入 `extern crate alloc` 而无收益）。但 M1 编码只有 3 指针 + 3 整型槽，**无法内联数组**——`encode_reply_data` 只写 `count`/`next` 到整型槽、源侧长度到 `m1p1`（os/servers/vm/src/vm_server.rs:fn run_once（L1215，工具生成），VMI-2 现状延续）。数组负载 DEFERRED 到 `sys_datacopy` 传输接线。**handler 正确性是硬契约**（数据算对了，编码缺一步），文档与代码注释均显式标注。`VmReply::InfoRegion { regions, .. }` 构造路径**无任何堆分配**——`regions` 字段是值类型 64×24B = 1536B，Copy 触发 64 次 24B mem-copy（SIMD 友好），远快于 `Box` 的 alloc+memcpy+refcount 路径。`#[allow(clippy::large_enum_variant)]` 标在 `DispatchAction`（os/servers/vm/src/vm_server.rs:const PS（L719，工具生成））以及未来其他 `Copy`-by-value 使用点，silence ~1.5 KiB "large variant" lint。
+**数组负载的落地形式（`[ARCH: 26-D7]`，闭环）**：`VmReply::InfoRegion.regions` 是**栈上 inline 数组** `[VmRegionInfo; 64]`（minix-types vm.rs:709-718）——`VmReply` 整体因此保持 `Copy`（同一批注释解释 inline 比 Box 更优：变体 ~1.5 KiB 小到足以放栈，`VmRegionInfo` 自身 `Copy`，boxing 会引入 `extern crate alloc` 而无收益）。M1 的具名字段装不下整批，故条目按**值通道分批**内联进回复负载的字节区：`[0..4)` 本包条数、`[4..12)` 新游标（LE u64）、`[12..)` 每条 20 字节（addr/length/prot），一包最多 `MAX_VRI_PER_REPLY = 2` 条（负载 56 字节 − 12 字节头）。消费方（IS `SysVmInfo::vm_region_via`）按游标续批直到缓冲填满或收到空包——调用方看到的语义与 C 的"一次调用搬一批"相同，只有往返次数随包大小变化。**为什么不是 `sys_datacopy`**：26-D1 的结构性结论是"IPC 模型里不存在往调用者地址空间写这一步"，值通道是该结论在数组上的自然延伸；C 的 `handle_memory_once` 钉页防死锁机制随之不需要。`VmReply::InfoRegion { regions, .. }` 构造路径**无任何堆分配**——`regions` 字段是值类型 64×24B = 1536B，Copy 触发 64 次 24B mem-copy（SIMD 友好），远快于 `Box` 的 alloc+memcpy+refcount 路径。`#[allow(clippy::large_enum_variant)]` 标在 `DispatchAction`（os/servers/vm/src/vm_server.rs:const PS（L719，工具生成））以及未来其他 `Copy`-by-value 使用点，silence ~1.5 KiB "large variant" lint。
 
 ### 3.8 GETPHYS/GETREF 走 MemType 能力门控（D8）
 
@@ -503,7 +503,7 @@ C 的非 PM 返回 OK、端点错 ESRCH、children 为 TODO 且假定 PM 先清�
 |---|------|--------|-----------|------|
 | 1 | sys_datacopy → IPC 消息 | 结果复制进调用者地址空间 | 结果编码进 `VmReply` | ARCH（D1） |
 | 2 | handle_memory_once 前置 | 复制前钉住目标页防死锁 | 结构性消除（无跨空间复制） | ARCH（D1） |
-| 3 | region 数组编码 | sys_datacopy 送 64 条 | 只编码 count/next，数组 DEFERRED | transport 缺口（D7） |
+| 3 | region 数组编码 | sys_datacopy 送 64 条 | 值通道分批内联（每包 2 条 + 游标），消费方续批 | ARCH（26-D7，闭环） |
 | 4 | vri_flags | 恒 0（死字段） | 不建模 | 结构简化（D6） |
 | 5 | is_stack_region | vaddr/length 精确启发式（region.c:1388-1389） | `end_addr() == region_top()` 近似 | 近似（C 自述 guesswork） |
 | 6 | get_vm_self_pages | minix3/minix/servers/vm/pagetable.c:get_vm_self_pages 独立计数器 | `self_page_count()`（分配器记账） | ARCH（D5，A-1 衍生） |
@@ -661,7 +661,7 @@ pub(crate) fn handle_getrusage(
 | GetRefcount | m1i1 = count | `retc`（C: mmap.c:481） |
 | InfoStats | p1=pagesize, i1=total, i2=free, i3=largest, **p2=cached** | 5 字段全编码；`dropped_messages`/`pagefault_errors`（V10-P2-4）与 `alloc_failures`（V11/T18，[ARCH: A-16]）扩展字段**无 C wire 槽位**，encode 丢弃 |
 | InfoUsage | p1=total, p2=common, p3=shared, i1=virtual(页数), i2=mvirtual(页数), **i3=maxrss(KB)** | minflt/majflt 无槽位，DEFERRED |
-| InfoRegion | p1=源长度, i1=count, i2=next | 数组负载 DEFERRED（VMI-2） |
+| InfoRegion | p1=源长度, i1=count, i2=next | 负载字节区：条数+游标+每包最多 2 条紧凑条目（26-D7） |
 | Getrusage | p1=maxrss, i1=minflt, i2=majflt | 3 字段 |
 
 编码注释均按 review-patterns-skill §模式19 附 SAFETY（`as i32` 截断饱和）。

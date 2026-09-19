@@ -134,6 +134,34 @@ pub(crate) fn reply_to_errno(reply: VmReply) -> i32 {
 /// this function accepts `VmReply` directly, so a future refactor that
 /// bypasses the wrapper could pass `Suspend` here. The `unreachable!()`
 /// assertion catches that bug immediately, consistent with `reply_to_errno`.
+/// 单条区域在回复里的紧凑宽度（addr u64 + length u64 + prot u32）。
+pub(crate) const VRI_PACKED_LEN: usize = 20;
+
+/// 一条回复最多携带的区域条目数：负载 56 字节 − 12 字节头 = 44 / 20 = 2。
+pub(crate) const MAX_VRI_PER_REPLY: usize = 2;
+
+/// 把一批区域条目按 `[ARCH: 26-D7]` 的紧凑布局打进回复负载。
+///
+/// 返回的字节数 ≤ `MESSAGE_PAYLOAD_SIZE`；`count` 是**本回复实际携带**的
+/// 条数（可能小于服务端算出的 `count`——消费方按游标续批）。
+pub(crate) fn pack_region_reply(
+    regions: &[minix_types::VmRegionInfo],
+    count: usize,
+    next: minix_types::VirBytes,
+) -> alloc::vec::Vec<u8> {
+    let shipped = count.min(regions.len()).min(MAX_VRI_PER_REPLY);
+    let mut out = alloc::vec![0u8; 12 + shipped * VRI_PACKED_LEN];
+    out[0..4].copy_from_slice(&(shipped as i32).to_le_bytes());
+    out[4..12].copy_from_slice(&next.0.to_le_bytes());
+    for (i, r) in regions.iter().take(shipped).enumerate() {
+        let at = 12 + i * VRI_PACKED_LEN;
+        out[at..at + 8].copy_from_slice(&r.addr.0.to_le_bytes());
+        out[at + 8..at + 16].copy_from_slice(&r.length.0.to_le_bytes());
+        out[at + 16..at + 20].copy_from_slice(&r.prot.to_le_bytes());
+    }
+    out
+}
+
 pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
     // SAFETY: All VM replies use the M1 message format.
     let m1 = unsafe { &mut msg.m_u.m_m1 };
@@ -222,28 +250,25 @@ pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
             m1.m1i3 = len as i32;
         }
         VmReply::InfoRegion { regions, count, next } => {
-            // Minix3 C uses `sys_datacopy(VM_PROC_NR, regions_addr,
-            // caller, call_addr, count*sizeof(vm_region_info))` to copy
-            // the region array (utility.c). M1 layout has only 1 pointer
-            // and 3 integer slots — insufficient to ship the array inline.
+            // `[ARCH: 26-D7]` 值通道分批：C 用 `sys_datacopy(VM, regions,
+            // caller, ptr, count*sizeof)` 把整批写进调用方缓冲
+            // （utility.c:169-182，复制前 `handle_memory_once` 钉页防死锁）；
+            // minix-rs 的 IPC 模型没有"往调用方地址空间写"这一步（26-D1），
+            // 故条目**随回复内联**——回复负载 56 字节里塞得下
+            // `MAX_VRI_PER_REPLY` 条紧凑条目（addr u64 / length u64 /
+            // prot u32 = 20 字节），分批循环由消费方（IS `SysVmInfo`）做。
             //
-            // FIX (VMI-2): Previously `let _ = regions;` discarded the
-            // entire region list, leaving PM unable to enumerate regions
-            // (m1.m1i1=count, m1.m1i2=next but no array payload). Encoding
-            // is unchanged for now (count + next in integer slots), but we
-            // expose the source length in m1.m1p1 so the caller can detect
-            // "VM stub returned N regions but no sys_datacopy happened" vs
-            // "VM really has 0 regions". When `IpcTransport::send` lands,
-            // replace this with a real sys_datacopy call.
-            let len_u32 = u32::try_from(regions.len()).unwrap_or(u32::MAX);
-            m1.m1p1 = u64::from(len_u32); // sentinel: source-side length
-            m1.m1i1 = count as i32;
-            // SAFETY: `as i32` truncates the vaddr cursor. Region addresses
-            // live in the low 4 GiB user range (VM_MMAPTOP = 0x80000000),
-            // so the cursor fits — documented per §模式19.
-            m1.m1i2 = next.0 as i32;
-            // m1.m1i3 deliberately left as 0 — reserved for caller-side
-            // buffer capacity once sys_datacopy is wired.
+            // 负载布局（回复 raw 字节视图，消费方逐字节同解）：
+            //   [0..4)  count（本回复内条目数，LE i32）
+            //   [4..12) next（新游标，LE u64；区域地址在低 4 GiB 内）
+            //   [12..)  条目数组，每条 20 字节，最多 MAX_VRI_PER_REPLY 条
+            let _ = m1;
+            let packed = pack_region_reply(&regions, count, next);
+            // SAFETY: 回复负载的 raw 视图（union 的字节面，与 M1 同区）；
+            // 本臂独占写，长度由 `pack_region_reply` 保证不超过负载容量。
+            unsafe {
+                msg.m_u.raw[..packed.len()].copy_from_slice(&packed);
+            }
         }
         VmReply::Getrusage { max_rss_kb, minor_faults, major_faults } => {
             // C's VM writes ru_maxrss/ru_minflt/ru_majflt into PM's stack
@@ -318,6 +343,71 @@ mod tests {
         assert_eq!(m1.m1i3, 0x3000);
         // The endpoint slot must not be clobbered by the len write (25-R2).
         assert_eq!(m1.m1i1, 0);
+    }
+
+    /// `[ARCH: 26-D7]`：区域批次的紧凑布局——count（本回复条数）/ next
+    /// （新游标）/ 每条 20 字节（addr/length/prot），一回复最多
+    /// `MAX_VRI_PER_REPLY` 条；超出部分由消费方按游标续批。
+    #[test]
+    fn test_pack_region_reply_layout_and_cap() {
+        let regions = [
+            minix_types::VmRegionInfo {
+                addr: minix_types::VirBytes(0x1000),
+                length: minix_types::VirBytes(0x2000),
+                prot: 1,
+            },
+            minix_types::VmRegionInfo {
+                addr: minix_types::VirBytes(0x4000),
+                length: minix_types::VirBytes(0x1000),
+                prot: 3,
+            },
+            // 第三条超出单回复容量，必须被丢弃（消费方续批拿）。
+            minix_types::VmRegionInfo {
+                addr: minix_types::VirBytes(0x8000),
+                length: minix_types::VirBytes(0x1000),
+                prot: 5,
+            },
+        ];
+        let packed = pack_region_reply(&regions, 3, minix_types::VirBytes(0x5000));
+        assert_eq!(packed.len(), 12 + MAX_VRI_PER_REPLY * VRI_PACKED_LEN);
+        assert_eq!(i32::from_le_bytes(packed[0..4].try_into().unwrap()), 2);
+        assert_eq!(u64::from_le_bytes(packed[4..12].try_into().unwrap()), 0x5000);
+        assert_eq!(u64::from_le_bytes(packed[12..20].try_into().unwrap()), 0x1000);
+        assert_eq!(u64::from_le_bytes(packed[20..28].try_into().unwrap()), 0x2000);
+        assert_eq!(u32::from_le_bytes(packed[28..32].try_into().unwrap()), 1);
+        assert_eq!(u64::from_le_bytes(packed[32..40].try_into().unwrap()), 0x4000);
+        assert_eq!(u32::from_le_bytes(packed[48..52].try_into().unwrap()), 3);
+
+        // 空批：只有头，count=0（消费方据此停批）。
+        let empty = pack_region_reply(&regions, 0, minix_types::VirBytes(0));
+        assert_eq!(empty.len(), 12);
+        assert_eq!(i32::from_le_bytes(empty[0..4].try_into().unwrap()), 0);
+    }
+
+    /// 编码路径把打包负载写进回复负载区（`encode_reply_data` 的
+    /// InfoRegion 臂）：消费方按同一字节布局解码。
+    #[test]
+    fn test_encode_info_region_writes_packed_payload() {
+        let mut regions = [minix_types::VmRegionInfo {
+            addr: minix_types::VirBytes(0),
+            length: minix_types::VirBytes(0),
+            prot: 0,
+        }; 64];
+        regions[0] = minix_types::VmRegionInfo {
+            addr: minix_types::VirBytes(0x2000),
+            length: minix_types::VirBytes(0x1000),
+            prot: 2,
+        };
+        let mut msg = Message::default();
+        encode_reply_data(
+            VmReply::InfoRegion { regions, count: 1, next: minix_types::VirBytes(0x3000) },
+            &mut msg,
+        );
+        // SAFETY: 断言侧按打包布局读回复负载。
+        let raw = unsafe { &msg.m_u.raw };
+        assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 1);
+        assert_eq!(u64::from_le_bytes(raw[4..12].try_into().unwrap()), 0x3000);
+        assert_eq!(u64::from_le_bytes(raw[12..20].try_into().unwrap()), 0x2000);
     }
 
     /// V11/T23 (V11-P2-5): the wrapper is the compile-time gate — wrapping a

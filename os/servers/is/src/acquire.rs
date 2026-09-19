@@ -813,11 +813,10 @@ impl GetSysinfoTransport for SysGetsysinfo {
 /// - REGION：`m1i1`=实际条数、`m1i2`=新游标（低 32 位——区域地址在低 4 GiB
 ///   用户区间内，故 C 的 `vir_bytes` 游标在此不丢精度）。
 ///
-/// REGION 的**条目数组**当前不在回复里：`26-vm-queries.md` §4.8 的 D7
-/// transport 缺口（handler 算得对，编码只写 count/next）。服务端报 count>0
-/// 而条目不可得时，本客户端如实回 `-ENOTSUP`（C 的 `!= OK` 面即"这屏取不到"，
-/// dump 打一行错误继续），**不把"未送达"伪装成"空地址空间"**；count==0 是
-/// 合法答案（地址空间确实没有区域），按 OK 回。
+/// REGION 的条目数组按 `[ARCH: 26-D7]` 的**值通道分批**随回复内联
+/// （每包 [`SysVmInfo::VRI_PER_REPLY`] 条，20 字节紧凑布局），
+/// [`SysVmInfo::vm_region_via`] 替调用方把批拼齐——C 的"一次调用搬一批"
+/// 语义不变，只是往返次数由包大小决定。
 #[derive(Debug, Default)]
 pub struct SysVmInfo;
 
@@ -905,30 +904,88 @@ impl SysVmInfo {
         minix_types::OK
     }
 
+    /// 一次 REGION 回复里最多携带的条目数（与服务端
+    /// `os/servers/vm/src/ipc/encode.rs` 的 `MAX_VRI_PER_REPLY` 同一契约；
+    /// 消费方按游标续批，不依赖此常数做正确性判断）。
+    pub const VRI_PER_REPLY: usize = 2;
+
+    /// 解一包 REGION 回复：`(本包条数, 新游标, 条目字节区)`。
+    ///
+    /// 布局（生产端 `pack_region_reply` 同解）：`[0..4)` 条数、
+    /// `[4..12)` 游标（LE u64）、`[12..)` 每条 20 字节（addr/length/prot）。
+    fn decode_region_payload(msg: &Message) -> (usize, u64, &[u8]) {
+        // SAFETY: 回复负载的 raw 视图；本函数只读，长度由本包条数校验。
+        let raw = unsafe { &msg.m_u.raw };
+        let count = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]).max(0) as usize;
+        let mut next_bytes = [0u8; 8];
+        next_bytes.copy_from_slice(&raw[4..12]);
+        let next = u64::from_le_bytes(next_bytes);
+        let want = count.min(Self::VRI_PER_REPLY);
+        let body = &raw[12..12 + want * 20];
+        (want, next, body)
+    }
+
+    /// 区域批腿：**循环取批**直到调用方缓冲填满、服务端报空、或游标不再
+    /// 前进（防死循环）。
+    ///
+    /// C 的 `vm_info_region` 一次调用搬 `count` 条（`utility.c:142-160` 的
+    /// `MIN(count, MAX_VRI_COUNT)`），条数受调用方缓冲限制；minix-rs 的
+    /// IPC 模型把条目内联在回复里（`[ARCH: 26-D7]` 值通道，每包
+    /// [`Self::VRI_PER_REPLY`] 条），故这里替调用方把批拼起来——调用方
+    /// 看到的语义与 C 相同（返回条数 + 新游标），只有往返次数不同。
+    ///
+    /// 返回 `(status, 新游标, 收到条数)`：`status != OK` 时 `out` 未被触碰
+    /// 的部分保持原样，游标回退到最后一包生效处。
     pub fn vm_region_via(
         transport: &impl IpcTransport,
         who: Endpoint,
         out: &mut [VmRegionSnap],
         next: u64,
     ) -> (i32, u64, i32) {
-        let (status, msg) = Self::status(Self::call(
-            transport,
-            minix_types::VMIW_REGION,
-            who,
-            out.len() as i32,
-            next,
-        ));
-        let Some(msg) = msg else { return (status, next, 0) };
-        // SAFETY: VM 的 REGION 回复用 M1 槽（encode.rs 的 InfoRegion 臂：
-        // m1i1=count、m1i2=next 低位）。
-        let m1 = unsafe { &msg.m_u.m_m1 };
-        let count = m1.m1i1;
-        let next_out = m1.m1i2 as u32 as u64;
-        if count > 0 {
-            // 条目数组未随回复送达（D7 缺口）——如实报"取不到"，游标原样。
-            return (-minix_types::ENOTSUP, next, 0);
+        let mut cursor = next;
+        let mut filled = 0usize;
+        while filled < out.len() {
+            let want = (out.len() - filled).min(Self::VRI_PER_REPLY);
+            let (status, msg) = Self::status(Self::call(
+                transport,
+                minix_types::VMIW_REGION,
+                who,
+                want as i32,
+                cursor,
+            ));
+            let Some(msg) = msg else {
+                // 服务端拒绝：已收到的条目照实报，游标停在最后一包生效处。
+                return (status, cursor, filled as i32);
+            };
+            let (got, next_out, body) = Self::decode_region_payload(&msg);
+            for i in 0..got {
+                let at = i * 20;
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&body[at..at + 8]);
+                let addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&body[at + 8..at + 16]);
+                let length = u64::from_le_bytes(b8);
+                let mut b4 = [0u8; 4];
+                b4.copy_from_slice(&body[at + 16..at + 20]);
+                out[filled] = VmRegionSnap {
+                    vri_addr: addr,
+                    vri_length: length,
+                    vri_prot: i32::from_le_bytes(b4),
+                    vri_flags: 0, // C 的 vri_flags 恒零（region.c 从不写）
+                };
+                filled += 1;
+            }
+            if got == 0 {
+                // 空包＝枚举到底：C 的 `get_region_info` 返回 0 即此义。
+                return (minix_types::OK, next_out, filled as i32);
+            }
+            if next_out == cursor {
+                // 游标不前进＝服务端没推进，停批防死循环。
+                return (minix_types::OK, cursor, filled as i32);
+            }
+            cursor = next_out;
         }
-        (minix_types::OK, next_out, 0)
+        (minix_types::OK, cursor, filled as i32)
     }
 }
 
@@ -1384,48 +1441,60 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(req.ep, Endpoint::PM.get());
     }
 
-    /// REGION 游标协议 + 条目数组缺口（26-vm-queries.md §4.8 D7）：
-    /// count==0 是合法答案（地址空间无区域）；count>0 而条目不在回复里时
-    /// 如实回 `-ENOTSUP`，不把"未送达"伪装成空表。
+    /// REGION 值通道分批（`[ARCH: 26-D7]`）：客户端替调用方把多包拼齐
+    /// ——每包按 `count`/`next`/条目区解，空包（count=0）即枚举到底；
+    /// 请求侧的 `count` 是"我还缺几条、但不超过单包容量"。
     #[test]
-    fn test_vm_info_region_cursor_and_payload_gap() {
-        let mut canned = CannedTransport::new();
-        let mut reply = Message::default();
-        reply.m_type = OK;
-        // SAFETY(test): 按 InfoRegion 槽序（count/next）回填。
-        unsafe {
-            let m1 = &mut reply.m_u.m_m1;
-            m1.m1i1 = 0;
-            m1.m1i2 = 0x4000;
-        }
-        canned.reply_sendrec(Ok(reply));
-        let mut out = [VmRegionSnap::default(); 4];
-        assert_eq!(
-            SysVmInfo::vm_region_via(&canned, Endpoint::PM, &mut out, 0x1000),
-            (OK, 0x4000, 0)
-        );
-        let sent = canned.sent.borrow();
-        // SAFETY(test): 请求域（count 是调用方声明的批大小）。
-        let req = unsafe { &sent[0].1.m_u.m_lsys_vm_info };
-        assert_eq!(req.what, minix_types::VMIW_REGION);
-        assert_eq!(req.count, 4);
-        assert_eq!(req.next, 0x1000, "游标按调用方入参带上");
+    fn test_vm_info_region_batches_until_empty() {
+        let packed = |addrs: &[(u64, u64, i32)], next: u64| {
+            let mut v = Vec::new();
+            v.extend_from_slice(&(addrs.len() as i32).to_le_bytes());
+            v.extend_from_slice(&next.to_le_bytes());
+            for (a, l, p) in addrs {
+                v.extend_from_slice(&a.to_le_bytes());
+                v.extend_from_slice(&l.to_le_bytes());
+                v.extend_from_slice(&p.to_le_bytes());
+            }
+            v
+        };
+        let reply_with = |payload: &[u8]| {
+            let mut m = Message::default();
+            m.m_type = OK;
+            // SAFETY(test): 按打包布局填回复负载。
+            unsafe {
+                m.m_u.raw[..payload.len()].copy_from_slice(payload);
+            }
+            m
+        };
 
         let mut canned = CannedTransport::new();
-        let mut reply = Message::default();
-        reply.m_type = OK;
-        // SAFETY(test): count=3 但回复里没有条目数组。
-        unsafe {
-            let m1 = &mut reply.m_u.m_m1;
-            m1.m1i1 = 3;
-            m1.m1i2 = 0x5000;
-        }
-        canned.reply_sendrec(Ok(reply));
+        canned.reply_sendrec(Ok(reply_with(&packed(&[(0x1000, 0x1000, 1)], 0x2000))));
+        canned.reply_sendrec(Ok(reply_with(&packed(&[(0x2000, 0x1000, 3)], 0x3000))));
+        canned.reply_sendrec(Ok(reply_with(&packed(&[], 0x3000))));
+
         let mut out = [VmRegionSnap::default(); 4];
-        assert_eq!(
-            SysVmInfo::vm_region_via(&canned, Endpoint::PM, &mut out, 0x1000),
-            (-minix_types::ENOTSUP, 0x1000, 0)
-        );
+        let (status, next, count) =
+            SysVmInfo::vm_region_via(&canned, Endpoint::PM, &mut out, 0x1000);
+        assert_eq!((status, next, count), (OK, 0x3000, 2));
+        assert_eq!(out[0].vri_addr, 0x1000);
+        assert_eq!(out[0].vri_length, 0x1000);
+        assert_eq!(out[0].vri_prot, 1);
+        assert_eq!(out[0].vri_flags, 0, "C 的 vri_flags 恒零");
+        assert_eq!(out[1].vri_addr, 0x2000);
+        assert_eq!(out[1].vri_prot, 3);
+
+        // 三包请求：count 逐包递减到"还缺几条"（≤ 单包容量），游标逐包前进。
+        let sent = canned.sent.borrow();
+        let reqs: Vec<_> = sent
+            .iter()
+            .map(|(_, m)| unsafe {
+                let g = &m.m_u.m_lsys_vm_info;
+                (g.what, g.count, g.next)
+            })
+            .collect();
+        assert_eq!(reqs[0], (minix_types::VMIW_REGION, 2, 0x1000));
+        assert_eq!(reqs[1], (minix_types::VMIW_REGION, 2, 0x2000));
+        assert_eq!(reqs[2], (minix_types::VMIW_REGION, 2, 0x3000));
     }
 
     /// 宿主构建下三条 VM 腿都诚实上浮 -EIO，不假装成功
