@@ -32,6 +32,8 @@
 //!   minix-rs models this as a single-threaded event loop with request-slot
 //!   state machines (ARCH A-1, see 01-vfs-init-main.md §3.4).
 
+extern crate alloc;
+
 use crate::device_map::{DmapTable, SmapTable};
 use crate::fcntl::LockTable;
 use crate::filp::FilpTable;
@@ -729,6 +731,155 @@ impl VfsState {
         route
     }
 
+    /// 调用方的根目录三元组（C `fp_rd` → vnode → `(fs, ino, dev)`）。
+    ///
+    /// 路径起点选择（root vs work dir）在臂侧（`eat_path` 的首字符判断），
+    /// 这里只做 vnode → 三元组的解引用；槽空/vnode 缺失回零三元组，
+    /// `LookupWalk` 的 chroot 边界判定自然失效（与 C 的 `fp_rd == NULL`
+    /// 在未初始化进程上的效果一致）。
+    pub fn root_dir_of(&self, fp_slot: Option<minix_types::UserSlot>) -> crate::path::RootDir {
+        let vnode = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .and_then(|fp| fp.root_dir)
+            .and_then(|idx| self.vnode_table.get(crate::vnode::VnodeId(idx)));
+        match vnode {
+            Some(v) => crate::path::RootDir { ino: v.ino, fs: v.fs, dev: v.dev },
+            None => crate::path::RootDir { ino: 0, fs: Endpoint::NONE, dev: 0 },
+        }
+    }
+
+    /// 调用方的工作目录三元组（C `fp_wd`）。
+    pub fn work_dir_of(&self, fp_slot: minix_types::UserSlot) -> crate::path::RootDir {
+        let vnode = self
+            .fproc_table
+            .get(fp_slot)
+            .and_then(|fp| fp.work_dir)
+            .and_then(|idx| self.vnode_table.get(crate::vnode::VnodeId(idx)));
+        match vnode {
+            Some(v) => crate::path::RootDir { ino: v.ino, fs: v.fs, dev: v.dev },
+            None => crate::path::RootDir { ino: 0, fs: Endpoint::NONE, dev: 0 },
+        }
+    }
+
+    /// 当前挂载表（`path::lookup` 的 `mounts` 参数）——从 `vmnt_table` +
+    /// 各挂载点的根 vnode 组装。空行（`fs == NONE`）不进表。
+    pub fn mounted_fs_list(&self) -> alloc::vec::Vec<crate::path::MountedFs> {
+        let mut out = alloc::vec::Vec::new();
+        for idx in 0..crate::vmnt::NR_MNTS {
+            let Some(v) = self.vmnt_table.get(crate::vmnt::VmntId(idx)) else {
+                continue;
+            };
+            if v.fs == Endpoint::NONE {
+                continue;
+            }
+            // 根 vnode（`m_root_node` 的 (ino, dev)）与挂载点 vnode
+            // （`m_mounted_on` 的 (ino, fs, dev)）。
+            let root_vn = v
+                .root
+                .and_then(|i| self.vnode_table.get(crate::vnode::VnodeId(i)));
+            let (root_ino, root_dev) = root_vn.map_or((0, v.dev), |rv| (rv.ino, rv.dev));
+            let mounted_on = v.mounted_on.and_then(|i| {
+                self.vnode_table
+                    .get(crate::vnode::VnodeId(i))
+                    .map(|mv| (mv.ino, mv.fs, mv.dev))
+            });
+            out.push(crate::path::MountedFs {
+                fs: v.fs,
+                dev: v.dev,
+                root: (root_ino, root_dev),
+                mounted_on,
+            });
+        }
+        out
+    }
+
+    /// 把槽内的路径游标装进 scratch（+ NUL）、授权、组 `REQ_LOOKUP` 并交给
+    /// 循环发送（与臂的首条 lookup 共用同一条构造路径）。
+    pub fn send_lookup_for_slot(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+        dir_ino: u64,
+        root_ino: u64,
+    ) -> Result<(), i32> {
+        let vmnt = self.vmnt_table.find_by_fs(fs_e).ok_or(minix_types::EIO)?.0;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        let (grant, path_len) = {
+            let wp = self.worker_pool.get_mut(idx).ok_or(minix_types::EIO)?;
+            let walk_path = wp
+                .path
+                .as_ref()
+                .map(|p| p.walk.resolve().path.clone())
+                .unwrap_or_default();
+            let bytes = walk_path.as_bytes();
+            let n = bytes.len().min(crate::path::PATH_MAX - 1);
+            wp.path_scratch[..n].copy_from_slice(&bytes[..n]);
+            wp.path_scratch[n] = 0;
+            let addr = wp.path_scratch.as_ptr() as u64;
+            let len = n + 1;
+            let grant = self
+                .grants
+                .grant_direct(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    fs_e.get(),
+                    addr,
+                    len as u64,
+                    minix_types::CpFlags::READ,
+                )
+                .map_err(|_| minix_types::EIO)?;
+            (grant, len)
+        };
+        // 现场里记录新 grant（回复后 revoke）。
+        if let Some(wp) = self.worker_pool.get_mut(idx)
+            && let Some(p) = wp.path.as_mut()
+        {
+            p.grant = grant;
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt,
+            fs_e,
+            worker: idx,
+            grant,
+            user,
+            req: crate::request::encode_lookup(grant, path_len, dir_ino, root_ino),
+        });
+        Ok(())
+    }
+
+    /// 收尾一个挂起的作业并回用户（错误路径与相位 2 之后的统一出口）。
+    pub fn finish_worker_job(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        status: i32,
+    ) {
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = None;
+            wp.path = None;
+            wp.sendrec = None;
+            wp.task = None;
+        }
+        self.worker_pool.release(idx);
+        if self.current_worker == Some(idx) {
+            self.current_worker = None;
+        }
+        if let Some(fp_slot) = fp_slot
+            && let Some(fp) = self.fproc_table.get(fp_slot)
+        {
+            let target = fp.endpoint;
+            let result = if status == 0 {
+                crate::call_table::SyscallResult::Ok(0)
+            } else {
+                crate::call_table::SyscallResult::Error(status)
+            };
+            self.queue_reply(target, result);
+        }
+    }
+
     /// 把臂登记的 FS 对话发出去（C `fs_sendrec` 的发送半；臂里做不到，
     /// 因为臂没有 transport 句柄）。
     ///
@@ -793,6 +944,99 @@ impl VfsState {
             match cont {
                 crate::worker::WorkerCont::Fstat { grant } => {
                     let _ = self.revoke_grant(grant);
+                }
+                crate::worker::WorkerCont::Path => {
+                    // 路径遍历的续走：取出现场 → revoke → 解回复 →
+                    // `walk.resume` → 再发一条 lookup（放回现场、继续挂起）
+                    // 或做相位 2（`PathFollow`）。
+                    let Some(mut pending) = self
+                        .worker_pool
+                        .get_mut(idx)
+                        .and_then(|wp| wp.path.take())
+                    else {
+                        continue;
+                    };
+                    let _ = self.revoke_grant(pending.grant);
+                    let follow = pending.follow;
+                    let walk_err = |e: crate::path::PathError| e.to_errno();
+                    // 回复解码：特殊码/OK 交给状态机；其余状态（含负 errno）
+                    // 按错误收尾。
+                    let resumed: Result<crate::path::WalkStep, PathFail> =
+                        match crate::request::decode_lookup_reply(status, &reply) {
+                            Some(res) => {
+                                let rd = self.root_dir_of(fp_slot);
+                                let mounts = self.mounted_fs_list();
+                                pending.walk.resume(res, rd, &mounts).map_err(PathFail::Path)
+                            }
+                            None => Err(PathFail::Status(status)),
+                        };
+                    match resumed {
+                        Ok(crate::path::WalkStep::Send { fs_e, dir_ino, root_ino }) => {
+                            // 再发一条 REQ_LOOKUP（路径从 walk 的游标拷进槽内
+                            // scratch + NUL），现场放回，继续挂起。
+                            if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                wp.path = Some(pending);
+                            }
+                            if self
+                                .send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
+                                .is_err()
+                            {
+                                // 发送前失败（无 vmnt/无槽/grant 失败）：收尾。
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.path = None;
+                                }
+                                self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                            }
+                            continue;
+                        }
+                        Ok(crate::path::WalkStep::Done(node)) => match follow {
+                            crate::worker::PathFollow::Stat { user, buf } => {
+                                // 相位 2：grant 用户 stat 缓冲 → REQ_STAT →
+                                // 续接交棒给 Fstat（已落的那条）。
+                                let grant = match self.grant_user_buffer(
+                                    node.fs_e,
+                                    user,
+                                    buf,
+                                    88, // LP64 struct stat
+                                    minix_types::CpFlags::WRITE | minix_types::CpFlags::TRY,
+                                ) {
+                                    Ok(g) => g,
+                                    Err(_) => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    }
+                                };
+                                let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
+                                    Some(v) => v.0,
+                                    None => {
+                                        let _ = self.revoke_grant(grant);
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    }
+                                };
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont = Some(crate::worker::WorkerCont::Fstat { grant });
+                                }
+                                self.pending_fs = Some(PendingFs {
+                                    vmnt,
+                                    fs_e: node.fs_e,
+                                    worker: idx,
+                                    grant,
+                                    user,
+                                    req: crate::request::encode_stat(node.ino, grant),
+                                });
+                                continue; // 等 stat 的回复（Fstat 续接收尾）
+                            }
+                        },
+                        Err(e) => {
+                            let status = match e {
+                                PathFail::Path(p) => walk_err(p),
+                                PathFail::Status(st) => st,
+                            };
+                            self.finish_worker_job(idx, fp_slot, status);
+                            continue;
+                        }
+                    }
                 }
                 crate::worker::WorkerCont::Transfer {
                     grant,
@@ -1223,6 +1467,20 @@ impl Default for VfsState {
     }
 }
 
+/// 路径续走的两种失败源（状态机错误 vs FS 回复的原始状态）。
+enum PathFail {
+    /// `LookupWalk` 的错误（`PathError`）。
+    Path(crate::path::PathError),
+    /// FS 回复的状态不是 OK/三特殊码（普通错误）。
+    Status(i32),
+}
+
+impl From<crate::path::PathError> for PathFail {
+    fn from(e: crate::path::PathError) -> Self {
+        Self::Path(e)
+    }
+}
+
 /// 一条待发的 FS 对话（见 [`VfsState::flush_pending_fs`]）。
 #[derive(Debug, Clone, Copy)]
 pub struct PendingFs {
@@ -1384,6 +1642,116 @@ mod tests {
         let mut m = Message { m_type: crate::fs_comm::TransId::add(req, slot) as i32, ..Message::default() };
         m.m_source = source;
         m
+    }
+
+    /// 挂载表组装（`mounted_fs_list`）与起点三元组（`root_dir_of` /
+    /// `work_dir_of`）：从 `vmnt_table` + vnode 表读出的六个事实。
+    #[test]
+    fn test_mount_list_and_start_triples() {
+        let mut state = VfsState::new();
+        // 一个挂载行：fs=MFS，dev=7，root vnode=3（ino=30），挂载点 vnode=4
+        // （ino=40, fs=VFS, dev=7）。
+        let v_root = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(v_root).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 30;
+            v.dev = 7;
+            // `alloc` 取"ref_count == 0 的第一个槽"，不置 ref → 不抬引用
+            // 的话下一次 alloc 会拿到同一个槽（`advance` 的用法是先 alloc
+            // 再填再置 ref_count/fs_count）。
+            v.ref_count = 1;
+        }
+        let v_mnt = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(v_mnt).unwrap();
+            v.fs = Endpoint::VFS;
+            v.ino = 40;
+            v.dev = 7;
+        }
+        let vmnt = state.vmnt_table.alloc().unwrap();
+        {
+            let m = state.vmnt_table.get_mut(vmnt).unwrap();
+            m.fs = Endpoint::MFS;
+            m.dev = 7;
+            m.root = Some(v_root.get());
+            m.mounted_on = Some(v_mnt.get());
+        }
+        let mounts = state.mounted_fs_list();
+        assert_eq!(mounts.len(), 1, "空行不进表");
+        assert_eq!(mounts[0].fs, Endpoint::MFS);
+        assert_eq!(mounts[0].dev, 7);
+        assert_eq!(mounts[0].root, (30, 7));
+        assert_eq!(mounts[0].mounted_on, Some((40, Endpoint::VFS, 7)));
+
+        // 起点三元组：根与工作目录各自解到 (fs, ino, dev)。
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.root_dir = Some(v_root.get());
+            fp.work_dir = Some(v_mnt.get());
+        }
+        let rd = state.root_dir_of(Some(slot));
+        assert_eq!((rd.fs, rd.ino, rd.dev), (Endpoint::MFS, 30, 7));
+        let wd = state.work_dir_of(slot);
+        assert_eq!((wd.fs, wd.ino, wd.dev), (Endpoint::VFS, 40, 7));
+    }
+
+    /// `WorkerCont::Path` 的收尾接线：走完（`Ok`）后进相位 2（这里 grant 在
+    /// 宿主不可达 → 以 EIO 收尾），**槽必须被释放、用户必须收到回复**——
+    /// 防的是"续接体吞掉作业、槽泄漏、调用方永等"。
+    #[test]
+    fn test_worker_continuation_path_finishes_on_phase2_failure() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        // 现场：一趟已走完的遍历（路径随便给，续接只用到 follow）。
+        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let (walk, _step) = crate::path::LookupWalk::begin(
+            start,
+            crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        // 回复：OK + ino=5（四域 node_details）。
+        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        // SAFETY(test): 按 lookup_reply_off 填 ino。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&5u64.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Stat { user, buf: 0x6000 },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+        assert_eq!(
+            state.take_reply(),
+            Some((user, minix_types::EIO)),
+            "相位 2 的 grant 在宿主不可达 → EIO 收尾（不悬挂）"
+        );
     }
 
     /// 续接层的**写**分支：除位置推进外还要按 C read.c:255-259 抬高

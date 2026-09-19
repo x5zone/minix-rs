@@ -11,6 +11,7 @@
 //! 通电后按同臂位接入对话（模式 60 诚实契约）。
 
 use crate::call_table::{SyscallResult, VfsCallNum};
+use crate::path::PathFetcher as _;
 use crate::filedes::{close_fd, Fd};
 use crate::open::{seek_pos, S_IFMT, S_IFIFO, Whence};
 use crate::main_loop::VfsState;
@@ -172,7 +173,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Fchmod
         | VfsCallNum::Chown
         | VfsCallNum::Fchown
-        | VfsCallNum::Stat
         | VfsCallNum::Lstat
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
@@ -441,6 +441,100 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 user: user_e,
                 req,
             });
+            SyscallResult::Suspend
+        }
+
+        // ── 路径族臂：stat（path 版；首个走 W7 遍历的臂）──
+        VfsCallNum::Stat => {
+            // C `do_stat`（stadir.c:140-165）：取路径 → `eat_path` 走遍历
+            // （每步一条 REQ_LOOKUP）→ `req_stat(fs_e, ino, who_e, buf)`。
+            // 单线程模型里遍历的每一步都要挂起-续走，故本臂只做三件事：
+            // ①取路径（`PathFetcher`）②开状态机（`LookupWalk::begin`）
+            // ③登记现场与续接、把首条 lookup 交给循环发；后续由
+            // `WorkerCont::Path` 的续接体推进（含相位 2 的 REQ_STAT）。
+            let (name_addr, name_len, statbuf) = {
+                // 用户载荷（minix-sys `stat_via_path`：len@0、name@8、
+                // buf@16 — C `mess_lc_vfs_stat` 的 LP64 换算）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let name = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                (name, len, u64::from_le_bytes(b8))
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // 取路径：C `copy_path` 的两支（消息内联 vs 跨空间），Rust 侧
+            // 生产取数件在 `path::SysPathFetcher`。
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            let path = match fetcher.fetch(name_addr, name_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // 起点：路径首字符 `/` 取进程根，否则取工作目录（C `eat_path`
+            // 的同一选择）。
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.eff_uid)
+                .unwrap_or(0);
+            let gid = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.eff_gid)
+                .unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                // `begin` 永不直接完成（首步必是 Send），防御性返回。
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            // 登记现场：状态机 + follow（相位 2）+ 续接标识；路径 grant 由
+            // `send_lookup_for_slot` 现开（槽内 scratch 装路径 + NUL）。
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Stat { user: user_e, buf: statbuf },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
             SyscallResult::Suspend
         }
 

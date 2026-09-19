@@ -32,6 +32,9 @@
 //! Minix3 chooses 9 fixed kernel-visible threads; the rewrite chooses 9
 //! user-visible request slots with the same `may_do_pending` spare invariant.
 
+extern crate alloc;
+
+use alloc::boxed::Box;
 use core::cell::Cell;
 
 use minix_types::{Endpoint, Message, UserSlot};
@@ -86,6 +89,10 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// 路径遍历（`REQ_LOOKUP` 一趟或多趟）：现场在 `WorkerSlot.path`
+    /// （`PathPending`）——续接体把它 `take()` 出来、`resume()` 后决定
+    /// "再发一条 lookup"（放回现场，继续挂起）还是"做相位 2"。
+    Path,
     /// `Read`/`Write`（`REQ_READ`/`REQ_WRITE`）：回复的
     /// `seek_pos`/`nbytes` 要写回 filp 位置，状态是实际传输的字节数
     /// （C read.c 的 `cum_io`）；写方向还要按 C read.c:255-259 更新
@@ -101,6 +108,30 @@ pub enum WorkerCont {
         orig_pos: i64,
         /// 方向：`true` = 写（要更新 vnode 大小），`false` = 读。
         write: bool,
+    },
+}
+
+/// 路径遍历的挂起现场（C 那份"活在 worker 线程栈上"的局部量）。
+#[derive(Debug)]
+pub struct PathPending {
+    /// 遍历状态机（起点三元组 + symloop + 路径游标）。
+    pub walk: crate::path::LookupWalk,
+    /// 当前在途的路径 grant（回复到达后 revoke）。
+    pub grant: i32,
+    /// 走完之后做什么（臂的"相位 2"）。
+    pub follow: PathFollow,
+}
+
+/// 路径走完之后的动作（C 里是 `eat_path` 返回后臂自己接着写的那段代码）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathFollow {
+    /// `stat(path, buf)`：按走完的 ino 发 `REQ_STAT`（C `do_stat` →
+    /// `req_stat`），随后由 `WorkerCont::Fstat` 续接收尾。
+    Stat {
+        /// 调用方端点（stat 缓冲的属主，magic grant 的 `who_from`）。
+        user: Endpoint,
+        /// 用户 `struct stat` 缓冲地址。
+        buf: u64,
     },
 }
 
@@ -148,6 +179,13 @@ pub struct WorkerSlot {
     /// 续接标识（`Some` = 该槽的作业在等 FS 回复，回复到了要跑续接体；
     /// C 的"后半段在栈上"在单线程模型里的显式对应物）。
     pub cont: Option<WorkerCont>,
+    /// 路径遍历现场（`WorkerCont::Path` 时必有）：跨多次 `REQ_LOOKUP`
+    /// 存活，直到走完或出错。
+    pub path: Option<PathPending>,
+    /// 路径 grant 的源缓冲：grant 要 NUL 结尾的字节区，而 `String` 没有
+    /// 结尾 NUL，故每次 lookup 把当前路径拷进来 + 补 NUL 再授权；放在槽上
+    /// 是因为它必须活过"挂起 → 回复"这段（每槽一块，池子建一次）。
+    pub path_scratch: Box<[u8; crate::path::PATH_MAX]>,
 }
 
 impl WorkerSlot {
@@ -163,6 +201,8 @@ impl WorkerSlot {
             func: None,
             self_index: index,
             cont: None,
+            path: None,
+            path_scratch: Box::new([0u8; crate::path::PATH_MAX]),
         }
     }
 
@@ -189,6 +229,7 @@ impl WorkerSlot {
         self.state = WorkerState::Idle;
         self.func = None;
         self.cont = None;
+        self.path = None;
     }
 
     /// `WaitingForFs` — `fs_sendrec` in flight (`worker.c:539` `w_task != NONE`).
