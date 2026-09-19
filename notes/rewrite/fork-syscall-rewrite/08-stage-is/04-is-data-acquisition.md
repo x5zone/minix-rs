@@ -357,7 +357,7 @@ traits 返回 Minix 码原样：05~10 按 C 惯用 `!= OK` 判定；转 `Result`
 
 ```text
 os/libs/minix-types/src/ipc/sysinfo.rs — GET/SI/DIAGCTL/SYS/PM/VFS 常量 + 单测（D1）
-os/servers/is/src/acquire.rs           — SiWhat/IS_GETSYSINFO_CALLS/getsysinfo_call 助手 + 5 类型化 trait + Acquires 超特质 + Unimplemented + fake（D2-D6，V1 轮定型）
+os/servers/is/src/acquire.rs           — SiWhat/IS_GETSYSINFO_CALLS/getsysinfo_call 助手 + 5 类型化 trait + Acquires 超特质 + 生产实现（SysAcquires/KernelKmessTransport/SysGetsysinfo）+ Unimplemented + fake（D2-D6，V1 轮定型；生产面随 S23 分批真装）
 os/servers/is/src/lib.rs               — pub mod acquire + 重导出 + IsServer<T, F, A: Acquires>
 ```
 
@@ -395,6 +395,29 @@ pub trait VmInfoTransport {
 }
 pub trait Acquires: SysGetinfoTransport + DiagctlTransport + KerninfoTransport + GetSysinfoTransport + VmInfoTransport {}  // blanket impl；IsServer<T, F, A: Acquires>
 ```
+
+### 4.2b 生产取数面（S23 分批落地）
+
+五种通道的生产实现在 `SysAcquires` 一处装配（`main.rs` 换装），按批：
+`SysGetinfoTransport` 七 what 直调 `sys_getinfo_into`、`DiagctlTransport`
+走 `SYS_DIAGCTL` code 2、`ClockTransport` 读 `SYS_TIMES` 的 `real_ticks`
+（A-3 无 usermapped 页）、`KerninfoTransport` 按 `GET_KMESSAGES` 的 10008
+字节快照取回再拆包（§3.3）。
+
+`GetSysinfoTransport` 的生产件 `SysGetsysinfo` 是五条腿的客户端，每条腿
+一个 `*_via(transport, …)` 形态（生产传 `DirectTrapTransport`，测试传脚本
+双替身）：请求按 `m_lsys_getsysinfo` 的三 lane 打包（`what` @0、调用方缓冲
+虚地址 @8、字节长度 @16），调用号取自 `getsysinfo_call`（C
+`getsysinfo.c:14-24` 的 `who` 开关），`size` **必须**等于出参切片的
+`size_of_val`——服务端的尺寸门是精确匹配（§2.4）。两条腿的边界情形：
+
+- **RS 双拉**（`rs_tables`）：先 `SI_PROCPUB_TAB` 后 `SI_PROC_TAB`，前者
+  失败即返回（C `dmp_rs.c:33-34` 的 `||` 短路）。
+- **VFS 两腿**：本地回 `-ENOSYS` 而不发消息——VFS 侧的 `do_getsysinfo`
+  纯函数半已备，但运行时应答面尚未接线（`dispatch_syscall` 把
+  `Getsysinfo` 归入 `SyscallResult::Nosys` 且主循环不回信），此刻发过去
+  会等一个永不来的回复并把 IS 挂死。VFS 应答面随 W1 传输批次落地后，这两
+  条腿换成正常发送即可。
 
 常量权威位置（§2.4g）：GET/SI/DIAGCTL/SYS/PM/VFS 唯一定义于
 `minix-types::ipc::sysinfo`（RS/DS/VM 同类沿用各模块，不迁入）。
