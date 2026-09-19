@@ -592,8 +592,8 @@ fn kernel_call_dispatch_inner(
         Syscall::Sdevio => CurrentArchSyscall::dispatch_sdevio(caller, msg, priv_table, proc_table),
         // D6: VDEVIO is also x86-specific (system.c:215-216: #if defined(__i386__))
         Syscall::Vdevio => CurrentArchSyscall::dispatch_vdevio(caller, msg, priv_table),
-        Syscall::Setalarm => dispatch_setalarm(caller, msg, priv_table, clock_state),
-        Syscall::Times => dispatch_times(caller, msg, proc_table),
+        Syscall::Setalarm => dispatch_setalarm(caller.p_nr, msg, priv_table, clock_state, proc_table),
+        Syscall::Times => dispatch_times(caller.p_nr, msg, proc_table),
         Syscall::Getinfo => dispatch_getinfo(caller, msg, priv_table, proc_table, clock_state),
         Syscall::Abort => dispatch_abort(caller, msg),
         Syscall::Iopenable => CurrentArchSyscall::dispatch_iopenable(caller, msg, proc_table),
@@ -603,11 +603,11 @@ fn kernel_call_dispatch_inner(
         Syscall::Setgrant => dispatch_setgrant(caller, msg, priv_table),
         Syscall::Readbios => CurrentArchSyscall::dispatch_readbios(caller, msg),
         Syscall::Sprof => dispatch_sprofile(caller, msg, proc_table),
-        Syscall::Stime => dispatch_stime(caller, msg, clock_state),
-        Syscall::Settime => dispatch_settime(caller, msg, clock_state),
+        Syscall::Stime => dispatch_stime(msg, clock_state),
+        Syscall::Settime => dispatch_settime(msg, clock_state),
         Syscall::Vmctl => dispatch_vmctl(caller, msg, proc_table, priv_table),
         Syscall::Diagctl => dispatch_diagctl(caller, msg, priv_table, proc_table),
-        Syscall::Vtimer => dispatch_vtimer(caller, msg, priv_table, proc_table),
+        Syscall::Vtimer => dispatch_vtimer(caller.p_nr, msg, priv_table, proc_table),
         Syscall::Runctl => dispatch_runctl(caller, msg, proc_table),
         Syscall::Getmcontext => dispatch_getmcontext(caller, msg, proc_table),
         Syscall::Setmcontext => dispatch_setmcontext(caller, msg, proc_table),
@@ -1943,8 +1943,8 @@ fn dispatch_irqctl(
     let irq_mgr = crate::irq_manager_with(bkl_section);
     crate::syscall_device::dispatch_irqctl(caller, msg, irq_mgr, priv_table)
 }
-fn dispatch_setalarm(caller: &mut KProcess, msg: &mut Message, priv_table: &mut PrivTable, clock_state: &mut ClockState) -> KcallResult { crate::syscall_clock::dispatch_setalarm(caller, msg, priv_table, clock_state) }
-fn dispatch_times(caller: &mut KProcess, msg: &mut Message, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_times(caller, msg, proc_table) }
+fn dispatch_setalarm(caller_nr: crate::proc::ProcNr, msg: &mut Message, priv_table: &mut PrivTable, clock_state: &mut ClockState, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_setalarm(caller_nr, msg, priv_table, clock_state, proc_table) }
+fn dispatch_times(caller_nr: crate::proc::ProcNr, msg: &mut Message, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_times(caller_nr, msg, proc_table) }
 fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &mut PrivTable, proc_table: &mut crate::proc_table::ProcessTable, clock_state: &ClockState) -> KcallResult {
     crate::misc::dispatch_getinfo(caller, msg, priv_table, proc_table, clock_state)
 }
@@ -2047,8 +2047,8 @@ fn dispatch_setgrant(caller: &mut KProcess, msg: &Message, priv_table: &mut Priv
     }
 }
 fn dispatch_sprofile(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::misc::dispatch_profile(caller, msg, proc_table) }
-fn dispatch_stime(caller: &mut KProcess, msg: &Message, clock_state: &mut ClockState) -> KcallResult { crate::syscall_clock::dispatch_stime(caller, msg, clock_state) }
-fn dispatch_settime(caller: &mut KProcess, msg: &Message, clock_state: &mut ClockState) -> KcallResult { crate::syscall_clock::dispatch_settime(caller, msg, clock_state) }
+fn dispatch_stime(msg: &Message, clock_state: &mut ClockState) -> KcallResult { crate::syscall_clock::dispatch_stime(msg, clock_state) }
+fn dispatch_settime(msg: &Message, clock_state: &mut ClockState) -> KcallResult { crate::syscall_clock::dispatch_settime(msg, clock_state) }
 /// Dispatch SYS_VMCTL.
 ///
 /// C: `do_vmctl()` — do_vmctl.c:17-173
@@ -2748,7 +2748,7 @@ fn dispatch_diagctl(
         _ => KcallResult::Ok(EINVAL),
     }
 }
-fn dispatch_vtimer(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTable, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_vtimer(caller, msg, priv_table, proc_table) }
+fn dispatch_vtimer(caller_nr: crate::proc::ProcNr, msg: &mut Message, priv_table: &PrivTable, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_vtimer(caller_nr, msg, priv_table, proc_table) }
 fn dispatch_runctl(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_process::dispatch_runctl(caller, msg, proc_table) }
 /// Dispatch SYS_GETMCONTEXT.
 ///

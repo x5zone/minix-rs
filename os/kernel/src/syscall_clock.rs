@@ -24,7 +24,7 @@ use minix_types::{
 
 use crate::clock::{self, ClockState, TimerAction, TMR_NEVER};
 use crate::kpriv::{KPriv, PrivTable};
-use crate::proc::{KProcess, MiscFlagsBits};
+use crate::proc::{KProcess, MiscFlagsBits, ProcNr};
 use crate::proc_table::ProcessTable;
 use crate::syscall::{KcallResult, Syscall};
 
@@ -102,7 +102,7 @@ fn msg_m2(msg: &Message) -> MessageM2 {
 /// 4. Always read `get_monotonic()`, `get_realtime()`, `get_boottime()`.
 /// 5. Pack into `MessKrnLsysSysTimes` reply overlay.
 pub fn dispatch_times(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
     msg: &mut Message,
     proc_table: &ProcessTable,
 ) -> KcallResult {
@@ -114,7 +114,10 @@ pub fn dispatch_times(
 
     // C: do_times.c:33-34 — SELF replacement
     let target_endpoint = if endpt == SELF {
-        caller.p_endpoint
+        proc_table
+            .get(caller_nr)
+            .map(|p| p.p_endpoint)
+            .expect("dispatch_times: caller slot must exist")
     } else {
         Endpoint(endpt)
     };
@@ -175,10 +178,11 @@ pub fn dispatch_times(
 /// 4. Return time_left and current uptime.
 /// 5. Set or reset timer in ClockState.
 pub fn dispatch_setalarm(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
     msg: &mut Message,
     priv_table: &mut PrivTable,
     clock_state: &mut ClockState,
+    proc_table: &ProcessTable,
 ) -> KcallResult {
     // C: do_setalarm.c:31-32 — extract parameters
     msg.debug_check_m_type_any(&[Syscall::Setalarm as i32]);
@@ -188,14 +192,16 @@ pub fn dispatch_setalarm(
     let use_abs_time = req.abs_time != 0;
 
     // C: do_setalarm.c:33 — SYS_PROC permission check
-    if !caller_has_sys_proc_with_table(caller, priv_table) {
+    if !proc_table
+        .get(caller_nr)
+        .is_some_and(|c| caller_has_sys_proc_with_table(c, priv_table))
+    {
         return KcallResult::Ok(EPERM);
     }
 
     // C: do_setalarm.c:36 — get timer from priv structure
-    let caller_priv_id = match caller.priv_id {
-        Some(id) => id,
-        None => return KcallResult::Ok(EPERM), // already checked above, defensive
+    let Some(caller_priv_id) = proc_table.get(caller_nr).and_then(|c| c.priv_id) else {
+        return KcallResult::Ok(EPERM); // already checked above, defensive
     };
 
     // C: do_setalarm.c:39-46 — return time left on previous alarm
@@ -247,7 +253,10 @@ pub fn dispatch_setalarm(
             caller_priv_id,
             actual_exp_time,
             TimerAction::NotifyAlarm {
-                endpoint: caller.p_endpoint,
+                endpoint: proc_table
+                    .get(caller_nr)
+                    .map(|c| c.p_endpoint)
+                    .expect("dispatch_setalarm: caller slot must exist"),
             },
         );
     }
@@ -321,7 +330,6 @@ pub(crate) fn caller_has_sys_proc(caller: &KProcess) -> bool {
 ///    internal field and the global `CLOCK_BOOTTIME` atomic.
 /// 3. Return OK.
 pub fn dispatch_stime(
-    _caller: &mut KProcess,
     msg: &Message,
     clock_state: &mut ClockState,
 ) -> KcallResult {
@@ -352,7 +360,6 @@ pub fn dispatch_stime(
 ///    `sec - boottime`, validate range, and call `set_realtime()`
 ///    (C:35-57). If boottime was wrong, correct it.
 pub fn dispatch_settime(
-    _caller: &mut KProcess,
     msg: &Message,
     clock_state: &mut ClockState,
 ) -> KcallResult {
@@ -423,7 +430,7 @@ pub fn dispatch_settime(
 /// 5. If VT_SET: write new value and set/clear MiscFlags.
 /// 6. Return old value in reply message.
 pub fn dispatch_vtimer(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
     msg: &mut Message,
     priv_table: &PrivTable,
     proc_table: &ProcessTable,
@@ -438,7 +445,10 @@ pub fn dispatch_vtimer(
     let endpt = m2.m2l2 as i32; // VT_ENDPT
 
     // C: do_vtimer.c:31 — SYS_PROC permission check
-    if !caller_has_sys_proc_with_table(caller, priv_table) {
+    if !proc_table
+        .get(caller_nr)
+        .is_some_and(|c| caller_has_sys_proc_with_table(c, priv_table))
+    {
         return KcallResult::Ok(EPERM);
     }
 
@@ -450,7 +460,10 @@ pub fn dispatch_vtimer(
 
     // C: do_vtimer.c:37-38 — SELF replacement + endpoint validation
     let target_endpoint = if endpt == SELF {
-        caller.p_endpoint
+        proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint)
+            .expect("dispatch_vtimer: caller slot must exist")
     } else {
         Endpoint(endpt)
     };
@@ -580,10 +593,12 @@ mod tests {
 
     #[test]
     fn test_ksc_setalarm_non_sys_proc_returns_eperm() {
-        let mut p = proc_with_priv_id(None);
+        // caller-by-nr: the caller is table slot ProcNr(0) with priv_id None.
+        let proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut msg = Message::default();
         msg.m_type = Syscall::Setalarm as i32;
-        match dispatch_setalarm(&mut p, &mut msg, &mut crate::test_helpers::test_priv_table(), &mut ClockState::new()) {
+        match dispatch_setalarm(ProcNr(0), &mut msg, &mut priv_table, &mut ClockState::new(), &proc_table) {
             KcallResult::Ok(EPERM) => {}
             other => panic!("expected Ok(EPERM), got {:?}", other),
         }
@@ -591,10 +606,12 @@ mod tests {
 
     #[test]
     fn test_ksc_vtimer_non_sys_proc_returns_eperm() {
-        let mut p = proc_with_priv_id(None);
+        // caller-by-nr: the caller is table slot ProcNr(0) with priv_id None.
+        let proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
         let mut msg = Message::default();
         msg.m_type = Syscall::Vtimer as i32;
-        match dispatch_vtimer(&mut p, &mut msg, &crate::test_helpers::test_priv_table(), &crate::test_helpers::test_proc_table()) {
+        match dispatch_vtimer(ProcNr(0), &mut msg, &priv_table, &proc_table) {
             KcallResult::Ok(EPERM) => {}
             other => panic!("expected Ok(EPERM), got {:?}", other),
         }
@@ -611,14 +628,13 @@ mod tests {
     #[test]
     fn test_dispatch_times_self_replacement() {
         // Test that SELF (-2) is replaced with caller's endpoint
-        let mut p = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 5));
         let mut msg = Message::default();
         // Set up the request: endpt = SELF
         msg.m_u.m_lsys_krn_sys_times.endpt = SELF;
         msg.m_type = 25; // SYS_TIMES
 
         let proc_table = crate::test_helpers::test_proc_table();
-        let result = dispatch_times(&mut p, &mut msg, &proc_table);
+        let result = dispatch_times(ProcNr(0), &mut msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(OK));
 
         // Verify reply fields are populated
@@ -634,27 +650,33 @@ mod tests {
     #[test]
     fn test_dispatch_setalarm_reset_timer() {
         // Test that exp_time=0 with !abs_time resets the alarm
-        let mut p = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
-        p.priv_id = None; // Will be rejected by EPERM check
+        // caller-by-nr: slot ProcNr(0) keeps priv_id None → EPERM check.
+        let proc_table = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
         let mut msg = Message::default();
         msg.m_type = Syscall::Setalarm as i32;
         let result = dispatch_setalarm(
-            &mut p, &mut msg, &mut crate::test_helpers::test_priv_table(), &mut ClockState::new(),
+            ProcNr(0), &mut msg, &mut priv_table, &mut ClockState::new(), &proc_table,
         );
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
     // ── T-6: STIME / SETTIME / SETALARM / VTIMER 非 EPERM 行为测试 ──
 
-    /// SYS_PROC 调用者构造：priv_id 指向带 SYS_PROC 能力的静态 priv 槽。
-    fn t6_sys_proc_caller() -> (KProcess, crate::test_helpers::TestPrivTable) {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
+    /// SYS_PROC 调用者构造（caller-by-nr 形态）：调用者**占表槽**
+    /// `ProcNr(0)`——新 API 按号码回查进程表，独立的 `KProcess` 不再是
+    /// 合法调用者。priv_id 指向带 SYS_PROC 能力的静态 priv 槽；SLOT_FREE
+    /// 一并清除（`endpoint_to_nr` 跳过自由槽）。
+    fn t6_sys_proc_caller() -> (crate::test_helpers::TestProcTable, crate::test_helpers::TestPrivTable) {
+        let mut table = crate::test_helpers::test_proc_table();
         let mut privs = crate::test_helpers::test_priv_table();
         let pid = privs.assign_static(ProcNr(0)).expect("static priv slot");
         privs.get_mut(pid).unwrap().flags.s_flags =
             crate::capability::ProcessCapability::SYS_PROC;
-        caller.priv_id = Some(pid);
-        (caller, privs)
+        let slot = table.get_mut(ProcNr(0)).unwrap();
+        slot.priv_id = Some(pid);
+        slot.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        (table, privs)
     }
 
     #[test]
@@ -665,7 +687,7 @@ mod tests {
         msg.m_type = Syscall::Stime as i32;
         // SAFETY: m_type 已设置；测试侧 union 写。
         unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
-        let result = dispatch_stime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        let result = dispatch_stime(&msg, &mut cs);
         assert_eq!(result, KcallResult::Ok(OK));
         assert_eq!(cs.boottime(), 1000);
     }
@@ -677,9 +699,9 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Stime as i32;
         unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
-        let _ = dispatch_stime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        let _ = dispatch_stime(&msg, &mut cs);
         unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 2000; }
-        let _ = dispatch_stime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        let _ = dispatch_stime(&msg, &mut cs);
         assert_eq!(cs.boottime(), 2000);
     }
 
@@ -693,7 +715,7 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_settime.clock_id = 99; // 非 CLOCK_REALTIME
             msg.m_u.m_lsys_krn_sys_settime.now = 100;
         }
-        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        let result = dispatch_settime(&msg, &mut cs);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -710,7 +732,7 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_settime.now = 7;
             msg.m_u.m_lsys_krn_sys_settime.sec = 3000; // < boottime 5000
         }
-        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        let result = dispatch_settime(&msg, &mut cs);
         assert_eq!(result, KcallResult::Ok(OK));
         assert_eq!(cs.boottime(), 3000, "boottime 必须被纠正为 sec");
         assert_eq!(cs.realtime(), 1);
@@ -729,7 +751,7 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_settime.sec = 2;
             msg.m_u.m_lsys_krn_sys_settime.nsec = 0;
         }
-        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        let result = dispatch_settime(&msg, &mut cs);
         assert_eq!(result, KcallResult::Ok(OK));
         assert_eq!(cs.adjtime_delta(), 2 * hz);
     }
@@ -749,7 +771,7 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_settime.sec = 100;
             msg.m_u.m_lsys_krn_sys_settime.nsec = 0;
         }
-        let result = dispatch_settime(&mut KProcess::new(ProcNr(0), Endpoint(0)), &msg, &mut cs);
+        let result = dispatch_settime(&msg, &mut cs);
         assert_eq!(result, KcallResult::Ok(OK));
         assert_eq!(cs.realtime(), 100 * hz as u64);
     }
@@ -758,9 +780,7 @@ mod tests {
     fn test_t6_setalarm_first_set_returns_ok_and_arms() {
         // C do_setalarm.c:56-62 — 相对 100 tick 武装闹钟（uptime=0 时
         // exp_time = 100），前一闹钟未设置故 time_left = TMR_NEVER。
-        let (mut caller, mut privs) = t6_sys_proc_caller();
-        // 注意：caller 是独立 KProcess（不占表槽）——保持 SLOT_FREE 原样，
-        // 清除会触发 KProcess Drop 守卫 panic（occupied slot 无表托管）。
+        let (table, mut privs) = t6_sys_proc_caller();
         let mut cs = ClockState::new();
         let mut msg = Message::default();
         msg.m_type = Syscall::Setalarm as i32;
@@ -768,9 +788,9 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_setalarm.exp_time = 100;
             msg.m_u.m_lsys_krn_sys_setalarm.abs_time = 0;
         }
-        let result = dispatch_setalarm(&mut caller, &mut msg, &mut privs, &mut cs);
+        let result = dispatch_setalarm(ProcNr(0), &mut msg, &mut privs, &mut cs, &table);
         assert_eq!(result, KcallResult::Ok(0));
-        let pid = caller.priv_id.unwrap();
+        let pid = table.get(ProcNr(0)).unwrap().priv_id.unwrap();
         let tp = privs.get(pid).unwrap().runtime.s_alarm_timer;
         assert!(tp.is_set(), "闹钟必须已武装");
         assert_eq!(tp.exp_time, 100);
@@ -780,7 +800,7 @@ mod tests {
     fn test_t6_setalarm_second_set_returns_previous_time_left() {
         // C do_setalarm.c:39-46 — 已有闹钟（exp=100 > uptime=0）时再次
         // SETALARM 返回前一闹钟剩余时间 100 - 0 = 100。
-        let (mut caller, mut privs) = t6_sys_proc_caller();
+        let (table, mut privs) = t6_sys_proc_caller();
         let mut cs = ClockState::new();
 
         let mut msg = Message::default();
@@ -789,10 +809,10 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_setalarm.exp_time = 100;
             msg.m_u.m_lsys_krn_sys_setalarm.abs_time = 0;
         }
-        let first = dispatch_setalarm(&mut caller, &mut msg, &mut privs, &mut cs);
+        let first = dispatch_setalarm(ProcNr(0), &mut msg, &mut privs, &mut cs, &table);
         assert_eq!(first, KcallResult::Ok(OK));
 
-        let second = dispatch_setalarm(&mut caller, &mut msg, &mut privs, &mut cs);
+        let second = dispatch_setalarm(ProcNr(0), &mut msg, &mut privs, &mut cs, &table);
         assert_eq!(second, KcallResult::Ok(OK));
         // time_left 经消息结构体回填（msg.m_lsys_krn_sys_setalarm），非 KcallResult。
         let time_left = unsafe { msg.m_u.m_lsys_krn_sys_setalarm.time_left };
@@ -802,16 +822,14 @@ mod tests {
     #[test]
     fn test_t6_vtimer_invalid_type_returns_einval() {
         // C do_vtimer.c:33-34 — VT_WHICH 非 VT_VIRTUAL/VT_PROF → EINVAL。
-        let (mut caller, privs) = t6_sys_proc_caller();
-        let mut proc_table = crate::test_helpers::test_proc_table();
-        // SELF → nr 0；endpoint_to_nr 跳过 SLOT_FREE，须在表内占用该槽。
-        proc_table.get_mut(ProcNr(0)).unwrap()
-            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        // caller-by-nr: the caller IS table slot ProcNr(0) (t6 fixture
+        // clears SLOT_FREE so SELF → nr 0 resolves).
+        let (proc_table, privs) = t6_sys_proc_caller();
         let mut msg = Message::default();
         msg.m_type = Syscall::Vtimer as i32;
         // SAFETY: m_type 已设置；测试侧 union 写。
         unsafe { msg.m_u.m_m2.m2i1 = 99; } // 非 1/2
-        let result = dispatch_vtimer(&mut caller, &mut msg, &privs, &proc_table);
+        let result = dispatch_vtimer(ProcNr(0), &mut msg, &privs, &proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -819,10 +837,7 @@ mod tests {
     fn test_t6_vtimer_virtual_set_then_get_roundtrip() {
         // C do_vtimer.c:60-71 — VT_SET 写入 virt_left 并置 VIRT_TIMER；
         // 再 VT_GET 返回旧值（m2l1 回填）。
-        let (mut caller, privs) = t6_sys_proc_caller();
-        let mut proc_table = crate::test_helpers::test_proc_table();
-        proc_table.get_mut(ProcNr(0)).unwrap()
-            .p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        let (proc_table, privs) = t6_sys_proc_caller();
         let mut msg = Message::default();
         msg.m_type = Syscall::Vtimer as i32;
         unsafe {
@@ -831,7 +846,7 @@ mod tests {
             msg.m_u.m_m2.m2l2 = SELF as i64; // VT_ENDPT = SELF → caller
             msg.m_u.m_m2.m2l1 = 500; // VT_VALUE
         }
-        let first = dispatch_vtimer(&mut caller, &mut msg, &privs, &proc_table);
+        let first = dispatch_vtimer(ProcNr(0), &mut msg, &privs, &proc_table);
         assert_eq!(first, KcallResult::Ok(0));
 
         // VT_GET：set=false → 回填旧值 500。
@@ -842,7 +857,7 @@ mod tests {
             msg2.m_u.m_m2.m2i2 = 0; // VT_GET
             msg2.m_u.m_m2.m2l2 = SELF as i64;
         }
-        let second = dispatch_vtimer(&mut caller, &mut msg2, &privs, &proc_table);
+        let second = dispatch_vtimer(ProcNr(0), &mut msg2, &privs, &proc_table);
         assert_eq!(second, KcallResult::Ok(0));
         let old = unsafe { msg2.m_u.m_m2.m2l1 };
         assert_eq!(old, 500, "VT_GET 必须回填先前 VT_SET 的值");
