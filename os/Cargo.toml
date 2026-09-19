@@ -177,6 +177,7 @@ members = [
     # 用户态框架库（占位，镜像 minix3/minix/lib）
     "libs/minix-sef",
     "libs/minix-fs",
+    "libs/minix-crypt",
     "libs/minix-audiodriver",
     "libs/minix-i2cdriver",
     "libs/minix-chardriver",
@@ -216,6 +217,7 @@ minix-elf = { path = "libs/minix-elf" }
 minix-platform = { path = "libs/minix-platform" }
 minix-fs = { path = "libs/minix-fs" }
 minix-fs-rt = { path = "fs/fs-rt" }
+minix-crypt = { path = "libs/minix-crypt" }
 minix-arch = { path = "arch", default-features = false }
 minix-plat = { path = "plat" }
 minix-kernel = { path = "kernel", default-features = false }

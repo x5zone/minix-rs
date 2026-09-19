@@ -64,8 +64,9 @@ pub struct DriverState {
     pub rootdir: String,
     /// Root's password verifier, built once at startup from the passwd
     /// hash (C: the crypt comparison; ARCH A-12). `None` = no usable
-    /// hash, the gate does not run.
-    pub root_verify: Option<&'static dyn Fn(&str) -> bool>,
+    /// hash, the gate does not run. Owned closure — it captures the
+    /// stored hash for the `crypt(3)` re-derive.
+    pub root_verify: Option<crate::password::RootVerifier>,
 }
 
 impl DriverState {
@@ -256,7 +257,7 @@ pub(crate) fn step(host: &mut dyn InitHost, state: &mut DriverState, current: St
                 rootdir: rootdir.clone(),
             };
             let deps = SingleUserDeps {
-                verify_password: *root_verify,
+                verify_password: root_verify.as_deref(),
                 console_secure: *console_secure,
                 from_securitylevel: *from_securitylevel,
                 collector: &mut collector,

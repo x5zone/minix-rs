@@ -4,11 +4,15 @@
 //! the gate's passwd read (`getpwnam("root")`, init.c:733).
 //! Design contract: `.design/04-design.v1.md §1.1`, doc 12.
 //!
-//! The scheme dispatch is complete here; the individual hash backends
-//! (DES, MD5, SHA1, bcrypt — `minix3/lib/libcrypt/*.c`) are a
-//! shared-infrastructure candidate, the same split libcrypt makes. A
-//! backend-less scheme verifies nothing, which on a real boot is the
-//! same observable outcome as a locked account.
+//! Scheme dispatch and the four hash backends both live behind
+//! `minix-crypt` (the shared-infrastructure split libcrypt itself
+//! makes): `crypt(3)` re-derives with the stored setting and compares,
+//! which is exactly `verify`'s shape here.
+
+
+/// The gate's password verifier: re-derive with the stored setting and
+/// compare — the `crypt(3)` shape. Owned so it can capture the hash.
+pub type RootVerifier = Box<dyn Fn(&str) -> bool>;
 
 /// The parsed `pw_passwd` of root (C: `pp->pw_passwd`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,9 +57,19 @@ pub fn parse_password_hash(pw_passwd: &str) -> PasswordHash {
 }
 
 /// Whether the scheme has a hash backend in this build. Locked
-/// accounts and empty passwords are decided without one.
+/// accounts and empty passwords are decided without one. All four
+/// libcrypt schemes (DES, MD5, SHA1, bcrypt) are ported in
+/// `minix-crypt`, so every variant is covered.
 pub fn scheme_has_backend(hash: &PasswordHash) -> bool {
-    matches!(hash, PasswordHash::Empty | PasswordHash::Locked)
+    matches!(
+        hash,
+        PasswordHash::Empty
+            | PasswordHash::Locked
+            | PasswordHash::Descrypt { .. }
+            | PasswordHash::Md5
+            | PasswordHash::Bcrypt
+            | PasswordHash::Sha1
+    )
 }
 
 /// Extract root's password hash from an `/etc/passwd` body (C:
@@ -74,21 +88,25 @@ pub fn root_password_hash(passwd_body: &str) -> Option<String> {
 }
 
 /// Build the gate's verifier over a hash (the `verify_password` seed
-/// for doc 04's deps). Locked or unsupported schemes deny everything;
-/// the deny is the safe direction — a wrong answer costs the admin a
-/// ^D, never an unauthorized shell.
-pub fn build_verifier(hash: &str) -> Option<&'static dyn Fn(&str) -> bool> {
+/// for doc 04's deps). Locked accounts deny everything; real schemes
+/// re-derive through `minix-crypt::verify` — the `crypt(3)` compare —
+/// and a backend error also denies (the safe direction: a wrong answer
+/// costs the admin a ^D, never an unauthorized shell).
+pub fn build_verifier(hash: &str) -> Option<RootVerifier> {
     match parse_password_hash(hash) {
         PasswordHash::Empty => None,
-        PasswordHash::Locked => Some(&|_| false),
+        PasswordHash::Locked => Some(Box::new(|_| false)),
         _ => {
-            // Hash backends pending (libcrypt family, shared-infra
-            // candidate): deny rather than fake a match.
-            Some(&|_| false)
+            let stored = hash.to_string();
+            Some(Box::new(move |password: &str| {
+                matches!(
+                    minix_crypt::verify(password.as_bytes(), &stored),
+                    Ok(true)
+                )
+            }))
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,7 +129,7 @@ mod tests {
     #[test]
     fn test_des_salt_is_two_leading_chars() {
         assert_eq!(
-            parse_password_hash("xyVVcouf"),
+            parse_password_hash("xyAjYtmfRYx/."),
             PasswordHash::Descrypt { salt: "xy".into() }
         );
     }
@@ -131,5 +149,35 @@ mod tests {
             Some("Vvura9AdWCkic")
         );
         assert_eq!(root_password_hash("daemon:*:1:1:daemon:/"), None);
+    }
+
+    /// 真装闭环：四方案正确口令放行、错误口令拒绝（黄金向量来自
+    /// 宿主 libcrypt）。
+    #[test]
+    fn test_build_verifier_round_trip_all_schemes() {
+        let cases = [
+            ("password", "xyAjYtmfRYx/."), // 传统 DES（宿主 libcrypt 真值）
+            ("password", "$1$saltstri$qQY4WxjABChYG1ccLpfkz/"), // MD5
+            ("password", "$sha1$10$ab$jntRdwlglqBkw1n87bz5r/2ZrFcr"), // SHA1
+            (
+                "password",
+                "$2a$05$abcdefghijklmnopqrstuuWG29KuyeAicPCJODk1zjyGvyQUU2awu",
+            ), // bcrypt
+        ];
+        for (password, stored) in cases {
+            let verify = build_verifier(stored).expect("verifier");
+            assert!(verify(password), "correct password denied: {stored:?}");
+            assert!(
+                !verify("wrong-password"),
+                "wrong password accepted: {stored:?}"
+            );
+        }
+    }
+
+    /// 后端报错（畸形 setting）按 deny 处理，绝不放行。
+    #[test]
+    fn test_malformed_setting_denies() {
+        let verify = build_verifier("$1$").expect("verifier");
+        assert!(!verify("anything"));
     }
 }

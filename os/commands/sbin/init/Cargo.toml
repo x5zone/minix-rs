@@ -11,4 +11,5 @@ path = "src/main.rs"
 
 [dependencies]
 minix-sys = { workspace = true }
+minix-crypt = { workspace = true }
 minix-rt = { workspace = true, features = ["std"] }

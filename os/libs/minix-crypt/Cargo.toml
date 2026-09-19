@@ -1,0 +1,10 @@
+[package]
+name = "minix-crypt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[lib]
+name = "minix_crypt"
+path = "src/lib.rs"
