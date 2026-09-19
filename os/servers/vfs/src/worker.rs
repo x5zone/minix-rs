@@ -196,6 +196,23 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `link(name1, name2)` 阶段 1：走**整条 name1**（要链接的源文件，
+    /// C `do_link:188-189` 的 `eat_path`）。走通后转阶段 2（走 name2 的
+    /// 父目录）。
+    LinkSrc {
+        /// name2（新链接的路径）——阶段 2 要重新切出父目录与组件名。
+        dst_path: alloc::string::String,
+    },
+    /// `link` 阶段 2：走 name2 的**父目录**（`last_dir`），走通后过跨设备门与
+    /// `W|X` 门再发 `REQ_LINK`。C `do_link:191-214`。
+    LinkDst {
+        /// 源文件所在 FS 端点（跨设备门用它比）。
+        src_fs_e: Endpoint,
+        /// 源文件的节点号（`REQ_LINK` 的 `inode` 域）。
+        src_ino: u64,
+        /// name2 的最后组件名。
+        entry: alloc::string::String,
+    },
     /// `symlink(target, linkpath)`：走完**父目录**（`last_dir`）过门后发
     /// `REQ_SLINK`——两个 grant：名字（VFS 内存，direct）+ 目标串（**用户
     /// 内存**，magic）。C `do_slink`（link.c:386-424）。

@@ -208,7 +208,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        | VfsCallNum::Link
         | VfsCallNum::Rename
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
@@ -1200,6 +1199,91 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 路径臂模板：mknod（父目录遍历 + 名字 direct grant）──
         // ── 路径臂模板：utimens（path/fd 两半共用一个体）──
         // ── 路径臂模板：symlink（父目录遍历 + 名字 direct grant + 目标 magic grant）──
+        // ── 路径臂模板：link（**两段遍历**：先源文件、再新名的父目录）──
+        VfsCallNum::Link => {
+            // C `do_link`（link.c:170-230）：载荷 `mess_lc_vfs_link`
+            // （name1@0 = 源文件路径、name2@8 = 新链接路径、len1@16、len2@24）。
+            // 阶段 1 走整条 name1（源文件必须存在），阶段 2 走 name2 的父目录。
+            let (src_addr, dst_addr, src_len, dst_len) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let src_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let dst_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let src_len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                let dst_len = u64::from_le_bytes(b8);
+                (src_addr, dst_addr, src_len, dst_len)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            // 两条路径都在用户内存里（跨空间取，宿主取不到）。
+            let src_path = match fetcher.fetch(src_addr, src_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let dst_path = match fetcher.fetch(dst_addr, dst_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // C link.c:186 的 `lookup_init(..., PATH_NOFLAGS, ...)`。
+            let resolve = match crate::path::Lookup::new(
+                src_path,
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::LinkSrc { dst_path },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Symlink => {
             // C `do_slink`（link.c:386-424）：载荷 `mess_lc_vfs_link`
             // （name1@0 = 目标串、name2@8 = 链接路径、len1@16、len2@24）。

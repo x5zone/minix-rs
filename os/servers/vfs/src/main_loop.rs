@@ -1929,6 +1929,196 @@ impl VfsState {
                                 }
                                 continue;
                             }
+                            crate::worker::PathFollow::LinkSrc { dst_path } => {
+                                // C `do_link:188-196` 阶段 1 走通：转阶段 2——
+                                // 切出 name2 的父目录与组件名，**从根/工作目录
+                                // 重新起走**（C 是同一个 `resolve` 换路径再来
+                                // 一趟 `last_dir`）。
+                                let rd = self.root_dir_of(fp_slot);
+                                let split = match crate::path::last_dir_split(&dst_path) {
+                                    Ok(sp) => sp,
+                                    Err(e) => {
+                                        self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                        continue;
+                                    }
+                                };
+                                let resolve = match crate::path::Lookup::new(
+                                    split.dir_path.clone(),
+                                    crate::path::LookupFlags::NOFLAGS,
+                                ) {
+                                    Ok(l) => l,
+                                    Err(e) => {
+                                        self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                        continue;
+                                    }
+                                };
+                                let start = if resolve.path.starts_with('/') {
+                                    crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+                                } else {
+                                    let wd = fp_slot
+                                        .map(|s| self.work_dir_of(s))
+                                        .unwrap_or(crate::path::RootDir {
+                                            ino: rd.ino,
+                                            fs: rd.fs,
+                                            dev: rd.dev,
+                                        });
+                                    crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+                                };
+                                let (uid, gid) = match fp_slot.and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (fp.eff_uid, fp.eff_gid),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
+                                let (walk2, step2) = match crate::path::LookupWalk::begin(
+                                    start, resolve, rd, uid, gid,
+                                ) {
+                                    Ok(pair) => pair,
+                                    Err(e) => {
+                                        self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                        continue;
+                                    }
+                                };
+                                let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step2
+                                else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    continue;
+                                };
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont = Some(crate::worker::WorkerCont::Path);
+                                    wp.path = Some(crate::worker::PathPending {
+                                        walk: walk2,
+                                        grant: 0,
+                                        follow: crate::worker::PathFollow::LinkDst {
+                                            src_fs_e: node.fs_e,
+                                            src_ino: node.ino,
+                                            entry: split.entry,
+                                        },
+                                    });
+                                }
+                                if self
+                                    .send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
+                                    .is_err()
+                                {
+                                    if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                        wp.path = None;
+                                        wp.cont = None;
+                                    }
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                }
+                                continue;
+                            }
+                            crate::worker::PathFollow::LinkDst {
+                                src_fs_e,
+                                src_ino,
+                                entry,
+                            } => {
+                                // C `do_link:203-211`：跨设备门（EXDEV）→
+                                // `W|X` 门 → `req_link`。
+                                if node.fs_e != src_fs_e {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EXDEV);
+                                    continue;
+                                }
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                        Some(fp) => (
+                                            fp.real_uid,
+                                            fp.real_gid,
+                                            fp.eff_uid,
+                                            fp.eff_gid,
+                                            fp.supplemental_groups[..fp.ngroups.min(16)]
+                                                .to_vec(),
+                                        ),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let readonly_fs = self
+                                    .vmnt_table
+                                    .find_by_fs(node.fs_e)
+                                    .and_then(|v| self.vmnt_table.get(v))
+                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                                    .unwrap_or(false);
+                                let forbid = crate::protect::forbidden_decision(
+                                    &crate::protect::ForbidInput {
+                                        real_uid,
+                                        real_gid,
+                                        eff_uid,
+                                        eff_gid,
+                                        is_access_call: false,
+                                        file_uid: node.uid,
+                                        file_gid: node.gid,
+                                        mode: node.mode,
+                                        access: (crate::open::W_BIT | crate::open::X_BIT) as u8,
+                                        is_dir: true,
+                                        supp: &supp,
+                                        readonly_fs,
+                                    },
+                                );
+                                if let Err(e) = forbid {
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                    continue;
+                                }
+                                let (grant, name_len) = {
+                                    let Some(wp) = self.worker_pool.get_mut(idx) else {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    };
+                                    let bytes = entry.as_bytes();
+                                    let n = bytes.len().min(crate::path::PATH_MAX - 1);
+                                    wp.path_scratch[..n].copy_from_slice(&bytes[..n]);
+                                    wp.path_scratch[n] = 0;
+                                    let addr = wp.path_scratch.as_ptr() as u64;
+                                    let len = n + 1;
+                                    match self.grants.grant_direct(
+                                        &minix_sys::syscall::DirectKernelCallTransport,
+                                        node.fs_e.get(),
+                                        addr,
+                                        len as u64,
+                                        minix_types::CpFlags::READ,
+                                    ) {
+                                        Ok(g) => (g, len),
+                                        Err(_) => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EIO,
+                                            );
+                                            continue;
+                                        }
+                                    }
+                                };
+                                let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    let _ = self.revoke_grant(grant);
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    continue;
+                                };
+                                let user = fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                    .map(|fp| fp.endpoint)
+                                    .unwrap_or(Endpoint::NONE);
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont = Some(crate::worker::WorkerCont::Status);
+                                }
+                                self.pending_fs = Some(PendingFs {
+                                    vmnt: vmnt.0,
+                                    fs_e: node.fs_e,
+                                    worker: idx,
+                                    grant,
+                                    user,
+                                    req: crate::request::encode_link(
+                                        src_ino, node.ino, grant, name_len,
+                                    ),
+                                });
+                                continue;
+                            }
                             crate::worker::PathFollow::Slink { entry, target_addr, target_len } => {
                                 // C `do_slink:411-414`：`forbidden(fp, vp,
                                 // W_BIT|X_BIT)` 过了才发 `req_slink`（父目录
@@ -3733,6 +3923,195 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::LinkSrc` → `LinkDst` 的转场 + `LinkDst` 的门与请求：
+    /// C `do_link`（link.c:170-230）是**两段遍历**——先 `eat_path` 源文件、
+    /// 再 `last_dir` 新名的父目录；跨设备即 EXDEV，父目录要 `W|X`，请求
+    /// `REQ_LINK` 的两个 ino 顺序是**文件在前、目录在后**。
+    #[test]
+    fn test_path_follow_link_chain_and_gates() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState, eff_uid: u32| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            {
+                let fp = state.fproc_table.get_mut(slot).unwrap();
+                fp.endpoint = user;
+                fp.pid = 100;
+                fp.eff_uid = eff_uid;
+                fp.eff_gid = eff_uid;
+                fp.real_uid = eff_uid;
+                fp.real_gid = eff_uid;
+            }
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/s".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (idx, walk)
+        };
+        let done_reply = |ino: u64, mode: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&ino.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&mode.to_le_bytes());
+            }
+            reply
+        };
+        let plant = |state: &mut VfsState, idx: usize, walk, reply: Message, follow: PathFollow| {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending { walk, grant: 9, follow });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        };
+
+        // ① 阶段 1 走通（源文件在）→ 转阶段 2：现场换成 LinkDst，且已登记
+        // 第二条 REQ_LOOKUP（走新名的父目录）。
+        let mut state = VfsState::new();
+        // 阶段 2 要从**进程根**重新起走，所以根目录 vnode 必须先铺好
+        // （`seed_ready_state` 一并把 grant 表热身）。
+        crate::main_loop::seed_ready_state(&mut state);
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x55, crate::open::S_IFREG | 0o644),
+            PathFollow::LinkSrc { dst_path: "/d/new".to_string() },
+        );
+        state.run_worker_continuations();
+        assert!(state.take_reply().is_none(), "转场不该回用户");
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
+            Some(PathFollow::LinkDst { src_ino: 0x55, .. })
+        ));
+        assert_eq!(
+            state.pending_fs.as_ref().map(|p| p.req.m_type),
+            Some(minix_types::REQ_LOOKUP),
+            "阶段 2 起走新名的父目录"
+        );
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = None;
+            wp.path = None;
+            wp.sendrec = None;
+            wp.task = None;
+        }
+        state.worker_pool.release(idx);
+
+        // ② 跨设备 → EXDEV（源在 MFS、父目录在别的 FS）。
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        {
+            // 让这一趟遍历的 fs 变成"另一个 FS"：换起点重建 walk。
+            let start = crate::path::LookupStart {
+                fs: Endpoint::from_generation_slot(0, 9),
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk2, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            plant(
+                &mut state,
+                idx,
+                walk2,
+                done_reply(0x21, crate::open::S_IFDIR | 0o755),
+                PathFollow::LinkDst {
+                    src_fs_e: Endpoint::MFS,
+                    src_ino: 0x55,
+                    entry: "new".to_string(),
+                },
+            );
+            let _ = walk;
+        }
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EXDEV))
+        );
+
+        // ③ 同设备 + 非属主对 0755 无写权 → EACCES。
+        let (idx, walk) = mk(&mut state, 2000);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x21, crate::open::S_IFDIR | 0o755),
+            PathFollow::LinkDst {
+                src_fs_e: Endpoint::MFS,
+                src_ino: 0x55,
+                entry: "new".to_string(),
+            },
+        );
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EACCES))
+        );
+
+        // ④ 全过 → REQ_LINK（文件 ino 在前、目录 ino 在后）+ 状态回复。
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x21, crate::open::S_IFDIR | 0o755),
+            PathFollow::LinkDst {
+                src_fs_e: Endpoint::MFS,
+                src_ino: 0x55,
+                entry: "new".to_string(),
+            },
+        );
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_LINK");
+        assert_eq!(p.req.m_type, minix_types::REQ_LINK);
+        // SAFETY(test): 按 link_req_off 读回四域。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let inode = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let dir_ino = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+            let path_len = u64::from_le_bytes(raw[24..32].try_into().unwrap());
+            assert_eq!(inode, 0x55, "inode 是被链接的源文件");
+            assert_eq!(dir_ino, 0x21, "dir_ino 是新名的父目录");
+            assert_eq!(path_len, 4, "名字含结尾 NUL（\"new\" → 4 字节）");
+        }
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0))
+        );
     }
 
     /// `PathFollow::Slink`（symlink 的父目录半）：`W|X` 权限门（EACCES）过了
