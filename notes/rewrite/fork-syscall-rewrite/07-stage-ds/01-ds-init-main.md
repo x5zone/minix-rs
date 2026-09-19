@@ -164,4 +164,4 @@ os/servers/ds/src/
 
 ## 附：Rust 接线状态（2026-09-15）
 
-主循环的装配已落地：`server.rs` 的 `DsServer::run_once` 按 §1.3 的三拍走（receive → `dispatch::triage` → 七臂分派 → `should_reply` 结算），传输经 `DsIpc`（receive/send/notify，真实端委托 minix-sys `IpcTransport`，通电挂 edge E1）与 `DsKernel`（safecopy/datacopy 三拷贝动词，真实端待 minix-sys SYS_SAFECOPY*/SYS_DATACOPY 包装，挂 edge E2/E-DSWIRE）双接缝表达；`main.rs` 是唯一装配点。判定层与执行半的分界沿用全篇的"frontier"记法——接缝两侧各自可测（mock 传输 + mock 内核），真实通电的验收面在 edge E5(f)。
+主循环的装配已落地：`server.rs` 的 `DsServer::run_once` 按 §1.3 的三拍走（receive → `dispatch::triage` → 七臂分派 → `should_reply` 结算），传输经 `DsIpc`（receive/send/notify，真实端委托 minix-sys `IpcTransport`，通电挂 edge E1）与 `DsKernel`（safecopy/datacopy 三拷贝动词，真实端已接 minix-sys 的 `sys_safecopyfrom`/`sys_safecopyto`/`sys_datacopy`——S22 收口；hosted 构建的 trap 传输诚实回 EIO，通电挂 E1）双接缝表达；`main.rs` 是唯一装配点（S22 复核：`DsServer::new` + `SysIpc(DirectTrapTransport)` + `SysKernel` 的真装配在库内已就位，main 只是其调用面）。`data_copy_to` 的目标地址来自 `m_lsys_getsysinfo.where`（store.c:672），随调用透传。判定层与执行半的分界沿用全篇的"frontier"记法——接缝两侧各自可测（mock 传输 + mock 内核），真实通电的验收面在 edge E5(f)。

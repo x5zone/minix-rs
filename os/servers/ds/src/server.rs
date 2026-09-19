@@ -68,8 +68,14 @@ pub trait DsKernel {
     /// :441-444, :561-563 — the three read-back roads).
     fn safecopy_to(&mut self, caller: Endpoint, grant: GrantId, buf: &[u8]) -> Result<(), i32>;
     /// Copy server bytes into caller space (store.c:672-675 — the whole
-    /// table image rides one call, SELF as source).
-    fn data_copy_to(&mut self, caller: Endpoint, buf: &[u8]) -> Result<(), i32>;
+    /// table image rides one call, SELF as source). `where_` is the
+    /// caller-supplied destination (`m_lsys_getsysinfo.where`, store.c:672).
+    fn data_copy_to(
+        &mut self,
+        caller: Endpoint,
+        where_: u64,
+        buf: &[u8],
+    ) -> Result<(), i32>;
 }
 
 /// Receive-failure bound (`store.c:39-40` panics on the first one; the
@@ -197,16 +203,16 @@ impl DsServer {
                 // C reads the getsysinfo payload (main.c:72 → store.c:655)
                 // — `mess_lsys_getsysinfo`, a different shape than the
                 // DS request arm.
-                let (what, size) = unsafe {
+                let (what, size, where_) = unsafe {
                     let g = &message.m_u.m_lsys_getsysinfo;
-                    (g.what, g.size as usize)
+                    (g.what, g.size as usize, g.where_)
                 };
                 match plan_getsysinfo(what, size) {
                     Ok(len) => {
                         // C 672-675: one `sys_datacopy(SELF → caller)`,
                         // the whole image.
                         self.render_image();
-                        match kernel.data_copy_to(caller, &self.image[..len]) {
+                        match kernel.data_copy_to(caller, where_, &self.image[..len]) {
                             Ok(()) => OK,
                             Err(r) => r,
                         }
@@ -738,14 +744,54 @@ impl<T: SysIpcTransport> DsIpc for SysIpc<T> {
 pub struct SysKernel;
 
 impl DsKernel for SysKernel {
-    fn safecopy_from(&mut self, _: Endpoint, _: GrantId, _: &mut [u8]) -> Result<(), i32> {
-        Err(minix_types::EIO)
+    fn safecopy_from(&mut self, caller: Endpoint, grant: GrantId, buf: &mut [u8]) -> Result<(), i32> {
+        // C store.c:167-172 — sys_safecopyfrom(caller, grant, 0, SELF,
+        // buf, len)。
+        minix_sys::syscall::sys_safecopyfrom(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            caller.0,
+            grant,
+            0,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        )
+        .map_err(positive)
     }
-    fn safecopy_to(&mut self, _: Endpoint, _: GrantId, _: &[u8]) -> Result<(), i32> {
-        Err(minix_types::EIO)
+
+    fn safecopy_to(&mut self, caller: Endpoint, grant: GrantId, buf: &[u8]) -> Result<(), i32> {
+        // C store.c:409-416 — sys_safecopyto(caller, grant, 0, SELF,
+        // buf, len)。
+        minix_sys::syscall::sys_safecopyto(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            caller.0,
+            grant,
+            0,
+            buf.as_ptr() as u64,
+            buf.len() as u64,
+        )
+        .map_err(positive)
     }
-    fn data_copy_to(&mut self, _: Endpoint, _: &[u8]) -> Result<(), i32> {
-        Err(minix_types::EIO)
+
+    fn data_copy_to(&mut self, caller: Endpoint, where_: u64, buf: &[u8]) -> Result<(), i32> {
+        // C store.c:672-675 — sys_datacopy(SELF, src, caller, where, len)。
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            minix_sys::syscall::SELF,
+            buf.as_ptr() as u64,
+            caller.0,
+            where_,
+            buf.len() as u64,
+        )
+        .map_err(positive)
+    }
+}
+
+/// 负 errno → 正(DS 回复面;同 ipc-server boundary 的 positive)。
+fn positive(e: i32) -> i32 {
+    if e < 0 {
+        -e
+    } else {
+        e
     }
 }
 
@@ -830,7 +876,7 @@ mod tests {
     struct MockKernel {
         grants: RefCell<Vec<(Endpoint, GrantId, Vec<u8>)>>,
         written: RefCell<Vec<(Endpoint, GrantId, Vec<u8>)>>,
-        copied: RefCell<Vec<(Endpoint, Vec<u8>)>>,
+        copied: RefCell<Vec<(Endpoint, u64, Vec<u8>)>>,
     }
 
     impl MockKernel {
@@ -875,10 +921,24 @@ mod tests {
             Ok(())
         }
 
-        fn data_copy_to(&mut self, caller: Endpoint, buf: &[u8]) -> Result<(), i32> {
-            self.copied.borrow_mut().push((caller, buf.to_vec()));
+        fn data_copy_to(&mut self, caller: Endpoint, where_: u64, buf: &[u8]) -> Result<(), i32> {
+            self.copied.borrow_mut().push((caller, where_, buf.to_vec()));
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_sys_kernel_hosted_reports_eio() {
+        // S22:SysKernel 已接 minix-sys 真 wrapper(hosted 构建的
+        // DirectKernelCallTransport 诚实回 EIO/负值——E1 通电前不伪造
+        // 成功)。三方法同面。
+        use crate::server::{DsKernel, SysKernel};
+        use minix_types::{Endpoint, GrantId};
+        let mut k = SysKernel;
+        let mut buf = [0u8; 8];
+        assert_eq!(k.safecopy_from(Endpoint(9), 3 as GrantId, &mut buf), Err(minix_types::EIO));
+        assert_eq!(k.safecopy_to(Endpoint(9), 3 as GrantId, &buf), Err(minix_types::EIO));
+        assert_eq!(k.data_copy_to(Endpoint(9), 0x4000, &buf), Err(minix_types::EIO));
     }
 
     fn letter(caller: Endpoint, call: i32) -> Message {
@@ -1073,15 +1133,18 @@ mod tests {
         let copies = kernel.copied.borrow();
         assert_eq!(copies.len(), 1);
         assert_eq!(copies[0].0, Endpoint(9));
-        assert_eq!(copies[0].1.len(), image_bytes());
+        // S22:目标地址来自 m_lsys_getsysinfo.where(store.c:672 的
+        // `m_ptr->m_lsys_getsysinfo.where`),随调用原样透传。
+        assert_eq!(copies[0].1, 0x4000, "where_ 原样透传");
+        assert_eq!(copies[0].2.len(), image_bytes());
         // Slot 0 holds the seeded "rs" label (IN_USE|TYPE_LABEL = 0x101);
         // the published "cfg" (U32) took slot 2 — first-fit order.
         assert_eq!(
-            u32::from_ne_bytes(copies[0].1[0..4].try_into().unwrap()),
+            u32::from_ne_bytes(copies[0].2[0..4].try_into().unwrap()),
             (DsFlags::IN_USE | DsFlags::TYPE_LABEL).bits()
         );
         assert_eq!(
-            u32::from_ne_bytes(copies[0].1[2 * 192..2 * 192 + 4].try_into().unwrap()),
+            u32::from_ne_bytes(copies[0].2[2 * 192..2 * 192 + 4].try_into().unwrap()),
             (DsFlags::IN_USE | DsFlags::TYPE_U32).bits()
         );
     }
