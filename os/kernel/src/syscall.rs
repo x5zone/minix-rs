@@ -594,10 +594,10 @@ fn kernel_call_dispatch_inner(
     }
 
     match syscall {
-        Syscall::Fork => dispatch_fork(caller, msg, proc_table, priv_table),
-        Syscall::Exec => dispatch_exec(caller, msg, proc_table),
-        Syscall::Clear => dispatch_clear(caller, msg, proc_table, priv_table, clock_state),
-        Syscall::Exit => dispatch_exit(caller, msg, proc_table, priv_table),
+        Syscall::Fork => dispatch_fork(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::Exec => dispatch_exec(caller.p_nr, proc_table, msg),
+        Syscall::Clear => dispatch_clear(caller.p_nr, proc_table, msg, priv_table, clock_state),
+        Syscall::Exit => dispatch_exit(caller.p_nr, proc_table, msg, priv_table),
         Syscall::Schedule => dispatch_schedule(caller, msg, proc_table, priv_table),
         Syscall::Privctl => dispatch_privctl(caller, msg, proc_table, priv_table, clock_state),
         Syscall::Trace => dispatch_trace(caller, msg, proc_table, priv_table),
@@ -634,12 +634,12 @@ fn kernel_call_dispatch_inner(
         Syscall::Vmctl => dispatch_vmctl(caller, msg, proc_table, priv_table),
         Syscall::Diagctl => dispatch_diagctl(caller.p_nr, proc_table, msg, priv_table),
         Syscall::Vtimer => dispatch_vtimer(caller.p_nr, msg, priv_table, proc_table),
-        Syscall::Runctl => dispatch_runctl(caller, msg, proc_table),
+        Syscall::Runctl => dispatch_runctl(caller.p_nr, proc_table, msg),
         Syscall::Getmcontext => dispatch_getmcontext(caller.p_nr, proc_table, msg),
         Syscall::Setmcontext => dispatch_setmcontext(caller.p_nr, proc_table, msg),
         Syscall::Update => dispatch_update(caller, msg, proc_table, priv_table),
 
-        Syscall::Schedctl => dispatch_schedctl(caller, msg, proc_table),
+        Syscall::Schedctl => dispatch_schedctl(caller.p_nr, proc_table, msg),
         Syscall::Statectl => dispatch_statectl(caller, msg, proc_table, priv_table, crate::ipc_filter_pool_with(bkl_section)),
         Syscall::Safememset => dispatch_safememset(caller, msg, proc_table, priv_table),
         // D6: ARM-specific — return BadCall on other architectures.
@@ -885,12 +885,12 @@ pub(crate) fn dispatch_ipc(
 // Functions that need ProcessTable or PrivTable receive them from
 // kernel_call_dispatch (threaded through since 2026-06-15).
 
-fn dispatch_fork(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult {
-    crate::syscall_process::dispatch_fork(caller, msg, proc_table, priv_table)
+fn dispatch_fork(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
+    crate::syscall_process::dispatch_fork(caller_nr, proc_table, msg, priv_table)
 }
-fn dispatch_exec(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_process::dispatch_exec(caller, msg, proc_table) }
-fn dispatch_clear(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut crate::kpriv::PrivTable, clock_state: &mut ClockState) -> KcallResult { crate::syscall_process::dispatch_clear(caller, msg, proc_table, priv_table, clock_state) }
-fn dispatch_exit(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut crate::kpriv::PrivTable) -> KcallResult { crate::syscall_process::dispatch_exit(caller, msg, proc_table, priv_table) }
+fn dispatch_exec(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_process::dispatch_exec(caller_nr, proc_table, msg) }
+fn dispatch_clear(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut crate::kpriv::PrivTable, clock_state: &mut ClockState) -> KcallResult { crate::syscall_process::dispatch_clear(caller_nr, proc_table, msg, priv_table, clock_state) }
+fn dispatch_exit(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &mut crate::kpriv::PrivTable) -> KcallResult { crate::syscall_process::dispatch_exit(caller_nr, proc_table, msg, priv_table) }
 
 /// Dispatch SYS_SCHEDULE.
 ///
@@ -2794,7 +2794,7 @@ fn dispatch_diagctl(
     }
 }
 fn dispatch_vtimer(caller_nr: crate::proc::ProcNr, msg: &mut Message, priv_table: &PrivTable, proc_table: &crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_clock::dispatch_vtimer(caller_nr, msg, priv_table, proc_table) }
-fn dispatch_runctl(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_process::dispatch_runctl(caller, msg, proc_table) }
+fn dispatch_runctl(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_process::dispatch_runctl(caller_nr, proc_table, msg) }
 /// Dispatch SYS_GETMCONTEXT.
 ///
 /// C: `do_getmcontext()` — do_mcontext.c:23-68
@@ -2995,9 +2995,9 @@ fn dispatch_setmcontext(
     KcallResult::Ok(OK)
 }
 fn dispatch_update(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut PrivTable) -> KcallResult { crate::misc::dispatch_update(caller, msg, proc_table, priv_table) }
-fn dispatch_schedctl(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_process::dispatch_schedctl(caller, msg, proc_table) }
+fn dispatch_schedctl(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_process::dispatch_schedctl(caller_nr, proc_table, msg) }
 fn dispatch_statectl(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut PrivTable, pool: &mut crate::ipc_filter::IpcFilterPool) -> KcallResult {
-    crate::syscall_process::dispatch_statectl(caller, msg, proc_table, priv_table, pool)
+    crate::syscall_process::dispatch_statectl(caller.p_nr, proc_table, msg, priv_table, pool)
 }
 fn dispatch_safememset(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safememset(caller, msg, proc_table, priv_table) }
 

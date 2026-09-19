@@ -136,9 +136,9 @@ fn msg_schedctl(msg: &Message) -> MessLsysKrnSchedctl {
 /// pre-faults it eagerly to avoid a CoW fault inside the reply copy —
 /// fork.c:100-108).
 pub fn dispatch_fork(
-    caller: &mut KProcess,
-    msg: &mut Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &mut Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     // E-FORKMSG: the C fork wire has a dedicated request struct
@@ -159,7 +159,10 @@ pub fn dispatch_fork(
 
     // Validate: parent must be receiving (synchronous fork)
     // C: do_fork.c:51
-    if !caller.p_rts_flags.is_set(RtsFlagsBits::RECEIVING) {
+    if !proc_table
+        .get(caller_nr)
+        .is_some_and(|c| c.p_rts_flags.is_set(RtsFlagsBits::RECEIVING))
+    {
         return KcallResult::Ok(EINVAL);
     }
 
@@ -187,11 +190,19 @@ pub fn dispatch_fork(
     // Use fork_from to create child from parent with corrections.
     // C guarantees rpp == caller (parent is the one calling SYS_FORK),
     // so using caller directly is correct.
-    let mut child = KProcess::fork_from(caller, child_slot, child_endpoint);
+    let mut child = KProcess::fork_from(
+        proc_table
+            .get(caller_nr)
+            .expect("dispatch_fork: caller slot must exist"),
+        child_slot,
+        child_endpoint,
+    );
 
     // C: do_fork.c:105-107 — if parent is SYS_PROC, downgrade child privilege
     // Check parent's privilege flags to determine if child needs downgrade.
-    let parent_is_sys_proc = caller.priv_id
+    let parent_is_sys_proc = proc_table
+        .get(caller_nr)
+        .and_then(|c| c.priv_id)
         .and_then(|id| priv_table.get(id))
         .map(|p| p.flags.s_flags.contains(ProcessCapability::SYS_PROC))
         .unwrap_or(false);
@@ -228,7 +239,10 @@ pub fn dispatch_fork(
         // the union arm is plain-old-data.
         let reply_arm = unsafe { &mut msg.m_u.m_krn_lsys_sys_fork };
         reply_arm.endpt = child_endpoint.0;
-        reply_arm.msgaddr = caller.p_delivermsg_vir.0;
+        reply_arm.msgaddr = proc_table
+            .get(caller_nr)
+            .map(|c| c.p_delivermsg_vir.0)
+            .expect("dispatch_fork: caller slot must exist");
     }
 
     // C: do_fork.c returns OK — the child endpoint rides in the reply
@@ -251,9 +265,9 @@ pub fn dispatch_fork(
 /// The caller (typically PM) passes the endpoint of the process that
 /// just did exec; the kernel patches that target process.
 pub fn dispatch_exec(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
     // C: do_exec.c:27 — extract fields from mess_lsys_krn_sys_exec.
     // Use the typed message (not M1) because SYS_EXEC's layout differs
@@ -285,8 +299,14 @@ pub fn dispatch_exec(
         let name_ptr = exec_msg.name;
 
         // Capture caller's endpoint and CR3 before mutable borrow.
-        let caller_endpt = caller.p_endpoint;
-        let caller_cr3 = caller.p_seg.phys_root;
+        let caller_endpt = proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint)
+            .expect("dispatch_exec: caller slot must exist");
+        let caller_cr3 = proc_table
+            .get(caller_nr)
+            .map(|c| c.p_seg.phys_root)
+            .expect("dispatch_exec: caller slot must exist");
 
         let mut name_buf = [0u8; PROC_NAME_LEN];
         let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(
@@ -303,7 +323,7 @@ pub fn dispatch_exec(
         };
         let dst = AddressRef::Physical(dst_phys);
 
-        match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, PROC_NAME_LEN, proc_cr3) {
+        match data_copy_vmcheck(caller_nr, proc_table, src, dst, PROC_NAME_LEN, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => {
                 // C: ensure null termination (do_exec.c:43)
                 name_buf[PROC_NAME_LEN - 1] = 0;
@@ -371,15 +391,15 @@ pub fn dispatch_exec(
 /// The "自杀 → 委托 → 回收" three-phase contract is preserved: the kernel
 /// does not free resources here; it only makes the death observable.
 pub fn dispatch_exit(
-    caller: &mut KProcess,
-    _msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    _msg: &Message,
     priv_table: &mut PrivTable,
 ) -> KcallResult {
     // C: do_exit.c:21 — cause_sig(caller->p_nr, SIGABRT); EDONTREPLY
     // SIGABRT ∈ SIGS_IS_LETHAL（signal.h:280-282），因此自管理进程的 exit
     // 会进入 cause_signal 的致命 SELF 子路径（backup 提升或 panic）。
-    cause_signal(caller.p_nr, SIGABRT, proc_table, priv_table);
+    cause_signal(caller_nr, SIGABRT, proc_table, priv_table);
 
     // C: do_exit.c:23 — return EDONTREPLY
     KcallResult::NoReply
@@ -416,9 +436,9 @@ pub fn dispatch_exit(
 /// FPU flag clear, SYS_PROC privilege release) prevent slot leaks and
 /// make the slot reusable by a new process.
 pub fn dispatch_clear(
-    _caller: &mut KProcess,
-    msg: &Message,
+    _caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
     priv_table: &mut PrivTable,
     clock_state: &mut crate::clock::ClockState,
 ) -> KcallResult {
@@ -524,9 +544,9 @@ pub fn dispatch_clear(
 /// specified by `RC_ENDPT` (not the caller). If the target is on
 /// a different CPU, use IPI to stop it (SMP path deferred).
 pub fn dispatch_runctl(
-    _caller: &mut KProcess,
-    msg: &Message,
+    _caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
     let m1 = msg_m1(msg);
     // C: do_runctl.c:34-35 — extract parameters
@@ -649,9 +669,9 @@ pub fn dispatch_runctl(
 /// on `caller` would be a P0 semantic drift (the caller would accidentally
 /// re-schedule itself).
 pub fn dispatch_schedctl(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
     let sc = msg_schedctl(msg);
     // C: do_schedctl.c:16 — extract flags
@@ -735,7 +755,7 @@ pub fn dispatch_schedctl(
             Some(p) => p,
             None => return KcallResult::Ok(EINVAL),
         };
-        target.p_sched.scheduler = Some(caller.p_nr);
+        target.p_sched.scheduler = Some(caller_nr);
     }
 
     KcallResult::Ok(OK)
@@ -756,9 +776,9 @@ pub fn dispatch_schedctl(
 /// - `SYS_STATE_ADD_IPC_WL_FILTER` (4): add_ipc_filter(WHITELIST) — IMPLEMENTED
 /// - `SYS_STATE_CLEAR_IPC_FILTERS` (5): clear_ipc_filters(caller) — IMPLEMENTED
 pub(crate) fn dispatch_statectl(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
     priv_table: &mut PrivTable,
     pool: &mut crate::ipc_filter::IpcFilterPool,
 ) -> KcallResult {
@@ -779,12 +799,12 @@ pub(crate) fn dispatch_statectl(
         // See `syscall::clear_ipc_refs` for the full semantics and design
         // gap notes (return value register, async send cancellation).
         StatectlRequest::ClearIpcRefs => {
-            let caller_nr = caller.p_nr;
+            let caller_nr = caller_nr;
             crate::syscall::clear_ipc_refs(proc_table, priv_table, caller_nr, EDEADSRCDST);
         }
         // C: do_statectl.c:29-30 — priv(caller)->s_state_table = address; s_state_entries = length
         StatectlRequest::SetStateTable => {
-            if let Some(pid) = caller.priv_id
+            if let Some(pid) = proc_table.get(caller_nr).and_then(|c| c.priv_id)
                 && let Some(priv_) = priv_table.get_mut(pid) {
                     priv_.runtime.s_state_table = sc.address as usize;
                     priv_.runtime.s_state_entries = sc.length;
@@ -794,19 +814,19 @@ pub(crate) fn dispatch_statectl(
         StatectlRequest::AddIpcBlFilter => {
             // C: do_statectl.c:34-36 — add_ipc_filter(caller, IPCF_BLACKLIST,
             // address, length)。D-16/D-18 实现见 add_ipc_filter_arm。
-            return add_ipc_filter_arm(caller, sc, proc_table, priv_table, pool,
+            return add_ipc_filter_arm(caller_nr, proc_table, sc, priv_table, pool,
                 crate::ipc_filter::IpcFilterType::Blacklist);
         }
         // C: do_statectl.c:37-41 — add_ipc_filter(caller, IPCF_WHITELIST, address, length)
         StatectlRequest::AddIpcWlFilter => {
-            return add_ipc_filter_arm(caller, sc, proc_table, priv_table, pool,
+            return add_ipc_filter_arm(caller_nr, proc_table, sc, priv_table, pool,
                 crate::ipc_filter::IpcFilterType::Whitelist);
         }
         StatectlRequest::ClearIpcFilters => {
             // C clear_ipc_filters (system.c:751-770) — free the WHOLE
             // filter chain (D-16: filters chain via `next`; clearing only
             // the head would orphan the rest).
-            if let Some(pid) = caller.priv_id
+            if let Some(pid) = proc_table.get(caller_nr).and_then(|c| c.priv_id)
                 && let Some(priv_) = priv_table.get_mut(pid)
                 && let Some(head) = priv_.mem.s_ipcf.take()
             {
@@ -825,9 +845,9 @@ pub(crate) fn dispatch_statectl(
 /// （fill_flags）→ **链尾追加**（C system.c:742-745；修复旧实现"替换非
 /// 追加"的偏离）。失败路径只释放新槽位，链上既有 filter 不受影响。
 fn add_ipc_filter_arm(
-    caller: &mut KProcess,
-    sc: MessLsysKrnSysStatectl,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    sc: MessLsysKrnSysStatectl,
     priv_table: &mut PrivTable,
     pool: &mut crate::ipc_filter::IpcFilterPool,
     filter_type: crate::ipc_filter::IpcFilterType,
@@ -857,8 +877,14 @@ fn add_ipc_filter_arm(
         None => return KcallResult::Ok(ENOMEM),
     };
 
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_process: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("syscall_process: caller slot must exist");
 
     // C system.c:729-731 — data_copy elements directly into the slot.
     let dst_phys = match pool.get_mut(new_idx) {
@@ -873,7 +899,7 @@ fn add_ipc_filter_arm(
     };
     let dst = AddressRef::Physical(dst_phys);
 
-    match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, length, |_pt, endpt| {
+    match data_copy_vmcheck(caller_nr, proc_table, src, dst, length, |_pt, endpt| {
         if endpt == caller_endpt { Some(caller_cr3) } else { None }
     }) {
         CrossSpaceResult::Completed(Ok(())) => {}
@@ -893,7 +919,7 @@ fn add_ipc_filter_arm(
     // (isokendpt 经 proc_table 解析) + MATCH 标志聚合（fill_flags）+
     // 链尾追加（C system.c:742-745）。校验失败：finalize 不释放，由本
     // 函数释放新槽位后返回 EINVAL。
-    let caller_priv_id = match caller.priv_id {
+    let caller_priv_id = match proc_table.get(caller_nr).and_then(|c| c.priv_id) {
         Some(id) => id,
         None => return KcallResult::Ok(EPERM),
     };
@@ -999,7 +1025,7 @@ mod tests {
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 5);
         assert_eq!(
-            dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
+            dispatch_statectl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut pool),
             KcallResult::Ok(EINVAL)
         );
         assert_eq!(pool.allocated_count(), 0);
@@ -1013,7 +1039,7 @@ mod tests {
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 0);
         assert_eq!(
-            dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
+            dispatch_statectl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut pool),
             KcallResult::Ok(E2BIG)
         );
         assert_eq!(pool.allocated_count(), 0);
@@ -1028,7 +1054,7 @@ mod tests {
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(3, 0xdead_beef, 12); // 1 element
         assert_eq!(
-            dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
+            dispatch_statectl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut pool),
             KcallResult::VmSuspend
         );
         assert_eq!(pool.allocated_count(), 0, "suspend must free the new slot");
@@ -1102,7 +1128,7 @@ mod tests {
         let mut pool = crate::ipc_filter::IpcFilterPool::new();
         let msg = build_statectl_msg(99, 0, 0);
         assert_eq!(
-            dispatch_statectl(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut pool),
+            dispatch_statectl(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut pool),
             KcallResult::Ok(EINVAL)
         );
     }
@@ -1150,7 +1176,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(0, 0));
         let msg = Message::default();
         assert_eq!(
-            dispatch_exit(&mut caller, &msg, &mut procs, &mut privs),
+            dispatch_exit(ProcNr(0), &mut procs, &msg, &mut privs),
             KcallResult::NoReply
         );
     }
@@ -1180,7 +1206,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(0, 0));
         let msg = Message::default();
         assert_eq!(
-            dispatch_exit(&mut caller, &msg, &mut procs, &mut privs),
+            dispatch_exit(ProcNr(0), &mut procs, &msg, &mut privs),
             KcallResult::NoReply
         );
 
@@ -1211,7 +1237,7 @@ mod tests {
         msg.m_u.m_m1.m1i2 = RC_STOP;           // action = stop
         msg.m_u.m_m1.m1i3 = 0;                  // no RC_DELAY
 
-        let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
         assert!(proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
     }
@@ -1232,7 +1258,7 @@ mod tests {
         msg.m_u.m_m1.m1i1 = target_endpoint.0; // RC_ENDPT = target
         msg.m_u.m_m1.m1i2 = RC_RESUME;
 
-        let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
         assert!(!proc_table.get(target_nr).unwrap().p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
     }
@@ -1251,7 +1277,7 @@ mod tests {
         msg.m_u.m_m1.m1i1 = target_endpoint.0;
         msg.m_u.m_m1.m1i2 = 99; // invalid action
 
-        let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1277,7 +1303,7 @@ mod tests {
         msg.m_u.m_m1.m1i1 = kernel_endpoint.0;
         msg.m_u.m_m1.m1i2 = RC_STOP;
 
-        let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1302,7 +1328,7 @@ mod tests {
         // name = 0 (null pointer) — data_copy_vmcheck will suspend
         // on the page fault (source address 0 not mapped).
 
-        let result = dispatch_exec(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_exec(ProcNr(0), &mut proc_table, &msg);
         // Name copy suspends (null name pointer → page fault → VmSuspend).
         // C: do_exec.c:37-42 — name copy via data_copy; fault → VMSUSPEND.
         assert_eq!(result, KcallResult::VmSuspend);
@@ -1330,7 +1356,7 @@ mod tests {
         msg.m_type = Syscall::Exec as i32;
         msg.m_u.m_lsys_krn_sys_exec.endpt = 99999; // invalid endpoint
 
-        let result = dispatch_exec(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_exec(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1346,7 +1372,7 @@ mod tests {
         // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
         // real dispatch runs under the BKL; tests acquire it here.
         let bkl_section = crate::smp::bkl_lock_section();
-        let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_clear(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
         crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
@@ -1379,7 +1405,7 @@ mod tests {
         // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
         // real dispatch runs under the BKL; tests acquire it here.
         let bkl_section = crate::smp::bkl_lock_section();
-        let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_clear(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
         crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(OK));
 
@@ -1411,7 +1437,7 @@ mod tests {
         // A1: dispatch_clear's IRQ-hook cleanup takes a BKL witness —
         // real dispatch runs under the BKL; tests acquire it here.
         let bkl_section = crate::smp::bkl_lock_section();
-        let result = dispatch_clear(&mut caller, &msg, &mut proc_table, &mut priv_table, &mut crate::clock::ClockState::new());
+        let result = dispatch_clear(ProcNr(0), &mut proc_table, &msg, &mut priv_table, &mut crate::clock::ClockState::new());
         crate::smp::bkl_unlock();
         assert_eq!(result, KcallResult::Ok(OK));
 
@@ -1462,7 +1488,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(0));
         let msg = build_schedctl_msg(0xFF, 0, 0, 0, 0);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1474,7 +1500,7 @@ mod tests {
         // Endpoint 99999 won't resolve in an empty process table.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, 99999, 0, 0, 0);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1497,7 +1523,7 @@ mod tests {
         // Valid scheduling parameters: priority=5, quantum=10ms, cpu=0.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 5, 10, 0);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
 
         // TARGET (not caller) should have scheduler cleared and priority applied.
@@ -1519,7 +1545,7 @@ mod tests {
         // priority = 999 exceeds NR_SCHED_QUEUES (16) → EINVAL.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 999, 10, 0);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1539,7 +1565,7 @@ mod tests {
         // priority = 256 truncates to 0 without the fix — must be rejected.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 256, 10, 0);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1554,7 +1580,7 @@ mod tests {
         // quantum = 0 is invalid (must be >= 1 or -1).
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), 5, 0, 0);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1567,21 +1593,23 @@ mod tests {
         let target_nr = ProcNr(0);
         let target_ep = install_target(&mut proc_table, target_nr);
 
-        // Caller is process at slot 7 (e.g., the sched server).
+        // Caller is process at slot 7 (e.g., the sched server); with
+        // K20 caller-by-nr its identity lives on that slot.
         let caller_nr = ProcNr(7);
-        let mut caller = KProcess::new(caller_nr, Endpoint::from_generation_slot(1, caller_nr.0));
+        proc_table.get_mut(caller_nr).unwrap().p_endpoint =
+            Endpoint::from_generation_slot(1, caller_nr.0);
 
         // flags = 0 (no SCHEDCTL_FLAG_KERNEL) — caller becomes scheduler.
         let msg = build_schedctl_msg(0, target_ep.get(), 0, 0, 0);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(7), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
 
         // TARGET should have scheduler = Some(caller_nr).
         let target = proc_table.get(target_nr).unwrap();
         assert_eq!(target.p_sched.scheduler, Some(caller_nr));
         // Caller's own scheduler field should be unchanged.
-        assert_eq!(caller.p_sched.scheduler, None);
+        assert_eq!(proc_table.get(caller_nr).unwrap().p_sched.scheduler, None);
     }
 
     #[test]
@@ -1602,7 +1630,7 @@ mod tests {
         // All -1 sentinels → sched_proc should keep current values.
         let msg = build_schedctl_msg(SCHEDCTL_FLAG_KERNEL, target_ep.get(), -1, -1, -1);
 
-        let result = dispatch_schedctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_schedctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
 
         let target = proc_table.get(target_nr).unwrap();
@@ -1619,9 +1647,13 @@ mod tests {
         // E-FORKMSG:应答形状对齐 C do_fork.c:111-112 + :135 —— 返回 OK(0),
         // endpt/msgaddr 原地写进 m_krn_lsys_sys_fork 应答臂(msgaddr 是
         // 调用方的 p_delivermsg_vir)。
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
-        caller.p_rts_flags.set(RtsFlagsBits::RECEIVING);
         let mut proc_table = crate::test_helpers::test_proc_table();
+        // K20 caller-by-nr: the caller's identity/state lives on slot 0.
+        {
+            let caller = proc_table.get_mut(ProcNr(0)).unwrap();
+            caller.p_endpoint = Endpoint(100);
+            caller.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        }
         let priv_table = crate::test_helpers::test_priv_table();
 
         let mut msg = Message::default();
@@ -1629,12 +1661,16 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_fork.slot = 3;    // 子槽位
         msg.m_u.m_lsys_krn_sys_fork.flags = 0;   // flags
 
-        let result = dispatch_fork(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_fork(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(0), "C do_fork 返回 OK");
         // SAFETY(测试):m_type 未变(SYS_FORK),读应答臂是构造的镜像。
         let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
         assert_eq!(reply_arm.endpt, (1 << 15) + 3, "应答臂 endpt = (gen+1)<<15 | slot");
-        assert_eq!(reply_arm.msgaddr, caller.p_delivermsg_vir.0, "应答臂 msgaddr = p_delivermsg_vir");
+        assert_eq!(
+            reply_arm.msgaddr,
+            proc_table.get(ProcNr(0)).unwrap().p_delivermsg_vir.0,
+            "应答臂 msgaddr = p_delivermsg_vir"
+        );
         let child = proc_table.get(ProcNr(3)).unwrap();
         assert_eq!(child.p_endpoint.0, (1 << 15) + 3);
         assert_eq!(child.p_nr, ProcNr(3));
@@ -1653,7 +1689,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_fork.slot = 3;
         msg.m_u.m_lsys_krn_sys_fork.flags = 0;
 
-        let result = dispatch_fork(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_fork(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1661,21 +1697,24 @@ mod tests {
     fn test_t12_fork_downgrades_sys_proc_child() {
         // C do_fork.c:105-107 — SYS_PROC 父 → 子挂 USER_PRIV_ID 且置
         // RTS_NO_PRIV（运行前需重新授权）。
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
-        caller.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        {
+            let caller = proc_table.get_mut(ProcNr(0)).unwrap();
+            caller.p_endpoint = Endpoint(100);
+            caller.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        }
         let mut priv_table = crate::test_helpers::test_priv_table();
         let pid = priv_table.assign_static(ProcNr(0)).expect("priv slot");
         priv_table.get_mut(pid).unwrap().flags.s_flags =
             crate::capability::ProcessCapability::SYS_PROC;
-        caller.priv_id = Some(pid);
-        let mut proc_table = crate::test_helpers::test_proc_table();
+        proc_table.get_mut(ProcNr(0)).unwrap().priv_id = Some(pid);
 
         let mut msg = Message::default();
         msg.m_u.m_lsys_krn_sys_fork.endpt = 100;
         msg.m_u.m_lsys_krn_sys_fork.slot = 3;
         msg.m_u.m_lsys_krn_sys_fork.flags = 0;
 
-        let result = dispatch_fork(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_fork(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert!(matches!(result, KcallResult::Ok(_)));
         let child = proc_table.get(ProcNr(3)).unwrap();
         assert_eq!(child.priv_id, Some(crate::kpriv::USER_PRIV_ID),
@@ -1702,7 +1741,7 @@ mod tests {
         msg.m_u.m_m1.m1i2 = RC_STOP;
         msg.m_u.m_m1.m1i3 = RC_DELAY;
 
-        let result = dispatch_runctl(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_runctl(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EBUSY));
         assert!(proc_table.get(target_nr).unwrap()
             .p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY),
@@ -1731,12 +1770,12 @@ mod tests {
         let mut msg = Message::default();
         msg.m_u.m_m1.m1i1 = target_ep.0;
 
-        let first = dispatch_clear(&mut caller, &msg, &mut proc_table,
+        let first = dispatch_clear(ProcNr(0), &mut proc_table, &msg,
             &mut priv_table, &mut clock_state);
         assert_eq!(first, KcallResult::Ok(OK), "第一次 clear 应成功");
 
         // C isokendpt 不排除释放槽 → 第二次命中 isemptyp → OK（非 EINVAL）。
-        let second = dispatch_clear(&mut caller, &msg, &mut proc_table,
+        let second = dispatch_clear(ProcNr(0), &mut proc_table, &msg,
             &mut priv_table, &mut clock_state);
         assert_eq!(second, KcallResult::Ok(OK),
             "重复 clear 必须幂等返回 OK（C do_clear.c:38）");
