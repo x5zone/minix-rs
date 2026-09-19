@@ -296,10 +296,8 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
     }
 
-    // Launder the caller handle through the single audited constructor —
-    // the aliasing contract (C-exact caller-in-table semantics) lives on
-    // `ProcessTable::caller_slot_mut`; this body adds no local escape.
-    let caller = unsafe { table.caller_slot_mut(cur_nr) };
+    // K20 (caller-by-nr): no laundering — the caller travels as its nr and
+    // every access re-borrows the slot from `table` at the point of use.
 
     // Pre-decode: unknown call numbers exit before the BKL is taken —
     // dispatch_ipc_entry's own decode-fail return path also skips the BKL
@@ -316,8 +314,13 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     let r1 = frame.rax; // src/dst endpoint, or SENDA count
     let r2 = frame.rbx; // message pointer, or SENDA table pointer
     let is_senda = call_nr == (crate::ipc::IpcCall::SendA as i32);
-    caller.p_defer.r2 = r1 as usize;
-    caller.p_defer.r3 = if is_senda { r2 as usize } else { 0 };
+    {
+        let caller = table
+            .get_mut(cur_nr)
+            .expect("int-33 IPC: caller slot must exist");
+        caller.p_defer.r2 = r1 as usize;
+        caller.p_defer.r3 = if is_senda { r2 as usize } else { 0 };
+    }
 
     // Copy the user message (kernel-side copy, TOCTOU defense — the same
     // shape as kernel_call's own copy). SENDA carries no message buffer:
@@ -331,7 +334,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
                 // C system.c:152-155 parity (kernel_call's copy arm):
                 // SIGSEGV + EFAULT, without entering IPC dispatch.
                 crate::syscall_signal::cause_signal(
-                    caller.p_nr,
+                    cur_nr,
                     crate::syscall_signal::SIGSEGV,
                     table,
                     unsafe { crate::priv_table_boot_unchecked() },
@@ -342,13 +345,16 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         }
     }
     msg.m_type = call_nr;
-    msg.m_source = caller.p_endpoint;
+    msg.m_source = table
+        .get(cur_nr)
+        .map(|c| c.p_endpoint)
+        .expect("int-33 IPC: caller slot must exist");
 
     // BKL: dispatch_ipc_entry acquires and transfers out (held across
     // kernel_call_finish, which releases it on every non-VmSuspend path).
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
-    let result = crate::syscall::dispatch_ipc_entry(caller, &mut msg, priv_table, table);
-    crate::syscall::kernel_call_finish(caller, &msg, result, table, priv_table);
+    let result = crate::syscall::dispatch_ipc_entry(cur_nr, table, &mut msg, priv_table);
+    crate::syscall::kernel_call_finish(cur_nr, table, &msg, result, priv_table);
 
     // Delivered (reply code): errno rides RAX out through the stub's
     // iretq; the IPC status bits were ORed into the saved context's RBX by
@@ -358,7 +364,11 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // a return value; it stays unrunnable until its IPC completes.
     if let Some(code) = result.reply_code() {
         frame.rax = code as i64 as u64;
-        minix_arch::sync_status_register_to_frame(&caller.cpu_context, frame);
+        let ctx = &table
+            .get(cur_nr)
+            .expect("int-33 IPC: caller slot must exist")
+            .cpu_context;
+        minix_arch::sync_status_register_to_frame(ctx, frame);
     } else {
         // Enter the scheduling loop; never returns to this frame.
         reenter_scheduler();
@@ -412,15 +422,11 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
     let m_user = VirBytes::new(frame.rdi);
 
     let table = unsafe { crate::proc_table_boot_unchecked() };
-    // Launder the caller handle through the single audited constructor —
-    // the aliasing contract (C-exact caller-in-table semantics, and why
-    // borrowck's structural view must be bypassed) lives on
-    // `ProcessTable::caller_slot_mut`; this body adds no local escape.
-    let caller = unsafe { table.caller_slot_mut(cur_nr) };
+    // K20 (caller-by-nr): no laundering — the caller travels as its nr.
     let result = crate::syscall::kernel_call(
-        caller,
-        m_user,
+        cur_nr,
         table,
+        m_user,
         unsafe { crate::priv_table_boot_unchecked() },
         unsafe { crate::clock_state_boot_unchecked() },
         &crate::ipc::KernelUserCopy,
