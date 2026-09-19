@@ -1719,6 +1719,62 @@ pub(crate) fn consume_kbill_ipc(
     true
 }
 
+/// **中断入口的 context_stop 半**（C-26）：把"被打断段"结清给被打断的进程。
+///
+/// C 的 `context_stop` 有两条来源，本函数是第二条：汇编中断入口
+/// （`hwint_master`，`mpx.S:76-90`）先 `TEST_INT_IN_KERNEL` 判中断来自用户态
+/// 还是内核态——来自用户态就把**被打断的进程**压栈当实参调 `context_stop`
+/// （记用户段），来自内核态则走 `context_stop_idle` 那条路（不动用户账）。
+/// 处理完中断后在 `switch_to_user` 尾再调一次 `context_stop(proc_addr(KERNEL))`
+/// 记内核段——两个站点共用同一个 TSC 基线，所以两段不重不漏。
+///
+/// Rust 的对应判据是 BKL 的两态（[`crate::irq_manager::dispatch_hardware_irq`]
+/// 里 `bkl_try_lock` 的 acquired/inherited）：**空闲 = 打断的是用户态或 idle**
+/// （要结清被打断者），**继承 = 打断的是内核态**（不记，留给切换站点）。
+///
+/// 结清四件事（全部照 C 的 `context_stop`）：quantum 递减
+/// （[`crate::clock::decrement_quantum_in_with_delta`]，`arch_clock.c:326-330`）、
+/// 状态桶 + 总周期 + cpuavg（[`account_process_stop`]）、以及 kcall/kipc 标记
+/// 的消费（C 在两个站点都消费，粗估法照抄）。
+///
+/// 被记账的进程取该 CPU 的 `proc_ptr`——idle 期间它是 IDLE（C 的
+/// `context_stop_idle` 正是 `context_stop(idle_proc)`，状态桶落 CP_IDLE）。
+pub(crate) fn account_interrupt_stop(section: &crate::smp::BklSection<'_>) {
+    account_interrupt_stop_with(section, crate::clock::read_tsc());
+}
+
+/// [`account_interrupt_stop`] 的可注入 TSC 版本（宿主测试用——`cfg(test)`
+/// 下 `read_tsc()` 恒 0，真实 delta 只能由调用方给）。
+pub(crate) fn account_interrupt_stop_with(
+    section: &crate::smp::BklSection<'_>,
+    current_tsc: u64,
+) {
+    let smp = crate::smp_state_with(section);
+    // 与 `decrement_quantum_in_with_delta` 用**同一个** CPU id——基线是
+    // per-CPU 的（`CpuLocal::tsc_ctr_switch`），取错 CPU 就取错基线。
+    let cpu = smp.bsp_cpu_id();
+    let Some(nr) = smp.cpu_local(cpu).and_then(|l| l.proc_ptr) else {
+        return; // 早启动窗口：还没有"当前进程"，无账可结
+    };
+    let table = crate::proc_table_with(section);
+    let delta = {
+        let Some(p) = table.get_mut(nr) else {
+            return;
+        };
+        // C `arch_clock.c:314`：kernel/idle 任务 quantum 豁免，但 delta 照返
+        // （总周期与 cpuavg 对它们也记——C 的公共尾不分类型）。
+        let (_exhausted, delta) = crate::clock::decrement_quantum_in_with_delta(smp, p, current_tsc);
+        delta
+    };
+    if delta == 0 {
+        return;
+    }
+    account_process_stop(table, smp, nr, delta, section);
+    // C 的 `arch_clock.c:274-281`：两个标记在**每个** context_stop 都消费。
+    consume_kbill_ipc(table, delta, section);
+    consume_kbill_kcall(table, delta, section);
+}
+
 // ── Panic diagnostic (D-48, C utility.c:22-50) ─────────────────────────
 
 /// Kernel panic renderer: C's `panic()` body minus the shutdown
@@ -2593,17 +2649,15 @@ fn idle(
         .get_mut(proc_nr::KERNEL)
         .expect("idle: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
-    // S-6.4/I-16: shared context_stop KERNEL-branch accounting.
-    account_kernel_stop(table, smp, tsc_delta);
+    // S-6.4/I-16 + C-25/C-26: context_stop KERNEL 分支的**全部**周期账
+    // （状态桶 + 总周期 + cpuavg）——单点、不重不漏。
+    account_process_stop(table, smp, crate::proc::proc_nr::KERNEL, tsc_delta, section);
     // D-9 — idle 的 context_stop 等价同样消费 kbill（C 的消费块是
     // context_stop 公共尾部，不区分 USER/KERNEL/IDLE 分支）。
     if tsc_delta > 0 {
         // C-25：C 的两块并列（先 ipc 后 kcall），同一个 delta 各记一份。
         consume_kbill_ipc(table, tsc_delta, section);
         consume_kbill_kcall(table, tsc_delta, section);
-        // C-25：idle 站的 C 锚点是 `proc.c:208` 的
-        // `context_stop(proc_addr(KERNEL))`——cpuavg 记在 KERNEL 上。
-        account_cpuavg_stop(table, crate::proc::proc_nr::KERNEL, tsc_delta, section);
     }
 
     // 5. BKL release (C: context_stop's must_bkl_unlock — arch_clock.c:
@@ -2742,46 +2796,51 @@ fn switch_address_space(
 /// (arch_clock.c:340) and in its `p_cycles` (arch_clock.c:232/250).
 ///
 /// I-16 closure note: before this helper the per-state bucket was
-/// double-counted at the idle site (two tick-1 edits stacked) and the
-/// finish_and_restore site accumulated neither — `p_cycles` for KERNEL was
-/// single-sourced and GET_PROC's KERNEL row under-reported.
-fn account_kernel_stop(
+/// `context_stop` 公共尾的**周期账**（C `arch_clock.c:290-340` 的 cpuavg
+/// 块与状态桶两块），按进程记账。
+///
+/// 三件事，全部照 C 的形态：
+/// 1. **状态桶**：`tsc_per_state[cpu][classify_cpu_state(p)] += delta`
+///    （C 按进程类别分 CP_USER/CP_NICE/CP_SYS/CP_INTR/CP_IDLE，见
+///    [`crate::clock::classify_cpu_state`]）——`getcputicks` 那族读的就是它；
+/// 2. **总周期**：`p_cycles.total += delta`（C `p->p_cycles += tsc_delta`）；
+/// 3. **CPU 均值**：delta 累进 `p_cycles.tick`（C 的 `p_tick_cycles`），
+///    每攒够一个滴答的周期数（`tpt = tsc_per_ms * 1000 / hz`，C i386 的
+///    `tsc_per_tick[cpu]`）就推进一次（[`minix_types::cpuavg::increment`]）。
+///
+/// **调用点**（C 的两条 context_stop 来源，Rust 一一对应）：
+/// - 内核上下文的三个站点（`proc.c:208` idle / `:440` `switch_to_user` 尾 /
+///   `:1956`）→ 记 **KERNEL**（见 `idle`/`finish_and_restore` 的调用）；
+/// - 汇编中断入口（`mpx.S:77-90` 把被打断的进程压栈）→ 记**被打断的进程**
+///   （见 [`account_interrupt_stop_with`]）。
+///
+/// 两站点共用同一个 TSC 基线（`CpuLocal::tsc_ctr_switch`），所以"用户段 +
+/// 内核段 = 总时间、不重不漏"是结构保证的。
+fn account_process_stop(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
-    tsc_delta: u64,
-) {
-    if tsc_delta == 0 {
-        return;
-    }
-    smp.account_tsc_per_state(crate::current_cpu_id(), crate::clock::CP_INTR, tsc_delta);
-    table
-        .get_mut(crate::proc::proc_nr::KERNEL)
-        .expect("KERNEL pseudo-process slot must exist")
-        .p_cycles
-        .add_cycles(tsc_delta);
-}
-
-/// C-25：context_stop 公共尾的 cpuavg 记账（C `arch_clock.c:290-307`）。
-///
-/// 按 C 的形态：把本次 TSC delta 累进该进程的"滴答周期账"
-/// （`p_cycles.tick`，C 的 `p_tick_cycles`），每攒够一个滴答的周期数
-/// （`tpt = tsc_per_ms * 1000 / hz`，C i386 的 `tsc_per_tick[cpu]`）就把
-/// 该进程的 CPU 均值推进一次（[`minix_types::cpuavg::increment`]）。
-///
-/// **只记 `KERNEL`**：C 的 `context_stop` 有两条来源——`proc.c:208/440/1956`
-/// 三处显式传 `proc_addr(KERNEL)`（idle 与 `switch_to_user` 尾），汇编中断
-/// 入口（`mpx.S:77-90` 把**被打断的进程**压栈当实参）则记用户进程。Rust 的
-/// 两个 context_stop 等价站点对应的是前者（见各自的 C 锚点注释），故这里记
-/// KERNEL；用户进程那一半（中断入口站）在 Rust 模型里没有对应站点——登记
-/// 为 C-25 的余项，见 FIXLOG。
-fn account_cpuavg_stop(
-    table: &mut crate::proc_table::ProcessTable,
     nr: crate::proc::ProcNr,
     tsc_delta: u64,
     section: &crate::smp::BklSection<'_>,
 ) {
     if tsc_delta == 0 {
         return;
+    }
+    // 1. 状态桶 + 2. 总周期：C `arch_clock.c:271`（`p->p_cycles += delta`）
+    //    与 `:334-340`（`tsc_per_state[cpu][counter] += delta`）。
+    //    `smp` 由调用方传入（不能再 `smp_state_with` 取一次——那是第二个
+    //    `&mut` 别名，Rust 的别名规则不允许）。
+    let bucket = {
+        let priv_table = crate::priv_table_with(section);
+        table
+            .get(nr)
+            .map(|p| crate::clock::classify_cpu_state(p, priv_table))
+    };
+    if let Some(bucket) = bucket {
+        smp.account_tsc_per_state(crate::current_cpu_id(), bucket, tsc_delta);
+    }
+    if let Some(p) = table.get_mut(nr) {
+        p.p_cycles.add_cycles(tsc_delta);
     }
     let clock = crate::clock_state_with(section);
     let hz = clock.hz() as u64;
@@ -2793,13 +2852,12 @@ fn account_cpuavg_stop(
     // C earm 的 `tsc_per_tick[0] = tsc_per_ms[0] * 1000 / system_hz`
     // （arch_clock.c:44）；i386 是 `cpu_get_freq(cpu) / system_hz` 的同一量。
     let tpt = tsc_per_ms.saturating_mul(1000) / hz;
-    if tpt == 0 {
-        return;
-    }
 
     let Some(p) = table.get_mut(nr) else {
         return;
     };
+    // C 的 `p->p_tick_cycles += tsc_delta` 在 while **之前**、无条件执行；
+    // `tpt == 0`（周期/滴答未标定，例如宿主测试）只让 while 不跑，累加照旧。
     let mut tick_cycles = p.p_cycles.tick.load(core::sync::atomic::Ordering::Acquire)
         .saturating_add(tsc_delta);
     // C 的 `while (tpt > 0 && p->p_tick_cycles >= tpt)`：攒够一个滴答就推一次
@@ -2812,7 +2870,10 @@ fn account_cpuavg_stop(
         _padding: 0,
     };
     let mut bumped = false;
-    while tick_cycles >= tpt {
+    // C 的条件是 `while (tpt > 0 && p->p_tick_cycles >= tpt)` —— **`tpt > 0`
+    // 这个守卫不能省**：宿主测试下 `TSC_PER_MS` 为 0 时 `tpt == 0`，
+    // `tick_cycles -= 0` 永不递减就成了死循环（本批踩过，见 FIXLOG #115）。
+    while tpt > 0 && tick_cycles >= tpt {
         tick_cycles -= tpt;
         minix_types::cpuavg::increment(&mut snapshot, uptime, hz);
         bumped = true;
@@ -2887,10 +2948,10 @@ fn finish_and_restore(
         .get_mut(crate::proc::proc_nr::KERNEL)
         .expect("finish_and_restore: KERNEL pseudo-process slot must exist");
     let (_exhausted, tsc_delta) = crate::clock::decrement_quantum_in_with_delta(smp, kernel, tsc);
-    // S-6.4/I-16: shared context_stop KERNEL-branch accounting (C:440 site —
-    // the pre-S-6.4 code here missed BOTH the per-state bucket and the
-    // p_cycles accumulation that the idle site had).
-    account_kernel_stop(table, smp, tsc_delta);
+    // S-6.4/I-16 + C-25/C-26: shared context_stop KERNEL-branch accounting
+    // (C:440 site — the pre-S-6.4 code here missed BOTH the per-state bucket
+    // and the p_cycles accumulation that the idle site had).
+    account_process_stop(table, smp, crate::proc::proc_nr::KERNEL, tsc_delta, section);
     // D-9 (C arch_clock.c:279-281) — consume kbill_kcall with the same
     // whole-delta context_stop uses; must run before the BKL release
     // below (see consume_kbill_kcall doc).
@@ -2898,9 +2959,6 @@ fn finish_and_restore(
         // C-25：与上面 idle 同序（C arch_clock.c:274-281 的两块并列）。
         consume_kbill_ipc(table, tsc_delta, section);
         consume_kbill_kcall(table, tsc_delta, section);
-        // C-25：switch_to_user 尾的 C 锚点是 `proc.c:440` 的
-        // `context_stop(proc_addr(KERNEL))`——cpuavg 同样记 KERNEL。
-        account_cpuavg_stop(table, crate::proc::proc_nr::KERNEL, tsc_delta, section);
     }
     // C releases the BKL inside context_stop (must_bkl_unlock,
     // arch_clock.c:226-233); the restore below is the last kernel act.
@@ -3659,6 +3717,167 @@ mod tests {
         assert!(bsp_local.fpu_presence, "fpu_init must set fpu_presence = true");
     }
 
+    /// C-26 测试的全局装配：`account_interrupt_stop_with` 读的是
+    /// `SMP_STATE`/`CLOCK_STATE`/`PROC_TABLE`/`PRIV_TABLE` 四个全局
+    /// （`PROC_TABLE` 是内联构造，另三个要装）——与 clock.rs 的
+    /// `setup_globals` 同法，只装本组测试读到的。
+    fn setup_c26_globals() {
+        crate::smp::bkl_lock_reset_for_test();
+        // SAFETY: single-threaded test (workspace forces --test-threads=1);
+        // each test re-installs the globals it reads.
+        unsafe {
+            *crate::globals::SMP_STATE.get() = Some(crate::smp::SmpState::new_single_cpu());
+            *crate::globals::CLOCK_STATE.get() = Some(crate::clock::ClockState::new());
+        }
+    }
+
+    /// 把槽位铺成"被打断的普通用户进程"：endpoint ≥ 0（不豁免 quantum）、
+    /// 指定剩余 quantum、`proc_ptr` 指向它、基线设在 `baseline`。
+    fn arm_interrupted_user(nr: crate::proc::ProcNr, quantum_left: u64, baseline: u64) {
+        let section = crate::smp::bkl_lock_section();
+        {
+            let table = crate::proc_table_with(&section);
+            let p = table.get_mut(nr).unwrap();
+            p.p_nr = nr;
+            p.p_endpoint = minix_types::Endpoint(7);
+            p.p_rts_flags = crate::proc::RtsFlags::with(crate::proc::RtsFlagsBits::empty());
+            // 给 USER 特权，让状态桶落 CP_USER（C 的判据是
+            // `p->p_priv != priv_addr(USER_PRIV_ID)` → CP_SYS；priv_id 为
+            // None 的进程也算"非 USER"，所以必须显式给）。
+            p.priv_id = Some(crate::kpriv::USER_PRIV_ID);
+            p.p_sched
+                .quantum
+                .cpu_time_left
+                .store(quantum_left, core::sync::atomic::Ordering::Release);
+        }
+        {
+            let smp = crate::smp_state_with(&section);
+            let local = smp.cpu_local_mut(crate::proc::CpuId::BSP).unwrap();
+            local.set_running(nr);
+            local.tsc_ctr_switch = baseline;
+        }
+        crate::smp::bkl_unlock();
+    }
+
+    /// C-26：中断入口站把"被打断段"结清给被打断的进程——四件事一次到位：
+    /// quantum 递减（C `arch_clock.c:326-330`）、状态桶（CP_USER）、总周期、
+    /// cpuavg 的滴答累加（`p_cycles.tick`）。
+    #[test]
+    fn test_interrupt_stop_charges_interrupted_process() {
+        setup_c26_globals();
+        let nr = crate::proc::ProcNr(1);
+        arm_interrupted_user(nr, 10_000, 1000);
+        // 中断读到的 TSC = 3000，基线 1000 → delta 2000。
+        let section = crate::smp::bkl_lock_section();
+        super::account_interrupt_stop_with(&section, 3000);
+        crate::smp::bkl_unlock();
+
+        let section = crate::smp::bkl_lock_section();
+        let table = crate::proc_table_with(&section);
+        let p = table.get(nr).unwrap();
+        assert_eq!(
+            p.p_sched.quantum.cpu_time_left.load(core::sync::atomic::Ordering::Acquire),
+            8_000,
+            "quantum 被消费 2000（C 的 p_cpu_time_left -= tsc_delta）"
+        );
+        assert_eq!(
+            p.p_cycles.total.load(core::sync::atomic::Ordering::Acquire),
+            2_000,
+            "总周期记到被打断的进程（此前只记 KERNEL）"
+        );
+        assert_eq!(
+            p.p_cycles.tick.load(core::sync::atomic::Ordering::Acquire),
+            2_000,
+            "cpuavg 的滴答账先累加（未攒够 tpt 时不推进均值）"
+        );
+        let local = crate::smp_state_with(&section)
+            .cpu_local(crate::proc::CpuId::BSP)
+            .unwrap();
+        assert_eq!(
+            local.tsc_per_state[crate::clock::CP_USER],
+            2_000,
+            "状态桶按进程类别落 CP_USER"
+        );
+        assert_eq!(local.tsc_ctr_switch, 3000, "基线前移到本次读数");
+        crate::smp::bkl_unlock();
+    }
+
+    /// C-26：quantum 用尽 → 下一次 `switch_to_user` 的 Stage 4 判
+    /// `check_quantum` 为假并置 `RTS_NO_QUANTUM`（C `proc.c:418-428`）——
+    /// 消费半接通后这条抢占链才真的会触发。
+    #[test]
+    fn test_interrupt_stop_exhausts_quantum_then_policy_applies() {
+        setup_c26_globals();
+        let nr = crate::proc::ProcNr(1);
+        arm_interrupted_user(nr, 500, 1000);
+        let section = crate::smp::bkl_lock_section();
+        super::account_interrupt_stop_with(&section, 3000); // delta 2000 > 500
+        crate::smp::bkl_unlock();
+        {
+            let section = crate::smp::bkl_lock_section();
+            assert_eq!(
+                crate::proc_table_with(&section)
+                    .get(nr)
+                    .unwrap()
+                    .p_sched
+                    .quantum
+                    .cpu_time_left
+                    .load(core::sync::atomic::Ordering::Acquire),
+                0,
+                "quantum 饱和到 0（不是回绕）"
+            );
+            crate::smp::bkl_unlock();
+        }
+        // Stage 4：`check_quantum` 现在真的看得到"用尽"（此前 cpu_time_left
+        // 从不递减，这一支在生产路径上不可达），并按 C `proc_no_time` 的**政策**
+        // 处置：本进程 `p_sched.scheduler` 为 None（内核调度）→ else 支补满
+        // quantum、不置 NO_QUANTUM（C proc.c:1893-1910）。
+        // 用户调度 + 可抢占那一支（置 NO_QUANTUM + 通知调度器）需要活的调度器
+        // 进程与 IPC，由 proc_table.rs 的 `sched_proc_no_time` 既有测试覆盖。
+        let section = crate::smp::bkl_lock_section();
+        let priv_table = crate::priv_table_with(&section);
+        let _ = crate::proc_table_with(&section).check_quantum(nr, priv_table, &section);
+        crate::smp::bkl_unlock();
+        let section = crate::smp::bkl_lock_section();
+        let p = crate::proc_table_with(&section).get(nr).unwrap();
+        assert!(
+            p.p_sched.quantum.cpu_time_left.load(core::sync::atomic::Ordering::Acquire) > 0,
+            "内核调度支：政策把 quantum 补满（证明用尽被看见）"
+        );
+        assert!(
+            !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_QUANTUM),
+            "内核调度支不置 NO_QUANTUM（C 的 else 支）"
+        );
+        crate::smp::bkl_unlock();
+    }
+
+    /// C-26：`proc_ptr` 缺席（早启动窗口）安全退出——无账可结，连基线都不动。
+    #[test]
+    fn test_interrupt_stop_no_current_proc_is_noop() {
+        setup_c26_globals();
+        {
+            let section = crate::smp::bkl_lock_section();
+            let smp = crate::smp_state_with(&section);
+            let local = smp.cpu_local_mut(crate::proc::CpuId::BSP).unwrap();
+            local.proc_ptr = None;
+            local.tsc_ctr_switch = 1000;
+            crate::smp::bkl_unlock();
+        }
+        let section = crate::smp::bkl_lock_section();
+        super::account_interrupt_stop_with(&section, 3000);
+        crate::smp::bkl_unlock();
+        let section = crate::smp::bkl_lock_section();
+        assert_eq!(
+            crate::smp_state_with(&section)
+                .cpu_local(crate::proc::CpuId::BSP)
+                .unwrap()
+                .tsc_ctr_switch,
+            1000,
+            "没有当前进程时连基线都不动（无账可结）"
+        );
+        crate::smp::bkl_unlock();
+    }
+
     /// Verify the bsp_finish_booting Step 5/7 are no-ops for non-BSP CPUs
     /// (single-CPU build: only BSP exists, AP CPU 1 is the empty default).
     #[test]
@@ -3693,15 +3912,17 @@ mod tests {
     /// where `ptproc` is uninitialized until `arch_post_init()`.
     #[test]
     #[test]
-    fn test_account_kernel_stop_accumulates_p_cycles() {
+    fn test_account_process_stop_accumulates_p_cycles() {
         // I-16: the helper is the single KERNEL-branch accounting point —
         // both context_stop equivalents route through it; the delta lands
         // in KERNEL.p_cycles (GET_PROC observable) and the CP_INTR bucket.
         fresh_ptproc_state();
         let mut table = crate::test_helpers::test_proc_table();
         let mut smp = crate::smp::SmpState::with_ncpus(1, crate::proc::CpuId::BSP);
-        super::account_kernel_stop(&mut table, &mut smp, 1000);
-        super::account_kernel_stop(&mut table, &mut smp, 250);
+        let section = crate::smp::bkl_lock_section();
+        super::account_process_stop(&mut table, &mut smp, crate::proc::proc_nr::KERNEL, 1000, &section);
+        super::account_process_stop(&mut table, &mut smp, crate::proc::proc_nr::KERNEL, 250, &section);
+        crate::smp::bkl_unlock();
         let cycles = table
             .get(crate::proc::proc_nr::KERNEL)
             .unwrap()
@@ -3717,11 +3938,13 @@ mod tests {
     }
 
     #[test]
-    fn test_account_kernel_stop_zero_delta_is_noop() {
+    fn test_account_process_stop_zero_delta_is_noop() {
         fresh_ptproc_state();
         let mut table = crate::test_helpers::test_proc_table();
         let mut smp = crate::smp::SmpState::with_ncpus(1, crate::proc::CpuId::BSP);
-        super::account_kernel_stop(&mut table, &mut smp, 0);
+        let section = crate::smp::bkl_lock_section();
+        super::account_process_stop(&mut table, &mut smp, crate::proc::proc_nr::KERNEL, 0, &section);
+        crate::smp::bkl_unlock();
         let cycles = table
             .get(crate::proc::proc_nr::KERNEL)
             .unwrap()

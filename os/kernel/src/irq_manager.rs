@@ -223,6 +223,13 @@ pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
     // before returning), inherit otherwise.
     let acquired = crate::smp::bkl_try_lock();
     let section = unsafe { crate::smp::BklSection::assume_held() };
+    // C-26：中断入口的 context_stop 半。`acquired` 为真说明打断的是**用户态或
+    // idle**（BKL 空闲）——按 C `hwint_master` 的 `TEST_INT_IN_KERNEL` 语义把
+    // "被打断段"结清给被打断的进程；继承（打断内核态）则不记，那段留给
+    // switch_to_user 尾的 KERNEL 站点（两站点共用同一 TSC 基线，不重不漏）。
+    if acquired {
+        crate::account_interrupt_stop(&section);
+    }
     let mgr = crate::irq_manager_with(&section);
     let result = mgr.dispatch(irq, &mut notifier);
     if acquired {
