@@ -21,8 +21,8 @@
 
 验证基线（2026-09-18 实测；后续轮对照）：
 
-- `cargo test -p minix-init`：**143 passed / 0 failed**（首轮 89；P1-8 全图测试 +5 后为终态）
-- `cargo clippy -p minix-init`：**32 条**——全部为 E-INITSYS 门控 API 面（见 §1 P2-6 残余表），非删除对象
+- `cargo test -p minix-init`：**136 passed / 0 failed**（2026-09-20 卡 J 实测复准；此前记录的 143/138 为账本漂移——P1-8 后各轮有增删，本轮起以实测为准）
+- `cargo clippy -p minix-init`：**37 条**（2026-09-20 实测复准）——大部分为 E-INITSYS 门控 API 面与仅测试配置使用的导入（非删除对象），含少量配置性伪告警（clippy 不带 `--tests` 时测试专用结构记为死代码）
 - `tools/design-coverage-check.sh`：14/16 PASS（00/99 两篇骨架缺快照，归 P2-5）
 
 ---
@@ -47,8 +47,8 @@ clippy 32 条残余全部是等待 E-INITSYS 的接线目标，**不删除**：
 | signal_state（take_* 待主循环 drain 接线；note_* 已由 trampoline 消费 ✅） | E-INITSYS ① PM 臂闭单后由 run_transition 接管 |
 | log::disaster（fatal handler 安装） | E-INITSYS ①；信号名已经 Signal::name 权威生成（P2-4 ✓） |
 | contracts（request_for/shutdown_argv/SHUTDOWN_PATH）+ SignalState::take_shutdown_request 的驱动侧 drain | E-INITSYS ①（handler 置位 + 主循环边界执行 spawn） |
-| multi_user::setctty 包装 | E-INITSYS ②（setsid/login_tty） |
-| utmp（session_utmpx/RecordType::Login/clear_session_logs） | E-INITSYS ②（open-existing 后的文件写） |
+| multi_user::setctty 包装 | E-INITSYS ②（setsid ✅；login_tty 的 dup2/TIOCSCTTY 封装待 C-21 扩面） |
+| utmp（session_utmpx/RecordType::Login/clear_session_logs） | ✅ 执行半就位（2026-09-20 卡 J：append_file 真装 open/write/close；时间戳 now_secs 仍 ENOSYS→退化为 0，GETTIMEOFDAY 封装待 C-21 扩面） |
 | session_db（FakeDb/DbError/open/is_open） | 会话表重启路径接线 |
 | wait（exited/signal 辅助） | 后续状态扩展 |
 | password（scheme_has_backend） | libcrypt 后端落地 |
