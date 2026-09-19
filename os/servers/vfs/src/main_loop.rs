@@ -1896,6 +1896,92 @@ impl VfsState {
             .map_err(|_| minix_types::EIO)
     }
 
+    /// **进程级挂起**的套接字调用（C `sdev_suspend` sdev.c:82-112）：把调用进程
+    /// 标成 `FP_BLOCKED_ON_SDEV` 并**释放 worker 槽**（这类调用可能等很久——
+    /// 比如 connect 等对端——C 不肯拿 worker 槽去等），回复到达后由
+    /// [`Self::finish_sdev_blocked`] 收尾。
+    pub fn suspend_on_sdev(
+        &mut self,
+        fp_slot: Option<minix_types::UserSlot>,
+        idx: usize,
+        block: crate::fproc::SdevBlock,
+    ) -> Result<(), i32> {
+        let Some(slot) = fp_slot else {
+            return Err(minix_types::EINVAL);
+        };
+        let fp = self.fproc_table.get_mut(slot).ok_or(minix_types::EINVAL)?;
+        fp.blocked_on = crate::fproc::BlockedOn::Sdev(block);
+        // 释放槽（C 的 `suspend()` 之后 worker 就空了）；`run_once` 见
+        // `Suspend` 不再重复释放，也不回用户——回复由驱动那侧来。
+        self.worker_pool.release(idx);
+        if self.current_worker == Some(idx) {
+            self.current_worker = None;
+        }
+        Ok(())
+    }
+
+    /// 驱动回复唤醒**进程级挂起**的套接字调用（C `sdev_reply` 的第二条路 +
+    /// `sdev_finish` 的 bind/connect 组）：按**设备号的驱动**找到那个被挂起的
+    /// 进程，清掉挂起态、撤销它留下的 grant，再把状态回给用户。
+    ///
+    /// 返回 `true` 表示认领了这条回复。
+    pub fn finish_sdev_blocked(&mut self, msg: &Message) -> bool {
+        // C `sdev_reply`：回复里的 `req_id` 是调用方端点——本模型里直接按
+        // "谁被挂起 + 设备号的驱动是谁"找（两者等价且更严）。
+        let mut found: Option<(minix_types::UserSlot, crate::fproc::SdevBlock)> = None;
+
+        for i in 0..minix_types::NR_PROCS {
+            let slot = minix_types::UserSlot::new(i);
+            let Some(fp) = self.fproc_table.get(slot) else {
+                continue;
+            };
+            let crate::fproc::BlockedOn::Sdev(block) = fp.blocked_on else {
+                continue;
+            };
+            // 这个设备的驱动就是回复方吗？
+            if crate::device_map::smap_endpt_by_dev(&self.smap_table, block.dev)
+                == Some(msg.m_source)
+            {
+                found = Some((slot, block));
+                break;
+            }
+        }
+        let Some((slot, block)) = found else {
+            return false;
+        };
+        // 清挂起态（C 的 `rfp->fp_blocked_on = FP_BLOCKED_ON_NONE`）。
+        if let Some(fp) = self.fproc_table.get_mut(slot) {
+            fp.blocked_on = crate::fproc::BlockedOn::None;
+        }
+        // 撤销留下的 grant（C 的 `sdev_finish` 之前先 revoke 那三张）。
+        for g in block.grants.iter().flatten() {
+            let _ = self.revoke_grant(*g);
+        }
+        let target = self
+            .fproc_table
+            .get(slot)
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        // 状态：回复号是 `SDEV_REPLY` 就取**载荷里的 status**；回复号本身是
+        // 负值（驱动死了）就取它；其余算协议错误 → EIO（C `sdev_finish`）。
+        let status = if msg.m_type == minix_sockdriver::sdev::SdevReply::Reply as i32 {
+            // SAFETY: `mess_lsockdriver_vfs_reply { int status; }` 在负载区首字。
+            let raw = unsafe { &msg.m_u.raw };
+            i32::from_le_bytes(raw[0..4].try_into().unwrap())
+        } else if msg.m_type < 0 {
+            msg.m_type
+        } else {
+            minix_types::EIO
+        };
+        let result = if status < 0 {
+            crate::call_table::SyscallResult::Error(status)
+        } else {
+            crate::call_table::SyscallResult::Ok(status)
+        };
+        self.queue_reply(target, result);
+        true
+    }
+
     /// 驱动回复落槽（C `sdev_reply`/`cdev_reply`/`bdev_reply` 的公共前半）：
     /// 找到**正在等这个驱动**的 worker 槽，把回复落进它的 `sendrec` 并唤醒
     /// （状态转 `Busy`，与 FS 回复同一套续接机制）。
@@ -1909,6 +1995,11 @@ impl VfsState {
                 .is_some_and(|w| w.task == Some(msg.m_source))
         });
         let Some(slot) = slot else {
+            // 没有 worker 在等：试试**进程级挂起**那条路（C `sdev_reply` 的
+            // 第二条分支——bind/connect/accept/recvfrom 这些调用的回复）。
+            if self.finish_sdev_blocked(msg) {
+                return Ok(usize::MAX); // 已由被挂起的进程收尾
+            }
             return Err(FsReplyError::WrongTask);
         };
         let wp = self
