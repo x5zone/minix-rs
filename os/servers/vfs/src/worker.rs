@@ -215,6 +215,35 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `rename(name1, name2)` 阶段 1：走**name1 的父目录**（`last_dir`）。
+    /// 走通后先过粘滞位（开着就转 `RenameOldSticky` 子遍历），再转阶段 2
+    /// （走 name2 的父目录）。C `do_rename`（link.c:166-280）。
+    RenameOld {
+        /// name1 的最后组件（**要保存的旧名**）。
+        entry: alloc::string::String,
+        /// name2（阶段 2 要切出它的父目录与组件名）。
+        new_path: alloc::string::String,
+    },
+    /// `rename` 阶段 1 的粘滞位子遍历（只在旧父目录带粘滞位时走）：从旧父
+    /// 目录起走 name1 的最后组件（`PATH_RET_SYMLINK`），取受害者属主。
+    RenameOldSticky {
+        /// 旧名（阶段 2 要用）。
+        entry: alloc::string::String,
+        /// name2。
+        new_path: alloc::string::String,
+    },
+    /// `rename` 阶段 2：走 name2 的**父目录**，走通后过跨设备门与两个
+    /// `W|X` 门，再发 `REQ_RENAME`。
+    RenameNew {
+        /// 旧父目录所在 FS 端点（跨设备门用它比）。
+        old_fs_e: Endpoint,
+        /// 旧父目录节点号（`REQ_RENAME` 的 `dir_old`）。
+        old_ino: u64,
+        /// 保存下来的旧名。
+        old_name: alloc::string::String,
+        /// name2 的最后组件（新名；阶段 2 起走时切好带进来）。
+        new_entry: alloc::string::String,
+    },
     /// `link(name1, name2)` 阶段 1：走**整条 name1**（要链接的源文件，
     /// C `do_link:188-189` 的 `eat_path`）。走通后转阶段 2（走 name2 的
     /// 父目录）。

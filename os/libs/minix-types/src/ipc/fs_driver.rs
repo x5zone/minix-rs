@@ -340,6 +340,28 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_RENAME` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_rename { ino_t dir_old; ino_t dir_new; size_t len_old;
+/// size_t len_new; cp_grant_id_t grant_old; cp_grant_id_t grant_new; }`
+/// （ipc.h:2133-2143，`request.c:927-955` 的 `req_rename`）。**两个 grant 都是
+/// direct**（旧名是 VFS 保存下来的组件名、新名来自 name2 的最后组件，两者都
+/// 在 VFS 内存里）；两个名字长度都含结尾 NUL。
+pub mod rename_req_off {
+    /// `ino_t dir_old`（旧名的父目录）。
+    pub const DIR_OLD: usize = 0;
+    /// `ino_t dir_new`（新名的父目录）。
+    pub const DIR_NEW: usize = 8;
+    /// `size_t len_old`。
+    pub const LEN_OLD: usize = 16;
+    /// `size_t len_new`。
+    pub const LEN_NEW: usize = 24;
+    /// `cp_grant_id_t grant_old`。
+    pub const GRANT_OLD: usize = 32;
+    /// `cp_grant_id_t grant_new`。
+    pub const GRANT_NEW: usize = 36;
+}
+
 /// `REQ_SLINK` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_slink { ino_t inode; size_t path_len; size_t mem_size;
@@ -674,6 +696,13 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // rename：请求六域（两个 direct grant：旧名 + 新名）。
+        assert_eq!(rename_req_off::DIR_OLD, 0);
+        assert_eq!(rename_req_off::DIR_NEW, 8);
+        assert_eq!(rename_req_off::LEN_OLD, 16);
+        assert_eq!(rename_req_off::LEN_NEW, 24);
+        assert_eq!(rename_req_off::GRANT_OLD, 32);
+        assert_eq!(rename_req_off::GRANT_NEW, 36);
         // slink：请求七域（两个 grant：名字 direct + 目标 magic）。
         assert_eq!(slink_req_off::INODE, 0);
         assert_eq!(slink_req_off::PATH_LEN, 8);

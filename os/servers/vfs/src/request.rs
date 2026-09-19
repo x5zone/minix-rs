@@ -505,6 +505,41 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_RENAME` 请求（C `req_rename` — request.c:927-955）。
+///
+/// 两个名字都在 VFS 内存里（各一张 direct grant）：旧名是 VFS 从 name1 的
+/// 最后组件保存下来的，新名来自 name2 的最后组件。两个长度都含结尾 NUL。
+pub fn encode_rename(
+    dir_old: u64,
+    dir_new: u64,
+    len_old: usize,
+    len_new: usize,
+    grant_old: i32,
+    grant_new: i32,
+) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_RENAME,
+        ..Message::default()
+    };
+    // SAFETY: REQ_RENAME 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::rename_req_off::DIR_OLD..minix_types::rename_req_off::DIR_OLD + 8]
+            .copy_from_slice(&dir_old.to_le_bytes());
+        raw[minix_types::rename_req_off::DIR_NEW..minix_types::rename_req_off::DIR_NEW + 8]
+            .copy_from_slice(&dir_new.to_le_bytes());
+        raw[minix_types::rename_req_off::LEN_OLD..minix_types::rename_req_off::LEN_OLD + 8]
+            .copy_from_slice(&(len_old as u64).to_le_bytes());
+        raw[minix_types::rename_req_off::LEN_NEW..minix_types::rename_req_off::LEN_NEW + 8]
+            .copy_from_slice(&(len_new as u64).to_le_bytes());
+        raw[minix_types::rename_req_off::GRANT_OLD..minix_types::rename_req_off::GRANT_OLD + 4]
+            .copy_from_slice(&grant_old.to_le_bytes());
+        raw[minix_types::rename_req_off::GRANT_NEW..minix_types::rename_req_off::GRANT_NEW + 4]
+            .copy_from_slice(&grant_new.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_SLINK` 请求（C `req_slink_actual` — request.c:990-1046）。
 ///
 /// 双 grant：组件名（VFS 内存，direct）与链接目标串（**用户内存**，magic）。
@@ -1642,6 +1677,44 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_rename` 的六域落位（两个 direct grant：旧名 + 新名，长度都
+    /// 含结尾 NUL）。
+    #[test]
+    fn test_encode_rename_fields() {
+        let m = encode_rename(0x11, 0x22, 5, 7, 3, 4);
+        assert_eq!(m.m_type, minix_types::REQ_RENAME);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::rename_req_off::DIR_OLD..minix_types::rename_req_off::DIR_OLD + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x11);
+        b8.copy_from_slice(
+            &raw[minix_types::rename_req_off::DIR_NEW..minix_types::rename_req_off::DIR_NEW + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x22);
+        b8.copy_from_slice(
+            &raw[minix_types::rename_req_off::LEN_OLD..minix_types::rename_req_off::LEN_OLD + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 5);
+        b8.copy_from_slice(
+            &raw[minix_types::rename_req_off::LEN_NEW..minix_types::rename_req_off::LEN_NEW + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 7);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::rename_req_off::GRANT_OLD
+                ..minix_types::rename_req_off::GRANT_OLD + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 3);
+        b4.copy_from_slice(
+            &raw[minix_types::rename_req_off::GRANT_NEW
+                ..minix_types::rename_req_off::GRANT_NEW + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 4);
+    }
+
     /// `encode_slink` 的七域落位（双 grant：名字 direct + 目标 magic）与
     /// `encode_link` 的四域落位（文件 ino 在前、父目录 ino 在后）。
     #[test]

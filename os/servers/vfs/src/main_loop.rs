@@ -1159,6 +1159,152 @@ impl VfsState {
         out
     }
 
+    /// `rename` 的阶段 1 → 阶段 2 转场：切出 name2 的最后组件，从进程根起走
+    /// 它的父目录（C `do_rename:218-231` 的第二趟 `last_dir`）。
+    fn rename_stage_two(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        old_fs_e: Endpoint,
+        old_ino: u64,
+        old_name: alloc::string::String,
+        new_path: &str,
+    ) {
+        let new_entry = match crate::path::last_dir_split(new_path) {
+            Ok(sp) => sp.entry,
+            Err(e) => {
+                self.finish_worker_job(idx, fp_slot, e.to_errno());
+                return;
+            }
+        };
+        if let Err(e) = self.start_parent_walk(
+            idx,
+            fp_slot,
+            new_path,
+            crate::worker::PathFollow::RenameNew {
+                old_fs_e,
+                old_ino,
+                old_name,
+                new_entry,
+            },
+        ) {
+            self.finish_worker_job(idx, fp_slot, e);
+        }
+    }
+
+    /// 发一条 `REQ_RENAME`（C `req_rename` — request.c:927-955）：两个名字各占
+    /// 槽内 scratch 的一半（`PATH_MAX` 1024 → 每半 512 ≥ `NAME_MAX+1`），各做
+    /// 一张 **direct grant**（两张都指向 VFS 自己的内存）；回复只有状态。
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_rename_for_slot(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+        dir_old: u64,
+        dir_new: u64,
+        old_name: &str,
+        new_entry: &str,
+    ) -> Result<(), i32> {
+        let vmnt = self.vmnt_table.find_by_fs(fs_e).ok_or(minix_types::EIO)?.0;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        let half = crate::path::PATH_MAX / 2;
+        let (grant_old, len_old, grant_new, len_new) = {
+            let wp = self.worker_pool.get_mut(idx).ok_or(minix_types::EIO)?;
+            let ob = old_name.as_bytes();
+            let on = ob.len().min(half - 1);
+            wp.path_scratch[..on].copy_from_slice(&ob[..on]);
+            wp.path_scratch[on] = 0;
+            let nb = new_entry.as_bytes();
+            let nn = nb.len().min(half - 1);
+            wp.path_scratch[half..half + nn].copy_from_slice(&nb[..nn]);
+            wp.path_scratch[half + nn] = 0;
+            let addr_old = wp.path_scratch.as_ptr() as u64;
+            let addr_new = wp.path_scratch[half..].as_ptr() as u64;
+            let g_old = self
+                .grants
+                .grant_direct(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    fs_e.get(),
+                    addr_old,
+                    (on + 1) as u64,
+                    minix_types::CpFlags::READ,
+                )
+                .map_err(|_| minix_types::EIO)?;
+            let g_new = match self.grants.grant_direct(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                fs_e.get(),
+                addr_new,
+                (nn + 1) as u64,
+                minix_types::CpFlags::READ,
+            ) {
+                Ok(g) => g,
+                Err(_) => {
+                    let _ = self.revoke_grant(g_old);
+                    return Err(minix_types::EIO);
+                }
+            };
+            (g_old, on + 1, g_new, nn + 1)
+        };
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Status);
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt,
+            fs_e,
+            worker: idx,
+            grant: grant_old,
+            user,
+            req: crate::request::encode_rename(
+                dir_old, dir_new, len_old, len_new, grant_old, grant_new,
+            ),
+        });
+        Ok(())
+    }
+
+    /// 从进程根/工作目录起走一条路径的**父目录**（`last_dir` 的目录前缀），
+    /// 现场换成 `follow` 并发出首条 lookup。C 里 rename/link 这些"换条路径
+    /// 再来一趟"的地方都是这个形状（新 `resolve` + 同一套 `last_dir`）。
+    pub fn start_parent_walk(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        path: &str,
+        follow: crate::worker::PathFollow,
+    ) -> Result<(), i32> {
+        let rd = self.root_dir_of(fp_slot);
+        let split = crate::path::last_dir_split(path).map_err(|e| e.to_errno())?;
+        let resolve =
+            crate::path::Lookup::new(split.dir_path.clone(), crate::path::LookupFlags::NOFLAGS)
+                .map_err(|e| e.to_errno())?;
+        let start = if resolve.path.starts_with('/') {
+            crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+        } else {
+            let wd = match fp_slot {
+                Some(slot) => self.work_dir_of(slot),
+                None => rd,
+            };
+            crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+        };
+        let (uid, gid) = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+            Some(fp) => (fp.eff_uid, fp.eff_gid),
+            None => return Err(minix_types::EINVAL),
+        };
+        let (walk, step) = crate::path::LookupWalk::begin(start, resolve, rd, uid, gid)
+            .map_err(|e| e.to_errno())?;
+        let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+            return Err(minix_types::EIO);
+        };
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Path);
+            wp.path = Some(crate::worker::PathPending { walk, grant: 0, follow });
+        }
+        self.send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
+    }
+
     /// 给槽发一条 `REQ_SYNC`（C `req_sync`：空载荷、状态回复）。
     ///
     /// **不动槽上的续接标识**：调用方（`begin_sync_sequence` 与
@@ -2129,6 +2275,183 @@ impl VfsState {
                                 };
                                 let status = self.change_into(fp_slot, vnode, into_root);
                                 self.finish_worker_job(idx, fp_slot, status);
+                                continue;
+                            }
+                            crate::worker::PathFollow::RenameOld { entry, new_path } => {
+                                // C `do_rename:194-215`：旧父目录带粘滞位就先做
+                                // **子遍历**取受害者属主（与 unlink 同款），
+                                // 否则直接转阶段 2。
+                                if node.mode & crate::open::S_ISVTX != 0 {
+                                    let start = crate::path::LookupStart {
+                                        fs: node.fs_e,
+                                        ino: node.ino,
+                                        dev: node.dev,
+                                    };
+                                    let rd = self.root_dir_of(fp_slot);
+                                    let resolve = match crate::path::Lookup::new(
+                                        entry.clone(),
+                                        crate::path::LookupFlags::RET_SYMLINK,
+                                    ) {
+                                        Ok(l) => l,
+                                        Err(e) => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                e.to_errno(),
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let (uid, gid) = match fp_slot
+                                        .and_then(|s| self.fproc_table.get(s))
+                                    {
+                                        Some(fp) => (fp.eff_uid, fp.eff_gid),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let (walk2, step2) = match crate::path::LookupWalk::begin(
+                                        start, resolve, rd, uid, gid,
+                                    ) {
+                                        Ok(pair) => pair,
+                                        Err(e) => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                e.to_errno(),
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let crate::path::WalkStep::Send {
+                                        fs_e,
+                                        dir_ino,
+                                        root_ino,
+                                    } = step2
+                                    else {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    };
+                                    if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                        wp.cont = Some(crate::worker::WorkerCont::Path);
+                                        wp.path = Some(crate::worker::PathPending {
+                                            walk: walk2,
+                                            grant: 0,
+                                            follow: crate::worker::PathFollow::RenameOldSticky {
+                                                entry,
+                                                new_path,
+                                            },
+                                        });
+                                    }
+                                    if self
+                                        .send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
+                                        .is_err()
+                                    {
+                                        if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                            wp.path = None;
+                                            wp.cont = None;
+                                        }
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    }
+                                    continue;
+                                }
+                                self.rename_stage_two(idx, fp_slot, node.fs_e, node.ino, entry, &new_path);
+                                continue;
+                            }
+                            crate::worker::PathFollow::RenameOldSticky { entry, new_path } => {
+                                // 子遍历走通：C `do_rename:205-210` 的属主门
+                                // （决策函数 `link::sticky_check`），过了转阶段 2。
+                                let eff_uid = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                    Some(fp) => fp.eff_uid,
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = crate::link::sticky_check(true, node.uid, eff_uid) {
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                    continue;
+                                }
+                                self.rename_stage_two(idx, fp_slot, node.fs_e, node.ino, entry, &new_path);
+                                continue;
+                            }
+                            crate::worker::PathFollow::RenameNew {
+                                old_fs_e,
+                                old_ino,
+                                old_name,
+                                new_entry,
+                            } => {
+                                // C `do_rename:242-259`：跨设备门（EXDEV）→
+                                // 两个父目录的 `W|X` 门 → `req_rename`。
+                                if node.fs_e != old_fs_e {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EXDEV);
+                                    continue;
+                                }
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                        Some(fp) => (
+                                            fp.real_uid,
+                                            fp.real_gid,
+                                            fp.eff_uid,
+                                            fp.eff_gid,
+                                            fp.supplemental_groups[..fp.ngroups.min(16)]
+                                                .to_vec(),
+                                        ),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let readonly_fs = self
+                                    .vmnt_table
+                                    .find_by_fs(node.fs_e)
+                                    .and_then(|v| self.vmnt_table.get(v))
+                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                                    .unwrap_or(false);
+                                // 新父目录的 `W|X` 门（旧父目录那道在阶段 1 的
+                                // `rename_stage_two` 里过——C 把两道写在一处，
+                                // 但两道的输入不同，Rust 侧按阶段各判一次，
+                                // 结果与 C 等价：任一不过就是那个错误码）。
+                                let forbid = crate::protect::forbidden_decision(
+                                    &crate::protect::ForbidInput {
+                                        real_uid,
+                                        real_gid,
+                                        eff_uid,
+                                        eff_gid,
+                                        is_access_call: false,
+                                        file_uid: node.uid,
+                                        file_gid: node.gid,
+                                        mode: node.mode,
+                                        access: (crate::open::W_BIT | crate::open::X_BIT) as u8,
+                                        is_dir: true,
+                                        supp: &supp,
+                                        readonly_fs,
+                                    },
+                                );
+                                if let Err(e) = forbid {
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                    continue;
+                                }
+                                if let Err(e) = self.send_rename_for_slot(
+                                    idx,
+                                    fp_slot,
+                                    node.fs_e,
+                                    old_ino,
+                                    node.ino,
+                                    &old_name,
+                                    &new_entry,
+                                ) {
+                                    self.finish_worker_job(idx, fp_slot, e);
+                                }
                                 continue;
                             }
                             crate::worker::PathFollow::LinkSrc { dst_path } => {
@@ -4231,6 +4554,248 @@ mod tests {
             Some((user, 0))
         );
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `rename` 的三段链（C `do_rename` link.c:166-280）：阶段 1 走旧父目录
+    /// →（旧父目录带粘滞位时插一段子遍历取受害者属主）→ 阶段 2 走新父目录 →
+    /// 跨设备门 + `W|X` 门 + `REQ_RENAME`（**两个 direct grant**，旧名是阶段 1
+    /// 保存下来的）。
+    #[test]
+    fn test_path_follow_rename_chain_and_request() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState, eff_uid: u32| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            {
+                let fp = state.fproc_table.get_mut(slot).unwrap();
+                fp.endpoint = user;
+                fp.pid = 100;
+                fp.eff_uid = eff_uid;
+                fp.eff_gid = eff_uid;
+                fp.real_uid = eff_uid;
+                fp.real_gid = eff_uid;
+            }
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/a".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (idx, walk)
+        };
+        let done_reply = |ino: u64, mode: u32, uid: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&ino.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&mode.to_le_bytes());
+                raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                    .copy_from_slice(&uid.to_le_bytes());
+            }
+            reply
+        };
+        let plant = |state: &mut VfsState, idx: usize, walk, reply: Message, follow: PathFollow| {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending { walk, grant: 9, follow });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        };
+        let clear_slot = |state: &mut VfsState, idx: usize| {
+            {
+                let wp = state.worker_pool.get_mut(idx).unwrap();
+                wp.cont = None;
+                wp.path = None;
+                wp.sendrec = None;
+                wp.task = None;
+            }
+            state.worker_pool.release(idx);
+            state.pending_fs = None;
+        };
+
+        // ① 阶段 1 走通、旧父目录无粘滞位 → 直接转阶段 2（旧名已保存）。
+        let mut state = VfsState::new();
+        crate::main_loop::seed_ready_state(&mut state);
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x11, crate::open::S_IFDIR | 0o755, 0),
+            PathFollow::RenameOld {
+                entry: "old".to_string(),
+                new_path: "/b/new".to_string(),
+            },
+        );
+        state.run_worker_continuations();
+        assert!(state.take_reply().is_none(), "转场不回用户");
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
+            Some(PathFollow::RenameNew { old_name, new_entry, .. })
+                if old_name == "old" && new_entry == "new"
+        ));
+        assert_eq!(
+            state.pending_fs.as_ref().map(|p| p.req.m_type),
+            Some(minix_types::REQ_LOOKUP),
+            "阶段 2 起走新父目录"
+        );
+        clear_slot(&mut state, idx);
+
+        // ② 旧父目录带粘滞位 → 先插一段子遍历。
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x11, crate::open::S_IFDIR | 0o755 | crate::open::S_ISVTX, 0),
+            PathFollow::RenameOld {
+                entry: "old".to_string(),
+                new_path: "/b/new".to_string(),
+            },
+        );
+        state.run_worker_continuations();
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
+            Some(PathFollow::RenameOldSticky { .. })
+        ));
+        assert_eq!(
+            state.pending_fs.as_ref().map(|p| p.req.m_type),
+            Some(minix_types::REQ_LOOKUP)
+        );
+        clear_slot(&mut state, idx);
+
+        // ③ 子遍历走通：受害者属主不是调用方 → EPERM。
+        let (idx, walk) = mk(&mut state, 2000);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x33, crate::open::S_IFREG | 0o644, 1000),
+            PathFollow::RenameOldSticky {
+                entry: "old".to_string(),
+                new_path: "/b/new".to_string(),
+            },
+        );
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EPERM))
+        );
+
+        // ④ 阶段 2：跨设备 → EXDEV。
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        {
+            let start = crate::path::LookupStart {
+                fs: Endpoint::from_generation_slot(0, 9),
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk2, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/b".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            plant(
+                &mut state,
+                idx,
+                walk2,
+                done_reply(0x22, crate::open::S_IFDIR | 0o755, 0),
+                PathFollow::RenameNew {
+                    old_fs_e: Endpoint::MFS,
+                    old_ino: 0x11,
+                    old_name: "old".to_string(),
+                    new_entry: "new".to_string(),
+                },
+            );
+            let _ = walk;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EXDEV))
+        );
+
+        // ⑤ 阶段 2：非属主对新父目录无写权 → EACCES。
+        let (idx, walk) = mk(&mut state, 2000);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x22, crate::open::S_IFDIR | 0o755, 0),
+            PathFollow::RenameNew {
+                old_fs_e: Endpoint::MFS,
+                old_ino: 0x11,
+                old_name: "old".to_string(),
+                new_entry: "new".to_string(),
+            },
+        );
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EACCES))
+        );
+
+        // ⑥ 全过 → REQ_RENAME（两个 direct grant + 两个名字长度）+ 状态回复。
+        let (idx, walk) = mk(&mut state, crate::link::SU_UID);
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(0x22, crate::open::S_IFDIR | 0o755, 0),
+            PathFollow::RenameNew {
+                old_fs_e: Endpoint::MFS,
+                old_ino: 0x11,
+                old_name: "old".to_string(),
+                new_entry: "new".to_string(),
+            },
+        );
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_RENAME");
+        assert_eq!(p.req.m_type, minix_types::REQ_RENAME);
+        // SAFETY(test): 按 rename_req_off 读回六域。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let dir_old = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let dir_new = u64::from_le_bytes(raw[8..16].try_into().unwrap());
+            let len_old = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+            let len_new = u64::from_le_bytes(raw[24..32].try_into().unwrap());
+            let grant_old = i32::from_le_bytes(raw[32..36].try_into().unwrap());
+            let grant_new = i32::from_le_bytes(raw[36..40].try_into().unwrap());
+            assert_eq!(dir_old, 0x11, "dir_old 是旧父目录（阶段 1 记下的）");
+            assert_eq!(dir_new, 0x22, "dir_new 是新父目录");
+            assert_eq!(len_old, 4, "旧名含 NUL（\"old\" → 4 字节）");
+            assert_eq!(len_new, 4, "新名含 NUL（\"new\" → 4 字节）");
+            assert_ne!(grant_old, grant_new, "两个名字各一张 grant");
+        }
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0))
+        );
     }
 
     /// `PathFollow::LinkSrc` → `LinkDst` 的转场 + `LinkDst` 的门与请求：

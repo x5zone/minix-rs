@@ -208,7 +208,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        | VfsCallNum::Rename
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
@@ -1358,6 +1357,101 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 }
                 Err(e) => SyscallResult::Error(e),
             }
+        }
+
+        // ── 路径臂模板：rename（**三段链**：旧父目录 → [粘滞位子遍历] → 新父目录）──
+        VfsCallNum::Rename => {
+            // C `do_rename`（link.c:166-280）：载荷与 link 同形
+            // （name1@0、name2@8、len1@16、len2@24）。阶段 1 走 name1 的父目录
+            // （`last_dir`），阶段 2 走 name2 的父目录，中间可能插一段粘滞位
+            // 子遍历（旧父目录带 `S_ISVTX` 时）。
+            let (old_addr, new_addr, old_len, new_len) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let old_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let new_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let old_len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                let new_len = u64::from_le_bytes(b8);
+                (old_addr, new_addr, old_len, new_len)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            let old_path = match fetcher.fetch(old_addr, old_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let new_path = match fetcher.fetch(new_addr, new_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // C `do_rename:196`：`last_dir` 切出旧名的最后组件——它要被**保存**
+            // 下来（阶段 2 发请求时用），所以随 follow 带过去。
+            let split = match crate::path::last_dir_split(&old_path) {
+                Ok(sp) => sp,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // C `do_rename:188` 的 `lookup_init(..., PATH_RET_SYMLINK, ...)`；
+            // 目录前缀里的符号链接要跟进（`path.c:231-235` 清 RET_SYMLINK）。
+            let resolve = match crate::path::Lookup::new(
+                split.dir_path.clone(),
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::RenameOld {
+                        entry: split.entry,
+                        new_path,
+                    },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
         }
 
         VfsCallNum::Link => {
@@ -4415,12 +4509,14 @@ mod tests {
     #[test]
     fn test_dispatch_fs_dialogue_arms_nosys() {
         // FS/驱动对话臂：未接线的仍 fail-closed Nosys（诚实契约，模式 60）。
-        // 已按模板接线的：`Read`/`Write`/`Fstat`/`Stat`/`Ftruncate`/`Lseek`/
-        // `Open`（含 `O_TRUNC`）/`Mkdir`/`Creat`/`Getdents`/`Access`/`Readlink`/
-        // `Chmod`/`Unlink`/`Rmdir`。这里取还没接的 `Rename` 作代表——它同属
-        // "FS 对话族"，而且是同族里唯一还需要"两个父目录"的臂。
+        // 已按模板接线的：`Read`/`Write`/`Fstat`/`Stat`/`Lstat`/`Ftruncate`/
+        // `Lseek`/`Open`（含 `O_TRUNC`）/`Mkdir`/`Creat`/`Getdents`/`Access`/
+        // `Readlink`/`Chmod`/`Fchmod`/`Chown`/`Fchown`/`Unlink`/`Rmdir`/`Mknod`/
+        // `Symlink`/`Link`/`Rename`/`Utimens`/`Sync`/`Fsync`/`Chdir`/`Fchdir`/
+        // `Chroot`。这里取还没接的 `Mount` 作代表——它同属"FS 对话族"，而且是
+        // 同族里唯一要**新建挂载行**的臂。
         let mut state = seeded(100);
-        let call = VfsCallNum::Rename;
+        let call = VfsCallNum::Mount;
         state.current_message = Message {
             m_source: Endpoint::from_generation_slot(1, 0),
             m_type: call as i32,
