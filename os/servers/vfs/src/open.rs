@@ -37,6 +37,10 @@ pub const S_IFBLK: Mode = 0o060000;
 pub const S_IFIFO: Mode = 0o010000;
 /// See [`S_IFMT`].
 pub const S_IFLNK: Mode = 0o120000;
+
+/// `S_ISVTX` (`sys/stat.h:145,159` = `_S_ISVTX` `0001000`)——粘滞位：目录上
+/// 置位时，只有受害者属主或超级用户能删/改名其中的条目（`do_unlink:132`）。
+pub const S_ISVTX: Mode = 0o1000;
 /// See [`S_IFMT`].
 pub const S_IFSOCK: Mode = 0o140000;
 

@@ -210,15 +210,12 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
         | VfsCallNum::Mknod
         | VfsCallNum::Link
-        | VfsCallNum::Unlink
         | VfsCallNum::Rename
-        | VfsCallNum::Rmdir
         | VfsCallNum::Symlink
         | VfsCallNum::Truncate
         | VfsCallNum::Fchmod
         | VfsCallNum::Chown
         | VfsCallNum::Fchown
-        | VfsCallNum::Lstat
         | VfsCallNum::Statvfs1
         | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
@@ -826,8 +823,10 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 return SyscallResult::Error(minix_types::ENAMETOOLONG);
             };
             let _ = name_addr;
-            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
-            {
+            let resolve = match crate::path::Lookup::new(
+                path,
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
                 Ok(l) => l,
                 Err(e) => return SyscallResult::Error(e.to_errno()),
             };
@@ -881,7 +880,19 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         }
 
         // ── 路径族臂：stat（path 版；首个走 W7 遍历的臂）──
-        VfsCallNum::Stat => {
+        VfsCallNum::Stat | VfsCallNum::Lstat => {
+            // C `do_stat`（stadir.c:140-165）与 `do_lstat`（stadir.c:405-434）
+            // 的**唯一差别**是遍历标志：stat 用 `PATH_NOFLAGS`、lstat 用
+            // `PATH_RET_SYMLINK`（末组件是符号链接就带链接本身回来，不跟进）。
+            // 其余（`req_stat` 的目标、权限、锁）逐字相同，所以两条调用号
+            // 共用一个臂。
+            //
+            // 宿主可测性边界：`mess_lc_vfs_stat` 没有内联路径字段，路径要经
+            // `SysPathFetcher` 跨空间取（C `fetch_name`），宿主构建下取不到
+            // ——所以"lstat 的 flags 是 RET_SYMLINK"这条在宿主下观测不到，
+            // 挂真机 E5/T4；同一条 flags 管线的宿主断言在 Unlink 的粘滞位
+            // 子遍历那条 REQ_LOOKUP 上（那里 flags 真的落在消息里）。
+            let retain_symlink = matches!(call, VfsCallNum::Lstat);
             // C `do_stat`（stadir.c:140-165）：取路径 → `eat_path` 走遍历
             // （每步一条 REQ_LOOKUP）→ `req_stat(fs_e, ino, who_e, buf)`。
             // 单线程模型里遍历的每一步都要挂起-续走，故本臂只做三件事：
@@ -916,7 +927,14 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 Ok(p) => p,
                 Err(e) => return SyscallResult::Error(e.to_errno()),
             };
-            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            let resolve = match crate::path::Lookup::new(
+                path,
+                if retain_symlink {
+                    crate::path::LookupFlags::RET_SYMLINK
+                } else {
+                    crate::path::LookupFlags::NOFLAGS
+                },
+            )
             {
                 Ok(l) => l,
                 Err(e) => return SyscallResult::Error(e.to_errno()),
@@ -1078,6 +1096,89 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 路径臂模板：access（走完即判，无 FS 往返）──
         // ── 路径臂模板：readlink（走末组件符号链接本身，不跟进）──
         // ── 路径臂模板：chmod（走完过权限门，回复带实际模式）──
+        // ── 路径臂模板：unlink / rmdir（父目录遍历 + 粘滞位子遍历）──
+        VfsCallNum::Unlink | VfsCallNum::Rmdir => {
+            // C `do_unlink`（link.c:94-163）同时服务 unlink 与 rmdir（table.c:25
+            // 与 :36 都指向它），差别只在最后发哪个请求号（link.c:156-159）。
+            let rmdir = matches!(call, VfsCallNum::Rmdir);
+            let (name_len, inline) = {
+                // 载荷与 access/chmod 同形（`mess_lc_vfs_path`：name@0、
+                // len@8、flags@16、mode@20、buf@24 内联路径）——unlink 不用 mode。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                (u64::from_le_bytes(b8), raw[24..].to_vec())
+            };
+            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                let n = (name_len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => p,
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            } else {
+                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            };
+            // C `last_dir`（path.c:146-380）：切出目录前缀与最后组件，**只走
+            // 目录前缀**（前缀里的符号链接要跟进——`path.c:231-235` 把
+            // RET_SYMLINK 清掉正是这个意思，所以这里用 NOFLAGS）。
+            let split = match crate::path::last_dir_split(&path) {
+                Ok(sp) => sp,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(
+                split.dir_path.clone(),
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Unlink {
+                        entry: split.entry,
+                        rmdir,
+                    },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Chmod => {
             // C `do_chmod`（protect.c:62-133）的路径半：`m_lc_vfs_path.mode`
             // → 走路径（VNODE_WRITE 锁，此处不建模）→ 属主/超级用户门 +
@@ -2507,10 +2608,11 @@ mod tests {
     fn test_dispatch_fs_dialogue_arms_nosys() {
         // FS/驱动对话臂：未接线的仍 fail-closed Nosys（诚实契约，模式 60）。
         // 已按模板接线的：`Read`/`Write`/`Fstat`/`Stat`/`Ftruncate`/`Lseek`/
-        // `Open`（含 `O_TRUNC`）/`Mkdir`/`Creat`/`Getdents`。这里取还没接的
-        // `Unlink` 作代表——它同属"FS 对话族"。
+        // `Open`（含 `O_TRUNC`）/`Mkdir`/`Creat`/`Getdents`/`Access`/`Readlink`/
+        // `Chmod`/`Unlink`/`Rmdir`。这里取还没接的 `Rename` 作代表——它同属
+        // "FS 对话族"，而且是同族里唯一还需要"两个父目录"的臂。
         let mut state = seeded(100);
-        let call = VfsCallNum::Unlink;
+        let call = VfsCallNum::Rename;
         state.current_message = Message {
             m_source: Endpoint::from_generation_slot(1, 0),
             m_type: call as i32,

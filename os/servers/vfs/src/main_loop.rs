@@ -1050,6 +1050,64 @@ impl VfsState {
         Ok(())
     }
 
+    /// 发一条 `REQ_UNLINK`/`REQ_RMDIR`（C `req_unlink`/`req_rmdir`，
+    /// request.c:1149-1175 / 966-989）：组件名写进槽内 scratch 并做
+    /// **direct grant**（名字在 VFS 内存里，不是 magic grant），父目录 ino
+    /// 与名字长度随请求带上；回复只有状态，所以续接标识是 `Status`。
+    pub fn send_unlink_for_slot(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        fs_e: Endpoint,
+        dir_ino: u64,
+        entry: &str,
+        rmdir: bool,
+    ) -> Result<(), i32> {
+        let vmnt = self.vmnt_table.find_by_fs(fs_e).ok_or(minix_types::EIO)?.0;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        let (grant, name_len) = {
+            let wp = self.worker_pool.get_mut(idx).ok_or(minix_types::EIO)?;
+            let bytes = entry.as_bytes();
+            let n = bytes.len().min(crate::path::PATH_MAX - 1);
+            wp.path_scratch[..n].copy_from_slice(&bytes[..n]);
+            wp.path_scratch[n] = 0;
+            let addr = wp.path_scratch.as_ptr() as u64;
+            let len = n + 1;
+            // C `cpf_grant_direct(fs_e, lastc, len, CPF_READ)`。
+            let grant = self
+                .grants
+                .grant_direct(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    fs_e.get(),
+                    addr,
+                    len as u64,
+                    minix_types::CpFlags::READ,
+                )
+                .map_err(|_| minix_types::EIO)?;
+            (grant, len)
+        };
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Status);
+        }
+        let req = if rmdir {
+            crate::request::encode_rmdir(dir_ino, grant, name_len)
+        } else {
+            crate::request::encode_unlink(dir_ino, grant, name_len)
+        };
+        self.pending_fs = Some(PendingFs {
+            vmnt,
+            fs_e,
+            worker: idx,
+            grant,
+            user,
+            req,
+        });
+        Ok(())
+    }
+
     /// 收尾一个挂起的作业并回用户（错误路径与相位 2 之后的统一出口）。
     pub fn finish_worker_job(
         &mut self,
@@ -1321,6 +1379,176 @@ impl VfsState {
                             continue;
                         }
                         Ok(crate::path::WalkStep::Done(node)) => match follow {
+                            crate::worker::PathFollow::Unlink { entry, rmdir } => {
+                                // C `do_unlink`（link.c:122-159）阶段 1 走通：
+                                // 父目录类型门 → `X|W` 权限门 → 粘滞位门。
+                                if node.mode & crate::open::S_IFMT != crate::open::S_IFDIR {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::ENOTDIR);
+                                    continue;
+                                }
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                        Some(fp) => (
+                                            fp.real_uid,
+                                            fp.real_gid,
+                                            fp.eff_uid,
+                                            fp.eff_gid,
+                                            fp.supplemental_groups[..fp.ngroups.min(16)]
+                                                .to_vec(),
+                                        ),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let readonly_fs = self
+                                    .vmnt_table
+                                    .find_by_fs(node.fs_e)
+                                    .and_then(|v| self.vmnt_table.get(v))
+                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                                    .unwrap_or(false);
+                                // C `forbidden(fp, dirp, X_BIT | W_BIT)`。
+                                let forbid = crate::protect::forbidden_decision(
+                                    &crate::protect::ForbidInput {
+                                        real_uid,
+                                        real_gid,
+                                        eff_uid,
+                                        eff_gid,
+                                        is_access_call: false,
+                                        file_uid: node.uid,
+                                        file_gid: node.gid,
+                                        mode: node.mode,
+                                        access: (crate::open::X_BIT | crate::open::W_BIT) as u8,
+                                        is_dir: true,
+                                        supp: &supp,
+                                        readonly_fs,
+                                    },
+                                );
+                                if let Err(e) = forbid {
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                    continue;
+                                }
+                                // C `do_unlink:132-152`：粘滞位目录上要先把
+                                // 受害者查出来（`advance(dirp, stickycheck)`），
+                                // 属主不对就是 EPERM——这一步是**子遍历**，
+                                // 所以在 Rust 里是又一段挂起。
+                                if node.mode & crate::open::S_ISVTX != 0 {
+                                    let start = crate::path::LookupStart {
+                                        fs: node.fs_e,
+                                        ino: node.ino,
+                                        dev: node.dev,
+                                    };
+                                    let rd = self.root_dir_of(fp_slot);
+                                    let resolve = match crate::path::Lookup::new(
+                                        entry.clone(),
+                                        crate::path::LookupFlags::RET_SYMLINK,
+                                    ) {
+                                        Ok(l) => l,
+                                        Err(e) => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                e.to_errno(),
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let (walk2, step2) = match crate::path::LookupWalk::begin(
+                                        start, resolve, rd, eff_uid, eff_gid,
+                                    ) {
+                                        Ok(pair) => pair,
+                                        Err(e) => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                e.to_errno(),
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                    let crate::path::WalkStep::Send {
+                                        fs_e,
+                                        dir_ino,
+                                        root_ino,
+                                    } = step2
+                                    else {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    };
+                                    if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                        wp.cont = Some(crate::worker::WorkerCont::Path);
+                                        wp.path = Some(crate::worker::PathPending {
+                                            walk: walk2,
+                                            grant: 0,
+                                            follow: crate::worker::PathFollow::UnlinkSticky {
+                                                entry,
+                                                rmdir,
+                                                dir_fs_e: node.fs_e,
+                                                dir_ino: node.ino,
+                                            },
+                                        });
+                                    }
+                                    if self
+                                        .send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
+                                        .is_err()
+                                    {
+                                        if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                            wp.path = None;
+                                            wp.cont = None;
+                                        }
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    }
+                                    continue;
+                                }
+                                if let Err(e) = self.send_unlink_for_slot(
+                                    idx,
+                                    fp_slot,
+                                    node.fs_e,
+                                    node.ino,
+                                    &entry,
+                                    rmdir,
+                                ) {
+                                    self.finish_worker_job(idx, fp_slot, e);
+                                }
+                                continue;
+                            }
+                            crate::worker::PathFollow::UnlinkSticky {
+                                entry,
+                                rmdir,
+                                dir_fs_e,
+                                dir_ino,
+                            } => {
+                                // C `do_unlink:137-141`：粘滞位目录里只有受害者
+                                // 属主或超级用户能删（决策函数 `link::sticky_check`）。
+                                // 受害者查不到时走上一条 Err 分支（C 的
+                                // `else r = err_code`），这里不会到达。
+                                let eff_uid = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                    Some(fp) => fp.eff_uid,
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = crate::link::sticky_check(true, node.uid, eff_uid) {
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                    continue;
+                                }
+                                if let Err(e) = self.send_unlink_for_slot(
+                                    idx,
+                                    fp_slot,
+                                    dir_fs_e,
+                                    dir_ino,
+                                    &entry,
+                                    rmdir,
+                                ) {
+                                    self.finish_worker_job(idx, fp_slot, e);
+                                }
+                                continue;
+                            }
                             crate::worker::PathFollow::Chmod { user, mode } => {
                                 // C `do_chmod` 的本地半（protect.c:112-124）：
                                 // 只有属主或超级用户能改模式（否则 EPERM），
@@ -2744,6 +2972,261 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::Unlink`（阶段 1）的三道门 + `PathFollow::UnlinkSticky`
+    /// （阶段 2，粘滞位目录上的子遍历）：C `do_unlink`（link.c:122-159）。
+    ///
+    /// 阶段 1 走完父目录后：类型门（不是目录 → ENOTDIR）→ `X|W` 权限门
+    /// （EACCES）→ 粘滞位门（开着就转阶段 2，**子遍历**取受害者属主）。
+    /// 阶段 2 的属主门在续接体里判：受害者属主 ≠ 有效 id 且不是超级用户
+    /// → EPERM。
+    ///
+    /// 宿主可测到"请求已登记"这一步：grant 表首次增长要过 `sys_setgrant`
+    /// （宿主不可达），但失败路径已经把 freelist 铺好，**后续 grant 会成功**
+    /// ——所以测试开头先做一次"热身" grant 把这一格确定性化，之后就能断言
+    /// 真正登记出去的请求（`REQ_LOOKUP` / `REQ_UNLINK` / `REQ_RMDIR`）。
+    #[test]
+    fn test_path_follow_unlink_gates_and_sticky_stage() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (slot, idx, walk)
+        };
+        let done_reply = |mode: u32, uid: u32, gid: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&7u64.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&mode.to_le_bytes());
+                raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                    .copy_from_slice(&uid.to_le_bytes());
+                raw[minix_types::lookup_reply_off::GID..minix_types::lookup_reply_off::GID + 4]
+                    .copy_from_slice(&gid.to_le_bytes());
+            }
+            reply
+        };
+        let plant = |state: &mut VfsState, idx: usize, walk, reply: Message, follow: PathFollow| {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending { walk, grant: 9, follow });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        };
+
+        // ① 父目录不是目录（父路径解析到一个常规文件）→ ENOTDIR。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        // 热身：让 grant 表完成一次（失败的）增长，后续 grant 走 freelist
+        // 直接成功——把"能不能发请求"从测试变量里去掉。
+        let _ = state.grants.grant_direct(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::MFS.get(),
+            0x1000,
+            8,
+            minix_types::CpFlags::READ,
+        );
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFREG | 0o777, 0, 0),
+            PathFollow::Unlink { entry: "x".to_string(), rmdir: false },
+        );
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::ENOTDIR))
+        );
+
+        // ② 目录 0755（other 有 x 无 w）、调用方 1000 号 → 权限门拒。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000;
+            fp.eff_gid = 1000;
+            fp.real_uid = 1000;
+            fp.real_gid = 1000;
+        }
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFDIR | 0o755, 0, 0),
+            PathFollow::Unlink { entry: "x".to_string(), rmdir: false },
+        );
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EACCES))
+        );
+
+        // ③ 0777 可写但带粘滞位 → 转阶段 2；宿主下子遍历的 grant 不可达 →
+        // EIO（真机上这里是第二条 REQ_LOOKUP）。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000;
+            fp.eff_gid = 1000;
+        }
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFDIR | 0o777 | crate::open::S_ISVTX, 0, 0),
+            PathFollow::Unlink { entry: "x".to_string(), rmdir: true },
+        );
+        state.run_worker_continuations();
+        assert!(state.take_reply().is_none(), "子遍历还没走完，不能回用户");
+        let p = state.pending_fs.as_ref().expect("已登记第二条 REQ_LOOKUP");
+        assert_eq!(p.req.m_type, minix_types::REQ_LOOKUP, "粘滞位门要再走一趟");
+        assert_eq!(p.fs_e, Endpoint::MFS);
+        // 子遍历带 `PATH_RET_SYMLINK`（C `lookup_init(&stickycheck, ...,
+        // PATH_RET_SYMLINK, ...)`，link.c:134）——这是宿主下能观测到的
+        // "flags 真的发进消息"的地方（域曾经从来没写过）。
+        // SAFETY(test): 按 lookup_req_off 读 FLAGS 域。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let flags = u32::from_le_bytes(raw[16..20].try_into().unwrap());
+            assert_eq!(flags, minix_types::PATH_RET_SYMLINK);
+        }
+        // 现场换成了阶段 2（父目录身份随行）。
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
+            Some(PathFollow::UnlinkSticky { dir_ino: 7, rmdir: true, .. })
+        ));
+        state.pending_fs = None;
+
+        // ④ 0777 无粘滞位 → 直接发请求；宿主下同样停在 grant → EIO。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000;
+            fp.eff_gid = 1000;
+        }
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFDIR | 0o777, 0, 0),
+            PathFollow::Unlink { entry: "x".to_string(), rmdir: false },
+        );
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_UNLINK");
+        assert_eq!(p.req.m_type, minix_types::REQ_UNLINK);
+        assert_eq!(p.worker, idx);
+        // SAFETY(test): 按 unlink_req_off 读回父目录 ino 与名字长度。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let path_len = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+            assert_eq!(ino, 7, "inode 域是**父目录**的节点号");
+            assert_eq!(path_len, 2, "名字含结尾 NUL（\"x\" → 2 字节）");
+        }
+        // 回复只有状态：续接体把状态原样回用户。
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0)),
+            "REQ_UNLINK 成功 → 用户拿 0"
+        );
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+
+        // ⑤ 阶段 2：受害者属主不是调用方（1000 vs 0）→ EPERM。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000;
+            fp.eff_gid = 1000;
+        }
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFREG | 0o644, 0, 0),
+            PathFollow::UnlinkSticky {
+                entry: "x".to_string(),
+                rmdir: false,
+                dir_fs_e: Endpoint::MFS,
+                dir_ino: 7,
+            },
+        );
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EPERM))
+        );
+
+        // ⑥ 阶段 2：受害者属主就是调用方 → 过粘滞位门，停在 grant → EIO。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000;
+            fp.eff_gid = 1000;
+        }
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFREG | 0o644, 1000, 1000),
+            PathFollow::UnlinkSticky {
+                entry: "x".to_string(),
+                rmdir: true,
+                dir_fs_e: Endpoint::MFS,
+                dir_ino: 7,
+            },
+        );
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_RMDIR");
+        assert_eq!(p.req.m_type, minix_types::REQ_RMDIR, "rmdir 走自己的请求号");
+        // SAFETY(test): 父目录 ino 随现场带过来。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            assert_eq!(ino, 7);
+        }
     }
 
     /// `PathFollow::Chmod` 与 `WorkerCont::Chmod`：`chmod` 的两段。

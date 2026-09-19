@@ -505,6 +505,37 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_UNLINK` 请求（C `req_unlink` — request.c:1149-1175）。
+///
+/// 载荷 `{inode, grant, path_len}`：`inode` 是**父目录**，`grant` 指向 VFS
+/// 内存里的组件名（`CPF_READ` 的 direct grant，名字不在用户空间）。回复只有
+/// 状态（`m_type`），没有载荷——所以续接体用 `WorkerCont::Status` 就够。
+pub fn encode_unlink(dir_ino: u64, grant: i32, path_len: usize) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_UNLINK,
+        ..Message::default()
+    };
+    // SAFETY: REQ_UNLINK 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::unlink_req_off::INODE..minix_types::unlink_req_off::INODE + 8]
+            .copy_from_slice(&dir_ino.to_le_bytes());
+        raw[minix_types::unlink_req_off::GRANT..minix_types::unlink_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+        raw[minix_types::unlink_req_off::PATH_LEN..minix_types::unlink_req_off::PATH_LEN + 8]
+            .copy_from_slice(&(path_len as u64).to_le_bytes());
+    }
+    msg
+}
+
+/// `REQ_RMDIR` 请求：与 [`encode_unlink`] **同载荷同结构**（C 里
+/// `req_rmdir` 也填 `m_vfs_fs_unlink`，request.c:977-979），只有 `m_type` 不同。
+pub fn encode_rmdir(dir_ino: u64, grant: i32, path_len: usize) -> Message {
+    let mut msg = encode_unlink(dir_ino, grant, path_len);
+    msg.m_type = minix_types::REQ_RMDIR;
+    msg
+}
+
 /// `REQ_CHMOD` 请求（C `req_chmod` — request.c:108-130）。
 ///
 /// 载荷 `{inode, mode}`；回复带**实际生效的模式**（FS 可能收窄），由调用方
@@ -1462,6 +1493,35 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_unlink` / `encode_rmdir` 的三个域落位，并钉住"两者同载荷、
+    /// 只有 m_type 不同"这一条（C 里共用一个结构体，别写成两套偏移）。
+    #[test]
+    fn test_encode_unlink_and_rmdir_share_layout() {
+        let u = encode_unlink(0x11, 21, 8);
+        let r = encode_rmdir(0x11, 21, 8);
+        assert_eq!(u.m_type, minix_types::REQ_UNLINK);
+        assert_eq!(r.m_type, minix_types::REQ_RMDIR);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &u.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::unlink_req_off::INODE..minix_types::unlink_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x11);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::unlink_req_off::GRANT..minix_types::unlink_req_off::GRANT + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 21);
+        b8.copy_from_slice(
+            &raw[minix_types::unlink_req_off::PATH_LEN..minix_types::unlink_req_off::PATH_LEN + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 8);
+        // 除 m_type 外逐字节相同（同一结构体的两个调用号）。
+        let ru = unsafe { &r.m_u.raw };
+        assert_eq!(raw, ru, "unlink 与 rmdir 的载荷必须逐字节一致");
+    }
+
     /// `encode_chmod` 的两个域落位（inode@0、mode@8）；回复侧的 `mode`
     /// 是"实际生效的模式"，与请求同名字不同来源。
     #[test]

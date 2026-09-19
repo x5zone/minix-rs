@@ -186,6 +186,30 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `unlink(path)` / `rmdir(path)` 阶段 1：走**父目录**（`last_dir` 的
+    /// 目录前缀）。走通后过三道门（父目录类型 → `X|W` 权限 → 粘滞位），
+    /// 粘滞位开着就转阶段 2（子遍历取受害者属主），否则直接发
+    /// `REQ_UNLINK`/`REQ_RMDIR`。C `do_unlink`（link.c:94-163）。
+    Unlink {
+        /// 最后组件名（发给 FS 的名字）。
+        entry: alloc::string::String,
+        /// `true` 走 `REQ_RMDIR`，`false` 走 `REQ_UNLINK`（C 按 `job_call_nr`
+        /// 分流，link.c:156-159）。
+        rmdir: bool,
+    },
+    /// `unlink`/`rmdir` 阶段 2（**只在粘滞位目录上走**）：从父目录起走
+    /// 最后组件本身（`PATH_RET_SYMLINK`，不跟进），拿到受害者属主后过
+    /// 粘滞位门，再发请求。C `do_unlink:132-152` 的 `advance(dirp, ...)`。
+    UnlinkSticky {
+        /// 最后组件名。
+        entry: alloc::string::String,
+        /// 是否 rmdir。
+        rmdir: bool,
+        /// 父目录所在 FS 端点（发请求的目标，阶段 2 的回复要用）。
+        dir_fs_e: Endpoint,
+        /// 父目录节点号（`REQ_UNLINK` 的 `inode` 域）。
+        dir_ino: u64,
+    },
     /// `chmod(path, mode)`：走完过权限门后发 `REQ_CHMOD`，回复带**实际生效
     /// 的模式**（FS 可能收窄），由续接体回写 vnode 缓存。C `do_chmod`
     /// （protect.c:62-133）的路径半。

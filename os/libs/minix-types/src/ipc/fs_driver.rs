@@ -340,6 +340,22 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_UNLINK` / `REQ_RMDIR` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_unlink { ino_t inode; cp_grant_id_t grant; size_t
+/// path_len; }`（ipc.h:2176-2183）——`req_unlink`（request.c:1149-1175）与
+/// `req_rmdir`（request.c:966-989）**共用这一个结构**，只有 `m_type` 不同。
+/// `grant` 是 VFS 自己内存里的组件名的 direct grant（`CPF_READ`，不是 magic
+/// grant：名字在 VFS 侧而不在用户侧）。
+pub mod unlink_req_off {
+    /// `ino_t inode`（**父目录**的节点号）。
+    pub const INODE: usize = 0;
+    /// `cp_grant_id_t grant`。
+    pub const GRANT: usize = 8;
+    /// `size_t path_len`（含结尾 NUL）。
+    pub const PATH_LEN: usize = 16;
+}
+
 /// `REQ_CHMOD` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_chmod { ino_t inode; mode_t mode; }`（ipc.h:1944-1950，
@@ -549,6 +565,10 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // unlink/rmdir：请求三域（共用结构，只有 m_type 不同），无载荷回复。
+        assert_eq!(unlink_req_off::INODE, 0);
+        assert_eq!(unlink_req_off::GRANT, 8);
+        assert_eq!(unlink_req_off::PATH_LEN, 16);
         // chmod：请求两域 + 回复一域（实际生效的模式）。
         assert_eq!(chmod_req_off::INODE, 0);
         assert_eq!(chmod_req_off::MODE, 8);
