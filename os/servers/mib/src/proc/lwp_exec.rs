@@ -276,6 +276,7 @@ pub(super) fn judge_row_state(
 
 /// `fill_lwp_user` — proc.c:487-505: the state machine first (which may
 /// attach wchan/wmesg and the interruptible bit), then identity and times.
+#[allow(clippy::too_many_arguments)]
 fn fill_user_row(
     l: &mut KinfoLwp,
     kern: &KernelRows,

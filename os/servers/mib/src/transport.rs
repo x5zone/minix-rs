@@ -199,8 +199,18 @@ impl MibServices for SysServices {
         getnuid_via(&self.ipc, who).map(|uid| uid as u32).map_err(|e| e.to_i32())
     }
 
-    fn getsysinfo(&mut self, _target: Endpoint, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
-        Err(EIO)
+    fn getsysinfo(&mut self, target: Endpoint, what: i32, buf: &mut [u8]) -> Result<(), i32> {
+        // C `getsysinfo(PM/VFS/RS/DS, what, buf, size)`（getsysinfo.c:8-32
+        // 的路由 wrapper；目标服务器经内核拷贝把应答写进 buf 的本进程
+        // 地址）。
+        minix_sys::rs::system_info_via(
+            &self.ipc,
+            target,
+            what,
+            buf.as_ptr() as u64,
+            buf.len(),
+        )
+        .map_err(|e| e.to_i32())
     }
 
     fn ds_retrieve_label_name(&mut self, who: Endpoint, buf: &mut [u8]) -> Result<usize, i32> {
@@ -218,8 +228,49 @@ impl MibServices for SysServices {
         Err(EIO)
     }
 
-    fn vm_info(&mut self, _what: i32, _ep: Endpoint, _buf: &mut [u8]) -> Result<(), i32> {
-        Err(EIO)
+    fn vm_info(&mut self, what: i32, ep: Endpoint, buf: &mut [u8]) -> Result<(), i32> {
+        // C `vm_info_usage(who, vui)`（vm_info.c:25-33 的 RPC 面）：
+        // 请求走 M2（what/ep/count/next，utility.c:100），回复的负载按
+        // 26-D1 的值通道语义编进 **M1 槽位**（encode.rs InfoUsage 臂）：
+        //   p1/p2/p3 = vui_total/common/shared（字节）
+        //   i1/i2    = vui_virtual/mvirtual（**页数**）
+        //   i3       = vui_maxrss（KB，饱和）
+        //   minflt/majflt 无 M1 槽（V11/T31 裁决）——按零回填。
+        // 这里把 M1 槽位重装进 buf 的 `struct vm_usage_info` 域序
+        // （vm.h:48-58 八个 u64），virtual/mvirtual 还原成字节。
+        use minix_types::{Message, PAGE_SIZE, VM_INFO};
+        let mut msg = Message { m_type: VM_INFO as i32, ..Message::default() };
+        // SAFETY: `mess_lsys_vm_info` 经 m2 overlay 携带
+        // what/ep/count/next（utility.c:100 的同一槽位集）。
+        let m2 = unsafe { &mut msg.m_u.m_m2 };
+        m2.m2i1 = what;
+        m2.m2i2 = ep.0;
+        m2.m2i3 = 0;
+        m2.m2l2 = 0;
+        self.ipc.sendrec(Endpoint::VM, &mut msg).map_err(|t| t.0)?;
+        if msg.m_type < 0 {
+            return Err(-msg.m_type);
+        }
+        // SAFETY: VM 的成功回复用 M1 槽位带负载（encode.rs InfoUsage 臂）。
+        let m1 = unsafe { &msg.m_u.m_m1 };
+        let words = [
+            m1.m1p1,
+            m1.m1p2,
+            m1.m1p3,
+            (m1.m1i1.max(0) as u64).saturating_mul(PAGE_SIZE),
+            (m1.m1i2.max(0) as u64).saturating_mul(PAGE_SIZE),
+            m1.m1i3.max(0) as u64,
+            0, // vui_minflt：wire 无槽（V11/T31）
+            0, // vui_majflt：同上
+        ];
+        for (i, word) in words.iter().enumerate() {
+            let at = i * 8;
+            if at + 8 <= buf.len() {
+                let le = word.to_le_bytes();
+                buf[at..at + 8].copy_from_slice(&le);
+            }
+        }
+        Ok(())
     }
 
     fn remote_call(

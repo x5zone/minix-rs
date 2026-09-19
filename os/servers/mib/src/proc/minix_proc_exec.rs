@@ -72,12 +72,12 @@ fn proc_list<K: MibKernel, S: MibServices>(
         mpl_uid: 0,
         mpl_gid: 0,
     }; minix_types::NR_PROCS];
-    for mslot in 0..minix_types::NR_PROCS {
+    for (mslot, slot) in mpl.iter_mut().enumerate() {
         let Some(row) = pm.row(mslot) else { continue };
         if !list_row_included(PmRows::in_use(&row), row.mp_pid) {
             continue;
         }
-        mpl[mslot] = MinixProcList {
+        *slot = MinixProcList {
             mpl_flags: list_flags(PmRows::is_zombie(&row)),
             mpl_pid: row.mp_pid,
             mpl_uid: row.mp_effuid,
@@ -187,7 +187,6 @@ fn proc_data<K: MibKernel, S: MibServices>(
         mpd_kcall_cycles: 0,
         mpd_nice: 0,
         mpd_name: [0; 16],
-        ..zeroed_data()
     };
     // C: `if (kslot >= NR_TASKS)` — user rows take nice+name from PM,
     // tasks from the kernel row (proc.c:1280-1285).
@@ -208,13 +207,6 @@ fn proc_data<K: MibKernel, S: MibServices>(
         Ok(_) => SysctlOutcome::Done(size),
         Err(code) => SysctlOutcome::err(code),
     }
-}
-
-/// Zeroed `MinixProcData` (C's `memset(&mpd, 0, sizeof(mpd))` — proc.c:1263).
-fn zeroed_data() -> MinixProcData {
-    // SAFETY: `MinixProcData` is `#[repr(C)]` over integers, byte arrays and
-    // POD structs — all-zero is valid for every field.
-    unsafe { core::mem::zeroed() }
 }
 
 /// `strlcpy` a NUL-terminated name into a fixed buffer (shared shape with
