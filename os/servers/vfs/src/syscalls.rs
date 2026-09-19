@@ -208,7 +208,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        | VfsCallNum::Mknod
         | VfsCallNum::Link
         | VfsCallNum::Rename
         | VfsCallNum::Symlink
@@ -1185,6 +1184,106 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     walk,
                     grant: 0, // 由 send_lookup_for_slot 覆写
                     follow: crate::worker::PathFollow::Truncate { length },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
+        // ── 路径臂模板：mknod（父目录遍历 + 名字 direct grant）──
+        VfsCallNum::Mknod => {
+            // C `do_mknod`（open.c:514-556）：载荷 `mess_lc_vfs_mknod`
+            // （device@0、name@8、len@16、mode@24）→ 只有超级用户能建非 FIFO
+            // 节点（否则 EPERM）→ 模式按 umask 收窄 → `last_dir` 走父目录。
+            let (dev, name_len, name_addr, mode_bits) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let dev = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let name_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let name_len = u64::from_le_bytes(b8);
+                let mode_bits = u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]);
+                (dev, name_len, name_addr, mode_bits)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (eff_uid, umask) = match state.fproc_table.get(fp_slot) {
+                Some(fp) => (fp.eff_uid, fp.umask),
+                None => return SyscallResult::Error(minix_types::EINVAL),
+            };
+            // C open.c:530-531 —— 只有超级用户能建非 FIFO 节点。
+            if eff_uid != crate::link::SU_UID
+                && mode_bits & crate::open::S_IFMT != crate::open::S_IFIFO
+            {
+                return SyscallResult::Error(minix_types::EPERM);
+            }
+            // C open.c:541 —— `(mode & S_IFMT) | (mode & ACCESSPERMS & fp_umask)`；
+            // Rust 侧 umask 存原始掩码，故取 `& !umask`（见 `fproc::FProc`）。
+            let bits = (mode_bits & crate::open::S_IFMT) | (mode_bits & 0o777 & !umask);
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            let path = match fetcher.fetch(name_addr, name_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let split = match crate::path::last_dir_split(&path) {
+                Ok(sp) => sp,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // 目录前缀的符号链接要跟进（`path.c:231-235` 清 RET_SYMLINK）。
+            let resolve = match crate::path::Lookup::new(
+                split.dir_path.clone(),
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, eff_uid, gid)
+            {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Mknod {
+                        entry: split.entry,
+                        mode_bits: bits,
+                        dev,
+                    },
                 });
             }
             if state
@@ -2596,6 +2695,74 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Mknod` 臂的门与模式收窄（C `do_mknod` open.c:514-556）：
+    /// 只有超级用户能建**非 FIFO** 节点（否则 EPERM）；模式 = 类型位 |
+    /// （权限位 & `!umask`）。
+    #[test]
+    fn test_dispatch_mknod_superuser_gate_and_mode_narrowing() {
+        use minix_types::Endpoint;
+
+        let mknod_msg = |mode: u32, dev: u64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Mknod as i32,
+                ..Message::default()
+            };
+            // SAFETY: mknod 载荷 device@0、name@8、len@16、mode@24
+            // （ipc.h:736-744）；路径经 SysPathFetcher 跨空间取（宿主取不到），
+            // 所以这里只测门与模式——能过门的话会停在取路径的 EINVAL。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&dev.to_le_bytes());
+                raw[16..24].copy_from_slice(&3u64.to_le_bytes());
+                raw[24..28].copy_from_slice(&mode.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 非超级用户 + 常规文件 → EPERM（在任何取路径之前）。
+        let mut state = seeded(100);
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            fp.eff_uid = 1000;
+        }
+        state.current_message = mknod_msg(crate::open::S_IFREG | 0o644, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Mknod),
+            SyscallResult::Error(minix_types::EPERM)
+        );
+
+        // ② 非超级用户 + FIFO → 过门（FIFO 人人可建）；宿主下取路径不可达
+        // → EINVAL（`SysPathFetcher` 的失败面）。
+        state.current_message = mknod_msg(crate::open::S_IFIFO | 0o644, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Mknod),
+            SyscallResult::Error(minix_types::EINVAL),
+            "FIFO 过超级用户门，停在跨空间取路径"
+        );
+
+        // ③ 超级用户 + 字符设备：模式收窄按 umask，dev 随行（这里只能验到
+        // "没被 EPERM 挡"——完整形状由 Done 臂那条测试钉）。
+        let mut state = seeded(100);
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            fp.eff_uid = crate::link::SU_UID;
+            fp.umask = 0o022;
+        }
+        state.current_message = mknod_msg(crate::open::S_IFCHR | 0o666, 0x0301);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Mknod),
+            SyscallResult::Error(minix_types::EINVAL),
+            "root 过门，停在跨空间取路径"
+        );
     }
 
     /// 建节点模式的 **umask 收窄**（C `open.c:109` 的 creat、

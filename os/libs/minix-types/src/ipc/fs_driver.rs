@@ -340,6 +340,30 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_MKNOD` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_mknod { dev_t device; ino_t inode; mode_t mode; uid_t uid;
+/// gid_t gid; cp_grant_id_t grant; size_t path_len; }`（ipc.h:2051-2062，
+/// `request.c:567-601` 的 `req_mknod`）。`inode` 是**父目录**；`grant` 指向
+/// VFS 内存里的组件名（`CPF_READ` 的 direct grant）；回复**只有状态**
+/// （libfsdriver 的 `fsdriver_mknod` 把 `m_out` 标成 `__unused`）。
+pub mod mknod_req_off {
+    /// `dev_t device`（字符/块设备的设备号，FIFO 与常规文件为 0）。
+    pub const DEVICE: usize = 0;
+    /// `ino_t inode`（父目录）。
+    pub const INODE: usize = 8;
+    /// `mode_t mode`（已按 umask 收窄的完整模式，含类型位）。
+    pub const MODE: usize = 16;
+    /// `uid_t uid`（新节点的属主 = 调用方有效 uid）。
+    pub const UID: usize = 20;
+    /// `gid_t gid`。
+    pub const GID: usize = 24;
+    /// `cp_grant_id_t grant`。
+    pub const GRANT: usize = 28;
+    /// `size_t path_len`（含结尾 NUL）。
+    pub const PATH_LEN: usize = 32;
+}
+
 /// `REQ_CHOWN` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_chown { ino_t inode; uid_t uid; gid_t gid; }`
@@ -589,6 +613,14 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // mknod：请求七域（device/inode/mode/uid/gid/grant/path_len）。
+        assert_eq!(mknod_req_off::DEVICE, 0);
+        assert_eq!(mknod_req_off::INODE, 8);
+        assert_eq!(mknod_req_off::MODE, 16);
+        assert_eq!(mknod_req_off::UID, 20);
+        assert_eq!(mknod_req_off::GID, 24);
+        assert_eq!(mknod_req_off::GRANT, 28);
+        assert_eq!(mknod_req_off::PATH_LEN, 32);
         // chown：请求三域 + 回复一域（新的模式）。
         assert_eq!(chown_req_off::INODE, 0);
         assert_eq!(chown_req_off::UID, 8);

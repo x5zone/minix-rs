@@ -196,6 +196,16 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `mknod(path, mode, dev)`：走完**父目录**（`last_dir`）过门后发
+    /// `REQ_MKNOD`。C `do_mknod`（open.c:514-556）。
+    Mknod {
+        /// 最后组件名。
+        entry: alloc::string::String,
+        /// 已按 umask 收窄的完整模式（含类型位）。
+        mode_bits: u32,
+        /// 设备号（FIFO/常规文件为 0）。
+        dev: u64,
+    },
     /// `truncate(path, length)`：走完过写位门后发 `REQ_FTRUNC`（与
     /// `Ftruncate` 共用发送半）。C `do_truncate`（link.c:277-326）的路径半。
     Truncate {

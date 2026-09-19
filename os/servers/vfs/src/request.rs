@@ -505,6 +505,44 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_MKNOD` 请求（C `req_mknod` — request.c:567-601）。
+///
+/// 载荷七域：`device`（字符/块设备号）、父目录 `inode`、已收窄的 `mode`、
+/// 属主 `uid`/`gid`、名字 grant、名字长度。回复只有状态。
+pub fn encode_mknod(
+    dev: u64,
+    dir_ino: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    grant: i32,
+    path_len: usize,
+) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_MKNOD,
+        ..Message::default()
+    };
+    // SAFETY: REQ_MKNOD 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::mknod_req_off::DEVICE..minix_types::mknod_req_off::DEVICE + 8]
+            .copy_from_slice(&dev.to_le_bytes());
+        raw[minix_types::mknod_req_off::INODE..minix_types::mknod_req_off::INODE + 8]
+            .copy_from_slice(&dir_ino.to_le_bytes());
+        raw[minix_types::mknod_req_off::MODE..minix_types::mknod_req_off::MODE + 4]
+            .copy_from_slice(&mode.to_le_bytes());
+        raw[minix_types::mknod_req_off::UID..minix_types::mknod_req_off::UID + 4]
+            .copy_from_slice(&uid.to_le_bytes());
+        raw[minix_types::mknod_req_off::GID..minix_types::mknod_req_off::GID + 4]
+            .copy_from_slice(&gid.to_le_bytes());
+        raw[minix_types::mknod_req_off::GRANT..minix_types::mknod_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+        raw[minix_types::mknod_req_off::PATH_LEN..minix_types::mknod_req_off::PATH_LEN + 8]
+            .copy_from_slice(&(path_len as u64).to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_CHOWN` 请求（C `req_chown` — request.c:136-158）。
 ///
 /// 载荷 `{inode, uid, gid}`；回复带**新的模式**（FS 可能清掉 setuid/setgid），
@@ -1515,6 +1553,46 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_mknod` 的七个域落位（device@0、inode@8、mode@16、uid@20、
+    /// gid@24、grant@28、path_len@32）。
+    #[test]
+    fn test_encode_mknod_fields() {
+        let m = encode_mknod(0x0301, 0x11, 0o100644, 1000, 100, 5, 8);
+        assert_eq!(m.m_type, minix_types::REQ_MKNOD);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::mknod_req_off::DEVICE..minix_types::mknod_req_off::DEVICE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x0301);
+        b8.copy_from_slice(
+            &raw[minix_types::mknod_req_off::INODE..minix_types::mknod_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x11);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::mknod_req_off::MODE..minix_types::mknod_req_off::MODE + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 0o100644);
+        b4.copy_from_slice(
+            &raw[minix_types::mknod_req_off::UID..minix_types::mknod_req_off::UID + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 1000);
+        b4.copy_from_slice(
+            &raw[minix_types::mknod_req_off::GID..minix_types::mknod_req_off::GID + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 100);
+        b4.copy_from_slice(
+            &raw[minix_types::mknod_req_off::GRANT..minix_types::mknod_req_off::GRANT + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 5);
+        b8.copy_from_slice(
+            &raw[minix_types::mknod_req_off::PATH_LEN..minix_types::mknod_req_off::PATH_LEN + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 8);
+    }
+
     /// `encode_chown` 的三个域落位（inode@0、uid@8、gid@12）。
     #[test]
     fn test_encode_chown_fields() {
