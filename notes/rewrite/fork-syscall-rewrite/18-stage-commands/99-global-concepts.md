@@ -1,21 +1,30 @@
 # 99-全局概念
 
-> **状态**: pending（依赖契约三节已写，其余待改写）
+> **重写**: 2026-09-20（edge3 卡N/S41；§0 命令面规模节为本轮补写，§1~§3 契约三节保留）
+> **状态**: 正文
 > **定位**: 全局概念
-> **源码**: `minix3/minix/commands/DESCRIBE/（构建面）`
-> **Rust 模块**: `os/commands/*`
+> **源码**: `minix3/minix/commands/DESCRIBE/（构建面）`、`minix3/bin/`、`sbin/`、`usr.bin/`、`usr.sbin/`、`etc/`
+> **Rust 模块**: `os/commands/*`（24 域 crate）、`os/etc/`
 > **draft 素材**: 无（新建）
 
-## 核心点
+## 0. 命令面规模与安装面
 
-- 命令安装面：bin/sbin/usr.bin/usr.sbin 分层 + PATH 语义
-- [ARCH] A-1：用户态静态链接（ld.elf_so 不实现，ldd 语义变化）
-- [ARCH] A-4：命令参数框架（自研 argparse + --help/usage 约定）
-- [ARCH] A-5：退出码/errno 约定（Result + errno 映射，POSIX 退出码保持）
+命令面的量级先立住：328 个命令程序、865 个 .c、425,130 行（`plan.md:14` 的实测口径），Rust 侧收敛为 24 个功能域 crate（域矩阵见 `00-commands-overview.md` §1.3，本篇不抄第二份）。安装面分四层目录，PATH 语义照 C 原版：`bin`（基本命令）、`sbin`（系统管理）、`usr.bin`（用户工具）、`usr.sbin`（用户态系统管理），加 `minix/commands` 与 `games`。`etc/` 的 49 项配置文件的逐项分配在 `plan.md` §5.3。
+
+四条 [ARCH] 决策在命令层的效果：
+
+- **A-1 用户态静态链接**：`ld.elf_so` 不实现，命令是静态二进制，`ldd` 的语义随之变化（报告"静态链接"而非列出共享库）；
+- **A-2 不移植 libc**：命令的文本组织用 `core::fmt`/`alloc::format`，系统调用走 `minix-sys` 顶层（详见 §1 的 stdio 落点清单）；
+- **A-4 命令参数框架**：自研 argparse，`--help`/usage 约定全域一致；
+- **A-5 退出码约定**：`Result` + errno 映射，POSIX 退出码保持不变。
+
+构建面的 DESCRIBE 目录（`minix3/minix/commands/DESCRIBE/`）是 C 侧的命令描述数据，Rust 侧的对应物是 00 篇 §1.3 的域矩阵与各命令文档的契约表。
+
+## 核心契约（三节，依次为依赖分层、行为判定、契约表模板）
+
 - §1 分层契约：命令依赖 `minix-rt` 与 `minix-sys` 顶层，不直接构造 IPC 消息
 - §2 行为判定基准：POSIX 规定接口契约，Minix3 C 实现是真值
 - §3 命令契约表模板：在 plan.md §3.6 的列上增补 Requires（依赖 API）列
-- /etc 配置约定 + DESCRIBE 构建面 + curses/terminfo 决策汇总（A-2）
 
 ---
 
@@ -83,7 +92,7 @@ plan.md §3.6 的契约表当前列为：命令 / C 源 / 职责 / 关键选项 
 ## 参见
 
 - `plan.md`——§3.3 边界表、§3.6 命令契约表、§5.2 命令归属表、§5.4 排除表
-- `todo.md`——本阶段实施规格缺口登记（P0-1 依赖契约、P1-1 Requires 列、P1-2 POSIX 基准、E-THREAD-MODEL 线程模型）
+- `todo.md`——本阶段实施规格缺口登记（依赖契约、Requires 列、POSIX 基准、线程模型各轮的登记与销账记录）
 - `../14-stage-runtime/plan.md`——运行时库分层与 [ARCH] A-2（no_std 替代 libc）、A-4（TLS）
 - `../14-stage-runtime/todo.md:60`——命令层硬依赖 API 的缺口登记
 - `../17-stage-net/plan.md`——socket 封装的归属
