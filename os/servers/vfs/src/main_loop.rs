@@ -742,6 +742,23 @@ impl VfsState {
         node: &crate::path::NodeDetails,
         oflags: u32,
     ) {
+        self.finish_open_local_inner(idx, fp_slot, node, oflags, false);
+    }
+
+    /// [`Self::finish_open_local`] 的本体；`trunc_done` 表示"`O_TRUNC` 的
+    /// 截断已经做过"（`O_TRUNC` 分支的续接体走这条），于是分派时把该位当
+    /// 已消费——否则 `dispatch_open` 会再判一次 `NeedTruncate` 而成环。
+    /// **`filp_flags` 仍写原始 `oflags`**：C `open.c:136` 是
+    /// `filp->filp_flags = oflags`（含 `O_TRUNC`），这个字随后随读写请求
+    /// 原样传给 FS（`read.c` 的 `REQ_FLAGS`），不是本地私有的。
+    fn finish_open_local_inner(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        node: &crate::path::NodeDetails,
+        oflags: u32,
+        trunc_done: bool,
+    ) {
         let access = match crate::open::OpenFlags::from_bits(oflags)
             .and_then(|f| f.access().ok())
         {
@@ -753,7 +770,11 @@ impl VfsState {
         };
         let bits: crate::open::AccessBits = access.into();
         let ft = crate::open::FileType::from(node.mode);
-        match crate::open::dispatch_open(ft, bits, crate::open::OpenFlags::from_bits_truncate(oflags)) {
+        let mut dispatch_flags = crate::open::OpenFlags::from_bits_truncate(oflags);
+        if trunc_done {
+            dispatch_flags.remove(crate::open::OpenFlags::TRUNC);
+        }
+        match crate::open::dispatch_open(ft, bits, dispatch_flags) {
             crate::open::OpenOutcome::Proceed => {
                 let vnode_idx = match self.intern_vnode(node) {
                     Some(i) => i,
@@ -801,8 +822,77 @@ impl VfsState {
             crate::open::OpenOutcome::Reject(e) => {
                 self.finish_worker_job(idx, fp_slot, e.to_errno());
             }
-            // 需要 FS 往返或驱动层的分支（O_TRUNC 截断、设备 open、FIFO
-            // 配对）：本批未接线，诚实拒绝。
+            crate::open::OpenOutcome::NeedTruncate => {
+                // C `common_open:150-157`：常规文件 + `O_TRUNC` → W 位门 →
+                // `truncate_vnode(vp, 0)`（**结果忽略**）→ 照常装配。
+                let (real_uid, eff_uid, real_gid, eff_gid, supp) = match fp_slot
+                    .and_then(|s| self.fproc_table.get(s))
+                {
+                    Some(fp) => (
+                        fp.real_uid,
+                        fp.eff_uid,
+                        fp.real_gid,
+                        fp.eff_gid,
+                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                    ),
+                    None => {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                        return;
+                    }
+                };
+                let readonly_fs = self
+                    .vmnt_table
+                    .find_by_fs(node.fs_e)
+                    .and_then(|v| self.vmnt_table.get(v))
+                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                    .unwrap_or(false);
+                let forbid = crate::protect::forbidden_decision(&crate::protect::ForbidInput {
+                    real_uid,
+                    real_gid,
+                    eff_uid,
+                    eff_gid,
+                    is_access_call: false,
+                    file_uid: node.uid,
+                    file_gid: node.gid,
+                    mode: node.mode,
+                    access: crate::open::W_BIT as u8,
+                    is_dir: false,
+                    supp: &supp,
+                    readonly_fs,
+                });
+                if let Err(e) = forbid {
+                    // C 的 `break`：带该错误结束 open。
+                    self.finish_worker_job(idx, fp_slot, e.to_errno());
+                    return;
+                }
+                let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
+                    Some(v) => v.0,
+                    None => {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                        return;
+                    }
+                };
+                let user = fp_slot
+                    .and_then(|s| self.fproc_table.get(s))
+                    .map(|fp| fp.endpoint)
+                    .unwrap_or(Endpoint::NONE);
+                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                    wp.cont = Some(crate::worker::WorkerCont::OpenTrunc {
+                        node: *node,
+                        oflags,
+                    });
+                }
+                self.pending_fs = Some(PendingFs {
+                    vmnt,
+                    fs_e: node.fs_e,
+                    worker: idx,
+                    grant: 0, // 无数据面
+                    user,
+                    // C `truncate_vnode(vp, 0)` → `req_ftrunc(fs_e, ino, 0, 0)`。
+                    req: crate::request::encode_ftrunc(node.ino, 0, 0),
+                });
+            }
+            // 设备 open（19-22）与 FIFO 配对：本批未接线，诚实拒绝。
             _ => self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS),
         }
     }
@@ -1036,6 +1126,16 @@ impl VfsState {
                     let (Some(cont), Some(reply)) = (wp.cont, wp.sendrec) else {
                         continue;
                     };
+                    // 必须"回复已落槽"才跑续接：`sendrec` 在 C 里是双向缓冲
+                    // ——`fs_sendrec` 送出时装的是**请求**（`set_waiting`），
+                    // `do_reply` 收到时才被回复覆写。C 的线程在
+                    // `worker_wait` 里阻塞，只有 `worker_signal`（本模型里
+                    // `handle_fs_reply` 置 `Busy`）才会醒；若只按
+                    // `cont + sendrec` 判定，另一个客户端的调用进来时会拿
+                    // 请求码当状态，把挂起的作业假完成。
+                    if wp.state != crate::worker::WorkerState::Busy {
+                        continue;
+                    }
                     (cont, reply, wp.fp_slot)
                 }
                 None => continue,
@@ -1051,6 +1151,14 @@ impl VfsState {
             match cont {
                 crate::worker::WorkerCont::Fstat { grant } => {
                     let _ = self.revoke_grant(grant);
+                }
+                crate::worker::WorkerCont::OpenTrunc { node, oflags } => {
+                    // C `common_open:150-157` 的 `truncate_vnode(vp, 0)` 结果
+                    // **被忽略**——截断失败不拦 open；随后照常装配。清掉
+                    // `O_TRUNC` 位再进本地半（否则 dispatch 会再判一次）。
+                    let _ = status;
+                    self.finish_open_local_inner(idx, fp_slot, &node, oflags, true);
+                    continue;
                 }
                 crate::worker::WorkerCont::Create { user, oflags } => {
                     // 阶段 3：`REQ_CREATE` 的回复是新建节点的 node_details
@@ -2405,6 +2513,174 @@ mod tests {
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
+    /// `open` 的 `O_TRUNC` 分支（C `common_open:150-157`）：常规文件 +
+    /// `O_TRUNC` → W 位门过了之后发 `REQ_FTRUNC(ino, 0, 0)`（`end == 0`
+    /// 即"截到 start"，mfs `fs_trunc:439-443`）→ 回复到达后照常装配 fd。
+    /// 两段都钉在这里：**发出去的是截断请求**（不是直接装配），以及
+    /// **截断状态被忽略**（C 没接 `truncate_vnode` 的返回值）——所以回复
+    /// 里带错误也照样装配。
+    #[test]
+    fn test_open_trunc_sends_ftrunc_then_assembles() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 0; // 文件属主，0644 有 W 位
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let (walk, _) = crate::path::LookupWalk::begin(
+            start,
+            crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&5u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFREG | 0o644).to_le_bytes());
+            raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                .copy_from_slice(&0u32.to_le_bytes());
+            raw[minix_types::lookup_reply_off::GID..minix_types::lookup_reply_off::GID + 4]
+                .copy_from_slice(&0u32.to_le_bytes());
+        }
+        let oflags = crate::open::OpenFlags::TRUNC.bits();
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Open { user, oflags },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+
+        // 相位 2 没直接装配：登记的是截断请求，槽继续挂起，用户还没回复。
+        assert!(state.take_reply().is_none(), "截断未完成前不得回复 fd");
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_FTRUNC");
+        assert_eq!(p.req.m_type, minix_types::REQ_FTRUNC);
+        assert_eq!(p.worker, idx);
+        assert_eq!(p.grant, 0, "截断无数据面");
+        // SAFETY(test): 按 ftrunc_req_off 读回三域。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let trc_start = i64::from_le_bytes(raw[8..16].try_into().unwrap());
+            let trc_end = i64::from_le_bytes(raw[16..24].try_into().unwrap());
+            assert_eq!((ino, trc_start, trc_end), (5, 0, 0), "截到 0（C truncate_vnode(vp, 0)）");
+        }
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().cont,
+            Some(WorkerCont::OpenTrunc { .. })
+        ));
+        assert!(!state.worker_pool.get_mut(idx).unwrap().is_idle());
+
+        // 回复到达（故意带错误）：C 忽略截断结果，照常装配。
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: minix_types::EIO, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, user);
+        assert_eq!(reply.m_type, 0, "首个 fd 是 0（截断失败不拦 open）");
+        let fp = state.fproc_table.get(slot).unwrap();
+        let filp_id = fp.filps[0].expect("fd 指向 filp");
+        let f = state.filp_table.get(crate::filp::FilpId(filp_id)).unwrap();
+        assert_eq!(f.flags, oflags as i32, "filp_flags 写原始 oflags（含 O_TRUNC）");
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `O_TRUNC` 的 W 位门（C `common_open:152` 的 `forbidden(fp, vp,
+    /// W_BIT)`）：只读打开 + `O_TRUNC` 的文件若不可写，open 直接以
+    /// `EACCES` 结束——**不发截断请求**。
+    #[test]
+    fn test_open_trunc_denied_by_write_gate() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000; // 非属主、非 root
+            fp.real_uid = 1000;
+            fp.eff_gid = 1000;
+            fp.real_gid = 1000;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let (walk, _) = crate::path::LookupWalk::begin(
+            start,
+            crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        // SAFETY(test): 0644 且属主是 0 → 1000 号只读。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&5u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFREG | 0o644).to_le_bytes());
+            raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                .copy_from_slice(&0u32.to_le_bytes());
+            raw[minix_types::lookup_reply_off::GID..minix_types::lookup_reply_off::GID + 4]
+                .copy_from_slice(&0u32.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Open {
+                    user,
+                    oflags: crate::open::OpenFlags::TRUNC.bits(),
+                },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none(), "门没过就不该发截断");
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EACCES))
+        );
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+    }
+
     /// `WorkerCont::Path` 的收尾接线：走完（`Ok`）后进相位 2（这里 grant 在
     /// 宿主不可达 → 以 EIO 收尾），**槽必须被释放、用户必须收到回复**——
     /// 防的是"续接体吞掉作业、槽泄漏、调用方永等"。
@@ -2666,6 +2942,65 @@ mod tests {
             state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, minix_types::EIO))
         );
+    }
+
+    /// 续接层的门：**只有回复已落槽的作业**才跑续接。C 里 `w_sendrec`
+    /// 是双向缓冲——`fs_sendrec` 送出时装的是请求、线程随即在
+    /// `worker_wait` 里阻塞；只有 `do_reply`（本模型的
+    /// `handle_fs_reply` 置 `Busy`）才会把回复覆写进去并唤醒线程。若少了
+    /// 这道门，另一个客户端在这段时间里发来的调用会驱动续接体拿请求码
+    /// 当状态，把挂起的作业假完成（用户收到垃圾结果、真回复到达时
+    /// `w_task` 已被清而报 WrongTask）。
+    #[test]
+    fn test_continuation_skips_slot_still_waiting_for_fs() {
+        use crate::worker::{WorkerCont, WorkerState};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .expect("空闲槽");
+        // 发送半之后的槽态：sendrec 里是**请求**（`REQ_LOOKUP` 的码），
+        // 状态是 `WaitingForFs`（`fs_sendrec` → `set_waiting`）。
+        let req = crate::request::encode_lookup(3, 2, 1, 1);
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Fstat { grant: 4 });
+            wp.set_waiting(Endpoint::MFS, req);
+        }
+        assert_eq!(
+            state.worker_pool.get_mut(idx).unwrap().state,
+            WorkerState::WaitingForFs
+        );
+        state.run_worker_continuations();
+        assert!(state.take_reply().is_none(), "等待中不得回复用户");
+        assert!(
+            !state.worker_pool.get_mut(idx).unwrap().is_idle(),
+            "等待中的槽不得被释放"
+        );
+        assert!(
+            state.worker_pool.get_mut(idx).unwrap().cont.is_some(),
+            "续接标识保留给真正的回复"
+        );
+        // 回复真到了（`handle_fs_reply` 的落槽形态）：这时才跑。
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0))
+        );
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
     /// W3 回复半：`SyscallResult` → 回复入队的映射（C `do_work` 尾部

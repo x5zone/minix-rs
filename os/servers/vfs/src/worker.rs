@@ -89,6 +89,16 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `open` 的 `O_TRUNC` 分支（`REQ_FTRUNC`）：C `common_open:150-157` 对
+    /// 常规文件先过 W 位门、再 `truncate_vnode(vp, 0)`，**截断结果被忽略**
+    /// （C 没接返回值），随后照常装配 fd/filp。续接里按此继续本地半
+    /// （`O_TRUNC` 位要清掉，否则 `dispatch_open` 会再判一次 NeedTruncate）。
+    OpenTrunc {
+        /// 走完的节点（本地半要用它的 mode/ino 做类型分派与并表）。
+        node: crate::path::NodeDetails,
+        /// 原始 `oflags`（含 `O_TRUNC`）。
+        oflags: u32,
+    },
     /// `creat` 阶段 3（`REQ_CREATE`）：回复是新建节点的 `node_details`，
     /// 续接里并进 vnode 表、再做 `common_open` 的本地半（fd/filp 装配）。
     Create {
