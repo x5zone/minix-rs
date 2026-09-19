@@ -664,9 +664,71 @@ pub trait PathFetcher {
     fn copy(&self, path: &str) -> Result<String, PathError>;
 }
 
+/// 把已取到的名字字节解成路径串（C `copy_path`/`fetch_name` 的尾门）。
+///
+/// C 的两处同名检查：`dest[len - 1] != '\0'` 即 `ENAMETOOLONG`
+/// （utility.c:49-52 的 inline 分支与 :84-87 的跨空间分支）——调用方给的
+/// `len` **含结尾 NUL**，末字节不是 NUL 说明名字被截断或长度撒谎。
+pub(crate) fn decode_name(buf: &[u8], len: usize) -> Result<String, PathError> {
+    if len == 0 || len > buf.len() {
+        return Err(PathError::Inval);
+    }
+    if buf[len - 1] != 0 {
+        return Err(PathError::TooLong);
+    }
+    Ok(String::from_utf8_lossy(&buf[..len - 1]).into_owned())
+}
+
+/// 生产 `PathFetcher`：路径字符串在**调用方内存**里，经跨地址空间拷贝取回。
+///
+/// C: `copy_path`（utility.c:24-55）的"名字不在消息里"分支 + `fetch_name`
+/// （:60-90）——两道长度门（`len > PATH_MAX` → `ENAMETOOLONG`、
+/// `len > SSIZE_MAX` → `EINVAL`）、一次 `sys_datacopy(who_e, path, VFS, dest,
+/// len)`（失败 → `EINVAL`）、尾字节 NUL 检查。
+///
+/// `who` 是发起调用的进程端点（C 的 `who_e` 全局；Rust 显式携带，因为
+/// `PathFetcher::fetch` 是 `&self` 的纯取数动词）。
+#[derive(Debug, Clone, Copy)]
+pub struct SysPathFetcher {
+    /// 路径字符串所在进程（C `who_e`）。
+    pub who: minix_types::Endpoint,
+}
+
+impl PathFetcher for SysPathFetcher {
+    fn fetch(&self, addr: u64, len: usize) -> Result<String, PathError> {
+        // C utility.c:71-78 的两道门。
+        if len > PATH_MAX {
+            return Err(PathError::TooLong);
+        }
+        if len == 0 || len > i64::MAX as usize {
+            return Err(PathError::Inval);
+        }
+        let mut buf = [0u8; PATH_MAX];
+        let dst = buf.as_mut_ptr() as u64;
+        // C: `sys_datacopy_wrapper(who_e, path, VFS_PROC_NR, dest, len)`。
+        // 失败即 `EINVAL`（utility.c:79-83）。
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            self.who.get(),
+            addr,
+            minix_types::Endpoint::SELF.get(),
+            dst,
+            len as u64,
+        )
+        .map_err(|_| PathError::Inval)?;
+        decode_name(&buf, len)
+    }
+
+    fn copy(&self, path: &str) -> Result<String, PathError> {
+        // C: 名字在消息里的那一支——只过长度门（utility.c:44-53）。
+        if path.len() + 1 > PATH_MAX {
+            return Err(PathError::TooLong);
+        }
+        Ok(path.to_string())
+    }
+}
+
 /// Test double: fabricates bytes instead of reading caller memory.
-/// The production `PathFetcher` impl arrives with the kernel IPC
-/// primitives (W1) — `sys_safecopy` over the transport.
 #[cfg(test)]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DirectFetcher;
@@ -713,6 +775,37 @@ impl PathFetcher for SafecopyFetcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `decode_name`：调用方的 `len` 含结尾 NUL；末字节不是 NUL 即
+    /// `ENAMETOOLONG`（C utility.c:49-52/:84-87 的同名检查）。
+    #[test]
+    fn test_decode_name_requires_trailing_nul() {
+        assert_eq!(decode_name(b"/dev\0", 5).unwrap(), "/dev");
+        assert_eq!(decode_name(b"/dev", 4), Err(PathError::TooLong));
+        assert_eq!(decode_name(b"", 0), Err(PathError::Inval));
+        assert_eq!(decode_name(b"ab\0", 9), Err(PathError::Inval), "len 越界");
+    }
+
+    /// 生产 `PathFetcher` 的两道长度门在**任何拷贝之前**生效（宿主构建下
+    /// 拷贝不可达 → 诚实 `Inval`；真机路径由 E5/T4 联调覆盖）。
+    #[test]
+    fn test_sys_path_fetcher_gates_then_copy() {
+        use minix_types::Endpoint;
+        let f = SysPathFetcher { who: Endpoint(9) };
+        assert_eq!(f.fetch(0x4000, PATH_MAX + 1), Err(PathError::TooLong));
+        assert_eq!(f.fetch(0x4000, 0), Err(PathError::Inval));
+        assert_eq!(
+            f.fetch(0x4000, 5),
+            Err(PathError::Inval),
+            "宿主：sys_datacopy 不可达"
+        );
+        // `copy` 是名字在消息里的那一支：只过长度门。
+        assert_eq!(f.copy("/etc/passwd").unwrap(), "/etc/passwd");
+        assert_eq!(
+            f.copy(&"a".repeat(PATH_MAX)),
+            Err(PathError::TooLong)
+        );
+    }
 
     #[test]
     fn test_lookup_init_null() {
