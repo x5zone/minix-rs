@@ -12,6 +12,7 @@ pub mod minix_proc;
 pub mod proc2;
 pub mod proc2_exec;
 pub mod proc_args;
+pub mod proc_args_exec;
 pub mod rows;
 pub mod tables;
 

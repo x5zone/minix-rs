@@ -876,6 +876,9 @@ fn func_exec<K: MibKernel, S: MibServices>(
         FuncKey::Kern(KernFunc::Proc2) => {
             crate::proc::proc2_exec::proc2_exec(ctx, args, req.oldp.as_ref())
         }
+        FuncKey::Kern(KernFunc::ProcArgs) => {
+            crate::proc::proc_args_exec::proc_args_exec(ctx, args, req.oldp.as_ref())
+        }
         FuncKey::Kern(KernFunc::Ccpu)
         | FuncKey::Kern(KernFunc::CpTime)
         | FuncKey::Kern(KernFunc::Consdev)
@@ -883,7 +886,6 @@ fn func_exec<K: MibKernel, S: MibServices>(
         | FuncKey::Kern(KernFunc::Boottime)
         | FuncKey::Kern(KernFunc::RootDevice)
         | FuncKey::Kern(KernFunc::IpcInfo)
-        | FuncKey::Kern(KernFunc::ProcArgs)
         | FuncKey::Vm(_)
         | FuncKey::Hw(_) => {
             let _ = ctx.svc.vm_info(0, &mut []); // touch the transport honestly

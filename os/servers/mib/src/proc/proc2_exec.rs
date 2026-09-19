@@ -545,7 +545,15 @@ mod tests {
             ..MProcSnap::default()
         });
         (
-            FakeKernel { proctab, ticks: 1000, hz: 50, boot: 172_800, sink: RefCell::new(Vec::new()) },
+            FakeKernel {
+                proctab,
+                ticks: 1000,
+                hz: 50,
+                boot: 172_800,
+                sink: RefCell::new(Vec::new()),
+                target_base: 0,
+                target_mem: Vec::new(),
+            },
             FakeServices { pm_tab: pm },
         )
     }

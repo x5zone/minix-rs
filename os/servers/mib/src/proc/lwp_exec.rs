@@ -616,7 +616,15 @@ mod tests {
             ..MProcSnap::default()
         });
         (
-            mocks::FakeKernel { proctab, ticks: 1000, hz: 50, boot: 172_800, sink: core::cell::RefCell::new(Vec::new()) },
+            mocks::FakeKernel {
+                proctab,
+                ticks: 1000,
+                hz: 50,
+                boot: 172_800,
+                sink: core::cell::RefCell::new(Vec::new()),
+                target_base: 0,
+                target_mem: Vec::new(),
+            },
             mocks::FakeServices { pm_tab: pm },
         )
     }

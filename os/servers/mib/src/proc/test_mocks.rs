@@ -27,11 +27,20 @@ pub(crate) struct FakeKernel {
     pub boot: u64,
     /// The caller sink: `datacopy_to(addr)` lands at this offset.
     pub sink: RefCell<Vec<u8>>,
+    /// 目标进程内存像（KERN_PROC_ARGS 的取页源）：`target_base` 起的
+    /// 线性字节；`datacopy_from` 越界即 EFAULT（与 C 的失败路径同形）。
+    pub target_base: u64,
+    pub target_mem: Vec<u8>,
 }
 
 impl MibKernel for FakeKernel {
-    fn datacopy_from(&mut self, _s: Endpoint, _a: u64, _b: &mut [u8]) -> Result<(), i32> {
-        Err(minix_types::EIO)
+    fn datacopy_from(&mut self, _s: Endpoint, a: u64, b: &mut [u8]) -> Result<(), i32> {
+        let at = (a - self.target_base) as usize;
+        if a < self.target_base || at + b.len() > self.target_mem.len() {
+            return Err(minix_types::EFAULT);
+        }
+        b.copy_from_slice(&self.target_mem[at..at + b.len()]);
+        Ok(())
     }
 
     fn datacopy_to(&mut self, _d: Endpoint, a: u64, b: &[u8]) -> Result<(), i32> {
