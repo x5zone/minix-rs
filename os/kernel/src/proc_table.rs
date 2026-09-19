@@ -1452,6 +1452,60 @@ mod tests {
         assert!(idle.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
     }
 
+    /// K6-v2 tick-path gate (the function the 0xF1 LAPIC arm calls):
+    /// a process with quantum left must be left untouched — the gate is a
+    /// pure read, it must NOT delegate to sched_proc_no_time.
+    #[test]
+    fn test_check_quantum_with_time_left_is_noop() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+        let p = table.get_mut(ProcNr(0)).unwrap();
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        p.p_sched.quantum.cpu_time_left.store(5000, Ordering::Release);
+        p.p_sched.quantum.size_ms.store(200, Ordering::Release);
+
+        let section = crate::smp::bkl_lock_section();
+        let runnable = table.check_quantum(ProcNr(0), &priv_table, &section);
+        crate::smp::bkl_unlock();
+
+        assert!(runnable, "quantum remaining: process stays runnable");
+        let p = table.get(ProcNr(0)).unwrap();
+        assert_eq!(
+            p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire),
+            5000,
+            "gate must not touch the counter while time remains"
+        );
+        assert!(!p.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
+    }
+
+    /// K6-v2 tick-path gate, exhausted half: zero time left must delegate
+    /// to `sched_proc_no_time`. Kernel-scheduled process → the renewal
+    /// branch (cpu_time_left refilled from size_ms, no NO_QUANTUM); the
+    /// delegation is proven by the refill itself (the gate never writes
+    /// the counter on its own).
+    #[test]
+    fn test_check_quantum_exhausted_delegates_to_no_time() {
+        let mut table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+        let p = table.get_mut(ProcNr(0)).unwrap();
+        p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        p.p_sched.scheduler = None; // kernel-scheduled → renewal branch
+        p.p_sched.quantum.cpu_time_left.store(0, Ordering::Release);
+        p.p_sched.quantum.size_ms.store(200, Ordering::Release);
+
+        let section = crate::smp::bkl_lock_section();
+        let runnable = table.check_quantum(ProcNr(0), &priv_table, &section);
+        crate::smp::bkl_unlock();
+
+        assert!(runnable, "after renewal the process is runnable again");
+        let p = table.get(ProcNr(0)).unwrap();
+        assert!(
+            p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0,
+            "exhausted quantum must be renewed by sched_proc_no_time"
+        );
+        assert!(!p.p_rts_flags.is_set(RtsFlagsBits::NO_QUANTUM));
+    }
+
     #[test]
     fn test_is_valid_nr() {
         assert!(ProcessTable::is_valid_nr(ProcNr(0)));
