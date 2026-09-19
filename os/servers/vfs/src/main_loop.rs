@@ -732,6 +732,33 @@ impl VfsState {
         route
     }
 
+    /// C `advance`（path.c:60-127）的收尾：把走完的节点并进 vnode 表——
+    /// `find_by_ino` 命中则抬 FS 引用 + `dup`，否则填草稿槽并置
+    /// `fs_count = ref_count = 1`。返回表下标（走完之后的臂要拿它当
+    /// `filp_vno`）。
+    pub fn intern_vnode(&mut self, node: &crate::path::NodeDetails) -> Option<usize> {
+        if let Some(hit) = self.vnode_table.find_by_ino(node.fs_e, node.ino) {
+            if let Some(v) = self.vnode_table.get_mut(hit) {
+                v.fs_count += 1;
+            }
+            self.vnode_table.dup(hit);
+            return Some(hit.0);
+        }
+        let scratch = self.vnode_table.alloc().ok()?;
+        if let Some(v) = self.vnode_table.get_mut(scratch) {
+            v.fs = node.fs_e;
+            v.ino = node.ino;
+            v.mode = node.mode;
+            v.size = node.size;
+            v.uid = node.uid;
+            v.gid = node.gid;
+            v.dev = node.dev;
+            v.fs_count = 1;
+            v.ref_count = 1;
+        }
+        Some(scratch.0)
+    }
+
     /// 调用方的根目录三元组（C `fp_rd` → vnode → `(fs, ino, dev)`）。
     ///
     /// 路径起点选择（root vs work dir）在臂侧（`eat_path` 的首字符判断），
@@ -1021,6 +1048,101 @@ impl VfsState {
                             continue;
                         }
                         Ok(crate::path::WalkStep::Done(node)) => match follow {
+                            crate::worker::PathFollow::Open { user: _open_user, oflags } => {
+                                let _ = _open_user; // 回复目的地统一取 fp_slot 的端点
+                                // `common_open` 的本地半（C open.c:118-274
+                                // 里不碰 FS 的那些步）：类型分派 → fd/filp
+                                // 装配 → 回 fd。需要 FS 往返的分支
+                                // （O_TRUNC 的截断、设备驱动 open、FIFO
+                                // 配对）本批未接线，按 ENOSYS 诚实拒绝。
+                                let oflags_u32 = oflags;
+                                let access = match crate::open::OpenFlags::from_bits(oflags_u32)
+                                    .and_then(|f| f.access().ok())
+                                {
+                                    Some(access) => access,
+                                    None => {
+                                        self.finish_worker_job(
+                                            idx,
+                                            fp_slot,
+                                            minix_types::EINVAL,
+                                        );
+                                        continue;
+                                    }
+                                };
+                                // 走完的节点先并进 vnode 表（C `advance` 的
+                                // 收尾），臂拿到表下标当 `filp_vno`。
+                                let vnode_idx = match self.intern_vnode(&node) {
+                                    Some(i) => i,
+                                    None => {
+                                        self.finish_worker_job(
+                                            idx,
+                                            fp_slot,
+                                            minix_types::ENFILE,
+                                        );
+                                        continue;
+                                    }
+                                };
+                                let bits: crate::open::AccessBits = access.into();
+                                let ft = crate::open::FileType::from(node.mode);
+                                let verdict = crate::open::dispatch_open(
+                                    ft,
+                                    bits,
+                                    crate::open::OpenFlags::from_bits_truncate(oflags_u32),
+                                );
+                                match verdict {
+                                    crate::open::OpenOutcome::Proceed => {
+                                        // C open.c:135-141 —— 取 fd 与 filp
+                                        // 槽（未认领）→ 认领四件 → 插槽。
+                                        let (fd, filp_id) = {
+                                            let Some(fp) = self.fproc_table.get_mut(fp_slot.unwrap_or(minix_types::UserSlot::new(0))) else {
+                                                self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                                continue;
+                                            };
+                                            match crate::filedes::get_fd(
+                                                fp,
+                                                0,
+                                                &crate::filedes::LowestFree,
+                                                &mut self.filp_table,
+                                                bits.bits(),
+                                            ) {
+                                                Ok(pair) => pair,
+                                                Err(_) => {
+                                                    self.finish_worker_job(idx, fp_slot, minix_types::EMFILE);
+                                                    continue;
+                                                }
+                                            }
+                                        };
+                                        if let Some(f) = self.filp_table.get_mut(filp_id) {
+                                            f.vnode = Some(vnode_idx);
+                                            f.flags = oflags_u32 as i32;
+                                        }
+                                        self.filp_table.inc_count(filp_id);
+                                        if let Some(fp) = fp_slot.and_then(|s| self.fproc_table.get_mut(s)) {
+                                            fp.filps[fd.get()] = Some(filp_id.get());
+                                            // C open.c:140-141 —— O_CLOEXEC 记入
+                                            // 位图。
+                                            if oflags_u32 & crate::open::OpenFlags::CLOEXEC.bits() != 0
+                                            {
+                                                // `Bitmap::set(idx, true)` 是位图的置位面
+                                                // （C 的 `FD_SET`）。
+                                                fp.cloexec_set.set(fd.get(), true);
+                                            }
+                                        }
+                                        self.finish_worker_job(idx, fp_slot, fd.get() as i32);
+                                        continue;
+                                    }
+                                    crate::open::OpenOutcome::Reject(e) => {
+                                        self.finish_worker_job(idx, fp_slot, e.to_errno());
+                                        continue;
+                                    }
+                                    // 需要 FS 往返或驱动层的分支（19-22 与
+                                    // O_TRUNC 截断）：本批未接线，诚实拒绝。
+                                    _ => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
+                                        continue;
+                                    }
+                                }
+                            }
                             crate::worker::PathFollow::Stat { user, buf } => {
                                 // 相位 2：grant 用户 stat 缓冲 → REQ_STAT →
                                 // 续接交棒给 Fstat（已落的那条）。
@@ -1742,6 +1864,77 @@ mod tests {
         assert_eq!((rd.fs, rd.ino, rd.dev), (Endpoint::MFS, 30, 7));
         let wd = state.work_dir_of(slot);
         assert_eq!((wd.fs, wd.ino, wd.dev), (Endpoint::VFS, 40, 7));
+    }
+
+    /// `PathFollow::Open` 的相位 2（`common_open` 的本地半）：走完 → 类型
+    /// 分派 → fd/filp 装配 → 回 fd。**完全本地，宿主可测**——这是 Open 臂
+    /// 里唯一不需要内核的部分，也正是最易错的部分（fd 与 filp 两处槽位
+    /// 的认领顺序、O_CLOEXEC 位图）。
+    #[test]
+    fn test_path_follow_open_assembles_fd_and_filp() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        // 现场：一趟已走完的遍历（follow = Open，无 O_TRUNC）。
+        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let (walk, _) = crate::path::LookupWalk::begin(
+            start,
+            crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
+            rd,
+            0,
+            0,
+        )
+        .unwrap();
+        // 回复：OK + ino=5 + mode=S_IFREG|0644（四域 node_details）。
+        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        // SAFETY(test): 按 lookup_reply_off 填 ino 与 mode。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&5u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFREG | 0o644).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Open {
+                    user,
+                    oflags: 0, // O_RDONLY（access 位为 0）
+                },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+
+        // 回的是 fd（C `common_open` 返回 fd 即 syscall 结果）。
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, user);
+        assert_eq!(reply.m_type, 0, "首个 fd 是 0");
+        let fd = reply.m_type as usize;
+        // fd 与 filp 两处都认领了：fproc 槽指向 filp，filp 带 vnode 与模式。
+        let fp = state.fproc_table.get(slot).unwrap();
+        let filp_id = fp.filps[fd].expect("fd 指向 filp");
+        let f = state.filp_table.get(crate::filp::FilpId(filp_id)).unwrap();
+        assert_eq!(f.vnode.is_some(), true, "filp_vno 已填（并进的 vnode）");
+        assert_eq!(f.count, 1, "filp_count = 1（认领）");
+        assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
     /// `WorkerCont::Path` 的收尾接线：走完（`Ok`）后进相位 2（这里 grant 在

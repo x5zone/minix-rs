@@ -208,7 +208,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        | VfsCallNum::Open
         | VfsCallNum::Creat
         | VfsCallNum::Mkdir
         | VfsCallNum::Mknod
@@ -598,6 +597,101 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             SyscallResult::Suspend
         }
 
+        // ── 路径族臂：open（open-existing；O_CREAT 归 creat 臂）──
+        VfsCallNum::Open => {
+            // C `do_open`（open.c:38-53）：`O_CREAT` 必须缺席（libc 把
+            // open() 拆成 OPEN 与 CREAT 两个调用）→ `copy_path` 取路径 →
+            // `common_open` 走遍历 + 本地装配。本臂做取路径 + 起走，
+            // 走完之后的本地半由 `PathFollow::Open` 的续接体做。
+            let (name_addr, name_len, flags, inline) = {
+                // 用户载荷（minix-sys `OpenPathPayload`：name@0、len@8、
+                // flags@16、mode@20、buf@24 —— C `mess_lc_vfs_path` 的
+                // LP64 换算；≤ OPEN_PATH_INLINE_MAX 的路径**内联在 buf**）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[8..16]);
+                let len = u64::from_le_bytes(b8);
+                let flags = u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]);
+                let inline = raw[24..].to_vec();
+                (name, len, flags, inline)
+            };
+            // `do_open` 的 O_CREAT 门（C open.c:46-47）。
+            let args = crate::open::OpenArgs {
+                oflags: crate::open::OpenFlags::from_bits_truncate(flags),
+                mode: 0,
+            };
+            if args.validate_for_open().is_err() {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            // 路径取回：≤ 内联上限的走载荷内联（minix-rs 的 wire 裁决，
+            // minix-sys `OPEN_PATH_INLINE_MAX`），超长即 ENAMETOOLONG。
+            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                let n = (name_len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => p,
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            } else {
+                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            };
+            let _ = name_addr;
+            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // 起点：路径首字符 `/` 取进程根，否则工作目录（C `eat_path`）。
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Open { user: user_e, oflags: flags },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         // ── 路径族臂：stat（path 版；首个走 W7 遍历的臂）──
         VfsCallNum::Stat => {
             // C `do_stat`（stadir.c:140-165）：取路径 → `eat_path` 走遍历
@@ -951,6 +1045,64 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Write),
             SyscallResult::Error(minix_types::EIO),
             "常规文件：无 vmnt → EIO"
+        );
+    }
+
+    /// `Open` 臂的门：`O_CREAT` 在场即 EINVAL（C `do_open:46-47`，libc 把
+    /// open() 拆成 OPEN/CREAT 两调用）；超内联上限的路径 ENAMETOOLONG
+    /// （minix-rs 的 wire 裁决）；其余走到遍历（宿主下首条 lookup 的
+    /// grant 不可达 → EIO）。
+    #[test]
+    fn test_dispatch_open_gates() {
+        use minix_types::Endpoint;
+
+        let open_msg = |flags: u32, path: &[u8]| {
+            let mut m = Message::default();
+            m.m_source = Endpoint::from_generation_slot(1, 0);
+            m.m_type = VfsCallNum::Open as i32;
+            // SAFETY: open 载荷 name@0/len@8/flags@16/buf@24（OpenPathPayload）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[8..16].copy_from_slice(&(path.len() as u64).to_le_bytes());
+                raw[16..20].copy_from_slice(&flags.to_le_bytes());
+                let n = path.len().min(raw.len() - 24);
+                raw[24..24 + n].copy_from_slice(&path[..n]);
+            }
+            m
+        };
+
+        // O_CREAT 在场 → EINVAL（位值取 `OpenFlags::CREAT` = 0x200）。
+        let mut state = seeded(100);
+        state.current_message = open_msg(0x0000_0200, b"/x\0");
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Open),
+            SyscallResult::Error(minix_types::EINVAL),
+            "O_CREAT 归 creat 臂"
+        );
+
+        // 超内联上限（含 NUL 的 33 字节）→ ENAMETOOLONG。
+        let long = [b'a'; 33];
+        state.current_message = open_msg(0, &long);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Open),
+            SyscallResult::Error(minix_types::ENAMETOOLONG)
+        );
+
+        // 合法内联路径：走到遍历（宿主下 grant 不可达 → EIO）。直调
+        // dispatch 没有 run_once 的绑槽层，故手工绑槽（臂的挂起阶段需要）。
+        let worker = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .unwrap();
+        state.current_worker = Some(worker);
+        state.current_message = open_msg(0, b"/x\0");
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Open),
+            SyscallResult::Error(minix_types::EIO)
         );
     }
 
@@ -1489,10 +1641,11 @@ mod tests {
     #[test]
     fn test_dispatch_fs_dialogue_arms_nosys() {
         // FS/驱动对话臂：未接线的仍 fail-closed Nosys（诚实契约，模式 60）。
-        // `Read`/`Write`/`Fstat` 已按模板接线（走各自的门），这里取还没接的
-        // `Open` 作代表——它同属"FS 对话族"，且要等 W7 的 path 往返。
+        // `Read`/`Write`/`Fstat`/`Stat`/`Ftruncate`/`Open` 已按模板接线，
+        // 这里取还没接的 `Mkdir` 作代表——它同属"FS 对话族"，且要等
+        // `REQ_MKDIR` 的相位 2。
         let mut state = seeded(100);
-        let call = VfsCallNum::Open;
+        let call = VfsCallNum::Mkdir;
         state.current_message = Message {
             m_source: Endpoint::from_generation_slot(1, 0),
             m_type: call as i32,

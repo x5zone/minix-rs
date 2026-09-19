@@ -147,6 +147,14 @@ pub enum PathFollow {
         /// 用户 `struct stat` 缓冲地址。
         buf: u64,
     },
+    /// `open(path, flags)`：走完后做 `common_open` 的**本地半**（类型分派 +
+    /// fd/filp 装配 + 回 fd），C `open.c:118-274` 里不碰 FS 的那些步。
+    Open {
+        /// 调用方端点（回复目的地）。
+        user: Endpoint,
+        /// 原始 `oflags`（C 的 `open_flags`）。
+        oflags: u32,
+    },
 }
 
 /// Observable state of a single worker slot.
