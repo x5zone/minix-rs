@@ -257,13 +257,46 @@ fn read_i64(raw: &[u8], at: usize) -> i64 {
 
 impl<K: KernelIpc> Transport for MinixTransport<K> {
     fn next(&mut self) -> Option<Incoming> {
-        let mut msg = Message::default();
-        let status = self.receive_message(&mut msg)?;
-        let notify = minix_sef::is_ipc_notify(status);
-        let source = msg.m_source;
+        loop {
+            let mut msg = Message::default();
+            let status = self.receive_message(&mut msg)?;
+            let notify = minix_sef::is_ipc_notify(status);
+            let source = msg.m_source;
 
-        // C `fsdriver_process:26-31`：非请求（通知或别的服务发来的消息）
-        // 走 `other` 且不回信。devman 的 other 就是 DEVMAN 消息面。
+            // **出生面**（全树共同的 RS_INIT 握手，卡K/S25 收口）：RS 的
+            // init 请求不进业务循环——fresh 就地应答 `RS_INIT+OK`（devman
+            // 的树在 `Server::new` 构造期已建，等价 C `init_hook` 的首次
+            // 构建语义），LU/RESTART 诚实拒 `ENOSYS` 并终止循环（C 对
+            // init 失败 panic；单线程服务器 fail-closed 停机，RS 按崩溃
+            // 处置）。语义与 `fs/fs-rt` 的 `run_birth` 同源
+            // （C `sef_startup` 尾部 + `do_sef_init_request`，
+            // sef_init.c:193-215）；两族各持一份是分层使然（fs-rt 依赖
+            // minix-fs 的 FsDriver 面，devman 不在此族），第三处出现时再
+            // 裁决上收。
+            if !notify && msg.m_type == minix_types::RS_INIT && source == Endpoint::RS {
+                // SAFETY: 出生请求的活跃 union 臂是 `m_rs_init`
+                // （m_type == RS_INIT 且来源 RS）。
+                let kind = unsafe { msg.m_u.m_rs_init.type_ };
+                let result = if kind == 0 { minix_types::OK } else { minix_types::ENOSYS };
+                let mut reply = Message {
+                    m_type: minix_types::RS_INIT,
+                    ..Message::default()
+                };
+                // union 字段写是 safe 的（只有读才 unsafe）；回信臂同
+                // `m_rs_init`（process_init 尾部：
+                // `m.m_type = RS_INIT; m.m_rs_init.result = result;`）。
+                reply.m_u.m_rs_init.result = result;
+                // C 经 `sef_cb_init_response` 的 `ipc_sendnb`（sef_init.c
+                // 尾部）；RS 在 sendrec 里等，`send` 的阻塞语义在此等价。
+                let _ = self.kernel.send(Endpoint::RS, &reply);
+                if result == minix_types::OK {
+                    continue; // 出生已应答，吞掉这条，服务循环继续
+                }
+                return None; // init 被拒：fail-closed 停机
+            }
+
+            // C `fsdriver_process:26-31`：非请求（通知或别的服务发来的消息）
+            // 走 `other` 且不回信。devman 的 other 就是 DEVMAN 消息面。
         if notify || source != Endpoint::VFS {
             if notify {
                 return Some(Incoming::Devman { source, msg: None });
@@ -346,7 +379,8 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 return Some(Incoming::Refused);
             }
         };
-        Some(Incoming::Fs(request))
+            return Some(Incoming::Fs(request));
+        }
     }
 
     fn reply(&mut self, reply: Reply) {
@@ -619,10 +653,9 @@ mod tests {
             m_type: minix_types::DEVMAN_DEL_DEV,
             ..Message::default()
         };
-        // SAFETY(test): DEVMAN 的 BIND/UNBIND/DEL 用 m4 词（05 相位表）。
-        unsafe {
-            m.m_u.m_m4.m4l2 = 11;
-        }
+        // union 字段写是 safe 的（只有读才 unsafe）；DEVMAN 的
+        // BIND/UNBIND/DEL 用 m4 词（05 相位表）。
+        m.m_u.m_m4.m4l2 = 11;
         k.inbox.push_back((m, 0));
         let mut t = MinixTransport::new(k);
         match t.next() {
@@ -640,5 +673,86 @@ mod tests {
     fn test_receive_failure_ends_loop() {
         let mut t = MinixTransport::new(ScriptedKernel::default());
         assert_eq!(t.next(), None);
+    }
+
+    /// 出生面：RS_INIT（fresh）就地应答 `RS_INIT+OK` 并被吞掉，下一条
+    /// 消息正常进入分类（C `sef_startup` 尾部 + `do_sef_init_request`）。
+    #[test]
+    fn test_rs_birth_fresh_replies_ok_and_continues() {
+        let mut birth = Message {
+            m_type: minix_types::RS_INIT,
+            m_source: Endpoint::RS,
+            ..Message::default()
+        };
+        // union 字段写是 safe 的；活跃臂 `m_rs_init`（type_=0 即
+        // SEF_INIT_FRESH）。
+        birth.m_u.m_rs_init.type_ = 0;
+        let follow = Message {
+            m_type: 0x1000 + 3, // 通知 → Devman 面提示
+            m_source: Endpoint(7),
+            ..Message::default()
+        };
+
+        let kernel = ScriptedKernel {
+            inbox: VecDeque::from(vec![(birth, 0), (follow, 0)]),
+            ..ScriptedKernel::default()
+        };
+        let mut t = MinixTransport::new(kernel);
+        let incoming = t.next().expect("birth swallowed; next delivery lands");
+        assert!(matches!(incoming, Incoming::Devman { msg: None, .. }));
+
+        let kernel = t.kernel;
+        assert_eq!(kernel.sent.len(), 1, "出生回信恰好一条");
+        let (dest, reply) = &kernel.sent[0];
+        assert_eq!(*dest, Endpoint::RS);
+        assert_eq!(reply.m_type, minix_types::RS_INIT);
+        // SAFETY(test): 回信臂 `m_rs_init.result`。
+        unsafe {
+            assert_eq!(reply.m_u.m_rs_init.result, minix_types::OK);
+        }
+    }
+
+    /// 出生面：LU/RESTART 诚实拒 `ENOSYS` 并终止循环（fail-closed）。
+    #[test]
+    fn test_rs_birth_stateful_refused_ends_loop() {
+        let mut birth = Message {
+            m_type: minix_types::RS_INIT,
+            m_source: Endpoint::RS,
+            ..Message::default()
+        };
+        // type_=1 即 SEF_INIT_LU。
+        birth.m_u.m_rs_init.type_ = 1;
+        let kernel = ScriptedKernel {
+            inbox: VecDeque::from(vec![(birth, 0)]),
+            ..ScriptedKernel::default()
+        };
+        let mut t = MinixTransport::new(kernel);
+        assert!(t.next().is_none(), "init 被拒 → 循环停机");
+        // 回信仍是 RS_INIT + ENOSYS（RS 按崩溃处置，不假装就绪）。
+        let kernel = t.kernel;
+        let (dest, reply) = &kernel.sent[0];
+        assert_eq!(*dest, Endpoint::RS);
+        // SAFETY(test): 同上。
+        unsafe {
+            assert_eq!(reply.m_u.m_rs_init.result, minix_types::ENOSYS);
+        }
+    }
+
+    /// 非 RS 源的 RS_INIT 不拦截（走既有 DEVMAN 面）——出生判定同时看
+    /// 类型与来源（C `IS_SEF_INIT_REQUEST`，sef.h:33-34）。
+    #[test]
+    fn test_rs_init_from_other_source_not_intercepted() {
+        let mut fake = Message {
+            m_type: minix_types::RS_INIT,
+            m_source: Endpoint(5), // 非 RS
+            ..Message::default()
+        };
+        let kernel = ScriptedKernel {
+            inbox: VecDeque::from(vec![(fake, 0)]),
+            ..ScriptedKernel::default()
+        };
+        let mut t = MinixTransport::new(kernel);
+        let incoming = t.next().expect("非 RS 源不拦截");
+        assert!(matches!(incoming, Incoming::Devman { .. }));
     }
 }
