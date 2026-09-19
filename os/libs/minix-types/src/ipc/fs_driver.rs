@@ -579,6 +579,18 @@ pub mod readsuper_req_off {
     pub const GRANT: usize = 24;
 }
 
+/// `REQ_PUTNODE` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_putnode { ino_t inode; unsigned int count; }`
+/// （ipc.h:2093-2098，`request.c:699-711` 的 `req_putnode` 填两格）——
+/// 让 FS 把 `count` 份 inode 引用关掉（VFS 的 `fs_count` 批量归还）。
+pub mod putnode_req_off {
+    /// `ino_t inode`。
+    pub const INODE: usize = 0;
+    /// `unsigned int count`。
+    pub const COUNT: usize = 8;
+}
+
 /// `REQ_NEW_DRIVER` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_new_driver { dev_t device; cp_grant_id_t grant;
@@ -780,6 +792,9 @@ mod tests {
         assert_eq!(new_driver_req_off::DEVICE, 0);
         assert_eq!(new_driver_req_off::GRANT, 8);
         assert_eq!(new_driver_req_off::PATH_LEN, 16);
+        // putnode：inode/count 两格（批量的 fs_count 归还）。
+        assert_eq!(putnode_req_off::INODE, 0);
+        assert_eq!(putnode_req_off::COUNT, 8);
     }
 
     /// lookup 的 `flags` 两位 pin（vfsif.h:12,16）——FS 侧按同一张表判

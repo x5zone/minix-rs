@@ -467,6 +467,22 @@ pub fn encode_readsuper(
     msg
 }
 
+/// `req_putnode` 的请求编码（C request.c:699-711）：载荷
+/// `{inode@0(ino_t), count@8(unsigned int)}`——把 `count` 份 inode 引用
+/// 还给 FS（`put_vnode` 慢路径的批量归还）。回复只有状态，调用方丢弃。
+pub fn encode_putnode(ino: u64, count: i32) -> Message {
+    let mut msg = Message {
+        m_type: REQ_PUTNODE,
+        ..Message::default()
+    };
+    // SAFETY: raw 臂按字节写——`mess_vfs_fs_putnode`（ipc.h:2093-2098）
+    // 没有专属 union 成员，域序见 `minix_types::putnode_req_off`。
+    let raw = unsafe { &mut msg.m_u.raw };
+    raw[0..8].copy_from_slice(&ino.to_le_bytes());
+    raw[8..12].copy_from_slice(&count.to_le_bytes());
+    msg
+}
+
 /// `req_newdriver` 的请求编码（C request.c:664-691）：载荷
 /// `{device@0(dev_t), grant@8(cp_grant_id_t), path_len@16(size_t)}`——
 /// 驱动标签本体在 VFS 内存里，经 **direct grant** 给 FS（`CPF_READ`），
@@ -1785,6 +1801,33 @@ mod tests {
         // SAFETY(test): grant 在负载区首字（mess_vfs_fs_statvfs）。
         let raw = unsafe { &m.m_u.raw };
         assert_eq!(i32::from_le_bytes(raw[0..4].try_into().unwrap()), 7);
+    }
+
+    /// `encode_putnode`：两域落位（inode/count）。
+    #[test]
+    fn test_encode_putnode_fields() {
+        let m = encode_putnode(0x77, 3);
+        assert_eq!(m.m_type, minix_types::REQ_PUTNODE);
+        // SAFETY(test): 按共享偏移表读回（putnode_req_off）。
+        let raw = unsafe { &m.m_u.raw };
+        assert_eq!(
+            u64::from_le_bytes(
+                raw[minix_types::putnode_req_off::INODE
+                    ..minix_types::putnode_req_off::INODE + 8]
+                    .try_into()
+                    .unwrap()
+            ),
+            0x77
+        );
+        assert_eq!(
+            i32::from_le_bytes(
+                raw[minix_types::putnode_req_off::COUNT
+                    ..minix_types::putnode_req_off::COUNT + 4]
+                    .try_into()
+                    .unwrap()
+            ),
+            3
+        );
     }
 
     /// `encode_new_driver`：三域落位（device/grant/path_len）——**grant 在

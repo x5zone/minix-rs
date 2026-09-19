@@ -74,6 +74,22 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 (vid, pid)
             };
 
+            // C `close_fd:496-505`：最后一次关闭（`--filp_count == 0`）
+            // 要对 filp 的 vnode 做 `put_vnode`（慢路径发 REQ_PUTNODE）。
+            let last_close = {
+                let filp_idx = state
+                    .fproc_table
+                    .get(fp_slot)
+                    .and_then(|fp| fp.filps[fd.get()]);
+                match filp_idx {
+                    Some(idx) => state
+                        .filp_table
+                        .get(crate::filp::FilpId(idx))
+                        .map(|f| f.count == 1)
+                        .unwrap_or(false),
+                    None => false,
+                }
+            };
             let fp = match state.fproc_table.get_mut(fp_slot) {
                 Some(fp) => fp,
                 None => return SyscallResult::Error(minix_types::EINVAL),
@@ -81,6 +97,11 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             match close_fd(fp, fd, &mut state.filp_table) {
                 Ok(()) => {}
                 Err(e) => return SyscallResult::Error(e.to_errno()),
+            }
+            if last_close
+                && let Some(vid) = filp_vid
+            {
+                let _ = state.put_vnode_deferred(vid);
             }
 
             // POSIX 记录锁释放（C `close_fd:700-713`）：关闭文件的 vnode 上
@@ -6124,6 +6145,128 @@ mod tests {
         assert_eq!(m.m_type, 0, "select 超时 = 就绪数 0（POSIX 语义；vir 指针为 0 无拷回）");
         // 无挂起 select 了：不再触发。
         assert!(!state.select_timeout_check());
+    }
+
+    /// `put_vnode` 的两半（C `put_vnode` vnode.c:240-290）：快速路径只减
+    /// 引用、慢路径把 `REQ_PUTNODE` 排进 `pending_puts`（fs/ino/fs_count
+    /// 三元组来自 vnode 的 `v_fs_e`/`v_inode_nr`/`v_fs_count`）。
+    #[test]
+    fn test_put_vnode_deferred_fast_and_slow_paths() {
+        let mut state = seeded(100);
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 0x33;
+            v.mode = crate::open::S_IFREG | 0o600;
+            v.ref_count = 2;
+            v.fs_count = 2;
+        }
+        // 快速路径：ref>1 → 只减，队列为空。
+        assert_eq!(state.put_vnode_deferred(vid), Ok(false));
+        assert_eq!(state.vnode_table.get(vid).unwrap().ref_count, 1);
+        assert!(state.pending_puts.is_empty());
+        // 慢路径：ref==1 → 槽释放 + REQ_PUTNODE 排队。
+        assert_eq!(state.put_vnode_deferred(vid), Ok(true));
+        assert_eq!(
+            state.pending_puts.as_slice(),
+            [crate::vnode::PutNodeReq { fs_e: Endpoint::MFS, ino: 0x33, count: 2 }]
+        );
+    }
+
+    /// Close 臂的 last-close 半（C `filedes.c:496-505`）：最后一个关闭
+    /// 要对 filp 的 vnode 做 put_vnode（排队投递）；非最后关闭不投。
+    #[test]
+    fn test_dispatch_close_last_close_puts_vnode() {
+        let mut state = seeded(100);
+        crate::main_loop::seed_ready_state(&mut state);
+        let slot = minix_types::UserSlot::new(0);
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 0x34;
+            v.mode = crate::open::S_IFREG | 0o600;
+            v.ref_count = 1;
+            v.fs_count = 1;
+        }
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+        state.filp_table.inc_count(fid);
+        state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.filps[3] = Some(fid.get());
+        }
+        let fd = Fd::new(3).unwrap();
+        state.current_fp_slot = Some(slot);
+        state.current_message = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Close as i32,
+            m_u: MessageUnion {
+                m_m7: MessageM7 { m7i1: 3, ..Default::default() },
+            },
+        };
+        assert_eq!(dispatch_syscall(&mut state, VfsCallNum::Close), SyscallResult::Ok(0));
+        assert_eq!(
+            state.pending_puts.as_slice(),
+            [crate::vnode::PutNodeReq { fs_e: Endpoint::MFS, ino: 0x34, count: 1 }],
+            "last close 的 put_vnode 排队投递"
+        );
+    }
+
+    /// `flush_pending_puts`：队列逐条 `REQ_PUTNODE` 发出（记录型传输），
+    /// 无挂载行的条目丢弃。
+    #[test]
+    fn test_flush_pending_puts_sends_and_drops() {
+        struct RecordingIpc {
+            sent: core::cell::RefCell<alloc::vec::Vec<(i32, i32)>>,
+        }
+        impl minix_sys::ipc::IpcTransport for RecordingIpc {
+            fn send(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+                Err(minix_sys::ipc::TrapStatus(minix_types::EIO))
+            }
+            fn receive(
+                &self,
+                _s: Endpoint,
+                _m: &mut Message,
+            ) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
+                Err(minix_sys::ipc::TrapStatus(minix_types::EIO))
+            }
+            fn sendrec(
+                &self,
+                d: Endpoint,
+                m: &mut Message,
+            ) -> Result<(), minix_sys::ipc::TrapStatus> {
+                self.sent.borrow_mut().push((d.0, m.m_type));
+                Ok(())
+            }
+            fn notify(&self, _d: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> {
+                Err(minix_sys::ipc::TrapStatus(minix_types::EIO))
+            }
+            fn sendnb(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+                Err(minix_sys::ipc::TrapStatus(minix_types::EIO))
+            }
+            fn senda(&self, _t: &[minix_sys::ipc::AsyncSlot]) -> Result<(), minix_sys::ipc::TrapStatus> {
+                Err(minix_sys::ipc::TrapStatus(minix_types::EIO))
+            }
+            fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> {
+                Err(minix_sys::ipc::TrapStatus(minix_types::EIO))
+            }
+        }
+        let mut state = seeded(100);
+        crate::main_loop::seed_ready_state(&mut state);
+        state.pending_puts = alloc::vec![
+            crate::vnode::PutNodeReq { fs_e: Endpoint::MFS, ino: 7, count: 2 },
+            crate::vnode::PutNodeReq { fs_e: Endpoint::NONE, ino: 9, count: 1 },
+        ];
+        let ipc = RecordingIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()) };
+        state.flush_pending_puts(&ipc);
+        assert_eq!(
+            ipc.sent.borrow().as_slice(),
+            [(Endpoint::MFS.0, minix_types::REQ_PUTNODE)],
+            "只有挂在表上的 FS 收到 REQ_PUTNODE"
+        );
+        assert!(state.pending_puts.is_empty(), "flush 后队列清空");
     }
 
     /// 测试适配：`do_select` 现在直接回 `SyscallResult`（挂起语义不能折

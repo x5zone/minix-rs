@@ -361,6 +361,11 @@ pub struct VfsState {
     /// `ENXIO`），不假装通知成功。
     pub root_fs_e: Endpoint,
     pub pending_fs: Option<PendingFs>,
+    /// 待投递的 `REQ_PUTNODE` 队列（`put_vnode` 慢路径的通知面；C 是
+    /// worker 同步 `fs_sendrec`，模型里臂/续接上下文不能同步发——排队
+    /// 由主循环统一投，回复 C 只 printf，丢弃无损）。
+    pub pending_puts: alloc::vec::Vec<crate::vnode::PutNodeReq>,
+
     /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
     /// `(调用方, 回复消息)` 入队，`run()` 在每轮循环尾发出（C `reply(who_e,
     /// result)` 的位置，`job_m_out` 就是那条消息）。多数回复只有 `m_type`
@@ -400,6 +405,8 @@ impl VfsState {
             root_fs_e: Endpoint::NONE,
             statvfs_buf: minix_types::StatvfsBuf::new(),
             pending_fs: None,
+            pending_puts: alloc::vec::Vec::new(),
+
         }
     }
 
@@ -1264,6 +1271,21 @@ impl VfsState {
     /// vnode 的放回走 `VnodeTable::put` 的**快速路径**（`ref>1 → ref--`）；
     /// 慢路径（`ref==1` → `req_putnode`）与 `change_into`/`close_filp` 是
     /// 同一处待办（`DeferredPutNode` 把那条 FS 通知留空）。
+    /// `put_vnode` 的 VFS 半（C vnode.c:240-290）：快速路径（`ref>1`）
+    /// 只减引用；慢路径（`ref==1`）把 `REQ_PUTNODE` 排进
+    /// [`VfsState::pending_puts`]（`clean_refs` 的批量归还同路收集），
+    /// 主循环统一投递。返回 `put` 的结果（`Ok(true)` = 槽已释放）。
+    pub fn put_vnode_deferred(&mut self, id: crate::vnode::VnodeId) -> Result<bool, i32> {
+        let mut q: alloc::vec::Vec<crate::vnode::PutNodeReq> = alloc::vec::Vec::new();
+        let mut sink = PutNodeSink(&mut q);
+        let r = self
+            .vnode_table
+            .put(id, &mut sink)
+            .map_err(|_| minix_types::EINVAL);
+        self.pending_puts.append(&mut q);
+        r
+    }
+
     pub fn release_open_claim(
         &mut self,
         fp_slot: Option<minix_types::UserSlot>,
@@ -1278,10 +1300,7 @@ impl VfsState {
             fp.filps[fd as usize] = None;
             fp.cloexec_set.set(fd as usize, false);
         }
-        let mut fs_ctl = DeferredPutNode;
-        let _ = self
-            .vnode_table
-            .put(crate::vnode::VnodeId(vnode), &mut fs_ctl);
+        let _ = self.put_vnode_deferred(crate::vnode::VnodeId(vnode));
     }
 
     /// 块设备 open 成功后的**第二段**（C `open.c:186-216`）：定 `v_bfs_e`，
@@ -1574,8 +1593,7 @@ impl VfsState {
         }
         // 换：旧目录 put（快速路径）、新目录已经 dup 过（`intern_vnode`）。
         if let Some(old_id) = old {
-            let mut fs_ctl = DeferredPutNode;
-            let _ = self.vnode_table.put(crate::vnode::VnodeId(old_id), &mut fs_ctl);
+            let _ = self.put_vnode_deferred(crate::vnode::VnodeId(old_id));
         }
         if let Some(fp) = self.fproc_table.get_mut(slot) {
             if into_root {
@@ -4164,6 +4182,28 @@ impl VfsState {
                     crate::call_table::SyscallResult::Error(minix_types::EIO),
                 );
             }
+        }
+    }
+
+    /// 把排队的 `REQ_PUTNODE` 逐条发出（`put_vnode` 慢路径的投递半）。
+    ///
+    /// C 在 worker 里同步 `fs_sendrec`（vnode.c:278），失败 `printf`
+    /// （vnode.c:281-283）——不回用户、不重试。模型里回复被忽略，发送
+    /// 失败同样丢弃：对用户可观测的行为一致（FS 侧引用计数由 FS 自己
+    /// 的回收面兜底）。
+    pub fn flush_pending_puts(&mut self, transport: &impl minix_sys::ipc::IpcTransport) {
+        let puts: alloc::vec::Vec<crate::vnode::PutNodeReq> =
+            core::mem::take(&mut self.pending_puts);
+        for p in puts {
+            // C `req_putnode`（request.c:699-711）：sendrec，回复只查错。
+            // 队列按挂载行过滤（挂载没了 = 无处可发，丢弃）。
+            if self.vmnt_table.find_by_fs(p.fs_e).is_none() {
+                continue;
+            }
+            let _ = transport.sendrec(
+                p.fs_e,
+                &mut crate::request::encode_putnode(p.ino, p.count as i32),
+            );
         }
     }
 
@@ -7048,6 +7088,9 @@ pub fn run() -> ! {
                     transport: minix_sys::ipc::DirectTrapTransport,
                 };
                 state.flush_pending_fs(&mut fs_ipc);
+                // put_vnode 慢路径的 REQ_PUTNODE 投递（sendrec 直连，
+                // 回复只查错——C vnode.c:278 的 worker 内同步 sendrec）。
+                state.flush_pending_puts(&minix_sys::ipc::DirectTrapTransport);
             }
             SefEvent::Signal(_) => {}
             // init_restart ≡ init_fresh(已文档化);LU prepare/rollback 的
@@ -7075,18 +7118,19 @@ impl crate::device_map::EndpointDirectory for LabelDir<'_> {
     }
 }
 
-/// 生产 `FsCtl` 占位：`VnodeTable::put` 的**慢路径**（`ref==1` →
-/// `req_putnode`）还没接线（与 `filp.rs` 里 `close_filp` 的同一处待办），
-/// 这里只让快速路径（`ref>1 → ref--`）生效，慢路径的 FS 通知留空。
-struct DeferredPutNode;
+/// `FsCtl` 的**队列收集**实现：`VnodeTable::put` 慢路径（`ref==1` →
+/// `req_putnode`）与 `clean_refs`（`fs_count > 256` 的批量归还）把通知
+/// 收进缓冲，调用方再并入 [`VfsState::pending_puts`] 统一投递。
+struct PutNodeSink<'a>(&'a mut alloc::vec::Vec<crate::vnode::PutNodeReq>);
 
-impl crate::vnode::FsCtl for DeferredPutNode {
+impl crate::vnode::FsCtl for PutNodeSink<'_> {
     fn put_node(
         &mut self,
-        _fs: Endpoint,
-        _ino: u64,
-        _count: usize,
+        fs: Endpoint,
+        ino: u64,
+        count: usize,
     ) -> Result<(), crate::vnode::VnodeError> {
+        self.0.push(crate::vnode::PutNodeReq { fs_e: fs, ino, count });
         Ok(())
     }
 }

@@ -333,6 +333,19 @@ pub trait FsCtl {
     fn put_node(&mut self, fs: Endpoint, ino: u64, count: usize) -> Result<(), VnodeError>;
 }
 
+/// 一笔待投递的 `REQ_PUTNODE`（C `put_vnode` 慢路径的 `req_putnode`，
+/// vnode.c:278——`fs_e`/`inode_nr`/`fs_count` 三元组）。VFS 侧排队，
+/// 主循环统一发（回复 C 只 printf，丢弃无损）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PutNodeReq {
+    /// FS 端点。
+    pub fs_e: Endpoint,
+    /// inode 号。
+    pub ino: u64,
+    /// 归还的引用份数（`v_fs_count`）。
+    pub count: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VnodeError {
     NoSpace,
