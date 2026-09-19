@@ -479,7 +479,7 @@ mod pull_tests {
         ) -> Result<(), i32> {
             Err(EIO)
         }
-        fn vm_info(&mut self, _what: i32, _buf: &mut [u8]) -> Result<(), i32> {
+        fn vm_info(&mut self, _what: i32, _ep: Endpoint, _buf: &mut [u8]) -> Result<(), i32> {
             Err(EIO)
         }
         fn pm_getparam(&mut self, _param: i32, _buf: &mut [u8]) -> Result<(), i32> {
@@ -585,7 +585,7 @@ mod pull_tests {
             ) -> Result<(), i32> {
                 Err(EIO)
             }
-            fn vm_info(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(EIO) }
+            fn vm_info(&mut self, _: i32, _: Endpoint, _: &mut [u8]) -> Result<(), i32> { Err(EIO) }
             fn pm_getparam(&mut self, _: i32, _: &mut [u8]) -> Result<(), i32> { Err(EIO) }
         }
         let mut tables = Tables::new();
