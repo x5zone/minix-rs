@@ -1336,6 +1336,40 @@ impl VfsState {
         )
     }
 
+    /// `get_sock`（C socket.c:276-302）：fd → filp → **必须是套接字**
+    /// （否则 `ENOTSOCK`），返回它的设备号与打开标志。套接字族共用的第一道门
+    /// ——全本地判定，没有驱动对话。
+    pub fn get_sock(
+        &self,
+        fp_slot: minix_types::UserSlot,
+        fd: i32,
+    ) -> Result<(u64, i32), i32> {
+        if fd < 0 {
+            return Err(minix_types::EBADF);
+        }
+        let fp = self.fproc_table.get(fp_slot).ok_or(minix_types::EINVAL)?;
+        let filp_idx = fp
+            .filps
+            .get(fd as usize)
+            .copied()
+            .flatten()
+            .ok_or(minix_types::EBADF)?;
+        let filp = self
+            .filp_table
+            .get(crate::filp::FilpId(filp_idx))
+            .ok_or(minix_types::EBADF)?;
+        let vnode_idx = filp.vnode.ok_or(minix_types::EBADF)?;
+        let v = self
+            .vnode_table
+            .get(crate::vnode::VnodeId(vnode_idx))
+            .ok_or(minix_types::EBADF)?;
+        // C `!S_ISSOCK(filp->filp_vno->v_mode)` → ENOTSOCK。
+        if v.mode & crate::open::S_IFMT != crate::open::S_IFSOCK {
+            return Err(minix_types::ENOTSOCK);
+        }
+        Ok((v.sdev, filp.flags))
+    }
+
     /// `do_mapdriver` 的**主体**（C dmap.c:106-177 的取标签之后那半）：
     /// 标签 → 端点（`resolve_driver`）→ 标成服务进程（`FP_SRV_PROC`）→
     /// `map_driver`（major 有效时）→ `smap_map`（有域时；失败要**撤销** dmap）。

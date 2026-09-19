@@ -211,8 +211,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Mount
         | VfsCallNum::Umount
         | VfsCallNum::Select
-        | VfsCallNum::Socket
-        | VfsCallNum::Socketpair
         | VfsCallNum::Bind
         | VfsCallNum::Connect
         | VfsCallNum::Listen
@@ -225,7 +223,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Getsockopt
         | VfsCallNum::Getsockname
         | VfsCallNum::Getpeername
-        | VfsCallNum::Shutdown
         | VfsCallNum::Svrctl
         | VfsCallNum::Vmcall
         | VfsCallNum::Socketpath
@@ -1359,6 +1356,73 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── ioctl（按文件类型分派；设备对话管线未接线，见下面的注记）──
         // ── copyfd（驱动回调用：在调用方与远端之间搬/关一个 fd）──
         // ── pipe2（向 PFS 要一个新 inode，再装配 fd 对）──
+        // ── socket 族（共同的本地门：域 → 驱动表、fd → socket、资源够不够）──
+        VfsCallNum::Socket | VfsCallNum::Socketpair => {
+            // C `do_socket`（socket.c:176-216）/ `do_socketpair`
+            // （socket.c:224-273）：载荷都是 `mess_lc_vfs_socket`
+            // （domain@0、type@4、protocol@8）。
+            let (domain, ty, _protocol) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let domain = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let ty = i32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+                let protocol = i32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                (domain, ty, protocol)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            // C socket.c:185-187 —— 这个域有没有套接字驱动？没有就是
+            // `EAFNOSUPPORT`（本地判定：查 smap 的域映射表）。
+            if crate::device_map::smap_by_domain(&state.smap_table, domain).is_none() {
+                return SyscallResult::Error(minix_types::EAFNOSUPPORT);
+            }
+            // C socket.c:204-205 / :242-243 —— 先确认进程有足够的 fd 槽
+            // （socket 要 1 个、socketpair 要 2 个）。
+            let want = if matches!(call, VfsCallNum::Socketpair) { 2 } else { 1 };
+            let enough = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| crate::filedes::check_fds(fp, want).is_ok())
+                .unwrap_or(false);
+            if !enough {
+                return SyscallResult::Error(minix_types::EMFILE);
+            }
+            // C 的 `sock_type = type & ~SOCK_FLAGS_MASK` 与 `get_sock_flags`
+            // （决策函数 `socket::strip_sock_type`）：类型位与打开标志分开。
+            let (_sock_type, _flags) = crate::socket::strip_sock_type(ty as u32);
+            // 下一步是 `sdev_socket(domain, sock_type, protocol, &dev, pair)`
+            // ——**套接字驱动对话**（smap 取端点 + 发送 + 回复落槽），本批还没
+            // 接线：登记缺口，不假装建成了套接字。
+            SyscallResult::Error(minix_types::ENOSYS)
+        }
+
+        VfsCallNum::Shutdown => {
+            // C `do_shutdown`（socket.c:744-762）：`get_sock(fd)` 的两道门
+            // （不是 fd → EBADF；不是套接字 → ENOTSOCK）→ `how` 的取值门
+            // （EINVAL）→ `sdev_shutdown`（驱动对话，缺口）。
+            let (fd, how) = {
+                // SAFETY: `mess_lc_vfs_shutdown { int fd; int how; }`
+                // （ipc.h:828-833）。
+                let raw = unsafe { &msg.m_u.raw };
+                (
+                    i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]),
+                    i32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]),
+                )
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            if let Err(e) = state.get_sock(fp_slot, fd) {
+                return SyscallResult::Error(e);
+            }
+            if let Err(e) = crate::socket::check_shutdown_how(how) {
+                return SyscallResult::Error(e.to_errno());
+            }
+            // `sdev_shutdown(dev, how)` 是驱动对话——缺口同 Socket。
+            SyscallResult::Error(minix_types::ENOSYS)
+        }
+
         VfsCallNum::Pipe2 => {
             // C `do_pipe2`（pipe.c:39-55）+ `create_pipe`（pipe.c:58-135）：
             // 载荷 `mess_lc_vfs_pipe2`（flags@0、_unused@4、oflags@8）——两个
@@ -3968,6 +4032,140 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// 套接字族的第一批门（C `do_socket`/`do_socketpair` socket.c:176-273 与
+    /// `do_shutdown` socket.c:744-762）：**域没有驱动 → EAFNOSUPPORT**、
+    /// **fd 槽不够 → EMFILE**、**fd 不是套接字 → ENOTSOCK**、**how 取值非法 →
+    /// EINVAL**。这些都是本地判定；下一步的驱动对话（`sdev_*`）管线未接线，
+    /// 所以过门之后诚实回 ENOSYS。
+    #[test]
+    fn test_dispatch_socket_family_local_gates() {
+        use minix_types::Endpoint;
+
+        let setup = || {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx)
+        };
+        let socket_msg = |call: VfsCallNum, domain: i32, ty: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: call as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_socket：domain@0、type@4、protocol@8。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&domain.to_le_bytes());
+                raw[4..8].copy_from_slice(&ty.to_le_bytes());
+            }
+            m
+        };
+        let shutdown_msg = |fd: i32, how: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Shutdown as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_shutdown：fd@0、how@4。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[4..8].copy_from_slice(&how.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 域没有套接字驱动 → EAFNOSUPPORT（smap 的域映射表空着）。
+        let (mut state, _idx) = setup();
+        state.current_message = socket_msg(VfsCallNum::Socket, 2, 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Socket),
+            SyscallResult::Error(minix_types::EAFNOSUPPORT)
+        );
+
+        // ② 域映射了（pfmap[2] = 行 0）→ 过域门；驱动对话未接线 → ENOSYS。
+        let (mut state, _idx) = setup();
+        state.smap_table.pfmap[2] = Some(0);
+        state.smap_table.entries[0].endpt = Some(Endpoint::from_generation_slot(0, 11));
+        state.current_message = socket_msg(VfsCallNum::Socket, 2, 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Socket),
+            SyscallResult::Error(minix_types::ENOSYS),
+            "域门过了，停在驱动对话"
+        );
+
+        // ③ fd 槽不够 → EMFILE（socketpair 要 2 个：只留 1 个空槽）。
+        let (mut state, _idx) = setup();
+        state.smap_table.pfmap[2] = Some(0);
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            for i in 1..crate::fproc::OPEN_MAX {
+                fp.filps[i] = Some(0);
+            }
+        }
+        state.current_message = socket_msg(VfsCallNum::Socketpair, 2, 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Socketpair),
+            SyscallResult::Error(minix_types::EMFILE)
+        );
+
+        // ④ shutdown：fd 无效 → EBADF；fd 有效但不是套接字 → ENOTSOCK；
+        // 是套接字但 how 非法 → EINVAL；全过 → ENOSYS（驱动对话缺口）。
+        let (mut state, _idx) = setup();
+        state.current_message = shutdown_msg(9, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Shutdown),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        // 挂一个常规文件的 fd 3 → ENOTSOCK。
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 0x42;
+            v.mode = crate::open::S_IFREG | 0o644;
+            v.ref_count = 1;
+        }
+        state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+        state.current_message = shutdown_msg(3, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Shutdown),
+            SyscallResult::Error(minix_types::ENOTSOCK)
+        );
+        // 换成套接字 vnode → 过类型门；how 非法 → EINVAL。
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFSOCK | 0o777;
+        state.vnode_table.get_mut(vid).unwrap().sdev = 0x1234;
+        state.current_message = shutdown_msg(3, 99);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Shutdown),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+        state.current_message = shutdown_msg(3, 1); // SHUT_WR
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Shutdown),
+            SyscallResult::Error(minix_types::ENOSYS),
+            "全过，停在 sdev_shutdown"
+        );
     }
 
     /// `Pipe2` 臂（C `do_pipe2` pipe.c:39-55 + `create_pipe` pipe.c:58-135）：
