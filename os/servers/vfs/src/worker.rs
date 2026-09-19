@@ -99,6 +99,18 @@ pub enum WorkerCont {
         /// 折算后的新属组。
         gid: u32,
     },
+    /// `statvfs` 的对话半（`REQ_STATVFS`）：回复只有状态，FS 已经把统计量写
+    /// 进 VFS 侧的 `struct statvfs` 缓冲了；续接体要撤销 grant、把 FS 那 17 个
+    /// 字段存进挂载行的缓存（C `update_statvfs`）、补本地字段，再整块拷给用户
+    /// （C `fill_statvfs` 尾部的 `sys_datacopy_wrapper`）。
+    Statvfs {
+        /// 已发给 FS 的 direct grant（收尾时撤销）。
+        grant: i32,
+        /// 用户缓冲地址（拷给它的目的地）。
+        user_buf: u64,
+        /// 被查询的挂载行下标（缓存写回处）。
+        vmnt: usize,
+    },
     /// `chmod` 的对话半（`REQ_CHMOD`）：回复的 `mode` 是实际生效的模式
     /// （C request.c:127），成功时回写 vnode 缓存（C `vp->v_mode =
     /// result_mode`，protect.c:127-128）。
@@ -271,6 +283,15 @@ pub enum PathFollow {
         target_addr: u64,
         /// 目标串长度（**不含**结尾 NUL，C 传 `vname1_length - 1`）。
         target_len: u64,
+    },
+    /// `statvfs1(path, buf, flags)`：走完拿到 vnode 后进 `fill_statvfs`
+    /// （挂载行 → 缓存或 FS 往返 → 本地字段 → 拷给用户）。C `do_statvfs`
+    /// （stadir.c:294-326）。
+    Statvfs {
+        /// 用户 `struct statvfs` 缓冲地址。
+        user_buf: u64,
+        /// `ST_NOWAIT` 等标志。
+        flags: i32,
     },
     /// `chdir(path)` / `chroot(path)`：走完改**本进程**的当前目录/根目录
     /// （`change_into`，stadir.c:120-140）——没有 FS 往返，走完即判即改。

@@ -21,6 +21,8 @@
 //! - `kerninfo`: `MINIX_KERNINFO` shared page ABI (`minix_kerninfo` /
 //!   `kuserinfo` + OS release constants, E-KERNINFO)
 //! - `priv_info`: GET_PRIVTAB wire entry (E-ISPROD)
+//! - `vm_cache`: virtual-memory cache flags and sentinels shared by the
+//!   file-system buffer pool and the VM server (E-FSVMCACHE)
 
 mod address;
 mod bitmap;
@@ -51,8 +53,10 @@ mod rs_snap;
 mod ps_strings;
 pub mod signal;
 pub mod stat;
+pub mod statvfs;
 mod sysctl;
 mod sysctl_abi;
+pub mod vm_cache;
 
 pub use address::*;
 pub use bitmap::*;
@@ -85,5 +89,7 @@ pub use signal::*;
 // `stat` 故意不走根 glob：ipc::fs_driver 已有一个序列化用的 `Stat`
 // （VTreeFS `fs_stat` 载荷），两个概念同名——用户态 `struct stat` ABI
 // 经 `types::stat::Stat` 路径取用（minix-sys 再导出为 `minix_sys::Stat`）。
+pub use statvfs::*;
+pub use vm_cache::*;
 pub use sysctl::*;
 pub use sysctl_abi::*;

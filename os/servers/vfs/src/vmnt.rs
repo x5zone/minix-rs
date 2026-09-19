@@ -121,6 +121,31 @@ impl VmntLock {
     }
 }
 
+/// `m_stats` 的缓存字段（C `struct statvfs` 里由 FS 填的那 17 个）。
+///
+/// 只缓存 FS 侧的统计量；`f_flag` 的只读位、`f_fsid`、三个名字这些**本地
+/// 字段**每次现算（`fill_statvfs` 就是这么做的）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VmntStats {
+    pub f_flag: u64,
+    pub f_bsize: u64,
+    pub f_frsize: u64,
+    pub f_iosize: u64,
+    pub f_blocks: u64,
+    pub f_bfree: u64,
+    pub f_bavail: u64,
+    pub f_bresvd: u64,
+    pub f_files: u64,
+    pub f_ffree: u64,
+    pub f_favail: u64,
+    pub f_fresvd: u64,
+    pub f_syncreads: u64,
+    pub f_syncwrites: u64,
+    pub f_asyncreads: u64,
+    pub f_asyncwrites: u64,
+    pub f_namemax: u64,
+}
+
 /// `struct vmnt` (`vmnt.h:7-21`).
 #[derive(Debug, Clone)]
 pub struct Vmnt {
@@ -133,6 +158,10 @@ pub struct Vmnt {
     pub fs_flags: u32,
     pub mounted_on: Option<usize>, // VnodeId index placeholder
     pub root: Option<usize>,
+    /// `m_stats`（C vmnt.h:16）——`statvfs` 的缓存（`update_statvfs` 在每次
+    /// 从 FS 取到新数据后逐字段存下来；`ST_NOWAIT` 的调用直接用它，不再打扰
+    /// FS）。字段与 `struct statvfs` 里 FS 负责的那 17 个一一对应。
+    pub stats: VmntStats,
     pub label: String,
     pub mount_path: String,
     pub mount_dev: String,
@@ -149,6 +178,7 @@ impl Default for Vmnt {
             fs_flags: 0,
             mounted_on: None,
             root: None,
+            stats: VmntStats::default(),
             label: String::new(),
             mount_path: String::new(),
             mount_dev: String::new(),

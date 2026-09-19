@@ -208,8 +208,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        | VfsCallNum::Statvfs1
-        | VfsCallNum::Fstatvfs1
         | VfsCallNum::Mount
         | VfsCallNum::Umount
         | VfsCallNum::Pipe2
@@ -1360,6 +1358,135 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         }
 
         // ── 路径臂模板：rename（**三段链**：旧父目录 → [粘滞位子遍历] → 新父目录）──
+        // ── statvfs 族（Statvfs1 / Fstatvfs1）：取挂载行 → fill_statvfs ──
+        VfsCallNum::Statvfs1 | VfsCallNum::Fstatvfs1 => {
+            // C `do_statvfs`（stadir.c:294-326，路径半）与 `do_fstatvfs`
+            // （stadir.c:419-442，fd 半）：都归结到 `fill_statvfs(vp->v_vmnt,
+            // who_e, statbuf, flags)`——载荷 `mess_lc_vfs_statvfs1`
+            // （fd@0、flags@4、len@8、name@16、buf@24）。
+            let (fd, flags, name_len, name_addr, statbuf) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let flags = i32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let name_len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let name_addr = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                let statbuf = u64::from_le_bytes(b8);
+                (fd, flags, name_len, name_addr, statbuf)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if matches!(call, VfsCallNum::Fstatvfs1) {
+                // C stadir.c:428-431：fd → filp → vnode 的 `v_vmnt`。
+                if fd < 0 {
+                    return SyscallResult::Error(minix_types::EBADF);
+                }
+                let vnode_idx = {
+                    let fp = match state.fproc_table.get(fp_slot) {
+                        Some(fp) => fp,
+                        None => return SyscallResult::Error(minix_types::EINVAL),
+                    };
+                    let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                        Some(idx) => idx,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    };
+                    match state
+                        .filp_table
+                        .get(crate::filp::FilpId(filp_idx))
+                        .and_then(|f| f.vnode)
+                    {
+                        Some(v) => v,
+                        None => return SyscallResult::Error(minix_types::EBADF),
+                    }
+                };
+                let fs_e = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => v.fs,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let Some(vmnt_idx) = state.vmnt_table.find_by_fs(fs_e) else {
+                    return SyscallResult::Error(minix_types::EIO);
+                };
+                // `begin_statvfs` 可能"已挂起"（新鲜路径）也可能"已收尾"
+                // （`ST_NOWAIT` 走缓存、就地补字段并回信）——两种结局都报挂起：
+                // 收尾时槽已被释放、回复已入队，`run_once` 见 Suspend 不再释放，
+                // `queue_reply(Suspend)` 也不会覆盖已入队的回复。
+                return match state.begin_statvfs(
+                    worker,
+                    Some(fp_slot),
+                    vmnt_idx.0,
+                    statbuf,
+                    flags,
+                ) {
+                    Ok(()) => SyscallResult::Suspend,
+                    Err(e) => SyscallResult::Error(e),
+                };
+            }
+            // 路径半：C stadir.c:305-313 的 `eat_path`（NOFLAGS）。
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let fetcher = crate::path::SysPathFetcher { who: user_e };
+            let path = match fetcher.fetch(name_addr, name_len as usize) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(
+                path,
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Statvfs {
+                        user_buf: statbuf,
+                        flags,
+                    },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Rename => {
             // C `do_rename`（link.c:166-280）：载荷与 link 同形
             // （name1@0、name2@8、len1@16、len2@24）。阶段 1 走 name1 的父目录
@@ -3266,6 +3393,162 @@ mod tests {
             let uid = u32::from_le_bytes(raw[8..12].try_into().unwrap());
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
+        }
+    }
+
+    /// Statvfs 族（C `do_statvfs`/`do_fstatvfs` stadir.c:294-442 +
+    /// `fill_statvfs`/`update_statvfs`）：新鲜路径给 VFS 侧缓冲做 direct grant
+    /// 发 `REQ_STATVFS`（统计量由 FS 整块回填）；`ST_NOWAIT` **不发请求**，直接
+    /// 用挂载行缓存。两条路最后都补本地字段（只读位、`f_fsid`、三个名字）再
+    /// 整块拷给用户——宿主下拷贝不可达，如实回 EIO。
+    #[test]
+    fn test_dispatch_fstatvfs_fresh_and_nowait() {
+        use minix_types::Endpoint;
+
+        let setup = |readonly: bool| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            {
+                let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+                if readonly {
+                    v.flags = crate::vmnt::VmntFlags::READONLY;
+                }
+                v.mount_path = "/".to_string();
+                v.mount_dev = "/dev/root".to_string();
+                v.fstype = "mfs".to_string();
+            }
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x42;
+                v.mode = crate::open::S_IFREG | 0o644;
+                v.dev = 1;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx)
+        };
+        let fstatvfs_msg = |fd: i32, flags: i32, buf: u64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Fstatvfs1 as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_statvfs1：fd@0、flags@4、len@8、name@16、buf@24。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[4..8].copy_from_slice(&flags.to_le_bytes());
+                raw[24..32].copy_from_slice(&buf.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 负 fd → EBADF。
+        let (mut state, _idx) = setup(false);
+        state.current_message = fstatvfs_msg(-1, 0, 0x5000);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fstatvfs1),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // ② 新鲜路径：发 REQ_STATVFS，grant 指向 VFS 侧缓冲。
+        let (mut state, idx) = setup(false);
+        state.current_message = fstatvfs_msg(3, 0, 0x5000);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fstatvfs1),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_STATVFS");
+        assert_eq!(p.req.m_type, minix_types::REQ_STATVFS);
+        // SAFETY(test): grant 在负载区首字。
+        let grant = unsafe { i32::from_le_bytes(p.req.m_u.raw[0..4].try_into().unwrap()) };
+        assert_eq!(grant, p.grant);
+        assert!(matches!(
+            state.worker_pool.get_mut(idx).unwrap().cont,
+            Some(crate::worker::WorkerCont::Statvfs { user_buf: 0x5000, .. })
+        ));
+
+        // ③ 回复到达：FS 已经把统计量写进缓冲（测试直接写缓冲模拟）→ 缓存
+        // 写回挂载行 + 本地字段补齐；拷给用户宿主不可达 → EIO。
+        {
+            use minix_types::statvfs_off as off;
+            let b = &mut state.statvfs_buf;
+            b.set_u64(off::BSIZE, 4096);
+            b.set_u64(off::BLOCKS, 1000);
+            b.set_u64(off::NAMEMAX, 60);
+        }
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let v = state.vmnt_table.get(crate::vmnt::VmntId(0)).unwrap();
+        assert_eq!(v.stats.f_bsize, 4096, "FS 的统计量进了挂载行缓存");
+        assert_eq!(v.stats.f_blocks, 1000);
+        assert_eq!(v.stats.f_namemax, 60);
+        {
+            use minix_types::statvfs_off as off;
+            let b = state.statvfs_buf;
+            assert_eq!(b.get_u64(off::FSID), 1, "f_fsid 是挂载设备号");
+            assert_eq!(b.get_name(off::FSTYPENAME), "mfs");
+            assert_eq!(b.get_name(off::MNTONNAME), "/");
+            assert_eq!(b.get_name(off::MNTFROMNAME), "/dev/root");
+        }
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+            "宿主下 sys_datacopy 不可达 → EIO（如实，不假装拷成功）"
+        );
+
+        // ④ ST_NOWAIT：不发请求，直接用缓存（并把只读位补进 f_flag）。
+        let (mut state, _idx) = setup(true);
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+            v.stats.f_bsize = 512;
+            v.stats.f_blocks = 77;
+        }
+        state.current_message = fstatvfs_msg(3, minix_types::ST_NOWAIT, 0x5000);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Fstatvfs1),
+            SyscallResult::Suspend,
+            "缓存分支就地收尾，也报挂起（回复已入队）"
+        );
+        assert!(state.pending_fs.is_none(), "ST_NOWAIT 不该打扰 FS");
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((Endpoint::from_generation_slot(1, 0), minix_types::EIO)),
+            "拷贝在宿主下不可达 → EIO"
+        );
+        {
+            use minix_types::statvfs_off as off;
+            let b = state.statvfs_buf;
+            assert_eq!(b.get_u64(off::BSIZE), 512, "统计量来自缓存");
+            assert_eq!(b.get_u64(off::BLOCKS), 77);
+            assert_eq!(
+                b.get_u64(off::FLAG) & minix_types::ST_RDONLY,
+                minix_types::ST_RDONLY,
+                "只读挂载位补进 f_flag"
+            );
         }
     }
 

@@ -339,6 +339,10 @@ pub struct VfsState {
     pub current_worker: Option<usize>,
     /// 臂登记、待主循环发出的 FS 对话（单线程模型：臂只碰状态，I/O 归
     /// 循环——C 的 `fs_sendrec` 在同一处既登记又发送，这里拆成两半）。
+    /// `struct statvfs` 的 VFS 侧缓冲（C `fill_statvfs` 的局部 `struct
+    /// statvfs buf`）：FS 经 direct grant 整块回填它，VFS 补本地字段后再整块
+    /// 拷给用户。放在状态里而不是栈上，是因为 grant 要指向一个**稳定地址**。
+    pub statvfs_buf: minix_types::StatvfsBuf,
     pub pending_fs: Option<PendingFs>,
     /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
     /// `(调用方, 回复消息)` 入队，`run()` 在每轮循环尾发出（C `reply(who_e,
@@ -374,6 +378,7 @@ impl VfsState {
             pending_reply: None,
             grants: minix_sys::grant::GrantTable::new(),
             current_worker: None,
+            statvfs_buf: minix_types::StatvfsBuf::new(),
             pending_fs: None,
         }
     }
@@ -1157,6 +1162,147 @@ impl VfsState {
             out.push(v.fs);
         }
         out
+    }
+
+    /// `fill_statvfs` 的**本地半**（C stadir.c:255-272 的尾部）：补上只读位、
+    /// `f_fsid`/`f_fsidx` 与三个名字字段，然后整块拷给用户。
+    ///
+    /// `sys_datacopy` 是跨空间的，宿主构建下不可达 → 诚实回浮 EIO（不假装
+    /// 拷成功）。
+    fn finish_statvfs_copy(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        user_buf: u64,
+        vmnt_idx: usize,
+    ) -> i32 {
+        let (dev, readonly, fstype, mount_path, mount_dev) = match self
+            .vmnt_table
+            .get(crate::vmnt::VmntId(vmnt_idx))
+        {
+            Some(v) => (
+                v.dev,
+                v.flags.contains(crate::vmnt::VmntFlags::READONLY),
+                v.fstype.clone(),
+                v.mount_path.clone(),
+                v.mount_dev.clone(),
+            ),
+            None => return minix_types::EIO,
+        };
+        let b = &mut self.statvfs_buf;
+        if readonly {
+            let f = b.get_u64(minix_types::statvfs_off::FLAG);
+            b.set_u64(minix_types::statvfs_off::FLAG, f | minix_types::ST_RDONLY);
+        }
+        // `f_fsid` 与 `f_fsidx.__fsid_val[0]` 都是设备号（C 的注释说这是
+        // NetBSD 的做法）。
+        b.set_u64(minix_types::statvfs_off::FSID, dev);
+        b.set_u32(minix_types::statvfs_off::FSIDX, dev as u32);
+        b.set_u32(minix_types::statvfs_off::FSIDX + 4, 0);
+        b.set_name(minix_types::statvfs_off::FSTYPENAME, &fstype);
+        b.set_name(minix_types::statvfs_off::MNTONNAME, &mount_path);
+        b.set_name(minix_types::statvfs_off::MNTFROMNAME, &mount_dev);
+        // 拷给用户：`sys_datacopy_wrapper(SELF, &buf, endpt, buf_addr, sizeof)`。
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        let src = self.statvfs_buf.as_bytes().as_ptr() as u64;
+        let _ = idx;
+        match minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            minix_types::Endpoint::SELF.0,
+            src,
+            user.0,
+            user_buf,
+            minix_types::STATVFS_SIZE as u64,
+        ) {
+            Ok(()) => 0,
+            Err(_) => minix_types::EIO,
+        }
+    }
+
+    /// `fill_statvfs` 的**入口**（C stadir.c:230-253）：`ST_NOWAIT` 就用挂载行
+    /// 缓存（不打扰 FS），否则给 VFS 侧缓冲做 direct grant 并发 `REQ_STATVFS`，
+    /// 统计量由续接体收（`WorkerCont::Statvfs`）。
+    pub fn begin_statvfs(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        vmnt_idx: usize,
+        user_buf: u64,
+        flags: i32,
+    ) -> Result<(), i32> {
+        let fs_e = self
+            .vmnt_table
+            .get(crate::vmnt::VmntId(vmnt_idx))
+            .map(|v| v.fs)
+            .ok_or(minix_types::EIO)?;
+        if flags & minix_types::ST_NOWAIT != 0 {
+            // 缓存分支：`memset(&buf, 0, ...)` 之后逐字段抄缓存。
+            self.statvfs_buf = minix_types::StatvfsBuf::new();
+            let stats = self
+                .vmnt_table
+                .get(crate::vmnt::VmntId(vmnt_idx))
+                .map(|v| v.stats)
+                .unwrap_or_default();
+            {
+                use minix_types::statvfs_off as off;
+                let b = &mut self.statvfs_buf;
+                b.set_u64(off::FLAG, stats.f_flag);
+                b.set_u64(off::BSIZE, stats.f_bsize);
+                b.set_u64(off::FRSIZE, stats.f_frsize);
+                b.set_u64(off::IOSIZE, stats.f_iosize);
+                b.set_u64(off::BLOCKS, stats.f_blocks);
+                b.set_u64(off::BFREE, stats.f_bfree);
+                b.set_u64(off::BAVAIL, stats.f_bavail);
+                b.set_u64(off::BRESVD, stats.f_bresvd);
+                b.set_u64(off::FILES, stats.f_files);
+                b.set_u64(off::FFREE, stats.f_ffree);
+                b.set_u64(off::FFAVAIL, stats.f_favail);
+                b.set_u64(off::FRESVD, stats.f_fresvd);
+                b.set_u64(off::SYNCREADS, stats.f_syncreads);
+                b.set_u64(off::SYNCWRITES, stats.f_syncwrites);
+                b.set_u64(off::ASYNCREADS, stats.f_asyncreads);
+                b.set_u64(off::ASYNCWRITES, stats.f_asyncwrites);
+                b.set_u64(off::NAMEMAX, stats.f_namemax);
+            }
+            let status = self.finish_statvfs_copy(idx, fp_slot, user_buf, vmnt_idx);
+            self.finish_worker_job(idx, fp_slot, status);
+            return Ok(());
+        }
+        // 新鲜分支：direct grant 指向 VFS 侧缓冲（地址要稳定——它在状态里）。
+        let addr = self.statvfs_buf.as_bytes().as_ptr() as u64;
+        let grant = self
+            .grants
+            .grant_direct(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                fs_e.get(),
+                addr,
+                minix_types::STATVFS_SIZE as u64,
+                minix_types::CpFlags::WRITE,
+            )
+            .map_err(|_| minix_types::EIO)?;
+        let user = fp_slot
+            .and_then(|s| self.fproc_table.get(s))
+            .map(|fp| fp.endpoint)
+            .unwrap_or(Endpoint::NONE);
+        if let Some(wp) = self.worker_pool.get_mut(idx) {
+            wp.cont = Some(crate::worker::WorkerCont::Statvfs {
+                grant,
+                user_buf,
+                vmnt: vmnt_idx,
+            });
+        }
+        self.pending_fs = Some(PendingFs {
+            vmnt: vmnt_idx,
+            fs_e,
+            worker: idx,
+            grant,
+            user,
+            req: crate::request::encode_statvfs(grant),
+        });
+        Ok(())
     }
 
     /// `rename` 的阶段 1 → 阶段 2 转场：切出 name2 的最后组件，从进程根起走
@@ -1969,6 +2115,39 @@ impl VfsState {
                         }
                     }
                 }
+                crate::worker::WorkerCont::Statvfs { grant, user_buf, vmnt } => {
+                    // C `update_statvfs` + `fill_statvfs` 的收尾：撤销 grant →
+                    // 把 FS 那 17 个字段存进挂载行缓存 → 补本地字段 → 整块拷给
+                    // 用户（状态照 C：`update_statvfs` 失败就 EIO，否则看拷贝）。
+                    let _ = self.revoke_grant(grant);
+                    if status == 0 {
+                        use minix_types::statvfs_off as off;
+                        let b = self.statvfs_buf;
+                        let cached = crate::vmnt::VmntStats {
+                            f_flag: b.get_u64(off::FLAG),
+                            f_bsize: b.get_u64(off::BSIZE),
+                            f_frsize: b.get_u64(off::FRSIZE),
+                            f_iosize: b.get_u64(off::IOSIZE),
+                            f_blocks: b.get_u64(off::BLOCKS),
+                            f_bfree: b.get_u64(off::BFREE),
+                            f_bavail: b.get_u64(off::BAVAIL),
+                            f_bresvd: b.get_u64(off::BRESVD),
+                            f_files: b.get_u64(off::FILES),
+                            f_ffree: b.get_u64(off::FFREE),
+                            f_favail: b.get_u64(off::FFAVAIL),
+                            f_fresvd: b.get_u64(off::FRESVD),
+                            f_syncreads: b.get_u64(off::SYNCREADS),
+                            f_syncwrites: b.get_u64(off::SYNCWRITES),
+                            f_asyncreads: b.get_u64(off::ASYNCREADS),
+                            f_asyncwrites: b.get_u64(off::ASYNCWRITES),
+                            f_namemax: b.get_u64(off::NAMEMAX),
+                        };
+                        if let Some(v) = self.vmnt_table.get_mut(crate::vmnt::VmntId(vmnt)) {
+                            v.stats = cached;
+                        }
+                        status = self.finish_statvfs_copy(idx, fp_slot, user_buf, vmnt);
+                    }
+                }
                 crate::worker::WorkerCont::SyncMounts { targets, count, at, first_err } => {
                     // C `do_sync`/`do_fsync` 的循环在单线程模型里的形态：每条
                     // 回复到达就发下一条，发完报 `first_err`（C 把 `req_sync`
@@ -2275,6 +2454,19 @@ impl VfsState {
                                 };
                                 let status = self.change_into(fp_slot, vnode, into_root);
                                 self.finish_worker_job(idx, fp_slot, status);
+                                continue;
+                            }
+                            crate::worker::PathFollow::Statvfs { user_buf, flags } => {
+                                // C `do_statvfs:318-323`：走完拿 vnode 的
+                                // `v_vmnt` 再进 `fill_statvfs`。
+                                let Some(vmnt_idx) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    continue;
+                                };
+                                match self.begin_statvfs(idx, fp_slot, vmnt_idx.0, user_buf, flags) {
+                                    Ok(()) => {}
+                                    Err(e) => self.finish_worker_job(idx, fp_slot, e),
+                                }
                                 continue;
                             }
                             crate::worker::PathFollow::RenameOld { entry, new_path } => {
