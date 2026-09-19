@@ -216,7 +216,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Symlink
         | VfsCallNum::Readlink
         | VfsCallNum::Truncate
-        | VfsCallNum::Getdents
         | VfsCallNum::Chmod
         | VfsCallNum::Fchmod
         | VfsCallNum::Chown
@@ -1078,6 +1077,132 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         }
 
         // ── 服务器自用臂：getsysinfo（VFS_GETSYSINFO = +48）──
+        // ── 对话臂模板：getdents（目录读；只有目录能过类型门）──
+        VfsCallNum::Getdents => {
+            // C `do_getdents`（read.c:282-317）：载荷与 read/write 同形
+            // （`mess_lc_vfs_readwrite`，但 `cum_io` 这一格**必须为 0**）
+            // → fd 门（R_BIT + 必须是目录）→ `req_getdents`（grant 是 FS
+            // 往用户缓冲写目录项的 magic grant）→ 回复带下一趟位置与实际
+            // 字节数，**位置只在 `nbytes > 0` 时推进**。
+            let (fd, buf, len, cum_io) = {
+                // 用户载荷：fd@0、buf@8、len@16、cum_io@24
+                // （ipc.h:795-802 的 `mess_lc_vfs_readwrite`）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let buf = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let len = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                (fd, buf, len, u64::from_le_bytes(b8))
+            };
+            // C read.c:290-292 —— `cum_io` 是内部保留格，非零即 EINVAL
+            // （用户态不该填它；填了说明调用方用错了入口）。
+            if cum_io != 0 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (filp_idx, fs_e, ino, mode, orig_pos) = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let filp = match state.filp_table.get(crate::filp::FilpId(filp_idx)) {
+                    Some(f) => f,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode_idx = match filp.vnode {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                (filp_idx, vnode.fs, vnode.ino, vnode.mode, filp.pos)
+            };
+            // C read.c:294-297 —— 两个 EBADF 门：filp 的打开模式要含读位、
+            // 且节点必须是目录（`getdents` 不是"读文件"的通用入口）。
+            let filp_mode = state
+                .filp_table
+                .get(crate::filp::FilpId(filp_idx))
+                .map(|f| f.mode)
+                .unwrap_or(0);
+            if filp_mode & crate::open::R_BIT == 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            if mode & crate::open::S_IFMT != crate::open::S_IFDIR {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            let vmnt_id = match state.vmnt_table.find_by_fs(fs_e) {
+                Some(v) => v,
+                None => return SyscallResult::Error(minix_types::EIO),
+            };
+            // C request.c:316-319 —— FS 未声明 64 位能力且位置越过 INT_MAX
+            // 即 EINVAL。**顺序与 C 有意不同**：C 在这条早退里把刚建的
+            // grant 漏掉了（`cpf_revoke` 只在正常路径调），本臂把能力门
+            // 提到建 grant 之前——正常路径的返回值与 C 一致，早退路径不
+            // 留悬空 grant。
+            let fs_flags = state
+                .vmnt_table
+                .get(vmnt_id)
+                .map(|v| v.fs_flags)
+                .unwrap_or(0);
+            if fs_flags & crate::request::FsFlags::IS64BIT.bits() == 0 && orig_pos > i32::MAX as i64 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // magic grant：FS 往用户缓冲写目录项。C 的 `req_getdents`
+            // 包装（request.c:341-357）首趟带 `CPF_TRY`（用户页没驻留时
+            // 不 panic，回 ERESTART 由 `vm_vfs_procctl_handlemem` 补页后
+            // 重试）——补页重试这一环与读/写臂同样待接，此处先按 C 的首趟
+            // 形态带 `CPF_TRY`。
+            let grant = match state.grant_user_buffer(
+                fs_e,
+                user_e,
+                buf,
+                len,
+                minix_types::CpFlags::WRITE | minix_types::CpFlags::TRY,
+            ) {
+                Ok(g) => g,
+                Err(_) => return SyscallResult::Error(minix_types::EIO),
+            };
+            let req = crate::request::encode_getdents(ino, orig_pos, grant, len as usize);
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Getdents {
+                    grant,
+                    filp: filp_idx,
+                });
+            }
+            state.pending_fs = Some(crate::main_loop::PendingFs {
+                vmnt: vmnt_id.0,
+                fs_e,
+                worker,
+                grant,
+                user: user_e,
+                req,
+            });
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Getsysinfo => {
             // C `do_getsysinfo`（misc.c:59-113）三段：root 门 → `what`
             // 分类 → 精确长度门 + `sys_datacopy(SELF → 调用方)`。
@@ -1563,6 +1688,140 @@ mod tests {
         );
     }
 
+    /// `Getdents` 臂的门与顺序：`cum_io != 0` 先拒（C read.c:290-292，这是
+    /// 内部保留格）；fd 门与类型门是两个**不同的** EBADF（C read.c:294-297
+    /// 的 `filp_mode & R_BIT` 与 `S_ISDIR`）；能力门（FS 未声明 64 位且位置
+    /// 越过 `INT_MAX`）在建 grant 之前生效。
+    #[test]
+    fn test_dispatch_getdents_gates_and_type_branch() {
+        use minix_types::Endpoint;
+
+        let getdents_msg = |fd: i32, buf: u64, len: u64, cum_io: u64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Getdents as i32,
+                ..Message::default()
+            };
+            // SAFETY: getdents 载荷 fd@0、buf@8、len@16、cum_io@24
+            // （ipc.h:795-802 的 mess_lc_vfs_readwrite）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&buf.to_le_bytes());
+                raw[16..24].copy_from_slice(&len.to_le_bytes());
+                raw[24..32].copy_from_slice(&cum_io.to_le_bytes());
+            }
+            m
+        };
+
+        // `cum_io` 非零 → EINVAL（先于一切 fd 检查）。
+        let mut state = seeded(100);
+        state.current_message = getdents_msg(-1, 0x5000, 16, 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // 负 fd 与空槽 → EBADF。
+        state.current_message = getdents_msg(-1, 0x5000, 16, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        state.current_message = getdents_msg(3, 0x5000, 16, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        // 挂上 filp + 目录 vnode，但打开模式只写 → 第一个 EBADF 门。
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 7;
+            v.mode = crate::open::S_IFDIR | 0o755;
+            v.ref_count = 1;
+        }
+        {
+            let f = state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap();
+            f.vnode = Some(vid.get());
+            f.mode = crate::open::W_BIT; // 只写打开
+        }
+        state.current_message = getdents_msg(3, 0x5000, 16, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EBADF),
+            "只写 fd 不能 getdents"
+        );
+
+        // 读位有了但节点是常规文件 → 第二个 EBADF 门。
+        state
+            .filp_table
+            .get_mut(crate::filp::FilpId(fid.get()))
+            .unwrap()
+            .mode = crate::open::R_BIT;
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFREG | 0o644;
+        state.current_message = getdents_msg(3, 0x5000, 16, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EBADF),
+            "getdents 只服务目录"
+        );
+
+        // 目录了：无挂载窗口 → EIO（C `find_vmnt` 的失败面）。
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFDIR | 0o755;
+        state.current_message = getdents_msg(3, 0x5000, 16, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EIO)
+        );
+
+        // 有挂载窗口但 FS 未声明 64 位能力 + 位置越过 INT_MAX → EINVAL
+        // （C request.c:316-319）。
+        let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+        v.fs = Endpoint::MFS;
+        v.dev = 1;
+        v.fs_flags = 0;
+        state
+            .filp_table
+            .get_mut(crate::filp::FilpId(fid.get()))
+            .unwrap()
+            .pos = i32::MAX as i64 + 1;
+        state.current_message = getdents_msg(3, 0x5000, 16, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // 声明了 64 位能力：能力门放行，走到 worker 槽与 grant（宿主构建下
+        // grant 不可达 → 诚实回 EIO，与 C 在 grant 失败处 panic 的"内部
+        // 错误对外面"同值）。先绑一个 worker 槽——没槽时臂回 EAGAIN
+        // （C `handle_work:150-151`），那是另一条门，不在这条断言里。
+        state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap().fs_flags =
+            crate::request::FsFlags::IS64BIT.bits();
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+        state.current_message = getdents_msg(3, 0x5000, 16, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getdents),
+            SyscallResult::Error(minix_types::EIO)
+        );
+    }
+
     /// `Fstat` 臂（对话臂模板）：fd 无效/空槽在**任何 I/O 之前**就回
     /// EBADF（C `get_filp` 的门）；挂载窗口缺失回 EIO（C `find_vmnt`）；
     /// 门全过才走 grant（宿主构建下 `grant_magic` 不可达 → 诚实回 EIO，
@@ -1887,7 +2146,8 @@ mod tests {
     fn test_dispatch_fs_dialogue_arms_nosys() {
         // FS/驱动对话臂：未接线的仍 fail-closed Nosys（诚实契约，模式 60）。
         // 已按模板接线的：`Read`/`Write`/`Fstat`/`Stat`/`Ftruncate`/`Lseek`/
-        // `Open`/`Mkdir`。这里取还没接的 `Unlink` 作代表——它同属"FS 对话族"。
+        // `Open`（含 `O_TRUNC`）/`Mkdir`/`Creat`/`Getdents`。这里取还没接的
+        // `Unlink` 作代表——它同属"FS 对话族"。
         let mut state = seeded(100);
         let call = VfsCallNum::Unlink;
         state.current_message = Message {

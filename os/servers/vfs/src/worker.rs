@@ -89,6 +89,16 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `getdents` 的对话半（`REQ_GETDENTS`）：C `do_getdents`（read.c:282-317）
+    /// 的回复处理与 read/write 不同——**只有 `nbytes > 0` 才推进 filp 位置**
+    /// （C `if (r > 0) rfilp->filp_pos = new_pos;`），也不动 vnode 大小，
+    /// 所以不能复用 `Transfer`。
+    Getdents {
+        /// 已发给 FS 的 magic grant（收尾时撤销）。
+        grant: i32,
+        /// 目标 filp 下标（位置写回处）。
+        filp: usize,
+    },
     /// `open` 的 `O_TRUNC` 分支（`REQ_FTRUNC`）：C `common_open:150-157` 对
     /// 常规文件先过 W 位门、再 `truncate_vnode(vp, 0)`，**截断结果被忽略**
     /// （C 没接返回值），随后照常装配 fd/filp。续接里按此继续本地半

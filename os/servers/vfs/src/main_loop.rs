@@ -1193,6 +1193,37 @@ impl VfsState {
                     }
                     reply_payload = Some(m);
                 }
+                crate::worker::WorkerCont::Getdents { grant, filp } => {
+                    // C `req_getdents_actual` 的收尾（request.c:330-336）：
+                    // 回复的 `seek_pos` 是下一趟的位置、`nbytes` 是本次写出
+                    // 的字节数，而**位置只在 `nbytes > 0` 时推进**
+                    // （read.c:311-313 的 `if (r > 0) rfilp->filp_pos =
+                    // new_pos;`）——空目录/缓冲满都是 `nbytes == 0`，位置
+                    // 必须留在原处，否则下一趟会跳过条目。
+                    let _ = self.revoke_grant(grant);
+                    if status == 0 {
+                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        let raw = unsafe { &reply.m_u.raw };
+                        let mut b8 = [0u8; 8];
+                        b8.copy_from_slice(
+                            &raw[minix_types::getdents_reply_off::SEEK_POS
+                                ..minix_types::getdents_reply_off::SEEK_POS + 8],
+                        );
+                        let new_pos = i64::from_le_bytes(b8);
+                        b8.copy_from_slice(
+                            &raw[minix_types::getdents_reply_off::NBYTES
+                                ..minix_types::getdents_reply_off::NBYTES + 8],
+                        );
+                        let nbytes = i64::from_le_bytes(b8);
+                        if nbytes > 0
+                            && let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp))
+                        {
+                            f.pos = new_pos;
+                        }
+                        // 用户拿到的是字节数（C 返回 `nbytes`，不是 0）。
+                        status = nbytes as i32;
+                    }
+                }
                 crate::worker::WorkerCont::Ftrunc { vnode, newsize } => {
                     // 成功时更新 vnode 大小（C `truncate_vnode` 尾部的
                     // `vp->v_size = newsize`；失败不动）。
@@ -2887,6 +2918,60 @@ mod tests {
             "状态＝实际读到的字节数（C cum_io）"
         );
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `WorkerCont::Getdents`：回复的 `seek_pos`/`nbytes` 取共享表
+    /// （`getdents_reply_off`），**位置只在 `nbytes > 0` 时推进**
+    /// （C read.c:311-313）——空目录或窗口装不下一整条目录项时
+    /// `nbytes == 0`，位置若动了下一趟就跳过条目；用户拿到的是字节数。
+    #[test]
+    fn test_worker_continuation_getdents_position_gate() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+        state.filp_table.get_mut(fid).unwrap().pos = 0x100;
+
+        let run = |state: &mut VfsState, status: i32, pos: i64, nbytes: i64| {
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .expect("空闲槽");
+            let mut reply = Message { m_type: status, ..Message::default() };
+            // SAFETY(test): 按 getdents_reply_off 填 seek_pos/nbytes。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[0..8].copy_from_slice(&pos.to_le_bytes());
+                raw[8..16].copy_from_slice(&nbytes.to_le_bytes());
+            }
+            {
+                let wp = state.worker_pool.get_mut(idx).unwrap();
+                wp.cont = Some(WorkerCont::Getdents { grant: 5, filp: fid.get() });
+                wp.sendrec = Some(reply);
+                wp.state = crate::worker::WorkerState::Busy;
+            }
+            state.run_worker_continuations();
+            assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+            state.take_reply().expect("回复").1.m_type
+        };
+
+        // 空目录（nbytes == 0）：位置**不动**，用户拿到 0。
+        assert_eq!(run(&mut state, 0, 0x180, 0), 0);
+        assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x100);
+
+        // 真读出条目：位置推进到回复给的新位置，用户拿到字节数。
+        assert_eq!(run(&mut state, 0, 0x180, 48), 48);
+        assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x180);
+
+        // FS 报错：位置不动，错误原样回用户。
+        assert_eq!(run(&mut state, minix_types::ENOTDIR, 0x200, 12), minix_types::ENOTDIR);
+        assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x180);
     }
 
     /// 续接层（`run_worker_continuations`）：回复已落槽的作业按续接标识

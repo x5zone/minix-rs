@@ -329,6 +329,36 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_GETDENTS` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_getdents { ino_t inode; off_t seek_pos; cp_grant_id_t
+/// grant; size_t mem_size; }`（ipc.h:1990-2000，`request.c:308-315` 的
+/// `req_getdents_actual`）。`mem_size` 是目录项窗口的大小，数据经 `grant`
+/// 由 FS 直接写进调用方缓冲；位置由 VFS 从 filp 取出随请求带上。
+pub mod getdents_req_off {
+    /// `ino_t inode`（目录的节点号）。
+    pub const INODE: usize = 0;
+    /// `off_t seek_pos`（本趟从目录的哪个偏移开始）。
+    pub const SEEK_POS: usize = 8;
+    /// `cp_grant_id_t grant`（FS 往用户缓冲写的 magic grant）。
+    pub const GRANT: usize = 16;
+    /// `size_t mem_size`（窗口字节数）。
+    pub const MEM_SIZE: usize = 24;
+}
+
+/// `REQ_GETDENTS` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+///
+/// C: `mess_fs_vfs_getdents { off_t seek_pos; size_t nbytes; }`
+/// （ipc.h:153-159）——与请求载荷是两套结构。字段序与
+/// [`transfer_reply_off`] 相同，但 C 里是两个独立结构体，这里也各自成表
+/// （对照修改时不必去猜另一个请求号的布局）。
+pub mod getdents_reply_off {
+    /// `off_t seek_pos`（下一趟的目录偏移）。
+    pub const SEEK_POS: usize = 0;
+    /// `size_t nbytes`（本次实际写出的字节数）。
+    pub const NBYTES: usize = 8;
+}
+
 /// `REQ_READSUPER` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_readsuper`（ipc.h:2112-2119）：`dev_t device`、
@@ -462,6 +492,13 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // getdents：请求四域（inode/seek_pos/grant/mem_size）+ 回复两域。
+        assert_eq!(getdents_req_off::INODE, 0);
+        assert_eq!(getdents_req_off::SEEK_POS, 8);
+        assert_eq!(getdents_req_off::GRANT, 16);
+        assert_eq!(getdents_req_off::MEM_SIZE, 24);
+        assert_eq!(getdents_reply_off::SEEK_POS, 0);
+        assert_eq!(getdents_reply_off::NBYTES, 8);
         // reads超級：device/flags/path_len/grant。
         assert_eq!(readsuper_req_off::DEVICE, 0);
         assert_eq!(readsuper_req_off::FLAGS, 8);

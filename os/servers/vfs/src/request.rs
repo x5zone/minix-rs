@@ -505,6 +505,33 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_GETDENTS` 请求（C `req_getdents_actual` — request.c:288-336）。
+///
+/// 载荷 `{inode, seek_pos, grant, mem_size}`；数据面由 FS 经 grant 往用户
+/// 缓冲写目录项（`CPF_WRITE` 的 magic grant）。位置由调用方从 filp 取出
+/// 随请求带上——FS 不持有位置（C `read.c:309` 传的是 `rfilp->filp_pos`）。
+///
+/// 偏移取共享权威 `minix_types::getdents_req_off`（FS 侧解码用同一张表）。
+pub fn encode_getdents(ino: u64, pos: i64, grant: i32, mem_size: usize) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_GETDENTS,
+        ..Message::default()
+    };
+    // SAFETY: REQ_GETDENTS 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::getdents_req_off::INODE..minix_types::getdents_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::getdents_req_off::SEEK_POS..minix_types::getdents_req_off::SEEK_POS + 8]
+            .copy_from_slice(&pos.to_le_bytes());
+        raw[minix_types::getdents_req_off::GRANT..minix_types::getdents_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+        raw[minix_types::getdents_req_off::MEM_SIZE..minix_types::getdents_req_off::MEM_SIZE + 8]
+            .copy_from_slice(&(mem_size as u64).to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_LOOKUP` 请求（C `req_lookup` — request.c:430-500）。
 ///
 /// 载荷是 `mess_vfs_fs_lookup`：路径 grant（**`CPF_READ|CPF_WRITE`** ——
@@ -1362,6 +1389,37 @@ mod tests {
             &raw[minix_types::transfer_req_off::BYTES..minix_types::transfer_req_off::BYTES + 8],
         );
         assert_eq!(u64::from_le_bytes(b8), 64);
+    }
+
+    /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
+    /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
+    /// 这里只钉请求侧，防"看着回复表写请求"。
+    #[test]
+    fn test_encode_getdents_fields() {
+        let m = encode_getdents(0x77, 0x800, 9, 4096);
+        assert_eq!(m.m_type, minix_types::REQ_GETDENTS);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::getdents_req_off::INODE..minix_types::getdents_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x77);
+        b8.copy_from_slice(
+            &raw[minix_types::getdents_req_off::SEEK_POS
+                ..minix_types::getdents_req_off::SEEK_POS + 8],
+        );
+        assert_eq!(i64::from_le_bytes(b8), 0x800);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::getdents_req_off::GRANT..minix_types::getdents_req_off::GRANT + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 9);
+        b8.copy_from_slice(
+            &raw[minix_types::getdents_req_off::MEM_SIZE
+                ..minix_types::getdents_req_off::MEM_SIZE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 4096);
     }
 
     #[test]
