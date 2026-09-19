@@ -174,6 +174,10 @@ pub struct Session {
     /// `None` = 尚未启用（`u` 回 "nothing to undo"）。
     undo_current: Option<usize>,
     undo_last: Option<usize>,
+    /// `isglobal`（C main.c:91）：全局命令执行中——清栈被抑制（整段
+    /// 全局是一条撤销单位）、嵌套 `g` 被拒、`s` 无匹配不算错、裸地址
+    /// 缺省即当前行。
+    is_global: bool,
     /// The suffix `gflag` of the command that opened text-input mode; the
     /// post-input display uses it (`exec_command` returns it, and the
     /// input lines are consumed inside the same call in C).
@@ -209,6 +213,7 @@ impl Session {
             undo_stack: Vec::new(),
             undo_current: None,
             undo_last: None,
+            is_global: false,
             prompt: Prompt::star(),
             opt_prompt: opt_prompt.and_then(|text| Prompt::from(text).ok()),
         }
@@ -446,6 +451,125 @@ fn delete_range<S: TextStore>(
         text,
     });
     Ok(())
+}
+
+/// `g`/`v` 的执行半（C `glbl.c` 全篇 + `main.c:562-574`）：
+///
+/// 1. 范围缺省整缓冲（`check_addr_range(1, addr_last)`）；尾形式
+///    `<定界>模式<定界>子命令`（空子命令不隐含 `p`——本构建无
+///    BACKWARDS，glbl.c:56-63）；空模式复用上一模式。
+/// 2. 建活跃表（`build_active_list`，glbl.c:43-67）：`g` 收匹配行、
+///    `v` 收不匹配行，升序记内容快照。
+/// 3. 清撤销栈一次（exec_global:143）——整段全局是**一条**撤销单位，
+///    子命令里的清栈被 `is_global` 抑制。
+/// 4. 逐活跃行执行子命令（`exec_global:104-144`）：当前行落到活跃行
+///    上；活跃行已被删/已改则跳过（定位规则见下）；子命令出错即中止
+///    整段全局（已执行的变更保留，C 同）。嵌套 `g` 在派发处拒绝
+///    （main.c:562-564）。
+///
+/// **登记偏差（活跃行的定位）**：C 用行节点身份（被删行的槽位置空、
+/// `next_active_node` 跳过），本模型按匹配时的内容从上次命中处向后
+/// 重定位——计数减少视为有行被删，从命中行重扫；否则从下一行起扫。
+/// 重复内容的行在搬移/插入类子命令下可能与 C 差位。
+fn global_command<S: TextStore, I: EditorIo>(
+    store: &mut S,
+    sess: &mut Session,
+    io: &mut I,
+    line: &str,
+    cursor: usize,
+    range: &AddressRange,
+) -> Result<Flow, ExecError> {
+    if sess.is_global {
+        return Err(err("cannot nest global commands"));
+    }
+    let count = store.line_count();
+    let mut probe = StoreSearch { store, sess: &*sess };
+    let (from, to) =
+        evaluate_range_with(range, &context_of(store, sess), (1, count), line, &mut probe)
+            .map_err(map_store_error)?;
+    // 探针的借用到此为止：后面的建表与子命令走可变借用。
+    let rest = &line[cursor..];
+    let bytes = rest.as_bytes();
+    if bytes.is_empty() || bytes[0] == b' ' {
+        return Err(err("invalid pattern delimiter"));
+    }
+    let delim = bytes[0];
+    let (pspan, after) =
+        crate::addr::scan_pattern(bytes, 1, delim).map_err(map_store_error)?;
+    let mut pattern_len = pspan.len as usize;
+    let mut pattern_buf = [0u8; MAX_TEXT];
+    pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
+    if pattern_len == 0 {
+        // 空模式复用上一模式（C `get_compiled_pattern` 的 expr 缓存）。
+        pattern_len = sess.last_pattern_len;
+        pattern_buf[..pattern_len].copy_from_slice(sess.last_pattern_bytes());
+    }
+    if pattern_len == 0 {
+        return Err(err("no previous pattern"));
+    }
+    sess.remember_pattern(&pattern_buf[..pattern_len])?;
+    let pattern_text =
+        core::str::from_utf8(&pattern_buf[..pattern_len]).map_err(|_| err("invalid content"))?;
+    let compiled = compile_basic(pattern_text).map_err(|_| err("invalid pattern"))?;
+    // `rest[0]` 就是命令字母（`g` 或 `v`）。
+    // `rest[0]` 是定界符；命令字母在 `line[cursor - 1]`（`g` 或 `v`）。
+    let inverse = line.as_bytes()[cursor - 1] == b'v';
+    let mut active: Vec<Vec<u8>> = Vec::new();
+    let mut n = from;
+    while n <= to {
+        let mut buf = [0u8; MAX_TEXT];
+        let used = store.read_line(n, &mut buf).map_err(map_store_error)?;
+        let text = core::str::from_utf8(&buf[..used]).map_err(|_| err("invalid content"))?;
+        if compiled.is_match(text) != inverse {
+            active.push(buf[..used].to_vec());
+        }
+        n += 1;
+    }
+    if !sess.is_global {
+        clear_undo(store, sess);
+    }
+    let cmd = &rest[after..];
+    let was_global = sess.is_global;
+    sess.is_global = true;
+    let mut result = Ok(Flow::Continue);
+    let mut cursor_pos = 1usize;
+    for want in &active {
+        // 内容重定位：从上一命中处向后找同文行（见函数头偏差注记）。
+        let mut found = None;
+        let mut n = cursor_pos;
+        while n <= store.line_count() {
+            let mut b = [0u8; MAX_TEXT];
+            let used = store.read_line(n, &mut b).map_err(map_store_error)?;
+            if &b[..used] == want.as_slice() {
+                found = Some(n);
+                break;
+            }
+            n += 1;
+        }
+        let Some(at) = found else { continue };
+        sess.current = at;
+        if cmd.is_empty() {
+            // 空子命令：本构建不隐含 `p`（glbl.c:56-63 无 BACKWARDS），
+            // 只落当前行。
+            cursor_pos = at + 1;
+            continue;
+        }
+        let before = store.line_count();
+        result = step_inner(store, sess, cmd, io);
+        if result.is_err() || matches!(result, Ok(Flow::Quit) | Ok(Flow::QuitModified)) {
+            break;
+        }
+        // 游标推进：计数减少 = 有行被删，下一个活跃行可能就落在命中行
+        // 上（重扫）；否则命中行若存活即消费掉（下一行起扫）。
+        let survived = at <= store.line_count() && {
+            let mut b = [0u8; MAX_TEXT];
+            let used = store.read_line(at, &mut b).map_err(map_store_error)?;
+            &b[..used] == want.as_slice()
+        };
+        cursor_pos = if store.line_count() < before || !survived { at } else { at + 1 };
+    }
+    sess.is_global = was_global;
+    result
 }
 
 /// `pop_undo_stack`（undo.c:71-105）：`u` 的本体——逆序回放撤销栈，把
@@ -945,8 +1069,15 @@ fn step_inner<S: TextStore, I: EditorIo>(
         // defaulting to the line after current (`main.c:884-890`,
         // `check_addr_range(1, current_addr + 1)`). Display moves current
         // to that line, which is how a lone `3` navigates.
-        let (_, to) = evaluate_range_with(&range, &context_of(store, sess), (1, sess.current + 1), line, &mut probe)
-            .map_err(map_store_error)?;
+        let step_past = usize::from(!sess.is_global);
+        let (_, to) = evaluate_range_with(
+            &range,
+            &context_of(store, sess),
+            (1, sess.current + step_past),
+            line,
+            &mut probe,
+        )
+        .map_err(map_store_error)?;
         display(store, sess, io, to, to, 0)?;
         return Ok(Flow::Continue);
     }
@@ -965,7 +1096,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
             ensure_line_end(&line[cursor..])?;
             let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             sess.pending_input = Some(second + 1);
             sess.pending_gflag = g;
             Ok(Flow::Continue)
@@ -978,7 +1111,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
             }
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             sess.pending_input = Some(second);
             sess.pending_gflag = g;
             Ok(Flow::Continue)
@@ -988,7 +1123,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             delete_range(store, sess, from, to)?;
             sess.pending_input = Some(from);
             sess.pending_gflag = g;
@@ -999,7 +1136,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             delete_range(store, sess, from, to)?;
             // `INC_MOD(current_addr, addr_last)` (`ed.h:101`) then
             // `if (addr != 0)`: slide to the line after the deleted block
@@ -1075,7 +1214,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
             let mut target_buf = [0u8; MAX_FILENAME + 1];
             let target = target_name(sess, typed, &mut target_buf)?;
             // C 522/537：e/E 无条件清撤销栈（在删旧缓冲之前）。
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             if count >= 1 {
                 delete_range(store, sess, 1, count)?;
             }
@@ -1089,7 +1230,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
             reject_glued(&modifiers, false)?;
             let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, count), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             let mut taken = [0u8; MAX_FILENAME + 1];
             let kind = take_filename(&line[cursor..], sess, &mut taken)?;
             let mut name_buf = [0u8; MAX_FILENAME + 1];
@@ -1232,7 +1375,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
             let len = to - from + 1;
             let mut buf = [0u8; MAX_TEXT];
             let joined = join_lines(store, from, to, &mut buf)?;
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             if command == Command::Move {
                 if dest + 1 == from || dest == to {
                     // `move_lines`' no-op shape (`main.c:1141`): the block
@@ -1271,7 +1416,9 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 &mut probe,
             )
                 .map_err(|_| err("invalid address"))?;
-            clear_undo(store, sess);
+            if !sess.is_global {
+                clear_undo(store, sess);
+            }
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
             if from != to {
@@ -1355,13 +1502,14 @@ fn step_inner<S: TextStore, I: EditorIo>(
             pop_undo(store, sess)?;
             finish(store, sess, io, g)
         }
-        Command::Global | Command::GlobalInteractive | Command::Shell => match command {
+        Command::Global => {
+            global_command(store, sess, io, line, cursor, &range)
+        }
+        Command::GlobalInteractive | Command::Shell => match command {
             Command::Shell if sess.secure || sess.restricted => {
                 Err(err("shell access restricted"))
             }
-            Command::Global | Command::GlobalInteractive => {
-                Err(err("global commands not wired"))
-            }
+            Command::GlobalInteractive => Err(err("interactive global not wired")),
             _ => Err(err("shell access not wired")),
         },
     }
@@ -1576,7 +1724,9 @@ fn substitute_command<S: TextStore, I: EditorIo>(
         n += 1;
     }
     sess.current = last_changed.unwrap_or(original_current);
-    if last_changed.is_none() {
+    // C `sub.c:175` 的 `!(gflag & GLB)`：全局里 `s` 无匹配不算错
+    // （main.c:755 置 GLB）。
+    if last_changed.is_none() && !sess.is_global {
         return Err(err("no match"));
     }
     // 后缀打印（C：SGP 折 GPR 并清 GLS|GNP，main.c:752-754；其余与
@@ -2123,6 +2273,80 @@ mod tests {
         assert_eq!(&line[..4], b"keep");
     }
 
+    /// `g/pat/cmd`：匹配行逐个执行子命令（C `glbl.c` 的 exec_global）。
+    /// 经典三件：删除全部匹配、逐行替换、打印。
+    #[test]
+    fn test_global_delete_substitute_and_print() {
+        // `g/x/d`：删光匹配行。
+        let (mut store, mut sess) = seeded(&["x1", "keep", "x2", "also"]);
+        sess.current = 1;
+        let mut io = io_none();
+        step(&mut store, &mut sess, "g/x/d", &mut io).unwrap();
+        assert_eq!(store.line_count(), 2);
+        let mut line = [0u8; 64];
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..4], b"keep");
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..4], b"also");
+        // `v/x/d`：删光不匹配行（反向）。
+        let (mut store, mut sess) = seeded(&["x1", "keep", "x2"]);
+        sess.current = 1;
+        step(&mut store, &mut sess, "v/x/d", &mut io).unwrap();
+        assert_eq!(store.line_count(), 2);
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..2], b"x1");
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..2], b"x2");
+        // `g/o/s/o/0/`：逐行替换（每行首替），后缀 `p` 的打印走子命令
+        // 自己的通道。
+        let (mut store, mut sess) = seeded(&["foo", "boo"]);
+        sess.current = 1;
+        step(&mut store, &mut sess, "g/o/s/o/0/", &mut io).unwrap();
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..3], b"f0o");
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..3], b"b0o");
+    }
+
+    /// 全局的撤销：整段全局是**一条**撤销单位（C exec_global:143 清栈
+    /// 一次，子命令里的清栈被 isglobal 抑制）。
+    #[test]
+    fn test_global_undo_is_one_unit() {
+        let (mut store, mut sess) = seeded(&["x1", "keep", "x2"]);
+        sess.current = 1;
+        let mut io = io_none();
+        step(&mut store, &mut sess, "g/x/d", &mut io).unwrap();
+        assert_eq!(store.line_count(), 1);
+        step(&mut store, &mut sess, "u", &mut io).unwrap();
+        assert_eq!(store.line_count(), 3, "一次 `u` 撤销整段全局");
+        // 嵌套 `g` 被拒（C main.c:562-564）。
+        step(&mut store, &mut sess, "g/x/g/x/d", &mut io).unwrap_err();
+        // 错误中止：子命令出错即中止整段（已执行的变更保留，C 同）。
+        let (mut store, mut sess) = seeded(&["a1", "a2"]);
+        sess.current = 1;
+        // `y` 没有对应的命令字母（C 的分派表里无此支）。
+        assert_eq!(
+            step(&mut store, &mut sess, "g/a/y", &mut io).unwrap_err().message,
+            "unknown command"
+        );
+    }
+
+    /// 空子命令不隐含 `p`（本构建无 BACKWARDS，glbl.c:56-63）：只落
+    /// 当前行到最后一个活跃行。
+    #[test]
+    fn test_global_empty_cmd_moves_current_only() {
+        let (mut store, mut sess) = seeded(&["m1", "mid", "m2"]);
+        sess.current = 1;
+        let mut io = io_none();
+        step(&mut store, &mut sess, "g/m/", &mut io).unwrap();
+        assert_eq!(sess.current, 3, "当前行落到最后一个活跃行");
+        assert_eq!(
+            io.out_text(),
+            "",
+            "空子命令不打印（非 BACKWARDS 构建）"
+        );
+    }
+
     fn io_none() -> ScriptIo {
         ScriptIo::new()
     }
@@ -2132,8 +2356,8 @@ mod tests {
         let (mut store, mut sess) = seeded(&["a"]);
         let mut io = ScriptIo::new();
         assert_eq!(
-            step(&mut store, &mut sess, "1,2g/p/d", &mut io).unwrap_err().message,
-            "global commands not wired"
+            step(&mut store, &mut sess, "1,2G/p", &mut io).unwrap_err().message,
+            "interactive global not wired"
         );
         assert_eq!(
             step(&mut store, &mut sess, "!ls", &mut io).unwrap_err().message,
