@@ -227,7 +227,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Umount
         | VfsCallNum::Sync
         | VfsCallNum::Fsync
-        | VfsCallNum::Access
         | VfsCallNum::Chdir
         | VfsCallNum::Fchdir
         | VfsCallNum::Chroot
@@ -1078,6 +1077,92 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
 
         // ── 服务器自用臂：getsysinfo（VFS_GETSYSINFO = +48）──
         // ── 对话臂模板：getdents（目录读；只有目录能过类型门）──
+        // ── 路径臂模板：access（走完即判，无 FS 往返）──
+        VfsCallNum::Access => {
+            // C `do_access`（protect.c:199-233）：先验 mode（只允许
+            // `R_OK|W_OK|X_OK` 的组合或 `F_OK`）→ `copy_path` → `eat_path`
+            // → `forbidden(fp, vp, access)`（**真实** uid/gid）。
+            let (name_len, mode, inline) = {
+                // 用户载荷与 open 同形（`mess_lc_vfs_path`：name@0、len@8、
+                // flags@16、mode@20、buf@24 内联路径）——access 取 `mode`。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let len = u64::from_le_bytes(b8);
+                let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
+                (len, mode, raw[24..].to_vec())
+            };
+            // C protect.c:216-217 —— 位掩码先验：`F_OK`(0) 之外只认
+            // `R_OK|W_OK|X_OK`（4|2|1）；别的位就是 EINVAL，不做权限判断。
+            if mode & !0o7 != 0 && mode != 0 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                let n = (name_len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => p,
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            } else {
+                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            };
+            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            // 走路径时的 uid/gid 只用于 `advance` 的搜索权限判断（C
+            // `advance` 内部用有效 id）；access 自己的判断在走完之后用真实
+            // id 重做一遍（protect.c:255-256）。
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Access { user: user_e, access: mode },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Getdents => {
             // C `do_getdents`（read.c:282-317）：载荷与 read/write 同形
             // （`mess_lc_vfs_readwrite`，但 `cum_io` 这一格**必须为 0**）
@@ -1820,6 +1905,62 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Getdents),
             SyscallResult::Error(minix_types::EIO)
         );
+    }
+
+    /// `Access` 臂的位掩码先验（C protect.c:216-217）：`F_OK`(0) 之外只认
+    /// `R_OK|W_OK|X_OK`（4|2|1）的组合——多出别的位就是 EINVAL，且这条门
+    /// 在取路径与走遍历**之前**生效（别把它放到权限判断之后）。
+    #[test]
+    fn test_dispatch_access_mode_gate() {
+        use minix_types::Endpoint;
+
+        let access_msg = |mode: u32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Access as i32,
+                ..Message::default()
+            };
+            // SAFETY: access 载荷与 open 同形（name@0、len@8、mode@20、
+            // 内联路径@24）——给一条两字节路径，让位掩码门之后的取路径与
+            // 走遍历真的被执行到。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[8..16].copy_from_slice(&3u64.to_le_bytes());
+                raw[20..24].copy_from_slice(&mode.to_le_bytes());
+                raw[24] = b'/';
+                raw[25] = b'x';
+                raw[26] = 0; // fetch_name 的长度含结尾 NUL（utility.c:60-90）
+            }
+            m
+        };
+
+        let mut state = seeded(100);
+        // 0o10 = 8：多出 R/W/X 之外的位 → EINVAL。
+        state.current_message = access_msg(0o10);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Access),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+        // 0o7（R|W|X 全给）与 0（F_OK）都过门；宿主下走路径的 grant 不可达
+        // → EIO（诚实边界，与其它路径臂同值）。先绑一个 worker 槽——没槽
+        // 时臂回 EAGAIN（C `handle_work:150-151`），那是另一条门。
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+        for mode in [0o7u32, 0] {
+            state.current_message = access_msg(mode);
+            assert_eq!(
+                dispatch_syscall(&mut state, VfsCallNum::Access),
+                SyscallResult::Error(minix_types::EIO),
+                "mode={mode} 过位掩码门后停在 grant"
+            );
+        }
     }
 
     /// `Fstat` 臂（对话臂模板）：fd 无效/空槽在**任何 I/O 之前**就回

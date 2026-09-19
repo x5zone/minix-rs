@@ -1280,6 +1280,61 @@ impl VfsState {
                             continue;
                         }
                         Ok(crate::path::WalkStep::Done(node)) => match follow {
+                            crate::worker::PathFollow::Access { user: _acc_user, access } => {
+                                // C `do_access`（protect.c:216-231）的本地半：
+                                // 走完就判权限——`forbidden` 用**真实** uid/gid
+                                // （protect.c:255-256 的 `job_call_nr ==
+                                // VFS_ACCESS` 特例），根用户另有 rwx 全给的面。
+                                let _ = _acc_user;
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
+                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                        Some(fp) => (
+                                            fp.real_uid,
+                                            fp.real_gid,
+                                            fp.eff_uid,
+                                            fp.eff_gid,
+                                            fp.supplemental_groups[..fp.ngroups.min(16)]
+                                                .to_vec(),
+                                        ),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                let readonly_fs = self
+                                    .vmnt_table
+                                    .find_by_fs(node.fs_e)
+                                    .and_then(|v| self.vmnt_table.get(v))
+                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                                    .unwrap_or(false);
+                                let verdict = crate::protect::forbidden_decision(
+                                    &crate::protect::ForbidInput {
+                                        real_uid,
+                                        real_gid,
+                                        eff_uid,
+                                        eff_gid,
+                                        is_access_call: true,
+                                        file_uid: node.uid,
+                                        file_gid: node.gid,
+                                        mode: node.mode,
+                                        access: access as u8,
+                                        is_dir: node.mode & crate::open::S_IFMT
+                                            == crate::open::S_IFDIR,
+                                        supp: &supp,
+                                        readonly_fs,
+                                    },
+                                );
+                                let status = match verdict {
+                                    Ok(()) => 0,
+                                    Err(e) => e.to_errno(),
+                                };
+                                self.finish_worker_job(idx, fp_slot, status);
+                                continue;
+                            }
                             crate::worker::PathFollow::Open { user: _open_user, oflags } => {
                                 let _ = _open_user;
                                 self.finish_open_local(idx, fp_slot, &node, oflags);
@@ -2542,6 +2597,128 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::Access`：走完即判权限，**没有 FS 往返**——`forbidden`
+    /// 对 access(2) 用**真实** uid/gid（C protect.c:255-256 的
+    /// `job_call_nr == VFS_ACCESS` 特例）。这里的现场特意让真实 id 是文件
+    /// 属主、有效 id 不是：若实现错用有效 id，W_OK 会被误拒。
+    #[test]
+    fn test_path_follow_access_uses_real_ids() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (slot, idx, walk)
+        };
+        let done_reply = |mode: u32, uid: u32, gid: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 mode/uid/gid（ino 用不着）。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&5u64.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&mode.to_le_bytes());
+                raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                    .copy_from_slice(&uid.to_le_bytes());
+                raw[minix_types::lookup_reply_off::GID..minix_types::lookup_reply_off::GID + 4]
+                    .copy_from_slice(&gid.to_le_bytes());
+            }
+            reply
+        };
+        let run = |state: &mut VfsState, idx: usize, slot: minix_types::UserSlot, walk, access: u32, reply: Message| {
+            {
+                let wp = state.worker_pool.get_mut(idx).unwrap();
+                wp.cont = Some(WorkerCont::Path);
+                wp.path = Some(PathPending {
+                    walk,
+                    grant: 9,
+                    follow: PathFollow::Access { user, access },
+                });
+                wp.sendrec = Some(reply);
+                wp.state = crate::worker::WorkerState::Busy;
+            }
+            state.run_worker_continuations();
+            assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+            let _ = slot;
+            state.take_reply().expect("回复").1.m_type
+        };
+
+        // 真实 id = 属主(0)、有效 id = 1000：W_OK 按真实 id 判 → 允许。
+        let mut state = VfsState::new();
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.real_uid = 0;
+            fp.eff_uid = 1000;
+            fp.real_gid = 0;
+            fp.eff_gid = 1000;
+        }
+        assert_eq!(
+            run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            0,
+            "access 用真实 id 判：真实 id 是属主 → W_OK 允许"
+        );
+
+        // 属主是 0、真实 id 也是 1000（换一组）：W_OK 被拒。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.real_uid = 1000;
+            fp.real_gid = 1000;
+        }
+        assert_eq!(
+            run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            minix_types::EACCES,
+            "非属主对 0644 无写权"
+        );
+        // 同一个 0644：别人的读位在（other r）→ R_OK 允许。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.real_uid = 1000;
+            fp.real_gid = 1000;
+        }
+        assert_eq!(
+            run(&mut state, idx, slot, walk.clone(), 0o4, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            0
+        );
+
+        // 只读挂载 + W_OK → EROFS（C `read_only` 在 forbidden 尾部）。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.real_uid = 0;
+            fp.real_gid = 0;
+        }
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+            v.fs = Endpoint::MFS;
+            v.dev = 1;
+            v.flags = crate::vmnt::VmntFlags::READONLY;
+        }
+        assert_eq!(
+            run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            minix_types::EROFS
+        );
     }
 
     /// `open` 的 `O_TRUNC` 分支（C `common_open:150-157`）：常规文件 +

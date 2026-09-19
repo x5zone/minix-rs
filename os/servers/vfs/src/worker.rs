@@ -172,6 +172,15 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `access(path, mode)`：走完就结束——权限判断全在本地
+    /// （C `do_access`，protect.c:199-233：`eat_path` 之后只剩一次
+    /// `forbidden`），**没有 FS 往返**，所以这个 follow 的续接体直接回状态。
+    Access {
+        /// 调用方端点（回复目的地）。
+        user: Endpoint,
+        /// 用户给的 `mode`（`R_OK`/`W_OK`/`X_OK`/`F_OK` 的位组合）。
+        access: u32,
+    },
     /// `stat(path, buf)`：按走完的 ino 发 `REQ_STAT`（C `do_stat` →
     /// `req_stat`），随后由 `WorkerCont::Fstat` 续接收尾。
     Stat {
