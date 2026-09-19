@@ -209,7 +209,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
         | VfsCallNum::Creat
-        | VfsCallNum::Mkdir
         | VfsCallNum::Mknod
         | VfsCallNum::Link
         | VfsCallNum::Unlink
@@ -594,6 +593,101 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 user: user_e,
                 req: crate::request::encode_ftrunc(ino, length, 0),
             });
+            SyscallResult::Suspend
+        }
+
+        // ── 路径族臂：mkdir（走父目录 → REQ_MKDIR）──
+        VfsCallNum::Mkdir => {
+            // C `do_mkdir`（open.c:564-598）：取路径 → `last_dir`（**走父
+            // 目录**）→ 目录门 + 权限门 → `req_mkdir(父 ino, lastc, uid,
+            // gid, bits)`。路径拆成"父目录 + 最后组件"用 `last_dir_split`
+            // （C `last_dir` 的同一件事，含 NAME_MAX 门）。
+            let (path, mode) = {
+                // 载荷与 open 同形（`mess_lc_vfs_path`：name@0、len@8、
+                // flags@16、mode@20、buf@24）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let len = u64::from_le_bytes(b8);
+                let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
+                let inline = &raw[24..];
+                if len as usize > minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                    return SyscallResult::Error(minix_types::ENAMETOOLONG);
+                }
+                let n = (len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => (p, mode),
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let split = match crate::path::last_dir_split(&path) {
+                Ok(sp) => sp,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // C `do_mkdir:583` —— 权限位 = I_DIRECTORY | (mode & RWX & umask)。
+            let umask = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.umask)
+                .unwrap_or(0o022);
+            let bits = crate::open::S_IFDIR | (mode & 0o777 & umask);
+            let resolve = match crate::path::Lookup::new(
+                split.dir_path.clone(),
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0,
+                    follow: crate::worker::PathFollow::Mkdir {
+                        user: user_e,
+                        entry: split.entry,
+                        mode: bits,
+                    },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
             SyscallResult::Suspend
         }
 
@@ -1641,11 +1735,10 @@ mod tests {
     #[test]
     fn test_dispatch_fs_dialogue_arms_nosys() {
         // FS/驱动对话臂：未接线的仍 fail-closed Nosys（诚实契约，模式 60）。
-        // `Read`/`Write`/`Fstat`/`Stat`/`Ftruncate`/`Open` 已按模板接线，
-        // 这里取还没接的 `Mkdir` 作代表——它同属"FS 对话族"，且要等
-        // `REQ_MKDIR` 的相位 2。
+        // 已按模板接线的：`Read`/`Write`/`Fstat`/`Stat`/`Ftruncate`/`Lseek`/
+        // `Open`/`Mkdir`。这里取还没接的 `Unlink` 作代表——它同属"FS 对话族"。
         let mut state = seeded(100);
-        let call = VfsCallNum::Mkdir;
+        let call = VfsCallNum::Unlink;
         state.current_message = Message {
             m_source: Endpoint::from_generation_slot(1, 0),
             m_type: call as i32,

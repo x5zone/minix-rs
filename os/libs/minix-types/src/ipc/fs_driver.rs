@@ -251,6 +251,24 @@ pub mod ftrunc_req_off {
     pub const TRC_END: usize = 16;
 }
 
+/// `REQ_MKDIR` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_mkdir { ino_t inode; mode_t mode; uid_t uid; gid_t gid;
+/// cp_grant_id_t grant; }`（`request.c:548-555` 的 `req_mkdir`；`grant`
+/// 指向**最后组件名**）。
+pub mod mkdir_req_off {
+    /// `ino_t inode`（父目录）。
+    pub const INODE: usize = 0;
+    /// `mode_t mode`（含 `I_DIRECTORY` 与 umask 后的权限位）。
+    pub const MODE: usize = 8;
+    /// `uid_t uid`。
+    pub const UID: usize = 12;
+    /// `gid_t gid`。
+    pub const GID: usize = 16;
+    /// `cp_grant_id_t grant`。
+    pub const GRANT: usize = 20;
+}
+
 /// `REQ_STAT` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_stat { ino_t inode; cp_grant_id_t grant; }`
@@ -382,6 +400,12 @@ mod tests {
         assert_eq!(lookup_reply_off::UID, 36);
         assert_eq!(lookup_reply_off::GID, 40);
         assert_eq!(lookup_reply_off::SYMLOOP, 44);
+        // mkdir：父 inode/mode/uid/gid/grant 五个域。
+        assert_eq!(mkdir_req_off::INODE, 0);
+        assert_eq!(mkdir_req_off::MODE, 8);
+        assert_eq!(mkdir_req_off::UID, 12);
+        assert_eq!(mkdir_req_off::GID, 16);
+        assert_eq!(mkdir_req_off::GRANT, 20);
         // ftrunc：inode/trc_start/trc_end 三个域。
         assert_eq!(ftrunc_req_off::INODE, 0);
         assert_eq!(ftrunc_req_off::TRC_START, 8);

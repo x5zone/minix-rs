@@ -611,6 +611,30 @@ pub fn encode_inhibread(ino: u64) -> Message {
     msg
 }
 
+/// `REQ_MKDIR` 请求（C `req_mkdir` — request.c:528-558）：父目录 ino +
+/// 权限位 + uid/gid + 指向**最后组件名**的 grant。
+pub fn encode_mkdir(dir_ino: u64, grant: i32, mode: u32, uid: u32, gid: u32) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_MKDIR,
+        ..Message::default()
+    };
+    // SAFETY: REQ_MKDIR 的载荷按 LP64 域序写在消息负载区。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::mkdir_req_off::INODE..minix_types::mkdir_req_off::INODE + 8]
+            .copy_from_slice(&dir_ino.to_le_bytes());
+        raw[minix_types::mkdir_req_off::MODE..minix_types::mkdir_req_off::MODE + 4]
+            .copy_from_slice(&mode.to_le_bytes());
+        raw[minix_types::mkdir_req_off::UID..minix_types::mkdir_req_off::UID + 4]
+            .copy_from_slice(&uid.to_le_bytes());
+        raw[minix_types::mkdir_req_off::GID..minix_types::mkdir_req_off::GID + 4]
+            .copy_from_slice(&gid.to_le_bytes());
+        raw[minix_types::mkdir_req_off::GRANT..minix_types::mkdir_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_FTRUNC` 请求（C `req_ftrunc` — request.c:261-282）。
 ///
 /// VFS 的 `truncate_vnode` 只发一种形状：`req_ftrunc(fs_e, ino, newsize, 0)`
@@ -1122,6 +1146,29 @@ mod tests {
             None,
             "普通错误交错误面"
         );
+    }
+
+    /// `REQ_MKDIR` 编码：五域（父 ino/mode/uid/gid/grant）。
+    #[test]
+    fn test_encode_mkdir_fields() {
+        let m = encode_mkdir(0x10, 33, 0o40755, 1000, 1000);
+        assert_eq!(m.m_type, minix_types::REQ_MKDIR);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::mkdir_req_off::INODE..minix_types::mkdir_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x10);
+        let rd4 = |at: usize| {
+            let mut b = [0u8; 4];
+            b.copy_from_slice(&raw[at..at + 4]);
+            u32::from_le_bytes(b)
+        };
+        assert_eq!(rd4(minix_types::mkdir_req_off::MODE), 0o40755);
+        assert_eq!(rd4(minix_types::mkdir_req_off::UID), 1000);
+        assert_eq!(rd4(minix_types::mkdir_req_off::GID), 1000);
+        assert_eq!(rd4(minix_types::mkdir_req_off::GRANT), 33);
     }
 
     /// `REQ_FTRUNC` 编码：三域（inode/trc_start/trc_end），且 VFS 的调用

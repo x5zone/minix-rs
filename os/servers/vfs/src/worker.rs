@@ -89,6 +89,9 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// 纯状态续接（`REQ_MKDIR`/`REQ_UNLINK` 一类"回了状态就完事"的请求）：
+    /// 把回复的状态原样回给用户，无载荷、无副作用。
+    Status,
     /// `Lseek` 的"抑制预读"请求（`REQ_INHIBREAD`）：位置已改，回复到达后
     /// 把新位置写进回复载荷（C `do_lseek` 的 `job_m_out.m_vfs_lc_lseek`）。
     InhibRead {
@@ -137,7 +140,9 @@ pub struct PathPending {
 }
 
 /// 路径走完之后的动作（C 里是 `eat_path` 返回后臂自己接着写的那段代码）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
     /// `stat(path, buf)`：按走完的 ino 发 `REQ_STAT`（C `do_stat` →
     /// `req_stat`），随后由 `WorkerCont::Fstat` 续接收尾。
@@ -154,6 +159,17 @@ pub enum PathFollow {
         user: Endpoint,
         /// 原始 `oflags`（C 的 `open_flags`）。
         oflags: u32,
+    },
+    /// `mkdir(path, mode)`：**走的是父目录**（`last_dir_split` 的
+    /// `dir_path`），走完后发 `REQ_MKDIR`（C `do_mkdir` 的
+    /// `last_dir` + `req_mkdir`）。
+    Mkdir {
+        /// 调用方端点。
+        user: Endpoint,
+        /// 最后组件名（新目录的名字）。
+        entry: alloc::string::String,
+        /// 建目录的权限位（已含 `I_DIRECTORY` 与 umask）。
+        mode: u32,
     },
 }
 
