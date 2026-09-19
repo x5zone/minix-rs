@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的验收层第三组——靠故事留住人的游戏，世界能走、骰子能掷、格言能抽的证明
 > **源码**: `minix3/games/adventure/hdr.h`（词汇上限 `HTSIZE 512` 见第 78 行附近、物品描述见第 101 行附近、物品初始位置见第 116 行附近）、`minix3/games/adventure/vocab.c`（物品移动见第 72 行附近）、`minix3/games/monop/`（棋盘玩法见 `monop.c`、牌堆见 `cards.c`、房子见 `houses.c`、监狱见 `jail.c`）、`minix3/games/fortune/fortune/fortune.c`（索引表定位见第 267 行附近、表读取见第 980 行附近）、`minix3/games/fortune/datfiles/`（格言数据文件）、`minix3/games/fish/fish.c`（十三点数 `RANKS` 见第 61 行附近、整副牌见第 64 行附近、成书计数见第 83 行附近、要牌提示见第 160 行附近）、`minix3/games/wtf/wtf`（`-o` 与 `-f` 标志、跳过的 `is` 词）、`minix3/games/random/random.c`（时钟加进程播种见第 107 行附近、分母选中见第 126 行附近）、`minix3/games/wargames/wargames.sh`（战争游戏脚本）
-> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，22 个测试通过）；各游戏的 `src/bin/` 薄壳随执行层批次在本 crate 内落地（数据文件读取与玩家交互随执行层落地；原同名占位二进制壳已于 2026-09-17 删除，见 todo.md §6.1 步骤 3）
+> **Rust 模块**: `os/commands/games/text-games`（库包 `minix-text-games`：`adventure.rs`、`monop.rs`、`fortune.rs`、`fish.rs`、`acronym.rs`、`lottery.rs`，22 个测试通过）；`wtf`/`fortune`/`random` 三枚薄壳已接线（各游戏 `src/bin/` 内，数据文件读取与抽取面落地；`adventure`/`monop` 的完整游玩循环归执行层批次）
 > **前置依赖**: `06-file-ops.md` 与 `10-doc-man-tools.md`（输入输出与文本面先行）
 > **不覆盖（移交）**: 大文本数据文件格式落地（架构演进决策，见 3.5 节）、数据文件读取与玩家交互（各游戏二进制包）、纸牌发牌与战争游戏剧本（后续补齐）
 
@@ -138,7 +138,7 @@
 
 ## 5. 测试要点
 
-`cargo test -p minix-text-games`：**22 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-text-games`：**22 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/games/text-games` 复现）：
 
@@ -180,3 +180,9 @@
 - `rg -n "getopts|offensive|is term" wtf` → 标志与跳过词命中。
 - `cargo test -p minix-text-games` → 22 通过、0 失败；`cargo clippy` 无警告。
 - 本文档引用的 `file:line` 均来自正文写作前实际执行的 `rg -n` 输出，非凭记忆书写。
+
+## 批次随记（接线状态，批次二十七）
+
+- **已接线**：`wtf`（`-f` 指库、命令行 `is` 词跳过、逐词 `term: expansion` 打印、任一查无退出 1）、`fortune`（数据文件按行切分、时钟秒抽取、`pick_quip` 取模语义）、`random N`（标准输入逐行、LCG 掷 `1/N` 概率后中覆盖先中、播种混时钟与进程号）。三枚薄壳的文件读取走 L10 的 open/read/close 既有路。
+- **声明性留白**：`adventure`/`monop` 的完整游玩循环（世界状态推进与回合交互是执行层批次）、`fish` 的对手回合（要电脑玩家循环）、fortune 索引表版数据文件（现读纯文本行）。
+- **POSIX 基准**：四命令均无 POSIX 条目，行为以 `minix3/games/` 与 `minix3/games/wtf/wtf` 脚本为准绳。

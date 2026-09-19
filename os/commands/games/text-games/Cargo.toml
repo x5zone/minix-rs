@@ -8,3 +8,18 @@ license.workspace = true
 [lib]
 name = "minix_text_games"
 path = "src/lib.rs"
+
+[dependencies]
+minix-sys = { workspace = true }
+
+[[bin]]
+name = "wtf"
+path = "src/bin/wtf.rs"
+
+[[bin]]
+name = "fortune"
+path = "src/bin/fortune.rs"
+
+[[bin]]
+name = "random"
+path = "src/bin/random.rs"
