@@ -9,6 +9,8 @@
 //! 忠实移植边界：需要 FS/驱动对话的调用，在 W1 transport 通电前以
 //! `SyscallResult::Nosys` 显式拒绝（fail-closed），逐臂注明依赖；
 //! 通电后按同臂位接入对话（模式 60 诚实契约）。
+extern crate alloc;
+
 
 use crate::call_table::{SyscallResult, VfsCallNum};
 use crate::path::PathFetcher as _;
@@ -210,7 +212,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
         | VfsCallNum::Mount
         | VfsCallNum::Umount
-        | VfsCallNum::Select
         | VfsCallNum::Svrctl
         | VfsCallNum::Vmcall
         | VfsCallNum::Socketpath
@@ -1580,6 +1581,48 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── sendto / recvfrom（数据 + 地址两张 grant，进程级挂起）──
         // ── sendmsg / recvmsg（msghdr + 单个 iovec；与 sendto/recvfrom 同一
         //    条 sdev_readwrite，多一个控制缓冲与 msg_buf）──
+        // ── select（本地半：门、fd 校验、就绪判定与立即返回）──
+        VfsCallNum::Select => {
+            // C `do_select`（select.c:94-260）：载荷 `mess_lc_vfs_select`
+            // （nfds@0、readfds@8、writefds@16、errorfds@24、timeout@32）。
+            let (nfds, readfds, writefds, errorfds, timeout) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let nfds = u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let readfds = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                let writefds = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[24..32]);
+                let errorfds = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[32..40]);
+                (nfds, readfds, writefds, errorfds, u64::from_le_bytes(b8))
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let io = crate::select::SysFdSetIo { who: user_e };
+            match do_select(
+                state,
+                fp_slot,
+                nfds as usize,
+                readfds,
+                writefds,
+                errorfds,
+                timeout,
+                &io,
+            ) {
+                Ok(count) => SyscallResult::Ok(count),
+                Err(e) => SyscallResult::Error(e),
+            }
+        }
+
         VfsCallNum::Sendmsg | VfsCallNum::Recvmsg => {
             // C `do_sockmsg`（socket.c:538-595）：载荷 `mess_lc_vfs_sockmsg`
             // （fd@0、msgbuf@8、flags@16）。取用户 `struct msghdr`（跨空间）→
@@ -3845,6 +3888,232 @@ fn do_sockmsg(
     result
 }
 
+/// `do_select` 的**本地半**（C `do_select` select.c:94-260）：`nfds` 门 → 取一个
+/// select 槽（满即 `ENOSPC`）→ 拷三张 fd 集 → 逐 fd 校验（`tab2ops` 空位跳过、
+/// `get_filp` 失败 `EBADF`、类型不认识 `EBADF`）→ 就绪判定（模式位不符与常规
+/// 文件立刻算就绪）→ 立即返回（`should_return`）。
+///
+/// **未接的一半**：字符/套接字驱动的 `select_request` 与管道探测、以及"没有就绪
+/// 就挂起等驱动/超时"那条路——它们要驱动对话（管线已就位）与定时器，是下一步。
+/// 走到那一步时诚实回 `ENOSYS` 并把槽放回。
+///
+/// 抽成自由函数是为了可注入取存件（宿主下生产件取不到用户 fd_set）。
+#[allow(clippy::too_many_arguments)]
+fn do_select(
+    state: &mut VfsState,
+    fp_slot: minix_types::UserSlot,
+    nfds: usize,
+    readfds: u64,
+    writefds: u64,
+    errorfds: u64,
+    timeout: u64,
+    io: &impl crate::select::FdSetIo,
+) -> Result<i32, i32> {
+    // C select.c:110-111 —— `nfds < 0 || nfds > OPEN_MAX` 即 EINVAL。
+    if nfds > crate::fproc::OPEN_MAX {
+        return Err(minix_types::EINVAL);
+    }
+    // C select.c:118-124 —— 找一个空槽；满了 ENOSPC。
+    let Some(slot_idx) = state.select_table.alloc() else {
+        return Err(minix_types::ENOSPC);
+    };
+    let bytes = crate::select::fdset_bytes(nfds).ok_or(minix_types::EINVAL)?;
+    // C `copy_fdsets(se, nfds, FROM_PROC)`：三张集分别拷进来（指针为 0 的
+    // 那几张跳过——`select` 允许只关心其中一部分）。
+    let mut read_set = alloc::vec::Vec::new();
+    let mut write_set = alloc::vec::Vec::new();
+    let mut error_set = alloc::vec::Vec::new();
+    if readfds != 0 {
+        read_set = io.fetch(readfds, bytes)?;
+    }
+    if writefds != 0 {
+        write_set = io.fetch(writefds, bytes)?;
+    }
+    if errorfds != 0 {
+        error_set = io.fetch(errorfds, bytes)?;
+    }
+    // 超时：C `plan_timeout`（无 timeval = 永远等；(0,0) = poll）。
+    let plan = if timeout == 0 {
+        crate::select::TimeoutPlan::Forever
+    } else {
+        // 用户 `struct timeval { time_t tv_sec; suseconds_t tv_usec; }`（LP64
+        // 两个 8 字节域）——取它也要跨空间（同一个缝不覆盖，暂用宿主不可达的
+        // 直取，失败即 EINVAL）。
+        let mut raw = [0u8; 16];
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            io_who(state, fp_slot),
+            timeout,
+            minix_types::Endpoint::SELF.0,
+            raw.as_mut_ptr() as u64,
+            16,
+        )
+        .map_err(|e| -e)?;
+        let sec = i64::from_le_bytes(raw[0..8].try_into().unwrap());
+        let usec = i64::from_le_bytes(raw[8..16].try_into().unwrap());
+        crate::select::plan_timeout(true, sec, usec, 60).map_err(|e| e.to_errno())?
+    };
+    let block = crate::select::block_of(plan);
+    {
+        let Some(se) = state.select_table.get_mut(slot_idx) else {
+            return Err(minix_types::EIO);
+        };
+        se.requestor = Some(fp_slot);
+        se.block = block;
+        se.nfds = nfds;
+        se.vir_readfds = readfds;
+        se.vir_writefds = writefds;
+        se.vir_errorfds = errorfds;
+        se.readfds = read_set;
+        se.writefds = write_set;
+        se.errorfds = error_set;
+        se.nready = 0;
+        se.error = 0;
+    }
+    let bit = |set: &[u8], fd: usize| -> bool {
+        let byte = fd / 8;
+        let mask = 1u8 << (fd % 8);
+        set.get(byte).is_some_and(|b| b & mask != 0)
+    };
+    let mut nready = 0usize;
+    let mut pending = 0usize;
+    for fd in 0..nfds {
+        let (rd, wr, er) = {
+            let Some(se) = state.select_table.get(slot_idx) else {
+                return Err(minix_types::EIO);
+            };
+            (
+                bit(&se.readfds, fd),
+                bit(&se.writefds, fd),
+                bit(&se.errorfds, fd),
+            )
+        };
+        let ops = crate::select::tab2ops(rd, wr, er);
+        if ops.is_empty() {
+            continue; // C：这一位没设，跳过
+        }
+        // C `get_filp(fd, VNODE_READ)`：拿不到就是 EBADF。
+        let Some(fp) = state.fproc_table.get(fp_slot) else {
+            return Err(minix_types::EINVAL);
+        };
+        let Some(filp_idx) = fp.filps.get(fd).copied().flatten() else {
+            state.select_table.release(slot_idx);
+            return Err(minix_types::EBADF);
+        };
+        let Some(filp) = state.filp_table.get(crate::filp::FilpId(filp_idx)) else {
+            state.select_table.release(slot_idx);
+            return Err(minix_types::EBADF);
+        };
+        let mode = filp.mode;
+        let Some(vnode_idx) = filp.vnode else {
+            state.select_table.release(slot_idx);
+            return Err(minix_types::EBADF);
+        };
+        let Some(v) = state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) else {
+            state.select_table.release(slot_idx);
+            return Err(minix_types::EBADF);
+        };
+        let ft = crate::open::FileType::from(v.mode);
+        // C `fdtypes[type].type_match` 找不到类型 → EBADF。
+        let Some(kind) = crate::select::classify(
+            ft == crate::open::FileType::Char,
+            ft == crate::open::FileType::Socket,
+            ft == crate::open::FileType::Regular,
+            ft == crate::open::FileType::Fifo,
+        ) else {
+            state.select_table.release(slot_idx);
+            return Err(minix_types::EBADF);
+        };
+        // C select.c:213-226 —— 打开模式与请求方向不符的**立刻算就绪**
+        // （随后的读写必然失败）；常规文件永远就绪（`FdKind::File`）。
+        if rd && mode & crate::open::R_BIT == 0 {
+            nready += 1;
+        }
+        if wr && mode & crate::open::W_BIT == 0 {
+            nready += 1;
+        }
+        match kind {
+            crate::select::FdKind::File => {
+                // `select_request_file`：永远就绪。
+                if rd {
+                    nready += 1;
+                }
+                if wr {
+                    nready += 1;
+                }
+            }
+            // 字符/套接字/管道要问驱动或探测——**未接**（见函数注记）。
+            _ => pending += 1,
+        }
+    }
+    if pending > 0 {
+        state.select_table.release(slot_idx);
+        return Err(minix_types::ENOSYS);
+    }
+    // 立即返回（C `should_return`）：没有要等的，就把就绪集拷回去并回个数。
+    let should = crate::select::should_return(nready, false, block, false);
+    if !should {
+        state.select_table.release(slot_idx);
+        return Err(minix_types::ENOSYS);
+    }
+    let Some(se) = state.select_table.get(slot_idx) else {
+        return Err(minix_types::EIO);
+    };
+    // 结果集：C `ops2tab` 把**就绪位**写进副本，最后整块拷回用户。三张集各
+    // 有各的结果（`errorfds` 这一轮没有会置位的来源——驱动那一半未接）。
+    let (mut out_rd, mut out_wr) = (alloc::vec![0u8; bytes], alloc::vec![0u8; bytes]);
+    for fd in 0..nfds {
+        let (rd, wr) = (bit(&se.readfds, fd), bit(&se.writefds, fd));
+        if !rd && !wr {
+            continue;
+        }
+        let Some(fp) = state.fproc_table.get(fp_slot) else {
+            return Err(minix_types::EINVAL);
+        };
+        let Some(filp_idx) = fp.filps.get(fd).copied().flatten() else {
+            continue;
+        };
+        let Some(filp) = state.filp_table.get(crate::filp::FilpId(filp_idx)) else {
+            continue;
+        };
+        let Some(vnode_idx) = filp.vnode else { continue };
+        let Some(v) = state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) else {
+            continue;
+        };
+        let ft = crate::open::FileType::from(v.mode);
+        // C select.c:213-226：打开模式与请求方向不符 → 立刻就绪；常规文件
+        // （`FdKind::File`）两个方向都就绪。
+        if rd && (filp.mode & crate::open::R_BIT == 0 || ft == crate::open::FileType::Regular) {
+            out_rd[fd / 8] |= 1u8 << (fd % 8);
+        }
+        if wr && (filp.mode & crate::open::W_BIT == 0 || ft == crate::open::FileType::Regular) {
+            out_wr[fd / 8] |= 1u8 << (fd % 8);
+        }
+    }
+    let count = nready as i32;
+    let (vir_read, vir_write, vir_err) = (se.vir_readfds, se.vir_writefds, se.vir_errorfds);
+    state.select_table.release(slot_idx);
+    if vir_read != 0 {
+        io.store(vir_read, &out_rd)?;
+    }
+    if vir_write != 0 {
+        io.store(vir_write, &out_wr)?;
+    }
+    if vir_err != 0 {
+        io.store(vir_err, &alloc::vec![0u8; bytes])?;
+    }
+    Ok(count)
+}
+
+/// 调用方端点（超时结构体的跨空间取要用）。
+fn io_who(state: &VfsState, fp_slot: minix_types::UserSlot) -> i32 {
+    state
+        .fproc_table
+        .get(fp_slot)
+        .map(|fp| fp.endpoint.0)
+        .unwrap_or(0)
+}
+
 use crate::fproc::OPEN_MAX;
 
 
@@ -4853,6 +5122,147 @@ mod tests {
                 crate::fproc::BlockedOn::None
             ),
             "发不出去就不该挂起"
+        );
+    }
+
+    /// `Select` 的**本地半**（C `do_select` select.c:94-260）：`nfds > OPEN_MAX`
+    /// → EINVAL；槽满 → ENOSPC；逐 fd 校验（位没设跳过、fd 无效 EBADF、类型
+    /// 不认识 EBADF）；常规文件与"模式位不符"的 fd **立刻就绪**；没有要等的就
+    /// 立刻返回（把结果位图拷回用户）。
+    ///
+    /// 走"要等驱动/超时"那条路的（字符/套接字/管道）诚实回 ENOSYS——那一半
+    /// 要驱动对话与定时器，是下一步。
+    #[test]
+    fn test_dispatch_select_local_half() {
+        use crate::select::MemoryFdSetIo;
+        use minix_types::Endpoint;
+
+        let setup = |mode: u32, filp_mode: u32| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            let fid = state.filp_table.alloc_filp(filp_mode).unwrap();
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            let vid = state.vnode_table.alloc().unwrap();
+            {
+                let v = state.vnode_table.get_mut(vid).unwrap();
+                v.fs = Endpoint::MFS;
+                v.ino = 0x11;
+                v.mode = mode;
+                v.ref_count = 1;
+            }
+            state.filp_table.get_mut(fid).unwrap().vnode = Some(vid.get());
+            state
+        };
+        let io_with = |bits: &[u8]| {
+            let mut set = [0u8; 8];
+            set[..bits.len()].copy_from_slice(bits);
+            MemoryFdSetIo {
+                read: set.to_vec(),
+                write: vec![0u8; 8],
+                error: vec![0u8; 8],
+                stored: core::cell::RefCell::new(Vec::new()),
+            }
+        };
+
+        // ① `nfds > OPEN_MAX` → EINVAL。
+        let mut state = setup(crate::open::S_IFREG | 0o644, crate::open::R_BIT);
+        let io = io_with(&[]);
+        assert_eq!(
+            do_select(
+                &mut state,
+                minix_types::UserSlot::new(0),
+                crate::fproc::OPEN_MAX + 1,
+                0,
+                0,
+                0,
+                0,
+                &io
+            ),
+            Err(minix_types::EINVAL)
+        );
+
+        // ② readfds 里指了一个**没开的 fd**（fd 5）→ EBADF。
+        let mut state = setup(crate::open::S_IFREG | 0o644, crate::open::R_BIT);
+        let io = io_with(&[1 << 5]);
+        assert_eq!(
+            do_select(
+                &mut state,
+                minix_types::UserSlot::new(0),
+                8,
+                1,
+                0,
+                0,
+                0,
+                &io
+            ),
+            Err(minix_types::EBADF)
+        );
+
+        // ③ 常规文件 + 读位 → **立刻就绪**：回 1，且结果位图拷回用户（fd 3 的
+        // 读位被置上）。
+        let mut state = setup(crate::open::S_IFREG | 0o644, crate::open::R_BIT);
+        let io = io_with(&[1 << 3]);
+        let r = do_select(
+            &mut state,
+            minix_types::UserSlot::new(0),
+            8,
+            1,
+            0,
+            0,
+            0,
+            &io,
+        );
+        assert_eq!(r, Ok(1), "常规文件读方向永远就绪");
+        let stored = io.stored.borrow();
+        assert_eq!(stored.len(), 1, "结果只拷回给了 readfds");
+        assert_eq!(stored[0].0, 1, "拷回的是用户给的 readfds 地址");
+        assert_eq!(stored[0].1[0] & (1 << 3), 1 << 3, "fd 3 的读位置上了");
+
+        // ④ 套接字 + 读位 → 要走驱动 `select_request`（未接）→ ENOSYS，且
+        // **槽要放回**（下次还能用）。
+        let mut state = setup(crate::open::S_IFSOCK | 0o777, crate::open::R_BIT);
+        let io = io_with(&[1 << 3]);
+        assert_eq!(
+            do_select(
+                &mut state,
+                minix_types::UserSlot::new(0),
+                8,
+                1,
+                0,
+                0,
+                0,
+                &io
+            ),
+            Err(minix_types::ENOSYS),
+            "套接字要问驱动，那一半未接"
+        );
+        assert!(
+            state.select_table.slots.iter().all(|s| s.is_free()),
+            "未接路径要把槽放回去（否则 25 次之后 ENOSPC）"
+        );
+
+        // ⑤ 槽满 → ENOSPC（把 25 个槽全占上）。
+        let mut state = setup(crate::open::S_IFREG | 0o644, crate::open::R_BIT);
+        for s in state.select_table.slots.iter_mut() {
+            s.requestor = Some(minix_types::UserSlot::new(1));
+        }
+        let io = io_with(&[1 << 3]);
+        assert_eq!(
+            do_select(
+                &mut state,
+                minix_types::UserSlot::new(0),
+                8,
+                1,
+                0,
+                0,
+                0,
+                &io
+            ),
+            Err(minix_types::ENOSPC)
         );
     }
 

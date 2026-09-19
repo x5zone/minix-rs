@@ -30,6 +30,8 @@
 //! answers readiness its own way, `poll_table` gathers); Redox models it as
 //! `Scheme::poll` on pollable handles. Here `FdKind` is the poll table and
 //! [`SelectDriver`] is the per-type answer.
+extern crate alloc;
+
 
 use crate::filp::FsfFlags;
 use crate::fproc::OPEN_MAX;
@@ -155,6 +157,168 @@ pub fn ops2tab_apply(
         }
     }
     ReadyMark { newly }
+}
+
+/// 一个挂起的 `select` 请求（C `struct selectentry`，select.c:14-45）。
+#[derive(Debug, Clone, Default)]
+pub struct SelectSlot {
+    /// 发起者（`None` = 空槽）。
+    pub requestor: Option<minix_types::UserSlot>,
+    /// 是否阻塞（`block`）：无超时或超时非零为真；`(0,0)` 是一次 poll。
+    pub block: bool,
+    /// `nfds`（C 用它做 fd 循环上界）。
+    pub nfds: usize,
+    /// 三张 fd 集（VFS 侧副本，按 C 的 `fd_set` 字节布局）。
+    pub readfds: alloc::vec::Vec<u8>,
+    /// `writefds`。
+    pub writefds: alloc::vec::Vec<u8>,
+    /// `errorfds`。
+    pub errorfds: alloc::vec::Vec<u8>,
+    /// 用户给的三个指针（结果要拷回这里）。
+    pub vir_readfds: u64,
+    /// `writefds` 的指针。
+    pub vir_writefds: u64,
+    /// `errorfds` 的指针。
+    pub vir_errorfds: u64,
+    /// 已经就绪的 fd 数（`nreadyfds`）。
+    pub nready: usize,
+    /// 出错码（非零即中止整个 select）。
+    pub error: i32,
+}
+
+impl SelectSlot {
+    /// 空槽。
+    pub fn free() -> Self {
+        Self::default()
+    }
+
+    /// 是不是空槽（C 的 `selecttab[s].requestor == NULL`）。
+    pub fn is_free(&self) -> bool {
+        self.requestor.is_none()
+    }
+}
+
+/// `selecttab`：固定 25 个槽（C `MAXSELECTS`，select.c:31）。
+#[derive(Debug)]
+pub struct SelectTable {
+    /// 槽位。
+    pub slots: alloc::vec::Vec<SelectSlot>,
+}
+
+impl Default for SelectTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SelectTable {
+    /// 全空表。
+    pub fn new() -> Self {
+        Self {
+            slots: (0..MAXSELECTS).map(|_| SelectSlot::free()).collect(),
+        }
+    }
+
+    /// 找第一个空槽（C `do_select:118-124` 的循环）。
+    pub fn alloc(&mut self) -> Option<usize> {
+        self.slots.iter().position(|s| s.is_free())
+    }
+
+    /// 取槽。
+    pub fn get(&self, idx: usize) -> Option<&SelectSlot> {
+        self.slots.get(idx)
+    }
+
+    /// 改槽。
+    pub fn get_mut(&mut self, idx: usize) -> Option<&mut SelectSlot> {
+        self.slots.get_mut(idx)
+    }
+
+    /// 释放槽（C 的 `se->requestor = NULL`）。
+    pub fn release(&mut self, idx: usize) {
+        if let Some(s) = self.slots.get_mut(idx) {
+            *s = SelectSlot::free();
+        }
+    }
+}
+
+/// 用户 `fd_set` 的取/存缝（C `copy_fdsets` 的两个方向：`FROM_PROC` 拷进来、
+/// `TO_PROC` 拷回去，select.c:660-708）。
+///
+/// 生产件走跨空间 `sys_datacopy`（宿主不可达）；脚本替身让"取到之后"的门与
+/// 返回路径在宿主下也能测——与 `socket::MsgHdrFetcher` 同一个套路。
+pub trait FdSetIo {
+    /// 把用户缓冲拷进来（失败给 errno）。
+    fn fetch(&self, addr: u64, bytes: usize) -> Result<alloc::vec::Vec<u8>, i32>;
+    /// 把结果拷回去。
+    fn store(&self, addr: u64, bytes: &[u8]) -> Result<(), i32>;
+}
+
+/// 生产取存件：两次 `sys_datacopy`。
+#[derive(Debug, Clone, Copy)]
+pub struct SysFdSetIo {
+    /// 调用方端点（C 的 `who_e`）。
+    pub who: minix_types::Endpoint,
+}
+
+impl FdSetIo for SysFdSetIo {
+    fn fetch(&self, addr: u64, bytes: usize) -> Result<alloc::vec::Vec<u8>, i32> {
+        let mut buf = alloc::vec![0u8; bytes];
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            self.who.0,
+            addr,
+            minix_types::Endpoint::SELF.0,
+            buf.as_mut_ptr() as u64,
+            bytes as u64,
+        )
+        .map_err(|e| -e)?;
+        Ok(buf)
+    }
+    fn store(&self, addr: u64, bytes: &[u8]) -> Result<(), i32> {
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            minix_types::Endpoint::SELF.0,
+            bytes.as_ptr() as u64,
+            self.who.0,
+            addr,
+            bytes.len() as u64,
+        )
+        .map_err(|e| -e)
+    }
+}
+
+/// 内存替身：把"用户缓冲"放在一个 `Vec` 里（测试用，另一种行为不同的实现）。
+#[derive(Debug, Default, Clone)]
+pub struct MemoryFdSetIo {
+    /// 读方向的"用户内存"（`readfds` 的位图）。
+    pub read: alloc::vec::Vec<u8>,
+    /// `writefds` 的位图。
+    pub write: alloc::vec::Vec<u8>,
+    /// `errorfds` 的位图。
+    pub error: alloc::vec::Vec<u8>,
+    /// 写回的记录（`(地址, 内容)` 顺序追加）。
+    pub stored: core::cell::RefCell<alloc::vec::Vec<(u64, alloc::vec::Vec<u8>)>>,
+}
+
+impl FdSetIo for MemoryFdSetIo {
+    fn fetch(&self, addr: u64, bytes: usize) -> Result<alloc::vec::Vec<u8>, i32> {
+        // 三个地址用约定区分（测试自己摆位图）：1=read、2=write、3=error。
+        let src = match addr {
+            1 => &self.read,
+            2 => &self.write,
+            3 => &self.error,
+            _ => return Err(minix_types::EINVAL),
+        };
+        if src.len() < bytes {
+            return Err(minix_types::EINVAL);
+        }
+        Ok(src[..bytes].to_vec())
+    }
+    fn store(&self, addr: u64, bytes: &[u8]) -> Result<(), i32> {
+        self.stored.borrow_mut().push((addr, bytes.to_vec()));
+        Ok(())
+    }
 }
 
 /// `fd_set` copy direction (`copy_fdsets`, `select.c:660-708`).

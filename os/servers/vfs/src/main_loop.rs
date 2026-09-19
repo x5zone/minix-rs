@@ -343,6 +343,9 @@ pub struct VfsState {
     /// statvfs buf`）：FS 经 direct grant 整块回填它，VFS 补本地字段后再整块
     /// 拷给用户。放在状态里而不是栈上，是因为 grant 要指向一个**稳定地址**。
     pub statvfs_buf: minix_types::StatvfsBuf,
+    /// `selecttab[MAXSELECTS]`（C `select.c:31`）——每个挂起的 `select` 一个槽，
+    /// 存调用者、三张 fd 集与阻塞/超时状态。
+    pub select_table: crate::select::SelectTable,
     /// 驱动标签 → 端点的**本地目录**（C `do_mapdriver` 的
     /// `ds_retrieve_label_endpt` 那一跳）。生产填充面（DS 事件里带标签时写入）
     /// 还没接线——见 `LabelDir` 的注记；空表下 `mapdriver` 对任何标签都回
@@ -383,6 +386,7 @@ impl VfsState {
             pending_reply: None,
             grants: minix_sys::grant::GrantTable::new(),
             current_worker: None,
+            select_table: crate::select::SelectTable::new(),
             driver_labels: alloc::vec::Vec::new(),
             statvfs_buf: minix_types::StatvfsBuf::new(),
             pending_fs: None,
