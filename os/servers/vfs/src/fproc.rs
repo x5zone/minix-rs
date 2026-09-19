@@ -469,6 +469,32 @@ impl FProcTable {
     /// `sys_datacopy_wrapper(SELF, fproc, ...)` copies the raw
     /// `fproc[NR_PROCS]` BSS image (`misc.c:76-77,113`) — per-slot
     /// filtering is the *consumer's* job (dmp_fs.c skips `pid <= 0`).
+    /// 同时借两个槽（`copyfd` 要在**调用方**与**远端**两张 fd 表之间搬
+    /// filp，两个 `&mut FProc` 必须并存）。同一个槽返回 `None`——那种调用
+    /// 是自拷贝，C 里由 `filp_ioctl_fp`/自拷贝门挡住，不该走到这里。
+    pub fn get_two_mut(
+        &mut self,
+        a: UserSlot,
+        b: UserSlot,
+    ) -> Option<(&mut FProc, &mut FProc)> {
+        if a == b {
+            return None;
+        }
+        let (ia, ib) = (a.get(), b.get());
+        if ia >= NR_PROCS || ib >= NR_PROCS {
+            return None;
+        }
+        let (lo, hi) = if ia < ib { (ia, ib) } else { (ib, ia) };
+        let (left, right) = self.slots.split_at_mut(hi);
+        let lo_ref = &mut left[lo];
+        let hi_ref = &mut right[0];
+        if ia < ib {
+            Some((lo_ref, hi_ref))
+        } else {
+            Some((hi_ref, lo_ref))
+        }
+    }
+
     pub fn slots(&self) -> &[FProc] {
         &self.slots
     }

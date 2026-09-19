@@ -229,7 +229,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Shutdown
         | VfsCallNum::Svrctl
         | VfsCallNum::Vmcall
-        | VfsCallNum::Copyfd
         | VfsCallNum::Socketpath
         | VfsCallNum::GcovFlush => {
             // FS/驱动对话——W1 transport 通电后经 fs_comm 窗口接入
@@ -1359,6 +1358,87 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── mapdriver（只有 RS 能调；标签 → 端点 → dmap/smap 登记）──
         // ── fcntl（大部分是本地 fd 表操作；锁与 F_FREESP 要跨空间拷 flock）──
         // ── ioctl（按文件类型分派；设备对话管线未接线，见下面的注记）──
+        // ── copyfd（驱动回调用：在调用方与远端之间搬/关一个 fd）──
+        VfsCallNum::Copyfd => {
+            // C `do_copyfd`（filedes.c:524-650）：载荷 `mess_lsys_vfs_copyfd`
+            // （endpt@0、fd@4、what@8）。**全程本地表操作**（没有 FS/驱动
+            // 往返），决策与执行都在 `filedes::copy_fd` 里（V1 轮已备）。
+            let (endpt_raw, fd, what) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let endpt_raw = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let fd = i32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
+                let what = i32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                (endpt_raw, fd, what)
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            // C filedes.c:540-541 —— `flags = what & COPYFD_FLAGS; what &=
+            // ~COPYFD_FLAGS`：低四位是操作种类、`0x8000` 是 CLOEXEC 位。
+            let flags = what & 0xF000;
+            let op = what & !0xF000;
+            let kind = match op {
+                0 => crate::filedes::CopyKind::From,
+                1 => crate::filedes::CopyKind::To,
+                2 => crate::filedes::CopyKind::Close,
+                _ => return SyscallResult::Error(minix_types::EINVAL),
+            };
+            let cloexec = flags & 0x8000 != 0;
+            // C filedes.c:543-545 —— `isokendpt(endpt)`：远端必须是**活着的**
+            // 进程。注意不能只判"槽在范围内"：`FProcTable` 的槽是预分配的，
+            // 空槽也 `get()` 得到——要用 `is_ok_endpoint`（端点与槽里记的
+            // 端点相符，正是 C 的 generation 校验）。
+            let remote_ep = minix_types::Endpoint(endpt_raw);
+            let remote_slot = match state.fproc_table.is_ok_endpoint(remote_ep) {
+                Ok(s) => s,
+                Err(_) => return SyscallResult::Error(minix_types::EINVAL),
+            };
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            let fd = match crate::filedes::Fd::new(fd as usize) {
+                Some(f) => f,
+                None => return SyscallResult::Error(minix_types::EBADF),
+            };
+            let is_super = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.eff_uid == crate::link::SU_UID)
+                .unwrap_or(false);
+            // 两个槽同时借出（`get_two_mut`）——`copy_fd` 要同时拿调用方与
+            // 远端的 fd 表；其余表经 `CopyFdCtx` 借。
+            let caller_ep = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let (caller_fp, remote_fp) = match state
+                .fproc_table
+                .get_two_mut(fp_slot, remote_slot)
+            {
+                Some(pair) => pair,
+                None => return SyscallResult::Error(minix_types::EINVAL),
+            };
+            let result = {
+                let mut ctx = crate::filedes::CopyFdCtx {
+                    filp_table: &mut state.filp_table,
+                    vnode_table: &state.vnode_table,
+                    smap_table: &state.smap_table,
+                    policy: &crate::filedes::LowestFree,
+                    caller_endpoint: caller_ep,
+                    remote_slot,
+                    is_super,
+                    cloexec,
+                };
+                crate::filedes::copy_fd(caller_fp, remote_fp, fd, kind, ctx)
+            };
+            match result {
+                Ok(new_fd) => SyscallResult::Ok(new_fd.get() as i32),
+                Err(e) => SyscallResult::Error(e.to_errno()),
+            }
+        }
+
         VfsCallNum::Ioctl => {
             // C `do_ioctl`（device.c:18-58）：载荷 `mess_lc_vfs_ioctl`
             // （fd@0、req@8、arg@16）。取 filp/vnode 后按**文件类型**分派：
@@ -3760,6 +3840,149 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Copyfd` 臂（C `do_copyfd` filedes.c:524-650，驱动回调用）：只有超级
+    /// 用户能调（EPERM）；远端端点必须已知（EINVAL）；三种操作都是**本地表
+    /// 操作**——`TO` 把调用方的 fd 装进远端、`FROM` 反过来（且不带 CLOEXEC）、
+    /// `CLOSE` 回滚一次 `TO`（计数 > 1 才允许）。
+    #[test]
+    fn test_dispatch_copyfd_three_ops() {
+        use minix_types::Endpoint;
+
+        let caller_ep = Endpoint::from_generation_slot(1, 0);
+        let remote_ep = Endpoint::from_generation_slot(1, 1);
+        let setup = |is_super: bool| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            // 注意默认 `eff_uid` 就是 0（= SU_UID），所以"非超级用户"那条要
+            // **显式**改成非 0，否则门恒开。
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .eff_uid = if is_super { crate::link::SU_UID } else { 1000 };
+            // 远端进程：槽 1。
+            {
+                let fp = state
+                    .fproc_table
+                    .get_mut(minix_types::UserSlot::new(1))
+                    .unwrap();
+                fp.endpoint = remote_ep;
+                fp.pid = 101;
+            }
+            // 调用方的 fd 3 → filp（计数 1）。
+            let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+            state.filp_table.inc_count(fid);
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap()
+                .filps[3] = Some(fid.get());
+            // 远端也有一个自己的 fd 5 → 同一个 filp（给 FROM/CLOSE 用）。
+            state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(1))
+                .unwrap()
+                .filps[5] = Some(fid.get());
+            state.filp_table.inc_count(fid);
+            (state, fid)
+        };
+        let copyfd_msg = |endpt: Endpoint, fd: i32, what: i32| {
+            let mut m = Message {
+                m_source: caller_ep,
+                m_type: VfsCallNum::Copyfd as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lsys_vfs_copyfd：endpt@0、fd@4、what@8。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&endpt.0.to_le_bytes());
+                raw[4..8].copy_from_slice(&fd.to_le_bytes());
+                raw[8..12].copy_from_slice(&what.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 非超级用户 → EPERM（驱动回调用的特权）。
+        let (mut state, _fid) = setup(false);
+        state.current_message = copyfd_msg(remote_ep, 3, 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Copyfd),
+            SyscallResult::Error(minix_types::EPERM)
+        );
+
+        // ② 远端端点未知 → EINVAL。
+        let (mut state, _fid) = setup(true);
+        state.current_message = copyfd_msg(Endpoint::from_generation_slot(3, 9), 3, 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Copyfd),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // ③ `COPYFD_TO`：调用方的 fd 3 装进远端的第一个空闲槽（0），
+        // CLOEXEC 位跟着 `what` 的 0x8000 走。
+        let (mut state, fid) = setup(true);
+        state.current_message = copyfd_msg(remote_ep, 3, 1 | 0x8000);
+        let r = dispatch_syscall(&mut state, VfsCallNum::Copyfd);
+        assert_eq!(r, SyscallResult::Ok(0), "远端第一个空闲 fd 是 0");
+        {
+            let remote = state
+                .fproc_table
+                .get(minix_types::UserSlot::new(1))
+                .unwrap();
+            assert_eq!(remote.filps[0], Some(fid.get()), "远端 fd 0 指向同一 filp");
+            assert!(remote.cloexec_set.get(0), "CLOEXEC 位跟过来");
+        }
+        assert_eq!(state.filp_table.get(fid).unwrap().count, 3, "计数 +1");
+
+        // ④ `COPYFD_FROM`：远端的 fd 5 装进**调用方**的表，且**不带** CLOEXEC
+        // （C 明确 `flags &= ~COPYFD_CLOEXEC`）。
+        let (mut state, fid) = setup(true);
+        state.current_message = copyfd_msg(remote_ep, 5, 0 | 0x8000);
+        let r = dispatch_syscall(&mut state, VfsCallNum::Copyfd);
+        assert_eq!(r, SyscallResult::Ok(0), "调用方第一个空闲 fd 是 0");
+        {
+            let caller = state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap();
+            assert_eq!(caller.filps[0], Some(fid.get()));
+            assert!(!caller.cloexec_set.get(0), "FROM 方向剥掉 CLOEXEC");
+        }
+
+        // ⑤ `COPYFD_CLOSE`：回滚一次 `TO`——计数 > 1 才允许，成功清掉远端槽。
+        let (mut state, _fid) = setup(true);
+        state.current_message = copyfd_msg(remote_ep, 5, 2);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Copyfd),
+            SyscallResult::Ok(5),
+            "CLOSE 回的是被清掉的 fd 号"
+        );
+        assert_eq!(
+            state
+                .fproc_table
+                .get(minix_types::UserSlot::new(1))
+                .unwrap()
+                .filps[5],
+            None,
+            "远端槽已清"
+        );
+
+        // ⑥ 计数 == 1 时 CLOSE → EBADF（C 的 `filp_count > 1` 门）。
+        let (mut state, fid) = setup(true);
+        // 把计数压到 1（只留调用方那一个引用）。
+        state.filp_table.dec_count(fid);
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(1))
+            .unwrap()
+            .filps[5] = Some(fid.get());
+        state.current_message = copyfd_msg(remote_ep, 5, 2);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Copyfd),
+            SyscallResult::Error(minix_types::EBADF)
+        );
     }
 
     /// `Ioctl` 臂的类型分派（C `do_ioctl` device.c:18-58）：fd/vnode 门 →
