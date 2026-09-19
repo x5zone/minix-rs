@@ -505,6 +505,28 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_NEWNODE` 请求（C `req_newnode` — request.c:170-197）。
+///
+/// 载荷 `{device, mode, uid, gid}`（ipc.h:2082-2090）；**回复带新节点的
+/// `node_details`**（`mess_fs_vfs_newnode`：file_size/device/inode/mode/uid/gid
+/// ——字段序与 [`minix_types::lookup_reply_off`] 的前六域一致，解码可复用那张
+/// 表）。管道就是靠它向 PFS 要一个新 inode。
+pub fn encode_newnode(dev: u64, mode: u32, uid: u32, gid: u32) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_NEWNODE,
+        ..Message::default()
+    };
+    // SAFETY: REQ_NEWNODE 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[0..8].copy_from_slice(&dev.to_le_bytes());
+        raw[8..12].copy_from_slice(&mode.to_le_bytes());
+        raw[12..16].copy_from_slice(&uid.to_le_bytes());
+        raw[16..20].copy_from_slice(&gid.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_FLUSH` 请求（C `req_flush` — request.c:219-229）。
 ///
 /// 载荷只有 `device`：让 FS 把该设备上的块刷下去（`fcntl(F_FLUSH_FS_CACHE)`
@@ -1711,6 +1733,19 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_newnode` 的四域落位（device@0、mode@8、uid@12、gid@16）。
+    #[test]
+    fn test_encode_newnode_fields() {
+        let m = encode_newnode(0, 0o010600, 1000, 100);
+        assert_eq!(m.m_type, minix_types::REQ_NEWNODE);
+        // SAFETY(test): 按 C 的 `mess_vfs_fs_newnode` 域序读回。
+        let raw = unsafe { &m.m_u.raw };
+        assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(raw[8..12].try_into().unwrap()), 0o010600);
+        assert_eq!(u32::from_le_bytes(raw[12..16].try_into().unwrap()), 1000);
+        assert_eq!(u32::from_le_bytes(raw[16..20].try_into().unwrap()), 100);
+    }
+
     /// `encode_flush`：载荷只有 `device`。
     #[test]
     fn test_encode_flush_device_only() {

@@ -210,7 +210,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
         | VfsCallNum::Mount
         | VfsCallNum::Umount
-        | VfsCallNum::Pipe2
         | VfsCallNum::Select
         | VfsCallNum::Socket
         | VfsCallNum::Socketpair
@@ -1359,6 +1358,135 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── fcntl（大部分是本地 fd 表操作；锁与 F_FREESP 要跨空间拷 flock）──
         // ── ioctl（按文件类型分派；设备对话管线未接线，见下面的注记）──
         // ── copyfd（驱动回调用：在调用方与远端之间搬/关一个 fd）──
+        // ── pipe2（向 PFS 要一个新 inode，再装配 fd 对）──
+        VfsCallNum::Pipe2 => {
+            // C `do_pipe2`（pipe.c:39-55）+ `create_pipe`（pipe.c:58-135）：
+            // 载荷 `mess_lc_vfs_pipe2`（flags@0、_unused@4、oflags@8）——两个
+            // flags 字段按位或（向后兼容）；回复载荷是 `m_vfs_lc_fdpair`。
+            let (flags, oflags) = {
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let flags = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let oflags = i32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                (flags, oflags)
+            };
+            let flags = flags | oflags;
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            // C pipe.c:70-71 —— `find_vmnt(PFS_PROC_NR)`，拿不到就 panic
+            // （"PFS gone"）。Rust 侧**不 panic**：PFS 是另一条线的服务器，
+            // 未挂载时这里 fail-closed 回 EIO 并记缺口（不假装建成了管道）。
+            let Some(vmnt_id) = state.vmnt_table.find_by_fs(minix_types::Endpoint::PFS) else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            // C pipe.c:75-78 —— 预留一个 vnode（`get_free_vnode`）。
+            let vnode = match state.vnode_table.alloc() {
+                Ok(v) => v,
+                Err(_) => return SyscallResult::Error(minix_types::ENFILE),
+            };
+            // C pipe.c:81-110 —— 两个 fd + 两个 filp（读端 R、写端 W）；第二步
+            // 失败要按 `rollback_for` 把第一步拆掉。
+            let (fd0, filp0) = {
+                let Some(fp) = state.fproc_table.get_mut(fp_slot) else {
+                    return SyscallResult::Error(minix_types::EINVAL);
+                };
+                use crate::filedes::FdAllocPolicy;
+                let idx = match crate::filedes::LowestFree.allocate(&fp.filps, 0) {
+                    Some(i) => i,
+                    None => return SyscallResult::Error(minix_types::EMFILE),
+                };
+                let fd = match crate::filedes::Fd::new(idx) {
+                    Some(f) => f,
+                    None => return SyscallResult::Error(minix_types::EMFILE),
+                };
+                let filp = match state.filp_table.alloc_filp(crate::open::R_BIT) {
+                    Ok(f) => f,
+                    Err(_) => return SyscallResult::Error(minix_types::ENFILE),
+                };
+                state.filp_table.inc_count(filp);
+                if let Some(fp) = state.fproc_table.get_mut(fp_slot) {
+                    fp.filps[idx] = Some(filp.get());
+                }
+                (fd, filp)
+            };
+            let (fd1, filp1) = {
+                let Some(fp) = state.fproc_table.get_mut(fp_slot) else {
+                    return SyscallResult::Error(minix_types::EINVAL);
+                };
+                use crate::filedes::FdAllocPolicy;
+                let idx = match crate::filedes::LowestFree.allocate(&fp.filps, 0) {
+                    Some(i) => i,
+                    None => {
+                        // `rollback_for(FdWrite)`：拆掉读端与 vnode。
+                        let plan = crate::pipe::rollback_for(crate::pipe::CreateStage::FdWrite);
+                        if plan.free_read {
+                            fp.filps[fd0.get()] = None;
+                            state.filp_table.dec_count(filp0);
+                        }
+                        if plan.free_vnode
+                            && let Some(v) = state.vnode_table.get_mut(vnode)
+                        {
+                            v.ref_count = 0;
+                        }
+                        return SyscallResult::Error(minix_types::EMFILE);
+                    }
+                };
+                let fd = match crate::filedes::Fd::new(idx) {
+                    Some(f) => f,
+                    None => return SyscallResult::Error(minix_types::EMFILE),
+                };
+                let filp = match state.filp_table.alloc_filp(crate::open::W_BIT) {
+                    Ok(f) => f,
+                    Err(_) => return SyscallResult::Error(minix_types::ENFILE),
+                };
+                state.filp_table.inc_count(filp);
+                if let Some(fp) = state.fproc_table.get_mut(fp_slot) {
+                    fp.filps[idx] = Some(filp.get());
+                }
+                (fd, filp)
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let (uid, gid) = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| (fp.eff_uid, fp.eff_gid))
+                .unwrap_or((0, 0));
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Pipe2 {
+                    filp0: filp0.get(),
+                    filp1: filp1.get(),
+                    fd0: fd0.get() as u32,
+                    fd1: fd1.get() as u32,
+                    flags,
+                    vnode: vnode.get(),
+                });
+            }
+            state.pending_fs = Some(crate::main_loop::PendingFs {
+                vmnt: vmnt_id.0,
+                fs_e: minix_types::Endpoint::PFS,
+                worker,
+                grant: 0, // 无数据面
+                user: user_e,
+                // C pipe.c:112-113：`req_newnode(PFS, effuid, effgid,
+                // I_NAMED_PIPE, NO_DEV, &res)`。
+                req: crate::request::encode_newnode(
+                    minix_types::NO_DEV,
+                    crate::open::S_IFIFO | 0o600,
+                    uid,
+                    gid,
+                ),
+            });
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Copyfd => {
             // C `do_copyfd`（filedes.c:524-650）：载荷 `mess_lsys_vfs_copyfd`
             // （endpt@0、fd@4、what@8）。**全程本地表操作**（没有 FS/驱动
@@ -3840,6 +3968,156 @@ mod tests {
             let gid = u32::from_le_bytes(raw[12..16].try_into().unwrap());
             assert_eq!((uid, gid), (1000, 100), "-1 折算成文件现有值");
         }
+    }
+
+    /// `Pipe2` 臂（C `do_pipe2` pipe.c:39-55 + `create_pipe` pipe.c:58-135）：
+    /// 没有 PFS 挂载行 → fail-closed EIO（C 会 panic "PFS gone"）；有挂载行时
+    /// 预留 vnode + 认领两个 fd/filp，向 PFS 发 `REQ_NEWNODE`；回复到达后填
+    /// vnode 与两个 filp，并把 `m_vfs_lc_fdpair { fd0, fd1 }` 作为**回复载荷**
+    /// 发回（用户拿到的就是这两个 fd）。
+    #[test]
+    fn test_dispatch_pipe2_flow_and_payload() {
+        use minix_types::Endpoint;
+
+        let setup = |with_pfs: bool| {
+            let mut state = seeded(100);
+            crate::main_loop::seed_ready_state(&mut state);
+            if with_pfs {
+                // PFS 挂载行（`find_vmnt(PFS_PROC_NR)` 那一跳）。
+                let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(1)).unwrap();
+                v.fs = Endpoint::PFS;
+                v.dev = 9;
+            }
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    minix_types::UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .expect("空闲槽");
+            state.current_worker = Some(idx);
+            (state, idx)
+        };
+        let pipe2_msg = |flags: i32, oflags: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Pipe2 as i32,
+                ..Message::default()
+            };
+            // SAFETY: mess_lc_vfs_pipe2：flags@0、_unused@4、oflags@8。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&flags.to_le_bytes());
+                raw[8..12].copy_from_slice(&oflags.to_le_bytes());
+            }
+            m
+        };
+
+        // ① 没有 PFS 挂载行 → EIO（C 在这里 panic；Rust 侧 fail-closed）。
+        let (mut state, _idx) = setup(false);
+        state.current_message = pipe2_msg(0, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Pipe2),
+            SyscallResult::Error(minix_types::EIO),
+            "PFS 未挂载：不假装建成了管道"
+        );
+
+        // ② 有 PFS：认领两个 fd/filp 并向 PFS 发 REQ_NEWNODE。
+        let (mut state, idx) = setup(true);
+        state.current_message = pipe2_msg(0, crate::open::OpenFlags::CLOEXEC.bits() as i32);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Pipe2),
+            SyscallResult::Suspend
+        );
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_NEWNODE");
+        assert_eq!(p.req.m_type, minix_types::REQ_NEWNODE);
+        assert_eq!(p.fs_e, Endpoint::PFS);
+        // SAFETY(test): 按 C 的 mess_vfs_fs_newnode 域序读回（device@0、mode@8）。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), 0);
+            let mode = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            assert_eq!(mode & crate::open::S_IFMT, crate::open::S_IFIFO, "管道节点");
+        }
+        {
+            let fp = state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap();
+            assert!(fp.filps[0].is_some() && fp.filps[1].is_some(), "两个 fd 已认领");
+            // CLOEXEC 位不在这一步置位——C 是**建成功之后**才 `FD_SET`
+            // （pipe.c:126-129），所以这里只断言 fd 认领。
+            assert!(!fp.cloexec_set.get(0), "CLOEXEC 还没置（建成功才置）");
+        }
+
+        // ③ 回复到达（带新节点 details）→ 填 vnode/两个 filp + 回复载荷带 fd 对。
+        let mut reply = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 按 lookup_reply_off（与 mess_fs_vfs_newnode 前六域同序）
+        // 填 ino/mode/device。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                .copy_from_slice(&0x77u64.to_le_bytes());
+            raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                .copy_from_slice(&(crate::open::S_IFIFO | 0o600).to_le_bytes());
+        }
+        state.pending_fs = None;
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(reply);
+            wp.task = None;
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        let (target, reply) = state.take_reply().expect("回复");
+        assert_eq!(target, Endpoint::from_generation_slot(1, 0));
+        assert_eq!(reply.m_type, 0, "成功回 0（fd 对在载荷里）");
+        // SAFETY(test): `mess_vfs_lc_fdpair { fd0, fd1 }`。
+        let (fd0, fd1) = unsafe {
+            (
+                i32::from_le_bytes(reply.m_u.raw[0..4].try_into().unwrap()),
+                i32::from_le_bytes(reply.m_u.raw[4..8].try_into().unwrap()),
+            )
+        };
+        assert_eq!((fd0, fd1), (0, 1), "回复载荷带的是两个 fd");
+        // vnode 与两个 filp 都落位了。
+        let vnode_idx = {
+            let fp = state
+                .fproc_table
+                .get(minix_types::UserSlot::new(0))
+                .unwrap();
+            let f0 = fp.filps[fd0 as usize].expect("读端 filp");
+            state
+                .filp_table
+                .get(crate::filp::FilpId(f0))
+                .and_then(|f| f.vnode)
+                .expect("filp 指向 vnode")
+        };
+        let v = state
+            .vnode_table
+            .get(crate::vnode::VnodeId(vnode_idx))
+            .unwrap();
+        assert_eq!(v.ino, 0x77);
+        assert_eq!(v.fs, Endpoint::PFS, "管道节点在 PFS 上");
+        assert_eq!(v.ref_count, 2, "两端各持一个引用");
+        let fp = state
+            .fproc_table
+            .get(minix_types::UserSlot::new(0))
+            .unwrap();
+        let f0 = state
+            .filp_table
+            .get(crate::filp::FilpId(fp.filps[fd0 as usize].unwrap()))
+            .unwrap();
+        let f1 = state
+            .filp_table
+            .get(crate::filp::FilpId(fp.filps[fd1 as usize].unwrap()))
+            .unwrap();
+        assert_eq!(f0.flags as u32 & crate::open::O_ACCMODE, crate::open::O_RDONLY);
+        assert_eq!(f1.flags as u32 & crate::open::O_ACCMODE, crate::open::O_WRONLY);
+        // 建成功之后 CLOEXEC 才置位（C pipe.c:126-129），两个 fd 都要。
+        assert!(fp.cloexec_set.get(fd0 as usize), "读端 CLOEXEC");
+        assert!(fp.cloexec_set.get(fd1 as usize), "写端 CLOEXEC");
     }
 
     /// `Copyfd` 臂（C `do_copyfd` filedes.c:524-650，驱动回调用）：只有超级

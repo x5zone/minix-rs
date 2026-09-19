@@ -2317,6 +2317,94 @@ impl VfsState {
                         }
                     }
                 }
+                crate::worker::WorkerCont::Pipe2 {
+                    filp0,
+                    filp1,
+                    fd0,
+                    fd1,
+                    flags,
+                    vnode,
+                } => {
+                    // C `create_pipe` 的后半（pipe.c:117-131）：拿新节点的
+                    // `node_details` 填 vnode 与两个 filp，再把 fd 对放进回复
+                    // 载荷。失败时按 `rollback_for(Node)` 回滚两端。
+                    if status != 0 {
+                        let plan = crate::pipe::rollback_for(crate::pipe::CreateStage::Node);
+                        let _ = plan;
+                        if let Some(slot) = fp_slot {
+                            if let Some(fp) = self.fproc_table.get_mut(slot) {
+                                if plan.free_read {
+                                    fp.filps[fd0 as usize] = None;
+                                }
+                                if plan.free_write {
+                                    fp.filps[fd1 as usize] = None;
+                                }
+                            }
+                        }
+                        // C 用 `filp_count = 0` 把 filp 标回空闲；Rust 侧就是
+                        // `dec_count`（归零即释放）。
+                        self.filp_table.dec_count(crate::filp::FilpId(filp0));
+                        self.filp_table.dec_count(crate::filp::FilpId(filp1));
+                        if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
+                            v.ref_count = 0;
+                            v.fs_count = 0;
+                        }
+                        self.finish_worker_job(idx, fp_slot, status);
+                        continue;
+                    }
+                    // 回复的 `node_details`（`mess_fs_vfs_newnode`：file_size/
+                    // device/inode/mode/uid/gid）——字段序与 `lookup_reply_off`
+                    // 的前六域一致，复用那张表。
+                    let node = crate::request::decode_lookup_reply(status, &reply);
+                    let Some(crate::path::LookupRes::Ok { ino, mode, dev, .. }) = node else {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                        continue;
+                    };
+                    if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
+                        v.fs = minix_types::Endpoint::PFS;
+                        v.map_fs = minix_types::Endpoint::PFS;
+                        v.ino = ino;
+                        v.map_ino = ino;
+                        v.mode = mode;
+                        v.fs_count = 1;
+                        v.mapfs_count = 1;
+                        v.ref_count = 1;
+                        v.size = 0;
+                        v.dev = minix_types::NO_DEV;
+                    }
+                    // 两个 filp：读端 `O_RDONLY | (flags & ~O_ACCMODE)`、写端
+                    // `O_WRONLY | ...`；vnode 再 dup 一次（两端各持一个引用）。
+                    let extra = (flags as u32 & !crate::open::O_ACCMODE) as i32;
+                    if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp0)) {
+                        f.vnode = Some(vnode);
+                        f.flags = (crate::open::O_RDONLY as i32) | extra;
+                    }
+                    if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp1)) {
+                        f.vnode = Some(vnode);
+                        f.flags = (crate::open::O_WRONLY as i32) | extra;
+                    }
+                    self.vnode_table.dup(crate::vnode::VnodeId(vnode));
+                    if let Some(slot) = fp_slot
+                        && let Some(fp) = self.fproc_table.get_mut(slot)
+                        && flags & crate::open::OpenFlags::CLOEXEC.bits() as i32 != 0
+                    {
+                        fp.cloexec_set.set(fd0 as usize, true);
+                        fp.cloexec_set.set(fd1 as usize, true);
+                    }
+                    // 回复载荷：`m_vfs_lc_fdpair { fd0, fd1 }`（用户拿到的
+                    // 就是这两个 fd；C `do_pipe2:48-51`）。
+                    let mut m = Message {
+                        m_type: status,
+                        ..Message::default()
+                    };
+                    // SAFETY: `mess_vfs_lc_fdpair { int fd0; int fd1; }`
+                    // （ipc.h:2198-2203）在负载区前两字。
+                    unsafe {
+                        m.m_u.raw[0..4].copy_from_slice(&(fd0 as i32).to_le_bytes());
+                        m.m_u.raw[4..8].copy_from_slice(&(fd1 as i32).to_le_bytes());
+                    }
+                    reply_payload = Some(m);
+                }
                 crate::worker::WorkerCont::Statvfs {
                     grant,
                     user_buf,

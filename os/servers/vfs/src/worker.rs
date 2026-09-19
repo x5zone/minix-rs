@@ -99,6 +99,24 @@ pub enum WorkerCont {
         /// 折算后的新属组。
         gid: u32,
     },
+    /// `pipe2` 的对话半（`REQ_NEWNODE`）：回复带新节点的 `node_details`，续接体
+    /// 要用它填 vnode 与两个 filp，并把 `m_vfs_lc_fdpair { fd0, fd1 }` 作为
+    /// **回复载荷**发回（用户拿到的就是这两个 fd）。C `create_pipe`
+    /// （pipe.c:58-135）的后半。
+    Pipe2 {
+        /// 读端 filp（已认领，等 vnode 落位）。
+        filp0: usize,
+        /// 写端 filp。
+        filp1: usize,
+        /// 读端 fd 号。
+        fd0: u32,
+        /// 写端 fd 号。
+        fd1: u32,
+        /// `flags | oflags`（CLOEXEC 位要用）。
+        flags: i32,
+        /// 预留的 vnode 下标。
+        vnode: usize,
+    },
     /// `statvfs` 的对话半（`REQ_STATVFS`）：回复只有状态，FS 已经把统计量写
     /// 进 VFS 侧的 `struct statvfs` 缓冲了；续接体要撤销 grant、把 FS 那 17 个
     /// 字段存进挂载行的缓存（C `update_statvfs`）、补本地字段，再整块拷给用户
