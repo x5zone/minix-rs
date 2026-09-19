@@ -339,14 +339,22 @@ impl<I: IpcTransport, K: KernelCallTransport> DsClient<I, K> {
         // `ds_check` (ds.c:209-219) rides `do_invoke_ds`, whose
         // unconditional revoke (ds.c:32) covers the failure case too.
         let outcome = perform_taskcall(&self.ipc, self.ds_endpoint, DS_CHECK, &mut msg);
-        let _ = self.grants.revoke(key_grant);
         let reply = outcome.map_err(|e| e.to_i32())?;
+        // SAFETY: the store wrote flags/owner back into the request lanes.
+        let req = unsafe { &msg.m_u.m_ds_req };
+        let has_event = reply >= 0 && req.flags != 0;
+        // C ds_check 的 key 参数是 WRITE grant 登记的本进程内存：DS 把
+        // 事件 key 写进去，revoke 后内容仍在（ds.c:209-219）。回拷给
+        // 调用者——VFS 的 ds_event 靠 key 前缀分类（misc.c:952-970）。
+        if has_event {
+            let n = room.min(key.len());
+            key[..n].copy_from_slice(&seed[..n]);
+        }
+        let _ = self.grants.revoke(key_grant);
         if reply < 0 {
             return Err(-reply);
         }
-        // SAFETY: the store wrote flags/owner back into the request lanes.
-        let req = unsafe { &msg.m_u.m_ds_req };
-        if req.flags == 0 {
+        if !has_event {
             return Ok(None); // No pending update for this subscriber.
         }
         Ok(Some(DsCheckReply {

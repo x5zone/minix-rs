@@ -335,7 +335,9 @@ impl VfsState {
             filp_table: FilpTable::new(),
             vnode_table: VnodeTable::new(),
             vmnt_table: VmntTable::new(),
-            dmap_table: DmapTable::new(),
+            // C init_dmap(dmap.c:230-247):清零全 NONE 后唯一显式
+            // 映射 CTTY_MAJOR ← "vfs"(CTTY_ENDPT)——W5/S13 接线。
+            dmap_table: DmapTable::init(),
             smap_table: SmapTable::new(),
             lock_table: LockTable::new(),
             worker_pool: WorkerPool::new(),
@@ -431,7 +433,9 @@ impl VfsState {
         //              （ARCH A-14 未实现，DEFERRED，归 19/24）。
         // main.c:445 — worker_init()：WorkerPool 构造即就绪（NR_WTHREADS=9，归 08）。
         // main.c:448 — bsf_lock：单线程事件循环下锁原语降级（归 07）。
-        // main.c:451-453 — init_dmap()/init_smap()（归 19，DEFERRED）。
+        // main.c:451-453 — init_dmap()/init_smap():init_dmap 已随
+        // VfsState::new 的 DmapTable::init 接线(CTTY 槽,S13 W5);
+        // init_smap ≡ SmapTable::new(全空基编号)。
         // main.c:455-467 — sys_safecopyfrom(RS_PROC_NR, rproctab) + map_service()
         //                  （归 19，DEFERRED，依赖 sys_safecopyfrom 内核原语）。
 
@@ -1290,7 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn test_vfs_state_new() {
+    fn test_vfs_state_dmap_ctty_default() {
         let state = VfsState::new();
         assert_eq!(state.reviving, 0);
         assert!(state.current_fp_slot.is_none());

@@ -763,6 +763,71 @@ pub fn ds_event_action(kind: DsDriverKind, value: u32) -> Option<DsUpTarget> {
     }
 }
 
+/// DS 订阅排空循环(`ds_event`,`misc.c:949-986`)。
+///
+/// `while ds_check(key, &type, &owner) == OK` 的对应物:每条事件经
+/// `DsClient::check` 取回(key 由 DS 写回调用者缓冲——C-13 回拷通道),
+/// 前缀分类(`classify_ds_key`)后 `ds_retrieve_u32` 取值,非
+/// `DS_DRIVER_UP` 跳过;命中者经 `sink` 交给执行体(C 的
+/// `dmap_endpt_up`/`smap_endpt_up` 调用点)。`Ok(None)`(无待处理)与
+/// `Err(ENOENT)` 都是正常排空终止;其它错误原样上抛(C 的
+/// `printf + break`,misc.c:973-974)。
+///
+/// 订阅本体(`ds_subscribe("drv\\.[bc]..\\..*", DSF_INITIAL|DSF_OVERWRITE)`,
+/// main.c:441)由调用方在启动段执行一次——`DsClient::subscribe` 已备。
+/// 给排空循环供数的最小面(`ds_check` + `ds_retrieve_u32`);生产实现
+/// 是 `DsClient` 的本地适配(`impl DsEventSource for DsClient`),测试
+/// 用脚本化替身。
+pub trait DsEventSource {
+    /// 取一条待处理事件:`Ok(Some(owner))` 时 `key` 已被 DS 写回;
+    /// `Ok(None)` = 无待处理。
+    fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32>;
+    /// 取 key 对应的 u32 值(C: `ds_retrieve_u32`)。
+    fn event_value(&mut self, key: &str) -> Result<u32, i32>;
+}
+
+pub fn ds_drain(
+    client: &mut dyn DsEventSource,
+    sink: &mut dyn FnMut(Endpoint, DsUpTarget),
+) -> Result<(), i32> {
+    let mut key = [0u8; minix_types::DS_MAX_KEYLEN];
+    loop {
+        let owner = match client.next_event(&mut key) {
+            Ok(Some(o)) => o,
+            Ok(None) => return Ok(()),
+            Err(minix_types::ENOENT) => return Ok(()), // 排空(C 的正常出口)
+            Err(e) => return Err(e),
+        };
+        // C misc.c:952-970 — key 前缀分类,非驱动 key 跳过。
+        let key_len = key.iter().position(|&b| b == 0).unwrap_or(key.len());
+        let key_str = core::str::from_utf8(&key[..key_len]).unwrap_or("");
+        let Some(kind) = classify_ds_key(key_str) else {
+            continue;
+        };
+        // C misc.c:971-974 — ds_retrieve_u32,失败 printf+break。
+        let value = client.event_value(key_str)?;
+        // C misc.c:975-982 — 非 DRIVER_UP 跳过;命中交执行体。
+        if let Some(target) = ds_event_action(kind, value) {
+            sink(owner, target);
+        }
+    }
+}
+
+/// DsClient 适配:check 的 key 回拷(C-13)供分类,retrieve_u32 供值。
+impl<I: minix_sys::ipc::IpcTransport, K: minix_sys::syscall::KernelCallTransport> DsEventSource
+    for minix_sys::ds::DsClient<I, K>
+{
+    fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
+        Ok(self
+            .check(key)?
+            .map(|r| Endpoint(r.owner)))
+    }
+
+    fn event_value(&mut self, key: &str) -> Result<u32, i32> {
+        self.retrieve_u32(key).map(|(v, _)| v)
+    }
+}
+
 /// One step of the VFS reboot sequence (`pm_reboot`, `misc.c:510-572`).
 ///
 /// The sequence exists to peel the tree from the leaves: normal processes
@@ -1424,6 +1489,93 @@ mod tests {
         );
         // Non-up values skip (`misc.c:976-977`).
         assert_eq!(ds_event_action(DsDriverKind::Blk, 0), None);
+    }
+
+    /// 脚本化事件源:按序出事件,key 由"DS 写回"。
+    #[cfg(test)]
+    struct ScriptedSource {
+        events: alloc::vec::Vec<Result<Option<(Endpoint, &'static str)>, i32>>,
+        values: alloc::vec::Vec<u32>,
+    }
+    #[cfg(test)]
+    impl DsEventSource for ScriptedSource {
+        fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
+            match self.events.remove(0) {
+                Ok(Some((owner, k))) => {
+                    let n = k.len().min(key.len());
+                    key[..n].copy_from_slice(k.as_bytes());
+                    Ok(Some(owner))
+                }
+                Ok(None) => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+        fn event_value(&mut self, _key: &str) -> Result<u32, i32> {
+            Ok(self.values.remove(0))
+        }
+    }
+
+    #[test]
+    fn test_ds_drain_dispatches_up_events() {
+        // C misc.c:949-986 主链:blk 上线 + chr 非 UP 跳过 + sck 上线 +
+        // 非驱动 key 跳过 → 排空终止(ENOENT/None 同判)。
+        let mut src = ScriptedSource {
+            events: alloc::vec![
+                Ok(Some((Endpoint(4), "drv.blk.0"))),
+                Ok(Some((Endpoint(4), "drv.chr.2"))),
+                Ok(Some((Endpoint(9), "drv.sck.1"))),
+                Ok(Some((Endpoint(5), "drv.net.0"))),
+                Ok(None),
+            ],
+            values: alloc::vec![DS_DRIVER_UP, 0, DS_DRIVER_UP],
+        };
+        let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
+        ds_drain(&mut src, &mut |o, t| hits.push((o, t))).unwrap();
+        assert_eq!(
+            hits,
+            alloc::vec![
+                (Endpoint(4), DsUpTarget::Dmap { is_blk: true }),
+                (Endpoint(9), DsUpTarget::Smap),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ds_drain_propagates_retrieve_failure() {
+        // C misc.c:971-974 — retrieve_u32 失败 printf+break(错误上抛)。
+        struct FailRetrieve;
+        impl DsEventSource for FailRetrieve {
+            fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
+                key[..9].copy_from_slice(b"drv.blk.0");
+                Ok(Some(Endpoint(4)))
+            }
+            fn event_value(&mut self, _key: &str) -> Result<u32, i32> {
+                Err(minix_types::EACCES)
+            }
+        }
+        let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
+        assert_eq!(
+            ds_drain(&mut FailRetrieve, &mut |o, t| hits.push((o, t))),
+            Err(minix_types::EACCES)
+        );
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn test_ds_drain_enoent_is_clean_exit() {
+        // C misc.c:984-985 — ds_check 返回 ENOENT 是正常排空出口。
+        struct Empty;
+        impl DsEventSource for Empty {
+            fn next_event(&mut self, _key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
+                Err(minix_types::ENOENT)
+            }
+            fn event_value(&mut self, _key: &str) -> Result<u32, i32> {
+                unreachable!()
+            }
+        }
+        let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
+        assert!(ds_drain(&mut Empty, &mut |o, t| hits.push((o, t))).is_ok());
+        assert!(hits.is_empty());
     }
 
     #[test]
