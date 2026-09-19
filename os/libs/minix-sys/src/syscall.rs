@@ -163,10 +163,13 @@ impl KernelCallTransport for DirectKernelCallTransport {
         {
             return unsafe { crate::arch_trap::kernel_call_trap(message) };
         }
-        // K12b riscv64 leg: the same message leg through the ecall
-        // boundary (trap number 0, message pointer in a0, reply code in
-        // a0) — see arch_trap::KERNEL_CALL_TRAP_NR.
-        #[cfg(all(target_arch = "riscv64", feature = "real-trap"))]
+        // K12b riscv64/aarch64 legs: the same message leg through the
+        // arch boundary (trap number 0, message pointer in a0/x0, reply
+        // code in a0/x0) — see arch_trap::KERNEL_CALL_TRAP_NR.
+        #[cfg(all(
+            any(target_arch = "riscv64", target_arch = "aarch64"),
+            feature = "real-trap"
+        ))]
         {
             return unsafe { crate::arch_trap::kernel_call_trap(message) };
         }

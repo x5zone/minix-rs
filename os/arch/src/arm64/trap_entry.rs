@@ -131,7 +131,10 @@ core::arch::global_asm! {
     "bl  aarch64_trap_diag",
     "1: wfe",
     "b   1b",
-    ".size exc_vector_table, 2048",
+    // No `.size` directive: LLVM's integrated assembler rejects the GNU
+    // `.size` pseudo-op in inline asm (live: "unknown directive .size
+    // exc_vector_table, 2048" on the aarch64 build). The table's extent is
+    // fixed by construction — `.align 11` plus sixteen 128-byte slots.
 }
 
 /// Rust-side diagnostic reporter for the exception table stubs.

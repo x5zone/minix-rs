@@ -249,7 +249,7 @@ fn birth_fail() -> ! {
 #[cfg(all(
     not(test),
     not(feature = "std"),
-    any(target_arch = "x86_64", target_arch = "riscv64")
+    any(target_arch = "x86_64", target_arch = "riscv64", target_arch = "aarch64")
 ))]
 unsafe extern "C" fn rt_birth(ps_strings: u64) -> ! {
     use crate::init::{initialize_runtime, DirectTrapSource, IpcTableSelection};
@@ -363,6 +363,27 @@ pub extern "C" fn _start() -> ! {
     core::arch::naked_asm!(
         "call {birth}",
         "unimp",
+        birth = sym rt_birth,
+    );
+}
+
+// ── Entry stub (aarch64) ────────────────────────────────────────────────
+//
+// K12b aarch64 leg. Established by the kernel's `build_cpu_context`
+// (arch/src/arm64/boot.rs): `sp` is the initial stack pointer and `x0`
+// carries the `ps_strings` pointer — the register IS the birth function's
+// first argument per the AArch64 ABI, so the stub is a bare call (same
+// shape as the riscv64 stub).
+
+#[cfg(all(not(test), not(feature = "std"), target_arch = "aarch64"))]
+#[unsafe(no_mangle)]
+#[unsafe(naked)]
+pub extern "C" fn _start() -> ! {
+    // SAFETY: naked entry — sp and x0 are the kernel-established process
+    // state (build_cpu_context); no Rust prologue has run.
+    core::arch::naked_asm!(
+        "bl {birth}",
+        "brk #0",
         birth = sym rt_birth,
     );
 }

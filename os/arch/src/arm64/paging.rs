@@ -52,8 +52,22 @@ bitflags::bitflags! {
     struct Arm64PteFlags: u64 {
         const VALID = 1 << 0;   // Valid
         const TABLE = 1 << 1;   // Type: 0=block/page, 1=table
-        const AP1   = 1 << 5;   // AP[1]: 0=EL1 only, 1=EL0+EL1
-        const AP2   = 1 << 6;   // AP[2]: 0=writable, 1=read-only
+        /// Same bit as TABLE, named for the leaf level: ARM ARM requires
+        /// bits[1:0] = 0b11 for a valid **page** descriptor at L3, exactly
+        /// as for a table descriptor at L0-L2. `flags_to_pte` leaves it
+        /// clear (correct for L1/L2 BLOCK descriptors), so every 4 KiB
+        /// leaf writer must OR it in — the 0b01 encoding is RESERVED at
+        /// L3 and the MMU takes a translation fault at level 3 on it.
+        const PAGE  = 1 << 1;
+        // AP[2:1] live at bits [7:6] (ARM ARM D8.3.1, stage-1 4 KiB page
+        // descriptor); bit 5 is NS, NOT an AP bit. The pre-K12b values
+        // (1<<5 / 1<<6) were each shifted one bit low: USER_ACCESSIBLE
+        // set NS (granting nothing) and read-only marked AP[1] (granting
+        // EL0!). Live-found by the aarch64 birth-chain carrier: the EL0
+        // stack write took a permission fault level 3 while the text page
+        // — writable through the mis-shifted AP[1] — fetched fine.
+        const AP1   = 1 << 6;   // AP[1]: 0=EL1 only, 1=EL0+EL1
+        const AP2   = 1 << 7;   // AP[2]: 0=writable, 1=read-only
         const AF    = 1 << 10;  // Access Flag
         const NG    = 1 << 11;  // non-Global: 0=global, 1=process-local
         const PXN   = 1 << 53;  // Privileged Execute Never
@@ -107,6 +121,19 @@ fn flags_to_pte(flags: PageFlags) -> u64 {
         pte |= Arm64PteFlags::XN;
     }
     pte.bits()
+}
+
+/// `flags_to_pte` for a 4 KiB **page** leaf (L3): adds the page bit.
+///
+/// Live-found on the aarch64 birth-chain carrier (edge1 K12b): the loader
+/// mapped the user ELF with plain `flags_to_pte`, the software walk found
+/// every entry (`query()` returned the right PA and flags), and the MMU
+/// still refused the EL0 fetch — translation fault level 3 — because the
+/// leaf read 0b01, a reserved encoding at L3 (the arm64 sibling of the
+/// x86 "present bit" and riscv64 "V bit": without it the descriptor is
+/// invisible to hardware).
+fn flags_to_pte_page(flags: PageFlags) -> u64 {
+    flags_to_pte(flags) | Arm64PteFlags::PAGE.bits()
 }
 
 /// Translate ARM64 hardware PTE flags into OS-semantic `PageFlags`.
@@ -560,7 +587,7 @@ impl Paging for AArch64Paging {
         if pte & Arm64PteFlags::VALID.bits() != 0 {
             return Err(PageTableError::AlreadyMapped);
         }
-        let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
+        let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte_page(flags);
         // SAFETY: see above. Flush TLB for the target vaddr in case a
         // stale entry lingers from a prior unmap.
         unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
@@ -584,7 +611,7 @@ impl Paging for AArch64Paging {
                 } else {
                     None
                 };
-                let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
+                let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte_page(flags);
                 // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
                 unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
                 Ok(old)
@@ -615,8 +642,11 @@ impl Paging for AArch64Paging {
     ) -> Result<(), PageTableError> {
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & Arm64PteFlags::VALID.bits() != 0 => {
-                // Preserve the physical address, replace only the flag bits.
-                let new_pte = (pte & ADDR_MASK) | flags_to_pte(flags);
+                // Preserve the physical address and the descriptor level
+                // (bit 1: page at L3, block at L1/L2), replace only the
+                // flag bits.
+                let new_pte =
+                    (pte & (ADDR_MASK | Arm64PteFlags::PAGE.bits())) | flags_to_pte(flags);
                 // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
                 unsafe { write_pte_dm(leaf_paddr, new_pte, vaddr.0, self.channel) };
                 Ok(())
@@ -840,8 +870,16 @@ impl crate::arch::dm_coverage::DmCoverageArch for AArch64DmCoverage {
         if e3 & Arm64PteFlags::VALID.bits() != 0 {
             return Err(PageTableError::AlreadyMapped);
         }
-        // SAFETY: identity channel active; fresh leaf slot.
-        unsafe { write_entry(l3_ptr, i3, (paddr.0 & ADDR_MASK) | pte_flags) };
+        // SAFETY: identity channel active; fresh 4 KiB leaf slot — the
+        // page bit (bit 1) joins pte_flags here; the 1 GiB/2 MiB branches
+        // above write BLOCK descriptors and must leave it clear.
+        unsafe {
+            write_entry(
+                l3_ptr,
+                i3,
+                (paddr.0 & ADDR_MASK) | pte_flags | Arm64PteFlags::PAGE.bits(),
+            )
+        };
         Ok(())
     }
 }
@@ -849,6 +887,21 @@ impl crate::arch::dm_coverage::DmCoverageArch for AArch64DmCoverage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Descriptor-type encoding witness (live-found bug, edge1 K12b):
+    /// 4 KiB page leaves must carry bits[1:0] = 0b11; block descriptors
+    /// (plain `flags_to_pte`) keep 0b01. Getting this wrong is invisible
+    /// to the software walk and fatal to the MMU.
+    #[test]
+    fn test_page_leaf_descriptor_type_bits() {
+        let flags = PageFlags::PRESENT | PageFlags::USER_ACCESSIBLE | PageFlags::EXECUTABLE;
+        let page = flags_to_pte_page(flags);
+        let block = flags_to_pte(flags);
+        assert_eq!(page & 0b11, 0b11, "4 KiB page leaf must read as 0b11 at L3");
+        assert_eq!(block & 0b11, 0b01, "block descriptor keeps 0b01");
+        // Everything except the type bit is identical between the two.
+        assert_eq!(page ^ block, Arm64PteFlags::PAGE.bits());
+    }
 
     #[test]
     fn test_flags_to_pte_kernel_read_write() {

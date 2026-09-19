@@ -56,7 +56,7 @@ for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher
 done
 
 # ── aarch64 (UEFI) ──
-for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64; do
+for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64 test-rt-birth-aarch64; do
     echo "--- aarch64: $pkg ---"
     cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target aarch64-unknown-uefi --release 2>&1 || echo "(build failed)"
 done
@@ -137,6 +137,16 @@ if command -v qemu-system-aarch64 &>/dev/null; then
     run_test "test-higher-half-aarch64" aarch64  "$OS_ROOT/target/aarch64-unknown-uefi/release/test-higher-half-aarch64.efi"
     run_test "test-protection-aarch64" aarch64  "$OS_ROOT/target/aarch64-unknown-uefi/release/test-protection-aarch64.efi"
     run_test "test-smp-topo-aarch64"   aarch64  "$OS_ROOT/target/aarch64-unknown-uefi/release/test-smp-topo-aarch64.efi"
+
+    # ── Special-protocol script (edge1 K12b): the aarch64 birth-chain
+    # carrier builds the rt-birth user image itself and judges PASS from
+    # the serial markers.
+    echo "--- Running: test-rt-birth-aarch64 (special: birth-chain serial markers) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-rt-birth-aarch64.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-rt-birth-aarch64: skipped)"
+    else FAIL=$((FAIL + 1)); fi
 fi
 
 # riscv64 tests

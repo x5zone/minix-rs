@@ -183,3 +183,64 @@ pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
     }
     ret as i32
 }
+
+// ── aarch64 SVC boundary (K12b aarch64 leg) ─────────────────────────────
+//
+// The aarch64 semantic mapping of the same C i386 soft-int convention,
+// following the riscv64 shape (one boundary instruction serving both the
+// IPC and KERNEL_CALL legs): `svc #0` from EL0 raises a synchronous
+// exception to EL1 (ESR EC 0x15, SVC from AArch64), and x8 is the
+// syscall-number register per the arm64 Linux convention.
+//
+// ```text
+// x8  = call number          (0 = KERNEL_CALL message leg; 1..16 = raw IPC)
+// x0  = operand 1            (IPC: endpoint / KERNEL_CALL: message pointer)
+// x1  = operand 2            (IPC: message pointer)
+// svc #0
+// return: x0 = errno (0 = OK), x1 = secondary return (status / page VA)
+// ```
+//
+// `svc` DOES advance the return PC past the instruction (ELR_EL1 = the
+// next instruction, per the A-arm exception semantics), so — unlike
+// riscv64 ecall — the trap handler must NOT step the saved PC.
+
+/// Execute the aarch64 IPC trap (mirror of the riscv64 `ipc_trap`).
+///
+/// # Safety
+///
+/// Traps into the kernel. Requires a live kernel behind the svc boundary
+/// and a valid `a2` pointer for message-carrying calls.
+#[cfg(all(target_arch = "aarch64", feature = "real-trap"))]
+pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
+    let ret: usize;
+    let status: usize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inlateout("x0") a1 => ret,
+            inlateout("x1") a2 => status,
+            in("x8") call_nr as usize,
+        );
+    }
+    (ret as i32, status)
+}
+
+/// Execute a kernel call through the KERNEL_CALL message leg (mirror of
+/// the riscv64 `kernel_call_trap`).
+///
+/// # Safety
+///
+/// Traps into the kernel; `msg` must be a valid, writable user message.
+#[cfg(all(target_arch = "aarch64", feature = "real-trap"))]
+pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
+    let ret: usize;
+    unsafe {
+        core::arch::asm!(
+            "svc #0",
+            inlateout("x0") msg as *mut minix_types::Message as usize => ret,
+            lateout("x1") _,
+            in("x8") KERNEL_CALL_TRAP_NR as usize,
+        );
+    }
+    ret as i32
+}

@@ -39,7 +39,7 @@
 | C-11 | edge1 K10 第四轮 SSWI：平台描述暴露 + arch IPI 消费 | edge1 | `os/libs/minix-boot/src/platform.rs`（PlatformDesc trait 增 `sswi_setip_base()` 默认方法）+ `os/libs/minix-platform`（device_tree.rs aclint-sswi/aclint-mtimer 解析 + global.rs 转发）。两库在三线所有权清单均未登记、功能上属内核 boot/platform 面；edge1 以 K10（riscv64 S-10 IPI 路径，smp_todo 归属）持锁 | 无 | ✅ 销账（2026-09-19，回路真机 PASS 5/5：trait 默认方法 + aclint-sswi/mtimer 解析 + global 转发 + arch `send_sched_ipi` SSWI 直写优先/SBI 兜底；hosted platform 17/boot 13/arch 237 全绿，riscv64gc target check 零错误） |
 | C-12 | edge3 S26 RMIB 协议走查器：minix-sys walker 函数节点回调 | edge3（需求方） | `os/libs/minix-sys/src/rmib.rs`：`rmib_call` 增函数节点 handler 回调参（C `rmib.c:809-811` 的 `node->func(call,node,oldp,newp)` 面，现版此分支恒 `EOPNOTSUPP`）；`os/servers/ipc-server/src/boundary.rs` 的 `mib_process` 消费（COMMON_MIB_INFO/CALL 分发 + COMMON_MIB_REPLY 两分回复，libsys `rmib.c:1037-1080`） | edge3 | ✅ 销账（2026-09-19，53c709e09+a6d1fe2fd+本批 ipc-server 提交） |
 | C-13 | edge3 S13 W5：ds_check 事件 key 回拷 | edge3（需求方） | `os/libs/minix-sys/src/ds.rs`：`DsClient::check` 在有事件时把 WRITE grant 登记的本进程内存（DS 写入的事件 key）回拷给调用者缓冲——C `ds_check`（ds.c:209-219）的 key 参数即此通道，VFS `ds_event` 靠 key 前缀分类 | edge3 | ✅ 销账（2026-09-19，S13 W5 批） |
-| C-13 | edge1 K12b riscv64 腿：诞生链入口 + trap ABI | edge1 | `os/libs/minix-rt/src/crt0.rs`（riscv64 `_start` naked 入口 + `rt_birth` cfg 门拓宽；出生链本体为架构中性 Rust）+ `os/libs/minix-sys/src/{arch_trap.rs,ipc.rs,syscall.rs}`（riscv64 ecall 传输：a7=call nr、a0/a1 操作数/回程；real-trap 门拓宽）+ `os/libs/minix-rt/src/init.rs`（DirectTrapSource 门拓宽）。minix-rt/minix-sys 属 edge2 领地；x86 现状（int-0x21/LSTAR 双腿）不动，仅新增 riscv64 分支 | 无 | ✅ 销账（2026-09-19，诞生链真机 PASS 3/3：argv/kerninfo=ready/MAIN OK/panic render 五标记全过；x86 腿零改动——hosted rt 53 + sys 229 全绿回归佐证） |
+| C-13 | edge1 K12b 双腿：诞生链入口 + trap ABI（riscv64 ecall / aarch64 svc） | edge1 | `os/libs/minix-rt/src/{crt0.rs,init.rs}`（riscv64+aarch64 `_start` naked 入口与 rt_birth/DirectTrapSource 门拓宽）+ `os/libs/minix-sys/src/{arch_trap.rs,ipc.rs,syscall.rs}`（riscv64 ecall 与 aarch64 svc 传输：call nr 寄存器、0=KERNEL_CALL 消息腿、操作数/回程对）。minix-rt/minix-sys 属 edge2 领地；x86 现状（int-0x21/LSTAR 双腿）不动，仅新增两架构分支 | 无 | ✅ 销账（2026-09-19，双腿诞生链真机 PASS 各 3/3：argv/kerninfo=ready/MAIN OK/panic render 五标记全过；x86 腿零改动——hosted rt 53 + sys 229 全绿回归佐证） |
 
 ### 共享文件登记流水（append-only，登记 → 改 → 销账）
 
@@ -52,6 +52,7 @@
 | 2026-09-18 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K17：test-paging-faultloop（E5(d) 缺页完整回路载体）入 workspace 成员 + x86_64 构建清单 + 特殊协议脚本区（gdbstub 邮箱断言，test-user-trap 同款） | ✅ 同日（真机 PASS 后接线完成并验证） |
 | 2026-09-19 | edge1 | `os/qemu-tests/run_all.sh` | K10：test-smp-ipi-riscv64 回路真机绿后入 riscv64 构建清单 + 特殊协议脚本区（aclint=on 串口判定） | ✅ 同日 |
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b：test-rt-birth-riscv64 入 workspace 成员 + riscv64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
+| 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b aarch64 腿：test-rt-birth-aarch64 入 workspace 成员 + aarch64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 

@@ -655,9 +655,13 @@ impl IpcTransport for DirectTrapTransport {
             }
             return Err(TrapStatus(ret));
         }
-        // K12b riscv64 leg: same query through the ecall boundary
-        // (a7 = KERNINFO_NR, secondary return in a1).
-        #[cfg(all(target_arch = "riscv64", feature = "real-trap"))]
+        // K12b riscv64/aarch64 legs: same query through the arch boundary
+        // (riscv64: a7 = KERNINFO_NR / aarch64: x8 = KERNINFO_NR,
+        // secondary return in a1/x1).
+        #[cfg(all(
+            any(target_arch = "riscv64", target_arch = "aarch64"),
+            feature = "real-trap"
+        ))]
         {
             let (ret, page) =
                 unsafe { crate::arch_trap::ipc_trap(crate::arch_trap::KERNINFO_NR, 0, 0) };
