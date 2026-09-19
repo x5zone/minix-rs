@@ -152,7 +152,7 @@ pub const fn derive_block_size(log_block_size: u32, page_size: u32) -> Result<u3
         return Err(SuperError::Invalid);
     }
     let size = 1024u32 << log_block_size;
-    if size < page_size || size % 512 != 0 || SUPER_STORED_BYTES as u32 > size {
+    if size < page_size || !size.is_multiple_of(512) || SUPER_STORED_BYTES as u32 > size {
         return Err(SuperError::Invalid);
     }
     Ok(size)
@@ -189,6 +189,64 @@ pub const fn group_count(block_count: u32, first_data_block: u32, blocks_per_gro
 }
 
 /// Validate the whole superblock and derive geometry (`read_super`).
+/// 解出盘上 1024 字节的存储态超块（偏移按 ext2 规范：`s_inodes_count@0`
+/// … `s_feature_ro_compat@100`）。字段到结构的映射不是声明序——盘序
+/// 与结构序不同，逐偏移显式读。
+pub fn from_stored(stored: &[u8]) -> RawSuperblock {
+    let rd32 = |at: usize| -> u32 {
+        u32::from_le_bytes(stored[at..at + 4].try_into().unwrap())
+    };
+    let rd16 = |at: usize| -> u16 {
+        u16::from_le_bytes(stored[at..at + 2].try_into().unwrap())
+    };
+    RawSuperblock {
+        magic: rd16(56),
+        log_block_size: rd32(24),
+        revision: rd32(76),
+        inode_count: rd32(0),
+        block_count: rd32(4),
+        reserved_count: rd32(8),
+        free_blocks: rd32(12),
+        free_inodes: rd32(16),
+        first_data_block: rd32(20),
+        blocks_per_group: rd32(32),
+        inodes_per_group: rd32(40),
+        inode_size: rd16(88),
+        first_inode: rd32(84),
+        feature_compat: rd32(92),
+        feature_incompat: rd32(96),
+        feature_ro_compat: rd32(100),
+        state: rd16(58),
+    }
+}
+
+/// 一个块组的描述符（`struct ext2_group_desc`，32 字节）。只读半只用
+/// inode 表块号；位图与计数字段供写半（F3c）消费。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GroupDescriptor {
+    /// 块位图所在块。
+    pub block_bitmap: u32,
+    /// inode 位图所在块。
+    pub inode_bitmap: u32,
+    /// inode 表起始块。
+    pub inode_table: u32,
+}
+
+impl GroupDescriptor {
+    /// 从块数据偏移处解一个描述符。
+    pub fn decode(block: &[u8], at: usize) -> Option<Self> {
+        let window = block.get(at..at + 32)?;
+        let rd32 = |base: usize| -> u32 {
+            u32::from_le_bytes(window[base..base + 4].try_into().unwrap())
+        };
+        Some(Self {
+            block_bitmap: rd32(0),
+            inode_bitmap: rd32(4),
+            inode_table: rd32(8),
+        })
+    }
+}
+
 pub fn validate(raw: &RawSuperblock, page_size: u32, read_only: bool) -> Result<Geometry, SuperError> {
     check_magic(raw.magic)?;
     let block_size = derive_block_size(raw.log_block_size, page_size)?;

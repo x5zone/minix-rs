@@ -24,6 +24,7 @@ pub mod dir;
 pub mod inode;
 pub mod mapping;
 pub mod superblock;
+pub mod server;
 
 use minix_types::{EFBIG, EINVAL, Errno};
 
