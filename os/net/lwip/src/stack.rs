@@ -28,7 +28,9 @@ use smoltcp::phy::{
 use smoltcp::socket::raw;
 use smoltcp::socket::tcp;
 use smoltcp::time::Instant;
-use smoltcp::wire::{HardwareAddress, IpVersion};
+use smoltcp::wire::{
+    HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint, IpVersion,
+};
 
 use crate::lwip_port::{PollWhen, Readiness, Stack, StackFamily, StackSocket};
 use crate::lwip_port::{TCP_SEND_BUFFER, TCP_WINDOW};
@@ -39,28 +41,38 @@ use crate::util;
 /// 槽位表把服务侧句柄的 `index` 半边翻译成栈内句柄：下标稳定（关闭只
 /// 清槽、不搬移后续槽位，服务手里的句柄永远指同一个套接字），家族随槽
 /// 记录——家族对不上的句柄按"已关闭"回答（墙的契约：缺省就绪位，不炸）。
-pub struct SmoltcpStack {
+pub struct SmoltcpStack<D: Device = TrunkDevice> {
     iface: Interface,
-    device: TrunkDevice,
+    device: D,
     sockets: SocketSet<'static>,
     slots: Vec<Option<Slot>>,
 }
 
-/// 一个在役槽位：栈内句柄加开户家族。
+/// 一个在役槽位：栈内句柄、开户家族、UDP 默认对端（connect 语义）。
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     handle: smoltcp::iface::SocketHandle,
     family: StackFamily,
+    udp_peer: Option<crate::lwip_port::StackEndpoint>,
 }
 
-impl SmoltcpStack {
+impl<D: Device + 'static> SmoltcpStack<D> {
     /// 栈本体构造（C `lwip_init`，`lwip.c:208-210`）：接口按三层介质
     /// （`HardwareAddress::Ip`——以太帧介质等 16-stage 网卡接缝时再扩），
     /// `seed` 交给栈做随机面（TCP 初始序号等，与 C 的 `srand48` 同位）。
-    pub fn new(seed: u64, now_millis: i64) -> Self {
+    /// 设备即垫片的墙：缺省 [`TrunkDevice`]，测试换 [`LoopDevice`]。
+    pub fn new(seed: u64, now_millis: i64) -> Self
+    where
+        D: Default,
+    {
+        Self::with_device(seed, D::default(), now_millis)
+    }
+
+    /// 指定设备构造。
+    pub fn with_device(seed: u64, device: D, now_millis: i64) -> Self {
         let mut config = Config::new(HardwareAddress::Ip);
         config.random_seed = seed;
-        let mut device = TrunkDevice;
+        let mut device = device;
         let iface = Interface::new(config, &mut device, Instant::from_millis(now_millis));
         SmoltcpStack {
             iface,
@@ -76,9 +88,19 @@ impl SmoltcpStack {
         let slot = self.slots.get(idx).copied().flatten()?;
         (slot.family == socket.family()).then_some(slot)
     }
+
+    /// 取 UDP 套接字的栈内可变引用；句柄失效或家族不符为 `None`。
+    fn udp_mut(
+        &mut self,
+        socket: StackSocket,
+    ) -> Option<&mut smoltcp::socket::udp::Socket<'static>> {
+        self.slot(socket)
+            .filter(|slot| slot.family == StackFamily::Udp)
+            .map(|slot| self.sockets.get_mut(slot.handle))
+    }
 }
 
-impl Stack for SmoltcpStack {
+impl<D: Device + 'static> Stack for SmoltcpStack<D> {
     /// 推进栈：收发包、服务到期定时器，再问栈下次何时需要推进。
     /// smoltcp 的一次 `poll` 就是 C `expire_timers` 的同位动作；返回的
     /// 时刻与 C `sys_now` 同一毫秒时间基。
@@ -155,7 +177,7 @@ impl Stack for SmoltcpStack {
             }
             StackFamily::Icmp => return Err(util::ERR_GENERIC),
         };
-        let slot = Some(Slot { handle, family });
+        let slot = Some(Slot { handle, family, udp_peer: None });
         let index = match self.slots.iter().position(|s| s.is_none()) {
             Some(free) => {
                 self.slots[free] = slot;
@@ -179,6 +201,113 @@ impl Stack for SmoltcpStack {
         Ok(())
     }
 
+    // -- UDP 半（第 09 篇的栈面）--
+
+    fn bind_udp(
+        &mut self,
+        socket: StackSocket,
+        local: Option<crate::lwip_port::StackEndpoint>,
+    ) -> Result<(), i32> {
+        let listen = listen_endpoint(local);
+        self.udp_mut(socket)
+            .ok_or(util::ERR_GENERIC)?
+            .bind(listen)
+            .map_err(|_| util::ERR_ADDRESS_IN_USE)
+    }
+
+    fn connect_udp(
+        &mut self,
+        socket: StackSocket,
+        remote: crate::lwip_port::StackEndpoint,
+    ) -> Result<(), i32> {
+        // smoltcp 的 UDP 没有连接态：默认对端记在服务侧槽位上，send
+        // 不带地址时取它（逐包元数据模型，`send_slice` 的 meta 参数）。
+        if remote.addr.is_none() {
+            return Err(util::ERR_INVALID);
+        }
+        let idx = socket.index() as usize;
+        match self.slots.get_mut(idx).and_then(|s| s.as_mut()) {
+            Some(slot) if slot.family == StackFamily::Udp => {
+                slot.udp_peer = Some(remote);
+                Ok(())
+            }
+            _ => Err(util::ERR_GENERIC),
+        }
+    }
+
+    fn send_udp(
+        &mut self,
+        socket: StackSocket,
+        data: &[u8],
+        remote: Option<crate::lwip_port::StackEndpoint>,
+    ) -> Result<usize, i32> {
+        let endpoint = match remote {
+            Some(remote) => {
+                let Some(addr) = remote.addr else {
+                    return Err(util::ERR_INVALID);
+                };
+                IpEndpoint { addr: to_ip_address(addr), port: remote.port }
+            }
+            None => {
+                // 无地址即 send 语义：取 connect 定下的默认对端。
+                let slot = self.slot(socket).ok_or(util::ERR_GENERIC)?;
+                let peer = slot.udp_peer.ok_or(util::ERR_INVALID)?;
+                let peer_addr = peer.addr.expect("connect 时已校验地址在场");
+                IpEndpoint { addr: to_ip_address(peer_addr), port: peer.port }
+            }
+        };
+        let bound = self
+            .udp_mut(socket)
+            .map(|s| s.endpoint())
+            .ok_or(util::ERR_GENERIC)?;
+        if bound.port == 0 {
+            return Err(util::ERR_INVALID);
+        }
+        self.udp_mut(socket)
+            .ok_or(util::ERR_GENERIC)?
+            .send_slice(data, endpoint)
+            .map(|_| data.len())
+            .map_err(|_| util::ERR_NO_BUFFERS)
+    }
+
+    fn recv_udp(
+        &mut self,
+        socket: StackSocket,
+        data: &mut [u8],
+    ) -> Result<(usize, crate::lwip_port::StackEndpoint), i32> {
+        self.udp_mut(socket)
+            .ok_or(util::ERR_GENERIC)?
+            .recv_slice(data)
+            .map(|(n, meta)| {
+                (
+                    n,
+                    crate::lwip_port::StackEndpoint {
+                        addr: Some(from_ip_address(meta.endpoint.addr)),
+                        port: meta.endpoint.port,
+                    },
+                )
+            })
+            .map_err(|_| util::ERR_WOULD_BLOCK)
+    }
+
+    fn local_endpoint_udp(
+        &self,
+        socket: StackSocket,
+    ) -> Result<crate::lwip_port::StackEndpoint, i32> {
+        let slot = self.slot(socket).ok_or(util::ERR_GENERIC)?;
+        if slot.family != StackFamily::Udp {
+            return Err(util::ERR_GENERIC);
+        }
+        let listen = self
+            .sockets
+            .get::<smoltcp::socket::udp::Socket>(slot.handle)
+            .endpoint();
+        Ok(crate::lwip_port::StackEndpoint {
+            addr: listen.addr.map(from_ip_address),
+            port: listen.port,
+        })
+    }
+
     /// 交付一个入站帧：中继设备没有真网卡可交，按"网络未接"回答。
     /// 真数据路径随 16-stage 网卡接缝落地（N1-P1-5 的帧模型一并细化）。
     fn receive_frame(&mut self, _frame: &[u8]) -> Result<(), i32> {
@@ -189,6 +318,61 @@ impl Stack for SmoltcpStack {
     /// ——没有网卡，栈发不出去任何东西）。
     fn transmit_frame(&mut self, _frame: &mut [u8]) -> Option<usize> {
         None
+    }
+}
+
+/// 墙端点到栈监听端点的翻译（`None` 地址 = 通配）。
+fn listen_endpoint(
+    endpoint: Option<crate::lwip_port::StackEndpoint>,
+) -> IpListenEndpoint {
+    let (addr, port) = match endpoint {
+        Some(e) => (e.addr.map(to_ip_address), e.port),
+        None => (None, 0),
+    };
+    IpListenEndpoint { addr, port }
+}
+
+/// 墙地址到栈地址。
+fn to_ip_address(addr: crate::lwip_port::StackIpAddr) -> IpAddress {
+    match addr {
+        crate::lwip_port::StackIpAddr::V4(octets) => {
+            IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(
+                octets[0], octets[1], octets[2], octets[3],
+            ))
+        }
+        crate::lwip_port::StackIpAddr::V6(bytes) => {
+            IpAddress::Ipv6(core::net::Ipv6Addr::from(bytes))
+        }
+    }
+}
+
+/// 栈地址到墙地址。
+fn from_ip_address(addr: IpAddress) -> crate::lwip_port::StackIpAddr {
+    match addr {
+        IpAddress::Ipv4(v4) => crate::lwip_port::StackIpAddr::V4(v4.octets()),
+        IpAddress::Ipv6(v6) => crate::lwip_port::StackIpAddr::V6(v6.octets()),
+    }
+}
+
+impl<D: Device + 'static> SmoltcpStack<D> {
+    /// 给接口挂一个版本 4 地址（ifconf 的栈半；接口批次会用墙外的一层
+    /// 包住它，这里先供测试与缺省配置步使用）。
+    pub fn add_address_v4(&mut self, octets: [u8; 4], prefix: u8, now_millis: i64) {
+        let cidr = IpCidr::new(
+            IpAddress::Ipv4(smoltcp::wire::Ipv4Address::new(
+                octets[0], octets[1], octets[2], octets[3],
+            )),
+            prefix,
+        );
+        let _ = now_millis;
+        self.iface.update_ip_addrs(|addrs| {
+            if addrs.push(cidr).is_err() {
+                // 地址表满：首版只挂一个地址，替换首条。
+                if let Some(first) = addrs.iter_mut().next() {
+                    *first = cidr;
+                }
+            }
+        });
     }
 }
 
@@ -250,13 +434,84 @@ impl Device for TrunkDevice {
     }
 }
 
+/// 回环设备（仅测试）：发出去的帧绕回接收半，配合接口地址即可在
+/// 宿主测试里走完整的数据面（绑、发、推进、收），不依赖任何网卡。
+#[derive(Debug, Default)]
+pub struct LoopDevice {
+    looped: alloc::vec::Vec<alloc::vec::Vec<u8>>,
+}
+
+impl LoopDevice {
+    /// 空回环设备。
+    pub fn new() -> Self {
+        LoopDevice { looped: alloc::vec::Vec::new() }
+    }
+}
+
+impl Device for LoopDevice {
+    type RxToken<'a> = LoopRxToken;
+    type TxToken<'a> = LoopTxToken<'a>;
+
+    fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        if self.looped.is_empty() {
+            return None;
+        }
+        let frame = self.looped.remove(0);
+        Some((LoopRxToken { frame }, LoopTxToken { queue: &mut self.looped }))
+    }
+
+    fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        Some(LoopTxToken { queue: &mut self.looped })
+    }
+
+    fn capabilities(&self) -> DeviceCapabilities {
+        let mut caps = DeviceCapabilities::default();
+        caps.medium = Medium::Ip;
+        caps.max_transmission_unit = 1500;
+        caps
+    }
+}
+
+/// [`LoopDevice`] 的接收令牌：把绕回的帧交给栈。
+#[derive(Debug)]
+pub struct LoopRxToken {
+    frame: alloc::vec::Vec<u8>,
+}
+
+impl RxToken for LoopRxToken {
+    fn consume<R, F>(self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        f(&self.frame)
+    }
+}
+
+/// [`LoopDevice`] 的发送令牌：帧入绕回队列。
+#[derive(Debug)]
+pub struct LoopTxToken<'a> {
+    queue: &'a mut alloc::vec::Vec<alloc::vec::Vec<u8>>,
+}
+
+impl<'a> TxToken for LoopTxToken<'a> {
+    fn consume<R, F>(self, _len: usize, f: F) -> R
+    where
+        F: FnOnce(&mut [u8]) -> R,
+    {
+        let mut frame = alloc::vec![0u8; _len];
+        let result = f(&mut frame);
+        self.queue.push(frame);
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_open_close_roundtrip_reuses_slot() {
-        let mut stack = SmoltcpStack::new(1, 0);
+        let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
         let first = stack.open(StackFamily::Tcp).expect("TCP 建户");
         assert_eq!(first.index(), 0, "首户占 0 号槽");
         stack.close(first).expect("关闭");
@@ -266,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_open_families_get_distinct_slots() {
-        let mut stack = SmoltcpStack::new(1, 0);
+        let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
         let t = stack.open(StackFamily::Tcp).unwrap();
         let u = stack.open(StackFamily::Udp).unwrap();
         let r = stack.open(StackFamily::Raw).unwrap();
@@ -282,7 +537,7 @@ mod tests {
 
     #[test]
     fn test_readiness_after_close_is_default() {
-        let mut stack = SmoltcpStack::new(1, 0);
+        let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
         let ghost = StackSocket::new(StackFamily::Tcp, 9);
         assert_eq!(
             stack.readiness(ghost),
@@ -301,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_close_guards_family_and_double_close() {
-        let mut stack = SmoltcpStack::new(1, 0);
+        let mut stack: SmoltcpStack = SmoltcpStack::new(1, 0);
         let tcp = stack.open(StackFamily::Tcp).unwrap();
         // 家族对不上的句柄按"已关闭"回答（不动栈内套接字）。
         let wrong_family = StackSocket::new(StackFamily::Udp, tcp.index());
@@ -311,8 +566,64 @@ mod tests {
     }
 
     #[test]
+    fn test_udp_datagram_loopback_roundtrip() {
+        use crate::lwip_port::StackEndpoint;
+        // 回环设备上的完整数据面：绑 → 发到自身 → 推进（帧绕回、
+        // 栈收包入套接字缓冲）→ 收到带发送方端点的原样数据。
+        let mut stack: SmoltcpStack<LoopDevice> =
+            SmoltcpStack::with_device(0x5EED, LoopDevice::new(), 0);
+        stack.add_address_v4([127, 0, 0, 1], 8, 0);
+        let socket = stack.open(StackFamily::Udp).expect("UDP 建户");
+        stack
+            .bind_udp(
+                socket,
+                Some(StackEndpoint {
+                    addr: Some(crate::lwip_port::StackIpAddr::V4([127, 0, 0, 1])),
+                    port: 7777,
+                }),
+            )
+            .expect("绑定 7777");
+        let sent = stack
+            .send_udp(
+                socket,
+                &[9, 9, 9, 9],
+                Some(StackEndpoint {
+                    addr: Some(crate::lwip_port::StackIpAddr::V4([127, 0, 0, 1])),
+                    port: 7777,
+                }),
+            )
+            .expect("发送入栈");
+        assert_eq!(sent, 4);
+        // 一趟推进不足以让帧绕回并被栈消费（发送与接收各需一遍），
+        // 推到时间前进为止——有数据后再收。
+        let mut received = None;
+        for tick in 1..=8u64 {
+            stack.poll(tick * 100);
+            let mut buf = [0u8; 64];
+            match stack.recv_udp(socket, &mut buf) {
+                Ok((n, peer)) => {
+                    received = Some((n, peer, buf));
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+        let (n, peer, buf) = received.expect("回环报文在数趟推进内到达");
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..4], &[9, 9, 9, 9]);
+        assert_eq!(
+            peer,
+            StackEndpoint {
+                addr: Some(crate::lwip_port::StackIpAddr::V4([127, 0, 0, 1])),
+                port: 7777,
+            },
+            "发送方端点随报文带回"
+        );
+    }
+
+    #[test]
     fn test_fresh_stack_polls_never() {
-        let mut stack = SmoltcpStack::new(0x1234_5678, 0);
+        let mut stack: SmoltcpStack = SmoltcpStack::new(0x1234_5678, 0);
         // 空栈无定时器无待办：推进后睡到下一个消息到来。
         assert_eq!(stack.poll(0), PollWhen::Never);
         assert_eq!(stack.poll(10_000), PollWhen::Never);

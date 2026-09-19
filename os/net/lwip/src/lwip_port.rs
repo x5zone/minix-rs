@@ -172,6 +172,23 @@ pub struct Readiness {
     pub writable: bool,
 }
 
+/// 一个 UDP 端点：地址加端口。`addr` 为 `None` 表示通配（绑定时未定
+/// 地址、发送时取套接字默认对端语义外的裸端口面）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StackEndpoint {
+    /// 地址；`None` = 通配。
+    pub addr: Option<StackIpAddr>,
+    /// 端口（主机序）。
+    pub port: u16,
+}
+
+impl StackEndpoint {
+    /// 指定地址与端口的端点。
+    pub const fn new(addr: Option<StackIpAddr>, port: u16) -> Self {
+        StackEndpoint { addr, port }
+    }
+}
+
 /// 主循环向栈询问下一次交付时刻，对应 C 里 `sys_check_timeouts` 的语义
 /// 位置。`At` 携带的毫秒时刻与 C `sys_now` 同一时间基。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +225,34 @@ pub trait Stack {
     /// 从栈取一个出站帧到服务提供的缓冲，返回写入长度；`None` 表示
     /// 暂无待发帧。
     fn transmit_frame(&mut self, frame: &mut [u8]) -> Option<usize>;
+
+    // -- UDP 半（第 09 篇的栈面；家族操作按批上墙）--
+
+    /// 绑定本地端点；`None` = 通配地址加临时端口语义由实现定（栈侧
+    /// 分配）。非 UDP 句柄或重复绑定按栈错误回答。
+    fn bind_udp(&mut self, socket: StackSocket, local: Option<StackEndpoint>) -> Result<(), i32>;
+
+    /// 设默认对端（connect 的 UDP 语义）：此后 [`Self::send_udp`] 不带
+    /// 地址即发往对端。
+    fn connect_udp(&mut self, socket: StackSocket, remote: StackEndpoint) -> Result<(), i32>;
+
+    /// 发送一段数据；带 `remote` 即 sendto 语义，`None` 走 connect 定
+    /// 下的默认对端。返回实际入栈字节数（栈缓冲满按 EWOULDBLOCK 类
+    /// 错误回答，不部分发送）。
+    fn send_udp(
+        &mut self,
+        socket: StackSocket,
+        data: &[u8],
+        remote: Option<StackEndpoint>,
+    ) -> Result<usize, i32>;
+
+    /// 接收一段数据，返回 `(字节数, 发送方端点)`；无到包按 EWOULDBLOCK
+    /// 类错误回答（调用方决定挂起还是立即返回）。
+    fn recv_udp(&mut self, socket: StackSocket, data: &mut [u8])
+        -> Result<(usize, StackEndpoint), i32>;
+
+    /// 查询本地端点（getsockname 的栈半）；未绑定时返回通配端点。
+    fn local_endpoint_udp(&self, socket: StackSocket) -> Result<StackEndpoint, i32>;
 }
 
 #[cfg(test)]
@@ -280,6 +325,51 @@ mod wall_tests {
     }
 
     impl Stack for ShapeStack {
+        fn bind_udp(
+            &mut self,
+            _socket: StackSocket,
+            _local: Option<StackEndpoint>,
+        ) -> Result<(), i32> {
+            Ok(())
+        }
+
+        fn connect_udp(
+            &mut self,
+            _socket: StackSocket,
+            _remote: StackEndpoint,
+        ) -> Result<(), i32> {
+            Ok(())
+        }
+
+        fn send_udp(
+            &mut self,
+            _socket: StackSocket,
+            data: &[u8],
+            _remote: Option<StackEndpoint>,
+        ) -> Result<usize, i32> {
+            Ok(data.len())
+        }
+
+        fn recv_udp(
+            &mut self,
+            _socket: StackSocket,
+            data: &mut [u8],
+        ) -> Result<(usize, StackEndpoint), i32> {
+            let n = data.len().min(3);
+            data[..n].copy_from_slice(&[1, 2, 3][..n]);
+            Ok((
+                n,
+                StackEndpoint {
+                    addr: Some(StackIpAddr::V4([127, 0, 0, 1])),
+                    port: 7,
+                },
+            ))
+        }
+
+        fn local_endpoint_udp(&self, _socket: StackSocket) -> Result<StackEndpoint, i32> {
+            Ok(StackEndpoint { addr: None, port: 0 })
+        }
+
         fn poll(&mut self, now_millis: u64) -> PollWhen {
             let _ = now_millis;
             PollWhen::Never

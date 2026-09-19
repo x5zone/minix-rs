@@ -66,9 +66,9 @@
 |----|------|------|
 | 1 播种 | 时钟混进程号 | ✅ 已实现（`main.rs` `startup_step` 的种子面） |
 | 2 lwip 库初始化 | 栈本体构造 | ✅ 已实现（`stack.rs` 的 `SmoltcpStack::new`：接口按三层介质构造、套接字集合就位，种子经 `Config::random_seed` 交给栈做随机面——与 C 的 `srand48` 同位；语义垫片的映射边界见 `25-smoltcp-shim.md`） |
-| 3 事件库 | 定时器与事件面 | ✅ 已实现（实体机制住 `SockTable`——挂起记账 [`Continuation`]、事件唤醒 [`WakeAction`]、定时到账 [`poll_timers`]；服务半是套接字路的"立即回答或挂起记账"编排，续答回执经 `take_wake_replies` 在循环尾统一非阻塞发出） |
+| 3 事件库 | 定时器与事件面 | ✅ 已实现（实体机制住 `SockTable`——挂起记账 [`Continuation`]、事件唤醒 [`WakeAction`]、定时到账 [`poll_timers`]；服务半是套接字路的"立即回答或挂起记账"编排，续答回执经 `take_wake_replies` 在循环尾统一非阻塞发出；UDP 接收的挂起→就绪扫描→续答已通，`Resume` 唤醒有了生产者） |
 | 4 辅助初始化 | 内部结构 | ✅ 已实现（内存池库内已建；组播成员注册表 `McastRegistry` 构造进启动链；初始序号小工是栈内同位——种子已随步 2 交栈，`24-liblwip-port.md` §1.5 偏差表在案） |
-| 5 高套接字 | TCP/UDP/RAW 域表 | 部分（`SockTable` 已建；域套接字挂 smoltcp） |
+| 5 高套接字 | TCP/UDP/RAW 域表 | 部分（`SockTable` 已建；UDP 建户与收发已过墙，TCP/RAW 的操作面随各自家族批） |
 | 6 接口注册 | 网卡数据路径 | 等 16-stage（NIC 驱动归其边界节） |
 | 7 卡驱动模块 | 同上 | 等 16-stage |
 | 8 低套接字 | route/rtsock/链路 | 部分（决定半表已在；链路接 smoltcp） |
