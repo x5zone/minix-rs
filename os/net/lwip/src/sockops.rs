@@ -139,6 +139,35 @@ pub fn internet_family(sock_type: i32, is_root: bool) -> Result<StackFamily, i32
     }
 }
 
+/// 调用方身份的缝（C `util_is_root`——服务持有 fproc 副本查 uid；本
+/// 模型的进程表面随系统进程批接线，生产实现先 fail-closed 恒非根，
+/// RAW 建户回 EACCES；测试注 canned 实现）。
+pub trait IdentitySource {
+    /// 该端点是否根身份（RAW 建户的门）。
+    fn is_root(&self, user: Endpoint) -> bool;
+}
+
+/// 生产实现：fail-closed 恒非根（C `util_is_root` 的进程表面随系统
+/// 进程批接线，接线前 RAW 建户一律 EACCES——不假装放行）。
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FailClosedIdentity;
+
+impl IdentitySource for FailClosedIdentity {
+    fn is_root(&self, _user: Endpoint) -> bool {
+        false
+    }
+}
+
+/// canned 替身：按构造参数回答（服务二进制测试用它放行/拒绝 RAW）。
+#[derive(Debug, Clone, Copy)]
+pub struct CannedIdentity(pub bool);
+
+impl IdentitySource for CannedIdentity {
+    fn is_root(&self, _user: Endpoint) -> bool {
+        self.0
+    }
+}
+
 /// 类基到家族（线上套接字号反查栈家族用）。
 fn family_of_class(class: sockid::SockClass) -> Option<StackFamily> {
     match class {
@@ -325,9 +354,16 @@ pub fn open_socket(
     req: &SocketRequest,
     is_root: bool,
 ) -> Result<i32, i32> {
+    // RT/LNK 两域不进栈：服务侧表登记（C 的 rtsock/lnksocket 同为表
+    // 对象），消息面（第 20/11 篇）随后批接线。
+    if req.domain == domain::ROUTE {
+        return open_service_socket(table, sockid::SockClass::Rt);
+    }
+    if req.domain == domain::LINK {
+        return open_service_socket(table, sockid::SockClass::Lnk);
+    }
     let family = match req.domain {
         domain::INET | domain::INET6 => internet_family(req.sock_type, is_root)?,
-        domain::ROUTE | domain::LINK => return Err(minix_types::ENOSYS),
         _ => return Err(minix_types::EAFNOSUPPORT),
     };
     let stack_socket = stack.open(family)?;
@@ -343,6 +379,24 @@ pub fn open_socket(
         return Err(minix_types::EAGAIN);
     }
     Ok(id.raw())
+}
+
+/// 服务侧建户（rtsock/lnksock 两域：不进栈，纯服务表对象——C 的
+/// `rtsock_socket`/`lnksock_socket` 同为表登记）。类内下标线性扫描
+/// 空闲号（两域套接字数少，扫描面可忽略）。
+pub fn open_service_socket(
+    table: &mut SockTable,
+    class: sockid::SockClass,
+) -> Result<i32, i32> {
+    for index in 0..=sockid::INDEX_MASK {
+        let Some(id) = SockId::from_class(class, index) else {
+            continue;
+        };
+        if !table.contains(id) && table.add(id).is_ok() {
+            return Ok(id.raw());
+        }
+    }
+    Err(minix_types::ENOSPC)
 }
 
 // ---------------------------------------------------------------------------
@@ -553,6 +607,57 @@ pub struct PendingRecv {
     pub addr_len: usize,
     /// 授权方端点（拷贝动词的 granter）。
     pub user_endpt: i32,
+}
+
+/// 关闭如何半关（`sys/socket.h` 的 `SHUT_*` 值，与垫片的 `shutdown_tcp`
+/// 同表）。
+pub mod shut {
+    /// `SHUT_RD`（0）。
+    pub const RD: i32 = 0;
+    /// `SHUT_WR`（1）。
+    pub const WR: i32 = 1;
+    /// `SHUT_RDWR`（2）。
+    pub const RDWR: i32 = 2;
+}
+
+/// 关闭（C `sdev_close` → 各模块 close + 表摘除）：栈类先关栈内套
+/// 接字，服务侧类（rtsock/lnksock）只摘表；两类都回 0。C 的可挂起
+/// 关闭（缓冲未走的体面收尾）随接口批——此处为立即关闭，登记差异。
+pub fn close_socket(
+    stack: &mut dyn Stack,
+    table: &mut SockTable,
+    msg: &Message,
+) -> Option<Message> {
+    let Some(req) = decode_simple(msg) else {
+        return Some(simple_reply(0, -(minix_types::EINVAL)));
+    };
+    let Some(id) = SockId::from_raw(req.sock_id) else {
+        return Some(simple_reply(req.req_id, -(minix_types::EBADF)));
+    };
+    if let Some(stack_socket) = stack_socket_of(req.sock_id) {
+        let _ = stack.close(stack_socket);
+    }
+    table.close(id);
+    Some(simple_reply(req.req_id, 0))
+}
+
+/// 半关（C `sdev_shutdown` → `sock_shutdown`）：栈类转
+/// [`Stack::shutdown_tcp`]，服务侧类（rtsock/lnksock）无对端半关
+/// 语义，成功无操作回答（与 C 的 datagram shutdown 行为一致）。
+pub fn shutdown_socket(
+    stack: &mut dyn Stack,
+    msg: &Message,
+) -> Option<Message> {
+    let Some(req) = decode_simple(msg) else {
+        return Some(simple_reply(0, -(minix_types::EINVAL)));
+    };
+    match stack_socket_of(req.sock_id) {
+        Some(stack_socket) => Some(match stack.shutdown_tcp(stack_socket, req.param) {
+            Ok(()) => simple_reply(req.req_id, 0),
+            Err(e) => simple_reply(req.req_id, wire(e)),
+        }),
+        None => Some(simple_reply(req.req_id, 0)),
+    }
 }
 
 /// UDP 路的翻译入口：`msg` 已是 UDP 类套接字上的某条请求。返回
@@ -1261,10 +1366,12 @@ mod tests {
             req_id: 1, domain: domain::ROUTE, sock_type: sock_type::DGRAM,
             protocol: 0, user_endpt: 100,
         };
+        // RT/LNK 服务侧建户（批八起转真）：不进栈，类号各归其位。
+        let route_id = open_socket(&mut stack, &mut table, &route, false).unwrap();
         assert_eq!(
-            open_socket(&mut stack, &mut table, &route, false).unwrap_err(),
-            minix_types::ENOSYS,
-            "rtsock 随后批接线，先诚实回答未接线"
+            sockid::SockId::from_raw(route_id).unwrap().class_base(),
+            sockid::SOCKID_RT,
+            "路由套接字是服务侧对象，不进栈"
         );
         let alien = SocketRequest {
             req_id: 2, domain: 42, sock_type: sock_type::STREAM,

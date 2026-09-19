@@ -285,6 +285,10 @@ pub trait Stack {
     /// C 的 read 返回 0 即 EOF。
     fn recv_tcp(&mut self, socket: StackSocket, data: &mut [u8])
         -> Result<(usize, bool), i32>;
+
+    /// 半关/全关（shutdown 的栈半）：写向关闭走体面的 FIN（后续推进
+    /// 发出）；读向单独关闭在栈上无对应动词，由实现按能力回答。
+    fn shutdown_tcp(&mut self, socket: StackSocket, how: i32) -> Result<(), i32>;
 }
 
 #[cfg(test)]
@@ -453,6 +457,10 @@ mod wall_tests {
             let n = data.len().min(2);
             data[..n].copy_from_slice(&[7, 7][..n]);
             Ok((n, false))
+        }
+
+        fn shutdown_tcp(&mut self, _socket: StackSocket, _how: i32) -> Result<(), i32> {
+            Ok(())
         }
 
         fn poll(&mut self, now_millis: u64) -> PollWhen {

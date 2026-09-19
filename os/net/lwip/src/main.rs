@@ -48,6 +48,8 @@ struct ProductionHandler {
     epoch: std::time::Instant,
     /// 拷贝缝（用户 grant 与栈缓冲之间的搬运动词）。
     copy: Box<dyn minix_net_lwip::sockops::CopyTransport>,
+    /// 调用方身份缝（RAW 建户的根门；生产 fail-closed，测试注 canned）。
+    identity: Box<dyn minix_net_lwip::sockops::IdentitySource>,
     /// 挂起留言条账本（接收/连接/受纳三类现场，ready-scan 的对象）。
     pending: minix_net_lwip::sockops::PendingTables,
     /// 挂起续答的待发回执（C 的 `reply` 在事件处理任意点发出；本模型
@@ -68,6 +70,7 @@ impl ProductionHandler {
             stack: None,
             epoch: std::time::Instant::now(),
             copy: Box::new(minix_net_lwip::sockops::SysCopyTransport),
+            identity: Box::new(minix_net_lwip::sockops::FailClosedIdentity),
             pending: minix_net_lwip::sockops::PendingTables::default(),
             wake_replies: Vec::new(),
             mcast: None,
@@ -211,11 +214,14 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
         };
         if msg.m_type == minix_sockdriver::sdev::SdevRequest::Socket as i32 {
             let reply = match sockops::decode_socket(msg) {
-                Some(req) => match sockops::open_socket(stack.as_mut(), table, &req, false)
-                {
-                    Ok(id) => sockops::socket_reply(req.req_id, id),
-                    Err(e) => sockops::socket_reply(req.req_id, -e),
-                },
+                Some(req) => {
+                    let is_root =
+                        self.identity.is_root(minix_types::Endpoint(req.user_endpt));
+                    match sockops::open_socket(stack.as_mut(), table, &req, is_root) {
+                        Ok(id) => sockops::socket_reply(req.req_id, id),
+                        Err(e) => sockops::socket_reply(req.req_id, -e.abs()),
+                    }
+                }
                 None => sockops::simple_reply(0, -(minix_types::EINVAL)),
             };
             return Some(reply);
@@ -243,6 +249,18 @@ impl minix_net_lwip::server::NetHandler for ProductionHandler {
                 msg.m_source,
                 msg,
             );
+        }
+        if msg.m_type == SdevRequest::Close as i32 {
+            return sockops::close_socket(stack.as_mut(), table, msg);
+        }
+        if msg.m_type == SdevRequest::Shutdown as i32 {
+            return sockops::shutdown_socket(stack.as_mut(), msg);
+        }
+        if msg.m_type == SdevRequest::SocketPair as i32 {
+            // 成对建户随 rtsock/uds 语义批——先按未接线回答。
+            // SAFETY(test): req_id 在首格。
+            let req_id = unsafe { i32::from_le_bytes(msg.m_u.raw[0..4].try_into().unwrap()) };
+            return Some(sockops::simple_reply(req_id, -(minix_types::ENOSYS)));
         }
         // 其余 sdev 请求：通用形状 + ENOSYS（req_id 在两形状里都在首格）。
         // SAFETY: { req_id@0 } 两族回复共用首格。
@@ -749,7 +767,112 @@ mod tests {
         // canned.written 可断言——本测试以受纳回复的 len=16 为准）。
     }
 
+    /// 请求面收尾：RAW 建户的根门（身份缝）、RT/LNK 两域的服务侧
+    /// 建户、CLOSE 的全类闭环（关栈内套接字加摘服务表，槽位复用）。
+    #[test]
+    fn test_request_surface_completion() {
+        use minix_net_lwip::server::NetHandler as _;
+        let mut handler = ProductionHandler::new(&[]);
+        // 启动链七步：步 2 构造栈本体（建户/关闭都要过栈）。
+        for _ in 0..7 {
+            handler.startup_step();
+        }
+        let mut table = minix_netdriver::socktable::SockTable::new();
+
+        // RAW：非根 EACCES（fail-closed 身份缝），根放行得 RAW 类号。
+        let raw_open = |handler: &mut ProductionHandler, table: &mut minix_netdriver::socktable::SockTable| {
+            let mut m = minix_types::Message::default();
+            m.m_type = minix_sockdriver::sdev::SdevRequest::Socket as i32;
+            // SAFETY(test): { req_id@0; domain@4; type@8 }。
+            unsafe {
+                m.m_u.raw[0..4].copy_from_slice(&11i32.to_le_bytes());
+                m.m_u.raw[4..8].copy_from_slice(&2i32.to_le_bytes());
+                m.m_u.raw[8..12].copy_from_slice(&3i32.to_le_bytes());
+            }
+            handler.socket_device(table, &m).expect("建户有回复")
+        };
+        handler.identity = Box::new(minix_net_lwip::sockops::CannedIdentity(false));
+        let reply = raw_open(&mut handler, &mut table);
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            -(minix_types::EACCES),
+            "非根 RAW 拒绝"
+        );
+        handler.identity = Box::new(minix_net_lwip::sockops::CannedIdentity(true));
+        let reply = raw_open(&mut handler, &mut table);
+        let raw_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+        assert!(raw_id >= 0);
+        assert_eq!(
+            minix_netdriver::sockid::SockId::from_raw(raw_id)
+                .unwrap()
+                .class_base(),
+            minix_netdriver::sockid::SOCKID_RAW,
+            "根 RAW 放行得 RAW 类号"
+        );
+
+        // RT/LNK：服务侧建户（不进栈），类号各归其位。
+        for (req_id, pf, base) in [
+            (12i32, 34i32, minix_netdriver::sockid::SOCKID_RT),
+            (13, 18, minix_netdriver::sockid::SOCKID_LNK),
+        ] {
+            let mut m = minix_types::Message::default();
+            m.m_type = minix_sockdriver::sdev::SdevRequest::Socket as i32;
+            // SAFETY(test): { req_id@0; domain@4; type@8 }。
+            unsafe {
+                m.m_u.raw[0..4].copy_from_slice(&req_id.to_le_bytes());
+                m.m_u.raw[4..8].copy_from_slice(&pf.to_le_bytes());
+                m.m_u.raw[8..12].copy_from_slice(&2i32.to_le_bytes());
+            }
+            let reply = handler.socket_device(&mut table, &m).expect("服务侧建户有回复");
+            let id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+            assert!(
+                id >= 0,
+                "PF_ROUTE/PF_LINK 服务侧建户放行（rtsock/lnksock 的消息面随后批）"
+            );
+            assert_eq!(
+                minix_netdriver::sockid::SockId::from_raw(id)
+                    .unwrap()
+                    .class_base(),
+                base
+            );
+        }
+
+        // CLOSE：TCP 建户后关——表摘除、栈槽复用（重开得同一下标）。
+        let mut open = minix_types::Message::default();
+        open.m_type = minix_sockdriver::sdev::SdevRequest::Socket as i32;
+        // SAFETY(test): { req_id@0; domain@4; type@8 }。
+        unsafe {
+            open.m_u.raw[0..4].copy_from_slice(&14i32.to_le_bytes());
+            open.m_u.raw[4..8].copy_from_slice(&2i32.to_le_bytes());
+            open.m_u.raw[8..12].copy_from_slice(&1i32.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &open).expect("TCP 建户有回复");
+        let tcp_id = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+        assert!(tcp_id >= 0);
+        let mut close = minix_types::Message::default();
+        close.m_type = minix_sockdriver::sdev::SdevRequest::Close as i32;
+        // SAFETY(test): simple 形状 { req_id@0; sock_id@4 }。
+        unsafe {
+            close.m_u.raw[0..4].copy_from_slice(&15i32.to_le_bytes());
+            close.m_u.raw[4..8].copy_from_slice(&tcp_id.to_le_bytes());
+        }
+        let reply = handler.socket_device(&mut table, &close).expect("关闭有回复");
+        assert_eq!(
+            i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap()),
+            0
+        );
+        assert!(
+            !table.contains(minix_netdriver::sockid::SockId::from_raw(tcp_id).unwrap()),
+            "关闭后服务表摘除"
+        );
+        let reply = handler.socket_device(&mut table, &open).expect("重开有回复");
+        let reopened = i32::from_le_bytes(unsafe { &reply.m_u.raw }[4..8].try_into().unwrap());
+        assert_eq!(reopened, tcp_id, "槽位回收复用");
+    }
+
     /// 挂起续答通道：带截止时刻的挂起请求到期 → 循环尾的待发回执里
+    /// 出现超时回复（C `sockevent` 定时器半；回复形状取通用形状，
+    /// req_id 槽不用——VFS 侧只读状态格）。    /// 挂起续答通道：带截止时刻的挂起请求到期 → 循环尾的待发回执里
     /// 出现超时回复（C `sockevent` 定时器半；回复形状取通用形状，
     /// req_id 槽不用——VFS 侧只读状态格）。
     #[test]

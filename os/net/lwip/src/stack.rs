@@ -518,6 +518,24 @@ impl<D: Device + 'static> Stack for SmoltcpStack<D> {
         }
     }
 
+    fn shutdown_tcp(&mut self, socket: StackSocket, how: i32) -> Result<(), i32> {
+        // 写向与双向：体面 FIN（随推进发出，套接字留驻到收尾）。
+        // 读向单独关闭在 smoltcp 无对应动词——按能力如实回答。
+        const SHUT_RD: i32 = 0;
+        const SHUT_WR: i32 = 1;
+        const SHUT_RDWR: i32 = 2;
+        match how {
+            SHUT_WR | SHUT_RDWR => {
+                self.tcp_mut(socket)
+                    .ok_or(util::ERR_GENERIC)?
+                    .close();
+                Ok(())
+            }
+            SHUT_RD => Err(util::ERR_INVALID),
+            _ => Err(util::ERR_INVALID),
+        }
+    }
+
     fn remote_endpoint_tcp(
         &self,
         socket: StackSocket,
