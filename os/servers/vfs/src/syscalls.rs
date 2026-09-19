@@ -1363,7 +1363,9 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // C `do_fcntl`（misc.c:127-300）：载荷 `mess_lc_vfs_fcntl`
             // （fd@0、cmd@4、arg_int@8、arg_ptr@16）。未知 cmd → EINVAL
             // （C 的 `default: r = EINVAL`）。
-            let (fd, cmd_raw, arg_int, arg_ptr) = {
+            // `arg_ptr` 是锁类命令的 `struct flock *`（本批未接线，见下面
+            // 的分支）；解析出来但不用，前缀下划线明示。
+            let (fd, cmd_raw, arg_int, _arg_ptr) = {
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
