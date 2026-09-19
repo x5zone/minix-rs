@@ -215,7 +215,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Rmdir
         | VfsCallNum::Symlink
         | VfsCallNum::Truncate
-        | VfsCallNum::Chmod
         | VfsCallNum::Fchmod
         | VfsCallNum::Chown
         | VfsCallNum::Fchown
@@ -1078,6 +1077,85 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── 对话臂模板：getdents（目录读；只有目录能过类型门）──
         // ── 路径臂模板：access（走完即判，无 FS 往返）──
         // ── 路径臂模板：readlink（走末组件符号链接本身，不跟进）──
+        // ── 路径臂模板：chmod（走完过权限门，回复带实际模式）──
+        VfsCallNum::Chmod => {
+            // C `do_chmod`（protect.c:62-133）的路径半：`m_lc_vfs_path.mode`
+            // → 走路径（VNODE_WRITE 锁，此处不建模）→ 属主/超级用户门 +
+            // 只读挂载门 + setgid 清位 → `REQ_CHMOD`。
+            let (name_len, mode, inline) = {
+                // 载荷与 access 同形（`mess_lc_vfs_path`：name@0、len@8、
+                // flags@16、mode@20、buf@24 内联路径）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let len = u64::from_le_bytes(b8);
+                let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
+                (len, mode, raw[24..].to_vec())
+            };
+            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                let n = (name_len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => p,
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            } else {
+                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            };
+            // C `lookup_init(..., PATH_NOFLAGS, ...)`（protect.c:76）。
+            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0, // 由 send_lookup_for_slot 覆写
+                    follow: crate::worker::PathFollow::Chmod { user: user_e, mode },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
+            SyscallResult::Suspend
+        }
+
         VfsCallNum::Readlink => {
             // C `do_rdlink`（link.c:473-507）：载荷
             // `mess_lc_vfs_readlink { name, namelen, buf, bufsize }` →

@@ -340,6 +340,27 @@ pub mod transfer_reply_off {
     pub const NBYTES: usize = 8;
 }
 
+/// `REQ_CHMOD` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_chmod { ino_t inode; mode_t mode; }`（ipc.h:1944-1950，
+/// `request.c:108-130` 的 `req_chmod`）。
+pub mod chmod_req_off {
+    /// `ino_t inode`。
+    pub const INODE: usize = 0;
+    /// `mode_t mode`（4 字节，8 字节域之后自然对齐）。
+    pub const MODE: usize = 8;
+}
+
+/// `REQ_CHMOD` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+///
+/// C: `mess_fs_vfs_chmod { mode_t mode; }`（ipc.h:127-131）——FS 回的是
+/// **实际生效的模式**（`request.c:127` 的 `*new_modep = m.m_fs_vfs_chmod.mode`，
+/// 可能被 FS 收窄），VFS 拿它回写 vnode 缓存。
+pub mod chmod_reply_off {
+    /// `mode_t mode`。
+    pub const MODE: usize = 0;
+}
+
 /// `REQ_RDLINK` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_rdlink { ino_t inode; cp_grant_id_t grant; size_t
@@ -528,6 +549,10 @@ mod tests {
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
+        // chmod：请求两域 + 回复一域（实际生效的模式）。
+        assert_eq!(chmod_req_off::INODE, 0);
+        assert_eq!(chmod_req_off::MODE, 8);
+        assert_eq!(chmod_reply_off::MODE, 0);
         // rdlink：请求三域 + 回复一域（字节数在载荷里，m_type 只是 OK）。
         assert_eq!(rdlink_req_off::INODE, 0);
         assert_eq!(rdlink_req_off::GRANT, 8);

@@ -89,6 +89,13 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `chmod` 的对话半（`REQ_CHMOD`）：回复的 `mode` 是实际生效的模式
+    /// （C request.c:127），成功时回写 vnode 缓存（C `vp->v_mode =
+    /// result_mode`，protect.c:127-128）。
+    Chmod {
+        /// 被改模式的 vnode 下标（走完时并入缓存的那个）。
+        vnode: usize,
+    },
     /// `readlink` 的对话半（`REQ_RDLINK`）：C `req_rdlink_actual`
     /// （request.c:741-747）——回复的 `m_type` 只是 `OK`，**字节数在载荷里**
     /// （`mess_fs_vfs_rdlink { size_t nbytes; }`），所以不能复用 `Status`。
@@ -179,6 +186,15 @@ pub struct PathPending {
 /// 非 `Copy`：`Mkdir` 要带上"最后组件名"（`String`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathFollow {
+    /// `chmod(path, mode)`：走完过权限门后发 `REQ_CHMOD`，回复带**实际生效
+    /// 的模式**（FS 可能收窄），由续接体回写 vnode 缓存。C `do_chmod`
+    /// （protect.c:62-133）的路径半。
+    Chmod {
+        /// 调用方端点（回复目的地）。
+        user: Endpoint,
+        /// 用户给的模式位（setgid 位可能被清，见续接前的本地半）。
+        mode: u32,
+    },
     /// `readlink(path, buf, bufsize)`：走完（**不跟进末组件符号链接**，
     /// `PATH_RET_SYMLINK`）后发 `REQ_RDLINK`，链接文本由 FS 经 magic grant
     /// 写进用户缓冲。C `do_rdlink`（link.c:473-507）。

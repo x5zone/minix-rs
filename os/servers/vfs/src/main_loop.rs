@@ -1200,6 +1200,24 @@ impl VfsState {
                     }
                     reply_payload = Some(m);
                 }
+                crate::worker::WorkerCont::Chmod { vnode } => {
+                    // C `do_chmod` 的收尾（protect.c:126-128）：成功时把
+                    // **FS 回的实际模式**写回 vnode 缓存——FS 可能收窄
+                    // （例如没有权限位就清掉 setgid），缓存跟着 FS 走。
+                    if status == 0 {
+                        // SAFETY: 回复载荷按 LP64 域序写在负载区（共享表）。
+                        let raw = unsafe { &reply.m_u.raw };
+                        let mut b4 = [0u8; 4];
+                        b4.copy_from_slice(
+                            &raw[minix_types::chmod_reply_off::MODE
+                                ..minix_types::chmod_reply_off::MODE + 4],
+                        );
+                        let actual = u32::from_le_bytes(b4);
+                        if let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode)) {
+                            v.mode = actual;
+                        }
+                    }
+                }
                 crate::worker::WorkerCont::Rdlink { grant } => {
                     // C `req_rdlink_actual`（request.c:743-747）：撤销 grant，
                     // 然后**从载荷取字节数**（`mess_fs_vfs_rdlink.nbytes`），
@@ -1303,6 +1321,67 @@ impl VfsState {
                             continue;
                         }
                         Ok(crate::path::WalkStep::Done(node)) => match follow {
+                            crate::worker::PathFollow::Chmod { user, mode } => {
+                                // C `do_chmod` 的本地半（protect.c:112-124）：
+                                // 只有属主或超级用户能改模式（否则 EPERM），
+                                // 只读挂载上谁都不能（EROFS）；非超级用户且
+                                // 文件的组不是自己的有效组时**清掉 setgid 位**
+                                // （protect.c:120-121）。
+                                let (eff_uid, eff_gid) =
+                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                        Some(fp) => (fp.eff_uid, fp.eff_gid),
+                                        None => {
+                                            self.finish_worker_job(
+                                                idx,
+                                                fp_slot,
+                                                minix_types::EINVAL,
+                                            );
+                                            continue;
+                                        }
+                                    };
+                                if node.uid != eff_uid && eff_uid != crate::link::SU_UID {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EPERM);
+                                    continue;
+                                }
+                                let readonly_fs = self
+                                    .vmnt_table
+                                    .find_by_fs(node.fs_e)
+                                    .and_then(|v| self.vmnt_table.get(v))
+                                    .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
+                                    .unwrap_or(false);
+                                if readonly_fs {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EROFS);
+                                    continue;
+                                }
+                                // 非超级用户且文件不在自己的组里就清 setgid
+                                // （protect.c:120-121）——决策函数已有。
+                                let new_mode = crate::protect::strip_setgid(
+                                    eff_uid == crate::link::SU_UID,
+                                    node.gid,
+                                    eff_gid,
+                                    mode,
+                                );
+                                let Some(vnode) = self.intern_vnode(&node) else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                                    continue;
+                                };
+                                let Some(vmnt) = self.vmnt_table.find_by_fs(node.fs_e) else {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                    continue;
+                                };
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont = Some(crate::worker::WorkerCont::Chmod { vnode });
+                                }
+                                self.pending_fs = Some(PendingFs {
+                                    vmnt: vmnt.0,
+                                    fs_e: node.fs_e,
+                                    worker: idx,
+                                    grant: 0, // 无数据面
+                                    user,
+                                    req: crate::request::encode_chmod(node.ino, new_mode),
+                                });
+                                continue;
+                            }
                             crate::worker::PathFollow::Rdlink { user, buf, buf_size } => {
                                 // C `do_rdlink`（link.c:496-506）：不是符号链接
                                 // 就是 EINVAL（`PATH_RET_SYMLINK` 已经让 FS 不
@@ -2665,6 +2744,159 @@ mod tests {
         assert_eq!(f.count, 1, "filp_count = 1（认领）");
         assert_eq!(f.mode & crate::open::R_BIT, crate::open::R_BIT, "只读打开");
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
+    /// `PathFollow::Chmod` 与 `WorkerCont::Chmod`：`chmod` 的两段。
+    /// 走完先过两道门（属主/超级用户 → 否则 EPERM；只读挂载 → EROFS），
+    /// 再过 setgid 清位（非超级用户且文件不在自己的组里），才发 `REQ_CHMOD`；
+    /// 回复带**实际生效的模式**，续接体回写 vnode 缓存（C protect.c:120-128）。
+    #[test]
+    fn test_path_follow_chmod_gates_and_cache_writeback() {
+        use crate::worker::{PathFollow, PathPending, WorkerCont};
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mk = |state: &mut VfsState| {
+            let slot = minix_types::UserSlot::new(0);
+            let idx = state
+                .worker_pool
+                .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+                .unwrap();
+            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
+            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let (walk, _) = crate::path::LookupWalk::begin(
+                start,
+                crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS)
+                    .unwrap(),
+                rd,
+                0,
+                0,
+            )
+            .unwrap();
+            (slot, idx, walk)
+        };
+        let done_reply = |uid: u32, gid: u32| {
+            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
+            unsafe {
+                let raw = &mut reply.m_u.raw;
+                raw[minix_types::lookup_reply_off::INODE..minix_types::lookup_reply_off::INODE + 8]
+                    .copy_from_slice(&0x21u64.to_le_bytes());
+                raw[minix_types::lookup_reply_off::MODE..minix_types::lookup_reply_off::MODE + 4]
+                    .copy_from_slice(&(crate::open::S_IFREG | 0o644).to_le_bytes());
+                raw[minix_types::lookup_reply_off::UID..minix_types::lookup_reply_off::UID + 4]
+                    .copy_from_slice(&uid.to_le_bytes());
+                raw[minix_types::lookup_reply_off::GID..minix_types::lookup_reply_off::GID + 4]
+                    .copy_from_slice(&gid.to_le_bytes());
+            }
+            reply
+        };
+        let plant = |state: &mut VfsState, idx: usize, walk, mode: u32, reply: Message| {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Path);
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow: PathFollow::Chmod { user, mode },
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        };
+
+        // ① 非属主（有效 id 1000，文件属主 0）→ EPERM，不发请求。
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000;
+            fp.eff_gid = 1000;
+        }
+        plant(&mut state, idx, walk.clone(), 0o600, done_reply(0, 0));
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none(), "门没过不该发 REQ_CHMOD");
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EPERM))
+        );
+
+        // ② 属主但挂载是只读 → EROFS。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 0;
+            fp.eff_gid = 0;
+        }
+        {
+            let v = state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap();
+            v.flags = crate::vmnt::VmntFlags::READONLY;
+        }
+        plant(&mut state, idx, walk.clone(), 0o600, done_reply(0, 0));
+        state.run_worker_continuations();
+        assert!(state.pending_fs.is_none());
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, minix_types::EROFS))
+        );
+
+        // ③ 属主（非超级用户：有效 id 1000 = 文件属主）+ 可写挂载：发请求，
+        // 且 setgid 位被清（文件组 0 ≠ 有效组 1000，protect.c:120-121）。
+        // 注意这里**不能**用 eff_uid 0——0 就是超级用户，清位那条不适用。
+        let (slot, idx, walk) = mk(&mut state);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+            fp.eff_uid = 1000;
+            fp.eff_gid = 1000;
+        }
+        state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap().flags =
+            crate::vmnt::VmntFlags::empty();
+        plant(&mut state, idx, walk.clone(), 0o2664, done_reply(1000, 0));
+        state.run_worker_continuations();
+        let p = state.pending_fs.as_ref().expect("已登记 REQ_CHMOD");
+        assert_eq!(p.req.m_type, minix_types::REQ_CHMOD);
+        // SAFETY(test): 按 chmod_req_off 读回 inode/mode。
+        unsafe {
+            let raw = &p.req.m_u.raw;
+            let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+            let mode = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+            assert_eq!(ino, 0x21);
+            assert_eq!(mode, 0o664, "setgid 位被清（非超级用户且不同组）");
+        }
+
+        // 续接体：回复带实际模式（FS 收窄成 0o750）→ 回写 vnode 缓存。
+        // 注意回复里的模式是**整字**（含类型位）：mfs 的 `fs_chmod` 末尾是
+        // `*mode = rip->i_mode`（mfs/protect.c），libfsdriver 原样搬进回复
+        // （call.c:787）。只回权限位是错的实现——缓存里的类型位会丢。
+        let vnode = match state.worker_pool.get_mut(idx).unwrap().cont {
+            Some(WorkerCont::Chmod { vnode }) => vnode,
+            _ => panic!("续接标识应是 Chmod"),
+        };
+        state.pending_fs = None;
+        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        // SAFETY(test): 按 chmod_reply_off 填实际模式（整字，含 S_IFREG）。
+        unsafe {
+            reply.m_u.raw[0..4]
+                .copy_from_slice(&(crate::open::S_IFREG | 0o750).to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0))
+        );
+        assert_eq!(
+            state.vnode_table.get(crate::vnode::VnodeId(vnode)).unwrap().mode,
+            crate::open::S_IFREG | 0o750,
+            "缓存里的模式跟着 FS 回的实际值走"
+        );
     }
 
     /// `PathFollow::Rdlink` 与 `WorkerCont::Rdlink`：`readlink` 的两段。

@@ -505,6 +505,26 @@ pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_CHMOD` 请求（C `req_chmod` — request.c:108-130）。
+///
+/// 载荷 `{inode, mode}`；回复带**实际生效的模式**（FS 可能收窄），由调用方
+/// 回写 vnode 缓存。
+pub fn encode_chmod(ino: u64, mode: u32) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_CHMOD,
+        ..Message::default()
+    };
+    // SAFETY: REQ_CHMOD 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::chmod_req_off::INODE..minix_types::chmod_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::chmod_req_off::MODE..minix_types::chmod_req_off::MODE + 4]
+            .copy_from_slice(&mode.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_RDLINK` 请求（C `req_rdlink_actual` — request.c:717-748）。
 ///
 /// 载荷 `{inode, grant, mem_size}`；数据面由 FS 经 grant 把链接文本写进
@@ -1442,6 +1462,26 @@ mod tests {
     /// `encode_getdents` 的四个域按 `getdents_req_off` 落位——请求与回复是
     /// 两套结构（回复见 `main_loop` 的续接体用 `getdents_reply_off` 解），
     /// 这里只钉请求侧，防"看着回复表写请求"。
+    /// `encode_chmod` 的两个域落位（inode@0、mode@8）；回复侧的 `mode`
+    /// 是"实际生效的模式"，与请求同名字不同来源。
+    #[test]
+    fn test_encode_chmod_fields() {
+        let m = encode_chmod(0x33, 0o640);
+        assert_eq!(m.m_type, minix_types::REQ_CHMOD);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::chmod_req_off::INODE..minix_types::chmod_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x33);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::chmod_req_off::MODE..minix_types::chmod_req_off::MODE + 4],
+        );
+        assert_eq!(u32::from_le_bytes(b4), 0o640);
+    }
+
     /// `encode_rdlink` 的三个域落位；回复侧只有 `nbytes` 一域（见
     /// `rdlink_reply_off`）——别把回复表拿来写请求。
     #[test]
