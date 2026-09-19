@@ -605,8 +605,7 @@ pub fn dispatch_sigsend(
         ));
         let caller_endpt = caller.p_endpoint;
         let caller_cr3 = caller.p_seg.phys_root;
-        let pt: &ProcessTable = proc_table;
-        let proc_cr3 = |ep: Endpoint| {
+        let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
             } else {
@@ -621,7 +620,7 @@ pub fn dispatch_sigsend(
         };
         let dst = AddressRef::Physical(smsg_phys);
         match data_copy_vmcheck(
-            caller,
+            caller.p_nr, proc_table,
             src,
             dst,
             core::mem::size_of::<SigMsg>(),
@@ -677,8 +676,7 @@ pub fn dispatch_sigsend(
         ));
         let caller_endpt = caller.p_endpoint;
         let caller_cr3 = caller.p_seg.phys_root;
-        let pt: &ProcessTable = proc_table;
-        let proc_cr3 = |ep: Endpoint| {
+        let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
             } else {
@@ -693,7 +691,7 @@ pub fn dispatch_sigsend(
             offset: VirBytes(frame_addr),
         };
         match data_copy_vmcheck(
-            caller,
+            caller.p_nr, proc_table,
             src,
             dst,
             CurrentSignalContext::sigframe_size(),
@@ -789,8 +787,7 @@ pub fn dispatch_sigreturn(
         ));
         let caller_endpt = caller.p_endpoint;
         let caller_cr3 = caller.p_seg.phys_root;
-        let pt: &ProcessTable = proc_table;
-        let proc_cr3 = |ep: Endpoint| {
+        let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
             } else {
@@ -804,7 +801,7 @@ pub fn dispatch_sigreturn(
             offset: VirBytes(sigctx_addr),
         };
         let dst = AddressRef::Physical(sctx_phys);
-        match data_copy_vmcheck(caller, src, dst, sctx_size, proc_cr3) {
+        match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, sctx_size, proc_cr3) {
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Completed(Ok(())) => {}

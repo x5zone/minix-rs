@@ -160,7 +160,8 @@ pub fn cursor() -> (usize, usize) {
 /// 臂的同款语义)。快照经内核堆中转一次拷出(ring 环形 → 顺序流),
 /// 不占内核栈大缓冲。
 pub fn copy_snapshot_to_caller(
-    caller: &mut crate::proc::KProcess,
+    caller_nr: crate::proc::ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
     val_ptr: u64,
     val_len: i32,
 ) -> crate::syscall::KcallResult {
@@ -187,13 +188,20 @@ pub fn copy_snapshot_to_caller(
     // SAFETY: 快照缓冲在内核堆(直映射可达);拷至调用方缓冲为单次跨
     // 空间拷,caller 的 cr3 由 proc_cr3 解析(与 dispatch_trace 同款)。
     let snap_phys = CurrentDirectMap::virt_to_phys(VirBytes(snap.as_ptr() as u64));
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
-    let proc_cr3 = |endpt: minix_types::Endpoint| {
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|p| p.p_endpoint)
+        .expect("copy_snapshot_to_caller: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|p| p.p_seg.phys_root)
+        .expect("copy_snapshot_to_caller: caller slot must exist");
+    let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, endpt: minix_types::Endpoint| {
         if endpt == caller_endpt { Some(caller_cr3) } else { None }
     };
     let r = data_copy_vmcheck(
-        caller,
+        caller_nr,
+        proc_table,
         AddressRef::Physical(snap_phys),
         AddressRef::Process { endpoint: caller_endpt, offset: VirBytes(val_ptr) },
         KMESS_SNAPSHOT_SIZE,

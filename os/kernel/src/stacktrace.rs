@@ -247,7 +247,7 @@ fn make_read_word(
         // back from the same address.
         let scratch_ptr = scratch_cell.get();
         let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(scratch_ptr as u64));
-        let proc_cr3 = |ep: Endpoint| {
+        let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == target_endpt { Some(target_cr3) } else { None }
         };
         let src = AddressRef::Process {
@@ -255,7 +255,11 @@ fn make_read_word(
             offset: VirBytes(vaddr),
         };
         let dst = AddressRef::Physical(dst_phys);
-        match cross_space_copy::<CurrentDirectMap>(&src, &dst, 8, proc_cr3) {
+        // The closure ignores the table (it resolves one known endpoint),
+        // but the callee's signature carries it: hand over the live table
+        // through the sanctioned boot accessor (BKL-held panic path).
+        let proc_table = unsafe { crate::proc_table_boot_unchecked() };
+        match cross_space_copy::<CurrentDirectMap>(&src, &dst, 8, proc_table, proc_cr3) {
             // The walk must not trigger VM-suspend (we are inside the
             // BKL critical section on the panic path; suspending here
             // would never resume because the caller is about to panic).

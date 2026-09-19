@@ -510,7 +510,8 @@ pub fn dispatch_devio<PI: PortIo>(
 /// user→kernel copy. Rust uses `pte_walk::copy_from_user` which walks
 /// the caller's page table via Direct Map — no magic KERNEL endpoint.
 pub fn dispatch_vdevio<PI: PortIo>(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
     msg: &Message,
     port_io: &PI,
     priv_table: &PrivTable,
@@ -583,29 +584,44 @@ pub fn dispatch_vdevio<PI: PortIo>(
     // PvLongPair/u16; the `bytes > VDEVIO_BUF_SIZE → E2BIG` check above
     // bounds every cast's `vec_size * size` within the buffer.
     let mut buf = IoBatchBuf::<VDEVIO_BUF_SIZE>::zeroed();
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|p| p.p_endpoint)
+        .expect("dispatch_vdevio: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|p| p.p_seg.phys_root)
+        .expect("dispatch_vdevio: caller slot must exist");
 
     let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(
         buf.as_mut_ptr() as u64,
     ));
-    let proc_cr3 = |ep: Endpoint| {
-        if ep == caller_endpt { Some(caller_cr3) } else { None }
-    };
+    let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
+            if ep == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                pt.endpoint_to_nr(ep)
+                    .and_then(|nr| pt.get(nr))
+                    .map(|p| p.p_seg.phys_root)
+            }
+        };
     let src = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(vec_addr),
     };
     let dst = AddressRef::Physical(dst_phys);
 
-    match data_copy_vmcheck(caller, src, dst, bytes, proc_cr3) {
+    match data_copy_vmcheck(caller_nr, proc_table, src, dst, bytes, proc_cr3) {
         CrossSpaceResult::Completed(Ok(())) => {}
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
     }
 
     // C: do_vdevio.c:72-100 — batch permission check
-    let caller_priv = caller.priv_id.and_then(|pid| priv_table.get(pid));
+    let caller_priv = proc_table
+        .get(caller_nr)
+        .and_then(|p| p.priv_id)
+        .and_then(|pid| priv_table.get(pid));
     if let Some(priv_) = caller_priv
         && priv_.flags.s_flags.contains(ProcessCapability::CHECK_IO_PORT) {
             for i in 0..vec_size as usize {
@@ -722,15 +738,21 @@ pub fn dispatch_vdevio<PI: PortIo>(
         let src_phys = CurrentDirectMap::virt_to_phys(VirBytes(
             buf.as_ptr() as u64,
         ));
-        let proc_cr3 = |ep: Endpoint| {
-            if ep == caller_endpt { Some(caller_cr3) } else { None }
+        let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
+            if ep == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                pt.endpoint_to_nr(ep)
+                    .and_then(|nr| pt.get(nr))
+                    .map(|p| p.p_seg.phys_root)
+            }
         };
         let src = AddressRef::Physical(src_phys);
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(vec_addr),
         };
-        match data_copy_vmcheck(caller, src, dst, bytes, proc_cr3) {
+        match data_copy_vmcheck(caller_nr, proc_table, src, dst, bytes, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => {}
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -834,7 +856,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
     msg: &Message,
     port_io: &PI,
     priv_table: &PrivTable,
-    proc_table: &crate::proc_table::ProcessTable,
+    proc_table: &mut crate::proc_table::ProcessTable,
 ) -> KcallResult {
     // C: do_sdevio.c:42-46 — extract parameters via dedicated struct
     msg.debug_check_m_type_any(&[Syscall::Sdevio as i32]);
@@ -964,26 +986,24 @@ pub fn dispatch_sdevio<PI: PortIo>(
 
         let caller_endpt = caller.p_endpoint;
         let caller_cr3 = caller.p_seg.phys_root;
-        let proc_cr3 = |endpt: Endpoint| {
+        let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
                 Some(caller_cr3)
             } else {
-                proc_table
-                    .endpoint_to_nr(endpt)
-                    .and_then(|nr| proc_table.get(nr))
+                pt.endpoint_to_nr(endpt)
+                    .and_then(|nr| pt.get(nr))
                     .map(|p| p.p_seg.phys_root)
             }
         };
 
         let outcome = verify_grant(
-            caller,
+            caller.p_nr, proc_table,
             target_ep,
             caller_endpt,
             vec_addr as i32,
             total_bytes as u64,
             access,
             sdevio.offset,
-            proc_table,
             priv_table,
             &proc_cr3,
         );
@@ -1015,7 +1035,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
                 offset: granter_vaddr,
             };
             let dst = AddressRef::Physical(buf_phys);
-            match data_copy_vmcheck(caller, src, dst, total_bytes, proc_cr3) {
+            match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, total_bytes, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {}
                 CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
                 CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -1054,7 +1074,7 @@ pub fn dispatch_sdevio<PI: PortIo>(
                 endpoint: granter,
                 offset: granter_vaddr,
             };
-            match data_copy_vmcheck(caller, src, dst, total_bytes, proc_cr3) {
+            match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, total_bytes, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {}
                 CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
                 CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -1157,7 +1177,8 @@ const UPPER_MEM_END: u64 = 0x0FFFFF;
 /// no magic NONE endpoint, the type system distinguishes physical
 /// (Direct Map) from user-virtual (PTE walk) addressing.
 pub fn dispatch_readbios(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
     msg: &Message,
 ) -> KcallResult {
     // C: do_readbios.c:19-22 — extract parameters via dedicated struct
@@ -1201,23 +1222,35 @@ pub fn dispatch_readbios(
     use crate::vm::{AddressRef, CrossSpaceResult};
     use minix_types::{Endpoint, PhysBytes, VirBytes};
 
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|p| p.p_endpoint)
+        .expect("dispatch_readbios: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|p| p.p_seg.phys_root)
+        .expect("dispatch_readbios: caller slot must exist");
     let mut remaining = size as usize;
     let mut src_phys = addr;
     let mut dst_va = buf;
 
     while remaining > 0 {
         let chunk = core::cmp::min(remaining, 4096);
-        let proc_cr3 = |ep: Endpoint| {
-            if ep == caller_endpt { Some(caller_cr3) } else { None }
+        let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
+            if ep == caller_endpt {
+                Some(caller_cr3)
+            } else {
+                pt.endpoint_to_nr(ep)
+                    .and_then(|nr| pt.get(nr))
+                    .map(|p| p.p_seg.phys_root)
+            }
         };
         let src = AddressRef::Physical(PhysBytes(src_phys));
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(dst_va),
         };
-        match data_copy_vmcheck(caller, src, dst, chunk, proc_cr3) {
+        match data_copy_vmcheck(caller_nr, proc_table, src, dst, chunk, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => {}
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -1609,7 +1642,7 @@ mod tests {
     #[test]
     fn test_sdevio_invalid_endpoint_returns_einval() {
         // C: do_sdevio.c:56 — isokendpt fails → EINVAL
-        let proc_table = crate::test_helpers::test_proc_table();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint::from_generation_slot(1, 0));
 
         let mut msg = Message::default();
@@ -1622,7 +1655,7 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1649,7 +1682,7 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1673,7 +1706,7 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1696,7 +1729,7 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1720,7 +1753,7 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1751,7 +1784,7 @@ mod tests {
         };
 
         let pio = MockPortIo::new(0);
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1781,7 +1814,7 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1805,7 +1838,7 @@ mod tests {
 
         let pio = MockPortIo::new(0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &proc_table);
+        let result = dispatch_sdevio(&mut caller, &msg, &pio, &priv_table, &mut proc_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1824,7 +1857,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dispatch_readbios(&mut caller, &msg);
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let result = dispatch_readbios(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1841,7 +1875,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dispatch_readbios(&mut caller, &msg);
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let result = dispatch_readbios(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1868,7 +1903,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dispatch_readbios(&mut caller, &msg);
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let result = dispatch_readbios(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1885,7 +1921,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = dispatch_readbios(&mut caller, &msg);
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let result = dispatch_readbios(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 

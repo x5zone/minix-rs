@@ -188,16 +188,16 @@ const MEM_TOP: u64 = u64::MAX;
 // diverge from C and hurt grep-ability. Allowed per clippy::too_many_arguments.
 #[allow(clippy::too_many_arguments)]
 pub fn verify_grant(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
+    proc_table: &mut ProcessTable,
     granter: Endpoint,
     grantee: Endpoint,
     grant_id: i32,
     bytes: u64,
     access: CpFlags,
     offset_in: u64,
-    proc_table: &ProcessTable,
     priv_table: &PrivTable,
-    proc_cr3: &dyn Fn(Endpoint) -> Option<PhysBytes>,
+    proc_cr3: &dyn Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> VerifyGrantOutcome {
     let mut granter = granter;
     let mut grantee = grantee;
@@ -284,7 +284,7 @@ pub fn verify_grant(
         let dst = AddressRef::Physical(dst_phys);
 
         match data_copy_vmcheck(
-            caller,
+            caller_nr, proc_table,
             src,
             dst,
             core::mem::size_of::<CpGrant>(),
@@ -508,19 +508,18 @@ mod tests {
     #[test]
     fn test_verify_grant_invalid_endpoint() {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
-        let proc_table = crate::test_helpers::test_proc_table();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let proc_cr3 = |_| None;
+        let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, _| None;
 
         let result = verify_grant(
-            &mut caller,
+            ProcNr(0), &mut proc_table,
             Endpoint(NONE),
             Endpoint(100),
             0,
             0,
             CpFlags::READ,
             0,
-            &proc_table,
             &priv_table,
             &proc_cr3,
         );
@@ -530,19 +529,18 @@ mod tests {
     #[test]
     fn test_verify_grant_invalid_grant_id() {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
-        let proc_table = crate::test_helpers::test_proc_table();
+        let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let proc_cr3 = |_| None;
+        let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, _| None;
 
         let result = verify_grant(
-            &mut caller,
+            ProcNr(0), &mut proc_table,
             Endpoint(100),
             Endpoint(100),
             GRANT_INVALID,
             0,
             CpFlags::READ,
             0,
-            &proc_table,
             &priv_table,
             &proc_cr3,
         );
@@ -580,16 +578,15 @@ mod tests {
         // grant_id=10 → g_idx=10 >= s_grant_entries=2 → EPERM。
         // 闭包返 None 即可：越界分支先于授权条目的跨空间读取触发。
         let result = verify_grant(
-            &mut caller,
+            ProcNr(0), &mut proc_table,
             Endpoint(200),   // granter
             Endpoint(100),   // grantee
             10,              // grant_id → idx 10，越界
             16,              // bytes
             CpFlags::READ,
             0,
-            &proc_table,
             &priv_table,
-            &|_| None,
+            &|_pt: &crate::proc_table::ProcessTable, _| None,
         );
         assert!(matches!(result, VerifyGrantOutcome::Err(EPERM)),
             "越界 grant 索引必须返回 EPERM，实际 {:?}", result);
@@ -620,16 +617,15 @@ mod tests {
         proc_table.get_mut(ProcNr(1)).unwrap().priv_id = Some(pid);
 
         let result = verify_grant(
-            &mut caller,
+            ProcNr(0), &mut proc_table,
             Endpoint(200),
             Endpoint(100),
             0,               // idx 0，在 s_grant_entries=8 范围内
             16,
             CpFlags::READ,
             0,
-            &proc_table,
             &priv_table,
-            &|_| None,
+            &|_pt: &crate::proc_table::ProcessTable, _| None,
         );
         assert!(matches!(result, VerifyGrantOutcome::Err(ENOTREADY)),
             "临时授权表 grantee 不匹配必须返回 ENOTREADY，实际 {:?}", result);

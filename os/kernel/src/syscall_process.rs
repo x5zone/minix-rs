@@ -293,7 +293,7 @@ pub fn dispatch_exec(
             name_buf.as_mut_ptr() as u64,
         ));
 
-        let proc_cr3 = |endpt: Endpoint| {
+        let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt { Some(caller_cr3) } else { None }
         };
 
@@ -303,7 +303,7 @@ pub fn dispatch_exec(
         };
         let dst = AddressRef::Physical(dst_phys);
 
-        match data_copy_vmcheck(caller, src, dst, PROC_NAME_LEN, proc_cr3) {
+        match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, PROC_NAME_LEN, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => {
                 // C: ensure null termination (do_exec.c:43)
                 name_buf[PROC_NAME_LEN - 1] = 0;
@@ -873,7 +873,7 @@ fn add_ipc_filter_arm(
     };
     let dst = AddressRef::Physical(dst_phys);
 
-    match data_copy_vmcheck(caller, src, dst, length, |endpt| {
+    match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, length, |_pt, endpt| {
         if endpt == caller_endpt { Some(caller_cr3) } else { None }
     }) {
         CrossSpaceResult::Completed(Ok(())) => {}

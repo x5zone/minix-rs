@@ -288,14 +288,20 @@ pub fn lookup_range_in_table<D: DirectMapArch>(
     Some((phys_base, chunk as usize))
 }
 
+/// K20: the `proc_cr3` closure receives the process table as a parameter
+/// (it no longer captures it) — a caller holding `&mut ProcessTable` for
+/// the suspend tail can therefore still call the closure through a shared
+/// reborrow, and closures that only need copied field values simply
+/// ignore the parameter.
 fn resolve_physical<D: DirectMapArch>(
     addr: &AddressRef,
-    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+    proc_table: &crate::proc_table::ProcessTable,
+    proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> Result<PhysBytes, ResolveError> {
     match addr {
         AddressRef::Physical(paddr) => Ok(*paddr),
         AddressRef::Process { endpoint, offset } => {
-            let cr3 = proc_cr3(*endpoint).ok_or(ResolveError::UnknownEndpoint)?;
+            let cr3 = proc_cr3(proc_table, *endpoint).ok_or(ResolveError::UnknownEndpoint)?;
             lookup_in_table::<D>(cr3, *offset)
                 .map(|(paddr, _)| paddr)
                 .ok_or(ResolveError::PageFault)
@@ -328,16 +334,17 @@ pub fn cross_space_copy<D: DirectMapArch>(
     src: &AddressRef,
     dst: &AddressRef,
     bytes: usize,
-    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+    proc_table: &crate::proc_table::ProcessTable,
+    proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    let src_phys = match resolve_physical::<D>(src, &proc_cr3) {
+    let src_phys = match resolve_physical::<D>(src, proc_table, &proc_cr3) {
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Src),
         Err(ResolveError::UnknownEndpoint) => {
             return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
         }
     };
-    let dst_phys = match resolve_physical::<D>(dst, &proc_cr3) {
+    let dst_phys = match resolve_physical::<D>(dst, proc_table, &proc_cr3) {
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
         Err(ResolveError::UnknownEndpoint) => {
@@ -380,9 +387,10 @@ pub fn cross_space_memset<D: DirectMapArch>(
     dst: &AddressRef,
     value: u8,
     count: usize,
-    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+    proc_table: &crate::proc_table::ProcessTable,
+    proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    let dst_phys = match resolve_physical::<D>(dst, &proc_cr3) {
+    let dst_phys = match resolve_physical::<D>(dst, proc_table, &proc_cr3) {
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
         Err(ResolveError::UnknownEndpoint) => {
@@ -422,9 +430,10 @@ pub fn cross_space_memset<D: DirectMapArch>(
 pub fn cross_space_write<D: DirectMapArch>(
     src: &[u8],
     dst: &AddressRef,
-    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+    proc_table: &crate::proc_table::ProcessTable,
+    proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    let dst_phys = match resolve_physical::<D>(dst, &proc_cr3) {
+    let dst_phys = match resolve_physical::<D>(dst, proc_table, &proc_cr3) {
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
         Err(ResolveError::UnknownEndpoint) => {
@@ -1057,7 +1066,7 @@ mod tests {
         use minix_arch::direct_map::MockDirectMap;
         let paddr = PhysBytes::new(0x5000);
         let addr = AddressRef::Physical(paddr);
-        let result = resolve_physical::<MockDirectMap>(&addr, |_| None);
+        let result = resolve_physical::<MockDirectMap>(&addr, &crate::test_helpers::test_proc_table(), |_pt: &crate::proc_table::ProcessTable, _| None);
         assert_eq!(result, Ok(paddr));
     }
 
@@ -1068,7 +1077,7 @@ mod tests {
             endpoint: Endpoint::from_generation_slot(1, 9999),
             offset: VirBytes::new(0),
         };
-        let result = resolve_physical::<MockDirectMap>(&addr, |_| None);
+        let result = resolve_physical::<MockDirectMap>(&addr, &crate::test_helpers::test_proc_table(), |_pt: &crate::proc_table::ProcessTable, _| None);
         assert_eq!(result, Err(ResolveError::UnknownEndpoint));
     }
 

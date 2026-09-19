@@ -22,7 +22,8 @@
 //!   Suspended(VmFaultType) — C conflates these in a single `int`
 //! - **D3**: `AddressRef` enum (Process/Physical) replaces C's `vir_addr`
 //!   struct + sentinel `proc_nr_e` values
-//! - **D4**: `caller: &mut KProcess` is explicit — VMSUSPEND requires setting
+//! - **D4**: the caller is named explicitly (`caller_nr` + `&mut ProcessTable`,
+//!   K20 caller-by-nr, uniform parameter order) — VMSUSPEND requires setting
 //!   RTS_VMREQUEST on the caller, so the borrow must be mutable
 //! - **D7**: `dispatch_datacopy` is **deleted** — Minix3 has no
 //!   `SYS_DATACOPY` call number; `sys_datacopy` is a user-space macro that
@@ -42,6 +43,8 @@
 use minix_types::{Endpoint, PhysBytes, VirBytes};
 
 use crate::proc::KProcess;
+use crate::proc::ProcNr;
+use crate::proc_table::ProcessTable;
 use crate::vm::{AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy, cross_space_memset, cross_space_write};
 use minix_arch::CurrentDirectMap;
 
@@ -104,10 +107,10 @@ use minix_arch::CurrentDirectMap;
 /// C takes `struct proc * caller` (raw pointer) and resolves `from_proc` /
 /// `to_proc` to `struct proc *` internally via `isokendpt()` + `proc_addr()`.
 /// Rust takes `AddressRef` values (endpoint + offset, or physical address)
-/// plus a `proc_cr3` closure, avoiding the need to borrow multiple
-/// `KProcess` simultaneously — the `caller: &mut KProcess` mutable borrow
-/// does not conflict with the immutable `proc_table` borrow used to build
-/// the closure.
+/// plus a `proc_cr3` closure. Since K20 (caller-by-nr) the caller travels
+/// as `caller_nr: ProcNr` (with `proc_table` in the uniform second slot)
+/// and the suspend side effect re-borrows its slot at the point of use —
+/// the closure captures only copied field values, never a table borrow.
 ///
 /// # Critical invariant
 ///
@@ -116,13 +119,14 @@ use minix_arch::CurrentDirectMap;
 /// the process will be resumed and the copy retried with the original
 /// register state.
 pub fn data_copy_vmcheck(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
+    proc_table: &mut ProcessTable,
     src: AddressRef,
     dst: AddressRef,
     bytes: usize,
-    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+    proc_cr3: impl Fn(&ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    let result = cross_space_copy::<CurrentDirectMap>(&src, &dst, bytes, &proc_cr3);
+    let result = cross_space_copy::<CurrentDirectMap>(&src, &dst, bytes, proc_table, &proc_cr3);
 
     // On suspend, set RTS_VMREQUEST on the caller and store the copy
     // context so kernel_call_resume() can retry. This inlines C's
@@ -166,13 +170,16 @@ pub fn data_copy_vmcheck(
         // not a kernel-call dispatcher. The dispatcher layer
         // (dispatch_vircopy) is responsible for saving the request message
         // before calling this function if resumption requires it.
-        caller.suspend_for_vm_with_copy(
-            VmSuspendType::KernelCall,
-            target,
-            check_params,
-            None,
-            copy_ctx,
-        );
+        proc_table
+            .get_mut(caller_nr)
+            .expect("data_copy_vmcheck: caller slot must exist")
+            .suspend_for_vm_with_copy(
+                VmSuspendType::KernelCall,
+                target,
+                check_params,
+                None,
+                copy_ctx,
+            );
     }
 
     result
@@ -188,12 +195,13 @@ pub fn data_copy_vmcheck(
 /// caller and stores the copy context, mirroring the destination arm of
 /// [`data_copy_vmcheck`].
 pub fn write_to_process_vmcheck(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
+    proc_table: &mut ProcessTable,
     src: &[u8],
     dst: AddressRef,
-    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+    proc_cr3: impl Fn(&ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    let result = cross_space_write::<CurrentDirectMap>(src, &dst, &proc_cr3);
+    let result = cross_space_write::<CurrentDirectMap>(src, &dst, proc_table, &proc_cr3);
 
     if let CrossSpaceResult::Suspended(fault_type) = result {
         // Kernel-local sources cannot fault — only the destination can.
@@ -215,13 +223,16 @@ pub fn write_to_process_vmcheck(
             src.len(),
             fault_type,
         );
-        caller.suspend_for_vm_with_copy(
-            VmSuspendType::KernelCall,
-            target,
-            check_params,
-            None,
-            copy_ctx,
-        );
+        proc_table
+            .get_mut(caller_nr)
+            .expect("data_copy_vmcheck: caller slot must exist")
+            .suspend_for_vm_with_copy(
+                VmSuspendType::KernelCall,
+                target,
+                check_params,
+                None,
+                copy_ctx,
+            );
     }
 
     result
@@ -240,13 +251,14 @@ pub fn write_to_process_vmcheck(
 /// side effect uses `suspend_for_vm` (no `VmCopyContext`) because memset
 /// is a one-sided operation (no source to resume).
 pub fn memset_vmcheck(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
+    proc_table: &mut ProcessTable,
     dst: AddressRef,
     value: u8,
     count: usize,
-    proc_cr3: impl Fn(Endpoint) -> Option<PhysBytes>,
+    proc_cr3: impl Fn(&ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    let result = cross_space_memset::<CurrentDirectMap>(&dst, value, count, &proc_cr3);
+    let result = cross_space_memset::<CurrentDirectMap>(&dst, value, count, proc_table, &proc_cr3);
 
     if let CrossSpaceResult::Suspended(VmFaultType::Dst) = result {
         // Physical addresses cannot fault — only Process addresses can.
@@ -260,12 +272,15 @@ pub fn memset_vmcheck(
         // No VmCopyContext for memset — it's a one-sided operation.
         // kernel_call_resume() will re-dispatch SYS_MEMSET, which calls
         // this function again with the original message parameters.
-        caller.suspend_for_vm(
-            VmSuspendType::KernelCall,
-            target,
-            check_params,
-            None,
-        );
+        proc_table
+            .get_mut(caller_nr)
+            .expect("memset_vmcheck: caller slot must exist")
+            .suspend_for_vm(
+                VmSuspendType::KernelCall,
+                target,
+                check_params,
+                None,
+            );
     }
 
     result
@@ -367,37 +382,45 @@ mod tests {
     /// EFAULT / VMSUSPEND。Rust 对应 Completed(Ok) / Completed(Err) /
     /// Suspended。宿主可安全触发：零字节物理→物理 = Ok；closure 返 None =
     /// UnknownEndpoint(Err)；未映射用户地址 = Suspended。
+    /// caller-by-nr 夹具（K20）：调用者占表槽 `ProcNr(0)`。
+    fn caller_table() -> crate::test_helpers::TestProcTable {
+        crate::test_helpers::test_proc_table()
+    }
+
     #[test]
     fn test_data_copy_vmcheck_parity_with_c() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut table = caller_table();
 
         // OK 态：零字节物理→物理（无解析、无内存访问）。
         let ok = data_copy_vmcheck(
-            &mut caller,
+            ProcNr(0),
+            &mut table,
             AddressRef::Physical(PhysBytes(0x2000)),
             AddressRef::Physical(PhysBytes(0x3000)),
             0,
-            |_| Some(PhysBytes(0)),
+            |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
         assert_eq!(ok, CrossSpaceResult::Completed(Ok(())));
 
         // EFAULT 态：endpoint 无 cr3 → Completed(Err(UnknownEndpoint))。
         let fault = data_copy_vmcheck(
-            &mut caller,
+            ProcNr(0),
+            &mut table,
             AddressRef::Process { endpoint: Endpoint(999), offset: VirBytes(0) },
             AddressRef::Physical(PhysBytes(0)),
             4,
-            |_| None,
+            |_pt: &crate::proc_table::ProcessTable, _| None,
         );
         assert!(matches!(fault, CrossSpaceResult::Completed(Err(_))));
 
         // VMSUSPEND 态：未映射用户目标 → Suspended(Dst)。
         let suspend = data_copy_vmcheck(
-            &mut caller,
+            ProcNr(0),
+            &mut table,
             AddressRef::Physical(PhysBytes(0)),
             AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
             4,
-            |_| Some(PhysBytes(0)),
+            |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
         assert!(matches!(suspend, CrossSpaceResult::Suspended(_)));
     }
@@ -407,15 +430,17 @@ mod tests {
     #[test]
     fn test_data_copy_vmcheck_sets_rts_vmrequest() {
         use crate::proc::RtsFlagsBits;
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut table = caller_table();
         let r = data_copy_vmcheck(
-            &mut caller,
+            ProcNr(0),
+            &mut table,
             AddressRef::Physical(PhysBytes(0)),
             AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
             4,
-            |_| Some(PhysBytes(0)),
+            |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
         assert!(matches!(r, CrossSpaceResult::Suspended(_)));
+        let caller = table.get(ProcNr(0)).unwrap();
         assert!(caller.p_rts_flags.is_set(RtsFlagsBits::VMREQUEST),
             "挂起必须置 RTS_VMREQUEST");
         assert!(caller.p_vm_suspend.is_some(), "挂起必须保存 VmSuspendContext");
@@ -427,15 +452,17 @@ mod tests {
     #[test]
     fn test_data_copy_vmcheck_preserves_copy_context() {
         use crate::proc::RtsFlagsBits;
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut table = caller_table();
         let r = data_copy_vmcheck(
-            &mut caller,
+            ProcNr(0),
+            &mut table,
             AddressRef::Physical(PhysBytes(0)),
             AddressRef::Process { endpoint: Endpoint(100), offset: VirBytes(0x1000) },
             4,
-            |_| Some(PhysBytes(0)),
+            |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
         assert!(matches!(r, CrossSpaceResult::Suspended(VmFaultType::Dst)));
+        let caller = table.get(ProcNr(0)).unwrap();
         let ctx = caller.p_vm_suspend.as_ref()
             .and_then(|s| s.copy_context.as_ref())
             .expect("挂起必须携带 copy_context");
@@ -452,13 +479,14 @@ mod tests {
     /// 字节数检查，故零字节仅在物理地址（免解析）上有确定语义。
     #[test]
     fn test_zero_byte_copy_returns_ok() {
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
+        let mut table = caller_table();
         let r = data_copy_vmcheck(
-            &mut caller,
+            ProcNr(0),
+            &mut table,
             AddressRef::Physical(PhysBytes(0x2000)),
             AddressRef::Physical(PhysBytes(0x3000)),
             0,
-            |_| None,
+            |_pt: &crate::proc_table::ProcessTable, _| None,
         );
         assert_eq!(r, CrossSpaceResult::Completed(Ok(())));
     }
