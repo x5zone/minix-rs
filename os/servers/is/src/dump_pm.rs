@@ -6,53 +6,11 @@
 //! A-6 output channel; this module delivers snapshots, encoders, cursor,
 //! and format constants.
 //!
-//! `[ARCH: A-4]`: `MProcSnap` is the wire-contract proposal (`#[repr(C)]`,
-//! used-fields subset in C declaration order); the PM-side GETSYSINFO
-//! producer aligns to it (pending PM-crate work, explicit TODO below).
-
-// TODO(P1): [code] [factual] Align PM-crate GETSYSINFO producers with
-// MProcSnap below — see 06 §4. (current state: IS-side wire proposal)
-// (fix: PM `do_getsysinfo` SI_PROC_TAB payload matches this layout; A-4).
-
-/// PM process-table snapshot (used fields only).
-///
-/// C: `struct mproc` — `minix3/minix/servers/pm/mproc.h` (subset).
-#[derive(Debug, Clone, Copy, Default)]
-#[repr(C)]
-pub struct MProcSnap {
-    /// C: `mp_pid` (mproc.h:28).
-    pub mp_pid: i32,
-    /// C: `mp_parent`, table index (mproc.h:33).
-    pub mp_parent: i32,
-    /// C: `mp_tracer` (mproc.h:34).
-    pub mp_tracer: i32,
-    /// C: `mp_name[PROC_NAME_LEN]` (mproc.h:80).
-    pub mp_name: [u8; 16],
-    /// C: `mp_procgrp` (mproc.h:30).
-    pub mp_procgrp: i32,
-    /// C: `mp_realuid` (mproc.h:41).
-    pub mp_realuid: u32,
-    /// C: `mp_effuid` (mproc.h:42).
-    pub mp_effuid: u32,
-    /// C: `mp_realgid` (mproc.h:44).
-    pub mp_realgid: u32,
-    /// C: `mp_effgid` (mproc.h:45).
-    pub mp_effgid: u32,
-    /// C: `mp_nice` (mproc.h:75).
-    pub mp_nice: i32,
-    /// C: `mp_flags` (mproc.h:66).
-    pub mp_flags: u32,
-    /// C: `mp_ignore.__bits[0]` (mproc.h:53; only the first word is dumped).
-    pub mp_ignore0: u32,
-    /// C: `mp_catch.__bits[0]` (mproc.h:54).
-    pub mp_catch0: u32,
-    /// C: `mp_sigmask.__bits[0]` (mproc.h:55).
-    pub mp_sigmask0: u32,
-    /// C: `mp_sigpending.__bits[0]` (mproc.h:57).
-    pub mp_sigpending0: u32,
-    /// C: `mp_timer.tmr_exp_time` (mproc.h:62, timers.h:35).
-    pub mp_timer_exp: u32,
-}
+//! `[ARCH: A-4]`: the table row is [`minix_types::MProcSnap`] — the
+//! single authority shared with the PM-side `SI_PROC_TAB` producer
+//! (`os/servers/pm/src/mproc/wire.rs`); this module re-exports it rather
+//! than keeping a divergent copy (E-ISPROD's founding incident).
+pub use minix_types::MProcSnap;
 
 /// PM slot number (its own pid-0 row is kept). C: `PM_PROC_NR 0` — com.h:59.
 pub const PM_PROC_NR_IDX: usize = 0;

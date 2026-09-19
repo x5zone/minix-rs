@@ -6,7 +6,6 @@
 //!   Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Clock, Pid, Uid, Gid, Endpoint, VirBytes, EINVAL, EPERM, ESRCH, ENOSPC, E2BIG, ENOSYS};
-use minix_types::MprocWire;
 use crate::mproc::ProcTable;
 use crate::ipc::ReplyIntent;
 
@@ -22,10 +21,12 @@ pub const MAX_LOCAL_PARAMS: usize = 2;
 /// `RB_POWERDOWN` (`reboot.h`).
 pub const RB_POWERDOWN: i32 = 1 << 0;
 
-/// `SI_PROC_TAB` (`sysinfo.h`).
-pub const SI_PROC_TAB: i32 = 0;
-/// `SI_CALL_STATS` (`sysinfo.h`, cfg guarded).
-pub const SI_CALL_STATS: i32 = 1;
+/// `SI_PROC_TAB`（`sysinfo.h:12`——C 值 2；本 crate 原本本地记作 0，
+/// 与 C 及其余服务不一致，是 E-ISPROD 对账挖出的真 bug：IS/MIB 按 C 值
+/// 发 2 会被本服务 EINVAL 拒收）。
+pub const SI_PROC_TAB: i32 = 2;
+/// `SI_CALL_STATS`（`sysinfo.h:14`——C 值 9）。
+pub const SI_CALL_STATS: i32 = 9;
 
 /// `RUSAGE_SELF/CHILDREN` (`resource.h`).
 pub const RUSAGE_SELF: i32 = 0;
@@ -121,9 +122,9 @@ impl TryFrom<i32> for SysInfoWhat {
     type Error = MiscError;
     fn try_from(v: i32) -> Result<Self, Self::Error> {
         match v {
-            0 => Ok(Self::ProcTab),
+            SI_PROC_TAB => Ok(Self::ProcTab),
             #[cfg(feature = "syscall_stats")]
-            1 => Ok(Self::CallStats),
+            SI_CALL_STATS => Ok(Self::CallStats),
             _ => Err(MiscError::Inval),
         }
     }
@@ -472,26 +473,26 @@ pub fn do_getsysinfo(
     }
     match what {
         SysInfoWhat::ProcTab => {
-            // D-29 真实数据路径：整表 C-ABI 序列化（`struct mproc` 464B/槽
-            // × NR_PROCS），逐槽拷出到调用方缓冲。C: misc.c:142-143 的
-            // sys_datacopy(SELF, mproc, dst, size) 对应——逐槽拷避免 118KB
-            // 内核/堆中转缓冲。
-            const WIRE_SIZE: usize = core::mem::size_of::<MprocWire>();
-            let tab_size = WIRE_SIZE * table.procs.len();
+            // 整表快照序列化（`MProcSnap` 76B/槽 × NR_PROCS），逐槽拷出到
+            // 调用方缓冲。C: misc.c:142-143 的 sys_datacopy(SELF, mproc,
+            // dst, size) 对应——逐槽拷避免整表中转缓冲（旧 C-ABI 464B
+            // 行随 A-4 对齐退役，见 mproc/wire.rs 顶部差异表）。
+            const ROW_SIZE: usize = core::mem::size_of::<minix_types::MProcSnap>();
+            let tab_size = ROW_SIZE * table.procs.len();
             if size != tab_size {
                 return Err(MiscError::Inval);
             }
             for (idx, slot) in table.procs.iter().enumerate() {
-                let wire = crate::mproc::wire::serialize_slot(idx, slot);
+                let row = crate::mproc::wire::serialize_snap(idx, slot);
                 let bytes = unsafe {
                     core::slice::from_raw_parts(
-                        core::ptr::addr_of!(wire) as *const u8,
-                        WIRE_SIZE,
+                        core::ptr::addr_of!(row) as *const u8,
+                        ROW_SIZE,
                     )
                 };
                 cpy.copy_to_user(
                     bytes,
-                    VirBytes(dst.0 + (idx * WIRE_SIZE) as u64),
+                    VirBytes(dst.0 + (idx * ROW_SIZE) as u64),
                 )?;
             }
             Ok(())
@@ -876,13 +877,13 @@ mod tests {
         let mut cpy = NopCopy;
         // non-super → Perm
         assert_eq!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 100, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(), MiscError::Perm);
-        // super but size mismatch（表大小 = 槽数 × 464）
+        // super but size mismatch（表大小 = 槽数 × 行宽 76）
         table.procs[0].resources.privilege = Privilege::User(Credentials::new(0, 0));
         assert_eq!(do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, 99, VirBytes(0x1000), &ctl, &mut cpy).unwrap_err(), MiscError::Inval);
         // D-29 激活：size = 表大小 → 真实序列化拷出（NopCopy 吞拷贝），
         // 返回 Ok——ENOSYS fail-closed 由真实数据路径取代（V3-P1-4 →
         // D-29 闭环）。
-        let mproc_tab = table.procs.len() * core::mem::size_of::<minix_types::MprocWire>();
+        let mproc_tab = table.procs.len() * core::mem::size_of::<minix_types::MProcSnap>();
         assert_eq!(
             do_getsysinfo(&table, UserSlot::new(0), SysInfoWhat::ProcTab, mproc_tab, VirBytes(0x1000), &ctl, &mut cpy).unwrap(),
             ()
@@ -1159,7 +1160,8 @@ mod tests {
         assert_eq!(PM_REBOOT, 37);
         assert_eq!(PM_SVRCTL, 38);
         assert_eq!(PM_GETRUSAGE, 36);
-        assert_eq!(SI_PROC_TAB, 0);
+        assert_eq!(SI_PROC_TAB, 2);
+        assert_eq!(SI_CALL_STATS, 9);
         assert_eq!(RUSAGE_SELF, 0);
         assert_eq!(RUSAGE_CHILDREN, -1);
     }

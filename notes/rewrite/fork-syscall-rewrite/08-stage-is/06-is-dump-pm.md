@@ -94,8 +94,11 @@ ignore:53/catch:54/sigmask:55/sigpending:57（各 `__bits[0]`，sigset 为
 
 ### 3.1 D1：MProcSnap 子集（A-4）
 
-16 字段（§4.2），C 声明序，`#[repr(C)]`，待办 TODO。否决全镜像/复用 PM
-活体类型（另 crate 未定）。
+16 字段（§4.2），C 声明序，`#[repr(C)]`。否决全镜像（C 的 `struct mproc`
+含指针与内嵌 64 字节消息，跨 wire 无意义）与复用 PM 活体类型（跨 crate
+不可见）。**权威位置**：`minix_types::MProcSnap`（`types/mproc.rs`）——
+生产者（PM `mproc/wire.rs`）按它序列化 `SI_PROC_TAB` 行，IS 这里只重导出
+（"IS 侧提案 + 待办对齐"随该类型上移单一权威而闭合）。
 
 ### 3.2 D2：11 位编码 const fn
 
@@ -125,13 +128,13 @@ C 的 64 位 TODO 原样继承，不解决（注释存证）。
 ### 4.1 模块树（增量）
 
 ```text
-os/servers/is/src/dump_pm.rs — MProcSnap/pm_flags_str/PmCursor/PmAction/alarm_left/5 格式常量（D1-D5）
+os/servers/is/src/dump_pm.rs — MProcSnap（重导出 minix-types 权威）/pm_flags_str/PmCursor/PmAction/alarm_left/5 格式常量（D1-D5）
 ```
 
 ### 4.2 关键签名（与 §3 一致，Gate D-5 依据）
 
 ```rust
-pub struct MProcSnap { mp_pid/parent/tracer: i32, mp_name: [u8;16], mp_procgrp: i32, mp_realuid/effuid/realgid/effgid: u32, mp_nice: i32, mp_flags: u32, mp_ignore0/catch0/sigmask0/sigpending0: u32, mp_timer_exp: u32 }
+pub use minix_types::MProcSnap; // 16 字段：mp_pid/parent/tracer: i32, mp_name: [u8;16], mp_procgrp: i32, mp_realuid/effuid/realgid/effgid: u32, mp_nice: i32, mp_flags: u32, mp_ignore0/catch0/sigmask0/sigpending0: u32, mp_timer_exp: u32 }
 pub const fn pm_flags_str(u32) -> [u8;12];
 pub enum PmAction { Skip, Emit, More }
 pub struct PmCursor; push(pid: i32, idx: usize) -> PmAction; finish(exhausted: bool); next() -> usize;

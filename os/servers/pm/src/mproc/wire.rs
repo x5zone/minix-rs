@@ -1,32 +1,25 @@
-//! PM 进程表 → C `struct mproc` 字节镜像（D-29 数据路径）。
+//! PM 进程表 → `SI_PROC_TAB` 快照行（`[ARCH: A-4]` 单一权威）。
 //!
-//! C ground truth: `servers/pm/mproc.h` `mproc[NR_PROCS]`；wire 镜像为
-//! [`minix_types::MprocWire`]（464 字节/槽，布局见证在其 `layout` 测试）。
-//! 消费方（RS live-update 的 SI_PROC_TAB、IS 的 mproc_tab dump）按 C 字段
-//! 偏移读取——IN_USE 位为槽有效判据，全零槽即"未使用"。
+//! C ground truth: `servers/pm/mproc.h` `mproc[NR_PROCS]`；wire 行是
+//! [`minix_types::MProcSnap`]（76 字节/槽，布局见证在其 `layout` 测试）。
+//! 消费方（IS `dump_pm` 的两个 dump、MIB `proc/tables` 的取表半）按名读
+//! 字段——C 的逐行 `MP_MAGIC` 漂移校验由共享类型取代（见该结构文档）。
 //!
-//! 映射纪律：C 字段 → PM 类型化对应物逐一映射；无对应物的字段填 0 并在
-//! 下表登记（与 C 消费方对"零值 = 未使用"的处理一致）：
+//! 映射纪律：C 字段 → PM 类型化对应物逐一映射；无对应物的字段填 0。
+//! 与 C 快照的差异表（A-4 子集裁定的落地清单）：
 //!
-//! | C 字段 | 来源 | 说明 |
+//! | C 字段 | 处理 | 说明 |
 //! |---|---|---|
-//! | mp_pid/endpoint/procgrp/name | identity | 直接映射 |
-//! | mp_parent/mp_tracer | guardianship | `NO_TRACER = 0`（const.h:11）|
-//! | mp_wpid/mp_waddr | wait | `AnyChild → -1`、`SpecificChild → pid`、`Group → pgid` |
-//! | mp_exitstatus/sigstatus | lifecycle `exit_code()` | 仅 Zombie/TraceZombie/Exiting/ToldParent 有值 |
-//! | mp_flags | lifecycle + block + wait + remaining + trace | 位合成（见 `flags_for`）|
-//! | uid/gid ×6/ngroups/sgroups | credentials | 直接映射 |
-//! | 7 × sigset | signals（SigSet u64 → LE 双 u32）| bits[2..4] 恒 0 |
-//! | mp_sigreturn | signals.sigreturn_addr | 直接映射 |
-//! | mp_sigact = 0 | 无对应物 | Rust 用 `Box<[SigAction]>`，无 mpsigact 指针 |
-//! | mp_timer/interval | resources.timer/intervals | `tmr_next/tmr_func/tmr_arg = 0` |
-//! | mp_reply | ipc.reply | 64 字节消息逐字节 |
-//! | mp_frame_addr/len | ipc.frame_addr/len | 直接映射 |
-//! | mp_nice/scheduler | resources | 直接映射 |
+//! | mp_pid/name/procgrp/parent/tracer | 直接映射 | `NO_TRACER = 0`（const.h:11）|
+//! | mp_realuid/effuid/realgid/effgid | credentials | Kernel 权限进程保持全零（C 系统进程初值语义）|
+//! | mp_nice | resources.nice | 直接映射 |
+//! | mp_flags | 位合成（[`flags_for`]）| IN_USE 置位即"在用"判据 |
+//! | mp_ignore/catch/sigmask/sigpending `__bits[0]` | signals | 低位字；dump 只打这一字 |
+//! | mp_timer_exp | resources.timer | `tmr_exp_time`（无 timer 时为 0）|
+//! | 其余 C 字段（mp_reply[64]、mp_sigact、mp_sgroups、mp_wpid…）| 不进快照 | A-4 裁定：无人读或跨 wire 无意义 |
 
 use crate::mproc::{ProcTable, Process};
-use minix_types::{MprocWire, SigSetWire, MP_MAGIC, PROC_NAME_LEN};
-
+use minix_types::MProcSnap;
 
 /// C mproc.h:86-104 的 flags 位（wire 值）。
 pub mod mp_flags {
@@ -51,101 +44,11 @@ pub mod mp_flags {
     pub const EVENT_CALL: u32 = 0x80000;
 }
 
-/// C `NO_EVENTSUB`（char 槽，无订阅者）。
-const NO_EVENTSUB: u8 = u8::MAX;
-
-/// 把一个 PM 槽序列化为 C `struct mproc` wire 形状。
+/// C `mp_flags` 的位合成（不变量：在用槽必带 `IN_USE`）。
 ///
-/// `idx` 是槽位索引（mp_parent/mp_tracer 等引用的就是它）。未使用槽
-/// 返回全零 wire（IN_USE 未置），与 C 的空槽映像一致。
-pub fn serialize_slot(idx: usize, p: &Process) -> MprocWire {
-    let mut w = MprocWire::new();
-    if !p.state.lifecycle.is_in_use() {
-        return w;
-    }
-
-    // ── identity（mproc.h:39-45）──
-    w.mp_pid = p.identity.id.pid;
-    w.mp_endpoint = p.identity.endpoint.get();
-    w.mp_procgrp = p.identity.procgrp;
-    w.mp_name = p.identity.name;
-
-    // ── wait（mproc.h:43/46-47：wpid/waddr，wait.rs）──
-    if p.state.wait.waiting {
-        w.mp_flags |= mp_flags::WAITING;
-    }
-    // C waitpid 语义：pid > 0 等特定子进程，pid == -1 等任意子进程。
-    w.mp_wpid = match &p.state.wait.target {
-        crate::mproc::WaitTarget::AnyChild => -1,
-        crate::mproc::WaitTarget::SpecificChild(pid) => *pid,
-        crate::mproc::WaitTarget::Group(pgid) => *pgid,
-    };
-    w.mp_waddr = p.state.wait.rusage_addr.0;
-
-    // ── guardianship（mproc.h:47-48：parent/tracer；NO_TRACER = 0）──
-    w.mp_parent = p.state.guardianship.parent().0 as i32;
-    w.mp_tracer = p.state.guardianship.tracer().map_or(0, |t| t.0 as i32);
-    w.mp_trace_flags = p.state.guardianship.trace_options().bits();
-
-    // ── credentials（mproc.h:53-63）──
-    // Privilege::User(Credentials) → uid/gid；Kernel 权限进程的 uid/gid
-    // 全零（wire 零值 = C 系统进程初值语义，消费方按 uid=0 视作 root）。
-    if let crate::mproc::Privilege::User(cred) = &p.resources.privilege {
-        w.mp_realuid = cred.user.real;
-        w.mp_effuid = cred.user.effective;
-        w.mp_svuid = cred.user.saved;
-        w.mp_realgid = cred.group.real;
-        w.mp_effgid = cred.group.effective;
-        w.mp_svgid = cred.group.saved;
-        w.mp_ngroups = cred.ngroups as i32;
-        w.mp_sgroups = cred.supplemental_groups;
-    }
-    // Kernel 权限进程：uid/gid 全零（wire 保持零值，C 消费方按 uid=0
-    // 视作 root——与 C 的系统进程 mproc 初值语义一致）。
-
-    // ── signals（mproc.h:64-70；SigSet u64 → LE 双 u32，高位 0）──
-    let sig = &p.resources.signals;
-    w.mp_ignore = sig_set_wire(sig.ignored);
-    w.mp_catch = sig_set_wire(sig.caught);
-    w.mp_sigmask = sig_set_wire(sig.mask);
-    w.mp_sigmask2 = sig_set_wire(sig.mask_saved);
-    w.mp_sigpending = sig_set_wire(sig.pending);
-    w.mp_ksigpending = sig_set_wire(sig.kernel_pending);
-    w.mp_sigtrace = sig_set_wire(sig.trace_mask);
-    w.mp_sigreturn = sig.sigreturn_addr.0;
-
-    // ── resources：时间/timer/nice/scheduler（mproc.h:49-51/72-77）──
-    w.mp_child_utime = p.resources.child_utime as u64;
-    w.mp_child_stime = p.resources.child_stime as u64;
-    w.mp_started = p.resources.started as u64;
-    w.mp_nice = p.resources.nice;
-    w.mp_scheduler = p.resources.scheduler.get();
-    if let Some(timer) = &p.resources.timer {
-        w.mp_timer.tmr_exp_time = timer.expire_time as u64;
-        // tmr_next/tmr_func/tmr_arg 无对应物（Rust timer 链在 timer.rs），
-        // 保持 0 —— C 消费方只在 alarm 活跃时读完整 timer。
-    }
-    w.mp_interval = [p.resources.intervals[0] as u64, p.resources.intervals[1] as u64, p.resources.intervals[2] as u64];
-
-    // ── ipc（mproc.h:73-76：reply/frame/eventsub）──
-    if let Some(reply) = &p.ipc.reply {
-        // SAFETY: `Message` 是 64 字节 repr(C) POD，逐字节拷入 wire。
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                core::ptr::addr_of!(*reply) as *const u8,
-                core::ptr::addr_of_mut!(w.mp_reply) as *mut u8,
-                64,
-            );
-        }
-    }
-    w.mp_frame_addr = p.ipc.frame_addr.0;
-    w.mp_frame_len = p.ipc.frame_len as u64;
-    w.mp_eventsub = p
-        .ipc
-        .event_subscriber
-        .map_or(NO_EVENTSUB, |slot| slot.0 as u8);
-
-    // ── flags 合成（C mproc.h:86-104 位值）──
+/// C: mproc.h:86-104 各位的置位处散在 wait/exit/signal 各文件；
+/// 本函数把同一组位在**一处**合成，`serialize_snap` 与空槽判据共用。
+pub fn flags_for(p: &Process) -> u32 {
     let mut flags: u32 = mp_flags::IN_USE;
     flags |= match &p.state.lifecycle {
         crate::mproc::Lifecycle::Zombie { .. } | crate::mproc::Lifecycle::TraceZombie { .. } => {
@@ -155,9 +58,8 @@ pub fn serialize_slot(idx: usize, p: &Process) -> MprocWire {
         crate::mproc::Lifecycle::Exiting { .. } => mp_flags::EXITING,
         _ => 0,
     };
-    if let Some((exit_code, sig_status)) = p.state.lifecycle.exit_code() {
-        w.mp_exitstatus = exit_code as u8;
-        w.mp_sigstatus = sig_status as u8;
+    if p.state.wait.waiting {
+        flags |= mp_flags::WAITING;
     }
     if p.state.block.stopped {
         flags |= mp_flags::PROC_STOPPED;
@@ -186,23 +88,97 @@ pub fn serialize_slot(idx: usize, p: &Process) -> MprocWire {
     if p.resources.signals.suspended {
         flags |= mp_flags::SIGSUSPENDED;
     }
-    w.mp_flags = flags;
+    flags
+}
 
+/// 把一个 PM 槽序列化为 `MProcSnap` 行。
+///
+/// `idx` 是槽位索引（`mp_parent`/`mp_tracer` 引用的就是它）。未使用槽
+/// 返回全零行（`IN_USE` 未置）——消费方按 `mp_flags & IN_USE` 过滤空槽，
+/// 与 C 的空槽映像同一判据。
+pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
+    let _ = idx; // C 的 mp_parent/mp_tracer 已是槽索引，无需换算
+    let mut w = MProcSnap::default();
+    if !p.state.lifecycle.is_in_use() {
+        return w;
+    }
+
+    // ── identity（mproc.h:28-45/80）──
+    w.mp_pid = p.identity.id.pid;
+    w.mp_procgrp = p.identity.procgrp;
+    w.mp_name = p.identity.name;
+
+    // ── guardianship（mproc.h:33-34；NO_TRACER = 0）──
+    w.mp_parent = p.state.guardianship.parent().0 as i32;
+    w.mp_tracer = p.state.guardianship.tracer().map_or(0, |t| t.0 as i32);
+
+    // ── credentials（mproc.h:41-45）──
+    // Privilege::User(Credentials) → uid/gid；Kernel 权限进程的 uid/gid
+    // 全零（零值 = C 系统进程初值语义，消费方按 uid=0 视作 root）。
+    if let crate::mproc::Privilege::User(cred) = &p.resources.privilege {
+        w.mp_realuid = cred.user.real;
+        w.mp_effuid = cred.user.effective;
+        w.mp_realgid = cred.group.real;
+        w.mp_effgid = cred.group.effective;
+    }
+
+    // ── signals（mproc.h:53-57；u64 SigSet 的低位字）──
+    let sig = &p.resources.signals;
+    w.mp_ignore0 = sig.ignored as u32;
+    w.mp_catch0 = sig.caught as u32;
+    w.mp_sigmask0 = sig.mask as u32;
+    w.mp_sigpending0 = sig.pending as u32;
+
+    // ── resources：nice / timer 到期时刻（mproc.h:62/75）──
+    w.mp_nice = p.resources.nice;
+    if let Some(timer) = &p.resources.timer {
+        w.mp_timer_exp = timer.expire_time as u32;
+    }
+
+    w.mp_flags = flags_for(p);
     w
 }
 
-/// 序列化整表（256 槽 × 464 字节 = 118784 字节，C `mproc[NR_PROCS]` 映像）。
-pub fn serialize_mproc_tab(table: &ProcTable, out: &mut [MprocWire]) {
+/// 序列化整表（`NR_PROCS` 槽 × 76 字节）。返回槽数（== 输出槽数）。
+pub fn serialize_mproc_tab(table: &ProcTable, out: &mut [MProcSnap]) {
     assert_eq!(out.len(), table.procs.len(), "mproc tab slot count mismatch");
-    for (idx, (wire, proc)) in out.iter_mut().zip(table.procs.iter()).enumerate() {
-        *wire = serialize_slot(idx, proc);
+    for (idx, (row, proc)) in out.iter_mut().zip(table.procs.iter()).enumerate() {
+        *row = serialize_snap(idx, proc);
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mproc::ProcTable;
 
-/// SigSet u64 → LE 双 u32 wire。
-fn sig_set_wire(set: u64) -> SigSetWire {
-    SigSetWire {
-        bits: [set as u32, (set >> 32) as u32, 0, 0],
+    /// 空槽：全零行（`IN_USE` 未置）。C 的空 `mproc` 槽判据同构。
+    #[test]
+    fn test_empty_slot_is_all_zero() {
+        let table = ProcTable::new();
+        let mut out = vec![MProcSnap::default(); table.procs.len()];
+        serialize_mproc_tab(&table, &mut out);
+        assert_eq!(out[0].mp_flags & mp_flags::IN_USE, 0);
+        assert_eq!(out[0], MProcSnap::default());
+    }
+
+    /// 在用槽必带 IN_USE；flags 合成涵盖 wait/exit/signal 三类位。
+    #[test]
+    fn test_flags_for_in_use_and_waiting() {
+        use crate::mproc::Lifecycle;
+        let mut p = crate::mproc::Process::new(0, 1);
+        p.state.lifecycle = Lifecycle::Running;
+        p.state.wait.waiting = true;
+        let flags = flags_for(&p);
+        assert_ne!(flags & mp_flags::IN_USE, 0);
+        assert_ne!(flags & mp_flags::WAITING, 0);
+    }
+
+    /// 行宽 = minix-types 权威（76），整表宽度跟随之（旧 C-ABI 464 B 行退役）。
+    #[test]
+    fn test_row_width_follows_shared_snapshot() {
+        assert_eq!(core::mem::size_of::<MProcSnap>(), 76);
+        assert_eq!(core::mem::size_of::<MProcSnap>() * 256, 19_456);
+        assert_eq!(core::mem::offset_of!(MProcSnap, mp_name), 12);
     }
 }

@@ -40,7 +40,7 @@ static char *uts_tbl[] = { "i386", NULL, machine, NULL, nodename, release, versi
 - `what` 分派 `SI_PROC_TAB → src=mproc, len=sizeof mproc*NR_PROCS`（`125-128` 全表 `mproc` 起址 + `NR_PROCS=256` 的 `sizeof mproc` 线性长度，`NR_PROCS*size` 的 `304` 行 `mproc` 连续内存）与 `SI_CALL_STATS → calls_stats[NR_PM_CALLS]` 条件编译（`129-133` `ENABLE_SYSCALL_STATS` 的 `calls_stats` 缺省 `WONTFIX`，`20` 标注为 `cfg` 缺口）。
 - `size != len → EINVAL`（`139-140` 精确匹配非截断，调用者需 `sizeof mproc*NR_PROCS` 精确，`E2BIG` 不适用，`size` 精确性与 `svrctl` 的 `E2BIG` 溢出守卫 `380-381` 对偶——`getsysinfo` 的精确非截断 vs `svrctl` 的溢出 `E2BIG`）。
 
-Rust 以 `SysInfoWhat { ProcTab }` 枚举穷尽 `SI_PROC_TAB` 的 `0` 单一，`size != len → Inval` 的精确匹配在类型层显式，`effuid==0` 门复用 `15` 的 `is_superuser` 一处谓词。
+Rust 以 `SysInfoWhat { ProcTab }` 枚举穷尽 `SI_PROC_TAB` 的 `2` 单一，`size != len → Inval` 的精确匹配在类型层显式，`effuid==0` 门复用 `15` 的 `is_superuser` 一处谓词。
 
 ### 1.3 为什么 `getprocnr/getepinfo` 是 `endpoint↔pid` 双向解析的 RS 专属与全量截断
 
@@ -144,7 +144,7 @@ int do_getsysinfo(void)
 { // 108  GETSYSINFO 的 PM 侧入口（全表泄露 + size 精确）
   vir_bytes src_addr, dst_addr; size_t len; // 110-111
   if (mp->mp_effuid != 0) { printf("PM: unauthorized call of do_getsysinfo by proc %d '%s'\n", mp->mp_endpoint, mp->mp_name); sys_diagctl_stacktrace(mp->mp_endpoint); return EPERM; } // 116-122  effuid!=0→printf+stacktrace+EPERM（审计）
-  switch(m_in.m_lsys_getsysinfo.what) { // 124  m_lsys_getsysinfo.what（sysinfo.h: SI_PROC_TAB 0/SI_CALL_STATS 1）
+  switch(m_in.m_lsys_getsysinfo.what) { // 124  m_lsys_getsysinfo.what（sysinfo.h: SI_PROC_TAB 2/SI_CALL_STATS 9）
   case SI_PROC_TAB: src_addr=(vir_bytes)mproc; len=sizeof mproc * NR_PROCS; break; // 125-128  SI_PROC_TAB→mproc 全表起址 + NR_PROCS*size 长度`
 #if ENABLE_SYSCALL_STATS
   case SI_CALL_STATS: src_addr=(vir_bytes)calls_stats; len=sizeof calls_stats; break; // 130-133  SI_CALL_STATS 条件编译（ENABLE_SYSCALL_STATS 的 WONTFIX 缺口）
@@ -327,7 +327,7 @@ void set_rusage_times(struct rusage * r_usage, clock_t user_time, clock_t sys_ti
 
 - `PM_SYSUNAME 25`（`minix3/minix/include/minix/callnr.h:PM_SETGID` `PM_BASE+25`）/ `PM_GETSYSINFO 47`（`minix3/minix/include/minix/callnr.h:PM_CLOCK_GETTIME`）/ `PM_GETPROCNR 46`/`PM_GETEPINFO 45`/`PM_REBOOT 37`/`PM_SVRCTL 38`/`PM_GETRUSAGE 36`/`PM_SPROF 39`/`PM_GETMCONTEXT 18/SETMCONTEXT 19`（`minix3/minix/include/minix/callnr.h:PM_SETGID` 47 项之一，`table.c: `CALL(PM_SYSUNAME)=do_sysuname` 等）
 - `MessLcPmSysuname { field, req, len, value }`（`ipc.h:469` `field: int, req: int, len: size_t, value: VirBytes`）/ `MessLsysGetsysinfo { what, size, where }`（`ipc.h:469` `what: int, size: size_t, where: VirBytes`）/ `MessLsysPmGetprocnr { pid }`（`ipc.h:469` `pid: pid_t`）/ `MessLsysPmGetepinfo { endpt, ngroups, groups }`（`ipc.h:469` `endpt: endpoint_t, ngroups: int, groups: VirBytes`）/ `MessLcPmReboot { how }`（`ipc.h:469` `how: int RB_*`）/ `MessLcSvrctl { request, arg }`（`ipc.h:469` `request: unsigned long, arg: VirBytes`）/ `MessLcPmRusage { who, addr }`（`ipc.h:469` `who: int, addr: VirBytes`）/ `MessLcPmSprof { action, mem_size, freq, intr_type, ctl_ptr, mem_ptr }`（`ipc.h:469` `action: int PROF_*`）/ `MessLcPmMcontext { ctx }`（`ipc.h:469` `ctx: VirBytes`）
-- `SI_PROC_TAB 0`（`sysinfo.h: SI_PROC_TAB 0`）/ `SI_CALL_STATS 1`（`sysinfo.h: SI_CALL_STATS 1` 的条件 `ENABLE_SYSCALL_STATS`）+ `VFS_PM_REBOOT`（`com.h: VFS_PM_REBOOT`）+ `RB_POWERDOWN`（`reboot.h: RB_POWERDOWN 1`）+ `PMSETPARAM/GETPARAM`（`svrctl.h: PMSETPARAM 0x...`）+ `RUSAGE_SELF 0/CHILDREN -1`（`resource.h: RUSAGE_SELF 0`）+ `PROF_START/STOP`（`profile.h: PROF_START 0`）
+- `SI_PROC_TAB 2`（`sysinfo.h: SI_PROC_TAB 2`）/ `SI_CALL_STATS 9`（`sysinfo.h: SI_CALL_STATS 9` 的条件 `ENABLE_SYSCALL_STATS`）+ `VFS_PM_REBOOT`（`com.h: VFS_PM_REBOOT`）+ `RB_POWERDOWN`（`reboot.h: RB_POWERDOWN 1`）+ `PMSETPARAM/GETPARAM`（`svrctl.h: PMSETPARAM 0x...`）+ `RUSAGE_SELF 0/CHILDREN -1`（`resource.h: RUSAGE_SELF 0`）+ `PROF_START/STOP`（`profile.h: PROF_START 0`）
 
 ### 2.13 不变式即契约
 
@@ -358,6 +358,7 @@ Rust 改写遵循“`UtsField` 枚举穷尽 + `SysInfoWhat` 精确 + `EpInfo` �
 
 - **C**：`misc.c:125-143` `SI_PROC_TAB→mproc` + `SI_CALL_STATS` 条件 + `size!=len→EINVAL`。
 - **Rust**：`enum SysInfoWhat { ProcTab }`（`SI_CALL_STATS` 以 `cfg(feature)` 缺口） + `trait SysInfoCtl { fn proc_tab(&self) -> &[u8]; }`（`effuid==0` 门 + `size` 精确守卫一处，`sys_datacopy` 抽象为 `CopyToUser::copy`）。
+- **载荷行宽（A-4 裁定）**：C 的 `sizeof mproc * NR_PROCS`（i386 下每槽上百字节）在 Rust 侧不逐字节镜像指针/内嵌消息；`SI_PROC_TAB` 的行是 `minix_types::MProcSnap`（使用字段子集，C 声明序，76 字节/槽），生产者 `mproc/wire.rs` 按该结构序列化，消费方（IS、MIB）按名读取。C 用逐行 `MP_MAGIC` 做运行时漂移校验，Rust 侧同一目的由共享类型 + 布局测试在编译期结构性拦住（详见 `os/libs/minix-types/src/types/mproc.rs` 头注释）。
 
 ### D3：`getprocnr/getepinfo` 双向收敛到 `ProcQuery` 显式参（ARCH A-3）
 
@@ -423,7 +424,7 @@ os/servers/pm/src/
 ```rust
 pub const PM_SYSUNAME: i32 = 25; pub const PM_GETSYSINFO: i32 = 47; /* ... SPROF 39 等 */
 pub enum UtsField { SysName=0, Nodename, Release, Version, Machine } + TryFrom<usize>
-pub enum SysInfoWhat { ProcTab } + TryFrom<i32> // SI_PROC_TAB 0, SI_CALL_STATS cfg 缺口
+pub enum SysInfoWhat { ProcTab } + TryFrom<i32> // SI_PROC_TAB 2, SI_CALL_STATS cfg 缺口
 pub struct EpInfo { pub pid: Pid, pub uid: Uid, pub euid: Uid, pub gid: Gid, pub egid: Gid, pub ngroups: usize, pub groups: Vec<Gid> }
 pub trait SysInfoCtl { fn proc_tab(&self) -> &[u8]; }
 pub trait RebootCtl { fn set_abort(&mut self, how: i32); fn try_power_off(&mut self); fn broadcast_kill(&mut self); fn stop_init(&mut self); fn tell_reboot(&mut self) -> i32; }
@@ -484,7 +485,7 @@ pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, addr: V
 
 ### 5.2 `minix-types`（常量）
 
-- `test_constants_match_c`：锁定 `PM_SYSUNAME 25/GETSYSINFO 47/GETPROCNR 46/GETEPINFO 45/REBOOT 37/SVRCTL 38/GETRUSAGE 36/SPROF 39`（`minix3/minix/include/minix/callnr.h:PM_SETGID`）、`SI_PROC_TAB 0`（`sysinfo.h`）、`RB_POWERDOWN 1`（`reboot.h`）、`RUSAGE_SELF 0`（`resource.h`）
+- `test_constants_match_c`：锁定 `PM_SYSUNAME 25/GETSYSINFO 47/GETPROCNR 46/GETEPINFO 45/REBOOT 37/SVRCTL 38/GETRUSAGE 36/SPROF 39`（`minix3/minix/include/minix/callnr.h:PM_SETGID`）、`SI_PROC_TAB 2`（`sysinfo.h`）、`RB_POWERDOWN 1`（`reboot.h`）、`RUSAGE_SELF 0`（`resource.h`）
 - `test_find_param_kvp`：`find_param` 的 `KVP` 纯函数
 
 测试策略：`SysInfoCtl/RebootCtl/ParamStore/TimesVmCtl/SprofCtl/McontextCtl` 均 `Test*` mock 可注入 `OK/EPERM/ENOSYS` 与计数；`find_param` 纯函数脱离 `ProcTable` 独立测；`svrctl` 的 `keylen==0→全表` 与 `E2BIG` 分叉在 `ParamStore` 内单元测；`getrusage` 的 `ticks*1e6/hz` 在 `rusage_from_ticks` 纯函数验证 `u64` 防溢出。
