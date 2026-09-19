@@ -945,6 +945,15 @@ impl VfsState {
                 crate::worker::WorkerCont::Fstat { grant } => {
                     let _ = self.revoke_grant(grant);
                 }
+                crate::worker::WorkerCont::Ftrunc { vnode, newsize } => {
+                    // 成功时更新 vnode 大小（C `truncate_vnode` 尾部的
+                    // `vp->v_size = newsize`；失败不动）。
+                    if status == 0
+                        && let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode))
+                    {
+                        v.size = newsize as u64;
+                    }
+                }
                 crate::worker::WorkerCont::Path => {
                     // 路径遍历的续走：取出现场 → revoke → 解回复 →
                     // `walk.resume` → 再发一条 lookup（放回现场、继续挂起）

@@ -597,6 +597,28 @@ pub fn decode_lookup_reply(status: i32, msg: &Message) -> Option<crate::path::Lo
     }
 }
 
+/// `REQ_FTRUNC` 请求（C `req_ftrunc` — request.c:261-282）。
+///
+/// VFS 的 `truncate_vnode` 只发一种形状：`req_ftrunc(fs_e, ino, newsize, 0)`
+/// ——`trc_end == 0` 在 FS 侧就是"截到 `trc_start`"（mfs `fs_trunc`）。
+pub fn encode_ftrunc(ino: u64, start: i64, end: i64) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_FTRUNC,
+        ..Message::default()
+    };
+    // SAFETY: REQ_FTRUNC 的载荷按 LP64 域序写在消息负载区。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::ftrunc_req_off::INODE..minix_types::ftrunc_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::ftrunc_req_off::TRC_START..minix_types::ftrunc_req_off::TRC_START + 8]
+            .copy_from_slice(&start.to_le_bytes());
+        raw[minix_types::ftrunc_req_off::TRC_END..minix_types::ftrunc_req_off::TRC_END + 8]
+            .copy_from_slice(&end.to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_STAT` 请求（C `req_stat_actual` — request.c:1087-1096）：载荷只有
 /// `{inode, grant}` 两域，FS 把 `struct stat` 直接写进 grant 指向的用户缓冲。
 ///
@@ -1086,6 +1108,30 @@ mod tests {
             None,
             "普通错误交错误面"
         );
+    }
+
+    /// `REQ_FTRUNC` 编码：三域（inode/trc_start/trc_end），且 VFS 的调用
+    /// 形状是 `end = 0`（"截到 start"）。
+    #[test]
+    fn test_encode_ftrunc_fields() {
+        let m = encode_ftrunc(0x42, 100, 0);
+        assert_eq!(m.m_type, minix_types::REQ_FTRUNC);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::ftrunc_req_off::INODE..minix_types::ftrunc_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x42);
+        b8.copy_from_slice(
+            &raw[minix_types::ftrunc_req_off::TRC_START
+                ..minix_types::ftrunc_req_off::TRC_START + 8],
+        );
+        assert_eq!(i64::from_le_bytes(b8), 100);
+        b8.copy_from_slice(
+            &raw[minix_types::ftrunc_req_off::TRC_END..minix_types::ftrunc_req_off::TRC_END + 8],
+        );
+        assert_eq!(i64::from_le_bytes(b8), 0);
     }
 
     /// `REQ_STAT` 编码：inode/grant 落在共享偏移表的两个域上。

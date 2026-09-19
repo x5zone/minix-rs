@@ -89,6 +89,14 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `Ftruncate`（`REQ_FTRUNC`）：回复只有状态，但成功时要按 C
+    /// `truncate_vnode:382` 把 vnode 大小改成新长度。
+    Ftrunc {
+        /// 目标 vnode 下标（成功时更新大小）。
+        vnode: usize,
+        /// 新的文件长度（C 的 `newsize`）。
+        newsize: i64,
+    },
     /// 路径遍历（`REQ_LOOKUP` 一趟或多趟）：现场在 `WorkerSlot.path`
     /// （`PathPending`）——续接体把它 `take()` 出来、`resume()` 后决定
     /// "再发一条 lookup"（放回现场，继续挂起）还是"做相位 2"。

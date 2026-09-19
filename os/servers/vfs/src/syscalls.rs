@@ -167,7 +167,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Symlink
         | VfsCallNum::Readlink
         | VfsCallNum::Truncate
-        | VfsCallNum::Ftruncate
         | VfsCallNum::Getdents
         | VfsCallNum::Chmod
         | VfsCallNum::Fchmod
@@ -440,6 +439,109 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 grant,
                 user: user_e,
                 req,
+            });
+            SyscallResult::Suspend
+        }
+
+        // ── 对话臂模板：ftruncate（fd 版截断；无数据面）──
+        VfsCallNum::Ftruncate => {
+            // C `do_ftruncate`（link.c:331-359）：fd + 新长度 → `get_filp(fd,
+            // VNODE_WRITE)` → 写位门（`filp_mode & W_BIT`）→ 大小不变则
+            // **不发请求**（POSIX：保住文件时间）→ `truncate_vnode` →
+            // 类型门（REG/FIFO）→ `req_ftrunc(fs_e, ino, newsize, 0)`。
+            let (length, fd) = {
+                // 用户载荷（C `mess_lc_vfs_truncate`：offset@0、fd@8；
+                // minix-sys 暂无 wrapper，按 C 结构序的 LP64 换算）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let len = i64::from_le_bytes(b8);
+                let fd = i32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                (len, fd)
+            };
+            // C link.c:341-342 —— 负长度即 EINVAL。
+            if length < 0 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (filp_idx, fs_e, ino, mode, size, vnode_idx) = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let filp = match state.filp_table.get(crate::filp::FilpId(filp_idx)) {
+                    Some(f) => f,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                // C link.c:346-347 —— 写位门（`!(filp_mode & W_BIT)`；
+                // 位值权威在 `open::W_BIT`，与 `filp.mode` 同为 `Mode`）。
+                if filp.mode & crate::open::W_BIT == 0 {
+                    return SyscallResult::Error(minix_types::EBADF);
+                }
+                let vnode_idx = match filp.vnode {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                (filp_idx, vnode.fs, vnode.ino, vnode.mode, vnode.size, vnode_idx)
+            };
+            let _ = filp_idx;
+            // C link.c:349-354 —— 大小不变则不打扰 FS（POSIX 文件时间）。
+            if mode & crate::open::S_IFMT == crate::open::S_IFREG && size == length as u64 {
+                return SyscallResult::Ok(length as i32);
+            }
+            // C `truncate_vnode:375-376` —— 只服务常规文件与管道。
+            let ftype = mode & crate::open::S_IFMT;
+            if ftype != crate::open::S_IFREG && ftype != crate::open::S_IFIFO {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let vmnt_id = match state.vmnt_table.find_by_fs(fs_e) {
+                Some(v) => v,
+                None => return SyscallResult::Error(minix_types::EIO),
+            };
+            // C request.c:274-278 —— 未声明 64 位且长度越过 INT_MAX 即 EINVAL。
+            let fs_flags = state
+                .vmnt_table
+                .get(vmnt_id)
+                .map(|v| v.fs_flags)
+                .unwrap_or(0);
+            if fs_flags & crate::request::FsFlags::IS64BIT.bits() == 0 && length > i32::MAX as i64 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Ftrunc {
+                    vnode: vnode_idx,
+                    newsize: length,
+                });
+            }
+            state.pending_fs = Some(crate::main_loop::PendingFs {
+                vmnt: vmnt_id.0,
+                fs_e,
+                worker,
+                grant: 0, // 无数据面，不发 grant
+                user: user_e,
+                req: crate::request::encode_ftrunc(ino, length, 0),
             });
             SyscallResult::Suspend
         }
@@ -798,6 +900,139 @@ mod tests {
             SyscallResult::Error(minix_types::EIO),
             "常规文件：无 vmnt → EIO"
         );
+    }
+
+    /// `Ftruncate` 臂（fd 版截断）：门序照 C `do_ftruncate` —— 负长度 →
+    /// EINVAL；无 filp → EBADF；**写位门**（`filp_mode & W_BIT`）→ EBADF；
+    /// 大小不变 → 直接 Ok（不打扰 FS）；非 REG/FIFO → EINVAL；其余到挂载
+    /// 窗口与请求编码。
+    #[test]
+    fn test_dispatch_ftruncate_gates() {
+        use minix_types::Endpoint;
+
+        let ftrunc_msg = |fd: i32, length: i64| {
+            let mut m = Message::default();
+            m.m_source = Endpoint::from_generation_slot(1, 0);
+            m.m_type = VfsCallNum::Ftruncate as i32;
+            // SAFETY: ftruncate 载荷 offset@0、fd@8（C mess_lc_vfs_truncate）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&length.to_le_bytes());
+                raw[8..12].copy_from_slice(&fd.to_le_bytes());
+            }
+            m
+        };
+
+        let mut state = seeded(100);
+        state.current_message = ftrunc_msg(3, -1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ftruncate),
+            SyscallResult::Error(minix_types::EINVAL),
+            "负长度"
+        );
+        state.current_message = ftrunc_msg(3, 100);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ftruncate),
+            SyscallResult::Error(minix_types::EBADF),
+            "无 filp"
+        );
+
+        // 有 filp 但只读（mode 无写位）→ EBADF（C link.c:346-347）。
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 11;
+            v.mode = crate::open::S_IFREG | 0o644;
+            v.size = 50;
+        }
+        state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap().vnode = Some(vid.get());
+        state.current_message = ftrunc_msg(3, 100);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ftruncate),
+            SyscallResult::Error(minix_types::EBADF),
+            "只读 fd"
+        );
+
+        // 给写位后：**大小不变 → 直接 Ok（不打扰 FS）**（C link.c:349-354）。
+        state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap().mode =
+            crate::open::R_BIT | crate::open::W_BIT;
+        state.current_message = ftrunc_msg(3, 50);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ftruncate),
+            SyscallResult::Ok(50)
+        );
+
+        // 类型门：目录 → EINVAL（C truncate_vnode:375-376）。
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFDIR | 0o755;
+        state.current_message = ftrunc_msg(3, 10);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ftruncate),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // 常规文件 + 新长度不同：走到挂载窗口（无 vmnt → EIO）。
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFREG | 0o644;
+        state.current_message = ftrunc_msg(3, 10);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Ftruncate),
+            SyscallResult::Error(minix_types::EIO)
+        );
+    }
+
+    /// `Ftrunc` 续接：成功时按 C `truncate_vnode:382` 更新 vnode 大小；
+    /// 失败不动；两者都把状态回给用户并释放槽。
+    #[test]
+    fn test_worker_continuation_ftrunc_updates_size() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let vid = state.vnode_table.alloc().unwrap();
+        state.vnode_table.get_mut(vid).unwrap().size = 50;
+
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Ftrunc { vnode: vid.get(), newsize: 10 });
+            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(state.vnode_table.get(vid).unwrap().size, 10, "成功即更新大小");
+        assert_eq!(state.take_reply(), Some((user, 0)));
+
+        // 失败：大小不动。
+        let idx2 = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        {
+            let wp = state.worker_pool.get_mut(idx2).unwrap();
+            wp.cont = Some(WorkerCont::Ftrunc { vnode: vid.get(), newsize: 999 });
+            wp.sendrec = Some(Message {
+                m_type: minix_types::EACCES,
+                ..Message::default()
+            });
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(state.vnode_table.get(vid).unwrap().size, 10, "失败不动大小");
+        assert_eq!(state.take_reply(), Some((user, minix_types::EACCES)));
     }
 
     /// `Read` 臂（模板的第二个）：门序照 C `read_write` —— 负 fd / 无 filp

@@ -237,6 +237,20 @@ pub mod lookup_reply_off {
     pub const SYMLOOP: usize = 44;
 }
 
+/// `REQ_FTRUNC` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_ftrunc { ino_t inode; off_t trc_start; off_t trc_end; }`
+/// （`request.c:269-272` 的 `req_ftrunc`）。语义：`trc_end == 0` 表示
+/// "截到 `trc_start`"（mfs `fs_trunc:439-443`），非零则释放 `[start,end)`。
+pub mod ftrunc_req_off {
+    /// `ino_t inode`。
+    pub const INODE: usize = 0;
+    /// `off_t trc_start`。
+    pub const TRC_START: usize = 8;
+    /// `off_t trc_end`。
+    pub const TRC_END: usize = 16;
+}
+
 /// `REQ_STAT` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_stat { ino_t inode; cp_grant_id_t grant; }`
@@ -368,6 +382,10 @@ mod tests {
         assert_eq!(lookup_reply_off::UID, 36);
         assert_eq!(lookup_reply_off::GID, 40);
         assert_eq!(lookup_reply_off::SYMLOOP, 44);
+        // ftrunc：inode/trc_start/trc_end 三个域。
+        assert_eq!(ftrunc_req_off::INODE, 0);
+        assert_eq!(ftrunc_req_off::TRC_START, 8);
+        assert_eq!(ftrunc_req_off::TRC_END, 16);
         // stat：inode/grant 两个域。
         assert_eq!(stat_req_off::INODE, 0);
         assert_eq!(stat_req_off::GRANT, 8);
