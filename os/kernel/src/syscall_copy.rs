@@ -218,31 +218,31 @@ fn msg_vsafecopy(msg: &Message) -> MessLsysKernVsafecopy {
 /// Copy data using virtual or physical addressing.
 /// Both calls share the same handler; permissions differ.
 pub fn dispatch_vircopy(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
-    dispatch_copy(caller, msg, proc_table)
+    dispatch_copy(caller_nr, proc_table, msg)
 }
 
 /// Dispatch SYS_PHYSCOPY.
 ///
 /// C: `do_copy()` — do_copy.c (same handler as VIRCOPY)
 pub fn dispatch_physcopy(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
-    dispatch_copy(caller, msg, proc_table)
+    dispatch_copy(caller_nr, proc_table, msg)
 }
 
 /// Shared implementation for VIRCOPY and PHYSCOPY.
 ///
 /// C: do_copy.c:22-90
 fn dispatch_copy(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
     let m = msg_copy(msg);
 
@@ -256,10 +256,16 @@ fn dispatch_copy(
 
     // C: do_copy.c:64-65 — SELF replacement
     if src_endpt == SELF {
-        src_endpt = caller.p_endpoint.0;
+        src_endpt = proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.0)
+            .expect("syscall_copy: caller slot must exist");
     }
     if dst_endpt == SELF {
-        dst_endpt = caller.p_endpoint.0;
+        dst_endpt = proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.0)
+            .expect("syscall_copy: caller slot must exist");
     }
 
     // C: do_copy.c:66-71 — endpoint validation via isokendpt
@@ -308,8 +314,14 @@ fn dispatch_copy(
     // Build proc_cr3 closure: resolves Endpoint → page-table root (CR3/TTBR0).
     // Reads caller's fields BEFORE the mutable borrow to avoid aliasing —
     // the closure captures `caller_cr3` and `caller_endpt` by value (both Copy).
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("syscall_copy: caller slot must exist");
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
@@ -344,7 +356,7 @@ fn dispatch_copy(
     // C: do_copy.c:86-89 — normal copy with VM check.
     // virtual_copy_vmcheck(caller, &vir_addr[_SRC_], &vir_addr[_DST_], bytes)
     let result = crate::cross_space::data_copy_vmcheck(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         src,
         dst,
         nr_bytes as usize,
@@ -366,12 +378,12 @@ fn dispatch_copy(
 /// Copy data from a granter to the caller using grant-based access control.
 /// This is a thin wrapper over `safecopy_common_impl` with `access = CpFlags::READ`.
 pub fn dispatch_safecopy_from(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    safecopy_common_impl(caller, msg, proc_table, priv_table, CpFlags::READ)
+    safecopy_common_impl(caller_nr, proc_table, msg, priv_table, CpFlags::READ)
 }
 
 /// Dispatch SYS_SAFECOPYTO.
@@ -380,12 +392,12 @@ pub fn dispatch_safecopy_from(
 /// Copy data from the caller to a granter using grant-based access control.
 /// This is a thin wrapper over `safecopy_common_impl` with `access = CpFlags::WRITE`.
 pub fn dispatch_safecopy_to(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
-    safecopy_common_impl(caller, msg, proc_table, priv_table, CpFlags::WRITE)
+    safecopy_common_impl(caller_nr, proc_table, msg, priv_table, CpFlags::WRITE)
 }
 
 /// Shared implementation for SAFECOPYFROM (READ) and SAFECOPYTO (WRITE).
@@ -405,9 +417,9 @@ pub fn dispatch_safecopy_to(
 ///    EFAULT on fault, writes soft-fault marker).
 /// 5. Else: use `data_copy_vmcheck` (VMSUSPEND on fault for VM resolution).
 fn safecopy_common_impl(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
     priv_table: &PrivTable,
     access: CpFlags,
 ) -> KcallResult {
@@ -421,7 +433,13 @@ fn safecopy_common_impl(
 
     // C: do_safecopy.c:290-293 — endpoint validation.
     // "nonsense processes" — both granter and grantee (caller) must be valid.
-    if granter_ep == NONE || caller.p_endpoint.0 == NONE {
+    if granter_ep == NONE
+        || proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.0)
+            .expect("syscall_copy: caller slot must exist")
+            == NONE
+    {
         return KcallResult::Ok(EFAULT);
     }
 
@@ -442,8 +460,14 @@ fn safecopy_common_impl(
     // Build proc_cr3 closure: resolves Endpoint → page-table root.
     // Captures caller fields by value (both Copy) to avoid aliasing
     // with the &mut caller borrow.
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("syscall_copy: caller slot must exist");
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
@@ -458,9 +482,12 @@ fn safecopy_common_impl(
 
     // C: do_safecopy.c:305-312 — verify_grant(granter, grantee, grantid,
     // bytes, access, g_offset, &v_offset, &new_granter, &sfinfo).
-    let grantee = caller.p_endpoint;
+    let grantee = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
     let outcome = verify_grant(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         Endpoint(granter_ep),
         grantee,
         grant_id,
@@ -507,12 +534,12 @@ fn safecopy_common_impl(
         match copy_result {
             CrossSpaceResult::Completed(Ok(())) => return KcallResult::Ok(OK),
             CrossSpaceResult::Completed(Err(_)) => {
-                write_soft_fault_marker(caller.p_nr, proc_table, sfinfo, &proc_cr3);
+                write_soft_fault_marker(caller_nr, proc_table, sfinfo, &proc_cr3);
                 return KcallResult::Ok(EFAULT);
             }
             CrossSpaceResult::Suspended(_) => {
                 // CPF_TRY: VMSUSPEND → EFAULT (no suspend).
-                write_soft_fault_marker(caller.p_nr, proc_table, sfinfo, &proc_cr3);
+                write_soft_fault_marker(caller_nr, proc_table, sfinfo, &proc_cr3);
                 return KcallResult::Ok(EFAULT);
             }
         }
@@ -520,7 +547,7 @@ fn safecopy_common_impl(
 
     // C: do_safecopy.c:371 — virtual_copy_vmcheck(caller, &v_src, &v_dst, bytes).
     let result = crate::cross_space::data_copy_vmcheck(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         src,
         dst,
         bytes as usize,
@@ -598,9 +625,9 @@ fn write_soft_fault_marker(
 /// retry, matching C's behavior (static `vec[]` is re-populated by
 /// `virtual_copy_vmcheck`).
 pub fn dispatch_vsafecopy(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_vsafecopy(msg);
@@ -611,7 +638,12 @@ pub fn dispatch_vsafecopy(
     // C: do_safecopy.c:408 — `assert(src.proc_nr_e != NONE)`.
     // We replace the panic with an EFAULT return so a misbehaving caller
     // gets an explicit error rather than a kernel panic.
-    if caller.p_endpoint.0 == NONE {
+    if proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint.0)
+        .expect("syscall_copy: caller slot must exist")
+        == NONE
+    {
         return KcallResult::Ok(EFAULT);
     }
 
@@ -639,8 +671,14 @@ pub fn dispatch_vsafecopy(
 
     // C: do_safecopy.c:417-419 — virtual_copy_vmcheck to copy the vector.
     // src = caller@vec_addr, dst = KERNEL@vec.
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("syscall_copy: caller slot must exist");
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
@@ -657,7 +695,7 @@ pub fn dispatch_vsafecopy(
         vec.as_mut_ptr() as u64,
     ));
     let copy_result = crate::cross_space::data_copy_vmcheck(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(vec_addr),
@@ -698,7 +736,7 @@ pub fn dispatch_vsafecopy(
         elem_msg.m_u.m_lsys_kern_safecopy.address = elem.v_addr;
 
         let result = safecopy_common_impl(
-            caller, &elem_msg, proc_table, priv_table, access,
+            caller_nr, proc_table, &elem_msg, priv_table, access,
         );
         match result {
             KcallResult::Ok(OK) => continue,
@@ -750,9 +788,9 @@ pub struct VscpVec {
 ///
 /// Design decision D8: merged with UMAP_REMOTE logic.
 pub fn dispatch_umap(
-    caller: &mut KProcess,
-    msg: &mut Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_umap(msg);
@@ -766,7 +804,7 @@ pub fn dispatch_umap(
     }
 
     // C: do_umap.c:35-36 — set dst_endpt = SELF and delegate
-    dispatch_umap_remote_impl(caller, msg, SELF, proc_table, priv_table)
+    dispatch_umap_remote_impl(caller_nr, proc_table, msg, SELF, priv_table)
 }
 
 /// Dispatch SYS_UMAP_REMOTE.
@@ -775,14 +813,14 @@ pub fn dispatch_umap(
 ///
 /// Map virtual address to physical address for any process, with grantee check.
 pub fn dispatch_umap_remote(
-    caller: &mut KProcess,
-    msg: &mut Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_umap(msg);
     let grantee = m.dst_endpt;
-    dispatch_umap_remote_impl(caller, msg, grantee, proc_table, priv_table)
+    dispatch_umap_remote_impl(caller_nr, proc_table, msg, grantee, priv_table)
 }
 
 /// Shared implementation for UMAP and UMAP_REMOTE.
@@ -803,10 +841,10 @@ pub fn dispatch_umap_remote(
 ///    (must cover all `count` bytes).
 /// 6. Write `phys_addr` to `m_krn_lsys_sys_umap.dst_addr` (reply field).
 fn dispatch_umap_remote_impl(
-    caller: &mut KProcess,
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
     msg: &mut Message,
     grantee: i32,
-    proc_table: &mut crate::proc_table::ProcessTable,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_umap(msg);
@@ -818,7 +856,10 @@ fn dispatch_umap_remote_impl(
 
     // C: do_umap_remote.c:39-45 — endpoint validation + SELF replacement
     let target_endpoint = if endpt == SELF {
-        caller.p_endpoint
+        proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint)
+            .expect("dispatch_umap_remote: caller slot must exist")
     } else {
         let ep = Endpoint(endpt);
         if proc_table.endpoint_to_nr(ep).is_none() {
@@ -833,7 +874,10 @@ fn dispatch_umap_remote_impl(
     // clippy::if_same_then_else.
     #[allow(clippy::if_same_then_else)]
     let grantee_endpoint = if grantee == SELF {
-        caller.p_endpoint
+        proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint)
+            .expect("dispatch_umap_remote: caller slot must exist")
     } else if grantee == NONE || grantee == ANY {
         return KcallResult::Ok(EINVAL);
     } else if seg_index != MEM_GRANT {
@@ -857,8 +901,14 @@ fn dispatch_umap_remote_impl(
         // C: verify_grant(targetpr->p_endpoint, grantee, grant, count,
         //                  0, 0, &newoffset, &newep, NULL)
         // access = 0 → resolve-only, no READ/WRITE permission check.
-        let caller_endpt = caller.p_endpoint;
-        let caller_cr3 = caller.p_seg.phys_root;
+        let caller_endpt = proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint)
+            .expect("syscall_copy: caller slot must exist");
+        let caller_cr3 = proc_table
+            .get(caller_nr)
+            .map(|c| c.p_seg.phys_root)
+            .expect("syscall_copy: caller slot must exist");
         // K20: value-capturing closure (see the 8-space variant note).
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
@@ -872,7 +922,7 @@ fn dispatch_umap_remote_impl(
 
         let grant_id = offset as i32;
         let outcome = verify_grant(
-            caller.p_nr, proc_table,
+            caller_nr, proc_table,
             target_endpoint,
             grantee_endpoint,
             grant_id,
@@ -968,9 +1018,9 @@ fn dispatch_umap_remote_impl(
 /// 4. Copy `pvec[]` back to caller via `data_copy_vmcheck`.
 /// 5. Write `pcount` to `m_krn_lsys_sys_vumap.pcount`.
 pub fn dispatch_vumap(
-    caller: &mut KProcess,
-    msg: &mut Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_vumap(msg);
@@ -984,7 +1034,10 @@ pub fn dispatch_vumap(
     let pmax = m.pmax;
 
     // C: do_vumap.c:37 — caller must have a valid endpoint.
-    let caller_endpt = caller.p_endpoint;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
     if caller_endpt.0 == NONE {
         return KcallResult::Ok(EFAULT);
     }
@@ -1025,7 +1078,10 @@ pub fn dispatch_vumap(
     let mut vvec: [VumapVir; MAPVEC_NR] = [VumapVir::ZERO; MAPVEC_NR];
     let mut pvec: [VumapPhys; MAPVEC_NR] = [VumapPhys::ZERO; MAPVEC_NR];
 
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("syscall_copy: caller slot must exist");
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
@@ -1044,7 +1100,7 @@ pub fn dispatch_vumap(
         vvec.as_mut_ptr() as u64,
     ));
     let vvec_copy = crate::cross_space::data_copy_vmcheck(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(vaddr),
@@ -1082,7 +1138,7 @@ pub fn dispatch_vumap(
         // C: do_vumap.c:79-87 — resolve grant or use direct address.
         let (mut vir_addr, granter) = if source != SELF {
             let outcome = verify_grant(
-                caller.p_nr, proc_table,
+                caller_nr, proc_table,
                 Endpoint(source),
                 caller_endpt,
                 vv.vv_grant(),
@@ -1147,7 +1203,10 @@ pub fn dispatch_vumap(
                         length: VirBytes(size as u64),
                         write_flag: true,
                     };
-                    caller.suspend_for_vm(
+                    proc_table
+                        .get_mut(caller_nr)
+                        .expect("dispatch_vumap: caller slot must exist")
+                        .suspend_for_vm(
                         VmSuspendType::KernelCall,
                         granter,
                         check_params,
@@ -1173,7 +1232,7 @@ pub fn dispatch_vumap(
         pvec.as_ptr() as u64,
     ));
     let pvec_copy = crate::cross_space::data_copy_vmcheck(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         AddressRef::Physical(pvec_src_phys),
         AddressRef::Process {
             endpoint: caller_endpt,
@@ -1266,9 +1325,9 @@ pub const VUA_WRITE: i32 = 0x02;
 /// - On page fault → `KcallResult::VmSuspend` (caller suspended via
 ///   `suspend_for_vm`, VM handles fault, `kernel_call_resume` retries)
 pub fn dispatch_memset(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
 ) -> KcallResult {
     let m = msg_memset(msg);
     // C: do_memset.c:19-25 — extract parameters
@@ -1278,7 +1337,12 @@ pub fn dispatch_memset(
     let count = m.count;
 
     // C: vm_memset:536-537 — check_resumed_caller() precondition.
-    if caller.p_endpoint.0 == NONE {
+    if proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint.0)
+        .expect("syscall_copy: caller slot must exist")
+        == NONE
+    {
         return KcallResult::Ok(EFAULT);
     }
 
@@ -1312,8 +1376,14 @@ pub fn dispatch_memset(
     };
 
     // Build proc_cr3 closure (same pattern as dispatch_copy).
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("syscall_copy: caller slot must exist");
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
@@ -1328,7 +1398,7 @@ pub fn dispatch_memset(
 
     // C: vm_memset:553-580 — memset via Direct Map + PTE walk.
     let result = crate::cross_space::memset_vmcheck(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         dst,
         pattern_byte,
         count as usize,
@@ -1359,9 +1429,9 @@ pub fn dispatch_memset(
 /// 4. Call `memset_vmcheck` on the resolved offset + effective granter
 ///    (do_safememset.c:56).
 pub fn dispatch_safememset(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let m = msg_safememset(msg);
@@ -1373,7 +1443,13 @@ pub fn dispatch_safememset(
     let bytes = m.bytes;             // SMS_BYTES
 
     // C: do_safememset.c:36-37 — endpoint validation (NONE check)
-    if dst_endpt == NONE || caller.p_endpoint.0 == NONE {
+    if dst_endpt == NONE
+        || proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.0)
+            .expect("dispatch_safememset: caller slot must exist")
+            == NONE
+    {
         return KcallResult::Ok(EFAULT);
     }
 
@@ -1395,8 +1471,14 @@ pub fn dispatch_safememset(
     }
 
     // Build proc_cr3 closure.
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("syscall_copy: caller slot must exist");
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
@@ -1412,9 +1494,12 @@ pub fn dispatch_safememset(
     // C: do_safememset.c:48-49 — verify_grant(CPF_WRITE).
     // C: offset/bytes are `long` in the message (m2_l1/m2_l2) but
     // vir_bytes/size_t are unsigned; cast to u64 for verify_grant.
-    let grantee = caller.p_endpoint;
+    let grantee = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("syscall_copy: caller slot must exist");
     let outcome = verify_grant(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         Endpoint(dst_endpt),
         grantee,
         grant_id,
@@ -1440,7 +1525,7 @@ pub fn dispatch_safememset(
     };
 
     let memset_result = crate::cross_space::memset_vmcheck(
-        caller.p_nr, proc_table,
+        caller_nr, proc_table,
         dst,
         pattern_byte,
         bytes as usize,
@@ -1542,7 +1627,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
         msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
         msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        let result = dispatch_vircopy(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1563,7 +1648,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
         msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
         msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        let result = dispatch_vircopy(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1586,7 +1671,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
         msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         // Should NOT return EINVAL — NONE endpoints are valid (physical copy)
-        let result = dispatch_vircopy(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_ne!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1617,7 +1702,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
         msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         // SELF should resolve to caller's endpoint, which is valid
-        let result = dispatch_vircopy(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_ne!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1634,7 +1719,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
         msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 1;
         msg.m_u.m_lsys_krn_sys_copy.flags = 0;
-        let result = dispatch_vircopy(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(E2BIG));
     }
 
@@ -1660,7 +1745,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0;
         msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0x100;
         msg.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
-        let result = dispatch_vircopy(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -1714,7 +1799,7 @@ mod tests {
         // src_endpt = SELF, segment = LOCAL_VM_SEG | VIR_ADDR.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, SELF, 0x100i32);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         // vm_lookup via lookup_in_table returns None in test env (MockPteWalk) → EFAULT
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
@@ -1726,7 +1811,7 @@ mod tests {
         // src_endpt = 9999 is invalid.
         let mut msg = build_umap_msg(9999, LOCAL_VM_SEG | VIR_ADDR, 0x1000, SELF, 0x100_i32);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1743,7 +1828,7 @@ mod tests {
             0x100_i32,
         );
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         // vm_lookup via lookup_in_table returns None in test env (MockPteWalk) → EFAULT
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
@@ -1755,7 +1840,7 @@ mod tests {
         // grantee = NONE is not valid for UMAP_REMOTE.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, NONE, 0x100_i32);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1766,7 +1851,7 @@ mod tests {
         // grantee = ANY is not valid for UMAP_REMOTE.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, ANY, 0x100_i32);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1778,7 +1863,7 @@ mod tests {
         // a non-SELF grantee to be valid. Here seg_index = VIR_ADDR → EINVAL.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | VIR_ADDR, 0x1000, 9999, 0x100_i32);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1795,7 +1880,7 @@ mod tests {
             0x100_i32,
         );
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         // verify_grant fails (no grant table in test) → EFAULT
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
@@ -1807,7 +1892,7 @@ mod tests {
         // segment type 0x9999 is unknown → EINVAL.
         let mut msg = build_umap_msg(SELF, 0x9999, 0x1000, SELF, 0x100_i32);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1818,7 +1903,7 @@ mod tests {
         // segment = LOCAL_VM_SEG | 0x99 (bogus index) → EFAULT.
         let mut msg = build_umap_msg(SELF, LOCAL_VM_SEG | 0x99, 0x1000, SELF, 0x100_i32);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap_remote(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap_remote(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -1836,7 +1921,7 @@ mod tests {
             0x100_i32,
         );
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_umap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_umap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -1867,7 +1952,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safememset_msg(NONE, 0, 0, 0, 0);
-        let result = dispatch_safememset(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safememset(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -1885,7 +1970,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // dst_endpt = 9999 is not in proc_table.
         let msg = build_safememset_msg(9999, 0, 0, 0, 0);
-        let result = dispatch_safememset(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safememset(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1911,7 +1996,7 @@ mod tests {
         }
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safememset_msg(200, 0, 0i64, 0, 0i64);
-        let result = dispatch_safememset(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safememset(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -1944,7 +2029,7 @@ mod tests {
         }
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safememset_msg(200, 0, 0i64, 0xABi32, 0x100i64);
-        let result = dispatch_safememset(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safememset(ProcNr(0), &mut proc_table, &msg, &priv_table);
         // verify_grant reads grant entry via data_copy_vmcheck → MockPteWalk
         // returns None → Suspended → VmSuspend.
         assert_eq!(result, KcallResult::VmSuspend);
@@ -1977,7 +2062,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(NONE, 0, 0, 0, 0);
-        let result = dispatch_safecopy_from(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_from(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -1988,7 +2073,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(9999, 0, 0, 0, 0);
-        let result = dispatch_safecopy_from(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_from(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2005,7 +2090,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // grant_id = -1 (INVALID_GRANT sentinel) or any negative.
         let msg = build_safecopy_msg(200, -1, 0, 0, 0);
-        let result = dispatch_safecopy_from(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_from(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2022,7 +2107,7 @@ mod tests {
         }
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(200, 1, 0, 0x1000, 0x100);
-        let result = dispatch_safecopy_from(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_from(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -2038,7 +2123,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(NONE, 0, 0, 0, 0);
-        let result = dispatch_safecopy_to(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_to(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -2049,7 +2134,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(9999, 0, 0, 0, 0);
-        let result = dispatch_safecopy_to(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_to(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2064,7 +2149,7 @@ mod tests {
         }
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(200, -1, 0, 0, 0);
-        let result = dispatch_safecopy_to(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_to(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2081,7 +2166,7 @@ mod tests {
         }
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_safecopy_msg(200, 1, 0, 0x1000, 0x100);
-        let result = dispatch_safecopy_to(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_safecopy_to(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
 
@@ -2105,7 +2190,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // process = 9999 is not in proc_table.
         let msg = build_memset_msg(0x1000, 0x100, 0xAB, 9999);
-        let result = dispatch_memset(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_memset(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(ESRCH));
     }
 
@@ -2126,7 +2211,7 @@ mod tests {
         // the standalone handle carries endpoint 100, the target slot 200.
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_memset_msg(0x1000, 0x100, 0xAB, 200);
-        let result = dispatch_memset(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_memset(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::VmSuspend);
     }
 
@@ -2137,7 +2222,7 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_memset_msg(0x1000, 0, 0xAB, NONE);
-        let result = dispatch_memset(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_memset(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
     }
 
@@ -2147,7 +2232,7 @@ mod tests {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_memset_msg(u64::MAX, 1, 0xAB, NONE);
-        let result = dispatch_memset(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_memset(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(E2BIG));
     }
 
@@ -2160,7 +2245,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         // pattern = 0xAB_CD_EF_12 — only 0x12 is the actual byte.
         let msg = build_memset_msg(0x1000, 0, 0xABCDEF12, NONE);
-        let result = dispatch_memset(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_memset(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(OK));
     }
 
@@ -2181,9 +2266,10 @@ mod tests {
         // (we replace the panic with a graceful EFAULT return).
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(NONE));
+        // K20 caller-by-nr: the NONE endpoint lives on the caller's slot.
+        proc_table.get_mut(ProcNr(0)).unwrap().p_endpoint = Endpoint(NONE);
         let msg = build_vsafecopy_msg(0x1000, 1);
-        let result = dispatch_vsafecopy(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_vsafecopy(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -2195,7 +2281,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, 0);
-        let result = dispatch_vsafecopy(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_vsafecopy(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2207,7 +2293,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, -1);
-        let result = dispatch_vsafecopy(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_vsafecopy(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2219,7 +2305,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, MAX_VSCPVEC + 1);
-        let result = dispatch_vsafecopy(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_vsafecopy(ProcNr(0), &mut proc_table, &msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2233,7 +2319,7 @@ mod tests {
         let priv_table = crate::test_helpers::test_priv_table();
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let msg = build_vsafecopy_msg(0x1000, 4);
-        let result = dispatch_vsafecopy(&mut caller, &msg, &mut proc_table, &priv_table);
+        let result = dispatch_vsafecopy(ProcNr(0), &mut proc_table, &msg, &priv_table);
         // The copy fails because the caller has no real page tables.
         // Accept either EFAULT (Completed Err) or VmSuspend (Suspended).
         assert!(
@@ -2280,10 +2366,10 @@ mod tests {
     fn test_dispatch_vumap_rejects_none_caller() {
         // C: do_vumap.c:37 — caller must have a valid endpoint.
         let mut proc_table = crate::test_helpers::test_proc_table();
-        let mut caller = KProcess::new(ProcNr(0), Endpoint(NONE));
+        proc_table.get_mut(ProcNr(0)).unwrap().p_endpoint = Endpoint(NONE);
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 4, VUA_READ, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -2294,7 +2380,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 0, 0x2000, 4, VUA_READ, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2305,7 +2391,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 0, VUA_READ, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2317,7 +2403,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 4, 0xFF, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2334,7 +2420,7 @@ mod tests {
         // source = 9999 is not in proc_table.
         let mut msg = build_vumap_msg(9999, 0x1000, 4, 0x2000, 4, VUA_READ, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2347,7 +2433,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 4, 0x2000, 4, VUA_READ, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
 
@@ -2366,7 +2452,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(200, 0x1000, 4, 0x2000, 4, VUA_READ | VUA_WRITE, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
 
@@ -2380,7 +2466,7 @@ mod tests {
         let mut caller = KProcess::new(ProcNr(0), Endpoint(100));
         let mut msg = build_vumap_msg(SELF, 0x1000, 1000, 0x2000, 4, VUA_READ, 0);
         let priv_table = crate::test_helpers::test_priv_table();
-        let result = dispatch_vumap(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_vumap(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::VmSuspend);
     }
 
@@ -2410,7 +2496,7 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 4;
             msg.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
         }
-        let r = dispatch_vircopy(&mut caller, &msg, &mut proc_table);
+        let r = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(r, KcallResult::Ok(EFAULT),
             "SELF 已替换为 caller endpoint（校验通过 → TRY 拷贝页失败 → EFAULT）");
 
@@ -2424,7 +2510,7 @@ mod tests {
             msg2.m_u.m_lsys_krn_sys_copy.nr_bytes = 4;
             msg2.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
         }
-        let r2 = dispatch_vircopy(&mut caller, &msg2, &mut proc_table);
+        let r2 = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg2);
         assert_eq!(r2, KcallResult::Ok(EINVAL),
             "非 SELF 的未知 endpoint 直接 EINVAL（对照判据）");
     }

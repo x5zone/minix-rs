@@ -606,12 +606,12 @@ fn kernel_call_dispatch_inner(
         Syscall::Endksig => dispatch_endksig(caller.p_nr, proc_table, msg, priv_table),
         Syscall::Sigsend => dispatch_sigsend(caller.p_nr, proc_table, msg),
         Syscall::Sigreturn => dispatch_sigreturn(caller.p_nr, proc_table, msg),
-        Syscall::Memset => dispatch_memset(caller, msg, proc_table),
-        Syscall::Umap => dispatch_umap(caller, msg, proc_table, priv_table),
-        Syscall::Vircopy => dispatch_vircopy(caller, msg, proc_table),
-        Syscall::Physcopy => dispatch_physcopy(caller, msg, proc_table),
-        Syscall::UmapRemote => dispatch_umap_remote(caller, msg, proc_table, priv_table),
-        Syscall::Vumap => dispatch_vumap(caller, msg, proc_table, priv_table),
+        Syscall::Memset => dispatch_memset(caller.p_nr, proc_table, msg),
+        Syscall::Umap => dispatch_umap(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::Vircopy => dispatch_vircopy(caller.p_nr, proc_table, msg),
+        Syscall::Physcopy => dispatch_physcopy(caller.p_nr, proc_table, msg),
+        Syscall::UmapRemote => dispatch_umap_remote(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::Vumap => dispatch_vumap(caller.p_nr, proc_table, msg, priv_table),
         Syscall::Irqctl => dispatch_irqctl(caller, proc_table, msg, priv_table, bkl_section),
         // D6: x86-specific syscalls — return BadCall on other architectures.
         Syscall::Devio => CurrentArchSyscall::dispatch_devio(caller, proc_table, msg, priv_table),
@@ -623,9 +623,9 @@ fn kernel_call_dispatch_inner(
         Syscall::Getinfo => dispatch_getinfo(caller, msg, priv_table, proc_table, clock_state),
         Syscall::Abort => dispatch_abort(caller, msg),
         Syscall::Iopenable => CurrentArchSyscall::dispatch_iopenable(caller, proc_table, msg),
-        Syscall::SafecopyFrom => dispatch_safecopy_from(caller, msg, proc_table, priv_table),
-        Syscall::SafecopyTo => dispatch_safecopy_to(caller, msg, proc_table, priv_table),
-        Syscall::Vsafecopy => dispatch_vsafecopy(caller, msg, proc_table, priv_table),
+        Syscall::SafecopyFrom => dispatch_safecopy_from(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::SafecopyTo => dispatch_safecopy_to(caller.p_nr, proc_table, msg, priv_table),
+        Syscall::Vsafecopy => dispatch_vsafecopy(caller.p_nr, proc_table, msg, priv_table),
         Syscall::Setgrant => dispatch_setgrant(caller, msg, priv_table),
         Syscall::Readbios => CurrentArchSyscall::dispatch_readbios(caller, proc_table, msg),
         Syscall::Sprof => dispatch_sprofile(caller, msg, proc_table),
@@ -641,7 +641,7 @@ fn kernel_call_dispatch_inner(
 
         Syscall::Schedctl => dispatch_schedctl(caller.p_nr, proc_table, msg),
         Syscall::Statectl => dispatch_statectl(caller, msg, proc_table, priv_table, crate::ipc_filter_pool_with(bkl_section)),
-        Syscall::Safememset => dispatch_safememset(caller, msg, proc_table, priv_table),
+        Syscall::Safememset => dispatch_safememset(caller.p_nr, proc_table, msg, priv_table),
         // D6: ARM-specific — return BadCall on other architectures.
         Syscall::Padconf => CurrentArchSyscall::dispatch_padconf(caller, msg),
     }
@@ -1952,12 +1952,12 @@ fn dispatch_sigsend(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc
 fn dispatch_sigreturn(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult {
     crate::syscall_signal::dispatch_sigreturn(caller_nr, proc_table, msg)
 }
-fn dispatch_memset(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_copy::dispatch_memset(caller, msg, proc_table) }
-fn dispatch_umap(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_umap(caller, msg, proc_table, priv_table) }
-fn dispatch_vircopy(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_copy::dispatch_vircopy(caller, msg, proc_table) }
-fn dispatch_physcopy(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable) -> KcallResult { crate::syscall_copy::dispatch_physcopy(caller, msg, proc_table) }
-fn dispatch_umap_remote(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_umap_remote(caller, msg, proc_table, priv_table) }
-fn dispatch_vumap(caller: &mut KProcess, msg: &mut Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_vumap(caller, msg, proc_table, priv_table) }
+fn dispatch_memset(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_copy::dispatch_memset(caller_nr, proc_table, msg) }
+fn dispatch_umap(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_umap(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_vircopy(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_copy::dispatch_vircopy(caller_nr, proc_table, msg) }
+fn dispatch_physcopy(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) -> KcallResult { crate::syscall_copy::dispatch_physcopy(caller_nr, proc_table, msg) }
+fn dispatch_umap_remote(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_umap_remote(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_vumap(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &mut Message, priv_table: &PrivTable) -> KcallResult { crate::syscall_copy::dispatch_vumap(caller_nr, proc_table, msg, priv_table) }
 fn dispatch_irqctl(
     caller: &mut KProcess,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -2038,9 +2038,9 @@ fn dispatch_abort(caller: &mut KProcess, msg: &Message) -> KcallResult {
         caller.p_endpoint, action, nosync, dump, how,
     );
 }
-fn dispatch_safecopy_from(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safecopy_from(caller, msg, proc_table, priv_table) }
-fn dispatch_safecopy_to(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safecopy_to(caller, msg, proc_table, priv_table) }
-fn dispatch_vsafecopy(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_vsafecopy(caller, msg, proc_table, priv_table) }
+fn dispatch_safecopy_from(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safecopy_from(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_safecopy_to(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safecopy_to(caller_nr, proc_table, msg, priv_table) }
+fn dispatch_vsafecopy(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_vsafecopy(caller_nr, proc_table, msg, priv_table) }
 /// Dispatch SYS_SETGRANT.
 ///
 /// C: `do_setgrant()` — do_setgrant.c:15-29
@@ -2999,7 +2999,7 @@ fn dispatch_schedctl(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::pro
 fn dispatch_statectl(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &mut PrivTable, pool: &mut crate::ipc_filter::IpcFilterPool) -> KcallResult {
     crate::syscall_process::dispatch_statectl(caller.p_nr, proc_table, msg, priv_table, pool)
 }
-fn dispatch_safememset(caller: &mut KProcess, msg: &Message, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safememset(caller, msg, proc_table, priv_table) }
+fn dispatch_safememset(caller_nr: crate::proc::ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message, priv_table: &crate::kpriv::PrivTable) -> KcallResult { crate::syscall_copy::dispatch_safememset(caller_nr, proc_table, msg, priv_table) }
 
 // ── kernel_call_finish / kernel_call_resume ──
 // C: system.c:58-90 (kernel_call_finish), system.c:612-638 (kernel_call_resume)
