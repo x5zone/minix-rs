@@ -32,6 +32,7 @@
 pub mod ptime;
 pub mod signal;
 pub mod stable;
+pub mod stamp;
 pub mod utmp;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.

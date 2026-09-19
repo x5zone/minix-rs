@@ -8,3 +8,17 @@ license.workspace = true
 [lib]
 name = "minix_proctools"
 path = "src/lib.rs"
+
+[dev-dependencies]
+minix-doctools = { path = "../../usr-bin/doctools" }
+
+[[bin]]
+name = "kill"
+path = "src/bin/kill.rs"
+
+[[bin]]
+name = "who"
+path = "src/bin/who.rs"
+
+[dependencies]
+minix-sys = { workspace = true }

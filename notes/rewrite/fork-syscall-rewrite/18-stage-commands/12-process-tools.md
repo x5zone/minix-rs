@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的看护层——哪些进程在跑、谁在登录、怎么发信号
 > **源码**: `minix3/bin/ps/`（`ps.c` 含 `kvm.h` 与 `sysctl.h` 第 89 到 92 行、`keyword.c` 列定义宏第 115 到 197 行）、`minix3/bin/kill/kill.c`（默认终止信号第 83 行、列表打印第 105 行、名转号第 119 到 127 行与第 188 到 195 行、挂起终止特判第 178 行）、`minix3/bin/date/`、`minix3/usr.bin/` 二十一个（`finger`、`from`、`ipcrm`、`ipcs`、`last`、`leave`、`lock`、`logger`、`logname`、`mesg`、`nice`、`nohup`、`renice`、`shlock`、`time`、`tty`、`users`、`w`、`wall`、`who`、`write`）、`minix3/minix/usr.bin/` 三个（`ministat`、`mtop`、`toproto`）、`minix3/etc/utmp`、`minix3/lib/libc/compat/include/utmp.h`（登录记录结构：终端行、用户名、主机、时间）、`minix3/sys/sys/signal.h`（信号编号第 52 到 84 行：挂起 1 到电源 32）
-> **Rust 模块**: `os/commands/bin/proctools`（库包 `minix-proctools`：`signal.rs`、`ptime.rs`、`utmp.rs`、`stable.rs`，16 个测试通过）
+> **Rust 模块**: `os/commands/bin/proctools`（库包 `minix-proctools`：`signal.rs`、`ptime.rs`、`utmp.rs`、`stable.rs`、`stamp.rs` 加 `kill`/`who` 薄壳，20 个测试通过）
 > **前置依赖**: `05-shell-family.md`（调用方）、`03-login-passwd.md`（登录记录的写入方）
 > **不覆盖（移交）**: 终端控制（见 `13-terminal-termios.md`）、网络会话（见 `19-network-services.md`）、进程检验的内核表读取（后续内核接口阶段）、终端前台作业联动（见进程管理阶段）
 
@@ -118,7 +118,7 @@
 
 ### 4.1 模块结构
 
-`os/commands/bin/proctools`（库包名 `minix-proctools`）共 5 个源文件：
+`os/commands/bin/proctools`（库包名 `minix-proctools`）持决定半（6 个源文件），`kill` 与 `who` 薄壳在 `src/bin/`：
 
 | Rust 文件 | 对应 C 源码位置 | 职责 |
 |-----------|----------------|------|
@@ -127,6 +127,9 @@
 | `ptime.rs` | `time` 输出格式 | 时长四形态（`format_duration`） |
 | `utmp.rs` | `utmp.h` 记录结构 | 记录解析（`parse_record`）与库遍历（`walk_database`） |
 | `stable.rs` | `ps` 列表思想 | `ProcessTable` 接口、`EmptyTable` 与 `SliceTable` |
+| `stamp.rs` | `who.c:317`（`%.12s` of `ctime`） | 登录时刻十二列戳（`civil_from_days` 加 `format_login_time`） |
+| `bin/kill.rs` | `kill.c` 主循环 | `-l` 列表、`-s`/`-名字`/`-号码`、逐 pid 发信号 |
+| `bin/who.rs` | `who.c:189`/`:310-318` | 读库、过滤在场会话、打印名/行/时刻 |
 
 ### 4.2 关键类型与不变量
 
@@ -144,12 +147,14 @@
 | `format_duration` | 秒数与缓冲 | 字节数 | 时长格式语义 |
 | `parse_record`/`walk_database` | 记录与库 | 条目与计数 | 登录记录语义 |
 | `list`/`find`/`lookup` | 表与进程号 | 行或查无 | 进程列表语义 |
+| `civil_from_days(日数)` | 纪元日 | 年月日 | `ctime` 的历法反推（Hinnant 算法） |
+| `format_login_time(纪元秒, 缓冲)` | 秒数 | 十二列戳 | `who` 的时刻列语义 |
 
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-proctools`：**16 个测试，全部通过**（截至 2026-09-06）。
+`cargo test -p minix-proctools`：**20 个测试，全部通过**（`ulimit -v 3G` 加 `-j 1` 内存闸门下运行；计数与提交的对应见 18-stage todo 的批次记录）。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/bin/proctools` 复现）：
 
@@ -157,6 +162,9 @@
 - **时长**（`ptime.rs`，2 个）：`test_four_shapes`（四形态）、`test_boundaries`（七边界）。
 - **登录记录**（`utmp.rs`，5 个）：`test_fields_trimmed`（三字段去尾加时间）、`test_logged_out_empty_name`（空名即退出）、`test_short_record_rejected`（短记录）、`test_walk_counts_and_visits`（双记录遍历）、`test_torn_image_rejected`（撕裂库）。
 - **进程表**（`stable.rs`，4 个）：`test_empty_table_lists_nothing`（空表）、`test_slice_lists_and_finds`（列表查找）、`test_lookup_maps_miss`（查无报 3）、`test_tables_share_the_trait`（接口统一）。
+- **时刻戳**（`stamp.rs`，4 个）：`test_epoch_zero_is_new_years`（纪元零）、`test_known_stamp_september_nine_2001`（十亿秒名场）、`test_leap_year_february_twenty_nine`（闰日）、`test_civil_matches_days_from_civil`（与 10 篇 `cal.rs` 的格里高利编码器交叉往返，dev-dependency 直连）。
+
+**执行批后的接线与留白**：`kill` 与 `who` 已接线——`kill` 覆盖 `-l`/`-l 码`/`-s 名`/`-名字`/`-号码` 加逐 pid 发信（失败翻退出码不中断，`kill.c` 主循环语义），`who` 覆盖默认库与操作数库、只印在场会话的名/行/时刻十二列。留白：`who` 的空闲与终端状态列（要 `stat` 终端行）、`-u`/`-T` 等列选；`ps`（要内核表数据源）、`finger`/`from`（邮件面）、`date`/`sleep`/`nice` 族随各自数据源批次接。时区声明：时刻戳一律 UTC（本层无时区库，C 的 `ctime` 是本地时）。
 
 尚未覆盖、随后续阶段补齐的：内核表读取（`ps` 执行层）、终端检查（`-t` 之类）、作业联动（挂起终止特判的执行侧）、邮件与网络会话（`from` 信箱、`write` 投递）。号码记录表格三层是全覆盖的，执行层是显式留白的。
 
