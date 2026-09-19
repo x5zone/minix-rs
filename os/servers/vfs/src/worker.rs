@@ -94,6 +94,19 @@ pub struct PairState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerCont {
+    /// 字符设备 open 的对话半（`CDEV_OPEN`）：回复是
+    /// `mess_lchardriver_vfs_reply { status, id }`（状态在首字）；`status >= 0`
+    /// 时低位带 `CDEV_CLONED`/`CDEV_CTTY` 两个效果位——克隆要 PFS（未接）、
+    /// 控制终端要写回 `fp_tty` 与该 dmap 行的 `dmap_seen_tty`。
+    /// C `cdev_opcl`（cdev.c:236-249）。
+    CdevOpen {
+        /// 已认领的 fd（成功时作为返回值）。
+        fd: u32,
+        /// 已认领的 filp（失败时要放开）。
+        filp: usize,
+        /// 目标设备号（`CDEV_CTTY` 效果要把它写进 `fp_tty`）。
+        dev: u64,
+    },
     /// 块设备 ioctl 的对话半（`BDEV_IOCTL`）：回复是
     /// `mess_lblockdriver_lbdev_reply { int status; int id; }`（状态在首字）；
     /// 续接体撤销 grant、清 `filp_ioctl_fp` 守卫并把状态回给用户。

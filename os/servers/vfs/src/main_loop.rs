@@ -914,7 +914,183 @@ impl VfsState {
                     req: crate::request::encode_ftrunc(node.ino, 0, 0),
                 });
             }
-            // 设备 open（19-22）与 FIFO 配对：本批未接线，诚实拒绝。
+            crate::open::OpenOutcome::Delegate(crate::open::DeviceClass::Char) => {
+                // C `common_open` 的 `S_IFCHR` 支（open.c:162-168）→
+                // `cdev_open(fd, vp->v_sdev, bits | (oflags & O_NOCTTY))`
+                // → `cdev_opcl`（cdev.c:236-249）：`cdev_map` 的 `/dev/tty`
+                // 重定向 → dmap 按 major 找驱动（没有 → ENXIO）→ `CTTY_MAJOR`
+                // 例外（`/dev/tty` 直接成功，不打扰驱动）→ `O_NOCTTY` 三条规则
+                // → 认领 fd/filp → `CDEV_OPEN` → worker 等待。
+                let dev = node.dev;
+                // `cdev_map`：`/dev/tty` 换成进程的控制终端（`tty_redirect`）。
+                let is_ctty = ((dev & 0x000fff00) >> 8) as u32
+                    == crate::device_map::CTTY_MAJOR as u32;
+                let fp_tty = fp_slot
+                    .and_then(|s| self.fproc_table.get(s))
+                    .map(|fp| fp.tty)
+                    .filter(|t| *t != minix_types::NO_DEV);
+                let major_valid = (((dev & 0x000fff00) >> 8) as usize)
+                    < crate::device_map::NR_DEVICES;
+                let dev = match crate::cdev::tty_redirect(dev, is_ctty, fp_tty, major_valid) {
+                    crate::cdev::RedirectVerdict::Keep(d)
+                    | crate::cdev::RedirectVerdict::Substitute(d) => d,
+                    crate::cdev::RedirectVerdict::NoDev => {
+                        self.finish_worker_job(idx, fp_slot, minix_types::ENXIO);
+                        return;
+                    }
+                };
+                // CTTY 例外：`/dev/tty` 不真发请求（`cdev.c:174`）。
+                if ((dev & 0x000fff00) >> 8) as u32 == crate::device_map::CTTY_MAJOR as u32 {
+                    // 仍要认领 fd/filp（C 是在类型分派之前认领的）。
+                    let Some(slot) = fp_slot else {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                        return;
+                    };
+                    let Some(vnode_idx) = self.intern_vnode(node) else {
+                        self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                        return;
+                    };
+                    let fd = {
+                        let Some(fp) = self.fproc_table.get_mut(slot) else {
+                            self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                            return;
+                        };
+                        match crate::filedes::get_fd(
+                            fp,
+                            0,
+                            &crate::filedes::LowestFree,
+                            &mut self.filp_table,
+                            bits.bits(),
+                        ) {
+                            Ok((fd, filp_id)) => {
+                                if let Some(f) = self.filp_table.get_mut(filp_id) {
+                                    f.vnode = Some(vnode_idx);
+                                    f.flags = oflags as i32;
+                                }
+                                self.filp_table.inc_count(filp_id);
+                                if let Some(fp) = self.fproc_table.get_mut(slot) {
+                                    fp.filps[fd.get()] = Some(filp_id.get());
+                                }
+                                fd.get() as i32
+                            }
+                            Err(_) => {
+                                self.finish_worker_job(idx, fp_slot, minix_types::EMFILE);
+                                return;
+                            }
+                        }
+                    };
+                    self.finish_worker_job(idx, fp_slot, fd);
+                    return;
+                }
+                let major = ((dev & 0x000fff00) >> 8) as u32;
+                let minor = (((dev & 0xfff0_0000) >> 12) | (dev & 0xff)) as u32;
+                let drv_e = match crate::device_map::get_by_major(&self.dmap_table, major)
+                    .and_then(|row| row.driver)
+                {
+                    Some(e) => e,
+                    None => {
+                        self.finish_worker_job(idx, fp_slot, minix_types::ENXIO);
+                        return;
+                    }
+                };
+                // `O_NOCTTY` 三条规则（`noctty_force`）：非会话首进程、已有控制
+                // 终端、或这个驱动见过 TTY 且别处已把它设成控制终端 → 强制加上。
+                let (is_leader, has_tty) = fp_slot
+                    .and_then(|s| self.fproc_table.get(s))
+                    .map(|fp| {
+                        (
+                            fp.flags.contains(crate::fproc::FpFlags::SESLDR),
+                            fp.tty != minix_types::NO_DEV,
+                        )
+                    })
+                    .unwrap_or((false, false));
+                let requested = oflags & crate::open::OpenFlags::NOCTTY.bits() != 0;
+                let seen_elsewhere = self.dmap_table.get(major).map(|r| r.seen_tty).unwrap_or(false)
+                    && (0..minix_types::NR_PROCS).any(|i| {
+                        self.fproc_table
+                            .get(minix_types::UserSlot::new(i))
+                            .is_some_and(|fp| fp.pid != 0 && fp.tty == dev)
+                    });
+                let noctty = crate::cdev::noctty_force(is_leader, has_tty, requested, seen_elsewhere);
+                let access = crate::cdev::access_bits(
+                    bits.bits() & crate::open::R_BIT != 0,
+                    bits.bits() & crate::open::W_BIT != 0,
+                    noctty,
+                );
+                let Some(slot) = fp_slot else {
+                    self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                    return;
+                };
+                let Some(vnode_idx) = self.intern_vnode(node) else {
+                    self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                    return;
+                };
+                // 认领 fd/filp（C 在类型分派之前就认领；失败路径由续接体放开）。
+                let (fd, filp_id) = {
+                    let Some(fp) = self.fproc_table.get_mut(slot) else {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                        return;
+                    };
+                    match crate::filedes::get_fd(
+                        fp,
+                        0,
+                        &crate::filedes::LowestFree,
+                        &mut self.filp_table,
+                        bits.bits(),
+                    ) {
+                        Ok(pair) => pair,
+                        Err(_) => {
+                            self.finish_worker_job(idx, fp_slot, minix_types::EMFILE);
+                            return;
+                        }
+                    }
+                };
+                if let Some(f) = self.filp_table.get_mut(filp_id) {
+                    f.vnode = Some(vnode_idx);
+                    f.flags = oflags as i32;
+                }
+                self.filp_table.inc_count(filp_id);
+                if let Some(fp) = self.fproc_table.get_mut(slot) {
+                    fp.filps[fd.get()] = Some(filp_id.get());
+                }
+                let user_e = self
+                    .fproc_table
+                    .get(slot)
+                    .map(|fp| fp.endpoint)
+                    .unwrap_or(Endpoint::NONE);
+                let mut m = minix_types::Message {
+                    m_type: minix_chardriver::protocol::CdevRequest::Open as i32,
+                    ..minix_types::Message::default()
+                };
+                // SAFETY: `mess_vfs_lchardriver_openclose { devminor_t minor@0;
+                // endpoint_t id@4; endpoint_t user@8; int access@12 }`
+                // （ipc.h:2226-2234 一类）。
+                unsafe {
+                    let raw = &mut m.m_u.raw;
+                    raw[0..2].copy_from_slice(&(minor as u16).to_le_bytes());
+                    raw[4..8].copy_from_slice(&user_e.0.to_le_bytes());
+                    raw[8..12].copy_from_slice(&user_e.0.to_le_bytes());
+                    raw[12..16].copy_from_slice(&(access as i32).to_le_bytes());
+                }
+                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                    wp.cont = Some(crate::worker::WorkerCont::CdevOpen {
+                        fd: fd.get() as u32,
+                        filp: filp_id.get(),
+                        dev,
+                    });
+                }
+                if let Err(e) = self.send_drv_for_slot(idx, fp_slot, drv_e, &m) {
+                    // 发不出去：放开认领的 fd/filp 再回错。
+                    self.filp_table.dec_count(filp_id);
+                    if let Some(fp) = self.fproc_table.get_mut(slot) {
+                        fp.filps[fd.get()] = None;
+                    }
+                    self.finish_worker_job(idx, fp_slot, e);
+                }
+                return;
+            }
+            // 块设备 open（`bdev_open` + `bfs_e` + `req_newdriver`）与 FIFO
+            // 配对：本批未接线，诚实拒绝。
             _ => self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS),
         }
     }
@@ -932,6 +1108,17 @@ impl VfsState {
             return Some(hit.0);
         }
         let scratch = self.vnode_table.alloc().ok()?;
+        // C `advance`（path.c:98-106）：`v_sdev = res.dev`（**特殊设备号**，
+        // 设备节点靠它认驱动）、`v_dev = vmp->m_dev`（**挂载分区的设备号**）。
+        // 两者是不同字段：先前把 `res.dev` 写进 `v_dev` 是错的——设备节点的
+        // `v_sdev` 一直是 0，`cdev_get`/`bdev_ioctl` 那些按 `v_sdev` 找驱动的
+        // 地方就都找不到。
+        let mount_dev = self
+            .vmnt_table
+            .find_by_fs(node.fs_e)
+            .and_then(|id| self.vmnt_table.get(id))
+            .map(|v| v.dev)
+            .unwrap_or(minix_types::NO_DEV);
         if let Some(v) = self.vnode_table.get_mut(scratch) {
             v.fs = node.fs_e;
             v.ino = node.ino;
@@ -939,7 +1126,8 @@ impl VfsState {
             v.size = node.size;
             v.uid = node.uid;
             v.gid = node.gid;
-            v.dev = node.dev;
+            v.dev = mount_dev;
+            v.sdev = node.dev;
             v.fs_count = 1;
             v.ref_count = 1;
         }
@@ -3037,6 +3225,58 @@ impl VfsState {
                             status = 0;
                         }
                     }
+                }
+                crate::worker::WorkerCont::CdevOpen { fd, filp, dev } => {
+                    // C `cdev_opcl` 的收尾（cdev.c:236-249）：状态取
+                    // `mess_lchardriver_vfs_reply.status`（**首字**）；`>= 0`
+                    // 时低位是两个效果位——`CDEV_CLONED`（要 PFS 建克隆节点，
+                    // 未接）与 `CDEV_CTTY`（把设备记成控制终端）。
+                    // SAFETY: `mess_lchardriver_vfs_reply { int status;
+                    // uint32_t id; }`——状态在首字。
+                    let raw = unsafe { &reply.m_u.raw };
+                    let dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    if dstatus < 0 {
+                        // 驱动拒绝：放开刚认领的 fd/filp，把错误回用户。
+                        self.filp_table.dec_count(crate::filp::FilpId(filp));
+                        if let Some(slot) = fp_slot
+                            && let Some(fp) = self.fproc_table.get_mut(slot)
+                        {
+                            fp.filps[fd as usize] = None;
+                        }
+                        self.finish_worker_job(idx, fp_slot, dstatus);
+                        continue;
+                    }
+                    let effects = crate::cdev::open_effects(dstatus, dev);
+                    if effects.clone_minor.is_some() {
+                        // `cdev_clone`（cdev.c:100-145）要 PFS 建一个新节点
+                        // （`req_newnode(PFS_PROC_NR, ...)`）——PFS 是另一条线，
+                        // 本批未接：诚实拒绝并把刚认领的 fd 放开（不假装打开
+                        // 了一个克隆设备）。
+                        self.filp_table.dec_count(crate::filp::FilpId(filp));
+                        if let Some(slot) = fp_slot
+                            && let Some(fp) = self.fproc_table.get_mut(slot)
+                        {
+                            fp.filps[fd as usize] = None;
+                        }
+                        self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
+                        continue;
+                    }
+                    if let Some(tty_dev) = effects.grant_tty {
+                        // C：`fp->fp_tty = dev; dp->dmap_seen_tty = TRUE;`
+                        if let Some(slot) = fp_slot
+                            && let Some(fp) = self.fproc_table.get_mut(slot)
+                        {
+                            fp.tty = tty_dev;
+                        }
+                        let major = ((tty_dev & 0x000fff00) >> 8) as u32;
+                        if let Some(row) = self.dmap_table.get_mut(major) {
+                            row.seen_tty = true;
+                        }
+                    }
+                    // 成功：用户拿到的是 fd（C `r = OK` 之后 `common_open`
+                    // 把 `r = fd` 回上去）。
+                    self.finish_worker_job(idx, fp_slot, fd as i32);
+                    continue;
                 }
                 crate::worker::WorkerCont::BdevIoctl { grant, filp } => {
                     // C `bdev_ioctl` 的收尾：撤 grant → 清 `filp_ioctl_fp` →
@@ -6610,6 +6850,32 @@ mod tests {
             state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, 0))
         );
+    }
+
+    /// `intern_vnode` 的**设备号归属**（C `advance` path.c:98-106）：
+    /// `v_sdev = res.dev`（特殊设备号，设备节点靠它认驱动）、
+    /// `v_dev = vmp->m_dev`（挂载分区的设备号）。两者是不同字段——先前把
+    /// `res.dev` 写进 `v_dev` 是错的（`v_sdev` 一直为 0，`cdev_get` 那类按
+    /// `v_sdev` 找驱动的地方就都找不到）。
+    #[test]
+    fn test_intern_vnode_splits_device_numbers() {
+        use minix_types::Endpoint;
+        let mut state = VfsState::new();
+        seed_vmnt0(&mut state);
+        // 挂载行的设备号是 1（`seed_vmnt0` 播的）；节点带特殊设备号 0x0507。
+        let node = crate::path::NodeDetails {
+            fs_e: Endpoint::MFS,
+            ino: 0x42,
+            mode: crate::open::S_IFCHR | 0o644,
+            size: 0,
+            uid: 0,
+            gid: 0,
+            dev: 0x0507,
+        };
+        let idx = state.intern_vnode(&node).expect("并表");
+        let v = state.vnode_table.get(crate::vnode::VnodeId(idx)).unwrap();
+        assert_eq!(v.sdev, 0x0507, "v_sdev 是节点带回来的特殊设备号");
+        assert_eq!(v.dev, 1, "v_dev 是挂载行的设备号");
     }
 
     /// `PathFollow::Mknod`（mknod 的父目录半）：类型门（ENOTDIR）→ `W|X`

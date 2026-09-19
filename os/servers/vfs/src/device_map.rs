@@ -86,6 +86,10 @@ pub struct DmapEntry {
     pub recovering: bool,
     /// A worker is currently servicing this driver.
     pub servicing: bool,
+    /// `dmap_seen_tty`（`dmap.h:31`）——这个驱动**曾经**把某个设备设为控制
+    /// 终端。它是 `cdev_opcl` 里"要不要扫全表找控制终端"的性能开关
+    /// （`cdev.c:196-201`：只有为真时才扫 `fproc[]`）。
+    pub seen_tty: bool,
 }
 
 impl DmapEntry {
@@ -96,6 +100,7 @@ impl DmapEntry {
             label: [0; LABEL_MAX],
             recovering: false,
             servicing: false,
+            seen_tty: false,
         }
     }
 
@@ -144,6 +149,11 @@ impl DmapTable {
     /// Read one row (`None` when out of range).
     pub fn get(&self, major: u32) -> Option<&DmapEntry> {
         self.entries.get(major as usize)
+    }
+
+    /// Mutable row access (`None` when out of range).
+    pub fn get_mut(&mut self, major: u32) -> Option<&mut DmapEntry> {
+        self.entries.get_mut(major as usize)
     }
 
     /// Write one row (`false` when out of range → `ENODEV` at call sites).
