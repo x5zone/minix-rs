@@ -34,6 +34,7 @@ use crate::addr::{
 use crate::cmd::{parse_command, Command, Modifiers};
 use crate::store::{TextStore, MAX_TEXT};
 use crate::EditorError;
+use alloc::vec::Vec;
 use minix_regex::sed::{apply as subst_apply, Subst, SubstScope};
 use minix_regex::pattern::compile_basic;
 
@@ -166,6 +167,13 @@ pub struct Session {
     /// 上一次 `s` 的作用域（裸 `s`/`sg`/`sN` 重放——C 的 `sgflag`/`sgnum`
     /// 全局）。`None` = 还没有过替换（"no previous substitution"）。
     last_scope: Option<SubstScope>,
+    /// 撤销栈（C `ustack`/`u_p`，undo.c:41-43）。每个条目记一次变更；
+    /// `u` 逆序回放后翻种翻转序，第二次 `u` 即重做。
+    undo_stack: Vec<UndoEntry>,
+    /// `u_current_addr`/`u_addr_last`（C undo.c:64-65）：变更前的现场，
+    /// `None` = 尚未启用（`u` 回 "nothing to undo"）。
+    undo_current: Option<usize>,
+    undo_last: Option<usize>,
     /// The suffix `gflag` of the command that opened text-input mode; the
     /// post-input display uses it (`exec_command` returns it, and the
     /// input lines are consumed inside the same call in C).
@@ -198,6 +206,9 @@ impl Session {
             last_replacement: [0; MAX_TEXT],
             last_replacement_len: 0,
             last_scope: None,
+            undo_stack: Vec::new(),
+            undo_current: None,
+            undo_last: None,
             prompt: Prompt::star(),
             opt_prompt: opt_prompt.and_then(|text| Prompt::from(text).ok()),
         }
@@ -349,6 +360,46 @@ fn marks_delete(sess: &mut Session, from: usize, to: usize) {
     }
 }
 
+/// 一条撤销记录的种类（C `UADD`/`UDEL`，ed.h:84-85）。`u` 回放后翻转：
+/// Add 变 Delete（下次 `u` 即重做删除），反之亦然。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UndoKind {
+    /// 插入了 `from..=to` 行（撤销 = 删回）。
+    Add,
+    /// 删除了 `from..=to` 行，`text` 留有内容（撤销 = 插回）。
+    Delete,
+}
+
+/// 一条撤销记录（C `undo_t`，ed.h:87-91——C 用行节点指针保身份，本模型
+/// 用行号加内容：Delete 件把被删文本带在身上，`u` 时原样插回）。
+#[derive(Debug, Clone)]
+struct UndoEntry {
+    kind: UndoKind,
+    from: usize,
+    to: usize,
+    text: Vec<u8>,
+}
+
+/// `clear_undo_stack`（undo.c:107-120）：清栈并把现场快照进
+/// `undo_current`/`undo_last`——这条快照是 `u` 的"改动前状态"。
+/// 每个改动型命令（a/i/c/d/e/E/i/j/m/r/s/t）在动手前调用。
+fn clear_undo<S: TextStore>(store: &S, sess: &mut Session) {
+    sess.undo_stack.clear();
+    sess.undo_current = Some(sess.current);
+    sess.undo_last = Some(store.line_count());
+}
+
+/// `push_undo_stack` 的插入半（C 的 UADD，main.c:1085/1125/1203：每一行
+/// 插入记一条）。
+fn push_undo_add(sess: &mut Session, pos: usize) {
+    sess.undo_stack.push(UndoEntry {
+        kind: UndoKind::Add,
+        from: pos,
+        to: pos,
+        text: Vec::new(),
+    });
+}
+
 /// One inserted line: the store call plus the session bookkeeping C does
 /// inside `put_sbuf_line` (`main.c:1129` — every insert marks the buffer
 /// modified).
@@ -361,21 +412,110 @@ fn insert_line<S: TextStore>(
     store.insert(pos, text).map_err(map_store_error)?;
     marks_shift_up(sess, pos, 1);
     sess.modified = true;
+    push_undo_add(sess, pos);
     Ok(())
 }
 
 /// A deleted range: the store call plus `delete_lines`' bookkeeping
-/// (`main.c:1233-1235` — current drops to `from - 1`, buffer modified).
+/// (`main.c:1222` 的 UDEL 记账加 `main.c:1233-1235`——current 落到
+/// `from - 1`，缓冲已改）。删除的文本随条目带走（C 靠节点保留，这里
+/// 靠 `text`）。
 fn delete_range<S: TextStore>(
     store: &mut S,
     sess: &mut Session,
     from: usize,
     to: usize,
 ) -> Result<(), ExecError> {
+    let mut text = Vec::new();
+    let mut n = from;
+    while n <= to {
+        let mut buf = [0u8; MAX_TEXT];
+        let used = store.read_line(n, &mut buf).map_err(map_store_error)?;
+        text.extend_from_slice(&buf[..used]);
+        text.push(b'\n');
+        n += 1;
+    }
     store.delete(from, to).map_err(map_store_error)?;
     marks_delete(sess, from, to);
     sess.current = from - 1;
     sess.modified = true;
+    sess.undo_stack.push(UndoEntry {
+        kind: UndoKind::Delete,
+        from,
+        to,
+        text,
+    });
+    Ok(())
+}
+
+/// `pop_undo_stack`（undo.c:71-105）：`u` 的本体——逆序回放撤销栈，把
+/// 每条变更翻回去，然后**翻转种类、倒转栈序、互换现场快照**（第二次
+/// `u` 即重做；C 的 `type ^= 1` 加 USWAP，undo.c:117-123）。
+///
+/// 回放走裸 store 调用（不再入栈），标记按原命令同款平移/摘除；结束
+/// 后当前行与缓冲规模取自改动前快照（`u_current_addr`/`u_addr_last`）。
+fn pop_undo<S: TextStore>(store: &mut S, sess: &mut Session) -> Result<(), ExecError> {
+    // `undo_last` 是重做态的缓冲规模：回放本身把它恢复出来（C 的
+    // `addr_last = u_addr_last` 互换），这里用它做回放完整性的断言。
+    let (Some(undo_current), Some(undo_last)) = (sess.undo_current, sess.undo_last) else {
+        return Err(err("nothing to undo"));
+    };
+    // C：`else if (u_p) modified = 1;`——有账可翻就把缓冲标脏。
+    if !sess.undo_stack.is_empty() {
+        sess.modified = true;
+    }
+    let o_current = sess.current;
+    let o_last = store.line_count();
+    for i in (0..sess.undo_stack.len()).rev() {
+        let (kind, from, to) = {
+            let e = &sess.undo_stack[i];
+            (e.kind, e.from, e.to)
+        };
+        match kind {
+            UndoKind::Add => {
+                // 撤销插入：先把 `from..=to` 的现行文本收进条目（翻转后
+                // 是 Delete，重做时要用），再删回。
+                let mut text = Vec::new();
+                let mut n = from;
+                while n <= to {
+                    let mut buf = [0u8; MAX_TEXT];
+                    let used = store.read_line(n, &mut buf).map_err(map_store_error)?;
+                    text.extend_from_slice(&buf[..used]);
+                    text.push(b'\n');
+                    n += 1;
+                }
+                store.delete(from, to).map_err(map_store_error)?;
+                marks_delete(sess, from, to);
+                let e = &mut sess.undo_stack[i];
+                e.kind = UndoKind::Delete;
+                e.text = text;
+            }
+            UndoKind::Delete => {
+                // 撤销删除：把带的文本按行插回 `from`，翻成 Add。
+                let text = sess.undo_stack[i].text.clone();
+                let line_text =
+                    core::str::from_utf8(&text).map_err(|_| err("invalid content"))?;
+                let pieces = LinesOf { rest: line_text };
+                let mut pos = from;
+                let mut k = 0;
+                for piece in pieces {
+                    store.insert(pos, piece).map_err(map_store_error)?;
+                    pos += 1;
+                    k += 1;
+                }
+                marks_shift_up(sess, from, k);
+                let e = &mut sess.undo_stack[i];
+                e.kind = UndoKind::Add;
+                e.from = from;
+                e.to = from + k - 1;
+            }
+        }
+    }
+    sess.undo_stack.reverse();
+    sess.current = undo_current;
+    sess.undo_current = Some(o_current);
+    sess.undo_last = Some(o_last);
+    debug_assert_eq!(store.line_count(), undo_last, "回放应把缓冲还原到改动前规模");
     Ok(())
 }
 
@@ -825,6 +965,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             ensure_line_end(&line[cursor..])?;
             let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, sess.current), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
+            clear_undo(store, sess);
             sess.pending_input = Some(second + 1);
             sess.pending_gflag = g;
             Ok(Flow::Continue)
@@ -837,6 +978,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             }
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
+            clear_undo(store, sess);
             sess.pending_input = Some(second);
             sess.pending_gflag = g;
             Ok(Flow::Continue)
@@ -846,6 +988,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
+            clear_undo(store, sess);
             delete_range(store, sess, from, to)?;
             sess.pending_input = Some(from);
             sess.pending_gflag = g;
@@ -856,6 +999,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 .map_err(|_| err("invalid address"))?;
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
+            clear_undo(store, sess);
             delete_range(store, sess, from, to)?;
             // `INC_MOD(current_addr, addr_last)` (`ed.h:101`) then
             // `if (addr != 0)`: slide to the line after the deleted block
@@ -930,6 +1074,8 @@ fn step_inner<S: TextStore, I: EditorIo>(
             }
             let mut target_buf = [0u8; MAX_FILENAME + 1];
             let target = target_name(sess, typed, &mut target_buf)?;
+            // C 522/537：e/E 无条件清撤销栈（在删旧缓冲之前）。
+            clear_undo(store, sess);
             if count >= 1 {
                 delete_range(store, sess, 1, count)?;
             }
@@ -943,6 +1089,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             reject_glued(&modifiers, false)?;
             let (_, second) = evaluate_range_with(&range, &ctx, (sess.current, count), line, &mut probe)
                 .map_err(|_| err("invalid address"))?;
+            clear_undo(store, sess);
             let mut taken = [0u8; MAX_FILENAME + 1];
             let kind = take_filename(&line[cursor..], sess, &mut taken)?;
             let mut name_buf = [0u8; MAX_FILENAME + 1];
@@ -1085,6 +1232,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
             let len = to - from + 1;
             let mut buf = [0u8; MAX_TEXT];
             let joined = join_lines(store, from, to, &mut buf)?;
+            clear_undo(store, sess);
             if command == Command::Move {
                 if dest + 1 == from || dest == to {
                     // `move_lines`' no-op shape (`main.c:1141`): the block
@@ -1123,6 +1271,7 @@ fn step_inner<S: TextStore, I: EditorIo>(
                 &mut probe,
             )
                 .map_err(|_| err("invalid address"))?;
+            clear_undo(store, sess);
             let g = suffix_bits(&modifiers)?;
             ensure_line_end(&line[cursor..])?;
             if from != to {
@@ -1195,18 +1344,26 @@ fn step_inner<S: TextStore, I: EditorIo>(
         Command::Substitute => {
             substitute_command(store, sess, io, line, cursor, &modifiers, &range)
         }
-        Command::Global | Command::GlobalInteractive | Command::Undo | Command::Shell => {
-            match command {
-                Command::Shell if sess.secure || sess.restricted => {
-                    Err(err("shell access restricted"))
-                }
-                Command::Global | Command::GlobalInteractive => {
-                    Err(err("global commands not wired"))
-                }
-                Command::Undo => Err(err("undo not wired")),
-                _ => Err(err("shell access not wired")),
+        Command::Undo => {
+            // C main.c:794-800：地址即 "unexpected address"，后缀照读，
+            // 然后 `pop_undo_stack`——**不清栈**（清栈是改动型命令的事）。
+            if range.first.is_some() || range.second.is_some() {
+                return Err(err("unexpected address"));
             }
+            let g = suffix_bits(&modifiers)?;
+            ensure_line_end(&line[cursor..])?;
+            pop_undo(store, sess)?;
+            finish(store, sess, io, g)
         }
+        Command::Global | Command::GlobalInteractive | Command::Shell => match command {
+            Command::Shell if sess.secure || sess.restricted => {
+                Err(err("shell access restricted"))
+            }
+            Command::Global | Command::GlobalInteractive => {
+                Err(err("global commands not wired"))
+            }
+            _ => Err(err("shell access not wired")),
+        },
     }
 }
 
@@ -1386,6 +1543,7 @@ fn substitute_command<S: TextStore, I: EditorIo>(
     if sess.current == 0 && range.first.is_none() && range.second.is_none() {
         return Err(err("no match"));
     }
+    clear_undo(store, sess);
     let mut probe = StoreSearch { store, sess: &*sess };
     let (from, to) = evaluate_range_with(
         range,
@@ -1409,12 +1567,10 @@ fn substitute_command<S: TextStore, I: EditorIo>(
             // C：delete_lines(current, current) + 逐行 put_sbuf_line
             // （sub.c:148-163）；替换模板在行内不会引入换行（模板里的
             // 反斜杠换行是交互续行面，本模型的行不带换行），单行删插。
+            // 删与插都走带撤销记账的助手（UDEL + UADD，sub.c:152）。
             let text = core::str::from_utf8(&out[..len]).map_err(|_| err("invalid content"))?;
-            store.delete(n, n).map_err(map_store_error)?;
-            marks_delete(sess, n, n);
-            store.insert(n, text).map_err(map_store_error)?;
-            marks_shift_up(sess, n, 1);
-            sess.modified = true;
+            delete_range(store, sess, n, n)?;
+            insert_line(store, sess, n, text)?;
             last_changed = Some(n);
         }
         n += 1;
@@ -1892,6 +2048,85 @@ mod tests {
         );
     }
 
+    /// `u` 的撤销与重做（C undo.c:71-105 的回放与快照互换）：`d` 后
+    /// `u` 恢复行与当前行，再次 `u` 重做删除；`modified` 在撤销时回脏。
+    #[test]
+    fn test_undo_restores_delete_then_redoes() {
+        let (mut store, mut sess) = seeded(&["alpha", "beta", "gamma"]);
+        sess.current = 1;
+        step(&mut store, &mut sess, "2,3d", &mut io_none()).unwrap();
+        assert_eq!(store.line_count(), 1);
+        // 撤销：行回来，当前行回到改动前（1）。
+        step(&mut store, &mut sess, "u", &mut io_none()).unwrap();
+        assert_eq!(store.line_count(), 3);
+        let mut line = [0u8; 64];
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..4], b"beta");
+        assert_eq!(sess.current, 1, "当前行取改动前快照");
+        assert!(sess.modified, "撤销把缓冲标脏（C undo.c:91）");
+        // 重做：再删一次。
+        step(&mut store, &mut sess, "u", &mut io_none()).unwrap();
+        assert_eq!(store.line_count(), 1);
+        // 第三次 `u` 再撤销——翻转后的栈继续循环。
+        step(&mut store, &mut sess, "u", &mut io_none()).unwrap();
+        assert_eq!(store.line_count(), 3);
+    }
+
+    /// 插入的撤销（`a` 的 UADD 件）与 "nothing to undo" 起手。
+    #[test]
+    fn test_undo_restores_append_and_reports_empty() {
+        let (mut store, mut sess) = seeded(&["one"]);
+        sess.current = 1;
+        let mut io = io_none();
+        assert_eq!(
+            step(&mut store, &mut sess, "u", &mut io).unwrap_err().message,
+            "nothing to undo",
+            "未做任何改动前 `u` 拒绝（C undo.c:76-79）"
+        );
+        // `a` 插两行，`u` 一次全收掉（每行一条 UADD，回放逆序各删）。
+        step(&mut store, &mut sess, "a", &mut io).unwrap();
+        step(&mut store, &mut sess, "two", &mut io).unwrap();
+        step(&mut store, &mut sess, "three", &mut io).unwrap();
+        step(&mut store, &mut sess, ".", &mut io).unwrap();
+        assert_eq!(store.line_count(), 3);
+        step(&mut store, &mut sess, "u", &mut io).unwrap();
+        assert_eq!(store.line_count(), 1, "两行插入被整批撤销");
+        // 重做把两行放回。
+        step(&mut store, &mut sess, "u", &mut io).unwrap();
+        assert_eq!(store.line_count(), 3);
+        let mut line = [0u8; 64];
+        store.read_line(3, &mut line).unwrap();
+        assert_eq!(&line[..5], b"three");
+    }
+
+    /// 替换的撤销：原文恢复（C `search_and_replace` 的 UDEL+UADD 对，
+    /// sub.c:148-163）。
+    #[test]
+    fn test_undo_restores_substitute() {
+        let (mut store, mut sess) = seeded(&["foo boo", "keep"]);
+        sess.current = 1;
+        let mut io = io_none();
+        step(&mut store, &mut sess, "1,2s/o/0/g", &mut io).unwrap();
+        let mut line = [0u8; 64];
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..7], b"f00 b00");
+        step(&mut store, &mut sess, "u", &mut io).unwrap();
+        store.read_line(1, &mut line).unwrap();
+        assert_eq!(&line[..7], b"foo boo");
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..4], b"keep", "未替换的行不受影响");
+        // 新改动清掉旧撤销账（C：每个改动型命令先 clear_undo_stack）。
+        step(&mut store, &mut sess, "2d", &mut io).unwrap();
+        step(&mut store, &mut sess, "u", &mut io).unwrap();
+        assert_eq!(store.line_count(), 2, "撤销指向最近一次改动（d）");
+        store.read_line(2, &mut line).unwrap();
+        assert_eq!(&line[..4], b"keep");
+    }
+
+    fn io_none() -> ScriptIo {
+        ScriptIo::new()
+    }
+
     #[test]
     fn test_declared_gaps_answer_through_the_question_channel() {
         let (mut store, mut sess) = seeded(&["a"]);
@@ -1900,7 +2135,6 @@ mod tests {
             step(&mut store, &mut sess, "1,2g/p/d", &mut io).unwrap_err().message,
             "global commands not wired"
         );
-        assert_eq!(step(&mut store, &mut sess, "u", &mut io).unwrap_err().message, "undo not wired");
         assert_eq!(
             step(&mut store, &mut sess, "!ls", &mut io).unwrap_err().message,
             "shell access not wired"

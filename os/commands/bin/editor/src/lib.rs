@@ -40,12 +40,18 @@
 //! cache. File input/output also stays outside the pure logic:
 //! [`exec::EditorIo`] carries the seam, and the `ed` binary supplies the
 //! `minix_sys` production half. Everything here borrows from the input and
-//! uses fixed size buffers: no heap, `no_std` throughout.
+//! uses fixed size buffers; the one exception is the undo stack's retained
+//! deleted text (see the `extern crate alloc` note below), `no_std` throughout.
 
 pub mod addr;
 pub mod cmd;
 pub mod exec;
 pub mod store;
+
+// The undo stack (C `undo.c`'s malloc'd `ustack` plus its retained deleted
+// line nodes) is the one allocation site here: deleted line text moves to
+// `alloc` so `u` can restore it. Line storage itself stays fixed-size.
+extern crate alloc;
 
 /// Errors produced by this crate, mapped to classic Unix error numbers.
 ///
