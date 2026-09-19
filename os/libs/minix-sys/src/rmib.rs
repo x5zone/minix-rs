@@ -774,6 +774,55 @@ mod pure_tests {
     }
 }
 
+/// MIB 挂载时的描述拉取请求(C: `m_mib_lsys_info` 字段集,rmib.c:998 起)。
+pub struct RmibInfoReq {
+    /// 子树根 id。C: `root_id`。
+    pub root_id: u32,
+    /// 根节点名缓冲 grant。C: `name_grant`。
+    pub name_grant: i32,
+    /// 名缓冲大小。C: `name_size`。
+    pub name_size: usize,
+    /// 描述缓冲 grant。C: `desc_grant`。
+    pub desc_grant: i32,
+    /// 描述缓冲大小。C: `desc_size`。
+    pub desc_size: usize,
+}
+
+/// C: `rmib_info` — rmib.c:998-1035. 把子树根的名字与描述拷给 MIB 服务
+/// (挂载时 MIB 会拉一次)。名字放不下 → ENAMETOOLONG(C 同,服务编写者
+/// 的错);描述超长按 desc_size 截断(C rmib.c:1030-1032);无描述拷
+/// 空串。成功返回 OK(C 的返回值即最后一次 safecopy 的结果)。
+pub fn rmib_info(
+    table: &SubtreeTable,
+    req: &RmibInfoReq,
+    io: &mut dyn RmibIo,
+) -> Result<(), i32> {
+    let slot = table.slots.get(req.root_id as usize).ok_or(minix_types::ENOENT)?;
+    let root = slot.tree.as_ref().ok_or(minix_types::ENOENT)?;
+
+    // C rmib.c:1007-1011 — 名字(含 NUL)必须放得下。
+    let mut name = Vec::with_capacity(root.name.len() + 1);
+    name.extend_from_slice(root.name.as_bytes());
+    name.push(0);
+    if name.len() > req.name_size {
+        return Err(minix_types::ENAMETOOLONG);
+    }
+    io.copyout(&name, req.name_grant, 0)?;
+
+    // C rmib.c:1014-1032 — 无描述拷空串;超长截断到 desc_size。
+    let mut desc: Vec<u8> = Vec::new();
+    match &root.desc {
+        Some(d) => {
+            desc.extend_from_slice(d.as_bytes());
+            desc.push(0);
+        }
+        None => desc.push(0),
+    }
+    let dsize = desc.len().min(req.desc_size);
+    io.copyout(&desc[..dsize], req.desc_grant, 0)?;
+    Ok(())
+}
+
 // ── E-RMIBWIRE 2/2:rmib_call 遍历、叶读写、注册簿记 ──
 //
 // C: rmib_call(rmib.c:678-824)、rmib_getptr(:482-516)、rmib_read
