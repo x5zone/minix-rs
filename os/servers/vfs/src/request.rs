@@ -496,6 +496,15 @@ pub fn encode_read(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
     msg
 }
 
+/// `REQ_WRITE` 请求（与 [`encode_read`] 同载荷，方向相反：FS 从用户缓冲
+/// **读**数据，故 grant 权限位是 `CPF_READ` — C `req_readwrite_actual`
+/// request.c:846-848 的 `rw_flag==READING ? CPF_WRITE : CPF_READ`）。
+pub fn encode_write(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
+    let mut msg = encode_read(ino, grant, pos, nbytes);
+    msg.m_type = minix_types::REQ_WRITE;
+    msg
+}
+
 /// `REQ_STAT` 请求（C `req_stat_actual` — request.c:1087-1096）：载荷只有
 /// `{inode, grant}` 两域，FS 把 `struct stat` 直接写进 grant 指向的用户缓冲。
 ///
@@ -916,6 +925,17 @@ mod tests {
             &raw[minix_types::stat_req_off::GRANT..minix_types::stat_req_off::GRANT + 4],
         );
         assert_eq!(i32::from_le_bytes(b4), 42);
+    }
+
+    /// `REQ_WRITE`：与读同载荷，只换请求号（方向差在 grant 权限位上）。
+    #[test]
+    fn test_encode_write_shares_read_layout() {
+        let w = encode_write(0x11, 9, 0x20, 8);
+        let r = encode_read(0x11, 9, 0x20, 8);
+        assert_eq!(w.m_type, minix_types::REQ_WRITE);
+        assert_eq!(r.m_type, minix_types::REQ_READ);
+        // SAFETY(test): 两边的负载字节应逐位相同（只有 m_type 不同）。
+        assert_eq!(unsafe { w.m_u.raw }, unsafe { r.m_u.raw });
     }
 
     /// `REQ_READ` 编码：四个域（inode/seek_pos/grant/nbytes）落在共享偏移表上。

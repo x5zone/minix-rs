@@ -21,6 +21,19 @@ use crate::vnode::VnodeId;
 ///
 /// 解码约定：`lc_vfs_*` 消息布局按 C `ipc.h` 的字段偏移，经 `Message`
 /// 的 M7 视图读取（`off_t` 由相邻两个 `i32` 拼回，低 32 位在前）。
+/// 传输的起始位置：`O_APPEND` 时取文件大小（C read.c:234），否则取 filp
+/// 位置（:145 的 `position = f->filp_pos`）。
+///
+/// 抽成纯函数是因为它在本拍的两条门（grant/挂载）之前生效，宿主构建下
+/// 走不到后面的登记，只有这里能测——同时把 C 的两个来源摆在一处。
+pub(crate) const fn transfer_position(flags: i32, filp_pos: i64, vnode_size: u64) -> i64 {
+    if (flags as u32) & crate::fcntl::O_APPEND != 0 {
+        vnode_size as i64
+    } else {
+        filp_pos
+    }
+}
+
 pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult {
     let msg = state.current_message;
     // 联合体读取与 C 的 union 语义一致（VfsPmInit decode 同款惯例）。
@@ -142,7 +155,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        VfsCallNum::Write
         | VfsCallNum::Open
         | VfsCallNum::Creat
         | VfsCallNum::Mkdir
@@ -234,7 +246,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             let Some(fp_slot) = state.current_fp_slot else {
                 return SyscallResult::Error(minix_types::EINVAL);
             };
-            let (filp_idx, fs_e, ino, mode, orig_pos) = {
+            let (filp_idx, fs_e, ino, mode, orig_pos, vnode_idx) = {
                 let fp = match state.fproc_table.get(fp_slot) {
                     Some(fp) => fp,
                     None => return SyscallResult::Error(minix_types::EINVAL),
@@ -255,7 +267,14 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     Some(v) => v,
                     None => return SyscallResult::Error(minix_types::EBADF),
                 };
-                (filp_idx, vnode.fs, vnode.ino, vnode.mode, filp.pos)
+                (
+                    filp_idx,
+                    vnode.fs,
+                    vnode.ino,
+                    vnode.mode,
+                    filp.pos,
+                    vnode_idx,
+                )
             };
             // C 按 `vp->v_mode` 分派（read.c:154-231）：本拍只服务常规文件。
             if mode & crate::open::S_IFMT != crate::open::S_IFREG {
@@ -296,10 +315,122 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             };
             let req = crate::request::encode_read(ino, grant, orig_pos, len as usize);
             if let Some(wp) = state.worker_pool.get_mut(worker) {
-                wp.cont = Some(crate::worker::WorkerCont::Read {
+                wp.cont = Some(crate::worker::WorkerCont::Transfer {
                     grant,
                     filp: filp_idx,
+                    vnode: vnode_idx,
                     orig_pos,
+                    write: false,
+                });
+            }
+            state.pending_fs = Some(crate::main_loop::PendingFs {
+                vmnt: vmnt_id.0,
+                fs_e,
+                worker,
+                grant,
+                user: user_e,
+                req,
+            });
+            SyscallResult::Suspend
+        }
+
+        // ── 对话臂模板：write（常规文件；管道/字符/块各有其臂）──
+        VfsCallNum::Write => {
+            // C `do_write` → `read_write(WRITING)`（read.c:141-265）：位置取
+            // filp（:145），**`O_APPEND` 时位置改取 vnode 大小**（:234）→
+            // `req_readwrite`（grant 是 FS 从用户缓冲读的 magic grant，
+            // `CPF_READ|CPF_TRY`）→ 回复带新位置与实际字节数，并且写方向
+            // 要按新位置抬高 vnode 大小（:255-259，续接体里做）。
+            let (fd, buf, len) = {
+                // 载荷与读同形（minix-sys `write_via` 用同一个
+                // ReadWritePayload：fd@0、buf@8、len@16）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let buf = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                (fd, buf, u64::from_le_bytes(b8))
+            };
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            // C read.c:150 的同一条门（读写在 C 里共用一个函数）。
+            if len > i64::MAX as u64 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (filp_idx, fs_e, ino, mode, orig_pos, vnode_idx) = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let filp = match state.filp_table.get(crate::filp::FilpId(filp_idx)) {
+                    Some(f) => f,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode_idx = match filp.vnode {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                // C read.c:234 —— `O_APPEND` 时位置改取当前文件大小。
+                let pos = transfer_position(filp.flags, filp.pos, vnode.size);
+                (filp_idx, vnode.fs, vnode.ino, vnode.mode, pos, vnode_idx)
+            };
+            // 类型分派同读（本拍只服务常规文件）。
+            if mode & crate::open::S_IFMT != crate::open::S_IFREG {
+                return SyscallResult::Nosys;
+            }
+            let vmnt_id = match state.vmnt_table.find_by_fs(fs_e) {
+                Some(v) => v,
+                None => return SyscallResult::Error(minix_types::EIO),
+            };
+            let fs_flags = state
+                .vmnt_table
+                .get(vmnt_id)
+                .map(|v| v.fs_flags)
+                .unwrap_or(0);
+            if fs_flags & crate::request::FsFlags::IS64BIT.bits() == 0 && orig_pos > i32::MAX as i64 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // magic grant：写方向＝FS 从用户缓冲读（`CPF_READ`）。
+            let grant = match state.grant_user_buffer(
+                fs_e,
+                user_e,
+                buf,
+                len,
+                minix_types::CpFlags::READ | minix_types::CpFlags::TRY,
+            ) {
+                Ok(g) => g,
+                Err(_) => return SyscallResult::Error(minix_types::EIO),
+            };
+            let req = crate::request::encode_write(ino, grant, orig_pos, len as usize);
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Transfer {
+                    grant,
+                    filp: filp_idx,
+                    vnode: vnode_idx,
+                    orig_pos,
+                    write: true,
                 });
             }
             state.pending_fs = Some(crate::main_loop::PendingFs {
@@ -492,6 +623,87 @@ mod tests {
         state.current_fp_slot = Some(slot);
         state.initialized = true;
         state
+    }
+
+    /// `transfer_position`：C 的两个位置来源（read.c:145/:234）。
+    #[test]
+    fn test_transfer_position_sources() {
+        // 无 O_APPEND：取 filp 位置。
+        assert_eq!(transfer_position(0, 0x1000, 0x9000), 0x1000);
+        // 有 O_APPEND：取文件大小（追加写）。
+        assert_eq!(
+            transfer_position(
+                crate::fcntl::O_APPEND as i32,
+                0x1000,
+                0x9000
+            ),
+            0x9000
+        );
+        // 空文件 + O_APPEND：位置 0。
+        assert_eq!(transfer_position(crate::fcntl::O_APPEND as i32, 0x1000, 0), 0);
+    }
+
+    /// `Write` 臂（模板的第三个）：门序与类型分支同 Read；追加位置见
+    /// `transfer_position`，写入后的文件大小更新在续接体（见 main_loop 的
+    /// 续接测试）。
+    #[test]
+    fn test_dispatch_write_gates_and_type_branch() {
+        use minix_types::Endpoint;
+
+        let write_msg = |fd: i32, buf: u64, len: u64| {
+            let mut m = Message::default();
+            m.m_source = Endpoint::from_generation_slot(1, 0);
+            m.m_type = VfsCallNum::Write as i32;
+            // SAFETY: write 载荷 fd@0、buf@8、len@16（minix-sys write_via 同布局）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&buf.to_le_bytes());
+                raw[16..24].copy_from_slice(&len.to_le_bytes());
+            }
+            m
+        };
+
+        let mut state = seeded(100);
+        state.current_message = write_msg(-1, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Write),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+        state.current_message = write_msg(3, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Write),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 9;
+            v.mode = crate::open::S_IFCHR | 0o644;
+        }
+        state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap().vnode = Some(vid.get());
+        state.current_message = write_msg(3, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Write),
+            SyscallResult::Nosys,
+            "字符设备分支未接线"
+        );
+
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFREG | 0o644;
+        state.current_message = write_msg(3, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Write),
+            SyscallResult::Error(minix_types::EIO),
+            "常规文件：无 vmnt → EIO"
+        );
     }
 
     /// `Read` 臂（模板的第二个）：门序照 C `read_write` —— 负 fd / 无 filp
@@ -771,10 +983,10 @@ mod tests {
     #[test]
     fn test_dispatch_fs_dialogue_arms_nosys() {
         // FS/驱动对话臂：未接线的仍 fail-closed Nosys（诚实契约，模式 60）。
-        // `Read` 与 `Fstat` 已按模板接线（走各自的门），这里取还没接的
-        // `Write` 作代表——它同属"FS 对话族"。
+        // `Read`/`Write`/`Fstat` 已按模板接线（走各自的门），这里取还没接的
+        // `Open` 作代表——它同属"FS 对话族"，且要等 W7 的 path 往返。
         let mut state = seeded(100);
-        let call = VfsCallNum::Write;
+        let call = VfsCallNum::Open;
         state.current_message = Message {
             m_source: Endpoint::from_generation_slot(1, 0),
             m_type: call as i32,

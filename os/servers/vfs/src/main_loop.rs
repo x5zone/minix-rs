@@ -794,7 +794,13 @@ impl VfsState {
                 crate::worker::WorkerCont::Fstat { grant } => {
                     let _ = self.revoke_grant(grant);
                 }
-                crate::worker::WorkerCont::Read { grant, filp, orig_pos } => {
+                crate::worker::WorkerCont::Transfer {
+                    grant,
+                    filp,
+                    vnode,
+                    orig_pos,
+                    write,
+                } => {
                     let _ = self.revoke_grant(grant);
                     if status == 0 {
                         // C `req_readwrite_actual` 的成功半：从**回复**取
@@ -816,6 +822,17 @@ impl VfsState {
                         let nbytes = i64::from_le_bytes(b8);
                         if let Some(f) = self.filp_table.get_mut(crate::filp::FilpId(filp)) {
                             f.pos = new_pos;
+                        }
+                        // C read.c:255-259 —— 写方向且是常规文件/目录时，
+                        // 新位置越过旧大小即抬高（读方向不动大小）。
+                        if write
+                            && let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode))
+                            && (v.mode & crate::open::S_IFMT == crate::open::S_IFREG
+                                || v.mode & crate::open::S_IFMT == crate::open::S_IFDIR)
+                            && new_pos > 0
+                            && (new_pos as u64) > v.size
+                        {
+                            v.size = new_pos as u64;
                         }
                         status = nbytes as i32;
                         let _ = orig_pos; // 位置已由回复给出，原值只作对账
@@ -1363,6 +1380,96 @@ mod tests {
         m
     }
 
+    /// 续接层的**写**分支：除位置推进外还要按 C read.c:255-259 抬高
+    /// vnode 大小（位置越过旧大小才动；读方向不动大小）。
+    #[test]
+    fn test_worker_continuation_write_raises_vnode_size() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.mode = crate::open::S_IFREG | 0o644;
+            v.size = 0x100; // 旧大小
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let mut reply = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 按 transfer_reply_off 填回复（写 0x40 字节到 0x140）。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::transfer_reply_off::SEEK_POS
+                ..minix_types::transfer_reply_off::SEEK_POS + 8]
+                .copy_from_slice(&0x140i64.to_le_bytes());
+            raw[minix_types::transfer_reply_off::NBYTES
+                ..minix_types::transfer_reply_off::NBYTES + 8]
+                .copy_from_slice(&0x40u64.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Transfer {
+                grant: 4,
+                filp: fid.get(),
+                vnode: vid.get(),
+                orig_pos: 0x100,
+                write: true,
+            });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+
+        assert_eq!(
+            state.vnode_table.get(vid).unwrap().size,
+            0x140,
+            "写方向：新位置越过旧大小 → 抬高 vnode 大小（C read.c:255-259）"
+        );
+        assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x140);
+        assert_eq!(state.take_reply(), Some((user, 0x40)));
+
+        // 反向对照：新位置**未**越过旧大小 → 大小不动。
+        let idx2 = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        let mut reply2 = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 位置 0x110（小于当前 0x140），写 0x10 字节。
+        unsafe {
+            let raw = &mut reply2.m_u.raw;
+            raw[minix_types::transfer_reply_off::SEEK_POS
+                ..minix_types::transfer_reply_off::SEEK_POS + 8]
+                .copy_from_slice(&0x110i64.to_le_bytes());
+            raw[minix_types::transfer_reply_off::NBYTES
+                ..minix_types::transfer_reply_off::NBYTES + 8]
+                .copy_from_slice(&0x10u64.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx2).unwrap();
+            wp.cont = Some(WorkerCont::Transfer {
+                grant: 5,
+                filp: fid.get(),
+                vnode: vid.get(),
+                orig_pos: 0x100,
+                write: true,
+            });
+            wp.sendrec = Some(reply2);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(state.vnode_table.get(vid).unwrap().size, 0x140, "大小不回退");
+        let _ = state.take_reply();
+    }
+
     /// 续接层的 Read 分支：从回复取 `seek_pos`/`nbytes`（C `mess_fs_vfs_readwrite`
     /// 的共享偏移表），位置写回 filp，**状态＝实际读到的字节数**（C 的
     /// `cum_io`），槽释放。
@@ -1379,6 +1486,7 @@ mod tests {
         }
         let fid = state.filp_table.alloc_filp(0o644).unwrap();
         state.filp_table.get_mut(fid).unwrap().pos = 0x1000;
+        let vid = state.vnode_table.alloc().unwrap();
 
         let idx = state
             .worker_pool
@@ -1398,7 +1506,13 @@ mod tests {
         }
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.cont = Some(WorkerCont::Read { grant: 3, filp: fid.get(), orig_pos: 0x1000 });
+            wp.cont = Some(WorkerCont::Transfer {
+                grant: 3,
+                filp: fid.get(),
+                vnode: vid.get(),
+                orig_pos: 0x1000,
+                write: false,
+            });
             wp.sendrec = Some(reply);
             wp.state = crate::worker::WorkerState::Busy;
         }

@@ -86,15 +86,21 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
-    /// `Read`（`do_read` → `REQ_READ`）：回复的 `nbytes`/`seek_pos` 要写回
-    /// filp 位置，状态是"读到多少字节"（C read.c 的 `cum_io`）。
-    Read {
+    /// `Read`/`Write`（`REQ_READ`/`REQ_WRITE`）：回复的
+    /// `seek_pos`/`nbytes` 要写回 filp 位置，状态是实际传输的字节数
+    /// （C read.c 的 `cum_io`）；写方向还要按 C read.c:255-259 更新
+    /// vnode 大小（位置越过旧大小即抬高）。
+    Transfer {
         /// 已发给 FS 的 magic grant。
         grant: i32,
         /// 目标 filp 下标（位置推进要写回它）。
         filp: usize,
+        /// 目标 vnode 下标（写方向的大小更新要回写它）。
+        vnode: usize,
         /// 请求时的位置（C 的 `position`，回复里给的是新位置）。
         orig_pos: i64,
+        /// 方向：`true` = 写（要更新 vnode 大小），`false` = 读。
+        write: bool,
     },
 }
 
