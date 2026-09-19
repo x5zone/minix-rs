@@ -25,7 +25,7 @@ use alloc::vec;
 
 use minix_fs::driver::FsDriver;
 use minix_fs::protocol::{CapabilityFlags, FileNode, MountFlags};
-use minix_types::{EIO, ENOSPC, EPERM, EINVAL, ENOENT, ENOTEMPTY, Errno, Stat};
+use minix_types::{EIO, ENOSPC, EPERM, EINVAL, ENOENT, Errno, Stat};
 
 use crate::dir;
 use crate::inode::{self, DiskInode};
@@ -353,7 +353,6 @@ impl Ext2Server {
         name: &str,
     ) -> Result<(dir::Entry, SlotPos, Option<SlotPos>), Errno> {
         let inode = self.read_inode(directory)?;
-        let size = inode.size as usize;
         let block_size = self.geometry.block_size as usize;
         let blocks = u64::from(inode.size).div_ceil(u64::from(self.geometry.block_size)) as usize;
         let mut prev: Option<SlotPos> = None;
@@ -392,7 +391,7 @@ impl Ext2Server {
         name: &[u8],
     ) -> Result<(), Errno> {
         let needed = dir::actual_size(name.len());
-        let mut record = self.read_inode(directory)?;
+        let record = self.read_inode(directory)?;
         let block_size = self.geometry.block_size as usize;
         let blocks = u64::from(record.size).div_ceil(u64::from(self.geometry.block_size)) as usize;
 
@@ -456,7 +455,7 @@ impl Ext2Server {
         let new_block = self.alloc_block()?;
         let mut record_ref = self.read_inode(directory)?;
         record_ref.blocks[blocks] = new_block as u32;
-        record_ref.size += self.geometry.block_size as u32;
+        record_ref.size += self.geometry.block_size;
         self.write_inode_back(directory, &record_ref);
         self.cache.insert(directory, record_ref);
         let at = new_block as usize * block_size;
@@ -512,7 +511,7 @@ impl Ext2Server {
     /// 释放一个 inode：清 inode 位图位、零化表内记录、空闲计数回加
     /// （C `free_bit` IMAP 半）。调用方先释放数据块。
     fn free_inode(&mut self, number: u32) -> Result<(), Errno> {
-        let group = ((number - 1) / self.inodes_per_group) as u32;
+        let group = (number - 1) / self.inodes_per_group;
         let index = (number - 1) % self.inodes_per_group;
         let descriptor = self.group_descriptor(group)?;
         let bitmap_block = descriptor.inode_bitmap as u64;
@@ -902,7 +901,6 @@ impl FsDriver for Ext2Server {
         }
         let number = inode as u32;
         let inode = self.read_inode(number)?;
-        let size = inode.size as usize;
         let block_size = self.geometry.block_size as usize;
         let mut cursor = *position as usize;
         let mut staging = alloc::vec![0u8; capacity.max(1)];
@@ -956,7 +954,9 @@ impl FsDriver for Ext2Server {
         }
         let delivered = encoder.finish()?;
         if !done {
-            *position = size as i64;
+            // 未提前结束：位置推进到目录尾（块数 × 块大小）。
+            let blocks = u64::from(inode.size).div_ceil(u64::from(self.geometry.block_size)) as usize;
+            *position = (blocks as u64 * u64::from(self.geometry.block_size)) as i64;
         } else {
             *position = cursor as i64;
         }
@@ -1004,7 +1004,7 @@ impl FsDriver for Ext2Server {
             record.uid = owner as u16;
             record.gid = group as u16;
             record.links = 2;
-            let data_block = self.alloc_block()? as u64;
+            let data_block = self.alloc_block()?;
             record.blocks[0] = data_block as u32;
             record.size = self.geometry.block_size;
             self.write_inode_back(number, &record);
@@ -1153,14 +1153,12 @@ impl FsDriver for Ext2Server {
             record.gid = group as u16;
             record.size = target.len() as u32;
             if target.len() < 60 {
-                // 快速符号链接：目标直接写进指针区的 60 字节。
-                let base = unsafe {
-                    core::ptr::addr_of_mut!(record.blocks) as *mut u8
-                };
-                for (offset, byte) in target.iter().enumerate() {
-                    unsafe {
-                        core::ptr::write(base.add(offset), *byte);
-                    }
+                // 快速符号链接：目标直接写进指针区的 60 字节。按 u32 槽
+                // 组装，避开裸指针。
+                for (index, chunk) in target.chunks(4).enumerate() {
+                    let mut word = [0u8; 4];
+                    word[..chunk.len()].copy_from_slice(chunk);
+                    record.blocks[index] = u32::from_le_bytes(word);
                 }
             } else {
                 let data_block = self.alloc_block()?;
@@ -1185,16 +1183,12 @@ impl FsDriver for Ext2Server {
         let record = self.read_inode(inode as u32)?;
         let length = record.size as usize;
         let bytes: Vec<u8> = if length < 60 {
-            // SAFETY: the pointer area's raw bytes carry the fast-symlink
-            // target (C convention: `inode.i_block` doubles as the buffer).
-            let base = unsafe {
-                core::ptr::addr_of!(record.blocks) as *const u8
-            };
+            // 快速符号链接：目标住在指针区的 60 字节里，按 u32 槽展开。
             let mut target = Vec::new();
-            for offset in 0..length {
-                // SAFETY: within the 60-byte pointer area.
-                target.push(unsafe { core::ptr::read(base.add(offset)) });
+            for word in &record.blocks {
+                target.extend_from_slice(&word.to_le_bytes());
             }
+            target.truncate(length);
             target
         } else {
             let data_block = u64::from(record.blocks[0]);
