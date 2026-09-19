@@ -578,7 +578,13 @@ fn build_boot_image(
 /// C: `do_getinfo()` — do_getinfo.c
 ///
 /// Query kernel information. Various sub-requests return different data.
-pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTable, proc_table: &mut crate::proc_table::ProcessTable, clock_state: &ClockState) -> KcallResult {
+pub fn dispatch_getinfo(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+    clock_state: &ClockState,
+) -> KcallResult {
     let gi = msg_getinfo(msg);
     // C: do_getinfo.c:22-24 — extract parameters
     let request = gi.request;       // m_lsys_krn_sys_getinfo.request
@@ -592,25 +598,25 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
     };
 
     match req {
-        GetInfoRequest::WhoAmI => getinfo_whoami(caller, msg, priv_table),
-        GetInfoRequest::KInfo => getinfo_kinfo(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::Proc => getinfo_proc(caller, proc_table, val_ptr, val_len, val_len2_e),
-        GetInfoRequest::ProcTab => getinfo_proc_tab(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::PrivTab => getinfo_priv_tab(caller, proc_table, priv_table, val_ptr, val_len),
-        GetInfoRequest::LoadInfo => getinfo_load_info(caller, proc_table, clock_state, val_ptr, val_len),
-        GetInfoRequest::Priv => getinfo_priv(caller, proc_table, priv_table, val_ptr, val_len, val_len2_e),
-        GetInfoRequest::Regs => getinfo_regs(caller, proc_table, val_ptr, val_len, val_len2_e),
-        GetInfoRequest::CpuTicks => getinfo_cpu_ticks(caller, proc_table, val_len2_e, val_ptr, val_len),
-        GetInfoRequest::Hz => getinfo_hz(caller, proc_table, clock_state, val_ptr, val_len),
-        GetInfoRequest::Machine => getinfo_machine(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::CpuInfo => getinfo_cpu_info(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::IrqActids => getinfo_irq_actids(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::IdleTsc => getinfo_idle_tsc(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::Randomness => getinfo_randomness(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::RandomnessBin => getinfo_randomness_bin(caller, proc_table, val_len2_e, val_ptr, val_len),
-        GetInfoRequest::IrqHooks => getinfo_irq_hooks(caller, proc_table, val_ptr, val_len),
-        GetInfoRequest::KMessages => crate::kmess::copy_snapshot_to_caller(caller.p_nr, proc_table, val_ptr, val_len),
-        GetInfoRequest::Image => getinfo_image(caller, proc_table, val_ptr, val_len),
+        GetInfoRequest::WhoAmI => getinfo_whoami(caller_nr, proc_table, msg, priv_table),
+        GetInfoRequest::KInfo => getinfo_kinfo(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::Proc => getinfo_proc(caller_nr, proc_table, val_ptr, val_len, val_len2_e),
+        GetInfoRequest::ProcTab => getinfo_proc_tab(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::PrivTab => getinfo_priv_tab(caller_nr, proc_table, priv_table, val_ptr, val_len),
+        GetInfoRequest::LoadInfo => getinfo_load_info(caller_nr, proc_table, clock_state, val_ptr, val_len),
+        GetInfoRequest::Priv => getinfo_priv(caller_nr, proc_table, priv_table, val_ptr, val_len, val_len2_e),
+        GetInfoRequest::Regs => getinfo_regs(caller_nr, proc_table, val_ptr, val_len, val_len2_e),
+        GetInfoRequest::CpuTicks => getinfo_cpu_ticks(caller_nr, proc_table, val_len2_e, val_ptr, val_len),
+        GetInfoRequest::Hz => getinfo_hz(caller_nr, proc_table, clock_state, val_ptr, val_len),
+        GetInfoRequest::Machine => getinfo_machine(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::CpuInfo => getinfo_cpu_info(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::IrqActids => getinfo_irq_actids(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::IdleTsc => getinfo_idle_tsc(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::Randomness => getinfo_randomness(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::RandomnessBin => getinfo_randomness_bin(caller_nr, proc_table, val_len2_e, val_ptr, val_len),
+        GetInfoRequest::IrqHooks => getinfo_irq_hooks(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::KMessages => crate::kmess::copy_snapshot_to_caller(caller_nr, proc_table, val_ptr, val_len),
+        GetInfoRequest::Image => getinfo_image(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::MonParams => getinfo_mon_params(),
     }
 }
@@ -620,8 +626,15 @@ pub fn dispatch_getinfo(caller: &mut KProcess, msg: &mut Message, priv_table: &P
 /// C: do_getinfo.c:132-141 — GET_WHOAMI
 /// This is special: it writes directly into the reply message,
 /// no data_copy_vmcheck needed.
-fn getinfo_whoami(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTable) -> KcallResult {
-    let (privflags, initflags) = caller.priv_id
+fn getinfo_whoami(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &mut Message,
+    priv_table: &PrivTable,
+) -> KcallResult {
+    let (privflags, initflags) = proc_table
+        .get(caller_nr)
+        .and_then(|c| c.priv_id)
         .and_then(|pid| priv_table.get(pid))
         // C: do_getinfo.c:139 — `privflags = priv(caller)->s_flags` (u16
         // wire width); to_wire strips the kernel-only extension bits.
@@ -629,7 +642,10 @@ fn getinfo_whoami(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTab
         .unwrap_or((0, 0));
 
     let mut name_buf = [0u8; 44];
-    let src_bytes = caller.p_name.as_bytes();
+    let src_bytes = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_name.as_bytes())
+        .expect("getinfo_whoami: caller slot must exist");
     let copy_len = src_bytes.len().min(43); // leave room for NUL
     name_buf[..copy_len].copy_from_slice(&src_bytes[..copy_len]);
 
@@ -638,7 +654,10 @@ fn getinfo_whoami(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTab
     // guarantees the `m_krn_lsys_sys_getwhoami` variant is active.
     // `#[repr(C)]` union write is sound.
     msg.m_u.m_krn_lsys_sys_getwhoami = MessKrnLsysSysGetwhoami {
-        endpt: caller.p_endpoint.get(),
+        endpt: proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.get())
+            .expect("getinfo_whoami: caller slot must exist"),
         privflags,
         initflags,
         name: name_buf,
@@ -654,7 +673,12 @@ fn getinfo_whoami(caller: &mut KProcess, msg: &mut Message, priv_table: &PrivTab
 /// diverged from the C struct-copy contract; E-ISPROD replaced it with a
 /// [`KinfoStruct`] copy (used-fields subset, minix-types single authority
 /// — field order preserves C kinfo relative order).
-fn getinfo_kinfo(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_kinfo(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let (user_sp, freepde_start, vir_kern_start) = crate::kernel_info()
         .map(|ki| {
             (
@@ -676,7 +700,7 @@ fn getinfo_kinfo(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proc
         version: str_to_kinfo_field(minix_types::OS_VERSION),
         _padding: [0; 4],
     };
-    copy_struct_to_caller(caller.p_nr, proc_table, &info, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &info, val_ptr, val_len)
 }
 
 /// Copy a release/version string into the C `char[6]` kinfo field
@@ -694,9 +718,18 @@ fn str_to_kinfo_field(s: &str) -> [u8; 6] {
 /// C: do_getinfo.c:107-114 — copy single process table entry.
 /// C: nr_e = (val_len2_e == SELF) ? caller->p_endpoint : val_len2_e
 /// C: if(!isokendpt(nr_e, &nr)) return EINVAL
-fn getinfo_proc(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32, val_len2_e: i32) -> KcallResult {
+fn getinfo_proc(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+    val_len2_e: i32,
+) -> KcallResult {
     let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
-        caller.p_endpoint.0
+        proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.0)
+            .expect("getinfo: caller slot must exist")
     } else {
         val_len2_e
     };
@@ -711,7 +744,7 @@ fn getinfo_proc(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proce
     let info = proc_table.get(target_nr)
         .map(ProcInfoStruct::from_kprocess)
         .unwrap_or_default();
-    copy_struct_to_caller(caller.p_nr, proc_table, &info, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &info, val_ptr, val_len)
 }
 
 /// GET_PROCTAB — copy the entire process table (chunked per-entry copies).
@@ -720,15 +753,26 @@ fn getinfo_proc(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proce
 /// NR_PROCS + NR_TASKS entries; each copied separately to avoid
 /// a large stack buffer (261 * sizeof(ProcInfoStruct) ≈ 27KB,
 /// which would overflow the typical 8-16KB kernel stack).
-fn getinfo_proc_tab(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_proc_tab(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let total = NR_PROCS + NR_TASKS;
     let elem_size = core::mem::size_of::<ProcInfoStruct>();
     let length = total * elem_size;
     if val_len > 0 && (length as i64) > (val_len as i64) {
         return KcallResult::Ok(E2BIG);
     }
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("getinfo: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("getinfo: caller slot must exist");
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
                 Some(caller_cr3)
@@ -753,7 +797,7 @@ fn getinfo_proc_tab(caller: &mut KProcess, proc_table: &mut crate::proc_table::P
             endpoint: caller_endpt,
             offset: VirBytes(val_ptr + (i * elem_size) as u64),
         };
-        match write_to_process_vmcheck(caller.p_nr, proc_table, src, dst, proc_cr3) {
+        match write_to_process_vmcheck(caller_nr, proc_table, src, dst, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => continue,
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -767,15 +811,27 @@ fn getinfo_proc_tab(caller: &mut KProcess, proc_table: &mut crate::proc_table::P
 /// C: do_getinfo.c:132-150 — copy privilege table.
 /// NR_SYS_PROCS entries; each copied separately (same chunked
 /// approach as GET_PROCTAB to keep stack usage bounded).
-fn getinfo_priv_tab(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_priv_tab(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    priv_table: &PrivTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let total = crate::kpriv::NR_SYS_PROCS;
     let elem_size = core::mem::size_of::<PrivInfoStruct>();
     let length = total * elem_size;
     if val_len > 0 && (length as i64) > (val_len as i64) {
         return KcallResult::Ok(E2BIG);
     }
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("getinfo: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("getinfo: caller slot must exist");
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
                 Some(caller_cr3)
@@ -798,7 +854,7 @@ fn getinfo_priv_tab(caller: &mut KProcess, proc_table: &mut crate::proc_table::P
             endpoint: caller_endpt,
             offset: VirBytes(val_ptr + (i * elem_size) as u64),
         };
-        match write_to_process_vmcheck(caller.p_nr, proc_table, src, dst, proc_cr3) {
+        match write_to_process_vmcheck(caller_nr, proc_table, src, dst, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => continue,
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
@@ -810,7 +866,13 @@ fn getinfo_priv_tab(caller: &mut KProcess, proc_table: &mut crate::proc_table::P
 /// GET_LOADINFO — copy the load-average history window.
 ///
 /// C: do_getinfo.c:71-75 — copy load info
-fn getinfo_load_info(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, clock_state: &ClockState, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_load_info(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    clock_state: &ClockState,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let history = clock_state.load_history();
     let mut loadinfo = LoadInfoStruct {
         proc_load_history: [0u16; 150],
@@ -822,16 +884,26 @@ fn getinfo_load_info(caller: &mut KProcess, proc_table: &mut crate::proc_table::
     for (i, hist_val) in history.iter().take(n).enumerate() {
         loadinfo.proc_load_history[i] = *hist_val;
     }
-    copy_struct_to_caller(caller.p_nr, proc_table, &loadinfo, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &loadinfo, val_ptr, val_len)
 }
 
 /// GET_PRIV — copy a single privilege structure.
 ///
 /// C: do_getinfo.c:115-122 — copy single privilege structure.
 /// Same endpoint validation as GET_PROC.
-fn getinfo_priv(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, priv_table: &PrivTable, val_ptr: u64, val_len: i32, val_len2_e: i32) -> KcallResult {
+fn getinfo_priv(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    priv_table: &PrivTable,
+    val_ptr: u64,
+    val_len: i32,
+    val_len2_e: i32,
+) -> KcallResult {
     let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
-        caller.p_endpoint.0
+        proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.0)
+            .expect("getinfo: caller slot must exist")
     } else {
         val_len2_e
     };
@@ -847,7 +919,7 @@ fn getinfo_priv(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proce
         .and_then(|pid| priv_table.get(pid))
         .map(PrivInfoStruct::from_kpriv)
         .unwrap_or_default();
-    copy_struct_to_caller(caller.p_nr, proc_table, &info, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &info, val_ptr, val_len)
 }
 
 /// GET_REGS — copy the target's CPU context as raw bytes.
@@ -855,9 +927,18 @@ fn getinfo_priv(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proce
 /// C: do_getinfo.c:123-131 — copy general process registers (p_reg).
 /// The register state is arch-private (CurrentCpuContext). Expose
 /// it as raw bytes, matching C's `sizeof(p->p_reg)` behavior.
-fn getinfo_regs(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32, val_len2_e: i32) -> KcallResult {
+fn getinfo_regs(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+    val_len2_e: i32,
+) -> KcallResult {
     let target_ep = if val_len2_e == minix_types::Endpoint::SELF.0 {
-        caller.p_endpoint.0
+        proc_table
+            .get(caller_nr)
+            .map(|c| c.p_endpoint.0)
+            .expect("getinfo: caller slot must exist")
     } else {
         val_len2_e
     };
@@ -883,8 +964,14 @@ fn getinfo_regs(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proce
     if val_len > 0 && (reg_size as i64) > (val_len as i64) {
         return KcallResult::Ok(E2BIG);
     }
-    let caller_endpt = caller.p_endpoint;
-    let caller_cr3 = caller.p_seg.phys_root;
+    let caller_endpt = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_endpoint)
+        .expect("getinfo: caller slot must exist");
+    let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("getinfo: caller slot must exist");
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
                 Some(caller_cr3)
@@ -899,7 +986,7 @@ fn getinfo_regs(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proce
         endpoint: caller_endpt,
         offset: VirBytes(val_ptr),
     };
-    match data_copy_vmcheck(caller.p_nr, proc_table, src, dst, reg_size, proc_cr3) {
+    match data_copy_vmcheck(caller_nr, proc_table, src, dst, reg_size, proc_cr3) {
         CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
@@ -910,7 +997,13 @@ fn getinfo_regs(caller: &mut KProcess, proc_table: &mut crate::proc_table::Proce
 ///
 /// C: do_getinfo.c:192-202 — per-state CPU ticks.
 /// val_len2_e is the CPU index, not an endpoint.
-fn getinfo_cpu_ticks(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_len2_e: i32, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_cpu_ticks(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_len2_e: i32,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let cpu = val_len2_e as u32;
     // C: if (cpu >= CONFIG_MAX_CPUS) return EINVAL
     // CONFIG_MAX_CPUS is typically 1 or small; use a conservative bound.
@@ -940,15 +1033,21 @@ fn getinfo_cpu_ticks(caller: &mut KProcess, proc_table: &mut crate::proc_table::
             }
         }
     }
-    copy_struct_to_caller(caller.p_nr, proc_table, &ticks, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &ticks, val_ptr, val_len)
 }
 
 /// GET_HZ — copy the system clock frequency.
 ///
 /// C: do_getinfo.c:81-84 — copy system_hz
-fn getinfo_hz(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, clock_state: &ClockState, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_hz(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    clock_state: &ClockState,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let hz: i32 = clock_state.system_hz();
-    copy_struct_to_caller(caller.p_nr, proc_table, &hz, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &hz, val_ptr, val_len)
 }
 
 /// GET_MACHINE — processor count and BSP id.
@@ -957,14 +1056,19 @@ fn getinfo_hz(caller: &mut KProcess, proc_table: &mut crate::proc_table::Process
 /// SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
 /// try_smp_state() returns None before boot init (e.g. in unit
 /// tests); fall back to single-CPU defaults in that case.
-fn getinfo_machine(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_machine(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let smp = unsafe { crate::try_smp_state() };
     let machine = MachineStruct {
         processors_count: smp.as_ref().map(|s| s.ncpus()).unwrap_or(1),
         bsp_id: smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0),
         ..Default::default()
     };
-    copy_struct_to_caller(caller.p_nr, proc_table, &machine, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &machine, val_ptr, val_len)
 }
 
 /// GET_CPUINFO — copy the whole cpu_info[] array (unprobed slots zeroed).
@@ -979,7 +1083,12 @@ fn getinfo_machine(caller: &mut KProcess, proc_table: &mut crate::proc_table::Pr
 /// pending SMP bring-up in 16-smp.md). Unprobed slots convert to the
 /// all-zero record (C zero-fill behavior); see CpuInfoEntry for the
 /// wire layout and the non-x86 mapping note.
-fn getinfo_cpu_info(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_cpu_info(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let mut cpuinfo = [CpuInfoEntry::default(); crate::smp::MAX_CPUS];
     for (slot, entry) in cpuinfo.iter_mut().enumerate() {
         // SAFETY: CpuId::new_unchecked contract (id < MAX_CPUS) holds —
@@ -989,7 +1098,7 @@ fn getinfo_cpu_info(caller: &mut KProcess, proc_table: &mut crate::proc_table::P
             *entry = CpuInfoEntry::from(id);
         }
     }
-    copy_struct_to_caller(caller.p_nr, proc_table, &cpuinfo, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &cpuinfo, val_ptr, val_len)
 }
 
 /// GET_IRQACTIDS — snapshot the IRQ handler-availability table.
@@ -1008,7 +1117,12 @@ fn getinfo_cpu_info(caller: &mut KProcess, proc_table: &mut crate::proc_table::P
 /// SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
 /// try_irq_manager() returns None before boot init (e.g. in unit
 /// tests); we return EINVAL in that case.
-fn getinfo_irq_actids(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_irq_actids(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let actids_snapshot: [u32; NR_IRQ_VECTORS] = match unsafe { crate::try_irq_manager() } {
         Some(mgr) => {
             let src = mgr.irq_actids();
@@ -1022,7 +1136,7 @@ fn getinfo_irq_actids(caller: &mut KProcess, proc_table: &mut crate::proc_table:
         }
         None => return KcallResult::Ok(EINVAL),
     };
-    copy_struct_to_caller(caller.p_nr, proc_table, &actids_snapshot, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &actids_snapshot, val_ptr, val_len)
 }
 
 /// GET_IDLETSC — the IDLE process's accumulated cycles.
@@ -1036,12 +1150,17 @@ fn getinfo_irq_actids(caller: &mut KProcess, proc_table: &mut crate::proc_table:
 /// For SMP, each CPU's idle_proc is a separate KProcess slot;
 /// summing would require iterating CpuLocal. Since the current
 /// build is single-CPU, we read the single IDLE slot.
-fn getinfo_idle_tsc(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_idle_tsc(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let idle_cycles: u64 = proc_table
         .get(crate::proc::proc_nr::IDLE)
         .map(|p| p.p_cycles.total.load(core::sync::atomic::Ordering::Acquire))
         .unwrap_or(0);
-    copy_struct_to_caller(caller.p_nr, proc_table, &idle_cycles, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &idle_cycles, val_ptr, val_len)
 }
 
 /// GET_RANDOMNESS — copy the whole krandom struct, then wipe all bins.
@@ -1053,7 +1172,12 @@ fn getinfo_idle_tsc(caller: &mut KProcess, proc_table: &mut crate::proc_table::P
 /// wiping the original. We snapshot under BKL, then wipe.
 ///
 /// SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
-fn getinfo_randomness(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_randomness(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let krandom_snapshot = match unsafe { crate::krandom::try_krandom() } {
         Some(kr) => {
             let snapshot = *kr;
@@ -1062,7 +1186,7 @@ fn getinfo_randomness(caller: &mut KProcess, proc_table: &mut crate::proc_table:
         }
         None => return KcallResult::Ok(EINVAL),
     };
-    copy_struct_to_caller(caller.p_nr, proc_table, &krandom_snapshot, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &krandom_snapshot, val_ptr, val_len)
 }
 
 /// GET_RANDOMNESS_BIN — copy one randomness bin by index, then wipe it.
@@ -1071,7 +1195,13 @@ fn getinfo_randomness(caller: &mut KProcess, proc_table: &mut crate::proc_table:
 /// then wipe that bin after successful copy.
 ///
 /// val_len2_e is the bin index (not an endpoint).
-fn getinfo_randomness_bin(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_len2_e: i32, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_randomness_bin(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_len2_e: i32,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let bin = val_len2_e;
     // C: if(bin < 0 || bin >= RANDOM_SOURCES) return EINVAL
     // RANDOM_SOURCES = 16 (include/minix/type.h:182).
@@ -1094,7 +1224,7 @@ fn getinfo_randomness_bin(caller: &mut KProcess, proc_table: &mut crate::proc_ta
         }
         None => return KcallResult::Ok(EINVAL),
     };
-    copy_struct_to_caller(caller.p_nr, proc_table, &bin_snapshot, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &bin_snapshot, val_ptr, val_len)
 }
 
 /// GET_IRQHOOKS — snapshot the IRQ hook table.
@@ -1108,7 +1238,12 @@ fn getinfo_randomness_bin(caller: &mut KProcess, proc_table: &mut crate::proc_ta
 /// the global IrqManager. Rust uses index-based linked lists,
 /// so `next` and `handler` are exported as 0 (user-space tools
 /// only read the non-pointer fields).
-fn getinfo_irq_hooks(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_irq_hooks(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let mut hooks: [IrqHookStruct; crate::syscall_device::NR_IRQ_HOOKS] =
         [IrqHookStruct::default(); crate::syscall_device::NR_IRQ_HOOKS];
     // SAFETY: BKL is held by kernel_call_dispatch (syscall.rs:245).
@@ -1129,7 +1264,7 @@ fn getinfo_irq_hooks(caller: &mut KProcess, proc_table: &mut crate::proc_table::
             }
         }
     }
-    copy_struct_to_caller(caller.p_nr, proc_table, &hooks, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &hooks, val_ptr, val_len)
 }
 
 /// GET_IMAGE — copy the boot image table.
@@ -1142,12 +1277,17 @@ fn getinfo_irq_hooks(caller: &mut KProcess, proc_table: &mut crate::proc_table::
 /// In C, `image[]` is a static table initialized in `table.c`.
 /// In Rust, it is rebuilt from the process table + boot modules
 /// in the same boot image order (see `build_boot_image`).
-fn getinfo_image(caller: &mut KProcess, proc_table: &mut crate::proc_table::ProcessTable, val_ptr: u64, val_len: i32) -> KcallResult {
+fn getinfo_image(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
     let boot_modules = crate::kernel_info()
         .map(|ki| ki.boot_modules())
         .unwrap_or(&[]);
     let image = build_boot_image(proc_table, boot_modules);
-    copy_struct_to_caller(caller.p_nr, proc_table, &image, val_ptr, val_len)
+    copy_struct_to_caller(caller_nr, proc_table, &image, val_ptr, val_len)
 }
 
 /// GET_MONPARAMS — boot monitor parameter buffer (not yet populated).
@@ -1240,9 +1380,9 @@ fn getinfo_mon_params() -> KcallResult {
 ///
 /// All 13 TRACE requests are fully implemented.
 pub fn dispatch_trace(
-    caller: &mut KProcess,
-    msg: &mut Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &mut Message,
     priv_table: &PrivTable,
 ) -> KcallResult {
     let tr = msg_trace(msg);
@@ -1346,25 +1486,25 @@ pub fn dispatch_trace(
         // C: do_trace.c:95-103 — T_GETINS / T_GETDATA:
         // COPYFROMPROC(tr_addr, &tr_data, sizeof(long)).
         TraceRequest::GetIns | TraceRequest::GetData => {
-            trace_copy_word_from_proc(caller.p_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr)
+            trace_copy_word_from_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr)
         }
 
         // C: do_trace.c:126-134 — T_SETINS / T_SETDATA:
         // COPYTOPROC(tr_addr, &tr_data, sizeof(long)).
         TraceRequest::SetIns | TraceRequest::SetData => {
-            trace_copy_word_to_proc(caller.p_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr, tr_data)
+            trace_copy_word_to_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr, tr_data)
         }
 
         // C: do_trace.c:191-194 — T_READB_INS:
         // COPYFROMPROC(tr_addr, &ub, 1) — byte-level copy.
         TraceRequest::ReadBIns => {
-            trace_copy_byte_from_proc(caller.p_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr)
+            trace_copy_byte_from_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr)
         }
 
         // C: do_trace.c:196-200 — T_WRITEB_INS:
         // COPYTOPROC(tr_addr, &ub, 1) — byte-level copy.
         TraceRequest::WriteBIns => {
-            trace_copy_byte_to_proc(caller.p_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr, tr_data)
+            trace_copy_byte_to_proc(caller_nr, proc_table, msg, target_endpoint, target_cr3, tr_addr, tr_data)
         }
 
         // C: do_trace.c:105-124 — T_GETUSER: read from proc/priv struct.
@@ -1661,9 +1801,9 @@ fn trace_set_user(
 /// process address spaces, and is only triggered when both src and dst
 /// have non-zero asynsize + matching asynendpoint (live update scenario).
 pub fn dispatch_update(
-    caller: &mut KProcess,
-    msg: &Message,
+    caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
+    msg: &Message,
     priv_table: &mut PrivTable,
 ) -> KcallResult {
     // C: do_update.c:9-11 — SYS_UPDATE uses the M1 message format:
@@ -1955,7 +2095,7 @@ pub fn dispatch_update(
     // (e.g. a NO_PRIV user process suspended mid-kcall for VM assistance).
     proc_table.vm_swap_requestor(src_nr, dst_nr);
 
-    let _ = caller;
+    let _ = caller_nr;
     KcallResult::Ok(0)
 }
 
@@ -2113,7 +2253,11 @@ fn clean_seen_flag(proc_table: &mut ProcessTable) {
     }
 }
 
-pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut ProcessTable) -> KcallResult {
+pub fn dispatch_profile(
+    caller_nr: ProcNr,
+    proc_table: &mut ProcessTable,
+    msg: &Message,
+) -> KcallResult {
     // C: do_sprofile.c — read from mess_lsys_krn_sys_sprof
     msg.debug_check_m_type_any(&[Syscall::Sprof as i32]);
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
@@ -2240,7 +2384,10 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
             };
 
             // Capture caller's CR3 for the proc_cr3 closure.
-            let caller_cr3 = caller.p_seg.phys_root;
+            let caller_cr3 = proc_table
+        .get(caller_nr)
+        .map(|c| c.p_seg.phys_root)
+        .expect("getinfo: caller slot must exist");
 
             // Copy 1: sprof_info struct → user space.
             //
@@ -2263,7 +2410,7 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
                 offset: minix_types::VirBytes(info_addr),
             };
             match data_copy_vmcheck(
-                caller.p_nr, proc_table,
+                caller_nr, proc_table,
                 info_src,
                 info_dst,
                 core::mem::size_of::<SprofInfo>(),
@@ -2294,7 +2441,7 @@ pub fn dispatch_profile(caller: &mut KProcess, msg: &Message, proc_table: &mut P
                     offset: minix_types::VirBytes(data_addr),
                 };
                 match data_copy_vmcheck(
-                    caller.p_nr, proc_table,
+                    caller_nr, proc_table,
                     buf_src,
                     buf_dst,
                     mem_used,
@@ -2841,7 +2988,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100; // target endpoint
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Step as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(0));
         // Verify side effects.
         let target = proc_table.get(ProcNr(0)).unwrap();
@@ -2859,7 +3006,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Resume as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(!target.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
@@ -2874,7 +3021,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Stop as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(target.p_rts_flags.is_set(RtsFlagsBits::PROC_STOP));
@@ -2893,7 +3040,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Detach as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(!target.p_misc_flags.is_set(MiscFlagsBits::SC_ACTIVE));
@@ -2910,7 +3057,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Syscall as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(0));
         let target = proc_table.get(ProcNr(0)).unwrap();
         assert!(target.p_misc_flags.is_set(MiscFlagsBits::SC_TRACE));
@@ -2928,7 +3075,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = 8; // T_EXIT = PT_KILL = 8
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -2945,7 +3092,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetIns as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -2977,7 +3124,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetIns as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1001; // unaligned (1 byte off 8-byte boundary)
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -2998,7 +3145,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetData as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1000; // aligned
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3019,7 +3166,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetIns as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1003; // unaligned
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3041,7 +3188,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetData as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x1000; // aligned
         msg.m_u.m_lsys_krn_sys_trace.data = 0xDEAD_BEEF; // data to write
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3060,7 +3207,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x4; // unaligned
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -3074,7 +3221,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0x2; // unaligned
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -3089,7 +3236,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 56; // rip offset
         msg.m_u.m_lsys_krn_sys_trace.data = 0xdead_beef;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(0), "writing rip should succeed");
     }
 
@@ -3107,7 +3254,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 8; // cs offset (protected)
         msg.m_u.m_lsys_krn_sys_trace.data = 0x10;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -3124,7 +3271,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::SetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = 0; // psw offset
         msg.m_u.m_lsys_krn_sys_trace.data = 0x0200; // IF (bit 9)
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(0), "writing psw should succeed");
     }
 
@@ -3136,7 +3283,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = 99; // out of range
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3148,7 +3295,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 9999; // not in proc table
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Step as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3168,7 +3315,7 @@ mod tests {
         msg.m_type = Syscall::Trace as i32;
         msg.m_u.m_lsys_krn_sys_trace.endpt = 50;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::Step as i32;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &crate::test_helpers::test_priv_table());
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &crate::test_helpers::test_priv_table());
         // ProcessTable::is_kernel(KERNEL=-1) returns true → EPERM.
         assert_eq!(result, KcallResult::Ok(EPERM));
     }
@@ -3188,7 +3335,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = tr_addr as u64;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(0), "priv-struct read should succeed");
         // The first field of PrivInfoStruct is s_proc_nr (i32). For slot 0
         // with assign_static(0), s_proc_nr should be 0.
@@ -3212,7 +3359,7 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_trace.endpt = 100;
         msg.m_u.m_lsys_krn_sys_trace.request = TraceRequest::GetUser as i32;
         msg.m_u.m_lsys_krn_sys_trace.address = tr_addr;
-        let result = dispatch_trace(&mut caller, &mut msg, &mut proc_table, &priv_table);
+        let result = dispatch_trace(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
         assert_eq!(result, KcallResult::Ok(EFAULT));
     }
 
@@ -3267,7 +3414,7 @@ mod tests {
         msg.m_u.m_m1.m1i1 = minix_types::Endpoint::NONE.0; // src = NONE
         msg.m_u.m_m1.m1i2 = 200;
         msg.m_u.m_m1.m1i3 = 0;
-        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        let result = dispatch_update(ProcNr(0), &mut proc_table, &msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3281,7 +3428,7 @@ mod tests {
         msg.m_u.m_m1.m1i1 = 100; // src = 100
         msg.m_u.m_m1.m1i2 = 100; // dst = 100 (same)
         msg.m_u.m_m1.m1i3 = 0;
-        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        let result = dispatch_update(ProcNr(0), &mut proc_table, &msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3303,7 +3450,7 @@ mod tests {
         msg.m_u.m_m1.m1i1 = 100;
         msg.m_u.m_m1.m1i2 = 200;
         msg.m_u.m_m1.m1i3 = 0;
-        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        let result = dispatch_update(ProcNr(0), &mut proc_table, &msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(EBUSY));
     }
 
@@ -3322,7 +3469,7 @@ mod tests {
         assert_eq!(proc_table.get(ProcNr(0)).unwrap().p_endpoint, Endpoint(100));
         assert_eq!(proc_table.get(ProcNr(1)).unwrap().p_endpoint, Endpoint(200));
 
-        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        let result = dispatch_update(ProcNr(0), &mut proc_table, &msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(0), "swap should succeed");
 
         // Post-swap: identity fields preserved (endpoint, nr stay in original slot)
@@ -3369,7 +3516,7 @@ mod tests {
         }
         proc_table.vm_enqueue(ProcNr(1));
 
-        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        let result = dispatch_update(ProcNr(0), &mut proc_table, &msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(0), "swap should succeed");
 
         // Post-swap the requesting process lives at the src slot (nr 0):
@@ -3411,7 +3558,7 @@ mod tests {
         priv_table.get_mut(dst_pid).unwrap().runtime.s_alarm_timer.action =
             Some(crate::clock::TimerAction::NotifyAlarm { endpoint: Endpoint(200) });
 
-        let result = dispatch_update(&mut caller, &msg, &mut proc_table, &mut priv_table);
+        let result = dispatch_update(ProcNr(0), &mut proc_table, &msg, &mut priv_table);
         assert_eq!(result, KcallResult::Ok(0), "swap should succeed");
 
         // Post-swap: each slot retains its own armed alarm.
@@ -3500,7 +3647,7 @@ mod tests {
         // Set request = GET_PROC (11), val_len2_e = SELF (-1)
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Proc as i32;
         msg.m_u.m_m1.m1p3 = Endpoint::SELF.0 as u64; // val_len2_e = SELF
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         // Endpoint is valid (SELF replaced with caller's). data_copy_vmcheck
         // is now wired (was DEFERRED → ENOSYS). In mock mode the PTE walk
         // always misses, so the copy suspends → VmSuspend + RTS_VMREQUEST.
@@ -3532,7 +3679,7 @@ mod tests {
         // Set request = GET_PROC (11), val_len2_e = valid endpoint
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Proc as i32;
         msg.m_u.m_m1.m1p3 = target_ep.0 as u64; // val_len2_e = valid endpoint
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3552,7 +3699,7 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Proc as i32;
         msg.m_u.m_m1.m1p3 = 9999u64; // val_len2_e = invalid
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3567,7 +3714,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::ProcTab as i32;
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3595,7 +3742,7 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Priv as i32;
         msg.m_u.m_m1.m1p3 = target_ep.0 as u64;
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3614,7 +3761,7 @@ mod tests {
         let mut msg = Message::default();
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::PrivTab as i32;
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3639,7 +3786,7 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Regs as i32;
         msg.m_u.m_m1.m1p3 = target_ep.0 as u64;
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::VmSuspend);
         assert!(proc_table
             .get(ProcNr(0))
@@ -3659,7 +3806,7 @@ mod tests {
         msg.m_type = Syscall::Getinfo as i32;
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Regs as i32;
         msg.m_u.m_m1.m1p3 = 9999u64; // val_len2_e = invalid
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3675,7 +3822,7 @@ mod tests {
         // Set request = GET_PRIV (17), val_len2_e = invalid endpoint
         msg.m_u.m_m1.m1i1 = GetInfoRequest::Priv as i32;
         msg.m_u.m_m1.m1p3 = 9999u64; // val_len2_e = invalid
-        let result = dispatch_getinfo(&mut caller, &mut msg, &priv_table, &mut proc_table, &crate::clock::ClockState::new());
+        let result = dispatch_getinfo(ProcNr(0), &mut proc_table, &mut msg, &priv_table, &crate::clock::ClockState::new());
         assert_eq!(result, KcallResult::Ok(EINVAL));
     }
 
@@ -3732,7 +3879,7 @@ fn sprof_test_teardown() {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = 99; // unknown action
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         sprof_test_teardown();
     }
@@ -3747,7 +3894,7 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = 9999; // invalid endpoint
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         sprof_test_teardown();
     }
@@ -3769,7 +3916,7 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = target_ep.0;
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = 99; // unknown intr_type
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         sprof_test_teardown();
     }
@@ -3790,7 +3937,7 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = target_ep.0;
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         // Validation passes, init_profile_clock wired → OK (0)
         assert_eq!(result, KcallResult::Ok(0));
         // SPROFILING must remain true after successful START
@@ -3819,7 +3966,7 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = target_ep.0;
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(0));
 
         // clean_seen_flag ran: every proc slot's SPROF_SEEN is cleared.
@@ -3844,7 +3991,7 @@ fn sprof_test_teardown() {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EBUSY));
         sprof_test_teardown();
     }
@@ -3870,7 +4017,7 @@ fn sprof_test_teardown() {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         // In mock mode: VmSuspend (page table walk fails).
         // On real hardware: Ok(OK) (data_copy succeeds).
         // We accept either outcome; the key assertion is that SPROFILING
@@ -3901,7 +4048,7 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = 100;
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EBUSY));
         sprof_test_teardown();
     }
@@ -3915,7 +4062,7 @@ fn sprof_test_teardown() {
         let mut msg = Message::default();
         msg.m_type = Syscall::Sprof as i32;
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Stop as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EBUSY));
         sprof_test_teardown();
     }
@@ -3933,7 +4080,7 @@ fn sprof_test_teardown() {
         msg.m_u.m_lsys_krn_sys_sprof.action = ProfAction::Start as i32;
         msg.m_u.m_lsys_krn_sys_sprof.endpt = 9999; // invalid
         msg.m_u.m_lsys_krn_sys_sprof.intr_type = ProfIntrType::Rtc as i32;
-        let result = dispatch_profile(&mut caller, &msg, &mut proc_table);
+        let result = dispatch_profile(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(EINVAL));
         // Verify rollback.
         assert!(!SPROFILING.load(Ordering::Acquire));
