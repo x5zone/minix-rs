@@ -197,9 +197,9 @@ void __minix_init(void)   /* __attribute__((constructor))，:13-31 */
 **`[ARCH: A-3]`**（三处之一，本节）：minix-rs 64-bit 不移植 `.usermapped`
 段（`28-usermapped-data.md` 既定结论）→ 上述整条"映射页直读"链无处可挂。
 演进设计：新增 `GET_KMESSAGES` 等价 `sys_getinfo` 子请求（kernel 侧拷贝
-`kmessages` 环形缓冲；布局随 05 `dump_kernel` 兑现），IS 经 §3 D2 的
-`SysGetinfoTransport` 取数。否决复用 DIAGCTL（§2.2：只打印不回传）。
-另两处：design D3 + `KerninfoTransport` 注释（当前 fail-closed）。
+`kmessages` 环形缓冲），IS 经 `KerninfoTransport` 通道取数（§3.3）。
+否决复用 DIAGCTL（§2.2：只打印不回传）。
+另两处：design D3 + `KerninfoTransport` 注释。
 
 ### 2.4 getsysinfo：他馆发函（跨服务表）
 
@@ -320,9 +320,15 @@ GET_KENV、MIB 面的 SI_CALL_STATS 等编译期拒绝）。
 
 ### 3.3 D3：A-3 kerninfo 抽象（§2.3 三处之二）
 
-内容见 §2.3 演进设计。`KerninfoTransport::kmmessages_available` 为新通道
-占位（当前 Unimplemented fail-closed）。否决直读移植（与 28 既定结论冲突）
+内容见 §2.3 演进设计。`KerninfoTransport::kmessages(meta, ring)` 即该通道
+的缝（游标与环体分两口出参）。否决直读移植（与 28 既定结论冲突）
 与 DIAGCTL 复用（语义不同）。
+
+生产实现（`KernelKmessTransport`）按 10008 字节快照一次取回再拆包：8 字节
+游标头（`km_next`/`km_size`，LE）进 `meta`，10000 字节环体按调用方缓冲
+容量填前缀——缓冲短于环体不改变语义，`kmessages_dmp` 的打印组装本来就
+按 `km_size` 游标重排（`minix3/minix/servers/is/dmp_kernel.c:kmessages_dmp`）。
+宿主构建（未开 real-trap）下如实上浮 `-EIO`，不假装成功。
 
 ### 3.4 D4：IS 侧三义务（机读化）
 

@@ -19,9 +19,9 @@ fn main() {
         // S23 装配:`SysSefTransport`(receive 经 minix-sef ping 透明/
         // send 阻塞/warn+diag 走 SYS_DIAGCTL 缝)、`SysFkeyCtl`
         // (fkey_ctl → minix-sys tty::fkey_ctl_via)、`SysAcquires`
-        // (SYS_GETINFO 七 what + stacktrace + uptime 真装;Kerninfo/
-        // GetSysinfo/VM_INFO 三通道片 3b 委托 fail-closed——它们只在
-        // 对应 dump 请求到达时触达)。
+        // (SYS_GETINFO 七 what + stacktrace + uptime + GET_KMESSAGES
+        // 真装;GetSysinfo/VM_INFO 两通道片 3b 余件委托 fail-closed——
+        // 它们只在对应 dump 请求到达时触达)。
         let mut server = IsServer::new(SysSefTransport::new(), SysFkeyCtl, SysAcquires::default());
 
         // C: sef_local_startup() + boot anchor — main.c:40-41,94-102.

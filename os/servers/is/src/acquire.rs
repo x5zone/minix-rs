@@ -135,13 +135,12 @@ pub trait DiagctlTransport {
 /// usermapped page, magic-checked (`minix3/minix/lib/libc/sys/init.c:22-27`)
 /// → `get_minix_kerninfo()->kmessages` ring read (dmp_kernel.c:71).
 /// minix-rs 64-bit does not port `.usermapped`
-/// (`28-usermapped-data.md`); the production implementation is a new
-/// `GET_KMESSAGES`-equivalent `sys_getinfo` sub-request (kernel edge
-/// E-ISKMESS): the kernel copies the raw ring into `ring` and the cursor
-/// fields into `meta`, and IS computes the print start via
-/// `kmess_start` (05 §3 D4). Until the kernel wiring lands this is
-/// fail-closed. The `DIAGCTL_CODE_STACKTRACE` channel is NOT reused: it
-/// prints into the kernel log and returns no buffer (different semantics).
+/// (`28-usermapped-data.md`); the production implementation is the
+/// `GET_KMESSAGES` `sys_getinfo` sub-request (kernel edge E-ISKMESS): the
+/// kernel copies the raw ring into `ring` and the cursor fields into
+/// `meta`, and IS computes the print start via `kmess_start` (05 §3 D4).
+/// The `DIAGCTL_CODE_STACKTRACE` channel is NOT reused: it prints into the
+/// kernel log and returns no buffer (different semantics).
 pub trait KerninfoTransport {
     /// Kernel-message ring snapshot. C: `kmessages_dmp` read face —
     /// dmp_kernel.c:63-93.
@@ -252,16 +251,17 @@ impl<T> Acquires for T where
 {
 }
 
-/// 生产取数面(S23 片 3a):SYS_GETINFO 族直调(结构即 minix-types 的
+/// 生产取数面(S23 片 3a/3b):SYS_GETINFO 族直调(结构即 minix-types 的
 /// wire 权威,repr(C) 布局按字节通到内核)、SYS_DIAGCTL 的 stacktrace
 /// (code 2,载荷端点)、SYS_TIMES 的 uptime(`real_ticks`,C `getticks`
-/// 读 kclockinfo->uptime 的同源量;A-3 无 usermapped 页)。
-/// Kerninfo/GetSysinfo/VM_INFO 三通道留片 3b(需 PM/VFS/RS/VM 的
-/// taskcall 面与 kmessages 的特殊布局)。
+/// 读 kclockinfo->uptime 的同源量;A-3 无 usermapped 页)、
+/// `GET_KMESSAGES` 快照([`KernelKmessTransport`])。
+/// GetSysinfo/VM_INFO 两通道留片 3b 余件(需 PM/VFS/RS/DS/VM 的
+/// taskcall 面经生产者对齐后接通)。
 #[derive(Debug, Default)]
 pub struct SysAcquires {
-    /// 片 3b 待装的三通道(Kerninfo/GetSysinfo/VM_INFO)——委托
-    /// fail-closed 占位;装齐后本字段消失。
+    /// 片 3b 待装的两通道(GetSysinfo/VM_INFO)——委托 fail-closed
+    /// 占位;装齐后本字段消失。
     pending: UnimplementedAcquires,
 }
 
@@ -360,7 +360,10 @@ impl ClockTransport for SysAcquires {
 
 impl KerninfoTransport for SysAcquires {
     fn kmessages(&mut self, meta: &mut KmessagesSnap, ring: &mut [u8]) -> i32 {
-        self.pending.kmessages(meta, ring)
+        // 片 3b-1:`GET_KMESSAGES` 快照通道真装——10008 字节快照(8 字节
+        // 游标头 + 10000 环体)经 `sys_getinfo` 一次取回后拆包;宿主构建
+        // 诚实上浮 -EIO(核 `kmess` 臂只在 real-trap 下可达)。
+        KernelKmessTransport.kmessages(meta, ring)
     }
 }
 
@@ -871,6 +874,20 @@ mod tests {
         assert!(a.get_monparams(&mut mon) < 0);
         assert!(a.stacktrace(Endpoint(9)) < 0);
         assert_eq!(a.uptime(), 0);
+    }
+
+    #[test]
+    fn test_sys_acquires_kmessages_leg_is_live_not_fail_closed() {
+        // 片 3b-1 见证:kmessages 腿已换装 KernelKmessTransport——宿主
+        // 构建下如实回 -EIO(DirectKernelCallTransport 的 real-trap 门控),
+        // 不再走 UnimplementedAcquires 的 fail-closed panic。旧通道的
+        // panic 断言留在 test_kerninfo_unimplemented_fail_closed
+        // (该替身仍是测试双件)。
+        use super::{KerninfoTransport, SysAcquires};
+        let mut a = SysAcquires::default();
+        let mut meta = KmessagesSnap::default();
+        let mut ring = [0u8; 64];
+        assert_eq!(a.kmessages(&mut meta, &mut ring), -minix_types::EIO);
     }
 
     #[test]
