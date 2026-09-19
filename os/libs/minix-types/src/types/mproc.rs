@@ -78,6 +78,14 @@ pub struct MProcSnap {
     /// KERN_PROC2 的 `p_groups` 消费；此前"无人读"的裁定随 MIB 取表半
     /// 失效，C-22 扩进 wire）。
     pub mp_sgroups: [u32; NGROUPS_MAX],
+    /// C: `mp_endpoint`（mproc.h；KERN_PROC_ARGS 按它读目标进程的
+    /// ps_strings 与参数页，proc.c:963-965）。
+    pub mp_endpoint: i32,
+    /// C: `mp_frame_addr`（mproc.h；exec 时置的参数帧基址）。
+    pub mp_frame_addr: u64,
+    /// C: `mp_frame_len`（mproc.h；帧长度——大小估算的上限之一，
+    /// proc.c:981）。
+    pub mp_frame_len: u64,
 }
 
 /// C `mp_flags` 的位值（mproc.h:86-104）——wire 权威（C-21）。
@@ -132,10 +140,12 @@ mod mproc_snap_layout_tests {
     use core::mem::offset_of;
 
     /// 布局见证：88 字节（C-21 的 mp_started）+ C-22 尾段
-    /// （svuid/svgid/child 双时刻/ngroups/sgroups[16]）= 184 字节。
+    /// （svuid/svgid/child 双时刻/ngroups/sgroups[16]/endpoint/frame
+    /// 三域）= 200 字节（endpoint 尾随的 4 字节恰好被 frame_addr 的
+    /// 8 对齐吸收，无结构尾垫）。
     #[test]
     fn test_mproc_snap_size() {
-        assert_eq!(size_of::<MProcSnap>(), 184);
+        assert_eq!(size_of::<MProcSnap>(), 200);
     }
 
     /// 字段偏移（生产者逐槽写、消费方按名读的同一份契约）。
@@ -164,6 +174,9 @@ mod mproc_snap_layout_tests {
         assert_eq!(offset_of!(MProcSnap, mp_child_stime), 104);
         assert_eq!(offset_of!(MProcSnap, mp_ngroups), 112);
         assert_eq!(offset_of!(MProcSnap, mp_sgroups), 116);
+        assert_eq!(offset_of!(MProcSnap, mp_endpoint), 180);
+        assert_eq!(offset_of!(MProcSnap, mp_frame_addr), 184);
+        assert_eq!(offset_of!(MProcSnap, mp_frame_len), 192);
     }
 
     /// mp_flags 位值（wire 权威的钉值；与 C mproc.h:86-104 逐位对照）。

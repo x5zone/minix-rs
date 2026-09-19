@@ -1,7 +1,7 @@
 //! PM 进程表 → `SI_PROC_TAB` 快照行（`[ARCH: A-4]` 单一权威）。
 //!
 //! C ground truth: `servers/pm/mproc.h` `mproc[NR_PROCS]`；wire 行是
-//! [`minix_types::MProcSnap`]（184 字节/槽，布局见证在其 `layout` 测试）。
+//! [`minix_types::MProcSnap`]（200 字节/槽，布局见证在其 `layout` 测试）。
 //! 消费方（IS `dump_pm` 的两个 dump、MIB `proc/tables` 的取表半）按名读
 //! 字段——C 的逐行 `MP_MAGIC` 漂移校验由共享类型取代（见该结构文档）。
 //!
@@ -20,6 +20,8 @@
 //! | mp_svuid/svgid | credentials 的 IdSet saved 位 | KERN_PROC2 的 p_svuid/svgid（C-22）|
 //! | mp_child_utime/stime | resources.child_* | KERN_PROC2 的 p_uctime（C-22）|
 //! | mp_ngroups/sgroups | credentials 的 ngroups/supplemental_groups | KERN_PROC2 的 p_groups（C-22）|
+//! | mp_endpoint | identity.endpoint | KERN_PROC_ARGS 读目标进程页的地址载体（C-22）|
+//! | mp_frame_addr/len | ipc.frame_addr/frame_len | 参数帧基址与长度（C-22，KERN_PROC_ARGS 估算上限）|
 //! | 其余 C 字段（mp_reply[64]、mp_sigact、mp_sgroups、mp_wpid…）| 不进快照 | A-4 裁定：无人读或跨 wire 无意义 |
 //!
 //! `mp_flags` 的位值权威在 `minix_types::mp_flags`（C-21 上收），本 crate
@@ -163,6 +165,12 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
     }
     w.mp_child_utime = p.resources.child_utime as u64;
     w.mp_child_stime = p.resources.child_stime as u64;
+    // ── KERN_PROC_ARGS 的取页载体（C-22）──
+    // C: `mp->mp_endpoint`（proc.c:963 的 datacopy 目标进程）与
+    // `mp_frame_addr + mp_frame_len`（ps_strings 落在帧尾，proc.c:964）。
+    w.mp_endpoint = p.identity.endpoint.0;
+    w.mp_frame_addr = p.ipc.frame_addr.0;
+    w.mp_frame_len = p.ipc.frame_len as u64;
 
     w.mp_flags = flags_for(p);
     w
@@ -207,8 +215,8 @@ mod tests {
     /// 跟随之（旧 C-ABI 464 B 行退役）。
     #[test]
     fn test_row_width_follows_shared_snapshot() {
-        assert_eq!(core::mem::size_of::<MProcSnap>(), 184);
-        assert_eq!(core::mem::size_of::<MProcSnap>() * 256, 47_104);
+        assert_eq!(core::mem::size_of::<MProcSnap>(), 200);
+        assert_eq!(core::mem::size_of::<MProcSnap>() * 256, 51_200);
         assert_eq!(core::mem::offset_of!(MProcSnap, mp_name), 12);
         assert_eq!(core::mem::offset_of!(MProcSnap, mp_started), 80);
     }
