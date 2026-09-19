@@ -142,8 +142,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        VfsCallNum::Read
-        | VfsCallNum::Write
+        VfsCallNum::Write
         | VfsCallNum::Open
         | VfsCallNum::Creat
         | VfsCallNum::Mkdir
@@ -203,6 +202,115 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // FS/驱动对话——W1 transport 通电后经 fs_comm 窗口接入
             // （plan.md §8 W3 尾注）。
             SyscallResult::Nosys
+        }
+
+        // ── 对话臂模板：read（常规文件；管道/字符/块各有其臂）──
+        VfsCallNum::Read => {
+            // C `do_read` → `read_write(READING)`（read.c:141-265）的
+            // **常规文件**分支：位置取 filp（`position = f->filp_pos`，
+            // :145）→ `req_readwrite`（grant 是 FS 往用户缓冲写的 magic
+            // grant，`CPF_WRITE|CPF_TRY`）→ 回复带新位置与实际字节数。
+            // 本节拍只接常规文件；`S_ISFIFO`/`S_ISCHR`/`S_ISBLK` 三个分支
+            // 各有其臂（pipe.c/cdev.c/bdev.c），未接线前保持 ENOSYS。
+            let (fd, buf, len) = {
+                // 用户载荷（minix-sys `read_via`：fd@0、buf@8、len@16、
+                // 保留的累计字段@24 恒零 — C `mess_lc_vfs_readwrite`）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let buf = u64::from_le_bytes(b8);
+                b8.copy_from_slice(&raw[16..24]);
+                (fd, buf, u64::from_le_bytes(b8))
+            };
+            if fd < 0 {
+                return SyscallResult::Error(minix_types::EBADF);
+            }
+            // C read.c:150 —— `if (size > SSIZE_MAX) return EINVAL;`
+            if len > i64::MAX as u64 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let (filp_idx, fs_e, ino, mode, orig_pos) = {
+                let fp = match state.fproc_table.get(fp_slot) {
+                    Some(fp) => fp,
+                    None => return SyscallResult::Error(minix_types::EINVAL),
+                };
+                let filp_idx = match fp.filps.get(fd as usize).copied().flatten() {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let filp = match state.filp_table.get(crate::filp::FilpId(filp_idx)) {
+                    Some(f) => f,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode_idx = match filp.vnode {
+                    Some(idx) => idx,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                let vnode = match state.vnode_table.get(crate::vnode::VnodeId(vnode_idx)) {
+                    Some(v) => v,
+                    None => return SyscallResult::Error(minix_types::EBADF),
+                };
+                (filp_idx, vnode.fs, vnode.ino, vnode.mode, filp.pos)
+            };
+            // C 按 `vp->v_mode` 分派（read.c:154-231）：本拍只服务常规文件。
+            if mode & crate::open::S_IFMT != crate::open::S_IFREG {
+                return SyscallResult::Nosys;
+            }
+            let vmnt_id = match state.vmnt_table.find_by_fs(fs_e) {
+                Some(v) => v,
+                None => return SyscallResult::Error(minix_types::EIO),
+            };
+            // C request.c:860-862 —— FS 未声明 64 位能力且位置越过 INT_MAX
+            // 即 EINVAL（`!(vmp->m_fs_flags & RES_64BIT) && pos > INT_MAX`）。
+            let fs_flags = state
+                .vmnt_table
+                .get(vmnt_id)
+                .map(|v| v.fs_flags)
+                .unwrap_or(0);
+            if fs_flags & crate::request::FsFlags::IS64BIT.bits() == 0 && orig_pos > i32::MAX as i64 {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // magic grant：读方向＝FS 往用户缓冲写。
+            let grant = match state.grant_user_buffer(
+                fs_e,
+                user_e,
+                buf,
+                len,
+                minix_types::CpFlags::WRITE | minix_types::CpFlags::TRY,
+            ) {
+                Ok(g) => g,
+                Err(_) => return SyscallResult::Error(minix_types::EIO),
+            };
+            let req = crate::request::encode_read(ino, grant, orig_pos, len as usize);
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Read {
+                    grant,
+                    filp: filp_idx,
+                    orig_pos,
+                });
+            }
+            state.pending_fs = Some(crate::main_loop::PendingFs {
+                vmnt: vmnt_id.0,
+                fs_e,
+                worker,
+                grant,
+                user: user_e,
+                req,
+            });
+            SyscallResult::Suspend
         }
 
         // ── 对话臂模板：fstat（fd 版 stat）──
@@ -384,6 +492,79 @@ mod tests {
         state.current_fp_slot = Some(slot);
         state.initialized = true;
         state
+    }
+
+    /// `Read` 臂（模板的第二个）：门序照 C `read_write` —— 负 fd / 无 filp
+    /// → EBADF；`size > SSIZE_MAX` → EINVAL；**非常规文件**（管道/字符/块）
+    /// 仍回 Nosys（各自的臂未接线）；常规文件走到挂载窗口与 grant。
+    #[test]
+    fn test_dispatch_read_gates_and_type_branch() {
+        use minix_types::Endpoint;
+
+        let read_msg = |fd: i32, buf: u64, len: u64| {
+            let mut m = Message::default();
+            m.m_source = Endpoint::from_generation_slot(1, 0);
+            m.m_type = VfsCallNum::Read as i32;
+            // SAFETY: read 载荷 fd@0、buf@8、len@16（minix-sys read_via 同布局）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&buf.to_le_bytes());
+                raw[16..24].copy_from_slice(&len.to_le_bytes());
+            }
+            m
+        };
+
+        let mut state = seeded(100);
+        state.current_message = read_msg(-1, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Read),
+            SyscallResult::Error(minix_types::EBADF)
+        );
+
+        state.current_message = read_msg(3, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Read),
+            SyscallResult::Error(minix_types::EBADF),
+            "无 filp → EBADF"
+        );
+
+        // filp + 非常规 vnode（管道）→ 类型分支未接线：Nosys。
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 7;
+            v.mode = crate::open::S_IFIFO | 0o644;
+        }
+        state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap().vnode = Some(vid.get());
+        state.current_message = read_msg(3, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Read),
+            SyscallResult::Nosys,
+            "管道分支未接线"
+        );
+
+        // 常规文件：走到挂载窗口（无 vmnt → EIO）。
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFREG | 0o644;
+        state.current_message = read_msg(3, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Read),
+            SyscallResult::Error(minix_types::EIO)
+        );
+
+        // 超 SSIZE_MAX 的长度门（C read.c:150）在解析之前生效。
+        state.current_message = read_msg(3, 0x5000, u64::MAX);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Read),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
     }
 
     /// `Fstat` 臂（对话臂模板）：fd 无效/空槽在**任何 I/O 之前**就回
@@ -589,9 +770,11 @@ mod tests {
 
     #[test]
     fn test_dispatch_fs_dialogue_arms_nosys() {
-        // FS/驱动对话臂：W1 通电前 fail-closed Nosys（诚实契约，模式 60）。
+        // FS/驱动对话臂：未接线的仍 fail-closed Nosys（诚实契约，模式 60）。
+        // `Read` 与 `Fstat` 已按模板接线（走各自的门），这里取还没接的
+        // `Write` 作代表——它同属"FS 对话族"。
         let mut state = seeded(100);
-        let call = VfsCallNum::Read;
+        let call = VfsCallNum::Write;
         state.current_message = Message {
             m_source: Endpoint::from_generation_slot(1, 0),
             m_type: call as i32,

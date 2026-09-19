@@ -1363,6 +1363,60 @@ mod tests {
         m
     }
 
+    /// 续接层的 Read 分支：从回复取 `seek_pos`/`nbytes`（C `mess_fs_vfs_readwrite`
+    /// 的共享偏移表），位置写回 filp，**状态＝实际读到的字节数**（C 的
+    /// `cum_io`），槽释放。
+    #[test]
+    fn test_worker_continuation_read_updates_filp_and_status() {
+        use crate::worker::WorkerCont;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+        let slot = minix_types::UserSlot::new(0);
+        {
+            let fp = state.fproc_table.get_mut(slot).unwrap();
+            fp.endpoint = user;
+            fp.pid = 100;
+        }
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state.filp_table.get_mut(fid).unwrap().pos = 0x1000;
+
+        let idx = state
+            .worker_pool
+            .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
+            .unwrap();
+        // 回复载荷：seek_pos@0、nbytes@8（共享偏移表）。
+        let mut reply = Message { m_type: 0, ..Message::default() };
+        // SAFETY(test): 按 transfer_reply_off 填回复。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::transfer_reply_off::SEEK_POS
+                ..minix_types::transfer_reply_off::SEEK_POS + 8]
+                .copy_from_slice(&0x1020i64.to_le_bytes());
+            raw[minix_types::transfer_reply_off::NBYTES
+                ..minix_types::transfer_reply_off::NBYTES + 8]
+                .copy_from_slice(&0x20u64.to_le_bytes());
+        }
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(WorkerCont::Read { grant: 3, filp: fid.get(), orig_pos: 0x1000 });
+            wp.sendrec = Some(reply);
+            wp.state = crate::worker::WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+
+        assert_eq!(
+            state.filp_table.get(fid).unwrap().pos,
+            0x1020,
+            "位置按回复的 seek_pos 推进"
+        );
+        assert_eq!(
+            state.take_reply(),
+            Some((user, 0x20)),
+            "状态＝实际读到的字节数（C cum_io）"
+        );
+        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
+    }
+
     /// 续接层（`run_worker_continuations`）：回复已落槽的作业按续接标识
     /// 收尾——Fstat 只撤 grant 并把状态回给用户；`ERESTART` 折 `EIO`
     /// （C comm.c:161-163）；槽被释放。

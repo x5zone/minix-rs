@@ -471,6 +471,31 @@ pub fn encode_readsuper(
 /// device@8(dev_t)、inode@16(ino_t)、flags@24(u32 = fs_flags)、
 /// mode@28、uid@32、gid@36、con_reqs@40(u16,ipc.h:198-211)。
 /// `fs_e` 由调用方给(即 `m_source`,C 的 `res->fs_e = m.m_source`)。
+/// `REQ_READ` / `REQ_WRITE` 请求（C `req_readwrite_actual` —
+/// request.c:834-874）：载荷 `{inode, seek_pos, grant, nbytes}`，数据面由
+/// FS 经 grant 直读写（读是 FS 往用户缓冲 `safecopyto`）。
+///
+/// 偏移取共享权威 `minix_types::transfer_req_off`（FS 侧解码用同一张表）。
+pub fn encode_read(ino: u64, grant: i32, pos: i64, nbytes: usize) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_READ,
+        ..Message::default()
+    };
+    // SAFETY: REQ_READ 的载荷按 LP64 域序写在消息负载区（无专属 union 成员）。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::transfer_req_off::INODE..minix_types::transfer_req_off::INODE + 8]
+            .copy_from_slice(&ino.to_le_bytes());
+        raw[minix_types::transfer_req_off::SEEK_POS..minix_types::transfer_req_off::SEEK_POS + 8]
+            .copy_from_slice(&pos.to_le_bytes());
+        raw[minix_types::transfer_req_off::GRANT..minix_types::transfer_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+        raw[minix_types::transfer_req_off::BYTES..minix_types::transfer_req_off::BYTES + 8]
+            .copy_from_slice(&(nbytes as u64).to_le_bytes());
+    }
+    msg
+}
+
 /// `REQ_STAT` 请求（C `req_stat_actual` — request.c:1087-1096）：载荷只有
 /// `{inode, grant}` 两域，FS 把 `struct stat` 直接写进 grant 指向的用户缓冲。
 ///
@@ -871,6 +896,54 @@ mod tests {
                 .unwrap_err(),
             FsError::InvalidOff
         );
+    }
+
+    #[test]
+    /// `REQ_STAT` 编码：inode/grant 落在共享偏移表的两个域上。
+    #[test]
+    fn test_encode_stat_fields() {
+        let m = encode_stat(0x1234, 42);
+        assert_eq!(m.m_type, minix_types::REQ_STAT);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::stat_req_off::INODE..minix_types::stat_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x1234);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::stat_req_off::GRANT..minix_types::stat_req_off::GRANT + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 42);
+    }
+
+    /// `REQ_READ` 编码：四个域（inode/seek_pos/grant/nbytes）落在共享偏移表上。
+    #[test]
+    fn test_encode_read_fields() {
+        let m = encode_read(0x99, 5, 0x1000, 64);
+        assert_eq!(m.m_type, minix_types::REQ_READ);
+        // SAFETY(test): 按共享偏移表读回。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::transfer_req_off::INODE..minix_types::transfer_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x99);
+        b8.copy_from_slice(
+            &raw[minix_types::transfer_req_off::SEEK_POS
+                ..minix_types::transfer_req_off::SEEK_POS + 8],
+        );
+        assert_eq!(i64::from_le_bytes(b8), 0x1000);
+        let mut b4 = [0u8; 4];
+        b4.copy_from_slice(
+            &raw[minix_types::transfer_req_off::GRANT..minix_types::transfer_req_off::GRANT + 4],
+        );
+        assert_eq!(i32::from_le_bytes(b4), 5);
+        b8.copy_from_slice(
+            &raw[minix_types::transfer_req_off::BYTES..minix_types::transfer_req_off::BYTES + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 64);
     }
 
     #[test]
