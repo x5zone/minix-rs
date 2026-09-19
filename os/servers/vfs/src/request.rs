@@ -611,6 +611,71 @@ pub fn encode_inhibread(ino: u64) -> Message {
     msg
 }
 
+/// `REQ_CREATE` 请求（C `req_create` — request.c:166-200）：父目录 ino +
+/// 模式位 + uid/gid + 指向**最后组件名**的 grant + 名字长度。
+pub fn encode_create(
+    dir_ino: u64,
+    grant: i32,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    path_len: usize,
+) -> Message {
+    let mut msg = Message {
+        m_type: minix_types::REQ_CREATE,
+        ..Message::default()
+    };
+    // SAFETY: REQ_CREATE 的载荷按 LP64 域序写在消息负载区。
+    unsafe {
+        let raw = &mut msg.m_u.raw;
+        raw[minix_types::create_req_off::INODE..minix_types::create_req_off::INODE + 8]
+            .copy_from_slice(&dir_ino.to_le_bytes());
+        raw[minix_types::create_req_off::MODE..minix_types::create_req_off::MODE + 4]
+            .copy_from_slice(&mode.to_le_bytes());
+        raw[minix_types::create_req_off::UID..minix_types::create_req_off::UID + 4]
+            .copy_from_slice(&uid.to_le_bytes());
+        raw[minix_types::create_req_off::GID..minix_types::create_req_off::GID + 4]
+            .copy_from_slice(&gid.to_le_bytes());
+        raw[minix_types::create_req_off::GRANT..minix_types::create_req_off::GRANT + 4]
+            .copy_from_slice(&grant.to_le_bytes());
+        raw[minix_types::create_req_off::PATH_LEN..minix_types::create_req_off::PATH_LEN + 8]
+            .copy_from_slice(&(path_len as u64).to_le_bytes());
+    }
+    msg
+}
+
+/// 解一条 `REQ_CREATE` 回复（C `req_create` 收尾）：`fs_e` 取回复的
+/// `m_source`（C 的 `res->fs_e = m.m_source`），`dev` 为 0（新建节点无设备，
+/// C 的 `res->dev` 在该路径上未写）。
+pub fn decode_create_reply(msg: &Message) -> crate::path::NodeDetails {
+    use minix_types::create_reply_off as off;
+    // SAFETY: 回复载荷按上述域序写在负载区。
+    let raw = unsafe { &msg.m_u.raw };
+    let rd8 = |at: usize| -> u64 {
+        let mut b = [0u8; 8];
+        if at + 8 <= raw.len() {
+            b.copy_from_slice(&raw[at..at + 8]);
+        }
+        u64::from_le_bytes(b)
+    };
+    let rd4 = |at: usize| -> u32 {
+        let mut b = [0u8; 4];
+        if at + 4 <= raw.len() {
+            b.copy_from_slice(&raw[at..at + 4]);
+        }
+        u32::from_le_bytes(b)
+    };
+    crate::path::NodeDetails {
+        fs_e: msg.m_source,
+        ino: rd8(off::INODE),
+        mode: rd4(off::MODE),
+        size: rd8(off::FILE_SIZE),
+        uid: rd4(off::UID),
+        gid: rd4(off::GID),
+        dev: 0,
+    }
+}
+
 /// `REQ_MKDIR` 请求（C `req_mkdir` — request.c:528-558）：父目录 ino +
 /// 权限位 + uid/gid + 指向**最后组件名**的 grant。
 pub fn encode_mkdir(dir_ino: u64, grant: i32, mode: u32, uid: u32, gid: u32) -> Message {
@@ -1146,6 +1211,52 @@ mod tests {
             None,
             "普通错误交错误面"
         );
+    }
+
+    /// `REQ_CREATE` 编码六域 + 回复解码五域（`fs_e` 取 `m_source`）。
+    #[test]
+    fn test_encode_create_and_decode_reply() {
+        let m = encode_create(0x20, 44, 0o100644, 1000, 1000, 4);
+        assert_eq!(m.m_type, minix_types::REQ_CREATE);
+        // SAFETY(test): 按共享偏移表读回请求域。
+        let raw = unsafe { &m.m_u.raw };
+        let mut b8 = [0u8; 8];
+        b8.copy_from_slice(
+            &raw[minix_types::create_req_off::INODE..minix_types::create_req_off::INODE + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 0x20);
+        b8.copy_from_slice(
+            &raw[minix_types::create_req_off::PATH_LEN..minix_types::create_req_off::PATH_LEN + 8],
+        );
+        assert_eq!(u64::from_le_bytes(b8), 4);
+
+        // 回复：file_size@0、inode@8、mode@16、uid@20、gid@24。
+        let mut reply = Message {
+            m_source: minix_types::Endpoint::MFS,
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
+        // SAFETY(test): 按共享偏移表填回复。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[minix_types::create_reply_off::FILE_SIZE
+                ..minix_types::create_reply_off::FILE_SIZE + 8]
+                .copy_from_slice(&0u64.to_le_bytes());
+            raw[minix_types::create_reply_off::INODE..minix_types::create_reply_off::INODE + 8]
+                .copy_from_slice(&0x77u64.to_le_bytes());
+            raw[minix_types::create_reply_off::MODE..minix_types::create_reply_off::MODE + 4]
+                .copy_from_slice(&0o100644u32.to_le_bytes());
+            raw[minix_types::create_reply_off::UID..minix_types::create_reply_off::UID + 4]
+                .copy_from_slice(&7u32.to_le_bytes());
+            raw[minix_types::create_reply_off::GID..minix_types::create_reply_off::GID + 4]
+                .copy_from_slice(&8u32.to_le_bytes());
+        }
+        let d = decode_create_reply(&reply);
+        assert_eq!(d.fs_e, minix_types::Endpoint::MFS, "fs_e 取 m_source");
+        assert_eq!(d.ino, 0x77);
+        assert_eq!(d.mode, 0o100644);
+        assert_eq!((d.uid, d.gid), (7, 8));
+        assert_eq!((d.size, d.dev), (0, 0));
     }
 
     /// `REQ_MKDIR` 编码：五域（父 ino/mode/uid/gid/grant）。

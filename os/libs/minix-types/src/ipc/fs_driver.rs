@@ -251,6 +251,43 @@ pub mod ftrunc_req_off {
     pub const TRC_END: usize = 16;
 }
 
+/// `REQ_CREATE` 请求载荷的 LP64 域偏移。
+///
+/// C: `mess_vfs_fs_create { ino_t inode; mode_t mode; uid_t uid; gid_t gid;
+/// cp_grant_id_t grant; size_t path_len; }`（`request.c:189-196` 的
+/// `req_create`；`grant` 指向**最后组件名**）。
+pub mod create_req_off {
+    /// `ino_t inode`（父目录）。
+    pub const INODE: usize = 0;
+    /// `mode_t mode`（omode = 模式位，**不含** `O_*`）。
+    pub const MODE: usize = 8;
+    /// `uid_t uid`。
+    pub const UID: usize = 12;
+    /// `gid_t gid`。
+    pub const GID: usize = 16;
+    /// `cp_grant_id_t grant`。
+    pub const GRANT: usize = 20;
+    /// `size_t path_len`（含 NUL）。
+    pub const PATH_LEN: usize = 24;
+}
+
+/// `REQ_CREATE` 的**回复**载荷 LP64 域偏移（FS→VFS 方向）。
+///
+/// C: `mess_fs_vfs_create { off_t file_size; ino_t inode; mode_t mode;
+/// uid_t uid; gid_t gid; }`（ipc.h:141-150）——与请求是两套结构。
+pub mod create_reply_off {
+    /// `off_t file_size`。
+    pub const FILE_SIZE: usize = 0;
+    /// `ino_t inode`。
+    pub const INODE: usize = 8;
+    /// `mode_t mode`。
+    pub const MODE: usize = 16;
+    /// `uid_t uid`。
+    pub const UID: usize = 20;
+    /// `gid_t gid`。
+    pub const GID: usize = 24;
+}
+
 /// `REQ_MKDIR` 请求载荷的 LP64 域偏移。
 ///
 /// C: `mess_vfs_fs_mkdir { ino_t inode; mode_t mode; uid_t uid; gid_t gid;
@@ -400,6 +437,18 @@ mod tests {
         assert_eq!(lookup_reply_off::UID, 36);
         assert_eq!(lookup_reply_off::GID, 40);
         assert_eq!(lookup_reply_off::SYMLOOP, 44);
+        // create：请求六域 + 回复五域（两套结构）。
+        assert_eq!(create_req_off::INODE, 0);
+        assert_eq!(create_req_off::MODE, 8);
+        assert_eq!(create_req_off::UID, 12);
+        assert_eq!(create_req_off::GID, 16);
+        assert_eq!(create_req_off::GRANT, 20);
+        assert_eq!(create_req_off::PATH_LEN, 24);
+        assert_eq!(create_reply_off::FILE_SIZE, 0);
+        assert_eq!(create_reply_off::INODE, 8);
+        assert_eq!(create_reply_off::MODE, 16);
+        assert_eq!(create_reply_off::UID, 20);
+        assert_eq!(create_reply_off::GID, 24);
         // mkdir：父 inode/mode/uid/gid/grant 五个域。
         assert_eq!(mkdir_req_off::INODE, 0);
         assert_eq!(mkdir_req_off::MODE, 8);

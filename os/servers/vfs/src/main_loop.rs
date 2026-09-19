@@ -732,6 +732,81 @@ impl VfsState {
         route
     }
 
+    /// `common_open` 的**本地半**（C `open.c:118-274` 里不碰 FS 的那些步）：
+    /// 类型分派 → fd/filp 装配 → 回 fd（成功时 syscall 结果就是 fd）。
+    /// `Open` 与 `Creat` 两条臂共用（后者走完 create 之后落到这里）。
+    pub fn finish_open_local(
+        &mut self,
+        idx: usize,
+        fp_slot: Option<minix_types::UserSlot>,
+        node: &crate::path::NodeDetails,
+        oflags: u32,
+    ) {
+        let access = match crate::open::OpenFlags::from_bits(oflags)
+            .and_then(|f| f.access().ok())
+        {
+            Some(a) => a,
+            None => {
+                self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                return;
+            }
+        };
+        let bits: crate::open::AccessBits = access.into();
+        let ft = crate::open::FileType::from(node.mode);
+        match crate::open::dispatch_open(ft, bits, crate::open::OpenFlags::from_bits_truncate(oflags)) {
+            crate::open::OpenOutcome::Proceed => {
+                let vnode_idx = match self.intern_vnode(node) {
+                    Some(i) => i,
+                    None => {
+                        self.finish_worker_job(idx, fp_slot, minix_types::ENFILE);
+                        return;
+                    }
+                };
+                let Some(slot) = fp_slot else {
+                    self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                    return;
+                };
+                let (fd, filp_id) = {
+                    let Some(fp) = self.fproc_table.get_mut(slot) else {
+                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                        return;
+                    };
+                    match crate::filedes::get_fd(
+                        fp,
+                        0,
+                        &crate::filedes::LowestFree,
+                        &mut self.filp_table,
+                        bits.bits(),
+                    ) {
+                        Ok(pair) => pair,
+                        Err(_) => {
+                            self.finish_worker_job(idx, fp_slot, minix_types::EMFILE);
+                            return;
+                        }
+                    }
+                };
+                if let Some(f) = self.filp_table.get_mut(filp_id) {
+                    f.vnode = Some(vnode_idx);
+                    f.flags = oflags as i32;
+                }
+                self.filp_table.inc_count(filp_id);
+                if let Some(fp) = self.fproc_table.get_mut(slot) {
+                    fp.filps[fd.get()] = Some(filp_id.get());
+                    if oflags & crate::open::OpenFlags::CLOEXEC.bits() != 0 {
+                        fp.cloexec_set.set(fd.get(), true);
+                    }
+                }
+                self.finish_worker_job(idx, fp_slot, fd.get() as i32);
+            }
+            crate::open::OpenOutcome::Reject(e) => {
+                self.finish_worker_job(idx, fp_slot, e.to_errno());
+            }
+            // 需要 FS 往返或驱动层的分支（O_TRUNC 截断、设备 open、FIFO
+            // 配对）：本批未接线，诚实拒绝。
+            _ => self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS),
+        }
+    }
+
     /// C `advance`（path.c:60-127）的收尾：把走完的节点并进 vnode 表——
     /// `find_by_ino` 命中则抬 FS 引用 + `dup`，否则填草稿槽并置
     /// `fs_count = ref_count = 1`。返回表下标（走完之后的臂要拿它当
@@ -977,6 +1052,19 @@ impl VfsState {
                 crate::worker::WorkerCont::Fstat { grant } => {
                     let _ = self.revoke_grant(grant);
                 }
+                crate::worker::WorkerCont::Create { user, oflags } => {
+                    // 阶段 3：`REQ_CREATE` 的回复是新建节点的 node_details
+                    // （C `req_create` 收尾）→ 本地半（fd/filp 装配）。
+                    // `EEXIST` 一类错误按状态收尾（`O_EXCL` 的 FS 侧答复）。
+                    if status != 0 {
+                        self.finish_worker_job(idx, fp_slot, status);
+                        continue;
+                    }
+                    let node = crate::request::decode_create_reply(&reply);
+                    let _ = user;
+                    self.finish_open_local(idx, fp_slot, &node, oflags);
+                    continue;
+                }
                 crate::worker::WorkerCont::Status => {
                     // 纯状态：无载荷、无副作用——收尾的默认路径就够了。
                 }
@@ -1054,99 +1142,92 @@ impl VfsState {
                         }
                         Ok(crate::path::WalkStep::Done(node)) => match follow {
                             crate::worker::PathFollow::Open { user: _open_user, oflags } => {
-                                let _ = _open_user; // 回复目的地统一取 fp_slot 的端点
-                                // `common_open` 的本地半（C open.c:118-274
-                                // 里不碰 FS 的那些步）：类型分派 → fd/filp
-                                // 装配 → 回 fd。需要 FS 往返的分支
-                                // （O_TRUNC 的截断、设备驱动 open、FIFO
-                                // 配对）本批未接线，按 ENOSYS 诚实拒绝。
-                                let oflags_u32 = oflags;
-                                let access = match crate::open::OpenFlags::from_bits(oflags_u32)
-                                    .and_then(|f| f.access().ok())
-                                {
-                                    Some(access) => access,
-                                    None => {
-                                        self.finish_worker_job(
-                                            idx,
-                                            fp_slot,
-                                            minix_types::EINVAL,
-                                        );
-                                        continue;
-                                    }
-                                };
-                                // 走完的节点先并进 vnode 表（C `advance` 的
-                                // 收尾），臂拿到表下标当 `filp_vno`。
-                                let vnode_idx = match self.intern_vnode(&node) {
-                                    Some(i) => i,
-                                    None => {
-                                        self.finish_worker_job(
-                                            idx,
-                                            fp_slot,
-                                            minix_types::ENFILE,
-                                        );
-                                        continue;
-                                    }
-                                };
-                                let bits: crate::open::AccessBits = access.into();
-                                let ft = crate::open::FileType::from(node.mode);
-                                let verdict = crate::open::dispatch_open(
-                                    ft,
-                                    bits,
-                                    crate::open::OpenFlags::from_bits_truncate(oflags_u32),
-                                );
-                                match verdict {
-                                    crate::open::OpenOutcome::Proceed => {
-                                        // C open.c:135-141 —— 取 fd 与 filp
-                                        // 槽（未认领）→ 认领四件 → 插槽。
-                                        let (fd, filp_id) = {
-                                            let Some(fp) = self.fproc_table.get_mut(fp_slot.unwrap_or(minix_types::UserSlot::new(0))) else {
-                                                self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
-                                                continue;
-                                            };
-                                            match crate::filedes::get_fd(
-                                                fp,
-                                                0,
-                                                &crate::filedes::LowestFree,
-                                                &mut self.filp_table,
-                                                bits.bits(),
-                                            ) {
-                                                Ok(pair) => pair,
-                                                Err(_) => {
-                                                    self.finish_worker_job(idx, fp_slot, minix_types::EMFILE);
-                                                    continue;
-                                                }
-                                            }
-                                        };
-                                        if let Some(f) = self.filp_table.get_mut(filp_id) {
-                                            f.vnode = Some(vnode_idx);
-                                            f.flags = oflags_u32 as i32;
-                                        }
-                                        self.filp_table.inc_count(filp_id);
-                                        if let Some(fp) = fp_slot.and_then(|s| self.fproc_table.get_mut(s)) {
-                                            fp.filps[fd.get()] = Some(filp_id.get());
-                                            // C open.c:140-141 —— O_CLOEXEC 记入
-                                            // 位图。
-                                            if oflags_u32 & crate::open::OpenFlags::CLOEXEC.bits() != 0
-                                            {
-                                                // `Bitmap::set(idx, true)` 是位图的置位面
-                                                // （C 的 `FD_SET`）。
-                                                fp.cloexec_set.set(fd.get(), true);
-                                            }
-                                        }
-                                        self.finish_worker_job(idx, fp_slot, fd.get() as i32);
-                                        continue;
-                                    }
-                                    crate::open::OpenOutcome::Reject(e) => {
-                                        self.finish_worker_job(idx, fp_slot, e.to_errno());
-                                        continue;
-                                    }
-                                    // 需要 FS 往返或驱动层的分支（19-22 与
-                                    // O_TRUNC 截断）：本批未接线，诚实拒绝。
-                                    _ => {
-                                        self.finish_worker_job(idx, fp_slot, minix_types::ENOSYS);
-                                        continue;
-                                    }
+                                let _ = _open_user;
+                                self.finish_open_local(idx, fp_slot, &node, oflags);
+                                continue;
+                            }
+                            crate::worker::PathFollow::Creat {
+                                    user,
+                                    oflags,
+                                    mode,
+                                    path: _creat_path,
+                                } => {
+                                // `path` 只在阶段 1 失败（ENOENT）时用得到，
+                                // 那条路走的是 Err 分支里的同一字段。
+                                // 阶段 1 走通＝文件已存在：`O_EXCL` 即
+                                // EEXIST（C open.c:118-120 的 `exist` 判定），
+                                // 否则按普通 open 收尾。
+                                let _ = user;
+                                if oflags & crate::open::OpenFlags::EXCL.bits() != 0 {
+                                    self.finish_worker_job(idx, fp_slot, minix_types::EEXIST);
+                                    continue;
                                 }
+                                let _ = mode;
+                                self.finish_open_local(idx, fp_slot, &node, oflags);
+                                continue;
+                            }
+                            crate::worker::PathFollow::CreatInDir { user, oflags, mode, entry } => {
+                                // 阶段 2 走通（父目录在）：发 `REQ_CREATE`
+                                // （C `new_node` → `req_create`）。
+                                let (grant, name_len) = {
+                                    let Some(wp) = self.worker_pool.get_mut(idx) else {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    };
+                                    let bytes = entry.as_bytes();
+                                    let n = bytes.len().min(crate::path::PATH_MAX - 1);
+                                    wp.path_scratch[..n].copy_from_slice(&bytes[..n]);
+                                    wp.path_scratch[n] = 0;
+                                    let addr = wp.path_scratch.as_ptr() as u64;
+                                    let len = n + 1;
+                                    let grant = self.grants.grant_direct(
+                                        &minix_sys::syscall::DirectKernelCallTransport,
+                                        node.fs_e.get(),
+                                        addr,
+                                        len as u64,
+                                        minix_types::CpFlags::READ,
+                                    );
+                                    match grant {
+                                        Ok(g) => (g, len),
+                                        Err(_) => {
+                                            self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                            continue;
+                                        }
+                                    }
+                                };
+                                let vmnt = match self.vmnt_table.find_by_fs(node.fs_e) {
+                                    Some(v) => v.0,
+                                    None => {
+                                        let _ = self.revoke_grant(grant);
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EIO);
+                                        continue;
+                                    }
+                                };
+                                let (uid, gid) = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                    Some(fp) => (fp.eff_uid, fp.eff_gid),
+                                    None => {
+                                        let _ = self.revoke_grant(grant);
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
+                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                    wp.cont = Some(crate::worker::WorkerCont::Create {
+                                        user,
+                                        oflags,
+                                    });
+                                }
+                                self.pending_fs = Some(PendingFs {
+                                    vmnt,
+                                    fs_e: node.fs_e,
+                                    worker: idx,
+                                    grant,
+                                    user,
+                                    req: crate::request::encode_create(
+                                        node.ino, grant, mode, uid, gid, name_len,
+                                    ),
+                                });
+                                continue; // 等 REQ_CREATE 的回复（Create 续接）
                             }
                             crate::worker::PathFollow::Mkdir { user, entry, mode } => {
                                 // C `do_mkdir`（open.c:564-598）：走到的必须是
@@ -1310,6 +1391,128 @@ impl VfsState {
                                 PathFail::Path(p) => walk_err(p),
                                 PathFail::Status(st) => st,
                             };
+                            // `creat` 阶段 1 的 ENOENT → 阶段 2：**走父目录**
+                            // （C `new_node` 的 `last_dir` 那一步）。其余错误
+                            // 按状态收尾。
+                            if status == minix_types::ENOENT
+                                && let crate::worker::PathFollow::Creat {
+                                    user,
+                                    oflags,
+                                    mode,
+                                    path,
+                                } = follow
+                            {
+                                match crate::path::last_dir_split(&path) {
+                                    Ok(split) => {
+                                        let resolve = match crate::path::Lookup::new(
+                                            split.dir_path,
+                                            crate::path::LookupFlags::NOFLAGS,
+                                        ) {
+                                            Ok(l) => l,
+                                            Err(pe) => {
+                                                self.finish_worker_job(
+                                                    idx,
+                                                    fp_slot,
+                                                    pe.to_errno(),
+                                                );
+                                                continue;
+                                            }
+                                        };
+                                        let rd = self.root_dir_of(fp_slot);
+                                        let start = if resolve.path.starts_with('/') {
+                                            crate::path::LookupStart {
+                                                fs: rd.fs,
+                                                ino: rd.ino,
+                                                dev: rd.dev,
+                                            }
+                                        } else {
+                                            let wd = fp_slot
+                                                .map(|s| self.work_dir_of(s))
+                                                .unwrap_or(rd);
+                                            crate::path::LookupStart {
+                                                fs: wd.fs,
+                                                ino: wd.ino,
+                                                dev: wd.dev,
+                                            }
+                                        };
+                                        let uid = fp_slot
+                                            .and_then(|s| self.fproc_table.get(s))
+                                            .map(|fp| fp.eff_uid)
+                                            .unwrap_or(0);
+                                        let gid = fp_slot
+                                            .and_then(|s| self.fproc_table.get(s))
+                                            .map(|fp| fp.eff_gid)
+                                            .unwrap_or(0);
+                                        match crate::path::LookupWalk::begin(
+                                            start, resolve, rd, uid, gid,
+                                        ) {
+                                            Ok((walk2, step2)) => {
+                                                let crate::path::WalkStep::Send {
+                                                    fs_e,
+                                                    dir_ino,
+                                                    root_ino,
+                                                } = step2
+                                                else {
+                                                    self.finish_worker_job(
+                                                        idx,
+                                                        fp_slot,
+                                                        minix_types::EIO,
+                                                    );
+                                                    continue;
+                                                };
+                                                if let Some(wp) =
+                                                    self.worker_pool.get_mut(idx)
+                                                {
+                                                    wp.path = Some(
+                                                        crate::worker::PathPending {
+                                                            walk: walk2,
+                                                            grant: 0,
+                                                            follow: crate::worker::PathFollow::CreatInDir {
+                                                                user,
+                                                                oflags,
+                                                                mode,
+                                                                entry: split.entry,
+                                                            },
+                                                        },
+                                                    );
+                                                }
+                                                if self
+                                                    .send_lookup_for_slot(
+                                                        idx, fp_slot, fs_e, dir_ino,
+                                                        root_ino,
+                                                    )
+                                                    .is_err()
+                                                {
+                                                    if let Some(wp) =
+                                                        self.worker_pool.get_mut(idx)
+                                                    {
+                                                        wp.path = None;
+                                                        wp.cont = None;
+                                                    }
+                                                    self.finish_worker_job(
+                                                        idx,
+                                                        fp_slot,
+                                                        minix_types::EIO,
+                                                    );
+                                                }
+                                                continue;
+                                            }
+                                            Err(pe) => {
+                                                self.finish_worker_job(
+                                                    idx,
+                                                    fp_slot,
+                                                    pe.to_errno(),
+                                                );
+                                                continue;
+                                            }
+                                        }
+                                    }
+                                    Err(pe) => {
+                                        self.finish_worker_job(idx, fp_slot, pe.to_errno());
+                                        continue;
+                                    }
+                                }
+                            }
                             self.finish_worker_job(idx, fp_slot, status);
                             continue;
                         }

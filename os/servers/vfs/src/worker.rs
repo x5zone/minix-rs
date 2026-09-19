@@ -89,6 +89,14 @@ pub enum WorkerCont {
         /// 已发给 FS 的 magic grant（续接里 revoke，C request.c:1109）。
         grant: i32,
     },
+    /// `creat` 阶段 3（`REQ_CREATE`）：回复是新建节点的 `node_details`，
+    /// 续接里并进 vnode 表、再做 `common_open` 的本地半（fd/filp 装配）。
+    Create {
+        /// 调用方端点。
+        user: Endpoint,
+        /// 原始 `oflags`。
+        oflags: u32,
+    },
     /// 纯状态续接（`REQ_MKDIR`/`REQ_UNLINK` 一类"回了状态就完事"的请求）：
     /// 把回复的状态原样回给用户，无载荷、无副作用。
     Status,
@@ -159,6 +167,31 @@ pub enum PathFollow {
         user: Endpoint,
         /// 原始 `oflags`（C 的 `open_flags`）。
         oflags: u32,
+    },
+    /// `creat(path, flags, mode)` 阶段 1：**走整条路径**。走通＝文件已存在
+    /// （`O_EXCL` 时是 EEXIST）；ENOENT 则转阶段 2（走父目录）。
+    /// C `common_open` 的 O_CREAT 支（open.c:100-135）。
+    Creat {
+        /// 调用方端点。
+        user: Endpoint,
+        /// 原始 `oflags`（含 `O_CREAT`）。
+        oflags: u32,
+        /// 新建节点的模式位（已按 umask 收窄）。
+        mode: u32,
+        /// 原路径（阶段 2 要重新 split 出父目录与组件名）。
+        path: alloc::string::String,
+    },
+    /// `creat` 阶段 2：走父目录（`last_dir_split` 的 `dir_path`），走通后发
+    /// `REQ_CREATE`。C `new_node` 的 `last_dir` 那一步（open.c:322）。
+    CreatInDir {
+        /// 调用方端点。
+        user: Endpoint,
+        /// 原始 `oflags`。
+        oflags: u32,
+        /// 新建节点的模式位。
+        mode: u32,
+        /// 最后组件名（新节点的名字）。
+        entry: alloc::string::String,
     },
     /// `mkdir(path, mode)`：**走的是父目录**（`last_dir_split` 的
     /// `dir_path`），走完后发 `REQ_MKDIR`（C `do_mkdir` 的

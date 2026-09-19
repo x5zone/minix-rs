@@ -208,7 +208,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Getrusage => SyscallResult::Ok(0), // 废弃调用恒 OK（misc.c:1005）
 
         // ── FS 对话族：req_* 经 fs_comm 窗口投递，W1 transport 通电后启用 ──
-        | VfsCallNum::Creat
         | VfsCallNum::Mknod
         | VfsCallNum::Link
         | VfsCallNum::Unlink
@@ -593,6 +592,105 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 user: user_e,
                 req: crate::request::encode_ftrunc(ino, length, 0),
             });
+            SyscallResult::Suspend
+        }
+
+        // ── 路径族臂：creat（O_CREAT；三段续接链）──
+        VfsCallNum::Creat => {
+            // C `do_creat`（open.c:58-78）→ `common_open` 的 O_CREAT 支：
+            // ①`O_CREAT` 必须在场（否则 EINVAL）②取路径 ③模式位按 umask
+            // 收窄 ④走整条路径——走通即"文件已存在"，ENOENT 则转走父目录
+            // 并发 `REQ_CREATE`（阶段 2/3 在续接体里）。
+            let (path, oflags, mode) = {
+                // 载荷（C `mess_lc_vfs_creat`：name/len/flags/mode；Rust 侧
+                // 与 open 同形：name@0、len@8、flags@16、mode@20、buf@24）。
+                // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
+                let raw = unsafe { &msg.m_u.raw };
+                let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[8..16]);
+                let len = u64::from_le_bytes(b8);
+                let flags = u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]);
+                let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
+                let inline = &raw[24..];
+                if len as usize > minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+                    return SyscallResult::Error(minix_types::ENAMETOOLONG);
+                }
+                let n = (len as usize).min(inline.len());
+                match crate::path::decode_name(&inline[..n], n) {
+                    Ok(p) => (p, flags, mode),
+                    Err(e) => return SyscallResult::Error(e.to_errno()),
+                }
+            };
+            // C `do_creat:71-72` —— `O_CREAT` 必须在场。
+            let args = crate::open::OpenArgs {
+                oflags: crate::open::OpenFlags::from_bits_truncate(oflags),
+                mode,
+            };
+            if args.validate_for_creat().is_err() {
+                return SyscallResult::Error(minix_types::EINVAL);
+            }
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            // C `common_open` 的建节点模式：`bits & RWX & umask`。
+            let umask = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.umask)
+                .unwrap_or(0o022);
+            let create_bits = (mode & 0o777 & umask) | crate::open::S_IFREG;
+            let resolve = match crate::path::Lookup::new(path.clone(), crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let rd = state.root_dir_of(Some(fp_slot));
+            let start = if resolve.path.starts_with('/') {
+                crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            } else {
+                let wd = state.work_dir_of(fp_slot);
+                crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            };
+            let uid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_uid).unwrap_or(0);
+            let gid = state.fproc_table.get(fp_slot).map(|fp| fp.eff_gid).unwrap_or(0);
+            let (walk, step) = match crate::path::LookupWalk::begin(start, resolve, rd, uid, gid) {
+                Ok(pair) => pair,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+                return SyscallResult::Error(minix_types::EIO);
+            };
+            let Some(worker) = state.current_worker else {
+                return SyscallResult::Error(minix_types::EAGAIN);
+            };
+            if let Some(wp) = state.worker_pool.get_mut(worker) {
+                wp.cont = Some(crate::worker::WorkerCont::Path);
+                wp.path = Some(crate::worker::PathPending {
+                    walk,
+                    grant: 0,
+                    follow: crate::worker::PathFollow::Creat {
+                        user: user_e,
+                        oflags,
+                        mode: create_bits,
+                        path,
+                    },
+                });
+            }
+            if state
+                .send_lookup_for_slot(worker, Some(fp_slot), fs_e, dir_ino, root_ino)
+                .is_err()
+            {
+                if let Some(wp) = state.worker_pool.get_mut(worker) {
+                    wp.cont = None;
+                    wp.path = None;
+                }
+                return SyscallResult::Error(minix_types::EIO);
+            }
             SyscallResult::Suspend
         }
 
@@ -1139,6 +1237,59 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Write),
             SyscallResult::Error(minix_types::EIO),
             "常规文件：无 vmnt → EIO"
+        );
+    }
+
+    /// `Creat` 臂的门：`O_CREAT` 缺席即 EINVAL（C `do_creat:71-72`）；超内联
+    /// 上限 ENAMETOOLONG；合法路径走到遍历（宿主下 grant 不可达 → EIO）。
+    #[test]
+    fn test_dispatch_creat_gates() {
+        use minix_types::Endpoint;
+
+        let creat_msg = |flags: u32, mode: u32, path: &[u8]| {
+            let mut m = Message::default();
+            m.m_source = Endpoint::from_generation_slot(1, 0);
+            m.m_type = VfsCallNum::Creat as i32;
+            // SAFETY: creat 载荷 name@0/len@8/flags@16/mode@20/buf@24。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[8..16].copy_from_slice(&(path.len() as u64).to_le_bytes());
+                raw[16..20].copy_from_slice(&flags.to_le_bytes());
+                raw[20..24].copy_from_slice(&mode.to_le_bytes());
+                let n = path.len().min(raw.len() - 24);
+                raw[24..24 + n].copy_from_slice(&path[..n]);
+            }
+            m
+        };
+
+        let mut state = seeded(100);
+        // O_CREAT 缺席 → EINVAL。
+        state.current_message = creat_msg(0, 0o644, b"/x\0");
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Creat),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+        // 超内联 → ENAMETOOLONG。
+        let long = [b'a'; 33];
+        state.current_message = creat_msg(0x200, 0o644, &long);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Creat),
+            SyscallResult::Error(minix_types::ENAMETOOLONG)
+        );
+        // 合法：走到遍历（绑槽后宿主 grant 不可达 → EIO）。
+        let worker = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .unwrap();
+        state.current_worker = Some(worker);
+        state.current_message = creat_msg(0x200, 0o644, b"/x\0");
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Creat),
+            SyscallResult::Error(minix_types::EIO)
         );
     }
 
