@@ -166,17 +166,16 @@ impl FsDriver for PtyfsDriver {
         }
         let mut pos = *position as u64;
         let mut staging = vec![0u8; GETDENTS_BUFFER];
+        let mut backend = OutBackend { out };
+        let mut encoder = DentryEncoder::new(
+            minix_fs::data::DataChannel::Present {
+                backend: &mut backend,
+                size: capacity,
+            },
+            capacity,
+            &mut staging[..],
+        );
         let mut delivered = 0usize;
-        {
-            let mut backend = OutBackend { out };
-            let mut encoder = DentryEncoder::new(
-                minix_fs::data::DataChannel::Present {
-                    backend: &mut backend,
-                    size: capacity,
-                },
-                capacity,
-                &mut staging[..],
-            );
         loop {
             let current = pos;
             pos += 1;
@@ -185,7 +184,7 @@ impl FsDriver for PtyfsDriver {
                 encoder.add(ROOT_NUMBER, name, DirentType::Directory)
             } else {
                 let index = current - 2;
-                if index >= self.table.upper_bound() as u64 {
+                if index >= self.table.upper_bound() {
                     break; // EOF (C ptyfs.c:180-181)
                 }
                 let Some(stored) = self.table.get(index as u32) else {
@@ -205,8 +204,7 @@ impl FsDriver for PtyfsDriver {
         }
         // C `fsdriver_dentry_finish`（dentry.c:85-99）：把 staging 里的
         // 尾段刷给调用者，返回发出的总字节数。
-        delivered = encoder.finish().map_err(|e| e)?;
-        }
+        delivered += encoder.finish().map_err(|e| e)?;
         *position = pos as i64;
         Ok(delivered)
     }
@@ -262,7 +260,7 @@ impl FsDriver for PtyfsDriver {
     /// `StatVfs` value carries no flag field, so only `f_namemax` lands
     /// (the flag face is a tracked wire gap).
     fn stat_vfs(&mut self, vfs: &mut StatVfs) -> Result<(), minix_types::Errno> {
-        let (_never_truncates, name_max) = filesystem_stat(NAME_MAX_REPORTED as usize);
+        let (_never_truncates, name_max) = filesystem_stat(NAME_MAX_REPORTED);
         vfs.name_max = name_max as u64;
         Ok(())
     }
@@ -297,7 +295,7 @@ mod tests {
         );
 
         // 控制消息替身：直接向表写一个从节点（index 3 → 名字 "3"）。
-        driver.table.set(
+        let _ = driver.table.set(
             3,
             crate::table::StoredNode { device: 9, mode: 0o020620, uid: 100, gid: 5, created: 77 },
         );
