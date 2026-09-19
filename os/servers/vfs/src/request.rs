@@ -606,6 +606,10 @@ pub fn decode_lookup_reply(status: i32, msg: &Message) -> Option<crate::path::Lo
             mode: rd4(off::MODE),
             size: rd8(off::FILE_SIZE),
             dev: rd8(off::DEVICE),
+            // `node_details` 的属主/属组：C `advance` 把它写进 vnode 的
+            // `v_uid`/`v_gid`（path.c:98-99），权限判断随后按它算。
+            uid: rd4(off::UID),
+            gid: rd4(off::GID),
         }),
         minix_types::EENTERMOUNT => Some(crate::path::LookupRes::EnterMount {
             ino: rd8(off::INODE),
@@ -1213,7 +1217,7 @@ mod tests {
                 mode: 0o100644,
                 size: 12,
                 dev: 3
-            })
+            , uid: 0, gid: 0 })
         );
         assert_eq!(
             decode_lookup_reply(

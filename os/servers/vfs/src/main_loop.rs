@@ -2620,8 +2620,11 @@ mod tests {
                 crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS)
                     .unwrap(),
                 rd,
-                0,
-                0,
+                // 遍历时带的 id 故意等于后面用例里的调用方真实 id（1000）：
+                // 若实现按遍历参数而非回复里的属主算，用例 2 的 W_OK 会被
+                // 误放行——那条断言因此是区分性的。
+                1000,
+                1000,
             )
             .unwrap();
             (slot, idx, walk)
@@ -2746,12 +2749,15 @@ mod tests {
             .unwrap();
         let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
         let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        // 遍历时带的 id 故意与回复里的属主不同（7777 vs 0）：权限判断必须
+        // 按 `node_details` 的属主算（C `advance` 的 `v_uid = res.uid`），
+        // 按遍历参数算会把"非属主"误判成属主。
         let (walk, _) = crate::path::LookupWalk::begin(
             start,
             crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
             rd,
-            0,
-            0,
+            7777,
+            7777,
         )
         .unwrap();
         let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
@@ -2849,8 +2855,11 @@ mod tests {
             start,
             crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
             rd,
-            0,
-            0,
+            // 遍历时带的 id **故意等于调用方的有效 id**（1000）：权限判断若
+            // 按遍历参数而非回复里的属主算，就会把非属主当成属主、把这次
+            // 打开放行——这条断言因此是区分性的。
+            1000,
+            1000,
         )
         .unwrap();
         let mut reply = Message { m_type: minix_types::OK, ..Message::default() };

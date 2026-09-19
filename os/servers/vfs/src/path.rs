@@ -118,6 +118,12 @@ pub enum LookupRes {
         mode: u32,
         size: u64,
         dev: u64,
+        /// `node_details.uid`——**文件属主**（C `advance` 的
+        /// `new_vp->v_uid = res.uid`，path.c:98-99；`path.c:565-566` 同款）。
+        /// 权限判断按它算，不是按调用方自己的 id。
+        uid: u32,
+        /// `node_details.gid`——文件属组（同上）。
+        gid: u32,
     },
     EnterMount {
         ino: u64,
@@ -292,15 +298,20 @@ impl LookupWalk {
     ) -> Result<WalkStep, PathError> {
         if matches!(res, LookupRes::Ok { .. }) {
             return match res {
-                LookupRes::Ok { ino, mode, size, dev } => Ok(WalkStep::Done(NodeDetails {
-                    fs_e: self.fs_e,
-                    ino,
-                    mode,
-                    size,
-                    uid: self.uid,
-                    gid: self.gid,
-                    dev,
-                })),
+                LookupRes::Ok { ino, mode, size, dev, uid, gid } => {
+                    Ok(WalkStep::Done(NodeDetails {
+                        fs_e: self.fs_e,
+                        ino,
+                        mode,
+                        size,
+                        // 属主来自 FS 的回复（C `advance` 的 `v_uid = res.uid`），
+                        // **不是**遍历时带的调用方 id——那两个只用于 `advance`
+                        // 内部的搜索权限判断。
+                        uid,
+                        gid,
+                        dev,
+                    }))
+                }
                 _ => unreachable!(),
             };
         }
@@ -899,7 +910,7 @@ mod tests {
         // 正常回复：完成，七字段带上起点三元组里的 fs 与上下文 uid/gid。
         let step = walk
             .resume(
-                LookupRes::Ok { ino: 9, mode: 0o100644, size: 12, dev: 0 },
+                LookupRes::Ok { ino: 9, mode: 0o100644, size: 12, dev: 0 , uid: 0, gid: 0 },
                 rd,
                 &mounts,
             )
@@ -1203,20 +1214,30 @@ mod tests {
             calls += 1;
             assert_eq!(fs, parent);
             assert_eq!(dir, 1);
-            Ok(LookupRes::Ok { ino: 42, mode: 0o100644, size: 7, dev: 100 })
+            Ok(LookupRes::Ok {
+                ino: 42,
+                mode: 0o100644,
+                size: 7,
+                dev: 100,
+                uid: 1000,
+                gid: 100,
+            })
         };
         let mut lk = Lookup::new("/a/b".to_string(), LookupFlags::NOFLAGS).unwrap();
+        // 遍历时带的 id 故意与回复里的属主不同：`node_details` 的 uid/gid
+        // 才是文件的属主/属组（C `advance` 的 `v_uid = res.uid`，
+        // path.c:98-99），遍历参数只用于 `advance` 内部的搜索权限判断。
         let nd = lookup(
             LookupStart { fs: parent, ino: 1, dev: 100 },
             &mut lk,
             RootDir { ino: 1, fs: parent, dev: 100 },
-            1000, 100, &mounts, &mut req,
+            5555, 5555, &mounts, &mut req,
         )
         .unwrap();
         assert_eq!(calls, 1);
         assert_eq!(nd.ino, 42);
         assert_eq!(nd.fs_e, parent);
-        assert_eq!(nd.uid, 1000);
+        assert_eq!((nd.uid, nd.gid), (1000, 100), "属主来自回复而非调用方 id");
     }
 
     #[test]
@@ -1241,7 +1262,7 @@ mod tests {
                 Ok(LookupRes::EnterMount { ino: 9, offset: 5, symloop: 0 })
             } else {
                 assert_eq!(dir, 2);
-                Ok(LookupRes::Ok { ino: 77, mode: 0o040755, size: 3, dev: 101 })
+                Ok(LookupRes::Ok { ino: 77, mode: 0o040755, size: 3, dev: 101 , uid: 0, gid: 0 })
             }
         };
         let nd = lookup(
@@ -1276,7 +1297,7 @@ mod tests {
             } else {
                 // 爬出后落在父分区的挂载点 vnode 上（ino 9）。
                 assert_eq!(dir, 9);
-                Ok(LookupRes::Ok { ino: 55, mode: 0o100644, size: 1, dev: 100 })
+                Ok(LookupRes::Ok { ino: 55, mode: 0o100644, size: 1, dev: 100 , uid: 0, gid: 0 })
             }
         };
         let nd = lookup(
@@ -1362,12 +1383,12 @@ mod tests {
         let mut rdlink_calls = 0;
         let mut req = |fs: Endpoint, dir: u64, _root: u64, lk2: &mut Lookup| {
             if dir == 1 {
-                return Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 });
+                return Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 , uid: 0, gid: 0 });
             }
             if lk2.flags.contains(LookupFlags::RET_SYMLINK) {
-                return Ok(LookupRes::Ok { ino: 8, mode: S_IFLNK | 0o777, size: 1, dev: 100 });
+                return Ok(LookupRes::Ok { ino: 8, mode: S_IFLNK | 0o777, size: 1, dev: 100 , uid: 0, gid: 0 });
             }
-            Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 })
+            Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 , uid: 0, gid: 0 })
         };
         let mut rdlink = |_fs: Endpoint, _ino: u64| -> Result<String, PathError> {
             rdlink_calls += 1;
@@ -1438,21 +1459,21 @@ mod tests {
         let mut req = |fs: Endpoint, dir: u64, _root: u64, lk2: &mut Lookup| {
             assert_eq!(fs, p10);
             if lk2.path == "/a" {
-                return Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 });
+                return Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 , uid: 0, gid: 0 });
             }
             if lk2.path == "link" && lk2.flags.contains(LookupFlags::RET_SYMLINK) {
-                return Ok(LookupRes::Ok { ino: 8, mode: S_IFLNK | 0o777, size: 1, dev: 100 });
+                return Ok(LookupRes::Ok { ino: 8, mode: S_IFLNK | 0o777, size: 1, dev: 100 , uid: 0, gid: 0 });
             }
             if lk2.path == "c" {
-                return Ok(LookupRes::Ok { ino: 9, mode: 0o100644, size: 4, dev: 100 });
+                return Ok(LookupRes::Ok { ino: 9, mode: 0o100644, size: 4, dev: 100 , uid: 0, gid: 0 });
             }
             if lk2.path == "." {
                 // "．"解析为目录自身（/a = ino 5）。
-                return Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 });
+                return Ok(LookupRes::Ok { ino: 5, mode: 0o040755, size: 0, dev: 100 , uid: 0, gid: 0 });
             }
             if lk2.path == ".." {
                 // ".."爬出一级到根（ino 1）。
-                return Ok(LookupRes::Ok { ino: 1, mode: 0o040755, size: 0, dev: 100 });
+                return Ok(LookupRes::Ok { ino: 1, mode: 0o040755, size: 0, dev: 100 , uid: 0, gid: 0 });
             }
             Err(PathError::NoEnt)
         };
