@@ -587,6 +587,36 @@ pub struct PendingTables {
     pub tcp_sends: Vec<PendingTcpSend>,
     /// TCP 接收挂起（无数据）。
     pub tcp_recvs: Vec<PendingTcpRecv>,
+    /// select 等待（一层触发：回复后由 VFS 自行重挂）。
+    pub selects: Vec<PendingSelect>,
+}
+
+/// 一条 select 等待：套接字号、VFS 端点（select1 回复的目的地）与
+/// 关心的就绪位（`SDEV_OP_*`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingSelect {
+    pub sock_id: i32,
+    pub vfs: Endpoint,
+    pub ops: u8,
+}
+
+impl PendingTables {
+    /// 取消一位调用方在某套接字上的全部挂起现场（C `sockevent_cancel`
+    /// 的服务半；SDEV_CANCEL 无回复，取消后原请求由超时/事件路径
+    /// 自然沉默）。
+    pub fn cancel_for(&mut self, sock_id: i32, who: Endpoint) {
+        self.recvs.retain(|n| !(n.sock_id == sock_id && n.caller == who));
+        self.connects
+            .retain(|n| !(n.sock_id == sock_id && n.caller == who));
+        self.accepts
+            .retain(|n| !(n.listener_id == sock_id && n.caller == who));
+        self.tcp_sends
+            .retain(|n| !(n.sock_id == sock_id && n.caller == who));
+        self.tcp_recvs
+            .retain(|n| !(n.sock_id == sock_id && n.caller == who));
+        self.selects
+            .retain(|n| !(n.sock_id == sock_id && n.vfs == who));
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -618,6 +648,58 @@ pub mod shut {
     pub const WR: i32 = 1;
     /// `SHUT_RDWR`（2）。
     pub const RDWR: i32 = 2;
+}
+
+/// 取消（C `sdev_cancel` 的服务半，sdev.c:25 的"无回复"面）：摘掉
+/// 该调用方在该套接字上的全部挂起现场——服务侧留言条与表内记账都
+/// 清。**不发回复**（C：取消的回复就是原请求的回复，这里沉默让位）。
+pub fn cancel_road(table: &mut SockTable, pending: &mut PendingTables, msg: &Message) {
+    let Some(req) = decode_simple(msg) else {
+        return;
+    };
+    let Some(id) = SockId::from_raw(req.sock_id) else {
+        return;
+    };
+    let who = Endpoint(req.req_id);
+    table.cancel(id, who);
+    pending.cancel_for(req.sock_id, who);
+}
+
+/// select 路（C `sdev_select` 的两层回复）：就绪即回一型；未就绪登记
+/// 等待（一层触发——回复后由 VFS 自行决定重挂），ready-scan 唤醒。
+pub fn select_road(
+    stack: &mut dyn Stack,
+    table: &mut SockTable,
+    pending: &mut PendingTables,
+    vfs: Endpoint,
+    msg: &Message,
+) -> Option<Message> {
+    let Some((sock_id, ops)) = decode_select(msg) else {
+        return Some(select1_reply(sock_id_from(0), 0));
+    };
+    let Some(stack_socket) = stack_socket_of(sock_id) else {
+        return Some(select1_reply(sock_id, 0));
+    };
+    let readiness = stack.readiness(stack_socket);
+    let ready = matched_ops(readiness, ops);
+    if ready != 0 {
+        return Some(select1_reply(sock_id, ready));
+    }
+    let Some(id) = SockId::from_raw(sock_id) else {
+        return Some(select1_reply(sock_id, 0));
+    };
+    // 同一套接字只挂一条等待（C `ss_endpt` 单槽；重复 select 顶替）。
+    if let Err(e) = table.register_select(id, vfs, ops) {
+        let _ = e;
+        return Some(select1_reply(sock_id, 0));
+    }
+    pending.selects.retain(|s| s.sock_id != sock_id);
+    pending.selects.push(PendingSelect { sock_id, vfs, ops });
+    None
+}
+
+fn sock_id_from(v: usize) -> i32 {
+    v as i32
 }
 
 /// 关闭（C `sdev_close` → 各模块 close + 表摘除）：栈类先关栈内套
@@ -658,6 +740,46 @@ pub fn shutdown_socket(
         }),
         None => Some(simple_reply(req.req_id, 0)),
     }
+}
+
+/// 解码 `SDEV_SELECT` 载荷：`mess_vfs_lsockdriver_select { sock_id@0;
+/// ops@4 }`（ipc.h:2295-2302；ops 是 `SDEV_OP_*` 就绪位）。
+pub fn decode_select(msg: &Message) -> Option<(i32, u8)> {
+    // SAFETY: 载荷按上述域序写在消息负载区。
+    let raw = unsafe { &msg.m_u.raw };
+    Some((
+        i32::from_le_bytes(raw[0..4].try_into().unwrap()),
+        i32::from_le_bytes(raw[4..8].try_into().unwrap()) as u8,
+    ))
+}
+
+/// 组装 select 一型回复：`mess_lsockdriver_vfs_select_reply
+/// { sock_id@0; status@4 }`——status 是就绪的 `SDEV_OP_*` 位。
+pub fn select1_reply(sock_id: i32, ready: u8) -> Message {
+    let mut m = Message {
+        m_type: SdevReply::SelectReply1 as i32,
+        ..Message::default()
+    };
+    // SAFETY: 回复载荷按上述域序写在消息负载区。
+    unsafe {
+        let raw = &mut m.m_u.raw;
+        raw[0..4].copy_from_slice(&sock_id.to_le_bytes());
+        raw[4..8].copy_from_slice(&(ready as i32).to_le_bytes());
+    }
+    m
+}
+
+/// 就绪位与关心位的交集（读/写两面；错误位随 error 字段单独批）。
+fn matched_ops(readiness: crate::lwip_port::Readiness, ops: u8) -> u8 {
+    use minix_sockdriver::sdev::{SDEV_OP_RD, SDEV_OP_WR};
+    let mut matched = 0u8;
+    if readiness.readable {
+        matched |= SDEV_OP_RD;
+    }
+    if readiness.writable {
+        matched |= SDEV_OP_WR;
+    }
+    matched & ops
 }
 
 /// UDP 路的翻译入口：`msg` 已是 UDP 类套接字上的某条请求。返回
@@ -1284,6 +1406,28 @@ pub fn ready_scan(
                 i += 1;
             }
         }
+    }
+    // select 等待：就绪位与关心位有交集即回一型并摘账（一层触发：
+    // 回复后由 VFS 自行决定重挂；对端关闭按错误位归入 ERR 面）。
+    let mut i = 0;
+    while i < pending.selects.len() {
+        let note = pending.selects[i];
+        let ready = stack_socket_of(note.sock_id)
+            .map(|s| stack.readiness(s))
+            .map(|r| matched_ops(r, note.ops))
+            .unwrap_or(0);
+        if ready == 0 {
+            i += 1;
+            continue;
+        }
+        let Some(id) = SockId::from_raw(note.sock_id) else {
+            pending.selects.remove(i);
+            continue;
+        };
+        if table.take_select(id).is_some() {
+            replies.push((note.vfs, select1_reply(note.sock_id, ready)));
+        }
+        pending.selects.remove(i);
     }
     replies
 }
