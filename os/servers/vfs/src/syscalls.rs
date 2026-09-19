@@ -200,11 +200,45 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         | VfsCallNum::Ioctl
         | VfsCallNum::Fcntl
         | VfsCallNum::Getvfsstat
-        | VfsCallNum::GcovFlush
-        | VfsCallNum::Getsysinfo => {
+        | VfsCallNum::GcovFlush => {
             // FS/驱动对话——W1 transport 通电后经 fs_comm 窗口接入
             // （plan.md §8 W3 尾注）。
             SyscallResult::Nosys
+        }
+
+        // ── 服务器自用臂：getsysinfo（VFS_GETSYSINFO = +48）──
+        VfsCallNum::Getsysinfo => {
+            // C `do_getsysinfo`（misc.c:59-113）三段：root 门 → `what`
+            // 分类 → 精确长度门 + `sys_datacopy(SELF → 调用方)`。
+            // root 判据是 C 的 `super_user` 宏（glo.h:33）——当前 fproc
+            // 的 `fp_effuid == SU_UID (0)`。
+            let what_raw = unsafe { msg.m_u.m_lsys_getsysinfo.what };
+            let where_ = unsafe { msg.m_u.m_lsys_getsysinfo.where_ };
+            let size = unsafe { msg.m_u.m_lsys_getsysinfo.size };
+            let is_root = state
+                .current_fp_slot
+                .and_then(|slot| state.fproc_table.get(slot))
+                .map(|fp| fp.eff_uid == 0)
+                .unwrap_or(false);
+            let what = match crate::misc::SysinfoWhat::from_raw(what_raw as u32) {
+                Some(w) => w,
+                // C `default: return(EINVAL)`（misc.c:104-105）。
+                None => return SyscallResult::Error(minix_types::EINVAL),
+            };
+            let target = msg.m_source;
+            let mut cpy = crate::misc::SysCopyToUser { target };
+            match crate::misc::do_getsysinfo(
+                &state.fproc_table,
+                &state.dmap_table,
+                is_root,
+                what,
+                size,
+                minix_types::VirBytes(where_),
+                &mut cpy,
+            ) {
+                Ok(()) => SyscallResult::Ok(0),
+                Err(e) => SyscallResult::Error(e.to_errno()),
+            }
         }
     }
 }
@@ -252,6 +286,74 @@ mod tests {
         state.current_fp_slot = Some(slot);
         state.initialized = true;
         state
+    }
+
+    /// `VFS_GETSYSINFO` 臂（W3 回复半的服务器自用臂）：三段与 C
+    /// `do_getsysinfo`（misc.c:59-113）一致——root 门（`fp_effuid == 0`，
+    /// C 的 `super_user` 宏 glo.h:33）先于长度门，`what` 分类失败回
+    /// `EINVAL`，门全过才走拷出缝（宿主构建下 `sys_datacopy` 诚实回
+    /// `EFAULT`，见 `SysCopyToUser`）。
+    #[test]
+    fn test_dispatch_getsysinfo_gates_and_copy_stage() {
+        use minix_types::{SI_DMAP_TAB, SI_PROC_TAB};
+
+        let getsysinfo_msg = |what: i32, size: u64| {
+            let mut m = Message::default();
+            m.m_source = Endpoint::from_generation_slot(1, 0);
+            m.m_type = VfsCallNum::Getsysinfo as i32;
+            // SAFETY: m_lsys_getsysinfo 是 VFS_GETSYSINFO 的载荷域。
+            unsafe {
+                let g = &mut m.m_u.m_lsys_getsysinfo;
+                g.what = what;
+                g.where_ = 0x4000;
+                g.size = size;
+            }
+            m
+        };
+        let dmap_bytes =
+            (core::mem::size_of::<minix_types::DmapSnap>() * minix_types::NR_DEVICES) as u64;
+        let fproc_bytes =
+            (core::mem::size_of::<minix_types::FProcSnap>() * minix_types::NR_PROCS) as u64;
+
+        // 非 root（eff_uid != 0）→ EPERM，且发生在任何拷贝之前。
+        let mut state = seeded(100);
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .eff_uid = 1000;
+        state.current_message = getsysinfo_msg(SI_PROC_TAB, fproc_bytes);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getsysinfo),
+            SyscallResult::Error(minix_types::EPERM)
+        );
+
+        // 未知 what → EINVAL（C 的 default 臂）。
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .eff_uid = 0;
+        state.current_message = getsysinfo_msg(99, 0);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getsysinfo),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // root + 尺寸不符 → EINVAL（精确长度门）。
+        state.current_message = getsysinfo_msg(SI_DMAP_TAB, dmap_bytes - 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getsysinfo),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // root + 门全过 → 到达拷出缝；宿主构建下 sys_datacopy 不可达，
+        // 诚实上浮 EFAULT（Fault），不假装成功。
+        state.current_message = getsysinfo_msg(SI_DMAP_TAB, dmap_bytes);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Getsysinfo),
+            SyscallResult::Error(minix_types::EFAULT)
+        );
     }
 
     #[test]

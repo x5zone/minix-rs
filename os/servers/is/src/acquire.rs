@@ -760,26 +760,17 @@ impl SysGetsysinfo {
         Self::leg(transport, Endpoint::DS, SI_DATA_STORE, out)
     }
 
-    /// VFS 两腿的诚实出口。
-    ///
-    /// VFS 侧 `do_getsysinfo` 的纯函数半已备并有测试（`vfs/src/misc.rs`），
-    /// 但**运行时的应答面尚不接线**：`dispatch_syscall` 把 `Getsysinfo`
-    /// 归入 `SyscallResult::Nosys` 且主循环不回信（`vfs/src/syscalls.rs`），
-    /// 现在发过去会等一个永不来的回复（无回复的 sendrec 会把 IS 挂死）。
-    /// 故此处本地回 `-ENOSYS`——按 C 的 `!= OK` 判读面就是"该表取不到"，
-    /// dump 打一行错误继续；VFS 应答面随 W1 传输批次（S12）落地后，本腿
-    /// 换成 `Self::leg(transport, Endpoint::VFS, …)` 即可。
-    const VFS_REPLY_PATH_PENDING: i32 = -minix_types::ENOSYS;
-
     /// VFS fproc_tab 腿。C: `dmp_fs.c:31`。
-    pub fn vfs_proc_tab_via(_transport: &impl IpcTransport, _out: &mut [FProcSnap]) -> i32 {
-        Self::VFS_REPLY_PATH_PENDING
+    ///
+    /// VFS 侧的运行时应答面已落地（W3 回复半：`dispatch_syscall` 的
+    /// `Getsysinfo` 臂 + `run()` 循环尾的 `send_reply`），故本腿正常收发。
+    pub fn vfs_proc_tab_via(transport: &impl IpcTransport, out: &mut [FProcSnap]) -> i32 {
+        Self::leg(transport, Endpoint::VFS, SI_PROC_TAB, out)
     }
 
-    /// VFS dmap_tab 腿。C: `dmp_fs.c:71`（**加上生产者半**也归 S33：
-    /// VFS 的 `do_getsysinfo` 目前只服务 `SI_PROC_TAB`，DMAP 臂回 `EINVAL`）。
-    pub fn vfs_dmap_tab_via(_transport: &impl IpcTransport, _out: &mut [DmapSnap]) -> i32 {
-        Self::VFS_REPLY_PATH_PENDING
+    /// VFS dmap_tab 腿。C: `dmp_fs.c:71`。
+    pub fn vfs_dmap_tab_via(transport: &impl IpcTransport, out: &mut [DmapSnap]) -> i32 {
+        Self::leg(transport, Endpoint::VFS, SI_DMAP_TAB, out)
     }
 }
 
@@ -1279,16 +1270,55 @@ mod vfs_proc_tab_transport_tests {
         assert_eq!(sys.ds_data_store(&mut store), -minix_types::EIO);
     }
 
-    /// VFS 两腿的诚实出口：**不发消息**（VFS 运行时应答面未接线，发过去
-    /// 会等一个永不来的回复），本地回 `-ENOSYS` = C 的"该表取不到"。
+    /// VFS 两腿的请求形状与宿主行为：目的地 VFS、调用号 `VFS_GETSYSINFO`、
+    /// what 分别是 `SI_PROC_TAB`(2) 与 `SI_DMAP_TAB`(3)、size = 出参切片
+    /// 字节长（服务端的精确长度门）；宿主构建下真 trap 不可达，如实回
+    /// `-EIO`（不再需要本地 fail-closed 出口——VFS 应答面已通电）。
     #[test]
-    fn test_vfs_legs_fail_closed_without_sending() {
+    fn test_vfs_legs_wire_and_hosted_eio() {
+        use minix_sys::ipc::CannedTransport;
         use super::{GetSysinfoTransport, SysGetsysinfo};
+
+        let mut canned = CannedTransport::new();
+        let mut ok = Message::default();
+        ok.m_type = OK;
+        canned.reply_sendrec(Ok(ok));
+        canned.reply_sendrec(Ok(ok));
+
+        let mut fp = [FProcSnap::default(); 3];
+        assert_eq!(SysGetsysinfo::vfs_proc_tab_via(&canned, &mut fp), OK);
+        let mut dm = [DmapSnap::default(); 2];
+        assert_eq!(SysGetsysinfo::vfs_dmap_tab_via(&canned, &mut dm), OK);
+
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].0, Endpoint::VFS);
+        assert_eq!(sent[0].1.m_type, VFS_GETSYSINFO);
+        assert_eq!(sent[1].0, Endpoint::VFS);
+        assert_eq!(sent[1].1.m_type, VFS_GETSYSINFO);
+        // SAFETY(test): what/where/size 三 lane（与 fetch 同布局）。
+        let lanes = |m: &Message| unsafe {
+            let raw = &m.m_u.raw;
+            let what = i32::from_ne_bytes([raw[0], raw[1], raw[2], raw[3]]);
+            let mut sz = [0u8; 8];
+            sz.copy_from_slice(&raw[16..24]);
+            (what, u64::from_ne_bytes(sz))
+        };
+        assert_eq!(
+            lanes(&sent[0].1),
+            (SI_PROC_TAB, (fp.len() * core::mem::size_of::<FProcSnap>()) as u64)
+        );
+        assert_eq!(
+            lanes(&sent[1].1),
+            (SI_DMAP_TAB, (dm.len() * core::mem::size_of::<DmapSnap>()) as u64)
+        );
+
+        // 宿主：真 trap 不可达 → 传输级 -EIO（诚实面）。
         let mut sys = SysGetsysinfo;
         let mut fp = [FProcSnap::default(); 2];
-        assert_eq!(sys.vfs_proc_tab(&mut fp), -minix_types::ENOSYS);
+        assert_eq!(sys.vfs_proc_tab(&mut fp), -minix_types::EIO);
         let mut dm = [DmapSnap::default(); 2];
-        assert_eq!(sys.vfs_dmap_tab(&mut dm), -minix_types::ENOSYS);
+        assert_eq!(sys.vfs_dmap_tab(&mut dm), -minix_types::EIO);
     }
 
     /// VM_INFO 三查询的请求形状与回复槽解码（值通道，[ARCH: 26-D1]）：

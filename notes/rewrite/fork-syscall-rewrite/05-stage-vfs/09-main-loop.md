@@ -53,6 +53,17 @@ Minix3 的 `table.c:17` 的 `int (*const call_vec[NR_VFS_CALLS])(void) = { CALL(
 
 ### 1.4 回复的双路径：`reply` 的 `ipc_sendnb` 与 `SUSPEND` 的延迟
 
+> **W3 接线更新**：回复的**发送半**已落地——`run_once` 把每轮分发的
+> `SyscallResult` 折成 `(调用方, m_type)` 入队（`Ok`/`Error` 取原值、
+> `Nosys` 回 `ENOSYS`、`Suspend` 不入队），`run()` 在循环尾以
+> `send_reply`（非阻塞 `ipc_sendnb`）发出；`Route::Enosys` 的不可解析
+> 调用号也走这一路回 `ENOSYS`（C main.c:283-294）。握手收尾的
+> `ipc_send(PM, OK)`（C main.c:435-436）同期落地——PM 的
+> `vfs_init_sync` 末条 sendrec 屏障等的就是它，不发则 PM 启动链停住。
+> 服务器自用臂里 `VFS_GETSYSINFO` 已按 `do_getsysinfo` 三段接线
+> （root 门用 C 的 `super_user` 宏语义 `fp_effuid == 0`），其余臂仍是
+> 显式 `ENOSYS`（W3 的逐臂余量）。
+
 `do_work:297` 的 `if (error != SUSPEND) reply(&job_m_out, fp->fp_endpoint, error)` 使 `SUSPEND` 的三恢复路径（`17-pipe.md` 的 `revive`、`23-select.md` 的 `select_return`、`21-cdev.md/22-sdev.md` 的 `*_reply`）不回复；`reply:638` 的 `m_out->m_type=result; ipc_sendnb(whom,m_out)` 非阻塞发送（`KERNEL` 的 `sendnb` 不等待接收方 `receive`），失败仅 `printf+stacktrace`（`644`）。`replycode:655` 的 `memset+reply` 在 `handle_work:160` 的 `CALLBACK/SUSPEND` 路径的 `EAGAIN` 注入中复用。
 
 `ARCH A-5` 的演进是 `ReplyIntent::Reply(i32)/ReplyLater/NoReply` 的显式契约：`SUSPEND` 在 Rust 以 `ReplyLater` 的 `must-be-revived` 状态显式，`reviving` 的 `for REVIVED→unblock` 优先路径成为该状态的消费方（17/23 的 revive 路径再转 `worker_start(...,do_pending_pipe)`）。

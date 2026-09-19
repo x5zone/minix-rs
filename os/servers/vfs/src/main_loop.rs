@@ -327,6 +327,11 @@ pub struct VfsState {
     pub pending: usize,
     /// Whether boot completed (`finish_init()` ran).
     pub initialized: bool,
+    /// 待发送的回复（W3 回复半）：`run_once` 分发完把结果折成
+    /// `(调用方, m_type)` 入队，`run()` 在每轮循环尾用
+    /// [`send_reply`] 发出（C `reply(who_e, result)` 的位置）。
+    /// `Suspend` 的臂不入队——它们的回复在 FS 应答落地时发。
+    pub pending_reply: Option<(Endpoint, i32)>,
 }
 
 impl VfsState {
@@ -352,6 +357,7 @@ impl VfsState {
             accept_requests: true,
             pending: 0,
             initialized: false,
+            pending_reply: None,
         }
     }
 
@@ -654,13 +660,16 @@ impl VfsState {
         match route {
             Route::Syscall { call } => {
                 if self.accept_requests {
-                    let _ = crate::syscalls::dispatch_syscall(self, call);
+                    let result = crate::syscalls::dispatch_syscall(self, call);
+                    self.queue_reply(msg.m_source, result);
                 } else if let Some(slot) = self.current_fp_slot {
                     self.mark_request_pending(slot);
                 }
             }
             Route::Enosys { .. } => {
-                // 真实回复 ENOSYS 的发送侧挂 W1 transport；决策面已定。
+                // C main.c:283-294——不可解析的调用号回 ENOSYS 而不是装成
+                // 真调用（W3 回复半：发送在 `run()` 的循环尾）。
+                self.queue_reply(msg.m_source, crate::call_table::SyscallResult::Nosys);
             }
             Route::FsReply { .. } => {
                 // C main.c:80-89 — do_reply 无应答对象；软失败（typed
@@ -788,6 +797,37 @@ impl VfsState {
     /// `replycode:655` — `memset + reply`.
     pub fn reply_code(&self, target: Endpoint, result: i32) -> ReplyIntent {
         self.reply(target, result)
+    }
+
+    /// 把一次分发的 [`SyscallResult`](crate::call_table::SyscallResult)
+    /// 折成回复并入队（W3 回复半）。
+    ///
+    /// 映射照 C 的 `do_work` 尾部 `reply(who_e, result)`：
+    /// `Ok(v)`/`Error(e)` 都直接当 `m_type` 发（errno 是**正值**——
+    /// 与 PM/RS/DS 各服务的应答约定一致），`Nosys` 显式回 `ENOSYS`
+    /// （main.c:283-294 的不可解析调用号），`Suspend` 不入队（回复在
+    /// 该请求的 FS 应答落地时发）。目标为 `NONE` 或调用方无槽位时不发。
+    pub fn queue_reply(
+        &mut self,
+        target: Endpoint,
+        result: crate::call_table::SyscallResult,
+    ) {
+        use crate::call_table::SyscallResult;
+        if target == Endpoint::NONE || target.to_user_slot().is_none() {
+            return;
+        }
+        let code = match result {
+            SyscallResult::Ok(v) => v,
+            SyscallResult::Error(e) => e,
+            SyscallResult::Nosys => minix_types::ENOSYS,
+            SyscallResult::Suspend => return,
+        };
+        self.pending_reply = Some((target, code));
+    }
+
+    /// 取走待发回复（`run()` 每轮循环尾调用）。
+    pub fn take_reply(&mut self) -> Option<(Endpoint, i32)> {
+        self.pending_reply.take()
     }
 
     /// `fs_sendrec`（comm.c:134-170）的对话原语——syscall 臂的进入半。
@@ -992,6 +1032,18 @@ impl minix_sef::SefIpc for VfsIpc {
 ///
 /// Corresponds to Minix3's `main()` function (main.c:54-118): SEF 启动 →
 /// 握手阻塞循环(main.c:410-436)→ `sef_receive(ANY)` 主循环(main.c:601)。
+/// 生产回复发送（C `reply` 的 `ipc_sendnb` 半，main.c）。
+///
+/// 应答只带 `m_type`（C 的 `reply` 同样是 `memset(&m, 0, sizeof(m));
+/// m.m_type = result` 的裸回复）——数据面早已由各臂自己拷出或经
+/// FS 应答落地。
+fn send_reply(target: Endpoint, code: i32) {
+    use minix_sys::ipc::IpcTransport;
+    let reply = Message { m_type: code, ..Message::default() };
+    // 非阻塞发（C `ipc_sendnb`）：调用方在 sendrec 里等着，不会拒绝接收。
+    let _ = minix_sys::ipc::DirectTrapTransport.sendnb(target, &reply);
+}
+
 pub fn run() -> ! {
     let mut state = VfsState::new();
     state.init_fresh();
@@ -1012,7 +1064,10 @@ pub fn run() -> ! {
             break;
         }
     }
-    // C main.c:435-436 — ipc_send(PM, OK) 同步屏障;send 动词挂 W1 通电面。
+    // C main.c:435-436 — `mess.m_type = OK; ipc_send(PM_PROC_NR, &mess)`：
+    // 进程表收齐后把成功回给 PM（PM 侧 `vfs_init_sync` 的末条是 sendrec
+    // 屏障，等的就是这一条——不发则 PM 启动链停在这里）。
+    send_reply(Endpoint::PM, minix_types::OK);
     state.finish_init();
 
     // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
@@ -1036,6 +1091,11 @@ pub fn run() -> ! {
             SefEvent::Call(_) => {
                 let codec = VfsTransIdCodec;
                 let _ = state.run_once(&recv.message, &codec);
+                // W3 回复半：本轮分发的回复在循环尾发出（C `do_work`
+                // 尾部的 `reply(who_e, result)`）。
+                if let Some((target, code)) = state.take_reply() {
+                    send_reply(target, code);
+                }
             }
             SefEvent::Signal(_) => {}
             // init_restart ≡ init_fresh(已文档化);LU prepare/rollback 的
@@ -1071,6 +1131,31 @@ mod tests {
         let mut m = Message { m_type: crate::fs_comm::TransId::add(req, slot) as i32, ..Message::default() };
         m.m_source = source;
         m
+    }
+
+    /// W3 回复半：`SyscallResult` → 回复入队的映射（C `do_work` 尾部
+    /// `reply(who_e, result)`）。`Suspend` 不入队（回复在 FS 应答落地时
+    /// 发），`Nosys` 显式回 ENOSYS，目标为 NONE 时不发。
+    #[test]
+    fn test_queue_reply_maps_syscall_results() {
+        use crate::call_table::SyscallResult;
+        let user = Endpoint::from_generation_slot(1, 0);
+        let mut state = VfsState::new();
+
+        state.queue_reply(user, SyscallResult::Ok(7));
+        assert_eq!(state.take_reply(), Some((user, 7)));
+
+        state.queue_reply(user, SyscallResult::Error(minix_types::EINVAL));
+        assert_eq!(state.take_reply(), Some((user, minix_types::EINVAL)));
+
+        state.queue_reply(user, SyscallResult::Nosys);
+        assert_eq!(state.take_reply(), Some((user, minix_types::ENOSYS)));
+
+        state.queue_reply(user, SyscallResult::Suspend);
+        assert_eq!(state.take_reply(), None, "Suspend 的回复在 FS 应答时发");
+
+        state.queue_reply(Endpoint::NONE, SyscallResult::Ok(0));
+        assert_eq!(state.take_reply(), None, "无调用方不发");
     }
 
     #[test]

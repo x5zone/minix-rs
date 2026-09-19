@@ -120,6 +120,31 @@ pub trait CopyToUser {
     fn copy_to_user(&mut self, src: &[u8], dst: VirBytes) -> Result<(), MiscError>;
 }
 
+/// 生产 `CopyToUser`：`sys_datacopy(SELF → 调用方)`（`misc.c:113` 的
+/// `sys_datacopy_wrapper(SELF, src_addr, who_e, dst_addr, len)`）。
+///
+/// 失败原样折成 `Fault`（EFAULT）——C 的 `do_getsysinfo` 对 datacopy 失败
+/// 直接 `return r`，调用方看到的就是内核给的那个 errno。
+pub struct SysCopyToUser {
+    /// 调用方端点（C 的 `who_e`，取自消息源）。
+    pub target: Endpoint,
+}
+
+impl CopyToUser for SysCopyToUser {
+    fn copy_to_user(&mut self, src: &[u8], dst: VirBytes) -> Result<(), MiscError> {
+        let bytes = u64::try_from(src.len()).map_err(|_| MiscError::Fault)?;
+        minix_sys::syscall::sys_datacopy(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            Endpoint::SELF.get(),
+            src.as_ptr() as u64,
+            self.target.get(),
+            dst.0,
+            bytes,
+        )
+        .map_err(|_| MiscError::Fault)
+    }
+}
+
 /// `do_getsysinfo` execution half (`misc.c:59-113`): root door, table
 /// selection, exact-length door, then the table copy SELF → caller.
 ///
@@ -1020,6 +1045,9 @@ pub enum MiscError {
     RoFs,
     /// `EIO`: FS-side refusal.
     Io,
+    /// `EFAULT`: 拷出到调用方失败（`sys_datacopy` 的 errno，`misc.c:113`
+    /// 的 `return r` 面——C 直接把内核返回值透传）。
+    Fault,
 }
 
 impl minix_types::ToErrno for MiscError {
@@ -1041,6 +1069,7 @@ impl MiscError {
             Self::BadF => minix_types::EBADF,
             Self::RoFs => minix_types::EROFS,
             Self::Io => minix_types::EIO,
+            Self::Fault => minix_types::EFAULT,
         }
     }
 }
