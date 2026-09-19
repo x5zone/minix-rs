@@ -18,6 +18,7 @@
 
 extern crate alloc;
 
+pub mod driver;
 pub mod names;
 pub mod table;
 
@@ -357,8 +358,13 @@ pub fn filesystem_stat(name_max: usize) -> (bool, usize) {
     (true, name_max)
 }
 
-/// Service initialization entry (kept for the server binary).
-pub fn init() {}
+/// Service initialization entry: build the driver value the binary hands
+/// to [`minix_fs_rt::serve`] — an empty slave table and the C root
+/// defaults (`ptyfs.c:17-22`; the C fresh-install callback
+/// `ptyfs_init`, ptyfs.c:422-424, equally only confirms readiness).
+pub fn init() -> driver::PtyfsDriver {
+    driver::PtyfsDriver::new()
+}
 
 #[cfg(test)]
 mod tests {
