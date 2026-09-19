@@ -4086,6 +4086,7 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             match crate::misc::do_getsysinfo(
                 &state.fproc_table,
                 &state.dmap_table,
+                &state.smap_table,
                 is_root,
                 what,
                 size,

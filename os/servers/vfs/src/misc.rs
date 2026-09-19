@@ -159,6 +159,7 @@ impl CopyToUser for SysCopyToUser {
 pub fn do_getsysinfo(
     table: &FProcTable,
     dmap: &crate::device_map::DmapTable,
+    smap: &crate::device_map::SmapTable,
     is_root: bool,
     what: SysinfoWhat,
     buf_size: u64,
@@ -212,10 +213,28 @@ pub fn do_getsysinfo(
             }
             Ok(())
         }
-        // C fills SI_PROCLIGHT_TAB for MIB on request (`misc.c:81-95`);
-        // that producer half stays fail-closed until its wire authority
-        // lands (the A-7/MIB defer, fproc.rs `snapshot_light`).
-        SysinfoWhat::ProcLightTab => Err(MiscError::Inval),
+        // C fills SI_PROCLIGHT_TAB for MIB on request (`misc.c:81-95`)。
+        // C-22 后半落地：行是共享快照 `FprocLightSnap`（16 B/槽，wire
+        // 权威在 minix-types::fproc——tty/blocked_on/task 三列，task 的
+        // sdev 半经注入的 smap 查询）。未用槽的 task 是 NONE（C 的填充
+        // 循环覆盖全部槽，misc.c:87-94）。
+        SysinfoWhat::ProcLightTab => {
+            const WIRE: usize = core::mem::size_of::<minix_types::FprocLightSnap>();
+            sysinfo_len_gate((WIRE * NR_PROCS) as u64, buf_size)?;
+            let lookup = |dev: u64| crate::device_map::smap_endpt_by_dev(smap, dev);
+            for (idx, wire) in table.snapshot_light(&lookup).iter().enumerate() {
+                // SAFETY: `FprocLightSnap` is a 16-byte repr(C) POD; the
+                // byte view feeds the copy seam only (ProcTab 臂同款展开)。
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(
+                        core::ptr::addr_of!(wire) as *const u8,
+                        WIRE,
+                    )
+                };
+                cpy.copy_to_user(bytes, VirBytes(dst.0 + (idx * WIRE) as u64))?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1173,6 +1192,7 @@ mod tests {
         do_getsysinfo(
             &table,
             &crate::device_map::DmapTable::new(),
+            &crate::device_map::SmapTable::new(),
             true,
             SysinfoWhat::ProcTab,
             want,
@@ -1207,6 +1227,7 @@ mod tests {
     fn test_do_getsysinfo_dmap_tab_serves_whole_table() {
         const WIRE: usize = core::mem::size_of::<DmapSnap>();
         let mut dmap = crate::device_map::DmapTable::new();
+        let smap = crate::device_map::SmapTable::new();
         let mut entry = crate::device_map::DmapEntry::empty();
         entry.driver = Some(Endpoint(9));
         entry.label[..4].copy_from_slice(b"bdev");
@@ -1216,6 +1237,7 @@ mod tests {
         do_getsysinfo(
             &FProcTable::new(),
             &dmap,
+            &crate::device_map::SmapTable::new(),
             true,
             SysinfoWhat::DmapTab,
             (WIRE * DMAP_NR_DEVICES) as u64,
@@ -1246,28 +1268,31 @@ mod tests {
     fn test_do_getsysinfo_gates_fail_closed() {
         let table = FProcTable::new();
         let dmap = crate::device_map::DmapTable::new();
+        let smap = crate::device_map::SmapTable::new();
         let wire = (core::mem::size_of::<FProcSnap>() * NR_PROCS) as u64;
 
         let mut cpy = RecordingCopy { copies: Vec::new() };
         assert_eq!(
-            do_getsysinfo(&table, &dmap, false, SysinfoWhat::ProcTab, wire, VirBytes(0), &mut cpy),
+            do_getsysinfo(&table, &dmap, &smap, false, SysinfoWhat::ProcTab, wire, VirBytes(0), &mut cpy),
             Err(MiscError::Perm)
         );
         assert_eq!(
-            do_getsysinfo(&table, &dmap, true, SysinfoWhat::ProcTab, wire - 1, VirBytes(0), &mut cpy),
+            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::ProcTab, wire - 1, VirBytes(0), &mut cpy),
             Err(MiscError::Inval)
         );
         assert_eq!(
-            do_getsysinfo(&table, &dmap, true, SysinfoWhat::ProcTab, wire + 1, VirBytes(0), &mut cpy),
+            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::ProcTab, wire + 1, VirBytes(0), &mut cpy),
             Err(MiscError::Inval)
         );
         assert_eq!(
-            do_getsysinfo(&table, &dmap, true, SysinfoWhat::DmapTab, wire, VirBytes(0), &mut cpy),
+            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::DmapTab, wire, VirBytes(0), &mut cpy),
             Err(MiscError::Inval),
             "DMAP 的长度门是整表宽度，FProc 表宽会被拒"
         );
+        // light 表的长度门是自己的整表宽度（16B×NR_PROCS），FProc 表宽
+        // 会被拒（C-22 后半：生产臂已真装）。
         assert_eq!(
-            do_getsysinfo(&table, &dmap, true, SysinfoWhat::ProcLightTab, wire, VirBytes(0), &mut cpy),
+            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::ProcLightTab, wire, VirBytes(0), &mut cpy),
             Err(MiscError::Inval)
         );
         assert!(cpy.copies.is_empty(), "no copy on any refused path");

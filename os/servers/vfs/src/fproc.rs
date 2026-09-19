@@ -31,7 +31,7 @@
 use minix_types::{
     Bitmap, DevId, Endpoint, FProcSnap, Gid, GrantId, Mode, NO_DEV, NR_PROCS, Pid, Uid, UserSlot,
     VirBytes,
-};
+FprocLightSnap, };
 
 /// Maximum number of open file descriptors per process.
 ///
@@ -601,57 +601,42 @@ impl FProcTable {
         self.get(slot).map(|fp| !fp.is_in_use()).unwrap_or(true)
     }
 
-    /// Snapshot the `fproc_light` projection (`fproc.h:111-115`, `misc.c:75-96`).
+    /// Snapshot the `fproc_light` projection (`fproc.h:111-115`,
+    /// `misc.c:81-95`)——`SI_PROCLIGHT_TAB` 的生产半，MIB 的
+    /// `get_lwp_stat` 按 16 字节/槽消费（C-22 后半：此前 feature 占位
+    /// 与"task=NONE"的澄清注记一并清除——`fpl_task` 的 C 语义就是
+    /// cdev 直取 `fp_cdev.endpt`、sdev 经 `get_smap_by_dev` 查
+    /// `smap_endpt`，其余 `NONE`，misc.c:87-94）。
     ///
-    /// `ARCH A-7` defer: `MIB` 拉取未实现，`#[cfg(feature = "fproc_light")]` 缺口占位。
-    #[cfg(feature = "fproc_light")]
-    pub fn snapshot_light(&self) -> Vec<FprocLight> {
+    /// `smap_endpt_by_dev` 由调用方注入（socket-map 属 19 的设备表面，
+    /// 表结构不出本模块）。
+    pub fn snapshot_light(
+        &self,
+        smap_endpt_by_dev: &dyn Fn(DevId) -> Option<Endpoint>,
+    ) -> Vec<FprocLightSnap> {
         self.slots
             .iter()
-            .map(|fp| FprocLight {
-                tty: fp.tty,
-                blocked_on: fp.blocked_on,
-                task: Endpoint::NONE, // fpl_task 语义待 MIB 澄清，暂以 NONE 占位
+            .map(|fp| {
+                let (blocked_on, task) = match &fp.blocked_on {
+                    BlockedOn::None => (0, Endpoint::NONE),
+                    BlockedOn::Pipe(_) => (1, Endpoint::NONE),
+                    BlockedOn::Flock(_) => (2, Endpoint::NONE),
+                    BlockedOn::PipeOpen(_) => (3, Endpoint::NONE),
+                    BlockedOn::Select => (4, Endpoint::NONE),
+                    BlockedOn::Cdev(b) => (5, b.endpt),
+                    BlockedOn::Sdev(b) => {
+                        // C: `get_smap_by_dev(fp_sdev.dev)->smap_endpt`
+                        // 查不到也落 NONE（misc.c:92-94）。
+                        (6, smap_endpt_by_dev(b.dev).unwrap_or(Endpoint::NONE))
+                    }
+                };
+                FprocLightSnap {
+                    fpl_tty: fp.tty,
+                    fpl_blocked_on: blocked_on,
+                    fpl_task: task.get(),
+                }
             })
             .collect()
-    }
-}
-
-/// `fproc_light` projection (`fproc.h:111-115`, `ARCH A-7`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FprocLight {
-    pub tty: DevId,
-    pub blocked_on: BlockedOn,
-    pub task: Endpoint,
-}
-
-/// `FprocLightTable` heap storage (`fproc.h:115`, `ARCH A-4`).
-pub struct FprocLightTable(Box<[FprocLight]>);
-
-impl Default for FprocLightTable {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl FprocLightTable {
-    pub fn new() -> Self {
-        let v: Box<[FprocLight]> = (0..NR_PROCS)
-            .map(|_| FprocLight {
-                tty: NO_DEV,
-                blocked_on: BlockedOn::None,
-                task: Endpoint::NONE,
-            })
-            .collect();
-        Self(v)
-    }
-    pub fn get(&self, slot: UserSlot) -> Option<&FprocLight> {
-        let idx = slot.get();
-        if idx < NR_PROCS {
-            Some(&self.0[idx])
-        } else {
-            None
-        }
     }
 }
 
@@ -917,15 +902,63 @@ mod tests {
         assert!(!table.is_slot_free(slot));
     }
 
+    /// C-22 后半：light 快照的逐槽形状——tty 直取、blocked_on 按
+    /// const.h:19-25 折算、cdev 任务端点直取、sdev 经注入的 smap 查询、
+    /// 其余 NONE；未用槽全零（misc.c:81-95 的 C 填充面）。
     #[test]
-    #[cfg(feature = "fproc_light")]
     fn test_fproc_light_snapshot() {
         let mut table = FProcTable::new();
         let slot = UserSlot::new(0);
-        table.get_mut(slot).unwrap().tty = 7;
-        let v = table.snapshot_light();
-        assert_eq!(v[0].tty, 7);
-        assert_eq!(v[0].blocked_on, BlockedOn::None);
+        {
+            let fp = table.get_mut(slot).unwrap();
+            fp.tty = 7;
+            fp.blocked_on = BlockedOn::Cdev(CdevBlock {
+                dev: NO_DEV,
+                endpt: Endpoint::TTY,
+                grant: None,
+            });
+        }
+        let lookup = |dev: DevId| -> Option<Endpoint> {
+            if dev == 99 {
+                Some(Endpoint::from_generation_slot(0, 30))
+            } else {
+                None
+            }
+        };
+        // Sdev 槽：smap 查中。
+        {
+            let fp = table.get_mut(UserSlot::new(1)).unwrap();
+            fp.blocked_on = BlockedOn::Sdev(SdevBlock {
+                dev: 99,
+                call: crate::fproc::SdevCall::Ioctl,
+                grants: [None; 3],
+                aux: crate::fproc::SdevAux::None,
+            });
+        }
+        // Sdev 槽：smap 查不中 → NONE（misc.c:92-94）。
+        {
+            let fp = table.get_mut(UserSlot::new(2)).unwrap();
+            fp.blocked_on = BlockedOn::Sdev(SdevBlock {
+                dev: 77,
+                call: crate::fproc::SdevCall::Ioctl,
+                grants: [None; 3],
+                aux: crate::fproc::SdevAux::None,
+            });
+        }
+        let v = table.snapshot_light(&lookup);
+        assert_eq!(v.len(), minix_types::NR_PROCS);
+        assert_eq!(v[0].fpl_tty, 7);
+        assert_eq!(v[0].fpl_blocked_on, 5); // FP_BLOCKED_ON_CDEV
+        assert_eq!(v[0].fpl_task, Endpoint::TTY.get());
+        assert_eq!(v[1].fpl_blocked_on, 6); // FP_BLOCKED_ON_SDEV
+        assert_eq!(v[1].fpl_task, Endpoint::from_generation_slot(0, 30).get());
+        assert_eq!(v[2].fpl_blocked_on, 6);
+        assert_eq!(v[2].fpl_task, Endpoint::NONE.get());
+        // 未用槽：blocked_on=0，但 task 仍被 C 的填充循环置 NONE
+        // （misc.c:87-94 覆盖全部 NR_PROCS 槽，BSS 零像随即被覆写）。
+        assert_eq!(v[5].fpl_blocked_on, 0);
+        assert_eq!(v[5].fpl_task, Endpoint::NONE.get());
+        assert_eq!(v[5].fpl_tty, 0);
     }
 
     /// Unused slot → all-zero wire: C's `do_getsysinfo` copies the raw BSS
