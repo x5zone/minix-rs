@@ -1199,9 +1199,8 @@ pub const READLINK_INLINE_MAX: usize = 24;
 /// bufsize@24。C 只传 name 地址，但服务端 Readlink 臂按内联 `raw[32..]`
 /// 读路径（同 open-existing 的塑形改造），所以客户端把路径字节写进
 /// @32 窗口；窗口只有 [`READLINK_INLINE_MAX`] 字节（56−32），超长经
-/// `ENAMETOOLONG` 显式拒绝——比服务端 `<= OPEN_PATH_INLINE_MAX(32)` 的
-/// 检查更严（25..=32 在服务端会落入 24 字节窗口截断，客户端提前挡掉，
-/// 仓内闭环里服务端分支不可达；差异已登记）。
+/// `ENAMETOOLONG` 拒绝。服务端 Readlink 臂用同一个常量设门（vfs
+/// syscalls.rs 的 Readlink 臂互见），两侧窗宽一致。
 ///
 /// The reply's message type carries the byte count the server wrote into
 /// `buf` (C: `_syscall` 的非负 m_type 直接作为 ssize_t 返回).

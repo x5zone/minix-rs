@@ -1062,12 +1062,13 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         // ── fchmod（C `do_chmod`，protect.c:62-133 的 fd 半：从 filp 取
         // vnode，之后与 path 半共用同一个体）──
         VfsCallNum::Fchmod => {
-            // 载荷 `mess_lc_vfs_fchmod`（ipc.h:647-652）：fd@0、mode@8。
+            // 载荷 `mess_lc_vfs_fchmod`（ipc.h:647-652）：fd@0、mode@4
+            // （`mode_t` 是 4 字节，两个域紧挨着排）。
             let (fd, mode) = {
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let fd = i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]);
-                let mode = u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]);
+                let mode = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]);
                 (fd, mode)
             };
             let Some(fp_slot) = state.current_fp_slot else {
@@ -3783,7 +3784,11 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             if buf_size > i64::MAX as u64 {
                 return SyscallResult::Error(minix_types::EINVAL);
             }
-            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+            // 内联窗从 raw[32] 到 56 字节载荷区末尾，只有 READLINK_INLINE_MAX
+            // 字节（与客户端 readlink_via 同门，minix-sys vfs.rs 互见）：
+            // namelen 超窗直接 ENAMETOOLONG，不放行进 decode_name 靠截断后
+            // 的 NUL 检查兜底。
+            let path = if name_len as usize <= minix_sys::vfs::READLINK_INLINE_MAX {
                 let n = (name_len as usize).min(inline.len());
                 match crate::path::decode_name(&inline[..n], n) {
                     Ok(p) => p,
@@ -9549,11 +9554,14 @@ mod tests {
                 m_type: VfsCallNum::Fchmod as i32,
                 ..Message::default()
             };
-            // SAFETY: fchmod 载荷 fd@0、mode@8（ipc.h:647-652）。
+            // SAFETY: fchmod 载荷 fd@0、mode@4（ipc.h:647-652）。@8 填一个
+            // 干扰值：mode 只许从 @4 取，错位读取会让下面 case ④ 的模式
+            // 断言当场失败。
             unsafe {
                 let raw = &mut m.m_u.raw;
                 raw[0..4].copy_from_slice(&fd.to_le_bytes());
-                raw[8..12].copy_from_slice(&mode.to_le_bytes());
+                raw[4..8].copy_from_slice(&mode.to_le_bytes());
+                raw[8..12].copy_from_slice(&0o777u32.to_le_bytes());
             }
             m
         };
@@ -9750,6 +9758,67 @@ mod tests {
             let flags = u32::from_le_bytes(raw[16..20].try_into().unwrap());
             assert_eq!(flags, minix_types::PATH_RET_SYMLINK);
         }
+    }
+
+    /// `Readlink` 臂的内联窗门：namelen 的上限是内联窗本身的 24 字节
+    /// （`READLINK_INLINE_MAX`），不是普通路径的 32 字节
+    /// （`OPEN_PATH_INLINE_MAX`）。25..=32 一带在门上就 ENAMETOOLONG——
+    /// 哪怕内联字节里第 24 字节恰好是 NUL、截断名解得出来也不放行；
+    /// 24 字节整窗仍正常走遍历。
+    #[test]
+    fn test_dispatch_readlink_inline_window_gate() {
+        use minix_types::Endpoint;
+
+        let readlink_msg = |name_len: u64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Readlink as i32,
+                ..Message::default()
+            };
+            // SAFETY: readlink 载荷 name@0、namelen@8、buf@16、bufsize@24
+            // （ipc.h:785-792）；内联窗 @32 起共 24 字节，这里故意把窗内
+            // 第 24 字节写成 NUL——namelen 多报一截时，截断名照样解得出来。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[8..16].copy_from_slice(&name_len.to_le_bytes());
+                raw[16..24].copy_from_slice(&0x5000u64.to_le_bytes());
+                raw[24..32].copy_from_slice(&128u64.to_le_bytes());
+                for slot in raw[32..56].iter_mut() {
+                    *slot = b'a';
+                }
+                raw[32] = b'/';
+                raw[32 + 23] = 0;
+            }
+            m
+        };
+
+        // namelen=25：超窗（但在普通路径的 32 字节门内）→ 门上就拒，
+        // 到不了取路径与走遍历。
+        let mut state = seeded(100);
+        state.current_message = readlink_msg(25);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Readlink),
+            SyscallResult::Error(minix_types::ENAMETOOLONG)
+        );
+        assert!(state.pending_fs.is_none());
+
+        // namelen=24（整窗）：过门 → 起走遍历（挂起）。基线同 buffer 门
+        // 测试：挂载行 + 调用方根目录 vnode + 热身过的 grant 表。
+        crate::main_loop::seed_ready_state(&mut state);
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+        state.current_message = readlink_msg(24);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Readlink),
+            SyscallResult::Suspend
+        );
     }
 
     /// `Access` 臂的位掩码先验（C protect.c:216-217）：`F_OK`(0) 之外只认
