@@ -51,8 +51,8 @@ enum Commands {
         /// 目标架构（x86_64 / aarch64 / riscv64）
         #[arg(long, default_value = "x86_64")]
         arch: String,
-        /// 内核 ELF 路径（缺省取 target/<三架构>/<profile>/kernel.elf；
-        /// 生产内核 bin 的产出者登记为 new_edge3 NS8-A，属 new_edge1 面）
+        /// 内核 ELF 路径（缺省取 target/x86_64-unknown-none/<profile>/kernel，
+        /// 即 kernel-image 包的产出工件；ESP 安装名恒为 /EFI/minix/kernel.elf）
         #[arg(long)]
         kernel: Option<PathBuf>,
         /// 只打印装配计划，不落盘

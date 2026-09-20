@@ -124,8 +124,11 @@ impl Layout {
     }
 }
 
-/// 内核 ELF 的取用路径（NS8-A：生产内核 bin 尚无产出者，属 new_edge1
-/// 面；装机面按给定路径取件，不代产）。
+/// 内核 ELF 的取用路径。产出者 = `kernel-image` 包（NS8-A，new_edge1
+/// 面）：bin 名 `kernel`，cargo 对 none 目标产无扩展名工件
+/// `target/<target>/<profile>/kernel`——缺省路径与之对齐；ESP 侧安装名
+/// 仍是 `/EFI/minix/kernel.elf`（`loader::KERNEL_PATH` 契约位不变）。
+/// `--kernel` 可指向任意外部产出的 ELF（自定义内核构建流程用）。
 fn kernel_elf_path(
     layout: &Layout,
     override_path: Option<&Path>,
@@ -138,7 +141,7 @@ fn kernel_elf_path(
             .target_root
             .join(arch.module_target())
             .join(layout.profile_dir(release))
-            .join("kernel.elf"),
+            .join("kernel"),
     }
 }
 
@@ -201,6 +204,21 @@ pub fn plan(
             "--no-default-features",
             "--features",
             "fw-x86-uefi",
+        ],
+    );
+
+    // 2b. 生产内核镜像（NS8-A 产出者：`-p kernel-image`，bin 门
+    //     fw-x86-none，产出 `target/x86_64-unknown-none/<profile>/kernel`）。
+    cargo_release(
+        &mut actions,
+        "生产内核镜像构建（kernel-image，NS8-A）",
+        &[
+            "-p",
+            "kernel-image",
+            "--target",
+            "x86_64-unknown-none",
+            "--features",
+            "fw-x86-none",
         ],
     );
 
@@ -538,8 +556,8 @@ mod tests {
                 .iter()
                 .filter(|a| matches!(a, Action::Cargo { .. }))
                 .count()),
-            14,
-            "12 模块 + boot-shim + mkfs_mfs = 14 步 cargo 构建"
+            15,
+            "12 模块 + boot-shim + kernel-image + mkfs_mfs = 15 步 cargo 构建"
         );
         // 生产开关与 uefi 目标。
         assert!(text.contains("fw-x86-uefi") && text.contains("x86_64-unknown-uefi"));
@@ -547,9 +565,14 @@ mod tests {
             text.contains("--no-default-features"),
             "boot-shim 构建必须关默认 feature"
         );
+        // 内核镜像构建步（NS8-A 产出者）与 guest 目标开关。
+        assert!(
+            text.contains("kernel-image") && text.contains("fw-x86-none"),
+            "装配计划应含 kernel-image 构建步（fw-x86-none 门）"
+        );
         // mkfs_mfs 播种与 imgrd 入包。
         assert!(text.contains("mkfs_mfs") && text.contains("imgrd"));
-        // 内核 ELF 契约位与 ESP 产出位。
+        // 内核 ELF 契约位（ESP 安装名）与产出位。
         assert!(text.contains("kernel.elf"));
         assert!(esp.ends_with("minix.img"));
         // mtools 组装段在位。

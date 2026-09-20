@@ -2,7 +2,10 @@
 members = [
     # 内核
     "kernel",
-    
+    # 生产内核镜像 bin（NS8-A：/EFI/minix/kernel.elf 产出者，x86_64-unknown-none
+    # 专用；bin 门 fw-x86-none，宿主 --workspace --bins 跳过——X-2 同款隔离）
+    "kernel-image",
+
     # 硬件抽象层
     "arch",
     "plat",
