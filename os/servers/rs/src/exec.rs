@@ -179,7 +179,8 @@ pub fn read_exec_with(io: &mut dyn ExecImageIo, slot: &mut ServiceSlot) -> Resul
     if len < 64 {
         return Err(Errno::ENOEXEC);
     }
-    let fd = io.open(path)?; // C: manager.c:1392-1394 (failure → -errno).
+    // C: open(e_name, O_RDONLY) — manager.c:1392-1394 (failure → -errno).
+    let fd = io.open(path)?;
     // C mallocs exactly st_size (manager.c:1395-1403) — the Vec is
     // zero-initialized where C's malloc bytes are uninitialized; the
     // full-count read below makes the difference unobservable.
