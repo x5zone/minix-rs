@@ -311,6 +311,20 @@ mod tests {
             Ok(ReplyIntent::ReplyLater)
         }
     }
+    /// 记录收到的 `ExecRequest`，用于断言转发确实抵达 VFS 且载荷原样递送。
+    struct RecordingVfs { pub seen: Option<ExecRequest> }
+    impl RecordingVfs { fn new() -> Self { Self { seen: None } } }
+    impl VfsExec for RecordingVfs {
+        fn forward_exec(
+            &mut self,
+            _table: &mut ProcTable,
+            _caller: UserSlot,
+            req: ExecRequest,
+        ) -> Result<ReplyIntent, ExecError> {
+            self.seen = Some(req);
+            Ok(ReplyIntent::ReplyLater)
+        }
+    }
     /// `exec_restart` 的合并注入 mock（D5/D7 收敛后单一 service 对象）。
     struct TestExecSvc { pub killed: Option<Endpoint>, pub replied: Option<(UserSlot,i32)>, pub execed: Option<Endpoint>, pub sig: Option<i32> }
     impl TestExecSvc { fn new() -> Self { Self { killed: None, replied: None, execed: None, sig: None } } }
@@ -324,28 +338,34 @@ mod tests {
     }
     impl ExecRestartServices for TestExecSvc {}
 
-    /// C do_exec (exec.c:38-56) has no caller gate — any process (including
-    /// init) can trigger execve → PM → forward to VFS unconditionally.
+    /// `do_exec` 无条件把 `ExecRequest` 转发给 VFS 并返回 ReplyLater
+    /// （C exec.c:38-56：tell_vfs(VFS_PM_EXEC) → SUSPEND，无门）。
     #[test]
     fn test_do_exec_forwards() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0);
-        // No special endpoint needed — gate removed (C fidelity).
         let req = ExecRequest { caller: UserSlot::new(0), endpoint: Endpoint::from_generation_slot(1,0), path: VirBytes(0x1000), path_len: 5, frame: VirBytes(0x2000), frame_len: 128, ps_str: VirBytes(0) };
-        let mut vfs = NopVfs;
+        let mut vfs = RecordingVfs::new();
         let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs).unwrap();
         assert_eq!(r, ReplyIntent::ReplyLater);
+        // 载荷确实抵达 VFS 且原样递送（转发行为本体，而非仅返回码）。
+        let seen = vfs.seen.expect("do_exec must forward to VFS");
+        assert_eq!(seen.endpoint, req.endpoint);
+        assert_eq!(seen.path, req.path);
+        assert_eq!(seen.path_len, req.path_len);
     }
 
-    /// do_exec has NO caller gate (C exec.c:38-56). Non-VFS/RS callers
-    /// succeed — the gate belongs exclusively to do_newexec (exec.c:70-71).
+    /// `do_exec` 无调用者门（C exec.c:38-56）：init 这类既非 VFS 又非 RS
+    /// 的普通进程端点发起 execve 也必须成功——门只属于 do_newexec（70-71）。
     #[test]
     fn test_do_exec_no_caller_gate() {
         let mut table = ProcTable::new();
-        mk_proc(&mut table, 0); // slot 0 endpoint is a generic process (not VFS/RS)
+        mk_proc(&mut table, 0); // slot 0 endpoint 是普通进程（非 VFS/RS）
+        assert_ne!(table.procs[0].endpoint(), Endpoint::VFS);
+        assert_ne!(table.procs[0].endpoint(), Endpoint::RS);
         let req = ExecRequest { caller: UserSlot::new(0), endpoint: Endpoint::from_generation_slot(1,0), path: VirBytes(0x1000), path_len: 5, frame: VirBytes(0x2000), frame_len: 128, ps_str: VirBytes(0) };
         let mut vfs = NopVfs;
-        // Must succeed — do_exec unconditionally forwards.
+        // 普通进程端点也必须被无条件转发（旧版此处误返回 EPERM）。
         let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs);
         assert_eq!(r.unwrap(), ReplyIntent::ReplyLater);
     }
