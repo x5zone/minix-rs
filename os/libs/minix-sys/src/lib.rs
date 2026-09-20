@@ -71,6 +71,9 @@ pub mod syscall;
 pub mod pm;
 /// File system call group (document 09).
 pub mod vfs;
+/// Working-directory traversal behind `getcwd` (C
+/// `minix3/minix/lib/libc/sys/__getcwd.c`).
+pub mod getcwd;
 /// Virtual memory call group (document 10).
 pub mod vm;
 /// Miscellaneous calls: sleeping, server control, clock reads (document 11).
@@ -759,6 +762,18 @@ pub fn getdents(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
         buf.as_mut_ptr() as u64,
         buf.len(),
     )
+}
+
+/// Returns the working directory path in the caller's buffer.
+///
+/// C: `getcwd(buf, size)` — answered in user space by climbing parent
+/// directories (mechanism and C source in the [`getcwd`] module header).
+/// On success the buffer holds the NUL-terminated absolute path at its
+/// front and the returned slice is the path without the terminator; a
+/// buffer of one byte or less is `EINVAL`, a path that does not fit is
+/// `ERANGE`, and the working directory is unchanged on every exit.
+pub fn getcwd(buffer: &mut [u8]) -> Result<&[u8], Errno> {
+    getcwd::getcwd_via(&ipc::DirectTrapTransport, buffer)
 }
 
 /// Memory mapping.
