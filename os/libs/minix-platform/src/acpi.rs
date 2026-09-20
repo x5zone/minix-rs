@@ -429,6 +429,8 @@ unsafe fn parse_madt(
     let mut gicd_base = 0usize; // Filled by the GICD entry (0 = absent).
     #[cfg(target_arch = "aarch64")]
     let mut gicr_base = 0usize; // Filled by the first GICC entry.
+    #[cfg(target_arch = "aarch64")]
+    let mut gic_version = 0u8; // Filled by the GICD entry (0 = not read).
     let mut nr_cpus = 0u32;
     let mut bsp_id = 0u32;
     let mut cpus = [CpuInfo::default(); MAX_CPUS];
@@ -573,13 +575,17 @@ unsafe fn parse_madt(
                 // GIC ID(4) + base_address(8, at +8) + global_irq_offset(4)
                 // + version(1). Empirically pinned on QEMU virt GICv2
                 // (S-2b): base 0x08000000 at +8, version 2 at +20.
-                if entry_len >= 20 {
+                if entry_len >= 21 {
                     let base = (madt_phys + offset) as *const u8;
                     let bytes = unsafe {
                         core::slice::from_raw_parts(base.add(8), 8)
                     };
                     gicd_base =
                         u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
+                    // Version byte at +20: 1 = GICv1, 2 = GICv2, 3 = GICv3,
+                    // 4 = GICv4. Only readable when the entry is long enough
+                    // to carry it (hence the 21-byte gate above).
+                    gic_version = unsafe { *base.add(20) };
                 }
             }
             _ => {
@@ -590,12 +596,13 @@ unsafe fn parse_madt(
         offset += entry_len;
     }
 
-    // aarch64: a MADT with CPUs but no GICD entry is unusable — the
-    // interrupt controller base would be missing for every consumer.
+    // aarch64: reject a GIC surface the GICv3 descriptor cannot drive
+    // (missing GICD / v1-v2 controller / zero redistributor base) before it
+    // reaches the driver — a rejected MADT makes `init_from_kinfo` fall
+    // through to the next platform source instead of faulting later on the
+    // first GICR MMIO write.
     #[cfg(target_arch = "aarch64")]
-    if nr_cpus > 0 && gicd_base == 0 {
-        return Err(AcpiParseError::GicdNotFound);
-    }
+    check_gic_madt(nr_cpus, gicd_base, gicr_base, gic_version)?;
 
     // If no CPUs were found in the MADT, default to single-core.
     if nr_cpus == 0 {
@@ -618,6 +625,51 @@ unsafe fn parse_madt(
         #[cfg(target_arch = "aarch64")]
         gicr_base,
     })
+}
+
+// ── GIC MADT validation ──
+
+/// aarch64: decide whether the GIC records a MADT carries can back a
+/// [`Gicv3Desc`], before any descriptor is built from them.
+///
+/// Two firmware facts pin the decision table (both byte-verified against the
+/// live QEMU `virt` MADT under AAVMF):
+/// - With `gic-version=2` (QEMU `virt` default), the GICC "GICR Base Address"
+///   slot does not hold a redistributor base — GICv2 has none — and the
+///   frame left there is the GICV base (0x0803_0000). Adopting it makes the
+///   driver's first GICR write land in a reserved frame and externally
+///   abort, so a v1/v2 controller is refused outright (mirroring the DTB
+///   path, which only matches the `arm,gic-v3` compatible string).
+/// - Even with `gic-version=3`, QEMU fills the GICC GICR field with 0. A
+///   zero base is rejected instead of being passed to the driver (whose own
+///   zero-base assert would only fire later, away from the discovery site).
+///
+/// Version 0 means "byte not read" (entry shorter than 21 bytes); such a
+/// table falls through to the zero-GICR check, which a GICv2 machine only
+/// survives by accident — no known firmware emits sub-21-byte GICD entries.
+///
+/// Not `#[cfg]`-gated so the decision table stays unit-testable on the x86_64
+/// host; production callers are aarch64-only.
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+fn check_gic_madt(
+    nr_cpus: u32,
+    gicd_base: usize,
+    gicr_base: usize,
+    gicd_version: u8,
+) -> Result<(), AcpiParseError> {
+    if nr_cpus == 0 {
+        return Ok(());
+    }
+    if gicd_base == 0 {
+        return Err(AcpiParseError::GicdNotFound);
+    }
+    if matches!(gicd_version, 1 | 2) {
+        return Err(AcpiParseError::GicVersionUnsupported(gicd_version));
+    }
+    if gicr_base == 0 {
+        return Err(AcpiParseError::GicrNotFound);
+    }
+    Ok(())
 }
 
 // ── Little-endian byte helpers ──
@@ -650,6 +702,14 @@ pub enum AcpiParseError {
     /// aarch64: MADT lists CPUs but no GIC Distributor record — the
     /// interrupt controller base would be missing for every consumer.
     GicdNotFound,
+    /// aarch64: MADT GICC entries carry a zero GICR base (QEMU fills the
+    /// field with 0 even for `gic-version=3`) — no redistributor frame
+    /// exists to drive.
+    GicrNotFound,
+    /// aarch64: MADT GICD reports a GICv1/v2 controller; the
+    /// redistributor-based (GICv3) interrupt driver cannot drive such a
+    /// machine. Carries the reported version byte.
+    GicVersionUnsupported(u8),
 }
 
 impl fmt::Display for AcpiParseError {
@@ -660,6 +720,10 @@ impl fmt::Display for AcpiParseError {
             Self::MadtNotFound => write!(f, "MADT (APIC) table not found"),
             Self::MadtTooShort => write!(f, "MADT table too short"),
             Self::GicdNotFound => write!(f, "MADT has CPUs but no GICD record"),
+            Self::GicrNotFound => write!(f, "MADT GICC carries a zero GICR base"),
+            Self::GicVersionUnsupported(v) => {
+                write!(f, "MADT GICD reports GICv{}; GICv3+ required", v)
+            }
         }
     }
 }
@@ -677,6 +741,9 @@ mod tests {
             AcpiParseError::NoXsdtPointer,
             AcpiParseError::MadtNotFound,
             AcpiParseError::MadtTooShort,
+            AcpiParseError::GicdNotFound,
+            AcpiParseError::GicrNotFound,
+            AcpiParseError::GicVersionUnsupported(2),
         ];
         for i in 0..errs.len() {
             for j in (i + 1)..errs.len() {
@@ -712,6 +779,58 @@ mod tests {
     #[test]
     fn test_u32_le_from_slice() {
         assert_eq!(u32_le_from_slice(&[0x78, 0x56, 0x34, 0x12]), 0x12345678);
+    }
+
+    /// Decision table of `check_gic_madt` — the aarch64 post-MADT-walk gate.
+    ///
+    /// The GICC/GICD entry arms are `#[cfg(target_arch = "aarch64")]`, so a
+    /// host (x86_64) run cannot exercise the full `parse_madt` aarch64 path;
+    /// the pure decision function is ungated precisely so this table runs
+    /// everywhere. Live-firmware coverage (AAVMF v2 table rejected, v3
+    /// accepted) stays a machine-test concern.
+    #[test]
+    fn test_check_gic_madt_decision_table() {
+        // No CPUs (x86-style MADT): not the aarch64 gate's business.
+        assert_eq!(check_gic_madt(0, 0, 0, 0), Ok(()));
+
+        // Spec-conformant GICv3 machine: GICD present, version 3, nonzero
+        // redistributor base (QEMU virt gic-version=3 layout: 0x080A_0000).
+        assert_eq!(check_gic_madt(1, 0x0800_0000, 0x080A_0000, 3), Ok(()));
+
+        // QEMU gic-version=3 observed shape: GICR field filled with 0.
+        assert_eq!(
+            check_gic_madt(1, 0x0800_0000, 0, 3),
+            Err(AcpiParseError::GicrNotFound)
+        );
+
+        // QEMU virt GICv2 (default) observed shape: version byte 2 and the
+        // GICV frame base (0x0803_0000) parked in the GICC GICR slot — the
+        // exact shape that externally aborted on the first GICR write
+        // before this gate existed.
+        assert_eq!(
+            check_gic_madt(1, 0x0800_0000, 0x0803_0000, 2),
+            Err(AcpiParseError::GicVersionUnsupported(2))
+        );
+
+        // GICv1 likewise unsupported.
+        assert_eq!(
+            check_gic_madt(1, 0x0800_0000, 0x080A_0000, 1),
+            Err(AcpiParseError::GicVersionUnsupported(1))
+        );
+
+        // Missing GICD outranks the other checks (the version byte is only
+        // readable when a GICD entry exists).
+        assert_eq!(
+            check_gic_madt(1, 0, 0x080A_0000, 3),
+            Err(AcpiParseError::GicdNotFound)
+        );
+
+        // Version byte not read (0): falls through to the zero-GICR check.
+        assert_eq!(check_gic_madt(1, 0x0800_0000, 0x080A_0000, 0), Ok(()));
+        assert_eq!(
+            check_gic_madt(1, 0x0800_0000, 0, 0),
+            Err(AcpiParseError::GicrNotFound)
+        );
     }
 
     /// Build a minimal synthetic ACPI table set in memory and parse it.
