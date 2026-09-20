@@ -307,9 +307,11 @@ pub struct SigActionWire {
 /// 线格式 `mess_lc_pm_sig`(ipc.h:528-540):`nr` 为信号号,`act`/`oact`
 /// 是**用户态地址**(PM 用 `sys_datacopy` 出入,`act==0` 即只读查询),
 /// `ret` 是 sigreturn 恢复桩地址。恢复函数本体已就位(`sigreturn`,
-/// lib.rs 顶层;`sigreturn_via` 在本模块);裸桩**地址**仍传 0——它需要
-/// 从信号帧里定位 `scp`,而帧偏移的单一权威在内核侧,投递臂通电
-/// (edge3 S3 同窗)时才接线。
+/// lib.rs 顶层;`sigreturn_via` 在本模块);桩**地址**由调用方传入
+/// ——C 的 libc 单一单元直接填 `__sigreturn`(sigaction.c:7/:19),
+/// 本仓的对应符号住 minix-rt(`signals::__sigreturn`,NL3③),依赖
+/// 方向 rt→sys 决定本面只收地址;零配置顶层见 rt 同名面(NS11 init
+/// 消费先例:填真符号地址)。
 #[allow(clippy::too_many_arguments)]
 pub fn sigaction_via(
     transport: &impl IpcTransport,
@@ -359,18 +361,17 @@ pub fn sigprocmask_via(
     Ok(raw)
 }
 
-/// 以给定掩码等待信号(C: `sigsuspend(2)`)。正常情况下仅在 handler
-/// 返回后经 sigreturn 醒来,调用失败面即 errno(`EINTR` 为设计值)。
-pub fn sigsuspend_via(
-    transport: &impl IpcTransport,
-    mask: &[u32; 4],
-    sigreturn: u64,
-) -> Result<(), Errno> {
+/// 以给定掩码等待信号(C: `sigsuspend`,lib/libc/sys/sigsuspend.c:11-17
+/// ——消息只携带 `set`,恢复桩由 sigaction 时刻的 `ret` 槽定死,本调用
+/// 不再携带;PM 臂同样只消费掩码,calls.rs `_ctx` 忽略)。正常情况下
+/// 仅在 handler 返回后经 sigreturn 醒来,调用失败面即 errno
+/// (`EINTR` 为设计值)。
+pub fn sigsuspend_via(transport: &impl IpcTransport, mask: &[u32; 4]) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
     message.m_u.m_lc_pm_sigset = minix_types::MessLcPmSigset {
         how: 0,
         _pad: [0; 4],
-        ctx: sigreturn,
+        ctx: 0,
         set: *mask,
         _padding: [0; 24],
     };
@@ -1005,15 +1006,18 @@ mod tests {
     }
 
     #[test]
-    fn test_sigsuspend_carries_mask_and_ctx() {
+    fn test_sigsuspend_carries_mask_only() {
+        // C sigsuspend.c:11-17——只发 .set;ctx 车道保持零(PM 忽略)。
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
-        let mask: [u32; 4] = [0, 0b1000, 0, 0];
-        assert_eq!(sigsuspend_via(&transport, &mask, 0x1234), Ok(()));
+        let mask: [u32; 4] = [0b1000, 0, 0, 0];
+        assert_eq!(sigsuspend_via(&transport, &mask), Ok(()));
         let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(sent.m_type, PM_CALL_SIGSUSPEND);
         let ctx = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
-        assert_eq!(ctx, 0x1234);
+        assert_eq!(ctx, 0, "ctx 车道 C 形为零");
+        let wire_set = unsafe { u32::from_ne_bytes(sent.m_u.raw[16..20].try_into().unwrap()) };
+        assert_eq!(wire_set, 0b1000);
     }
 
     #[test]
