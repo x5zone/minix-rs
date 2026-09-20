@@ -1587,14 +1587,14 @@ Boot 阶段是整个系统最脆弱的环节——页表配置错误直接导致
 | Crate | 测试数 | 覆盖范围 |
 |-------|--------|----------|
 | `minix-elf` | 23 | `ElfError` 变体、`ProgramHeader64` 解析、PT_LOAD 迭代、边界检查、zero-filesz 段、segment flags 等 |
-| `boot-shim` (loader) | 12 | `first_overlapping_pair` (5) + `load_kernel_with_loader` (3) + `MockLoader` (2) + `load_boot_modules` (1) + panic path (1) |
+| `boot-shim` (loader) | 13 | `first_overlapping_pair` (5) + `load_kernel_with_loader` (2) + `MockLoader` (2) + bss 清零/`build_module_path` (2) + `load_boot_modules` 契约序 (1) + 缺件 fail-fast panic (1) |
 | `boot-shim` (opensbi_helpers) | 13 | `BootFileTable` 校验/查找、`entry_path_eq`、U-Boot file loader、`build_kernel_info` (riscv64 user_sp + 8 字段全断言 + bootstrap 零值回归保护)、`bump_alloc` (正向+负向)、`build_memmap` 默认区域、`alloc_bump_region` round-trip、`alloc_root_page` 4K 对齐 |
 | `boot-shim` (uefi_helpers) | 1 | `build_kernel_info_fields` |
-| `boot-shim` (总计) | 26 | 上三项之和 |
+| `boot-shim` (总计) | 27 | 上三项之和 |
 | `minix-boot` | 17 | 类型定义 + 平台描述符解析（`kernel_info.rs` 9 + `platform.rs` 8）|
-| **doc 01 路径总计** | **66** | — |
+| **doc 01 路径总计** | **67** | — |
 
-**UEFI 路径测试不足**: 26 个 boot-shim 测试中仅 1 个（4%）覆盖 UEFI 路径。其余 25 个测试都是 OpenSBI + loader + U-Boot table 路径。这是因为 UEFI 协议调用是单根（efi_main → BootServices），难以在 host 上 mock，需要 QEMU 集成测试覆盖。
+**UEFI 路径测试不足**: 27 个 boot-shim 测试中仅 1 个（4%）覆盖 UEFI 路径。其余 26 个测试都是 OpenSBI + loader + U-Boot table 路径。这是因为 UEFI 协议调用是单根（efi_main → BootServices），难以在 host 上 mock，需要 QEMU 集成测试覆盖。
 
 #### 5.1.1 集成测试覆盖层
 
@@ -1775,7 +1775,7 @@ fn panic(info: &PanicInfo) -> ! {
 |---------|---------|------|---------|
 | **UEFI 协议未找到** | `uefi_helpers::prepare_boot` `LocateProtocol` | `prepare_boot` 直接 `unwrap()` panic（UEFI 不返回 error）| QEMU `-d int,cpu_reset` 查看 RIP；预期为 `protocol not found` 字样 |
 | **kernel ELF 损坏** | `loader::load_kernel_with_loader` | `parse_elf64_header` 返回 `Err(ElfError::InvalidMagic)` → `prepare_boot` panic | 串口输出 `load_kernel_with_loader_computes_layout` 测试覆盖（`os/boot-shim/src/loader.rs`） |
-| **boot module 缺失** | `loader::load_boot_modules_with_loader` | `loader.read(path)` 返回 `None` → 文件不存在则 `panic!` | 测试：`test_load_boot_modules_with_loader_skips_missing`（mock loader 验证 skip 语义） |
+| **boot module 缺失** | `loader::load_boot_modules_with_loader` | 内核按位置消费 12 个模块并断言 `count == NR_BOOT_MODULES`（`os/kernel/src/lib.rs:1131-1137`），缺任一即装配错误；boot-shim 现 fail-fast：`loader.read(path)` 返回 `None` → 带模块名 `panic!`（不再静默 skip，把错误前移到此处而非内核深处） | 测试：`test_load_boot_modules_panics_on_missing`（mock loader 缺末项 `init` 验证 panic）+ `test_load_boot_modules_loads_all_in_contract_order`（12 项契约序全装载） |
 | **bump 分配器耗尽** | `bump_alloc(n)` | `BUMP_PTR + n*4096 > BUMP_END` 时返回 `None` → 调用方 panic | 测试：`test_bump_alloc_rejects_zero_pages`（负向）；正向耗尽无测试（测试缺口，后续补） |
 | **DTB 解析失败** | `uefi_helpers::find_platform_sources` | DTB 物理地址为 0 时不构造对应 `PlatformDescSource::new(DTB, PhysBytes(0))` → `platform_sources` 中无 DTB 条目 | 串口输出 `dtb_ptr=0x0`（由 `find_platform_sources()` 可观测）|
 | **页表切换崩溃** | `arch_boot_impl::enable()` | 切换后立即 #PF / Data Abort / Instruction Access Fault | QEMU `-d int,page` 查看页表错误地址；对照 `arch_boot_impl` 是否覆盖该区间 |

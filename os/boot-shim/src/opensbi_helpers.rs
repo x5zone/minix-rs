@@ -81,9 +81,9 @@ pub const BOOT_FILE_TABLE_MAGIC: u64 = 0x3154_4f4f_4258_4e4d;
 
 /// Maximum number of files describable by a single `BootFileTable`.
 ///
-/// One slot for the kernel + one per module. Sixteen is comfortable
-/// headroom over the current `MODULE_NAMES` list (`vm`, `pm`, `vfs`,
-/// `rs`, `ds`, `inet` = 6, plus kernel = 7) and keeps the table small.
+/// One slot for the kernel + one per module. Sixteen covers the 12-entry
+/// `MODULE_NAMES` boot contract plus the kernel image (13 total) with
+/// headroom, and keeps the table small.
 pub const BOOT_FILE_TABLE_MAX_ENTRIES: usize = 16;
 
 /// Maximum length of a path stored in a `BootFileEntry`.

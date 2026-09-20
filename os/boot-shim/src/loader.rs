@@ -33,25 +33,39 @@ pub const KERNEL_PATH: &str = "/EFI/minix/kernel.elf";
 /// Directory containing boot modules (same convention for both paths).
 pub const MODULES_DIR: &str = "/EFI/minix/modules";
 
-/// Boot modules to load, in order. Names match files under `MODULES_DIR`.
+/// Boot modules to load, **in the order the kernel consumes them**.
 ///
-/// **Order semantics**: this list is the order in which the boot-shim
-/// hands the modules to the kernel. The kernel's IPC startup sequence
-/// (see `kernel/src/proc_table.rs`) consumes the list sequentially:
-/// the first module becomes the first system task, etc. The C reference
-/// order is in `minix3/minix/servers/rs/table.c::boot_image_priv_table`:
-/// `rs, vm, pm, sched, vfs, ds, tty, memory, mib, pfs, fs_imgrd, init`.
+/// The kernel reads these modules positionally: the `i`-th entry here becomes
+/// the `i`-th [`BootModule`] in `kernel_info.boot_modules()`, which the kernel
+/// maps to process slot `BOOT_MODULE_PROC_NRS[i]` while building the process
+/// table (see `os/kernel/src/lib.rs:1185-1188`). The kernel also asserts at
+/// boot that the number of modules equals `NR_BOOT_MODULES` (12)
+/// (`os/kernel/src/lib.rs:1131-1137`). So **both the order and the count of
+/// this list are load-bearing** — they are not free to reorder, and a missing
+/// entry is a boot-time failure, not a cosmetic gap.
 ///
-/// **Why we diverge**: in minix-rs the kernel's `proc_table` builds the
-/// same process table from `kinfo.module_list[]` (cf. `minix3/minix/kernel/main.c:171`),
-/// so the on-disk module list order is decoupled from the IPC startup
-/// order. The kernel's `proc_init` reorders them by `SYSTEM` flag
-/// priority. Therefore, the boot-shim list is alphabetical-by-category
-/// (memory managers first: `vm`, then task managers: `pm`, then file
-/// services: `vfs`, then re-incarnation: `rs`, then data services: `ds`,
-/// then network: `inet`) for readability — IPC order is a kernel
-/// concern, not a boot-shim concern.
-pub const MODULE_NAMES: &[&str] = &["vm", "pm", "vfs", "rs", "ds", "inet"];
+/// The authoritative source is the C kernel boot image table
+/// `minix3/minix/kernel/table.c:44-64` (`struct boot_image image[]`). Its
+/// user-space section, in order, is: `ds, rs, pm, sched, vfs, memory, tty,
+/// mib, vm, pfs, mfs, init`. This list reproduces exactly that order. Note
+/// that a module's process number is **not** its position — `BOOT_MODULE_PROC_NRS`
+/// maps position to the fixed `com.h` number (e.g. `ds` is position 0 but
+/// process number 6).
+///
+/// Each name doubles as the file the boot-shim reads under [`MODULES_DIR`] and
+/// as the `p_name` the booted process carries, so the image-packaging step
+/// must install a file with this exact name.
+pub const MODULE_NAMES: &[&str] = &[
+    "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
+];
+
+/// Compile-time guard: the boot-module count must match the kernel's
+/// `NR_BOOT_MODULES` (12). The two crates are kept separate on purpose
+/// (boot-shim must not depend on the kernel), so the contract is pinned by
+/// this literal instead of a shared constant; changing the kernel's
+/// `NR_BOOT_MODULES` without updating this list fails to compile here rather
+/// than surfacing as an opaque boot-time assert.
+const _: () = assert!(MODULE_NAMES.len() == 12);
 
 /// Result of computing the kernel's load layout from its ELF header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,9 +261,12 @@ pub fn load_kernel_with_loader<L: FileLoader>(
 /// Read each named module, copy bytes into pages from `alloc_pages`,
 /// and return a leaked `'static` slice of `BootModule`.
 ///
-/// Modules that fail to read or allocate are skipped silently — this
-/// matches the Minix3 GRUB behaviour where missing modules simply don't
-/// appear in `kinfo.module_list`.
+/// The kernel consumes the result positionally and asserts the count is
+/// `NR_BOOT_MODULES` (12), so a missing module is a boot-time failure, not a
+/// gap to paper over. This therefore **fails fast**: a module that cannot be
+/// read, or whose pages cannot be allocated, panics with the offending name —
+/// surfacing the assembly error here (with the module it is) instead of as an
+/// opaque "expected 12 boot modules, found N" assert deep in the kernel.
 pub fn load_boot_modules_with_loader<L: FileLoader>(
     loader: &L,
     alloc_pages: PageAllocator,
@@ -258,16 +275,23 @@ pub fn load_boot_modules_with_loader<L: FileLoader>(
 
     for &name in MODULE_NAMES {
         let path = build_module_path(name);
-        let data = match loader.read(&path) {
-            Some(d) => d,
-            None => continue,
-        };
+        let data = loader.read(&path).unwrap_or_else(|| {
+            panic!(
+                "boot-shim: required boot module '{}' not found at {} \
+                 (kernel needs all {} in BOOT_MODULE_PROC_NRS order)",
+                name,
+                path,
+                MODULE_NAMES.len()
+            )
+        });
 
         let num_pages = (data.len() + 4095) / 4096;
-        let phys_base = match alloc_pages(num_pages) {
-            Some(p) => p,
-            None => continue,
-        };
+        let phys_base = alloc_pages(num_pages).unwrap_or_else(|| {
+            panic!(
+                "boot-shim: out of memory loading boot module '{}' ({} pages)",
+                name, num_pages
+            )
+        });
 
         // SAFETY: `alloc_pages` returned `num_pages` pages of writable
         // physical memory; `data.len() <= num_pages * 4096`.
@@ -367,7 +391,7 @@ mod tests {
     #[test]
     fn test_build_module_path_joins_with_slash() {
         assert_eq!(build_module_path("vm"), "/EFI/minix/modules/vm");
-        assert_eq!(build_module_path("inet"), "/EFI/minix/modules/inet");
+        assert_eq!(build_module_path("memory"), "/EFI/minix/modules/memory");
     }
 
     #[test]
@@ -487,34 +511,58 @@ mod tests {
         assert_eq!(buf[memsz as usize], 0xCC, "buf tail must be untouched");
     }
 
-    #[test]
-    fn test_load_boot_modules_with_loader_skips_missing() {
-        // Bump allocator backed by a Vec so we don't write to real phys memory.
-        // We allocate large enough that addresses are non-overlapping but
-        // dummies. To avoid an actual phys write we provide an allocator
-        // whose returned address points into a leaked Vec.
-        use std::sync::Mutex;
-        static STORAGE: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
+    // Bump allocator backed by a Vec so we never write to real physical
+    // memory in unit tests: the returned address points into a leaked Vec
+    // kept alive in STORAGE for the duration of the test.
+    use std::sync::Mutex;
+    static STORAGE: Mutex<Vec<Vec<u8>>> = Mutex::new(Vec::new());
 
-        fn alloc(num_pages: usize) -> Option<u64> {
-            let mut storage = STORAGE.lock().unwrap();
-            let mut buf = vec![0u8; num_pages * 4096];
-            let addr = buf.as_mut_ptr() as u64;
-            storage.push(buf);
-            Some(addr)
+    fn mock_alloc(num_pages: usize) -> Option<u64> {
+        let mut storage = STORAGE.lock().unwrap();
+        let mut buf = vec![0u8; num_pages * 4096];
+        let addr = buf.as_mut_ptr() as u64;
+        storage.push(buf);
+        Some(addr)
+    }
+
+    #[test]
+    fn test_load_boot_modules_loads_all_in_contract_order() {
+        // All 12 contract modules present → they come back in MODULE_NAMES
+        // order (the order the kernel maps to BOOT_MODULE_PROC_NRS index).
+        let mut loader = MockLoader::new();
+        for (i, name) in MODULE_NAMES.iter().enumerate() {
+            loader.insert(&build_module_path(name), vec![0x10 + i as u8; 100]);
         }
 
-        let mut loader = MockLoader::new();
-        loader.insert("/EFI/minix/modules/vm", vec![0xAA; 100]);
-        loader.insert("/EFI/minix/modules/pm", vec![0xBB; 200]);
-        // vfs/rs/ds/inet missing → must be skipped, not panic.
+        let modules = load_boot_modules_with_loader(&loader, mock_alloc);
+        assert_eq!(modules.len(), MODULE_NAMES.len());
+        for (i, name) in MODULE_NAMES.iter().enumerate() {
+            assert_eq!(
+                modules[i].name, *name,
+                "module {i} must keep contract order"
+            );
+            assert_eq!(modules[i].len, 100);
+        }
+    }
 
-        let modules = load_boot_modules_with_loader(&loader, alloc);
-        assert_eq!(modules.len(), 2);
-        assert_eq!(modules[0].name, "vm");
-        assert_eq!(modules[0].len, 100);
-        assert_eq!(modules[1].name, "pm");
-        assert_eq!(modules[1].len, 200);
+    #[test]
+    fn test_load_boot_modules_panics_on_missing() {
+        // The kernel consumes modules positionally and asserts the count is
+        // 12, so a missing module must fail fast here — not be silently
+        // skipped (the old behaviour, which deferred the error to an opaque
+        // kernel assert). Drop the last contract module ("init").
+        let mut loader = MockLoader::new();
+        for name in &MODULE_NAMES[..MODULE_NAMES.len() - 1] {
+            loader.insert(&build_module_path(name), vec![0xAA; 64]);
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            load_boot_modules_with_loader(&loader, mock_alloc);
+        }));
+        assert!(
+            result.is_err(),
+            "missing boot module must panic (fail-fast), not be skipped"
+        );
     }
 
     fn phdr(paddr: u64, memsz: u64) -> minix_elf::LoadSegment {
