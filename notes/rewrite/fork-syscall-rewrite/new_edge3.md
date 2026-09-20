@@ -33,7 +33,7 @@
 
 | 编号 | 条目 | 前轮状态 | 本轮处置 |
 |---|---|---|---|
-| S30 | （前轮 🔄 项） | 🔄 | 继续按前轮要点执行 |
+| S30 | （前轮 🔄 项） | 🔄 | 本轮批次：F3c-2 写半后段 🔄 2026-09-21 zcode_glm_2（claim/S30-F3C2-zcode_glm_2）——ext2 create/mkdir/link/unlink/rmdir/symlink/rename 消费 alloc_inode；其余子项（procfs/ptyfs 缺口、F3 文档面）不动 |
 | S31 | （⏸ S29 通用框架） | ⏸ | S29 若已 ✅ 则解锁，开工前复核 |
 | S32 | 根镜像装机面 | ~~⏸~~ 已解锁 | 并入 NS8 执行 |
 | S33 | E-MIBPROD/E-ISPROD 余项 | 🔄（余外部依赖） | 余项=run_dump A-6 输出面真机联调（E5(g)），挂 T2 后 |
