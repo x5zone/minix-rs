@@ -65,6 +65,10 @@ pub const PM_CALL_KILL: i32 = 11;
 ///
 /// C: `PM_EXEC (PM_BASE + 14)` (`callnr.h:27`).
 pub const PM_CALL_EXEC: i32 = 14;
+/// Set or read an interval timer.
+///
+/// C: `PM_ITIMER (PM_BASE + 17)` (`callnr.h:30`).
+pub const PM_CALL_ITIMER: i32 = 17;
 /// Start a system service (server-side call).
 ///
 /// C: `PM_SRV_FORK (PM_BASE + 41)` (`callnr.h:54`).
@@ -496,6 +500,72 @@ pub fn exec_via(transport: &impl IpcTransport, prepared: PreparedExec) -> Errno 
         Ok(_) => Errno::EIO,
         Err(error) => error,
     }
+}
+
+/// One `struct timeval` user-image half (`sys/sys/time.h:78-88`): two
+/// signed 64-bit fields on LP64. Never crosses the message itself — PM
+/// copies the surrounding `itimerval` through `sys_datacopy`
+/// (`minix3/minix/servers/pm/alarm.c:120-121`).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimevalWire {
+    /// Seconds. C: `time_t tv_sec`.
+    pub tv_sec: i64,
+    /// Microseconds. C: `suseconds_t tv_usec`.
+    pub tv_usec: i64,
+}
+
+/// The `struct itimerval` user-image (`sys/sys/time.h:267-272`): interval
+/// (reload) and value (countdown), each a [`TimevalWire`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ItimervalWire {
+    /// Reload value after each expiry. C: `struct timeval it_interval`.
+    pub it_interval: TimevalWire,
+    /// Countdown to the next signal. C: `struct timeval it_value`.
+    pub it_value: TimevalWire,
+}
+
+/// `ITIMER_REAL` — real-time countdown, SIGALRM on expiry
+/// (`sys/sys/time.h:264`; PM dispatch `alarm.c:126`).
+pub const ITIMER_REAL: i32 = 0;
+/// `ITIMER_VIRTUAL` — user CPU time (`sys/sys/time.h:265`).
+pub const ITIMER_VIRTUAL: i32 = 1;
+/// `ITIMER_PROF` — user plus system CPU time (`sys/sys/time.h:266`).
+pub const ITIMER_PROF: i32 = 2;
+
+/// Sets or reads an interval timer (C: `setitimer`,
+/// `minix3/minix/lib/libc/sys/setitimer.c:19-38`).
+///
+/// The wire carries `which` and the two *pointers* (`mess_lc_pm_itimer`,
+/// ipc.h:468-474, wire struct `MessLcPmItimer` in minix-types); PM copies
+/// the 32-byte `itimerval` through `sys_datacopy` (`alarm.c:120`). A `None`
+/// side travels as a zero pointer — PM reads that as "no set" / "no get"
+/// and requires at least one side (`alarm.c:106-110`), so the shape
+/// `Some(value), None` is the plain setter.
+pub fn setitimer_via(
+    transport: &impl IpcTransport,
+    which: i32,
+    value: Option<&ItimervalWire>,
+    ovalue: Option<&mut ItimervalWire>,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    let packed = minix_types::MessLcPmItimer {
+        which,
+        value: value.map(|v| v as *const ItimervalWire as u64).unwrap_or(0),
+        ovalue: ovalue.map(|o| o as *mut ItimervalWire as u64).unwrap_or(0),
+        _padding: [0; 32],
+    };
+    // SAFETY: MessLcPmItimer is a plain 56-byte value; the byte copy below
+    // is its exact representation (same idiom as `exec_via`).
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&raw const packed) as *const u8,
+            core::mem::size_of::<minix_types::MessLcPmItimer>(),
+        )
+    };
+    crate::syscall::write_payload(&mut message, bytes);
+    perform_syscall(transport, pm_endpoint(), PM_CALL_ITIMER, &mut message).map(|_| ())
 }
 
 /// Starts a system service with dropped privileges (server-side call).
@@ -1149,5 +1219,63 @@ mod payload_layout_tests {
         assert_eq!(size_of::<ServiceForkPayload>(), 56);
         assert_eq!(offset_of!(ServiceForkPayload, uid), 0);
         assert_eq!(offset_of!(ServiceForkPayload, gid), 4);
+    }
+}
+
+#[cfg(test)]
+mod itimer_wire_tests {
+    use super::*;
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    /// C 绝对值 pin：PM_ITIMER = PM_BASE + 17（callnr.h:30）。
+    #[test]
+    fn test_itimer_call_number_matches_c() {
+        assert_eq!(PM_CALL_ITIMER, 17);
+        assert_eq!(ITIMER_REAL, 0);
+        assert_eq!(ITIMER_VIRTUAL, 1);
+        assert_eq!(ITIMER_PROF, 2);
+    }
+
+    /// 布局见证：TimevalWire 16 字节、ItimervalWire 32 字节（LP64
+    /// time_t/suseconds_t 各 8；PM sys_datacopy 整块拷贝，alarm.c:120）。
+    #[test]
+    fn test_itimerval_layout() {
+        assert_eq!(core::mem::size_of::<TimevalWire>(), 16);
+        assert_eq!(core::mem::size_of::<ItimervalWire>(), 32);
+    }
+
+    /// 线格式：which@0（i32）、value@8、ovalue@16（指针域）；Some/None
+    /// 分别落非零/零指针——PM 按指针判 set/get（alarm.c:106-110）。
+    #[test]
+    fn test_setitimer_message_carries_which_and_pointers() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let timer = ItimervalWire {
+            it_interval: TimevalWire { tv_sec: 0, tv_usec: 0 },
+            it_value: TimevalWire { tv_sec: 30, tv_usec: 0 },
+        };
+        assert_eq!(setitimer_via(&transport, ITIMER_REAL, Some(&timer), None), Ok(()));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, pm_endpoint());
+        assert_eq!(sent.m_type, PM_CALL_ITIMER);
+        // SAFETY: byte-level read of the union overlay lanes for test
+        // assertions only (same as the sigaction wire test).
+        let (which, value, ovalue) = unsafe {
+            (
+                i32::from_ne_bytes(sent.m_u.raw[0..4].try_into().unwrap()),
+                u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()),
+                u64::from_ne_bytes(sent.m_u.raw[16..24].try_into().unwrap()),
+            )
+        };
+        assert_eq!(which, ITIMER_REAL);
+        assert_eq!(value, &timer as *const ItimervalWire as u64);
+        assert_eq!(ovalue, 0, "None ovalue travels as the zero pointer");
     }
 }

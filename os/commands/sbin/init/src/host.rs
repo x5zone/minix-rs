@@ -282,8 +282,23 @@ impl InitHost for MinixSysHost {
     }
 
     fn alarm(&mut self, secs: u32) -> Result<(), Errno> {
-        let _ = secs;
-        Err(Errno::ENOSYS)
+        // C alarm(3) is the backwards-compatible setitimer shape
+        // (minix3/lib/libc/gen/alarm.c:54-70): ITIMER_REAL, zero interval,
+        // value = {secs, 0}. init discards the old value (init.c:1685), so
+        // ovalue travels as NULL — PM reads that as "no get" (alarm.c:108).
+        let timer = minix_sys::pm::ItimervalWire {
+            it_interval: minix_sys::pm::TimevalWire { tv_sec: 0, tv_usec: 0 },
+            it_value: minix_sys::pm::TimevalWire {
+                tv_sec: secs as i64,
+                tv_usec: 0,
+            },
+        };
+        minix_sys::pm::setitimer_via(
+            &DirectTrapTransport,
+            minix_sys::pm::ITIMER_REAL,
+            Some(&timer),
+            None,
+        )
     }
 
     fn now_secs(&self) -> Result<i64, Errno> {
@@ -692,10 +707,9 @@ mod tests {
         // 本测试分两栏：**仍缺封装**的接缝必须诚实回 ENOSYS（不假成功）；
         // **已接线**的接缝在宿主 trap 断链下诚实回 EIO（E1 切片 5 的 hosted
         // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
-        // 仍缺封装：alarm（PM setitimer 面）、内核 mib 三件（12 篇）、
+        // 仍缺封装：内核 mib 三件（12 篇）、
         // set_controlling_tty（dup2/TIOCSCTTY 面）、chroot、
         // set_env（E-CMDSYSFACE）。
-        assert_eq!(host.alarm(10), Err(Errno::ENOSYS));
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
@@ -719,6 +733,8 @@ mod tests {
             matches!(host.register_handlers(&spec), Err(e) if e == Errno::EIO),
             "宿主 trap 断链 → EIO（不伪造成功）"
         );
+        // alarm 已接线（PM_ITIMER 面）：宿主 trap 断链诚实回 EIO。
+        assert_eq!(host.alarm(10), Err(Errno::EIO));
         // exec 已接线（PM_EXEC 面，execve.rs）：宿主 kerninfo 断链 →
         // 帧的 vsp 无从取值 → 诚实 EIO（不伪造成功）。
         assert_eq!(
