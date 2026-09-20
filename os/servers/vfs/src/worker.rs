@@ -177,6 +177,16 @@ pub enum WorkerCont {
         /// 已发给驱动的 magic grant（收尾时撤销）。
         grant: i32,
     },
+    /// 字符设备读/写的数据对话半（`CDEV_READ`/`CDEV_WRITE`）：回复同 ioctl，
+    /// 成功状态是**搬运字节数**（非负，原样回给用户——驱动挂起读写的正常
+    /// 完成形态），失败是负 errno（`EINTR` 按 `cdev_generic_reply` 的折算改
+    /// 成 `EAGAIN`）。续接体撤销数据 magic grant、清 `BlockedOn::Cdev` 再回
+    /// 用户。C `cdev_io`（cdev.c:277-341）+ `cdev_generic_reply`
+    /// （cdev.c:471-477）。
+    CdevIo {
+        /// 已发给驱动的数据 magic grant（收尾时撤销）。
+        grant: i32,
+    },
     /// `Fstat`（`do_fstat` → `REQ_STAT`）：回复只有状态字，续接就是把
     /// 用户的 grant 撤掉再把状态回给用户。
     Fstat {

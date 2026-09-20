@@ -37,6 +37,135 @@ pub(crate) const fn transfer_position(flags: i32, filp_pos: i64, vnode_size: u64
     }
 }
 
+/// 读/写臂的字符设备路由（C `read_write` 的 `S_ISCHR` 支 read.c:162-217 →
+/// `cdev_io`，cdev.c:277-341）：`/dev/tty` 重定向（`cdev_get` → `cdev_map`）
+/// → dmap 按 major 找驱动（没有 → **EIO**——读写的查表门是运行时事故面，
+/// 与开合的 `ENXIO` 不同）→ 交叉 magic grant（读配 `CPF_WRITE`、写配
+/// `CPF_READ`，`grant_dir`）→ `CDEV_READ`/`CDEV_WRITE` 消息 → 驱动悬停，
+/// 位置按 C 的乐观推进写回 filp（read.c:216 的 FIXME 同款：悬挂时按请求
+/// 长度前移，实际搬运数由驱动回复，VFS 不再回改）。
+///
+/// `filp_idx` 是位置推进用的 filp 表下标；`sdev` 是 vnode 的特殊
+/// 设备号；`write` 选方向。宿主构建下驱动发送不可达，成功路径只有真机
+/// 可达（同 ioctl 臂的诚实注记）。
+pub(crate) fn cdev_data_route(
+    state: &mut VfsState,
+    fp_slot: minix_types::UserSlot,
+    filp_idx: usize,
+    sdev: u64,
+    buf: u64,
+    len: u64,
+    write: bool,
+) -> SyscallResult {
+    // C `major(x)`/`minor(x)`（sys/types.h:290-292）——与 ioctl 臂同一套位
+    // 折算；重定向后按新设备号重算。
+    let is_ctty = ((sdev & 0x000fff00) >> 8) as u32 == crate::device_map::CTTY_MAJOR;
+    let major_valid = (((sdev & 0x000fff00) >> 8) as usize) < crate::device_map::NR_DEVICES;
+    let fp_tty = state
+        .fproc_table
+        .get(fp_slot)
+        .map(|fp| fp.tty)
+        .filter(|t| *t != minix_types::NO_DEV);
+    let dev = match crate::cdev::tty_redirect(sdev, is_ctty, fp_tty, major_valid) {
+        crate::cdev::RedirectVerdict::Keep(d) | crate::cdev::RedirectVerdict::Substitute(d) => d,
+        // C `cdev_map` 返回 `NO_DEV` → `cdev_get` 给 NULL → `cdev_io` 回
+        // EIO（cdev.c:292-293；不是开合路径的 ENXIO）。
+        crate::cdev::RedirectVerdict::NoDev => {
+            return SyscallResult::Error(minix_types::EIO);
+        }
+    };
+    let major = ((dev & 0x000fff00) >> 8) as u32;
+    let minor = (((dev & 0xfff0_0000) >> 12) | (dev & 0xff)) as u32;
+    let drv_e = match crate::device_map::get_by_major(&state.dmap_table, major)
+        .and_then(|row| row.driver)
+    {
+        Some(e) => e,
+        None => return SyscallResult::Error(minix_types::EIO),
+    };
+    let Some(worker) = state.current_worker else {
+        return SyscallResult::Error(minix_types::EAGAIN);
+    };
+    let user_e = state
+        .fproc_table
+        .get(fp_slot)
+        .map(|fp| fp.endpoint)
+        .unwrap_or(minix_types::Endpoint::NONE);
+    // 数据 magic grant：读＝驱动往用户缓冲**写**，写＝驱动从用户缓冲
+    // **读**（cdev.c:306-308 的交叉配向）。
+    let access = minix_types::CpFlags::from_bits_truncate(crate::cdev::grant_dir(!write))
+        | minix_types::CpFlags::TRY;
+    let grant = match state.grant_user_buffer(drv_e, user_e, buf, len, access) {
+        Ok(g) => g,
+        Err(_) => return SyscallResult::Error(minix_types::EIO),
+    };
+    let mut m = minix_types::Message {
+        // 消息号是基值+序数（0x402/0x403）——`as i32` 只给枚举序数，
+        // 必须走 `message_type()`。
+        m_type: if write {
+            minix_chardriver::protocol::CdevRequest::Write.message_type()
+        } else {
+            minix_chardriver::protocol::CdevRequest::Read.message_type()
+        },
+        ..minix_types::Message::default()
+    };
+    // SAFETY: `mess_vfs_lchardriver_readwrite { off_t pos@0; cp_grant_id_t
+    // grant@8; size_t count@16; unsigned long request@24; int flags@32;
+    // endpoint_t id@36; endpoint_t user@40; devminor_t minor@44 }`
+    // （ipc.h:2238-2249）。`id = proc_e`（cdev.c:326）——驱动的回复原样
+    // 带回，VFS 的回复路由按它认进程。
+    unsafe {
+        let raw = &mut m.m_u.raw;
+        let pos = state
+            .filp_table
+            .get(crate::filp::FilpId(filp_idx))
+            .map(|f| f.pos)
+            .unwrap_or(0);
+        raw[0..8].copy_from_slice(&pos.to_le_bytes());
+        raw[8..12].copy_from_slice(&grant.to_le_bytes());
+        raw[16..24].copy_from_slice(&len.to_le_bytes());
+        let mut flags = 0i32;
+        if state
+            .filp_table
+            .get(crate::filp::FilpId(filp_idx))
+            .is_some_and(|f| f.flags & (crate::fcntl::O_NONBLOCK as i32) != 0)
+        {
+            flags |= minix_chardriver::protocol::CDEV_NONBLOCK;
+        }
+        raw[32..36].copy_from_slice(&flags.to_le_bytes());
+        raw[36..40].copy_from_slice(&user_e.0.to_le_bytes());
+        raw[40..44].copy_from_slice(&user_e.0.to_le_bytes());
+        raw[44..46].copy_from_slice(&(minor as u16).to_le_bytes());
+    }
+    if let Some(wp) = state.worker_pool.get_mut(worker) {
+        wp.cont = Some(crate::worker::WorkerCont::CdevIo { grant });
+    }
+    match state.send_drv_for_slot(worker, Some(fp_slot), drv_e, &m) {
+        Ok(()) => {
+            // C read.c:216 的乐观推进（FIXME 原文保留）：悬挂即把位置按请求
+            // 长度前移，`f->filp_pos` 在 read_write 尾部（:261）随之提交；
+            // 实际搬运数由驱动回复直接回给用户，不回改位置。
+            if let Some(f) = state.filp_table.get_mut(crate::filp::FilpId(filp_idx)) {
+                f.pos = f.pos.saturating_add(len as i64);
+            }
+            // C cdev.c:336-339：`fp_cdev { dev, endpt, grant }` +
+            // `FP_BLOCKED_ON_CDEV`——驱动死亡清扫（`driver_vanish_plan` 的
+            // `ReviveEio` 面）与 MIB 的 `fpl_task` 都按它认账。
+            if let Some(fp) = state.fproc_table.get_mut(fp_slot) {
+                fp.blocked_on = crate::fproc::BlockedOn::Cdev(crate::fproc::CdevBlock {
+                    dev,
+                    endpt: drv_e,
+                    grant: Some(grant),
+                });
+            }
+            SyscallResult::Suspend
+        }
+        Err(e) => {
+            let _ = state.revoke_grant(grant);
+            SyscallResult::Error(e)
+        }
+    }
+}
+
 pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult {
     let msg = state.current_message;
     // 联合体读取与 C 的 union 语义一致（VfsPmInit decode 同款惯例）。
@@ -302,9 +431,19 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     vnode_idx,
                 )
             };
-            // C 按 `vp->v_mode` 分派（read.c:154-231）：本拍只服务常规文件。
-            if mode & crate::open::S_IFMT != crate::open::S_IFREG {
-                return SyscallResult::Nosys;
+            // C 按 `vp->v_mode` 分派（read.c:154-231）：CHR → `cdev_io`
+            // （NS7 接线）、REG → `req_read`；FIFO/SOCK/BLK 维持 Nosys。
+            match mode & crate::open::S_IFMT {
+                crate::open::S_IFCHR => {
+                    let sdev = state
+                        .vnode_table
+                        .get(VnodeId(vnode_idx))
+                        .map(|v| v.sdev)
+                        .unwrap_or(minix_types::NO_DEV);
+                    return cdev_data_route(state, fp_slot, filp_idx, sdev, buf, len, false);
+                }
+                crate::open::S_IFREG => {}
+                _ => return SyscallResult::Nosys,
             }
             let vmnt_id = match state.vmnt_table.find_by_fs(fs_e) {
                 Some(v) => v,
@@ -414,9 +553,19 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 let pos = transfer_position(filp.flags, filp.pos, vnode.size);
                 (filp_idx, vnode.fs, vnode.ino, vnode.mode, pos, vnode_idx)
             };
-            // 类型分派同读（本拍只服务常规文件）。
-            if mode & crate::open::S_IFMT != crate::open::S_IFREG {
-                return SyscallResult::Nosys;
+            // 类型分派同读（read.c:154-231 的 WRITING 面）：CHR → `cdev_io`
+            // （NS7 接线）、REG → `req_readwrite`；其余维持 Nosys。
+            match mode & crate::open::S_IFMT {
+                crate::open::S_IFCHR => {
+                    let sdev = state
+                        .vnode_table
+                        .get(VnodeId(vnode_idx))
+                        .map(|v| v.sdev)
+                        .unwrap_or(minix_types::NO_DEV);
+                    return cdev_data_route(state, fp_slot, filp_idx, sdev, buf, len, true);
+                }
+                crate::open::S_IFREG => {}
+                _ => return SyscallResult::Nosys,
             }
             let vmnt_id = match state.vmnt_table.find_by_fs(fs_e) {
                 Some(v) => v,
@@ -4927,12 +5076,18 @@ mod tests {
             v.ino = 9;
             v.mode = crate::open::S_IFCHR | 0o644;
         }
-        state.filp_table.get_mut(crate::filp::FilpId(fid.get())).unwrap().vnode = Some(vid.get());
+        state
+            .filp_table
+            .get_mut(crate::filp::FilpId(fid.get()))
+            .unwrap()
+            .vnode = Some(vid.get());
         state.current_message = write_msg(3, 0x5000, 16);
+        // NS7 接线后：CHR 走 cdev 路由——sdev 缺省 0（major 0）无 dmap 行，
+        // C `cdev_io` 的查表门（cdev.c:292-293）回 EIO。
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Write),
-            SyscallResult::Nosys,
-            "字符设备分支未接线"
+            SyscallResult::Error(minix_types::EIO),
+            "字符设备走 cdev 路由（无驱动行 → EIO）"
         );
 
         state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFREG | 0o644;
@@ -4942,6 +5097,194 @@ mod tests {
             SyscallResult::Error(minix_types::EIO),
             "常规文件：无 vmnt → EIO"
         );
+    }
+
+    /// `Write` 臂的字符路由（NS7，C `read_write` 的 CHR 支 → `cdev_io`）：
+    /// dmap 有驱动时真组 `CDEV_WRITE` 请求（宿主发送不可达 → EIO），但请求
+    /// 已按线格式停槽——m_type/minor/id/count/grant 各槽位对齐
+    /// `mess_vfs_lchardriver_readwrite`（ipc.h:2238-2249）；位置不前移
+    /// （C read.c:216 的乐观推进只在发送成功后发生）。
+    #[test]
+    fn test_dispatch_write_char_routes_to_driver() {
+        let mut state = seeded(100);
+        // 宿主下 grant 表首次增长过不了 `sys_setgrant`：先热身，让数据
+        // magic grant 真建出来（否则 EIO 来自 grant 门，走不到发送）。
+        crate::main_loop::warm_grants(&mut state);
+        let user = state
+            .fproc_table
+            .get(minix_types::UserSlot::new(0))
+            .unwrap()
+            .endpoint;
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 9;
+            v.mode = crate::open::S_IFCHR | 0o644;
+            // /dev/console：major 4（TTY_MAJOR，dmap.h:25）minor 0。
+            v.sdev = 4 << 8;
+        }
+        state
+            .filp_table
+            .get_mut(crate::filp::FilpId(fid.get()))
+            .unwrap()
+            .vnode = Some(vid.get());
+        let mut row = crate::device_map::DmapEntry::empty();
+        row.driver = Some(Endpoint::from_generation_slot(0, 12));
+        state.dmap_table.set(4, row);
+        let worker = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .unwrap();
+        state.current_worker = Some(worker);
+
+        let mut m = Message {
+            m_source: Endpoint::from_generation_slot(1, 0),
+            m_type: VfsCallNum::Write as i32,
+            ..Message::default()
+        };
+        // SAFETY: write 载荷 fd@0、buf@8、len@16。
+        unsafe {
+            let raw = &mut m.m_u.raw;
+            raw[0..4].copy_from_slice(&3i32.to_le_bytes());
+            raw[8..16].copy_from_slice(&0x5000u64.to_le_bytes());
+            raw[16..24].copy_from_slice(&16u64.to_le_bytes());
+        }
+        state.current_message = m;
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Write),
+            SyscallResult::Error(minix_types::EIO),
+            "宿主构建下驱动发送不可达 → EIO"
+        );
+        let wp = state.worker_pool.get(worker).unwrap();
+        let req = wp.sendrec.expect("请求已停在槽上");
+        assert_eq!(
+            req.m_type,
+            minix_chardriver::protocol::CdevRequest::Write.message_type()
+        );
+        // SAFETY(test): 按 readwrite 的载荷偏移读回（ipc.h:2238-2249）。
+        unsafe {
+            let raw = &req.m_u.raw;
+            let grant = i32::from_le_bytes(raw[8..12].try_into().unwrap());
+            assert_ne!(grant, minix_types::GRANT_INVALID, "数据 magic grant 已发");
+            let count = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+            assert_eq!(count, 16, "count = 请求长度");
+            let id = i32::from_le_bytes(raw[36..40].try_into().unwrap());
+            assert_eq!(id, user.get(), "id = 发请求进程（cdev.c:326）");
+            let minor = u16::from_le_bytes(raw[44..46].try_into().unwrap());
+            assert_eq!(minor, 0, "minor = /dev/console 的 0");
+        }
+        assert!(wp.cont.is_some(), "续接标识（CdevIo）已挂——等驱动回复收尾");
+        assert_eq!(
+            state
+                .filp_table
+                .get(crate::filp::FilpId(fid.get()))
+                .unwrap()
+                .pos,
+            0,
+            "发送失败：位置不前移"
+        );
+    }
+
+    /// 字符路由的 `/dev/tty` 重定向（C `cdev_get` → `cdev_map`，cdev.c:64-97）：
+    /// 有控制终端时替换成真实设备，minor 按新设备发；无控制终端 → `NO_DEV`
+    /// → `cdev_io` 的 EIO（读写的查表面，不是开合路径的 ENXIO）。
+    #[test]
+    fn test_dispatch_write_char_ctty_redirect() {
+        let mut state = seeded(100);
+        crate::main_loop::warm_grants(&mut state);
+        let fid = state.filp_table.alloc_filp(0o644).unwrap();
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .filps[3] = Some(fid.get());
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let v = state.vnode_table.get_mut(vid).unwrap();
+            v.fs = Endpoint::MFS;
+            v.ino = 9;
+            v.mode = crate::open::S_IFCHR | 0o644;
+            // /dev/tty：CTTY_MAJOR 5（dmap.h:26）。
+            v.sdev = 5 << 8;
+        }
+        state
+            .filp_table
+            .get_mut(crate::filp::FilpId(fid.get()))
+            .unwrap()
+            .vnode = Some(vid.get());
+        let mut row = crate::device_map::DmapEntry::empty();
+        row.driver = Some(Endpoint::from_generation_slot(0, 12));
+        state.dmap_table.set(4, row);
+        let worker = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .unwrap();
+        state.current_worker = Some(worker);
+
+        let msg = |fd: i32| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: VfsCallNum::Write as i32,
+                ..Message::default()
+            };
+            // SAFETY: write 载荷 fd@0、buf@8、len@16。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..4].copy_from_slice(&fd.to_le_bytes());
+                raw[8..16].copy_from_slice(&0x5000u64.to_le_bytes());
+                raw[16..24].copy_from_slice(&16u64.to_le_bytes());
+            }
+            m
+        };
+
+        // 无控制终端：`cdev_map` 给 `NO_DEV` → EIO，且没有请求停槽。
+        state.current_message = msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Write),
+            SyscallResult::Error(minix_types::EIO),
+            "/dev/tty 无控制终端 → EIO"
+        );
+        assert!(
+            state.worker_pool.get(worker).unwrap().sendrec.is_none(),
+            "重定向失败：不发请求"
+        );
+
+        // 有控制终端（真实设备 major 4 minor 7）：替换后 minor = 7。
+        state
+            .fproc_table
+            .get_mut(minix_types::UserSlot::new(0))
+            .unwrap()
+            .tty = (4 << 8) | 7;
+        state.current_message = msg(3);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Write),
+            SyscallResult::Error(minix_types::EIO),
+            "宿主发送不可达 → EIO"
+        );
+        let req = state
+            .worker_pool
+            .get(worker)
+            .unwrap()
+            .sendrec
+            .expect("重定向后请求已停槽");
+        // SAFETY(test): minor 在 readwrite 载荷 @44。
+        let minor = unsafe { u16::from_le_bytes(req.m_u.raw[44..46].try_into().unwrap()) };
+        assert_eq!(minor, 7, "minor 按控制终端的真实设备发");
     }
 
     /// `Creat` 臂的门：`O_CREAT` 缺席即 EINVAL（C `do_creat:71-72`）；合法
@@ -5203,8 +5546,9 @@ mod tests {
     }
 
     /// `Read` 臂（模板的第二个）：门序照 C `read_write` —— 负 fd / 无 filp
-    /// → EBADF；`size > SSIZE_MAX` → EINVAL；**非常规文件**（管道/字符/块）
-    /// 仍回 Nosys（各自的臂未接线）；常规文件走到挂载窗口与 grant。
+    /// → EBADF；`size > SSIZE_MAX` → EINVAL；**字符**走 cdev 路由（NS7；
+    /// 无驱动行 EIO），管道仍回 Nosys（未接线）；常规文件走到挂载窗口与
+    /// grant。
     #[test]
     fn test_dispatch_read_gates_and_type_branch() {
         use minix_types::Endpoint;
@@ -5257,6 +5601,16 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Read),
             SyscallResult::Nosys,
             "管道分支未接线"
+        );
+
+        // NS7 接线：字符设备 → cdev 路由；sdev 缺省 0（major 0）无 dmap 行
+        // → C `cdev_io` 的查表门 EIO（cdev.c:292-293）。
+        state.vnode_table.get_mut(vid).unwrap().mode = crate::open::S_IFCHR | 0o644;
+        state.current_message = read_msg(3, 0x5000, 16);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Read),
+            SyscallResult::Error(minix_types::EIO),
+            "字符设备走 cdev 路由（无驱动行 → EIO）"
         );
 
         // 常规文件：走到挂载窗口（无 vmnt → EIO）。
