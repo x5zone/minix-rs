@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 minix-types = { path = "../libs/minix-types" }
 minix-pm = { path = "../servers/pm" }
-minix-vm = { path = "../servers/vm" }
+minix-vfs = { path = "../servers/vfs" }
+minix-sys = { path = "../libs/minix-sys" }
 
 [dev-dependencies]
 
