@@ -14,3 +14,7 @@ minix-sys = { path = "../libs/minix-sys" }
 [[test]]
 name = "pm_vm_fork"
 path = "pm_vm_fork.rs"
+
+[[test]]
+name = "srv_fork"
+path = "srv_fork.rs"
