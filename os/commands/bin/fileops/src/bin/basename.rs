@@ -8,13 +8,23 @@
 //! deciding half, fully tested); this program gathers argv and prints the
 //! result.
 
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
 #[path = "../bin_support.rs"]
 mod support;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use minix_fileops::path::basename;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+/// The whole program body; both `main` forms call it and it never
+/// returns (every path ends in [`support::terminate`]). The two-form
+/// entry contract is documented once in `echo.rs`, this crate's
+/// template binary.
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     // BSD getopt with an empty option string stops at the first
     // non-option; any option-looking argument is a usage failure.
     let mut operands: Vec<&str> = Vec::new();
@@ -45,4 +55,15 @@ fn main() {
     line.push(b'\n');
     support::emit(&line);
     support::terminate(0);
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

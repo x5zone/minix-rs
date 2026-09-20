@@ -8,13 +8,23 @@
 //! unsupported by the engine (see its module header) and are reported as
 //! errors rather than rendering wrong output.
 
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
 #[path = "../bin_support.rs"]
 mod support;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use minix_fileops::printf::{format, FormatError};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+/// The whole program body; both `main` forms call it and it never
+/// returns (every path ends in [`support::terminate`]). The two-form
+/// entry contract is documented once in `echo.rs`, this crate's
+/// template binary.
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     if argv.len() < 2 {
         support::warn(b"Usage: printf format [argument ...]\n");
         support::terminate(1);
@@ -45,4 +55,15 @@ fn main() {
         }
     };
     support::terminate(status);
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

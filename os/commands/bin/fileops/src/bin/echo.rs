@@ -8,38 +8,58 @@
 //! stage contract (99-global-concepts.md §1): no stdio library, no message
 //! construction.
 //!
-//! Two seams carry the hosted-versus-target split, and both swap in one
-//! sweep when no_std program images land:
-//!
-//! - argv gathering uses `std::env::args` here; the target build reads the
-//!   birth-chain descriptor through `minix-rt`.
-//! - `terminate` below exits through the host runtime, because
-//!   `minix_sys::exit` deliberately spins when no process manager answers
-//!   (the C `_exit` last resort, `minix3/minix/lib/libc/sys/_exit.c`), which
-//!   would hang every hosted run; the target build swaps it for
-//!   `minix_sys::exit`. Writes always go through `minix_sys::write`, so a
-//!   hosted run without a kernel must fail with exit 1 as soon as the
-//!   transport reports its explicit error (that error short-circuits to a
-//!   typed `Err` — edge E-SYSCALL-SIGN).
+//! The hosted-versus-target split is carried by the two seams shared with
+//! every binary in this crate (`../bin_support.rs`): argv via the host
+//! runtime or the `minix-rt` birth-chain descriptor, termination via the
+//! host runtime or `minix_sys::exit`. This file adds the third piece the
+//! freestanding image needs at the crate root: the `no_std`/`no_main`
+//! gate with the two `main` forms over one diverging `run` (the init
+//! entry precedent, `os/commands/sbin/init/src/main.rs` — rustc 1.94
+//! requires a hosted `main` to return `()`, while the `crt0` consumer
+//! contract resolves the symbol `main` returning `i32`).
 
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+#[path = "../bin_support.rs"]
+mod support;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 use minix_fileops::echo::echo_emit;
 use minix_sys::{write, Fd};
 
 /// Standard output, POSIX `STDOUT_FILENO`.
 const STDOUT: Fd = 1;
 
-/// Terminates the process with an exit status.
-fn terminate(code: i32) -> ! {
-    std::process::exit(code)
-}
-
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+/// The whole program body; both `main` forms call it and it never
+/// returns (every path ends in [`support::terminate`]).
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let delivered = echo_emit(&args, |piece: &[u8]| write(STDOUT, piece).is_ok());
     if delivered {
-        terminate(0);
+        support::terminate(0);
     } else {
-        terminate(1);
+        support::terminate(1);
     }
+}
+
+/// Target entry: the `crt0` birth chain resolves the symbol `main` by
+/// name (consumer contract, `minix-rt/src/crt0.rs`) and its stage-6
+/// `exit(main())` reads the `i32` slot — `run` diverges, so the slot is
+/// never produced, but the ABI shape must match the contract.
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+/// Hosted entry: std builds go through rustc's start glue, whose `main`
+/// must return a `Termination` type — `i32` is not one (rustc 1.94,
+/// E0277), `()` is.
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

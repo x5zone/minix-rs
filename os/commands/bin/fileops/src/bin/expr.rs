@@ -8,13 +8,23 @@
 //! (expr.y:73-76), and status 2 for every evaluation error
 //! (expr.y:429-439), whose diagnostics go to standard error.
 
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
 #[path = "../bin_support.rs"]
 mod support;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use minix_fileops::expr::{evaluate, is_zero_or_null, ExprError};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+/// The whole program body; both `main` forms call it and it never
+/// returns (every path ends in [`support::terminate`]). The two-form
+/// entry contract is documented once in `echo.rs`, this crate's
+/// template binary.
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     if argv.len() < 2 {
         support::warn(b"usage: expr expression\n");
         support::terminate(2);
@@ -72,4 +82,15 @@ fn diagnose(error: &ExprError) -> Vec<u8> {
         }
     }
     line
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }
