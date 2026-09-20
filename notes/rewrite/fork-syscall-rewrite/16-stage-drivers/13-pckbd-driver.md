@@ -215,9 +215,9 @@ Minix3 的键盘部分就是这位译员。扫描码是源语言（硬件方言�
 - 复现命令：`cargo test -p minix-driver-pckbd --lib`（工作目录 `os/`）。
 - 完整测试清单：`rg "fn test_" os/drivers/hid/pckbd/src/`。
 
-### 5.6 服务接线测试（九个）
+### 5.6 服务接线测试（十个）
 
-`os/drivers/hid/pckbd/src/service.rs` 用脚本化传输逐面断言出站与状态：配置认得发送方才存地址与双号、冒名忽略；设灯认得配置过的服务才压 outbox（两字节）、冒名不压；已配键盘扫描经门禁阻塞发到服务并带分配号、未配则静默丢、发送失败即解绑令后续停发；鼠标整包事件全上报带鼠标号；硬件通知无动作无回复。复现命令：`cargo test -p minix-driver-pckbd --lib service`（工作目录 `os/`）。
+`os/drivers/hid/pckbd/src/service.rs` 用脚本化传输逐面断言出站与状态：配置认得发送方才存地址与双号、冒名忽略；设灯认得配置过的服务才压 outbox（两字节）、冒名不压；已配键盘扫描经门禁阻塞发到服务并带分配号、未配则静默丢、发送失败即解绑令后续停发——参照表路径与真机全表入口（`feed_keyboard_byte` 走生产用的 `FullMap`，回车扫描码同样发到服务并带键盘号）都覆盖到；鼠标整包事件全上报带鼠标号；硬件通知无动作无回复。复现命令：`cargo test -p minix-driver-pckbd --lib service`（工作目录 `os/`）。
 
 ---
 
