@@ -11,13 +11,16 @@
 //! behaviorally distinct implementation.
 //!
 //! Which methods are live today is a property of `minix-sys`, not of
-//! this crate: fork/waitpid/kill/write/sleep have wrappers and run for
-//! real; the rest (path exec, signals, setsid, controlling tty, uid,
-//! alarm, clock, path probe) return honest `ENOSYS` from
-//! [`MinixSysHost`] — the same policy `minix-sys` uses for
-//! open-existing (`libs/minix-sys/src/lib.rs:186-190`). Callers branch
-//! on the error instead of on a compiled-out feature. Closing those
-//! gaps is edge E-INITSYS, owned by the shared-infrastructure lane.
+//! this crate. Wired and running for real: fork/waitpid/kill, the file
+//! family (open/stat/read/write/append/close), the signal family
+//! (sigaction/sigprocmask), uid/setsid, the file-backed probes, exec
+//! (PM_EXEC with the initial-stack frame, see [`crate::execve`]),
+//! alarm (PM_ITIMER), the wall clock (PM_GETTIMEOFDAY), and
+//! set_controlling_tty (open + TIOCSCTTY + dup2). Still honest `ENOSYS`
+//! from [`MinixSysHost`]: the kernel mib trio (see below for the
+//! verdict), `chroot`, and `set_env`. Callers branch on the error
+//! instead of on a compiled-out feature — the same policy `minix-sys`
+//! uses for open-existing (`libs/minix-sys/src/lib.rs:186-190`).
 
 use alloc::{string::String, string::ToString, vec::Vec};
 use crate::session::ParsedCommand;
@@ -83,12 +86,12 @@ pub trait InitHost {
     /// init.c:248).
     fn getpid(&self) -> Result<Pid, Errno>;
 
-    /// The caller's real uid (C: getuid, init.c:242). ENOSYS until
-    /// E-INITSYS ② lands the client wrapper.
+    /// The caller's real uid (C: getuid, init.c:242). Wired through
+    /// E-INITSYS ②'s client wrapper.
     fn getuid(&self) -> Result<u32, Errno>;
 
-    /// Become a session leader (C: setsid, init.c:255). ENOSYS until
-    /// E-INITSYS ②.
+    /// Become a session leader (C: setsid, init.c:255). Wired through
+    /// E-INITSYS ②'s client wrapper.
     fn setsid(&mut self) -> Result<Pid, Errno>;
 
     /// Make `device` the controlling terminal on fds 0-2 (C:
@@ -101,10 +104,20 @@ pub trait InitHost {
     fn close_std_fds(&mut self) -> Result<(), Errno>;
 
     // ── kernel mib (securelevel; ARCH A-4/A-5) ──
+    //
+    // VERDICT (edge3 卡 J, S39, 2026-09-20): the mib trio below stays
+    // honest `ENOSYS`. C reaches sysctl through the kernel's SYS_GETMIB
+    // call (doc 12: `getsecuritylevel`/`setsecuritylevel`/`shouldchroot`,
+    // init.c:569-618/1859-1900); the rewrite kernel has no GETMIB
+    // dispatch arm yet (grep os/kernel for SYS_GETMIB/SYS_SETMIB: zero
+    // hits), and `minix-sys::rmib` is the server-side subtree helper,
+    // not a client face around a missing kernel call. Closing these is
+    // kernel-side work (A-4/A-5), not an init-side seam — registered as
+    // the hand-over destination on the S39 ledger line.
 
     /// Read the kernel security level; `Ok(None)` means the node does
     /// not exist (C: `getsecuritylevel` returning -1, init.c:569-587).
-    /// ENOSYS until the kernel mib face lands.
+    /// ENOSYS until the kernel SYS_GETMIB face lands (A-4).
     fn securitylevel(&self) -> Result<Option<i32>, Errno>;
 
     /// Lower the security level; `Ok(false)` means unsupported or a
@@ -113,7 +126,7 @@ pub trait InitHost {
 
     /// Read the `init.root` chroot prefix (C: `shouldchroot`'s sysctl
     /// read, init.c:1859-1900). `Ok(None)` = node absent. ENOSYS until
-    /// the kernel mib face lands.
+    /// the kernel SYS_GETMIB face lands (A-5).
     fn init_root(&self) -> Result<Option<String>, Errno>;
 
     // ── signals and time ──
