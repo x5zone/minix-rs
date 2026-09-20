@@ -2,7 +2,7 @@
 
 > **分类**：启动关键第 2 篇（控制台加串口加键盘，启动映像成员）
 > **源码**：`minix3/minix/drivers/tty/tty/tty.c`（一千六百零三行，主循环、行规则、读写挂起、选择）、`minix3/minix/drivers/tty/tty/tty.h`（一百五十五 行，终端结构与输入队列常量）、`minix3/minix/drivers/tty/tty/arch/`（控制台与串口，见第 2.8 节）、`minix3/minix/drivers/tty/tty/keyboard.c` 与 `keymaps/`（键盘，见第 2.8 节）、`minix3/minix/include/minix/dmap.h`（第九十五行，控制台号）、`minix3/minix/include/minix/config.h`（第四十一行到第四十六行，终端数量）
-> **Rust 模块**：`os/drivers/tty/tty/src/line.rs`（线路解码）、`os/drivers/tty/tty/src/termios.rs`（行配置）、`os/drivers/tty/tty/src/input.rs`（输入队列与行加工）、`os/drivers/tty/tty/src/session.rs`（打开会话与挂起选择）、`os/drivers/tty/tty/src/backend.rs`（设备后端抽象）
+> **Rust 模块**：`os/drivers/tty/tty/src/line.rs`（线路解码）、`os/drivers/tty/tty/src/termios.rs`（行配置）、`os/drivers/tty/tty/src/input.rs`（输入队列与行加工）、`os/drivers/tty/tty/src/session.rs`（打开会话与挂起选择）、`os/drivers/tty/tty/src/backend.rs`（设备后端抽象）、`os/drivers/tty/tty/src/service.rs`（消息泵与出生面装配）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架，本篇是其最重的用户）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/05-memory-driver.md`（面的守卫思想）
 > **说明**：终端驱动是启动映像的第二个驱动，也是全系统最复杂的字符驱动：四个控制台、四条串口、键盘映射、行规则、挂起读写、轮询、内核消息重定向、视频分支、功能键观察、输入服务事件，全部住在一个进程里。本篇讲终端共用的部分：主循环如何泵事件、次设备号如何映射到终端表、行规则如何加工输入、挂起与取消如何配对、轮询的两条特殊规则。控制台渲染、串口芯片、键盘映射的具体实现是设备相关，在第 2.8 节只讲分工，逐寄存器展开留给后续的架构文档。
 
@@ -175,6 +175,8 @@ Redox 的终端也是用户态进程，行编辑 approach 接近：输入先攒�
 
 七个设备函数收成七个方法，全默认空操作。空后端与回环后端两个行为不同的实现满足门禁：空后端测无设备，回复环测有来有回。控制台串口伪终端的真实后端在服务层与后续文档实现。替代方案是函数指针表（C 做法），不选的理由同框架篇：空检查分散不如默认体集中。
 
+服务层的消息泵已落在 `os/drivers/tty/tty/src/service.rs`：一条消息进来，先由字符框架的判定核（`minix-chardriver` 的 `classify` 与 `reply_decision`）分类，再分派到上表七个设备函数（打开、关闭、读、写、控制、取消、轮询）对应的钩子，块设备打开回「无此设备」，通知走中断与闹钟两个钩子且不回复，重启后未打开设备的迟到请求静默丢弃。出生握手（收重启服务器的初始化请求、跑回调、回报结果）住在共享驱动运行时 `os/libs/minix-driver-rt/src/runtime.rs`，与文件运行时同源。读写的物理缓冲区拷贝按计数语义交接、留作已登记缺口（真机内核授权才能验，宿主脚本不伪造），控制流与回复纪律则完整且宿主可测。真实后端（控制台显存、串口芯片）仍是本层的开口。
+
 ### 3.7 设计决策汇总
 
 | 决策 | 依据 | 替代方案 | 为何不选 |
@@ -304,5 +306,6 @@ Redox 的终端也是用户态进程，行编辑 approach 接近：输入先攒�
 - `os/drivers/tty/tty/src/input.rs`：输入队列与行加工的实现。
 - `os/drivers/tty/tty/src/session.rs`：打开会话与挂起选择的实现。
 - `os/drivers/tty/tty/src/backend.rs`：设备后端抽象的实现。
+- `os/drivers/tty/tty/src/service.rs`：服务层消息泵与设备函数分派的实现。
 - `minix3/minix/drivers/tty/tty/tty.c`：终端主循环的原始实现（一千六百零三行）。
 - `minix3/minix/drivers/tty/tty/tty.h`：终端结构的原始定义（一百五十五 行）。
