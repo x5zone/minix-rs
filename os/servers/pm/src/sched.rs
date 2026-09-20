@@ -186,13 +186,18 @@ impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
         msg
     }
 
-    /// 一次 taskcall：发出 → 回复 `m_type` 即 rv（负 errno 或 OK）。
+    /// 一次 taskcall：发出 → 回复 `m_type` 即 rv（OK = 0，拒绝码非 0）。
     fn taskcall(&mut self, sched: Endpoint, mut msg: Message) -> i32 {
         match self.transport.sendrec(sched, &mut msg) {
             // C `_taskcall` 传输失败返回负 errno；这里折负 EIO。
             Err(_) => -minix_types::EIO,
-            // C：rv 就是回复的 m_type（OK = 0，负 errno = 失败）。
-            Ok(()) => 0,
+            // C taskcall.c:17-20：`if (status != 0) return (status);
+            // return (msgptr->m_type);`——rv 就是回复的 m_type。SCHED 的
+            // 拒绝码（EDEADEPT/EPERM/EINVAL；C 系统进程 wire 带负号，本仓
+            // 统一正值，非零即失败）必须经此透传：吞掉它会把每次拒绝读成
+            // 成功，schedule.c:44-47 的拒绝告警与 main.c:373 的失败传播
+            // 双双失活。
+            Ok(()) => msg.m_type,
         }
     }
 }
@@ -523,6 +528,51 @@ mod tests {
         assert_eq!(sched_nice(&mut table, UserSlot::new(5), 0, &mut s).unwrap_err(), SchedError::Inval);
         table.procs[5].resources.scheduler = Endpoint::NONE;
         assert_eq!(sched_nice(&mut table, UserSlot::new(5), 0, &mut s).unwrap_err(), SchedError::Inval);
+    }
+
+    /// C taskcall.c:17-20：`_taskcall` 的 rv = 回复 m_type——SCHED 的拒绝
+    /// 码必须经 `MinixSchedCtl::taskcall` 透传为 `SchedError::Kernel`，
+    /// 而不是被传输成功掩盖成 0（schedule.c:108 透传给调用方）。
+    #[test]
+    fn test_sched_nice_refusal_rv_is_reply_m_type() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 0, Endpoint::SCHED, false);
+        let mut transport = crate::ipc::TestIpcTransport::new();
+        transport.queue_sendrec_reply(Message {
+            m_type: minix_types::EDEADEPT,
+            ..Message::default()
+        });
+        let mut ctl = MinixSchedCtl::new(&mut transport);
+        assert_eq!(
+            sched_nice(&mut table, UserSlot::new(5), 0, &mut ctl).unwrap_err(),
+            SchedError::Kernel(minix_types::EDEADEPT)
+        );
+    }
+
+    /// sched_init 的拒绝分支（schedule.c:44-47 的 printf 同语义）由 rv
+    /// 驱动：SCHED 拒绝时结果里携带拒绝码、`mp_scheduler` 不被回写。
+    #[test]
+    fn test_sched_init_refusal_keeps_scheduler_unset() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 11, 0, Endpoint::KERNEL, false);
+        table.procs[11].identity.id.pid = 1;
+        table.procs[11].state.guardianship = crate::mproc::Guardianship::Normal {
+            parent: UserSlot::new(11),
+        };
+        let mut transport = crate::ipc::TestIpcTransport::new();
+        transport.queue_sendrec_reply(Message {
+            m_type: minix_types::EDEADEPT,
+            ..Message::default()
+        });
+        let mut ctl = MinixSchedCtl::new(&mut transport);
+        let results = sched_init(&mut table, &mut ctl);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, minix_types::EDEADEPT, "拒绝码经 rv 透传");
+        assert_eq!(
+            table.procs[11].resources.scheduler,
+            Endpoint::KERNEL,
+            "拒绝不回写调度器（schedule.c:44-47 只告警）"
+        );
     }
 
     #[test]
