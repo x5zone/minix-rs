@@ -252,6 +252,179 @@ pub fn pipe2(flags: i32) -> Result<(Fd, Fd), Errno> {
     vfs::pipe2_via(&ipc::DirectTrapTransport, flags)
 }
 
+// 文件操作族（NL4 高优先批）：路径参数一律 `&str`，上线时按 C 惯例
+// 携带 NUL —— 地址 = 首字节指针，长度 = `len + 1`（strlen+1 对位的
+// wire 语义，见 `vfs::path_request_via` 等处的 C 包装器锚点）。
+
+/// Deletes a directory entry (C: `unlink`).
+pub fn unlink(path: &str) -> Result<(), Errno> {
+    vfs::unlink_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Removes an empty directory (C: `rmdir`).
+pub fn rmdir(path: &str) -> Result<(), Errno> {
+    vfs::rmdir_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Changes the working directory (C: `chdir`).
+pub fn chdir(path: &str) -> Result<(), Errno> {
+    vfs::chdir_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Changes the process root directory (C: `chroot`).
+pub fn chroot(path: &str) -> Result<(), Errno> {
+    vfs::chroot_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Creates a directory; the umask narrows the permission bits
+/// server-side (C: `mkdir`).
+pub fn mkdir(path: &str, mode: u32) -> Result<(), Errno> {
+    vfs::mkdir_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        mode,
+    )
+}
+
+/// Sets a path's permission bits (C: `chmod`).
+pub fn chmod(path: &str, mode: u32) -> Result<(), Errno> {
+    vfs::chmod_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        mode,
+    )
+}
+
+/// Checks real-uid access bits (`R_OK|W_OK|X_OK` or `F_OK`) without
+/// opening the file (C: `access`).
+pub fn access(path: &str, amode: i32) -> Result<(), Errno> {
+    vfs::access_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        amode,
+    )
+}
+
+/// Creates a hard link from `old` to `new` (C: `link`).
+pub fn link(old: &str, new: &str) -> Result<(), Errno> {
+    vfs::link_via(
+        &ipc::DirectTrapTransport,
+        old.as_ptr() as u64,
+        old.len().saturating_add(1),
+        new.as_ptr() as u64,
+        new.len().saturating_add(1),
+    )
+}
+
+/// Creates a symbolic link at `linkpath` pointing at `target` (C:
+/// `symlink`).
+pub fn symlink(target: &str, linkpath: &str) -> Result<(), Errno> {
+    vfs::symlink_via(
+        &ipc::DirectTrapTransport,
+        target.as_ptr() as u64,
+        target.len().saturating_add(1),
+        linkpath.as_ptr() as u64,
+        linkpath.len().saturating_add(1),
+    )
+}
+
+/// Moves `old` to `new` (C: `rename`).
+pub fn rename(old: &str, new: &str) -> Result<(), Errno> {
+    vfs::rename_via(
+        &ipc::DirectTrapTransport,
+        old.as_ptr() as u64,
+        old.len().saturating_add(1),
+        new.as_ptr() as u64,
+        new.len().saturating_add(1),
+    )
+}
+
+/// Sets a path's owner and group (C: `chown`).
+pub fn chown(path: &str, owner: u32, group: u32) -> Result<(), Errno> {
+    vfs::chown_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        owner,
+        group,
+    )
+}
+
+/// Sets a path's length (C: `truncate`).
+pub fn truncate(path: &str, length: i64) -> Result<(), Errno> {
+    vfs::truncate_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        length,
+    )
+}
+
+/// Sets an open descriptor's length (C: `ftruncate`).
+pub fn ftruncate(fd: Fd, length: i64) -> Result<(), Errno> {
+    vfs::ftruncate_via(&ipc::DirectTrapTransport, fd, length)
+}
+
+/// Changes the working directory to an open descriptor's (C: `fchdir`).
+pub fn fchdir(fd: Fd) -> Result<(), Errno> {
+    vfs::fchdir_via(&ipc::DirectTrapTransport, fd)
+}
+
+/// Sets the file-creation mask and returns the previous one (C: `umask`).
+pub fn umask(mask: u32) -> Result<u32, Errno> {
+    vfs::umask_via(&ipc::DirectTrapTransport, mask)
+}
+
+/// Reads a symlink target into the caller's buffer, returning the byte
+/// count written (C: `readlink`; the NUL terminator is *not* added, as in
+/// C).
+pub fn readlink(path: &str, buf: &mut [u8]) -> Result<usize, Errno> {
+    vfs::readlink_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        buf.as_mut_ptr() as u64,
+        buf.len(),
+    )
+}
+
+/// Creates a special file node; `mode` carries the file-type bits
+/// (C: `mknod`).
+pub fn mknod(path: &str, mode: u32, device: u64) -> Result<(), Errno> {
+    vfs::mknod_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        mode,
+        device,
+    )
+}
+
+/// Creates a FIFO (C: `mkfifo` = `mknod(name, mode | S_IFIFO, 0)`,
+/// `minix3/minix/lib/libc/sys/mkfifo.c:8-11`).
+pub fn mkfifo(path: &str, mode: u32) -> Result<(), Errno> {
+    mknod(path, mode | vfs::S_IFIFO, 0)
+}
+
 /// Terminal ioctl request: get the `struct termios`
 /// (`ttycom.h:88`, `_IOR('t', 19, struct termios)` — `IOC_OUT` 0x4000_0000,
 /// 44-byte argument in the length field, group `'t'`, number 19).
