@@ -715,11 +715,14 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             match crate::time::do_gettime(&src, clk, timers.system_hz) {
                 Ok(ts) => {
                     let mut reply = minix_types::Message::default();
-                    // SAFETY: m_lc_pm_time 应答载荷(sec@0/nsec@16),与
-                    // C do_gettime 的 mp_reply 同臂。
+                    // SAFETY: 应答 overlay 是 C `mess_pm_lc_time`
+                    // (ipc.h:1769-1773:sec@0/nsec@8,LP64 自然宽)——
+                    // C do_gettime 写 mp_reply.m_pm_lc_time(time.c:43-46)、
+                    // libc 客户端读同一 overlay(gettimeofday.c:18-20);
+                    // 不是请求臂 m_lc_pm_time(nsec 在 @16)。
                     unsafe {
                         reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
-                        reply.m_u.raw[16..24].copy_from_slice(&ts.nsec.to_ne_bytes());
+                        reply.m_u.raw[8..16].copy_from_slice(&ts.nsec.to_ne_bytes());
                     }
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
@@ -737,10 +740,11 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             match crate::time::do_getres(clk, timers.system_hz) {
                 Ok(ts) => {
                     let mut reply = minix_types::Message::default();
-                    // SAFETY: 应答臂 sec@0/nsec@16。
+                    // SAFETY: 应答 overlay 同 GetTimeOfDay 臂——C
+                    // `mess_pm_lc_time`(ipc.h:1769-1773)sec@0/nsec@8。
                     unsafe {
                         reply.m_u.raw[0..8].copy_from_slice(&(ts.sec as u64).to_ne_bytes());
-                        reply.m_u.raw[16..24].copy_from_slice(&ts.nsec.to_ne_bytes());
+                        reply.m_u.raw[8..16].copy_from_slice(&ts.nsec.to_ne_bytes());
                     }
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
@@ -1660,6 +1664,47 @@ mod tests {
         assert_eq!(i64_at(32), 4096);
         assert_eq!(i64_at(64), 33);
         assert_eq!(i64_at(72), 4);
+    }
+
+    #[test]
+    fn test_dispatch_clockgetres_reply_lands_on_c_lane() {
+        // C-54:C 应答 overlay 是 m_pm_lc_time(ipc.h:1769-1773,LP64
+        // sec@0/nsec@8)——应答 nsec 落 @8,不落请求臂 m_lc_pm_time 的
+        // @16 槽。选 ClockGetRes 臂做车道 pin:do_getres 纯 1e9/hz
+        // 计算(time.c:60 对位),无内核时钟腿,宿主可确定性断言;
+        // GetTimeOfDay 臂与它同形编码(SysClockSource 硬编码内核腿,
+        // 宿主单测不可达——注入缝缺口随 FIXLOG 登记)。
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup_with_caller(3, ep);
+        let mut kern = CapKernel { copies: alloc::vec::Vec::new() };
+        let mut msg = Message { m_type: 33, ..Message::default() };
+        msg.m_source = ep;
+        {
+            // SAFETY: 测试构造——按 m_lc_pm_time 车道写 clk_id@8。
+            let raw = unsafe { &mut msg.m_u.raw };
+            raw[8..12].copy_from_slice(&0i32.to_le_bytes()); // CLOCK_REALTIME
+        }
+        assert_eq!(
+            dispatch_pm_call(
+                PmCall::ClockGetRes,
+                &mut table,
+                &mut events,
+                &mut transport,
+                &mut kern,
+                &mut leak_timers(),
+                UserSlot::new(3),
+                &msg
+            ),
+            ReplyIntent::Reply(0)
+        );
+        let reply = table.procs[3].ipc.reply.take().expect("应答已预填");
+        // SAFETY: 按应答 overlay 车道读字节。
+        let raw = unsafe { &reply.m_u.raw };
+        let sec = u64::from_ne_bytes(raw[0..8].try_into().unwrap());
+        let nsec = i64::from_ne_bytes(raw[8..16].try_into().unwrap());
+        assert_eq!(sec, 0);
+        assert_eq!(nsec, 1_000_000_000 / 100); // hz=100 → 10ms 分辨率
+        assert_eq!(raw[16..24], [0u8; 8], "旧 @16 槽不再被写");
     }
 
     #[test]

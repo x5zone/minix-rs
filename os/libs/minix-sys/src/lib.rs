@@ -85,6 +85,10 @@ pub mod sysctl;
 pub mod vm;
 /// Miscellaneous calls: sleeping, server control, clock reads (document 11).
 pub mod misc;
+/// Process CPU-time accounting behind `times` (C
+/// `minix3/minix/lib/libc/gen/times.c` and
+/// `minix3/minix/lib/libc/sys/getrusage.c`).
+pub mod time;
 /// Initial-stack frame construction (E-BOOTFRAME — `minix_stack_params`/
 /// `minix_stack_fill`, libc stack_utils.c).
 pub mod stack;
@@ -835,6 +839,24 @@ pub fn sysctlbyname(
     new: Option<&[u8]>,
 ) -> Result<(), Errno> {
     sysctl::sysctlbyname_via(&ipc::DirectTrapTransport, name, old, new)
+}
+
+/// The `who` selectors and the report types of the `times` face (C
+/// `sys/resource.h:56-57` and `sys/sys/times.h:49-54`).
+pub use time::{Rusage, Tms, RUSAGE_CHILDREN, RUSAGE_SELF};
+
+/// Reports resource usage of the calling process or of its reaped
+/// children (C: `getrusage` — mechanism and wire in the [`time`] module
+/// header).
+pub fn getrusage(who: i32, r_usage: &mut Rusage) -> Result<(), Errno> {
+    time::getrusage_via(&ipc::DirectTrapTransport, who, r_usage)
+}
+
+/// Reports CPU-time accounting in `buffer` and returns the elapsed wall
+/// clock in ticks (C: `times` — the composition C builds from
+/// `getrusage` twice plus one `gettimeofday`, documented in [`time`]).
+pub fn times(buffer: &mut Tms) -> Result<minix_types::Clock, Errno> {
+    time::times_via(&ipc::DirectTrapTransport, buffer)
 }
 
 /// Memory mapping.
