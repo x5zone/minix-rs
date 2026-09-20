@@ -1,0 +1,19 @@
+[package]
+name = "test-timer-irq-aarch64"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+uefi = { version = "0.33" }
+minix-arch = { workspace = true, default-features = false }
+minix-plat = { workspace = true }
+minix-platform = { workspace = true }
+minix-types = { workspace = true }
+minix-boot = { workspace = true }
+minix-kernel = { workspace = true, default-features = false }
+boot-shim = { workspace = true, features = ["uefi"] }
+
+[[bin]]
+name = "test-timer-irq-aarch64"
+path = "src/main.rs"
+test = false
