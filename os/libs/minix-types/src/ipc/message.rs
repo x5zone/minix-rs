@@ -387,6 +387,25 @@ impl Message {
         }
     }
 
+    /// The `RS_INIT` SEF init type — C: `m.m_rs_init.type` (sef_init.c:202,
+    /// `do_sef_init_request` reads it to pick the fresh/live-update/restart
+    /// callback). Values are `SEF_INIT_*` (sef.h:93-95): 0 = fresh,
+    /// 1 = live update, 2 = restart.
+    ///
+    /// `None` when the message is not an `RS_INIT`; see
+    /// [`Message::rs_init_result`] for why the union read is centralized
+    /// here (the receiving servers stay zero-`unsafe`).
+    #[inline]
+    pub fn rs_init_type(&self) -> Option<i32> {
+        if self.m_type == crate::RS_INIT {
+            // SAFETY: `m_type == RS_INIT` tags the union arm in use; the
+            // arm is plain-old-data (`MessRsInit`), so the read is sound.
+            Some(unsafe { self.m_u.m_rs_init.type_ })
+        } else {
+            None
+        }
+    }
+
     /// The generic RS control-request payload — C: `m.m_rs_req.addr`/`len`
     /// (request.c:121 do_down, request.c:37 do_up). `None` when `m_type` is
     /// not an RS request; see [`Message::rs_init_result`] for why the
@@ -4099,6 +4118,23 @@ mod rs_accessor_tests {
         assert_eq!(m.rs_init_result(), Some(5));
         m.m_type = crate::RS_LU_PREPARE; // wrong arm → None
         assert_eq!(m.rs_init_result(), None);
+    }
+
+    #[test]
+    fn test_rs_init_type_accessor() {
+        // E-BIRTHFACE library root: sef_receive_status reads the init type to
+        // surface it, so the safe accessor must mirror rs_init_result and
+        // refuse non-RS_INIT messages.
+        let mut m = Message {
+            m_source: crate::Endpoint::RS,
+            m_type: crate::RS_INIT,
+            m_u: Default::default(),
+        };
+        assert_eq!(m.rs_init_type(), Some(0)); // default arm → SEF_INIT_FRESH
+        m.m_u.m_rs_init.type_ = 2; // SEF_INIT_RESTART (sef.h:95)
+        assert_eq!(m.rs_init_type(), Some(2));
+        m.m_type = crate::RS_LU_PREPARE; // wrong arm → None
+        assert_eq!(m.rs_init_type(), None);
     }
 
     #[test]

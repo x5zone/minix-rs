@@ -66,12 +66,14 @@ pub enum SefEvent {
     /// SYSTEM notification → signal request (C sef.c:222-226; the server
     /// dispatches its registered signal handler).
     Signal(i32),
-    /// RS notification with `SEF_INIT` marker (C sef.c:196-206). Carries
-    /// the init type: 0 = FRESH, 1 = LU, 2 = RESTART (sef.h:93-95).
+    /// RS birth request with `RS_INIT` (C sef.c:196-206, `IS_SEF_INIT_REQUEST`
+    /// sef.h:33). Carries the init type: 0 = FRESH, 1 = LU, 2 = RESTART
+    /// (sef.h:93-95). The server runs its own init callback and answers with
+    /// [`sef_init_reply`].
     Init(i32),
-    /// RS notification that is not a valid ping: C's `IS_SEF_PING_REQUEST`
-    /// failed and the message falls through the switch (sef.c:208-214
-    /// `break` path).
+    /// RS notification that is not a valid ping: C's `do_sef_ping_request`
+    /// did not swallow it and the message falls through the switch
+    /// (sef.c:208-214 `break` path) for the server to deliver.
     PingInvalid,
 }
 
@@ -116,8 +118,9 @@ pub fn pong_via_ipc(ipc: &mut impl SefIpc, source: Endpoint) {
 }
 
 /// C: `sef_receive_status` — sef.c:149-260. Loop on receive; classify
-/// notifications by source; intercept ping (reply pong, swallow) and
-/// signal (surface as [`SefEvent::Signal`]); return ordinary messages.
+/// notifications by source; intercept ping (reply pong, swallow); surface
+/// the birth request as [`SefEvent::Init`] and signal requests as
+/// [`SefEvent::Signal`]; return ordinary messages.
 ///
 /// Live-update/state-transfer interception (`INTERCEPT_SEF_LU_REQUESTS`
 /// / `__sef_st_before_receive`) is not modeled: those paths depend on the
@@ -137,10 +140,27 @@ pub fn sef_receive_status(
         // C: ipc_receive(src, m_ptr, &status) — sef.c:168-172.
         let status = ipc.receive(src, msg)?;
         let m_type = msg.m_type;
+        let source = msg.m_source;
+
+        // Birth request (E-BIRTHFACE library root): C `IS_SEF_INIT_REQUEST`
+        // (sef.h:33) keys on `m_type == RS_INIT && m_source == RS` alone —
+        // delivery-independent, so the async `RS_INIT` an RS boot sends
+        // arrives as a plain (non-notify) request. Surface the init type
+        // (sef_init.c:202 `do_sef_init_request`) so the server dispatches
+        // its own fresh/LU/restart callback and answers via
+        // [`sef_init_reply`]; SEF cannot run the server-specific callback.
+        if m_type == SEF_INIT_REQUEST_TYPE && source == RS_ENDPOINT {
+            let init_type = msg.rs_init_type().unwrap_or(0); // SEF_INIT_FRESH
+            return Ok(SefReceive {
+                source,
+                message: *msg,
+                status,
+                event: SefEvent::Init(init_type),
+            });
+        }
 
         // C sef.c:174-191 — notification classification by source.
         if is_ipc_notify(status) {
-            let source = msg.m_source;
             if source == SYSTEM_ENDPOINT {
                 // C sef.c:222-226 — SYSTEM → signal request.
                 on_signal(SEF_SIGNAL_REQUEST_TYPE);
@@ -151,22 +171,53 @@ pub fn sef_receive_status(
                     event: SefEvent::Signal(SEF_SIGNAL_REQUEST_TYPE),
                 });
             }
-            if source == RS_ENDPOINT && m_type == SEF_PING_REQUEST_TYPE {
-                // C sef.c:208-214 + sef_ping.c:21-38 — ping: reply pong and
-                // continue (never returned to the caller).
-                pong_via_ipc(ipc, source);
-                continue;
+            if source == RS_ENDPOINT {
+                if m_type == SEF_PING_REQUEST_TYPE {
+                    // C sef.c:208-214 + sef_ping.c:21-38 — valid ping: reply
+                    // pong and continue (never returned to the caller).
+                    pong_via_ipc(ipc, source);
+                    continue;
+                }
+                // RS notification that is not a valid ping (sef.c:208-214
+                // `break` path): C's `do_sef_ping_request` did not swallow it,
+                // so it falls through for the server to deliver.
+                return Ok(SefReceive {
+                    source,
+                    message: *msg,
+                    status,
+                    event: SefEvent::PingInvalid,
+                });
             }
         }
 
         // Ordinary message: return to the server loop (C sef.c:252-258).
         return Ok(SefReceive {
-            source: msg.m_source,
+            source,
             message: *msg,
             status,
             event: SefEvent::Call(m_type),
         });
     }
+}
+
+/// Build the SEF birth reply a server sends back to RS once its init
+/// callback has run — C: the `process_init` tail (sef_init.c:113-117),
+/// which fills an `RS_INIT` message with `m_rs_init.result` and delivers it
+/// to RS through `sef_cb_init_response_rs_reply` (`ipc_sendrec(RS_PROC_NR,
+/// m)`, sef_init.c:458-466).
+///
+/// This is the shared counterpart of [`SefEvent::Init`]: `sef_receive_status`
+/// surfaces the request, the server runs its own init work, then sends this
+/// message (result `0`/`OK` on success) to release RS's boot step3. Kept a
+/// pure builder so it needs no new [`SefIpc`] verb — each server already owns
+/// a send round trip. Mirrors the `run_birth` reply in the driver/FS
+/// runtimes (`minix-driver-rt`, `fs-rt`).
+pub fn sef_init_reply(result: i32) -> Message {
+    let mut m = Message { m_type: SEF_INIT_REQUEST_TYPE, ..Message::default() };
+    // Union field *write* is safe (only reads need the `m_type` tag guard);
+    // the active arm is `m_rs_init`, the same one the reply carries in C.
+    m.m_u.m_rs_init.result = result;
+    m
 }
 
 /// Buffered SEF receive: keeps the IPC behind a struct so tests script the
@@ -251,6 +302,16 @@ mod tests {
         m
     }
 
+    /// An `RS_INIT` birth request from RS carrying `init_type` in the
+    /// `m_rs_init` arm (C: RS boot async-sends `m_type = RS_INIT`; the type
+    /// field is what `IS_SEF_INIT_REQUEST` + `do_sef_init_request` read).
+    fn rs_init_msg(init_type: i32) -> Message {
+        let mut m = Message { m_source: RS_ENDPOINT, m_type: RS_INIT, ..Message::default() };
+        // Union field write is safe; the `RS_INIT` tag selects `m_rs_init`.
+        m.m_u.m_rs_init.type_ = init_type;
+        m
+    }
+
     /// C sef.c:208-214 — RS ping 拦截:回 pong(notify)后 continue,消息
     /// 不到达调用方。脚本两条 ping + 一条普通消息;普通消息最终返回,
     /// pong 记录两次。
@@ -319,5 +380,59 @@ mod tests {
         ipc.empty_error = minix_types::EINTR;
         let r = sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {});
         assert_eq!(r, Err(minix_types::EINTR));
+    }
+
+    /// E-BIRTHFACE 库根：RS 的 `RS_INIT` 出生请求（非 notify 的异步投递）
+    /// 上浮为 `SefEvent::Init`，携带 m_rs_init.type（C sef.h:33 判定 +
+    /// sef_init.c:202 读 type）。此前库从不构造 Init——服务器 Init 臂死代码。
+    #[test]
+    fn test_rs_init_request_surfaces_init_event() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.push(1, rs_init_msg(1)); // status 1 = 非通知；type 1 = SEF_INIT_LU
+        let recv =
+            sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {})
+                .unwrap();
+        assert_eq!(recv.event, SefEvent::Init(1), "RS_INIT → Init(init_type) 上浮");
+        assert_eq!(recv.source, RS_ENDPOINT);
+        assert!(ipc.pongs.is_empty(), "出生请求应答归服务器，SEF 不代答 pong");
+    }
+
+    /// 出生判定按 type+source、与投递方式无关（C IS_SEF_INIT_REQUEST 无
+    /// notify 条件）：即便 status 落在通知段，仍先判 Init，不误入 ping 分支。
+    #[test]
+    fn test_rs_init_wins_over_notify_band() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.push(4, rs_init_msg(0)); // status 通知段 (CALL_NOTIFY=4)；SEF_INIT_FRESH
+        let recv =
+            sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {})
+                .unwrap();
+        assert_eq!(recv.event, SefEvent::Init(0));
+        assert!(ipc.pongs.is_empty());
+    }
+
+    /// H-22：RS 的通知但 m_type 非 NOTIFY_MESSAGE（不是有效 ping）上浮为
+    /// `SefEvent::PingInvalid`（C sef.c:208-214 break 路径），此前无人构造。
+    #[test]
+    fn test_rs_non_ping_notification_is_invalid() {
+        let mut ipc = CannedSefIpc::new();
+        let mut m = call_msg(999); // RS 通知但非 ping 消息
+        m.m_source = RS_ENDPOINT;
+        ipc.push(4, m); // status 通知段 (CALL_NOTIFY=4)
+        let recv =
+            sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {})
+                .unwrap();
+        assert_eq!(recv.event, SefEvent::PingInvalid);
+        assert!(ipc.pongs.is_empty(), "无效 ping 不pong");
+    }
+
+    /// 共享应答助手：`sef_init_reply` 造出回 RS 的 `RS_INIT`+result 消息
+    /// （C process_init 尾部 sef_init.c:113-117，经 ipc_sendrec(RS) 送出）。
+    #[test]
+    fn test_sef_init_reply_carries_result() {
+        let ok = sef_init_reply(minix_types::OK);
+        assert_eq!(ok.m_type, RS_INIT);
+        assert_eq!(ok.rs_init_result(), Some(minix_types::OK));
+        let refused = sef_init_reply(minix_types::ENOSYS);
+        assert_eq!(refused.rs_init_result(), Some(minix_types::ENOSYS));
     }
 }
