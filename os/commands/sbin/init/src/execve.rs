@@ -41,7 +41,7 @@
 //! grows `STACK_MIN_BYTES` and the fill order.
 
 use crate::session::ParsedCommand;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use minix_sys::ipc::{DirectTrapTransport, IpcTransport as _};
 use minix_sys::pm;

@@ -56,12 +56,10 @@ use host::{InitHost, MinixSysHost};
 use state_machine::StateKind;
 use alloc::sync::Arc;
 
-/// PID 1 的入口：签名与返回值形态对齐 minix-rt 出生链的消费契约
-/// （crt0.rs:293 `unsafe extern "Rust" { fn main() -> i32; }`，rt-birth
-/// 先例 main.rs:117）。freestanding 构建里 `run_transition` 发散
-/// （`-> !`），永不返回；宿主 std 构建里它是普通入口（i32 实现
-/// Termination，链接器需要它喂 Scrt1.o 的 `main`）。
-fn main() {
+/// PID 1 的启动体：八步接线（C init.c:229-367 的 Rust 侧），尾调
+/// `run_transition`（`-> !`，状态机永不返回）。两个入口形态共用本
+/// 函数，见下方各自 cfg 门控的 `main`。
+fn run_init() -> ! {
     minix_rt::init();
     let mut host = MinixSysHost::default();
 
@@ -153,6 +151,25 @@ fn main() {
     };
     let _ = TTYS_PATH; // read per read_ttys step through the seam
     driver::run_transition(&mut host, &mut state, initial);
+}
+
+/// 真机入口：crt0 出生链消费契约的精确形（crt0.rs Consumer contract：
+/// `#[no_mangle]` 承载符号名——`unsafe extern "Rust" { fn main() ->
+/// i32; }` 按名解析、不查签名，`()` 形态照样链接但返回寄存器无人写，
+/// stage-6 的 `exit(main())` 读垃圾；rt-birth 先例 main.rs:117）。
+/// `run_init` 发散，i32 槽位永不产出——契约要的是 ABI 形态一致。
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run_init()
+}
+
+/// 宿主入口：std 构建走 rustc 的 start glue，`main` 返回类型必须实现
+/// `Termination`——`i32` 不是（rustc 1.94 实测 E0277），`()` 是；
+/// `run_init` 发散，本函数同样永不返回，exit code 路径只是类型面。
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run_init()
 }
 
 /// PID 1 的 panic handler（P1-2 ③ 决策记录的落地形态；门控与 crate 的
