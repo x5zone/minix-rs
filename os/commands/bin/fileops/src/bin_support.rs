@@ -29,6 +29,8 @@
 
 use minix_sys::Fd;
 
+/// Standard input, POSIX `STDIN_FILENO`.
+pub const STDIN: Fd = 0;
 /// Standard error, POSIX `STDERR_FILENO`.
 pub const STDERR: Fd = 2;
 /// Standard output, POSIX `STDOUT_FILENO`.
