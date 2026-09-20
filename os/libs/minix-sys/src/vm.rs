@@ -786,7 +786,7 @@ mod tests {
             offset: -2,
         };
         let _ = mmap_via(&transport, Endpoint(5), request).unwrap();
-        let (dest, sent) = transport.sent.borrow()[0].clone();
+        let (dest, sent) = transport.sent.borrow()[0];
         assert_eq!(dest, vm_endpoint());
         assert_eq!(sent.m_type, VM_CALL_MMAP);
         // SAFETY: VM_MMAP messages carry the m_mmap arm (asserted here by
@@ -869,11 +869,9 @@ mod tests {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
         // VM writes the chosen address into the same overlay's retaddr lane
-        // (servers/vm/mmap.c:276); the wrapper reads it from there.
-        // SAFETY: test-only payload setup through the documented overlay.
-        unsafe {
-            reply.m_u.m_mmap.retaddr = 0x8000;
-        }
+        // (servers/vm/mmap.c:276); the wrapper reads it from there. Union
+        // field writes are safe — only the read back needs `unsafe`.
+        reply.m_u.m_mmap.retaddr = 0x8000;
         transport.reply_sendrec(Ok(reply));
         let result = mmap_via(&transport, Endpoint(5), request_for(5)).unwrap();
         assert_eq!(result, VirBytes(0x8000));

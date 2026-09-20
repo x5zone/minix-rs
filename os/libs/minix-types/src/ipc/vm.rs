@@ -1366,7 +1366,7 @@ mod tests {
         msg.m_type = VM_MUNMAP as i32;
         unsafe {
             msg.m_u.m_mmap = MessMmap {
-                offset: 0xDEAD_BEEF, // must be ignored
+                offset: 0xDEAD_BEEF,    // must be ignored
                 addr: 0x7fff_fbff_f000, // >4 GiB — pins the 64-bit lane
                 len: 0x2000,
                 ..MessMmap::default()
