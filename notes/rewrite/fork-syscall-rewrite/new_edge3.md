@@ -22,7 +22,7 @@
 | NS5 | VFS exec worker | [edge_todo.md](edge_todo.md) E-EXECFILE ｜ [05-stage-vfs/todo.md](05-stage-vfs/todo.md) 2026-09-20 节 | ipc/dispatcher.rs:200-215 桩 → 真 worker：open + read_header（#! ESCRIPT 分支可后置）+ ELF 段装载 + PM_EXEC_NEW 载荷（wire 已备 0x906/0x986；VM→kernel 半已真）。C 对位 vfs/exec.c | NS4（有根才能 open） | ☐ |
 | NS6 | mfs 块源装配：imgrd 内存盘 BlockSource | [edge_todo.md](edge_todo.md) E-FSBDEV 最小半 ｜ [15-stage-fs/todo.md](15-stage-fs/todo.md) 2026-09-20 节 | fs-rt/source.rs PendingBlockSource（恒 EIO）→ imgrd 内存盘实现（boot 传入基址/尺寸；对端 new_edge2 NL6）；BdevBlockSource 已在 minix-fs（bdev_bridge.rs:44-165）缺 mfs bin 消费切换 | new_edge2 NL6 | ☐ |
 | NS7 | E-CONSOLE VFS 半 | [edge_todo.md](edge_todo.md) E-CONSOLE ｜ [05-stage-vfs/todo.md](05-stage-vfs/todo.md) 2026-09-20 节 | 字符设备写臂 Nosys → cdev 路由（syscalls.rs:306-307/:418-419）；dmap 补 tty 槽（device_map.rs:137-146；DS 事件填充机制已有）。驱动半归 new_edge2 NL1 | new_edge2 NL1/NL6 | ☐ |
-| NS8 | E-IMGPKG：镜像装机面 | [edge_todo.md](edge_todo.md) E-IMGPKG ｜ S32 ｜ [18-stage-commands/todo.md](18-stage-commands/todo.md) 2026-09-20 节 | xtask `image()`/`qemu()` 实装（build() 扩全量 + default-features=false 生产开关 + 三架构布局）；12 模块装机清单（对位 OQ-N2 裁决结果；缺件不再静默跳过，loader.rs:259-264）；/etc 最小内容（rc + /dev/console 节点 + TTYS；OQ-3 盘上文件面裁决，不等 A-6）；mkfs_mfs proto 填充做装机消费；占位 bin 排除（X-11） | NK4（OQ-N2）+ NL6 | 🔄 2026-09-21 zcode_glm_1（claim/NS8-zcode_glm_1；本会话交付 xtask image/qemu 实装 + 装机清单 + /etc 最小集 + mkfs_mfs 装机消费 + 占位排除） |
+| NS8 | E-IMGPKG：镜像装机面 | [edge_todo.md](edge_todo.md) E-IMGPKG ｜ S32 ｜ [18-stage-commands/todo.md](18-stage-commands/todo.md) 2026-09-20 节 | xtask `image()`/`qemu()` 实装（build() 扩全量 + default-features=false 生产开关 + 三架构布局）；12 模块装机清单（对位 OQ-N2 裁决结果；缺件不再静默跳过，loader.rs:259-264）；/etc 最小内容（rc + /dev/console 节点 + TTYS；OQ-3 盘上文件面裁决，不等 A-6）；mkfs_mfs proto 填充做装机消费；占位 bin 排除（X-11） | NK4（OQ-N2）+ NL6 | ✅ 2026-09-21（zcode_glm_1，dfb910f37）：xtask image()/qemu() 实装（装配计划/执行分离，dry-run 可打印）+ 装机清单三重锁（计数绑 NR_BOOT_MODULES/顺序对 boot-shim MODULE_NAMES 源文本/包目录守卫；X-11 白名单语义）+ /etc 最小集（rc + ttys + console 节点经原型；**OQ-3 口径草案待用户过目**）+ mkfs_mfs 装机消费（真实播种 EXIT=0，2048×4KiB）+ ESP 组装（mtools）+ build() 扩全量。x86_64 全链；aarch64/riscv64 honest bail（产出链缺口注明）。**登记见本轮新登记 NS8-A（kernel.elf 生产者缺口，edge1 面）与 NS8-B（模块 guest 构建首阻塞点，NL5②/NS12 波次）**；真机启动验证随 NK4-A 消费（QEMU 串行纪律未占） |
 | NS9 | RS read_exec 生产化 | S42 批五登记 ｜ [03-stage-rs/todo.md](03-stage-rs/todo.md) | exec.rs:21-31 noop 注入 → 真读盘（C manager.c:1372-1420）；service up / 崩溃重启自持 | NS4+NS5（VFS 通电） | ⏸ NS4/NS5 |
 | NS10 | PM 批次 E/G + Reboot 臂 | [04-stage-pm/todo.md](04-stage-pm/todo.md) §11.1.1 ｜ [edge_todo.md](edge_todo.md) E-EXECFILE | 批次 E（exec wire 装配，与 NS5 对接）/G（misc）；`PmCall::Reboot` 臂（catch-all ENOSYS → 最小 sys_abort 等价；init minixreboot 依赖） | NS3/NS5 | ☐ |
 | NS11 | init 残余面 | [09-stage-init/todo.md](09-stage-init/todo.md) 2026-09-20 节 | main 签名 `()` → `-> i32`（main.rs:64，crt0 契约；exit code 读垃圾修复）；securitylevel（host.rs:288）/init_root（:292，随 NS4 解锁）；trampoline 填真（host.rs:296-305，等 new_edge2 NL3③） | NL3③、NS4 | ☐ |
@@ -45,6 +45,13 @@
 ## 已闭单勿领（以 edge_todo.md 最新进度注记为准）
 
 S1-S29 ✅ 各行、S34、S38、S39、S42 批一/二/三/五；E1-E9、E-FSRUNTIME 装配半（V1-P0-1）、五路扫描确认的既有闭环（E-SYSCALL-SIGN 双腿、E-CMDSYSFACE、PM 信号/uid 臂——勿按 qwen P2 滞后主张重开）。
+
+## 本轮新登记（NS8 交付时发现，归 edge4 收敛；复核命令绿 = 已闭可划掉）
+
+| 标记 | 发现 | 现状证据 | 复核命令 | 归属 |
+|---|---|---|---|---|
+| NS8-A | 生产 kernel.elf 无产出者：minix-kernel 是纯 lib（`os/kernel/Cargo.toml` 无 `[[bin]]`），而 boot-shim 按契约读 `/EFI/minix/kernel.elf`（`os/boot-shim/src/loader.rs:31`）→ NS8 的 image() 按 `--kernel` 路径取件（缺省 `target/x86_64-unknown-none/release/kernel.elf`），缺件即 fail-fast，不代产。需 kernel bin + 链接脚本决策（与 C-29/NK1 地址空间设计相邻） | `grep -c "\[\[bin\]\]" os/kernel/Cargo.toml` = 0；`cargo run -p xtask image --dry-run` 计划含 kernel.elf 取件步 | 有产出者后 `cargo build -p <kernel-bin> --target x86_64-unknown-none` 出 ELF 且 `xtask image` 走通取件步 → 划掉 | **new_edge1**（os/kernel 所有权） |
+| NS8-B | 12 模块 guest 目标（x86_64-unknown-none）构建首个阻塞点实测 = minix-ds 链接期 `#[panic_handler] function required`（deps 全过，bin 链接失败）——freestanding bin 需要 minix-rt `panic-handler`/`alloc-global` feature 或自备 handler 的接线决策 | `cargo build -p minix-ds --target x86_64-unknown-none`（宿主 ulimit）→ E0463 panic_handler | minix-ds guest 构建 Finished → 逐包推进至 12/12（feature 接线方案 = echo 双 seam 模板的推广）→ 划掉 | new_edge2 NL5② / new_edge3 NS12 |
 
 ## 本线在验收阶梯中的位置（全文见 [new_edge4.md](new_edge4.md) §7）
 
