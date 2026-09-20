@@ -3,7 +3,7 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的准备层——磁盘先切分、卷先格式化，挂载才有东西可用
 > **源码**: `minix3/sys/sys/bootblock.h`（表偏移 446、魔数 `0xAA55` 在 510、四项、激活标志 `0x80`、类型码含 Minix `0x80` 与 `0x81`、Linux 原生 `0x83`、386BSD `0xA5`；16 字节项结构第 703 到 714 行）、`minix3/minix/commands/part/part.c`（扇区 512 第 47 行、引导块第 300 行、表拷贝第 384 到 482 行、起止换算第 550 到 551 行与第 691 到 702 行）、`minix3/minix/commands/fdisk/fdisk.c`（表指针定位）、`minix3/minix/commands/partition/`、`autopart/`、`repartition/`、`format/`、`devsize/`、`minix3/sbin/newfs_ext2fs/`、`newfs_msdos/`、`newfs_udf/`、`newfs_v7fs/`、`minix3/usr.sbin/makefs/`
-> **Rust 模块**: `os/commands/sbin/diskfmt`（库包 `minix-diskfmt`：`mbr.rs`、`size.rs`，9 个测试通过）加 `mkfs.mfs` 薄壳（已接线：决定半在 `minix-fs-mfs::mkfs`——格式知识归文件系统库，薄壳只管参数与落盘；`fsck.mfs` 与原型文件填充随后批，认领轨道见 edge E-FSCMDS；原 `os/commands/sbin/mkfs` 占位壳已随执行层收敛批次删除）
+> **Rust 模块**: `os/commands/sbin/diskfmt`（库包 `minix-diskfmt`：`mbr.rs`、`size.rs`，9 个测试通过）加 `mkfs.mfs` 薄壳（已接线：决定半在 `minix-fs-mfs::mkfs`——格式知识归文件系统库，薄壳只管参数、读原型与落盘；空卷与原型播种两支路都可走，`fsck.mfs` 随后批，认领轨道见 edge E-FSCMDS；原 `os/commands/sbin/mkfs` 占位壳已随执行层收敛批次删除）
 > **前置依赖**: `14-mount-fsck.md`（挂载使用在先，准备在后——阅读顺序先用后备，见 1.5 节说明）
 > **不覆盖（移交）**: 分区写入执行与格式化执行（待块设备接口）、文件系统内部结构（见 `15-stage-fs`）、存储驱动（见驱动阶段）
 
@@ -120,12 +120,17 @@
 | `plan_layout(块数, inode 数?, 块大小)` | 卷几何 | 布局全量（两张位图块、inode 表块、首数据区、最大文件尺寸） | `super` 的算术半；`zone_shift = 0` |
 | `default_inode_count(块数, 块大小)` | 卷几何 | 缺省 inode 数（KB 阶梯加块倍数取整） | `main` mkfs.c:344-357 |
 | `build_image(布局, 时刻)` | 布局与时间戳 | 整幅镜像字节 | `main` 写序：boot 零、超级块、位图 0 号位、根 inode（目录 0777、链接二、尺寸 128）、根数据区 `.`/`..` |
+| `proto_header(原型文本)` | 原型前两行 | 头（块数、inode 数） | `main` mkfs.c:294-310：引导块行读到即弃，第二行定规模 |
+| `mode_con(模式串)` | 六字符模式串 | 权限位 | `mode_con` mkfs.c:1195-1215（生成形见 `mkproto` mkproto.c:303-315 的 `%c%c%c%03o`）：类型字母、set-uid/set-gid 位符、三位八进制 |
+| `build_image_seeded(布局, 原型, 宿主读取器, 时刻)` | 布局加原型加宿主缝 | 播种后的镜像 | `eat_dir`/`eat_file`（mkfs.c:765-870）加目录、inode、分配三个助手组（mkfs.c:873-1165）：目录递归、设备挂设备号、链接挂目标、普通文件从宿主读 |
+
+原型播种的登记偏差有两条。其一，模式串按六字符文法严格收——C 的 `mode_con` 对短串会读到词界之外（潜在越界读），Rust 侧拒绝而不是复刻垃圾。其二，原型头声明的 inode 数会被向上取整到 inode 块的倍数（`plan_layout` 的统一取整），超级块报告取整后的数——容量只增不减，空卷支路本就如此。`add_zone` 的间接链（直接区、一级、二级）与 `enter_dir` 的一级间接都照 C 逐层走，名字超 60 字节截断同 C 的 `strncpy`。
 
 ---
 
 ## 5. 测试要点
 
-`cargo test -p minix-diskfmt`：**9 个测试，全部通过**；`mkfs.mfs` 的决定半另有 `cargo test -p minix-fs-mfs mkfs` 三条（布局算术对照、缺省阶梯、镜像经服务器自己的 `DiskSuperblock`/`DiskInode` 解析器逐位回读）。
+`cargo test -p minix-diskfmt`：**9 个测试，全部通过**；`mkfs.mfs` 的决定半另有 `cargo test -p minix-fs-mfs mkfs` 七条（布局算术对照、缺省阶梯、镜像经服务器自己的 `DiskSuperblock`/`DiskInode` 解析器逐位回读、六字符模式串各形与拒收、原型整树播种回读、错误面拒绝、零长文件与空根），全库 `cargo test -p minix-fs-mfs` 为 138 个测试。
 
 重点行为与测试的对应（以下函数名均可用 `rg "fn 测试名" os/commands/sbin/diskfmt` 复现）：
 
