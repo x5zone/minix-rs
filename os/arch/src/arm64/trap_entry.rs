@@ -47,132 +47,31 @@ use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use minix_types::VirBytes;
 use core::arch::asm;
 
-// ── Exception vector table (the S-8 link landmine, defused — edge1 K9) ──
+// ── Exception vector table (production legs — E-3ARCHTRAP) ──────────────
 //
-// The 2 KiB table required by the architecture: 16 entries of exactly 128
-// bytes each, the whole table 2 KiB-aligned (`.align 11`), selected by
-// VBAR_EL1. Layout is fixed by hardware — 4 exception classes (sync, IRQ,
-// FIQ, SError) × 4 origin groups (current EL+SP0, current EL+SPx, lower
-// EL AArch64, lower EL AArch32) — so each slot holds one branch to a
-// class handler and padding.
-//
-// Slot disposition (the bring-up lane boundary drawn in smp_todo.md S-8):
-// the kernel-origin slots (current EL, SPx) branch to real diagnostic
-// stubs — ESR/FAR/ELR/SPSR are captured and handed to
-// [`aarch64_trap_diag`], which prints and halts, honoring the stage
-// invariant "after S-8 no empty handler exists anywhere". The user-origin
-// (lower EL) and SP0/AArch32 slots are `exc_bad_mode`: full frame-shaped
-// save and dispatch is the arm64 bring-up lane's work (K12b), and no
-// user context exists before that lane lands.
+// The 2 KiB table (16 entries × 128 bytes, `.align 11`) is defined in
+// `trap_stub`, together with the frame layout and the dispatch thunks —
+// all 16 slots are wired: current-EL and lower-EL sync/IRQ slots save a
+// full frame and forward to the kernel-registered dispatch bodies (the
+// SP_EL0 exchange happens in the lower-EL legs), while the never-legal
+// groups (current EL with SP0, lower EL AArch32) and the non-deliverable
+// classes (FIQ/SError) branch to the print-and-halt diagnostic. The
+// stage invariant "after S-8 no empty handler exists anywhere" now holds
+// with production legs, not diagnostic ones.
 //
 // Alignment proof obligations: the table symbol must be 2 KiB-aligned
 // (`VBAR_EL1` mandates bits [10:0] zero) and every slot exactly 128
 // bytes (offsets are address bits [9:7], not encoded fields). The
-// `.size`/`.space` directives make a wrong layout an assembly-time
+// `.align`/`.space` directives make a wrong layout an assembly-time
 // failure on the aarch64 target; the hardware-level check is `msr
-// vbar_el1` acceptance and a real exception delivery (K12b boot).
-core::arch::global_asm! {
-    ".align 11",
-    ".globl exc_vector_table",
-    "exc_vector_table:",
-    // Macro: one 128-byte slot that branches to its class handler.
-    ".macro VEC name",
-    "b  \\name",
-    ".space 124",
-    ".endm",
-    // Group 0 — current EL, SP0 (kernel must never run with SP0).
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    // Group 1 — current EL, SPx (kernel-origin traps: the live slots).
-    "VEC el1_sync",
-    "VEC el1_irq",
-    "VEC el1_fiq",
-    "VEC el1_serror",
-    // Group 2 — lower EL, AArch64 (user-origin: lands with K12b).
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    // Group 3 — lower EL, AArch32 (never: no 32-bit guests).
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    "VEC exc_bad_mode",
-    // Diagnostic stubs: capture the architectural state, hand it to the
-    // Rust reporter, and never return.
-    ".macro TRAPBODY class",
-    "mrs x0, esr_el1",
-    "mrs x1, far_el1",
-    "mrs x2, elr_el1",
-    "mrs x3, spsr_el1",
-    "mov x4, #\\class",
-    "bl  aarch64_trap_diag",
-    "1: wfe",
-    "b   1b",
-    ".endm",
-    "el1_sync:",
-    "TRAPBODY 0",
-    "el1_irq:",
-    "TRAPBODY 1",
-    "el1_fiq:",
-    "TRAPBODY 2",
-    "el1_serror:",
-    "TRAPBODY 3",
-    // exc_bad_mode reports via a synthetic ESR (class field 0xF = unknown)
-    // so the printed line distinguishes "wrong mode" from a real exception.
-    "exc_bad_mode:",
-    "mov x0, #0x00F00000",
-    "mov x1, xzr",
-    "mov x2, xzr",
-    "mov x3, xzr",
-    "mov x4, #4",
-    "bl  aarch64_trap_diag",
-    "1: wfe",
-    "b   1b",
-    // No `.size` directive: LLVM's integrated assembler rejects the GNU
-    // `.size` pseudo-op in inline asm (live: "unknown directive .size
-    // exc_vector_table, 2048" on the aarch64 build). The table's extent is
-    // fixed by construction — `.align 11` plus sixteen 128-byte slots.
-}
-
-/// Rust-side diagnostic reporter for the exception table stubs.
-///
-/// Prints the captured state over the early console and halts the CPU —
-/// the arm64 bring-up lane replaces this with frame-shaped save and
-/// `ExceptionDispatcher` wiring; until then the stage invariant is
-/// "observable, never silent".
-#[cfg(target_arch = "aarch64")]
-#[unsafe(no_mangle)]
-extern "C" fn aarch64_trap_diag(class: u64, esr: u64, far: u64, elr: u64, spsr: u64) -> ! {
-    use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-    Console::write_str("aarch64 trap class=");
-    Console::write_hex(class);
-    Console::write_str(" esr=");
-    Console::write_hex(esr);
-    Console::write_str(" far=");
-    Console::write_hex(far);
-    Console::write_str(" elr=");
-    Console::write_hex(elr);
-    Console::write_str(" spsr=");
-    Console::write_hex(spsr);
-    Console::write_str(" — halted\n");
-    loop {
-        // SAFETY: privileged halt instruction; the diag reporter never
-        // returns by design.
-        unsafe {
-            core::arch::asm!("wfe");
-        }
-    }
-}
-
+// vbar_el1` acceptance and a real exception delivery (the timer-irq
+// carrier).
 /// ARM64 trap entry state.
 ///
 /// On ARM64, the trap entry mechanism is the exception vector table,
 /// pointed to by VBAR_EL1. The table itself is defined in assembly
-/// (exc_vector_table), and this struct manages loading it into the
-/// hardware register.
+/// (`exc_vector_table`, see `trap_stub`), and this struct manages loading
+/// it into the hardware register.
 pub struct AArch64TrapEntry;
 
 impl TrapEntryArch for AArch64TrapEntry {
@@ -213,19 +112,17 @@ impl TrapEntryArch for AArch64TrapEntry {
 
     fn load(&self) {
         // Set VBAR_EL1 to the exception vector table address.
-        // The table is defined in the global_asm! above (edge1 K9 defused
-        // the S-8 link landmine: the symbol previously had no definition,
-        // masked only by load() never being called).
-        unsafe extern "C" {
-            static exc_vector_table: u8;
-        }
+        // The table (all 16 slots wired) is defined in the `global_asm!`
+        // in `trap_stub` (edge1 K9 defused the S-8 link landmine;
+        // E-3ARCHTRAP replaced the diagnostic slots with the production
+        // frame-save legs).
+        let vbar = super::trap_stub::vector_table_va().get();
         // SAFETY: VBAR_EL1 write is safe because:
         // - We are at EL1 (kernel mode), required for MSR access.
         // - exc_vector_table is a valid symbol defined in assembly,
         //   aligned to 2KB per ARM Architecture Reference Manual.
         // - ISB ensures the write is visible before any exception.
         unsafe {
-            let vbar = &exc_vector_table as *const u8 as u64;
             asm!("msr vbar_el1, {}", in(reg) vbar);
             // Instruction Synchronization Barrier: ensures VBAR_EL1
             // write is visible to subsequent exception handling.

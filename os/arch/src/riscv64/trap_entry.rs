@@ -49,65 +49,34 @@ use crate::trap_entry::{TrapEntryArch, InterruptVector};
 use minix_types::VirBytes;
 use core::arch::asm;
 
-// ── Trap vector (the S-8 link landmine, defused — edge1 K9) ─────────────
+// ── Trap vector (production legs — E-3ARCHTRAP) ─────────────────────────
 //
-// stvec Direct mode: ONE entry point, 4-byte aligned (stvec BASE bits [1:0]
-// hold the mode, so the base itself must not collide with them). Every trap
-// — synchronous or interrupt — lands here and software dispatches on
-// `scause`.
+// stvec Direct mode: ONE vector address, and since a production leg must
+// pick its stack strategy by interrupted privilege (swap to the sscratch
+// kernel stack for U-origin, frame below the interrupted sp for S-origin),
+// the vector is SWITCHED between two asm legs instead of testing the
+// origin in a scratch register the interrupted context owns:
 //
-// Slot disposition mirrors the arm64 table (bring-up lane boundary from
-// smp_todo.md S-8): this stub captures the three diagnostic CSRs and hands
-// them to [`riscv64_trap_diag`], which prints and halts — the stage
-// invariant "no empty handler anywhere" holds from `load()` onward. Full
-// register-file save, the kernel stack swap via `sscratch`, and
-// scause-keyed dispatch (timer/IPI/ecall legs) are the riscv64 bring-up
-// lane's work (K10/K12b); no user context exists before that lane lands.
-core::arch::global_asm! {
-    ".align 2",
-    ".globl trap_vector",
-    "trap_vector:",
-    "csrr a0, scause",   // what trapped (exception code / interrupt bit)
-    "csrr a1, stval",    // faulting address (exceptions) / 0 (interrupts)
-    "csrr a2, sepc",     // where the interrupted context resumes
-    "call riscv64_trap_diag",
-    // The diag reporter never returns; the loop is belt and braces.
-    "1: wfi",
-    "j 1b",
-    ".size trap_vector, .-trap_vector",
-}
-
-/// Rust-side diagnostic reporter for the trap vector stub.
-///
-/// Prints the captured state over the early console and halts the hart —
-/// the riscv64 bring-up lane replaces this with full register save and
-/// scause-keyed dispatch; until then the stage invariant is "observable,
-/// never silent".
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-extern "C" fn riscv64_trap_diag(scause: u64, stval: u64, sepc: u64) -> ! {
-    use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-    Console::write_str("riscv64 trap scause=");
-    Console::write_hex(scause);
-    Console::write_str(" stval=");
-    Console::write_hex(stval);
-    Console::write_str(" sepc=");
-    Console::write_hex(sepc);
-    Console::write_str(" — halted\n");
-    loop {
-        // SAFETY: privileged halt instruction; the diag reporter never
-        // returns by design.
-        unsafe {
-            core::arch::asm!("wfi");
-        }
-    }
-}
-
+// - `riscv64_kernel_trap_vector` (defined in `trap_stub`, together with
+//   the frame layout and the dispatch thunks): installed here by `load()`
+//   — until a `sret` targets U-mode, every trap is a kernel trap.
+// - `riscv64_user_trap_vector`: installed by the U-return path
+//   (`TrapReturnArch::restore_to_user`) immediately before `sret`, so
+//   `stvec` always describes the mode the CPU is about to run in.
+//
+// The stage invariant "no empty handler anywhere" still holds from
+// `load()` onward — both legs save a full frame and forward to the
+// kernel-registered dispatch bodies; an unhandled cause is a kernel-side
+// panic with scause/stval/sepc diagnostics (the old print-and-halt diag
+// stub is gone: halting in the entry leg cannot return to a scheduler,
+// while a body panic routes through the kernel's diagnostic path).
 /// RISC-V 64-bit trap entry state.
 ///
 /// On RISC-V, the trap entry mechanism is the stvec CSR, which points
 /// to the trap handler. The handler itself is defined in assembly
-/// (trap_vector), and this struct manages loading it into the CSR.
+/// (`riscv64_kernel_trap_vector` / `riscv64_user_trap_vector`, see
+/// `trap_stub`), and this struct manages loading the kernel leg into
+/// the CSR.
 pub struct Riscv64TrapEntry;
 
 impl TrapEntryArch for Riscv64TrapEntry {
@@ -147,22 +116,19 @@ impl TrapEntryArch for Riscv64TrapEntry {
     }
 
     fn load(&self) {
-        // Set stvec to the trap vector address in Direct mode (MODE=0).
-        // The trap vector is defined in the global_asm! above (edge1 K9
-        // defused the S-8 link landmine: the symbol previously had no
-        // definition, masked only by load() never being called).
-        unsafe extern "C" {
-            static trap_vector: u8;
-        }
+        // Set stvec to the KERNEL leg (the production default: until a
+        // `sret` targets U-mode, every trap is a kernel trap — the U-return
+        // path re-points stvec at the user leg). The legs are defined in
+        // the `global_asm!` in `trap_stub` (edge1 K9 defused the S-8 link
+        // landmine; E-3ARCHTRAP replaced the K9 diagnostic stub with the
+        // production frame-save legs).
+        let stvec_addr = super::trap_stub::kernel_trap_vector_va().get();
         // SAFETY: CSR write to stvec is safe because:
         // - We are in S-mode (supervisor), required for CSR access.
-        // - trap_vector is a valid symbol defined in assembly,
+        // - The kernel-leg symbol is defined in assembly in `trap_stub`,
         //   4-byte aligned as required by Direct mode.
         // - Direct mode (MODE=0) is the simplest and most common mode.
         unsafe {
-            let stvec_addr = &trap_vector as *const u8 as usize;
-            // stvec = BASE (aligned to 4) | MODE (0 = Direct)
-            // The address must be 4-byte aligned for Direct mode.
             asm!("csrw stvec, {}", in(reg) stvec_addr);
         }
     }

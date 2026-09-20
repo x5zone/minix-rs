@@ -4,6 +4,7 @@ pub mod paging;
 pub mod protection;
 pub mod trap_entry;
 pub mod trap_return;
+pub mod trap_stub;
 pub mod exception;
 pub mod clock;
 pub mod timer_irq_gate;

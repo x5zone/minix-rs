@@ -244,15 +244,16 @@ pub type CurrentTrapEntry = crate::riscv64::trap_entry::Riscv64TrapEntry;
 // `TrapEntryArch::load()` from "deferred" into a safe call: after both run,
 // no gate has an empty handler (the S-8 stage invariant).
 //
-// aarch64/riscv64 stub inventory (S-8 deliverable, 2026-09-14): both archs
-// use a single fixed asm vector (VBAR_EL1 table / stvec direct mode), where
-// `set_handler` is already a documented no-op — there is nothing to install
-// per-vector. The inventory also found that their `load()` paths reference
-// asm symbols that are declared but never defined
-// (`exc_vector_table` / `trap_vector`; zero `global_asm!` in either module)
-// — currently masked only by dead-code elimination because no caller
-// invokes `load()`. Their stub bodies stay part of their own bring-up
-// lanes (S-4 arm64/riscv64); recorded in smp_todo.md S-8.
+// aarch64/riscv64 entry shape (updated by E-3ARCHTRAP, 2026-09-20): both
+// archs use a single fixed asm vector (VBAR_EL1 table / stvec direct mode
+// with kernel+user legs), where `set_handler` is already a documented no-op
+// — there is nothing to install per-vector, so `install_trap_stubs` is a
+// documented no-op there. Their asm symbols (`exc_vector_table`,
+// `riscv64_{kernel,user}_trap_vector`) are defined by `global_asm!` in the
+// same modules that declare them (the K9 defusal; the earlier S-8
+// inventory finding "declared but never defined" is historical), and the
+// production frame-save legs + dispatch thunks live in each arch's
+// `trap_stub`.
 #[cfg(feature = "runtime-window")]
 pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {}
 #[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
@@ -260,16 +261,23 @@ pub fn install_trap_stubs(entry: &mut CurrentTrapEntry) {
     crate::x86_64::trap_stub::install_idt_handlers(entry);
 }
 #[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
-pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {}
+pub fn install_trap_stubs(_entry: &mut CurrentTrapEntry) {
+    // Fixed asm tables (VBAR_EL1 / stvec): nothing per-vector to install —
+    // `set_handler` is a documented no-op on both archs, and the asm
+    // symbols are defined by `global_asm!` in the same modules that
+    // declare them (K9), so `load()` cannot link-fail. The production
+    // frame-save legs + dispatch thunks live in each arch's `trap_stub`.
+}
 
 /// SYSCALL entry address for `TrapEntryArch::configure_syscall`.
 ///
-/// x86-64: the LSTAR asm entry (`x86_syscall_entry`). aarch64/riscv64: 0 —
-/// their SYSCALL (SVC/ecall) shares the exception vector, so
-/// `configure_syscall` is a no-op and the value is unused (C parity: the
-/// kernel sources the entry from its own asm label, protect.c:189-205 —
-/// not from the boot-provided `KernelInfo.syscall_entry`, which is
-/// reference-only metadata).
+/// x86-64: the LSTAR asm entry (`x86_syscall_entry`). aarch64: the
+/// lower-EL AArch64 synchronous slot (VBAR + 0x400, the SVC entry);
+/// riscv64: the user-leg `stvec` entry — their SYSCALL (SVC/ecall) shares
+/// the exception vector, so `configure_syscall` is a no-op and the value
+/// is metadata only (C parity: the kernel sources the entry from its own
+/// asm label, protect.c:189-205 — not from the boot-provided
+/// `KernelInfo.syscall_entry`, which is reference-only metadata).
 #[cfg(feature = "runtime-window")]
 pub fn syscall_entry_va() -> minix_types::VirBytes {
     minix_types::VirBytes::new(0)
@@ -277,6 +285,14 @@ pub fn syscall_entry_va() -> minix_types::VirBytes {
 #[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]
 pub fn syscall_entry_va() -> minix_types::VirBytes {
     crate::x86_64::trap_stub::syscall_entry_va()
+}
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
+pub fn syscall_entry_va() -> minix_types::VirBytes {
+    crate::arm64::trap_stub::syscall_entry_va()
+}
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
+pub fn syscall_entry_va() -> minix_types::VirBytes {
+    crate::riscv64::trap_stub::user_trap_vector_va()
 }
 
 /// Persist an interrupted user register file into the per-process saved
@@ -321,10 +337,10 @@ pub fn ipc_return_code(ctx: &CurrentCpuContext) -> u64 {
 pub fn ipc_return_code(_ctx: &CurrentCpuContext) -> u64 {
     0
 }
-#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
-pub fn syscall_entry_va() -> minix_types::VirBytes {
-    minix_types::VirBytes::new(0)
-}
+// (syscall_entry_va for aarch64/riscv64 lives in the per-arch cfg blocks
+// above — the merged `any(aarch64, riscv64)` stub returning 0 was removed
+// with E-3ARCHTRAP: returning a fake entry address masked the fact that no
+// production trap legs existed.)
 
 /// Register the kernel-side trap/syscall dispatch bodies with the x86-64
 /// entry stubs (see `x86_64::trap_stub` for the gate rationale). Must run
@@ -343,11 +359,24 @@ pub fn register_trap_dispatchers(
 ) {
     crate::x86_64::trap_stub::register_dispatchers(trap, syscall);
 }
-#[cfg(all(not(feature = "runtime-window"), any(target_arch = "aarch64", target_arch = "riscv64")))]
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub fn register_trap_dispatchers(
-    _trap: unsafe extern "C" fn(&mut ()),
-    _syscall: unsafe extern "C" fn(&mut ()),
+    trap: unsafe extern "C" fn(&mut arm64::trap_stub::AArch64TrapFrame, u64),
+    syscall: unsafe extern "C" fn(&mut arm64::trap_stub::AArch64TrapFrame, u64),
 ) {
+    // Slot semantics: `trap` = current-EL (kernel) leg, `syscall` =
+    // lower-EL (user) leg — the vector table splits by origin group. The
+    // second operand is the exception class (sync/IRQ) the slot ran.
+    crate::arm64::trap_stub::register_dispatchers(trap, syscall);
+}
+#[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
+pub fn register_trap_dispatchers(
+    trap: unsafe extern "C" fn(&mut riscv64::trap_stub::Riscv64TrapFrame),
+    syscall: unsafe extern "C" fn(&mut riscv64::trap_stub::Riscv64TrapFrame),
+) {
+    // Slot semantics: `trap` = kernel leg (S-origin), `syscall` = user
+    // leg (U-origin) — the stvec legs split by interrupted privilege.
+    crate::riscv64::trap_stub::register_dispatchers(trap, syscall);
 }
 
 #[cfg(all(not(feature = "runtime-window"), target_arch = "x86_64"))]

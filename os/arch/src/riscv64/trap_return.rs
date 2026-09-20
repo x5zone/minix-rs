@@ -64,6 +64,14 @@ impl TrapReturnArch for Riscv64TrapReturn {
             // Park the register-file pointer in t6 (its user slot is
             // gp_regs[GP_T6], loaded last as a self-referential load).
             "mv t6, a1",
+            // Point stvec at the USER leg: the CPU is about to run U-mode
+            // code, so its next trap must enter through the swap leg
+            // (`riscv64_user_trap_vector` — the kernel/user legs are
+            // selected by this switch, not by an origin test in a scratch
+            // register the interrupted context owns). t0 is explicitly
+            // bound for the write and reloaded from the context right
+            // after, before its user value matters.
+            "csrw stvec, t0",
             // ── Mode-switch pair: sepc + sstatus ──
             "ld t0, {sepc_off}(a0)",
             "csrw sepc, t0",
@@ -112,6 +120,7 @@ impl TrapReturnArch for Riscv64TrapReturn {
             "sret",
             in("a0") frame as *const Riscv64ExceptionFrame,
             in("a1") regs as *const Riscv64CpuContext,
+            in("t0") super::trap_stub::user_trap_vector_va().get(),
             sepc_off = const core::mem::offset_of!(Riscv64ExceptionFrame, sepc),
             sp_off = const core::mem::offset_of!(Riscv64CpuContext, sp),
             a0_off = const core::mem::offset_of!(Riscv64CpuContext, a0),

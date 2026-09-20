@@ -27,6 +27,52 @@ use crate::clock::{ClockArch, ProfileClockError};
 /// C: earm/arch_system.c PMU init (cycle counter for user mode)
 pub struct AArch64ClockArch;
 
+/// Interval between ticks in counter units, armed by `init_timer` and
+/// re-read by the per-tick re-arm. A static (not instance state) because
+/// the kernel constructs transient `ClockArch` instances per call — see
+/// `kernel::clock::local_tick`.
+static TICK_INTERVAL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+impl AArch64ClockArch {
+    /// Re-arm the one-shot: CNTP fires once per CVAL (no auto-periodic
+    /// mode), so the tick body must schedule the next deadline or the
+    /// tick train stops dead — the aarch64 analogue of the x86 LAPIC ICR
+    /// re-arm (`kernel::clock::local_tick` calls this after every tick).
+    fn rearm_next_tick() {
+        let interval = TICK_INTERVAL.load(core::sync::atomic::Ordering::Relaxed);
+        let interval = if interval == 0 {
+            // `local_timer_eoi` before any `init_timer` would be a wiring
+            // bug (D-59: the gate opens only after the source is armed);
+            // fall back to CNTFRQ at DEFAULT_HZ rather than arming a zero
+            // interval (an interrupt storm).
+            let freq: u64;
+            // SAFETY: side-effect-free counter-frequency read.
+            unsafe {
+                core::arch::asm!("mrs {}, cntfrq_el0", out(reg) freq, options(nomem, nostack));
+            }
+            freq / crate::clock::DEFAULT_HZ as u64
+        } else {
+            interval
+        };
+        let now = Self::read_counter();
+        // SAFETY: an absolute compare-value write on this CPU's own timer
+        // module; architected system registers at EL1.
+        unsafe {
+            core::arch::asm!("msr cntp_cval_el0, {}", in(reg) now + interval, options(nostack));
+        }
+    }
+
+    /// Read CNTPCT_EL0 (the system counter).
+    fn read_counter() -> u64 {
+        let count: u64;
+        // SAFETY: side-effect-free counter read.
+        unsafe {
+            core::arch::asm!("mrs {}, cntpct_el0", out(reg) count, options(nomem, nostack));
+        }
+        count
+    }
+}
+
 impl ClockArch for AArch64ClockArch {
     fn new(desc: &dyn minix_platform::TimerDesc) -> Self {
         // ARM Generic Timer carries no data in the descriptor — frequency
@@ -61,7 +107,8 @@ impl ClockArch for AArch64ClockArch {
 
         // Set compare value: current_count + (freq / hz) ticks per interrupt
         // CNTP_CVAL_EL0 is an absolute value, not a relative interval.
-        let compare = current_count + freq / hz as u64;
+        let interval = freq / hz as u64;
+        let compare = current_count + interval;
         unsafe {
             // Set the compare value for the EL1 physical timer
             core::arch::asm!("msr cntp_cval_el0, {}", in(reg) compare);
@@ -77,6 +124,10 @@ impl ClockArch for AArch64ClockArch {
             // (arch_clock.c:177-196 / interrupt.c:65).
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0x2u64);
         }
+        // Record the interval for the per-tick re-arm (`local_timer_eoi`
+        // — CNTP is a one-shot; without the re-arm the tick train stops
+        // dead after the first interrupt).
+        TICK_INTERVAL.store(interval, core::sync::atomic::Ordering::Relaxed);
     }
 
     fn read_ticks(&self) -> u64 {
@@ -97,6 +148,12 @@ impl ClockArch for AArch64ClockArch {
             // Clear ENABLE (bit 0) and set IMASK (bit 1) to suppress IRQ
             core::arch::asm!("msr cntp_ctl_el0, {}", in(reg) 0x2u64);
         }
+    }
+
+    fn local_timer_eoi(&mut self) {
+        // Re-arm the one-shot (see `rearm_next_tick`) — called by
+        // `kernel::clock::local_tick` after every tick.
+        Self::rearm_next_tick();
     }
 
     fn init_profile_clock(&mut self, _hz: u32) -> Result<(), ProfileClockError> {
