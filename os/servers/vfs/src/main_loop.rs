@@ -1097,6 +1097,80 @@ impl VfsState {
                 // 真调用（W3 回复半：发送在 `run()` 的循环尾）。
                 self.queue_reply(msg.m_source, crate::call_table::SyscallResult::Nosys);
             }
+            Route::Pm => {
+                // C main.c 的 `service_pm`：VFS_PM_* 控制面。此前本臂缺席
+                // 时消息被静默丢弃；NS5 起解码分派——EXEC 走同步执行件
+                // （exec_worker::pm_exec，ARCH A-1"同步到底无续作"，传输
+                // 与 run() 的 FS flush 同款 trap 直连），其余控制调用走
+                // `VfsPmHandler` 纯表面。解码失败 = 诚实 ENOSYS。
+                use crate::ipc::PmHandler as _;
+                use minix_types::{VfsCall, VfsReply};
+                match VfsCall::decode(msg) {
+                    Ok(VfsCall::Exec {
+                        endpoint,
+                        path,
+                        path_len,
+                        frame,
+                        frame_len,
+                        ps_str,
+                    }) => {
+                        // 栈顶生产源是 kerninfo `user_sp`（C exec.c:205 经
+                        // `minix_get_user_sp`，kernel_utils.c:40-60）；读半
+                        // 归 E-KERNINFO 波次，暂以 boot 契约缺省值供缝
+                        // （已登记 new_edge3 NS5-B）。
+                        const DEFAULT_USER_SP: u64 = 0x7fff_ffff_f000;
+                        let kernel = minix_sys::syscall::DirectKernelCallTransport;
+                        let ipc = minix_sys::ipc::DirectTrapTransport;
+                        let result = crate::exec_worker::pm_exec(
+                            self,
+                            &kernel,
+                            &ipc,
+                            crate::exec_worker::ExecRequest {
+                                target: endpoint,
+                                path_addr: path,
+                                path_len: path_len.max(0) as usize,
+                                frame_addr: frame,
+                                frame_len: frame_len.max(0) as usize,
+                                ps_str,
+                                stack_high: DEFAULT_USER_SP,
+                            },
+                        );
+                        // C worker 的回程：status 带结果（失败为负 errno），
+                        // pc/newsp 只在成功时有意义（com.h:570-575）。
+                        let reply = match result {
+                            Ok(loaded) => VfsReply::Exec {
+                                status: minix_types::OK,
+                                pc: loaded.pc,
+                                newsp: loaded.newsp,
+                                newps_str: loaded.newps_str,
+                            },
+                            Err(errno) => VfsReply::Exec {
+                                status: errno,
+                                pc: 0,
+                                newsp: 0,
+                                newps_str: 0,
+                            },
+                        };
+                        self.queue_reply_msg(msg.m_source, reply.encode());
+                    }
+                    Ok(other) => {
+                        let mut handler =
+                            crate::ipc::VfsPmHandler { table: &mut self.fproc_table };
+                        match handler.handle(other) {
+                            Ok(reply) => self.queue_reply_msg(msg.m_source, reply.encode()),
+                            Err(e) => self.queue_reply(
+                                msg.m_source,
+                                crate::call_table::SyscallResult::Error(
+                                    crate::ipc::PmError::to_errno(e),
+                                ),
+                            ),
+                        }
+                    }
+                    Err(_) => {
+                        self.queue_reply(msg.m_source, crate::call_table::SyscallResult::Nosys);
+                    }
+                }
+            }
             Route::Bdev | Route::Cdev | Route::Sdev => {
                 // C main.c:126-134 —— 块/字符/套接字驱动的回复各走
                 // `bdev_reply`/`cdev_reply`/`sdev_reply`，三者的公共前半是
@@ -7586,7 +7660,14 @@ impl crate::device_map::EndpointDirectory for LabelDir<'_> {
 /// `FsCtl` 的**队列收集**实现：`VnodeTable::put` 慢路径（`ref==1` →
 /// `req_putnode`）与 `clean_refs`（`fs_count > 256` 的批量归还）把通知
 /// 收进缓冲，调用方再并入 [`VfsState::pending_puts`] 统一投递。
-struct PutNodeSink<'a>(&'a mut alloc::vec::Vec<crate::vnode::PutNodeReq>);
+pub(crate) struct PutNodeSink<'a>(&'a mut alloc::vec::Vec<crate::vnode::PutNodeReq>);
+
+/// 跨模块构造入口（exec_worker 的终局 vnode 归还与主循环共用同一sink）。
+pub(crate) fn put_node_sink(
+    sink: &'_ mut alloc::vec::Vec<crate::vnode::PutNodeReq>,
+) -> PutNodeSink<'_> {
+    PutNodeSink(sink)
+}
 
 impl crate::vnode::FsCtl for PutNodeSink<'_> {
     fn put_node(

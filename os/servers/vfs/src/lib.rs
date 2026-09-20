@@ -33,6 +33,7 @@ pub mod cdev;
 pub mod coredump;
 pub mod device_map;
 pub mod exec;
+pub mod exec_worker;
 pub mod fcntl;
 pub mod filedes;
 pub mod filp;

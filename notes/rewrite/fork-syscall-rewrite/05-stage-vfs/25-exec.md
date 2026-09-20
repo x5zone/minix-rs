@@ -180,6 +180,7 @@ Rust 改写不是照抄 `exec.c` 的打开文件与装载流程，而是吸收 L
 ```
 os/servers/vfs/src/
 ├── exec.rs                 — 本篇：管线/打开文件/脚本/动态链接/装载/备栈/收尾判定
+├── exec_worker.rs          — 本篇执行件：pm_exec 的跨进程 I/O 落地（取帧/寻路开卷/段装载/PM 通告）
 ├── path.rs                 — eat_path/fetch_name 执行对照（13）
 ├── open.rs                 — common_open 执行对照（15，for_exec 归属）
 ├── filedes.rs              — get_fd/close_fd/check_fds 执行对照（14）
@@ -188,6 +189,14 @@ os/servers/vfs/src/
 ```
 
 > 设计决策：§3 D1（管线枚举）/ D3（脚本解释器处理）/ D5（装载双路径）。
+>
+> 执行件与判定层的分工：`exec.rs` 保存"装载推进到哪一步、每一步的门与
+> 清理顺序"这类知识，全部动作都在虚拟文件系统进程内存里完成；
+> `exec_worker.rs` 补上跨进程的那一半——从 PM 转发的调用里取出目标进程
+> 的路径与参数帧（`exec_worker::pm_exec` 对位 `exec.c:185-402` 的
+> `pm_exec`），向文件系统发出路径解析与文件读取请求，向 VM 请求段内存
+> 分配与旧地址空间拆除，向 PM 发出 `PM_EXEC_NEW` 通告。单线程事件循环
+> 模型（ARCH A-1）里执行调用在一条臂内同步跑完，不设续作状态机。
 
 ### 4.2 核心符号表
 
@@ -221,7 +230,7 @@ os/servers/vfs/src/
 
 ## 5 测试要点
 
-> 基线：`cargo test -p minix-vfs --lib` 截至 2026-09-03 为 **295 passed / 0 failed**（既有 288 + 本篇新增 7；`minix-types` 独立）。
+> 基线：`cargo test -p minix-vfs --lib` 为 **512 passed / 0 failed**（判定层 7 个 + 执行件 6 个随本篇交付；`minix-types` 独立）。
 > 本章直接影响 7 项新增。
 
 | 测试名 | 覆盖 C 行号 | 行为 | 文件 |
@@ -236,11 +245,14 @@ os/servers/vfs/src/
 
 测试策略：管线以十一段全枚举锁定；打开文件以检查顺序 + 有效 uid/gid 四种组合覆盖；脚本以边界检查/差量/对齐/限高覆盖（含 C 对齐 quirks 诚实注记）；动态链接以三值 + 基址 + 标志表覆盖；装载以双检查 + 首胜 + 哨兵覆盖；备栈以七个辅向量 + 封口 + 取小覆盖；收尾以帧检查 + 有效 uid/gid + 清理序覆盖；错误以 7 变体全映射覆盖。
 
-### 5.1 测试统计（截至 2026-09-03）
+### 5.1 测试统计
 
-- `cargo test -p minix-vfs --lib`：**295 passed / 0 failed**
-- 本节列出与本模块直接相关的 7 个（子集）
-- 完整测试清单：`rg "fn test_" os/servers/vfs/src/exec.rs`
+- `cargo test -p minix-vfs --lib`：**512 passed / 0 failed**
+- 本节列出与本模块直接相关的 13 个（子集）：`exec.rs` 判定层 7 个 +
+  `exec_worker.rs` 执行件 6 个（ELF 头解析的收与拒、段装载的 VM/FS 线
+  形状、PM_EXEC_NEW 载荷与裁决回程、取帧上限门、坏目标槽拒绝、空路径
+  取名拒绝）
+- 完整测试清单：`rg "fn test_" os/servers/vfs/src/exec.rs os/servers/vfs/src/exec_worker.rs`
 
 ---
 

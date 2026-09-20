@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 minix-types = { workspace = true }
+minix-elf = { workspace = true }
 minix-sockdriver = { workspace = true }
 minix-chardriver = { workspace = true }
 minix-sys = { workspace = true }

@@ -198,20 +198,13 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 Ok(VfsReply::SrvFork)
             }
             VfsCall::Exec { endpoint, .. } => {
-                // Postponed in C (`worker_start(..., NULL)`); here we just
-                // validate the endpoint is known and return `Exec` for the
-                // caller to route via `PM_WORK`.
-                let slot = endpoint.to_user_slot().ok_or(PmError::BadEndpoint)?;
-                let fp = self.table.get(slot).ok_or(PmError::BadEndpoint)?;
-                if fp.pid == PID_FREE {
-                    return Err(PmError::BadEndpoint);
-                }
-                Ok(VfsReply::Exec {
-                    status: 0,
-                    pc: 0,
-                    newsp: 0,
-                    newps_str: 0,
-                })
+                // 纯表测试面的诚实拒（`ENOSYS`）：exec 的生产装载在
+                // `exec_worker::pm_exec`（NS5 执行件，Route::Pm 直达），
+                // 需要 FS/VM/PM 三方往返，不是这张表的纯内存动作。曾经
+                // 在这里回 `status: 0` 的桩是虚构成功——断言 exec 全链的
+                // 测试应走 `exec_worker` 的 canned-transport 用例。
+                let _ = endpoint;
+                Err(PmError::NotImplemented)
             }
             VfsCall::DumpCore {
                 endpoint, term_sig, ..

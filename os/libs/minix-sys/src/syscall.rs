@@ -921,6 +921,39 @@ pub fn sys_datacopy(
     Ok(())
 }
 
+/// 内核侧整块填充（C libsys `sys_memset`，sys_memset.c:3-16）。
+///
+/// `bytes == 0` 短路 `OK`（C :9-11 同语义）；其余经 `SYS_MEMSET`
+/// （com.h:221）由内核向 `process` 的 `base..base+bytes` 写 `pattern`
+/// ——exec 收尾的 clearmem 回调（exec.c:382 经 libexec_clear_sys_memset）
+/// 用它清段间隙，不经过本进程的中转缓冲。
+pub fn sys_memset(
+    transport: &impl KernelCallTransport,
+    process: i32,
+    pattern: u64,
+    base: u64,
+    bytes: u64,
+) -> Result<(), i32> {
+    if bytes == 0 {
+        return Ok(());
+    }
+    let mut msg = cleared_message();
+    {
+        // SAFETY: m_lsys_krn_sys_memset 是 MEMSET 的文档化载荷
+        //（kernel syscall_copy.rs msg_memset:187-191 同一联合臂）。
+        let m = unsafe { &mut msg.m_u.m_lsys_krn_sys_memset };
+        m.base = base;
+        m.count = bytes;
+        m.pattern = pattern;
+        m.process = process;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_MEMSET, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
 /// E-IPCWIRE 第 6 项:clock_time 客户端。
 ///
 /// C: libsys `clock_time`(clock_time.c:12-38)读 kerninfo kclockinfo 的
