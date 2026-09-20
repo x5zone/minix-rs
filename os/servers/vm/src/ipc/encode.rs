@@ -163,12 +163,23 @@ pub(crate) fn pack_region_reply(
 }
 
 pub(crate) fn encode_reply_data(reply: VmReply, msg: &mut Message) {
+    // The user-facing mmap reply is the one non-M1 reply: C's VM writes the
+    // chosen address into the same m_mmap overlay's retaddr lane
+    // (servers/vm/mmap.c:191/:276), where libc minix_mmap_for reads it back
+    // (libc/sys/mmap.c:44-45). Handled before the M1 borrow below — it has
+    // no M1 slot (edge NS5-A; the old m1p1 form collided with mmap_via's
+    // @40 read on the real wire).
+    if let VmReply::Mmap(out) = reply {
+        out.encode_message(msg);
+        return;
+    }
     // SAFETY: All VM replies use the M1 message format.
     let m1 = unsafe { &mut msg.m_u.m_m1 };
     match reply {
         VmReply::Fork(out) => out.encode(m1),
         VmReply::Brk(out) => out.encode(m1),
-        VmReply::Mmap(out) => out.encode(m1),
+        // Intercepted above (m_mmap retaddr lane, not an M1 slot).
+        VmReply::Mmap(_) => unreachable!("VmReply::Mmap handled before the M1 encode"),
         VmReply::MapPhys(out) => out.encode(m1),
         VmReply::MapCache { addr } => {
             // C: msg->m_vmmcp_reply.addr = vr->vaddr (mem_cache.c:170);

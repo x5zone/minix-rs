@@ -114,26 +114,13 @@ pub const fn vm_endpoint() -> Endpoint {
     Endpoint(VM_ENDPOINT_NUMBER)
 }
 
-/// Mapping request in C field order.
+/// Mapping request lanes live in the shared `minix_types::MessMmap` overlay
+/// (C `mess_mmap` field order, ipc.h:1582-1593; 64-bit `addr`/`len`/`retaddr`
+/// lanes — the 56-byte payload only compiles on i386 with 32-bit pointers,
+/// and minix-rs userspace is LP64; see the overlay's doc, edge NS5-A). Note
+/// the leading position of the offset: like the seek payload, the address is
+/// not first.
 ///
-/// C: `mess_mmap` (`minix3/minix/include/minix/ipc.h:1582-1593`) — offset,
-/// address, length, protection, flags, file, beneficiary, return address —
-/// plus padding. Note the leading position of the offset: like the seek
-/// payload, the address is not first.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct MapPayload {
-    offset: i64,
-    address: u64,
-    length: u64,
-    protection: u32,
-    flags: u32,
-    file: i32,
-    beneficiary: i32,
-    return_address: u64,
-    _padding: [u8; 8],
-}
-
 /// A validated mapping request: what to map, where, and for whom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MapRequest {
@@ -179,29 +166,25 @@ pub fn mmap_via(
     request: MapRequest,
 ) -> Result<VirBytes, Errno> {
     let mut message = crate::syscall::cleared_message();
-    let packed = MapPayload {
-        offset: request.offset,
-        address: request.address.0,
-        length: request.length.0,
-        protection: request.protection,
-        flags: request.effective_flags(caller),
-        file: request.file,
-        beneficiary: request.beneficiary.0,
-        return_address: 0,
-        _padding: [0; 8],
-    };
-    // SAFETY: plain 56-byte value; exact byte representation below.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            (&raw const packed) as *const u8,
-            core::mem::size_of::<MapPayload>(),
-        )
-    };
-    crate::syscall::write_payload(&mut message, bytes);
+    {
+        // SAFETY: `m_mmap` is the documented payload arm for VM_MMAP; the
+        // lane map is the crate-wide `MessMmap` authority (64-bit
+        // addr/len/retaddr — edge NS5-A).
+        let m = unsafe { &mut message.m_u.m_mmap };
+        m.offset = request.offset as u64;
+        m.addr = request.address.0;
+        m.len = request.length.0;
+        m.prot = request.protection as i32;
+        m.flags = request.effective_flags(caller) as i32;
+        m.fd = request.file;
+        m.forwhom = request.beneficiary.0;
+    }
     perform_syscall(transport, vm_endpoint(), VM_CALL_MMAP, &mut message)?;
-    // SAFETY: the reply payload is 56 readable bytes; the chosen address
-    // sits at the return-address lane (last eight bytes before padding).
-    let chosen = unsafe { message.m_u.raw[40..48].as_ptr().cast::<u64>().read() };
+    // C reads the chosen address back from the same overlay's retaddr lane
+    // (`return m.m_mmap.retaddr`, libc/sys/mmap.c:44-45); VM writes it
+    // there (servers/vm/mmap.c:276, VM encode.rs Mmap arm).
+    // SAFETY: `m_mmap` is the active union arm for the reply.
+    let chosen = unsafe { message.m_u.m_mmap.retaddr };
     Ok(VirBytes(chosen))
 }
 
@@ -215,25 +198,12 @@ pub fn munmap_via(
     length: VirBytes,
 ) -> Result<(), Errno> {
     let mut message = crate::syscall::cleared_message();
-    let packed = MapPayload {
-        offset: 0,
-        address: address.0,
-        length: length.0,
-        protection: 0,
-        flags: 0,
-        file: 0,
-        beneficiary: 0,
-        return_address: 0,
-        _padding: [0; 8],
-    };
-    // SAFETY: same plain-value reasoning as mmap_via.
-    let bytes = unsafe {
-        core::slice::from_raw_parts(
-            (&raw const packed) as *const u8,
-            core::mem::size_of::<MapPayload>(),
-        )
-    };
-    crate::syscall::write_payload(&mut message, bytes);
+    {
+        // SAFETY: same overlay reasoning as mmap_via (edge NS5-A lane map).
+        let m = unsafe { &mut message.m_u.m_mmap };
+        m.addr = address.0;
+        m.len = length.0;
+    }
     perform_syscall(transport, vm_endpoint(), VM_CALL_MUNMAP, &mut message).map(|_| ())
 }
 
@@ -738,6 +708,7 @@ pub fn clear_cache_via(transport: &impl IpcTransport, dev: u64) -> Result<(), Er
 mod tests {
     use super::*;
     use crate::ipc::{CannedTransport, TrapStatus};
+    use minix_types::MessMmap;
 
     fn reply_with_type(message_type: i32) -> Message {
         let mut message = Message::zeroed();
@@ -798,17 +769,77 @@ mod tests {
     }
 
     #[test]
-    fn test_map_payload_matches_c_field_order() {
-        assert_eq!(core::mem::size_of::<MapPayload>(), 56);
-        let packed = MapPayload {
-            offset: 0,
-            address: 0x1000,
-            length: 4096,
+    fn test_mmap_request_wire_lanes() {
+        // The full lane map, asserted on the outgoing wire bytes through
+        // the real wrapper (C order: offset @0, address @8, length @16,
+        // protection @24, flags @28, file @32, beneficiary @36; edge NS5-A
+        // 64-bit pointer lanes).
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let request = MapRequest {
+            beneficiary: Endpoint(5),
+            address: VirBytes(0x7fff_fbff_f000),
+            length: VirBytes(0x4000_1000),
             protection: 3,
+            flags: 0x1000,
+            file: -1,
+            offset: -2,
+        };
+        let _ = mmap_via(&transport, Endpoint(5), request).unwrap();
+        let (dest, sent) = transport.sent.borrow()[0];
+        assert_eq!(dest, vm_endpoint());
+        assert_eq!(sent.m_type, VM_CALL_MMAP);
+        // SAFETY: VM_MMAP messages carry the m_mmap arm (asserted here by
+        // reading the same lanes decode_message reads).
+        let m = unsafe { &sent.m_u.m_mmap };
+        assert_eq!(m.offset, (-2i64) as u64);
+        assert_eq!(m.addr, 0x7fff_fbff_f000);
+        assert_eq!(m.len, 0x4000_1000);
+        assert_eq!(m.prot, 3);
+        // beneficiary == caller → no third-party flag bit added.
+        assert_eq!(m.flags, 0x1000);
+        assert_eq!(m.fd, -1);
+        assert_eq!(m.forwhom, 5);
+        // The padding half of the payload stays zero, like C's memset.
+        assert!(unsafe { &sent.m_u.m_mmap }._padding.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_mmap_third_party_flag_on_beneficiary_mismatch() {
+        // C adds MAP_THIRDPARTY whenever forwhom != SELF (mmap.c:36-38);
+        // the wire lane carries the beneficiary endpoint either way.
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let request = MapRequest {
+            beneficiary: Endpoint(9),
+            address: VirBytes(0),
+            length: VirBytes(4096),
+            protection: 1,
             flags: 0,
             file: -1,
-            beneficiary: 5,
-            return_address: 0,
+            offset: 0,
+        };
+        let _ = mmap_via(&transport, Endpoint(5), request).unwrap();
+        // SAFETY: same overlay reasoning as test_mmap_request_wire_lanes.
+        let m = unsafe { &transport.sent.borrow()[0].1.m_u.m_mmap };
+        assert_eq!(m.forwhom, 9);
+        assert_eq!(m.flags, (MAP_FLAG_THIRD_PARTY) as i32);
+    }
+
+    #[test]
+    fn test_map_payload_matches_c_field_order() {
+        // Struct-level pin of the shared overlay's layout: C field order
+        // with the 64-bit pointer lanes (edge NS5-A), 56 bytes total.
+        assert_eq!(core::mem::size_of::<MessMmap>(), 56);
+        let packed = MessMmap {
+            offset: 0,
+            addr: 0x1000,
+            len: 4096,
+            prot: 3,
+            flags: 0x20,
+            fd: -1,
+            forwhom: 5,
+            retaddr: 0x7fff_fbff_f000,
             _padding: [0; 8],
         };
         // SAFETY: plain value read-back of the struct just built above.
@@ -817,25 +848,30 @@ mod tests {
         let bytes = unsafe {
             core::slice::from_raw_parts(
                 (&raw const packed) as *const u8,
-                core::mem::size_of::<MapPayload>(),
+                core::mem::size_of::<MessMmap>(),
             )
         };
-        assert_eq!(i64::from_ne_bytes(bytes[0..8].try_into().unwrap()), 0);
+        assert_eq!(u64::from_ne_bytes(bytes[0..8].try_into().unwrap()), 0);
         assert_eq!(u64::from_ne_bytes(bytes[8..16].try_into().unwrap()), 0x1000);
         assert_eq!(u64::from_ne_bytes(bytes[16..24].try_into().unwrap()), 4096);
         assert_eq!(u32::from_ne_bytes(bytes[24..28].try_into().unwrap()), 3);
+        assert_eq!(u32::from_ne_bytes(bytes[28..32].try_into().unwrap()), 0x20);
         assert_eq!(i32::from_ne_bytes(bytes[32..36].try_into().unwrap()), -1);
         assert_eq!(i32::from_ne_bytes(bytes[36..40].try_into().unwrap()), 5);
+        assert_eq!(
+            u64::from_ne_bytes(bytes[40..48].try_into().unwrap()),
+            0x7fff_fbff_f000
+        );
     }
 
     #[test]
     fn test_mmap_returns_chosen_address() {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
-        // SAFETY: test-only payload setup through the documented overlay.
-        unsafe {
-            reply.m_u.raw[40..48].copy_from_slice(&0x8000u64.to_ne_bytes());
-        }
+        // VM writes the chosen address into the same overlay's retaddr lane
+        // (servers/vm/mmap.c:276); the wrapper reads it from there. Union
+        // field writes are safe — only the read back needs `unsafe`.
+        reply.m_u.m_mmap.retaddr = 0x8000;
         transport.reply_sendrec(Ok(reply));
         let result = mmap_via(&transport, Endpoint(5), request_for(5)).unwrap();
         assert_eq!(result, VirBytes(0x8000));
@@ -860,10 +896,17 @@ mod tests {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
         assert_eq!(
-            munmap_via(&transport, VirBytes(0x8000), VirBytes(4096)),
+            munmap_via(&transport, VirBytes(0x7fff_fbff_f000), VirBytes(4096)),
             Ok(())
         );
         assert_eq!(transport.sendrec_calls.get(), 1);
+        // C stores the pair through the mapping payload's address/length
+        // lanes (`m.VMUM_ADDR`/`m.VMUM_LEN`, libc/sys/mmap.c:79-86) — the
+        // 64-bit NS5-A lanes, asserted on the outgoing wire bytes.
+        // SAFETY: VM_MUNMAP messages carry the m_mmap arm.
+        let m = unsafe { &transport.sent.borrow()[0].1.m_u.m_mmap };
+        assert_eq!(m.addr, 0x7fff_fbff_f000);
+        assert_eq!(m.len, 4096);
     }
 
     #[test]
