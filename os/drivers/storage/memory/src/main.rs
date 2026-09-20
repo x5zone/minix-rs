@@ -20,7 +20,6 @@ extern crate minix_rt;
 
 use minix_driver_rt::kernel::KernelTransport;
 use minix_driver_rt::runtime::DriverRuntime;
-use minix_types::Endpoint;
 
 // 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
 // ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
@@ -40,11 +39,13 @@ fn main() {
 }
 
 fn real_main() {
-    // The self endpoint is assigned by the restart server during SEF
-    // startup; until that assignment lands (real boot, edge E5) this is the
-    // same `Endpoint::NONE` seam the tty binary and input server carry.
-    let self_endpoint = Endpoint::NONE;
-    let transport = KernelTransport::new(self_endpoint);
+    // 出生自证:C sef_startup 先 sys_whoami 填 sef_self_endpoint(sef.c:76-87,
+    // 失败即 panic :81)。端点由内核引导表授予(引导期不经 RS——旧注失实);
+    // 问询走无源 DirectKernelCallTransport(应答按调用者进程上下文取内核
+    // 槽,与 m_source 无关),答案再喂带源的 IPC 传输(tty NL6-A 同款)。
+    let who = minix_sys::syscall::sys_whoami(&minix_sys::syscall::DirectKernelCallTransport)
+        .unwrap_or_else(|r| panic!("memory: sys_whoami failed: {r}"));
+    let transport = KernelTransport::new(who.endpoint);
     // A dual-framework driver publishes both family keys at announce: the
     // character label first, then the block label (C runs
     // `chardriver_announce` and `blockdriver_announce` back to back in

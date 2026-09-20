@@ -33,7 +33,16 @@ fn main() {
         // loop classifies, dispatches, and performs through serve.rs. The
         // SEF switch point (receive → sef_receive_status) is documented at
         // KernelTransport::receive.
-        let self_ep = minix_types::Endpoint::NONE; // A-6/RS assignment pending
+        //
+        // 出生自证:C sef_startup 先 sys_whoami 填 sef_self_endpoint
+        //(sef.c:76-87,失败即 panic :81)。问询走无源
+        // DirectKernelCallTransport(应答按调用者进程上下文取内核槽,
+        // 与 m_source 无关;tty NL6-A 同款);旧注"A-6/RS assignment
+        // pending"失实——端点由内核引导过程授予,不经 RS。
+        let self_ep =
+            minix_sys::syscall::sys_whoami(&minix_sys::syscall::DirectKernelCallTransport)
+                .unwrap_or_else(|r| panic!("input: sys_whoami failed: {r}"))
+                .endpoint;
         let mut transport = minix_input::serve::KernelTransport::default();
         let mut server = minix_input::dispatcher::Server::fresh();
         minix_input::serve::serve(&mut transport, self_ep, &mut server);
