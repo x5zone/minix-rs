@@ -21,7 +21,29 @@ pub mod input;
 pub mod keyboard;
 pub mod line;
 pub mod session;
+pub mod service;
 pub mod termios;
 
-/// Service initialization entry (wires the line table; transport stays out).
-pub fn init() {}
+use backend::{LineBackend, NullBackend};
+use char_face::TtyDriver;
+use service::TtyService;
+
+/// Line-table slot count: four consoles followed by the serial lines
+/// (C: `NR_CONSOLES` consoles plus `NR_RS_LINES` serials, `tty.h`). The
+/// configured console line is minor zero.
+const LINE_SLOTS: usize = 8;
+const CONSOLE_LINE: u32 = 0;
+
+/// Build the service over a device backend: the line table (one session
+/// per slot) plus the chardriver face the message pump drives.
+pub fn new_service<B: LineBackend>(backend: B) -> TtyService<B> {
+    TtyService::new(TtyDriver::new(LINE_SLOTS, CONSOLE_LINE, backend))
+}
+
+/// Service initialization entry: the wired line table over the null
+/// backend (an unplugged terminal). A real boot picks the console/serial
+/// backend; the transport and birth handshake stay in the binary.
+pub fn init() -> TtyService<NullBackend> {
+    new_service(NullBackend)
+}
+

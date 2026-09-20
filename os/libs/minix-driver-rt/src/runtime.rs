@@ -14,7 +14,7 @@
 
 use alloc::string::String;
 use alloc::string::ToString;
-use minix_types::Message;
+use minix_types::{Endpoint, Message, ENOSYS, RS_INIT};
 
 use crate::transport::DriverTransport;
 
@@ -26,6 +26,23 @@ use crate::transport::DriverTransport;
 pub trait DriverHandler<T: DriverTransport> {
     /// Handle one delivered message (request or notification).
     fn handle(&mut self, transport: &mut T, msg: &Message);
+}
+
+/// What the birth callback is being asked to run.
+///
+/// C: the SEF init type carried in the RS init request (`sef.h:93`):
+/// a fresh start, a live update, or a stateful restart. A no-std
+/// single-threaded driver models only the fresh start honestly; the two
+/// stateful kinds are refused rather than run against stale expectations
+/// (same discipline as the FS runtime's birth face, `fs-rt`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InitKind {
+    /// Fresh start (`SEF_INIT_FRESH`).
+    Fresh,
+    /// Live update (`SEF_INIT_LU`): refused as unmodeled.
+    LiveUpdate,
+    /// Stateful restart (`SEF_INIT_RESTART`): refused as unmodeled.
+    Restart,
 }
 
 /// Announce-and-loop shell behind every driver binary.
@@ -66,6 +83,73 @@ impl<T: DriverTransport> DriverRuntime<T> {
             self.transport.receive(&mut msg)?;
             handler.handle(&mut self.transport, &msg);
         }
+    }
+
+    /// Announce, run the RS birth handshake through `init`, then loop
+    /// delivering every later message to `handler`.
+    ///
+    /// C: the SEF startup (`sef_local_startup`) blocks until RS delivers
+    /// the init request, runs the fresh-start callback, and reports the
+    /// result back to RS — all before the task loop's first receive. This
+    /// is the same birth face the FS runtime runs (`fs-rt::run_birth`);
+    /// the driver runtime owns it once so no driver re-implements it.
+    /// Returns only on transport failure or a refused init (the nonzero
+    /// result is surfaced as the error); a driver that cannot be born
+    /// cannot serve.
+    pub fn serve<H, F>(&mut self, handler: &mut H, init: F) -> Result<(), i32>
+    where
+        H: DriverHandler<T>,
+        F: FnOnce(InitKind) -> Result<(), i32>,
+    {
+        self.announce()?;
+        self.run_birth(init)?;
+        loop {
+            let mut msg = Message::default();
+            self.transport.receive(&mut msg)?;
+            handler.handle(&mut self.transport, &msg);
+        }
+    }
+
+    /// Consume RS's init request: run `init` for its kind and report
+    /// `RS_INIT` with the result back to RS. Returns `Ok(())` only when
+    /// the fresh-start callback succeeded; a stateful kind or a failed
+    /// callback stops startup honestly (`Err`) rather than entering the
+    /// loop in an unprepared state.
+    fn run_birth<F: FnOnce(InitKind) -> Result<(), i32>>(&mut self, init: F) -> Result<(), i32> {
+        let mut msg = Message::default();
+        self.transport.receive(&mut msg)?;
+        // The first message of a driver's life is RS's init request; any
+        // other arrival means the transport is not speaking SEF startup.
+        if msg.m_type != RS_INIT || msg.m_source != Endpoint::RS {
+            return Err(ENOSYS);
+        }
+        // SAFETY: the birth request's active union arm is `m_rs_init`
+        // (m_type == RS_INIT from RS; both checked just above).
+        let init_type = unsafe { msg.m_u.m_rs_init.type_ };
+        let kind = match init_type {
+            0 => InitKind::Fresh,
+            1 => InitKind::LiveUpdate,
+            _ => InitKind::Restart,
+        };
+        let result = match kind {
+            InitKind::Fresh => init(InitKind::Fresh).map(|_| 0).unwrap_or_else(|e| e),
+            other => {
+                // Stateful starts are unmodeled: refuse honestly instead of
+                // running a fresh init against stale state expectations.
+                let _ = other;
+                ENOSYS
+            }
+        };
+        let mut reply = Message {
+            m_type: RS_INIT,
+            ..Message::default()
+        };
+        reply.m_u.m_rs_init.result = result;
+        self.transport.send(Endpoint::RS, &mut reply)?;
+        if result != 0 {
+            return Err(result);
+        }
+        Ok(())
     }
 }
 
@@ -196,5 +280,62 @@ mod tests {
         assert_eq!(runtime.transport.sent.len(), 2);
         assert_eq!(runtime.transport.sent[0].1, 102);
         assert_eq!(runtime.transport.sent[1].1, 103);
+    }
+
+    /// An RS init request of the given SEF kind.
+    fn birth_request(init_type: i32) -> Message {
+        let mut message = Message {
+            m_type: minix_types::RS_INIT,
+            m_source: Endpoint::RS,
+            ..Message::default()
+        };
+        message.m_u.m_rs_init.type_ = init_type;
+        message
+    }
+
+    /// Serve consumes RS's birth request (running the callback and
+    /// reporting the result) before the handler ever sees a message, then
+    /// delivers only the later loop messages.
+    #[test]
+    fn test_serve_runs_birth_then_delivers_loop() {
+        let transport = Canned::new(vec![
+            Ok(birth_request(0)), // SEF_INIT_FRESH
+            Ok(scripted(201)),
+            Ok(scripted(202)),
+            Err(-minix_types::EIO), // transport dies: the loop returns
+        ]);
+        let mut runtime = DriverRuntime::new(transport, "drv.chr.tty");
+        let mut handler = Counter { handled: 0 };
+        let mut ran = false;
+        let init = |kind| {
+            assert_eq!(kind, InitKind::Fresh);
+            ran = true;
+            Ok(())
+        };
+        assert_eq!(runtime.serve(&mut handler, init), Err(-minix_types::EIO));
+        assert!(ran, "fresh birth ran the init callback");
+        assert_eq!(handler.handled, 2, "only post-birth messages reach the handler");
+        // The birth reply is the first send: RS_INIT back to RS.
+        assert_eq!(runtime.transport.sent[0], (Endpoint::RS, minix_types::RS_INIT));
+        assert_eq!(runtime.transport.sent.len(), 3);
+    }
+
+    /// A stateful (live-update) kind is refused honestly: the result is
+    /// reported to RS, startup stops before the loop, and the handler runs
+    /// nothing.
+    #[test]
+    fn test_serve_refuses_stateful_birth() {
+        let transport = Canned::new(vec![Ok(birth_request(1))]); // SEF_INIT_LU
+        let mut runtime = DriverRuntime::new(transport, "drv.chr.tty");
+        let mut handler = Counter { handled: 0 };
+        assert_eq!(
+            runtime.serve(&mut handler, |_| Ok(())),
+            Err(minix_types::ENOSYS)
+        );
+        assert_eq!(handler.handled, 0);
+        assert_eq!(
+            runtime.transport.sent,
+            vec![(Endpoint::RS, minix_types::RS_INIT)]
+        );
     }
 }
