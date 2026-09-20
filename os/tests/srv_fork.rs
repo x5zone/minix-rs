@@ -180,6 +180,9 @@ impl KernelGateway for NoopKernelGateway {
     fn diag_write(&mut self, _text: &str) -> Result<(), i32> {
         Ok(())
     }
+    fn sys_diagctl_stacktrace(&mut self, _ep: Endpoint) -> Result<(), i32> {
+        Ok(())
+    }
 }
 
 /// 构造一个运行中的用户进程槽（用于负路径：非 RS 端点的调用者）。
