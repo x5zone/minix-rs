@@ -374,8 +374,8 @@ pub trait TracerSig { fn send(&mut self, table: &mut ProcTable, caller: UserSlot
 ### 5.1 `exec.rs`（`VFS` 转发与哨兵）
 
 - `test_do_exec_forwards`：`VFS_PM_EXEC` 六字段 + `VFS_CALL→SUSPEND`（`38-56`）
-- `test_do_newexec_perm_gate`：`VFS/RS→EPERM` 门（`70-71`）
-- `test_do_exec_caller_gate`：`do_exec` 的调用者门——非 VFS/RS 发起 → `EPERM`（`70-71`，todo.md §11 V2-P2-2）
+- `test_do_exec_no_caller_gate`：`do_exec` 无调用者门——任意进程发起均转发成功（C `38-56` 无门，门属于 `do_newexec` `70-71`，NS3 修正）
+- `test_do_newexec_perm_gate`：`do_newexec` 的 `VFS/RS→EPERM` 门（`70-71`）
 - `test_do_newexec_tainted_double`：`allow_setuid` 双重 + `TAINTED` 二重（`83-109`）
 - `test_partial_exec_sentinel`：`PARTIAL_EXEC` 置位→`173` 清零→`161` `SIGKILL` 分叉
 - `test_exec_restart_resets_caught`：`catch` 重置而 `ignore` 保留（`178-184`）
