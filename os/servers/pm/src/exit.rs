@@ -121,6 +121,12 @@ pub trait KernelGateway {
     /// 动作，signal.c:818）。EFAULT/ENOMEM = 进程内存装不下 handler
     ///（合法失败）；其它负 errno = PM/内核失配（调用方 panic，C 同型）。
     fn sys_sigsend(&mut self, ep: Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32>;
+
+    /// C: `sys_diagctl_stacktrace(proc_nr_e)`（`syslib.h:167` =
+    /// `sys_diagctl(DIAGCTL_CODE_STACKTRACE, NULL, ep)`）——请求内核打印
+    /// 目标进程的栈回溯。C 调用方（`signal.c:464-466`、RS `main.c:681-683`）
+    /// 不检查返回值；诊断通道失败静默。
+    fn sys_diagctl_stacktrace(&mut self, ep: Endpoint) -> Result<(), i32>;
 }
 
 /// 生产实现：内核调用经 minix-sys 的 trap 通道（pre-E1 回 `-EIO`）。
@@ -261,6 +267,10 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
 
     fn sys_sigsend(&mut self, ep: Endpoint, sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> {
         minix_sys::syscall::sys_sigsend(&self.transport, ep.0, sigmsg)
+    }
+
+    fn sys_diagctl_stacktrace(&mut self, ep: Endpoint) -> Result<(), i32> {
+        minix_sys::syscall::sys_diagctl_stacktrace(&self.transport, ep.0)
     }
 
     fn sys_sigreturn(&mut self, ep: Endpoint, ctx: VirBytes) -> Result<(), i32> {
@@ -972,6 +982,7 @@ mod tests {
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> {
             Ok(())
         }
+        fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
 
     #[test]

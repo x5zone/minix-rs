@@ -118,13 +118,17 @@ const SCPVEC_NR: usize = 64;
 /// Maximum VUMAP vector elements. C: `MAPVEC_NR`
 const MAPVEC_NR: usize = 64;
 
-/// SELF endpoint sentinel. C: `SELF` — endpoint.h
-const SELF: i32 = -2;
+/// SELF endpoint sentinel. C: `SELF` — endpoint.h:56, `_ENDPOINT_SLOT_TOP - 3`.
+/// Derived from the minix-types authority (single source) — the former local
+/// `-2`/`-1`/`-3` made every sentinel comparison against authority-valued
+/// wire fields (user side sends `minix_types::Endpoint::{SELF,NONE,ANY}`)
+/// fall through (E-MIBGRANT constant class; see `grant.rs::ANY`).
+const SELF: i32 = minix_types::Endpoint::SELF.0;
 
-/// NONE endpoint sentinel. C: `NONE` — endpoint.h
-const NONE: i32 = -1;
-/// ANY endpoint sentinel. C: `ANY` — endpoint.h
-const ANY: i32 = -3;
+/// NONE endpoint sentinel. C: `NONE` — endpoint.h:54, `_ENDPOINT_SLOT_TOP - 2`.
+const NONE: i32 = minix_types::Endpoint::NONE.0;
+/// ANY endpoint sentinel. C: `ANY` — endpoint.h:55, `_ENDPOINT_SLOT_TOP - 1`.
+const ANY: i32 = minix_types::Endpoint::ANY.0;
 
 // ── Safecopy access direction ──
 

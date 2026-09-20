@@ -491,6 +491,7 @@ mod tests {
         fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
         fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
         fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         fn copy_from_user(&mut self, _src_ep: Endpoint, _src: u64, bytes: &mut [u8]) -> Result<(), i32> {
             match &self.range_block {
                 Some(pr) => {
