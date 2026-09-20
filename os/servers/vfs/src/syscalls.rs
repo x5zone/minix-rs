@@ -2457,7 +2457,11 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                         minix_types::GRANT_INVALID
                     };
                     let mut m = minix_types::Message {
-                        m_type: minix_chardriver::protocol::CdevRequest::Ioctl as i32,
+                        // 消息号＝基值+序数（0x404，`com.h:923` 的
+                        // CDEV_RQ_BASE 门内）——`as i32` 只给枚举序数，驱动侧
+                        // `is_char_request` 掩码判定不识别，必须走
+                        // `message_type()`（NS7 数据臂同款）。
+                        m_type: minix_chardriver::protocol::CdevRequest::Ioctl.message_type(),
                         ..minix_types::Message::default()
                     };
                     // SAFETY: `mess_vfs_lchardriver_readwrite { off_t pos@0;
@@ -8600,6 +8604,7 @@ mod tests {
         // ④ 字符设备 + 有驱动 → 真发 `CDEV_IOCTL`（宿主下 trap 不可达 →
         // EIO），且续接标识挂上（等驱动的回复）。
         let (mut state, _fid) = setup(crate::open::S_IFCHR | 0o644);
+        let idx;
         {
             // vnode 的 `sdev` 定 major/minor（major 3 → dmap 行 3）。
             let vid = state
@@ -8607,7 +8612,7 @@ mod tests {
                 .find_by_ino(Endpoint::MFS, 0x42)
                 .expect("刚建的 vnode");
             state.vnode_table.get_mut(vid).unwrap().sdev = (3 << 8) | 7;
-            let idx = state
+            idx = state
                 .worker_pool
                 .assign_first_fit(
                     minix_types::UserSlot::new(0),
@@ -8620,11 +8625,26 @@ mod tests {
             row.driver = Some(Endpoint::from_generation_slot(0, 12));
             state.dmap_table.set(3, row);
         }
+        // 宿主下 grant 表首次增长过不了 `sys_setgrant`：先热身，让
+        // magic grant 真建出来（否则 EIO 来自 grant 门，走不到发送停槽）。
+        crate::main_loop::warm_grants(&mut state);
         state.current_message = ioctl_msg(3, 0x5401);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Ioctl),
             SyscallResult::Error(minix_types::EIO),
             "有驱动就真发（宿主下发送失败）"
+        );
+        // NS7-A：停槽请求的消息号必须是完整基值+序数（0x404）——`as i32`
+        // 的枚举序数（4）过不了驱动侧 `is_char_request` 的掩码判定。
+        let parked = state
+            .worker_pool
+            .get(idx)
+            .and_then(|w| w.sendrec)
+            .expect("请求已停槽");
+        assert_eq!(
+            parked.m_type,
+            minix_chardriver::protocol::CdevRequest::Ioctl.message_type(),
+            "CDEV_IOCTL 消息号完整（0x404）"
         );
 
         // ⑤ 套接字：smap 里没这个设备号的驱动 → EIO（C `sdev_ioctl` 的
