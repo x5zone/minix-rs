@@ -904,6 +904,53 @@ pub fn sys_getinfo_into(
     Ok(())
 }
 
+/// 调用方自身身份(SYS_GETINFO · GET_WHOAMI 的应答)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WhoAmI {
+    /// 调用方端点。C: `who_ep` 出参。
+    pub endpoint: Endpoint,
+    /// 特权旗标。C: `priv_flags` 出参。
+    pub priv_flags: i32,
+    /// 初始旗标。C: `init_flags` 出参。
+    pub init_flags: i32,
+    /// 进程名(wire 宽 44,NUL 终结由内核写)。C: `who_name` 出参。
+    pub name: [u8; 44],
+}
+
+/// SYS_GETINFO · GET_WHOAMI(19):取调用方自身身份。C: `sys_whoami`
+/// (libsys,sys_getinfo.c:29-55)——sef_startup 出生即问(sef.c:76-87),
+/// 是 C 驱动/服务器 `sef_self_endpoint` 的唯一来源。内核按调用者进程
+/// 上下文应答并直写应答消息 overlay(kernel/src/misc.rs getinfo_whoami,
+/// C do_getinfo.c:132-141),不做结构拷贝。
+///
+/// 与 C 的形状差异:len<2 门(C sys_getinfo.c:40-41)保护的是调用方自备
+/// 的 name 缓冲;Rust 侧 name 以 44 字节 wire 宽随结构整体返回,无自备
+/// 缓冲,该守卫无对应面,故不设。失败语义同 C:内核负值原样 `Err`。
+pub fn sys_whoami(transport: &impl KernelCallTransport) -> Result<WhoAmI, i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_getinfo 是 GETINFO 的文档化载荷
+        //(kernel/src/misc.rs msg_getinfo——勿用 m1 覆盖)。
+        let gi = unsafe { &mut msg.m_u.m_lsys_krn_sys_getinfo };
+        // C sys_getinfo.c:38——GET_WHOAMI 请求只带 request 一个车道,
+        // endpt/val_* 均不设。
+        gi.request = minix_types::GET_WHOAMI;
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_GETINFO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 应答由内核经 GET_WHOAMI 臂直写同一 overlay
+    //(kernel/src/misc.rs getinfo_whoami)。
+    let w = unsafe { msg.m_u.m_krn_lsys_sys_getwhoami };
+    Ok(WhoAmI {
+        endpoint: Endpoint(w.endpt),
+        priv_flags: w.privflags,
+        init_flags: w.initflags,
+        name: w.name,
+    })
+}
+
 /// SYS_PRIVCTL:特权控制(allow/disallow/set_sys/set_user/...)。
 /// M1 载荷:m1i1=request,m1i2=endpt,m1p1=arg_ptr(用户态特权结构
 /// 指针,无则为 0)。C: mess_lsys_krn_sys_privctl,do_privctl.c:47-51。
@@ -1296,6 +1343,49 @@ mod tests {
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].m_type, SYS_CLEAR_CALL);
         assert_eq!(unsafe { sent[0].m_u.m_m1 }.m1i1, 11);
+    }
+
+    #[test]
+    fn test_sys_whoami_requests_get_whoami_and_decodes_reply_overlay() {
+        // C: libsys sys_getinfo.c:29-55 — 请求只带 request=GET_WHOAMI；
+        // 回复直写 m_krn_lsys_sys_getwhoami（endpt/privflags/initflags/name）。
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        {
+            // SAFETY: 测试按 GET_WHOAMI 文档化应答布局填充。
+            let w = unsafe { &mut reply.m_u.m_krn_lsys_sys_getwhoami };
+            w.endpt = 0x5F5C; // 任意 slot 推导端点（非哨兵值即可）
+            w.privflags = 0x0000_0040;
+            w.initflags = 0x0000_0003;
+            let mut name = [0u8; 44];
+            name[..11].copy_from_slice(b"drv.chr.tty");
+            w.name = name;
+        }
+        canned.reply_message(reply);
+
+        let who = sys_whoami(&canned).expect("kernel answered OK");
+
+        assert_eq!(who.endpoint, Endpoint(0x5F5C));
+        assert_eq!(who.priv_flags, 0x40);
+        assert_eq!(who.init_flags, 3);
+        assert_eq!(&who.name[..12], b"drv.chr.tty\0");
+        // 请求腿:m_type = SYS_GETINFO,overlay 只带 request=GET_WHOAMI。
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, minix_types::SYS_GETINFO);
+        assert_eq!(
+            unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo }.request,
+            minix_types::GET_WHOAMI
+        );
+    }
+
+    #[test]
+    fn test_sys_whoami_propagates_kernel_error() {
+        // C sys_getinfo.c:43-44 — _kernel_call 负值原样返回。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-1);
+
+        assert_eq!(sys_whoami(&canned), Err(-1));
     }
 
     #[test]

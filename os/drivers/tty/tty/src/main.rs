@@ -18,7 +18,6 @@ extern crate minix_rt;
 
 use minix_driver_rt::kernel::KernelTransport;
 use minix_driver_rt::runtime::DriverRuntime;
-use minix_types::Endpoint;
 
 // 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
 // ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
@@ -38,11 +37,15 @@ fn main() {
 }
 
 fn real_main() {
-    // The self endpoint is assigned by the restart server during SEF
-    // startup; until that assignment lands (real boot, edge E5) this is the
-    // same `Endpoint::NONE` seam the input server carries.
-    let self_endpoint = Endpoint::NONE;
-    let transport = KernelTransport::new(self_endpoint);
+    // 出生自证:C sef_startup 先 sys_whoami 填 sef_self_endpoint(sef.c:76-87,
+    // 失败即 panic :81)。端点是内核引导过程按 BOOT_MODULE_PROC_NRS 授予的
+    //(引导期不经 RS——旧注"由 RS 分配"系失实);应答读调用者自身内核槽
+    //(misc.rs getinfo_whoami),与消息 m_source 无关,故问询走无源的
+    // DirectKernelCallTransport(driver-rt safecopy 同款),答案再喂给
+    // 带源的 IPC 传输。
+    let who = minix_sys::syscall::sys_whoami(&minix_sys::syscall::DirectKernelCallTransport)
+        .unwrap_or_else(|r| panic!("tty: sys_whoami failed: {r}"));
+    let transport = KernelTransport::new(who.endpoint);
     let mut runtime = DriverRuntime::new(transport, "drv.chr.tty");
     let mut service = minix_driver_tty::init();
     // A fresh start needs no extra preparation: the line table is built at
