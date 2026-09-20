@@ -135,4 +135,13 @@ mod kernel_transport_tests {
         let mut t = KernelTransport::new(Endpoint::PM);
         assert_eq!(t.publish_label("drv.chr.t7"), Err(-minix_types::EIO));
     }
+
+    /// DS label 查表腿经双载体 DsClient：宿主下查表不可达诚实返回
+    /// `None`（调用方读作 C 的"忽略该消息"，与 publish 的 fail-closed
+    /// 上浮同源，但查表失败在 C 里是静默忽略而非错误码）。
+    #[test]
+    fn test_lookup_label_hosted_is_none() {
+        let mut t = KernelTransport::new(Endpoint::PM);
+        assert_eq!(t.lookup_label("input"), None);
+    }
 }

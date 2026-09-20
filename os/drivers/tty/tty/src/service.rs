@@ -42,6 +42,17 @@ const CDEV_SEL1_REPLY: i32 = CDEV_REPLY_BASE + 1;
 /// `m_type` at 0 and `m_source` at 4, with 8-byte union alignment). Every
 /// wire offset below is `8 +` the field's position inside its C payload
 /// struct (ipc.h:2206-2258).
+///
+/// The union exposes no typed character-request arm yet, so these fields
+/// are read by pinned byte offset — the same interim the input server's
+/// reply builder uses (`servers/input/src/serve.rs::reply_task_msg`),
+/// pending the typed arm the minix-types layout authority will supply
+/// (tracked as E-MINTYPES-RUNTIME, owned by another lane; this line must
+/// not re-implement it). This is a deliberate stopgap at the message
+/// boundary, not a line-for-line rendering of the C struct access: the
+/// routing, judgment, and reply decisions are expressed in the type system
+/// (enum `CdevRequest`, newtypes `DeviceMinor`/`RequestId`, `Result` +
+/// `Errno`), and the offsets are the one place the byte layout still shows.
 const PAYLOAD: usize = 8;
 
 /// Character-request and notify wire offsets, keyed per payload struct.

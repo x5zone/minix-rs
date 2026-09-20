@@ -344,6 +344,23 @@ mod tests {
         assert_eq!((id, page, code), (3, 0x0007, 0x0028));
     }
 
+    /// The hardware-seam entry `feed_keyboard_byte` drives the production
+    /// full table (`FullMap`): a configured Enter scan-code reaches the
+    /// server with the keyboard slot, exactly as the reference-map path.
+    #[test]
+    fn test_feed_keyboard_byte_uses_full_table() {
+        let server = Endpoint(6);
+        let mut svc = service();
+        svc.face.configure(server, 3, INVALID_INPUT_ID);
+        let mut transport = Scripted::new(Some(server));
+        // FullMap: 0x1C is Enter (page 0x0007, code 0x0028), a down event.
+        svc.feed_keyboard_byte(&mut transport, 0x1C);
+        assert_eq!(transport.sends.len(), 1);
+        let (dst, kind, id, page, code, value) = transport.sends[0];
+        assert_eq!((dst, kind), (server, minix_types::INPUT_EVENT));
+        assert_eq!((id, page, code, value), (3, 0x0007, 0x0028, 1));
+    }
+
     /// An event before any configuration is dropped without a send.
     #[test]
     fn test_unconfigured_event_is_dropped() {
