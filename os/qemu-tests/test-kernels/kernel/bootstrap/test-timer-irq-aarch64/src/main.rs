@@ -270,10 +270,22 @@ fn main() -> Status {
         minix_kernel::arch_boot_impl::<AArch64Paging>(&result.kernel_info, result.root_page);
     early_console::write_str("  paging enabled\n");
 
-    // Phase A.5: platform discovery (ACPI/UEFI handoff — kmain order).
-    unsafe { minix_platform::init_from_kinfo(&result.kernel_info) };
-    early_console::write_str("  platform desc installed\n");
-
+    // Phase A.5: platform discovery — this carrier targets QEMU virt
+    // (`gic-version=3` in the run script, the smp-ipi-riscv64 `aclint=on`
+    // analogue) and installs the hardcoded QemuVirtDesc directly, because
+    // AAVMF hands the guest ACPI only and QEMU's MADT leaves
+    // GICC."GICR Base Address" = 0 (live, first carrier run: the v2
+    // default parse produced gicr = 0x0803_0000 — the GICV slot — and the
+    // GICR_WAKER write landed in a reserved hole: external abort, ESR
+    // 0x96000050, FAR 0x08030014). The hardcoded descriptor carries the
+    // correct redistributor base 0x080A_0000; production discovery stays
+    // ACPI/DTB and is the platform lane's concern, not NK3's.
+    unsafe {
+        minix_platform::init(minix_platform::PlatformDescEnum::QemuVirt(
+            minix_platform::arch::aarch64::QemuVirtDesc::default(),
+        ));
+    }
+    early_console::write_str("  platform desc installed (QemuVirt, gicr=0x080A0000)\n");
     // 3. Trap entry — the trap-entry half of init_protection, performed
     // by hand (see the module doc: AAVMF rejects the SP_EL1 write in
     // `AArch64Protection::init`). Order matters: the dispatch bodies are

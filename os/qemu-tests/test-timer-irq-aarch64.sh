@@ -56,7 +56,7 @@ pkill -9 qemu-system-aar 2>/dev/null || true
 sleep 1
 
 timeout "$TIMEOUT_RUN" qemu-system-aarch64 \
-    -machine virt \
+    -machine virt,gic-version=3 \
     -cpu cortex-a57 \
     -smp 1 \
     -m 256M \

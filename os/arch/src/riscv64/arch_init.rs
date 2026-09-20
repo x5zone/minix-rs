@@ -35,17 +35,15 @@ impl ArchInit for Riscv64ArchInit {
     }
 
     fn init(&mut self) {
-        // 1. Configure PMP (Physical Memory Protection)
-        // OpenSBI may have already configured PMP entries.
-        // We add a default entry that allows all access.
-        unsafe {
-            // pmpaddr0 = 0xFFFFFFFFFFFFFFFF (match all addresses)
-            core::arch::asm!("csrw pmpaddr0, {}", in(reg) u64::MAX);
-            // pmpcfg0 = A=NAPOT (0x18) + X+R+W (0x7) = 0x1F
-            // This allows all access to all memory regions.
-            core::arch::asm!("csrw pmpcfg0, {}", in(reg) 0x1Fu64);
-        }
-
+        // 1. PMP (Physical Memory Protection): NO S-mode setup possible or
+        // needed. PMP CSRs (pmpcfg*/pmpaddr*) are M-mode-only per the
+        // privileged spec — an S-mode write takes an illegal instruction
+        // (live, first timer-irq carrier run: scause=2,
+        // stval=0x3b051073 = `csrw pmpaddr0`). Under OpenSBI the firmware
+        // owns PMP and its Domain0 regions already delegate S/U (R,W,X)
+        // over the whole address space, so the allow-all intent this
+        // entry once tried to program is satisfied by the firmware.
+        //
         // 2. (Removed by D-59, 2026-09-09.) This step used to set
         // `sie = STIE | SSIE` (0x22) here — enabling the S-mode timer gate
         // before any handler is registered. Both bits now have owners:

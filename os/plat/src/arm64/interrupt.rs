@@ -55,11 +55,23 @@ const GICD_ICENABLER: usize = 0x0180;
 /// GICD_IGROUPR<n>: Interrupt Group Register.
 const GICD_IGROUPR: usize = 0x0080;
 
+/// Byte offset of the redistributor's SGI/PPI frame (ARM IHI 0069 §5.3.9:
+/// the RD frame 0x0000-0xFFFF carries CTLR/WAKER/…, the SGI/PPI frame at
+/// 0x10000-0x1FFFF re-uses the GICD-style register offsets for INTIDs
+/// 0-31). Every GICR_IGROUPR0/ISENABLER0/ICENABLER0 access below goes
+/// through this offset — without it the writes land in reserved RD-frame
+/// slots, which QEMU implements as write-ignored: the enable is silently
+/// dropped and the line stays dead (live, first timer-irq carrier run).
+const GICR_SGI_FRAME: usize = 0x1_0000;
+
+/// GICR_IGROUPR0: Redistributor group register for SGI/PPI (INTID 0-31).
+const GICR_IGROUPR0: usize = GICR_SGI_FRAME + 0x0080;
+
 /// GICR_ISENABLER0: Redistributor Interrupt Set-Enable Register (SGI+PPI, INTID 0-31).
-const GICR_ISENABLER0: usize = 0x0100;
+const GICR_ISENABLER0: usize = GICR_SGI_FRAME + 0x0100;
 
 /// GICR_ICENABLER0: Redistributor Interrupt Clear-Enable Register (SGI+PPI, INTID 0-31).
-const GICR_ICENABLER0: usize = 0x0180;
+const GICR_ICENABLER0: usize = GICR_SGI_FRAME + 0x0180;
 
 /// GICR_WAKER: Redistributor Wake Register.
 const GICR_WAKER: usize = 0x0014;
@@ -132,6 +144,15 @@ impl AArch64InterruptController {
             // "init masks everything" invariant (D-61; the SPI half is
             // GICD_ICENABLER in `init_distributor`).
             self.gicr_write32(GICR_ICENABLER0, 0xFFFF_FFFF);
+            // Group all SGIs/PPIs into Group 1 (non-secure) to match the
+            // distributor's IGROUPR handling of the SPIs above: reset
+            // leaves GICR_IGROUPR0 = 0, which puts every PPI in Group 0 —
+            // delivered as FIQ, not IRQ (live, first timer-irq carrier
+            // run: the enabled timer PPI stayed silent because the IRQ
+            // leg was listening and the FIQ mask stayed set). Group 1
+            // delivery under ICC_IGRPEN1_EL1 is the routing this
+            // controller's claim/complete half expects.
+            self.gicr_write32(GICR_IGROUPR0, 0xFFFF_FFFF);
         }
     }
 
