@@ -238,6 +238,47 @@ pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
     result
 }
 
+/// Take the controller's claim (GIC ICC_IAR1 / PLIC claim register) without
+/// dispatching — the identification half of the aarch64 entry path, where
+/// the INTID must be known before the chain can be picked (E-3ARCHTRAP).
+/// The claim travels to [`dispatch_claimed_hardware_irq`], which completes
+/// it — the D-61 pairing is preserved across the split.
+///
+/// BKL: try-or-inherit, the same contract as `dispatch_hardware_irq` (the
+/// claim may run while the interrupted context holds the BKL, or during an
+/// idle window where it does not). The claim itself is per-CPU controller
+/// state and needs no lock for its own correctness; the window only guards
+/// access to the global manager.
+pub fn claim_hardware_irq() -> Option<u32> {
+    let acquired = crate::smp::bkl_try_lock();
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let mgr = crate::irq_manager_with(&section);
+    let claimed = mgr.controller_claim();
+    if acquired {
+        crate::smp::bkl_unlock();
+    }
+    claimed
+}
+
+/// Dispatch an IRQ whose claim the caller already took via
+/// [`claim_hardware_irq`] — the routing half of the aarch64 entry path.
+/// The claim/completion pairing (D-61) travels intact: the identity this
+/// call completes is exactly the one the caller read.
+pub fn dispatch_claimed_hardware_irq(irq: IrqVector, claimed: Option<u32>) -> Result<(), IrqError> {
+    let mut notifier = KernelNotifier;
+    let acquired = crate::smp::bkl_try_lock();
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    if acquired {
+        crate::account_interrupt_stop(&section);
+    }
+    let mgr = crate::irq_manager_with(&section);
+    let result = mgr.dispatch_claimed(irq, claimed, &mut notifier);
+    if acquired {
+        crate::smp::bkl_unlock();
+    }
+    result
+}
+
 /// An IRQ hook slot in the global hook pool.
 struct IrqHookSlot {
     next: Option<usize>,
@@ -470,20 +511,38 @@ impl<IC: InterruptRouter + PerCpuInterruptUnit> IrqManager<IC> {
         irq: IrqVector,
         notifier: &mut dyn IrqNotify,
     ) -> Result<(), IrqError> {
+        let claimed = self.controller.claim();
+        self.dispatch_claimed(irq, claimed, notifier)
+    }
+
+    /// The controller's claim read (GIC ICC_IAR1 / PLIC claim register),
+    /// exposed for the split claim → route → dispatch entry path
+    /// ([`claim_hardware_irq`] is its kernel-side wrapper).
+    pub fn controller_claim(&mut self) -> Option<u32> {
+        self.controller.claim()
+    }
+
+    /// Dispatch against a claim the caller already took.
+    ///
+    /// The claim/completion pairing (D-61) requires that `complete` writes
+    /// exactly the identity `claim` returned. On GIC the ICC_IAR1_EL1 read
+    /// IS the identification register — an entry path that must route on
+    /// the INTID (E-3ARCHTRAP: the aarch64 trap body reads the claim first
+    /// to decide which chain this interrupt belongs to) would otherwise
+    /// leave dispatch's own claim reading spurious 1023, never completing
+    /// the real INTID, and the interrupt refiring forever. The claim
+    /// travels in, the whole mask → chain → unmask → complete handshake
+    /// runs unchanged.
+    pub fn dispatch_claimed(
+        &mut self,
+        irq: IrqVector,
+        claimed: Option<u32>,
+        notifier: &mut dyn IrqNotify,
+    ) -> Result<(), IrqError> {
         let irq_idx = irq.get() as usize;
         if irq_idx >= NR_IRQ_VECTORS {
             return Err(IrqError::InvalidIrq);
         }
-
-        // Claim first (D-61 + K8 pairing): the identity `complete` writes
-        // must be exactly what this read returns — on GIC the
-        // ICC_IAR1_EL1 read both acknowledges and yields the INTID; on
-        // PLIC the claim read moves the interrupt to in-progress. A
-        // `None` claim (GIC spurious INTID 1023, PLIC id 0) completes
-        // nothing. On x86 APIC the claim is a documented no-op returning
-        // None (there is no claim register; the EOI is the whole
-        // handshake) and `complete` EOIs regardless.
-        let claimed = self.controller.claim();
 
         self.controller.mask(irq);
 

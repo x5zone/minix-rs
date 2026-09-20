@@ -36,15 +36,19 @@ use crate::syscall::KcallResult;
 use minix_arch::exception::{ExceptionArch, FaultContext};
 use minix_arch::exception_dispatcher::{ExceptionDispatcher, ExceptionOutcome, ExceptionSignal};
 use minix_arch::TrapStyle;
+#[cfg(target_arch = "x86_64")]
 use minix_arch::x86_64::exception::X86_64ExceptionFrame;
+#[cfg(target_arch = "x86_64")]
 use minix_arch::x86_64::trap_stub::TrapFrame;
 use minix_types::VirBytes;
 
 /// The int-33 IPC gate (C: IPC_VECTOR_ORIG = 33, interrupt.h:33).
+#[cfg(target_arch = "x86_64")]
 const IPC_VECTOR_GATE: u8 = 33;
 
 /// Build the CPU-pushed tail of the frame as an `X86_64ExceptionFrame` for
 /// the arch-generic dispatcher (which is implemented over that type).
+#[cfg(target_arch = "x86_64")]
 fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
     X86_64ExceptionFrame {
         vector: frame.vector,
@@ -57,6 +61,7 @@ fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 /// A-path body: exceptions, external IRQs, IPIs, soft-int gates, spurious.
 ///
 /// Registered via `minix_arch::register_trap_dispatchers` before
@@ -372,6 +377,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 /// Map the arch-generic exception classification to the kernel signal
 /// number (C: the `ex_data[].signum` column — exception.c:19-39; constants
 /// signal.h:55-63).
@@ -438,6 +444,7 @@ fn forward_pagefault_to_vm(
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 /// E1 trap bridge — locate the current user process for the vector-33 arm.
 /// Mirrors the SYSCALL body's per-CPU anchor read (proc_ptr before any lock).
 fn current_ipc_proc_nr() -> crate::proc::ProcNr {
@@ -452,6 +459,7 @@ fn current_ipc_proc_nr() -> crate::proc::ProcNr {
         })
 }
 
+#[cfg(target_arch = "x86_64")]
 /// E1 trap bridge body: vector-33 IPC leg.
 ///
 /// Contract (design doc 18, decisions 1-3):
@@ -562,6 +570,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     }
 }
 
+#[cfg(target_arch = "x86_64")]
 /// Re-acquire the BKL (released by `kernel_call_finish`) and enter the
 /// scheduling loop — the unified exit for blocked IPC (design decision 3).
 fn reenter_scheduler() -> ! {
@@ -575,6 +584,7 @@ fn reenter_scheduler() -> ! {
     crate::scheduler_loop(cpu)
 }
 
+#[cfg(target_arch = "x86_64")]
 /// B-path body: SYSCALL entry → `kernel_call` (trap-1).
 ///
 /// Registered via `minix_arch::register_trap_dispatchers`; reached from
@@ -626,6 +636,427 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
         Some(code) => code as i64 as u64,
         None => panic!("trap_dispatch: syscall returned {result:?} with no reply code"),
     };
+}
+
+// ── riscv64 / aarch64 production trap bodies (E-3ARCHTRAP) ─────────────
+//
+// The kernel-side policy half of the production trap legs. The arch asm
+// legs (frame save + stack strategy) live in `minix_arch::{riscv64,arm64}
+// ::trap_stub`; these bodies receive the frame and decide:
+// - **timer arm**: SBI re-arm + per-CPU tick (riscv64) / GIC claim-route
+//   (aarch64) → the clock hook chain advances uptime (D-46) → quantum
+//   enforcement (C proc.c:418-424, the x86 0xF1 shape).
+// - **syscall arm**: the KERNEL_CALL message leg (a7/x8 == 0, message at
+//   a0/x0 per `minix_sys::arch_trap`) → `kernel_call`, reply code in
+//   a0/x0. The raw IPC legs (a7/x8 1..16) are a registered gap — the
+//   int-33 IPC bridge is x86-only so far — and answer -ENOSYS (the same
+//   contract the K12b carriers observed).
+// - **faults**: panic with the architectural diagnostics. The acting
+//   arms (ForwardToVm / cause_signal — NK2, x86-only) are the downstream
+//   "页故障回路三架构化" wave; reaching them here is a registered gap,
+//   not recoverable state.
+//
+// Registered by `init_protection` before `TrapEntryArch::load()`; slot
+// semantics per arch are documented on `register_trap_dispatchers`.
+
+/// -ENOSYS on the trap ABI return register (minix_types::errno parity;
+/// the carriers pin the same value).
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+const ENOSYS_CODE: u64 = 38;
+/// KERNEL_CALL message-leg trap number (minix_sys::arch_trap).
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+const KERNEL_CALL_TRAP: u64 = 0;
+/// riscv64 scause: Supervisor Timer interrupt (privileged spec §5.2.2,
+/// interrupt code 5 under the interrupt bit).
+#[cfg(target_arch = "riscv64")]
+const RISCV64_CAUSE_SUPERVISOR_TIMER: u64 = 5;
+/// riscv64 scause: Environment Call from U-mode (exception code 8).
+#[cfg(target_arch = "riscv64")]
+const RISCV64_CAUSE_ECALL_UMODE: u64 = 8;
+/// riscv64 scause interrupt bit (bit 63).
+#[cfg(target_arch = "riscv64")]
+const RISCV64_SCAUSE_INTERRUPT: u64 = 1 << 63;
+/// GIC spurious INTID (nothing claimable — ICC_IAR1_EL1).
+#[cfg(target_arch = "aarch64")]
+const GIC_SPURIOUS_INTID: u32 = 1023;
+
+#[cfg(target_arch = "riscv64")]
+fn riscv64_read_scause() -> u64 {
+    let v: u64;
+    // SAFETY: side-effect-free CSR read in S-mode; nomem/nostack per the
+    // usual CSR-read contract.
+    unsafe { core::arch::asm!("csrr {}, scause", out(reg) v, options(nomem, nostack)); }
+    v
+}
+
+#[cfg(target_arch = "riscv64")]
+fn riscv64_read_stval() -> u64 {
+    let v: u64;
+    // SAFETY: side-effect-free CSR read in S-mode.
+    unsafe { core::arch::asm!("csrr {}, stval", out(reg) v, options(nomem, nostack)); }
+    v
+}
+
+/// Kernel-leg body (S-origin): supervisor timer ticks + kernel-fault
+/// diagnostics. The SSI (IPI) and SEI (PLIC external) interrupt arms are
+/// registered gaps — S-10/K11 own the riscv64 IPI lane on this leg.
+///
+/// # Safety
+///
+/// `frame` points at the live kernel-leg frame (asm contract); the stub
+/// resumes via `sret` when this returns.
+#[cfg(target_arch = "riscv64")]
+pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+    let scause = riscv64_read_scause();
+    if scause & RISCV64_SCAUSE_INTERRUPT != 0
+        && scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER
+    {
+        riscv64_timer_arm();
+        return;
+    }
+    riscv64_diag_panic(frame, scause, "kernel-leg trap");
+}
+
+/// User-leg body (U-origin): ecall kernel calls + user-fault diagnostics.
+/// Fault classification (page-fault forwarding / signals) is the
+/// downstream three-arch wave — a faulting user process panics here with
+/// diagnostics instead of being parked for VM.
+///
+/// # Safety
+///
+/// `frame` points at the live user-leg frame at the kernel-stack top
+/// (asm contract); the interrupted user sp travels in `frame.gpr[2]`.
+#[cfg(target_arch = "riscv64")]
+pub unsafe extern "C" fn riscv64_user_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+    let scause = riscv64_read_scause();
+    if scause == RISCV64_CAUSE_ECALL_UMODE {
+        // `ecall` does not advance sepc — step past the 4-byte
+        // instruction or the sret re-executes it and the trap loops
+        // forever (minix-sys arch_trap contract).
+        frame.sepc = frame.sepc.wrapping_add(4);
+        let leg = frame.gpr[17] as u64; // a7 = call number register
+        if leg == KERNEL_CALL_TRAP {
+            riscv64_kernel_call_leg(frame);
+        } else {
+            // Raw IPC legs (SEND..SENDA) and MINIX_KERNINFO: the
+            // int-33-style IPC bridge is x86-only so far — registered
+            // gap, answered -ENOSYS on the a0/a1 return pair.
+            frame.gpr[10] = (-(ENOSYS_CODE as i64)) as u64; // a0
+            frame.gpr[11] = 0; // a1
+        }
+        return;
+    }
+    riscv64_diag_panic(frame, scause, "user-leg trap");
+}
+
+/// The riscv64 timer arm — one S-mode timer tick, three jobs in the x86
+/// local-tick + PIT-hook order:
+/// 1. `local_tick` (per-CPU observability counter + the SBI re-arm via
+///    `ClockArch::local_timer_eoi` — the one-shot stops dead unless the
+///    body re-arms, apic.c:578 parity),
+/// 2. the clock hook chain under `minix_plat::TIMER_IRQ` (advances
+///    uptime, expires alarms — D-46; the PLIC claim is a documented
+///    no-op for the CPU-local timer, pseudo-vector 0),
+/// 3. quantum enforcement for this CPU's running process
+///    (C proc.c:418-424).
+fn riscv64_timer_arm() {
+    crate::clock::local_tick(crate::clock::current_cpuid());
+    match crate::irq_manager::dispatch_hardware_irq(minix_plat::TIMER_IRQ) {
+        Ok(()) => {}
+        Err(crate::irq_manager::IrqError::Spurious(irq)) => {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+            Console::write_str("spurious irq ");
+            Console::write_hex(irq.get() as u64);
+            Console::write_str("\n");
+        }
+        Err(e) => panic!("riscv64 timer arm: IRQ dispatch error {e:?}"),
+    }
+    // Quantum check under try-or-inherit BKL (the SCHED_IPI shape): the
+    // tick may interrupt the kernel with the BKL held (inherit) or an
+    // idle window without it (acquire → release).
+    let acquired = crate::smp::bkl_try_lock();
+    {
+        let section = unsafe { crate::smp::BklSection::assume_held() };
+        let smp = crate::smp_state_with(&section);
+        let cur_nr = {
+            let cpu = crate::current_cpu_id();
+            smp.cpu_local(cpu).and_then(|l| l.proc_ptr)
+        };
+        if let Some(nr) = cur_nr {
+            let table = crate::proc_table_with(&section);
+            let priv_table = crate::priv_table_with(&section);
+            if table.get(nr).is_some_and(|p| p.is_runnable()) {
+                table.check_quantum(nr, priv_table, &section);
+            }
+        }
+    }
+    if acquired {
+        crate::smp::bkl_unlock();
+    }
+}
+
+/// The KERNEL_CALL leg: message pointer at a0, call number in
+/// `m_type` — `kernel_call` parity with the x86 SYSCALL body.
+///
+/// # Safety
+///
+/// Caller guarantees the registered-dispatcher invariants (scheduler
+/// brought up, tables initialized); a blocked-call outcome is a wiring
+/// bug here (blocking IPC arrives through the IPC bridge, x86 parity).
+#[cfg(target_arch = "riscv64")]
+unsafe fn riscv64_kernel_call_leg(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "riscv64 kernel call before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+    // User message pointer ABI: a0 (minix_sys::arch_trap kernel_call_trap).
+    let m_user = VirBytes::new(frame.gpr[10]);
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+    let result = crate::syscall::kernel_call(
+        cur_nr,
+        table,
+        m_user,
+        unsafe { crate::priv_table_boot_unchecked() },
+        unsafe { crate::clock_state_boot_unchecked() },
+        &crate::ipc::KernelUserCopy,
+    );
+    // Reply code → a0. NoReply/VmSuspend must not occur on this leg
+    // (blocking IPC arrives via the IPC bridge) — x86 B-body parity:
+    // panic rather than reply garbage.
+    frame.gpr[10] = match result.reply_code() {
+        Some(code) => code as i64 as u64,
+        None => panic!("riscv64 kernel call returned {result:?} with no reply code"),
+    };
+}
+
+/// Console diagnostics + panic for unreached causes — the production
+/// replacement of the removed print-and-halt diag stub: the panic routes
+/// through the kernel diagnostic path instead of halting in the entry
+/// leg, so a scheduler can at least be observed around the corpse.
+#[cfg(target_arch = "riscv64")]
+fn riscv64_diag_panic(
+    frame: &minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
+    scause: u64,
+    origin: &str,
+) {
+    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+    let stval = riscv64_read_stval();
+    Console::write_str(origin);
+    Console::write_str(" scause=");
+    Console::write_hex(scause);
+    Console::write_str(" stval=");
+    Console::write_hex(stval);
+    Console::write_str(" sepc=");
+    Console::write_hex(frame.sepc);
+    Console::write_str(" sstatus=");
+    Console::write_hex(frame.sstatus);
+    Console::write_str("\n");
+    panic!(
+        "riscv64 {origin}: scause {scause:#x} stval {stval:#x} sepc {:#x}",
+        frame.sepc
+    );
+}
+
+/// Current-EL (kernel) body: GIC claim → route → dispatch, kernel-fault
+/// diagnostics. IRQ: the claim read IS the identification register on
+/// GIC (D-61), so the INTID routes the chain and travels to
+/// `dispatch_claimed_hardware_irq` for the completion half. Sync: a
+/// kernel-origin synchronous exception is a kernel bug at this stage —
+/// panic with the syndrome (the EL0 page-fault arm lands with the
+/// three-arch wave).
+///
+/// # Safety
+///
+/// `frame` points at the live kernel-leg frame (asm contract); the stub
+/// resumes via `eret` when this returns.
+#[cfg(target_arch = "aarch64")]
+pub unsafe extern "C" fn aarch64_kernel_body(
+    frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
+    class: u64,
+) {
+    if class == minix_arch::arm64::trap_stub::TRAP_CLASS_IRQ {
+        let claimed = crate::irq_manager::claim_hardware_irq();
+        match claimed {
+            // Spurious: nothing claimable, nothing to complete (K8).
+            None => return,
+            Some(id) if id == GIC_SPURIOUS_INTID => return,
+            Some(id) => {
+                // INTIDs ≥ NR_IRQ_VECTORS cannot be enabled (the
+                // controller clamps its line count at the manager bound)
+                // — routing one would alias through the u8 conversion.
+                if id as usize >= minix_plat::NR_IRQ_VECTORS {
+                    panic!(
+                        "aarch64 IRQ route: intid {id} beyond NR_IRQ_VECTORS — \
+                         controller wiring bug"
+                    );
+                }
+                // The boot clock PPI: per-CPU re-arm + observability tick
+                // BEFORE the hook chain (the riscv64 timer-arm shape;
+                // CNTP is a one-shot — without the re-arm the tick train
+                // stops dead after the first interrupt).
+                let is_timer = id as u8 == minix_plat::TIMER_IRQ.get();
+                if is_timer {
+                    crate::clock::local_tick(crate::clock::current_cpuid());
+                }
+                let irq = minix_plat::IrqVector::new(id as u8);
+                match crate::irq_manager::dispatch_claimed_hardware_irq(irq, claimed) {
+                    Ok(()) => {}
+                    Err(crate::irq_manager::IrqError::Spurious(line)) => {
+                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+                        Console::write_str("spurious irq ");
+                        Console::write_hex(line.get() as u64);
+                        Console::write_str("\n");
+                    }
+                    Err(e) => panic!("aarch64 IRQ route: dispatch error {e:?} (intid {id})"),
+                }
+                // Quantum enforcement for a timer tick (C proc.c:418-424;
+                // try-or-inherit BKL — the SCHED_IPI shape).
+                if is_timer {
+                    let acquired = crate::smp::bkl_try_lock();
+                    {
+                        let section = unsafe { crate::smp::BklSection::assume_held() };
+                        let smp = crate::smp_state_with(&section);
+                        let cur_nr = {
+                            let cpu = crate::current_cpu_id();
+                            smp.cpu_local(cpu).and_then(|l| l.proc_ptr)
+                        };
+                        if let Some(nr) = cur_nr {
+                            let table = crate::proc_table_with(&section);
+                            let priv_table = crate::priv_table_with(&section);
+                            if table.get(nr).is_some_and(|p| p.is_runnable()) {
+                                table.check_quantum(nr, priv_table, &section);
+                            }
+                        }
+                    }
+                    if acquired {
+                        crate::smp::bkl_unlock();
+                    }
+                }
+            }
+        }
+        return;
+    }
+    aarch64_diag_panic(frame, "kernel sync exception");
+}
+
+/// Lower-EL (user) body: SVC kernel calls + user-origin diagnostics.
+///
+/// # Safety
+///
+/// `frame` points at the live user-leg frame on the EL1 entry stack
+/// (asm contract); the interrupted EL0 sp travels in `frame.sp`.
+#[cfg(target_arch = "aarch64")]
+pub unsafe extern "C" fn aarch64_user_body(
+    frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
+    class: u64,
+) {
+    if class == minix_arch::arm64::trap_stub::TRAP_CLASS_IRQ {
+        // Interrupts arriving from EL0 route through the same GIC
+        // claim/route as kernel-origin ones.
+        aarch64_kernel_body(frame, class);
+        return;
+    }
+    // Synchronous: discriminate by ESR_EL1 EC (bits [31:26]).
+    // EC 0x15 = SVC from AArch64; `svc` DOES advance ELR — no PC step
+    // (minix-sys arch_trap contract).
+    const ESR_EC_SHIFT: u64 = 26;
+    const ESR_EC_MASK: u64 = 0x3F;
+    const EC_SVC_AARCH64: u64 = 0x15;
+    let esr = aarch64_read_esr();
+    let ec = (esr >> ESR_EC_SHIFT) & ESR_EC_MASK;
+    if ec == EC_SVC_AARCH64 {
+        let leg = frame.gpr[8] as u64; // x8 = call number register
+        if leg == KERNEL_CALL_TRAP {
+            aarch64_kernel_call_leg(frame);
+        } else {
+            // Raw IPC legs / MINIX_KERNINFO: registered gap (x86-only
+            // IPC bridge) — -ENOSYS on the x0/x1 return pair.
+            frame.gpr[0] = (-(ENOSYS_CODE as i64)) as u64;
+            frame.gpr[1] = 0;
+        }
+        return;
+    }
+    aarch64_diag_panic(frame, "user sync exception");
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_read_esr() -> u64 {
+    let v: u64;
+    // SAFETY: side-effect-free system-register read at EL1.
+    unsafe { core::arch::asm!("mrs {}, esr_el1", out(reg) v, options(nomem, nostack)); }
+    v
+}
+
+/// The KERNEL_CALL leg: message pointer at x0 — `kernel_call` parity
+/// with the x86 SYSCALL body (riscv64 sibling carries the full contract).
+///
+/// # Safety
+///
+/// Same invariants as `riscv64_kernel_call_leg`.
+#[cfg(target_arch = "aarch64")]
+unsafe fn aarch64_kernel_call_leg(frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame) {
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "aarch64 kernel call before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+    let m_user = VirBytes::new(frame.gpr[0]);
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+    let result = crate::syscall::kernel_call(
+        cur_nr,
+        table,
+        m_user,
+        unsafe { crate::priv_table_boot_unchecked() },
+        unsafe { crate::clock_state_boot_unchecked() },
+        &crate::ipc::KernelUserCopy,
+    );
+    frame.gpr[0] = match result.reply_code() {
+        Some(code) => code as i64 as u64,
+        None => panic!("aarch64 kernel call returned {result:?} with no reply code"),
+    };
+}
+
+/// Console diagnostics + panic for unreached causes (riscv64 sibling
+/// carries the rationale).
+#[cfg(target_arch = "aarch64")]
+fn aarch64_diag_panic(frame: &minix_arch::arm64::trap_stub::AArch64TrapFrame, origin: &str) {
+    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
+    let far = aarch64_read_far();
+    Console::write_str(origin);
+    Console::write_str(" esr=");
+    Console::write_hex(aarch64_read_esr());
+    Console::write_str(" far=");
+    Console::write_hex(far);
+    Console::write_str(" elr=");
+    Console::write_hex(frame.elr);
+    Console::write_str(" spsr=");
+    Console::write_hex(frame.spsr);
+    Console::write_str("\n");
+    panic!(
+        "aarch64 {origin}: elr {:#x} spsr {:#x} far {far:#x}",
+        frame.elr, frame.spsr
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+fn aarch64_read_far() -> u64 {
+    let v: u64;
+    // SAFETY: side-effect-free system-register read at EL1.
+    unsafe { core::arch::asm!("mrs {}, far_el1", out(reg) v, options(nomem, nostack)); }
+    v
 }
 
 #[cfg(test)]

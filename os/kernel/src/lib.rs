@@ -64,12 +64,10 @@ pub mod dm_coverage;
 pub mod vm_handoff;
 
 pub mod irq_manager;
-// The trap dispatcher consumes the x86 IDT TrapFrame shape and the
-// interrupt/trap-gate conventions of the x86 lane (vector-33 gate, LSTAR
-// syscall leg). aarch64/riscv64 have no production dispatch entry yet —
-// their bootstrap lanes (K12b) carry carrier-local handlers until the
-// arch-generic dispatch lands.
-#[cfg(target_arch = "x86_64")]
+// Kernel-side trap/syscall dispatch bodies — the policy half of every
+// arch's production trap legs (x86_64: exceptions/IRQs + SYSCALL over the
+// IDT frame; aarch64/riscv64: the E-3ARCHTRAP production legs over their
+// own frame shapes, registered per arch by init_protection).
 pub mod trap_dispatch;
 pub mod syscall;
 pub mod memmap;
@@ -892,14 +890,31 @@ pub fn init_protection(kernel_info: &KernelInfo) {
     use minix_arch::{install_trap_stubs, syscall_entry_va, register_trap_dispatchers};
     install_trap_stubs(&mut trap);
     trap.configure_syscall(syscall_entry_va());
-    // The x86 dispatch bodies exist only on x86_64 (they consume the IDT
-    // TrapFrame shape); aarch64/riscv64 have no production dispatch entry
-    // yet (K12b lane) and register nothing — their `register_trap_
-    // dispatchers` is a no-op there.
+    // The dispatch bodies are arch-shaped: each arch registers its
+    // production bodies for its own frame type (E-3ARCHTRAP — before
+    // this, only x86_64 had a production dispatch entry and the
+    // aarch64/riscv64 legs were diagnostic stubs; the K12b carriers
+    // supplied their own trap legs instead).
+    // x86_64: exceptions/IRQs + SYSCALL over the IDT TrapFrame shape.
     #[cfg(target_arch = "x86_64")]
     register_trap_dispatchers(
         trap_dispatch::x86_trap_dispatch_body,
         trap_dispatch::x86_syscall_dispatch_body,
+    );
+    // riscv64: kernel leg (S-origin: timer ticks, kernel faults) + user
+    // leg (U-origin: ecall kernel calls, user faults).
+    #[cfg(target_arch = "riscv64")]
+    register_trap_dispatchers(
+        trap_dispatch::riscv64_kernel_body,
+        trap_dispatch::riscv64_user_body,
+    );
+    // aarch64: current-EL leg (kernel IRQs/faults) + lower-EL leg (SVC
+    // kernel calls, EL0 faults/interrupts); the u64 operand is the
+    // exception class the asm slot ran.
+    #[cfg(target_arch = "aarch64")]
+    register_trap_dispatchers(
+        trap_dispatch::aarch64_kernel_body,
+        trap_dispatch::aarch64_user_body,
     );
     store_trap_entry(trap);
     with_trap_entry(|trap| trap.load());
