@@ -41,7 +41,7 @@
 
 | 编号 | 条目 | 线 | 触碰文件 | 状态 |
 |---|---|---|---|---|
-| C-30 | E-BOOTMODS boot-shim 清单半 | new_edge1 | `os/boot-shim/src/loader.rs`（MODULE_NAMES 扩 12 项对 C 序 + 删虚假注释 + 缺件 fail-fast） | ☐（随 NK4/OQ-N2） |
+| C-30 | E-BOOTMODS boot-shim 清单半 | new_edge1 | `os/boot-shim/src/loader.rs`（MODULE_NAMES 扩 12 项对 C `table.c:44-64` image[] 序 = `ds,rs,pm,sched,vfs,memory,tty,mib,vm,pfs,mfs,init` + 删虚假"顺序无关"注释 + 缺件/OOM 带名 fail-fast + 编译期 `assert!(len==12)`） | ✅ 随 NK4（qorder_1，2026-09-20，boot-shim 14 单测+kernel 787 全绿，clippy 9→9） |
 | C-31 | E-CONSOLE 驱动半 | new_edge2 | `os/drivers/tty/tty/`（输出后端）、`os/drivers/storage/memory/`（进程壳） | ☐（NL1/NL6） |
 | C-32 | E-IMGPKG xtask 半 | new_edge3 | `os/xtask/src/main.rs`（image/qemu/build 实装） | ☐（NS8） |
 | C-33 | NK3 载体注册（共享文件半） | new_edge1 | `os/Cargo.toml`（workspace members 增 test-timer-irq-{riscv64,aarch64}）+ `os/qemu-tests/run_all.sh`（构建/run 段增两名）——NK3 主体在 edge1 所有权内（os/arch、os/kernel、os/qemu-tests） | 🔄（zcode_glm_1，2026-09-20） |
@@ -61,7 +61,7 @@
 | new_edge2 NL3③（sigreturn trampoline） | new_edge3 NS11（init trampoline 填真） | ☐ |
 | new_edge1 NK1（C-29 载体收口） | new_edge3 NS1/NS2（boot 链真机验收）、E5 族真机半 | ☐ |
 | new_edge1 NK2（页故障转发） | 一切用户程序（内存故障安全网）；E5(d) 真机 | ✅（2026-09-20，5037491ff） |
-| new_edge1 NK4/OQ-N2（12 模块契约） | new_edge3 NS8（装机清单） | ☐ |
+| new_edge1 NK4/OQ-N2（12 模块契约）——✅ 契约已钉（2026-09-20，loader.rs MODULE_NAMES 12 项对 C image[] 序） | new_edge3 NS8（装机清单——须把 `/EFI/minix/modules/` 下 12 文件命名严格对齐 `ds,rs,pm,sched,vfs,memory,tty,mib,vm,pfs,mfs,init`，缺件 boot-shim 现 fail-fast panic） | 供方 ✅ / 消费方 NS8 ☐（NK4-A 追踪真机端到端） |
 | new_edge3 NS4/NS5（挂根+exec） | NS9/NS12、T3/T4 | ☐ |
 | new_edge3 NS7 + NL1（console 全链） | T4 冒烟（可见输出） | ☐ |
 
