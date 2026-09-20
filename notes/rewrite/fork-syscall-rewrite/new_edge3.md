@@ -50,7 +50,7 @@ S1-S29 ✅ 各行、S34、S38、S39、S42 批一/二/三/五；E1-E9、E-FSRUNTI
 
 | 标记 | 发现 | 现状证据 | 复核命令 | 归属 |
 |---|---|---|---|---|
-| NS8-A | 生产 kernel.elf 无产出者：minix-kernel 是纯 lib（`os/kernel/Cargo.toml` 无 `[[bin]]`），而 boot-shim 按契约读 `/EFI/minix/kernel.elf`（`os/boot-shim/src/loader.rs:31`）→ NS8 的 image() 按 `--kernel` 路径取件（缺省 `target/x86_64-unknown-none/release/kernel.elf`），缺件即 fail-fast，不代产。需 kernel bin + 链接脚本决策（与 C-29/NK1 地址空间设计相邻） | `grep -c "\[\[bin\]\]" os/kernel/Cargo.toml` = 0；`cargo run -p xtask image --dry-run` 计划含 kernel.elf 取件步 | 有产出者后 `cargo build -p <kernel-bin> --target x86_64-unknown-none` 出 ELF 且 `xtask image` 走通取件步 → 划掉 | **new_edge1**（os/kernel 所有权） |
+| NS8-A | 生产 kernel.elf 无产出者：minix-kernel 是纯 lib（`os/kernel/Cargo.toml` 无 `[[bin]]`），而 boot-shim 按契约读 `/EFI/minix/kernel.elf`（`os/boot-shim/src/loader.rs:31`）→ NS8 的 image() 按 `--kernel` 路径取件（缺省 `target/x86_64-unknown-none/release/kernel.elf`），缺件即 fail-fast，不代产。需 kernel bin + 链接脚本决策（与 C-29/NK1 地址空间设计相邻） | `grep -c "\[\[bin\]\]" os/kernel/Cargo.toml` = 0；`cargo run -p xtask image --dry-run` 计划含 kernel.elf 取件步 | 有产出者后 `cargo build -p <kernel-bin> --target x86_64-unknown-none` 出 ELF 且 `xtask image` 走通取件步 → 划掉 | **new_edge1**（os/kernel 所有权）**🔄 2026-09-21 zcode_glm_1（claim/NS8-A-zcode_glm_1）** |
 | NS8-B | 12 模块 guest 目标（x86_64-unknown-none）构建首个阻塞点实测 = minix-ds 链接期 `#[panic_handler] function required`（deps 全过，bin 链接失败）——freestanding bin 需要 minix-rt `panic-handler`/`alloc-global` feature 或自备 handler 的接线决策 | `cargo build -p minix-ds --target x86_64-unknown-none`（宿主 ulimit）→ E0463 panic_handler | minix-ds guest 构建 Finished → 逐包推进至 12/12（feature 接线方案 = echo 双 seam 模板的推广）→ 划掉 | new_edge2 NL5② / new_edge3 NS12 |
 
 ## 本线在验收阶梯中的位置（全文见 [new_edge4.md](new_edge4.md) §7）
