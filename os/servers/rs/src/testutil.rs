@@ -558,10 +558,33 @@ pub(crate) fn booted() -> RsServer {
     booted_with(alloc::boxed::Box::new(crate::boot::UnimplementedKernelApi))
 }
 
+/// The always-succeeds exec-image face: reads report a full buffer whose
+/// first bytes carry the ELF magic (the `read_exec` size gate needs
+/// st_size ≥ 64, manager.c:1388; the content itself is opaque to the
+/// orchestration). Production carries `exec::VfsImageIo`, whose hosted
+/// transport answers EIO — the fixtures install this double so the wired
+/// image arrival face stays deterministic under test (NS9).
+pub(crate) struct PermissiveImageIo;
+
+impl crate::exec::ExecImageIo for PermissiveImageIo {
+    fn stat_size(&mut self, _path: &str) -> Result<i64, Errno> {
+        Ok(64)
+    }
+    fn open(&mut self, _path: &str) -> Result<minix_sys::Fd, Errno> {
+        Ok(3)
+    }
+    fn read(&mut self, _fd: minix_sys::Fd, buf: &mut [u8]) -> Result<usize, Errno> {
+        buf[..4].copy_from_slice(b"\x7fELF");
+        Ok(buf.len())
+    }
+    fn close(&mut self, _fd: minix_sys::Fd) {}
+}
+
 /// Same fixture with an injectable kernel seam (E-10: the waitpid drain
 /// and the second-init panic need a mock / a consumed boot machine).
 pub(crate) fn booted_with(kernel: alloc::boxed::Box<dyn KernelApi>) -> RsServer {
     let mut server = RsServer::with_kernel(BootTables::placeholder(), kernel);
+    server.image_io = alloc::boxed::Box::new(PermissiveImageIo);
     let mut table = RProcTable::new();
     let id = table.alloc_slot().unwrap();
     {
