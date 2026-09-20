@@ -504,6 +504,86 @@ impl VfsCall {
             m_u: MessageUnion { m_m7: m7 },
         }
     }
+
+    /// 从 IPC 消息解码（PM → VFS 控制面入口，`service_pm` 的载荷半）。
+    ///
+    /// 与 [`Self::encode`] 互逆：字段序与 C `mess_7` 槽位一致（com.h:560-575
+    /// 的 `VFS_PM_PATH`/`VFS_PM_FRAME` 等名字锚点即 encode 注记表）。先校验
+    /// 落于 RQ 族（C: `main.c` 以 `who_e == PM_PROC_NR` 进 `service_pm`，
+    /// 族判定补载荷侧这一道），族外回 [`VfsCallError::NotACall`]，族内
+    /// 无 variant 回 [`VfsCallError::UnknownCall`]。
+    ///
+    /// `VFS_PM_INIT` 不在此解码：进程表交换走 [`VfsPmInit`]（握手专用
+    /// 载荷，见其 `decode`）。
+    pub fn decode(msg: &Message) -> Result<Self, VfsCallError> {
+        if !is_vfs_pm_rq(msg.m_type) || msg.m_type == VFS_PM_INIT {
+            return Err(VfsCallError::NotACall(msg.m_type));
+        }
+        // m_type 已验证属于 RQ 族；联合体读取与 C 的 union 语义一致。
+        let m7 = unsafe { &msg.m_u.m_m7 };
+        Ok(match msg.m_type {
+            VFS_PM_SETUID => Self::SetUid {
+                endpoint: Endpoint(m7.m7i1),
+                eid: m7.m7i2,
+                rid: m7.m7i3,
+            },
+            VFS_PM_SETGID => Self::SetGid {
+                endpoint: Endpoint(m7.m7i1),
+                eid: m7.m7i2,
+                rid: m7.m7i3,
+            },
+            VFS_PM_SETGROUPS => Self::SetGroups {
+                endpoint: Endpoint(m7.m7i1),
+                group_no: m7.m7i2,
+                group_addr: m7.m7p1,
+            },
+            VFS_PM_SETSID => Self::SetSid {
+                endpoint: Endpoint(m7.m7i1),
+            },
+            VFS_PM_EXEC => Self::Exec {
+                endpoint: Endpoint(m7.m7i1),
+                path: m7.m7p1,
+                path_len: m7.m7i2,
+                frame: m7.m7p2,
+                frame_len: m7.m7i3,
+                ps_str: m7.m7i5,
+            },
+            VFS_PM_EXIT => Self::Exit {
+                endpoint: Endpoint(m7.m7i1),
+            },
+            VFS_PM_DUMPCORE => Self::DumpCore {
+                endpoint: Endpoint(m7.m7i1),
+                term_sig: m7.m7i2,
+                path: m7.m7p1,
+            },
+            VFS_PM_FORK => Self::Fork {
+                child: Endpoint(m7.m7i1),
+                parent: Endpoint(m7.m7i2),
+                child_pid: m7.m7i3,
+            },
+            VFS_PM_SRV_FORK => Self::SrvFork {
+                child: Endpoint(m7.m7i1),
+                parent: Endpoint(m7.m7i2),
+                child_pid: m7.m7i3,
+                reuid: m7.m7i4,
+                regid: m7.m7i5,
+            },
+            VFS_PM_UNPAUSE => Self::Unpause {
+                endpoint: Endpoint(m7.m7i1),
+            },
+            VFS_PM_REBOOT => Self::Reboot,
+            _ => return Err(VfsCallError::UnknownCall(msg.m_type)),
+        })
+    }
+}
+
+/// `VfsCall::decode` 错误。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VfsCallError {
+    /// `m_type` 不在 RQ 请求族（或为握手专用的 `VFS_PM_INIT`）。
+    NotACall(i32),
+    /// `m_type` 在 RQ 族但无对应 variant。
+    UnknownCall(i32),
 }
 
 /// VFS → PM 的回复。
@@ -595,6 +675,61 @@ impl VfsReply {
             _ => return Err(VfsReplyError::UnknownReply(msg.m_type)),
         })
     }
+
+    /// 编码为 IPC 消息（PM 侧 `handle_vfs_reply` 的消费格式，与
+    /// [`Self::decode`] 互逆）。
+    ///
+    /// C `reply(who_e, result)` 是裸回复（`memset(&m, 0, …)` 后只写
+    /// `m_type`）；带载荷的两路按 com.h:570-575 的槽位填：`Exec` 的
+    /// status/pc/newsp/newps_str 与 `Core` 的 status。`m_source` 置
+    /// `Endpoint::NONE`，发送目标由传输层决定。
+    pub fn encode(&self) -> Message {
+        let mut msg = Message {
+            m_source: Endpoint::NONE,
+            m_type: self.m_type(),
+            m_u: MessageUnion {
+                m_m7: MessageM7 {
+                    m7i1: 0,
+                    m7i2: 0,
+                    m7i3: 0,
+                    m7i4: 0,
+                    m7i5: 0,
+                    m7p1: 0,
+                    m7p2: 0,
+                    _padding: [0; 20],
+                },
+            },
+        };
+        match *self {
+            Self::Exec {
+                status,
+                pc,
+                newsp,
+                newps_str,
+            } => {
+                let m7 = unsafe { &mut msg.m_u.m_m7 };
+                m7.m7i2 = status;
+                m7.m7p1 = pc;
+                m7.m7p2 = newsp;
+                m7.m7i5 = newps_str;
+            }
+            Self::Core { status } => {
+                let m7 = unsafe { &mut msg.m_u.m_m7 };
+                m7.m7i2 = status;
+            }
+            // C 的裸回复：载荷区保持全零（reply() 的 memset 语义）。
+            Self::SetUid
+            | Self::SetGid
+            | Self::SetGroups
+            | Self::SetSid
+            | Self::Exit
+            | Self::Fork
+            | Self::SrvFork
+            | Self::Unpause
+            | Self::Reboot => {}
+        }
+        msg
+    }
 }
 
 /// `VfsReply::decode` / `handle_vfs_reply` 错误。
@@ -623,6 +758,52 @@ mod vfs_call_reply_tests {
             let m7 = unsafe { &msg.m_u.m_m7 };
             assert_eq!(m7.m7i1, ep.get(), "endpoint 必须编码到 m7_i1");
         }
+        // encode → decode 全量互逆（NS5 的 service_pm 载荷半）。
+        assert_eq!(VfsCall::decode(&msg), Ok(call));
+    }
+
+    /// NS5：`VfsReply::Exec` 的 encode → decode 往返（PM 侧
+    /// `handle_vfs_reply` 的消费格式，com.h:570-575 槽位）。
+    #[test]
+    fn test_vfs_reply_exec_encode_decode_roundtrip() {
+        let reply = VfsReply::Exec {
+            status: 0,
+            pc: 0x401_000,
+            newsp: 0x7fff_ffff_e000,
+            newps_str: 0x1234,
+        };
+        let msg = reply.encode();
+        assert_eq!(msg.m_type, VFS_PM_EXEC_REPLY);
+        assert_eq!(VfsReply::decode(&msg), Ok(reply));
+        // 裸回复（C reply() 的 memset 语义）也是同形往返。
+        let bare = VfsReply::Fork.encode();
+        assert_eq!(VfsReply::decode(&bare), Ok(VfsReply::Fork));
+    }
+
+    #[test]
+    fn test_vfs_call_decode_rejects_out_of_family() {
+        // 族外（FS 请求族）与握手专用 INIT 都不进 service_pm 载荷解码。
+        assert_eq!(
+            VfsCall::decode(&Message { m_type: 0xA00, ..Message::default() }),
+            Err(VfsCallError::NotACall(0xA00))
+        );
+        assert_eq!(
+            VfsCall::decode(&Message {
+                m_type: VFS_PM_INIT,
+                ..Message::default()
+            }),
+            Err(VfsCallError::NotACall(VFS_PM_INIT))
+        );
+        // 族内但未定义的编号。
+        let bogus = VFS_PM_RQ_BASE + 12;
+        assert!(
+            is_vfs_pm_rq(bogus),
+            "bogus 必须落在 RQ 族内以测试 UnknownCall 分支"
+        );
+        assert_eq!(
+            VfsCall::decode(&Message { m_type: bogus, ..Message::default() }),
+            Err(VfsCallError::UnknownCall(bogus))
+        );
     }
 
     #[test]
