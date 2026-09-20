@@ -25,7 +25,7 @@
 | 编号 | 条目 | 线 | 前轮状态 | 本轮去向 |
 |---|---|---|---|---|
 | C-2 | E-SDEVOWN vfs 副本删除 | edge2 | 🔄 持锁 | **销账更正**：L8 已于 2026-09-18 闭环（907e65f79，vfs 923→233 行），前轮 §2 行未回勾 |
-| C-6 | D-16 DumpCore wire 按值携带名字 | edge3 | ☐ | 携带；NS10 批内顺手 |
+| C-6 | D-16 DumpCore wire 按值携带名字 | edge3 | 🔄 2026-09-21 zcode_glm_3 | 携带；NS10 批内顺手（claim/NS10-zcode_glm_3 执行） |
 | C-17 | devman 客户端生产传输 SysClientTransport | edge3 | 🔄 登记即动 | 携带（非启动链，随 E-DMWIRE 通电波） |
 | C-18 | 对话臂 magic grant（GrantTable::grant_magic） | edge3 | 🔄 登记即动 | 携带（VFS REQ_READ/STAT 臂消费，NS4/NS5 之后） |
 | C-21 | fs-rt crate 成员 | edge3 | 🔄 卡D 开工 | 携带 |
