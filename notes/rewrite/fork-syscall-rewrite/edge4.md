@@ -70,6 +70,7 @@
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b：test-rt-birth-riscv64 入 workspace 成员 + riscv64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b aarch64 腿：test-rt-birth-aarch64 入 workspace 成员 + aarch64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K11：test-shutdown-aarch64 / test-shutdown-riscv64 入 workspace 成员 + 两架构构建清单 + 特殊协议脚本区（exit code 双断言） | ✅ 同日（三架构真机全过） |
+| 2026-09-20 | edge4 E5(a) | `os/tests/`（`pm_vm_fork.rs` 重写 + `Cargo.toml` 依赖换 minix-vfs/minix-sys + 死壳 `pm_vm_fork_test.rs` 删除） | E5(a) 宿主联调复活（旧停用注释的复活条件 E1/E2 已满足）；本线自持，无跨界认领 | ✅ 同日（430803d4f；minix-tests 2 passed，pm 502 + vfs 全绿） |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 
@@ -104,7 +105,7 @@
 
 | 子项 | 内容 | 前置（哪条线交付什么） | 执行载体 | 状态 |
 |---|---|---|---|---|
-| E5(a) | PM↔VM fork 全链路（走 minix-sys 消息层） | edge3 S1+S20+S17；内核 eager-CoW 已备 | `os/tests/`（宿主）+ 真机挂 T2 | ☐ |
+| E5(a) | PM↔VM fork 全链路（走 minix-sys 消息层） | edge3 S1+S20+S17；内核 eager-CoW 已备 | `os/tests/`（宿主）+ 真机挂 T2 | 🔄 **宿主半 ✅（2026-09-20，430803d4f）**：`os/tests/pm_vm_fork.rs` 复活重写——旧停用注释的复活条件（E1/E2 闭环）已满足；PM `do_fork` 真状态机 × VM wire 契约（`VmForkIn` 回解 / `VmForkOut` 构造，互证）× VFS `VfsPmHandler::handle` 真分发臂（`child_pid` 取自消息 m7i3 闭环）；2 测试（成功链 / VM 拒绝回滚），死壳 `pm_vm_fork_test.rs` 删除。**真机半挂 T2** |
 | E5(b) | VM↔VFS fdclose 往返 | edge3 S12 + S20 | 同上 | ☐ S20 VM 侧已通电（2026-09-19），等 S12 |
 | E5(c) | RS live-update 全链（PREPARE→UPDATE→resume） | edge3 S17+S18+S20 | 同上 | ☐ |
 | E5(d) | QEMU VM paging 冒烟（含缺页完整回路 + VM 写 PTE） | edge3 S20 + edge1 K17 载体 | `os/qemu-tests/`（edge1 实现，edge4 验收） | ☐ |
