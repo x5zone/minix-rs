@@ -320,8 +320,8 @@ impl Default for ProcessIpc {
 /// | mp_flags: SIGSUSPENDED | resources.signals.suspended |
 /// | mp_flags: PRIV_PROC | resources.privilege (Privilege::Kernel) |
 /// | mp_flags: ALARM_ON/PARTIAL_EXEC/TAINTED | resources.flags (RemainingFlags) |
-/// | mp_realuid/effuid/svuid + gid triplet | resources.privilege User(Credentials) |
-/// | mp_ngroups / mp_sgroups | resources.privilege User(Credentials).ngroups/supplemental_groups |
+/// | mp_realuid/effuid/svuid + gid triplet | resources.privilege .{User,Kernel}(Credentials)（凭证恒存在，C-28）|
+/// | mp_ngroups / mp_sgroups | resources.privilege .{User,Kernel}(Credentials).ngroups/supplemental_groups |
 /// | mp_ignore/mp_catch/mp_sigmask/mp_sigmask2 | resources.signals.ignored/caught/mask/mask_saved |
 /// | mp_sigpending/mp_ksigpending/mp_sigtrace | resources.signals.pending/kernel_pending/trace_mask |
 /// | mp_sigact[] / mp_sigreturn | resources.signals.actions / sigreturn_addr |

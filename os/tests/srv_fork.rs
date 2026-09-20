@@ -304,12 +304,13 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         Endpoint::NONE,
         "系统服务 scheduler 保持 NONE（不经 SCHED 接管）"
     );
-    // PRIV_PROC 保留（C-28 已落地）：C 的 do_srv_fork 用 `SRV_FORK_INHERIT_FLAGS`
-    // 保留 `PRIV_PROC`（forkexit.c:199-200），设计文档 08-pm-srv-fork.md §4.2/§D2
-    // 写明子进程 `is_kernel_process()==true`。`Process::srv_fork_from`
-    //（mproc/fork.rs）现落 `Privilege::Kernel(注入凭证)`：`Privilege::Kernel`
-    // 携带凭证字段，既保留特权位又安放六字段注入（对应 C 里 PRIV_PROC 与
-    // mp_realuid 等正交）。上面的凭证断言证明注入值生效，本断言证明特权位保留。
+    // PRIV_PROC 保留（C-28 已落地）：C 的 do_srv_fork 用内联掩码
+    // `rmc->mp_flags &= (IN_USE|PRIV_PROC|DELAY_CALL)`（forkexit.c:200）保留
+    // `PRIV_PROC`，设计文档 08-pm-srv-fork.md §4.2/§D2 写明子进程
+    // `is_kernel_process()==true`。`Process::srv_fork_from`（mproc/fork.rs）
+    // 现落 `Privilege::Kernel(注入凭证)`：`Privilege::Kernel` 携带凭证字段，
+    // 既保留特权位又安放六字段注入（对应 C 里 PRIV_PROC 与 mp_realuid 等正交）。
+    // 上面的凭证断言证明注入值生效，本断言证明特权位保留。
     assert!(
         child.is_kernel_process(),
         "srv_fork 子进程保留 PRIV_PROC（is_kernel_process==true，C-28）"

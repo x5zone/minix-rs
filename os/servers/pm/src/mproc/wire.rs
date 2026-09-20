@@ -11,7 +11,7 @@
 //! | C 字段 | 处理 | 说明 |
 //! |---|---|---|
 //! | mp_pid/name/procgrp/parent/tracer | 直接映射 | `NO_TRACER = 0`（const.h:11）|
-//! | mp_realuid/effuid/realgid/effgid | credentials | Kernel 权限进程保持全零（C 系统进程初值语义）|
+//! | mp_realuid/effuid/realgid/effgid | credentials | 两类变体统一序列化：boot 系统进程全零（C 初值）、srv_fork 子为注入值（C-28）|
 //! | mp_nice | resources.nice | 直接映射 |
 //! | mp_flags | 位合成（[`flags_for`]）| IN_USE 置位即"在用"判据 |
 //! | mp_ignore/catch/sigmask/sigpending `__bits[0]` | signals | 低位字；dump 只打这一字 |

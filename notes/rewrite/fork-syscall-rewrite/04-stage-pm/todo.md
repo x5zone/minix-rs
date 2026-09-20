@@ -587,3 +587,12 @@ V2 轮（§11.3）已核对 GitLab 源码与迁移提交。V3 轮补充两项 20
 8. **批次 F（调度）**：依赖 SCHED 服务器（06-stage）+ V3-P2-3 先修。
 9. **文档对账批（V3-P1-5 + V3-P3-6）**：可与任一等待外部依赖的窗口并行。
 10. 跨阶段部分（E6 清单增补：sys_delay_stop、内核 ksig 对端；E7 增补：PROC_EVENT_REPLY 双址）见 §9.2 与 edge_todo.md，单线程执行。
+
+### 12.7 C-28 回归 review 后续登记（2026-09-21，Fix #123 的审查产物；均**未**在 C-28 commit 内改）
+
+C-28 把 srv_fork 子从 `Privilege::User` 翻正为 `Privilege::Kernel`，使其进入既有的系统进程代码路径，暴露/扩大了以下三条**既有**欠账（非本次引入的回归，登记待后续，不塞进 C-28）：
+
+1. **[P1] `signal.rs` 的 ksig 系统信号支路是 stub（signal.rs:313-319）**——`sig_send` 对 `is_kernel_process()` 且 `ksig==true` 的信号：`is_stacktrace` 支（313-315）仅 `let _ = target;`，`!is_termination` 支（316-319）注释声称发 `SIGS_SIGNAL_RECEIVED` 实为丢弃。C 锚点 `signal.c:467-472`（`asynsend3(rmp->mp_endpoint, SIGS_SIGNAL_RECEIVED, AMF_NOREPLY)`）；消费方 `os/libs/minix-sef/src/lib.rs:54-55`（`SEF_SIGNAL_REQUEST_TYPE = SIGS_SIGNAL_RECEIVED`）确实等这条消息。注：用户 `kill` 走 `!ksig` 支（305-311，Fix #50 已接 `sys_kill`），故此项专指**内核态来信号**的系统进程投递。修法：接 `sys_diagctl_stacktrace` + 异步发 `SIGS_SIGNAL_RECEIVED`；若内核 ksig 回环未接线，至少改掉与行为不符的注释。
+2. **[P2] `mproc/wire.rs` `flags_for()` 不 emit `PRIV_PROC`（wire.rs:68-108）**——逐位合成 13 个 `mp_flags` 唯独缺 `PRIV_PROC`，致 MIB 快照里 Kernel/User 两类进程不可区分（下游 `os/servers/mib/src/proc/minix_proc_exec.rs:178` 用 `mflags & PRIV_PROC` 判 SYSTEM）。既有缺口，C-28 把凭证统一入 wire 后更显眼。修法：`if p.resources.privilege.is_kernel() { flags |= mp_flags::PRIV_PROC; }` + 给 `flags_for` 补 Kernel 槽钉值测试。
+3. **[P2] `07-pm-fork.md:180`「Kernel → User(root)」陈述在 C-28 新场景下失效**——该文称普通 fork 对特权父落 `User(root)`；C-28 后 `fork_from` 落 `User(父凭证.clone())`，boot 服务凭证全零故仍等价 root，但 **srv_fork 子（Kernel + 非零注入凭证）再普通 fork，孙继承的是注入 uid 而非 root**（`forkexit.c:87` whole-copy 的正确行为）。修法：改为「`Privilege::Kernel → User(父凭证)` + `scheduler=SCHED`」，注明 boot 服务凭证全零故等价 root。
+
