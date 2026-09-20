@@ -283,9 +283,12 @@ pub const SYS_TIMES_CALL: i32 = 25;
 /// C: SYS_VIRCOPY 是内核调用 15（`kernel/src/syscall.rs` `Syscall::Vircopy`）。
 pub const SYS_VIRCOPY_CALL: i32 = 15;
 
-/// C: `SELF`（kernel/src/syscall_copy.rs:124）——源/目标 endpoint 为调用者
-/// 自身时使用的哨兵值，内核分发时替换为调用者真实 endpoint。
-pub const SELF: i32 = -2;
+/// C: `SELF`（endpoint.h:56，`_ENDPOINT_SLOT_TOP - 3`）——源/目标 endpoint
+/// 为调用者自身时使用的哨兵值，内核分发时替换为调用者真实 endpoint。
+/// 权威值自 `minix_types::Endpoint::SELF` 派生；历史误值 -2 恰为 SYSTEM
+/// 任务 endpoint（com.h:50），内核比对面权威化后（syscall_copy.rs:126）
+/// 传 -2 永不命中 SELF 替换，真机 wire 层按具体端点解析失败。
+pub const SELF: i32 = Endpoint::SELF.0;
 
 /// 请求内核中止系统（C: libsys `sys_abort`，`sys_abort.c:8-13`）。
 ///
@@ -475,7 +478,7 @@ pub fn sys_trace(
 /// `kernel/src/syscall_copy.rs dispatch_vircopy` = `Syscall::Vircopy = 15`）。
 ///
 /// 载荷 `mess_lsys_krn_sys_copy`：src_endpt（`SELF` 由内核替换为调用者
-/// endpoint，`syscall_copy.rs:124` `SELF = -2`）→ dst_endpt 的虚地址。
+/// endpoint，哨兵权威见 [`SELF`]）→ dst_endpt 的虚地址。
 /// PM 的 rusage 投递（tell_parent）与 exec 的 frame 拷贝共用此通道。
 ///
 /// C: SYS_RUNCTL 是内核调用 46（`kernel/src/syscall.rs` `Syscall::Runctl`）。
@@ -1236,17 +1239,21 @@ mod tests {
     #[test]
     fn test_sys_vircopy_encodes_copy_payload() {
         // C: do_copy.c — m_lsys_krn_sys_copy {src_endpt, src_addr, dst_endpt,
-        // dst_addr, nr_bytes}；SELF(-2) 由内核替换为调用者 endpoint。
+        // dst_addr, nr_bytes}；SELF 由内核替换为调用者 endpoint。
+        // src 走 `SELF` 常量（与 ipc-server/rs/ds/pm 消费点同形态）。
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
 
-        let r = sys_vircopy(&canned, -2, 0x1000, 9, 0x7000, 144);
+        let r = sys_vircopy(&canned, SELF, 0x1000, 9, 0x7000, 144);
 
         assert_eq!(r, 0);
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, SYS_VIRCOPY_CALL);
         let cp = unsafe { &sent[0].m_u.m_lsys_krn_sys_copy };
-        assert_eq!(cp.src_endpt, -2);
+        assert_eq!(cp.src_endpt, SELF);
+        // 哨兵权威绝对值 pin：-2 是 SYSTEM 任务 endpoint（com.h:50），常量若
+        // 退回历史误值，真机 wire 层 SELF 替换将静默失效。
+        assert_eq!(SELF, 31742); // endpoint.h:56
         assert_eq!(cp.src_addr, 0x1000);
         assert_eq!(cp.dst_endpt, 9);
         assert_eq!(cp.dst_addr, 0x7000);
