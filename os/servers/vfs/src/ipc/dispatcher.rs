@@ -207,11 +207,17 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
                 Err(PmError::NotImplemented)
             }
             VfsCall::DumpCore {
-                endpoint, term_sig, ..
+                endpoint,
+                term_sig,
+                name_len: _,
+                name: _,
             } => {
                 if term_sig == 0 {
                     return Err(PmError::BadEndpoint);
                 }
+                // 名字现按值随载荷到达（C-6/OQ-5：取代 C m7_p1 指针 +
+                // safecopy fetch）；core 文件落盘面仍未接线，本臂维持
+                // 表校验 + Core 回复的诚实现状。
                 let slot = endpoint.to_user_slot().ok_or(PmError::BadEndpoint)?;
                 let fp = self.table.get(slot).ok_or(PmError::BadEndpoint)?;
                 if fp.pid == PID_FREE {

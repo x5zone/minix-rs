@@ -368,13 +368,22 @@ pub enum VfsCall {
         endpoint: Endpoint,
     },
     /// VFS_PM_DUMPCORE — 进程 core dump（forkexit.c:351）。
+    ///
+    /// C 的 `VFS_PM_PATH`（com.h:562 = m7_p1）是指向 PM `mp_name` 的指针，
+    /// VFS 稍后 safecopy 取名（forkexit.c:357 `m.VFS_PM_PATH = rmp->mp_name`）。
+    /// 本线按 OQ-5 裁决（new_edge4 §2 C-6，2026-09-19）把内核内部协议改为
+    /// **按值携带名字**：名字走载荷尾偏移 40..56（`MessageM7` 尾 pad 上半，
+    /// 36..40 保留零），长度走 m7_i3 槽。`name_len` ≤ 16（C mproc.h
+    /// `PM_NAME_LEN`）由 PM 侧编码保证，解码侧按定长 `[u8; 16]` 拷贝。
     DumpCore {
         /// 目标进程 endpoint（VFS_PM_ENDPT = m7_i1）。
         endpoint: Endpoint,
         /// 终止信号（VFS_PM_TERM_SIG = m7_i2）。
         term_sig: i32,
-        /// core 文件路径（VFS_PM_PATH = m7_p1）。
-        path: u64,
+        /// 进程名字节数（不含 NUL，≤ 16；m7_i3 槽）。
+        name_len: u32,
+        /// 进程名按值副本（NUL 填充；载荷偏移 40..56）。
+        name: [u8; 16],
     },
     /// VFS_PM_FORK — 复制父进程 fd 表（forkexit.c:123）。
     Fork {
@@ -471,8 +480,9 @@ impl VfsCall {
             Self::DumpCore {
                 endpoint,
                 term_sig,
-                path,
-            } => (endpoint.get(), term_sig, 0, 0, 0, path, 0),
+                name_len,
+                name: _,
+            } => (endpoint.get(), term_sig, name_len as i32, 0, 0, 0, 0),
             Self::Fork {
                 child,
                 parent,
@@ -488,7 +498,7 @@ impl VfsCall {
             Self::Unpause { endpoint } => (endpoint.get(), 0, 0, 0, 0, 0, 0),
             Self::Reboot => (0, 0, 0, 0, 0, 0, 0),
         };
-        let m7 = MessageM7 {
+        let mut m7 = MessageM7 {
             m7i1: i1,
             m7i2: i2,
             m7i3: i3,
@@ -498,6 +508,10 @@ impl VfsCall {
             m7p2: p2,
             _padding: [0; 20],
         };
+        // DumpCore 的按值名字走载荷尾 40..56（pad 上半，见 variant 文档）。
+        if let Self::DumpCore { name, .. } = self {
+            m7._padding[4..20].copy_from_slice(name);
+        }
         Message {
             m_source: Endpoint::NONE,
             m_type: self.m_type(),
@@ -554,7 +568,12 @@ impl VfsCall {
             VFS_PM_DUMPCORE => Self::DumpCore {
                 endpoint: Endpoint(m7.m7i1),
                 term_sig: m7.m7i2,
-                path: m7.m7p1,
+                name_len: m7.m7i3 as u32,
+                name: {
+                    let mut name = [0u8; 16];
+                    name.copy_from_slice(&m7._padding[4..20]);
+                    name
+                },
             },
             VFS_PM_FORK => Self::Fork {
                 child: Endpoint(m7.m7i1),
@@ -840,7 +859,12 @@ mod vfs_call_reply_tests {
         roundtrip(VfsCall::DumpCore {
             endpoint: Endpoint::from_generation_slot(1, 5),
             term_sig: 11,
-            path: 0x5000_0000,
+            name_len: 4,
+            name: {
+                let mut n = [0u8; 16];
+                n[..4].copy_from_slice(b"init");
+                n
+            },
         });
         roundtrip(VfsCall::Fork {
             child: Endpoint::from_generation_slot(1, 6),
@@ -894,6 +918,37 @@ mod vfs_call_reply_tests {
         assert_eq!(m7.m7p1, 0x4000_0000);
         assert_eq!(m7.m7p2, 0x4000_1000);
         assert_eq!(m7.m7i5, 0x7fff_0000i32);
+    }
+
+    /// C-6（OQ-5 裁决）：DumpCore 按值名字的字节位——名字落载荷尾
+    /// 40..56（`_padding[4..20]`）、长度落 m7_i3、指针槽 m7_p1 恒零
+    /// （C 的 m7_p1 指针 + VFS safecopy fetch 由按值携带取代）。
+    #[test]
+    fn test_vfs_call_dumpcore_by_value_name_layout() {
+        let mut name = [0u8; 16];
+        name[..9].copy_from_slice(b"getty.bin");
+        let msg = VfsCall::DumpCore {
+            endpoint: Endpoint::from_generation_slot(1, 5),
+            term_sig: 11,
+            name_len: 9,
+            name,
+        }
+        .encode();
+        let m7 = unsafe { &msg.m_u.m_m7 };
+        assert_eq!(m7.m7i3, 9, "name_len 必须编码到 m7_i3");
+        assert_eq!(m7.m7p1, 0, "指针槽必须清零（按值协议不再用 m7_p1）");
+        assert_eq!(&m7._padding[0..4], &[0; 4], "载荷 36..40 保留零");
+        assert_eq!(&m7._padding[4..13], b"getty.bin");
+        assert_eq!(m7._padding[13], 0, "名字 NUL 填充");
+        assert_eq!(
+            VfsCall::decode(&msg).unwrap(),
+            VfsCall::DumpCore {
+                endpoint: Endpoint::from_generation_slot(1, 5),
+                term_sig: 11,
+                name_len: 9,
+                name,
+            }
+        );
     }
 
     #[test]
