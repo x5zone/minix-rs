@@ -120,7 +120,7 @@
 | OQ-N3 | console 输出通道选型 | 串口直程（需 port I/O 权限面）/ video-text+mem server / 系统任务中转 | QEMU 目标下串口最直接；需一并裁决 driver 进程的 I/O 特权模型 |
 | OQ-N4 | minix-rt 页供应商通道 | VM_BRK taskcall / mmap 通道 | 循 E-BOOTFRAME 判例设计轮定 |
 | OQ-N5 | 边界守卫是否豁免 `#[cfg(test)]` 代码 | 豁免 / 不豁免（测试改 re-export 面） | 豁免测试代码（守卫意图是生产行为分层）；stty 测试改用 minix_sys re-export |
-| OQ-N6 | C-29 修法：load_vm_elf 增 stack_high 参数 vs per-process 根（C 对位） | ①快但共享根段面互撞仍在 ②动 kernel/arch 设计先行 | 方案②（C 对位，一劳永逸）；先出设计轮 |
+| OQ-N6 | C-29 修法：load_vm_elf 增 stack_high 参数 vs per-process 根（C 对位） | ①快但共享根段面互撞仍在 ②动 kernel/arch 设计先行 | **✅ 已裁决（用户，2026-09-21，NK1 设计轮 zcode_glm_4 上会）：采方案② per-process 根**——实施形态：`load_vm_elf` 语义不动（VM/bootstrap root 专用，A1 handoff 零波及 = C 内核只建 VM 那根，protect.c:388），新增 `load_process_elf` 每镜像新根原语（根帧出自 VmBootAllocator；`ProcessSegments.phys_root` 槽在位 proc.rs:799-824 = C p_cr3 对位），test-sysboot 载体 tx 槽接入；每镜像同址 `user_sp` 栈值回归 C `kinfo.user_sp` 本义（每地址空间一份布局）。方案①（stack_high 参数）否决：段面互撞与零隔离是结构性缺陷。解锁 NK1 |
 
 ---
 
