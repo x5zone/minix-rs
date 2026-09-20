@@ -27,6 +27,7 @@ sprofile = []
 [dependencies]
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
+minix-sef = { workspace = true }
 bitflags = { workspace = true }
 
 [dev-dependencies]

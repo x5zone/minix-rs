@@ -481,6 +481,29 @@ impl<T: IpcTransport> PmServer<T> {
             return RunStep::Handled;
         }
 
+        // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 在 sef_local_startup 内
+        // 消费（main.c:56 → sef.c:127-141 阻塞等 IS_SEF_INIT_REQUEST），
+        // 循环体不见；本树无独立 startup 面（server.init() 构造即 fresh 体），
+        // 在此拦截并按 process_init 尾部（sef_init.c:113-117）回
+        // RS_INIT+result。注册面 fresh 实体 + restart STATEFUL
+        //（main.c:118-119）→ fresh/restart 都 OK；LU 未注册 → 默认
+        // ENOSYS（sef_init.c:324-327）。应答失败 = RS 不在，C 侧等价于
+        // init 应答丢失（RS boot step3 超时）——同传输损坏 fail-fast。
+        if msg.m_type == minix_types::RS_INIT && msg.m_source == Endpoint::RS {
+            // SAFETY: m_type == RS_INIT 且源 RS → 活跃 union 臂是
+            // m_rs_init（sef_init.c:193-215 unpack 同款）。
+            let init_type = unsafe { msg.m_u.m_rs_init.type_ };
+            let result = match init_type {
+                0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                _ => minix_types::ENOSYS,
+            };
+            let birth = minix_sef::sef_init_reply(result);
+            self.transport
+                .send(Endpoint::RS, &birth)
+                .expect("PM: can't reply RS_INIT birth report to RS");
+            return RunStep::Handled;
+        }
+
         // C: main.c:74-77 — who_e = m_in.m_source；pm_isokendpt 验证。
         // C 对非法 endpoint panic（"PM got message from invalid endpoint"）；
         // Rust 等价 fail-fast（与 C 行为一致，见 04 文档 §3.6 D6）。
@@ -1052,6 +1075,34 @@ mod tests {
         server.transport.queue_receive(msg, IpcStatus { flags: 4 });
         assert_eq!(server.run_once(), RunStep::Handled);
         assert!(server.transport.sent().is_empty());
+    }
+
+    #[test]
+    fn test_run_once_birth_request_answers_rs_init_report() {
+        // E-BIRTHFACE（NS1）：RS_INIT from RS → 出生应答（process_init 尾部
+        // sef_init.c:113-117），不落 pm_isokendpt/dispatch 路——C 侧该请求
+        // 由 sef_local_startup 消费（main.c:56）。注册面 fresh + restart
+        // STATEFUL（main.c:118-119）→ 都 OK；LU → ENOSYS。
+        let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
+        let mut birth = Message { m_type: minix_types::RS_INIT, ..Message::default() };
+        birth.m_source = Endpoint::RS;
+        // Union 写安全：RS_INIT 标签选中 m_rs_init 臂。
+        birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
+        server.transport.queue_receive(birth, IpcStatus { flags: 1 });
+        assert_eq!(server.run_once(), RunStep::Handled);
+        let sent = server.transport.sent();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, Endpoint::RS);
+        assert_eq!(sent[0].1.m_type, minix_types::RS_INIT);
+        assert_eq!(sent[0].1.rs_init_result(), Some(0));
+
+        let mut server2 = PmServer::with_transport(test_params(), TestIpcTransport::new());
+        let mut lu = Message { m_type: minix_types::RS_INIT, ..Message::default() };
+        lu.m_source = Endpoint::RS;
+        lu.m_u.m_rs_init.type_ = 1; // SEF_INIT_LU
+        server2.transport.queue_receive(lu, IpcStatus { flags: 1 });
+        server2.run_once();
+        assert_eq!(server2.transport.sent()[0].1.rs_init_result(), Some(minix_types::ENOSYS));
     }
 
     /// V2-P2-1：CLOCK notify 进入 expire_timers 路径（handle_clock_notify），

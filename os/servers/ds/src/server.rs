@@ -166,6 +166,25 @@ impl DsServer {
         };
         let caller = message.m_source;
 
+        // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 由 sef_local_startup 在
+        // 主循环前消费（ds main.c:96-103 sef_startup → sef.c:127-141 阻塞
+        // 等 IS_SEF_INIT_REQUEST），循环体永远见不到它；本树无独立 startup
+        // 面，在此拦截。fresh 锚点 ≡ 构造态（main.rs 注记：reset 半
+        // store.c:254-265，表自构造即净）；shadow 半（store.c:267-269 经
+        // rproctab grant 取 BootService）挂 grant 消费面，登记不扩。应答
+        // 按 process_init 尾部（sef_init.c:113-117）回 RS_INIT+result——
+        // 注册面 fresh + restart STATEFUL（main.c:96-97），LU 未注册 →
+        // 默认 ENOSYS（sef_init.c:324-327）。
+        if message.m_type == minix_types::RS_INIT && caller == RS_PROC_NR {
+            let init_type = message.rs_init_type().unwrap_or(0);
+            let result = match init_type {
+                0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                _ => minix_types::ENOSYS,
+            };
+            let _ = ipc.send(caller, &minix_sef::sef_init_reply(result));
+            return Step::Handled;
+        }
+
         let result = match triage(message.m_type) {
             // C 47-51: a notification has nothing to dispatch.
             Incoming::NotifyRefusal => EINVAL,
@@ -1160,6 +1179,35 @@ mod tests {
         assert_eq!(
             ipc.replies(),
             vec![(Endpoint(4), EINVAL), (Endpoint(4), EINVAL)]
+        );
+    }
+
+    /// E-BIRTHFACE（NS1）：RS 的出生请求不再落 Unknown/EINVAL，而是按
+    /// process_init 尾部（sef_init.c:113-117）回 RS_INIT+result——fresh
+    /// → OK；且应答走独立 lane，不触碰 store（fresh 锚点 ≡ 构造态）。
+    #[test]
+    fn test_rs_init_birth_answered_with_ok() {
+        let (mut server, mut kernel) = wired();
+        let mut birth = letter(RS_PROC_NR, minix_types::RS_INIT);
+        // Union field write is safe: the RS_INIT tag selects m_rs_init.
+        birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
+        let mut ipc = MockIpc::new(vec![birth]);
+        drain(&mut server, &mut ipc, &mut kernel);
+
+        let replies = ipc.sent.borrow().clone();
+        assert_eq!(replies.len(), 1, "出生请求恰好应答一次");
+        assert_eq!(replies[0].0, RS_PROC_NR);
+        assert_eq!(replies[0].1.m_type, minix_types::RS_INIT);
+        assert_eq!(replies[0].1.rs_init_result(), Some(OK));
+        // live update 未建模：诚实 ENOSYS（sef_init.c:324-327 默认面）。
+        let (mut server2, mut kernel2) = wired();
+        let mut lu = letter(RS_PROC_NR, minix_types::RS_INIT);
+        lu.m_u.m_rs_init.type_ = 1; // SEF_INIT_LU
+        let mut ipc2 = MockIpc::new(vec![lu]);
+        drain(&mut server2, &mut ipc2, &mut kernel2);
+        assert_eq!(
+            ipc2.sent.borrow()[0].1.rs_init_result(),
+            Some(minix_types::ENOSYS)
         );
     }
 

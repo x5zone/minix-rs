@@ -1317,7 +1317,25 @@ impl VmServer {
         if m_type == RS_INIT && source == RS_PROC_NR {
             let init = minix_types::RsInit::decode_message(msg);
             match self.rs_handshake(&init) {
-                Ok(()) => return DispatchAction::Suspend,
+                Ok(()) => {
+                    // E-BIRTHFACE（NS1）出生应答半：C 的 do_sef_init_request
+                    // 内部 process_init 尾部先回 RS_INIT+result
+                    //（sef_init.c:113-117），主循环的 SUSPEND
+                    //（vm/main.c:150-152 "do not reply to RS"）压的是
+                    // 第二回复。本臂此前只学 SUSPEND 半，RS boot step3
+                    // 等不到应答。应答失败 = RS 已不在，同 Reply 臂
+                    // fail-fast（vm/main.c:195-197 panic 同款）。
+                    self.transport
+                        .borrow_mut()
+                        .send(
+                            RS_PROC_NR,
+                            &minix_sef::sef_init_reply(minix_types::OK),
+                        )
+                        .unwrap_or_else(|_| {
+                            panic!("ipc_send() failed (RS_INIT birth report)")
+                        });
+                    return DispatchAction::Suspend;
+                }
                 Err(e) => {
                     // C panics on init failure (main.c:151 "do_sef_init_request
                     // failed!"); minix-rs fails closed at the IPC boundary
@@ -3241,6 +3259,15 @@ mod tests {
             // The in_use entry's 64-bit call mask survives the decode
             // (V13a: chunks beyond bit 32 are authorization, not noise).
             assert_eq!(vfs_rprocpub_call_mask(), 0x0000_0300_0000_00ff);
+
+            // E-BIRTHFACE（NS1）：成功握手的同轮必须回出生报告
+            //（process_init 尾部 sef_init.c:113-117）——RS boot step3
+            // 等的就是它；SUSPEND 只压主循环的第二回复。
+            let sent = handle.sent();
+            assert_eq!(sent.len(), 1, "恰好一条出生应答");
+            assert_eq!(sent[0].0, Endpoint::RS);
+            assert_eq!(sent[0].1.m_type, RS_INIT as i32);
+            assert_eq!(sent[0].1.rs_init_result(), Some(minix_types::OK));
 
             reset_boot_slots();
         });

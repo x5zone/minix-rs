@@ -50,7 +50,7 @@ pub use tty_fkey::{
 
 use core::fmt;
 use core::fmt::Write as _;
-use minix_types::{EDONTREPLY, Errno, OK};
+use minix_types::{EDONTREPLY, Endpoint, Errno, OK};
 
 /// A NUL-terminated C byte string rendered through format specs.
 ///
@@ -172,6 +172,32 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
 
         let result = match classify(call_nr, caller) {
             DispatchAction::HandleFkey => self.handle_fkey_pressed(),
+            DispatchAction::Birth => {
+                // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 在 sef_local_startup
+                // 内消费（main.c:79-87），主循环不见；本树 startup() 已跑过
+                // fresh 体（main.rs 构造序），此处补应答半——按 process_init
+                // 尾部（sef_init.c:113-117）回 RS_INIT+result。C 注册面
+                // fresh/LU/restart 三回调同为 sef_cb_init_fresh
+                //（main.c:80-82），任何出生类型都跑同体（[ARCH: A-10]
+                // STATELESS 已文档化）。应答失败 = do_sef_init_request 失败，
+                // C 一路 panic（vm/main.c:151 同款 "do_sef_init_request
+                // failed!"），Rust 同款 fail-fast。已自带应答，suppressing
+                // 通用回复路。
+                let init_type = unsafe { self.state.inbox.m_u.m_rs_init.type_ };
+                let kind = match init_type {
+                    0 => SefInitType::Fresh, // sef.h:93-95
+                    1 => SefInitType::Lu,
+                    _ => SefInitType::Restart,
+                };
+                let info = SefInitInfo::default();
+                let reply_result =
+                    self.init_fresh(kind, &info).unwrap_or_else(|e| e.to_i32());
+                let birth_reply = minix_sef::sef_init_reply(reply_result);
+                if self.transport.send(Endpoint::RS, &birth_reply).is_err() {
+                    panic!("IS: can't reply RS_INIT birth report to RS");
+                }
+                EDONTREPLY
+            }
             DispatchAction::Suppress => {
                 // C: non-notify arm warns (main.c:60-61); the non-TTY
                 // notify default is silent (main.c:53-56, FIXME).
@@ -657,6 +683,26 @@ mod tests {
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert!(s.transport.sends.is_empty());
         assert_eq!(s.transport.warnings, Vec::from([(0x42, Endpoint::RS)]));
+    }
+
+    #[test]
+    fn test_step_birth_request_answers_rs_init_report() {
+        // E-BIRTHFACE（NS1）：RS_INIT from RS → Birth 臂——跑 init 体并按
+        // process_init 尾部（sef_init.c:113-117）回 RS_INIT+OK；不再落
+        // Suppress 的 illegal-warning 路（C 侧该请求由 sef_local_startup
+        // 消费，main.c:79-87）。fake 的 inbox 为默认零值 → type = FRESH。
+        let mut s = server(Vec::from([Some((Endpoint::RS, minix_types::RS_INIT))]));
+        assert_eq!(s.step(), LifecycleAction::Continue);
+        assert!(s.transport.warnings.is_empty(), "出生请求不走 illegal 路");
+        assert_eq!(s.transport.sends, Vec::from([(Endpoint::RS, minix_types::RS_INIT)]));
+        // 下一条消息照常分类——出生臂不吞循环。
+        let mut s2 = server(Vec::from([
+            Some((Endpoint::RS, minix_types::RS_INIT)),
+            Some((Endpoint::RS, 0x42)),
+        ]));
+        s2.step();
+        assert_eq!(s2.step(), LifecycleAction::Continue);
+        assert_eq!(s2.transport.warnings, Vec::from([(0x42, Endpoint::RS)]));
     }
 
     #[test]

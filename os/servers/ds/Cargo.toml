@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 minix-types = { workspace = true }
+minix-sef = { workspace = true }
 minix-sys = { workspace = true }
 
 [lib]

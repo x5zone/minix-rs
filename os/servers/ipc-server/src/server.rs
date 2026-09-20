@@ -309,6 +309,28 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
             return RunStep::Handled;
         }
 
+        // E-BIRTHFACE（NS1）出生臂：C 的 RS_INIT 由 sef_local_startup 在
+        // 主循环前消费（ipc main.c:124-134 注册 → sef.c:127-141 阻塞等），
+        // 循环体不见；本树无独立 startup 面（init() 只标 ready），在此拦截。
+        // 注册面 fresh+restart 同体 = sef_cb_init_fresh（main.c:128-129；
+        // Rust 对位 ≡ 构造态 + mib 树就绪），LU 未注册 → 默认 ENOSYS
+        //（sef_init.c:324-327）。应答按 process_init 尾部
+        //（sef_init.c:113-117）；发送失败计数照常（RS 已不在）。
+        if msg.m_type == minix_types::RS_INIT && msg.m_source == Endpoint::RS {
+            // SAFETY: classify 前置检查 m_type == RS_INIT 且源 RS → 活跃
+            // union 臂是 m_rs_init（sef_init.c:193-215 unpack 同款）。
+            let init_type = unsafe { msg.m_u.m_rs_init.type_ };
+            let result = match init_type {
+                0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                _ => ENOSYS,
+            };
+            let birth = minix_sef::sef_init_reply(result);
+            if self.transport.borrow_mut().send_reply(Endpoint::RS, &birth).is_err() {
+                self.note_dropped();
+            }
+            return RunStep::Handled;
+        }
+
         match classify(false, msg.m_source, msg.m_type) {
             Incoming::Notify => {
                 // Unreachable: notifications return above via the status word.
@@ -527,6 +549,27 @@ mod tests {
         assert_eq!(server.run_once(), RunStep::Handled);
         assert_eq!(server.completed_cycles(), 0);
         assert_eq!(server.dropped_messages(), 0);
+    }
+
+    #[test]
+    fn run_once_birth_request_answers_rs_init_report() {
+        // E-BIRTHFACE（NS1）：RS_INIT from RS → 出生应答（process_init 尾部
+        // sef_init.c:113-117），不落 Unknown/ENOSYS，也不跑 cycle hook——
+        // C 侧该请求由 sef_local_startup 消费（main.c:124-134）。
+        let mut transport = TestTransport::new();
+        let mut birth = request_msg(Endpoint::RS, minix_types::RS_INIT);
+        // Union field write is safe: the RS_INIT tag selects m_rs_init.
+        birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
+        transport.push(birth, IpcStatus::request());
+        let server = IpcServer::new(transport, RecordingHandler::new(0));
+        server.init();
+        assert_eq!(server.run_once(), RunStep::Handled);
+        assert_eq!(server.completed_cycles(), 0, "出生臂跳过 cycle hook");
+        let transport = server.transport.borrow();
+        assert_eq!(transport.replies.len(), 1);
+        assert_eq!(transport.replies[0].0, Endpoint::RS);
+        assert_eq!(transport.replies[0].1.m_type, minix_types::RS_INIT);
+        assert_eq!(transport.replies[0].1.rs_init_result(), Some(0));
     }
 
     #[test]

@@ -7,9 +7,11 @@ use minix_pm::init::{BootParams, PmServer};
 
 fn main() {
     // C: main.c:49-56 — main() → sef_local_startup() → sef_startup()
-    // → sef_cb_init_fresh()。本树 C 的 PM 启动只与 VFS 同步
-    //（VFS_PM_INIT，main.c:220-236），无 RS_INIT 握手；此处直接构造
-    // 服务器并执行 init_fresh 等价初始化。
+    // → 阻塞等 RS 的 RS_INIT（sef.c:127-141）→ sef_cb_init_fresh
+    //（main.c:130-243，内含与 VFS 的 VFS_PM_INIT 同步 main.c:220-236）
+    // → process_init 尾部回 RS_INIT+result（sef_init.c:113-117）。
+    // 本树把 fresh 体放在构造后的 server.init()；出生请求的接收与
+    // 应答由 run() 循环内的出生臂（E-BIRTHFACE，NS1）承接。
     //
     // 真实启动获取（D-02 消费半 / S42 ②）：C main.c:167-176/238 的
     // sys_getmonparams + sys_getimage + sys_hz。任一失败即停车——

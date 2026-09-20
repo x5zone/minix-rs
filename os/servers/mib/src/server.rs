@@ -18,8 +18,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use minix_sys::ipc::{CALL_SENDREC, STATUS_CALL_MASK};
 use minix_types::{
-    CTLFLAG_PERMANENT, CTLTYPE_NODE, EDONTREPLY, EINVAL, Endpoint, Message, MessLcMibSysctl,
-    MessLsysMibRegister, OK,
+    CTLFLAG_PERMANENT, CTLTYPE_NODE, EDONTREPLY, EINVAL, ENOSYS, Endpoint, Message,
+    MessLcMibSysctl, MessLsysMibRegister, OK,
 };
 
 use crate::auth::CallAuth;
@@ -152,15 +152,32 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         // `sef_receive_status`; SYSTEM notifies surface as SefEvent::Signal
         // (MIB registers no signal handler — ignored, same as C's
         // `is_ipc_notify` refusal at main.c:449-454).
-        let status = match minix_sef::sef_receive_status(
+        let rx = match minix_sef::sef_receive_status(
             &mut self.ipc,
             Endpoint::ANY,
             &mut msg,
             &mut |_sig| {},
         ) {
-            Ok(rx) => rx.status as u32,
+            Ok(rx) => rx,
             Err(_) => return (Turn::ReceiveFailed, Incoming::Unknown),
         };
+        // E-BIRTHFACE（NS1）出生臂：C 在 mib_startup 内消费 RS_INIT
+        // （main.c:415-431），循环体不见；本树 fresh 锚点 ≡ 构造
+        //（MibServer::new 的静态树，≡ mib_init 体 main.c:384-410）。
+        // 注册面 fresh+restart 同体（main.c:419/425）→ 都 OK；LU 未注册
+        // → 默认 ENOSYS（sef_init.c:324-327）。应答按 process_init 尾部
+        // （sef_init.c:113-117）。
+        if let minix_sef::SefEvent::Init(init_type) = rx.event {
+            let result = match init_type {
+                0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                _ => ENOSYS,
+            };
+            let _ = self
+                .ipc
+                .send_nb(Endpoint::RS, &minix_sef::sef_init_reply(result));
+            return (Turn::Handled, Incoming::Birth);
+        }
+        let status = rx.status as u32;
         let incoming = triage(status_is_notify(status), msg.m_type);
         let is_sendrec = (status & STATUS_CALL_MASK) == minix_sys::ipc::CALL_SENDREC;
         let mut out = Message::default();
@@ -174,6 +191,12 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
                 // Blocking callers hear ENOSYS; one-way sends, silence
                 // (:474-479).
                 out.m_type = default_outcome(is_sendrec);
+            }
+            Incoming::Birth => {
+                // Unreachable: Birth is produced only by the birth guard
+                // above, which returns before triage runs (justified
+                // non-test panic — the arm exists for exhaustiveness).
+                unreachable!("Birth is intercepted before triage")
             }
             Incoming::Dispatch(MibCall::Sysctl) => {
                 let (code, reply) = self.sysctl_arm(&mut msg);
@@ -661,6 +684,36 @@ mod tests {
         assert_eq!(turn, Turn::Handled);
         assert_eq!(incoming, Incoming::NotifyRefusal);
         assert!(s.ipc.sent.borrow().is_empty());
+    }
+
+    /// E-BIRTHFACE（NS1）：RS 的出生请求按注册面应答——fresh/restart
+    /// 同体（main.c:419/425）→ OK；LU 未注册 → ENOSYS（sef_init.c:324-327）。
+    /// 应答经 send_nb 回 RS（process_init 尾部 sef_init.c:113-117）。
+    #[test]
+    fn test_rs_init_birth_answered_by_registration() {
+        let mut birth = mib_msg(minix_types::RS_INIT);
+        birth.m_source = Endpoint::RS;
+        // Union field write is safe: the RS_INIT tag selects m_rs_init.
+        birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
+        let mut s = server_with(&[(1, birth)]); // status 1 = 非通知
+        let (turn, incoming) = s.run_once();
+        assert_eq!(turn, Turn::Handled);
+        assert_eq!(incoming, Incoming::Birth);
+        let sent = s.ipc.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, minix_types::RS_INIT);
+        assert_eq!(sent[0].rs_init_result(), Some(OK));
+
+        let mut lu = mib_msg(minix_types::RS_INIT);
+        lu.m_source = Endpoint::RS;
+        lu.m_u.m_rs_init.type_ = 1; // SEF_INIT_LU
+        let mut s2 = server_with(&[(1, lu)]);
+        let (_, incoming2) = s2.run_once();
+        assert_eq!(incoming2, Incoming::Birth);
+        assert_eq!(
+            s2.ipc.sent.borrow()[0].rs_init_result(),
+            Some(ENOSYS)
+        );
     }
 
     /// RS ping: ponged inside the SEF library and swallowed — the turn is
