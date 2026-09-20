@@ -101,7 +101,7 @@
 | 编号 | 议题 | 备选 | 建议 |
 |---|---|---|---|
 | OQ-N1 | 命令全集口径：328（plan.md:14 实测）vs 247（muse 口径） | 以 plan.md 为权威 / 重测 | 采 plan.md 328，登记分歧即可 |
-| OQ-N2 | E-BOOTMODS 修法：补齐 12 模块装机清单对 C 序 vs 放宽内核 assert/按名查找 | 前者（保 C 对位）/后者 | 补齐清单（HY4 论证：放宽 assert 掩盖装配错误） |
+| OQ-N2 | E-BOOTMODS 修法：补齐 12 模块装机清单对 C 序 vs 放宽内核 assert/按名查找 | 前者（保 C 对位）/后者 | **✅ 已裁决（用户，2026-09-20）：采「补齐清单」**——boot-shim loader.rs MODULE_NAMES 补成对 C 序真 12 项、缺件 fail-fast、内核 assert 保持严格（放宽会掩盖装配错误，从 HY4 论证）。解锁 new_edge1 NK4 |
 | OQ-N3 | console 输出通道选型 | 串口直程（需 port I/O 权限面）/ video-text+mem server / 系统任务中转 | QEMU 目标下串口最直接；需一并裁决 driver 进程的 I/O 特权模型 |
 | OQ-N4 | minix-rt 页供应商通道 | VM_BRK taskcall / mmap 通道 | 循 E-BOOTFRAME 判例设计轮定 |
 | OQ-N5 | 边界守卫是否豁免 `#[cfg(test)]` 代码 | 豁免 / 不豁免（测试改 re-export 面） | 豁免测试代码（守卫意图是生产行为分层）；stty 测试改用 minix_sys re-export |
