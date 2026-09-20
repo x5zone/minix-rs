@@ -17,8 +17,8 @@
 //! (PM_EXEC with the initial-stack frame, see [`crate::execve`]),
 //! alarm (PM_ITIMER), the wall clock (PM_GETTIMEOFDAY), and
 //! set_controlling_tty (open + TIOCSCTTY + dup2). Still honest `ENOSYS`
-//! from [`MinixSysHost`]: the kernel mib trio (see below for the
-//! verdict), `chroot`, and `set_env`. Callers branch on the error
+//! from [`MinixSysHost`]: the kernel mib trio only (see below for the
+//! client-face dependency). Callers branch on the error
 //! instead of on a compiled-out feature — the same policy `minix-sys`
 //! uses for open-existing (`libs/minix-sys/src/lib.rs:186-190`).
 
@@ -27,7 +27,7 @@ use crate::session::ParsedCommand;
 use crate::state_machine::sig;
 use crate::state_machine::HandlerKind;
 use crate::wait::{from_raw, WaitStatus};
-use minix_sys::ipc::DirectTrapTransport;
+use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
 use minix_sys::{self, Errno, Pid};
 use minix_sys::pm::SigActionWire;
 
@@ -105,19 +105,27 @@ pub trait InitHost {
 
     // ── kernel mib (securelevel; ARCH A-4/A-5) ──
     //
-    // VERDICT (edge3 卡 J, S39, 2026-09-20): the mib trio below stays
-    // honest `ENOSYS`. C reaches sysctl through the kernel's SYS_GETMIB
-    // call (doc 12: `getsecuritylevel`/`setsecuritylevel`/`shouldchroot`,
-    // init.c:569-618/1859-1900); the rewrite kernel has no GETMIB
-    // dispatch arm yet (grep os/kernel for SYS_GETMIB/SYS_SETMIB: zero
-    // hits), and `minix-sys::rmib` is the server-side subtree helper,
-    // not a client face around a missing kernel call. Closing these is
-    // kernel-side work (A-4/A-5), not an init-side seam — registered as
-    // the hand-over destination on the S39 ledger line.
+    // The mib trio below stays honest `ENOSYS`. Correction (NS11 recon,
+    // 2026-09-21): the earlier verdict here — "C reaches sysctl through
+    // the kernel's SYS_GETMIB call" — contradicts the C ground truth.
+    // C's sysctl(2) is a blocking SENDREC of MIB_SYSCTL to the MIB
+    // service itself (com.h:1026; MIB_PROC_NR com.h:66; the service
+    // decodes `m_lc_mib_sysctl` and gates on SENDREC, mib/main.c:292-
+    // 306) — no kernel dispatch arm exists in C either. The real gap is
+    // client-side: minix-sys has the constants (misc.rs) and minix-types
+    // has both wire overlays (MessLcMibSysctl / the reply lane), but no
+    // request-builder + sendrec + reply-decode function, and `init.root`
+    // reads by name additionally need the sysctlbyname half (nametomib
+    // via CTL_QUERY, lib libc gen/sysctl.c). Registered as NS11-A
+    // (new_edge3 新登记): shared-library work in edge2 territory, to be
+    // picked up on the claim board after the in-flight minix-sys claims
+    // drain. Until that face lands these three stay ENOSYS — the C
+    // behavior when a question cannot be asked is a warning and a
+    // default, never a fabricated answer.
 
     /// Read the kernel security level; `Ok(None)` means the node does
     /// not exist (C: `getsecuritylevel` returning -1, init.c:569-587).
-    /// ENOSYS until the kernel SYS_GETMIB face lands (A-4).
+    /// ENOSYS until the minix-sys MIB_SYSCTL client face lands (NS11-A).
     fn securitylevel(&self) -> Result<Option<i32>, Errno>;
 
     /// Lower the security level; `Ok(false)` means unsupported or a
@@ -126,7 +134,7 @@ pub trait InitHost {
 
     /// Read the `init.root` chroot prefix (C: `shouldchroot`'s sysctl
     /// read, init.c:1859-1900). `Ok(None)` = node absent. ENOSYS until
-    /// the kernel SYS_GETMIB face lands (A-5).
+    /// the minix-sys MIB_SYSCTL client face lands (NS11-A).
     fn init_root(&self) -> Result<Option<String>, Errno>;
 
     // ── signals and time ──
@@ -194,6 +202,46 @@ pub struct MinixSysHost {
     /// and `exec` folds it over the birth environment to make the child
     /// envp (`execv(shell, argv)` inherits `environ`, init.c:803).
     env: Vec<(String, String)>,
+}
+
+impl MinixSysHost {
+    /// The sigreturn restore stub for the sigaction request's `ret`
+    /// lane (C: `sigaction.c:18` `m.m_lc_pm_sig.ret = __sigreturn`).
+    /// The stub lives in minix-rt (`signals::__sigreturn`, the NL3③
+    /// deliverable, x86_64 leg); other arches keep the honest 0 until
+    /// their delivery legs land, same as the stub module itself.
+    #[cfg(target_arch = "x86_64")]
+    fn sigreturn_stub() -> u64 {
+        // fn 指针取址两步走（clippy function_casts_as_integer 建议形）：
+        // 直接 `as u64` 是新告警面。
+        minix_rt::signals::__sigreturn as *const () as u64
+    }
+
+    /// Non-x86_64 counterpart: no stub leg yet — carry 0 rather than
+    /// invent an address the frame contract cannot honor.
+    #[cfg(not(target_arch = "x86_64"))]
+    fn sigreturn_stub() -> u64 {
+        0
+    }
+
+    /// One sigaction round trip over `transport`: handler address in,
+    /// sigreturn stub in the `ret` lane (C: `sigaction.c:15-19`). A
+    /// free-standing associated function so tests can drive the same
+    /// wire through a canned transport instead of the direct trap.
+    fn send_sigaction(
+        transport: &impl IpcTransport,
+        signum: i32,
+        handler: usize,
+        sigreturn: u64,
+    ) -> Result<(), Errno> {
+        let act = SigActionWire {
+            sa_handler: handler,
+            sa_mask: [0; 4],
+            sa_flags: 0,
+            _pad: [0; 4],
+        };
+        minix_sys::pm::sigaction_via(transport, signum, Some(&act), None, sigreturn)
+    }
 }
 
 impl InitHost for MinixSysHost {
@@ -290,24 +338,22 @@ impl InitHost for MinixSysHost {
 
     fn register_handlers(&mut self, spec: &SignalSpec) -> Result<(), Errno> {
         // Real installation: one sigaction per entry with the shared
-        // trampoline, then the block mask. Two honest gaps remain:
-        // (a) the sigreturn stub address is 0 until minix-rt provides
-        // one; (b) the PM dispatch arm for PM_SIGACTION is missing, so
-        // a real PM answers EBADCALL — main logs it and the machine
-        // runs on default dispositions until E-INITSYS ① closes.
+        // trampoline as handler and minix-rt's `__sigreturn` as the
+        // restore stub (C: libc folds the stub into every sigaction,
+        // sigaction.c:18). The round trip is contract-complete: PM's
+        // PM_SIGACTION arm stores the stub per process (`install` →
+        // `sigreturn_addr`, mproc/signal.rs:236) and the delivery
+        // snapshot publishes it back to the kernel frame planter
+        // (mproc/signal.rs:335); the physical frame plant on the real
+        // machine is the T2 power-on surface.
         let tramp = crate::signal_state::trampoline_address();
+        let sigreturn = Self::sigreturn_stub();
         for (signum, kind) in &spec.handlers {
             let handler = match kind {
                 HandlerKind::Ignore => 1usize, // SIG_IGN
                 _ => tramp,
             };
-            let act = SigActionWire {
-                sa_handler: handler,
-                sa_mask: [0; 4],
-                sa_flags: 0,
-                _pad: [0; 4],
-            };
-            minix_sys::pm::sigaction_via(&DirectTrapTransport, *signum, Some(&act), None, 0)?;
+            Self::send_sigaction(&DirectTrapTransport, *signum, handler, sigreturn)?;
         }
         if let Some(except) = &spec.blocked_except {
             minix_sys::pm::sigprocmask_via(&DirectTrapTransport, SIG_SETMASK, Some(&sigset_full_minus(except)))?;
@@ -744,12 +790,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_sigaction_wire_carries_sigreturn_stub() {
+        // C: libc folds the restore stub into every sigaction request
+        // (`sigaction.c:18` `.ret = __sigreturn`). The rewrite's stub is
+        // minix-rt's `__sigreturn` (NL3③); the install path must carry
+        // that address in the `ret` lane — a zero slot was the NS11 gap.
+        let canned = minix_sys::ipc::CannedTransport::new();
+        let stub = MinixSysHost::sigreturn_stub();
+        assert_ne!(stub, 0, "x86_64 测试面上桩地址必须非零");
+        MinixSysHost::send_sigaction(&canned, 14, 0x5000, stub).unwrap_err();
+        let (dest, sent) = canned.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, minix_sys::pm::pm_endpoint());
+        assert_eq!(sent.m_type, minix_sys::pm::PM_CALL_SIGACTION);
+        // SAFETY: byte-level read of the union overlay lane for the test
+        // assertion only.
+        let ret = unsafe { sent.m_u.m_lc_pm_sig.ret };
+        assert_eq!(ret, stub);
+        assert_eq!(
+            ret,
+            minix_rt::signals::__sigreturn as *const () as u64,
+            "ret 槽必须精确等于 minix-rt 的 __sigreturn 符号地址"
+        );
+    }
+
+    #[test]
     fn test_minix_host_honest_enosys_for_missing_wrappers() {
         let mut host = MinixSysHost::default();
         // 本测试分两栏：**仍缺封装**的接缝必须诚实回 ENOSYS（不假成功）；
         // **已接线**的接缝在宿主 trap 断链下诚实回 EIO（E1 切片 5 的 hosted
         // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
-        // 仍缺封装：内核 mib 三件（12 篇）。
+        // 仍缺封装：内核 mib 三件——缺的是 minix-sys 的 MIB_SYSCTL
+        // 客户端面（NS11-A 登记），不是内核臂（C 亦无 GETMIB 系统调用，
+        // sysctl(2) = SENDREC 直达 MIB 服务，见 trait 上方更正注记）。
         // （set_controlling_tty/alarm/time/chroot 已接线，见下；set_env
         // 是本地环境表面——无机器往返，见第三栏。）
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
