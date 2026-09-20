@@ -147,6 +147,15 @@ pub struct SuperInfo {
     /// ipc.h:206)。C 侧无消费者——窗口上限由 `max_reqs` 决定,保留
     /// 字段对齐协议面。
     pub con_reqs: u16,
+    /// 回复携带的根 inode 明细（C `struct node_details`，request.c:818-825
+    /// 解出）——`mount_fs` 用它填根 vnode（mount.c:283-291 的
+    /// `root_node->v_*` 七连赋值）。S14 版只留窗口字段；根挂载编排
+    /// （NS4）要建根 vnode，必须拿到 inode/mode/size 等明细，这里补全。
+    pub node: crate::path::NodeDetails,
+    /// 回复的原始 `fs_flags` 字（`m_fs_flags = fs_flags`，mount.c:266）。
+    /// `threaded` 是它 `RES_THREADED` 位的布尔视图（`max_reqs` 用），
+    /// 存储面保留整字。
+    pub fs_flags: u32,
 }
 
 impl SuperInfo {
@@ -192,6 +201,8 @@ impl SuperblockReader for MemSuperblock {
             fs_e: 3,
             threaded: self.threaded,
             con_reqs: 1,
+            node: crate::path::NodeDetails::default(),
+            fs_flags: 0,
         })
     }
 }
@@ -246,6 +257,18 @@ impl<C: crate::request::FsClient + ?Sized> SuperblockReader for FsSuperblock<'_,
                 fs_e: node.fs_e.0,
                 threaded: fs_flags.contains(crate::request::FsFlags::THREADED),
                 con_reqs,
+                // request::NodeDetails → path::NodeDetails：同构类型面收敛
+                // （fs_e/ino/mode/size/uid/gid/dev 七字段一一对应）。
+                node: crate::path::NodeDetails {
+                    fs_e: node.fs_e,
+                    ino: node.ino,
+                    mode: node.mode,
+                    size: node.size,
+                    uid: node.uid,
+                    gid: node.gid,
+                    dev: node.dev,
+                },
+                fs_flags: fs_flags.bits(),
             }),
             // 回复臂不匹配或 FS 错误:统一 EIO(C mount_fs 对
             // req_readsuper 失败的 errno 原样上抛;类型化面收敛 Io)。

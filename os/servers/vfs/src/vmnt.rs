@@ -258,6 +258,14 @@ impl VmntTable {
         None
     }
 
+    /// 已挂 `dev` 的行（`mount_fs` 的 `EBUSY` 扫描，`mount.c:190-196`）。
+    pub fn find_by_dev(&self, dev: DevId) -> Option<VmntId> {
+        self.slots
+            .iter()
+            .position(|v| v.dev == dev && v.dev != NO_DEV)
+            .map(VmntId)
+    }
+
     /// 块设备 open 的 `v_bfs_e` 选择（C `open.c:195-202` 的循环）。
     ///
     /// 默认是根文件系统；每个 `m_dev == dev` 且**不带** `VMNT_FORCEROOTBSF`

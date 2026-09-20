@@ -23,7 +23,7 @@
 //! - `ioctl_route` reuses 15's `FileType` instead of redefining dispatch
 //! - dmap locking reuses 07's borrow model (no second lock abstraction)
 
-use minix_types::Endpoint;
+use minix_types::{DevId, Endpoint};
 use crate::open::FileType;
 
 /// `NR_DEVICES` (`minix3/minix/include/minix/dmap.h:82`): major table size.
@@ -46,6 +46,17 @@ pub const LABEL_MAX: usize = 16;
 
 /// `CTTY_MAJOR` (`dmap.h:26`): `/dev/tty` is handled by VFS itself.
 pub const CTTY_MAJOR: u32 = 5;
+
+/// `MEMORY_MAJOR` (`dmap.h:22` = 1): the memory driver owns this major —
+/// `/dev/imgrd` (the boot ramdisk block device) lives under it, so the
+/// root mount's dmap lookup resolves against this row.
+pub const MEMORY_MAJOR: u32 = 1;
+
+/// `DEV_IMGRD` (`dmap.h:113` = `0x0106`): boot ramdisk device — major 1
+/// (memory driver), minor `IMGRD_DEV` = 6. The root mount
+/// (`do_init_root` → `mount_fs`, C `main.c:508-518`) mounts the root fs
+/// from this device.
+pub const DEV_IMGRD: DevId = 0x0106;
 
 /// `CTTY_ENDPT` = `VFS_PROC_NR` (`const.h:52`, `com.h:60` = 1).
 pub const CTTY_ENDPT: Endpoint = Endpoint::VFS;

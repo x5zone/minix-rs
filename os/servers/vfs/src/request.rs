@@ -1212,6 +1212,71 @@ pub struct MockFsClient {
     pub inject_restart: bool,
 }
 
+/// 生产 `FsClient`——`REQ_*` 走真传输（NS4/18-mount W6 执行件）。
+///
+/// C `request.c` 每个 `req_*` 的三步舞是同一形状：`cpf_grant_direct` 建载荷
+/// grant → 填消息 `fs_sendrec` → `cpf_revoke`，回复解进出参。这里对
+/// [`FsReq::ReadSuper`] 实现该形状（根挂载链当前的唯一消费，C
+/// `request.c:780-833`）；其余 `REQ_*` 变体在各自臂通电时逐个补臂，缺失
+/// 即 [`FsError::UnknownReq`] 诚实失败——不假装发送成功。
+///
+/// 借用面：grant 表住 [`crate::main_loop::VfsState`]（`grants` 字段），客户
+/// 端按调用借 `&mut`，避免把表搬出状态聚合（ARCH A-4）。
+pub struct WireFsClient<'a, K: minix_sys::syscall::KernelCallTransport, T: minix_sys::ipc::IpcTransport>
+{
+    /// `cpf_grant_direct`/`cpf_revoke` 的表（safecopies.c 的 `grants` 全局）。
+    pub grants: &'a mut minix_sys::grant::GrantTable,
+    /// `sys_setgrant`/grant 增长所需的内核调用传输。
+    pub kernel: &'a K,
+    /// `fs_sendrec` 的承载（trap 直连；C worker 上下文的同步 sendrec）。
+    pub ipc: &'a T,
+}
+
+impl<
+        K: minix_sys::syscall::KernelCallTransport,
+        T: minix_sys::ipc::IpcTransport,
+    > FsClient for WireFsClient<'_, K, T>
+{
+    fn send(&mut self, req: FsReq, _scope: GrantScope) -> Result<FsResp, FsError> {
+        let (fs_e, label, dev, readonly, isroot) = match req {
+            FsReq::ReadSuper { fs_e, label, dev, readonly, isroot } => {
+                (fs_e, label, dev, readonly, isroot)
+            }
+            // 未通电的 REQ_* 臂：诚实拒绝（18-mount 后续波次逐个落）。
+            other => return Err(FsError::UnknownReq(other.m_type())),
+        };
+
+        // C request.c:789-793 — `len = strlen(label)+1`，grant 覆盖含 NUL 的
+        // 整串（CPF_READ）。空 label（mount_pfs 传 ""）也是 1 字节 NUL。
+        let mut bytes = label.into_bytes();
+        bytes.push(0);
+        let len = bytes.len();
+        let grant_id = self
+            .grants
+            .grant_direct(
+                self.kernel,
+                fs_e.get(),
+                bytes.as_ptr() as u64,
+                len as u64,
+                minix_types::CpFlags::READ,
+            )
+            .map_err(FsError::Io)?;
+        // C request.c:797-810 — 消息四件套 flags/grant/device/path_len。
+        let mut msg = encode_readsuper(dev, len, grant_id, readonly, isroot);
+        // C request.c:813 — `fs_sendrec`（同步往返，worker 上下文）。
+        let r = self.ipc.sendrec(fs_e, &mut msg);
+        // C request.c:814 — 回复无关成败都先 revoke（C 同样先 revoke 再查 r）。
+        let _ = self.grants.revoke(grant_id);
+        if let Err(t) = r {
+            return Err(FsError::Io(t.0));
+        }
+        match decode_readsuper_reply(&msg, fs_e) {
+            resp @ FsResp::ReadSuper { .. } => Ok(resp),
+            _ => Err(FsError::UnknownReq(REQ_READSUPER)),
+        }
+    }
+}
+
 #[cfg(test)]
 impl FsClient for MockFsClient {
     fn send(&mut self, req: FsReq, scope: GrantScope) -> Result<FsResp, FsError> {
