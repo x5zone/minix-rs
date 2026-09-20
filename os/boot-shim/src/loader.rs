@@ -38,9 +38,9 @@ pub const MODULES_DIR: &str = "/EFI/minix/modules";
 /// The kernel reads these modules positionally: the `i`-th entry here becomes
 /// the `i`-th [`BootModule`] in `kernel_info.boot_modules()`, which the kernel
 /// maps to process slot `BOOT_MODULE_PROC_NRS[i]` while building the process
-/// table (see `os/kernel/src/lib.rs:1185-1188`). The kernel also asserts at
+/// table (see `os/kernel/src/lib.rs:1200-1203`). The kernel also asserts at
 /// boot that the number of modules equals `NR_BOOT_MODULES` (12)
-/// (`os/kernel/src/lib.rs:1131-1137`). So **both the order and the count of
+/// (`os/kernel/src/lib.rs:1146-1152`). So **both the order and the count of
 /// this list are load-bearing** — they are not free to reorder, and a missing
 /// entry is a boot-time failure, not a cosmetic gap.
 ///
@@ -59,12 +59,15 @@ pub const MODULE_NAMES: &[&str] = &[
     "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
 ];
 
-/// Compile-time guard: the boot-module count must match the kernel's
-/// `NR_BOOT_MODULES` (12). The two crates are kept separate on purpose
-/// (boot-shim must not depend on the kernel), so the contract is pinned by
-/// this literal instead of a shared constant; changing the kernel's
-/// `NR_BOOT_MODULES` without updating this list fails to compile here rather
-/// than surfacing as an opaque boot-time assert.
+/// Compile-time guard: this list must always hold exactly 12 entries, so an
+/// accidental add/remove in boot-shim is caught here instead of at boot.
+/// Because boot-shim deliberately does not depend on the kernel crate, this
+/// literal cannot cross-check the kernel's `NR_BOOT_MODULES` value: if the
+/// kernel changes `NR_BOOT_MODULES` to something other than 12, this assert
+/// still passes and the mismatch surfaces only at the kernel's boot-time
+/// `assert_eq!(boot_modules().len(), NR_BOOT_MODULES)` (`lib.rs:1146-1152`).
+/// Keeping the two 12s in sync across crates is therefore a manual contract
+/// (see the ordering note above), not something this guard can enforce.
 const _: () = assert!(MODULE_NAMES.len() == 12);
 
 /// Result of computing the kernel's load layout from its ELF header.
