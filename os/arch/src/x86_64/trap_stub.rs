@@ -563,6 +563,16 @@ pub fn ipc_return_code(ctx: &super::boot::X86_64CpuContext) -> u64 {
     ctx.gp_regs[0]
 }
 
+/// Read back the saved PSW (RFLAGS) from a saved context.
+///
+/// Kernel-side callers cannot reach the arch-private register file (same
+/// seam as [`ipc_return_code`]); the nested-debug legitimacy check reads
+/// the trace bit from exactly this field — C:
+/// `saved_proc->p_reg.psw & TRACEBIT` (exception.c:233, archconst.h:120).
+pub fn saved_psw(ctx: &super::boot::X86_64CpuContext) -> u64 {
+    ctx.psw
+}
+
 pub fn syscall_entry_va() -> VirBytes {
     // SAFETY: address-only symbol read.
     VirBytes::new(unsafe { &x86_syscall_entry as *const u8 as usize } as u64)
@@ -842,5 +852,30 @@ mod save_frame_tests {
         assert_eq!(ctx.psw, 0x202);
         assert_eq!(ctx.cs, 0x1B);
         assert_eq!(ctx.ss, 0x23);
+    }
+
+    #[test]
+    fn saved_psw_reads_back_the_saved_rflags() {
+        // The saved PSW is the trace-bit data source for the nested-debug
+        // legitimacy check (C: saved_proc->p_reg.psw & TRACEBIT —
+        // exception.c:233); the accessor must round-trip the exact field
+        // save_frame_to_context stores.
+        let frame = TrapFrame {
+            rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
+            r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+            vector: 14,
+            errcode: 0,
+            rip: 0x2000,
+            cs: 0x1B,
+            rflags: 0x302, // IF | TF(0x100) | reserved bit 1
+            rsp: 0x7fff_0000,
+            ss: 0x23,
+        };
+        let mut ctx = super::super::boot::X86_64CpuContext::new();
+        save_frame_to_context(&frame, &mut ctx);
+        assert_eq!(saved_psw(&ctx), 0x302);
+        // Trace bit visible through the accessor — the check the kernel
+        // body performs, pinned here at the seam.
+        assert_ne!(saved_psw(&ctx) & 0x0100, 0);
     }
 }

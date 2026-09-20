@@ -312,6 +312,8 @@ pub fn cross_space_copy<D: DirectMapArch>(
 - C 用 `lin_lin_copy` 拷贝，Rust 用 `copy_nonoverlapping`（语义等价，Rust 类型安全）
 - C 返回 int（VMSUSPEND/EFAULT_SRC/DST 混合），Rust 返回 `CrossSpaceResult` enum
 
+**物理范围窗口校验（2026-09-21 NK2-A 落地）**：`AddressRef::Physical`（调用方传入，SYS_PHYSCOPY 的 NONE 端点 / SYS_MEMSET）不经页表解析，原先直通 `copy_nonoverlapping`——越过 boot DM 建立覆盖（`dm_coverage.rs` `establish_boot_dm`：memmap 候选并集，全 PA 跨度）的地址会在窗口访问内真缺页。C 以 `in_physcopy`/`in_memset` EIP 判定 + `phys_copy_fault`/`memset_fault_in_kernel` 标号重定向恢复（exception.c:66-91、klib.S:204-214/:371-383）；Rust 在拷贝前以 `physical_range_in_dm_window`（`vm.rs`）对 active root 逐页校验窗口映射，失配回 `VmCopyError::{Src,Dst}PageFault` → 分发层 EFAULT——上层可观察行为与 C 恢复路径一致，fault 本身不再发生。无 active root（boot 早期/宿主测试）时校验放行（与 PteWalkArch 的 paging-enabled 前置一致）。
+
 ### 4.2 data_copy_vmcheck — 内核内部入口
 
 `data_copy_vmcheck()`（`os/kernel/src/cross_space.rs:fn data_copy_vmcheck`）是内核内部跨地址空间拷贝的入口，对应 C 的 `data_copy_vmcheck()`（`arch/i386/memory.c:690-705`）：
