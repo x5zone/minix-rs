@@ -70,7 +70,7 @@
 
 ### 2.2 六种消息结构（逐字段，lane 均为 4 字节）
 
-6 个结构全是 56 字节（`_ASSERT_MSG_SIZE`），lane 全 4 字节——32 位 Minix3 的信封预算（`MESSAGE_PAYLOAD_SIZE=56`）。顺序即布局，Rust 侧原样复刻（§4）。
+6 个结构全是 56 字节（`_ASSERT_MSG_SIZE`），C 形态 lane 全 4 字节——32 位 Minix3 的信封预算（`MESSAGE_PAYLOAD_SIZE=56`）。顺序即布局，Rust 侧原样复刻（§4）；**唯一例外是结构①**：minix-rs 的交换面走 64 位车道，见本节末尾的 `[ARCH: MIB-SYSCTL-64LANE]` 注记。
 
 **① `mess_lc_mib_sysctl`**（用户 → MIB，`ipc.h:424-433`）：
 
@@ -83,6 +83,8 @@
 | 4 | `namelen` | `unsigned` | 16 | 名长（分量数，01 判 `0<len≤12`） |
 | 5 | `namep` | `vir_bytes` | 20 | 长名字的名址（`>8` 时用） |
 | 6 | `name` | `int[8]` | 24 | 信内名（`≤8` 时用，`CTL_SHORTNAME`，`ipc.h:15`） |
+
+> `[ARCH: MIB-SYSCTL-64LANE]` **minix-rs 交换面的 64 位形态**（上表是 C 的 32 位形态，作 ground truth 保留）。C 只有 32 位形态：56 字节预算装不下 LP64 展开的 80 字节，`_ASSERT_MSG_SIZE`（`ipcconst.h:17-19`）直接编译失败，所以 C 侧地址天然 32 位。minix-rs 的用户镜像链接基址是 5 GiB（`os/qemu-tests/test-kernels/user/rt-birth/link.ld`，4 GiB 以下是 bootstrap root 一致映射保留窗），栈顶在 0x7fff_ffff_f000——32 位车道对真机上每一个调用者的缓冲地址都会截断。minix-rs 交换面因此把五个指针与长度 lane 全部加宽为 64 位：`oldp`@0、`oldlen`@8、`newp`@16、`newlen`@24、`namelen`（u32）@32、对齐间隙@36、`namep`@40、`name`（`[i32;2]`）@48，总数仍是 56 字节（`os/libs/minix-types/src/ipc/message.rs:3232`，编译期与逐字段测试双钉）。代价是信内名窗从 8 分量缩到 2 分量：窗宽常量 `MessLcMibSysctl::INLINE_NAME_COMPONENTS`（`os/libs/minix-types/src/ipc/message.rs:3257`）是唯一真源，客户端（`minix-sys` 的 `sysctl_name_fits_inline`）与服务端（`os/servers/mib/src/dispatch.rs` 的 `classify_name`）都从它派生，双侧不可能各改各的；超窗名字经 `namep` 走一次内核拷贝，与 C 的长名路径同机制，外部行为不变。其余五个结构（②~⑥）没有地址 lane，维持 C 32 位形态不动。
 
 **② `mess_mib_lc_sysctl`**（MIB → 用户，`ipc.h:1548-1552`）：1 个 lane——`oldlen`（`size_t`，偏移 0）+ 52 字节补位。永远只报"完整长度"，成功失败都报（01 §2.4）。
 
@@ -149,7 +151,7 @@ MINIX3 扩展（`minix/sysctl.h`）：`CTL_MINIX 32`（`:17`，躲开 NetBSD 未
 
 | # | 决策 | C 做法 | Rust 做法 | 为什么 |
 |---|------|--------|-----------|--------|
-| D1 | 线格式原样 32 位 | 32 位 C 结构体（lane 全 4 字节） | 6 个 `#[repr(C)]` 结构，`vir_bytes`/`size_t` 取 `u32`，各 56 字节（`message.rs:3014,3037,3074,3098,3144,3179`） | 56 字节预算塞不下 64 位地址 + `name[8]`；发送者（libc/libsys）今天就是 32 位 C。 stealth 加宽会一次性失配所有发送者——64 位用户态是 A-4 的显式 ABI 决策，不是本篇能顺手做的 |
+| D1 | 线格式原样 32 位 | 32 位 C 结构体（lane 全 4 字节） | 原决策：6 个 `#[repr(C)]` 结构，`vir_bytes`/`size_t` 取 `u32`，各 56 字节。**已按 A-4 演进（`[ARCH: MIB-SYSCTL-64LANE]`）**：结构①的交换面加宽为五 lane 64 位 + 信内名窗 8→2（§2.2 末注记，`os/libs/minix-types/src/ipc/message.rs:3232`），②~⑥维持 32 位 | 原因（维持 32 位时）：56 字节预算塞不下 64 位地址 + `name[8]`，stealth 加宽会失配所有发送者。演进原因：minix-rs 用户镜像链接在 5 GiB，C 的 32 位地址车道对真机每个调用者都截断——这是当初预留的"64 位用户态显式 ABI 决策"，由交换面三端（overlay/客户端/服务）同 commit 统一执行，窗宽常量单一真源防漂移 |
 | D2 | 语义/线分离 | `mib_sysctl` 里判断与拷贝混写 | `message.rs` 只管形状（`size_of==56` 钉死），`ipc/mib.rs` 只管 verdict（`SysctlRequest::decode` 等，`os/libs/minix-types/src/ipc/mib.rs:fn decode`），映射（01 `map_sysctl_reply`）只判一次 | 照 `vm.rs` In/Out + `decode_message` 先例（`VmBrkIn` 从专用 union 臂解，不走 M1）；`SysctlReply` 只打包不映射——映射判两次必分叉（模式 59 的反面） |
 | D3 | 单向约束进类型 | 注释 + `return EDONTREPLY` 散写 | `MountRequest::decode_register` 越界回 `Err(EDONTREPLY)`（`os/libs/minix-types/src/ipc/mib.rs:impl MountRequest`，`remote.c:221-224`）；`decode_deregister` 只读 `root_id`（`os/libs/minix-types/src/ipc/mib.rs:fn decode_register（L190，工具生成）`，`remote.c:303`） | C 的"静默丢弃"是最容易被"好心改成报错"的语义——把它写进返回类型，改的人必须先改签名 |
 | D4 | 版本与上限编译期钉死 | `#error` 守卫 + 运行时 `SYSCTL_VERS` 宏 | `SYSCTL_VERSION` 常量（`sysctl.rs`）+ `const _: () = assert!(CTL_MAXID <= CTL_MINIX)`（`sysctl.rs:74`，对 `minix/sysctl.h:19-21`）+ `sysctl_vers/type/flags` 三个 `const fn` | C 用预处理器看门，Rust 用编译期断言看门——门的位置变了，看门这件事没变 |
@@ -200,7 +202,7 @@ os/libs/minix-types/src/
 
 ### 4.4 与 C 的差异说明（模式 72 CSSCM）
 
-§2 七节 vs §4 四模块：节多是因为 C 的"协议面"散在四个头文件（com/ipc/sys sysctl/minix sysctl），Rust 按"值表（sysctl.rs）/形状（message.rs）/ verdict（mib.rs）/号段（com.rs）"四模块收拢——**收拢是文件组织差异，语义零差异**：常量值、字段顺序、lane 宽度、错误码逐一同 C。唯一-category 为设计决策（D1 线宽保持 32 位，A-4 未来演进时三处标注）。
+§2 七节 vs §4 四模块：节多是因为 C 的"协议面"散在四个头文件（com/ipc/sys sysctl/minix sysctl），Rust 按"值表（sysctl.rs）/形状（message.rs）/ verdict（mib.rs）/号段（com.rs）"四模块收拢——**收拢是文件组织差异，语义零差异**：常量值、字段顺序、lane 宽度、错误码逐一同 C（唯一例外：结构①交换面的 64 位车道，见 §2.2 末 `[ARCH: MIB-SYSCTL-64LANE]` 注记）。唯一-category 为设计决策（D1 线宽原保持 32 位，A-4 演进已按注记三处标注执行：本篇 + overlay 代码注释 + 分类门 doc）。
 
 ---
 

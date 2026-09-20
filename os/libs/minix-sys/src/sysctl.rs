@@ -26,17 +26,18 @@
 //!   level and matches `sysctl_name`, and a name under a leaf is `ENOTDIR`
 //!   exactly as C's node-type gate answers.
 //!
-//! Known platform gap (inherited, not introduced here): the request
-//! overlay's three address lanes (`oldp`/`newp`/`namep`) are 32-bit. C
-//! pins every payload at 56 bytes (`_ASSERT_MSG_SIZE`,
-//! `minix/include/minix/ipcconst.h:17-19`), a bound the LP64 expansion of
-//! `mess_lc_mib_sysctl` (80 bytes) cannot meet — C itself only ever built
-//! the 32-bit form, where addresses are 32-bit too. minix-rs user images
-//! link at 5 GiB (the bootstrap root keeps the first 4 GiB identity-mapped,
-//! see the user link script), so a real caller's buffer address exceeds
-//! the lane on the live wire; the hosted round trips this crate tests are
-//! unaffected. Widening needs the inline-name window traded for lane width
-//! and moves all three ends (overlay, service decode, this client).
+//! Exchange ABI note: the request overlay's five pointer/size lanes
+//! (`oldp`/`oldlen`/`newp`/`newlen`/`namep`) travel full 64-bit width, and
+//! the inline-name window is two components (`MessLcMibSysctl::
+//! INLINE_NAME_COMPONENTS`, derived by both ends). C pins every payload at
+//! 56 bytes (`_ASSERT_MSG_SIZE`, `minix/include/minix/ipcconst.h:17-19`)
+//! and only ever built the 32-bit form of this exchange — its LP64
+//! expansion (80 bytes) cannot meet the assert. minix-rs user images link
+//! at 5 GiB (the bootstrap root keeps the first 4 GiB identity-mapped, see
+//! the user link script), so the C 32-bit lanes would truncate every
+//! real-machine buffer; the 64-bit form spends the `name[8]` window to buy
+//! the width. Names past the window travel by pointer exactly as C's long
+//! names did (`__sysctl.c:23-24`).
 
 use crate::Errno;
 use crate::ipc::IpcTransport;
@@ -118,7 +119,7 @@ impl<T: IpcTransport> RawSysctl for WireSysctl<'_, T> {
 /// Runs one sysctl exchange over an explicit transport.
 ///
 /// The name travels inline while it fits the message window and by pointer
-/// past that (`__sysctl.c:23-24`, the `CTL_SHORTNAME` split —
+/// past that (`__sysctl.c:23-24`, the short-name split —
 /// [`crate::misc::sysctl_name_fits_inline`]). A failed round trip is an
 /// `Err` carrying the service's or the transport's errno; the sink's
 /// length is refreshed whenever the service answered.
@@ -129,27 +130,27 @@ pub fn sysctl_via<T: IpcTransport>(
     new: Option<&[u8]>,
 ) -> Result<(), Errno> {
     let mut message = Message::zeroed();
-    // The address lanes are 32-bit (see the module header's platform
-    // note); the pointers leave the frame only for the synchronous round
-    // trip — the C `oldp`/`newp` argument shape.
+    // The pointer/size lanes are full 64-bit width (the exchange ABI
+    // note in the module header); the pointers leave the frame only for
+    // the synchronous round trip — the C `oldp`/`newp` argument shape.
     let old_pointer = old
         .as_mut()
-        .map_or(0, |slot| slot.buffer.as_mut_ptr() as u64 as u32);
+        .map_or(0, |slot| slot.buffer.as_mut_ptr() as u64);
     let old_capacity = old.as_ref().map_or(0, |slot| slot.buffer.len());
-    let new_pointer = new.map_or(0, |bytes| bytes.as_ptr() as u64 as u32);
+    let new_pointer = new.map_or(0, |bytes| bytes.as_ptr() as u64);
     {
         // SAFETY: the overlay is plain `repr(C)` data at the message
         // payload head; every field is written before the send.
         let wire: &mut MessLcMibSysctl = unsafe { &mut message.m_u.m_lc_mib_sysctl };
         wire.oldp = old_pointer;
-        wire.oldlen = old_capacity as u32;
+        wire.oldlen = old_capacity as u64;
         wire.newp = new_pointer;
-        wire.newlen = new.map_or(0, <[u8]>::len) as u32;
+        wire.newlen = new.map_or(0, <[u8]>::len) as u64;
         wire.namelen = name.len() as u32;
         if crate::misc::sysctl_name_fits_inline(name.len()) {
             wire.name[..name.len()].copy_from_slice(name);
         } else {
-            wire.namep = name.as_ptr() as u64 as u32;
+            wire.namep = name.as_ptr() as u64;
         }
     }
     message.m_type = MIB_CALL_SYSCTL;
@@ -684,17 +685,17 @@ mod tests {
 
     /// A name past the inline window travels by pointer only, and the
     /// inline lanes stay zero (`__sysctl.c:23-24` — the copy is gated on
-    /// `CTL_SHORTNAME`).
+    /// the exchange overlay's window, two components in the 64-bit form).
     #[test]
     fn test_sysctl_wire_long_name_goes_by_pointer() {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(cleared_message()));
-        let name = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-        assert_eq!(name.len(), crate::misc::SYSCTL_SHORT_NAME_LENGTH + 1);
+        let name = [1, 2, 3];
+        assert_eq!(name.len(), MessLcMibSysctl::INLINE_NAME_COMPONENTS + 1);
         sysctl_via(&transport, &name, None, None).unwrap();
         // SAFETY(test): 长名时 name lanes 恒零、namep 承载。
         let wire = unsafe { &transport.sent.borrow()[0].1.m_u.m_lc_mib_sysctl };
-        assert_eq!(wire.namelen, 9);
+        assert_eq!(wire.namelen, 3);
         assert_ne!(wire.namep, 0);
         assert!(wire.name.iter().all(|lane| *lane == 0));
     }

@@ -27,7 +27,7 @@
 | `NR_MIB_CALLS` | 3（三信无死号） | `com.h:1030` | `types/com.rs:258` |
 | `COMMON_MIB_INFO` / `COMMON_MIB_CALL` | `0xE04` / `0xE05` | `com.h:613,616` | `types/com.rs:271-274` |
 | `COMMON_MIB_REPLY` | `0xE81` | `com.h:622` | `types/com.rs:277` |
-| 六种 56 字节线载荷 | `mess_lc_mib_sysctl` 等 | `ipc.h` 六处 | `ipc/message.rs:3014-3196`（`size_of==56` 全钉，`message.rs:3784`） |
+| 六种 56 字节线载荷 | `mess_lc_mib_sysctl` 等 | `ipc.h` 六处 | `ipc/message.rs:3188-3273`（`size_of==56` 全钉，`message.rs:4045`；其中结构①为 minix-rs 64 位交换面，见 02 §2.2 末 `[ARCH: MIB-SYSCTL-64LANE]` 注记） |
 
 ## 3 常量总表
 
