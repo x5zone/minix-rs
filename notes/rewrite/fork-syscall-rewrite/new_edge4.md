@@ -73,6 +73,7 @@
 | C-59 | E5(g) 执行的跨界触碰：MIB_SYSCTL 调用号权威化 + sysctl_via 应答判定修正（照规则 1 登记）【⚠️ 撞号让位注记（2026-09-21 zcode_glm_1 二次顺延）：初登号 C-55 归 NL5-CI 的 kernel 伞注释单（341346d3e 先落主线）；注记原指改号 C-57 又被 NS12 冒烟脚本单（157d83ef7）先占——按先落主线判例顺延取 **C-59**。FIXLOG edge3 #145 与 merge 8d7c6ad79 内的 "C-55" 字样均指本行】 | new_edge2 面 `os/libs/minix-sys/src/misc.rs`（`MIB_CALL_SYSCTL` 0x600→`minix_types::MIB_SYSCTL` 派生）+ `os/libs/minix-sys/src/sysctl.rs`（应答判定：非零 m_type 即 errno）+ `os/tests/Cargo.toml`（minix-mib/minix-sef 依赖 + mib_sysctl 目标）（登记人/执行人：zcode_glm_1，认领 new_edge4 §5 E5(g) 宿主半） | 四链联调线束揭出两处仓内 wire 缺陷：①`MIB_CALL_SYSCTL=0x600` 与 minix-types 权威 `MIB_SYSCTL=MIB_BASE+0=0x1800`（C com.h:1022/:1026）相左——NS11-A 客户端的每次 sendrec 都落进服务端 Unknown 桶得 ENOSYS 应答，而双方 canned 测试各用各的常量恒绿；②`sysctl_via` 只把负 m_type 判失败，而 C MIB 服务端应答协议是正 errno（main.c:483 `m_out.m_type = r`）——服务端 ENOMEM/ENOSYS 一律被客户端当成功。修法：常量改权威派生（C-41/NK8 判例）+ 判定改 `0=Ok / 非 0=Err(errno)`（`__sysctl.c` 透传 r 的 C 形）。触碰前核验：在制 NK1（kernel）/NS12（commands）/NL5-CI（xtask/CI）与本单文件无 hunk 交集 | 🔄 |
 | C-58 | NL6-A 的跨界触碰：minix-sys sys_whoami 客户端 + tty 出生自证消费（照规则 1 登记；用户指派 zcode_glm_3 认领 new_edge2 NL6 携带子项） | new_edge2 面 `os/libs/minix-sys/src/syscall.rs`（E9 GETINFO 家族新增 `WhoAmI`+`sys_whoami`，C sys_getinfo.c:29-55 对位 + 2 canned 回放测）+ `os/drivers/tty/tty/src/main.rs`（出生位 `Endpoint::NONE` 桩改 sys_whoami 真值，C sef.c:76-87 对位） | 三半对账：kernel `getinfo_whoami`（misc.rs:645）与 overlay（message.rs:1824）已真，缺客户端半+消费位；顺带纠正旧注"endpoint 由 RS 分配"失实（内核引导表 BOOT_MODULE_PROC_NRS 授予，引导期不经 RS，原"RS 端点分配接线"半随之销）。触碰前核验：`tools/claim.sh list` 在制 NK1/NS12/E5G 与本单两文件无交集；memory driver 与 input server 同缝未顺手修（登记随波次） | **✅ 2026-09-21 销账（zcode_glm_3，代码 d585fa7f2 / merge 55bb73931）**：sys 315（313+2）/tty 52 全绿，clippy 38=38 零新增、rustfmt 新增区清；全账见 FIXLOG edge2 NL6-A 节 |
 | C-60 | NL6-B（同缝批）的跨界触碰：memory/pckbd 出生桩 whoami 化（照规则 1 登记；NL6-A 收口时登记的同缝余量，用户指派 zcode_glm_3 续清；初登跳号——C-59 已被 E5(g) 让位顺延占用，按先落主线判例取 60） | new_edge2 面 `os/drivers/storage/memory/src/main.rs` + `os/drivers/hid/pckbd/src/main.rs`（出生位 `Endpoint::NONE` 桩改 sys_whoami 真值 + 旧注失实纠正；input server `os/servers/input/src/main.rs` 为 edge3 本线面免登记，同批交付） | 全仓扫描确认出生桩类仅此三处余量（其余 `Endpoint::NONE` 命中均为合法哨兵用途非出生桩）。修法/tty NL6-A 完全同款（C sef.c:76-87 对位）。触碰前核验：`tools/claim.sh list` 在制 NK1/NS12 与本单三文件无交集 | **✅ 2026-09-21 销账（zcode_glm_3，代码 afe7c2a7a / merge baafaa80d）**：memory 34/pckbd 33/input 98 全绿，clippy 三包 EXIT 0 触碰文件零命中，rustfmt 三文件清；全账见 FIXLOG edge2 NL6-B 节 |
+| C-60 | OQ-N5 落地的共享文件触碰：边界守卫豁免 #[cfg(test)] 模块（照规则 3 登记） | new_edge4（编排；裁决落地执行人 zcode_glm_1） | `tools/check-command-boundary.sh`（新增 `strip_test_modules` 预处理：两条 grep 前剥除 `#[cfg(test)]` 门控模块，输出保持 file:行号:内容 形，行号指原文件；OQ-N5 裁决 2026-09-21） | ✅ 2026-09-21（实测：4 处 sbin/init 生产违规照报不误；测试代码结构性豁免——NL7 后 commands 树内已无测试态直用，豁免为守卫语义补齐而非放水） |
 
 ---
 
@@ -120,17 +121,17 @@
 
 ## §6 OQ 队列（等用户/联合裁决，任何线不得代决）
 
-**携带**（前轮 §6 未决者照旧有效，编号不变）：OQ-3（已裁决盘上文件面——/etc 最小内容集仍需用户过目）、OQ-4（已裁决归 14-stage）、其余未决项按前轮 §6。
+**携带**（前轮 §6 未决者照旧有效，编号不变）：OQ-3（**✅ 全闭 2026-09-21**：盘上文件面裁决 + /etc 最小内容集获用户认可为 T4 冒烟基线，详下）、OQ-4（已裁决归 14-stage）、其余未决项按前轮 §6。
 
 **新增（2026-09-20 扫描收敛）**：
 
 | 编号 | 议题 | 备选 | 建议 |
 |---|---|---|---|
-| OQ-N1 | 命令全集口径：328（plan.md:14 实测）vs 247（muse 口径） | 以 plan.md 为权威 / 重测 | 采 plan.md 328，登记分歧即可 |
+| OQ-N1 | 命令全集口径：328（plan.md:14 实测）vs 247（muse 口径） | 以 plan.md 为权威 / 重测 | 采 plan.md 328，登记分歧即可 **✅ 已裁决（用户，2026-09-21）：采 plan.md:14 实测 328 为全集权威口径**；muse 247 系子集口径差异，登记分歧、不重测 |
 | OQ-N2 | E-BOOTMODS 修法：补齐 12 模块装机清单对 C 序 vs 放宽内核 assert/按名查找 | 前者（保 C 对位）/后者 | **✅ 已裁决（用户，2026-09-20）：采「补齐清单」**——boot-shim loader.rs MODULE_NAMES 补成对 C 序真 12 项、缺件 fail-fast、内核 assert 保持严格（放宽会掩盖装配错误，从 HY4 论证）。解锁 new_edge1 NK4 |
 | OQ-N3 | console 输出通道选型 | 串口直程（需 port I/O 权限面）/ video-text+mem server / 系统任务中转 | QEMU 目标下串口最直接；需一并裁决 driver 进程的 I/O 特权模型 **✅ 已裁决（用户，2026-09-21，NL1 设计轮 zcode_glm_2 上会）：采方案 B「内核中转 + 串口先行」，两轴分裁**——①**通道**：/dev/console 输出走 minix-sys sys_outb/sys_sdevio wrapper（客户端半待建）→ 内核 SYS_DEVIO（已真，os/kernel/src/syscall_device.rs:432-520 含 CHECK_IO_PORT 门）→ COM1 0x3F8；/dev/console 落串口 = QEMU 载体适配（harness `-display none -serial file:`，os/xtask/src/qemu.rs:92-95，video-text 在验收面物理不可见），诚实标注不冒充 C 形态；video-text backend（console.c:963 `vm_map_phys` 对位）维持登记，待有 display 可见验收面再落。②**特权模型**：采 C 模型——驱动无 IOPL，port I/O 一律经 SYS_DEVIO + 端口白名单（C 对位：rs232.c `my_inb` 即 `sys_inb` 包装 :223-232、syslib.h:217、do_devio.c:38-48 CHECK_IO_PORT+s_io_tab；Rust 表机制在库 os/kernel/src/kpriv.rs:21/:292-293/:537），tty privilege 行加 0x3F8-0x3FF。**明确否决**：串口直程（驱动直持 I/O 特权，原案选项①"直程"半轴——C 驱动从不持 IOPL）；系统任务中转（原案选项③——C 无此通道，自造架构）。解锁 new_edge2 NL1 批B → new_edge3 NS7 |
-| OQ-N4 | minix-rt 页供应商通道 | VM_BRK taskcall / mmap 通道 | 循 E-BOOTFRAME 判例设计轮定 |
-| OQ-N5 | 边界守卫是否豁免 `#[cfg(test)]` 代码 | 豁免 / 不豁免（测试改 re-export 面） | 豁免测试代码（守卫意图是生产行为分层）；stty 测试改用 minix_sys re-export |
+| OQ-N4 | minix-rt 页供应商通道 | VM_BRK taskcall / mmap 通道 | 循 E-BOOTFRAME 判例设计轮定 **✅ 已裁决（用户，2026-09-21）：采 VM_BRK taskcall 通道**——对位 C libc brk() 直发 VM_PROC_NR（minix-types vm.rs:208 引 C 形），rt 侧 `request_new_break` 纯函数已在库；VM_MMAP 通道（NS5-A 64 车道）留作 exec/栈映射专用、不作堆形态；「维持静态池+上限」否决（命令运行后最先触顶）。解锁 new_edge2 NL3①（实施待领，推进另议） |
+| OQ-N5 | 边界守卫是否豁免 `#[cfg(test)]` 代码 | 豁免 / 不豁免（测试改 re-export 面） | 豁免测试代码（守卫意图是生产行为分层）；stty 测试改用 minix_sys re-export **✅ 已裁决（用户，2026-09-21）：豁免并落地守卫脚本**——check-command-boundary.sh 于 grep 前剥除 #[cfg(test)] 门控模块（tools/ 触碰照规则 3 登记 §2 C-60）；现行 4 处 violations 全在 sbin/init **生产代码**（kerninfo 直读 ×2 + DirectTrapTransport ×2），系真实生产违规另行登记修复，不属本豁免范围 |
 | OQ-N6 | C-29 修法：load_vm_elf 增 stack_high 参数 vs per-process 根（C 对位） | ①快但共享根段面互撞仍在 ②动 kernel/arch 设计先行 | **✅ 已裁决（用户，2026-09-21，NK1 设计轮 zcode_glm_4 上会）：采方案② per-process 根**——实施形态：`load_vm_elf` 语义不动（VM/bootstrap root 专用，A1 handoff 零波及 = C 内核只建 VM 那根，protect.c:388），新增 `load_process_elf` 每镜像新根原语（根帧出自 VmBootAllocator；`ProcessSegments.phys_root` 槽在位 proc.rs:799-824 = C p_cr3 对位），test-sysboot 载体 tx 槽接入；每镜像同址 `user_sp` 栈值回归 C `kinfo.user_sp` 本义（每地址空间一份布局）。方案①（stack_high 参数）否决：段面互撞与零隔离是结构性缺陷。解锁 NK1 |
 
 ---
