@@ -100,7 +100,7 @@
 | E5(b) | VM↔VFS fdclose 往返 | — | 🔄 宿主半 ✅（79d82ed91）；真机半挂 T2 |
 | E5(c) | RS live-update 全链 | — | 🔄 前哨段宿主半 ✅（fbd33bcae）；主体挂 T2（NS1/NS2） |
 | E5(d) | QEMU VM paging 冒烟（缺页完整回路+VM 写 PTE） | new_edge1 NK2（转发臂） | ☐（内核转发臂 ✅ 5037491ff + 载体真机 PASS；余 T2 boot 链真机半） |
-| E5(e) | PM↔SCHED 调度链 | NS10 + K1/K2 | ☐ |
+| E5(e) | PM↔SCHED 调度链 | NS10 + K1/K2 | ☐→前置全清（NS10 ✅ 75aaea831/merge d0ce564cd，2026-09-21；K1/K2 前轮 ✅）——可开工，未领取 |
 | E5(f) | DS 发布/订阅三链 | NS1 | 🔄 宿主半 ✅（65bd107a6）；真机半挂 T2 |
 | E5(g) | MIB/sysctl 四链 + rmibtest | NS1 + E-RMIBWIRE 通电 | ☐ |
 | E5(h) | devman 生命周期四链 | NS1 + E-DMWIRE | ☐ |
