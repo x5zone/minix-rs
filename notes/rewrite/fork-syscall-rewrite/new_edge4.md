@@ -12,8 +12,9 @@
 4. **进度记账**：完成即在状态列 ✅ + 日期 + commit；解锁他线条目同步勾 §3。**禁止直接回写 edge_todo.md / stage todo**——由本线（edge4 角色）在里程碑批量收敛（2026-09-20 已按此纪律完成一轮五路扫描收敛，见 edge_todo.md 同日节）。
 5. **FIXLOG 增量纪律（新增，2026-09-20 事故后）**：三条线的 `.review/zcode/edgeN/FIXLOG.md` **只写增量，禁止全量复述**；edge3 的 FIXLOG 曾被全量重复追加 32 次膨胀到 68,552 行（95% 重复），已归档重组（263 行 + FIXLOG_archive.md + 原始底档 .bak）。追加前自检：`grep -c "^# edge3 线修复日志" FIXLOG.md` 必须为 1；edge3 编号从 **#122** 续（#117-119 历史撞号，引用带限定词）。
 6. **并发隔离命名约定（新增）**：扫描/调研类中间产物一律带作者后缀（`new_todo_{name}.md`）；工作线文件按轮次更替（前轮 edge1-4 已冻结加横幅，本轮 new_edge1-4）；阶段收尾时由本线批量并回权威文件后冻结。
-7. **领取锁（新增，2026-09-20）**：条目领取 = `tools/claim.sh claim <ID> <owner>`——`claim/<ID>-<owner>` 分支即排他锁（分支名全局唯一，双领第二个直接失败；worktree 间共享 refs 所以跨工作树有效）；`list` 按日期列全部领取（最旧者 = stale 候选，可回收）；完成后合入主线再 `release` 销账。重活并行用 `git worktree`（各线一树）；QEMU 真机验证保持全仓同一时刻只有一方在跑（串口判定不可并发）。
-8. **构建优先级（新增，2026-09-20）**：cargo build/test/clippy **永远 docker `minix-ci:1.94` 第一优先**（`-m 2g -j 1`；docker 隔离一切 panic 崩 WSL，不只 OOM，无宿主直跑例外）；仅 docker 不可用才回退宿主 `ulimit -v 3145728`（KB）+ `-j 1`。标准命令与并发挂载见项目 memory《测试内存铁律》。
+7. **领取锁 + 工作树隔离（2026-09-20 C-35 事故后硬化为机制）**：条目领取 = `tools/claim.sh claim <ID> <owner>`——`claim/<ID>-<owner>` 分支即排他锁（分支名全局唯一，双领第二个直接失败；worktree 间共享 refs 所以跨工作树有效）；claim **同时自动建 `.wt/<id>-<owner>/` 专属工作树并打印 `cd` 路径**，领取者只在本会话的专属树内改码/构建/测试；开工/换任务前跑 `tools/claim.sh verify` 自检位置（主树 → 警告；claim 分支 + 专属树 → OK）。**共享主树内禁 checkout/reset --force**——主树同时承载多线未提交在制品，换分支即销毁别人的工作（C-35 判例）。`list` 按日期列全部领取（最旧者 = stale 候选，可回收）；完成后合入主线再 `release` 销账（自动删工作树，树内有未提交改动则拒绝，防误弃）。**在制品守卫**：new_edgeX.md 与 `tools/claim.sh` 等纪律载体必须被 git 跟踪且改完即 commit——未跟踪/脏状态 = 一次误 reset 就没（C-35 同日 `tools/claim.sh`、`new_edge2.md` 曾处于未跟踪态）。QEMU 真机验证保持全仓同一时刻只有一方在跑（串口判定不可并发）。
+8. **在制品即提交（新增，2026-09-20，随规则 7 机制化一并立规）**：new_edgeX.md 状态列/认领板每次更新后立即 commit（风格照旧 `docs(edgeN): …`），勿留未跟踪或长期脏状态——未跟踪文件是一次 `reset --hard` 的零成本牺牲品；`tools/claim.sh verify` 报出的未提交文件数即自查信号。
+9. **构建优先级（新增，2026-09-20）**：cargo build/test/clippy **永远 docker `minix-ci:1.94` 第一优先**（`-m 2g -j 1`；docker 隔离一切 panic 崩 WSL，不只 OOM，无宿主直跑例外）；仅 docker 不可用才回退宿主 `ulimit -v 3145728`（KB）+ `-j 1`。标准命令与并发挂载见项目 memory《测试内存铁律》。
 
 ---
 
@@ -45,6 +46,8 @@
 | C-32 | E-IMGPKG xtask 半 | new_edge3 | `os/xtask/src/main.rs`（image/qemu/build 实装） | ☐（NS8） |
 | C-33 | NK3 载体注册（共享文件半） | new_edge1 | `os/Cargo.toml`（workspace members 增 test-timer-irq-{riscv64,aarch64}）+ `os/qemu-tests/run_all.sh`（构建/run 段增两名）——NK3 主体在 edge1 所有权内（os/arch、os/kernel、os/qemu-tests） | 🔄（zcode_glm_1，2026-09-20） |
 | C-34 | RS `crate::boot` 路径 bug（宿主 `--workspace --bins` 首停点） | **new_edge3** | `os/servers/rs/src/main.rs:39`（`crate::boot::parse_rs_verbose` → `minix_rs::boot::…`；edge3 f5fcef73f 今日引入）——由 new_edge1 NK5 排查发现，非 edge1 所有权，仅登记待 edge3 认领 | ☐ 待 new_edge3 认领 |
+| C-35 | **共享工作树踩踏事故（2026-09-20 22:26）**：NK5 会话在单工作树下 `checkout`+`reset` 到 `claim/NK5-qorder_1`，摧毁两组未提交在制品——① C-28（qorder_3，`Privilege::Kernel(Credentials)` 类型重设计，review 已验语义贴 C/406+19 测试全绿，diff 仅存于审查会话）② NL6（qorder_2，memory 驱动进程壳半成品）。处置：C-28 重建前先 `claim.sh` 复核锁仍在；NL6 由 qorder_2 重做；§1 规则 7 补执行纪律——领取后开工前必须 `git worktree add`（各线一树），共享树内禁 checkout/reset。**处置已硬化为机制（2026-09-20）**：`tools/claim.sh` 升级——claim 自动建 `.wt/<id>-<owner>/` 专属树、新增 `verify` 开工自检、`release` 连树回收（脏树拒绝）；§1 规则 7 改写为机制版；new_edge1-3 头部领取规则同步；claim.sh/new_edge2.md 首次纳入 git 跟踪（此前未跟踪 = reset 一下就没了） | — | 全仓（流程） | ✅ 机制半落地（文档+脚本已 commit）；遗留：C-28/NK3/NL6 三个在制 claim 尚无专属树，各持有人下次开工前补 claim/建树 |
+| C-36 | 规则 7/8 机制化改点登记（共享文件 `tools/`，照规则 3 补登） | new_edge4（编排） | `tools/claim.sh`（claim 自动建 .wt 专属树 + verify 自检 + release 连树回收）、`.gitignore`（补 `.wt/`——原只在 `.git/info/exclude`，不随 clone 走）、new_edge1-4.md（领取规则/§1 规则 7 改写 + 新增规则 8 在制品即提交 + C-35 处置更新） | ✅ 2026-09-20（实测 claim/verify/release 全周期通过后 commit） |
 
 ---
 

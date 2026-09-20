@@ -5,7 +5,7 @@
 > **所有权（本线可独占修改，清单外触碰走 new_edge4 §2 认领板）**：`os/kernel/`、`os/arch/`、`os/plat/`、`os/boot-shim/`、`os/qemu-tests/`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`、`00-master-plan/`。
 >
 > **并发规则**：见 [new_edge4.md](new_edge4.md) §1（沿旧 edge4 §1 三条 + FIXLOG 增量纪律）。
-> **领取规则**：开工任何条目前先 `tools/claim.sh claim <ID> <owner>` 领取——分支 `claim/<ID>-<owner>` 即排他锁（同名/同 ID 已存在即被领走，`list` 看全量，完成后 `release` 销账）；状态列同步标 🔄。文件头规则是提示，分支才是锁。
+> **领取规则**：开工任何条目前先 `tools/claim.sh claim <ID> <owner>` 领取——分支 `claim/<ID>-<owner>` 即排他锁（同名/同 ID 已存在即被领走，`list` 看全量），claim 同时自动建 `.wt/<id>-<owner>/` 专属工作树并打印 `cd` 路径——**本会话只在那棵树内改码/构建/测试**。每次从本文件重选/新领条目，先重读 [new_edge4.md](new_edge4.md) §1（尤其规则 7 并发隔离）并跑一次 `tools/claim.sh verify` 确认位置。文件头规则是提示，分支才是锁，工作树才是壳：共享主树内禁 checkout/reset --force（C-35 事故判例：NK5 会话主树换分支销毁了 C-28/NL6 两组在制品）；new_edgeX.md 的修改改完即 commit，勿留未跟踪状态。完成后合入主线再 `release` 销账（自动删树）；状态列同步标 🔄。
 
 状态图例：☐ 未开工 ｜ 🔄 进行中 ｜ ⏸ 等待（注明等谁）｜ ✅ 完成（日期+commit）｜ 🚫 维持登记不排期
 

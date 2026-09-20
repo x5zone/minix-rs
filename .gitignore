@@ -73,3 +73,6 @@ node_modules/
 
 .clangd/
 compile_commands.json
+
+# claim.sh 专属工作树（.git/info/exclude 不随 clone 走，正式忽略规则入 .gitignore）
+.wt/

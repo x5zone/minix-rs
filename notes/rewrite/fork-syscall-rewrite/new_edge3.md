@@ -5,7 +5,7 @@
 > **所有权（本线可独占修改）**：`os/servers/`（rs/vm/pm/vfs/ds/is/mib/devman/input/ipc-server/sched）、`os/fs/`（mfs/pfs/ext2/.../fs-rt）、`os/net/`、`os/commands/`、`os/etc/`、`os/xtask/`、`notes/rewrite/fork-syscall-rewrite/` 的 02/03/04/05/09/15/17/18-stage 文档。`os/Cargo.toml`、`os/qemu-tests/run_all.sh`、`edge_todo.md` 等共享文件触碰走 new_edge4 §2 认领板。
 >
 > **并发规则**：见 [new_edge4.md](new_edge4.md) §1。FIXLOG：`.review/zcode/edge3/FIXLOG.md`（2026-09-20 已归档重组为 263 行 + FIXLOG_archive.md；**只写增量**，编号从 #122 续，追加前跑守卫自检）。
-> **领取规则**：开工任何条目前先 `tools/claim.sh claim <ID> <owner>` 领取——分支 `claim/<ID>-<owner>` 即排他锁（同名/同 ID 已存在即被领走，`list` 看全量，完成后 `release` 销账）；状态列同步标 🔄。文件头规则是提示，分支才是锁。
+> **领取规则**：开工任何条目前先 `tools/claim.sh claim <ID> <owner>` 领取——分支 `claim/<ID>-<owner>` 即排他锁（同名/同 ID 已存在即被领走，`list` 看全量），claim 同时自动建 `.wt/<id>-<owner>/` 专属工作树并打印 `cd` 路径——**本会话只在那棵树内改码/构建/测试**。每次从本文件重选/新领条目，先重读 [new_edge4.md](new_edge4.md) §1（尤其规则 7 并发隔离）并跑一次 `tools/claim.sh verify` 确认位置。文件头规则是提示，分支才是锁，工作树才是壳：共享主树内禁 checkout/reset --force（C-35 事故判例：NK5 会话主树换分支销毁了 C-28/NL6 两组在制品）；new_edgeX.md 的修改改完即 commit，勿留未跟踪状态。完成后合入主线再 `release` 销账（自动删树）；状态列同步标 🔄。
 
 状态图例：☐ 未开工 ｜ 🔄 进行中 ｜ ⏸ 等待（注明等谁）｜ ✅ 完成（日期+commit）｜ 🚫 维持登记不排期
 
