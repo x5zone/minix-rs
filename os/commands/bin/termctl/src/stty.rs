@@ -128,22 +128,22 @@ pub fn parse_args<'a>(args: &[&'a str]) -> Result<([SttyOp<'a>; 16], usize), Ter
 /// (name, group, bit) 三元组：`FLAGS` 里每个字的落位（`termios.h`
 /// 各旗标 define；`cs8` 特殊——置位时先清 `CSIZE` 掩码再上 `CS8`）。
 const FLAG_BITS: [(&str, FlagGroup, u32); 16] = [
-    ("parenb", FlagGroup::Control, minix_types::PARENB),
-    ("parodd", FlagGroup::Control, minix_types::PARODD),
-    ("cs8", FlagGroup::Control, minix_types::CS8),
-    ("hupcl", FlagGroup::Control, minix_types::HUPCL),
-    ("istrip", FlagGroup::Input, minix_types::ISTRIP),
-    ("ixon", FlagGroup::Input, minix_types::IXON),
-    ("ixoff", FlagGroup::Input, minix_types::IXOFF),
-    ("icrnl", FlagGroup::Input, minix_types::ICRNL),
-    ("icanon", FlagGroup::Local, minix_types::ICANON),
-    ("echo", FlagGroup::Local, minix_types::ECHO),
-    ("echoe", FlagGroup::Local, minix_types::ECHOE),
-    ("echok", FlagGroup::Local, minix_types::ECHOK),
-    ("isig", FlagGroup::Local, minix_types::ISIG),
-    ("iexten", FlagGroup::Local, minix_types::IEXTEN),
-    ("opost", FlagGroup::Output, minix_types::OPOST),
-    ("onlcr", FlagGroup::Output, minix_types::ONLCR),
+    ("parenb", FlagGroup::Control, minix_sys::PARENB),
+    ("parodd", FlagGroup::Control, minix_sys::PARODD),
+    ("cs8", FlagGroup::Control, minix_sys::CS8),
+    ("hupcl", FlagGroup::Control, minix_sys::HUPCL),
+    ("istrip", FlagGroup::Input, minix_sys::ISTRIP),
+    ("ixon", FlagGroup::Input, minix_sys::IXON),
+    ("ixoff", FlagGroup::Input, minix_sys::IXOFF),
+    ("icrnl", FlagGroup::Input, minix_sys::ICRNL),
+    ("icanon", FlagGroup::Local, minix_sys::ICANON),
+    ("echo", FlagGroup::Local, minix_sys::ECHO),
+    ("echoe", FlagGroup::Local, minix_sys::ECHOE),
+    ("echok", FlagGroup::Local, minix_sys::ECHOK),
+    ("isig", FlagGroup::Local, minix_sys::ISIG),
+    ("iexten", FlagGroup::Local, minix_sys::IEXTEN),
+    ("opost", FlagGroup::Output, minix_sys::OPOST),
+    ("onlcr", FlagGroup::Output, minix_sys::ONLCR),
 ];
 
 /// Apply parsed operations to a terminal attribute record (`modeset`,
@@ -152,7 +152,7 @@ const FLAG_BITS: [(&str, FlagGroup, u32); 16] = [
 /// `cs8` 的置位先清 `CSIZE` 掩码（字符大小是域不是位）；清除则只清
 /// `CS8` 位值。速度同时写两个方向（C 的 `cfsetispeed`/`cfsetospeed`
 /// 成对面）。
-pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_types::Termios) {
+pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_sys::Termios) {
     for op in &ops[..count.min(ops.len())] {
         match *op {
             SttyOp::Speed(baud) => {
@@ -160,7 +160,7 @@ pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_types::Termios) {
                 t.c_ospeed = baud as i32;
             }
             SttyOp::ControlChar(slot, value) => {
-                if (slot as usize) < minix_types::NCCS {
+                if (slot as usize) < minix_sys::NCCS {
                     t.c_cc[slot as usize] = value;
                 }
             }
@@ -178,8 +178,8 @@ pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_types::Termios) {
                 };
                 if name == "cs8" && set {
                     // 置八位：清大小域再上 CS8（termios.h:131-135）。
-                    *word &= !minix_types::CSIZE;
-                    *word |= minix_types::CS8;
+                    *word &= !minix_sys::CSIZE;
+                    *word |= minix_sys::CS8;
                 } else if set {
                     *word |= bit;
                 } else {
@@ -195,7 +195,7 @@ pub fn apply_ops(ops: &[SttyOp], count: usize, t: &mut minix_types::Termios) {
 /// C 的 `stty -a` 还有 rows/columns 与 line discipline 两个域——本模型
 /// 的属性记录没有这两个面，显示里省略（13-terminal-termios.md §5 声明）。
 /// 旗标清单就是决定半认识的十六个字。
-pub fn display_a(t: &minix_types::Termios, out: &mut [u8]) -> Result<usize, TermError> {
+pub fn display_a(t: &minix_sys::Termios, out: &mut [u8]) -> Result<usize, TermError> {
     let mut at = 0usize;
     let put = |out: &mut [u8], at: &mut usize, bytes: &[u8]| -> Result<(), TermError> {
         if *at + bytes.len() > out.len() {
@@ -350,25 +350,25 @@ mod tests {
     #[test]
     fn test_apply_flag_bits_and_cs8_domain() {
         use super::*;
-        let mut t = minix_types::Termios::new();
+        let mut t = minix_sys::Termios::new();
         // 四组各一位：置位落对字，清除清对位。
         let (ops, count) = parse_args(&["echo", "-icrnl", "parenb", "-onlcr"]).unwrap();
         apply_ops(&ops, count, &mut t);
-        assert!(t.c_lflag & minix_types::ECHO != 0);
-        assert!(t.c_iflag & minix_types::ICRNL == 0);
-        assert!(t.c_cflag & minix_types::PARENB != 0);
-        assert!(t.c_oflag & minix_types::ONLCR == 0);
+        assert!(t.c_lflag & minix_sys::ECHO != 0);
+        assert!(t.c_iflag & minix_sys::ICRNL == 0);
+        assert!(t.c_cflag & minix_sys::PARENB != 0);
+        assert!(t.c_oflag & minix_sys::ONLCR == 0);
         // cs8 置位：清 CSIZE 域再上 CS8（termios.h:131-135）。
         t.c_cflag |= 0x100; // 人为置 CS7 位（CSIZE 域内）
         let (ops, count) = parse_args(&["cs8"]).unwrap();
         apply_ops(&ops, count, &mut t);
-        assert!(t.c_cflag & minix_types::CSIZE == minix_types::CS8);
+        assert!(t.c_cflag & minix_sys::CSIZE == minix_sys::CS8);
     }
 
     #[test]
     fn test_apply_speed_and_control_char() {
         use super::*;
-        let mut t = minix_types::Termios::new();
+        let mut t = minix_sys::Termios::new();
         let (ops, count) = parse_args(&["115200", "intr", "^C"]).unwrap();
         apply_ops(&ops, count, &mut t);
         assert_eq!(t.c_ispeed, 115200);
@@ -379,12 +379,12 @@ mod tests {
     #[test]
     fn test_display_a_shape() {
         use super::*;
-        let mut t = minix_types::Termios::new();
+        let mut t = minix_sys::Termios::new();
         t.c_ospeed = 9600;
         t.c_ispeed = 9600;
-        t.c_lflag |= minix_types::ICANON | minix_types::ECHO;
-        t.c_cflag |= minix_types::CS8;
-        t.c_cc[minix_types::VINTR] = 0x03;
+        t.c_lflag |= minix_sys::ICANON | minix_sys::ECHO;
+        t.c_cflag |= minix_sys::CS8;
+        t.c_cc[minix_sys::VINTR] = 0x03;
         let mut out = [0u8; 512];
         let used = display_a(&t, &mut out).unwrap();
         let text = core::str::from_utf8(&out[..used]).unwrap();

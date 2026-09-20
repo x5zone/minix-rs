@@ -54,6 +54,15 @@ pub use minix_types::types::stat::Stat;
 /// never forks a value.
 pub use minix_types::types::errno::*;
 
+/// The termios table at the crate root — the position `<termios.h>` holds
+/// for C programs (C: `minix3/sys/sys/termios.h`; command binaries like
+/// `stty` `use minix_sys::ECHO` the way C code includes the header, per
+/// the same 18-stage layering rule that keeps `minix-types` off command
+/// imports — edge E-CMDSYSFACE precedent, defect batch X-1). The names
+/// come from the single authority in `minix-types` (`types/termios.rs`);
+/// this crate adds no constants and never forks a value.
+pub use minix_types::types::termios::*;
+
 /// Inter-process communication primitives (document 04).
 pub mod ipc;
 /// System call protocol above send-and-receive (document 05).
@@ -426,6 +435,13 @@ pub fn mkfifo(path: &str, mode: u32) -> Result<(), Errno> {
 }
 
 // ── Process identity and scheduling ──
+
+/// Returns the process id of the caller (C: `getpid`,
+/// `minix3/minix/lib/libc/sys/getpid.c:12-19`; the module-only
+/// `pm::getpid_via` topled per the C-44 leftover list).
+pub fn getpid() -> Result<Pid, Errno> {
+    pm::getpid_via(&ipc::DirectTrapTransport)
+}
 
 /// Returns the parent process id of the caller (C: `getppid`,
 /// `minix3/minix/lib/libc/sys/getppid.c:12-19`).

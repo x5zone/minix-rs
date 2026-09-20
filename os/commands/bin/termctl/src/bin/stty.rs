@@ -31,7 +31,7 @@ fn main() {
         fail("option not wired");
     }
     if args.first().map(|a| *a == "-a").unwrap_or(false) {
-        let mut t = minix_types::Termios::new();
+        let mut t = minix_sys::Termios::new();
         tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
         let mut out = [0u8; 512];
         match display_a(&t, &mut out) {
@@ -45,7 +45,7 @@ fn main() {
 
     if args.is_empty() {
         // 无操作数：只打速度行（C `stty` 的缺省面）。
-        let mut t = minix_types::Termios::new();
+        let mut t = minix_sys::Termios::new();
         tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
         let line = format!("speed {} baud\n", t.c_ospeed);
         let _ = minix_sys::write(STDOUT, line.as_bytes());
@@ -56,7 +56,7 @@ fn main() {
         Ok(pair) => pair,
         Err(_) => fail("unrecognized operand"),
     };
-    let mut t = minix_types::Termios::new();
+    let mut t = minix_sys::Termios::new();
     tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
     apply_ops(&ops, count, &mut t);
     tcsetattr(STDIN, &t).unwrap_or_else(|_| fail("cannot set terminal attributes"));

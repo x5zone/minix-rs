@@ -10,7 +10,6 @@ name = "minix_termctl"
 path = "src/lib.rs"
 
 [dependencies]
-minix-types = { workspace = true }
 minix-sys = { workspace = true }
 
 [[bin]]

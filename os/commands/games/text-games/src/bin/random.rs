@@ -6,8 +6,6 @@
 //! LCG 生成（textfilter `jot.rs` 先例），播种料来自时钟与 `getpid`。
 
 use minix_text_games::lottery::{is_selected, mix_seed, parse_denominator};
-use minix_sys::ipc::DirectTrapTransport;
-use minix_sys::pm::getpid_via;
 use minix_sys::read;
 
 fn main() {
@@ -27,7 +25,7 @@ fn main() {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let pid = getpid_via(&DirectTrapTransport).unwrap_or(0) as u32;
+    let pid = minix_sys::getpid().unwrap_or(0) as u32;
     let mut state = mix_seed(now.as_secs(), now.subsec_micros(), pid);
 
     // 逐行读标准输入：每行掷一次 [0, N)，掷中 0 即替换当前选中行。
