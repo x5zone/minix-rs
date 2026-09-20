@@ -12,6 +12,14 @@
 //! hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -23,8 +31,8 @@ use minix_sys::read;
 
 const UNITSFILE: &str = "/usr/lib/units";
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut userfile: Option<String> = None;
     let mut list = false;
     let mut listexpand = false;
@@ -153,7 +161,7 @@ fn convert(table: &UnitsTable, have_expr: &str, want_expr: &str) -> Option<Answe
 /// exits 1 like the C's `err(1, ...)`.
 fn load_units_file(path: Option<&str>) -> Vec<u8> {
     match path.unwrap_or(UNITSFILE) {
-        real => match std::fs::read(real) {
+        real => match support::read_file(real) {
             Ok(v) => v,
             Err(_) => {
                 support::warn(format!("units: can't open {}\n", real).as_bytes());
@@ -164,7 +172,7 @@ fn load_units_file(path: Option<&str>) -> Vec<u8> {
 }
 
 fn split_file_lines(bytes: &[u8]) -> Vec<&str> {
-    let text = std::str::from_utf8(bytes).unwrap_or("");
+    let text = core::str::from_utf8(bytes).unwrap_or("");
     let mut lines: Vec<&str> = Vec::new();
     for line in text.split_inclusive('\n') {
         lines.push(line.strip_suffix('\n').unwrap_or(line));
@@ -198,4 +206,16 @@ fn read_line() -> Option<String> {
 fn usage() -> ! {
     support::warn(b"\nunits [-Llqv] [-f filename] [[count] from-unit to-unit]\n");
     support::terminate(3);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

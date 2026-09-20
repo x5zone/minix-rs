@@ -7,14 +7,21 @@
 //! this build serves one stdin stream (serial join, or pass-through in
 //! parallel mode — a single stream has nothing to merge with).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::paste::{join_serial, parse};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
     let options = match parse(&words) {
         Ok(options) => options,
@@ -33,7 +40,7 @@ fn main() {
             Err(_) => break,
         }
     }
-    let text = std::str::from_utf8(&input).unwrap_or("");
+    let text = core::str::from_utf8(&input).unwrap_or("");
     let mut lines: Vec<&str> = text.split('\n').collect();
     if options.serial {
         if lines.last() == Some(&"") {
@@ -52,4 +59,16 @@ fn main() {
         }
     }
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

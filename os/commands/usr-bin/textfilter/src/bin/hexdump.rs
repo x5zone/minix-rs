@@ -12,6 +12,14 @@
 //! hosted-versus-target seams are the echo template's
 //! (`os/commands/bin/fileops/src/bin/echo.rs`).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::format;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -20,8 +28,8 @@ use minix_textfilter::hexdump::{
 };
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut formats: Vec<DumpFormat> = Vec::new();
     let mut options = HexOptions::default();
     let mut skip: u64 = 0;
@@ -143,4 +151,16 @@ fn flag_value(argv: &[String], i: &mut usize, chars: &[char], k: &mut usize) -> 
 fn usage() -> ! {
     support::warn(b"usage: hexdump [-bcCdovx] [-e fmt] [-f fmt_file] [-n length] [-s skip] [file ...]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

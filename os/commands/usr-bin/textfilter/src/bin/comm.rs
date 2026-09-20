@@ -8,14 +8,21 @@
 //! open-existing call, so this build compares two reads of stdin —
 //! which compare equal — only structurally.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::comm::{comm, CommOptions};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut options = CommOptions::default();
     let mut index = 1;
     while index < argv.len() {
@@ -63,10 +70,22 @@ fn split_lines(input: &[u8]) -> Vec<String> {
     if input.is_empty() {
         return Vec::new();
     }
-    let text = std::str::from_utf8(input).unwrap_or("");
+    let text = core::str::from_utf8(input).unwrap_or("");
     let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
     if input.ends_with(b"\n") {
         pieces.pop();
     }
     pieces
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

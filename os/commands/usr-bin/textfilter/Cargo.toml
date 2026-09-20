@@ -13,4 +13,13 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
+
+# minix-rt 按目标分形态（fileops/NS12 seam 判例）：无条件声明会把 std
+# feature 统一进下游的 none 构建图，freestanding 侧 minix-rt 必须 no_std。
+# feature 只在各自门下出现，宿主图统一特性时不会把 `#[panic_handler]`
+# 漏进 std 构建（E0152 死结）。
+[target.'cfg(not(target_os = "none"))'.dependencies]
 minix-rt = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+minix-rt = { workspace = true, features = ["alloc-global", "panic-handler"] }

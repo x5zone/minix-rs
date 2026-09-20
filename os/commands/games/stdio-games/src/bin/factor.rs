@@ -6,6 +6,13 @@
 //! arguments every stdin line carries one value. A malformed value is a
 //! failure (the C path is `errx`), exiting 1.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -13,8 +20,8 @@ use minix_stdio_games::factor::{parse_value, render_factors, trial_divide};
 use minix_sys::read;
 use support::LineReader;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     if argv.len() > 1 {
         for arg in &argv[1..] {
             factor_word(arg);
@@ -34,7 +41,7 @@ fn main() {
             if trimmed.is_empty() {
                 continue;
             }
-            let word = std::str::from_utf8(trimmed).unwrap_or("");
+            let word = core::str::from_utf8(trimmed).unwrap_or("");
             factor_word(word);
         }
     }
@@ -59,4 +66,16 @@ fn factor_word(word: &str) {
         }
         Err(_) => support::terminate(1),
     }
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

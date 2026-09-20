@@ -5,14 +5,21 @@
 //! stdin, decodes, and prints. File operands wait for the gated
 //! open-existing call; the HTTP/MIME flag families are later batches.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::vis::decode;
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     for arg in &argv[1..] {
         if arg.starts_with('-') && arg.len() > 1 {
             support::warn(b"unvis: flag families beyond the default decoder are later batches\n");
@@ -29,8 +36,20 @@ fn main() {
             Err(_) => break,
         }
     }
-    let text = std::str::from_utf8(&input).unwrap_or("");
+    let text = core::str::from_utf8(&input).unwrap_or("");
     let decoded = decode(text);
     support::emit(&decoded);
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

@@ -23,3 +23,13 @@ path = "src/bin/whatis.rs"
 [[bin]]
 name = "apropos"
 path = "src/bin/apropos.rs"
+
+# minix-rt 按目标分形态（fileops/NS12 seam 判例）：真机（x86_64-unknown-none，
+# NS8 装机面的命令工件）取 `_start` 出生链 + `alloc-global` slab 池 +
+# `panic-handler` 统一 panic 面；宿主开发面取 std 形态（无 `_start`，无
+# panic-handler——feature 只在各自门下出现，避免 E0152 死结）。
+[target.'cfg(not(target_os = "none"))'.dependencies]
+minix-rt = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+minix-rt = { workspace = true, features = ["alloc-global", "panic-handler"] }

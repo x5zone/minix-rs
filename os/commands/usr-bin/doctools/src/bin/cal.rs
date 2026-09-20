@@ -8,29 +8,33 @@
 //! `-r`/`-A`/`-B`/`-C`/`-d`/`-R` 等面回答 "option not wired"；月份只收
 //! 数字（C 的月名解析面未移植）。
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_doctools::cal::{render_month, render_year, Reckoning};
 use minix_sys::write;
 
 const STDOUT: i32 = 1;
 const STDERR: i32 = 2;
 
-fn terminate(code: i32) -> ! {
-    std::process::exit(code)
-}
 
 fn fail(message: &str) -> ! {
     let _ = write(STDERR, message.as_bytes());
     let _ = write(STDERR, b"\n");
-    terminate(1)
+    support::terminate(1)
 }
 
-/// 宿主取当前 UTC 时刻（`cal` 无参时的当前月）；no_std 目标换时钟系统
-/// 调用，接缝与 argv 同批切换。
+/// 当前 UTC 时刻（`cal` 无参时的当前月）：宿主读宿主钟，目标读内核
+/// `SYS_TIMES` 面（`support::epoch_micros` 双形）。
 fn now_epoch_days_civil() -> (i32, u32) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let secs = (support::epoch_micros().unwrap_or(0) / 1_000_000) as i64;
     let days = secs.div_euclid(86_400);
     // Hinnant civil_from_days（与 12 篇 stamp.rs 同式）。
     let z = days + 719_468;
@@ -47,8 +51,8 @@ fn now_epoch_days_civil() -> (i32, u32) {
     (y as i32, m)
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut operands: Vec<&str> = Vec::new();
     for arg in &args[1..] {
@@ -109,5 +113,17 @@ fn main() {
         }
         Err(_) => fail("render buffer too small"),
     }
-    terminate(0);
+    support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

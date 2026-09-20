@@ -7,13 +7,20 @@
 //! (edge E-CMDSYSFACE), so this build warns per operand and still
 //! serves stdout; `-i`'s signal face is likewise a later batch.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut operands: Vec<&str> = Vec::new();
     let mut index = 1;
     while index < argv.len() {
@@ -62,4 +69,16 @@ fn main() {
         }
     }
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

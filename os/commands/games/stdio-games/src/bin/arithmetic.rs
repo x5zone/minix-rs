@@ -17,6 +17,14 @@
 //! (`penalise`, line 255) are not modelled yet — the same problem is
 //! simply asked again.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -26,8 +34,8 @@ use support::LineReader;
 
 const KEYS: [Operator; 4] = [Operator::Add, Operator::Subtract, Operator::Multiply, Operator::Divide];
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut range = DEFAULT_RANGE;
     let mut keys: Vec<usize> = vec![0, 1];
     let mut index = 1;
@@ -98,7 +106,7 @@ fn main() {
             while end < line.len() && line[end].is_ascii_digit() {
                 end += 1;
             }
-            let word = std::str::from_utf8(&line[start..end]).unwrap_or("0");
+            let word = core::str::from_utf8(&line[start..end]).unwrap_or("0");
             let given: u64 = word.parse().unwrap_or(u64::MAX);
             if given == answer_of(question) as u64 {
                 score.right += 1;
@@ -213,13 +221,22 @@ fn print_score(score: &Score) {
     support::emit(b"\n");
 }
 
-/// Seeds the generator from the host clock (std seam; the target build
-/// seeds from a kernel clock read once the clock face lands).
+/// Seeds the generator from the clock face (`support::epoch_micros`
+/// twin: host clock hosted, kernel `SYS_TIMES` face on target — the C
+/// seeds `random(3)` from `time(2)`, whose sequence not the clock is the
+/// observable contract).
 fn seed() -> u32 {
-    use std::time::SystemTime;
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() ^ (d.as_secs() as u32))
-        .unwrap_or(1)
-        | 1
+    (support::epoch_micros().unwrap_or(1) as u32) | 1
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

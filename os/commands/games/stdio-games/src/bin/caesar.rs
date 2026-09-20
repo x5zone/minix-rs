@@ -8,6 +8,13 @@
 //! deciding half is not yet in the library, so this build reports the C
 //! usage and exits 1 for that mode until it lands.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -15,8 +22,8 @@ use minix_stdio_games::caesar::{parse_rotation, rotate_line};
 use minix_sys::read;
 use support::LineReader;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let rotation = match argv.len() {
         2 => match parse_rotation(&argv[1]) {
             Ok(rotation) => rotation,
@@ -41,4 +48,16 @@ fn main() {
         }
     }
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

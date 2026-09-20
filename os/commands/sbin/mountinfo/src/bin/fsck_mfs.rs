@@ -15,15 +15,26 @@
 //! 致命 8（消息 + `fatal` 尾注）。多镜像逐个检查，观察单每镜像后
 //! 重置（C `chkdev` 后清列表同款）。
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_fs_mfs::fsck::{self, Fsck, FsckOptions};
 
 fn usage(program: &str) -> ! {
-    eprintln!("usage: {program} [-lfs] [-i ino]... [-z zone]... image...");
-    std::process::exit(fsck::EXIT_USAGE);
+    support::warn(format!("usage: {program} [-lfs] [-i ino]... [-z zone]... image...\n").as_bytes());
+    support::terminate(fsck::EXIT_USAGE);
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let args: Vec<String> = support::args();
     let program = args.first().map(String::as_str).unwrap_or("fsck.mfs");
     let mut listing = false;
     let mut want_super = false;
@@ -59,14 +70,17 @@ fn main() {
                     continue;
                 }
                 b'r' | b'y' | b'a' | b'p' | b'd' | b'c' => {
-                    eprintln!(
-                        "{program}: {arg} needs the repair face (deferred); \
-                         only the read-only decision half is built"
+                    support::warn(
+                        format!(
+                            "{program}: {arg} needs the repair face (deferred); \
+                         only the read-only decision half is built\n"
+                        )
+                        .as_bytes(),
                     );
-                    std::process::exit(fsck::EXIT_USAGE);
+                    support::terminate(fsck::EXIT_USAGE);
                 }
                 _ => {
-                    eprintln!("{program}: unknown flag '{arg}'");
+                    support::warn(format!("{program}: unknown flag '{arg}'\n").as_bytes());
                     bad_flag = true;
                 }
             }
@@ -81,25 +95,28 @@ fn main() {
 
     for image_path in &images {
         // C devopen 失败走 fatal（fsck.c:384-391）。
-        let image = match std::fs::read(image_path) {
+        // 文件读取走 `support::read_file` 双形（宿主 std::fs，目标
+        // minix_sys open/read/close）；失败原因在缝上抹平为存在性——
+        // C 的 strerror 细节未建模，与 hosted io::Error 路径同。
+        let image = match support::read_file(image_path) {
             Ok(bytes) => bytes,
-            Err(error) => {
-                println!("fsck.mfs: cannot read {image_path}: {error}");
-                println!("couldn't open device to fsck\nfatal");
-                std::process::exit(fsck::EXIT_CHECK_FAILED);
+            Err(_) => {
+                support::emit(format!("fsck.mfs: cannot read {image_path}\n").as_bytes());
+                support::emit(b"couldn't open device to fsck\nfatal\n");
+                support::terminate(fsck::EXIT_CHECK_FAILED);
             }
         };
         let mut checker = match Fsck::new(&image) {
             Ok(checker) => checker,
             Err(fatal) => {
-                println!("{}\nfatal", fatal.message);
-                std::process::exit(fsck::EXIT_CHECK_FAILED);
+                support::emit(format!("{}\nfatal\n", fatal.message).as_bytes());
+                support::terminate(fsck::EXIT_CHECK_FAILED);
             }
         };
         if want_super {
             // C 的 lsuper 在读超块后立即打（fsck.c:577）；这里在静态
             // 校验后打，字段面相同。
-            print!("{}", checker.list_super());
+            support::emit(format!("{}", checker.list_super()).as_bytes());
         }
         let options = FsckOptions {
             listing,
@@ -109,19 +126,32 @@ fn main() {
         match checker.run(&options) {
             Ok(_summary) => {
                 for message in checker.messages() {
-                    println!("{message}");
+                    support::emit(format!("{message}\n").as_bytes());
                 }
             }
             Err(fatal) => {
                 for message in checker.messages() {
-                    println!("{message}");
+                    support::emit(format!("{message}\n").as_bytes());
                 }
-                println!("{}\nfatal", fatal.message);
-                std::process::exit(fsck::EXIT_CHECK_FAILED);
+                support::emit(format!("{}\nfatal\n", fatal.message).as_bytes());
+                support::terminate(fsck::EXIT_CHECK_FAILED);
             }
         }
         // 多镜像：观察单每镜像后重置（fsck.c:1660-1662）。
         watch_inodes.clear();
         watch_zones.clear();
     }
+    support::terminate(0)
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

@@ -5,11 +5,22 @@
 //! `for_each_matching`（大小写折叠的行内匹配），库面与缺库行为同
 //! `whatis`——经典文本库，`makewhatis` 构建面是 10 篇 §3.4 的声明留白。
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_doctools::whatis::SliceManDb;
 use minix_sys::{open, read, Fd};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut db_path = "/usr/man/whatis";
     let mut keywords: Vec<&str> = Vec::new();
@@ -19,8 +30,8 @@ fn main() {
             "-M" => {
                 at += 1;
                 db_path = args.get(at).copied().unwrap_or_else(|| {
-                    eprintln!("apropos: -M needs a path");
-                    std::process::exit(1);
+                    support::warn(b"apropos: -M needs a path\n");
+                    support::terminate(1);
                 });
             }
             other => keywords.push(other),
@@ -28,15 +39,15 @@ fn main() {
         at += 1;
     }
     if keywords.is_empty() {
-        eprintln!("usage: apropos [-M db] keyword ...");
-        std::process::exit(1);
+        support::warn(b"usage: apropos [-M db] keyword ...\n");
+        support::terminate(1);
     }
 
     let fd: Fd = match open(db_path, 0, 0) {
         Ok(fd) => fd,
         Err(_) => {
-            eprintln!("apropos: {db_path}: cannot open");
-            std::process::exit(1);
+            support::warn(format!("apropos: {db_path}: cannot open\n").as_bytes());
+            support::terminate(1);
         }
     };
     let mut image = Vec::new();
@@ -46,8 +57,8 @@ fn main() {
             Ok(0) => break,
             Ok(n) => image.extend_from_slice(&chunk[..n]),
             Err(_) => {
-                eprintln!("apropos: {db_path}: read error");
-                std::process::exit(1);
+                support::warn(format!("apropos: {db_path}: read error\n").as_bytes());
+                support::terminate(1);
             }
         }
     }
@@ -56,12 +67,24 @@ fn main() {
     let text = String::from_utf8_lossy(&image).into_owned();
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
-        std::process::exit(1);
+        support::terminate(1);
     }
     let db = SliceManDb { lines: &lines };
     let mut hits = 0;
     for keyword in keywords {
-        hits += db.for_each_matching(keyword, |line| println!("{line}"));
+        hits += db.for_each_matching(keyword, |line| support::emit(format!("{line}\n").as_bytes()));
     }
-    std::process::exit(if hits > 0 { 0 } else { 1 });
+    support::terminate(if hits > 0 { 0 } else { 1 });
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

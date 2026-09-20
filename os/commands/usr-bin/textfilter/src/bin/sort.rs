@@ -9,14 +9,21 @@
 //! trailing newline. File operands wait for the gated open-existing
 //! call; `-m` (merge) and `-o` (output file) land with the files face.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::sort::{compare, parse_options};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
     let (options, operands) = match parse_options(&words) {
         Ok((options, operands)) => (options, operands),
@@ -56,7 +63,7 @@ fn split_lines(input: &[u8]) -> Vec<String> {
     if input.is_empty() {
         return Vec::new();
     }
-    let text = std::str::from_utf8(input).unwrap_or("");
+    let text = core::str::from_utf8(input).unwrap_or("");
     let mut pieces: Vec<String> = text.split('\n').map(String::from).collect();
     if input.ends_with(b"\n") {
         pieces.pop();
@@ -89,4 +96,16 @@ fn check(lines: &[String], options: &minix_textfilter::sort::Options) {
         }
         previous = Some(line);
     }
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

@@ -10,13 +10,20 @@
 //! the library yet and are reported as usage failures rather than being
 //! silently ignored; file operands wait for the gated open-existing call.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::uniq::{Uniq, UniqMode};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut mode = UniqMode::All;
     let mut mode_seen = false;
     let mut index = 1;
@@ -78,4 +85,16 @@ fn unsupported_operand(option: &str) -> ! {
     support::emit(b"uniq: file operands wait for the open call (edge E-CMDSYSFACE)\n");
     let _ = option;
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

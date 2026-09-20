@@ -8,6 +8,17 @@
 //! then consumes operands even in `-a`/`-g` mode; this shell keeps the
 //! mutually exclusive branch shape declared in 13-terminal-termios.md §5.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_sys::{tcgetattr, tcsetattr};
 use minix_termctl::stty::{apply_ops, display_a, grep_print, parse_args};
 
@@ -15,18 +26,15 @@ const STDIN: i32 = 0;
 const STDOUT: i32 = 1;
 const STDERR: i32 = 2;
 
-fn terminate(code: i32) -> ! {
-    std::process::exit(code)
-}
 
 fn fail(message: &str) -> ! {
     let _ = minix_sys::write(STDERR, message.as_bytes());
     let _ = minix_sys::write(STDERR, b"\n");
-    terminate(1)
+    support::terminate(1)
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let all: Vec<&str> = argv.iter().map(String::as_str).collect();
     let args: Vec<&str> = all[1..].to_vec();
 
@@ -41,7 +49,7 @@ fn main() {
             }
             Err(_) => fail("display buffer too small"),
         }
-        terminate(0);
+        support::terminate(0);
     }
     if args.first().map(|a| *a == "-a").unwrap_or(false) {
         let mut t = minix_sys::Termios::new();
@@ -53,7 +61,7 @@ fn main() {
             }
             Err(_) => fail("display buffer too small"),
         }
-        terminate(0);
+        support::terminate(0);
     }
 
     if args.is_empty() {
@@ -62,7 +70,7 @@ fn main() {
         tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
         let line = format!("speed {} baud\n", t.c_ospeed);
         let _ = minix_sys::write(STDOUT, line.as_bytes());
-        terminate(0);
+        support::terminate(0);
     }
 
     let (ops, count) = match parse_args(&args) {
@@ -73,5 +81,17 @@ fn main() {
     tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
     apply_ops(&ops, count, &mut t);
     tcsetattr(STDIN, &t).unwrap_or_else(|_| fail("cannot set terminal attributes"));
-    terminate(0);
+    support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

@@ -13,14 +13,22 @@
 //! open seam, edge E-CMDSYSFACE). The hosted-versus-target seams are
 //! the echo template's (`os/commands/bin/fileops/src/bin/echo.rs`).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::format;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::unifdef::{add_symbol, Options, Unifdef, UnifdefError};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut options = Options::default();
     let mut ofilename: Option<String> = None;
     let mut operand: Option<String> = None;
@@ -120,7 +128,7 @@ fn main() {
             }
             v
         }
-        Some(path) => match std::fs::read(path) {
+        Some(path) => match support::read_file(path) {
             Ok(v) => v,
             Err(_) => {
                 support::warn(format!("unifdef: can't open {}\n", path).as_bytes());
@@ -134,7 +142,7 @@ fn main() {
         Ok(outcome) => {
             match ofilename {
                 Some(path) => {
-                    if let Err(_) = std::fs::write(&path, &outcome.output) {
+                    if let Err(_) = support::write_file(&path, &outcome.output) {
                         support::warn(format!("unifdef: can't open {}\n", path).as_bytes());
                         support::terminate(2);
                     }
@@ -181,4 +189,16 @@ fn usage() -> ! {
         b"usage: unifdef [-cdeklst] [-o output] [-Dsym[=val]] [-Usym] [-iDsym[=val]] [-iUsym] ... [file]\n",
     );
     support::terminate(2);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

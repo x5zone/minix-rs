@@ -12,6 +12,14 @@
 //! (`os/commands/bin/fileops/src/bin/echo.rs`): argv via
 //! `std::env::args`, termination via the host runtime.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::format;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -20,8 +28,8 @@ use minix_textfilter::jot::{
     HAVE_ENDER, HAVE_REPS, HAVE_STEP,
 };
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut options = JotOptions::default();
     let mut seed_word: Option<String> = None;
     let mut i = 1;
@@ -124,12 +132,11 @@ fn main() {
             _ => bad_step(&s),
         },
         None => {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos() as u64)
-                .unwrap_or(0);
-            nanos ^ ((std::process::id() as u64) << 16)
+            // Clock + pid mix (C jot seeds from time(2)); the clock half
+            // rides the `support::epoch_micros` twin, the pid half the
+            // kernel getpid wrapper both sides.
+            support::epoch_micros().unwrap_or(0)
+                ^ ((minix_sys::getpid().unwrap_or(0) as u64) << 16)
         }
     };
 
@@ -203,4 +210,16 @@ fn usage() -> ! {
         b"usage: jot [-cnr] [-b word] [-p precision] [-s string] [-w word] [reps [begin [end [step | seed]]]]\n",
     );
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

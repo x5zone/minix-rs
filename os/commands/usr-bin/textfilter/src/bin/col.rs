@@ -8,14 +8,21 @@
 //! (`os/commands/bin/fileops/src/bin/echo.rs`): argv via
 //! `std::env::args`, termination via the host runtime.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::col::{filter, ColOptions};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut options = ColOptions::default();
     let mut i = 1;
     while i < argv.len() {
@@ -73,4 +80,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: col [-bfpx] [-l nline]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

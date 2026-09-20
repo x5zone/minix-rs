@@ -7,6 +7,17 @@
 //! `stat` on the terminal lines and are declared unwired; stamps are UTC
 //! (no time-zone database in this layer, see 12-process-tools.md §5).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_proctools::stamp::format_login_time;
 use minix_proctools::utmp::walk_database;
 use minix_sys::{open, read, Fd};
@@ -15,20 +26,20 @@ use minix_sys::{open, read, Fd};
 /// (`who.c:189`).
 const DEFAULT_UTMP: &str = "/usr/adm/utmp";
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     if args.len() > 2 {
-        eprintln!("usage: who [utmp_file]");
-        std::process::exit(1);
+        support::warn(b"usage: who [utmp_file]\n");
+        support::terminate(1);
     }
     let path = args.get(1).copied().unwrap_or(DEFAULT_UTMP);
 
     let fd: Fd = match open(path, 0, 0) {
         Ok(fd) => fd,
         Err(_) => {
-            eprintln!("who: {path}: cannot open");
-            std::process::exit(1);
+            support::warn(format!("who: {path}: cannot open\n").as_bytes());
+            support::terminate(1);
         }
     };
     let mut image = Vec::new();
@@ -38,8 +49,8 @@ fn main() {
             Ok(0) => break,
             Ok(n) => image.extend_from_slice(&chunk[..n]),
             Err(_) => {
-                eprintln!("who: {path}: read error");
-                std::process::exit(1);
+                support::warn(format!("who: {path}: read error\n").as_bytes());
+                support::terminate(1);
             }
         }
     }
@@ -56,10 +67,23 @@ fn main() {
             Ok(used) => String::from_utf8_lossy(&stamp_buf[..used]).into_owned(),
             Err(_) => "?".to_string(),
         };
-        println!("{:<8} {:<8} {}", entry.name, entry.line, stamp);
+        support::emit(format!("{:<8} {:<8} {}\n", entry.name, entry.line, stamp).as_bytes());
     });
     if walk.is_err() {
-        eprintln!("who: {path}: corrupt database");
-        std::process::exit(1);
+        support::warn(format!("who: {path}: corrupt database\n").as_bytes());
+        support::terminate(1);
     }
+    support::terminate(0)
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

@@ -13,6 +13,16 @@
 //! `minix_sys::exit` would spin), bytes through `minix_sys::read`/`write`
 //! so a hosted run without a kernel fails honestly.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_editor::exec::{self, EditorIo, Flow, Session};
 use minix_editor::store::{GapStore, TextStore};
 use minix_sys::{read, write, Fd};
@@ -22,10 +32,6 @@ const STDIN: Fd = 0;
 const STDOUT: Fd = 1;
 const STDERR: Fd = 2;
 
-/// Terminates the process with an exit status.
-fn terminate(code: i32) -> ! {
-    std::process::exit(code)
-}
 
 /// The production I/O half: bytes in and out through `minix_sys`, files
 /// through the open/read/write/close family (L10's wrappers, one call
@@ -123,8 +129,8 @@ fn read_line(buf: &mut [u8; 8192]) -> Option<String> {
     }
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let program = args.first().copied().unwrap_or("ed");
     // `red = strlen > 2 && argv[0][n-3] == 'r'` (`main.c:118`).
@@ -173,7 +179,7 @@ fn main() {
                     }
                     _ => {
                         let _ = write(STDERR, b"Usage: ed [-] [-ESsx] [-p string] [name]\n");
-                        terminate(1);
+                        support::terminate(1);
                     }
                 }
             }
@@ -195,13 +201,13 @@ fn main() {
             let _ = write(STDERR, b"?\n");
             sess.error_msg = Some("invalid filename");
             if scripted {
-                terminate(2);
+                support::terminate(2);
             }
         } else {
             let mut scratch = [0u8; minix_editor::store::MAX_TEXT];
             match io.read_file(name, &mut scratch) {
                 Ok(size) => {
-                    if let Ok(text) = std::str::from_utf8(&scratch[..size]) {
+                    if let Ok(text) = core::str::from_utf8(&scratch[..size]) {
                         let mut pos = 0usize;
                         for piece in text.split('\n').collect::<Vec<_>>() {
                             // `split` yields a trailing empty piece for a
@@ -218,12 +224,12 @@ fn main() {
                         sess.current = pos;
                         sess.modified = false;
                     }
-                    sess.set_filename(name).unwrap_or_else(|_| terminate(2));
+                    sess.set_filename(name).unwrap_or_else(|_| support::terminate(2));
                 }
                 Err(_) => {
                     let _ = write(STDERR, b"?\n");
                     if scripted {
-                        terminate(2);
+                        support::terminate(2);
                     }
                 }
             }
@@ -242,12 +248,12 @@ fn main() {
                 let _ = write(STDERR, b"?\n");
                 sess.error_msg = Some("warning: file modified");
                 if sess.scripted {
-                    terminate(2);
+                    support::terminate(2);
                 }
                 sess.modified = false;
                 continue;
             }
-            terminate(0);
+            support::terminate(0);
         };
         if line.is_empty() && !sess.scripted {
             // C distinguishes an immediate EOF (n == 0) from an empty
@@ -255,14 +261,14 @@ fn main() {
         }
         match exec::step(&mut store, &mut sess, &line, &mut io) {
             Ok(Flow::Continue) => {}
-            Ok(Flow::Quit) => terminate(0),
+            Ok(Flow::Quit) => support::terminate(0),
             Ok(Flow::QuitModified) => {
                 let _ = write(STDERR, b"?\n");
                 let message = sess.error_msg.unwrap_or("warning: file modified");
                 let _ = write(STDERR, message.as_bytes());
                 let _ = write(STDERR, b"\n");
                 if sess.scripted {
-                    terminate(2);
+                    support::terminate(2);
                 }
                 sess.modified = false;
             }
@@ -276,9 +282,21 @@ fn main() {
                 if sess.scripted {
                     // Script mode quits on the first error
                     // (`main.c:268-275`).
-                    terminate(2);
+                    support::terminate(2);
                 }
             }
         }
     }
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

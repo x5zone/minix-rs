@@ -2,20 +2,27 @@
 //!
 //! Included per binary through `#[path = "../bin_support.rs"]`; it never
 //! enters the library target, keeping `minix-stdio-games` free of any
-//! system-call import. Two seams carry the hosted-versus-target split and
-//! swap in one sweep when no_std program images land (same decision as the
-//! echo template, `os/commands/bin/fileops/src/bin/echo.rs`):
+//! system-call import. Two seams carry the hosted-versus-target split,
+//! carried here as `cfg`-twin pairs so each binary swaps both in one sweep
+//! (same decision as the echo template,
+//! `os/commands/bin/fileops/src/bin/echo.rs`):
 //!
-//! - argv gathering uses `std::env::args` here; the target build reads the
-//!   birth-chain descriptor through `minix-rt`.
-//! - `terminate` exits through the host runtime, because `minix_sys::exit`
-//!   deliberately spins when no process manager answers (the C `_exit`
-//!   last resort); the target build swaps it for `minix_sys::exit`.
+//! - argv gathering uses `std::env::args` on hosted builds; the target
+//!   build reads the birth-chain descriptor through `minix_rt::crt0::args`
+//!   (raw initial-stack bytes rendered lossily into `String`s).
+//! - `terminate` exits through the host runtime on hosted builds, because
+//!   `minix_sys::exit` deliberately spins when no process manager answers
+//!   (the C `_exit` last resort); the target build swaps it for
+//!   `minix_sys::exit`.
 //!
 //! Writes and reads go through `minix_sys::write`/`read` only. Transport
 //! failures short-circuit to a typed `Err` (edge E-SYSCALL-SIGN), so
 //! hosted runs observe honest failures on both channels; on-target behavior
 //! is unaffected.
+
+// Each binary includes this module and uses the subset it needs; the
+// unused helpers in any one binary are intentional, not drift.
+#![allow(dead_code)]
 
 use minix_sys::{write, Fd};
 
@@ -25,6 +32,30 @@ pub const STDIN: Fd = 0;
 pub const STDOUT: Fd = 1;
 
 /// Terminates the process with an exit status (see the module header).
+/// Program arguments without `argv[0]` conventions applied — index 0 is
+/// the program name, exactly as C's `argv`.
+#[cfg(all(not(test), target_os = "none"))]
+pub fn args() -> alloc::vec::Vec<alloc::string::String> {
+    minix_rt::crt0::args()
+        .map(|raw| alloc::string::String::from_utf8_lossy(raw).into_owned())
+        .collect()
+}
+
+/// Hosted twin of [`args`] (see the module header for the seam contract).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn args() -> alloc::vec::Vec<alloc::string::String> {
+    std::env::args().collect()
+}
+
+/// Terminates the process with an exit status (see the module header).
+#[cfg(all(not(test), target_os = "none"))]
+pub fn terminate(code: i32) -> ! {
+    minix_sys::exit(code)
+}
+
+/// Hosted twin of [`terminate`] (see the module header for the seam
+/// contract).
+#[cfg(any(test, not(target_os = "none")))]
 pub fn terminate(code: i32) -> ! {
     std::process::exit(code)
 }
@@ -141,9 +172,26 @@ impl<'a, R: FnMut(&mut [u8]) -> Result<usize, ()>> LineReader<'a, R> {
     }
 }
 
+/// Wall-clock microseconds since the epoch, when a clock face answers.
+///
+/// Hosted builds read the host clock; the target build reads the kernel
+/// `SYS_TIMES` face — boot epoch seconds times one million plus real-time
+/// ticks times ten thousand (tick rate `DEFAULT_HZ = 100`,
+/// `os/kernel/src/clock.rs:685`). This serves the jobs C utilities cover
+/// with `time(2)` and seed mixes: entropy and coarse stamps, not a
+/// monotonic measurement.
+#[cfg(any(test, not(target_os = "none")))]
+pub fn epoch_micros() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_micros() as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
 
     /// Runs the reader over canned input, returning every delivered line.
     fn lines(input: &[u8], capacity: usize) -> Vec<Vec<u8>> {
@@ -206,3 +254,14 @@ mod tests {
         assert_eq!(&out[..five], b"12345");
     }
 }
+
+#[cfg(all(not(test), target_os = "none"))]
+pub fn epoch_micros() -> Option<u64> {
+    minix_sys::syscall::sys_times(
+        &minix_sys::syscall::DirectKernelCallTransport,
+        minix_sys::syscall::SELF,
+    )
+    .ok()
+    .map(|times| times.boot_time * 1_000_000 + times.real_ticks * 10_000)
+}
+
