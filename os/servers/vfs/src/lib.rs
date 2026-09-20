@@ -21,6 +21,12 @@
 //! - `call_table`: System call dispatch table.
 //! - `ipc`: IPC message handling.
 
+#![cfg_attr(not(test), no_std)]
+
+// alloc 宏（vec!/format!）crate 级引入（init 双形态先例）。
+#[macro_use]
+extern crate alloc;
+
 pub mod bdev;
 pub mod call_table;
 pub mod cdev;

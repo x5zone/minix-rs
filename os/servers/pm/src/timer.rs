@@ -7,6 +7,7 @@
 use alloc::collections::BTreeMap;
 use minix_types::{Endpoint, UserSlot, EINVAL};
 use crate::mproc::{ProcTable, RemainingFlags};
+use alloc::vec::Vec;
 
 /// Clock ticks (`clock_t`, 64-bit `i64` extension, A-11).
 pub type Clock = i64;

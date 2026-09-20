@@ -38,8 +38,8 @@ pub struct Tll {
     owner: Option<UserSlot>,
     readonly: usize,
     status: TllStatus,
-    write_q: std::collections::VecDeque<UserSlot>,
-    serial_q: std::collections::VecDeque<UserSlot>,
+    write_q: alloc::collections::VecDeque<UserSlot>,
+    serial_q: alloc::collections::VecDeque<UserSlot>,
 }
 
 impl Default for Tll {
@@ -55,8 +55,8 @@ impl Tll {
             owner: None,
             readonly: 0,
             status: TllStatus::empty(),
-            write_q: std::collections::VecDeque::new(),
-            serial_q: std::collections::VecDeque::new(),
+            write_q: alloc::collections::VecDeque::new(),
+            serial_q: alloc::collections::VecDeque::new(),
         }
     }
 

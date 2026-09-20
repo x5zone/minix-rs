@@ -364,7 +364,7 @@ impl<'a, T: IpcTransport> PmServices<'a, T> {
         };
         // C 的 reply() 在发送失败时仅告警不 panic；这里保持一致。
         if let Err(e) = self.transport.send(ep, &msg) {
-            eprintln!("PM: vfs reply to slot {} failed: {:?}", slot.get(), e);
+            pm_diag!("PM: vfs reply to slot {} failed: {:?}", slot.get(), e);
         }
     }
 }

@@ -18,3 +18,18 @@ minix-sys = { workspace = true }
 [lib]
 name = "minix_driver_tty"
 path = "src/lib.rs"
+
+# minix-rt 双 seam（init 先例；NS8-B/NL5② freestanding 装机面）：
+# - 宿主/测试取 std 形态：无 `_start` 也无 panic-handler，宿主二进制与
+#   测试图都干净（Scrt1.o 入口）。
+# - 真机（`target_os = "none"`，boot 装机模块）取 freestanding 形态：
+#   `alloc-global` 把 rt slab 池绑进 `#[global_allocator]`（lib.rs:203
+#   门控 not(std)）；`panic-handler` 取 rt 统一 panic 面（L12 形式定形；
+#   C panic.c:34-66 对位——格式化→诊断钩子→exit(1) 交 PM 收尸、RS 重启
+#   服务）。feature 只在 none 门下出现：workspace 宿主图统一特性时
+#   不会把 `#[panic_handler]` 漏进 std 构建（E0152 死结）。
+[target.'cfg(not(target_os = "none"))'.dependencies]
+minix-rt = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+minix-rt = { workspace = true, features = ["alloc-global", "panic-handler"] }

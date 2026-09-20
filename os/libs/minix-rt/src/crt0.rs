@@ -47,7 +47,10 @@
 //! ```
 //!
 //! (Reference consumer: rt-birth, `test-kernels/user/rt-birth/src/main.rs`
-//! — real-machine verified on all three architectures.) Arguments are
+//! — real-machine verified on all three architectures. NS8-B 起，11 个
+//! boot 装机模块〔ds/rs/pm/sched/vfs/mib/vm/memory/tty/pfs/mfs〕的同款
+//! none 侧入口经 `servers/*/src/main.rs` 的双形 main 落地；init 的签名
+//! 半随 NS11。) Arguments are
 //! never taken: the argv/env vectors live behind the accessor functions
 //! above, matching the std `main()` + `env::args()` split rather than C's
 //! `main(argc, argv, envp)`. The returned `i32` becomes the process exit

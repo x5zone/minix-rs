@@ -21,6 +21,8 @@
 //! the pseudo-device pool cites `NR_NONEDEVS` directly.)
 
 /// `NR_NONEDEVS` (`const.h:12` = `NR_MNTS` = 16): pseudo-device pool size.
+use alloc::string::String;
+
 pub const NR_NONEDEVS: usize = 16;
 
 /// `NONE_MAJOR` (`minix3/minix/include/minix/dmap.h:21`): major number of

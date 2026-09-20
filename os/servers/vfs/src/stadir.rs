@@ -28,6 +28,10 @@
 //! [`StatFs`] is the per-filesystem answer.
 
 /// `ST_RDONLY` (`minix3/sys/sys/fstypes.h:88` via `statvfs.h:108`).
+use alloc::string::String;
+
+use alloc::string::ToString;
+
 pub const ST_RDONLY: u64 = 0x0000_0001;
 /// `ST_NOWAIT` (`fstypes.h:283` via `statvfs.h:139`): don't wait for I/O.
 pub const ST_NOWAIT: u64 = 2;

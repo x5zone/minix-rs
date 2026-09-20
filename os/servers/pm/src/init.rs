@@ -19,8 +19,10 @@ use crate::ipc::{
     handle_vfs_reply, is_vfs_pm_rs,
 };
 use crate::mproc::{Guardianship, INIT_PID, Lifecycle, Privilege, ProcTable, SigSet};
-use alloc::vec::Vec;
 use minix_types::{Endpoint, Message, NR_BOOT_PROCS, NR_PROCS, UserSlot};
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 // ── 常量（C: minix3/minix/servers/pm + include）──
 
@@ -607,7 +609,7 @@ impl<T: IpcTransport> PmServer<T> {
             // C: printf("PM can't reply to %d (%s): %d") — 警告不 panic。
             let _ = e;
             #[cfg(test)]
-            eprintln!("PM can't reply to {}: {:?}", endpoint.get(), e);
+            pm_diag!("PM can't reply to {}: {:?}", endpoint.get(), e);
         }
     }
 
@@ -785,7 +787,7 @@ impl<T: IpcTransport> PmServer<T> {
                 Err(()) => {
                     // C: schedule.c:60-67 — 失败仅打印警告，不 panic。
                     #[cfg(test)]
-                    eprintln!("PM: SCHED denied taking over scheduling of slot {}", slot);
+                    pm_diag!("PM: SCHED denied taking over scheduling of slot {}", slot);
                 }
             }
         }

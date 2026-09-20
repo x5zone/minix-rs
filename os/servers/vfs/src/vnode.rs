@@ -9,6 +9,7 @@
 //! - `v_lock` → `VnodeLock` borrow (ARCH A-6)
 
 use minix_types::{DevId, Endpoint, Mode};
+use alloc::boxed::Box;
 
 /// `NR_VNODES` (`const.h:8` 1024).
 pub const NR_VNODES: usize = 1024;

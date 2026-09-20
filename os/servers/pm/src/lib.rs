@@ -28,7 +28,29 @@
 //! - `wait`: wait for child process
 //! - `ipc`: IPC message handling
 
+#![cfg_attr(not(test), no_std)]
+
+// alloc 宏（vec!/format!）crate 级引入：no_std 侧由 alloc 供给；
+// 测试态 std 形态下与 prelude 同名宏语义一致（init 双形态先例）。
+#[macro_use]
 extern crate alloc;
+
+// 诊断行输出（C 对位 printf，main.c 沿线的尽力而为打印）：
+// - 生产（no_std）：无 stderr，走内核 diagctl 通道（minix-sys
+//   sys_diagctl_write，rs verbose 行同款）；失败吞掉——尽力而为语义。
+// - 测试态（std 形态）：保持 eprintln!，宿主测试面行为不变。
+#[cfg(not(test))]
+macro_rules! pm_diag {
+    ($($arg:tt)*) => {{
+        let line = alloc::format!($($arg)*);
+        let _ = minix_sys::syscall::sys_diagctl_write(
+            &minix_sys::syscall::DirectKernelCallTransport, &line);
+    }};
+}
+#[cfg(test)]
+macro_rules! pm_diag {
+    ($($arg:tt)*) => { eprintln!($($arg)*) };
+}
 
 pub mod event;
 pub mod exec;

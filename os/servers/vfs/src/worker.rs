@@ -38,6 +38,7 @@ use alloc::boxed::Box;
 use core::cell::Cell;
 
 use minix_types::{Endpoint, Message, UserSlot};
+use alloc::vec::Vec;
 
 use crate::fproc::{FProc, FpFlags};
 

@@ -24,6 +24,8 @@ use crate::credentials::{
     do_get, do_set, CopyGroups, GetOp, GetResult, SetOp, SetError, VfsForwarder,
 };
 use minix_types::{ENOSYS, EINVAL, Endpoint, Gid, Message, PmError, ProcEventMask, UserSlot, VirBytes};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// PM 系统调用枚举（C: `callnr.h:14-60`，`PM_BASE + 1` ~ `PM_BASE + 47`）。
 ///

@@ -8,6 +8,9 @@
 use minix_types::{Clock, Pid, Uid, Gid, Endpoint, VirBytes, EINVAL, EPERM, ESRCH, ENOSPC, E2BIG, ENOSYS};
 use crate::mproc::ProcTable;
 use crate::ipc::ReplyIntent;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec::Vec;
 
 /// 自身/子进程的 (utime, stime) 二元对（`getrusage`/`sys_times` 汇聚的类型化别名）。
 type UtimeStimePair = ((i64, i64), (i64, i64));

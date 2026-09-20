@@ -6,11 +6,37 @@
 // In test builds, use the system allocator instead of VmAllocator.
 // VmAllocator requires PAGE_ALLOC_PTR which is only set by VmServer::new(),
 // but the test harness allocates memory before main() runs.
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
+// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
+// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
+// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
+//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
+// 无须也不应再调。
+#[cfg(all(not(test), target_os = "none"))]
+extern crate minix_rt;
+
 #[cfg(test)]
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;
 
+// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
+// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
+// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
+// E0277（docker minix-ci:1.94 实测）。
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    real_main()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
 fn main() {
+    real_main()
+}
+
+fn real_main() -> ! {
     // In test builds, the global allocator (VmAllocator) requires PAGE_ALLOC_PTR
     // which is only set by VmServer::new(). Since the test harness allocates
     // memory before main() runs, we skip the binary entirely in test mode.
@@ -53,4 +79,6 @@ fn main() {
         // SEF startup step is needed (see doc 01-vm-init-main §3.4).
         server.run();
     }
+    #[cfg(test)]
+    unreachable!("bin entry unused in test builds")
 }
