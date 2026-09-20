@@ -31,6 +31,7 @@ mod clean_ttys;
 mod contracts;
 mod driver;
 mod entry;
+mod execve;
 mod host;
 mod log;
 mod multi_user;
@@ -62,7 +63,7 @@ use alloc::sync::Arc;
 /// Termination，链接器需要它喂 Scrt1.o 的 `main`）。
 fn main() {
     minix_rt::init();
-    let mut host = MinixSysHost;
+    let mut host = MinixSysHost::default();
 
     // C step 1: identity gate (init.c:242-249). getuid has no client
     // wrapper yet (E-INITSYS ②) — say so once and continue; pid 1 is

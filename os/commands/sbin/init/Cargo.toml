@@ -12,6 +12,9 @@ path = "src/main.rs"
 [dependencies]
 minix-sys = { workspace = true }
 minix-crypt = { workspace = true }
+# kerninfo 页面类型（MinixKerninfo/KuserInfo）——exec 接缝读新栈顶用
+# （execve.rs 的 minix_get_user_sp 对位物）。
+minix-types = { workspace = true }
 
 # minix-rt 按目标分形态（C-21 / P1-2 ③ 执行面）：
 # - 宿主（linux-gnu/musl，开发与测试面）取 **std 形态**：rustc 对 hosted

@@ -267,7 +267,7 @@ mod tests {
         // E-INITSYS) counts as "no console" — honest failure, and the
         // entry decision treats it exactly like C treats a missing
         // console device.
-        assert!(!console_present(&crate::host::MinixSysHost, "/dev/console"));
+        assert!(!console_present(&crate::host::MinixSysHost::default(), "/dev/console"));
     }
 
     #[test]

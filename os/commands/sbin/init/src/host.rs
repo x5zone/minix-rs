@@ -175,7 +175,13 @@ pub trait InitHost {
 /// a panic and never a fake success (see the E-SYSCALL-SIGN lesson in
 /// edge_todo.md).
 #[derive(Debug, Default)]
-pub struct MinixSysHost;
+pub struct MinixSysHost {
+    /// The process environment this seam maintains (C: `environ`).
+    /// `set_env` writes it (`setenv("PATH", INIT_PATH, 1)`, init.c:801)
+    /// and `exec` folds it over the birth environment to make the child
+    /// envp (`execv(shell, argv)` inherits `environ`, init.c:803).
+    env: Vec<(String, String)>,
+}
 
 impl InitHost for MinixSysHost {
     fn fork(&mut self) -> Result<Pid, Errno> {
@@ -183,11 +189,13 @@ impl InitHost for MinixSysHost {
     }
 
     fn exec(&mut self, cmd: &ParsedCommand) -> Errno {
-        // Path-based exec is a PM call (PM_EXEC) whose client wrapper
-        // does not exist yet; the prepared-image exec in minix-sys is
-        // for boot-procedure images, not for spawning /bin/sh.
-        let _ = cmd;
-        Errno::ENOSYS
+        // Real PM_EXEC (execve.c:33-58): the execve module builds the
+        // initial-stack frame (argv/envp slots + strings + ps_strings)
+        // and fills the five-field message. Hosted builds fail honest at
+        // the kerninfo query — the new-image stack top only exists where
+        // a kernel published it (EIO fallback, E1 slice 5) — and a real
+        // machine answers with the PM verdict.
+        crate::execve::exec_command(&self.env, cmd)
     }
 
     fn exit_process(&mut self, status: i32) -> ! {
@@ -680,13 +688,13 @@ mod tests {
 
     #[test]
     fn test_minix_host_honest_enosys_for_missing_wrappers() {
-        let mut host = MinixSysHost;
+        let mut host = MinixSysHost::default();
         // 本测试分两栏：**仍缺封装**的接缝必须诚实回 ENOSYS（不假成功）；
         // **已接线**的接缝在宿主 trap 断链下诚实回 EIO（E1 切片 5 的 hosted
         // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
         // 仍缺封装：alarm（PM setitimer 面）、内核 mib 三件（12 篇）、
-        // exec（PM_EXEC 面）、set_controlling_tty（dup2/TIOCSCTTY 面）、
-        // chroot、set_env（E-CMDSYSFACE）。
+        // set_controlling_tty（dup2/TIOCSCTTY 面）、chroot、
+        // set_env（E-CMDSYSFACE）。
         assert_eq!(host.alarm(10), Err(Errno::ENOSYS));
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
@@ -711,12 +719,14 @@ mod tests {
             matches!(host.register_handlers(&spec), Err(e) if e == Errno::EIO),
             "宿主 trap 断链 → EIO（不伪造成功）"
         );
+        // exec 已接线（PM_EXEC 面，execve.rs）：宿主 kerninfo 断链 →
+        // 帧的 vsp 无从取值 → 诚实 EIO（不伪造成功）。
         assert_eq!(
             host.exec(&ParsedCommand {
                 exec_path: "/bin/sh".into(),
                 argv: vec!["sh".into(), "/etc/rc".into()],
             }),
-            Errno::ENOSYS
+            Errno::EIO
         );
     }
 
