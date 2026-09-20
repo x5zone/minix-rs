@@ -1047,6 +1047,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **依赖**：无硬依赖（纯增量 API）。18-stage 侧的接线动作在其 todo.md §6.2（C-2：init 去除 minix-types 依赖）与 §6.3（C-3：Requires 回填指向本 API）。
 **解锁**：18-stage-commands/todo.md C-1 落地步（echo 第一个端到端命令）、C-2、C-7 守卫脚本零误报启用；E-FSCMDS 的"命令轨道建立"前置之一（crate 收敛半在 18-stage todo.md §6.1 C-1，本条供其 API 面）。
 
+> **复核（2026-09-21，qorder_3）**：方案 A 三件**代码已全落地**——①errno 常量 glob 再导出在 minix-sys lib.rs:55；②`env_count/argv_count/argv_bytes/env_bytes/args()/envs()` 全在 crt0.rs（:180/:193/:206/:221/:229）；③pm.rs 无 unused `Message`。termios 表 re-export 缺口由 NL7/X-1 同批补齐（cd3582edf）。**本条可闭**；init 的 minix-types 依赖行残留归 18 侧 C-2 消费面已另销。
+
 ---
 
 ## E-SYSCALL-SIGN perform_syscall 与 DirectTrapTransport 的 errno 符号约定冲突，宿主下系统调用假成功（18-stage-commands 架构审查发现，2026-09-17）
@@ -1065,6 +1067,8 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 **解锁**：18-stage-commands 全部命令 bin 的宿主冒烟可信化；`cargo test` 之外新增“宿主运行即失败可见”的验收面。
 
 > **增补（2026-09-18，T9 fproc_tab wire 轮）：taskcall 腿同型缺陷**。`perform_taskcall`（os/libs/minix-sys/src/syscall.rs:112-125）对 transport 级失败 `return status.0` 原样返回——DirectTrapTransport 宿主回退携带正 errno（如 `TrapStatus(EIO)`=+5），穿过任何 `reply < 0` 判错的消费端即假成功；`system_info_via`（os/libs/minix-sys/src/rs.rs:264-285）的 getsysinfo 全家（PM/VFS/RS/DS 四腿）在宿主下同型失真。首个真实消费者 IS `VfsProcTabTransport`（ae452edf8）已本地归一（`Err(status) => -(status.0.unsigned_abs())`）绕开并在注释声明回迁条件。本条方案 A（transport 失败短路 Err）落地时覆盖两腿：`perform_syscall` 与 `perform_taskcall` 一并短路，`system_info_via` 与 IS 侧归一随之回迁。宿主 -EIO 的 IS 门控测试（`test_vfs_proc_tab_transport_hosted_is_eio`）已钉住消费侧语义，方案 A 落地后该测试应保持绿。
+
+> **复核（2026-09-21，qorder_3，NL7 会话选任务扫描时发现）**：方案 A **代码已全落地**——`perform_syscall`/`perform_taskcall` 双腿均已 transport 失败短路 `Err(Errno::from_i32(status.0))`（syscall.rs:94-139 现状），测试 `test_transport_failure_short_circuits_as_typed_error` 钉住（:1437，注释点名本条）；rs.rs 无 `status.0` 绕开残留、IS 侧本地归一已回迁。**账面滞后销账：本条可闭**（落地 commit 归 NK8/E-INITSYS 会话链，未回写本账）。
 
 ---
 
