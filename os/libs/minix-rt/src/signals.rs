@@ -16,10 +16,10 @@
 //! register state lives only in the sigcontext inside the signal frame, so
 //! the trampoline is the one piece of code that can hand the context
 //! pointer back to PM for restoration. Without it a delivered signal never
-//! returns: the handler's `ret` jumps to whatever the frame carried, and
-//! the frame consumer that needs the address finds none (the current
-//! consumer fills the slot with 0 —
-//! `os/commands/sbin/init/src/host.rs:294-295` self-declares that gap).
+//! returns: the handler's `ret` jumps to whatever the frame carried.
+//! init was the first consumer to plant the real address in the `ret`
+//! slot (it fills `minix_rt::signals::__sigreturn` — NS11); the
+//! [`sigaction`] face below now supplies it for every caller.
 //!
 //! # Frame contract (what PM's delivery arm must plant)
 //!
@@ -67,14 +67,62 @@ extern "C" fn __sigreturn_body(ctx: usize) -> ! {
     minix_sys::sigreturn(ctx as u64)
 }
 
+use minix_sys::Errno;
+use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
+use minix_sys::pm::{SigActionWire, sigaction_via, sigsuspend_via};
+
+/// Installs or queries a signal disposition over an explicit transport —
+/// C `sigaction` (`minix3/minix/lib/libc/sys/sigaction.c:11-22`): the
+/// one-call face C programs get because their libc holds both the
+/// wrapper and `__sigreturn`. This module is the minix-rs counterpart of
+/// that unit, so the `ret` slot is filled here, with this module's
+/// trampoline address (NS11's init did the same by hand; this face is
+/// the shared form). The trampoline only exists on x86_64 — on the other
+/// architectures there is no correct `ret` value until their delivery
+/// legs land, so this face is x86_64-only with the module gate.
+pub fn sigaction_with<T: IpcTransport>(
+    transport: &T,
+    sig: i32,
+    act: Option<&SigActionWire>,
+    oact: Option<&mut SigActionWire>,
+) -> Result<(), Errno> {
+    sigaction_via(transport, sig, act, oact, __sigreturn as *const () as u64)
+}
+
+/// Installs or queries a signal disposition (C: `sigaction`) over the
+/// direct transport. See [`sigaction_with`] for the wire contract.
+pub fn sigaction(
+    sig: i32,
+    act: Option<&SigActionWire>,
+    oact: Option<&mut SigActionWire>,
+) -> Result<(), Errno> {
+    sigaction_with(&DirectTrapTransport, sig, act, oact)
+}
+
+/// Waits for a signal with a temporary mask over an explicit transport —
+/// C `sigsuspend` (`minix3/minix/lib/libc/sys/sigsuspend.c:11-17`): the
+/// mask is all the wire carries; the handler return path was fixed by
+/// the earlier [`sigaction`] call, so no restorer rides this one.
+pub fn sigsuspend_with<T: IpcTransport>(transport: &T, set: &[u32; 4]) -> Result<(), Errno> {
+    sigsuspend_via(transport, set)
+}
+
+/// Waits for a signal with a temporary mask (C: `sigsuspend`) over the
+/// direct transport. See [`sigsuspend_with`] for the wire contract.
+pub fn sigsuspend(set: &[u32; 4]) -> Result<(), Errno> {
+    sigsuspend_with(&DirectTrapTransport, set)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::__sigreturn;
+    use super::{__sigreturn, sigaction_with, sigsuspend_with};
+    use minix_sys::ipc::CannedTransport;
+    use minix_sys::pm::PM_CALL_SIGACTION;
+    use minix_types::Message;
 
     /// Address pin: the trampoline must have a real, nonzero address — the
     /// sigaction consumer hands it to PM as the handler return address, and
-    /// a zero slot is exactly the gap this module closes (init fills the
-    /// `ret` slot with 0 until it adopts this symbol).
+    /// a zero slot is exactly the gap this module closes.
     #[test]
     fn trampoline_address_is_nonzero() {
         assert_ne!(__sigreturn as usize, 0);
@@ -87,5 +135,51 @@ mod tests {
     fn trampoline_entry_holds_code() {
         let first_word = unsafe { core::ptr::read(__sigreturn as usize as *const u32) };
         assert_ne!(first_word, 0);
+    }
+
+    /// The `sigaction` face rides the canned transport with the
+    /// trampoline's own address in the `ret` lane — the value PM plants
+    /// as the handler return address (C sigaction.c:19 `ret` 域).
+    #[test]
+    fn sigaction_face_carries_trampoline_address() {
+        let mut transport = CannedTransport::new();
+        let mut reply = Message::zeroed();
+        reply.m_type = 0;
+        transport.reply_sendrec(Ok(reply));
+        let act = minix_sys::pm::SigActionWire {
+            sa_handler: 0x2000,
+            sa_mask: [0; 4],
+            sa_flags: 0,
+            _pad: [0; 4],
+        };
+        assert_eq!(sigaction_with(&transport, 15, Some(&act), None), Ok(()));
+        let (destination, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(destination, minix_sys::pm::pm_endpoint());
+        assert_eq!(sent.m_type, PM_CALL_SIGACTION);
+        // SAFETY: byte-level read of the union lanes (nr@4, act@8, ret@24).
+        let raw = unsafe { &sent.m_u.raw };
+        let nr = i32::from_ne_bytes(raw[4..8].try_into().unwrap());
+        let act_addr = u64::from_ne_bytes(raw[8..16].try_into().unwrap());
+        let ret = u64::from_ne_bytes(raw[24..32].try_into().unwrap());
+        assert_eq!(nr, 15);
+        assert_eq!(act_addr, &act as *const _ as u64);
+        assert_eq!(ret, __sigreturn as *const () as u64);
+    }
+
+    /// The `sigsuspend` face rides the canned transport mask-only —
+    /// C sigsuspend.c:11-17 sends `.set` and nothing else.
+    #[test]
+    fn sigsuspend_face_carries_mask_only() {
+        let mut transport = CannedTransport::new();
+        let mut reply = Message::zeroed();
+        reply.m_type = 0;
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(sigsuspend_with(&transport, &[0, 1, 0, 0]), Ok(()));
+        let (destination, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(destination, minix_sys::pm::pm_endpoint());
+        assert_eq!(sent.m_type, minix_sys::pm::PM_CALL_SIGSUSPEND);
+        // SAFETY: byte-level read of the ctx lane (kept at zero).
+        let ctx = unsafe { u64::from_ne_bytes(sent.m_u.raw[8..16].try_into().unwrap()) };
+        assert_eq!(ctx, 0);
     }
 }
