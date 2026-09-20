@@ -412,13 +412,17 @@ impl SprofCtl for SysSprofCtl {
 }
 
 /// Helper: `is_superuser`.
+///
+/// C 判据是 `mp_effuid == 0`，对所有 mproc 统一（含 `PRIV_PROC`）；系统进程
+/// 凭证的 effuid 恒 0（boot 全零初值），故直接读凭证即忠实复现 C。
 pub(crate) fn is_superuser(table: &ProcTable, caller: minix_types::UserSlot) -> bool {
     table.procs[caller.get()]
         .resources
         .privilege
         .credentials()
-        .map(|c| c.user.effective == 0)
-        .unwrap_or(false)
+        .user
+        .effective
+        == 0
 }
 
 /// `do_sysuname` (`misc.c:72-100`, D1).
@@ -531,7 +535,7 @@ pub fn do_getepinfo(
 ) -> Result<EpInfo, MiscError> {
     let slot = table.pm_isokendpt(ep).map_err(|_| MiscError::Srch)?;
     let rmp = &table.procs[slot.get()];
-    let creds = rmp.resources.privilege.credentials().ok_or(MiscError::Inval)?;
+    let creds = rmp.resources.privilege.credentials();
     // C misc.c:184：回复载荷的 ngroups 填**全量** mp_ngroups——截断只影响
     // 拷贝数，调用方（RS）有权知道真实组数（区分"只有 N 组"与"有更多但
     // 缓冲不足"）。V3-P2-4 之前先截断再填，语义退化。

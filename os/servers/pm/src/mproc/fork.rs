@@ -277,17 +277,16 @@ impl Process {
             trace: TraceState::default(),
         };
 
-        // Srv-fork retains PRIV_PROC (system service): child is system service
-        // with scheduler NONE (not SCHED) and credentials injected from params.
-        // In Minix3, even PRIV_PROC has uid/gid (mp_realuid etc.), but Rust's
-        // Privilege::Kernel has no creds field. We model srv_fork child as
-        // User with injected creds + scheduler NONE, and treat scheduler==NONE
-        // as system-service marker. is_kernel_process() will be false — this is
-        // a known P2 gap vs C's PRIV_PROC (see design D2); 09 will refine with
-        // a shadow creds field or by extending Privilege::Kernel to carry creds.
+        // Srv-fork retains PRIV_PROC (forkexit.c:199-200) *and* injects the
+        // six credential fields from params (forkexit.c:206-211): the child
+        // is a system service (`is_kernel_process()==true`, scheduler NONE,
+        // not taken over by SCHED) that still carries its real/effective/saved
+        // uid/gid. `Privilege::Kernel(Credentials)` models exactly this C
+        // orthogonality — a PRIV_PROC process with credentials.
         let scheduler = parent.resources.scheduler; // RS has NONE, child keeps NONE
+        let credentials = Credentials::new(params.uid, params.gid);
         let resources = ProcessResources {
-            privilege: Privilege::User(Credentials::new(params.uid, params.gid)),
+            privilege: Privilege::Kernel(credentials),
             signals: parent.resources.signals.clone(),
             child_utime: 0,
             child_stime: 0,
@@ -356,22 +355,18 @@ impl Process {
             trace: TraceState::default(),
         };
 
-        let (privilege, scheduler) = match &parent.resources.privilege {
-            Privilege::Kernel => (
-                // forkexit.c:96-100 + 106: a system process (PRIV_PROC) that
-                // calls regular fork (e.g. RS spawning a recovery script)
-                // produces a *user* child scheduled by SCHED; PRIV_PROC is
-                // dropped by the inheritance mask. System process credentials
-                // are uid/gid 0 (boot image never sets them), so the child
-                // starts as root.
-                Privilege::User(Credentials::new(0, 0)),
-                Endpoint::SCHED,
-            ),
-            Privilege::User(creds) => (
-                Privilege::User(creds.clone()),
-                parent.resources.scheduler,
-            ),
+        // forkexit.c:87 copies the whole slot (credentials included), then
+        // forkexit.c:106 masks PRIV_PROC off. So a regular-fork child is
+        // always a *user* process inheriting the parent's credentials; only
+        // the scheduler handoff differs: a PRIV_PROC parent's child is taken
+        // over by SCHED (forkexit.c:96-100), others inherit the parent's.
+        let credentials = parent.resources.privilege.credentials().clone();
+        let scheduler = if parent.resources.privilege.is_kernel() {
+            Endpoint::SCHED
+        } else {
+            parent.resources.scheduler
         };
+        let privilege = Privilege::User(credentials);
 
         let resources = ProcessResources {
             privilege,
@@ -567,7 +562,7 @@ mod tests {
     #[test]
     fn test_fork_privilege_scheduler() {
         let mut parent = Process::new(0, 100);
-        parent.resources.privilege = Privilege::Kernel;
+        parent.resources.privilege = Privilege::Kernel(Credentials::default());
         parent.resources.scheduler = Endpoint::NONE;
         
         let child = Process::fork_from(&parent, 5, 200, Endpoint(50), 0, 1234);
@@ -617,13 +612,16 @@ mod tests {
     fn test_srv_fork_credentials_injected() {
         let parent = {
             let mut p = Process::new(2, 2);
-            p.resources.privilege = Privilege::Kernel;
+            p.resources.privilege = Privilege::Kernel(Credentials::default());
             p.resources.scheduler = Endpoint::NONE;
             p
         };
         let params = SrvForkParams { uid: 1001, gid: 100 };
         let child = Process::srv_fork_from(&parent, 5, 200, Endpoint(50), 2, params, 777);
-        let creds = child.resources.privilege.credentials().unwrap();
+        // C forkexit.c:199-200 retains PRIV_PROC, so the srv_fork child is a
+        // system process, not a user process (design 08 §4.2 / §D2).
+        assert!(child.is_kernel_process(), "srv_fork child retains PRIV_PROC");
+        let creds = child.resources.privilege.credentials();
         assert_eq!(creds.user.real, 1001);
         assert_eq!(creds.user.effective, 1001);
         assert_eq!(creds.group.real, 100);

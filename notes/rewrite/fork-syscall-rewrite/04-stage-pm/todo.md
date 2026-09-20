@@ -555,9 +555,9 @@ V3 实测清单（`grep 'pub trait' os/servers/pm/src`）：中央 `KernelGatewa
 
 `trace.rs:398-401` 的 `test_constants_match_c` 只断言 18 个常量中恰好正确的 2 个。与 V2 的 TSTL/SBCD 同族但不同形：**测试名声称全面对账（match_c），断言集却恰好规避了所有错误项**。候选模式 CSL（Constants-match Subset Lie）建议：凡名含 `match_c`/`matches_c` 的测试，断言项数量必须与被对账全集一致或显式注释排除理由；检查命令：`rg "fn test_\w*match_c" os/servers/pm/src -A5` 人工核对断言覆盖面。登记状态与 V2 两个候选模式一并待规则集维护轮。
 
-#### 观察 6：`unwrap_or_default()` 凭据模式（设计观察，非偏差——对子代理结论的降级）
+#### 观察 6：`unwrap_or_default()` 凭据模式（✅ 已由 C-28 消解，2026-09-20，Fix #123）
 
-`sched.rs:258-259`、`trace.rs:103-104` 等处对 `privilege.credentials()` 用 `.cloned().unwrap_or_default()`：`Privilege::Kernel` 槽位得到全零凭据 = effuid 0 = 超级用户。审查代理曾标为"特权门旁路"，经对照 C 判定为**等价模拟**：C 的 mproc 表每槽都有 mp_effuid 字段且系统进程启动即为 0（超级用户），Rust 的全零默认恰好复现该行为，不存在对 C 的偏离。保留为设计观察：该模式把"无凭据"隐式映射为"root"，是脆弱默认——未来若 `Credentials` 增字段或语义变化，会静默放权。建议在 `Privilege` 上提供显式的 `effective_uid_or_root()` 类命名方法，让"缺省即 root"成为显式契约而非 derivational 副作用。
+`sched.rs`、`trace.rs` 等处曾对 `privilege.credentials()` 用 `.cloned().unwrap_or_default()`：`Privilege::Kernel` 变体不带凭证，取不到时回落全零 = effuid 0 = 超级用户。C-28 已把 `Privilege` 改为 `User(Credentials)` / `Kernel(Credentials)`，`credentials()` 返回 `&Credentials`（不再 `Option`），全仓 `.unwrap_or_default()` 随之消失。原观察担忧的"无凭据隐式映射为 root"脆弱默认已不存在——系统进程的 root 身份现在是 `Kernel(Credentials::default())`（或 srv_fork 的 `Kernel(Credentials::new(uid,gid))`）的**显式构造**，"缺省即 root"从 derivational 副作用升为类型层的显式契约，正是原建议 `effective_uid_or_root()` 想要达成的目标（以更彻底的变体承载方式实现）。
 
 #### 观察 7：Redox 参照（V3 增补）
 

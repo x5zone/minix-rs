@@ -134,25 +134,24 @@ fn apply_tainted_and_creds(
 
     if effective_allow {
         // 91-94 set eff uid/gid to new
-        if let Some(creds) = proc.resources.privilege.credentials_mut() {
-            creds.user.effective = info.new_uid;
-            creds.group.effective = info.new_gid;
-        }
+        let creds = proc.resources.privilege.credentials_mut();
+        creds.user.effective = info.new_uid;
+        creds.group.effective = info.new_gid;
     }
     // 97-98 svuid = eff
-    if let Some(creds) = proc.resources.privilege.credentials_mut() {
+    {
+        let creds = proc.resources.privilege.credentials_mut();
         creds.user.saved = creds.user.effective;
         creds.group.saved = creds.group.effective;
     }
 
-    // 100-109 TAINTED double
-    let mut tainted = false;
-    if effective_allow && info.allow_setuid {
-        tainted = true;
-    } else if let Some(creds) = proc.resources.privilege.credentials()
-        && (creds.user.effective != creds.user.real || creds.group.effective != creds.group.real) {
-            tainted = true;
-        }
+    // 100-109 TAINTED：setuid/setgid 位生效（第一条件），或 eff≠real
+    // （被提/降权，第二条件）——C 用 if/else if 两支都置位，Rust 折叠为单个
+    // 布尔，两支同作无副作用（都只 |= TAINTED），语义一致。
+    let creds = proc.resources.privilege.credentials();
+    let tainted = (effective_allow && info.allow_setuid)
+        || creds.user.effective != creds.user.real
+        || creds.group.effective != creds.group.real;
     proc.resources.tainted = tainted;
     if tainted {
         proc.resources.flags.insert(RemainingFlags::TAINTED);
@@ -270,19 +269,6 @@ pub fn exec_restart(
     }
 }
 
-// Helper trait for credentials_mut (for Privilege)
-trait PrivExt {
-    fn credentials_mut(&mut self) -> Option<&mut crate::mproc::Credentials>;
-}
-impl PrivExt for crate::mproc::Privilege {
-    fn credentials_mut(&mut self) -> Option<&mut crate::mproc::Credentials> {
-        match self {
-            crate::mproc::Privilege::User(c) => Some(c),
-            crate::mproc::Privilege::Kernel => None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,14 +369,14 @@ mod tests {
     fn test_do_newexec_tainted_double() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 5);
-        table.procs[5].resources.privilege.credentials_mut().unwrap().user.effective = 1000;
-        table.procs[5].resources.privilege.credentials_mut().unwrap().user.real = 1000;
+        table.procs[5].resources.privilege.credentials_mut().user.effective = 1000;
+        table.procs[5].resources.privilege.credentials_mut().user.real = 1000;
         let info = ExecInfo { allow_setuid: true, new_uid: 0, new_gid: 0, progname: *b"prog\0\0\0\0\0\0\0\0\0\0\0\0", stack_high: VirBytes(0x8000), frame_len: 64 };
         // tracer none, allow_setuid true -> should set eff to 0 and tainted true
         let allow = do_newexec(&mut table, Endpoint::VFS, Endpoint::from_generation_slot(1,5), info).unwrap();
         assert!(allow);
         assert!(table.procs[5].resources.tainted);
-        assert_eq!(table.procs[5].resources.privilege.credentials().unwrap().user.effective, 0);
+        assert_eq!(table.procs[5].resources.privilege.credentials().user.effective, 0);
         // frame saved
         assert!(matches!(table.procs[5].resources.exec_state, ExecState::Partial { .. }));
     }
@@ -445,7 +431,7 @@ mod tests {
         mk_proc(&mut table, 5);
         // With tracer, allow_setuid false -> tainted should be via eff!=real
         table.procs[5].state.guardianship = crate::mproc::Guardianship::Traced { parent: UserSlot::new(0), tracer: UserSlot::new(1), trace_options: crate::mproc::TraceOptions::empty() };
-        table.procs[5].resources.privilege.credentials_mut().unwrap().user.effective = 2000; // eff != real (1000)
+        table.procs[5].resources.privilege.credentials_mut().user.effective = 2000; // eff != real (1000)
         let info = ExecInfo { allow_setuid: true, new_uid: 0, new_gid: 0, progname: [0;16], stack_high: VirBytes(0x8000), frame_len: 64 };
         let _ = do_newexec(&mut table, Endpoint::VFS, Endpoint::from_generation_slot(1,5), info).unwrap();
         // tracer present => allow_setuid false, so not via first branch, but eff!=real => tainted true

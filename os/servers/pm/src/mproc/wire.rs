@@ -130,9 +130,10 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
     w.mp_tracer = p.state.guardianship.tracer().map_or(0, |t| t.0 as i32);
 
     // ── credentials（mproc.h:41-45）──
-    // Privilege::User(Credentials) → uid/gid；Kernel 权限进程的 uid/gid
-    // 全零（零值 = C 系统进程初值语义，消费方按 uid=0 视作 root）。
-    if let crate::mproc::Privilege::User(cred) = &p.resources.privilege {
+    // 凭证恒存在：User 槽携带用户凭证，Kernel 特权槽携带全零凭证
+    //（C 系统进程 uid/gid 初值为 0，消费方按 uid=0 视作 root）。两类统一序列化。
+    {
+        let cred = p.resources.privilege.credentials();
         w.mp_realuid = cred.user.real;
         w.mp_effuid = cred.user.effective;
         w.mp_realgid = cred.group.real;
@@ -157,7 +158,8 @@ pub fn serialize_snap(idx: usize, p: &Process) -> MProcSnap {
 
     // ── 凭证尾段 + 子进程时钟（C-22；KERN_PROC2 的 p_svuid/svgid、
     // p_groups、p_uctime 消费）──
-    if let crate::mproc::Privilege::User(cred) = &p.resources.privilege {
+    {
+        let cred = p.resources.privilege.credentials();
         w.mp_svuid = cred.user.saved;
         w.mp_svgid = cred.group.saved;
         w.mp_ngroups = cred.ngroups as u32;

@@ -102,15 +102,24 @@ pub struct MinixTimer {
 
 /// Privilege level.
 ///
-/// Corresponds to Minix3's `PRIV_PROC` flag.
+/// Corresponds to Minix3's `PRIV_PROC` flag. The two dimensions of a
+/// Minix3 `mproc` — the `PRIV_PROC` bit in `mp_flags` and the always
+/// present `mp_realuid`/`mp_realgid`/... credential fields — are
+/// orthogonal in C: a `PRIV_PROC` process still carries credentials
+/// (a boot service uses the all-zero initial value; a `srv_fork`
+/// child receives an injected `uid`/`gid`, `forkexit.c:206-211`). The
+/// variant selects the privilege class, the payload carries the
+/// credentials for *both* classes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Privilege {
     /// Regular user process.
     User(Credentials),
     /// System process (PRIV_PROC).
     ///
-    /// System processes have special privileges and don't need to wait for VFS on exit.
-    Kernel,
+    /// System processes have special privileges and don't need to wait
+    /// for VFS on exit. They still carry credentials: uid/gid 0 for
+    /// boot-time services, injected values for `srv_fork` children.
+    Kernel(Credentials),
 }
 
 impl Default for Privilege {
@@ -120,18 +129,23 @@ impl Default for Privilege {
 }
 
 impl Privilege {
-    /// Checks if this is a system process.
+    /// System process (PRIV_PROC)?
     pub fn is_kernel(&self) -> bool {
-        matches!(self, Self::Kernel)
+        matches!(self, Self::Kernel(_))
     }
-    
-    /// Gets credentials.
-    ///
-    /// Returns `None` if this is a system process.
-    pub fn credentials(&self) -> Option<&Credentials> {
+
+    /// The process credentials. Always present — a system process still
+    /// owns `uid`/`gid` in Minix3, so this cannot fail.
+    pub fn credentials(&self) -> &Credentials {
         match self {
-            Self::User(creds) => Some(creds),
-            Self::Kernel => None,
+            Self::User(creds) | Self::Kernel(creds) => creds,
+        }
+    }
+
+    /// Mutable access to the process credentials (always present).
+    pub fn credentials_mut(&mut self) -> &mut Credentials {
+        match self {
+            Self::User(creds) | Self::Kernel(creds) => creds,
         }
     }
 }
@@ -478,7 +492,7 @@ mod tests {
         let mut proc = Process::default();
         assert!(!proc.is_kernel_process());
         
-        proc.resources.privilege = Privilege::Kernel;
+        proc.resources.privilege = Privilege::Kernel(Credentials::default());
         assert!(proc.is_kernel_process());
     }
     

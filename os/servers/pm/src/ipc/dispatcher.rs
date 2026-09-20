@@ -301,7 +301,7 @@ mod tests {
         table.procs[slot].identity.id.pid = 100 + slot as i32;
         table.procs[slot].state.lifecycle = Lifecycle::Running;
         if kernel {
-            table.procs[slot].resources.privilege = crate::mproc::Privilege::Kernel;
+            table.procs[slot].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         }
         (table, EventRegistry::new(), TestIpcTransport::new())
     }

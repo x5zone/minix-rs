@@ -527,7 +527,7 @@ mod tests {
         let sub_slot = UserSlot::new(2);
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         // target process (slot 5) — may be EXITING or UNPAUSED per test
         let tgt = UserSlot::new(5);
         table.procs[5].state.lifecycle = Lifecycle::Running;
@@ -565,7 +565,7 @@ mod tests {
         let caller = UserSlot::new(2);
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
 
         let mut reg = EventRegistry::new();
         let mask = ProcEventMask::EXIT | ProcEventMask::SIGNAL;
@@ -622,7 +622,7 @@ mod tests {
         let caller = UserSlot::new(2);
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         let mut reg = EventRegistry::new();
         let intent = reg.do_proceventmask_mut(caller, ProcEventMask::empty(), &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(OK));
@@ -637,14 +637,14 @@ mod tests {
             let _slot = UserSlot::new(i);
             table.procs[i].state.lifecycle = Lifecycle::Running;
             table.procs[i].identity.endpoint = Endpoint::from_generation_slot(1, i as i32);
-            table.procs[i].resources.privilege = crate::mproc::Privilege::Kernel;
+            table.procs[i].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
             reg.subs[i] = Some(Subscriber { endpoint: Endpoint::from_generation_slot(1, i as i32), mask: ProcEventMask::EXIT, waiting: 0 });
         }
         reg.nsubs = NR_SUBS;
         let caller = UserSlot::new(10);
         table.procs[10].state.lifecycle = Lifecycle::Running;
         table.procs[10].identity.endpoint = Endpoint::from_generation_slot(1, 10);
-        table.procs[10].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[10].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         let intent = reg.do_proceventmask_mut(caller, ProcEventMask::EXIT, &mut table, &mut crate::TestIpcTransport::default(), &mut MockKernelGateway);
         assert_eq!(intent, ReplyIntent::Reply(ENOMEM));
         assert_eq!(reg.len(), NR_SUBS);
@@ -735,7 +735,7 @@ mod tests {
         for i in [2, 3] {
             table.procs[i].state.lifecycle = Lifecycle::Running;
             table.procs[i].identity.endpoint = Endpoint::from_generation_slot(1, i as i32);
-            table.procs[i].resources.privilege = crate::mproc::Privilege::Kernel;
+            table.procs[i].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         }
 
         reg.publish_event(tgt, &mut table, &mut transport, &mut kern);
@@ -782,7 +782,7 @@ mod tests {
         reg.nsubs = 1;
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
 
         // target is the subscriber itself, exiting (PRIV_PROC|EXITING)
         let tgt = UserSlot::new(2);
@@ -862,7 +862,7 @@ mod tests {
         let sub = UserSlot::new(2);
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         // another slot for bad endpoint test
         table.procs[6].state.lifecycle = Lifecycle::Running;
         table.procs[6].identity.endpoint = Endpoint::from_generation_slot(1, 6);
@@ -932,7 +932,7 @@ mod tests {
         let caller = UserSlot::new(3);
         table.procs[3].state.lifecycle = Lifecycle::Running;
         table.procs[3].identity.endpoint = Endpoint::from_generation_slot(1, 3);
-        table.procs[3].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[3].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
         let intent = reg.do_proc_event_reply(&msg, caller, &mut table, &mut transport, &mut kern);
         assert_eq!(intent, ReplyIntent::ReplyLater);
@@ -976,7 +976,7 @@ mod tests {
         let sub = UserSlot::new(2);
         table.procs[2].state.lifecycle = Lifecycle::Running;
         table.procs[2].identity.endpoint = Endpoint::from_generation_slot(1, 2);
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
 
         // Even though mask empty doesn't contain Exit, reply should still be accepted
         // Actually publish would have skipped empty mask, but if waiting, reply still accepted
@@ -1000,7 +1000,7 @@ mod tests {
         reg.nsubs = 2;
         table.procs[3].state.lifecycle = Lifecycle::Running;
         table.procs[3].identity.endpoint = Endpoint::from_generation_slot(1, 3);
-        table.procs[3].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[3].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
 
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
         let intent = reg.do_proc_event_reply(&msg, sub, &mut table, &mut transport, &mut kern);

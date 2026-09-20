@@ -650,7 +650,7 @@ impl<T: IpcTransport> PmServer<T> {
                     parent: UserSlot::new(parent),
                 };
                 proc.state.lifecycle = Lifecycle::Running; // IN_USE
-                proc.resources.privilege = Privilege::Kernel; // PRIV_PROC
+                proc.resources.privilege = Privilege::Kernel(crate::mproc::Credentials::default()); // PRIV_PROC
                 // C: main.c:213-214 — 系统进程由 RS 调度（NONE = 未指定）。
                 proc.resources.scheduler = Endpoint::NONE;
                 proc.resources.nice = nice_from_queue(SRV_Q);

@@ -320,12 +320,15 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 1. dump_core double gate (285-292) ----
     {
         let proc = &table.procs[slot.get()];
-        if dump_core && proc.resources.privilege.credentials().is_some() {
-            let creds = proc.resources.privilege.credentials().unwrap();
+        // forkexit.c:285-286：setuid 程序（real uid ≠ effective uid）不 dump core。
+        // 该判据对所有 mproc 统一（含 PRIV_PROC），凭证恒存在。
+        if dump_core {
+            let creds = proc.resources.privilege.credentials();
             if creds.user.real != creds.user.effective {
                 dump_core = false;
             }
         }
+        // forkexit.c:291-292：PRIV_PROC 系统进程不 dump core。
         if dump_core && proc.is_kernel_process() {
             dump_core = false;
         }
@@ -976,7 +979,7 @@ mod tests {
         let mut table = ProcTable::new();
         table.procs[0].state.lifecycle = Lifecycle::Running;
         table.procs[0].identity.endpoint = Endpoint::from_generation_slot(1, 0);
-        table.procs[0].resources.privilege = Privilege::Kernel;
+        table.procs[0].resources.privilege = Privilege::Kernel(Credentials::default());
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = KillRecorder::default();
         let intent = do_exit(&mut table, UserSlot::new(0), 0, &mut transport, &mut kern);
@@ -1076,7 +1079,7 @@ mod tests {
     fn test_exit_proc_dump_core_suppressed_for_priv() {
         let mut table = ProcTable::new();
         running_proc(&mut table, 5, 42);
-        table.procs[5].resources.privilege = Privilege::Kernel;
+        table.procs[5].resources.privilege = Privilege::Kernel(Credentials::default());
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = KillRecorder::default();
         exit_proc(&mut table, UserSlot::new(5), 0, true, &mut transport, &mut kern);

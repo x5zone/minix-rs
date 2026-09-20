@@ -444,7 +444,7 @@ mod tests {
         let mut ctl = TestSetCtl { last: None, ret: 0 };
         assert_eq!(do_settime(&table, UserSlot::new(0), req, &mut ctl).unwrap_err(), TimeError::Perm);
         // super succeeds
-        table.procs[0].resources.privilege.credentials_mut().unwrap().user.effective = 0;
+        table.procs[0].resources.privilege.credentials_mut().user.effective = 0;
         do_settime(&table, UserSlot::new(0), req, &mut ctl).unwrap();
         assert_eq!((), ());
         assert_eq!(ctl.last, Some((true, ClockId::Realtime, 2000, 0)));
@@ -519,18 +519,5 @@ mod tests {
         assert_eq!(PM_CLOCK_GETTIME, 34);
         assert_eq!(PM_CLOCK_SETTIME, 35);
         assert_eq!(NSEC_PER_SEC, 1_000_000_000);
-    }
-
-    // Helper to get mutable credentials
-    trait CredMut {
-        fn credentials_mut(&mut self) -> Option<&mut Credentials>;
-    }
-    impl CredMut for crate::mproc::Privilege {
-        fn credentials_mut(&mut self) -> Option<&mut Credentials> {
-            match self {
-                crate::mproc::Privilege::User(c) => Some(c),
-                crate::mproc::Privilege::Kernel => None,
-            }
-        }
     }
 }

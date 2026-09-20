@@ -34,7 +34,7 @@
 | C-24 | smoltcp 外部依赖引入 | edge3 | 🔄 卡E 批三开工 | 携带 |
 | C-26 | sffs 语义核心入库 | edge3 | 🔄 卡F3d 开工 | 携带 |
 | C-27 | 全系统自举载体 | edge3 | 🔄 载体半程 | **并入 new_edge1 NK1 收口**（PASS 后接 run_all） |
-| C-28 | srv_fork 子 PRIV_PROC 保留缺失【PM 类型设计裁决】 | edge3 | ☐ 待认领 | 携带（is_kernel_process 四判据；os/tests/srv_fork.rs 已钉偏差） |
+| C-28 | srv_fork 子 PRIV_PROC 保留缺失【PM 类型设计裁决】 | edge3 | ✅ 已修 2026-09-20（qorder_3，`.review/zcode/edge3/FIXLOG.md` Fix #123） | `Privilege::Kernel(Credentials)` 承载凭证，`is_kernel_process()==true`；偏差钉翻转正断言（os/tests/srv_fork.rs） |
 | C-29 | boot loader per-process 地址空间/栈 | edge1 面 | ☐ 待认领 | **改编号 new_edge1 NK1**（设计裁决 OQ-N6 先行） |
 
 ### 新增认领（2026-09-20 扫描收敛产生）

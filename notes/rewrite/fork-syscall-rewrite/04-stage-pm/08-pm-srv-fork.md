@@ -148,7 +148,7 @@ assert(rmc->mp_eventsub == NO_EVENTSUB); // 216 与 07 116 同
 
 逐行要点：
 
-- `PRIV_PROC` 保留使子 `is_kernel_process()==true` 且 `scheduler==NONE` 保留（`mproc/fork.rs:199` 的 `SRV_FORK_INHERIT_FLAGS` 含 `PRIV_PROC`，子 `scheduler` 不接管为 `SCHED`， vs 07 的 `fork_from` 接管）；
+- `PRIV_PROC` 保留使子 `is_kernel_process()==true` 且 `scheduler==NONE` 保留：Rust 侧 `PRIV_PROC` 由 `Privilege` 变体建模，`srv_fork_from` 落 `Privilege::Kernel(credentials)`（`mproc/fork.rs`）——`Kernel` 变体携带注入后的 `Credentials`，`is_kernel_process()` 读 `privilege.is_kernel()` 恒为真，子 `scheduler` 不接管为 `SCHED`（vs 07 的 `fork_from` 落 `Privilege::User` 并接管）；
 - 六字段注入覆盖父继承，`m_lsys_pm_srv_fork` 为 `ipc.h:1422` 的 `mess_lsys_pm_srv_fork { uid,gid,padding[48] }`（`uid` 为 `UID` 32 位，`gid` 为 `GID` 32 位）；
 - `DELAY_CALL` 保留与 07 相同（`IN_USE|PRIV_PROC|DELAY_CALL` 含 `DELAY_CALL`，但 Rust 侧 `BlockState::default` 已不继承 `DELAY_CALL`，与 07 `mproc/fork.rs:307` 注释同理：mid-send 不可 fork，`DELAY_CALL` 继承为 whole-copy 副产物）。
 
@@ -211,7 +211,7 @@ Rust 改写遵循"显式协调器 + 显式构造 + 类型化凭证"的 5 处差�
 
 ### D2：标志继承 `IN_USE|PRIV_PROC|DELAY_CALL`（ARCH A-2）
 
-`mproc/fork.rs:199` 新增 `SRV_FORK_INHERIT_FLAGS = IN_USE|PRIV_PROC|DELAY_CALL`（`RemainingFlags` 的 `PRIV_PROC` 位 + `BlockState` 的 `DELAY_CALL` 位），`srv_fork_from` 的 `RemainingFlags` 过滤仅保留 `PRIV_PROC`（`TAINTED` 丢弃，与 07 的 `FORK_INHERIT_FLAGS=TAINTED` 正交），`BlockState` 仍 `default` 不继承 `DELAY_CALL`（同 07 论证）。
+Rust 侧不用 `mp_flags` 位掩码建模 `PRIV_PROC`：`srv_fork_from`（`mproc/fork.rs`）落 `privilege: Privilege::Kernel(credentials)`，`is_kernel_process()` 读 `privilege.is_kernel()` 表达 C 的 `mp_flags & PRIV_PROC`（A-2 的 `PRIV_PROC` 保留）；`TAINTED` 丢弃由 `flags: RemainingFlags::empty()` 表达（srv_fork 清空 `RemainingFlags`，与 07 `fork_from` 继承 `TAINTED` 正交）；`BlockState` 仍 `default` 不继承 `DELAY_CALL`（同 07 论证）。历史上设想的 `SRV_FORK_INHERIT_FLAGS` 常量与 `RemainingFlags::PRIV_PROC` 位均不存在——`PRIV_PROC` 语义归 `Privilege` 变体，`RemainingFlags` 只承载 `TAINTED` 一类普通标志。
 
 ### D3：凭证注入 `SrvForkParams{uid,gid}` 六字段（ARCH A-11）
 
@@ -257,7 +257,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 
 ### 4.2 进程复制层（`os/servers/pm/src/mproc/fork.rs`）
 
-`Process::srv_fork_from(parent, child_idx, child_pid, child_ep, parent_idx, uid, gid)`（`mproc/fork.rs:360`，与 `fork_from` 对照）：`Identity`（`pid/endpoint/procgrp`）→ `State`（`Running`/`BlockState::default`/`Normal{parent}`/`TraceState::default`）→ `Privilege::Kernel` 保留（`is_kernel_process()==true`）→ `Credentials::new(uid,gid)` 六字段注入（覆盖父）→ `Resources`（`child_utime/stime=0`/`intervals=0`/`scheduler=NONE`/`RemainingFlags::PRIV_PROC`）→ `SignalState` 克隆→ `Ipc::default`。差异仅 3 处：`privilege` 保留 `Kernel`、 `scheduler` 不接管、`flags` 保留 `PRIV_PROC`。
+`Process::srv_fork_from(parent, child_idx, child_pid, child_ep, parent_idx, params, started)`（`mproc/fork.rs`，与 `fork_from` 对照）：`Identity`（`pid/endpoint/procgrp`）→ `State`（`Running`/`BlockState::default`/`Normal{parent}`/`TraceState::default`）→ `Resources.privilege = Privilege::Kernel(Credentials::new(uid,gid))`（`is_kernel_process()==true` 且六字段注入覆盖父，C 的 `PRIV_PROC` 位与 `mp_realuid` 等正交在此合流）→ `Resources`（`child_utime/stime=0`/`intervals=0`/`scheduler=NONE`/`flags: RemainingFlags::empty()`）→ `SignalState` 克隆→ `Ipc::default`。差异仅 3 处：`privilege` 保留 `Kernel`（`PRIV_PROC`）、`scheduler` 不接管、`flags` 清空（丢 `TAINTED`）。
 
 ### 4.3 协议层（`os/libs/minix-types/src/ipc/{vfs,message}.rs`）
 
@@ -275,7 +275,7 @@ C 各自 `static next_child` 分离，Rust 侧 `ProcTable::next_child: Cell<usiz
 | # | 不变量 | C 锚点 | Rust 表达 |
 |---|--------|--------|-----------|
 | 1 | 非 RS → `EPERM` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L159，工具生成）` | `if parent_ep != RS → EPERM` |
-| 2 | `PRIV_PROC` 保留 | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L199，工具生成）` | `SRV_FORK_INHERIT_FLAGS` 含 `PRIV_PROC` |
+| 2 | `PRIV_PROC` 保留 | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L199，工具生成）` | `srv_fork_from` 落 `Privilege::Kernel(credentials)`，`is_kernel_process()==true` |
 | 3 | 六字段同值注入 | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L206，工具生成）` | `Credentials::new(uid,gid)` |
 | 4 | `VFS_CALL` 置子进程且 `REUID/REGID` 真实 | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L227，工具生成）` | `tell_vfs(child_slot, SrvFork{reuid,regid})` |
 | 5 | `reply(child,OK)`+`return pid` vs `SUSPEND` | `minix3/minix/servers/pm/forkexit.c:do_srv_fork（L237，工具生成）/239` | `send(child,OK)`+`Ok(pid)→Reply(pid)` |

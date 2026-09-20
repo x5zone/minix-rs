@@ -5,7 +5,7 @@
 //! Single-threaded — `&mut ProcTable` without `Arc`.
 
 use minix_types::{Endpoint, UserSlot, Pid, Uid, Gid, VirBytes, EINVAL, EPERM, EFAULT, ESRCH};
-use crate::mproc::{ProcTable, Credentials, NGROUPS_MAX, RemainingFlags};
+use crate::mproc::{ProcTable, NGROUPS_MAX, RemainingFlags};
 use crate::ipc::ReplyIntent;
 
 /// `GID_MAX`（`sys/sys/syslimits.h:53`，`2147483647U`）。gid_t 是 32 位
@@ -105,20 +105,20 @@ pub fn do_get(
     let rmp = &table.procs[caller.get()];
     match op {
         GetOp::GetUid => {
-            let real = rmp.resources.privilege.credentials().map(|c| c.user.real).unwrap_or(0);
-            let eff = rmp.resources.privilege.credentials().map(|c| c.user.effective).unwrap_or(0);
+            let real = rmp.resources.privilege.credentials().user.real;
+            let eff = rmp.resources.privilege.credentials().user.effective;
             Ok(GetResult::Uid { real, eff })
         }
         GetOp::GetGid => {
-            let real = rmp.resources.privilege.credentials().map(|c| c.group.real).unwrap_or(0);
-            let eff = rmp.resources.privilege.credentials().map(|c| c.group.effective).unwrap_or(0);
+            let real = rmp.resources.privilege.credentials().group.real;
+            let eff = rmp.resources.privilege.credentials().group.effective;
             Ok(GetResult::Gid { real, eff })
         }
         GetOp::GetGroups { count, ptr } => {
             if count > NGROUPS_MAX as i32 || count < 0 {
                 return Err(SetError::Inval);
             }
-            let creds = rmp.resources.privilege.credentials().ok_or(SetError::Inval)?;
+            let creds = rmp.resources.privilege.credentials();
             if count == 0 {
                 return Ok(GetResult::Groups { count: creds.ngroups });
             }
@@ -166,7 +166,7 @@ pub fn do_set(
 ) -> Result<ReplyIntent, SetError> {
     let ep = table.procs[caller.get()].endpoint();
     // Clone credentials for permission checks (avoid double borrow)
-    let creds = table.procs[caller.get()].resources.privilege.credentials().cloned().unwrap_or_default();
+    let creds = table.procs[caller.get()].resources.privilege.credentials().clone();
     let procgrp = table.procs[caller.get()].identity.procgrp;
     let pid = table.procs[caller.get()].identity.id.pid;
 
@@ -175,7 +175,7 @@ pub fn do_set(
             if creds.user.real != uid && !creds.is_superuser() {
                 return Err(SetError::Perm);
             }
-            let c = table.procs[caller.get()].resources.privilege.credentials_mut().unwrap();
+            let c = table.procs[caller.get()].resources.privilege.credentials_mut();
             c.set_uid_all(uid);
             // VFS forwarding (121-125)
             vfs.forward_set(table, caller, ep, &SetOp::SetUid(uid))?;
@@ -185,7 +185,7 @@ pub fn do_set(
             if creds.user.real != uid && creds.user.saved != uid && !creds.is_superuser() {
                 return Err(SetError::Perm);
             }
-            table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_euid(uid);
+            table.procs[caller.get()].resources.privilege.credentials_mut().set_euid(uid);
             vfs.forward_set(table, caller, ep, &SetOp::SetEUid(uid))?;
             Ok(ReplyIntent::ReplyLater)
         }
@@ -193,7 +193,7 @@ pub fn do_set(
             if creds.group.real != gid && !creds.is_superuser() {
                 return Err(SetError::Perm);
             }
-            table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_gid_all(gid);
+            table.procs[caller.get()].resources.privilege.credentials_mut().set_gid_all(gid);
             vfs.forward_set(table, caller, ep, &SetOp::SetGid(gid))?;
             Ok(ReplyIntent::ReplyLater)
         }
@@ -201,7 +201,7 @@ pub fn do_set(
             if creds.group.real != gid && creds.group.saved != gid && !creds.is_superuser() {
                 return Err(SetError::Perm);
             }
-            table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_egid(gid);
+            table.procs[caller.get()].resources.privilege.credentials_mut().set_egid(gid);
             vfs.forward_set(table, caller, ep, &SetOp::SetEGid(gid))?;
             Ok(ReplyIntent::ReplyLater)
         }
@@ -217,7 +217,7 @@ pub fn do_set(
                     return Err(SetError::Inval);
                 }
             }
-            table.procs[caller.get()].resources.privilege.credentials_mut().unwrap().set_groups(gids);
+            table.procs[caller.get()].resources.privilege.credentials_mut().set_groups(gids);
             vfs.forward_set(table, caller, ep, &op)?;
             Ok(ReplyIntent::ReplyLater)
         }
@@ -228,20 +228,6 @@ pub fn do_set(
             table.procs[caller.get()].identity.procgrp = pid;
             vfs.forward_set(table, caller, ep, &SetOp::SetSid)?;
             Ok(ReplyIntent::ReplyLater)
-        }
-    }
-}
-
-// Helper to get mutable credentials (for Privilege::User)
-trait PrivilegeExt {
-    fn credentials_mut(&mut self) -> Option<&mut Credentials>;
-}
-
-impl PrivilegeExt for crate::mproc::Privilege {
-    fn credentials_mut(&mut self) -> Option<&mut Credentials> {
-        match self {
-            crate::mproc::Privilege::User(c) => Some(c),
-            crate::mproc::Privilege::Kernel => None,
         }
     }
 }
@@ -285,7 +271,7 @@ mod tests {
     fn test_getgroups_zero_queries() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0, 1000, 100);
-        table.procs[0].resources.privilege.credentials_mut().unwrap().ngroups = 3;
+        table.procs[0].resources.privilege.credentials_mut().ngroups = 3;
         let mut c = NopCopy;
         let res = do_get(&table, UserSlot::new(0), GetOp::GetGroups { count: 0, ptr: VirBytes(0) }, &mut c).unwrap();
         assert_eq!(res, GetResult::Groups { count: 3 });
@@ -295,7 +281,7 @@ mod tests {
     fn test_getgroups_less_than_avail_inval() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0, 1000, 100);
-        table.procs[0].resources.privilege.credentials_mut().unwrap().ngroups = 3;
+        table.procs[0].resources.privilege.credentials_mut().ngroups = 3;
         let mut c = NopCopy;
         let res = do_get(&table, UserSlot::new(0), GetOp::GetGroups { count: 2, ptr: VirBytes(0x1000) }, &mut c);
         assert_eq!(res.unwrap_err(), SetError::Inval);
@@ -305,8 +291,8 @@ mod tests {
     fn test_getgroups_copy_to_user() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0, 1000, 100);
-        table.procs[0].resources.privilege.credentials_mut().unwrap().supplemental_groups[0] = 100;
-        table.procs[0].resources.privilege.credentials_mut().unwrap().ngroups = 1;
+        table.procs[0].resources.privilege.credentials_mut().supplemental_groups[0] = 100;
+        table.procs[0].resources.privilege.credentials_mut().ngroups = 1;
         let mut c = NopCopy;
         let res = do_get(&table, UserSlot::new(0), GetOp::GetGroups { count: 1, ptr: VirBytes(0x1000) }, &mut c).unwrap();
         assert_eq!(res, GetResult::Groups { count: 1 });
@@ -316,7 +302,7 @@ mod tests {
     fn test_getuid_gid_double_value() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0, 1000, 100);
-        table.procs[0].resources.privilege.credentials_mut().unwrap().user.effective = 0;
+        table.procs[0].resources.privilege.credentials_mut().user.effective = 0;
         let mut c = NopCopy;
         let res = do_get(&table, UserSlot::new(0), GetOp::GetUid, &mut c).unwrap();
         assert_eq!(res, GetResult::Uid { real: 1000, eff: 0 });
@@ -383,10 +369,10 @@ mod tests {
         // Non-super, real != uid => EPERM
         assert_eq!(do_set(&mut table, UserSlot::new(0), op.clone(), &mut c, &mut v).unwrap_err(), SetError::Perm);
         // Super can set
-        table.procs[0].resources.privilege.credentials_mut().unwrap().user.effective = 0;
+        table.procs[0].resources.privilege.credentials_mut().user.effective = 0;
         let res = do_set(&mut table, UserSlot::new(0), SetOp::SetUid(2000), &mut c, &mut v).unwrap();
         assert_eq!(res, ReplyIntent::ReplyLater);
-        let creds = table.procs[0].resources.privilege.credentials().unwrap();
+        let creds = table.procs[0].resources.privilege.credentials();
         assert_eq!(creds.user.real, 2000);
         assert_eq!(creds.user.effective, 2000);
         assert_eq!(creds.user.saved, 2000);
@@ -396,15 +382,15 @@ mod tests {
     fn test_seteuid_triple_check() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0, 1000, 100);
-        table.procs[0].resources.privilege.credentials_mut().unwrap().user.saved = 0;
+        table.procs[0].resources.privilege.credentials_mut().user.saved = 0;
         let mut c = NopCopy;
         let mut v = NopVfs;
         // real==1000, saved==0, can set to 0 via saved
         let res = do_set(&mut table, UserSlot::new(0), SetOp::SetEUid(0), &mut c, &mut v).unwrap();
         assert_eq!(res, ReplyIntent::ReplyLater);
-        assert_eq!(table.procs[0].resources.privilege.credentials().unwrap().user.effective, 0);
+        assert_eq!(table.procs[0].resources.privilege.credentials().user.effective, 0);
         // Reset to non-super to test Perm: real=1000, saved=0, eff=1000 (not super)
-        table.procs[0].resources.privilege.credentials_mut().unwrap().user.effective = 1000;
+        table.procs[0].resources.privilege.credentials_mut().user.effective = 1000;
         // Try to set to 2000 without super and not real/saved
         let res2 = do_set(&mut table, UserSlot::new(0), SetOp::SetEUid(2000), &mut c, &mut v);
         assert_eq!(res2.unwrap_err(), SetError::Perm);
@@ -417,10 +403,10 @@ mod tests {
         let mut c = NopCopy;
         let mut v = NopVfs;
         assert_eq!(do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: vec![1,2] }, &mut c, &mut v).unwrap_err(), SetError::Perm);
-        table.procs[0].resources.privilege.credentials_mut().unwrap().user.effective = 0;
+        table.procs[0].resources.privilege.credentials_mut().user.effective = 0;
         let res = do_set(&mut table, UserSlot::new(0), SetOp::SetGroups { gids: vec![1,2] }, &mut c, &mut v).unwrap();
         assert_eq!(res, ReplyIntent::ReplyLater);
-        assert_eq!(table.procs[0].resources.privilege.credentials().unwrap().ngroups, 2);
+        assert_eq!(table.procs[0].resources.privilege.credentials().ngroups, 2);
     }
 
     #[test]
@@ -463,7 +449,7 @@ mod tests {
     fn test_do_set_forwards_to_vfs() {
         let mut table = ProcTable::new();
         mk_running(&mut table, 0);
-        table.procs[0].resources.privilege.credentials_mut().unwrap().user.effective = 0;
+        table.procs[0].resources.privilege.credentials_mut().user.effective = 0;
         let mut c = NopCopy;
         let mut v = NopVfs;
         let res = do_set(&mut table, UserSlot::new(0), SetOp::SetUid(0), &mut c, &mut v).unwrap();

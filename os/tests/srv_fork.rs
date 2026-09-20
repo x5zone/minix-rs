@@ -34,7 +34,7 @@
 
 use minix_pm::exit::KernelGateway;
 use minix_pm::fork::{do_srv_fork, ForkCoordError};
-use minix_pm::mproc::{Lifecycle, Privilege, ProcTable, SrvForkParams};
+use minix_pm::mproc::{Credentials, Lifecycle, Privilege, ProcTable, SrvForkParams};
 use minix_pm::TestIpcTransport;
 use minix_vfs::PmHandler;
 use minix_types::{
@@ -80,7 +80,7 @@ fn table_with_rs() -> ProcTable {
     rs.identity.id.pid = RS_PID;
     rs.identity.procgrp = RS_PID;
     rs.state.lifecycle = Lifecycle::Running;
-    rs.resources.privilege = Privilege::Kernel;
+    rs.resources.privilege = Privilege::Kernel(Credentials::default());
     rs.resources.scheduler = Endpoint::NONE;
     table
 }
@@ -287,11 +287,7 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
     );
 
     // ── 凭证：SrvForkParams 注入（对比 do_fork 的父继承）──
-    let creds = child
-        .resources
-        .privilege
-        .credentials()
-        .expect("子槽持有 User 凭证块");
+    let creds = child.resources.privilege.credentials();
     assert_eq!(creds.user.real, INJECT_UID, "mp_realuid = 注入 uid");
     assert_eq!(creds.user.effective, INJECT_UID, "mp_effuid = 注入 uid");
     assert_eq!(creds.user.saved, INJECT_UID, "mp_svuid = 注入 uid");
@@ -308,16 +304,15 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         Endpoint::NONE,
         "系统服务 scheduler 保持 NONE（不经 SCHED 接管）"
     );
-    // 偏差钉：C 保留 PRIV_PROC 使子进程 `mp_flags & PRIV_PROC` 为真
-    // （forkexit.c:199-200），设计文档 08-pm-srv-fork.md §4.2/§D2 也写明
-    // "`Privilege::Kernel` 保留（`is_kernel_process()==true`）`SRV_FORK_INHERIT_FLAGS`
-    // 含 `PRIV_PROC`"。当前 `Process::srv_fork_from`（mproc/fork.rs:283-294）
-    // 落 `Privilege::User(注入凭证)`，自注为 "known P2 gap vs C's PRIV_PROC"
-    // （`Privilege::Kernel` 无凭证字段，六字段注入无处安放）。
-    // 本断言钉住现值：偏差登记见 edge4 §2，翻转时此处必须同步改。
+    // PRIV_PROC 保留（C-28 已落地）：C 的 do_srv_fork 用 `SRV_FORK_INHERIT_FLAGS`
+    // 保留 `PRIV_PROC`（forkexit.c:199-200），设计文档 08-pm-srv-fork.md §4.2/§D2
+    // 写明子进程 `is_kernel_process()==true`。`Process::srv_fork_from`
+    //（mproc/fork.rs）现落 `Privilege::Kernel(注入凭证)`：`Privilege::Kernel`
+    // 携带凭证字段，既保留特权位又安放六字段注入（对应 C 里 PRIV_PROC 与
+    // mp_realuid 等正交）。上面的凭证断言证明注入值生效，本断言证明特权位保留。
     assert!(
-        !child.is_kernel_process(),
-        "PRIV_PROC 保留尚未落地（见上注，偏差已登记 edge4 §2）"
+        child.is_kernel_process(),
+        "srv_fork 子进程保留 PRIV_PROC（is_kernel_process==true，C-28）"
     );
 
     // ── 出站二：VFS_PM_SRV_FORK（tell_vfs 载荷 m7 逐域）──

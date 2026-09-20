@@ -194,24 +194,19 @@ fn is_termination(signo: i32) -> bool {
     is_lethal(signo) || signo == SIGKILL || signo == SIGPIPE
 }
 
-/// Checks permission (`signal.c:622-628`).
+/// Checks permission (`signal.c:621-628`).
 fn can_signal(table: &ProcTable, caller: UserSlot, target: UserSlot) -> bool {
-    let caller_creds = table.procs[caller.get()].resources.privilege.credentials();
-    let target_creds = table.procs[target.get()].resources.privilege.credentials();
-    if let (Some(c), Some(t)) = (caller_creds, target_creds) {
-        if c.user.effective == 0 {
-            return true; // SUPER_USER
-        }
-        c.user.real == t.user.real
-            || c.user.effective == t.user.real
-            || c.user.real == t.user.effective
-            || c.user.effective == t.user.effective
-    } else {
-        // Kernel processes (no creds) — treat as superuser for signal?
-        // In C, `mp_effuid` for PRIV_PROC is still 0, so true
-        // For Rust, Kernel privilege is considered superuser
-        table.procs[caller.get()].is_kernel_process() || table.procs[target.get()].is_kernel_process()
+    // 凭证恒存在：Kernel 特权槽携带全零凭证（effuid 0 = SUPER_USER），与 C 的
+    // `mp->mp_effuid` 对系统进程同为 0 一致，无需 Option 分支。
+    let c = table.procs[caller.get()].resources.privilege.credentials();
+    let t = table.procs[target.get()].resources.privilege.credentials();
+    if c.user.effective == 0 {
+        return true; // SUPER_USER
     }
+    c.user.real == t.user.real
+        || c.user.effective == t.user.real
+        || c.user.real == t.user.effective
+        || c.user.effective == t.user.effective
 }
 
 /// 把 [`sig_proc`]（trace=FALSE 的重投形态）适配为 [`crate::signal_flow::
@@ -702,7 +697,7 @@ mod tests {
         table.procs[slot].identity.procgrp = procgrp;
         table.procs[slot].identity.endpoint = Endpoint::from_generation_slot(1, slot as i32);
         if is_kernel {
-            table.procs[slot].resources.privilege = Privilege::Kernel;
+            table.procs[slot].resources.privilege = Privilege::Kernel(Credentials::default());
         } else {
             table.procs[slot].resources.privilege = Privilege::User(Credentials::new(1000, 100));
         }

@@ -168,13 +168,15 @@ pub fn do_trace<T: crate::ipc::IpcTransport + ?Sized>(
     transport: &mut T,
 ) -> Result<ReplyIntent, TraceError> {
     // caller 是否 root：C 的 `mp_effuid != SUPER_USER`（trace.c:67/74/102/114）。
-    // Kernel 特权槽 = C 的系统进程（effuid 恒 0，见 todo.md §12.3 观察 6）。
+    // Kernel 特权槽 = C 的系统进程（凭证 effuid 恒 0，见 todo.md §12.3 观察 6），
+    // 直接读凭证即覆盖两类进程。
     let caller_root = table.procs[caller.get()]
         .resources
         .privilege
         .credentials()
-        .map(|c| c.user.effective == 0)
-        .unwrap_or(true);
+        .user
+        .effective
+        == 0;
     let caller_is_kernel = table.procs[caller.get()].is_kernel_process();
 
     match req.req {
@@ -198,9 +200,9 @@ pub fn do_trace<T: crate::ipc::IpcTransport + ?Sized>(
             }
             // 非 root：eff uid/gid 匹配 + 目标未 setuid/setgid（trace.c:67-71）。
             let caller_creds = table.procs[caller.get()]
-                .resources.privilege.credentials().cloned().unwrap_or_default();
+                .resources.privilege.credentials().clone();
             let child_creds = table.procs[child.get()]
-                .resources.privilege.credentials().cloned().unwrap_or_default();
+                .resources.privilege.credentials().clone();
             if !caller_root
                 && (caller_creds.user.effective != child_creds.user.effective
                     || caller_creds.group.effective != child_creds.group.effective

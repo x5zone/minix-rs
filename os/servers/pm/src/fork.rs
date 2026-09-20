@@ -3,7 +3,7 @@
 //! Implements core logic of fork system call for PM server.
 
 use minix_types::{Endpoint, UserSlot, PmError, VfsCall, OK};
-use crate::mproc::{ProcTable, Lifecycle, Privilege, SrvForkParams};
+use crate::mproc::{ProcTable, Lifecycle, SrvForkParams};
 use crate::exit::KernelGateway;
 use crate::ipc::{vm_fork, IpcTransport, tell_vfs};
 
@@ -29,10 +29,7 @@ pub fn do_fork<T: IpcTransport>(
     // 1. Find parent process (forkexit.c:59 rmp=mp)
     let parent_slot = find_parent_slot(table, parent_endpoint)?;
     let parent = &table.procs[parent_slot];
-    let is_root = match &parent.resources.privilege {
-        Privilege::Kernel => true, // system process (PRIV_PROC) treated as superuser for LAST_FEW
-        Privilege::User(c) => c.user.effective == 0,
-    };
+    let is_root = parent.resources.privilege.credentials().is_superuser();
 
     // 2. Capacity check procs_in_use + LAST_FEW (forkexit.c:60-65 → EAGAIN)
     if !table.can_alloc_for_user(is_root) {
@@ -128,10 +125,7 @@ pub fn do_srv_fork<T: IpcTransport>(
     }
     let parent_slot = find_parent_slot(table, parent_endpoint)?;
     let parent = &table.procs[parent_slot];
-    let is_root = match &parent.resources.privilege {
-        Privilege::Kernel => true,
-        Privilege::User(c) => c.user.effective == 0,
-    };
+    let is_root = parent.resources.privilege.credentials().is_superuser();
 
     // 2. Capacity (162-171)
     if !table.can_alloc_for_user(is_root) {
@@ -294,7 +288,7 @@ fn copy_mproc(
     {
         let parent = &table.procs[parent_slot];
         procgrp = parent.procgrp();
-        credentials = parent.resources.privilege.credentials().cloned();
+        credentials = parent.resources.privilege.credentials().clone();
         nice = parent.resources.nice;
         // forkexit.c:96-100: a PRIV_PROC parent's regular-fork child is a
         // *user* process scheduled by SCHED; other children inherit.
@@ -325,10 +319,10 @@ fn copy_mproc(
 
     child.state.guardianship = child_guardianship;
 
-    // Copy credentials
-    if let Some(creds) = credentials {
-        child.resources.privilege = crate::mproc::Privilege::User(creds);
-    }
+    // Copy credentials (forkexit.c:87 copies mp_realuid etc.; PRIV_PROC is
+    // dropped by the :106 mask, so a regular-fork child is always a *user*
+    // process carrying the parent's credential values).
+    child.resources.privilege = crate::mproc::Privilege::User(credentials);
 
     // Set lifecycle to running
     child.state.lifecycle = Lifecycle::Running;
@@ -530,7 +524,7 @@ mod tests {
         table.procs[2].identity.endpoint = Endpoint::RS;
         table.procs[2].identity.id.pid = 2;
         table.procs[2].state.lifecycle = Lifecycle::Running;
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         table.procs[2].resources.scheduler = Endpoint::NONE;
 
         let mut transport = crate::ipc::TestIpcTransport::default();
@@ -550,7 +544,10 @@ mod tests {
         // Child should have injected credentials
         let child_slot = table.find_proc(child_pid).expect("child not found").get();
         let child = &table.procs[child_slot];
-        assert_eq!(child.resources.privilege.credentials().unwrap().user.real, 1000);
+        // Child retains PRIV_PROC (forkexit.c:199-200) *and* carries injected
+        // credentials (forkexit.c:206-211).
+        assert!(child.is_kernel_process(), "srv_fork child retains PRIV_PROC");
+        assert_eq!(child.resources.privilege.credentials().user.real, 1000);
     }
 
     #[test]
@@ -559,7 +556,7 @@ mod tests {
         table.procs[2].identity.endpoint = Endpoint::RS;
         table.procs[2].identity.id.pid = 2;
         table.procs[2].state.lifecycle = Lifecycle::Running;
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = TestKernelTimes::default();
         queue_vm_fork_reply(&mut transport, Endpoint::from_generation_slot(2, 1));
@@ -660,7 +657,7 @@ mod tests {
         table.procs[2].identity.endpoint = Endpoint::RS;
         table.procs[2].identity.id.pid = 2;
         table.procs[2].state.lifecycle = Lifecycle::Running;
-        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel;
+        table.procs[2].resources.privilege = crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
         table.procs[2].resources.scheduler = Endpoint::NONE;
         // RS（此处即父进程）被 tracer=7 跟踪且带 TO_TRACEFORK。
         table.procs[2].state.guardianship = Guardianship::Traced {

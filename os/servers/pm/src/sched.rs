@@ -361,8 +361,8 @@ pub fn do_getsetpriority(
 ) -> Result<i32, SchedError> {
     let _which = SchedWhich::try_from(which)?;
     let target_slot = Who::resolve(table, caller, who)?;
-    let caller_creds = table.procs[caller.get()].resources.privilege.credentials().cloned().unwrap_or_default();
-    let target_creds = table.procs[target_slot.get()].resources.privilege.credentials().cloned().unwrap_or_default();
+    let caller_creds = table.procs[caller.get()].resources.privilege.credentials().clone();
+    let target_creds = table.procs[target_slot.get()].resources.privilege.credentials().clone();
     let target_nice = table.procs[target_slot.get()].resources.nice;
 
     if !may_get_prio(&caller_creds, &target_creds) {
@@ -405,7 +405,7 @@ mod tests {
         table.procs[slot].identity.id.pid = slot as Pid;
         table.procs[slot].resources.nice = nice;
         table.procs[slot].resources.scheduler = scheduler;
-        table.procs[slot].resources.privilege = if is_priv { Privilege::Kernel } else { Privilege::User(Credentials::new(1000, 100)) };
+        table.procs[slot].resources.privilege = if is_priv { Privilege::Kernel(Credentials::default()) } else { Privilege::User(Credentials::new(1000, 100)) };
     }
 
     struct OkSched;
