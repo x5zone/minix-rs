@@ -7,6 +7,7 @@ edition = "2024"
 minix-types = { path = "../libs/minix-types" }
 minix-pm = { path = "../servers/pm" }
 minix-vfs = { path = "../servers/vfs" }
+minix-ds = { path = "../servers/ds" }
 minix-sys = { path = "../libs/minix-sys" }
 
 [dev-dependencies]
@@ -22,3 +23,7 @@ path = "srv_fork.rs"
 [[test]]
 name = "vm_vfs_fdclose"
 path = "vm_vfs_fdclose.rs"
+
+[[test]]
+name = "ds_publish_subscribe"
+path = "ds_publish_subscribe.rs"
