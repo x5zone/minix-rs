@@ -24,6 +24,12 @@
 | NL7 | X-1：边界守卫回归修复 | [edge_todo.md](edge_todo.md) 缺陷批 X-1 ｜ [18-stage-commands/todo.md](18-stage-commands/todo.md) C-7 | 40 violations 两类：termctl stty 测试代码 minix_types 直用（守卫豁免 `#[cfg(test)]` 的裁决挂 OQ-N5）；init host.rs/execve.rs、text-games/random.rs 直用 DirectTrapTransport（改走顶层封装，缺件登记 NL4） | OQ-N5 | ☐ |
 | NL8 | X-9：static mut / unsafe 密度裁决 | [edge_todo.md](edge_todo.md) 缺陷批 X-9 | 81 处 static mut、21 文件 unsafe 密度超标；pm/ipc/decode.rs（31/461）单独裁决。code-excellence 窗口，不清就不阻塞 | 无 | 🚫（登记） |
 
+## 本轮新登记（NK8 会话发现，2026-09-21；复核命令绿 = 已闭可划掉）
+
+| 标记 | 发现 | 现状证据 | 复核命令 | 归属 |
+|---|---|---|---|---|
+| NL9 | E-MIBGRANT 常量类余毒：minix-sys `pub const SELF: i32 = -2`（`os/libs/minix-sys/src/syscall.rs:288`）与端点权威不符（endpoint.h:56 / minix-types endpoint.rs:50 ⇒ SELF=31742；**-2 恰为 com.h:50 SYSTEM 任务 endpoint**）。**9 个消费点全部实断**：内核 sys_datacopy/sys_vircopy 比对面已被 C-41 权威化（syscall_copy.rs:126），这些站点传 -2 永不命中 SELF 替换 → 按具体端点 -2 解析失败。站点：ipc-server boundary.rs:82/:93（sem 拷贝）、rs trap_api.rs:407/:409/:539/:549（exec read_seg/safecopy）、ds server.rs:799、pm exit.rs:179/:243。宿主 canned transport 不校验端点语义故测试全绿，真机 wire 层才暴露（T2 通电阻塞位）。修法同 C-41/NK8：常量改 `minix_types::Endpoint::SELF.0` 派生（minix-sys 已依赖 minix-types，:928 先例在文件内），一处改全消费点自愈；:286 注释把 Rust 路径（kernel/src/syscall_copy.rs:124）当 C 锚点的归属错误一并修。**NK8 会话按"不顺手修"纪律只登记不执行**（qorder_3 持 NL4 在同文件在制） | `grep -n "pub const SELF: i32 = -2" os/libs/minix-sys/src/syscall.rs` = 1；`grep -rn "syscall::SELF" os/servers/ --include="*.rs" \| grep -c .` = 9 | `grep -n "pub const SELF: i32 = minix_types::Endpoint::SELF.0" os/libs/minix-sys/src/syscall.rs` 命中 = 已修（修后 docker minix-sys 250 + 消费 crate 各自测试不回归） | new_edge2（os/libs/minix-sys；消费点回归面跨 ipc-server/rs/ds/pm → edge3） |
+
 ## 携带的前轮遗留
 
 - L1-L16 全 ✅（含 L14 BdevBlockSource、L15 二级缓存、L17 批A/批C）；"已闭单勿领"清单照旧。
