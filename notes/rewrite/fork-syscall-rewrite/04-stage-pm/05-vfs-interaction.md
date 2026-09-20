@@ -335,7 +335,7 @@ C 用 `mp_flags` 加 `return` 位置表达"接下来做什么"，读者必须跨
 - 04-ipc-dispatch.md 的 VFS 回复"钩子"已落地为真实状态机：dispatcher 不再含 VFS 分支，`run_once` 第一路直接拦截（D8）。
 - 06（事件订阅）、09（exit 收养）、13（信号重投）已全部接线；`set_core_flag` 已随 D-07 落地（sig_status bit7）；16 的 `sched_start_user` 与 17 的 `exec_restart` 内核侧 `sys_exec` 仍为占位（各带自说明）。05 协议可独立测试与验证。
 - 07-pm-fork 协调器已把 fork 的 VFS 发送切到 `tell_vfs`，消除旧 `VfsRequest`/`send_vfs_request` 双 API。
-- 下一步：09 落地 `mark_new_parent` 设置侧；13 落地 `restart_signals` 真实实现替换 no-op 脚手架；REBOOT 写入侧（`do_reboot`）归 20 档。
+- 下一步：09 落地 `mark_new_parent` 设置侧；13 落地 `restart_signals` 真实实现替换 no-op 脚手架。REBOOT 写入侧（`PmCall::Reboot` 臂 + `SysRebootCtl`）已随 NS10 落地（2026-09-21），机制归 20 档 D4 节。
 
 ---
 

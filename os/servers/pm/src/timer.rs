@@ -419,7 +419,8 @@ impl TimerCtl for SysTimerCtl {
 }
 
 /// 分发面的定时器出口束（S5）：`dispatch_pm_call` 的 Itimer 臂经此拿到
-/// 两个计时器出口与系统频率。
+/// 两个计时器出口与系统频率。svrctl_store/call_stats/abort_flag 是同束
+/// 搭载的 misc 族服务器全局态（C 的 misc.c 静态全局在分发面对位）。
 pub struct TimerFaces<'a> {
     pub tctl: &'a mut dyn TimerCtl,
     pub vctl: &'a mut dyn VTimerCtl,
@@ -430,6 +431,10 @@ pub struct TimerFaces<'a> {
     /// D-32 调用计数字节面(SI_CALL_STATS 应答;无 feature 时全零,
     /// 递增行为仍由 run_once 的 feature 门控决定)。
     pub call_stats: &'a mut [u8],
+    /// 内核中止标志(NS10 Reboot 臂;C glo.h:26 `abort_flag`——do_reboot
+    /// 写入(misc.c:204),VFS_PM_REBOOT_REPLY 特例读出交 sys_abort
+    /// (misc.c:309 对位,ipc/vfs.rs:548))。PmServer 持有,分发面经此写入。
+    pub abort_flag: &'a mut i32,
 }
 
 /// `handle_clock_notify` (`main.c:65-71` CLOCK → `expire_timers`)。

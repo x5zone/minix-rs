@@ -12,8 +12,8 @@
 //! "从 message 联合体取出本调用参数" 这一步的 Rust 对应物。
 
 use minix_types::{
-    MessLcPmExit, MessLcPmKill, MessLcPmPtrace, MessLcPmWait4, MessLsysPmProceventmask,
-    MessLsysPmSrvFork, MessRsPmSrvKill, Message,
+    MessLcPmExit, MessLcPmKill, MessLcPmPtrace, MessLcPmReboot, MessLcPmWait4,
+    MessLsysPmProceventmask, MessLsysPmSrvFork, MessRsPmSrvKill, Message,
 };
 // 凭证族三 wire(MessLcPmSetid/Groups/Getsid)的 MessageUnion 无专属臂,
 // 解码按字节读前 24 域(vm.rs wrapper 的 raw 读取先例)。
@@ -27,6 +27,7 @@ const _: () = assert!(size_of::<MessLcPmKill>() <= minix_types::MESSAGE_PAYLOAD_
 const _: () = assert!(size_of::<MessRsPmSrvKill>() <= minix_types::MESSAGE_PAYLOAD_SIZE);
 const _: () = assert!(size_of::<MessLsysPmProceventmask>() <= minix_types::MESSAGE_PAYLOAD_SIZE);
 const _: () = assert!(size_of::<MessLcPmPtrace>() <= minix_types::MESSAGE_PAYLOAD_SIZE);
+const _: () = assert!(size_of::<MessLcPmReboot>() <= minix_types::MESSAGE_PAYLOAD_SIZE);
 
 
 /// srv_fork 参数 (uid, gid)。RS → PM。
@@ -100,6 +101,16 @@ pub(crate) fn ptrace(msg: &Message) -> (i32, i32, u64, i64) {
     // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路，Copy 按值读。
     let pl = unsafe { msg.m_u.m_lc_pm_ptrace };
     (pl.pid, pl.req, pl.addr, pl.data)
+}
+
+/// reboot 的 how 位组。user → PM。
+///
+/// C: `mess_lc_pm_reboot` — ipc.h:503-507（`do_reboot` 消费 how，
+/// misc.c:205；读入后成为 `abort_flag`，glo.h:26）。
+pub(crate) fn reboot(msg: &Message) -> i32 {
+    // SAFETY: 同 srv_fork——dispatch 已按 m_type 选路，Copy 按值读。
+    let pl = unsafe { msg.m_u.m_lc_pm_reboot };
+    pl.how
 }
 
 /// exec 参数 (path 指针, path_len, frame 指针, framelen, ps_str)。
@@ -457,5 +468,13 @@ mod tests {
             m.m_u.m_lc_pm_ptrace.data = 0x1234_5678;
         });
         assert_eq!(ptrace(&m), (3, 2, 0x4000, 0x1234_5678));
+    }
+
+    #[test]
+    fn reboot_decodes_how_bitmask() {
+        let m = msg_with(|m| {
+            m.m_u.m_lc_pm_reboot.how = 0x0808;
+        });
+        assert_eq!(reboot(&m), 0x0808);
     }
 }

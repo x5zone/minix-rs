@@ -5,7 +5,9 @@
 //!   Design: `.design/20-design.v1.md` D1–D8 (explicit `UtsField/SysInfoWhat/EpInfo/RebootCtl/ParamStore/RusageWho`).
 //!   Single-threaded — `&mut ProcTable` without `Arc`.
 
-use minix_types::{Clock, Pid, Uid, Gid, Endpoint, VirBytes, EINVAL, EPERM, ESRCH, ENOSPC, E2BIG, ENOSYS};
+use minix_types::{
+    Clock, E2BIG, EINVAL, ENOSPC, ENOSYS, EPERM, ESRCH, Endpoint, Gid, Pid, Uid, UserSlot, VirBytes,
+};
 use crate::mproc::ProcTable;
 use crate::ipc::ReplyIntent;
 use alloc::string::String;
@@ -247,12 +249,21 @@ impl ParamStore {
 }
 
 /// `RebootCtl` (`misc.c:207-230`, D4, A-3).
+///
+/// `broadcast_kill`/`stop_init`/`tell_reboot` 分别对位 C 的
+/// `check_sig(-1, SIGKILL, FALSE)`（misc.c:221）/`sys_stop(INIT_PROC_NR)`
+/// （:222）/`tell_vfs(&mproc[VFS_PROC_NR], &m)`（:228）——三者都要摸
+/// mproc 表，执行上下文由 [`do_reboot`] 按调用点以 `&mut ProcTable`
+/// 复借用转交，端口自身只持内核/传输通道。
 pub trait RebootCtl {
+    /// C: `abort_flag = m_in.m_lc_pm_reboot.how`（misc.c:205；glo.h:26）。
     fn set_abort(&mut self, how: i32);
+    /// C: readclock `RTCDEV_PWR_OFF` taskcall（misc.c:207-214，DS 查名
+    /// 失败即跳过）。返回是否已请求断电。
     fn try_power_off(&mut self) -> bool;
-    fn broadcast_kill(&mut self);
-    fn stop_init(&mut self);
-    fn tell_reboot(&mut self) -> i32;
+    fn broadcast_kill(&mut self, table: &mut ProcTable, caller: UserSlot);
+    fn stop_init(&mut self, table: &ProcTable);
+    fn tell_reboot(&mut self, table: &mut ProcTable) -> i32;
 }
 
 /// VM 侧补充的资源用量三元组（`vm_getrusage` 的产出,`utility.c:446-450`）。
@@ -563,9 +574,15 @@ pub fn do_getepinfo(
     })
 }
 
-/// `do_reboot` (`misc.c:198-233`, D4).
+/// `do_reboot` (`misc.c:198-231`, D4).
+///
+/// C 序：EPERM 门（:202）→ `abort_flag = how`（:205）→ RB_POWERDOWN
+/// 走 readclock taskcall（:207-214）→ `check_sig(-1, SIGKILL, FALSE)`
+/// （:221，注释明言先 kill 后 reboot 的次序约束）→ `sys_stop(INIT_PROC_NR)`
+/// （:222，返回值不检查）→ `tell_vfs` VFS_PM_REBOOT（:228）→ SUSPEND
+/// 不回调用者（:230）。
 pub fn do_reboot(
-    table: &ProcTable,
+    table: &mut ProcTable,
     caller: minix_types::UserSlot,
     how: i32,
     ctl: &mut dyn RebootCtl,
@@ -577,9 +594,9 @@ pub fn do_reboot(
     if (how & RB_POWERDOWN) != 0 {
         let _ = ctl.try_power_off();
     }
-    ctl.broadcast_kill();
-    ctl.stop_init();
-    let _ = ctl.tell_reboot();
+    ctl.broadcast_kill(table, caller);
+    ctl.stop_init(table);
+    let _ = ctl.tell_reboot(table);
     Ok(ReplyIntent::ReplyLater) // SUSPEND never reply
 }
 
@@ -820,19 +837,34 @@ mod tests {
         told: bool,
     }
     impl RebootCtl for TestReboot {
-        fn set_abort(&mut self, how: i32) { self.abort = how; }
-        fn try_power_off(&mut self) -> bool { false }
-        fn broadcast_kill(&mut self) { self.killed = true; }
-        fn stop_init(&mut self) { self.stopped = true; }
-        fn tell_reboot(&mut self) -> i32 { self.told = true; 0 }
+        fn set_abort(&mut self, how: i32) {
+            self.abort = how;
+        }
+        fn try_power_off(&mut self) -> bool {
+            false
+        }
+        fn broadcast_kill(&mut self, _table: &mut ProcTable, _caller: UserSlot) {
+            self.killed = true;
+        }
+        fn stop_init(&mut self, _table: &ProcTable) {
+            self.stopped = true;
+        }
+        fn tell_reboot(&mut self, _table: &mut ProcTable) -> i32 {
+            self.told = true;
+            0
+        }
     }
     struct AltReboot;
     impl RebootCtl for AltReboot {
         fn set_abort(&mut self, _how: i32) {}
-        fn try_power_off(&mut self) -> bool { true }
-        fn broadcast_kill(&mut self) {}
-        fn stop_init(&mut self) {}
-        fn tell_reboot(&mut self) -> i32 { 0 }
+        fn try_power_off(&mut self) -> bool {
+            true
+        }
+        fn broadcast_kill(&mut self, _table: &mut ProcTable, _caller: UserSlot) {}
+        fn stop_init(&mut self, _table: &ProcTable) {}
+        fn tell_reboot(&mut self, _table: &mut ProcTable) -> i32 {
+            0
+        }
     }
     struct TestTimesVm { hz: Clock }
     impl TimesVmCtl for TestTimesVm {
@@ -940,10 +972,18 @@ mod tests {
     fn test_reboot_perm_suspend() {
         let mut table = ProcTable::new();
         mk_running(&mut table, 0, 1000);
-        let mut ctl = TestReboot { abort: 0, killed: false, stopped: false, told: false };
-        assert_eq!(do_reboot(&table, UserSlot::new(0), 0, &mut ctl).unwrap_err(), MiscError::Perm);
-        table.procs[0].resources.privilege = Privilege::User(Credentials::new(0,0));
-        let r = do_reboot(&table, UserSlot::new(0), RB_POWERDOWN, &mut ctl).unwrap();
+        let mut ctl = TestReboot {
+            abort: 0,
+            killed: false,
+            stopped: false,
+            told: false,
+        };
+        assert_eq!(
+            do_reboot(&mut table, UserSlot::new(0), 0, &mut ctl).unwrap_err(),
+            MiscError::Perm
+        );
+        table.procs[0].resources.privilege = Privilege::User(Credentials::new(0, 0));
+        let r = do_reboot(&mut table, UserSlot::new(0), RB_POWERDOWN, &mut ctl).unwrap();
         assert_eq!(r, ReplyIntent::ReplyLater);
         assert!(ctl.killed);
         assert!(ctl.stopped);

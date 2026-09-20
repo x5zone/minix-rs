@@ -564,6 +564,7 @@ impl<T: IpcTransport> PmServer<T> {
             system_hz: self.params.system_hz as i64,
             svrctl_store: &mut self.svrctl_store,
             call_stats: &mut self.call_stats,
+            abort_flag: &mut self.abort_flag,
         };
         let intent = dispatch_message(
             &mut self.table,

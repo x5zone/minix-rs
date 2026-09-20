@@ -11,7 +11,7 @@ use super::vm::{MessLcVmGetphys, MessLsysVmGetref, MessLsysVmInfo, MessLsysVmRus
 // E9 PmApi: the service-process message arms reuse the wire structs defined
 // in [`crate::ipc::pm`] (single definition, union + client decoder).
 use super::pm::{
-    MessLcPmSig, MessLcPmSigset, MessLsysPmGetepinfo, MessLsysPmGetprocnr,
+    MessLcPmReboot, MessLcPmSig, MessLcPmSigset, MessLsysPmGetepinfo, MessLsysPmGetprocnr,
     MessPmLsysGetepinfo, MessPmLsysGetprocnr, MessPmLcSigset, MessRsPmExecRestart,
 };
 
@@ -258,6 +258,8 @@ pub union MessageUnion {
     pub m_lc_pm_sigset: MessLcPmSigset,
     /// PM: signal-mask/pending reply (PM → user). C: `mess_pm_lc_sigset` — signal.c:117/97
     pub m_pm_lc_sigset: MessPmLcSigset,
+    /// PM: reboot params (user → PM). C: `mess_lc_pm_reboot` (how) — ipc.h:503-507
+    pub m_lc_pm_reboot: MessLcPmReboot,
     /// PM: srv_kill params (RS → PM). C: `mess_rs_pm_srv_kill` — ipc.h:1880-1885
     pub m_rs_pm_srv_kill: MessRsPmSrvKill,
     /// Asynchronous notification payload (mini_notify / BuildNotifyMessage).
