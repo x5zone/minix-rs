@@ -74,6 +74,9 @@ pub mod vfs;
 /// Working-directory traversal behind `getcwd` (C
 /// `minix3/minix/lib/libc/sys/__getcwd.c`).
 pub mod getcwd;
+/// Run-time configurable path variables behind `pathconf`/`fpathconf`
+/// (C `minix3/minix/lib/libc/sys/{pathconf.c,fpathconf.c}`).
+pub mod pathconf;
 /// System control transport face and the by-name walk (C
 /// `minix3/minix/lib/libc/sys/__sysctl.c`,
 /// `minix3/minix/lib/libc/gen/sysctlgetmibinfo.c`).
@@ -735,6 +738,32 @@ pub fn lstat(path: &str, buf: &mut Stat) -> Result<(), Errno> {
 /// Retrieves file status for an open descriptor (C: `fstat`).
 pub fn fstat(fd: Fd, buf: &mut Stat) -> Result<(), Errno> {
     vfs::fstat_via(&ipc::DirectTrapTransport, fd, buf as *mut Stat as u64)
+}
+
+/// The `_PC_*` variable numbers — the position the pathconf section of
+/// `<unistd.h>` holds for C programs (the query entry points are the
+/// `fpathconf`/`pathconf` functions below).
+pub use pathconf::{
+    PC_CHOWN_RESTRICTED, PC_LINK_MAX, PC_MAX_CANON, PC_MAX_INPUT, PC_NAME_MAX, PC_NO_TRUNC,
+    PC_PATH_MAX, PC_PIPE_BUF, PC_VDISABLE,
+};
+
+/// Reports run-time values of path variables for an open descriptor
+/// (C: `fpathconf`).
+pub fn fpathconf(fd: Fd, name: i32) -> Result<i64, Errno> {
+    pathconf::fpathconf_via(&ipc::DirectTrapTransport, fd, name)
+}
+
+/// Reports run-time values of path variables for a path (C: `pathconf`).
+///
+/// C `pathconf.c:37-45` opens the path `O_RDONLY` (flag value 0 per
+/// `fcntl.h`), runs the descriptor query, and closes — the open's errno
+/// propagates and the close result is ignored, ordering included.
+pub fn pathconf(path: &str, name: i32) -> Result<i64, Errno> {
+    let fd = open(path, 0, 0)?;
+    let value = fpathconf(fd, name);
+    let _ = close(fd);
+    value
 }
 
 /// Runs a device-specific control request (C: `ioctl`).
