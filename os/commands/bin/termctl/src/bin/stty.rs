@@ -1,12 +1,15 @@
 //! Minix-RS stty — the doing half over `minix_termctl::stty`.
 //!
 //! Ground truth: `minix3/bin/stty/stty.c` — no operands prints the speed
-//! line; `-a` prints everything; operands parse then apply to the current
-//! attributes (`tcgetattr` → apply → `tcsetattr`). `-g` (the readable
-//! single-line form) is declared unwired — 13-terminal-termios.md §5.
+//! line; `-a` prints everything; `-g` prints the machine-readable grep
+//! form (`gfmt.c:61-71`); operands parse then apply to the current
+//! attributes (`tcgetattr` → apply → `tcsetattr`), including whole
+//! `gfmt1:...` operands (`stty.c:143-146`). The C main loop prints and
+//! then consumes operands even in `-a`/`-g` mode; this shell keeps the
+//! mutually exclusive branch shape declared in 13-terminal-termios.md §5.
 
 use minix_sys::{tcgetattr, tcsetattr};
-use minix_termctl::stty::{apply_ops, display_a, parse_args};
+use minix_termctl::stty::{apply_ops, display_a, grep_print, parse_args};
 
 const STDIN: i32 = 0;
 const STDOUT: i32 = 1;
@@ -28,7 +31,17 @@ fn main() {
     let args: Vec<&str> = all[1..].to_vec();
 
     if args.first().map(|a| *a == "-g").unwrap_or(false) {
-        fail("option not wired");
+        // C 的 STTY_GFLAG 支路（stty.c:120-122）：tcgetattr 后 gprint 一行。
+        let mut t = minix_sys::Termios::new();
+        tcgetattr(STDIN, &mut t).unwrap_or_else(|_| fail("stdin is not a terminal"));
+        let mut out = [0u8; 512];
+        match grep_print(&t, &mut out) {
+            Ok(used) => {
+                let _ = minix_sys::write(STDOUT, &out[..used]);
+            }
+            Err(_) => fail("display buffer too small"),
+        }
+        terminate(0);
     }
     if args.first().map(|a| *a == "-a").unwrap_or(false) {
         let mut t = minix_sys::Termios::new();
