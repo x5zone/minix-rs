@@ -872,6 +872,23 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
+        // C: do_reboot(misc.c:198-231)——EPERM 门 → abort_flag →
+        // RB_POWERDOWN readclock 腿 → check_sig(-1, SIGKILL) 广播 →
+        // sys_stop(INIT) → tell VFS VFS_PM_REBOOT → SUSPEND 不回复
+        // (回复经 VFS_PM_REBOOT_REPLY 特例走 sys_abort(abort_flag),
+        // ipc/vfs.rs handle_vfs_reply 的 D-09 臂)。
+        PmCall::Reboot => {
+            let how = super::decode::reboot(msg);
+            let mut ctl = SysRebootCtl {
+                abort_flag: &mut *timers.abort_flag,
+                kern,
+                transport,
+            };
+            match crate::misc::do_reboot(table, caller, how, &mut ctl) {
+                Ok(intent) => intent,
+                Err(e) => ReplyIntent::Reply(e.to_errno()),
+            }
+        }
         // C: do_svrctl(misc.c:302-390)——IOCGROUP 门('P'/'M')+
         // sysgetenv 32 字节拷入(key/val 指针与长度),SET 存表,GET 回拷
         // val(misc.c:359-384)。
@@ -1004,12 +1021,6 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 Err(e) => ReplyIntent::Reply(e.to_errno()),
             }
         }
-        // 其余调用：handler 均已接线(1..=47 全量,S4 收尾后无 ENOSYS
-        // 臂)。逐调用的接线台账(C handler / Rust 逻辑位置 / wire·
-        // wrapper 前置条件 / 批次 A-G)见 04-stage-pm/todo.md §11.1——
-        // 本兜底臂仅承接未注册号的解码前置(正确性由 from_call_nr 的
-        // None→ENOSYS 路径保证)。
-        _ => ReplyIntent::Reply(ENOSYS),
     }
 }
 
@@ -1110,6 +1121,66 @@ impl<T: IpcTransport + ?Sized> crate::exec::VfsExec for SysVfsExec<'_, T> {
 /// new_gid@52/allow_setuid@56/…/stack_high@184;拷入尺寸 192。
 const EXEC_INFO_COPY_SIZE: usize = 192;
 
+/// Reboot 臂的生产端口(NS10):abort_flag 直写 PmServer 字段
+/// (C glo.h:26 `abort_flag` 对位)、内核腿经 KernelGateway、VFS 告知经
+/// IpcTransport(`misc.rs::RebootCtl` 文档的各腿 C 对位)。
+struct SysRebootCtl<'a, T: IpcTransport + ?Sized> {
+    abort_flag: &'a mut i32,
+    kern: &'a mut dyn crate::exit::KernelGateway,
+    transport: &'a mut T,
+}
+
+impl<T: IpcTransport + ?Sized> crate::misc::RebootCtl for SysRebootCtl<'_, T> {
+    fn set_abort(&mut self, how: i32) {
+        *self.abort_flag = how;
+    }
+
+    fn try_power_off(&mut self) -> bool {
+        // C misc.c:207-214:DS 查 "readclock.drv" 成功才 _taskcall 断电,
+        // 查不到即静默跳过("nothing we can do if it fails")。PM 尚无 DS
+        // label→endpoint 客户端,且当前 boot 信封本无 readclock 驱动(C
+        // 同样走跳过分支,外部行为一致);断电腿维持诚实不请求,驱动与 DS
+        // 客户端出现后随波次接入。
+        false
+    }
+
+    fn broadcast_kill(&mut self, table: &mut ProcTable, caller: UserSlot) {
+        // C misc.c:221:check_sig(-1, SIGKILL, FALSE)("kill all users
+        // except init"),返回值不检查。广播跳过 PRIV_PROC 的语义在
+        // check_sig 内(signal.c:607-608 对位)。
+        let _ = crate::signal::check_sig(
+            table,
+            caller,
+            -1,
+            crate::signal::SIGKILL,
+            false,
+            self.kern,
+            self.transport,
+        );
+    }
+
+    fn stop_init(&mut self, table: &ProcTable) {
+        // C misc.c:222:sys_stop(INIT_PROC_NR),返回值不检查。生产
+        // KernelGateway::sys_delay_stop 在 E6 wrapper 落地前是诚实占位
+        // (-EIO,exit.rs),此处对失败静默与 C 同型;「init 未被内核冻结」
+        // 的窗口差异随 E6 wrapper 自愈(FIXLOG NS10 已登记)。
+        if let Ok(slot) = table.pm_isokendpt(Endpoint::INIT) {
+            let _ = self.kern.sys_delay_stop(table.procs[slot.get()].endpoint());
+        }
+    }
+
+    fn tell_reboot(&mut self, table: &mut ProcTable) -> i32 {
+        // C misc.c:228:tell_vfs(&mproc[VFS_PROC_NR], &m)——Reboot 不关联
+        // 用户进程,借 VFS 槽位挂 VFS_CALL(ipc/vfs.rs tell_vfs 文档)。
+        // VFS 不在表(已死)时回复方与 abort 交付都不可能,跳过告知与 C
+        // 写死槽位的可观察结果一致。
+        if let Ok(slot) = table.pm_isokendpt(Endpoint::VFS) {
+            crate::ipc::vfs::tell_vfs(table, slot, minix_types::VfsCall::Reboot, self.transport);
+        }
+        0
+    }
+}
+
 /// 凭证族的 VFS 转发适配(S2):编码 VfsCall 后走 tell_vfs 同型三段
 /// (not-idle 断言 / send / VFS_CALL 置位——vfs.rs:166-175)。
 struct SysVfsForward<'a, T: IpcTransport + ?Sized> {
@@ -1197,12 +1268,14 @@ fn leak_timers() -> crate::timer::TimerFaces<'static> {
     let svrctl: &'static mut crate::misc::ParamStore =
         Box::leak(Box::new(crate::misc::ParamStore::new(alloc::string::String::new())));
     let call_stats: &'static mut [u8] = Box::leak(Box::new([0u8; 192]));
+    let abort_flag: &'static mut i32 = Box::leak(Box::new(0));
     crate::timer::TimerFaces {
         tctl,
         vctl,
         system_hz: 100,
         svrctl_store: svrctl,
         call_stats,
+        abort_flag,
     }
 }
 

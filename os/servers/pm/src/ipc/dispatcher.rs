@@ -247,6 +247,10 @@ mod tests {
     }
     fn timers() -> TimerFaces<'static> {
         // 测试用泄漏式构造('static 借用由泄漏的 Box 承担)。
+        timers_with(Box::leak(Box::new(0i32)))
+    }
+    /// 注入受测方可读的 abort_flag（Reboot 臂断言用）。
+    fn timers_with<'a>(abort_flag: &'a mut i32) -> TimerFaces<'a> {
         let tctl: &'static mut dyn TimerCtl = Box::leak(Box::new(TestTimerCtl));
         let vctl: &'static mut dyn crate::timer::VTimerCtl = Box::leak(Box::new(TestVTimerCtl));
         let svrctl: &'static mut crate::misc::ParamStore =
@@ -258,6 +262,7 @@ mod tests {
             system_hz: 100,
             svrctl_store: svrctl,
             call_stats,
+            abort_flag,
         }
     }
 
@@ -565,5 +570,77 @@ mod tests {
             UserSlot::new(7),
         );
         assert_eq!(result.unwrap_err(), crate::fork::ForkCoordError::VmError);
+    }
+
+    /// NS10：root 的 PM_REBOOT 走完整 reboot 序——SUSPEND 不回复、
+    /// abort_flag 记 how（glo.h:26 对位）、VFS 槽位挂 VFS_CALL。
+    /// sys_abort 的实际发出在 VFS_PM_REBOOT_REPLY 特例（run_once
+    /// 第一路，misc.c:309 对位），不在本臂。
+    #[test]
+    fn test_reboot_root_suspends_sets_abort_flag_and_tells_vfs() {
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup(3, ep, false);
+        // setup 默认凭证即 uid 0；显式置 User(0,0) 表达"root 用户进程"。
+        table.procs[3].resources.privilege =
+            crate::mproc::Privilege::User(crate::mproc::Credentials::new(0, 0));
+        // VFS 行在表（C mproc[VFS_PROC_NR]）：tell_reboot 的 slot 来源。
+        // PRIV_PROC 使广播 SIGKILL 跳过它（signal.c:607-608）。
+        table.procs[1].identity.endpoint = Endpoint::VFS;
+        table.procs[1].identity.id.pid = 2;
+        table.procs[1].state.lifecycle = Lifecycle::Running;
+        table.procs[1].resources.privilege =
+            crate::mproc::Privilege::Kernel(crate::mproc::Credentials::default());
+        let mut kern = NoopKernel;
+        let mut abort_flag = 0i32;
+        let mut timers = timers_with(&mut abort_flag);
+        let mut msg = msg_with(37, ep); // PM_REBOOT（callnr.h）
+        msg.m_u.m_lc_pm_reboot.how = 0x0808;
+        let intent = dispatch_message(
+            &mut table,
+            &mut events,
+            &mut transport,
+            &mut kern,
+            &mut timers,
+            UserSlot::new(3),
+            &msg,
+        );
+        assert_eq!(intent, ReplyIntent::ReplyLater, "SUSPEND：不回复调用者");
+        assert_eq!(abort_flag, 0x0808, "abort_flag 必须记下 how 位组");
+        match table.procs[1].state.block.ipc_blocked {
+            Some(crate::mproc::IpcBlockReason::VfsCall { .. }) => {}
+            ref other => panic!("VFS 槽位应挂 VFS_CALL，实为 {other:?}"),
+        }
+    }
+
+    /// NS10：非 root → EPERM 同步回复，零副作用（misc.c:202 门）。
+    #[test]
+    fn test_reboot_non_root_is_eperm_without_side_effects() {
+        let ep = Endpoint::from_generation_slot(1, 3);
+        let (mut table, mut events, mut transport) = setup(3, ep, false);
+        table.procs[3].resources.privilege =
+            crate::mproc::Privilege::User(crate::mproc::Credentials::new(1000, 1000));
+        table.procs[1].identity.endpoint = Endpoint::VFS;
+        table.procs[1].identity.id.pid = 2;
+        table.procs[1].state.lifecycle = Lifecycle::Running;
+        let mut kern = NoopKernel;
+        let mut abort_flag = 0i32;
+        let mut timers = timers_with(&mut abort_flag);
+        let mut msg = msg_with(37, ep);
+        msg.m_u.m_lc_pm_reboot.how = 0x0808;
+        let intent = dispatch_message(
+            &mut table,
+            &mut events,
+            &mut transport,
+            &mut kern,
+            &mut timers,
+            UserSlot::new(3),
+            &msg,
+        );
+        assert_eq!(intent, ReplyIntent::Reply(minix_types::EPERM));
+        assert_eq!(abort_flag, 0, "EPERM 路径不得写 abort_flag");
+        assert!(
+            table.procs[1].state.block.ipc_blocked.is_none(),
+            "EPERM 路径不得告知 VFS"
+        );
     }
 }

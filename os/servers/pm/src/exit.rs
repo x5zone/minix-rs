@@ -412,17 +412,24 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     // ---- 8. VFS tell (350-359) ----
     {
         let call = if dump_core {
-            // C: forkexit.c:354-357 — `m.VFS_PM_PATH = rmp->mp_name`（m7p1）：
-            // 指向 PM 静态 mproc 表内进程名的指针，VFS 稍后经 safecopy 从
-            // PM 内存读取。Rust 无法对可移动的表数据形成跨异步的稳定裸指针，
-            // 且 minix-types 的 `VfsCall::DumpCore.path` 为 i32（容不下 64 位
-            // 指针）——wire 契约需与 05-stage-vfs 协同重新设计（按值携带
-            // [u8;16] 名字，或 minix-types 增加 path+len 成员，挂 edge E7）。
-            // [DEFERRED: D-16] 阻塞依赖：跨服务 core-name 契约决策。
+            // C: forkexit.c:354-357 — `m.VFS_PM_PATH = rmp->mp_name`（m7p1
+            // 指针，VFS 稍后 safecopy）。本线按 OQ-5 裁决（new_edge4 §2 C-6）
+            // 改为**按值携带**：`mp_name` 的 Rust 对位 `identity.name`
+            // （[u8; PROC_NAME_LEN] NUL 填充）直接进载荷尾 40..56，
+            // name_len = 首个 NUL 前的字节数（m7_i3 槽）——Rust 侧无可移动
+            // 表行上的稳定裸指针，按值协议同时消除跨异步指针稳定性问题。
+            let name = table.procs[proc_nr].identity.name;
+            let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
             VfsCall::DumpCore {
                 endpoint: proc_ep,
-                term_sig: table.procs[proc_nr].state.lifecycle.exit_code().map(|(_, s)| s as i32).unwrap_or(0),
-                path: 0, // [DEFERRED: D-16] 见上
+                term_sig: table.procs[proc_nr]
+                    .state
+                    .lifecycle
+                    .exit_code()
+                    .map(|(_, s)| s as i32)
+                    .unwrap_or(0),
+                name_len: name_len as u32,
+                name,
             }
         } else {
             VfsCall::Exit { endpoint: proc_ep }

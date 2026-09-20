@@ -368,7 +368,8 @@ Rust 改写遵循“`UtsField` 枚举穷尽 + `SysInfoWhat` 精确 + `EpInfo` �
 ### D4：`do_reboot` 定序收敛到 `RebootCtl` trait（ARCH A-3/A-6）
 
 - **C**：`misc.c:207-232` `abort_flag = how` + `RB_POWERDOWN→RTCDEV_PWR_OFF` + `check_sig(-1,SIGKILL)` + `sys_stop(INIT)` + `VFS_PM_REBOOT` + `SUSPEND` 永不回复。
-- **Rust**：`trait RebootCtl { fn set_abort(&mut self, how: i32); fn try_power_off(&mut self); fn broadcast_kill(&mut self); fn stop_init(&mut self); fn tell_reboot(&mut self) -> Result<(), RebootError>; }`（定序 `abort→power→kill→stop→tell→SUSPEND` 显式，`abort_flag` 全局注入）。
+- **Rust**：`trait RebootCtl { fn set_abort(&mut self, how: i32); fn try_power_off(&mut self) -> bool; fn broadcast_kill(&mut self, table: &mut ProcTable, caller: UserSlot); fn stop_init(&mut self, table: &ProcTable); fn tell_reboot(&mut self, table: &mut ProcTable) -> i32; }`（定序 `abort→power→kill→stop→tell→SUSPEND` 显式；`broadcast_kill/stop_init/tell_reboot` 三腿各对应 C 摸 mproc 表的 `check_sig/sys_stop/tell_vfs`，执行上下文由 `do_reboot` 以 `&mut ProcTable` 复借用转交，端口自身只持内核/传输通道）。
+- **接线（NS10，2026-09-21 落地）**：`PmCall::Reboot` 臂（`ipc/calls.rs`，`decode::reboot` 按 `mess_lc_pm_reboot` 的 `how@0` 解码，ipc.h:503-507）+ 生产端口 `SysRebootCtl`——`abort_flag` 直写 `PmServer` 字段（`TimerFaces` 束带入分发面，C glo.h:26 全局对位；`VFS_PM_REBOOT_REPLY` 特例经 `PmServices` 读出交 `sys_abort`）；`try_power_off` 诚实恒 `false`（C 的 readclock taskcall 腿前置 DS 查名，PM 无 DS label 客户端且当前 boot 信封无 readclock 驱动，C 同走跳过分支，外部行为一致）；`stop_init` 委托 `KernelGateway::sys_delay_stop`（E6 wrapper 落地前为诚实 `-EIO` 占位，C 对 `sys_stop` 返回值本不检查，init 未被内核冻结的窗口差异随 E6 自愈）；`broadcast_kill` 复用 `check_sig(-1, SIGKILL, false)`（PRIV_PROC 跳过语义在 `check_sig` 内，signal.c:607-608）。
 
 ### D5：`svrctl` 的 `local_overrides[2]` 收敛到 `ParamStore`（ARCH A-3）
 
@@ -427,7 +428,7 @@ pub enum UtsField { SysName=0, Nodename, Release, Version, Machine } + TryFrom<u
 pub enum SysInfoWhat { ProcTab } + TryFrom<i32> // SI_PROC_TAB 2, SI_CALL_STATS cfg 缺口
 pub struct EpInfo { pub pid: Pid, pub uid: Uid, pub euid: Uid, pub gid: Gid, pub egid: Gid, pub ngroups: usize, pub groups: Vec<Gid> }
 pub trait SysInfoCtl { fn proc_tab(&self) -> &[u8]; }
-pub trait RebootCtl { fn set_abort(&mut self, how: i32); fn try_power_off(&mut self); fn broadcast_kill(&mut self); fn stop_init(&mut self); fn tell_reboot(&mut self) -> i32; }
+pub trait RebootCtl { fn set_abort(&mut self, how: i32); fn try_power_off(&mut self) -> bool; fn broadcast_kill(&mut self, table: &mut ProcTable, caller: UserSlot); fn stop_init(&mut self, table: &ProcTable); fn tell_reboot(&mut self, table: &mut ProcTable) -> i32; } // 三腿摸表：上下文由 do_reboot 复借用转交
 pub struct ParamStore { pub local: ArrayVec<(String,String),2>, pub monitor: String }
 pub fn find_param(monitor: &str, key: &str) -> Option<String> // KVP 纯函数
 pub enum RusageWho { Slf=0, Children=-1 } + TryFrom<i32>
@@ -438,7 +439,7 @@ pub fn do_sysuname(field: usize, caller: UserSlot, len: usize, cpy: &mut dyn Cop
 pub fn do_getsysinfo(table: &ProcTable, caller: UserSlot, what: SysInfoWhat, size: usize, dst: VirBytes, cpy: &mut dyn CopyToUser) -> Result<(), MiscError>
 pub fn do_getprocnr(table: &ProcTable, caller_ep: Endpoint, pid: Pid) -> Result<Endpoint, MiscError>
 pub fn do_getepinfo(table: &ProcTable, ep: Endpoint, caller_ngroups: usize, cpy: &mut dyn CopyGroups) -> Result<EpInfo, MiscError>
-pub fn do_reboot(table: &ProcTable, caller: UserSlot, how: i32, ctl: &mut dyn RebootCtl) -> Result<ReplyIntent, MiscError> // SUSPEND 永不回复
+pub fn do_reboot(table: &mut ProcTable, caller: UserSlot, how: i32, ctl: &mut dyn RebootCtl) -> Result<ReplyIntent, MiscError> // SUSPEND 永不回复
 pub fn do_svrctl(store: &mut ParamStore, req: SvrctlReq, cpy: &mut dyn CopySvrctl) -> Result<usize, MiscError> // E2BIG/ENOSPC/ESRCH 三码
 pub fn do_getrusage(table: &ProcTable, caller: UserSlot, who: RusageWho, addr: VirBytes, hz: Clock, ctl: &mut dyn TimesVmCtl, cpy: &mut dyn CopyToUser) -> Result<UtimeStimePair, MiscError> // 组装 128B rusage 后经 cpy 拷出
 ```

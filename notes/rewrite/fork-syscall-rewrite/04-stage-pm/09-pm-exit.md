@@ -294,7 +294,7 @@ Rust 改写遵循"显式协调器 + 状态机枚举 + 双监护 + 事件发布"�
 
 ### 4.3 `os/servers/pm/src/ipc/{vfs,event}.rs`
 
-`VfsCall::Exit/DumpCore` + `tell_vfs`（`VFS_CALL` 置退出进程）+ `EventRegistry::publish_event`（EXIT 事件，`main.c:365`）。
+`VfsCall::Exit/DumpCore` + `tell_vfs`（`VFS_CALL` 置退出进程）+ `EventRegistry::publish_event`（EXIT 事件，`main.c:365`）。DumpCore 的名字自 NS10 起按值携带（OQ-5/C-6 裁决：`name_len` 走 `m7_i3`、名字走载荷尾 40..56，取代 C `m7_p1` 指针 + VFS safecopy fetch，`forkexit.c:357` 对位）。
 
 ### 4.4 `os/servers/pm/src/signal.rs`
 
