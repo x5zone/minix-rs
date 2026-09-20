@@ -22,6 +22,11 @@ minix-arch = { path = "../arch", features = ["runtime-window"] }
 minix-plat = { path = "../plat", features = ["mock"] }
 
 [features]
+# 形态开关（NL5③ 生产开关显式化）：`default = ["mock"]` 是宿主测试形态
+# （arch 带 runtime-window、plat 走 mock 替身）；生产形态 = `--no-default-features`
+# （真 arch/plat；riscv64gc/aarch64-unknown-none 判例见 NK8/NL5②），
+# 唯一装机消费者 = os/test-kernels/kernel-image（其 Cargo.toml 对本包
+# default-features = false，NS8-A）。`qemu_test` 为载体侧追加位，与两形态正交。
 default = ["mock"]
 mock = ["minix-arch/runtime-window", "minix-plat/mock"]
 qemu_test = []
