@@ -263,16 +263,18 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
             let notify = minix_sef::is_ipc_notify(status);
             let source = msg.m_source;
 
-            // **出生面**（全树共同的 RS_INIT 握手，卡K/S25 收口）：RS 的
-            // init 请求不进业务循环——fresh 就地应答 `RS_INIT+OK`（devman
+            // **出生面**（全树共同的 RS_INIT 握手，卡K/S25 收口；S42 批二
+            // 转完整握手表述）：RS 的发送腿（boot step2，main.c:365/387
+            // 对位 + do_up 的 `rs_asynsend`，utility.c:62）已在库，本拦截
+            // 即握手的应答半——C `sef_startup` 尾部 + `do_sef_init_request`
+            // （sef_init.c:193-215）。fresh 就地应答 `RS_INIT+OK`（devman
             // 的树在 `Server::new` 构造期已建，等价 C `init_hook` 的首次
             // 构建语义），LU/RESTART 诚实拒 `ENOSYS` 并终止循环（C 对
             // init 失败 panic；单线程服务器 fail-closed 停机，RS 按崩溃
-            // 处置）。语义与 `fs/fs-rt` 的 `run_birth` 同源
-            // （C `sef_startup` 尾部 + `do_sef_init_request`，
-            // sef_init.c:193-215）；两族各持一份是分层使然（fs-rt 依赖
-            // minix-fs 的 FsDriver 面，devman 不在此族），第三处出现时再
-            // 裁决上收。
+            // 处置）。第三处实现已随 S42 批二落在 sched 传输层（第三族）：
+            // 三族各持是分层使然（fs-rt 依赖 minix-fs 的 FsDriver 面、
+            // devman/sched 各贴自身传输层），统一上收留裁决（fs-rt 本卡
+            // 禁触，无法三向归一）。
             if !notify && msg.m_type == minix_types::RS_INIT && source == Endpoint::RS {
                 // SAFETY: 出生请求的活跃 union 臂是 `m_rs_init`
                 // （m_type == RS_INIT 且来源 RS）。

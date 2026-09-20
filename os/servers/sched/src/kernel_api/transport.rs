@@ -109,8 +109,15 @@ impl IpcTransport for KernelIpcTransport {
         // signal requests (SCHED registers no handler, main.c:118; the
         // no-handler default is OK, so sef.c:232-237 `continue`s). A
         // surfaced signal would earn a no_sys reply C never sends.
+        //
+        // 出生应答的发送腿：C `sef_cb_init_response` 缺省实现是
+        // `ipc_sendnb(RS_PROC_NR, &m)`（sef_init.c:121，SEF_CB_INIT_
+        // RESPONSE_DEFAULT）——阻塞 send 在此等价（RS 发出 init 后阻塞
+        // 在 catch 收应答）。
         let mut sef = SefIpcAdapter { inner: self.inner };
-        sef_filtered_receive(&mut sef)
+        let mut send_reply =
+            |m: &Message| self.inner.send(Endpoint::RS, m).map_err(trap_errno);
+        sef_filtered_receive(&mut sef, &mut send_reply)
     }
 
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
@@ -139,23 +146,60 @@ impl minix_sef::SefIpc for SefIpcAdapter {
 
 /// 经 SEF 层的接收循环（C `sef_receive_status` 的主循环契约）：普通调用与
 /// 通知原样上浮（状态字随之走，02 的 classify 与 `noquantum_trust` 消费两
-/// 个半边）；信号与启动请求被吞掉、继续等下一条。
+/// 个半边）；信号被吞掉、继续等下一条；RS 的 init 请求走**出生面**。
 ///
 /// `SefEvent::Signal` 在这里吞掉，因为 SCHED 没有注册信号处理程序——C 的
 /// `sef_receive_status` 对无处理程序的服务同样是吞（处理结果 OK →
-/// `continue`）。`SefEvent::Init` 今天不可达（minix-sef 尚不拦截启动请求）；
-/// 吞掉是对 RS_INIT 到达时"不以 no_sys 回 RS"的占位，真正的握手面是启动链
-/// 条目的共用面（edge3 拆分卡 D / S29），落地时从这里接。
-fn sef_filtered_receive<S: minix_sef::SefIpc>(sef: &mut S) -> Result<(Message, IpcStatus), i32> {
+/// `continue`）。
+///
+/// **出生面**（S42 批二收口；此前 RS_INIT 浮进分发表换来 no_sys 回复，
+/// RS 的 boot 期 catch 永久阻塞——S25/S27 登记的挂点）：C `sef_startup`
+/// 阻塞等 RS 的 init 请求（sef.c:103-111 `IS_SEF_INIT_REQUEST`，
+/// sef.h:33-34 按 type+source 判定、与投递方式无关），回调完工后回
+/// `RS_INIT+result`（process_init 尾部，sef_init.c:115-121）。Rust 侧
+/// sched 的 init 工作——`sys_getmachine` + `init_scheduling`——已在
+/// main 于循环前完成（等价 C `sef_cb_init_fresh` main.c:126-136 的
+/// 完工语义，devman「构造期已建」同型），应答因此发生在首次收包：
+/// fresh 应答 `RS_INIT+OK` 后进主循环；LU/RESTART 诚实拒 `ENOSYS`
+/// 并停机（devman/fs-rt 出生面同族协议，C 对 init 失败 panic 的
+/// fail-closed 对应）。
+fn sef_filtered_receive<S: minix_sef::SefIpc>(
+    sef: &mut S,
+    send_reply: &mut dyn FnMut(&Message) -> Result<(), i32>,
+) -> Result<(Message, IpcStatus), i32> {
     loop {
         let mut message = blank_message();
         let recv = minix_sef::sef_receive_status(sef, Endpoint::ANY, &mut message, &mut |_| {})?;
+        // 出生拦截先于事件分类：RS_INIT 不论以何种事件形态到达
+        // （minix-sef 不产出 Init 事件，异步投递走 Call 形态）都按
+        // sef.h:33-34 的 type+source 判定。
+        if recv.message.m_type == minix_types::RS_INIT && recv.source == Endpoint::RS {
+            // SAFETY: 出生请求的活跃 union 臂是 `m_rs_init`
+            //（m_type == RS_INIT 且来源 RS，上面两道门已过）。
+            let kind = unsafe { recv.message.m_u.m_rs_init.type_ };
+            let result = if kind == 0 {
+                minix_types::OK
+            } else {
+                minix_types::ENOSYS
+            };
+            let mut reply = blank_message();
+            reply.m_type = minix_types::RS_INIT;
+            // union 字段写是 safe 的（只有读才 unsafe）；回信臂同
+            // `m_rs_init`（process_init 尾部：`m.m_type = RS_INIT;
+            // m.m_rs_init.result = result;`）。
+            reply.m_u.m_rs_init.result = result;
+            send_reply(&reply)?;
+            if result == minix_types::OK {
+                continue; // 出生已应答，吞掉这条，主循环继续
+            }
+            return Err(minix_types::ENOSYS); // init 被拒：fail-closed 停机
+        }
         match recv.event {
             // 普通消息与"不是 ping 的 RS 通知"（C 的 `break` 路径）照常上浮。
             minix_sef::SefEvent::Call(_) | minix_sef::SefEvent::PingInvalid => {
                 return Ok((recv.message, IpcStatus(recv.status as u32)));
             }
-            // 无处理程序的信号请求与启动请求：吞掉，继续等（C sef.c:232-237）。
+            // 无处理程序的信号请求：吞掉，继续等（C sef.c:232-237）。
             minix_sef::SefEvent::Signal(_) | minix_sef::SefEvent::Init(_) => continue,
         }
     }
@@ -400,7 +444,8 @@ mod sef_filter_tests {
             arrival(Endpoint::from_generation_slot(1, 2), minix_types::SCHEDULING_START, false),
         ];
         let mut sef = ScriptedSef::new(script);
-        let (message, _status) = sef_filtered_receive(&mut sef).expect("真调用浮出");
+        let (message, _status) =
+            sef_filtered_receive(&mut sef, &mut |_: &Message| Ok(())).expect("真调用浮出");
         assert_eq!(message.m_type, minix_types::SCHEDULING_START);
         assert_eq!(
             sef.notified.borrow().as_slice(),
@@ -414,9 +459,101 @@ mod sef_filter_tests {
         // 底座断链（宿主 trap 恒 EIO）→ Err 原样上浮，循环不伪造成功。
         let mut sef = ScriptedSef::new(std::vec::Vec::new());
         assert!(
-            matches!(sef_filtered_receive(&mut sef), Err(e) if e == minix_types::EIO),
+            matches!(
+                sef_filtered_receive(&mut sef, &mut |_: &Message| Ok(())),
+                Err(e) if e == minix_types::EIO
+            ),
             "底座断链 → Err 原样上浮"
         );
+    }
+
+    /// 出生面（S42 批二）：RS 的 fresh init 请求被应答 `RS_INIT+OK` 后
+    /// 吞掉，下一条业务消息正常上浮——「init 发出 → 应答 OK → 服务进
+    /// 主循环」的传输层往返。
+    #[test]
+    fn birth_fresh_is_answered_ok_then_loop_serves_business() {
+        let mut birth = Message {
+            m_type: minix_types::RS_INIT,
+            m_source: Endpoint::RS,
+            ..Message::default()
+        };
+        // union 字段写是 safe 的；活跃臂 `m_rs_init`（type_=0 即
+        // SEF_INIT_FRESH）。
+        birth.m_u.m_rs_init.type_ = 0;
+        let business = arrival(
+            Endpoint::from_generation_slot(1, 2),
+            minix_types::SCHEDULING_START,
+            false,
+        );
+        let script = vec![(0, birth), business];
+        let mut sef = ScriptedSef::new(script);
+        let replied: RefCell<std::vec::Vec<Message>> = RefCell::new(std::vec::Vec::new());
+        let mut send = |m: &Message| {
+            replied.borrow_mut().push(*m);
+            Ok(())
+        };
+        let (message, _status) =
+            sef_filtered_receive(&mut sef, &mut send).expect("业务消息浮出");
+        assert_eq!(message.m_type, minix_types::SCHEDULING_START);
+        let replies = replied.borrow();
+        assert_eq!(replies.len(), 1, "出生回信恰好一条");
+        assert_eq!(replies[0].m_type, minix_types::RS_INIT);
+        // SAFETY(test): 回信臂 `m_rs_init.result`。
+        unsafe {
+            assert_eq!(replies[0].m_u.m_rs_init.result, minix_types::OK);
+        }
+    }
+
+    /// 出生面：LU/RESTART 诚实拒 `ENOSYS` 并停机（回信 ENOSYS 后 Err
+    /// 上浮，调用方 fail-closed；C 对 init 失败 panic）。
+    #[test]
+    fn birth_stateful_is_refused_enosys_and_stops() {
+        let mut birth = Message {
+            m_type: minix_types::RS_INIT,
+            m_source: Endpoint::RS,
+            ..Message::default()
+        };
+        // type_=1 即 SEF_INIT_LU。
+        birth.m_u.m_rs_init.type_ = 1;
+        let mut sef = ScriptedSef::new(vec![(0, birth)]);
+        let replied: RefCell<std::vec::Vec<Message>> = RefCell::new(std::vec::Vec::new());
+        let mut send = |m: &Message| {
+            replied.borrow_mut().push(*m);
+            Ok(())
+        };
+        let outcome = sef_filtered_receive(&mut sef, &mut send);
+        assert!(
+            matches!(outcome, Err(e) if e == minix_types::ENOSYS),
+            "init 被拒 → Err(ENOSYS) 上浮停机"
+        );
+        let replies = replied.borrow();
+        assert_eq!(replies.len(), 1);
+        // SAFETY(test): 回信臂 `m_rs_init.result`。
+        unsafe {
+            assert_eq!(replies[0].m_u.m_rs_init.result, minix_types::ENOSYS);
+        }
+    }
+
+    /// 非 RS 源的 RS_INIT 不拦截（sef.h:33-34 的 source 门）——照常
+    /// 上浮进分发表，不回信。
+    #[test]
+    fn rs_init_from_other_source_surfaces_unanswered() {
+        let mut impostor = Message {
+            m_type: minix_types::RS_INIT,
+            m_source: Endpoint::from_generation_slot(1, 2),
+            ..Message::default()
+        };
+        impostor.m_u.m_rs_init.type_ = 0;
+        let mut sef = ScriptedSef::new(vec![(0, impostor)]);
+        let replied: RefCell<std::vec::Vec<Message>> = RefCell::new(std::vec::Vec::new());
+        let mut send = |m: &Message| {
+            replied.borrow_mut().push(*m);
+            Ok(())
+        };
+        let (message, _status) =
+            sef_filtered_receive(&mut sef, &mut send).expect("非 RS 源照常上浮");
+        assert_eq!(message.m_type, minix_types::RS_INIT);
+        assert!(replied.borrow().is_empty(), "非 RS 源不触发出生应答");
     }
 }
 

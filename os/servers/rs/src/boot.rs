@@ -1407,7 +1407,7 @@ mod tests {
         assert_eq!(
             boot.init_fresh(&mut sys),
             Err(BootError::Kernel(Errno::ENOSYS)),
-            "step 3 fail-closed until 12 (T6)"
+            "step 3 blocks on the receive seam: an undelivered init-ready fails the boot"
         );
 
         // Step 1: SYS_PRIV_SET_SYS for every service except RS/VM (10 services).
@@ -1494,8 +1494,9 @@ mod tests {
         let tables = BootTables::new(image);
         let mut sys = MockKernelApi::new(100);
         let mut boot = BootInit::new(tables);
-        // Steps 1-2 only (step 3 is fail-closed until 12 — T6); the table
-        // population happens in step 1 (main.c:244-346).
+        // Steps 1-2 only (step 3 blocks on the live receive seam — an empty
+        // inbox fails the boot); the table population happens in step 1
+        // (main.c:244-346).
         boot.step0_prepare(&mut sys).expect("step 0");
         boot.step1_set_attrs(&mut sys).expect("step 1");
 
@@ -2116,7 +2117,7 @@ mod tests {
         assert_eq!(
             boot.step2_allow_run(&mut sys),
             Err(BootError::Kernel(Errno::ENOSYS)),
-            "SF_SYNCH_BOOT sync catch is fail-closed until 12 (T6)"
+            "SYNCH_BOOT catch: an undelivered init-ready receive fails the boot (main.c:390-392)"
         );
     }
 
