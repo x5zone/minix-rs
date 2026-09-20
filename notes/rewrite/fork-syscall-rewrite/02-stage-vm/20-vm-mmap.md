@@ -100,7 +100,7 @@ mmap = 调用者验证（execpriv 分级）→ 地址分配（mmap_region 三路
   └─ 文件 → vfs_request(FDLOOKUP) → SUSPEND → mmap_file_cont → mmap_file → ipc_send
 ```
 
-**消息结构 `mess_mmap`**（ipc.h:1582-1592）——**x86_64 线载 64 位车道**（NS5-A，2026-09-21）：
+**消息结构 `mess_mmap`**（ipc.h:1582-1592）——**x86_64 线载 64 位车道**（NS5-A）：
 
 C 的 `_ASSERT_MSG_SIZE`（ipcconst.h:17-19）把每条消息载荷钉在 56 字节，该断言只在 i386 下成立——LP64 下同一字段表是 72 字节（addr/len/retaddr 各 8 字节），即 **C 从未有 64 位形态的 `mess_mmap` 可供对位**（Minix3 用户态产不出 4 GiB 以上 VA）。minix-rs 用户态是 LP64：exec 栈顶 `0x7fff_ffff_f000` 一族只有 64 位车道装得下，u32 车道会静默截断每一次栈映射。因此本 overlay 沿用与 `m_vm_pagefault`（16-pagefault.md §3.4）、`m_vmmcp_reply`（E-VMMCPWIRE）一致的既有裁决：**字段名、字段序、语义与 C 头 1:1，指针/长度车道载诚实 64 位值，载荷总尺寸 56 字节不变**（C i386 形态把宽度花在 `padding[5]` 上，本线载把它花在指针车道上）。单一权威 = minix-types `MessMmap`（编译期 size 断言）；minix-sys `mmap_via`/`munmap_via` 与 VFS exec 发送臂、VM `VmMmapIn`/`VmMunmapIn` decode 同读此结构。回程车道 = 同一 overlay 的 `retaddr`（C `m->m_mmap.retaddr`，mmap.c:276/:191；VM 侧 `VmMmapOut::encode_message`）：
 
@@ -264,7 +264,7 @@ C 的 `_ASSERT_MSG_SIZE`（ipcconst.h:17-19）把每条消息载荷钉在 56 字
 | 9 | flags 无效组合不检查（flags=0 匿名成功） | SHARED/PRIVATE 互斥校验 → EINVAL | ✅ 收紧 |
 | 10 | `MAP_PREALLOC` → `MF_PREALLOC` 立即分配页 | 仅标 `PREALLOC_MAP`，页仍惰性分配 | ⚠️ 缺口（backlog B1，RS GET_PREALLOC_MAP 可查询到标志） |
 | 11 | `vfs_request` 经 IPC 直发 VFS | 入队 `VfsRequestQueue`（KernelIpcTransport 未接线） | ⚠️ 部分（backlog B2） |
-| 12 | `mess_mmap` 指针车道 i386 32 位（56 字节断言在 LP64 无解，C 无 64 位形态） | `addr`/`len`/`retaddr` 载诚实 64 位值，字段序/语义 1:1，56 字节不变（§2.1；同 `m_vm_pagefault`/E-VMMCPWIRE 裁决） | ✅ 已实现（NS5-A，2026-09-21——修 u32 截断 + 双方言 + 回程 m1p1 错位三合一） |
+| 12 | `mess_mmap` 指针车道 i386 32 位（56 字节断言在 LP64 无解，C 无 64 位形态） | `addr`/`len`/`retaddr` 载诚实 64 位值，字段序/语义 1:1，56 字节不变（§2.1；同 `m_vm_pagefault`/E-VMMCPWIRE 裁决） | ✅ 已实现（NS5-A——修 u32 截断 + 双方言 + 回程 m1p1 错位三合一） |
 | 12 | `mmap_file_cont` `ipc_send` 解除阻塞 | 回调建区域；回复依赖 transport | ⚠️ 部分（backlog B3） |
 | 13 | `map_perm_check` 经 `sys_privquery_mem` 内核裁决 | TTY/MEM 豁免 + fail-closed 拒绝 | ⚠️ 部分（backlog B4） |
 | 14 | `do_mmap` 主循环直接 vfs_request（C 静态全局 vfs_rq） | `VfsRequestQueue` 显式队列（23 设计，vfs_queue.rs） | ✅ 结构差异（23 范围） |
