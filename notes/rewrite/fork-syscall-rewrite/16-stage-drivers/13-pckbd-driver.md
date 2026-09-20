@@ -2,7 +2,7 @@
 
 > **分类**：输入第 1 篇（扫描码翻译，事件桥）
 > **源码**：`minix3/minix/drivers/hid/pckbd/pckbd.c`（五百零七行，扫描、翻译、发光二极管、桥接）、`minix3/minix/drivers/hid/pckbd/table.c`（一百六十九行，扫描码对照表）、`minix3/minix/drivers/hid/pckbd/pckbd.h`（按键常量）、`minix3/minix/lib/libinputdriver/inputdriver.c`（二百零六行，事件桥）、`minix3/minix/include/minix/inputdriver.h`（桥回调表）、`minix3/minix/include/minix/input.h`（事件词汇）、`minix3/minix/include/minix/com.h`（第八百九十行到第八百九十三行，输入协议号）
-> **Rust 模块**：`os/drivers/hid/pckbd/src/scancode.rs`（扫描码状态机）、`os/drivers/hid/pckbd/src/mouse.rs`（鼠标包组装）、`os/drivers/hid/pckbd/src/led.rs`（发光二极管 outbox）、`os/libs/minix-sys/src/inputdriver.rs`（事件桥，单一权威——桥属协议而非本驱动，crate 内旧 bridge 副本已删，对账 edge E-PCKBDREG 第 5 项）
+> **Rust 模块**：`os/drivers/hid/pckbd/src/scancode.rs`（扫描码状态机）、`os/drivers/hid/pckbd/src/mouse.rs`（鼠标包组装）、`os/drivers/hid/pckbd/src/led.rs`（发光二极管 outbox）、`os/drivers/hid/pckbd/src/char_face.rs`（门禁面：状态机跑过权威门禁、吐线形事件）、`os/drivers/hid/pckbd/src/service.rs`（服务接线：消息泵、三面路由、事件上报）、`os/drivers/hid/pckbd/src/main.rs`（驱动进程入口：宣告 + 出生握手 + 接收循环）、`os/libs/minix-sys/src/inputdriver.rs`（事件桥，单一权威——桥属协议而非本驱动，crate 内旧 bridge 副本已删，对账 edge E-PCKBDREG 第 5 项）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（本篇不走字符框架，走输入协议，见第 1.2 节）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`（终端键盘读取是另一条路）
 > **说明**：键盘鼠标驱动是人手与系统的翻译官：按键变成事件，滚轮变成位移，大小写灯听指挥。本篇讲翻译的三件事：扫描码状态机、鼠标三字节包、发光二极管 outbox，外加事件桥（通往输入服务的单行道）。键盘初始化的端口体操（自检、中断挂钩、控制器命令）在服务层实现，本库只定策略。
 
@@ -98,10 +98,10 @@ Minix3 的键盘部分就是这位译员。扫描码是源语言（硬件方言�
 | 鼠标处理三字节 | 第 2.2 节 | `MouseAssembler` | 已覆盖 |
 | 对照表两张 | 第 2.2 节 | `KeyMap` 与两实现 | 已覆盖（示例层） |
 | 发光二极管三函数 | 第 2.3 节 | `LedOutbox` 与掩码翻译 | 已覆盖 |
-| 桥四函数 | 第 2.4 节 | `InputBridge` | 已覆盖 |
-| 初始化 | 第 2.5 节 | 服务层（宣告在服务层） | 已记录，不管实现 |
-| 端口读写函数族 | 第 2.2、2.3 节 | 服务层（端口在服务层） | 已记录，不管实现 |
-| 桥回调表 | 第 2.4 节 | 服务层接线 | 已记录，不管实现 |
+| 桥四函数 | 第 2.4 节 | `service.rs`（宣告/上报/配置/设灯）+ `minix-sys` 权威 | 已接线 |
+| 初始化 | 第 2.5 节 | `main.rs`（宣告 + 出生握手 + 循环） | 已接线（端口体操登记为硬件缝） |
+| 端口读写函数族 | 第 2.2、2.3 节 | 服务层中断分支 | 已记录缺口：端口属 I/O 特权家族，宿主不可达 |
+| 桥回调表 | 第 2.4 节 | `service.rs` 逐条分派（`classify_incoming`） | 已接线（配置/设灯/上报三路） |
 | 事件词汇常量 | 第 1.5 节引入 | 桥与鼠标常量 | 已覆盖 |
 
 ### 2.7 与 C 八百八十二行的差异说明
@@ -145,6 +145,14 @@ Minix3 的键盘部分就是这位译员。扫描码是源语言（硬件方言�
 | 鼠标组装器 | 第 1.3、2.2 节 | 回调式 | 焊死消费方 |
 | 灯 outbox | 第 1.4、2.3 节 | 发送放库 | 端口进库 |
 | 桥门禁状态 | 第 1.5、2.4 节 | 发送放库 | 传输进库 |
+
+### 3.7 服务层接线（驱动进程化）
+
+前六节的策略拼成进程靠 `os/drivers/hid/pckbd/src/service.rs` 与 `main.rs`。事件循环壳与重启服务器的出生握手来自共享运行时 `os/libs/minix-driver-rt/src/runtime.rs`（`DriverRuntime::serve`：宣告、消费第一条出生请求、之后逐条投递），本篇只出一句话的决策：分类、路由、上报。`main.rs` 的宣告键用 `minix-sys` 的 `announce_key("pckbd")` 拼出输入前缀（`inputdriver.c:22-32`）。
+
+一条到达消息先分通知与普通两路（通知按发送方分硬件、时钟、其它，普通按号分配置、设灯、其它），分派表由 `minix-sys::inputdriver` 的 `classify_incoming` 权威判定（`inputdriver.c:141-170`）。配置一路：先查 `"input"` 标签回端点（传输动词 `DriverTransport::lookup_label`，宿主无数据服务时诚实返回空即 C 的"查不到就忽略"，`inputdriver.c:84`），再 `verify_conf_sender` 对发送方，认得的才 `decode_conf` 存地址与双号（`service.rs` 的 `handle_configure`）。设灯一路：`accept_setleds` 认发送方是配置过的服务，认得的把掩码压进 outbox（`handle_set_lights`）。事件上报一路：门禁 verdict 由 `decide_report` 出（未连或未分号静默丢），放行才填五字段走阻塞发，发送失败即 `note_server_lost` 解绑（`report`，对 `inputdriver.c:49-73`）。全程无回复——输入协议单行道。
+
+两条诚实缺口登记在此，不伪造：其一，硬件中断路真机要从键盘控制器端口读扫描字节再喂 `feed_keyboard_byte`，端口读写属 I/O 特权家族（与 `06-tty-driver.md` §3.6 的控制台输出后端同源），宿主不可达，故中断分支目前吸收、字节注入留给出站测试驱动；其二，宣告的载荷语义有别——本篇 C 用 `ds_publish_u32` 发设备类型值（`inputdriver.c:33`），共享运行时的 `publish_label` 发端点标签，键名拼法忠实、值与端点之别落在输入服务的订阅读端（edge3 已收口），此处登记不臆造。
 
 ---
 
@@ -201,11 +209,15 @@ Minix3 的键盘部分就是这位译员。扫描码是源语言（硬件方言�
 
 事件桥的门禁、发送与解绑决策是协议而非驱动（crate 内旧 bridge 副本已删，对账 edge E-PCKBDREG 第 5 项）；其测试随 `minix-sys` 的测试套运行，见 `rg "fn test_" os/libs/minix-sys/src/inputdriver.rs`。
 
-### 5.5 测试统计（截至 2026-09-17）
+### 5.5 测试统计
 
-- 本篇直接相关：十六个（扫描八个，鼠标四个，灯四个），全部通过；事件桥测试四项随 `minix-sys` 套件另行运行。
+- 本篇翻译策略三模块（扫描、鼠标、灯）：十六个（扫描八个，鼠标四个，灯四个），全部通过；事件桥测试四项随 `minix-sys` 套件另行运行；服务接线测试另见第 5.6 节。
 - 复现命令：`cargo test -p minix-driver-pckbd --lib`（工作目录 `os/`）。
 - 完整测试清单：`rg "fn test_" os/drivers/hid/pckbd/src/`。
+
+### 5.6 服务接线测试（九个）
+
+`os/drivers/hid/pckbd/src/service.rs` 用脚本化传输逐面断言出站与状态：配置认得发送方才存地址与双号、冒名忽略；设灯认得配置过的服务才压 outbox（两字节）、冒名不压；已配键盘扫描经门禁阻塞发到服务并带分配号、未配则静默丢、发送失败即解绑令后续停发；鼠标整包事件全上报带鼠标号；硬件通知无动作无回复。复现命令：`cargo test -p minix-driver-pckbd --lib service`（工作目录 `os/`）。
 
 ---
 
@@ -224,7 +236,8 @@ Minix3 的键盘部分就是这位译员。扫描码是源语言（硬件方言�
 - `os/drivers/hid/pckbd/src/scancode.rs`：扫描码状态机的实现。
 - `os/drivers/hid/pckbd/src/mouse.rs`：鼠标包组装的实现。
 - `os/drivers/hid/pckbd/src/led.rs`：发光二极管 outbox 的实现。
-- `os/drivers/hid/pckbd/src/bridge.rs`：事件桥的实现。
+- `os/drivers/hid/pckbd/src/char_face.rs`：门禁面的实现（状态机过权威门禁）。
+- `os/drivers/hid/pckbd/src/service.rs`：服务接线的实现（消息泵、三面路由、事件上报）。
 - `minix3/minix/drivers/hid/pckbd/pckbd.c`：扫描翻译的原始实现（五百零七行）。
 - `minix3/minix/lib/libinputdriver/inputdriver.c`：事件桥的原始实现（二百零六行）。
 | 端口读写 | 直接编程 | 服务层 | 架构演进（端口在板侧） |
