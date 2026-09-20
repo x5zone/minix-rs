@@ -194,6 +194,16 @@ os/servers/vfs/src/
 | 克隆掩码正交 | `&~(CLONED\|CTTY)` | 号与位分离 | `minix3/minix/servers/vfs/cdev.c:cdev_opcl（L232，工具生成）` |
 | 选择无改道 | `select_bypass` | CTTY 拒绝 | `minix3/minix/servers/vfs/cdev.c:cdev_io（L346，工具生成）` |
 
+### 4.4 读写数据臂的对话接线（NS7，2026-09-21）
+
+§2.6 的 `cdev_io` 机在 Rust 侧的落地收口：读/写臂的 `S_ISCHR` 支（C `read.c:162-217` 的五路分派第二路）从 `Nosys` 改为真路由——`os/servers/vfs/src/syscalls.rs` 的 `cdev_data_route` 串联 §4.2 的既有件：`tty_redirect` 改道（`/dev/tty` 替身）→ dmap 查表（无驱动 **EIO**，§2.6 的"运行时事故"面，区别于开合的 ENXIO）→ `grant_dir` 交叉 magic grant（读配 `CPF_WRITE`、写配 `CPF_READ`）→ `CDEV_READ`/`CDEV_WRITE` 消息停槽（`WorkerCont::CdevIo`）。位置按 C 的乐观推进提交（`read.c:216` 的 FIXME 同款：悬挂即按请求长度前移，实际搬运数由回复直接回用户，不回改位置）。
+
+完成面在 `main_loop.rs` 的 `run_worker_continuations`：`CdevIo` 臂撤销 grant、读 `mess_lchardriver_vfs_reply` 载荷首字（成功＝搬运字节数原样回，失败＝负 errno；`EINTR` 折回 `EAGAIN`，`cdev.c:471-473` 的换码对），并清掉进程级挂起 `BlockedOn::Cdev`——驱动死亡清扫（`driver_vanish_plan` 的 `ReviveEio`）与 MIB 的 `fpl_task` 由此自动接通。回复落槽 `handle_drv_reply` 对 `CDEV_REPLY` 按 `id`（＝发请求时的 `proc_e`，`cdev.c:326/:442-460`）优先配对，两作业同候一驱动时不再错认彼此的回复。
+
+dmap 的 tty 槽（major 4，`dmap.h:25`）boot 期即由 RS dev 表（`BOOT_IMAGE_DEV_TABLE` 的 tty 行 `dev_nr=4`）经 NS4-A 的 `map_boot_services` 填充；`test_apply_boot_rows_maps_tty_dmap_slot` 钉住该链。
+
+诚实登记（不在本批修，见 new_edge3 新登记 NS7-A）：既有 `CdevIoctl` 对话半两处缺陷——消息号 `CdevRequest::Ioctl as i32` 取的是枚举序数（4）而非消息号（0x404，须 `message_type()`）；收尾的 `if status == 0` 解码门恒假（驱动回复 m_type 恒 0x480，载荷状态永不读出）。宿主构建下发送不可达故测试测不出，真机 T2 的 ioctl 才会暴露。
+
 ---
 
 ## 5 测试要点

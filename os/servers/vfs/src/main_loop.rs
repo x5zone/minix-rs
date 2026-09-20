@@ -4046,11 +4046,27 @@ impl VfsState {
             }
             _ => {}
         }
-        let slot = (0..crate::worker::NR_WTHREADS).find(|i| {
+        // 槽配对：C `cdev_generic_reply`（cdev.c:442-460）先按回复的 `id`
+        // （VFS 发请求时填的 `proc_e`，cdev.c:326）认进程、再看它的 worker
+        // 等不等这个驱动——两个作业同候一个驱动时，"首个等它的槽"会错认
+        // 别人的回复。这里先试 id 精确配对，配不上（宿主构造的请求不带
+        // id）回落首匹配保开合路径兼容。
+        let id_slot = if msg.m_type == minix_types::CDEV_REPLY_BASE {
+            let reply_user = i32::from_le_bytes(raw[4..8].try_into().unwrap());
+            self.fproc_table.is_ok_endpoint(Endpoint(reply_user)).ok()
+        } else {
+            None
+        };
+        let waits_on_driver = |w: &crate::worker::WorkerSlot| w.task == Some(msg.m_source);
+        let mut slot = (0..crate::worker::NR_WTHREADS).find(|i| {
             self.worker_pool
                 .get(*i)
-                .is_some_and(|w| w.task == Some(msg.m_source))
+                .is_some_and(|w| waits_on_driver(w) && id_slot.is_none_or(|s| w.fp_slot == Some(s)))
         });
+        if slot.is_none() {
+            slot = (0..crate::worker::NR_WTHREADS)
+                .find(|i| self.worker_pool.get(*i).is_some_and(waits_on_driver));
+        }
         let Some(slot) = slot else {
             // 没有 worker 在等：试试**进程级挂起**那条路（C `sdev_reply` 的
             // 第二条分支——bind/connect/accept/recvfrom 这些调用的回复）。
@@ -5037,6 +5053,37 @@ impl VfsState {
                         // uint32_t id; }`（ipc.h:943-948）——状态在首字。
                         let raw = unsafe { &reply.m_u.raw };
                         status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    }
+                }
+                crate::worker::WorkerCont::CdevIo { grant } => {
+                    // C `cdev_io` 的数据收尾 + `cdev_generic_reply` 的 revive
+                    // 面（cdev.c:438-477）：撤 grant → 状态取
+                    // `mess_lchardriver_vfs_reply.status`（**载荷首字**，无条件
+                    // 解码——驱动回复的 m_type 恒 `CDEV_REPLY`，不像 FS 回复
+                    // 把状态放在 m_type 里）。成功是搬运字节数（非负，`Ok` 值
+                    // 回用户）；失败是负 errno，`EINTR` 折回 `EAGAIN`
+                    // （cdev.c:471-473 与 `cdev_cancel` 的转换配对）。读/写的
+                    // 进程级挂起在此收尾：清 `BlockedOn::Cdev`。
+                    let _ = self.revoke_grant(grant);
+                    // SAFETY: `mess_lchardriver_vfs_reply { int status;
+                    // uint32_t id; }`（ipc.h:943-948）——状态在首字。
+                    let raw = unsafe { &reply.m_u.raw };
+                    let dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    if let Some(slot) = fp_slot
+                        && let Some(fp) = self.fproc_table.get_mut(slot)
+                        && matches!(fp.blocked_on, crate::fproc::BlockedOn::Cdev(_))
+                    {
+                        fp.blocked_on = crate::fproc::BlockedOn::None;
+                    }
+                    if dstatus < 0 {
+                        status = if dstatus == -(minix_types::EINTR) {
+                            minix_types::EAGAIN
+                        } else {
+                            -dstatus
+                        };
+                    } else {
+                        status = dstatus;
+                        value_reply = true;
                     }
                 }
                 crate::worker::WorkerCont::SdevSimple => {
@@ -11700,6 +11747,219 @@ mod tests {
         if let Route::Syscall { call } = route {
             assert_eq!(call, crate::call_table::VfsCallNum::Open);
         }
+    }
+
+    /// `CdevIo` 续接的成功面（NS7）：驱动回复 `CDEV_REPLY`，载荷首字是
+    /// 搬运字节数——原样作为 `Ok` 值回用户，`BlockedOn::Cdev` 清掉
+    /// （C `cdev_generic_reply` 的 `revive` 面，cdev.c:471-477）。
+    #[test]
+    fn test_cdev_io_continuation_completes_with_count() {
+        let mut state = VfsState::new();
+        let user = Endpoint::from_generation_slot(1, 0);
+        {
+            let fp = state.fproc_table.get_mut(UserSlot::new(0)).unwrap();
+            fp.pid = 100;
+            fp.endpoint = user;
+            fp.blocked_on = crate::fproc::BlockedOn::Cdev(crate::fproc::CdevBlock {
+                dev: 4 << 8,
+                endpt: Endpoint::from_generation_slot(0, 12),
+                grant: None,
+            });
+        }
+        let mut reply = Message {
+            m_type: minix_types::CDEV_REPLY_BASE,
+            m_source: Endpoint::from_generation_slot(0, 12),
+            ..Message::default()
+        };
+        // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }`——状态
+        // 在载荷首字，id 在第二字。
+        unsafe {
+            let raw = &mut reply.m_u.raw;
+            raw[0..4].copy_from_slice(&7i32.to_le_bytes());
+            raw[4..8].copy_from_slice(&user.get().to_le_bytes());
+        }
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .unwrap();
+        {
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(crate::worker::WorkerCont::CdevIo { grant: 0 });
+            wp.sendrec = Some(reply);
+            wp.state = WorkerState::Busy;
+        }
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 7)),
+            "搬运字节数原样回用户"
+        );
+        assert!(
+            matches!(
+                state.fproc_table.get(UserSlot::new(0)).unwrap().blocked_on,
+                crate::fproc::BlockedOn::None
+            ),
+            "读/写的进程级挂起在完成时清掉"
+        );
+    }
+
+    /// `CdevIo` 续接的失败面：负 errno 原样折正回用户；`EINTR` 按
+    /// `cdev_generic_reply` 的折算改回 `EAGAIN`（cdev.c:471-473）。
+    #[test]
+    fn test_cdev_io_continuation_error_and_eintr() {
+        let make_reply = |status: i32, user: Endpoint| {
+            let mut m = Message {
+                m_type: minix_types::CDEV_REPLY_BASE,
+                m_source: Endpoint::from_generation_slot(0, 12),
+                ..Message::default()
+            };
+            // SAFETY(test): 状态在载荷首字。
+            unsafe {
+                m.m_u.raw[0..4].copy_from_slice(&status.to_le_bytes());
+                m.m_u.raw[4..8].copy_from_slice(&user.get().to_le_bytes());
+            }
+            m
+        };
+        let park = |state: &mut VfsState, user: Endpoint| {
+            let fp = state.fproc_table.get_mut(UserSlot::new(0)).unwrap();
+            fp.pid = 100;
+            fp.endpoint = user;
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .unwrap();
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(crate::worker::WorkerCont::CdevIo { grant: 0 });
+            wp.fp_slot = Some(UserSlot::new(0));
+            wp.state = WorkerState::Busy;
+            idx
+        };
+
+        // EIO：负 errno 折正。
+        let mut state = VfsState::new();
+        let user = Endpoint::from_generation_slot(1, 0);
+        let idx = park(&mut state, user);
+        let wp = state.worker_pool.get_mut(idx).unwrap();
+        wp.sendrec = Some(make_reply(-minix_types::EIO, user));
+        wp.state = WorkerState::Busy;
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::EIO))
+        );
+
+        // EINTR → EAGAIN（`cdev_cancel` 的配对转换）。
+        let mut state = VfsState::new();
+        let idx = park(&mut state, user);
+        let wp = state.worker_pool.get_mut(idx).unwrap();
+        wp.sendrec = Some(make_reply(-minix_types::EINTR, user));
+        wp.state = WorkerState::Busy;
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::EAGAIN)),
+            "EINTR 折回 EAGAIN（cdev.c:471-473）"
+        );
+    }
+
+    /// 驱动回复的 id 配对（NS7）：两个作业同候一个驱动时，回复按载荷的
+    /// `id`（= 发请求时的 `proc_e`）落到正确的槽——不是"首个等它的槽"
+    /// （C `cdev_generic_reply` 按 id 认进程，cdev.c:442-460）。
+    #[test]
+    fn test_drv_reply_lands_by_id() {
+        let mut state = VfsState::new();
+        let driver = Endpoint::from_generation_slot(0, 12);
+        let user_a = Endpoint::from_generation_slot(1, 0);
+        let user_b = Endpoint::from_generation_slot(1, 1);
+        for (slot, ep) in [(0usize, user_a), (1, user_b)] {
+            let fp = state.fproc_table.get_mut(UserSlot::new(slot)).unwrap();
+            fp.pid = 100 + slot as i32;
+            fp.endpoint = ep;
+        }
+        let parked = Message {
+            m_type: minix_chardriver::protocol::CdevRequest::Write.message_type(),
+            ..Message::default()
+        };
+        for (idx, slot) in [(0usize, 0usize), (1, 1)] {
+            state
+                .worker_pool
+                .get_mut(idx)
+                .unwrap()
+                .set_waiting(driver, parked);
+            state.worker_pool.get_mut(idx).unwrap().fp_slot = Some(UserSlot::new(slot));
+        }
+        // B 的回复到达：必须落 B 的槽（1），A 的槽原样等着。
+        let mut reply = Message {
+            m_type: minix_types::CDEV_REPLY_BASE,
+            m_source: driver,
+            ..Message::default()
+        };
+        // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }`。
+        unsafe {
+            reply.m_u.raw[4..8].copy_from_slice(&user_b.get().to_le_bytes());
+        }
+        assert_eq!(state.handle_drv_reply(&reply), Ok(1));
+        assert_eq!(
+            state.worker_pool.get(0).unwrap().state,
+            WorkerState::WaitingForFs,
+            "A 的槽不受影响"
+        );
+        assert_eq!(state.worker_pool.get(1).unwrap().state, WorkerState::Busy);
+
+        // 无 id 归宿（id 是未登记端点）→ 回落首匹配，兼容不带 id 的请求。
+        let mut stray = Message {
+            m_type: minix_types::CDEV_REPLY_BASE,
+            m_source: driver,
+            ..Message::default()
+        };
+        // SAFETY(test): 同上，id 换成未登记端点。
+        unsafe {
+            stray.m_u.raw[4..8].copy_from_slice(&9999i32.to_le_bytes());
+        }
+        assert_eq!(state.handle_drv_reply(&stray), Ok(0));
+    }
+
+    /// `apply_boot_rows` 的 tty 槽半（NS7 的 dmap 半）：RS dev 表来的
+    /// `dev_nr = TTY_MAJOR(4)` 行落 dmap[4]，驱动端点 = tty（NS4-A 的
+    /// boot 装配把 `BOOT_IMAGE_DEV_TABLE` 的 tty 行带进 pub_wire）。
+    #[test]
+    fn test_apply_boot_rows_maps_tty_dmap_slot() {
+        let mut state = VfsState::new();
+        // isokendpt 要求端点↔槽一致（dmap.c:208-214 对位）。
+        {
+            let fp = state.fproc_table.get_mut(UserSlot::new(5)).unwrap();
+            fp.pid = 7;
+            fp.endpoint = Endpoint::TTY;
+        }
+        let mut label = [0u8; minix_types::RS_MAX_LABEL_LEN];
+        label[..3].copy_from_slice(b"tty");
+        let row = minix_types::RprocpubSnap {
+            in_use: 1,
+            endpoint: Endpoint::TTY.get(),
+            dev_nr: 4, // TTY_MAJOR（rs table.c:45-50 → dmap.h:25）
+            label,
+            ..minix_types::RprocpubSnap::default()
+        };
+        state.apply_boot_rows(&[row]).unwrap();
+        let drow = state.dmap_table.get(4).expect("major 4 在表内");
+        assert_eq!(drow.driver, Some(Endpoint::TTY), "tty 槽已映射");
+        assert!(
+            state
+                .fproc_table
+                .get(UserSlot::new(5))
+                .unwrap()
+                .flags
+                .contains(crate::fproc::FpFlags::SRV_PROC),
+            "服务标记 FP_SRV_PROC"
+        );
     }
 
     #[test]
