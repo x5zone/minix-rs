@@ -57,6 +57,7 @@
 | C-26 | edge3 卡F3d（S30 余量）：sffs 语义核心入库（`os/libs/minix-sffs` 扩展） | edge3（需求方） | `os/libs/minix-sffs/src/`：新增 `attr.rs`（SffsAttr + SFFS_ATTR_* 掩码）、`table.rs`（SffsTable trait——C `struct sffs_table` 15 动词的 Rust 直译，句柄 u64）、`server.rs`（SffsServer: FsDriver 只读半 + 节点树/惰性句柄，C libsffs inode.c/handle.c/lookup.c 对位）；Cargo.toml 增 `minix-fs` 依赖（FsDriver/DentryEncoder 面）。既有 params/path/name/verify 模块只消费不改动 | edge3 | 🔄 登记即动（2026-09-20，卡F3d 开工） |
 | C-26 | edge3 卡 I 余项：**中断入口的 context_stop**（用户进程的周期账与 quantum 消费） | edge3（需求方；edge1 已收线，由本线执行） | `os/kernel/src/`：①`lib.rs` 把 `context_stop` 的消费账（状态桶+总周期+cpuavg）并成单点 `account_process_stop`（顺手消除与 `account_kernel_stop` 的双计风险）；②新增 `account_interrupt_stop(_with)` 并在 `irq_manager.rs` 的 `dispatch_hardware_irq` 接线——以 BKL 的 acquired/inherited 两态对应 C `hwint_master` 的 `TEST_INT_IN_KERNEL`（打断用户态→结清被打断者，打断内核态→留给切换站点）；③quantum 从此真正被消费，`check_quantum`/抢占链复活。只增不改既有导出面 | edge3 | ✅ 销账（2026-09-20，用户裁决选 A 后同轮落地：`account_process_stop` 单点三账、`account_interrupt_stop(_with)` + `dispatch_hardware_irq` 接线；kernel 780 测试全绿（+3 端到端：quantum 消费/抢占政策/空转安全）。**余**：非 timer 中断与 SMP 多 CPU 的站点归属随 SMP 收口一并核）|
 | C-27 | edge3 S42 ④ 全系统自举载体 | edge3（需求方） | `os/qemu-tests/`：多进程 boot 形态载体（kernel → VM/RS → 服务集 → init；现生产链只有测试内核手工 `load_vm_elf` 形态）。edge1 已收线，由 edge3 线经本认领执行（C-25/C-26 先例）；新增独立测试内核文件按 §1 规则 3 免登记，`run_all.sh` 接线需登记 | 无 | ☐ 待 S42 开工 |
+| C-28 | edge4 E5(c) 前哨批A 附带发现：srv_fork 子的 PRIV_PROC 保留未落地 | edge3（需求方；edge4 只登记不改） | `os/servers/pm`：`mproc/fork.rs` 的 `Process::srv_fork_from` 现落 `Privilege::User(注入凭证)`，C（`forkexit.c:199-200`）与设计（`04-stage-pm/08-pm-srv-fork.md` §2.4/§4.2）均要求保留 `PRIV_PROC`（`is_kernel_process()==true`）——设计引用的 `SRV_FORK_INHERIT_FLAGS` 全仓无此符号，`RemainingFlags` 亦无该位。修法需 `Privilege::Kernel` 承载凭证（六字段注入无处安放），属 PM 类型设计裁决；行为后果在 `is_kernel_process()` 的退出/致命信号/事件订阅/调度接管四处判据。**登记即持锁（PM 生产代码归 edge3）**；edge4 侧以测试偏差钉钉住现值（`os/tests/srv_fork.rs`） | edge3 | ☐ 待认领（2026-09-20 由 edge4 批A 发现并登记，细节见 `.review/zcode/edge4/FIXLOG.md`） |
 ### 共享文件登记流水（append-only，登记 → 改 → 销账）
 
 | 日期 | 线 | 文件 | 意图 | 销账 |
@@ -71,6 +72,7 @@
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b aarch64 腿：test-rt-birth-aarch64 入 workspace 成员 + aarch64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K11：test-shutdown-aarch64 / test-shutdown-riscv64 入 workspace 成员 + 两架构构建清单 + 特殊协议脚本区（exit code 双断言） | ✅ 同日（三架构真机全过） |
 | 2026-09-20 | edge4 E5(a) | `os/tests/`（`pm_vm_fork.rs` 重写 + `Cargo.toml` 依赖换 minix-vfs/minix-sys + 死壳 `pm_vm_fork_test.rs` 删除） | E5(a) 宿主联调复活（旧停用注释的复活条件 E1/E2 已满足）；本线自持，无跨界认领 | ✅ 同日（430803d4f；minix-tests 2 passed，pm 502 + vfs 全绿） |
+| 2026-09-20 | edge4 E5(c) 前哨 | `os/tests/`（新增 `srv_fork.rs` + `Cargo.toml` 增一条 `[[test]]` 声明） | 批A srv_fork 链宿主半（RS→PM→VM→VFS）；本线自持，生产代码零改动 | 🔄 本会话 |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 
@@ -106,8 +108,8 @@
 | 子项 | 内容 | 前置（哪条线交付什么） | 执行载体 | 状态 |
 |---|---|---|---|---|
 | E5(a) | PM↔VM fork 全链路（走 minix-sys 消息层） | edge3 S1+S20+S17；内核 eager-CoW 已备 | `os/tests/`（宿主）+ 真机挂 T2 | 🔄 **宿主半 ✅（2026-09-20，430803d4f）**：`os/tests/pm_vm_fork.rs` 复活重写——旧停用注释的复活条件（E1/E2 闭环）已满足；PM `do_fork` 真状态机 × VM wire 契约（`VmForkIn` 回解 / `VmForkOut` 构造，互证）× VFS `VfsPmHandler::handle` 真分发臂（`child_pid` 取自消息 m7i3 闭环）；2 测试（成功链 / VM 拒绝回滚），死壳 `pm_vm_fork_test.rs` 删除。**真机半挂 T2** |
-| E5(b) | VM↔VFS fdclose 往返 | edge3 S12 + S20 | 同上 | ☐ S20 VM 侧已通电（2026-09-19），等 S12 |
-| E5(c) | RS live-update 全链（PREPARE→UPDATE→resume） | edge3 S17+S18+S20 | 同上 | ☐ |
+| E5(b) | VM↔VFS fdclose 往返 | edge3 S12 + S20 | 同上 | 🔄 本会话执行（2026-09-20）——宿主半 |
+| E5(c) | RS live-update 全链（PREPARE→UPDATE→resume） | edge3 S17+S18+S20 | 同上 | 🔄 本会话执行（2026-09-20）——srv_fork 前哨段（RS→PM→VM→VFS），宿主半 |
 | E5(d) | QEMU VM paging 冒烟（含缺页完整回路 + VM 写 PTE） | edge3 S20 + edge1 K17 载体 | `os/qemu-tests/`（edge1 实现，edge4 验收） | ☐ |
 | E5(e) | PM↔SCHED 调度链（START/INHERIT/NO_QUANTUM 回环） | edge3 S27 + edge1 K1/K2 | 真机（T2 后） | ☐ |
 | E5(f) | DS 发布/订阅三链 + regex pattern 用例 | edge3 S22 + S17 | 真机（T2 后） | ☐ |
