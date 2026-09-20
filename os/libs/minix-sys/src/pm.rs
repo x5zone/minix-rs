@@ -73,6 +73,10 @@ pub const PM_CALL_ITIMER: i32 = 17;
 ///
 /// C: `PM_GETTIMEOFDAY (PM_BASE + 28)` (`callnr.h:43`).
 pub const PM_CALL_GETTIMEOFDAY: i32 = 28;
+/// Resource-usage snapshot for the caller or its reaped children.
+///
+/// C: `PM_GETRUSAGE (PM_BASE + 36)` (`callnr.h:51`).
+pub const PM_CALL_GETRUSAGE: i32 = 36;
 /// Start a system service (server-side call).
 ///
 /// C: `PM_SRV_FORK (PM_BASE + 41)` (`callnr.h:54`).
