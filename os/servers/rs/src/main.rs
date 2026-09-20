@@ -46,8 +46,8 @@ fn main() {
         let mut server = RsServer::new(tables);
 
         // C: sef_startup() → sef_cb_init_fresh() — main.c:151,158-494.
-        // The KernelApi production impl is DEFERRED (19); the fresh-boot
-        // path fails closed (Err(ENOSYS)) until then. C treats boot failure
+        // KernelApi 生产实现 = TrapKernelApi（trap 直连内核，S42 批一
+        // 接线；构造序 RsServer::new 默认装配）。C treats boot failure
         // as fatal (main.c:226 `panic(...)`); do not enter the main loop on
         // an incomplete boot — an RS that never finished booting cannot
         // manage services. The SEF face carries a bare errno; the typed
@@ -60,10 +60,12 @@ fn main() {
             );
         }
 
-        // C: main loop — main.c:50-131 (skeleton; details in 06).
-        // Fail-closed (T2): the unwired receive face returns ENOSYS, ending
-        // the run loop with an error instead of spinning or panicking. The
-        // 19 wiring replaces the seam and the loop becomes long-running.
-        let _ = server.run();
+        // C: main loop — main.c:50-131 (skeleton; details in 06). C 的
+        // while(TRUE) 永不返回；循环退出 = 传输/boot 面故障，属致命——
+        // 与 boot 失败同款 panic（X-6：此前 `let _ =` 把 Err 静默吞掉，
+        // 进程以 0 退出假成功）。
+        if let Err(e) = server.run() {
+            panic!("RS main loop terminated: {e:?}");
+        }
     }
 }

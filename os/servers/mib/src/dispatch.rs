@@ -74,6 +74,13 @@ pub enum Incoming {
     Dispatch(MibCall),
     /// A wild number: `default` (`474-479`).
     Unknown,
+    /// RS's birth request (`RS_INIT` from RS). C consumes it inside
+    /// `sef_local_startup` (main.c:415-431 `mib_startup` → sef.c:127-141)
+    /// before the loop ever runs; the Rust loop surfaces it from
+    /// `sef_receive_status` and answers per the process_init tail
+    /// (sef_init.c:113-117). Never produced by `triage` — only by the
+    /// birth guard in `run_once`.
+    Birth,
 }
 
 /// Triage an arrival (`main.c:449-479`).

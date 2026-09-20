@@ -7148,9 +7148,22 @@ pub fn run() -> ! {
                 state.flush_pending_puts(&minix_sys::ipc::DirectTrapTransport);
             }
             SefEvent::Signal(_) => {}
-            // init_restart ≡ init_fresh(已文档化);LU prepare/rollback 的
-            // 决策函数就位,RS 推进面挂通电。
-            SefEvent::Init(_) => state.init_fresh(),
+            // E-BIRTHFACE（NS1）出生应答半：C 的 RS_INIT 在 sef_local_startup
+            // 内消费后由 process_init 尾部回 RS_INIT+result（sef_init.c:113-117），
+            // 这条应答是 RS boot step3 释放的条件。result 按 C 注册面
+            // （main.c:377-381）：fresh 实体（本树构造即跑过 ≡ state.init_fresh，
+            // init_restart ≡ init_fresh 亦已文档化）→ OK；LU 有注册
+            //（sef_cb_init_lu）但 Rust 侧 LU 机制未建模 → 诚实 ENOSYS。
+            SefEvent::Init(init_type) => {
+                let result = match init_type {
+                    0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                    _ => minix_types::ENOSYS,
+                };
+                if result == 0 {
+                    state.init_fresh();
+                }
+                send_reply(Endpoint::RS, minix_sef::sef_init_reply(result));
+            }
             SefEvent::PingInvalid => {}
         }
     }

@@ -10,7 +10,7 @@
 //! (dmp.c:103-117), `mapping_dmp` layout (dmp.c:118-132).
 
 use core::fmt;
-use minix_types::{EDONTREPLY, Endpoint};
+use minix_types::{EDONTREPLY, Endpoint, RS_INIT};
 
 use crate::tty_fkey::FkeyId;
 
@@ -23,6 +23,9 @@ pub const NOTIFY_MESSAGE: i32 = 0x1000;
 /// TTY slot number. C: `TTY_PROC_NR ((endpoint_t) 5)` —
 /// `minix3/minix/include/minix/com.h:64`.
 pub const TTY_PROC_SLOT: i32 = 5;
+
+/// RS slot number. C: `RS_PROC_NR ((endpoint_t) 2)` — com.h:61.
+pub const RS_PROC_SLOT: i32 = 2;
 
 /// Notification range width. C: the `< 0x100` in `is_notify` — com.h:93.
 const NOTIFY_RANGE: u32 = 0x100;
@@ -52,6 +55,11 @@ pub const fn is_notify_call(call_nr: i32) -> bool {
 pub enum DispatchAction {
     /// TTY notification → `do_fkey_pressed` (03-is-dump-dispatch.md).
     HandleFkey,
+    /// RS's birth request (`RS_INIT` from RS). C consumes it inside
+    /// `sef_local_startup` (main.c:79-87 → sef.c:127-141) before the
+    /// loop; the Rust loop surfaces it and answers the birth report
+    /// (process_init tail, sef_init.c:113-117) from `step`.
+    Birth,
     /// Anything else → `EDONTREPLY`, reply path skipped.
     Suppress,
 }
@@ -69,6 +77,8 @@ pub enum DispatchAction {
 pub const fn classify(call_nr: i32, sender: Endpoint) -> DispatchAction {
     if is_notify_call(call_nr) && sender.slot() == TTY_PROC_SLOT {
         DispatchAction::HandleFkey
+    } else if call_nr == RS_INIT && sender.slot() == RS_PROC_SLOT {
+        DispatchAction::Birth
     } else {
         DispatchAction::Suppress
     }
