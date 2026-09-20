@@ -78,7 +78,12 @@ pub mod proc_nr {
 /// from the multiboot module list.
 /// C: image[] in table.c has NR_BOOT_PROCS entries (kernel tasks + user modules).
 /// C: kinfo.module_list[] has only user-space modules (NR_BOOT_MODULES entries).
-pub const NR_BOOT_MODULES: usize = 12;
+///
+/// The value's single source of truth is `minix_boot::NR_BOOT_MODULES`, shared
+/// with boot-shim so a count change fails to compile on both sides at once
+/// (`BOOT_MODULE_PROC_NRS` below is typed `&[ProcNr; NR_BOOT_MODULES]`; the
+/// boot-shim `MODULE_NAMES` asserts against the same const).
+pub use minix_boot::NR_BOOT_MODULES;
 pub const NR_BOOT_PROCS: usize = crate::proc_table::NR_TASKS + NR_BOOT_MODULES;
 
 /// Kernel task definitions (hardcoded, matching C's image[] in table.c).

@@ -22,7 +22,7 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use minix_types::{PhysBytes, VirBytes};
-use minix_boot::BootModule;
+use minix_boot::{BootModule, NR_BOOT_MODULES};
 
 /// Path to the kernel ELF (same convention for UEFI ESP and U-Boot FAT).
 ///
@@ -59,16 +59,15 @@ pub const MODULE_NAMES: &[&str] = &[
     "ds", "rs", "pm", "sched", "vfs", "memory", "tty", "mib", "vm", "pfs", "mfs", "init",
 ];
 
-/// Compile-time guard: this list must always hold exactly 12 entries, so an
-/// accidental add/remove in boot-shim is caught here instead of at boot.
-/// Because boot-shim deliberately does not depend on the kernel crate, this
-/// literal cannot cross-check the kernel's `NR_BOOT_MODULES` value: if the
-/// kernel changes `NR_BOOT_MODULES` to something other than 12, this assert
-/// still passes and the mismatch surfaces only at the kernel's boot-time
-/// `assert_eq!(boot_modules().len(), NR_BOOT_MODULES)` (`lib.rs:1146-1152`).
-/// Keeping the two 12s in sync across crates is therefore a manual contract
-/// (see the ordering note above), not something this guard can enforce.
-const _: () = assert!(MODULE_NAMES.len() == 12);
+/// Compile-time guard on the count. `NR_BOOT_MODULES` is the shared
+/// single-source constant from `minix-boot` — the same value the kernel pins
+/// its `BOOT_MODULE_PROC_NRS` array length to (`&[ProcNr; NR_BOOT_MODULES]`).
+/// So if the contract count changes, BOTH boot-shim (this assert) and the
+/// kernel (array type) fail to compile until their lists are updated in
+/// lockstep — the count can no longer drift on one side only. This locks the
+/// count only; the *order* stays a positional contract against the kernel's
+/// `BOOT_MODULE_PROC_NRS` (see the ordering note above).
+const _: () = assert!(MODULE_NAMES.len() == NR_BOOT_MODULES);
 
 /// Result of computing the kernel's load layout from its ELF header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

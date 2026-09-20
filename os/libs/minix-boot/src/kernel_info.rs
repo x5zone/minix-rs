@@ -282,6 +282,28 @@ pub struct MemoryRegion {
     pub len: usize,
 }
 
+/// Number of user-space boot modules the kernel expects the boot-shim to
+/// deliver, in `KernelInfo::boot_modules()`.
+///
+/// This is the **shared boot-module count contract** between the two
+/// independent consumers, both of which depend on this crate:
+/// - boot-shim `MODULE_NAMES` must have exactly this many entries
+///   (`os/boot-shim/src/loader.rs` asserts it at compile time).
+/// - the kernel's `BOOT_MODULE_PROC_NRS` map is typed
+///   `&[ProcNr; NR_BOOT_MODULES]`, so its length is structurally pinned here
+///   (`os/kernel/src/proc.rs`).
+///
+/// Before this constant lived here, both sides carried their own literal `12`
+/// and a change on one side would not fail to compile on the other. Housing
+/// the count in this crate makes such a drift a compile error in *both* crates
+/// at once. It locks the **count** only — the *order* remains a positional
+/// contract that boot-shim's `MODULE_NAMES` must match against the kernel's
+/// `BOOT_MODULE_PROC_NRS` (authoritative C source:
+/// `minix3/minix/kernel/table.c:44-64` `image[]` user-space section).
+///
+/// C: `NR_BOOT_MODULES` — the user-module tail of `image[NR_BOOT_PROCS]`.
+pub const NR_BOOT_MODULES: usize = 12;
+
 pub struct BootModule {
     pub name: &'static str,
     pub start: PhysBytes,
