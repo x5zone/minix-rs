@@ -49,6 +49,13 @@ pub enum InitKind {
 pub struct DriverRuntime<T: DriverTransport> {
     transport: T,
     label: String,
+    /// A second family label for a driver that serves two frameworks from
+    /// one process (the memory driver is character and block at once). C:
+    /// `sef_cb_init_fresh` runs `chardriver_announce` *and*
+    /// `blockdriver_announce` (`memory.c:160-161`), so both data-store keys
+    /// must be published before the shared loop's first receive. A
+    /// single-family driver leaves this `None`.
+    extra_label: Option<String>,
 }
 
 impl<T: DriverTransport> DriverRuntime<T> {
@@ -58,16 +65,30 @@ impl<T: DriverTransport> DriverRuntime<T> {
         DriverRuntime {
             transport,
             label: label.to_string(),
+            extra_label: None,
         }
+    }
+
+    /// Add a second family label to publish at announce (dual-framework
+    /// drivers only; see the [`DriverRuntime::extra_label`] field).
+    pub fn also_announce(mut self, label: impl ToString) -> Self {
+        self.extra_label = Some(label.to_string());
+        self
     }
 
     /// Announce readiness through the data store.
     ///
     /// C: `chardriver_announce` (`chardriver.c:99`) runs before the first
     /// receive; a driver nobody can find must not serve, so failure
-    /// aborts startup rather than entering the loop.
+    /// aborts startup rather than entering the loop. A dual-framework
+    /// driver publishes its second label the same way (the memory driver's
+    /// `blockdriver_announce`), and a failure there aborts identically.
     pub fn announce(&mut self) -> Result<(), i32> {
-        self.transport.publish_label(&self.label)
+        self.transport.publish_label(&self.label)?;
+        if let Some(extra) = &self.extra_label {
+            self.transport.publish_label(extra)?;
+        }
+        Ok(())
     }
 
     /// Announce, then loop forever delivering messages to `handler`.
@@ -169,6 +190,7 @@ mod tests {
     /// records every publish and send.
     struct Canned {
         label: Option<String>,
+        labels: Vec<String>,
         script: Vec<Result<Message, i32>>,
         sent: Vec<(Endpoint, i32)>,
     }
@@ -177,6 +199,7 @@ mod tests {
         fn new(script: Vec<Result<Message, i32>>) -> Self {
             Canned {
                 label: None,
+                labels: Vec::new(),
                 script,
                 sent: Vec::new(),
             }
@@ -229,6 +252,7 @@ mod tests {
 
         fn publish_label(&mut self, label: &str) -> Result<(), i32> {
             self.label = Some(label.to_string());
+            self.labels.push(label.to_string());
             Ok(())
         }
     }
@@ -337,5 +361,32 @@ mod tests {
             runtime.transport.sent,
             vec![(Endpoint::RS, minix_types::RS_INIT)]
         );
+    }
+
+    /// A dual-framework driver publishes both family labels at announce:
+    /// the primary first, the second (added via `also_announce`) after.
+    /// The memory driver is the motivating case — it announces as both a
+    /// character and a block driver (`memory.c:113-165`).
+    #[test]
+    fn test_announce_publishes_both_labels() {
+        let transport = Canned::new(vec![Err(-minix_types::EIO)]);
+        let mut runtime =
+            DriverRuntime::new(transport, "drv.chr.memory").also_announce("drv.blk.memory");
+        assert_eq!(runtime.announce(), Ok(()));
+        assert_eq!(
+            runtime.transport.labels,
+            vec!["drv.chr.memory".to_string(), "drv.blk.memory".to_string()]
+        );
+    }
+
+    /// A single-label driver publishes exactly one label — `also_announce`
+    /// is opt-in and its absence must not add a second publish (guards the
+    /// tty/pckbd path against regression).
+    #[test]
+    fn test_announce_publishes_one_label_without_extra() {
+        let transport = Canned::new(vec![Err(-minix_types::EIO)]);
+        let mut runtime = DriverRuntime::new(transport, "drv.chr.tty");
+        assert_eq!(runtime.announce(), Ok(()));
+        assert_eq!(runtime.transport.labels, vec!["drv.chr.tty".to_string()]);
     }
 }
