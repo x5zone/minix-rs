@@ -16,7 +16,10 @@
 //! the copy/dispatch traits owned by 06/10; this module only decides
 //! *which* path the loop takes and *what* the reply carries.
 
-use minix_types::{EDONTREPLY, EINVAL, ENOMEM, ENOSYS, MIB_DEREGISTER, MIB_REGISTER, MIB_SYSCTL, OK};
+use minix_types::{
+    EDONTREPLY, EINVAL, ENOMEM, ENOSYS, MIB_DEREGISTER, MIB_REGISTER, MIB_SYSCTL, MessLcMibSysctl,
+    OK,
+};
 
 /// Largest sysctl name the loop accepts, in components.
 ///
@@ -25,13 +28,16 @@ use minix_types::{EDONTREPLY, EINVAL, ENOMEM, ENOSYS, MIB_DEREGISTER, MIB_REGIST
 /// decode thresholds this module judges on are repeated here.
 pub const CTL_MAXNAME: u32 = 12;
 
-/// Longest name that rides inside the request message, in components.
+/// Longest name that rides inside the sysctl request message, in components.
 ///
-/// C: `CTL_SHORTNAME` — minix/ipc.h:15 (`name[CTL_SHORTNAME]` in
-/// `mess_lc_mib_sysctl`, ipc.h:431). Names at or below this length are
-/// copied out of the message inline (`main.c:314-315`); longer names
-/// need one kernel copy (`:310-312`, effect owned by 06).
-pub const CTL_SHORTNAME: u32 = 8;
+/// The exchange overlay's own window (`MessLcMibSysctl::
+/// INLINE_NAME_COMPONENTS`, the minix-rs 64-bit form): service and client
+/// (`minix-sys`) derive the same split from the wire shape, so the threshold
+/// cannot drift from the lanes that carry it. C's `CTL_SHORTNAME 8`
+/// (minix/ipc.h:15) is the 32-bit form's budget — `name[8]` there, two
+/// slots here; the full-width address lanes paid the difference.
+/// `[ARCH: MIB-SYSCTL-64LANE]`
+pub const CTL_SHORTNAME: u32 = MessLcMibSysctl::INLINE_NAME_COMPONENTS as u32;
 
 /// The three letters (`main.c:459-472`, `com.h:1026-1028`).
 ///
@@ -138,10 +144,10 @@ pub const fn check_namelen(namelen: u32) -> Result<u32, i32> {
 
 /// Where the name bytes come from (`main.c:309-315`).
 ///
-/// Short names ride in the message (`name[CTL_SHORTNAME]`, ipc.h:431) so
-/// the loop avoids a kernel copy; long names are fetched with one
-/// `sys_datacopy` from `namep`. The copy itself is an effect (06); the
-/// *choice* is pure and testable here.
+/// Short names ride in the message (the overlay's inline window,
+/// [`CTL_SHORTNAME`]) so the loop avoids a kernel copy; long names are
+/// fetched with one `sys_datacopy` from `namep`. The copy itself is an
+/// effect (06); the *choice* is pure and testable here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamePath {
     /// `namelen <= CTL_SHORTNAME`: copy out of the message (`:313-315`).
@@ -339,11 +345,13 @@ mod tests {
 
     #[test]
     fn test_classify_name_short_long() {
-        // CTL_SHORTNAME=8: at/below rides along, above is fetched (`309-315`).
-        assert_eq!(CTL_SHORTNAME, 8);
+        // CTL_SHORTNAME rides the exchange overlay's window (two slots in
+        // the 64-bit form): at/below rides along, above is fetched
+        // (`309-315`).
+        assert_eq!(CTL_SHORTNAME, 2);
         assert_eq!(classify_name(1), NamePath::Inline);
-        assert_eq!(classify_name(8), NamePath::Inline);
-        assert_eq!(classify_name(9), NamePath::Copy);
+        assert_eq!(classify_name(2), NamePath::Inline);
+        assert_eq!(classify_name(3), NamePath::Copy);
         assert_eq!(classify_name(12), NamePath::Copy);
     }
 

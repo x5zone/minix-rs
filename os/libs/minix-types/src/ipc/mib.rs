@@ -37,12 +37,13 @@ pub struct SysctlRequest {
 /// Name source after the length verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SysctlName {
-    /// `namelen <= CTL_SHORTNAME`: bytes ride in the message.
-    /// C: `memcpy(name, m.name, ...)` — main.c:314-315.
-    Inline([i32; 8]),
-    /// `namelen > CTL_SHORTNAME`: fetch from this user address first.
-    /// C: `sys_datacopy(namep → &name)` — main.c:310-312 (effect: 06).
-    FetchFrom(u32),
+    /// `namelen <= MessLcMibSysctl::INLINE_NAME_COMPONENTS`: bytes ride
+    /// in the message. C: `memcpy(name, m.name, ...)` — main.c:314-315
+    /// (over the 8-wide C window; the minix-rs exchange form carries 2).
+    Inline([i32; 2]),
+    /// Longer names: fetch from this user address first. C:
+    /// `sys_datacopy(namep → &name)` — main.c:310-312 (effect: 06).
+    FetchFrom(u64),
 }
 
 /// An open old-data sink. C: `struct mib_oldp` — main.c:70-74.
@@ -51,9 +52,9 @@ pub struct DataSink {
     /// Owner endpoint. C: `oldp_endpt`.
     pub endpt: Endpoint,
     /// Sink address. C: `oldp_addr`.
-    pub addr: u32,
+    pub addr: u64,
     /// Sink length. C: `oldp_len`.
-    pub len: u32,
+    pub len: u64,
 }
 
 /// Supplied new data. C: `struct mib_newp` — main.c:79-83.
@@ -62,9 +63,9 @@ pub struct NewData {
     /// Owner endpoint. C: `newp_endpt`.
     pub endpt: Endpoint,
     /// Data address. C: `newp_addr`.
-    pub addr: u32,
+    pub addr: u64,
     /// Data length. C: `newp_len`.
-    pub len: u32,
+    pub len: u64,
 }
 
 impl SysctlRequest {
@@ -78,7 +79,7 @@ impl SysctlRequest {
         if w.namelen == 0 || w.namelen > CTL_MAXNAME {
             return Err(EINVAL);
         }
-        let name = if w.namelen > CTL_SHORTNAME {
+        let name = if w.namelen as usize > MessLcMibSysctl::INLINE_NAME_COMPONENTS {
             SysctlName::FetchFrom(w.namep)
         } else {
             SysctlName::Inline(w.name)
@@ -277,7 +278,7 @@ impl<'a> InfoFetch<'a> {
 mod tests {
     use super::*;
 
-    fn wire_req(namelen: u32, oldp: u32, oldlen: u32, newp: u32, newlen: u32) -> MessLcMibSysctl {
+    fn wire_req(namelen: u32, oldp: u64, oldlen: u64, newp: u64, newlen: u64) -> MessLcMibSysctl {
         MessLcMibSysctl {
             oldp,
             oldlen,
@@ -285,8 +286,7 @@ mod tests {
             newlen,
             namelen,
             namep: 0x2000,
-            name: [1, 2, 3, 0, 0, 0, 0, 0],
-            ..Default::default()
+            name: [1, 2],
         }
     }
 
@@ -309,11 +309,13 @@ mod tests {
     #[test]
     fn test_sysctl_name_paths() {
         let me = Endpoint(5);
-        // Short: bytes ride along (main.c:314-315).
-        let short = SysctlRequest::decode(me, &wire_req(3, 0, 0, 0, 0)).unwrap();
-        assert_eq!(short.name, SysctlName::Inline([1, 2, 3, 0, 0, 0, 0, 0]));
-        assert_eq!(short.name_len, 3);
-        // Long: address staged for the 06 fetch (main.c:310-312).
+        // Short: bytes ride along (main.c:314-315, over the exchange
+        // overlay's two-slot window).
+        let short = SysctlRequest::decode(me, &wire_req(2, 0, 0, 0, 0)).unwrap();
+        assert_eq!(short.name, SysctlName::Inline([1, 2]));
+        assert_eq!(short.name_len, 2);
+        // Long: address staged for the 06 fetch (main.c:310-312) —
+        // a full-width guest address, not the truncated 32-bit lane.
         let long = SysctlRequest::decode(me, &wire_req(9, 0, 0, 0, 0)).unwrap();
         assert_eq!(long.name, SysctlName::FetchFrom(0x2000));
     }
@@ -324,12 +326,16 @@ mod tests {
         // Bare old length forgiven (main.c:322-328).
         let bare = SysctlRequest::decode(me, &wire_req(2, 0, 999, 0, 0)).unwrap();
         assert_eq!(bare.old, None);
-        let sink = SysctlRequest::decode(me, &wire_req(2, 0x1000, 64, 0, 0)).unwrap();
+        // The sink address rides full width — a guest stack-window
+        // buffer is unreachable through the 32-bit lanes this view
+        // replaced.
+        let sink =
+            SysctlRequest::decode(me, &wire_req(2, 0x0000_7fff_ffff_f000, 64, 0, 0)).unwrap();
         assert_eq!(
             sink.old,
             Some(DataSink {
                 endpt: me,
-                addr: 0x1000,
+                addr: 0x0000_7fff_ffff_f000,
                 len: 64
             })
         );

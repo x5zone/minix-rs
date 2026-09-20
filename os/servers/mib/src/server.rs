@@ -240,7 +240,9 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             Err(code) => return (code, out),
         };
         // Gate 2: the name's road — inline lanes or one kernel copy
-        // (:309-315; the copy is 06's transport verb).
+        // (:309-315; the copy is 06's transport verb). `namep` is full
+        // width (the exchange overlay's 64-bit lanes), so the fetch
+        // reaches guest buffers above 4 GiB.
         let mut name_vec: Vec<i32> = Vec::with_capacity(namelen as usize);
         match classify_name(namelen) {
             crate::dispatch::NamePath::Inline => {
@@ -248,9 +250,7 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             }
             crate::dispatch::NamePath::Copy => {
                 let mut bytes = vec![0u8; namelen as usize * 4];
-                if let Err(code) =
-                    self.kernel.datacopy_from(caller, wire.namep as u64, &mut bytes)
-                {
+                if let Err(code) = self.kernel.datacopy_from(caller, wire.namep, &mut bytes) {
                     return (code, out);
                 }
                 for chunk in bytes.chunks_exact(4) {
@@ -259,19 +259,19 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
             }
         }
         // Gates 3/4: pair the old/new arguments (:322-340).
-        let oldp = match pair_oldp(wire.oldp as u64, wire.oldlen as u64) {
+        let oldp = match pair_oldp(wire.oldp, wire.oldlen) {
             crate::dispatch::OldpPresence::Present => Some(Oldp {
                 endpt: caller,
-                addr: wire.oldp as u64,
-                left: wire.oldlen as u64,
+                addr: wire.oldp,
+                left: wire.oldlen,
             }),
             crate::dispatch::OldpPresence::Absent => None,
         };
-        let newp = match pair_newp(wire.newp as u64, wire.newlen as u64) {
+        let newp = match pair_newp(wire.newp, wire.newlen) {
             crate::dispatch::NewpPresence::Present => Some(Newp {
                 endpt: caller,
-                addr: wire.newp as u64,
-                len: wire.newlen as u64,
+                addr: wire.newp,
+                len: wire.newlen,
             }),
             crate::dispatch::NewpPresence::Absent => None,
         };
@@ -289,11 +289,7 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         let mut request = Request { name: &name_vec, oldp, newp };
         let outcome = walker::sysctl(&mut ctx, &mut request);
         // Gate 6: shape the reply (:368-377).
-        let (code, out_len) = map_sysctl_reply(
-            outcome,
-            wire.oldp as u64,
-            wire.oldlen as u64,
-        );
+        let (code, out_len) = map_sysctl_reply(outcome, wire.oldp, wire.oldlen);
         out.m_type = code;
         let reply: &mut minix_types::MessMibLcSysctl =
             unsafe { &mut out.m_u.m_mib_lc_sysctl };
@@ -593,7 +589,7 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transport::recording::Recorder;
+    use crate::transport::recording::{Call, Recorder};
     use core::cell::RefCell;
     use minix_types::{
         CTL_HW, CTL_KERN, CTL_MINIX, EIO, ENOSYS, HW_MACHINE, KERN_HARDCLOCK_TICKS, MINIX_TEST,
@@ -809,6 +805,57 @@ mod tests {
         // The answer bytes crossed the copy transport.
         let written = s.kernel.written.borrow();
         assert_eq!(&written[..], b"x86_64\0");
+    }
+
+    /// Full-width lanes: a guest stack-window sink address survives the
+    /// request overlay and reaches the copy transport whole. The 32-bit
+    /// lanes this wire replaced truncated 0x7fff_ffff_f000 to
+    /// 0xffff_f000 — the recorded address is the regression pin.
+    #[test]
+    fn test_sysctl_sink_address_rides_full_width() {
+        let stack_window = 0x0000_7fff_ffff_f000;
+        let machine = minix_types::HW_MACHINE;
+        let mut m = mib_msg(minix_types::MIB_SYSCTL);
+        {
+            let w: &mut MessLcMibSysctl = unsafe { &mut m.m_u.m_lc_mib_sysctl };
+            w.namelen = 2;
+            w.name[..2].copy_from_slice(&[CTL_HW, machine]);
+            w.oldp = stack_window;
+            w.oldlen = 64;
+        }
+        let mut s = server_with(&[(minix_sys::ipc::CALL_SENDREC, m)]);
+        let (turn, _) = s.run_once();
+        assert_eq!(turn, Turn::Handled);
+        let calls = s.kernel.calls.borrow();
+        assert!(calls.iter().any(|c| matches!(
+            c,
+            Call::DatacopyTo(_, addr, _) if *addr == stack_window
+        )));
+    }
+
+    /// Long names fetch from `namep` at full width: a name past the
+    /// inline window triggers exactly one kernel copy, addressed to the
+    /// untruncated caller address.
+    #[test]
+    fn test_sysctl_long_name_fetched_from_full_width_address() {
+        let stack_window = 0x0000_7fff_ffff_f000;
+        let mut m = mib_msg(minix_types::MIB_SYSCTL);
+        {
+            let w: &mut MessLcMibSysctl = unsafe { &mut m.m_u.m_lc_mib_sysctl };
+            w.namelen = 3;
+            w.namep = stack_window;
+            w.oldp = 0x5000;
+            w.oldlen = 64;
+        }
+        let mut s = server_with(&[(minix_sys::ipc::CALL_SENDREC, m)]);
+        s.kernel.canned_from = vec![0; 3 * 4];
+        let (turn, _) = s.run_once();
+        assert_eq!(turn, Turn::Handled);
+        let calls = s.kernel.calls.borrow();
+        assert!(calls.iter().any(|c| matches!(
+            c,
+            Call::DatacopyFrom(_, addr, 12) if *addr == stack_window
+        )));
     }
 
     /// Register success: the label resolves, the mount lands, and the

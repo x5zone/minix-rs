@@ -3188,46 +3188,73 @@ impl Default for MessRsPmSrvKill {
 // ── MIB wire payloads (02-mib-message-contract.md) ──
 //
 // All six are wire-identical 32-bit layouts: every lane is 4 bytes, so
-// each struct is exactly the 56-byte union payload. `vir_bytes`/`size_t`
-// travel as `u32` — the senders (libc `__sysctl`, libsys `rmib.c`) are
-// 32-bit C, and the 56-byte budget cannot hold 64-bit addresses next to
-// `name[8]` anyway. A future 64-bit userland is an A-4 exchange-ABI
-// decision, not a silent widening: widening here would desynchronise
-// every sender at once.
+// each struct is exactly the 56-byte union payload — except the sysctl
+// exchange request, below, whose 64-bit form is a recorded exception.
+// Wire budget: `_ASSERT_MSG_SIZE` (`ipcconst.h:17-19`) pins every MIB
+// payload at 56 bytes. C itself only ever built the 32-bit form of the
+// sysctl exchange (six 4-byte lanes + `name[8]` fills exactly 56); its
+// LP64 expansion (80 bytes) cannot meet the assert, so no C 64-bit shape
+// exists to match. minix-rs user images link at 5 GiB (the bootstrap
+// root keeps the first 4 GiB identity-mapped), so the C 32-bit address
+// lanes truncate every real-machine caller.
+//
+// `[ARCH: MIB-SYSCTL-64LANE]` The exchange overlay therefore defines the
+// minix-rs 64-bit form: the five pointer/size lanes travel full width
+// (the NS5-A `MessMmap` field-width rule — C pointers/`size_t` go 8
+// bytes), and the inline-name window shrinks from C's `name[8]`
+// (`CTL_SHORTNAME`, ipc.h:15) to `name[2]` to fit the same 56 bytes.
+// The window is an optimization threshold, not a semantic: long names
+// fetch through `namep` exactly as before, and every sender/receiver in
+// this repo derives the threshold from the constant below so the three
+// ends cannot drift. The register face (`mess_lsys_mib_register`, no
+// address lanes) keeps the C 32-bit shape untouched.
 
 /// MIB sysctl(2) request payload (user/libc → MIB).
 ///
-/// C: `mess_lc_mib_sysctl` — ipc.h:424-433.
+/// C: `mess_lc_mib_sysctl` — ipc.h:424-433 (the 32-bit form; the
+/// minix-rs 64-bit exchange form is described above).
 ///
-/// # Layout (matches C, all lanes 4 bytes)
+/// # Layout (minix-rs exchange ABI, 56 bytes)
 /// ```text
 /// | Field   | Type    | Offset |
 /// |---------|---------|--------|
-/// | oldp    | u32     | 0      |
-/// | oldlen  | u32     | 4      |
-/// | newp    | u32     | 8      |
-/// | newlen  | u32     | 12     |
-/// | namelen | u32     | 16     |
-/// | namep   | u32     | 20     |
-/// | name    | [i32;8] | 24     |
+/// | oldp    | u64     | 0      |
+/// | oldlen  | u64     | 8      |
+/// | newp    | u64     | 16     |
+/// | newlen  | u64     | 24     |
+/// | namelen | u32     | 32     |
+/// | (align) | —       | 36     |
+/// | namep   | u64     | 40     |
+/// | name    | [i32;2] | 48     |
 /// ```
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct MessLcMibSysctl {
     /// Old-data address (0 = no sink). C: `vir_bytes oldp`.
-    pub oldp: u32,
+    pub oldp: u64,
     /// Old-data length. C: `size_t oldlen`.
-    pub oldlen: u32,
+    pub oldlen: u64,
     /// New-data address. C: `vir_bytes newp`.
-    pub newp: u32,
+    pub newp: u64,
     /// New-data length. C: `size_t newlen`.
-    pub newlen: u32,
+    pub newlen: u64,
     /// Name length in components. C: `unsigned int namelen`.
     pub namelen: u32,
     /// Name address for long names. C: `vir_bytes namep`.
-    pub namep: u32,
-    /// Inline name (`namelen <= CTL_SHORTNAME`). C: `int name[CTL_SHORTNAME]`.
-    pub name: [i32; 8],
+    pub namep: u64,
+    /// Inline name (`namelen <= Self::INLINE_NAME_COMPONENTS`). C:
+    /// `int name[CTL_SHORTNAME]` (8 wide in the C form).
+    pub name: [i32; 2],
+}
+
+impl MessLcMibSysctl {
+    /// Longest name that rides inside this message, in components.
+    ///
+    /// The single source of truth for the inline window: the client
+    /// (`minix-sys`) and the service (`mib`'s `classify_name`) both
+    /// derive their split from this, so the overlay cannot widen or
+    /// narrow without both ends moving in the same commit.
+    pub const INLINE_NAME_COMPONENTS: usize = 2;
 }
 
 /// MIB sysctl(2) reply payload (MIB → user/libc).
@@ -4023,19 +4050,32 @@ mod tests {
         assert_eq!(size_of::<MessLsysMibReply>(), 56);
         assert_eq!(size_of::<MessMibLsysCall>(), 56);
         assert_eq!(size_of::<MessMibLsysInfo>(), 56);
-        // Field order pins the C layouts (ipc.h:424-433,1548-1580,1373-1389).
+        // The exchange overlay carries the five pointer/size lanes at
+        // full width: five u64 lanes + the u32 namelen + its 4-byte
+        // alignment gap before namep + the two-slot name window pin the
+        // minix-rs 64-bit form (`[ARCH: MIB-SYSCTL-64LANE]`; C's 32-bit
+        // shape is ipc.h:424-433).
+        assert_eq!(
+            size_of::<MessLcMibSysctl>(),
+            size_of::<u64>() * 5 + size_of::<u32>() * 2 + size_of::<i32>() * 2
+        );
         let req = MessLcMibSysctl {
-            oldp: 0x1000,
+            oldp: 0x0000_7fff_ffff_f000,
             oldlen: 64,
             newp: 0,
             newlen: 0,
             namelen: 3,
-            namep: 0,
-            name: [1, 7, 12, 0, 0, 0, 0, 0],
-            ..Default::default()
+            namep: 0x0000_7fff_ffff_f000,
+            name: [1, 7],
         };
-        assert_eq!((req.oldp, req.oldlen, req.namelen), (0x1000, 64, 3));
-        assert_eq!(req.name[2], 12);
+        // A guest stack-window address survives the lane whole — the
+        // u32 lanes this overlay replaced truncated it to 0xffff_f000.
+        assert_eq!(req.oldp, 0x0000_7fff_ffff_f000);
+        assert_eq!(req.oldlen, 64);
+        assert_eq!(req.namelen, 3);
+        assert_eq!(req.namep, 0x0000_7fff_ffff_f000);
+        assert_eq!(req.name, [1, 7]);
+        assert_eq!(MessLcMibSysctl::INLINE_NAME_COMPONENTS, 2);
         let reg = MessLsysMibRegister {
             root_id: 9,
             flags: 0,

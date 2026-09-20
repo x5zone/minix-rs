@@ -31,7 +31,7 @@
 use crate::ipc::IpcTransport;
 use crate::syscall::perform_syscall;
 use crate::{pm::pm_endpoint, vfs::vfs_endpoint};
-use minix_types::{Errno, Message};
+use minix_types::{Errno, Message, MessLcMibSysctl};
 
 /// Server-control request to the process manager.
 ///
@@ -50,12 +50,6 @@ pub const MIB_ENDPOINT_NUMBER: i32 = 7;
 
 /// System control query. C: `MIB_SYSCTL (MIB_BASE + 0)` (`com.h:1026`).
 pub const MIB_CALL_SYSCTL: i32 = 0x600;
-
-/// Longest sysctl name carried inside the message.
-///
-/// C: `CTL_SHORTNAME 8` (`minix3/minix/include/minix/ipc.h:15`): names this
-/// long or shorter travel inline; longer names travel by pointer only.
-pub const SYSCTL_SHORT_NAME_LENGTH: usize = 8;
 
 /// Nanoseconds per microsecond (also microseconds per millisecond, and
 /// milliseconds per second — the three identical conversion steps in
@@ -256,10 +250,14 @@ pub const fn combine_timestamp(high_half: u32, low_half: u32) -> u64 {
 /// Validates a sysctl name length for the inline-or-pointer rule.
 ///
 /// Names this long or shorter travel inside the message; longer names travel
-/// by pointer only (see `__sysctl.c`: `namelen <= CTL_SHORTNAME` copies
-/// inline). The boolean reports "fits inline".
+/// by pointer only (see `__sysctl.c`: short names copy inline, the rest go
+/// through `namep`). The threshold is the exchange overlay's own window
+/// ([`MessLcMibSysctl::INLINE_NAME_COMPONENTS`], the minix-rs 64-bit form —
+/// C's `CTL_SHORTNAME 8`, ipc.h:15, is the 32-bit shape's budget), so the
+/// client and the service can only move together with the wire shape.
+/// The boolean reports "fits inline".
 pub const fn sysctl_name_fits_inline(name_length: usize) -> bool {
-    name_length <= SYSCTL_SHORT_NAME_LENGTH
+    name_length <= MessLcMibSysctl::INLINE_NAME_COMPONENTS
 }
 
 /// Sleeps through the descriptor-wait call with empty sets.
@@ -324,7 +322,7 @@ mod tests {
     fn test_constants_match_c_headers() {
         assert_eq!(MIB_ENDPOINT_NUMBER, 7);
         assert_eq!(MIB_CALL_SYSCTL, 0x600);
-        assert_eq!(SYSCTL_SHORT_NAME_LENGTH, 8);
+        assert_eq!(MessLcMibSysctl::INLINE_NAME_COMPONENTS, 2);
         assert_eq!(NANOSECONDS_PER_SECOND, 1_000_000_000);
     }
 
@@ -456,8 +454,11 @@ mod tests {
 
     #[test]
     fn test_sysctl_inline_boundary() {
-        assert!(sysctl_name_fits_inline(8));
-        assert!(!sysctl_name_fits_inline(9));
+        // The window is the exchange overlay's own (two slots in the
+        // minix-rs 64-bit form; C's 32-bit form carried eight).
+        let window = MessLcMibSysctl::INLINE_NAME_COMPONENTS;
+        assert!(sysctl_name_fits_inline(window));
+        assert!(!sysctl_name_fits_inline(window + 1));
     }
 
     #[test]
