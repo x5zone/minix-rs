@@ -437,6 +437,10 @@ pub fn fcntl_via(
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_FCNTL, &mut message)
 }
 
+/// Changes the process root directory.
+///
+/// C: `VFS_CHROOT (VFS_BASE + 28)` (`callnr.h:100`).
+pub const VFS_CALL_CHROOT: i32 = 0x100 + 28;
 /// `F_DUPFD` — duplicate the descriptor (`sys/sys/fcntl.h:178`).
 pub const F_DUPFD: i32 = 0;
 /// `F_GETFL` — get the status flags (`sys/sys/fcntl.h:181`); also the
@@ -467,6 +471,39 @@ pub fn dup2_via(transport: &impl IpcTransport, fd: i32, fd2: i32) -> Result<i32,
     }
     let _ = close_via(transport, fd2);
     fcntl_via(transport, fd, F_DUPFD, fd2, 0)
+}
+
+/// Changes the process root directory (C: `chroot`,
+/// `minix3/minix/lib/libc/sys/chroot.c:12-19`).
+///
+/// C loads the name inline into the message (`_loadname`, chroot.c:15);
+/// this face reuses the open-existing payload shape — address, length,
+/// then the path bytes themselves (see `open_existing_via`, where the
+/// inline boundary and its ENAMETOOLONG answer live too). The caller
+/// keeps the path buffer alive until the reply: a real server reads it
+/// through the caller's address space, the way `chroot`'s `loadname`
+/// made the message itself carry the bytes.
+pub fn chroot_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+) -> Result<(), Errno> {
+    if name_length_including_nul == 0 || name_length_including_nul > OPEN_PATH_INLINE_MAX {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    // SAFETY: the caller's path buffer lives in this same address space
+    // (user library reads its own argument — C loadname.c:16-17 同型).
+    let path_bytes = unsafe {
+        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
+    };
+    let mut packed = [0u8; core::mem::size_of::<OpenPathPayload>()];
+    packed[0..8].copy_from_slice(&name_address.to_le_bytes());
+    packed[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
+    // flags/mode lanes stay zero — chroot carries neither.
+    packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    let mut message = crate::syscall::cleared_message();
+    crate::syscall::write_payload(&mut message, &packed);
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_CHROOT, &mut message).map(|_| ())
 }
 
 /// Reads directory entries in the getdents wire format.
@@ -1243,5 +1280,54 @@ mod dup2_wire_tests {
         transport.reply_sendrec(Err(crate::ipc::TrapStatus(minix_types::EBADF)));
         assert_eq!(dup2_via(&transport, 9, 0), Err(Errno::EBADF));
         assert_eq!(transport.sent.borrow().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod chroot_wire_tests {
+    use super::*;
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    /// C 绝对值 pin：VFS_CHROOT = VFS_BASE + 28（callnr.h:100）。
+    #[test]
+    fn test_chroot_call_number_matches_c() {
+        assert_eq!(VFS_CALL_CHROOT, 0x100 + 28);
+    }
+
+    /// 载荷形态沿 open_existing：地址@0、长度@8、flags/mode 零、内联
+    /// 路径字节 @24（chroot.c:15 loadname 内联语义的载荷等价物）。
+    #[test]
+    fn test_chroot_payload_carries_inline_path() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/mnt/newroot\0";
+        assert_eq!(chroot_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, vfs_endpoint());
+        assert_eq!(sent.m_type, VFS_CALL_CHROOT);
+        // SAFETY: byte-level read of the union overlay lanes for test
+        // assertions only (same as the sigaction wire test).
+        let raw = unsafe { &sent.m_u.raw };
+        assert_eq!(u64::from_le_bytes(raw[0..8].try_into().unwrap()), path.as_ptr() as u64);
+        assert_eq!(u64::from_le_bytes(raw[8..16].try_into().unwrap()), path.len() as u64);
+        assert_eq!(&raw[24..24 + path.len()], path);
+    }
+
+    /// 越界路径与 open 同判 ENAMETOOLONG（内联边界同源）。
+    #[test]
+    fn test_chroot_rejects_over_inline_boundary() {
+        let transport = CannedTransport::new();
+        let long = [b'a'; OPEN_PATH_INLINE_MAX + 1];
+        assert_eq!(
+            chroot_via(&transport, long.as_ptr() as u64, long.len()),
+            Err(Errno::ENAMETOOLONG)
+        );
     }
 }

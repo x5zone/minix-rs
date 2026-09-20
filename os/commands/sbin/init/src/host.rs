@@ -404,8 +404,12 @@ impl InitHost for MinixSysHost {
     }
 
     fn chroot(&mut self, root: &str) -> Result<(), Errno> {
-        let _ = root;
-        Err(Errno::ENOSYS)
+        // C: chroot(rootdir) before the chroot run of /etc/rc
+        // (init.c:903); the path travels inline, the open shape.
+        let mut path = Vec::with_capacity(root.len() + 1);
+        path.extend_from_slice(root.as_bytes());
+        path.push(0);
+        minix_sys::vfs::chroot_via(&DirectTrapTransport, path.as_ptr() as u64, path.len())
     }
 
     fn append_file(&mut self, path: &str, bytes: &[u8]) -> Result<(), Errno> {
@@ -745,13 +749,14 @@ mod tests {
         // 本测试分两栏：**仍缺封装**的接缝必须诚实回 ENOSYS（不假成功）；
         // **已接线**的接缝在宿主 trap 断链下诚实回 EIO（E1 切片 5 的 hosted
         // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
-        // 仍缺封装：内核 mib 三件（12 篇）、chroot。
-        // （set_controlling_tty/alarm/time 已接线，见下；set_env 是
-        // 本地环境表面——无机器往返，见第三栏。）
+        // 仍缺封装：内核 mib 三件（12 篇）。
+        // （set_controlling_tty/alarm/time/chroot 已接线，见下；set_env
+        // 是本地环境表面——无机器往返，见第三栏。）
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
-        assert_eq!(host.chroot("/"), Err(Errno::ENOSYS));
+        // chroot 已接线（VFS_CHROOT 面）：宿主 trap 断链诚实回 EIO。
+        assert_eq!(host.chroot("/"), Err(Errno::EIO));
         // set_env 已接线（本地环境表，setenv 语义）：成功路径 Ok，
         // 畸形名 EINVAL（C setenv.c:70-74）；exec 帧消费见 execve.rs。
         assert_eq!(host.set_env("PATH", "/sbin"), Ok(()));
