@@ -1,0 +1,69 @@
+//! `sysboot-rx` — the receive half of the S42 ④ multi-process boot carrier
+//! (C-27). Loaded into the VM boot slot by the carrier kernel, so its boot
+//! endpoint is 8 (generation 0: endpoint == proc_nr).
+//!
+//! It parks in `receive(ANY)` — the first real blocking user receive — and
+//! on the peer's message answers with a non-blocking send, emitting the
+//! serial markers the run script greps:
+//!   SYSBOOT RX UP    — main entered, diagctl console channel works
+//!   SYSBOOT RX GOT   — the user↔user message arrived through the kernel
+//!   SYSBOOT RX DONE  — the reply left through sendnb
+//!
+//! After the exchange it parks again in `receive(ANY)`: the carrier has no
+//! exit primitive to exercise, and a parked process keeps the scheduler
+//! honest without burning the CPU.
+
+#![no_std]
+#![no_main]
+
+use minix_sys::ipc::{DirectTrapTransport, IpcTransport};
+use minix_sys::syscall::{sys_diagctl, DirectKernelCallTransport};
+use minix_types::{Endpoint, Message};
+
+/// Console write through the kernel diagnostic channel (rt-birth's
+/// `emit` shape: `sys_diagctl` code 1, kernel renders on its console).
+fn emit(message: &[u8]) {
+    let _ = sys_diagctl(
+        &DirectKernelCallTransport,
+        1,
+        message.as_ptr() as u64,
+        message.len() as i32,
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    // Birth-chain evidence: argv parse through minix-rt's crt0 statics
+    // (rt-birth marker convention; also keeps the runtime crate linked).
+    let argv = minix_rt::crt0::argv_count();
+    let mut up: [u8; 21] = *b"SYSBOOT RX UP argv=?\n";
+    up[19] = b'0' + (argv as u8).min(9);
+    emit(&up);
+
+    let ipc = DirectTrapTransport;
+    loop {
+        let mut msg = Message::default();
+        match ipc.receive(Endpoint::ANY, &mut msg) {
+            Ok(_status) => {
+                emit(b"SYSBOOT RX GOT\n");
+                // The peer sits in sendrec's receive half: a non-blocking
+                // full-message send delivers the reply and wakes it.
+                let mut reply = Message::default();
+                reply.m_type = 0x43;
+                match ipc.sendnb(msg.m_source, &reply) {
+                    Ok(()) => emit(b"SYSBOOT RX DONE\n"),
+                    Err(_) => emit(b"SYSBOOT RX REPLY-ERR\n"),
+                }
+            }
+            Err(_code) => {
+                // The receive trap failed: report once and park in a spin —
+                // there is no user-space exit primitive in this carrier, and
+                // the run script judges by markers, not by process exit.
+                emit(b"SYSBOOT RX RECV-ERR\n");
+                loop {
+                    core::hint::spin_loop();
+                }
+            }
+        }
+    }
+}

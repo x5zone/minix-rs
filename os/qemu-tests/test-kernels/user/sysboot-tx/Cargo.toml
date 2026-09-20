@@ -1,0 +1,23 @@
+[package]
+name = "sysboot-tx"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "sysboot-tx"
+path = "src/main.rs"
+# Freestanding user image: never compile a host test harness (the
+# minix-rt `#[panic_handler]` would collide with the std one).
+test = false
+
+[dependencies]
+# Inline declaration (not workspace inheritance): this is the one consumer
+# that needs `default-features = false` on minix-rt — the freestanding
+# no_std birth-chain image (rt-birth precedent).
+minix-rt = { path = "../../../../libs/minix-rt", default-features = false, features = [
+    "panic-handler",
+    "alloc-global",
+    "real-trap",
+] }
+minix-sys = { workspace = true, features = ["real-trap"] }
+minix-types = { workspace = true }
