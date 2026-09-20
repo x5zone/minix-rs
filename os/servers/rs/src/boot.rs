@@ -1064,12 +1064,15 @@ impl<'a> BootInit<'a> {
                 {
                     // C: SF_SYNCH_BOOT → catch_boot_init_ready — main.c:390-392:
                     // a blocking receive for THIS service's init-ready before
-                    // boot proceeds (12: the receive seam is wired — the
-                    // blocking shape itself is the fail-closed behavior).
+                    // boot proceeds.
                     self.catch_boot_init_ready(sys, priv_.endpoint)?;
+                } else {
+                    // C: main.c:393-394 — the count is the *else* branch: a
+                    // SYNCH service's ready reply was already consumed by the
+                    // inline catch, so counting it too would leave step 3
+                    // blocked forever on a reply that never comes.
+                    nr_uncaught_init_srvs += 1;
                 }
-                // C: else branch — main.c:393-394: count, Step 3 catches it.
-                nr_uncaught_init_srvs += 1;
             }
         }
         self.nr_uncaught_init_srvs = nr_uncaught_init_srvs;
@@ -1259,7 +1262,7 @@ mod tests {
     /// wire 形状（request=1、整表定容）与失败路径（Err 原始 errno）。
     #[test]
     fn test_boot_tables_acquire_wire_shape() {
-        use minix_sys::syscall::{CannedKernelCallTransport, KernelCallTransport};
+        use minix_sys::syscall::CannedKernelCallTransport;
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
         let tables = BootTables::acquire_from(&canned).unwrap();
@@ -2231,6 +2234,359 @@ mod tests {
         }
 
         // VM + non-synch SYS_PROC counted; RS itself is not (main.c:368-394).
+        assert_eq!(boot.nr_uncaught_init_srvs, 2);
+    }
+
+    /// 批三序列钉（S42 ③）：RS_INIT 的发送次序 = boot tab 表序。C
+    /// table.c:14-15 注释明言 priv 表序即"boot system services are made
+    /// runnable and initialized at boot time"的顺序，main.c:344-399 按
+    /// 表下标遍历；Rust step2 的 priv_table 迭代即同一消费半。
+    #[test]
+    fn test_boot_send_order_follows_priv_table_order() {
+        static IMAGE: &[BootImage] = &[
+            boot_image(2, Endpoint::RS),
+            boot_image(8, Endpoint::VM),
+            boot_image(0, Endpoint::PM),
+            boot_image(4, Endpoint::SCHED),
+        ];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::PM,
+                label: "pm",
+                flags: crate::privilege::SRV_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::SCHED,
+                label: "sched",
+                flags: crate::privilege::SRV_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::PM,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::SCHED,
+                flags: crate::service_slot::SRVR_SF,
+            },
+        ];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table: &[],
+        };
+        let mut sys = MockKernelApi::new(100);
+        sys.ticks = 500;
+        sys.kernel_privs.push((
+            Endpoint::RS,
+            crate::privilege::Privilege::boot_priv(crate::privilege::RSYS_F, 2),
+        ));
+        sys.kernel_privs.push((
+            Endpoint::VM,
+            crate::privilege::Privilege::boot_priv(crate::privilege::VM_F, 8),
+        ));
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+
+        // 发送次序恰为表序（RS 不发）——table.c:14-15 + main.c:344-399。
+        let order: alloc::vec::Vec<Endpoint> =
+            sys.sent.iter().map(|(e, _)| *e).collect();
+        assert_eq!(
+            order,
+            alloc::vec![Endpoint::VM, Endpoint::PM, Endpoint::SCHED],
+            "RS_INIT 发送次序 = boot tab 表序"
+        );
+    }
+
+    /// 批三失败路径钉（S42 ③）：`sched_init_proc` 失败 → boot 在断点
+    /// 中止（C main.c:376-377 `panic("unable to initialize scheduling")`
+    /// 的 fail-closed 对应），后续服务不再收到 init 发送。
+    #[test]
+    fn test_boot_aborts_when_sched_init_proc_fails() {
+        static IMAGE: &[BootImage] = &[
+            boot_image(2, Endpoint::RS),
+            boot_image(8, Endpoint::VM),
+            boot_image(0, Endpoint::PM),
+            boot_image(4, Endpoint::SCHED),
+        ];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::PM,
+                label: "pm",
+                flags: crate::privilege::SRV_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::SCHED,
+                label: "sched",
+                flags: crate::privilege::SRV_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::PM,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::SCHED,
+                flags: crate::service_slot::SRVR_SF,
+            },
+        ];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table: &[],
+        };
+        let mut sys = MockKernelApi::new(100);
+        sys.ticks = 500;
+        sys.kernel_privs.push((
+            Endpoint::RS,
+            crate::privilege::Privilege::boot_priv(crate::privilege::RSYS_F, 2),
+        ));
+        sys.kernel_privs.push((
+            Endpoint::VM,
+            crate::privilege::Privilege::boot_priv(crate::privilege::VM_F, 8),
+        ));
+        // PM 的 sched_init_proc 失败（fail-injection 按变体匹配）。
+        sys.fail_calls.push(Call::SchedInitProc(Endpoint::PM));
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        assert!(
+            matches!(
+                boot.step2_allow_run(&mut sys),
+                Err(BootError::Kernel(Errno::ENOSYS))
+            ),
+            "sched_init_proc 失败 → BootError 中止 boot"
+        );
+        // VM 已发（断点之前），PM/SCHED 未发（断点之后不再推进）。
+        let sent_eps: alloc::vec::Vec<Endpoint> =
+            sys.sent.iter().map(|(e, _)| *e).collect();
+        assert_eq!(
+            sent_eps,
+            alloc::vec![Endpoint::VM],
+            "boot 停在失败服务：后续服务不收 init"
+        );
+    }
+
+    /// 批三失败路径钉（S42 ③）：`rs_asynsend`（init_service 的发送腿）
+    /// 失败 → boot 中止（C main.c:386-388
+    /// `panic("unable to initialize service")` 的 fail-closed 对应）。
+    #[test]
+    fn test_boot_aborts_when_init_asynsend_fails() {
+        static IMAGE: &[BootImage] = &[
+            boot_image(2, Endpoint::RS),
+            boot_image(8, Endpoint::VM),
+            boot_image(0, Endpoint::PM),
+        ];
+        let priv_table: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::PM,
+                label: "pm",
+                flags: crate::privilege::SRV_F,
+            },
+        ];
+        let sys_table: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::PM,
+                flags: crate::service_slot::SRVR_SF,
+            },
+        ];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table,
+            sys_table,
+            dev_table: &[],
+        };
+        let mut sys = MockKernelApi::new(100);
+        sys.ticks = 500;
+        sys.kernel_privs.push((
+            Endpoint::RS,
+            crate::privilege::Privilege::boot_priv(crate::privilege::RSYS_F, 2),
+        ));
+        sys.kernel_privs.push((
+            Endpoint::VM,
+            crate::privilege::Privilege::boot_priv(crate::privilege::VM_F, 8),
+        ));
+        sys.fail_calls
+            .push(Call::Asynsend(Endpoint::PM, minix_types::RS_INIT));
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        assert!(
+            matches!(
+                boot.step2_allow_run(&mut sys),
+                Err(BootError::Kernel(Errno::ENOSYS))
+            ),
+            "init 发送失败 → BootError 中止 boot"
+        );
+    }
+
+    /// 批三序列钉（S42 ③）：`SF_SYNCH_BOOT` 服务的 init-ready 在 step2
+    /// **内联**捕获——阻塞发生在两服务的 init 发送之间（C main.c:390-392
+    /// 的顺序语义：PM 的应答消费先于 SCHED 的 init 发送）。
+    #[test]
+    fn test_synch_boot_catch_is_inline_between_sends() {
+        static IMAGE: &[BootImage] = &[
+            boot_image(2, Endpoint::RS),
+            boot_image(8, Endpoint::VM),
+            boot_image(0, Endpoint::PM),
+            boot_image(4, Endpoint::SCHED),
+        ];
+        static PRIV_TABLE: &[BootImagePriv] = &[
+            BootImagePriv {
+                endpoint: Endpoint::RS,
+                label: "rs",
+                flags: crate::privilege::RSYS_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::VM,
+                label: "vm",
+                flags: crate::privilege::VM_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::PM,
+                label: "pm",
+                flags: crate::privilege::SRV_F,
+            },
+            BootImagePriv {
+                endpoint: Endpoint::SCHED,
+                label: "sched",
+                flags: crate::privilege::SRV_F,
+            },
+        ];
+        static SYS_TABLE: &[BootImageSys] = &[
+            BootImageSys {
+                endpoint: Endpoint::RS,
+                flags: crate::service_slot::SRVR_SF,
+            },
+            BootImageSys {
+                endpoint: Endpoint::VM,
+                flags: crate::service_slot::VM_SF,
+            },
+            // PM 挂 SYNCH_BOOT：init-ready 在 step2 内联捕获。
+            // （bitflags 的 BitOr 非 const，static 内用 bits 组合还原。）
+            BootImageSys {
+                endpoint: Endpoint::PM,
+                flags: SysFlags::from_bits_retain(
+                    crate::service_slot::SRVR_SF.bits() | SysFlags::SYNCH_BOOT.bits(),
+                ),
+            },
+            BootImageSys {
+                endpoint: Endpoint::SCHED,
+                flags: crate::service_slot::SRVR_SF,
+            },
+        ];
+        let tables = BootTables {
+            image: IMAGE,
+            priv_table: PRIV_TABLE,
+            sys_table: SYS_TABLE,
+            dev_table: &[],
+        };
+        let mut sys = MockKernelApi::new(100);
+        sys.ticks = 500;
+        sys.kernel_privs.push((
+            Endpoint::RS,
+            crate::privilege::Privilege::boot_priv(crate::privilege::RSYS_F, 2),
+        ));
+        sys.kernel_privs.push((
+            Endpoint::VM,
+            crate::privilege::Privilege::boot_priv(crate::privilege::VM_F, 8),
+        ));
+        // 预置 PM 的 init-ready 应答（inbox 顺序即消费顺序）。
+        let pm_ready = minix_types::RsInit {
+            result: 0,
+            init_type: 0,
+            rproctab_gid: -1,
+            old_endpoint: Endpoint::NONE,
+            restarts: 1,
+            flags: 0,
+            buff_addr: minix_types::VirBytes(0),
+            buff_len: 0,
+            prepare_state: 0,
+        }
+        .encode_message();
+        let mut pm_ready = pm_ready;
+        pm_ready.m_source = Endpoint::PM;
+        sys.inbox
+            .push((pm_ready, crate::dispatch::IpcStatus::default(), 501));
+        let mut boot = BootInit::new(tables);
+        boot.step0_prepare(&mut sys).expect("step 0");
+        boot.step1_set_attrs(&mut sys).expect("step 1");
+        boot.step2_allow_run(&mut sys).expect("step 2");
+
+        // 位置序：VM 发 < PM 的应答回声（catch 内联证据）< SCHED 发。
+        let calls = &sys.calls;
+        let find = |pred: &dyn Fn(&Call) -> bool| {
+            calls.iter().position(pred).expect("调用必须存在")
+        };
+        let vm_send = find(&|c| matches!(c, Call::Asynsend(e, _) if *e == Endpoint::VM));
+        let pm_reply = find(&|c| matches!(c, Call::Reply(e, _) if *e == Endpoint::PM));
+        let sched_send = find(&|c| matches!(c, Call::Asynsend(e, _) if *e == Endpoint::SCHED));
+        assert!(
+            vm_send < pm_reply && pm_reply < sched_send,
+            "SYNCH_BOOT 的 catch 内联在前后服务的 init 发送之间 \
+             (vm_send={vm_send}, pm_reply={pm_reply}, sched_send={sched_send})"
+        );
+        // VM + SCHED 计入 step3；PM 已内联消费。
         assert_eq!(boot.nr_uncaught_init_srvs, 2);
     }
 
