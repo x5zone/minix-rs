@@ -11,9 +11,12 @@ fn main() {
     //（VFS_PM_INIT，main.c:220-236），无 RS_INIT 握手；此处直接构造
     // 服务器并执行 init_fresh 等价初始化。
     //
-    // 占位参数：真实启动路径由 sys_getmonparams/sys_getimage 填充
-    // （minix-sys 落地后替换 BootParams::placeholder()）。
-    let params = BootParams::placeholder();
+    // 真实启动获取（D-02 消费半 / S42 ②）：C main.c:167-176/238 的
+    // sys_getmonparams + sys_getimage + sys_hz。任一失败即停车——
+    // C 对应 panic（"get monitor params failed"/"couldn't get image
+    // table"），半真数据不得进启动契约。
+    let params = BootParams::acquire_from(&minix_sys::syscall::DirectKernelCallTransport)
+        .unwrap_or_else(|e| panic!("PM boot: kernel getinfo failed: errno {e}"));
 
     let mut server = PmServer::new(params);
 

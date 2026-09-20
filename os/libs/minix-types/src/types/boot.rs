@@ -336,6 +336,20 @@ impl BootImage {
             .unwrap_or(PROC_NAME_LEN);
         core::str::from_utf8(&self.proc_name[..len]).unwrap_or("<invalid>")
     }
+
+    /// Decode one GET_IMAGE wire row ([`crate::types::boot_image::
+    /// BootImageStruct`], 40 字节,C `struct boot_image` — type.h:148-154)
+    /// 为内部建模行。GET_IMAGE 消费方(PM `BootParams` / RS `BootTables`)
+    /// 共用此转换,wire 布局只有 `BootImageStruct` 一个权威。
+    pub fn from_wire(wire: &crate::types::boot_image::BootImageStruct) -> Self {
+        Self {
+            proc_nr: wire.proc_nr,
+            proc_name: wire.proc_name,
+            endpoint: Endpoint(wire.endpoint),
+            start_addr: wire.start_addr,
+            len: wire.len,
+        }
+    }
 }
 
 impl Default for BootImage {
@@ -355,6 +369,29 @@ mod tests {
         assert_eq!(img.endpoint, Endpoint::NONE);
         assert_eq!(img.start_addr, 0);
         assert_eq!(img.len, 0);
+    }
+
+    /// from_wire：GET_IMAGE 线上行（BootImageStruct）逐域折为建模行。
+    #[test]
+    fn test_boot_image_from_wire() {
+        use crate::types::boot_image::BootImageStruct;
+        let wire = BootImageStruct {
+            proc_nr: 2,
+            proc_name: {
+                let mut n = [0u8; PROC_NAME_LEN];
+                n[..2].copy_from_slice(b"rs");
+                n
+            },
+            endpoint: 2,
+            start_addr: 0x11_0000,
+            len: 0x2000,
+        };
+        let img = BootImage::from_wire(&wire);
+        assert_eq!(img.proc_nr, 2);
+        assert_eq!(img.endpoint, Endpoint(2));
+        assert_eq!(img.name(), "rs");
+        assert_eq!(img.start_addr, 0x11_0000);
+        assert_eq!(img.len, 0x2000);
     }
 
     #[test]

@@ -20,11 +20,13 @@ fn main() {
         // `SefCallbacks` trait implemented by `RsServer` itself (N5); there
         // is no separate registration value to construct.
 
-        // C: sys_getimage(image) — main.c:196. Placeholder until the
-        // sys_getimage wiring lands (19-rs-external-interfaces.md); the
-        // production path injects the kernel's boot_image[] copy here
-        // (ARCH A-13).
-        let tables = BootTables::placeholder();
+        // C: sys_getimage(image) — main.c:196. The kernel's GET_IMAGE
+        // answer is the boot truth (do_getinfo.c:86-90); a failure stops
+        // the boot (C panic, main.c:196-198) — half-true tables must not
+        // reach the boot invariants below (ARCH A-13 resolved: the tables
+        // now come from the kernel, not the placeholder).
+        let tables = BootTables::acquire_from(&minix_sys::syscall::DirectKernelCallTransport)
+            .unwrap_or_else(|e| panic!("RS boot: sys_getimage failed: errno {e}"));
 
         let mut server = RsServer::new(tables);
 

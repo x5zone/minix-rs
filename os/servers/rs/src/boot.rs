@@ -572,13 +572,49 @@ impl<'a> BootTables<'a> {
         }
     }
 
-    /// Placeholder used by `main.rs` until `sys_getimage` wiring lands.
+    /// Placeholder boot tables（测试/宿主开发用值）。
     ///
     /// Mirrors VM's `BootParams::placeholder()` strategy
     /// (02-stage-vm/01-vm-init-main.md §4.1): a minimal but valid boot image
-    /// so the production binary has a legal boot input.
+    /// so the production binary has a legal boot input. 生产 main 用
+    /// [`BootTables::acquire_from`] 换内核 GET_IMAGE 真值。
     pub fn placeholder() -> BootTables<'static> {
         BootTables::new(BOOT_IMAGE_PLACEHOLDER)
+    }
+
+    /// 真实启动获取（D-02 消费半，S42 ② boot 真值链）。
+    ///
+    /// C main.c:196 `sys_getimage(image)`：内核 GET_IMAGE 的应答是 boot
+    /// 真值（do_getinfo.c:86-90 的 `struct boot_image[NR_BOOT_PROCS]`
+    /// 整表），按 minix-types wire 权威（`BootImageStruct`，40 字节 × 17）
+    /// 解码为建模行。失败回 `Err(原始 errno)`——C 对应 panic
+    /// （main.c:196-198），生产 main 据此停车。
+    ///
+    /// 生命周期：RS 常驻，boot 表随进程同寿，`Box::leak` 换 `'static`
+    /// 借用是单进程服务器的诚实形态（C 的 `image[]` 也是静态存储）。
+    pub fn acquire_from(
+        transport: &impl minix_sys::syscall::KernelCallTransport,
+    ) -> Result<BootTables<'static>, i32> {
+        let mut wire =
+            [minix_types::BootImageStruct::default(); minix_types::NR_BOOT_PROCS];
+        // SAFETY: `[BootImageStruct; N]` 是 repr(C) 的 POD 数组
+        //（minix-types boot_image.rs 布局冻结测试钉值），整块按字节
+        // 可写；内核 GET_IMAGE 按同一布局填充。
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                wire.as_mut_ptr() as *mut u8,
+                core::mem::size_of::<
+                    [minix_types::BootImageStruct; minix_types::NR_BOOT_PROCS],
+                >(),
+            )
+        };
+        minix_sys::syscall::sys_getimage(transport, bytes)?;
+
+        let image: alloc::vec::Vec<BootImage> = wire
+            .iter()
+            .map(BootImage::from_wire)
+            .collect();
+        Ok(BootTables::new(alloc::boxed::Box::leak(image.into_boxed_slice())))
     }
 
     /// Validates that image and priv tables describe the same system services.
@@ -1218,6 +1254,41 @@ mod tests {
     use crate::testutil::{Call, MockKernelApi};
     use alloc::vec::Vec;
     use minix_types::BootImage;
+
+    /// D-02 消费半（S42 ② boot 真值链）：`acquire_from` 的 GET_IMAGE
+    /// wire 形状（request=1、整表定容）与失败路径（Err 原始 errno）。
+    #[test]
+    fn test_boot_tables_acquire_wire_shape() {
+        use minix_sys::syscall::{CannedKernelCallTransport, KernelCallTransport};
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let tables = BootTables::acquire_from(&canned).unwrap();
+        {
+            let sent = canned.sent.borrow();
+            assert_eq!(sent.len(), 1);
+            // SAFETY(test): GETINFO 载荷臂。
+            let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+            assert_eq!(gi.request, minix_types::GET_IMAGE);
+            assert_eq!(
+                gi.val_len,
+                (minix_types::NR_BOOT_PROCS
+                    * core::mem::size_of::<minix_types::BootImageStruct>())
+                    as i32
+            );
+        }
+        // canned 应答零填缓冲 → 17 行 proc_nr=0 的建模行，priv/sys/dev
+        // 三表仍是 RS 静态真值（acquire 只换 image 半）。
+        assert_eq!(tables.image.len(), minix_types::NR_BOOT_PROCS);
+        assert_eq!(tables.priv_table.len(), BOOT_IMAGE_PRIV_TABLE.len());
+
+        // 内核拒绝 → Err 透传，零静默。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-minix_types::EPERM);
+        assert_eq!(
+            BootTables::acquire_from(&canned).unwrap_err(),
+            -minix_types::EPERM
+        );
+    }
 
     const fn boot_image(proc_nr: i32, endpoint: Endpoint) -> BootImage {
         BootImage {

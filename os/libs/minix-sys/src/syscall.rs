@@ -801,6 +801,24 @@ pub fn sys_get_priv(transport: &impl KernelCallTransport, endpt: i32, out: &mut 
     sys_getinfo_into(transport, minix_types::GET_PRIV, out, endpt)
 }
 
+/// SYS_GETINFO · GET_MONPARAMS(4):取 boot monitor 参数缓冲。
+/// C: `sys_getmonparams(v,vl)` = `sys_getinfo(GET_MONPARAMS, v,vl, 0,0)`
+/// (syslib.h:187 宏)。内核按 `sizeof(kinfo.param_buf)` 恒拷 1024 字节
+/// (do_getinfo.c:143-146,param.h:28,尾部零填充)——调用方缓冲须按
+/// MULTIBOOT_PARAM_BUF_SIZE 定容,短缓冲得 E2BIG。
+pub fn sys_getmonparams(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
+    sys_getinfo_into(transport, minix_types::GET_MONPARAMS, out, minix_types::Endpoint::NONE.0)
+}
+
+/// SYS_GETINFO · GET_IMAGE(1):取内核 boot image 表。
+/// C: `sys_getimage(dst)` = `sys_getinfo(GET_IMAGE, dst, 0,0,0)`
+/// (syslib.h:184 宏)。载荷为 `struct boot_image[NR_BOOT_PROCS]`
+/// (do_getinfo.c:86-90;wire 布局权威 = minix-types `BootImageStruct`,
+/// 40 字节 × 17)——调用方缓冲须按整表定容。
+pub fn sys_getimage(transport: &impl KernelCallTransport, out: &mut [u8]) -> Result<(), i32> {
+    sys_getinfo_into(transport, minix_types::GET_IMAGE, out, minix_types::Endpoint::NONE.0)
+}
+
 /// GETINFO 通用承载:填充 `m_lsys_krn_sys_getinfo` 并执行。
 /// `endpt` 落 `val_len2_e`(kernel getinfo_priv 以此读目标端点;
 /// 无端点语义的子请求传 NONE,内核忽略)。
@@ -1788,6 +1806,37 @@ mod tests {
         let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
         assert_eq!(gi.request, minix_types::GET_PRIV);
         assert_eq!(gi.val_len2_e, 9);
+    }
+
+    /// C-3/S42 ②:GET_MONPARAMS 请求形状——request=4,缓冲长度原样
+    /// 传递(C syslib.h:187 宏的 (v,vl) 两参形状)。
+    #[test]
+    fn test_sys_getmonparams_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let mut out = [0u8; 1024]; // MULTIBOOT_PARAM_BUF_SIZE 定容
+        sys_getmonparams(&canned, &mut out).unwrap();
+        let sent = canned.sent.borrow();
+        // SAFETY: 断言读回 getinfo 臂。
+        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_MONPARAMS);
+        assert_eq!(gi.val_ptr, out.as_ptr() as u64);
+        assert_eq!(gi.val_len, 1024);
+    }
+
+    /// C-3/S42 ②:GET_IMAGE 请求形状——request=1,整表定容缓冲
+    /// (NR_BOOT_PROCS × 40 = 680 字节,C syslib.h:184 宏)。
+    #[test]
+    fn test_sys_getimage_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+        let mut out = [0u8; minix_types::NR_BOOT_PROCS * 40];
+        sys_getimage(&canned, &mut out).unwrap();
+        let sent = canned.sent.borrow();
+        // SAFETY: 断言读回 getinfo 臂。
+        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_IMAGE);
+        assert_eq!(gi.val_len, (minix_types::NR_BOOT_PROCS * 40) as i32);
     }
 
     /// E9 切片 1:PRIVCTL 的 M1 载荷(request/endpt/arg_ptr)。

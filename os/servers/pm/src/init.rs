@@ -159,8 +159,8 @@ impl BootParams {
     /// 占位参数（内核 IPC 落地前的测试/开发用值）。
     ///
     /// boot image 全为空条目（`endpoint == NONE`，`fill_boot_procs` 全部
-    /// 跳过——占位参数不会产生任何进程）。真实启动路径必须用
-    /// `sys_getimage` 结果替换（minix-sys 落地后）。
+    /// 跳过——占位参数不会产生任何进程）。生产 main 用
+    /// [`BootParams::acquire_from`] 换真实内核答案。
     pub fn placeholder() -> Self {
         Self {
             monitor_params: [0; MULTIBOOT_PARAM_BUF_SIZE],
@@ -168,6 +168,53 @@ impl BootParams {
             system_hz: 100,
             vfs_endpoint: Endpoint::VFS,
         }
+    }
+
+    /// 真实启动获取（D-02 消费半，S42 ② boot 真值链）。
+    ///
+    /// C main.c:167-238 的三个内核 IPC——`sys_getmonparams`（:167-170）、
+    /// `sys_getimage`（:172-176）、`sys_hz`（:238）——按 minix-sys wrapper
+    /// 取回并按 wire 权威解码：monitor params 为
+    /// `MULTIBOOT_PARAM_BUF_SIZE` 全长（kernel do_getinfo.c:143-146 的
+    /// `length = sizeof(kinfo.param_buf)`），image 为
+    /// `NR_BOOT_PROCS × BootImageStruct`（do_getinfo.c:86-90）。
+    /// 任一内核调用失败折为 `Err(原始 errno)`——C 对应 panic
+    /// （"get monitor params failed"/"couldn't get image table"），生产
+    /// main 据此停车，不让半真数据进启动契约。
+    pub fn acquire_from(
+        transport: &impl minix_sys::syscall::KernelCallTransport,
+    ) -> Result<Self, i32> {
+        use minix_sys::syscall::{sys_get_hz, sys_getimage, sys_getmonparams};
+
+        let mut monitor_params = [0u8; MULTIBOOT_PARAM_BUF_SIZE];
+        sys_getmonparams(transport, &mut monitor_params)?;
+
+        let mut wire = [minix_types::BootImageStruct::default(); NR_BOOT_PROCS];
+        // SAFETY: `[BootImageStruct; N]` 是 repr(C) 的 POD 数组
+        //（minix-types boot_image.rs 布局冻结测试钉值），整块按字节
+        // 可写；内核 GET_IMAGE 按同一布局填充。
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(
+                wire.as_mut_ptr() as *mut u8,
+                core::mem::size_of::<[minix_types::BootImageStruct; NR_BOOT_PROCS]>(),
+            )
+        };
+        sys_getimage(transport, bytes)?;
+
+        let mut boot_image = [minix_types::BootImage::empty(); NR_BOOT_PROCS];
+        for (dst, src) in boot_image.iter_mut().zip(wire.iter()) {
+            *dst = minix_types::BootImage::from_wire(src);
+        }
+
+        let system_hz = sys_get_hz(transport)? as u32;
+        Ok(Self {
+            monitor_params,
+            boot_image,
+            system_hz,
+            // C 与 VFS 的同步恒发往 VFS_PROC_NR 常量（main.c:229/:234），
+            // 非占位数据。
+            vfs_endpoint: Endpoint::VFS,
+        })
     }
 }
 
@@ -812,6 +859,43 @@ mod tests {
             system_hz: 100,
             vfs_endpoint: Endpoint::VFS,
         }
+    }
+
+    /// D-02 消费半（S42 ② boot 真值链）：`acquire_from` 的三连内核调用
+    /// 次序与 wire 形状（monparams 1024 → image 整表 → hz），失败路径
+    /// 回原始 errno 且不发后续调用。
+    #[test]
+    fn test_boot_params_acquire_wire_shapes() {
+        use minix_sys::syscall::{CannedKernelCallTransport, KernelCallTransport};
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0); // GET_MONPARAMS
+        canned.reply(0); // GET_IMAGE
+        canned.reply(0); // GET_HZ
+        let params = BootParams::acquire_from(&canned).unwrap();
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 3);
+        // SAFETY(test): 三条都是 GETINFO 载荷臂。
+        let gi = unsafe { sent[0].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_MONPARAMS);
+        assert_eq!(gi.val_len, MULTIBOOT_PARAM_BUF_SIZE as i32);
+        let gi = unsafe { sent[1].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_IMAGE);
+        assert_eq!(
+            gi.val_len,
+            (NR_BOOT_PROCS * core::mem::size_of::<minix_types::BootImageStruct>()) as i32
+        );
+        let gi = unsafe { sent[2].m_u.m_lsys_krn_sys_getinfo };
+        assert_eq!(gi.request, minix_types::GET_HZ);
+        assert_eq!(params.vfs_endpoint, Endpoint::VFS);
+
+        // 首个内核调用失败：Err 透传原始 errno，后续调用不发出。
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(-minix_types::EPERM);
+        assert_eq!(
+            BootParams::acquire_from(&canned).unwrap_err(),
+            -minix_types::EPERM
+        );
+        assert_eq!(canned.sent.borrow().len(), 1);
     }
 
     #[test]

@@ -631,7 +631,9 @@ pub fn dispatch_getinfo(
         GetInfoRequest::IrqHooks => getinfo_irq_hooks(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::KMessages => crate::kmess::copy_snapshot_to_caller(caller_nr, proc_table, val_ptr, val_len),
         GetInfoRequest::Image => getinfo_image(caller_nr, proc_table, val_ptr, val_len),
-        GetInfoRequest::MonParams => getinfo_mon_params(),
+        GetInfoRequest::MonParams => {
+            getinfo_mon_params(caller_nr, proc_table, val_ptr, val_len)
+        }
     }
 }
 
@@ -1304,26 +1306,67 @@ fn getinfo_image(
     copy_struct_to_caller(caller_nr, proc_table, &image, val_ptr, val_len)
 }
 
-/// GET_MONPARAMS — boot monitor parameter buffer (not yet populated).
+/// GET_MONPARAMS — boot monitor parameter buffer.
 ///
 /// C: do_getinfo.c:143-146 — copy boot monitor parameter buffer.
 ///
 /// C: `src_vir = (vir_bytes) kinfo.param_buf`
 ///     `length = sizeof(kinfo.param_buf)`
 ///
-/// P9-1 (2026-08-13): `KernelInfo.param_buf` field now exists
-/// (minix-boot/src/kernel_info.rs:129, `&'static [u8]`).
-/// However, the boot-shim currently populates it with an empty
-/// slice (`&[]`) because UEFI load options are not yet wired
-/// to fill it. When the boot-shim forwards UEFI load options
-/// into `param_buf`, this branch should copy the bytes to the
-/// caller's buffer via `data_copy_vmcheck`.
+/// `kinfo.param_buf` is a fixed `MULTIBOOT_PARAM_BUF_SIZE` (1024,
+/// param.h:28) array: C always copies the full 1024 bytes, zero-padded
+/// past the parameter string (`kinfo` is static storage). Rust's
+/// `KernelInfo.param_buf` (minix-boot/src/kernel_info.rs:129) carries
+/// only the bytes the boot-shim forwarded (empty until UEFI load options
+/// are wired); the zero padding reproduces C's fixed-size copy, so a
+/// consumer that sizes its buffer with `MULTIBOOT_PARAM_BUF_SIZE` (C
+/// syslib.h:187 `sys_getmonparams(v,vl)` macro) never sees E2BIG no
+/// matter how many parameters booted.
 ///
-/// Until then, return EINVAL to indicate the data is not
-/// available (buffer is empty). This matches C's behavior when
-/// the multiboot parameter buffer is empty.
-fn getinfo_mon_params() -> KcallResult {
-    KcallResult::Ok(EINVAL)
+/// Before boot (`kernel_info()` = None, unit tests only) there is no
+/// buffer to copy — fail closed with EINVAL.
+fn getinfo_mon_params(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
+    match crate::kernel_info() {
+        Some(ki) => copy_monparams(caller_nr, proc_table, ki.param_buf, val_ptr, val_len),
+        None => KcallResult::Ok(EINVAL),
+    }
+}
+
+/// C: `char kinfo.param_buf[MULTIBOOT_PARAM_BUF_SIZE]` (param.h:28;
+/// `MULTIBOOT_PARAM_BUF_SIZE = 1024` — earm multiboot.h:240).
+const MULTIBOOT_PARAM_BUF_SIZE: usize = 1024;
+
+/// Zero-padded fixed-size snapshot of the boot parameter buffer.
+///
+/// The GET_MONPARAMS wire length is the *buffer* length, not the string
+/// length (do_getinfo.c:145 `length = sizeof(kinfo.param_buf)`), so the
+/// tail past the forwarded bytes must read as zeros exactly like C's
+/// static array.
+fn monparams_snapshot(param_buf: &[u8]) -> [u8; MULTIBOOT_PARAM_BUF_SIZE] {
+    let mut buf = [0u8; MULTIBOOT_PARAM_BUF_SIZE];
+    let n = param_buf.len().min(MULTIBOOT_PARAM_BUF_SIZE);
+    buf[..n].copy_from_slice(&param_buf[..n]);
+    buf
+}
+
+/// GET_MONPARAMS copy half: snapshot `param_buf` into the fixed C-shaped
+/// buffer and run the common `do_getinfo` tail. Split from
+/// [`getinfo_mon_params`] so the buffer shape is testable without the
+/// process-global boot state.
+fn copy_monparams(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    param_buf: &[u8],
+    val_ptr: u64,
+    val_len: i32,
+) -> KcallResult {
+    let snapshot = monparams_snapshot(param_buf);
+    copy_struct_to_caller(caller_nr, proc_table, &snapshot, val_ptr, val_len)
 }
 
 /// Dispatch SYS_TRACE.
@@ -2965,6 +3008,55 @@ mod tests {
         assert_eq!(image[NR_TASKS + 2].proc_nr, 0);  // PM
         assert_eq!(image[NR_TASKS + 8].proc_nr, 8);  // VM
         assert_eq!(image[NR_TASKS + 11].proc_nr, 11); // INIT
+    }
+
+    #[test]
+    fn test_monparams_snapshot_zero_pads_to_c_buffer_size() {
+        // C: do_getinfo.c:145 `length = sizeof(kinfo.param_buf)` — the wire
+        // length is the fixed 1024-byte buffer (param.h:28), not the string:
+        // the tail past the forwarded bytes reads as zeros (static storage).
+        let snap = monparams_snapshot(b"processor=2\n");
+        assert_eq!(snap.len(), MULTIBOOT_PARAM_BUF_SIZE);
+        assert_eq!(MULTIBOOT_PARAM_BUF_SIZE, 1024); // multiboot.h:240
+        assert_eq!(&snap[..12], b"processor=2\n");
+        assert!(snap[12..].iter().all(|&b| b == 0));
+        // Exact-size input fills the buffer verbatim.
+        let exact = [7u8; MULTIBOOT_PARAM_BUF_SIZE];
+        assert_eq!(monparams_snapshot(&exact), exact);
+        // Over-long input truncates at the buffer end (KernelInfo::validate
+        // forbids >1024; the cap stays defensive).
+        let long = [9u8; MULTIBOOT_PARAM_BUF_SIZE + 16];
+        assert_eq!(monparams_snapshot(&long), [9u8; MULTIBOOT_PARAM_BUF_SIZE]);
+        // Empty boot-shim buffer (UEFI load options not wired yet) →
+        // all zeros, still the full 1024 bytes.
+        assert_eq!(monparams_snapshot(&[]), [0u8; MULTIBOOT_PARAM_BUF_SIZE]);
+    }
+
+    #[test]
+    fn test_getinfo_monparams_copy_uses_c_buffer_length() {
+        // C: do_getinfo.c:143-146 — src = kinfo.param_buf, length =
+        // sizeof(kinfo.param_buf) = 1024 regardless of the string length;
+        // the common tail (do_getinfo.c:210-212) E2BIGs when val_len is
+        // shorter. A full-size buffer passes the E2BIG gate and reaches the
+        // cross-space copy, which in mock mode misses the PTE walk →
+        // VmSuspend. (Pre-C-3 this arm returned EINVAL unconditionally.)
+        use crate::proc::RtsFlagsBits;
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        if let Some(target) = proc_table.get_mut(ProcNr(0)) {
+            target.p_endpoint = Endpoint::from_generation_slot(1, 0);
+            target.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+        }
+        let full = copy_monparams(
+            ProcNr(0),
+            &mut proc_table,
+            b"processor=2\n",
+            0x4000,
+            MULTIBOOT_PARAM_BUF_SIZE as i32,
+        );
+        assert_eq!(full, KcallResult::VmSuspend);
+        // val_len shorter than the fixed buffer → E2BIG, never EINVAL.
+        let short = copy_monparams(ProcNr(0), &mut proc_table, b"processor=2\n", 0x4000, 100);
+        assert_eq!(short, KcallResult::Ok(E2BIG));
     }
 
     #[test]
