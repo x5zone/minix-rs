@@ -20,12 +20,14 @@
 //! to the buffer start; the return borrows the path without the
 //! terminator.
 //!
-//! Known platform gap (inherited, not introduced here): path requests on
-//! this wire carry the name inline only — `vfs::OPEN_PATH_INLINE_MAX`
-//! bytes — and the server rejects longer names outright, so a parent
-//! entry longer than that cannot be stat-verified and is skipped where C
-//! (which ships the name pointer and lets the server fetch) would find
-//! it. The same limit already applies to every path call in this crate.
+//! Known platform gap (lifted 2026-09-21, NL10): path requests used to
+//! carry the name inline only and both sides rejected longer names, so a
+//! parent entry longer than the inline window could not be stat-verified
+//! and was skipped. The path family now ships the name pointer and length
+//! on every request (C `loadname.c:15-17`) and the server fetches long
+//! names from the caller's address space (C `copy_path` → `fetch_name`,
+//! utility.c:31-32), so this traversal matches C again; a candidate is
+//! skipped only when its probe stat genuinely fails (`getcwd.c:118`).
 
 use crate::ipc::IpcTransport;
 use crate::vfs;

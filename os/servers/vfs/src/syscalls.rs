@@ -549,25 +549,20 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // ①`O_CREAT` 必须在场（否则 EINVAL）②取路径 ③模式位按 umask
             // 收窄 ④走整条路径——走通即"文件已存在"，ENOENT 则转走父目录
             // 并发 `REQ_CREATE`（阶段 2/3 在续接体里）。
-            let (path, oflags, mode) = {
-                // 载荷（C `mess_lc_vfs_creat`：name/len/flags/mode；Rust 侧
-                // 与 open 同形：name@0、len@8、flags@16、mode@20、buf@24）。
+            let (name_addr, name_len, oflags, mode) = {
+                // 载荷（C `mess_lc_vfs_creat`：name@0/len@8/flags@16/mode@20
+                // + padding，ipc.h:628-637——**没有 buf 字段**，客户端
+                // `open_via` 的 CreatePayload 同构零填充）。
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[8..16]);
                 let len = u64::from_le_bytes(b8);
                 let flags = u32::from_le_bytes([raw[16], raw[17], raw[18], raw[19]]);
                 let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
-                let inline = &raw[24..];
-                if len as usize > minix_sys::vfs::OPEN_PATH_INLINE_MAX {
-                    return SyscallResult::Error(minix_types::ENAMETOOLONG);
-                }
-                let n = (len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => (p, flags, mode),
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
+                (name, len, flags, mode)
             };
             // C `do_creat:71-72` —— `O_CREAT` 必须在场。
             let args = crate::open::OpenArgs {
@@ -590,16 +585,25 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 .map(|fp| fp.umask)
                 .unwrap_or(0o022);
             let create_bits = (mode & 0o777 & !umask) | crate::open::S_IFREG;
-            let resolve = match crate::path::Lookup::new(path.clone(), crate::path::LookupFlags::NOFLAGS)
-            {
-                Ok(l) => l,
-                Err(e) => return SyscallResult::Error(e.to_errno()),
-            };
             let user_e = state
                 .fproc_table
                 .get(fp_slot)
                 .map(|fp| fp.endpoint)
                 .unwrap_or(minix_types::Endpoint::NONE);
+            // 取路径：C `do_creat:72-74` 恒 `fetch_name`——creat 的 wire 无
+            // 内联字段，路径只经调用方地址空间交付（宿主构建下 fetch 的
+            // 失败面是 EINVAL；上限 PATH_MAX 与 NUL 尾检在 fetch 内）。
+            let path = match (crate::path::SysPathFetcher { who: user_e })
+                .fetch(name_addr, name_len as usize)
+            {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(path.clone(), crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
             let rd = state.root_dir_of(Some(fp_slot));
             let start = if resolve.path.starts_with('/') {
                 crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
@@ -651,27 +655,32 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // 目录**）→ 目录门 + 权限门 → `req_mkdir(父 ino, lastc, uid,
             // gid, bits)`。路径拆成"父目录 + 最后组件"用 `last_dir_split`
             // （C `last_dir` 的同一件事，含 NAME_MAX 门）。
-            let (path, mode) = {
+            let (name_addr, name_len, mode, inline) = {
                 // 载荷与 open 同形（`mess_lc_vfs_path`：name@0、len@8、
                 // flags@16、mode@20、buf@24）。
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[8..16]);
                 let len = u64::from_le_bytes(b8);
                 let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
-                let inline = &raw[24..];
-                if len as usize > minix_sys::vfs::OPEN_PATH_INLINE_MAX {
-                    return SyscallResult::Error(minix_types::ENAMETOOLONG);
-                }
-                let n = (len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => (p, mode),
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
+                (name, len, mode, raw[24..].to_vec())
             };
             let Some(fp_slot) = state.current_fp_slot else {
                 return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // 取路径：C `copy_path` 双支（utility.c:17-43）——≤ 内联上限走
+            // 载荷内联，超长经调用方地址空间 fetch（宿主下失败面 EINVAL）。
+            let path = match crate::path::copy_path(&inline, name_addr, name_len as usize, user_e) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
             };
             let split = match crate::path::last_dir_split(&path) {
                 Ok(sp) => sp,
@@ -693,11 +702,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 Ok(l) => l,
                 Err(e) => return SyscallResult::Error(e.to_errno()),
             };
-            let user_e = state
-                .fproc_table
-                .get(fp_slot)
-                .map(|fp| fp.endpoint)
-                .unwrap_or(minix_types::Endpoint::NONE);
             let rd = state.root_dir_of(Some(fp_slot));
             let start = if resolve.path.starts_with('/') {
                 crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
@@ -771,25 +775,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             if args.validate_for_open().is_err() {
                 return SyscallResult::Error(minix_types::EINVAL);
             }
-            // 路径取回：≤ 内联上限的走载荷内联（minix-rs 的 wire 裁决，
-            // minix-sys `OPEN_PATH_INLINE_MAX`），超长即 ENAMETOOLONG。
-            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
-                let n = (name_len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => p,
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
-            } else {
-                return SyscallResult::Error(minix_types::ENAMETOOLONG);
-            };
-            let _ = name_addr;
-            let resolve = match crate::path::Lookup::new(
-                path,
-                crate::path::LookupFlags::NOFLAGS,
-            ) {
-                Ok(l) => l,
-                Err(e) => return SyscallResult::Error(e.to_errno()),
-            };
             let Some(fp_slot) = state.current_fp_slot else {
                 return SyscallResult::Error(minix_types::EINVAL);
             };
@@ -798,6 +783,20 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 .get(fp_slot)
                 .map(|fp| fp.endpoint)
                 .unwrap_or(minix_types::Endpoint::NONE);
+            // 路径取回：C `copy_path` 双支（utility.c:17-43）——≤ 内联上限的
+            // 走载荷内联（minix-sys `OPEN_PATH_INLINE_MAX`），超长经调用方
+            // 地址空间 fetch（C `fetch_name`，宿主下失败面 EINVAL）。
+            let path = match crate::path::copy_path(&inline, name_addr, name_len as usize, user_e) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(
+                path,
+                crate::path::LookupFlags::NOFLAGS,
+            ) {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
             // 起点：路径首字符 `/` 取进程根，否则工作目录（C `eat_path`）。
             let rd = state.root_dir_of(Some(fp_slot));
             let start = if resolve.path.starts_with('/') {
@@ -1241,22 +1240,25 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 let status = state.change_into(Some(fp_slot), vnode_idx, false);
                 return SyscallResult::Ok(status);
             }
-            // path 半：与 access/chmod 同形（内联路径），走完本地改目录。
-            let (name_len, inline) = {
+            // path 半：与 access/chmod 同形（`mess_lc_vfs_path`），走完本地
+            // 改目录。取路径走 C `copy_path` 双支（utility.c:17-43）。
+            let (name_addr, name_len, inline) = {
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[8..16]);
-                (u64::from_le_bytes(b8), raw[24..].to_vec())
+                (name, u64::from_le_bytes(b8), raw[24..].to_vec())
             };
-            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
-                let n = (name_len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => p,
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
-            } else {
-                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            let path = match crate::path::copy_path(&inline, name_addr, name_len as usize, user_e) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
             };
             // C stadir.c:65 的 `lookup_init(..., PATH_NOFLAGS, ...)`。
             let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
@@ -3606,23 +3608,30 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // C `do_unlink`（link.c:94-163）同时服务 unlink 与 rmdir（table.c:25
             // 与 :36 都指向它），差别只在最后发哪个请求号（link.c:156-159）。
             let rmdir = matches!(call, VfsCallNum::Rmdir);
-            let (name_len, inline) = {
+            let (name_addr, name_len, inline) = {
                 // 载荷与 access/chmod 同形（`mess_lc_vfs_path`：name@0、
                 // len@8、flags@16、mode@20、buf@24 内联路径）——unlink 不用 mode。
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[8..16]);
-                (u64::from_le_bytes(b8), raw[24..].to_vec())
+                (name, u64::from_le_bytes(b8), raw[24..].to_vec())
             };
-            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
-                let n = (name_len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => p,
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
-            } else {
-                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // 取路径：C `copy_path` 双支（utility.c:17-43，do_unlink 用它——
+            // link.c 的函数级映射）；超长经调用方地址空间 fetch。
+            let path = match crate::path::copy_path(&inline, name_addr, name_len as usize, user_e) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
             };
             // C `last_dir`（path.c:146-380）：切出目录前缀与最后组件，**只走
             // 目录前缀**（前缀里的符号链接要跟进——`path.c:231-235` 把
@@ -3637,9 +3646,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             ) {
                 Ok(l) => l,
                 Err(e) => return SyscallResult::Error(e.to_errno()),
-            };
-            let Some(fp_slot) = state.current_fp_slot else {
-                return SyscallResult::Error(minix_types::EINVAL);
             };
             let rd = state.root_dir_of(Some(fp_slot));
             let start = if resolve.path.starts_with('/') {
@@ -3688,31 +3694,18 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // C `do_chmod`（protect.c:62-133）的路径半：`m_lc_vfs_path.mode`
             // → 走路径（VNODE_WRITE 锁，此处不建模）→ 属主/超级用户门 +
             // 只读挂载门 + setgid 清位 → `REQ_CHMOD`。
-            let (name_len, mode, inline) = {
+            let (name_addr, name_len, mode, inline) = {
                 // 载荷与 access 同形（`mess_lc_vfs_path`：name@0、len@8、
                 // flags@16、mode@20、buf@24 内联路径）。
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[8..16]);
                 let len = u64::from_le_bytes(b8);
                 let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
-                (len, mode, raw[24..].to_vec())
-            };
-            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
-                let n = (name_len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => p,
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
-            } else {
-                return SyscallResult::Error(minix_types::ENAMETOOLONG);
-            };
-            // C `lookup_init(..., PATH_NOFLAGS, ...)`（protect.c:76）。
-            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
-            {
-                Ok(l) => l,
-                Err(e) => return SyscallResult::Error(e.to_errno()),
+                (name, len, mode, raw[24..].to_vec())
             };
             let Some(fp_slot) = state.current_fp_slot else {
                 return SyscallResult::Error(minix_types::EINVAL);
@@ -3722,6 +3715,18 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 .get(fp_slot)
                 .map(|fp| fp.endpoint)
                 .unwrap_or(minix_types::Endpoint::NONE);
+            // 取路径：C `copy_path` 双支（utility.c:17-43，do_chmod 用它——
+            // stadir.c 的函数级映射）；超长经调用方地址空间 fetch。
+            let path = match crate::path::copy_path(&inline, name_addr, name_len as usize, user_e) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            // C `lookup_init(..., PATH_NOFLAGS, ...)`（protect.c:76）。
+            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
             let rd = state.root_dir_of(Some(fp_slot));
             let start = if resolve.path.starts_with('/') {
                 crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
@@ -3765,37 +3770,45 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
         VfsCallNum::Readlink => {
             // C `do_rdlink`（link.c:473-507）：载荷
             // `mess_lc_vfs_readlink { name, namelen, buf, bufsize }` →
-            // `bufsize > SSIZE_MAX` 即 EINVAL → 带 `PATH_RET_SYMLINK` 走路径
-            // → 不是符号链接即 EINVAL → `REQ_RDLINK`（grant 往用户缓冲写）。
-            let (name_len, buf, buf_size, inline) = {
-                // 用户载荷：name@0、namelen@8、buf@16、bufsize@24（ipc.h:785-792）。
+            // `bufsize > SSIZE_MAX` 即 EINVAL → `fetch_name` 取路径（**恒
+            // fetch**——wire 无内联字段，link.c:494）→ 带 `PATH_RET_SYMLINK`
+            // 走路径 → 不是符号链接即 EINVAL → `REQ_RDLINK`（grant 往用户
+            // 缓冲写）。
+            let (name_addr, name_len, buf, buf_size) = {
+                // 用户载荷：name@0、namelen@8、buf@16、bufsize@24（ipc.h:785-792；
+                // LP64 下剩余载荷区是 padding，@32 起无内联窗）。
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[8..16]);
-                let name_len = u64::from_le_bytes(b8);
+                let namelen = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[16..24]);
                 let buf = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[24..32]);
                 let buf_size = u64::from_le_bytes(b8);
-                (name_len, buf, buf_size, raw[32..].to_vec())
+                (name, namelen, buf, buf_size)
             };
             // C link.c:486 —— 窗口大于 SSIZE_MAX 即 EINVAL。
             if buf_size > i64::MAX as u64 {
                 return SyscallResult::Error(minix_types::EINVAL);
             }
-            // 内联窗从 raw[32] 到 56 字节载荷区末尾，只有 READLINK_INLINE_MAX
-            // 字节（与客户端 readlink_via 同门，minix-sys vfs.rs 互见）：
-            // namelen 超窗直接 ENAMETOOLONG，不放行进 decode_name 靠截断后
-            // 的 NUL 检查兜底。
-            let path = if name_len as usize <= minix_sys::vfs::READLINK_INLINE_MAX {
-                let n = (name_len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => p,
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
-            } else {
-                return SyscallResult::Error(minix_types::ENAMETOOLONG);
+            let Some(fp_slot) = state.current_fp_slot else {
+                return SyscallResult::Error(minix_types::EINVAL);
+            };
+            let user_e = state
+                .fproc_table
+                .get(fp_slot)
+                .map(|fp| fp.endpoint)
+                .unwrap_or(minix_types::Endpoint::NONE);
+            // 取路径：C `do_rdlink:494` 恒 `fetch_name`（宿主构建下 fetch 的
+            // 失败面是 EINVAL；上限 PATH_MAX 与 NUL 尾检在 fetch 内）。
+            let path =
+                match (crate::path::SysPathFetcher { who: user_e }).fetch(name_addr, name_len as usize)
+            {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
             };
             // C link.c:489 —— `PATH_RET_SYMLINK`：末组件是符号链接就带回
             // 链接本身（该位的语义在 FS 侧，见 `encode_lookup`）。
@@ -3806,14 +3819,6 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 Ok(l) => l,
                 Err(e) => return SyscallResult::Error(e.to_errno()),
             };
-            let Some(fp_slot) = state.current_fp_slot else {
-                return SyscallResult::Error(minix_types::EINVAL);
-            };
-            let user_e = state
-                .fproc_table
-                .get(fp_slot)
-                .map(|fp| fp.endpoint)
-                .unwrap_or(minix_types::Endpoint::NONE);
             let rd = state.root_dir_of(Some(fp_slot));
             let start = if resolve.path.starts_with('/') {
                 crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
@@ -3862,36 +3867,24 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
             // C `do_access`（protect.c:199-233）：先验 mode（只允许
             // `R_OK|W_OK|X_OK` 的组合或 `F_OK`）→ `copy_path` → `eat_path`
             // → `forbidden(fp, vp, access)`（**真实** uid/gid）。
-            let (name_len, mode, inline) = {
+            let (name_addr, name_len, mode, inline) = {
                 // 用户载荷与 open 同形（`mess_lc_vfs_path`：name@0、len@8、
                 // flags@16、mode@20、buf@24 内联路径）——access 取 `mode`。
                 // SAFETY: 该调用号的载荷按上述域序写在消息负载区。
                 let raw = unsafe { &msg.m_u.raw };
                 let mut b8 = [0u8; 8];
+                b8.copy_from_slice(&raw[0..8]);
+                let name = u64::from_le_bytes(b8);
                 b8.copy_from_slice(&raw[8..16]);
                 let len = u64::from_le_bytes(b8);
                 let mode = u32::from_le_bytes([raw[20], raw[21], raw[22], raw[23]]);
-                (len, mode, raw[24..].to_vec())
+                (name, len, mode, raw[24..].to_vec())
             };
             // C protect.c:216-217 —— 位掩码先验：`F_OK`(0) 之外只认
             // `R_OK|W_OK|X_OK`（4|2|1）；别的位就是 EINVAL，不做权限判断。
             if mode & !0o7 != 0 && mode != 0 {
                 return SyscallResult::Error(minix_types::EINVAL);
             }
-            let path = if name_len as usize <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
-                let n = (name_len as usize).min(inline.len());
-                match crate::path::decode_name(&inline[..n], n) {
-                    Ok(p) => p,
-                    Err(e) => return SyscallResult::Error(e.to_errno()),
-                }
-            } else {
-                return SyscallResult::Error(minix_types::ENAMETOOLONG);
-            };
-            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
-            {
-                Ok(l) => l,
-                Err(e) => return SyscallResult::Error(e.to_errno()),
-            };
             let Some(fp_slot) = state.current_fp_slot else {
                 return SyscallResult::Error(minix_types::EINVAL);
             };
@@ -3900,6 +3893,17 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 .get(fp_slot)
                 .map(|fp| fp.endpoint)
                 .unwrap_or(minix_types::Endpoint::NONE);
+            // 取路径：C `copy_path` 双支（utility.c:17-43，do_access 用它——
+            // protect.c:221）；超长经调用方地址空间 fetch。
+            let path = match crate::path::copy_path(&inline, name_addr, name_len as usize, user_e) {
+                Ok(p) => p,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
+            let resolve = match crate::path::Lookup::new(path, crate::path::LookupFlags::NOFLAGS)
+            {
+                Ok(l) => l,
+                Err(e) => return SyscallResult::Error(e.to_errno()),
+            };
             let rd = state.root_dir_of(Some(fp_slot));
             let start = if resolve.path.starts_with('/') {
                 crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
@@ -4940,8 +4944,9 @@ mod tests {
         );
     }
 
-    /// `Creat` 臂的门：`O_CREAT` 缺席即 EINVAL（C `do_creat:71-72`）；超内联
-    /// 上限 ENAMETOOLONG；合法路径走到遍历（宿主下 grant 不可达 → EIO）。
+    /// `Creat` 臂的门：`O_CREAT` 缺席即 EINVAL（C `do_creat:71-72`）；合法
+    /// 路径到恒 fetch 取名（wire 无内联字段，宿主下取不到 → EINVAL）；长度
+    /// 超 PATH_MAX 在 fetch 第一道门 ENAMETOOLONG（utility.c:62-65 对位）。
     #[test]
     fn test_dispatch_creat_gates() {
         use minix_types::Endpoint;
@@ -4950,14 +4955,15 @@ mod tests {
             let mut m = Message::default();
             m.m_source = Endpoint::from_generation_slot(1, 0);
             m.m_type = VfsCallNum::Creat as i32;
-            // SAFETY: creat 载荷 name@0/len@8/flags@16/mode@20/buf@24。
+            // SAFETY: creat 载荷 name@0/len@8/flags@16/mode@20 + padding
+            // （ipc.h:628-637——**无 buf 字段**，路径只经调用方地址空间交付，
+            // C do_creat:72-74 恒 fetch_name）。
             unsafe {
                 let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&(0x7000u64).to_le_bytes());
                 raw[8..16].copy_from_slice(&(path.len() as u64).to_le_bytes());
                 raw[16..20].copy_from_slice(&flags.to_le_bytes());
                 raw[20..24].copy_from_slice(&mode.to_le_bytes());
-                let n = path.len().min(raw.len() - 24);
-                raw[24..24 + n].copy_from_slice(&path[..n]);
             }
             m
         };
@@ -4969,34 +4975,28 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Creat),
             SyscallResult::Error(minix_types::EINVAL)
         );
-        // 超内联 → ENAMETOOLONG。
-        let long = [b'a'; 33];
+        // 合法：到恒 fetch 取路径——宿主构建下取不到调用方内存 → EINVAL
+        // （`SysPathFetcher` 的失败面）；遍历续接的形状由 open/mkdir 的
+        // 同款续接测试钉，creat 真机半挂 T2。
+        state.current_message = creat_msg(0x200, 0o644, b"/x\0");
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Creat),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+        // 长度 > PATH_MAX：fetch 第一道门上就 ENAMETOOLONG（utility.c:62-65
+        // 对位），宿主可确定性观测。
+        let long = [b'a'; crate::path::PATH_MAX + 1];
         state.current_message = creat_msg(0x200, 0o644, &long);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Creat),
             SyscallResult::Error(minix_types::ENAMETOOLONG)
         );
-        // 合法：走到遍历（绑槽后宿主 grant 不可达 → EIO）。
-        let worker = state
-            .worker_pool
-            .assign_first_fit(
-                minix_types::UserSlot::new(0),
-                crate::worker::WorkerFunc::DoWork,
-                &Message::default(),
-            )
-            .unwrap();
-        state.current_worker = Some(worker);
-        state.current_message = creat_msg(0x200, 0o644, b"/x\0");
-        assert_eq!(
-            dispatch_syscall(&mut state, VfsCallNum::Creat),
-            SyscallResult::Error(minix_types::EIO)
-        );
     }
 
     /// `Open` 臂的门：`O_CREAT` 在场即 EINVAL（C `do_open:46-47`，libc 把
-    /// open() 拆成 OPEN/CREAT 两调用）；超内联上限的路径 ENAMETOOLONG
-    /// （minix-rs 的 wire 裁决）；其余走到遍历（宿主下首条 lookup 的
-    /// grant 不可达 → EIO）。
+    /// open() 拆成 OPEN/CREAT 两调用）；超内联上限的路径走 fetch（宿主下
+    /// 取不到 → EINVAL，>PATH_MAX 在门上 ENAMETOOLONG）；内联路径走到遍历
+    /// （宿主下首条 lookup 的 grant 不可达 → EIO）。
     #[test]
     fn test_dispatch_open_gates() {
         use minix_types::Endpoint;
@@ -5008,6 +5008,7 @@ mod tests {
             // SAFETY: open 载荷 name@0/len@8/flags@16/buf@24（OpenPathPayload）。
             unsafe {
                 let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&(0x7000u64).to_le_bytes());
                 raw[8..16].copy_from_slice(&(path.len() as u64).to_le_bytes());
                 raw[16..20].copy_from_slice(&flags.to_le_bytes());
                 let n = path.len().min(raw.len() - 24);
@@ -5025,9 +5026,18 @@ mod tests {
             "O_CREAT 归 creat 臂"
         );
 
-        // 超内联上限（含 NUL 的 33 字节）→ ENAMETOOLONG。
+        // 超内联上限（含 NUL 的 33 字节）→ fetch 半：宿主下取不到调用方
+        // 内存 → EINVAL（`SysPathFetcher` 的失败面）。
         let long = [b'a'; 33];
         state.current_message = open_msg(0, &long);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Open),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // 长度 > PATH_MAX：fetch 第一道门 ENAMETOOLONG（utility.c:62-65）。
+        let over = [b'a'; crate::path::PATH_MAX + 1];
+        state.current_message = open_msg(0, &over);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Open),
             SyscallResult::Error(minix_types::ENAMETOOLONG)
@@ -9482,10 +9492,36 @@ mod tests {
 
         // umask 0（新进程默认）：全保留。
         assert_eq!(run(VfsCallNum::Mkdir, 0o777, 0), crate::open::S_IFDIR | 0o777);
-        assert_eq!(run(VfsCallNum::Creat, 0o666, 0), crate::open::S_IFREG | 0o666);
         // umask 022：按位收窄（不是"只留掩码里的位"）。
         assert_eq!(run(VfsCallNum::Mkdir, 0o777, 0o022), crate::open::S_IFDIR | 0o755);
-        assert_eq!(run(VfsCallNum::Creat, 0o666, 0o022), crate::open::S_IFREG | 0o644);
+        // creat 的收窄公式与 mkdir 同构（`S_IFREG | mode & 0o777 & !umask`，
+        // open.c:109），但 creat 臂恒 fetch 取路径（C do_creat:72-74，wire
+        // 无内联字段）——续接体在宿主不可达，此前的"内联伪造路径走到续接"
+        // 是假覆盖（真 wire 上客户端 CreatePayload 从不写 buf，臂会解出
+        // NUL 垃圾名）。宿主可观测的是 fetch 失败面 EINVAL，收窄的真机
+        // 半挂 T2。
+        let mut state = seeded(100);
+        crate::main_loop::seed_ready_state(&mut state);
+        let idx = state
+            .worker_pool
+            .assign_first_fit(
+                minix_types::UserSlot::new(0),
+                crate::worker::WorkerFunc::DoWork,
+                &Message::default(),
+            )
+            .expect("空闲槽");
+        state.current_worker = Some(idx);
+        let mut m = path_msg(VfsCallNum::Creat, 0o666);
+        // SAFETY: name@0 lane（fetch 的源地址，宿主下无内核应答）。
+        unsafe {
+            m.m_u.raw[0..8].copy_from_slice(&(0x7000u64).to_le_bytes());
+        }
+        state.current_message = m;
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Creat),
+            SyscallResult::Error(minix_types::EINVAL),
+            "creat 恒 fetch：宿主失败面"
+        );
     }
 
     /// `Lseek` 位置不变那条路的**回复载荷不能被统一收尾覆盖**：C `do_lseek`
@@ -9702,7 +9738,9 @@ mod tests {
     }
 
     /// `Readlink` 臂的窗口门（C link.c:486）：`bufsize > SSIZE_MAX` 即
-    /// EINVAL，且这条门在取路径与走遍历之前生效。
+    /// EINVAL，且这条门在取路径之前生效；过门后是恒 fetch 取路径
+    /// （link.c:494）——宿主构建下取不到调用方内存 → EINVAL。遍历标志
+    /// `PATH_RET_SYMLINK` 的 REQ_SHAPE 观测随续接体挂真机半（T2）。
     #[test]
     fn test_dispatch_readlink_buffer_gate() {
         use minix_types::Endpoint;
@@ -9714,15 +9752,13 @@ mod tests {
                 ..Message::default()
             };
             // SAFETY: readlink 载荷 name@0、namelen@8、buf@16、bufsize@24
-            // （ipc.h:785-792）——内联路径从 @32 起。
+            // （ipc.h:785-792）——无内联字段，路径只经指针 lane 交付。
             unsafe {
                 let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&(0x7000u64).to_le_bytes());
                 raw[8..16].copy_from_slice(&name_len.to_le_bytes());
                 raw[16..24].copy_from_slice(&0x5000u64.to_le_bytes());
                 raw[24..32].copy_from_slice(&buf_size.to_le_bytes());
-                raw[32] = b'/';
-                raw[33] = b'x';
-                raw[34] = 0;
             }
             m
         };
@@ -9733,40 +9769,22 @@ mod tests {
             dispatch_syscall(&mut state, VfsCallNum::Readlink),
             SyscallResult::Error(minix_types::EINVAL)
         );
-        // 窗口合法则过门 → 起走遍历（挂起）。基线要先铺好：挂载行 + 调用方
-        // 根目录 vnode + 热身过的 grant 表，缺任一项都会以 EIO 收场。
-        crate::main_loop::seed_ready_state(&mut state);
-        let idx = state
-            .worker_pool
-            .assign_first_fit(
-                minix_types::UserSlot::new(0),
-                crate::worker::WorkerFunc::DoWork,
-                &Message::default(),
-            )
-            .expect("空闲槽");
-        state.current_worker = Some(idx);
+        // 窗口合法 → 到 fetch 取路径：宿主下取不到 → EINVAL。
         state.current_message = readlink_msg(3, 128);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Readlink),
-            SyscallResult::Suspend
+            SyscallResult::Error(minix_types::EINVAL),
+            "恒 fetch：宿主失败面"
         );
-        // 末组件符号链接要带回：遍历标志必须是 RET_SYMLINK（C link.c:489）。
-        // SAFETY(test): 按 lookup_req_off 读 FLAGS 域。
-        let p = state.pending_fs.as_ref().expect("已登记 REQ_LOOKUP");
-        unsafe {
-            let raw = &p.req.m_u.raw;
-            let flags = u32::from_le_bytes(raw[16..20].try_into().unwrap());
-            assert_eq!(flags, minix_types::PATH_RET_SYMLINK);
-        }
+        assert!(state.pending_fs.is_none());
     }
 
-    /// `Readlink` 臂的内联窗门：namelen 的上限是内联窗本身的 24 字节
-    /// （`READLINK_INLINE_MAX`），不是普通路径的 32 字节
-    /// （`OPEN_PATH_INLINE_MAX`）。25..=32 一带在门上就 ENAMETOOLONG——
-    /// 哪怕内联字节里第 24 字节恰好是 NUL、截断名解得出来也不放行；
-    /// 24 字节整窗仍正常走遍历。
+    /// `Readlink` 臂无内联窗：路径长度没有本地门（此前的 24 字节自造窗
+    /// `READLINK_INLINE_MAX` 已拆，对位 C wire 无 buf 字段）——namelen 在
+    /// PATH_MAX 内一律走到 fetch（宿主失败面 EINVAL），超过 PATH_MAX 才在
+    /// fetch 第一道门 ENAMETOOLONG（utility.c:62-65 对位）。
     #[test]
-    fn test_dispatch_readlink_inline_window_gate() {
+    fn test_dispatch_readlink_no_inline_window_leniency() {
         use minix_types::Endpoint;
 
         let readlink_msg = |name_len: u64| {
@@ -9775,50 +9793,34 @@ mod tests {
                 m_type: VfsCallNum::Readlink as i32,
                 ..Message::default()
             };
-            // SAFETY: readlink 载荷 name@0、namelen@8、buf@16、bufsize@24
-            // （ipc.h:785-792）；内联窗 @32 起共 24 字节，这里故意把窗内
-            // 第 24 字节写成 NUL——namelen 多报一截时，截断名照样解得出来。
+            // SAFETY: readlink 载荷 name@0、namelen@8、buf@16、bufsize@24。
             unsafe {
                 let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&(0x7000u64).to_le_bytes());
                 raw[8..16].copy_from_slice(&name_len.to_le_bytes());
                 raw[16..24].copy_from_slice(&0x5000u64.to_le_bytes());
                 raw[24..32].copy_from_slice(&128u64.to_le_bytes());
-                for slot in raw[32..56].iter_mut() {
-                    *slot = b'a';
-                }
-                raw[32] = b'/';
-                raw[32 + 23] = 0;
             }
             m
         };
 
-        // namelen=25：超窗（但在普通路径的 32 字节门内）→ 门上就拒，
-        // 到不了取路径与走遍历。
+        // namelen=25（旧窗门在此 ENAMETOOLONG）：现在照走到 fetch。
         let mut state = seeded(100);
         state.current_message = readlink_msg(25);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Readlink),
+            SyscallResult::Error(minix_types::EINVAL),
+            "超旧窗不再本地拒，fetch 宿主失败面"
+        );
+        assert!(state.pending_fs.is_none());
+
+        // namelen > PATH_MAX：fetch 第一道门 ENAMETOOLONG。
+        state.current_message = readlink_msg(crate::path::PATH_MAX as u64 + 1);
         assert_eq!(
             dispatch_syscall(&mut state, VfsCallNum::Readlink),
             SyscallResult::Error(minix_types::ENAMETOOLONG)
         );
         assert!(state.pending_fs.is_none());
-
-        // namelen=24（整窗）：过门 → 起走遍历（挂起）。基线同 buffer 门
-        // 测试：挂载行 + 调用方根目录 vnode + 热身过的 grant 表。
-        crate::main_loop::seed_ready_state(&mut state);
-        let idx = state
-            .worker_pool
-            .assign_first_fit(
-                minix_types::UserSlot::new(0),
-                crate::worker::WorkerFunc::DoWork,
-                &Message::default(),
-            )
-            .expect("空闲槽");
-        state.current_worker = Some(idx);
-        state.current_message = readlink_msg(24);
-        assert_eq!(
-            dispatch_syscall(&mut state, VfsCallNum::Readlink),
-            SyscallResult::Suspend
-        );
     }
 
     /// `Access` 臂的位掩码先验（C protect.c:216-217）：`F_OK`(0) 之外只认
@@ -9882,6 +9884,92 @@ mod tests {
             );
             state.pending_fs = None;
         }
+    }
+
+    /// 六家族路径臂（mkdir/chmod/access/chdir/unlink/chroot）的超内联
+    /// 支走到 fetch：宿主下取不到调用方内存 → EINVAL（`SysPathFetcher`
+    /// 失败面）；长度 > PATH_MAX 在 fetch 第一道门 ENAMETOOLONG
+    /// （utility.c:62-65 对位）。chroot 走到 fetch 前还有超级用户门，
+    /// 这里先铺 eff_uid=0。
+    #[test]
+    fn test_dispatch_path_family_long_name_fetch_faces() {
+        use minix_types::Endpoint;
+
+        let path_msg = |call: VfsCallNum, mode: u32, name_len: u64| {
+            let mut m = Message {
+                m_source: Endpoint::from_generation_slot(1, 0),
+                m_type: call as i32,
+                ..Message::default()
+            };
+            // SAFETY: 六家族共用 `mess_lc_vfs_path`——name@0、len@8、
+            // flags@16、mode@20；超内联名不写 buf（指针车道，服务端 fetch）。
+            unsafe {
+                let raw = &mut m.m_u.raw;
+                raw[0..8].copy_from_slice(&(0x7000u64).to_le_bytes());
+                raw[8..16].copy_from_slice(&name_len.to_le_bytes());
+                raw[20..24].copy_from_slice(&mode.to_le_bytes());
+            }
+            m
+        };
+
+        // mkdir：33 字节（超内联、在 PATH_MAX 内）→ fetch 失败面 EINVAL。
+        let mut state = seeded(100);
+        state.current_message = path_msg(VfsCallNum::Mkdir, 0o755, 33);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Mkdir),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+        assert!(state.pending_fs.is_none());
+
+        // chmod：同样走到 fetch。
+        state.current_message = path_msg(VfsCallNum::Chmod, 0o644, 33);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Chmod),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // unlink：> PATH_MAX 在 fetch 第一道门 ENAMETOOLONG。
+        state.current_message = path_msg(VfsCallNum::Unlink, 0, crate::path::PATH_MAX as u64 + 1);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Unlink),
+            SyscallResult::Error(minix_types::ENAMETOOLONG)
+        );
+
+        // chdir：同上双支。
+        state.current_message = path_msg(VfsCallNum::Chdir, 0, 33);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Chdir),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // access：位掩码门（protect.c:216-217）在取路径之前仍先生效，
+        // 然后才是 fetch。
+        state.current_message = path_msg(VfsCallNum::Access, 0o644, 33);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Access),
+            SyscallResult::Error(minix_types::EINVAL),
+            "位掩码门先行"
+        );
+        state.current_message = path_msg(VfsCallNum::Access, 4 | 2, 33);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Access),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
+
+        // chroot：超级用户门在取路径之前（stadir.c 的 do_chroot 门序），
+        // 铺 eff_uid=0 后走到 fetch。
+        {
+            let fp = state
+                .fproc_table
+                .get_mut(minix_types::UserSlot::new(0))
+                .unwrap();
+            fp.eff_uid = crate::link::SU_UID;
+        }
+        state.current_message = path_msg(VfsCallNum::Chroot, 0, 33);
+        assert_eq!(
+            dispatch_syscall(&mut state, VfsCallNum::Chroot),
+            SyscallResult::Error(minix_types::EINVAL)
+        );
     }
 
     /// `Fstat` 臂（对话臂模板）：fd 无效/空槽在**任何 I/O 之前**就回

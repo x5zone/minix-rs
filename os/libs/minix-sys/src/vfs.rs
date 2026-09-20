@@ -510,28 +510,30 @@ pub fn pipe2_via(transport: &impl IpcTransport, flags: i32) -> Result<(i32, i32)
 /// C loads the name inline into the message (`_loadname`, chroot.c:15);
 /// this face reuses the open-existing payload shape — address, length,
 /// then the path bytes themselves (see `open_existing_via`, where the
-/// inline boundary and its ENAMETOOLONG answer live too). The caller
-/// keeps the path buffer alive until the reply: a real server reads it
-/// through the caller's address space, the way `chroot`'s `loadname`
-/// made the message itself carry the bytes.
+/// inline boundary and the server-side fetch for longer names live too).
+/// The caller keeps the path buffer alive until the reply: a real server
+/// reads it through the caller's address space, the way `chroot`'s
+/// `loadname` made the message itself carry the bytes.
 pub fn chroot_via(
     transport: &impl IpcTransport,
     name_address: u64,
     name_length_including_nul: usize,
 ) -> Result<(), Errno> {
-    if name_length_including_nul == 0 || name_length_including_nul > OPEN_PATH_INLINE_MAX {
+    if name_length_including_nul == 0 {
         return Err(Errno::ENAMETOOLONG);
     }
-    // SAFETY: the caller's path buffer lives in this same address space
-    // (user library reads its own argument — C loadname.c:16-17 同型).
-    let path_bytes = unsafe {
-        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
-    };
     let mut packed = [0u8; core::mem::size_of::<OpenPathPayload>()];
     packed[0..8].copy_from_slice(&name_address.to_le_bytes());
     packed[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
     // flags/mode lanes stay zero — chroot carries neither.
-    packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    if name_length_including_nul <= OPEN_PATH_INLINE_MAX {
+        // SAFETY: the caller's path buffer lives in this same address space
+        // (user library reads its own argument — C loadname.c:16-17 同型)。
+        let path_bytes = unsafe {
+            core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
+        };
+        packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    }
     let mut message = crate::syscall::cleared_message();
     crate::syscall::write_payload(&mut message, &packed);
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_CHROOT, &mut message).map(|_| ())
@@ -700,9 +702,10 @@ struct CreatePayload {
 ///
 /// Scope note: both dispatch arms are implemented — create below, and the
 /// open-existing path through [`open_existing_via`], which carries the
-/// 64-bit layout adjudication (LP64: the inline buffer shrinks from 40 to
-/// 32 bytes including the NUL; longer paths return `ENAMETOOLONG` where C's
-/// `loadname` silently skipped the inline copy).
+/// 64-bit layout adjudication (LP64: the inline window is 32 bytes
+/// including the NUL under the 56-byte payload invariant; longer paths
+/// travel by the pointer lane and the server fetches them from the
+/// caller's address space, exactly the split C's `copy_path` makes).
 /// C: `mess_lc_vfs_path` (`ipc.h:754-768`) — open-existing 的载荷形状。
 /// i386 原始布局：name/len/flags/mode/buf[40] = 56 字节。
 #[repr(C)]
@@ -715,35 +718,41 @@ struct OpenPathPayload {
     buf: [u8; 32],
 }
 
-/// open-existing 内联容量（LP64 判例：指针 4→8 后 buf 由 40 收缩为 32；
-/// 含 NUL 的总长 ≤ 32 才能内联）。
+/// open-existing 内联容量（LP64 判例：指针 4→8 后 buf 由 C i386 的
+/// `M_PATH_STRING_MAX` 40 收缩为 32；含 NUL 的总长 ≤ 32 才能内联）。
+/// 超长路径走指针车道，由服务端 fetch（C `copy_path` 双支，
+/// utility.c:31-32）——内联是优化不是上限。
 pub const OPEN_PATH_INLINE_MAX: usize = 32;
 
-/// open-existing 路径的 wire 裁决（99 篇定稿 + 09 篇 §3.2 缺口闭合）：
-/// 路径 ≤ [`OPEN_PATH_INLINE_MAX`] 字节（含 NUL）时内联进载荷 buf；
-/// 超长返回 `ENAMETOOLONG`——C 的 loadname（loadname.c:18）在超长时
-/// 跳过 strcpy 但不报错（截断静默发生），minix-rs 诚实化为显式错误
-/// （DELIBERATE DIVERGENCE：加固而非行为漂移，登记于 09 篇 §3.2）。
+/// open-existing 路径的 wire 语义（C `_loadname`，loadname.c:7-19）：
+/// **地址与 NUL 含长度恒发送**（:15-17），路径 ≤ [`OPEN_PATH_INLINE_MAX`]
+/// 字节（含 NUL）才内联进载荷 buf（:18 的 strcpy 是优化非语义；C 容量是
+/// `M_PATH_STRING_MAX` 40，本线 LP64 载荷 56 字节不变量下内联窗为 32，
+/// 99 篇 §1.2 判例）。超长路径不内联，由服务端从调用方地址空间取回
+/// （C `copy_path` → `fetch_name`，utility.c:31-32/:60-90：上限 PATH_MAX、
+/// 尾字节 NUL 校验）——超长与否是服务端裁决，客户端不发 `ENAMETOOLONG`。
 pub fn open_existing_via(
     transport: &impl IpcTransport,
     name_address: u64,
     name_length_including_nul: usize,
     flags: i32,
 ) -> Result<i32, Errno> {
-    if name_length_including_nul == 0 || name_length_including_nul > OPEN_PATH_INLINE_MAX {
+    if name_length_including_nul == 0 {
         return Err(Errno::ENAMETOOLONG);
     }
-    // SAFETY: the caller's path buffer lives in this same address space
-    // (user library reads its own argument — C loadname.c:16-17 同型)。
-    let path_bytes = unsafe {
-        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
-    };
     let mut packed = [0u8; core::mem::size_of::<OpenPathPayload>()];
     packed[0..8].copy_from_slice(&name_address.to_le_bytes());
     packed[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
     packed[16..20].copy_from_slice(&flags.to_le_bytes());
     // mode @20..24 = 0（非创建路径无 mode，C open.c:31 同填 0）。
-    packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    if name_length_including_nul <= OPEN_PATH_INLINE_MAX {
+        // SAFETY: the caller's path buffer lives in this same address space
+        // (user library reads its own argument — C loadname.c:18 同型)。
+        let path_bytes = unsafe {
+            core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
+        };
+        packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    }
     let mut message = crate::syscall::cleared_message();
     crate::syscall::write_payload(&mut message, &packed);
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_OPEN, &mut message)
@@ -902,9 +911,12 @@ pub const S_IFIFO: u32 = 0o010000;
 /// stays zero for all six; the three path-only calls also leave `mode`
 /// zero. The mode lane's i32 type follows [`OpenPathPayload`]'s field.
 ///
-/// The inline boundary and its `ENAMETOOLONG` answer are shared with
-/// [`open_existing_via`] (identical layout, identical deliberate
-/// hardening of C `loadname`'s silent inline-copy skip).
+/// The inline boundary is shared with [`open_existing_via`] (identical
+/// layout, identical split): paths at or under [`OPEN_PATH_INLINE_MAX`]
+/// bytes (NUL included) ride in the payload buffer; longer ones leave the
+/// inline window zero and the server fetches them from the caller's
+/// address space (C `copy_path` → `fetch_name`, utility.c:31-32) — the
+/// same two branches C's six path-request servers run.
 fn path_request_via(
     transport: &impl IpcTransport,
     call_number: i32,
@@ -912,20 +924,22 @@ fn path_request_via(
     name_length_including_nul: usize,
     mode: i32,
 ) -> Result<(), Errno> {
-    if name_length_including_nul == 0 || name_length_including_nul > OPEN_PATH_INLINE_MAX {
+    if name_length_including_nul == 0 {
         return Err(Errno::ENAMETOOLONG);
     }
-    // SAFETY: the caller's path buffer lives in this same address space
-    // (user library reads its own argument — C loadname.c:16-17 同型)。
-    let path_bytes = unsafe {
-        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
-    };
     let mut packed = [0u8; core::mem::size_of::<OpenPathPayload>()];
     packed[0..8].copy_from_slice(&name_address.to_le_bytes());
     packed[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
     // flags @16..20 stays zero for all six calls (C memset, never written).
     packed[20..24].copy_from_slice(&mode.to_le_bytes());
-    packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    if name_length_including_nul <= OPEN_PATH_INLINE_MAX {
+        // SAFETY: the caller's path buffer lives in this same address space
+        // (user library reads its own argument — C loadname.c:16-17 同型)。
+        let path_bytes = unsafe {
+            core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
+        };
+        packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    }
     let mut message = crate::syscall::cleared_message();
     crate::syscall::write_payload(&mut message, &packed);
     perform_syscall(transport, vfs_endpoint(), call_number, &mut message).map(|_| ())
@@ -1188,19 +1202,17 @@ pub fn umask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32, Errno>
     Ok(old as u32)
 }
 
-/// readlink 内联窗口容量：name 字节从 raw[32] 起，到 56 字节负载区末尾
-/// 只剩 24 字节（含 NUL）。服务端 Readlink 臂读 `raw[32..]`。
-pub const READLINK_INLINE_MAX: usize = 24;
-
 /// Reads a symlink target into the caller's buffer (C: `readlink`,
 /// `minix3/minix/lib/libc/sys/readlink.c:13-24`).
 ///
 /// `mess_lc_vfs_readlink`（`ipc.h:785-792`）：name@0、namelen@8、buf@16、
-/// bufsize@24。C 只传 name 地址，但服务端 Readlink 臂按内联 `raw[32..]`
-/// 读路径（同 open-existing 的塑形改造），所以客户端把路径字节写进
-/// @32 窗口；窗口只有 [`READLINK_INLINE_MAX`] 字节（56−32），超长经
-/// `ENAMETOOLONG` 拒绝。服务端 Readlink 臂用同一个常量设门（vfs
-/// syscalls.rs 的 Readlink 臂互见），两侧窗宽一致。
+/// bufsize@24——C 的 wire **没有内联路径字段**（i386 与 LP64 换算皆然，
+/// 剩余载荷区是 padding），客户端只发四个 lane，路径由服务端从调用方
+/// 地址空间取回（C `do_rdlink` 恒 `fetch_name`，link.c:494：上限
+/// PATH_MAX、尾字节 NUL 校验）。此前 minix-rs 在 @32 起自造过 24 字节
+/// 内联窗（`READLINK_INLINE_MAX`），与 C 形状不符且给长路径加了客户端
+/// 上限——NL10 拆除，双侧恒指针。namelen 为 0 仍是本面的诚实拒绝
+/// （C `strlen+1` 不可达 0）。
 ///
 /// The reply's message type carries the byte count the server wrote into
 /// `buf` (C: `_syscall` 的非负 m_type 直接作为 ssize_t 返回).
@@ -1211,22 +1223,18 @@ pub fn readlink_via(
     buffer_address: u64,
     buffer_size: usize,
 ) -> Result<usize, Errno> {
-    if name_length_including_nul == 0 || name_length_including_nul > READLINK_INLINE_MAX {
+    if name_length_including_nul == 0 {
         return Err(Errno::ENAMETOOLONG);
     }
-    // SAFETY: the caller's path buffer lives in this same address space.
-    let path_bytes = unsafe {
-        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
-    };
     let mut message = crate::syscall::cleared_message();
     // SAFETY: lanes follow `mess_lc_vfs_readlink` field order; the server's
-    // Readlink arm decodes name_len@8, buf@16, bufsize@24, inline @32.
+    // Readlink arm decodes name@0, name_len@8, buf@16, bufsize@24 and
+    // fetches the path through the caller's address space (C link.c:494).
     unsafe {
         message.m_u.raw[0..8].copy_from_slice(&name_address.to_le_bytes());
         message.m_u.raw[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
         message.m_u.raw[16..24].copy_from_slice(&buffer_address.to_le_bytes());
         message.m_u.raw[24..32].copy_from_slice(&(buffer_size as u64).to_le_bytes());
-        message.m_u.raw[32..32 + path_bytes.len()].copy_from_slice(path_bytes);
     }
     let written = perform_syscall(transport, vfs_endpoint(), VFS_CALL_READLINK, &mut message)?;
     Ok(written as usize)
@@ -1773,8 +1781,16 @@ mod payload_layout_tests {
 #[cfg(test)]
 mod open_path_tests {
     use super::*;
+    use alloc::vec;
     use core::mem::offset_of;
     use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
 
     /// open-existing 载荷布局见证：LP64 判例下总长 56（C i386 buf[40]
     /// 收缩为 32），字段序 name/len/flags/mode/buf。
@@ -1788,23 +1804,42 @@ mod open_path_tests {
         assert_eq!(offset_of!(OpenPathPayload, buf), 24);
     }
 
-    /// 内联拷贝：路径字节进 buf、len 含 NUL——C loadname.c:16-18 同型。
+    /// 内联边界与指针车道分界：恰好 32（含 NUL）内联拷贝；33 起不再读
+    /// 调用方缓冲，buf 保持零、地址/长度 lane 照发（C loadname.c:15-18
+    /// 的 strcpy 跳过同型；服务端 fetch 见 utility.c:31-32）。
     #[test]
-    fn test_open_path_inline_boundary() {
+    fn test_open_path_inline_boundary_and_pointer_lane() {
         // 恰好 32（含 NUL）：可内联。
         assert_eq!(31, OPEN_PATH_INLINE_MAX - 1);
-        // 超界 33：ENAMETOOLONG。
-        let long = [b'a'; 34];
+        let mut inline_transport = CannedTransport::new();
+        inline_transport.reply_sendrec(Ok(reply_with_type(3)));
+        let short = b"/tmp/abcdefghijklmnopqrstuvwxyz\0";
+        assert_eq!(short.len(), OPEN_PATH_INLINE_MAX);
         assert_eq!(
-            open_existing_via(
-                &CannedTransport::new(),
-                long.as_ptr() as u64,
-                long.len(),
-                0
-            )
-            .unwrap_err(),
-            Errno::ENAMETOOLONG
+            open_existing_via(&inline_transport, short.as_ptr() as u64, short.len(), 0),
+            Ok(3)
         );
+        let sent = inline_transport.sent.borrow();
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[24..24 + short.len()], short, "内联支拷贝路径字节");
+
+        // 超界 33：不发 ENAMETOOLONG，照发往返——buf 零、lane 在。
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(4)));
+        let long = [b'a'; OPEN_PATH_INLINE_MAX + 1];
+        assert_eq!(
+            open_existing_via(&transport, long.as_ptr() as u64, long.len(), 0x1),
+            Ok(4)
+        );
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VFS_CALL_OPEN);
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(raw[0..8].to_vec(), (long.as_ptr() as u64).to_le_bytes(), "name@0");
+        assert_eq!(raw[8..16].to_vec(), (long.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(raw[16..20].to_vec(), 0x1i32.to_le_bytes(), "flags@16");
+        assert_eq!(raw[24..56].to_vec(), vec![0; 32], "超长不内联，buf 保持零");
     }
 
 }
@@ -1938,6 +1973,7 @@ mod pipe_wire_tests {
 #[cfg(test)]
 mod chroot_wire_tests {
     use super::*;
+    use alloc::vec;
     use crate::ipc::CannedTransport;
     use minix_types::Message;
 
@@ -1972,15 +2008,28 @@ mod chroot_wire_tests {
         assert_eq!(&raw[24..24 + path.len()], path);
     }
 
-    /// 越界路径与 open 同判 ENAMETOOLONG（内联边界同源）。
+    /// 越界路径与 open 同构：超内联不本地拒绝，buf 保持零、地址/长度
+    /// lane 照发（指针车道，服务端 fetch）；0 长仍零回合拒绝。
     #[test]
-    fn test_chroot_rejects_over_inline_boundary() {
-        let transport = CannedTransport::new();
+    fn test_chroot_long_path_travels_by_pointer_lane() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
         let long = [b'a'; OPEN_PATH_INLINE_MAX + 1];
         assert_eq!(
             chroot_via(&transport, long.as_ptr() as u64, long.len()),
-            Err(Errno::ENAMETOOLONG)
+            Ok(())
         );
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 1, "超长照发往返");
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(raw[0..8].to_vec(), (long.as_ptr() as u64).to_le_bytes(), "name@0");
+        assert_eq!(raw[8..16].to_vec(), (long.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(raw[24..56].to_vec(), vec![0; 32], "超长不内联");
+
+        let quiet = CannedTransport::new();
+        assert_eq!(chroot_via(&quiet, long.as_ptr() as u64, 0), Err(Errno::ENAMETOOLONG));
+        assert!(quiet.sent.borrow().is_empty(), "0 长零回合拒绝");
     }
 }
 
@@ -2084,18 +2133,36 @@ mod fileop_wire_tests {
         assert_eq!(sent[1].1.m_type, VFS_CALL_ACCESS);
     }
 
-    /// 内联族边界与 open 同源：0 长与 >32（含 NUL）都拒绝且不发往返
-    /// （DELIBERATE DIVERGENCE：C loadname 静默跳过内联拷贝）。
+    /// 内联族超长走指针车道：33 字节起不内联、lane 照发（服务端 fetch，
+    /// utility.c:31-32）；mode lane 在超长支也保持（mkdir 的 0o700 在）；
+    /// 0 长仍零回合拒绝（本面 API 契约，C strlen+1 不可达）。
     #[test]
-    fn test_path_family_rejects_inline_boundary_without_round_trip() {
-        let transport = CannedTransport::new();
+    fn test_path_family_long_path_travels_by_pointer_lane() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        transport.reply_sendrec(Ok(reply_with_type(0)));
         let long = [b'a'; OPEN_PATH_INLINE_MAX + 1];
         assert_eq!(
             mkdir_via(&transport, long.as_ptr() as u64, long.len(), 0o700),
-            Err(Errno::ENAMETOOLONG)
+            Ok(())
         );
-        assert_eq!(access_via(&transport, long.as_ptr() as u64, 0, 0), Err(Errno::ENAMETOOLONG));
-        assert!(transport.sent.borrow().is_empty(), "边界拒绝不发往返");
+        assert_eq!(unlink_via(&transport, long.as_ptr() as u64, long.len()), Ok(()));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 2, "超长照发往返");
+        assert_eq!(sent[0].1.m_type, VFS_CALL_MKDIR);
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        let m = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(m[0..8].to_vec(), (long.as_ptr() as u64).to_le_bytes(), "name@0");
+        assert_eq!(m[8..16].to_vec(), (long.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(m[20..24].to_vec(), 0o700u32.to_le_bytes(), "mode@20 超长支仍在");
+        assert_eq!(m[24..56].to_vec(), vec![0; 32], "超长不内联");
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        let u = unsafe { &sent[1].1.m_u.raw };
+        assert_eq!(u[24..56].to_vec(), vec![0; 32], "unlink 超长同样不内联");
+
+        let quiet = CannedTransport::new();
+        assert_eq!(access_via(&quiet, long.as_ptr() as u64, 0, 0), Err(Errno::ENAMETOOLONG));
+        assert!(quiet.sent.borrow().is_empty(), "0 长零回合拒绝");
     }
 
     /// link 四 lane：name1@0、name2@8、len1@16、len2@24（地址制，无
@@ -2205,9 +2272,10 @@ mod fileop_wire_tests {
         assert_eq!(raw_lane(&sent, 0..4), 0o077u32.to_le_bytes(), "mask@0");
     }
 
-    /// readlink：name@0、namelen@8、buf@16、bufsize@24、内联字节@32；
-    /// 写字节数经回复 m_type 带回；超过 24 字节窗口即 ENAMETOOLONG
-    /// （比服务端的 32 检查更严，见 `READLINK_INLINE_MAX` 注记）。
+    /// readlink：name@0、namelen@8、buf@16、bufsize@24 四 lane，@32 起
+    /// 是 C padding 保持零（wire 无内联字段，C readlink.c:17-20 同形）；
+    /// 写字节数经回复 m_type 带回；路径长度无客户端上限（服务端
+    /// `do_rdlink` 恒 fetch_name，link.c:494）。
     #[test]
     fn test_readlink_wire_and_value_reply() {
         let mut transport = CannedTransport::new();
@@ -2229,11 +2297,17 @@ mod fileop_wire_tests {
         assert_eq!(raw_lane(&sent, 0..8), (path.as_ptr() as u64).to_le_bytes(), "name@0");
         assert_eq!(raw_lane(&sent, 8..16), (path.len() as u64).to_le_bytes(), "namelen@8");
         assert_eq!(raw_lane(&sent, 24..32), (buf.len() as u64).to_le_bytes(), "bufsize@24");
-        assert_eq!(raw_lane(&sent, 32..32 + path.len()), path.to_vec(), "inline@32");
-        let long = [b'a'; READLINK_INLINE_MAX + 1];
+        assert_eq!(
+            raw_lane(&sent, 32..56),
+            vec![0; 24],
+            "padding@32 保持零（无内联窗）"
+        );
+        // 长名照发（此前 24 字节自造窗已拆）。
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let long = [b'a'; 40];
         assert_eq!(
             readlink_via(&transport, long.as_ptr() as u64, long.len(), 0, 0),
-            Err(Errno::ENAMETOOLONG)
+            Ok(0)
         );
     }
 
