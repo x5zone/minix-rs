@@ -105,6 +105,13 @@ pub fn flags_for(p: &Process) -> u32 {
     if p.resources.signals.suspended {
         flags |= mp_flags::SIGSUSPENDED;
     }
+    // C 的 `is_kernel_process() ⇔ mp_flags & PRIV_PROC`（mproc.h）。两类
+    // `Privilege` 变体的凭证在 `serialize_snap` 统一序列化，特权位在此合成：
+    // boot 服务与 srv_fork 子（C-28）同为 `Kernel`，MIB 取表半据此判 SYSTEM
+    // （`minix_proc_exec.rs` 的 `mflags & PRIV_PROC`）。
+    if p.resources.privilege.is_kernel() {
+        flags |= mp_flags::PRIV_PROC;
+    }
     flags
 }
 
@@ -211,6 +218,26 @@ mod tests {
         let flags = flags_for(&p);
         assert_ne!(flags & mp_flags::IN_USE, 0);
         assert_ne!(flags & mp_flags::WAITING, 0);
+    }
+
+    /// `PRIV_PROC` 随 `Privilege::Kernel` 合成：boot 服务与 srv_fork 子
+    ///（C-28）同为 Kernel，MIB 据此判 SYSTEM；User 进程不得带此位。
+    #[test]
+    fn test_flags_for_priv_proc() {
+        use crate::mproc::{Credentials, Privilege};
+        let mut kernel = crate::mproc::Process::new(0, 1);
+        kernel.resources.privilege = Privilege::Kernel(Credentials::default());
+        assert_ne!(
+            flags_for(&kernel) & mp_flags::PRIV_PROC,
+            0,
+            "Kernel 进程 mp_flags 必带 PRIV_PROC（C is_kernel_process 判据）"
+        );
+        let user = crate::mproc::Process::new(1, 2); // 默认 User
+        assert_eq!(
+            flags_for(&user) & mp_flags::PRIV_PROC,
+            0,
+            "User 进程不得带 PRIV_PROC"
+        );
     }
 
     /// 行宽 = minix-types 权威（88，C-21 的 `mp_started` 尾槽），整表宽度
