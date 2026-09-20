@@ -8,7 +8,7 @@
 // （其 `_start` 需要 `main` + `__libc_start_main`），no_std + no_main 在
 // 宿主链接必断；`target_os = "none"` 侧才是 freestanding 真身（boot 装
 // 机模块）。`#[unsafe(no_mangle)]` 满足 minix-rt crt0 出生链按名解
-// `main` 的 Consumer contract（`os/libs/minix-rt/src/crt0.rs:38`：
+// `main` 的 Consumer contract（`os/libs/minix-rt/src/crt0.rs:40`：
 // 名字 + Rust ABI + `-> i32` 三要素，返回值经 stage-6 exit 原样成为
 // 进程退出码）。
 #![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
@@ -29,7 +29,7 @@ extern crate minix_rt;
 static GLOBAL: std::alloc::System = std::alloc::System;
 
 // 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
+// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
 // `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
 // E0277（docker minix-ci:1.94 实测）。
 #[cfg(all(not(test), target_os = "none"))]

@@ -17,7 +17,7 @@ extern crate minix_rt;
 use minix_pm::init::{BootParams, PmServer};
 
 // 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
+// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
 // `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
 // E0277（docker minix-ci:1.94 实测）。
 #[cfg(all(not(test), target_os = "none"))]
@@ -52,6 +52,6 @@ fn real_main() -> ! {
     server.init();
 
     // C: main.c:59-110 — 主循环（分发细节归 04）。run() 发散
-    //（init.rs:396 `-> !`），尾表达式即 real_main 的函数尾。
+    //（init.rs:398 `-> !`），尾表达式即 real_main 的函数尾。
     server.run()
 }

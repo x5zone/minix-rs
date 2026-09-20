@@ -22,7 +22,7 @@ static GLOBAL: std::alloc::System = std::alloc::System;
 extern crate minix_rt;
 
 // 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
-// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
+// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
 // `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
 // E0277（docker minix-ci:1.94 实测）。
 #[cfg(all(not(test), target_os = "none"))]
