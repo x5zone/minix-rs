@@ -101,7 +101,7 @@
 | E5(b) | VM↔VFS fdclose 往返 | — | 🔄 宿主半 ✅（79d82ed91）；真机半挂 T2 |
 | E5(c) | RS live-update 全链 | — | 🔄 前哨段宿主半 ✅（fbd33bcae）；主体挂 T2（NS1/NS2） |
 | E5(d) | QEMU VM paging 冒烟（缺页完整回路+VM 写 PTE） | new_edge1 NK2（转发臂） | ☐（内核转发臂 ✅ 5037491ff + 载体真机 PASS；余 T2 boot 链真机半） |
-| E5(e) | PM↔SCHED 调度链 | NS10 + K1/K2 | ☐→前置全清（NS10 ✅ 75aaea831/merge d0ce564cd，2026-09-21；K1/K2 前轮 ✅）——可开工，未领取 |
+| E5(e) | PM↔SCHED 调度链 | NS10 + K1/K2 | ☐→前置全清（NS10 ✅ 75aaea831/merge d0ce564cd，2026-09-21；K1/K2 前轮 ✅）→ **宿主半 ✅ 2026-09-21（zcode_glm_1，claim/E5E-zcode_glm_1：代码 04f8c5417/09d3b9014/d5f53da9d）**——三链宿主联调四测试入库（START/INHERIT/NO_QUANTUM 回环/拒绝透传，`os/tests/pm_sched.rs`，E5(a) 判例：PM 真状态机+SCHED 真 run_once 经共享 bus 对跑，内核面以生产渲染线束对账）；顺带修 PM `MinixSchedCtl::taskcall` rv 吞回复 m_type 的真分歧（C taskcall.c:17-20 对位，SCHED 拒绝码此前被读成成功，+2 pin 测试）与 minix-tests E0046 断裂（NS8-B 夹具缺 sys_diagctl_stacktrace，该断裂曾令 clippy 多 crate 会话中途阻断）；pm 415(+2)/sched 98/minix-tests 12 全绿（合并态 sys 300/vfs 523 保持），clippy 净新增 0。**真机半挂 T2**（随 NK1 收口波次）；FIXLOG edge3 #142 |
 | E5(f) | DS 发布/订阅三链 | NS1 | 🔄 宿主半 ✅（65bd107a6）；真机半挂 T2 |
 | E5(g) | MIB/sysctl 四链 + rmibtest | NS1 + E-RMIBWIRE 通电 | ☐ |
 | E5(h) | devman 生命周期四链 | NS1 + E-DMWIRE | ☐ |
