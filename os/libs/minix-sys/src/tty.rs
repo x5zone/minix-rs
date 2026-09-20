@@ -6,6 +6,16 @@
 
 use minix_types::{Endpoint, Message, TTY_FKEY_CONTROL};
 
+/// `TIOCSCTTY` — claim the terminal as controlling tty
+/// (`sys/sys/ttycom.h:136`, `_IO('t', 97)`): MINIX `ioccom` packs it as
+/// `IOC_VOID (0x20000000) | ('t' << 8) | 97`
+/// (`sys/sys/ioccom.h:72/65`). VFS intercepts this request at the char
+/// device layer to authorize the claim
+/// (`minix3/minix/servers/vfs/cdev.c:296-303`); the tty driver answers it
+/// (`minix3/minix/drivers/tty/tty/tty.c:701`). C `login_tty` issues it
+/// with a NULL argument (`minix3/lib/libutil/login_tty.c:56`).
+pub const TIOCSCTTY: u64 = 0x2000_7461;
+
 /// C: `fkey_ctl(req, *fkeys, *sfkeys)` — fkey_ctl.c:11-28。
 ///
 /// `_taskcall(TTY, TTY_FKEY_CONTROL)`:请求臂

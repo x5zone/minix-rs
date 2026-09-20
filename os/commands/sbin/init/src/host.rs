@@ -226,8 +226,29 @@ impl InitHost for MinixSysHost {
     }
 
     fn set_controlling_tty(&mut self, device: &str) -> Result<(), Errno> {
-        let _ = device;
-        Err(Errno::ENOSYS)
+        // C setctty (init.c:669-689) + login_tty (minix3/lib/libutil/
+        // login_tty.c:46-61), folded: setsid (failure warned away,
+        // init.c:674), the DTR-low gap (250 ms, init.c:98/680), open
+        // O_RDWR, TIOCSCTTY, dup2 onto 0/1/2, close the working fd.
+        let _ = minix_sys::pm::setsid_via(&DirectTrapTransport);
+        let _ = minix_sys::misc::nanosleep_via(
+            &DirectTrapTransport,
+            Some(minix_sys::misc::SleepRequest {
+                seconds: 0,
+                nanoseconds: 250_000_000,
+            }),
+        );
+        let fd = minix_sys::open(device, O_RDWR, 0)?;
+        // login_tty.c:56-58: the ioctl failure IS the login_tty failure;
+        // everything after it is best-effort.
+        minix_sys::ioctl(fd, minix_sys::tty::TIOCSCTTY, 0)?;
+        for std_fd in [0, 1, 2] {
+            let _ = minix_sys::vfs::dup2_via(&DirectTrapTransport, fd, std_fd);
+        }
+        if fd > 2 {
+            let _ = minix_sys::close(fd);
+        }
+        Ok(())
     }
 
     fn close_std_fds(&mut self) -> Result<(), Errno> {
@@ -407,9 +428,10 @@ impl InitHost for MinixSysHost {
     }
 }
 
-/// `open(2)` flag words this host uses (C `sys/sys/fcntl.h:64,65,82`).
+/// `open(2)` flag words this host uses (C `sys/sys/fcntl.h:64,65,66,82`).
 const O_RDONLY: i32 = 0x0000;
 const O_WRONLY: i32 = 0x0001;
+const O_RDWR: i32 = 0x0002;
 const O_APPEND: i32 = 0x0008;
 
 /// A scripted host for tests: every effect is a queued outcome or a
@@ -715,10 +737,6 @@ mod tests {
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
-        assert_eq!(
-            host.set_controlling_tty("/dev/console"),
-            Err(Errno::ENOSYS)
-        );
         assert_eq!(host.chroot("/"), Err(Errno::ENOSYS));
         assert_eq!(host.set_env("PATH", "/sbin"), Err(Errno::ENOSYS));
         // 已接线（宿主 trap 断链 → EIO）：文件族三件 + 信号安装。
@@ -735,10 +753,15 @@ mod tests {
             matches!(host.register_handlers(&spec), Err(e) if e == Errno::EIO),
             "宿主 trap 断链 → EIO（不伪造成功）"
         );
-        // alarm/time 已接线（PM_ITIMER / PM_GETTIMEOFDAY 面）：宿主 trap
-        // 断链诚实回 EIO。
+        // alarm/time/set_controlling_tty 已接线（PM_ITIMER /
+        // PM_GETTIMEOFDAY / open+TIOCSCTTY+dup2 面）：宿主 trap 断链
+        // 诚实回 EIO。
         assert_eq!(host.alarm(10), Err(Errno::EIO));
         assert_eq!(host.now_secs(), Err(Errno::EIO));
+        assert_eq!(
+            host.set_controlling_tty("/dev/console"),
+            Err(Errno::EIO)
+        );
         // exec 已接线（PM_EXEC 面，execve.rs）：宿主 kerninfo 断链 →
         // 帧的 vsp 无从取值 → 诚实 EIO（不伪造成功）。
         assert_eq!(

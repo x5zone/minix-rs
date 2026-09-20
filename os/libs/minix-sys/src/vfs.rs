@@ -437,6 +437,38 @@ pub fn fcntl_via(
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_FCNTL, &mut message)
 }
 
+/// `F_DUPFD` — duplicate the descriptor (`sys/sys/fcntl.h:178`).
+pub const F_DUPFD: i32 = 0;
+/// `F_GETFL` — get the status flags (`sys/sys/fcntl.h:181`); also the
+/// cheapest validity probe for an existing descriptor.
+pub const F_GETFL: i32 = 3;
+/// Descriptor upper bound (`sys/sys/syslimits.h:38`); C `dup2` answers
+/// EBADF above it (`minix3/minix/lib/libc/sys/dup2.c:17-19`).
+pub const OPEN_MAX: i32 = 255;
+
+/// Duplicates a descriptor onto an exact slot (C: `dup2`,
+/// `minix3/minix/lib/libc/sys/dup2.c:12-32`).
+///
+/// POSIX shapes dup2 as "almost, but not quite fcntl" (`dup2.c:6-8`), and
+/// the C wrapper keeps three of the differences: a range check that answers
+/// EBADF without a round trip (`dup2.c:17-19`), an `F_GETFL` validity probe
+/// on the source descriptor whose error travels (`dup2.c:22-26`), and the
+/// same-descriptor short circuit that succeeds without closing
+/// (`dup2.c:27-29`). Otherwise: close the target slot (its failure is
+/// ignored, `dup2.c:30`), then `F_DUPFD` with `fd2` as the floor — the
+/// reply is the new descriptor.
+pub fn dup2_via(transport: &impl IpcTransport, fd: i32, fd2: i32) -> Result<i32, Errno> {
+    if !(0..=OPEN_MAX).contains(&fd2) {
+        return Err(Errno::EBADF);
+    }
+    fcntl_via(transport, fd, F_GETFL, 0, 0)?;
+    if fd == fd2 {
+        return Ok(fd2);
+    }
+    let _ = close_via(transport, fd2);
+    fcntl_via(transport, fd, F_DUPFD, fd2, 0)
+}
+
 /// Reads directory entries in the getdents wire format.
 ///
 /// C: `getdents` (`minix3/minix/lib/libc/sys/getdents.c`) reuses the
@@ -1152,4 +1184,64 @@ mod open_path_tests {
         );
     }
 
+}
+
+#[cfg(test)]
+mod dup2_wire_tests {
+    use super::*;
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    /// C 绝对值 pin：F_DUPFD=0 / F_GETFL=3（sys/sys/fcntl.h:178/181）、
+    /// OPEN_MAX=255（syslimits.h:38）。
+    #[test]
+    fn test_dup2_constants_match_c() {
+        assert_eq!(F_DUPFD, 0);
+        assert_eq!(F_GETFL, 3);
+        assert_eq!(OPEN_MAX, 255);
+    }
+
+    /// 全序：F_GETFL 探测 → close(fd2) → F_DUPFD(fd, fd2)，回复即新
+    /// 描述符（dup2.c:22-31）。
+    #[test]
+    fn test_dup2_probes_closes_and_duplicates() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0))); // F_GETFL ok
+        transport.reply_sendrec(Ok(reply_with_type(0))); // close ok
+        transport.reply_sendrec(Ok(reply_with_type(3))); // F_DUPFD → fd 3
+        assert_eq!(dup2_via(&transport, 4, 3), Ok(3));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 3);
+        assert_eq!(sent[0].1.m_type, VFS_CALL_FCNTL);
+        assert_eq!(sent[2].1.m_type, VFS_CALL_FCNTL);
+    }
+
+    /// 同槽短路：fd == fd2 在探测之后直接成功——close 与 F_DUPFD
+    /// 都不发生（探测本身在前，dup2.c:22-29）；越界目标零回合 EBADF
+    /// （dup2.c:17-19）。
+    #[test]
+    fn test_dup2_same_fd_short_circuits_and_bounds_reject() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0))); // F_GETFL probe
+        assert_eq!(dup2_via(&transport, 2, 2), Ok(2));
+        assert_eq!(transport.sent.borrow().len(), 1);
+        assert_eq!(dup2_via(&transport, 1, OPEN_MAX + 1), Err(Errno::EBADF));
+        assert_eq!(dup2_via(&transport, 1, -1), Err(Errno::EBADF));
+        assert_eq!(transport.sent.borrow().len(), 1, "bounds rejects add no round trips");
+    }
+
+    /// 源描述符失效：F_GETFL 的错误原样上行（dup2.c:22-26），不发后续。
+    #[test]
+    fn test_dup2_source_probe_failure_travels() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Err(crate::ipc::TrapStatus(minix_types::EBADF)));
+        assert_eq!(dup2_via(&transport, 9, 0), Err(Errno::EBADF));
+        assert_eq!(transport.sent.borrow().len(), 1);
+    }
 }

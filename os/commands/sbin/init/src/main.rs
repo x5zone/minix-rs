@@ -95,7 +95,7 @@ fn main() {
     // birth descriptor via minix-rt — no std env anywhere on the boot
     // path (P1-2).
     let argv: Vec<String> = (0..minix_rt::crt0::argv_count())
-        .filter_map(|i| minix_rt::crt0::argv_bytes(i))
+        .filter_map(minix_rt::crt0::argv_bytes)
         .map(|b| String::from_utf8_lossy(b).into_owned())
         .collect();
     let (boot_args, boot_warnings) = parse_boot_args(&argv);

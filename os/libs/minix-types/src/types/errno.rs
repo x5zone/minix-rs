@@ -200,6 +200,8 @@ impl Errno {
     pub const ENOENT: Errno = Errno(ENOENT);
     /// C: `EIO` — sys/errno.h:5.
     pub const EIO: Errno = Errno(EIO);
+    /// C: `EBADF` — sys/errno.h:9 (bad descriptor; `dup2` range rejects).
+    pub const EBADF: Errno = Errno(EBADF);
     /// C: `EEXIST` — sys/errno.h:17.
     pub const EEXIST: Errno = Errno(EEXIST);
     /// C: `ENAMETOOLONG` — sys/errno.h:63.
