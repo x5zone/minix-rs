@@ -74,6 +74,7 @@
 | 2026-09-20 | edge4 E5(a) | `os/tests/`（`pm_vm_fork.rs` 重写 + `Cargo.toml` 依赖换 minix-vfs/minix-sys + 死壳 `pm_vm_fork_test.rs` 删除） | E5(a) 宿主联调复活（旧停用注释的复活条件 E1/E2 已满足）；本线自持，无跨界认领 | ✅ 同日（430803d4f；minix-tests 2 passed，pm 502 + vfs 全绿） |
 | 2026-09-20 | edge4 E5(c) 前哨 | `os/tests/`（新增 `srv_fork.rs` + `Cargo.toml` 增一条 `[[test]]` 声明） | 批A srv_fork 链宿主半（RS→PM→VM→VFS）；本线自持，生产代码零改动 | ✅ 同日（fbd33bcae；srv_fork 2 passed，pm 405+11 + vfs 502 全绿） |
 | 2026-09-20 | edge4 E5(b) | `os/tests/`（新增 `vm_vfs_fdclose.rs` + `Cargo.toml` 增一条 `[[test]]` 声明） | 批B VM↔VFS FDCLOSE 往返宿主半；本线自持，生产代码零改动 | ✅ 同日（79d82ed91；vm_vfs_fdclose 2 passed，pm/vfs 全绿） |
+| 2026-09-20 | edge4 E5(f) | `os/tests/`（新增 `ds_publish_subscribe.rs` + `Cargo.toml` 增一条 `[[test]]` 声明与 `minix-ds` 依赖） | 批C DS 发布/订阅/取回三链宿主半；本线自持，生产代码零改动 | ✅ 同日（65bd107a6；ds_publish_subscribe 2 passed，ds 112 + pm/vfs 全绿） |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 
@@ -113,7 +114,7 @@
 | E5(c) | RS live-update 全链（PREPARE→UPDATE→resume） | edge3 S17+S18+S20 | 同上 | 🔄 **前哨段宿主半 ✅（2026-09-20，fbd33bcae）**：`os/tests/srv_fork.rs`——RS 门负路径（非 RS 端点 → `NotPermitted` 且零出站，门在 `vm_fork` 之前）× 成功链三支出站（VM_FORK 经 `VmForkIn` 回解 / `VFS_PM_SRV_FORK` 的 `REUID`/`REGID` 为真实 uid/gid / 给子进程的立即 OK）× VFS `VfsPmHandler::handle(VfsCall::SrvFork)` 真分发臂（复制后追加 setuid/setgid 两步）；2 测试。**附带发现 C-28**（子进程 `PRIV_PROC` 保留未落地，偏差钉在测试里）。**PREPARE→UPDATE→resume 主体与真机半挂 T2** |
 | E5(d) | QEMU VM paging 冒烟（含缺页完整回路 + VM 写 PTE） | edge3 S20 + edge1 K17 载体 | `os/qemu-tests/`（edge1 实现，edge4 验收） | ☐ |
 | E5(e) | PM↔SCHED 调度链（START/INHERIT/NO_QUANTUM 回环） | edge3 S27 + edge1 K1/K2 | 真机（T2 后） | ☐ |
-| E5(f) | DS 发布/订阅三链 + regex pattern 用例 | edge3 S22 + S17 | 真机（T2 后） | ☐ |
+| E5(f) | DS 发布/订阅三链 + regex pattern 用例 | edge3 S22 + S17 | 真机（T2 后） | 🔄 **宿主半 ✅（2026-09-20，65bd107a6）**：`os/tests/ds_publish_subscribe.rs`——DS 的事件循环开在 `DsIpc`/`DsKernel` 两个 trait 上，宿主态跑真服务器 `DsServer::run_once`：`boot::apply_boot_map` 铺标签 → 订阅（`plan_subscribe` 模式编译 + `apply_subscribe` 落座）→ 发布（`plan_publish` 裁决 + 提交 + `notify::apply_update` 扫描唤醒）→ 取回（`plan_check` + grant 写回 + `apply_check` 消费）；对端接缝断言 DS 落座的 key/值咬合 VFS 的 `classify_ds_key` 与 `ds_event_action`（`drv.blk.0` + `DS_DRIVER_UP` → dmap 上线）。2 测试（三链全通 / 模式不匹配不唤醒）。**真机半挂 T2** |
 | E5(g) | MIB/sysctl 四链 + rmibtest 契约 | edge3 S24/S26/S33 + E-RMIBWIRE 通电 | 真机（T2 后） | ☐ |
 | E5(h) | devman 生命周期四链 | edge3 S25 + S17 | 真机（T2 后） | ☐ |
 | E5-SMP | 「fork 后父子并发写 CoW 页」陈旧 TLB 用例 | edge1 K3 + 真拓扑 | `os/qemu-tests/` -smp 4 | ☐ |
