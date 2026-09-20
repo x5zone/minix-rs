@@ -2337,22 +2337,28 @@ fn dispatch_vmctl(
 ///
 /// C: do_vmctl.c:32-35 — assert(RTS_ISSET(p,RTS_PAGEFAULT));
 /// RTS_UNSET(p, RTS_PAGEFAULT). The C assert converts to EINVAL.
+///
+/// The clear goes through the scheduler-aware `rts_unset`, which is the
+/// RTS_UNSET macro's enqueue half: the process became non-runnable at
+/// fault time (RTS_PAGEFAULT, dequeued) and must re-enter its run queue
+/// now that VM resolved the fault. The primitive flag clear alone left
+/// the process dequeued forever — the fault loop never closed.
 fn vmctl_clear_page_fault(
     proc_table: &mut crate::proc_table::ProcessTable,
     target_nr: ProcNr,
 ) -> KcallResult {
-    let target = proc_table.get_mut(target_nr);
-    match target {
-        Some(p) => {
-            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::PAGEFAULT) {
-                // C: assert(RTS_ISSET(p, RTS_PAGEFAULT)) — convert to error return
-                return KcallResult::Ok(EINVAL);
-            }
-            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::PAGEFAULT);
-            KcallResult::Ok(0)
-        }
-        None => KcallResult::Ok(EINVAL),
+    let was_set = proc_table
+        .get(target_nr)
+        .is_some_and(|p| p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::PAGEFAULT));
+    if !was_set {
+        // C: assert(RTS_ISSET(p, RTS_PAGEFAULT)) — convert to error return
+        return KcallResult::Ok(EINVAL);
     }
+    proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::PAGEFAULT);
+    if let Some(p) = proc_table.get_mut(target_nr) {
+        p.p_fault_addr = None;
+    }
+    KcallResult::Ok(0)
 }
 
 /// MemReqGet — VM fetches the next pending memory request.
@@ -4426,5 +4432,42 @@ mod tests {
             "padconf on a non-arm32 kernel is the C NULL-entry case");
         assert_eq!(result.reply_code(), Some(EBADREQUEST),
             "user-visible reply must be EBADREQUEST (212), matching system.c:123");
+    }
+
+    #[test]
+    fn test_vmctl_clear_page_fault_requeues_target() {
+        // C: do_vmctl.c:32-35 — RTS_UNSET(p, RTS_PAGEFAULT) is the
+        // macro form: clear + enqueue when the process becomes runnable.
+        // The process parked at fault time (rts_set → dequeued); VM's
+        // ClearPageFault must return it to the run queue, or the E5(d)
+        // loop never closes (the process is never scheduled again).
+        use crate::proc::RtsFlagsBits;
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let nr = ProcNr(0);
+        {
+            let p = proc_table.get_mut(nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.p_endpoint = minix_types::Endpoint(100);
+        }
+        // Fault-time park: PAGEFAULT set through the scheduler-aware
+        // rts_set (the trap arm's transition).
+        proc_table.rts_set(nr, RtsFlagsBits::PAGEFAULT);
+        assert!(!proc_table.get(nr).unwrap().is_runnable(),
+            "faulted process must be non-runnable before VM resolves");
+
+        // Clear → runnable again, fault-address record dropped.
+        assert_eq!(vmctl_clear_page_fault(&mut proc_table, nr), KcallResult::Ok(0));
+        assert!(proc_table.get(nr).unwrap().is_runnable(),
+            "RTS_UNSET must re-enqueue the resolved process (do_vmctl.c:35)");
+        assert_eq!(proc_table.get(nr).unwrap().p_fault_addr, None);
+
+        // Second clear without a pending fault → EINVAL (C assert parity).
+        assert_eq!(vmctl_clear_page_fault(&mut proc_table, nr), KcallResult::Ok(EINVAL));
+
+        // Free slot target → EINVAL as well (old None arm preserved).
+        assert_eq!(
+            vmctl_clear_page_fault(&mut proc_table, ProcNr(1)),
+            KcallResult::Ok(EINVAL)
+        );
     }
 }

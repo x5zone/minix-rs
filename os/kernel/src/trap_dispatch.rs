@@ -13,14 +13,18 @@
 //!   `BklSection::assume_held()` — the same root contract
 //!   `dispatch_hardware_irq` and `clock_irq_handler` already witness. C's
 //!   interrupt handlers take no lock for the same reason.
-//! - **User-origin traps**: every acting outcome (signals, VM page-fault
-//!   forwarding, FPU restore, recovery redirects) needs the per-CPU current
-//!   process and the VM IPC link. Those arrive with the per-CPU scheduler
-//!   steps (S-6/S-7); until then this body treats them as unreachable and
-//!   panics with the outcome attached — no CPL3 code can exist before the
-//!   scheduler hands out user contexts, so the panic is a wiring bug alarm,
-//!   not reachable behavior. The S-9 step threads the explicit BKL witness
-//!   for the exception entry (todo D-38①).
+//! - **User-origin traps** (S-6/S-7 wired): the body captures the per-CPU
+//!   current process, acquires the BKL (user code runs without it —
+//!   `finish_and_restore` released it), and acts on the outcome:
+//!   `ForwardToVm` sets RTS_PAGEFAULT and sends the `VM_PAGEFAULT`
+//!   message to VM FROM_KERNEL (C: `pagefault()` — exception.c:112-129);
+//!   `Signal` calls `cause_signal` (C: `cause_sig` — exception.c:276);
+//!   VM's own fault panics (C: "pagefault in VM" — exception.c:101-118).
+//!   Both acting arms end in the scheduling loop (C: mpx.S
+//!   `jmp switch_to_user`). Outcomes with no acting stage yet (FpuTrap —
+//!   lazy-FPU restore, recovery redirects, traced-debug, spurious-NMI
+//!   resume) still panic with the outcome attached — registered gaps,
+//!   not reachable from the current carriers.
 //! - **Syscall body**: reads the per-CPU `proc_ptr` anchor before any lock
 //!   (C reads `proc_ptr` at trap entry the same way), then runs the
 //!   existing `kernel_call` wrapper — which acquires/releases the BKL
@@ -30,7 +34,7 @@
 
 use crate::syscall::KcallResult;
 use minix_arch::exception::{ExceptionArch, FaultContext};
-use minix_arch::exception_dispatcher::{ExceptionDispatcher, ExceptionOutcome};
+use minix_arch::exception_dispatcher::{ExceptionDispatcher, ExceptionOutcome, ExceptionSignal};
 use minix_arch::TrapStyle;
 use minix_arch::x86_64::exception::X86_64ExceptionFrame;
 use minix_arch::x86_64::trap_stub::TrapFrame;
@@ -173,21 +177,57 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
 
     // Exception / user soft-int gate → arch-generic dispatcher.
     //
-    // S-9 (D-38①) — BKL ownership at the exception entry: the trap path
-    // INHERITS the interrupted context's BKL ownership (C parity: trap
-    // handlers run with the BKL owned by the interrupted context; trap.c
-    // takes no lock — acquiring here would deadlock on the non-reentrant
-    // CAS lock for the normal kernel-origin case). `assume_held` turns that
-    // invariant into a debug-asserted witness; the user-origin acquire
-    // (C: trap entry BKL_LOCK from ring 3) becomes reachable with S-6/S-7
-    // user frames and threads its own witness then.
-    let _section = unsafe { crate::smp::BklSection::assume_held() };
+    // S-9 (D-38①) — BKL ownership at the exception entry, per origin:
+    // - **Kernel-origin** (is_user = false): the interrupted context owns
+    //   the BKL, so the body INHERITS it via `assume_held` (C parity: trap
+    //   handlers run with the BKL owned by the interrupted context; trap.c
+    //   takes no lock — acquiring here would deadlock on the non-reentrant
+    //   CAS lock for the normal kernel-origin case).
+    // - **User-origin** (is_user = true): user code runs WITHOUT the BKL
+    //   (`finish_and_restore` releases it before the context restore —
+    //   C: context_stop must_bkl_unlock, arch_clock.c:226-233), so the
+    //   entry ACQUIRES it (C: trap entry BKL_LOCK from ring 3). Every
+    //   acting arm below (page-fault forwarding, signal) mutates shared
+    //   tables and must run under the lock; the scheduling loop reuses the
+    //   held-BKL convention on exit.
     let mut exc = exception_frame_of(frame);
     let is_user = X86_64ExceptionFrame::is_user_mode(&exc);
+    let section = if is_user {
+        crate::smp::bkl_lock_section()
+    } else {
+        unsafe { crate::smp::BklSection::assume_held() }
+    };
+    // Per-CPU current process (C: `saved_proc = get_cpulocal_var(proc_ptr)`
+    // — exception.c:186). Only user-origin outcomes act on it; the read
+    // follows the same dispatch-anchor convention as the SYSCALL body
+    // (proc_ptr is read as the anchor itself). None = no scheduler step
+    // ever ran on this CPU, so no CPL3 code could have faulted — wiring
+    // bug, same alarm as the SYSCALL arm.
+    let cur_nr = if is_user {
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        let cpu = crate::current_cpu_id();
+        Some(
+            smp.cpu_local(cpu)
+                .and_then(|l| l.proc_ptr)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "user exception before scheduler bring-up (proc_ptr = \
+                         None on cpu {cpu:?}) — wiring bug"
+                    )
+                }),
+        )
+    } else {
+        None
+    };
+    // is_vm feeds the page-fault classification (C: `pr->p_endpoint ==
+    // VM_PROC_NR` — exception.c:101; VM's own faults cannot be forwarded
+    // to VM itself). Kernel-origin faults never reach that check (the
+    // nested path panics first), matching C's is_nested ordering.
+    let is_vm = cur_nr == Some(crate::proc::proc_nr::VM_PROC_NR);
     let outcome = ExceptionDispatcher::<X86_64ExceptionFrame>::handle(
         &mut exc,
         /* is_nested = */ !is_user,
-        /* is_vm = */ false, // current-process identity arrives with S-6
+        is_vm,
         FaultContext::Normal,
         /* is_traced = */ false,
         TrapStyle::NoEntry,
@@ -220,11 +260,93 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 frame.errcode
             );
         }
+        ExceptionOutcome::VmPageFault => {
+            // VM's own user page fault — forwarding to VM would deadlock
+            // on itself. C: pagefault() prints the frame summary and
+            // panics ("pagefault in VM") — exception.c:101-118.
+            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            Console::write_str("pagefault for VM on cpu ");
+            Console::write_hex(crate::current_cpu_id().raw() as u64);
+            Console::write_str(" rip ");
+            Console::write_hex(frame.rip);
+            Console::write_str("\n");
+            panic!("pagefault in VM");
+        }
+        ExceptionOutcome::ForwardToVm(pf) => {
+            let cur_nr = cur_nr.expect("ForwardToVm implies a user-origin fault");
+            // Persist the user register file BEFORE any dispatch side
+            // effect (design decision 3, same shape as the int-33 IPC
+            // arm) — VM resolves the fault while the process is parked on
+            // RTS_PAGEFAULT, and the resume must re-execute the faulting
+            // instruction against this saved state (C: mpx.S
+            // SAVE_PROCESS_CTX already ran by the time exception_handler
+            // dispatches).
+            {
+                let table = crate::proc_table_with(&section);
+                let proc = table
+                    .get_mut(cur_nr)
+                    .unwrap_or_else(|| panic!("pagefault from invalid proc nr {cur_nr:?}"));
+                minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+            }
+            // C: pagefault() tail — RTS_PAGEFAULT, VM_PAGEFAULT message,
+            // FROM_KERNEL mini_send (exception.c:112-129). Send errors
+            // panic here (C: panic "WARNING: pagefault: mini_send
+            // returned %d").
+            if let Err(e) = forward_pagefault_to_vm(
+                crate::proc_table_with(&section),
+                crate::priv_table_with(&section),
+                cur_nr,
+                pf.vaddr.0,
+                frame.errcode as u32,
+            ) {
+                panic!("pagefault: mini_send returned {e:?}");
+            }
+            // C: pagefault() returns → mpx.S `jmp switch_to_user`. The
+            // process stays non-runnable (RTS_PAGEFAULT) until VM's
+            // SYS_VMCTL ClearPageFault re-enqueues it (do_vmctl.c:35);
+            // the scheduling loop picks whoever is runnable next.
+            crate::scheduler_loop(crate::current_cpu_id())
+        }
+        ExceptionOutcome::Signal(sig) => {
+            let cur_nr = cur_nr.expect("Signal implies a user-origin exception");
+            // Persist first: the signal manager's later SIGSEND delivery
+            // builds the handler trampoline on top of the fault-time
+            // register file (C: sig_proc reshapes p_reg, which holds the
+            // trap-saved state).
+            {
+                let table = crate::proc_table_with(&section);
+                let proc = table
+                    .get_mut(cur_nr)
+                    .unwrap_or_else(|| panic!("exception from invalid proc nr {cur_nr:?}"));
+                minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+            }
+            // C: cause_sig(proc_nr(saved_proc), ep->signum) —
+            // exception.c:276. RTS_SIGNALED parks the process until its
+            // signal manager resolves the delivery (kernel-side behavior
+            // is complete at cause_sig).
+            let sig_nr = exception_signal_to_nr(sig);
+            crate::syscall_signal::cause_signal(
+                cur_nr,
+                sig_nr,
+                crate::proc_table_with(&section),
+                crate::priv_table_with(&section),
+            );
+            // C: cause_sig returns → mpx.S `jmp switch_to_user`.
+            crate::scheduler_loop(crate::current_cpu_id())
+        }
         other => {
-            // Console diagnostics before dying (same as the KernelPanic
-            // arm): the user-origin page-fault/exception path is unwired
-            // (S-6/S-7), so when it fires the frame contents are the only
-            // evidence available.
+            // Console diagnostics before dying: these outcomes are typed
+            // but their acting stages are not wired into this trap path
+            // yet, so reaching them is a wiring gap, not recoverable
+            // state. Each names its registered owner:
+            // - FpuTrap: lazy-FPU restore stage (save owner / restore
+            //   self / clts) — FPU ownership wiring, X-8 / T5 wave.
+            // - RedirectToRecovery / PhysCopyFault: the kernel copy paths
+            //   do not thread FaultContext into this entry yet.
+            // - ClearTrapFlag: is_traced / kern_trap_style are not
+            //   threaded from the saved PSW yet.
+            // - SpuriousNmi: C prints-and-returns (exception.c:191-195);
+            //   the vector-2 resume leg is unwired.
             use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
             Console::write_str("trap: vector ");
             Console::write_hex(vector as u64);
@@ -242,12 +364,77 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(frame.ss);
             Console::write_str("\n");
             panic!(
-                "trap_dispatch: user-origin outcome {other:?} needs per-CPU process \
-                 context (S-6/S-7); reached at vector {vector:#04x} rip {:#x} — \
-                 wiring bug, no CPL3 code should exist yet",
+                "trap_dispatch: outcome {other:?} has no acting stage wired \
+                 (registered gap, not recoverable) — vector {vector:#04x} rip {:#x}",
                 frame.rip
             )
         }
+    }
+}
+
+/// Map the arch-generic exception classification to the kernel signal
+/// number (C: the `ex_data[].signum` column — exception.c:19-39; constants
+/// signal.h:55-63).
+fn exception_signal_to_nr(sig: ExceptionSignal) -> u32 {
+    match sig {
+        ExceptionSignal::Fpe => crate::syscall_signal::SIGFPE,
+        ExceptionSignal::Ill => crate::syscall_signal::SIGILL,
+        ExceptionSignal::Segv => crate::syscall_signal::SIGSEGV,
+        ExceptionSignal::Bus => crate::syscall_signal::SIGBUS,
+        ExceptionSignal::Emt => crate::syscall_signal::SIGEMT,
+        ExceptionSignal::Trap => crate::syscall_signal::SIGTRAP,
+    }
+}
+
+/// The page-fault forwarding arm's acting half — C: `pagefault()` tail,
+/// exception.c:112-129.
+///
+/// 1. `RTS_SET(pr, RTS_PAGEFAULT)` (exception.c:115) — via the
+///    scheduler-aware `rts_set`, which is the RTS_SET macro's dequeue
+///    half; the primitive flag set in `page_fault::set_pagefault_pending`
+///    alone would leave the process queued while non-runnable
+///    (pick_proc returns queue heads without a runnable re-check).
+/// 2. Build the `VM_PAGEFAULT` message (m_source = faulting endpoint,
+///    VPF_ADDR = fault address, VPF_FLAGS = raw error code —
+///    exception.c:118-122) and `mini_send` it to VM FROM_KERNEL
+///    (exception.c:123-125).
+///
+/// Returns `Err(errno)` when the send fails; the caller panics (C:
+/// `panic("WARNING: pagefault: mini_send returned %d")`).
+fn forward_pagefault_to_vm(
+    proc_table: &mut crate::proc_table::ProcessTable,
+    priv_table: &mut crate::kpriv::PrivTable,
+    cur_nr: crate::proc::ProcNr,
+    fault_addr: u64,
+    error_code: u32,
+) -> Result<crate::ipc::IpcOutcome, crate::ipc::IpcError> {
+    use crate::ipc::{IpcEngine, KernelUserCopy, SendFlags};
+    use crate::proc::RtsFlagsBits;
+
+    proc_table.rts_set(cur_nr, RtsFlagsBits::PAGEFAULT);
+    // Rust-side diagnostic record (the field `set_pagefault_pending`
+    // maintains; C keeps no per-process fault address — the address
+    // travels in the message alone).
+    if let Some(p) = proc_table.get_mut(cur_nr) {
+        p.p_fault_addr = Some(fault_addr);
+    }
+    let src_endpoint = proc_table
+        .get(cur_nr)
+        .map(|p| p.p_endpoint)
+        .unwrap_or(minix_types::Endpoint::NONE);
+    let msg = crate::page_fault::build_vm_pagefault_msg(src_endpoint, fault_addr, error_code);
+    // Send target: the VM process's own endpoint (C: mini_send(pr,
+    // VM_PROC_NR, ...) resolves the slot through the table; a dead VM
+    // slot is the EDEADSRCDST path).
+    let dst_endpoint = proc_table
+        .get(crate::proc::proc_nr::VM_PROC_NR)
+        .map(|p| p.p_endpoint)
+        .ok_or(crate::ipc::IpcError::DeadSrcDst)?;
+    let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy);
+    let outcome = engine.send(cur_nr, dst_endpoint, &msg, SendFlags::FROM_KERNEL);
+    match outcome {
+        crate::ipc::IpcOutcome::Error(e) => Err(e),
+        delivered_or_blocked => Ok(delivered_or_blocked),
     }
 }
 
@@ -509,5 +696,128 @@ mod tests {
         assert_eq!(KcallResult::Ok(7).reply_code(), Some(7));
         assert!(KcallResult::NoReply.reply_code().is_none());
         assert!(KcallResult::VmSuspend.reply_code().is_none());
+    }
+
+    #[test]
+    fn exception_signal_maps_to_c_signum() {
+        // C: the ex_data[].signum column (exception.c:19-39) — the
+        // classification lives in the arch dispatcher, the numeric signal
+        // in this kernel signal module; the mapping must hit the C
+        // constants exactly (signal.h:55-63).
+        use minix_arch::exception_dispatcher::ExceptionSignal;
+        assert_eq!(exception_signal_to_nr(ExceptionSignal::Fpe), crate::syscall_signal::SIGFPE);
+        assert_eq!(exception_signal_to_nr(ExceptionSignal::Ill), crate::syscall_signal::SIGILL);
+        assert_eq!(exception_signal_to_nr(ExceptionSignal::Segv), crate::syscall_signal::SIGSEGV);
+        assert_eq!(exception_signal_to_nr(ExceptionSignal::Bus), crate::syscall_signal::SIGBUS);
+        assert_eq!(exception_signal_to_nr(ExceptionSignal::Emt), crate::syscall_signal::SIGEMT);
+        assert_eq!(exception_signal_to_nr(ExceptionSignal::Trap), crate::syscall_signal::SIGTRAP);
+    }
+
+    /// Shape a test table with a faulting user proc (nr 0) and the VM
+    /// slot (VM_PROC_NR), both occupied with distinct endpoints.
+    fn pagefault_test_table() -> (crate::test_helpers::TestProcTable, crate::proc::ProcNr) {
+        use crate::proc::RtsFlagsBits;
+        let mut table = crate::test_helpers::test_proc_table();
+        let caller_nr = crate::proc::ProcNr(0);
+        {
+            let p = table.get_mut(caller_nr).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.p_endpoint = minix_types::Endpoint(100);
+        }
+        {
+            let p = table.get_mut(crate::proc::proc_nr::VM_PROC_NR).unwrap();
+            p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            p.p_endpoint = minix_types::Endpoint(8);
+        }
+        (table, caller_nr)
+    }
+
+    #[test]
+    fn forward_pagefault_blocks_when_vm_not_receiving() {
+        // C: mini_send(pr, VM_PROC_NR, &m_pagefault, FROM_KERNEL) with VM
+        // busy → the faulting process parks on the VM caller queue,
+        // carrying RTS_PAGEFAULT (the scheduler must skip it until VM
+        // resolves — exception.c:115 + proc.c:938-960).
+        use crate::ipc::IpcOutcome;
+        use crate::proc::{proc_nr, RtsFlagsBits};
+        let (mut table, caller_nr) = pagefault_test_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+
+        let outcome = forward_pagefault_to_vm(&mut table, &mut priv_table, caller_nr, 0x4000, 0x4);
+        assert!(matches!(outcome, Ok(IpcOutcome::Blocked)));
+        {
+            let p = table.get(caller_nr).unwrap();
+            assert!(p.p_rts_flags.is_set(RtsFlagsBits::PAGEFAULT));
+            assert!(!p.is_runnable(), "faulting process must not stay schedulable");
+            assert!(p.p_rts_flags.is_set(RtsFlagsBits::SENDING));
+            assert_eq!(p.p_sendto_e, minix_types::Endpoint(8));
+            assert_eq!(p.p_fault_addr, Some(0x4000));
+        }
+        assert_eq!(
+            table.get(proc_nr::VM_PROC_NR).unwrap().caller_q_head,
+            Some(caller_nr),
+            "caller must be enqueued on VM's caller queue"
+        );
+    }
+
+    #[test]
+    fn forward_pagefault_delivers_to_receiving_vm() {
+        // Path A: VM in RECEIVE for the faulting endpoint → direct
+        // delivery; the delivered message is the VM_PAGEFAULT wire shape
+        // (m_source = faulting endpoint, VPF_ADDR, VPF_FLAGS —
+        // exception.c:118-122), and the faulting process is parked on
+        // RTS_PAGEFAULT alone (delivery cleared nothing for the sender).
+        use crate::ipc::IpcOutcome;
+        use crate::proc::{proc_nr, RtsFlagsBits};
+        let (mut table, caller_nr) = pagefault_test_table();
+        {
+            let vm = table.get_mut(proc_nr::VM_PROC_NR).unwrap();
+            vm.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            vm.p_getfrom_e = minix_types::Endpoint(100);
+        }
+        let mut priv_table = crate::test_helpers::test_priv_table();
+
+        let outcome = forward_pagefault_to_vm(&mut table, &mut priv_table, caller_nr, 0xCAFE, 0x6);
+        assert!(matches!(outcome, Ok(IpcOutcome::Delivered)));
+        {
+            let vm = table.get(proc_nr::VM_PROC_NR).unwrap();
+            assert!(vm.p_misc_flags.is_set(crate::proc::MiscFlagsBits::DELIVERMSG));
+            assert_eq!(vm.p_delivermsg.m_type, minix_types::VM_PAGEFAULT as i32);
+            assert_eq!(vm.p_delivermsg.m_source, minix_types::Endpoint(100));
+            // SAFETY: m_vm_pagefault is the active arm — the kernel just
+            // wrote it via build_vm_pagefault_msg.
+            let pf = unsafe { vm.p_delivermsg.m_u.m_vm_pagefault };
+            assert_eq!(pf.vpf_addr, 0xCAFE);
+            assert_eq!(pf.vpf_flags, 0x6);
+        }
+        {
+            let p = table.get(caller_nr).unwrap();
+            assert!(p.p_rts_flags.is_set(RtsFlagsBits::PAGEFAULT));
+            assert!(
+                !p.is_runnable(),
+                "delivered != resolved: parked until SYS_VMCTL ClearPageFault"
+            );
+        }
+    }
+
+    #[test]
+    fn forward_pagefault_errors_on_dead_vm_slot() {
+        // C: mini_send error → the caller panics ("WARNING: pagefault:
+        // mini_send returned %d"). The helper surfaces the errno as Err
+        // for the trap body's panic; RTS_PAGEFAULT was still set first
+        // (exception.c:115 precedes the send).
+        use crate::ipc::IpcError;
+        use crate::proc::RtsFlagsBits;
+        let (mut table, caller_nr) = pagefault_test_table();
+        {
+            let vm = table.get_mut(crate::proc::proc_nr::VM_PROC_NR).unwrap();
+            vm.p_rts_flags.set(RtsFlagsBits::NO_ENDPOINT);
+        }
+        let mut priv_table = crate::test_helpers::test_priv_table();
+
+        let outcome = forward_pagefault_to_vm(&mut table, &mut priv_table, caller_nr, 0x4000, 0x4);
+        assert_eq!(outcome, Err(IpcError::DeadSrcDst));
+        let p = table.get(caller_nr).unwrap();
+        assert!(p.p_rts_flags.is_set(RtsFlagsBits::PAGEFAULT));
     }
 }
