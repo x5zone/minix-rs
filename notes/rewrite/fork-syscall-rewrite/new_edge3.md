@@ -39,7 +39,7 @@
 | S33 | E-MIBPROD/E-ISPROD 余项 | 🔄（余外部依赖） | 余项=run_dump A-6 输出面真机联调（E5(g)），挂 T2 后 |
 | S35 | 18-stage C-1 长尾 | 🔄（等跨线原语） | 跨线原语即 NL4/NS5/NS7，解锁后按批推进 |
 | S36 | Requires 回填 + POSIX 基准 | ☐ | 随 S35/NS12 各批同步 |
-| S37 | E-DMABUF VM 侧 | 已解锁（L9 闭环） | 按 16-stage 驱动消费方节奏 🔄 2026-09-21 zcode_glm_3（claim/S37-zcode_glm_3 @ .wt/s37-zcode_glm_3；E-DMABUF 方案 A trait 契约 + VM 侧接口化） |
+| S37 | E-DMABUF VM 侧 | 已解锁（L9 闭环） | ~~按 16-stage 驱动消费方节奏~~ **✅ CTOS 勘误 2026-09-21（zcode_glm_3，领取核验后释放 claim 未动代码）**：两半实际均已落主线——**契约半**＝minix-types `types/dma.rs`（`DmaMemory` 四操作 + `DmaRegion` 凭据，757398407，edge2 L9 定稿）+ 契约文档 `16-stage-drivers/25-dma-memory-contract.md`（§3 明言"生产端的实现是 VM 服务器的事（edge3 S37）"）；**VM 侧行为半**＝`os/servers/vm/src/dma.rs`（`VmDmaMemory<A: PfnAllocator>`，Direct Map 常数偏移 + `alloc_contiguous` 单次多页 + 在役簿记 + 对齐裁剪，9 个 `dma_` 测试；7ed891a9b，2026-09-19，docker vm 520 绿），`lib.rs:81` 已接线。**余量均非本条目、随消费方节奏**：①服务器集成点（`VmDmaMemory` 包住 `VmPageAllocator` 实例化）随 16-stage 消费批；②驱动进程生产传输半（minix-sys 的 alloc_contig/umap wrapper 现零命中）随 16-stage A5；③端到端通电挂 E5。复核命令：`grep -c "fn dma_" os/servers/vm/src/dma.rs` ≥ 7 = 已闭。**edge_todo.md E-DMABUF 条目文字（"两侧都未启动"）过期，归 edge4 批量收敛** |
 | S42 批四 | 全系统载体 | 半程（C-27/C-29） | 载体收口随 new_edge1 NK1；NS1/NS2 供 step3 应答 |
 
 ## 已闭单勿领（以 edge_todo.md 最新进度注记为准）
