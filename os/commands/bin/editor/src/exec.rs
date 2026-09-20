@@ -32,7 +32,7 @@ use crate::addr::{
     evaluate_with, evaluate_range_with, parse_range, AddressRange, Context, SearchProbe, MAX_MARKS,
 };
 use crate::cmd::{parse_command, Command, Modifiers};
-use crate::store::{TextStore, MAX_TEXT};
+use crate::store::{TextStore, MAX_LINES, MAX_TEXT};
 use crate::EditorError;
 use alloc::vec::Vec;
 use minix_regex::sed::{apply as subst_apply, Subst, SubstScope};
@@ -156,6 +156,9 @@ pub struct Session {
     /// While collecting text for `a`/`i`/`c`: the insert-before position
     /// of the next input line.
     pending_input: Option<usize>,
+    /// `G`/`V` 交互全局的进行态（C `exec_global` 的 interact 半，
+    /// glbl.c:107-134）：每个活跃行显示后等一条命令。
+    pending_global: Option<PendingGlobal>,
     /// 上一次的模式字节（`s/old/…` 写入；`//` 空模式与裸 `s` 复用——C 的
     /// `pat` 全局加 `expr` 缓存，re.c:59-88）。空 len = 无。
     last_pattern: [u8; MAX_TEXT],
@@ -204,6 +207,7 @@ impl Session {
             marks: [None; MAX_MARKS],
             error_msg: None,
             pending_input: None,
+            pending_global: None,
             pending_gflag: 0,
             last_pattern: [0; MAX_TEXT],
             last_pattern_len: 0,
@@ -453,6 +457,104 @@ fn delete_range<S: TextStore>(
     Ok(())
 }
 
+/// 活跃表（C `glbl.c` 的 `active_list`，升序记内容快照）。定长缓冲：
+/// 活跃内容是缓冲内容的子集，store 的容量就是表的容量上限。
+struct ActiveList {
+    text: [u8; MAX_TEXT],
+    starts: [u16; MAX_LINES + 1],
+    count: usize,
+}
+
+impl ActiveList {
+    fn new() -> Self {
+        ActiveList { text: [0; MAX_TEXT], starts: [0; MAX_LINES + 1], count: 0 }
+    }
+
+    fn line(&self, index: usize) -> &[u8] {
+        &self.text[self.starts[index] as usize..self.starts[index + 1] as usize]
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        let start = self.starts[self.count] as usize;
+        debug_assert!(self.count < MAX_LINES && start + bytes.len() <= MAX_TEXT);
+        self.text[start..start + bytes.len()].copy_from_slice(bytes);
+        self.count += 1;
+        self.starts[self.count] = (start + bytes.len()) as u16;
+    }
+}
+
+/// `G`/`V` 的进行态：活跃表加游标，加本段 G 已见过的最近命令（C 的
+/// `ocmd` 静态量，`&` 重放源；`seen` 对应 C 局部 `cmd != NULL` 的
+/// "no previous command" 门——每段 G 重新起算）。
+struct PendingGlobal {
+    active: ActiveList,
+    /// 下一活跃行下标。
+    next: usize,
+    /// 内容重定位的扫描起点（行号）。
+    relocate: usize,
+    /// 当前等答案的行号。
+    at: usize,
+    prev: [u8; MAX_TEXT],
+    prev_len: usize,
+    seen: bool,
+    /// 尾缀打印位（`G/…/n` 之类，C `main.c:566` 的 GET_COMMAND_SUFFIX）。
+    gflag: u8,
+}
+
+/// `g`/`v`/`G`/`V` 的公共前半（C `build_active_list`，glbl.c:43-67）：
+/// 范围求值（缺省整缓冲）、模式解析（空模式复用上一模式并落账）、按
+/// 匹配与否收活跃表。返回表与模式后的余部起点。
+fn build_active<S: TextStore>(
+    store: &mut S,
+    sess: &mut Session,
+    line: &str,
+    cursor: usize,
+    range: &AddressRange,
+    is_match: bool,
+) -> Result<(ActiveList, usize), ExecError> {
+    let count = store.line_count();
+    let mut probe = StoreSearch { store, sess: &*sess };
+    let (from, to) =
+        evaluate_range_with(range, &context_of(store, sess), (1, count), line, &mut probe)
+            .map_err(map_store_error)?;
+    // 探针的借用到此为止：后面的建表走可变借用。
+    let rest = &line[cursor..];
+    let bytes = rest.as_bytes();
+    if bytes.is_empty() || bytes[0] == b' ' {
+        return Err(err("invalid pattern delimiter"));
+    }
+    let delim = bytes[0];
+    let (pspan, after) =
+        crate::addr::scan_pattern(bytes, 1, delim).map_err(map_store_error)?;
+    let mut pattern_len = pspan.len as usize;
+    let mut pattern_buf = [0u8; MAX_TEXT];
+    pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
+    if pattern_len == 0 {
+        // 空模式复用上一模式（C `get_compiled_pattern` 的 expr 缓存）。
+        pattern_len = sess.last_pattern_len;
+        pattern_buf[..pattern_len].copy_from_slice(sess.last_pattern_bytes());
+    }
+    if pattern_len == 0 {
+        return Err(err("no previous pattern"));
+    }
+    sess.remember_pattern(&pattern_buf[..pattern_len])?;
+    let pattern_text =
+        core::str::from_utf8(&pattern_buf[..pattern_len]).map_err(|_| err("invalid content"))?;
+    let compiled = compile_basic(pattern_text).map_err(|_| err("invalid pattern"))?;
+    let mut active = ActiveList::new();
+    let mut n = from;
+    while n <= to {
+        let mut buf = [0u8; MAX_TEXT];
+        let used = store.read_line(n, &mut buf).map_err(map_store_error)?;
+        let text = core::str::from_utf8(&buf[..used]).map_err(|_| err("invalid content"))?;
+        if compiled.is_match(text) == is_match {
+            active.push(&buf[..used]);
+        }
+        n += 1;
+    }
+    Ok((active, after))
+}
+
 /// `g`/`v` 的执行半（C `glbl.c` 全篇 + `main.c:562-574`）：
 ///
 /// 1. 范围缺省整缓冲（`check_addr_range(1, addr_last)`）；尾形式
@@ -482,58 +584,19 @@ fn global_command<S: TextStore, I: EditorIo>(
     if sess.is_global {
         return Err(err("cannot nest global commands"));
     }
-    let count = store.line_count();
-    let mut probe = StoreSearch { store, sess: &*sess };
-    let (from, to) =
-        evaluate_range_with(range, &context_of(store, sess), (1, count), line, &mut probe)
-            .map_err(map_store_error)?;
-    // 探针的借用到此为止：后面的建表与子命令走可变借用。
-    let rest = &line[cursor..];
-    let bytes = rest.as_bytes();
-    if bytes.is_empty() || bytes[0] == b' ' {
-        return Err(err("invalid pattern delimiter"));
-    }
-    let delim = bytes[0];
-    let (pspan, after) =
-        crate::addr::scan_pattern(bytes, 1, delim).map_err(map_store_error)?;
-    let mut pattern_len = pspan.len as usize;
-    let mut pattern_buf = [0u8; MAX_TEXT];
-    pattern_buf[..pattern_len].copy_from_slice(&bytes[1..1 + pattern_len]);
-    if pattern_len == 0 {
-        // 空模式复用上一模式（C `get_compiled_pattern` 的 expr 缓存）。
-        pattern_len = sess.last_pattern_len;
-        pattern_buf[..pattern_len].copy_from_slice(sess.last_pattern_bytes());
-    }
-    if pattern_len == 0 {
-        return Err(err("no previous pattern"));
-    }
-    sess.remember_pattern(&pattern_buf[..pattern_len])?;
-    let pattern_text =
-        core::str::from_utf8(&pattern_buf[..pattern_len]).map_err(|_| err("invalid content"))?;
-    let compiled = compile_basic(pattern_text).map_err(|_| err("invalid pattern"))?;
-    // `rest[0]` 就是命令字母（`g` 或 `v`）。
-    // `rest[0]` 是定界符；命令字母在 `line[cursor - 1]`（`g` 或 `v`）。
-    let inverse = line.as_bytes()[cursor - 1] == b'v';
-    let mut active: Vec<Vec<u8>> = Vec::new();
-    let mut n = from;
-    while n <= to {
-        let mut buf = [0u8; MAX_TEXT];
-        let used = store.read_line(n, &mut buf).map_err(map_store_error)?;
-        let text = core::str::from_utf8(&buf[..used]).map_err(|_| err("invalid content"))?;
-        if compiled.is_match(text) != inverse {
-            active.push(buf[..used].to_vec());
-        }
-        n += 1;
-    }
+    // 命令字母在 `line[cursor - 1]`（`g` 或 `v`）。
+    let is_match = line.as_bytes()[cursor - 1] == b'g';
+    let (active, after) = build_active(store, sess, line, cursor, range, is_match)?;
     if !sess.is_global {
         clear_undo(store, sess);
     }
-    let cmd = &rest[after..];
+    let cmd = &line[cursor + after..];
     let was_global = sess.is_global;
     sess.is_global = true;
     let mut result = Ok(Flow::Continue);
     let mut cursor_pos = 1usize;
-    for want in &active {
+    for index in 0..active.count {
+        let want = active.line(index).to_vec();
         // 内容重定位：从上一命中处向后找同文行（见函数头偏差注记）。
         let mut found = None;
         let mut n = cursor_pos;
@@ -570,6 +633,147 @@ fn global_command<S: TextStore, I: EditorIo>(
     }
     sess.is_global = was_global;
     result
+}
+
+/// `G`/`V` 的启动半（C `main.c:560-574` 的 G/V 支路）：与 `g`/`v` 同一
+/// 建表半（`build_active_list`），随后读 p/l/n 尾缀、清栈一次、置
+/// 输入态并显示第一个活跃行——余下的交互跨多次 [`step`] 进行。
+fn global_interactive_start<S: TextStore, I: EditorIo>(
+    store: &mut S,
+    sess: &mut Session,
+    io: &mut I,
+    line: &str,
+    cursor: usize,
+    range: &AddressRange,
+) -> Result<Flow, ExecError> {
+    if sess.is_global {
+        return Err(err("cannot nest global commands"));
+    }
+    let is_match = line.as_bytes()[cursor - 1] == b'G';
+    let (active, after) = build_active(store, sess, line, cursor, range, is_match)?;
+    let gflag = suffix_scan(&line[cursor + after..])?;
+    if !sess.is_global {
+        clear_undo(store, sess);
+    }
+    sess.is_global = true;
+    let mut pending = PendingGlobal {
+        active,
+        next: 0,
+        relocate: 1,
+        at: 0,
+        prev: [0; MAX_TEXT],
+        prev_len: 0,
+        seen: false,
+        gflag,
+    };
+    if global_resume(store, sess, io, &mut pending)? {
+        sess.pending_global = Some(pending);
+        Ok(Flow::Continue)
+    } else {
+        sess.is_global = false;
+        Ok(Flow::Continue)
+    }
+}
+
+/// 定位并显示下一个活跃行（C `exec_global` 循环头的 `display_lines`，
+/// glbl.c:107-110）。返回假表示活跃表走尽——整个 G 收束。
+fn global_resume<S: TextStore, I: EditorIo>(
+    store: &mut S,
+    sess: &mut Session,
+    io: &mut I,
+    pending: &mut PendingGlobal,
+) -> Result<bool, ExecError> {
+    while pending.next < pending.active.count {
+        let want = pending.active.line(pending.next).to_vec();
+        // 内容重定位：从上一命中处向后找同文行（批次三十同式）。
+        let mut found = None;
+        let mut n = pending.relocate;
+        while n <= store.line_count() {
+            let mut b = [0u8; MAX_TEXT];
+            let used = store.read_line(n, &mut b).map_err(map_store_error)?;
+            if &b[..used] == want.as_slice() {
+                found = Some(n);
+                break;
+            }
+            n += 1;
+        }
+        let Some(at) = found else {
+            pending.next += 1;
+            continue;
+        };
+        sess.current = at;
+        pending.at = at;
+        display(store, sess, io, at, at, pending.gflag)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// 一条 `G`/`V` 的回答（C glbl.c:111-134）：空行跳过、`&` 重放、其余
+/// 按全局文法执行。`Ok(None)` = 继续等下一活跃行的回答；`Ok(Some)`
+/// = G 收束并带出流向；`Err` = G 整段中止（已执行的变更保留，C 同）。
+fn global_interact_answer<S: TextStore, I: EditorIo>(
+    store: &mut S,
+    sess: &mut Session,
+    io: &mut I,
+    line: &str,
+    pending: &mut PendingGlobal,
+) -> Result<Option<Flow>, ExecError> {
+    let at = pending.at;
+    let want = pending.active.line(pending.next).to_vec();
+    if line.is_empty() {
+        // `n == 1 && ibuf == "\n"`：这一行跳过（glbl.c:119-120）。
+        pending.next += 1;
+        pending.relocate = at + 1;
+        return if global_resume(store, sess, io, pending)? {
+            Ok(None)
+        } else {
+            Ok(Some(Flow::Continue))
+        };
+    }
+    let cmd: &str;
+    if line == "&" {
+        if !pending.seen {
+            // C glbl.c:121-125：本段还没给过命令。
+            return Err(err("no previous command"));
+        }
+        cmd = core::str::from_utf8(&pending.prev[..pending.prev_len])
+            .map_err(|_| err("invalid content"))?;
+    } else {
+        if line.len() > MAX_TEXT {
+            return Err(err("out of memory"));
+        }
+        pending.prev[..line.len()].copy_from_slice(line.as_bytes());
+        pending.prev_len = line.len();
+        pending.seen = true;
+        cmd = line;
+    }
+    let before = store.line_count();
+    match step_inner(store, sess, cmd, io) {
+        Err(e) => Err(e),
+        Ok(flow @ (Flow::Quit | Flow::QuitModified)) => Ok(Some(flow)),
+        Ok(Flow::Continue) => {
+            // C `append_lines` 的 isglobal 支路（main.c:1059-1064）：正文
+            // 从命令串里读——一段回答收不到正文行，`a`/`i`/`c` 落空即过。
+            if sess.pending_input.take().is_some() {
+                sess.pending_gflag = 0;
+            }
+            // 重定位记账：计数减少 = 有行被删（重扫）；否则命中行若
+            // 存活即消费掉（下一行起扫）。
+            let survived = at <= store.line_count() && {
+                let mut b = [0u8; MAX_TEXT];
+                let used = store.read_line(at, &mut b).map_err(map_store_error)?;
+                &b[..used] == want.as_slice()
+            };
+            pending.relocate = if store.line_count() < before || !survived { at } else { at + 1 };
+            pending.next += 1;
+            if global_resume(store, sess, io, pending)? {
+                Ok(None)
+            } else {
+                Ok(Some(Flow::Continue))
+            }
+        }
+    }
 }
 
 /// `pop_undo_stack`（undo.c:71-105）：`u` 的本体——逆序回放撤销栈，把
@@ -1059,6 +1263,26 @@ fn step_inner<S: TextStore, I: EditorIo>(
         return Ok(Flow::Continue);
     }
 
+    // `G`/`V` 交互全局：每行输入是当前活跃行的回答（C `exec_global` 的
+    // interact 半跨多次 step——每个匹配行显示后等一条命令）。
+    if sess.pending_global.is_some() {
+        let mut pending = sess.pending_global.take().unwrap();
+        match global_interact_answer(store, sess, io, line, &mut pending) {
+            Ok(None) => {
+                sess.pending_global = Some(pending);
+                return Ok(Flow::Continue);
+            }
+            Ok(Some(flow)) => {
+                sess.is_global = false;
+                return Ok(flow);
+            }
+            Err(e) => {
+                sess.is_global = false;
+                return Err(e);
+            }
+        }
+    }
+
     let (range, consumed) = parse_range_err(line)?;
     let rest = &line[consumed..];
     // 搜索探针：不可变借用 store 与 sess；NLL 保证各臂在末次使用之后即可
@@ -1505,13 +1729,16 @@ fn step_inner<S: TextStore, I: EditorIo>(
         Command::Global => {
             global_command(store, sess, io, line, cursor, &range)
         }
-        Command::GlobalInteractive | Command::Shell => match command {
-            Command::Shell if sess.secure || sess.restricted => {
+        Command::GlobalInteractive => {
+            global_interactive_start(store, sess, io, line, cursor, &range)
+        }
+        Command::Shell => {
+            if sess.secure || sess.restricted {
                 Err(err("shell access restricted"))
+            } else {
+                Err(err("shell access not wired"))
             }
-            Command::GlobalInteractive => Err(err("interactive global not wired")),
-            _ => Err(err("shell access not wired")),
-        },
+        }
     }
 }
 
@@ -1691,7 +1918,11 @@ fn substitute_command<S: TextStore, I: EditorIo>(
     if sess.current == 0 && range.first.is_none() && range.second.is_none() {
         return Err(err("no match"));
     }
-    clear_undo(store, sess);
+    // C `main.c:684`：全局里 `s` 的清栈被 isglobal 抑制——整段全局是
+    // 一条撤销单位。
+    if !sess.is_global {
+        clear_undo(store, sess);
+    }
     let mut probe = StoreSearch { store, sess: &*sess };
     let (from, to) = evaluate_range_with(
         range,
@@ -2351,14 +2582,110 @@ mod tests {
         ScriptIo::new()
     }
 
+    /// 读回整个缓冲（测试断言助手）。
+    fn buffer_lines<S: TextStore>(store: &S) -> Vec<String> {
+        let mut buf = [0u8; MAX_TEXT];
+        let mut lines = Vec::new();
+        for n in 1..=store.line_count() {
+            let used = store.read_line(n, &mut buf).unwrap();
+            lines.push(String::from_utf8(buf[..used].to_vec()).unwrap());
+        }
+        lines
+    }
+
+    #[test]
+    fn test_interactive_global_edits_each_match_and_replays() {
+        let (mut store, mut sess) = seeded(&["one", "two", "three", "four"]);
+        let mut io = ScriptIo::new();
+        feed(&mut store, &mut sess, &mut io, &["G/o", "s/o/0", "&", ""]);
+        // 逐活跃行先显示后执行；`&` 重放上一条；空行跳过（glbl.c:111-134）。
+        assert_eq!(io.out_lines(), ["one", "two", "four"]);
+        assert_eq!(buffer_lines(&store), ["0ne", "tw0", "three", "four"]);
+        assert_eq!(sess.current, 4, "最后一个活跃行落当前行");
+    }
+
+    #[test]
+    fn test_interactive_global_v_inverse_and_number_suffix() {
+        let (mut store, mut sess) = seeded(&["one", "two", "three", "four"]);
+        let mut io = ScriptIo::new();
+        // `V` 收不匹配行，`n` 尾缀给显示加编号（C main.c:566 的后缀）。
+        feed(&mut store, &mut sess, &mut io, &["V/e/n", "", ""]);
+        assert_eq!(io.out_lines(), ["2\ttwo", "4\tfour"]);
+        assert_eq!(buffer_lines(&store), ["one", "two", "three", "four"], "全跳过：缓冲不动");
+    }
+
+    #[test]
+    fn test_interactive_global_amp_needs_a_previous_command() {
+        let (mut store, mut sess) = seeded(&["a", "b"]);
+        let mut io = ScriptIo::new();
+        // 起手 `&`：本段还没给过命令（glbl.c:121-125）——整段中止。
+        assert_eq!(step(&mut store, &mut sess, "G/a", &mut io).unwrap(), Flow::Continue);
+        assert_eq!(
+            step(&mut store, &mut sess, "&", &mut io).unwrap_err().message,
+            "no previous command"
+        );
+        assert_eq!(store.line_count(), 2, "中止不动缓冲");
+        // seen 每段 G 重新起算：新一段的起手 `&` 同样被拒。
+        feed(&mut store, &mut sess, &mut io, &["G/a", "d"]);
+        assert_eq!(store.line_count(), 1);
+        assert_eq!(step(&mut store, &mut sess, "G/b", &mut io).unwrap(), Flow::Continue);
+        assert_eq!(
+            step(&mut store, &mut sess, "&", &mut io).unwrap_err().message,
+            "no previous command"
+        );
+    }
+
+    #[test]
+    fn test_interactive_global_delete_relocates_and_rejects_nesting() {
+        let (mut store, mut sess) = seeded(&["a", "b", "a", "b"]);
+        let mut io = ScriptIo::new();
+        feed(&mut store, &mut sess, &mut io, &["G/a", "d", "d"]);
+        assert_eq!(buffer_lines(&store), ["b", "b"], "两个活跃行都按内容重定位后删除");
+        // 回答里的嵌套 g 被拒（C main.c:562-564 的 isglobal 门）。
+        assert_eq!(step(&mut store, &mut sess, "G/b", &mut io).unwrap(), Flow::Continue);
+        assert_eq!(
+            step(&mut store, &mut sess, "g/x/d", &mut io).unwrap_err().message,
+            "cannot nest global commands"
+        );
+        // 中止后回到正常派发：下一行不再是回答。
+        let before = io.out_lines();
+        assert_eq!(step(&mut store, &mut sess, "1,$p", &mut io).unwrap(), Flow::Continue);
+        assert_eq!(io.out_lines()[before.len()..], ["b", "b"]);
+    }
+
+    #[test]
+    fn test_interactive_global_undo_is_one_unit() {
+        let (mut store, mut sess) = seeded(&["one", "two", "four"]);
+        let mut io = ScriptIo::new();
+        feed(&mut store, &mut sess, &mut io, &["G/o", "s/o/0", "&", "&"]);
+        // 清栈一次——整段 G 是一条撤销单位（C exec_global:143）。
+        feed(&mut store, &mut sess, &mut io, &["u"]);
+        assert_eq!(buffer_lines(&store), ["one", "two", "four"], "一次 u 翻掉整段 G");
+        feed(&mut store, &mut sess, &mut io, &["u"]);
+        assert_eq!(buffer_lines(&store), ["0ne", "tw0", "f0ur"], "再 u 即重做");
+    }
+
+    #[test]
+    fn test_interactive_global_unknown_answer_aborts_session() {
+        let (mut store, mut sess) = seeded(&["x", "y"]);
+        let mut io = ScriptIo::new();
+        assert_eq!(step(&mut store, &mut sess, "G/x", &mut io).unwrap(), Flow::Continue);
+        // 坏回答（未知命令）中止整段 G；已执行的变更保留（C 同）。
+        assert_eq!(
+            step(&mut store, &mut sess, "~", &mut io).unwrap_err().message,
+            "unknown command"
+        );
+        assert_eq!(
+            step(&mut store, &mut sess, "1,$p", &mut io).unwrap(),
+            Flow::Continue,
+            "G 中止后输入回到正常派发"
+        );
+    }
+
     #[test]
     fn test_declared_gaps_answer_through_the_question_channel() {
         let (mut store, mut sess) = seeded(&["a"]);
         let mut io = ScriptIo::new();
-        assert_eq!(
-            step(&mut store, &mut sess, "1,2G/p", &mut io).unwrap_err().message,
-            "interactive global not wired"
-        );
         assert_eq!(
             step(&mut store, &mut sess, "!ls", &mut io).unwrap_err().message,
             "shell access not wired"
