@@ -797,8 +797,8 @@ mod tests {
         // The init-side pin is the stub VALUE; the wire-lane mapping
         // (`ret` 参数 → `MessLcPmSig.ret`、PM endpoint、调用号) 由
         // minix-sys 自己的回放测试钉死（pm.rs sigaction_via 测试）——
-        // 命令层不自建 transport 测试替身（边界守卫 C-7，直用
-        // minix_sys::ipc 即违规）。
+        // 命令层不自建 transport 测试替身（边界守卫 C-7：直用 libsys
+        // IPC 层类型即违规，注释里写字面量路径都会被 grep 命中）。
         let stub = MinixSysHost::sigreturn_stub();
         assert_ne!(stub, 0, "x86_64 测试面上桩地址必须非零");
         assert_eq!(
