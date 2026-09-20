@@ -59,7 +59,7 @@
 
 | 前置（供方） | 消费方 | 状态 |
 |---|---|---|
-| new_edge2 NL2（minix-sef SefEvent::Init） | new_edge3 NS1（六服务器应答臂）、NL6（memory 进程壳） | ☐ |
+| new_edge2 NL2（minix-sef SefEvent::Init） | new_edge3 NS1（六服务器应答臂）、NL6（memory 进程壳） | 供方 ✅（e31a86ab5）/ **NS1 ✅（zcode_glm_4，74414dd1e——含 VM 应答半 + X-6）**；NL6 ✅（qorder_2，c0a9b81aa） |
 | new_edge2 NL6（memory 驱动进程） | new_edge3 NS4（挂根）/NS6（块源）/NS8（镜像） | ✅ 供方 2026-09-20 qorder_2 c0a9b81aa（claim/NL6-qorder_2，双面消息泵+进程壳，待合入 rewrite 后下游方可消费）|
 | new_edge2 NL4（pipe2/whoami/文件族 wrapper） | new_edge3 NS12（sh 等）、NL6（tty 端点） | ☐ |
 | new_edge2 NL3③（sigreturn trampoline） | new_edge3 NS11（init trampoline 填真） | ☐ |

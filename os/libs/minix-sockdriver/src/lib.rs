@@ -16,5 +16,7 @@
 //! (`suspend_aux`, revival groups, driver-death stop plans) reads the
 //! VFS fproc and smap state, so it remains there over this vocabulary.
 
+#![no_std]
+
 pub mod sdev;
 pub mod sockevent;

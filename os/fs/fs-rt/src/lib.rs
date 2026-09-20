@@ -21,10 +21,12 @@
 //!   injected init callback and reports the result back, exactly like
 //!   `sef_startup` (`minix3/minix/lib/libsys/sef.c` tail) waiting for the
 //!   init message and `do_sef_init_request` answering `RS_INIT`.
-//! - [`source::PendingBlockSource`] is the fail-closed block source for
-//!   servers whose driver channel is not wired yet (the block seam is the
-//!   separately tracked E-FSBDEV item); mounts answer "input/output error"
-//!   instead of pretending to read a disk.
+//! - [`source::BootBlockSource`] is what a server binary starts on: the
+//!   boot image RAM disk ([`source::ImgrdBlockSource`], the E-FSBDEV
+//!   minimal half) when the packaging supplied one, or the fail-closed
+//!   [`source::PendingBlockSource`] whose mounts answer "input/output
+//!   error" instead of pretending to read a disk. The bdev channel to a
+//!   real block driver is the separately tracked full half of E-FSBDEV.
 
 #![no_std]
 

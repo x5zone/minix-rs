@@ -841,6 +841,27 @@ mod tests {
     }
 
     #[test]
+    fn test_mount_serves_mkfs_image_through_imgrd_source() {
+        // The boot-image source in the mount chain (the E-FSBDEV minimal
+        // half): a whole image from the crate's own mkfs — the same
+        // fixture shape the fsck suite uses — served through
+        // `ImgrdBlockSource` instead of a `RamDisk`.
+        let plan = crate::mkfs::plan_layout(64, Some(64), BLOCK_SIZE as u64).unwrap();
+        let image = crate::mkfs::build_image(&plan, 1_000).unwrap();
+        let source = minix_fs_rt::source::ImgrdBlockSource::new(image, BLOCK_SIZE).unwrap();
+        let (mounted, node) = mount(source, DEVICE, flags(false), MIN_POOL_SIZE).unwrap();
+        // The root mkfs laid out: inode one, a directory holding `.` and
+        // `..` (mode and size per mkfs's root record).
+        assert_eq!(node.inode_number, 1);
+        assert_eq!(node.mode, 0o040777);
+        assert_eq!(node.size, 2 * crate::inode::DIRECTORY_ENTRY_SIZE as i64);
+        assert!(!mounted.is_read_only());
+        let (_, source) = unmount(mounted, &mut |_| {}).unwrap();
+        // The imgrd geometry is the image itself (`memory.c:149`).
+        assert_eq!(source.size_bytes(), 64 * BLOCK_SIZE as u64);
+    }
+
+    #[test]
     fn test_bitmaps_loaded_from_image_and_stored_back() {
         let image = build_image();
         let (mut mounted, _) = mount(image.disk, DEVICE, flags(false), MIN_POOL_SIZE).unwrap();
