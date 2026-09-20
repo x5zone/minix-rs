@@ -415,6 +415,28 @@ impl ProcessTable {
             }
     }
 
+    /// Complete a block whose flag was set with the primitive
+    /// `RtsFlags::set` by a component without run-queue access (the IPC
+    /// engine holds a procs slice only — the C `RTS_SET` macro pairs the
+    /// flag set with the dequeue, and this is the dequeue half for callers
+    /// that cannot perform it inline; `rts_set` above is the full mirror
+    /// for components that can).
+    ///
+    /// If `nr` is now non-runnable but still linked into its CPU's run
+    /// queue, remove it. Without this the blocked caller stays queued and
+    /// the scheduler spin-picks it forever (observed on real machine:
+    /// 86k picks of a receiver parked in `RTS_RECEIVING`, test-sysboot
+    /// C-27 carrier).
+    pub fn dequeue_if_blocked(&mut self, nr: ProcNr) {
+        let runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+        if !runnable && self.is_in_scheduler(nr) {
+            let cpu_id = self.get(nr)
+                .map(|p| CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire)))
+                .unwrap_or(CpuId::BSP);
+            self.sched_dequeue(nr, cpu_id);
+        }
+    }
+
     /// Clear RTS flags on a process. If the process transitions from
     /// non-runnable to runnable, automatically enqueues it in the scheduler.
     ///

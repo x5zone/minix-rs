@@ -202,6 +202,9 @@ pub enum IpcError {
     /// Caller lacks SYS_PROC privilege. C: `EPERM` — `mini_senda`
     /// (proc.c:1336-1339)
     Permission,
+    /// Bad argument value. C: `EINVAL` — proc.c:508 (`ANY` passed with a
+    /// non-RECEIVE call — ANY is a receive-only wildcard).
+    Invalid,
 }
 
 // IPC send flags. C: `minix3/minix/kernel/ipc.h:11-12`.
@@ -1848,18 +1851,35 @@ impl<'a> IpcEngine<'a> {
         let caller_priv_id = self.procs[caller_idx].priv_id.ok_or(IpcError::CallDenied)?;
         let caller_priv = self.priv_table.get(caller_priv_id).ok_or(IpcError::CallDenied)?;
 
-        // Layer 1: endpoint validity. C: proc.c:487-495.
-        let dst_idx = self.idx_by_endpoint(dst_endpoint);
-        match dst_idx {
-            None => return Err(IpcError::DeadSrcDst),
-            Some(i) if self.procs[i].p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) => {
+        // C: proc.c:503-541 — ANY is a wildcard ONLY for RECEIVE: it passes
+        // through untouched (no endpoint validity check — there is no
+        // process behind it to validate); for any other call it is EINVAL.
+        // A real endpoint must resolve (`isokendpt` → EDEADSRCDST on miss,
+        // NO_ENDPOINT slots included). Without the ANY special case every
+        // `receive(ANY)` — the standard server receive form — died here
+        // with EDEADSRCDST (observed on real machine: test-sysboot C-27
+        // carrier's first blocking receive).
+        let is_receive = matches!(call, IpcCall::Receive);
+        let dst_idx = if dst_endpoint == minix_types::Endpoint::ANY {
+            if !is_receive {
+                // C: proc.c:508 — `return EINVAL`.
+                return Err(IpcError::Invalid);
+            }
+            None
+        } else {
+            let i = self.idx_by_endpoint(dst_endpoint).ok_or(IpcError::DeadSrcDst)?;
+            if self.procs[i].p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) {
                 return Err(IpcError::DeadSrcDst);
             }
-            _ => {}
-        }
+            Some(i)
+        };
 
-        // Layer 2: IPC whitelist. C: `may_send_to` — ipc.h.
-        if let Some(i) = dst_idx
+        // Layer 2: IPC whitelist. C: `may_send_to` — ipc.h — send-family
+        // calls only (C: proc.c:527-533, gated on `call_nr != RECEIVE`;
+        // a RECEIVE from a specific source is not a "send to" and skips
+        // the whitelist).
+        if !is_receive
+            && let Some(i) = dst_idx
             && let Some(dst_pid) = self.procs[i].priv_id
                 && !caller_priv.may_send_to(dst_pid) {
                     return Err(IpcError::CallDenied);

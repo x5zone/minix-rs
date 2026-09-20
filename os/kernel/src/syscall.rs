@@ -881,6 +881,7 @@ pub(crate) fn dispatch_ipc(
                 IpcError::CallDenied => ECALLDENIED,
                 IpcError::TrapDenied => ETRAPDENIED,
                 IpcError::Permission => EPERM,
+                IpcError::Invalid => EINVAL,
             };
             KcallResult::Ok(errno)
         }
@@ -3145,6 +3146,18 @@ pub fn kernel_call_finish(
         .as_mut()
     {
         ctx.saved_msg = None;
+    }
+
+    // NoReply = the caller is now blocked. The IPC engine set the blocking
+    // RTS flag with the primitive `RtsFlags::set` (it holds a procs slice,
+    // not the run queues) — complete the block by dequeuing the caller,
+    // the dequeue half of C's `RTS_SET` macro. Without this the blocked
+    // caller stays queued and the scheduler spin-picks it forever
+    // (observed on real machine: 86k picks of a receiver parked in
+    // `RTS_RECEIVING`, test-sysboot C-27 carrier). Both IPC doors
+    // (int-33 and the syscall leg) route their NoReply through here.
+    if matches!(result, KcallResult::NoReply) {
+        proc_table.dequeue_if_blocked(caller_nr);
     }
 
     if let Some(errno) = result.reply_code() {

@@ -55,11 +55,17 @@ extern "Rust" fn main() -> i32 {
                     Err(_) => emit(b"SYSBOOT RX REPLY-ERR\n"),
                 }
             }
-            Err(_code) => {
-                // The receive trap failed: report once and park in a spin —
-                // there is no user-space exit primitive in this carrier, and
-                // the run script judges by markers, not by process exit.
-                emit(b"SYSBOOT RX RECV-ERR\n");
+            Err(code) => {
+                // The receive trap failed: report the errno once and park
+                // in a spin — there is no user-space exit primitive in
+                // this carrier, and the run script judges by markers, not
+                // by process exit. Two decimal digits suffice: every
+                // Minix3 errno is < 100 (signal.h errno values).
+                let v = code.0 as u32 & 0xff;
+                let mut m: [u8; 20] = *b"SYSBOOT RX ERR ??  \n";
+                m[14] = b'0' + ((v / 10) % 10) as u8;
+                m[15] = b'0' + (v % 10) as u8;
+                emit(&m);
                 loop {
                     core::hint::spin_loop();
                 }

@@ -135,6 +135,11 @@ mod bkl_protected {
         minix_boot::KernelInfo,
         crate::memmap::MemMapEntry,
         crate::kerninfo::KerninfoPage,
+        // Handoff-page physical range (plain u64 pair). Written once at the
+        // A2 classification point (single-threaded boot — `build_vm_handoff`
+        // publishing the post-deduction free list for multi-image boot
+        // loaders), read-only afterwards — same contract as MemMapEntry.
+        minix_types::HandoffMemRegion,
 
         // BKL-serialized mutation (kernel-internal types):
         crate::proc_table::ProcessTable,

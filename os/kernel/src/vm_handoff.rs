@@ -32,16 +32,13 @@
 //! All storage is fixed-size — boot is zero-heap.
 
 use crate::boot_alloc::{boot_alloc_region, boot_alloc_used_bytes};
+use crate::globals::SyncUnsafeCell;
 use crate::memmap::{cut_memmap, MemMapEntry, MAXMEMMAP};
 use crate::proc::{BOOT_MODULE_PROC_NRS, KERNEL_TASKS};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use minix_arch::arch::frame::VmBootAllocator;
 use minix_arch::DirectMapArch;
-use minix_boot::KernelInfo;
-// MemoryRegion is consumed only by the test-only raw-slice classifier
-// (classify_regions) and its helpers — gate the import to match, so the
-// non-test build does not see an unused import (V12-B4).
-#[cfg(test)]
-use minix_boot::MemoryRegion;
+use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{
     BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS,
     PhysBytes, VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED,
@@ -51,6 +48,59 @@ use minix_types::{
 
 /// Frame size of every `VmBootAllocator` page (C: I386_PAGE_SIZE).
 const PAGE_SIZE: u64 = 0x1000;
+
+/// The A2 free list (physical memory still free after the first
+/// boot-image load), published by [`build_vm_handoff`] at the
+/// classification point.
+///
+/// Consumers that allocate frames AFTER the first boot-image load —
+/// multi-image boot loaders (the C-27 carrier's second image) — must
+/// select from this list, not from the raw `KernelInfo::memmap()`: the
+/// raw map still advertises the frames the first load consumed
+/// (segments, stack, page-table pages, handoff page), and handing them
+/// out a second time overwrites the first image's memory. The first
+/// process then executes corrupted bytes with a perfectly intact page
+/// table (observed on real machine: test-sysboot's VM slot took #UD at
+/// its entry once the per-image-root load unblocked the second load).
+/// C parity: every `pg_alloc_page` consumer walks the mutated `memmap`
+/// (pg_utils.c:138-160), so a later loader never sees spent frames.
+///
+/// # Concurrency
+///
+/// Written exactly once, at the classification point (single-threaded
+/// boot, no scheduler yet); read-only afterwards. `SyncUnsafeCell`
+/// soundness follows the same write-once-then-read contract as
+/// `globals::FREE_MEMMAP` (`HandoffMemRegion` is in the approved
+/// write-once list).
+static VM_PMM_FREE: SyncUnsafeCell<[HandoffMemRegion; VM_BOOT_HANDOFF_MAX_REGIONS]> =
+    SyncUnsafeCell::new([HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_REGIONS]);
+
+/// How many leading entries of [`VM_PMM_FREE`] are valid. 0 until the
+/// classification point; the Release store pairs with the Acquire load in
+/// [`vm_pmm_free_regions`] to publish the array write.
+static VM_PMM_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Physical memory still free after the first boot-image load — the A2
+/// free list (`VM PMM eligible = conventional ∩ DM-representable −
+/// LiveBootstrap`), converted to `MemoryRegion` for
+/// `VmBootRegion::select_multi`. Deduction already covers the kernel
+/// image, the boot bump region, every bootstrap-consumed frame and the
+/// reserved module blobs, so no additional exclusions are needed.
+///
+/// Returns the populated slice (entries with `len > 0`); empty until
+/// `build_vm_handoff` ran (i.e., before the first boot-image load
+/// completed — nothing may allocate from this before that point).
+pub fn vm_pmm_free_regions() -> ([MemoryRegion; VM_BOOT_HANDOFF_MAX_REGIONS], usize) {
+    let count = VM_PMM_FREE_COUNT.load(Ordering::Acquire);
+    // SAFETY: write-once-then-read (see `VM_PMM_FREE`); the copy-out is a
+    // plain value read of plain data.
+    let regions = unsafe { *VM_PMM_FREE.get() };
+    let mut out = [MemoryRegion { base: PhysBytes(0), len: 0 }; VM_BOOT_HANDOFF_MAX_REGIONS];
+    for (i, region) in regions.iter().enumerate().take(count) {
+        out[i] = MemoryRegion { base: PhysBytes(region.base), len: region.size as usize };
+    }
+    (out, count)
+}
 
 /// A2 classification output — the free list and the deduction record.
 ///
@@ -242,6 +292,18 @@ pub fn build_vm_handoff(
     vm_module_idx: usize,
 ) -> VmBootHandoff {
     let classification = classify(kernel_info, root_paddr, vm_alloc, vm_module_idx);
+
+    // Publish the A2 free list for post-first-load frame consumers (see
+    // [`VM_PMM_FREE`]) — write-once at the classification point, before
+    // any multi-image loader runs.
+    {
+        // SAFETY: write-once-then-read contract (see `VM_PMM_FREE`).
+        let slot = unsafe { &mut *VM_PMM_FREE.get() };
+        for (i, region) in classification.free_regions.iter().enumerate() {
+            slot[i] = *region;
+        }
+        VM_PMM_FREE_COUNT.store(classification.free_region_count, Ordering::Release);
+    }
 
     // Reserved module blobs (every module except VM's) — C: kinfo
     // `.module_list[]`, whose still-reserved entries VM charges to the

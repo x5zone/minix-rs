@@ -380,6 +380,20 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         }
         ExceptionOutcome::Signal(sig) => {
             let cur_nr = cur_nr.expect("Signal implies a user-origin exception");
+            // Console diagnostics for the signal-classified exception —
+            // same rationale as the KernelPanic arm's frame dump: which
+            // vector became which signal is not otherwise observable on
+            // real machine (the panic handler cannot render it).
+            {
+                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                Console::write_str("user exception: vector ");
+                Console::write_hex(vector as u64);
+                Console::write_str(" err ");
+                Console::write_hex(frame.errcode);
+                Console::write_str(" rip ");
+                Console::write_hex(frame.rip);
+                Console::write_str("\n");
+            }
             // Persist first: the signal manager's later SIGSEND delivery
             // builds the handler trampoline on top of the fault-time
             // register file (C: sig_proc reshapes p_reg, which holds the
@@ -571,6 +585,19 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     let r1 = frame.rax; // src/dst endpoint, or SENDA count
     let r2 = frame.rbx; // message pointer, or SENDA table pointer
     let is_senda = call_nr == (crate::ipc::IpcCall::SendA as i32);
+    // Body-less calls: the stubs trap with rbx = 0 (no message buffer) —
+    // C `ipc_minix_kerninfo.S:8-10` zeroes eax/ebx before `int`, and the
+    // notify stub passes 0 the same way ("notify without a message body").
+    // KernInfo's result returns through the secondary RBX channel; the
+    // service arm documents "No message buffer is read or written"
+    // (syscall.rs). Copying 64 bytes from VA 0 was the SIGSEGV this door
+    // delivered to every birth-time kerninfo query on real machine
+    // (test-sysboot C-27 carrier, first real-machine birth through this
+    // gate).
+    let is_bodyless =
+        is_senda
+            || call_nr == (crate::ipc::IpcCall::KernInfo as i32)
+            || call_nr == (crate::ipc::IpcCall::Notify as i32);
     {
         let caller = table
             .get_mut(cur_nr)
@@ -583,7 +610,7 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // shape as kernel_call's own copy). SENDA carries no message buffer:
     // mini_senda reads entries from the user table directly (proc.c:683).
     let mut msg = minix_types::Message::default();
-    if !is_senda {
+    if !is_bodyless {
         use crate::ipc::UserCopy as _;
         match crate::ipc::KernelUserCopy.copy_msg_from_user(VirBytes(r2)) {
             Ok(m) => msg = m,
@@ -621,12 +648,61 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // a return value; it stays unrunnable until its IPC completes.
     if let Some(code) = result.reply_code() {
         frame.rax = code as i64 as u64;
+        {
+            // [diag] door-level reply trace (real-machine IPC bring-up).
+            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            Console::write_str("ipc door: call ");
+            Console::write_hex(call_nr as u64);
+            Console::write_str(" src ");
+            Console::write_hex(r1);
+            Console::write_str(" buf ");
+            Console::write_hex(r2);
+            Console::write_str(" -> ");
+            Console::write_hex(code as i64 as u64);
+            Console::write_str("\n");
+        }
         let ctx = &table
             .get(cur_nr)
             .expect("int-33 IPC: caller slot must exist")
             .cpu_context;
         minix_arch::sync_status_register_to_frame(ctx, frame);
     } else {
+        {
+            // [diag] door-level block trace (real-machine IPC bring-up).
+            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            Console::write_str("ipc door: call ");
+            Console::write_hex(call_nr as u64);
+            Console::write_str(" src ");
+            Console::write_hex(r1);
+            Console::write_str(" -> blocked, flags ");
+            Console::write_hex(
+                table
+                    .get(cur_nr)
+                    .map(|p| {
+                        use crate::proc::RtsFlagsBits;
+                        let f = p.p_rts_flags.get();
+                        let mut v = 0u64;
+                        for (bit, flag) in [
+                            (0, RtsFlagsBits::SLOT_FREE),
+                            (1, RtsFlagsBits::NO_PRIV),
+                            (2, RtsFlagsBits::NO_QUANTUM),
+                            (3, RtsFlagsBits::VMINHIBIT),
+                            (4, RtsFlagsBits::BOOTINHIBIT),
+                            (5, RtsFlagsBits::PROC_STOP),
+                            (6, RtsFlagsBits::RECEIVING),
+                            (7, RtsFlagsBits::SENDING),
+                            (8, RtsFlagsBits::SIGNALED),
+                        ] {
+                            if f.contains(flag) {
+                                v |= 1u64 << bit;
+                            }
+                        }
+                        v
+                    })
+                    .unwrap_or(0),
+            );
+            Console::write_str("\n");
+        }
         // Enter the scheduling loop; never returns to this frame.
         reenter_scheduler();
     }
