@@ -2,7 +2,7 @@
 
 > **分类**：启动关键第 1 篇（双面设备，启动映像成员）
 > **源码**：`minix3/minix/drivers/storage/memory/memory.c`（五百九十九行）、`minix3/minix/include/minix/dmap.h`（第八十五行到第九十二行，设备号定义）、`minix3/minix/include/sys/ioc_memory.h`（内存盘控制码定义）
-> **Rust 模块**：`os/drivers/storage/memory/src/device.rs`（设备号、几何表、打开计数、扩容策略）、`os/drivers/storage/memory/src/transfer.rs`（传输规划、页窗口、映射抽象）
+> **Rust 模块**：`os/drivers/storage/memory/src/device.rs`（设备号、几何表、打开计数、扩容策略）、`os/drivers/storage/memory/src/transfer.rs`（传输规划、页窗口、映射抽象）、`os/drivers/storage/memory/src/char_face.rs`（字符面框架适配）、`os/drivers/storage/memory/src/block_face.rs`（块面框架适配）、`os/drivers/storage/memory/src/service.rs`（双面消息泵：按块请求谓词分诊、逐请求规划与回复）、`os/drivers/storage/memory/src/main.rs`（进程壳：宣告两面、出生握手、进入事件循环）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/02-blockdriver-framework.md`（块框架）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/04-bdev-client.md`（调用方视角）
 > **说明**：内存驱动是启动映像里仅有的两个驱动之一（另一个是终端驱动），也是全系统唯一同时服务字符与块两种请求的驱动。它管七个固定设备加六个内存盘：绝对内存、内核内存、空洞、零源、启动设备、映像盘，外加六个可扩容的内存盘。本篇讲这个双面驱动的全部语义：两张回调表、主循环如何分诊、每个设备的读写行为、内存盘扩容控制。
 
@@ -122,7 +122,7 @@ Redox 没有直接对应的驱动：它的零源与空洞是方案（scheme）�
 
 | C 符号 | 本篇位置 | Rust 对应 | 状态 |
 |--------|----------|-----------|------|
-| `main`（分诊循环） | 第 2.2 节 | 服务层（本库出归属谓词） | 已覆盖（策略层） |
+| `main`（分诊循环） | 第 2.2 节 | `service.rs::MemoryService::dispatch`（按块请求谓词分流到两面） | 已覆盖（消息泵已接线） |
 | `sef_local_startup`、`sef_cb_init_fresh` | 第 2.3 节 | `DeviceTable::fresh` 加服务层宣告 | 已覆盖 |
 | `m_is_block` | 第 2.4 节 | `MemoryMinor::is_character_only` | 已覆盖 |
 | `m_transfer_kmem` | 第 2.5 节 | `char_read_plan` 等映射分支 | 已覆盖 |
@@ -133,7 +133,7 @@ Redox 没有直接对应的驱动：它的零源与空洞是方案（scheme）�
 | `m_block_transfer` | 第 2.7 节 | `vec_step` | 已覆盖 |
 | `m_block_open`、`m_block_close` | 第 2.6 节 | `DeviceTable::open`、`close` | 已覆盖 |
 | `m_block_ioctl` | 第 2.8 节 | `resize_policy` | 已覆盖 |
-| 两张回调表 | 第 2.2 节 | 服务层接线（本库不管传输） | 已记录，不管实现 |
+| 两张回调表 | 第 2.2 节 | `char_face::MemoryChar` 与 `block_face::MemoryBlock`，由 `service.rs` 双面消息泵按请求类型分派 | 已覆盖（接线批落地） |
 | 八个设备号 | 第 2.1 节 | `MemoryMinor` | 已覆盖 |
 | 扩容控制码 | 第 2.8 节 | 策略函数（数值在服务层） | 已覆盖（策略层） |
 
@@ -201,7 +201,7 @@ Redox 没有直接对应的驱动：它的零源与空洞是方案（scheme）�
 | 映射失败 | 内存不足 | `MapperError::NoMemory` 转该码 | 页建不出来 |
 | 映射地址不对齐 | C 无此情形（页起算恒对齐） | `MapperError::Misaligned` 转无效参数 | 调用方错误，非线上答案 |
 | 字符面框架接线 | 第 2.2 节 | `char_face::MemoryChar` 实现 `CharDriver` | 已覆盖 |
-| 块面框架接线 | 第 2.4 节 | `block_face::MemoryBlock` 实现 `BlockDriver`（占用、裁剪、改容） | 已覆盖（真实循环随接线批） |
+| 块面框架接线 | 第 2.4 节 | `block_face::MemoryBlock` 实现 `BlockDriver`（占用、裁剪、改容） | 已覆盖（真实循环已接线：`service.rs` 消息泵 + `main.rs` 进程壳；grant 字节拷贝为登记缺口） |
 | 非盘扩容 | 无效参数 | `ResizeVerdict::NotRamdisk` | 面的守卫的控制版 |
 | 盘忙扩容 | 忙 | `ResizeVerdict::Busy` | 独占要求 |
 | 复制失败（块） | 停下 | 服务层按规划处理 | 块复制失败无恢复意义，文档记录 |
@@ -221,7 +221,7 @@ Redox 没有直接对应的驱动：它的零源与空洞是方案（scheme）�
 | 扩容策略六分支 | 非盘、已对、映像零、忙、可扩、兼容号 | `m_block_ioctl` |
 | 新表绝对内存四吉字节 | 基址零长度全一 | `sef_cb_init_fresh` |
 
-### 5.2 传输模块测试（十个）
+### 5.2 传输模块测试（十一个）
 
 | 测试 | 验证内容 | 对应依据 |
 |------|----------|----------|
@@ -232,15 +232,52 @@ Redox 没有直接对应的驱动：它的零源与空洞是方案（scheme）�
 | 块设备走字符面被拒 | 七号零号未知号全错 | `m_char_read` 守卫 |
 | 向量步截短与耗尽标记 | 整吞、截短、到头、高位 | `m_block_transfer` 循环体 |
 | 空映射报内存不足 | 选择失败、码为内存不足 | `m_transfer_mem` 建失败分支 |
+| 误用与耗尽分流 | 不对齐报无效参数、越界报内存不足 | 第 4 节错误映射两行 |
 | 页窗口缓存一页 | 同页命中、跨页切换、刷新清 | `m_transfer_mem` 缓存三态 |
 | 内存映射往返 | 写七读回、越界拒绝 | 页窗口正确性 |
 | 设备号在传输可见 | 空洞号与成功码 | 跨模块一致性 |
 
-### 5.3 测试统计（截至 2026-09-05）
+### 5.3 字符面框架测试（三个）
 
-- 本篇直接相关：十六个（设备六个，传输十个），全部通过。
+| 测试 | 验证内容 | 对应依据 |
+|------|----------|----------|
+| 开关沿表流转 | 打开计数经 `DeviceTable` 增删 | `m_char_open`、`m_char_close` |
+| 零源读答全长 | 读零源按请求长度全额回复 | `m_char_read` 零源分支 |
+| 空洞读答到头 | 读到空洞尾返回零字节 | `m_char_read` 空洞分支 |
+
+### 5.4 块面框架测试（四个）
+
+| 测试 | 验证内容 | 对应依据 |
+|------|----------|----------|
+| 开关沿表流转 | 块面打开计数经表增删 | `m_block_open`、`m_block_close` |
+| 传输在设备尾截断 | 越界请求截到设备末尾 | `m_block_transfer` 截断 |
+| 经后端读写往返 | 规划喂给后备，写入再读回 | `m_block_transfer` |
+| 扩容门控后端增长 | 策略批准才改后备容量 | `m_block_ioctl` |
+
+### 5.5 双面消息泵测试（十个）
+
+接线批（`service.rs::MemoryService::dispatch` 加 `main.rs` 进程壳）落地的路由与回复纪律，逐条对应 C 主循环分诊（`memory.c` 第 99 到 108 行）：
+
+| 测试 | 验证内容 | 对应依据 |
+|------|----------|----------|
+| 字符打开分流并回复 | 字符请求走字符面、按基址回复 | 主循环分诊 |
+| 零源读经消息泵答全长 | 消息泵层零源读答全长 | `m_char_read` |
+| 块打开走块面 | 块请求按谓词分流到块面 | `m_is_block` |
+| 过期块请求不回复 | 重启门内旧请求吞掉不回复 | `m_block_open` 重启门 |
+| 块传输截断并回复 | 块读按规划截断、答字节数 | `m_block_transfer` |
+| 通知不回复 | 通知类型不产生回复 | 主循环通知分支 |
+| 块面守卫拒字符号 | 块面收到纯字符设备号被拒 | `m_block_open` 面守卫 |
+| select 用专用回复类型 | 字符 select 走 select 回复类型 | `m_char_select` |
+| 字符过期请求不回复 | 字符面旧请求吞掉不回复 | 重启门 |
+| handler 转发分诊 | `DriverHandler` 转 `dispatch` | 框架接线 |
+
+> **登记缺口**：消息泵按规划答复字节数与控制流，grant 授权后的实际物理字节拷贝尚未接线（与终端驱动同源，属数据面 seam，非假成功）。
+
+### 5.6 测试统计（截至 2026-09-20）
+
+- 本篇直接相关：三十四个（设备六个，传输十一个，字符面框架三个，块面框架四个，双面消息泵十个），全部通过。
 - 复现命令：`cargo test -p minix-driver-memory --lib`（工作目录 `os/`）。
-- 完整测试清单：`rg "fn test_" os/drivers/storage/memory/src/device.rs os/drivers/storage/memory/src/transfer.rs`。
+- 完整测试清单：`rg "fn test_" os/drivers/storage/memory/src/*.rs`。
 
 ---
 
