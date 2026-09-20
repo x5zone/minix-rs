@@ -309,6 +309,54 @@ fn resolve_physical<D: DirectMapArch>(
     }
 }
 
+/// Validate that the Direct Map window carries a translation for every page
+/// of a physical range, software-walk first so the window access below can
+/// no longer fault.
+///
+/// `AddressRef::Physical` addresses arrive from callers (SYS_PHYSCOPY with
+/// the NONE endpoint, SYS_MEMSET) and are not pre-resolved through a page
+/// table — a caller-supplied address beyond the RAM the boot DM
+/// establishment mapped (`establish_boot_dm`: the union of the memmap
+/// candidates, full PA span) would fault inside the window access. C
+/// recovers such faults by redirecting execution into the
+/// `phys_copy_fault`/`memset_fault` labels (klib.S:204-214, fed by the
+/// `in_physcopy`/`in_memset` EIP check — exception.c:66-70); this kernel
+/// expresses the same contract in types: the range is validated here and
+/// the copy path returns `Fault` instead of taking the fault.
+///
+/// The window translation is checked in the **active** root — the same
+/// walk the MMU performs on the access, and the same precondition every
+/// Direct Map access already stands on (kernel DM slots are present in
+/// every root). Without an active root (no paging yet — boot or hosted
+/// tests) there is no translation to validate, so the check passes.
+///
+/// `walk` is injected so hosted tests can drive both outcomes without real
+/// page tables; production passes `minix_arch::CurrentPteWalk::walk`.
+fn physical_range_in_dm_window(
+    root: Option<PhysBytes>,
+    dm_va: VirBytes,
+    len: usize,
+    walk: impl Fn(PhysBytes, VirBytes) -> Option<(PhysBytes, PageFlags)>,
+) -> bool {
+    let Some(root) = root else {
+        return true;
+    };
+    if len == 0 {
+        return true;
+    }
+    const PAGE: u64 = 4096;
+    let start = dm_va.0 & !(PAGE - 1);
+    let end = dm_va.0 + len as u64 - 1;
+    let mut page = start;
+    while page <= end {
+        if walk(root, VirBytes(page)).is_none() {
+            return false;
+        }
+        page += PAGE;
+    }
+    true
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResolveError {
     PageFault,
@@ -355,6 +403,31 @@ pub fn cross_space_copy<D: DirectMapArch>(
     let src_vaddr = D::kernel_phys_to_virt(src_phys);
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
 
+    // Caller-supplied physical ranges (NONE endpoint) are validated against
+    // the Direct Map window before the access — see
+    // `physical_range_in_dm_window` (C: phys_copy_fault recovery, made
+    // unnecessary here because the fault is prevented).
+    #[cfg(not(test))]
+    {
+        let active_root = crate::current_root_phys();
+        if !physical_range_in_dm_window(
+            active_root,
+            src_vaddr,
+            bytes,
+            minix_arch::CurrentPteWalk::walk,
+        ) {
+            return CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault));
+        }
+        if !physical_range_in_dm_window(
+            active_root,
+            dst_vaddr,
+            bytes,
+            minix_arch::CurrentPteWalk::walk,
+        ) {
+            return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+        }
+    }
+
     // SAFETY:
     // - src_vaddr and dst_vaddr are derived from DirectMapArch::kernel_phys_to_virt()
     //   on physical addresses returned by lookup_in_table, which are valid page-backed
@@ -400,6 +473,19 @@ pub fn cross_space_memset<D: DirectMapArch>(
 
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
 
+    // Caller-supplied physical ranges (NONE endpoint) are validated against
+    // the Direct Map window before the access — C's memset_fault recovery
+    // (klib.S:377) made unnecessary by preventing the fault.
+    #[cfg(not(test))]
+    if !physical_range_in_dm_window(
+        crate::current_root_phys(),
+        dst_vaddr,
+        count,
+        minix_arch::CurrentPteWalk::walk,
+    ) {
+        return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+    }
+
     // SAFETY:
     // - dst_vaddr is derived from DirectMapArch::kernel_phys_to_virt() on a valid
     //   physical address returned by lookup_in_table.
@@ -442,6 +528,18 @@ pub fn cross_space_write<D: DirectMapArch>(
     };
 
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
+
+    // Same Direct Map window validation as `cross_space_copy` — the
+    // destination may be a caller-supplied physical address (NONE endpoint).
+    #[cfg(not(test))]
+    if !physical_range_in_dm_window(
+        crate::current_root_phys(),
+        dst_vaddr,
+        src.len(),
+        minix_arch::CurrentPteWalk::walk,
+    ) {
+        return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+    }
 
     // SAFETY:
     // - dst_vaddr is derived from DirectMapArch::kernel_phys_to_virt() on a
@@ -1091,6 +1189,72 @@ mod tests {
         let addr = AddressRef::Physical(paddr);
         let result = resolve_physical::<MockDirectMap>(&addr, &crate::test_helpers::test_proc_table(), |_pt: &crate::proc_table::ProcessTable, _| None);
         assert_eq!(result, Ok(paddr));
+    }
+
+    #[test]
+    fn physical_range_without_active_root_passes() {
+        // No active root = no paging (boot/hosted posture): nothing to
+        // validate, the check must not block the access.
+        let mapped = physical_range_in_dm_window(
+            None,
+            VirBytes::new(0xFFFF_8080_0000_1000),
+            128,
+            |_: PhysBytes, _: VirBytes| panic!("walk must not be called without a root"),
+        );
+        assert!(mapped);
+    }
+
+    #[test]
+    fn physical_range_zero_len_passes_without_walk() {
+        let mapped = physical_range_in_dm_window(
+            Some(PhysBytes::new(0x1000)),
+            VirBytes::new(0xFFFF_8080_0000_1000),
+            0,
+            |_: PhysBytes, _: VirBytes| panic!("zero-length range needs no walk"),
+        );
+        assert!(mapped);
+    }
+
+    #[test]
+    fn physical_range_unmapped_page_fails() {
+        // Caller-supplied physical address whose DM window translation is
+        // absent (beyond the boot-established RAM) — C answered this with
+        // phys_copy_fault recovery returning the fault address; the
+        // validate-first check answers `false` so the copy path returns
+        // Fault (EFAULT at the dispatcher).
+        let mapped = physical_range_in_dm_window(
+            Some(PhysBytes::new(0x1000)),
+            VirBytes::new(0xFFFF_8080_4000_0000),
+            64,
+            |_: PhysBytes, _: VirBytes| None,
+        );
+        assert!(!mapped);
+    }
+
+    #[test]
+    fn physical_range_spanning_two_pages_needs_both() {
+        // 64 bytes at the last 4 bytes of a page walk two pages; only the
+        // first mapped → fail (the second page's access would fault).
+        let both_mapped = physical_range_in_dm_window(
+            Some(PhysBytes::new(0x1000)),
+            VirBytes::new(0xFFFF_8080_0000_1FFC),
+            64,
+            |_: PhysBytes, va: VirBytes| Some((PhysBytes::new(va.0), PageFlags::PRESENT)),
+        );
+        assert!(both_mapped);
+        let first_only = physical_range_in_dm_window(
+            Some(PhysBytes::new(0x1000)),
+            VirBytes::new(0xFFFF_8080_0000_1FFC),
+            64,
+            |_: PhysBytes, va: VirBytes| {
+                if va.0 & !0xFFF == 0xFFFF_8080_0000_1000 {
+                    Some((PhysBytes::new(va.0), PageFlags::PRESENT))
+                } else {
+                    None
+                }
+            },
+        );
+        assert!(!first_only);
     }
 
     #[test]

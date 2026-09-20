@@ -21,10 +21,15 @@
 //!   `Signal` calls `cause_signal` (C: `cause_sig` — exception.c:276);
 //!   VM's own fault panics (C: "pagefault in VM" — exception.c:101-118).
 //!   Both acting arms end in the scheduling loop (C: mpx.S
-//!   `jmp switch_to_user`). Outcomes with no acting stage yet (FpuTrap —
-//!   lazy-FPU restore, recovery redirects, traced-debug, spurious-NMI
-//!   resume) still panic with the outcome attached — registered gaps,
-//!   not reachable from the current carriers.
+//!   `jmp switch_to_user`).
+//! - **Recovery-class outcomes** (NK2-A ②③④ wired): `SpuriousNmi` prints
+//!   and returns (C: exception.c:191-194); `ClearTrapFlag` clears the
+//!   trace bit in the frame and returns (C: exception.c:243-245, fed by
+//!   the saved-PSW/trap-style legitimacy inputs); `RedirectToRecovery` /
+//!   `PhysCopyFault` are invariant panics — the kernel copy paths are
+//!   validate-first (ipc.rs / vm.rs), so C's RIP-redirect recovery
+//!   (klib.S labels) has no producer here. Only `FpuTrap` remains a
+//!   registered gap (lazy-FPU restore, X-8 / T5 wave).
 //! - **Syscall body**: reads the per-CPU `proc_ptr` anchor before any lock
 //!   (C reads `proc_ptr` at trap entry the same way), then runs the
 //!   existing `kernel_call` wrapper — which acquires/releases the BKL
@@ -45,6 +50,13 @@ use minix_types::VirBytes;
 /// The int-33 IPC gate (C: IPC_VECTOR_ORIG = 33, interrupt.h:33).
 #[cfg(target_arch = "x86_64")]
 const IPC_VECTOR_GATE: u8 = 33;
+
+/// RFLAGS trace bit — single-step flag (C: `TRACEBIT` 0x0100,
+/// i386 archconst.h:120). Read from the saved process PSW for the
+/// nested-debug legitimacy check; cleared in the frame by the
+/// ClearTrapFlag acting arm (exception.c:243).
+#[cfg(target_arch = "x86_64")]
+const TRACEBIT: u64 = 0x0100;
 
 /// Build the CPU-pushed tail of the frame as an `X86_64ExceptionFrame` for
 /// the arch-generic dispatcher (which is implemented over that type).
@@ -203,42 +215,96 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         unsafe { crate::smp::BklSection::assume_held() }
     };
     // Per-CPU current process (C: `saved_proc = get_cpulocal_var(proc_ptr)`
-    // — exception.c:186). Only user-origin outcomes act on it; the read
-    // follows the same dispatch-anchor convention as the SYSCALL body
-    // (proc_ptr is read as the anchor itself). None = no scheduler step
-    // ever ran on this CPU, so no CPL3 code could have faulted — wiring
-    // bug, same alarm as the SYSCALL arm.
+    // — exception.c:186). User-origin outcomes act on it; the kernel-origin
+    // path needs it too for the nested-debug legitimacy check (C reads
+    // saved_proc->p_reg.psw and p_kern_trap_style unconditionally —
+    // exception.c:232-234). The read follows the same dispatch-anchor
+    // convention as the SYSCALL body (proc_ptr is read as the anchor
+    // itself). User origin + None = no scheduler step ever ran on this CPU,
+    // so no CPL3 code could have faulted — wiring bug, same alarm as the
+    // SYSCALL arm. Kernel origin tolerates None (early-boot faults have no
+    // saved process, C: "no saved_proc yet" — exception.c:173).
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let proc_ptr = smp.cpu_local(cpu).and_then(|l| l.proc_ptr);
     let cur_nr = if is_user {
-        let smp = unsafe { crate::smp_state_boot_unchecked() };
-        let cpu = crate::current_cpu_id();
-        Some(
-            smp.cpu_local(cpu)
-                .and_then(|l| l.proc_ptr)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "user exception before scheduler bring-up (proc_ptr = \
-                         None on cpu {cpu:?}) — wiring bug"
-                    )
-                }),
-        )
+        Some(proc_ptr.unwrap_or_else(|| {
+            panic!(
+                "user exception before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        }))
     } else {
-        None
+        proc_ptr
     };
     // is_vm feeds the page-fault classification (C: `pr->p_endpoint ==
     // VM_PROC_NR` — exception.c:101; VM's own faults cannot be forwarded
     // to VM itself). Kernel-origin faults never reach that check (the
     // nested path panics first), matching C's is_nested ordering.
     let is_vm = cur_nr == Some(crate::proc::proc_nr::VM_PROC_NR);
+    // Nested-debug legitimacy inputs, read from the saved process state the
+    // way C does (exception.c:232-234): the trace bit comes from the saved
+    // PSW (`p_reg.psw & TRACEBIT`, archconst.h:120), the entry style from
+    // the per-process record (`p_seg.p_kern_trap_style`). A kernel-origin
+    // fault with no saved process is not a traced-process debug trap.
+    let (is_traced, kern_trap_style) = cur_nr
+        .and_then(|nr| {
+            crate::proc_table_with(&section).get(nr).map(|p| {
+                (
+                    (minix_arch::x86_64::trap_stub::saved_psw(&p.cpu_context) & TRACEBIT) != 0,
+                    p.trap_style,
+                )
+            })
+        })
+        .unwrap_or((false, TrapStyle::NoEntry));
+    // The kernel copy paths are validate-first (user-buffer range checks in
+    // ipc.rs, Direct Map window checks in vm.rs), so no FaultContext slot is
+    // maintained: C's `catch_pagefaults` + context-tracking replacement
+    // (doc 14 §3.4) has no producer in this kernel — a fault inside a
+    // recoverable copy cannot occur by construction. `FaultContext::Normal`
+    // is therefore the truthful context, not a placeholder.
     let outcome = ExceptionDispatcher::<X86_64ExceptionFrame>::handle(
         &mut exc,
         /* is_nested = */ !is_user,
         is_vm,
         FaultContext::Normal,
-        /* is_traced = */ false,
-        TrapStyle::NoEntry,
+        is_traced,
+        kern_trap_style,
     );
 
     match outcome {
+        // Spurious NMI — C prints and returns (exception.c:191-194); the
+        // stub's iretq resumes the interrupted context. No state mutated.
+        ExceptionOutcome::SpuriousNmi => {
+            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+            Console::write_str("got spurious NMI\n");
+        }
+        // Traced process entered the kernel (int-gate legs keep TF set) and
+        // single-stepped the first kernel instruction before the entry
+        // recorded a style. C clears the flag in the frame and resumes
+        // (exception.c:243-245); identical here — the stub's iretq delivers
+        // the corrected RFLAGS. (The `syscall` entry masks TF in hardware,
+        // so on this port only the int-33 gate leg can produce the case.)
+        ExceptionOutcome::ClearTrapFlag => {
+            frame.rflags &= !TRACEBIT;
+        }
+        // C recovers copy faults by redirecting RIP into recovery labels
+        // (exception.c:206-230, klib.S) — a mechanism this kernel replaces
+        // with validate-first copy paths (ipc.rs `user_copy_range_mapped`,
+        // vm.rs `physical_range_in_dm_window`): bad caller buffers produce
+        // typed Err values and never fault. Reaching these outcomes means a
+        // fault escaped validation — an invariant break (kernel bug), not
+        // recoverable state. C's own fallback for unrecognized kernel
+        // faults is inkernel_disaster (exception.c:280-282).
+        ExceptionOutcome::RedirectToRecovery(rp) => panic!(
+            "trap_dispatch: RedirectToRecovery({rp:?}) — kernel copy paths \
+             are validate-first; a fault here escaped validation (kernel bug)"
+        ),
+        ExceptionOutcome::PhysCopyFault { fault_addr } => panic!(
+            "trap_dispatch: PhysCopyFault at {:#x} — Direct Map window \
+             validation escaped a fault (kernel bug)",
+            fault_addr.0
+        ),
         ExceptionOutcome::KernelPanic(v) => {
             // Console diagnostics before dying: the panic handler cannot
             // render the formatted message (no fmt on early console).
@@ -340,18 +406,13 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             crate::scheduler_loop(crate::current_cpu_id())
         }
         other => {
-            // Console diagnostics before dying: these outcomes are typed
-            // but their acting stages are not wired into this trap path
-            // yet, so reaching them is a wiring gap, not recoverable
-            // state. Each names its registered owner:
-            // - FpuTrap: lazy-FPU restore stage (save owner / restore
-            //   self / clts) — FPU ownership wiring, X-8 / T5 wave.
-            // - RedirectToRecovery / PhysCopyFault: the kernel copy paths
-            //   do not thread FaultContext into this entry yet.
-            // - ClearTrapFlag: is_traced / kern_trap_style are not
-            //   threaded from the saved PSW yet.
-            // - SpuriousNmi: C prints-and-returns (exception.c:191-195);
-            //   the vector-2 resume leg is unwired.
+            // The only remaining outcome: user-mode #NM (vector 7) — the
+            // lazy-FPU restore stage (save owner / restore self / clts).
+            // Its acting stage lands with the FPU ownership wiring
+            // (X-8 / T5 wave, NK2-A ①); reaching it before that wave is a
+            // wiring gap, not recoverable state. Every other outcome has an
+            // acting arm above. Console diagnostics first: the panic
+            // handler cannot render the formatted message.
             use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
             Console::write_str("trap: vector ");
             Console::write_hex(vector as u64);
@@ -369,8 +430,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(frame.ss);
             Console::write_str("\n");
             panic!(
-                "trap_dispatch: outcome {other:?} has no acting stage wired \
-                 (registered gap, not recoverable) — vector {vector:#04x} rip {:#x}",
+                "trap_dispatch: outcome {other:?} (FpuTrap) awaits the \
+                 lazy-FPU restore stage (registered gap, T5 wave) — \
+                 vector {vector:#04x} rip {:#x}",
                 frame.rip
             )
         }

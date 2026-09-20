@@ -534,6 +534,8 @@ pub struct IpcEngine<'a> {
 3. `'a` 生命周期将 engine 绑定到借用域——engine 是短生命周期对象（每次 syscall dispatch 构造，返回时 drop），不会跨 syscall 存活。
 4. `user_copy: &dyn UserCopy` 注入 arch 层实现，测试用 `KernelUserCopy` stub。
 
+**KernelUserCopy 生产半的校验先行（2026-09-21 NK2-A 落地）**：生产实现不再是"volatile 直读直写、fault 靠 trap 恢复"——`copy_msg_from_user`/`copy_msg_to_user` 在访问前经 `user_copy_range_mapped` 校验：①缓冲整体落在用户半（`USER_ADDRESS_SPACE_LIMIT`，x86-64/aarch64 `0x0000_8000_0000_0000`、riscv64 Sv39 `0x0000_0040_0000_0000`，锚点为各 link.ld 的内核半基址；越界回 `CopyError::OutOfBounds`，对位 C i386 用户段限的结构性约束）；②按页走 active root 页表，要求 `USER_ACCESSIBLE`（写向再加 `WRITABLE`；失配回 `CopyError::PageFault`）。错误管道即既有契约：send 侧 EFAULT（proc.c:919/:936）、delivermsg 两击 suspend/SIGSEGV（proc.c:270-289）。此消除了两个真实缺陷面：坏用户指针引发的内核态缺页（C 经 `__user_copy_msg_pointer_failure` 重定向恢复，Rust 侧改为类型化 Err）与用户把内核虚地址当缓冲直通读写（共享页表 flat 模型无段限，原先可越界）。
+
 ### 3.4 SendFlags：bitflags! 宏替代裸 u32 + 修正常量值
 
 **C 模式**：`NON_BLOCKING=0x0080` / `FROM_KERNEL=0x0100`（`ipc.h:11-12`）

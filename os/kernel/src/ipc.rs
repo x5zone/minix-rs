@@ -23,6 +23,8 @@
 //! 870-962, 967-1117, 1122-1167, 1200-1326, 1331-1346`.
 
 use minix_types::{Endpoint, Message, MessNotify, VirBytes};
+#[cfg(not(test))]
+use minix_arch::PteWalkArch;
 use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits, NONE_PROC_NR, proc_nr};
 use crate::proc_table::PROC_TABLE_SIZE;
 use crate::kpriv::{KPriv, PrivTable};
@@ -343,19 +345,107 @@ pub enum CopyError {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct KernelUserCopy;
 
+/// Top of the user half of the canonical address space, per architecture
+/// (the boundary the higher-half kernel link scripts draw —
+/// `02-higher-half-kernel.md` §4.1).
+///
+/// Every virtual address at or above this limit is kernel or
+/// non-canonical — never a message buffer a user process may hand the
+/// kernel. C enforced the same boundary structurally: the i386
+/// `copy_msg_from_user`/`copy_msg_to_user` run through the user DS
+/// segment, whose limit cannot cover kernel linear addresses
+/// (usermapped_glo_ipc.S). The flat shared-page-table model has no
+/// segment limit, so the bound must be checked explicitly before any
+/// user-buffer access.
+#[cfg(target_arch = "x86_64")]
+const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000; // PML4[256] base
+#[cfg(target_arch = "aarch64")]
+const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000; // TTBR1 region base
+#[cfg(target_arch = "riscv64")]
+const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_0040_0000_0000; // Sv39 VPN[2]=256
+
+/// Validate a user buffer range for a kernel-side user copy, software-walk
+/// first so the access below can no longer fault.
+///
+/// C's user-message copies recover from bad user pointers by fault
+/// redirection (`__user_copy_msg_pointer_failure` — mpx.S, fed by the
+/// EIP-range check in exception.c:206-219). This kernel expresses the same
+/// contract in types instead: the copy path validates before touching the
+/// buffer, so a bad pointer produces an `Err` here (EFAULT at the send
+/// layer, the two-strike suspend/SIGSEGV policy at delivery) rather than a
+/// kernel-mode fault. Same discipline as the cross-space copy paths, which
+/// software-walk the page table before their Direct Map window access.
+///
+/// Checks, in order:
+/// 1. The range lies entirely in the user half (`USER_ADDRESS_SPACE_LIMIT`)
+///    — otherwise `Err(CopyError::OutOfBounds)`.
+/// 2. With an active page-table root, every page in the range is mapped
+///    user-accessible (and writable for the write direction) — otherwise
+///    `Err(CopyError::PageFault)`. Without a root (no paging yet — boot or
+///    hosted tests) there is no translation to validate and no user
+///    process to protect, so the check passes.
+///
+/// `walk` is injected so hosted tests can drive every branch without real
+/// page tables; production passes `minix_arch::CurrentPteWalk::walk`.
+fn user_copy_range_mapped(
+    root: Option<minix_types::PhysBytes>,
+    va: VirBytes,
+    len: usize,
+    need_write: bool,
+    walk: impl Fn(
+        minix_types::PhysBytes,
+        VirBytes,
+    ) -> Option<(minix_types::PhysBytes, minix_arch::paging::PageFlags)>,
+) -> Result<(), CopyError> {
+    use minix_arch::paging::PageFlags;
+
+    // 1. User-half bound (checked_add: a wrap must not read as "fits").
+    match va.0.checked_add(len as u64) {
+        Some(end) if va.0 < USER_ADDRESS_SPACE_LIMIT && end <= USER_ADDRESS_SPACE_LIMIT => {}
+        _ => return Err(CopyError::OutOfBounds),
+    }
+
+    // 2. Per-page translation check against the active root.
+    let Some(root) = root else {
+        return Ok(());
+    };
+    const PAGE: u64 = 4096;
+    let mut page = va.0 & !(PAGE - 1);
+    let end = va.0 + len as u64;
+    while page < end {
+        let Some((_, flags)) = walk(minix_types::PhysBytes(root.0), VirBytes(page)) else {
+            return Err(CopyError::PageFault);
+        };
+        let user_ok = flags.contains(PageFlags::USER_ACCESSIBLE);
+        let write_ok = !need_write || flags.contains(PageFlags::WRITABLE);
+        if !user_ok || !write_ok {
+            return Err(CopyError::PageFault);
+        }
+        page += PAGE;
+    }
+    Ok(())
+}
+
 impl UserCopy for KernelUserCopy {
     #[cfg(not(test))]
     fn copy_msg_from_user(&self, src: VirBytes) -> Result<Message, CopyError> {
-        // E1/E8: CPL0 reads user VAs through the shared page tables
-        // (higher-half layout — kernel and user share the same CR3).
-        // The volatile read prevents the compiler from optimizing away
-        // the access; an unmapped VA would trigger a page fault caught
-        // by the kernel's page-fault handler (standard user-VA access
-        // from kernel mode).
+        // Validate-first (see `user_copy_range_mapped`): bound the buffer to
+        // the user half and software-walk every page user-accessible in the
+        // caller's active address space, then read through the shared page
+        // tables (higher-half layout — kernel and user share the CR3). The
+        // volatile read prevents the compiler from eliding the access; after
+        // validation an unmapped VA is no longer reachable, and a fault here
+        // would mean the walk lied (kernel bug), not bad user input.
         //
         // SAFETY: `src` is a user VA from the trap-frame contract (the
-        // caller's RDI/m_user). The kernel's page-fault handler handles
-        // the case where the VA is not mapped (C: user acc check).
+        // caller's RDI/m_user), bounded and translation-checked above.
+        user_copy_range_mapped(
+            crate::current_root_phys(),
+            src,
+            core::mem::size_of::<Message>(),
+            /* need_write = */ false,
+            minix_arch::CurrentPteWalk::walk,
+        )?;
         let msg = unsafe { core::ptr::read_volatile(src.0 as *const Message) };
         Ok(msg)
     }
@@ -368,7 +458,15 @@ impl UserCopy for KernelUserCopy {
     #[cfg(not(test))]
     fn copy_msg_to_user(&self, dst: VirBytes, msg: &Message) -> Result<(), CopyError> {
         // SAFETY: symmetric with copy_msg_from_user — CPL0 write to the
-        // caller's user VA through the shared page tables.
+        // caller's user VA through the shared page tables, with the write
+        // direction additionally requiring each page writable.
+        user_copy_range_mapped(
+            crate::current_root_phys(),
+            dst,
+            core::mem::size_of::<Message>(),
+            /* need_write = */ true,
+            minix_arch::CurrentPteWalk::walk,
+        )?;
         unsafe { core::ptr::write_volatile(dst.0 as *mut Message, *msg) };
         Ok(())
     }
@@ -3287,5 +3385,152 @@ mod tests {
         // succeed (C ignores A_INSRT errors).
         assert!(copier.read_senda_entry(VirBytes::new(0), 0).is_err());
         copier.write_senda_result(VirBytes::new(0), 0, 0, 0).unwrap();
+    }
+
+    // ── user_copy_range_mapped: validate-first user-buffer checks ──
+    //
+    // The production wiring passes `CurrentPteWalk::walk` (real page
+    // tables); these tests drive the injected-walk seam so every branch is
+    // exercised without an MMU (C parity anchors per branch below).
+
+    /// Mock walk over a page->flags map (page base address is the key).
+    fn walk_table(
+        pages: &[(u64, minix_arch::paging::PageFlags)],
+    ) -> impl Fn(
+        minix_types::PhysBytes,
+        VirBytes,
+    ) -> Option<(minix_types::PhysBytes, minix_arch::paging::PageFlags)>
+    + '_ {
+        move |_, va| {
+            pages
+                .iter()
+                .find(|(base, _)| *base == va.0 & !0xFFF)
+                .map(|(base, flags)| (minix_types::PhysBytes(*base), *flags))
+        }
+    }
+
+    #[test]
+    fn user_copy_range_rejects_kernel_half_as_out_of_bounds() {
+        // C's segment-limited copy could never reach kernel linear
+        // addresses; the flat model expresses that as the user-half bound.
+        let any_walk = |_: minix_types::PhysBytes, _: VirBytes| None;
+        let r = user_copy_range_mapped(
+            None,
+            VirBytes::new(0xFFFF_8000_0000_0000),
+            8,
+            false,
+            any_walk,
+        );
+        assert_eq!(r, Err(CopyError::OutOfBounds));
+    }
+
+    #[test]
+    fn user_copy_range_rejects_range_end_overflow_as_out_of_bounds() {
+        // va + len must not wrap past the limit (0x7FFF...FF + 8).
+        let any_walk = |_: minix_types::PhysBytes, _: VirBytes| None;
+        let r = user_copy_range_mapped(
+            None,
+            VirBytes::new(0x0000_7FFF_FFFF_FFF8),
+            64,
+            false,
+            any_walk,
+        );
+        assert_eq!(r, Err(CopyError::OutOfBounds));
+    }
+
+    #[test]
+    fn user_copy_range_without_active_root_passes_bound_only() {
+        // No active root = no paging (boot/hosted posture): the bound is
+        // the only checkable contract, translation is vacuously absent.
+        let r = user_copy_range_mapped(
+            None,
+            VirBytes::new(0x1000),
+            64,
+            false,
+            |_: minix_types::PhysBytes, _: VirBytes| {
+                panic!("walk must not be called without an active root")
+            },
+        );
+        assert_eq!(r, Ok(()));
+    }
+
+    #[test]
+    fn user_copy_range_unmapped_page_is_page_fault() {
+        let r = user_copy_range_mapped(
+            Some(minix_types::PhysBytes::new(0x9000)),
+            VirBytes::new(0x5000),
+            64,
+            false,
+            walk_table(&[]),
+        );
+        assert_eq!(r, Err(CopyError::PageFault));
+    }
+
+    #[test]
+    fn user_copy_range_second_page_unmapped_is_page_fault() {
+        // A 64-byte buffer straddling the page boundary needs BOTH pages.
+        let page = minix_arch::paging::PageFlags::PRESENT
+            | minix_arch::paging::PageFlags::USER_ACCESSIBLE
+            | minix_arch::paging::PageFlags::WRITABLE;
+        let r = user_copy_range_mapped(
+            Some(minix_types::PhysBytes::new(0x9000)),
+            VirBytes::new(0x1FFC),
+            64,
+            false,
+            walk_table(&[(0x1000, page)]), // 0x2000 page missing
+        );
+        assert_eq!(r, Err(CopyError::PageFault));
+    }
+
+    #[test]
+    fn user_copy_range_supervisor_page_is_page_fault() {
+        // Identity-mapped low pages are supervisor-only (U=0): a user
+        // process must not hand them to the kernel as message buffers.
+        let kernel_page =
+            minix_arch::paging::PageFlags::PRESENT | minix_arch::paging::PageFlags::WRITABLE;
+        let r = user_copy_range_mapped(
+            Some(minix_types::PhysBytes::new(0x9000)),
+            VirBytes::new(0x1000),
+            64,
+            false,
+            walk_table(&[(0x1000, kernel_page)]),
+        );
+        assert_eq!(r, Err(CopyError::PageFault));
+    }
+
+    #[test]
+    fn user_copy_range_write_to_readonly_page_is_page_fault() {
+        let ro = minix_arch::paging::PageFlags::read_only();
+        let r = user_copy_range_mapped(
+            Some(minix_types::PhysBytes::new(0x9000)),
+            VirBytes::new(0x2000),
+            64,
+            true,
+            walk_table(&[(0x2000, ro)]),
+        );
+        assert_eq!(r, Err(CopyError::PageFault));
+    }
+
+    #[test]
+    fn user_copy_range_readonly_read_and_rw_write_pass() {
+        let ro = minix_arch::paging::PageFlags::read_only();
+        let rw = minix_arch::paging::PageFlags::read_write();
+        let table = [(0x2000, ro), (0x3000, rw)];
+        let read_ro = user_copy_range_mapped(
+            Some(minix_types::PhysBytes::new(0x9000)),
+            VirBytes::new(0x2000),
+            64,
+            false,
+            walk_table(&table),
+        );
+        assert_eq!(read_ro, Ok(()));
+        let write_rw = user_copy_range_mapped(
+            Some(minix_types::PhysBytes::new(0x9000)),
+            VirBytes::new(0x3000),
+            64,
+            true,
+            walk_table(&table),
+        );
+        assert_eq!(write_rw, Ok(()));
     }
 }
