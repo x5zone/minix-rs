@@ -42,7 +42,7 @@
 | 编号 | 条目 | 线 | 触碰文件 | 状态 |
 |---|---|---|---|---|
 | C-30 | E-BOOTMODS boot-shim 清单半 | new_edge1 | `os/boot-shim/src/loader.rs`（MODULE_NAMES 扩 12 项对 C `table.c:44-64` image[] 序 = `ds,rs,pm,sched,vfs,memory,tty,mib,vm,pfs,mfs,init` + 删虚假"顺序无关"注释 + 缺件/OOM 带名 fail-fast + 编译期 `assert!(len==12)`） | ✅ 随 NK4（qorder_1，2026-09-20，boot-shim 14 单测+kernel 787 全绿，clippy 9→9） |
-| C-31 | E-CONSOLE 驱动半 | new_edge2 | `os/drivers/tty/tty/`（输出后端）、`os/drivers/storage/memory/`（进程壳） | 🔶 部分：NL6 memory 进程壳 ✅ 2026-09-20 c0a9b81aa；NL1 tty 输出后端 ⏸ OQ-N3 |
+| C-31 | E-CONSOLE 驱动半 | new_edge2 | `os/drivers/tty/tty/`（输出后端）、`os/drivers/storage/memory/`（进程壳） | ✅ 2026-09-21（NL1 批B 收口，zcode_glm_2，代码 546aef11e / merge 1357689bc——OQ-N3 方案B 串口 backend + 写字节管道 + minix-sys sys_outb/sys_inb；NL6 memory 进程壳 ✅ c0a9b81aa 前闭；video-text backend 维持登记待 display 可见验收面）；VFS 半归 NS7 |
 | C-32 | E-IMGPKG xtask 半 | new_edge3 | `os/xtask/src/main.rs`（image/qemu/build 实装） | ✅ 2026-09-21（zcode_glm_1，dfb910f37，NS8 收线——image()/qemu() 实装 + 装机清单三重锁 + /etc 最小集 + mkfs_mfs 装机消费真实播种 EXIT=0；登记 NS8-A〔kernel.elf 生产者缺口→edge1〕/NS8-B〔模块 guest 构建首阻塞点→NL5②/NS12〕见 new_edge3 新登记；NL5③ 的 xtask 拆 invocation 半随 build() 扩全量落了，CI 半与生产开关显式化核验收敛归 edge4/zcode_glm_3 对账） |
 | C-33 | NK3 载体注册（共享文件半） | new_edge1 | `os/Cargo.toml`（workspace members 增 test-timer-irq-{riscv64,aarch64}）+ `os/qemu-tests/run_all.sh`（构建/run 段增两名）——NK3 主体在 edge1 所有权内（os/arch、os/kernel、os/qemu-tests） | ✅ 2026-09-20（zcode_glm_1，bd6a910cf——两名已入 members 与 run_all 构建/run 段，真机 PASS ×2；NK3 收线） |
 | C-34 | RS `crate::boot` 路径 bug（宿主 `--workspace --bins` 首停点） | **new_edge3** | `os/servers/rs/src/main.rs:39`（`crate::boot::parse_rs_verbose` → `minix_rs::boot::…`；edge3 f5fcef73f 今日引入）——由 new_edge1 NK5 排查发现，非 edge1 所有权，仅登记待 edge3 认领 | ✅ 2026-09-20（zcode_glm_2，aec8ea361——一行改经 `minix_rs::boot::`；docker 宿主 `-p minix-rs --bins` Finished + test ok + clippy 零新增；NK5 的 C-34 前置清空） |
@@ -79,7 +79,7 @@
 | new_edge1 NK3（三架构生产 trap 腿 + timer-irq 载体） | E5-SMP（-smp 用例的中断交付前提）；E5-ARCH（三架构复跑）；一切 riscv64/aarch64 真机中断/用户往返 | ✅（2026-09-20，c1bb93c22 等 4 commit；真机 PASS ×2） |
 | new_edge1 NK4/OQ-N2（12 模块契约）——✅ 契约已钉（2026-09-20，loader.rs MODULE_NAMES 12 项对 C image[] 序） | new_edge3 NS8（装机清单——须把 `/EFI/minix/modules/` 下 12 文件命名严格对齐 `ds,rs,pm,sched,vfs,memory,tty,mib,vm,pfs,mfs,init`，缺件 boot-shim 现 fail-fast panic） | 供方 ✅ / 消费方 ✅（NS8 2026-09-21 dfb910f37：装机清单三重锁对齐契约，xtask image() 按同序装机；NK4-A 真机端到端余量待 QEMU 窗口 + NS8-A kernel.elf 产出者） |
 | new_edge3 NS4/NS5（挂根+exec） | NS9/NS12、T3/T4 | ☐ |
-| new_edge3 NS7 + NL1（console 全链） | T4 冒烟（可见输出） | ☐ |
+| new_edge3 NS7 + NL1（console 全链） | T4 冒烟（可见输出） | ◐ NL1 驱动半 ✅（2026-09-21，546aef11e——串口 backend + 写字节管道，真机半挂 T2）；NS7（VFS cdev 臂/dmap tty 槽）前置已解锁待领 |
 
 ---
 
