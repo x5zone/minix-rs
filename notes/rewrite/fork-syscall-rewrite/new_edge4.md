@@ -42,7 +42,7 @@
 | 编号 | 条目 | 线 | 触碰文件 | 状态 |
 |---|---|---|---|---|
 | C-30 | E-BOOTMODS boot-shim 清单半 | new_edge1 | `os/boot-shim/src/loader.rs`（MODULE_NAMES 扩 12 项对 C `table.c:44-64` image[] 序 = `ds,rs,pm,sched,vfs,memory,tty,mib,vm,pfs,mfs,init` + 删虚假"顺序无关"注释 + 缺件/OOM 带名 fail-fast + 编译期 `assert!(len==12)`） | ✅ 随 NK4（qorder_1，2026-09-20，boot-shim 14 单测+kernel 787 全绿，clippy 9→9） |
-| C-31 | E-CONSOLE 驱动半 | new_edge2 | `os/drivers/tty/tty/`（输出后端）、`os/drivers/storage/memory/`（进程壳） | 🔶 部分：NL6 memory 进程壳 ✅ 2026-09-20 21bb3d7cf；NL1 tty 输出后端 ⏸ OQ-N3 |
+| C-31 | E-CONSOLE 驱动半 | new_edge2 | `os/drivers/tty/tty/`（输出后端）、`os/drivers/storage/memory/`（进程壳） | 🔶 部分：NL6 memory 进程壳 ✅ 2026-09-20 f07fa535d；NL1 tty 输出后端 ⏸ OQ-N3 |
 | C-32 | E-IMGPKG xtask 半 | new_edge3 | `os/xtask/src/main.rs`（image/qemu/build 实装） | ☐（NS8） |
 | C-33 | NK3 载体注册（共享文件半） | new_edge1 | `os/Cargo.toml`（workspace members 增 test-timer-irq-{riscv64,aarch64}）+ `os/qemu-tests/run_all.sh`（构建/run 段增两名）——NK3 主体在 edge1 所有权内（os/arch、os/kernel、os/qemu-tests） | ✅ 2026-09-20（zcode_glm_1，bd6a910cf——两名已入 members 与 run_all 构建/run 段，真机 PASS ×2；NK3 收线） |
 | C-34 | RS `crate::boot` 路径 bug（宿主 `--workspace --bins` 首停点） | **new_edge3** | `os/servers/rs/src/main.rs:39`（`crate::boot::parse_rs_verbose` → `minix_rs::boot::…`；edge3 f5fcef73f 今日引入）——由 new_edge1 NK5 排查发现，非 edge1 所有权，仅登记待 edge3 认领 | ✅ 2026-09-20（zcode_glm_2，aec8ea361——一行改经 `minix_rs::boot::`；docker 宿主 `-p minix-rs --bins` Finished + test ok + clippy 零新增；NK5 的 C-34 前置清空） |
@@ -59,7 +59,7 @@
 | 前置（供方） | 消费方 | 状态 |
 |---|---|---|
 | new_edge2 NL2（minix-sef SefEvent::Init） | new_edge3 NS1（六服务器应答臂）、NL6（memory 进程壳） | ☐ |
-| new_edge2 NL6（memory 驱动进程） | new_edge3 NS4（挂根）/NS6（块源）/NS8（镜像） | ✅ 供方 2026-09-20 qorder_2 21bb3d7cf（claim/NL6-qorder_2，双面消息泵+进程壳，待合入 rewrite 后下游方可消费）|
+| new_edge2 NL6（memory 驱动进程） | new_edge3 NS4（挂根）/NS6（块源）/NS8（镜像） | ✅ 供方 2026-09-20 qorder_2 f07fa535d（claim/NL6-qorder_2，双面消息泵+进程壳，待合入 rewrite 后下游方可消费）|
 | new_edge2 NL4（pipe2/whoami/文件族 wrapper） | new_edge3 NS12（sh 等）、NL6（tty 端点） | ☐ |
 | new_edge2 NL3③（sigreturn trampoline） | new_edge3 NS11（init trampoline 填真） | ☐ |
 | new_edge1 NK1（C-29 载体收口） | new_edge3 NS1/NS2（boot 链真机验收）、E5 族真机半 | ☐ |
