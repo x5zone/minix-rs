@@ -857,11 +857,12 @@ pub fn lookup_dev(table: &[BootImageDev], endpoint: Endpoint) -> &BootImageDev {
 pub struct RinitState {
     /// C: `rinit.rproctab_gid = cpf_grant_direct(ANY, rprocpub, ...)` — main.c:185.
     ///
-    /// `None` = grant not yet created (DEFERRED: `cpf_grant_direct` wiring is
-    /// part of the syscall surface, 19). Consumption: 12-rs-init-run.md —
-    /// the 12 wiring copies **this** field into `InitMessage::rproctab_gid`
-    /// (ready.rs; R32.2: one global, one payload — the wiring is the only
-    /// bridge, keep them from drifting into two independent sources).
+    /// Filled by `step0_prepare` (the grant covers the table's wire mirror);
+    /// `None` = grant not created yet (fresh `BootInit`). Consumption:
+    /// 12-rs-init-run.md — the 12 wiring copies **this** field into
+    /// `InitMessage::rproctab_gid` (ready.rs; R32.2: one global, one payload
+    /// — the wiring is the only bridge, keep them from drifting into two
+    /// independent sources).
     pub rproctab_gid: Option<u32>,
 }
 
@@ -948,10 +949,6 @@ impl<'a> BootInit<'a> {
         // C: env_parse("rs_verbose", ...) — main.c:179 (config injection; A-11).
         // C: sys_getinfo(GET_HZ, &system_hz, ...) — main.c:181-183.
         self.system_hz = sys.get_hz()?;
-        // C: rinit.rproctab_gid = cpf_grant_direct(...) — main.c:185.
-        //   Creation point. DEFERRED: grant syscall wiring is 19's scope; the
-        //   field stays None until then (consumed by init_service, 12).
-        self.rinit = RinitState::default();
         // C: RUPDATE_INIT() + shutting_down = FALSE — main.c:192-193.
         //   The update descriptor (16) is reset at construction
         //   (`RupdateState::default()` in 16's module); we reset the flag here.
@@ -963,6 +960,19 @@ impl<'a> BootInit<'a> {
         // C: process table reset — main.c:230-237. Rebuilt from scratch
         //   (full field semantics: 02-rs-process-table.md §2.12).
         self.table = RProcTable::new();
+        // C: rinit.rproctab_gid = cpf_grant_direct(ANY, rprocpub,
+        //   sizeof(rprocpub), CPF_READ) — main.c:185-189; VM reads the table
+        //   through this grant at RS_INIT (main.c:246). A failed creation
+        //   stops the boot (C panics, main.c:186-189; here the Errno reaches
+        //   main() as the Kernel BootError, same fatal stop). Order note: C
+        //   grants *before* the table reset because the granted `rprocpub`
+        //   is a static array the reset cannot move; the Rust grant covers
+        //   the table's derived wire mirror, so the reset (which allocates
+        //   that mirror) must come first — the grant pins the mirror's
+        //   address, step 1 fills its rows (`sync_pub_wire`).
+        let wire = self.table.pub_wire_bytes();
+        let gid = sys.grant_read(Endpoint::ANY, wire.as_ptr() as u64, wire.len() as u64)?;
+        self.rinit.rproctab_gid = Some(gid as u32);
         Ok(())
     }
 
@@ -1021,6 +1031,10 @@ impl<'a> BootInit<'a> {
                 ticks,
             )?;
         }
+        // C fills `rprocpub[i]` in place during registration (main.c:258-345);
+        // the wire mirror the rproctab grant covers is derived, so refresh it
+        // once the boot rows exist — VM reads it when RS_INIT arrives (step 2).
+        self.table.sync_pub_wire();
         Ok(())
     }
 
@@ -1623,6 +1637,36 @@ mod tests {
             let id = boot.table.endpoint_slot(ep).expect("boot slot indexed");
             assert_eq!(boot.table.get(id).pid, Some(100));
         }
+    }
+
+    #[test]
+    fn test_step0_creates_rproctab_grant_over_wire_mirror() {
+        // C main.c:185-189 — boot step 0 creates the READ grant for ANY over
+        // `rprocpub`; step 2 carries the gid in RS_INIT and VM safecopies the
+        // table through it (main.c:246). The Rust grant covers the table's
+        // wire mirror: 64 × 40-byte rows, granted here at the reset-fresh
+        // (all-zero) content — step 1's sync fills the rows, the address is
+        // what the grant pins.
+        let mut sys = MockKernelApi::new(100);
+        let mut boot = BootInit::new(BootTables::placeholder());
+        boot.step0_prepare(&mut sys).expect("step 0");
+
+        let (_, addr, len) = sys.last_grant.expect("step0 must create the rproctab grant");
+        assert_eq!(
+            len as usize,
+            64 * core::mem::size_of::<minix_types::RprocpubSnap>(),
+            "grant covers sizeof(rprocpub) = NR_SYS_PROCS × row width"
+        );
+        assert_eq!(
+            addr,
+            boot.table.pub_wire_bytes().as_ptr() as u64,
+            "grant target = the wire mirror the kernel safecopies from"
+        );
+        assert_eq!(
+            boot.rinit().rproctab_gid,
+            Some(1),
+            "MockKernelApi grant ids start at 1 (testutil grant_read)"
+        );
     }
 
     #[test]
@@ -2268,7 +2312,7 @@ mod tests {
             let init = minix_types::RsInit::decode_message(msg);
             assert_eq!(init.init_type, 0, "SEF_INIT_FRESH — sef.h:93");
             assert_eq!(init.result, 0);
-            assert_eq!(init.rproctab_gid, -1, "grant not created → GRANT_INVALID");
+            assert_eq!(init.rproctab_gid, 1, "step0's rproctab grant id (main.c:185)");
             assert_eq!(init.old_endpoint, Endpoint::NONE, "boot has no old self");
             assert_eq!(init.restarts, 1, "r_restarts 0 + 1 — utility.c:58");
             assert_eq!(init.prepare_state, crate::live_update::SEF_LU_STATE_NULL);

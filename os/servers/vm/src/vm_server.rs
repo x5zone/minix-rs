@@ -1337,11 +1337,22 @@ impl VmServer {
                     return DispatchAction::Suspend;
                 }
                 Err(e) => {
-                    // C panics on init failure (main.c:151 "do_sef_init_request
-                    // failed!"); minix-rs fails closed at the IPC boundary
-                    // ([ARCH: A-14] / V9-P0-1): drop + count + audit, no reply —
-                    // RS times out exactly as it would against a dead VM,
-                    // minus the whole-system outage.
+                    // NS2/E-RPROCTAB: C's process_init replies RS_INIT+result
+                    // to RS *unconditionally* — success or failure
+                    // (sef_init.c:110-119; VM registers the async-response
+                    // variant, main.c:229 "avoid a boot-time deadlock") — and
+                    // only then does the main loop treat the failure as fatal
+                    // (main.c:151). Reply with the mapped errno first so RS's
+                    // catch_boot_init_ready fails visibly on the non-OK
+                    // result (main.c:805-807) instead of blocking forever.
+                    self.transport
+                        .borrow_mut()
+                        .send(RS_PROC_NR, &minix_sef::sef_init_reply(e.to_errno()))
+                        .unwrap_or_else(|_| panic!("ipc_send() failed (RS_INIT birth report)"));
+                    // [A-14] fail-closed continues after the reply: C panics
+                    // here (main.c:151); minix-rs drops + counts + audits —
+                    // no second reply, VM stays alive minus the whole-system
+                    // outage ([ARCH: A-14] / V9-P0-1).
                     self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
                     audit_log!(
                         "[VM RS] handshake failed (gid={}): {:?} — RS_INIT dropped",
@@ -3274,8 +3285,9 @@ mod tests {
     }
 
     /// E-RSWIRE fail-closed half: when the kernel rejects the safecopy
-    /// (grant not mounted yet), the handshake errors — the message is
-    /// dropped and counted, nothing is sent to RS.
+    /// (grant not mounted yet), the handshake errors — RS still gets the
+    /// RS_INIT+result failure report (sef_init.c:110-119), then the message
+    /// is dropped and counted ([A-14]: no second reply, no panic).
     #[test]
     fn test_run_once_rs_init_fails_closed_on_safecopy_error() {
         with_test_mock_base(|| {
@@ -3290,6 +3302,18 @@ mod tests {
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
             server.init();
+
+            // Register RS as a live caller — without this the pre-dispatch
+            // sender check drops the RS_INIT before the handshake ever runs
+            // (the failure reply below must be reachable; main.c:497-520 —
+            // RS is a boot-image process, its slot is active by construction).
+            let rs_table = VmProcTable::get_global();
+            let rs_slot = UserSlot::new(2);
+            unsafe { rs_table.reset_slot(rs_slot); }
+            let rs_empty = rs_table.get_empty(rs_slot).unwrap();
+            let mut rs_proc = rs_empty.activate(Endpoint::RS);
+            rs_proc.init_page_table().expect("rs pt");
+            rs_proc.init_regions();
 
             // Mock with NO payload and a failing safecopy: swap in a
             // gateway whose safecopy errors — reuse SharedMockGateway over
@@ -3358,7 +3382,18 @@ mod tests {
 
             let step = server.run_once();
             assert_eq!(step, RunStep::Handled);
-            assert_eq!(handle.sent().len(), 0, "no reply to RS on failed handshake");
+            // NS2/E-RPROCTAB: the failure still replies RS_INIT+result
+            // (process_init replies unconditionally — sef_init.c:110-119),
+            // then the fail-closed drop stands ([A-14]: no second reply).
+            let sent = handle.sent();
+            assert_eq!(sent.len(), 1, "exactly the failure result reaches RS");
+            assert_eq!(sent[0].0, Endpoint::RS);
+            assert_eq!(sent[0].1.m_type, RS_INIT as i32);
+            assert_eq!(
+                sent[0].1.rs_init_result(),
+                Some(minix_types::ESRCH),
+                "safecopy failure maps to InvalidEndpoint → ESRCH (ipc/vm.rs)"
+            );
             assert_eq!(server.dropped_messages(), 1, "failed handshake must be counted");
 
             reset_boot_slots();

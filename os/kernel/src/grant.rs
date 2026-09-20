@@ -108,11 +108,12 @@ pub struct GrantVerifyResult {
 
 // ── Endpoint sentinels ──
 
-/// C: `NONE` — endpoint.h
-#[allow(dead_code)] // endpoint sentinel constant; not yet wired to all call sites
-const NONE: i32 = -1;
-/// C: `ANY` — endpoint.h
-const ANY: i32 = -3;
+/// C: `ANY` — endpoint.h:55, `_ENDPOINT_SLOT_TOP - 1` (= 31744 with
+/// com.h:55 `MAX_NR_TASKS 1023`; the former local `-3` made the grantee
+/// gate below deny every who_to=ANY grant with EPERM — the E-MIBGRANT
+/// constant class). Derived from the minix-types authority so the two
+/// cannot drift (`may_create_magic_grant`'s Endpoint::VFS/MIB pattern).
+const ANY: i32 = minix_types::Endpoint::ANY.0;
 
 /// Only VFS and MIB may create magic grants.
 ///
@@ -505,6 +506,20 @@ mod tests {
     }
 
     #[test]
+    fn test_grantee_gate_any_authority_value() {
+        // E-MIBGRANT constant class: the grantee gate (three sites below)
+        // must compare against C's ANY — endpoint.h:55, `_ENDPOINT_SLOT_TOP
+        // - 1`, i.e. 32768 - 1023 - 1 with com.h:55 `MAX_NR_TASKS 1023` —
+        // not a small negative. The former local `-3` denied every
+        // who_to=ANY grant (the rproctab grant, main.c:185, is exactly
+        // `cpf_grant_direct(ANY, …, CPF_READ)`) with EPERM while host
+        // tests self-consistently used the wrong value (test blindness).
+        assert_eq!(ANY, 32768 - 1023 - 1);
+        // And it stays the single authority minix-types derives.
+        assert_eq!(ANY, minix_types::Endpoint::ANY.0);
+    }
+
+    #[test]
     fn test_verify_grant_invalid_endpoint() {
         let mut proc_table = crate::test_helpers::test_proc_table();
         let priv_table = crate::test_helpers::test_priv_table();
@@ -512,7 +527,7 @@ mod tests {
 
         let result = verify_grant(
             ProcNr(0), &mut proc_table,
-            Endpoint(NONE),
+            minix_types::Endpoint::NONE,
             Endpoint(100),
             0,
             0,

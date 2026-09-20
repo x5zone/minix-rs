@@ -817,9 +817,9 @@ fn self_update(&mut self, sys: &mut dyn KernelApi) -> Result<(), Errno> { ... }
 
 ### 3.7 rinit grant 创建点的表达（对应 §2.3.1，D-16）
 
-`rinit.rproctab_gid = cpf_grant_direct(...)`（main.c:185）是**创建点**（本文档语义），消费点在 12（`init_service` 把 gid 放入 RS_INIT 消息）。Rust 中 `RinitState` 字段 `rproctab_gid: Option<GrantId>`（当前以 `Option<u32>` 表达，`GrantId` 类型归 99/19 落地后替换）：
+`rinit.rproctab_gid = cpf_grant_direct(...)`（main.c:185）是**创建点**（本文档语义），消费点在 12（`init_service` 把 gid 放入 RS_INIT 消息）。Rust 中 `RinitState` 字段 `rproctab_gid: Option<u32>`（`GrantId = i32`，minix-types id.rs:75）：
 
-- 创建：`step0_prepare` 阶段通过 `KernelApi` 的 grant 接口设置（`grant_direct` 归 19；当前未接线时以 `None` + 文档标注 DEFERRED）。
+- 创建：**已落地（NS2，2026-09-21）**——`step0_prepare` 经 `KernelApi::grant_read`（`SysApi` 面，实现在 `trap_api::TrapKernelApi` → `minix_sys::grant::GrantTable::grant_direct`）创建 `CPF_READ|ANY` 授权，覆盖 `RProcTable` 的 wire 镜像（`pub_wire_bytes()`，64×40 字节行，C 静态数组 `rprocpub[]` 的替身；表重置先于授权，因为 Rust 授权钉的是镜像地址，行内容由 step1 的 `sync_pub_wire` 填充）。
 - 消费：12 的 `init_service` 读取该字段（12 文档实现）。
 - 用 `Option<GrantId>` 表达"boot 已创建 / 未创建"状态，杜绝 C 的 `GRANT_VALID()` 宏手动判定。
 
@@ -931,7 +931,7 @@ impl RsServer {
 - `ServiceSlot`：C `rproc` 的**最小生命周期视图**（`endpoint`/`label`/`sys_flags`/`dev_nr`/`pid`/`in_use`），完整字段语义归 02；本模块只承载四步 boot 需要的属性。
 - `BootInit::init_fresh()`：四步编排（§3.4）。各步要点：
   - **与 C 的步骤数差异（CSSCM）**：C 的 `sef_cb_init_fresh` 是"前置 + Step 1~4"（前置在 §2.3.1，未编号）；Rust 显式命名为 `step0_prepare` + `step1_set_attrs`~`step4_finish` 共 5 个私有方法。机制步骤一一对应（无增减），差异仅为命名显式化（架构演进，无 C 行为偏移）。
-  - `step0_prepare`：`env_parse` 配置注入（参数）、`get_hz`、grant 创建点、`RUPDATE_INIT` 等价（`RupdateState::default()`）、`sys_getimage` 等价（`tables.image` 已注入）→ 计数核对（`validate_tables`，对应 main.c:225-227）→ 表重置（`slots` 重建，对应 main.c:230-237）。
+  - `step0_prepare`：`env_parse` 配置注入（参数）、`get_hz`、`RUPDATE_INIT` 等价（`RupdateState::default()`）、`sys_getimage` 等价（`tables.image` 已注入）→ 计数核对（`validate_tables`，对应 main.c:225-227）→ 表重置（`slots` 重建，对应 main.c:230-237）→ rproctab 授权创建（§3.7，main.c:185-189；Rust 侧表重置先行——授权钉的是 wire 镜像地址，行内容 step1 才填；NS2 2026-09-21 落地）。
   - `step1_set_attrs`：遍历 priv 表（对应 main.c:244），每项 `lookup_image/sys/dev` + 填充 `ServiceSlot` 属性；`endpoint == RS || endpoint == VM` 跳过 `privctl(SET_SYS)`（对应 main.c:285-291，RS/VM 例外）；其余经 `privctl(SET_SYS)` + `getpriv`。priv/send mask/call mask 的**完整构造**归 03/05，本模块只做调用编排。
   - `step2_allow_run`：遍历 priv 表；RS/VM → `init_service`（12 语义已接线——`mark_initializing` 三时间戳 + RS 自身 `ROOT_SYS_PROC` 早退不发消息、VM/普通服务经 `IpcApi::asynsend` 缝发出 `RS_INIT`，生产面 ENOSYS fail-closed、mock 记录全载荷）；普通服务 → `sched_init_proc` + `privctl(ALLOW)` + `init_service` + `SF_SYNCH_BOOT` 分支（同步 catch / 累积计数，对应 main.c:375-398）。
   - `step3_catch_init_ready`：循环调用 `catch_boot_init_ready`（12 机制，receive 缝已接线）。

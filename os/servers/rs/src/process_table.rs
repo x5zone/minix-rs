@@ -14,7 +14,7 @@
 //! See 02-rs-process-table.md §4.2.
 
 use alloc::vec::Vec;
-use minix_types::{Clock, Endpoint, Errno, NR_PROCS, NR_TASKS, Pid};
+use minix_types::{Clock, Endpoint, Errno, NR_PROCS, NR_TASKS, Pid, RprocpubSnap};
 
 use crate::privilege::Privilege;
 use crate::service_slot::{Label, RFlags, RS_MAX_LABEL_LEN, ServiceSlot, SlotId, SysFlags};
@@ -77,6 +77,18 @@ pub struct RProcTable {
     /// Indexed by `endpoint.slot()` (`_ENDPOINT_P`). Negative slots (kernel
     /// tasks) are never services and are not indexed.
     by_endpoint: [Option<SlotId>; NR_PROCS],
+    /// Public-table wire mirror — the memory the rproctab grant covers.
+    ///
+    /// C grants the `rprocpub[NR_SYS_PROCS]` static array directly
+    /// (main.c:185; its address survives the table reset at :238-250). The
+    /// Rust table is typed rows, so the mirror is the grant's stand-in: one
+    /// [`RprocpubSnap`] row per slot, kept in sync by [`RProcTable::sync_pub_wire`].
+    /// The heap buffer's address is stable across the table's own moves
+    /// (BootInit → ServerState handover) and across the step-0 reset, which
+    /// is what grant readers (VM's `sys_safecopyfrom`, main.c:246) rely on.
+    /// Never `clone()` a table whose mirror is granted — the clone's rows
+    /// live elsewhere and the grant would keep serving stale rows.
+    pub_wire: Vec<RprocpubSnap>,
 }
 
 impl RProcTable {
@@ -90,6 +102,40 @@ impl RProcTable {
                 .map(|_| ServiceSlot::vacant())
                 .collect(),
             by_endpoint: [None; NR_PROCS],
+            pub_wire: alloc::vec![RprocpubSnap::default(); minix_types::NR_SYS_PROCS],
+        }
+    }
+
+    /// The public-table wire mirror as raw bytes.
+    ///
+    /// This is the memory the rproctab grant covers (C:
+    /// `cpf_grant_direct(ANY, rprocpub, sizeof(rprocpub), CPF_READ)` —
+    /// main.c:185). Rows are `#[repr(C)]` POD snapshots, so the byte view is
+    /// the wire (same discipline as shell_request's `row_bytes`).
+    pub fn pub_wire_bytes(&self) -> &[u8] {
+        // SAFETY: `RprocpubSnap` is `#[repr(C)]` with no padding-sensitive
+        // readers on the wire side (the consumer reads whole 40-byte rows),
+        // and the slice covers exactly `len * size_of::<RprocpubSnap>()`
+        // bytes of a heap allocation that outlives the borrow.
+        unsafe {
+            core::slice::from_raw_parts(
+                self.pub_wire.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(self.pub_wire.as_slice()),
+            )
+        }
+    }
+
+    /// Re-derives the wire mirror from the typed slots.
+    ///
+    /// C updates `rprocpub[i]` in place wherever the public half changes;
+    /// the mirror is the Rust stand-in and needs the sync spelled out. Call
+    /// after every mutation that changes grant-visible fields — boot
+    /// registration does it once after the activation loop (step 1), and
+    /// later service create/update paths must do the same before any peer
+    /// can read the grant.
+    pub fn sync_pub_wire(&mut self) {
+        for (i, slot) in self.slots.iter().enumerate() {
+            self.pub_wire[i] = crate::shell_request::serialize_rprocpub_snap(slot);
         }
     }
 
@@ -586,6 +632,37 @@ mod tests {
             .expect("activate");
         table.get_mut(SlotId::new(0)).pid = Some(100);
         table
+    }
+
+    #[test]
+    fn test_pub_wire_mirror_tracks_sync() {
+        // The rproctab grant (main.c:185) covers `pub_wire` — C's
+        // `rprocpub[]`. Fresh table = BSS-zero rows; `sync_pub_wire` must
+        // re-derive each row from the typed slot (the VM grant reader sees
+        // exactly the serializer's field mapping).
+        let mut table = RProcTable::new();
+        table.sync_pub_wire();
+        assert!(
+            table.pub_wire.iter().all(|r| *r == RprocpubSnap::default()),
+            "fresh mirror = all-zero rows (C reset leaves BSS zeros)"
+        );
+
+        let mut table = table_with_one_slot();
+        table.sync_pub_wire();
+        assert_eq!(
+            table.pub_wire[0],
+            crate::shell_request::serialize_rprocpub_snap(table.get(SlotId::new(0))),
+            "row 0 mirrors the activated slot's public half"
+        );
+        assert_eq!(table.pub_wire[0].in_use, 1);
+        assert_eq!(table.pub_wire[0].endpoint, Endpoint::VFS.0);
+        // Vacant rows stay zero (C: unallocated slots keep BSS zeros).
+        assert_eq!(table.pub_wire[1], RprocpubSnap::default());
+        // The byte view is the wire: grant length = 64 × 40 bytes.
+        assert_eq!(
+            table.pub_wire_bytes().len(),
+            64 * core::mem::size_of::<RprocpubSnap>()
+        );
     }
 
     #[test]
