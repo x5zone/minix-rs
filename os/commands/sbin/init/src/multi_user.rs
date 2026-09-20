@@ -11,6 +11,7 @@
 //! another state. Note the wait uses plain options — no WUNTRACED
 //! here (init.c:1559), unlike the rescue states.
 
+use alloc::vec::Vec;
 use crate::host::InitHost;
 use crate::log::{emergency, stall, warning};
 use crate::session::{Session, SE_SHUTDOWN};

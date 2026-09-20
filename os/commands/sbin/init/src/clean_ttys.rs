@@ -10,6 +10,7 @@
 //! here — the SE_SHUTDOWN sessions die and are collected in the
 //! multi-user loop (doc 09).
 
+use alloc::vec::Vec;
 use crate::host::InitHost;
 use crate::log::warning;
 use crate::session::{build_session, split_command, ParsedCommand, Session, SE_PRESENT, SE_SHUTDOWN};

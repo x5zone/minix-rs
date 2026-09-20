@@ -12,4 +12,23 @@ path = "src/main.rs"
 [dependencies]
 minix-sys = { workspace = true }
 minix-crypt = { workspace = true }
+
+# minix-rt 按目标分形态（C-21 / P1-2 ③ 执行面）：
+# - 宿主（linux-gnu/musl，开发与测试面）取 **std 形态**：rustc 对 hosted
+#   target 一律传 Scrt1.o（其 `_start` 需要 `main`/`__libc_start_main`），
+#   no-std minix-rt 的 `_start` 出生链会在链接期与之撞符号（实测
+#   duplicate symbol: _start）；std 形态既无 `_start` 也无 panic-handler，
+#   宿主二进制与测试图都干净。
+# - 真机（`x86_64-unknown-none`，rt-birth 先例，workspace .cargo/config
+#   已为该 target 配 static 重定位）取 **freestanding 形态**：`_start`
+#   出生链 + `alloc-global` 把 slab 池绑进 `#[global_allocator]`（minix-rt
+#   lib.rs:203 门控 not(std)）。
+# 两个形态都不取 `panic-handler`：handler 由 init 自带（main.rs 底部，
+# format_panic_report 渲染 + SYS_DIAGCTL + 非零 exit，PID 1 不自旋）；
+# `real-trap` 也不取：init 的宿主测试身份钉在 minix-sys 的诚实 EIO
+# fallback 上（E1 切片 5），real-trap 归真机装配面（S42/xtask）随件裁决。
+[target.'cfg(not(target_os = "none"))'.dependencies]
 minix-rt = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+minix-rt = { workspace = true, features = ["alloc-global"] }

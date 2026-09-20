@@ -11,6 +11,7 @@
 //! labels "copied from single_user(); this is a bit paranoid" — minus
 //! the transition poll, which runetcrc never had.
 
+use alloc::string::ToString;
 use crate::entry::RuncomMode;
 use crate::host::{ignore_spec, InitHost, SignalSpec};
 use crate::log::{emergency, stall, warning};

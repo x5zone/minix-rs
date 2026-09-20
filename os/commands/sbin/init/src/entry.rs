@@ -10,6 +10,7 @@
 //! testable without a filesystem while the live host still asks the
 //! real one.
 
+use alloc::{string::String, string::ToString, vec::Vec};
 use crate::host::InitHost;
 
 /// How `/etc/rc` should run (C: `runcom_mode`, init.c:151).

@@ -10,6 +10,8 @@
 //! which is exactly `verify`'s shape here.
 
 
+use alloc::{boxed::Box, string::String, string::ToString, vec::Vec};
+
 /// The gate's password verifier: re-derive with the stored setting and
 /// compare — the `crypt(3)` shape. Owned so it can capture the hash.
 pub type RootVerifier = Box<dyn Fn(&str) -> bool>;

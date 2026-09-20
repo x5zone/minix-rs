@@ -17,6 +17,7 @@
 //! arbitrary fake graphs; the real graph is testable by driving the
 //! real state functions over a scripted host.
 
+use alloc::{string::String, string::ToString, vec::Vec};
 use crate::entry::RuncomMode;
 use crate::host::InitHost;
 use crate::multi_user::multi_user;

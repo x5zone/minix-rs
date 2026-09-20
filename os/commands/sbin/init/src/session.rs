@@ -5,6 +5,8 @@
 //! `new_session`, `setupargv`).
 //! Design contract: `.design/07-design.v1.md §1.1-§1.4`.
 
+use alloc::{string::String, string::ToString, vec::Vec};
+
 /// Shutdown flag (C: `SE_SHUTDOWN`, init.c:161).
 pub const SE_SHUTDOWN: u8 = 0x1;
 /// Present-in-ttys flag (C: `SE_PRESENT`, init.c:162).

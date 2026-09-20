@@ -9,6 +9,8 @@
 /// (Minix3 `<sys/signal.h>` numbering); E-INITSYS ④ closed 2026-09-18.
 pub use minix_sys::signal as sig;
 
+use alloc::string::ToString;
+use alloc::string::String;
 use sig::{
     SIGNAL_ABORT, SIGNAL_ALARM, SIGNAL_CONTINUE, SIGNAL_HANGUP, SIGNAL_KILL,
     SIGNAL_TERMINAL_STOP, SIGNAL_TERMINATE, SIGNAL_USER_1,

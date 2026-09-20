@@ -13,6 +13,8 @@
 //! consumer — the C layout is not the format anything reads yet
 //! (`utmpx.h:83` notes the same for Minix3's own tools).
 
+use alloc::string::ToString;
+use alloc::string::String;
 use crate::host::InitHost;
 use crate::state_machine::StateKind;
 use crate::wait::WaitStatus;

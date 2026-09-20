@@ -12,6 +12,8 @@
 //! [`InitHost`] seam with the fork semantics intact — `Ok(0)` means
 //! this very call now runs the child branch.
 
+use alloc::string::ToString;
+use alloc::string::String;
 use crate::host::{ignore_spec, restore_spec, InitHost};
 use crate::log::{emergency, warning};
 use crate::state_machine::{sig, StateKind};

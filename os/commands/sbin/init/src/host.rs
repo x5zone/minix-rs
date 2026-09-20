@@ -19,6 +19,7 @@
 //! on the error instead of on a compiled-out feature. Closing those
 //! gaps is edge E-INITSYS, owned by the shared-infrastructure lane.
 
+use alloc::{string::String, string::ToString, vec::Vec};
 use crate::session::ParsedCommand;
 use crate::state_machine::sig;
 use crate::state_machine::HandlerKind;

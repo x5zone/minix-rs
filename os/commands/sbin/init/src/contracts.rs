@@ -3,6 +3,7 @@
 //! Covers `minix3/sbin/init/init.c:517-538`.
 //! Design contract: `.design/14-design.v1.md §1.1-§1.2`.
 
+use alloc::{string::String, string::ToString, vec::Vec};
 use crate::session::ParsedCommand;
 use crate::state_machine::sig;
 use sig::{SIGNAL_ABORT, SIGNAL_USER_1};

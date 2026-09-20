@@ -7,6 +7,9 @@
 //! tokens, and `window=` value options.
 //! Design contract: `.design/06-design.v1.md §1.1-§1.3`.
 
+use alloc::string::ToString;
+use alloc::string::String;
+
 /// Terminal status flags (C: `ty_status`, `minix3/include/ttyent.h:57-58`).
 ///
 /// init only tests TTY_ON and TTY_SECURE. The libc parser knows more
