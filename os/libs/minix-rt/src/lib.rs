@@ -60,6 +60,9 @@ pub mod init;
 pub mod alloc;
 /// Diagnostic output: buffering, number formatting, panic ladder (document 07).
 pub mod diag;
+/// Signal return trampoline: the handler-return stub whose address goes
+/// into the sigaction request ([`signals`]; C libc `__sigreturn`).
+pub mod signals;
 
 #[cfg(not(feature = "std"))]
 use core::panic::PanicInfo;
@@ -266,16 +269,17 @@ mod global_tests {
 /// # Current behavior
 ///
 /// Formats the panic location and message into a stack buffer, hands the
-/// buffer to the diagnostic sink, and then stops. The default sink spins
-/// forever: the safest minimal behavior for a freestanding binary, requiring
-/// no subsystem (no console, no allocator, no syscalls) and halting forward
-/// progress deterministically.
+/// buffer to the diagnostic sink (a registered kernel hook when one exists,
+/// the spin sink otherwise), and then terminates the process through the
+/// process manager with status 1.
 ///
 /// # Staged evolution (architecture item A-8)
 ///
-/// 1. Spin after formatting (current step; observable behavior unchanged).
-/// 2. Route the sink through the kernel diagnostic channel.
-/// 3. Terminate through the process manager after emitting.
+/// 1. Spin after formatting (landed; observable behavior unchanged).
+/// 2. Route the sink through the kernel diagnostic channel (landed: the
+///    shared minix-types hook registry, written by the kernel at boot).
+/// 3. Terminate through the process manager after emitting (landed:
+///    `minix_sys::exit(1)` — the C ladder's `_exit(1)`).
 #[cfg(all(not(test), not(feature = "std"), feature = "panic-handler"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
@@ -302,9 +306,13 @@ fn panic(info: &PanicInfo) -> ! {
         let mut sink = diag::SpinSink;
         diag::DiagnosticSink::emit(&mut sink, &buffer[..length]);
     }
-    loop {
-        core::hint::spin_loop();
-    }
+    // Stage 3 (A-8 step 3; C panic.c:54 `_exit(1)`): terminate through the
+    // process manager so PM can reap the process — and RS restart it when
+    // it is a service. `exit` never returns: when the PM_EXIT send finds
+    // no process manager (bare boot images), the transport-side park takes
+    // over — the C ladder's final hang (panic.c:66), the same observable
+    // fallback the previous spin tail provided.
+    minix_sys::exit(1)
 }
 
 // ── Panic diagnostic hook contract (D-48, A-8 step 2) ───────────────────
