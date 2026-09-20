@@ -72,7 +72,8 @@
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K12b aarch64 腿：test-rt-birth-aarch64 入 workspace 成员 + aarch64 构建清单 + 特殊协议脚本区（诞生链串口五标记判定） | ✅ 同日（真机 PASS 3/3） |
 | 2026-09-19 | edge1 | `os/Cargo.toml` + `os/qemu-tests/run_all.sh` | K11：test-shutdown-aarch64 / test-shutdown-riscv64 入 workspace 成员 + 两架构构建清单 + 特殊协议脚本区（exit code 双断言） | ✅ 同日（三架构真机全过） |
 | 2026-09-20 | edge4 E5(a) | `os/tests/`（`pm_vm_fork.rs` 重写 + `Cargo.toml` 依赖换 minix-vfs/minix-sys + 死壳 `pm_vm_fork_test.rs` 删除） | E5(a) 宿主联调复活（旧停用注释的复活条件 E1/E2 已满足）；本线自持，无跨界认领 | ✅ 同日（430803d4f；minix-tests 2 passed，pm 502 + vfs 全绿） |
-| 2026-09-20 | edge4 E5(c) 前哨 | `os/tests/`（新增 `srv_fork.rs` + `Cargo.toml` 增一条 `[[test]]` 声明） | 批A srv_fork 链宿主半（RS→PM→VM→VFS）；本线自持，生产代码零改动 | 🔄 本会话 |
+| 2026-09-20 | edge4 E5(c) 前哨 | `os/tests/`（新增 `srv_fork.rs` + `Cargo.toml` 增一条 `[[test]]` 声明） | 批A srv_fork 链宿主半（RS→PM→VM→VFS）；本线自持，生产代码零改动 | ✅ 同日（fbd33bcae；srv_fork 2 passed，pm 405+11 + vfs 502 全绿） |
+| 2026-09-20 | edge4 E5(b) | `os/tests/`（新增 `vm_vfs_fdclose.rs` + `Cargo.toml` 增一条 `[[test]]` 声明） | 批B VM↔VFS FDCLOSE 往返宿主半；本线自持，生产代码零改动 | ✅ 同日（79d82ed91；vm_vfs_fdclose 2 passed，pm/vfs 全绿） |
 
 ## §3 依赖状态板（跨线前置一览；各线开工前查这里）
 
@@ -108,8 +109,8 @@
 | 子项 | 内容 | 前置（哪条线交付什么） | 执行载体 | 状态 |
 |---|---|---|---|---|
 | E5(a) | PM↔VM fork 全链路（走 minix-sys 消息层） | edge3 S1+S20+S17；内核 eager-CoW 已备 | `os/tests/`（宿主）+ 真机挂 T2 | 🔄 **宿主半 ✅（2026-09-20，430803d4f）**：`os/tests/pm_vm_fork.rs` 复活重写——旧停用注释的复活条件（E1/E2 闭环）已满足；PM `do_fork` 真状态机 × VM wire 契约（`VmForkIn` 回解 / `VmForkOut` 构造，互证）× VFS `VfsPmHandler::handle` 真分发臂（`child_pid` 取自消息 m7i3 闭环）；2 测试（成功链 / VM 拒绝回滚），死壳 `pm_vm_fork_test.rs` 删除。**真机半挂 T2** |
-| E5(b) | VM↔VFS fdclose 往返 | edge3 S12 + S20 | 同上 | 🔄 本会话执行（2026-09-20）——宿主半 |
-| E5(c) | RS live-update 全链（PREPARE→UPDATE→resume） | edge3 S17+S18+S20 | 同上 | 🔄 本会话执行（2026-09-20）——srv_fork 前哨段（RS→PM→VM→VFS），宿主半 |
+| E5(b) | VM↔VFS fdclose 往返 | edge3 S12 + S20 | 同上 | 🔄 **宿主半 ✅（2026-09-20，79d82ed91）**：`os/tests/vm_vfs_fdclose.rs`——VM 发送半 `pub(crate)` 不可链接，按同一 wire 结构 `MessVmVfsCall` 构造请求；`decode_vm_call` 真解码器解六域 → 按 C `do_vm_call` 的 FDCLOSE 分支走 `close_fd` 真语义（关的是 VM 自己的 fd 表，消息 `endpoint` 域只属 FDLOOKUP）→ 应答经 VM 的真解码器 `VmVfsReplyIn::decode_message` 读回（`reqid`/`result`/`endpoint` 三域闭环，失败路径携 `-EBADF` 与原请求号）。2 测试（成功往返 / 无效 fd）。**真机半挂 T2**；VM 侧缺口登记见下行注 |
+| E5(c) | RS live-update 全链（PREPARE→UPDATE→resume） | edge3 S17+S18+S20 | 同上 | 🔄 **前哨段宿主半 ✅（2026-09-20，fbd33bcae）**：`os/tests/srv_fork.rs`——RS 门负路径（非 RS 端点 → `NotPermitted` 且零出站，门在 `vm_fork` 之前）× 成功链三支出站（VM_FORK 经 `VmForkIn` 回解 / `VFS_PM_SRV_FORK` 的 `REUID`/`REGID` 为真实 uid/gid / 给子进程的立即 OK）× VFS `VfsPmHandler::handle(VfsCall::SrvFork)` 真分发臂（复制后追加 setuid/setgid 两步）；2 测试。**附带发现 C-28**（子进程 `PRIV_PROC` 保留未落地，偏差钉在测试里）。**PREPARE→UPDATE→resume 主体与真机半挂 T2** |
 | E5(d) | QEMU VM paging 冒烟（含缺页完整回路 + VM 写 PTE） | edge3 S20 + edge1 K17 载体 | `os/qemu-tests/`（edge1 实现，edge4 验收） | ☐ |
 | E5(e) | PM↔SCHED 调度链（START/INHERIT/NO_QUANTUM 回环） | edge3 S27 + edge1 K1/K2 | 真机（T2 后） | ☐ |
 | E5(f) | DS 发布/订阅三链 + regex pattern 用例 | edge3 S22 + S17 | 真机（T2 后） | ☐ |
@@ -120,6 +121,8 @@
 | E5-ARCH | 三架构全系统复跑：服务器/命令 bins 交叉构建矩阵（riscv64gc/aarch64-unknown-none）+ 非 x86 多进程 boot harness + T2~T4 梯次复跑编排 | T2~T4 达成 + edge3 S42 | `os/qemu-tests/`（经 C-27 由 edge3 线执行）+ 各线构建面 | ☐ |
 
 QEMU 测试内核与脚本统一由 edge1 在 `os/qemu-tests/` 实现（新增独立文件不需登记）；edge4 只持断言清单与 PASS 判定。
+
+**E5(b) 的 VM 侧缺口（2026-09-20 批B 核实，如实登记不改）**：`minix-vm` 的对外导出面只有 `VmServer` 与 boot 类型（`os/servers/vm/src/lib.rs:97-100`），`vfs_queue` 全模块 `pub(crate)`——`VfsRequestQueue::take_pending_vfs_call`（发送半）与 `purge_by_owner`（死进程兜底，V13-P3-1之2）都链接不到。因此宿主半只能覆盖到 wire 形状，VM 队列自身行为由 `os/servers/vm/src/vfs_queue.rs:444-528` 的 crate 内测试覆盖（其中 `purge_drops_queued_of_owner_and_keeps_others` 即死进程兜底）。若要宿主侧也真跑 VM 队列，需 VM 侧暴露可链接面——那属 edge3 领地，本线不自行开口。
 
 ## §6 OQ 队列（等用户/联合裁决，任何线不得代决）
 
