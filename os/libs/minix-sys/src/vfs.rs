@@ -868,6 +868,25 @@ pub const VFS_CALL_FCHDIR: i32 = 0x100 + 31;
 pub const VFS_CALL_TRUNCATE: i32 = 0x100 + 33;
 /// `VFS_FTRUNCATE (VFS_BASE + 34)` (`callnr.h:106`).
 pub const VFS_CALL_FTRUNCATE: i32 = 0x100 + 34;
+/// `VFS_SYNC (VFS_BASE + 16)` (`callnr.h:88`).
+pub const VFS_CALL_SYNC: i32 = 0x100 + 16;
+/// `VFS_UTIMENS (VFS_BASE + 37)` (`callnr.h:109`).
+pub const VFS_CALL_UTIMENS: i32 = 0x100 + 37;
+
+/// `UTIME_NOW` — set the timestamp to the current time
+/// (`sys/sys/stat.h:235`: `((1 << 30) - 1)`).
+pub const UTIME_NOW: i64 = (1 << 30) - 1;
+/// `UTIME_OMIT` — leave the timestamp unchanged
+/// (`sys/sys/stat.h:236`: `((1 << 30) - 2)`).
+pub const UTIME_OMIT: i64 = (1 << 30) - 2;
+/// `AT_FDCWD` — relative paths resolve against the caller's working
+/// directory (`sys/sys/fcntl.h:297`, consumed by
+/// `minix3/minix/lib/libc/sys/utimensat.c:36`).
+pub const AT_FDCWD: i32 = -100;
+/// `AT_SYMLINK_NOFOLLOW` — do not follow a trailing symlink
+/// (`sys/sys/fcntl.h:299`, used by `lutimens` in
+/// `minix3/lib/libc/gen/utimens.c`).
+pub const AT_SYMLINK_NOFOLLOW: i32 = 0x200;
 
 /// FIFO file-type bit (`sys/sys/stat.h` `__S_IFIFO`, used by C `mkfifo`).
 pub const S_IFIFO: u32 = 0o010000;
@@ -1238,6 +1257,132 @@ pub fn mknod_via(
         message.m_u.raw[24..28].copy_from_slice(&mode.to_le_bytes());
     }
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_MKNOD, &mut message).map(|_| ())
+}
+
+/// Flushes all mounted file systems' dirty state (C: `sync`,
+/// `minix3/minix/lib/libc/sys/sync.c:12-17` — a cleared message, return
+/// value discarded by the C wrapper itself).
+///
+/// The server's `Sync | Fsync` arm (`syscalls.rs:1306`) walks every
+/// mount; the reply type is the errno face only.
+pub fn sync_via(transport: &impl IpcTransport) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_SYNC, &mut message).map(|_| ())
+}
+
+/// Shared packing for the two `VFS_UTIMENS` shapes (see
+/// [`utimensat_via`] and [`futimens_via`]).
+///
+/// Wire: `mess_vfs_utimens` (`ipc.h:2355-2367`, LP64): atime i64@0,
+/// mtime i64@8, ansec i64@16, mnsec i64@24, len u64@32, name u64@40,
+/// fd i32@48, flags i32@52 — matching the server Utimens arm decode
+/// (`syscalls.rs:3241-3264`) byte for byte. `name_address == 0` selects
+/// the fd half (C `futimens`), otherwise the server fetches the path
+/// through `SysPathFetcher` (address-based, no inline window).
+/// `ansec`/`mnsec` carry either nanoseconds or the `UTIME_NOW` /
+/// `UTIME_OMIT` sentinels — both are server-interpreted, passed through.
+#[allow(clippy::too_many_arguments)] // 8 payload lanes, one per C struct field
+fn utimens_request_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: u64,
+    atime_seconds: i64,
+    atime_nanoseconds: i64,
+    mtime_seconds: i64,
+    mtime_nanoseconds: i64,
+    fd: i32,
+    flags: i32,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_vfs_utimens` field order; the server's
+    // Utimens arm decodes atime@0, mtime@8, ansec@16, mnsec@24, len@32,
+    // name@40, fd@48, flags@52.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&atime_seconds.to_le_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&mtime_seconds.to_le_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&atime_nanoseconds.to_le_bytes());
+        message.m_u.raw[24..32].copy_from_slice(&mtime_nanoseconds.to_le_bytes());
+        message.m_u.raw[32..40].copy_from_slice(&name_length_including_nul.to_le_bytes());
+        message.m_u.raw[40..48].copy_from_slice(&name_address.to_le_bytes());
+        message.m_u.raw[48..52].copy_from_slice(&fd.to_le_bytes());
+        message.m_u.raw[52..56].copy_from_slice(&flags.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_UTIMENS, &mut message).map(|_| ())
+}
+
+/// Sets a path's access and modification times (C: `utimensat`,
+/// `minix3/minix/lib/libc/sys/utimensat.c:30-52`).
+///
+/// The C client-layer guards are reproduced before any round trip:
+/// empty name is `ENOENT`, a relative name with a directory fd other
+/// than `AT_FDCWD` is `EINVAL` ("Not supported" — the wire carries the
+/// fd only for the fd half), and flags beyond `SHRT_MAX` is `EINVAL`.
+/// `NULL` timespec pairs are a caller concern: pass `UTIME_NOW` lanes
+/// explicitly (the C defaulting to now lives in the libc wrapper, see
+/// the top-level `utimensat`).
+#[allow(clippy::too_many_arguments)] // mirrors the C wire one-for-one
+pub fn utimensat_via(
+    transport: &impl IpcTransport,
+    dirfd: i32,
+    name_address: u64,
+    name_length_including_nul: usize,
+    atime_seconds: i64,
+    atime_nanoseconds: i64,
+    mtime_seconds: i64,
+    mtime_nanoseconds: i64,
+    flags: i32,
+) -> Result<(), Errno> {
+    if name_length_including_nul <= 1 {
+        // C utimensat.c:32-35: name[0]=='\0' — POSIX requires ENOENT.
+        return Err(Errno::ENOENT);
+    }
+    let first = // SAFETY: the caller promises a NUL-inclusive name at
+        // this address; only the first byte is inspected, matching C.
+        unsafe { (name_address as *const u8).read() };
+    if first != b'/' && dirfd != AT_FDCWD {
+        // C utimensat.c:36-39.
+        return Err(Errno::EINVAL);
+    }
+    if flags > i16::MAX as i32 || flags < 0 {
+        // C utimensat.c:40-42: `(unsigned)flags > SHRT_MAX` (the cast
+        // also rejects negatives).
+        return Err(Errno::EINVAL);
+    }
+    utimens_request_via(
+        transport,
+        name_address,
+        name_length_including_nul as u64,
+        atime_seconds,
+        atime_nanoseconds,
+        mtime_seconds,
+        mtime_nanoseconds,
+        dirfd,
+        flags,
+    )
+}
+
+/// Sets an open file's access and modification times (C: `futimens`,
+/// `minix3/minix/lib/libc/sys/futimens.c:1-20` — same wire, name
+/// pointer NULL so the server takes its fd half, flags zero).
+pub fn futimens_via(
+    transport: &impl IpcTransport,
+    fd: i32,
+    atime_seconds: i64,
+    atime_nanoseconds: i64,
+    mtime_seconds: i64,
+    mtime_nanoseconds: i64,
+) -> Result<(), Errno> {
+    utimens_request_via(
+        transport,
+        0,
+        0,
+        atime_seconds,
+        atime_nanoseconds,
+        mtime_seconds,
+        mtime_nanoseconds,
+        fd,
+        0,
+    )
 }
 
 #[cfg(test)]
@@ -2111,5 +2256,141 @@ mod fileop_wire_tests {
         assert_eq!(raw_lane(&sent, 16..24), (path.len() as u64).to_le_bytes(), "len@16");
         assert_eq!(raw_lane(&sent, 24..28), mode.to_le_bytes(), "mode@24");
         assert_eq!(raw_lane(&sent, 28..56), vec![0; 28], "尾部保持零");
+    }
+}
+
+#[cfg(test)]
+mod time_sync_wire_tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    fn last_sent(transport: &CannedTransport) -> (minix_types::Endpoint, Message) {
+        transport.sent.borrow().last().cloned().unwrap()
+    }
+
+    fn raw_lane(msg: &Message, range: core::ops::Range<usize>) -> Vec<u8> {
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        unsafe { msg.m_u.raw[range].to_vec() }
+    }
+
+    #[test]
+    fn test_sync_utimens_call_numbers_match_c() {
+        // C: callnr.h:88/109（VFS_BASE + 16 / + 37）。
+        assert_eq!(VFS_CALL_SYNC, 0x100 + 16);
+        assert_eq!(VFS_CALL_UTIMENS, 0x100 + 37);
+        // sys/sys/stat.h:235-236、sys/sys/fcntl.h:297/299。
+        assert_eq!(UTIME_NOW, (1 << 30) - 1);
+        assert_eq!(UTIME_OMIT, (1 << 30) - 2);
+        assert_eq!(AT_FDCWD, -100);
+        assert_eq!(AT_SYMLINK_NOFOLLOW, 0x200);
+    }
+
+    #[test]
+    fn test_sync_wire() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(sync_via(&transport), Ok(()));
+        let (dest, sent) = last_sent(&transport);
+        assert_eq!(dest, vfs_endpoint());
+        assert_eq!(sent.m_type, VFS_CALL_SYNC);
+        assert_eq!(raw_lane(&sent, 0..56), vec![0; 56], "sync 载荷全零（C memset）");
+    }
+
+    #[test]
+    fn test_utimensat_wire_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/tmp/f\0";
+        assert_eq!(
+            utimensat_via(
+                &transport,
+                AT_FDCWD,
+                path.as_ptr() as u64,
+                path.len(),
+                100,
+                UTIME_OMIT,
+                200,
+                300,
+                AT_SYMLINK_NOFOLLOW,
+            ),
+            Ok(())
+        );
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_UTIMENS);
+        assert_eq!(raw_lane(&sent, 0..8), 100i64.to_le_bytes(), "atime@0");
+        assert_eq!(raw_lane(&sent, 8..16), 200i64.to_le_bytes(), "mtime@8");
+        assert_eq!(raw_lane(&sent, 16..24), UTIME_OMIT.to_le_bytes(), "ansec@16");
+        assert_eq!(raw_lane(&sent, 24..32), 300i64.to_le_bytes(), "mnsec@24");
+        assert_eq!(raw_lane(&sent, 32..40), (path.len() as u64).to_le_bytes(), "len@32");
+        assert_eq!(raw_lane(&sent, 40..48), (path.as_ptr() as u64).to_le_bytes(), "name@40");
+        assert_eq!(raw_lane(&sent, 48..52), AT_FDCWD.to_le_bytes(), "fd@48");
+        assert_eq!(raw_lane(&sent, 52..56), AT_SYMLINK_NOFOLLOW.to_le_bytes(), "flags@52");
+    }
+
+    #[test]
+    fn test_utimensat_guards_answer_without_roundtrip() {
+        let transport = CannedTransport::new();
+        let abs = b"/tmp/f\0";
+        let rel = b"tmp/f\0";
+        // 空名 → ENOENT（C utimensat.c:32-35）。
+        assert_eq!(
+            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, 1, 0, 0, 0, 0, 0),
+            Err(Errno::ENOENT)
+        );
+        // 相对名 + dirfd != AT_FDCWD → EINVAL（C :36-39）。
+        assert_eq!(
+            utimensat_via(&transport, 7, rel.as_ptr() as u64, rel.len(), 0, 0, 0, 0, 0),
+            Err(Errno::EINVAL)
+        );
+        // flags 超界 → EINVAL（C :40-42）。
+        assert_eq!(
+            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, 70000),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, -1),
+            Err(Errno::EINVAL)
+        );
+        // 全部被挡：零往返。
+        assert!(transport.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_futimens_wire_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(futimens_via(&transport, 4, 0, UTIME_NOW, 12345, 678), Ok(()));
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_UTIMENS);
+        assert_eq!(raw_lane(&sent, 0..8), 0i64.to_le_bytes(), "atime@0=0（C now 形态）");
+        assert_eq!(raw_lane(&sent, 8..16), 12345i64.to_le_bytes(), "mtime@8");
+        assert_eq!(raw_lane(&sent, 16..24), UTIME_NOW.to_le_bytes(), "ansec@16");
+        assert_eq!(raw_lane(&sent, 24..32), 678i64.to_le_bytes(), "mnsec@24");
+        assert_eq!(raw_lane(&sent, 32..48), vec![0; 16], "len/name=0 走 fd 半");
+        assert_eq!(raw_lane(&sent, 48..52), 4i32.to_le_bytes(), "fd@48");
+        assert_eq!(raw_lane(&sent, 52..56), 0i32.to_le_bytes(), "flags@52=0（C futimens）");
+    }
+
+    #[test]
+    fn test_utimens_error_leg() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(-minix_types::ENOENT)));
+        assert_eq!(
+            sync_via(&transport),
+            Err(Errno::from_i32(minix_types::ENOENT))
+        );
+        transport.reply_sendrec(Ok(reply_with_type(-minix_types::EPERM)));
+        assert_eq!(
+            futimens_via(&transport, 4, 1, 2, 3, 4),
+            Err(Errno::from_i32(minix_types::EPERM))
+        );
     }
 }

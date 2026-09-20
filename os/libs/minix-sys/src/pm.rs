@@ -91,6 +91,10 @@ pub const PM_CALL_SIGSUSPEND: i32 = 21;
 pub const PM_CALL_SIGPENDING: i32 = 22;
 /// C: `PM_SIGPROCMASK (PM_BASE + 23)` (`callnr.h:36`).
 pub const PM_CALL_SIGPROCMASK: i32 = 23;
+/// C: `PM_GETPRIORITY (PM_BASE + 26)` (`callnr.h:39`).
+pub const PM_CALL_GETPRIORITY: i32 = 26;
+/// C: `PM_SETPRIORITY (PM_BASE + 27)` (`callnr.h:40`).
+pub const PM_CALL_SETPRIORITY: i32 = 27;
 /// C: `PM_REBOOT (PM_BASE + 37)` (`callnr.h:50`).
 pub const PM_CALL_REBOOT: i32 = 37;
 /// E9 PmApi:PM_GETPROCNR(callnr.h:59,PM_BASE + 46)。
@@ -424,6 +428,78 @@ pub fn raise_via(transport: &impl IpcTransport, signal: i32) -> Result<(), Errno
     }
     let me = getpid_via(transport)?;
     kill_via(transport, me, signal)
+}
+
+/// Reads the caller's parent pid (C: `getppid`,
+/// `minix3/minix/lib/libc/sys/getppid.c:12-19` — the same `PM_GETPID`
+/// round trip as `getpid`, but the answer travels in the reply
+/// payload).
+///
+/// Wire divergence from C, same family convention as [`getuid_via`]:
+/// C keeps `parent_pid` in `mess_pm_lc_getpid` and the self pid in the
+/// reply type, while our PM server's GetPid arm prefills
+/// `m1i1 = self pid`, `m1i2 = parent pid` with reply type 0
+/// (`get_result_intent`, servers/pm `ipc/calls.rs` `GetResult::Pid`).
+/// The self pid therefore stays `getpid_via`'s channel and this call
+/// reads `m1i2`.
+pub fn getppid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, pm_endpoint(), PM_CALL_GETPID, &mut message)?;
+    // SAFETY: the PM prefills `m_m1` (m1i1=self, m1i2=parent) on this
+    // call — the same reply overlay getuid_via reads.
+    let parent = unsafe { message.m_u.m_m1.m1i2 };
+    if parent < 0 {
+        return Err(Errno::from_i32(minix_types::ESRCH));
+    }
+    Ok(parent)
+}
+
+/// `PRIO_MIN` (`sys/sys/resource.h:43`); the PM wire returns priority
+/// offset by it (see [`getpriority_via`]).
+pub const PRIO_MIN: i32 = -20;
+
+/// Reads a process's scheduling priority (C: `getpriority`,
+/// `minix3/minix/lib/libc/sys/priority.c:16-31`).
+///
+/// Wire: `mess_lc_pm_priority` (`ipc.h:484-491`) is three ints —
+/// which@0, who@4, prio@8 — matching the server's `getsetpriority`
+/// decode (m1 triple). The PM answers the raw value already offset by
+/// `PRIO_MIN` (C `misc.c:266` `mp_nice - PRIO_MIN`, so 0..=40 on
+/// success); the C libc correction `v + PRIO_MIN` back to -20..=19
+/// happens here, in the same layer C puts it.
+pub fn getpriority_via(
+    transport: &impl IpcTransport,
+    which: i32,
+    who: i32,
+) -> Result<i32, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_lc_pm_priority` field order; the
+    // server's GetPriority arm decodes which@0, who@4 (prio unused).
+    unsafe {
+        message.m_u.raw[0..4].copy_from_slice(&which.to_le_bytes());
+        message.m_u.raw[4..8].copy_from_slice(&who.to_le_bytes());
+    }
+    let value = perform_syscall(transport, pm_endpoint(), PM_CALL_GETPRIORITY, &mut message)?;
+    Ok(value + PRIO_MIN)
+}
+
+/// Sets a process's scheduling priority (C: `setpriority`,
+/// `minix3/minix/lib/libc/sys/priority.c:33-40` — same three-int wire,
+/// prio@8).
+pub fn setpriority_via(
+    transport: &impl IpcTransport,
+    which: i32,
+    who: i32,
+    prio: i32,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_lc_pm_priority` field order.
+    unsafe {
+        message.m_u.raw[0..4].copy_from_slice(&which.to_le_bytes());
+        message.m_u.raw[4..8].copy_from_slice(&who.to_le_bytes());
+        message.m_u.raw[8..12].copy_from_slice(&prio.to_le_bytes());
+    }
+    perform_syscall(transport, pm_endpoint(), PM_CALL_SETPRIORITY, &mut message).map(|_| ())
 }
 
 /// Prepared execution request: validated addresses for the manager call.
@@ -1342,5 +1418,97 @@ mod gettimeofday_wire_tests {
         let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
         assert_eq!(dest, pm_endpoint());
         assert_eq!(sent.m_type, PM_CALL_GETTIMEOFDAY);
+    }
+}
+
+#[cfg(test)]
+mod pm_identity_wire_tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    /// 请求腿的 lane 读出（与 vfs fileop 测试同法）。
+    fn raw_lane(msg: &Message, range: core::ops::Range<usize>) -> Vec<u8> {
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        unsafe { msg.m_u.raw[range].to_vec() }
+    }
+
+    #[test]
+    fn test_priority_call_numbers_match_c() {
+        // C: callnr.h:39-40 (PM_BASE + 26 / + 27)。
+        assert_eq!(PM_CALL_GETPRIORITY, 26);
+        assert_eq!(PM_CALL_SETPRIORITY, 27);
+        assert_eq!(PRIO_MIN, -20); // sys/sys/resource.h:43
+    }
+
+    #[test]
+    fn test_getppid_reads_parent_lane() {
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        // 本仓 server 约定：m1i1=self、m1i2=parent（getuid_via 同族）。
+        reply.m_u.m_m1.m1i1 = 7;
+        reply.m_u.m_m1.m1i2 = 3;
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(getppid_via(&transport), Ok(3));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, pm_endpoint());
+        assert_eq!(sent.m_type, PM_CALL_GETPID);
+        assert_eq!(raw_lane(&sent, 0..56), vec![0u8; 56], "请求载荷保持零");
+    }
+
+    #[test]
+    fn test_getppid_negative_parent_is_esrch() {
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        reply.m_u.m_m1.m1i1 = 0;
+        reply.m_u.m_m1.m1i2 = -1;
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(
+            getppid_via(&transport),
+            Err(Errno::from_i32(minix_types::ESRCH))
+        );
+    }
+
+    #[test]
+    fn test_getppid_error_leg() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(-minix_types::EAGAIN)));
+        assert_eq!(
+            getppid_via(&transport),
+            Err(Errno::from_i32(minix_types::EAGAIN))
+        );
+    }
+
+    #[test]
+    fn test_getpriority_lanes_and_value_channel() {
+        let mut transport = CannedTransport::new();
+        // server 回 raw = nice - PRIO_MIN（C misc.c:266），0..=40。
+        transport.reply_sendrec(Ok(reply_with_type(25)));
+        assert_eq!(getpriority_via(&transport, 1, 9), Ok(5)); // 25 + (-20)
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, PM_CALL_GETPRIORITY);
+        assert_eq!(raw_lane(&sent, 0..4), 1i32.to_le_bytes(), "which@0");
+        assert_eq!(raw_lane(&sent, 4..8), 9i32.to_le_bytes(), "who@4");
+        assert_eq!(raw_lane(&sent, 8..56), vec![0; 48], "prio 及尾部保持零");
+    }
+
+    #[test]
+    fn test_setpriority_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(setpriority_via(&transport, 1, 9, -5), Ok(()));
+        let (_, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(sent.m_type, PM_CALL_SETPRIORITY);
+        assert_eq!(raw_lane(&sent, 0..4), 1i32.to_le_bytes(), "which@0");
+        assert_eq!(raw_lane(&sent, 4..8), 9i32.to_le_bytes(), "who@4");
+        assert_eq!(raw_lane(&sent, 8..12), (-5i32).to_le_bytes(), "prio@8");
+        assert_eq!(raw_lane(&sent, 12..56), vec![0; 44], "尾部保持零");
     }
 }
