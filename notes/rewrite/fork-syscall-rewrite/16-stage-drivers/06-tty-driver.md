@@ -2,7 +2,7 @@
 
 > **分类**：启动关键第 2 篇（控制台加串口加键盘，启动映像成员）
 > **源码**：`minix3/minix/drivers/tty/tty/tty.c`（一千六百零三行，主循环、行规则、读写挂起、选择）、`minix3/minix/drivers/tty/tty/tty.h`（一百五十五 行，终端结构与输入队列常量）、`minix3/minix/drivers/tty/tty/arch/`（控制台与串口，见第 2.8 节）、`minix3/minix/drivers/tty/tty/keyboard.c` 与 `keymaps/`（键盘，见第 2.8 节）、`minix3/minix/include/minix/dmap.h`（第九十五行，控制台号）、`minix3/minix/include/minix/config.h`（第四十一行到第四十六行，终端数量）
-> **Rust 模块**：`os/drivers/tty/tty/src/line.rs`（线路解码）、`os/drivers/tty/tty/src/termios.rs`（行配置）、`os/drivers/tty/tty/src/input.rs`（输入队列与行加工）、`os/drivers/tty/tty/src/session.rs`（打开会话与挂起选择）、`os/drivers/tty/tty/src/backend.rs`（设备后端抽象）、`os/drivers/tty/tty/src/service.rs`（消息泵与出生面装配）
+> **Rust 模块**：`os/drivers/tty/tty/src/line.rs`（线路解码）、`os/drivers/tty/tty/src/termios.rs`（行配置）、`os/drivers/tty/tty/src/input.rs`（输入队列与行加工）、`os/drivers/tty/tty/src/session.rs`（打开会话与挂起选择）、`os/drivers/tty/tty/src/backend.rs`（设备后端抽象）、`os/drivers/tty/tty/src/serial.rs`（串口输出后端）、`os/drivers/tty/tty/src/service.rs`（消息泵与出生面装配）
 > **前置**：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/01-chardriver-framework.md`（字符框架，本篇是其最重的用户）、`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/05-memory-driver.md`（面的守卫思想）
 > **说明**：终端驱动是启动映像的第二个驱动，也是全系统最复杂的字符驱动：四个控制台、四条串口、键盘映射、行规则、挂起读写、轮询、内核消息重定向、视频分支、功能键观察、输入服务事件，全部住在一个进程里。本篇讲终端共用的部分：主循环如何泵事件、次设备号如何映射到终端表、行规则如何加工输入、挂起与取消如何配对、轮询的两条特殊规则。控制台渲染、串口芯片、键盘映射的具体实现是设备相关，在第 2.8 节只讲分工，逐寄存器展开留给后续的架构文档。
 
@@ -175,21 +175,23 @@ Redox 的终端也是用户态进程，行编辑 approach 接近：输入先攒�
 
 七个设备函数收成七个方法，全默认空操作。空后端与回环后端两个行为不同的实现满足门禁：空后端测无设备，回复环测有来有回。控制台串口伪终端的真实后端在服务层与后续文档实现。替代方案是函数指针表（C 做法），不选的理由同框架篇：空检查分散不如默认体集中。
 
-服务层的消息泵已落在 `os/drivers/tty/tty/src/service.rs`：一条消息进来，先由字符框架的判定核（`minix-chardriver` 的 `classify` 与 `reply_decision`）分类，再分派到上表七个设备函数（打开、关闭、读、写、控制、取消、轮询）对应的钩子，块设备打开回「无此设备」，通知走中断与闹钟两个钩子且不回复，重启后未打开设备的迟到请求静默丢弃。出生握手（收重启服务器的初始化请求、跑回调、回报结果）住在共享驱动运行时 `os/libs/minix-driver-rt/src/runtime.rs`，与文件运行时同源。读写的物理缓冲区拷贝按计数语义交接、留作已登记缺口（真机内核授权才能验，宿主脚本不伪造），控制流与回复纪律则完整且宿主可测。真实后端（控制台显存、串口芯片）仍是本层的开口。
+服务层的消息泵已落在 `os/drivers/tty/tty/src/service.rs`：一条消息进来，先由字符框架的判定核（`minix-chardriver` 的 `classify` 与 `reply_decision`）分类，再分派到上表七个设备函数（打开、关闭、读、写、控制、取消、轮询）对应的钩子，块设备打开回「无此设备」，通知走中断与闹钟两个钩子且不回复，重启后未打开设备的迟到请求静默丢弃。出生握手（收重启服务器的初始化请求、跑回调、回报结果）住在共享驱动运行时 `os/libs/minix-driver-rt/src/runtime.rs`，与文件运行时同源。写方向的物理拷贝已经接线：服务泵把写请求里的授权内存按六十四字节分块拷进驱动（`service.rs` 的写臂经 `copy_from_grant`），再交给后端落到设备，回复实际搬运数；读方向仍按计数语义交接、留作已登记缺口（真机内核授权才能验，宿主脚本不伪造）。真实串口后端已落地（下一节），控制台显存后端维持登记开口。
 
 请求载荷（次设备号、偏移、授予、计数、标志、请求号）目前没有类型化的消息联合体字段可读，服务层按 `ipc.h:2206-2258` 锚定的字节偏移读写——这与输入服务器的回复构造（`os/servers/input/src/serve.rs:205-219`）是同一处临时停靠，等 minix-types 的布局单点权威补上类型化字段臂后收编（该项登记为 E-MINTYPES-RUNTIME，归另一条线执行，本线不重复实现）。这是消息边界上的有意停靠，不是把 C 的结构体取值逐行照搬：分派、判定、回复都走类型系统（`CdevRequest` 枚举、`DeviceMinor` 与 `RequestId` 新类型、`Result` 配 `Errno`），字节布局只在偏移读取这一处露面。
 
-#### 控制台输出后端的可达性盘点（结论：暂不落地，如实登记缺口）
+#### 控制台输出后端的通道裁决与落地形态（内核中转加串口先行）
 
-终端输出要真正抵达硬件，先得有一条把待写字节从调用方搬进驱动的中转：虚拟文件系统把写请求连同一段授权内存交给驱动，驱动加工后交给后端。这条中转尚未落地——设备写入按字节数交接（`os/drivers/tty/tty/src/char_face.rs` 的 `write` 只把数量交给后端，`os/drivers/tty/tty/src/backend.rs` 的 `dev_write` 也只收数量），线路本身只有输入侧的字节环，输出侧仅记录能否再写，没有承接字节的输出缓冲。没有待写字节，任何后端都无内容可发，硬搭一个「能跑」的后端就是伪造。
+终端输出要抵达硬件，先得有一条把待写字节从调用方搬进驱动的中转。这条中转已经落地：虚拟文件系统把写请求连同一段授权内存交给驱动，服务泵把授权内存按六十四字节分块拷进驱动（`os/drivers/tty/tty/src/service.rs` 的写臂），交 `write_bytes` 字节道交给后端，后端落多少回多少，回复带实际搬运数。线路本身依旧只有输入侧的字节环，输出侧记录能否再写——这与 C 的现代形态一致：`do_write`（`tty.c:536-578`）把写请求挂在终端结构上，设备钩子直接从调用方的授权内存分块搬字节，中间没有整份的行输出缓冲。
 
-在此前提下盘点三个候选出口，逐一核实可达性：
+通道选型经用户裁决（编排台 OQ-N3 记账）：控制台输出走**内核中转的串口**，特权模型采 C 形——驱动进程从不持有 I/O 特权，每次端口读写都是一次 SYS_DEVIO 内核调用，由内核的端口白名单门裁决（`os/kernel/src/syscall_device.rs:458-484` 的 CHECK_IO_PORT 检查）。C 里 tty 服务声明 `io ALL`（`/etc/system.conf:177`），即不设白名单行、内核照单放行的形态；裁决同时否决了两条路：给驱动进程开 I/O 特权的「直程」形态（C 驱动从不持有 IOPL，rs232.c 的 `my_inb` 就是 `sys_inb` 的包装，`rs232.c:223-232`），以及让内核代为搬运字节的「系统任务中转」形态（C 无此通道）。
 
-- **串口直接编程**（x86 端口读写指令，C 参考 `minix3/minix/drivers/tty/tty/arch/i386/rs232.c` 用 `sys_outb` 拨调制解调器控制口）。用户态驱动经内核代理写端口（`SYS_DEVIO`）需先取得端口范围权限，而该权限的申请通道（`SYS_PRIVCTL` 的加 `IO` 子命令）在内核里限定只有系统进程可发起（`os/kernel/src/syscall.rs` 的 `dispatch_privctl` 系统进程校验），且 `minix-sys` 未导出任何端口读写包装。故串口直接编程今日不可达。
-- **显存映射**（视频文本缓冲物理地址 `0xB8000`，C 参考 `minix3/minix/drivers/tty/tty/arch/i386/console.c` 直接算视频内存）。物理映射通道存在且可用（`os/libs/minix-sys/src/vm.rs` 的 `map_physical_via`），权限校验把调用方限定为终端与内存两类（`os/servers/vm/src/map_phys.rs` 的 `map_perm_check`），终端进程恰在白名单内；但映射需活着的内存服务器应答，且仍缺上段的字节中转。故显存后端机制可及、端到端不可达。
-- **诊断输出缝**（`os/libs/minix-sys/src/syscall.rs` 的 `sys_diagctl_write`，内核把至多一百二十八字节打到串口控制台，无需端口权限，QEMU 可见）。可达，但语义是服务器诊断打印的下沉通道，不是终端数据通路，且同样缺字节中转与活内核。
+串口后端落在 `os/drivers/tty/tty/src/serial.rs`：16550 芯片的发送保持寄存器空位轮询（`LSR.THRE`，C 的 `txready` 探针 `rs232.c:121`），逐字节经 `os/libs/minix-sys/src/syscall.rs` 的 `sys_outb`/`sys_inb`（SYS_DEVIO 客户端包装，C syslib.h:217 对位）发出。三条如实登记的形态差：
 
-三条出口要么权限不可达、要么缺输出字节中转、要么语义错位，因此本批如实登记缺口，保留空后端与回环后端作为测试替身，不伪造一个看似工作的控制台。控制台真机可达（本篇所属卡的第三个目标）依赖数据面字节搬运与真机联调，后者按分工挂 edge4 E5、载体属另一条线。待数据面落地后，终端进程内的显存映射是三条里最短的真实通路（已在白名单）。
+- **不做芯片重初始化**：C 的 `rs_init` 会在开线时编程波特率与线控；本后端跳过初始化，因为内核诊断台已持有同一颗 COM1 的线设置，驱动再初始化一次会跟内核的打印互相踩。通道裁决里的显存对位（C `console.c:963` 的 `vm_map_phys`）维持登记，等验收面有可见显示通路再落。
+- **发送完成靠轮询而非中断**：C 的 rs232 用发送中断推进；本后端轮询保持寄存器空位，等待次数有上界，超界按「设备停摆」回报部分搬运，避免单线程事件循环被一颗僵死的芯片永久挂死。
+- **真机通电随启动映像构建波**：端口访问走 `DirectKernelCallTransport`，宿主构建按仓库既定约定如实返回负 EIO（与内存驱动、键盘驱动的内核调用同门控），启动映像构建开 `real-trap` 后同一份代码走真 trap。
+
+读半的字节搬运（串口接收、把排队的字节拷进读方授权内存）维持登记缺口，随输入波次落地；显存映射通路本身机制在位（`os/libs/minix-sys/src/vm.rs` 的 `map_physical_via`，权限白名单已含终端进程），是显存后端落地时最短的真实通路。
 
 ### 3.7 设计决策汇总
 

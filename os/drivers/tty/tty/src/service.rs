@@ -16,12 +16,14 @@
 //! host-testable with a scripted transport: no kernel is needed to assert
 //! which reply reaches which caller with what status.
 //!
-//! Data-plane seam: the read and write hooks answer byte counts and park
-//! or wake; the physical grant copies between a caller buffer and the
-//! input queue are not wired here (the hooks hand out counts, not bytes),
-//! so a real boot still needs that copy. It is a registered gap, not a
-//! fabricated success — the control flow and reply discipline are complete
-//! and tested.
+//! Data-plane seam: the write arm copies the caller's grant bytes through
+//! `copy_from_grant` and pushes them into the device backend (`write_bytes`
+//! down to the serial face), then answers the moved count — the C do_write
+//! drain (tty.c:536-578) minus the parked-write resume, which the polled
+//! backend makes unnecessary (a stall answers partial and the request
+//! completes). The read half keeps its registered gap: a completed read
+//! answers the count while the grant copy of the queued bytes still needs
+//! wiring — the control flow and reply discipline are complete and tested.
 
 use crate::backend::LineBackend;
 use crate::char_face::TtyDriver;
@@ -37,6 +39,12 @@ use minix_types::{CDEV_REPLY_BASE, Endpoint, Message};
 /// (`CDEV_SEL1_REPLY`, `com.h:936`). minix-types names only the base, so
 /// the selector reply is the base plus the select index.
 const CDEV_SEL1_REPLY: i32 = CDEV_REPLY_BASE + 1;
+
+/// Grant-copy chunk for the write pipeline: the stack slice one
+/// `copy_from_grant` fills before the backend drains it. C moves the
+/// writer's bytes through comparably sized per-device chunk buffers
+/// (the console ram queue; rs232.c:86-88 discusses the same chunking).
+const WRITE_CHUNK: usize = 64;
 
 /// The message union payload begins at byte 8 of [`Message`] (after
 /// `m_type` at 0 and `m_source` at 4, with 8-byte union alignment). Every
@@ -214,6 +222,7 @@ impl<B: LineBackend> TtyService<B> {
         &mut self,
         request: CdevRequest,
         msg: &Message,
+        caller: Endpoint,
         transport: &mut impl DriverTransport,
     ) -> Option<PendingReply> {
         let minor = Self::minor_of(request, msg);
@@ -240,10 +249,53 @@ impl<B: LineBackend> TtyService<B> {
             CdevRequest::Write => {
                 let grant = read_u32(msg, wire::readwrite::GRANT);
                 let count = read_u64(msg, wire::readwrite::COUNT) as usize;
-                let position = read_u64(msg, wire::readwrite::POS);
-                let flags = read_i32(msg, wire::readwrite::FLAGS);
-                self.driver
-                    .write(minor, position, grant as u64, count, flags, RequestId(id))
+                let _position = read_u64(msg, wire::readwrite::POS);
+                let _flags = read_i32(msg, wire::readwrite::FLAGS);
+                // Output byte pipeline (NL1 批B): pull the writer's bytes
+                // in grant-sized chunks and push them through the device
+                // backend. C: do_write parks the write (tty.c:536-578) and
+                // the device hook drains the grant; here the drain runs to
+                // completion (or a device stall) inline — the polled
+                // serial backend makes the stall the only partial case.
+                let mut moved = 0usize;
+                let mut offset = 0u64;
+                let mut chunk = [0u8; WRITE_CHUNK];
+                while moved < count {
+                    let span = (count - moved).min(WRITE_CHUNK);
+                    if transport
+                        .copy_from_grant(caller, grant as i32, offset, &mut chunk[..span])
+                        .is_err()
+                    {
+                        // C: grant copy failure surfaces as EFAULT to the
+                        // writer (the kernel copy arms' errno face).
+                        return Some(PendingReply {
+                            reply_type: CDEV_REPLY_BASE,
+                            status: -minix_types::EFAULT,
+                            id,
+                        });
+                    }
+                    match self.driver.write_bytes(minor.0, &chunk[..span]) {
+                        Ok(accepted) => {
+                            moved += accepted;
+                            offset += accepted as u64;
+                            if accepted < span {
+                                // Device stall: report the bytes moved so
+                                // far (the C writer would stay parked
+                                // until the device drains; the polled
+                                // backend makes a stall final).
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            return Some(PendingReply {
+                                reply_type: CDEV_REPLY_BASE,
+                                status: -e.to_i32(),
+                                id,
+                            });
+                        }
+                    }
+                }
+                Ok(moved)
             }
             CdevRequest::Ioctl => {
                 let request_code = read_u64(msg, wire::readwrite::REQUEST);
@@ -309,7 +361,7 @@ impl<B: LineBackend> TtyService<B> {
                 }
                 None
             }
-            Route::Request(req) => self.handle_request(req, msg, transport),
+            Route::Request(req) => self.handle_request(req, msg, caller, transport),
             Route::BlockOpen => Some(PendingReply {
                 reply_type: CDEV_REPLY_BASE,
                 status: -minix_types::ENXIO,
@@ -351,17 +403,22 @@ fn raw(code: i32) -> Result<usize, minix_types::Errno> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::NullBackend;
+    use crate::backend::{LoopBackend, NullBackend};
     use crate::session::CONTROLLED;
     use alloc::vec;
     use alloc::vec::Vec;
     use minix_chardriver::protocol::{CdevRequest, DeviceMinor};
 
     /// Scripted transport: feeds queued messages to `receive`, records
-    /// every reply sent (destination, type, decoded status, echoed id).
+    /// every reply sent (destination, type, decoded status, echoed id),
+    /// and serves write-pipeline grant copies from a scripted byte source.
     struct Scripted {
         incoming: Vec<Message>,
         replies: Vec<(Endpoint, i32, i32, u32)>,
+        /// Byte source for `copy_from_grant` (the writer's buffer).
+        grant_bytes: Vec<u8>,
+        /// Grant copies served so far (destination, grant id, offset, len).
+        copies: Vec<(Endpoint, i32, u64, usize)>,
     }
 
     impl Scripted {
@@ -369,7 +426,15 @@ mod tests {
             Scripted {
                 incoming,
                 replies: Vec::new(),
+                grant_bytes: Vec::new(),
+                copies: Vec::new(),
             }
+        }
+
+        /// A transport whose grant source carries these writer bytes.
+        fn with_grant_bytes(mut self, bytes: &[u8]) -> Self {
+            self.grant_bytes = bytes.to_vec();
+            self
         }
     }
 
@@ -394,7 +459,13 @@ mod tests {
             ));
             Ok(())
         }
-        fn copy_from_grant(&mut self, _g: Endpoint, _gr: i32, _o: u64, _b: &mut [u8]) -> Result<(), i32> {
+        fn copy_from_grant(&mut self, g: Endpoint, gr: i32, o: u64, b: &mut [u8]) -> Result<(), i32> {
+            self.copies.push((g, gr, o, b.len()));
+            let start = o as usize;
+            if start + b.len() > self.grant_bytes.len() {
+                return Err(-minix_types::EFAULT);
+            }
+            b.copy_from_slice(&self.grant_bytes[start..start + b.len()]);
             Ok(())
         }
         fn copy_to_grant(&mut self, _g: Endpoint, _gr: i32, _o: u64, _b: &[u8]) -> Result<(), i32> {
@@ -442,9 +513,10 @@ mod tests {
         msg
     }
 
-    fn write_msg(minor: u32, count: u64, id: u32, caller: Endpoint) -> Message {
+    fn write_msg(minor: u32, grant: u32, count: u64, id: u32, caller: Endpoint) -> Message {
         let mut msg = request(CdevRequest::Write, caller);
         put(&mut msg, wire::readwrite::MINOR, &minor.to_le_bytes());
+        put(&mut msg, wire::readwrite::GRANT, &grant.to_le_bytes());
         put(&mut msg, wire::readwrite::COUNT, &count.to_le_bytes());
         put(&mut msg, wire::readwrite::ID, &id.to_le_bytes());
         msg
@@ -495,16 +567,49 @@ mod tests {
         assert_eq!(transport.replies, vec![(caller, CDEV_REPLY_BASE, 3, 5)]);
     }
 
-    /// A write answers the byte count the backend accepted (null accepts 0).
+    /// A write answers the byte count the backend accepted (null accepts
+    /// 0); the grant copy is served from the scripted byte source first.
     #[test]
     fn test_write_answers_backend_accepted_count() {
         let caller = Endpoint(9);
         let mut svc = service();
         svc.driver.open(DeviceMinor(0), 0, 42);
-        let msg = write_msg(0, 10, 6, caller);
-        let mut transport = Scripted::new(vec![msg]);
+        let msg = write_msg(0, 77, 10, 6, caller);
+        let mut transport = Scripted::new(vec![msg]).with_grant_bytes(&[0u8; 10]);
         svc.dispatch(&mut transport, &msg);
         assert_eq!(transport.replies, vec![(caller, CDEV_REPLY_BASE, 0, 6)]);
+        assert_eq!(transport.copies, vec![(caller, 77, 0, 10)]);
+    }
+
+    /// The write pipeline moves the writer's grant bytes into the device
+    /// backend and answers the full count (C: do_write drain, tty.c:536-578).
+    #[test]
+    fn test_write_pipeline_moves_grant_bytes_to_backend() {
+        let caller = Endpoint(9);
+        let mut svc = TtyService::new(TtyDriver::new(8, 0, LoopBackend::new(16)));
+        svc.driver.open(DeviceMinor(0), 0, 42);
+        let msg = write_msg(0, 5, 3, 8, caller);
+        let mut transport = Scripted::new(vec![msg]).with_grant_bytes(b"ab\n");
+        svc.dispatch(&mut transport, &msg);
+        assert_eq!(transport.replies, vec![(caller, CDEV_REPLY_BASE, 3, 8)]);
+        assert_eq!(svc.driver.backend.take(16), b"ab\n".to_vec());
+    }
+
+    /// A grant copy the writer cannot back reads as EFAULT (the kernel
+    /// copy arms' errno face), not as a silent short write.
+    #[test]
+    fn test_write_grant_copy_failure_replies_efault() {
+        let caller = Endpoint(9);
+        let mut svc = service();
+        svc.driver.open(DeviceMinor(0), 0, 42);
+        let msg = write_msg(0, 5, 10, 9, caller);
+        // Grant source shorter than the claimed count: the copy fails.
+        let mut transport = Scripted::new(vec![msg]).with_grant_bytes(b"short");
+        svc.dispatch(&mut transport, &msg);
+        assert_eq!(
+            transport.replies,
+            vec![(caller, CDEV_REPLY_BASE, -minix_types::EFAULT, 9)]
+        );
     }
 
     /// A block-side open on this character driver answers "no such device".
