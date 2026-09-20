@@ -58,11 +58,32 @@ pub fn terminate(code: i32) -> ! {
 
 /// Best-effort write to standard error (the C `warnx` channel); write
 /// failures are ignored exactly as stdio's are in the C utilities.
+/// Hosted twin: real stdio — the pre-freestanding `println!`/`eprintln!`
+/// semantics these binaries carried before the seam landed (hosted runs
+/// are host tools and test fixtures; the kernel transport is not on the
+/// hosted output path).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn warn(bytes: &[u8]) {
+    use std::io::Write as _;
+    let _ = std::io::stderr().write_all(bytes);
+}
+
+/// Hosted twin of [`emit`].
+#[cfg(any(test, not(target_os = "none")))]
+pub fn emit(bytes: &[u8]) {
+    use std::io::Write as _;
+    if std::io::stdout().write_all(bytes).is_err() {
+        terminate(1);
+    }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
 pub fn warn(bytes: &[u8]) {
     let _ = minix_sys::write(STDERR, bytes);
 }
 
 /// Writes the slice to standard output, exiting 1 on failure.
+#[cfg(all(not(test), target_os = "none"))]
 pub fn emit(bytes: &[u8]) {
     if minix_sys::write(STDOUT, bytes).is_err() {
         terminate(1);

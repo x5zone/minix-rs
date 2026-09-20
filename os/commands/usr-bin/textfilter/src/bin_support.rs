@@ -46,6 +46,23 @@ pub fn args() -> alloc::vec::Vec<alloc::string::String> {
 }
 
 /// Terminates the process with an exit status (see the module header).
+/// Hosted twin: real stdio — the pre-freestanding `println!`/`eprintln!`
+/// semantics (hosted runs are host tools and test fixtures; the kernel
+/// transport is not on the hosted output path).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn warn(bytes: &[u8]) {
+    use std::io::Write as _;
+    let _ = std::io::stderr().write_all(bytes);
+}
+
+/// Hosted twin of [`emit`].
+#[cfg(any(test, not(target_os = "none")))]
+pub fn emit(bytes: &[u8]) {
+    use std::io::Write as _;
+    if std::io::stdout().write_all(bytes).is_err() {
+        terminate(1);
+    }
+}
 #[cfg(all(not(test), target_os = "none"))]
 pub fn terminate(code: i32) -> ! {
     minix_sys::exit(code)
@@ -59,6 +76,7 @@ pub fn terminate(code: i32) -> ! {
 }
 
 /// Writes the slice to standard output, exiting 1 on failure.
+#[cfg(all(not(test), target_os = "none"))]
 pub fn emit(bytes: &[u8]) {
     if write(STDOUT, bytes).is_err() {
         terminate(1);
@@ -73,6 +91,7 @@ pub fn write_ok(bytes: &[u8]) -> bool {
 
 /// Best-effort write to standard error (the C `warnx` channel); write
 /// failures are ignored exactly as stdio's are in the C utilities.
+#[cfg(all(not(test), target_os = "none"))]
 pub fn warn(bytes: &[u8]) {
     let _ = write(STDERR, bytes);
 }

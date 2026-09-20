@@ -71,6 +71,16 @@ pub fn write_chunk(fd: Fd, bytes: &[u8]) -> bool {
 }
 
 /// Writes the slice to standard output, exiting 1 on failure.
+/// Hosted twin of [`emit`]: real stdio (see [`warn`]).
+#[cfg(any(test, not(target_os = "none")))]
+pub fn emit(bytes: &[u8]) {
+    use std::io::Write as _;
+    if std::io::stdout().write_all(bytes).is_err() {
+        terminate(1);
+    }
+}
+
+#[cfg(all(not(test), target_os = "none"))]
 pub fn emit(bytes: &[u8]) {
     if !write_chunk(STDOUT, bytes) {
         terminate(1);
