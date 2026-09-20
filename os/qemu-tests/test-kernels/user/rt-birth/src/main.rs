@@ -176,8 +176,10 @@ extern "Rust" fn main() -> i32 {
     // minix-types registry is per-address-space — the kernel's hook is not
     // visible here), then panic on purpose. The handler renders through
     // `format_panic_report` and hands the report to the hook, which routes
-    // it to the console; the process then spins, which is the handler's
-    // contract.
+    // it to the console; the process then exits through the process
+    // manager (status 1). On this bare image no PM answers the exit send,
+    // so the process parks inside the exit path — the observable end
+    // state on this carrier is unchanged.
     minix_types::set_panic_diagnostic_hook(Some(|message: &str| {
         emit(message.as_bytes());
         emit(b"\n");
