@@ -495,6 +495,14 @@ pub struct ServiceSlot {
 - **兼容性**：保持 `01-rs-boot-init.md` 已使用的字段名（`endpoint`/`label`/`sys_flags`/`dev_nr`/`pid`/`in_use`）不变——这些字段放在 `pub_` 内或提供访问路径，boot 接线最小化（§4.3）。
 - **验证**：boot 集成测试断言 Step 1 后槽位字段与索引一致（§5）。
 
+### 3.1.1 公开表 wire 镜像：`RProcTable.pub_wire`（NS2，2026-09-21）
+
+行内合并消灭了 `r_pub` 指针，但 C 的 `rprocpub[NR_SYS_PROCS]` 还有一个身份：**连续内存区**——`rinit.rproctab_gid` 授权的就是这块内存（main.c:185 `cpf_grant_direct(ANY, rprocpub, sizeof(rprocpub), CPF_READ)`，读者 VM 经 `sys_safecopyfrom` 按地址取行，main.c:246）。类型化槽位给不出这块内存，`RProcTable` 因此携带派生镜像 `pub_wire: Vec<RprocpubSnap>`（64 行 × 40 字节，`RprocpubSnap` 为 `minix-types` 的 `[ARCH: A-4]` 行权威）：
+
+- `sync_pub_wire()`：从类型化槽位逐行重导出（复用 `shell_request::serialize_rprocpub_snap` 的字段映射）；每个改公开半的变异点之后都要调用——boot 注册在 step1 循环后同步一次（01 §3.7），运行期 create/update 路径落地时同样。
+- `pub_wire_bytes()`：镜像的字节视图（授权/测试用）；堆缓冲地址跨 `BootInit → ServerState` 交接与表重置稳定，即授权钉住的地址。
+- 空槽出全零行：C 的 `rprocpub[]` 是 BSS，未分配槽保持零、按 `in_use` 过滤——镜像沿用同一纪律（`serialize_rprocpub_snap` 空槽分支）。
+
 ### 3.2 r_flags → RFlags bitflags(u16)（D1）
 
 **C**：`unsigned r_flags` + 16 个宏（const.h:28-43）。**Rust**：

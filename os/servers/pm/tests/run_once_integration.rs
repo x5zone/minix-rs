@@ -35,6 +35,7 @@ impl minix_pm::exit::KernelGateway for MockKernelGateway {
         Ok(self.ksig_script.remove(0).map(|(ep, mask)| (Endpoint(ep), mask)))
     }
     fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+    fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
     fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
     fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }

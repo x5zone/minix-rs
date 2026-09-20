@@ -310,11 +310,18 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
             let _ = kern.sys_kill(table.procs[target.get()].endpoint(), signo);
             return Ok(());
         }
+        // C signal.c:464-466：栈回溯类信号（lethal 且非 SIGABRT）先请求内核
+        // 打印目标栈，再走终止/投递分岔。返回值 C 不检查（诊断通道失败静默）。
         if is_stacktrace(signo) {
-            let _ = target;
+            let _ = kern.sys_diagctl_stacktrace(table.procs[target.get()].endpoint());
         }
         if !is_termination(signo) {
-            // Message SIGS_SIGNAL_RECEIVED to system process
+            // C signal.c:468-474：非终止内核信号一律翻译成 SIGS_SIGNAL_RECEIVED
+            // 消息 `asynsend3(ep, &m, AMF_NOREPLY)` 投给目标服务。Rust 侧尚未
+            // 接线：`asynsend3` 的重试表在 PM 的 IpcTransport 无等价物（sendnb
+            // 对不在 receive 的目标会 EBUSY 丢），且 `mess_pm_lsys_sigs_signal`
+            // 载荷 overlay 未入 minix-types。当前内核 ksig 只产终止类信号，此路
+            // 实际不可达——登记待信号链批次 H（04-stage-pm/todo.md §12.7）。
             let _ = (target, signo);
             return Ok(());
         } else {
@@ -681,6 +688,7 @@ mod tests {
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
             Ok((self.user, self.sys))
         }
+        fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
     use super::*;
     use crate::mproc::{ProcTable, Lifecycle, Privilege, Credentials};
@@ -823,6 +831,7 @@ mod tests {
             fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
                 Ok((0, 0))
             }
+            fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
         }
 
         let mut table = ProcTable::new();
@@ -970,6 +979,7 @@ mod tests {
             self.endksig_calls.push((ep, sig));
             Ok(())
         }
+        fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
 
     /// C sef_signal.c:27-63：SIGKSIG 到达后的拉取循环——getksig 取回
@@ -1061,6 +1071,7 @@ mod tests {
                 None => Ok(()),
             }
         }
+        fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
 
     /// C signal.c:772-818：sig_send 组装 sigmsg（mask/signo/handler/
@@ -1201,6 +1212,7 @@ mod tests {
         fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
         fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
         fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn sys_diagctl_stacktrace(&mut self, _ep: minix_types::Endpoint) -> Result<(), i32> { Ok(()) }
     }
 
     /// C signal.c:425-443：VFS_CALL 挂起的进程收到信号 → pending 置位 +
@@ -1286,5 +1298,70 @@ mod tests {
             let _ = sig_proc(&mut table, UserSlot::new(5), SIGTERM, false, false, &mut kern, &mut t);
         }));
         assert!(res.is_err(), "MustStop + EBUSY must panic");
+    }
+
+    /// 记录 stacktrace 请求的内核网关 mock：sig_proc 的 ksig 栈回溯支路
+    /// （C signal.c:464-466 `sys_diagctl_stacktrace(mp_endpoint)`）回归用。
+    #[derive(Default)]
+    struct StacktraceRecorder {
+        traces: Vec<minix_types::Endpoint>,
+    }
+    impl crate::exit::KernelGateway for StacktraceRecorder {
+        fn sys_sigsend(&mut self, _ep: minix_types::Endpoint, _sigmsg: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> { Ok(()) }
+        fn sys_kill(&mut self, _ep: Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_clear(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_abort(&mut self, _how: i32) -> Result<(), i32> { Ok(()) }
+        fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> { Ok(()) }
+        fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> { Ok(()) }
+        fn sys_trace(&mut self, _req: i32, _ep: minix_types::Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> { Ok(()) }
+        fn sys_vircopy(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _dst_ep: minix_types::Endpoint, _dst: u64, _len: u64) -> Result<(), i32> { Ok(()) }
+        fn copy_from_user(&mut self, _src_ep: minix_types::Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> { Ok(()) }
+        fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> { Ok((0, 0)) }
+        fn get_ksig(&mut self) -> Result<Option<(minix_types::Endpoint, u64)>, i32> { Ok(None) }
+        fn end_ksig(&mut self, _ep: minix_types::Endpoint, _sig: i32) -> Result<(), i32> { Ok(()) }
+        fn sys_diagctl_stacktrace(&mut self, ep: minix_types::Endpoint) -> Result<(), i32> {
+            self.traces.push(ep);
+            Ok(())
+        }
+    }
+
+    /// C signal.c:464-477：PRIV_PROC 进程收到内核致命信号（SIGSEGV 属
+    /// stacktrace 类）——先向内核请求打印目标栈回溯，再落入终止链。
+    /// 接线回归锚点：早前此支路是 `let _ = target;` 空转（无诊断输出）。
+    #[test]
+    fn test_sig_proc_ksig_stacktrace_asks_kernel_then_terminates() {
+        let mut table = ProcTable::new();
+        // 内核进程（is_kernel_process=true，endpoint != PM 不会早退）。
+        mk_proc(&mut table, 5, 42, 42, true);
+        let target_ep = table.procs[5].identity.endpoint;
+        let mut kern = StacktraceRecorder::default();
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let res = check_sig(&mut table, UserSlot::new(0), 42, crate::signal::SIGSEGV, true, &mut kern, &mut t);
+        assert!(res.is_ok());
+        // ① 栈回溯请求确实发出，目标端点 = 该进程的 endpoint（C :465）。
+        assert_eq!(kern.traces, vec![target_ep]);
+        // ② SIGSEGV 是终止类：随后走 sig_proc_exit（C :475-477），进程离活。
+        assert!(
+            matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. })
+                || table.procs[5].state.lifecycle.is_exiting(),
+            "lethal ksig must terminate kernel proc, got {:?}",
+            table.procs[5].state.lifecycle
+        );
+    }
+
+    /// C signal.c:464 + `SIGS_IS_STACKTRACE` 宏（`sys/sys/signal.h:286`
+    /// = `SIGS_IS_LETHAL && sig != SIGABRT`）：SIGABRT 虽是致命信号但被
+    /// 显式排除在 stacktrace 集合外——不得发栈回溯请求（与上一测试成对，
+    /// 钉住集合边界）。
+    #[test]
+    fn test_sig_proc_ksig_abort_skips_stacktrace() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, true);
+        let mut kern = StacktraceRecorder::default();
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let res = check_sig(&mut table, UserSlot::new(0), 42, SIGABRT, true, &mut kern, &mut t);
+        assert!(res.is_ok());
+        assert!(kern.traces.is_empty(), "SIGABRT must not request stacktrace");
     }
 }

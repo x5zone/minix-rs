@@ -12,3 +12,6 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true }
 anyhow = { workspace = true }
+# 装机清单的计数单一真源（NK7）：BOOT_MODULES 长度绑定 NR_BOOT_MODULES，
+# 任何一侧增减条目，本 crate 编译失败。
+minix-boot = { workspace = true }

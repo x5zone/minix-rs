@@ -1,0 +1,10 @@
+#!/bin/sh
+# minix-rs /etc/rc — init 在进入 multi-user 前执行的最小启动脚本。
+#
+# 消费链：init 的 runcom 状态机 exec sh /etc/rc（S42 批五已落
+# host.rs 的 argv sh+/etc/rc 装配；C 对位链见 minix3/etc/rc）。
+#
+# 内容口径：OQ-3 盘上文件面的 /etc 最小集草案（new_edge3 NS8 交付），
+# 只含启动期可见标记，**待用户过目**——mount/hostname/rc.d 等扩展项
+# 等 05-shell 与 18-stage 消费方就绪后按需上收。
+echo "minix-rs rc: minimal boot script marker"

@@ -1,14 +1,21 @@
 //! Minix-RS Build System (xtask)
 //!
 //! 用法:
-//!   cargo run -p xtask build          # 编译项目
+//!   cargo run -p xtask build          # 编译项目（宿主开发面，全量）
 //!   cargo run -p xtask test           # 运行所有测试
 //!   cargo run -p xtask test --slice fork  # 运行 fork 切片测试
 //!   cargo run -p xtask check          # 检查代码
 //!   cargo run -p xtask doc            # 生成文档
+//!   cargo run -p xtask image          # 装配可启动机镜像（E-IMGPKG）
+//!   cargo run -p xtask qemu           # 用镜像启动 QEMU
 
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use std::process::Command;
+
+mod image;
+mod manifest;
+mod qemu;
 
 #[derive(Parser)]
 #[command(name = "xtask")]
@@ -20,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// 编译项目
+    /// 编译项目（宿主开发面：库 + 内核 + 装机清单全量服务器）
     Build {
         #[arg(short, long)]
         release: bool,
@@ -37,13 +44,36 @@ enum Commands {
     Doc,
     /// 清理构建产物
     Clean,
-    /// 打包 boot image / rootfs 镜像（骨架）
+    /// 装配可启动机镜像（boot-shim + 内核 + 12 模块 + imgrd）
     Image {
         #[arg(short, long)]
         release: bool,
+        /// 目标架构（x86_64 / aarch64 / riscv64）
+        #[arg(long, default_value = "x86_64")]
+        arch: String,
+        /// 内核 ELF 路径（缺省取 target/<三架构>/<profile>/kernel.elf；
+        /// 生产内核 bin 的产出者登记为 new_edge3 NS8-A，属 new_edge1 面）
+        #[arg(long)]
+        kernel: Option<PathBuf>,
+        /// 只打印装配计划，不落盘
+        #[arg(long)]
+        dry_run: bool,
     },
-    /// 启动 QEMU 并跑验收（骨架）
-    Qemu,
+    /// 用装配好的镜像启动 QEMU（真机验证须先确认 QEMU 空闲窗口）
+    Qemu {
+        /// 目标架构（x86_64 / aarch64 / riscv64）
+        #[arg(long, default_value = "x86_64")]
+        arch: String,
+        /// 盘镜像路径（缺省取 target/image/<arch>/minix.img）
+        #[arg(long)]
+        image: Option<PathBuf>,
+        /// 串口日志路径（缺省取 target/image/<arch>/serial.log）
+        #[arg(long)]
+        serial: Option<PathBuf>,
+        /// 只打印命令行，不启动
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -55,13 +85,34 @@ fn main() -> anyhow::Result<()> {
         Commands::Check => check(),
         Commands::Doc => doc(),
         Commands::Clean => clean(),
-        Commands::Image { release } => image(release),
-        Commands::Qemu => qemu(),
+        Commands::Image {
+            release,
+            arch,
+            kernel,
+            dry_run,
+        } => {
+            let arch = image::Arch::parse(&arch)?;
+            image::run(release, arch, kernel.as_deref(), dry_run)
+        }
+        Commands::Qemu {
+            arch,
+            image: img,
+            serial,
+            dry_run,
+        } => {
+            let arch = image::Arch::parse(&arch)?;
+            qemu::run(arch, img.as_deref(), serial.as_deref(), dry_run)
+        }
     }
 }
 
+/// 宿主开发面全量构建：基础库 + 内核 + 装机清单 12 包 + 盘工具。
+///
+/// 这里的目标是宿主三元组（服务器/命令的 E5 宿主半运行形态）；镜像
+/// 产出的 guest/UEFI 目标构建归 `image` 子命令（生产开关与
+/// `--target` 成对传递，见 image.rs 模块文档）。
 fn build(release: bool) -> anyhow::Result<()> {
-    println!("🚀 Building Minix-RS...");
+    println!("🚀 Building Minix-RS (host dev, full manifest)...");
 
     // 编译库
     println!("📦 Building libraries...");
@@ -74,9 +125,14 @@ fn build(release: bool) -> anyhow::Result<()> {
     println!("🔨 Building kernel...");
     run_cargo(&["build", "-p", "minix-kernel"], release)?;
 
-    // 编译服务器
-    println!("🔧 Building servers...");
-    run_cargo(&["build", "-p", "minix-pm"], release)?;
+    // 编译装机清单全量服务器（X-11 白名单语义：镜像只装清单内包）
+    println!("🔧 Building boot modules (manifest)...");
+    for entry in manifest::BOOT_MODULES.iter() {
+        run_cargo(&["build", "-p", entry.package], release)?;
+    }
+
+    // 盘工具（imgrd 生成器）
+    run_cargo(&["build", "-p", "minix-diskfmt"], release)?;
 
     println!("✅ Build complete!");
     Ok(())
@@ -85,7 +141,7 @@ fn build(release: bool) -> anyhow::Result<()> {
 fn run_tests(slice: Option<String>) -> anyhow::Result<()> {
     match slice {
         Some(s) => {
-            println!("🧪 Running {} slice tests...", s);
+            println!("🧪 Running {s} slice tests...");
             // 运行特定切片测试
             run_cargo(&["test", "-p", "minix-pm", &s], false)?;
         }
@@ -117,27 +173,6 @@ fn clean() -> anyhow::Result<()> {
     println!("🧹 Cleaning build artifacts...");
     run_cargo(&["clean"], false)?;
     println!("✅ Clean complete!");
-    Ok(())
-}
-
-fn image(release: bool) -> anyhow::Result<()> {
-    println!("📦 Packaging boot image (skeleton)...");
-    let _ = release;
-    // TODO(skeleton): 占位——实装于 15-stage-fs / 16-stage-drivers 之前需要的基础设施：
-    //   1) 收集 boot image 进程 ELF（kernel + ds/rs/pm/sched/vfs/tty/memory/mib/vm/pfs/mfs/init，
-    //      对照 minix3/minix/kernel/table.c:36 boot_image 数组）
-    //   2) 按 minix3 boot image 格式打包（参考 minix3/releasetools/mkboot + distrib/common/bootimage）
-    //   3) 生成 rootfs/ramdisk 镜像（mkfs + fstab，参考 minix3/distrib/common/bootimage/fstab.in）
-    //   4) 输出到 os/target/image/
-    println!("    [skeleton] 计划输出: os/target/image/boot_image + rootfs");
-    Ok(())
-}
-
-fn qemu() -> anyhow::Result<()> {
-    println!("🚀 Launching QEMU (skeleton)...");
-    // TODO(skeleton): 组合 QEMU 参数并启动（-nographic -kernel <boot_image> -hda <rootfs> ...），
-    //   参考 os/qemu-tests/run_qemu.sh；验收标准 = boot_to_sample 集成测试。
-    println!("    [skeleton] 待实现：参考 os/qemu-tests/run_qemu.sh");
     Ok(())
 }
 

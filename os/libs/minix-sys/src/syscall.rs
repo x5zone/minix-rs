@@ -872,8 +872,13 @@ pub fn sys_privctl(
 
 /// SYS_DIAGCTL · STACKTRACE(2):请求目标进程的栈回溯打印。
 /// C: main.c:681-683(RS 信号管理器的 stacktrace-signal 分支)。
+///
+/// C: `syslib.h:167` 定义为 `sys_diagctl(DIAGCTL_CODE_STACKTRACE, NULL, ep)`
+/// ——端点走 **arg2**（`sys_diagctl.c:16-17` 的 `endpt = (endpoint_t)arg2`）。
+/// 早前版本误把 target 放在 arg1（buf 槽位）、arg2 恒 0，内核收到的
+/// `endpt` 永远是 0——本次接线 PM stacktrace 支路时按 C 纠正。
 pub fn sys_diagctl_stacktrace(transport: &impl KernelCallTransport, target: i32) -> Result<(), i32> {
-    sys_diagctl(transport, minix_types::DIAGCTL_CODE_STACKTRACE, target as u64, 0)
+    sys_diagctl(transport, minix_types::DIAGCTL_CODE_STACKTRACE, 0, target)
 }
 
 /// SYS_DATACOPY 命名别名:C syslib.h:129 把它定义为 sys_vircopy 的
@@ -1875,6 +1880,8 @@ mod tests {
     }
 
     /// E9 切片 1:STACKTRACE 诊断码(2) + 目标端点。
+    /// 必须核 `endpt` 本身——早前版本只断言 code，target 放错实参位
+    /// （arg1 而非 C 的 arg2）被放过，内核侧永远收到 endpt=0。
     #[test]
     fn test_sys_diagctl_stacktrace_code_and_target() {
         let mut canned = CannedKernelCallTransport::new();
@@ -1884,6 +1891,7 @@ mod tests {
         // SAFETY: 断言读回 diagctl 臂。
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!(d.code, minix_types::DIAGCTL_CODE_STACKTRACE);
+        assert_eq!(d.endpt, 9, "target 必须落进 endpt 字段（C: sys_diagctl.c:17）");
     }
 
     /// E-IPCWIRE 第 6 项:clock_time_via 组合 SYS_TIMES + GET_HZ——

@@ -598,8 +598,8 @@ SEF 在 C 中解决 3 个问题，Rust 各有更简单的替代：
 | SEF 组件 | C 中的必要性 | Rust 下的处理 |
 |---------|-------------|--------------|
 | `sef_startup()` + `sef_cb_init_fresh`（main.c:241-260） | C 没有标准服务初始化协议，必须通过 IPC 从 RS 取 rproctab | 保留协议、去掉框架：`VmServer::rs_handshake()`——`ipc_call_rs_init()` 取 rproctab → 逐条 `acl_set`（等价 `map_service`） |
-| `do_sef_init_request` + `sef_cb_init_response`（minix3/minix/lib/libsys/sef_init.c:do_sef_init_request） | 主循环 RS_INIT 分支 | 主循环优先级 2 直接调 `rs_handshake()`，返回 `DispatchAction::Suspend`（不回复） |
-| `sef_cb_init_response_rs_asyn_once`（minix3/minix/lib/libsys/sef_init.c:sef_cb_init_response_rs_asyn_once） | 避免启动死锁 | **DEFERRED**：RS_INIT 回复本身依赖 asynsend 原语（内核 IPC），落地时引入 |
+| `do_sef_init_request` + `sef_cb_init_response`（minix3/minix/lib/libsys/sef_init.c:do_sef_init_request） | 主循环 RS_INIT 分支 | 主循环优先级 2 直接调 `rs_handshake()`：成功 → `sef_init_reply(OK)` 出生应答后 `Suspend`（E-BIRTHFACE/NS1，74414dd1e——C 的应答在 process_init 尾部 sef_init.c:110-119，SUSPEND 只压主循环的第二回复）；失败 → 先回 `sef_init_reply(errno)`（应答无条件，sef_init.c:110-119；NS2 2026-09-21）再按 [A-14] 丢弃 + 计数 + 审计（C 在 main.c:151 panic，Rust 保持进程存活） |
+| `sef_cb_init_response_rs_asyn_once`（minix3/minix/lib/libsys/sef_init.c:sef_cb_init_response_rs_asyn_once） | 避免启动死锁 | 出生/失败应答经 `IpcTransport::send` 单臂发出（E-BIRTHFACE/NS1 + NS2 落地）；asynsend 语义等价——单条无期待回复的消息 |
 | `sef_cb_init_lu_restart` / `sef_cb_lu_state_changed` / `sef_cb_init_vm_multi_lu`（main.c:196-217,592-730） | Live Update 状态机 | **DEFERRED**：`rs.rs` 的 `handle_rs_prepare`/`handle_rs_update` 已预留入口；swap_proc_slot 等 LU 语义归 `25-rs-services.md` |
 | `sef_cb_signal_handler`（main.c:731-754） | 信号经 IPC 通知送达 | 主循环 `rcv_sts.is_notify()` 分支识别通知（V10-P1-1，transport.rs:58）；`SIGKMEM → do_memory` 归 `06-page-allocator.md`，当前 DEFERRED（通知分支直接 return Handled） |
 
@@ -760,7 +760,7 @@ pub fn init(&mut self) {
 
 #### 4.4.3 主循环与 RS_INIT（对应 §3.4；细节归 15）
 
-`run()`/`run_once()`（os/servers/vm/src/vm_server.rs:fn init_boot_procs（L588，工具生成）/:623）经 `self.transport.borrow_mut().receive()/send()` 走 `IpcTransport` trait 对象（V10-P0-2）；通知跳过用 `rcv_sts.is_notify()`（V10-P1-1）；`missing_spares` 检查保持既有实现；`dispatch_on_msg` 优先级 2 的 RS_INIT 分支调用 `rs_handshake()` 并返回 `DispatchAction::Suspend`（不回复，等价 C main.c:149-152 的 SUSPEND 语义）。
+`run()`/`run_once()`（os/servers/vm/src/vm_server.rs:fn init_boot_procs（L588，工具生成）/:623）经 `self.transport.borrow_mut().receive()/send()` 走 `IpcTransport` trait 对象（V10-P0-2）；通知跳过用 `rcv_sts.is_notify()`（V10-P1-1）；`missing_spares` 检查保持既有实现；`dispatch_on_msg` 优先级 2 的 RS_INIT 分支调用 `rs_handshake()`：成功 → `sef_init_reply(OK)` 出生应答（sef_init.c:110-117，E-BIRTHFACE/NS1）后 `Suspend`；失败 → `sef_init_reply(errno)` 应答（sef_init.c:110-119 应答无条件，NS2）后 [A-14] 丢弃 + 计数 + 审计——两臂都不走 dispatcher 的二次回复腿，等价 C main.c:149-152 的 SUSPEND 语义。测试：`test_run_once_rs_init_handshake_copies_and_maps_service`（成功臂）/ `test_run_once_rs_init_fails_closed_on_safecopy_error`（失败臂）。
 
 #### 4.4.4 Drop 与测试基础设施修复
 

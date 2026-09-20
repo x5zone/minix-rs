@@ -473,6 +473,37 @@ pub fn dup2_via(transport: &impl IpcTransport, fd: i32, fd2: i32) -> Result<i32,
     fcntl_via(transport, fd, F_DUPFD, fd2, 0)
 }
 
+/// `VFS_PIPE2` — create a pipe (`callnr.h:98`, `VFS_BASE + 26`).
+pub const VFS_CALL_PIPE2: i32 = 0x100 + 26;
+
+/// Creates a pipe over the given transport (C: `pipe2`,
+/// `minix3/minix/lib/libc/sys/pipe.c:14-27`).
+///
+/// Request payload is `mess_lc_vfs_pipe2`（flags@0、_unused@4、oflags@8）；
+/// the server bitwise-ors the two flag fields (`pipe.c:45-46`), and the C
+/// libc writes the same `flags` into both for backward compatibility
+/// (`pipe.c:18-19`) — done the same way here. The OK reply carries
+/// `mess_vfs_lc_fdpair { int fd0; int fd1; }`（`ipc.h:2198-2203`）in the
+/// first two payload words; the return is that (read end, write end) pair.
+pub fn pipe2_via(transport: &impl IpcTransport, flags: i32) -> Result<(i32, i32), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: `mess_lc_vfs_pipe2` 的两个 i32 域写在负载区偏移 0 与 8
+    // （服务端 `syscalls.rs` 的 Pipe2 臂按同布局解码，互为见证）。
+    unsafe {
+        message.m_u.raw[0..4].copy_from_slice(&flags.to_le_bytes());
+        message.m_u.raw[8..12].copy_from_slice(&flags.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_PIPE2, &mut message)?;
+    // SAFETY: 成功回复是 `mess_vfs_lc_fdpair`，fd0/fd1 在负载区前两字。
+    let (fd0, fd1) = unsafe {
+        (
+            i32::from_le_bytes(message.m_u.raw[0..4].try_into().expect("four payload bytes")),
+            i32::from_le_bytes(message.m_u.raw[4..8].try_into().expect("four payload bytes")),
+        )
+    };
+    Ok((fd0, fd1))
+}
+
 /// Changes the process root directory (C: `chroot`,
 /// `minix3/minix/lib/libc/sys/chroot.c:12-19`).
 ///
@@ -819,6 +850,7 @@ mod tests {
         assert_eq!(VFS_CALL_CREATE, 0x104);
         assert_eq!(VFS_CALL_CLOSE, 0x105);
         assert_eq!(VFS_CALL_FCNTL, 0x119);
+        assert_eq!(VFS_CALL_PIPE2, 0x11A);
         assert_eq!(VFS_CALL_GETDENTS, 0x11D);
         assert_eq!(VFS_CALL_SELECT, 0x11E);
         assert_eq!(VFS_CALL_SERVER_CONTROL, 0x12B);
@@ -1280,6 +1312,72 @@ mod dup2_wire_tests {
         transport.reply_sendrec(Err(crate::ipc::TrapStatus(minix_types::EBADF)));
         assert_eq!(dup2_via(&transport, 9, 0), Err(Errno::EBADF));
         assert_eq!(transport.sent.borrow().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod pipe_wire_tests {
+    use super::*;
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    /// OK 回复携带 `mess_vfs_lc_fdpair { int fd0; int fd1; }`（ipc.h:2198-2203）
+    /// 于负载区前两字（服务端 main_loop.rs 的 Pipe2 收尾同布局写入）。
+    fn reply_fdpair(fd0: i32, fd1: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = 0;
+        // SAFETY: test-only canned reply, fdpair 前两字。
+        unsafe {
+            message.m_u.raw[0..4].copy_from_slice(&fd0.to_le_bytes());
+            message.m_u.raw[4..8].copy_from_slice(&fd1.to_le_bytes());
+        }
+        message
+    }
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    /// 请求腿：flags 同时写 @0 与 @8（C libc 双写向后兼容，pipe.c:18-19），
+    /// 调用号 VFS_PIPE2 = VFS_BASE + 26（callnr.h:98），目的端 VFS。
+    /// 回复腿：fd 对从 fdpair 读出。
+    #[test]
+    fn test_pipe2_wire_roundtrip_both_flag_fields() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_fdpair(3, 4)));
+        assert_eq!(pipe2_via(&transport, 0o2000000), Ok((3, 4)));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, vfs_endpoint());
+        assert_eq!(sent[0].1.m_type, VFS_CALL_PIPE2);
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[0..4], &0o2000000i32.to_le_bytes(), "flags@0");
+        assert_eq!(&raw[4..8], &[0; 4], "_unused@4 保持零");
+        assert_eq!(&raw[8..12], &0o2000000i32.to_le_bytes(), "oflags@8 同值双写");
+    }
+
+    /// `pipe()` 顶层形态 = `pipe2(_, 0)`（C pipe.c:30-33）：flags 两字段皆零。
+    #[test]
+    fn test_pipe2_zero_flags_matches_pipe_shim() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_fdpair(5, 6)));
+        assert_eq!(pipe2_via(&transport, 0), Ok((5, 6)));
+        let sent = transport.sent.borrow();
+        // SAFETY: test-only payload read-back of the outgoing wire bytes.
+        let raw = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(&raw[0..12], &[0u8; 12]);
+    }
+
+    /// 服务端错误（如 PFS 未挂载时的 EIO，syscalls.rs Pipe2 臂 fail-closed）
+    /// 以负 m_type 回来，fd 对不被读出。
+    #[test]
+    fn test_pipe2_error_lane_returns_errno() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(-minix_types::EIO)));
+        assert_eq!(pipe2_via(&transport, 0), Err(Errno::EIO));
     }
 }
 

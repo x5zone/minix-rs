@@ -236,6 +236,22 @@ pub fn open(path: &str, flags: i32, mode: u32) -> Result<Fd, Errno> {
     )
 }
 
+/// Creates a pipe, returning its `(read end, write end)` descriptor pair.
+///
+/// C: `pipe(fild[2])` is `pipe2(fild, 0)`
+/// (`minix3/minix/lib/libc/sys/pipe.c:30-33`).
+pub fn pipe() -> Result<(Fd, Fd), Errno> {
+    vfs::pipe2_via(&ipc::DirectTrapTransport, 0)
+}
+
+/// Creates a pipe with `O_*` flags (e.g. `O_CLOEXEC`, `O_NONBLOCK`).
+///
+/// C: `pipe2(fild[2], flags)` (`minix3/minix/lib/libc/sys/pipe.c:14-27`);
+/// the request goes to VFS as `VFS_PIPE2` and the flags are checked there.
+pub fn pipe2(flags: i32) -> Result<(Fd, Fd), Errno> {
+    vfs::pipe2_via(&ipc::DirectTrapTransport, flags)
+}
+
 /// Terminal ioctl request: get the `struct termios`
 /// (`ttycom.h:88`, `_IOR('t', 19, struct termios)` — `IOC_OUT` 0x4000_0000,
 /// 44-byte argument in the length field, group `'t'`, number 19).
