@@ -8,6 +8,7 @@ minix-types = { path = "../libs/minix-types" }
 minix-pm = { path = "../servers/pm" }
 minix-vfs = { path = "../servers/vfs" }
 minix-ds = { path = "../servers/ds" }
+minix-sched = { path = "../servers/sched" }
 minix-sys = { path = "../libs/minix-sys" }
 
 [dev-dependencies]
@@ -15,6 +16,10 @@ minix-sys = { path = "../libs/minix-sys" }
 [[test]]
 name = "pm_vm_fork"
 path = "pm_vm_fork.rs"
+
+[[test]]
+name = "pm_sched"
+path = "pm_sched.rs"
 
 [[test]]
 name = "srv_fork"

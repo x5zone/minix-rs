@@ -162,6 +162,9 @@ impl KernelGateway for NoopKernelGateway {
     fn diag_write(&mut self, _text: &str) -> Result<(), i32> {
         Ok(())
     }
+    fn sys_diagctl_stacktrace(&mut self, _ep: Endpoint) -> Result<(), i32> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
