@@ -175,7 +175,7 @@ VM 只在收到 MAKE_VM 后才真正允许 RS 实例 pin 内存，所以 RS 要�
 `service_create.rs::create_service(table, rp, kernel, ticks, read_exec)` 按 §2 的 11 步序列组装——
 前置三闸门（失败即 `free_slot`，兑现 `check_create_preconditions` 的"调用方清理"契约）、
 `srv_fork`（失败即释放）、`getprocnr`（C panic 语义保留为 `expect`）、`mark_child_created` 表登记、
-priv 设置+回读、调度（`sched_decision` 纯决策 + 内核调用）、`read_exec`（注入缝，文件 I/O 归 19）、
+priv 设置+回读、调度（`sched_decision` 纯决策 + 内核调用）、`read_exec`（注入缝；文件 I/O 半已接 VFS 客户端面——`exec::read_exec` 经 `RsServer.image_io` 生产装配，内核 `srv_execve` 半仍归 19）、
 `srv_execve`、无条件 RS 重-pin、`setuid(0)` hack、RS/VM pin + RS 实例逐个重-pin、`vm_set_priv`。
 每步失败路径 = `cleanup_service`（两相执行体，15 §3）+ RS 重-pin + 对应 errno，与 C 的对称清理一致。
 **ARCH 偏差**：C 向 `srv_execve` 传递 RS 自身的 `environ`；本重写不建模环境继承
