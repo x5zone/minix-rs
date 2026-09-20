@@ -94,6 +94,8 @@ PFS 是拆除唯一的例外：它没有根节点可清（`530-535` 的条件）
 
 **Rust canned-mount 计划（C-7 闭合）**：`PfsMountPlan{dev, vmnt_slot, label:"pfs", mount_path:"pipe", mount_dev:"none"}` + `pfs_mount_plan(dev, vmnt_slot)`（`os/servers/vfs/src/mount.rs`）——`fs_e = PFS_PROC_NR`/`m_fs_flags = 0` 由固定身份蕴含；`req_readsuper` 确认往返属 FS 通信执行半（P1-2），C 对其失败仅 printf、挂载照旧，决策层无失败臂。
 
+**Rust 执行半（NS4/W6 落地，2026-09-21）**：根路径（`mount_root` 分支）与 `mount_pfs` 的执行编排已接——`VfsState::mount_fs_root`/`mount_pfs`（`os/servers/vfs/src/main_loop.rs`，C 序与失败臂见 `01-vfs-init-main.md` §2.5 的 Rust 落地段）。生产传输 `WireFsClient`（`os/servers/vfs/src/request.rs`）：对 `REQ_READSUPER` 实现三步舞——`GrantTable::grant_direct` 建标签 grant（CPF_READ，空标签也是 1 字节 NUL）→ `encode_readsuper` + `IpcTransport::sendrec` → `revoke` 后 `decode_readsuper_reply`（C request.c:780-833 逐步对位；未通电的其余 `REQ_*` 臂诚实返回 `UnknownReq`，随 18-mount 后续波次逐个补）。`SuperInfo` 由窗口三元组扩为含 `node: NodeDetails`（根 vnode 七连填的数据源）与原始 `fs_flags`（`m_fs_flags = fs_flags`，mount.c:266）。非根路径的挂载点查找/胶水（`eat_path`+`req_mountpoint`，mount.c:211-238）与 `do_mount` 系统调用门（§2.5）仍归本篇后续波次；`update_statvfs` 缓存首填归 stadir 消费面。
+
 ### 2.8 `do_umount/unmount` 拆除机（`mount.c:430-546`）
 
 `do_umount`：超管门（`447`）→ 取名解设备（`450-453`，`allow_mountpt=TRUE`）→ `unmount`（`455`）→ 标签 overlong 截断（`460-461`）→ 回传标签（`462-463`，供调用者停服）。`unmount`：按设备定位槽（`480-485`，双挂 panic——挂载门保证不可能），无槽 `EINVAL`（`488`），加 `EXCL`（`490`）→ 忙检查（`494-504`：引用和>1、有锁超 1、vmnt 有等待，三者任一 `EBUSY`）→ 清统计（`507`）→ 清根引用（`510`）→ 放挂载点（`512-515`）→ 限流 1（`517-519`）→ 调 FS 卸载（`522-524`，失败打印忽略）→ 还伪设备号（`526`）→ 回传标签（`528`）→ 清根节点（`530-535`，PFS 跳过）→ 释槽（`536`）→ 解锁（`538`）→ 加 `bsf` 改道回根并投递（`541-543`）。
