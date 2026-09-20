@@ -52,7 +52,17 @@ extern "Rust" fn main() -> i32 {
                 reply.m_type = 0x43;
                 match ipc.sendnb(msg.m_source, &reply) {
                     Ok(()) => emit(b"SYSBOOT RX DONE\n"),
-                    Err(_) => emit(b"SYSBOOT RX REPLY-ERR\n"),
+                    Err(code) => {
+                        // Report the errno (two decimal digits, < 100 for
+                        // classic errnos; Minix-extended ones print their
+                        // low two digits — enough to distinguish lanes).
+                        let v = code.0 as u32 & 0xff;
+                        let mut m: [u8; 21] = *b"SYSBOOT RX RERR ??? \n";
+                        m[15] = b'0' + ((v / 100) % 10) as u8;
+                        m[16] = b'0' + ((v / 10) % 10) as u8;
+                        m[17] = b'0' + (v % 10) as u8;
+                        emit(&m);
+                    }
                 }
             }
             Err(code) => {

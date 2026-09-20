@@ -3198,18 +3198,6 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                 .is_some_and(|p| p.needs_tlb_refresh(crate::current_ptproc_nr()));
             // C: proc.c:349 — switch_address_space(p).
             switch_address_space(table, picked);
-            // [diag] address-space install trace (real-machine bring-up).
-            #[cfg(target_arch = "x86_64")]
-            {
-                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-                Console::write_str("dispatch: nr ");
-                Console::write_hex(picked.0 as u64);
-                Console::write_str(" root ");
-                Console::write_hex(
-                    table.get(picked).map(|p| p.p_seg.phys_root.0).unwrap_or(0),
-                );
-                Console::write_str("\n");
-            }
         }
         let picked = current.expect("scheduler loop: proc_ptr seeded or picked above");
 

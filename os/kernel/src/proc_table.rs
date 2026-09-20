@@ -437,6 +437,28 @@ impl ProcessTable {
         }
     }
 
+    /// Complete a wake whose flag was cleared with the primitive
+    /// `RtsFlags::clear` by a component without run-queue access — the
+    /// ENQUEUE half of C's `RTS_UNSET` macro (proc.h:216-224: clear +
+    /// enqueue-when-runnable), for callers that cannot perform it inline;
+    /// `rts_unset` above is the full mirror for components that can.
+    ///
+    /// If `nr` is now runnable but not linked into a run queue, enqueue it
+    /// on its own CPU. Without this the woken process never re-enters the
+    /// scheduling queues and the system idles with a runnable process
+    /// (observed on real machine: a sender's sendrec completed its SEND
+    /// half, the parked receiver was flagged runnable but never enqueued —
+    /// test-sysboot C-27 carrier).
+    pub fn enqueue_if_woken(&mut self, nr: ProcNr) {
+        let runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+        if runnable && !self.is_in_scheduler(nr) {
+            let cpu_id = self.get(nr)
+                .map(|p| CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire)))
+                .unwrap_or(CpuId::BSP);
+            self.sched_enqueue(nr, cpu_id);
+        }
+    }
+
     /// Clear RTS flags on a process. If the process transitions from
     /// non-runnable to runnable, automatically enqueues it in the scheduler.
     ///

@@ -835,7 +835,7 @@ pub(crate) fn dispatch_ipc(
     // The engine borrows the process slice out of `proc_table`; the scope
     // block ends that borrow so the `sig_delay_done` protocol below can
     // touch `proc_table` again (the scheduler-aware `cause_signal`).
-    let (outcome, pending_sig_delay) = {
+    let (outcome, pending_sig_delay, woken_target) = {
         // D-16: wire the global IPC filter pool. A1 chain root (D-63②):
         // this is the kernel_call dispatch path — the BKL is held by the
         // kernel_call contract (kernel_call_dispatch acquires it); the
@@ -861,7 +861,11 @@ pub(crate) fn dispatch_ipc(
         // needs its PM stop-delay ended: take the record out of the engine
         // (it holds the proc_table/priv_table borrows).
         let pending = engine.take_sig_delay_sender();
-        (outcome, pending)
+        // The engine may also have WOKEN a parked process (clearing
+        // RTS_RECEIVING/RTS_SENDING with the primitive setter) — take the
+        // record so the ProcessTable-level code below can enqueue it.
+        let woken = engine.take_wake_target();
+        (outcome, pending, woken)
     };
 
     // Map IpcOutcome → KcallResult.
@@ -892,6 +896,13 @@ pub(crate) fn dispatch_ipc(
     // under BKL (dispatch_ipc_entry), so no observable interleaving vs C.
     if let Some(sender_nr) = pending_sig_delay {
         proc_table.sig_delay_done(sender_nr, priv_table);
+    }
+
+    // Complete the wake ENQUEUE half for a process the engine unparked
+    // (C: RTS_UNSET's enqueue — see ProcessTable::enqueue_if_woken). Runs
+    // under the same BKL discipline as sig_delay_done above.
+    if let Some(woken_nr) = woken_target {
+        proc_table.enqueue_if_woken(woken_nr);
     }
 
     result

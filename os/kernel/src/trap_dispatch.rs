@@ -565,6 +565,16 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             .get_mut(cur_nr)
             .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));
         minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
+        // Record the ENTRY style (C: every mpx.S soft-int entry records
+        // `p_kern_trap_style`; arch_system.c:585 consumes it at
+        // restore_user_context). A door-parked caller (blocked IPC)
+        // resumes through finish_and_restore's entry-style gate — without
+        // a fresh record the wake dispatch finds NoEntry and panics
+        // ("no entry trap style known", arch_system.c:597-598; observed
+        // on real machine waking a parked receiver, test-sysboot C-27).
+        // The int-33 gate pushes a full frame, so the style is
+        // FullContext — same record the carrier seeds for the first run.
+        caller.trap_style = TrapStyle::FullContext;
     }
 
     // K20 (caller-by-nr): no laundering — the caller travels as its nr and

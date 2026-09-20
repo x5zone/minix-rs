@@ -256,24 +256,34 @@ fn main() -> Status {
         .unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"));
         early_console::write_str("  TX ELF loaded into the RS slot (per-image root)\n");
         {
-            // [diag + fix] PDPT-slot merge for the kernel's IDENTITY range.
+        {
+            // [fix] PDPT-slot merge for the kernel's LOW-half footprint.
             // This test kernel executes identity-mapped (UEFI-era shape:
             // kernel code at ~0xdb9xxxxx, PML4 entry 0 — the USER half),
             // so the entry-range supervisor inherit cannot carry it: the
             // same entry also hosts the first image's user mappings. The
-            // merge copies the kernel's 1 GB PDPT slot from the bootstrap
-            // root into the fresh root, leaving the image's own slot
-            // (link base 0x140000000 → slot 5; stack → 511) untouched.
+            // merge copies the kernel-owned 1 GB PDPT slots from the
+            // bootstrap root into the fresh root, leaving the images'
+            // own slots (link base 0x140000000 → slot 5; stack → 511)
+            // untouched:
+            //   slot(kernel_va)   — supervisor code/data + IDT/GDT targets
+            //   slot(KERNINFO_USER_VA) — the published kernel-info page
+            //     (read-only): the birth chain's kerninfo query returns
+            //     this VA and the payload dereferences it immediately —
+            //     without the slot the read page-faults in the new root
+            //     (CR2 = 0x200000000 observed on real machine).
             // Production higher-half kernels need none of this: their
             // supervisor footprint IS entries 256..512, already inherited.
             use minix_arch::frame::PhysAccess as _;
             let kernel_va = main as *const () as u64;
             let kern_slot = ((kernel_va >> 30) & 0x1ff) as usize;
+            let kerninfo_slot =
+                ((minix_kernel::kerninfo::KERNINFO_USER_VA >> 30) & 0x1ff) as usize;
             let src_pml4 = access.phys_to_virt(PhysBytes(root_phys.0)).0 as *const u64;
             let dst_pml4 = access.phys_to_virt(PhysBytes(tx.root.0)).0 as *mut u64;
             // Source entry 0 → bootstrap's PDPT; dest entry 0 → the fresh
             // root's own PDPT (walk_alloc created it while mapping the
-            // image). Copy ONLY the kernel slot.
+            // image). Copy ONLY the kernel-owned slots.
             let src_pdpt =
                 unsafe { src_pml4.add(0).read() } & 0x000f_ffff_ffff_f000;
             let dst_pdpt =
@@ -281,14 +291,19 @@ fn main() -> Status {
             if src_pdpt != 0 && dst_pdpt != 0 {
                 let s = access.phys_to_virt(PhysBytes(src_pdpt)).0 as *const u64;
                 let d = access.phys_to_virt(PhysBytes(dst_pdpt)).0 as *mut u64;
-                unsafe {
-                    let entry = s.add(kern_slot).read();
-                    d.add(kern_slot).write(entry);
+                for slot in [kern_slot, kerninfo_slot] {
+                    unsafe {
+                        let entry = s.add(slot).read();
+                        d.add(slot).write(entry);
+                    }
                 }
-                early_console::write_str("  identity merge: slot ");
+                early_console::write_str("  identity merge: slots ");
                 early_console::write_hex(kern_slot as u64);
+                early_console::write_str(" + ");
+                early_console::write_hex(kerninfo_slot as u64);
                 early_console::write_str("\n");
             }
+        }
         }
 
         // Rebuild the RS slot's CPU context for the loaded entry — the same
