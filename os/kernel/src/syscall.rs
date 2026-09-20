@@ -2662,17 +2662,6 @@ fn dispatch_diagctl(
             const DIAGBUFSIZE: usize = 128;
 
             let len = diag_msg.len as usize;
-            // TEMP-DEBUG: head-of-arm probe.
-            {
-                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-                Console::write_str("TEMP code1: code=");
-                Console::write_hex(diag_msg.code as u64);
-                Console::write_str(" buf=");
-                Console::write_hex(diag_msg.buf);
-                Console::write_str(" len=");
-                Console::write_hex(diag_msg.len as u64);
-                Console::write_str("\n");
-            }
             if len > DIAGBUFSIZE {
                 return KcallResult::Ok(E2BIG);
             }
@@ -2719,32 +2708,14 @@ fn dispatch_diagctl(
             }
         };
 
-            {
-                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-                Console::write_str("TEMP d1 cr3=");
-                Console::write_hex(caller_cr3.0);
-                Console::write_str(" buf=");
-                Console::write_hex(diag_msg.buf);
-                Console::write_str(" dstphys=");
-                Console::write_hex(dst_phys.0);
-                Console::write_str("\n");
-            }
             let src = AddressRef::Process {
                 endpoint: caller_endpt,
                 offset: VirBytes(diag_msg.buf),
             };
             let dst = AddressRef::Physical(dst_phys);
-            {
-                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-                Console::write_str("TEMP d2 pre-copy\n");
-            }
 
             match data_copy_vmcheck(caller_nr, proc_table, src, dst, len, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {
-                    {
-                        use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-                        Console::write_str("TEMP d3 copied\n");
-                    }
                     // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
                     // the kmess ring is the C kputc accumulation half —
                     // record here so the IS `kmessages_dmp` replay
