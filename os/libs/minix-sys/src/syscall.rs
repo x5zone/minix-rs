@@ -753,6 +753,60 @@ pub fn sys_diagctl_write(transport: &impl KernelCallTransport, text: &str) -> Re
     sys_diagctl(transport, 1, text.as_ptr() as u64, text.len() as i32)
 }
 
+/// SYS_DEVIO 请求字节的 I/O 方向与宽度位（C: com.h:283/:287
+/// `_DIO_INPUT=0x001`/`_DIO_OUTPUT=0x002`/`_DIO_BYTE=0x010`；
+/// kernel `IoDirection`/`IoSize` 的 `from_request_mask` 按同值解码）。
+pub const _DIO_INPUT: i32 = 0x001;
+/// C: `com.h:283` `_DIO_OUTPUT`。
+pub const _DIO_OUTPUT: i32 = 0x002;
+/// C: `com.h:287` `_DIO_BYTE`。
+pub const _DIO_BYTE: i32 = 0x010;
+
+/// SYS_DEVIO 字节输出：向硬件端口写一个字节（C: libsys syslib.h:217
+/// `sys_outb(p,v) = sys_out(p, v, _DIO_BYTE)`）。端口可达性由内核
+/// `do_devio` 的 CHECK_IO_PORT 门裁决——调用方特权无 CHECK_IO_PORT
+/// 标志时放行（C system.conf tty 服务 `io ALL` 即此形态：驱动从不
+/// 持有 IOPL，port I/O 一律内核中转）。
+pub fn sys_outb(transport: &impl KernelCallTransport, port: u16, value: u8) -> Result<(), i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局
+        //（kernel/src/syscall_device.rs dispatch_devio：request/port/value；
+        // C ipc.h mess_lsys_krn_sys_devio）。
+        let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
+        devio.request = _DIO_OUTPUT | _DIO_BYTE;
+        devio.port = i32::from(port);
+        devio.value = u32::from(value);
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_DEVIO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    Ok(())
+}
+
+/// SYS_DEVIO 字节输入：从硬件端口读一个字节（C: libsys syslib.h
+/// `sys_inb(p, v*)` 的同族封装；回值载荷 `mess_krn_lsys_sys_devio`，
+/// value@0——kernel `dispatch_devio` Input 臂回填同一槽位）。
+pub fn sys_inb(transport: &impl KernelCallTransport, port: u16) -> Result<u8, i32> {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_devio 是 SYS_DEVIO 的文档化载荷布局
+        //（kernel/src/syscall_device.rs dispatch_devio；C ipc.h
+        // mess_lsys_krn_sys_devio）。
+        let devio = unsafe { &mut msg.m_u.m_lsys_krn_sys_devio };
+        devio.request = _DIO_INPUT | _DIO_BYTE;
+        devio.port = i32::from(port);
+    }
+    let reply = perform_kernel_call(transport, minix_types::SYS_DEVIO, &mut msg, |_| {});
+    if reply < 0 {
+        return Err(reply);
+    }
+    // SAFETY: 回值在 MessKrnLsysSysDevio.value（偏移 0）——kernel
+    // dispatch_devio Input 臂写回同一 variant（对位注释见 :506 附近）。
+    Ok(unsafe { msg.m_u.m_krn_lsys_sys_devio.value } as u8)
+}
+
 /// SYS_SETALARM：设置（或取消）闹钟并取回旧闹钟信息（C: libsys
 /// `sys_setalarm2`；kernel `dispatch_setalarm` 读/写
 /// `m_lsys_krn_sys_setalarm`——请求 exp_time/abs_time，应答 time_left/
@@ -1691,6 +1745,52 @@ mod tests {
         // SAFETY(test):读回载荷臂核对 endpt 字段。
         let d = unsafe { sent[0].m_u.m_lsys_krn_sys_diagctl };
         assert_eq!((d.code, d.endpt), (2, 9));
+    }
+
+    /// SYS_DEVIO outb 回放:请求字 `_DIO_OUTPUT|_DIO_BYTE` + 端口/值。
+    #[test]
+    fn test_sys_outb_encodes_devio_wire() {
+        let mut canned = CannedKernelCallTransport::new();
+        canned.reply(0);
+
+        let r = sys_outb(&canned, 0x3F8, 0x61);
+
+        assert_eq!(r, Ok(()));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_DEVIO);
+        // SAFETY(test):读回载荷臂核对 request/port/value。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
+        assert_eq!(d.request, _DIO_OUTPUT | _DIO_BYTE);
+        assert_eq!(d.port, 0x3F8);
+        assert_eq!(d.value, 0x61);
+    }
+
+    /// SYS_DEVIO inb 回放:请求字 `_DIO_INPUT|_DIO_BYTE`，回值取自
+    /// `mess_krn_lsys_sys_devio` value@0（kernel dispatch_devio Input 臂
+    /// 回填同一槽位）；errno 回复走 Err 车道。
+    #[test]
+    fn test_sys_inb_decodes_reply_value() {
+        let mut canned = CannedKernelCallTransport::new();
+        let mut reply = Message::default();
+        reply.m_type = 0;
+        // SAFETY(test):构造应答臂镜像内核回填(syscall_device.rs Input 臂)。
+        let arm = unsafe { &mut reply.m_u.m_krn_lsys_sys_devio };
+        arm.value = 0x20;
+        canned.reply_message(reply);
+
+        let r = sys_inb(&canned, 0x3FD); // COM1 LSR
+        assert_eq!(r, Ok(0x20));
+        let sent = canned.sent.borrow();
+        assert_eq!(sent[0].m_type, minix_types::SYS_DEVIO);
+        // SAFETY(test):读回请求臂核对方向/宽度/端口。
+        let d = unsafe { sent[0].m_u.m_lsys_krn_sys_devio };
+        assert_eq!(d.request, _DIO_INPUT | _DIO_BYTE);
+        assert_eq!(d.port, 0x3FD);
+
+        // errno 回复(EPERM=-1):白名单拒绝(C do_devio.c:55 EPERM)。
+        let mut denied = CannedKernelCallTransport::new();
+        denied.reply(-minix_types::EPERM);
+        assert_eq!(sys_inb(&denied, 0x3FD), Err(-minix_types::EPERM));
     }
 
     /// SYS_SETALARM 回放:请求 exp/abs + 应答臂 time_left/uptime。

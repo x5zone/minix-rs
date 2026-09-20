@@ -7,20 +7,15 @@
 //! lines program the serial chip, pseudo slaves move bytes to the master
 //! side; this trait keeps the line policy above those details.
 //!
-//! Real console backend: not landed, registered as a gap. A line hands
-//! output to a backend by *count* (`dev_write` takes a size, and the write
-//! hook hands out counts too), and a terminal line keeps no output byte
-//! buffer — only the input side has a ring; the output side records
-//! readability. So no backend has bytes to emit yet; wiring the physical
-//! copy is the prerequisite. Among the candidate output faces the serial
-//! port is unreachable from a driver (no port read/write wrapper, and the
-//! I/O-range privilege is reserved to the system process), the video-text
-//! mapping is permitted for this endpoint but needs a live memory server
-//! plus the byte copy, and the kernel diagnostic seam is QEMU-visible but
-//! is a debug channel, not the terminal data path. Until the byte pipeline
-//! exists, the null and loop backends below stay the honest stand-ins. See
-//! the reachability inventory in
-//! `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/06-tty-driver.md`.
+//! Output byte pipeline (NL1 批B): [`LineBackend::write_bytes`] carries the
+//! actual bytes from the writer's grant to the device, mirroring the C
+//! data plane where the device hook drains the parked write request
+//! (`tty_devwrite` pulling from `tp->tty_outgrant` through
+//! `sys_vircopy`). The count-only [`LineBackend::dev_write`] stays as the
+//! readiness seam the chardriver face answers with; the serial backend
+//! below implements the byte lane, the video-text face (C console.c:963
+//! `vm_map_phys`) remains registered until a display-visible acceptance
+//! harness exists.
 
 /// Device behavior below one terminal line.
 ///
@@ -37,6 +32,16 @@ pub trait LineBackend {
     /// Push bytes toward the device (returns bytes accepted).
     fn dev_write(&mut self, count: usize) -> usize {
         let _ = count;
+        0
+    }
+
+    /// Push actual output bytes into the device (returns bytes accepted).
+    ///
+    /// C: the drain half of `tty_devwrite` — the device takes what it can
+    /// from the caller's bytes and reports the moved count. Default: accept
+    /// nothing, so backends that only model counts behave as before.
+    fn write_bytes(&mut self, bytes: &[u8]) -> usize {
+        let _ = bytes;
         0
     }
 
@@ -108,6 +113,13 @@ impl LineBackend for LoopBackend {
         let room = self.capacity.saturating_sub(self.buffer.len());
         let accepted = count.min(room);
         self.buffer.extend(core::iter::repeat_n(0, accepted));
+        accepted
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) -> usize {
+        let room = self.capacity.saturating_sub(self.buffer.len());
+        let accepted = bytes.len().min(room);
+        self.buffer.extend_from_slice(&bytes[..accepted]);
         accepted
     }
 

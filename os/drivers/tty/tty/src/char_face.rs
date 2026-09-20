@@ -57,6 +57,26 @@ impl<B: LineBackend> TtyDriver<B> {
             LineId::Video => None,
         }
     }
+
+    /// The write byte lane: actual bytes from the writer's grant reach
+    /// the device here (NL1 批B pipeline).
+    ///
+    /// C: `do_write` parks the request and `tty_devwrite` drains the
+    /// caller's bytes through the device hook; the framework replies with
+    /// the moved count. The count-only [`CharDriver::write`] stays as the
+    /// readiness seam; this method is the data path the service feeds.
+    pub fn write_bytes(&mut self, minor: u32, bytes: &[u8]) -> Result<usize, Errno> {
+        let Some(slot) = self.slot(minor) else {
+            return Err(Errno::from_i32(minix_types::ENXIO));
+        };
+        // C: do_write.c:553-556 — `if (size <= 0) return EINVAL`.
+        if bytes.is_empty() {
+            return Err(Errno::from_i32(minix_types::EINVAL));
+        }
+        let accepted = self.backend.write_bytes(bytes);
+        self.sessions[slot].note_output(accepted < bytes.len(), accepted < bytes.len());
+        Ok(accepted)
+    }
 }
 
 impl<B: LineBackend> CharDriver for TtyDriver<B> {

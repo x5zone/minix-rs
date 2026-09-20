@@ -20,6 +20,7 @@ pub mod char_face;
 pub mod input;
 pub mod keyboard;
 pub mod line;
+pub mod serial;
 pub mod session;
 pub mod service;
 pub mod termios;
@@ -40,10 +41,17 @@ pub fn new_service<B: LineBackend>(backend: B) -> TtyService<B> {
     TtyService::new(TtyDriver::new(LINE_SLOTS, CONSOLE_LINE, backend))
 }
 
-/// Service initialization entry: the wired line table over the null
-/// backend (an unplugged terminal). A real boot picks the console/serial
-/// backend; the transport and birth handshake stay in the binary.
-pub fn init() -> TtyService<NullBackend> {
+/// Service initialization entry: the wired line table over the COM1
+/// serial output face (OQ-N3 裁决方案 B — /dev/console drains to the
+/// UART through kernel-mediated SYS_DEVIO; the video-text backend stays
+/// registered until a display-visible acceptance harness exists).
+pub fn init() -> TtyService<serial::SerialBackend<serial::WireUart>> {
+    new_service(serial::SerialBackend::com1())
+}
+
+/// Service initialization over the null backend (an unplugged terminal),
+/// kept for tests and for a boot that carries no UART.
+pub fn init_null() -> TtyService<NullBackend> {
     new_service(NullBackend)
 }
 
