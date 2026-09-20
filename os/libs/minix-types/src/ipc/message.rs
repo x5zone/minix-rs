@@ -2314,33 +2314,53 @@ impl Default for MessLcVmBrk {
 /// int prot; int flags; int fd; endpoint_t forwhom; void *retaddr;
 /// u32_t padding[5]; }` (minix3/minix/include/minix/ipc.h:1582-1592).
 ///
-/// Wire layout follows the 32-bit C sender (libc `minix_mmap_for`, libc/sys/mmap.c):
-/// `offset` is 64-bit at payload offset 0; the remaining fields are 32-bit on
-/// the wire (`size_t`/`void*`/`int`/`endpoint_t` are 4 bytes on i386). The
-/// 64-bit Rust receiver zero-extends the 32-bit fields. `retaddr` is the reply
-/// field the kernel echoes back to libc after a successful map.
+/// **64-bit overlay wire (same decision as `m_vm_pagefault`, 02-stage-vm
+/// doc 16 §3.4; `m_vmmcp_reply`, edge E-VMMCPWIRE; tracked as edge NS5-A)**:
+/// C pins every message payload to 56 bytes (`_ASSERT_MSG_SIZE`,
+/// ipcconst.h:17-19), and that assert only compiles on i386 — with LP64
+/// pointers the same field list is 72 bytes. Minix3 therefore never had a
+/// 64-bit `mess_mmap` to copy: its userspace could not produce a VA above
+/// 4 GiB. minix-rs userspace is LP64 — the exec stack top lives at
+/// `0x7fff_ffff_f000` — so the `addr`/`len`/`retaddr` lanes carry honest
+/// 64-bit values; a u32 lane silently truncates every stack mapping. Field
+/// order and semantics stay 1:1 with the C header, and the 56-byte payload
+/// size (kernel IPC copy invariant) is preserved: the C i386 layout spent
+/// the width on `padding[5]`, this layout spends it on the pointer lanes.
+///
+/// Wire layout: `offset` @0 (u64), `addr` @8 (u64), `len` @16 (u64),
+/// `prot` @24, `flags` @28, `fd` @32, `forwhom` @36, `retaddr` @40 (u64),
+/// padding @48..56. `retaddr` doubles as the reply field: C's VM writes the
+/// chosen address back into the same overlay (`mmap_reply.m_mmap.retaddr`,
+/// servers/vm/mmap.c:191/:276), so request and reply share one lane map.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct MessMmap {
     /// File offset. C: `mess_mmap.offset` (payload offset 0)
     pub offset: u64,
-    /// Requested address hint. C: `mess_mmap.addr` (payload offset 8)
-    pub addr: u32,
-    /// Mapping length in bytes. C: `mess_mmap.len` (payload offset 12)
-    pub len: u32,
-    /// Protection flags (PROT_*). C: `mess_mmap.prot` (payload offset 16)
+    /// Requested address hint. C: `mess_mmap.addr` (payload offset 8;
+    /// 64-bit on the x86_64 wire — a u32 here truncates the exec stack
+    /// mapping at `0x7fff_ffff_f000`).
+    pub addr: u64,
+    /// Mapping length in bytes. C: `mess_mmap.len` (payload offset 16;
+    /// 64-bit on the x86_64 wire).
+    pub len: u64,
+    /// Protection flags (PROT_*). C: `mess_mmap.prot` (payload offset 24)
     pub prot: i32,
-    /// Mapping flags (MAP_*). C: `mess_mmap.flags` (payload offset 20)
+    /// Mapping flags (MAP_*). C: `mess_mmap.flags` (payload offset 28)
     pub flags: i32,
-    /// File descriptor, -1 for anonymous. C: `mess_mmap.fd` (payload offset 24)
+    /// File descriptor, -1 for anonymous. C: `mess_mmap.fd` (payload offset 32)
     pub fd: i32,
-    /// Target endpoint for MAP_THIRDPARTY. C: `mess_mmap.forwhom` (payload offset 28)
+    /// Target endpoint for MAP_THIRDPARTY. C: `mess_mmap.forwhom` (payload offset 36)
     pub forwhom: i32,
-    /// Reply: mapped address. C: `mess_mmap.retaddr` (payload offset 32)
-    pub retaddr: u32,
+    /// Reply: mapped address. C: `mess_mmap.retaddr` (payload offset 40;
+    /// 64-bit on the x86_64 wire — written by VM on success, C
+    /// servers/vm/mmap.c:276).
+    pub retaddr: u64,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 20],
+    pub _padding: [u8; 8],
 }
+
+const _: () = assert!(core::mem::size_of::<MessMmap>() == 56);
 
 /// VFS-initiated file mapping payload (VFS → VM).
 ///

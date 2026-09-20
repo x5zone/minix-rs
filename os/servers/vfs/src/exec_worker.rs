@@ -27,13 +27,12 @@
 //!   `if (!execi->is_dyn) return OK`（exec.c:417-419）——静态帧原样过山。
 //! * `vmfd` 直映射路（exec.c:316-335）不设：C 本就以 `read_seg` 分段读为
 //!   兜底路（25-exec.md §4.3"装载有路"不变量），行为等价、吞吐另计。
-//! * **已登记的线宽缺陷**：`MessMmap.addr/len` 是 u32（payload @8/@12），
-//!   C `mess_mmap`（ipc.h:1583-1593）是 `void *addr; size_t len` 的 LP64
-//!   8 字节域，还有结构内 `retaddr` 回程域——两端都在 minix-rs 内自洽
-//!   （VM `VmMmapIn::decode_message` 读同一臂），但 4 GiB 以上的栈顶
-//!   （`user_sp = 0x7fff_ffff_f000` 一族）会在这一臂上截断。段装载的
-//!   典型 vaddr（< 4 GiB）不受影响；**栈映射截断是 T2 真机半的已登记
-//!   阻塞位**（new_edge3 新登记 NS5-A），随线宽批统一修，本条目不代改。
+//! * `VM_MMAP` 载荷走 `MessMmap` 的 64 位车道（NS5-A 已修，曾经是 u32 截
+//!   断阻塞位）：C `mess_mmap`（ipc.h:1583-1593）受 56 字节载荷断言约束
+//!   只有 i386 形态（addr/len/retaddr 32 位），LP64 下同一字段表 72 字节
+//!   断言必炸——minix-rs 用户态是 LP64（栈顶 `0x7fff_ffff_f000` 一族），
+//!   线载诚实 64 位值，与 `m_vm_pagefault`/E-VMMCPWIRE 同一裁决。车道图
+//!   单点权威在 minix-types `MessMmap` 注释。
 
 extern crate alloc;
 
@@ -377,8 +376,8 @@ where
 
     // ── 栈分配（exec_elf.c:308-313 的 `allocmem_ondemand(stacklow,
     // stack_size)`；execi.stack_high/stack_size 的页整，exec_elf.c:156-158）。
-    // ⚠ 4 GiB 以上栈顶在 MessMmap 的 u32 addr 臂上截断——模块头注记的
-    // NS5-A 已登记线宽缺陷，随线宽批修。
+    // 栈顶 0x7fff_ffff_f000 一族 > 4 GiB：VM_MMAP 的 NS5-A 64 位车道
+    // 承载，无截断（u32 臂时代这里是真机阻塞位）。
     let stack_high_paged = req.stack_high - req.stack_high % PAGE_SIZE;
     let stack_size_paged = roundup(exec::DEFAULT_STACK_LIMIT, PAGE_SIZE);
     let stacklow = stack_high_paged - stack_size_paged;
@@ -862,11 +861,9 @@ where
 }
 
 /// `VM_MMAP` 的 ANON 分配（`minix_mmap_for` 的 VM_MMAP 腿；m_mmap 联合臂
-/// 布局与 VM 侧 `VmMmapIn::decode_message` 对偶）。
-///
-/// ⚠ `MessMmap.addr/len` 是 u32 臂（见模块头 NS5-A 注记）：4 GiB 以上地址
-/// 在此截断——已登记的线宽缺陷，段装载典型 vaddr 不受影响，栈映射是 T2
-/// 真机半的阻塞位。
+/// 布局与 VM 侧 `VmMmapIn::decode_message` 对偶）。地址/长度走 NS5-A 的
+/// 64 位车道——C 头是 i386 指针宽（56 字节断言在 LP64 必炸），minix-rs
+/// 用户态是 LP64，栈顶 0x7fff_ffff_f000 一族只有 64 位车道装得下。
 fn vm_mmap<T: IpcTransport>(
     ipc: &T,
     forwhom: Endpoint,
@@ -884,8 +881,8 @@ fn vm_mmap<T: IpcTransport>(
         // `VmMmapIn::decode_message` 读同一臂；C ipc.h:1583-1593）。
         let m = unsafe { &mut msg.m_u.m_mmap };
         m.offset = 0;
-        m.addr = addr as u32;
-        m.len = len as u32;
+        m.addr = addr;
+        m.len = len;
         m.prot = prot as i32;
         m.flags = (map_flags::ANON | map_flags::FIXED | extra_flags) as i32;
         m.fd = -1;
@@ -1062,12 +1059,15 @@ mod tests {
     /// 脚本化 IPC：按对端 m_type 落 canned 回复，并记录全部 sendrec。
     struct ExecScriptedIpc {
         sent: core::cell::RefCell<Vec<(Endpoint, i32)>>,
+        /// VM 端 sendrec 的完整消息快照（NS5-A 车道 pin 用）。
+        vm_sent: core::cell::RefCell<Vec<Message>>,
     }
 
     impl ExecScriptedIpc {
         fn new() -> Self {
             Self {
                 sent: core::cell::RefCell::new(Vec::new()),
+                vm_sent: core::cell::RefCell::new(Vec::new()),
             }
         }
         fn types_of(&self, e: Endpoint) -> Vec<i32> {
@@ -1093,6 +1093,9 @@ mod tests {
         }
         fn sendrec(&self, d: Endpoint, m: &mut Message) -> Result<(), minix_sys::ipc::TrapStatus> {
             let ty = m.m_type;
+            if d == Endpoint::VM {
+                self.vm_sent.borrow_mut().push(*m);
+            }
             self.sent.borrow_mut().push((d, ty));
             m.m_type = match (d, ty) {
                 // VM 两路：清除与分配都成功。
@@ -1182,6 +1185,40 @@ mod tests {
             .filter(|m| m.m_type == minix_types::SYS_MEMSET)
             .count();
         assert_eq!(memsets, 1, "tail clear only (vaddr page-aligned)");
+    }
+
+    /// NS5-A 车道 pin：栈映射的 VM_MMAP 请求在 64 位车道上承载 >4 GiB
+    /// 栈顶，且 VM 侧 `VmMmapIn::decode_message`（真 wire 上 VM 跑的同一
+    /// 解码）原样取回——u32 臂时代这里静默截断（T2 真机阻塞位，已修）。
+    #[test]
+    fn test_vm_mmap_stack_lanes_carry_above_4gib() {
+        let ipc = ExecScriptedIpc::new();
+        // 缺省栈顶 0x7fff_ffff_f000 − DEFAULT_STACK_LIMIT(4 MiB)，页整。
+        let stack_low = 0x7fff_ffff_f000 - exec::DEFAULT_STACK_LIMIT;
+        assert_eq!(stack_low % PAGE_SIZE, 0);
+        assert!(stack_low > 4 * 1024 * 1024 * 1024);
+        vm_mmap(
+            &ipc,
+            Endpoint(5),
+            stack_low,
+            exec::DEFAULT_STACK_LIMIT,
+            0,
+            PROT_RWX,
+        )
+        .expect("stack mmap succeeds on canned VM");
+        let sent = ipc.vm_sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, minix_types::VM_MMAP as i32);
+        // 发送臂写哪条车道，decode_message（VM 真机同一解码）就从哪条读。
+        let req = minix_types::VmMmapIn::decode_message(&sent[0]);
+        assert_eq!(req.addr.0, stack_low);
+        assert_eq!(req.length.0, exec::DEFAULT_STACK_LIMIT);
+        assert_eq!(req.forwhom, Endpoint(5));
+        assert_eq!(req.prot, PROT_RWX);
+        assert_eq!(req.flags, map_flags::ANON | map_flags::FIXED);
+        assert_eq!(req.fd, -1);
+        // 截断回归钉：旧 u32 臂会把请求写坏成低 32 位。
+        assert_ne!((stack_low as u32) as u64, stack_low);
     }
 
     /// 线形状②：PM_EXEC_NEW 载荷与裁决回程（exec_general.c:78-90）。

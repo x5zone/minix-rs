@@ -888,7 +888,9 @@ impl VmMunmapIn {
     /// VM_MUNMAP, mmap.c:518-525) and the payload from the dedicated
     /// `m_mmap` union member, matching the C wire format as sent by libc
     /// `munmap()` (`m.VMUM_ADDR = addr; m.VMUM_LEN = len;`,
-    /// libc/sys/mmap.c:79-86): `addr` (u32 @ 8), `len` (u32 @ 12).
+    /// libc/sys/mmap.c:79-86, lanes aliased to `mess_mmap.addr/len`).
+    /// The `addr`/`len` lanes are 64-bit — same overlay decision as
+    /// `VmMmapIn` (see `MessMmap`, edge NS5-A).
     ///
     /// Do NOT decode from `MessageM1` — same wire-format family as
     /// 19-P1-1 / 16-P0-1 / 20-P1-1 (the old M1 decode read the endpoint
@@ -900,8 +902,8 @@ impl VmMunmapIn {
         let mm = unsafe { msg.m_u.m_mmap };
         Self {
             endpoint: msg.m_source,
-            addr: VirBytes(mm.addr as u64),
-            length: VirBytes(mm.len as u64),
+            addr: VirBytes(mm.addr),
+            length: VirBytes(mm.len),
         }
     }
 }
@@ -1002,10 +1004,11 @@ impl VmMmapIn {
     /// Decode a `VM_MMAP` request (user process → VM).
     ///
     /// Reads `caller` from `m_source` (kernel-set, spoof-proof) and the
-    /// payload from the dedicated `m_mmap` union member, matching the C
-    /// wire format (`mess_mmap`, ipc.h:1582-1592) as sent by libc
-    /// `minix_mmap_for` (libc/sys/mmap.c): `offset` (u64 @ 0), `addr`,
-    /// `len`, `prot`, `flags`, `fd`, `forwhom` as 32-bit fields.
+    /// payload from the dedicated `m_mmap` union member. Field order is
+    /// C's (`mess_mmap`, ipc.h:1582-1592, as sent by libc `minix_mmap_for`,
+    /// libc/sys/mmap.c); the `addr`/`len` lanes are 64-bit — the C header
+    /// only compiles at 56-byte payload size on i386 and minix-rs userspace
+    /// is LP64 (see `MessMmap`, edge NS5-A).
     ///
     /// Do NOT decode from `MessageM1` — the real libc sender memsets the
     /// message and writes the fields at the union payload offsets, so the
@@ -1018,8 +1021,8 @@ impl VmMmapIn {
         Self {
             caller: msg.m_source,
             forwhom: Endpoint(mm.forwhom),
-            addr: VirBytes(mm.addr as u64),
-            length: VirBytes(mm.len as u64),
+            addr: VirBytes(mm.addr),
+            length: VirBytes(mm.len),
             prot: mm.prot as u32,
             flags: mm.flags as u32,
             fd: mm.fd,
@@ -1052,7 +1055,30 @@ impl VmMapPhysIn {
     }
 }
 
+impl VmMmapOut {
+    /// Encode the user-facing `VM_MMAP` reply: the chosen address goes back
+    /// in the same `m_mmap` overlay's `retaddr` lane, which is where C's VM
+    /// writes it (`m->m_mmap.retaddr = (void *) vr->vaddr`,
+    /// servers/vm/mmap.c:276; file-backed continuation :191) and where libc
+    /// `minix_mmap_for` reads it (`return m.m_mmap.retaddr`,
+    /// libc/sys/mmap.c:44-45). Not an M1 slot — the M1 pointer lanes end at
+    /// `m1p3` (@32..40) — hence a dedicated overlay encoder instead of
+    /// `EncodeToM1` (edge NS5-A; the old m1p1 form was the reply-lane half
+    /// of the mmap_via scramble).
+    pub fn encode_message(&self, msg: &mut Message) {
+        // SAFETY: `m_mmap` is the active union arm for VM_MMAP replies.
+        let mm = unsafe { &mut msg.m_u.m_mmap };
+        mm.retaddr = self.ret_addr.0;
+    }
+}
+
 impl EncodeToM1 for VmMmapOut {
+    /// VFS-facing `VM_VFS_MMAP` reply variant: C's `do_vfs_mmap` replies
+    /// with the bare return value (mmap.c:135-158 returns `r`; the mapped
+    /// address is already fixed by the request's `vaddr`), so the payload
+    /// slot content is inert — kept on `m1p1` for the existing
+    /// `VmReply::VfsMmap` consumers. The user-facing reply is
+    /// [`VmMmapOut::encode_message`](Self::encode_message).
     fn encode(&self, m1: &mut MessageM1) {
         m1.m1p1 = self.ret_addr.0;
     }
@@ -1221,10 +1247,12 @@ mod tests {
 
     #[test]
     fn test_vm_mmap_in_decode_message() {
-        // C wire format (mess_mmap, ipc.h:1582): offset (u64 @ 0), addr
-        // (u32 @ 8), len (u32 @ 12), prot (i32 @ 16), flags (i32 @ 20),
-        // fd (i32 @ 24), forwhom (i32 @ 28). The old M1 decode zeroed
-        // prot/flags/fd/offset — the regression asserts all fields survive.
+        // Wire format (mess_mmap field order, ipc.h:1582; 64-bit addr/len
+        // lanes per the NS5-A overlay decision — offset u64 @ 0, addr u64
+        // @ 8, len u64 @ 16, prot @ 24, flags @ 28, fd @ 32, forwhom @ 36).
+        // The old M1 decode zeroed prot/flags/fd/offset — the regression
+        // asserts all fields survive; the >4 GiB addr pins the 64-bit lane
+        // (a u32 lane would truncate it).
         use crate::ipc::{MessMmap, Message};
         let mut msg = Message::default();
         msg.m_source = Endpoint::PM;
@@ -1232,7 +1260,7 @@ mod tests {
         unsafe {
             msg.m_u.m_mmap = MessMmap {
                 offset: 0x2000,
-                addr: 0x4000_0000,
+                addr: 0x7fff_fbff_f000,
                 len: 0x3000,
                 prot: 3,
                 flags: 0x1002,
@@ -1244,12 +1272,29 @@ mod tests {
         let req = VmMmapIn::decode_message(&msg);
         assert_eq!(req.caller, Endpoint::PM, "caller must come from m_source");
         assert_eq!(req.forwhom.0, 42);
-        assert_eq!(req.addr.0, 0x4000_0000);
+        assert_eq!(req.addr.0, 0x7fff_fbff_f000);
         assert_eq!(req.length.0, 0x3000);
         assert_eq!(req.prot, 3);
         assert_eq!(req.flags, 0x1002);
         assert_eq!(req.fd, 7);
         assert_eq!(req.offset, 0x2000);
+    }
+
+    #[test]
+    fn test_vm_mmap_out_encodes_overlay_retaddr() {
+        // C's VM writes the chosen address into the same m_mmap overlay's
+        // retaddr lane (servers/vm/mmap.c:276; :191 file-backed), where
+        // libc minix_mmap_for reads it back (libc/sys/mmap.c:44-45) — not
+        // an M1 slot (edge NS5-A).
+        use crate::ipc::{Message, VmMmapOut};
+        let mut msg = Message::default();
+        VmMmapOut {
+            ret_addr: VirBytes(0x7fff_fbff_f000),
+        }
+        .encode_message(&mut msg);
+        // SAFETY: VM_MMAP replies carry the m_mmap arm.
+        let mm = unsafe { msg.m_u.m_mmap };
+        assert_eq!(mm.retaddr, 0x7fff_fbff_f000);
     }
 
     #[test]
@@ -1322,7 +1367,7 @@ mod tests {
         unsafe {
             msg.m_u.m_mmap = MessMmap {
                 offset: 0xDEAD_BEEF, // must be ignored
-                addr: 0x1000,
+                addr: 0x7fff_fbff_f000, // >4 GiB — pins the 64-bit lane
                 len: 0x2000,
                 ..MessMmap::default()
             };
@@ -1332,7 +1377,7 @@ mod tests {
             req.endpoint, msg.m_source,
             "endpoint must come from m_source"
         );
-        assert_eq!(req.addr.0, 0x1000);
+        assert_eq!(req.addr.0, 0x7fff_fbff_f000);
         assert_eq!(req.length.0, 0x2000);
     }
 
