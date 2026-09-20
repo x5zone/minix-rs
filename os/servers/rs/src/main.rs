@@ -28,6 +28,21 @@ fn main() {
         let tables = BootTables::acquire_from(&minix_sys::syscall::DirectKernelCallTransport)
             .unwrap_or_else(|e| panic!("RS boot: sys_getimage failed: errno {e}"));
 
+        // C main.c:171 — env_parse("rs_verbose", "d", 0, &rs_verbose, 0, 1)
+        // over the monitor parameters (GET_MONPARAMS → S42 批一真值链)。
+        // verbose 带来的 printf 增量在 C 遍布 rs_verbose 门控点；Rust 侧
+        // 的消费面随 19/E-11 接线补齐，此处先取真值并经诊断缝确认解析。
+        let mut monparams = [0u8; 1024]; // MULTIBOOT_PARAM_BUF_SIZE — param.h:28
+        let monparams_ok =
+            minix_sys::syscall::sys_getmonparams(&minix_sys::syscall::DirectKernelCallTransport, &mut monparams)
+                .is_ok();
+        let rs_verbose = monparams_ok && crate::boot::parse_rs_verbose(&monparams);
+        if rs_verbose {
+            use minix_sys::syscall::{sys_diagctl, DirectKernelCallTransport};
+            let line = b"RS: running in verbose mode\n";
+            let _ = sys_diagctl(&DirectKernelCallTransport, 1, line.as_ptr() as u64, line.len() as i32);
+        }
+
         let mut server = RsServer::new(tables);
 
         // C: sef_startup() → sef_cb_init_fresh() — main.c:151,158-494.

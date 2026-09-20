@@ -94,7 +94,7 @@
 | edge3 S27 sched 通电 | edge3 | edge3 S7/S10（PM 调度臂）+ edge4 E5(e) | ✅ 2026-09-20（通电半：接收半装 SEF 层 + 参战场景宿主断言，84 passed；真机参战半移交 E5(e)——S7/S10 解锁，PM 侧臂按 sched 消息面契约开工） |
 | edge3 S29 通用 startup 框架 | edge3 | edge3 S30/S31/S25 余件（fs-rt 共享面：生产 FsTransport + RS_INIT 出生 + serve 装配） | ✅ 2026-09-20 卡D（minix-fs-rt；S30/S31/S25-K 可开工） |
 | edge2 L17 G6 波次 1（驱动进程层起步） | edge2（已收线） | T2 交互面（console/键盘）、edge4 E5 真机联调 | ☐ 待认领执行（edge2 线不活跃） |
-| edge3 S42 启动装配（RS init 发送腿 + boot 真值链 + RS boot tab + 全系统载体 + init/rc） | edge3 | edge4 T2/T3；S9（②并入）；C-3/C-27 | ☐ |
+| edge3 S42 启动装配（RS init 发送腿 + boot 真值链 + RS boot tab + 全系统载体 + init/rc） | edge3 | edge4 T2/T3；S9（②并入）；C-3/C-27 | ✅ 2026-09-20 S42 卡（五批：①②③⑤落地——sched 出生应答补全/GET_MONPARAMS+GET_IMAGE 真值链+PM·RS acquire/boot tab 序列+SYNCH_BOOT 计数 P0 修复/boot 参数读取面；④载体半程——test-sysboot 入库+真机确诊 boot loader per-process 栈放置缺口→**C-29 挂账**；真机 rc 链随 T3/T4。五笔提交 8650fb26e…见 edge3 FIXLOG #117-121） |
 | edge1 K9 向量表 | edge1 | edge1 K12b（三架构用户态）、edge4 T5 | ✅ 2026-09-20 复核（edge1.md K9 行：arm64 `exc_vector_table` 16×128B `.align 11` + 4 类 diag stub 已落；K12b 双腿真机 PASS 各 3/3 —— 本行原记 ☐ 系状态板滞后，按 edge1.md 更正） |
 | edge1 K1/K2/K3 SMP 面 | edge1 | edge4 E5(e)/E5 SMP 冒烟 | ✅ 2026-09-20 复核（edge1.md：K1 生产壳读 `try_smp_state`+参数化 `sched_enqueue_with`、K2 环①按 §3.5.3 冻结决策记账、K3 本地臂/IPI 臂缺口中修双设 VMINHIBIT+FLUSH_TLB，三者均 2026-09-18 收口；**E5(e)/E5-SMP 的 edge1 侧前置已清**，只剩真机载体的 edge3 侧条目） |
 

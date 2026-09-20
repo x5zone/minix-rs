@@ -645,6 +645,47 @@ impl<'a> BootTables<'a> {
     }
 }
 
+/// Boot-parameter lookup over the GET_MONPARAMS buffer.
+///
+/// C `env_get_param` 的读半（libsys env_get_prm.c:26-84 的
+/// `find_key` 扫描对位）：参数缓冲是 NUL 分隔的 `key=value` 条目流，
+/// 按条目步进，key 前缀相等且紧跟 `=` 才算命中（strncmp + `'='`
+/// 界定，`env_get_prm.c:73-76`）——`rs_verbose_x=…` 不会命中
+/// `rs_verbose`。返回值切片（`=` 之后、条目 NUL 之前）。
+///
+/// 这是 boot 参数面的读取半：GET_MONPARAMS 由内核 GET_MONPARAMS 臂
+/// 提供（do_getinfo.c:143-146，S42 批一真值链）。pre-VFS 阶段这是
+/// 服务读 boot 参数的唯一通道；`/etc/rc` 等盘上配置面随 T3/T4 通电
+/// 后由 init/RS 同源读取（edge4 §6 OQ-3 裁决）——两条通道同源衔接。
+pub fn find_boot_param<'a>(params: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {
+    let mut envp = params;
+    while let Some(&first) = envp.first() {
+        if first == 0 {
+            break; // C: for (envp = params; *envp != 0;) — NUL 即表尾
+        }
+        let key_matched = envp.len() > key.len()
+            && envp.starts_with(key)
+            && envp[key.len()] == b'=';
+        if key_matched {
+            let rest = &envp[key.len() + 1..];
+            let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+            return Some(&rest[..end]);
+        }
+        // 跳过本条到 NUL（C: while (*envp++ != 0)）；缓冲中途截断
+        // （无 NUL）则无更多条目。
+        let next = envp.iter().position(|&b| b == 0)?;
+        envp = &envp[next + 1..];
+    }
+    None
+}
+
+/// C main.c:171 — `env_parse("rs_verbose", "d", 0, &rs_verbose, 0, 1)`:
+/// RS verbose 开关的 boot 参数解析。env_parse 的 "d" 数值域只认十进制
+/// 串；缺省/解析失败落 0（verbose off），值域 [0,1] 外亦按失败计。
+pub fn parse_rs_verbose(params: &[u8]) -> bool {
+    matches!(find_boot_param(params, b"rs_verbose"), Some(b"1"))
+}
+
 /// Builds a placeholder `BootImage` entry with a padded name.
 const fn boot_img(proc_nr: i32, endpoint: Endpoint, name: &str) -> BootImage {
     let mut proc_name = [0u8; 16];
@@ -2235,6 +2276,46 @@ mod tests {
 
         // VM + non-synch SYS_PROC counted; RS itself is not (main.c:368-394).
         assert_eq!(boot.nr_uncaught_init_srvs, 2);
+    }
+
+    #[test]
+    fn test_find_boot_param_scans_key_value_entries() {
+        // C env_get_prm.c:26-84 find_key —— NUL 分隔 key=value 流的扫描
+        //（mb_set_param pre_init.c:35-63 同一 NUL 条目语义：条目以 NUL
+        // 结尾，末尾双 NUL 收尾）。值在 = 与条目 NUL 之间。
+        let params = *b"processor=2\0rs_verbose=1\0label=rs\0";
+        assert_eq!(find_boot_param(&params, b"processor"), Some(&b"2"[..]));
+        assert_eq!(
+            find_boot_param(&params, b"rs_verbose"),
+            Some(&b"1"[..]),
+            "命中条目取 = 后至 NUL"
+        );
+        assert_eq!(find_boot_param(&params, b"label"), Some(&b"rs"[..]));
+        // 前缀撞车：key 是另一条目的前缀但无 '=' 界定 → 不命中。
+        let prefix_trap = *b"rs_verbose_extra=0\0rs_verbose=1\0";
+        assert_eq!(
+            find_boot_param(&prefix_trap, b"rs_verbose"),
+            Some(&b"1"[..]),
+            "rs_verbose_extra 不拦截，第二条才是命中"
+        );
+        // 值为空、键缺失、空缓冲。
+        assert_eq!(find_boot_param(b"k=\0x=1\0", b"k"), Some(&b""[..]));
+        assert_eq!(find_boot_param(&params, b"missing"), None);
+        assert_eq!(find_boot_param(&[], b"rs_verbose"), None);
+        // 缓冲中途无 NUL：不假装截断成功。
+        assert_eq!(find_boot_param(b"no-terminator", b"no-terminator"), None);
+    }
+
+    #[test]
+    fn test_parse_rs_verbose_matches_c_env_parse() {
+        // C main.c:171 env_parse("rs_verbose","d",0,&rs_verbose,0,1) —
+        // 只有 "1" 打开；缺省/其他值/空值都落 verbose off。
+        assert!(parse_rs_verbose(b"rs_verbose=1\0"));
+        assert!(!parse_rs_verbose(b"rs_verbose=0\0"));
+        assert!(!parse_rs_verbose(b"rs_verbose=\0"), "空值 → off");
+        assert!(!parse_rs_verbose(b"rs_verbose=2\0"), "值域外 → off");
+        assert!(!parse_rs_verbose(b"other=1\0"), "键缺失 → off");
+        assert!(!parse_rs_verbose(&[]), "空缓冲 → off");
     }
 
     /// 批三序列钉（S42 ③）：RS_INIT 的发送次序 = boot tab 表序。C
