@@ -555,7 +555,7 @@ V3 实测清单（`grep 'pub trait' os/servers/pm/src`）：中央 `KernelGatewa
 
 `trace.rs:398-401` 的 `test_constants_match_c` 只断言 18 个常量中恰好正确的 2 个。与 V2 的 TSTL/SBCD 同族但不同形：**测试名声称全面对账（match_c），断言集却恰好规避了所有错误项**。候选模式 CSL（Constants-match Subset Lie）建议：凡名含 `match_c`/`matches_c` 的测试，断言项数量必须与被对账全集一致或显式注释排除理由；检查命令：`rg "fn test_\w*match_c" os/servers/pm/src -A5` 人工核对断言覆盖面。登记状态与 V2 两个候选模式一并待规则集维护轮。
 
-#### 观察 6：`unwrap_or_default()` 凭据模式（✅ 已由 C-28 消解，2026-09-20，Fix #123）
+#### 观察 6：`unwrap_or_default()` 凭据模式（✅ 已由 C-28 消解，2026-09-20，commit fb2a22f51）
 
 `sched.rs`、`trace.rs` 等处曾对 `privilege.credentials()` 用 `.cloned().unwrap_or_default()`：`Privilege::Kernel` 变体不带凭证，取不到时回落全零 = effuid 0 = 超级用户。C-28 已把 `Privilege` 改为 `User(Credentials)` / `Kernel(Credentials)`，`credentials()` 返回 `&Credentials`（不再 `Option`），全仓 `.unwrap_or_default()` 随之消失。原观察担忧的"无凭据隐式映射为 root"脆弱默认已不存在——系统进程的 root 身份现在是 `Kernel(Credentials::default())`（或 srv_fork 的 `Kernel(Credentials::new(uid,gid))`）的**显式构造**，"缺省即 root"从 derivational 副作用升为类型层的显式契约，正是原建议 `effective_uid_or_root()` 想要达成的目标（以更彻底的变体承载方式实现）。
 
@@ -588,11 +588,11 @@ V2 轮（§11.3）已核对 GitLab 源码与迁移提交。V3 轮补充两项 20
 9. **文档对账批（V3-P1-5 + V3-P3-6）**：可与任一等待外部依赖的窗口并行。
 10. 跨阶段部分（E6 清单增补：sys_delay_stop、内核 ksig 对端；E7 增补：PROC_EVENT_REPLY 双址）见 §9.2 与 edge_todo.md，单线程执行。
 
-### 12.7 C-28 回归 review 后续登记（2026-09-21，Fix #123 的审查产物；均**未**在 C-28 commit 内改）
+### 12.7 C-28 回归 review 后续登记（2026-09-21，C-28 commit fb2a22f51 的 review 产物；均**未**在 C-28 commit 内改）
 
 C-28 把 srv_fork 子从 `Privilege::User` 翻正为 `Privilege::Kernel`，使其进入既有的系统进程代码路径，暴露/扩大了以下三条**既有**欠账（非本次引入的回归，登记待后续，不塞进 C-28）：
 
-1. **[P1，待专项] `signal.rs` 的 ksig 系统信号支路是 stub（signal.rs:313-319）**——`sig_send` 对 `is_kernel_process()` 且 `ksig==true` 的信号：`is_stacktrace` 支（313-315）仅 `let _ = target;`，`!is_termination` 支（316-319）注释声称发 `SIGS_SIGNAL_RECEIVED` 实为丢弃。C 锚点 `signal.c:467-472`（`asynsend3(rmp->mp_endpoint, SIGS_SIGNAL_RECEIVED, AMF_NOREPLY)`）；消费方 `os/libs/minix-sef/src/lib.rs:54-55`（`SEF_SIGNAL_REQUEST_TYPE = SIGS_SIGNAL_RECEIVED`）确实等这条消息。注：用户 `kill` 走 `!ksig` 支（305-311，Fix #50 已接 `sys_kill`），故此项专指**内核态来信号**的系统进程投递。修法：接 `sys_diagctl_stacktrace` + 异步发 `SIGS_SIGNAL_RECEIVED`；若内核 ksig 回环未接线，至少改掉与行为不符的注释。**本轮侦察：非单点可修**——`KernelGateway` trait 现无 `sys_diagctl_stacktrace`（只有 `sys_kill`/`sys_trace`/`sys_sigsend` 等），stacktrace 半需扩这层共享 trait；`SIGS_SIGNAL_RECEIVED` 的异步无回复发送也需 transport 侧 plumbing。属跨模块改动，留待信号链专项（与 §12.6 批次 H「内核信号入口」合流），不在本次 C-28 后续 commit 内强塞。
-2. **[P2] ✅已修（Fix #125）`mproc/wire.rs` `flags_for()` 不 emit `PRIV_PROC`（wire.rs:68-108）**——逐位合成 13 个 `mp_flags` 唯独缺 `PRIV_PROC`，致 MIB 快照里 Kernel/User 两类进程不可区分（下游 `os/servers/mib/src/proc/minix_proc_exec.rs:178` 用 `mflags & PRIV_PROC` 判 SYSTEM）。既有缺口，C-28 把凭证统一入 wire 后更显眼。修法：`if p.resources.privilege.is_kernel() { flags |= mp_flags::PRIV_PROC; }` + 给 `flags_for` 补 Kernel 槽钉值测试。
-3. **[P2] ✅已修（Fix #125）`07-pm-fork.md:180`「Kernel → User(root)」陈述在 C-28 新场景下失效**——该文称普通 fork 对特权父落 `User(root)`；C-28 后 `fork_from` 落 `User(父凭证.clone())`，boot 服务凭证全零故仍等价 root，但 **srv_fork 子（Kernel + 非零注入凭证）再普通 fork，孙继承的是注入 uid 而非 root**（`forkexit.c:87` whole-copy 的正确行为）。修法：改为「`Privilege::Kernel → User(父凭证)` + `scheduler=SCHED`」，注明 boot 服务凭证全零故等价 root。
+1. **[P1，待专项] `signal.rs` 的 ksig 系统信号支路是 stub（signal.rs:313-319）**——`sig_send` 对 `is_kernel_process()` 且 `ksig==true` 的信号：`is_stacktrace` 支（313-315）仅 `let _ = target;`，`!is_termination` 支（316-319）注释声称发 `SIGS_SIGNAL_RECEIVED` 实为丢弃。C 锚点 `signal.c:467-472`（`asynsend3(rmp->mp_endpoint, SIGS_SIGNAL_RECEIVED, AMF_NOREPLY)`）；消费方 `os/libs/minix-sef/src/lib.rs:54-55`（`SEF_SIGNAL_REQUEST_TYPE = SIGS_SIGNAL_RECEIVED`）确实等这条消息。注：用户 `kill` 走 `!ksig` 支（305-311，早前已接 `sys_kill`），故此项专指**内核态来信号**的系统进程投递。修法：接 `sys_diagctl_stacktrace` + 异步发 `SIGS_SIGNAL_RECEIVED`；若内核 ksig 回环未接线，至少改掉与行为不符的注释。**本轮侦察：非单点可修**——`KernelGateway` trait 现无 `sys_diagctl_stacktrace`（只有 `sys_kill`/`sys_trace`/`sys_sigsend` 等），stacktrace 半需扩这层共享 trait；`SIGS_SIGNAL_RECEIVED` 的异步无回复发送也需 transport 侧 plumbing。属跨模块改动，留待信号链专项（与 §12.6 批次 H「内核信号入口」合流），不在本次 C-28 后续 commit 内强塞。
+2. **[P2] ✅已修（commit 56683b497）`mproc/wire.rs` `flags_for()` 不 emit `PRIV_PROC`（wire.rs:68-108）**——逐位合成 13 个 `mp_flags` 唯独缺 `PRIV_PROC`，致 MIB 快照里 Kernel/User 两类进程不可区分（下游 `os/servers/mib/src/proc/minix_proc_exec.rs:178` 用 `mflags & PRIV_PROC` 判 SYSTEM）。既有缺口，C-28 把凭证统一入 wire 后更显眼。修法：`if p.resources.privilege.is_kernel() { flags |= mp_flags::PRIV_PROC; }` + 给 `flags_for` 补 Kernel 槽钉值测试。
+3. **[P2] ✅已修（commit 56683b497）`07-pm-fork.md:180`「Kernel → User(root)」陈述在 C-28 新场景下失效**——该文称普通 fork 对特权父落 `User(root)`；C-28 后 `fork_from` 落 `User(父凭证.clone())`，boot 服务凭证全零故仍等价 root，但 **srv_fork 子（Kernel + 非零注入凭证）再普通 fork，孙继承的是注入 uid 而非 root**（`forkexit.c:87` whole-copy 的正确行为）。修法：改为「`Privilege::Kernel → User(父凭证)` + `scheduler=SCHED`」，注明 boot 服务凭证全零故等价 root。
 
