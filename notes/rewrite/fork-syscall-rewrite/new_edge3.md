@@ -33,7 +33,7 @@
 
 | 编号 | 条目 | 前轮状态 | 本轮处置 |
 |---|---|---|---|
-| S30 | （前轮 🔄 项） | 🔄 | 本轮批次：F3c-2 写半后段 🔄 2026-09-21 zcode_glm_2（claim/S30-F3C2-zcode_glm_2）——ext2 create/mkdir/link/unlink/rmdir/symlink/rename 消费 alloc_inode；其余子项（procfs/ptyfs 缺口、F3 文档面）不动 |
+| S30 | （前轮 🔄 项） | 🔄 | 本轮批次：F3c-2 写半后段 ✅ 2026-09-21 zcode_glm_2（98d6c6a68，合主线 2e095e154）——领取时核查：⏳ 主张（create/mkdir 等消费 alloc_inode）已由 17c88be0c 全额落地（模式 70 CTOS 过期账面）；真实剩余 rename tail 已补完（C fs_rename link.c:268-445 决策树对位：跨父 `..` 重指+双父链接账、覆写摘目标、祖先环 EINVAL、EMLINK、同名无操作、类型错配两拒、换名保留类型字节；测试 43→52 全绿，clippy 零告警，doc 22 §5.3 同步）。同批登记三项未修见 FIXLOG #131（link 类型字节/缺 EMLINK 门、doc 22 快速链接行过期）；S30 余项（procfs/ptyfs 缺口、F3 文档面）不动 |
 | S31 | （⏸ S29 通用框架） | ⏸ | S29 若已 ✅ 则解锁，开工前复核 |
 | S32 | 根镜像装机面 | ~~⏸~~ 已解锁 | 并入 NS8 执行 |
 | S33 | E-MIBPROD/E-ISPROD 余项 | 🔄（余外部依赖） | 余项=run_dump A-6 输出面真机联调（E5(g)），挂 T2 后 |
