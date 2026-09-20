@@ -39,7 +39,7 @@
 | S33 | E-MIBPROD/E-ISPROD 余项 | 🔄（余外部依赖） | 余项=run_dump A-6 输出面真机联调（E5(g)），挂 T2 后 |
 | S35 | 18-stage C-1 长尾 | 🔄（等跨线原语） | 跨线原语即 NL4/NS5/NS7，解锁后按批推进 |
 | S36 | Requires 回填 + POSIX 基准 | ☐ | 随 S35/NS12 各批同步 |
-| S37 | E-DMABUF VM 侧 | 已解锁（L9 闭环） | 按 16-stage 驱动消费方节奏 |
+| S37 | E-DMABUF VM 侧 | 已解锁（L9 闭环） | 按 16-stage 驱动消费方节奏 🔄 2026-09-21 zcode_glm_3（claim/S37-zcode_glm_3 @ .wt/s37-zcode_glm_3；E-DMABUF 方案 A trait 契约 + VM 侧接口化） |
 | S42 批四 | 全系统载体 | 半程（C-27/C-29） | 载体收口随 new_edge1 NK1；NS1/NS2 供 step3 应答 |
 
 ## 已闭单勿领（以 edge_todo.md 最新进度注记为准）
