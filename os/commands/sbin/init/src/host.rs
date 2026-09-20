@@ -302,7 +302,9 @@ impl InitHost for MinixSysHost {
     }
 
     fn now_secs(&self) -> Result<i64, Errno> {
-        Err(Errno::ENOSYS)
+        // C reads the wall clock through gettimeofday (init.c:1352 getty
+        // spacing, the utmp timestamps); only whole seconds matter here.
+        minix_sys::pm::gettimeofday_via(&DirectTrapTransport).map(|(sec, _nsec)| sec)
     }
 
     fn sleep_secs(&mut self, secs: u64) -> Result<(), Errno> {
@@ -709,7 +711,7 @@ mod tests {
         // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
         // 仍缺封装：内核 mib 三件（12 篇）、
         // set_controlling_tty（dup2/TIOCSCTTY 面）、chroot、
-        // set_env（E-CMDSYSFACE）。
+        // set_env（E-CMDSYSFACE）。（alarm/time 已在本轮接线，见下。）
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
@@ -733,8 +735,10 @@ mod tests {
             matches!(host.register_handlers(&spec), Err(e) if e == Errno::EIO),
             "宿主 trap 断链 → EIO（不伪造成功）"
         );
-        // alarm 已接线（PM_ITIMER 面）：宿主 trap 断链诚实回 EIO。
+        // alarm/time 已接线（PM_ITIMER / PM_GETTIMEOFDAY 面）：宿主 trap
+        // 断链诚实回 EIO。
         assert_eq!(host.alarm(10), Err(Errno::EIO));
+        assert_eq!(host.now_secs(), Err(Errno::EIO));
         // exec 已接线（PM_EXEC 面，execve.rs）：宿主 kerninfo 断链 →
         // 帧的 vsp 无从取值 → 诚实 EIO（不伪造成功）。
         assert_eq!(

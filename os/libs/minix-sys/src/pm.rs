@@ -69,6 +69,10 @@ pub const PM_CALL_EXEC: i32 = 14;
 ///
 /// C: `PM_ITIMER (PM_BASE + 17)` (`callnr.h:30`).
 pub const PM_CALL_ITIMER: i32 = 17;
+/// Read the wall clock.
+///
+/// C: `PM_GETTIMEOFDAY (PM_BASE + 28)` (`callnr.h:43`).
+pub const PM_CALL_GETTIMEOFDAY: i32 = 28;
 /// Start a system service (server-side call).
 ///
 /// C: `PM_SRV_FORK (PM_BASE + 41)` (`callnr.h:54`).
@@ -566,6 +570,29 @@ pub fn setitimer_via(
     };
     crate::syscall::write_payload(&mut message, bytes);
     perform_syscall(transport, pm_endpoint(), PM_CALL_ITIMER, &mut message).map(|_| ())
+}
+
+/// Reads the wall clock (C: `gettimeofday`,
+/// `minix3/minix/lib/libc/sys/gettimeofday.c:15-32`).
+///
+/// The request carries no payload — a cleared message, the PM endpoint,
+/// the call number (`gettimeofday.c:24-26`). The reply lands in
+/// `mess_pm_lc_time` (ipc.h:1769-1773): `time_t sec`@0, `long nsec`@8,
+/// both 8 bytes on LP64; C's wrapper divides the nanoseconds down to
+/// microseconds (`gettimeofday.c:30`), which the caller here can skip or
+/// repeat, so both raw fields come back.
+pub fn gettimeofday_via(transport: &impl IpcTransport) -> Result<(i64, i64), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, pm_endpoint(), PM_CALL_GETTIMEOFDAY, &mut message)?;
+    // SAFETY: byte-level read of the union overlay lanes for the reply
+    // payload (mess_pm_lc_time layout, ipc.h:1769-1773).
+    let (sec, nsec) = unsafe {
+        (
+            i64::from_ne_bytes(message.m_u.raw[0..8].try_into().unwrap()),
+            i64::from_ne_bytes(message.m_u.raw[8..16].try_into().unwrap()),
+        )
+    };
+    Ok((sec, nsec))
 }
 
 /// Starts a system service with dropped privileges (server-side call).
@@ -1277,5 +1304,43 @@ mod itimer_wire_tests {
         assert_eq!(which, ITIMER_REAL);
         assert_eq!(value, &timer as *const ItimervalWire as u64);
         assert_eq!(ovalue, 0, "None ovalue travels as the zero pointer");
+    }
+}
+
+#[cfg(test)]
+mod gettimeofday_wire_tests {
+    use super::*;
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    /// C 绝对值 pin：PM_GETTIMEOFDAY = PM_BASE + 28（callnr.h:43）。
+    #[test]
+    fn test_gettimeofday_call_number_matches_c() {
+        assert_eq!(PM_CALL_GETTIMEOFDAY, 28);
+    }
+
+    /// 回复载荷按 mess_pm_lc_time 解码（ipc.h:1769-1773：sec@0、
+    /// nsec@8），请求本身无载荷。
+    #[test]
+    fn test_gettimeofday_reply_carries_sec_and_nsec() {
+        let mut transport = CannedTransport::new();
+        let mut reply = reply_with_type(0);
+        // SAFETY: byte-level write of the union overlay lanes to script the
+        // reply payload (sec@0, nsec@8).
+        unsafe {
+            reply.m_u.raw[0..8].copy_from_slice(&1_700_000_000i64.to_ne_bytes());
+            reply.m_u.raw[8..16].copy_from_slice(&123_456_789i64.to_ne_bytes());
+        }
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(gettimeofday_via(&transport), Ok((1_700_000_000, 123_456_789)));
+        let (dest, sent) = transport.sent.borrow().last().cloned().unwrap();
+        assert_eq!(dest, pm_endpoint());
+        assert_eq!(sent.m_type, PM_CALL_GETTIMEOFDAY);
     }
 }
