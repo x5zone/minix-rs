@@ -12,6 +12,7 @@
 use minix_types::{DevId, Mode, UserSlot};
 
 use crate::vnode::VnodeId;
+use alloc::boxed::Box;
 
 /// `NR_FILPS` (`const.h:5` 1024).
 pub const NR_FILPS: usize = 1024;

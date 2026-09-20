@@ -34,6 +34,9 @@
 
 extern crate alloc;
 
+// no_std（NS8-B guest 构建面）：裸 String 由 alloc 供给。
+use alloc::string::String;
+
 use crate::device_map::{DmapTable, SmapTable, DEV_IMGRD};
 use crate::fcntl::LockTable;
 use crate::filp::FilpTable;

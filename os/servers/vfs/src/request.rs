@@ -16,6 +16,10 @@
 //! the registered third consumer). The C-absolute pin tests stay in this
 //! module: they guard what VFS actually puts on the wire.
 
+#[cfg(test)] // Box 仅测试模块（PathFetcher/FsClient 注入）使用
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 use minix_types::{
     is_fs_rq, Endpoint, Message, REQ_BREAD, REQ_BPEEK, REQ_BWRITE, REQ_CHMOD, REQ_CHOWN, REQ_CREATE,
     REQ_FLUSH, REQ_FTRUNC, REQ_GETDENTS, REQ_GETNODE, REQ_INHIBREAD, REQ_LINK, REQ_LOOKUP,

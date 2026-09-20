@@ -11,6 +11,7 @@
 use minix_types::{Endpoint, Message, UserSlot, VfsCall, VirBytes};
 use crate::ipc::ReplyIntent;
 use crate::mproc::{ProcTable, Lifecycle};
+use alloc::vec::Vec;
 
 /// Exit status truncation: Minix3 `mp_exitstatus` is `char` (`mproc.h:25`).
 fn trunc_status(status: i32) -> i8 {
@@ -302,7 +303,7 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
         // 因此这里**不**调 exit_proc：违规进程在 PM 表中保持 Running，
         // 等待 SIGKILL 的内核信号回环。
         #[cfg(test)]
-        eprintln!(
+        pm_diag!(
             "PM: system process {} tries to exit(), sending SIGKILL",
             proc.endpoint().get()
         );

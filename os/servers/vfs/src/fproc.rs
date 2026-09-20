@@ -28,10 +28,12 @@
 //!   (`WorkerThread::fp_slot`), so no two-directional pointer bookkeeping is
 //!   needed. See `02-fproc-struct.md` §3.
 
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use minix_types::{
     Bitmap, DevId, Endpoint, FProcSnap, Gid, GrantId, Mode, NO_DEV, NR_PROCS, Pid, Uid, UserSlot,
-    VirBytes,
-FprocLightSnap, };
+    VirBytes, FprocLightSnap,
+};
 
 /// Maximum number of open file descriptors per process.
 ///

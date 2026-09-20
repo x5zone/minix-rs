@@ -128,7 +128,7 @@ impl FdAllocPolicy for NextFitDemo {
         let base = self.next.get() % OPEN_MAX;
         // Try base..OPEN_MAX then 0..base, but respect caller's start as lower bound
         let scan_start = core::cmp::max(base, start);
-        let find = |range: std::ops::Range<usize>| -> Option<usize> {
+        let find = |range: core::ops::Range<usize>| -> Option<usize> {
             let offset = table[range.clone()]
                 .iter()
                 .position(|slot| slot.is_none())?;

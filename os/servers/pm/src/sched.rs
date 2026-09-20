@@ -11,6 +11,7 @@
 use crate::ipc::IpcTransport;
 use minix_types::{Endpoint, Message, UserSlot, Pid, EINVAL, EPERM, EACCES, ESRCH};
 use crate::mproc::{ProcTable, Credentials};
+use alloc::vec::Vec;
 
 /// `PRIO_MIN / PRIO_MAX` (`sys/resource.h:43-44`).
 pub const PRIO_MIN: i32 = -20;
@@ -282,7 +283,7 @@ pub fn sched_init(table: &mut ProcTable, sched: &mut dyn SchedCtl) -> Vec<(UserS
         } else {
             // `schedule.c:44-47` non-panic, just warn
             #[cfg(test)]
-            eprintln!("PM: SCHED denied taking over scheduling of slot {}: {}", idx, res);
+            pm_diag!("PM: SCHED denied taking over scheduling of slot {}: {}", idx, res);
         }
         results.push((UserSlot::new(idx), res));
     }

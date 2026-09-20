@@ -20,6 +20,7 @@ use minix_types::VirBytes;
 
 use crate::fproc::{PipeBlock, PipeIo};
 use crate::read_write::RwDir;
+use alloc::vec::Vec;
 
 /// `PIPE_BUF` under `__minix` (`minix3/sys/sys/syslimits.h:66`): atomic
 /// pipe-write threshold used by the sizing matrix.

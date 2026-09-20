@@ -2,8 +2,8 @@
 //!
 //! Provides process signal mask, pending signals, and other management.
 
-use alloc::boxed::Box;
 use minix_types::VirBytes;
+use alloc::boxed::Box;
 
 /// Signal numbers (subset, `sys/signal.h`).
 pub const SIGKILL: i32 = 9;

@@ -9,6 +9,8 @@
 //! - `mark_free` 2-field vs `clear` 6-field split
 
 use minix_types::{DevId, Endpoint, NO_DEV};
+use alloc::boxed::Box;
+use alloc::string::String;
 
 /// `NR_MNTS` — C `const.h:7` `#define NR_MNTS 16`（首轮误记 8，与 stadir.rs 的 16 分叉，Fix #33 统一） (`const.h:NR_MNTS` 8).
 pub const NR_MNTS: usize = 16;

@@ -12,6 +12,13 @@ use crate::vnode::{VnodeId, VnodeTable};
 use minix_types::Endpoint;
 
 /// `PATH_MAX 1024` — `limits.h`.
+use alloc::string::String;
+use alloc::vec::Vec;
+#[cfg(test)] // Box 仅测试模块（PathFetcher/FsClient 注入）使用
+use alloc::boxed::Box;
+
+use alloc::string::ToString;
+
 pub const PATH_MAX: usize = 1024;
 /// `NAME_MAX 60` — single component max (Minix `NAME_MAX`).
 pub const NAME_MAX: usize = 60;

@@ -4,13 +4,40 @@
 //! See `notes/rewrite/fork-syscall-rewrite/06-stage-sched/01-sched-init-main.md`
 //! (the startup order) and `02-sched-message-surface.md` (the loop's turn).
 
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
 // In test builds, use the system allocator (the crate is no_std in
 // production; the test harness allocates before main() runs).
 #[cfg(test)]
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;
 
+
+// freestanding 侧持有 minix-rt 的链接引用：bin 代码本身不经 rt 的任何
+// 符号，未引用的 rlib 会被整体丢弃，`_start`/`#[panic_handler]`/
+// `#[global_allocator]` 三件随之消失（panic-halt 模式的 `extern crate`
+// 保留语义）。出生链 `_start` 在 main 前已自动完成 rt 初始化
+//（`lib.rs:86` init 契约：no_std 模式 `_start` 自动调用、幂等），这里
+// 无须也不应再调。
+#[cfg(all(not(test), target_os = "none"))]
+extern crate minix_rt;
+
+// 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
+// ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:40）；宿主/测试侧保持
+// `()`——rustc 1.94 起 Termination 不再为 i32 实现，宿主 i32 main 即
+// E0277（docker minix-ci:1.94 实测）。
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    real_main()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
 fn main() {
+    real_main()
+}
+
+fn real_main() -> ! {
     // In test builds, skip the binary entirely (the test harness drives the
     // library directly).
     #[cfg(not(test))]
@@ -55,4 +82,6 @@ fn main() {
         // deviation from C's panic-on-first-failure).
         server.run(&KernelIpcTransport::new(), &mut kernel);
     }
+    #[cfg(test)]
+    unreachable!("bin entry unused in test builds")
 }

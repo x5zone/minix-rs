@@ -7,6 +7,7 @@
 use minix_types::{Endpoint, UserSlot, Pid, Uid, Gid, VirBytes, EINVAL, EPERM, EFAULT, ESRCH};
 use crate::mproc::{ProcTable, NGROUPS_MAX, RemainingFlags};
 use crate::ipc::ReplyIntent;
+use alloc::vec::Vec;
 
 /// `GID_MAX`（`sys/sys/syslimits.h:53`，`2147483647U`）。gid_t 是 32 位
 /// 无符号（`sys/sys/ansi.h:38` `__uint32_t`），因此 C 的 `> GID_MAX`
