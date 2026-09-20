@@ -325,10 +325,11 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(frame.ss);
             Console::write_str("\n");
             panic!(
-                "kernel exception vector {} at rip {:#x} errcode {:#x}",
+                "kernel exception vector {} at rip {:#x} errcode {:#x} [dispatch_body @ 0x{:x}]",
                 v.get(),
                 frame.rip,
-                frame.errcode
+                frame.errcode,
+                x86_trap_dispatch_body as *const () as usize
             );
         }
         ExceptionOutcome::VmPageFault => {
