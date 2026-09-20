@@ -31,7 +31,7 @@
 use crate::ipc::IpcTransport;
 use crate::syscall::perform_syscall;
 use crate::{pm::pm_endpoint, vfs::vfs_endpoint};
-use minix_types::{Errno, Message, MessLcMibSysctl};
+use minix_types::{Errno, MessLcMibSysctl, Message};
 
 /// Server-control request to the process manager.
 ///
