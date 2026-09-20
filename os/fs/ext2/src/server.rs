@@ -25,7 +25,7 @@ use alloc::vec;
 
 use minix_fs::driver::FsDriver;
 use minix_fs::protocol::{CapabilityFlags, FileNode, MountFlags};
-use minix_types::{EIO, ENOSPC, EPERM, EINVAL, ENOENT, Errno, Stat};
+use minix_types::{EIO, ENOSPC, EPERM, EINVAL, ENOENT, EISDIR, EMLINK, ENOTDIR, Errno, Stat};
 
 use crate::dir;
 use crate::inode::{self, DiskInode};
@@ -36,6 +36,11 @@ use crate::superblock::{
 
 /// Superblock's stored size — the boot pad occupies block 0's first half.
 const STORED_AT: usize = SUPER_OFFSET;
+
+/// 链接数上限（Minix 语义取 32767，`minix3/sys/sys/syslimits.h` 的
+/// `LINK_MAX`；盘上字段虽是 u16，C `link.c:364-365` 的
+/// `SHRT_MAX || LINK_MAX` 双门同为此值）。
+const LINK_MAX: u32 = 32767;
 
 /// The read-only ext2 server over an in-memory image.
 #[derive(Debug)]
@@ -1117,9 +1122,18 @@ impl FsDriver for Ext2Server {
         Ok(())
     }
 
-    /// Rename: remove the old name and add the new one. Same-parent
-    /// renames keep all bookkeeping local; cross-parent directory moves
-    /// need `..` fixups that stay with F3c-2's tail (registered gap).
+    /// Rename: C `fs_rename`'s decision tree. The same-inode rename is a
+    /// no-op success; type mismatches refuse (`ENOTDIR`/`EISDIR`); the
+    /// ancestor walk refuses moving a directory into its own subtree
+    /// (`EINVAL`, `..` missing treated the same); the new parent's link
+    /// cap refuses before the move (`EMLINK`). An existing target comes
+    /// off first (empty-dir rule for directories), then the entries swap
+    /// in the C order: same parent deletes the old name first so the
+    /// freed slot serves the new one, cross parent enters the new name
+    /// first so a failure cannot lose the file. A moved directory gets
+    /// its `..` retargeted, trading one link between the parents.
+    /// Mountpoint guards are VFS-level and have no single-server
+    /// counterpart.
     fn rename(
         &mut self,
         old_directory: u64,
@@ -1127,13 +1141,96 @@ impl FsDriver for Ext2Server {
         new_directory: u64,
         new_name: &str,
     ) -> Result<(), Errno> {
-        let number = self.remove_entry(old_directory as u32, old_name)?;
-        self.add_entry(
-            new_directory as u32,
-            number,
-            dir::TYPE_UNKNOWN,
-            new_name.as_bytes(),
-        )
+        let old_number = self.find_entry_slot(old_directory as u32, old_name)?.0.number;
+        let old_record = self.read_inode(old_number)?;
+        let old_is_dir = Self::is_directory(&old_record);
+        let same_pdir = old_directory == new_directory;
+        // 目标名现状：不存在记 `None`（查找的 ENOENT），其余错误如实传播。
+        let target = match self.find_entry_slot(new_directory as u32, new_name) {
+            Ok((entry, _, _)) => Some(entry.number),
+            Err(e) if e.to_i32() == ENOENT => None,
+            Err(e) => return Err(e),
+        };
+
+        // 祖先环检查（C 在目标检查之前跑）：沿新父的 `..` 上行，撞见
+        // 被搬目录即 EINVAL；`..` 缺失按最坏情况同样拒绝；根的 `..`
+        // 自指即到顶放行。
+        if old_is_dir && !same_pdir {
+            let mut current = new_directory as u32;
+            loop {
+                if current == old_number {
+                    return Err(Errno::from_i32(EINVAL));
+                }
+                if current == ROOT_INODE_NUMBER {
+                    break;
+                }
+                match self.find_entry_slot(current, "..") {
+                    Ok((entry, _, _)) if entry.number != current => current = entry.number,
+                    Ok(_) => break,
+                    Err(_) => return Err(Errno::from_i32(EINVAL)),
+                }
+            }
+        }
+
+        if let Some(target_number) = target {
+            if target_number == old_number {
+                // C `SAME`：改名到自己，成功无操作。
+                return Ok(());
+            }
+            let target_record = self.read_inode(target_number)?;
+            let target_is_dir = Self::is_directory(&target_record);
+            if old_is_dir && !target_is_dir {
+                return Err(Errno::from_i32(ENOTDIR));
+            }
+            if !old_is_dir && target_is_dir {
+                return Err(Errno::from_i32(EISDIR));
+            }
+        } else if old_is_dir && !same_pdir {
+            // 目标不存在才查新父的链接顶：目录迁入要占一条 `..` 链接。
+            let parent = self.read_inode(new_directory as u32)?;
+            if u32::from(parent.links) >= LINK_MAX {
+                return Err(Errno::from_i32(EMLINK));
+            }
+        }
+
+        // 覆写：目标先摘除——目录走空检查与释放，文件走减链释放。
+        if target.is_some() {
+            if old_is_dir {
+                self.remove_dir(new_directory, new_name)?;
+            } else {
+                self.unlink(new_directory, new_name)?;
+            }
+        }
+
+        // 条目换位（C 两顺序）：同父先删后插，腾出的槽位给新名；跨父
+        // 先插后删，插入失败（盘满）时旧名原封不动，文件不丢。
+        let entry_type = dirent_type_for_mode(old_record.mode as u32);
+        if same_pdir {
+            self.remove_entry(old_directory as u32, old_name)?;
+            self.add_entry(new_directory as u32, old_number, entry_type, new_name.as_bytes())?;
+        } else {
+            self.add_entry(new_directory as u32, old_number, entry_type, new_name.as_bytes())?;
+            self.remove_entry(old_directory as u32, old_name)?;
+        }
+
+        // `..` 修正：搬走的目录仍指向旧父。摘除 `..` 时旧父链接减一
+        // （C unlink_file 的减链半）；重插指向新父成功时新父链接加一
+        // （C ENTER + links_count++），插入失败按 C 不加不减。
+        if old_is_dir && !same_pdir {
+            if let Ok(old_parent) = self.remove_entry(old_number, "..") {
+                let _ = self.adjust_links(old_parent, -1);
+            }
+            if self
+                .add_entry(old_number, new_directory as u32, dir::TYPE_DIRECTORY, b"..")
+                .is_ok()
+            {
+                let mut new_parent = self.read_inode(new_directory as u32)?;
+                new_parent.links += 1;
+                self.write_inode_back(new_directory as u32, &new_parent);
+                self.cache.insert(new_directory as u32, new_parent);
+            }
+        }
+        Ok(())
     }
 
     /// Symbolic link: the target rides the pointer area when it fits
@@ -1262,6 +1359,21 @@ type SlotPos = (usize, usize, u16);
 /// 位图位测试（位 0 = 字节 0 的最低位）。
 fn bit_test(map: &[u8], bit: u32) -> bool {
     map[(bit / 8) as usize] & (1 << (bit % 8)) != 0
+}
+
+/// inode 模式类型位 → 目录项 file_type 字节（`path.c` ENTER 的映射链，
+/// `minix3/minix/fs/ext2/path.c:286-303`）。套接字与未知类型落
+/// `TYPE_UNKNOWN`——映射链上没有 socket 分支，与 C 行为一致。
+fn dirent_type_for_mode(mode: u32) -> u8 {
+    match mode & 0o170000 {
+        0o100000 => dir::TYPE_REGULAR,
+        0o040000 => dir::TYPE_DIRECTORY,
+        0o120000 => dir::TYPE_SYMLINK,
+        0o060000 => dir::TYPE_BLKDEV,
+        0o020000 => dir::TYPE_CHRDEV,
+        0o010000 => dir::TYPE_FIFO,
+        _ => dir::TYPE_UNKNOWN,
+    }
 }
 
 /// 位图置位。
@@ -1733,6 +1845,216 @@ mod tests {
             .unwrap();
         assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "OLD.TXT").is_err());
         assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "RENAMED.TXT").is_ok());
+    }
+
+    // ---- F3c-2 tail：fs_rename 决策树（link.c:268-445 对位） ----
+
+    /// 跨父搬目录：名字迁移 + `..` 重指新父 + 两父链接数一减一增。
+    #[test]
+    fn test_rename_moves_dir_across_parents_and_retargets_dotdot() {
+        let mut server = mounted();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "A", 0o755, 0, 0).unwrap();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "B", 0o755, 0, 0).unwrap();
+        let (a, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "A").unwrap();
+        let (b, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "B").unwrap();
+        let mut root_before = Stat::zeroed();
+        server.stat(ROOT_INODE_NUMBER as u64, &mut root_before).unwrap();
+
+        server.rename(ROOT_INODE_NUMBER as u64, "A", b.inode_number, "C").unwrap();
+
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "A").is_err());
+        let (c, is_dir) = server.lookup_child(b.inode_number, "C").unwrap();
+        assert!(is_dir);
+        assert_eq!(c.inode_number, a.inode_number, "inode 跟着走");
+        // C 的 `..` 现在指向新父 B，`.` 仍指自己。
+        let (dotdot, _) = server.lookup_child(c.inode_number, "..").unwrap();
+        assert_eq!(dotdot.inode_number, b.inode_number);
+        let (dot, _) = server.lookup_child(c.inode_number, ".").unwrap();
+        assert_eq!(dot.inode_number, c.inode_number);
+        // 目录项类型字节：C 与 `..` 都是目录。
+        let (c_entry, _, _) = server.find_entry_slot(b.inode_number as u32, "C").unwrap();
+        assert_eq!(c_entry.file_type, dir::TYPE_DIRECTORY);
+        let (dd_entry, _, _) = server.find_entry_slot(c.inode_number as u32, "..").unwrap();
+        assert_eq!(dd_entry.file_type, dir::TYPE_DIRECTORY);
+        // 链接账：旧父 -1，新父 +1（B = 自身两链 + C 的 `..`）。
+        let mut root_after = Stat::zeroed();
+        server.stat(ROOT_INODE_NUMBER as u64, &mut root_after).unwrap();
+        assert_eq!(root_after.nlinks + 1, root_before.nlinks);
+        let mut b_stat = Stat::zeroed();
+        server.stat(b.inode_number, &mut b_stat).unwrap();
+        assert_eq!(b_stat.nlinks, 3);
+    }
+
+    /// 跨父搬文件：换位走"先插后删"，目录链接数不动（文件不牵 `..`）。
+    #[test]
+    fn test_rename_moves_file_across_parents() {
+        let mut server = mounted();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "DST", 0o755, 0, 0).unwrap();
+        let (dst, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "DST").unwrap();
+        server
+            .rename(ROOT_INODE_NUMBER as u64, "FILE.TXT", dst.inode_number, "MOVED.TXT")
+            .unwrap();
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "FILE.TXT").is_err());
+        let (moved, is_dir) = server.lookup_child(dst.inode_number, "MOVED.TXT").unwrap();
+        assert!(!is_dir);
+        assert_eq!(moved.inode_number, 11);
+        let mut st = Stat::zeroed();
+        server.stat(dst.inode_number, &mut st).unwrap();
+        assert_eq!(st.nlinks, 2, "文件迁移不占目录链接");
+    }
+
+    /// 目录搬进自己的子树：沿 `..` 上行撞见自己即 EINVAL；合法的隔代
+    /// 迁移照常成功。
+    #[test]
+    fn test_rename_refuses_dir_into_own_subtree() {
+        let mut server = mounted();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "TOP", 0o755, 0, 0).unwrap();
+        let (top, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "TOP").unwrap();
+        server.make_dir(top.inode_number, "SUB", 0o755, 0, 0).unwrap();
+        let (sub, _) = server.lookup_child(top.inode_number, "SUB").unwrap();
+        // 直接子树命中。
+        assert_eq!(
+            server
+                .rename(ROOT_INODE_NUMBER as u64, "TOP", sub.inode_number, "UNDER")
+                .unwrap_err()
+                .to_i32(),
+            minix_types::EINVAL
+        );
+        // SUB 搬到根下不构成环，放行，且 `..` 随迁指向根。
+        server
+            .rename(top.inode_number, "SUB", ROOT_INODE_NUMBER as u64, "SUB2")
+            .unwrap();
+        let (moved, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "SUB2").unwrap();
+        let (dotdot, _) = server.lookup_child(moved.inode_number, "..").unwrap();
+        assert_eq!(dotdot.inode_number, ROOT_INODE_NUMBER as u64);
+    }
+
+    /// 覆写同名文件目标：旧目标摘除释放，名字落到旧 inode，号回收。
+    #[test]
+    fn test_rename_overwrites_file_target_and_recycles_inode() {
+        let mut server = mounted();
+        let a = server
+            .create(ROOT_INODE_NUMBER as u64, "A.TXT", 0o644, 0, 0)
+            .unwrap();
+        let b = server
+            .create(ROOT_INODE_NUMBER as u64, "B.TXT", 0o644, 0, 0)
+            .unwrap();
+        server
+            .rename(ROOT_INODE_NUMBER as u64, "A.TXT", ROOT_INODE_NUMBER as u64, "B.TXT")
+            .unwrap();
+        let (now_b, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "B.TXT").unwrap();
+        assert_eq!(now_b.inode_number, a.inode_number, "B.TXT 指向 A 的 inode");
+        let mut st = Stat::zeroed();
+        server.stat(a.inode_number, &mut st).unwrap();
+        assert_eq!(st.nlinks, 1);
+        // 旧 B 链接归零已释放：下一次分配回收同号。
+        let recycled = server.alloc_inode(0o100644).unwrap();
+        assert_eq!(recycled, b.inode_number as u32);
+    }
+
+    /// 目录盖到非空目录上：空检查拒绝，两名都原地不动。
+    #[test]
+    fn test_rename_dir_onto_nonempty_dir_refuses() {
+        let mut server = mounted();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "SRC", 0o755, 0, 0).unwrap();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "DST", 0o755, 0, 0).unwrap();
+        let (dst, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "DST").unwrap();
+        let _ = server.create(dst.inode_number, "INNER.TXT", 0o644, 0, 0).unwrap();
+        assert_eq!(
+            server
+                .rename(ROOT_INODE_NUMBER as u64, "SRC", ROOT_INODE_NUMBER as u64, "DST")
+                .unwrap_err()
+                .to_i32(),
+            minix_types::ENOTEMPTY
+        );
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "SRC").is_ok());
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "DST").is_ok());
+    }
+
+    /// 类型错配两拒绝：目录盖文件 ENOTDIR，文件盖目录 EISDIR。
+    #[test]
+    fn test_rename_type_mismatch_refusals() {
+        let mut server = mounted();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "SUB", 0o755, 0, 0).unwrap();
+        assert_eq!(
+            server
+                .rename(ROOT_INODE_NUMBER as u64, "SUB", ROOT_INODE_NUMBER as u64, "FILE.TXT")
+                .unwrap_err()
+                .to_i32(),
+            minix_types::ENOTDIR
+        );
+        assert_eq!(
+            server
+                .rename(ROOT_INODE_NUMBER as u64, "FILE.TXT", ROOT_INODE_NUMBER as u64, "SUB")
+                .unwrap_err()
+                .to_i32(),
+            minix_types::EISDIR
+        );
+    }
+
+    /// 改名到自己：成功无操作，条目不重复、链接不增。
+    #[test]
+    fn test_rename_to_same_name_is_noop() {
+        let mut server = mounted();
+        server
+            .rename(ROOT_INODE_NUMBER as u64, "FILE.TXT", ROOT_INODE_NUMBER as u64, "FILE.TXT")
+            .unwrap();
+        let (found, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "FILE.TXT").unwrap();
+        assert_eq!(found.inode_number, 11);
+        let mut real = 0usize;
+        server.walk_directory(ROOT_INODE_NUMBER, |_| {
+            real += 1;
+            true
+        })
+        .unwrap();
+        assert_eq!(real, 3, "点名自身后仍是三条真实条目");
+        let mut st = Stat::zeroed();
+        server.stat(11, &mut st).unwrap();
+        assert_eq!(st.nlinks, 1);
+    }
+
+    /// 同父换名保留目录项类型字节（普通文件与符号链接各一）。
+    #[test]
+    fn test_rename_keeps_dirent_type_byte() {
+        let mut server = mounted();
+        server
+            .symbolic_link(ROOT_INODE_NUMBER as u64, "LNK", 0, 0, b"/t")
+            .unwrap();
+        server
+            .rename(ROOT_INODE_NUMBER as u64, "FILE.TXT", ROOT_INODE_NUMBER as u64, "RENAMED.TXT")
+            .unwrap();
+        server
+            .rename(ROOT_INODE_NUMBER as u64, "LNK", ROOT_INODE_NUMBER as u64, "LNK2")
+            .unwrap();
+        let (file_entry, _, _) = server
+            .find_entry_slot(ROOT_INODE_NUMBER, "RENAMED.TXT")
+            .unwrap();
+        assert_eq!(file_entry.file_type, dir::TYPE_REGULAR, "换名不改类型字节");
+        let (lnk_entry, _, _) = server
+            .find_entry_slot(ROOT_INODE_NUMBER, "LNK2")
+            .unwrap();
+        assert_eq!(lnk_entry.file_type, dir::TYPE_SYMLINK);
+    }
+
+    /// 跨父搬目录且新父链接顶到上限：EMLINK，失败无副作用。
+    #[test]
+    fn test_rename_cross_parent_emlink_when_parent_full() {
+        let mut server = mounted();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "A", 0o755, 0, 0).unwrap();
+        server.make_dir(ROOT_INODE_NUMBER as u64, "B", 0o755, 0, 0).unwrap();
+        let (b, _) = server.lookup_child(ROOT_INODE_NUMBER as u64, "B").unwrap();
+        let mut record = server.read_inode(b.inode_number as u32).unwrap();
+        record.links = LINK_MAX as u16;
+        server.write_inode_back(b.inode_number as u32, &record);
+        server.cache.insert(b.inode_number as u32, record);
+        assert_eq!(
+            server
+                .rename(ROOT_INODE_NUMBER as u64, "A", b.inode_number, "C")
+                .unwrap_err()
+                .to_i32(),
+            minix_types::EMLINK
+        );
+        assert!(server.lookup_child(ROOT_INODE_NUMBER as u64, "A").is_ok());
     }
 
     #[test]

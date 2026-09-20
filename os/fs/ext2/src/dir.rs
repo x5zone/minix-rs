@@ -21,6 +21,12 @@ pub const ALIGNMENT: usize = 4;
 pub const TYPE_DIRECTORY: u8 = 2;
 /// Regular file type (`EXT2_FT_REG_FILE`, one).
 pub const TYPE_REGULAR: u8 = 1;
+/// Character device type (`EXT2_FT_CHRDEV`, three).
+pub const TYPE_CHRDEV: u8 = 3;
+/// Block device type (`EXT2_FT_BLKDEV`, four).
+pub const TYPE_BLKDEV: u8 = 4;
+/// Named pipe type (`EXT2_FT_FIFO`, five).
+pub const TYPE_FIFO: u8 = 5;
 /// Symbolic link type (`EXT2_FT_SYMLINK`, seven).
 pub const TYPE_SYMLINK: u8 = 7;
 /// Unknown type (`EXT2_FT_UNKNOWN`, zero).
