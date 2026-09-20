@@ -427,6 +427,10 @@ impl RsServer {
         // initializes a fresh slot that inherits the old instance's
         // immutable defaults, links to it, and is created without running.
         let ticks = self.kernel.get_ticks()?;
+        let image_io = self.image_io.as_mut();
+        let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+            crate::exec::read_exec_with(image_io, slot)
+        };
         let mut new_id: Option<crate::service_slot::SlotId> = None;
         if !prepare_only {
             if do_self_update {
@@ -437,7 +441,7 @@ impl RsServer {
                     crate::privilege::PrivFlags::LU_SYS_PROC,
                     entry.init_flags,
                     ticks,
-                    &mut |_| Ok(()),
+                    &mut read_exec,
                 )?;
                 new_id = state.table.get(id).new_rp;
             } else {
@@ -453,7 +457,7 @@ impl RsServer {
                     &mut slot,
                     &rs_start,
                     &state.table,
-                    &mut |_| Ok(()),
+                    &mut read_exec,
                 );
                 // Inherit the old instance's immutable defaults while the
                 // row is still out of the table (the def borrow and the
@@ -480,7 +484,7 @@ impl RsServer {
                     nid,
                     self.kernel.as_mut(),
                     ticks,
-                    &mut |_| Ok(()),
+                    &mut read_exec,
                 )?;
                 new_id = Some(nid);
             }
@@ -915,8 +919,11 @@ impl RsServer {
         let script = state.table.get(id).script;
         state.table.get_mut(id).script[0] = 0;
         let ticks = self.kernel.get_ticks()?;
+        let image_io = self.image_io.as_mut();
+        let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+            crate::exec::read_exec_with(image_io, slot)
+        };
         let kernel = self.kernel.as_mut();
-        let mut noop_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
         let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
         let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
         crate::service_create::restart_service(
@@ -925,7 +932,7 @@ impl RsServer {
             kernel,
             ticks,
             &mut crate::service_create::RestartEffects {
-                read_exec: &mut noop_exec,
+                read_exec: &mut read_exec,
                 run_script: &mut noop_script,
                 asynsend: &mut noop_asynsend,
             },
@@ -950,7 +957,10 @@ impl RsServer {
             .sys_flags
             .insert(crate::service_slot::SysFlags::USE_REPL);
         let ticks = self.kernel.get_ticks()?;
-        let mut noop_read_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+        let image_io = self.image_io.as_mut();
+        let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+            crate::exec::read_exec_with(image_io, slot)
+        };
         match crate::service_create::clone_service(
             &mut state.table,
             id,
@@ -958,7 +968,7 @@ impl RsServer {
             crate::privilege::PrivFlags::RST_SYS_PROC,
             0,
             ticks,
-            &mut noop_read_exec,
+            &mut read_exec,
         ) {
             Ok(_) => Ok(0),
             Err(e) => {
@@ -1477,19 +1487,24 @@ impl RsServer {
         }
 
         // Initialize the slot as requested (request.c:62-68). read_exec is
-        // the 19 file-I/O seam (exec.c read_seg — E-11): the noop keeps the
-        // orchestration observable without faking a real image load.
+        // the VFS-client image arrival face (C read_exec, manager.c:1372 —
+        // edit_slot's RSS_COPY branch reads through it); the kernel exec
+        // face (srv_execve) remains 19-rs-external-interfaces.md.
         // init_slot's reviewed shape (Fix #49) takes the row and the table
         // separately, so the row is taken out for the call and put back —
         // for a fresh allocation the donor scan (RSS_REUSE, edit_slot)
         // sees the same vacant row C's loop skips, and a failed init_slot
         // leaves the dirty-but-vacant row in place exactly like C.
         let ticks = self.kernel.get_ticks()?;
+        let image_io = self.image_io.as_mut();
+        let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+            crate::exec::read_exec_with(image_io, slot)
+        };
         let mut slot = core::mem::replace(
             state.table.get_mut(id),
             crate::service_slot::ServiceSlot::vacant(),
         );
-        crate::service_create::init_slot(&mut slot, &rs_start, &state.table, &mut |_| Ok(()))?;
+        crate::service_create::init_slot(&mut slot, &rs_start, &state.table, &mut read_exec)?;
         *state.table.get_mut(id) = slot;
 
         // Duplicate gates (request.c:70-85): label, device number, domains.
@@ -1582,7 +1597,7 @@ impl RsServer {
                         Ok(())
                     },
                 ),
-                ..Default::default()
+                read_exec: alloc::boxed::Box::new(&mut read_exec),
             };
             crate::service_create::start_service(
                 &mut state.table,
@@ -1678,11 +1693,15 @@ impl RsServer {
         // row dirty-but-vacant-free: it was in-use before and stays so, the
         // take/put only hides it from the donor scan).
         let ticks = self.kernel.get_ticks()?;
+        let image_io = self.image_io.as_mut();
+        let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+            crate::exec::read_exec_with(image_io, slot)
+        };
         let mut slot = core::mem::replace(
             state.table.get_mut(id),
             crate::service_slot::ServiceSlot::vacant(),
         );
-        let edit_r = crate::slot::edit_slot(&mut slot, &rs_start, &state.table, &mut |_| Ok(()));
+        let edit_r = crate::slot::edit_slot(&mut slot, &rs_start, &state.table, &mut read_exec);
         *state.table.get_mut(id) = slot;
         edit_r?;
 
@@ -1752,7 +1771,7 @@ impl RsServer {
                 crate::privilege::PrivFlags::RST_SYS_PROC,
                 0,
                 ticks,
-                &mut |_| Ok(()),
+                &mut read_exec,
             );
         }
 

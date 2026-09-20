@@ -133,6 +133,11 @@ pub struct RsServer {
     /// completes; [`RsServer::run`] fails closed on a missing state.
     state: Option<ServerState<'static>>,
     kernel: alloc::boxed::Box<dyn KernelApi>,
+    /// The exec-image arrival face (NS9; C's `read_exec` implicit global —
+    /// manager.c:1372). Production carries [`exec::VfsImageIo`] (VFS client
+    /// calls over the direct-trap transport); tests swap in a canned face —
+    /// the `with_kernel` injection pattern on the file-system side.
+    pub(crate) image_io: alloc::boxed::Box<dyn exec::ExecImageIo>,
     /// Typed cause of the last failed fresh boot (E-6). The SEF callback
     /// face returns a bare errno (C `int` face — `From<BootError> for
     /// Errno` flattens `Kernel(e) → e`, invariant violations → `EINVAL`),
@@ -199,6 +204,7 @@ impl RsServer {
             boot: Some(BootInit::new(tables)),
             state: None,
             kernel,
+            image_io: alloc::boxed::Box::new(exec::VfsImageIo),
             boot_diagnostic: None,
             restart_cb: sef::RestartCb::Rs, // C: main.c:140 registration
         }
@@ -424,7 +430,10 @@ impl RsServer {
                 PeriodAction::Nothing | PeriodAction::BackoffTick | PeriodAction::FreePass => {}
                 // C: request.c:977-978 — backoff drained → revive the service.
                 PeriodAction::Restart => {
-                    let mut noop_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                    let image_io = self.image_io.as_mut();
+                    let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+                        crate::exec::read_exec_with(image_io, slot)
+                    };
                     let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                     let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
                     service_create::restart_service(
@@ -433,7 +442,7 @@ impl RsServer {
                         self.kernel.as_mut(),
                         now,
                         &mut crate::service_create::RestartEffects {
-                            read_exec: &mut noop_exec,
+                            read_exec: &mut read_exec,
                             run_script: &mut noop_script,
                             asynsend: &mut noop_asynsend,
                         },
@@ -729,6 +738,10 @@ impl SefCallbacks for RsServer {
                 let _ = crate::publish::unpublish_result(use_copy, false, false, false);
             };
             let outcome = {
+                let image_io = self.image_io.as_mut();
+                let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+                    crate::exec::read_exec_with(image_io, slot)
+                };
                 let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
                 let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
                 crate::recovery::terminate_service(
@@ -741,6 +754,7 @@ impl SefCallbacks for RsServer {
                     &mut crate::recovery::TerminateEffects {
                         unpublish: alloc::boxed::Box::new(&mut unpublish),
                         run_script: alloc::boxed::Box::new(&mut noop_script),
+                        read_exec: alloc::boxed::Box::new(&mut read_exec),
                         asynsend: alloc::boxed::Box::new(&mut noop_asynsend),
                     },
                 )
@@ -751,19 +765,24 @@ impl SefCallbacks for RsServer {
                 // shape, update.c:883-887 sibling).
                 return Err(Errno::EGENERIC);
             }
-            let kernel = self.kernel.as_mut();
-            let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
-            let mut noop_read_exec = |_: &mut crate::service_slot::ServiceSlot| Ok(());
-            let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
-            crate::recovery::rs_idle_period(
-                &mut state.table,
-                kernel,
-                ticks,
-                shutting_down,
-                &mut noop_script,
-                &mut noop_read_exec,
-                &mut noop_asynsend,
-            );
+            {
+                let image_io = self.image_io.as_mut();
+                let mut read_exec = |slot: &mut crate::service_slot::ServiceSlot| {
+                    crate::exec::read_exec_with(image_io, slot)
+                };
+                let kernel = self.kernel.as_mut();
+                let mut noop_script = |_: &mut crate::service_slot::ServiceSlot| Ok(());
+                let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
+                crate::recovery::rs_idle_period(
+                    &mut state.table,
+                    kernel,
+                    ticks,
+                    shutting_down,
+                    &mut noop_script,
+                    &mut read_exec,
+                    &mut noop_asynsend,
+                );
+            }
             return Err(Errno::EDEADEPT);
         }
 

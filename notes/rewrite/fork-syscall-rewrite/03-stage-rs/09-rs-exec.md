@@ -263,8 +263,11 @@ exec.rs
 ├─ share_exec（D1：Arc::clone）
 ├─ has_shared_exec（D2：iter_in_use 扫描 + Arc::ptr_eq）
 ├─ free_exec（D1/D2：先扫后清）
-└─ #[cfg(test)] 5 个测试（§5）
+├─ ExecImageIo trait + read_exec / read_exec_with（NS9：§2.1 到达面的 Rust 半）
+└─ #[cfg(test)] 12 个测试（§5）
 ```
+
+到达面接线（NS9，`minix3/minix/servers/rs/manager.c:read_exec` 对位）：`ExecImageIo` trait 把 C `read_exec` 的四步系统调用（`stat`/`open`/`read`/`close`，manager.c:1385/:1392/:1410/:1412）收为可注入缝；策略层 `read_exec_with` 单点承载尺寸门（`st_size < 64 → ENOEXEC`，manager.c:1388）、短读判 `EIO`（manager.c:1414-1418）、`close` 恒执行且其返回值忽略（manager.c:1412）三条 C 语义。生产实现 `VfsImageIo` 走 `minix-sys` 顶层 VFS 客户端 wrapper（直陷 transport，与 DS 发布面同形态）；路径取 `r_argv[0]`（manager.c:1380，`build_cmd_dep` 首令牌，N11 空命令情形落到对空名的 `ENOENT`）。装配面：`RsServer.image_io` 持有该缝（`with_kernel` 注入模式在文件系统侧的同款），`do_init`/`do_update`/`do_edit`/`do_clone`/`do_restart`/period/idle 六类请求与恢复路径的十二个生产位点据此装配；`TerminateEffects` 增 `read_exec` 槽（C 隐式全局 `read_exec` 与 `run_script`/`rs_asynsend` 同族）。`ARCH` 注记：C 先 `malloc` 进 `rp->r_exec`、失败 `free_exec`；Rust 本地建缓冲、成功才装入 `slot.exec`——各失败路径上 `slot.exec` 保持 `None`，外部行为一致。
 
 关键不变量：
 
@@ -278,7 +281,7 @@ exec.rs
 
 ## 5. 测试要点
 
-`cargo test -p minix-rs --lib`（exec 相关 5 个）：
+`cargo test -p minix-rs --lib`（exec 相关 12 个）：
 
 | 测试 | 覆盖 |
 |------|------|
@@ -287,8 +290,15 @@ exec.rs
 | `test_share_exec_clones` | `Arc::clone` 后两槽共享同一缓冲（`Arc::ptr_eq`） |
 | `test_free_exec_exclusive` | 单持有者 → 释放（exec = None） |
 | `test_free_exec_shared_keeps_other` | 共享者存在 → 本槽断开、他槽保留（minix3/minix/servers/rs/manager.c:rproc（L1433，工具生成） 扫描） |
+| `test_read_exec_installs_image_from_argv0` | NS9：读入路径 = `r_argv[0]` 首令牌，成功装入 `slot.exec`，`open`/`close` 均达 |
+| `test_read_exec_small_file_enoexec_before_open` | NS9：`st_size < 64 → ENOEXEC`，且门在 `open` 之前（manager.c:1388-1389 门序） |
+| `test_read_exec_stat_and_open_errors_propagate` | NS9：`stat`/`open` 失败原样上抛 errno（manager.c:1386/:1394 的 `-errno` 面） |
+| `test_read_exec_empty_command_stats_empty_path` | NS9：N11 空命令 → argv[0]="" → 对空名查找失败（`ENOENT`） |
+| `test_read_exec_short_read_is_eio_and_closes` | NS9：一次 `read` 短读 → `EIO` 不重试，fd 仍关闭（manager.c:1414-1418） |
+| `test_read_exec_read_error_propagates_errno` | NS9：`read` 出错走 `r < 0` 分支上抛 errno（manager.c:1419） |
+| `test_read_exec_failure_leaves_prior_exec_alone` | NS9：失败不触碰调用方既有 `slot.exec`（USE_COPY 共享映像不受影响） |
 
-**Gate D 证据**：`rg "fn (validate_image|share_exec|has_shared_exec|free_exec)" os/servers/rs/src/exec.rs` —— 4 个函数全部存在；无 `todo!`/`unimplemented!`（DEFERRED 面以文档契约 + `KernelApi` 模式表达，非 stub 占位）。
+**存在性证据**：`rg "fn (validate_image|share_exec|has_shared_exec|free_exec|read_exec|read_exec_with)" os/servers/rs/src/exec.rs` —— 6 个函数全部存在；无 `todo!`/`unimplemented!`（DEFERRED 面以文档契约 + `KernelApi` 模式表达，非 stub 占位）。
 
 ---
 

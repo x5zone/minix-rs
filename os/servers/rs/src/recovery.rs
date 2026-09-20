@@ -818,6 +818,7 @@ fn reincarnate_service(
     kernel: &mut dyn KernelApi,
     ticks: Clock,
     asynsend: &mut dyn FnMut(Endpoint, &crate::ready::InitMessage) -> Result<(), Errno>,
+    read_exec: &mut dyn FnMut(&mut ServiceSlot) -> Result<(), Errno>,
 ) {
     // manager.c:1036-1040 — clone failure is reported and ignored (the
     // service stays dead; the ping path will pick it up).
@@ -836,6 +837,7 @@ fn reincarnate_service(
     let restarts = table.get(rp).restarts; // manager.c:1045-1049
     let mut effects = crate::service_create::CreateEffects {
         asynsend: alloc::boxed::Box::new(asynsend),
+        read_exec: alloc::boxed::Box::new(&mut *read_exec),
         ..Default::default()
     };
     let _ = crate::service_create::start_service(
@@ -866,6 +868,10 @@ pub struct TerminateEffects<'a> {
     pub unpublish: alloc::boxed::Box<dyn FnMut(SlotId) + 'a>,
     /// Recovery script hook. C: run_script — manager.c:1209 (15/19).
     pub run_script: alloc::boxed::Box<crate::service_create::SlotEffectFn<'a>>,
+    /// Binary image load for the restart arms (refresh / first unexpected
+    /// exit) and the reincarnate tail. C: read_exec — manager.c:1372, the
+    /// implicit global in the same family as run_script/rs_asynsend.
+    pub read_exec: alloc::boxed::Box<crate::service_create::SlotEffectFn<'a>>,
     /// RS_INIT async send. C: rs_asynsend — utility.c:223 (19).
     pub asynsend: alloc::boxed::Box<crate::service_create::AsynsendFn<'a>>,
 }
@@ -921,14 +927,13 @@ pub fn terminate_service(
         }
         // manager.c:1154-1156 — refresh path: restart in place.
         TerminateAction::Refresh => {
-            let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
             crate::service_create::restart_service(
                 table,
                 rp,
                 kernel,
                 ticks,
                 &mut crate::service_create::RestartEffects {
-                    read_exec: &mut noop_read_exec,
+                    read_exec: &mut *effects.read_exec,
                     run_script: &mut effects.run_script,
                     asynsend: &mut effects.asynsend,
                 },
@@ -941,14 +946,13 @@ pub fn terminate_service(
         }
         // manager.c:1177-1179 — first unexpected exit: immediate restart.
         TerminateAction::Restart => {
-            let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
             crate::service_create::restart_service(
                 table,
                 rp,
                 kernel,
                 ticks,
                 &mut crate::service_create::RestartEffects {
-                    read_exec: &mut noop_read_exec,
+                    read_exec: &mut *effects.read_exec,
                     run_script: &mut effects.run_script,
                     asynsend: &mut effects.asynsend,
                 },
@@ -1025,7 +1029,14 @@ pub fn terminate_service(
             // manager.c:1145-1151 — reincarnate after cleanup (the decision
             // already cleared RS_REINCARNATE via `mutations.clear`).
             if reincarnate {
-                reincarnate_service(table, rp, kernel, ticks, &mut effects.asynsend);
+                reincarnate_service(
+                    table,
+                    rp,
+                    kernel,
+                    ticks,
+                    &mut effects.asynsend,
+                    &mut *effects.read_exec,
+                );
             }
         }
     }
