@@ -18,3 +18,7 @@ path = "pm_vm_fork.rs"
 [[test]]
 name = "srv_fork"
 path = "srv_fork.rs"
+
+[[test]]
+name = "vm_vfs_fdclose"
+path = "vm_vfs_fdclose.rs"
