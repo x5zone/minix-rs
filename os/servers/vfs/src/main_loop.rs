@@ -34,17 +34,20 @@
 
 extern crate alloc;
 
-use crate::device_map::{DmapTable, SmapTable};
+use crate::device_map::{DmapTable, SmapTable, DEV_IMGRD};
 use crate::fcntl::LockTable;
 use crate::filp::FilpTable;
 use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
 use crate::fs_comm::{CommError, FsTransport, GlobalComm};
+use crate::mount::{DevCodec, FsSuperblock, MountError, SuperblockReader};
+use crate::request::WireFsClient;
 use crate::vnode::VnodeTable;
-use crate::vmnt::VmntTable;
+use crate::vmnt::{VmntFlags, VmntTable};
 use minix_sef::SefEvent;
 use minix_sys::ipc::IpcTransport as _;
+use minix_sys::syscall::KernelCallTransport;
 use crate::worker::WorkerPool;
-use minix_types::{Endpoint, Gid, Message, Uid, UserSlot, VfsPmInit, VfsPmInitError};
+use minix_types::{DevId, Endpoint, Gid, Message, NO_DEV, NR_PROCS, Uid, UserSlot, VfsPmInit, VfsPmInitError};
 
 /// C: `const.h:16-17` — uid_t/gid_t for system processes and INIT.
 const SYS_UID: Uid = 0;
@@ -355,11 +358,25 @@ pub struct VfsState {
     ///
     /// 块设备 open 要用它选 `v_bfs_e`（设备没被别的挂载占着就归根）并决定
     /// 要不要补发 `REQ_NEW_DRIVER`（open.c:186-216）。**赋值面在根挂载**
-    /// （`mount.c:326-328` 的 `ROOT_FS_E = fs_e`），而根挂载的执行编排归
-    /// 18-mount，本批还没接——所以现在恒为 `NONE`，块设备 open 在"设备未被
+    /// （`mount.c:326-328` 的 `ROOT_FS_E = fs_e`，NS4 已接：见
+    /// [`Self::do_init_root`]）；在此之前恒为 `NONE`，块设备 open 在"设备未被
     /// 挂载占着"这条路上按 C 的 newdriver 失败路径收尾（`bdev_close` +
     /// `ENXIO`），不假装通知成功。
     pub root_fs_e: Endpoint,
+    /// 根文件系统的设备号（C `glo.h:20` 的 `EXTERN dev_t ROOT_DEV`）。
+    ///
+    /// 与 [`Self::root_fs_e`] 同点赋值（`mount.c:326-327`），boot 链上即
+    /// `DEV_IMGRD`。
+    pub root_dev: DevId,
+    /// 根挂载计数（C `glo.h:19` 的 `EXTERN int have_root`）。
+    ///
+    /// `mount_fs` 用它区分"根可挂两次"（ramdisk/boot 盘，mount.c:208-210）
+    /// 的 `mount_root` 判定；boot 根挂载完成后为 1。
+    pub have_root: u32,
+    /// `none` 伪设备池（C `mount.c:33-37` 的 nonedev 位图）。
+    ///
+    /// `mount_pfs` 要从这里分一个伪设备（`find_free_nonedev`）。
+    pub nonedev: crate::mount::NonedevBitmap,
     pub pending_fs: Option<PendingFs>,
     /// 待投递的 `REQ_PUTNODE` 队列（`put_vnode` 慢路径的通知面；C 是
     /// worker 同步 `fs_sendrec`，模型里臂/续接上下文不能同步发——排队
@@ -403,6 +420,9 @@ impl VfsState {
             select_table: crate::select::SelectTable::new(),
             driver_labels: alloc::vec::Vec::new(),
             root_fs_e: Endpoint::NONE,
+            root_dev: NO_DEV,
+            have_root: 0,
+            nonedev: crate::mount::NonedevBitmap::default(),
             statvfs_buf: minix_types::StatvfsBuf::new(),
             pending_fs: None,
             pending_puts: alloc::vec::Vec::new(),
@@ -478,7 +498,11 @@ impl VfsState {
     /// Completes the post-handshake boot sequence (main.c:438-497).
     ///
     /// Requires the handshake to have terminated (phase `InitTables`).
-    pub fn finish_init(&mut self) {
+    pub fn finish_init(
+        &mut self,
+        kernel: &impl KernelCallTransport,
+        transport: &impl minix_sys::ipc::IpcTransport,
+    ) -> Result<(), MountError> {
         assert_eq!(
             self.boot_phase,
             BootPhase::InitTables,
@@ -494,7 +518,10 @@ impl VfsState {
         // VfsState::new 的 DmapTable::init 接线(CTTY 槽,S13 W5);
         // init_smap ≡ SmapTable::new(全空基编号)。
         // main.c:455-467 — sys_safecopyfrom(RS_PROC_NR, rproctab) + map_service()
-        //                  （归 19，DEFERRED，依赖 sys_safecopyfrom 内核原语）。
+        //                  （dmap 的 boot 装配半 = E-RPROCTAB 消费侧；见
+        //                  new_edge3 新登记——RS 侧的 wire 契约归 NS2，消费
+        //                  适配在其落地时接。boot 链上 dmap[MEMORY_MAJOR]
+        //                  为空 ⇒ 根挂载按 C 同款 EINVAL 失败。）
 
         // main.c:468-483 — fp_lock（槽位锁，单线程下归 07）+ filp/rd/wd 清零。
         self.fproc_table.init_phase2();
@@ -503,18 +530,26 @@ impl VfsState {
         //                  （表结构归 04~06，DEFERRED）。
 
         // main.c:492-497 — worker_start(fproc_addr(VFS_PROC_NR), do_init_root, ...)。
-        self.do_init_root();
+        // C 的 do_init_root 失败即 panic（main.c:519-520）——这里把 Err 交给
+        // 调用方（run() panic），决策面保持可测。
+        self.do_init_root(kernel, transport)?;
 
         assert_eq!(self.boot_phase, BootPhase::Running);
         self.initialized = true;
+        Ok(())
     }
 
-    /// Root mount sequence (main.c:501-527).
+    /// Root mount sequence (main.c:501-527) — NS4/W6 执行编排。
     ///
-    /// Establishes the worker gate contract: requests are refused while the
-    /// root file system is being mounted, then re-enabled. The actual
-    /// `mount_pfs()`/`mount_fs()` IPC is DEFERRED to 18-mount.
-    pub fn do_init_root(&mut self) {
+    /// 拒绝新请求（`worker_allow(FALSE)`）后挂 pipe fs 与根 fs：PFS 的
+    /// `req_readsuper` 失败只记录（C printf，挂载照旧），根挂载失败返回
+    /// [`MountError`]（C `panic("Failed to initialize root")`，main.c:519-520
+    /// 的 panic 归调用方）。成功后相位推进 `Running`。
+    pub fn do_init_root(
+        &mut self,
+        kernel: &impl KernelCallTransport,
+        transport: &impl minix_sys::ipc::IpcTransport,
+    ) -> Result<(), MountError> {
         assert_eq!(
             self.boot_phase,
             BootPhase::InitTables,
@@ -525,18 +560,214 @@ impl VfsState {
         // main.c:503 — worker_allow(FALSE)：挂载期间拒绝新请求（含 init(8)）。
         self.set_accept_requests(false);
 
-        // main.c:505 — mount_pfs()（执行编排归 18，决策件 mount.rs 已备）。
+        // main.c:505 — mount_pfs()：失败容忍（C printf 后继续）。
+        // C: printf("VFS: unable to mount PFS (%d)\n", r)——诊断输出，
+        // 无行为权重；no_std 载体无 stdout 承诺，这里静默同权。
+        let _ = self.mount_pfs(kernel, transport);
+
         // main.c:508-518 — mount_fs(DEV_IMGRD, "bootramdisk", "/", MFS_PROC_NR,
-        //                   0, "mfs", "fs_imgrd")：req_readsuper 往返件已备
-        //                   (S14:FsSuperblock 经 FsClient 的
-        //                   send_with_retry,SuperInfo.con_reqs 与
-        //                   max_reqs 窗口规则 mount.c:307-312);挂启动段
-        //                   执行归通电面。
+        //                   0, "mfs", "fs_imgrd")；失败 = C panic 路径。
+        let r = self.mount_fs_root(kernel, transport);
 
-        // main.c:525 — worker_allow(TRUE)：根文件系统就绪，恢复接受请求。
-        self.set_accept_requests(true);
+        match r {
+            Ok(()) => {
+                // main.c:525 — worker_allow(TRUE)：根文件系统就绪。
+                self.set_accept_requests(true);
+                self.boot_phase = BootPhase::Running;
+                Ok(())
+            }
+            // C: panic("Failed to initialize root")——门不复位（进程即将
+            // 终止，worker 门无观察者）；错误交调用方决定处置。
+            Err(e) => Err(e),
+        }
+    }
 
-        self.boot_phase = BootPhase::Running;
+    /// `mount_pfs`（`mount.c:391-425`）：PFS 以固定身份领一个 `none` 伪设备
+    /// 与一个 vmnt 槽，`req_readsuper` 确认后仅回填 `m_fs_flags`（C 忽略
+    /// 节点明细）。库存不足按 C 的 panic 路径返回 Err（调用方终止 boot）。
+    fn mount_pfs(
+        &mut self,
+        kernel: &impl KernelCallTransport,
+        transport: &impl minix_sys::ipc::IpcTransport,
+    ) -> Result<(), MountError> {
+        // find_free_nonedev + get_free_vmnt（C panic → 这里 Err 上抛）。
+        let dev = crate::mount::alloc_nonedev(&mut self.nonedev)?;
+        let slot = self.vmnt_table.alloc().map_err(|_| MountError::NoMem)?;
+
+        let plan = crate::mount::pfs_mount_plan(dev, slot.0 as u8);
+        {
+            let v = self.vmnt_table.get_mut(slot).ok_or(MountError::NoMem)?;
+            v.fs = Endpoint::PFS;
+            v.dev = plan.dev;
+            v.label = plan.label.into();
+            v.mount_path = plan.mount_path.into();
+            v.mount_dev = plan.mount_dev.into();
+            v.fs_flags = 0;
+        }
+
+        // req_readsuper(vmp, "", dev, FALSE, FALSE)（mount.c:417）——确认往返，
+        // 成功只回填 fs_flags；节点明细按 C 忽略。
+        let mut client = WireFsClient { grants: &mut self.grants, kernel, ipc: transport };
+        let mut sb = FsSuperblock { client: &mut client, fs_e: Endpoint::PFS, label: String::new() };
+        match sb.read_super(plan.dev, false, false) {
+            Ok(info) => {
+                if let Some(v) = self.vmnt_table.get_mut(slot) {
+                    v.fs_flags = info.fs_flags;
+                }
+                Ok(())
+            }
+            // C: printf + 挂载照旧——PFS 缺席不阻塞 boot（管道面后补）。
+            Err(e) => Err(e),
+        }
+    }
+
+    /// `mount_fs` 的根路径（`mount.c:156-350` 的 `mount_root` 分支）：
+    /// DEV_IMGRD 上的 mfs 挂为 `/`，装配 ROOT_DEV/ROOT_FS_E、根 vnode、
+    /// MAKEROOT 全表与 bspec 扫描。挂载点查找/胶水阶段（非根路径）归
+    /// 18-mount 的 `do_mount`。
+    fn mount_fs_root(
+        &mut self,
+        kernel: &impl KernelCallTransport,
+        transport: &impl minix_sys::ipc::IpcTransport,
+    ) -> Result<(), MountError> {
+        let dev = DEV_IMGRD;
+        let fs_e = Endpoint::MFS;
+        let mount_root = true; // mount_path "/" 且 boot 期 have_root < 2
+
+        // mount.c:170-183 — 非 none 设备先查 dmap 拿驱动标签；无驱动 = EINVAL
+        // （"no driver for dev"）。boot 链上 dmap[MEMORY_MAJOR] 的装配半
+        // （rproctab 消费）未接时，这里按 C 同款失败——不假装有盘。
+        let major = DevCodec::major(dev);
+        let label = {
+            let entry = self
+                .dmap_table
+                .get(major)
+                .filter(|e| e.is_mapped())
+                .ok_or(MountError::Inval)?;
+            let end = entry.label.iter().position(|&b| b == 0).unwrap_or(entry.label.len());
+            alloc::string::String::from_utf8_lossy(&entry.label[..end]).into_owned()
+        };
+
+        // mount.c:190-200 — 设备已挂 → EBUSY；领空闲 vmnt 槽 → ENOMEM。
+        if self.vmnt_table.find_by_dev(dev).is_some() {
+            return Err(MountError::Busy);
+        }
+        let slot = self.vmnt_table.alloc().map_err(|_| MountError::NoMem)?;
+
+        // mount.c:248-251 — 根 vnode（mount_root 跳过挂载点查找/胶水）。
+        let root_vn = self.vnode_table.alloc().map_err(|_| MountError::NoMem)?;
+
+        // mount.c:256-262 — isokendpt(fs_e) + 记系统进程旗标。
+        let fs_slot = UserSlot::new(fs_e.slot() as usize);
+        if self.fproc_table.get_mut(fs_slot).is_none() {
+            self.vmnt_table.mark_free(slot);
+            return Err(MountError::Inval);
+        }
+        self.fproc_table
+            .get_mut(fs_slot)
+            .unwrap()
+            .flags
+            .insert(FpFlags::SRV_PROC);
+
+        // mount.c:264-269 — vmnt 基础数据 + MOUNTING 旗标。
+        {
+            let v = self.vmnt_table.get_mut(slot).ok_or(MountError::NoMem)?;
+            v.fs = fs_e;
+            v.dev = dev;
+            v.mount_path = alloc::string::String::from("/");
+            v.mount_dev = alloc::string::String::from("bootramdisk");
+            v.fstype = alloc::string::String::from("mfs");
+            v.flags.insert(VmntFlags::MOUNTING);
+        }
+
+        // mount.c:270-272 — req_readsuper 往返（grant+sendrec+revoke）。
+        let read = {
+            let mut client =
+                WireFsClient { grants: &mut self.grants, kernel, ipc: transport };
+            let mut sb = FsSuperblock {
+                client: &mut client,
+                fs_e,
+                label: label.clone(),
+            };
+            sb.read_super(dev, false, mount_root)
+        };
+        if let Some(v) = self.vmnt_table.get_mut(slot) {
+            v.flags.remove(VmntFlags::MOUNTING); // mount.c:273
+        }
+
+        let info = match read {
+            Ok(info) => info,
+            // mount.c:277-281 — 失败：释放 vmnt（根 vnode ref==0，天然回
+            // 自由表，与 C 的 get_free_vnode 语义一致），errno 上抛。
+            Err(e) => {
+                self.vmnt_table.mark_free(slot);
+                return Err(e);
+            }
+        };
+
+        // mount.c:266 + 297-303 — fs_flags 与并发窗口（threaded → NR_WTHREADS）。
+        // mount.c:268-270 的 update_statvfs（statvfs 缓存首填）归 stadir
+        // 消费面（getvfsstat 接线波次，见 18-mount 实现表）。
+        {
+            let v = self.vmnt_table.get_mut(slot).ok_or(MountError::NoMem)?;
+            v.fs_flags = info.fs_flags;
+            let window = &mut self.comm.vmnts[slot.get()];
+            window.max_reqs = info.max_reqs();
+            window.cur_reqs = 0;
+        }
+
+        // mount.c:283-296 — 根 vnode 七连填 + 引用基线。
+        {
+            let vn = self.vnode_table.get_mut(root_vn).ok_or(MountError::NoMem)?;
+            vn.fs = info.node.fs_e;
+            vn.ino = info.node.ino;
+            vn.mode = info.node.mode;
+            vn.uid = info.node.uid;
+            vn.gid = info.node.gid;
+            vn.size = info.node.size;
+            vn.sdev = NO_DEV;
+            vn.fs_count = 1;
+            vn.ref_count = 1;
+            vn.vmnt = Some(crate::vnode::VmntId(slot.0));
+            vn.dev = dev;
+        }
+
+        // mount.c:305 — VMNT_CANSTAT：此后可对外报告该文件系统。
+        if let Some(v) = self.vmnt_table.get_mut(slot) {
+            v.flags.insert(VmntFlags::CANSTAT);
+        }
+
+        // mount.c:318-325 — 挂载落位：根节点、无父挂载点、标签。
+        {
+            let v = self.vmnt_table.get_mut(slot).ok_or(MountError::NoMem)?;
+            v.root = Some(root_vn.get());
+            v.mounted_on = None;
+            v.label = alloc::string::String::from("fs_imgrd");
+        }
+
+        // mount.c:331 — update_bspec(dev, fs_e, 0)：已有块特殊文件改路
+        // （boot 期表空，扫描为空转；语义随挂载提供）。
+        self.vnode_table.route_block_special(dev, fs_e);
+
+        // mount.c:326-328 — ROOT_DEV/ROOT_FS_E（NS4 赋值面核心）。
+        self.root_dev = dev;
+        self.root_fs_e = fs_e;
+
+        // mount.c:331-345 — MAKEROOT 全表：既有进程的 rd/wd 换根。boot 期
+        // 指针为空（None），`put_vnode` 半按 C 同款跳过；ref 基线即上面的
+        // `ref_count = 1`（C 首个 MAKEROOT 的 dup_vnode 同源）。
+        for i in 0..NR_PROCS {
+            if let Some(fp) = self.fproc_table.get_mut(UserSlot::new(i))
+                && fp.pid != PID_FREE
+            {
+                fp.root_dir = Some(root_vn.get());
+                fp.work_dir = Some(root_vn.get());
+            }
+        }
+
+        // mount.c:349 — have_root++。
+        self.have_root += 1;
+        Ok(())
     }
 
     /// Sets whether new requests may be assigned to worker slots.
@@ -7103,7 +7334,13 @@ pub fn run() -> ! {
         Endpoint::PM,
         Message { m_type: minix_types::OK, ..Message::default() },
     );
-    state.finish_init();
+    // main.c:492-497 — do_init_root 经 worker_start 启动；C 失败即 panic
+    // （main.c:519-520），这里同权。
+    state.finish_init(
+        &minix_sys::syscall::DirectKernelCallTransport,
+        &minix_sys::ipc::DirectTrapTransport,
+    )
+    .unwrap_or_else(|e| panic!("vfs: failed to initialize root: {e:?}"));
 
     // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
     // C 进程启动时的 grant 表注册（`sys_setgrant`，safecopies.c 的
@@ -10581,11 +10818,17 @@ mod tests {
         }
         .encode();
         state.pm_handshake_step(&terminator).unwrap();
-        state.finish_init();
+        seed_imgrd_driver(&mut state);
+        let ipc = BootScriptedIpc::default();
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        state.finish_init(&kernel, &ipc).unwrap();
 
         assert!(state.initialized);
         assert_eq!(state.boot_phase, BootPhase::Running);
         assert!(state.accept_requests);
+        assert_eq!(state.root_fs_e, Endpoint::MFS);
+        assert_eq!(state.root_dev, DEV_IMGRD);
+        assert_eq!(state.have_root, 1);
     }
 
     #[test]
@@ -10593,7 +10836,9 @@ mod tests {
     fn test_finish_init_requires_handshake() {
         let mut state = VfsState::new();
         state.init_fresh();
-        state.finish_init();
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        let ipc = BootScriptedIpc::default();
+        state.finish_init(&kernel, &ipc);
     }
 
     #[test]
@@ -10607,10 +10852,241 @@ mod tests {
         }
         .encode();
         state.pm_handshake_step(&terminator).unwrap();
+        seed_imgrd_driver(&mut state);
 
-        state.do_init_root();
+        let ipc = BootScriptedIpc::default();
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        state.do_init_root(&kernel, &ipc).unwrap();
         assert_eq!(state.boot_phase, BootPhase::Running);
         assert!(state.accept_requests);
+        assert_eq!(state.root_fs_e, Endpoint::MFS);
+    }
+
+    // ── NS4/W6 根挂载编排 ────────────────────────────────────────────
+
+    /// 给 dmap 播种 memory 驱动行（DEV_IMGRD 的 major 归属，C boot 链上
+    /// 由 rproctab/map_service 装配——E-RPROCTAB 消费半，这里测试直填）。
+    fn seed_imgrd_driver(state: &mut VfsState) {
+        let mut entry = crate::device_map::DmapEntry::empty();
+        entry.driver = Some(Endpoint::MEM);
+        entry.label[..7].copy_from_slice(b"memory\0");
+        assert!(state.dmap_table.set(crate::device_map::MEMORY_MAJOR, entry));
+    }
+
+    /// 根 readsuper 的脚本回复（ipc.h:198-211 布局：file_size@0、device@8、
+    /// inode@16、flags@24、mode@28、uid@32、gid@36、con_reqs@40）。
+    fn readsuper_reply(ino: u64, mode: u32, size: u64) -> Message {
+        let mut m = Message::default();
+        {
+            // SAFETY: 按 request.rs:1140 解码器的既有偏移写字节面。
+            let raw = unsafe { &mut m.m_u.raw };
+            raw[0..8].copy_from_slice(&size.to_le_bytes());
+            raw[16..24].copy_from_slice(&ino.to_le_bytes());
+            raw[24..28].copy_from_slice(&0u32.to_le_bytes());
+            raw[28..32].copy_from_slice(&mode.to_le_bytes());
+            raw[32..36].copy_from_slice(&0u32.to_le_bytes());
+            raw[36..40].copy_from_slice(&0u32.to_le_bytes());
+        }
+        m
+    }
+
+    /// boot 段脚本 IPC：`sendrec` 依次弹出回复，空脚本给默认成功回复
+    /// （目录根节点、非 threaded）。
+    struct BootScriptedIpc {
+        queue: core::cell::RefCell<alloc::collections::VecDeque<Option<Message>>>,
+        /// (目的地, 发出的请求) 按序记录。
+        pub sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
+        /// 非 None 时下一次 sendrec 报这个正 errno（TrapStatus 契约）。
+        pub fail_next: core::cell::Cell<Option<i32>>,
+    }
+
+    impl Default for BootScriptedIpc {
+        fn default() -> Self {
+            Self {
+                queue: core::cell::RefCell::new(alloc::collections::VecDeque::new()),
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail_next: core::cell::Cell::new(None),
+            }
+        }
+    }
+
+    impl BootScriptedIpc {
+        fn push(&self, m: Option<Message>) {
+            self.queue.borrow_mut().push_back(m);
+        }
+    }
+
+    impl minix_sys::ipc::IpcTransport for BootScriptedIpc {
+        fn send(
+            &self,
+            _d: Endpoint,
+            _m: &Message,
+        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
+        fn receive(
+            &self,
+            _s: Endpoint,
+            _m: &mut Message,
+        ) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
+            unimplemented!("boot 段不收消息")
+        }
+        fn sendrec(
+            &self,
+            destination: Endpoint,
+            message: &mut Message,
+        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+            self.sent.borrow_mut().push((destination, message.clone()));
+            if let Some(e) = self.fail_next.take() {
+                return Err(minix_sys::ipc::TrapStatus(e));
+            }
+            match self.queue.borrow_mut().pop_front() {
+                Some(Some(m)) => *message = m,
+                _ => *message = readsuper_reply(1, crate::open::S_IFDIR | 0o755, 64),
+            }
+            Ok(())
+        }
+        fn notify(&self, _d: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
+        fn sendnb(
+            &self,
+            _d: Endpoint,
+            _m: &Message,
+        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
+        fn senda(
+            &self,
+            _t: &[minix_sys::ipc::AsyncSlot],
+        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
+        fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> {
+            Err(minix_sys::ipc::TrapStatus(minix_types::ENOSYS))
+        }
+    }
+
+    /// boot 前置：一个 live 进程槽（槽 0，供 MAKEROOT 断言）+ 握手终止
+    /// + dmap 驱动行（根挂载的脚本环境）。
+    fn boot_ready_state() -> (VfsState, BootScriptedIpc) {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let first =
+            VfsPmInit { slot: 0, pid: 8, endpoint: Endpoint::from_generation_slot(1, 0) }
+                .encode();
+        state.pm_handshake_step(&first).unwrap();
+        let terminator = VfsPmInit { slot: 0, pid: 0, endpoint: Endpoint::NONE }.encode();
+        state.pm_handshake_step(&terminator).unwrap();
+        seed_imgrd_driver(&mut state);
+        (state, BootScriptedIpc::default())
+    }
+
+    #[test]
+    fn test_root_mount_full_assembly() {
+        let (mut state, ipc) = boot_ready_state();
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        // 脚本序:PFS 先答（明细按 C 忽略），MFS 后答（根 inode 1、目录、
+        // 串行窗口 = 1——flags@24 零即无 RES_THREADED）。
+        ipc.push(Some(readsuper_reply(1, crate::open::S_IFDIR | 0o755, 32)));
+        ipc.push(Some(readsuper_reply(1, crate::open::S_IFDIR | 0o755, 4096)));
+
+        state.do_init_root(&kernel, &ipc).unwrap();
+
+        // 赋值面（mount.c:326-328）。
+        assert_eq!(state.root_fs_e, Endpoint::MFS);
+        assert_eq!(state.root_dev, DEV_IMGRD);
+        assert_eq!(state.have_root, 1);
+
+        // vmnt 行：标签/路径/设备 + CANSTAT + 窗口（mount.c:297-305/318-325）。
+        let id = state.vmnt_table.find_by_dev(DEV_IMGRD).expect("root vmnt row");
+        let v = state.vmnt_table.get(id).unwrap();
+        assert_eq!(v.fs, Endpoint::MFS);
+        assert_eq!(v.dev, DEV_IMGRD);
+        assert!(v.flags.contains(VmntFlags::CANSTAT));
+        assert!(!v.flags.contains(VmntFlags::MOUNTING));
+        assert_eq!(v.label, "fs_imgrd");
+        assert_eq!(v.mount_path, "/");
+        assert_eq!(v.fstype, "mfs");
+        assert_eq!(v.mounted_on, None);
+        assert_eq!(state.comm.vmnts[id.get()].max_reqs, 1);
+
+        // 根 vnode 七连填（mount.c:283-296）。
+        let root_idx = v.root.expect("root vnode set");
+        let vn = state.vnode_table.get(crate::vnode::VnodeId(root_idx)).unwrap();
+        assert_eq!(vn.ino, 1);
+        assert_eq!(vn.mode, crate::open::S_IFDIR | 0o755);
+        assert_eq!(vn.size, 4096);
+        assert_eq!(vn.ref_count, 1);
+        assert_eq!(vn.fs_count, 1);
+        assert_eq!(vn.sdev, NO_DEV);
+        assert_eq!(vn.vmnt, Some(crate::vnode::VmntId(id.get())));
+        assert_eq!(vn.dev, DEV_IMGRD);
+
+        // MAKEROOT：live fproc 槽（槽 0 已被握手播种）rd/wd 归根。
+        let fp = state.fproc_table.get(UserSlot::new(0)).unwrap();
+        assert_eq!(fp.root_dir, Some(root_idx));
+        assert_eq!(fp.work_dir, Some(root_idx));
+    }
+
+    #[test]
+    fn test_root_mount_without_driver_is_inval_and_gate_stays_closed() {
+        let (mut state, ipc) = boot_ready_state();
+        // 拔掉 dmap 行：boot 装配半（rproctab 消费）缺位时的诚实失败。
+        state
+            .dmap_table
+            .set(crate::device_map::MEMORY_MAJOR, crate::device_map::DmapEntry::empty());
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+
+        let r = state.do_init_root(&kernel, &ipc);
+        assert!(matches!(r, Err(MountError::Inval)));
+        // C panic 前 worker 门不复位；root 未赋值。
+        assert!(!state.accept_requests);
+        assert_eq!(state.root_fs_e, Endpoint::NONE);
+        assert_eq!(state.have_root, 0);
+    }
+
+    #[test]
+    fn test_pfs_readsuper_failure_tolerated() {
+        let (mut state, ipc) = boot_ready_state();
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        // 第一发（PFS）失败，第二发（MFS）走默认回复。
+        ipc.fail_next.set(Some(minix_types::EIO));
+
+        state.do_init_root(&kernel, &ipc).unwrap();
+        assert_eq!(state.have_root, 1);
+        assert_eq!(state.root_fs_e, Endpoint::MFS);
+        // PFS 行仍站着（C：printf 后挂载照旧），fs_flags 未回填。
+        let pfs = state.vmnt_table.find_by_fs(Endpoint::PFS).expect("pfs row stands");
+        assert_eq!(state.vmnt_table.get(pfs).unwrap().fs_flags, 0);
+    }
+
+    #[test]
+    fn test_root_mount_wire_shape() {
+        let (mut state, ipc) = boot_ready_state();
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        state.do_init_root(&kernel, &ipc).unwrap();
+
+        let sent = ipc.sent.borrow();
+        assert_eq!(sent.len(), 2, "PFS + MFS 各一次 readsuper");
+        let (pfs_dst, pfs_req) = &sent[0];
+        let (mfs_dst, mfs_req) = &sent[1];
+        assert_eq!(*pfs_dst, Endpoint::PFS);
+        assert_eq!(*mfs_dst, Endpoint::MFS);
+        assert_eq!(pfs_req.m_type, minix_types::REQ_READSUPER as i32);
+        assert_eq!(mfs_req.m_type, minix_types::REQ_READSUPER as i32);
+
+        // 线上形状（request.c:780-813）：device@0、flags@8、path_len@16、grant@24。
+        let raw = unsafe { &mfs_req.m_u.raw };
+        let dev = u64::from_le_bytes(raw[0..8].try_into().unwrap());
+        let flags = u32::from_le_bytes(raw[8..12].try_into().unwrap());
+        let path_len = u64::from_le_bytes(raw[16..24].try_into().unwrap());
+        let grant = i32::from_le_bytes(raw[24..28].try_into().unwrap());
+        assert_eq!(dev, DEV_IMGRD);
+        assert_ne!(flags & crate::request::REQ_ISROOT, 0, "根挂载带 REQ_ISROOT");
+        // label "memory\0" = 7 字节（dmap 行播种的驱动标签）。
+        assert_eq!(path_len, 7);
+        assert!(grant >= 0, "grant 已建（CPF_READ 直授权）");
     }
 
     #[test]

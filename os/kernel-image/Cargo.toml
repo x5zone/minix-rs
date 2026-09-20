@@ -1,0 +1,28 @@
+[package]
+name = "kernel-image"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+# X-2/NK5 裸机隔离：本包 bin 是 no_std 裸机内核镜像（自带 panic_handler 与
+# global_allocator），宿主 `--workspace --bins` 必须跳过；真机构建成对传
+# `--target x86_64-unknown-none --features fw-x86-none`（与 test-kernels
+# 同一 fw-* 词汇表）。
+fw-x86-none = []
+
+[dependencies]
+minix-arch = { path = "../arch", default-features = false }
+minix-kernel = { path = "../kernel", default-features = false }
+minix-plat = { path = "../plat" }
+minix-types = { path = "../libs/minix-types" }
+minix-boot = { path = "../libs/minix-boot" }
+
+# 产出物就是取件契约位的文件名：cargo 对 none 目标产无扩展名工件
+# `target/x86_64-unknown-none/<profile>/kernel`，xtask image() 的取件
+# 缺省路径与之对齐（os/xtask/src/image.rs kernel_elf_path）。
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+required-features = ["fw-x86-none"]

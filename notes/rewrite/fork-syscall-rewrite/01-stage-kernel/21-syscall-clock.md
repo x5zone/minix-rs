@@ -39,7 +39,7 @@
 | realtime | `get_realtime()` (minix3/minix/kernel/system/do_times.c:do_times（L41，工具生成）) | 墙上时钟 tick 数（受 adjtime 影响） | 是（SETTIME now≠0） |
 | boottime | `get_boottime()` (minix3/minix/kernel/system/do_times.c:do_times（L42，工具生成）) | 系统启动时的 Unix 时间戳 | 是（STIME） |
 
-**SELF 语义**：`endpt == SELF` (-2) 表示"查询自己"，内核替换为 `caller->p_endpoint` (minix3/minix/kernel/system/do_times.c:do_times（L33，工具生成）)。`endpt == NONE` 表示不查询特定进程时间，仅返回时钟值 (minix3/minix/kernel/system/do_times.c:do_times（L35，工具生成）)。
+**SELF 语义**：`endpt == SELF`（endpoint.h:56 哨兵，`_ENDPOINT_SLOT_TOP - 3` = 31742，由 com.h:55 `MAX_NR_TASKS=1023` 推导；Rust 权威在 `minix-types` endpoint.rs:50）表示"查询自己"，内核替换为 `caller->p_endpoint` (minix3/minix/kernel/system/do_times.c:do_times（L33，工具生成）)。`endpt == NONE` 表示不查询特定进程时间，仅返回时钟值 (minix3/minix/kernel/system/do_times.c:do_times（L35，工具生成）)。
 
 **并发安全**：minix3/minix/kernel/system/do_times.c:do_times（L29，工具生成） 注释指出时钟中断 handler 可能并发更新时间字段，但单字段读是原子的。Rust 用 `AtomicU64::load(Ordering::Relaxed)` 天然表达此语义（见 Ch3 D6）。
 
@@ -751,7 +751,8 @@ pub(crate) fn caller_has_sys_proc_with_table(caller: &KProcess, priv_table: &Pri
 | `test_ksc_setalarm_non_sys_proc_returns_eperm` | SETALARM 非 SYS_PROC 返回 EPERM | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成） |
 | `test_ksc_vtimer_non_sys_proc_returns_eperm` | VTIMER 非 SYS_PROC 返回 EPERM | minix3/minix/kernel/system/do_vtimer.c:do_vtimer（L31，工具生成） |
 | `test_ksc_priv_flags_sys_proc_bit_definition` | IDL_F/SRV_F 含 SYS_PROC, USR_F 不含 | `SYS_PROC` 位 |
-| `test_dispatch_times_self_replacement` | TIMES SELF 替换 + reply 填充 | minix3/minix/kernel/system/do_times.c:do_times（L33，工具生成） |
+| `test_dispatch_times_self_replacement` | TIMES SELF 替换 + reply 填充（caller 槽带专属 endpoint 与非零 user_time，判别替换真实发生） | minix3/minix/kernel/system/do_times.c:do_times（L33，工具生成） |
+| `test_sys_times_self_sentinel_authority_pin` | SELF 哨兵权威值 pin（31742 = endpoint.h:56 `_ENDPOINT_SLOT_TOP-3`；防 -2 化石值回归） | endpoint.h:56 + com.h:55 |
 | `test_dispatch_setalarm_reset_timer` | SETALARM 非 SYS_PROC 返回 EPERM（reset 路径前置检查） | minix3/minix/kernel/system/do_setalarm.c:do_setalarm（L33，工具生成） |
 
 ### 5.2 待补充测试（行为覆盖，DEFERRED）→ ✅ 全部补齐（2026-09-08，T-6）

@@ -830,6 +830,561 @@ pub fn select_empty_via(
     perform_syscall(transport, vfs_endpoint(), VFS_CALL_SELECT, &mut message)
 }
 
+// ── 文件操作族（NL4 高优先批，2026-09-21）──────────────────────────────
+//
+// 十六个调用号，全部对应 `minix3/minix/include/minix/callnr.h:78-106` 的
+// `VFS_BASE + N`；服务端 `os/servers/vfs/src/syscalls.rs` 的各臂早已就绪，
+// 本批是纯客户端封装缺口（new_edge2.md NL4 侦察结论）。
+
+/// `VFS_LINK (VFS_BASE + 6)` (`callnr.h:78`).
+pub const VFS_CALL_LINK: i32 = 0x100 + 6;
+/// `VFS_UNLINK (VFS_BASE + 7)` (`callnr.h:79`).
+pub const VFS_CALL_UNLINK: i32 = 0x100 + 7;
+/// `VFS_CHDIR (VFS_BASE + 8)` (`callnr.h:80`).
+pub const VFS_CALL_CHDIR: i32 = 0x100 + 8;
+/// `VFS_MKDIR (VFS_BASE + 9)` (`callnr.h:81`).
+pub const VFS_CALL_MKDIR: i32 = 0x100 + 9;
+/// `VFS_MKNOD (VFS_BASE + 10)` (`callnr.h:82`).
+pub const VFS_CALL_MKNOD: i32 = 0x100 + 10;
+/// `VFS_CHMOD (VFS_BASE + 11)` (`callnr.h:83`).
+pub const VFS_CALL_CHMOD: i32 = 0x100 + 11;
+/// `VFS_CHOWN (VFS_BASE + 12)` (`callnr.h:84`).
+pub const VFS_CALL_CHOWN: i32 = 0x100 + 12;
+/// `VFS_ACCESS (VFS_BASE + 15)` (`callnr.h:87`).
+pub const VFS_CALL_ACCESS: i32 = 0x100 + 15;
+/// `VFS_RENAME (VFS_BASE + 17)` (`callnr.h:89`).
+pub const VFS_CALL_RENAME: i32 = 0x100 + 17;
+/// `VFS_RMDIR (VFS_BASE + 18)` (`callnr.h:90`).
+pub const VFS_CALL_RMDIR: i32 = 0x100 + 18;
+/// `VFS_SYMLINK (VFS_BASE + 19)` (`callnr.h:91`).
+pub const VFS_CALL_SYMLINK: i32 = 0x100 + 19;
+/// `VFS_READLINK (VFS_BASE + 20)` (`callnr.h:92`).
+pub const VFS_CALL_READLINK: i32 = 0x100 + 20;
+/// `VFS_UMASK (VFS_BASE + 27)` (`callnr.h:99`).
+pub const VFS_CALL_UMASK: i32 = 0x100 + 27;
+/// `VFS_FCHDIR (VFS_BASE + 31)` (`callnr.h:103`).
+pub const VFS_CALL_FCHDIR: i32 = 0x100 + 31;
+/// `VFS_TRUNCATE (VFS_BASE + 33)` (`callnr.h:105`).
+pub const VFS_CALL_TRUNCATE: i32 = 0x100 + 33;
+/// `VFS_FTRUNCATE (VFS_BASE + 34)` (`callnr.h:106`).
+pub const VFS_CALL_FTRUNCATE: i32 = 0x100 + 34;
+/// `VFS_SYNC (VFS_BASE + 16)` (`callnr.h:88`).
+pub const VFS_CALL_SYNC: i32 = 0x100 + 16;
+/// `VFS_UTIMENS (VFS_BASE + 37)` (`callnr.h:109`).
+pub const VFS_CALL_UTIMENS: i32 = 0x100 + 37;
+
+/// `UTIME_NOW` — set the timestamp to the current time
+/// (`sys/sys/stat.h:235`: `((1 << 30) - 1)`).
+pub const UTIME_NOW: i64 = (1 << 30) - 1;
+/// `UTIME_OMIT` — leave the timestamp unchanged
+/// (`sys/sys/stat.h:236`: `((1 << 30) - 2)`).
+pub const UTIME_OMIT: i64 = (1 << 30) - 2;
+/// `AT_FDCWD` — relative paths resolve against the caller's working
+/// directory (`sys/sys/fcntl.h:297`, consumed by
+/// `minix3/minix/lib/libc/sys/utimensat.c:36`).
+pub const AT_FDCWD: i32 = -100;
+/// `AT_SYMLINK_NOFOLLOW` — do not follow a trailing symlink
+/// (`sys/sys/fcntl.h:299`, used by `lutimens` in
+/// `minix3/lib/libc/gen/utimens.c`).
+pub const AT_SYMLINK_NOFOLLOW: i32 = 0x200;
+
+/// FIFO file-type bit (`sys/sys/stat.h` `__S_IFIFO`, used by C `mkfifo`).
+pub const S_IFIFO: u32 = 0o010000;
+
+/// Six inline-path calls (unlink, rmdir, chdir, mkdir, chmod, access) share
+/// one request shape: `mess_lc_vfs_path` — address @0, NUL-inclusive length
+/// @8, flags @16, mode @20, inline path bytes @24.
+///
+/// C: each wrapper memsets the message, runs `_loadname` (address, length,
+/// inline strcpy), and for mkdir/chmod/access alone sets
+/// `m_lc_vfs_path.mode` — `mkdir.c`/`chmod.c` the permission bits,
+/// `access.c` the `amode` (`R_OK|W_OK|X_OK` or `F_OK`). The `flags` lane
+/// stays zero for all six; the three path-only calls also leave `mode`
+/// zero. The mode lane's i32 type follows [`OpenPathPayload`]'s field.
+///
+/// The inline boundary and its `ENAMETOOLONG` answer are shared with
+/// [`open_existing_via`] (identical layout, identical deliberate
+/// hardening of C `loadname`'s silent inline-copy skip).
+fn path_request_via(
+    transport: &impl IpcTransport,
+    call_number: i32,
+    name_address: u64,
+    name_length_including_nul: usize,
+    mode: i32,
+) -> Result<(), Errno> {
+    if name_length_including_nul == 0 || name_length_including_nul > OPEN_PATH_INLINE_MAX {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    // SAFETY: the caller's path buffer lives in this same address space
+    // (user library reads its own argument — C loadname.c:16-17 同型)。
+    let path_bytes = unsafe {
+        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
+    };
+    let mut packed = [0u8; core::mem::size_of::<OpenPathPayload>()];
+    packed[0..8].copy_from_slice(&name_address.to_le_bytes());
+    packed[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
+    // flags @16..20 stays zero for all six calls (C memset, never written).
+    packed[20..24].copy_from_slice(&mode.to_le_bytes());
+    packed[24..24 + path_bytes.len()].copy_from_slice(path_bytes);
+    let mut message = crate::syscall::cleared_message();
+    crate::syscall::write_payload(&mut message, &packed);
+    perform_syscall(transport, vfs_endpoint(), call_number, &mut message).map(|_| ())
+}
+
+/// Deletes a directory entry (C: `unlink`,
+/// `minix3/minix/lib/libc/sys/unlink.c:9-18`).
+pub fn unlink_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+) -> Result<(), Errno> {
+    path_request_via(transport, VFS_CALL_UNLINK, name_address, name_length_including_nul, 0)
+}
+
+/// Removes an empty directory (C: `rmdir`,
+/// `minix3/minix/lib/libc/sys/rmdir.c:9-18`).
+pub fn rmdir_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+) -> Result<(), Errno> {
+    path_request_via(transport, VFS_CALL_RMDIR, name_address, name_length_including_nul, 0)
+}
+
+/// Changes the working directory (C: `chdir`,
+/// `minix3/minix/lib/libc/sys/chdir.c:9-18`).
+pub fn chdir_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+) -> Result<(), Errno> {
+    path_request_via(transport, VFS_CALL_CHDIR, name_address, name_length_including_nul, 0)
+}
+
+/// Creates a directory (C: `mkdir`,
+/// `minix3/minix/lib/libc/sys/mkdir.c:8-17`; the server applies the
+/// process umask to the low permission bits, `open.c:583` 对位的
+/// `do_mkdir` 臂).
+pub fn mkdir_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    mode: u32,
+) -> Result<(), Errno> {
+    path_request_via(
+        transport,
+        VFS_CALL_MKDIR,
+        name_address,
+        name_length_including_nul,
+        mode as i32,
+    )
+}
+
+/// Sets a path's permission bits (C: `chmod`,
+/// `minix3/minix/lib/libc/sys/chmod.c:8-17`).
+pub fn chmod_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    mode: u32,
+) -> Result<(), Errno> {
+    path_request_via(
+        transport,
+        VFS_CALL_CHMOD,
+        name_address,
+        name_length_including_nul,
+        mode as i32,
+    )
+}
+
+/// Checks real-uid access bits without opening (C: `access`,
+/// `minix3/minix/lib/libc/sys/access.c:8-17`; the `amode` word is
+/// `R_OK|W_OK|X_OK` or `F_OK`, validated server-side at
+/// `protect.c:199-233` 对位的 Access 臂).
+pub fn access_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    amode: i32,
+) -> Result<(), Errno> {
+    path_request_via(transport, VFS_CALL_ACCESS, name_address, name_length_including_nul, amode)
+}
+
+/// Shared request shape of link, symlink, and rename:
+/// `mess_lc_vfs_link` — first address @0, second @8, first NUL-inclusive
+/// length @16, second @24 (`ipc.h:708-715`). Unlike the six above, these
+/// three carry no inline bytes: the C wrappers pass both pointers and the
+/// server fetches the names through the caller's address space
+/// (`SysPathFetcher::fetch`, 服务端 Link/Symlink/Rename 臂同见证).
+///
+/// C sets exactly these four fields in `link.c`/`symlink.c`/`rename.c`
+/// after a memset; no length pre-check happens client-side because no
+/// inline window exists to overflow.
+fn link_names_via(
+    transport: &impl IpcTransport,
+    call_number: i32,
+    name1_address: u64,
+    name1_length_including_nul: usize,
+    name2_address: u64,
+    name2_length_including_nul: usize,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: the four lanes follow `mess_lc_vfs_link` field order; the
+    // server's Link/Symlink/Rename arms decode the same offsets.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&name1_address.to_le_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&name2_address.to_le_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&(name1_length_including_nul as u64).to_le_bytes());
+        message.m_u.raw[24..32].copy_from_slice(&(name2_length_including_nul as u64).to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), call_number, &mut message).map(|_| ())
+}
+
+/// Creates a hard link (C: `link(name, name2)`,
+/// `minix3/minix/lib/libc/sys/link.c:9-19`).
+pub fn link_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    new_name_address: u64,
+    new_name_length_including_nul: usize,
+) -> Result<(), Errno> {
+    link_names_via(
+        transport,
+        VFS_CALL_LINK,
+        name_address,
+        name_length_including_nul,
+        new_name_address,
+        new_name_length_including_nul,
+    )
+}
+
+/// Creates a symbolic link (C: `symlink(name, name2)`,
+/// `minix3/minix/lib/libc/sys/symlink.c:9-19`; `name` is the target text,
+/// `name2` the link path being created).
+pub fn symlink_via(
+    transport: &impl IpcTransport,
+    target_address: u64,
+    target_length_including_nul: usize,
+    link_path_address: u64,
+    link_path_length_including_nul: usize,
+) -> Result<(), Errno> {
+    link_names_via(
+        transport,
+        VFS_CALL_SYMLINK,
+        target_address,
+        target_length_including_nul,
+        link_path_address,
+        link_path_length_including_nul,
+    )
+}
+
+/// Moves a path (C: `rename(name, name2)`,
+/// `minix3/minix/lib/libc/sys/rename.c:9-19`).
+pub fn rename_via(
+    transport: &impl IpcTransport,
+    old_address: u64,
+    old_length_including_nul: usize,
+    new_address: u64,
+    new_length_including_nul: usize,
+) -> Result<(), Errno> {
+    link_names_via(
+        transport,
+        VFS_CALL_RENAME,
+        old_address,
+        old_length_including_nul,
+        new_address,
+        new_length_including_nul,
+    )
+}
+
+/// Sets a path's owner and group (C: `chown`,
+/// `minix3/minix/lib/libc/sys/chown.c:9-20`).
+///
+/// `mess_lc_vfs_chown`（`ipc.h:611-619`）：name@0、len@8、fd@16、
+/// owner@20、group@24。fd lane 是 fchown 复用的字段，path 半按 C memset
+/// 保持 0（chown.c 只填 name/len/owner/group，服务端按调用号判别）。
+pub fn chown_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    owner: u32,
+    group: u32,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_lc_vfs_chown` field order; the server's
+    // Chown|Fchown arm decodes the same offsets.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&name_address.to_le_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
+        message.m_u.raw[20..24].copy_from_slice(&owner.to_le_bytes());
+        message.m_u.raw[24..28].copy_from_slice(&group.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_CHOWN, &mut message).map(|_| ())
+}
+
+/// Sets a path's length (C: `truncate`,
+/// `minix3/minix/lib/libc/sys/truncate.c:9-17`).
+///
+/// `mess_lc_vfs_truncate`（`ipc.h:894-902`）：offset@0、fd@8、name@16、
+/// len@24。fd lane 是 ftruncate 复用的字段，path 半按 C memset 保持 0；
+/// name 走地址由服务端 fetcher 取回。
+pub fn truncate_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    offset: i64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_lc_vfs_truncate` field order; the
+    // server's Truncate arm decodes the same offsets.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&offset.to_le_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&name_address.to_le_bytes());
+        message.m_u.raw[24..32].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_TRUNCATE, &mut message).map(|_| ())
+}
+
+/// Sets an open descriptor's length (C: `ftruncate`,
+/// `minix3/minix/lib/libc/sys/ftruncate.c:9-16`; same payload struct as
+/// [`truncate_via`], fd half).
+pub fn ftruncate_via(transport: &impl IpcTransport, fd: i32, offset: i64) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: offset@0、fd@8（`mess_lc_vfs_truncate` 的 fd 半）。
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&offset.to_le_bytes());
+        message.m_u.raw[8..12].copy_from_slice(&fd.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_FTRUNCATE, &mut message).map(|_| ())
+}
+
+/// Changes the working directory to an open descriptor's (C: `fchdir`,
+/// `minix3/minix/lib/libc/sys/chdir.c:21-29`; `mess_lc_vfs_fchdir`
+/// 只有一个 int fd @0，`ipc.h:640-644`).
+pub fn fchdir_via(transport: &impl IpcTransport, fd: i32) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: `mess_lc_vfs_fchdir { int fd; }` — descriptor at byte zero.
+    unsafe {
+        message.m_u.raw[0..4].copy_from_slice(&fd.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_FCHDIR, &mut message).map(|_| ())
+}
+
+/// Sets the file-creation mask and reports the previous one (C: `umask`,
+/// `minix3/minix/lib/libc/sys/umask.c:9-17`).
+///
+/// `mess_lc_vfs_umask`（`ipc.h:905-909`）只有一个 mode_t mask @0（4 字节
+/// lane）。C 把回复的 message type 直接当旧 mask 读回（umask 是唯一经
+/// m_type 值通道返回 mode_t 的文件调用），服务端 Umask 臂
+/// （protect.c:186-190 对位）同形回复 `Ok(old)`。
+pub fn umask_via(transport: &impl IpcTransport, mask: u32) -> Result<u32, Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: `mess_lc_vfs_umask { mode_t mask; }` — mask at byte zero.
+    unsafe {
+        message.m_u.raw[0..4].copy_from_slice(&mask.to_le_bytes());
+    }
+    let old = perform_syscall(transport, vfs_endpoint(), VFS_CALL_UMASK, &mut message)?;
+    Ok(old as u32)
+}
+
+/// readlink 内联窗口容量：name 字节从 raw[32] 起，到 56 字节负载区末尾
+/// 只剩 24 字节（含 NUL）。服务端 Readlink 臂读 `raw[32..]`。
+pub const READLINK_INLINE_MAX: usize = 24;
+
+/// Reads a symlink target into the caller's buffer (C: `readlink`,
+/// `minix3/minix/lib/libc/sys/readlink.c:13-24`).
+///
+/// `mess_lc_vfs_readlink`（`ipc.h:785-792`）：name@0、namelen@8、buf@16、
+/// bufsize@24。C 只传 name 地址，但服务端 Readlink 臂按内联 `raw[32..]`
+/// 读路径（同 open-existing 的塑形改造），所以客户端把路径字节写进
+/// @32 窗口；窗口只有 [`READLINK_INLINE_MAX`] 字节（56−32），超长经
+/// `ENAMETOOLONG` 显式拒绝——比服务端 `<= OPEN_PATH_INLINE_MAX(32)` 的
+/// 检查更严（25..=32 在服务端会落入 24 字节窗口截断，客户端提前挡掉，
+/// 仓内闭环里服务端分支不可达；差异已登记）。
+///
+/// The reply's message type carries the byte count the server wrote into
+/// `buf` (C: `_syscall` 的非负 m_type 直接作为 ssize_t 返回).
+pub fn readlink_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    buffer_address: u64,
+    buffer_size: usize,
+) -> Result<usize, Errno> {
+    if name_length_including_nul == 0 || name_length_including_nul > READLINK_INLINE_MAX {
+        return Err(Errno::ENAMETOOLONG);
+    }
+    // SAFETY: the caller's path buffer lives in this same address space.
+    let path_bytes = unsafe {
+        core::slice::from_raw_parts(name_address as *const u8, name_length_including_nul)
+    };
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_lc_vfs_readlink` field order; the server's
+    // Readlink arm decodes name_len@8, buf@16, bufsize@24, inline @32.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&name_address.to_le_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&buffer_address.to_le_bytes());
+        message.m_u.raw[24..32].copy_from_slice(&(buffer_size as u64).to_le_bytes());
+        message.m_u.raw[32..32 + path_bytes.len()].copy_from_slice(path_bytes);
+    }
+    let written = perform_syscall(transport, vfs_endpoint(), VFS_CALL_READLINK, &mut message)?;
+    Ok(written as usize)
+}
+
+/// Creates a special file node (C: `mknod`,
+/// `minix3/minix/lib/libc/sys/mknod.c:9-19`).
+///
+/// `mess_lc_vfs_mknod`（`ipc.h:736-744`）：device@0（dev_t，8 字节）、
+/// name@8、len@16、mode@24（mode_t，4 字节 lane）。mode 高位携带文件
+/// 类型（`S_IFIFO` 等），服务端只放行非超级用户的 FIFO（open.c:530-531
+/// 对位的 Mknod 臂）；name 走地址由服务端 fetcher 取回。
+pub fn mknod_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: usize,
+    mode: u32,
+    device: u64,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_lc_vfs_mknod` field order; the server's
+    // Mknod arm decodes device@0, name@8, len@16, mode@24.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&device.to_le_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&name_address.to_le_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&(name_length_including_nul as u64).to_le_bytes());
+        message.m_u.raw[24..28].copy_from_slice(&mode.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_MKNOD, &mut message).map(|_| ())
+}
+
+/// Flushes all mounted file systems' dirty state (C: `sync`,
+/// `minix3/minix/lib/libc/sys/sync.c:12-17` — a cleared message, return
+/// value discarded by the C wrapper itself).
+///
+/// The server's `Sync | Fsync` arm (`syscalls.rs:1306`) walks every
+/// mount; the reply type is the errno face only.
+pub fn sync_via(transport: &impl IpcTransport) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_SYNC, &mut message).map(|_| ())
+}
+
+/// Shared packing for the two `VFS_UTIMENS` shapes (see
+/// [`utimensat_via`] and [`futimens_via`]).
+///
+/// Wire: `mess_vfs_utimens` (`ipc.h:2355-2367`, LP64): atime i64@0,
+/// mtime i64@8, ansec i64@16, mnsec i64@24, len u64@32, name u64@40,
+/// fd i32@48, flags i32@52 — matching the server Utimens arm decode
+/// (`syscalls.rs:3241-3264`) byte for byte. `name_address == 0` selects
+/// the fd half (C `futimens`), otherwise the server fetches the path
+/// through `SysPathFetcher` (address-based, no inline window).
+/// `ansec`/`mnsec` carry either nanoseconds or the `UTIME_NOW` /
+/// `UTIME_OMIT` sentinels — both are server-interpreted, passed through.
+#[allow(clippy::too_many_arguments)] // 8 payload lanes, one per C struct field
+fn utimens_request_via(
+    transport: &impl IpcTransport,
+    name_address: u64,
+    name_length_including_nul: u64,
+    atime_seconds: i64,
+    atime_nanoseconds: i64,
+    mtime_seconds: i64,
+    mtime_nanoseconds: i64,
+    fd: i32,
+    flags: i32,
+) -> Result<(), Errno> {
+    let mut message = crate::syscall::cleared_message();
+    // SAFETY: lanes follow `mess_vfs_utimens` field order; the server's
+    // Utimens arm decodes atime@0, mtime@8, ansec@16, mnsec@24, len@32,
+    // name@40, fd@48, flags@52.
+    unsafe {
+        message.m_u.raw[0..8].copy_from_slice(&atime_seconds.to_le_bytes());
+        message.m_u.raw[8..16].copy_from_slice(&mtime_seconds.to_le_bytes());
+        message.m_u.raw[16..24].copy_from_slice(&atime_nanoseconds.to_le_bytes());
+        message.m_u.raw[24..32].copy_from_slice(&mtime_nanoseconds.to_le_bytes());
+        message.m_u.raw[32..40].copy_from_slice(&name_length_including_nul.to_le_bytes());
+        message.m_u.raw[40..48].copy_from_slice(&name_address.to_le_bytes());
+        message.m_u.raw[48..52].copy_from_slice(&fd.to_le_bytes());
+        message.m_u.raw[52..56].copy_from_slice(&flags.to_le_bytes());
+    }
+    perform_syscall(transport, vfs_endpoint(), VFS_CALL_UTIMENS, &mut message).map(|_| ())
+}
+
+/// Sets a path's access and modification times (C: `utimensat`,
+/// `minix3/minix/lib/libc/sys/utimensat.c:30-52`).
+///
+/// The C client-layer guards are reproduced before any round trip:
+/// empty name is `ENOENT`, a relative name with a directory fd other
+/// than `AT_FDCWD` is `EINVAL` ("Not supported" — the wire carries the
+/// fd only for the fd half), and flags beyond `SHRT_MAX` is `EINVAL`.
+/// `NULL` timespec pairs are a caller concern: pass `UTIME_NOW` lanes
+/// explicitly (the C defaulting to now lives in the libc wrapper, see
+/// the top-level `utimensat`).
+#[allow(clippy::too_many_arguments)] // mirrors the C wire one-for-one
+pub fn utimensat_via(
+    transport: &impl IpcTransport,
+    dirfd: i32,
+    name_address: u64,
+    name_length_including_nul: usize,
+    atime_seconds: i64,
+    atime_nanoseconds: i64,
+    mtime_seconds: i64,
+    mtime_nanoseconds: i64,
+    flags: i32,
+) -> Result<(), Errno> {
+    if name_length_including_nul <= 1 {
+        // C utimensat.c:32-35: name[0]=='\0' — POSIX requires ENOENT.
+        return Err(Errno::ENOENT);
+    }
+    let first = // SAFETY: the caller promises a NUL-inclusive name at
+        // this address; only the first byte is inspected, matching C.
+        unsafe { (name_address as *const u8).read() };
+    if first != b'/' && dirfd != AT_FDCWD {
+        // C utimensat.c:36-39.
+        return Err(Errno::EINVAL);
+    }
+    if flags > i16::MAX as i32 || flags < 0 {
+        // C utimensat.c:40-42: `(unsigned)flags > SHRT_MAX` (the cast
+        // also rejects negatives).
+        return Err(Errno::EINVAL);
+    }
+    utimens_request_via(
+        transport,
+        name_address,
+        name_length_including_nul as u64,
+        atime_seconds,
+        atime_nanoseconds,
+        mtime_seconds,
+        mtime_nanoseconds,
+        dirfd,
+        flags,
+    )
+}
+
+/// Sets an open file's access and modification times (C: `futimens`,
+/// `minix3/minix/lib/libc/sys/futimens.c:1-20` — same wire, name
+/// pointer NULL so the server takes its fd half, flags zero).
+pub fn futimens_via(
+    transport: &impl IpcTransport,
+    fd: i32,
+    atime_seconds: i64,
+    atime_nanoseconds: i64,
+    mtime_seconds: i64,
+    mtime_nanoseconds: i64,
+) -> Result<(), Errno> {
+    utimens_request_via(
+        transport,
+        0,
+        0,
+        atime_seconds,
+        atime_nanoseconds,
+        mtime_seconds,
+        mtime_nanoseconds,
+        fd,
+        0,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1426,6 +1981,416 @@ mod chroot_wire_tests {
         assert_eq!(
             chroot_via(&transport, long.as_ptr() as u64, long.len()),
             Err(Errno::ENAMETOOLONG)
+        );
+    }
+}
+
+#[cfg(test)]
+mod fileop_wire_tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    fn last_sent(transport: &CannedTransport) -> (minix_types::Endpoint, Message) {
+        transport.sent.borrow().last().cloned().unwrap()
+    }
+
+    /// 请求腿的 lane 读出（测试断言专用，与 chroot wire 测试同法）。
+    fn raw_lane(msg: &Message, range: core::ops::Range<usize>) -> Vec<u8> {
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        unsafe { msg.m_u.raw[range].to_vec() }
+    }
+
+    /// C 绝对值 pin：16 个调用号对 `callnr.h:78-106` 逐一定死。
+    #[test]
+    fn test_fileop_call_numbers_match_c() {
+        assert_eq!(VFS_CALL_LINK, 0x100 + 6);
+        assert_eq!(VFS_CALL_UNLINK, 0x100 + 7);
+        assert_eq!(VFS_CALL_CHDIR, 0x100 + 8);
+        assert_eq!(VFS_CALL_MKDIR, 0x100 + 9);
+        assert_eq!(VFS_CALL_MKNOD, 0x100 + 10);
+        assert_eq!(VFS_CALL_CHMOD, 0x100 + 11);
+        assert_eq!(VFS_CALL_CHOWN, 0x100 + 12);
+        assert_eq!(VFS_CALL_ACCESS, 0x100 + 15);
+        assert_eq!(VFS_CALL_RENAME, 0x100 + 17);
+        assert_eq!(VFS_CALL_RMDIR, 0x100 + 18);
+        assert_eq!(VFS_CALL_SYMLINK, 0x100 + 19);
+        assert_eq!(VFS_CALL_READLINK, 0x100 + 20);
+        assert_eq!(VFS_CALL_UMASK, 0x100 + 27);
+        assert_eq!(VFS_CALL_FCHDIR, 0x100 + 31);
+        assert_eq!(VFS_CALL_TRUNCATE, 0x100 + 33);
+        assert_eq!(VFS_CALL_FTRUNCATE, 0x100 + 34);
+    }
+
+    /// mkdir 请求腿全 lane：address@0、len@8、flags@16 零、mode@20、
+    /// 内联字节@24（C mkdir.c：memset 后只经 mode 与 loadname）。
+    #[test]
+    fn test_mkdir_wire_lanes_and_inline_path() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/tmp/ndir\0";
+        assert_eq!(mkdir_via(&transport, path.as_ptr() as u64, path.len(), 0o755), Ok(()));
+        let (dest, sent) = last_sent(&transport);
+        assert_eq!(dest, vfs_endpoint());
+        assert_eq!(sent.m_type, VFS_CALL_MKDIR);
+        assert_eq!(raw_lane(&sent, 0..8), (path.as_ptr() as u64).to_le_bytes(), "name@0");
+        assert_eq!(raw_lane(&sent, 8..16), (path.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(raw_lane(&sent, 16..20), [0; 4], "flags@16 保持零");
+        assert_eq!(raw_lane(&sent, 20..24), 0o755u32.to_le_bytes(), "mode@20");
+        assert_eq!(raw_lane(&sent, 24..24 + path.len()), path.to_vec(), "inline@24");
+    }
+
+    /// unlink/rmdir/chdir 共用同一形状，mode lane 也保持零（C 侧只
+    /// memset + loadname）。错误经负 m_type 上行。
+    #[test]
+    fn test_path_only_calls_carry_zero_mode_and_error_lane_travels() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/tmp/f\0";
+        assert_eq!(unlink_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
+        assert_eq!(rmdir_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
+        assert_eq!(chdir_via(&transport, path.as_ptr() as u64, path.len()), Ok(()));
+        let types: Vec<i32> = transport.sent.borrow().iter().map(|(_, m)| m.m_type).collect();
+        assert_eq!(types, vec![VFS_CALL_UNLINK, VFS_CALL_RMDIR, VFS_CALL_CHDIR]);
+        for (_, msg) in transport.sent.borrow().iter() {
+            assert_eq!(raw_lane(msg, 16..24), [0; 8], "flags/mode 全零");
+        }
+        // 错误腿：ENOENT 以负 m_type 回来。
+        transport.reply_sendrec(Ok(reply_with_type(-minix_types::ENOENT)));
+        assert_eq!(unlink_via(&transport, path.as_ptr() as u64, path.len()), Err(Errno::ENOENT));
+    }
+
+    /// chmod 与 access 复用 mode lane：chmod 传新权限位，access 传
+    /// amode（C 两文件同写 `m_lc_vfs_path.mode`）。
+    #[test]
+    fn test_chmod_and_access_share_mode_lane() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/x\0";
+        assert_eq!(chmod_via(&transport, path.as_ptr() as u64, path.len(), 0o644), Ok(()));
+        assert_eq!(access_via(&transport, path.as_ptr() as u64, path.len(), 4 | 2), Ok(()));
+        let sent = transport.sent.borrow();
+        assert_eq!(raw_lane(&sent[0].1, 20..24), 0o644u32.to_le_bytes(), "mode@20");
+        assert_eq!(raw_lane(&sent[1].1, 20..24), 6i32.to_le_bytes(), "amode@20");
+        assert_eq!(sent[1].1.m_type, VFS_CALL_ACCESS);
+    }
+
+    /// 内联族边界与 open 同源：0 长与 >32（含 NUL）都拒绝且不发往返
+    /// （DELIBERATE DIVERGENCE：C loadname 静默跳过内联拷贝）。
+    #[test]
+    fn test_path_family_rejects_inline_boundary_without_round_trip() {
+        let transport = CannedTransport::new();
+        let long = [b'a'; OPEN_PATH_INLINE_MAX + 1];
+        assert_eq!(
+            mkdir_via(&transport, long.as_ptr() as u64, long.len(), 0o700),
+            Err(Errno::ENAMETOOLONG)
+        );
+        assert_eq!(access_via(&transport, long.as_ptr() as u64, 0, 0), Err(Errno::ENAMETOOLONG));
+        assert!(transport.sent.borrow().is_empty(), "边界拒绝不发往返");
+    }
+
+    /// link 四 lane：name1@0、name2@8、len1@16、len2@24（地址制，无
+    /// 内联字节；symlink/rename 共用 helper，各以调用号区分）。
+    #[test]
+    fn test_link_family_carries_both_names_by_address() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let a = b"/p/a\0";
+        let b = b"/p/b\0";
+        assert_eq!(
+            link_via(&transport, a.as_ptr() as u64, a.len(), b.as_ptr() as u64, b.len()),
+            Ok(())
+        );
+        assert_eq!(
+            symlink_via(&transport, a.as_ptr() as u64, a.len(), b.as_ptr() as u64, b.len()),
+            Ok(())
+        );
+        assert_eq!(
+            rename_via(&transport, a.as_ptr() as u64, a.len(), b.as_ptr() as u64, b.len()),
+            Ok(())
+        );
+        let sent: Vec<Message> = transport.sent.borrow().iter().map(|(_, m)| *m).collect();
+        assert_eq!(
+            Vec::from(sent.iter().map(|m| m.m_type).collect::<Vec<_>>().as_slice()),
+            vec![VFS_CALL_LINK, VFS_CALL_SYMLINK, VFS_CALL_RENAME]
+        );
+        for msg in sent.iter() {
+            // SAFETY: test-only read-back of the outgoing wire bytes.
+            let raw = unsafe { &msg.m_u.raw };
+            assert_eq!(raw[0..8].to_vec(), (a.as_ptr() as u64).to_le_bytes(), "name1@0");
+            assert_eq!(raw[8..16].to_vec(), (b.as_ptr() as u64).to_le_bytes(), "name2@8");
+            assert_eq!(raw[16..24].to_vec(), (a.len() as u64).to_le_bytes(), "len1@16");
+            assert_eq!(raw[24..32].to_vec(), (b.len() as u64).to_le_bytes(), "len2@24");
+            assert_eq!(raw[32..56].to_vec(), vec![0; 24], "尾部保持零");
+        }
+    }
+
+    /// chown：name@0、len@8、fd@16 零（path 半按 C memset 不写）、
+    /// owner@20、group@24。
+    #[test]
+    fn test_chown_wire_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/f\0";
+        assert_eq!(chown_via(&transport, path.as_ptr() as u64, path.len(), 1000, 1001), Ok(()));
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_CHOWN);
+        assert_eq!(raw_lane(&sent, 0..8), (path.as_ptr() as u64).to_le_bytes(), "name@0");
+        assert_eq!(raw_lane(&sent, 8..16), (path.len() as u64).to_le_bytes(), "len@8");
+        assert_eq!(raw_lane(&sent, 16..20), [0; 4], "fd@16 零（path 半）");
+        assert_eq!(raw_lane(&sent, 20..24), 1000u32.to_le_bytes(), "owner@20");
+        assert_eq!(raw_lane(&sent, 24..28), 1001u32.to_le_bytes(), "group@24");
+    }
+
+    /// truncate：offset@0、fd@8 零（path 半）、name@16、len@24；
+    /// ftruncate：offset@0、fd@8。
+    #[test]
+    fn test_truncate_family_wire_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/f\0";
+        assert_eq!(
+            truncate_via(&transport, path.as_ptr() as u64, path.len(), -1),
+            Ok(())
+        );
+        assert_eq!(ftruncate_via(&transport, 7, 4096), Ok(()));
+        let sent = transport.sent.borrow();
+        assert_eq!(sent[0].1.m_type, VFS_CALL_TRUNCATE);
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        let t = unsafe { &sent[0].1.m_u.raw };
+        assert_eq!(t[0..8].to_vec(), (-1i64).to_le_bytes(), "offset@0");
+        assert_eq!(t[8..12].to_vec(), [0; 4], "fd@8 零（path 半）");
+        assert_eq!(t[16..24].to_vec(), (path.as_ptr() as u64).to_le_bytes(), "name@16");
+        assert_eq!(t[24..32].to_vec(), (path.len() as u64).to_le_bytes(), "len@24");
+        assert_eq!(sent[1].1.m_type, VFS_CALL_FTRUNCATE);
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        let f = unsafe { &sent[1].1.m_u.raw };
+        assert_eq!(f[0..8].to_vec(), 4096i64.to_le_bytes(), "offset@0");
+        assert_eq!(f[8..12].to_vec(), 7i32.to_le_bytes(), "fd@8");
+    }
+
+    /// fchdir 只有一个 int fd lane @0（`ipc.h:640-644`）。
+    #[test]
+    fn test_fchdir_wire_lane() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(fchdir_via(&transport, 3), Ok(()));
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_FCHDIR);
+        assert_eq!(raw_lane(&sent, 0..4), 3i32.to_le_bytes());
+        assert_eq!(raw_lane(&sent, 4..56), vec![0; 52], "其余保持零");
+    }
+
+    /// umask：mask@0（4 字节 lane）；旧 mask 经回复 m_type 值通道带回
+    /// （服务端 `Ok(old as i32)`，protect.c:186-190 对位）。
+    #[test]
+    fn test_umask_mask_lane_and_old_value_reply() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0o022)));
+        assert_eq!(umask_via(&transport, 0o077), Ok(0o022));
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_UMASK);
+        assert_eq!(raw_lane(&sent, 0..4), 0o077u32.to_le_bytes(), "mask@0");
+    }
+
+    /// readlink：name@0、namelen@8、buf@16、bufsize@24、内联字节@32；
+    /// 写字节数经回复 m_type 带回；超过 24 字节窗口即 ENAMETOOLONG
+    /// （比服务端的 32 检查更严，见 `READLINK_INLINE_MAX` 注记）。
+    #[test]
+    fn test_readlink_wire_and_value_reply() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(6)));
+        let path = b"/link\0";
+        let mut buf = [0u8; 64];
+        assert_eq!(
+            readlink_via(
+                &transport,
+                path.as_ptr() as u64,
+                path.len(),
+                buf.as_mut_ptr() as u64,
+                buf.len(),
+            ),
+            Ok(6)
+        );
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_READLINK);
+        assert_eq!(raw_lane(&sent, 0..8), (path.as_ptr() as u64).to_le_bytes(), "name@0");
+        assert_eq!(raw_lane(&sent, 8..16), (path.len() as u64).to_le_bytes(), "namelen@8");
+        assert_eq!(raw_lane(&sent, 24..32), (buf.len() as u64).to_le_bytes(), "bufsize@24");
+        assert_eq!(raw_lane(&sent, 32..32 + path.len()), path.to_vec(), "inline@32");
+        let long = [b'a'; READLINK_INLINE_MAX + 1];
+        assert_eq!(
+            readlink_via(&transport, long.as_ptr() as u64, long.len(), 0, 0),
+            Err(Errno::ENAMETOOLONG)
+        );
+    }
+
+    /// mknod：device@0（8B）、name@8、len@16、mode@24（4B lane）。
+    #[test]
+    fn test_mknod_wire_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/dev/fifo\0";
+        let mode = 0o600 | S_IFIFO;
+        assert_eq!(
+            mknod_via(&transport, path.as_ptr() as u64, path.len(), mode, 0),
+            Ok(())
+        );
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_MKNOD);
+        assert_eq!(raw_lane(&sent, 0..8), 0u64.to_le_bytes(), "device@0");
+        assert_eq!(raw_lane(&sent, 8..16), (path.as_ptr() as u64).to_le_bytes(), "name@8");
+        assert_eq!(raw_lane(&sent, 16..24), (path.len() as u64).to_le_bytes(), "len@16");
+        assert_eq!(raw_lane(&sent, 24..28), mode.to_le_bytes(), "mode@24");
+        assert_eq!(raw_lane(&sent, 28..56), vec![0; 28], "尾部保持零");
+    }
+}
+
+#[cfg(test)]
+mod time_sync_wire_tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+    use crate::ipc::CannedTransport;
+    use minix_types::Message;
+
+    fn reply_with_type(message_type: i32) -> Message {
+        let mut message = Message::zeroed();
+        message.m_type = message_type;
+        message
+    }
+
+    fn last_sent(transport: &CannedTransport) -> (minix_types::Endpoint, Message) {
+        transport.sent.borrow().last().cloned().unwrap()
+    }
+
+    fn raw_lane(msg: &Message, range: core::ops::Range<usize>) -> Vec<u8> {
+        // SAFETY: test-only read-back of the outgoing wire bytes.
+        unsafe { msg.m_u.raw[range].to_vec() }
+    }
+
+    #[test]
+    fn test_sync_utimens_call_numbers_match_c() {
+        // C: callnr.h:88/109（VFS_BASE + 16 / + 37）。
+        assert_eq!(VFS_CALL_SYNC, 0x100 + 16);
+        assert_eq!(VFS_CALL_UTIMENS, 0x100 + 37);
+        // sys/sys/stat.h:235-236、sys/sys/fcntl.h:297/299。
+        assert_eq!(UTIME_NOW, (1 << 30) - 1);
+        assert_eq!(UTIME_OMIT, (1 << 30) - 2);
+        assert_eq!(AT_FDCWD, -100);
+        assert_eq!(AT_SYMLINK_NOFOLLOW, 0x200);
+    }
+
+    #[test]
+    fn test_sync_wire() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(sync_via(&transport), Ok(()));
+        let (dest, sent) = last_sent(&transport);
+        assert_eq!(dest, vfs_endpoint());
+        assert_eq!(sent.m_type, VFS_CALL_SYNC);
+        assert_eq!(raw_lane(&sent, 0..56), vec![0; 56], "sync 载荷全零（C memset）");
+    }
+
+    #[test]
+    fn test_utimensat_wire_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        let path = b"/tmp/f\0";
+        assert_eq!(
+            utimensat_via(
+                &transport,
+                AT_FDCWD,
+                path.as_ptr() as u64,
+                path.len(),
+                100,
+                UTIME_OMIT,
+                200,
+                300,
+                AT_SYMLINK_NOFOLLOW,
+            ),
+            Ok(())
+        );
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_UTIMENS);
+        assert_eq!(raw_lane(&sent, 0..8), 100i64.to_le_bytes(), "atime@0");
+        assert_eq!(raw_lane(&sent, 8..16), 200i64.to_le_bytes(), "mtime@8");
+        assert_eq!(raw_lane(&sent, 16..24), UTIME_OMIT.to_le_bytes(), "ansec@16");
+        assert_eq!(raw_lane(&sent, 24..32), 300i64.to_le_bytes(), "mnsec@24");
+        assert_eq!(raw_lane(&sent, 32..40), (path.len() as u64).to_le_bytes(), "len@32");
+        assert_eq!(raw_lane(&sent, 40..48), (path.as_ptr() as u64).to_le_bytes(), "name@40");
+        assert_eq!(raw_lane(&sent, 48..52), AT_FDCWD.to_le_bytes(), "fd@48");
+        assert_eq!(raw_lane(&sent, 52..56), AT_SYMLINK_NOFOLLOW.to_le_bytes(), "flags@52");
+    }
+
+    #[test]
+    fn test_utimensat_guards_answer_without_roundtrip() {
+        let transport = CannedTransport::new();
+        let abs = b"/tmp/f\0";
+        let rel = b"tmp/f\0";
+        // 空名 → ENOENT（C utimensat.c:32-35）。
+        assert_eq!(
+            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, 1, 0, 0, 0, 0, 0),
+            Err(Errno::ENOENT)
+        );
+        // 相对名 + dirfd != AT_FDCWD → EINVAL（C :36-39）。
+        assert_eq!(
+            utimensat_via(&transport, 7, rel.as_ptr() as u64, rel.len(), 0, 0, 0, 0, 0),
+            Err(Errno::EINVAL)
+        );
+        // flags 超界 → EINVAL（C :40-42）。
+        assert_eq!(
+            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, 70000),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            utimensat_via(&transport, AT_FDCWD, abs.as_ptr() as u64, abs.len(), 0, 0, 0, 0, -1),
+            Err(Errno::EINVAL)
+        );
+        // 全部被挡：零往返。
+        assert!(transport.sent.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_futimens_wire_lanes() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(0)));
+        assert_eq!(futimens_via(&transport, 4, 0, UTIME_NOW, 12345, 678), Ok(()));
+        let (_, sent) = last_sent(&transport);
+        assert_eq!(sent.m_type, VFS_CALL_UTIMENS);
+        assert_eq!(raw_lane(&sent, 0..8), 0i64.to_le_bytes(), "atime@0=0（C now 形态）");
+        assert_eq!(raw_lane(&sent, 8..16), 12345i64.to_le_bytes(), "mtime@8");
+        assert_eq!(raw_lane(&sent, 16..24), UTIME_NOW.to_le_bytes(), "ansec@16");
+        assert_eq!(raw_lane(&sent, 24..32), 678i64.to_le_bytes(), "mnsec@24");
+        assert_eq!(raw_lane(&sent, 32..48), vec![0; 16], "len/name=0 走 fd 半");
+        assert_eq!(raw_lane(&sent, 48..52), 4i32.to_le_bytes(), "fd@48");
+        assert_eq!(raw_lane(&sent, 52..56), 0i32.to_le_bytes(), "flags@52=0（C futimens）");
+    }
+
+    #[test]
+    fn test_utimens_error_leg() {
+        let mut transport = CannedTransport::new();
+        transport.reply_sendrec(Ok(reply_with_type(-minix_types::ENOENT)));
+        assert_eq!(
+            sync_via(&transport),
+            Err(Errno::from_i32(minix_types::ENOENT))
+        );
+        transport.reply_sendrec(Ok(reply_with_type(-minix_types::EPERM)));
+        assert_eq!(
+            futimens_via(&transport, 4, 1, 2, 3, 4),
+            Err(Errno::from_i32(minix_types::EPERM))
         );
     }
 }

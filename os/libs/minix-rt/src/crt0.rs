@@ -7,6 +7,8 @@
 //!
 //! # Entry ABI at `_start` (x86-64)
 //!
+#![cfg_attr(feature = "std", allow(dead_code))]
+//!
 //! Established by the kernel's `build_cpu_context` (arch/src/x86_64/boot.rs):
 //! `RSP` is the initial stack pointer, `RBX` carries the `struct ps_strings`
 //! pointer — C's third entry value. `RDX`/`RCX` are C's cleanup-function and

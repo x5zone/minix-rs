@@ -233,6 +233,22 @@ impl VnodeTable {
         None
     }
 
+    /// `update_bspec` 的扫描半（`mount.c:46-56`，`send_drv_e=0` 分支）：
+    /// 把 `sdev == dev` 的打开块特殊文件改路到新的 FS 端点。
+    ///
+    /// C 的 `send_drv_e != 0` 分支（`req_newdriver` 补发）随驱动重启面
+    /// （19 号 `recover_step`）落，boot 挂载传 0，这里只接扫描赋值。
+    pub fn route_block_special(&mut self, dev: DevId, fs_e: Endpoint) {
+        for v in self.slots.iter_mut() {
+            if v.ref_count > 0
+                && v.mode & crate::open::S_IFMT == crate::open::S_IFBLK
+                && v.sdev == dev
+            {
+                v.bfs = fs_e;
+            }
+        }
+    }
+
     pub fn is_locked(&self, id: VnodeId) -> bool {
         self.get(id).map(|v| v.is_locked()).unwrap_or(false)
     }

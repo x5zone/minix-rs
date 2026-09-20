@@ -252,6 +252,364 @@ pub fn pipe2(flags: i32) -> Result<(Fd, Fd), Errno> {
     vfs::pipe2_via(&ipc::DirectTrapTransport, flags)
 }
 
+// 文件操作族（NL4 高优先批）：路径参数一律 `&str`，上线时按 C 惯例
+// 携带 NUL —— 地址 = 首字节指针，长度 = `len + 1`（strlen+1 对位的
+// wire 语义，见 `vfs::path_request_via` 等处的 C 包装器锚点）。
+
+/// Deletes a directory entry (C: `unlink`).
+pub fn unlink(path: &str) -> Result<(), Errno> {
+    vfs::unlink_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Removes an empty directory (C: `rmdir`).
+pub fn rmdir(path: &str) -> Result<(), Errno> {
+    vfs::rmdir_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Changes the working directory (C: `chdir`).
+pub fn chdir(path: &str) -> Result<(), Errno> {
+    vfs::chdir_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Changes the process root directory (C: `chroot`).
+pub fn chroot(path: &str) -> Result<(), Errno> {
+    vfs::chroot_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+    )
+}
+
+/// Creates a directory; the umask narrows the permission bits
+/// server-side (C: `mkdir`).
+pub fn mkdir(path: &str, mode: u32) -> Result<(), Errno> {
+    vfs::mkdir_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        mode,
+    )
+}
+
+/// Sets a path's permission bits (C: `chmod`).
+pub fn chmod(path: &str, mode: u32) -> Result<(), Errno> {
+    vfs::chmod_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        mode,
+    )
+}
+
+/// Checks real-uid access bits (`R_OK|W_OK|X_OK` or `F_OK`) without
+/// opening the file (C: `access`).
+pub fn access(path: &str, amode: i32) -> Result<(), Errno> {
+    vfs::access_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        amode,
+    )
+}
+
+/// Creates a hard link from `old` to `new` (C: `link`).
+pub fn link(old: &str, new: &str) -> Result<(), Errno> {
+    vfs::link_via(
+        &ipc::DirectTrapTransport,
+        old.as_ptr() as u64,
+        old.len().saturating_add(1),
+        new.as_ptr() as u64,
+        new.len().saturating_add(1),
+    )
+}
+
+/// Creates a symbolic link at `linkpath` pointing at `target` (C:
+/// `symlink`).
+pub fn symlink(target: &str, linkpath: &str) -> Result<(), Errno> {
+    vfs::symlink_via(
+        &ipc::DirectTrapTransport,
+        target.as_ptr() as u64,
+        target.len().saturating_add(1),
+        linkpath.as_ptr() as u64,
+        linkpath.len().saturating_add(1),
+    )
+}
+
+/// Moves `old` to `new` (C: `rename`).
+pub fn rename(old: &str, new: &str) -> Result<(), Errno> {
+    vfs::rename_via(
+        &ipc::DirectTrapTransport,
+        old.as_ptr() as u64,
+        old.len().saturating_add(1),
+        new.as_ptr() as u64,
+        new.len().saturating_add(1),
+    )
+}
+
+/// Sets a path's owner and group (C: `chown`).
+pub fn chown(path: &str, owner: u32, group: u32) -> Result<(), Errno> {
+    vfs::chown_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        owner,
+        group,
+    )
+}
+
+/// Sets a path's length (C: `truncate`).
+pub fn truncate(path: &str, length: i64) -> Result<(), Errno> {
+    vfs::truncate_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        length,
+    )
+}
+
+/// Sets an open descriptor's length (C: `ftruncate`).
+pub fn ftruncate(fd: Fd, length: i64) -> Result<(), Errno> {
+    vfs::ftruncate_via(&ipc::DirectTrapTransport, fd, length)
+}
+
+/// Changes the working directory to an open descriptor's (C: `fchdir`).
+pub fn fchdir(fd: Fd) -> Result<(), Errno> {
+    vfs::fchdir_via(&ipc::DirectTrapTransport, fd)
+}
+
+/// Sets the file-creation mask and returns the previous one (C: `umask`).
+pub fn umask(mask: u32) -> Result<u32, Errno> {
+    vfs::umask_via(&ipc::DirectTrapTransport, mask)
+}
+
+/// Reads a symlink target into the caller's buffer, returning the byte
+/// count written (C: `readlink`; the NUL terminator is *not* added, as in
+/// C).
+pub fn readlink(path: &str, buf: &mut [u8]) -> Result<usize, Errno> {
+    vfs::readlink_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        buf.as_mut_ptr() as u64,
+        buf.len(),
+    )
+}
+
+/// Creates a special file node; `mode` carries the file-type bits
+/// (C: `mknod`).
+pub fn mknod(path: &str, mode: u32, device: u64) -> Result<(), Errno> {
+    vfs::mknod_via(
+        &ipc::DirectTrapTransport,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        mode,
+        device,
+    )
+}
+
+/// Creates a FIFO (C: `mkfifo` = `mknod(name, mode | S_IFIFO, 0)`,
+/// `minix3/minix/lib/libc/sys/mkfifo.c:8-11`).
+pub fn mkfifo(path: &str, mode: u32) -> Result<(), Errno> {
+    mknod(path, mode | vfs::S_IFIFO, 0)
+}
+
+// ── Process identity and scheduling ──
+
+/// Returns the parent process id of the caller (C: `getppid`,
+/// `minix3/minix/lib/libc/sys/getppid.c:12-19`).
+pub fn getppid() -> Result<Pid, Errno> {
+    pm::getppid_via(&ipc::DirectTrapTransport)
+}
+
+/// Returns the real user id of the caller (C: `getuid`; the same
+/// `PM_GETUID` round trip as [`geteuid`], which reads the other lane —
+/// see `pm::getuid_via`).
+pub fn getuid() -> Result<i32, Errno> {
+    Ok(pm::getuid_via(&ipc::DirectTrapTransport)?.0)
+}
+
+/// Returns the effective user id of the caller (C: `geteuid`).
+pub fn geteuid() -> Result<i32, Errno> {
+    Ok(pm::getuid_via(&ipc::DirectTrapTransport)?.1)
+}
+
+/// Sets the real user id of the caller (C: `setuid`, over
+/// `PM_SETUID` — see `pm::setuid_via`).
+pub fn setuid(uid: u32) -> Result<(), Errno> {
+    pm::setuid_via(&ipc::DirectTrapTransport, uid)
+}
+
+/// Detaches the caller from its controlling terminal into a new session
+/// and returns the new session id (C: `setsid`).
+pub fn setsid() -> Result<Pid, Errno> {
+    pm::setsid_via(&ipc::DirectTrapTransport)
+}
+
+/// Reads the scheduling nice value of `(which, who)` (C: `getpriority`,
+/// `minix3/minix/lib/libc/sys/priority.c:16-31`; the `PRIO_MIN`
+/// correction of the raw PM reply happens inside `pm::getpriority_via`).
+pub fn getpriority(which: i32, who: i32) -> Result<i32, Errno> {
+    pm::getpriority_via(&ipc::DirectTrapTransport, which, who)
+}
+
+/// Sets the scheduling nice value of `(which, who)` (C: `setpriority`).
+pub fn setpriority(which: i32, who: i32, prio: i32) -> Result<(), Errno> {
+    pm::setpriority_via(&ipc::DirectTrapTransport, which, who, prio)
+}
+
+// ── Signals (mask face; handler installation stays on the `pm` face) ──
+
+/// Reads the pending signal set of the caller (C: `sigpending`; the
+/// four 32-bit words carry 128 signal slots, matching the C
+/// `sigset_t` bit layout).
+pub fn sigpending() -> Result<[u32; 4], Errno> {
+    pm::sigpending_via(&ipc::DirectTrapTransport)
+}
+
+/// Examines or changes the signal mask and returns the previous mask
+/// (C: `sigprocmask`; `how` takes `SIG_BLOCK`/`SIG_UNBLOCK`/
+/// `SIG_SETMASK`, `set = None` inquires without writing).
+pub fn sigprocmask(how: i32, set: Option<&[u32; 4]>) -> Result<[u32; 4], Errno> {
+    pm::sigprocmask_via(&ipc::DirectTrapTransport, how, set)
+}
+
+/// Sends `signal` to the caller itself (C: `raise` — implemented as
+/// `kill(getpid(), sig)` exactly like the C composition; invalid
+/// signal numbers are rejected without a round trip).
+pub fn raise(signal: i32) -> Result<(), Errno> {
+    pm::raise_via(&ipc::DirectTrapTransport, signal)
+}
+
+// ── Descriptor and offset face ──
+
+/// Duplicates `fd` onto `fd2`, closing any previous `fd2` (C: `dup2`).
+pub fn dup2(fd: Fd, fd2: Fd) -> Result<Fd, Errno> {
+    vfs::dup2_via(&ipc::DirectTrapTransport, fd, fd2)
+}
+
+/// Repositions `fd` and returns the new offset (C: `lseek`; `whence`
+/// is the server-interpreted `SEEK_SET`/`SEEK_CUR`/`SEEK_END`).
+pub fn lseek(fd: Fd, offset: i64, whence: i32) -> Result<i64, Errno> {
+    vfs::lseek_via(&ipc::DirectTrapTransport, fd, offset, whence)
+}
+
+// ── Time face ──
+
+/// Sleeps for the requested duration (C: `nanosleep`; the C
+/// `remain` output is not carried — measure with wall-clock snapshots
+/// as [`misc::remaining_sleep`] prescribes). A sleep interrupted by a
+/// delivered signal answers `EINTR`.
+pub fn nanosleep(seconds: i64, nanoseconds: i64) -> Result<(), Errno> {
+    misc::nanosleep_via(
+        &ipc::DirectTrapTransport,
+        Some(misc::SleepRequest {
+            seconds,
+            nanoseconds,
+        }),
+    )
+}
+
+/// Flushes every mounted file system's dirty state to its device
+/// (C: `sync`, `minix3/minix/lib/libc/sys/sync.c:12-17` — the C
+/// wrapper discards the return value, so this cannot fail).
+pub fn sync() {
+    let _ = vfs::sync_via(&ipc::DirectTrapTransport);
+}
+
+/// A `(seconds, nanoseconds)` pair in the C `struct timespec` role;
+/// the nanosecond lane may carry [`vfs::UTIME_NOW`] or
+/// [`vfs::UTIME_OMIT`].
+pub type TimeSpec = (i64, i64);
+
+/// The C default when the `utimes`/`futimens` `tv` argument is NULL:
+/// both stamps become the current time.
+const NOW_TIMESPEC: [TimeSpec; 2] = [(0, vfs::UTIME_NOW), (0, vfs::UTIME_NOW)];
+
+/// Sets a path's access and modification times (C: `utimensat`,
+/// `minix3/minix/lib/libc/sys/utimensat.c`). `dirfd` must be
+/// [`vfs::AT_FDCWD`] for relative paths; `times = None` means
+/// "set both to the current time" (the C default array).
+pub fn utimensat(
+    dirfd: i32,
+    path: &str,
+    times: Option<[TimeSpec; 2]>,
+    flags: i32,
+) -> Result<(), Errno> {
+    let [atime, mtime] = times.unwrap_or(NOW_TIMESPEC);
+    vfs::utimensat_via(
+        &ipc::DirectTrapTransport,
+        dirfd,
+        path.as_ptr() as u64,
+        path.len().saturating_add(1),
+        atime.0,
+        atime.1,
+        mtime.0,
+        mtime.1,
+        flags,
+    )
+}
+
+/// Sets an open file's access and modification times (C: `futimens`,
+/// `minix3/minix/lib/libc/sys/futimens.c`; `times = None` means "now"
+/// per the C default array).
+pub fn futimens(fd: Fd, times: Option<[TimeSpec; 2]>) -> Result<(), Errno> {
+    let [atime, mtime] = times.unwrap_or(NOW_TIMESPEC);
+    vfs::futimens_via(
+        &ipc::DirectTrapTransport,
+        fd,
+        atime.0,
+        atime.1,
+        mtime.0,
+        mtime.1,
+    )
+}
+
+/// Sets a path's timestamps from microsecond pairs (C: `utimes`,
+/// `minix3/minix/lib/libc/sys/utimes.c:9-35` — the C conversion is
+/// `usec * 1000`, and `tv = None` answers "set both to now").
+pub fn utimes(path: &str, times: Option<[(i64, i64); 2]>) -> Result<(), Errno> {
+    let converted = times.map(|[a, b]| [(a.0, a.1.saturating_mul(1000)), (b.0, b.1.saturating_mul(1000))]);
+    utimensat(vfs::AT_FDCWD, path, converted, 0)
+}
+
+/// Sets an open file's timestamps from microsecond pairs (C:
+/// `futimes`, `minix3/minix/lib/libc/sys/futimes.c` — same
+/// microsecond-to-nanosecond conversion as [`utimes`]).
+pub fn futimes(fd: Fd, times: Option<[(i64, i64); 2]>) -> Result<(), Errno> {
+    let converted = times.map(|[a, b]| [(a.0, a.1.saturating_mul(1000)), (b.0, b.1.saturating_mul(1000))]);
+    futimens(fd, converted)
+}
+
+/// Sets a path's timestamps by name (C: `utimens`,
+/// `minix3/lib/libc/gen/utimens.c` — composition
+/// `utimensat(AT_FDCWD, path, times, 0)`).
+pub fn utimens(path: &str, times: Option<[TimeSpec; 2]>) -> Result<(), Errno> {
+    utimensat(vfs::AT_FDCWD, path, times, 0)
+}
+
+// ── Terminal face ──
+
+/// Reports whether `fd` refers to a terminal (C: `isatty`,
+/// `minix3/lib/libc/gen/isatty.c:44-48` — pure composition: a
+/// successful `tcgetattr` means tty, every failure means not).
+pub fn isatty(fd: Fd) -> bool {
+    let mut termios = minix_types::types::termios::Termios::default();
+    tcgetattr(fd, &mut termios).is_ok()
+}
+
+
 /// Terminal ioctl request: get the `struct termios`
 /// (`ttycom.h:88`, `_IOR('t', 19, struct termios)` — `IOC_OUT` 0x4000_0000,
 /// 44-byte argument in the length field, group `'t'`, number 19).

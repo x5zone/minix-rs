@@ -280,6 +280,14 @@ static void do_init_root(void)
 - `mount_fs(DEV_IMGRD, "bootramdisk", "/", MFS_PROC_NR, 0, "mfs", "fs_imgrd")`：根文件系统是 **MFS 上的 boot ramdisk**（设备 `0x0106`，`dmap.h:113`），标签 `fs_imgrd`（RS 里的 boot 服务名）。注释 `FIXME: use boot image process name instead` / `FIXME: obtain this from RS` 表明挂载参数目前硬编码。
 - `worker_allow(TRUE)`（main.c:522）：根就绪，放行 pending 请求。
 
+**Rust 执行编排（NS4/W6 落地，2026-09-21）**：`VfsState::do_init_root(kernel, transport)`（`os/servers/vfs/src/main_loop.rs`）按 C 序三步——
+
+1. `mount_pfs`：`alloc_nonedev` 领伪设备 + `pfs_mount_plan` 填 vmnt 行 + 经 `WireFsClient` 发 `REQ_READSUPER`，失败容忍（C printf 同权；no_std 载体无 stdout 承诺，静默处理）；nonedev/vmnt 库存不足按 C 的 panic 面返回 `Err(NoSpace/NoMem)`。
+2. `mount_fs_root`：dmap 查 `MEMORY_MAJOR` 拿驱动标签（无行 = C 同款 `EINVAL`——对应 boot 链上 rproctab→`map_service` 装配半尚未接线时的诚实失败，见 new_edge3 新登记）→ 空闲 vmnt 槽 + 根 vnode + `FP_SRV_PROC`（fproc 槽按 `fs_e.slot()` 定位）→ `REQ_READSUPER` 往返（`WireFsClient`：grant 驱动标签 → `encode_readsuper` → sendrec → revoke → `decode_readsuper_reply`，C request.c:780-833 逐步对位）→ 回填 `m_fs_flags`、窗口 `max_reqs`（threaded→9 否则 1）、根 vnode 七字段、`VMNT_CANSTAT`、`m_label="fs_imgrd"` → `route_block_special`（`update_bspec` 的 `send_drv_e=0` 扫描半，vnode.rs）→ **`ROOT_DEV`/`ROOT_FS_E` 赋值**（mount.c:326-328，即 `root_dev`/`root_fs_e` 字段）→ MAKEROOT 全表（live 槽的 `root_dir`/`work_dir` 指根 vnode；boot 期指针为空，`put_vnode` 半按 C 跳过）→ `have_root += 1`。`update_statvfs` 的 statvfs 缓存首填（mount.c:268-270）归 stadir 消费面（getvfsstat 接线波次）。
+3. 失败臂返回 `Err` 交 `run()` panic（C `panic("Failed to initialize root")` main.c:519-520 同权）；此时 worker 门不复位（进程即将终止，门无观察者）。
+
+测试：`test_root_mount_full_assembly`（装配全景）、`test_root_mount_wire_shape`（线上形状：device/REQ_ISROOT/path_len/grant 四件套）、`test_pfs_readsuper_failure_tolerated`（PFS 缺席不阻断）、`test_root_mount_without_driver_is_inval_and_gate_stays_closed`（无驱动行的诚实失败与门态）——`main_loop.rs` tests。
+
 ### 2.6 lock_proc/unlock_proc：可睡眠锁（main.c:528-553）
 
 ```c
