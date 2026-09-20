@@ -10,6 +10,8 @@ minix-vfs = { path = "../servers/vfs" }
 minix-ds = { path = "../servers/ds" }
 minix-sched = { path = "../servers/sched" }
 minix-sys = { path = "../libs/minix-sys" }
+minix-mib = { path = "../servers/mib" }
+minix-sef = { path = "../libs/minix-sef" }
 
 [dev-dependencies]
 
@@ -32,3 +34,7 @@ path = "vm_vfs_fdclose.rs"
 [[test]]
 name = "ds_publish_subscribe"
 path = "ds_publish_subscribe.rs"
+
+[[test]]
+name = "mib_sysctl"
+path = "mib_sysctl.rs"

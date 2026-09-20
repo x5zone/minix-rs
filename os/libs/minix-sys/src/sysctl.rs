@@ -170,10 +170,15 @@ pub fn sysctl_via<T: IpcTransport>(
     if let Some(slot) = old.as_mut() {
         *slot.length = replied_length;
     }
-    if message.m_type < 0 {
-        Err(Errno::from_i32(-message.m_type))
-    } else {
-        Ok(())
+    // The service answers `m_type = r` with r a plain errno — positive on
+    // failure, OK(0) on success (C main.c:483 `m_out.m_type = r`; the
+    // ENOMEM-with-full-length shape comes from main.c:368-374). Zero is
+    // success; anything else is that errno, sign included if a peer
+    // chose the negative spelling.
+    match message.m_type {
+        0 => Ok(()),
+        other if other < 0 => Err(Errno::from_i32(-other)),
+        other => Err(Errno::from_i32(other)),
     }
 }
 
@@ -649,7 +654,8 @@ mod tests {
         assert_eq!(destination, mib_endpoint());
         assert_eq!(destination, Endpoint(MIB_ENDPOINT_NUMBER));
         assert_eq!(sent.m_type, MIB_CALL_SYSCTL);
-        assert_eq!(sent.m_type, 0x600);
+        // C 绝对值 pin：MIB_BASE 0x1800 + 0（com.h:1022/:1026）。
+        assert_eq!(sent.m_type, 0x1800);
         // SAFETY(test): 读回请求 overlay 的字段序（ipc.h:424-433）。
         let wire = unsafe { &sent.m_u.m_lc_mib_sysctl };
         assert_ne!(wire.oldp, 0);

@@ -48,8 +48,13 @@ pub const VFS_CALL_SERVER_CONTROL: i32 = 0x100 + 43;
 /// C: `MIB_PROC_NR ((endpoint_t) 7)` (`minix3/minix/include/minix/com.h:66`).
 pub const MIB_ENDPOINT_NUMBER: i32 = 7;
 
-/// System control query. C: `MIB_SYSCTL (MIB_BASE + 0)` (`com.h:1026`).
-pub const MIB_CALL_SYSCTL: i32 = 0x600;
+/// System control query. C: `MIB_SYSCTL (MIB_BASE + 0)`
+/// (`com.h:1022/:1026`, `MIB_BASE 0x1800`) — derived from the single
+/// authority in `minix-types` rather than a local literal (C-41/NK8
+/// 判例): the old local `0x600` never matched the MIB service's own
+/// `MIB_SYSCTL`, so every wire send landed in the server's unknown-call
+/// bucket while both sides' canned tests stayed green.
+pub const MIB_CALL_SYSCTL: i32 = minix_types::MIB_SYSCTL;
 
 /// Nanoseconds per microsecond (also microseconds per millisecond, and
 /// milliseconds per second — the three identical conversion steps in
@@ -321,7 +326,9 @@ mod tests {
     #[test]
     fn test_constants_match_c_headers() {
         assert_eq!(MIB_ENDPOINT_NUMBER, 7);
-        assert_eq!(MIB_CALL_SYSCTL, 0x600);
+        // C 绝对值 pin：MIB_BASE 0x1800 + 0（com.h:1022/:1026）。
+        assert_eq!(MIB_CALL_SYSCTL, 0x1800);
+        assert_eq!(MIB_CALL_SYSCTL, minix_types::MIB_SYSCTL);
         assert_eq!(MessLcMibSysctl::INLINE_NAME_COMPONENTS, 2);
         assert_eq!(NANOSECONDS_PER_SECOND, 1_000_000_000);
     }
