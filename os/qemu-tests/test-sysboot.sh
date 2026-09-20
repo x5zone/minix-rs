@@ -38,11 +38,11 @@ fi
 
 # 1. Build both user images, then the kernel with them embedded.
 echo "building sysboot-rx (x86_64-unknown-none)…"
-( cd "$ROOT" && cargo build -p sysboot-rx --target x86_64-unknown-none --release ) || {
+( cd "$ROOT" && cargo build -p sysboot-rx --target x86_64-unknown-none --features fw-x86-none --release ) || {
     echo "FAIL: sysboot-rx build failed"; exit 1
 }
 echo "building sysboot-tx (x86_64-unknown-none)…"
-( cd "$ROOT" && cargo build -p sysboot-tx --target x86_64-unknown-none --release ) || {
+( cd "$ROOT" && cargo build -p sysboot-tx --target x86_64-unknown-none --features fw-x86-none --release ) || {
     echo "FAIL: sysboot-tx build failed"; exit 1
 }
 RX_ELF="$ROOT/target/x86_64-unknown-none/release/sysboot-rx"
@@ -50,7 +50,7 @@ TX_ELF="$ROOT/target/x86_64-unknown-none/release/sysboot-tx"
 
 echo "building test-sysboot kernel (embeds both)…"
 ( cd "$ROOT" && SYSBOOT_RX_ELF_PATH="$RX_ELF" SYSBOOT_TX_ELF_PATH="$TX_ELF" \
-    cargo build -p test-sysboot --target x86_64-unknown-uefi --release ) || {
+    cargo build -p test-sysboot --target x86_64-unknown-uefi --features fw-x86-uefi --release ) || {
     echo "FAIL: test-sysboot build failed"; exit 1
 }
 EFI="$ROOT/target/x86_64-unknown-uefi/release/test-sysboot.efi"

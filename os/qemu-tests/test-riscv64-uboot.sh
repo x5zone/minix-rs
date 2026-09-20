@@ -45,7 +45,7 @@ done
 if [ ! -f "$KERNEL" ]; then
     echo "building hello-boot-riscv64…"
     ( cd "$ROOT" && cargo build -p hello-boot-riscv64 \
-        --target riscv64gc-unknown-none-elf --release ) || fail "kernel build failed"
+        --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release ) || fail "kernel build failed"
 fi
 [ -f "$KERNEL" ] || fail "kernel ELF missing after build"
 

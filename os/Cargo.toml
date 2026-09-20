@@ -32,6 +32,10 @@ members = [
     "tests",
     
     # QEMU 集成测试 (kernel/bootstrap — 对应 01-boot-shim-bootstrap.md)
+    # X-2/NK5 裸机隔离：下列全部 bin 包带 required-features（fw-* 按目标三元组
+    # 分：fw-x86-uefi / fw-x86-none / fw-aarch64-uefi / fw-riscv64-none /
+    # fw-user-none），宿主 `--workspace --bins` 跳过；真机构建必须
+    # `--target` 与 `--features` 成对传递（run_all.sh / 特殊脚本 / CI 专职此责）。
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot",
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-aarch64",
     "qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64",

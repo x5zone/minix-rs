@@ -44,13 +44,13 @@ fi
 
 # 1. Build the user image, then the kernel with the artifact embedded.
 echo "building rt-birth (x86_64-unknown-none)…"
-( cd "$ROOT" && cargo build -p rt-birth --target x86_64-unknown-none --release ) || {
+( cd "$ROOT" && cargo build -p rt-birth --target x86_64-unknown-none --features fw-user-none --release ) || {
     echo "FAIL: rt-birth build failed"; exit 1
 }
 RT_BIRTH_ELF_PATH="$ROOT/target/x86_64-unknown-none/release/rt-birth"
 echo "building test-rt-birth kernel (embeds $RT_BIRTH_ELF_PATH)…"
 ( cd "$ROOT" && RT_BIRTH_ELF_PATH="$RT_BIRTH_ELF_PATH" \
-    cargo build -p test-rt-birth --target x86_64-unknown-uefi --release ) || {
+    cargo build -p test-rt-birth --target x86_64-unknown-uefi --features fw-x86-uefi --release ) || {
     echo "FAIL: test-rt-birth build failed"; exit 1
 }
 EFI="$ROOT/target/x86_64-unknown-uefi/release/test-rt-birth.efi"

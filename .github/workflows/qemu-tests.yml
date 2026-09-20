@@ -81,7 +81,7 @@ jobs:
 
       - name: Build riscv64 test kernel
         working-directory: os
-        run: cargo build -p hello-boot-riscv64 --target riscv64gc-unknown-none-elf --release
+        run: cargo build -p hello-boot-riscv64 --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release
 
       - name: Run U-Boot boot chain test
         run: bash os/qemu-tests/test-riscv64-uboot.sh

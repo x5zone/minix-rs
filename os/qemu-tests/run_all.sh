@@ -50,21 +50,23 @@ run_test() {
 echo "=== Building test kernels ==="
 
 # ── x86_64 (UEFI) ──
+# X-2/NK5：--target 与 --features 必须成对（required-features 门），
+# 缺 --features 会被静默跳过 → 下游 "binary not found, skip" 全表 skip。
 for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi test-smp-shutdown test-user-trap test-paging-faultloop; do
     echo "--- x86_64: $pkg ---"
-    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --release 2>&1 || echo "(build failed)"
+    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --features fw-x86-uefi --release 2>&1 || echo "(build failed)"
 done
 
 # ── aarch64 (UEFI) ──
 for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64 test-rt-birth-aarch64 test-shutdown-aarch64 test-timer-irq-aarch64; do
     echo "--- aarch64: $pkg ---"
-    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target aarch64-unknown-uefi --release 2>&1 || echo "(build failed)"
+    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target aarch64-unknown-uefi --features fw-aarch64-uefi --release 2>&1 || echo "(build failed)"
 done
 
 # ── riscv64 (OpenSBI, bare-metal) ──
 for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64 test-rt-birth-riscv64 test-shutdown-riscv64 test-timer-irq-riscv64; do
     echo "--- riscv64: $pkg ---"
-    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target riscv64gc-unknown-none-elf --release 2>&1 || echo "(build failed)"
+    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release 2>&1 || echo "(build failed)"
 done
 
 echo ""

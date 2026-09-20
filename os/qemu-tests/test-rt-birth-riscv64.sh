@@ -29,14 +29,14 @@ if ! command -v qemu-system-riscv64 &>/dev/null; then
 fi
 
 echo "building rt-birth (riscv64gc-unknown-none-elf)…"
-( cd "$OS_ROOT" && cargo build -p rt-birth --target riscv64gc-unknown-none-elf --release ) || {
+( cd "$OS_ROOT" && cargo build -p rt-birth --target riscv64gc-unknown-none-elf --features fw-user-none --release ) || {
     echo "FAIL: rt-birth build failed"; exit 1
 }
 RT_BIRTH_ELF_PATH="$OS_ROOT/target/riscv64gc-unknown-none-elf/release/rt-birth"
 
 echo "building test-rt-birth-riscv64 carrier (embeds $RT_BIRTH_ELF_PATH)…"
 ( cd "$OS_ROOT" && RT_BIRTH_ELF_PATH="$RT_BIRTH_ELF_PATH" \
-    cargo build -p test-rt-birth-riscv64 --target riscv64gc-unknown-none-elf --release ) || {
+    cargo build -p test-rt-birth-riscv64 --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release ) || {
     echo "FAIL: test-rt-birth-riscv64 build failed"; exit 1
 }
 KERNEL="$OS_ROOT/target/riscv64gc-unknown-none-elf/release/test-rt-birth-riscv64"

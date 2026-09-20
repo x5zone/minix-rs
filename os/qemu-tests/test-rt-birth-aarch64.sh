@@ -39,14 +39,14 @@ if [ -z "$FW" ] || [ -z "$FW_SRC_VARS" ]; then
 fi
 
 echo "building rt-birth (aarch64-unknown-none)…"
-( cd "$OS_ROOT" && cargo build -p rt-birth --target aarch64-unknown-none --release ) || {
+( cd "$OS_ROOT" && cargo build -p rt-birth --target aarch64-unknown-none --features fw-user-none --release ) || {
     echo "FAIL: rt-birth build failed"; exit 1
 }
 RT_BIRTH_ELF_PATH="$OS_ROOT/target/aarch64-unknown-none/release/rt-birth"
 
 echo "building test-rt-birth-aarch64 carrier (embeds $RT_BIRTH_ELF_PATH)…"
 ( cd "$OS_ROOT" && RT_BIRTH_ELF_PATH="$RT_BIRTH_ELF_PATH" \
-    cargo build -p test-rt-birth-aarch64 --target aarch64-unknown-uefi --release ) || {
+    cargo build -p test-rt-birth-aarch64 --target aarch64-unknown-uefi --features fw-aarch64-uefi --release ) || {
     echo "FAIL: test-rt-birth-aarch64 build failed"; exit 1
 }
 EFI="$OS_ROOT/target/aarch64-unknown-uefi/release/test-rt-birth-aarch64.efi"

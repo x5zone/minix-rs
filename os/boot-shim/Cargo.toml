@@ -10,6 +10,10 @@ uefi = ["dep:uefi"]
 opensbi = []
 # Enable both impls for `cargo test` so loader/opensbi tests are built.
 test-all = ["uefi", "opensbi"]
+# X-2/NK5 裸机隔离：bin 是 no_std UEFI 镜像（自带 panic_handler/global_allocator），
+# 宿主 `--workspace --bins` 必须跳过；真机构建成对传
+# `--target x86_64-unknown-uefi --features fw-x86-uefi`（与 test-kernels 同词汇表）。
+fw-x86-uefi = ["uefi"]
 
 [dependencies]
 minix-types = { path = "../libs/minix-types" }
@@ -28,4 +32,4 @@ test = true
 [[bin]]
 name = "boot-shim"
 test = false
-required-features = ["uefi"]
+required-features = ["fw-x86-uefi"]

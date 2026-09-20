@@ -16,3 +16,9 @@ boot-shim = { workspace = true, features = ["uefi"] }
 name = "test-shutdown-aarch64"
 path = "src/main.rs"
 test = false
+required-features = ["fw-aarch64-uefi"]
+
+# X-2/NK5 裸机隔离：宿主 --workspace --bins 跳过本包；
+# 真机构建由 run_all.sh / 特殊脚本 / CI 成对传 --target + --features。
+[features]
+fw-aarch64-uefi = []
