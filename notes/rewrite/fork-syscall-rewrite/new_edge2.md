@@ -2,7 +2,7 @@
 
 > **定位**：新一轮临时分工索引之二（前轮 [edge2.md](edge2.md) 已于 2026-09-20 冻结，L1-L16 全 ✅、L17 携带）。条目权威描述在 [edge_todo.md](edge_todo.md)（2026-09-20 节）与 14/16-stage todo；本线是三条线的**依赖下游汇聚点**——new_edge3 的服务器与命令消费本线 API。归档规则见 [new_edge4.md](new_edge4.md) §8。
 >
-> **所有权（本线可独占修改）**：`os/libs/`（minix-types、minix-sys、minix-rt、minix-sef、minix-chardriver、minix-blockdriver、minix-netdriver、minix-bdev、minix-driver-rt、minix-fs、minix-vtreefs、minix-sffs、minix-sockdriver）、`os/drivers/`、`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`、`16-stage-drivers/`。
+> **所有权（本线可独占修改）**：`os/libs/`（**以括号枚举为准，非整目录**：minix-types、minix-sys、minix-rt、minix-sef、minix-chardriver、minix-blockdriver、minix-netdriver、minix-bdev、minix-driver-rt、minix-fs、minix-vtreefs、minix-sffs、minix-sockdriver）、`os/drivers/`、`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`、`16-stage-drivers/`。**注**：`os/libs/minix-boot` 虽物理在 `os/libs/` 下，但经 new_edge4 §2 C-40 确权归 **new_edge1**（boot 交接契约库，消费者全在 edge1），不属本线；本线 `os/libs/` 认领以上述枚举为准，枚举外 crate 需在 §2 认领确权后方可改。
 >
 > **并发规则**：见 [new_edge4.md](new_edge4.md) §1。新增 API 纯增量优先；破坏性变更在 new_edge4 §2 公告。
 > **领取规则**：开工任何条目前先 `tools/claim.sh claim <ID> <owner>` 领取——分支 `claim/<ID>-<owner>` 即排他锁（同名/同 ID 已存在即被领走，`list` 看全量），claim 同时自动建 `.wt/<id>-<owner>/` 专属工作树并打印 `cd` 路径——**本会话只在那棵树内改码/构建/测试**。每次从本文件重选/新领条目，先重读 [new_edge4.md](new_edge4.md) §1（尤其规则 7 并发隔离）并跑一次 `tools/claim.sh verify` 确认位置。文件头规则是提示，分支才是锁，工作树才是壳：共享主树内禁 checkout/reset --force（C-35 事故判例：NK5 会话主树换分支销毁了 C-28/NL6 两组在制品）；new_edgeX.md 的修改改完即 commit，勿留未跟踪状态。完成后合入主线再 `release` 销账（自动删树）；状态列同步标 🔄。

@@ -2,7 +2,7 @@
 
 > **定位**：T1 收尾 + T2/T5 内核面的**新一轮临时分工索引**（前轮 [edge1.md](edge1.md) 已于 2026-09-20 收线冻结，K 组全 ✅/🚫；本轮携带其遗留与 2026-09-20 五路扫描收敛的新条目）。条目权威描述在 [edge_todo.md](edge_todo.md)（2026-09-20 节）与 stage todo；本文件只做范围圈定、前置标注与状态记账。归档规则见 [new_edge4.md](new_edge4.md) §8。
 >
-> **所有权（本线可独占修改，清单外触碰走 new_edge4 §2 认领板）**：`os/kernel/`、`os/arch/`、`os/plat/`、`os/boot-shim/`、`os/qemu-tests/`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`、`00-master-plan/`。
+> **所有权（本线可独占修改，清单外触碰走 new_edge4 §2 认领板）**：`os/kernel/`、`os/arch/`、`os/plat/`、`os/boot-shim/`、`os/qemu-tests/`、`os/libs/minix-boot`（boot 交接契约库：`KernelInfo`/`BootModule`/`BootShim`/`NR_BOOT_MODULES` 等，唯一消费者全在本线 `boot-shim`/`kernel`/`arch`/`qemu-tests`——经 new_edge4 §2 C-40 确权归本线，虽物理位于 `os/libs/`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`、`00-master-plan/`。
 >
 > **并发规则**：见 [new_edge4.md](new_edge4.md) §1（沿旧 edge4 §1 三条 + FIXLOG 增量纪律）。
 > **领取规则**：开工任何条目前先 `tools/claim.sh claim <ID> <owner>` 领取——分支 `claim/<ID>-<owner>` 即排他锁（同名/同 ID 已存在即被领走，`list` 看全量），claim 同时自动建 `.wt/<id>-<owner>/` 专属工作树并打印 `cd` 路径——**本会话只在那棵树内改码/构建/测试**。每次从本文件重选/新领条目，先重读 [new_edge4.md](new_edge4.md) §1（尤其规则 7 并发隔离）并跑一次 `tools/claim.sh verify` 确认位置。文件头规则是提示，分支才是锁，工作树才是壳：共享主树内禁 checkout/reset --force（C-35 事故判例：NK5 会话主树换分支销毁了 C-28/NL6 两组在制品）；new_edgeX.md 的修改改完即 commit，勿留未跟踪状态。完成后合入主线再 `release` 销账（自动删树）；状态列同步标 🔄。
