@@ -104,7 +104,7 @@
 | 1 | 调用形状 | `:292-293` | 非 `SENDREC` 直接 `EDONTREPLY`——连名字都不看 |
 | 2 | 取字段 | `:295-300` | `endpt=m_source`；`oldaddr/oldlen/newaddr/newlen/namelen` 取自 `mess_lc_mib_sysctl`（`ipc.h:424-433`：`oldp/oldlen/newp/newlen/namelen/namep/name[8]`） |
 | 3 | 长度校验 | `:302-303` | `namelen==0 \|\| namelen>CTL_MAXNAME(12，`sys/sys/sysctl.h:75`)` → `EINVAL` |
-| 4 | 取名字 | `:309-315` | `>CTL_SHORTNAME(8，`ipc.h:15`)` 则 `sys_datacopy(namep→&name)`，失败回その错误码；否则 `memcpy` 信内 `name[8]` |
+| 4 | 取名字 | `:309-315` | `>CTL_SHORTNAME(8，`ipc.h:15`)` 则 `sys_datacopy(namep→&name)`，失败回その错误码；否则 `memcpy` 信内 `name[8]`。Rust 侧窗宽随交换面 64 位形态缩为 2（`[ARCH: MIB-SYSCTL-64LANE]`，见 02 §2.2 末注记），机制不变 |
 | 5 | 配对 old/new | `:322-340` | old：`oldaddr!=0` 才开（长度无地址被原谅）；new：地址长度双非零才开（半份丢弃，NetBSD 同款） |
 | 6 | 组装 call 并收尾 | `:347-377` | `call_endpt/name/namelen/flags=0/reslen=0` → `mib_dispatch` → 收尾换算（见 2.4） |
 
