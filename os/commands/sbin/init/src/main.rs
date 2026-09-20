@@ -178,8 +178,9 @@ fn main() {
 /// 裁决：init 采用 minix-rt 的统一渲染——`minix_rt::diag::
 /// format_panic_report`（栈上缓冲、无分配器、无系统调用，minix-rt
 /// lib.rs:287 同款）——加上 init 特有的收尾：PID 1 不允许自旋挂死
-/// 全机（minix-rt 自带 handler 的兜底是 spin，lib.rs:305-307，对
-/// PID 1 等于把整台机器挂死），所以渲染完成后经 SYS_DIAGCTL 把报告
+/// 全机（minix-rt 自带 handler 的 no-hook 分支已改 SYS_DIAGCTL+exit
+/// 阶梯——C-56，2026-09-21；此自带 handler 为 PID 1 保留同一阶梯的
+/// 直接形式，不依赖 hook registry），所以渲染完成后经 SYS_DIAGCTL 把报告
 /// 送到内核诊断台（C 的 panic 即死语义，minix3/minix/lib/libsys/
 /// panic.c:51-58 emit→exit 阶梯），然后非零 `exit`——内核与 C 世界
 /// 一样看得见"init 死了"。
