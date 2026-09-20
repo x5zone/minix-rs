@@ -21,7 +21,20 @@ pub mod char_face;
 pub mod led;
 pub mod mouse;
 pub mod scancode;
+pub mod service;
 pub mod tables;
 
+use char_face::PckbdFace;
+use service::PckbdService;
+
+/// Build the service over a fresh, unconfigured face: the state machines,
+/// registration, and LED outbox the message pump drives. The server learns
+/// the driver's slots only when it sends a configuration.
+pub fn new_service() -> PckbdService {
+    PckbdService::new(PckbdFace::new())
+}
+
 /// Service initialization entry (wires the tables; transport stays out).
-pub fn init() {}
+pub fn init() -> PckbdService {
+    new_service()
+}

@@ -100,6 +100,17 @@ impl DriverTransport for KernelTransport {
         ds.publish_label(label, Endpoint::NONE, minix_types::DsFlags::empty())
             .map_err(|e| -(e.unsigned_abs() as i32))
     }
+
+    fn lookup_label(&mut self, label: &str) -> Option<Endpoint> {
+        // C: `do_conf` resolves the server label through the data store
+        // before comparing it to a sender (`inputdriver.c:82-111`). Same
+        // double-carrier client as publish: the lookup is a DS conversation
+        // on the IPC leg. A failed or unreachable lookup is `None`, which
+        // the caller reads as C's "ignore the message" (`get_service_endpt`
+        // failure path) — hosted builds (no DS) honestly get `None`.
+        let mut ds = DsClient::new(DirectTrapTransport, DirectKernelCallTransport, Endpoint::DS);
+        ds.retrieve_label_endpt(label).map(|(endpoint, _)| endpoint).ok()
+    }
 }
 
 #[cfg(test)]

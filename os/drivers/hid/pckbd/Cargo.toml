@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 minix-types = { workspace = true }
 minix-sys = { workspace = true }
+minix-driver-rt = { workspace = true }
 
 [lib]
 name = "minix_driver_pckbd"

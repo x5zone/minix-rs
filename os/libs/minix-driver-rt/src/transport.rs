@@ -57,4 +57,18 @@ pub trait DriverTransport {
     /// prefixes. Failure is a startup failure — a driver nobody can find
     /// must not serve.
     fn publish_label(&mut self, label: &str) -> Result<(), i32>;
+
+    /// Resolve a published label back to its endpoint through the data
+    /// store (a label lookup): an input driver finds its server this way
+    /// before trusting a configuration (`do_conf` looks up `"input"` and
+    /// compares, `inputdriver.c:82-111`).
+    ///
+    /// Additive with an honest default: a transport that cannot reach the
+    /// data store reports `None`, which the caller treats as a failed
+    /// lookup (C ignores the message when the lookup fails). A production
+    /// implementation backs this with the data store's endpoint retrieve.
+    fn lookup_label(&mut self, label: &str) -> Option<Endpoint> {
+        let _ = label;
+        None
+    }
 }
