@@ -37,7 +37,9 @@ extern crate alloc;
 // no_std（NS8-B guest 构建面）：裸 String 由 alloc 供给。
 use alloc::string::String;
 
-use crate::device_map::{DmapTable, SmapTable, DEV_IMGRD};
+use crate::device_map::{
+    DEV_IMGRD, DmapTable, MapError, ServiceMap, SmapTable, classify_service, map_driver,
+};
 use crate::fcntl::LockTable;
 use crate::filp::FilpTable;
 use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
@@ -394,6 +396,17 @@ pub struct VfsState {
     pub pending_reply: Option<(Endpoint, Message)>,
 }
 
+/// Boot rproctab 消费的失败面：C 侧 `init_fresh` 对两类失败都 panic
+///（main.c:457-459 与 main.c:461-466），这里 Err 化保住决策面可测，
+/// panic 归 run()（与 finish_init 的 Err→panic 同款分层）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootMapError {
+    /// `sys_safecopyfrom` 失败，携内核返回的 errno（main.c:458）。
+    Safecopy(i32),
+    /// `map_service` 语义失败（dmap.c:198-226 的 EINVAL/ENODEV 面）。
+    Map(MapError),
+}
+
 impl VfsState {
     /// Creates new VFS state.
     pub fn new() -> Self {
@@ -521,10 +534,10 @@ impl VfsState {
         // VfsState::new 的 DmapTable::init 接线(CTTY 槽,S13 W5);
         // init_smap ≡ SmapTable::new(全空基编号)。
         // main.c:455-467 — sys_safecopyfrom(RS_PROC_NR, rproctab) + map_service()
-        //                  （dmap 的 boot 装配半 = E-RPROCTAB 消费侧；见
-        //                  new_edge3 新登记——RS 侧的 wire 契约归 NS2，消费
-        //                  适配在其落地时接。boot 链上 dmap[MEMORY_MAJOR]
-        //                  为空 ⇒ 根挂载按 C 同款 EINVAL 失败。）
+        //                  已接线：RS_INIT 携带的 gid 由 run() 的 boot 会合段
+        //                  解出（C 的 sef_local_startup → init_fresh 时序位，
+        //                  先于本函数），经 `map_boot_services` 落 dmap 行后
+        //                  根挂载才有 REQ_READSUPER 路由。
 
         // main.c:468-483 — fp_lock（槽位锁，单线程下归 07）+ filp/rd/wd 清零。
         self.fproc_table.init_phase2();
@@ -583,6 +596,107 @@ impl VfsState {
             // 终止，worker 门无观察者）；错误交调用方决定处置。
             Err(e) => Err(e),
         }
+    }
+
+    /// Boot 链 rproctab 消费（main.c:455-467）——E-RPROCTAB 的 VFS 消费半
+    /// （NS4-A；RS 供方契约 = NS2 的 `pub_wire` 镜像，5917f2d51）。
+    ///
+    /// C `init_fresh` 在根挂载（main.c:492-497）之前把 RS 的公共进程表整表
+    /// safecopy 进来并逐行 `map_service`（dmap.c:198-226）：imgrd→memory 的
+    /// dmap 行由此装配，是 do_init_root 的 REQ_READSUPER 路由前置。行宽 =
+    /// 共享快照 `RprocpubSnap`（`[ARCH: A-4]` 单一权威）；表宽 = `NR_BOOT_PROCS`
+    /// （C main.c:399 `rprocpub[NR_BOOT_PROCS]`，param.h:9 = 17——RS 的 64 行
+    /// 公共表里 boot 进程占首段槽位，C 同款只读首 17 行）。C 的 `map_service`
+    /// 是导出符号，Rust 侧唯一调用方是同模块 run() 的 boot 会合段，故私有。
+    fn map_boot_services(
+        &mut self,
+        kernel: &impl KernelCallTransport,
+        rproctab_gid: i32,
+    ) -> Result<(), BootMapError> {
+        let mut buf = alloc::vec![
+            0u8;
+            minix_types::NR_BOOT_PROCS
+                * core::mem::size_of::<minix_types::RprocpubSnap>()
+        ];
+        // 授权方是 RS_PROC_NR，不是 SELF（C main.c:456；VM 同款先例
+        // ipc_call_rs_init，vm_server.rs:1704）。
+        minix_sys::syscall::sys_safecopyfrom(
+            kernel,
+            Endpoint::RS.get(),
+            rproctab_gid,
+            0,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        )
+        .map_err(BootMapError::Safecopy)?;
+        let rows = Self::decode_boot_rows(&buf);
+        self.apply_boot_rows(&rows).map_err(BootMapError::Map)
+    }
+
+    /// 公共表字节流 → 行快照（RS 供方 `pub_wire_bytes` 序列化的逆）。
+    fn decode_boot_rows(buf: &[u8]) -> alloc::vec::Vec<minix_types::RprocpubSnap> {
+        const ENTRY_SIZE: usize = core::mem::size_of::<minix_types::RprocpubSnap>();
+        let mut rows = alloc::vec::Vec::new();
+        for chunk in buf.chunks_exact(ENTRY_SIZE) {
+            // SAFETY(读取): 快照行是 repr(C) POD，从授权捞回的字节位逐行读；
+            // `read_unaligned` 不假设缓冲对齐（内核 safecopy 写的是字节流）。
+            // 与 VM 的 ipc_call_rs_init 解码半同形（vm_server.rs:1711）。
+            rows.push(unsafe { core::ptr::read_unaligned(chunk.as_ptr().cast()) });
+        }
+        rows
+    }
+
+    /// isokendpt + `FP_SRV_PROC` 标记（dmap.c:208-214）。端点解析失败即
+    /// EINVAL（C printf 后返回；boot 载体无 stdout 承诺，静默同权）。
+    /// fproc 槽已在 PM 握手期填满，端点↔槽一致性由 `is_ok_endpoint` 复验。
+    fn mark_boot_service(&mut self, endpoint: i32) -> Result<(), MapError> {
+        let slot = self
+            .fproc_table
+            .is_ok_endpoint(Endpoint(endpoint))
+            .map_err(|_| MapError::Inval)?;
+        if let Some(fp) = self.fproc_table.get_mut(slot) {
+            fp.flags |= FpFlags::SRV_PROC;
+        }
+        Ok(())
+    }
+
+    /// 逐行 `map_service`（dmap.c:198-226）：空槽跳过（main.c:462）、boot
+    /// 用户跳过（rs.h:188）、服务标 `FP_SRV_PROC`、带设备行落 dmap。任一
+    /// 行失败上抛——C 对 map_service 失败 panic（main.c:463-466）。
+    fn apply_boot_rows(&mut self, rows: &[minix_types::RprocpubSnap]) -> Result<(), MapError> {
+        for row in rows {
+            if row.in_use == 0 {
+                continue;
+            }
+            let is_boot_user = Endpoint(row.endpoint) == Endpoint::INIT;
+            // NO_DEV（id.rs:62，DevId=u64）与 C 一致是跨型比较：devmajor_t(int)
+            // 对 dev_t 0（dmap.c:217）。
+            let has_device = row.dev_nr != NO_DEV as i32;
+            match classify_service(is_boot_user, has_device) {
+                ServiceMap::SkipBootUser => {}
+                ServiceMap::ServiceOnly => self.mark_boot_service(row.endpoint)?,
+                ServiceMap::MapDriver => {
+                    self.mark_boot_service(row.endpoint)?;
+                    // C map_driver(rpub->label, rpub->dev_nr, rpub->endpoint)
+                    //（dmap.c:220）。label 按 NUL 截断（C strlen 门
+                    // dmap.c:89-94 在 map_driver 内复验）；dev_nr 负值
+                    // as u32 回绕出界 → ENODEV，与 C 的 major<0 门
+                    //（dmap.c:67）同判。
+                    let n = row
+                        .label
+                        .iter()
+                        .position(|&b| b == 0)
+                        .unwrap_or(row.label.len());
+                    map_driver(
+                        &mut self.dmap_table,
+                        Some(&row.label[..n]),
+                        row.dev_nr as u32,
+                        Some(Endpoint(row.endpoint)),
+                    )?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// `mount_pfs`（`mount.c:391-425`）：PFS 以固定身份领一个 `none` 伪设备
@@ -7337,6 +7451,49 @@ pub fn run() -> ! {
         Endpoint::PM,
         Message { m_type: minix_types::OK, ..Message::default() },
     );
+
+    // ── Boot 会合段：RS_INIT 消费（main.c:455-467 的对位时序位）──
+    // C 的 sef_local_startup 在 do_init_root（main.c:492-497）之前消费
+    // RS_INIT 并跑 init_fresh 的 rproctab 装配——dmap 的 boot 行是根挂载
+    // 的路由前置。RS boot 按 image 序逐台 asynsend 并等应答（rs/boot.rs
+    // step2），VFS 的 RS_INIT 严格晚于 PM 握手完成，所以这里对 RS 阻塞
+    // 收是 C 同序而非忙等。
+    let mut boot_msg = Message::default();
+    loop {
+        let recv =
+            minix_sef::sef_receive_status(&mut ipc, Endpoint::RS, &mut boot_msg, &mut |_| {})
+                .unwrap_or_else(|e| panic!("vfs: boot rendezvous receive failed: {e}"));
+        let SefEvent::Init(init_type) = recv.event else {
+            // 非 Init 的 RS 面消息：合法 ping 已在 SEF 层消化（sef.c:208-214），
+            // 其余在 boot 会合期不应出现——丢弃重等，C sef_local_startup 的
+            // 循环同款。
+            continue;
+        };
+        // 生面应答（E-BIRTHFACE 库根半）：C process_init 尾部无条件回
+        // RS_INIT+result（sef_init.c:113-117）。LU 未建模 → 诚实 ENOSYS
+        //（主循环 Init 臂同款语义）。
+        let result = match init_type {
+            0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+            _ => minix_types::ENOSYS,
+        };
+        if result == 0 {
+            // restart 重走本地重置（主循环 Init 臂同款）；fresh 的重置已在
+            // run() 开头做掉（≡ C init_fresh 单次执行）。
+            if init_type == 2 {
+                state.init_fresh();
+            }
+            let init = minix_types::RsInit::decode_message(&recv.message);
+            state
+                .map_boot_services(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    init.rproctab_gid,
+                )
+                .unwrap_or_else(|e| panic!("vfs: boot rproctab consumption failed: {e:?}"));
+        }
+        send_reply(Endpoint::RS, minix_sef::sef_init_reply(result));
+        break;
+    }
+
     // main.c:492-497 — do_init_root 经 worker_start 启动；C 失败即 panic
     // （main.c:519-520），这里同权。
     state.finish_init(
@@ -10874,6 +11031,181 @@ mod tests {
         entry.driver = Some(Endpoint::MEM);
         entry.label[..7].copy_from_slice(b"memory\0");
         assert!(state.dmap_table.set(crate::device_map::MEMORY_MAJOR, entry));
+    }
+
+    // ── NS4-A：boot rproctab 消费（main.c:455-467 消费半） ──────────────
+
+    /// repr(C) POD 快照行的字节镜像（`decode_boot_rows` 的逆，注入用）。
+    fn row_bytes(row: &minix_types::RprocpubSnap) -> [u8; 40] {
+        let mut b = [0u8; core::mem::size_of::<minix_types::RprocpubSnap>()];
+        // SAFETY(测试): repr(C) POD 行 write_unaligned——read_unaligned 的逆。
+        unsafe { (b.as_mut_ptr() as *mut minix_types::RprocpubSnap).write_unaligned(*row) };
+        b
+    }
+
+    /// 内存驱动 boot 行（C 链上 imgrd 的供给者，rpub.label = "memory"）。
+    fn mem_boot_row() -> minix_types::RprocpubSnap {
+        minix_types::RprocpubSnap {
+            in_use: 1,
+            endpoint: Endpoint::MEM.get(),
+            dev_nr: crate::device_map::MEMORY_MAJOR as i32,
+            label: *b"memory\0\0\0\0\0\0\0\0\0\0",
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_decode_boot_rows_roundtrip() {
+        let rows = [mem_boot_row(), minix_types::RprocpubSnap::default()];
+        let mut buf = alloc::vec::Vec::new();
+        for row in &rows {
+            buf.extend_from_slice(&row_bytes(row));
+        }
+        let decoded = VfsState::decode_boot_rows(&buf);
+        assert_eq!(decoded, rows);
+    }
+
+    #[test]
+    fn test_apply_boot_rows_maps_driver_and_marks_service() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        // fproc 槽预填 endpoint：C 的 PM 握手先收齐进程表（main.c:419-436），
+        // map_service 的 isokendpt 才解析得到（dmap.c:208）。槽位随端点派生。
+        let mem_slot = Endpoint::MEM.to_user_slot().unwrap();
+        state.fproc_table.get_mut(mem_slot).unwrap().endpoint = Endpoint::MEM;
+
+        state.apply_boot_rows(&[mem_boot_row()]).unwrap();
+
+        let fp = state.fproc_table.get_mut(mem_slot).unwrap();
+        assert!(fp.flags.contains(FpFlags::SRV_PROC));
+        let entry = state
+            .dmap_table
+            .get(crate::device_map::MEMORY_MAJOR)
+            .unwrap();
+        assert_eq!(entry.driver, Some(Endpoint::MEM));
+        assert_eq!(&entry.label[..7], b"memory\0");
+    }
+
+    /// dmap 已驱动行计数（`entries` 私有，逐 major 走 `get`；CTTY 槽在
+    /// `VfsState::new` 已预填——判"apply 未新增行"用计数差而非全空）。
+    fn dmap_driver_count(table: &DmapTable) -> usize {
+        (0..table.len() as u32)
+            .filter(|m| table.get(*m).is_some_and(|e| e.driver.is_some()))
+            .count()
+    }
+
+    #[test]
+    fn test_apply_boot_rows_skips_vacant_and_boot_user() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let vacant = minix_types::RprocpubSnap::default();
+        // boot 用户（init）：IS_RPUB_BOOT_USR（rs.h:188）——mark/dmap 都不做
+        //（C dmap.c:206 先于 isokendpt，无需 fproc 槽）。
+        let boot_user = minix_types::RprocpubSnap {
+            in_use: 1,
+            endpoint: Endpoint::INIT.get(),
+            dev_nr: 3,
+            ..Default::default()
+        };
+        state.apply_boot_rows(&[vacant, boot_user]).unwrap();
+        assert_eq!(
+            dmap_driver_count(&state.dmap_table),
+            dmap_driver_count(&DmapTable::init())
+        );
+        // boot 用户与空槽都不得标 SRV_PROC。
+        let init_slot = Endpoint::INIT.to_user_slot().unwrap();
+        let fp = state.fproc_table.get_mut(init_slot).unwrap();
+        assert!(!fp.flags.contains(FpFlags::SRV_PROC));
+    }
+
+    #[test]
+    fn test_apply_boot_rows_service_only_marks_without_dmap() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let mfs_slot = Endpoint::MFS.to_user_slot().unwrap();
+        state.fproc_table.get_mut(mfs_slot).unwrap().endpoint = Endpoint::MFS;
+        // dev_nr == NO_DEV（id.rs:62 = 0）：只标服务，不落 dmap（dmap.c:217-218）。
+        let service_only = minix_types::RprocpubSnap {
+            in_use: 1,
+            endpoint: Endpoint::MFS.get(),
+            dev_nr: NO_DEV as i32,
+            ..Default::default()
+        };
+        state.apply_boot_rows(&[service_only]).unwrap();
+        let fp = state.fproc_table.get_mut(mfs_slot).unwrap();
+        assert!(fp.flags.contains(FpFlags::SRV_PROC));
+        assert_eq!(
+            dmap_driver_count(&state.dmap_table),
+            dmap_driver_count(&DmapTable::init())
+        );
+    }
+
+    #[test]
+    fn test_apply_boot_rows_rejects_unknown_endpoint() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        // 端点不在 fproc（isokendpt 失败，dmap.c:208-212）→ EINVAL。
+        let ghost = minix_types::RprocpubSnap {
+            in_use: 1,
+            endpoint: 0x555,
+            dev_nr: 3,
+            ..Default::default()
+        };
+        assert_eq!(state.apply_boot_rows(&[ghost]), Err(MapError::Inval));
+    }
+
+    #[test]
+    fn test_apply_boot_rows_rejects_bad_major() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let mem_slot = Endpoint::MEM.to_user_slot().unwrap();
+        state.fproc_table.get_mut(mem_slot).unwrap().endpoint = Endpoint::MEM;
+        // dev_nr 负值：C map_driver 的 major<0 门（dmap.c:67）→ ENODEV。
+        let bad_major = minix_types::RprocpubSnap {
+            in_use: 1,
+            endpoint: Endpoint::MEM.get(),
+            dev_nr: -1,
+            ..Default::default()
+        };
+        assert_eq!(state.apply_boot_rows(&[bad_major]), Err(MapError::NoDev));
+    }
+
+    #[test]
+    fn test_map_boot_services_requests_rs_grant_copy() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let mut kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        kernel.reply(minix_types::OK);
+
+        state.map_boot_services(&kernel, 7).unwrap();
+
+        let sent = kernel.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        let call = sent[0];
+        assert_eq!(call.m_type, minix_types::SYS_SAFECOPYFROM);
+        // SAFETY(测试): m_lsys_kern_safecopy 是 SAFECOPYFROM 的载荷布局
+        //（minix-sys sys_safecopyfrom 装载侧同字段）。
+        let sc = unsafe { &call.m_u.m_lsys_kern_safecopy };
+        assert_eq!(sc.from_to, Endpoint::RS.get());
+        assert_eq!(sc.grant_id, 7);
+        assert_eq!(sc.offset, 0);
+        assert_eq!(
+            sc.bytes,
+            (minix_types::NR_BOOT_PROCS * core::mem::size_of::<minix_types::RprocpubSnap>()) as u64
+        );
+    }
+
+    #[test]
+    fn test_map_boot_services_fails_closed_on_copy_error() {
+        let mut state = VfsState::new();
+        state.init_fresh();
+        let mut kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        kernel.reply(-minix_types::EIO);
+
+        assert_eq!(
+            state.map_boot_services(&kernel, 7),
+            Err(BootMapError::Safecopy(-minix_types::EIO))
+        );
     }
 
     /// 根 readsuper 的脚本回复（ipc.h:198-211 布局：file_size@0、device@8、
