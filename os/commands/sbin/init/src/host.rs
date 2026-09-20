@@ -396,10 +396,11 @@ impl InitHost for MinixSysHost {
     }
 
     fn set_env(&mut self, key: &str, value: &str) -> Result<(), Errno> {
-        // minix-rt has no env mutation yet (E-CMDSYSFACE); the child
-        // would exec without the PATH override.
-        let _ = (key, value);
-        Err(Errno::ENOSYS)
+        // C: setenv("PATH", INIT_PATH, 1) (init.c:799-801). Pure process
+        // state — no machine round trip — so hosted builds and a real
+        // machine agree; the child sees the value through the exec
+        // frame's envp (`execve::compose_envp`).
+        crate::execve::apply_env_override(&mut self.env, key, value)
     }
 
     fn chroot(&mut self, root: &str) -> Result<(), Errno> {
@@ -744,14 +745,18 @@ mod tests {
         // 本测试分两栏：**仍缺封装**的接缝必须诚实回 ENOSYS（不假成功）；
         // **已接线**的接缝在宿主 trap 断链下诚实回 EIO（E1 切片 5 的 hosted
         // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
-        // 仍缺封装：内核 mib 三件（12 篇）、
-        // set_controlling_tty（dup2/TIOCSCTTY 面）、chroot、
-        // set_env（E-CMDSYSFACE）。（alarm/time 已在本轮接线，见下。）
+        // 仍缺封装：内核 mib 三件（12 篇）、chroot。
+        // （set_controlling_tty/alarm/time 已接线，见下；set_env 是
+        // 本地环境表面——无机器往返，见第三栏。）
         assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
         assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
         assert_eq!(host.init_root(), Err(Errno::ENOSYS));
         assert_eq!(host.chroot("/"), Err(Errno::ENOSYS));
-        assert_eq!(host.set_env("PATH", "/sbin"), Err(Errno::ENOSYS));
+        // set_env 已接线（本地环境表，setenv 语义）：成功路径 Ok，
+        // 畸形名 EINVAL（C setenv.c:70-74）；exec 帧消费见 execve.rs。
+        assert_eq!(host.set_env("PATH", "/sbin"), Ok(()));
+        assert_eq!(host.set_env("", "/sbin"), Err(Errno::EINVAL));
+        assert_eq!(host.set_env("PA=TH", "/sbin"), Err(Errno::EINVAL));
         // 已接线（宿主 trap 断链 → EIO）：文件族三件 + 信号安装。
         assert_eq!(host.path_exists("/dev/console"), Err(Errno::EIO));
         assert_eq!(host.read_file("/etc/ttys"), Err(Errno::EIO));

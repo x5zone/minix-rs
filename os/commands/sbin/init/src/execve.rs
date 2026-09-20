@@ -234,6 +234,26 @@ pub(crate) fn compose_envp(inherited: &[String], overrides: &[(String, String)])
     envp
 }
 
+/// Applies one `setenv(name, value, 1)`-shaped override to the host's
+/// environment table: replace the first matching key in place, else append
+/// (C: `setenv`, `minix3/lib/libc/stdlib/setenv.c:63-77`, `rewrite=1`).
+/// A name that is empty or contains `=` is malformed — C answers EINVAL
+/// through `__envvarnamelen` returning 0 (`setenv.c:70-74`).
+pub(crate) fn apply_env_override(
+    env: &mut Vec<(String, String)>,
+    key: &str,
+    value: &str,
+) -> Result<(), Errno> {
+    if key.is_empty() || key.contains('=') {
+        return Err(Errno::EINVAL);
+    }
+    match env.iter().position(|(k, _)| k == key) {
+        Some(at) => env[at] = (key.to_string(), value.to_string()),
+        None => env.push((key.to_string(), value.to_string())),
+    }
+    Ok(())
+}
+
 /// Runs the whole exec: frame, descriptor, five-field PM_EXEC message.
 ///
 /// C shape: `execve.c:33-58` — size the stack, take a buffer (there sbrk,
@@ -397,5 +417,36 @@ mod tests {
             argv: vec!["sh".into(), "/etc/rc".into()],
         };
         assert_eq!(exec_command(&[], &cmd), Errno::EIO);
+    }
+}
+
+#[cfg(test)]
+mod setenv_tests {
+    use super::*;
+
+    /// replace-in-place + append（C setenv rewrite=1，setenv.c:63-77）。
+    #[test]
+    fn test_apply_env_override_replaces_and_appends() {
+        let mut env: Vec<(String, String)> =
+            vec![("HOME".into(), "/".into()), ("PATH".into(), "/bin".into())];
+        apply_env_override(&mut env, "PATH", "/sbin").unwrap();
+        apply_env_override(&mut env, "TERM", "console").unwrap();
+        assert_eq!(
+            env,
+            vec![
+                ("HOME".to_string(), "/".to_string()),
+                ("PATH".to_string(), "/sbin".to_string()),
+                ("TERM".to_string(), "console".to_string()),
+            ]
+        );
+    }
+
+    /// 空名与含 = 的名回 EINVAL（C setenv.c:70-74，__envvarnamelen 0）。
+    #[test]
+    fn test_apply_env_override_rejects_malformed_names() {
+        let mut env: Vec<(String, String)> = Vec::new();
+        assert_eq!(apply_env_override(&mut env, "", "x"), Err(Errno::EINVAL));
+        assert_eq!(apply_env_override(&mut env, "A=B", "x"), Err(Errno::EINVAL));
+        assert!(env.is_empty());
     }
 }
