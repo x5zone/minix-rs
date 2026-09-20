@@ -11,8 +11,7 @@
 //! # 布局（每块 4096 字节、`zone_shift = 0` 的缺省面）
 //!
 //! ```text
-//! 块 0        引导块（全零）
-//! 块 1        超级块（31 字节有效负载，其余零）
+//! 块 0        引导块（全零；超级块在其内 1024 字节偏移处）
 //! 块 2..      inode 位图（imap_blocks 块）
 //! ..          区块位图（zmap_blocks 块）
 //! ..          inode 表（inode_table_blocks 块，每块 bs/64 个）
@@ -289,7 +288,9 @@ fn build_image_rooted(
         block_size: plan.block_size as u16,
         disk_version: 0,
     };
-    let at = bs as usize;
+    // 超级块：字节偏移 1024（C `SUPER_BLOCK_BYTES`，const.h:50；本服务
+    // 器 `parse_superblock` 的同一权威）——4096 字节块下它在"块 0"内。
+    let at = crate::superblock::SUPER_BLOCK_OFFSET;
     image[at..at + DiskSuperblock::STORED_BYTES].copy_from_slice(&sup.to_bytes());
 
     // 两张位图的 0 号位恒置位（C mkfs.c:705-708）。
@@ -880,10 +881,13 @@ mod tests {
         let plan = plan_layout(64, Some(64), 4096).unwrap();
         let image = build_image(&plan, 1_000).unwrap();
         assert_eq!(image.len() as u64, 64 * 4096);
-        // 引导块与超块块的其余部分保持零（C 的 put_block(zero)）。
+        // 引导块的超块之前部分保持零（C 的 put_block(zero)）。
         assert!(image[..1024].iter().all(|b| *b == 0));
-        // 超级块：用服务器自己的解析器回读。
-        let at = 4096usize;
+        // 超级块：先经服务器的挂载入口解析器（钉死 1024 偏移，参数
+        // 即挂载者的运行时事实），确认镜像可被本服务器挂载；再逐字段
+        // 回读。
+        crate::superblock::parse_superblock(&image, 0, false).unwrap();
+        let at = crate::superblock::SUPER_BLOCK_OFFSET;
         let sup = DiskSuperblock::from_bytes(&image[at..at + DiskSuperblock::STORED_BYTES])
             .unwrap();
         assert_eq!(sup.magic, MAGIC_V3);
