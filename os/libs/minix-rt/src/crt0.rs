@@ -34,6 +34,36 @@
 //!    split, not C's `main(argc, argv, envp)`).
 //! 6. **exit**: the return value goes to `minix_sys::exit` (PM_EXIT via the
 //!    direct trap; C `exit(main(...))`).
+//!
+//! # Consumer contract: the `main` symbol
+//!
+//! A freestanding binary on this runtime defines its own entry function
+//! with exactly this shape — name `main`, exported unmangled, Rust ABI,
+//! returning `i32`:
+//!
+//! ```text
+//! #[unsafe(no_mangle)]
+//! extern "Rust" fn main() -> i32
+//! ```
+//!
+//! (Reference consumer: rt-birth, `test-kernels/user/rt-birth/src/main.rs`
+//! — real-machine verified on all three architectures.) Arguments are
+//! never taken: the argv/env vectors live behind the accessor functions
+//! above, matching the std `main()` + `env::args()` split rather than C's
+//! `main(argc, argv, envp)`. The returned `i32` becomes the process exit
+//! status verbatim, through the stage-6 `minix_sys::exit` send.
+//!
+//! Both halves of the shape are checked by nothing downstream — the birth
+//! chain resolves the symbol by name across the `unsafe extern "Rust"`
+//! declaration, and symbol resolution compares names, never signatures:
+//!
+//! - **Missing `no_mangle`** → the definition stays under its mangled
+//!   name, the declaration finds no `main`, and the link fails loudly.
+//! - **Missing `-> i32`** → the link still succeeds, but a `()` function
+//!   never writes the return register, so the exit status is register
+//!   garbage — silently. A program that does not care about its status
+//!   must still return a concrete value (`0`), because whoever ran it
+//!   (the shell, init's waitpid) reads one anyway.
 
 use minix_types::Errno;
 
@@ -290,6 +320,16 @@ unsafe extern "C" fn rt_birth(ps_strings: u64) -> ! {
     }
 
     // Stage 5 — main (no-argument Rust shape; vectors via accessors).
+    // Consumer contract: the binary defines `main` itself — exactly
+    // `#[unsafe(no_mangle)] extern "Rust" fn main() -> i32` (rt-birth,
+    // test-kernels/user/rt-birth/src/main.rs:117, is the reference
+    // shape). `no_mangle` is load-bearing: without it the definition is
+    // mangled and the declaration below resolves to nothing (link
+    // error). The `i32` is load-bearing in a worse way: symbol
+    // resolution never checks signatures, so a `fn main()` returning
+    // `()` still links, but nothing writes the return register and the
+    // stage-6 exit status is whatever the register held. See the module
+    // docs ("Consumer contract: the `main` symbol").
     unsafe extern "Rust" {
         fn main() -> i32;
     }
