@@ -790,26 +790,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sigaction_wire_carries_sigreturn_stub() {
+    fn test_sigaction_carries_sigreturn_stub() {
         // C: libc folds the restore stub into every sigaction request
         // (`sigaction.c:18` `.ret = __sigreturn`). The rewrite's stub is
-        // minix-rt's `__sigreturn` (NL3③); the install path must carry
-        // that address in the `ret` lane — a zero slot was the NS11 gap.
-        let canned = minix_sys::ipc::CannedTransport::new();
+        // minix-rt's `__sigreturn` (NL3③); a zero slot was the NS11 gap.
+        // The init-side pin is the stub VALUE; the wire-lane mapping
+        // (`ret` 参数 → `MessLcPmSig.ret`、PM endpoint、调用号) 由
+        // minix-sys 自己的回放测试钉死（pm.rs sigaction_via 测试）——
+        // 命令层不自建 transport 测试替身（边界守卫 C-7，直用
+        // minix_sys::ipc 即违规）。
         let stub = MinixSysHost::sigreturn_stub();
         assert_ne!(stub, 0, "x86_64 测试面上桩地址必须非零");
-        MinixSysHost::send_sigaction(&canned, 14, 0x5000, stub).unwrap_err();
-        let (dest, sent) = canned.sent.borrow().last().cloned().unwrap();
-        assert_eq!(dest, minix_sys::pm::pm_endpoint());
-        assert_eq!(sent.m_type, minix_sys::pm::PM_CALL_SIGACTION);
-        // SAFETY: byte-level read of the union overlay lane for the test
-        // assertion only.
-        let ret = unsafe { sent.m_u.m_lc_pm_sig.ret };
-        assert_eq!(ret, stub);
         assert_eq!(
-            ret,
+            stub,
             minix_rt::signals::__sigreturn as *const () as u64,
-            "ret 槽必须精确等于 minix-rt 的 __sigreturn 符号地址"
+            "桩地址必须精确等于 minix-rt 的 __sigreturn 符号"
         );
     }
 
