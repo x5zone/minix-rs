@@ -367,6 +367,13 @@ fn main() -> Status {
     // 8. Hand the CPU over — the production scheduler loop multiplexes the
     // two processes through the IPC exchange.
     early_console::write_str("  entering scheduler (switch_to_user)\n");
+    {
+        // [diag] kernel image base marker: switch_to_user's runtime VA —
+        // diff against the objdump -t file VA to symbolize fault rips.
+        early_console::write_str("  marker: switch_to_user @ 0x");
+        early_console::write_hex(minix_kernel::switch_to_user as *const () as u64);
+        early_console::write_str("\n");
+    }
     minix_kernel::switch_to_user();
 }
 
