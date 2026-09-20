@@ -211,7 +211,12 @@ minix-types = { path = "libs/minix-types" }
 minix-boot = { path = "libs/minix-boot" }
 minix-sys = { path = "libs/minix-sys" }
 minix-sef = { path = "libs/minix-sef" }
-minix-rt = { path = "libs/minix-rt" }
+# default-features = false（C-21，2026-09-20 卡 J）：minix-rt 的 std 形态
+# 是宿主测试形态，no_std 形态才带 _start 出生链。default 关掉后，std 消费方
+# 必须显式 `features = ["std"]`（fileops/regex/textfilter/stdio-games/init
+# 测试面均已如此声明）；freestanding 二进制（rt-birth、no_std 后的 init）
+# 继承无 std 形态。feature 统一下不把 std 拖进 freestanding 构建。
+minix-rt = { path = "libs/minix-rt", default-features = false }
 minix-regex = { path = "commands/usr-bin/regex" }
 minix-elf = { path = "libs/minix-elf" }
 minix-platform = { path = "libs/minix-platform" }
