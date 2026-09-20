@@ -27,7 +27,7 @@
 | NS10 | PM 批次 E/G + Reboot 臂 | [04-stage-pm/todo.md](04-stage-pm/todo.md) §11.1.1 ｜ [edge_todo.md](edge_todo.md) E-EXECFILE | 批次 E（exec wire 装配，与 NS5 对接）/G（misc）；`PmCall::Reboot` 臂（catch-all ENOSYS → 最小 sys_abort 等价；init minixreboot 依赖） | NS3/NS5 | ☐ |
 | NS11 | init 残余面 | [09-stage-init/todo.md](09-stage-init/todo.md) 2026-09-20 节 | main 签名 `()` → `-> i32`（main.rs:64，crt0 契约；exit code 读垃圾修复）；securitylevel（host.rs:288）/init_root（:292，随 NS4 解锁）；trampoline 填真（host.rs:296-305，等 new_edge2 NL3③） | NL3③、NS4 | ☐ |
 | NS12 | 命令 freestanding 批量 + T4 判定集 | [18-stage-commands/todo.md](18-stage-commands/todo.md) ｜ [edge_todo.md](edge_todo.md) E-SVCFREE/E-EXECFILE | 65 bin 批量切 no_std 目标（echo 双 seam 模板；riscv64gc/aarch64-unknown-none 矩阵）；**sh/cat/ls 接线**（sh 前置 pipe2 = new_edge2 NL4 + NS5）；18-stage 冒烟脚本（QEMU 内执行断言输出） | NL4/NL5、NS5、NS7、NS8 | ☐ |
-| NS13 | X-10：06-file-ops.md:182 漂移修正 | [edge_todo.md](edge_todo.md) 缺陷批 X-10 | cat 阻塞描述改"guest 二进制形态 + exec 递送链" | 无 | ☐ |
+| NS13 | X-10：06-file-ops.md:182 漂移修正 | [edge_todo.md](edge_todo.md) 缺陷批 X-10 | cat 阻塞描述改"guest 二进制形态 + exec 递送链" | 无 | ✅ 2026-09-20 |
 
 ## 携带的前轮开放项（状态照旧，详情见前轮 edge3.md 对应行）
 

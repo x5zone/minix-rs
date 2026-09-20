@@ -179,7 +179,7 @@ Unix 文件的本质是"数据块加引用计数"：文件名只是指向数据�
 | echo | `write`、`exit`、argv 交接 | 已接线（`src/bin/echo.rs`） |
 | true、false | `exit` | 已接线（纯退出码，忽略操作数） |
 | basename、dirname | `write`、`exit`、argv 交接 | 已接线（决定半在 `path.rs`） |
-| cat | `open`（现有路径）、`read`、`write`、`close` | 待 `open` 现有路径解锁（`minix-sys/src/lib.rs:189` 的 ENOSYS，等 99 篇 64 位路径消息布局） |
+| cat | `open`（现有路径）、`read`、`write`、`close` | API 已备（`open_existing_via` 实装，`minix-sys/src/vfs.rs:696`）；真实阻塞 = guest 二进制形态（freestanding bin 尚未交叉编译入镜像）+ exec 递送链（NS3 门 bug 已修，NS5 VFS exec worker 待实装） |
 | cp、ln、mv、rm、mkdir、rmdir、chmod、chown、touch、mkfifo、truncate、link、unlink | 上一行全部，加各自的方向调用（建链/截断/权限位面） | 待 14 侧逐项登记封装 |
 | df、du、find、stat、`test` 的文件问 | `stat`、`getdents` | 缺封装（`../14-stage-runtime/todo.md:60` 已登记） |
 | pathchk | `write`、`exit`、argv 交接 | 已接线 `-p` 路（决定半 `pathchk.rs`：`_POSIX_NAME_MAX`/`_POSIX_PATH_MAX` 常量界限、可移植字符集、前导连字符；诊断走标准错误）；缺省模式的 `pathconf`/`stat` 探测待批，现显式拒绝 |
