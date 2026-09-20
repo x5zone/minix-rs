@@ -228,6 +228,39 @@ pub trait Paging {
     /// window — the handle's only way to reach them.
     fn adopt_active_root(root_phys: PhysBytes) -> Self;
 
+    /// Copy the supervisor (kernel) half of a source root table into this
+    /// root's supervisor half.
+    ///
+    /// Every architecture in this crate maps the kernel in the **upper
+    /// half** of the root table — x86-64 PML4 entries 256..512 (VAs ≥
+    /// `0xffff_8000_0000_0000`), riscv64 Sv39 L2 entries 256..512
+    /// (canonical high VAs), aarch64 L0 entries 256..512 (the TTBR1
+    /// region of the shared root table). A per-process root built from
+    /// scratch would otherwise contain no kernel mappings: the first
+    /// trap into the kernel would fault before the handler could run.
+    ///
+    /// The copy is a **raw `u64` entry copy** of the top-level slots
+    /// only, deliberately PTE-format-agnostic: kernel mappings are
+    /// identical in every address space, so entries may *share* the
+    /// referenced lower-level tables with the source root (those tables
+    /// are never rewritten to install a user mapping — user VAs live
+    /// strictly below the supervisor half on all three architectures).
+    ///
+    /// # Parameters
+    ///
+    /// - `source_root`: physical address of the root to inherit from —
+    ///   the live bootstrap root during boot, whose supervisor half is
+    ///   the kernel's own mappings.
+    ///
+    /// # Default
+    ///
+    /// No-op. Each production architecture overrides; the in-memory
+    /// models (test mock, VM simulator) have no supervisor half to
+    /// inherit and nothing to gain from the copy.
+    fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
+        let _ = source_root; // in-memory models: no supervisor half exists
+    }
+
     /// Load root table physical address into MMU and enable paging.
     /// After this call, all memory accesses go through page tables.
     /// Returns the root table physical address.

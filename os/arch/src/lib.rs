@@ -94,7 +94,7 @@ pub use smp::SmpArch;
 pub use arch_init::ArchInit;
 pub use boot::{
     CpuContextArch, EntrySpec, ProcKind, ProcNr,
-    VmLoadResult, VmLoadError, load_vm_elf,
+    ProcessLoad, VmLoadResult, VmLoadError, load_process_elf, load_vm_elf,
 };
 pub use stacktrace::StacktraceArch;
 pub use arch::current::{Arch, CurrentArch};

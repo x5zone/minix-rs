@@ -208,15 +208,18 @@ fn main() -> Status {
     early_console::write_str("  smp_init completed\n");
 
     // 7. Load sysboot-tx into the RS slot with the production machinery —
-    // the same `load_vm_elf` + bootstrap-root recipe the VM branch runs,
-    // then rebuild the slot's CPU context for the loaded entry.
+    // a PER-IMAGE root (`load_process_elf`, OQ-N6 ② verdict): the fresh
+    // root inherits the supervisor half of the live bootstrap root, then
+    // maps the image's segments + stack. Unlike the old shared-root
+    // recipe the VM branch runs (which can host exactly one image — the
+    // second stack mapping collided, C-27 real-machine evidence), the TX
+    // image may reuse the same stack window and link base as RX. The
+    // slot's `p_seg.phys_root` records the new root; the scheduler's
+    // address-space switch (C proc.c:349 对位) installs it at dispatch.
     {
-        use minix_arch::paging::Paging as _;
         use minix_arch::CurrentPaging;
         use minix_arch::frame::{VmBootAllocator, VmBootRegion};
-        use minix_arch::{
-            CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, load_vm_elf,
-        };
+        use minix_arch::{CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, load_process_elf};
 
 
         // Exclusions: kernel image + every boot module (both ELF blobs are
@@ -252,12 +255,17 @@ fn main() -> Status {
 
         let root_phys = minix_kernel::current_root_phys()
             .expect("test-sysboot: bootstrap root not set — arch_boot_impl must run first");
-        let mut paging = CurrentPaging::from_active_root(root_phys);
         let access = minix_arch::CurrentDirectMap::default();
         let tx_module = &result.kernel_info.boot_modules()[1]; // "rs"
-        let tx = load_vm_elf(tx_module, &result.kernel_info, &mut paging, &mut vm_alloc, &access)
-            .unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"));
-        early_console::write_str("  TX ELF loaded into the RS slot\n");
+        let tx = load_process_elf::<CurrentPaging, _>(
+            tx_module,
+            &result.kernel_info,
+            root_phys,
+            &mut vm_alloc,
+            &access,
+        )
+        .unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"));
+        early_console::write_str("  TX ELF loaded into the RS slot (per-image root)\n");
 
         // Rebuild the RS slot's CPU context for the loaded entry — the same
         // call init_proc_and_boot makes for boot processes (the slot was
@@ -274,6 +282,11 @@ fn main() -> Status {
                     minix_kernel::proc::proc_nr::RS_PROC_NR,
                     EntrySpec::loaded(tx.pc, tx.sp, tx.ps_strings),
                 );
+            // Record the fresh root so the scheduler's address-space
+            // switch (C `switch_address_space(p)`, proc.c:349 — klib.S
+            // __switch_address_space 对位) installs it when the RS slot
+            // is dispatched. C 对位: `p_seg.p_cr3` (x86) / `p_ttbr` (ARM).
+            rs.p_seg.phys_root = tx.root;
             rs.trap_style = minix_kernel::PublicTrapStyle::FullContext;
         }
         {
