@@ -704,6 +704,9 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ## E-DMWIRE devman 生产接线四缺：server transport、请求分类器、装配半、client/RS 侧生产传输（11-stage-devman 首轮架构审查登记，2026-09-15）
 
+> **复核进度（2026-09-21，qorder_3，LEDGER-AUDIT）**：四缺其二已落地：server transport（main.rs:39 MinixTransport::new）+ 装配半（hooks.rs:117 DevmanSef 生产 SefHooks，09-16 E-MIBPROD 收口注记同批）。**请求分类器与 client/RS 侧 devman_client 生产传输未落**（rs/src grep devman_client 零命中），本条维持开放。
+
+
 **问题**：devman 语义面 84 个测试全部跑在注入 seam 上（78 server + 6 client），生产执行半整层缺席，四个落点分属不同域：
 
 1. **server 侧生产 transport 不存在**（edge 判定①+③复合）。`main.rs:35-37` 是自旋停车（注释自认 "still `todo!()` — calling it would panic, so park"）；`VTreeFs::run`（os/servers/devman/src/vtreefs/mod.rs:322）与 `Server::handle_other`（server.rs:91）两条分派面的生产传输半都空——`Transport` 只有 VecTransport 测试实现（STATE.md P1-1T），生产 impl 需要 minix-sys 的 receive/send 面（E1 前置）。
@@ -749,6 +752,9 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ## E-INWIRE input 服务器生产传输接线四缺：事件循环、announce、编解码器消费、端到端联调（12-stage-input 首轮架构审查登记，2026-09-15）
 
+> **复核进度（2026-09-21，qorder_3，LEDGER-AUDIT）**：四缺其三已落地：循环壳（09-17 注记 593c2daa6）+ announce 面（serve.rs Transport trait `publish_label`，:58-59）+ 编解码器消费（decode_input_event/decode_setleds 接分派）。**余端到端联调**（真机半挂 E5），本条维持开放。
+
+
 **问题**：`os/servers/input` 的决策核心完整（66 个纯函数测试全过，对账见 12-stage-input/todo.md §1.0），但"服务器"实体未组装：`main.rs:31-32` 是带注释的空 `loop {}`；生产代码零状态（`InputTable::fresh()`（structs.rs:315）的调用者全部是测试）；`minix-types` 的五个消息编解码器（`ipc/input.rs` 的 conf/setleds/input_event/tty_event/tty_up 构造与解码）在 server 内零消费——server 今天无法构造发给驱动的 `INPUT_CONF`，也无法解出驱动发来的 `INPUT_EVENT`。四个落点：
 
 1. **事件循环落地方式**。`minix-sef` 目前是 5 行占位 stub（os/libs/minix-sef/src/lib.rs，"SEF 服务框架……待实装"），E-ISWIRE 已跟踪其缺口。input 需要裁决：等 minix-sef 实装后走 `sef_receive_status` 等价物（C 侧 `chardriver_task` 的收信循环，chardriver.c:549-573），还是先用 `minix-sys::receive`（lib.rs:86，已存在）直写最小循环。倾向后者先行、minix-sef 实装后切换——input 的判决面已全在纯函数里，循环壳随时可换。
@@ -769,7 +775,10 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ---
 
-## E-CDRCONV chardriver 框架双实现收敛（A-1 收口）+ minix-chardriver CDEV_REPLY_BASE 错值（12-stage-input 首轮架构审查登记，2026-09-15）
+## ✅ E-CDRCONV chardriver 框架双实现收敛（A-1 收口）+ minix-chardriver CDEV_REPLY_BASE 错值（12-stage-input 首轮架构审查登记，2026-09-15）
+
+> **复核闭单（2026-09-21，qorder_3，LEDGER-AUDIT 账面清理专项）**：CDEV_REPLY_BASE=0x480 权威已上收 minix-types `types/device.rs:25` 并测试 pin（:194）；框架单实现成立（minix-chardriver 存续且 fb 消费之，pckbd char_face.rs:18 改消费 minix-sys inputdriver::DriverRegistration） **代码已全部在树，本条闭单**（落地会话未回写本账，账面滞后）。
+
 
 **问题一（架构收敛，plan.md A-1 的收口时机已到）**：C 只有一个 `libchardriver`（chardriver.c 600 行，input、tty、十余个字符驱动共用），Rust 出现两套同源实现——`os/servers/input/src/framework.rs`（605 行：`classify_request`:190 / `gate_character_request`:228 / `decide_reply`:335 三判决 + 常量 + 应答结构）与 `os/libs/minix-chardriver`（1014 行：`CharDriver` trait driver.rs:180 + `classify` driver.rs:273 + `CharServer` driver.rs:326）。后者是**零依赖方孤儿**：grep 全 workspace，无任何 Cargo.toml 依赖它（仅 os/Cargo.toml:186 的成员声明），无任何 .rs 引用其符号。重复物清单：`CharacterRequest`（framework.rs:49）vs `CdevRequest`（protocol.rs:59）；`OpenDeviceSet` ×2（framework.rs:246 / protocol.rs:165，256 槽线性数组两份）；`ReplyDecision`（framework.rs:307）vs `reply_decision`（driver.rs:85 区域）；`NotifySource` ×2（framework.rs:175 / driver.rs:32）；CDEV 常量两份（framework.rs:29-36 / protocol.rs:16-48）。plan.md §7.3 的 A-1 建议是"新建共享框架 crate；input 内部最小等价实现可先行"——前半句已建成（16-stage 01-chardriver-framework.md 与库同时交付）、后半句已执行（12-stage 02-chardriver-framework.md 以 framework.rs 为实现锚点），但两半从未合拢，且 12-stage/02 与 16-stage/01 两篇文档各自成立、互不引用。
 
@@ -788,7 +797,10 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ---
 
-## E-TTYEVENT TTY_INPUT_UP / TTY_INPUT_EVENT 消费侧零实现（12-stage-input 首轮架构审查登记，2026-09-15）
+## ✅ E-TTYEVENT TTY_INPUT_UP / TTY_INPUT_EVENT 消费侧零实现（12-stage-input 首轮架构审查登记，2026-09-15）
+
+> **复核闭单（2026-09-21，qorder_3，LEDGER-AUDIT 账面清理专项）**：input 服务器消费面落地：serve.rs:32 起 `decode_input_event`/`decode_setleds` 接事件循环（:171/:181 分派），TTY_INPUT_UP 阻塞握手在 serve.rs:312 生产路径 **代码已全部在树，本条闭单**（落地会话未回写本账，账面滞后）。
+
 
 **问题**：C 的 input↔TTY 契约是三件事——input 启动时向 TTY 发 `TTY_INPUT_UP` 握手（input.c:671-677）；设备与其 mux 都未被打开时，事件转发 `TTY_INPUT_EVENT` 给 TTY（input.c:408-421）；TTY 侧 `do_input` 消费（`INPUT_PAGE_KEY` 过滤 + `NR_SCAN_CODES` 边界 + 释放位，keyboard.c:148-176），并经 `INPUT_SETLEDS` 回设灯（keyboard.c:369-384；input 侧只接受 TTY 来源，input.c:630-635）。Rust 现状：**生产侧已备**——servers/input 的 `forward_to_terminal`（produce.rs:131）、init 的 `NotifyTerminal` 步骤（init.rs）、minix-types 两消息号与 `tty_event_msg`/`tty_up_msg` 编解码（ipc/input.rs:37/:41/:337-383）齐备；**消费侧零实现**——`os/drivers/tty/tty` 全 crate grep 无 `TTY_INPUT_UP`/`TtyEvent` 消费（session.rs:221 的 "tty_events" 只是 select 唤醒的计数变量名），minix-types/ipc/tty.rs 只有 FKEY 观察者协议（tty.rs:1-40），与 input 无关。16-stage 06-tty-driver 文档面也无对应条目 [待验证]（其 STATE 记该篇九门收口，但代码 grep 零命中——收口范围可能未含此契约）。
 
@@ -803,7 +815,10 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ---
 
-## E-PCKBDREG pckbd 邻接面移交登记：一处行为分歧 + 三处缺口 + 双轨重编码（12-stage-input 首轮架构审查登记，2026-09-15）
+## ✅ E-PCKBDREG pckbd 邻接面移交登记：一处行为分歧 + 三处缺口 + 双轨重编码（12-stage-input 首轮架构审查登记，2026-09-15）
+
+> **复核闭单（2026-09-21，qorder_3，LEDGER-AUDIT 账面清理专项）**：五件全落地——①状态 3 FALLTHROUGH 行为已对齐 C（scancode.rs:123-146 注释点名 pckbd.c:353-358 判例，非 NumLock 落共享 default 臂含前缀重启）；②`MouseEvent::Motion` 补 flags 字段且 FLAG_RELATIVE 活引用（mouse.rs:116/:171）；③扫描码全表在 `pckbd/src/tables.rs`（scanmap_normal/escaped 对位）；④`note_ack(status: u8, byte: u8)` 状态参数已补（led.rs:136）；⑤bridge 重编码收敛为 minix-sys inputdriver 消费方（char_face.rs:18） **代码已全部在树，本条闭单**（落地会话未回写本账，账面滞后）。
+
 
 **所有权声明**：`os/drivers/hid/pckbd`（892 行）属 16-stage-drivers（其 13-pckbd-driver.md 已九门收口，17 测试全过）。以下为 12-stage 视角（文档 14-pckbd-driver.md 的契约面对账）扫描发现的移交项，登记于此供 16-stage 排期；第 1 项是正确性问题，修复走 full-review/todo-fix，本条不执行。
 
@@ -896,6 +911,9 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ## E-FSRUNTIME 8 个 fs server bin 的 SEF/RS 启动握手与运行时接线（15-stage-fs V1 轮登记，2026-09-16）
 
+> **复核进度（2026-09-21，qorder_3，LEDGER-AUDIT）**：8 bin 中 6 个已脱 loop{} 占位（grep 实测 2026-09-21 仅剩 hgfs/vbfs 两 main.rs 空转）——主体大幅落地，**余件收敛判据（SEF 三段对位逐 bin 核 + RS 启动）归 15-stage 复核后再闭单**。
+
+
 **问题**：8 个 fs server 的 bin 全部未接事件循环与进程握手：mfs 是 `fn main() { loop {} }`（os/fs/mfs/src/main.rs:8-10，模块注释声明归服务运行时轨道）；ext2/isofs/vbfs/hgfs/procfs/ptyfs 的 main.rs 第 4-6 行是同义 TODO 注释；pfs 构建 server 后停放（os/fs/pfs/src/main.rs:8-10）。C 对应物是各 server main.c 的三段：`env_setargs`（mfs/main.c:19）、`sef_local_startup`（:31-42，含 `sef_setcb_init_restart` 状态化重启）、`fsdriver_task(&mfs_table)` 分发主循环（:23）。框架内事件循环与 `impl FsDriver` 装配归 15-stage-fs/todo.md V1-P0-1，本条只管进程侧：SEF 回调注册、RS 启动握手、参数解析、信号接线。
 
 **影响**：mfs 纵有 26/31 个已实现的请求处理函数，也无从作为进程对外服务；boot 挂载链（VFS `do_init_root` → `mount_pfs()` → `mount_fs(DEV_IMGRD, "/", MFS)`，15-stage-fs/00-fs-overview.md:13）的 fs 侧永远等不到。
@@ -962,7 +980,10 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ---
 
-## E-DEVWIRE 设备族请求/回复线上常量单一来源（16-stage-drivers 全量扫描登记，2026-09-17）
+## ✅ E-DEVWIRE 设备族请求/回复线上常量单一来源（16-stage-drivers 全量扫描登记，2026-09-17）
+
+> **复核闭单（2026-09-21，qorder_3，LEDGER-AUDIT 账面清理专项）**：minix-types `types/device.rs` 权威成立，vfs 消费侧重述完成——bdev.rs:16-18 / cdev.rs:22 注释点名本条并 `use minix_types::` 消费 **代码已全部在树，本条闭单**（落地会话未回写本账，账面滞后）。本条解锁的 16-stage 99 篇展开另随其轨道
+
 
 **问题**：C 侧 CDEV/BDEV/NDEV/RTCDEV/USB_RQ 全部住一份 `include/minix/com.h`；Rust 侧常量散布至少七处且消费者重述——生产侧：`os/libs/minix-chardriver/src/protocol.rs:16-48`（CDEV 基址/标志 + `CdevRequest` 枚举）、`os/libs/minix-blockdriver/src/protocol.rs:14-65`（BDEV，且改名 `BDEV_READ_ACCESS/WRITE_ACCESS` 对应 C `BDEV_R_BIT/W_BIT`）、`os/libs/minix-netdriver/src/protocol.rs:10-60`（NDEV，回复仅基址无枚举）、`os/drivers/clock/readclock/src/protocol.rs:11-53`（RTCDEV 住驱动 crate 而非框架库）；消费侧重述：`os/servers/vfs/src/cdev.rs:21-34` 手抄 CDEV 六常量且类型漂移（u8 对生产侧 i32）、`os/servers/vfs/src/bdev.rs:26-28` 用 C 名字 `BDEV_R_BIT/W_BIT` 对生产侧新名——同一线上值、两个名字、两处定义。分叉已实际发生：`CDEV_REPLY_BASE 0x500` 错值（E-CDRCONV 问题二）。`16-stage-drivers/plan.md` §2 本指派 99-global-concepts 的 Rust 模块为 minix-types，现状违约。
 
@@ -1017,6 +1038,9 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ## E-NETSTART lwip/uds 双 server 的 SEF/RS 启动握手与真实 main（17-stage-net 架构扫描登记，2026-09-17）
 
+> **复核进度（2026-09-21，qorder_3，LEDGER-AUDIT）**：真实 main 半已落地：lwip main.rs 1397 行（startup 链+四路事件循环+KernelIpc 直装），uds main.rs ProductionHandler 实装（loop_keeps_running 决策消费）。**RS 加载握手未证**（未见 sef 启动面等价物），本条维持开放待 17-stage 核。
+
+
 **问题**：`os/net/lwip/src/main.rs:4` 与 `os/net/uds/src/main.rs:4` 均为 `// TODO: 实装为真实服务进程（事件循环 + RS 启动协议）` + `loop {}` 占位；C 侧两 server 都走 SEF 启动（lwip.c 的 13 步 init 链 + sef_startup，uds.c 同构），且 rc 脚本已有 `up lwip`/`up uds` 挂载点（minix3/etc/usr/rc:259 `up lwip -dev /dev/bpf -script /etc/rs.lwip`、`:286 up uds`；Rust 树的 rc 尚未建）。minix-sef/minix-rt 的通用启动框架尚不成体系——fs 侧同一缺口已立 E-FSRUNTIME（fs 8 server），net 侧此前无条目。startup.rs 已建模的启动链与 4 路分发（os/net/lwip/src/startup.rs:20-97）因此无真实消息源。
 
 **影响**：lwip/uds 无法被 RS 加载，net 面真机冒烟与联合验收全阻断；17-stage-net/todo.md N1-P1-4（传输层与主循环设计）通电前置。
@@ -1032,7 +1056,7 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ---
 
-## E-CMDSYSFACE 命令层 libc 调用面缺口：errno 常量再导出 + argv/env 访问器（18-stage-commands 架构审查登记，2026-09-17）
+## ✅ E-CMDSYSFACE 命令层 libc 调用面缺口：errno 常量再导出 + argv/env 访问器（18-stage-commands 架构审查登记，2026-09-17）
 
 **问题**：18-stage 的全部命令按 `18-stage-commands/99-global-concepts.md` §1 分层契约只允许依赖 `minix-sys` 顶层与 `minix-rt`，但该 libc 面存在三个缺口。① errno 常量未再导出：`os/libs/minix-sys/src/lib.rs:43` 只再导出 `Errno`/`Gid`/`Pid`/`Uid` 四个类型，`EEXIST` 等常量仍只在 `minix-types`，导致 `os/commands/sbin/init` 成为全 `os/commands` 唯一直接依赖 `minix-types` 的 crate（其 Cargo.toml 依赖行 + `src/entry.rs:11` 的 `use minix_types::{EEXIST, Errno};`，2026-09-17 grep 实测唯一命中）。② 参数/环境访问器只有雏形：`minix-rt` 出生链已把描述符解析为静态量（`crt0.rs:29-34` publish 阶段），对外仅有 `progname()`（`crt0.rs:129`）与逐个取的 `argv_bytes(index)`（`crt0.rs:154`）；`handoff.rs:290-315` 的 `environment_list`/`environment_count` 已解析但无对外访问器，也没有一次取全的迭代器封装。③ 卫生：`minix-sys/src/pm.rs:30` unused import `Message`、`minix-rt/src/crt0.rs:170` 不必要的 `mut`（`cargo build -p minix-init` 实测），可并入 E-MINSYS-HYGIENE 同轮或顺带。
 
@@ -1051,7 +1075,7 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 ---
 
-## E-SYSCALL-SIGN perform_syscall 与 DirectTrapTransport 的 errno 符号约定冲突，宿主下系统调用假成功（18-stage-commands 架构审查发现，2026-09-17）
+## ✅ E-SYSCALL-SIGN perform_syscall 与 DirectTrapTransport 的 errno 符号约定冲突，宿主下系统调用假成功（18-stage-commands 架构审查发现，2026-09-17）
 
 **问题**：`os/libs/minix-sys/src/syscall.rs:94-101` 的 `perform_syscall` 把 transport 的失败状态写回 `message.m_type` 后按**负数**判错（C 内核约定的"负 errno 直返"）。但 `os/libs/minix-sys/src/ipc.rs:549` 等处 `DirectTrapTransport` 的失败携带**正数** errno（`Err(TrapStatus(minix_types::EIO))`，errno 常量全系为正值，如 `os/libs/minix-types/src/types/errno.rs:31` 的 `EEXIST: i32 = 17`）。于是宿主（无 `real-trap`，default features 不含它，`libs/minix-sys/Cargo.toml:24`）下每次 sendrec 失败都被翻译成 `Ok(正数)`。
 
