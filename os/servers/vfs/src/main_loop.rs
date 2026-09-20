@@ -5044,15 +5044,29 @@ impl VfsState {
                     }
                 }
                 crate::worker::WorkerCont::CdevIoctl { grant } => {
-                    // C `cdev_io` 的收尾：撤 grant → 状态取
-                    // `mess_lchardriver_vfs_reply.status`（**首字**，这个回复
-                    // 结构体的第一格就是状态，不是 `req_id`）。
+                    // C `cdev_io` 的 ioctl 收尾（cdev.c:438-477 的
+                    // `cdev_generic_reply` 面）：撤 grant → 状态取
+                    // `mess_lchardriver_vfs_reply.status`（**载荷首字**，
+                    // 无条件解码——驱动回复的 m_type 恒 `CDEV_REPLY`(0x480)，
+                    // `status`（初值＝reply.m_type）永不为 0，旧
+                    // `if status == 0` 门是死路：载荷状态从不读出，0x480 会
+                    // 被当错误码回给用户）。负值折正回用户，`EINTR` 折回
+                    // `EAGAIN`（cdev.c:471-473 的换码对）；非负按值回
+                    // （ioctl 的成功态即 0，`Ok(0)`）。
                     let _ = self.revoke_grant(grant);
-                    if status == 0 {
-                        // SAFETY: `mess_lchardriver_vfs_reply { int status;
-                        // uint32_t id; }`（ipc.h:943-948）——状态在首字。
-                        let raw = unsafe { &reply.m_u.raw };
-                        status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    // SAFETY: `mess_lchardriver_vfs_reply { int status;
+                    // uint32_t id; }`（ipc.h:943-948）——状态在首字。
+                    let raw = unsafe { &reply.m_u.raw };
+                    let dstatus = i32::from_le_bytes(raw[0..4].try_into().unwrap());
+                    if dstatus < 0 {
+                        status = if dstatus == -(minix_types::EINTR) {
+                            minix_types::EAGAIN
+                        } else {
+                            -dstatus
+                        };
+                    } else {
+                        status = dstatus;
+                        value_reply = true;
                     }
                 }
                 crate::worker::WorkerCont::CdevIo { grant } => {
@@ -11867,6 +11881,72 @@ mod tests {
             state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, -minix_types::EAGAIN)),
             "EINTR 折回 EAGAIN（cdev.c:471-473）"
+        );
+    }
+
+    /// `CdevIoctl` 续接收尾（NS7-A）：载荷首字**无条件**解码——驱动回复
+    /// m_type 恒 `CDEV_REPLY`(0x480)，旧 `if status == 0` 门恒假、0x480 会
+    /// 被当错误码漏给用户；修后成功（status=0）回 `Ok(0)`，错误（-ENOTTY）
+    /// 折正回用户，`EINTR` 折回 `EAGAIN`（cdev.c:471-473）。
+    #[test]
+    fn test_cdev_ioctl_continuation_decodes_payload() {
+        let make_reply = |status: i32, user: Endpoint| {
+            let mut m = Message {
+                m_type: minix_types::CDEV_REPLY_BASE,
+                m_source: Endpoint::from_generation_slot(0, 12),
+                ..Message::default()
+            };
+            // SAFETY(test): `mess_lchardriver_vfs_reply { status; id }`——
+            // 状态在载荷首字，id 在第二字。
+            unsafe {
+                m.m_u.raw[0..4].copy_from_slice(&status.to_le_bytes());
+                m.m_u.raw[4..8].copy_from_slice(&user.get().to_le_bytes());
+            }
+            m
+        };
+        let park = |state: &mut VfsState, user: Endpoint| {
+            let fp = state.fproc_table.get_mut(UserSlot::new(0)).unwrap();
+            fp.pid = 100;
+            fp.endpoint = user;
+            let idx = state
+                .worker_pool
+                .assign_first_fit(
+                    UserSlot::new(0),
+                    crate::worker::WorkerFunc::DoWork,
+                    &Message::default(),
+                )
+                .unwrap();
+            let wp = state.worker_pool.get_mut(idx).unwrap();
+            wp.cont = Some(crate::worker::WorkerCont::CdevIoctl { grant: 0 });
+            wp.fp_slot = Some(UserSlot::new(0));
+            wp.state = WorkerState::Busy;
+            idx
+        };
+        let user = Endpoint::from_generation_slot(1, 0);
+
+        // 成功：status=0 → `Ok(0)`（旧门下这里是 -0x480）。
+        let mut state = VfsState::new();
+        let idx = park(&mut state, user);
+        let wp = state.worker_pool.get_mut(idx).unwrap();
+        wp.sendrec = Some(make_reply(0, user));
+        wp.state = WorkerState::Busy;
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0)),
+            "ioctl 成功态回 Ok(0)，不是 0x480 被当错误码"
+        );
+
+        // 错误：-ENOTTY 折正。
+        let mut state = VfsState::new();
+        let idx = park(&mut state, user);
+        let wp = state.worker_pool.get_mut(idx).unwrap();
+        wp.sendrec = Some(make_reply(-minix_types::ENOTTY, user));
+        wp.state = WorkerState::Busy;
+        state.run_worker_continuations();
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, -minix_types::ENOTTY))
         );
     }
 
