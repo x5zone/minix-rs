@@ -74,6 +74,10 @@ pub mod vfs;
 /// Working-directory traversal behind `getcwd` (C
 /// `minix3/minix/lib/libc/sys/__getcwd.c`).
 pub mod getcwd;
+/// System control transport face and the by-name walk (C
+/// `minix3/minix/lib/libc/sys/__sysctl.c`,
+/// `minix3/minix/lib/libc/gen/sysctlgetmibinfo.c`).
+pub mod sysctl;
 /// Virtual memory call group (document 10).
 pub mod vm;
 /// Miscellaneous calls: sleeping, server control, clock reads (document 11).
@@ -774,6 +778,34 @@ pub fn getdents(fd: Fd, buf: &mut [u8]) -> Result<usize, Errno> {
 /// `ERANGE`, and the working directory is unchanged on every exit.
 pub fn getcwd(buffer: &mut [u8]) -> Result<&[u8], Errno> {
     getcwd::getcwd_via(&ipc::DirectTrapTransport, buffer)
+}
+
+/// Runs one system control exchange (C `__sysctl.c`: a SENDREC of
+/// `MIB_SYSCTL` to the MIB service). The sink's length is refreshed with
+/// the server's answer whenever the service replied — also on a failed
+/// call, the buffer-sizing quirk `sysctl(8)` relies on.
+pub fn sysctl(
+    name: &[i32],
+    old: Option<sysctl::SysctlOld<'_>>,
+    new: Option<&[u8]>,
+) -> Result<(), Errno> {
+    sysctl::sysctl_via(&ipc::DirectTrapTransport, name, old, new)
+}
+
+/// Resolves a dotted sysctl name to its mib components (C
+/// `gen/sysctlgetmibinfo.c` — the per-level `CTL_QUERY` walk without the
+/// tree cache).
+pub fn sysctlnametomib(name: &[u8], mib: &mut [i32]) -> Result<usize, Errno> {
+    sysctl::sysctlnametomib_via(&ipc::DirectTrapTransport, name, mib)
+}
+
+/// System control by name (C `gen/sysctlbyname.c`).
+pub fn sysctlbyname(
+    name: &[u8],
+    old: Option<sysctl::SysctlOld<'_>>,
+    new: Option<&[u8]>,
+) -> Result<(), Errno> {
+    sysctl::sysctlbyname_via(&ipc::DirectTrapTransport, name, old, new)
 }
 
 /// Memory mapping.

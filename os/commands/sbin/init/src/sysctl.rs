@@ -1,10 +1,10 @@
-//! Securelevel and init.root interaction (deferred gaps).
+//! Securelevel and init.root interaction.
 //!
 //! Covers `minix3/sbin/init/init.c:544-618` and `1811-1900`.
-//! ARCH A-4 (securelevel) and A-5 (init.root) are deferred: the
-//! machine answers come through [`InitHost`] methods, whose live
-//! implementation returns ENOSYS until the kernel mib face lands.
-//! Design contract: `.design/12-design.v1.md §1.1-§1.2`.
+//! ARCH A-4 (securelevel) and A-5 (init.root): the machine answers come
+//! through [`InitHost`], whose live implementation asks the MIB service
+//! via `minix_sys`'s sysctl face. Design contract:
+//! `.design/12-design.v1.md §1.1-§1.2`.
 
 use crate::host::InitHost;
 

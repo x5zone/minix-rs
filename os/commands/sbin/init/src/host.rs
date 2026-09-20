@@ -105,27 +105,20 @@ pub trait InitHost {
 
     // ── kernel mib (securelevel; ARCH A-4/A-5) ──
     //
-    // The mib trio below stays honest `ENOSYS`. Correction (NS11 recon,
-    // 2026-09-21): the earlier verdict here — "C reaches sysctl through
-    // the kernel's SYS_GETMIB call" — contradicts the C ground truth.
-    // C's sysctl(2) is a blocking SENDREC of MIB_SYSCTL to the MIB
-    // service itself (com.h:1026; MIB_PROC_NR com.h:66; the service
-    // decodes `m_lc_mib_sysctl` and gates on SENDREC, mib/main.c:292-
-    // 306) — no kernel dispatch arm exists in C either. The real gap is
-    // client-side: minix-sys has the constants (misc.rs) and minix-types
-    // has both wire overlays (MessLcMibSysctl / the reply lane), but no
-    // request-builder + sendrec + reply-decode function, and `init.root`
-    // reads by name additionally need the sysctlbyname half (nametomib
-    // via CTL_QUERY, lib libc gen/sysctl.c). Registered as NS11-A
-    // (new_edge3 新登记): shared-library work in edge2 territory, to be
-    // picked up on the claim board after the in-flight minix-sys claims
-    // drain. Until that face lands these three stay ENOSYS — the C
-    // behavior when a question cannot be asked is a warning and a
-    // default, never a fabricated answer.
+    // The mib trio asks the MIB service through `minix_sys`'s sysctl face
+    // (one SENDREC of `MIB_SYSCTL` per question — C's sysctl(2) is no
+    // kernel call either: com.h:1026, `MIB_PROC_NR` com.h:66, the service
+    // decodes `m_lc_mib_sysctl` and gates on SENDREC, mib/main.c:292-306).
+    // The numeric security-level pair rides under
+    // `minix_sys::sysctl::{CTL_KERN, KERN_SECURELVL}`; the `init.root`
+    // probe resolves by name (`sysctlbyname`, the per-level `CTL_QUERY`
+    // walk of `minix3/minix/lib/libc/gen/sysctlgetmibinfo.c`). When the
+    // question cannot be asked, the C answer is a warning and a default,
+    // never a fabricated value — the decision layer
+    // (`crate::sysctl`) maps every non-`Ok` to that default.
 
     /// Read the kernel security level; `Ok(None)` means the node does
     /// not exist (C: `getsecuritylevel` returning -1, init.c:569-587).
-    /// ENOSYS until the minix-sys MIB_SYSCTL client face lands (NS11-A).
     fn securitylevel(&self) -> Result<Option<i32>, Errno>;
 
     /// Lower the security level; `Ok(false)` means unsupported or a
@@ -133,8 +126,7 @@ pub trait InitHost {
     fn set_securitylevel(&mut self, level: i32) -> Result<bool, Errno>;
 
     /// Read the `init.root` chroot prefix (C: `shouldchroot`'s sysctl
-    /// read, init.c:1859-1900). `Ok(None)` = node absent. ENOSYS until
-    /// the minix-sys MIB_SYSCTL client face lands (NS11-A).
+    /// read, init.c:1859-1900). `Ok(None)` = node absent.
     fn init_root(&self) -> Result<Option<String>, Errno>;
 
     // ── signals and time ──
@@ -324,16 +316,77 @@ impl InitHost for MinixSysHost {
     }
 
     fn securitylevel(&self) -> Result<Option<i32>, Errno> {
-        Err(Errno::ENOSYS)
+        // C getsecuritylevel (init.c:569-587): one int from
+        // {CTL_KERN, KERN_SECURELVL}; ENOENT is the kernel's "no
+        // securelevel" answer and maps to the caller's None.
+        let mut value = [0u8; 4];
+        let mut length = value.len();
+        let securelevel = &[
+            minix_sys::sysctl::CTL_KERN,
+            minix_sys::sysctl::KERN_SECURELVL,
+        ];
+        match minix_sys::sysctl(
+            securelevel,
+            Some(minix_sys::sysctl::SysctlOld {
+                buffer: &mut value,
+                length: &mut length,
+            }),
+            None,
+        ) {
+            Ok(()) if length == value.len() => Ok(Some(i32::from_ne_bytes(value))),
+            Ok(()) => Err(Errno::EINVAL),
+            Err(Errno::ENOENT) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn set_securitylevel(&mut self, level: i32) -> Result<bool, Errno> {
-        let _ = level;
-        Err(Errno::ENOSYS)
+        // C setsecuritylevel (init.c:595-618): an absent node is a silent
+        // no-op (:600-602), the same value is a no-op (:604-606), and the
+        // write carries one int through the same pair.
+        let current = self.securitylevel()?;
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        if current == level {
+            return Ok(false);
+        }
+        let securelevel = &[
+            minix_sys::sysctl::CTL_KERN,
+            minix_sys::sysctl::KERN_SECURELVL,
+        ];
+        minix_sys::sysctl(securelevel, None, Some(&level.to_ne_bytes()))?;
+        Ok(true)
     }
 
     fn init_root(&self) -> Result<Option<String>, Errno> {
-        Err(Errno::ENOSYS)
+        // C shouldchroot's read (init.c:1877-1896): sysctlbyname into
+        // PATH_MAX bytes (rootdir[PATH_MAX], init.c:211; PATH_MAX 1024,
+        // sys/sys/syslimits.h:64), ENOENT means the node is absent. The
+        // value must carry its own terminator exactly (init.c:1891-1893
+        // rejects anything else) — a malformed node is EINVAL, and the
+        // decision layer answers "no chroot" for every non-Ok.
+        let mut buffer = [0u8; 1024];
+        let mut length = buffer.len();
+        match minix_sys::sysctlbyname(
+            b"init.root",
+            Some(minix_sys::sysctl::SysctlOld {
+                buffer: &mut buffer,
+                length: &mut length,
+            }),
+            None,
+        ) {
+            Ok(()) => {}
+            Err(Errno::ENOENT) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let filled = &buffer[..length];
+        if length == 0 || filled[length - 1] != 0 || filled[..length - 1].contains(&0) {
+            return Err(Errno::EINVAL);
+        }
+        Ok(Some(
+            String::from_utf8_lossy(&filled[..length - 1]).into_owned(),
+        ))
     }
 
     fn register_handlers(&mut self, spec: &SignalSpec) -> Result<(), Errno> {
@@ -811,17 +864,17 @@ mod tests {
     #[test]
     fn test_minix_host_honest_enosys_for_missing_wrappers() {
         let mut host = MinixSysHost::default();
-        // 本测试分两栏：**仍缺封装**的接缝必须诚实回 ENOSYS（不假成功）；
-        // **已接线**的接缝在宿主 trap 断链下诚实回 EIO（E1 切片 5 的 hosted
-        // fallback；rt-birth 同款注记）——两栏都不许把失败装成功。
-        // 仍缺封装：内核 mib 三件——缺的是 minix-sys 的 MIB_SYSCTL
-        // 客户端面（NS11-A 登记），不是内核臂（C 亦无 GETMIB 系统调用，
-        // sysctl(2) = SENDREC 直达 MIB 服务，见 trait 上方更正注记）。
-        // （set_controlling_tty/alarm/time/chroot 已接线，见下；set_env
-        // 是本地环境表面——无机器往返，见第三栏。）
-        assert_eq!(host.securitylevel(), Err(Errno::ENOSYS));
-        assert_eq!(host.set_securitylevel(0), Err(Errno::ENOSYS));
-        assert_eq!(host.init_root(), Err(Errno::ENOSYS));
+        // 本测试分两栏：**已接线**的接缝在宿主 trap 断链下诚实回 EIO
+        // （E1 切片 5 的 hosted fallback；rt-birth 同款注记）；**本地环境
+        // 表面**无机器往返（set_env 走成功/INVAL 栏）——两栏都不许把
+        // 失败装成功。
+        // 内核 mib 三件已接线（minix-sys 的 MIB_SYSCTL 客户端面：
+        // sysctl(2) = SENDREC 直达 MIB 服务，C 亦无 GETMIB 内核臂，
+        // 见 trait 上方注记）——宿主 trap 断链诚实回 EIO，与 chroot
+        // 等已接线面同栏。
+        assert_eq!(host.securitylevel(), Err(Errno::EIO));
+        assert_eq!(host.set_securitylevel(0), Err(Errno::EIO));
+        assert_eq!(host.init_root(), Err(Errno::EIO));
         // chroot 已接线（VFS_CHROOT 面）：宿主 trap 断链诚实回 EIO。
         assert_eq!(host.chroot("/"), Err(Errno::EIO));
         // set_env 已接线（本地环境表，setenv 语义）：成功路径 Ok，
