@@ -130,7 +130,7 @@
 - **表行**（`fstab.rs`，5 个）：`test_root_row`（根行六字段）、`test_proc_row_skips_checks`（零零行）、`test_comment_and_blank_skipped`（注释空行）、`test_wrong_field_count_rejected`（多一少一）、`test_non_numeric_trailer_rejected`（尾段非数字）。
 - **选项**（`options.rs`，3 个）：`test_common_lists`（常用组合）、`test_read_only`（只读位）、`test_unknown_word_rejected`（拼错空表双逗号）。
 - **计划**（`order.rs`，4 个）：`test_root_first_then_ascending`（根首升序）、`test_pass_zero_skipped`（零号跳过）、`test_lookup_by_point`（按点查中落空空点位）、`test_empty_table_misses`（空表）。
-- **检查遍**（`os/fs/mfs/src/fsck.rs`，42 个，`rg "fn test_" os/fs/mfs/src/fsck.rs` 复现）：超块校验 20（干净镜像零警告、魔数三态、位图块数与首数据区对账、两方向位图差异与 80 条截断）；走查与计数 22（干净镜像总数表逐行、链接计数错、直连与间接越界区块、目录项五类不一致、坏模式、符号链接坏尺寸与空链接、设备文件 0 号与残留槽位、`-l` 列表逐字、观察单提示）。mkfs 与 fsck 互为验证：`mkfs::build_image` 造镜像、fsck 报干净、逐类篡改被抓。
+- **检查遍**（`os/fs/mfs/src/fsck.rs`，38 个，`rg -c "#\[test\]" os/fs/mfs/src/fsck.rs` 复现）：超块校验 20（干净镜像零警告、魔数三态、位图块数与首数据区对账、两方向位图差异与 80 条截断）；走查与计数 22（干净镜像总数表逐行、链接计数错、直连与间接越界区块、目录项五类不一致、坏模式、符号链接坏尺寸与空链接、设备文件 0 号与残留槽位、`-l` 列表逐字、观察单提示）。mkfs 与 fsck 互为验证：`mkfs::build_image` 造镜像、fsck 报干净、逐类篡改被抓。
 
 尚未覆盖、随后续阶段补齐的：真实挂载调用（文件系统服务接口）、检查遍的修复面与 preen、其余文件系统（ext2 等）的检查遍、`newfstab.sh` 执行（shell 执行器）。表选项计划三层是全覆盖的，执行层是显式留白的。
 
