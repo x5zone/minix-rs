@@ -3,9 +3,9 @@
 > **状态**: 已完成，等待评审收敛
 > **定位**: 交付因果链的存物层——磁盘挂上去、文件系统有人检查
 > **源码**: `minix3/minix/commands/mount/mount.c`（类型选项标志第 41 到 60 行、用法第 17 与 168 行、参数计数检查第 60 行）、`minix3/minix/commands/umount/umount.c`、`minix3/sbin/mount/`（`fattr.c` 属性工具、`mountprog.h`）、`minix3/sbin/fsck/`（`fsck.c` 通过号零跳过第 254 行、`preen.c` 预检查模式、`progress.c` 进度）、`minix3/sbin/fsck_ext2fs/`、`minix3/minix/commands/fsck.mfs/`、`minix3/etc/newfstab.sh`（单参数、读变量、必填检查）
-> **Rust 模块**: `os/commands/sbin/mountinfo`（库包 `minix-mountinfo`：`fstab.rs`、`options.rs`、`order.rs`，12 个测试通过）；fsck 的 `src/bin/` 薄壳随本域执行层批次在本 crate 内落地（检查遍待文件系统接口，认领轨道见 edge E-FSCMDS；原 `os/commands/sbin/fsck` 占位壳已于 2026-09-17 删除）
+> **Rust 模块**: `os/commands/sbin/mountinfo`（库包 `minix-mountinfo`：`fstab.rs`、`options.rs`、`order.rs`，12 个测试通过）加 `fsck.mfs` 薄壳（构建名 `fsck_mfs`，已接线：检查遍决定半在 `minix-fs-mfs::fsck`——格式知识归文件系统库，与 `mkfs.mfs` 同一先例，见 §4.4；原 `os/commands/sbin/fsck` 占位壳已删除）
 > **前置依赖**: `06-file-ops.md`（搬文件在先）、`15-stage-fs` 的服务端语义（挂载调用的另一端）
-> **不覆盖（移交）**: 文件系统服务端实现（见 `15-stage-fs`）、块驱动（见 `16-stage-drivers` 的存储部分）、检查遍实现（后续文件系统阶段）
+> **不覆盖（移交）**: 文件系统服务端实现（见 `15-stage-fs`）、块驱动（见 `16-stage-drivers` 的存储部分）、检查遍的修复面与 preen 模式（`fsck.mfs` 只读决定半已落，见 §4.4；其余文件系统的检查遍随各自语义波次）
 
 ---
 
@@ -85,6 +85,7 @@
 | `fstab.rs` | 表六字段格式 | 行解析（`parse_fstab_line`，六字段不多不少） |
 | `options.rs` | `mount.c:47` 选项思想 | 选项词表（`parse_options`，七词严表） |
 | `order.rs` | `fsck.c:254` 思想 | 检查计划（`plan_checks`）与 `MountTable` 接口 |
+| `src/bin/fsck_mfs.rs` | `fsck.c:main` 第 1616 到 1668 行 | `fsck.mfs` 薄壳：旗标解析、镜像读入、报告打印、退出码 |
 
 ### 4.2 关键类型与不变量
 
@@ -102,6 +103,22 @@
 | `plan_checks` | 表行表 | 任务序列 | 检查顺序语义 |
 | `lookup_mount` | 表与挂载点 | 条目或查无 | 查询语义 |
 
+### 4.4 `fsck.mfs` 的检查遍：决定半落在格式库
+
+检查遍不在本 crate——格式知识归文件系统库（`minix-fs-mfs`，与 `mkfs.mfs` 的决定半同一先例），薄壳只做参数与 I/O。`minix3/minix/commands/fsck.mfs/fsck.c` 的只读检查链按 `chkdev`（第 1538 到 1614 行）的序完整落地：
+
+| `minix_fs_mfs::fsck` | C 对应（fsck.c） | 职责 |
+|----------------------|------------------|------|
+| `Fsck::new` | `rw_super` 第 561 到 599 行、`chksuper` 第 602 到 655 行 | 超块校验：魔数、计数 sanity、位图块数与首数据区对账、最大尺寸封顶算式、强制特性位 |
+| `Fsck::run` | `chkdev` 第 1556 到 1591 行的只读序 | 走查 → 区块图对账 → 计数对账 → inode 图对账 → 空闲表清零检查 → 总数 |
+| `descendtree` 族 | 第 1021 到 1501 行 | 文件树走查：目录项、`.`/`..` 对账、区块标记、符号链接与设备文件检查 |
+| `check_bitmap` | `chkmap`/`chkword` 第 786 到 841 行 | 走查构造的期望图与盘上图逐位对照（每 80 条差异截断列举） |
+| `chkcount`/`counterror` | 第 866 到 908 行 | 链接计数台账：入口加一、访问减盘上链接数、收尾非零即报 |
+| `chkilist` | 第 843 到 864 行 | 空闲 inode 清零检查 |
+| `printtotal`/`list_inode`/`list_super` | 第 1503 到 1531、936 到 968、528 到 559 行 | 总数报告与列表半（`-l`/`-s`） |
+
+只读边界：C 的问句半（`yes`，第 256 到 280 行）在只读模式恒"否"，Rust 侧按同一语义把 remove/repair/adjust 分支整体留给修复批——`fsck_mfs` 对 `-r`/`-y`/`-a`/`-p`/`-d`/`-c` 诚实拒绝并指名归属。修复面与 preen 模式维持登记。
+
 ---
 
 ## 5. 测试要点
@@ -113,8 +130,9 @@
 - **表行**（`fstab.rs`，5 个）：`test_root_row`（根行六字段）、`test_proc_row_skips_checks`（零零行）、`test_comment_and_blank_skipped`（注释空行）、`test_wrong_field_count_rejected`（多一少一）、`test_non_numeric_trailer_rejected`（尾段非数字）。
 - **选项**（`options.rs`，3 个）：`test_common_lists`（常用组合）、`test_read_only`（只读位）、`test_unknown_word_rejected`（拼错空表双逗号）。
 - **计划**（`order.rs`，4 个）：`test_root_first_then_ascending`（根首升序）、`test_pass_zero_skipped`（零号跳过）、`test_lookup_by_point`（按点查中落空空点位）、`test_empty_table_misses`（空表）。
+- **检查遍**（`os/fs/mfs/src/fsck.rs`，42 个，`rg "fn test_" os/fs/mfs/src/fsck.rs` 复现）：超块校验 20（干净镜像零警告、魔数三态、位图块数与首数据区对账、两方向位图差异与 80 条截断）；走查与计数 22（干净镜像总数表逐行、链接计数错、直连与间接越界区块、目录项五类不一致、坏模式、符号链接坏尺寸与空链接、设备文件 0 号与残留槽位、`-l` 列表逐字、观察单提示）。mkfs 与 fsck 互为验证：`mkfs::build_image` 造镜像、fsck 报干净、逐类篡改被抓。
 
-尚未覆盖、随后续阶段补齐的：真实挂载调用（文件系统服务接口）、检查遍实现（各文件系统阶段）、`newfstab.sh` 执行（shell 执行器）。表选项计划三层是全覆盖的，执行层是显式留白的。
+尚未覆盖、随后续阶段补齐的：真实挂载调用（文件系统服务接口）、检查遍的修复面与 preen、其余文件系统（ext2 等）的检查遍、`newfstab.sh` 执行（shell 执行器）。表选项计划三层是全覆盖的，执行层是显式留白的。
 
 ---
 
@@ -134,6 +152,7 @@
 - `minix3/minix/commands/mount/mount.c:main（L41，工具生成）`——类型选项参数（`options.rs` 的形状来源）
 - `minix3/sbin/fsck/fsck.c:isok（L254，工具生成）`——零号跳过（`plan_checks` 的一句话来源）
 - `minix3/etc/newfstab.sh`——表生成脚本（`fstab.rs` 的输入来源）
+- `minix3/minix/commands/fsck.mfs/fsck.c`——检查遍权威源（`minix_fs_mfs::fsck` 的对应物，§4.4）
 
 ---
 
