@@ -1,0 +1,9 @@
+# name		getty			type	status		comments
+#
+# minix-rs /etc/ttys 最小集：只声明 console 一行。
+#
+# status 取 "off" 是刻意的：系统还没有 getty 二进制（18-stage 命令
+# 轨道交付项），"on" 会让 init 按行重生一个不存在的程序。getty 落地
+# 后把 console 翻成 "on secure"（C 对位 minix3/etc/ttys:6 的
+# console 行）。
+console		"/sbin/getty default"	minix	off secure
