@@ -311,7 +311,8 @@ pub fn sys_abort(
 ///
 /// `_kernel_call(SYS_TIMES, &m)`：请求载荷 m_lsys_krn_sys_times.endpt，
 /// 回复载荷 m_krn_lsys_sys_times（user/system/real/boot 四值 + boottime）。
-/// `endpt == SELF`（-1）由内核替换为调用者自身（do_times.c:33-34）。
+/// `endpt == SELF`（endpoint.h:56 哨兵，权威推导见
+/// `minix_types::Endpoint::SELF`）由内核替换为调用者自身（do_times.c:33-34）。
 pub fn sys_times(
     transport: &impl KernelCallTransport,
     endpt: i32,

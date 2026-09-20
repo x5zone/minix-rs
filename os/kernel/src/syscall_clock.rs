@@ -66,7 +66,14 @@ pub const CLOCK_REALTIME: i32 = 0;
 
 // ── SELF ──
 
-const SELF: i32 = -2;
+/// SELF endpoint sentinel. C: `SELF` — endpoint.h:56, `_ENDPOINT_SLOT_TOP - 3`.
+/// Derived from the minix-types authority (single source) — the former local
+/// `-2` is the SYSTEM task endpoint (com.h:50), so authority-valued wire
+/// fields (callers send `minix_types::Endpoint::SELF.0`, e.g.
+/// ipc-server boundary.rs:108 / is acquire.rs:353) never matched and the
+/// do_times.c:33-34 SELF replacement silently never fired
+/// (E-MIBGRANT constant class; see `syscall_copy.rs::SELF`, `grant.rs::ANY`).
+const SELF: i32 = minix_types::Endpoint::SELF.0;
 
 // ── Helpers ──
 
@@ -627,24 +634,55 @@ mod tests {
 
     #[test]
     fn test_dispatch_times_self_replacement() {
-        // Test that SELF (-2) is replaced with caller's endpoint
+        // SELF（endpoint.h:56 权威哨兵）必须替换为 caller 自身 endpoint：
+        // caller 槽 ProcNr(0) 携带专属 endpoint 与非零 user_time，仅当替换
+        // 真实发生才会把该值读回 reply（历史化石值 -2 使替换谓词永假，
+        // 走 else 分支按具体端点解析 → 回 0）。do_times.c:33-34。
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        // SAFETY: test-only; single-threaded under the harness. Installs a
+        // fresh ClockState so the unconditional clock fill (dispatch_times →
+        // clock_state_boot_unchecked, syscall_clock.rs:154) does not depend
+        // on another test having initialized the global (ordering fragility
+        // the old, non-resolving variant of this test silently relied on).
+        unsafe {
+            *crate::globals::CLOCK_STATE.get() = Some(crate::clock::ClockState::new());
+        }
+        {
+            let slot = proc_table.get_mut(ProcNr(0)).expect("slot 0");
+            slot.p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+            slot.p_endpoint = Endpoint(100);
+            slot.p_time.user_time.store(777, Ordering::Relaxed);
+        }
+
         let mut msg = Message::default();
         // Set up the request: endpt = SELF
         msg.m_u.m_lsys_krn_sys_times.endpt = SELF;
         msg.m_type = 25; // SYS_TIMES
 
-        let proc_table = crate::test_helpers::test_proc_table();
         let result = dispatch_times(ProcNr(0), &mut msg, &proc_table);
         assert_eq!(result, KcallResult::Ok(OK));
 
         // Verify reply fields are populated
         let reply = unsafe { &msg.m_u.m_krn_lsys_sys_times };
-        // boot_ticks should be get_monotonic() (may be 0 if no tick yet)
-        // real_ticks should be get_realtime()
-        // boot_time should be get_boottime()
-        // user_time and system_time should be 0 (process not found in empty table)
-        assert_eq!(reply.user_time, 0);
+        // user_time 必须经 SELF → caller endpoint(100) → 槽 0 解析读回 777；
+        // system_time 未填充保持 0。
+        assert_eq!(
+            reply.user_time, 777,
+            "SELF 替换必须解析到 caller 的 user_time"
+        );
         assert_eq!(reply.system_time, 0);
+    }
+
+    /// C 绝对值 pin：SELF 必须等于 endpoint.h:56 的 `_ENDPOINT_SLOT_TOP - 3`
+    /// = 32768 - MAX_NR_TASKS（com.h:55，1023）- 3 = 31742。历史本地化石值
+    /// -2 恰为 SYSTEM 任务 endpoint（com.h:50），而 ipc-server/is 实发权威值
+    /// （boundary.rs:108 / acquire.rs:353），替换谓词永假。对位
+    /// `grant.rs::test_magic_granter_endpoints_match_c_com_h`。
+    #[test]
+    fn test_sys_times_self_sentinel_authority_pin() {
+        assert_eq!(SELF, 31742); // endpoint.h:56 + com.h:55
+        assert_eq!(SELF, minix_types::Endpoint::SELF.0);
+        assert_ne!(SELF, Endpoint::SYSTEM.0); // 化石值 -2 是 SYSTEM，不是 SELF
     }
 
     #[test]
