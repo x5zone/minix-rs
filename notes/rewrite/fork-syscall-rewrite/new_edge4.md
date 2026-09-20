@@ -81,7 +81,7 @@
 | new_edge1 NK3（三架构生产 trap 腿 + timer-irq 载体） | E5-SMP（-smp 用例的中断交付前提）；E5-ARCH（三架构复跑）；一切 riscv64/aarch64 真机中断/用户往返 | ✅（2026-09-20，c1bb93c22 等 4 commit；真机 PASS ×2） |
 | new_edge1 NK4/OQ-N2（12 模块契约）——✅ 契约已钉（2026-09-20，loader.rs MODULE_NAMES 12 项对 C image[] 序） | new_edge3 NS8（装机清单——须把 `/EFI/minix/modules/` 下 12 文件命名严格对齐 `ds,rs,pm,sched,vfs,memory,tty,mib,vm,pfs,mfs,init`，缺件 boot-shim 现 fail-fast panic） | 供方 ✅ / 消费方 ✅（NS8 2026-09-21 dfb910f37：装机清单三重锁对齐契约，xtask image() 按同序装机；NK4-A 真机端到端余量待 QEMU 窗口 + NS8-A kernel.elf 产出者） |
 | new_edge3 NS4/NS5（挂根+exec） | NS9/NS12、T3/T4 | ☐ |
-| new_edge3 NS7 + NL1（console 全链） | T4 冒烟（可见输出） | ◐ NL1 驱动半 ✅（2026-09-21，546aef11e——串口 backend + 写字节管道，真机半挂 T2）；NS7（VFS cdev 臂/dmap tty 槽）前置已解锁待领 |
+| new_edge3 NS7 + NL1（console 全链） | T4 冒烟（可见输出） | ◐ NL1 驱动半 ✅（2026-09-21，546aef11e——串口 backend + 写字节管道，真机半挂 T2）；**NS7 ✅（2026-09-21，zcode_glm_3，代码 af715dfaf / merge 50c533761——读/写臂字符路由 + CdevIo 完成面 + 回复 id 配对；登记 NS7-A 见 new_edge3）**；console 全链宿主半齐，真机半挂 T2 |
 
 ---
 
