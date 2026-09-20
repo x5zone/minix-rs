@@ -96,22 +96,18 @@ pub trait TracerSig {
 /// 合并为 supertrait、函数体内经 trait 上转取用。
 pub trait ExecRestartServices: KernelExec + TracerSig {}
 
-/// `do_exec` (`exec.c:38-56`, D1) — forward to VFS.
+/// `do_exec` (`exec.c:38-56`, D1) — unconditionally forward to VFS.
+///
+/// C 中本函数无调用者门（门在 `do_newexec`，exec.c:70-71）。任何持有
+/// 自身端点的进程（含 init）都可发起 execve → PM → VFS 转发。
 pub fn do_exec(
     table: &mut ProcTable,
     caller: UserSlot,
     req: ExecRequest,
     vfs: &mut dyn VfsExec,
 ) -> Result<ReplyIntent, ExecError> {
-    // C exec.c:70-71：exec 只能由 VFS（用户 execve 的载体）或 RS（服务
-    // 进程重启）发起——这是 exec 的调用者门，exec_restart 的 RS 门
-    //（exec.c:136）与 do_newexec 的 PM 门同族。
-    let caller_ep = table.procs[caller.get()].endpoint();
-    if caller_ep != Endpoint::VFS && caller_ep != Endpoint::RS {
-        return Err(ExecError::Perm);
-    }
-    // C 中本调用经 tell_vfs 置 VFS_CALL 并返回 SUSPEND；VfsExec 的生产
-    // 实现内部编码 VFS_PM_EXEC 并做 tell_vfs。
+    // C exec.c:43-52: memset msg → tell_vfs(mp, &m) → return SUSPEND.
+    // VfsExec 的生产实现内部编码 VFS_PM_EXEC 并做 tell_vfs。
     vfs.forward_exec(table, caller, req)?;
     // do_exec 不置 PARTIAL_EXEC（那是 do_newexec 的职责，exec.c:107）。
     Ok(ReplyIntent::ReplyLater)
@@ -328,27 +324,30 @@ mod tests {
     }
     impl ExecRestartServices for TestExecSvc {}
 
+    /// C do_exec (exec.c:38-56) has no caller gate — any process (including
+    /// init) can trigger execve → PM → forward to VFS unconditionally.
     #[test]
     fn test_do_exec_forwards() {
         let mut table = ProcTable::new();
         mk_proc(&mut table, 0);
-        // C exec.c:70-71 的调用者门：RS 发起合法（VFS 同理）。
-        table.procs[0].identity.endpoint = Endpoint::RS;
+        // No special endpoint needed — gate removed (C fidelity).
         let req = ExecRequest { caller: UserSlot::new(0), endpoint: Endpoint::from_generation_slot(1,0), path: VirBytes(0x1000), path_len: 5, frame: VirBytes(0x2000), frame_len: 128, ps_str: VirBytes(0) };
         let mut vfs = NopVfs;
         let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs).unwrap();
         assert_eq!(r, ReplyIntent::ReplyLater);
     }
 
-    /// V2-P2-2：exec 的调用者门——非 VFS/RS 发起 → EPERM（exec.c:70-71）。
+    /// do_exec has NO caller gate (C exec.c:38-56). Non-VFS/RS callers
+    /// succeed — the gate belongs exclusively to do_newexec (exec.c:70-71).
     #[test]
-    fn test_do_exec_caller_gate() {
+    fn test_do_exec_no_caller_gate() {
         let mut table = ProcTable::new();
-        mk_proc(&mut table, 0); // slot 0 endpoint 非VFS/RS
+        mk_proc(&mut table, 0); // slot 0 endpoint is a generic process (not VFS/RS)
         let req = ExecRequest { caller: UserSlot::new(0), endpoint: Endpoint::from_generation_slot(1,0), path: VirBytes(0x1000), path_len: 5, frame: VirBytes(0x2000), frame_len: 128, ps_str: VirBytes(0) };
         let mut vfs = NopVfs;
+        // Must succeed — do_exec unconditionally forwards.
         let r = do_exec(&mut table, UserSlot::new(0), req, &mut vfs);
-        assert_eq!(r.unwrap_err(), ExecError::Perm);
+        assert_eq!(r.unwrap(), ReplyIntent::ReplyLater);
     }
 
     #[test]
