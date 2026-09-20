@@ -788,6 +788,31 @@ pub(crate) fn decode_name(buf: &[u8], len: usize) -> Result<String, PathError> {
     Ok(String::from_utf8_lossy(&buf[..len - 1]).into_owned())
 }
 
+/// `copy_path`——路径请求取名的 C 双支全同构（utility.c:17-43）。
+///
+/// C：长度超目标缓冲（`PATH_MAX`）先拒 `ENAMETOOLONG`（:21-25）；超过
+/// `M_PATH_STRING_MAX` 走 `fetch_name` 从调用方地址空间拉取（:31-32）；
+/// 否则 strncpy 消息内联并检查尾字节 NUL（:35-41）。本线内联容量是
+/// [`minix_sys::vfs::OPEN_PATH_INLINE_MAX`]（32——LP64 载荷 56 字节不变量
+/// 下的窗宽，99 篇 §1.2；C i386 是 40），fetch 半的 PATH_MAX/NUL 门在
+/// [`SysPathFetcher::fetch`] 内（utility.c:60-90 同构）。
+///
+/// `inline` 是该臂从载荷 buf lane 读出的内联字节；`name_addr`/`name_len`
+/// 是同一请求的指针与 NUL 含长度 lane；`who` 为调用方端点（C `who_e`）。
+pub(crate) fn copy_path(
+    inline: &[u8],
+    name_addr: u64,
+    name_len: usize,
+    who: minix_types::Endpoint,
+) -> Result<String, PathError> {
+    if name_len <= minix_sys::vfs::OPEN_PATH_INLINE_MAX {
+        let n = name_len.min(inline.len());
+        decode_name(&inline[..n], n)
+    } else {
+        SysPathFetcher { who }.fetch(name_addr, name_len)
+    }
+}
+
 /// 生产 `PathFetcher`：路径字符串在**调用方内存**里，经跨地址空间拷贝取回。
 ///
 /// C: `copy_path`（utility.c:24-55）的"名字不在消息里"分支 + `fetch_name`
