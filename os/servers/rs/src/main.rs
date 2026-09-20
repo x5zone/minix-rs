@@ -36,7 +36,7 @@ fn main() {
         let monparams_ok =
             minix_sys::syscall::sys_getmonparams(&minix_sys::syscall::DirectKernelCallTransport, &mut monparams)
                 .is_ok();
-        let rs_verbose = monparams_ok && crate::boot::parse_rs_verbose(&monparams);
+        let rs_verbose = monparams_ok && minix_rs::boot::parse_rs_verbose(&monparams);
         if rs_verbose {
             use minix_sys::syscall::{sys_diagctl, DirectKernelCallTransport};
             let line = b"RS: running in verbose mode\n";
