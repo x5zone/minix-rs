@@ -449,8 +449,12 @@ pub(crate) fn build_identity_windows(
     const USER_IDENTITY_FLOOR: u64 = 0x40_0000;
     /// Candidate slots: UEFI non-conventional descriptors are a few
     /// dozen on QEMU/OVMF; overflow is a firmware-shape surprise, not
-    /// something to truncate silently.
-    const MAX_CANDIDATES: usize = 128;
+    /// something to truncate silently. fix27d: real machine measured
+    /// 128 reserved descriptors after the above-RAM filter (the 4 KiB
+    /// fragmented OVMF map is far busier than the "few dozen" the
+    /// first cut assumed) — 256 keeps the fail-fast meaningful instead
+    /// of firing on the normal shape.
+    const MAX_CANDIDATES: usize = 256;
     /// Sanity cap on 4 KiB identity leaves: 128 Ki pages = 512 MiB.
     /// Blowing this means the "occupied" snapshot swallowed something
     /// enormous (fragmented firmware map or an MMIO-window regression) —
@@ -489,10 +493,13 @@ pub(crate) fn build_identity_windows(
     for r in kernel_info.reserved_regions() {
         push(r.base.0, r.len as u64, &mut n);
     }
-    let res_rejected = zeroed + below_floor;
     for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
         push(base, size, &mut n);
     }
+    // 结束闭包对计数器的可变借用，之后才能再读它们。
+    drop(push);
+    let res_rejected = zeroed + below_floor;
+    let _ = res_rejected;
 
     // insertion sort by base — n ≤ MAX_CANDIDATES, boot-path sizes only.
     for i in 1..n {

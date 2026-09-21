@@ -112,6 +112,21 @@ impl PageFlags {
             Self::PRESENT.bits() | Self::EXECUTABLE.bits() | Self::GLOBAL.bits()
         )
     }
+
+    /// Kernel read-write-**execute** page (global). fix27e: the identity
+    /// windows replayed into every VM-built process table mix the running
+    /// kernel's text, data and heap in one supervisor region — the UEFI
+    /// memory map carries no W^X intent, so the only sound common flag set
+    /// is RWX (an NX-set window #PFs on the first post-switch instruction
+    /// fetch because OVMF boots with EFER.NXE).
+    pub const fn kernel_executable_writable() -> Self {
+        Self::from_bits_truncate(
+            Self::PRESENT.bits()
+                | Self::WRITABLE.bits()
+                | Self::EXECUTABLE.bits()
+                | Self::GLOBAL.bits(),
+        )
+    }
 }
 
 /// Page table error type
@@ -610,13 +625,22 @@ pub fn map_kernel<P: Paging>(
     // contract broke or a window collides with one of the segments
     // above — fail fast either way (the error propagates out of
     // `init_page_table` and VM refuses the process).
+    //
+    // fix27e flags: PRESENT|WRITABLE|EXECUTABLE|GLOBAL (supervisor).
+    // The UEFI snapshot describes occupancy, not W^X intent — one window
+    // mixes the running kernel's text, data and heap, and OVMF boots with
+    // EFER.NXE set, so a non-executable identity window #PFs (present
+    // violation, err=0x11) on the first instruction fetch after the CR3
+    // switch (real machine 2026-09-21, int_fix33 IP=CR2=0x1daf0d9d).
+    // [ARCH]: narrowing this to per-section windows needs section-level
+    // provenance from the loader, not a memory-map snapshot.
+    let ident_flags = PageFlags::kernel_executable_writable();
     for region in ident_regions {
         debug_assert!(region.base % page_size == 0 && region.size % page_size == 0);
         let mut pa = region.base;
         let end = pa + region.size;
         while pa < end {
-            let addr = VirBytes(pa);
-            pt.map(addr, PhysBytes(pa), PageFlags::kernel_read_write())?;
+            pt.map(VirBytes(pa), PhysBytes(pa), ident_flags)?;
             pa += page_size;
         }
     }
@@ -1106,14 +1130,15 @@ pub mod mock {
                 ],
             ).unwrap();
 
-            // Segment 4: identity windows are mapped VA == PA, supervisor.
+            // Segment 4: identity windows are mapped VA == PA, supervisor
+            // RWX (fix27e: EXECUTABLE required — OVMF boots with EFER.NXE).
             for i in 0..2u64 {
                 let addr = VirBytes(0x1da0_0000 + i * PAGE_SIZE_CONST);
                 let (paddr, flags) = pt
                     .query(addr)
                     .expect("identity window page must be mapped");
                 assert_eq!(paddr, PhysBytes(0x1da0_0000 + i * PAGE_SIZE_CONST));
-                assert_eq!(flags, PageFlags::kernel_read_write());
+                assert_eq!(flags, PageFlags::kernel_executable_writable());
             }
 
             // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)

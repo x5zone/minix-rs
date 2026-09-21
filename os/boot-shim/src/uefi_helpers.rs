@@ -277,6 +277,21 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
 
     let mut regions: Vec<MemoryRegion> = Vec::new();
     let mut reserved: Vec<MemoryRegion> = Vec::new();
+    // RAM ceiling from the conventional list — descriptors entirely above
+    // it (fix27d forensics: a 192 MiB `RESERVED` hole at 0xfd0000_0000,
+    // the QEMU i440fx high chipset hole) are not memory the kernel can
+    // ever run in or touch; identity-mapping device space at 4 KiB
+    // granularity is waste at best. Collected in pass 1, applied in
+    // pass 2 (GetMemoryMap descriptors are unsorted across types).
+    let mut ram_top = 0u64;
+    for desc in mmap.entries() {
+        if desc.ty == MemoryType::CONVENTIONAL {
+            let end = desc.phys_start + desc.page_count * 4096;
+            if end > ram_top {
+                ram_top = end;
+            }
+        }
+    }
     for desc in mmap.entries() {
         if desc.ty == MemoryType::CONVENTIONAL {
             regions.push(MemoryRegion {
@@ -284,6 +299,20 @@ pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
                 len: desc.page_count as usize * 4096,
             });
         } else if desc.ty != MemoryType::MMIO && desc.ty != MemoryType::MMIO_PORT_SPACE {
+            if desc.phys_start >= ram_top {
+                continue;
+            }
+            // fix27d forensic (2026-09-21): fix27c landed the payload and
+            // the kernel's 512 MiB sanity cap fired — something in this
+            // list is enormous despite the MMIO exclusions. Dump every
+            // ≥ 4 MiB descriptor (there are only a handful) with its raw
+            // type so the next fix can exclude by fact, not guess.
+            if desc.page_count >= 1024 {
+                uefi::println!(
+                    "boot-shim: reserved-big ty={:?} base={:x} pages={:x}",
+                    desc.ty, desc.phys_start, desc.page_count
+                );
+            }
             reserved.push(MemoryRegion {
                 base: PhysBytes(desc.phys_start),
                 len: desc.page_count as usize * 4096,

@@ -487,7 +487,27 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
     // SAFETY: boot is single-threaded (before BKL exists); one write, then
     // read-only for the rest of the run.
     unsafe {
-        *KERNEL_INFO.get() = Some(*kernel_info);
+        // fix27c: the `reserved_regions` payload lives in the boot-shim's
+        // UEFI-pool heap — a `&'static` slice whose backing pages are only
+        // mapped by the firmware's 1:1 table. After the higher-half jump
+        // the kernel's own tables do not replay that mapping and the same
+        // VA reads zeros (real machine: res=127 zeroed=127 at
+        // build_identity_windows). Land the bytes in kernel .bss — mapped
+        // for the whole run — and hand the global copy that pointer.
+        // `ptr::copy` (not `copy_nonoverlapping`) because kmain re-stores
+        // the global copy itself: src and dst are then the same range.
+        let store = &mut *crate::globals::RESERVED_REGION_STORE.get();
+        let src = kernel_info.reserved_regions;
+        assert!(
+            src.len() <= store.len(),
+            "store_kernel_info: reserved_regions exceeds the .bss landing pad"
+        );
+        if src.as_ptr() != store.as_ptr() {
+            core::ptr::copy(src.as_ptr(), store.as_mut_ptr(), src.len());
+        }
+        let mut k = *kernel_info;
+        k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
+        *KERNEL_INFO.get() = Some(k);
     }
 }
 

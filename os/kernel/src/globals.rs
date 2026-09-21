@@ -140,6 +140,10 @@ mod bkl_protected {
         // publishing the post-deduction free list for multi-image boot
         // loaders), read-only afterwards — same contract as MemMapEntry.
         minix_types::HandoffMemRegion,
+        // fix27c `.bss` landing pad payload (plain u64+usize pair). Written
+        // once by `store_kernel_info` during boot, read-only afterwards —
+        // same contract as KernelInfo itself.
+        minix_boot::MemoryRegion,
 
         // BKL-serialized mutation (kernel-internal types):
         crate::proc_table::ProcessTable,
@@ -274,6 +278,26 @@ pub(crate) static FREE_MEMMAP: SyncUnsafeCell<[crate::memmap::MemMapEntry; crate
 /// SAFETY: Only written once during boot (single-threaded, before BKL needed).
 /// After boot, read-only under BKL protection.
 pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCell::new(None);
+
+/// fix27c `.bss` landing pad for the [`KERNEL_INFO`] `reserved_regions`
+/// payload.
+///
+/// The boot-shim builds that list in its (UEFI-pool-backed) heap and hands
+/// over a `&'static [MemoryRegion]`. Under the link-in execution model the
+/// kernel's own page tables do not replay the UEFI 1:1 mapping for those
+/// heap pages — after the higher-half jump the same VA reads back zeros
+/// (real machine 2026-09-21: `ident-windows res=127 zeroed=127`). The
+/// store in `arch_boot`/`kmain` deep-copies the bytes here (kernel `.bss`,
+/// mapped for the whole run) and repoints the slice.
+///
+/// 256 = matches `build_identity_windows::MAX_CANDIDATES` (fix27d real-
+/// machine shape: 128 filtered descriptors);
+/// overflow fails fast in `store_kernel_info`, never truncates.
+pub(crate) static RESERVED_REGION_STORE: SyncUnsafeCell<
+    [minix_boot::MemoryRegion; 256],
+> = SyncUnsafeCell::new([
+    minix_boot::MemoryRegion { base: minix_types::PhysBytes(0), len: 0 }; 256
+]);
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///
