@@ -545,6 +545,20 @@ pub fn delivermsg(proc: &mut crate::proc::KProcess, user_copy: &dyn UserCopy) ->
         Ok(()) => {
             proc.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
             proc.p_misc_flags.clear(MiscFlagsBits::MSGFAILED);
+            // C: proc.c:290-292 — the completed IPC returns OK to the user
+            // caller. The wake half (mini_notify direct delivery) only sets
+            // MF_DELIVERMSG; the return code lands here, when the pending
+            // delivery is flushed at dispatch time (C switch_to_user's
+            // delivermsg stage). Without it a blocked receiver woken by a
+            // notify restores with whatever RAX held at trap entry (real
+            // machine NK4-A C-3: VM woken by the SYSTEM SIGKMEM notify saw
+            // its src argument, ANY=31744, as the receive result and
+            // dropped the wake — RS starved on VMREQUEST).
+            // MF_CONTEXT_SET means the kernel deliberately rewrote the
+            // context (signal delivery); do not clobber the return reg.
+            if !proc.p_misc_flags.is_set(MiscFlagsBits::CONTEXT_SET) {
+                crate::proc::set_ipc_return_code(proc, OK as i64);
+            }
             DeliverResult::Delivered
         }
         Err(CopyError::PageFault) => {
@@ -3196,15 +3210,49 @@ mod tests {
 
     #[test]
     fn test_deliver_message_success() {
-        let a = make_test_proc(0, Endpoint(1));
+        let mut a = make_test_proc(0, Endpoint(1));
         a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+        // Poison the return register first: the delivery must overwrite it
+        // with OK (C: proc.c:291 — the completed IPC returns OK to the
+        // caller). Without the write the resumed caller sees the stale
+        // trap-entry value (real machine NK4-A C-3: VM saw its src arg).
+        crate::proc::set_ipc_return_code(&mut a, 0x7c00);
         let mut procs = crate::test_helpers::scratch_procs([a]);
         let mut priv_table = crate::test_helpers::test_priv_table();
         let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &SuccessCopy);
         let result = engine.deliver_message(test_nr(0));
         assert_eq!(result, DeliverResult::Delivered);
         // MF_DELIVERMSG cleared on success.
-        assert!(!engine.procs[0].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(
+            !engine.procs[0]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::DELIVERMSG)
+        );
+        // The completed IPC returns OK (C: proc.c:290-292).
+        assert_eq!(
+            minix_arch::ipc_return_code(&engine.procs[0].cpu_context),
+            OK as i64 as u64
+        );
+    }
+
+    #[test]
+    fn test_deliver_message_context_set_preserves_return_code() {
+        // C: proc.c:290 — `if(!(rp->p_misc_flags & MF_CONTEXT_SET))`:
+        // when the kernel deliberately rewrote the context (signal
+        // delivery), delivermsg must not clobber the return register.
+        let mut a = make_test_proc(0, Endpoint(1));
+        a.p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+        a.p_misc_flags.set(MiscFlagsBits::CONTEXT_SET);
+        crate::proc::set_ipc_return_code(&mut a, 0x1234);
+        let mut procs = crate::test_helpers::scratch_procs([a]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &SuccessCopy);
+        let result = engine.deliver_message(test_nr(0));
+        assert_eq!(result, DeliverResult::Delivered);
+        assert_eq!(
+            minix_arch::ipc_return_code(&engine.procs[0].cpu_context),
+            0x1234
+        );
     }
 
     #[test]
