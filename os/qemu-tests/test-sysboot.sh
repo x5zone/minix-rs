@@ -94,7 +94,7 @@ QEMU_PID=$!
 cleanup() {
     kill "$QEMU_PID" 2>/dev/null || true
     wait "$QEMU_PID" 2>/dev/null || true
-    cp "$SERIAL_LOG" /tmp/sysboot_debug.log 2>/dev/null; rm -rf "$STAGING" "$DISK_IMG" "$FW_VARS" "$MON_SOCK"
+    rm -rf "$STAGING" "$DISK_IMG" "$FW_VARS" "$MON_SOCK"
 }
 trap cleanup EXIT
 

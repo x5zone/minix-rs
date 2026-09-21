@@ -615,6 +615,18 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             .expect("int-33 IPC: caller slot must exist");
         caller.p_defer.r2 = r1 as usize;
         caller.p_defer.r3 = if is_senda { r2 as usize } else { 0 };
+        // C do_sync_ipc's `(message *) r3` — the caller's message buffer
+        // reaches the engine through `p_delivermsg_vir` (C mini_receive
+        // stores m_buff_usr there, proc.c:983; the syscall-leg kernel_call
+        // stores m_user, system.c:141). The door previously dropped rbx, so
+        // a parked receiver's wake delivery copied the message to a stale
+        // syscall buffer and the receive buffer kept its pre-call content
+        // (test-sysboot C-27: rx read Message::default poison, then its
+        // sendnb(m_source) failed with EDEADSRCDST on the garbage source).
+        // SENDA carries the table pointer in rbx instead (p_defer.r3 above).
+        if !is_senda {
+            caller.p_delivermsg_vir = VirBytes(r2);
+        }
     }
 
     // Copy the user message (kernel-side copy, TOCTOU defense — the same
@@ -659,61 +671,12 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // a return value; it stays unrunnable until its IPC completes.
     if let Some(code) = result.reply_code() {
         frame.rax = code as i64 as u64;
-        {
-            // [diag] door-level reply trace (real-machine IPC bring-up).
-            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-            Console::write_str("ipc door: call ");
-            Console::write_hex(call_nr as u64);
-            Console::write_str(" src ");
-            Console::write_hex(r1);
-            Console::write_str(" buf ");
-            Console::write_hex(r2);
-            Console::write_str(" -> ");
-            Console::write_hex(code as i64 as u64);
-            Console::write_str("\n");
-        }
         let ctx = &table
             .get(cur_nr)
             .expect("int-33 IPC: caller slot must exist")
             .cpu_context;
         minix_arch::sync_status_register_to_frame(ctx, frame);
     } else {
-        {
-            // [diag] door-level block trace (real-machine IPC bring-up).
-            use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
-            Console::write_str("ipc door: call ");
-            Console::write_hex(call_nr as u64);
-            Console::write_str(" src ");
-            Console::write_hex(r1);
-            Console::write_str(" -> blocked, flags ");
-            Console::write_hex(
-                table
-                    .get(cur_nr)
-                    .map(|p| {
-                        use crate::proc::RtsFlagsBits;
-                        let f = p.p_rts_flags.get();
-                        let mut v = 0u64;
-                        for (bit, flag) in [
-                            (0, RtsFlagsBits::SLOT_FREE),
-                            (1, RtsFlagsBits::NO_PRIV),
-                            (2, RtsFlagsBits::NO_QUANTUM),
-                            (3, RtsFlagsBits::VMINHIBIT),
-                            (4, RtsFlagsBits::BOOTINHIBIT),
-                            (5, RtsFlagsBits::PROC_STOP),
-                            (6, RtsFlagsBits::RECEIVING),
-                            (7, RtsFlagsBits::SENDING),
-                            (8, RtsFlagsBits::SIGNALED),
-                        ] {
-                            if f.contains(flag) {
-                                v |= 1u64 << bit;
-                            }
-                        }
-                        v
-                    })
-                    .unwrap_or(0),
-            );
-            Console::write_str("\n");
-        }
         // Enter the scheduling loop; never returns to this frame.
         reenter_scheduler();
     }
