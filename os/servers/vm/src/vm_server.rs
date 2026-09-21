@@ -1302,9 +1302,15 @@ impl VmServer {
                 }
                 // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
                 // user-space server must survive bad IPC — drop + audit.
-                Err(_) => {
+                Err(e) => {
                     drop(guard);
                     self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
+                    // C-3 迭代10 取证：receive Err 的错误码（限 4 次）——
+                    // 判别 VM 接收自旋的 Err 来源（EIO/EAGAIN/…）。
+                    #[cfg(not(feature = "mock"))]
+                    crate::bootmark::mark(&alloc::format!(
+                        "nk4a: rcv-err {e:?}\n"
+                    ));
                     audit_log!("[VM IPC] ipc_receive() failed — message dropped");
                     return RunStep::ReceiveFailed;
                 }
