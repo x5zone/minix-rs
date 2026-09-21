@@ -276,6 +276,22 @@ pub fn dispatch_exec(
     // SAFETY: `m_type` verified above (debug) / guaranteed by dispatch (release).
     let exec_msg = unsafe { msg.m_u.m_lsys_krn_sys_exec };
     let endpt = exec_msg.endpt;
+    // C-3 F0 续修取证（task1-close 裁决删除）：RS 用户首指令 rip=0/rsp=0
+    // 全零 fault——本探针分辨"内核收到的 ip/stack 就是 0"（VM 侧问题）还是
+    // "收到真值但上下文没种上"（内核侧问题）。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("nk4a: exec endpt=");
+        Console::write_hex(endpt as u64);
+        Console::write_str(" ip=");
+        Console::write_hex(exec_msg.ip);
+        Console::write_str(" stack=");
+        Console::write_hex(exec_msg.stack);
+        Console::write_str(" ps_str=");
+        Console::write_hex(exec_msg.ps_str);
+        Console::write_str("\n");
+    }
 
     // C: do_exec.c:27,30 — isokendpt(endpt, &proc_nr)
     let target_endpoint = Endpoint(endpt);
@@ -331,7 +347,25 @@ pub fn dispatch_exec(
                     rp.p_name = ProcName::from_array(name_buf);
                 }
             }
-            CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
+            // C do_exec.c:38-40: a failed name copy is NON-FATAL — C falls
+            // through with the literal "<unset>"; arch_proc_init (the
+            // context install below) runs unconditionally. This port
+            // previously returned EFAULT here, so every boot-module exec
+            // with name_ptr=0 (VM's exec_bootproc convention) aborted
+            // BEFORE the context install — the process restored with its
+            // zero seed context and #PF'd at rip=0 (NK4-A C-3 F0 follow-up,
+            // 2026-09-22; masked on the wire by the positive-errno reply,
+            // see FIXLOG Fix #9 新发现 F10).
+            CrossSpaceResult::Completed(Err(_)) => {
+                const UNSET: &[u8] = b"<unset>";
+                name_buf[..UNSET.len()].copy_from_slice(UNSET);
+                if UNSET.len() < PROC_NAME_LEN {
+                    name_buf[UNSET.len()] = 0;
+                }
+                if let Some(rp) = proc_table.get_mut(target_nr) {
+                    rp.p_name = ProcName::from_array(name_buf);
+                }
+            }
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
         }
     }
@@ -364,6 +398,25 @@ pub fn dispatch_exec(
             // 的 memory.c:725）——exec 装新上下文同样必须种 style，
             // 否则被 exec 的进程首次调度撞返回门 panic。
             rp.set_boot_cpu_context(cpu_context);
+            // C-3 F0 续修取证（task1-close 裁决删除）：store 后读回——
+            // 区分"写入即零"（build/消息侧）与"槽错位/被覆盖"（恢复侧读零）。
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                let mut probe_frame =
+                    <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
+                <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(
+                    &rp.cpu_context,
+                    &mut probe_frame,
+                );
+                Console::write_str("nk4a: exec-store nr=");
+                Console::write_hex(target_nr.0 as u64);
+                Console::write_str(" rip=");
+                Console::write_hex(probe_frame.rip);
+                Console::write_str(" rsp=");
+                Console::write_hex(probe_frame.rsp);
+                Console::write_str("\n");
+            }
         }
     }
 

@@ -3326,7 +3326,11 @@ fn finish_and_restore(
     #[cfg(not(feature = "mock"))]
     {
         use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-        C0::write_str("nk4a: pre-restore-\n");
+        C0::write_str("nk4a: pre-restore- rip=");
+        C0::write_hex(frame.rip);
+        C0::write_str(" rsp=");
+        C0::write_hex(frame.rsp);
+        C0::write_str("\n");
     }
     // SAFETY: all `TrapReturnArch::restore_to_user` preconditions hold:
     // - the picked process's address space is active (switch_address_space

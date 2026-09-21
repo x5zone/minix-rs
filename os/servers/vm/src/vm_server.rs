@@ -832,6 +832,26 @@ impl VmServer {
             }
         }
 
+        // C-3 F0 续修取证（task1-close 裁决删除）：RS 入口页 not-present
+        // （err=0x14，cr2=entry=0x2246c0）——段循环后立即读回入口 PTE，
+        // 分辨"map 静默失败/写错表"（query None）还是"表在内存正确但内核
+        // 装载的 root 不符"（query Some）。
+        {
+            let mut proc = table
+                .get_active(slot)
+                .ok_or("boot proc slot not active (vmq probe)")?;
+            use crate::pagetable::Paging as _;
+            match proc.page_table_mut().query(minix_types::VirBytes(entry)) {
+                Some((pa, flags)) => {
+                    crate::bootmark::mark("nk4a: vmq entry mapped\n");
+                    let _ = (pa, flags);
+                }
+                None => {
+                    crate::bootmark::mark("nk4a: vmq entry MISSING\n");
+                }
+            }
+        }
+
         self.install_boot_stack(ip.endpoint, ip.name(), entry)
     }
 
