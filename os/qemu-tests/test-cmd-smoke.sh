@@ -11,9 +11,9 @@
 #      boot-shim MODULE_NAMES order source, imgrd non-empty.
 #   3. Boot under OVMF and wait for the scheduler hand-off marker
 #      ("entering scheduler" — the T1 contract).
-#   4. T4 window: wait for the command-output marker (default
-#      "CMD-SMOKE-OK", what /etc/rc echoes once the OQ-3 content lands;
-#      override with SMOKE_MARKERS="pat1|pat2").
+#   4. T4 window: wait for the command-output marker — the line /etc/rc
+#      echoes ("rc: minimal boot script marker", the OQ-3-approved
+#      baseline; override with T4_MARKER).
 #
 # Exit codes: 0 = PASS, 1 = FAIL, 2 = SKIP (prerequisites missing).
 #
@@ -29,7 +29,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # …/minix-rs/os
 TIMEOUT_BOOT="${TIMEOUT_BOOT:-120}"
 TIMEOUT_T4="${TIMEOUT_T4:-60}"
-T4_MARKER="${T4_MARKER:-CMD-SMOKE-OK}"
+T4_MARKER="${T4_MARKER:-rc: minimal boot script marker}"
 
 if ! command -v qemu-system-x86_64 &>/dev/null; then
     echo "SKIP: qemu-system-x86_64 not found"; exit 2
