@@ -391,6 +391,11 @@ impl<'a> ActiveProc<'a> {
                 layout.kernel_data_pages,
                 layout.dm_vbase,
                 layout.dm_pages,
+                // fix27 (handoff v6): kernel runtime identity windows —
+                // under the UEFI link-in execution model the kernel's
+                // live code/GDT/IDT/TSS are at these low PAs; without
+                // them this table triple-faults on the first CR3 switch.
+                layout.ident_regions(),
             )?;
 
             self.inner.vm_pt.write(pt);

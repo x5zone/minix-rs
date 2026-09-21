@@ -477,6 +477,59 @@ mod tests {
         assert_eq!(addr.page_index(), 5);
     }
 
+    /// NK4-A fix21 复现：真机 init_boot_procs→init_page_table 报
+    /// AllocationFailed。用 fix20c 串口路标的真实幸存区列表（前 8 条
+    /// 照抄，后 2 条以同形小区补）+ 生产同款 sum 语义 total_pages，
+    /// 走 init → 大块(229) 分配（fix18 grow 形状）→ 模拟 relocate
+    /// （available_regions 重建）→ 单页分配，逐步断言不 OOM。
+    #[test]
+    fn test_first_light_regions_survive_relocate_reinit() {
+        let regions = vec![
+            BootMemRegion { base: 0x1000, size: 0x9f000 },
+            BootMemRegion { base: 0x100000, size: 0x100000 },
+            BootMemRegion { base: 0x808000, size: 0x3000 },
+            BootMemRegion { base: 0x80c000, size: 0x4000 },
+            BootMemRegion { base: 0x1780000, size: 0x1a3f5000 },
+            BootMemRegion { base: 0x1bb95000, size: 0x1e28000 },
+            BootMemRegion { base: 0x1da5d000, size: 0x3000 },
+            BootMemRegion { base: 0x1da92000, size: 0x32000 },
+        ];
+        // 生产语义：total = sum(size/CLICK)（boot.rs read_boot_params L297）
+        let tp: usize = regions.iter().map(|r| r.size / CLICK_SIZE).sum();
+        let metadata = make_test_metadata(tp);
+        let mut alloc = BitmapAllocator::init(metadata, tp, &regions, 0, 0);
+
+        // 1. fix18 grow 形状：229 页大块必须给得出来
+        let big = alloc
+            .alloc_mem(229, PageAllocFlags::empty())
+            .expect("fix21 repro: 229-page grow must succeed");
+        // 2. 单页（页表根形状）
+        let one = alloc
+            .alloc_mem(1, PageAllocFlags::empty())
+            .expect("fix21 repro: single page before relocate");
+
+        // 3. 模拟 relocate：旧表 available_regions → 新 metadata 重建
+        let mut free_regions: alloc::vec::Vec<BootMemRegion> = alloc::vec::Vec::new();
+        alloc.available_regions(&mut |base_page, num_pages| {
+            free_regions.push(BootMemRegion {
+                base: base_page * CLICK_SIZE,
+                size: num_pages * CLICK_SIZE,
+            });
+        });
+        let metadata2 = make_test_metadata(tp);
+        let mut alloc2 = BitmapAllocator::init(metadata2, tp, &free_regions, 0, 0);
+
+        // 4. relocate 后单页分配——真机挂点形状（init_page_table→pt_new）
+        let after = alloc2
+            .alloc_mem(1, PageAllocFlags::empty())
+            .expect("fix21 repro: single page after relocate re-init");
+        // 5. 归还路径也要工作（vm_pt_free 形状）——归还给页的原分配器
+        //    （alloc2 的 stats 没有这两笔分配，free 它会触发下溢断言）。
+        alloc.free_mem(one, 1);
+        alloc.free_mem(big, 229);
+        let _ = after;
+    }
+
     #[test]
     fn test_alloc_free_basic() {
         let regions = make_test_regions();

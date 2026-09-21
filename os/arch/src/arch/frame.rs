@@ -136,11 +136,17 @@ const PAGE_SIZE: u64 = PhysFrame::SIZE;
 
 /// Maximum number of bootstrap memory regions the VM owns.
 ///
-/// Bounded by `exclusions` cutting memmap — typical value 4–6, N=8
-/// leaves 2× headroom. Callers needing a different capacity use the
-/// const generic on [`VmBootRegions<N>`] / [`VmBootAllocator<N>`] and
-/// the const-generic variant of [`VmBootRegion::select_multi`].
-pub(crate) const MAX_BOOT_REGIONS: usize = 8;
+/// Sized for the UEFI path: the memmap is a live-map snapshot whose
+/// CONVENTIONAL entry count is firmware-determined (OVMF splits DRAM at
+/// every loader/firmware allocation), so surviving slices can far exceed
+/// the multiboot-E820 assumption of 4–6. NK4-A first-light evidence: an
+/// early snapshot + 13 exclusions produced > 8 slices and failed
+/// selection outright (boot-shim now snapshots after all LOADER_DATA
+/// allocations; this ceiling is the remaining defense for fragmented
+/// firmware maps). Callers needing a different capacity use the const
+/// generic on [`VmBootRegions<N>`] / [`VmBootAllocator<N>`] and the
+/// const-generic variant of [`VmBootRegion::select_multi`].
+pub(crate) const MAX_BOOT_REGIONS: usize = 32;
 
 // =====================================================================
 // Errors
@@ -304,10 +310,12 @@ impl VmBootRegion {
         // own two endpoints plus up to 2 endpoints per exclusion (the
         // entry start/end splitters don't count toward the limit). The
         // boot kernel currently has 13 exclusions (1 kernel image + up
-        // to 12 modules), so 28 split points is typical; 32 leaves a
-        // small safety margin. Increasing `MAX_REGIONS_SPLITS` matters
-        // only for synthetic tests with many exclusions.
-        const MAX_REGIONS_SPLITS: usize = 32;
+        // to 12 modules), so 28 split points is typical; 64 leaves
+        // headroom. Overflow is a hard capacity error — NOT a
+        // `debug_assert` only: in release the assert compiles away and
+        // the write would go out of bounds (NK4-A review, pattern:
+        // illegal state must be sealed in every profile).
+        const MAX_REGIONS_SPLITS: usize = 64;
         let mut splits = [0u64; MAX_REGIONS_SPLITS];
 
         let mut tmp = [VmBootRegion::new(PhysBytes(0), PhysBytes(PAGE_SIZE))
@@ -336,20 +344,16 @@ impl VmBootRegion {
                 let ex_end =
                     (excl.base.0 + excl.len as u64) / PAGE_SIZE * PAGE_SIZE;
                 if ex_start > entry_start && ex_start < entry_end {
-                    debug_assert!(
-                        n_splits < MAX_REGIONS_SPLITS,
-                        "VmBootRegion::select_multi_into: too many exclusion \
-                         boundaries inside one entry (≥ {MAX_REGIONS_SPLITS})"
-                    );
+                    if n_splits >= MAX_REGIONS_SPLITS {
+                        return Err(RegionError::TooManyRegions);
+                    }
                     splits[n_splits] = ex_start;
                     n_splits += 1;
                 }
                 if ex_end > entry_start && ex_end < entry_end {
-                    debug_assert!(
-                        n_splits < MAX_REGIONS_SPLITS,
-                        "VmBootRegion::select_multi_into: too many exclusion \
-                         boundaries inside one entry (≥ {MAX_REGIONS_SPLITS})"
-                    );
+                    if n_splits >= MAX_REGIONS_SPLITS {
+                        return Err(RegionError::TooManyRegions);
+                    }
                     splits[n_splits] = ex_end;
                     n_splits += 1;
                 }

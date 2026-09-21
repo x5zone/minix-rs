@@ -176,6 +176,38 @@ pub(crate) trait KernelGateway {
     /// disposed of (served or SIGSEGV'd), the process must be un-suspended.
     fn sys_vmctl_clear_pagefault(&mut self, endpoint: Endpoint) -> Result<(), GatewayError>;
 
+    /// Lift the boot inhibit (RTS_BOOTINHIBIT) so an exec'd boot process
+    /// becomes schedulable.
+    ///
+    /// C: `sys_vmctl(vmp->vm_endpoint, VMCTL_BOOTINHIBIT_CLEAR, 0)` —
+    /// main.c:414-416, the "make it runnable" step right after the boot
+    /// process's `sys_exec`. Boot processes are forked with
+    /// VMINHIBIT|BOOTINHIBIT (kernel/src/lib.rs:1666); without this call
+    /// they stay parked forever after exec (NK4-A fix23 forensics: every
+    /// `exec X ok` landmark reached the boot proc's `_start` never).
+    fn sys_vmctl_boot_inhibit_clear(&mut self, endpoint: Endpoint)
+        -> Result<(), GatewayError>;
+
+    /// Register a process's fresh page-table root with the kernel.
+    ///
+    /// C: `sys_vmctl_set_addrspace(who->vm_endpoint, pt->pt_dir_phys, pdes)`
+    /// — the tail of `pt_bind` (pagetable.c:1421). Kernel side (C
+    /// `setcr3`, arch_do_vmctl.c:19-33) stores the root AND clears
+    /// RTS_VMINHIBIT via RTS_UNSET — this call is the boot path's only
+    /// VMINHIBIT clear leg (NK4-A fix25 forensics: boot procs were exec'd
+    /// and BOOTINHIBIT-lifted but never scheduled because no SETADDRSPACE
+    /// ever told the kernel about VM-built page tables). `ptroot_virt`
+    /// carries C's `pdes` kernel-visible alias; under the Direct Map the
+    /// kernel walks from the physical root, so callers pass 0 and the
+    /// kernel records `virt_root = None` (same deviation already
+    /// documented at exit.rs:242-247).
+    fn sys_vmctl_set_addrspace(
+        &mut self,
+        endpoint: Endpoint,
+        ptroot_phys: u64,
+        ptroot_virt: u64,
+    ) -> Result<(), GatewayError>;
+
     /// Test/diagnostic accessor: concatenated diag text (default empty;
     /// `MockGateway` returns what `diag_write` recorded).
     #[cfg(test)]
@@ -296,6 +328,53 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
         Ok(())
     }
 
+    fn sys_vmctl_boot_inhibit_clear(&mut self, endpoint: Endpoint)
+        -> Result<(), GatewayError>
+    {
+        let mut msg = Message::default();
+        {
+            // SAFETY: SYS_VMCTL wire — SVMCTL_WHO (m1i1) target,
+            // SVMCTL_PARAM (m1i2) = VMCTL_BOOTINHIBIT_CLEAR (33,
+            // kernel/src/vm.rs VmCtlParam::BootInhibitClear; C
+            // do_vmctl.c:165-167 RTS_UNSET(p, RTS_BOOTINHIBIT)).
+            let m1 = unsafe { &mut msg.m_u.m_m1 };
+            m1.m1i1 = endpoint.0;
+            m1.m1i2 = VMCTL_BOOTINHIBIT_CLEAR;
+            m1.m1i3 = 0;
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_VMCTL_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
+
+    fn sys_vmctl_set_addrspace(
+        &mut self,
+        endpoint: Endpoint,
+        ptroot_phys: u64,
+        ptroot_virt: u64,
+    ) -> Result<(), GatewayError> {
+        let mut msg = Message::default();
+        {
+            // SAFETY: SYS_VMCTL wire — SVMCTL_WHO (m1i1) target,
+            // SVMCTL_PARAM (m1i2) = VMCTL_SETADDRSPACE (29, kernel/src/vm.rs
+            // VmCtlParam::SetAddrSpace; C com.h:405), SVMCTL_PTROOT (m1i3)
+            // physical root, SVMCTL_PTROOT_V (m1p1) kernel-visible root
+            // alias (0 = Direct Map walk, see trait doc).
+            let m1 = unsafe { &mut msg.m_u.m_m1 };
+            m1.m1i1 = endpoint.0;
+            m1.m1i2 = VMCTL_SETADDRSPACE;
+            m1.m1i3 = ptroot_phys as i32;
+            m1.m1p1 = ptroot_virt;
+        }
+        let reply = perform_kernel_call(&self.transport, SYS_VMCTL_CALL, &mut msg, |_| {});
+        if reply < 0 {
+            return Err(GatewayError::Kernel(reply));
+        }
+        Ok(())
+    }
+
     fn sys_exec(
         &mut self,
         endpt: Endpoint,
@@ -377,6 +456,14 @@ const VMCTL_MEMREQ_REPLY: i32 = 15;
 /// SVMCTL_PARAM sub-command: clear RTS_PAGEFAULT on the target
 /// (kernel/src/vm.rs VmCtlParam::ClearPageFault = 12; C VMCTL_CLEAR_PAGEFAULT).
 const VMCTL_CLEAR_PAGEFAULT: i32 = 12;
+/// SVMCTL_PARAM sub-command: clear RTS_BOOTINHIBIT on the target
+/// (kernel/src/vm.rs VmCtlParam::BootInhibitClear = 33; C
+/// VMCTL_BOOTINHIBIT_CLEAR, do_vmctl.c:165-167).
+const VMCTL_BOOTINHIBIT_CLEAR: i32 = 33;
+/// SVMCTL_PARAM sub-command: install the target's page-table root and
+/// clear RTS_VMINHIBIT (kernel/src/vm.rs VmCtlParam::SetAddrSpace = 29;
+/// C VMCTL_SETADDRSPACE, com.h:405 → arch_do_vmctl.c setcr3).
+const VMCTL_SETADDRSPACE: i32 = 29;
 #[cfg(test)]
 /// Scripted gateway for unit tests: records `sys_fork` inputs and answers
 /// either a configured endpoint (success) or a gateway error.
@@ -411,6 +498,11 @@ pub(crate) struct MockGateway {
     pub kills: RefCell<alloc::vec::Vec<(Endpoint, i32)>>,
     /// Endpoints recorded by `sys_vmctl_clear_pagefault` (V11/T35).
     pub clear_pagefaults: RefCell<alloc::vec::Vec<Endpoint>>,
+    /// Endpoints recorded by `sys_vmctl_boot_inhibit_clear` (NK4-A fix23).
+    pub boot_inhibit_clears: RefCell<alloc::vec::Vec<Endpoint>>,
+    /// (endpoint, ptroot_phys, ptroot_virt) tuples recorded by
+    /// `sys_vmctl_set_addrspace` (NK4-A fix25).
+    pub addrspace_sets: RefCell<alloc::vec::Vec<(Endpoint, u64, u64)>>,
 }
 
 #[cfg(test)]
@@ -429,6 +521,8 @@ impl MockGateway {
             memreq_error: Cell::new(0),
             kills: RefCell::new(alloc::vec::Vec::new()),
             clear_pagefaults: RefCell::new(alloc::vec::Vec::new()),
+            boot_inhibit_clears: RefCell::new(alloc::vec::Vec::new()),
+            addrspace_sets: RefCell::new(alloc::vec::Vec::new()),
             last_safecopy: Cell::new(None),
             safecopy_payload: RefCell::new(alloc::vec::Vec::new()),
         }
@@ -503,6 +597,25 @@ impl KernelGateway for MockGateway {
 
     fn sys_vmctl_clear_pagefault(&mut self, endpoint: Endpoint) -> Result<(), GatewayError> {
         self.clear_pagefaults.borrow_mut().push(endpoint);
+        Ok(())
+    }
+
+    fn sys_vmctl_boot_inhibit_clear(&mut self, endpoint: Endpoint)
+        -> Result<(), GatewayError>
+    {
+        self.boot_inhibit_clears.borrow_mut().push(endpoint);
+        Ok(())
+    }
+
+    fn sys_vmctl_set_addrspace(
+        &mut self,
+        endpoint: Endpoint,
+        ptroot_phys: u64,
+        ptroot_virt: u64,
+    ) -> Result<(), GatewayError> {
+        self.addrspace_sets
+            .borrow_mut()
+            .push((endpoint, ptroot_phys, ptroot_virt));
         Ok(())
     }
 

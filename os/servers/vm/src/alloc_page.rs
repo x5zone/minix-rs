@@ -484,6 +484,12 @@ mod tests {
             let again = alloc_pfn_reclaiming(crate::global::page_alloc_mut())
                 .expect("allocator must serve from the pool after pt free");
             let _ = again;
+
+            // PAGE_ALLOC_PTR is one global static: leaving `alloc` (a
+            // local) registered would dangle the pointer into freed
+            // stack and trip the overwrite guard of whichever test
+            // registers next (same hygiene as test_vm_pt_alloc above).
+            crate::global::unregister_page_alloc();
         });
     }
 

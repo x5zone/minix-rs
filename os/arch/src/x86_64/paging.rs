@@ -162,8 +162,23 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 { unsafe {
     core::ptr::read_volatile(channel_to_ptr(paddr, channel))
 }}
 
-/// Write a PTE at the given physical address via the Direct Map, with
-/// a conservative `invlpg` flush for the affected virtual address.
+/// Write a PTE at the given physical address via the Direct Map.
+///
+/// Flush behavior is pinned to the channel, mirroring how the channel
+/// itself pins the execution context:
+/// - `KernelDm` handles run at CPL0, so a conservative `invlpg` is
+///   always legal and kept for present→X transitions defense-in-depth.
+/// - `VmDm` handles are exercised by VM at CPL3, where `invlpg` is a
+///   privileged instruction (#GP(0) — the fix14 first-light forensics,
+///   2026-09-21: `user exception: vector 0xd rip <map+578>`). No flush
+///   is needed there: the only writes such a handle performs are
+///   not-present → present (`map` refuses `AlreadyMapped`, and
+///   `walk_alloc` only creates absent intermediates), and x86 never
+///   caches translations derived from not-present entries
+///   (Intel SDM Vol.3A §4.10.4), so no stale TLB entry can exist.
+///   present→X transitions on a `VmDm` handle (unmap/remap of VM's own
+///   live address space) would need a kernel-assisted flush, which is
+///   not wired — see the VmDm flush gap in the VM paging design notes.
 ///
 /// SAFETY: the channel's Direct Map window must be active; `paddr` must be
 /// a valid 8-byte aligned PTE address. `vaddr_for_flush` is the virtual
@@ -172,11 +187,15 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 { unsafe {
 #[inline]
 unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) { unsafe {
     core::ptr::write_volatile(channel_to_ptr(paddr, channel), value);
-    // Flush any stale TLB entry for this virtual address. For intermediate
-    // table entries (PML4/PDPT/PD), no leaf TLB entry exists yet, so the
-    // flush is a conservative no-op. For leaf PTE entries, this ensures
-    // stale mappings are evicted.
-    asm!("invlpg [{}]", in(reg) vaddr_for_flush, options(nostack, preserves_flags));
+    if channel == PteChannel::KernelDm {
+        // Flush any stale TLB entry for this virtual address. For intermediate
+        // table entries (PML4/PDPT/PD), no leaf TLB entry exists yet, so the
+        // flush is a conservative no-op. For leaf PTE entries, this ensures
+        // stale mappings are evicted.
+        asm!("invlpg [{}]", in(reg) vaddr_for_flush, options(nostack, preserves_flags));
+    }
+    // VmDm: see doc comment — invlpg at CPL3 faults, and the only writes
+    // this channel legally performs (not-present → present) need no flush.
 }}
 
 /// Read the current page-table root physical address (CR3, address bits
@@ -687,19 +706,187 @@ impl Paging for X86_64Paging {
         }
     }
 
+    /// Split the huge leaf covering `vaddr` into 4 KiB leaves (see
+    /// `Paging::split_huge` contract). Both the 1 GiB (PDPT PS) and the
+    /// 2 MiB (PD PS) shapes are handled; translations inside the split
+    /// range are preserved bit-for-bit (frame bits + leaf flags, PS
+    /// included, so `pte_to_flags` still reports HUGE_PAGE-equivalent
+    /// geometry for sibling pages). Intermediate table entries carry
+    /// PRESENT|WRITABLE|USER copied from the parent leaf — USER must
+    /// propagate at every level (see `walk_alloc` note on #PF(err=5)).
+    ///
+    /// Pages are NOT assumed zero-initialized: all 512 new entries are
+    /// written explicitly, so a reused frame cannot leak stale
+    /// translations. After any split, CR3 is reloaded for a full TLB
+    /// flush — boot-context single-CPU (mirrors `flush_tlb`), and it
+    /// covers speculative huge-leaf entries for addresses other than
+    /// `vaddr`. Subsequent `unmap` of the evicted page flushes precisely.
+    fn split_huge(&mut self, vaddr: VirBytes) -> Result<bool, PageTableError> {
+        let ch = self.channel;
+        let table_flags_mask =
+            (X64PteFlags::PRESENT | X64PteFlags::WRITABLE | X64PteFlags::USER).bits();
+        let mut split = false;
+
+        let i4 = pml4_index(vaddr.0);
+        // SAFETY: channel's Direct Map active (walk_read precondition);
+        // the PML4 slot address is within the root page.
+        let pml4e = unsafe { read_pte_dm(self.root_paddr + (i4 as u64) * 8, ch) };
+        if pml4e & X64PteFlags::PRESENT.bits() == 0 {
+            return Ok(false);
+        }
+        let pdpt_pa = pml4e & ADDR_MASK;
+
+        let i3 = pdpt_index(vaddr.0);
+        // SAFETY: see above; PDPT slot address is within the PDPT page.
+        let mut e3 = unsafe { read_pte_dm(pdpt_pa + (i3 as u64) * 8, ch) };
+        if e3 & X64PteFlags::PRESENT.bits() != 0 && e3 & X64PteFlags::PS.bits() != 0 {
+            // 1 GiB leaf → build a PD of 2 MiB leaves, then descend.
+            let leaf_pa = e3 & ADDR_MASK;
+            let leaf_bits = e3 & !ADDR_MASK;
+            let (pd_phys, _v) = crate::pt_alloc::alloc_pt_page()?;
+            for i in 0..512usize {
+                // SAFETY: `pd_phys` is a fresh page-table frame reachable
+                // through the active Direct Map channel; entry is aligned.
+                unsafe {
+                    write_pte_dm(
+                        pd_phys.0 + (i as u64) * 8,
+                        (leaf_pa + (i as u64) << PD_SHIFT) | leaf_bits,
+                        0,
+                        ch,
+                    )
+                };
+            }
+            let table_bits = pd_phys.0 | (e3 & table_flags_mask);
+            // SAFETY: PDPT slot address is within the live PDPT page.
+            unsafe { write_pte_dm(pdpt_pa + (i3 as u64) * 8, table_bits, vaddr.0, ch) };
+            split = true;
+            e3 = table_bits;
+        }
+        if e3 & X64PteFlags::PRESENT.bits() == 0 {
+            return Ok(split);
+        }
+        let pd_pa = e3 & ADDR_MASK;
+
+        let i2 = pd_index(vaddr.0);
+        // SAFETY: see above; PD slot address is within the live PD page
+        // (either the pre-existing one or the PD just installed above).
+        let e2 = unsafe { read_pte_dm(pd_pa + (i2 as u64) * 8, ch) };
+        if e2 & X64PteFlags::PRESENT.bits() != 0 && e2 & X64PteFlags::PS.bits() != 0 {
+            // 2 MiB leaf → build a PT of 4 KiB leaves. PS is cleared in
+            // the children: at PT level bit 7 is reserved (the 1 GiB
+            // pass above keeps it — there the children ARE 2 MiB leaves).
+            let leaf_pa = e2 & ADDR_MASK;
+            let leaf_bits = e2 & !ADDR_MASK & !X64PteFlags::PS.bits();
+            let (pt_phys, _v) = crate::pt_alloc::alloc_pt_page()?;
+            for i in 0..512usize {
+                // SAFETY: `pt_phys` is a fresh page-table frame reachable
+                // through the active Direct Map channel; entry is aligned.
+                unsafe {
+                    write_pte_dm(
+                        pt_phys.0 + (i as u64) * 8,
+                        (leaf_pa + (i as u64) << 12) | leaf_bits,
+                        0,
+                        ch,
+                    )
+                };
+            }
+            // SAFETY: PD slot address is within the live PD page.
+            unsafe {
+                write_pte_dm(
+                    pd_pa + (i2 as u64) * 8,
+                    pt_phys.0 | (e2 & table_flags_mask),
+                    vaddr.0,
+                    ch,
+                )
+            };
+            split = true;
+        }
+
+        if split {
+            // SAFETY: CPL0, boot context; CR3 reload with the same root
+            // flushes all non-global TLB entries (same effect as
+            // `flush_tlb`). Intel syntax (asm!'s default): with
+            // `att_syntax` the bare `cr3` token is not a register name
+            // and assembles to an external symbol reference instead.
+            unsafe {
+                asm!("mov cr3, {}", in(reg) self.root_paddr, options(nostack));
+            }
+        }
+        Ok(split)
+    }
+
+    /// OR the USER bit into PML4E / PDPTE / PDE on the path to `vaddr`
+    /// (see `Paging::grant_user_walk` contract). Absent intermediate →
+    /// `NotMapped` (the follow-up `map` creates it with USER already,
+    /// via `walk_alloc`). Huge leaf met mid-walk → `NotSupported`: the
+    /// caller must `split_huge` first; OR-ing USER into a huge leaf
+    /// would grant CPL3 access to the WHOLE 2 MiB / 1 GiB range.
+    fn grant_user_walk(&mut self, vaddr: VirBytes) -> Result<(), PageTableError> {
+        let ch = self.channel;
+        let present = X64PteFlags::PRESENT.bits();
+        let user = X64PteFlags::USER.bits();
+        let ps = X64PteFlags::PS.bits();
+
+        let i4 = pml4_index(vaddr.0);
+        let slot4 = self.root_paddr + (i4 as u64) * 8;
+        // SAFETY: channel's Direct Map active (walk_read precondition);
+        // slot addresses are within live table pages at each level.
+        let e4 = unsafe { read_pte_dm(slot4, ch) };
+        if e4 & present == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if e4 & user == 0 {
+            unsafe { write_pte_dm(slot4, e4 | user, vaddr.0, ch) };
+        }
+
+        let i3 = pdpt_index(vaddr.0);
+        let slot3 = (e4 & ADDR_MASK) + (i3 as u64) * 8;
+        let e3 = unsafe { read_pte_dm(slot3, ch) };
+        if e3 & present == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if e3 & ps != 0 {
+            return Err(PageTableError::NotSupported);
+        }
+        if e3 & user == 0 {
+            unsafe { write_pte_dm(slot3, e3 | user, vaddr.0, ch) };
+        }
+
+        let i2 = pd_index(vaddr.0);
+        let slot2 = (e3 & ADDR_MASK) + (i2 as u64) * 8;
+        let e2 = unsafe { read_pte_dm(slot2, ch) };
+        if e2 & present == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if e2 & ps != 0 {
+            return Err(PageTableError::NotSupported);
+        }
+        if e2 & user == 0 {
+            unsafe { write_pte_dm(slot2, e2 | user, vaddr.0, ch) };
+        }
+        Ok(())
+    }
+
     fn root_paddr(&self) -> PhysBytes {
         PhysBytes(self.root_paddr)
     }
 
     unsafe fn switch(&self) {
+        // Intel syntax (asm!'s default): with `options(att_syntax)` the bare
+        // `cr3` token is NOT a register name — it assembles to a memory
+        // reference of an external symbol `cr3` and fails the link the moment
+        // this method becomes live (fix20 forensics 2026-09-21: the shim
+        // image build broke here once `split_huge`'s CR3 reload started
+        // keeping these symbols reachable). Same rationale as split_huge.
         unsafe {
-            asm!("mov cr3, {}", in(reg) self.root_paddr, options(att_syntax));
+            asm!("mov cr3, {}", in(reg) self.root_paddr, options(nostack));
         }
     }
 
     unsafe fn flush_tlb(&self) {
+        // SAFETY/-syntax: see `switch` — Intel syntax, no `att_syntax`.
         unsafe {
-            asm!("mov cr3, {}", in(reg) self.root_paddr, options(att_syntax));
+            asm!("mov cr3, {}", in(reg) self.root_paddr, options(nostack));
         }
     }
 
@@ -1300,5 +1487,54 @@ mod tests {
         for d in [0x6000u64, 0x8000, 0xA000] {
             assert!(!freed.contains(&d), "data page {d:#x} must survive");
         }
+    }
+
+    /// fix14 regression: a `VmDm` handle's `map()` must reach the leaf
+    /// PTE write without executing `invlpg` — VM exercises this channel
+    /// at CPL3 where the flush is a privileged instruction (#GP(0)
+    /// serial forensics 2026-09-21, rip = leaf write + 4 inside `map`).
+    /// On the host the same instruction SIGSEGVs the test process, so
+    /// this test passing end-to-end IS the no-flush proof.
+    ///
+    /// Intermediate levels are hand-built (same reason E4 hand-builds:
+    /// `pt_alloc::register` is one-shot across the test binary), so the
+    /// production code under test is exactly the leaf write + flush
+    /// point from the fix14 crash.
+    #[test]
+    fn test_vmdm_channel_map_writes_pte_without_invlpg() {
+        // Fresh leaked pool: zeroed root + hand-built intermediates.
+        let pool: &'static mut [u8; E4_POOL_BYTES] =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new([0u8; E4_POOL_BYTES]));
+        let base = pool.as_mut_ptr() as u64;
+        crate::arch::direct_map::set_mock_vm_base(base);
+
+        // vaddr 0x200_000: PML4[0] → PDPT(0x1000)[0] → PD(0x2000)[1] →
+        // PT(0x3000)[0] → leaf slot left NOT present for map() to fill.
+        let mid = X64PteFlags::PRESENT | X64PteFlags::WRITABLE | X64PteFlags::USER;
+        let link = |table_off: u64, idx: usize, child_off: u64| {
+            unsafe {
+                core::ptr::write_volatile(
+                    (base + table_off + (idx as u64) * 8) as *mut u64,
+                    child_off | mid.bits(),
+                )
+            }
+        };
+        link(0, 0, 0x1000);
+        link(0x1000, 0, 0x2000);
+        link(0x2000, 1, 0x3000);
+
+        let mut pt = X86_64Paging {
+            root_paddr: 0,
+            channel: PteChannel::VmDm,
+        };
+        let vaddr = minix_types::VirBytes(0x200_000);
+        let paddr = minix_types::PhysBytes(0xE000);
+        pt.map(vaddr, paddr, PageFlags::read_write())
+            .expect("VmDm map() must succeed on the host (no privileged flush)");
+        assert_eq!(
+            pt.query(vaddr).map(|(p, _)| p),
+            Some(paddr),
+            "leaf written via VmDm channel must be queryable"
+        );
     }
 }

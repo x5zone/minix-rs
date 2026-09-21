@@ -237,8 +237,21 @@ impl VmServer {
         params.validate();
 
         let phys_alloc = Self::create_default_allocator(params.total_pages, params.free_regions);
-        let mut page_alloc = VmPageAllocator::new(phys_alloc);
-        crate::global::register_page_alloc(&mut page_alloc);
+        let page_alloc = VmPageAllocator::new(phys_alloc);
+        // fix21 (P0-code-bug): the global registration used to happen HERE,
+        // against the local `page_alloc` — which is then MOVED into
+        // `VmContext` and out through the return value, leaving
+        // PAGE_ALLOC_PTR dangling into this dead stack frame. Everything
+        // reaching `page_alloc_mut()` afterwards (the `vm_pt_alloc` hook,
+        // `refill_arena`, `alloc_oversize`) read a stale corpse: the first
+        // boot procs "worked" off leftover bits (double-allocating pages
+        // the post-relocate allocator still counted free), and `rs` died
+        // with `AllocationFailed free=0 … self_pages=0` once the frame was
+        // recycled (forensics 2026-09-21, serial_fix21.log). The
+        // registration now targets the FINAL address, at the top of
+        // `init()`, where `self` is the caller's stable local
+        // (`main.rs:57`) and never moves again. Heap requests in the
+        // construction window ride the early pool (global.rs EARLY_POOL).
 
         // Register the page-table-page allocator before any `Paging::new()` /
         // `map()` call. C: `pt_ptalloc` draws page-table pages from
@@ -319,7 +332,25 @@ impl VmServer {
 
         let adjusted_base = meta_phys_base + meta_pages * CLICK_SIZE;
         let adjusted_size = meta_region.size.saturating_sub(meta_pages * CLICK_SIZE);
-        let adjusted_regions = [BootMemRegion { base: adjusted_base, size: adjusted_size }];
+        // The metadata donor is carved IN PLACE; every other survivor region
+        // must reach the allocator too (C: `mem_init` seeds the hole list from
+        // ALL chunks, alloc.c:306-331). Passing only the donor — what this
+        // line used to do — left the PMM with the donor's remainder only
+        // (~133 pages on first light, so the `PageFrames` oversize grow hit
+        // PhysicalAllocFailed; fix19 forensics 2026-09-21, the vm_handoff
+        // serial landmark showing `free n=10` vs a 24-page pool).
+        let mut adjusted_regions =
+            alloc::vec::Vec::with_capacity(free_regions.len());
+        for r in free_regions {
+            if r.base == meta_region.base && r.size == meta_region.size {
+                adjusted_regions.push(BootMemRegion {
+                    base: adjusted_base,
+                    size: adjusted_size,
+                });
+            } else {
+                adjusted_regions.push(*r);
+            }
+        }
 
         PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
     }
@@ -452,6 +483,17 @@ impl VmServer {
     }
 
     pub fn init(&mut self) {
+        // fix21: register the global PMM pointer against the FINAL address
+        // of the allocator. `self` here is `main.rs:57`'s `let mut server`
+        // local — it never moves again after this point, so PAGE_ALLOC_PTR
+        // (read by the `vm_pt_alloc` hook, `refill_arena`, `alloc_oversize`)
+        // stays valid for the server's whole lifetime. Registering earlier
+        // (in `new_inner`, against a pre-move local) dangled the pointer
+        // into a dead stack frame — see the fix21 comment there.
+        // `relocate()` below replaces the allocator's `phys_alloc` field
+        // IN PLACE, so this registration survives it.
+        crate::global::register_page_alloc(&mut self.ctx.page_alloc);
+
         // C: init_vm() — main.c:428-584. Step order mirrors C exactly:
         //
         //   main.c:442      sys_getkinfo; main.c:451-452 asserts → BootParams::validate() (new_with_boot_params)
@@ -469,25 +511,26 @@ impl VmServer {
         // Relocation requires real page tables (vm_self_mappages); skipped in tests.
         #[cfg(not(test))]
         self.relocate();
+        // NK4-A fix22 路标（bootmark，task1-close 裁决去留）
+        crate::bootmark::mark("nk4a: relocate ok");
 
         // Phase 1: Memory detection — initialize global state with total page count.
         self.init_global_state();
 
         // Phase 2a: init_proc(VM_PROC_NR) — main.c:474.
         self.init_vm_slot();
+        crate::bootmark::mark("nk4a: vm slot ok");
 
         // Phase 2b: mem_add_total_pages() call points — main.c:485-495.
         self.account_boot_memory();
 
-        // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc
-        // landed in V11/T14; the initial stack frame ABI waits on edge
-        // E-BOOTFRAME).
-        self.init_boot_procs();
-
-        // Phase 2d: VM instance mark — main.c:577-579.
-        self.mark_vm_instance();
-
-        // Phase 3: PageFrames after total_pages is known.
+        // PageFrames after total_pages is known, BEFORE the boot-proc loop:
+        // C orders `mem_init()` (main.c:471 — the all-physical bookkeeping
+        // this mirrors) ahead of the `exec_bootproc` pass (main.c:498-520),
+        // and exec_bootproc consumes page_frames for segment pages. The
+        // former placement after init_boot_procs() was an unreachable-order
+        // latent bug the fix16 forensics exposed ("page_frames not
+        // initialized" panic from exec_bootproc, 2026-09-21).
         let total_phys = PhysBytes(self.ctx.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
         self.ctx.page_frames = Some(PageFrames::new(total_phys));
 
@@ -497,6 +540,14 @@ impl VmServer {
         if let Some(frames) = self.ctx.page_frames.as_mut() {
             crate::global::register_reclaim(&mut self.ctx.page_cache, frames);
         }
+
+        // Phase 2c: boot process slots — main.c:497-520 (exec_bootproc
+        // landed in V11/T14; the initial stack frame ABI waits on edge
+        // E-BOOTFRAME).
+        self.init_boot_procs();
+
+        // Phase 2d: VM instance mark — main.c:577-579.
+        self.mark_vm_instance();
 
         // C: __minix_init() (main.c:480) — SEF startup makes the IPC
         // channel ready before the main loop. V10-P0-2: without this, a
@@ -541,8 +592,8 @@ impl VmServer {
                 0x100_0000,            // kernel_text_pbase (16 MiB, mock)
                 8,                     // kernel_text_pages (mock)
                 8,                     // kernel_data_pages (mock)
-                0xFFFF_8000_0000_0000, // dm_vbase (KERNEL_DIRECT_MAP_BASE)
-                4,                     // dm_pages (sentinel only)
+                0xFFFF_8000_0000_0000, // dm_vbase (legacy sentinel — host-test shape only; a real handoff is v5 and carries the arch's true KERNEL_DIRECT_MAP_BASE, fix26)
+                4,                     // dm_pages (legacy sentinel — see fix26)
             )
         });
         // SAFETY: Called before any `init_page_table()` call (process table
@@ -594,6 +645,10 @@ impl VmServer {
             #[cfg(not(test))]
             self.exec_bootproc(ip)
                 .unwrap_or_else(|e| panic!("exec_bootproc: {} failed: {e}", ip.name()));
+            // NK4-A fix22 路标：boot proc 出生逐个过点（task1-close 裁决去留）
+            crate::bootmark::mark(
+                alloc::format!("nk4a: exec {} ok", ip.name()).as_str(),
+            );
 
             // C: main.c:513-516 — the boot blob is consumed; free it back
             // to the allocator (page-aligned, length rounded up).
@@ -680,6 +735,28 @@ impl VmServer {
         let mut proc = table
             .get_active(slot)
             .ok_or("boot proc slot not active")?;
+
+        // C: pt_bind(&vmp->vm_pt, vmp) — main.c:355, whose substance is
+        // `sys_vmctl_set_addrspace(endpoint, pt_dir_phys, pdes)`
+        // (pagetable.c:1421). The kernel stores the root and clears
+        // RTS_VMINHIBIT (C setcr3, arch_do_vmctl.c:19-33) — this is the
+        // ONLY boot-path VMINHIBIT clear leg (the kernel sets
+        // VMINHIBIT|BOOTINHIBIT on every non-VM boot proc,
+        // kernel/src/lib.rs:1666); without it the exec'd processes stay
+        // parked even after BOOTINHIBIT lifts (NK4-A fix25 forensics).
+        // `pdes` (the kernel-visible PDE alias) has no meaning under the
+        // Direct Map — 0 travels as `virt_root = None` (documented
+        // deviation, exit.rs:242-247).
+        let ptroot_phys =
+            <crate::pagetable::PageTable as crate::pagetable::Paging>::root_paddr(
+                proc.page_table_mut(),
+            )
+            .0;
+        self.ctx
+            .gateway
+            .borrow_mut()
+            .sys_vmctl_set_addrspace(ip.endpoint, ptroot_phys, 0)
+            .map_err(|_| "VMCTL_SETADDRSPACE failed")?;
 
         for seg in segments.iter() {
             let seg_len = seg.memsz;
@@ -880,10 +957,50 @@ impl VmServer {
         // C: sys_exec(endpoint, vsp, progname, pc, ps_str) — main.c:409-411.
         // `name` stays 0 (kernel-side name semantics are a separate edge);
         // stack/ps_str are now the real ABI values.
+        // fix20 probe: name the rejecting errno in the message (kernel
+        // answers negative errno; EINVAL = dead endpoint, EFAULT = the
+        // name-copy arm — C do_exec.c:37-40 treats that one as NON-fatal
+        // "<unset>", so an EFAULT here pinpoints the deviation).
         let mut gateway = self.ctx.gateway.borrow_mut();
         gateway
             .sys_exec(endpoint, entry, vsp, 0, filled.ps_str)
-            .map_err(|_| "sys_exec rejected by kernel")?;
+            .map_err(|e| match e {
+                crate::kernel_gateway::GatewayError::Kernel(c)
+                    if c == -minix_types::EINVAL =>
+                {
+                    "sys_exec rejected by kernel: EINVAL"
+                }
+                crate::kernel_gateway::GatewayError::Kernel(c)
+                    if c == -minix_types::EFAULT =>
+                {
+                    "sys_exec rejected by kernel: EFAULT"
+                }
+                crate::kernel_gateway::GatewayError::Kernel(c)
+                    if c == -minix_types::ECALLDENIED =>
+                {
+                    "sys_exec rejected by kernel: ECALLDENIED"
+                }
+                crate::kernel_gateway::GatewayError::Kernel(c)
+                    if c == -minix_types::EBADREQUEST =>
+                {
+                    "sys_exec rejected by kernel: EBADREQUEST"
+                }
+                crate::kernel_gateway::GatewayError::Kernel(c)
+                    if c == -minix_types::EIO =>
+                {
+                    "sys_exec rejected by kernel: EIO(stub)"
+                }
+                _ => "sys_exec rejected by kernel",
+            })?;
+        // C: main.c:414-416 — "make it runnable": the boot process was
+        // forked with VMINHIBIT|BOOTINHIBIT (kernel/src/lib.rs:1666) and
+        // stays parked after exec unless VM clears the inhibit. Without
+        // this leg every `exec X ok` booted a permanently stopped
+        // process (NK4-A fix23b forensics 2026-09-21: 11 boot procs
+        // exec'd, none ever reached `_start`).
+        gateway
+            .sys_vmctl_boot_inhibit_clear(endpoint)
+            .map_err(|_| "VMCTL_BOOTINHIBIT_CLEAR failed")?;
         Ok(())
     }
 
@@ -902,8 +1019,22 @@ impl VmServer {
         // (main.c:468) its empty region map — exec_bootproc's segment and
         // stack inserts depend on both. Rust: explicit init on the handle
         // (SimPaging stands in for the arch table in test builds).
-        proc.init_page_table()
-            .expect("init_proc: boot page table init failed");
+        // fix21 取证路标（NK4-A 真机挂点定位，task1-close 裁决去留）：
+        // panic 消息带上进程名与 PMM 实态（free 页数/最大连续段/VM 自持
+        // 页数），把"AllocationFailed 到底是真空闲还是状态被踩"一次问清。
+        proc.init_page_table().unwrap_or_else(|e| {
+            let alloc = crate::global::page_alloc_mut();
+            let stats = alloc.phys_alloc().memstats();
+            panic!(
+                "init_proc: {} pt failed {:?} free={} largest={} nodes={} self_pages={}",
+                ip.name(),
+                e,
+                stats.free_pages,
+                stats.largest_free,
+                stats.free_nodes,
+                alloc.self_page_count(),
+            );
+        });
         proc.init_regions();
         proc.set_boot(ip);
     }
@@ -3359,6 +3490,12 @@ mod tests {
                 fn sys_vmctl_clear_pagefault(&mut self, _: Endpoint)
                     -> Result<(), crate::kernel_gateway::GatewayError>
                 { Ok(()) }
+                fn sys_vmctl_boot_inhibit_clear(&mut self, _: Endpoint)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Ok(()) }
+                fn sys_vmctl_set_addrspace(&mut self, _: Endpoint, _: u64, _: u64)
+                    -> Result<(), crate::kernel_gateway::GatewayError>
+                { Ok(()) }
                 fn diag_write(&mut self, _text: &str)
                     -> Result<(), crate::kernel_gateway::GatewayError>
                 { Ok(()) }
@@ -3704,6 +3841,16 @@ mod tests {
             -> Result<(), crate::kernel_gateway::GatewayError>
         {
             self.0.borrow_mut().sys_vmctl_clear_pagefault(endpoint)
+        }
+        fn sys_vmctl_boot_inhibit_clear(&mut self, endpoint: Endpoint)
+            -> Result<(), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_vmctl_boot_inhibit_clear(endpoint)
+        }
+        fn sys_vmctl_set_addrspace(&mut self, endpoint: Endpoint, ptroot_phys: u64, ptroot_virt: u64)
+            -> Result<(), crate::kernel_gateway::GatewayError>
+        {
+            self.0.borrow_mut().sys_vmctl_set_addrspace(endpoint, ptroot_phys, ptroot_virt)
         }
         fn diag_write(&mut self, text: &str) -> Result<(), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().diag_write(text)

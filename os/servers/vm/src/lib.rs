@@ -94,6 +94,9 @@ pub(crate) mod rs;
 pub(crate) mod query;
 pub(crate) mod sanity;
 
+/// NK4-A 临时启动路标（fix22 二分取证，task1-close 裁决去留）。
+pub mod bootmark;
+
 pub use vm_server::VmServer;
 
 pub use phys_mem::BootMemRegion;

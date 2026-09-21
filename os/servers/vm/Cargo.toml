@@ -56,3 +56,7 @@ minix-rt = { workspace = true, features = ["std"] }
 
 [target.'cfg(target_os = "none")'.dependencies]
 minix-rt = { workspace = true, features = ["panic-handler"] }
+# NK4-A fix20 定案（stub -EIO 根因）、fix22 收口：真 trap 腿现在由
+# minix-sys 的 build.rs 按 target 自动开启（`cfg(kernel_trap)` =
+# freestanding ∨ real-trap feature），包级显式声明不再需要——曾经的
+# `features = ["real-trap"]` 行正是"每包自选"反模式的第一处补丁。

@@ -275,13 +275,52 @@ mod tests {
 
     #[test]
     fn test_bump_oversize_returns_null() {
-        // size > ARENA_BYTES must fail fast without touching PAGE_ALLOC_PTR
-        // or growing the HeapArena (2026-08-15 guard).
+        // size > ARENA_BYTES with no registered page allocator has no
+        // supplier (the early pool hands out arena-sized chunks only), so
+        // `alloc_oversize` must fail explicitly with null — never touch
+        // the HeapArena (fix18 semantics; the pre-fix18 guard returned
+        // null unconditionally, which killed `PageFrames` at boot).
+        unregister_page_alloc();
         let (allocator, _) = bump_allocator_with_fake_arena(0);
         unsafe {
             let p = allocator.alloc(Layout::from_size_align(VmAllocator::ARENA_BYTES + 1, 1).unwrap());
             assert!(p.is_null());
         }
+    }
+
+    #[test]
+    fn test_bump_oversize_grows_heap_arena() {
+        // fix18: an oversize request with a registered page allocator
+        // takes the dedicated HeapArena grow arm instead of failing —
+        // the null this used to return made `PageFrames` (933888 bytes,
+        // fix17 forensics 2026-09-21) a boot-killing handle_alloc_error.
+        crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
+        crate::pagetable::vm_self_map::init_vm_self_pt(minix_types::PhysBytes(0x900_000));
+        // 933888 B ≈ 228 pages plus block rounding — the fake bitmap
+        // must supply the whole run.
+        unregister_page_alloc();
+        let mut page_alloc = make_page_alloc(256);
+        register_page_alloc(&mut page_alloc);
+
+        let allocator = VmAllocator {
+            arena_base: AssumeSyncCell::new(core::ptr::null_mut()),
+            cursor: AssumeSyncCell::new(0),
+            free_head: AssumeSyncCell::new(core::ptr::null_mut()),
+        };
+        unsafe {
+            let layout = Layout::from_size_align(933888, 8).unwrap();
+            let p = allocator.alloc(layout);
+            assert!(!p.is_null(), "registered oversize must grow HeapArena");
+            assert_eq!(p as usize % CLICK_SIZE, 0, "grow hands out page-aligned VA");
+            assert!(
+                p as u64 >= crate::direct_map::VM_HEAP_BASE
+                    && (p as u64) + layout.size() as u64 <= crate::direct_map::VM_HEAP_LIMIT,
+                "oversize run must sit inside the heap arena window"
+            );
+        }
+
+        unregister_page_alloc();
+        crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
     }
 
     #[test]
@@ -320,6 +359,36 @@ mod tests {
 
         unregister_page_alloc();
         crate::pagetable::vm_self_map::reset_vm_self_pt_for_test();
+    }
+
+    /// NK4-A first-light regression: before `register_page_alloc()` the
+    /// allocator must still serve requests — `read_boot_params` and the
+    /// `VmServer` constructor allocate in that window (2888 bytes was the
+    /// first real request, panicking at `refill_arena`'s old null-PMM
+    /// arm). The early pool covers it; the host-test enable flag keeps
+    /// the shared statics deliberate.
+    #[test]
+    fn test_bump_refill_early_pool_before_registration() {
+        unregister_page_alloc();
+        set_early_pool_enabled(true);
+
+        let allocator = VmAllocator {
+            arena_base: AssumeSyncCell::new(core::ptr::null_mut()),
+            cursor: AssumeSyncCell::new(0),
+            free_head: AssumeSyncCell::new(core::ptr::null_mut()),
+        };
+        unsafe {
+            // The exact observed boot-request size (fix13 forensics).
+            let layout = Layout::from_size_align(2888, 8).unwrap();
+            let p = allocator.alloc(layout);
+            assert!(!p.is_null(), "pre-registration alloc must use the early pool");
+            // The arena really is writable image memory.
+            core::ptr::write_bytes(p, 0x5A, 2888);
+            assert_eq!(core::ptr::read(p), 0x5A);
+            allocator.dealloc(p, layout);
+        }
+
+        set_early_pool_enabled(false);
     }
 
     #[test]
@@ -445,8 +514,11 @@ mod tests {
 ///
 /// The `VmPageAllocator` pointed to by this static **must outlive** the
 /// `VmAllocator` (the `GLOBAL` static below). This is guaranteed by the
-/// VM lifecycle: `register_page_alloc()` is called in `VmServer::new()`
-/// and `unregister_page_alloc()` in `VmServer::drop()`. Since VmServer
+/// VM lifecycle: `register_page_alloc()` is called at the top of
+/// `VmServer::init()` (against the final, no-longer-moving address —
+/// fix21: registering in `new()` dangled the pointer into the
+/// constructor's dead stack frame) and `unregister_page_alloc()` in
+/// `VmServer::drop()`. Since VmServer
 /// owns the VmPageAllocator, the allocator lives as long as VmServer,
 /// and VmServer lives as long as the VM process — which is the entire
 /// lifetime of the `GLOBAL` allocator.
@@ -584,8 +656,9 @@ pub(crate) fn page_alloc_mut() -> &'static mut VmPageAllocator {
     );
     // SAFETY: 1. Single-threaded VM event loop: no concurrent access to
     // PAGE_ALLOC_PTR or the allocator it points to. 2. Outlive constraint:
-    // the pointer is set during VmServer::new() and cleared during
-    // VmServer::drop(); callers never dereference after it is nulled
+    // the pointer is set at the top of VmServer::init() (fix21: registered
+    // against the final address, after all moves are done) and cleared
+    // during VmServer::drop(); callers never dereference after it is nulled
     // (checked above). 3. No aliasing `&mut` exists: callers of this
     // accessor must not simultaneously hold a borrow of the same allocator
     // (e.g. via a `VmServer` field); the allocator hooks use it at points
@@ -864,16 +937,20 @@ impl VmAllocator {
     fn refill_arena(&self) -> bool {
         let alloc_ptr = PAGE_ALLOC_PTR.load(Ordering::SeqCst);
         if alloc_ptr.is_null() {
-            return false;
+            // Boot window: the PMM is not registered yet — carve the arena
+            // from the image-resident early pool (see [`EARLY_POOL`]).
+            return self.refill_arena_early();
         }
         // SAFETY:
         // 1. Single-threaded VM event loop: no concurrent access to PAGE_ALLOC_PTR.
         // 2. Outlive constraint: PAGE_ALLOC_PTR is set by `register_page_alloc()`
-        //    during VmServer::new() and only cleared by `unregister_page_alloc()`
+        //    at the top of `VmServer::init()` (fix21: the final, stable address)
+        //    and only cleared by `unregister_page_alloc()`
         //    during VmServer::drop. Since VmServer owns the VmPageAllocator field,
-        //    the allocator is guaranteed to outlive all arena refills — arena
-        //    refills only happen during GlobalAlloc::alloc calls, which only
-        //    occur while VmServer is alive (the VM event loop drives all allocation).
+        //    the allocator is guaranteed to outlive all arena refills — refills
+        //    that reach this arm happen while VmServer is alive (allocations
+        //    before registration take the early-pool arm above and never
+        //    dereference this pointer).
         // 3. The pointer is never dereferenced after unregister_page_alloc()
         //    sets it to null (checked above).
         let alloc = unsafe { &mut *alloc_ptr };
@@ -898,6 +975,151 @@ impl VmAllocator {
         }
         true
     }
+
+    /// Early-pool arena source (see the [`EARLY_POOL`] docs for why).
+    ///
+    /// Carves one [`Self::ARENA_BYTES`] chunk from the static pool; pool
+    /// exhaustion or the host-test disable flag returns false, so the
+    /// caller fails with a null pointer — the same explicit failure the
+    /// pre-registration path produced before any supplier existed.
+    fn refill_arena_early(&self) -> bool {
+        // SAFETY: single-threaded VM contract (same as every other static
+        // in this module); the pool and its cursor are written only here,
+        // and only while PAGE_ALLOC_PTR is still null or in opted-in
+        // host tests (the statics are shared across test threads, hence
+        // the default-off flag below).
+        unsafe {
+            if !*EARLY_POOL_ENABLED.get() {
+                return false;
+            }
+            let pool = &mut *EARLY_POOL.0.get();
+            let used = *EARLY_POOL_USED.get();
+            let arena = Self::ARENA_BYTES;
+            if used + arena > pool.len() {
+                return false;
+            }
+            *self.arena_base.get() = pool.as_mut_ptr().add(used);
+            *self.cursor.get() = 0;
+            *EARLY_POOL_USED.get() = used + arena;
+            true
+        }
+    }
+
+    /// Dedicated supply path for requests larger than one arena (see the
+    /// oversize guard in `alloc`).
+    ///
+    /// Grows [`HEAP_ARENA`] by exactly the pages the request needs —
+    /// `grow` accepts any page count, only the bump/free-list paths are
+    /// arena-sized. `PageFrames` (the whole-RAM bookkeeping table,
+    /// 933888 bytes on the first-light VM: fix17 forensics 2026-09-21)
+    /// is the first real consumer; before this arm existed the oversize
+    /// guard returned null and the table's allocation killed the boot.
+    ///
+    /// Returning null when no page allocator is registered is deliberate:
+    /// the early pool hands out arena-sized chunks only, so a pre-
+    /// registration oversize request has no supplier and must fail
+    /// loudly, like every other unsatisfiable allocation here.
+    ///
+    /// Leak bound: `dealloc` re-inserts a `round_up(layout.size())` block
+    /// at the payload address, so the alignment pad and the page tail
+    /// (at most `align - 1 + CLICK_SIZE - 1` bytes) never come back —
+    /// they stay attached to the dedicated run. Acceptable because the
+    /// consumers are one-shot long-lived bookkeeping tables; a header
+    /// per oversize block would buy back those bytes at the cost of
+    /// tracking state this allocator deliberately does not carry.
+    ///
+    /// # Safety
+    /// Called from `alloc` under the same single-threaded VM event-loop
+    /// contract as `refill_arena`.
+    unsafe fn alloc_oversize(&self, payload: usize, align: usize) -> *mut u8 {
+        let alloc_ptr = PAGE_ALLOC_PTR.load(Ordering::SeqCst);
+        if alloc_ptr.is_null() {
+            return core::ptr::null_mut();
+        }
+        // SAFETY: same lifetime contract as refill_arena — a non-null
+        // PAGE_ALLOC_PTR means VmServer is alive and owns the allocator.
+        let alloc = unsafe { &mut *alloc_ptr };
+        let pages = (payload + align - 1).div_ceil(CLICK_SIZE);
+        match HEAP_ARENA.grow(pages, alloc) {
+            Ok(va) => unsafe { Self::align_up(va as usize, align) as *mut u8 },
+            Err(_) => core::ptr::null_mut(),
+        }
+    }
+}
+
+// ── Early boot heap pool ─────────────────────────────────────────────
+//
+// C bakes the initial break into the process image: the linker's `_end`
+// symbol is published as the starting heap (`brksize.S`) and `brk`/`sbrk`
+// only reach out to the VM server when growing it (`brk.c`, `sbrk.c`).
+// Before that growth the C heap is image memory — no allocation can
+// require the server that the allocation is meant to create.
+//
+// The Rust VM had no such region: `refill_arena`'s only source is
+// [`HEAP_ARENA`], which needs the registered `VmPageAllocator` — but the
+// registration itself happens inside `VmServer::new_with_boot_params`,
+// and both that constructor and the `read_boot_params` call preceding it
+// allocate. The first VM boot ever reached that window on 2026-09-21
+// (first-light fix13 forensics: `memory allocation of 2888 bytes failed`
+// panic inside `read_boot_params`, exit spin after it). The pool below is
+// the C-shape answer: an image-resident (`.bss`) initial break, drawn
+// from only while the PMM is not yet registered; the same staged
+// evolution minix-rt documents for its own embedded pool
+// (`libs/minix-rt/src/lib.rs` "The C heap starts at the linker-provided
+// `_end` symbol … until that server channel lands"), and the shape
+// NL3① (new_edge2) will replace with a real VM_BRK taskcall.
+//
+// Four arenas (256 KiB) bound the pre-registration phase with headroom:
+// the known consumers are the `free_regions`/`modules` vectors copied off
+// the handoff page, the PMM bitmap (≈16 KiB per 512 MiB of RAM), and the
+// `VmServer`/`VmContext` construction — together under one arena's worth
+// of live data, so four complete arenas absorb fragmentation and the
+// 64 KiB arena granularity without ever handing a request to the failing
+// arm. Exhaustion is not silenced: it returns null, and the allocation
+// fails loudly exactly like an oversize request does.
+
+/// Number of arenas the early pool can hand out before requests fail.
+const EARLY_POOL_ARENAS: usize = 4;
+
+/// The pool bytes themselves (`.bss`). Page-aligned so the arena starts —
+/// multiples of [`VmAllocator::ARENA_BYTES`] — are page-aligned too,
+/// matching the alignment the HEAP_ARENA arms hand out.
+#[repr(align(4096))]
+struct EarlyPool(core::cell::UnsafeCell<[u8; EARLY_POOL_ARENAS * VmAllocator::ARENA_BYTES]>);
+
+// SAFETY: single-threaded VM contract; access goes through
+// `refill_arena_early` only (see its SAFETY comment).
+unsafe impl Sync for EarlyPool {}
+
+static EARLY_POOL: EarlyPool = EarlyPool(core::cell::UnsafeCell::new(
+    [0u8; EARLY_POOL_ARENAS * VmAllocator::ARENA_BYTES],
+));
+
+/// Bytes of [`EARLY_POOL`] already carved into arenas (monotonic bump;
+/// early arenas are never returned — like every other arena, they live
+/// until process exit, matching the V1 note on `VmAllocator`).
+static EARLY_POOL_USED: AssumeSyncCell<usize> = AssumeSyncCell::new(0);
+
+/// Opt-in switch for the early-pool arm.
+///
+/// Production (freestanding) boots with it on — that is the whole point
+/// of the pool. Host unit tests boot with it off because the pool and its
+/// cursor are statics shared by every allocator instance in one test
+/// binary, and the pre-existing refill-failure tests assert the
+/// "no supplier registered" outcome; a test that wants the early arm
+/// flips it explicitly (test binary runs single-threaded,
+/// `.cargo/config.toml` RUST_TEST_THREADS).
+static EARLY_POOL_ENABLED: AssumeSyncCell<bool> =
+    AssumeSyncCell::new(cfg!(not(test)));
+
+/// Host-test seam to enable/disable the early-pool arm (see
+/// [`EARLY_POOL_ENABLED`]).
+#[cfg(test)]
+fn set_early_pool_enabled(on: bool) {
+    // SAFETY: single-threaded test binary (RUST_TEST_THREADS=1).
+    unsafe {
+        *EARLY_POOL_ENABLED.get() = on;
+    }
 }
 
 unsafe impl GlobalAlloc for VmAllocator {
@@ -908,13 +1130,14 @@ unsafe impl GlobalAlloc for VmAllocator {
             let payload = Self::round_up(layout.size()).max(BLOCK_ALIGN);
             let align = layout.align();
 
-            // Oversize guard: a request larger than one arena cannot be served
-            // by any single block. Without this, bump would refill repeatedly
-            // until the whole HeapArena (64MB) is consumed, then return null.
-            // Alignment padding is included so a fresh arena always fits and
-            // the bump retry loop below cannot spin forever.
+            // Oversize requests (larger than one arena) cannot ride the
+            // bump path — they take a dedicated HeapArena run (see
+            // `alloc_oversize`; the plain null this guard used to return
+            // is what made `PageFrames` — a >64 KiB global bookkeeping
+            // table — a boot-killing handle_alloc_error, fix17 forensics
+            // 2026-09-21).
             if payload + align - 1 > Self::ARENA_BYTES {
-                return core::ptr::null_mut();
+                return self.alloc_oversize(payload, align);
             }
 
             if let Some(p) = self.try_alloc_from_free_list(payload, align) {
