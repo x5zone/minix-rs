@@ -1282,7 +1282,24 @@ impl VmServer {
                 &mut |signo| pending_signo = Some(signo),
             );
             match rcv {
-                Ok(r) => r,
+                Ok(r) => {
+                    // C-3 迭代8 取证（task1-close 裁决删除）：receive 返回
+                    // 的 source/type（限 16 次）——定位 VM 的接收自旋回路的
+                    // 内容。
+                    #[cfg(not(feature = "mock"))]
+                    {
+                        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                        static RCV_LOG: AtomicUsize = AtomicUsize::new(0);
+                        let rn = RCV_LOG.fetch_add(1, AtomicOrd::Relaxed);
+                        if rn < 16 {
+                            crate::bootmark::mark(&alloc::format!(
+                                "nk4a: rcv{} src={} type={:#x}\n",
+                                rn, r.source.0, r.message.m_type
+                            ));
+                        }
+                    }
+                    r
+                }
                 // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
                 // user-space server must survive bad IPC — drop + audit.
                 Err(_) => {
