@@ -3421,6 +3421,10 @@ fn finish_and_restore(
 /// production `kmain` tail does (C main.c:73 `bsp_finish_booting`).
 #[allow(dead_code)] // reachable only from the divergent boot path / asm entry
 pub fn switch_to_user() -> ! {
+    // T1 契约标记（test-cmd-smoke.sh stage-3 门）：内核进入调度循环、
+    // 将 CPU 交接给用户态进程排程的落点（C main.c:73 bsp_finish_booting
+    // 尾部进入调度循环）。
+    boot_stage!("entering scheduler\n");
     // C main.c:73 — bsp_finish_booting tails into switch_to_user with the
     // BKL held. S-7: the loop body is the shared `scheduler_loop`; the BSP
     // flavor only names its own CPU (seed + loop are per-CPU now).
