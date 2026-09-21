@@ -1127,7 +1127,9 @@ impl VmServer {
     pub(crate) fn handle_signal(&mut self, signo: i32) {
         // C: "Check for known kernel signals, ignore anything else."
         if signo == Self::SIGKMEM {
+            crate::bootmark::mark("nk4a: do-memory enter\n");
             self.do_memory();
+            crate::bootmark::mark("nk4a: do-memory done\n");
         }
         // V12-P2-4: C's tail here also ran `alloc_cycle()` on a pending
         // `missing_spares` deficit (main.c:118-119) — that chain is deleted
@@ -1166,6 +1168,11 @@ impl VmServer {
             };
 
             let ok = self.handle_kernel_memreq(&req);
+            // C-3 迭代8 取证：memreq 服务结果与目标范围。
+            crate::bootmark::mark(&alloc::format!(
+                "nk4a: memreq target={} start={:#x} len={:#x} ok={}\n",
+                req.target.0, req.start, req.length, ok as u8
+            ));
             if let Err(e) = self.ctx.gateway.borrow_mut().sys_vmctl_memreq_reply(req.target, ok) {
                 let _ = &e; // audit_log! compiles args away without features
                 audit_log!("[VM SIGKMEM] memreq_reply failed: {e:?}");
@@ -1306,7 +1313,21 @@ impl VmServer {
         // async signal, not a request; skipped before endpoint validation
         // (V10-P1-1). PingInvalid (RS notify that failed the ping test)
         // lands here too, matching C's sef.c:208-214 fall-through.
+        // C: if(is_ipc_notify(rcv_sts)) { continue; } (main.c:126-129).
+        // SEF already took the SYSTEM/RS-ping notifies; what reaches here
+        // is a leftover notification from any other source — still an
+        // async signal, not a request; skipped before endpoint validation
+        // (V10-P1-1). PingInvalid (RS notify that failed the ping test)
+        // lands here too, matching C's sef.c:208-214 fall-through.
+        //
+        // NK4-A C-3 迭代8：落入臂排空 memreq——SIGKMEM=71 超出 64 位
+        // SigSet，内核 D-20 唤醒通知的 sigset 为空，sef 提不出 signo 而
+        // 于此落入；D-20 契约（VM 经 MEMREQ_GET 探测而非读信号号）要求
+        // 此处排空，否则 RS 的挂起请求永不被服务（真机：sys-susp 后
+        // VM 静默死等，2026-09-22）。队列为空时 memreq_get 立即返回，
+        // 开销可忽略。
         if rcv_sts.is_notify() {
+            self.do_memory();
             return RunStep::Handled;
         }
 

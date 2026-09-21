@@ -1206,6 +1206,22 @@ impl<'a> IpcEngine<'a> {
             .p_misc_flags
             .is_set(MiscFlagsBits::REPLY_PEND);
 
+        // Phase 0: an already-deposited delivery (C: mini_receive 首检
+        // MF_DELIVERMSG——proc.c:999 之前，notify/send 先于 receive 到达
+        // 时把消息留在 p_delivermsg 并唤醒；重入的 receive 必须先把它
+        // 返回，否则接收者带着已投递消息重新阻塞，死等永不到来的唤醒——
+        // NK4-A C-3 真机：RS memreq 服务后 VM 唤醒却未返回 SIGKMEM
+        // notify，do_memory 永不执行，系统静默，2026-09-22）。
+        if self.procs[caller_idx]
+            .p_misc_flags
+            .is_set(MiscFlagsBits::DELIVERMSG)
+        {
+            self.procs[caller_idx]
+                .p_misc_flags
+                .clear(MiscFlagsBits::DELIVERMSG);
+            return IpcOutcome::Delivered;
+        }
+
         // Phase 1: pending notifications (skipped when MF_REPLY_PEND).
         // C: `has_pending` (NOTIFY) — proc.c:1000-1030.
         if !reply_pend

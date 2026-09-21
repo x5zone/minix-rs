@@ -319,16 +319,31 @@ impl ProcessTable {
             // swallowed this failure, diverging from C; tests exercising
             // this path must arrange the VM slot, exactly as the
             // `notify_scheduler` contract requires for the scheduler slot.
-            match crate::ipc::mini_notify_core(
+            let notify_outcome = crate::ipc::mini_notify_core(
                 self.procs_slice_mut(),
                 priv_table,
                 crate::proc::proc_nr::SYSTEM,
                 vm_ep,
-            ) {
+            );
+            match &notify_outcome {
                 crate::ipc::IpcOutcome::Delivered | crate::ipc::IpcOutcome::Blocked => {}
                 crate::ipc::IpcOutcome::Error(e) => {
                     panic!("vm_enqueue_and_notify_vm: wake-up notify to VM failed: {e:?}");
                 }
+            }
+            // NK4-A C-3 迭代8 取证：通知投递形态（1=Delivered VM 在收，
+            // 2=Blocked VM 忙——两者都靠下面的 enqueue 补队）。
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                let o: u8 = match notify_outcome {
+                    crate::ipc::IpcOutcome::Delivered => 1,
+                    crate::ipc::IpcOutcome::Blocked => 2,
+                    crate::ipc::IpcOutcome::Error(_) => 3,
+                };
+                Console::write_str("nk4a: memreq-notify o=");
+                Console::write_hex(o as u64);
+                Console::write_str("\n");
             }
             // C mini_notify 尾部的入队半：notify 清 RTS_RECEIVING（primitive
             // clear）后必须补 enqueue，否则 VM 可调度却永不在就绪队列——
