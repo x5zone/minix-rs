@@ -481,7 +481,45 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 Console::write_hex(frame.errcode);
                 Console::write_str(" rip ");
                 Console::write_hex(frame.rip);
+                Console::write_str(" rsp ");
+                Console::write_hex(frame.rsp);
+                Console::write_str(" cs ");
+                Console::write_hex(frame.cs);
+                Console::write_str(" rflags ");
+                Console::write_hex(frame.rflags);
                 Console::write_str("\n");
+                // NK4-A C-3 迭代5 取证（task1-close 裁决删除）：#GP 时直读
+                // rip 处 8 字节（走当前 root 的 PTE + DM 窗口）——对照 ELF
+                // 字节判别"特权指令执行态"还是"页内容/视图不一致"。RS 入口
+                // ELF 字节应为 48 83 e4 f0（and rsp,-0x10）。
+                if vector == 13 {
+                    if let Some(root) = crate::current_root_phys() {
+                        match crate::pte_walk::walk_x86_64(
+                            root,
+                            minix_types::VirBytes(frame.rip),
+                        ) {
+                            Some((pa, fl)) => {
+                                Console::write_str("nk4a: gp-byte@0x");
+                                Console::write_hex(pa.0);
+                                Console::write_str(" fl=0x");
+                                Console::write_hex(fl.bits() as u64);
+                                Console::write_str(" bytes=");
+                                use minix_arch::DirectMapArch;
+                                let base = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(pa).0;
+                                for i in 0..8u64 {
+                                    let b = unsafe {
+                                        ((base + i) as *const u8).read_volatile()
+                                    };
+                                    Console::write_hex(b as u64);
+                                }
+                                Console::write_str("\n");
+                            }
+                            None => {
+                                Console::write_str("nk4a: gp rip unmapped\n");
+                            }
+                        }
+                    }
+                }
             }
             // Persist first: the signal manager's later SIGSEND delivery
             // builds the handler trampoline on top of the fault-time

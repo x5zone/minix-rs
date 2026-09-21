@@ -763,8 +763,16 @@ impl VmServer {
             if seg_len == 0 {
                 continue;
             }
-            let pages = (seg_len as usize).div_ceil(PS);
-            let vaddr = minix_types::VirBytes(seg.vaddr);
+            // NK4-A C-3 迭代5（2026-09-22）：段基页对齐向下取整。RS 的入口
+            // 段 vaddr=0x2246c0 非页对齐——旧实现以未对齐段基为 region 零点
+            // 铺页，硬件 PTE 却按 4KiB 页界安装，页内内容整体错位
+            // (seg.vaddr & 0xfff)——RS 首指令在错位字节上 #GP(0)。
+            // C libexec 对位：p_offset ≡ p_vaddr (mod page) 的 ELF 约定下，
+            // 对齐页的文件源 = seg.offset - (seg.vaddr & 0xfff)。
+            let va_base = seg.vaddr & !(PS as u64 - 1);
+            let va_end = seg.vaddr + seg_len;
+            let pages = (va_end - va_base).div_ceil(PS as u64) as usize;
+            let vaddr = minix_types::VirBytes(va_base);
 
             // Region per segment (C: libexec_alloc_vm_prealloc → map_page_region).
             let region = crate::region::VirRegion::with_memtype(
@@ -793,40 +801,30 @@ impl VmServer {
                     &crate::memtype::MEM_TYPE_ANON,
                 );
 
-                // Copy file bytes into the fresh physical page.
+                // Copy file bytes into the fresh physical page. Page i 覆盖
+                // [va_base+i*PS, +PS)，与 [seg.vaddr, seg.vaddr+filesz) 的
+                // 交集才有效：ELF 对齐约定下文件源 = seg.offset +
+                // (页内起点 - seg.vaddr)，未对齐首部的尾部零填。
                 let dst_phys = pfn as u64 * PS as u64;
                 let dst_va = crate::direct_map::vm_phys_to_virt(
                     crate::phys_mem::AlignedPhysBytes::new(dst_phys),
                 );
-                let file_off = i as u64 * PS as u64;
-                let copy_len = core::cmp::min(
-                    PS as u64,
-                    seg.filesz.saturating_sub(file_off),
-                ) as usize;
-                if copy_len > 0 {
-                    let src_off = (seg.offset + file_off) as usize;
+                let page_va = va_base + i as u64 * PS as u64;
+                let lo = page_va.max(seg.vaddr);
+                let hi = (page_va + PS as u64).min(seg.vaddr + seg.filesz);
+                if hi > lo {
+                    let src_off = (seg.offset + (lo - seg.vaddr)) as usize;
+                    let dst_off = (lo - page_va) as usize;
+                    let copy_len = (hi - lo) as usize;
                     // SAFETY: destination is the freshly allocated page
                     // through the Direct Map; source is the boot image
                     // slice; both bounds-checked above.
                     unsafe {
                         core::ptr::copy_nonoverlapping(
                             image.as_ptr().add(src_off),
-                            dst_va.0 as *mut u8,
+                            (dst_va.0 as *mut u8).add(dst_off),
                             copy_len,
                         );
-                    }
-                    // BSS remainder (memsz > filesz): zero-fill (allocator
-                    // zero-fills new pages in this codebase, but be explicit
-                    // for partial pages whose file part ends mid-page).
-                    let tail = PS - copy_len;
-                    if tail > 0 {
-                        unsafe {
-                            core::ptr::write_bytes(
-                                (dst_va.0 as *mut u8).add(copy_len),
-                                0,
-                                tail,
-                            );
-                        }
                     }
                 }
             }
