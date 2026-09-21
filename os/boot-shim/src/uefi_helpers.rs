@@ -227,6 +227,7 @@ impl BootShim for UefiBootShim {
 
         uefi::println!("boot-shim: exiting boot services…");
         exit_boot_services();
+        uefi::println!("boot-shim: boot services exited");
 
         BootPrepareResult {
             kernel_info,

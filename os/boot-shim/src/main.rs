@@ -53,6 +53,11 @@ fn main() -> Status {
     // 3. Hand control to the kernel's arch-specific boot.
     //    Establishes page tables, enables paging, enters kmain.
     //    NEVER RETURNS.
+    //
+    //    NK4-A 首亮诊断：EBS 后、arch_boot 前的最后一块 shim 侧路标。
+    //    arch_boot 若先于内核第一条串口输出就卡死，本行是最后一根
+    //    可见路标（ConOut 已实证落在 QEMU 串口）。
+    uefi::println!("boot-shim: handing control to kernel arch_boot");
     minix_kernel::arch_boot(&result.kernel_info, result.root_page);
 
     // This line should never be reached.
