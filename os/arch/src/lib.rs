@@ -223,6 +223,38 @@ pub const fn boot_dm_admissible_end() -> u64 {
     }
 }
 
+/// MMIO pages the kernel keeps touching through LOW virtual addresses
+/// (VA = PA) while running on a VM-built process page table (NK4-A
+/// fix27, complements `KernelInfo::reserved_regions`).
+///
+/// These are NOT in the UEFI memory map's RAM descriptors (device
+/// memory is `EfiMemoryMappedIO`, deliberately excluded from the
+/// reserved snapshot because the windows are huge and uncachable), yet
+/// the kernel dereferences them at plain physical addresses — e.g. the
+/// local APIC EOI write on every timer tick
+/// (`os/arch/src/x86_64/clock.rs`: `lapic_base as *mut u32` with the
+/// default 0xFEE00000). A process page table missing them faults the
+/// first tick after a CR3 switch.
+///
+/// x86-64: the IO-APIC (0xFEC0_0000) and local-APIC (0xFEE0_0000)
+/// pages at their QEMU/default bases. Other architectures and the mock
+/// window: empty — their interrupt controllers are not dereferenced at
+/// fixed low VAs on this boot path yet.
+#[cfg(target_arch = "x86_64")]
+pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
+    &[
+        (0x0FEC0_0000, 4096), // IO-APIC
+        (0x0FEE0_0000, 4096), // local APIC (default base)
+    ]
+}
+
+/// Non-x86-64: no fixed low-VA MMIO the kernel dereferences yet
+/// (see the x86-64 doc).
+#[cfg(not(target_arch = "x86_64"))]
+pub const fn kernel_identity_mmio_regions() -> &'static [(u64, u64)] {
+    &[]
+}
+
 // ── CurrentTrapEntry type aliases ──
 //
 // Mock branch prevents tests on x86_64 host from touching real IDT

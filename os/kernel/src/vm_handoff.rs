@@ -42,8 +42,8 @@ use minix_boot::{KernelInfo, MemoryRegion};
 use minix_types::{
     BootImage, Endpoint, HandoffMemRegion, HandoffModule, NR_BOOT_PROCS,
     PhysBytes, VM_BOOT_HANDOFF_MAGIC, VM_BOOT_HANDOFF_MAX_DEDUCTED,
-    VM_BOOT_HANDOFF_MAX_MODULES, VM_BOOT_HANDOFF_MAX_REGIONS,
-    VM_BOOT_HANDOFF_VERSION, VmBootHandoff,
+    VM_BOOT_HANDOFF_MAX_IDENT, VM_BOOT_HANDOFF_MAX_MODULES,
+    VM_BOOT_HANDOFF_MAX_REGIONS, VM_BOOT_HANDOFF_VERSION, VmBootHandoff,
 };
 
 /// Frame size of every `VmBootAllocator` page (C: I386_PAGE_SIZE).
@@ -272,6 +272,26 @@ pub fn classify(
         free_count += 1;
     }
 
+    // NK4-A 取证（fix18 临时路标，task1-close 裁决去留）：分类幸存区可见
+    // 性——VM PMM 只有 ~133 页可用（grow(229) PhysicalAllocFailed，
+    // 2026-09-21 栈取证），需要知道是 memmap 快照本来就小，还是扣减切多
+    // 了。只打前 8 条，避免刷屏。
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("kernel: vm_handoff free n=");
+        Console::write_hex(free_count as u64);
+        Console::write_str(" deducted=");
+        Console::write_hex(record.count as u64);
+        Console::write_str("\n");
+        for r in free_regions.iter().take(free_count).take(8) {
+            Console::write_str("  base=");
+            Console::write_hex(r.base);
+            Console::write_str(" size=");
+            Console::write_hex(r.size);
+            Console::write_str("\n");
+        }
+    }
+
     Classification {
         free_regions,
         free_region_count: free_count,
@@ -353,6 +373,12 @@ pub fn build_vm_handoff(
     }
     debug_assert_eq!(n, NR_BOOT_PROCS, "kernel tasks + boot modules must fill the boot image table");
 
+    // fix27 (handoff v6): kernel runtime identity windows — the VM's
+    // `map_kernel` replays them into every process page table so the
+    // link-in execution model's low VA=PA code/data/MMIO accesses
+    // survive the first CR3 switch (see version history v6).
+    let (kern_ident, kern_ident_count) = build_identity_windows(kernel_info);
+
     VmBootHandoff {
         magic: VM_BOOT_HANDOFF_MAGIC,
         version: VM_BOOT_HANDOFF_VERSION,
@@ -369,6 +395,14 @@ pub fn build_vm_handoff(
         kern_phys_base: kernel_info.kern_phys_base().0,
         kern_text_pages: (kernel_info.kern_size() / 4096) as u32,
         kern_data_pages: 0,
+        // fix26 (handoff v5): the real kernel Direct Map window. VM's
+        // `map_kernel` replays this window into every process page
+        // table; the first CR3 switch to a VM-built table makes it the
+        // kernel's own DM access path, so base AND coverage must equal
+        // what `establish_boot_dm` installed on the bootstrap root
+        // (same candidate union — `kernel_dm_pa_end`).
+        kern_dm_vbase: minix_arch::CurrentDirectMap::KERNEL_DIRECT_MAP_BASE,
+        kern_dm_pages: crate::dm_coverage::kernel_dm_pa_end(kernel_info, root_paddr) / PAGE_SIZE,
         // E-BOOTFRAME: VM builds boot-proc initial stacks downward from
         // this value. C: execi->stack_high = kernel_boot_info.user_sp
         // (main.c:372); kinfo.user_sp = USR_STACKTOP (pre_init.c:156).
@@ -380,8 +414,145 @@ pub fn build_vm_handoff(
         free_regions: classification.free_regions,
         deducted: classification.deducted,
         modules,
+        kern_ident_count: kern_ident_count as u32,
+        kern_ident,
         boot_procs,
     }
+}
+
+/// Build the kernel runtime identity windows for the handoff (fix27,
+/// version 6) — the physical regions `map_kernel` must replay identity
+/// (VA = PA, supervisor-only) into every VM-built process page table.
+///
+/// Sources:
+/// - `KernelInfo::reserved_regions()` — the boot-shim's non-conventional
+///   memory-map snapshot (running PE image incl. the linked-in kernel,
+///   UEFI heap objects, ACPI tables, LOADER_DATA allocations). Empty on
+///   platforms without link-in execution (OpenSBI, host tests).
+/// - [`minix_arch::kernel_identity_mmio_regions()`] — fixed low-VA MMIO
+///   the kernel dereferences at runtime (x86-64: local APIC EOI page).
+///
+/// Transform: page-align out, drop everything below
+/// `USER_IDENTITY_FLOOR`, sort by base, merge overlapping/adjacent
+/// regions. Fail-fast on candidate, merged-entry, and total-page caps.
+///
+/// `USER_IDENTITY_FLOOR` (4 MiB): user-space boot images link their
+/// text/data at 2-4 MiB, and NO live kernel object sits below 4 MiB in
+/// the UEFI model (the standalone kernel.elf copy at 2-4 MiB is loaded
+/// but never executed, and its pages stay marked conventional so they
+/// never enter `reserved_regions` anyway). The floor is the defensive
+/// half of the identity-window / user-VA non-overlap discipline
+/// ([ARCH]: future VM mmap ranges must stay clear of the windows).
+pub(crate) fn build_identity_windows(
+    kernel_info: &KernelInfo,
+) -> ([HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT], usize) {
+    const USER_IDENTITY_FLOOR: u64 = 0x40_0000;
+    /// Candidate slots: UEFI non-conventional descriptors are a few
+    /// dozen on QEMU/OVMF; overflow is a firmware-shape surprise, not
+    /// something to truncate silently.
+    const MAX_CANDIDATES: usize = 128;
+    /// Sanity cap on 4 KiB identity leaves: 128 Ki pages = 512 MiB.
+    /// Blowing this means the "occupied" snapshot swallowed something
+    /// enormous (fragmented firmware map or an MMIO-window regression) —
+    /// mapping it per-process would exhaust the boot bump pool.
+    const MAX_TOTAL_PAGES: u64 = 128 * 1024;
+
+    let mut cand = [(0u64, 0u64); MAX_CANDIDATES];
+    let mut n = 0usize;
+    // fix27 forensic (2026-09-21): real machine showed res=127 arriving
+    // with cand=2 — every reserved entry rejected. Count WHY to split
+    // "payload zeroed (dangling slice)" from "all below the floor".
+    let mut zeroed = 0usize;
+    let mut below_floor = 0usize;
+    let mut max_end = 0u64;
+    let mut push = |base: u64, size: u64, n: &mut usize| {
+        assert!(*n < MAX_CANDIDATES, "vm_handoff: identity candidate overflow");
+        if base + size > max_end {
+            max_end = base + size;
+        }
+        if size == 0 {
+            zeroed += 1;
+            return;
+        }
+        // align out: floor base, ceil end.
+        let b = base & !(PAGE_SIZE - 1);
+        let e = (base + size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        // clip below the user-image floor.
+        if e <= USER_IDENTITY_FLOOR {
+            below_floor += 1;
+            return;
+        }
+        let b = b.max(USER_IDENTITY_FLOOR);
+        cand[*n] = (b, e - b);
+        *n += 1;
+    };
+    for r in kernel_info.reserved_regions() {
+        push(r.base.0, r.len as u64, &mut n);
+    }
+    let res_rejected = zeroed + below_floor;
+    for &(base, size) in minix_arch::kernel_identity_mmio_regions() {
+        push(base, size, &mut n);
+    }
+
+    // insertion sort by base — n ≤ MAX_CANDIDATES, boot-path sizes only.
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 && cand[j - 1].0 > cand[j].0 {
+            cand.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+
+    // merge overlapping/adjacent runs; fail fast on a produced-entry or
+    // page-total cap breach (never truncate — a cut window would put
+    // the #PF→#DF→triple-fault landmine back).
+    let mut ident = [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT];
+    let mut count = 0usize;
+    let mut total_pages = 0u64;
+    let mut i = 0usize;
+    while i < n {
+        let (b0, s0) = cand[i];
+        let mut end = b0 + s0;
+        let mut j = i + 1;
+        while j < n && cand[j].0 <= end {
+            end = end.max(cand[j].0 + cand[j].1);
+            j += 1;
+        }
+        assert!(count < VM_BOOT_HANDOFF_MAX_IDENT, "vm_handoff: identity window overflow");
+        total_pages += (end - b0) / PAGE_SIZE;
+        assert!(
+            total_pages <= MAX_TOTAL_PAGES,
+            "vm_handoff: identity windows exceed the 4KiB-leaf sanity cap"
+        );
+        ident[count] = HandoffMemRegion {
+            base: b0,
+            size: end - b0,
+        };
+        count += 1;
+        i = j;
+    }
+
+    // NK4-A fix27 取证路标（task1-close 裁决删除）：身份窗口真值必须
+    // 在真机上可见——数量决定 rs 切换后低段取指是否活着。mock（宿主
+    // 测试）下 console 是真实端口写，必须编译掉（同 lib.rs 路标惯例）。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        C0::write_str("nk4a: ident-windows res=");
+        C0::write_hex(kernel_info.reserved_regions().len() as u64);
+        C0::write_str(" zero=");
+        C0::write_hex(zeroed as u64);
+        C0::write_str(" low=");
+        C0::write_hex(below_floor as u64);
+        C0::write_str(" maxend=");
+        C0::write_hex(max_end);
+        C0::write_str(" n=");
+        C0::write_hex(count as u64);
+        C0::write_str("\n");
+    }
+    let _ = res_rejected;
+
+    (ident, count)
 }
 
 /// Copies a boot image name into the fixed `proc_name` field (truncate to
@@ -617,5 +788,77 @@ mod tests {
         assert!(name[2..].iter().all(|&b| b == 0));
 
         assert_eq!(KERNEL_TASKS.len() + BOOT_MODULE_PROC_NRS.len(), NR_BOOT_PROCS);
+    }
+
+    // ── fix27: identity-window construction ──
+
+    fn info_with_reserved(reserved: &'static [MemoryRegion]) -> KernelInfo {
+        // build_identity_windows reads only `reserved_regions`; the rest
+        // is inert filler.
+        KernelInfo {
+            memmap: &[],
+            reserved_regions: reserved,
+            kern_virt_base: minix_types::VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200000),
+            kern_size: 0x200000,
+            free_upper_idx: None,
+            user_sp: minix_types::VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: minix_types::VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: minix_types::VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+        }
+    }
+
+    #[test]
+    fn test_identity_windows_clip_sort_merge() {
+        static RESERVED: [MemoryRegion; 4] = [
+            // below the 4 MiB user-image floor: dropped entirely.
+            MemoryRegion { base: PhysBytes(0x1000), len: 0x2000 },
+            // deliberately unsorted; overlaps the next entry → merged.
+            MemoryRegion { base: PhysBytes(0x1da0_0000), len: 0x3000 },
+            MemoryRegion { base: PhysBytes(0x1da0_2000), len: 0x2000 },
+            // disjoint, stays its own entry.
+            MemoryRegion { base: PhysBytes(0x1db0_0000), len: 0x1000 },
+        ];
+        let (ident, count) = build_identity_windows(&info_with_reserved(&RESERVED));
+        let got = &ident[..count];
+
+        // The two MMIO pages the arch always adds (x86-64 host tests).
+        let mmio_n = minix_arch::kernel_identity_mmio_regions().len();
+        assert_eq!(count, 2 + mmio_n, "merged reserved entries + arch MMIO");
+
+        // Sorted; below-floor entry gone; the two overlapping entries
+        // merged into [0x1da00000, 0x1da04000).
+        assert_eq!(got[0].base, 0x1da0_0000);
+        assert_eq!(got[0].size, 0x4000);
+        assert_eq!(got[1].base, 0x1db0_0000);
+        assert_eq!(got[1].size, 0x1000);
+        if mmio_n > 0 {
+            assert_eq!(got[2].base, 0x0FEC0_0000);
+            assert_eq!(got[3].base, 0x0FEE0_0000);
+        }
+        // Invariant map_kernel relies on: sorted and non-overlapping.
+        for w in got {
+            assert_eq!(w.base % PAGE_SIZE, 0);
+            assert_eq!(w.size % PAGE_SIZE, 0);
+            assert!(w.base >= 0x40_0000);
+        }
+        for pair in got.windows(2) {
+            assert!(pair[0].base + pair[0].size <= pair[1].base);
+        }
+    }
+
+    #[test]
+    fn test_identity_windows_empty_reserved_still_has_mmio() {
+        // OpenSBI/host shape: reserved = ∅ → only the arch MMIO pages.
+        let (ident, count) = build_identity_windows(&info_with_reserved(&[]));
+        assert_eq!(count, minix_arch::kernel_identity_mmio_regions().len());
+        for (i, &(base, _)) in minix_arch::kernel_identity_mmio_regions().iter().enumerate() {
+            assert_eq!(ident[i].base, base);
+        }
     }
 }

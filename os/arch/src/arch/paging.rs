@@ -323,6 +323,47 @@ pub trait Paging {
 
     fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)>;
 
+    /// Split the huge-page leaf covering `vaddr` into 4 KiB leaves,
+    /// preserving every translation inside it (same frames, same per-leaf
+    /// flags), so individual pages become available to page-granular
+    /// `unmap`/`remap`.
+    ///
+    /// Returns `Ok(true)` when a huge leaf was split, `Ok(false)` when
+    /// `vaddr` is already backed by a 4 KiB leaf or by a hole (no change).
+    /// Errors only on intermediate-table allocation failure.
+    ///
+    /// The default is `Err(NotSupported)` — an architecture must not
+    /// silently pretend a split happened when a real huge leaf is
+    /// present. Production consumer: the boot ELF loader evicting
+    /// supervisor identity leftovers underneath user VAs on the adopted
+    /// bootstrap root (x86-64 first-light, #PF err=0x15 forensics
+    /// 2026-09-21; see `load_elf_into`); arm64/riscv64 must mirror the
+    /// x86-64 implementation when their boot reaches the same eviction.
+    fn split_huge(&mut self, _vaddr: VirBytes) -> Result<bool, PageTableError> {
+        Err(PageTableError::NotSupported)
+    }
+
+    /// Set the user-walkable bit on every EXISTING intermediate table
+    /// entry on the walk path to `vaddr` (never on the leaf, never
+    /// creating entries). Effective permission is the AND of all levels,
+    /// so this only removes an intermediate-level veto — a page stays
+    /// inaccessible to CPL3 unless its leaf is user too.
+    ///
+    /// Companion to `split_huge` for boot-identity eviction: the
+    /// identity huge leaf and the intermediates above it were both built
+    /// supervisor-only, and page-granular `map` refuses to touch
+    /// existing intermediates (`walk_alloc` only sets USER on tables it
+    /// creates) — without this step a freshly installed user leaf still
+    /// faults user instruction fetches with #PF err=0x15.
+    ///
+    /// `Err(NotMapped)` if any level is absent (caller maps the path
+    /// through `map` instead), `Err(NotSupported)` from the default —
+    /// an architecture whose intermediates cannot carry a user bit must
+    /// mirror the x86-64 implementation before its first-light eviction.
+    fn grant_user_walk(&mut self, _vaddr: VirBytes) -> Result<(), PageTableError> {
+        Err(PageTableError::NotSupported)
+    }
+
     fn root_paddr(&self) -> PhysBytes;
 
     /// Activate this page table on the current CPU.
@@ -512,10 +553,16 @@ pub fn clone_range<P: Paging>(
 
 /// Map kernel address space into a page table.
 ///
-/// Corresponds to Minix3's `pt_mapkernel()`. Establishes three mappings:
+/// Corresponds to Minix3's `pt_mapkernel()`. Establishes four mappings:
 /// 1. Kernel code segment (executable in real impl)
 /// 2. Kernel data segment (non-executable in real impl)
 /// 3. Kernel direct map (all physical memory, supervisor-only in real impl)
+/// 4. Kernel runtime identity windows (fix27): occupied physical regions
+///    mapped identity (VA = PA, supervisor-only) — on the UEFI link-in
+///    execution model the kernel's live code/GDT/IDT/TSS sit at the
+///    firmware-relocated low addresses these regions describe, so a
+///    table without them fault-triples the first CR3 switch to it
+///    (see `minix_types::VmBootHandoff` version history v6).
 ///
 /// This is NOT arch-specific — it composes `Paging::map()` operations.
 /// Address layout comes from `DirectMapArch`; physical addresses from boot_info.
@@ -532,6 +579,7 @@ pub fn map_kernel<P: Paging>(
     kernel_data_pages: usize,
     dm_vbase: u64,
     dm_pages: usize,
+    ident_regions: &[minix_types::HandoffMemRegion],
 ) -> Result<(), PageTableError> {
     let page_size = P::PAGE_SIZE as u64;
 
@@ -553,6 +601,24 @@ pub fn map_kernel<P: Paging>(
         let vaddr = VirBytes(dm_vbase + i as u64 * page_size);
         let paddr = PhysBytes(i as u64 * page_size);
         pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
+    }
+
+    // Segment 4 (fix27): identity windows. The producer
+    // (`vm_handoff::build_identity_windows`) guarantees page-aligned,
+    // sorted, NON-OVERLAPPING regions, so the 4 KiB walks below can
+    // never hit `AlreadyMapped` within this segment; a hit means that
+    // contract broke or a window collides with one of the segments
+    // above — fail fast either way (the error propagates out of
+    // `init_page_table` and VM refuses the process).
+    for region in ident_regions {
+        debug_assert!(region.base % page_size == 0 && region.size % page_size == 0);
+        let mut pa = region.base;
+        let end = pa + region.size;
+        while pa < end {
+            let addr = VirBytes(pa);
+            pt.map(addr, PhysBytes(pa), PageFlags::kernel_read_write())?;
+            pa += page_size;
+        }
     }
 
     Ok(())
@@ -1021,6 +1087,7 @@ pub mod mock {
             const MOCK_KERNEL_DATA_PAGES: usize = 8;
             const MOCK_DM_VBASE: u64 = 0xFFFF_8000_0000_0000;
             const MOCK_DM_SENTINEL_PAGES: usize = 4;
+            const PAGE_SIZE_CONST: u64 = MockPaging::PAGE_SIZE as u64;
 
             super::super::map_kernel(
                 &mut pt,
@@ -1030,7 +1097,24 @@ pub mod mock {
                 MOCK_KERNEL_DATA_PAGES,
                 MOCK_DM_VBASE,
                 MOCK_DM_SENTINEL_PAGES,
+                // fix27 segment 4: one two-page identity window.
+                &[
+                    minix_types::HandoffMemRegion {
+                        base: 0x1da0_0000,
+                        size: 2 * PAGE_SIZE_CONST,
+                    },
+                ],
             ).unwrap();
+
+            // Segment 4: identity windows are mapped VA == PA, supervisor.
+            for i in 0..2u64 {
+                let addr = VirBytes(0x1da0_0000 + i * PAGE_SIZE_CONST);
+                let (paddr, flags) = pt
+                    .query(addr)
+                    .expect("identity window page must be mapped");
+                assert_eq!(paddr, PhysBytes(0x1da0_0000 + i * PAGE_SIZE_CONST));
+                assert_eq!(flags, PageFlags::kernel_read_write());
+            }
 
             // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)
             const PAGE_SIZE: u64 = MockPaging::PAGE_SIZE as u64;

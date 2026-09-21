@@ -154,27 +154,20 @@ impl BootShim for UefiBootShim {
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
         uefi::println!("boot-shim: root+bump allocated");
-        // D-64② 顺序修正（NK4-A 首亮实证）：快照必须在两次 LOADER_DATA
-        // 分配之后。UEFI 从 conventional 空闲内存里满足分配、并把所分页
-        // 在活图中改标 LOADER_DATA——先拍快照会把这两段仍列为
-        // conventional：①下方守卫必然误炸（新分配与旧快照相交）；
-        // ②传给内核的 PMM 图把活页表页标成 conventional，正是本守卫
-        // 要防的 A2 灾难。后拍 = 活图已改标，conventional-only 快照自然
-        // 排除两段，守卫与内核图双双正确。
-        let memmap = build_memmap();
-        uefi::println!("boot-shim: memmap ok (post-allocation snapshot)");
-        // D-64②: wire the bootstrap-outside-memmap defense (it existed as
-        // an uncalled helper). The two LOADER_DATA allocations above must
-        // never sit in a page the memmap snapshot reports as conventional
-        // — otherwise the kernel's A2 handoff classification would hand
-        // live page-table pages to the VM PMM (07-paging_init_design
-        // §6.0-A2). Fail fast while the boot-shim can still print.
-        assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
-        assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
-
+        // D-64② 顺序修正（NK4-A 首亮实证）扩展版：快照必须在**全部**
+        // LOADER_DATA 分配之后——root 页、bump 区之外，还有 kernel 段与
+        // 12 个 boot module 的 allocate_pages（NK4-A 首亮第二层教训：原
+        // 修正只覆盖前两次分配，module 占页在快照里仍被列为
+        // conventional，内核 VM bootstrap 侧要再拿 13 个 exclusion 去切
+        // 这些洞，切出的碎片直接超过 VmBootRegions 容量）。UEFI 从
+        // conventional 空闲内存里满足分配、并把所分页在活图中改标
+        // LOADER_DATA——后拍 = 活图已改标，conventional-only 快照天然
+        // 排除全部占用段，传给内核的 PMM 图即 EBS 前的最终空闲态
+        // （对齐 C：kinfo.memmap 是 cut 完的版本）。
+        // 两处 uefi::println 之间的文件访问都依赖 SimpleFileSystem，
+        // 必须在 ExitBootServices 前完成；快照只依赖活图，放在最后。
         // Both file accesses must happen before ExitBootServices because
         // they depend on the SimpleFileSystem protocol.
-        uefi::println!("boot-shim: memmap guards ok");
         let file_loader = UefiFileLoader;
         uefi::println!("boot-shim: loading kernel.elf from ESP…");
         let kern = loader::load_kernel_with_loader(&file_loader).expect(
@@ -193,10 +186,26 @@ impl BootShim for UefiBootShim {
         // the System Table is only valid while boot services are available.
         uefi::println!("boot-shim: locating platform sources…");
         let platform_sources = find_platform_sources();
+
+        // fix27: one snapshot, two lists — conventional (free) plus the
+        // non-conventional remainder that hosts everything the kernel
+        // executes and touches through low addresses at runtime.
+        let (memmap, reserved_regions) = build_memmaps();
+        uefi::println!("boot-shim: memmap ok (final pre-EBS snapshot)");
+        // D-64②: wire the bootstrap-outside-memmap defense (it existed as
+        // an uncalled helper). The two LOADER_DATA allocations above must
+        // never sit in a page the memmap snapshot reports as conventional
+        // — otherwise the kernel's A2 handoff classification would hand
+        // live page-table pages to the VM PMM (07-paging_init_design
+        // §6.0-A2). Fail fast while the boot-shim can still print.
+        assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
+        assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
+
         uefi::println!("boot-shim: building KernelInfo…");
 
         let kernel_info = build_kernel_info(
             memmap,
+            reserved_regions,
             kern.kern_virt_base,
             kern.kern_phys_base,
             kern.kern_size,
@@ -242,25 +251,66 @@ impl BootShim for UefiBootShim {
 
 // ── UEFI-specific helper functions ──
 
-/// Convert UEFI memory map to a static slice of MemoryRegion.
+/// Convert UEFI memory map to the two physical-region lists the kernel
+/// needs: conventional (free) RAM and the occupied (non-conventional)
+/// remainder. Single iteration over one snapshot — both lists must come
+/// from the SAME `GetMemoryMap` call, or entries could drift between two
+/// snapshots (allocations made by the map-buffer allocation itself).
 ///
-/// Only includes CONVENTIONAL memory (free RAM). Leaks the allocation so
-/// it has `'static` lifetime — acceptable for boot-stage code that runs
-/// exactly once.
-pub fn build_memmap() -> &'static [MemoryRegion] {
+/// `build_memmap()` semantics for the conventional list are unchanged
+/// (free RAM only, kernel/module occupancy NOT cut — the kernel's A2
+/// classification does that). The reserved list (fix27) is everything
+/// else EXCEPT the MMIO descriptor types (`MMIO` / `MMIO_PORT_SPACE`):
+/// the running kernel's code,
+/// static data, GDT/IDT/TSS, the `KernelInfo` heap object, ACPI tables,
+/// LOADER_DATA allocations (root page, bump region, module blobs). MMIO
+/// windows are excluded because they are huge device ranges nobody may
+/// identity-map cacheably; the two local-APIC/IO-APIC pages the kernel
+/// touches on every tick are added kernel-side as arch constants
+/// (fix27, `kernel_identity_mmio_regions`).
+///
+/// Leaks the allocations so they have `'static` lifetime — acceptable
+/// for boot-stage code that runs exactly once.
+pub fn build_memmaps() -> (&'static [MemoryRegion], &'static [MemoryRegion]) {
     let mmap = boot::memory_map(MemoryType::LOADER_DATA)
         .expect("Failed to get UEFI memory map");
 
     let mut regions: Vec<MemoryRegion> = Vec::new();
+    let mut reserved: Vec<MemoryRegion> = Vec::new();
     for desc in mmap.entries() {
         if desc.ty == MemoryType::CONVENTIONAL {
             regions.push(MemoryRegion {
                 base: PhysBytes(desc.phys_start),
                 len: desc.page_count as usize * 4096,
             });
+        } else if desc.ty != MemoryType::MMIO && desc.ty != MemoryType::MMIO_PORT_SPACE {
+            reserved.push(MemoryRegion {
+                base: PhysBytes(desc.phys_start),
+                len: desc.page_count as usize * 4096,
+            });
         }
     }
-    Box::leak(regions.into_boxed_slice())
+    // fix27 forensic (2026-09-21): real machine showed ident-windows n=2
+    // (= arch MMIO only) → reserved list arrives empty at the kernel.
+    // Count both lists at the source to split "collection loop finds
+    // nothing" from "forwarding loses it".
+    uefi::println!(
+        "boot-shim: memmaps conv={} reserved={}",
+        regions.len(),
+        reserved.len()
+    );
+    (
+        Box::leak(regions.into_boxed_slice()),
+        Box::leak(reserved.into_boxed_slice()),
+    )
+}
+
+/// Convert UEFI memory map to a static slice of MemoryRegion.
+///
+/// Only includes CONVENTIONAL memory (free RAM). See `build_memmaps()`
+/// for the fix27 reserved-list companion.
+pub fn build_memmap() -> &'static [MemoryRegion] {
+    build_memmaps().0
 }
 
 /// Size of one page-table page (UEFI allocates in 4 KiB pages).
@@ -346,6 +396,7 @@ pub fn alloc_bump_region(num_pages: usize) -> (u64, u64) {
 /// (kernel falls back to QemuVirtDesc or panics).
 pub fn build_kernel_info(
     memmap: &'static [MemoryRegion],
+    reserved_regions: &'static [MemoryRegion],
     kern_virt_base: VirBytes,
     kern_phys_base: PhysBytes,
     kern_size: u64,
@@ -356,6 +407,7 @@ pub fn build_kernel_info(
 ) -> KernelInfo {
     KernelInfo {
         memmap,
+        reserved_regions,
         kern_virt_base,
         kern_phys_base,
         kern_size,
@@ -448,9 +500,14 @@ mod tests {
             start: PhysBytes(0x40_0000),
             len: 1024,
         }];
+        static RESERVED: [MemoryRegion; 1] = [MemoryRegion {
+            base: PhysBytes(0x1da0_0000),
+            len: 0x1000,
+        }];
 
         let info = build_kernel_info(
             &MEMMAP,
+            &RESERVED,
             VirBytes(0xFFFFFFFF80000000),
             PhysBytes(0x200000),
             0x100_000,
@@ -459,6 +516,9 @@ mod tests {
             0x100000,            // bootstrap_len
             &[],                 // platform_sources (empty = no source)
         );
+
+        assert_eq!(info.reserved_regions().len(), 1);
+        assert_eq!(info.reserved_regions()[0].base, PhysBytes(0x1da0_0000));
 
         assert_eq!(info.kern_virt_base, VirBytes(0xFFFFFFFF80000000));
         assert_eq!(info.kern_phys_base, PhysBytes(0x200000));
