@@ -540,6 +540,10 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         .expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
     // NK4-A 首亮取证（临时，v3）：入口 asm 强读 RDI（真实交接值）+ 全局槽
     // 指针 + 当前 RSP + 经槽读到的 bootstrap_len。
+    // x86_64 门：rdi/rdx 交接寄存器是 x86 SysV 语义（AArch64 在 x0、
+    // riscv64 在 a0），裸 asm 无架构门曾打断 aarch64/riscv64 载体编译
+    //（NK4-A 评审 F1，基线 940ad8363 对照证回归）。
+    #[cfg(target_arch = "x86_64")]
     {
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
         let entry_rdi: u64;
@@ -3469,7 +3473,9 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             // 死亡区间：sa1-after 缺失 = CR3 切换指令自身死；出现则死点在
             // 切换后的续跑路径（Stage 3-5 / restore）。root= 打印 CR3 将收
             // 到的页表根（serial_fix26b 死在 sa0/sa1 之间，需知写入了什么）。
-            #[cfg(not(feature = "mock"))]
+            // x86_64 门：walk_x86_64 与 RSP 强读都是 x86 取证语义（NK4-A
+            // 评审 F1——无架构门曾打断 aarch64/riscv64 载体编译）。
+            #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
             {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                 let root_dbg = table
@@ -3533,7 +3539,9 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             }
             // C: proc.c:349 — switch_address_space(p).
             switch_address_space(table, picked);
-            #[cfg(not(feature = "mock"))]
+            // x86_64 门：CR3 读回是 x86 语义（AArch64 对位是 TTBR0_EL1、
+            // riscv64 是 satp；NK4-A 评审 F1——无架构门曾打断载体编译）。
+            #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
             {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                 // serial_fix26c：rs 死在 sa0 之后 sa1 之前。sa2 打印
