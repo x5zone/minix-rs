@@ -775,10 +775,20 @@ impl VmServer {
             let vaddr = minix_types::VirBytes(va_base);
 
             // Region per segment (C: libexec_alloc_vm_prealloc → map_page_region).
+            // Writable flag 来自 ELF 段旗标（PF_W=2）：C 的 map_page_region
+            // 对 PT_LOAD RW 段建可写 region。此前全部段只给 ANON——数据段
+            // region 不可写 → is_page_writable 恒 false → sync_slot_pte 把
+            // .data 页映射成只读，用户态首次写即 PF(err=7) → VM 判违例 →
+            // SIGSEGV（真机 NK4-A C-3 c10a 轮：RS ensure_global_allocator
+            // 的分配器旗标 xchg 于 0x229708 二连故障，2026-09-22）。
+            let mut seg_flags = crate::region::VrFlags::ANON;
+            if seg.flags & 0x2 != 0 {
+                seg_flags |= crate::region::VrFlags::WRITABLE;
+            }
             let region = crate::region::VirRegion::with_memtype(
                 vaddr,
                 minix_types::VirBytes((pages * PS) as u64),
-                crate::region::VrFlags::ANON,
+                seg_flags,
                 &crate::memtype::MEM_TYPE_ANON,
             );
             proc.regions_mut()
