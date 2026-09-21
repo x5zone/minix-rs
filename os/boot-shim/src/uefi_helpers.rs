@@ -227,7 +227,9 @@ impl BootShim for UefiBootShim {
 
         uefi::println!("boot-shim: exiting boot services…");
         exit_boot_services();
-        uefi::println!("boot-shim: boot services exited");
+        // EBS 之后不再走 uefi::println!（crate 的日志路径可能依赖已消失的
+        // boot services 状态）——改裸写 COM1（0x3F8，OVMF 已初始化 16550）。
+        crate::raw_serial("boot-shim: [raw] boot services exited\r\n");
 
         BootPrepareResult {
             kernel_info,

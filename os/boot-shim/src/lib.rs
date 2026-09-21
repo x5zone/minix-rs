@@ -61,3 +61,24 @@ pub use uefi_helpers::{find_platform_sources, UefiBootShim};
 
 #[cfg(all(feature = "opensbi", not(feature = "uefi")))]
 pub use opensbi_helpers::OpenSbiBootShim;
+
+/// 裸写 QEMU 串口（COM1 数据口 0x3F8；OVMF 已完成 16550 初始化）。
+///
+/// 用途：EBS 之后 uefi::println! 的日志路径不再可靠（见
+/// uefi_helpers::exit_boot_services 的注释），裸端口写不依赖任何
+/// UEFI 状态——NK4-A 首亮诊断的 post-EBS 专用通道。
+#[cfg(target_arch = "x86_64")]
+pub fn raw_serial(text: &str) {
+    for byte in text.bytes() {
+        // SAFETY: COM1 数据口是 QEMU/PC 平台的固定 I/O 资源；boot-shim
+        // 是唯一所有者（固件交棒后无并发写者），out 指令无副作用泄漏。
+        unsafe {
+            core::arch::asm!("out dx, al", in("dx") 0x3f8u16, in("al") byte, options(nomem, nostack));
+        }
+    }
+}
+
+/// 非 x86_64 目标：无 COM1 语义，退化为空实现（诊断打印缺失可接受——
+/// 该诊断只服务于 x86_64 载体）。
+#[cfg(not(target_arch = "x86_64"))]
+pub fn raw_serial(_text: &str) {}

@@ -49,6 +49,7 @@ fn main() -> Status {
     // 2. Register boot-stage page table allocator
     boot_alloc::init_boot_pt_alloc(result.bump_base, result.bump_end);
     minix_arch::pt_alloc::register(boot_alloc::boot_pt_alloc);
+    boot_shim::raw_serial("boot-shim: [raw] pt_alloc registered, entering kernel arch_boot\r\n");
 
     // 3. Hand control to the kernel's arch-specific boot.
     //    Establishes page tables, enables paging, enters kmain.
@@ -68,3 +69,4 @@ fn main() -> Status {
 fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }
+
