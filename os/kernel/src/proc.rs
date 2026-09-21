@@ -1445,8 +1445,14 @@ impl KProcess {
     ///
     /// Replaces the previous `set_boot_initial_reg_state` +
     /// `set_boot_pc_sp` pair (06-proc-init-boot-proc.md §3.5).
+    ///
+    /// NK4-A 首亮修复：与 C 的 `arch_proc_reset`（arch_system.c:181，
+    /// boot 与 exec 两条路都经它）对位——装完整新上下文的同时必须种
+    /// `KTS_FULLCONTEXT`，否则首次调度在返回门撞上
+    /// `panic("no entry trap style known")`（arch_system.c:597-598）。
     pub fn set_boot_cpu_context(&mut self, cpu_context: CurrentCpuContext) {
         self.cpu_context = cpu_context;
+        self.trap_style = minix_arch::TrapStyle::FullContext;
     }
 
     /// Enable user I/O access (x86-64: set RFLAGS.IOPL = 3).

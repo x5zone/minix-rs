@@ -157,6 +157,45 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::x86_64::paging::X86_64Paging;
     use crate::x86_64::higher_half::X86_64HigherHalf;
     use crate::boot::HigherHalf;
+    // NK4-A 首亮修复（根因）：KernelInfo 在函数入口即按值收进内核 .bss
+    // 全局，后续一切（建页表、跳 kmain）都用全局副本的引用。原实现把
+    // shim 栈上的 `&KernelInfo` 经 `noreturn` asm 的 `in("rdi")` 直传给
+    // kmain——x86-64 System V 里 RDI 是 caller-saved，BOOTX64.EFI 的
+    // codegen 直接复用入口 RDI 跨过了中间的 call，寄存器被调用方覆写后
+    // kmain 拿到的是 .rdata 字符串地址（现场：kinfo=0x1ddda2ee，恰为
+    // "…jumping to kmain\n" 串首 + 串长），validate 读到 ASCII 垃圾即
+    // panic。全局副本的地址是链接期 RIP 相对常量，不经任何寄存器交接。
+    // NK4-A 首亮取证（临时）：入口第一时间打原始参数指针——判定
+    // shim main → arch_boot 的第一跳交接是否已经坏（.bss 收存之前）。
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("kernel: arch_boot arg=");
+        Console::write_hex(kernel_info as *const KernelInfo as u64);
+        Console::write_str(" blen=");
+        Console::write_hex(kernel_info.bootstrap_len);
+        Console::write_str("\n");
+        // fix27 forensic (2026-09-21): shim printed memmaps conv=12
+        // reserved=127 but the handoff saw zero identity candidates.
+        // Split "lost before arch_boot" (reslen=0 here) from "lost in
+        // store/copy" (reslen=127 here) — and print the first entry to
+        // distinguish a dangling slice (all-zero payload) from a lost
+        // length.
+        let rr = kernel_info.reserved_regions();
+        Console::write_str("kernel: arch_boot reslen=");
+        Console::write_hex(rr.len() as u64);
+        if let Some(r0) = rr.first() {
+            Console::write_str(" r0=");
+            Console::write_hex(r0.base.0);
+            Console::write_str("+");
+            Console::write_hex(r0.len as u64);
+        } else {
+            Console::write_str(" r0=NONE");
+        }
+        Console::write_str("\n");
+    }
+    store_kernel_info(kernel_info);
+    let kinfo: &'static KernelInfo = crate::kernel_info()
+        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
     // NK4-A 首亮诊断：内核侧第一根路标（EarlyConsole=COM1，与 boot-shim
     // 的 raw_serial 同口；EBS 已过、无并发写者）。
     {
@@ -168,15 +207,16 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     // 0 / util_stacktrace）此刻全部可用，注册点没有理由晚于第一个
     // 可 panic 的校验。kmain 的同名调用幂等。
     register_panic_diagnostic();
-    let info = arch_boot_impl::<X86_64Paging>(kernel_info, root_page);
+    arch_boot_impl::<X86_64Paging>(kinfo, root_page);
     {
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
         Console::write_str("kernel: arch_boot_impl done, jumping to kmain\n");
     }
     // SAFETY: arch_boot_impl just enabled paging with both identity
-    // and kernel high mappings. info is valid and accessible at high address.
-    // kern_stack_top is a valid high virtual address from KernelInfo.
-    unsafe { X86_64HigherHalf::jump_to_kmain(info, info.kern_stack_top) }
+    // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
+    // the high address. kern_stack_top is a valid high virtual address
+    // from KernelInfo.
+    unsafe { X86_64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
@@ -184,12 +224,19 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::arm64::paging::AArch64Paging;
     use crate::aarch64::higher_half::AArch64HigherHalf;
     use crate::boot::HigherHalf;
+    // NK4-A 首亮修复：同 x86_64——入口即把 KernelInfo 按值收进内核 .bss
+    // 全局，跳转与建页表一律用全局副本引用，杜绝引用跨 `noreturn` asm
+    // 的调用者保存寄存器交接（aarch64 对应 x0）。
+    store_kernel_info(kernel_info);
+    let kinfo: &'static KernelInfo = crate::kernel_info()
+        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
     register_panic_diagnostic();
-    let info = arch_boot_impl::<AArch64Paging>(kernel_info, root_page);
+    arch_boot_impl::<AArch64Paging>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity
-    // and kernel high mappings. info is valid and accessible at high address.
-    // kern_stack_top is a valid high virtual address from KernelInfo.
-    unsafe { AArch64HigherHalf::jump_to_kmain(info, info.kern_stack_top) }
+    // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
+    // the high address. kern_stack_top is a valid high virtual address
+    // from KernelInfo.
+    unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
@@ -197,12 +244,19 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::riscv64::paging::Riscv64Paging;
     use crate::riscv64::higher_half::Riscv64HigherHalf;
     use crate::boot::HigherHalf;
+    // NK4-A 首亮修复：同 x86_64——入口即把 KernelInfo 按值收进内核 .bss
+    // 全局，跳转与建页表一律用全局副本引用，杜绝引用跨 `noreturn` asm
+    // 的调用者保存寄存器交接（riscv64 对应 a0）。
+    store_kernel_info(kernel_info);
+    let kinfo: &'static KernelInfo = crate::kernel_info()
+        .expect("arch_boot: KERNEL_INFO store failed — store_kernel_info is one-shot");
     register_panic_diagnostic();
-    let info = arch_boot_impl::<Riscv64Paging>(kernel_info, root_page);
+    arch_boot_impl::<Riscv64Paging>(kinfo, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity
-    // and kernel high mappings. info is valid and accessible at high address.
-    // kern_stack_top is a valid high virtual address from KernelInfo.
-    unsafe { Riscv64HigherHalf::jump_to_kmain(info, info.kern_stack_top) }
+    // and kernel high mappings. kinfo is the kernel-.bss copy — valid at
+    // the high address. kern_stack_top is a valid high virtual address
+    // from KernelInfo.
+    unsafe { Riscv64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
 #[cfg(all(test, feature = "mock"))]
@@ -455,12 +509,40 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
 pub fn kmain(kernel_info: &KernelInfo) -> ! {
     use minix_platform::platform_desc;
 
+    // NK4-A 首亮修复（根因，消费侧收口）：改用 arch_boot 收进 .bss 全局的
+    // KernelInfo 副本，不再信任经内核栈落地的 `kernel_info` 参数引用。
+    // 取证（fix3）：入口 RDI 已正确（jump 走 .bss RIP 相对地址），全局槽
+    // 内容 bootstrap_len==0 完好；但参数引用被编译器 spill 到内核栈
+    // （kern_stack_top 附近）后 reload，该栈槽遭别名/覆写破坏——经参数读
+    // 到的字段全是 .rdata ASCII 垃圾，validate 遂 panic。全局槽位于 .bss、
+    // 不经那块栈，是唯一可信来源。下方诊断证实后可删本 shadow。
+    let kernel_info: &KernelInfo = crate::kernel_info()
+        .expect("kmain: KERNEL_INFO must be stored by arch_boot before jump");
+    // NK4-A 首亮取证（临时，v3）：入口 asm 强读 RDI（真实交接值）+ 全局槽
+    // 指针 + 当前 RSP + 经槽读到的 bootstrap_len。
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        let entry_rdi: u64;
+        unsafe { core::arch::asm!("mov {}, rdi", out(reg) entry_rdi, options(nomem, nostack, preserves_flags)); }
+        let rsp: u64;
+        unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp, options(nomem, nostack, pure)); }
+        Console::write_str("kernel: preA rdi=");
+        Console::write_hex(entry_rdi);
+        Console::write_str(" kinfo=");
+        Console::write_hex(kernel_info as *const minix_boot::KernelInfo as u64);
+        Console::write_str(" rsp=");
+        Console::write_hex(rsp);
+        Console::write_str(" blen=");
+        Console::write_hex(kernel_info.bootstrap_len);
+        Console::write_str("\n");
+    }
     boot_stage!("kernel: kmain Phase A enter\n");
     // Phase A: Entry
     // R-07 (2026-08-12): Validate KernelInfo invariants before any use.
     // Fail-fast on boot-shim bugs (e.g. non-zero bootstrap_len would
     // trigger add_memmap and reclaim firmware regions).
     kernel_info.validate();
+    boot_stage!("kernel: kmain A.1 validate ok\n");
 
     // Initialize the early console first so any boot diagnostic output
     // uses the correct baud rate / UART configuration.
@@ -472,6 +554,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
 
     store_kernel_info(kernel_info);
     KERNEL_MAY_ALLOC.store(true, Ordering::Release);
+    boot_stage!("kernel: kmain A.1b console+kinfo ok\n");
 
     // Phase A.2: Initialize FREE_MEMMAP from KernelInfo.memmap + cut boot module regions.
     // C: pre_init() → get_parameters() → add_memmap()×N → cut_memmap()×mod_count
@@ -501,6 +584,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
                 };
             }
         }
+        boot_stage!("kernel: kmain A.2a memmap copy ok\n");
         // Step 2: Cut boot module regions (temporarily reserve)
         // C: pre_init.c:211 — cut_memmap(&kinfo, mod_start, mod_end - mod_start)
         for module in kernel_info.boot_modules().iter() {
@@ -510,6 +594,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
                 module.len as u64,
             );
         }
+        boot_stage!("kernel: kmain A.2b module cuts ok\n");
         // Step 3: Cut the kernel image itself (D-64①). C parity: pre_init
         // appends the kernel as an extra boot module (`kern_mod`) and cuts
         // it together with the real modules (pre_init.c:196-216). On the
@@ -1459,6 +1544,68 @@ pub fn init_proc_and_boot(kernel_info: &KernelInfo) {
                     let _ = memmap::add_memmap(mmap, module.start.0, module.len as u64);
                 }
 
+                // NK4-A (2026-09-21): vacate the boot-identity leftovers under
+                // VM's runtime user VA layout. ELF segment VAs are handled
+                // inside `load_elf_into` (per-page eviction). The remaining
+                // window is VM's HeapArena [VM_HEAP_BASE, +VM_HEAP_SIZE): VM
+                // maps heap pages there at runtime via vm_self_mappages →
+                // Paging::map, which structurally fails with AlreadyMapped
+                // while arch_boot_impl Step 1's supervisor identity huge
+                // leaves stand (walk_alloc refuses to clobber huge leaves,
+                // x86_64/paging.rs:383/399). Split + unmap at 4 KiB
+                // granularity. Placed AFTER `load_vm_elf` returned, so a
+                // module blob read through its identity mapping is never
+                // evicted mid-copy; the arena's backing PAs have no other
+                // kernel-side identity consumers.
+                {
+                    let heap_lo = <minix_arch::CurrentDirectMap as minix_arch::arch::direct_map::DirectMapArch>::VM_HEAP_BASE;
+                    let heap_end = heap_lo
+                        + <minix_arch::CurrentDirectMap as minix_arch::arch::direct_map::DirectMapArch>::VM_HEAP_SIZE;
+                    let page = CurrentPaging::PAGE_SIZE as u64;
+                    let mut hva = heap_lo;
+                    while hva < heap_end {
+                        let v = VirBytes(hva);
+                        if paging.query(v).is_some() {
+                            paging.split_huge(v).unwrap_or_else(|e| panic!(
+                                "heap-window eviction: split_huge failed ({e:?}) — \
+                                 arm64/riscv64 must implement it before their first light"
+                            ));
+                            // Open the intermediate levels for CPL3 too:
+                            // VM's runtime `vm_self_mappages` → Paging::map
+                            // installs user leaves here, and `walk_alloc`
+                            // does not amend the supervisor identity
+                            // intermediates it finds in place (#PF
+                            // err=0x15 — same shape as the ELF segment
+                            // eviction in `load_elf_into`).
+                            paging.grant_user_walk(v).unwrap_or_else(|e| panic!(
+                                "heap-window eviction: grant_user_walk failed ({e:?})"
+                            ));
+                            paging.unmap(v).expect("heap-window eviction: unmap failed");
+                        }
+                        hva += page;
+                    }
+                }
+
+                // NK4-A 取证（fix10 临时）：ELF 驱逐 + 堆窗口驱逐都跑完后，
+                // 直接 query VM entry 页，区分"loader 驱逐未命中"（flags 无
+                // USER 或仍 HUGE）与"装好后又被重映射"。
+                {
+                    use minix_plat::{CurrentEarlyConsole as DiagC, EarlyConsole as _};
+                    let probe = vm_result.pc;
+                    DiagC::write_str("kernel: diag pc=");
+                    DiagC::write_hex(probe.0);
+                    match paging.query(VirBytes(probe.0 & !0xFFF)) {
+                        Some((pa, f)) => {
+                            DiagC::write_str(" pa=");
+                            DiagC::write_hex(pa.0);
+                            DiagC::write_str(" flags=");
+                            DiagC::write_hex(f.bits() as u64);
+                        }
+                        None => DiagC::write_str(" UNMAPPED"),
+                    }
+                    DiagC::write_str("\n");
+                }
+
                 // A1 address-space identity hand-off: publish VM's bootstrap
                 // root to VM itself. The kernel writes a `VmBootHandoff`
                 // page and maps it user read-only at `VM_BOOT_HANDOFF_VA`;
@@ -1846,6 +1993,16 @@ pub(crate) fn account_interrupt_stop_with(
 
 // ── Panic diagnostic (D-48, C utility.c:22-50) ─────────────────────────
 
+/// Re-entrancy guard for [`kernel_panic_diagnostic`] (NK4-A 首亮实证)：
+/// panic 上下文里的 `util_stacktrace` 帧链读一旦触发缺页，IDT 分发会再
+/// panic（exception 臂取 SMP 状态），而 SMP 在 proc_init 前必然未初始化
+/// ——钩子自身成为无限递归的第二故障源，串口被同一消息刷屏淹没。
+/// 钩子入口 `swap(true)`：已在本钩子内则跳过 stacktrace（消息本身仍
+/// 打，第一现场不被吞）。钩子不存在"正常退出后复用"——panic 尾部是
+/// 死循环，标志无需复位。
+static PANIC_DIAG_ACTIVE: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
 /// Kernel panic renderer: C's `panic()` body minus the shutdown
 /// (C utility.c:30-39; `minix_shutdown(0)` at :49 stays deferred — zero
 /// Rust foundation, see 27-kernel-utility.md §6.3). Invoked by the
@@ -1867,13 +2024,23 @@ fn kernel_panic_diagnostic(message: &str) {
     // C utility.c:38 — "kernel on CPU %d: ". Single-CPU build: always
     // the BSP (per-CPU id lands with todo D-40); SMP_STATE uninitialized
     // (panic before init_proc_and_boot) falls back to 0.
-    let cpu = unsafe { smp_state_boot_unchecked() }
-        .bsp_cpu_id()
-        .raw() as u64;
+    // NK4-A 取证修正：原实现用 smp_state_boot_unchecked()（未初始化即
+    // panic），与本函数"诊断不得成为第二故障、panic 路径禁 expect"的
+    // 契约（上方注释）直接冲突——proc_init 之前的任何 panic 都会经钩子
+    // 递归再 panic，串口被重复刷屏淹没。改用 try 形态 + BSP 回退。
+    let cpu = unsafe { try_smp_state() }
+        .map(|smp| smp.bsp_cpu_id().raw() as u64)
+        .unwrap_or(0);
     Console::write_str("kernel on CPU ");
     Console::write_hex(cpu);
     Console::write_str(": ");
-    // C utility.c:39 — util_stacktrace().
+    // C utility.c:39 — util_stacktrace()。防重入：钩子里再进来的 panic
+    // （典型：栈走查缺页 → exception 臂 SMP 未初始化）只终止走查，不再
+    // 展开第二份诊断。
+    if PANIC_DIAG_ACTIVE.swap(true, Ordering::AcqRel) {
+        Console::write_str("(stacktrace skipped: recursive panic)\n");
+        return;
+    }
     crate::stacktrace::util_stacktrace();
 }
 
@@ -2543,6 +2710,16 @@ pub(crate) fn set_active_root_tracked(root: PhysBytes) {
     unsafe {
         minix_arch::CurrentTlbArch::set_active_root(root);
     }
+    // NK4-A fix26 取证路标（task1-close 裁决删除）：serial_fix26e 的旧两
+    // 分显示 rs 的切换死在 sa0 与 sa1 之间。本路标把区间收窄到 `mov cr3`
+    // 本身：cr3-done 缺失 = 切换指令或紧随其后的取指/栈访问在新表下死。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        C0::write_str("nk4a: cr3-done-0x");
+        C0::write_hex(root.0);
+        C0::write_str("\n");
+    }
     set_current_root_phys(root);
 }
 
@@ -3093,6 +3270,13 @@ fn finish_and_restore(
     let mut frame = <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
     <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(&ctx, &mut frame);
 
+    // NK4-A fix26 取证路标（task1-close 裁决删除）：走到这里说明 Stage
+    // 3-5 全程在 picked 的地址空间下活着，死点只剩 restore/iret。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        C0::write_str("nk4a: pre-restore-\n");
+    }
     // SAFETY: all `TrapReturnArch::restore_to_user` preconditions hold:
     // - the picked process's address space is active (switch_address_space
     //   ran before the misc/quantum stages);
@@ -3233,6 +3417,16 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             // C: proc.c:338-340 — `while (!(p = pick_proc())) idle();`
             let picked = loop {
                 if let Some(p) = pick_and_bill(table, smp, priv_table, cpu) {
+                    // NK4-A 取证路标（task1-close 裁决删除）：pick 命中谁。
+                    // serial_fix25c 显示 rs 已入队却从未上 CPU，本路标
+                    // 分辨"pick 从未轮到它"与"pick 了但恢复上下文失败"。
+                    #[cfg(not(feature = "mock"))]
+                    {
+                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                        C0::write_str("nk4a: pick->");
+                        C0::write_hex(p.0 as u64);
+                        C0::write_str("\n");
+                    }
                     break p;
                 }
                 idle(&section, table, smp, priv_table, cpu);
@@ -3250,8 +3444,88 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             tlb_must_refresh = table
                 .get(picked)
                 .is_some_and(|p| p.needs_tlb_refresh(crate::current_ptproc_nr()));
+            // NK4-A fix26 取证路标（task1-close 裁决删除）：serial_fix26 证
+            // 明 DM 窗口真值已入表但 rs 被 pick 后仍静默死。下面三点二分
+            // 死亡区间：sa1-after 缺失 = CR3 切换指令自身死；出现则死点在
+            // 切换后的续跑路径（Stage 3-5 / restore）。root= 打印 CR3 将收
+            // 到的页表根（serial_fix26b 死在 sa0/sa1 之间，需知写入了什么）。
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                let root_dbg = table
+                    .get(picked)
+                    .map_or(0xFFFF_FFFF_FFFF_FFFF, |p| p.p_seg.phys_root.0);
+                let cur_dbg = crate::current_root_phys().map_or(0, |r| r.0);
+                C0::write_str("nk4a: sa0-");
+                C0::write_hex(picked.0 as u64);
+                C0::write_str(" root=0x");
+                C0::write_hex(root_dbg);
+                C0::write_str(" cur=0x");
+                C0::write_hex(cur_dbg);
+                C0::write_str("\n");
+                // serial_fix26d：rs 的 sa1（CR3 读回）缺失 = 切换后首条
+                // 取指即死。切换前用 Direct Map 渠道（不依赖 CR3）walk 目
+                // 标表的三个紧随切换而被访问的样本 VA：本函数代码页
+                // (.text)、当前内核栈页 (.bss)、内核 DM 首样本页。缺页
+                // 打 NP+flags，命中打 PA — 与期望线性 PA 对照即知
+                // map_kernel 铺哪一段坏了。
+                if root_dbg != 0 {
+                    use crate::pte_walk::walk_x86_64;
+                    let probe_text = switch_address_space as *const () as u64;
+                    let stack_va: u64;
+                    // SAFETY: reading RSP has no side effects.
+                    unsafe { core::arch::asm!("mov {}, rsp", out(reg) stack_va, options(nomem, nostack, preserves_flags)) };
+                    let stack_va = stack_va & !0xFFF;
+                    let dm_probe = {
+                        let b = minix_arch::CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
+                        b + 0x20_0000 // kernel image PA 0x200000 的 DM VA
+                    };
+                    for (tag, va) in [
+                        (" text", probe_text & !0xFFF),
+                        (" stk", stack_va),
+                        (" dm", dm_probe),
+                    ] {
+                        match walk_x86_64(
+                            minix_types::PhysBytes(root_dbg),
+                            minix_types::VirBytes(va),
+                        ) {
+                            Some((pa, f)) => {
+                                C0::write_str("nk4a: probe");
+                                C0::write_str(tag);
+                                C0::write_str(" va=0x");
+                                C0::write_hex(va);
+                                C0::write_str(" -> pa=0x");
+                                C0::write_hex(pa.0);
+                                C0::write_str(" fl=0x");
+                                C0::write_hex(f.bits() as u64);
+                                C0::write_str("\n");
+                            }
+                            None => {
+                                C0::write_str("nk4a: probe");
+                                C0::write_str(tag);
+                                C0::write_str(" va=0x");
+                                C0::write_hex(va);
+                                C0::write_str(" -> NP\n");
+                            }
+                        }
+                    }
+                }
+            }
             // C: proc.c:349 — switch_address_space(p).
             switch_address_space(table, picked);
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                // serial_fix26c：rs 死在 sa0 之后 sa1 之前。sa2 打印
+                // switch 后的 CR3 读回值——出现且值正确 = mov to cr3 与
+                // 紧随取指都活了，死点在更后的续跑；未出现 = 切换瞬间死。
+                let cr3_now: u64;
+                // SAFETY: reading CR3 has no side effects.
+                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_now, options(nomem, nostack, preserves_flags)) };
+                C0::write_str("nk4a: sa1-after cr3=0x");
+                C0::write_hex(cr3_now);
+                C0::write_str("\n");
+            }
         }
         let picked = current.expect("scheduler loop: proc_ptr seeded or picked above");
 
@@ -3398,6 +3672,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
 
         let root_page = PhysBytes(0x1000);
@@ -3462,6 +3737,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let mut paging = MockPaging::new_from_page(PhysBytes(0x1000));
 
@@ -3704,6 +3980,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -3728,6 +4005,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);
@@ -3752,6 +4030,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let root_page = PhysBytes(0x1000);
         let _ = arch_boot_impl::<MockPaging>(&info, root_page);

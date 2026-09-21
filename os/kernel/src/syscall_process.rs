@@ -359,7 +359,11 @@ pub fn dispatch_exec(
             entry,
         );
         if let Some(rp) = proc_table.get_mut(target_nr) {
-            rp.cpu_context = cpu_context;
+            // NK4-A 首亮修复：走 set_boot_cpu_context（对位 C
+            // arch_proc_init → arch_proc_reset → setcontext(KTS_FULLCONTEXT)
+            // 的 memory.c:725）——exec 装新上下文同样必须种 style，
+            // 否则被 exec 的进程首次调度撞返回门 panic。
+            rp.set_boot_cpu_context(cpu_context);
         }
     }
 

@@ -159,7 +159,7 @@ pub struct DirectKernelCallTransport;
 impl KernelCallTransport for DirectKernelCallTransport {
     fn kernel_call(&self, message: &mut Message) -> i32 {
         // E1 slice 3: the real SYSCALL-leg trap (hosted builds keep -EIO).
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             return unsafe { crate::arch_trap::kernel_call_trap(message) };
         }
@@ -168,7 +168,7 @@ impl KernelCallTransport for DirectKernelCallTransport {
         // code in a0/x0) — see arch_trap::KERNEL_CALL_TRAP_NR.
         #[cfg(all(
             any(target_arch = "riscv64", target_arch = "aarch64"),
-            feature = "real-trap"
+            kernel_trap
         ))]
         {
             return unsafe { crate::arch_trap::kernel_call_trap(message) };

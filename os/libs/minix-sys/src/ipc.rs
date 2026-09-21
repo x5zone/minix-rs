@@ -540,7 +540,7 @@ impl IpcTransport for DirectTrapTransport {
     fn send(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
         // E1 slice 3: the real trap branch (hosted builds keep the -EIO
         // fallback — `int` in a hosted process is not a kernel boundary).
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -559,7 +559,7 @@ impl IpcTransport for DirectTrapTransport {
         source: Endpoint,
         message: &mut Message,
     ) -> Result<IpcStatus, TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -581,7 +581,7 @@ impl IpcTransport for DirectTrapTransport {
         destination: Endpoint,
         message: &mut Message,
     ) -> Result<(), TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -596,7 +596,7 @@ impl IpcTransport for DirectTrapTransport {
         Err(TrapStatus(minix_types::EIO))
     }
     fn notify(&self, destination: Endpoint) -> Result<(), TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -611,7 +611,7 @@ impl IpcTransport for DirectTrapTransport {
         Err(TrapStatus(minix_types::EIO))
     }
     fn sendnb(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -628,7 +628,7 @@ impl IpcTransport for DirectTrapTransport {
     fn senda(&self, table: &[AsyncSlot]) -> Result<(), TrapStatus> {
         // C: `eax = count, ebx = table` (SENDA_ARGS) — count rides the
         // endpoint register, the table pointer the message-pointer one.
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -646,7 +646,7 @@ impl IpcTransport for DirectTrapTransport {
         // MINIX_KERNINFO: the page address comes back through the
         // secondary return register (RBX on x86, a1 on riscv64) — see
         // set_secondary_ipc_return.
-        #[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+        #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, page) =
                 unsafe { crate::arch_trap::ipc_trap(crate::arch_trap::KERNINFO_NR, 0, 0) };
@@ -660,7 +660,7 @@ impl IpcTransport for DirectTrapTransport {
         // secondary return in a1/x1).
         #[cfg(all(
             any(target_arch = "riscv64", target_arch = "aarch64"),
-            feature = "real-trap"
+            kernel_trap
         ))]
         {
             let (ret, page) =

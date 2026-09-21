@@ -286,9 +286,24 @@ fn birth_fail() -> ! {
     not(feature = "std"),
     any(target_arch = "x86_64", target_arch = "riscv64", target_arch = "aarch64")
 ))]
+/// NK4-A fix23 临时出生路标（与 vm bootmark 同法：SYS_DIAGCTL 直达内核
+/// 串口；`kernel_trap` 由 minix-sys build.rs 对 freestanding 自动开启）。
+/// task1-close 裁决去留。fail-silent：通道不通时不改变出生行为。
+fn birth_mark(msg: &str) {
+    let _ = minix_sys::syscall::sys_diagctl_write(
+        &minix_sys::syscall::DirectKernelCallTransport,
+        msg,
+    );
+}
+#[cfg(all(
+    not(test),
+    not(feature = "std"),
+    any(target_arch = "x86_64", target_arch = "riscv64", target_arch = "aarch64")
+))]
 unsafe extern "C" fn rt_birth(ps_strings: u64) -> ! {
     use crate::init::{initialize_runtime, DirectTrapSource, IpcTableSelection};
 
+    birth_mark("nk4a: birth enter");
     // Stage 1 — descriptor check (C: ps_strings == NULL → _FATAL).
     let ps = match unsafe { read_process_strings(ps_strings) } {
         Ok(ps) => ps,
@@ -304,6 +319,7 @@ unsafe extern "C" fn rt_birth(ps_strings: u64) -> ! {
     // rewrite), so the linked-in minix-sys direct transports are the
     // senders — the C "in-libc fallback" shape.
     let state = initialize_runtime(&DirectTrapSource, IpcTableSelection::None);
+    birth_mark("nk4a: birth s3 runtime ok");
 
     // Stage 4 — publish: short name from argv[0] (may be absent when the
     // kernel passed an empty vector, as boot-time images do).
@@ -338,6 +354,7 @@ unsafe extern "C" fn rt_birth(ps_strings: u64) -> ! {
     unsafe extern "Rust" {
         fn main() -> i32;
     }
+    birth_mark("nk4a: birth s5 -> main");
     let exit_code = unsafe { main() };
 
     // Stage 6 — exit (C: exit(main(...)) reduced to the PM_EXIT send).

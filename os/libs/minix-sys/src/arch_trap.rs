@@ -21,7 +21,10 @@
 //!
 //! # Gating
 //!
-//! The trap bodies compile only under the `real-trap` feature on x86-64.
+//! The trap bodies compile only under `cfg(kernel_trap)` — set by
+//! `build.rs` for freestanding targets or the `real-trap` feature
+//! (NK4-A fix22: the per-package feature opt-in used to be the only
+//! gate, and every image module that forgot it silently got `-EIO`).
 //! Hosted test builds keep the `-EIO` transports: a stray `syscall`/`int`
 //! under the HOST kernel is indistinguishable from a real boundary at
 //! compile time (observed live: the host answered -ENOSYS), so the switch
@@ -57,7 +60,7 @@ pub fn errno_result(ret: i32) -> Result<(), super::ipc::TrapStatus> {
 ///
 /// Traps into the kernel. Requires a live kernel behind the vector-33
 /// gate and a valid `a2` pointer for message-carrying calls.
-#[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+#[cfg(all(target_arch = "x86_64", kernel_trap))]
 pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
     // RBX is reserved by LLVM on x86-64 and cannot be a declared operand
     // (same constraint as cpu_identity.rs) — yet the ABI requires it as
@@ -91,7 +94,7 @@ pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
 /// # Safety
 ///
 /// Traps into the kernel; `msg` must be a valid, writable user message.
-#[cfg(all(target_arch = "x86_64", feature = "real-trap"))]
+#[cfg(all(target_arch = "x86_64", kernel_trap))]
 pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
     let ret: i32;
     unsafe {
@@ -146,7 +149,7 @@ pub const KERNEL_CALL_TRAP_NR: i32 = 0;
 ///
 /// Traps into the kernel. Requires a live kernel behind the ecall boundary
 /// and a valid `a2` pointer for message-carrying calls.
-#[cfg(all(target_arch = "riscv64", feature = "real-trap"))]
+#[cfg(all(target_arch = "riscv64", kernel_trap))]
 pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
     let ret: usize;
     let status: usize;
@@ -170,7 +173,7 @@ pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
 /// # Safety
 ///
 /// Traps into the kernel; `msg` must be a valid, writable user message.
-#[cfg(all(target_arch = "riscv64", feature = "real-trap"))]
+#[cfg(all(target_arch = "riscv64", kernel_trap))]
 pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
     let ret: usize;
     unsafe {
@@ -210,7 +213,7 @@ pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
 ///
 /// Traps into the kernel. Requires a live kernel behind the svc boundary
 /// and a valid `a2` pointer for message-carrying calls.
-#[cfg(all(target_arch = "aarch64", feature = "real-trap"))]
+#[cfg(all(target_arch = "aarch64", kernel_trap))]
 pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
     let ret: usize;
     let status: usize;
@@ -231,7 +234,7 @@ pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
 /// # Safety
 ///
 /// Traps into the kernel; `msg` must be a valid, writable user message.
-#[cfg(all(target_arch = "aarch64", feature = "real-trap"))]
+#[cfg(all(target_arch = "aarch64", kernel_trap))]
 pub unsafe fn kernel_call_trap(msg: &mut minix_types::Message) -> i32 {
     let ret: usize;
     unsafe {

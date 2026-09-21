@@ -2260,11 +2260,19 @@ fn dispatch_vmctl(
 
         // ── VmInhibitClear: clear RTS_VMINHIBIT on target ──
         // C: do_vmctl.c:132-160
-        VmCtlParam::VmInhibitClear => vmctl_vminhibit_clear(proc_table, target_nr),
+        VmCtlParam::VmInhibitClear => {
+            let r = vmctl_vminhibit_clear(proc_table, target_nr);
+            nk4a_flags_mark("vminh-clear", proc_table, target_nr);
+            r
+        }
 
         // ── BootInhibitClear: clear RTS_BOOTINHIBIT on target ──
         // C: do_vmctl.c:165-167 — RTS_UNSET(p, RTS_BOOTINHIBIT)
-        VmCtlParam::BootInhibitClear => vmctl_boot_inhibit_clear(proc_table, target_nr),
+        VmCtlParam::BootInhibitClear => {
+            let r = vmctl_boot_inhibit_clear(proc_table, target_nr);
+            nk4a_flags_mark("bootinh-clear", proc_table, target_nr);
+            r
+        }
 
         // ── ClearMapCache: clear cached mappings ──
         // C: do_vmctl.c:161-164 — mem_clear_mapcache()
@@ -2281,7 +2289,11 @@ fn dispatch_vmctl(
         // C: arch_do_vmctl.c:48-50 → setcr3(p, SVMCTL_PTROOT, SVMCTL_PTROOT_V)
         // (see vmctl_set_addr_space for the full 5-step C mapping and
         // the vm_running C-bug correction note)
-        VmCtlParam::SetAddrSpace => vmctl_set_addr_space(proc_table, target_nr, value_raw, msg),
+        VmCtlParam::SetAddrSpace => {
+            let r = vmctl_set_addr_space(proc_table, target_nr, value_raw, msg);
+            nk4a_flags_mark("setaddr", proc_table, target_nr);
+            r
+        }
 
         // ── Arch-specific commands: GetPdbr, FlushTlb, InvlPg ──
         // C: handled by arch_do_vmctl() in arch_do_vmctl.c:38-65
@@ -2500,43 +2512,83 @@ fn mark_flush_tlb(proc_table: &mut crate::proc_table::ProcessTable, target_nr: P
     }
 }
 
+/// NK4-A 首亮取证路标（task1-close 裁决删除）：每个调度抑制腿走完后
+/// 打印目标最终 RTS 位图与 runnable 判定（EarlyConsole=COM1），一次
+/// 真机分清"旗没清干净"与"清了没入队/没被 pick"两类挂点。
+/// 只用 `write_str`/`write_hex`——运行时内核 bump 堆已耗尽，`format!`
+/// 在这里就是一次 76 字节分配失败（fix25b forensics 2026-09-21）。
+fn nk4a_flags_mark(
+    tag: &str,
+    proc_table: &crate::proc_table::ProcessTable,
+    nr: ProcNr,
+) {
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        let (flags, runnable) = proc_table
+            .get(nr)
+            .map_or((0xFFFF_FFFF, false), |p| {
+                (p.p_rts_flags.load(), p.is_runnable())
+            });
+        let queued = proc_table.is_in_scheduler(nr);
+        Console::write_str("nk4a: ");
+        Console::write_str(tag);
+        Console::write_str(" nr=");
+        Console::write_hex(nr.0 as u64);
+        Console::write_str(" flags=0x");
+        Console::write_hex(flags as u64);
+        Console::write_str(" runnable=");
+        Console::write_str(if runnable { "yes" } else { "no" });
+        Console::write_str(" queued=");
+        Console::write_str(if queued { "yes" } else { "no" });
+        Console::write_str("\n");
+    }
+    let _ = (tag, proc_table, nr);
+}
+
 /// VmInhibitClear — clear RTS_VMINHIBIT on the target.
 ///
 /// C: do_vmctl.c:132-160. C's assert on RTS_VMINHIBIT converts to EINVAL;
 /// SMP-only MF_SENDA_VM_MISS handling + stale TLB fill not yet implemented.
+///
+/// The clear goes through `rts_unset` (C: RTS_UNSET carries the
+/// ready-queue check, proc.h:216-224): without it a process whose last
+/// blocking bit was VMINHIBIT never reaches the run queue (NK4-A fix24
+/// found the same shape on BootInhibitClear below).
 fn vmctl_vminhibit_clear(
     proc_table: &mut crate::proc_table::ProcessTable,
     target_nr: ProcNr,
 ) -> KcallResult {
-    let target = proc_table.get_mut(target_nr);
-    match target {
-        Some(p) => {
-            // C: assert(RTS_ISSET(p, RTS_VMINHIBIT)) — convert to error
-            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::VMINHIBIT) {
-                return KcallResult::Ok(EINVAL);
-            }
-            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::VMINHIBIT);
-            KcallResult::Ok(0)
-        }
-        None => KcallResult::Ok(EINVAL),
+    // C: assert(RTS_ISSET(p, RTS_VMINHIBIT)) — convert to error (missing
+    // slot takes the same arm, as before).
+    if !proc_table
+        .get(target_nr)
+        .is_some_and(|p| p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::VMINHIBIT))
+    {
+        return KcallResult::Ok(EINVAL);
     }
+    proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::VMINHIBIT);
+    KcallResult::Ok(0)
 }
 
 /// BootInhibitClear — clear RTS_BOOTINHIBIT on the target.
 ///
-/// C: do_vmctl.c:165-167 — RTS_UNSET(p, RTS_BOOTINHIBIT).
+/// C: do_vmctl.c:165-167 — RTS_UNSET(p, RTS_BOOTINHIBIT). The `rts_unset`
+/// wrapper IS the C macro's ready-queue check (proc.h:216-224): the boot
+/// processes were already released from PROC_STOP by bsp_finish_booting,
+/// so clearing BOOTINHIBIT is the event that makes them runnable — a
+/// bare flag clear left every exec'd boot process parked forever
+/// (NK4-A fix24 forensics 2026-09-21: VM's `exec X ok` landmarks all
+/// passed, no boot process ever reached `_start`).
 fn vmctl_boot_inhibit_clear(
     proc_table: &mut crate::proc_table::ProcessTable,
     target_nr: ProcNr,
 ) -> KcallResult {
-    let target = proc_table.get_mut(target_nr);
-    match target {
-        Some(p) => {
-            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::BOOTINHIBIT);
-            KcallResult::Ok(0)
-        }
-        None => KcallResult::Ok(EINVAL),
+    if proc_table.get(target_nr).is_none() {
+        return KcallResult::Ok(EINVAL);
     }
+    proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::BOOTINHIBIT);
+    KcallResult::Ok(0)
 }
 
 /// SetAddrSpace — switch the target's page table root.
@@ -2574,62 +2626,82 @@ fn vmctl_set_addr_space(
 ) -> KcallResult {
     // SVMCTL_PTROOT = m1_i3 (same field as SVMCTL_VALUE)
     // SVMCTL_PTROOT_V = m1_p1 (virtual address of page table root)
-    let ptroot_phys = value_raw as u64; // m1_i3 (i32) → u64 physical address
+    //
+    // `as u32 as u64` preserves the C bit pattern: C assigns the `int`
+    // field to a `u32_t` cr3 parameter (modular conversion, NK4-A
+    // fix25 note — the previous plain `as u64` sign-extended physical
+    // roots ≥ 0x8000_0000 into 0xFFFFFFFF_8xxxxxxx). Wire width keeps
+    // the C i386 constraint: physical roots above 4 GB cannot travel
+    // this field (boot-allocated page tables are low; same as C).
+    let ptroot_phys = value_raw as u32 as u64; // m1_i3 (i32) → bit-preserving u64
     let ptroot_virt = unsafe { msg.m_u.m_m1.m1p1 }; // m1_p1
 
-    let target = proc_table.get_mut(target_nr);
-    match target {
-        Some(p) => {
-            // Steps 1-2: Set page table roots.
-            // C: p->p_seg.p_cr3 = cr3; p->p_seg.p_cr3_v = v;
-            p.p_seg.phys_root = minix_types::PhysBytes(ptroot_phys);
-            p.p_seg.virt_root = if ptroot_virt != 0 {
-                Some(minix_types::VirBytes(ptroot_virt))
-            } else {
-                None
-            };
-
-            // Step 3: If target is the current ptproc, reload the
-            // hardware root register (CR3/TTBR0/satp) so the new
-            // page table takes effect immediately.
-            // C: if (p == get_cpulocal_var(ptproc)) write_cr3(p->p_seg.p_cr3);
-            //
-            // The ptproc comparison uses proc-nr (i32) rather than
-            // pointer identity. This is equivalent because proc-nrs
-            // uniquely identify process slots in the ProcessTable
-            // (one-to-one mapping, no aliasing).
-            //
-            // `set_active_root_tracked` = C's write_cr3 + the Rust
-            // CR3-mirror update: the scheduler's
-            // `switch_address_space` compares against the mirror
-            // (C reads the live CR3), so the mirror must reflect
-            // every root change or the first dispatch after this
-            // would needlessly reload the same root.
-            if crate::current_ptproc_nr() == Some(p.p_nr) {
-                crate::set_active_root_tracked(
-                    minix_types::PhysBytes(ptroot_phys),
-                );
-            }
-
-            // Step 4: arch_enable_paging — no-op on 64-bit
-            // (paging enabled in `arch_boot_impl` via `Paging::enable`).
-
-            // Step 5: Clear VMINHIBIT.
-            // C: RTS_UNSET(p, RTS_VMINHIBIT) — allows scheduling.
-            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::VMINHIBIT);
-
-            // C bug correction: set vm_running = true when target is VM.
-            // C source omits this (never writes vm_running=1). Rust
-            // corrects the omission so VM is marked as running after
-            // it has switched to its own page table.
-            if p.p_nr == crate::proc::proc_nr::VM_PROC_NR {
-                crate::set_vm_running(true);
-            }
-
-            KcallResult::Ok(0)
-        }
-        None => KcallResult::Ok(EINVAL),
+    // C: setcr3() is `static void` with no failure path; the slot-missing
+    // case (impossible in C — the caller resolved the slot first) maps to
+    // EINVAL here, same as before.
+    if proc_table.get(target_nr).is_none() {
+        return KcallResult::Ok(EINVAL);
     }
+    {
+        let p = proc_table
+            .get_mut(target_nr)
+            .expect("slot existence checked above");
+
+        // Steps 1-2: Set page table roots.
+        // C: p->p_seg.p_cr3 = cr3; p->p_seg.p_cr3_v = v;
+        p.p_seg.phys_root = minix_types::PhysBytes(ptroot_phys);
+        p.p_seg.virt_root = if ptroot_virt != 0 {
+            Some(minix_types::VirBytes(ptroot_virt))
+        } else {
+            None
+        };
+
+        // Step 3: If target is the current ptproc, reload the
+        // hardware root register (CR3/TTBR0/satp) so the new
+        // page table takes effect immediately.
+        // C: if (p == get_cpulocal_var(ptproc)) write_cr3(p->p_seg.p_cr3);
+        //
+        // The ptproc comparison uses proc-nr (i32) rather than
+        // pointer identity. This is equivalent because proc-nrs
+        // uniquely identify process slots in the ProcessTable
+        // (one-to-one mapping, no aliasing).
+        //
+        // `set_active_root_tracked` = C's write_cr3 + the Rust
+        // CR3-mirror update: the scheduler's
+        // `switch_address_space` compares against the mirror
+        // (C reads the live CR3), so the mirror must reflect
+        // every root change or the first dispatch after this
+        // would needlessly reload the same root.
+        if crate::current_ptproc_nr() == Some(p.p_nr) {
+            crate::set_active_root_tracked(
+                minix_types::PhysBytes(ptroot_phys),
+            );
+        }
+
+        // Step 4: arch_enable_paging — no-op on 64-bit
+        // (paging enabled in `arch_boot_impl` via `Paging::enable`).
+
+        // C bug correction: set vm_running = true when target is VM.
+        // C source omits this (never writes vm_running=1). Rust
+        // corrects the omission so VM is marked as running after
+        // it has switched to its own page table.
+        if p.p_nr == crate::proc::proc_nr::VM_PROC_NR {
+            crate::set_vm_running(true);
+        }
+    }
+
+    // Step 5: Clear VMINHIBIT — this is THE boot-path clear leg.
+    // C: RTS_UNSET(p, RTS_VMINHIBIT) (arch_do_vmctl.c:32), fired for
+    // every pt_bind → VMCTL_SETADDRSPACE (exec_bootproc main.c:355,
+    // do_clear exit.c:137, …). The `rts_unset` wrapper carries the
+    // ready-queue check (NK4-A fix24/25: a bare clear left boot
+    // processes VMINHIBIT-parked even after BOOTINHIBIT was lifted —
+    // this arm was the third instance of that shape). For boot
+    // processes the enqueue does not fire yet here (BOOTINHIBIT still
+    // set); it fires on the later BOOTINHIBIT_CLEAR, in C order.
+    proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::VMINHIBIT);
+
+    KcallResult::Ok(0)
 }
 /// Dispatch SYS_DIAGCTL.
 ///

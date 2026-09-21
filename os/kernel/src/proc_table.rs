@@ -705,7 +705,8 @@ impl ProcessTable {
     /// `p_nextready` (meaning it's linked in a queue chain). This is a
     /// conservative check: a process that is the tail of a queue and has
     /// `p_nextready == None` will only be detected by scanning all queue heads.
-    fn is_in_scheduler(&self, nr: ProcNr) -> bool {
+    // NK4-A 取证路标临时 pub(crate)（syscall.rs `nk4a_flags_mark`），task1-close 回收
+    pub(crate) fn is_in_scheduler(&self, nr: ProcNr) -> bool {
         for q in 0..16 {
             let mut current = self.sched.queue_head(q);
             while let Some(cur_nr) = current {

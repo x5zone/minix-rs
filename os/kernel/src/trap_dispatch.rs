@@ -341,6 +341,14 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(crate::current_cpu_id().raw() as u64);
             Console::write_str(" rip ");
             Console::write_hex(frame.rip);
+            // NK4-A 首亮取证（临时）：CR2 = 真实缺页地址。rip 只能说明
+            // 执行到了哪，判定"哪个 VA 没映射"必须看 cr2。
+            let cr2: u64;
+            unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)); }
+            Console::write_str(" cr2 ");
+            Console::write_hex(cr2);
+            Console::write_str(" err ");
+            Console::write_hex(frame.errcode);
             Console::write_str("\n");
             panic!("pagefault in VM");
         }

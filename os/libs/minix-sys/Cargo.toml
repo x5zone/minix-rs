@@ -10,6 +10,9 @@ name = "minix_sys"
 path = "src/lib.rs"
 
 [features]
+# Host-side FORCE switch for the real trap legs. Freestanding targets get
+# the real traps automatically via `cfg(kernel_trap)` (build.rs — the
+# single authority; see its doc comment for the NK4-A fix20 history).
 real-trap = []
 # Domain-external client modules (E-MINSYS-SCOPE plan A): each feature gates
 # one other stage's client library so its protocol evolution cannot leak
@@ -25,3 +28,8 @@ default = ["ds", "rmib", "devman", "input", "usb", "socket"]
 
 [dependencies]
 minix-types = { workspace = true }
+
+[lints.rust]
+# `kernel_trap` is emitted by build.rs (freestanding target or the
+# real-trap force switch) — see its doc comment.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kernel_trap)'] }
