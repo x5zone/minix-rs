@@ -1204,28 +1204,56 @@ impl VmServer {
             }
         };
 
-        let VmContext { page_alloc, page_frames, .. } = &mut self.ctx;
+        let VmContext { page_alloc, page_frames, page_cache, vfs_queue, .. } = &mut self.ctx;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
             None => return false,
         };
-        // G-V12-8: the CHECK verdict tells the kernel the range is mapped —
-        // the CoW resolution inside must also write the PTEs, or the process
-        // re-faults on resume (C: handle_memory_start → pt_writemap).
+        // C: VMPTYPE_CHECK 的 handle_memory_start（pagefaults.c:311-330）
+        // 逐页调 map_handle_memory——读故障（wrflag=false）同样保证页面
+        // 已映射进目标页表，wrflag 只决定 CoW 是否破解。此前经由
+        // handle_memory_once 的读路径只确认 region 存在就返回 Ok、不写
+        // 任何 PTE——内核重派 data_copy_vmcheck 仍 walk=NP，挂起-服务-
+        // 重派死循环（真机 NK4-A C-3 c9a 轮：memreq ok=1 后 DIAGCTL 重派
+        // 仍 susp-again，2026-09-22）。此处走缺页路径同一核心
+        // handle_pagefault（G-V12-8：映射必须落 PTE，记账与硬件表一致）。
         let (regions, pt) = proc.mem_parts_mut();
-        crate::fork::handle_memory_once(
-            regions,
-            frames,
-            page_alloc,
-            minix_types::VirBytes(req.start),
-            minix_types::VirBytes(req.length),
-            req.write,
-            pt,
-        )
-        .is_ok()
+        let page_mask = crate::region::PAGE_SIZE as u64 - 1;
+        let mut va = req.start & !page_mask;
+        let end = req.start.saturating_add(req.length);
+        while va < end {
+            let region = match regions.find_mut(minix_types::VirBytes(va)) {
+                Some(r) => r,
+                None => return false,
+            };
+            match crate::cow_exec_pf::handle_pagefault(
+                req.target,
+                region,
+                frames,
+                page_alloc,
+                minix_types::VirBytes(va),
+                req.write,
+                table,
+                page_cache,
+                vfs_queue,
+                pt,
+            ) {
+                Ok(crate::cow_exec_pf::PagefaultAction::Handled)
+                | Ok(crate::cow_exec_pf::PagefaultAction::MappedNewPage)
+                | Ok(crate::cow_exec_pf::PagefaultAction::CowResolved) => {}
+                // VFS 后备页需异步 I/O：C 在此处挂请求等 VFS 完成后再答；
+                // 本轮 fail closed（ok=0 → 内核按 Fault 处理），登记不假完成。
+                Ok(crate::cow_exec_pf::PagefaultAction::Suspended)
+                | Ok(crate::cow_exec_pf::PagefaultAction::AccessViolation) => return false,
+                Err(_) => return false,
+            }
+            // 单页步进；region 边界由下一轮 find_mut 重查（C
+            // map_handle_memory 逐页遍历同形）。
+            va += crate::region::PAGE_SIZE as u64;
+        }
+        true
     }
-
     /// Main event loop. Never returns (C: main.c:113-193).
     ///
     /// Per-iteration work lives in [`Self::run_once`] so tests can drive a
@@ -2462,11 +2490,16 @@ mod tests {
             drop(active);
             {
                 let mut proc = table.get_active(slot).unwrap();
-                proc.regions_mut().insert(crate::region::VirRegion::new(
-                    VirBytes(0x3000_0000),
-                    VirBytes(0x4000),
-                    crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
-                )).unwrap();
+                // memtype 必须在位（C 的每个 VM region 都有类型；
+                // handle_pagefault 经 memtype 分派，None 即 NoMemType）。
+                proc.regions_mut()
+                    .insert(crate::region::VirRegion::with_memtype(
+                        VirBytes(0x3000_0000),
+                        VirBytes(0x4000),
+                        crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+                        &crate::memtype::MEM_TYPE_ANON,
+                    ))
+                    .unwrap();
             }
 
             // Scripted kernel: CHECK over the region, then queue empty(与
@@ -3762,11 +3795,16 @@ mod tests {
             drop(active);
             {
                 let mut proc = table.get_active(slot).unwrap();
-                proc.regions_mut().insert(crate::region::VirRegion::new(
-                    VirBytes(0x3000_0000),
-                    VirBytes(0x4000),
-                    crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
-                )).unwrap();
+                // memtype 必须在位（C 的每个 VM region 都有类型；
+                // handle_pagefault 经 memtype 分派，None 即 NoMemType）。
+                proc.regions_mut()
+                    .insert(crate::region::VirRegion::with_memtype(
+                        VirBytes(0x3000_0000),
+                        VirBytes(0x4000),
+                        crate::region::VrFlags::WRITABLE | crate::region::VrFlags::ANON,
+                        &crate::memtype::MEM_TYPE_ANON,
+                    ))
+                    .unwrap();
             }
 
             // Scripted kernel: CHECK over the region, then queue empty.

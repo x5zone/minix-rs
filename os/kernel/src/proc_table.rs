@@ -302,6 +302,14 @@ impl ProcessTable {
     /// details via MEMREQ_GET, not the signal number.
     pub fn vm_enqueue_and_notify_vm(&mut self, nr: ProcNr, priv_table: &mut crate::kpriv::PrivTable) {
         let vm_ep = Endpoint::from_generation_slot(0, crate::proc::proc_nr::VM_PROC_NR.0);
+        // C RTS_SET(RTS_VMREQUEST) 的出队半（proc.h:216-224；vm_suspend 置位
+        // 点 proc.c:245）：挂起进程必须同时离开就绪队列。缺此半则进程留在
+        // 队列被 spin-pick——调度器每次选中它、发现 VMREQUEST 未清又跳过，
+        // 高优先级进程独占 CPU 饿死 VM（真机 NK4-A C-3 c9a 轮：stage 3a
+        // 重派再挂起后 RS spin-pick 10.6 万次，VM 得不到 CPU 服务后续
+        // memreq，2026-09-22）。幂等：SYSCALL 停车臂等调用方此前的显式
+        // dequeue 与此重复无副作用。
+        self.dequeue_if_blocked(nr);
         let was_empty = {
             // R-15 (2026-09-07): INVARIANT: `nr` is a caller-validated ProcNr
             // resolved from the process table (the just-suspended process);
