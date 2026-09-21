@@ -29,6 +29,49 @@ NK4-A = 生产启动链（boot-shim 装载 kernel + 12 模块 + imgrd）首次�
 （fix22-27b+ 系列，自称任务名"fork 系统调用重写"——**系账本目录名误用**，
 其 diff 实测零 fork 相关代码，全部是 nk4a boot 路径工作），用户不信任其产物。
 
+## §1.5 它到底干了什么（接手方改动全像，基于 940ad8363..HEAD 实测 diff）
+
+**接手时的挂点**：内核活到 `kernel: kmain Phase A enter` 后静默（前棒路标终点）。
+Phase A/A.2 的语义 = 用 KernelInfo.memmap（conventional-only 快照）初始化
+FREE_MEMMAP 并切割 boot 模块占页。
+
+**它的诊断（第三层根因，前棒只修到第二层）**：前棒把 memmap 快照挪到了
+root/bump 分配之后，但 **kernel 段与 12 个 boot module 的 allocate_pages 发生
+在快照之后**——这些页在快照里仍是 conventional。内核 VM bootstrap 拿这张图
+去切割模块占页/建 VM 区域时，走进活页或在 conventional 区里切出 13 个
+exclusion 碎片，撑爆 VmBootRegions 容量。它的取证注记："shim printed memmaps
+conv=12"（快照含 12 个 conventional 区）。
+
+**它的修法（+2439 行的全部去向）**：
+1. **快照三移**：memmap 快照 + `assert_bootstrap_outside_memmap` 双守卫挪到
+   **全部 LOADER_DATA 分配完成之后、ExitBootServices 之前**（最终空闲态）。
+   守卫是搬家重挂，非删除（已核验新位置）。
+2. **KernelInfo 协议 v6（ABI 变更，评审重点）**：minix-boot 的 KernelInfo 增
+   `reserved_regions` 身份窗口字段，"全部构造点同步"——这是 boot-shim↔kernel
+   的交接契约变更，必须核验：构造侧（shim）与消费侧（kernel/VM）字段一致、
+   三架构 test 载体同步、minix-boot 测试覆盖。
+3. **身份窗口机制**（fix27b，847 行 `vm_handoff.rs` + shim 双清单快照 +
+   `build_identity_windows` + `map_kernel` 第 4 段）：为 VM 的直接映射窗口
+   建立 bootstrap 期覆盖。
+4. **VM 侧拆分机制**（fix22-26）：huge-page 叶子拆 4KiB（保翻译/保旗标，
+   `Err(NotSupported)` 缺省语义）+ `kernel_gateway.rs`（kernel→VM 页分配
+   网关 47 行）+ `bitmap_alloc` 扩展 + `global.rs` +257 + `vm_server` 消费
+   181 行——VM PMM 获得页粒度 unmap/remap 能力。
+5. **bootmark 路标 crate**：新建诊断路标 crate（三架构 test 载体各 +1 行接线）。
+6. **取证路标**：kmain A.1/A.1b/A.2a/A.2b 细分打印（fix27 系列，接续前棒的
+   boot_stage! 体系）。
+
+**它的状态**：29+ 轮迭代，最后可见检查 MARK=0（未达 rc marker）、第 29 轮曾有
+E0133 编译错误（后续 commit 是否清掉待接手时实测）。用户给它两轮到停顿点，
+之后由本会话评审。
+
+**评审含义**：它做的不是 symptom 压制，而是把 VM bootstrap 从"conventional
+快照 + 切洞"重设计为"reserved_regions + 身份窗口 + 页粒度 PMM"——这是一个
+**协议级重设计**（KernelInfo v6 是 shim↔kernel ABI），方向可能正确，但：
+ABI 变更是否所有构造/消费点一致、847 行新机制的容量与碎片数学是否成立、
+测试是否钉住关键不变量、既有 2MiB/1GiB 映射契约是否被无意破坏——这四问
+就是评审的主战场。
+
 ## §2 任务总定义
 
 基线 commit = `940ad8363`（接手前最后 commit）。评审范围 =
