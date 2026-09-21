@@ -159,12 +159,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static VEC_SAMPLE: AtomicUsize = AtomicUsize::new(0);
         let vn = VEC_SAMPLE.fetch_add(1, AtomicOrd::Relaxed);
-        if vn < 40 {
+        // 迭代10：只采样 PIT（v=0x50）——每个时钟 tick 打印被打断者的
+        // rip，即 RS 用户态自旋点的周期采样（RS ELF 可符号化）。
+        if vector == 0x50 && vn < 400 {
             use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
             C0::write_str("nk4a: vs");
             C0::write_hex(vn as u64);
-            C0::write_str(" v=0x");
-            C0::write_hex(vector as u64);
             C0::write_str(" rip=0x");
             C0::write_hex(frame.rip);
             C0::write_str("\n");
