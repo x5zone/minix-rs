@@ -335,10 +335,26 @@ pub fn plan(
         to: staging.join("EFI/BOOT/BOOTX64.EFI"),
         note: "boot-shim 入包为固件默认加载项",
     });
-    let mut copy_pairs: Vec<(PathBuf, String)> = vec![(
-        staging.join("EFI/minix/kernel.elf"),
-        "::EFI/minix/kernel.elf".into(),
-    )];
+    // boot-shim 本体也是 ESP 文件：staging 只进了工作树，固件加载的是
+    // 盘上的 ::/EFI/BOOT/BOOTX64.EFI（首装配漏列即 UEFI Shell 落地，
+    // test-cmd-smoke 首跑实证）。startup.nsh 是本固件的自动引导 belt-
+    // and-suspenders（test-sysboot 判例：倒计时后逐行执行）。
+    actions.push(Action::Write {
+        path: staging.join("startup.nsh"),
+        bytes: b"echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\nBOOTX64.EFI\r\n".to_vec(),
+        note: "startup.nsh（固件自动引导脚本，test-sysboot 判例）",
+    });
+    let mut copy_pairs: Vec<(PathBuf, String)> = vec![
+        (
+            staging.join("EFI/BOOT/BOOTX64.EFI"),
+            "::EFI/BOOT/BOOTX64.EFI".into(),
+        ),
+        (staging.join("startup.nsh"), "::startup.nsh".into()),
+        (
+            staging.join("EFI/minix/kernel.elf"),
+            "::EFI/minix/kernel.elf".into(),
+        ),
+    ];
     copy_pairs.push((staging.join("EFI/minix/imgrd"), "::EFI/minix/imgrd".into()));
     for entry in crate::manifest::BOOT_MODULES.iter() {
         copy_pairs.push((
@@ -577,6 +593,9 @@ mod tests {
         assert!(esp.ends_with("minix.img"));
         // mtools 组装段在位。
         assert!(text.contains("mmd") && text.contains("mcopy") && text.contains("mkfs.vfat"));
+        // boot-shim 入 ESP 为固件默认加载项（首装配漏列 = UEFI Shell
+        // 落地，test-cmd-smoke 首跑实证）+ 自动引导脚本。
+        assert!(text.contains("BOOTX64.EFI") && text.contains("startup.nsh"));
     }
 
     /// 非 x86_64 架构 honest bail：装机面不装不可启动机的镜像。
