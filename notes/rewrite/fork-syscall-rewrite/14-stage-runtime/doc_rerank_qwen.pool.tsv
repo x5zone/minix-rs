@@ -1,0 +1,73 @@
+编号	名称	类型	来源类型	现有位置（文档与小节）	锚点（C 源码 / 制品 / 文档）	读者收益（学会它能回答什么问题）
+主表说明	本文件是 doc_rerank_qwen.md §2 知识点池的逐条展开：K-001~K-038 为存量（来自现有 15 篇），K-101~K-107 为新增（代码/制品已存在但无文档归属）。多 AI 汇总时以「名称 + 锚点」为对齐键。簇与条的对应见最末列备注。	-	-	-	-	-
+K-001a	kerninfo 页三组字段与只读映射	数据结构	存量	01 §2.2	minix3/include/minix/type.h:214-247	进程如何拿到内核公布的只读信息页？
+K-001b	MAGIC 值 0xfc3b84bf 校验	约束	存量	01 §2.2	minix3/minix/lib/libc/sys/init.c:20-32	运行时凭什么确认 kerninfo 页有效？
+K-001c	ki_flags 位标志	数据结构	存量	01 §2.2	type.h:214-247	页里的 flags 承载哪些全局开关？
+K-002a	kuserinfo 结构与端点数组	数据结构	存量	01 §2.1	type.h:205-212	用户态看到的 IPC 端点表长什么样？
+K-002b	KUSERINFO_HAS_FIELD 版本探测	机制	存量	01 §2.1	type.h:205-212	旧库跑在新核上如何安全探测字段是否存在？
+K-003a	get_minix_kerninfo 查询路径	接口	存量	01 §2.3	kernel_utils.c:25-62	kerninfo 地址从哪两条路获得？
+K-003b	minix_get_user_sp 双回退	机制	存量	01 §2.3	kernel_utils.c:25-62	用户栈指针拿不到时如何降级？
+K-004a	初始栈镜像计算与填充（调用方 libc）	机制	存量	01 §2.4	minix3/minix/lib/libc/sys/stack_utils.c:76,119	exec 时 argc/argv/envp 如何摆进栈？
+K-004b	ps_strings 结构	数据结构	存量	01 §2.5	minix3/include/minix/exec.h:104-116	_crt 起始时 RBX 指向的那块是什么？
+K-005	crt0.S 六指令入口桩与寄存器搬运	机制	存量	02 §2.1	minix3/lib/csu/arch/x86_64/crt0.S:43-49	_start 到 ___start 之间汇编做了什么？
+K-006a	___start 发布 environ	机制	存量	02 §2.3	crt0-common.c:150-165	envp 如何变成全局 environ？
+K-006b	___start 扫斜杠推 __progname	机制	存量	02 §2.3	crt0-common.c:150-165	argv[0] 短名怎么算出来？
+K-006c	_init 运行 .init_array 再进 main	机制	存量	02 §2.3	crt0-common.c:177-191	main 之前构造器按什么顺序跑？
+K-007	crtbegin 构造器/析构器逆序兼容层	机制	存量	02 §2.4	lib/csu/common/crtbegin.c:72-97	atexit 与 .fini_array 谁先执行？
+K-008	静态链接 vs 动态加载分支（rtld）	架构演进	存量	02 §1.3/§3	crt0-common.c:167-175	本运行时为什么永不进动态加载器分支？
+K-009a	__minix_init 查询 kerninfo	机制	存量	03 §2.1	init.c:20-32	谁在 main 前把 ipcvecs 装好？
+K-009b	MAGIC 校验失败即停	约束	存量	03 §2.1	init.c:20-32	校验不过会怎样？
+K-009c	ipcvecs 安装失败清零继续（not fatal）	不变量	存量	03 §2.1	init.c:20-32	为什么装向量失败不算致命？
+K-010	向量表类型 + 内联包装 + 双重条件安装	数据结构·不变量	存量	03 §2.2	ipc.h:2786-2834	系统调用号如何映射到陷入函数？
+K-011a	errno 全局槽与 __errno()	概念	存量	03 §2.3	_errno.c:44-55	无符号返回值怎么还原成 errno？
+K-011b	TLS 与单线程模型（A-4/A-5）	架构演进	存量	03 §1.3	_errno.c:44-55	为什么当前 errno 不需要真正的线程局部存储？
+K-012a	environ 哨兵 0x53535353	数据结构	存量	03 §2.4	environ.c	environ 数组末尾如何识别？
+K-012b	progname 只读约束	约束	存量	03 §2.5	get/setprogname.c	为什么 progname 不可写？
+K-013	六种通信原语语义与共享陷入约定	概念·机制	存量	04 §1	ipcconst.h:6-14	SEND/RECEIVE/SENDREC/NOTIFY/SENDNB/KERNINFO/SENDA 各自的阻塞语义？
+K-014	状态字两段编码（callnr/flags）+ 可信消息不回复	约束	存量	04 §2.1	ipcconst.h:20-35	一次 IPC 的返回状态里编了几层信息？
+K-015a	六个 _ipc.S 汇编陷入函数	机制	存量	04 §2.3	libc/arch/i386/sys/_ipc.S	陷入指令具体是谁发的？
+K-015b	ipc_minix_kerninfo.S 特殊向量	机制	存量	04 §2.4	ipc_minix_kerninfo.S	取 kerninfo 为什么走独立汇编？
+K-016	批量异步发送队列（asynsend 五步 + 取错）	机制·数据结构	存量	04 §2.5	asynsend.c:25-188, ipc.h:2745-2762	一次要发多条时如何批量且不阻塞？
+K-017a	_syscall 四步协议	接口·协议	存量	05 §2.1	syscall.c:9-25	一个普通系统调用封装的公共骨架是什么？
+K-017b	两层失败（IPC 层/调用层）	约束	存量	05 §2.1	syscall.c:9-25	返回值负号区分哪两级错误？
+K-018	_loadname 40 字节双路径打包	机制	存量	05 §2.2	loadname.c:7-19, ipc.h:761-767	长路径怎么塞进 56 字节消息？
+K-019	_kernel_call ENOTREADY 线性退避重试	机制	存量	05 §2.3	kernel_call.c:7-21, tickdelay.c	内核还没准备好时如何等待？
+K-020a	堆起点 end 符号（brksize.S）	机制	存量	06 §2.1	brksize.S	堆从哪里开始？
+K-020b	弱别名覆盖	机制	存量	06 §2.2	brksize.S	链接期怎么替换默认值？
+K-021	sbrk 相对移动 + 方向回绕检查	约束	存量	06 §2.3	sbrk.c:13-25	怎么判断 brk 移动溢出？
+K-022a	NetBSD malloc 两条路	概念	存量	06 §2.4	malloc.c:317,377-388	C 侧上层分配器怎么切分？
+K-022b	Rust slab 替换（A-3）	架构演进	存量	06 §3.2	malloc.c 对照 minix-rt	改写后分配器换成什么？
+K-023a	kputc 攒后发 + DIAG_BUFSIZE 2000	机制	存量	07 §2.1	kputc.c:17-32	诊断字符怎么缓冲再刷出？
+K-023b	diagctl 四操作码	接口	存量	07 §2.2	sys_diagctl.c:5-27, com.h:412-416	用户态通过哪个调用把缓冲送内核？
+K-024	panic 八阶梯子 + 弱别名钩子	机制	存量	07 §2.3	panic.c:21-67	用户态 panic 逐级兜底都做什么？
+K-025	itoa/stderr 打印辅助（含 C 五位局限）	工具	存量	07 §2.4	itoa.c:9-35, stderr.c:6-12	panic 时不依赖文件系统怎么打印数字？
+K-026	panic_handler 链接唯一性 + 注册表住 minix-types	架构演进·约束	存量	07 §3.4	minix-types::diagnostic	多个 crate 谁提供 panic 落地？
+K-027a	PM 生命族 fork/exit/execve/wait4	机制	存量	08 §2.1-2.4	fork.c, _exit.c, execve.c, wait4.c	进程四件套各自的 IPC 形状？
+K-027b	双回话/一去不回两种模型	概念	存量	08 §2.2	fork.c, execve.c	exec 与 fork 回复模式为何不同？
+K-028a	PM 信号族 kill/raise 范围检查	机制	存量	08 §2.5	kill.c, raise.c	发信号前如何校验目标？
+K-028b	服务端协议变体 srv_fork/taskcall	协议	存量	08 §2.6	srv_fork.c, taskcall.c:9	服务端与客户端调用面差异？
+K-029	调用号清单 PM_BASE + 端点 0	接口	存量	08 §2.7	callnr.h:9-60, com.h:59	PM 调用号从几开始、发到哪个端点？
+K-030a	VFS 四形状（读写/开关/定位/散列）	概念	存量	09 §1-2	read.c, open.c, lseek.c, vectorio.c	文件调用可以归纳成几种模板？
+K-030b	select 等待形状	机制	存量	09 §3.4	select 相关	多路等待走哪条路？
+K-031	指针载荷三变体（stat/ioctl/fcntl/getdents）+「魔法授权」	机制	存量（未讲透）	09 §2.7/§3.5	stat.c, ioctl.c, ipc.h	服务端怎么拿到用户缓冲区指针？（本篇不展开，见 K-101）
+K-032a	打开分派（创建位道岔）	机制	存量	09 §2.2	open.c	create 位如何分叉 O_RDONLY/RW？
+K-032b	LP64 内联 32 收缩（99 裁决）	约束	存量	09 §3.2	ipc.h:761-767	64 位下路径内联长度为什么是 32？
+K-033a	VM 三形状（映射七字段/边界/查询）	概念	存量	10 §1-2.1	mmap.c:21-171	mmap 消息里带了哪七个字段？
+K-033b	替办模型 + 哨兵消除	机制	存量	10 §2.2-2.3	mmap.c	VM 替客户端办什么、用什么哨兵表达无？
+K-034a	VM 客户端库族	接口	存量	10 §2.4	vm_fork.c, vm_*.c	VM 面向客户端暴露哪些封装？
+K-034b	余量清单（info/procctl/cache/rusage/willexit/unmap_phys/vfs_mmap）	接口	存量	10 §2.5	com.h:627-780	还有哪些零散 VM 调用？
+K-035	misc 四解法（sleep 复用 select/svrctl 分派/kerninfo 直读/tsc 拼接）	机制	存量	11 §1-3	nanosleep.c, svrctl.c, getticks.c, read_tsc_64.c	不属于四大服务的调用怎么办？
+K-036	RS 三步（现查/反查/路由）+ 无缓存决定	机制·约束	存量	12 §1-2	minix_rs.c, getepinfo.c, getsysinfo.c	怎么按名字找到服务端点、为什么不缓存？
+K-037	常量对账（errno 115/signal 32/调用号分段/端点排序）+ 权威归属	约束·工具	存量	13 §2-3	errno.h, signal.h, callnr.h, com.h	这些数值以谁为准、彼此怎么对齐？
+K-038a	endpoint/generation	概念	存量	99 §1.1	type.h	端点为什么要配一个代数号？
+K-038b	message 56B LP64 判例	协议·架构演进	存量	99 §1.2	ipc.h	一条 IPC 消息到底多少字节、怎么摆？
+K-038c	调用号归一 + 全局状态表	概念	存量	99 §1.3-1.4	com.h, kernel_call.rs	各服务调用号如何统一编码？
+K-101a	用户态授权表 cpf grant	机制·数据结构	新增	无（doc09 仅「魔法授权」悬空）	minix3/minix/lib/libsys/safecopies.c	服务端凭什么直写用户缓冲？
+K-101b	sys_setgrant 注册	接口	新增	无	safecopies.c	授权表槽位怎么登记？
+K-101c	grant/revoke 纯内存编辑 + seq 防 ABA	机制·不变量	新增	无	os/libs/minix-sys/src/grant.rs:1-18	回收槽位如何避免被复用错读？
+K-102	64 位真陷阱 ABI（syscall/int 0x21 向量 33；RCX=callnr/RAX=endpoint/RBX=msgptr）	接口·协议·架构演进	新增	无（doc04 只讲 i386）	arch_trap.rs:1-30	64 位下系统调用寄存器怎么约定？
+K-103	多架构 _start 入口桩（x86-64/riscv64/aarch64）	机制·架构演进	新增	无（doc02 单架构）	os/libs/minix-rt/src/crt0.rs:323-380, qemu-tests/test-rt-birth-{aarch64,riscv64}.sh	非 x86 平台的入口寄存器约定是什么？
+K-104	no_std 构建与 feature 门（default=std/real-trap/panic-handler/alloc-global）	工具·工程·约束	新增	无	os/libs/minix-rt/Cargo.toml, os/libs/minix-sys/Cargo.toml:[features]	编一个真机二进制要开哪些 feature？
+K-105	用户镜像布局与静态链接装配（text/data/bss/heap@end/stack/mmap）	数据结构·工具·工程	新增	部分散在 02/06	brksize.S, lib/csu/common/crtbegin.c, 链接脚本	一个用户进程的地址空间分几段、各段边界？
+K-106	测试基建三形态（CannedTransport/real-trap/rt-birth 真机五断言）	测试·工具	新增	散落各篇 §5	ipc.rs Canned*, arch_trap.rs, qemu-tests/test-rt-birth.sh	无硬件时怎么测、真机上冒烟测验证什么？
+K-107	wait 状态解码（WIFEXITED/WIFSIGNALED/WUNTRACED → 互斥和类型）	接口·数据结构	新增	无（doc08 讲 wait4 不解码）	minix3/sys/sys/wait.h:60-80, os/libs/minix-sys/src/wait.rs	wait4 返回的整数怎么翻译成「正常退出/被信号杀/停止」？

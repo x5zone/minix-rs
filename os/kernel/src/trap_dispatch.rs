@@ -86,6 +86,29 @@ fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
 pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     let vector = frame.vector as u8;
 
+    // NK4-A fix27e+ 取证路标（task1-close 裁决删除）：cr3 切换后内核在
+    // VM 页表上运行到 1dac2b12 空指针 #PF，handler 树又在 1dae6869 二次
+    // #PF 递归（int_fix35 CR2=0x10 ×4686）。本探针证明 PF 是否到达
+    // kernel body 并打印原始 RIP/err——若真机只见 12 条后静默，则崩溃点
+    // 在 asm stub/dispatcher 层（探针前），本身即证词。mock（宿主）下
+    // console 是真实端口写，编译掉（同 lib.rs 路标惯例）。
+    #[cfg(not(feature = "mock"))]
+    if vector == 14 {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static PF_MARK: AtomicUsize = AtomicUsize::new(0);
+        let n = PF_MARK.fetch_add(1, AtomicOrd::Relaxed);
+        if n < 12 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: pf#");
+            C0::write_hex(n as u64);
+            C0::write_str(" rip=");
+            C0::write_hex(frame.rip);
+            C0::write_str(" err=");
+            C0::write_hex(frame.errcode);
+            C0::write_str("\n");
+        }
+    }
+
     // E1 trap bridge: vector 33 (IPC_VECTOR) from user mode is the IPC
     // soft-int leg (C: IPC_VECTOR_ORIG, interrupt.h:33; gate DPL=3,
     // trap_entry.rs configure_ipc_entry). The register ABI is the C i386

@@ -1,0 +1,29 @@
+0x000000000000fff0 in ?? ()
+Hardware assisted breakpoint 1 at 0x21f0c0
+== grow hit 1 ==
+rip            0xfff0              0xfff0
+rdi            0x0                 0
+rsi            0x0                 0
+rdx            0x60fb1             397233
+
+Breakpoint 1, 0x000000000021f0c0 in minix_vm::heap_arena::HeapArena::grow ()
+rax            0x21f0c0            2224320
+rdx            0x18                24
+-- rdi buffer --
+0x7fffffffd620:	0x0000000000000000	0x0000000000000000
+0x7fffffffd630:	0x0000000000000000	0x0000000000000000
+0x7fffffffd640:	0x0000000000000000	0x0000000000000000
+
+Breakpoint 1, 0x000000000021f0c0 in minix_vm::heap_arena::HeapArena::grow ()
+== grow hit 2 ==
+rip            0x21f0c0            0x21f0c0 <minix_vm::heap_arena::HeapArena::grow>
+rdi            0x7fffffffd390      140737488343952
+rsi            0x246da0            2387360
+rdx            0xe5                229
+0x0000000000227d59 in <minix_vm::global::VmAllocator as core::alloc::global::GlobalAlloc>::alloc ()
+rax            0x7fffffffd390      140737488343952
+rdx            0x1                 1
+-- rdi buffer --
+0x7fffffffd390:	0xffff800000000003	0x0000000000288000
+0x7fffffffd3a0:	0x000000000000001a	0x000000000001c7ff
+0x7fffffffd3b0:	0x000000000000001a	0x00007fffffffecb0

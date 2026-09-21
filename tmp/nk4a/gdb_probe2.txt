@@ -1,0 +1,52 @@
+0x000000000000fff0 in ?? ()
+Hardware assisted breakpoint 1 at 0x22d262
+
+Breakpoint 1, 0x000000000022d262 in <minix_arch::x86_64::paging::X86_64Paging as minix_arch::arch::paging::Paging>::map ()
+rip            0x22d262            0x22d262 <<minix_arch::x86_64::paging::X86_64Paging as minix_arch::arch::paging::Paging>::map+578>
+rsp            0x7fffffffd2f0      0x7fffffffd2f0
+rbp            0x1dc8e000          0x1dc8e000
+rax            0x1dcac000          499826688
+rbx            0x1de27001          501379073
+rcx            0x0                 0
+rdx            0x9f000             651264
+rsi            0xc0000000          3221225472
+rdi            0x2469d0            2386384
+r8             0x7                 7
+r12            0x80000000          2147483648
+   0x22d258 <_ZN93_$LT$minix_arch..x86_64..paging..X86_64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$3map17h1bc11957234f8876E+568>:	and    %r9,%rdx
+   0x22d25b <_ZN93_$LT$minix_arch..x86_64..paging..X86_64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$3map17h1bc11957234f8876E+571>:	or     %rdx,%r15
+   0x22d25e <_ZN93_$LT$minix_arch..x86_64..paging..X86_64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$3map17h1bc11957234f8876E+574>:	mov    %r15,(%r12,%rax,1)
+=> 0x22d262 <_ZN93_$LT$minix_arch..x86_64..paging..X86_64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$3map17h1bc11957234f8876E+578>:	invlpg (%rsi)
+   0x22d265 <_ZN93_$LT$minix_arch..x86_64..paging..X86_64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$3map17h1bc11957234f8876E+581>:	mov    $0x6,%bl
+   0x22d267 <_ZN93_$LT$minix_arch..x86_64..paging..X86_64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$3map17h1bc11957234f8876E+583>:	jmp    0x22d03b <_ZN93_$LT$minix_arch..x86_64..paging..X86_64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$3map17h1bc11957234f8876E+27>
+0x7fffffffd2f0:	0x0000000000000000	0x0000000000000000
+0x7fffffffd300:	0x0000000000000000	0x0000000000000000
+0x7fffffffd310:	0x0000000000000000	0x0000000000000000
+0x7fffffffd320:	0x000000000001c800	0x0000000000000001
+0x7fffffffd330:	0x000000000009f000	0x00000000c0000000
+0x7fffffffd340:	0x0000000000000018	0x00000000c0000000
+0x7fffffffd350:	0x0000000000001000	0x000000000022017b
+0x7fffffffd360:	0x00007fffffffd620	0x00007fffffffebc0
+0x7fffffffd370:	0x0000000000000000	0x000000000009f000
+0x7fffffffd380:	0x00000000c0018000	0x00000000002469e0
+0x7fffffffd390:	0x0000000000000000	0x0000000000000000
+0x7fffffffd3a0:	0x0000000000000000	0x00007fffffffea40
+0x7fffffffd3b0:	0x000000000000001a	0x00007fffffffefd0
+0x7fffffffd3c0:	0x000000000001c800	0x000000000001817f
+0x7fffffffd3d0:	0x0000000000001000	0x000000000020628f
+0x7fffffffd3e0:	0x0000000000000000	0x0000000000000000
+0x7fffffffd3f0:	0x00007fffffffebc0	0x0000000000000000
+0x7fffffffd400:	0x0000000000000000	0x0000000000000000
+0x7fffffffd410:	0x0000000000000000	0x0000000000000000
+0x7fffffffd420:	0x0000000000000000	0x0000000000000000
+0x7fffffffd430:	0x0000000000000000	0x0000000000000000
+0x7fffffffd440:	0x0000000000000000	0x0000000000000000
+0x7fffffffd450:	0x0000000000000000	0x0000000000000000
+0x7fffffffd460:	0x0000000000000000	0x0000000000000000
+0x7fffffffd470:	0x0000000000000000	0x0000000000000000
+0x7fffffffd480:	0x0000000000000000	0x0000000000000000
+0x7fffffffd490:	0x0000000000000000	0x0000000000000000
+0x7fffffffd4a0:	0x0000000000000000	0x0000000000000000
+0x7fffffffd4b0:	0x0000000000000000	0x0000000000000000
+0x7fffffffd4c0:	0x0000000000000000	0x0000000000000000
+[Inferior 1 (process 1) detached]
