@@ -58,8 +58,17 @@ pub const MAX_SLABS: usize = 64;
 /// Maximum simultaneous whole-page allocations one allocator tracks.
 pub const MAX_BIG_BLOCKS: usize = 32;
 
-/// Initial heap pool for the global allocator, in bytes (sixteen pages).
-pub const GLOBAL_POOL_BYTES: usize = 16 * PAGE_BYTES;
+/// Initial heap pool for the global allocator, in bytes (256 pages).
+///
+/// The pool is `.bss` storage: pages materialize only when touched (the
+/// VM demand-fills them), so the nominal size costs no physical memory for
+/// binaries that stay small. The former 16-page pool OOM'd real servers —
+/// RS's boot allocates a 256512-byte table and aborted before its main
+/// loop (real machine NK4-A C-3 c12a: "memory allocation of 256512 bytes
+/// failed", 2026-09-22). C servers grow a real heap through VM `brk`; a
+/// VM-backed supplier is the follow-up (alloc.rs §module docs, "later,
+/// virtual memory mapping").
+pub const GLOBAL_POOL_BYTES: usize = 256 * PAGE_BYTES;
 
 /// Why an allocation or break adjustment failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
