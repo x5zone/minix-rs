@@ -34,7 +34,37 @@ pub const VM_BOOT_HANDOFF_MAGIC: u32 = 0x564D_4248; // "VMBH"
 ///   (pre_init.c:156). VM builds every boot process's initial stack
 ///   frame downward from it (E-BOOTFRAME; C exec_bootproc reads the
 ///   same value out of `kernel_boot_info`, main.c:372).
-pub const VM_BOOT_HANDOFF_VERSION: u32 = 4;
+/// - 5: `kern_dm_vbase` / `kern_dm_pages` — the kernel Direct Map
+///   window's real VA base and PA coverage (fix26). Version ≤ 4
+///   handoffs carried hardcoded sentinels here (wrong base + 4-page
+///   window): a process page table built from them left nearly the
+///   whole Direct Map not-present, so kernel physical-memory access
+///   after a CR3 switch to such a table was broken (the sentinel-era
+///   tables are unusable either way — see v6 for what actually killed
+///   the first switch). The kernel now computes both from the same
+///   candidate union `establish_boot_dm` maps
+///   (`dm_coverage::kernel_dm_pa_end`).
+/// - 6: `kern_ident` / `kern_ident_count` — the kernel runtime
+///   identity windows (fix27). NK4-A forensics (int_fix26f.log)
+///   established the real first-switch death cause: the kernel is
+///   statically linked into the UEFI boot-shim PE image and EXECUTES
+///   from the firmware-relocated low addresses (text ~0x1dac_xxxx,
+///   GDT/IDT/TSS ~0x1db9_xxxx after `mov cr3` succeeded, the very
+///   next instruction fetch at IP == CR2 hit a not-present page →
+///   #PF → #DF → triple fault). The higher-half standalone
+///   kernel.elf copy is loaded but never executed, so the v3+
+///   kern_* image span alone leaves the live code and tables
+///   unmapped in every VM-built page table. v6 ships the occupied
+///   (non-conventional) physical regions snapshotted from the UEFI
+///   memory map so `map_kernel` replays them identity (VA = PA,
+///   supervisor-only) into every process page table.
+pub const VM_BOOT_HANDOFF_VERSION: u32 = 6;
+
+/// Maximum kernel identity-window entries the handoff page carries
+/// (fix27, version 6). The UEFI memory map's non-conventional RAM
+/// typically occupies a few dozen descriptors; the kernel merges
+/// adjacent ranges before publishing and fails fast on overflow.
+pub const VM_BOOT_HANDOFF_MAX_IDENT: usize = 64;
 
 /// Maximum free-region entries the handoff page carries.
 ///
@@ -137,6 +167,20 @@ pub struct VmBootHandoff {
     /// Pages in the kernel data span (V11/E3; 0 = whole-span-as-text,
     /// the minix-rs kernel image is one contiguous span).
     pub kern_data_pages: u32,
+    /// Virtual base of the kernel Direct Map window (fix26, handoff v5;
+    /// arch constant `KERNEL_DIRECT_MAP_BASE` — e.g. x86-64
+    /// `0xFFFF_8080_0000_0000`, riscv64 differs). VM maps this window
+    /// into every process page table so kernel PA access survives a CR3
+    /// switch; a wrong base silently breaks the first context switch.
+    pub kern_dm_vbase: u64,
+    /// Pages the kernel Direct Map window covers in physical address
+    /// space (fix26, handoff v5; page-rounded highest PA
+    /// `establish_boot_dm` covered in the kernel window, i.e.
+    /// `dm_coverage::kernel_dm_pa_end / 4096`). The window maps PA
+    /// `[0, kern_dm_pages * 4096)` contiguously — a superset of the
+    /// candidate union, holes included (harmless: supervisor-only
+    /// translations to unbacked addresses nobody touches).
+    pub kern_dm_pages: u64,
     /// Initial user stack top. C: `kinfo.user_sp = USR_STACKTOP`
     /// (pre_init.c:156) — exec_bootproc builds the initial stack frame
     /// downward from this value and the frame's `vsp` becomes the
@@ -162,6 +206,15 @@ pub struct VmBootHandoff {
     /// module except VM itself — VM's blob was reclaimed after its ELF was
     /// copied, C: protect.c:450-451).
     pub modules: [HandoffModule; VM_BOOT_HANDOFF_MAX_MODULES],
+    /// Valid entries in `kern_ident`.
+    pub kern_ident_count: u32,
+    /// Kernel runtime identity windows (fix27, version 6): occupied
+    /// physical regions the running kernel image and its tables live
+    /// in (UEFI link-in execution model — see the version history
+    /// above). `map_kernel` maps each region identity (VA = PA)
+    /// supervisor-only into every process page table. Empty on
+    /// platforms without link-in execution.
+    pub kern_ident: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT],
     /// C: `kinfo.boot_procs[NR_BOOT_PROCS]` — the full boot image table
     /// (kernel tasks with negative proc_nr first, then user-space servers).
     pub boot_procs: [BootImage; NR_BOOT_PROCS],
@@ -173,17 +226,37 @@ impl VmBootHandoff {
     /// `Some` for version ≥ 3 handoffs (the kernel reports its text/data
     /// span); `None` for version ≤ 2 — the consumer keeps its historical
     /// fallback (VM: the mock `KernelLayout` constants + a warning).
+    ///
+    /// The Direct Map window is the kernel's real one only from version
+    /// 5 on (fix26): v3/v4 handoffs carry no DM fields and this function
+    /// returns the historical sentinels, which are wrong on real
+    /// hardware (base off by one PML4 slot, 4-page coverage). That is
+    /// unreachable in production — [`Self::validate`] hard-asserts the
+    /// exact current version — so the sentinels only ever surface in
+    /// host tests that fabricate old handoffs.
     pub fn kernel_layout(&self) -> Option<KernelLayout> {
         if self.version < 3 {
             return None;
         }
-        Some(KernelLayout::new(
+        let (dm_vbase, dm_pages) = if self.version >= 5 {
+            (self.kern_dm_vbase, self.kern_dm_pages as usize)
+        } else {
+            (0xFFFF_8000_0000_0000, 4) // legacy sentinels (see doc)
+        };
+        let (ident, ident_count) = if self.version >= 6 {
+            (self.kern_ident, self.kern_ident_count as usize)
+        } else {
+            ([HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT], 0)
+        };
+        Some(KernelLayout::new_with_ident(
             self.kern_virt_base,
             self.kern_phys_base,
             self.kern_text_pages as usize,
             self.kern_data_pages as usize,
-            0xFFFF_8000_0000_0000, // kernel DM window base (arch constant)
-            4,                     // sentinel pages (DM window size is arch-fixed)
+            dm_vbase,
+            dm_pages,
+            ident,
+            ident_count,
         ))
     }
 
@@ -233,6 +306,11 @@ impl VmBootHandoff {
             "VmBootHandoff: module_count {} exceeds capacity",
             self.module_count
         );
+        assert!(
+            (self.kern_ident_count as usize) <= VM_BOOT_HANDOFF_MAX_IDENT,
+            "VmBootHandoff: kern_ident_count {} exceeds capacity",
+            self.kern_ident_count
+        );
     }
 }
 
@@ -259,6 +337,9 @@ const _: () = assert!(
 ///   (immediately follows text segment in both VA and PA space).
 /// - `dm_vbase`: Virtual address where the kernel direct map starts.
 /// - `dm_pages`: Number of pages in the kernel direct map.
+/// - `ident` / `ident_count`: kernel runtime identity windows (fix27) —
+///   occupied physical regions to replay identity (VA = PA) into every
+///   process page table. Valid entries are `ident[..ident_count]`.
 ///
 /// # Safety invariants
 ///
@@ -266,6 +347,9 @@ const _: () = assert!(
 ///   does not overflow `u64`.
 /// - `kernel_text_pbase` must be page-aligned.
 /// - `dm_pages` must not exceed available physical memory.
+/// - `ident_count <= ident.len()`; entries page-aligned, sorted, and
+///   non-overlapping (the kernel builds them that way in
+///   `vm_handoff::build_identity_windows`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KernelLayout {
     pub kernel_text_vbase: u64,
@@ -274,6 +358,8 @@ pub struct KernelLayout {
     pub kernel_data_pages: usize,
     pub dm_vbase: u64,
     pub dm_pages: usize,
+    pub ident: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT],
+    pub ident_count: usize,
 }
 
 impl KernelLayout {
@@ -283,6 +369,11 @@ impl KernelLayout {
     /// the boot image / multiboot2 / stivale2 headers have been parsed.
     /// The resulting value is stored in a global (see `vm::global`) and
     /// read by every `init_page_table()` call.
+    ///
+    /// Produces a layout with NO identity windows — [`Self::new_with_ident`]
+    /// is the fix27 constructor used for version ≥ 6 handoffs. A layout
+    /// without identity windows is correct only when the kernel really
+    /// executes higher-half (never the UEFI link-in production model).
     pub const fn new(
         kernel_text_vbase: u64,
         kernel_text_pbase: u64,
@@ -298,7 +389,39 @@ impl KernelLayout {
             kernel_data_pages,
             dm_vbase,
             dm_pages,
+            ident: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT],
+            ident_count: 0,
         }
+    }
+
+    /// Creates a `KernelLayout` including the kernel runtime identity
+    /// windows (fix27, handoff version ≥ 6).
+    pub const fn new_with_ident(
+        kernel_text_vbase: u64,
+        kernel_text_pbase: u64,
+        kernel_text_pages: usize,
+        kernel_data_pages: usize,
+        dm_vbase: u64,
+        dm_pages: usize,
+        ident: [HandoffMemRegion; VM_BOOT_HANDOFF_MAX_IDENT],
+        ident_count: usize,
+    ) -> Self {
+        Self {
+            kernel_text_vbase,
+            kernel_text_pbase,
+            kernel_text_pages,
+            kernel_data_pages,
+            dm_vbase,
+            dm_pages,
+            ident,
+            ident_count,
+        }
+    }
+
+    /// The valid identity-window prefix (page-aligned `{base, size}`
+    /// pairs, sorted and non-overlapping — `map_kernel` input).
+    pub fn ident_regions(&self) -> &[HandoffMemRegion] {
+        &self.ident[..self.ident_count]
     }
 }
 
@@ -449,7 +572,8 @@ mod tests {
     mod kernel_layout_tests {
         use super::*;
 
-        /// A minimal v3 handoff: only the fields kernel_layout() reads.
+        /// A minimal handoff skeleton: only the fields kernel_layout()
+        /// reads are meaningful for the given version.
         fn handoff(version: u32) -> VmBootHandoff {
             let mut h = VmBootHandoff {
                 magic: VM_BOOT_HANDOFF_MAGIC,
@@ -462,6 +586,8 @@ mod tests {
                 kern_phys_base: 0,
                 kern_text_pages: 0,
                 kern_data_pages: 0,
+                kern_dm_vbase: 0,
+                kern_dm_pages: 0,
                 user_sp: 0,
                 is_first_time: 1,
                 free_region_count: 0,
@@ -470,6 +596,8 @@ mod tests {
                 free_regions: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_REGIONS],
                 deducted: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_DEDUCTED],
                 modules: [HandoffModule::ZERO; VM_BOOT_HANDOFF_MAX_MODULES],
+                kern_ident_count: 0,
+                kern_ident: [HandoffMemRegion::ZERO; VM_BOOT_HANDOFF_MAX_IDENT],
                 boot_procs: [BootImage::empty(); NR_BOOT_PROCS],
             };
             // Handoff::validate expects the field to be zeroed when fresh —
@@ -489,6 +617,43 @@ mod tests {
             assert_eq!(l.kernel_text_pbase, 0x100_0000);
             assert_eq!(l.kernel_text_pages, 24);
             assert_eq!(l.kernel_data_pages, 0);
+            // v3 has no DM fields — the historical sentinels surface
+            // (host-test shape only; production validate() pins the
+            // current version).
+            assert_eq!(l.dm_vbase, 0xFFFF_8000_0000_0000);
+            assert_eq!(l.dm_pages, 4);
+        }
+
+        /// v5 (fix26): the kernel's real Direct Map window values flow
+        /// through — no sentinels. v5 predates the identity windows, so
+        /// `ident_regions()` stays empty.
+        #[test]
+        fn test_kernel_layout_v5_reports_dm_window() {
+            let mut h = handoff(5);
+            h.kern_virt_base = 0xFFFF_8000_0000_0000;
+            h.kern_phys_base = 0x100_0000;
+            h.kern_text_pages = 48;
+            h.kern_data_pages = 0;
+            h.kern_dm_vbase = 0xFFFF_8080_0000_0000;
+            h.kern_dm_pages = 0x2_0000; // 512 MiB / 4 KiB
+            let l = h.kernel_layout().expect("v5 must carry the layout");
+            assert_eq!(l.dm_vbase, 0xFFFF_8080_0000_0000);
+            assert_eq!(l.dm_pages, 0x2_0000);
+            assert_eq!(l.ident_regions().len(), 0);
+        }
+
+        /// v6 (fix27): the kernel runtime identity windows flow through.
+        #[test]
+        fn test_kernel_layout_v6_reports_identity_windows() {
+            let mut h = handoff(VM_BOOT_HANDOFF_VERSION);
+            assert_eq!(VM_BOOT_HANDOFF_VERSION, 6);
+            h.kern_ident[0] = HandoffMemRegion { base: 0x1da0_0000, size: 0x40_0000 };
+            h.kern_ident[1] = HandoffMemRegion { base: 0x1f00_0000, size: 0x1000 };
+            h.kern_ident_count = 2;
+            let l = h.kernel_layout().expect("v6 must carry the layout");
+            assert_eq!(l.ident_regions().len(), 2);
+            assert_eq!(l.ident_regions()[0].base, 0x1da0_0000);
+            assert_eq!(l.ident_regions()[1].size, 0x1000);
         }
 
         #[test]

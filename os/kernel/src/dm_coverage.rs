@@ -95,8 +95,91 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
         establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
             .expect("boot DM: VM window establishment failed");
     }
+    for r in boot_module_candidates(kernel_info, root) {
+        establish_dm_range::<CurrentDmCoverage>(root, r, vm_pa_limit, vm_va, vm_flags)
+            .expect("boot DM: VM window module coverage failed");
+        establish_dm_range::<CurrentDmCoverage>(
+            root, r, u64::MAX, kernel_va, kernel_flags,
+        )
+        .expect("boot DM: kernel window module coverage failed");
+    }
 
     validate_bootstrap_tree(root);
+}
+
+/// Highest physical address end covered by the **kernel** DM window (the
+/// PA the per-process window mapping must reach; fix26, handoff v5).
+///
+/// Reuses exactly the candidate set [`establish_boot_dm`] installs into
+/// the kernel window (unlimited PA bound): memmap ∪ bootstrap tree ∪
+/// boot modules. `build_vm_handoff` derives `kern_dm_pages` from this so
+/// VM's `map_kernel` covers what the kernel actually accesses through
+/// its Direct Map — the previous hardcoded 4-page sentinel left every
+/// address above 16 KiB not-present after the first CR3 switch.
+///
+/// Returned value is page-rounded up (a `map()`-ready page count times
+/// [`PAGE_SIZE`]); 0 only if there are no candidates at all (no real
+/// boot shape). The contiguous mapping `[0, end)` VM builds is a
+/// superset of the (possibly non-contiguous) candidate union — holes
+/// gain supervisor-only translations to unbacked addresses nobody
+/// touches.
+pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
+    let mut max_end = 0u64;
+    let mut note = |r: DmRange| {
+        max_end = max_end.max(r.base.saturating_add(r.len));
+    };
+    for r in memmap_candidates(kernel_info) {
+        note(r);
+    }
+    for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
+        note(r);
+    }
+    for r in boot_module_candidates(kernel_info, root) {
+        note(r);
+    }
+    max_end.div_ceil(PAGE_SIZE) * PAGE_SIZE
+}
+
+/// Source 3: boot module blobs (`boot-shim: 12 boot modules loaded`).
+///
+/// The shim loads each module via `allocate_pages(LOADER_DATA)`, so the
+/// final pre-EBS conventional-only memmap snapshot excludes those pages
+/// (that is exactly how the VM PMM never hands out blob memory). But the
+/// VM's `exec_bootproc` reads each image straight through the VM Direct
+/// Map (`vm_server.rs` "no copy needed, unlike C") — an un-covered blob
+/// page is a DM hole and the first ELF-magic read #PFs at CPL3 (fix16
+/// first-light forensics 2026-09-21: cr2 0x9de0e000 = DM of PA
+/// 0x1de0e000, a module blob page).
+///
+/// Coverage is PTE-only and does not alter memmap semantics: the pages
+/// stay invisible to PMM resource qualification (exclusion unchanged).
+/// Module ranges beyond the VM window's PA limit are clipped by
+/// `establish_dm_range` and stay outside VM DM representability — same
+/// treatment as out-of-window memmap ranges.
+///
+/// Union semantics: a module range overlapping an earlier candidate
+/// (memmap, root/bump) is dropped — re-installing the same window slot
+/// is an `AlreadyMapped` boot refusal, not a silent overwrite. Real UEFI
+/// layouts are disjoint (every allocation is a distinct `AllocatePages`
+/// result); the filter guards fallback/test shapes.
+///
+/// Heap-free by necessity: this runs inside `arch_boot` before the kernel
+/// heap exists — a `collect` here is a 64-byte `handle_alloc_error` boot
+/// failure (fix16 self-inflicted regression, 2026-09-21).
+fn boot_module_candidates<'a>(
+    kernel_info: &'a KernelInfo,
+    root: PhysBytes,
+) -> impl Iterator<Item = DmRange> + 'a {
+    let source2 = bootstrap_tree_candidates(kernel_info, root);
+    kernel_info
+        .boot_modules
+        .iter()
+        .map(|m| DmRange::new(m.start.0, m.len as u64))
+        .filter(move |r| {
+            let overlaps = |o: DmRange| r.base < o.base + o.len && o.base < r.base + r.len;
+            !memmap_candidates(kernel_info).any(overlaps)
+                && !source2.into_iter().flatten().any(overlaps)
+        })
 }
 
 /// Source 1: conventional RAM ranges (the boot shim already type-filtered).
@@ -219,6 +302,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         // Bump inside the memmap range → dropped by union semantics.
         boot_alloc::init_boot_pt_alloc(0x20_0000, 0x21_0000);
@@ -261,6 +345,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         // Real test-user-trap numbers: bump [0x0dfaf000, 0x0dfef000) (64
         // pages), root page 0x0e789000 — above the bump end, outside the
@@ -276,6 +361,82 @@ mod tests {
     }
 
     // ── Boot-flow integration: arch_boot_impl Step 4 establishes DM coverage ──
+
+    /// fix16: boot module blobs are LOADER_DATA (absent from the
+    /// conventional-only memmap) yet the VM reads them through the VM DM
+    /// window (`exec_bootproc` "no copy needed, unlike C"). They must
+    /// surface as explicit candidates; a module overlapping an earlier
+    /// candidate is dropped (union semantics, no double install).
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_boot_module_candidates_union() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        use minix_boot::{BootModule, MemoryRegion};
+
+        let mk = |modules: &'static [BootModule]| KernelInfo {
+            memmap: &[MemoryRegion { base: PhysBytes(0), len: 0x100_0000 }],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200_000),
+            kern_size: 0x200_000,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: modules,
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: &[],
+        };
+        // Real fix16 shape (blob at PA 0x1de0e000, above the 16 MiB
+        // memmap) plus a hypothetical in-memmap module (dropped).
+        static MODS: &[BootModule] = &[
+            BootModule { name: "rs", start: PhysBytes(0x1de0_e000), len: 0x42_000 },
+            BootModule { name: "overlap", start: PhysBytes(0x80_0000), len: 0x1000 },
+        ];
+        boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // bump inside memmap → dropped by source 2 too
+        let cands: alloc::vec::Vec<DmRange> =
+            boot_module_candidates(&mk(MODS), PhysBytes(0x1000)).collect();
+        assert_eq!(cands, alloc::vec![DmRange::new(0x1de0_e000, 0x42_000)],
+            "out-of-memmap module kept, overlapping module dropped");
+    }
+
+    /// fix26: `kernel_dm_pa_end` returns the page-rounded highest end of
+    /// the same candidate union `establish_boot_dm` installs into the
+    /// kernel window — here the out-of-memmap module blob (0x1de0e000 +
+    /// 0x42000), which the old 4-page sentinel never covered.
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_kernel_dm_pa_end_covers_all_sources() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        use minix_boot::{BootModule, MemoryRegion};
+
+        static MODS: &[BootModule] = &[BootModule {
+            name: "rs",
+            start: PhysBytes(0x1de0_e000),
+            len: 0x42_000,
+        }];
+        let info = KernelInfo {
+            memmap: &[MemoryRegion { base: PhysBytes(0), len: 0x100_0000 }],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200_000),
+            kern_size: 0x200_000,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: MODS,
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: &[],
+        };
+        boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → dropped
+        assert_eq!(kernel_dm_pa_end(&info, PhysBytes(0x1000)), 0x1de5_0000,
+            "module end 0x1de0e000+0x42000=0x1de50000 is the highest candidate");
+    }
 
     /// Boot-shim contract simulation: the bump region must sit inside the
     /// DM-admissible bound `min(IDENTITY_MAP_END, VM window)`; the aarch64
@@ -304,6 +465,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let info_ref = crate::arch_boot_impl::<minix_arch::paging::mock::MockPaging>(&info, PhysBytes(0x1000));
         assert_eq!(info_ref.kern_virt_base.0, info.kern_virt_base.0,
@@ -329,6 +491,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let info_ref = crate::arch_boot_impl::<minix_arch::paging::mock::MockPaging>(&info, PhysBytes(0x1000));
         assert_eq!(info_ref.kern_phys_base.0, 0x4020_0000);
@@ -353,6 +516,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let info_ref = crate::arch_boot_impl::<minix_arch::paging::mock::MockPaging>(&info, PhysBytes(0x1000));
         assert_eq!(info_ref.kern_phys_base.0, 0x8000_0000);

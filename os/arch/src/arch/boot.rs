@@ -120,6 +120,12 @@ pub enum VmLoadError {
     OutOfMemory,
     /// Pages could not be mapped into the bootstrap page table.
     MappingFailed,
+    /// The module blob physically lands inside its own segment VA pages
+    /// (image PA ∈ segment VA range). Boot-identity eviction would
+    /// destroy not-yet-copied bytes; a real UEFI layout never produces
+    /// this overlap, so it is rejected explicitly rather than read
+    /// through a stale mapping (NK4-A first-light, 2026-09-21).
+    ImageInsideSegments,
 }
 
 /// Why a user register write (T_SETUSER) failed.
@@ -352,9 +358,16 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // SAFETY: `module.start` points to the VM ELF image in physical
     // memory; during boot the identity map covers this address range.
     // `module.len` is the module's exact size from the boot info.
+    // Identity direct-read stays valid until the copy loop below
+    // finishes: eviction (see the per-page branch) only touches pages
+    // that overlap the image PA range when they are OUTSIDE the
+    // segment VA pages (overlap → `ImageInsideSegments` refusal), so
+    // the blob's own bytes are never unmapped mid-copy.
     let image = unsafe {
         core::slice::from_raw_parts(module.start.0 as *const u8, module.len)
     };
+    let img_lo = module.start.0;
+    let img_hi = img_lo + module.len as u64;
 
     let iter = minix_elf::segment_iter(image)
         .map_err(|_| VmLoadError::InvalidElf)?;
@@ -396,14 +409,55 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
             let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
                 .min(page_size as usize - seg_start_in_page));
 
-            // ① Destination frame. A page that is ALREADY mapped is a
-            //    shared boundary page: linkers (lld's separate-code
-            //    layout) start a later PT_LOAD inside the previous
-            //    segment's last page. C parity: the C loader maps such a
-            //    page once and both segments' bytes land in the same
-            //    frame (libexec pg_map). Copy into the existing frame;
-            //    only a fresh page gets a new frame + full zero + map.
-            let (dst, shared_page) = match paging.query(VirBytes(vaddr)) {
+            // ① Destination frame. A page that is ALREADY mapped with
+            //    USER permission is a shared boundary page: linkers
+            //    (lld's separate-code layout) start a later PT_LOAD
+            //    inside the previous segment's last page. C parity: the
+            //    C loader maps such a page once and both segments' bytes
+            //    land in the same frame (libexec pg_map). Copy into the
+            //    existing frame; only a fresh page gets a new frame +
+            //    full zero + map. A mapped page WITHOUT USER is not a
+            //    linker artifact at all — it is boot-identity residue
+            //    on the adopted bootstrap root (see eviction below).
+            let v = VirBytes(vaddr);
+            if let Some((_pa, f)) = paging.query(v) {
+                if !f.contains(crate::paging::PageFlags::USER_ACCESSIBLE) {
+                    // Supervisor-only page under a user segment VA =
+                    // arch_boot_impl Step 1's identity huge leaf. Reusing
+                    // it would bind an arbitrary boot frame as the VM's
+                    // segment page AND leave user instruction fetches
+                    // hitting a supervisor mapping (x86-64 first-light
+                    // #PF err=0x15 forensics, 2026-09-21). Evict this
+                    // page: split the huge leaf to 4 KiB granularity,
+                    // unmap, then fall through to the fresh-map path.
+                    // The identity-covered PA is still tracked by the
+                    // memmap/exclusion ledgers, so dropping its mapping
+                    // leaks nothing.
+                    if vaddr < img_hi && img_lo < vaddr + page_size {
+                        // Image blob physically INSIDE a page we would
+                        // unmap → its remaining bytes would fault
+                        // mid-copy (or silently rebind through the DM
+                        // under a different identity). Never produced by
+                        // a real UEFI layout; refuse explicitly.
+                        return Err(VmLoadError::ImageInsideSegments);
+                    }
+                    paging
+                        .split_huge(v)
+                        .map_err(|_| VmLoadError::MappingFailed)?;
+                    // The identity walk's intermediates were built
+                    // supervisor-only too, and `walk_alloc` never amends
+                    // existing tables — a user leaf behind them still
+                    // faults CPL3 fetches (#PF err=0x15). Open the path
+                    // before installing the user leaf.
+                    paging
+                        .grant_user_walk(v)
+                        .map_err(|_| VmLoadError::MappingFailed)?;
+                    paging
+                        .unmap(v)
+                        .map_err(|_| VmLoadError::MappingFailed)?;
+                }
+            }
+            let (dst, shared_page) = match paging.query(v) {
                 Some((pa, _flags)) => (access.frame_virt(PhysFrame::new(pa)).0, true),
                 None => {
                     // ①a Allocate a physical frame (PA chosen by the
@@ -740,6 +794,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -850,6 +905,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -964,6 +1020,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         // The "live" bootstrap root — mock inherit is a no-op, only the
         // parameter plumbing is exercised here.
@@ -1042,6 +1099,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let result = load_process_elf::<crate::paging::mock::MockPaging, _>(
             &module,
@@ -1145,6 +1203,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1268,6 +1327,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 
@@ -1350,6 +1410,7 @@ mod tests {
             bootstrap_len: 0,
             platform_sources: &[],
             param_buf: &[],
+            reserved_regions: &[],
         };
         let mut paging = crate::paging::mock::MockPaging::new().unwrap();
 

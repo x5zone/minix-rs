@@ -124,6 +124,7 @@ extern "C" fn rust_main(_boot_hart: u64, _dtb_phys: u64) -> ! {
         bootstrap_len: 0,
         platform_sources: &[],
         param_buf: &[],
+        reserved_regions: &[],
     };
 
     let result = BootPrepareResult {

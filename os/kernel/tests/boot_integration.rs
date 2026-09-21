@@ -33,6 +33,7 @@ fn boot_simulation_full_flow() {
         bootstrap_len: 0,
         platform_sources: &[],
         param_buf: &[],
+        reserved_regions: &[],
     };
 
     let root_page = PhysBytes(0x1000); // physical page for PML4

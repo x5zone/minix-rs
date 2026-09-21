@@ -51,6 +51,7 @@ fn main() -> Status {
         bootstrap_len: 0,
         platform_sources: &[],
         param_buf: &[],
+        reserved_regions: &[],
     };
 
     let result = BootPrepareResult {

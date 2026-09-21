@@ -15,6 +15,28 @@ pub struct KernelInfo {
     /// C: kinfo.memmap[] — pg_utils.c add_memmap/cut_memmap
     pub memmap: &'static [MemoryRegion],
 
+    /// Non-free physical memory the firmware still marks occupied at
+    /// ExitBootServices (everything the memmap snapshot reports as
+    /// non-conventional RAM: the loaded boot-shim/kernel PE image, UEFI
+    /// boot-services heap objects such as `KernelInfo` itself, ACPI
+    /// tables, LOADER_DATA allocations including the bump region and
+    /// module blobs).
+    ///
+    /// NK4-A fix27: the kernel EXECUTES from these addresses — it is
+    /// statically linked into the boot-shim PE image, so after EDKII
+    /// relocation its code / GDT / IDT / TSS live at low physical
+    /// addresses (~0x1da-0x1db_xxxxxx under QEMU OVMF), not at the
+    /// higher-half link addresses of the (never-executed) standalone
+    /// kernel.elf copy. The VM-built process page tables must replay
+    /// these windows identity (VA = PA, supervisor-only) or the first
+    /// CR3 switch to such a table fault-triples on the next instruction
+    /// fetch (forensics: tmp/nk4a/int_fix26f.log — #PF at
+    /// IP=0x1dac5748 == CR2 right after `mov cr3`).
+    ///
+    /// OpenSBI/U-Boot and host tests pass `&[]` (no runtime identity
+    /// window; those platforms do not link the kernel into the shim).
+    pub reserved_regions: &'static [MemoryRegion],
+
     /// Kernel virtual base address.
     /// C: kinfo.vir_kern_start = &_kern_vir_base — pre_init.c:113
     pub kern_virt_base: VirBytes,
@@ -219,6 +241,12 @@ impl KernelInfo {
     #[inline]
     pub fn memmap(&self) -> &'static [MemoryRegion] { self.memmap }
 
+    /// Non-conventional (occupied) physical regions — the kernel runtime
+    /// identity windows fix27 replays into every process page table.
+    /// See the `reserved_regions` field doc.
+    #[inline]
+    pub fn reserved_regions(&self) -> &'static [MemoryRegion] { self.reserved_regions }
+
     /// Kernel virtual base address.
     /// C: `kinfo.vir_kern_start = &_kern_vir_base` — pre_init.c:113
     #[inline]
@@ -318,6 +346,7 @@ mod tests {
     fn make_valid_info() -> KernelInfo {
         KernelInfo {
             memmap: &[MemoryRegion { base: PhysBytes(0x100000), len: 0x1000000 }],
+            reserved_regions: &[MemoryRegion { base: PhysBytes(0x1da00000), len: 0x1000 }],
             kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
             kern_phys_base: PhysBytes(0x200000),
             kern_size: 0x200000,
@@ -422,6 +451,8 @@ mod tests {
         // Slice fields: compare length and first element address.
         assert_eq!(info.memmap().len(), info.memmap.len());
         assert_eq!(info.memmap().as_ptr(), info.memmap.as_ptr());
+        assert_eq!(info.reserved_regions().len(), info.reserved_regions.len());
+        assert_eq!(info.reserved_regions().as_ptr(), info.reserved_regions.as_ptr());
         assert_eq!(info.boot_modules().len(), info.boot_modules.len());
         assert_eq!(info.boot_modules().as_ptr(), info.boot_modules.as_ptr());
         assert_eq!(info.platform_sources().len(), info.platform_sources.len());

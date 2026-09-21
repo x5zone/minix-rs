@@ -443,6 +443,12 @@ pub fn build_kernel_info(
 ) -> KernelInfo {
     KernelInfo {
         memmap,
+        // fix27: no runtime identity windows on this path — the kernel
+        // executes as the standalone higher-half kernel.elf here (the
+        // boot-shim is a separate binary), so no low physical VA range
+        // hosts live kernel code/data. UEFI's link-in execution model
+        // is what populates this list (uefi_helpers::build_memmaps).
+        reserved_regions: &[],
         kern_virt_base,
         kern_phys_base,
         kern_size,
