@@ -46,19 +46,30 @@ SECTIONS
 
     .data ALIGN(4K) : AT(ADDR(.data) - KERNEL_HIGH_BASE)
     {
-        *(.data .data.*)
+        /* .ldata = rustc 大数据拆分节（同 .lbss 家族），漏匹配即成孤儿节
+           排到 ALIGN 之后、撑破镜像跨距对齐（NK4-A 首亮实证）。 */
+        *(.data .data.* .ldata .ldata.*)
         *(.got .got.*)
     }
 
     .bss ALIGN(4K) : AT(ADDR(.bss) - KERNEL_HIGH_BASE)
     {
-        *(.bss .bss.*)
+        /* .lbss = rustc 大 BSS 拆分节（PANIC_DIAGNOSTIC_HOOK 等），必须
+           归入本节才能落在 2MiB 收口之内。 */
+        *(.bss .bss.* .lbss .lbss.*)
         *(COMMON)
 
         . = ALIGN(16);
         kernel_boot_stack_bottom = .;
         . += 0x10000;    /* 64 KiB 引导栈（_start 立栈用） */
         kernel_boot_stack_top = .;
+
+        /* 镜像跨距 2MiB 收口（NK4-A 首亮实断）：boot_validate_and_prepare
+           按 huge-page 阶梯选映射粒度（1GiB→2MiB，lib.rs 选块），kern_size
+           非 2MiB 对齐即 panic；kern_stack_top（镜像尾）同时获得对齐。
+           收口属于末段 memsz，boot-shim 的 BSS 清零与 kern_size 计算都以
+           末段 memsz 端点为准。 */
+        . = ALIGN(0x200000);
     }
 
     /DISCARD/ :
