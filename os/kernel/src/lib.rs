@@ -230,6 +230,17 @@ fn mock_kmain_ok() -> ! {
 /// identity mapping and kernel mapping loops. This avoids duplicating the
 /// alignment/size selection logic between Step 0a validation and Step 2.
 fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
+    // NK4-A 逐断言路标（首亮诊断；方法同 arch_boot 入口）。
+    macro_rules! vmark {
+        ($msg:expr) => {{
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                Console::write_str($msg);
+            }
+        }};
+    }
+    vmark!("kernel: v0 enter\n");
     // R-07 (2026-08-12): Use getter methods (preferred API).
     // `validate()` is called later in `kmain`; the assertions here are
     // defense-in-depth — they fail-fast before paging setup begins.
@@ -274,6 +285,7 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
     // root + bump pages) has to stay DM-covered (07-paging_init_design §6.1
     // 资格过滤 ②), and `establish_boot_dm` fails fast otherwise. Enforcing
     // the bound here turns a late validate panic into an early, clearer one.
+    vmark!("kernel: v1 asserts ok\n");
     if boot_alloc::boot_alloc_region().is_none() {
         const FALLBACK_BUMP_LEN: u64 = 0x100_000;
         let dm_admissible_end =
@@ -291,9 +303,11 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
         });
         boot_alloc::init_boot_pt_alloc(base, boot_alloc_end);
     }
+    vmark!("kernel: v2 fallback region ok\n");
     if !pt_alloc::is_registered() {
         pt_alloc::register(boot_alloc::boot_pt_alloc);
     }
+    vmark!("kernel: v3 pt_alloc ok\n");
 
     kern_huge
 }
@@ -309,18 +323,21 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
 ///
 /// C: pg_clear() + pg_identity() + pg_mapkernel() + pg_load() + vm_enable_paging()
 ///    pre_init.c:230-236, pg_utils.c:162/186/204/247
+/// NK4-A 首亮诊断：boot 逐阶段路标（EarlyConsole=COM1，方法同
+/// debug.rs 的 CurrentEarlyConsole 用法；mock 构建下整体编译出局）。
+macro_rules! boot_stage {
+    ($msg:expr) => {{
+        #[cfg(not(feature = "mock"))]
+        {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            Console::write_str($msg);
+        }
+    }};
+}
+
 pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
-    // NK4-A 首亮诊断：逐阶段路标（EarlyConsole，方法同 arch_boot 入口）。
-    macro_rules! boot_stage {
-        ($msg:expr) => {{
-            #[cfg(not(feature = "mock"))]
-            {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                Console::write_str($msg);
-            }
-        }};
-    }
     // Step 0: Validate KernelInfo + register allocator + compute kern_huge.
+    boot_stage!("kernel: entering validate\n");
     let kern_huge = boot_validate_and_prepare::<P>(kernel_info);
     boot_stage!("kernel: step0 validate ok\n");
 
@@ -438,6 +455,7 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
 pub fn kmain(kernel_info: &KernelInfo) -> ! {
     use minix_platform::platform_desc;
 
+    boot_stage!("kernel: kmain Phase A enter\n");
     // Phase A: Entry
     // R-07 (2026-08-12): Validate KernelInfo invariants before any use.
     // Fail-fast on boot-shim bugs (e.g. non-zero bootstrap_len would
@@ -508,6 +526,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         );
     }
 
+    boot_stage!("kernel: kmain A/A.2 memmap+modules ok\n");
     // Phase A.5: Platform discovery — initialize PlatformContext from KernelInfo.
     // This MUST run before init_clock_and_interrupts() because the clock,
     // interrupt controller, and arch_init all read hardware parameters
@@ -517,10 +536,12 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         minix_platform::init_from_kinfo(kernel_info);
     }
 
+    boot_stage!("kernel: kmain A.5 platform ok\n");
     // Phase B: cstart — protection + clock + interrupt
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
 
+    boot_stage!("kernel: kmain B clock+intr ok\n");
     // Phase B.5: kernel information page — build, user-map, publish.
     // From here on the MINIX_KERNINFO IPC call (= 6) answers OK with the
     // page address instead of EBADCALL (C: proc.c:685-693, publication at
@@ -529,6 +550,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // kuserinfo fill (main.c:438-440) precedes proc_init.
     kerninfo::init_kerninfo(kernel_info);
 
+    boot_stage!("kernel: kmain B.5 kerninfo page ok\n");
     // Phase C: proc_init + arch_boot_proc
     // Populates the global `PROC_TABLE` / `PRIV_TABLE` statics.
     init_proc_and_boot(kernel_info);  // covered in 06
@@ -552,6 +574,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // `init_clock_and_interrupts`, but BKL is held until `switch_to_user`).
     crate::krandom::init();
 
+    boot_stage!("kernel: kmain C proc_init ok\n");
     // Phase D: arch_post_init + memory_init → Direct Map readiness check.
     // C: arch_post_init() — protect.c:370 (x86) / protect.c:97 (ARM)
     // C: memory_init() — memory.c:707 (x86) / memory.c:612 (ARM)
@@ -566,6 +589,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // initialization happen in Phase B / ClockState instead.
     // See 08-system-init-boot-finish.md §4.4
 
+    boot_stage!("kernel: kmain D memory_init ok\n");
     // Phase F: add_memmap + bsp_finish_booting
     // C: add_memmap(&kinfo, kinfo.bootstrap_start, kinfo.bootstrap_len)
     // D5: 4GB truncation removed for 64-bit.
