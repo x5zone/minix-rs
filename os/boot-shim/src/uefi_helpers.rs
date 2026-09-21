@@ -147,9 +147,15 @@ pub struct UefiBootShim;
 
 impl BootShim for UefiBootShim {
     fn prepare_boot(bump_pages: usize) -> BootPrepareResult {
+        // 阶段打印（NK4-A 首亮诊断）：shim 的 panic handler 是无声死循环，
+        // 没有这些行任何一步卡死都等于整机静默。ConOut 已实证落在 QEMU
+        // 串口（固件倒计时文案可见）。
+        uefi::println!("boot-shim: prepare_boot enter");
         let memmap = build_memmap();
+        uefi::println!("boot-shim: memmap ok");
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
+        uefi::println!("boot-shim: root+bump allocated");
         // D-64②: wire the bootstrap-outside-memmap defense (it existed as
         // an uncalled helper). The two LOADER_DATA allocations above must
         // never sit in a page the memmap snapshot reports as conventional
@@ -161,20 +167,26 @@ impl BootShim for UefiBootShim {
 
         // Both file accesses must happen before ExitBootServices because
         // they depend on the SimpleFileSystem protocol.
+        uefi::println!("boot-shim: memmap guards ok");
         let file_loader = UefiFileLoader;
+        uefi::println!("boot-shim: loading kernel.elf from ESP…");
         let kern = loader::load_kernel_with_loader(&file_loader).expect(
             "Failed to load kernel ELF from ESP — check that the ESP contains \
              /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have \
              not mounted the FAT partition, or the build did not embed the \
              kernel binary into the ESP image",
         );
+        uefi::println!("boot-shim: kernel loaded (entry staged)");
         let boot_modules =
             loader::load_boot_modules_with_loader(&file_loader, alloc_module_pages);
+        uefi::println!("boot-shim: 12 boot modules loaded");
 
         // Locate platform descriptor sources (ACPI RSDP and/or DTB) from the
         // UEFI configuration table. Must happen before ExitBootServices because
         // the System Table is only valid while boot services are available.
+        uefi::println!("boot-shim: locating platform sources…");
         let platform_sources = find_platform_sources();
+        uefi::println!("boot-shim: building KernelInfo…");
 
         let kernel_info = build_kernel_info(
             memmap,
@@ -206,6 +218,7 @@ impl BootShim for UefiBootShim {
             platform_sources,
         );
 
+        uefi::println!("boot-shim: exiting boot services…");
         exit_boot_services();
 
         BootPrepareResult {
