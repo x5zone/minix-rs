@@ -1,5 +1,11 @@
 # 交接 Prompt：NK4-A 生产启动链首亮 + NS12 尾款清理
 
+> **基线记录（2026-09-21，用户指示）**：接手前主线最后 commit = `940ad8363`
+> （kernel-image ld 跨距收口，本文件所载诊断与路标的落点）。接手方（busy-billing agent）
+> 在其上以 WIP commit 序列推进（77d50669b / ffff852f6 / 9e115387e…，fix22-27b+ 系列，
+> 身份窗口/VM 拆分/handoff 消费），验收时以 `940ad8363..rewrite` 的 diff + 独立重跑
+> test-cmd-smoke.sh 为准。
+
 > 用法：整段粘贴给任何 agent（无并发会话，**无需 claim.sh 上锁**，但所有纪律照旧）。
 > 开工前按序读完：`CLAUDE.md` + `.claude/rules/review-core.md` + `review-process.md` + `fix-guard.md`
 > + 本文件全文。Ground truth 链与构建纪律（docker minix-ci:1.94 第一优先；
