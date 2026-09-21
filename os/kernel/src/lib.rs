@@ -647,10 +647,37 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
 
     boot_stage!("kernel: kmain A.5 platform ok\n");
     // Phase B: cstart — protection + clock + interrupt
+    // C-3 F0 取证（task1-close 裁决删除）：GS.BASE 三点采样（kmain 入口/
+    // init_protection 后/RS 切换前）。current_cpu_id 的 gs:0x10 身份锚在
+    // RS 首次切换后 PF@cr2=0x10（NK4-A 评审 F0，C-3 迭代1 M1-M2 二分），
+    // 本采样判定 GS 是"从未编程"还是"中途被清"。
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        let (g_lo, g_hi): (u32, u32);
+        // SAFETY: rdmsr of GS_BASE is a read-only side-effect-free probe.
+        unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
+        let (k_lo, k_hi): (u32, u32);
+        // SAFETY: rdmsr of KERNEL_GS_BASE is read-only.
+        unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0102u32, out("eax") k_lo, out("edx") k_hi, options(nomem, nostack)) };
+        Console::write_str("nk4a: gs0 gsbase=0x");
+        Console::write_hex(((g_hi as u64) << 32) | g_lo as u64);
+        Console::write_str(" kgsbase=0x");
+        Console::write_hex(((k_hi as u64) << 32) | k_lo as u64);
+        Console::write_str("\n");
+    }
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
 
     boot_stage!("kernel: kmain B clock+intr ok\n");
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        let (g_lo, g_hi): (u32, u32);
+        // SAFETY: rdmsr probe, see gs0 above.
+        unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
+        Console::write_str("nk4a: gs1 gsbase=0x");
+        Console::write_hex(((g_hi as u64) << 32) | g_lo as u64);
+        Console::write_str("\n");
+    }
     // Phase B.5: kernel information page — build, user-map, publish.
     // From here on the MINIX_KERNINFO IPC call (= 6) answers OK with the
     // page address instead of EBADCALL (C: proc.c:685-693, publication at
@@ -3497,6 +3524,14 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                 // map_kernel 铺哪一段坏了。
                 if root_dbg != 0 {
                     use crate::pte_walk::walk_x86_64;
+                    // C-3 F0 取证：切换前 GS.BASE 采样（与 kmain gs0/gs1
+                    // 对比——判定 GS 何时为零）。
+                    let (g_lo, g_hi): (u32, u32);
+                    // SAFETY: rdmsr probe, read-only.
+                    unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
+                    C0::write_str("nk4a: gs2 gsbase=0x");
+                    C0::write_hex(((g_hi as u64) << 32) | g_lo as u64);
+                    C0::write_str("\n");
                     let probe_text = switch_address_space as *const () as u64;
                     let stack_va: u64;
                     // SAFETY: reading RSP has no side effects.

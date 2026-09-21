@@ -90,16 +90,21 @@ impl TrapReturnArch for X86_64TrapReturn {
             // ── 2. Data segment selectors (outside the CPU frame) ──
             // RAX is free again (its payload was pushed). C restores these
             // from p_reg in _restore_user_context; 64-bit mode loads
-            // selectors only — the FS/GS bases live in MSRs and are set
-            // elsewhere.
+            // selectors only. DS/ES are selector-loaded here.
+            //
+            // FS/GS are NOT: a `mov fs/gs, reg` clobbers the hidden BASE —
+            // the same clobber class load_with_tss's `mov gs, 0` already
+            // hit (see ProtectionArch::init_ap's ordering contract). The
+            // first VM-built process table went live with GS.BASE zeroed by
+            // this restore (silent: nothing read `gs:0x10` while the VM
+            // server ran), and the scheduler's next `current_cpu_id()`
+            // faulted at CR2=0x10 → #PF-storm (NK4-A C-3 F0 root cause,
+            // 2026-09-21). FS/GS bases are MSR-owned; a future user-TLS
+            // contract must use wr{f,g}sbase, not selector restores.
             "mov ax, [rsi + {ds_off}]",
             "mov ds, ax",
             "mov ax, [rsi + {es_off}]",
             "mov es, ax",
-            "mov ax, [rsi + {fs_off}]",
-            "mov fs, ax",
-            "mov ax, [rsi + {gs_off}]",
-            "mov gs, ax",
             // ── 3. RBX — named field (ps_strings / IPC status) ──
             "mov rbx, [rsi + {rbx_off}]",
             // ── 4. General-purpose registers, gp_regs[GP_RAX..=GP_R15] ──
@@ -136,8 +141,6 @@ impl TrapReturnArch for X86_64TrapReturn {
             ss_off = const core::mem::offset_of!(X86_64ExceptionFrame, ss),
             ds_off = const core::mem::offset_of!(X86_64CpuContext, ds),
             es_off = const core::mem::offset_of!(X86_64CpuContext, es),
-            fs_off = const core::mem::offset_of!(X86_64CpuContext, fs),
-            gs_off = const core::mem::offset_of!(X86_64CpuContext, gs),
             rbx_off = const core::mem::offset_of!(X86_64CpuContext, rbx),
             gp_off = const core::mem::offset_of!(X86_64CpuContext, gp_regs),
             // `nostack` must NOT be used: the payload pushes 5 quads onto

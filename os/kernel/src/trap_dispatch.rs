@@ -92,21 +92,49 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // kernel body 并打印原始 RIP/err——若真机只见 12 条后静默，则崩溃点
     // 在 asm stub/dispatcher 层（探针前），本身即证词。mock（宿主）下
     // console 是真实端口写，编译掉（同 lib.rs 路标惯例）。
+    // C-3 迭代1（评审 F0 续修）：补 CR2（故障 VA——判定是否恒 0x10）与
+    // RSP（栈耗尽可见性），上限 12→20；并加 M1-M5 分段路标（各限 4 次）
+    // 把递归点二分到 body 前段 / smp 读取 / 表读取 / handle / panic 渲染
+    // 之一（每轮最后出现的路标 = 故障段）。
     #[cfg(not(feature = "mock"))]
     if vector == 14 {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static PF_MARK: AtomicUsize = AtomicUsize::new(0);
         let n = PF_MARK.fetch_add(1, AtomicOrd::Relaxed);
-        if n < 12 {
+        if n < 20 {
             use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            let cr2: u64;
+            // SAFETY: reading CR2 has no side effects.
+            unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)) };
             C0::write_str("nk4a: pf#");
             C0::write_hex(n as u64);
             C0::write_str(" rip=");
             C0::write_hex(frame.rip);
             C0::write_str(" err=");
             C0::write_hex(frame.errcode);
+            C0::write_str(" cr2=");
+            C0::write_hex(cr2);
+            C0::write_str(" rsp=");
+            C0::write_hex(frame.rsp);
             C0::write_str("\n");
         }
+    }
+
+    // C-3 迭代1 分段路标：每个站点独立计数（static 展开在各站点），限 4 次。
+    // 用法：nk4a_stage_mark!("pfm2") —— 串口打 "nk4a: pfm2"。
+    #[cfg(not(feature = "mock"))]
+    macro_rules! nk4a_stage_mark {
+        ($tag:literal) => {{
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static STAGE_MARK: AtomicUsize = AtomicUsize::new(0);
+            let n = STAGE_MARK.fetch_add(1, AtomicOrd::Relaxed);
+            if n < 4 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: ");
+                C0::write_str($tag);
+                C0::write_str("\n");
+            }
+        }};
     }
 
     // E1 trap bridge: vector 33 (IPC_VECTOR) from user mode is the IPC
@@ -237,6 +265,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     } else {
         unsafe { crate::smp::BklSection::assume_held() }
     };
+    #[cfg(not(feature = "mock"))]
+    nk4a_stage_mark!("pfm1-gate");
     // Per-CPU current process (C: `saved_proc = get_cpulocal_var(proc_ptr)`
     // — exception.c:186). User-origin outcomes act on it; the kernel-origin
     // path needs it too for the nested-debug legitimacy check (C reads
@@ -265,6 +295,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // to VM itself). Kernel-origin faults never reach that check (the
     // nested path panics first), matching C's is_nested ordering.
     let is_vm = cur_nr == Some(crate::proc::proc_nr::VM_PROC_NR);
+    #[cfg(not(feature = "mock"))]
+    nk4a_stage_mark!("pfm2-smp");
     // Nested-debug legitimacy inputs, read from the saved process state the
     // way C does (exception.c:232-234): the trace bit comes from the saved
     // PSW (`p_reg.psw & TRACEBIT`, archconst.h:120), the entry style from
@@ -280,6 +312,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             })
         })
         .unwrap_or((false, TrapStyle::NoEntry));
+    #[cfg(not(feature = "mock"))]
+    nk4a_stage_mark!("pfm3-tbl");
     // The kernel copy paths are validate-first (user-buffer range checks in
     // ipc.rs, Direct Map window checks in vm.rs), so no FaultContext slot is
     // maintained: C's `catch_pagefaults` + context-tracking replacement
@@ -294,6 +328,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         is_traced,
         kern_trap_style,
     );
+    #[cfg(not(feature = "mock"))]
+    nk4a_stage_mark!("pfm4-hand");
 
     match outcome {
         // Spurious NMI — C prints and returns (exception.c:191-194); the
@@ -347,6 +383,8 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_str(" ss ");
             Console::write_hex(frame.ss);
             Console::write_str("\n");
+            #[cfg(not(feature = "mock"))]
+            nk4a_stage_mark!("pfm5-dump");
             panic!(
                 "kernel exception vector {} at rip {:#x} errcode {:#x} [dispatch_body @ 0x{:x}]",
                 v.get(),
