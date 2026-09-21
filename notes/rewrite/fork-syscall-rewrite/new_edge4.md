@@ -14,6 +14,7 @@
 6. **并发隔离命名约定（新增）**：扫描/调研类中间产物一律带作者后缀（`new_todo_{name}.md`）；工作线文件按轮次更替（前轮 edge1-4 已冻结加横幅，本轮 new_edge1-4）；阶段收尾时由本线批量并回权威文件后冻结。
 7. **领取锁 + 工作树隔离（2026-09-20 C-35 事故后硬化为机制）**：条目领取 = `tools/claim.sh claim <ID> <owner>`——`claim/<ID>-<owner>` 分支即排他锁（分支名全局唯一，双领第二个直接失败；worktree 间共享 refs 所以跨工作树有效）；claim **同时自动建 `.wt/<id>-<owner>/` 专属工作树并打印 `cd` 路径**，领取者只在本会话的专属树内改码/构建/测试；开工/换任务前跑 `tools/claim.sh verify` 自检位置（主树 → 警告；claim 分支 + 专属树 → OK）。**共享主树内禁 checkout/reset --force**——主树同时承载多线未提交在制品，换分支即销毁别人的工作（C-35 判例）。`list` 按日期列全部领取（最旧者 = stale 候选，可回收）；完成后合入主线再 `release` 销账（自动删工作树，树内有未提交改动则拒绝，防误弃）。**在制品守卫**：new_edgeX.md 与 `tools/claim.sh` 等纪律载体必须被 git 跟踪且改完即 commit——未跟踪/脏状态 = 一次误 reset 就没（C-35 同日 `tools/claim.sh`、`new_edge2.md` 曾处于未跟踪态）。QEMU 真机验证保持全仓同一时刻只有一方在跑（串口判定不可并发）。
 8. **在制品即提交（新增，2026-09-20，随规则 7 机制化一并立规）**：new_edgeX.md 状态列/认领板每次更新后立即 commit（风格照旧 `docs(edgeN): …`），勿留未跟踪或长期脏状态——未跟踪文件是一次 `reset --hard` 的零成本牺牲品；`tools/claim.sh verify` 报出的未提交文件数即自查信号。
+10. **共享文件触碰登记（run_all 接线，2026-09-21 zcode_glm_4）**：NK1 收口单在 `os/qemu-tests/run_all.sh` x86_64 特殊协议段尾接线 `test-sysboot.sh`（自建内核+六串行标记判定，test-rt-birth 同形），头注第 8 条测试族同步点名——共享文件触碰照规则 3 在此登记一句话，代码随 merge b5fe7e2fa。
 9. **构建优先级（新增，2026-09-20）**：cargo build/test/clippy **永远 docker `minix-ci:1.94` 第一优先**（`-m 2g -j 1`；docker 隔离一切 panic 崩 WSL，不只 OOM，无宿主直跑例外）；仅 docker 不可用才回退宿主 `ulimit -v 3145728`（KB）+ `-j 1`。标准命令与并发挂载见项目 memory《测试内存铁律》。
 
 ---
@@ -33,7 +34,7 @@
 | C-23 | termios wire + tty ioctl 面 | edge3 | 🔄 卡H 批次二十五 | 携带 |
 | C-24 | smoltcp 外部依赖引入 | edge3 | 🔄 卡E 批三开工 | 携带 |
 | C-26 | sffs 语义核心入库 | edge3 | 🔄 卡F3d 开工 | 携带 |
-| C-27 | 全系统自举载体 | edge3 | 🔄 载体半程 | **并入 new_edge1 NK1 收口**（PASS 后接 run_all） |
+| C-27 | 全系统自举载体 | edge3 | ✅ 2026-09-21（zcode_glm_4，91d3fa024/merge b5fe7e2fa）| **并入 new_edge1 NK1 收口**——真机 test-sysboot PASS（六标记双 DONE）+ run_all 已接线（特殊协议脚本段） |
 | C-28 | srv_fork 子 PRIV_PROC 保留缺失【PM 类型设计裁决】 | edge3 | ✅ 已修 2026-09-20（qorder_3，`.review/zcode/edge3/FIXLOG.md` Fix #123） | `Privilege::Kernel(Credentials)` 承载凭证，`is_kernel_process()==true`；偏差钉翻转正断言（os/tests/srv_fork.rs） |
 | C-29 | boot loader per-process 地址空间/栈 | edge1 面 | ☐ 待认领 | **改编号 new_edge1 NK1**（设计裁决 OQ-N6 先行） |
 
@@ -85,7 +86,7 @@
 | new_edge2 NL6（memory 驱动进程） | new_edge3 NS4（挂根）/NS6（块源）/NS8（镜像） | ✅ 供方 2026-09-20 qorder_2 c0a9b81aa（claim/NL6-qorder_2，双面消息泵+进程壳，待合入 rewrite 后下游方可消费）|
 | new_edge2 NL4（pipe2/whoami/文件族 wrapper） | new_edge3 NS12（sh 等）、NL6（tty 端点） | ☐ |
 | new_edge2 NL3③（sigreturn trampoline） | new_edge3 NS11（init trampoline 填真） | ☐ |
-| new_edge1 NK1（C-29 载体收口） | new_edge3 NS1/NS2（boot 链真机验收）、E5 族真机半 | ☐ |
+| new_edge1 NK1（C-29 载体收口） | new_edge3 NS1/NS2（boot 链真机验收）、E5 族真机半 | ✅（2026-09-21，91d3fa024/merge b5fe7e2fa——test-sysboot 真机 PASS 六标记双 DONE，run_all 接线；NS12 冒烟脚本前置同步解锁） |
 | new_edge1 NK2（页故障转发） | 一切用户程序（内存故障安全网）；E5(d) 真机 | ✅（2026-09-20，5037491ff） |
 | new_edge1 NK3（三架构生产 trap 腿 + timer-irq 载体） | E5-SMP（-smp 用例的中断交付前提）；E5-ARCH（三架构复跑）；一切 riscv64/aarch64 真机中断/用户往返 | ✅（2026-09-20，c1bb93c22 等 4 commit；真机 PASS ×2） |
 | new_edge1 NK4/OQ-N2（12 模块契约）——✅ 契约已钉（2026-09-20，loader.rs MODULE_NAMES 12 项对 C image[] 序） | new_edge3 NS8（装机清单——须把 `/EFI/minix/modules/` 下 12 文件命名严格对齐 `ds,rs,pm,sched,vfs,memory,tty,mib,vm,pfs,mfs,init`，缺件 boot-shim 现 fail-fast panic） | 供方 ✅ / 消费方 ✅（NS8 2026-09-21 dfb910f37：装机清单三重锁对齐契约，xtask image() 按同序装机；NK4-A 真机端到端余量待 QEMU 窗口 + NS8-A kernel.elf 产出者） |
