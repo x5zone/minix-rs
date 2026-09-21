@@ -558,7 +558,13 @@ pub fn kernel_call_dispatch(
 }
 
 /// Inner dispatch logic, called after BKL is acquired.
-fn kernel_call_dispatch_inner(
+///
+/// `pub(crate)`: the scheduler-loop KCALL_RESUME re-dispatch (stage 3a)
+/// calls this directly — C's `kernel_call_resume` dispatches the saved
+/// reqmsg without re-entering mpx.S's BKL_LOCK, and the Rust BKL is
+/// bundled in [`kernel_call_dispatch`] which would self-deadlock under
+/// the scheduler loop's held lock.
+pub(crate) fn kernel_call_dispatch_inner(
     caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
     msg: &mut Message,
@@ -3200,6 +3206,23 @@ pub fn kernel_call_finish(
     result: KcallResult,
     priv_table: &mut PrivTable,
 ) {
+    kernel_call_finish_holding_bkl(caller_nr, proc_table, msg, result, priv_table, true);
+}
+
+/// `kernel_call_finish` without the BKL release, for re-dispatch contexts
+/// that already run under the scheduler loop's held BKL (scheduler_loop
+/// stage 3a KCALL_RESUME consume). C calls `kernel_call_finish` from
+/// `kernel_call_resume` (system.c:636) while the scheduler holds the
+/// kernel lock — the Rust unlock sites exist for the trap-entry dispatch
+/// chain only, so they are conditional here.
+pub(crate) fn kernel_call_finish_holding_bkl(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    result: KcallResult,
+    priv_table: &mut PrivTable,
+    release_bkl: bool,
+) {
     // B1: the dispatch entry transferred a held BKL into this chain
     // (kernel_call_dispatch / dispatch_ipc_entry via `transfer()`); the
     // VmSuspend branch below releases it. A lost lock must fail loudly.
@@ -3229,7 +3252,11 @@ pub fn kernel_call_finish(
         // Release BKL — process is suspended waiting for VM.
         // Other CPUs can enter the kernel while we wait.
         // kernel_call_resume() will re-acquire BKL when VM replies.
-        crate::smp::bkl_unlock();
+        // (Skipped on the holding-bkl re-dispatch form: the scheduler
+        // loop's lock outlives this call.)
+        if release_bkl {
+            crate::smp::bkl_unlock();
+        }
         return;
     }
 
@@ -3311,7 +3338,10 @@ pub fn kernel_call_finish(
     }
 
     // Release BKL — syscall complete (Ok/NoReply/BadCall/CallDenied).
-    crate::smp::bkl_unlock();
+    // (Skipped on the holding-bkl re-dispatch form — see fn doc.)
+    if release_bkl {
+        crate::smp::bkl_unlock();
+    }
 }
 
 /// Resume a previously suspended kernel call (after VM handled the page fault).

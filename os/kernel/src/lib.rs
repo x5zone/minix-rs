@@ -3673,19 +3673,46 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             let resumed = crate::vm::kernel_call_resume(picked, table);
             match resumed {
                 crate::vm::VmCheckResult::Ok => {
-                    let m_user = table
+                    // C: kernel_call_resume 重派用的是 saved.reqmsg
+                    // （system.c:627：assert m_source 后直接
+                    // kernel_call_dispatch(caller, &saved.reqmsg)），不是
+                    // 重新从用户空间拷贝——saved_msg 由上一轮 finish 的
+                    // VmSuspend 臂存下。
+                    let mut msg = match table
                         .get(picked)
                         .and_then(|p| p.p_vm_suspend.as_ref())
-                        .and_then(|c| c.saved_m_user)
-                        .unwrap_or(0);
+                        .and_then(|c| c.saved_msg)
+                    {
+                        Some(m) => m,
+                        None => continue,
+                    };
                     let clock_state = unsafe { crate::clock_state_boot_unchecked() };
-                    let result = crate::syscall::kernel_call(
+                    // C: kernel_call_dispatch 本体不取 BKL（BKL_LOCK 只在
+                    // mpx.S 陷入入口）；Rust 的 kernel_call/kernel_call_
+                    // dispatch 把 bkl_lock() 打包在 dispatch 前——调度循环
+                    // 已持锁（&section，loop 前一次 assume_held），经它们
+                    // 重派 = 非重入自旋锁自死锁（真机 c8a 轮实证：memreq
+                    // 服务完成后 RS 挂死在 sa1-after 与 pre-restore 之间，
+                    // 无任何输出）。故走 inner + 环境 BKL 见证；finish 用
+                    // 持锁变体（两处 bkl_unlock 会丢掉调度循环的锁）。
+                    let result = crate::syscall::kernel_call_dispatch_inner(
                         picked,
                         table,
-                        minix_types::VirBytes(m_user),
+                        &mut msg,
                         priv_table,
                         clock_state,
-                        &crate::ipc::KernelUserCopy,
+                        &section,
+                    );
+                    // C: kernel_call_resume 尾部 kernel_call_finish
+                    // （system.c:636）——完成半的 reply 拷贝 / VmSuspend
+                    // 再挂起簿记 / NoReply 出队都由它做。
+                    crate::syscall::kernel_call_finish_holding_bkl(
+                        picked,
+                        table,
+                        &msg,
+                        result,
+                        priv_table,
+                        false,
                     );
                     match result.reply_code() {
                         // 完成：交付 RAX + 清挂起态，随后正常 restore。
@@ -3697,8 +3724,9 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                                 p.clear_vm_suspend();
                             }
                         }
-                        // 重派再次挂起（多页/多区间）：kernel_call 内部的
-                        // 挂起路径已自入队+通知 VM。此处不得递归重入
+                        // 重派再次挂起（多页/多区间）：finish 的 VmSuspend
+                        // 臂已存 saved_msg + 置 KCALL_RESUME + 入队通知 VM
+                        // （持锁变体，锁仍归调度循环）。此处不得递归重入
                         // scheduler_loop（每层挂起嵌套一整层调度器帧，内核
                         // 栈会耗尽）——continue 平级重挑：本进程已停排
                         // 不会被选中，VM 可运行、会得到 CPU。
