@@ -903,12 +903,19 @@ impl VmServer {
         .map_err(|_| "stack_fill refused the frame")?;
         let vsp = filled.vsp;
 
-        // Map the stack: one page below user_sp covers the frame
-        // (frame_size <= PAGE_SIZE and vsp = user_sp - frame_size).
-        let region_base = VirBytes(vsp & !(PS as u64 - 1));
+        // Map the stack region: C execi->stack_size = DEFAULT_STACK_LIMIT
+        // (sys_config.h:25, 4 MiB) below user_sp — the region covers the
+        // whole limit and pages materialize on demand; only the frame page
+        // is eagerly materialized below. The former one-page region made
+        // any call-chain descent past the frame page leave the region —
+        // pf find_mut → InvalidAddress → SIGSEGV (real machine NK4-A C-3
+        // c11a: RS main's stack read at 0x7fffffffd9c8, one page below the
+        // frame page, 2026-09-22).
+        const DEFAULT_STACK_LIMIT: u64 = 4 * 1024 * 1024;
+        let region_base = VirBytes((self.ctx.user_sp.0 - DEFAULT_STACK_LIMIT) & !(PS as u64 - 1));
         let region = crate::region::VirRegion::with_memtype(
             region_base,
-            VirBytes((self.ctx.user_sp.0 - region_base.0) as u64),
+            VirBytes(self.ctx.user_sp.0 - region_base.0),
             crate::region::VrFlags::ANON | crate::region::VrFlags::WRITABLE,
             &crate::memtype::MEM_TYPE_ANON,
         );
@@ -934,11 +941,19 @@ impl VmServer {
         let pfn = self.ctx.page_alloc.alloc_pfn()
             .map_err(|_| "boot stack page allocation failed")?;
         {
+            // 帧页在 region 内的偏移：region 基址是 4MiB 窗口底，帧页是
+            // vsp 所在页（非 region 首页）。
+            let frame_page = VirBytes(vsp & !(PS as u64 - 1));
             let vr = proc
                 .regions_mut()
-                .find_mut(region_base)
+                .find_mut(frame_page)
                 .ok_or("stack region vanished")?;
-            vr.map_page(frames, VirBytes(0), pfn, &crate::memtype::MEM_TYPE_ANON);
+            vr.map_page(
+                frames,
+                VirBytes(frame_page.0 - region_base.0),
+                pfn,
+                &crate::memtype::MEM_TYPE_ANON,
+            );
         }
 
         // C: handle_memory_once(vmp, vsp, frame_size, 1) — main.c:400.
@@ -966,14 +981,16 @@ impl VmServer {
         let dst_va = crate::direct_map::vm_phys_to_virt(
             crate::phys_mem::AlignedPhysBytes::new(dst_phys),
         );
-        let write_off = (vsp - region_base.0) as usize;
+        // 页内偏移（vsp 所在页的页基 = vsp & !PS-1），region 基址是 4MiB
+        // 窗口底——用它会把帧写到页外物理内存（宿主测试实证）。
+        let write_off = (vsp & (PS as u64 - 1)) as usize;
         // The frame's byte 0 lands at `vsp`, which sits `write_off` bytes
         // into the mapped page — not at the page start.
         // SAFETY: the DM window maps all of physical memory; the page was
         // just allocated to this process's stack region with refcount 1
         // (no CoW sharing), so the bytes are exclusively ours to write.
-        // `write_off + frame_size <= PS` holds because the region spans
-        // [region_base, user_sp) and vsp + frame_size == user_sp.
+        // `write_off + frame_size <= PS` holds because the frame fits one
+        // page and vsp + frame_size == user_sp.
         unsafe {
             core::ptr::copy_nonoverlapping(
                 frame.as_ptr(),
@@ -3341,15 +3358,19 @@ mod tests {
             // Frame bytes readable at vsp through the Direct Map.
             let table = VmProcTable::get_global();
             let proc = table.get_active(UserSlot(9)).expect("slot 9 active");
-            let region_base = vsp & !(PS as u64 - 1);
+            let frame_page = vsp & !(PS as u64 - 1);
             let region = proc
                 .regions()
-                .find(minix_types::VirBytes(region_base))
+                .find(minix_types::VirBytes(frame_page))
                 .expect("stack region registered");
-            let pfn = region.physblocks[0]
-                .pfn()
+            // 栈 region 是 user_sp 下的 4MiB 窗口（C DEFAULT_STACK_LIMIT），
+            // 帧页在其中偏移 (frame_page - region.vaddr) 处。
+            let frame_off = frame_page - region.vaddr.0;
+            let pfn = region
+                .get_slot(minix_types::VirBytes(frame_off))
+                .and_then(|s| s.pfn())
                 .expect("stack page materialized");
-            let off_in_page = (vsp - region_base) as usize;
+            let off_in_page = (vsp - frame_page) as usize;
             let phys_page = pfn as u64 * PS as u64;
             let va = crate::direct_map::vm_phys_to_virt(
                 crate::phys_mem::AlignedPhysBytes::new(phys_page),
