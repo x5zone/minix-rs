@@ -2200,6 +2200,13 @@ pub fn mini_notify_core(
     if IpcEngine::is_willing_to_receive(&procs[dst_idx], caller_endpoint) {
         let src = NotifySource::from_caller_nr(caller_nr);
         build_notify_message(procs, priv_table, dst_idx, src);
+        // C mini_notify（proc.c:1147 对位）：m_source = 调用者端点。
+        // build_notify_message 置 Message::default() 后未补 m_source，
+        // 通知以 src=NONE(0x7bff) 投递——sef 的 SYSTEM 信号路由
+        // （source == SYSTEM_ENDPOINT → on_signal）失配，VM 的
+        // SIGKMEM 唤醒被当普通消息丢弃（NK4-A C-3 迭代9 真机：
+        // RS 挂起后 VM 收到 src=NONE/type=0 空消息无限自旋、RS 饿死）。
+        procs[dst_idx].p_delivermsg.m_source = caller_endpoint;
         procs[dst_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
         // C: proc.c:1154 — `IPC_STATUS_ADD_CALL(dst_ptr, NOTIFY)`
         crate::proc::ipc_status_add_call(&mut procs[dst_idx], IpcCall::Notify);

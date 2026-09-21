@@ -151,6 +151,26 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         }};
     }
 
+    // NK4-A C-3 迭代9 取证（task1-close 裁决删除）：全向量采样器（限 40）
+    // ——验证 PIT/时钟中断是否触发（tick 活性），并采样被中断用户态
+    // （RS）的 rip 推进轨迹。
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static VEC_SAMPLE: AtomicUsize = AtomicUsize::new(0);
+        let vn = VEC_SAMPLE.fetch_add(1, AtomicOrd::Relaxed);
+        if vn < 40 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: vs");
+            C0::write_hex(vn as u64);
+            C0::write_str(" v=0x");
+            C0::write_hex(vector as u64);
+            C0::write_str(" rip=0x");
+            C0::write_hex(frame.rip);
+            C0::write_str("\n");
+        }
+    }
+
     // E1 trap bridge: vector 33 (IPC_VECTOR) from user mode is the IPC
     // soft-int leg (C: IPC_VECTOR_ORIG, interrupt.h:33; gate DPL=3,
     // trap_entry.rs configure_ipc_entry). The register ABI is the C i386
@@ -207,6 +227,17 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // SIE; the sret after the handler restores it (SPIE=1), so the
     // preempted process's instruction stream resumes without disruption.
     if vector == 0xF1 {
+        // NK4-A C-3 迭代8 取证（一次性）：LAPIC tick 存活证明——RS 用户态
+        // 裸转期间若 tick 从未触发，则无抢占、自旋独占 CPU。
+        #[cfg(not(feature = "mock"))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static TICK1: AtomicUsize = AtomicUsize::new(0);
+            if TICK1.fetch_add(1, AtomicOrd::Relaxed) == 0 {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                Console::write_str("nk4a: tick1\n");
+            }
+        }
         crate::clock::local_tick(crate::current_cpu_id());
         // Quantum enforcement (C proc.c:418-424): the tick CPU evaluates
         // its own running process — if the quantum is exhausted, the

@@ -3519,6 +3519,23 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                     }
                     break p;
                 }
+                // NK4-A C-3 迭代8 取证（一次性）：pick 空手时打印 RS 的
+                // RTS flags——"run enter"后调度器静默的判别仪器。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static PICKNONE: AtomicUsize = AtomicUsize::new(0);
+                    if PICKNONE.fetch_add(1, AtomicOrd::Relaxed) == 0 {
+                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                        C0::write_str("nk4a: picknone rs_flags=0x");
+                        let fl = table
+                            .get(crate::proc::proc_nr::RS_PROC_NR)
+                            .map(|p| p.p_rts_flags.get().bits())
+                            .unwrap_or(0xFFFF);
+                        C0::write_hex(fl as u64);
+                        C0::write_str("\n");
+                    }
+                }
                 idle(&section, table, smp, priv_table, cpu);
             };
             // C: proc.c:343 — `get_cpulocal_var(proc_ptr) = p;`
