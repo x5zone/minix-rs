@@ -245,6 +245,12 @@ impl CpuContextArch for X86_64CpuContextArch {
         ctx.rbx |= value;
     }
 
+    fn clear_ipc_status_reg(ctx: &mut Self::CpuContext) {
+        // C: `IPC_STATUS_CLEAR(p)` — `p_reg.bx = 0` (ipc.h:45; plain
+        // RECEIVE prologue, proc.c:581).
+        ctx.rbx = 0;
+    }
+
     fn set_secondary_ipc_return(ctx: &mut Self::CpuContext, value: u64) {
         // C: `arch_set_secondary_ipc_return` — arch_system.c:184-186,
         // i386 body `p->p_reg.bx = val`. Plain assignment (whole address,

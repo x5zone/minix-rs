@@ -149,6 +149,12 @@ impl CpuContextArch for Riscv64CpuContextArch {
         // Accessed via gp_regs[GP_A1] where GP_A1 = 8.
         ctx.gp_regs[crate::riscv64::signal::GP_A1] |= value;
     }
+
+    fn clear_ipc_status_reg(ctx: &mut Self::CpuContext) {
+        // C: `IPC_STATUS_CLEAR(p)` — `p_reg.A1 = 0` (ipc.h:45; plain
+        // RECEIVE prologue, proc.c:581).
+        ctx.gp_regs[crate::riscv64::signal::GP_A1] = 0;
+    }
 }
 
 #[cfg(target_arch = "riscv64")]

@@ -563,6 +563,13 @@ pub fn ipc_return_code(ctx: &super::boot::X86_64CpuContext) -> u64 {
     ctx.gp_regs[0]
 }
 
+/// Read back the saved RBX — the IPC status register (C ipcconst.h:10;
+/// `or_ipc_status_reg` OR-merges into it, the plain-RECEIVE prologue
+/// clears it — C proc.c:581). Same test seam as [`ipc_return_code`].
+pub fn ipc_status_register(ctx: &super::boot::X86_64CpuContext) -> u64 {
+    ctx.rbx
+}
+
 /// Read back the saved PSW (RFLAGS) from a saved context.
 ///
 /// Kernel-side callers cannot reach the arch-private register file (same

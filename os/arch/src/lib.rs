@@ -369,6 +369,19 @@ pub fn ipc_return_code(ctx: &CurrentCpuContext) -> u64 {
 pub fn ipc_return_code(_ctx: &CurrentCpuContext) -> u64 {
     0
 }
+
+/// Read back the saved IPC status register of a process's saved user
+/// context (test seam, same shape as [`ipc_return_code`] — the write
+/// side is kernel `ipc_status_*` / the plain-RECEIVE prologue clear;
+/// the register file itself is arch-private). Mock/other-arch: 0.
+#[cfg(target_arch = "x86_64")]
+pub fn ipc_status_register(ctx: &CurrentCpuContext) -> u64 {
+    crate::x86_64::trap_stub::ipc_status_register(ctx)
+}
+#[cfg(not(target_arch = "x86_64"))]
+pub fn ipc_status_register(_ctx: &CurrentCpuContext) -> u64 {
+    0
+}
 // (syscall_entry_va for aarch64/riscv64 lives in the per-arch cfg blocks
 // above — the merged `any(aarch64, riscv64)` stub returning 0 was removed
 // with E-3ARCHTRAP: returning a fake entry address masked the fact that no

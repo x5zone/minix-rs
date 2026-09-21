@@ -164,6 +164,12 @@ impl CpuContextArch for AArch64CpuContextArch {
         // Accessed via gp_regs[GP_X1] where GP_X1 = 0.
         ctx.gp_regs[crate::arm64::signal::GP_X1] |= value;
     }
+
+    fn clear_ipc_status_reg(ctx: &mut Self::CpuContext) {
+        // C: `IPC_STATUS_CLEAR(p)` — `p_reg.r1 = 0` (ipc.h:45; plain
+        // RECEIVE prologue, proc.c:581).
+        ctx.gp_regs[crate::arm64::signal::GP_X1] = 0;
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

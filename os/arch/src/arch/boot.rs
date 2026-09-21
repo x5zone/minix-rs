@@ -260,6 +260,20 @@ pub trait CpuContextArch {
         // default: no-op (overridden by each arch)
     }
 
+    /// Zero the IPC status register of a saved user context.
+    ///
+    /// C: `IPC_STATUS_CLEAR(p)` — `((p)->p_reg.IPC_STATUS_REG = 0)`,
+    /// ipc.h:45; called in the plain-RECEIVE prologue (proc.c:581)
+    /// before `mini_receive`. The register carries the user message
+    /// pointer at trap entry, so without the clear the completion-time
+    /// OR-merge lands on a pointer and the user-side `is_ipc_notify`
+    /// check (com.h:92, 6-bit mask) fails.
+    ///
+    /// Default: no-op (arch must override to enable IPC status).
+    fn clear_ipc_status_reg(_ctx: &mut Self::CpuContext) {
+        // default: no-op (overridden by each arch)
+    }
+
     /// Assign (not OR-merge) the secondary IPC return channel of a saved
     /// user context.
     ///

@@ -2050,7 +2050,26 @@ impl<'a> IpcEngine<'a> {
                     flags
                 },
             ),
-            IpcCall::Receive => self.receive(caller_nr, dst_endpoint),
+            IpcCall::Receive => {
+                // C: proc.c:578-583 — the plain-RECEIVE prologue in
+                // `sys_call`: clear MF_REPLY_PEND (SENDREC's protection,
+                // already consumed if we got here as a fresh RECEIVE) and
+                // IPC_STATUS_CLEAR the status register. The register still
+                // carries the user message pointer from trap entry, so
+                // without the clear the completion-time OR-merge lands on
+                // a pointer and the user-side `is_ipc_notify` check
+                // (com.h:92, 6-bit mask) fails — real machine NK4-A C-3
+                // 迭代11: VM's SYSTEM SIGKMEM notify surfaced with
+                // status = ptr|NOTIFY and was never routed to
+                // handle_signal, starving RS on VMREQUEST.
+                if let Some(ci) = nr_to_idx(caller_nr) {
+                    self.procs[ci].p_misc_flags.clear(MiscFlagsBits::REPLY_PEND);
+                    <minix_arch::CurrentCpuContextArch as minix_arch::CpuContextArch>::clear_ipc_status_reg(
+                        &mut self.procs[ci].cpu_context,
+                    );
+                }
+                self.receive(caller_nr, dst_endpoint)
+            }
             IpcCall::SendRec => self.sendrec(caller_nr, dst_endpoint, msg),
             IpcCall::Notify => self.notify(caller_nr, dst_endpoint),
             IpcCall::SendA => {
@@ -2726,6 +2745,57 @@ mod tests {
         let outcome = engine.receive(b_nr, Endpoint::ANY);
         // No caller_q entries → should block (notify was skipped).
         assert!(outcome.is_blocked(), "MF_REPLY_PEND must skip notify");
+    }
+
+    #[test]
+    fn test_do_ipc_receive_prologue_clears_reply_pend_and_status() {
+        // C: proc.c:578-583 — the plain-RECEIVE prologue clears
+        // MF_REPLY_PEND and IPC_STATUS_CLEARs the status register (which
+        // still carries the user message pointer from trap entry). The
+        // completion-time OR-merge must land on a clean word or the
+        // user-side is_ipc_notify check fails.
+        let mut a = make_test_proc(0, Endpoint(1));
+        a.p_rts_flags = RtsFlags::new();
+        a.priv_id = Some(0);
+        a.p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
+        // Poison the status register the way the wrapper leaves it: the
+        // message pointer is still in there at trap entry.
+        <minix_arch::CurrentCpuContextArch as minix_arch::CpuContextArch>::or_ipc_status_reg(
+            &mut a.cpu_context,
+            0x7fff_0000,
+        );
+        let mut procs = crate::test_helpers::scratch_procs([a]);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &SuccessCopy);
+        // Admit the RECEIVE trap through the permission layer (fresh test
+        // priv slots have an empty trap mask; C user servers boot with
+        // SRV_T = ~0).
+        engine.priv_table.get_mut(0).unwrap().ipc.s_trap_mask = crate::capability::TrapMask::ALL;
+        let outcome = engine.do_ipc(
+            test_nr(0),
+            IpcCall::Receive,
+            Endpoint::ANY,
+            &Message::default(),
+            SendFlags::NONE,
+            None,
+        );
+        assert!(outcome.is_blocked());
+        // SENDREC's protection is consumed by a fresh plain RECEIVE.
+        assert!(
+            !engine.procs[0]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::REPLY_PEND)
+        );
+        // The status register was cleared: a fresh completion-time merge of
+        // NOTIFY (4) reads back as exactly 4 (no pointer bits).
+        <minix_arch::CurrentCpuContextArch as minix_arch::CpuContextArch>::or_ipc_status_reg(
+            &mut engine.procs[0].cpu_context,
+            4,
+        );
+        assert_eq!(
+            minix_arch::ipc_status_register(&engine.procs[0].cpu_context),
+            4
+        );
     }
 
     #[test]
