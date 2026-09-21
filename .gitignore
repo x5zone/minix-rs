@@ -76,3 +76,17 @@ compile_commands.json
 
 # claim.sh 专属工作树（.git/info/exclude 不随 clone 走，正式忽略规则入 .gitignore）
 .wt/
+
+# 会话/机器产物不入库（2026-09-21 NK4-A f1041b3f1 落盘分流，方案C裁决）：
+# agent 会话状态、临时目录、一次性脚本与样例属中间产物。
+# 例外：tmp/nk4a/（内核代码注释引用的取证日志锚点）保留跟踪。
+.zcode/
+.trae/documents/
+/tmp/*
+!/tmp/nk4a/
+qpid4
+qpid5
+.codebuddy
+.patch_doc07.py
+check_references.sh
+/examples/
