@@ -157,7 +157,17 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::x86_64::paging::X86_64Paging;
     use crate::x86_64::higher_half::X86_64HigherHalf;
     use crate::boot::HigherHalf;
+    // NK4-A 首亮诊断：内核侧第一根路标（EarlyConsole=COM1，与 boot-shim
+    // 的 raw_serial 同口；EBS 已过、无并发写者）。
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("kernel: arch_boot entered\n");
+    }
     let info = arch_boot_impl::<X86_64Paging>(kernel_info, root_page);
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("kernel: arch_boot_impl done, jumping to kmain\n");
+    }
     // SAFETY: arch_boot_impl just enabled paging with both identity
     // and kernel high mappings. info is valid and accessible at high address.
     // kern_stack_top is a valid high virtual address from KernelInfo.
@@ -293,8 +303,19 @@ fn boot_validate_and_prepare<P: HugePages>(kernel_info: &KernelInfo) -> u64 {
 /// C: pg_clear() + pg_identity() + pg_mapkernel() + pg_load() + vm_enable_paging()
 ///    pre_init.c:230-236, pg_utils.c:162/186/204/247
 pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysBytes) -> &KernelInfo {
+    // NK4-A 首亮诊断：逐阶段路标（EarlyConsole，方法同 arch_boot 入口）。
+    macro_rules! boot_stage {
+        ($msg:expr) => {{
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                Console::write_str($msg);
+            }
+        }};
+    }
     // Step 0: Validate KernelInfo + register allocator + compute kern_huge.
     let kern_huge = boot_validate_and_prepare::<P>(kernel_info);
+    boot_stage!("kernel: step0 validate ok\n");
 
     let mut paging = P::new_from_page(root_page);
 
@@ -347,6 +368,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
         }
     }
 
+    boot_stage!("kernel: step1+2 mappings ok\n");
     // Step 3: Enable paging.
     // SAFETY: Steps 1+2 set up identity mapping covering current RIP.
     let _root_phys = unsafe { paging.enable() };
@@ -372,6 +394,7 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // Must run after `enable()` (writes VA=PA through the live root) and
     // before any VM physical access through the windows.
     crate::dm_coverage::establish_boot_dm(kernel_info, root_page);
+    boot_stage!("kernel: step4 DM coverage ok\n");
 
     // Return kernel_info so the caller can decide what to do next.
     kernel_info
