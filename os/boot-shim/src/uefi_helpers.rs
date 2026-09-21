@@ -151,11 +151,18 @@ impl BootShim for UefiBootShim {
         // 没有这些行任何一步卡死都等于整机静默。ConOut 已实证落在 QEMU
         // 串口（固件倒计时文案可见）。
         uefi::println!("boot-shim: prepare_boot enter");
-        let memmap = build_memmap();
-        uefi::println!("boot-shim: memmap ok");
         let root_page = alloc_root_page();
         let (bump_base, bump_end) = alloc_bump_region(bump_pages);
         uefi::println!("boot-shim: root+bump allocated");
+        // D-64② 顺序修正（NK4-A 首亮实证）：快照必须在两次 LOADER_DATA
+        // 分配之后。UEFI 从 conventional 空闲内存里满足分配、并把所分页
+        // 在活图中改标 LOADER_DATA——先拍快照会把这两段仍列为
+        // conventional：①下方守卫必然误炸（新分配与旧快照相交）；
+        // ②传给内核的 PMM 图把活页表页标成 conventional，正是本守卫
+        // 要防的 A2 灾难。后拍 = 活图已改标，conventional-only 快照自然
+        // 排除两段，守卫与内核图双双正确。
+        let memmap = build_memmap();
+        uefi::println!("boot-shim: memmap ok (post-allocation snapshot)");
         // D-64②: wire the bootstrap-outside-memmap defense (it existed as
         // an uncalled helper). The two LOADER_DATA allocations above must
         // never sit in a page the memmap snapshot reports as conventional
@@ -260,9 +267,11 @@ const PAGE_SIZE: u64 = 4096;
 /// allocation `[base, base + len)`.
 ///
 /// The root page and the bump region are LOADER_DATA allocations made
-/// before the memmap snapshot (see `prepare_boot`); if firmware ever
-/// reports those pages as conventional, the A2 classification would hand
-/// live page-table pages to the VM PMM (07-paging_init_design §6.0-A2).
+/// before the memmap snapshot (see `prepare_boot` — the snapshot is taken
+/// after both allocations, so the conventional-only list excludes them);
+/// if firmware ever reports those pages as conventional, the A2
+/// classification would hand live page-table pages to the VM PMM
+/// (07-paging_init_design §6.0-A2).
 fn assert_bootstrap_outside_memmap(memmap: &[MemoryRegion], base: u64, len: u64) {
     for r in memmap {
         let rbase = r.base.0;
