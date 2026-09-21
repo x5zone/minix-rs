@@ -8,14 +8,21 @@
 //! `-c` (the C queries the window size, which belongs to the terminal
 //! face).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::column::{columnate, parse_entries, ColumnOptions};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut options = ColumnOptions::default();
     let mut index = 1;
     while index < argv.len() {
@@ -56,7 +63,7 @@ fn main() {
             Err(_) => break,
         }
     }
-    let text = std::str::from_utf8(&input).unwrap_or("");
+    let text = core::str::from_utf8(&input).unwrap_or("");
     let lines: Vec<&str> = text.split('\n').collect();
     let entries = parse_entries(&lines);
     for line in columnate(&entries, &options) {
@@ -69,4 +76,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: column [-tx] [-c width] [-s separator]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

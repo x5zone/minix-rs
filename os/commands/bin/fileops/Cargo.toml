@@ -13,7 +13,22 @@ path = "src/lib.rs"
 # stays free of any system-call imports (pure deciding half).
 [dependencies]
 minix-sys = { workspace = true }
-minix-rt = { workspace = true, features = ["std"] }
 # The `:` operator of expr anchors a basic regular expression; the BRE
 # engine is the 08-stage library (the C expr links libc's regcomp).
 minix-regex = { workspace = true }
+
+# minix-rt 按目标分形态（init / NS8-B 服务器判例的命令侧推广，NS12）：
+# - 宿主（开发与测试面）取 std 形态：rustc 对 hosted target 一律传
+#   Scrt1.o（其 `_start` 需要 `main`），no_std minix-rt 的出生链会在
+#   链接期与之撞符号；std 形态既无 `_start` 也无 panic-handler。
+# - 真机（`x86_64-unknown-none`，NS8 装机面的命令工件）取 freestanding
+#   形态：`_start` 出生链 + `alloc-global` 把 slab 池绑进
+#   `#[global_allocator]` + `panic-handler` 取 rt 统一 panic 面
+#   （init 的自带渲染 handler 是 PID 1 特例，命令不复刻）。
+# feature 只在各自门下出现：workspace 宿主图统一特性时不会把
+# `#[panic_handler]` 漏进 std 构建（E0152 死结）。
+[target.'cfg(not(target_os = "none"))'.dependencies]
+minix-rt = { workspace = true, features = ["std"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+minix-rt = { workspace = true, features = ["alloc-global", "panic-handler"] }

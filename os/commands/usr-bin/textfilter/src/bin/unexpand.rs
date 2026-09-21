@@ -6,14 +6,21 @@
 //! reads stdin, tabifies, and prints. File operands wait for the gated
 //! open-existing call.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::unexpand::{parse_stops, unexpand, UnexpandOptions};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut options = UnexpandOptions::default();
     let mut index = 1;
     while index < argv.len() {
@@ -50,7 +57,7 @@ fn main() {
             Err(_) => break,
         }
     }
-    let text = std::str::from_utf8(&input).unwrap_or("");
+    let text = core::str::from_utf8(&input).unwrap_or("");
     for line in unexpand(text, &options) {
         let mut out = line.into_bytes();
         out.push(b'\n');
@@ -62,4 +69,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: unexpand [-a] [-t tablist]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

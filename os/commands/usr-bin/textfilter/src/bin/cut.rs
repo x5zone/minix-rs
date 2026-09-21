@@ -10,14 +10,22 @@
 //! gated on the 64-bit path message layout. A malformed list or a missing
 //! selection exits 1; a delimiter must be one byte.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::vec;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::cut::{parse_list, select_bytes, select_fields};
 use minix_sys::Fd;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut bytes_list: Option<String> = None;
     let mut fields_list: Option<String> = None;
     let mut delimiter: u8 = b'\t';
@@ -122,3 +130,15 @@ fn conflict() -> ! {
 // Standard input descriptor retained for the no_std sweep (the collection
 // helper owns the read today).
 const _: Fd = 0;
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
+}

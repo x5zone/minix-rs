@@ -12,13 +12,21 @@
 //! `parse_set`, which expands named classes inline; the complement is a
 //! membership inversion over the expanded set.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::vec;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::tr::{delete, parse_set, squeeze, translate};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut complement = false;
     let mut delete_flag = false;
     let mut squeeze_flag = false;
@@ -49,7 +57,7 @@ fn main() {
 }
 
 /// `tr -d set1` needs exactly one set.
-fn delete_only(mut operands: Vec<&str>, complement: bool) {
+fn delete_only(mut operands: Vec<&str>, complement: bool) -> ! {
     if operands.len() != 1 {
         usage();
     }
@@ -64,7 +72,7 @@ fn delete_only(mut operands: Vec<&str>, complement: bool) {
 }
 
 /// `tr -s set1`: collapse repeats of set1.
-fn squeeze_only(mut operands: Vec<&str>, complement: bool) {
+fn squeeze_only(mut operands: Vec<&str>, complement: bool) -> ! {
     let set = expand(operands.remove(0), complement);
     let input = support::read_stdin();
     let mut out = vec![0u8; input.len() + 1];
@@ -76,7 +84,7 @@ fn squeeze_only(mut operands: Vec<&str>, complement: bool) {
 }
 
 /// `tr [-c] set1 set2` with an optional `-s` on set2.
-fn translate_squeeze(operands: Vec<&str>, complement: bool) {
+fn translate_squeeze(operands: Vec<&str>, complement: bool) -> ! {
     if operands.len() != 2 {
         usage();
     }
@@ -98,7 +106,7 @@ fn translate_squeeze(operands: Vec<&str>, complement: bool) {
 }
 
 /// `tr -c -s set1`: delete set1, then squeeze repeats of set1.
-fn delete_squeeze(mut operands: Vec<&str>, complement: bool) {
+fn delete_squeeze(mut operands: Vec<&str>, complement: bool) -> ! {
     if operands.len() != 1 {
         usage();
     }
@@ -119,7 +127,7 @@ fn delete_squeeze(mut operands: Vec<&str>, complement: bool) {
 }
 
 /// `tr [-c] set1 set2` without `-s`.
-fn translate_only(operands: Vec<&str>, complement: bool) {
+fn translate_only(operands: Vec<&str>, complement: bool) -> ! {
     if operands.len() != 2 {
         usage();
     }
@@ -157,4 +165,16 @@ fn expand(text: &str, complement: bool) -> Vec<u8> {
 fn usage() -> ! {
     support::emit(b"usage: tr [-cs] string1 [string2]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

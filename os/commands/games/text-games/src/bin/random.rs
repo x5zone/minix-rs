@@ -5,28 +5,37 @@
 //! 播种混入时钟与进程号（`mix_seed` 的决定半语义）。抽取值由薄壳内的
 //! LCG 生成（textfilter `jot.rs` 先例），播种料来自时钟与 `getpid`。
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_text_games::lottery::{is_selected, mix_seed, parse_denominator};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let Some(word) = argv.get(1) else {
-        eprintln!("usage: random [N]");
-        std::process::exit(1);
+        support::warn(b"usage: random [N]\n");
+        support::terminate(1);
     };
     let denominator = match parse_denominator(word) {
         Ok(v) => v,
         Err(_) => {
-            eprintln!("random: {word}: bad denominator");
-            std::process::exit(1);
+            support::warn(format!("random: {word}: bad denominator\n").as_bytes());
+            support::terminate(1);
         }
     };
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
+    let micros = support::epoch_micros().unwrap_or(0);
     let pid = minix_sys::getpid().unwrap_or(0) as u32;
-    let mut state = mix_seed(now.as_secs(), now.subsec_micros(), pid);
+    let mut state = mix_seed(micros / 1_000_000, (micros % 1_000_000) as u32, pid);
 
     // 逐行读标准输入：每行掷一次 [0, N)，掷中 0 即替换当前选中行。
     let mut chosen: Option<String> = None;
@@ -38,8 +47,8 @@ fn main() {
             Ok(0) => break,
             Ok(n) => bytes.extend_from_slice(&chunk[..n]),
             Err(_) => {
-                eprintln!("random: read error");
-                std::process::exit(1);
+                support::warn(b"random: read error\n");
+                support::terminate(1);
             }
         }
     }
@@ -59,10 +68,23 @@ fn main() {
         }
     }
     match chosen {
-        Some(line) => println!("{line}"),
+        Some(line) => support::emit(format!("{line}\n").as_bytes()),
         None => {
-            eprintln!("random: nothing selected");
-            std::process::exit(1);
+            support::warn(b"random: nothing selected\n");
+            support::terminate(1);
         }
     }
+    support::terminate(0)
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

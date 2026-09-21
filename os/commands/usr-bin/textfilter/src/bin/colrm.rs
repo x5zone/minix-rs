@@ -9,14 +9,21 @@
 //! program parses the operands and runs the filter over stdin. File
 //! operands are rejected — the C takes none.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::colrm::filter_column;
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut operands: Vec<&str> = Vec::new();
     for arg in &argv[1..] {
         if arg.starts_with('-') && arg.len() > 1 {
@@ -48,7 +55,7 @@ fn main() {
             Err(_) => break,
         }
     }
-    let text = std::str::from_utf8(&input).unwrap_or("");
+    let text = core::str::from_utf8(&input).unwrap_or("");
     support::emit(&filter_column(text.as_bytes(), start, stop));
     support::terminate(0);
 }
@@ -68,4 +75,16 @@ fn parse_column(word: &str) -> usize {
 fn usage() -> ! {
     support::warn(b"usage: colrm [start [stop]]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

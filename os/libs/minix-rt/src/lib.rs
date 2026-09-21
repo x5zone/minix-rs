@@ -301,10 +301,22 @@ fn panic(info: &PanicInfo) -> ! {
     // on: the kernel registers at boot, this handler consults here.
     let message = core::str::from_utf8(&buffer[..length]).unwrap_or("panicked (non-utf8 message)");
     if !minix_types::run_panic_diagnostic_hook(message) {
-        // No hook registered (pre-registration panics, or binaries
-        // without a kernel): stage-1 emit through the default sink.
-        let mut sink = diag::SpinSink;
-        diag::DiagnosticSink::emit(&mut sink, &buffer[..length]);
+        // No hook registered in THIS address space. The registry is a
+        // per-address-space static: the kernel registers in its own space,
+        // so a user process (or any non-kernel binary) never observes that
+        // registration here. The previous fallback — the SpinSink — hung
+        // the process at exactly this point, which meant no panic message
+        // was ever visible from user mode and the stage-3 exit below was
+        // unreachable. Emit through the kernel diagnostic channel instead
+        // (SYS_DIAGCTL; the init PID-1 precedent, `os/commands/sbin/init/
+        // src/main.rs`'s handler): the kernel prints on its EarlyConsole,
+        // and when even the kernel is absent the transport's park is the
+        // C panic.c:66 hang this handler already documents. The SpinSink
+        // stays in `diag` for its staging/test consumers.
+        let _ = minix_sys::syscall::sys_diagctl_write(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            message,
+        );
     }
     // Stage 3 (A-8 step 3; C panic.c:54 `_exit(1)`): terminate through the
     // process manager so PM can reap the process — and RS restart it when

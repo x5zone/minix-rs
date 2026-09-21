@@ -7,14 +7,22 @@
 //! (`tail -n +5`) are not modelled yet. File operands wait for the gated
 //! open-existing call.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::vec;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::window::{LineWindow, TailWindow};
 use minix_sys::Fd;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut count: usize = 10;
     let mut index = 1;
     while index < argv.len() {
@@ -58,3 +66,15 @@ fn main() {
 // Standard input descriptor retained for the no_std sweep (the collection
 // helper owns the read today).
 const _: Fd = 0;
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
+}

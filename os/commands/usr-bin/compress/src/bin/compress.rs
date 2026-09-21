@@ -13,6 +13,18 @@
 //! When no_std program images land, the seams (argv, terminate, whole
 //! files through read/write) swap exactly like the other commands'.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::format;
+use alloc::vec;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_compress::lzw::{compress, decompress, frame_header, unframe, DEFAULT_MAXBITS};
 use minix_sys::{read, write, Fd};
 
@@ -20,15 +32,11 @@ const STDIN: Fd = 0;
 const STDOUT: Fd = 1;
 const STDERR: Fd = 2;
 
-/// Terminates the process with an exit status.
-fn terminate(code: i32) -> ! {
-    std::process::exit(code)
-}
 
 fn fail(message: &str) -> ! {
     let _ = write(STDERR, message.as_bytes());
     let _ = write(STDERR, b"\n");
-    terminate(1)
+    support::terminate(1)
 }
 
 /// Reads a whole stream into a vector (`read` until EOF).
@@ -50,8 +58,8 @@ fn emit(fd: Fd, data: &[u8]) {
     }
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     // `strcmp(cp, "uncompress") == 0` implies -d (`compress.c:334`).
     let invoked = args.first().copied().unwrap_or("compress");
@@ -118,12 +126,12 @@ fn main() {
                         fail("invalid suffix: expected .Z");
                     }
                     let plain = &text[..text.len() - 2];
-                    if !force && std::path::Path::new(plain).exists() {
+                    if !force && support::path_exists(plain) {
                         fail("already exists; not overwritten");
                     }
                     (Some(text.to_string()), Some(plain.to_string()), true)
                 } else {
-                    if !force && std::path::Path::new(&format!("{file}.Z")).exists() {
+                    if !force && support::path_exists(&format!("{file}.Z")) {
                         fail("already exists; not overwritten");
                     }
                     if to_stdout {
@@ -179,7 +187,7 @@ fn main() {
             emit(fd, &framed);
             let _ = minix_sys::close(fd);
             if let (Some(src), true) = (&source, delete_source) {
-                std::fs::remove_file(src).unwrap_or_else(|_| fail("cannot remove source"));
+                support::remove_file(src).unwrap_or_else(|_| fail("cannot remove source"));
             }
             if verbose {
                 let saved = if !decompressing && !input.is_empty() {
@@ -197,6 +205,17 @@ fn main() {
         }
         None => emit(STDOUT, &framed),
     }
-    terminate(0);
+    support::terminate(0);
 }
 
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
+}

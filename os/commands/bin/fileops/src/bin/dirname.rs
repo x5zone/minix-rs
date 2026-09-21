@@ -6,13 +6,23 @@
 //! live in the library's `path` module (the deciding half, fully tested);
 //! this program gathers argv and prints the result.
 
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
 #[path = "../bin_support.rs"]
 mod support;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use minix_fileops::path::dirname;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+/// The whole program body; both `main` forms call it and it never
+/// returns (every path ends in [`support::terminate`]). The two-form
+/// entry contract is documented once in `echo.rs`, this crate's
+/// template binary.
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut operands: Vec<&str> = Vec::new();
     for arg in &argv[1..] {
         if operands.is_empty() && arg.starts_with('-') && arg.len() > 1 {
@@ -34,4 +44,15 @@ fn main() {
     line.push(b'\n');
     support::emit(&line);
     support::terminate(0);
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

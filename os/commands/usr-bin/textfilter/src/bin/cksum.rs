@@ -8,14 +8,22 @@
 //! crypto primitives and are declared unsupported; file operands wait
 //! for the gated open-existing call.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::format;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::cksum::{cksum_crc, csum1, csum2};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut algorithm: u8 = 0;
     let mut index = 1;
     while index < argv.len() {
@@ -69,4 +77,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: cksum [-o 1 | -o 2] \n");
     support::terminate(2);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

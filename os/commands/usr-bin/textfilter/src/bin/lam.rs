@@ -12,14 +12,22 @@
 //! one stream is required. The hosted-versus-target seams are the
 //! echo template's (`os/commands/bin/fileops/src/bin/echo.rs`).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::format;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::lam::{laminate, parse_width, split_stream, LamSpec, MAX_STREAMS};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     // Sticky capitals: -F -P -S -T carry to every stream after them.
     let mut sticky = [false; 4]; // [P, S, F, T]
     let mut specs: Vec<LamSpec> = Vec::new();
@@ -163,4 +171,16 @@ fn usage() -> ! {
         b"\nUsage:  lam [ -[fp] min.max ] [ -s sepstring ] [ -t c ] file ...\n",
     );
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

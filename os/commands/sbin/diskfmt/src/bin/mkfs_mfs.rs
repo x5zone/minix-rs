@@ -13,17 +13,28 @@
 //! 从宿主读内容与修改时刻。C 的 getopt 面（`-b`/`-i`/`-l`/`-z`/`-T`）
 //! 与真机块设备写入随 E-FSBDEV 一并对位。
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_fs_mfs::mkfs::{self, MkfsError, ProtoHost};
-use std::cell::RefCell;
+use core::cell::RefCell;
 
 fn usage(program: &str) -> ! {
-    eprintln!("usage: {program} <image> <blocks> [inodes] [block-size] [-p proto]");
-    std::process::exit(2);
+    support::warn(format!("usage: {program} <image> <blocks> [inodes] [block-size] [-p proto]\n").as_bytes());
+    support::terminate(2);
 }
 
 fn fail(message: &str) -> ! {
-    eprintln!("mkfs.mfs: {message}");
-    std::process::exit(1);
+    support::warn(format!("mkfs.mfs: {message}\n").as_bytes());
+    support::terminate(1);
 }
 
 /// 宿主文件读取器的生产半：整文件读入，修改时刻取自元数据；失败的
@@ -35,17 +46,15 @@ struct StdHost {
 impl ProtoHost for StdHost {
     fn read_file(&mut self, path: &str, out: &mut [u8]) -> Result<mkfs::HostFile, MkfsError> {
         *self.last_path.borrow_mut() = path.to_string();
-        let bytes = std::fs::read(path).map_err(|_| MkfsError::HostFile)?;
+        let bytes = support::read_file(path).map_err(|_| MkfsError::HostFile)?;
         if bytes.len() > out.len() {
             return Err(MkfsError::BufferTooSmall);
         }
         out[..bytes.len()].copy_from_slice(&bytes);
-        let mtime = std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i32)
-            .unwrap_or(0);
+        // mtime 取当前时刻（原型文件元的修改时间戳）；目标侧时钟面是
+        // SYS_TIMES 合成秒（`support::epoch_micros`），与 hosted 元数据
+        // 查询的差别登记在 bin_support 头。
+        let mtime = (support::epoch_micros().unwrap_or(0) / 1_000_000) as i32;
         Ok(mkfs::HostFile { len: bytes.len(), mtime })
     }
 }
@@ -75,8 +84,8 @@ fn explain(error: MkfsError, host: &StdHost) -> ! {
     }
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let args: Vec<String> = support::args();
     // -p <proto> 可出现在任意位置；其余按位置收。
     let mut proto_path: Option<String> = None;
     let mut positional: Vec<String> = Vec::new();
@@ -110,7 +119,8 @@ fn main() {
     let mut inodes = inodes_arg;
     let mut host = StdHost { last_path: RefCell::new(String::new()) };
     let proto_text = proto_path.map(|path| {
-        std::fs::read_to_string(&path)
+        support::read_file(&path)
+            .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
             .unwrap_or_else(|_| fail(&format!("Can't open {path}")))
     });
     if let Some(text) = &proto_text {
@@ -129,20 +139,35 @@ fn main() {
         Ok(plan) => plan,
         Err(error) => explain(error, &host),
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i32)
-        .unwrap_or(0);
+    let now = (support::epoch_micros().unwrap_or(0) / 1_000_000) as i32;
     let image = match &proto_text {
         Some(text) => mkfs::build_image_seeded(&plan, text, &mut host, now),
         None => mkfs::build_image(&plan, now),
     }
     .unwrap_or_else(|error| explain(error, &host));
-    if let Err(e) = std::fs::write(&image_path, &image) {
-        fail(&format!("cannot write {}: {e}", image_path));
+    if support::write_file(&image_path, &image).is_err() {
+        // 目标侧失败原因在缝上抹平（minix_sys Errno 未穿透本缝），宿主
+        // io::Error 的 {e} 细节随之移除——失败可见性不变。
+        fail(&format!("cannot write {image_path}"));
     }
-    println!(
-        "{}: {} blocks, {} inodes, block size {}",
-        image_path, plan.blocks, plan.inodes, plan.block_size
+    support::emit(
+        format!(
+            "{}: {} blocks, {} inodes, block size {}\n",
+            image_path, plan.blocks, plan.inodes, plan.block_size
+        )
+        .as_bytes(),
     );
+    support::terminate(0)
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

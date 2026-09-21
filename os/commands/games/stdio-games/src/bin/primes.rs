@@ -7,14 +7,22 @@
 //! C default near 2^32; one argument starts there, two bound it. Output is
 //! one prime per line.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::vec;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_stdio_games::primes::{parse_bound, sieve, MAX_BOUND};
 use support::terminate;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let (lo, hi) = match argv.len() {
         1 => (2, MAX_BOUND),
         2 => bound(&argv[1], MAX_BOUND),
@@ -48,4 +56,16 @@ fn bound(word: &str, default_hi: u32) -> (u32, u32) {
         Err(_) => terminate(1),
     };
     (lo, default_hi)
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

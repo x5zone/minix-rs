@@ -12,6 +12,13 @@
 //! gated open-existing call; with stdin they would print
 //! `(standard input)` for `-l`.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -31,8 +38,8 @@ fn quote_meta(word: &str) -> String {
     quoted
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let words: Vec<&str> = argv.iter().map(String::as_str).collect();
     let (options, pattern_words, pattern_count, operands) =
         match parse_grep_args(&words[1..]) {
@@ -114,4 +121,16 @@ fn main() {
         support::emit(b"\n");
     }
     support::terminate(exit_code(matched_any, false, options.quiet));
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

@@ -34,6 +34,7 @@
 //! - [`script`]: startup file sequencing.
 
 pub mod expand;
+pub mod exec_frame;
 pub mod lexer;
 pub mod redir;
 pub mod script;

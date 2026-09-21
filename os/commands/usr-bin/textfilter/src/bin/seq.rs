@@ -9,13 +9,20 @@
 //! engine (the same float-rendering adjudication as printf's); the
 //! errors leave with status 1 (`errx(1, ...)` in the C).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::seq::{generate, parse, render_output, SeqError};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let words: Vec<&str> = argv[1..].iter().map(String::as_str).collect();
     let options = match parse(&words) {
         Ok(options) => options,
@@ -54,4 +61,16 @@ fn seq_error_message(error: &SeqError) -> Vec<u8> {
             b"seq: -f formats wait for the float renderer\n".to_vec()
         }
     }
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

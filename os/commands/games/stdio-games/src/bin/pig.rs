@@ -5,6 +5,13 @@
 //! (vowel rule at line 103). Word and separator runs are preserved as they
 //! appear; an unreadable (non-UTF-8) word passes through untouched.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -12,8 +19,8 @@ use minix_stdio_games::words::pig_word;
 use minix_sys::read;
 use support::LineReader;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     if argv.len() > 1 {
         support::emit(b"usage: pig\n");
         support::terminate(1);
@@ -40,7 +47,7 @@ fn pig_line(line: &[u8], out: &mut [u8]) {
                 cursor += 1;
             }
             let word = &line[start..cursor];
-            match std::str::from_utf8(word) {
+            match core::str::from_utf8(word) {
                 Ok(word) => match pig_word(word, out) {
                     Ok(len) => support::emit(&out[..len]),
                     Err(_) => support::emit(word.as_bytes()),
@@ -52,4 +59,16 @@ fn pig_line(line: &[u8], out: &mut [u8]) {
             cursor += 1;
         }
     }
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

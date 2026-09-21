@@ -9,12 +9,19 @@
 //! E-CMDSYSFACE). Exit statuses match the C: 0 equal, 1 different, 2
 //! usage or open trouble (`ERR_EXIT`).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut list_all = false;
     let mut silent = false;
     let mut operands: Vec<&str> = Vec::new();
@@ -44,4 +51,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: cmp [-l | -s] file1 file2 [skip1 [skip2]]\n");
     support::terminate(2);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

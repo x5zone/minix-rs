@@ -10,14 +10,22 @@
 //! are rejected with an explicit message instead of being ignored. File
 //! operands wait for the gated open-existing call.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+use alloc::vec;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_regex::pattern::{compile_basic, Pattern};
 use minix_regex::sed::{apply, parse_subst};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut quiet = false;
     let mut script: Option<&str> = None;
     for arg in &argv[1..] {
@@ -77,4 +85,16 @@ fn main() {
         }
     }
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

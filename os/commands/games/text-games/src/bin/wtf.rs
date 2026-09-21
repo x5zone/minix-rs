@@ -7,17 +7,25 @@
 //!
 //! 库默认 `/usr/share/misc/acronyms`（NetBSD wtf 的缺省路径）。
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_text_games::acronym::{is_skipped_word, lookup_acronym};
 use minix_sys::{open, read, Fd};
 
 const DEFAULT_DB: &str = "/usr/share/misc/acronyms";
 
-fn terminate(code: i32) -> ! {
-    std::process::exit(code)
-}
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut db_path = DEFAULT_DB;
     let mut terms: Vec<&str> = Vec::new();
@@ -27,8 +35,8 @@ fn main() {
             "-f" => {
                 at += 1;
                 db_path = args.get(at).copied().unwrap_or_else(|| {
-                    eprintln!("wtf: -f needs a database path");
-                    terminate(1);
+                    support::warn(b"wtf: -f needs a database path\n");
+                    support::terminate(1);
                 });
             }
             "-o" => {
@@ -42,15 +50,15 @@ fn main() {
         at += 1;
     }
     if terms.is_empty() {
-        eprintln!("usage: wtf [-f db] [is] term ...");
-        terminate(1);
+        support::warn(b"usage: wtf [-f db] [is] term ...\n");
+        support::terminate(1);
     }
 
     let fd: Fd = match open(db_path, 0, 0) {
         Ok(fd) => fd,
         Err(_) => {
-            eprintln!("wtf: {db_path}: cannot open");
-            terminate(1);
+            support::warn(format!("wtf: {db_path}: cannot open\n").as_bytes());
+            support::terminate(1);
         }
     };
     let mut image = Vec::new();
@@ -60,8 +68,8 @@ fn main() {
             Ok(0) => break,
             Ok(n) => image.extend_from_slice(&chunk[..n]),
             Err(_) => {
-                eprintln!("wtf: {db_path}: read error");
-                terminate(1);
+                support::warn(format!("wtf: {db_path}: read error\n").as_bytes());
+                support::terminate(1);
             }
         }
     }
@@ -79,12 +87,24 @@ fn main() {
             term
         };
         match lookup_acronym(&lines, word) {
-            Ok(expansion) => println!("{word}: {expansion}"),
+            Ok(expansion) => support::emit(format!("{word}: {expansion}\n").as_bytes()),
             Err(_) => {
-                eprintln!("wtf: {word}: nothing appropriate");
+                support::warn(format!("wtf: {word}: nothing appropriate\n").as_bytes());
                 status = 1;
             }
         }
     }
-    terminate(status)
+    support::terminate(status)
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

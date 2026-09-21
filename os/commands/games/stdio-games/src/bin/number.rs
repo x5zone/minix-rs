@@ -6,6 +6,13 @@
 //! matching the range the words tables model); malformed input is a
 //! failure, exiting 1.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -13,8 +20,8 @@ use minix_stdio_games::words::number_words;
 use minix_sys::read;
 use support::LineReader;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     if argv.len() > 1 {
         support::emit(b"usage: number\n");
         support::terminate(1);
@@ -31,7 +38,7 @@ fn main() {
             Some(b'\n') => &line[..line.len() - 1],
             _ => line,
         };
-        let word = std::str::from_utf8(trimmed).unwrap_or("");
+        let word = core::str::from_utf8(trimmed).unwrap_or("");
         match word.parse::<u32>() {
             Ok(value) => match number_words(value, &mut out) {
                 Ok(len) => {
@@ -44,4 +51,16 @@ fn main() {
         }
     }
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

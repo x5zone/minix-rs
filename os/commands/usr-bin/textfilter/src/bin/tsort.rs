@@ -8,14 +8,21 @@
 //! members — suppressed by `-q`). An odd token count leaves with status
 //! 1 ("odd data count", tsort.c:183).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::tsort::{tsort, TsortError};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut quiet = false;
     for arg in &argv[1..] {
         match arg.as_str() {
@@ -36,7 +43,7 @@ fn main() {
             Err(_) => break,
         }
     }
-    let text = std::str::from_utf8(&input).unwrap_or("");
+    let text = core::str::from_utf8(&input).unwrap_or("");
     let tokens: Vec<&str> = text.split_whitespace().collect();
     let result = match tsort(&tokens) {
         Ok(result) => result,
@@ -62,4 +69,16 @@ fn main() {
         support::emit(&out);
     }
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

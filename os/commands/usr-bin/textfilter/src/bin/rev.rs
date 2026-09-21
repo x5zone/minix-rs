@@ -6,14 +6,21 @@
 //! `rev [file ...]`. File operands wait for the gated open-existing
 //! call, so this build serves stdin.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::rev::reversed_lines;
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     if argv.len() > 1 {
         usage();
     }
@@ -37,4 +44,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: rev [file ...]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

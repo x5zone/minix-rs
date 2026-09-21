@@ -9,11 +9,22 @@
 //! `/usr/man/whatis`; the builder (`makewhatis`) is the declared gap of
 //! 10-doc-man-tools.md §3.4.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_doctools::whatis::{ManDb, SliceManDb};
 use minix_sys::{open, read, Fd};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
     let mut db_path = "/usr/man/whatis";
     let mut names: Vec<&str> = Vec::new();
@@ -23,8 +34,8 @@ fn main() {
             "-M" => {
                 at += 1;
                 db_path = args.get(at).copied().unwrap_or_else(|| {
-                    eprintln!("whatis: -M needs a path");
-                    std::process::exit(1);
+                    support::warn(b"whatis: -M needs a path\n");
+                    support::terminate(1);
                 });
             }
             other => names.push(other),
@@ -32,15 +43,15 @@ fn main() {
         at += 1;
     }
     if names.is_empty() {
-        eprintln!("usage: whatis [-M db] name ...");
-        std::process::exit(1);
+        support::warn(b"usage: whatis [-M db] name ...\n");
+        support::terminate(1);
     }
 
     let fd: Fd = match open(db_path, 0, 0) {
         Ok(fd) => fd,
         Err(_) => {
-            eprintln!("whatis: {db_path}: cannot open");
-            std::process::exit(1);
+            support::warn(format!("whatis: {db_path}: cannot open\n").as_bytes());
+            support::terminate(1);
         }
     };
     let mut image = Vec::new();
@@ -50,8 +61,8 @@ fn main() {
             Ok(0) => break,
             Ok(n) => image.extend_from_slice(&chunk[..n]),
             Err(_) => {
-                eprintln!("whatis: {db_path}: read error");
-                std::process::exit(1);
+                support::warn(format!("whatis: {db_path}: read error\n").as_bytes());
+                support::terminate(1);
             }
         }
     }
@@ -61,8 +72,8 @@ fn main() {
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
         // 空库：每个名字都查无（EmptyManDb 的诚实面）。
-        eprintln!("whatis: {db_path}: nothing appropriate");
-        std::process::exit(1);
+        support::warn(format!("whatis: {db_path}: nothing appropriate\n").as_bytes());
+        support::terminate(1);
     }
     // 生命周期：库行借 `text`，查询循环在同段借用内完成。
     query(SliceManDb { lines: &lines }, &names);
@@ -75,18 +86,33 @@ fn query(db: SliceManDb, names: &[&str]) -> ! {
             Some(entry) => {
                 // 经典行式 `name, name(section) - description`——条目不存
                 // 原文行，按解析域重组（空白已归一，语义同行）。
-                println!(
-                    "{}({}) - {}",
-                    entry.name_list().join(", "),
-                    entry.section,
-                    entry.description
+                support::emit(
+                    format!(
+                        "{}({}) - {}\n",
+                        entry.name_list().join(", "),
+                        entry.section,
+                        entry.description
+                    )
+                    .as_bytes(),
                 );
             }
             None => {
-                eprintln!("whatis: {}: nothing appropriate", name);
+                support::warn(format!("whatis: {}: nothing appropriate\n", name).as_bytes());
                 status = 1;
             }
         }
     }
-    std::process::exit(status)
+    support::terminate(status)
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

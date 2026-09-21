@@ -6,14 +6,21 @@
 //! stdin, expands, and prints. File operands wait for the gated
 //! open-existing call; the obsolete `-N` stop form parses too.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::expand::{expand, parse_stops};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut stops: Vec<usize> = Vec::new();
     let mut index = 1;
     while index < argv.len() {
@@ -56,7 +63,7 @@ fn main() {
             Err(_) => break,
         }
     }
-    let text = std::str::from_utf8(&input).unwrap_or("");
+    let text = core::str::from_utf8(&input).unwrap_or("");
     support::emit(expand(text, &stops).as_bytes());
     support::terminate(0);
 }
@@ -64,4 +71,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: expand [-t tablist]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

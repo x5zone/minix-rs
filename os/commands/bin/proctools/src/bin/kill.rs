@@ -6,34 +6,43 @@
 //! (line 83), and failures flip the exit status while the loop carries
 //! on. Numbers go straight through when they land in 1..=32 (`NSIG`).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
+
+#[path = "../bin_support.rs"]
+mod support;
 use minix_proctools::signal::{signame_to_signum, signum_to_signame, SIGNALS};
 use minix_sys::kill;
 
-/// Terminates the process with an exit status.
-fn terminate(code: i32) -> ! {
-    std::process::exit(code)
-}
 
 fn usage() -> ! {
-    eprintln!("usage: kill [-s signame | -signum | -signame] {{pid | -pgid}} ...");
-    eprintln!("       kill -l [exit_status]");
-    terminate(1)
+    support::warn(format!("usage: kill [-s signame | -signum | -signame] {{pid | -pgid}} ...\n").as_bytes());
+    support::warn(b"       kill -l [exit_status]\n");
+    support::terminate(1)
 }
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let args: Vec<&str> = argv.iter().map(String::as_str).collect();
 
     // `kill -l`: the name list, eight per line (`kill.c:100-112`).
     if args.len() == 2 && args[1] == "-l" {
         for (index, (_, name)) in SIGNALS.iter().enumerate() {
-            print!("{name} ");
+            support::emit(format!("{name} ").as_bytes());
             if index % 8 == 7 {
-                println!();
+                support::emit(b"
+");
             }
         }
-        println!();
-        terminate(0);
+        support::emit(b"
+");
+        support::terminate(0);
     }
     // `kill -l status`: the name of `status & 0177` when it is known
     // (`kill.c:114-117` region).
@@ -43,10 +52,10 @@ fn main() {
             Err(_) => usage(),
         };
         match signum_to_signame((status % 128) as u8) {
-            Some(name) => println!("{name}"),
+            Some(name) => support::emit(format!("{name}\n").as_bytes()),
             None => usage(),
         }
-        terminate(0);
+        support::terminate(0);
     }
 
     let mut numsig: u8 = 15; // SIGTERM (`kill.c:83`)
@@ -78,24 +87,24 @@ fn main() {
         let pid: i32 = match pid_text.parse() {
             Ok(v) => v,
             Err(_) => {
-                eprintln!("kill: {pid_text}: illegal pid");
+                support::warn(format!("kill: {pid_text}: illegal pid\n").as_bytes());
                 status = 1;
                 continue;
             }
         };
         if pid == 0 {
-            eprintln!("kill: {pid}: illegal pid");
+            support::warn(format!("kill: {pid}: illegal pid\n").as_bytes());
             status = 1;
             continue;
         }
         // Negative pids are process groups; the kernel call takes them
         // verbatim (`kill.c:141-150`).
         if kill(pid, numsig as i32).is_err() {
-            eprintln!("kill: {pid}: {numsig}: no such process");
+            support::warn(format!("kill: {pid}: {numsig}: no such process\n").as_bytes());
             status = 1;
         }
     }
-    terminate(status)
+    support::terminate(status)
 }
 
 fn parse_signal(text: &str) -> u8 {
@@ -103,4 +112,16 @@ fn parse_signal(text: &str) -> u8 {
         Ok(v) => v,
         Err(_) => usage(),
     }
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

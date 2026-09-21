@@ -8,6 +8,13 @@
 //! (the C decoder stays silent on them); the `-s` table dump of the C
 //! program is not modelled yet and reports the usage.
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -15,8 +22,8 @@ use minix_stdio_games::morse::{decode_group, encode_word, StaticMorse};
 use minix_sys::read;
 use support::LineReader;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut decode = false;
     let mut first = 1;
     // BSD getopt stops at the first non-option argument.
@@ -82,4 +89,16 @@ fn text_lines(strings: &[&str], input: &mut [u8]) -> Vec<String> {
 fn usage() -> ! {
     support::emit(b"usage: morse [-ds] [string ...]\n");
     support::terminate(1);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

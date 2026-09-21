@@ -8,6 +8,13 @@
 //! is the end, and the run ends with a newline when one is owed. Unknown
 //! options print `usage: ppt [-d] [string ...]` and exit 1 (line 61).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 #[path = "../bin_support.rs"]
 mod support;
 
@@ -15,8 +22,8 @@ use minix_stdio_games::ppt::{decode_line, punch_byte, EDGE};
 use minix_sys::read;
 use support::LineReader;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut decode = false;
     let mut first = 1;
     // BSD getopt stops at the first non-option argument.
@@ -33,6 +40,7 @@ fn main() {
     } else {
         punch(rest);
     }
+    support::terminate(0)
 }
 
 fn usage() -> ! {
@@ -115,4 +123,16 @@ fn decode_tape(strings: &[String]) {
         support::emit(b"\n");
     }
     support::terminate(0);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

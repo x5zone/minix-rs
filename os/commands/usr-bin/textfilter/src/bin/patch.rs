@@ -13,14 +13,22 @@
 //! are registered corners. The hosted-versus-target seams are the
 //! echo template's (`os/commands/bin/fileops/src/bin/echo.rs`).
 
+
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+use alloc::format;
 #[path = "../bin_support.rs"]
 mod support;
 
 use minix_textfilter::patch::{apply_patch, parse_patch, PatchOptions};
 use minix_sys::read;
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut options = PatchOptions::default();
     let mut patchfile: Option<String> = None;
     let mut operands: Vec<String> = Vec::new();
@@ -94,7 +102,7 @@ fn main() {
     }
 
     let text = match patchfile {
-        Some(path) => match std::fs::read(&path) {
+        Some(path) => match support::read_file(&path) {
             Ok(v) => String::from_utf8_lossy(&v).into_owned(),
             Err(_) => {
                 support::warn(format!("patch: can't read {}\n", path).as_bytes());
@@ -145,4 +153,16 @@ fn main() {
 fn usage() -> ! {
     support::warn(b"usage: patch [-Fu] [-i patchfile] [origfile]\n");
     support::terminate(2);
+}
+
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }

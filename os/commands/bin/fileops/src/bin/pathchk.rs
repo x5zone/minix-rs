@@ -14,13 +14,23 @@
 //! guessed limits. File operands do not apply here — every operand is a
 //! path to check.
 
+#![cfg_attr(all(not(test), target_os = "none"), no_std, no_main)]
+
+extern crate alloc;
+
 #[path = "../bin_support.rs"]
 mod support;
 
+use alloc::string::String;
+use alloc::vec::Vec;
 use minix_fileops::pathchk::{check_portable, PathFault};
 
-fn main() {
-    let argv: Vec<String> = std::env::args().collect();
+/// The whole program body; both `main` forms call it and it never
+/// returns (every path ends in [`support::terminate`]). The two-form
+/// entry contract is documented once in `echo.rs`, this crate's
+/// template binary.
+fn run() -> ! {
+    let argv: Vec<String> = support::args();
     let mut portable = false;
     let mut operands: Vec<&str> = Vec::new();
     for arg in &argv[1..] {
@@ -80,4 +90,15 @@ fn diagnose(path: &str, fault: &PathFault<'_>) {
 fn usage() -> ! {
     support::warn(b"usage: pathchk [-p] pathname...\n");
     support::terminate(1);
+}
+
+#[cfg(all(not(test), target_os = "none"))]
+#[unsafe(no_mangle)]
+extern "Rust" fn main() -> i32 {
+    run()
+}
+
+#[cfg(any(test, not(target_os = "none")))]
+fn main() {
+    run()
 }
