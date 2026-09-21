@@ -431,6 +431,71 @@ fn walk_alloc(
     Ok(pt + pt_idx * 8)
 }
 
+/// NK4-A C-3（2026-09-22）：用户叶被映射进 supervisor 身份层级的影子下
+/// （bootstrap 身份叶 P|W|X|G 覆盖低 4GiB，VM 拆叶后新 PT 链继承父叶的
+/// U=0）时，硬件按 AND 语义在任一中间层缺 U 即拒绝 CPL3 访问——
+/// #PF(err=0x15)，与叶子自身的 P|U|X 无关；软件 walk 只读叶级故不可见
+/// （真机：RS 入口 0x2246c0 永久 err=0x15，walk=0xd）。本助手沿路径把 U
+/// OR 进既存中间层（Linux 同法：既存 PMD/PUD 补 _PAGE_USER）。安全性：
+/// 叶级 U 仍逐页把门——supervisor 身份页自身叶 U=0 继续拒绝，无新暴露
+/// 面；G 位不动。调用后调用方需保证对 vaddr 的 TLB/paging-structure
+/// 缓存失效（恢复点 invlpg 已在 finish_and_restore 以 p_fault_addr 落地）。
+///
+/// # Safety
+///
+/// Same channel contract as `walk_alloc`: the channel's Direct Map window
+/// is active and covers `root_paddr`'s tree; all slots written are 8-byte
+/// aligned table entries.
+unsafe fn propagate_user_to_intermediates(root_paddr: u64, vaddr: u64, channel: PteChannel) {
+    let want = X64PteFlags::USER.bits();
+    let i4 = pml4_index(vaddr);
+    let pml4e = unsafe { read_pte_dm(root_paddr + (i4 as u64) * 8, channel) };
+    if pml4e & X64PteFlags::PRESENT.bits() == 0 {
+        // 空树：walk_alloc 以 mid_flags 建新链，天然带 U，无既存层可升。
+        return;
+    }
+    if pml4e & want == 0 {
+        unsafe {
+            write_pte_dm(root_paddr + (i4 as u64) * 8, pml4e | want, 0, channel);
+        }
+    }
+    let pdpt_pa = pml4e & ADDR_MASK;
+    let i3 = pdpt_index(vaddr);
+    let pdpte = unsafe { read_pte_dm(pdpt_pa + (i3 as u64) * 8, channel) };
+    if pdpte & (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
+        == (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
+    {
+        // 1GiB 叶占位：map 自身已报 AlreadyMapped，无中间层可升。
+        return;
+    }
+    if pdpte & X64PteFlags::PRESENT.bits() == 0 {
+        return;
+    }
+    if pdpte & want == 0 {
+        unsafe {
+            write_pte_dm(pdpt_pa + (i3 as u64) * 8, pdpte | want, 0, channel);
+        }
+    }
+    let pd_pa = pdpte & ADDR_MASK;
+    let i2 = pd_index(vaddr);
+    let pde = unsafe { read_pte_dm(pd_pa + (i2 as u64) * 8, channel) };
+    if pde & (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
+        == (X64PteFlags::PRESENT | X64PteFlags::PS).bits()
+    {
+        // 2MiB 叶占位：同上。
+        return;
+    }
+    if pde & X64PteFlags::PRESENT.bits() == 0 {
+        return;
+    }
+    if pde & want == 0 {
+        unsafe {
+            write_pte_dm(pd_pa + (i2 as u64) * 8, pde | want, 0, channel);
+        }
+    }
+    // PT 级无需：叶子本身携带 U。
+}
+
 impl Paging for X86_64Paging {
     const PAGE_SIZE: usize = 4096;
 
@@ -620,6 +685,14 @@ impl Paging for X86_64Paging {
         // per level — see walk_alloc).
         let new_pte = (paddr.0 & ADDR_MASK) | flags_to_pte(flags);
         let leaf_paddr = walk_alloc(self.root_paddr, vaddr.0, self.channel, new_pte)?;
+        // 用户叶：把 U 升进既存 supervisor 中间层（NK4-A C-3，见
+        // propagate_user_to_intermediates 文档）。
+        if flags.contains(PageFlags::USER_ACCESSIBLE) {
+            // SAFETY: same DM channel contract as walk_alloc above.
+            unsafe {
+                propagate_user_to_intermediates(self.root_paddr, vaddr.0, self.channel);
+            }
+        }
         // SAFETY: channel's Direct Map active; leaf_paddr is 8-byte aligned.
         let pte = unsafe { read_pte_dm(leaf_paddr, self.channel) };
         if pte & X64PteFlags::PRESENT.bits() != 0 {
@@ -677,6 +750,14 @@ impl Paging for X86_64Paging {
         vaddr: VirBytes,
         flags: PageFlags,
     ) -> Result<(), PageTableError> {
+        // 用户叶：中间层 U 升级与 map 同理（NK4-A C-3，见
+        // propagate_user_to_intermediates）。
+        if flags.contains(PageFlags::USER_ACCESSIBLE) {
+            // SAFETY: same DM channel contract as walk_alloc.
+            unsafe {
+                propagate_user_to_intermediates(self.root_paddr, vaddr.0, self.channel);
+            }
+        }
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(leaf_paddr, pte) if pte & X64PteFlags::PRESENT.bits() != 0 => {
                 // Preserve the physical address, replace only the flag bits.

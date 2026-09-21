@@ -116,6 +116,20 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             C0::write_hex(cr2);
             C0::write_str(" rsp=");
             C0::write_hex(frame.rsp);
+            // C-3 F0 迭代4：内核独立走当前 root 查 cr2 的 PTE——分辨
+            // "VM 的 PTE 写未持久到内存"（walk NP）与"写生效但翻译/TLB
+            // 不一致"（walk 命中）。
+            if let Some(root) = crate::current_root_phys() {
+                match crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(cr2)) {
+                    Some((pa, fl)) => {
+                        C0::write_str(" walk=0x");
+                        C0::write_hex(pa.0);
+                        C0::write_str("/0x");
+                        C0::write_hex(fl.bits() as u64);
+                    }
+                    None => C0::write_str(" walk=NP"),
+                }
+            }
             C0::write_str("\n");
         }
     }
@@ -428,6 +442,11 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("pagefault from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                // C 对位：异常入口与 trap 入口同记返回样式（mpx.S 保存半
+                // p_kern_trap_style=KTS_FULLCONTEXT；restore 消费）。缺它则
+                // 转发后重入队的进程在下次 dispatch 撞 "no entry trap style
+                // known"（NK4-A C-3 真机 2026-09-22：RS fault 填充恢复后）。
+                proc.trap_style = minix_arch::TrapStyle::FullContext;
             }
             // C: pagefault() tail — RTS_PAGEFAULT, VM_PAGEFAULT message,
             // FROM_KERNEL mini_send (exception.c:112-129). Send errors
@@ -474,6 +493,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("exception from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                // 同 ForwardToVm 臂：异常入口记返回样式（C mpx.S 对位），
+                // 信号暂停后的下次 dispatch 恢复需要它。
+                proc.trap_style = minix_arch::TrapStyle::FullContext;
             }
             // C: cause_sig(proc_nr(saved_proc), ep->signum) —
             // exception.c:276. RTS_SIGNALED parks the process until its
@@ -584,6 +606,32 @@ fn forward_pagefault_to_vm(
         .ok_or(crate::ipc::IpcError::DeadSrcDst)?;
     let mut engine = IpcEngine::new(proc_table.procs_slice_mut(), priv_table, &KernelUserCopy);
     let outcome = engine.send(cur_nr, dst_endpoint, &msg, SendFlags::FROM_KERNEL);
+    // C: RTS_UNSET(dst, RTS_RECEIVING) 的入队半——引擎侧只清 RTS 标志
+    // （primitive setter，见 ipc.rs 投递臂），入队必须由调用方补齐
+    // （syscall.rs dispatch_ipc_entry 的 take_wake_target →
+    // enqueue_if_woken 同款）。漏掉这半：VM 被解锁但从未入就绪队列，
+    // 调度器无人可选 → idle 停机（NK4-A C-3 真机：fwd Delivered 后全静默，
+    // 2026-09-22）。
+    let woken_target = engine.take_wake_target();
+    if let Some(woken_nr) = woken_target {
+        proc_table.enqueue_if_woken(woken_nr);
+    }
+    // 锚点括值：本函数运行时地址（一次性，供 #GP rip 离线定位）。
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static ANCHOR: AtomicUsize = AtomicUsize::new(0);
+        if ANCHOR.fetch_add(1, AtomicOrd::Relaxed) == 0 {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            Console::write_str("nk4a: anchor fwd=0x");
+            Console::write_hex(forward_pagefault_to_vm as *const () as u64);
+            Console::write_str(" finish=0x");
+            Console::write_hex(crate::finish_and_restore_addr());
+            Console::write_str(" sched=0x");
+            Console::write_hex(crate::scheduler_loop_addr());
+            Console::write_str("\n");
+        }
+    }
     match outcome {
         crate::ipc::IpcOutcome::Error(e) => Err(e),
         delivered_or_blocked => Ok(delivered_or_blocked),

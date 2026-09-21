@@ -2378,10 +2378,12 @@ fn vmctl_clear_page_fault(
         // C: assert(RTS_ISSET(p, RTS_PAGEFAULT)) — convert to error return
         return KcallResult::Ok(EINVAL);
     }
+    // TLB 失效半的时点说明（2026-09-22）：INVLPG 只击落当前 CR3 标签的
+    // 非 G 项——clear 时点执行在 VM 的 CR3 上下文里，杀不到故障进程自己
+    // 的陈旧项。真正的 invlpg 在 finish_and_restore（被恢复进程的 CR3 已
+    // 激活、iretq 之前）以其 p_fault_addr 执行；本臂只负责保留
+    // p_fault_addr（不再清 None）供恢复点使用。
     proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::PAGEFAULT);
-    if let Some(p) = proc_table.get_mut(target_nr) {
-        p.p_fault_addr = None;
-    }
     KcallResult::Ok(0)
 }
 

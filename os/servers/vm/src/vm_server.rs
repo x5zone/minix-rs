@@ -1701,6 +1701,8 @@ impl VmServer {
         };
         let proc_endpoint = proc.endpoint();
         let fault_addr = request.vaddr;
+        // C-3 F0 续修取证（task1-close 裁决删除）：VM 收到转发 PF 的现场。
+        crate::bootmark::mark("nk4a: vm-pf recv\n");
         // C pagefaults.c:109-119 — a write to a read-only region is not a
         // servable fault: deliver SIGSEGV to the faulting process, clear its
         // kernel pagefault suspension (RTS_PAGEFAULT), and stop. Pre-E2 the
@@ -1734,10 +1736,42 @@ impl VmServer {
             Some(r) => r,
             None => return VmReply::Error(VmError::InvalidAddress),
         };
-        match crate::cow_exec_pf::handle_pagefault(
+        let service_outcome = crate::cow_exec_pf::handle_pagefault(
             proc_endpoint, region, frames, page_alloc,
             fault_addr, request.write, table, page_cache, vfs_queue, pt,
-        ) {
+        );
+        // C-3 F0 续修取证（task1-close 裁决删除）：填充后直读叶子物理页
+        // 首 8 字节——对照 ELF 字节（RS: 48 83 e4 f0），分辨"内容没拷上/
+        // 拷错页"与"内容对但 CPU 视图不同"。须在 proc 记账前用 pt（借用
+        // 顺序），随后才轮到 proc 计数。
+        let probe_ok = matches!(
+            service_outcome,
+            Ok(
+                crate::cow_exec_pf::PagefaultAction::Handled
+                    | crate::cow_exec_pf::PagefaultAction::MappedNewPage
+                    | crate::cow_exec_pf::PagefaultAction::CowResolved
+            )
+        );
+        if probe_ok {
+            let aligned = minix_types::VirBytes(
+                fault_addr.0 & !(crate::region::PAGE_SIZE as u64 - 1),
+            );
+            use crate::pagetable::Paging as _;
+            if let Some((pa, _fl)) = pt.query(aligned) {
+                let dv = crate::direct_map::vm_phys_to_virt(
+                    crate::phys_mem::AlignedPhysBytes::new(pa.0),
+                );
+                let bytes =
+                    unsafe { core::slice::from_raw_parts(dv.0 as *const u8, 8) };
+                let mut hex = alloc::format!("nk4a: vm-pf bytes ");
+                for b in bytes {
+                    hex.push_str(&alloc::format!("{:02x}", b));
+                }
+                hex.push('\n');
+                crate::bootmark::mark(&hex);
+            }
+        }
+        match service_outcome {
             Ok(action) => {
                 // V11/T31: fault accounting. Minix3's VM has no fault
                 // counters — the fields are a minix-rs extension following
@@ -1753,9 +1787,36 @@ impl VmServer {
                     | crate::cow_exec_pf::PagefaultAction::MappedNewPage
                     | crate::cow_exec_pf::PagefaultAction::CowResolved => proc.inc_minor_fault(),
                 }
+                // C do_memory tail: memreq_reply → kernel ClearPageFault
+                // re-enqueues the parked process (do_vmctl.c:35). The
+                // message-shape arm (kernel VM_PAGEFAULT mini_send,
+                // exception.c:112-129) must unpark the same way — without
+                // it the faulting process stays RTS_PAGEFAULT forever and
+                // the system idles after the first user fault (NK4-A C-3
+                // 真机：fwd Delivered 后全静默的另一半，2026-09-22).
+                if matches!(
+                    action,
+                    crate::cow_exec_pf::PagefaultAction::Handled
+                        | crate::cow_exec_pf::PagefaultAction::MappedNewPage
+                        | crate::cow_exec_pf::PagefaultAction::CowResolved
+                ) {
+                    if let Err(e) = self
+                        .ctx
+                        .gateway
+                        .borrow_mut()
+                        .sys_vmctl_clear_pagefault(proc_endpoint)
+                    {
+                        let _ = &e;
+                        audit_log!("[VM PF] clear_pagefault failed: {e:?}");
+                    }
+                }
                 VmReply::Ok
             }
-            Err(_e) => {
+            Err(e) => {
+                // C-3 F0 续修取证（task1-close 裁决删除）。
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: vm-pf err {:?}\n", e
+                ));
                 VmReply::Error(VmError::AccessViolation)
             }
         }

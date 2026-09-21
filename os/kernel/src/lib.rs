@@ -3295,7 +3295,7 @@ fn finish_and_restore(
     // the arch-private context and restore.
     // C: restore_user_context (arch_system.c:577-610) — read the recorded
     // trap style, clear it (C:585), and select the register restore sequence.
-    let (ctx, return_seq) = {
+    let (ctx, return_seq, fault_flush_va) = {
         let p = table
             .get_mut(picked)
             .expect("finish_and_restore: picked ProcNr out of table range");
@@ -3303,7 +3303,15 @@ fn finish_and_restore(
         // Consume the record so the next dispatch cannot reuse this entry's
         // style (C:585 — p_kern_trap_style = KTS_NONE before branching).
         p.trap_style = TrapStyle::NoEntry;
-        (p.cpu_context, style.return_sequence())
+        // NK4-A C-3 迭代4（F2 内核辅助 flush 的 clear 点最小闭合）：故障
+        // 填充恢复时，在本进程 CR3 已激活的此刻 invlpg 其故障页。INVLPG
+        // 只击落当前 CR3 标签的非 G 项——clear 时点（VM 的 CR3）杀不到
+        // 本进程的陈旧项，必须在 iretq 前的原上下文里做（2026-09-22 真机
+        // 证据：RS 同址 0x2246c0 err=0x15 永久重震，内存 PTE 已是
+        // P|U|X）。
+        let fault_flush_va = p.p_fault_addr;
+        p.p_fault_addr = None;
+        (p.cpu_context, style.return_sequence(), fault_flush_va)
     };
     match return_seq {
         Some(ReturnSequence::FullContext) => {}
@@ -3331,6 +3339,16 @@ fn finish_and_restore(
         C0::write_str(" rsp=");
         C0::write_hex(frame.rsp);
         C0::write_str("\n");
+    }
+    // NK4-A C-3 迭代4：故障页 invlpg——此刻 CR3 即被恢复进程自己的根
+    // （switch_address_space 在 stage 2 已装），iretq 前的最后一点。
+    #[cfg(target_arch = "x86_64")]
+    if let Some(va) = fault_flush_va {
+        // SAFETY: invlpg is a privileged single-line TLB invalidation; the
+        // kernel is at CPL0 and `va` is never dereferenced.
+        unsafe {
+            core::arch::asm!("invlpg [{0}]", in(reg) va, options(nostack, preserves_flags));
+        }
     }
     // SAFETY: all `TrapReturnArch::restore_to_user` preconditions hold:
     // - the picked process's address space is active (switch_address_space
@@ -3419,6 +3437,19 @@ pub fn switch_to_user() -> ! {
 ///
 /// C: smp.c AP main loop parity — init_ap → ap_boot_finished → the same
 /// `main()` loop body as the BSP.
+/// NK4-A C-3 锚点括值（task1-close 删除）：见 finish_and_restore 内同名
+/// 说明。
+#[cfg(not(feature = "mock"))]
+pub fn scheduler_loop_addr() -> u64 {
+    scheduler_loop as *const () as u64
+}
+
+/// NK4-A C-3 锚点括值（task1-close 删除）。
+#[cfg(not(feature = "mock"))]
+pub fn finish_and_restore_addr() -> u64 {
+    finish_and_restore as *const () as u64
+}
+
 pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
     use crate::proc::proc_nr;
 

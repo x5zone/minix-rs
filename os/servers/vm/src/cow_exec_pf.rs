@@ -86,12 +86,23 @@ fn sync_slot_pte(
         .get_slot(offset)
         .and_then(PageSlot::pfn)
         .ok_or(CowCoreError::PageNotMapped)?;
-    let vaddr = VirBytes(region.vaddr.0 + offset.0);
+    // C map_pf 页对齐后再 pt_writemap——fault_addr 是指令给出的字节地址，
+    // PTE 只吃页界。未对齐地址此前让 pt.map 报 InvalidAddress，缺页填充
+    // 整体失败（NK4-A C-3 真机：RS 首指令 0x2246c0 → vm-pf err
+    // PageTable(InvalidAddress)，2026-09-22）。
+    let vaddr = VirBytes(
+        (region.vaddr.0 + offset.0) & !(crate::region::PAGE_SIZE as u64 - 1),
+    );
     let paddr = frames.pfn_to_phys(pfn);
+    // C i386 的 P|U 天然可执行（无 NX）；x86-64 NXE 下 EXECUTABLE 必须显式
+    // 给出，否则用户 text 首次取指即 #PF(err=0x15)（NK4-A C-3 真机
+    // 2026-09-22：RS 入口页 PTE=NX，walk=0x5，fetch 拒绝）。W^X 方向与
+    // fix27e 身份窗口 [ARCH] 一致：非可写段=RX（text），可写段=RW（NX，
+    // 数据/栈不可注入执行）。
     let flags = if region.is_page_writable(frames, offset) {
         PageFlags::read_write()
     } else {
-        PageFlags::read_only()
+        PageFlags::read_only() | PageFlags::EXECUTABLE
     };
     let result = match pt.query(vaddr) {
         Some((cur_paddr, _)) if cur_paddr == paddr => pt.update_flags(vaddr, flags),
