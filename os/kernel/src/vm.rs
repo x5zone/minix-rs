@@ -653,6 +653,12 @@ pub struct VmSuspendContext {
     /// C: `p_vmrequest.params.check.*`
     pub check_params: VmCheckParams,
 
+    /// NK4-A C-3 迭代6：SYSCALL 快路径挂起时保存的用户消息指针
+    /// （syscall ABI：RDI）。KCALL_RESUME 恢复阶段用它重派 kernel_call
+    /// （内存此时已由 VM 填充，重读用户消息缓冲可行）。IPC 陷阱腿不经
+    /// 此字段（saved_msg 承载）。
+    pub saved_m_user: Option<u64>,
+
     /// Current state of the suspend request.
     /// C: `p_vmrequest.vmresult` (three-state int)
     pub state: VmSuspendState,

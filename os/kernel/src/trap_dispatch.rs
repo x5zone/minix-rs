@@ -896,13 +896,31 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
         &crate::ipc::KernelUserCopy,
     );
 
-    // Reply code → RAX for the sysret leg (NoReply/VmSuspend must not occur
-    // for the SYSCALL fast path — VMSUSPEND arrives via the IPC trap path;
-    // treat them as a wiring bug rather than replying garbage).
-    frame.rax = match result.reply_code() {
-        Some(code) => code as i64 as u64,
-        None => panic!("trap_dispatch: syscall returned {result:?} with no reply code"),
-    };
+    // Reply code → RAX for the sysret leg. VmSuspend：调用已通过
+    // vm_suspend 停排（RTS_VMREQUEST + memreq 入队 + VM 收 SIGKMEM）——
+    // 保存完整上下文（RDI=消息指针经 saved_m_user 另存）、记返回样式、
+    // 重入调度器；VM 服务完成后 KCALL_RESUME 阶段重派调用并经
+    // set_ipc_return_code 交付 RAX（NK4-A C-3 迭代6，此前此臂 panic）。
+    // NoReply 不在此腿出现（receive 型调用走 int-33）。
+    match result.reply_code() {
+        Some(code) => frame.rax = code as i64 as u64,
+        None => {
+            if !matches!(result, KcallResult::VmSuspend) {
+                panic!("trap_dispatch: syscall returned {result:?} with no reply code");
+            }
+            {
+                let proc = table
+                    .get_mut(cur_nr)
+                    .expect("syscall suspend: caller slot must exist");
+                minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                proc.trap_style = minix_arch::TrapStyle::FullContext;
+                if let Some(ctx) = proc.p_vm_suspend.as_mut() {
+                    ctx.saved_m_user = Some(m_user.0);
+                }
+            }
+            crate::scheduler_loop(crate::current_cpu_id());
+        }
+    }
 }
 
 // ── riscv64 / aarch64 production trap bodies (E-3ARCHTRAP) ─────────────

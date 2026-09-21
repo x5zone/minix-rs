@@ -3582,6 +3582,7 @@ mod tests {
             p.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
             let target_ep = p.p_endpoint;
             p.p_vm_suspend = Some(VmSuspendContext {
+                saved_m_user: None,
                 state: VmSuspendState::Pending,
                 suspend_type: VmSuspendType::KernelCall,
                 target: target_ep,

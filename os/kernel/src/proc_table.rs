@@ -261,7 +261,13 @@ impl ProcessTable {
     ) -> Result<(), crate::vm::VmCtlError> {
         let proc = self.get_mut(target_nr)
             .ok_or(crate::vm::VmCtlError::InvalidEndpoint)?;
-        crate::vm::VmRequestHandler::memreq_reply(proc, result)
+        crate::vm::VmRequestHandler::memreq_reply(proc, result)?;
+        // C RTS_UNSET 的入队半：memreq_reply 清 VMREQUEST 后进程重新
+        // 可调度，但 primitive clear 不入队——漏掉则被挂起进程永远
+        // 不再被 pick（与 ForwardToVm 漏 enqueue_if_woken 同类，
+        // NK4-A C-3 迭代6，2026-09-22）。
+        self.enqueue_if_woken(target_nr);
+        Ok(())
     }
 
     /// Enqueue a process into the VM request queue.
@@ -1865,6 +1871,7 @@ mod tests {
                 proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
                 let target_ep = proc.p_endpoint;
                 proc.p_vm_suspend = Some(VmSuspendContext {
+                saved_m_user: None,
                     state: VmSuspendState::Pending,
                     suspend_type: VmSuspendType::KernelCall,
                     target: target_ep,
@@ -1910,6 +1917,7 @@ mod tests {
                 proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
                 let target_ep = proc.p_endpoint;
                 proc.p_vm_suspend = Some(VmSuspendContext {
+                saved_m_user: None,
                     state: VmSuspendState::Pending,
                     suspend_type: VmSuspendType::KernelCall,
                     target: target_ep,
@@ -1983,6 +1991,7 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
             proc.p_vm_suspend = Some(VmSuspendContext {
+                saved_m_user: None,
                 state: VmSuspendState::Pending,
                 suspend_type: VmSuspendType::KernelCall,
                 target: target_ep,
@@ -2027,6 +2036,7 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
             proc.p_vm_suspend = Some(VmSuspendContext {
+                saved_m_user: None,
                 state: VmSuspendState::Fetched,
                 suspend_type: VmSuspendType::KernelCall,
                 target: Endpoint(100),
@@ -2065,6 +2075,7 @@ mod tests {
             proc.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
             proc.p_vm_suspend = Some(VmSuspendContext {
+                saved_m_user: None,
                 state: VmSuspendState::Pending,
                 suspend_type: VmSuspendType::KernelCall,
                 target: Endpoint(100),

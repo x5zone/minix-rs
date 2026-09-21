@@ -3627,6 +3627,96 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
         }
         let picked = current.expect("scheduler loop: proc_ptr seeded or picked above");
 
+        // ── Stage 3a: KCALL_RESUME consume（C system.c:612-638
+        // kernel_call_resume）──
+        // VM 服务完成（memreq_reply 置 KCALL_RESUME + 清 VMREQUEST）后，
+        // 被挂起的内核调用在此重派：内核侧重跑 kernel_call（此刻目标内存
+        // 已由 VM 填充，check_resumed_caller 短路二次挂起），结果经
+        // set_ipc_return_code 写回 RAX，随后正常 restore。Fault 臂对位
+        // C 的 vmresult≠OK → SIGSEGV。须在 process_misc_flags 之前消费
+        //（其后同名臂只做 Fault 兜底）。
+        if table
+            .get(picked)
+            .is_some_and(|p| p.p_misc_flags.is_set(crate::proc::MiscFlagsBits::KCALL_RESUME))
+        {
+            // 状态守卫：仅在 Completed（VM 已回复）时重派；Pending/Fetched
+            // 说明 VM 仍在服务——本轮跳过派发（continue 重挑，VM 可运行、
+            // 会被轮到），等下一轮 Completed 再恢复。
+            let state_completed = table
+                .get(picked)
+                .and_then(|p| p.p_vm_suspend.as_ref())
+                .map(|c| matches!(c.state, crate::vm::VmSuspendState::Completed(_)));
+            if state_completed != Some(true) {
+                continue;
+            }
+            let resumed = crate::vm::kernel_call_resume(picked, table);
+            match resumed {
+                crate::vm::VmCheckResult::Ok => {
+                    let m_user = table
+                        .get(picked)
+                        .and_then(|p| p.p_vm_suspend.as_ref())
+                        .and_then(|c| c.saved_m_user)
+                        .unwrap_or(0);
+                    let clock_state = unsafe { crate::clock_state_boot_unchecked() };
+                    let result = crate::syscall::kernel_call(
+                        picked,
+                        table,
+                        minix_types::VirBytes(m_user),
+                        priv_table,
+                        clock_state,
+                        &crate::ipc::KernelUserCopy,
+                    );
+                    match result.reply_code() {
+                        // 完成：交付 RAX + 清挂起态，随后正常 restore。
+                        Some(code) => {
+                            if let Some(p) = table.get_mut(picked) {
+                                crate::proc::set_ipc_return_code(p, code as i64);
+                            }
+                            if let Some(p) = table.get_mut(picked) {
+                                p.clear_vm_suspend();
+                            }
+                        }
+                        // 重派再次挂起（多页/多区间）：kernel_call 内部的
+                        // 挂起路径已自入队+通知 VM。此处不得递归重入
+                        // scheduler_loop（每层挂起嵌套一整层调度器帧，内核
+                        // 栈会耗尽）——continue 平级重挑：本进程已停排
+                        // 不会被选中，VM 可运行、会得到 CPU。
+                        None => {
+                            #[cfg(not(feature = "mock"))]
+                            {
+                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                                if let Some(p) = table.get(picked) {
+                                    if let Some(ctx) = p.p_vm_suspend.as_ref() {
+                                        C0::write_str("nk4a: susp-again st=");
+                                        let s: u8 = match ctx.state {
+                                            crate::vm::VmSuspendState::Pending => 0,
+                                            crate::vm::VmSuspendState::Fetched => 1,
+                                            crate::vm::VmSuspendState::Completed(_) => 2,
+                                        };
+                                        C0::write_hex(s as u64);
+                                        C0::write_str(" start=0x");
+                                        C0::write_hex(ctx.check_params.start.0);
+                                        C0::write_str(" len=0x");
+                                        C0::write_hex(ctx.check_params.length.0);
+                                        C0::write_str("\n");
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+                crate::vm::VmCheckResult::Fault => {
+                    crate::syscall_signal::cause_signal(
+                        picked,
+                        crate::syscall_signal::SIGSEGV,
+                        table,
+                        priv_table,
+                    );
+                }
+            }
+        }
+
         // ── Stage 3: misc flags (check_misc_flags) ──
         // C: proc.c:351-415. Runs under the BKL (the contract documented
         // on process_misc_flags / arch_do_syscall). A `false` return is

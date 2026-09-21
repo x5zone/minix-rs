@@ -1494,6 +1494,7 @@ impl KProcess {
             check_params: params,
             state: VmSuspendState::Pending,
             saved_msg,
+            saved_m_user: None,
             copy_context: None,
         });
 
@@ -1523,6 +1524,7 @@ impl KProcess {
             check_params: params,
             state: VmSuspendState::Pending,
             saved_msg,
+            saved_m_user: None,
             copy_context: Some(copy_ctx),
         });
 

@@ -587,6 +587,24 @@ fn kernel_call_dispatch_inner(
         Ok(s) => s,
         Err(()) => return KcallResult::BadCall,
     };
+    // NK4-A C-3 迭代6 取证（task1-close 裁决删除）：内核调用流水（限 64
+    // 条）——定位 RS 用户态的循环点（哪个调用在反复挂起/重试）。
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static KCALL_LOG: AtomicUsize = AtomicUsize::new(0);
+        // 跳过 VM(caller 8) 的 exec 阶段调用，聚焦其后的服务调用流。
+        if caller_nr.0 != 8 && KCALL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 64 {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            Console::write_str("nk4a: kc");
+            Console::write_hex(KCALL_LOG.load(AtomicOrd::Relaxed) as u64);
+            Console::write_str(" caller=");
+            Console::write_hex(caller_nr.0 as u64);
+            Console::write_str(" call=");
+            Console::write_hex(call_nr as u64);
+            Console::write_str("\n");
+        }
+    }
 
     // C: `else if (!GET_BIT(priv(caller)->s_k_call_mask, call_nr))` — system.c:111
     // Check if the caller has permission to invoke this system call.
