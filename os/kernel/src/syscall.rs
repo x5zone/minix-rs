@@ -3267,7 +3267,47 @@ pub fn kernel_call_finish(
         let mut reply = *msg;
         reply.m_source = Endpoint::SYSTEM;
         reply.m_type = errno;
-        copy_msg_to_user(caller_nr, proc_table, &reply);
+        // C system.c:71-77 对位：结果消息 phys_copy 直写调用者用户缓冲
+        // （p_delivermsg_vir），不经 DELIVERMSG。旧实现经 p_delivermsg+
+        // DELIVERMSG 投递——调用者（VM）的 sef_receive 随即消费自己的
+        // 回执（src=SYSTEM/type=errno）形成接收自旋，饿死其他进程
+        // （NK4-A C-3 真机：VM exec 后 receive 空转、RS 永久饿死，
+        // 2026-09-22）。
+        let root = proc_table.get(caller_nr).map(|p| p.p_seg.phys_root);
+        let buf_va = proc_table.get(caller_nr).map(|p| p.p_delivermsg_vir.0);
+        use minix_arch::DirectMapArch as _;
+        if let (Some(root), Some(buf_va)) = (root, buf_va) {
+            let bytes = core::mem::size_of::<minix_types::Message>();
+            use minix_arch::DirectMapArch as _;
+            let mut off = 0usize;
+            while off < bytes {
+                let va = buf_va + off as u64;
+                // 调用者页表翻译（其 CR3 未激活时经 DM 直写物理页）。
+                match crate::pte_walk::walk_x86_64(
+                    root,
+                    minix_types::VirBytes(va),
+                ) {
+                    Some((pa, _fl)) => {
+                        let chunk = core::cmp::min(
+                            bytes - off,
+                            (0x1000 - (va & 0xfff)) as usize,
+                        );
+                        let dm = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa.0)).0;
+                        // SAFETY: DM 窗口覆盖全部物理内存；页为调用者
+                        // 驻留的消息缓冲；跨页按页界分块。
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                (&reply as *const minix_types::Message as *const u8).add(off),
+                                dm as *mut u8,
+                                chunk,
+                            );
+                        }
+                        off += chunk;
+                    }
+                    None => break, // 尾页未驻留：C phys_copy 同样静默失败
+                }
+            }
+        }
     }
 
     // Release BKL — syscall complete (Ok/NoReply/BadCall/CallDenied).

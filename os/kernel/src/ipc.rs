@@ -1192,6 +1192,9 @@ impl<'a> IpcEngine<'a> {
         caller_nr: ProcNr,
         src_endpoint: Endpoint,
     ) -> IpcOutcome {
+        // C-3 迭代10 取证：引擎 receive 进入（限 8）。
+        #[cfg(not(feature = "mock"))]
+        crate::ipc::probe_mark("nk4a: rcv-eng\n");
         let caller_idx = match self.idx_of(caller_nr) {
             Some(i) => i,
             None => return IpcOutcome::Error(IpcError::DeadSrcDst),
@@ -1216,6 +1219,9 @@ impl<'a> IpcEngine<'a> {
             .p_misc_flags
             .is_set(MiscFlagsBits::DELIVERMSG)
         {
+            // C-3 迭代10 取证：Phase 0 消费（一次性）。
+            #[cfg(not(feature = "mock"))]
+            crate::ipc::probe_mark("nk4a: rcv-p0\n");
             self.procs[caller_idx]
                 .p_misc_flags
                 .clear(MiscFlagsBits::DELIVERMSG);
@@ -1233,6 +1239,7 @@ impl<'a> IpcEngine<'a> {
                 self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
                 // C: proc.c:1033 — `IPC_STATUS_ADD_CALL(caller_ptr, NOTIFY)`
                 crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::Notify);
+                crate::ipc::probe_mark("nk4a: rcv-p1\n");
                 return IpcOutcome::Delivered;
             }
 
@@ -1243,8 +1250,8 @@ impl<'a> IpcEngine<'a> {
         if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint)
             && self.deliver_async(caller_idx, async_src)
         {
-            // C: proc.c:1047 — `IPC_STATUS_ADD_CALL(caller_ptr, SENDA)`
             crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
+            crate::ipc::probe_mark("nk4a: rcv-p2\n");
             return IpcOutcome::Delivered;
         }
 
@@ -1310,10 +1317,14 @@ impl<'a> IpcEngine<'a> {
             if self.procs[sender_idx].p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY) {
                 self.sig_delay_sender = Some(self.procs[sender_idx].p_nr);
             }
+            crate::ipc::probe_mark("nk4a: rcv-p3\n");
             return IpcOutcome::Delivered;
         }
 
         // Phase 4: block. C: proc.c:1096-1110.
+        // C-3 迭代10 取证：Phase 4 阻塞到达（一次性）。
+        #[cfg(not(feature = "mock"))]
+        crate::ipc::probe_mark("nk4a: rcv-p4\n");
         self.procs[caller_idx].p_getfrom_e = src_endpoint;
         self.procs[caller_idx].p_rts_flags.set(RtsFlagsBits::RECEIVING);
         IpcOutcome::Blocked
@@ -2178,6 +2189,22 @@ fn build_notify_message(
 /// - If dst is in RECEIVE matching caller → deliver directly to
 ///   `p_delivermsg` + wake dst.
 /// - Else set bit in `priv(dst).s_notify_pending` for later delivery.
+
+/// NK4-A C-3 迭代10 取证（task1-close 裁决删除）：限次一次性串口标记。
+pub(crate) fn probe_mark(msg: &str) {
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        use minix_plat::EarlyConsole as _;
+        static N: AtomicUsize = AtomicUsize::new(0);
+        if N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+            minix_plat::CurrentEarlyConsole::write_str(msg);
+        }
+    }
+    #[cfg(feature = "mock")]
+    let _ = msg;
+}
+
 pub fn mini_notify_core(
     procs: &mut [KProcess],
     priv_table: &mut PrivTable,

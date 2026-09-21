@@ -772,6 +772,21 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // (EBADCALL without acquiring), so kernel_call_finish must not run.
     // C: proc.c:602-606 — do_ipc's default branch, same effect.
     let call_nr = frame.rcx as i32;
+    // C-3 迭代10 取证：int-33 IPC 入口（限 16）。
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static IPC_ENTRY: AtomicUsize = AtomicUsize::new(0);
+        let n = IPC_ENTRY.fetch_add(1, AtomicOrd::Relaxed);
+        if n < 16 {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            Console::write_str("nk4a: ipc-entry nr=");
+            Console::write_hex(call_nr as u64);
+            Console::write_str(" caller=");
+            Console::write_hex(cur_nr.0 as u64);
+            Console::write_str("\n");
+        }
+    }
     if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
         frame.rax = crate::errno::EBADCALL as i64 as u64;
         return;
