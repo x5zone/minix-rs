@@ -163,6 +163,11 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
         Console::write_str("kernel: arch_boot entered\n");
     }
+    // 诊断注册前移（原在 kmain Step -1）：arch_boot 阶段的任何 panic
+    // 必须可见——诊断依赖（EarlyConsole / SMP_STATE boot_unchecked 回退
+    // 0 / util_stacktrace）此刻全部可用，注册点没有理由晚于第一个
+    // 可 panic 的校验。kmain 的同名调用幂等。
+    register_panic_diagnostic();
     let info = arch_boot_impl::<X86_64Paging>(kernel_info, root_page);
     {
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
@@ -179,6 +184,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::arm64::paging::AArch64Paging;
     use crate::aarch64::higher_half::AArch64HigherHalf;
     use crate::boot::HigherHalf;
+    register_panic_diagnostic();
     let info = arch_boot_impl::<AArch64Paging>(kernel_info, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity
     // and kernel high mappings. info is valid and accessible at high address.
@@ -191,6 +197,7 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::riscv64::paging::Riscv64Paging;
     use crate::riscv64::higher_half::Riscv64HigherHalf;
     use crate::boot::HigherHalf;
+    register_panic_diagnostic();
     let info = arch_boot_impl::<Riscv64Paging>(kernel_info, root_page);
     // SAFETY: arch_boot_impl just enabled paging with both identity
     // and kernel high mappings. info is valid and accessible at high address.
