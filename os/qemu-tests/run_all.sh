@@ -9,8 +9,8 @@
 #   5. test-higher-half: HigherHalf trait transition (stack/PC switch → kmain)
 #   6. test-protection: protection structure init (GDT/IDT/TSS, VBAR/SP_EL1, stvec/sscratch)
 #   7. test-proc-init: process table init + VM ELF loading + ptproc/freepdes (Phase C/D)
-#   8. test-user-trap / test-rt-birth: the CPL3 user-mode chain (int-33 trap
-#      bridge, KERNINFO page, minix-rt birth chain). These run through their
+#   8. test-user-trap / test-rt-birth / test-sysboot: the CPL3 user-mode
+#      chain and the multi-process boot carrier. These run through their
 #      own scripts — their PASS protocol is gdbstub mailbox reads / serial
 #      markers, not a TEST_RESULT line (edge1 K12).
 #
@@ -127,6 +127,16 @@ if command -v qemu-system-x86_64 &>/dev/null; then
     bash "$SCRIPT_DIR/test-rt-birth.sh" || rc=$?
     if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
     elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-rt-birth: skipped)"
+    else FAIL=$((FAIL + 1)); fi
+
+    # ── Special-protocol script (S42 ④ / C-27 / NK1): the multi-process
+    # boot carrier builds both user ELFs + its own kernel and judges PASS
+    # from the six serial exchange markers (RX UP → TX DONE).
+    echo "--- Running: test-sysboot (special: two-image IPC serial markers) ---"
+    rc=0
+    bash "$SCRIPT_DIR/test-sysboot.sh" || rc=$?
+    if [ "$rc" -eq 0 ]; then PASS=$((PASS + 1));
+    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-sysboot: skipped)"
     else FAIL=$((FAIL + 1)); fi
 fi
 

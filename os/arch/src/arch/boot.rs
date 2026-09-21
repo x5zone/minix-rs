@@ -34,7 +34,7 @@
 //! See `06-proc-init-boot-proc.md` §3.6.
 
 use minix_boot::{BootModule, KernelInfo};
-use minix_types::{PhysFrame, VirBytes};
+use minix_types::{PhysBytes, PhysFrame, VirBytes};
 
 /// Shared single source for the process number (kernel and arch trait
 /// signatures use the same newtype). Re-exported so the historical
@@ -319,6 +319,22 @@ pub fn load_vm_elf<P: Paging, A: PhysAccess>(
     vm_alloc: &mut VmBootAllocator,
     access: &A,
 ) -> Result<VmLoadResult, VmLoadError> {
+    load_elf_into(module, kernel_info, paging, vm_alloc, access)
+}
+
+/// Shared body of [`load_vm_elf`] / [`load_process_elf`]: parse the ELF,
+/// map every PT_LOAD segment page-by-page, then place the user stack and
+/// the `ps_strings` block at `kernel_info.user_sp()` — all into whatever
+/// root the caller's `paging` handle wraps. The two public entry points
+/// differ only in WHICH root that is (a caller-provided live root vs. a
+/// fresh per-process root), so the mapping logic lives here once.
+fn load_elf_into<P: Paging, A: PhysAccess>(
+    module: &BootModule,
+    kernel_info: &KernelInfo,
+    paging: &mut P,
+    vm_alloc: &mut VmBootAllocator,
+    access: &A,
+) -> Result<VmLoadResult, VmLoadError> {
     /// Default VM user-stack size (matches Minix3).
     const VM_STACK_SIZE: u64 = 64 * 1024;
 
@@ -533,6 +549,101 @@ pub fn load_vm_elf<P: Paging, A: PhysAccess>(
         sp,
         ps_strings,
         allocated_bytes: total_allocated,
+    })
+}
+
+/// Result of `load_process_elf` — the loaded image's own address-space
+/// root plus the entry triple derived from the ELF.
+#[derive(Debug, Clone, Copy)]
+pub struct ProcessLoad {
+    /// Physical address of the image's fresh page-table root. The caller
+    /// records it in the process's segment descriptor (C: `p_seg.p_cr3`
+    /// / `p_ttbr`) so the scheduler's address-space switch installs it
+    /// when the process is dispatched.
+    pub root: PhysBytes,
+    pub pc: VirBytes,
+    pub sp: VirBytes,
+    pub ps_strings: VirBytes,
+    /// Bookkeeping: page bytes this load allocated (segments + stack +
+    /// the root page itself), all owned by the new address space.
+    pub allocated_bytes: usize,
+}
+
+/// Load a user ELF image into a **fresh, per-image page-table root**.
+///
+/// Where [`load_vm_elf`] maps into the caller-provided (bootstrap) root —
+/// exactly one user image per root — this function gives each image its
+/// own root: a frame from the bootstrap allocator becomes a zero-filled
+/// root (`Paging::new_from_page`), the supervisor half is inherited from
+/// the live bootstrap root (`Paging::inherit_supervisor_half`), and the
+/// image's segments + stack are mapped into the result. Two images may
+/// therefore overlap freely in VA (same link base, same `user_sp` stack
+/// window) without colliding — the stack address comes from
+/// `kernel_info.user_sp()` per address space, which is also how C treats
+/// `kinfo.user_sp` (`protect.c:402`: a global value applied inside each
+/// address space VM builds).
+///
+/// # C correspondence (honest scoping)
+///
+/// In C the kernel itself loads only VM into the bootstrap pagetable
+/// (`protect.c:388`, VM branch) and the *VM server* later builds a
+/// per-process pagetable for every other boot image
+/// (`servers/vm/main.c:510` boot-image walk skipping itself;
+/// `pagetable.c:807/:933` `VMCTL_VMINHIBIT` release). This primitive is
+/// the boot-side equivalent of that per-process-root capability: it lets
+/// the kernel's boot loader host multiple images (multi-image carriers,
+/// C-27) without a VM server in the loop. Loading the production boot
+/// modules remains VM's job (T2 wave), which will reuse this same
+/// per-image-root shape rather than a shared root.
+///
+/// # Parameters
+///
+/// - `bootstrap_root`: physical address of the currently-active
+///   bootstrap root — the source of the supervisor-half inheritance
+///   (kernel mappings must be present in every root the kernel can trap
+///   into). The kernel passes `current_root_phys()`.
+/// - `vm_alloc` / `access`: same bootstrap frame source and direct-map
+///   accessor as [`load_vm_elf`] (the root page is allocated from the
+///   same verified regions as the image frames).
+///
+/// # Errors
+///
+/// `VmLoadError::OutOfMemory` when the allocator cannot supply the root
+/// page (or any image page); `InvalidElf` / `MappingFailed` as in
+/// [`load_vm_elf`].
+pub fn load_process_elf<P: Paging, A: PhysAccess>(
+    module: &BootModule,
+    kernel_info: &KernelInfo,
+    bootstrap_root: PhysBytes,
+    vm_alloc: &mut VmBootAllocator,
+    access: &A,
+) -> Result<ProcessLoad, VmLoadError> {
+    // ① Root page: same one-shot bootstrap allocator as the image frames
+    //    (PA chosen by the allocator, not assumed from the VA).
+    let root_frame = vm_alloc
+        .alloc_page()
+        .map_err(|_| VmLoadError::OutOfMemory)?;
+    let root = PhysBytes(root_frame.start().0);
+
+    // ② Fresh, zero-filled root wrapping that page. `new_from_page`'s
+    //    boot-phase contract (no global allocator; UEFI identity or DM
+    //    coverage of the root page) is the same phase this function runs
+    //    in — alongside `load_vm_elf` at boot.
+    let mut paging = P::new_from_page(root);
+
+    // ③ The new root starts kernel-less; inherit the supervisor half
+    //    from the live bootstrap root so traps into the kernel map.
+    paging.inherit_supervisor_half(bootstrap_root);
+
+    // ④ Image half: segments + stack + ps_strings (shared body).
+    let result = load_elf_into(module, kernel_info, &mut paging, vm_alloc, access)?;
+
+    Ok(ProcessLoad {
+        root,
+        pc: result.pc,
+        sp: result.sp,
+        ps_strings: result.ps_strings,
+        allocated_bytes: result.allocated_bytes + P::PAGE_SIZE,
     })
 }
 
@@ -787,6 +898,159 @@ mod tests {
             assert_eq!((psp.add(16) as *const u64).read(), envstr);
             assert_eq!((psp.add(24) as *const i32).read(), 0);
         }
+    }
+
+    /// Regression for the C-27 carrier collision: two images at the SAME
+    /// segment VA and SAME `user_sp` stack window both load — each into
+    /// its own root. Under the shared-bootstrap-root shape the second
+    /// `load_vm_elf` would hit an already-mapped stack page
+    /// (`MappingFailed`, observed on real machine by test-sysboot); with
+    /// per-image roots the collision is impossible by construction.
+    #[test]
+    fn load_process_elf_two_images_same_va_no_collision() {
+        use crate::arch::frame::{
+            PhysAccess, VmBootAllocator, VmBootRegion, VmBootRegions,
+        };
+
+        // Two distinct images with OVERLAPPING segment VAs (0x1000).
+        let image_a = build_bss_elf(0x200, 0x400, 0x1000);
+        let image_b = build_bss_elf(0x200, 0x400, 0x1000);
+        let module_a = BootModule {
+            name: "img-a",
+            start: PhysBytes(image_a.as_ptr() as u64),
+            len: image_a.len(),
+        };
+        let module_b = BootModule {
+            name: "img-b",
+            start: PhysBytes(image_b.as_ptr() as u64),
+            len: image_b.len(),
+        };
+
+        // Mock direct map: 2 MiB window, PA i ↦ base + i.
+        let buf: Box<[u8]> = vec![0u8; 0x200000].into_boxed_slice();
+        let dm_base = buf.as_ptr() as u64;
+        struct MockAccess {
+            dm_base: u64,
+        }
+        impl PhysAccess for MockAccess {
+            fn phys_to_virt(&self, phys: PhysBytes) -> VirBytes {
+                VirBytes(self.dm_base + phys.get())
+            }
+        }
+        let access = MockAccess { dm_base };
+
+        // Frames for two full loads (root + segment + 64 KiB stack each)
+        // out of one region.
+        let region = VmBootRegion::new(PhysBytes(0x1000), PhysBytes(0x200000)).unwrap();
+        let regions = VmBootRegions::from_sorted(&[region])
+            .expect("test: single region is descending & disjoint");
+        let mut vm_alloc = VmBootAllocator::new(regions);
+
+        let user_sp = VirBytes(0x19000);
+        let kinfo = KernelInfo {
+            memmap: &[minix_boot::MemoryRegion {
+                base: PhysBytes(0x1000),
+                len: 0x200000,
+            }],
+            kern_virt_base: VirBytes(0xffff_8000_0000_0000),
+            kern_phys_base: PhysBytes(0),
+            kern_size: 0,
+            free_upper_idx: None,
+            user_sp,
+            kern_stack_top: VirBytes(0),
+            syscall_entry: VirBytes(0),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+        };
+        // The "live" bootstrap root — mock inherit is a no-op, only the
+        // parameter plumbing is exercised here.
+        let bootstrap_root = PhysBytes(0xf_0000);
+
+        let a =
+            load_process_elf::<crate::paging::mock::MockPaging, _>(
+                &module_a, &kinfo, bootstrap_root, &mut vm_alloc, &access,
+            )
+            .expect("first image must load into its own root");
+        let b =
+            load_process_elf::<crate::paging::mock::MockPaging, _>(
+                &module_b, &kinfo, bootstrap_root, &mut vm_alloc, &access,
+            )
+            .expect("second image must load into its own root (no shared-root collision)");
+
+        // Distinct roots — each image owns an address space.
+        assert_ne!(a.root, b.root, "per-image roots must differ");
+        // Identical entry geometry: the same VA layout lives in BOTH
+        // address spaces (C kinfo.user_sp semantics — per-address-space
+        // stack placement from a shared boot value).
+        assert_eq!(a.pc, b.pc);
+        assert_eq!(a.sp.0, user_sp.0 - 52);
+        assert_eq!(b.sp.0, user_sp.0 - 52);
+        assert_eq!(a.ps_strings.0, user_sp.0 - 32);
+        assert_eq!(b.ps_strings.0, user_sp.0 - 32);
+        // Each load accounted its own root page on top of image + stack.
+        assert!(a.allocated_bytes >= 64 * 1024 + 0x1000 + 0x1000);
+        assert!(b.allocated_bytes >= 64 * 1024 + 0x1000 + 0x1000);
+    }
+
+    /// The root page comes out of the same bootstrap allocator; a
+    /// one-page region is consumed by the root, so the stack mapping
+    /// must fail with `OutOfMemory` (fail-fast, no partial state).
+    #[test]
+    fn load_process_elf_oom_when_region_exhausted() {
+        use crate::arch::frame::{
+            PhysAccess, VmBootAllocator, VmBootRegion, VmBootRegions,
+        };
+
+        let image = build_minimal_elf();
+        let module = BootModule {
+            name: "img-tiny",
+            start: PhysBytes(image.as_ptr() as u64),
+            len: image.len(),
+        };
+        struct NoAccess;
+        impl PhysAccess for NoAccess {
+            fn phys_to_virt(&self, _phys: PhysBytes) -> VirBytes {
+                VirBytes(0)
+            }
+        }
+        let access = NoAccess;
+
+        // Exactly one page of supply: the root takes it, the stack
+        // mapping finds nothing left.
+        let region = VmBootRegion::new(PhysBytes(0x1000), PhysBytes(0x2000)).unwrap();
+        let regions = VmBootRegions::from_sorted(&[region])
+            .expect("test: single region is descending & disjoint");
+        let mut vm_alloc = VmBootAllocator::new(regions);
+
+        let kinfo = KernelInfo {
+            memmap: &[minix_boot::MemoryRegion {
+                base: PhysBytes(0x1000),
+                len: 0x1000,
+            }],
+            kern_virt_base: VirBytes(0xffff_8000_0000_0000),
+            kern_phys_base: PhysBytes(0),
+            kern_size: 0,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x19000),
+            kern_stack_top: VirBytes(0),
+            syscall_entry: VirBytes(0),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+        };
+        let result = load_process_elf::<crate::paging::mock::MockPaging, _>(
+            &module,
+            &kinfo,
+            PhysBytes(0xf_0000),
+            &mut vm_alloc,
+            &access,
+        );
+        assert_eq!(result.err(), Some(VmLoadError::OutOfMemory));
     }
 
     /// Builds an ELF64 with one PT_LOAD: vaddr aligned, filesz spans

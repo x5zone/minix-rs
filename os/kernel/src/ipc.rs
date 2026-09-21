@@ -202,6 +202,9 @@ pub enum IpcError {
     /// Caller lacks SYS_PROC privilege. C: `EPERM` — `mini_senda`
     /// (proc.c:1336-1339)
     Permission,
+    /// Bad argument value. C: `EINVAL` — proc.c:508 (`ANY` passed with a
+    /// non-RECEIVE call — ANY is a receive-only wildcard).
+    Invalid,
 }
 
 // IPC send flags. C: `minix3/minix/kernel/ipc.h:11-12`.
@@ -796,6 +799,15 @@ pub struct IpcEngine<'a> {
     /// dispatcher (`dispatch_ipc`) completes the protocol after `do_ipc`
     /// returns. At most one sender is delivered per IPC operation.
     sig_delay_sender: Option<ProcNr>,
+    /// The process the engine just woke by clearing a blocking RTS flag
+    /// (`RTS_RECEIVING` / `RTS_SENDING`) with the primitive setter. The
+    /// engine holds a procs slice without run-queue access, so the wake's
+    /// ENQUEUE half (C `RTS_UNSET` macro — clear + enqueue-when-runnable)
+    /// must be completed by the `ProcessTable`-level dispatcher via
+    /// [`Self::take_wake_target`] — the wake-direction mirror of
+    /// `ProcessTable::dequeue_if_blocked` (the block direction). At most
+    /// one target is woken per IPC operation.
+    wake_target: Option<ProcNr>,
 }
 
 impl<'a> IpcEngine<'a> {
@@ -805,7 +817,14 @@ impl<'a> IpcEngine<'a> {
         priv_table: &'a mut PrivTable,
         user_copy: &'a dyn UserCopy,
     ) -> Self {
-        Self { procs, priv_table, user_copy, filter_pool: None, sig_delay_sender: None }
+        Self {
+            procs,
+            priv_table,
+            user_copy,
+            filter_pool: None,
+            sig_delay_sender: None,
+            wake_target: None,
+        }
     }
 
     /// Wire the IPC filter pool (D-16). Production dispatch passes the
@@ -881,6 +900,21 @@ impl<'a> IpcEngine<'a> {
     /// returns; `Some(sender_nr)` means "call `sig_delay_done(sender_nr)`".
     pub fn take_sig_delay_sender(&mut self) -> Option<ProcNr> {
         self.sig_delay_sender.take()
+    }
+
+    /// Take the wake target recorded by the last IPC operation — the
+    /// process whose blocking RTS flag the engine cleared with the
+    /// primitive setter. The `ProcessTable`-level caller must complete
+    /// the wake by enqueueing it (C: `RTS_UNSET`'s enqueue half,
+    /// proc.h:216-224) — see `ProcessTable::enqueue_if_woken`.
+    pub fn take_wake_target(&mut self) -> Option<ProcNr> {
+        self.wake_target.take()
+    }
+
+    /// Record a wake target (engine-internal helper for the primitive
+    /// flag clears at the delivery sites).
+    fn record_wake_target(&mut self, nr: ProcNr) {
+        self.wake_target = Some(nr);
     }
 
     // ── Helpers ──
@@ -1089,6 +1123,8 @@ impl<'a> IpcEngine<'a> {
             crate::proc::ipc_status_add_call(&mut self.procs[dst_idx], delivered_call);
             // C: `RTS_UNSET(dst, RTS_RECEIVING)` — wake up target.
             self.procs[dst_idx].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
+            let woken = self.procs[dst_idx].p_nr;
+            self.record_wake_target(woken);
             // E1 slice 2: the woken receiver's RECEIVE completes with OK
             // (same completion-path return-code rule as the sender wake).
             crate::proc::set_ipc_return_code(&mut self.procs[dst_idx], OK as i64);
@@ -1220,6 +1256,8 @@ impl<'a> IpcEngine<'a> {
             self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
             // Wake up the sender. C: `RTS_UNSET(sender, RTS_SENDING)`.
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
+            let woken_sender = self.procs[sender_idx].p_nr;
+            self.record_wake_target(woken_sender);
             // E1 slice 2: the woken sender's syscall completes with OK —
             // write its return code into the saved context RAX (C sets the
             // return at the completion path, not at trap entry).
@@ -1527,7 +1565,17 @@ impl<'a> IpcEngine<'a> {
         caller_nr: ProcNr,
         dst_endpoint: Endpoint,
     ) -> IpcOutcome {
-        mini_notify_core(self.procs, self.priv_table, caller_nr, dst_endpoint)
+        let outcome = mini_notify_core(self.procs, self.priv_table, caller_nr, dst_endpoint);
+        if matches!(outcome, IpcOutcome::Delivered)
+            && let Some(dst_idx) = self.idx_by_endpoint(dst_endpoint)
+        {
+            // Direct notify delivery woke a RECEIVE-blocked dst — record
+            // the wake so the ProcessTable-level dispatcher enqueues it
+            // (same primitive-clear reason as the send/receive sites).
+            let woken = self.procs[dst_idx].p_nr;
+            self.record_wake_target(woken);
+        }
+        outcome
     }
 
     // ── SendRec ──
@@ -1733,6 +1781,8 @@ impl<'a> IpcEngine<'a> {
                             .set(MiscFlagsBits::DELIVERMSG);
                         crate::proc::ipc_status_add_call(&mut self.procs[di], IpcCall::SendA);
                         self.procs[di].p_rts_flags.clear(RtsFlagsBits::RECEIVING);
+                        let woken_async = self.procs[di].p_nr;
+                        self.record_wake_target(woken_async);
                         true
                     } else {
                         // C: set_sys_bit(priv(dst)->s_asyn_pending,
@@ -1848,18 +1898,35 @@ impl<'a> IpcEngine<'a> {
         let caller_priv_id = self.procs[caller_idx].priv_id.ok_or(IpcError::CallDenied)?;
         let caller_priv = self.priv_table.get(caller_priv_id).ok_or(IpcError::CallDenied)?;
 
-        // Layer 1: endpoint validity. C: proc.c:487-495.
-        let dst_idx = self.idx_by_endpoint(dst_endpoint);
-        match dst_idx {
-            None => return Err(IpcError::DeadSrcDst),
-            Some(i) if self.procs[i].p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) => {
+        // C: proc.c:503-541 — ANY is a wildcard ONLY for RECEIVE: it passes
+        // through untouched (no endpoint validity check — there is no
+        // process behind it to validate); for any other call it is EINVAL.
+        // A real endpoint must resolve (`isokendpt` → EDEADSRCDST on miss,
+        // NO_ENDPOINT slots included). Without the ANY special case every
+        // `receive(ANY)` — the standard server receive form — died here
+        // with EDEADSRCDST (observed on real machine: test-sysboot C-27
+        // carrier's first blocking receive).
+        let is_receive = matches!(call, IpcCall::Receive);
+        let dst_idx = if dst_endpoint == minix_types::Endpoint::ANY {
+            if !is_receive {
+                // C: proc.c:508 — `return EINVAL`.
+                return Err(IpcError::Invalid);
+            }
+            None
+        } else {
+            let i = self.idx_by_endpoint(dst_endpoint).ok_or(IpcError::DeadSrcDst)?;
+            if self.procs[i].p_rts_flags.is_set(RtsFlagsBits::NO_ENDPOINT) {
                 return Err(IpcError::DeadSrcDst);
             }
-            _ => {}
-        }
+            Some(i)
+        };
 
-        // Layer 2: IPC whitelist. C: `may_send_to` — ipc.h.
-        if let Some(i) = dst_idx
+        // Layer 2: IPC whitelist. C: `may_send_to` — ipc.h — send-family
+        // calls only (C: proc.c:527-533, gated on `call_nr != RECEIVE`;
+        // a RECEIVE from a specific source is not a "send to" and skips
+        // the whitelist).
+        if !is_receive
+            && let Some(i) = dst_idx
             && let Some(dst_pid) = self.procs[i].priv_id
                 && !caller_priv.may_send_to(dst_pid) {
                     return Err(IpcError::CallDenied);
@@ -3532,5 +3599,52 @@ mod tests {
             walk_table(&table),
         );
         assert_eq!(write_rw, Ok(()));
+    }
+
+    // ── C-27 multi-process boot exchange (test-sysboot real-machine regression) ──
+
+    #[test]
+    fn test_sendrec_to_blocked_receiver_stamps_source_endpoint() {
+        // C-27 real machine (test-sysboot): the woken receiver observed
+        // m_source = Message::default() poison and failed its sendnb reply
+        // with EDEADSRCDST(202). Engine half of the contract: a sendrec
+        // into a parked receive(ANY) delivers with the SENDER's boot
+        // endpoint stamped over the copied message (C mini_send,
+        // proc.c:904 — `dst_ptr->p_delivermsg.m_source = caller endpt`),
+        // replayed here on the const-init table where gen-0 endpoints ==
+        // proc nrs, the exact boot state the carrier runs.
+        let mut table = crate::proc_table::ProcessTable::new();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let vm_idx = 8usize + NR_TASKS; // nr 8
+        let rs_idx = 2usize + NR_TASKS; // nr 2
+        {
+            let procs = table.procs_slice_mut();
+            procs[vm_idx].p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+            procs[rs_idx].p_rts_flags.clear(crate::proc::RtsFlagsBits::SLOT_FREE);
+        }
+        let procs = table.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
+
+        // rx parks in receive(ANY) — the door-blocked state.
+        let blocked = engine.receive(ProcNr(8), Endpoint::ANY);
+        assert!(matches!(blocked, IpcOutcome::Blocked), "rx must block");
+
+        // tx sendrec(8) — the send half should deliver into rx's p_delivermsg.
+        let mut msg = Message::default();
+        msg.m_type = 0x42;
+        let outcome = engine.sendrec(ProcNr(2), Endpoint(8), &msg);
+        assert!(
+            matches!(outcome, IpcOutcome::Blocked),
+            "tx parks in the reply receive half"
+        );
+        let delivered_source = engine.procs[vm_idx].p_delivermsg.m_source;
+        assert_eq!(delivered_source, Endpoint(2));
+        // Tear down: the const-init table carries occupied kernel-task slots
+        // (IDLE is PROC_STOP, not SLOT_FREE) whose Drop guard forbids plain
+        // scope exit — release every slot back to SLOT_FREE first. IpcEngine
+        // implements no Drop, so the table reborrow below ends its borrow.
+        for p in table.procs_slice_mut().iter_mut() {
+            p.p_rts_flags.set(crate::proc::RtsFlagsBits::SLOT_FREE);
+        }
     }
 }

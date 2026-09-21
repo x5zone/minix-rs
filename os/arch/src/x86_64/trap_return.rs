@@ -67,8 +67,9 @@ impl TrapReturnArch for X86_64TrapReturn {
         // - The BKL has been released by the caller before this call.
         // - Register sequencing: every scratch register used below (RAX,
         //   RCX, RDX, R10, R11) is reloaded from `regs.gp_regs` afterwards,
-        //   so no user value is clobbered; RBX is loaded after its last use
-        //   as a source and never used as scratch.
+        //   so no user value is clobbered; RBX and RSI are loaded after
+        //   their last use as a source (RSI is the load base — see the
+        //   step-4 comment) and never used as scratch afterwards.
         unsafe {
         core::arch::asm!(
             // ── 1. Build the iretq payload on the kernel stack ──
@@ -102,7 +103,13 @@ impl TrapReturnArch for X86_64TrapReturn {
             // ── 3. RBX — named field (ps_strings / IPC status) ──
             "mov rbx, [rsi + {rbx_off}]",
             // ── 4. General-purpose registers, gp_regs[GP_RAX..=GP_R15] ──
-            // Loaded high-to-low so RAX (last) cannot clobber RSI.
+            // RSI is loaded LAST: it is both the load base and itself a
+            // load target. The earlier order (rsi reloaded third-from-
+            // last) made the rdx/rcx/rax loads read [user_rsi+0x50..0x60]
+            // — a user-controlled address whose non-canonical values raise
+            // #GP(0) at restore (test-sysboot wake path: the door save
+            // stored a real user RSI, the first non-zero one ever
+            // restored; zero rsis merely read harmless low identity RAM).
             "mov r15, [rsi + {gp_off} + 13*8]",
             "mov r14, [rsi + {gp_off} + 12*8]",
             "mov r13, [rsi + {gp_off} + 11*8]",
@@ -113,10 +120,10 @@ impl TrapReturnArch for X86_64TrapReturn {
             "mov r8,  [rsi + {gp_off} + 6*8]",
             "mov rbp, [rsi + {gp_off} + 5*8]",
             "mov rdi, [rsi + {gp_off} + 4*8]",
-            "mov rsi, [rsi + {gp_off} + 3*8]",
             "mov rdx, [rsi + {gp_off} + 2*8]",
             "mov rcx, [rsi + {gp_off} + 1*8]",
             "mov rax, [rsi + {gp_off} + 0*8]",
+            "mov rsi, [rsi + {gp_off} + 3*8]",
             // ── 5. Mode switch — never returns to this sequence ──
             "iretq",
             in("rdi") frame as *const X86_64ExceptionFrame,

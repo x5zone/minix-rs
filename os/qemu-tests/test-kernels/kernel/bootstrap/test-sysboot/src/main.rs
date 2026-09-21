@@ -208,56 +208,103 @@ fn main() -> Status {
     early_console::write_str("  smp_init completed\n");
 
     // 7. Load sysboot-tx into the RS slot with the production machinery —
-    // the same `load_vm_elf` + bootstrap-root recipe the VM branch runs,
-    // then rebuild the slot's CPU context for the loaded entry.
+    // a PER-IMAGE root (`load_process_elf`, OQ-N6 ② verdict): the fresh
+    // root inherits the supervisor half of the live bootstrap root, then
+    // maps the image's segments + stack. Unlike the old shared-root
+    // recipe the VM branch runs (which can host exactly one image — the
+    // second stack mapping collided, C-27 real-machine evidence), the TX
+    // image may reuse the same stack window and link base as RX. The
+    // slot's `p_seg.phys_root` records the new root; the scheduler's
+    // address-space switch (C proc.c:349 对位) installs it at dispatch.
     {
-        use minix_arch::paging::Paging as _;
         use minix_arch::CurrentPaging;
         use minix_arch::frame::{VmBootAllocator, VmBootRegion};
-        use minix_arch::{
-            CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, load_vm_elf,
-        };
+        use minix_arch::{CpuContextArch, CurrentCpuContextArch, EntrySpec, ProcKind, load_process_elf};
 
 
-        // Exclusions: kernel image + every boot module (both ELF blobs are
-        // modules; TX's own source pages must not be handed out as frames).
-        let mut exclusions = [MemoryRegion { base: PhysBytes(0), len: 0 };
-            minix_kernel::proc::NR_BOOT_MODULES + 1];
-        let mut n_excl = 0usize;
-        let push = |excl: &mut [MemoryRegion; minix_kernel::proc::NR_BOOT_MODULES + 1],
-                        n: &mut usize,
-                        base: PhysBytes,
-                        len: usize| {
-            if *n < excl.len() {
-                excl[*n] = MemoryRegion { base, len };
-                *n += 1;
-            }
+        let regions = {
+            // Frames MUST come from the A2 post-deduction free list, not
+            // the raw boot memmap: init_proc_and_boot's first load
+            // consumed frames (segments + stack + PT pages + handoff) the
+            // raw map still advertises. Re-allocating them zeroes/copies
+            // over the RX image's memory — RX then executes corrupted
+            // bytes with an intact page table (the #UD this carrier hit
+            // on real machine once the per-image-root load unblocked the
+            // second load). C parity: every pg_alloc_page consumer walks
+            // the MUTATED memmap (pg_utils.c:138-160), so the second
+            // loader never sees spent frames. Deduction already covers
+            // the kernel image, bump region, VM's bootstrap frames and
+            // the reserved module blobs — no extra exclusions needed.
+            let (free_regions, n_free) = minix_kernel::vm_handoff::vm_pmm_free_regions();
+            VmBootRegion::select_multi(&free_regions[..n_free], &[])
+                .expect("test-sysboot: bootstrap region selection failed")
+                .unwrap_or_else(|| panic!("test-sysboot: no free memory for the TX load"))
         };
-        push(
-            &mut exclusions,
-            &mut n_excl,
-            result.kernel_info.kern_phys_base(),
-            result.kernel_info.kern_size() as usize,
-        );
-        for m in result.kernel_info.boot_modules() {
-            push(&mut exclusions, &mut n_excl, m.start, m.len);
-        }
-        let regions = VmBootRegion::select_multi(
-            result.kernel_info.memmap(),
-            &exclusions[..n_excl],
-        )
-        .expect("test-sysboot: bootstrap region selection failed")
-        .unwrap_or_else(|| panic!("test-sysboot: no free memory for the TX load"));
         let mut vm_alloc = VmBootAllocator::new(regions);
 
         let root_phys = minix_kernel::current_root_phys()
             .expect("test-sysboot: bootstrap root not set — arch_boot_impl must run first");
-        let mut paging = CurrentPaging::from_active_root(root_phys);
         let access = minix_arch::CurrentDirectMap::default();
         let tx_module = &result.kernel_info.boot_modules()[1]; // "rs"
-        let tx = load_vm_elf(tx_module, &result.kernel_info, &mut paging, &mut vm_alloc, &access)
-            .unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"));
-        early_console::write_str("  TX ELF loaded into the RS slot\n");
+        let tx = load_process_elf::<CurrentPaging, _>(
+            tx_module,
+            &result.kernel_info,
+            root_phys,
+            &mut vm_alloc,
+            &access,
+        )
+        .unwrap_or_else(|e| panic!("test-sysboot: TX ELF load failed: {e:?}"));
+        early_console::write_str("  TX ELF loaded into the RS slot (per-image root)\n");
+        {
+        {
+            // [fix] PDPT-slot merge for the kernel's LOW-half footprint.
+            // This test kernel executes identity-mapped (UEFI-era shape:
+            // kernel code at ~0xdb9xxxxx, PML4 entry 0 — the USER half),
+            // so the entry-range supervisor inherit cannot carry it: the
+            // same entry also hosts the first image's user mappings. The
+            // merge copies the kernel-owned 1 GB PDPT slots from the
+            // bootstrap root into the fresh root, leaving the images'
+            // own slots (link base 0x140000000 → slot 5; stack → 511)
+            // untouched:
+            //   slot(kernel_va)   — supervisor code/data + IDT/GDT targets
+            //   slot(KERNINFO_USER_VA) — the published kernel-info page
+            //     (read-only): the birth chain's kerninfo query returns
+            //     this VA and the payload dereferences it immediately —
+            //     without the slot the read page-faults in the new root
+            //     (CR2 = 0x200000000 observed on real machine).
+            // Production higher-half kernels need none of this: their
+            // supervisor footprint IS entries 256..512, already inherited.
+            use minix_arch::frame::PhysAccess as _;
+            let kernel_va = main as *const () as u64;
+            let kern_slot = ((kernel_va >> 30) & 0x1ff) as usize;
+            let kerninfo_slot =
+                ((minix_kernel::kerninfo::KERNINFO_USER_VA >> 30) & 0x1ff) as usize;
+            let src_pml4 = access.phys_to_virt(PhysBytes(root_phys.0)).0 as *const u64;
+            let dst_pml4 = access.phys_to_virt(PhysBytes(tx.root.0)).0 as *mut u64;
+            // Source entry 0 → bootstrap's PDPT; dest entry 0 → the fresh
+            // root's own PDPT (walk_alloc created it while mapping the
+            // image). Copy ONLY the kernel-owned slots.
+            let src_pdpt =
+                unsafe { src_pml4.add(0).read() } & 0x000f_ffff_ffff_f000;
+            let dst_pdpt =
+                unsafe { dst_pml4.add(0).read() } & 0x000f_ffff_ffff_f000;
+            if src_pdpt != 0 && dst_pdpt != 0 {
+                let s = access.phys_to_virt(PhysBytes(src_pdpt)).0 as *const u64;
+                let d = access.phys_to_virt(PhysBytes(dst_pdpt)).0 as *mut u64;
+                for slot in [kern_slot, kerninfo_slot] {
+                    unsafe {
+                        let entry = s.add(slot).read();
+                        d.add(slot).write(entry);
+                    }
+                }
+                early_console::write_str("  identity merge: slots ");
+                early_console::write_hex(kern_slot as u64);
+                early_console::write_str(" + ");
+                early_console::write_hex(kerninfo_slot as u64);
+                early_console::write_str("\n");
+            }
+        }
+        }
 
         // Rebuild the RS slot's CPU context for the loaded entry — the same
         // call init_proc_and_boot makes for boot processes (the slot was
@@ -274,6 +321,11 @@ fn main() -> Status {
                     minix_kernel::proc::proc_nr::RS_PROC_NR,
                     EntrySpec::loaded(tx.pc, tx.sp, tx.ps_strings),
                 );
+            // Record the fresh root so the scheduler's address-space
+            // switch (C `switch_address_space(p)`, proc.c:349 — klib.S
+            // __switch_address_space 对位) installs it when the RS slot
+            // is dispatched. C 对位: `p_seg.p_cr3` (x86) / `p_ttbr` (ARM).
+            rs.p_seg.phys_root = tx.root;
             rs.trap_style = minix_kernel::PublicTrapStyle::FullContext;
         }
         {
@@ -285,13 +337,29 @@ fn main() -> Status {
 
         // Make both slots runnable — the production scheduler (switch_to_user)
         // picks by priority; blocking semantics converge either order.
+        // init_proc_and_boot stamps the boot-stamp flag set on boot
+        // processes (C: main.c:226 NO_PRIV|NO_QUANTUM, main.c:263-265
+        // VMINHIBIT|BOOTINHIBIT, main.c:272 PROC_STOP — "not scheduled
+        // until VM has set up a pagetable"). In THIS carrier the kernel
+        // boot loader already built TX's address space (the per-image
+        // root above), so the carrier stands in for the release half that
+        // VM's pagetable arm (C: pagetable.c:933 VMCTL_VMINHIBIT_CLEAR)
+        // and RS's service-up would perform: clear the WHOLE stamp set for
+        // the RS slot. Clearing PROC_STOP alone left TX carrying
+        // NO_PRIV|NO_QUANTUM|VMINHIBIT|BOOTINHIBIT — is_runnable() false
+        // forever, never enqueued, never dispatched (the silent no-TX
+        // this carrier hit on real machine).
         table.rts_unset(
             minix_kernel::proc::proc_nr::VM_PROC_NR,
             minix_kernel::proc::RtsFlagsBits::PROC_STOP,
         );
         table.rts_unset(
             minix_kernel::proc::proc_nr::RS_PROC_NR,
-            minix_kernel::proc::RtsFlagsBits::PROC_STOP,
+            minix_kernel::proc::RtsFlagsBits::PROC_STOP
+                | minix_kernel::proc::RtsFlagsBits::VMINHIBIT
+                | minix_kernel::proc::RtsFlagsBits::BOOTINHIBIT
+                | minix_kernel::proc::RtsFlagsBits::NO_PRIV
+                | minix_kernel::proc::RtsFlagsBits::NO_QUANTUM,
         );
     }
     early_console::write_str("  RX (vm) + TX (rs) slots runnable\n");
@@ -299,6 +367,14 @@ fn main() -> Status {
     // 8. Hand the CPU over — the production scheduler loop multiplexes the
     // two processes through the IPC exchange.
     early_console::write_str("  entering scheduler (switch_to_user)\n");
+    {
+        // [diag] kernel image base marker: switch_to_user's runtime VA —
+        // diff against the objdump -t file VA to symbolize fault rips
+        // (paired with the KernelPanic arm's dispatch_body print).
+        early_console::write_str("  marker: switch_to_user @ ");
+        early_console::write_hex(minix_kernel::switch_to_user as *const () as u64);
+        early_console::write_str("\n");
+    }
     minix_kernel::switch_to_user();
 }
 

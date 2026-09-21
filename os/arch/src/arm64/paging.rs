@@ -465,6 +465,31 @@ impl Paging for AArch64Paging {
         Self { root_paddr: root_phys.0, channel: PteChannel::KernelDm }
     }
 
+    fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
+        // L0 entries 256..512 = the TTBR1 region (VAs ≥
+        // 0xffff_0000_0000_0000, T1SZ=16): kernel text/data and the DM
+        // windows. This crate pins TTBR0_EL1 and TTBR1_EL1 to the SAME
+        // root page (`enable`), so the "two tables" split lives inside
+        // one 512-entry L0 and the upper half is exactly the kernel's.
+        // Raw entry copy — the entries may point at shared L1/L2/L3
+        // table pages, which is sound because TTBR0 walks (user VAs,
+        // entries 0..256) never touch the upper half (see trait doc).
+        for i in 256usize..512 {
+            let slot = (i as u64) * 8;
+            // SAFETY: both roots are 4KB-aligned page-table pages in RAM;
+            // the KernelDm direct map (pinned by `new_from_page` /
+            // `from_active_root`) makes every descriptor slot addressable.
+            // Same access pattern as `walk_alloc`; cache maintenance is
+            // not required before first use — the root is not loaded into
+            // any TTBR until a later `enable()`/`switch()`.
+            let entry =
+                unsafe { read_pte_dm(source_root.0 + slot, PteChannel::KernelDm) };
+            unsafe {
+                write_pte_dm(self.root_paddr + slot, entry, 0, PteChannel::KernelDm)
+            };
+        }
+    }
+
     /// Wrap an already-active L0 translation table root for VM-context access.
     ///
     /// Same wrapping semantics as `from_active_root`, but the handle's PTE

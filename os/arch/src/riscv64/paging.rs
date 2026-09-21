@@ -483,6 +483,27 @@ impl Paging for Riscv64Paging {
         Self { root_paddr: root_phys.0, channel: PteChannel::KernelDm }
     }
 
+    fn inherit_supervisor_half(&mut self, source_root: PhysBytes) {
+        // Sv39 L2 entries 256..512 = the canonical high half (VAs with
+        // bit 38 set): kernel text/data and the DM windows. Raw entry
+        // copy — the entries may point at shared L1/L0 table pages,
+        // which is sound because user mappings (VAs below 2^38) never
+        // touch the upper half (see trait doc).
+        for i in 256usize..512 {
+            let slot = (i as u64) * 8;
+            // SAFETY: both roots are 4KB-aligned page-table pages in RAM;
+            // the KernelDm direct map (pinned by `new_from_page` /
+            // `from_active_root`) makes every PTE slot addressable. Same
+            // access pattern as `walk_alloc`; no fence needed — the copy
+            // runs before the root is ever loaded into `satp`.
+            let entry =
+                unsafe { read_pte_dm(source_root.0 + slot, PteChannel::KernelDm) };
+            unsafe {
+                write_pte_dm(self.root_paddr + slot, entry, 0, PteChannel::KernelDm)
+            };
+        }
+    }
+
     /// Wrap an already-active Sv39 root page table for VM-context access.
     ///
     /// Same wrapping semantics as `from_active_root`, but the handle's PTE

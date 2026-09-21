@@ -325,10 +325,11 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(frame.ss);
             Console::write_str("\n");
             panic!(
-                "kernel exception vector {} at rip {:#x} errcode {:#x}",
+                "kernel exception vector {} at rip {:#x} errcode {:#x} [dispatch_body @ 0x{:x}]",
                 v.get(),
                 frame.rip,
-                frame.errcode
+                frame.errcode,
+                x86_trap_dispatch_body as *const () as usize
             );
         }
         ExceptionOutcome::VmPageFault => {
@@ -380,6 +381,20 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         }
         ExceptionOutcome::Signal(sig) => {
             let cur_nr = cur_nr.expect("Signal implies a user-origin exception");
+            // Console diagnostics for the signal-classified exception —
+            // same rationale as the KernelPanic arm's frame dump: which
+            // vector became which signal is not otherwise observable on
+            // real machine (the panic handler cannot render it).
+            {
+                use minix_plat::{EarlyConsole, CurrentEarlyConsole as Console};
+                Console::write_str("user exception: vector ");
+                Console::write_hex(vector as u64);
+                Console::write_str(" err ");
+                Console::write_hex(frame.errcode);
+                Console::write_str(" rip ");
+                Console::write_hex(frame.rip);
+                Console::write_str("\n");
+            }
             // Persist first: the signal manager's later SIGSEND delivery
             // builds the handler trampoline on top of the fault-time
             // register file (C: sig_proc reshapes p_reg, which holds the
@@ -551,6 +566,16 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             .get_mut(cur_nr)
             .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));
         minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
+        // Record the ENTRY style (C: every mpx.S soft-int entry records
+        // `p_kern_trap_style`; arch_system.c:585 consumes it at
+        // restore_user_context). A door-parked caller (blocked IPC)
+        // resumes through finish_and_restore's entry-style gate — without
+        // a fresh record the wake dispatch finds NoEntry and panics
+        // ("no entry trap style known", arch_system.c:597-598; observed
+        // on real machine waking a parked receiver, test-sysboot C-27).
+        // The int-33 gate pushes a full frame, so the style is
+        // FullContext — same record the carrier seeds for the first run.
+        caller.trap_style = TrapStyle::FullContext;
     }
 
     // K20 (caller-by-nr): no laundering — the caller travels as its nr and
@@ -571,19 +596,44 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     let r1 = frame.rax; // src/dst endpoint, or SENDA count
     let r2 = frame.rbx; // message pointer, or SENDA table pointer
     let is_senda = call_nr == (crate::ipc::IpcCall::SendA as i32);
+    // Body-less calls: the stubs trap with rbx = 0 (no message buffer) —
+    // C `ipc_minix_kerninfo.S:8-10` zeroes eax/ebx before `int`, and the
+    // notify stub passes 0 the same way ("notify without a message body").
+    // KernInfo's result returns through the secondary RBX channel; the
+    // service arm documents "No message buffer is read or written"
+    // (syscall.rs). Copying 64 bytes from VA 0 was the SIGSEGV this door
+    // delivered to every birth-time kerninfo query on real machine
+    // (test-sysboot C-27 carrier, first real-machine birth through this
+    // gate).
+    let is_bodyless =
+        is_senda
+            || call_nr == (crate::ipc::IpcCall::KernInfo as i32)
+            || call_nr == (crate::ipc::IpcCall::Notify as i32);
     {
         let caller = table
             .get_mut(cur_nr)
             .expect("int-33 IPC: caller slot must exist");
         caller.p_defer.r2 = r1 as usize;
         caller.p_defer.r3 = if is_senda { r2 as usize } else { 0 };
+        // C do_sync_ipc's `(message *) r3` — the caller's message buffer
+        // reaches the engine through `p_delivermsg_vir` (C mini_receive
+        // stores m_buff_usr there, proc.c:983; the syscall-leg kernel_call
+        // stores m_user, system.c:141). The door previously dropped rbx, so
+        // a parked receiver's wake delivery copied the message to a stale
+        // syscall buffer and the receive buffer kept its pre-call content
+        // (test-sysboot C-27: rx read Message::default poison, then its
+        // sendnb(m_source) failed with EDEADSRCDST on the garbage source).
+        // SENDA carries the table pointer in rbx instead (p_defer.r3 above).
+        if !is_senda {
+            caller.p_delivermsg_vir = VirBytes(r2);
+        }
     }
 
     // Copy the user message (kernel-side copy, TOCTOU defense — the same
     // shape as kernel_call's own copy). SENDA carries no message buffer:
     // mini_senda reads entries from the user table directly (proc.c:683).
     let mut msg = minix_types::Message::default();
-    if !is_senda {
+    if !is_bodyless {
         use crate::ipc::UserCopy as _;
         match crate::ipc::KernelUserCopy.copy_msg_from_user(VirBytes(r2)) {
             Ok(m) => msg = m,
