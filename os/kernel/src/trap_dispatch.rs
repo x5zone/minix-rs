@@ -917,6 +917,47 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                 if let Some(ctx) = proc.p_vm_suspend.as_mut() {
                     ctx.saved_m_user = Some(m_user.0);
                 }
+                // C-3 迭代8 取证：停车时打印挂起态与 VMREQUEST（一次性）——
+                // 判别"挂起后未入队/未通知"导致 VM 永不服务的死等。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    let (vmreq, state_pending) = table
+                        .get(cur_nr)
+                        .map(|p| {
+                            (
+                                p.p_rts_flags
+                                    .is_set(crate::proc::RtsFlagsBits::VMREQUEST),
+                                p.p_vm_suspend
+                                    .as_ref()
+                                    .is_some_and(|c| {
+                                        matches!(
+                                            c.state,
+                                            crate::vm::VmSuspendState::Pending
+                                        )
+                                    }),
+                            )
+                        })
+                        .unwrap_or((false, false));
+                    Console::write_str("nk4a: sys-susp vmreq=");
+                    Console::write_str(if vmreq { "y" } else { "n" });
+                    Console::write_str(" pending=");
+                    Console::write_str(if state_pending { "y" } else { "n" });
+                    Console::write_str("\n");
+                }
+                // C RTS_SET 的 dequeue 半：挂起后进程必须移出就绪队列，否则
+                // 调度器对已停排进程 spin-pick（dequeue_if_blocked 文档记录
+                // 的同症状；NK4-A C-3 真机：RS 挂起后 pick->2 刷屏，
+                // 2026-09-22）。
+                table.dequeue_if_blocked(cur_nr);
+                // C kernel_call_finish 的 VmSuspend 半（system.c:60-63 +
+                // D-20 vm_enqueue_and_notify_vm）：挂起上下文入 VM 请求链并
+                // 以 SIGKMEM 通知 VM。快路径不走 finish，缺此步则 VM 永不
+                // 服务、RS 永久 Pending（真机：sys-susp 后系统静默）。
+                table.vm_enqueue_and_notify_vm(
+                    cur_nr,
+                    unsafe { crate::priv_table_boot_unchecked() },
+                );
             }
             crate::scheduler_loop(crate::current_cpu_id());
         }

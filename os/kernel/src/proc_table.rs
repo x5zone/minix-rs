@@ -330,6 +330,12 @@ impl ProcessTable {
                     panic!("vm_enqueue_and_notify_vm: wake-up notify to VM failed: {e:?}");
                 }
             }
+            // C mini_notify 尾部的入队半：notify 清 RTS_RECEIVING（primitive
+            // clear）后必须补 enqueue，否则 VM 可调度却永不在就绪队列——
+            // do_memory 不运行、RS 的 memreq 永不完成（NK4-A C-3 真机：
+            // sys-susp 后系统静默，2026-09-22；dequeue_if_blocked 文档
+            // 记录的对偶症状）。
+            self.enqueue_if_woken(crate::proc::proc_nr::VM_PROC_NR);
         }
     }
 

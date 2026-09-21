@@ -593,8 +593,8 @@ fn kernel_call_dispatch_inner(
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static KCALL_LOG: AtomicUsize = AtomicUsize::new(0);
-        // 跳过 VM(caller 8) 的 exec 阶段调用，聚焦其后的服务调用流。
-        if caller_nr.0 != 8 && KCALL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 64 {
+        // 只记 RS(caller 2) 的调用——定位其用户态循环点。
+        if caller_nr.0 == 2 && KCALL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 48 {
             use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
             Console::write_str("nk4a: kc");
             Console::write_hex(KCALL_LOG.load(AtomicOrd::Relaxed) as u64);
