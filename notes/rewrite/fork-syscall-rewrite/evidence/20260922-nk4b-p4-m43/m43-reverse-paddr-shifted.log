@@ -1,0 +1,38 @@
+# NK4-B P4 M4.3 反例2：paddr 整体 +2MiB 的 riscv64 工件（A1 必须当场红）
+# 工件构造: python3 把 release/kernel 的四条 PT_LOAD p_paddr 各 +0x200000
+#   （VMA / entry / 段体不动），见 m43-raw-paddr-shifted-manual.log 的原始跑
+# 命令: SKIP_BUILD=1 RUN=m43revP2 TIMEOUT_BOOT=25 bash os/qemu-tests/
+#       test-kernel-image-riscv64.sh tmp/nk4b-m43/kernel-paddr-shifted
+# 实测: EXIT=1；A1 FAIL(期望 0x80200000 实得 0x80400000)、A2 PASS、A3 PASS
+# 结论: next-address 取自工件最低 PT_LOAD paddr ⇒ A1 对可装载工件是敏感的
+expected next-address (from riscv64.ld): 0x0000000080200000
+qemu-system-riscv64: terminating on signal 15 from pid 1415074 (timeout)
+--- A1 固件跳入地址 = .ld 的 KERNEL_PHYS_BASE：
+    FAIL（期望 0x0000000080200000，实得 '0x0000000080400000'）
+--- A2 镜像入口横幅出现：
+    PASS
+--- A3 横幅排在 Next Address 之后（行号 57 > 40）：
+    PASS
+### TEST_RESULT: FAIL test-kernel-image-riscv64 ###
+--- 成因提示：入口横幅已出现，坏在地址/顺序对账（A1/A3）
+--- 串口尾部 20 行：
+Domain0 Region02          : 0x0000000080000000-0x000000008003ffff M: (R,X) S/U: ()
+Domain0 Region03          : 0x0000000000000000-0xffffffffffffffff M: (R,W,X) S/U: (R,W,X)
+Domain0 Next Address      : 0x0000000080400000
+Domain0 Next Arg1         : 0x000000008fe00000
+Domain0 Next Mode         : S-mode
+Domain0 SysReset          : yes
+Domain0 SysSuspend        : yes
+
+Boot HART ID              : 0
+Boot HART Domain          : root
+Boot HART Priv Version    : v1.12
+Boot HART Base ISA        : rv64imafdch
+Boot HART ISA Extensions  : time,sstc
+Boot HART PMP Count       : 16
+Boot HART PMP Granularity : 4
+Boot HART PMP Address Bits: 54
+Boot HART MHPM Count      : 16
+Boot HART MIDELEG         : 0x0000000000001666
+Boot HART MEDELEG         : 0x0000000000f0b509
+### minix-rs kernel image: entry reached (boot-shim handoff not wired yet — NK1/OQ-N6); halting

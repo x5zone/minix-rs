@@ -1689,20 +1689,22 @@ M4.3 的装载实形冲突，回来改 `_start` 而不是改判据」——本�
 第三条「`a0` = hartid」**本会话没观测**（镜像不打印寄存器），只能算 SBI
 约定 + 日志里的 `Boot HART ID : 0` 作旁证，不得当已验证事实引用。
 
-载体脚本已落盘：`os/qemu-tests/test-kernel-image-riscv64.sh`（新增 149 行，
+载体脚本已落盘：`os/qemu-tests/test-kernel-image-riscv64.sh`（163 行，
 **不注册进 `run_all.sh`**，接线归 P6/T6.1）。三条断言与它们的边界：
 
 | 断言 | 内容 | 实测 | 边界（写进脚本头注释） |
 |------|------|------|------------------------|
-| A1 | 固件 `Domain0 Next Address` = `.ld` 的 `KERNEL_PHYS_BASE`（从脚本现取，不写第二份） | PASS | **不看工件内容**（反向实验里喂 x86_64 ELF 仍 PASS），它只护「两个基址声明不漂」 |
-| A2 | 镜像入口横幅出现在串口 | PASS | 唯一对工件敏感的断言；横幅文字取自 `.rodata`，段装错就读不出来 |
+| A1 | 固件 `Domain0 Next Address` = `.ld` 的 `KERNEL_PHYS_BASE`（从脚本现取，不写第二份） | PASS | 只护「产物最低装载址 ↔ `.ld` 的 PHYS_BASE」不互漂（VIRT 侧由 L0/L3b/L4 护）。它对**被拒装的工件**会假 PASS（x86_64 ELF → 回退平台约定址 0x80200000 恰等值）；对**能装进来的工件**则确实敏感（paddr 搬移实验下当场 FAIL） |
+| A2 | 镜像入口横幅出现在串口 | PASS | 工件被拒装时唯一会当场红的断言；横幅文字取自 `.rodata`，段装错就读不出来 |
 | A3 | 横幅行号（57）> Next Address 行号（40） | PASS | 没这条，A2 可被日志里别处的 echo 污染 |
 
 验证次数（铁律：真机两次独立复跑）：`m43a`（含构建）/ `m43b`（含构建）/
-`m43c`（改完脚本注释后）/ `m43d`（提交态）四轮 EXIT=0、四份串口日志 md5 逐个
-相同（`e2e963c5ff44c0b6eccf3a2f4985c8df`）；反向判别喂 x86_64 工件得 **EXIT=1，
-A2/A3 FAIL、A1 仍 PASS**。证据全部在 `evidence/20260922-nk4b-p4-m43/`
-（`m43-serial-m43{a,b,c,d}.log`、`m43-reverse-x86-artifact.log`、
+`m43c`、`m43d`（改完脚本注释后）/ `m43e`、`m43f`（评审闭环后的提交态）
+六轮 EXIT=0、六份串口日志 md5 逐个相同
+（`e2e963c5ff44c0b6eccf3a2f4985c8df`）。反向判别两格（详见下一节矩阵）都
+**EXIT=1**。证据全部在 `evidence/20260922-nk4b-p4-m43/`
+（`m43-serial-m43{a..f}.log`、`m43-reverse-x86-{artifact,v2}.log`、
+`m43-reverse-paddr-shifted.log`、`m43-raw-paddr-shifted-manual.log`、
 `m43-exploratory-first-contact.log`、`m43-prereqs-{host,container}.log`）。
 
 ### 事实二：M4.1 的前置件探错了包名（本节当场更正）
@@ -1740,3 +1742,80 @@ U-Boot 腿（`fatload → bootelf`）仍需要两个包：`u-boot-tools` + `u-bo
    依赖它，只让 `test-riscv64-uboot.sh` 从 SKIP 变可跑，补齐「对照」这一格）；
 2. 不装，把 U-Boot 腿标为「既存 SKIP、非本弧线关键路径」，本弧线只交 OpenSBI 腿；
 3. CI 镜像加包（成本高：连 qemu 都不在该镜像里，需重建 `minix-ci`）。
+
+### M4.3 评审闭环节（2026-09-22）
+
+对 `d63bd852f` + `d16dedcf4` 的 CodeReview 结论：**需修后交付**（P1×1 + P2×4，
+全在口径与证据锚点，无一条涉及判据放松）。逐条闭环如下。
+
+**P1：`Domain0 Next Address` 的机制我写反了。** 上一节写的是「A1 不看工件内容 /
+next-address 是 QEMU 约定值」，据此得出「A1 不能证明工件正确」。结论方向没错
+（保守），但**机制是错的**。我没有采信评审的说法，自己复现了反证：用 python
+把成品镜像四条 `PT_LOAD` 的 `p_paddr` 整体 `+0x200000`（VMA / entry / 段体不动），
+裸 qemu 一跑：
+
+```
+Domain0 Next Address      : 0x0000000080400000     # 跟着工件搬移后的 paddr 走
+横幅出现次数               : 1                       # ELF 装载成功，照打
+```
+
+即 next-address = **工件自己的最低装载物理址**；喂 x86_64 工件时 A1 仍 PASS 是
+因为 QEMU 拒装后回退到平台约定址 `0x80200000`，而该值恰好等于 `.ld` 的
+`KERNEL_PHYS_BASE`——巧合命中，不是「与工件无关」。据此把脚本头注释与上一节
+表格改成三条边界，并补了第三格反例，构成三格矩阵：
+
+| 喂进来的工件 | A1 | A2 | A3 | 总 | 这一格证什么 |
+|--------------|----|----|----|----|--------------|
+| 正常 riscv64 生产镜像（六轮） | PASS | PASS | PASS | EXIT=0 | 装载链通 |
+| x86_64 生产工件（被拒装） | **假 PASS** | FAIL | FAIL | EXIT=1 | A1 有假绿面，不能单用 |
+| paddr 整体 +2MiB 的 riscv64 镜像 | **FAIL**(实得 0x80400000) | PASS | PASS | EXIT=1 | A1 对可装载工件确实敏感；也证明执行视图不依赖绝对址 |
+
+证据：`m43-reverse-x86-{artifact,v2}.log`、`m43-reverse-paddr-shifted.log`、
+`m43-raw-paddr-shifted-manual.log`。
+
+**P2-1（U-Boot 腿的语义我当成"共同约定"写了）**：上一节写「两条腿共同的入口约定
+是跳镜像物理基址首字节」——U-Boot 腿本轮一次没跑，而且 `bootelf` 按 ELF 的
+**e_entry** 跳，本镜像的 e_entry 是高半 VA（`satp=0` 下直跳即陷）。已把该段改成
+「本脚本只证 OpenSBI 腿」，并把「U-Boot 腿真接时是否需要 entry 侧适配」登记到
+下面的上交裁决（不自行定案）。
+
+**P2-2（"两个基址"用词）**：A1 只取 `KERNEL_PHYS_BASE`，`KERNEL_VIRT_BASE` 不参与；
+而「两个基址」在本仓是 VIRT+PHYS 的专名，容易被读成 A1 同时护两者。表格已改。
+
+**P2-3（证据锚点不可复跑，我连踩两次）**：`m42-check-layout-all-after-p2closure.log`
+头注释里写的「`grep -c PASS` = 40」只对命令原始 stdout 成立，对归档文件跑是 42。
+第一次修成「`grep -c '\] PASS'` = 39」，实测**又是错的**（得 40/1）——因为那一行
+注释本身含 `] PASS` 字样，被自己计入。最终改成行首锁定输出格式的
+`grep -cE '^ {2}\[[L][0-9a-c]*\] PASS'` → 对归档文件与对原始 stdout **同为 39/0**，
+且头注释自身不会被计入。教训：**锚点要么锁格式，要么锁字串，不能锁"长得像格式的
+字串"**；写锚点的人必须把锚点在自己写的注释上再跑一遍。
+
+**P2-4（首次接触日志无自述头）**：`m43-exploratory-first-contact.log` 与
+`m43-serial-m43a.log` 逐字节相同，已补 `#` 头写明「它是脚本落盘**之前**那次手摸跑的
+时间戳证据，判据以 m43{a..f} 为准」。
+
+**P2-5（死变量 `found`）**：轮询里写了不读。改成 `qemu_died_early` 并真正接入失败
+提示。第一版提示又出错：paddr 反例下横幅明明出现了，脚本却说「横幅未出现」——
+改成三档（先看 A2，再看 `qemu_died_early`），实测两格反例的提示都对。
+
+改完的提交态复跑：`m43e` / `m43f` 两轮 EXIT=0、六份串口日志 md5 一致；两格反例
+EXIT=1 且提示各就各位。脚本 149 行 → 163 行（表格与上一节数字已同步）。
+
+**本次评审同时"已实测确认"的几项**（记下来免得后人重验）：Stage 2 的 sed 不会
+误命中 `.ld` 注释里那个同名常量（注释行有 `*` 前缀且无结尾分号）；A3 缺行时不假绿
+（双 `[ -n ]` 保护实测生效）；脚本内的 `pkill -f '[q]emu-system'` 不自伤（脚本
+cmdline 不含该串）；失败路径退出码无假绿（构建失败/日志缺失=1，ELF/qemu 缺失=2 SKIP）；
+`run_all.sh` 用显式清单无 glob，「不注册」属实；本 commit 未触碰任何既有载体脚本、
+`check-layout.sh` 与 `os/etc/rc`。
+
+### 上交裁决（新增一条，与前置件那条并列）
+
+U-Boot 腿（`fatload virtio 0 ${loadaddr} boot.elf` → `bootelf ${loadaddr}`）按
+ELF 的 `e_entry` 跳转。既有 aarch64/riscv64 载体用这个机制能过，是因为它们的
+entry 是平坦物理址（例：`hello-boot-riscv64` 的 `e_entry = 0x80200000`，
+vaddr = paddr = entry 三者同一）。而生产镜像按 M4.2 的设计 entry 就是高半 VA，
+`satp=0` 下 `bootelf` 直跳必陷。三个方向（**本会话不下结论，也没跑过 U-Boot 腿**）：
+(a) 给 `.ld` 增加一个平坦 entry 蹦床（`_start` 在低址，再跳高半），(b) U-Boot 腿
+只装载不跳转（改 `boot.scr` 用 `go`/自写交接），(c) 本弧线放弃 U-Boot 腿、三架构
+统一走 OpenSBI/boot-shim 一条装载链。这条与「装 mkimage/u-boot-qemu」那条前置件
+裁决可以合并处理。

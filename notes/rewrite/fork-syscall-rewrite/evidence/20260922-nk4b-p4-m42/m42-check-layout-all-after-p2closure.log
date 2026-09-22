@@ -3,7 +3,14 @@
 # 动机: 评审提出 4 条 P2 引用漂移, 自查追加 1 条 (riscv64.ld 头注释 link.ld 行号),
 #       其中一处改动落在 riscv64.ld 本体 (纯注释), 故重跑全部三架构断言而非仅 riscv64。
 # 结果: CL-EXIT=0; 39 条断言全 PASS, FAIL=0
-#       (grep -c PASS = 40 = 39 条断言 + 末行 CHECK-LAYOUT=PASS 汇总)
+#       可复跑锚点（对本归档文件与对命令原始 stdout 同为 39/0）:
+#         grep -cE '^ {2}\[[L][0-9a-c]*\] PASS'  → 39
+#         grep -cE '^ {2}\[[L][0-9a-c]*\] FAIL'  → 0
+#       为何不能图省事写 grep -c 'PASS'：本头注释自己就含 PASS/FAIL 字样，会被
+#       同计。实测教训：上一版写的 grep -c PASS = 40 只对命令 stdout 成立，
+#       对本文件跑出来是 42；改成 grep -c '\] PASS' 后本文件又得 40/1（因为
+#       连那一行注释本身也被计入）。必须行首锁定格式，不锁定字串。
+#       （勘误 2026-09-22，M4.3 评审闭环节；命令输出本体未改，只改头注释。）
 # ---
 == x86_64：/home/xzhao/github/minix-rs/os/target/x86_64-unknown-none/release/kernel
   [L0] PASS  x86_64.ld 里 KERNEL_HIGH_BASE/KERNEL_PHYS_BASE 各恰好一处声明且等于 0xffff800000000000/0x200000（命中 1/1 处：ffff800000000000 | 200000）

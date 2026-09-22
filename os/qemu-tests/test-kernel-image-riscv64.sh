@@ -4,27 +4,31 @@
 # 断言三件事，全部围绕「固件把生产内核镜像装载到位并交出去」：
 #   A1 固件跳入地址 = 镜像物理基址：OpenSBI 打印的 `Domain0 Next Address`
 #      必须等于 `os/kernel-image/riscv64.ld` 里的 `KERNEL_PHYS_BASE`。镜像
-#      入口是高半 VA（0xFFFFFFC000000000），固件不可能直接跳它。反例实验
-#      没护住的那一面也得写清：本条只反映 QEMU 约定的 next-address 与 .ld
-#      声明一致，它不看工件内容（喂一份 x86_64 ELF 进来 A1 仍 PASS），所以
-#      「段确实被装到 paddr」靠 A2（横幅文字来自 .rodata，装错就读不出来）
-#      与静态侧 check-layout.sh 的 L3c/L4 保证，不靠 A1。
+#      入口是高半 VA（0xFFFFFFC000000000），固件不可能直接跳它。
+#      本条的机制已用实验钉住（不是推测）：把成品镜像的四条 PT_LOAD
+#      `p_paddr` 整体 +2MiB 后重跑，固件就改打印 `0x80400000` 且横幅照打
+#      ——即 next-address 取自**工件自己的最低装载物理址**。但它对「被拒装
+#      的工件」会假 PASS：喂 x86_64 ELF 时 QEMU 装不进回退到平台约定址
+#      `0x80200000`，恰与 `.ld` 同值。所以 A1 只护「产物最低装载址 与
+#      `.ld` 的 KERNEL_PHYS_BASE 不互相漂」（VIRT 侧由静态层 L0/L3b/L4 护），
+#      不能单拿它当「工件正确」的证据；那一格靠 A2。
 #   A2 入口确实被执行：镜像横幅（`os/kernel-image/src/main.rs` 的
-#      `rust_image_main` 第一行输出）出现在串口。本条是唯一对工件敏感的断言。
+#      `rust_image_main` 第一行输出）出现在串口。工件被拒装时它是唯一会
+#      当场红的断言（横幅文字取自 `.rodata`，段没装对就读不出来）。
 #   A3 顺序：横幅必须排在 `Domain0 Next Address` 之后。没有这条，A2 可能被
 #      「日志里别处的 echo」污染，不构成「负载被跳入后自己打印」的证据。
 #
-# 装载方式对照 `test-timer-irq-riscv64.sh`（同一条 `-bios default -kernel`）
-# 与 `test-riscv64-uboot.sh` 的 `fatload → bootelf`：这里走前者，因为后者
-# 需要 `mkimage` 与 U-Boot 固件 blob（本机宿主与 minix-ci 容器都没有，见
-# NK4B-WORKLOG「P4 M4.1/M4.3」的上交裁决）。两条腿共同的入口约定是「跳
-# 镜像物理基址的首字节」，A1 断言的就是这一条；段拷贝语义两边都由 ELF 的
-# PT_LOAD paddr 驱动（静态侧由 check-layout.sh L3c/L4 钉住）。
-#
+# 装载方式对照 `test-timer-irq-riscv64.sh`（同一条 `-bios default -kernel`）。
+# 本脚本只证 OpenSBI 腿。另一条对照腿 `test-riscv64-uboot.sh` 本轮**未跑**
+# （缺 `mkimage` 与 U-Boot blob，见 NK4B-WORKLOG「P4 M4.1/M4.3」的上交裁决），
+# 而且它的语义与本腿不同：`bootelf` 按 ELF 的 **e_entry** 跳，而本镜像的
+# e_entry 是高半 VA（satp=0 下直跳即陷）。也就是说 U-Boot 腿真接的时候可能
+# 需要 entry 侧适配，那是装载链的待裁决项，本脚本不替它下结论。
 # 为什么高半镜像能在分页关闭（satp=0）的情况下从物理基址跑起来：riscv64
 # 默认 medany 代码模型，`la`/符号引用被链接器松弛成 PC 相对的 `auipc`+`addi`，
-# 整个镜像内的引用都按实际 PC 解析（A1/A2/A3 三合一本机三轮实测成立，反向
-# 实验则如预期卡在 A2/A3）。
+# 整个镜像内的引用都按实际 PC 解析（A1/A2/A3 三合一本机四轮实测成立，且
+# paddr 整体搬移实验下横幅仍照打——进一步佐证执行视图不依赖绝对地址；
+# 喂 x86_64 工件的反例则如预期卡在 A2/A3）。
 #
 # 本脚本**不注册进 run_all.sh**（按 NK4B-TODO §6，接线归 P6）。
 # 临时文件落在 target 树内，不用 `mktemp`（它会硬写 /tmp，受限沙箱下报假
@@ -100,13 +104,14 @@ trap cleanup EXIT
 
 # 横幅出现即收；镜像停在 `_start` 的 `wfi` 循环里不会自己退出，所以必须
 # 主动 kill（与 test-timer-irq-riscv64.sh 同一处理方式）。
-found=0
+# `qemu_died_early` 只用于失败时多给一句区分（「QEMU 提前退出」与
+# 「跑到了超时但横幅没出现」是两种不同的坏），不参与任何断言判定。
+qemu_died_early=0
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
     if [ -f "$SERIAL_LOG" ] && grep -qaF "$MARK" "$SERIAL_LOG"; then
-        found=1
         break
     fi
-    kill -0 "$QEMU_PID" 2>/dev/null || break
+    kill -0 "$QEMU_PID" 2>/dev/null || { qemu_died_early=1; break; }
     sleep 1
 done
 kill "$QEMU_PID" 2>/dev/null || true
@@ -144,6 +149,15 @@ if [ "$A1$A2$A3" = "111" ]; then
 fi
 
 echo "### TEST_RESULT: FAIL test-kernel-image-riscv64 ###"
+# 提示分三档，不能只按 qemu_died_early 二分：反例实验里出现过「横幅已出现、
+# 坏在 A1」的形态，那时若说「横幅未出现」就是假提示。
+if [ "$A2" = 1 ]; then
+    echo "--- 成因提示：入口横幅已出现，坏在地址/顺序对账（A1/A3）"
+elif [ "$qemu_died_early" = 1 ]; then
+    echo "--- 成因提示：QEMU 在横幅出现前就退出了（看下面尾部的报错）"
+else
+    echo "--- 成因提示：QEMU 跑到超时，横幅未出现"
+fi
 echo "--- 串口尾部 20 行："
 tail -20 "$SERIAL_LOG"
 exit 1
