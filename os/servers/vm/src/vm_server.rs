@@ -1780,6 +1780,27 @@ impl VmServer {
         MessageDispatcher::dispatch_procctl(&mut self.ctx, caller, request)
     }
 
+    /// C pagefaults.c `handle_pagefault` 的"不可服务"终局收口
+    /// （unknown region :99-104、ro-map 写 :112-116、map_pf 失败
+    /// :146-151 三处共享的同一段尾巴）：`sys_kill(SIGSEGV)` 投递给
+    /// 故障进程 + `sys_vmctl(VMCTL_CLEAR_PAGEFAULT)` 清其挂起位。
+    /// 两条缺一不可——C 对两者都 `panic` on error；漏清挂起位则故障
+    /// 进程永停 RTS_PAGEFAULT（NK4-A Task A 真机 c17a：cr2=0 的
+    /// noaddr 出口只回 Error 不清挂起 → 全系统静默死锁，2026-09-22）。
+    /// 失败仅审计不 panic（[ARCH: A-14] fail-closed 姿态，同 wro 臂旧实现）。
+    fn pf_fail_segv(&mut self, proc_endpoint: Endpoint) {
+        if let Err(e) = self.ctx.gateway.borrow_mut()
+            .sys_kill(proc_endpoint, minix_types::SIGNAL_SEGMENT_VIOLATION)
+        {
+            let _ = &e;
+            audit_log!("[VM PF] SIGSEGV delivery failed: {e:?}");
+        }
+        if let Err(e) = self.ctx.gateway.borrow_mut().sys_vmctl_clear_pagefault(proc_endpoint) {
+            let _ = &e;
+            audit_log!("[VM PF] clear_pagefault failed: {e:?}");
+        }
+    }
+
     /// Pagefault dispatch — decodes VmPagefaultIn from Message, delegates to cow_exec_pf.
     /// C (main.c:147-156): do_pagefaults(&msg); continue;
     // NK4-A Task A 探针（task1-close 裁决删除）：mock 门在本 crate 未声明
@@ -1838,17 +1859,10 @@ impl VmServer {
         if request.write
             && !proc.regions().find(fault_addr).is_some_and(|r| r.is_writable())
         {
-            if let Err(e) = self.ctx.gateway.borrow_mut()
-                .sys_kill(proc_endpoint, minix_types::SIGNAL_SEGMENT_VIOLATION)
-            {
-                let _ = &e;
-                audit_log!("[VM PF] SIGSEGV delivery failed: {e:?}");
-            }
-            if let Err(e) = self.ctx.gateway.borrow_mut().sys_vmctl_clear_pagefault(proc_endpoint) {
-                let _ = &e;
-                audit_log!("[VM PF] clear_pagefault failed: {e:?}");
-            }
             pf_exit!("wro");
+            // C: pagefaults.c:112-116 — SIGSEGV + CLEAR_PAGEFAULT 收口
+            // （原内联两段与 pf_fail_segv 同体，提取共用不改语义）。
+            self.pf_fail_segv(proc_endpoint);
             return VmReply::Error(VmError::AccessViolation);
         }
 
@@ -1862,7 +1876,13 @@ impl VmServer {
         let region = match regions.find_mut(fault_addr) {
             Some(r) => r,
             None => {
+                // NK4-A Task A 修复（C pagefaults.c:89-105 对位）：
+                // unknown region 的 fault 不可服务——SIGSEGV +
+                // CLEAR_PAGEFAULT 收口后才返回。旧实现只回
+                // Error(InvalidAddress)，挂起位无人清，故障进程永停
+                // RTS_PAGEFAULT（真机 c17a：cr2=0 → 全系统静默死锁）。
                 pf_exit!("noaddr");
+                self.pf_fail_segv(proc_endpoint);
                 return VmReply::Error(VmError::InvalidAddress);
             }
         };
@@ -1920,7 +1940,12 @@ impl VmServer {
                         proc.inc_major_fault()
                     }
                     crate::cow_exec_pf::PagefaultAction::AccessViolation => {
+                        // C map_pf 返回 EFAULT → pagefaults.c:144-151
+                        // "pagefault not handled"：SIGSEGV + 清挂起。
+                        // 旧实现只计数返回 Ok，挂起位永不清（同 noaddr
+                        // 缺陷类的未观测分支）。
                         pf_exit!("accvio");
+                        self.pf_fail_segv(proc_endpoint);
                     }
                     crate::cow_exec_pf::PagefaultAction::Handled
                     | crate::cow_exec_pf::PagefaultAction::MappedNewPage
@@ -1957,6 +1982,9 @@ impl VmServer {
                 crate::bootmark::mark(&alloc::format!(
                     "nk4a: vm-pf err {:?}\n", e
                 ));
+                // C pagefaults.c:144-151 — 服务失败同属"不可服务"终局：
+                // SIGSEGV + 清挂起（旧实现只回 Error，挂起位不清）。
+                self.pf_fail_segv(proc_endpoint);
                 VmReply::Error(VmError::AccessViolation)
             }
         }
@@ -3042,6 +3070,78 @@ mod tests {
                     gw.clear_pagefaults.borrow().as_slice(),
                     &[ep],
                     "kernel pagefault suspension must be cleared"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn test_pagefault_unknown_region_sigsegv_and_clears_park() {
+        // NK4-A Task A 防回归（C pagefaults.c:89-105 对位）：不属于任何
+        // region 的 fault 必须 SIGSEGV + CLEAR_PAGEFAULT 收口。修复前
+        // noaddr 出口只回 Error(InvalidAddress)——下面两条 mock 网关断言
+        // 皆为空，故障进程滞留 RTS_PAGEFAULT（真机 c17a：cr2=0 全系统
+        // 静默死锁）。既有 wro 测试只覆盖"写只读 region"路径，无断言
+        // 触及 unknown region 出口——判别性在此。
+        use crate::region::{VirRegion, VrFlags};
+        with_test_mock_base(|| {
+            let mut server = make_test_vm_server();
+            server.init();
+
+            let table = VmProcTable::get_global();
+            let slot = UserSlot::new(73);
+            unsafe { table.reset_slot(slot); }
+            let empty = table.get_empty(slot).unwrap();
+            let ep = Endpoint::from_generation_slot(1, 73);
+            let mut active = empty.activate(ep);
+            active.init_page_table().unwrap();
+            active.init_regions();
+            drop(active);
+            {
+                let mut proc = table.get_active(slot).unwrap();
+                let mut region = VirRegion::new(
+                    VirBytes(0x4000_0000),
+                    VirBytes(0x4000),
+                    VrFlags::ANON | VrFlags::WRITABLE,
+                );
+                region.def_memtype = Some(&crate::memtype::MEM_TYPE_ANON);
+                proc.regions_mut().insert(region).unwrap();
+            }
+
+            let mock = alloc::rc::Rc::new(core::cell::RefCell::new(
+                crate::kernel_gateway::MockGateway::new(),
+            ));
+            server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(SharedMockGateway(alloc::rc::Rc::clone(&mock)))
+                    as alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>,
+            ));
+
+            // 读故障 @0x0：不落任何 region（真机 c17a 的 cr2=0 形态）。
+            let mut msg = Message::default();
+            msg.m_source = ep;
+            msg.m_type = minix_types::VM_PAGEFAULT as i32;
+            let mut pf = minix_types::ipc::MessVmPagefault::default();
+            pf.vpf_addr = 0x0;
+            pf.vpf_flags = 0;
+            unsafe {
+                msg.m_u.m_vm_pagefault = pf;
+            }
+            let kernel_status = IpcStatus { flags: 1 << 16 };
+            let action = server.dispatch_on_msg(&msg, &kernel_status, UserSlot::new(0));
+            assert!(matches!(action, DispatchAction::NoReply));
+            {
+                let gw = mock.borrow();
+                assert_eq!(
+                    gw.kills.borrow().as_slice(),
+                    &[(ep, minix_types::SIGNAL_SEGMENT_VIOLATION)],
+                    "unknown-region fault must SIGSEGV the faulting process \
+                     (C pagefaults.c:99-101)"
+                );
+                assert_eq!(
+                    gw.clear_pagefaults.borrow().as_slice(),
+                    &[ep],
+                    "unknown-region fault must clear the RTS_PAGEFAULT park \
+                     (C pagefaults.c:102-104)"
                 );
             }
         });
