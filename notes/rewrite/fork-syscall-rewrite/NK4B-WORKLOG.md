@@ -708,4 +708,115 @@ minix-arch 241 passed / 0 failed（与 P0 基线逐项相等）；
 副本与注入诱饵的中间日志已清理（中间那一格「诱饵行新旧对比」的日志被后面的
 四格矩阵取代，已删），工作树只留三个文件的改动。
 
+## P3 M3.3 — boot-shim 在 aarch64 上装载生产镜像（设计要点先行，实现与实测随后追加）
+
+任务书判据（NK4B-TODO §3 M3.3）：AAVMF 下 shim 打印
+`boot-shim: kernel loaded (entry staged)` 与 `boot-shim: 12 boot modules loaded`
+（两行现成的路标，`os/boot-shim/src/uefi_helpers.rs:179,182`）。
+只到「装载完成」，不包括「跳进内核」——那是 M3.4。
+
+### 两个前置事实（先跑再写设计，不凭常识）
+
+1. **12 个装机模块全部能在 `aarch64-unknown-none` 下构建**（逐个
+   `cargo build -p <pkg> --target aarch64-unknown-none --release`，全部退出码 0，
+   清单见 `evidence/…/m33-probe-modules.txt`）。否则 shim 根本打不出
+   「12 boot modules loaded」，本里程碑得先修模块。
+2. **内核侧 `arch_boot` 的 aarch64 实现不是桩**
+   （`os/kernel/src/lib.rs:223-241`：与 x86_64 同形，走 `AArch64Paging` +
+   `AArch64HigherHalf::jump_to_kmain`，并带 NK4-A 的那条 KernelInfo 收进
+   .bss 的修复）。意义：shim 过完两个路标后会真的跳进去，M3.3 不拦它也不修它，
+   卡在那里属于 M3.4 的正常现场（记录时不得把它当作 M3.3 失败）。
+
+另外：`os/boot-shim/src/uefi_helpers.rs:93-139` 的平台发现路径已经有
+`#[cfg(target_arch = "aarch64")]` 分支（优先 DTB、回落 ACPI），
+`loader.rs` 与两个路标本身架构中立——所以 M3.3 不是「把 shim 重写一遍」，
+而是补齐三处架构专属缺口（下面的决策一/二/三）与装机腿（决策四/五）。
+
+### 决策一：特性门沿用 M3.2 刚证明的那个形态
+
+`[[bin]]` 的 `required-features` 是「全部必须开」语义，两个架构特性并列会
+互相否掉。所以抽出内部特性 `fw-uefi-image` 给 bin 要求，`fw-x86-uefi` 与
+新增的 `fw-aarch64-uefi` 各自隐含它（与 `os/kernel-image/Cargo.toml` 的
+`fw-none-image` 同构，词汇表也对齐仓内 10 个 aarch64 载体已有的
+`fw-aarch64-uefi` 命名）。对外零变化：既有调用
+（`os/xtask/src/image.rs` 里 `-p boot-shim --no-default-features --features
+fw-x86-uefi`）与产物路径不变，宿主 `--workspace --bins` 仍靠
+required-features 跳过裸机 bin（X-2/NK5 隔离）。
+
+### 决策二：panic 与 EBS 后的裸打印——先给 PL011 补上节流，再让 shim 复用
+
+现状：`main.rs:119-149` 的 `raw_serial_line` 与 `lib.rs:70-83` 的
+`raw_serial` 都是 x86 端口 I/O（COM1 0x3f8，带 LSR 有界轮询），非 x86 上
+`raw_serial` 已是空实现（`lib.rs:83`）——后果：aarch64 上 panic 与交棒前最后
+几行诊断全部消失，而 shim 的 panic 本实现就是死循环，两者叠加等于整机静默，
+正是 NK4-A 花力气拆掉的那个坑。
+
+做法：boot-shim 加 `minix-plat`（`default-features = false`）依赖，非 x86 分支
+改用 `os/plat/src/arm64/early_console.rs::write_str`（PL011，基址
+`0x0900_0000`，与 QEMU virt 设备一致；x86 分支逐字不动）。**前提**：
+`write_byte` 今天是对 `PL011_BASE` 的直接 volatile 写、**不等 TXFF（FR bit5）**，
+长字符串会撞满 16 字节 FIFO 丢字；x86 侧同位置是有界轮询的。所以先给它补
+与 x86 同构的「有界等待 TXFF 再写」（上限内等不到也照写，不造成死循环），
+同步补一条宿主测试。对位：`os/plat/src/arm64/early_console.rs` 自身 + x86
+侧 `os/boot-shim/src/main.rs:135-146` 的有界轮询写法。
+
+退路（若 `minix-plat` 在 `default-features = false` 下为 uefi 目标编不过）：
+在 shim 内自写与 x86 同形的 12 行 PL011 写入，并在两处注释里互相指名对位；
+不另起第三种方案。
+
+约定范围边界：本决策只保证「路标与 panic 能打出来」；`uefi::println!`（ConOut）
+只在 EBS 前可用，这一点不变。
+
+### 决策三：入口交接协议不在本里程碑动
+
+`main.rs:66` 的 `minix_kernel::arch_boot(&result.kernel_info, result.root_page)`
+在 aarch64 上存在且同签名（`root_page` 对 arm64 就是 TTBR 值）。但「跳过去
+能不能活」属 M3.4；M3.3 不新增、不修改交接语义，也不为了让它看起来能动而
+加 stub（任务书铁律：不许 stub 制造完成）。两个路标在 `prepare_boot` 内、
+EBS 与交接之前（`uefi_helpers.rs:179,182`），所以判据与本决策不交叉。
+
+### 决策四：xtask 把写死的 x86 三元组改为按架构取表
+
+`os/xtask/src/image.rs:162-166` 现在对 aarch64 直接 bail，理由就是本里程碑补的
+东西；放行后需参数化三处：shim 的 target 三元组（今天写死
+`x86_64-unknown-uefi`）、特性名（写死 `fw-x86-uefi`）、ESP 内的引导文件名
+（写死 `EFI/BOOT/BOOTX64.EFI`，aarch64 按 UEFI 默认加载项应为
+`BOOTAA64.EFI`），以及 `startup.nsh` 里那一行自动加载脚本（同一文件名参数）。
+`Arch` 枚举已有 `module_target()`（`image.rs:49-55`，aarch64 →
+`aarch64-unknown-none`），本决策就同处再加两个访问器（shim target / EFI 文件名），
+不发明新布局概念。产物目录与布局（`/EFI/minix/{kernel.elf,imgrd,modules/×12}`）
+不变；内核镜像构建那一步（`2b`）的目标与特性同样参数化（M3.2 已备好
+`aarch64-unknown-none` + `fw-aarch64-none`）。
+
+### 决策五：真机载体 = 新增一个专用脚本，不接 run_all、不改既有冒烟脚本
+
+判据需要 AAVMF 下真跑一次装机盘。抄 `os/qemu-tests/test-timer-irq-aarch64.sh`
+的 qemu 参数（**必须 `gic-version=3`**，任务书 §3 的硬事实），再加上已组装好的
+ESP 盘镜像与 `-bios` 指向 AAVMF；串口采集方式照抄 x86_64 腿
+（`os/qemu-tests/test-cmd-smoke.sh`）的本仓做法。新脚本只断言两行路标，
+不断言 rc marker（那是 M3.6）。按任务书 P6 才接线 run_all，本里程碑
+不注册进去。注意环境陷阱：M3.2 已知边界 #4（`mktemp` 硬写 `/tmp`，受限沙箱
+下会假报），新脚本自己写临时文件时避开这一坑。
+
+### 判据与验收形式
+
+- 宿主可测：`cargo build -p boot-shim --target aarch64-unknown-uefi
+  --no-default-features --features fw-aarch64-uefi` 退出码 0；
+  `cargo build --target x86_64-unknown-uefi --features fw-x86-uefi` 仍 0；
+  `cargo test -p boot-shim --features test-all` 与宿主计数不减（kernel 809 /
+  arch 241 基线）；xtask 既有 x86_64 装机路径 `IMG-EXIT=0` 不变；
+  新增 `xtask image --arch aarch64` 能产出盘镜像（不再 bail）。
+- 真机：AAVMF 串口出现两行路标（逐字），且**两次独立复跑**同形。
+- 记录：设计本节 + 实现节追加；FIXLOG 按条（至少覆盖 PL011 节流这一条真修）。
+
+### 风险（可预见的那些）与不可预知项
+
+1. `alloc_root_page()` / `build_memmaps()` 里若有 x86 专属假设（页表页尺寸、
+   LOADER_DATA 语义）会在 aarch64 真机上暴露，宿主测不出来——只有真机能定量。
+2. `minix-kernel` 进链进 shim：aarch64 目标下 `arch_boot` 及其依赖链能否过
+   链接（符号/段属性）未验证；失败则先修构建再谈路标。
+3. PL011 在 AAVMF 手里是否已被初始化（固件用过即可用；若需自己写 LCRH/IBRD
+   则要补寄存器序列，这不在 `early_console.rs` 现状里）。不预估，真机见。
+
+
 
