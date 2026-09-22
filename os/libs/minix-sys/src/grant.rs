@@ -33,13 +33,6 @@ const fn access_check(access: CpFlags) -> bool {
     (access.bits() & !all) == 0
 }
 
-/// A user-space grant table plus its registration state.
-///
-/// Mirrors C libsys `safecopies.c` state (`grants`/`ngrants`/`freelist`)
-/// with one explicit addition: `registered` tracks whether the current
-/// table address/size has been told to the kernel (C does it eagerly
-/// inside `cpf_prealloc`; the explicit flag lets the caller own the
-/// kernel-call timing — one `sys_setgrant` per grow, not per slot).
 /// `GrantTable::probe` 的窗口读数:授权的宿主地址窗与访问形状。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GrantProbe {
@@ -51,6 +44,13 @@ pub struct GrantProbe {
     pub writable: bool,
 }
 
+/// A user-space grant table plus its registration state.
+///
+/// Mirrors C libsys `safecopies.c` state (`grants`/`ngrants`/`freelist`)
+/// with one explicit addition: `registered` tracks whether the current
+/// table address/size has been told to the kernel (C does it eagerly
+/// inside `cpf_prealloc`; the explicit flag lets the caller own the
+/// kernel-call timing — one `sys_setgrant` per grow, not per slot).
 pub struct GrantTable {
     slots: Vec<CpGrant>,
     /// Next free slot index, or -1 when the table is full (C: `freelist`).
@@ -248,11 +248,14 @@ impl GrantTable {
         }
         let g = grant_idx(grant) as usize;
         let slot = self.slots.get(g)?;
-        if slot.seq as u32 != grant_seq(grant) || !slot.cp_flags().contains(CpFlags::USED) {
+        let flags = slot.cp_flags();
+        if slot.seq as u32 != grant_seq(grant)
+            || !flags.contains(CpFlags::USED)
+            || !flags.contains(CpFlags::VALID)
+        {
             return None;
         }
-        let flags = slot.cp_flags();
-        // SAFETY: flags 的 USED 提交点保证 direct/magic 联合体臂已定型;
+        // SAFETY: flags 的 USED+VALID 提交点保证 direct/magic 联合体臂已定型;
         // INDIRECT 臂在宿主桥接面未使用,按未授权回答。
         unsafe {
             if flags.contains(CpFlags::DIRECT) {

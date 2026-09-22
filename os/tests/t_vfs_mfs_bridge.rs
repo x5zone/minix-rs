@@ -278,27 +278,11 @@ fn lookup_bridge_resolves_open() {
     req.m_source = USER_EP;
 
     // VFS 真主循环:open 挂起在 LOOKUP。
-    eprintln!("诊断: grants_before={}", state.grants.len());
-    eprintln!(
-        "诊断: find_by_fs(MFS)={:?}",
-        state.vmnt_table.find_by_fs(MFS_EP).is_some()
-    );
     let route = state.run_once(&req, &VfsTransIdCodec);
-    eprintln!(
-        "诊断: route={route:?} grants_after={} pending={}",
-        state.grants.len(),
-        state.pending_fs.is_some()
+    assert!(
+        state.pending_fs.is_some(),
+        "open 应挂起在 LOOKUP 请求上(route={route:?})"
     );
-    if state.pending_fs.is_none() {
-        if let Some((t, r)) = state.take_reply() {
-            panic!(
-                "open 提前结束:target={t:?} m_type={} errno_lane={}",
-                r.m_type,
-                unsafe { i32::from_le_bytes(r.m_u.raw[0..4].try_into().unwrap()) }
-            );
-        }
-        panic!("open 既未挂起也无应答(route={route:?})");
-    }
 
     // 桥驱动真 MfsServer:外层循环"发送半→task::run→续接",直到 open 完成。
     let mut task_server = TaskServer::new(mfs);
