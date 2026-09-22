@@ -782,7 +782,7 @@ impl VmServer {
             // SIGSEGV（真机 NK4-A C-3 c10a 轮：RS ensure_global_allocator
             // 的分配器旗标 xchg 于 0x229708 二连故障，2026-09-22）。
             let mut seg_flags = crate::region::VrFlags::ANON;
-            if seg.flags & 0x2 != 0 {
+            if seg.flags & minix_elf::PF_W != 0 {
                 seg_flags |= crate::region::VrFlags::WRITABLE;
             }
             let region = crate::region::VirRegion::with_memtype(
@@ -912,7 +912,17 @@ impl VmServer {
         // c11a: RS main's stack read at 0x7fffffffd9c8, one page below the
         // frame page, 2026-09-22).
         const DEFAULT_STACK_LIMIT: u64 = 4 * 1024 * 1024;
-        let region_base = VirBytes((self.ctx.user_sp.0 - DEFAULT_STACK_LIMIT) & !(PS as u64 - 1));
+        // 下溢防护（NK4 回归评审 P2-2）：user_sp 低于限额时裸减回绕会把
+        // region 基址推到地址空间顶端。生产 user_sp=0x7ffffffff000 远高于
+        // 限额；宿主测试的 mock user_sp 同样须满足该不变量。
+        debug_assert!(
+            self.ctx.user_sp.0 > DEFAULT_STACK_LIMIT,
+            "user_sp {:#x} leaves no room for the {}-byte stack window",
+            self.ctx.user_sp.0,
+            DEFAULT_STACK_LIMIT,
+        );
+        let region_base =
+            VirBytes((self.ctx.user_sp.0.saturating_sub(DEFAULT_STACK_LIMIT)) & !(PS as u64 - 1));
         let region = crate::region::VirRegion::with_memtype(
             region_base,
             VirBytes(self.ctx.user_sp.0 - region_base.0),

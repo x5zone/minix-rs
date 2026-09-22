@@ -54,6 +54,21 @@ pub const ET_EXEC: u16 = 2;
 /// Program header type: loadable segment
 pub const PT_LOAD: u32 = 1;
 
+// ── Program header segment flags (p_flags) ──
+//
+// ELF spec §"Program Header": PF_X=1, PF_W=2, PF_R=4. Consumers combine
+// them to derive region writability (e.g. VM boot exec derives RW data
+// segments from PF_W; everything else maps read-only).
+
+/// Segment flag: execute
+pub const PF_X: u32 = 1;
+
+/// Segment flag: write
+pub const PF_W: u32 = 2;
+
+/// Segment flag: read
+pub const PF_R: u32 = 4;
+
 // ── ELF64 header sizes ──
 
 /// ELF64 Ehdr size: 64 bytes
