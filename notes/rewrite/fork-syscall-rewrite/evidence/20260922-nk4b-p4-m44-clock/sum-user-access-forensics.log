@@ -245,3 +245,48 @@ bump 分配区（载体 :588-589）：0x8200_0000 .. 0x8400_0000 ⊂ 上面区�
 后真实值是 24。与 §4 的「两条注释 vs 实际三处」、§9 的「全仓 vs 两个目录」同一
 根因：结论里的数字没跟着完整输出走。本节已按实测改写为 24。
 
+## 13. 追加更正（commit 28a916f86 之后的评审闭环）：24 是「提及」不是「调用方」
+
+评审（对 commit 28a916f86，PASSED + 2 条观察项）抓到两处措辞与实测口径不符。
+两条都自己复跑证实，本节按「不追改 §12 正文、只在末尾追加」的纪律落盘。
+
+### 13.1 观察项一：§12.3 的「打印者：lib.rs:474」标签错位
+
+命令：sed -n '470,480p' os/kernel/src/lib.rs
+输出（节选，行号为绝对行号）：
+  474:    crate::dm_coverage::establish_boot_dm(kernel_info, root_page);
+  475:    boot_stage!("kernel: step4 DM coverage ok\n");
+⇒ `:474` 是调用（覆盖失败会 panic，走不到下一行），`:475` 的 `boot_stage!` 才是
+  这句打印本身。§12.3 原文「打印者：kernel/src/lib.rs:474 …establish_boot_dm…」
+  把两件事捆在了一个行号上——锚点内容没错，但「打印者」这个标签指向错了行。
+  WORKLOG 第 3 步已改为「触发代码在 lib.rs:474-475」并分别说明两行各干什么。
+
+### 13.2 观察项二：24 里含 3 条注释行，「24 个调用方」是过宽归类
+
+命令：
+  T=$(grep -rn --include=*.rs "cross_space::" kernel/src | grep -v "^kernel/src/cross_space.rs")
+  echo "总提及=$(echo "$T" | wc -l)"; echo "注释行=$(echo "$T" | grep -cE ':[[:space:]]*(///|//!|//)')"
+  echo "实际=$(echo "$T" | grep -vE ':[[:space:]]*(///|//!|//)' | wc -l)"
+（在 os/ 目录下执行）
+输出：
+  总提及=24
+  注释行=3
+  实际=21
+3 条注释行的位置（同一条命令再管道 grep -E ':[[:space:]]*(///|//!|//)' 可复现）：
+  kernel/src/syscall_copy.rs:52:// - `cross_space::data_copy_vmcheck` (cross_space.rs) — full cross-process
+  kernel/src/syscall_copy.rs:54:// - `cross_space::memset_vmcheck` (cross_space.rs) — cross-process memset
+  kernel/src/syscall_copy.rs:1323:/// Uses `cross_space::memset_vmcheck` (Direct Map + PTE walk + VMSUSPEND).
+⇒ 判别口径：`wc -l` 数的是「grep 命中行数」，也就是「仓内提及数」；我把它直接
+  叫成「调用方」，等于用命中数担保了一个它没测的语义（是不是真在调用）。§12.7
+  把 18→24 的错归因为「数字没跟着完整输出走」，这次是同一根因的下半段：数字
+  跟着输出了，但**数字的口径标签没跟着断言走**。
+⇒ WORKLOG 已改为「提及 24 处，其中实际调用/导入 21 处（另 3 处是注释里的名字
+  引用）」，裁决表 丙 行与「为何改推荐」段的承重数字统一下调为 21。改判结论
+  不受影响：21 处仍是「本仓跨空间拷贝的标准做法」，不是一两处孤例。
+
+### 13.3 判别性断言（防回归）
+
+跑 `cd os && grep -rn --include=*.rs "cross_space::" kernel/src | grep -v "^kernel/src/cross_space.rs" | grep -cE ':[[:space:]]*(///|//!|//)'`
+必须得 3（若将来有人把那三条注释改成真调用或删掉，本文档的 21/24 拆分就要重算）。
+跑 `cd .. && grep -n "24 个调用方\|已用 24 处" notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md`
+必须无输出（旧的过宽归类必须清零）。

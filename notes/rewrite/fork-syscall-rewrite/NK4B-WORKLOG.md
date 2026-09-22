@@ -2186,7 +2186,7 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
 |----|------|------------|
 | 甲 | 按仓内已写明的意图落地：`INIT_USER_SSTATUS` 加 SUM 位，并在 `restore_to_user` 里把该进程的 SUM 应用到 `sstatus`（现在只改 SPP/SPIE） | 改动最小（一个常量 + 入口 asm 一条），与 `boot.rs:95-97` 注释的设计意图同名同形；但效果是「只要当前进程是用户进程，内核全程可读用户页」，粒度粗 |
 | 乙 | 只在拷贝窗口内开/关 SUM（Linux 的 `enable_user_access()`/`disable_user_access()` 对位），需要一个 arch 门控的 guard（或给 `UserCopy` trait 加一对方法） | 语义最精确、与现有「先软走页表再访问」的纪律最配；**仓内已有同位可抄的窗口模式**（载体 `test-rt-birth-riscv64/src/main.rs:248,331,336,340`），只是它现在住在测试载体里、没提到 arch 层；代价是要新增一层 kernel↔arch 抽象并剔除掉载体那份副本 |
-| 丙 | 不碰 CSR：先把用户 VA 翻译成 PA，再从 Direct Map 窗口读。**这不是新抽象，而是本仓跨空间拷贝的标准三步**（取证见下一小节：24 个调用方都走这条路） | 只改 `ipc.rs:452` / `:473` 两个函数（消息面里直接取用户 VA 的仅这两处；grep 范围见下一小节第 2 步）；不需要任何 arch 层 CSR 代码，三架构（含 aarch64 PAN、x86_64 未来 SMAP）一次改动同享；代价是要处理“目标 PA 必须被 DM 覆盖”这条新前提（已有校验函数可复用）与 64 字节消息跨页时分段 |
+| 丙 | 不碰 CSR：先把用户 VA 翻译成 PA，再从 Direct Map 窗口读。**这不是新抽象，而是本仓跨空间拷贝的标准三步**（取证见下一小节：21 处实际调用都走这条路） | 只改 `ipc.rs:452` / `:473` 两个函数（消息面里直接取用户 VA 的仅这两处；grep 范围见下一小节第 2 步）；不需要任何 arch 层 CSR 代码，三架构（含 aarch64 PAN、x86_64 未来 SMAP）一次改动同享；代价是要处理“目标 PA 必须被 DM 覆盖”这条新前提（已有校验函数可复用）与 64 字节消息跨页时分段 |
 
 推荐 **丙**（本轮补完前置取证后改推荐，理由全部列在下一小节）。若你更看重“安
 全粒度必须在硬件上真拦住”而非“跟仓内已验证路径一致”，则 **乙** 是语义最精确的
@@ -2201,10 +2201,13 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
 
 1. **路已经铺好了，只是消息面没走**：仓内跨空间拷贝的标准三步在
    `kernel/src/vm.rs:388-404`——`resolve_physical`（走页表得 PA，缺页返
-   `Suspended`）→ `D::kernel_phys_to_virt` → 拷贝；`cross_space::` 的调用方 24 处
-   （命令：`grep -rn "cross_space::" --include=*.rs kernel/src | grep -v
-   "^kernel/src/cross_space.rs" | wc -l`）：`misc.rs` / `kmess.rs` /
-   `syscall_process.rs` / `syscall_device.rs` / `grant.rs` / `syscall_signal.rs` 等。
+   `Suspended`）→ `D::kernel_phys_to_virt` → 拷贝；`cross_space::` 在 `kernel/src`
+   下被提及 24 处（命令：`grep -rn "cross_space::" --include=*.rs kernel/src | grep -v
+   "^kernel/src/cross_space.rs" | wc -l`），其中**实际调用/导入 21 处**（另外 3 处是
+   注释里的名字引用：`syscall_copy.rs:52`、`:54`、`:1323`，可用同一条命令再管道
+   `grep -E ":\s*///|:\s*//!|:\s*//"` 筛出来）。下面提到的文件都在这 21 处里：
+   `misc.rs` / `kmess.rs` / `syscall_process.rs` / `syscall_device.rs` / `grant.rs` /
+   `syscall_signal.rs` 等。
    跨页与物理不连续也已处理：`kernel/src/vm.rs:249` 的 `lookup_range_in_table`
    （doc 在 `:225-248`）就是「返回从该 VA 起物理连续的最大字节数」，C 对位
    `vm_lookup_range`（`minix3/minix/kernel/arch/i386/memory.c:377`）。窗口覆盖也
@@ -2214,11 +2217,12 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
    用户 VA）与 `ipc.rs:473`（`copy_msg_to_user` 写用户 VA）。它们就是
    `UserCopy` trait（`ipc.rs:297` / `:301`）的两个方法——即：**消息面只有这两处
    直接拿用户 VA 当内核址用**。范围说清：这条只涵盖 `ipc.rs` + `kmess.rs` 两个
-   文件（本次没对全 `kernel/src` 做同型扫描），但 `cross_space::` 那 24 个调用方
+   文件（本次没对全 `kernel/src` 做同型扫描），但 `cross_space::` 那 21 处实际调用
    都走 walk+DM。这就是为什么阻塞点需要 SUM/PAN。
 3. **riscv64 上窗口今天就真的存在（真机证据，不是推导）**：本轮归档的串口日志
-   `serial_clk1.log:65` 打出 `kernel: step4 DM coverage ok`——该行由
-   `kernel/src/lib.rs:474` 的 `establish_boot_dm` 打印，在所有架构的
+   `serial_clk1.log:65` 打出 `kernel: step4 DM coverage ok`。触发代码在
+   `kernel/src/lib.rs:474-475`：`:474` 调 `establish_boot_dm`（覆盖失败会 panic，走不到
+   下一行），`:475` 的 `boot_stage!` 才是这句打印本身。这两行都在所有架构共用的
    `arch_boot_impl` 里同一条路径，riscv64 不例外。
 4. **用户栈的 PA 落在覆盖范围内**：载体 `test-rt-birth-riscv64/src/main.rs:115-118`
    声明的 memmap = `PA 0x8000_0000 + 256 MiB`（即 `[0x8000_0000, 0x9000_0000)`），
@@ -2236,7 +2240,7 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
 
 **为何改推荐（本链第三次自我更正，根因同一个）**：上一版写「乙 语义最精确、
 仓内已有窗口模式」而把丙 排在后面，理由是「丙 需先做窗口覆盖取证，不能直接
-选」。取证做完后两条都换了颜色：丙 不但不需要新抽象，它恰恰是本仓已用 24 处
+选」。取证做完后两条都换了颜色：丙 不但不需要新抽象，它恰恰是本仓已用 21 处
 的那条既有路，而且一次改动同时解决 aarch64 的 PAN 与 x86_64 未来启用 SMAP 后的
 同型问题；乙 则要新增一层 kernel↔arch 抽象并为三架构各写一份。上一版又犯了
 “先写结论再补命令”：我查了两份载体的窗口，却没查生产代码自己怎么处理其它用户
@@ -2286,7 +2290,7 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
   继承版管脚本）。
 - 不接 `run_all.sh`（属 P6）。
 
-### 更正与评审链（本里程碑四枚 commit，均未 push）
+### 更正与评审链（本里程碑七枚 commit / 四轮评审，均未 push）
 
 | commit | 内容 | 评审结果 |
 |--------|------|----------|
@@ -2294,12 +2298,18 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
 | `575663900` | 自查推翻「全仓无一处置 SUM」，改为「生产侧」；补生产腿调用链与 `uecall_handler` 死腿机制 | FAIL（P1） |
 | `8a205ca4e` | 修那条 P1：同型的「全仓无一处置 PAN」也犯同一错，aarch64 载体 `:391-408` 实有 PAN 窗口；同步限定导语与标题 | PASS，附 1 条 P1 + 1 条观察项 |
 | `4114d6b2f` | 修那两条：抠掉「全仓（生产侧）」这种括号收窄自相矛盾；自证命令目录实参从 `arch/src/arm64` 改成与断言同集的 `arch/src`（重跑确认结论不变，见日志 §11） | 未再审（纯措辞与命令对齐，逐条带实测输出） |
+| `7467c3357` | 把上面四枚的因果与可复用规则登进本节 | 未再审（登记性改动） |
+| `28a916f86` | 案丙 前置取证做完，裁决推荐从乙 改为丙（日志 §12） | PASSED，附 2 条观察项（均成立，见下一行） |
+| 本枚 | 修那两条观察项：「打印者 `lib.rs:474`」实际打印在 `:475`；「`cross_space::` 24 个调用方」里 3 条是注释行，实际调用/导入 21 处，承重数字全部下调（日志 §13） | — |
 
-三轮收敛形状符合停止规则（每轮新发现递减，且都是同一根因的不同表现）。根因
+四轮评审的收敛形状符合停止规则（每轮新发现递减，且都是同一根因的不同表现）。根因
 只有一条：**先写结论再补命令，而不是先跑命令抄输出**。由此得到两条可复用规则：
 否定式/全称断言的范围词必须与 grep 实参一字不差地一致；范围词不能靠括号收窄。
-另记一条评审手段发现：子代理给 PASSED 时列出的旁支常量（本例是它顺口提到的
-「载体自身的 `SSTATUS_SUM` 常量」）可能正是编排方自己断言的反例，必须当线索回读。
+第三条规则由 `28a916f86` 的评审补上（日志 §13.2）：**口径标签也要与断言一字不差**
+——`wc -l` 数的是「grep 命中行数」，只能担保「提及」，不能担保「调用」；把命中数
+直接叫成「调用方」，等于拿一个没测过的语义去撑裁决推荐。另记一条评审手段发现：
+子代理给 PASSED 时列出的旁支常量（本例是它顺口提到的
+「载体自身的 `SSTATUS_SUM` 常量」）可能正是编排者自己断言的反例，必须当线索回读。
 
 ### 锚点自查记录（写完当场逐条重跑）
 
@@ -2320,5 +2330,10 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
 | aarch64 载体 PAN 窗口 `test-rt-birth-aarch64/src/main.rs:391-408` | `sed -n '391,408p'` | 命中（评审追问后自查新增，初稿漏登记） |
 | `kernel/src/vm.rs:403`（Direct Map 模式） | `grep -n kernel_phys_to_virt` | 命中 |
 | 三载体 `grep -c init_clock_and_interrupts` = 1/1/0 | 逐目录 `grep -c` | 修后实测（修前 1/0/0） |
+| 案丙 取证锚点（日志 §12）：`vm.rs:249/:335/:388/:403/:404`、`ipc.rs:297/:301/:452/:473`、`dm_coverage.rs:66/:186`、`direct_map.rs:149/:151`、载体 `:115-118/:459/:588-589` | 逐行 `sed -n "${n}p"`（一轮跑完 11 个目标锚点 + 载体三处） | 全部命中；载体 bump 区实测为 `DRAM_BASE+0x0200_0000` / `+0x0400_0000`（即 0x8200_0000..0x8400_0000） |
+| `minix3/minix/kernel/arch/i386/memory.c:377`（`vm_lookup_range` 定义） | `sed -n '377p'` | 命中 `size_t vm_lookup_range(const struct proc *proc, …` |
+| `minix3/minix/kernel/memory.c` 不存在 | `ls` | 命中（`No such file or directory`）——而 `vm.rs:228` 的 doc 正写着这个路径 |
+| 本轮新增：`kernel/src/lib.rs:474-475` 两行分工 | `sed -n '474p;475p'` | 命中（`:474` = `establish_boot_dm` 调用，`:475` = `boot_stage!` 打印） |
+| 本轮新增：`cross_space::` 24 = 21 调用 + 3 注释 | 日志 §13.2 的命令（三段 `wc -l`/`grep -c`） | 实测 24 / 3 / 21；3 条注释在 `syscall_copy.rs:52/:54/:1323` |
 
 
