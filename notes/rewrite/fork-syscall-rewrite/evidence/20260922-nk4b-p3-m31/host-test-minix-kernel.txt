@@ -1,0 +1,4 @@
+test result: ok. 809 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 8.55s
+test result: ok. 3 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.90s
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+CARGO-EXIT=0

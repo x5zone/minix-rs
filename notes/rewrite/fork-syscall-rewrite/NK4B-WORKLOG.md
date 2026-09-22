@@ -281,3 +281,116 @@ M3.1 载体现状点电）——它与本断点无关。
   且 c27b 首次启动产出空串口日志已复跑纠正）；IMG-EXIT=0 ✅；证据已
   `git add -f` 归档 ✅；FIXLOG 本轮无修复条目（取证，非修复），N/A；
   未动 `os/etc/rc`、未动冒烟脚本、未删既有探针 ✅。
+
+## P3 M3.1 — aarch64 载体现状点电（状态：DONE，含一处构建断裂修复）
+
+- 状态：**DONE**（M3.1 判据 = 跑 `test-rt-birth-aarch64.sh` 并记录过/挂与
+  串口序列）。顺带修掉挡住这一步的 aarch64 构建断裂（它不属于任何
+  架构级裁决，是纯 cfg 缺失）。
+- commit：修复 `ab79b40ba fix(nk4b,m3.1): minix-kernel 的 x86 专属取证加架构门`；
+  本文与证据、取证包壳 `tmp/nk4a/run-rt-birth-aarch64.sh` 另一 commit。
+- 为什么先做 P3 而不做 P2：P2 判据要求 rc marker 之后的命令真实执行，
+  硬依赖 P1；P1 的修法已上交裁决（见上节 A/B/C 三案）等待中。
+  M3.1 只做现状记录，与 P1 断点无依赖。
+
+### 现状（一）：构建就挂——17 个编译错误，全部可归位到具体 commit
+
+首轮跑原脚本（`evidence/20260922-nk4b-p3-m31/carrier-build-before-fix.log`，
+696 行）：rt-birth 用户镜像构建成功，载体 `test-rt-birth-aarch64`
+（`--target aarch64-unknown-uefi --features fw-aarch64-uefi --release`）
+在依赖 `minix-kernel` lib 时报 **17 errors**，脚本以
+`FAIL: test-rt-birth-aarch64 build failed` 退出（exit 1）。按 `git blame`
+逐行归位（三条错误类型、四个来源 commit）：
+
+| 错误 | 条数 | 现场 | 引入 commit |
+|------|------|------|-------------|
+| `invalid register ecx/eax/edx` | 9 | `kernel/src/lib.rs:658/661/676` 的 `rdmsr`（GS_BASE/KERNEL_GS_BASE 采样） | `9764d4c7e`（NK4-A F0 根因修复的 gs0/gs1 探针） |
+| `no field rip/rsp on AArch64ExceptionFrame` | 4 | `kernel/src/lib.rs:3346/3348`、`kernel/src/syscall_process.rs:415/417` | `91961877b5`（NK4-A pre-restore / exec-store 路标） |
+| 同上 | 3 | `kernel/src/lib.rs:3364/3370/3376`（`rst` 轨迹探针传 `frame.rip`） | `3945cf5d0`（**本弧线 P1 第 7/8/9 轮，我自己上一里程碑加的**） |
+| `cannot find type TrapFrame` | 1 | `kernel/src/trap_dispatch.rs:119`（`mirror_irq_frame_into_proc` 形参；该类型的 `use` 在 `:46-47` 本就 x86 门控，函数体漏了） | `443624551e`（NK4-A IRQ/tick 入口全量存帧） |
+
+共同形态：x86_64 专属的取证代码写在三架构共用的路径上，只带
+`#[cfg(not(feature = "mock"))]` 特性门、没带架构门。宿主测试与非
+mock 的 x86_64 镜像构建都覆盖不到 aarch64，因此断裂一路无人发现；
+`os/qemu-tests/run_all.sh:63` 的 aarch64 构建循环把失败写成
+`|| echo "(build failed)"`，退出码被吞掉，后续步骤改判为 skip ——
+这条记给 P6（run_all 接线）：接线时不能沿用吞掉构建失败的形态。
+
+修法与验证见 FIXLOG 同日期条目（纯 cfg 门控，不删任何探针；对位仓内
+既有约定 `#[cfg(all(not(feature = "mock"), target_arch = ...))]`，同文件
+`kernel/src/lib.rs:136/140/144` 已是此形）。修后：
+
+- 载体构建成功（`target/aarch64-unknown-uefi/release/test-rt-birth-aarch64.efi`
+  985088 字节）；
+- 宿主 `cargo test -p minix-kernel` **809 passed / 0 failed**（与 P0 基线持平，
+  `host-test-minix-kernel.txt`）；
+- x86_64 侧语义零变化的证据：镜像 IMG-EXIT=0 + 真机 c28a 串口 3922 行，
+  `rs-tr` 64 条（上限耗尽）/`rs-anom` 12 条/`rs-leak` 6 条，终态与 P1 的
+  c27a/c27b 同形（rs SIGSEGV → 内核 vector 13 递归 panic），见
+  `serial_c28a.log`。
+
+### 现状（二）：修好构建后，串口停在平台发现
+
+原脚本第二轮（`test-script-after-fix.log`，1114 行，判据行
+`### TEST_RESULT: FAIL test-rt-birth-aarch64 ###`）与包壳两次复跑
+（`serial_a64_b1.log`、`serial_a64_b2.log`，各 817 字节，逐字相同）得到
+同一条到达序列，串口全文如下（原文行尾带回车符，此处不复制）：
+
+```
+### test_rt_birth (aarch64): first minix-rt user binary on AAVMF
+kernel: entering validate
+kernel: v0 enter
+kernel: v1 asserts ok
+kernel: v2 fallback region ok
+kernel: v3 pt_alloc ok
+kernel: step0 validate ok
+kernel: step1+2 mappings ok
+kernel: step4 DM coverage ok
+  paging enabled
+### PANIC in test-rt-birth-aarch64: libs/minix-platform/src/global.rs:0x0000000000000111 platform::init_from_kinfo: no platform source parsed successfully and not a dev build (no QemuVirt fallback in release)
+ ###
+```
+
+事实清单：
+
+1. 生产内核的架构无关段在 aarch64 上活着：页表校验（validate → v0-v3 →
+   step0/step1+2/step4）与 `paging enabled` 全部通过，即
+   `os/arch/src/aarch64` 的分页与半映射把内核送进了 C 对位的早期阶段。
+2. 死点是 `platform::init_from_kinfo`（`os/libs/minix-platform/src/global.rs:231-253`）：
+   它遍历 `kinfo.platform_sources`，第一个解析成功的描述符胜出；全失败时
+   调 `qemu_fallback_or_panic`，而该函数（同文件 `:223-224` 的注释即契约）
+   **release 构建直接 panic**，只有 dev 构建才回退到 `QemuVirtDesc`。载体
+   与 `run_all.sh` 都按 `--release` 构建，所以必然撞这堵墙。
+3. 载体的 sources 由 `os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:493`
+   调 `boot-shim/src/uefi_helpers.rs:93` 的 `find_platform_sources()` 产生；
+   aarch64 分支（同文件 `:110-125`）先找 UEFI 配置表里的 DTB
+   （`DEVICE_TREE_GUID`）、再补 ACPI RSDP。**本文不能判定**本次是
+   「一个 source 都没找到」还是「找到了但解析失败」——`global.rs:243-247`
+   故意把 `Err(_)` 静默丢掉，串口上没有任何线索。区分它只需要一条 dev
+   构建（走回退、能过）或一条打印 source 数量/解析错误的探针，属 M3.4 的
+   第一个实验，不在 M3.1 范围。
+4. 任务书 §3 的已知事实「AAVMF 载体必须 `gic-version=3`」在本次串口点
+   **尚不起作用**：默认 `-machine virt` 与 `-machine virt,gic-version=3`
+   两次串口 817 字节逐字相同，因为 panic 发生在中断控制器使用之前。
+   GIC 版本要到 M3.4 的时钟/中断初始化才成为变量。
+
+### M3.1 结论与下一步
+
+- 与 P1 不同，这里的断点**不需要架构裁决**就能推进：M3.2（kernel-image
+  aarch64 产出）与 M3.3（boot-shim aarch64 装载）都不经过
+  `init_from_kinfo`；本串口点只影响 M3.4（内核点电）。
+- 下一里程碑判据（NK4B-TODO §3 M3.2）：`os/kernel-image/` 现在
+  是 x86_64 专用（`fw-x86-none` 门 + `x86_64.ld`），要扩出 aarch64 的
+  链接脚本与入口约定，设计要点先写 WORKLOG，验证用宿主可测的
+  readelf 断言。M3.1 提供的事实前提是：aarch64 的 `minix-kernel` lib
+  现在能编译（本里程碑成果），而它一旦被真正装载执行，可以跑到
+  `paging enabled`。
+- 上交裁决：无。
+- 自检：fix-guard ✅（四处修改各自先读目标行 ±5 行 + grep 确认，一次一修，
+  修后 grep 复核 cfg 行在位；`git diff --stat` 为 3 files / +17 / -4）；
+  计数不减 ✅（宿主 kernel 809/0failed 持平）；两次复跑 ✅
+  （b1/b2 串口 817 字节逐字相同，另加原脚本 r2 一轮）；载体构建与
+  IMG-EXIT=0 ✅；证据 `git add -f` 归档 ✅；FIXLOG 同日期一条 ✅；
+  未动 `minix3/`、未动 `os/etc/rc`、未放松任何冒烟判据（本里程碑只
+  新增了一个不改判据的取证包壳 `tmp/nk4a/run-rt-birth-aarch64.sh`，
+  原脚本逐字未改）✅；未删既有探针 ✅（只加 cfg 门）。
