@@ -14,6 +14,7 @@
 | [error-rollback.md](error-rollback.md) | 错误回滚机制 |
 | [suspend-wakeup.md](suspend-wakeup.md) | SUSPEND 与唤醒机制 |
 | [integration-tests.md](integration-tests.md) | 集成测试 |
+| [minix3-tree-migration.md](minix3-tree-migration.md) | minix3 源码树目录级迁移评估(含 minix/tests 双腿迁移策略) |
 
 ## 3. 跨服务协调
 
