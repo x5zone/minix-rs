@@ -1,0 +1,35 @@
+### PKG=minix-kernel
+warning: unused import: `core::mem::offset_of`
+warning: unused import: `crate::DirectMapArch`
+warning: unused import: `minix_types::PhysBytes`
+warning: unused import: `crate::X86_64DirectMap`
+warning: unused variable: `period_ms`
+warning: unused variable: `bootstrap_pa`
+### PKG=minix-arch
+warning: unused import: `core::mem::offset_of`
+warning: unused import: `crate::DirectMapArch`
+warning: unused import: `minix_types::PhysBytes`
+warning: unused import: `crate::X86_64DirectMap`
+warning: unused variable: `period_ms`
+warning: unused variable: `bootstrap_pa`
+### PKG=minix-vm
+warning: unused import: `core::mem::offset_of`
+warning: unused import: `crate::DirectMapArch`
+warning: unused import: `minix_types::PhysBytes`
+warning: unused import: `crate::X86_64DirectMap`
+warning: unused variable: `period_ms`
+warning: unused variable: `bootstrap_pa`
+### PKG=minix-rs
+test result: ok. 350 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.48s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+### PKG=minix-rt
+test result: ok. 57 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+### PKG=minix-sys
+warning: unused imports: `MessKrnLsysSysTimes` and `MessSigcalls`
+warning: unused import: `super::*`
+warning: unused import: `crate::ipc::CannedTransport`
+warning: unused import: `super::*`
+test result: ok. 315 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

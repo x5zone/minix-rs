@@ -1,10 +1,21 @@
 # NK4-B WORKLOG — 三架构启动 + 18-stage-commands 命令面（qwen 执行记录）
 
 > 任务书：`NK4B-TODO.md`（同目录）。前一道弧线（NK4-A）的记录在
-> `NK4A-QWEN-WORKLOG.md`，其未决前沿（x86_64 上 RS 用户态 RBX 被交付
-> 成 0 导致崩溃）就是本弧线 P1 的第一个工作对象。
+> `NK4A-QWEN-WORKLOG.md`，其未决前沿（x86_64 上 rs（Root Server）用户态
+> RBX 被交付成 0 导致崩溃）就是本弧线 P1 的第一个工作对象。
 > 记录纪律：每个 Task/Milestone 一节（模板见 NK4B-TODO §7.1）；修复另记
 > `.review/zcode/edge1/FIXLOG.md`（只追加）。
+
+**术语约定**（本文首次出现处均按此展开，后文用短名）：
+
+- `rs` = Root Server，MINIX 的进程表/信号服务端点（本弧线上端点号为 2）；
+- `vm` = VM Server，虚拟内存服务器（负责页故障服务）；
+- `init` = 1 号进程，负责挂载根盘并执行启动脚本 `/etc/rc`；
+- ESP = EFI System Partition，镜像上的 EFI 系统分区，装载 kernel.elf 与各模块；
+- imgrd = image ramdisk，`init` 挂载为根文件系统的内存盘镜像；
+- rc marker = `os/etc/rc` 里 `echo` 出的那行
+  `minix-rs rc: minimal boot script marker`，本弧线的启动链终点标记；
+- 探针（本文原写「布防」）= 在代码路径里插入限次串口打印以取证。
 
 ## 会话开场（2026-09-22，本 session）
 
@@ -35,7 +46,7 @@ cb6377842 chore(nk4a,taskC): 第 5/6 轮 RBX 取证探针（pre-restore rbx 交�
 9424d9542 docs(edge1,nk4a,taskC): WORKLOG 二/三轮取证记录 + c19a/c20a/c21a 串口证据归档，Task C 按铁律#10 标 BLOCKED
 89cd5929c debug(rs,taskC): RS null-deref 三轮取证探针（step2 迭代打点 + endpoint_slot 基址探针）
 85fab23ae docs(edge1,nk4a,taskC): WORKLOG 记录 RS null-deref 第一轮取证
-84347cff2 docs(edge1,nk4a,taskA): WORKLOG 落盘 + c17a/c18a/c18b 串口证据归档（A5 定性 noaddr cr2=0x0…）
+84347cff2 docs(edge1,nk4a,taskA): WORKLOG 落盘 + c17a/c18a/c18b 串口证据归档（A5 定性 noaddr cr2=0x0；A7 两轮复跑死锁消除→新断点 cause_sig panic 归 Task C）
 febbb0c8b fix(edge1,nk4a,taskA): VM 页故障不可服务终局补 SIGSEGV+CLEAR_PAGEFAULT 收口（C pagefaults.c:89-105 对位）
 5f98b1db5 diag(nk4a,taskA): VM 页故障静默出口限次探针 pf-exit（badendpt/inactive/wro/noaddr/ok-nopte/susp/accvio/clrpf）
 eebe41550 docs(edge1,nk4a): qwen 接手任务书 + 开局 prompt（迭代18 后前沿与任务分解）
@@ -56,6 +67,12 @@ rewrite
 
 命令：`cd os && docker run --rm -v "$PWD:/work" -w /work -m 2g
 minix-ci:1.94 cargo test -j 1 -p <pkg>`（逐包，2026-09-22 实测）。
+两份存档：`evidence/20260922-nk4b-p0/host-tests-rs-rt-sys.txt` 是首次
+运行原样输出（当时误用 `head -6` 取结果，kernel/arch/vm 三包的
+`test result:` 行被先出现的编译警告顶出窗口，只存下警告部分）；
+`host-tests-kernel-arch-vm.txt` 是为补回这三包真实计数而重跑的输出
+（只留 `test result:` 与 `error` 行）。本表数值以后者 + 前者未受
+截断的部分为准。
 
 | 包 | 实测 passed | failed | ignored | 与 NK4B-TODO §1 引用的旧数（808/241/525/350/57/315）之差 |
 |----|------------|--------|---------|------------------------------------------------------------|
@@ -76,7 +93,10 @@ minix-ci:1.94 cargo test -j 1 -p <pkg>`（逐包，2026-09-22 实测）。
 
 命令：`SMOKE_SKIP_BOOT=0 bash os/qemu-tests/test-cmd-smoke.sh`
 （脚本自身跑 `xtask image --arch x86_64 --release`，未加宿主 ulimit 也
-构建成功；完整 stdout 在本会话工作文件 `/tmp/nk4b_p0_smoke.txt`）。
+构建成功；完整 stdout 已归档 `evidence/20260922-nk4b-p0/smoke-stdout.txt`）。
+
+命令输出中的 stage 判定行（`SMOKE-EXIT=1` 为本文另外用 `echo $?`
+取到的退出码，其余为脚本 stdout 关键行，箭号为本文标注）：
 
 ```
 SMOKE-EXIT=1
@@ -87,23 +107,30 @@ serial: scheduler hand-off reached — waiting for the T4 command marker  ← st
 FAIL: T4 marker 'rc: minimal boot script marker' never appeared within 60s  ← stage 4 FAIL
 ```
 
-失败时刻串口尾部（脚本自带的 `tail -12`，原文）：
+失败时刻脚本自带的 `tail -12` 串口尾部，全 12 行逐字摘录（完整段见上述
+归档文件；原文行尾带回车符 `\r`，此处不复制）：
 
 ```
-nk4a: sa1-after cr3=0x0x000000001e76d000
 nk4a: pre-restore- rip=0x00000000002014ad rsp=0x00007fffffffc0b8 rbx=0x0000000000010001
 nk4a: vm-pf recv
 nk4a: pf-exit noaddr cr2=0x0
 <unset> 0x0000000000000002 0x0000000000216a76
 boot-shim panic: panicked at kernel/src/syscall_signal.rs:300:13:
-cause_sig: sig manager 2 gets lethal signal 11 for itself…
+cause_sig: sig manager 2 gets lethal signal 11 for itselfkernel panic: panicked at kernel/src/syscall_signal.rs:300:13:
+cause_sig: sig manager 2 gets lethal signal 11 for itselfkernel on CPU 0x0000000000000000: trap: vector 0x000000000000000d err 0x0000000000000000 rip 0x000000001ddad6f9 cs 0x0000000000000008 rflags 0x0000000000000093 rsp 0xffff8000003ff990 ss 0x0000000000000010
+nk4a: pfm5-dump
+boot-shim panic: panicked at kernel/src/trap_dispatch.rs:543:13:
+kernel exception vector 13 at rip 0x1ddad6f9 errcode 0x0 [dispatch_body @ 0x1ddb43c0]kernel panic: panicked at kernel/src/trap_dispatch.rs:543:13:
+kernel exception vector 13 at rip 0x1ddad6f9 errcode 0x0 [dispatch_body @ 0x1ddb43c0]kernel on CPU 0x0000000000000000: (stacktrace skipped: recursive panic)
+qemu-system-x86_64: terminating on signal 15 from pid 1186075 (bash)
 ```
 
 到达序列结论：**stage1（镜像）→ stage2（ESP 校验）→ stage3（调度器交接
 "entering scheduler"）全部到达；stage4（rc marker）未到达**。失败形态
-与 NK4-A 最后一轮（c24a）逐字段一致：endpoint 2（RS）故障
-`rip=0x216a76`、`pf-exit noaddr cr2=0x0`、RS 自任 sig manager 收
-SIGSEGV → `syscall_signal.rs:300` panic。
+与 NK4-A 最后一轮（c24a）一致：端点 2（rs）页故障 `rip=0x216a76`、
+`pf-exit noaddr cr2=0x0`、rs 自任 sig manager 收 SIGSEGV →
+`syscall_signal.rs:300` panic；此后内核自己又踩到 vector 13（一般保护
+故障）递归 panic。
 
 附带事实：该脚本把串口日志写在 `mktemp` 且 `trap cleanup EXIT` 删除，
 **跑完不保留 serial 文件**；需要串口全文取证时另用
@@ -141,13 +168,13 @@ Fix #9 系列）。
 |------|---------|
 | VM 页故障静默死锁消除 | **有**：c18a/c18b 两次复跑 + 新增宿主测试 |
 | IRQ/tick 入口存帧对齐 C（独立 C 偏差） | **有**：宿主测试判别双向 FAIL；真机证明它**不是**本崩溃根因 |
-| 崩溃现场解释链（RBX=0 交付 → asynsend push/pop 固化 → self=0 → 读 VA 0 → SIGSEGV） | **静态有**（未 strip 的 RS ELF 反汇编：`0x203bf0`=asynsend 首指令、`0x216a76`=endpoint_slot+0x176、`0x20d2db` 调用点 `mov %rbx,%rdi`）；**根因未证实** |
-| 「IPC 状态寄存器写点把 0 写进 RS 的 RBX」 | **证伪**（c24a 五类写点对 RS 零命中） |
-| 「syscall 瘦帧未填 rbx」「apply_to_trap_frame 漏拷 rbx 致交付 0」 | **静态排除**（两入口汇编都 `push rbx`；`restore_to_user` 的 RBX/GP 取自 ctx 而非 frame，`arch/src/x86_64/trap_return.rs:109/118-131`） |
-| `ctx.rbx` 写者全集 | 已穷举：全量存帧 5 点（`kernel/src/trap_dispatch.rs:127/585/697/887/1103`）+ `clear_ipc_status_reg`（唯一站点 `kernel/src/ipc.rs:2087`）+ `or_ipc_status_reg`（`kernel/src/proc.rs:1790/1818`）+ `set_secondary_ipc_return`（`kernel/src/syscall.rs:811`，仅 KernInfo）+ `write_user_register` offset 72（`arch/src/x86_64/boot.rs:227`）+ 出生（`boot.rs:143` `ps_strings.unwrap_or(0)`）+ sigreturn（`arch/src/x86_64/signal.rs:321`） |
-| 第 6 轮布防缺口 | 5 个存帧点只布防了 3 个，**:697（异常→信号臂）与 :1103（syscall 腿 VmSuspend 臂）未布防** |
-| 取证方法缺陷 | `pf-save` 探针上限两次（8/48）被启动前段同一 refault 循环耗尽（c24a 48 条全在崩溃行之前），**崩溃前最后一次 RS 故障入口的捕获值至今未拿到** |
-| 已备好未执行的第 7 轮方案 | :697/:1103 各补一次 `nk4a_rbx_probe`；`pf-save` 改 `ep==2` 过滤 + `(rip,rbx)` 去重 + 上限 64；打印 RS 出生 `ctx.rbx` 判 `boot.rs:143` 的 `unwrap_or(0)` 是否被走到 |
+| 崩溃现场解释链（RBX=0 交付 → asynsend push/pop 固化 → self=0 → 读 VA 0 → SIGSEGV） | **静态有**（未 strip 的 rs ELF 反汇编：`0x203bf0`=asynsend 首指令、`0x216a76`=endpoint_slot+0x176、`0x20d2db` 调用点 `mov %rbx,%rdi`）；**根因未证实** |
+| 「IPC 状态寄存器写点把 0 写进 rs 的 RBX」 | **证伪**（c24a 五类写点对 rs 零命中） |
+| 「syscall 瘦帧未填 rbx」「apply_to_trap_frame 漏拷 rbx 致交付 0」 | **静态排除**（两入口汇编都 `push rbx`；`restore_to_user` 的 RBX/GP 取自 ctx 而非 frame，`os/arch/src/x86_64/trap_return.rs` 的 `rbx_off` 装配段） |
+| `ctx.rbx` 写者全集 | 已穷举：全量存帧 5 站点——`os/kernel/src/trap_dispatch.rs` 的 `mirror_irq_frame_into_proc`（:127）、`x86_trap_dispatch_body`（:585 页故障转发臂、:697 异常→信号臂）、`x86_ipc_dispatch_body`（:887）、`x86_syscall_dispatch_body`（:1103 VmSuspend 停车臂）+ `clear_ipc_status_reg`（唯一调用点 `os/kernel/src/ipc.rs` 的 plain-RECEIVE 前奏）+ `or_ipc_status_reg`（`os/kernel/src/proc.rs` 两处 `|=`）+ `set_secondary_ipc_return`（`os/kernel/src/syscall.rs`，仅 `IpcCall::KernInfo`）+ `write_user_register` offset 72（`os/arch/src/x86_64/boot.rs`）+ 出生值（同文件 `entry.ps_strings.map(...).unwrap_or(0)`）+ sigreturn（`os/arch/src/x86_64/signal.rs`） |
+| 探针未覆盖的存帧站点 | 5 个存帧站点只有探针 3 个，**:697（异常→信号臂）与 :1103（syscall 腿 VmSuspend 臂）无探针** |
+| `pf-save` 探针上限耗尽、覆盖不到崩溃现场 | 上限两次（8/48）均被启动前段同一 refault 循环耗尽（c24a 48 条全在崩溃行之前），**崩溃前最后一次 rs 故障入口的捕获值至今未拿到** |
+| 已备好未执行的第 7 轮方案 | :697/:1103 各补一次 `nk4a_rbx_probe`；`pf-save` 改 `ep == 2`（只看 rs）过滤 + `(rip,rbx)` 去重 + 上限 64；打印 rs 出生 `ctx.rbx` 判 `unwrap_or(0)` 是否被走到 |
 
 NK4-A 的 Task 粒度状态：A DONE、B 未触发、**C BLOCKED（六轮真机未定性，
 已超铁律 3 轮上限）**、D/E 未开始（严格下游）。
@@ -156,10 +183,11 @@ NK4-A 的 Task 粒度状态：A DONE、B 未触发、**C BLOCKED（六轮真机�
 
 T0.3 未到达 rc marker（stage 4 FAIL，SMOKE-EXIT=1）。按 NK4B-TODO §1
 T0.5 的分支：**P1 必须做**，其内容就是 NK4-A Task C 的未决前沿——
-x86_64 上 RS 的 RBX 交付成 0 → init_fresh step2 的 `self=0` 空指针
+x86_64 上 rs 的 RBX 交付成 0 → init_fresh step2 的 `self=0` 空指针
 → SIGSEGV → 内核 cause_sig panic，rc marker 因此永不到达。
-P1 的断点、已排除项、未布防站点、第 7 轮方案见上表（T0.4）。
+P1 的断点、已排除项、探针未覆盖的存帧站点、第 7 轮方案见上表（T0.4）。
 
 - 自检：fix-guard 本轮未涉及代码修改 N/A；计数不减 ✅（未改代码）；
   两次复跑 N/A（P0 只要求实测记录）；FIXLOG 本轮无修复条目，N/A；
-  WORKLOG ✅
+  WORKLOG ✅；真机/测试输出已 `git add -f` 归档到
+  `evidence/20260922-nk4b-p0/`（冒烟 stdout + 六包 `test result:` 行）✅
