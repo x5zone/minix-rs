@@ -1,0 +1,1 @@
+//! 翻译自 test1(信号递送到子进程)/test2(fork 等待与僵尸)/test12(fork 基础)/test13(pipe 加 fork 继承)/test70(fork 后 lseek 共享偏移)。驱动 minix-pm fork/exit/wait 真链与 minix-vfs handle_fork/copy_fproc 的 filp 共享面。点亮前提:PM fork 链可执行(VM 段以 wire 契约应答)。

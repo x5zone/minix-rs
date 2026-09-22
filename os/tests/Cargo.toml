@@ -12,6 +12,8 @@ minix-sched = { path = "../servers/sched" }
 minix-sys = { path = "../libs/minix-sys" }
 minix-mib = { path = "../servers/mib" }
 minix-sef = { path = "../libs/minix-sef" }
+minix-fs = { path = "../libs/minix-fs" }
+minix-fs-mfs = { path = "../fs/mfs" }
 
 [dev-dependencies]
 
@@ -38,3 +40,45 @@ path = "ds_publish_subscribe.rs"
 [[test]]
 name = "mib_sysctl"
 path = "mib_sysctl.rs"
+
+# ---------------------------------------------------------------------------
+# minix3/minix/tests(POSIX 合规套件)Rust 腿翻译目录。
+# 交付门 = 编译;全部测试 #[ignore] 注明点亮前提,随系统成熟逐域摘帽。
+# 翻译映射账本:notes/rewrite/fork-syscall-rewrite/19-stage-integration/minix3-tree-migration.md §7.2
+# ---------------------------------------------------------------------------
+
+[[test]]
+name = "t_proc_lifecycle"
+path = "t_proc_lifecycle.rs"
+
+[[test]]
+name = "t_signals"
+path = "t_signals.rs"
+
+[[test]]
+name = "t_credentials"
+path = "t_credentials.rs"
+
+[[test]]
+name = "t_fs_dir_ops"
+path = "t_fs_dir_ops.rs"
+
+[[test]]
+name = "t_fs_special"
+path = "t_fs_special.rs"
+
+[[test]]
+name = "t_pipe_select_locks"
+path = "t_pipe_select_locks.rs"
+
+[[test]]
+name = "t_memory_vm"
+path = "t_memory_vm.rs"
+
+[[test]]
+name = "t_tty_termios"
+path = "t_tty_termios.rs"
+
+[[test]]
+name = "t_net_sockets"
+path = "t_net_sockets.rs"
