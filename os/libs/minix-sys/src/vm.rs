@@ -235,28 +235,26 @@ pub fn break_via(
 /// Forks an address space (server-side call).
 ///
 /// C: `vm_fork` (`minix3/minix/lib/libsys/vm_fork.c:10-24`): store the
-/// endpoint and slot, run the server-side protocol, and read the child
-/// endpoint back from the reply. The child endpoint sits in the first four
-/// reply bytes.
+/// endpoint and slot in the `VMF_ENDPOINT`/`VMF_SLOTNO` lanes (`m1i1`/`m1i2`,
+/// `com.h:633-634`), run the server-side protocol, and read the child
+/// endpoint back from `VMF_CHILD_ENDPOINT` (`m1i3`, `com.h:635`). The named
+/// `mess_1` lanes carry the layout (`m1ull1` leads, so the integer lanes are
+/// not at raw offset zero).
 pub fn fork_address_space_via(
     transport: &impl IpcTransport,
     endpoint: Endpoint,
     slot: i32,
 ) -> Result<Endpoint, Errno> {
     let mut message = crate::syscall::cleared_message();
-    // SAFETY: two plain integers at bytes zero and four; exact bytes below.
-    unsafe {
-        message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
-        message.m_u.raw[4..8].copy_from_slice(&slot.to_ne_bytes());
-    }
+    message.m_u.m_m1.m1i1 = endpoint.0;
+    message.m_u.m_m1.m1i2 = slot;
     let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_FORK, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
-    // SAFETY: the reply payload is 56 readable bytes; the child endpoint
-    // sits at byte zero.
-    let child = unsafe { message.m_u.raw[..4].as_ptr().cast::<i32>().read() };
-    Ok(Endpoint(child))
+    // SAFETY: the reply's active arm is `m_m1` (VM writes `VMF_CHILD_ENDPOINT`
+    // = m1i3 back through the same lanes).
+    Ok(Endpoint(unsafe { message.m_u.m_m1.m1i3 }))
 }
 
 /// Ends address-space bookkeeping (server-side call).
@@ -934,15 +932,18 @@ mod tests {
     fn test_fork_address_space_returns_child() {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
-        // SAFETY: test-only payload setup through the documented overlay.
-        unsafe {
-            reply.m_u.raw[..4].copy_from_slice(&9i32.to_ne_bytes());
-        }
+        reply.m_u.m_m1.m1i3 = 9;
         transport.reply_sendrec(Ok(reply));
         assert_eq!(
             fork_address_space_via(&transport, Endpoint(4), 3),
             Ok(Endpoint(9))
         );
+        let sent = transport.sent.borrow();
+        let (dest, request) = &sent[0];
+        assert_eq!(*dest, vm_endpoint());
+        // SAFETY(test): m1i1/m1i2 are the request's active lanes.
+        let lanes = unsafe { (request.m_u.m_m1.m1i1, request.m_u.m_m1.m1i2) };
+        assert_eq!(lanes, (4, 3));
     }
 
     #[test]
