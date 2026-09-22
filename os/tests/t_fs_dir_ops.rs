@@ -1,4 +1,4 @@
-//! minix3/minix/tests Rust 腿翻译 —— 目录与链接语义域(test14-36/43 选集)。
+//! minix3/minix/tests Rust 腿翻译 —— 目录与链接语义域(test19/21/22/28/32/34/61/78 选集)。
 //!
 //! # 翻译映射
 //!
@@ -10,12 +10,12 @@
 //!
 //! | C 测试 | 语义归宿 |
 //! |---|---|
-//! | test23/test21(mkdir/rmdir 生命周期) | [`mkdir_lookup_rmdir_lifecycle`] |
-//! | test16/test28(link 计数与双名共存) | [`link_unlink_persists_via_second_name`] |
-//! | test21/32/46(rename 替换与跨目录) | [`rename_replaces_target_and_moves_across_dirs`] |
-//! | test25/43(符号链接往返) | [`symlink_roundtrip`] |
-//! | test33/34/35(chmod/chown 落盘) | [`chmod_chown_reflected_in_stat`] |
-//! | test22/33(umask 掩码) | umask 是 PM/VFS 侧决策(`syscalls.rs` Umask 臂已有 crate 测试),MFS 层看到的已是掩码后模式,不在此重复 |
+//! | test21b/21c 与 test28(mkdir/rmdir 生命周期) | [`mkdir_lookup_rmdir_lifecycle`] |
+//! | test19(link 与 fstat 的 st_nlink 对账,test19.c:314/320) | [`link_unlink_persists_via_second_name`] |
+//! | test21a/test32(rename 替换既有目标、超长名;test32 专测 rename) | [`rename_replaces_target_and_moves_across_dirs`] |
+//! | test78(DT_LNK 节点)与 test61(悬空链接) | [`symlink_roundtrip`] |
+//! | test34(chmod/chown) | [`chmod_chown_reflected_in_stat`] |
+//! | test22(umask) | umask 是 PM/VFS 侧决策(`syscalls.rs` Umask 臂已有 crate 测试),MFS 层看到的已是掩码后模式,不在此重复 |
 //!
 //! # 翻译即发现的 C↔Rust 语义缺口(记录,不改产品代码)
 //!
@@ -67,7 +67,7 @@ fn zero_clock() -> i64 {
 // test23/21 —— mkdir/rmdir 生命周期
 // ---------------------------------------------------------------------------
 
-/// C test23/test21:建目录、名字可解析、删除后名字消失;删不存在的目录
+/// C test21b/21c 与 test28:建目录、名字可解析、删除后名字消失;删不存在的目录
 /// 返回 ENOENT。
 #[test]
 #[ignore = "点亮前提:VFS↔MFS 跨包桥点亮后由真路径驱动复核"]
@@ -108,11 +108,12 @@ fn mkdir_lookup_rmdir_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
-// test16/28 —— link 计数与双名共存
+// test19 —— link 计数与双名共存
 // ---------------------------------------------------------------------------
 
-/// C test16/test28:硬链接后两个名字指向同一 inode,链接计数 2;删原名
-/// 后内容经别名仍可读;删掉最后一个名字后名字消失、链接计数归零。
+/// C test19(314/320 行的 st_nlink 对账)与 test17/30 的 link 面:硬链接后
+/// 两个名字指向同一 inode,链接计数 2;删原名后内容经别名仍可读;删掉
+/// 最后一个名字后名字消失、链接计数归零。
 #[test]
 #[ignore = "点亮前提:VFS↔MFS 跨包桥点亮后由真路径驱动复核"]
 fn link_unlink_persists_via_second_name() {
@@ -129,7 +130,10 @@ fn link_unlink_persists_via_second_name() {
     server
         .stat(file.inode_number, &mut stat)
         .expect("stat 可读");
-    assert_eq!(stat.nlinks, 2, "链接计数 2(C test28 的 st_nlink 断言)");
+    assert_eq!(
+        stat.nlinks, 2,
+        "链接计数 2(C test19.c:320 的 st_nlink 对账)"
+    );
 
     // 删原名:数据经别名存活。
     server.unlink(ROOT, "f").expect("删原名");
@@ -153,10 +157,10 @@ fn link_unlink_persists_via_second_name() {
 }
 
 // ---------------------------------------------------------------------------
-// test21/32/46 —— rename 替换与跨目录
+// test21a/32 —— rename 替换与跨目录
 // ---------------------------------------------------------------------------
 
-/// C test21/32/46:rename 同目录替换目标(目标 inode 被 a 的 inode 接管),
+/// C test21a/test32:rename 同目录替换目标(目标 inode 被 a 的 inode 接管),
 /// 跨目录移动后旧目录名字消失。
 #[test]
 #[ignore = "点亮前提:MfsServer 补 FsDriver rename 臂接线(当前 ENOSYS 默认,见文件头缺口记录)"]
@@ -177,7 +181,7 @@ fn rename_replaces_target_and_moves_across_dirs() {
         "b 的 inode = a 的 inode(替换)"
     );
 
-    // 跨目录移动(C test46:rename 涉及 root)。
+    // 跨目录移动(C test21a 的跨目录段:rename 涉及不同目录)。
     server.make_dir(ROOT, "d", 0o040755, 0, 0).expect("建目录");
     let d = server.lookup_child(ROOT, "d").expect("目录可解析").0;
     server.create(ROOT, "c", 0o100644, 0, 0).expect("建 c");
@@ -192,11 +196,11 @@ fn rename_replaces_target_and_moves_across_dirs() {
 }
 
 // ---------------------------------------------------------------------------
-// test25/43 —— 符号链接往返
+// test78/61 —— 符号链接往返
 // ---------------------------------------------------------------------------
 
-/// C test25/43:symlink 建立后名字解析到 S_IFLNK 类型节点,readlink 逐字节
-/// 还原目标串。
+/// C test78(DT_LNK 节点)与 test61(悬空链接):symlink 建立后名字解析到
+/// S_IFLNK 类型节点,readlink 逐字节还原目标串。
 #[test]
 #[ignore = "点亮前提:VFS↔MFS 跨包桥点亮后由真路径驱动复核"]
 fn symlink_roundtrip() {
@@ -219,10 +223,10 @@ fn symlink_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
-// test33/34/35 —— chmod/chown 落盘
+// test34 —— chmod/chown 落盘
 // ---------------------------------------------------------------------------
 
-/// C test33/34/35:chmod 只改权限位(类型位保留),chown 改属主/属组,
+/// C test34:chmod 只改权限位(类型位保留),chown 改属主/属组,
 /// 两者经 stat 读回。
 #[test]
 #[ignore = "点亮前提:VFS↔MFS 跨包桥点亮后由真路径驱动复核"]

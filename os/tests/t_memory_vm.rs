@@ -16,8 +16,15 @@
 //! | test64(mmap 跨 fork 的内核半) | [`fork_address_space_carries_endpoint_and_slot`] |
 //! | test75(getrusage)/test85(块设备 EOF) | getrusage 归 PM time 面(未翻译,挂账);块设备 EOF 归 `t_fs_special` 后续条目 |
 //!
+//! # 翻译即发现的 C↔Rust 语义缺口(记录,不改产品代码)
+//!
+//! `minix_sys::vm::fork_address_space_via` 从应答偏移 0 读子端点,而 C
+//! `libsys/vm_fork.c:21` 读 `VMF_CHILD_ENDPOINT` = m1i3 车道(偏移 8,
+//! `com.h:635`)——两侧自洽但与 C wire 不兼容。[`fork_address_space_carries_endpoint_and_slot`]
+//! 按 C 车道钉断言,当前实现下点亮即失败,须先裁决修正产品代码或经评审。
+//!
 //! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性
-//! (本文件四测信息性运行均通过)。
+//! (其余三测信息性运行通过)。
 
 use minix_sys::ipc::CannedTransport;
 use minix_sys::vm::{
@@ -88,7 +95,7 @@ fn mmap_carries_seven_lanes_and_third_party_flag() {
     // 自映射:不带第三方旗。
     let mut transport = CannedTransport::new();
     let mut reply = ok_reply();
-    // 应答的活跃车道是 retaddr(C mmap.c:44-45);union 字段赋值无读,
+    // 应答的活跃车道是 retaddr(C mmap.c:46);union 字段赋值无读,
     // 不需要 unsafe。
     reply.m_u.m_mmap.retaddr = 0x5000_0000;
     transport.reply_sendrec(Ok(reply));
@@ -160,22 +167,29 @@ fn munmap_carries_addr_and_len() {
 // test64 —— vm_fork:端点与槽位车道
 // ---------------------------------------------------------------------------
 
-/// C 语义(`libsys/vm_fork.c:10-24`):端点(0..4)与槽位(4..8)上 wire,
-/// 应答首 4 字节 = 子端点;负回码转 errno。
+/// C 语义(`libsys/vm_fork.c:10-24`):端点(m1i1,偏移 0)与槽位(m1i2,
+/// 偏移 4)上 wire;应答的子端点在 `VMF_CHILD_ENDPOINT` = m1i3 车道
+/// (`com.h:635`,偏移 8;`vm_fork.c:21` 读取);负回码转 errno。
 #[test]
-#[ignore = "点亮前提:VM fork 消费半随载体点亮后复核"]
+#[ignore = "点亮前提:minix_sys fork_address_space_via 的应答车道按 C 对齐(当前读偏移 0,见文件头缺口记录)后复核"]
 fn fork_address_space_carries_endpoint_and_slot() {
     let parent = minix_types::Endpoint(0x102);
     let mut transport = CannedTransport::new();
     let mut reply = ok_reply();
-    // SAFETY(test): 应答首 4 字节 = 子端点(vm_fork.c:21-23)。
+    // C 应答布局:子端点在 m1i3 车道(偏移 8,vm_fork.c:21 的
+    // VMF_CHILD_ENDPOINT)。
+    // SAFETY(test): raw 是应答消息的载荷区,偏移 8..12 = m1i3。
     unsafe {
-        reply.m_u.raw[..4].copy_from_slice(&0x103u32.to_ne_bytes());
+        reply.m_u.raw[8..12].copy_from_slice(&0x103u32.to_ne_bytes());
     }
     transport.reply_sendrec(Ok(reply));
 
     let child = fork_address_space_via(&transport, parent, 7).expect("vm_fork 成功");
-    assert_eq!(child, minix_types::Endpoint(0x103), "子端点从应答读回");
+    assert_eq!(
+        child,
+        minix_types::Endpoint(0x103),
+        "子端点从 m1i3 车道读回"
+    );
 
     let sent = transport.sent.borrow();
     let (dest, msg) = &sent[0];

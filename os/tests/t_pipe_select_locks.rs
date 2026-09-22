@@ -164,7 +164,9 @@ fn record_locks_conflict_query_and_release() {
         .expect("SETLKW 决策本身不报错");
     assert!(matches!(out, LockOutcome::Wait(_)), "F_SETLKW 转等待挂起");
 
-    // pid1 解锁:释放其在该 vnode 的全部锁(C lock.c:625 语义)。
+    // pid1 解锁:释放其在该 vnode 的全部锁。C 的按进程清扫在 free_proc
+    // 释放面(filp 关闭连带),锁表本体的解锁与唤醒在 lock.c:100-133
+    // (unlocking 分支尾 `lock_revive()`,133)。
     assert!(mgr.release_for(vnode, 1), "有锁可放");
     let out = mgr
         .lock_op_decision(

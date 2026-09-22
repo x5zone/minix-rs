@@ -4,14 +4,14 @@
 //!
 //! | C 测试 | 语义归宿 |
 //! |---|---|
-//! | test70(父子交替 lseek) | 本文件 [`lseek_alternating_processes_keep_shared_offset_consistent`] |
-//! | test13(fork 继承打开描述符) | 本文件 [`fork_shares_filp_entries_and_bumps_counts`](fd 继承面;pipe 语义本体归 `t_pipe_select_locks.rs`) |
+//! | test70(两进程对各自临时文件交替 lseek 的消息字段竞争回归) | 本文件 [`lseek_alternating_processes_keep_shared_offset_consistent`](C 的两进程各持独立文件;Rust VFS 单线程事件循环无竞争对象,钉的是字段逐条对账;测试额外覆盖 fork 共享 filp 后单一偏移的 POSIX 继承语义) |
+//! | test13(pipe 加 fork 的描述符继承吞吐面) | 本文件 [`fork_shares_filp_entries_and_bumps_counts`](fd 继承面;pipe 语义本体归 `t_pipe_select_locks.rs`) |
 //! | test1/2/12(fork/wait/僵尸) | 已由 `pm_vm_fork.rs`(fork 全链)与 `servers/pm/tests/run_once_integration.rs`(exit 不回复僵尸化、wait4 回收带状态、ECHILD)覆盖,不重复断言 |
 //!
 //! # 翻译即发现的 C↔Rust 语义偏差(记录,不改产品代码)
 //!
 //! C `misc.c:616-617`:pm_fork 对每个非空 `fp_filp[i]` 执行 `filp_count++`;
-//! C `misc.c:629-630`:对 `fp_rd`/`fp_wd` 各执行 `dup_vnode`。Rust 侧
+//! C `misc.c:632-633`:对 `fp_rd`/`fp_wd` 各执行 `dup_vnode`。Rust 侧
 //! `servers/vfs/src/ipc/dispatcher.rs` 的 `copy_fproc` 只拷贝索引,两处计数
 //! 均未递增。测试 A 把 C 语义钉为断言——点亮时若失败,即该偏差的复核点,
 //! 须先修产品代码或经评审裁决,不得改断言迁就实现。
@@ -75,7 +75,7 @@ fn lseek_msg(slot: usize, offset: i64, fd: i32) -> Message {
 }
 
 // ---------------------------------------------------------------------------
-// test13 + C misc.c:616-617/:629-630 —— fork 的描述符继承与共享计数
+// test13 + C misc.c:616-617/:632-633 —— fork 的描述符继承与共享计数
 // ---------------------------------------------------------------------------
 
 /// C 语义:子进程继承父的 fd 表(同一 filp 索引),每个继承项 `filp_count++`,
@@ -128,7 +128,7 @@ fn fork_shares_filp_entries_and_bumps_counts() {
             .expect("vnode 存在")
             .ref_count,
         2,
-        "C misc.c:629-630:rd/wd 各 dup_vnode → ref_count 2"
+        "C misc.c:632-633:rd/wd 各 dup_vnode → ref_count 2"
     );
 }
 
@@ -136,12 +136,14 @@ fn fork_shares_filp_entries_and_bumps_counts() {
 // test70 —— 父子进程对同一文件的交替 lseek
 // ---------------------------------------------------------------------------
 
-/// C test70(`minix3/minix/tests/test70.c`):两进程对同一文件各在自己区间
-/// 交替 lseek(子 [0,1000)、父 [1000,2000)),断言每次返回值/落位与请求一致。
-/// C 的动机是追查多线程消息字段竞争;Rust VFS 是单线程事件循环,竞争从架构
-/// 上不存在,翻译保留的语义是:每条请求的 m7 字段独立解析、共享 `filp.pos`
-/// 逐次落位正确、待答进程身份与请求进程一致。规模按宿主预算缩为 64 轮
-/// (C 为 5000 轮 × 1000 步;单线程下无竞争对象,轮数只影响对账次数)。
+/// C test70(`minix3/minix/tests/test70.c`)的动机:两进程并发 lseek 时
+/// VFS 的 m_out 消息字段被竞争线程覆写导致返回错值——C 里父子各自 mkstemp
+/// 独立临时文件(子 [0,1000)、父 [1000,2000),5000 轮)。Rust VFS 是单线程
+/// 事件循环,竞争从架构上不存在;本测试把该动机钉成两条可执行语义:每条
+/// 请求的 m7 字段独立解析、待答进程身份与请求进程一致;并以 fork 共享同一
+/// filp 的夹具一并覆盖 POSIX 继承语义下的单一 `filp.pos`(C 由
+/// `misc.c` pm_fork 的 filp 共继承承载,编号套件无共享偏移专项)。规模按
+/// 宿主预算缩为 64 轮(单线程下无竞争对象,轮数只影响对账次数)。
 #[test]
 #[ignore = "点亮前提:VFS 挂起路径续接(REQ_INHIBREAD → FS 回复 → 携新位置回信)真链复核"]
 fn lseek_alternating_processes_keep_shared_offset_consistent() {

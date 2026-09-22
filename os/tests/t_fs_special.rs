@@ -1,4 +1,4 @@
-//! minix3/minix/tests Rust 腿翻译 —— 特殊文件与目录边界域(test43/58/61/78)。
+//! minix3/minix/tests Rust 腿翻译 —— 特殊文件与目录边界域(test58/78 选集)。
 //!
 //! # 翻译映射
 //!
@@ -7,10 +7,10 @@
 //!
 //! | C 测试 | 语义归宿 |
 //! |---|---|
-//! | test61/78(mknod 设备文件) | [`mknod_device_file_records_type_and_rdev`] |
-//! | test43/78(lstat 读链接本体而非目标) | [`lstat_on_symlink_reports_link_not_target`] |
+//! | test78(chr/blk 节点经 mknod 建立并被 readdir 枚举) | [`mknod_device_file_records_type_and_rdev`](rdev 数值断言取 `mfs statdir.c:65` 的 st_rdev 语义,编号套件无数值断言) |
+//! | test78(DT_LNK 项经 lstat 取 S_IFLNK 位) | [`lstat_on_symlink_reports_link_not_target`](链接大小 = 目标串字节数为 POSIX 语义) |
 //! | test58(被删目录内名字消解) | [`removed_directory_names_stop_resolving`] |
-//! | test73(umask 与 root) | umask 归 PM/VFS 决策层(crate 已测),不在此重复 |
+//! | (test61 的 mknod EEXIST 面、test73 为 VM 缓存黑盒测试,与 umask 无关,均不在本文件) | — |
 //!
 //! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
 
@@ -47,17 +47,17 @@ fn zero_clock() -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// test61/78 —— mknod 设备文件
+// test78 —— mknod 设备文件
 // ---------------------------------------------------------------------------
 
-/// C test61/78:mknod 建字符设备文件后,名字解析到 S_IFCHR 节点,
-/// 设备号随 stat 读回(C test61 断言 st_rdev)。
+/// C test78:mkfifo/mknod(chr/blk)六类节点建立并被枚举;rdev 数值随
+/// stat 读回是 `mfs statdir.c:65` 的 st_rdev 语义(编号套件无数值断言)。
 #[test]
 #[ignore = "点亮前提:VFS↔MFS 跨包桥点亮后由真路径驱动复核"]
 fn mknod_device_file_records_type_and_rdev() {
     let mut server = mounted_server();
 
-    // C test61:mkfifo/mknod 组合;这里钉字符设备语义。
+    // C test78 的 mknod(chr/blk)段;这里钉字符设备语义。
     server
         .make_node(ROOT, "tty0", 0o020600, 0, 0, 0x2c01)
         .expect("mknod 合法");
@@ -69,7 +69,10 @@ fn mknod_device_file_records_type_and_rdev() {
         .stat(node.inode_number, &mut stat)
         .expect("stat 可读");
     assert_eq!(stat.mode & 0o170000, 0o020000, "stat 类型位一致");
-    assert_eq!(stat.special, 0x2c01, "stat 设备号一致(C test61 的 st_rdev)");
+    assert_eq!(
+        stat.special, 0x2c01,
+        "stat 设备号一致(mfs statdir.c:65 的 st_rdev 语义)"
+    );
 
     // 块设备同型(C test61 的第二段)。
     server
@@ -80,11 +83,12 @@ fn mknod_device_file_records_type_and_rdev() {
 }
 
 // ---------------------------------------------------------------------------
-// test43/78 —— lstat 读链接本体
+// test78 —— lstat 读链接本体
 // ---------------------------------------------------------------------------
 
-/// C test43:lstat 对符号链接返回链接自身(类型 S_IFLNK、大小 = 目标串
-/// 字节数),不解析目标。FS 层 stat 即 lstat 语义(VFS 才做跟随)。
+/// C test78(CR 宏对 DT_LNK 项 lstat 并要求 S_IFLNK 位):lstat 对符号
+/// 链接返回链接自身,不解析目标;链接大小 = 目标串字节数是 POSIX 语义
+/// (编号套件无大小断言)。FS 层 stat 即 lstat 语义(VFS 才做跟随)。
 #[test]
 #[ignore = "点亮前提:VFS↔MFS 跨包桥点亮后由真路径驱动复核"]
 fn lstat_on_symlink_reports_link_not_target() {

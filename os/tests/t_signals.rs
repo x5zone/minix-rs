@@ -1,13 +1,13 @@
-//! minix3/minix/tests Rust 腿翻译 —— 信号域(test5/37/41/52/68)。
+//! minix3/minix/tests Rust 腿翻译 —— 信号域(test5/37/41/68)。
 //!
 //! # 翻译映射
 //!
 //! | C 测试 | 语义归宿 |
 //! |---|---|
 //! | test37(sigaction 装置与读回) | 本文件 [`sigaction_installs_reads_back_and_rejects_invalid`] |
-//! | test37/52(信号被掩码后停于 pending) | 本文件 [`masked_signal_parks_in_pending_until_unblocked`] |
-//! | test5(用户身份与 kill 权限) | 本文件 [`kill_permission_eperm_esrch_and_probe`] |
-//! | test41(alarm 置位/撤销/到期) | 本文件 [`alarm_set_cancel_and_expiry_paths`] |
+//! | test37b(sigprocmask/sigpending:掩码信号停 pending、解阻塞投递) | 本文件 [`masked_signal_parks_in_pending_until_unblocked`] |
+//! | test5(同 uid 父子 kill 互发、退出状态、EINTR 面) | 本文件 [`kill_permission_eperm_esrch_and_probe`](跨用户 EPERM/ESRCH/探测在编号套件无专门载体,语义取 `signal.c:621-632` 实现面) |
+//! | test41(alarm 与 itimer 交互、到期投递;撤销与 SIG_IGN 为 alarm.c 实现语义) | 本文件 [`alarm_set_cancel_and_expiry_paths`] |
 //! | test38/68(信号与文件操作、exec 交错) | 挂起路径的续接面,待 VFS 挂起续接真链点亮后补;kill 终止链已由 `servers/pm/tests/run_once_integration.rs::kill_termination_tells_vfs_exit` 覆盖 |
 //!
 //! C 测试的断言锚点逐条给出(`minix3/minix/servers/pm/signal.c` 与
@@ -182,7 +182,7 @@ impl TimerCtl for ScriptedTimerCtl {
 // test37 —— sigaction 装置、读回与拒绝
 // ---------------------------------------------------------------------------
 
-/// C 语义(`minix3/minix/tests/test37.c` 的 sigaction 用法;处置表见
+/// C 语义(`minix3/minix/tests/test37.c` 的 test37b 装置/读回段;处置表见
 /// `servers/pm/signal.c`):装新处置并读回旧处置;SIGKILL 不可装置(早退,
 /// 不动 oact);无效信号号返回 EINVAL;act 为空时纯读回。
 #[test]
@@ -260,10 +260,10 @@ fn sigaction_installs_reads_back_and_rejects_invalid() {
 }
 
 // ---------------------------------------------------------------------------
-// test37/52 —— 掩码信号停于 pending,解除后可见
+// test37b —— 掩码信号停于 pending,解除后可见(C test52 本体是 pipe 加 SIGCHLD 轮替,不贡献此条)
 // ---------------------------------------------------------------------------
 
-/// C 语义(signal.c:486-490 掩码臂):目标把 SIGUSR1 屏蔽后收到该信号,
+/// C 语义(signal.c:491-497 掩码臂):目标把 SIGUSR1 屏蔽后收到该信号,
 /// 信号不投递,置入 pending 位图,进程不受扰;sigpending 快照可见;
 /// 掩码解除时返回旧掩码(C sigprocmask 的 oact 语义)。
 #[test]
@@ -322,7 +322,7 @@ fn masked_signal_parks_in_pending_until_unblocked() {
 // test5 —— kill 权限、存在性与存在探测
 // ---------------------------------------------------------------------------
 
-/// C 语义(signal.c:616-628 权限与探测):不同用户 kill → EPERM(C 622-628
+/// C 语义(signal.c 权限与探测,616-632):不同用户 kill → EPERM(C 622-626
 /// 的 real/eff 匹配规则);同用户 → 命中;signo == 0 是存在探测(不投递);
 /// 未知 pid → ESRCH;负信号号 → EINVAL。
 #[test]
@@ -336,7 +336,7 @@ fn kill_permission_eperm_esrch_and_probe() {
     let mut kern = NoopKernelGateway;
     let mut transport = TestIpcTransport::new();
 
-    // 跨用户:EPERM(C signal.c:622-628 无一匹配)。
+    // 跨用户:EPERM(C signal.c:622-626 无一匹配;编号套件无跨用户载体,取实现语义)。
     let err = do_kill(&mut table, caller, 200, SIGTERM, &mut kern, &mut transport)
         .expect_err("不同用户必须拒绝");
     assert_eq!(err.to_errno(), minix_types::EPERM, "跨用户 kill → EPERM");
@@ -346,7 +346,7 @@ fn kill_permission_eperm_esrch_and_probe() {
         do_kill(&mut table, caller, 300, SIGTERM, &mut kern, &mut transport).expect("同用户可发");
     assert_eq!(hits, 1);
 
-    // 存在探测(signo == 0):命中但不投递(C signal.c:630-631 探测分支),
+    // 存在探测(signo == 0):命中但不投递(C signal.c:631-632 探测分支),
     // 目标存活、无 VFS 告知。用未收到过终止信号的新目标与全新通道,
     // 免得前一段终止链的出站消息混入对账。
     seed(&mut table, 4, 400, 100);
@@ -378,10 +378,11 @@ fn kill_permission_eperm_esrch_and_probe() {
 // test41 —— alarm 置位、撤销与到期
 // ---------------------------------------------------------------------------
 
-/// C 语义(`minix3/minix/tests/test41.c`;机制 `servers/pm/alarm.c`):
+/// C 语义(`minix3/minix/tests/test41.c` 的 test_alarm 段 263-288;机制 `servers/pm/alarm.c`):
 /// alarm(n) 挂内核定时器并标记 ALARM_ON(set_alarm,alarm.c:299-311);
-/// alarm(0) 撤销;到期回调投递 SIGALRM(alarm.c:317-344)——已装 SIG_IGN
-/// 则吞掉(signal.c:486-488 忽略臂),默认处置则终止(经 VFS_PM_EXIT 告知);
+/// alarm(0) 撤销(实现语义,test41 的撤销走 setitimer 零值);到期回调投递
+/// SIGALRM(alarm.c:317-344,test41 断言到期 SIGALRM 恰一次)——已装 SIG_IGN
+/// 则吞掉(signal.c:487-490 忽略臂),默认处置则终止(经 VFS_PM_EXIT 告知);
 /// 无警报时的到期回调是空操作。
 #[test]
 #[ignore = "点亮前提:PM 定时器与信号终止链随载体点亮后复核"]
@@ -408,7 +409,7 @@ fn alarm_set_cancel_and_expiry_paths() {
     assert_eq!(tctl.cancels, vec![target_ep], "alarm(0) 取消定时器");
     assert!(table.procs[1].resources.timer.is_none(), "标记清除");
 
-    // 无警报时的到期回调:guard 拦截,不投递(alarm.c:324-330)。
+    // 无警报时的到期回调:guard 拦截,不投递(alarm.c:330-331)。
     let mut transport = TestIpcTransport::new();
     let delivered = cause_sigalrm(&mut table, target_ep, &mut tctl, &mut kern, &mut transport);
     assert!(!delivered, "无 ALARM_ON 标记 → 不触发投递");
@@ -445,7 +446,7 @@ fn alarm_set_cancel_and_expiry_paths() {
     );
 
     // 默认处置:重挂警报后到期,SIGALRM 终止目标并告知 VFS(C
-    // forkexit.c:350-358 的无条件 tell_vfs;终止链告知见 run_once_integration
+    // forkexit.c:347-359 的无条件 tell_vfs;终止链告知见 run_once_integration
     // ::kill_termination_tells_vfs_exit 判例)。
     let target2_slot = minix_types::UserSlot::new(2);
     seed(&mut table, 2, 101, 200);

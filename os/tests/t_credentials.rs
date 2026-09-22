@@ -6,8 +6,8 @@
 //! |---|---|
 //! | test89(saved IDs 舞步) | 本文件 [`seteuid_saved_id_dance_lets_root_drop_and_regain`] |
 //! | test89(setuid 权限门) | 本文件 [`setuid_requires_match_or_superuser`] |
-//! | test89(setgroups/getgroups) | 本文件 [`setgroups_superuser_only_and_getgroups_roundtrip`] |
-//! | test89(setsid 与进程组) | 本文件 [`setsid_binds_procgrp_and_getsid_resolves`] |
+//! | test46(getgroups/setgroups 专项) | 本文件 [`setgroups_superuser_only_and_getgroups_roundtrip`] |
+//! | setsid 与进程组(C 载体是 test42/77,编号套件无专项) | 本文件 [`setsid_binds_procgrp_and_getsid_resolves`](取 `getset.c:205-207` 实现语义) |
 //! | test11(exec 面的 UID/GID 语义) | exec 路径的 setuid 注入臂已由 `srv_fork.rs` 覆盖;文件权限判定归 `t_fs_dir_ops.rs`,此处不重复 |
 //!
 //! C ground truth:`minix3/minix/servers/pm/getset.c`(223 行,13 个调用)。
@@ -101,7 +101,7 @@ impl CopyGroups for ScriptedGroups {
 // test89 —— saved ID 舞步:root 降权后凭 saved id 收回
 // ---------------------------------------------------------------------------
 
-/// C 语义(getset.c:134 seteuid 只动 effective;权限门 128-131:目标须等于
+/// C 语义(getset.c:134 seteuid 只动 effective;权限门 131-133:目标须等于
 /// real 或 saved,或超级用户):(0,0,0) → seteuid(100) 得 (0,100,0)——
 /// saved 保留 0;凭 saved 收回 seteuid(0) 成功;setuid(100) 全三元组降权
 /// (117-119)后 seteuid(0) 被拒(saved 已是 100)。
@@ -197,7 +197,7 @@ fn setuid_requires_match_or_superuser() {
 // test89 —— setgroups/getgroups 往返
 // ---------------------------------------------------------------------------
 
-/// C 语义(getset.c:180-197):setgroups 仅超级用户(EPERM);getgroups
+/// C 语义(getset.c:172-197):setgroups 仅超级用户(EPERM);getgroups
 /// count==0 查询组数不拷贝;拷贝路径走 sys_datacopy 缝。
 #[test]
 #[ignore = "点亮前提:PM 凭证面随载体用户态点亮后复核"]
@@ -234,7 +234,7 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     )
     .expect("root setgroups 合法");
 
-    // count==0 查询:返回组数,不拷贝(getset.c:63-66)。
+    // count==0 查询:返回组数,不拷贝(getset.c:34-37)。
     match do_get(
         &table,
         root,
@@ -251,7 +251,7 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     }
     assert!(copier.written.is_empty(), "count==0 不拷贝");
 
-    // 拷贝路径:缓冲不足(count < ngroups)→ EINVAL(getset.c:67-69);
+    // 拷贝路径:缓冲不足(count < ngroups)→ EINVAL(getset.c:39-41);
     // 足够则按序写回。
     let too_small = do_get(
         &table,
@@ -286,7 +286,7 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
 // test89 —— setsid 与 getsid
 // ---------------------------------------------------------------------------
 
-/// C 语义(getset.c:201-208):setsid 时若调用者已是进程组长(procgrp ==
+/// C 语义(getset.c:205-207):setsid 时若调用者已是进程组长(procgrp ==
 /// pid)→ EPERM;否则 procgrp 绑为自身 pid。getsid:pid==0 查自身,未知
 /// pid → ESRCH。
 #[test]
@@ -305,7 +305,7 @@ fn setsid_binds_procgrp_and_getsid_resolves() {
         other => panic!("应返回 Pgrp,得 {other:?}"),
     }
 
-    // 再次 setsid:已是组长 → EPERM(getset.c:202-203)。
+    // 再次 setsid:已是组长 → EPERM(getset.c:206)。
     let err = do_set(&mut table, caller, SetOp::SetSid, &mut copier, &mut vfs)
         .expect_err("组长重复 setsid 必须拒绝");
     assert_eq!(err.to_errno(), minix_types::EPERM);

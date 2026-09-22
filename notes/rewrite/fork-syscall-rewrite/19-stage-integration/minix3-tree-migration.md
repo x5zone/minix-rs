@@ -148,7 +148,7 @@ C 腿的价值不因挂起而贬值:它是量尺,量尺的正确性不能依赖�
 
 | 测试文件 | 翻译自 | 层面 |
 |---|---|---|
-| `t_proc_lifecycle.rs` | test13/70 | VFS filp 共享 + 交替 lseek 对账 |
+| `t_proc_lifecycle.rs` | test13/70 | VFS filp 共享继承 + test70 消息字段对账(C 父子各持独立文件,共享偏移为 POSIX 继承语义推论) |
 | `t_signals.rs` | test5/37/41/52 | PM 信号处置、掩码 pending、kill 权限、alarm |
 | `t_credentials.rs` | test11/89 | PM 凭证:saved-id 舞步、权限门、setgroups、setsid |
 | `t_fs_dir_ops.rs` | test14-36/43 选集 | MFS 真盘:目录/链接/symlink/chmod |
@@ -170,14 +170,14 @@ test1/2/12 的 fork/wait 语义不重复翻译,由 `pm_vm_fork.rs` 与 `servers/
 |---|---|---|
 | test1 | fork 基础与信号递送到子进程(`test1.c`:`test1a`/`test1b`) | PM + 内核调度 |
 | test2 | fork/wait/pipe 混合计时与僵尸回收 | PM + VFS |
-| test5 | setuid/setgid 切换后信号与管道行为 | PM 权限面 |
+| test5 | 同 uid 父子 kill 互发、被信号打断的 EINTR、setuid/setgid(root) | PM 权限面 |
 | test12 | fork 简单语义 | PM |
 | test13 | pipe + fork 继承 | VFS + PM |
 | test37 | 信号处置 + setjmp/longjmp 穿越 | PM 信号面 |
 | test38 | 信号与文件操作交错 | PM + VFS |
 | test41 | alarm 定时与信号 | 时钟 + PM |
 | test42 | ptrace 全套(1509 行,套件最大单文件) | PM ptrace 面;若不做调试器支持则是边界决策项 |
-| test52 | 管道 + sigaction | PM + VFS |
+| test52 | pipe + fork 轮替计算,SIGCHLD handler 内 wait | PM + VFS |
 | test57 | 信号后寄存器恢复(`test57loop.S`,i386 专属) | 体系结构相关,按载体体系结构决定 |
 | test62 | 信号时序(i386 专属) | 同上 |
 
@@ -190,16 +190,16 @@ test1/2/12 的 fork/wait 语义不重复翻译,由 `pm_vm_fork.rs` 与 `servers/
 | test8 | pipe 行为细化 | VFS |
 | test10 | execl 执行语义 | PM exec |
 | test11 | exec 与 UID/GID 语义 | PM 权限面 |
-| test14–test36(23 项) | 目录操作、link/rename/umask、chmod/chown/utime、chdir、sync、mkfifo、symlink、dup/fcntl、umask 与权限组合——按编号递进,每项聚焦一两个系统调用的边角 | VFS + MFS;宿主接缝上可先行(Rust 腿) |
-| test43 | symlink/lstat 语义 | VFS |
-| test46 | rename + setuid(root 权限) | VFS + PM |
+| test14–test36(23 项) | 目录操作、link、rename、umask、时间戳(test16)、access(test33)、utime(test35)、mkdir/rmdir(test28)、chdir、sync、mkfifo、symlink、dup/fcntl——主题不随编号单调,逐个迁移前先核对头注释 | VFS + MFS;宿主接缝上可先行(Rust 腿) |
+| test43 | realpath(3) 解析(lstat 为其中一环) | VFS |
+| test46 | getgroups/setgroups 专项(root);rename 仅作写权限探针 | VFS + PM |
 | test50 | fcntl/lseek 大范围边角 | VFS |
 | test54、test55 | close/unlink、write 边角 | VFS |
 | test58 | 当前工作目录被删除/替换后的行为(`test58.c` 头注释) | VFS |
-| test61 | mknod 设备文件语义 | VFS + 设备面 |
+| test61 | 悬空符号链接消解 + mknod 已存在名 EEXIST | VFS |
 | test65 | setuid 下 mkdir | VFS + PM |
-| test70 | fork 后 lseek 共享偏移 | VFS + PM |
-| test73 | umask + mkfifo(root 权限) | VFS |
+| test70 | 多进程并发 lseek 的消息字段竞争回归(父子各持独立临时文件;VFS 单线程架构下按字段对账钉住) | VFS |
+| test73 | VM 二级缓存黑盒测试(testvm 服务;umask/setuid 仅为运行前提) | VM + 载体 |
 | test78 | mknod/symlink/lstat 组合 | VFS |
 | test86 | chmod 对 exec 的影响 | PM + VFS |
 
