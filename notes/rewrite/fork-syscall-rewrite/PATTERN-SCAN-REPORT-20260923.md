@@ -1,0 +1,217 @@
+# PATTERN-SCAN-REPORT-20260923 — 历史日志模式挖掘与回归检查（C-61）
+
+> **任务**：用户指令「从 FIXLOG、WORKLOG 等历史 LOG 中扫描并发掘模式，扫描得到测试，避免以后再出现类似的问题」。
+> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../../tools/pattern-gate.sh)（13 项机械检查）+
+> [`tools/pattern-gate-baseline.txt`](../../../tools/pattern-gate-baseline.txt)（存量豁免）。
+> 判别证据：`evidence/20260923-c61-pattern-gate/`（selftest 18 例正反矩阵 + 真树变异负例 6 组 + 全量运行实录）。
+> **更正纪律**：本档断言全部可用所引条目标题 grep 复位；引用 FIXLOG 用「线 + 条目标题」定位（裸行号会漂移，
+> 即 review-patterns 所称「代码注释行号漂移」一类），引用代码用符号名。发现写错就地追加更正节，不改写原条目。
+
+---
+
+## §1 扫描语料与方法
+
+**语料**（全部精读或定向提取）：
+
+| 语料 | 形态 | 说明 |
+|---|---|---|
+| `.review/zcode/edge1/FIXLOG.md` | 2219 行 | 全文精读。含 NK2/NK8/NK1/NK4-A 迭代1-21、NK4-B M3/M4 全系列补记 |
+| `.review/zcode/edge2/FIXLOG.md` | 301 行 | 全文精读。L17 三批 + NL/NK/C 系列执行记录 |
+| `.review/zcode/edge3/FIXLOG.md`（现行本） | 616 行 | 全文精读。Fix #122-#148 |
+| `.review/zcode/edge3/FIXLOG_archive.md` | 3659 行 | 定向精读：流程事故段（#3222 事故两起、#233 流程教训）+ P0 代表条目 |
+| `.review/zcode/edge3/FIXLOG.raw-20260920.bak` | 68552 行 | 不通读；与 archive 做 sort -u 差异核查——仅 8 行重复拼接伪影，**无独有内容丢失** |
+| `.review/zcode/edge4/FIXLOG.md` | 128 行 | 全文精读 |
+| `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+| `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+| `NK4A-REVIEW-REPORT.md`、`NK4-REGRESSION-REVIEW-20260922{,-PART2}.md` | 定向提取 | 评审归纳节（危险面、可沉淀资产、OQ-1 建议） |
+| `new_edge1-4.md`、`edge_todo.md` | 定向提取 | §1 协作规则 + §2 认领板 C-XX 登记行教训 + 账本行判例 |
+| `NK4A-TODO.md` §5/§9、`NK4B-TODO.md` §8、`NK4B-OPENING-PROMPT.md` | 定向提取 | 铁律条款 |
+| `AI-chats/daily.todo.md` | 定向提取 | 教训条目（含未提交修改） |
+| `.review/zcode/{fork-syscall-rewrite,runtime}/` STATE/fix-status | 定向提取 | P0/P1 级教训条目 |
+| `prompt/review-rules/review-patterns.md` | 索引级 | 85 既有模式对照（§3），避免重复立模式 |
+
+**方法**：先全文精读成稿（工作笔记先行，防上下文压缩丢失），再对每个候选模式问三个问题——
+「在几份独立日志里出现过（频次）？」「当时怎么发现/怎么修的（已有对策）？」「能不能用 grep/脚本机械拦住
+（检测方式）？」。能机械拦的落成 `pattern-gate.sh` 的 P 检查项；不能的进 §5 流程纪律清单。
+
+---
+
+## §2 模式目录（六族 34 条）
+
+编号供人引用；「→P#」表示已落成 pattern-gate 检查项，「→§5」表示归入流程纪律。
+
+### A 族：账面 / 日志类
+
+| # | 模式 | 代表事故（出处条目） | 根因 | 检测 |
+|---|---|---|---|---|
+| A1 | **日志全量重复追加** | edge3 FIXLOG 膨胀到 68,552 行（同内容 32 遍、95.3% 重复行）；对策=追加前 `grep -c "^# "` 必须为 1（new_edge4 §1 规则 5） | 会话收尾把整文件重当增量写 | →P1 |
+| A2 | **FIXLOG 编号撞号** | #117×3、#118×2、#119×2、#101/#102/#103/#104/#105 各×3、#125 撞号（edge3 archive 索引 + Fix #126 撞号教训） | 多会话向共享 gitignored FIXLOG 各自追加；tracked 文档引用序号不可移植 | →P10（增量拦 todo/new_todo 裸引）+§5 |
+| A3 | **账面失真/滞后** | edge_todo 52 条中 10 条滞后可闭（LEDGER-AUDIT 专项）；S30 F3c-2 ⏳ 主张已被 17c88be0c 全额落地；NS10 账面三件两件已闭；X-5 过期误报（「跨轮状态陈旧 CTOS」家族，review-patterns 在案） | 账本行与代码演进不同步；「已闭单勿领」（new_edge3 :45） | 半机械：领取前对码（§5）；tools/todo-staleness-check.sh 已有 |
+| A4 | **文档/注释引用不存在的符号** | 设计文档 08-pm-srv-fork.md §2.4/§4.2 引用 `SRV_FORK_INHERIT_FLAGS`，全仓零命中；srv_fork.rs 注释同样虚构（edge4 批A 附带发现 / Fix #124①） | 凭设计意图写「代码事实」 | →P13 |
+| A5 | **C 锚点漂移** | `kernel/memory.c`、`krandom.c`、`arch/i386/smp.c` 不存在；`protect.c` 三处偏 7-18 行；行号上的角色标签错（打印者标成调用者）；「全仓无一处」实扫两目录（NK4B M4.4 五轮评审 + 旁支修复） | 凭记忆写锚点；范围词大于命令根 | →P11（增量）；存量靠 review-line-check.sh |
+
+### B 族：wire / 常量 / 协议类（重灾区，7 条）
+
+| # | 模式 | 代表事故 | 根因 | 检测 |
+|---|---|---|---|---|
+| B1 | **哨兵/调用号字面量化石值** | `SELF=-2`（真值 31742，-2 恰为 SYSTEM 端点，9 消费点永不命中，真机 wire 层才暴露）；`ANY=-3`；`MIB_CALL_SYSCTL=0x600`（权威 0x1800）；枚举序数当消息号（`CdevRequest::Ioctl as i32`=4 ≠ 0x404） | 手抄字面量 + canned 测试无端点语义校验 → 恒绿 | →P3（权威派生断言 + 0x1800 pin）；枚举序数族由 P2 清单里的 NS7-A 测试钉 |
+| B2 | **回复车道偏移错位** | lseek 回复被覆盖（Fix #70）、Read 回复布局（Fix #50）、回复状态偏移（Fix #87）、fchmod mode @8 vs C @4（C-45）、PM GetTimeOfDay nsec @16 vs @8（C-54）、VM_MMAP 回程 m1p1@16 vs @40（NS5-A） | 回复 overlay 的 C 结构权威没有双侧对拍 | →P2 清单（车道 pin 测试存在性）+§5（新 lane 必须双侧对偶测试） |
+| B3 | **符号域 / 正负号折算** | ERESTART +200 vs 线上 -200（edge3 暂停交接登记）；MIB 应答「负 m_type 判失败」vs C 正 errno 协议（C-59②，ENOMEM/ENOSYS 被当成功）；`KcallResult::Ok(errno)` 正号上线、VM 网关 `< 0` 判错把失败读成成功（edge1 Fix #9 迭代3 F10，未修登记） | i386 负 errno 语义在 Rust `Result` 世界的手工折算点分散 | →§5（跨号域边界必须 pin 正负两相）；部分由 P2 清单覆盖 |
+| B4 | **u32 车道截断** | VM_MMAP addr/len `as u32`（栈顶 0x7fff_ffff_f000 必中，T2 阻塞位）；MIB_SYSCTL 三地址 lane u32（guest 基址 5GiB 必截断）；LP64 前提勘误——`_ASSERT_MSG_SIZE` 钉 56 字节使 C 头只有 i386 形态（NS5-A/NS11-B） | C i386 头照搬 + 宿主 canned 不发真实地址 | →P2 清单（>4GiB 往返 pin） |
+| B5 | **canned 双方各自为政恒绿** | MIB_SYSCTL 两侧 canned 各用各的常量恒绿（C-59①）；creat 臂从客户端恒零填充的 padding 区解内联路径=真 wire 缺陷被自造请求形掩盖（NL10） | 测试替身不校验语义 → 双方自洽、互相矛盾 | →§5（跨服务联调线束 E5 族的存在意义；修法见 C-59/C-45 判例） |
+| B6 | **宿主不可达缺陷** | NS7-A 两处（消息号取枚举序数、`if status == 0` 恒假门）宿主发送恒败故测试测不出，真机 ioctl 首拍即暴露；GetTimeOfDay 臂时钟源无注入缝宿主单测不可达（C-54 登记） | 宿主传输半恒败路径下的代码不可达 | →P2 清单（wire 形状 pin）+§5（真机冒烟兜底） |
+| B7 | **布局/对齐算术错** | ps_strings 紧凑 24B vs C LP64 自然对齐 32B（edge1 迭代7 F13）；`.sdata2` 误归 `.bss`（NOBITS 静默丢内容，M4.2 写作期纠正）；「恰 56」草稿算术未含对齐间隙（NS11-B，编译期 size 断言拦住） | 手算布局无编译期/测试期钉 | →§5（布局必须 repr(C)+size 断言+两侧 pin） |
+
+### C 族：测试有效性类（6 条）
+
+| # | 模式 | 代表事故 | 根因 | 检测 |
+|---|---|---|---|---|
+| C1 | **断言凭记忆虚构** | console 首次 open 断言期望 0，实返 CDEV_CTTY 0x40000000——「先跑测得 left=0x40000000 再改，不凭记忆」（edge2 F3） | 断言先写后跑 | →§5（断言先跑再写） |
+| C2 | **空转测试 / 碰巧通过** | VM 握手失败臂测试漏注册 RS caller，失败分支从未到达恒绿（Fix #130「碰巧通过」）；creat 续接体「假覆盖」；对策=反证跑——把目标改错测试必须红（edge4 批B 判例） | 失败路径测试不证明路径可达 | →§5（失败臂测试必须反证有牙） |
+| C3 | **测试自身缺陷** | dispatch_times 旧测试靠其它测试先初始化 CLOCK_STATE，过滤单跑必 panic（测试顺序耦合，Fix #5）；「存常量读回」同义反复断言（fix-status.md Fix #3）；GETCWD fake 四测首轮失败全是测试数据构造错 | 测试间隐式依赖 / 断言无判别力 | →§5（单跑过滤必须绿；判别断言） |
+| C4 | **夹具漂移断链** | `NoopKernelGateway` 缺 `sys_diagctl_stacktrace` → minix-tests 全 crate E0046 且阻断 clippy 多 crate 会话、pm 警告面 15 条不可见（Fix #142）；批量补 trait 方法两版脚本都有 bug——**必须 `cargo test`（test-profile）不能只 `cargo build`**（Fix #129 教训） | trait 加方法未跟夹具；#[cfg(test)] 不参与普通 build | →P4（[[test]] 对账）+§5（test-profile 编译门） |
+| C5 | **伪验证 / 非法组合** | `--features alloc-global,panic-handler,std` 直调 none 构建 144 错——验证必须走消费方真实 feature 面（Fix #147）；`cargo test --workspace --exclude minix-kernel` 组合下 feature 统一三错（NL4 预存登记） | feature 组合形态与生产消费面脱节 | →§5（guest 构建走真实消费面） |
+| C6 | **防回归测试被静默删除** | 历史事故的防回归测试（本档 §4 P2 表 20 个）无删除守卫 | 删测试无门 | →P2 |
+
+### D 族：流程 / 并发 / 工具类（6 条）
+
+| # | 模式 | 代表事故 | 根因 | 检测 |
+|---|---|---|---|---|
+| D1 | **共享主树裸 commit / amend 卷走他人工作** | 三起：amend 吞对方文档提交+卷入对方暂存批（archive :3222 事故1）；裸 `git add`+commit 卷走 17 文件（同 :3222 事故2）；STTY-G `--amend` 把对方 1302 行 exec_worker 一起改写（edge2 FIXLOG STTY-G 事故）。恢复法：`commit-tree` 逐字节复原（哈希一致）/ update-ref 退回。对策三条已固化（--only 显式文件、共享分支禁 amend、update-ref 后核对 staged） | 共享 index 无隔离 | →§5（git 纪律；无 hook 基础设施，机械拦截成本高于纪律） |
+| D2 | **reset/checkout 冲离在制** | NK5 checkout+reset 冲毁主树两组在制（C-35 机制化起源）；NS11-B clippy 对账 checkout 往返冲掉六文件、从会话记录重建（Fix #141 过程事故）；「基线对账禁 checkout 未提交树」 | 主树承载多线未提交在制 | →§5（claim.sh 机制 + 对账用 stash/已提交基线；规则 8 改完即 commit） |
+| D3 | **共享 target 指纹互踩** | 树内 docker 构建踩共享 target，NS11-B 在制 u32→u64 编译错窜入他线（NL10）；E0425 假失败判别法=单包构建退 0 + 换 `CARGO_TARGET_DIR` 复跑 | 并发会话共享构建产物 | →§5（树内 target 判例） |
+| D4 | **同文件并行编辑互相回滚** | 同响应内 SearchReplace 与 sed 并改一文件互相回滚（NL4）；批量字符串扫描脚本三处缺陷致 8 文件语法损坏，git checkout 回退重做+单管线+验证切片收敛（Fix #145 过程事故） | 工具并行改同一文件 | →§5（串行为准；批量变换后编译驱动验证） |
+| D5 | **退出码被吞** | run_all.sh 三处构建循环 `|| echo "(build failed)"`——aarch64 构建断裂 17 错被改判 skip（M3.1 发现路径之一）；登记待 P6 清理 | 脚本容错写法掩盖失败 | →P7（基线冻结三处，新增即拦） |
+| D6 | **CI 门用 check 不用 build / 判据看退出码不看工件** | OQ-1 变异实证：cargo check 不做 codegen，inline asm 寄存器/fixup 错误静默放过（check 0 错、build 报 invalid fixup）；required-features 不满足时 cargo 对 bin **静默跳过不报错**——判据必须看工件存在（M3.3 反向判别） | 把「命令没报错」当「验证通过」 | →P6（防删门+防 check 退化）+§5 |
+
+### E 族：语义 / 根因类（内核，8 条）
+
+| # | 模式 | 代表事故 | 根因 | 检测 |
+|---|---|---|---|---|
+| E1 | **失败收口缺失 → 静默死锁掩盖真 bug** | VM noaddr/AccessViolation/Err 出口不清 PAGEFAULT → RS 永停静默死锁；补 SIGSEGV 收口后暴露底层 null-deref（「这是暴露，不是回归」，NK4-A Task A）。同族：RTS_SET 出队半缺失（NK2 vmctl_clear）、阻塞后不出队 spin-pick 86,444 次（NK1 缺陷3）、唤醒入队半缺失（NK1 缺陷5）、重挂起 spin-pick 10.6 万次（迭代14）——**「置旗不出队/入队」同族病前后 5 例** | C 宏（RTS_SET/RTS_UNSET）的半边语义在 Rust 里没有单一对应物 | →P2 清单（noaddr 收口测试）+§5（状态迁移必须成对审查 enqueue/dequeue 半） |
+| E2 | **上下文撕裂 / 寄存器多身份** | IRQ/tick 臂不存全量帧 → 陈旧 ctx 恢复（C mpx.S 每入口 SAVE_PROCESS_CTX 不变量，迭代20）；frame 与 ctx 分管不同寄存器=任何只更新其一的路径交付撕裂寄存器文件（迭代21 副产品）；RBX 三重身份（ps_strings 出生值/IPC 状态寄存器/callee-saved 活值，NK4-A Task C 全史） | C 的 p_reg 单一快照不变量在 Rust frame/ctx 分家后失守 | →P2 清单（IRQ 镜像测试）+§5（撕裂风险在 SMP 收口轮审视清单） |
+| E3 | **移植语义面：i386 caller-saved → x86-64 callee-saved** | C 只有 i386（bx）/earm（r1）定义 IPC_STATUS_REG；x86_64 选 RBX（callee-saved）使「内核写状态寄存器」从无害变摧毁用户活值（NK4B P1 三案上交） | 寄存器模型差异未提升为显式架构裁决 | →§5（架构级裁决上交，不自行定案） |
+| E4 | **限次探针上限被高频事件耗尽** | pf-save cap 8/48 两次全部消耗在启动前段同一 refault 事件、崩溃现场未捕获——「连续第二次犯同一错误」；对策=按目标进程过滤+按 (rip,rbx) 去重+上限按预期重复次数设（NK4-A 第五/六轮自认缺陷） | 上限按串口可读性而非事件频度设 | →§5（探针纪律，NK4A-TODO §5 已固化；P12 兜架构门半边） |
+| E5 | **穷举不全仍称穷尽** | 第 6 轮布防 5 类写点实际只布 3 站点，「五类写点零命中」结论不足以覆盖写者全集（NK4-A 第六轮补充自曝）；「全仓三处提到 SUM」实扫两目录（M4.4 更正） | 布防/断言先于全枚举 | →§5（穷举主张先出全枚举清单再布防；范围词=命令根） |
+| E6 | **无定性不修复** | 铁律 #10：同一问题 3 轮无根因实证 → BLOCKED，不做无定性修复（NK4-A Task C 六轮、NK4B M4.4）；对照：迭代20 的 IRQ 存帧修是「独立成立的 C 偏差」即使证伪于本例也保留 | 防止用改动制造进展感 | →§5（已有任务书铁律，此处收录） |
+| E7 | **阻塞前提过期** | SIGACT 件登记的阻塞理由（「裸 sigreturn 桩依赖 S3 投递臂」）被三事推翻（「跨轮状态陈旧 CTOS」，review-patterns 在案）；M4.1 前置件清单探错包名、M4.3 当场更正 | 领取时不核实登记前提 | →§5（动手前核实前提） |
+| E8 | **服务端能力在、客户端缺位 = 死能力** | MIB_SYSCTL 服务端全真、客户端缺位 → 服务端全是无人问津的死能力、init 三件 ENOSYS（NS11-A）；RS_INIT 六服务器无一应答（NS1） | 只交付单侧半 | →§5（能力完整性两端对账） |
+
+### F 族：冒烟契约 / 对外产物 / 环境陷阱（6 条）
+
+| # | 模式 | 代表事故 | 根因 | 检测 |
+|---|---|---|---|---|
+| F1 | **冒烟契约 marker 无 emit 点** | T1 契约串 'entering scheduler' 全仓无 emit 点，smoke stage-3 永远过不去（edge1 迭代7 追记，NK4-A C-3 排查发现） | 判据写进脚本但无人负责 emit | →P5 |
+| F2 | **对外产物字节漂移** | startup.nsh 的 `cd EFI\BOOT` 被顺手改成带尾反斜杠（行为等价但越线：任务书要求一字不动）——「宿主测试没有任何一条断言过 startup.nsh 的字节，漂移无人守」（M3.3 补记三）；对策=钉**字节**而非「能不能启动」+ 判别变异 | 冻结基线无字节门 | →P2 清单（startup_nsh 字节门测试） |
+| F3 | **CRLF 入库** | aarch64.ld CRLF 入库（链接器容忍→全绿肉眼看不出，M3.2 评审复核抓到）；**M4.2 新写的 riscv64.ld 同病没人再查**（本次 P8 首跑实测在案）+ 4 个 .rs 文件 | 工具生成/跨平台编辑无 eol 门 | →P8（基线 5 处，新增即拦） |
+| F4 | **会话产物误入库** | f1041b3f1 落盘 543 文件 +35.7 万行（tmp/.zcode/.trae 等），Fix #9 修 2 分流 + .gitignore 加防复发规则 | 无 ignore 防线 | →P9 |
+| F5 | **工具缺位伪装成被测物错误** | 宿主 nm 不认 aarch64 ELF → 三条布局断言集体假 FAIL，读者会误判「镜像布局错了」（M3.2 CodeReview P2#1）；对策=先探测工具、失败原因落在工具上 | 判据未区分「工具失败」与「对象失败」 | →§5（check-layout.sh 已修，收录为先例） |
+| F6 | **环境陷阱**（各有判例，处置法见 §5）：docker 不带 `-u` 写脏 target root 属主（假失败，M4.2 注记）；裸机工件是 deps/ 硬链接不能用时间戳判断是否重产（M3.3 假证据自纠）；`cargo clean -p` 不删目标架构工件 → 「无工件」现场造假失败（同上）；pkill 与 qemu 同命令行自匹配（M4.3 + NK4A-TODO §5）；grep BRE `\+` 是量词（M4.4 方法伪影第5次）；`head -6` 截断证据（NK4B P0 T0.2）；`grep -c PASS` 被自己注释里的字串误命中（M4.3 教训连踩两次）；SUM 子串误命中 RESUME（M4.4） | 证据链工具的隐性语义 | →§5（证据命令锚定输出格式） |
+
+---
+
+## §3 与既有 85 模式（prompt/review-rules/review-patterns.md）的对照
+
+本次**新发现**（85 模式未覆盖，未登记进规则集——按用户裁决本次仅目录化）：
+
+| 新模式 | 最接近的既有模式 | 差异点 |
+|---|---|---|
+| B1/B5 canned 双方各自为政恒绿 | 「依赖全局状态」（40）| 40 讲 flaky，本模式讲 **假绿**：替身无语义校验使两侧缺陷互相不可见 |
+| D5 退出码被吞 | 「外部调用返回值被无说明忽略」（32） | 32 讲代码级，本模式讲**脚本/CI 层**失败改判 skip |
+| D6 check 不查 inline asm / 静默跳过当通过 | 「测试未覆盖设计决策」（12） | 本模式是**验证工具能力边界**（codegen 期校验、工件存在性判据） |
+| F1 契约 marker 无 emit 点 | 「跨文档阶段状态表漂移」（58） | 本模式是**契约↔实现双向**漂移，58 是单向文档漂移 |
+| A2 FIXLOG 序号撞号 | 无 | 并发共享 gitignored 账本特有 |
+| C4 夹具断链阻断多 crate | 无 | trait 演进的夹具半 |
+| E1 置旗不出队/入队半 | 「资源获取后无释放路径」（33） | 33 讲资源，本模式讲**状态机迁移的配对半** |
+| E4 探针上限被高频事件耗尽 | 无 | 取证方法论 |
+| E5 穷举不全仍称穷尽 | 「因果链编造」（48）邻接 | 48 是编造，本模式是**以抽样冒充全集** |
+| F6 族证据命令伪影 | 「无锚点知识点断言」（83）邻接 | 83 讲断言无锚点，本模式是**锚点命令本身的语义陷阱**（BRE/子串/截断） |
+
+已被既有模式覆盖、本次仅补实例的：「裸整数表达语义 / C 式空指针哨兵 / 裸 as 截断」（16/17/20→B4）、
+「注释理由虚假或牵强」（34→A4 邻接）、「因果链编造」（48→假归因「nt-tests 并发合入」实例）、
+「参考代码路径漂移」（65/66→A5）、「跨轮状态陈旧」（70→A3/E7）、「代码注释行号漂移」（77→A5）、
+「C 源码 bug 未显式标注」（78→B3 邻接）、「target-specific cfg 泄漏」（82→P12 同域；P12 落在 CI/build 门
+这一 82 未覆盖的 enforcement 半边）、「无锚点知识点断言」（83→A5）。
+
+---
+
+## §4 机械检查映射（tools/pattern-gate.sh）
+
+| 检查 | 级别 | 对应模式 | 事故出处（条目定位） | 实现要点 |
+|---|---|---|---|---|
+| P1 | gate | A1 | new_edge4 §1 规则 5；FIXLOG.md 头部归档注记 | 每份 edge*/FIXLOG.md 标题行=1 + 最大连续重复行≤5；.review 缺席 SKIP |
+| P2 | gate | C6 | 本表下方 20 测试清单 | `fn <name>` 全 os/ grep ≥1 |
+| P3 | gate | B1 | edge1 Fix #5（NK8）；C-59（edge4 §2 :74） | SELF/MIB_CALL_SYSCTL 派生断言 + `= -2/-3` 字面量零命中 + 0x1800 pin 在位 |
+| P4 | gate | C4 | edge3 Fix #142（夹具断链）；os/tests [[test]] 纪律 | .rs ↔ [[test]] 双向 comm |
+| P5 | gate | F1 | edge1 Fix #9 迭代7 追记（T1 marker） | 配对表：marker 在引用方脚本 + emit 范围可 grep |
+| P6 | gate | D6 | OQ-1（5ba2644b8 注释 + edge1 迭代21 补记） | job 存在 + aarch64/riscv64 build 腿存在 + `cargo check -p minix-kernel` 零命中 |
+| P7 | gate+基线 | D5 | M3.1（edge1 NK4-B P3 M3.1 补记）；run_all.sh 三处 | `(cargo\|bash\|sh) ... \|\| echo` 全量对账基线；本脚本自身豁免 |
+| P8 | gate+基线 | F3 | NK4B M3.2 评审复核（aarch64.ld）；riscv64.ld 为本次首跑新发现 | `git ls-files --eol` i/crlf × {ld,sh,rs} |
+| P9 | gate | F4 | edge1 Fix #9 修 2（落盘分流） | .gitignore 三条规则在位（.wt/、/tmp/*、!/tmp/nk4a/） |
+| P10 | report + diff 门 | A2 | edge3 archive 索引撞号注记；Fix #126 教训 | tracked todo/new_todo 的 `Fix #N` 引用：存量 489 处只报告，--diff 拦新增 |
+| P11 | diff 门 | A5 | NK4B M4.4 五轮评审（七组 C 对位缺陷） | 增量行 `.c:NNN` token：basename 在 minix3/ 可解析 + 行号落窗（多变体任一覆盖即过；基线可豁免引例） |
+| P12 | report+基线 | D6/E4 | 9e115387e / ab79b40ba（M3.1 补记「为什么没人发现」） | 共享路径 4 文件中 asm!/rdmsr 行向上 6 行无 target_arch → 基线对账 |
+| P13 | diff 门 | A4 | edge4 批A 附带发现；Fix #124① | 增量行反引号全大写带下划线 token 在 os/+minix3/ 存在性；PATTERN-SCAN-REPORT 自身豁免 |
+
+**P2 清单（20 个防回归测试 ↔ 事故）**：`test_sys_times_self_sentinel_authority_pin`（NK8 SELF 化石值）、
+`test_grantee_gate_any_authority_value`（NS2 ANY 哨兵）、`irq_entry_mirrors_user_frame_but_skips_kernel_origin`
+（NK4-A 迭代20 IRQ 存帧）、`test_pagefault_unknown_region_sigsegv_and_clears_park`（NK4-A Task A noaddr 收口）、
+`test_vmctl_clear_page_fault_requeues_target`（NK2 RTS_UNSET 出队半）、`test_vm_mmap_stack_lanes_carry_above_4gib`
+（NS5-A u32 截断）、`test_flags_for_priv_proc`（C-28 PRIV_PROC）、
+`startup_nsh_bytes_are_the_frozen_template_per_loader_name`（M3.3 startup.nsh 字节门）、
+`boot_module_order_matches_boot_shim_module_names`（NS8 装机三重锁）、
+`test_step0_creates_rproctab_grant_over_wire_mirror`（NS2 rproctab 授权）、
+`test_cdev_ioctl_continuation_decodes_payload`（NS7-A 恒假门）、`test_lookup_label_hosted_is_none`（NL4 driver-rt）、
+`test_feed_keyboard_byte_uses_full_table`（NL4 死缝）、`test_sigsuspend_carries_mask_only`（SIGACT 删死参）、
+`test_sigaction_carries_sigreturn_stub`（NS11 桩地址）、`test_rs_init_birth_answered_with_ok`（NS1 出生应答）、
+`load_process_elf_two_images_same_va_no_collision`（NK1 per-process 根）、`trampoline_address_is_nonzero`（NL3）、
+`test_dispatch_times_self_replacement`（NK8 判别补强）、`test_check_gic_madt_decision_table`（C-38 决策表）。
+
+**用法与语义**：
+
+```bash
+bash tools/pattern-gate.sh                    # 全量（P7/P8/P12 基线对账；基线外 FAIL）
+bash tools/pattern-gate.sh --diff [RANGE]     # 附加增量门（P10/P11/P13 只看新增行）
+bash tools/pattern-gate.sh --update-baseline  # 冻结当前存量进 baseline（人工复核后）
+bash tools/pattern-gate.sh --self-test        # 18 例正反判别矩阵（mktemp 夹具，跑完即删）
+```
+
+退出码 0/1/2 照 unsafe-audit 惯例。基线 key=`检查名|路径|cksum(行内容)`——对行号漂移免疫、对内容改动敏感
+（改了被豁免的行 = 当新违规重报，符合「动它就要处理它」）。判别证据：
+`evidence/20260923-c61-pattern-gate/{selftest,mutation-negative,full-run-worktree}.log`——
+selftest 18/18 全绿；真树变异 6 组（P3/P4/P5/P6/P7 注入真实违规全部现形，P6 拆出「缺腿」「check 退化」双断言），
+还原后复绿 PASS=9 FAIL=0。
+
+**局限（如实登记）**：①P12 是 6 行窗启发式，抓「cfg 紧邻缺失」形态，cfg 在更外层块的情况看不见——结构性拦截
+靠 P6 的 CI build 门（check 不查 asm，同理 grep 也查不出）；②P1 只在主树有意义（.review 不入 git），worktree/CI
+下 SKIP；③P2 清单是点名式，新事故的防回归测试要人工追加进 `P2_TESTS`（追加动作本身写进 §5 纪律）；
+④P4/P5/P6/P9 只查结构存在性，语义正确性仍靠既有 cargo/CI 门。
+
+---
+
+## §5 不可机械化的流程纪律（已有判例与出处，供 review 对照）
+
+1. **共享主树 git 三条**（D1/D2）：commit 一律 `--only <显式文件>`；共享分支禁 `--amend`；
+   对账基线用 stash 或已提交态，禁 checkout 未提交树；update-ref/FF 后先 `git status` 核 staged。
+   出处：archive :3222 两起 + STTY-G 双事故 + C-35 + Fix #141 过程事故。
+2. **断言先跑再写，不凭记忆**（C1）；失败臂测试必须反证有牙（C2，edge4 批B「反证跑」判例）；
+   过滤单跑必须绿（C3）；批量改码后必须 test-profile 编译（C4，Fix #129）。
+3. **穷举先于布防/断言**（E5）：「全仓无一处 X」必须把 grep 完整路径参数抄进证据行，范围词=命令根；
+   计数型断言写明由哪条命令哪个输出段得来；锚点要么锁输出格式要么锁字串（M4.3/M4.4 连续踩坑沉淀）。
+4. **状态机迁移成对审查**（E1）：每置旗/清旗问 enqueue/dequeue 配对半；每加 wire 车道问 client/server 双侧
+   对偶测试（B2/B5）；跨号域边界（errno 正负）pin 两相（B3）。
+5. **验证工具能力边界**（D6/C5）：check 不查 inline asm——跨架构门必须 build；required-features 静默跳过——
+   判据看工件不看退出码；guest 构建走消费方真实 feature 面。
+6. **探针纪律**（E4，NK4A-TODO §5 已固化）：限次+cap 按目标事件预期频度设、按目标进程过滤、去重、
+   `#[cfg(not(feature="mock"))]` + 架构门、「task1-close 裁决删除」注记。
+7. **能力完整性两端对账**（E8）+ **登记前提动手前核实**（E7）+ **3 轮无定性转 BLOCKED**（E6）。
+8. **证据命令防伪影**（F6）：`grep -F` 优先于 BRE 转义；`head` 截断不得当证据；存在性用 `find` 不用内容
+   grep；锚点自查表对自写注释复跑一遍。
+
+## §6 后续可选（本次不做，用户已裁决）
+
+- CI 接线（新增 workflow 跑本脚本纯文本检查）——用户裁决暂不接。
+- 新模式登记进 `prompt/review-rules/review-patterns.md`（B5/D5/D6/F1 等 10 条新发现）——需按 prompt/README
+  同步三端派生文件并跑 check-review-rules.sh，另开任务。
+- run_all.sh 三处吞退出码（P7 基线）在 P6 清理后出基线转真拦。
+- P8 基线里 riscv64.ld 与 4 个 .rs 的 CRLF 建议顺手转 LF 后出基线。
