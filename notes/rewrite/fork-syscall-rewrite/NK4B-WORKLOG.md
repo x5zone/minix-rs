@@ -1177,7 +1177,7 @@ M3.4 剩下的实质工作 = 让 `:645` 那道 panic 变成 `:648`，即平台�
 
 ### 三条定性结论
 
-1. **我的 platform panic 根因钉在 `check_gic_madt`**（`acpi.rs:654-672`，C-38 =
+1. **我的 platform panic 根因钉在 `check_gic_madt`**（`acpi.rs:654-673`，C-38 =
    commit `9b4b0c5b8`（2026-09-21）新增）。不是「AAVMF 没给来源」：来源恒有 1 个
    （ACPI2 RSDP），是这道门把两种 GIC 配置都判死。
 2. **aarch64 的 ACPI 发现链在 QEMU virt + AAVMF 上没有任何一种 gic-version 能拿到
@@ -1187,7 +1187,7 @@ M3.4 剩下的实质工作 = 让 `:645` 那道 panic 变成 `:648`，即平台�
 3. **DTB 通道：内容可行，缺的是交接**。QEMU 自己生成的 aarch64 DTB
    （`dumpdtb`，离线取，证据 `virt-gic3.dtb`）里有 `arm,gic-v3`、
    `arm,gic-v3-its`、`#redistributor-regions`，正是
-   `device_tree.rs:229-250` 的 `parse_gic` 要按 compatible 找、并取 `reg` 第二段当
+   `device_tree.rs:229-251` 的 `parse_gic` 要按 compatible 找、并取 `reg` 第二段当
    gicr_base 的东西；缺的是 AAVMF 不把 FDT 装进配置表（实测 sources 只有 RSDP 一个，
    与 S-2b 的字节级实证一致）。
 
@@ -1222,3 +1222,18 @@ M3.4 剩下的实质工作 = 让 `:645` 那道 panic 变成 `:648`，即平台�
 同形；宿主隔离门（干净 target）绿。M3.4 实现等 D1/B/A 定案后开工，开工第一步就是
 把本节的 `diag:` 行作为回归基线（定了案、门过去了，这两腿应变 `nr_cpus = 4` 且
 不再打 diag）。
+
+### M3.4 取证段评审（CodeReview 之后）
+
+状态：**DONE**。评审范围 = 本段三 commit（`759d3463e` 判据预核文档、
+`07b9afe7f` 测试内核诊断、`a476b86f9` 取证文档+证据）。结论：无 P0/P1，一条 P2。
+
+| 编号 | 问题 | 处置 |
+|------|------|------|
+| P2 | 两处文档锚点各差一行（`check_gic_madt` 写成 654-672，实为 654-673；`parse_gic` 写成 229-250，实为 229-251） | 自查 `sed -n '671,674p' acpi.rs` / `'249,252p' device_tree.rs` 确认闭合 `}` 行号后改准（WORKLOG 两处 + FIXLOG 一处）。证据文件 `m34-gicgate-2-context.log` 里的 229-250 不改——那是取证当时的现场快照，指向的是「最后一行有语义的代码」，归档不追改 |
+
+评审方实际核过的五条红线（都是它自己跑命令验的，不是我申报的）：判据未放松
+（fail 文案 / PASS 文案 / run_qemu.sh 的判绿 grep 三者一字未动）、二次解引用
+unsafe 成立（该测试内核全文件无 `exit_boot_services`，boot services 全程存活）、
+七个变体 match 穷尽（编译过即证）、`global.rs:234-254` 确实一句文案覆盖两种
+情况、sed 派生副本只改 line 125 且 `os/qemu-tests/` 本体零污染。
