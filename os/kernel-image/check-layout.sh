@@ -7,6 +7,8 @@
 # `load_segments_into_phys_memory`（os/boot-shim/src/loader.rs）读的全部字段。
 #
 # 断言清单（每项都是一条会被违反的真实契约，不是装饰）：
+#   L0 本脚本预期表里的两个基址 = 链接脚本里声明的那两个（防两处手写漂移，
+#      详见下方 arch_expect() 的注释）
 #   L1 ELF 类型 = EXEC（非 static-pie：内核 ELF 装载面无重定位处理器）
 #   L2 机器类型与预期三元组相符（防"拿 x86 工件当 aarch64 工件"）
 #   L3 首段 PT_LOAD 的 VMA/LMA = 该架构预期的基址
@@ -52,21 +54,57 @@ check() {
     fi
 }
 
-# 每架构一行：triple|feature|readelf Machine 字样|预期首段 VMA|预期首段 LMA|预期入口
-# （数值按十进制比较，故这里写十六进制字面量不受 readelf 补零宽度影响）
+# 每架构一行（地址按十进制比较，故这里写十六进制字面量不受 readelf 补零宽度影响）：
+#   triple | 构建特性 | readelf Machine 字样 | 链接脚本名 | 脚本内高半基址符号 |
+#   脚本内物理基址符号 | 预期高半基址 | 预期物理基址 | 首段 VMA 惯例
+# 「首段 VMA 惯例」两取值：plus_phys = x86_64 的 `vaddr = 高半基址 + paddr`
+# （⇒ 首段 VMA 含物理基址）；virt = aarch64 的
+# `vaddr = 高半基址 + (paddr - 物理基址)`（⇒ 首段 VMA 就是高半基址）。
+# 预期高半/物理基址两列与 .ld 里的声明由 L0 断言对账：两个架构的基址在
+# 「.ld」与「本表」各写一份，改一处忘改另一处时 L0 会直接报 FAIL（而不是
+# 让下面的段断言拿着旧预期值默默拒收）。
 arch_expect() {
     case "$1" in
-        x86_64)  echo "x86_64-unknown-none|fw-x86-none|Advanced Micro Devices X86-64|ffff800000200000|200000|ffff800000200000" ;;
-        aarch64) echo "aarch64-unknown-none|fw-aarch64-none|AArch64|ffff800000000000|40200000|ffff800000000000" ;;
+        x86_64)  echo "x86_64-unknown-none|fw-x86-none|Advanced Micro Devices X86-64|x86_64.ld|KERNEL_HIGH_BASE|KERNEL_PHYS_BASE|ffff800000000000|200000|plus_phys" ;;
+        aarch64) echo "aarch64-unknown-none|fw-aarch64-none|AArch64|aarch64.ld|KERNEL_VIRT_BASE|KERNEL_PHYS_BASE|ffff800000000000|40200000|virt" ;;
     esac
 }
 
+# 从链接脚本里取 `SYM = 0x...;` 的常量值（取不到则输出空）。
+# 统一转小写：.ld 里习惯写大写十六进制，预期表写小写，输出对账时同一形态
+# 才好读（比较本身走 hex2dec，与大小写无关）。
+ld_const() {
+    local file="$1" sym="$2"
+    sed -n "s/^[[:space:]]*$sym[[:space:]]*=[[:space:]]*0x\([0-9a-fA-F]*\);.*/\1/p" "$file" \
+        | head -1 | tr 'A-F' 'a-f'
+}
+
 check_arch() {
-    local arch="$1" triple feature machine want_vma want_lma entry_want
-    IFS='|' read -r triple feature machine want_vma want_lma entry_want < <(arch_expect "$arch")
+    local arch="$1" triple feature machine ld ld_vsym ld_psym virt_base phys_base vma_mode
+    IFS='|' read -r triple feature machine ld ld_vsym ld_psym virt_base phys_base vma_mode < <(arch_expect "$arch")
     local elf="$OS_ROOT/target/$triple/release/kernel"
+    local want_vma entry_want
+    if [ "$vma_mode" = "plus_phys" ]; then
+        want_vma=$(( $(hex2dec "$virt_base") + $(hex2dec "$phys_base") ))
+    else
+        want_vma=$(hex2dec "$virt_base")
+    fi
+    want_vma="$(printf '%x' "$want_vma")"
+    entry_want="$want_vma"   # 两个架构的入口都是镜像首字节（.text.boot 在 .text 首位）
 
     echo "== $arch：$elf"
+
+    # L0：预期基址与链接脚本声明对账
+    local script="$SCRIPT_DIR/$ld" got_v got_p
+    if [ ! -f "$script" ]; then
+        check L0 "链接脚本存在：$ld" 0
+    else
+        got_v="$(ld_const "$script" "$ld_vsym")"
+        got_p="$(ld_const "$script" "$ld_psym")"
+        check L0 "$ld 声明的 $ld_vsym/$ld_psym = $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")")（实得 ${got_v:-无}/${got_p:-无}）" \
+            "$([ "$(hex2dec "${got_v:-0}")" = "$(hex2dec "$virt_base")" ] && [ "$(hex2dec "${got_p:-0}")" = "$(hex2dec "$phys_base")" ] && echo 1 || echo 0)"
+    fi
+
     if [ "${SKIP_BUILD:-0}" != "1" ]; then
         # 与 xtask 装机同一条构建命令（换 target/feature）；ulimit 兜住
         # 宿主内存上限（大链接在 CI 容器里会 OOM，见 NK4A-TODO §7）。
@@ -80,6 +118,12 @@ check_arch() {
         rm -f "$blog"
     fi
     [ -f "$elf" ] || { echo "  工件缺失：$elf" >&2; FAIL=1; return; }
+    # nm 能否解析该架构的 ELF：只能读宿主架构的 nm（未装 binutils-multiarch
+    # 或 llvm-nm）会把下面的 L6b/L7/L8 伪装成「布局不对」，实际是工具缺位。
+    if ! nm "$elf" >/dev/null 2>&1; then
+        echo "  nm 无法解析 $elf（需 binutils-multiarch 或 llvm-nm）" >&2
+        FAIL=1; return
+    fi
 
     # L1 / L2
     local hdr etype amachine
@@ -104,8 +148,8 @@ check_arch() {
     first_vaddr="${first_vaddr#0x}"; first_paddr="${first_paddr#0x}"; first_memsz="${first_memsz#0x}"
     check "L3b" "首段 VMA = 0x$want_vma（实得 0x$first_vaddr）" \
         "$([ "$(hex2dec "$first_vaddr")" = "$(hex2dec "$want_vma")" ] && echo 1 || echo 0)"
-    check "L3c" "首段 LMA = 0x$want_lma（实得 0x$first_paddr）" \
-        "$([ "$(hex2dec "$first_paddr")" = "$(hex2dec "$want_lma")" ] && echo 1 || echo 0)"
+    check "L3c" "首段 LMA = 0x$phys_base（实得 0x$first_paddr）" \
+        "$([ "$(hex2dec "$first_paddr")" = "$(hex2dec "$phys_base")" ] && echo 1 || echo 0)"
 
     # L4：所有段的 vaddr-paddr 平移量与首段一致
     local delta_want bad=0 line v p d

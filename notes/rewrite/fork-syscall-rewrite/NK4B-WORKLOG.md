@@ -564,8 +564,8 @@ aarch64 镜像 `os/target/aarch64-unknown-none/release/kernel`（1205672 字节�
 
 #### 验证（逐项带证据文件名）
 
-- 宿主布局断言：`check-layout-all.log` —— x86_64 与 aarch64 各 L1–L8 全 PASS，
-  `CHECK-LAYOUT=PASS（all）`，`CL-EXIT=0`。
+- 宿主布局断言：`check-layout-all.log` —— x86_64 与 aarch64 各 L0–L8 共 13 条
+  全 PASS（合计 26 条），`CHECK-LAYOUT=PASS（all）`，`CL-EXIT=0`。
 - 断言的判别性（防「永远 PASS 的测试」）：`check-layout-negative-aarch64.log` ——
   只把 aarch64 的预期首段物理地址改成 `0x40000000`（QEMU virt 的 DRAM 起点，
   一个看起来合理的值）后重跑，结果 `[L3c] FAIL`、`CHECK-LAYOUT=FAIL`、
@@ -599,8 +599,9 @@ aarch64 镜像 `os/target/aarch64-unknown-none/release/kernel`（1205672 字节�
 2. `_start` 与内核本体之间仍未接线（NK1/OQ-N6 裁决），横幅打不出来；
    `wfi` 驻留在真实入口态下是否被陷入（HCR/TDCR 配置）要等 M3.4 才知道。
 3. `check-layout.sh` 未接进 `os/qemu-tests/run_all.sh`（按任务书 P6 才接线），
-   今天靠手工调用；它与 `aarch64.ld` 的预期值是两处手写同一批常量，改脚本
-   基址时必须同步改脚本预期（没做自动一致性检查，登记为风险）。
+   今天靠手工调用。它与 `aarch64.ld` 的两处手写常量曾无对账（CodeReview
+   P2#2，见下节，已用 L0 断言闭合）；残余缺口是 L0 只对基址这一组常量对账，
+   段序、`AT()` 式、引导栈大小仍是脚本与 `.ld` 各写一份、靠注释互相指认。
 4. 环境事实（给下位读者）：`os/qemu-tests/test-cmd-smoke.sh` 的 `mktemp` 模板
    硬写 `/tmp/...`，在 `/tmp` 只读的受限沙箱里会先报
    `FAIL: guest never reached the scheduler hand-off`（QEMU 根本没起来）。
@@ -614,3 +615,44 @@ aarch64 镜像 `os/target/aarch64-unknown-none/release/kernel`（1205672 字节�
   常量取自仓内既有 `os/kernel/src/arch/aarch64/link.ld`，非发明）；
   FIXLOG 一条 ✅；证据 `git add -f` ✅；未动 `minix3/`、未动 `os/etc/rc`、
   未放松任何冒烟判据 ✅；未新增探针（本里程碑是产出物，无需取证）✅。
+
+### 里程碑 CodeReview 结论与两条 P2 的闭环（2026-09-22 同日追加）
+
+评审范围：`f38fca038..15fb4600e`（M3.2 的 feat + docs 两笔）。
+结论：**无 P0 / 无 P1**。三项重点核查（x86_64 侧零回归、`aarch64.ld` 与
+boot-shim 读取字段对得上、`check-layout.sh` 的断言有判别力）均附核实方法通过；
+文档一致性与铁律（一逻辑单元一 commit、未碰禁区）核实通过。提出两条 P2，
+本会话不递延、直接闭合：
+
+| P2 | 风险（评审原话概括） | 闭环做法 | 实测证据 |
+|----|--------------------|---------|---------|
+| #1 | `nm` 若只能读宿主架构 ELF，L6b/L7/L8 会以「布局不对」的面目报错，
+      实际是工具缺位 | 读工件前先探一次 `nm "$elf"`，不可解析则直接报
+      「nm 无法解析……（需 binutils-multiarch 或 llvm-nm）」并退出，
+      不再让段断言背锅 | `check-layout-negative-nm-unreadable.log`（用 PATH
+      shim 把 `nm` 换成恒定失败的脚本）：退出码 1，输出只有 L0 PASS +
+      工具缺位提示，没有一排假的 FAIL |
+| #2 | 基址常量在 `.ld` 与脚本预期表里各手写一份，无一致性校验（本节
+      已知边界 #3 登记过） | 预期表扩到九列（新增：链接脚本名、脚本内高半
+      基址符号名、脚本内物理基址符号名、首段 VMA 惯例）；新增 `ld_const()` 从 `.ld`
+      里抽 `SYM = 0x...;`，新增 **L0 对账断言**；`want_vma` 与入口预期改为
+      按该惯例现场计算，不再手写拼串 | 两个漂移变体：改符号名（`KERNEL_PHYS_BASE_TYPO`）
+      → 只 `[L0] FAIL`、`[L3c]` 仍 PASS（即 L0 有段断言抓不到的独立能力）；
+      改值（`0x40000000`）→ L0 与 L3c 同 FAIL。证据
+      `check-layout-negative-L0-symbol-drift.log` /
+      `check-layout-negative-L0-value-drift.log`，均退出码 1 |
+
+闭环后的止态：`check-layout-all.log` —— 两架构各 13 条（L0–L8）全 PASS、
+`CHECK-LAYOUT=PASS（all）`、`CL-EXIT=0`（该日志由不带 `SKIP_BUILD` 的调用产出，
+即脚本自己走了一遍两架构的 `cargo build` 再断言）。本轮只改了一个宿主
+shell 脚本：`git diff --stat` 证明无 `.rs` / `.ld` / `Cargo.toml` 改动，且
+`grep -rn check-layout os/ .github/ tools/` 零命中（该脚本尚未被任何入口
+调用，影响面封闭）。仍按铁律复跑：宿主 minix-kernel 809 passed / 0 failed、
+minix-arch 241 passed / 0 failed（与 P0 基线逐项相等）；
+`cargo test -p kernel-image` 退出码 0 且无 `test result:` 行（X-2/NK5
+隔离未退化）；两个变体与 nm shim 的临时副本跑完即删，工作树无残留。
+
+本次编辑自己引入的两个小瑕（当场发现、当场修，不是新发现）：
+`ld_const` 的行续接反斜杠多写一个（`bash -n` 报回）、L0 输出大小写混排
+（`.ld` 习惯大写、预期表小写，对账行不好读，用 `tr 'A-F' 'a-f'` 归一）。
+

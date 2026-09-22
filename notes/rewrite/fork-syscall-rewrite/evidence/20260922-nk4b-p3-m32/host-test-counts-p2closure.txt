@@ -1,0 +1,13 @@
+# M3.2 CodeReview 两条 P2 闭环轮的宿主复跑（2026-09-22，命令：docker run --rm -v $PWD:/work -w /work -m 2g minix-ci:1.94 cargo test -j 1 -p <pkg>）
+## minix-kernel
+test result: ok. 809 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 9.86s
+test result: ok. 3 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 1.42s
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+KERNEL-EXIT=0
+## minix-arch
+test result: ok. 241 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+ARCH-EXIT=0
+## kernel-image（期望退出码 0 且无 test result 行 = 裸机 bin 被 required-features 跳过）
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 50.67s
+HOST-kernel-image-EXIT=0
