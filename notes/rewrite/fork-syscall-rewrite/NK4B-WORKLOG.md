@@ -2252,14 +2252,55 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
 `minix3/minix/kernel/arch/i386/memory.c:377`（函数定义行实测；earm 变体的 banner 在
 `arch/earm/memory.c:353`、定义在 `:355`）。
 
-修它的理由不是「顺手」：错 C 对位在铁律 4 下是双向污染——后人拿它当坐标去
-`minix3/` 对账会找不到文件，进而怀疑整段拷贝路径的可信度。初版判「不修」的原
-因是「不值得为此走一轮真机」，这个判断把成本算错了：纯 doc 注释改动不影响
-codegen，只需宿主测试全绿（实测 `cargo test -j 1 -p minix-kernel` 得 passed=812 /
-failed=0，P0 基线 809 只涨不跌），不需真机。同文件的另三条 `memory.c:NNN`
-引用（`:380`/`:458`/`:515`）也逐个核了行号，均与 `arch/i386/memory.c` 实文一字
-不差（526 = `vm_memset`、592 = `virtual_copy_f`），按局部约定不展开目录前缀，
-不是缺陷，不动。
+修它的理由不是「顺手」：错 C 对位在任务书铁律第 3 条（「修 bug 必须对照 C…写明
+对位」，`NK4B-OPENING-PROMPT.md:41`）下是双向污染——后人拿它当坐标去 `minix3/`
+对账会找不到文件，进而怀疑整段拷贝路径的可信度。初版判「不修」的原因是
+「不值得为此走一轮真机」，这个判断把成本算错了：纯 doc 注释改动不影响 codegen，
+只需宿主测试全绿，不需真机。
+
+#### 上一条的两个缺陷（评审抓出，本轮补做）
+
+1. **只修了一处，同串错还在**。同一个不存在的 `kernel/memory.c` 原样躺在同
+   crate 相邻模块 `os/kernel/src/cross_space.rs:14`（「delegate to the shared
+   `virtual_copy_vmcheck()` in `kernel/memory.c`」）。而它错得更具体：
+   `virtual_copy_vmcheck` 不是函数而是**宏**，定义在
+   `minix3/minix/kernel/proto.h:184`，展开为 `virtual_copy_f(caller, src, dst,
+   bytes, 1)`（实体在 `arch/i386/memory.c:592`，本轮实测）。已一并改掉，现在
+   `grep -rn "kernel/memory\.c" os/ --include=*.rs` 无输出。
+2. **修法方向与本仓规则相反**。`prompt/review-rules/review-patterns.md:1934`（模式
+   77）原文要求：「代码注释引用应使用**符号名**…不用裸行号；行号只允许工具
+   派生」。上一枚我把行号从 0 个加到 2 个（`:377`/`:355`）。已改成不带行号的
+   路径+符号形态：
+
+   ```rust
+   /// C: `vm_lookup_range` — minix3/minix/kernel/arch/i386/memory.c（earm 变体：
+   ///    minix3/minix/kernel/arch/earm/memory.c，同名函数）
+   ```
+
+   带目录前缀不是可选修饰：`memory.c` 在 `minix3/` 下有 i386 与 earm 两份，
+   裸名有歧义（`tools/anchor-resolve.sh:262-264` 的唯一 basename 索引会排除重名
+   文件——注释原话「重名不收录」，真去跑工具它会报 ZERO-DEF）。仓内已有 15 处 `.c:符号名` 先例（如
+   `os/arch/src/x86_64/fpu.rs:74`），不是新发明。
+
+#### 同类命中的全量登记（本轮逐条实测，**不在本枚修**，建议独立批量任务）
+
+只修 1 留 8 会制造「这类清了」的错觉，所以把已核实的清单钉在这里（每条都是
+我自己跑命令确认，不是转抄评审）：
+
+| # | Rust 侧引用 | 实测事实 |
+|---|------------|----------|
+| 1 | `vm.rs:190` `vm_lookup() — memory.c:325` | 行号对（i386/memory.c:325 = `int vm_lookup(`），仅同文件的第四条裸名引用，上一枚误数成「另三条」 |
+| 2 | `x86_64/smp.rs:180` 等 5 处写 `arch/i386/smp.c:65` | `minix3/minix/kernel/arch/i386/smp.c` **不存在**；`arch_send_smp_schedule_ipi` 定义在 `arch/i386/arch_smp.c:357`，`kernel/smp.c:65` 只是调用点 |
+| 3 | `arm64/boot.rs:275` 写 `arch/earm/exception.c:262-310` | 该文件共 **275 行**，上界 310 越界 |
+| 4 | `arch/paging.rs:185` 写 `pre_init.c:268 pg_clear()` | `arch/i386/pre_init.c` 共 **243 行**；`pg_clear()` 调用在 `:230`，定义在 `pg_utils.c:254`；`pagedir[1024]` 在 `pg_utils.c:19` |
+| 5 | `arch/boot.rs:364/:368/:552` 写 `protect.c:413/:417/:402` | 实测在 `:431`（`sp -= sizeof(struct ps_strings)`）、`:434`（“three words” 注释）、`:409`（`execi.stack_size`）——共偏 18/17/7 行 |
+| 6 | `kernel/src/lib.rs:2383` 写 `main.c:38-97` | `bsp_finish_booting` 实为 `main.c:38-109`（同仓 `lib.rs:795` 写的才是对的） |
+| 7 | `globals.rs:484` 写 `krandom — random.h/krandom.c` | **minix3 全仓无 `krandom.c`**；`krandom` 是 `kernel/glo.h:31` 的 `EXTERN struct k_randomness krandom;` |
+
+不修的理由不是「不值得」，而是**范围**：这七组分布在 `os/arch/src` 与
+`os/kernel/src` 多个文件，逐条改需要逐条回读 C 源确认正确锚点，是一个独立任务
+（建议入口：先把上面七条改成符号锚点，再考是否给 `anchor-resolve.sh` 加 `.rs`
+扫描模式——它现在只接 `--check DOC.md`，不扫 `.rs`）。
 
 ### 登记：riscv64 出生链载体的 `uecall_handler` 可能已是死腿（只登记，不修）
 
@@ -2299,7 +2340,10 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
   继承版管脚本）。
 - 不接 `run_all.sh`（属 P6）。
 
-### 更正与评审链（本里程碑七枚 commit / 四轮评审，均未 push）
+### 更正与评审链（本里程碑九枚 commit / 五轮评审，均未 push）
+
+命名约定（上一轮评审观察项：「本枚」会被误配到错 hash）：已入库的一律写真
+hash；尚未提交的那一枚只写「（待提交）」，由下一枚把它补成 hash。
 
 | commit | 内容 | 评审结果 |
 |--------|------|----------|
@@ -2309,9 +2353,11 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
 | `4114d6b2f` | 修那两条：抠掉「全仓（生产侧）」这种括号收窄自相矛盾；自证命令目录实参从 `arch/src/arm64` 改成与断言同集的 `arch/src`（重跑确认结论不变，见日志 §11） | 未再审（纯措辞与命令对齐，逐条带实测输出） |
 | `7467c3357` | 把上面四枚的因果与可复用规则登进本节 | 未再审（登记性改动） |
 | `28a916f86` | 案丙 前置取证做完，裁决推荐从乙 改为丙（日志 §12） | PASSED，附 2 条观察项（均成立，见下一行） |
-| 本枚 | 修那两条观察项：「打印者 `lib.rs:474`」实际打印在 `:475`；「`cross_space::` 24 个调用方」里 3 条是注释行，实际调用/导入 21 处，承重数字全部下调（日志 §13） | — |
+| `45c0682f9` | 修那两条观察项：「打印者 `lib.rs:474`」实际打印在 `:475`；「`cross_space::` 命中 24 行」被当成了 24 个调用来源（实为 21 调用 + 3 注释），承重数字全部下调（日志 §13） | 未单独再审：它是第四轮的闭环，内容被第五轮（对 `14de2eb9a`）连带读到并拓出两条新问题（见下两行） |
+| `14de2eb9a` | 旁支：`vm.rs:228` 的 C 对位由不存在的 `kernel/memory.c` 改指 `arch/i386/memory.c:377` | PASS，附 5 条 P2 + 4 条观察项：只修一处、同串错仍在 `cross_space.rs:14`；手工行号与模式 77 相反；「另三条」实为四条；铁律编号错引；+3 归因未核 |
+| （待提交） | 修那五条：同串错路径全仓清零、锚点改符号形态、计数与铁律编号改对、把同类七组命中逐条实测后登记（本轮上一节） | — |
 
-四轮评审的收敛形状符合停止规则（每轮新发现递减，且都是同一根因的不同表现）。根因
+五轮评审的收敛形状符合停止规则（每轮新发现递减，且都是同一根因的不同表现）。根因
 只有一条：**先写结论再补命令，而不是先跑命令抄输出**。由此得到两条可复用规则：
 否定式/全称断言的范围词必须与 grep 实参一字不差地一致；范围词不能靠括号收窄。
 第三条规则由 `28a916f86` 的评审补上（日志 §13.2）：**口径标签也要与断言一字不差**
@@ -2319,6 +2365,20 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
 直接叫成「调用方」，等于拿一个没测过的语义去撑裁决推荐。另记一条评审手段发现：
 子代理给 PASSED 时列出的旁支常量（本例是它顺口提到的
 「载体自身的 `SSTATUS_SUM` 常量」）可能正是编排者自己断言的反例，必须当线索回读。
+
+第四、第五条规则由第五轮（对 `14de2eb9a`）补上，两条都是新的失效形状：
+
+- **归因也不能没核就写**。我在 commit 信息里把「809→812」解释为「并发会话合入
+  的 nt-tests 用例」——仓内 `os/kernel` 下根本没有 `nt_tests`/`nt-tests` 命中。
+  实测真相：`cargo test -p minix-kernel` 跑三个 target，812 = 809（lib 单元）
+  + 3（`kernel/tests/boot_integration.rs`，早在 `19730973a` 就存仓）。所以「+3」
+  不是新增用例，而是**我 P0 基线只计了 lib target 一个口径**。数字没记错，
+  因果是我编的。从此：凡写「A 造成 B」必须附可复跑命令。
+- **防回归断言会被自己的更正说明打坏**。§13.3 立了「WORKLOG 搜旧措辞（那串把 24
+  直接叫成调用来源的说法）必须无输出」，而我在评审链表里为了说清「上一枚修了
+  什么」原文引用了那个词，第五轮实测命中 `:2312`——断言已被它自己的闭环说明破坏。
+  改写错说法时要用**同义转述**而不是原文引用，否则要么判别命令失真、要么更正被迫
+  不做（本行就是按这条规则重写的：故意不重现那个词）。
 
 ### 锚点自查记录（写完当场逐条重跑）
 
@@ -2341,7 +2401,11 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
 | 三载体 `grep -c init_clock_and_interrupts` = 1/1/0 | 逐目录 `grep -c` | 修后实测（修前 1/0/0） |
 | 案丙 取证锚点（日志 §12）：`vm.rs:249/:335/:388/:403/:404`、`ipc.rs:297/:301/:452/:473`、`dm_coverage.rs:66/:186`、`direct_map.rs:149/:151`、载体 `:115-118/:459/:588-589` | 逐行 `sed -n "${n}p"`（一轮跑完 11 个目标锚点 + 载体三处） | 全部命中；载体 bump 区实测为 `DRAM_BASE+0x0200_0000` / `+0x0400_0000`（即 0x8200_0000..0x8400_0000） |
 | `minix3/minix/kernel/arch/i386/memory.c:377`（`vm_lookup_range` 定义） | `sed -n '377p'` | 命中 `size_t vm_lookup_range(const struct proc *proc, …` |
-| `minix3/minix/kernel/memory.c` 不存在 | `ls` | 命中（`No such file or directory`）——而 `vm.rs:228` 的 doc 正写着这个路径 |
+| `minix3/minix/kernel/memory.c` 不存在 | `ls` | 命中（`No such file or directory`）——曾被 `vm.rs:228` 引用，已于 `14de2eb9a` 改掉 |
+| `arch/earm/memory.c`：banner `:353` / 定义 `:355` | `sed -n '353p;355p'` | 命中（:353 = `*  vm_lookup_range  *`，:355 = `size_t vm_lookup_range(…`） |
+| `virtual_copy_vmcheck` 是宏不是函数 | `sed -n '182,188p' minix3/minix/kernel/proto.h` | 命中：`proto.h:184` `#define virtual_copy_vmcheck(caller, src, dst, bytes) virtual_copy_f(caller, src, dst, bytes, 1)` |
+| `vm.rs:190` 的 `memory.c:325` | `sed -n '325p' arch/i386/memory.c` | 命中 `int vm_lookup(`——行号对，只是上一枚没数到它（所以上面写「另三条」） |
+| 本轮改动的宿主测试与 clippy | `cargo test -j 1 -p minix-kernel`；`cargo clippy --lib --message-format short` | test 三 target 合计 812 passed / 0 failed（809 lib + 3 `kernel/tests/boot_integration.rs`）；clippy 告警无一落在 `vm.rs:22x` 或 `cross_space.rs:1x` |
 | 本轮新增：`kernel/src/lib.rs:474-475` 两行分工 | `sed -n '474p;475p'` | 命中（`:474` = `establish_boot_dm` 调用，`:475` = `boot_stage!` 打印） |
 | 本轮新增：`cross_space::` 24 = 21 调用 + 3 注释 | 日志 §13.2 的命令（三段 `wc -l`/`grep -c`） | 实测 24 / 3 / 21；3 条注释在 `syscall_copy.rs:52/:54/:1323` |
 

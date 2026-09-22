@@ -225,7 +225,8 @@ const VM_LOOKUP_PAGE_SIZE: u64 = 4096;
 /// Walk the page table to find the largest contiguous physical range
 /// starting at `vaddr`, up to `max_bytes`.
 ///
-/// C: `vm_lookup_range` — kernel/arch/i386/memory.c:377（earm 变体在 arch/earm/memory.c:355）
+/// C: `vm_lookup_range` — minix3/minix/kernel/arch/i386/memory.c（earm 变体：
+///    minix3/minix/kernel/arch/earm/memory.c，同名函数）
 ///
 /// Returns `Some((phys_addr, chunk))` where `chunk` is the number of
 /// contiguous bytes (≤ `max_bytes`) starting at `vaddr` that map to

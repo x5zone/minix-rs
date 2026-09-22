@@ -322,3 +322,71 @@ bump 分配区（载体 :588-589）：0x8200_0000 .. 0x8400_0000 ⊂ 上面区�
   TEST-EXIT=0
   passed=812 failed=0 ignored=13（P0 基线 809，只涨不跌；增量为并发会话合入的
   nt-tests 用例，非本枚引入）
+
+## 15. 追加（第五轮评审闭环）：§14 的三处过期/错记，与同类命中的全量实测
+
+**本节生效范围**：§12.6 的「登记不修」已被 §14 取代；§14 写的代码锚点形态
+（带 `:377`/`:355` 手工行号）已被本节取代——最终形态是不带行号的路径+符号锚点。
+另 §14.3 关于「+3 来自并发合入的 nt-tests」的归因**是错的**，更正见 15.3。
+
+### 15.1 同串错路径的另一处命中（§14 只修了一处）
+  $ grep -rn "kernel/memory\.c" os/ --include=*.rs        # §14 修后立刻再跑
+  os/kernel/src/cross_space.rs:14://!   delegate to the shared `virtual_copy_vmcheck()` in `kernel/memory.c`).
+⇒ 同一个不存在的文件路径在同 crate 相邻模块原样还在。修法见 15.2。修后复跑该命令
+  无输出（exit 1）。
+
+### 15.2 `virtual_copy_vmcheck` 的真实形状（写注释前实测）
+  $ sed -n '182,188p' minix3/minix/kernel/proto.h
+  #define virtual_copy(src, dst, bytes) \
+                                  virtual_copy_f(NULL, src, dst, bytes, 0)
+  #define virtual_copy_vmcheck(caller, src, dst, bytes) \
+                                  virtual_copy_f(caller, src, dst, bytes, 1)
+  $ grep -rn "^int data_copy_vmcheck" minix3/minix/kernel/arch/*/memory.c
+  arch/i386/memory.c:690:  /  arch/earm/memory.c:595:
+  $ sed -n '325p' minix3/minix/kernel/arch/i386/memory.c
+  int vm_lookup(const struct proc *proc, const vir_bytes virtual,
+⇒ `virtual_copy_vmcheck` 是 **宏**（proto.h:184），不是 `kernel/memory.c` 里的函数；
+  它展开成 `virtual_copy_f(..., vmcheck=1)`，实体在 `arch/i386/memory.c:592`。
+  顺带证实 `vm.rs:190` 的 `memory.c:325` 行号是对的（同文件第四条，§14 数成三条）。
+
+### 15.3 812 的构成与一次假归因（我自己的错）
+  $ docker run ... cargo test -j 1 -p minix-kernel | grep '^test result:'
+  test result: ok. 809 passed; 0 failed; 8 ignored   (lib 单元目标)
+  test result: ok.   3 passed; 0 failed; 3 ignored   (kernel/tests/boot_integration.rs)
+  test result: ok.   0 passed; 0 failed; 2 ignored   (doc 目标)
+  $ git log --oneline --diff-filter=A -- os/kernel/tests/boot_integration.rs
+  19730973a add 03-stage-kernel
+  $ grep -rn "nt_tests\|nt-tests" os/kernel --include=*.rs | wc -l → 0
+⇒ 812 = 809(lib) + 3(集成目标)。那 3 个用例早在 `19730973a` 就存仓，与并发会话无关；
+  §14.3 写的「增量为并发会话合入的 nt-tests 用例」是**编的因果**（仓内 0 命中）。
+  真实情况：P0 基线 809 只计了 lib target 一个口径。数字没错，归因错。
+
+### 15.4 clippy 对账（§14 缺的一步）
+  $ cargo clippy -j 1 -p minix-kernel --lib --message-format short | grep -E 'vm\.rs:(22[0-9]|3[0-9])|cross_space\.rs:(1[0-9])'
+  （无输出，exit 1）
+⇒ 本 crate 有 84 行 short-format 告警（既有存量），但没有一条指向我改的这两段行号，
+  所以「注释改动是否引入新 lint」这一步现在是实测过的，不再靠推断。
+
+### 15.5 同类命中的全量实测（登记，不修）
+  $ ls minix3/minix/kernel/arch/i386/smp.c                 → No such file
+  $ grep -n "arch_send_smp_schedule_ipi" minix3/minix/kernel/arch/i386/arch_smp.c minix3/minix/kernel/smp.c
+    arch_smp.c:357:void arch_send_smp_schedule_ipi(unsigned cpu)   ← 定义
+    smp.c:65:      arch_send_smp_schedule_ipi(cpu);                ← 调用点
+  $ wc -l < minix3/minix/kernel/arch/earm/exception.c      → 275（Rust 侧引 :262-310）
+  $ wc -l < minix3/minix/kernel/arch/i386/pre_init.c       → 243（Rust 侧引 :268）
+  $ grep -n "pg_clear()" .../arch/i386/pre_init.c          → :230；定义在 pg_utils.c:254；pagedir[1024] 在 pg_utils.c:19
+  $ grep -n "sp -= sizeof(struct ps_strings)\|three words\|execi.stack_size = 64" .../arch/i386/protect.c
+    → :431 / :434 / :409（Rust 侧 `arch/src/arch/boot.rs` 引 413/417/402）
+  $ grep -n "bsp_finish_booting" minix3/minix/kernel/main.c → :38 定义，闭合 `}` 在 :109（Rust 侧引 38-97）
+  $ grep -rn "krandom;" minix3/minix/kernel/glo.h           → :31 `EXTERN struct k_randomness krandom;`
+  $ grep -rln "krandom.c" minix3/                            → 无（该文件全仓不存在）
+⇒ 七组（加 §15.1 的 cross_space.rs 与 §15.2 的 vm.rs:190 共九处）同类 C 对位缺陷，
+  分布跨 `os/arch/src` 与 `os/kernel/src` 多文件，登记为独立批量任务，不在本枚修。
+
+### 15.6 判别性断言（本节起生效，替换 §13.3(b) 与 §14 的断言写法）
+- (a) `grep -rn "kernel/memory\.c" os/ --include=*.rs` 必须**无输出**（全仓 .rs 清零，
+  不再限定单文件）。实测：无输出 ✓
+- (b) `grep -rn ": *[a-z_]*\.c:[0-9]" os/kernel/src/vm.rs | grep vm_lookup_range` 必须无
+  输出（该行不再有手工行号）。实测：无输出 ✓
+- (c) 沿用 §13.3(a) 原命令（在 `os/` 下）：`grep -rn --include=*.rs "cross_space::" kernel/src | grep -v "^kernel/src/cross_space.rs" | grep -cE ':[[:space:]]*(///|//!|//)'`
+  仍须为 3（即 24 = 21 调用 + 3 注释 的拆分仍成立）。实测 3 ✓

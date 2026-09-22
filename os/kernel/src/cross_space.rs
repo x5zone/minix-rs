@@ -11,7 +11,9 @@
 //!   in `kernel/system/do_copy.c:22-90`.
 //! - `data_copy_vmcheck()` is defined in `arch/i386/memory.c:690-705` and
 //!   `arch/earm/memory.c:590+` (architecture-specific entry points that
-//!   delegate to the shared `virtual_copy_vmcheck()` in `kernel/memory.c`).
+//!   delegate to the shared `virtual_copy_vmcheck()` — a macro in
+//!   `minix3/minix/kernel/proto.h` expanding to `virtual_copy_f()` with
+//!   `vmcheck=1`).
 //! - `vm_suspend()` lives in `kernel/proc.c:234-257`; the VMREQUEST handshake
 //!   uses `VMCTL_MEMREQ_GET`/`VMCTL_MEMREQ_REPLY` (see 09-vm-boot-protocol.md).
 //!
