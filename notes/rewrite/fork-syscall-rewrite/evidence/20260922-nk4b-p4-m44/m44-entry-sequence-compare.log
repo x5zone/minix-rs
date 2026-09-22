@@ -1,0 +1,29 @@
+# m44-entry-sequence-compare.log — NK4-B P4 M4.4 事实五第 3 条取证（2026-09-22）
+# 判别点：kernel-image 三架构入口序列均无 .bss 清零循环；
+#          仓内唯一真机跑到用户态的 riscv64 载体有该循环且注释写明原因。
+
+===== kernel-image riscv64 入口（os/kernel-image/src/main.rs:119-133）=====
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+    .section .text.boot, "ax"
+    .globl _start
+    _start:
+        la sp, kernel_boot_stack_top
+        li ra, 0
+        li fp, 0
+        call {rust_image_main}
+    2:  wfi
+        j 2b
+    "#,
+    rust_image_main = sym rust_image_main,
+);
+
+===== 对照：test-rt-birth-riscv64 入口 asm（同目录 grep 定位）=====
+130:    // Zero .bss: OpenSBI hands over without clearing the kernel image's
+132:    "    la t0, __bss_start",
+133:    "    la t1, __bss_end",
+135:    "    bgeu t0, t1, 2f",
+
+===== 反例：hello-boot-riscv64 也无清零（只有一处 .bss 字样的 link_section）=====
+45:#[unsafe(link_section = ".bss")]

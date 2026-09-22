@@ -1854,6 +1854,28 @@ vaddr = paddr = entry 三者同一）。而生产镜像按 M4.2 的设计 entry 
 0 error**（`KB2-EXIT=0`）。这也解释了为何 M4.2 的 kernel-image 能过：
 `os/kernel-image/Cargo.toml:32` 对本包就是 `default-features = false`。
 
+口径补充（针对一条评审意见的**实测驳回**）：该意见称「缓存命中时 cargo 不吐
+warning，复跑者会得到 Nothing to compile，45 这个数字不可复跑」。本轮重跑一次
+（同一条命令，`0.16s`、输出里无 `Compiling` 行，即确实缓存命中）：
+
+```
+warning: `minix-plat` (lib) generated 2 warnings
+warning: `minix-arch` (lib) generated 17 warnings
+warning: `minix-kernel` (lib) generated 45 warnings
+    Finished `release` profile [optimized] target(s) in 0.16s
+```
+
+即 cargo 在缓存态会**重放已缓存的 warning 计数**，「45 warning / 0 error」就是
+可复跑锚点，不必改成「一次性冷构建计数」。
+
+驳回过程中的一个插曲（对自己不美化）：为了“验证”该意见，我跑了第三条同样命令，
+看到输出里真的没有 warning 行，差点当场改口接受评审意见。区别只在 **grep 模式**：
+那条模式写成 `.minix-(kernel|arch|plat). generated`，漏了真实行里的 ` (lib)` 四个
+字符（真实汇总行的形状是：`warning: ` 后跟反引号包住的 crate 名、再跟
+` (lib) generated N warnings`）。换回正确模式后
+重放行重现。教训：**“复现不出”先查自己的观察手段，再改结论**——四轮实测与归档
+都在 `evidence/20260922-nk4b-p4-m44/m44-kernel-build-warming-census.log`。
+
 **登记为可复跑提醒**：任何人在本仓对 `minix-kernel` 做真机构建试探，必须带
 `--no-default-features`；不带得到的 372 条错是**方法伪影**，不是缺陷。
 
@@ -1872,10 +1894,24 @@ OpenSBI `-kernel` 直载形态下，既有测试内核**自己造交接件**—�
 
 同形对位不是孤例：`test-paging-enable-riscv64/src/main.rs:102-129`、
 `test-protection-riscv64/src/main.rs:118-145`、`test-rt-birth-riscv64/src/main.rs:452-483`
-都是同一段写法（自构 `KernelInfo` + `arch_boot_impl`），并在 NK3 真机上跑过。
-**价值**：「谁来建表、递什么参数」在 riscv64 上并非无人知道答案，仓内已有三份可跑
-样本；**局限**：三份都停在 `arch_boot_impl`（只验分页），没有一份进到 `kmain`，
-因此都没碰过 `validate()` 的真实门槛。
+都用了同一段写法（自构 `KernelInfo` + `arch_boot_impl`），并在 NK3 真机上跑过。
+
+**评审后更正的一处失准（本轮自查确认）**：上一版本节写「三份都停在
+`arch_boot_impl`（只验分页），没有一份进到 `kmain`」——这对 `test-rt-birth-riscv64`
+是错的，而且错的方向是**低估了仓内已有能力**。实测它走得很远：
+
+| 位置 | 内容 |
+|------|------|
+| `test-rt-birth-riscv64/src/main.rs:426` | `extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64)`——入口 asm 不清 a0/a1 直接 `call rust_main`，固件递的两个参数自然落位 |
+| `:493-501` | `dtb_phys == 0` 则 panic；否则 `PlatformDescSource::new(DTB, PhysBytes(dtb_phys))` → `parse_by_kind` → `minix_platform::init(desc)` |
+| `:535,540,541` | `init_kerninfo` / `init_proc_and_boot` / `init_smp_state`（文件头 `:1-12` 自述这是「production phases in kmain order」的逐相位复刻） |
+| `:566-567` | `minix_kernel::switch_to_user()` —— 已经进过用户态 |
+
+改后的结论（这才是站得住的那一句）：三份样本**都绕开了生产入口 `arch_boot`**——
+两份停在 `arch_boot_impl`（只验分页），第三份跑到用户态但是**手逐相位**（自己调
+`init_*` 系列而非经 `kmain`），所以三份都没有碰过 `validate()` 与 `jump_to_kmain`。
+因此本节的「局限」不变，但理由从「它们只验分页」改成「它们手搬相位、绕开生产入口」；
+而「价值」那一半反而更强：下面事实四第 1 条的 a1 递取已有可跑对位。
 
 ### 事实四：把 M4.4 拆开看，缺的是三件具体东西（不是“交接协议”这个抽象词）
 
@@ -1886,8 +1922,12 @@ OpenSBI `-kernel` 直载形态下，既有测试内核**自己造交接件**—�
    OpenSBI 腿没有内存图 API。可行的来源是设备树 `/memory` 节点——固件已经把它
    放进 `a1`（M4.3 实测串口 `Domain0 Next Arg1 : 0x000000008fe00000`），但
    **本镜像今天完全没读 `a1`**（`os/kernel-image/src/main.rs` 的 riscv64 入口序列
-   `:119-133` 只立栈就进 Rust 面）。`KernelInfo::platform_sources` 字段就是为这件事
-   留的位（`kernel_info.rs:125`）。
+   `:119-133` 只立栈就进 Rust 面，全文 `grep a1\|dtb\|fdt\|device.tree` 零命中）。
+   `KernelInfo::platform_sources` 字段就是为这件事留的位（`kernel_info.rs:125`）。
+   **本轮评审后补强的事实**：这条缺的不是「能力」而是「接线」——同一份仓内代码已经
+   跑通了这个动作：`test-rt-birth-riscv64/src/main.rs:426` 把 `a1` 当第二个入参收为
+   `dtb_phys`，`:493-501` 直接 `parse_by_kind(DTB 源)` 并 `minix_platform::init`。
+   所以甲案的这一半有逐行可抄的对位，不必从零写。
 2. **十二个 boot_modules 的装载来源**。riscv64 装机面仍是 honest bail
    （`os/xtask/src/image.rs:200-204`，上方 `:195-199` 的注释把理由写得很清楚：
    riscv64 不是 UEFI 盘形）。
@@ -1895,16 +1935,44 @@ OpenSBI `-kernel` 直载形态下，既有测试内核**自己造交接件**—�
    “写个空数组能诚”的那类：`validate()` 会当场 panic（`:203-207`）。
 3. **handoff 执行者是谁**。这一条才是真正的架构级选择，下面单独裁决。
 
-这三件里的前两件与 M3.4 的上交裁决（D1/B/A，见本文件「上交裁决（M3.4 的架构级
-选择）」节）**同族**：都落在「release 生产链从哪拿平台信息」这一条边界上。
-不同之处在于：aarch64 卡的是「拿不到平台描述符」（AAVMF 的 ACPI GICR 恒 0），而
-riscv64 卡的是「拿得到但没人递」。
+这三件里的前两件与 M3.4 的上交裁决（见本文件 `:1048` 「上交裁决（M3.4 的架构级
+选择，本会话不自行定案）」表体 A/B/C，以及后面的「M3.4 根因取证节」里把它收敛为
+**D1 > B > A** 的那一段）**同族**：都落在「release 生产链从哪拿平台信息」这一条
+边界上。不同之处在于：aarch64 卡的是「拿不到平台描述符」（AAVMF 的 ACPI GICR 恒 0），
+而 riscv64 卡的是「拿得到、仓内已有人解析成功过、但生产入口没人递」。
+
+### 事实五：riscv64 入口没清 `.bss`，而镜像的 bump 分配器就住在 `.bss`（本轮自查新增）
+
+这一条是写完上面四节后继续查实物产生的，不是推测，三条命令全部本轮实跑：
+
+1. 镜像 `.bss` 存在且为 `NOBITS`：
+   `readelf -S os/target/riscv64gc-unknown-none-elf/release/kernel` → 第 4 节
+   `.bss NOBITS ffffffc0000e0000`，大小 `0x120000`。`NOBITS` 意味着装载器
+   只为它预留范围内存、**不写入任何字节**。
+2. 依赖零初值的对象正好在这个段里：`nm` 同一文件 →
+   `ffffffc0000e0000 b IMAGE_ALLOCATOR`（小写 `b` = .bss）。它带
+   `cursor: AtomicUsize`（`os/kernel-image/src/main.rs:197,232`），非零 cursor 会让
+   第一次分配直接返回垃圾址。同一输出里 `IMAGE_HEAP` 是 `r`（在 `.rodata`）、
+   `KERNEL_ENTRY_ANCHOR` 也是 `r`，所以受影响的只有分配器游标这类对象。
+3. 入口序列确实没清：`os/kernel-image/src/main.rs:119-133` 只有 `la sp` /
+   `li ra,0` / `li fp,0` / `call`，无 `__bss_start..__bss_end` 清零循环；x86_64 臂
+   （`:86-100`）与 aarch64 臂（`:102-117`）同样没清。而仓内唯一真机跑到用户态的
+   那份载体明确写了这段，并把原因钉在注释上：`test-rt-birth-riscv64` 的入口 asm
+   「Zero .bss：OpenSBI hands over without clearing the kernel image's BSS
+   （K10 round-1 finding — garbage reads fake readiness）」；另一份
+   `hello-boot-riscv64` 也没清（它不读分配器，所以不暴露）。
+
+**为何本会话不现在就修**：拿不出判别性防回归断言。镜像今天只跑「打横幅 + halt」
+这条路径，它不读 `IMAGE_ALLOCATOR.cursor`，所以加了清零在真机上与不加**没有任何
+可观测差异**（M4.3 载体的三条断言不会变红也不会变绿）。按铁律「修 bug 必须带
+判别性断言」与「不许用改动制造推进感」，本轮只登记。开工时机：M4.4 裁决定案后的
+第一步（它是甲/乙两案的共同前置，不分案）。
 
 ### 上交裁决（M4.4 的架构级选择，本会话不自行定案）
 
 | 案 | 做法 | 代价 / 风险 |
 |----|------|-----------|
-| 甲 | 让 kernel-image 自己当 handoff 执行者：入口先读 `a1` 的 DTB 解 memmap，再自接模块装载源，建表后调 `minix_kernel::arch_boot` | 对位实现存在（事实三的三份样本），但把镜像从「契约位产出者」变成「引导体」，与 boot-shim 的职责边界重叠；x86_64 生产链刚在 NK4-A 翻绿，动它风险直接传导到 P1 |
+| 甲 | 让 kernel-image 自己当 handoff 执行者：入口先读 `a1` 的 DTB 解 memmap，再自接模块装载源，建表后调 `minix_kernel::arch_boot` | 对位实现比上一版估计的更充分（事实三更正后：a1 递取与 DTB 解析在 `test-rt-birth-riscv64:426,493-501` 已真机跑过）；但仍需先补事实五的 `.bss` 清零，且把镜像从「契约位产出者」变成「引导体」，与 boot-shim 职责边界重叠；x86_64 生产链刚在 NK4-A 翻绿，动它风险直接传导到 P1 |
 | 乙 | 给 riscv64 写一个独立的 boot-shim 等价体（不是 UEFI，而是 OpenSBI payload），与 x86_64/aarch64 同形：“装载体造 KernelInfo，镜像只当产物” | 职责最干净，不碰现有两条腿；代价是新增一份引导体代码与它的装机面（xtask 要给 riscv64 开一条非 ESP 的产物通道） |
 | 丙 | 本弧线 riscv64 不点电：P4 的交付面收敛为「镜像产出 + 装载链实证（M4.2 / M4.3 已完成）」，handoff 等 NK1/OQ-N6 统一裁决后三架构一起做 | 不阻塞其他工作；代价是 M4.4/M4.5 标 BLOCKED，任务书终目标里的 riscv64 rc marker 本轮交不出 |
 
@@ -1917,6 +1985,9 @@ riscv64 卡的是「拿得到但没人递」。
 
 - 没动 `os/kernel-image/` 下任何代码（包括没为“看起来能推进”加空 `KernelInfo`）；
 - 没读 `a1`、没解 DTB、没写 riscv64 装机面（均依赖上述裁决）；
+- 事实五的 `.bss` 清零**也没动**（它不依赖裁决，但拿不出判别性断言，理由与
+  登记均已写在该节）；取证输出已归档到
+  `evidence/20260922-nk4b-p4-m44/`（三份：构建输出、ELF 段表与符号、入口序列对照）；
 - M4.4 的下游两项（VM handoff、首模块用户态）未勘察——它们的前置（内核进 kmain）
   未达成，勘察只会得到推论，而推论不入库为事实。
 - 本节只新增文档，不新增 commit 以外的产物；生产代码改动量 = 0。
@@ -1926,7 +1997,31 @@ riscv64 卡的是「拿得到但没人递」。
 `kernel-image/Cargo.toml:33→:32`、`xtask/src/image.rs:195-203→:200-204`（拆成
 bail 块 + 上方注释两段）、`hello-boot-riscv64` 表格内三处（`boot_modules` 实为
 `:154` 不是 `:156`；基址对实为 `:147-148`；bump 实为 `:110,119-129`），以及表内
-「绕过 `arch_boot`」一栏补上完整文件路径（只写 `:243` 会被读成本文件行号，而那
-个文件只有 180 余行）。未偏的（已核为准确）：`NK4B-TODO.md:113`、
+「绕过 `arch_boot`」一栏补上完整文件路径（只写 `:243` 会被误读成样本文件
+`hello-boot-riscv64/src/main.rs` 的行号，而那个文件实测只有 202 行）。未偏的（已核为准确）：`NK4B-TODO.md:113`、
 `kernel/src/lib.rs:243`、`kernel_info.rs:125/203-207/333`、三份同形样本的起止行、
 `main.rs:69/119-133/139-148`。
+
+### M4.4 勘察节评审闭环（2026-09-22）
+
+对 `8c5aab711` 的里程碑 CodeReview：结论「需修后交付」（P1×1 + P2×1 + 4 条观察项），
+同时逐条实读了本节全部 `文件:行号` 锚点，判定无一错位。处理如下。
+
+- **P1 成立（自查确认）**：事实三原写「三份都停在 `arch_boot_impl`（只验分页）」
+  对 `test-rt-birth-riscv64` 是错的。实测它 `:566-567` 已经 `switch_to_user()` 进过
+  用户态。已改成「两份停在分页、第三份手搬相位到用户态，但三份都绕开生产入口
+  `arch_boot`」。这一条错的方向是**低估仓内已有能力**，不伤 BLOCKED 判定，但伤
+  裁决质量（案「甲」的代价因此调低）。证据已归档：
+  `evidence/20260922-nk4b-p4-m44/m44-entry-sequence-compare.log`。
+- **P2 不成立（实测驳回，理由见事实二那一小节）**：缓存态 cargo 确实重放 warning。
+  但驳回过程中我自己差点被一条写错的 grep 模式带到相反结论，已如实记录。
+- **观察项 3 成立**：「那个文件只有 180 余行」是凭印象写的，实测
+  `hello-boot-riscv64/src/main.rs` 为 **202 行**，已改正。
+- **观察项 1 成立**：交叉引用已补全实际标题后缀与「D1 > B > A 在 M3.4 根因取证节」
+  的位置（原引向 `:1048`，那里的表体仍是 A/B/C）。
+- **观察项 2、4 不采**：归档日志不改写（包括 `m43-reverse-x86-artifact.log` 里那句
+  已被 P1 推翻的旧机制措辞）——本弧线的纪律是「归档件不追改、活动文档就地更正」，
+  更正与三格矩阵均已在 M4.3 评审闭环节写清，后人从正文进入不会拿到旧结论。
+- **自查新增一条评审未列的事实**：即本节的「事实五」（入口不清 `.bss`，而
+  `IMAGE_ALLOCATOR` 正好住在 `.bss`）。它不依赖裁决，但拿不出判别性断言，所以
+  只登记不修；它是案甲与案乙的**共同前置**，开工第一步就要补。
