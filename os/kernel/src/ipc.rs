@@ -2032,6 +2032,26 @@ impl<'a> IpcEngine<'a> {
         flags: SendFlags,
         senda_table: Option<(VirBytes, usize)>,
     ) -> IpcOutcome {
+        // C: do_ipc 的 SENDA 臂（proc.c:673-684）在同步端点/权限校验层
+        // 之前拦截——r2 对 SENDA 是表元素个数而非端点，走
+        // check_ipc_permission 会对 ANY 伪端点报 EINVAL（C: proc.c:508）。
+        // mini_senda 自带 SYS_PROC 与逐条目检查，权限语义自洽。真机
+        // NK4-A C-3 c13a 轮：RS boot step2 的 RS_INIT asynsend 到 VM
+        // 死于此处（Errno 22 → RS boot failed）。
+        if let IpcCall::SendA = call {
+            let (table_ptr, count) = match senda_table {
+                Some(tc) => tc,
+                None => return IpcOutcome::Error(IpcError::BadCall),
+            };
+            // C: limit size to 16*(NR_TASKS + NR_PROCS) — proc.c:681.
+            let max_count = 16 * PROC_TABLE_SIZE;
+            if count > max_count {
+                // C: returns EDOM — mapped to BadCall (out-of-domain).
+                return IpcOutcome::Error(IpcError::BadCall);
+            }
+            return self.senda(caller_nr, table_ptr, count);
+        }
+
         // Permission check (NOTIFY has relaxed rules in C — the kernel's
         // mini_notify is a kernel-internal function that skips permission
         // checks; user-space SYS_NOTIFY goes through do_ipc's general
@@ -2072,24 +2092,10 @@ impl<'a> IpcEngine<'a> {
             }
             IpcCall::SendRec => self.sendrec(caller_nr, dst_endpoint, msg),
             IpcCall::Notify => self.notify(caller_nr, dst_endpoint),
-            IpcCall::SendA => {
-                // C: `size_t msg_size = (size_t) r2;` (proc.c:673)
-                //     `return mini_senda(caller_ptr, (asynmsg_t *) r3, msg_size);` (proc.c:683)
-                let (table_ptr, count) = match senda_table {
-                    Some(tc) => tc,
-                    None => return IpcOutcome::Error(IpcError::BadCall),
-                };
-                // C: limit size to 16*(NR_TASKS + NR_PROCS) — proc.c:681.
-                let max_count = 16 * PROC_TABLE_SIZE;
-                if count > max_count {
-                    // C: returns EDOM — mapped to BadCall (out-of-domain).
-                    return IpcOutcome::Error(IpcError::BadCall);
-                }
-                // No table pre-copy: `senda` reads entries from user space
-                // one at a time (C: `A_RETR`), keeping the kernel heap-free
-                // and retry semantics C-isomorphic (re-read on retry).
-                self.senda(caller_nr, table_ptr, count)
-            }
+            // SendA was intercepted above the permission layer (C do_ipc
+            // switch order, proc.c:673-684 before proc.c:503-541); this arm
+            // is unreachable and keeps the match exhaustive.
+            IpcCall::SendA => IpcOutcome::Error(IpcError::BadCall),
             // `MINIX_KERNINFO` never reaches the engine: `dispatch_ipc`
             // (syscall.rs) handles it before engine construction, mirroring
             // C where the arm sits in the same outer `do_ipc` switch but
