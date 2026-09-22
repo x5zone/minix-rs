@@ -454,7 +454,9 @@ pub(crate) fn build_identity_windows(
     /// fragmented OVMF map is far busier than the "few dozen" the
     /// first cut assumed) — 256 keeps the fail-fast meaningful instead
     /// of firing on the normal shape.
-    const MAX_CANDIDATES: usize = 256;
+    /// F6：单一常量双引用——与 globals::RESERVED_REGION_STORE_LEN 同源，
+    /// 编译期消除两处 256 手工对齐的漂移面。
+    const MAX_CANDIDATES: usize = crate::globals::RESERVED_REGION_STORE_LEN;
     /// Sanity cap on 4 KiB identity leaves: 128 Ki pages = 512 MiB.
     /// Blowing this means the "occupied" snapshot swallowed something
     /// enormous (fragmented firmware map or an MMIO-window regression) —

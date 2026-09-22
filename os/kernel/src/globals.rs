@@ -290,14 +290,20 @@ pub(crate) static KERNEL_INFO: SyncUnsafeCell<Option<KernelInfo>> = SyncUnsafeCe
 /// store in `arch_boot`/`kmain` deep-copies the bytes here (kernel `.bss`,
 /// mapped for the whole run) and repoints the slice.
 ///
-/// 256 = matches `build_identity_windows::MAX_CANDIDATES` (fix27d real-
-/// machine shape: 128 filtered descriptors);
-/// overflow fails fast in `store_kernel_info`, never truncates.
+/// 256 = `vm_handoff::build_identity_windows::MAX_CANDIDATES`（F6：单一
+/// 常量双引用——本常量是该耦合的唯一权威，vm_handoff 侧引用它，编译期
+/// 消除两处 256 手工对齐的漂移面）；overflow fails fast in
+/// `store_kernel_info`, never truncates.
+pub(crate) const RESERVED_REGION_STORE_LEN: usize = 256;
+
 pub(crate) static RESERVED_REGION_STORE: SyncUnsafeCell<
-    [minix_boot::MemoryRegion; 256],
-> = SyncUnsafeCell::new([
-    minix_boot::MemoryRegion { base: minix_types::PhysBytes(0), len: 0 }; 256
-]);
+    [minix_boot::MemoryRegion; RESERVED_REGION_STORE_LEN],
+> = SyncUnsafeCell::new(
+    [minix_boot::MemoryRegion {
+        base: minix_types::PhysBytes(0),
+        len: 0,
+    }; RESERVED_REGION_STORE_LEN],
+);
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///
