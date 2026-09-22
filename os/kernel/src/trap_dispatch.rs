@@ -794,19 +794,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 // 第 6 轮提到 48，仅真机。
                 #[cfg(not(feature = "mock"))]
                 {
-                    // 第 15 轮：RS 的 pf 保存无条件毒化 rbx（毒值带序号）——
-                    // 恢复交付毒值 ⇒ 保存→恢复忠实；交付 0 ⇒ 窗口内有写者。
-                    if proc.p_endpoint.0 == 2 {
-                        static POISON_N: core::sync::atomic::AtomicUsize =
-                            core::sync::atomic::AtomicUsize::new(0);
-                        let pn = POISON_N.fetch_add(1, AtomicOrd::Relaxed) as u64;
-                        use minix_arch::{CpuContextArch, CurrentCpuContextArch};
-                        let _ = <CurrentCpuContextArch as CpuContextArch>::write_user_register(
-                            &mut proc.cpu_context,
-                            72, // RBX（x86_64 offset map）
-                            0xDEAD_0000_0000_0000 | (pn & 0xFFFF),
-                        );
-                    }
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                     static PFRBX: AtomicUsize = AtomicUsize::new(0);
                     if PFRBX.fetch_add(1, AtomicOrd::Relaxed) < 48 {
