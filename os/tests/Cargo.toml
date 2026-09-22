@@ -14,6 +14,7 @@ minix-mib = { path = "../servers/mib" }
 minix-sef = { path = "../libs/minix-sef" }
 minix-fs = { path = "../libs/minix-fs" }
 minix-fs-mfs = { path = "../fs/mfs" }
+minix-fs-rt = { path = "../fs/fs-rt" }
 
 [dev-dependencies]
 
