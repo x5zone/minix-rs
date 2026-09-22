@@ -133,6 +133,12 @@ fn mirror_irq_frame_into_proc(
         frame.rbx,
         frame.rip,
     );
+    #[cfg(not(feature = "mock"))]
+    {
+        nk4a_rs_trace_probe("irq", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+        nk4a_rs_anom_probe("irq", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+        nk4a_rs_leak_probe("irq", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+    }
     true
 }
 
@@ -169,6 +175,175 @@ pub(crate) fn nk4a_rbx_probe(tag: &str, ep: u64, rbx: u64, rip: u64) {
         C0::write_hex(rip);
         C0::write_str("\n");
     }
+}
+
+#[cfg(not(feature = "mock"))]
+/// NK4-B P1 第 7 轮配对轨迹探针（task1-close 裁决删除）：只看 rs
+/// （endpoint 2），在「内核存下用户寄存器组」的每个站点无条件打印
+/// `(site, rip, rbx)`，并按三元组去重、全局限 64 条。
+///
+/// 与 [`nk4a_rbx_probe`] 的分工：后者只打 `rbx == 0`、与 add-call /
+/// add-flags 共享 40 条额度；c23a/c24a 证明那套过滤在 rs 崩溃前就
+/// 被启动前段同一 refault 循环耗尽（NK4B-WORKLOG T0.4），崩溃现场的
+/// 捕获值至今未拿到。本探针靠「只看 rs + 去重」把额度留给真正不
+/// 同的 (站点, rip, rbx) 组合，用来回答一个二分：rs 的 live RBX 是在
+/// 某个存帧点之**前**就被上一轮交付写坏（则所有站点看到的都是 0），
+/// 还是在存帧→恢复之间被内核改写（则入口非 0、交付 0）。
+pub(crate) fn nk4a_rs_trace_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    /// rs 的端点号（c23a `pf-save ep=0x2` 实证；MINIX3 里 RS = 2 号进程）。
+    const RS_ENDPOINT: u64 = 2;
+    const CAP: usize = 64;
+    if ep != RS_ENDPOINT {
+        return;
+    }
+    use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering as AtomicOrd};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    static SEEN_RIP: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static SEEN_RBX: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static SEEN_SITE: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
+    /// 站点以首字节区分（pf2 / x33 / irq / sig / vms / rst 首字互不相同；
+    /// 探针的 site 首字必须唯一，否则去重会合并不同站点）。
+    let site_key = site.as_bytes()[0];
+    let n = N.load(AtomicOrd::Relaxed);
+    let mut i = 0;
+    while i < n && i < CAP {
+        if SEEN_RIP[i].load(AtomicOrd::Relaxed) == rip
+            && SEEN_RBX[i].load(AtomicOrd::Relaxed) == rbx
+            && SEEN_SITE[i].load(AtomicOrd::Relaxed) == site_key
+        {
+            return;
+        }
+        i += 1;
+    }
+    if n >= CAP {
+        return;
+    }
+    SEEN_RIP[n].store(rip, AtomicOrd::Relaxed);
+    SEEN_RBX[n].store(rbx, AtomicOrd::Relaxed);
+    SEEN_SITE[n].store(site_key, AtomicOrd::Relaxed);
+    N.fetch_add(1, AtomicOrd::Relaxed);
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: rs-tr ");
+    C0::write_str(site);
+    C0::write_str(" n=");
+    C0::write_hex(n as u64);
+    C0::write_str(" rbx=");
+    C0::write_hex(rbx);
+    C0::write_str(" rip=");
+    C0::write_hex(rip);
+    C0::write_str("\n");
+}
+
+#[cfg(not(feature = "mock"))]
+/// NK4-B P1 第 8 轮异常轨迹探针（task1-close 裁决删除）：只看 rs，且只打
+/// 「RBX 不可能是用户指针」的存帧/交付现场（`rbx < 0x10000`，涵盖 0 与
+/// IPC 状态值两类），按 `(site, rbx, rip)` 去重、限 48 条。
+///
+/// 为何需要它：c25a 的 [`nk4a_rs_trace_probe`]（ep==2 全量 + 去重 + 64）
+/// 仍在崩溃前耗尽（最后一条在第 2194 行，崩溃在第 3800+ 行），因为启动
+/// 期 rs 不断引入新的正常 (rip, rbx) 组合。而 c25a 已证：pf2/rst/irq
+/// 三站的 (rbx, rip) 逐对相等 → 存帧→恢复回路忠实，0 不是在内回路与
+/// 交付之间被改写。本探针把额度全留给异常类（包括 0），以拿到
+/// 崩溃那次现场及其上一个异常点。
+pub(crate) fn nk4a_rs_anom_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    const RS_ENDPOINT: u64 = 2;
+    const ANOM_CEILING: u64 = 0x10000;
+    const CAP: usize = 48;
+    if ep != RS_ENDPOINT || rbx >= ANOM_CEILING {
+        return;
+    }
+    use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering as AtomicOrd};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    static SEEN_RIP: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static SEEN_RBX: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static SEEN_SITE: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
+    let site_key = site.as_bytes()[0];
+    let n = N.load(AtomicOrd::Relaxed);
+    let mut i = 0;
+    while i < n && i < CAP {
+        if SEEN_RIP[i].load(AtomicOrd::Relaxed) == rip
+            && SEEN_RBX[i].load(AtomicOrd::Relaxed) == rbx
+            && SEEN_SITE[i].load(AtomicOrd::Relaxed) == site_key
+        {
+            return;
+        }
+        i += 1;
+    }
+    if n >= CAP {
+        return;
+    }
+    SEEN_RIP[n].store(rip, AtomicOrd::Relaxed);
+    SEEN_RBX[n].store(rbx, AtomicOrd::Relaxed);
+    SEEN_SITE[n].store(site_key, AtomicOrd::Relaxed);
+    N.fetch_add(1, AtomicOrd::Relaxed);
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: rs-anom ");
+    C0::write_str(site);
+    C0::write_str(" n=");
+    C0::write_hex(n as u64);
+    C0::write_str(" rbx=");
+    C0::write_hex(rbx);
+    C0::write_str(" rip=");
+    C0::write_hex(rip);
+    C0::write_str("\n");
+}
+
+#[cfg(not(feature = "mock"))]
+/// NK4-B P1 第 9 轮「第一次泄露」跃变探针（task1-close 裁决删除）：
+/// 只看 rs，与上一个采样点比较——从「指针量级」（`>= 0x10000`）跳到
+/// 「状态量级」（`< 0x10000`）时打印跃变前后的 `(site, rbx, rip)`，限 12 条。
+///
+/// 它把 c25a/c26a 的两类归因分开：若跃变发生在存帧站（pf2/irq/i33/sig/vms），
+/// 说明内核保存之前用户态的 RBX 就已经被写坏（上一个交付点才是错点）；
+/// 若跃变发生在交付站（rst），则是内核亲手把状态量交付到了一个不在
+/// 用户态保存窗口（libc/ipc_trap 的 push-pop 窗口）内的恢复点。两者对
+/// 下一步修复方向的含义不同，必须区分。
+pub(crate) fn nk4a_rs_leak_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    const RS_ENDPOINT: u64 = 2;
+    const POINTER_FLOOR: u64 = 0x10000;
+    const CAP: usize = 12;
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+    static PREV_RBX: AtomicU64 = AtomicU64::new(POINTER_FLOOR);
+    static PREV_RIP: AtomicU64 = AtomicU64::new(0);
+    static PREV_SITE: AtomicU64 = AtomicU64::new(0);
+    static N: AtomicUsize = AtomicUsize::new(0);
+    if ep != RS_ENDPOINT {
+        return;
+    }
+    let prev = PREV_RBX.swap(rbx, AtomicOrd::Relaxed);
+    let prev_rip = PREV_RIP.swap(rip, AtomicOrd::Relaxed);
+    let prev_site = PREV_SITE.swap(site.as_bytes()[0] as u64, AtomicOrd::Relaxed) as u8;
+    if prev < POINTER_FLOOR || rbx >= POINTER_FLOOR {
+        return;
+    }
+    let n = N.fetch_add(1, AtomicOrd::Relaxed);
+    if n >= CAP {
+        return;
+    }
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: rs-leak ");
+    C0::write_str(site);
+    C0::write_str(" n=");
+    C0::write_hex(n as u64);
+    C0::write_str(" from_site=");
+    C0::write_str(match prev_site {
+        b'i' => "irq",
+        b'p' => "pf2",
+        b's' => "sig",
+        b'v' => "vms",
+        b'r' => "rst",
+        b'x' => "x33",
+        _ => "other",
+    });
+    C0::write_str(" prev_rbx=");
+    C0::write_hex(prev);
+    C0::write_str(" prev_rip=");
+    C0::write_hex(prev_rip);
+    C0::write_str(" rbx=");
+    C0::write_hex(rbx);
+    C0::write_str(" rip=");
+    C0::write_hex(rip);
+    C0::write_str("\n");
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -606,6 +781,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                         C0::write_str("\n");
                     }
                 }
+                #[cfg(not(feature = "mock"))]
+                {
+                    nk4a_rs_trace_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                    nk4a_rs_anom_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                    nk4a_rs_leak_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                }
                 // C 对位：异常入口与 trap 入口同记返回样式（mpx.S 保存半
                 // p_kern_trap_style=KTS_FULLCONTEXT；restore 消费）。缺它则
                 // 转发后重入队的进程在下次 dispatch 撞 "no entry trap style
@@ -695,6 +876,15 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("exception from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                // NK4-B P1 第 7 轮（task1-close 裁决删除）：本臂与下面的
+                // VmSuspend 臂是第 6 轮静态穷举发现、当时未取证的两个存帧
+                // 站点（NK4B-WORKLOG T0.4）。
+                #[cfg(not(feature = "mock"))]
+                {
+                    nk4a_rs_trace_probe("sig", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                    nk4a_rs_anom_probe("sig", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                    nk4a_rs_leak_probe("sig", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                }
                 // 同 ForwardToVm 臂：异常入口记返回样式（C mpx.S 对位），
                 // 信号暂停后的下次 dispatch 恢复需要它。
                 proc.trap_style = minix_arch::TrapStyle::FullContext;
@@ -892,6 +1082,12 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             frame.rbx,
             frame.rip,
         );
+        #[cfg(not(feature = "mock"))]
+        {
+            nk4a_rs_trace_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
+            nk4a_rs_anom_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
+            nk4a_rs_leak_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
+        }
         // Record the ENTRY style (C: every mpx.S soft-int entry records
         // `p_kern_trap_style`; arch_system.c:585 consumes it at
         // restore_user_context). A door-parked caller (blocked IPC)
@@ -1101,6 +1297,12 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .expect("syscall suspend: caller slot must exist");
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                #[cfg(not(feature = "mock"))]
+                {
+                    nk4a_rs_trace_probe("vms", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                    nk4a_rs_anom_probe("vms", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                    nk4a_rs_leak_probe("vms", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                }
                 proc.trap_style = minix_arch::TrapStyle::FullContext;
                 if let Some(ctx) = proc.p_vm_suspend.as_mut() {
                     ctx.saved_m_user = Some(m_user.0);

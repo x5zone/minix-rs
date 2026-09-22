@@ -3349,6 +3349,32 @@ fn finish_and_restore(
         C0::write_str(" rbx=");
         C0::write_hex(minix_arch::ipc_status_register(&ctx));
         C0::write_str("\n");
+        // NK4-B P1 第 7 轮（task1-close 裁决删除）：把「交付侧」也放进与
+        // 存帧侧共享的去重轨迹（site=rst）。rs 出生值一并回答：本进程
+        // 最早那条 rst 的 rbx 就是 boot 装配的 ctx.rbx（不必在 arch 层
+        // 写控制台）。
+        let picked_ep = table
+            .get(picked)
+            .map(|p| p.p_endpoint.0 as u64)
+            .unwrap_or(u64::MAX);
+        crate::trap_dispatch::nk4a_rs_trace_probe(
+            "rst",
+            picked_ep,
+            minix_arch::ipc_status_register(&ctx),
+            frame.rip,
+        );
+        crate::trap_dispatch::nk4a_rs_anom_probe(
+            "rst",
+            picked_ep,
+            minix_arch::ipc_status_register(&ctx),
+            frame.rip,
+        );
+        crate::trap_dispatch::nk4a_rs_leak_probe(
+            "rst",
+            picked_ep,
+            minix_arch::ipc_status_register(&ctx),
+            frame.rip,
+        );
     }
     // NK4-A C-3 迭代4：故障页 invlpg——此刻 CR3 即被恢复进程自己的根
     // （switch_address_space 在 stage 2 已装），iretq 前的最后一点。
