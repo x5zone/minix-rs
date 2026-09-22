@@ -763,6 +763,27 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("pagefault from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                // NK4-C 第 11 轮金丝雀（task1-close 裁决删除）：仅当保存值
+                // 为 0 时注入哨兵——恢复交付哨兵 ⇒ 保存即 0（用户侧/陷阱帧
+                // 侧）；恢复交付 0 ⇒ 保存后被内核改写（写者实锤）。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use minix_arch::{CpuContextArch, CurrentCpuContextArch};
+                    if proc.p_endpoint.0 == 2
+                        && minix_arch::x86_64::trap_stub::callee_saved_rbx(
+                            &proc.cpu_context,
+                        ) == 0
+                        && frame.rip >= 0x20_0000
+                        && frame.rip < 0x40_0000
+                    {
+                        let _ = <CurrentCpuContextArch as CpuContextArch>::write_user_register(
+                            &mut proc.cpu_context,
+                            72, // RBX（x86_64 offset map）
+                            0xDEAD_BEEF_CAFE_0001,
+                        );
+                        crate::ipc::probe_mark("nk4a: canary-set rbx=0\n");
+                    }
+                }
                 // NK4-A Task C 第 5 轮判别（task1-close 裁决删除）：pf 转发
                 // 入口「保存即采到的 RBX」——与 lib.rs pre-restore 路标的
                 // `rbx=`（同一进程本次恢复交付值）对照，三分支裁决：两处同

@@ -3353,8 +3353,12 @@ fn finish_and_restore(
         C0::write_hex(frame.rip);
         C0::write_str(" rsp=");
         C0::write_hex(frame.rsp);
-        C0::write_str(" rbx=");
+        // NK4-C Task C A 案后语义拆分：r10s=R10 状态车道交付值，
+        // rbx=用户 callee-saved RBX 交付值（真值，callee_saved_rbx）。
+        C0::write_str(" r10s=");
         C0::write_hex(minix_arch::ipc_status_register(&ctx));
+        C0::write_str(" rbx=");
+        C0::write_hex(minix_arch::x86_64::trap_stub::callee_saved_rbx(&ctx));
         C0::write_str("\n");
         // NK4-B P1 第 7 轮（task1-close 裁决删除）：把「交付侧」也放进与
         // 存帧侧共享的去重轨迹（site=rst）。rs 出生值一并回答：本进程

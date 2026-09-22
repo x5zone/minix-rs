@@ -1927,6 +1927,20 @@ impl VmServer {
                 for b in bytes {
                     hex.push_str(&alloc::format!("{:02x}", b));
                 }
+                // NK4-C 第 10 轮取证（task1-close 裁决删除）：**故障地址处**
+                // 的 8 字节（非页首）——页首全零可能是 ELF gap 的合法形状，
+                // 故障地址处的零才是「零填充错页」的直接证据。
+                let off = (fault_addr.0 - aligned.0) as usize;
+                let fbytes = unsafe {
+                    core::slice::from_raw_parts(
+                        (dv.0 + off as u64) as *const u8,
+                        8,
+                    )
+                };
+                hex.push_str(&alloc::format!("  fa={:#x} fa8=", fault_addr.0));
+                for b in fbytes {
+                    hex.push_str(&alloc::format!("{:02x}", b));
+                }
                 hex.push('\n');
                 crate::bootmark::mark(&hex);
             } else {
