@@ -12,16 +12,20 @@ license = "MIT"
 #
 # `required-features` 是「全部必须开」的语义，没法让两个架构特性各自
 # 打开同一个 bin（NK4-B P3 M3.2）。做法：抽出架构无关的内部特性
-# `fw-none-image` 由 bin 要求，`fw-x86-none` 与 `fw-aarch64-none` 都
-# 隐含它。对外零变化：`os/xtask/src/image.rs:212-222` 仍只传
-# `--features fw-x86-none`；riscv64（P4 M4.2）可同形扩展。链接脚本由
-# `--target` 选（见 build.rs），两个架构特性只标记「本架构已被要求
+# `fw-none-image` 由 bin 要求，`fw-x86-none` / `fw-aarch64-none` /
+# `fw-riscv64-none` 都隐含它。对外零变化：`os/xtask/src/image.rs:212-222`
+# 仍只传 `--features fw-x86-none`；riscv64（P4 M4.2 同形接入）的镜像
+# 目前只由 `kernel-image/check-layout.sh riscv64` 取件，不经 xtask 装机
+# 面（riscv64 不是 UEFI 盘形，`os/xtask/src/image.rs:195-203` 的 honest
+# bail 保持）。链接脚本由
+# `--target` 选（见 build.rs），三个架构特性只标记「本架构已被要求
 # 产出」；fw-none-image 不单独对外使用，但它被直接打开时的行为与今天
 # 在宿主 triple 上传 `fw-x86-none` 同形（裸机 bin 在宿主缺
 # `eh_personality` 而编译失败），不构成隔离退化。
 fw-none-image = []
 fw-x86-none = ["fw-none-image"]
 fw-aarch64-none = ["fw-none-image"]
+fw-riscv64-none = ["fw-none-image"]
 
 [dependencies]
 minix-arch = { path = "../arch", default-features = false }

@@ -25,7 +25,7 @@
 #   L8 内核启动图未被裁掉：`minix_kernel::arch_boot` 符号在镜像里
 #      （KERNEL_ENTRY_ANCHOR + 链接脚本 KEEP 的双重保险的可观测证据）
 #
-# 用法：bash os/kernel-image/check-layout.sh [x86_64|aarch64|all]
+# 用法：bash os/kernel-image/check-layout.sh [x86_64|aarch64|riscv64|all]
 #       SKIP_BUILD=1 复用已有工件（默认每个架构都重新构建）
 # 退出码：0 = 全部断言通过；1 = 任一断言失败；2 = 用法/环境错误
 set -uo pipefail
@@ -34,8 +34,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OS_ROOT="$(dirname "$SCRIPT_DIR")"
 WHICH="${1:-all}"
 case "$WHICH" in
-    x86_64|aarch64|all) ;;
-    *) echo "usage: $0 [x86_64|aarch64|all]" >&2; exit 2 ;;
+    x86_64|aarch64|riscv64|all) ;;
+    *) echo "usage: $0 [x86_64|aarch64|riscv64|all]" >&2; exit 2 ;;
 esac
 command -v readelf >/dev/null || { echo "缺 readelf" >&2; exit 2; }
 command -v nm >/dev/null || { echo "缺 nm" >&2; exit 2; }
@@ -58,15 +58,16 @@ check() {
 #   triple | 构建特性 | readelf Machine 字样 | 链接脚本名 | 脚本内高半基址符号 |
 #   脚本内物理基址符号 | 预期高半基址 | 预期物理基址 | 首段 VMA 惯例
 # 「首段 VMA 惯例」两取值：plus_phys = x86_64 的 `vaddr = 高半基址 + paddr`
-# （⇒ 首段 VMA 含物理基址）；virt = aarch64 的
+# （⇒ 首段 VMA 含物理基址）；virt = aarch64 与 riscv64 的
 # `vaddr = 高半基址 + (paddr - 物理基址)`（⇒ 首段 VMA 就是高半基址）。
-# 预期高半/物理基址两列与 .ld 里的声明由 L0 断言对账：两个架构的基址在
+# 预期高半/物理基址两列与 .ld 里的声明由 L0 断言对账：三个架构的基址在
 # 「.ld」与「本表」各写一份，改一处忘改另一处时 L0 会直接报 FAIL（而不是
 # 让下面的段断言拿着旧预期值默默拒收）。
 arch_expect() {
     case "$1" in
         x86_64)  echo "x86_64-unknown-none|fw-x86-none|Advanced Micro Devices X86-64|x86_64.ld|KERNEL_HIGH_BASE|KERNEL_PHYS_BASE|ffff800000000000|200000|plus_phys" ;;
         aarch64) echo "aarch64-unknown-none|fw-aarch64-none|AArch64|aarch64.ld|KERNEL_VIRT_BASE|KERNEL_PHYS_BASE|ffff800000000000|40200000|virt" ;;
+        riscv64) echo "riscv64gc-unknown-none-elf|fw-riscv64-none|RISC-V|riscv64.ld|KERNEL_VIRT_BASE|KERNEL_PHYS_BASE|ffffffc000000000|80200000|virt" ;;
     esac
 }
 
@@ -79,7 +80,7 @@ arch_expect() {
 # 被丢成「实得 无」→ 假失败）。所以换个能站住的做法：要求命中数恰好为 1。
 # 出现两处以上（包括顶格写在块注释里、单靠行文本辨不出的那种）时 L0 直接
 # 判失败并列出命中值，而不是拿“第一处”的运气值去比较。
-# 前提约定（两个 .ld 均遵守）：基址声明写在文件顶部、顶格、独占一行、
+# 前提约定（三份 .ld 均遵守）：基址声明写在文件顶部、顶格、独占一行、
 # 行尾不拼另一个声明。
 ld_values() {
     local file="$1" sym="$2"
@@ -105,12 +106,13 @@ check_arch() {
         virt)      want_vma=$(hex2dec "$virt_base") ;;
         *)
             # 不兼容的惯例取值当错误报：未知值默认走 `virt` 会把第三架构的
-            # L3b/L6a 预期算错而不告警（riscv64 到 P4 M4.2 若惯例不同必须新增取值）。
+            # L3b/L6a 预期算错而不告警（riscv64 已在 P4 M4.2 落地，实测两值
+            # 够用；再来一个惯例不同的架构必须新增取值而不是 reuse）。
             echo "  未知的首段 VMA 惯例：$vma_mode（只认 plus_phys|virt）" >&2
             FAIL=1; return ;;
     esac
     want_vma="$(printf '%x' "$want_vma")"
-    entry_want="$want_vma"   # 两个架构的入口都是镜像首字节（.text.boot 在 .text 首位）
+    entry_want="$want_vma"   # 三个架构的入口都是镜像首字节（.text.boot 在 .text 首位）
 
     echo "== $arch：$elf"
 
@@ -239,7 +241,8 @@ $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")"
 case "$WHICH" in
     x86_64)  check_arch x86_64 ;;
     aarch64) check_arch aarch64 ;;
-    all)     check_arch x86_64; check_arch aarch64 ;;
+    riscv64) check_arch riscv64 ;;
+    all)     check_arch x86_64; check_arch aarch64; check_arch riscv64 ;;
 esac
 
 if [ "$FAIL" = 0 ]; then

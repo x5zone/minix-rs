@@ -1,13 +1,18 @@
-//! 生产内核镜像 bin（NS8-A / NK4-B P3 M3.2 多架构）：把 minix-kernel 链接成
-//! boot-shim 契约位的内核 ELF。boot-shim 从
+//! 生产内核镜像 bin（NS8-A / NK4-B P3 M3.2 多架构 / P4 M4.2 三架构）：把
+//! minix-kernel 链接成 boot-shim 契约位的内核 ELF。boot-shim 从
 //! `/EFI/minix/kernel.elf`（`os/boot-shim/src/loader.rs`
 //! `KERNEL_PATH`）读它做两件事：`compute_kernel_layout` 取布局填
 //! `KernelInfo`（kern_virt_base / kern_phys_base / kern_size），
 //! `load_segments_into_phys_memory` 按 PT_LOAD 的物理地址拷段体、清 BSS。
 //! 布局契约由同目录的架构脚本定（高 VMA + 低物理 LMA，段间偏移一致）：
-//! x86_64 用 `x86_64.ld`，aarch64 用 `aarch64.ld`，由 `build.rs` 按
-//! `--target` 选一份。Rust 面架构无关，只有入口指令序列与早期控制台
-//! 按 `target_arch` 分道。
+//! x86_64 用 `x86_64.ld`，aarch64 用 `aarch64.ld`，riscv64 用 `riscv64.ld`，
+//! 由 `build.rs` 按 `--target` 选一份。Rust 面架构无关，只有入口指令序列
+//! 与早期控制台按 `target_arch` 分道。
+//!
+//! 取件方按架构不同：x86_64 / aarch64 走 UEFI 装机面（xtask image →
+//! boot-shim 读契约位）；riscv64 不是 UEFI 盘形，今天只由
+//! `os/kernel-image/check-layout.sh riscv64` 产出并校验静态布局，装机面
+//! 属 M4.3（`os/xtask/src/image.rs:195-203` 对该架构仍 honest bail）。
 //!
 //! ## 交付边界（诚实登记）
 //!
@@ -43,12 +48,15 @@ use alloc::alloc::{GlobalAlloc, Layout};
 use minix_boot::KernelInfo;
 use minix_types::PhysBytes;
 
-// 早期控制台按架构取板级实现（两者同名 `write_str`，因此 Rust 面无需
-// 分道）：x86_64 = COM1 串口，aarch64 = PL011。
+// 早期控制台按架构取板级实现（三者同名 `write_str`，因此 Rust 面无需
+// 分道）：x86_64 = COM1 串口，aarch64 = PL011，riscv64 = QEMU virt 的
+// 16550 UART（`os/plat/src/riscv64/early_console.rs`）。
 #[cfg(target_arch = "x86_64")]
 use minix_plat::x86_64::early_console;
 #[cfg(target_arch = "aarch64")]
 use minix_plat::arm64::early_console;
+#[cfg(target_arch = "riscv64")]
+use minix_plat::riscv64::early_console;
 
 // ── 内核启动图锚点 ──────────────────────────────────────────────
 //
@@ -69,9 +77,11 @@ static KERNEL_ENTRY_ANCHOR: fn(&KernelInfo, PhysBytes) -> ! = minix_kernel::arch
 // `kernel_boot_stack_top` 是链接脚本符号：在此处之外它无 Rust 声明，
 // 交给链接器解析（符号不存在时链接期即失败，符合 fail-fast）。
 //
-// 两个架构各一份指令序列，语义逐条对应：取栈顶 → 清帧指针 → 调 Rust
+// 三个架构各一份指令序列，语义逐条对应：取栈顶 → 清帧指针 → 调 Rust
 // 面 → 停机驻留。aarch64 的 `adrp` + `add :lo12:` 取符号写法抄仓内既有
-// 载体（`os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:250-251`）。
+// 载体（`os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:250-251`）；
+// riscv64 用 `la`（链接器松弛为 PC 相对的 `auipc` + `addi`），这样低半/
+// 高半两个执行视图下都能取到栈顶符号（NK4-B P4 M4.2 决策四）。
 
 #[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
@@ -106,6 +116,22 @@ core::arch::global_asm!(
     rust_image_main = sym rust_image_main,
 );
 
+#[cfg(target_arch = "riscv64")]
+core::arch::global_asm!(
+    r#"
+    .section .text.boot, "ax"
+    .globl _start
+    _start:
+        la sp, kernel_boot_stack_top
+        li ra, 0
+        li fp, 0
+        call {rust_image_main}
+    2:  wfi
+        j 2b
+    "#,
+    rust_image_main = sym rust_image_main,
+);
+
 /// Rust 面入口：横幅 + 触达锚点 + 驻留。
 ///
 /// 交接协议未接线（见模块文档"交付边界"），到达这里说明镜像已被
@@ -127,12 +153,18 @@ fn halt() -> ! {
         // 中断全关的停机驻留。不改内存、不碰栈。
         // - x86_64：`cli` + `hlt`；
         // - aarch64：`wfi`（本镜像未开 WFI 陷入控制，且入口态由未来的
-        //   交接协议定，属 NK1/OQ-N6 裁决范围；此处只需保证驻留）。
+        //   交接协议定，属 NK1/OQ-N6 裁决范围；此处只需保证驻留）；
+        // - riscv64：同名 `wfi`（S-mode 可用；是否被 `mstatus.TW` 陷入
+        //   取决于 OpenSBI 配置，同属入口态未接线那条边界）。
         #[cfg(target_arch = "x86_64")]
         unsafe {
             asm!("cli", "hlt", options(nomem, nostack))
         }
         #[cfg(target_arch = "aarch64")]
+        unsafe {
+            asm!("wfi", options(nomem, nostack))
+        }
+        #[cfg(target_arch = "riscv64")]
         unsafe {
             asm!("wfi", options(nomem, nostack))
         }
