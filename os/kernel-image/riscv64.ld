@@ -18,10 +18,10 @@
  *     bit38 符号扩展到 64 位，canonical high 区起点即 VPN[2] = 256 处
  *     （`os/arch/src/arch/direct_map.rs:133`、宿主测试
  *     `os/kernel/src/lib.rs:4215`、既有内核侧脚本
- *     `os/kernel/src/arch/riscv64/link.ld:24` 同值）。
+ *     `os/kernel/src/arch/riscv64/link.ld:21` 同值）。
  *     注意 0xFFFFC00000000000 与 0xFFFFFC0000000000 **不是**合法的 Sv39
  *     canonical high——它们 VPN[2] = 0，与低半地址重合（旧脚本头部
- *     同一文件 8-18 行的警示，这里一并抄下免得后人重踩）。
+ *     同一文件 6-14 行的警示，这里一并抄下免得后人重踩）。
  *   - KERNEL_PHYS_BASE = 0x80200000：QEMU virt（riscv64）DRAM 从
  *     0x80000000 起，+2MiB 且 2MiB 对齐（`os/kernel/src/lib.rs:4154/4216`，
  *     与 `os/arch/src/riscv64/paging.rs:883` 的测试地址族一致）。

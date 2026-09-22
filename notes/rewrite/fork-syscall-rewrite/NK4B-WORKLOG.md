@@ -1489,9 +1489,9 @@ ELF，必须由载体脚本第 35/38 行导出该变量。带上就构建成功�
 ### 决策二：两个基址沿用仓内既有值，不新发明
 
 - `KERNEL_VIRT_BASE = 0xFFFF_FFC0_0000_0000`（Sv39 canonical high，VPN[2]=256）
-  三处独立来源：`os/kernel/src/arch/riscv64/link.ld:24`、
+  三处独立来源：`os/kernel/src/arch/riscv64/link.ld:21`、
   `os/arch/src/arch/direct_map.rs:133`、宿主测试 `os/kernel/src/lib.rs:4215`。
-  旧脚本头部（同一文件 8-18 行）还写明了为什么不能取
+  旧脚本头部（同一文件 6-14 行）还写明了为什么不能取
   `0xFFFF_C000_0000_0000`/`0xFFFF_FC00_0000_0000`（它们 VPN[2]=0，与低半
   冲突）——这条约束我抄进新脚本注释，避免后人重踩。
 - `KERNEL_PHYS_BASE = 0x8020_0000`（QEMU virt DRAM 起点 `0x8000_0000` + 2 MiB，
@@ -1568,9 +1568,9 @@ readelf 布局断言，不含真机装载）
 
 | # | 接线点 | 做了什么 |
 |---|--------|----------|
-| 1 | `os/kernel-image/riscv64.ld`（新增 99 行） | 高半 VMA `0xFFFFFFC000000000` + `AT()` 把 LMA 拉到 `0x80200000` 起、`.text.boot`/`.rodata.kernel_anchor` 的 KEEP、64 KiB 引导栈、2 MiB 跨距收口 |
-| 2 | `os/kernel-image/build.rs:19-23` | `riscv64gc-unknown-none-elf → riscv64.ld`，并补 `rerun-if-changed=riscv64.ld` |
-| 3 | `os/kernel-image/Cargo.toml:31` | `fw-riscv64-none = ["fw-none-image"]`；把「riscv64 可同形扩展」的展望注释改成既成事实，并写清 riscv64 镜像只由 check-layout 取件 |
+| 1 | `os/kernel-image/riscv64.ld`（新增 101 行） | 高半 VMA `0xFFFFFFC000000000` + `AT()` 把 LMA 拉到 `0x80200000` 起、`.text.boot`/`.rodata.kernel_anchor` 的 KEEP、64 KiB 引导栈、2 MiB 跨距收口 |
+| 2 | `os/kernel-image/build.rs:19` + `:30` | `riscv64gc-unknown-none-elf → riscv64.ld`（:19），并补 `rerun-if-changed=riscv64.ld`（:30） |
+| 3 | `os/kernel-image/Cargo.toml:28` | `fw-riscv64-none = ["fw-none-image"]`；把「riscv64 可同形扩展」的展望注释改成既成事实，并写清 riscv64 镜像只由 check-layout 取件 |
 | 4 | `os/kernel-image/src/main.rs` | riscv64 的 `early_console` import、`_start` global_asm、`halt()` 第三分支、模块文档「两架构」→三架构 + 取件方分道 |
 | 5 | `os/kernel-image/check-layout.sh:70` | `arch_expect()` 第三行 + `case` 分支 + usage 文案 |
 | 6 | 验证 | 见下 |
@@ -1623,3 +1623,35 @@ readelf 布局断言，不含真机装载）
 立栈/清链路/进 Rust 面/`wfi` 驻留，明确**不**做开分页与 DTB 交接
 （NK1/OQ-N6 边界，与 x86_64/aarch64 同形）。真机装载属 M4.3，本节的
 「DONE」不含该判据，也不声称任何真机行为。
+
+### M4.2 评审闭环节（2026-09-22）
+
+本节三个 commit（`d7668ec6a` 设计 / `907a4444e` 实现 / `4093a1959` 落盘）的
+CodeReview 结论：**PASSED，0 P0 / 0 P1**。评审逐条核对过的东西里对本节
+结论最关键的是三条：基址与仓内四处既有常量一致（不是新发明）、与
+`aarch64.ld` 逐条同形、`.sdata2` 没被落进 NOBITS 的 `.bss`。评审还对
+`check-layout.sh` 里 `hex2dec()` 的 bash 有符号回绕做了实算（
+`0xffffffc000000000` 在 i64 里是负数），确认 L3b/L4/L5/L6c/L7 两侧同施
+`hex2dec`、`printf '%x'` 环回同串，无恒真/恒假断言。
+
+评审提出四条 P2，自查全部成立，并自查追加一条同源漂移（评审未列）：
+
+| # | 漂移 | 实测真相 | 落点 |
+|---|------|----------|------|
+| 1 | `riscv64.ld` 注释引用旧脚本 `link.ld:24` | `:21` 才是 `KERN_VIRT_BASE` 声明行，`:24` 是 `SECTIONS`（早期 Trae scan `.review/trae/…/02-higher-half-kernel-glm-design-structure.md:170` 用的就是 `:21`） | `riscv64.ld` + 本节决策二 |
+| 2 | 同一注释写「旧脚本头部 8-18 行的警示」 | 该警示跨 `:6-14` | `riscv64.ld` + 本节决策二 |
+| 3 | 「`riscv64.ld`（新增 99 行）」 | `wc -l` = 101 | 上面实现节表格 |
+| 4 | 「`build.rs:19-23`」 | `riscv64.ld` 分支在 `:19`，`rerun-if-changed` 在 `:30` | 上面实现节表格 |
+| 5 | 「`Cargo.toml:31`」 | `fw-riscv64-none = ["fw-none-image"]` 在 `:28` | 上面实现节表格 |
+
+五条都是引用/数字漂移，无一条改变行为或结论；但其中第 1/2 条落在
+`riscv64.ld` 本体——它是链接器输入而非纯文档，所以改完不是“校验一下
+diff”了事，而是重跑了三架构全量布局断言：`check-layout.sh all` →
+**CL-EXIT=0、39 条全 PASS、FAIL=0**（
+`evidence/20260922-nk4b-p4-m42/m42-check-layout-all-after-p2closure.log`）。
+这一格同时顺手证了 L0 的“注释不算声明”机制（`ld_values()` 的 sed 锁
+`^\s*SYM = 0x…;`，注释里那行带 ` *   - ` 前缀且无分号，实测仍报「命中 1/1 处」）。
+
+上一节写作期还出过一次事故：改块注释里的两行时 `original_text` 少带了
+` *     ` 续行前缀，把 `/* */` 块形状破坏了，是在复读 diff 时发现的，已补回。
+完整过程与两条可复跑判别断言写在 FIXLOG「NK4-B P4 M4.2 评审闭环节」。
