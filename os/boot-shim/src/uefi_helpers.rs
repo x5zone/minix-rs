@@ -200,6 +200,16 @@ impl BootShim for UefiBootShim {
         // §6.0-A2). Fail fast while the boot-shim can still print.
         assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
         assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
+        // F8 belt-and-braces（NK4 回归评审 PART2 §三线程 c）：kernel 段与
+        // boot 模块段同样必须不在 conventional 快照内。时点结构（快照拍在
+        // 全部 LOADER_DATA 分配之后，D-64②/fix27b）应已保证这一点，但
+        // "UEFI 改标正确"是固件行为假设——逐段断言让该假设的回归在此处
+        // 带着冲突区间 fail-fast，而不是下游内核 A2 分类把活页交给
+        // VM PMM 后静默腐蚀。
+        assert_bootstrap_outside_memmap(memmap, kern.kern_phys_base.0, kern.kern_size);
+        for module in boot_modules {
+            assert_bootstrap_outside_memmap(memmap, module.start.0, module.len as u64);
+        }
 
         uefi::println!("boot-shim: building KernelInfo…");
 
