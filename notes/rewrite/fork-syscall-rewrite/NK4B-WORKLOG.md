@@ -2186,12 +2186,67 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
 |----|------|------------|
 | 甲 | 按仓内已写明的意图落地：`INIT_USER_SSTATUS` 加 SUM 位，并在 `restore_to_user` 里把该进程的 SUM 应用到 `sstatus`（现在只改 SPP/SPIE） | 改动最小（一个常量 + 入口 asm 一条），与 `boot.rs:95-97` 注释的设计意图同名同形；但效果是「只要当前进程是用户进程，内核全程可读用户页」，粒度粗 |
 | 乙 | 只在拷贝窗口内开/关 SUM（Linux 的 `enable_user_access()`/`disable_user_access()` 对位），需要一个 arch 门控的 guard（或给 `UserCopy` trait 加一对方法） | 语义最精确、与现有「先软走页表再访问」的纪律最配；**仓内已有同位可抄的窗口模式**（载体 `test-rt-birth-riscv64/src/main.rs:248,331,336,340`），只是它现在住在测试载体里、没提到 arch 层；代价是要新增一层 kernel↔arch 抽象并剔除掉载体那份副本 |
-| 丙 | 不碰 CSR：先把用户 VA 翻译成 PA，再从 Direct Map 窗口读（仓内已有模式：`kernel/src/vm.rs:403`、`ipc.rs:379-381` 的注释就把这条当作出路） | 不引入新位、跟仓内既有跨空间拷贝一致；代价是每次拷贝多一次 walk，且要先证实 Direct Map 窗口覆盖到用户页所在的物理址 |
+| 丙 | 不碰 CSR：先把用户 VA 翻译成 PA，再从 Direct Map 窗口读。**这不是新抽象，而是本仓跨空间拷贝的标准三步**（取证见下一小节：24 个调用方都走这条路） | 只改 `ipc.rs:452` / `:473` 两个函数（消息面里直接取用户 VA 的仅这两处；grep 范围见下一小节第 2 步）；不需要任何 arch 层 CSR 代码，三架构（含 aarch64 PAN、x86_64 未来 SMAP）一次改动同享；代价是要处理“目标 PA 必须被 DM 覆盖”这条新前提（已有校验函数可复用）与 64 字节消息跨页时分段 |
 
-推荐 **乙**（安全语义上最接近现代 riscv64/Redox 做法，且与 `copy_msg_from_user`
-已有的「验证优先」分阶段结构同构）；若你希望本轮先把三架构点电到底、后续再收
-拢安全粒度，**甲** 是最低成本的临时形态（但必须同时在代码里标注它是临时形态，
-否则会被后人当成最终设计）。丙 需先做窗口覆盖取证，不能直接选。
+推荐 **丙**（本轮补完前置取证后改推荐，理由全部列在下一小节）。若你更看重“安
+全粒度必须在硬件上真拦住”而非“跟仓内已验证路径一致”，则 **乙** 是语义最精确的
+选（代价：新增一层 kernel↔arch guard 抽象 + 三架构各自实现 + 提升载体那份副
+本）。若只想本轮先把三架构点电到底、后续再收敛，**甲** 是最低成本的临时形
+态（但必须同时在代码里标注它是临时形态，否则会被后人当成最终设计）。
+
+### 案丙 前置取证（本轮补齐，上一版说「丙 需先做取证才能选」——现在做完了）
+
+取证命令与输出全文在
+`evidence/20260922-nk4b-p4-m44-clock/sum-user-access-forensics.log` §12，五步：
+
+1. **路已经铺好了，只是消息面没走**：仓内跨空间拷贝的标准三步在
+   `kernel/src/vm.rs:388-404`——`resolve_physical`（走页表得 PA，缺页返
+   `Suspended`）→ `D::kernel_phys_to_virt` → 拷贝；`cross_space::` 的调用方 24 处
+   （命令：`grep -rn "cross_space::" --include=*.rs kernel/src | grep -v
+   "^kernel/src/cross_space.rs" | wc -l`）：`misc.rs` / `kmess.rs` /
+   `syscall_process.rs` / `syscall_device.rs` / `grant.rs` / `syscall_signal.rs` 等。
+   跨页与物理不连续也已处理：`kernel/src/vm.rs:249` 的 `lookup_range_in_table`
+   （doc 在 `:225-248`）就是「返回从该 VA 起物理连续的最大字节数」，C 对位
+   `vm_lookup_range`（`minix3/minix/kernel/arch/i386/memory.c:377`）。窗口覆盖也
+   有现成校验：`kernel/src/vm.rs:335` `physical_range_in_dm_window`。
+2. **缺口只有两个点**：`grep -rn "read_volatile\|write_volatile" kernel/src/ipc.rs
+   kernel/src/kmess.rs` 只命中两行涉用户址：`ipc.rs:452`（`copy_msg_from_user` 读
+   用户 VA）与 `ipc.rs:473`（`copy_msg_to_user` 写用户 VA）。它们就是
+   `UserCopy` trait（`ipc.rs:297` / `:301`）的两个方法——即：**消息面只有这两处
+   直接拿用户 VA 当内核址用**。范围说清：这条只涵盖 `ipc.rs` + `kmess.rs` 两个
+   文件（本次没对全 `kernel/src` 做同型扫描），但 `cross_space::` 那 24 个调用方
+   都走 walk+DM。这就是为什么阻塞点需要 SUM/PAN。
+3. **riscv64 上窗口今天就真的存在（真机证据，不是推导）**：本轮归档的串口日志
+   `serial_clk1.log:65` 打出 `kernel: step4 DM coverage ok`——该行由
+   `kernel/src/lib.rs:474` 的 `establish_boot_dm` 打印，在所有架构的
+   `arch_boot_impl` 里同一条路径，riscv64 不例外。
+4. **用户栈的 PA 落在覆盖范围内**：载体 `test-rt-birth-riscv64/src/main.rs:115-118`
+   声明的 memmap = `PA 0x8000_0000 + 256 MiB`（即 `[0x8000_0000, 0x9000_0000)`），
+   `establish_boot_dm` 的候选就来自这张表（`kernel/src/dm_coverage.rs:73-79`）；
+   而用户栈 / 镜像 / ps_strings 都出自 bump 区 `PA 0x8200_0000..0x8400_0000`
+   （载体 `:588-589`），在覆盖区间内。窗口容量也对得上：riscv64 内核 DM 上界
+   是 PA 16 GiB（`kernel/src/dm_coverage.rs:40-47` 明写；基址
+   `direct_map.rs:149` = `0xFFFF_FFC0_4000_0000`）；候选集入口在
+   `kernel/src/dm_coverage.rs:186` 的 `memmap_candidates`（直接读
+   `kernel_info.memmap()`）。
+5. **跨页这个真实约束**：本轮这次 fault 的消息址 `stval=0x3fffffef6c`，加 64 字节
+   = `0x3fffffefac`，未过页边界 `0x3fffff_f000`（载体 `:459` 的 `user_sp`）——
+   这一例不跨页；但一般情况会（用户栈顶对齐到页尾时），所以丙 必须带分段循环，
+   不能直接 `copy_nonoverlapping(64)`。这是丙 唯一需要新写的代码。
+
+**为何改推荐（本链第三次自我更正，根因同一个）**：上一版写「乙 语义最精确、
+仓内已有窗口模式」而把丙 排在后面，理由是「丙 需先做窗口覆盖取证，不能直接
+选」。取证做完后两条都换了颜色：丙 不但不需要新抽象，它恰恰是本仓已用 24 处
+的那条既有路，而且一次改动同时解决 aarch64 的 PAN 与 x86_64 未来启用 SMAP 后的
+同型问题；乙 则要新增一层 kernel↔arch 抽象并为三架构各写一份。上一版又犯了
+“先写结论再补命令”：我查了两份载体的窗口，却没查生产代码自己怎么处理其它用户
+内存访问——而答案就是“从不直接读用户 VA”。取证命令已逐条写进日志 §12。
+
+另登记一条旁支发现（不修，P2 级）：`kernel/src/vm.rs:228` 的 doc 把 C 对位写
+成「`vm_lookup_range` — kernel/memory.c」，但 `minix3/minix/kernel/memory.c` 这个
+文件不存在，真实位置是 `minix3/minix/kernel/arch/i386/memory.c:377`（另有
+`arch/earm/memory.c:353` 等架构变体）。选 丙 后这段拷贝路径本来就要重动，届时
+一并改注释；现在单独改一行注释不值得走一轮真机。
 
 ### 登记：riscv64 出生链载体的 `uecall_handler` 可能已是死腿（只登记，不修）
 

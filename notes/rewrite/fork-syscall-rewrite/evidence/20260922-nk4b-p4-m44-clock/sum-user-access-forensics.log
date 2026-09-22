@@ -175,3 +175,73 @@ kernel/src/lib.rs:2096:    if PANIC_DIAG_ACTIVE.swap(true, Ordering::AcqRel) {
 `arch/src`（与断言范围对齐）。另外 §10 那句「生产侧只有一行意图注释」同理适用于
 SUM：把 `grep -rn --include=*.rs SUM arch/src kernel/src` 里的 riscv64 子目录限定
 去掉、扫整个 `arch/src`，结果仍是那 3 行注释（已实测）。
+
+## 12. 案丙 前置取证：Direct Map 路径在仓内已是主流，缺口只剩消息面两点
+
+### 12.1 仓内既有的「走页表 → 得 PA → 进 DM 窗口」三步
+
+  vm.rs:403:    let src_vaddr = D::kernel_phys_to_virt(src_phys);
+  vm.rs:404:    let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
+（上面 :388-401 是 resolve_physical 两个调用，PageFault 时返
+  CrossSpaceResult::Suspended，不 panic）
+
+命令：grep -rn "cross_space::" --include=*.rs kernel/src | grep -v "^kernel/src/cross_space.rs" | wc -l
+输出：24
+命令同上去掉 "| wc -l" 后的文件名分布（前几行）：
+  kernel/src/misc.rs:34, kernel/src/kmess.rs:168, kernel/src/syscall_process.rs:309,
+  kernel/src/syscall_device.rs:607, kernel/src/grant.rs:42,
+  kernel/src/syscall_signal.rs:24, kernel/src/syscall.rs:1121, kernel/src/syscall_copy.rs:360 …
+
+跨页/物理不连续的处理函数：vm.rs:249 `pub fn lookup_range_in_table<D: DirectMapArch>`
+（doc 在 :225-248，第 3 步写「First chunk extends to the end of the current 4KB
+page」）。窗口覆盖校验：vm.rs:335 `fn physical_range_in_dm_window`。
+
+### 12.2 消息面（本 grep 范围 = `kernel/src/ipc.rs` + `kernel/src/kmess.rs`）只有
+两处直接拿用户 VA 当内核址用
+
+命令：grep -rn "read_volatile\|write_volatile" --include=*.rs kernel/src/ipc.rs kernel/src/kmess.rs | grep -in "user\|msg\|src\|dst"
+  1:kernel/src/ipc.rs:452:        let msg = unsafe { core::ptr::read_volatile(src.0 as *const Message) };
+  2:kernel/src/ipc.rs:473:        unsafe { core::ptr::write_volatile(dst.0 as *mut Message, *msg) };
+接口定义：ipc.rs:297 `fn copy_msg_from_user(&self, src: VirBytes)` /
+ipc.rs:301 `fn copy_msg_to_user(&self, dst: VirBytes, msg: &Message)`
+⇒ 需要 SUM/PAN 的只有这两个函数体；其余用户内存访问都已走 12.1 那条路（该结论
+  的范围限于消息面：本次没对全仓 `kernel/src` 做同型扫描，如需只能说“消息面”）。
+
+### 12.3 riscv64 上 DM 窗口今天真机就存在
+
+  serial_clk1.log:65:kernel: step4 DM coverage ok
+打印者：kernel/src/lib.rs:474 `crate::dm_coverage::establish_boot_dm(kernel_info, root_page);`
+（在所有架构共用的 arch_boot_impl 里，无 cfg 分道）
+
+### 12.4 用户页的 PA 在覆盖范围内
+
+载体 memmap（test-rt-birth-riscv64/src/main.rs:115-118）：
+  base = DRAM_BASE = 0x8000_0000（:95）, len = 0x1000_0000（256 MiB）
+  ⇒ 覆盖 PA [0x8000_0000, 0x9000_0000)
+候选集入口：kernel/src/dm_coverage.rs:73-79（`for r in memmap_candidates(...)`）与
+  :186 `fn memmap_candidates`（直读 kernel_info.memmap()）
+bump 分配区（载体 :588-589）：0x8200_0000 .. 0x8400_0000 ⊂ 上面区间 ✓
+窗口上界：kernel/src/dm_coverage.rs:40-47 明写 riscv64 kernel DM 把 PA 限在 16 GiB；
+  基址 arch/src/arch/direct_map.rs:149 KERNEL_DIRECT_MAP_BASE = 0xFFFF_FFC0_4000_0000
+
+### 12.5 跨页约束：本例不跨，但必须带分段
+
+  stval = 0x3fffffef6c（本轮 fault 的消息址）; +64 = 0x3fffffefac
+  页边界 = 0x3fffff_f000（载体 :459 user_sp）⇒ 0xefac < 0xf000，本例同页
+⇒ 一般情况（栈顶落在页尾附近）会跨页，所以分段循环必须带；这是案丙 唯一需
+  新写的代码（lookup_range_in_table 已提供同样的语义）。
+
+### 12.6 旁支：一条错的 C 路径注释（登记不修）
+
+命令：grep -rn "vm_lookup_range" minix3/ | head
+  minix3/minix/kernel/arch/i386/memory.c:377:size_t vm_lookup_range(...)
+  minix3/minix/kernel/arch/earm/memory.c:353: ...（架构变体）
+但 os/kernel/src/vm.rs:228 的 doc 写的是「C: `vm_lookup_range` — kernel/memory.c」，
+而 `minix3/minix/kernel/memory.c` 不存在（grep 直接报 No such file）。
+
+### 12.7 本轮自己的计数错（第 8 次踩坑，同一模式）
+
+初稿写「调用方多达 18 处」，是凭 `| head -20` 的截断输出数的；补上 `| wc -l`
+后真实值是 24。与 §4 的「两条注释 vs 实际三处」、§9 的「全仓 vs 两个目录」同一
+根因：结论里的数字没跟着完整输出走。本节已按实测改写为 24。
+
