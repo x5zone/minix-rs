@@ -103,10 +103,12 @@
 - 状态：**未触发**——A 修复后两轮真机（c18a/c18b）未出现 boot.rs:1054
   panic；新断点为 RS null-deref → cause_sig panic，走 Task C 取证循环。
 
-## Task C — RS null-deref 取证（进行中）
+## Task C — RS null-deref 取证（BLOCKED，三轮取证上限）
 
-- 状态：**IN_PROGRESS**（第一轮取证已定性故障形态与位置，根因待
-  §8 步 4 的 RS 侧探针 + 真机复跑二选一确认；未定性不假修）。
+- 状态：**BLOCKED**（铁律 #10：c19a/c20a/c21a 三轮取证已达上限。故障
+  形态与 corruption 窗口已定性到「调用方在 PM 迭代把 &self.table=0x0
+  传入 endpoint_slot」，但「表基址如何在 VM→PM 迭代之间变 0」的根因
+  机制未实证，不假修）。已排除项与证据链见下文三轮记录。
 - C1 符号化（objdump + addr2line，rs 模块 not stripped）：
   - 故障 rip `0x20d0d5` → `minix_rs::boot::BootInit::init_fresh+0x975`
     （addr2line 确认；release 构建内联，无行号）。
@@ -139,5 +141,77 @@
   据读数定性后再对照 C `minix3/minix/servers/rs/` 修复。
 - 本轮取证产物：serial_c18a/c18b 日志已归档于
   `evidence/20260922-nk4a-taskA-c17a-c18/`（Task A commit 84347cff2）。
+
+### 第二轮取证（c19a 粗探针 + c20a 细探针，2026-09-22）
+
+- 假设 1（exec 数据页漏填）/ 假设 2（表未注册空槽）均被 c19a 否定：
+  step2 入口探针打印 `pt`/`tbl` 基址有效（0x7fffffffc800 量级），boot
+  表填充正常。
+- c20a 细探针（boot.rs step2 每迭代 ep/slot + PM 分支 pre-sched/
+  post-sched/post-privctl 打点）把崩溃窗口收窄到 step2 的 PM 迭代内
+  `endpoint_slot(Endpoint(0))` → `get(id)` → `get_ticks` 三调用窗口；
+  PM 分支三个打点（rs-pm pre-sched 等）从未打印 → 崩溃在到达
+  `sched_init_proc` 之前。
+- 反汇编解码（c20a 匹配的 RS 二进制，0x20d20e）：崩溃指令
+  `cmpl $0x1,(%rbx,%rax,1)` = `by_endpoint[slot]` 的 Option
+  discriminant 读取（`self.by_endpoint.as_ptr()+slot*16` 折叠形态）；
+  `<unset> 0x2 0x20d20e` 是内核 stacktrace.rs proc_stacktrace 的
+  `name endpoint rip` 三元组，确认 0x20d20e 即 RS 崩溃 rip。
+- 内核侧核实：exception.rs 入口读 cr2 → pf.vaddr → VM
+  `dispatch_pagefault` 的 `pf_exit!("noaddr")` 打印的是**消息里的
+  vaddr**，与 cr2 同链 → cr2=0 真实，用户指令确实访问了地址 0。
+
+### 第三轮取证（c21a 决定性探针 + 静态闭环，2026-09-22）→ BLOCKED
+
+- **决定性证据**（process_table.rs `endpoint_slot` 入口探针，限 4 次，
+  打印 self/by_endpoint 裸指针/slot）：
+  - VM 迭代：`nk4a: rs-epslot self=0x7fffffffc800 bep=0x7fffffffc800 slot=8`
+    （顺带实证 Rust 字段重排后 `by_endpoint` 在 RProcTable 偏移 0）；
+  - PM 迭代：`nk4a: rs-epslot self=0x0 bep=0x0 slot=0` → **调用方传入
+    的 receiver 真的是 0x0**（非寄存器被踩的假象、非 cr2 谎报）；崩溃
+    pc=0x216a76（探针阻断内联后的独立 endpoint_slot，
+    `mov (%rdx,%rcx,1),%rax`，rdx=0）。
+  - 两轮之间还观察到两次正常 pf 往返（rip=0x2014ad 与
+    rip=0x203bf0=asynsend 首指令 `sub $0x68,%rsp` 的取指 #PF，
+    page 0x203000 文本 demand paging，合法）。
+  - → **corruption 窗口锁定**：VM 迭代 `init_service→asynsend(RS_INIT)`
+    的 pf 往返之后、PM 迭代 `endpoint_slot` 调用之前，`&self.table`
+    从有效变 0。
+- 静态闭环（本轮排除项）：
+  1. pf save/restore 寄存器对称：`save_frame_to_context` 与
+     `restore_to_user`（trap_return.rs）逐槽核对一致（rbx 从 ctx.rbx、
+     gp_regs 按索引、rsi 最后加载）；
+  2. 用户侧 int 0x21 wrapper（minix-sys/arch_trap.rs）
+     `push rbx; mov rbx,msgptr; int; mov status,rbx; pop rbx` 自平衡；
+  3. **TrapFrame 布局 vs 硬件 int 帧序**（本轮截断续查完成）：CPU 推
+     SS→RSP→RFLAGS→CS→RIP（RIP 最后→最低址），stub 再推
+     errcode→vector→r15..rax（rax 最低）→ 栈低→高
+     `rax..r15, vector, errcode, rip, cs, rflags, rsp, ss`，与
+     trap_stub.rs:116-143 结构声明序完全一致；`x86_syscall_entry`
+     手工 push 序（先 user_ss，ss@slot21/rsp@slot20 注释）一致 →
+     **帧倒序假设排除**；
+  4. 「restore 到 0x2014ad（test %rax,%rax，不可能数据 fault 的指令，
+     且是 RS drop_in_place 中段）」异常：该 restore 出现在
+     `pick->0x8`（VM cr3=0x1dfde000）之后 → 更合理归因是 **VM 自身
+     二进制的同 VA 地址**（不同映像），不是 RS ctx 被踩 → 该异常点
+     不再指向内核踩 RS。
+- 遗留嫌疑（下一轮候选，未做）：
+  1. 本端口把 Minix3 IPC 状态寄存器（C i386 EAX=caller-saved）映射到
+     **RBX（x86-64 callee-saved）**：`clear_ipc_status_reg` 写
+     ctx.rbx=0（ipc.rs:2087 RECEIVE prologue）、
+     `sync_status_register_to_frame` 用 ctx.rbx 覆盖 frame.rbx
+     （trap_dispatch.rs:879）——「C 安全、Rust 危险」的移植语义面，
+     若 pf/IRQ 恢复恰落在 asynsend 的 int 0x21 窗口内（PIT 抢占时序
+     敏感，铁律 #9 同源）可解释踩 rbx=0；但本轮未找到该路径在此窗口
+     执行的证据；
+  2. RS 栈槽上的 table 指针被 pf 填页/拷贝踩写；
+  3. 第四轮取证方案：PM 分支每个 syscall 返回点后再打一次
+     `self.table` 基址（二分窗口内最后一个有效点），或反汇编 step2
+     循环确认 table 指针在迭代间的存活介质（栈槽 vs callee-saved
+     寄存器）后再定点布防。
+- 铁律 #10 裁决：同一问题三轮（c19a/c20a/c21a）无根因实证 →
+  **Task C 标记 BLOCKED**，本轮产物（探针 + 三份串口日志 + 本节）
+  commit 归档；不做无定性修复。
+
 
 
