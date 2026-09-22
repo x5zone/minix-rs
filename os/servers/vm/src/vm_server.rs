@@ -1927,6 +1927,40 @@ impl VmServer {
                 for b in bytes {
                     hex.push_str(&alloc::format!("{:02x}", b));
                 }
+                // NK4-C 第 12 轮（task1-close 裁决删除）：PA 别名检测——
+                // 若分配器把同一物理帧发给两个 VA，后一个零填充会清掉前一个
+                // VA 已写内容（「栈槽自零」机制）。记录 pa→首 VA，重复时
+                // 打印别名对。
+                {
+                    use core::sync::atomic::{
+                        AtomicU64, AtomicUsize, Ordering as AtomicOrd,
+                    };
+                    static SEEN_PA: AtomicUsize = AtomicUsize::new(0);
+                    static SEEN: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
+                    static SEEN_VA: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
+                    let n = SEEN_PA.load(AtomicOrd::Relaxed);
+                    let mut i = 0;
+                    let mut alias_va: u64 = 0;
+                    while i < n && i < 96 {
+                        if SEEN[i].load(AtomicOrd::Relaxed) == pa.0 {
+                            alias_va = SEEN_VA[i].load(AtomicOrd::Relaxed);
+                            break;
+                        }
+                        i += 1;
+                    }
+                    if alias_va != 0 {
+                        hex.push_str(&alloc::format!(
+                            "  PA-ALIAS pa={:#x} first_va={:#x} this_va={:#x}",
+                            pa.0,
+                            alias_va,
+                            aligned.0
+                        ));
+                    } else if n < 96 {
+                        SEEN[n].store(pa.0, AtomicOrd::Relaxed);
+                        SEEN_VA[n].store(aligned.0, AtomicOrd::Relaxed);
+                        SEEN_PA.store(n + 1, AtomicOrd::Relaxed);
+                    }
+                }
                 // NK4-C 第 10 轮取证（task1-close 裁决删除）：**故障地址处**
                 // 的 8 字节（非页首）——页首全零可能是 ELF gap 的合法形状，
                 // 故障地址处的零才是「零填充错页」的直接证据。
