@@ -1237,3 +1237,47 @@ M3.4 剩下的实质工作 = 让 `:645` 那道 panic 变成 `:648`，即平台�
 unsafe 成立（该测试内核全文件无 `exit_boot_services`，boot services 全程存活）、
 七个变体 match 穷尽（编译过即证）、`global.rs:234-254` 确实一句文案覆盖两种
 情况、sed 派生副本只改 line 125 且 `os/qemu-tests/` 本体零污染。
+
+## x86_64 装机面回归门（M3.2/M3.3 改完 xtask 后补做）
+
+状态：**DONE — x86_64 生产链零回归**。纯验证，无代码改动；证据
+`evidence/20260922-nk4b-p3-m34/x86-regress-smoke{,-2}.log`。
+
+### 为什么补这一道
+
+M3.2/M3.3 把 `xtask image` 的 UEFI 装机常量表化（`2b6d98ffd`），其间还顺手改过
+startup.nsh 模板（`2b33ee480` 回退）。我当时验到的是**产物字节**层面
+（`cmp` 盘上 startup.nsh 与 `873f3e947` 逐字节相同）和**镜像装配**层面
+（`IMG-EXIT=0`），但 x86_64 那条端到端冒烟链在改动之后**一次都没真跑过**。
+P1/P2 的前沿全建在这条链上——装机面被表化改坏而产物字节没变，是完全可能的事。
+
+### 判据（与 P0 基线同一条命令、同一份对照物）
+
+`SMOKE_SKIP_BOOT=0 bash os/qemu-tests/test-cmd-smoke.sh`，对照
+T0.3 在起点 commit `388252b6b` 记下的 stage 判定行 + 串口尾部 12 行
+（`evidence/20260922-nk4b-p0/smoke-stdout.txt`）。
+
+### 实测（两次独立复跑）
+
+| 项 | P0 基线（388252b6b） | 本轮 run1 | 本轮 run2 |
+|----|----------------------|-----------|-----------|
+| 退出码 | 1 | 1 | 1 |
+| stage 1-2（装盘 + ESP 校验） | PASS | PASS | PASS |
+| stage 3（`entering scheduler` 交接） | 到达 | 到达 | 到达 |
+| stage 4（rc marker） | 未到达 | 未到达 | 未到达 |
+
+两次复跑的串口尾部在剥掉地址与 pid 后逐字 diff 无差异。与 P0 的差异只有两处，
+都已定性、都不属回归：
+
+1. **地址漂移**（`rip 0x1ddad6f9 → 0x1ddb9719` 等）：内核自 P0 之后重编过，
+   加载布局随之变化。
+2. **panic 源码行号 543 → 723**（`trap_dispatch.rs`）：不是换了地方。
+   `diff <(git show 388252b6b:os/kernel/src/trap_dispatch.rs | sed -n '543p') <(sed -n '723p' os/kernel/src/trap_dispatch.rs)`
+   两侧原文逐字相同，都是那句 `panic!("kernel exception vector {} …")`；行号移动
+   由本弧在该文件的两次**增量**改动造成（`3945cf5d0` P1 探针 +202 行、
+   `ab79b40ba` M3.1 架构门 +7/-2），两者都在 `873f3e947` 之前。
+
+失败形态本身与 P0 完全同一条：端点 2（rs）页故障 → `pf-exit noaddr cr2=0x0` →
+rs 自任 sig manager 收 SIGSEGV → `syscall_signal.rs:300` panic → 内核再踩
+vector 13 递归 panic。**没前进也没后退**：P1 的 x86_64 rc marker 断点仍在原处，
+仍等 A/B/C 裁决。
