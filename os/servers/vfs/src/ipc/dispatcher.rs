@@ -249,7 +249,14 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
         child: Endpoint,
         child_pid: Pid,
     ) -> Result<CopyOutcome, PmError> {
-        handle_fork_inner(self.table, self.filp_table, self.vnode_table, parent, child, child_pid)
+        handle_fork_inner(
+            self.table,
+            self.filp_table,
+            self.vnode_table,
+            parent,
+            child,
+            child_pid,
+        )
     }
 
     fn handle_exit(&mut self, endpoint: Endpoint) -> Result<(), PmError> {
@@ -398,7 +405,13 @@ impl MessageDispatcher {
             minix_types::VfsRequest::Fork {
                 parent_endpoint,
                 child_endpoint,
-            } => Self::handle_fork_request(table, filp_table, vnode_table, parent_endpoint, child_endpoint),
+            } => Self::handle_fork_request(
+                table,
+                filp_table,
+                vnode_table,
+                parent_endpoint,
+                child_endpoint,
+            ),
         }
     }
 
@@ -409,7 +422,13 @@ impl MessageDispatcher {
         parent_endpoint: Endpoint,
         child_endpoint: Endpoint,
     ) -> minix_types::VfsResponse {
-        match handle_fork(table, filp_table, vnode_table, parent_endpoint, child_endpoint) {
+        match handle_fork(
+            table,
+            filp_table,
+            vnode_table,
+            parent_endpoint,
+            child_endpoint,
+        ) {
             Ok(()) => minix_types::VfsResponse::ForkOk,
             Err(e) => minix_types::VfsResponse::Error(e),
         }
@@ -427,15 +446,22 @@ pub fn handle_fork(
     parent_endpoint: Endpoint,
     child_endpoint: Endpoint,
 ) -> Result<(), minix_types::VfsError> {
-    handle_fork_inner(table, filp_table, vnode_table, parent_endpoint, child_endpoint, 0)
-        .map(|_| ())
-        .map_err(|e| match e {
-            PmError::BadEndpoint => minix_types::VfsError::InvalidEndpoint,
-            PmError::SlotOutOfRange => minix_types::VfsError::InvalidEndpoint,
-            PmError::BogusChild => minix_types::VfsError::InvalidEndpoint,
-            PmError::SlotInUse => minix_types::VfsError::SlotInUse,
-            _ => minix_types::VfsError::InternalError,
-        })
+    handle_fork_inner(
+        table,
+        filp_table,
+        vnode_table,
+        parent_endpoint,
+        child_endpoint,
+        0,
+    )
+    .map(|_| ())
+    .map_err(|e| match e {
+        PmError::BadEndpoint => minix_types::VfsError::InvalidEndpoint,
+        PmError::SlotOutOfRange => minix_types::VfsError::InvalidEndpoint,
+        PmError::BogusChild => minix_types::VfsError::InvalidEndpoint,
+        PmError::SlotInUse => minix_types::VfsError::SlotInUse,
+        _ => minix_types::VfsError::InternalError,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -469,7 +495,14 @@ fn handle_fork_inner(
     }
 
     // 3. Copy — preserve child's lock (slot-owned, ARCH A-6).
-    let outcome = copy_fproc(table, filp_table, vnode_table, parent_slot, child_slot, child_endpoint);
+    let outcome = copy_fproc(
+        table,
+        filp_table,
+        vnode_table,
+        parent_slot,
+        child_slot,
+        child_endpoint,
+    );
     // 4. Fill child's new identity (when caller passes cpid==0, keep parent's pid
     // for legacy `VfsRequest::Fork` tests; real PM→VFS Fork always passes cpid).
     if child_pid != 0 {

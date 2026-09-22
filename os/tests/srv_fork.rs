@@ -32,15 +32,15 @@
 //!
 //! 真机链路（VM 真实参战、RS 真实发起）挂 edge4 T2 / E5(c)。
 
-use minix_pm::exit::KernelGateway;
-use minix_pm::fork::{do_srv_fork, ForkCoordError};
-use minix_pm::mproc::{Credentials, Lifecycle, Privilege, ProcTable, SrvForkParams};
 use minix_pm::TestIpcTransport;
-use minix_vfs::PmHandler;
+use minix_pm::exit::KernelGateway;
+use minix_pm::fork::{ForkCoordError, do_srv_fork};
+use minix_pm::mproc::{Credentials, Lifecycle, Privilege, ProcTable, SrvForkParams};
 use minix_types::{
-    DecodeFromM1, EncodeToM1, Endpoint, Gid, Message, Uid, UserSlot, VfsCall, VfsReply, VmForkIn,
-    VmForkOut, OK, VFS_PM_SRV_FORK, VFS_PM_SRV_FORK_REPLY, VM_FORK,
+    DecodeFromM1, EncodeToM1, Endpoint, Gid, Message, OK, Uid, UserSlot, VFS_PM_SRV_FORK,
+    VFS_PM_SRV_FORK_REPLY, VM_FORK, VfsCall, VfsReply, VmForkIn, VmForkOut,
 };
+use minix_vfs::PmHandler;
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -369,8 +369,8 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         filp_table: &mut filps,
         vnode_table: &mut vnodes,
     }
-        .handle(vfs_call)
-        .expect("VFS 应接受 PM 的 srv_fork 通知");
+    .handle(vfs_call)
+    .expect("VFS 应接受 PM 的 srv_fork 通知");
     assert!(
         matches!(reply, VfsReply::SrvFork),
         "分发臂回 VfsReply::SrvFork"
@@ -381,13 +381,14 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
     assert_eq!(reply.m_type(), VFS_PM_SRV_FORK_REPLY);
 
     let child_fp = fproc
-        .get(child_endpoint().to_user_slot().expect("child endpoint is user proc"))
+        .get(
+            child_endpoint()
+                .to_user_slot()
+                .expect("child endpoint is user proc"),
+        )
         .expect("vfs child slot exists");
     assert_eq!(child_fp.endpoint, child_endpoint(), "子 fproc 端点落位");
-    assert_eq!(
-        child_fp.pid, child_pid,
-        "子 pid = PM 编入消息的 m7i3"
-    );
+    assert_eq!(child_fp.pid, child_pid, "子 pid = PM 编入消息的 m7i3");
     assert_eq!(
         child_fp.real_uid, INJECT_UID,
         "SRV_FORK 臂的追加 setuid：real_uid = REUID"
@@ -408,11 +409,7 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         child_fp.umask, 0o022,
         "fd 表复制带入父 umask（复制先于 setuid/setgid 两步）"
     );
-    assert_eq!(
-        child_fp.filps[0],
-        Some(7),
-        "filp 表共享（同一表项索引）"
-    );
+    assert_eq!(child_fp.filps[0], Some(7), "filp 表共享（同一表项索引）");
 
     // ── 出站三：给子进程的立即 OK（`srv_fork` 与 `do_fork` 的回复差异）──
     // `do_fork` 返回 SUSPEND，由 VFS_PM_FORK_REPLY 的双分支异步唤醒父与子；

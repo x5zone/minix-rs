@@ -23,26 +23,26 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use minix_fs::bio::{bio_transfer, TransferDirection};
-use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, VmCacheWire};
 use minix_fs::bio::DeviceInfo;
+use minix_fs::bio::{TransferDirection, bio_transfer};
+use minix_fs::cache::{AcquireMode, BlockCache, BlockKey, BlockSource, VmCacheWire};
 use minix_fs::data::{DataChannel, MemoryBackend};
 use minix_fs::driver::FsDriver;
 use minix_fs::protocol::{CapabilityFlags, FileNode, MountFlags};
 use minix_types::{Stat, StatVfs};
 
-use minix_types::{EBADF, EBUSY, EIO, EINVAL, ENOENT, Errno};
+use minix_types::{EBADF, EBUSY, EINVAL, EIO, ENOENT, Errno};
 
 use crate::dir::DirError;
-use crate::link::LinkCtx;
 use crate::dir_io::{load_dir_blocks, store_dir_blocks};
 use crate::inode::{InodeIo, InodeTable, TABLE_SLOTS};
+use crate::link::LinkCtx;
 use crate::second_level::MfsSecondLevel;
 
 use crate::mfs_cache::ZoneSpace;
-use crate::mount::{check_mountpoint, MountedFs};
+use crate::mount::{MountedFs, check_mountpoint};
 use crate::open::CreateCtx;
-use crate::read::{list_dir_entries, map_file_block, read_file, FileParams, MapParams, ZoneRange};
+use crate::read::{FileParams, MapParams, ZoneRange, list_dir_entries, map_file_block, read_file};
 use crate::superblock::Bitmap;
 use crate::write::{truncate_file, write_file};
 
@@ -112,10 +112,7 @@ pub struct Parts<'a, S: BlockSource> {
 fn zone_closures<'a, 'b>(
     cell: &'b core::cell::RefCell<(&'a mut Bitmap, &'a mut u64)>,
     first_data_zone: u64,
-) -> (
-    impl FnMut(u64) -> Option<u64> + 'b,
-    impl FnMut(u64) + 'b,
-) {
+) -> (impl FnMut(u64) -> Option<u64> + 'b, impl FnMut(u64) + 'b) {
     let alloc = move |hint: u64| -> Option<u64> {
         let mut guard = cell.borrow_mut();
         let (zmap, zsearch) = &mut *guard;
@@ -244,10 +241,7 @@ impl<S: BlockSource> MfsServer<S> {
     /// points, releasing the caller's reference once the bytes are copied
     /// out. Returns the images and the size they were loaded against (the
     /// append boundary the store half needs).
-    fn load_parent(
-        fs: &mut MountedFs<S>,
-        directory: u64,
-    ) -> Result<(Vec<Vec<u8>>, u64), Errno> {
+    fn load_parent(fs: &mut MountedFs<S>, directory: u64) -> Result<(Vec<Vec<u8>>, u64), Errno> {
         let parts = fs.parts();
         let dir_slot = parts
             .inodes
@@ -281,7 +275,13 @@ impl<S: BlockSource> MfsServer<S> {
         let (mut _alloc_bit, mut free_bit) = zone_closures(&cell, first);
         for &zone in zones {
             if zone != 0 {
-                crate::mfs_cache::free_zone(parts.cache, parts.device, parts.space, zone, &mut free_bit);
+                crate::mfs_cache::free_zone(
+                    parts.cache,
+                    parts.device,
+                    parts.space,
+                    zone,
+                    &mut free_bit,
+                );
             }
         }
     }
@@ -329,7 +329,13 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     ) -> Result<FileNode, Errno> {
         let source = self.source.take().ok_or_else(|| Errno::from_i32(EBUSY))?;
         let second_level = self.mount_second_level();
-        match crate::mount::mount_with_second_level(source, device, flags, self.pool_buffers, second_level) {
+        match crate::mount::mount_with_second_level(
+            source,
+            device,
+            flags,
+            self.pool_buffers,
+            second_level,
+        ) {
             Ok((fs, node)) => {
                 // MFS declares a peek entry point in C (`table.c:20`
                 // `.fdr_peek = fs_readwrite`), so the framework's
@@ -372,14 +378,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     fn is_mount_point(&mut self, inode: u64) -> Result<(), Errno> {
         let fs = self.mounted()?;
         let parts = fs.parts();
-        check_mountpoint(
-            parts.inodes,
-            parts.cache,
-            &parts.io,
-            parts.device,
-            inode,
-        )
-        .map_err(|error| error.to_errno())
+        check_mountpoint(parts.inodes, parts.cache, &parts.io, parts.device, inode)
+            .map_err(|error| error.to_errno())
     }
 
     fn read(
@@ -520,13 +520,9 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         // the partial edges through the cache, free the whole zones through
         // the mapping.
         let size = parts.inodes.slot(slot).size as u64;
-        let plan = crate::link::plan_free_range(
-            size,
-            parts.block_size as u64,
-            start as u64,
-            end as u64,
-        )
-        .map_err(|_| Errno::from_i32(EINVAL))?;
+        let plan =
+            crate::link::plan_free_range(size, parts.block_size as u64, start as u64, end as u64)
+                .map_err(|_| Errno::from_i32(EINVAL))?;
         for (range_start, length) in &plan.zero_ranges {
             let mut remaining = *length;
             let mut position = *range_start;
@@ -809,12 +805,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         Ok(())
     }
 
-    fn link(
-        &mut self,
-        directory: u64,
-        name: &str,
-        inode: u64,
-    ) -> Result<(), Errno> {
+    fn link(&mut self, directory: u64, name: &str, inode: u64) -> Result<(), Errno> {
         let fs = self.mounted()?;
         let (mut blocks, old_size) = Self::load_parent(fs, directory)?;
         {
@@ -829,14 +820,8 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 map: parts.map,
                 range: parts.range,
             };
-            crate::link::create_link(
-                &mut ctx,
-                directory,
-                &mut blocks,
-                name.as_bytes(),
-                inode,
-            )
-            .map_err(|error| error.to_errno())?;
+            crate::link::create_link(&mut ctx, directory, &mut blocks, name.as_bytes(), inode)
+                .map_err(|error| error.to_errno())?;
         }
         Self::store_parent(fs, directory, old_size, &mut blocks)?;
         Ok(())
@@ -1204,7 +1189,10 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         let fs = self.mounted()?;
         let parts = fs.parts();
         // 暂存缓冲按分区大小钳制，避免越界长度造成巨大分配。
-        let partition = parts.superblock.zones.saturating_mul(parts.block_size as u64);
+        let partition = parts
+            .superblock
+            .zones
+            .saturating_mul(parts.block_size as u64);
         let clamped =
             (length as u64).min(partition.saturating_sub(position.max(0) as u64)) as usize;
         let mut staging = alloc::vec![0u8; clamped];
@@ -1218,7 +1206,10 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 size: clamped,
             };
             let mut info = SuperblockBytes {
-                bytes: parts.superblock.zones.saturating_mul(parts.block_size as u64),
+                bytes: parts
+                    .superblock
+                    .zones
+                    .saturating_mul(parts.block_size as u64),
             };
             bio_transfer(
                 parts.cache,
@@ -1237,7 +1228,10 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
     fn block_write(&mut self, device: u64, position: i64, data: &[u8]) -> Result<usize, Errno> {
         let fs = self.mounted()?;
         let parts = fs.parts();
-        let partition = parts.superblock.zones.saturating_mul(parts.block_size as u64);
+        let partition = parts
+            .superblock
+            .zones
+            .saturating_mul(parts.block_size as u64);
         let clamped =
             (data.len() as u64).min(partition.saturating_sub(position.max(0) as u64)) as usize;
         let mut staging = data[..clamped].to_vec();
@@ -1251,7 +1245,10 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
                 size: clamped,
             };
             let mut info = SuperblockBytes {
-                bytes: parts.superblock.zones.saturating_mul(parts.block_size as u64),
+                bytes: parts
+                    .superblock
+                    .zones
+                    .saturating_mul(parts.block_size as u64),
             };
             bio_transfer(
                 parts.cache,
@@ -1284,7 +1281,7 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
 mod tests {
     use super::*;
     use crate::inode::DiskInode;
-    use crate::superblock::{SUPER_BLOCK_OFFSET, FLAG_CLEAN, MAGIC_V3};
+    use crate::superblock::{FLAG_CLEAN, MAGIC_V3, SUPER_BLOCK_OFFSET};
     use minix_fs::bio::RamDisk;
 
     const DEVICE: u64 = 0x301;
@@ -1373,7 +1370,9 @@ mod tests {
     fn test_mount_create_write_read_sync_unmount_remount() {
         let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
-        let root = server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        let root = server
+            .mount(DEVICE, flags(false), &mut capabilities)
+            .unwrap();
         assert_eq!(root.inode_number, 1);
         assert!(server.is_mounted());
 
@@ -1383,9 +1382,7 @@ mod tests {
         assert!(!mount_point);
 
         // Create a file and write through the assembled write path.
-        let file = server
-            .create(1, "hello", 0o100644, 0, 0)
-            .unwrap();
+        let file = server.create(1, "hello", 0o100644, 0, 0).unwrap();
         assert_eq!(file.inode_number, 2);
         let moved = server.write(2, 0, b"abc").unwrap();
         assert_eq!(moved, 3);
@@ -1435,7 +1432,9 @@ mod tests {
         // Remount on the handed-back device: the file is still there.
         let mut server = MfsServer::with_pool(source, 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
-        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server
+            .mount(DEVICE, flags(false), &mut capabilities)
+            .unwrap();
         let (node, _) = server.lookup_child(1, "hello").unwrap();
         assert_eq!(node.inode_number, 2);
         let mut seen = Vec::new();
@@ -1450,7 +1449,9 @@ mod tests {
     fn test_put_node_releases_and_refuses_overcount() {
         let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
-        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server
+            .mount(DEVICE, flags(false), &mut capabilities)
+            .unwrap();
         server.create(1, "temp", 0o100644, 0, 0).unwrap();
         // The create leaves one reference: releasing it retires the slot.
         server.put_node(2, 1).unwrap();
@@ -1472,7 +1473,9 @@ mod tests {
     fn test_namespace_family_link_unlink_symlink_mkdir_rmdir_mknod() {
         let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
-        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server
+            .mount(DEVICE, flags(false), &mut capabilities)
+            .unwrap();
         server.create(1, "a", 0o100644, 0, 0).unwrap();
         // Hard link: both names reach the same inode, the link count rises.
         server.link(1, "b", 2).unwrap();
@@ -1503,9 +1506,12 @@ mod tests {
         let mut listed = Vec::new();
         let mut position = 0i64;
         server
-            .get_dents(dir_node.inode_number, &mut position, 1024, &mut |bytes: &[u8]| {
-                listed.extend_from_slice(bytes)
-            })
+            .get_dents(
+                dir_node.inode_number,
+                &mut position,
+                1024,
+                &mut |bytes: &[u8]| listed.extend_from_slice(bytes),
+            )
             .unwrap();
         // The child lists the two dot names: three dot bytes across the
         // packed entries ("." once, ".." twice).
@@ -1524,7 +1530,9 @@ mod tests {
     fn test_statvfs_meta_and_reclaim_visibility() {
         let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
-        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server
+            .mount(DEVICE, flags(false), &mut capabilities)
+            .unwrap();
         let mut scratch = StatVfs::zeroed();
         server.stat_vfs(&mut scratch).unwrap();
         let free_before = scratch.blocks_free;
@@ -1560,14 +1568,19 @@ mod tests {
     fn test_block_read_raw_root_block() {
         let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
-        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server
+            .mount(DEVICE, flags(false), &mut capabilities)
+            .unwrap();
         // Raw transfer of the root directory block: the dot entry bytes
         // come through untouched.
         let mut seen = Vec::new();
         let got = server
-            .block_read(DEVICE, 5 * BLOCK_SIZE as i64, BLOCK_SIZE, &mut |bytes: &[u8]| {
-                seen.extend_from_slice(bytes)
-            })
+            .block_read(
+                DEVICE,
+                5 * BLOCK_SIZE as i64,
+                BLOCK_SIZE,
+                &mut |bytes: &[u8]| seen.extend_from_slice(bytes),
+            )
             .unwrap();
         assert_eq!(got, BLOCK_SIZE);
         assert_eq!(&seen[..4], &1u32.to_le_bytes());
@@ -1578,7 +1591,9 @@ mod tests {
     fn test_peek_warms_cache_without_advancing() {
         let mut server = MfsServer::with_pool(build_image(), 8, zero_clock);
         let mut capabilities = CapabilityFlags::EMPTY;
-        server.mount(DEVICE, flags(false), &mut capabilities).unwrap();
+        server
+            .mount(DEVICE, flags(false), &mut capabilities)
+            .unwrap();
         server.create(1, "a", 0o100644, 0, 0).unwrap();
         server.write(2, 0, b"xyz").unwrap();
         // Peek 只报字节数：读路径暖缓存，不做拷贝，也没有新位置。
