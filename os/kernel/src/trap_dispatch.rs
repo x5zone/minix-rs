@@ -126,7 +126,49 @@ fn mirror_irq_frame_into_proc(
     }
     minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
     proc.trap_style = TrapStyle::FullContext;
+    #[cfg(not(feature = "mock"))]
+    nk4a_rbx_probe(
+        "irq-save",
+        proc.p_endpoint.0 as u64,
+        frame.rbx,
+        frame.rip,
+    );
     true
+}
+
+#[cfg(not(feature = "mock"))]
+/// NK4-A Task C 第 6 轮判别探针（task1-close 裁决删除）：内核每一次改写
+/// 某进程保存上下文里的 RBX（IPC 状态寄存器家族）都打一条 —— tag 标站点、
+/// `ep` 是目标进程 endpoint、`rbx` 是写入后读回的值、`rip` 是该上下文当前
+/// 保存的返回点（无 rip 概念的站点打 0）。
+///
+/// 判别目标：真机 c23a 实证 `finish_and_restore` 交给 RS 的
+/// `rip=0x203bf0`（`asynsend` 首指令，`push rbx` 保护之前）配对
+/// `rbx=0x0`，RS 由此永久丢失 LLVM 常驻 RBX 的 `&self.table`（反汇编
+/// 0x20d2db `mov %rbx,%rdi` 传 endpoint_slot 的 self）。本探针回答「哪一
+/// 站把 0 写进了 RS 的 ctx.rbx」，与 `pf-save`（故障入口采到的 RBX）、
+/// `pre-restore rbx=`（恢复交付值）三点闭环。
+///
+/// 只打 `rbx == 0` 的站点（否则 add-call/add-flags 在 VM 投递上每消息
+/// 一条，40 条上限会在启动前段耗尽，看不到崩溃现场）。全局限 40 条。
+pub(crate) fn nk4a_rbx_probe(tag: &str, ep: u64, rbx: u64, rip: u64) {
+    if rbx != 0 {
+        return;
+    }
+    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+    static RBX_PROBE: AtomicUsize = AtomicUsize::new(0);
+    if RBX_PROBE.fetch_add(1, AtomicOrd::Relaxed) < 40 {
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        C0::write_str("nk4a: rbxw ");
+        C0::write_str(tag);
+        C0::write_str(" ep=");
+        C0::write_hex(ep);
+        C0::write_str(" rbx=");
+        C0::write_hex(rbx);
+        C0::write_str(" rip=");
+        C0::write_hex(rip);
+        C0::write_str("\n");
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -541,6 +583,29 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("pagefault from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                // NK4-A Task C 第 5 轮判别（task1-close 裁决删除）：pf 转发
+                // 入口「保存即采到的 RBX」——与 lib.rs pre-restore 路标的
+                // `rbx=`（同一进程本次恢复交付值）对照，三分支裁决：两处同
+                // 为 0 → 保存即错（故障点用户 RBX 已是 0）；保存非 0 而恢复
+                // 0 → 保存后被内核改写（RBX 的 IPC 状态寄存器语义踩掉用户
+                // callee-saved 活值）；两处非 0 而用户仍崩 → 恢复读错源。
+                // 上限 8 在 c23a 于启动前 8 次内耗尽（崩溃在第 100+ 次），
+                // 第 6 轮提到 48，仅真机。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static PFRBX: AtomicUsize = AtomicUsize::new(0);
+                    if PFRBX.fetch_add(1, AtomicOrd::Relaxed) < 48 {
+                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                        C0::write_str("nk4a: pf-save ep=");
+                        C0::write_hex(proc.p_endpoint.0 as u64);
+                        C0::write_str(" rbx=");
+                        C0::write_hex(frame.rbx);
+                        C0::write_str(" rip=");
+                        C0::write_hex(frame.rip);
+                        C0::write_str("\n");
+                    }
+                }
                 // C 对位：异常入口与 trap 入口同记返回样式（mpx.S 保存半
                 // p_kern_trap_style=KTS_FULLCONTEXT；restore 消费）。缺它则
                 // 转发后重入队的进程在下次 dispatch 撞 "no entry trap style
@@ -820,6 +885,13 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             .get_mut(cur_nr)
             .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));
         minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
+        #[cfg(not(feature = "mock"))]
+        nk4a_rbx_probe(
+            "int33-save",
+            caller.p_endpoint.0 as u64,
+            frame.rbx,
+            frame.rip,
+        );
         // Record the ENTRY style (C: every mpx.S soft-int entry records
         // `p_kern_trap_style`; arch_system.c:585 consumes it at
         // restore_user_context). A door-parked caller (blocked IPC)
@@ -945,6 +1017,8 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             .expect("int-33 IPC: caller slot must exist")
             .cpu_context;
         minix_arch::sync_status_register_to_frame(ctx, frame);
+        #[cfg(not(feature = "mock"))]
+        nk4a_rbx_probe("int33-ret", msg.m_source.0 as u64, frame.rbx, frame.rip);
     } else {
         // Enter the scheduling loop; never returns to this frame.
         reenter_scheduler();

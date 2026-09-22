@@ -2087,6 +2087,19 @@ impl<'a> IpcEngine<'a> {
                     <minix_arch::CurrentCpuContextArch as minix_arch::CpuContextArch>::clear_ipc_status_reg(
                         &mut self.procs[ci].cpu_context,
                     );
+                    // NK4-A Task C 第 6 轮判别（task1-close 裁决删除）：
+                    // RECEIVE prologue 是「把 0 写进 ctx.rbx」的显式站点，
+                    // 只关心 RS（endpoint 2，c23a `pf-save ep=0x2` 实证），
+                    // 其余服务器每收一条都打会耗尽上限。
+                    #[cfg(not(feature = "mock"))]
+                    if self.procs[ci].p_endpoint.0 as u64 == 2 {
+                        crate::trap_dispatch::nk4a_rbx_probe(
+                            "recv-clear",
+                            self.procs[ci].p_endpoint.0 as u64,
+                            0,
+                            0,
+                        );
+                    }
                 }
                 self.receive(caller_nr, dst_endpoint)
             }

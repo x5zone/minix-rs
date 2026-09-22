@@ -3334,10 +3334,20 @@ fn finish_and_restore(
     #[cfg(not(feature = "mock"))]
     {
         use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        // NK4-A Task C 第 5 轮判别（task1-close 裁决删除）：`rbx=` 是本次
+        // restore 将交付给用户的 RBX —— `restore_to_user` 无条件
+        // `mov rbx, [ctx + rbx_off]`（arch/x86_64/trap_return.rs），而本端口
+        // 把 RBX 同时用作内核维护的 IPC 状态寄存器（boot.rs
+        // or/clear_ipc_status_reg）。RS 真机 c21a/c22a：step2 循环里 LLVM 把
+        // `&self.table` 常驻 RBX（反汇编 0x20d2db `mov %rbx,%rdi` 传
+        // endpoint_slot 的 self），崩溃那次恢复后 self=0x0 —— 本字段裁决
+        // 「内核交付了 0」vs「交付值正确、用户态随后自行踩坏」。
         C0::write_str("nk4a: pre-restore- rip=");
         C0::write_hex(frame.rip);
         C0::write_str(" rsp=");
         C0::write_hex(frame.rsp);
+        C0::write_str(" rbx=");
+        C0::write_hex(minix_arch::ipc_status_register(&ctx));
         C0::write_str("\n");
     }
     // NK4-A C-3 迭代4：故障页 invlpg——此刻 CR3 即被恢复进程自己的根
