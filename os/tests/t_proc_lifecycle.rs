@@ -4,7 +4,7 @@
 //!
 //! | C 测试 | 语义归宿 |
 //! |---|---|
-//! | test70(两进程对各自临时文件交替 lseek 的消息字段竞争回归) | 本文件 [`lseek_alternating_processes_keep_shared_offset_consistent`](C 的两进程各持独立文件;Rust VFS 单线程事件循环无竞争对象,钉的是字段逐条对账;测试额外覆盖 fork 共享 filp 后单一偏移的 POSIX 继承语义) |
+//! | test70(两进程对各自临时文件并发 lseek 的消息字段竞争回归) | 本文件 [`lseek_alternating_processes_keep_shared_offset_consistent`](C 的两进程各持独立文件;Rust VFS 单线程事件循环无竞争对象,钉的是字段逐条对账;测试额外覆盖 fork 共享 filp 后单一偏移的 POSIX 继承语义) |
 //! | test13(pipe 加 fork 的描述符继承吞吐面) | 本文件 [`fork_shares_filp_entries_and_bumps_counts`](fd 继承面;pipe 语义本体归 `t_pipe_select_locks.rs`) |
 //! | test1/2/12(fork/wait/僵尸) | 已由 `pm_vm_fork.rs`(fork 全链)与 `servers/pm/tests/run_once_integration.rs`(exit 不回复僵尸化、wait4 回收带状态、ECHILD)覆盖,不重复断言 |
 //!
@@ -81,7 +81,7 @@ fn lseek_msg(slot: usize, offset: i64, fd: i32) -> Message {
 /// C 语义:子进程继承父的 fd 表(同一 filp 索引),每个继承项 `filp_count++`,
 /// root/working 目录 vnode 各 `dup_vnode`(引用计数 +1)。
 #[test]
-#[ignore = "点亮前提:copy_fproc 按 C misc.c:617/:629 补两处计数递增(当前缺,见文件头差异记录)"]
+#[ignore = "点亮前提:copy_fproc 按 C misc.c:617/:632-633 补两处计数递增(当前缺,见文件头差异记录)"]
 fn fork_shares_filp_entries_and_bumps_counts() {
     let mut state = seeded_vfs_state();
     let fid = state.filp_table.alloc_filp(0o644).expect("filp 表有空位");
@@ -94,7 +94,8 @@ fn fork_shares_filp_entries_and_bumps_counts() {
     }
     {
         let v = state.vnode_table.get_mut(VnodeId(0)).expect("vnode slot 0");
-        v.ref_count = 1; // 父进程持 rd/wd:各一引用
+        // 父进程 rd/wd 同指 vnode 0:引用计数各持一次,合计 2。
+        v.ref_count = 2;
         v.mode = 0o040755; // 目录
     }
 
@@ -113,7 +114,7 @@ fn fork_shares_filp_entries_and_bumps_counts() {
     let child = state.fproc_table.get(UserSlot::new(1)).expect("slot 1");
     assert_eq!(
         child.filps[3], parent.filps[3],
-        "继承 = 同一 filp 索引(C misc.c:613-617 的 Rust 面)"
+        "继承 = 同一 filp 索引(C misc.c:604-608 整体拷贝 + 616-617 计数)"
     );
     assert_eq!(child.filps[3], Some(fid.get()));
     assert_eq!(
@@ -127,8 +128,8 @@ fn fork_shares_filp_entries_and_bumps_counts() {
             .get(VnodeId(0))
             .expect("vnode 存在")
             .ref_count,
-        2,
-        "C misc.c:632-633:rd/wd 各 dup_vnode → ref_count 2"
+        4,
+        "C misc.c:632-633:父持 2 + rd/wd 各 dup 一次 = 4"
     );
 }
 

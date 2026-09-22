@@ -5,7 +5,7 @@
 //! | C 测试 | 语义归宿 |
 //! |---|---|
 //! | test37(sigaction 装置与读回) | 本文件 [`sigaction_installs_reads_back_and_rejects_invalid`] |
-//! | test37b(sigprocmask/sigpending:掩码信号停 pending、解阻塞投递) | 本文件 [`masked_signal_parks_in_pending_until_unblocked`] |
+//! | test37b(sigprocmask/sigpending:掩码信号停 pending;解阻塞后投递的载体是 test37i) | 本文件 [`masked_signal_parks_in_pending_until_unblocked`] |
 //! | test5(同 uid 父子 kill 互发、退出状态、EINTR 面) | 本文件 [`kill_permission_eperm_esrch_and_probe`](跨用户 EPERM/ESRCH/探测在编号套件无专门载体,语义取 `signal.c:621-632` 实现面) |
 //! | test41(alarm 与 itimer 交互、到期投递;撤销与 SIG_IGN 为 alarm.c 实现语义) | 本文件 [`alarm_set_cancel_and_expiry_paths`] |
 //! | test38/68(信号与文件操作、exec 交错) | 挂起路径的续接面,待 VFS 挂起续接真链点亮后补;kill 终止链已由 `servers/pm/tests/run_once_integration.rs::kill_termination_tells_vfs_exit` 覆盖 |
@@ -32,7 +32,7 @@ use minix_types::{Endpoint, VirBytes};
 const SIG_IGN: usize = 1; // C signal.h:SIG_IGN(处理映射 mproc/signal.rs:125-127)
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
-const SIGUSR1: i32 = 16;
+const SIGUSR1: i32 = 30; // C signal.h:82(SIGUSR1 = 30;16 在 C 编号里是 SIGURG)
 
 /// C `__sigmask`(Rust 侧 `init::sig_bit` 为 crate 私有,此处按同式计算)。
 fn sig_bit(sig: i32) -> u64 {

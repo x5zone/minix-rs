@@ -18,10 +18,13 @@
 //!
 //! # 翻译即发现的 C↔Rust 语义缺口(记录,不改产品代码)
 //!
-//! `minix_sys::vm::fork_address_space_via` 从应答偏移 0 读子端点,而 C
-//! `libsys/vm_fork.c:21` 读 `VMF_CHILD_ENDPOINT` = m1i3 车道(偏移 8,
-//! `com.h:635`)——两侧自洽但与 C wire 不兼容。[`fork_address_space_carries_endpoint_and_slot`]
-//! 按 C 车道钉断言,当前实现下点亮即失败,须先裁决修正产品代码或经评审。
+//! `minix_sys::vm::fork_address_space_via` 的车道与本树 C 布局错位:包装
+//! 函数把端点/槽位写在载荷偏移 0/4、从应答偏移 0 读子端点;而本树
+//! `include/minix/ipc.h` 的 `mess_1` 首成员是 `uint64_t m1ull1`,三个整型
+//! 车道在载荷偏移 8/12/16——`vm_fork.c:21` 的 `VMF_CHILD_ENDPOINT`
+//! (= m1i3,`com.h:635`)在偏移 16。两侧各自自洽,但与 C wire 不兼容。
+//! [`fork_address_space_carries_endpoint_and_slot`] 按 C 车道钉断言,当前
+//! 实现下点亮即失败,须先裁决修正产品代码或经评审。
 //!
 //! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性
 //! (其余三测信息性运行通过)。
@@ -167,20 +170,21 @@ fn munmap_carries_addr_and_len() {
 // test64 —— vm_fork:端点与槽位车道
 // ---------------------------------------------------------------------------
 
-/// C 语义(`libsys/vm_fork.c:10-24`):端点(m1i1,偏移 0)与槽位(m1i2,
-/// 偏移 4)上 wire;应答的子端点在 `VMF_CHILD_ENDPOINT` = m1i3 车道
-/// (`com.h:635`,偏移 8;`vm_fork.c:21` 读取);负回码转 errno。
+/// C 语义(`libsys/vm_fork.c:10-24`;本树 `ipc.h` mess_1 布局):端点
+/// m1i1(载荷偏移 8)与槽位 m1i2(偏移 12)上 wire;应答的子端点在
+/// `VMF_CHILD_ENDPOINT` = m1i3(偏移 16,`com.h:635`;`vm_fork.c:21`
+/// 读取);负回码转 errno。
 #[test]
 #[ignore = "点亮前提:minix_sys fork_address_space_via 的应答车道按 C 对齐(当前读偏移 0,见文件头缺口记录)后复核"]
 fn fork_address_space_carries_endpoint_and_slot() {
     let parent = minix_types::Endpoint(0x102);
     let mut transport = CannedTransport::new();
     let mut reply = ok_reply();
-    // C 应答布局:子端点在 m1i3 车道(偏移 8,vm_fork.c:21 的
-    // VMF_CHILD_ENDPOINT)。
-    // SAFETY(test): raw 是应答消息的载荷区,偏移 8..12 = m1i3。
+    // C 应答布局:子端点在 m1i3 车道(载荷偏移 16,vm_fork.c:21 的
+    // VMF_CHILD_ENDPOINT;mess_1 的 m1ull1 头占前 8 字节)。
+    // SAFETY(test): raw 是应答消息的载荷区,偏移 16..20 = m1i3。
     unsafe {
-        reply.m_u.raw[8..12].copy_from_slice(&0x103u32.to_ne_bytes());
+        reply.m_u.raw[16..20].copy_from_slice(&0x103u32.to_ne_bytes());
     }
     transport.reply_sendrec(Ok(reply));
 
@@ -188,18 +192,20 @@ fn fork_address_space_carries_endpoint_and_slot() {
     assert_eq!(
         child,
         minix_types::Endpoint(0x103),
-        "子端点从 m1i3 车道读回"
+        "子端点从 m1i3 车道(偏移 16)读回"
     );
 
     let sent = transport.sent.borrow();
     let (dest, msg) = &sent[0];
     assert_eq!(*dest, vm_endpoint());
+    // 请求侧断言的是包装函数当前布局(偏移 0/4);C 布局应为 8/12
+    // (m1i1/m1i2),错位已记录在文件头缺口。
     // SAFETY(test): 请求车道即包装函数的写入布局。
     let wire = unsafe { &msg.m_u.raw[..8] };
     let mut ep = [0u8; 4];
     let mut slot = [0u8; 4];
     ep.copy_from_slice(&wire[..4]);
     slot.copy_from_slice(&wire[4..]);
-    assert_eq!(i32::from_ne_bytes(ep), 0x102, "父端点车道");
-    assert_eq!(i32::from_ne_bytes(slot), 7, "槽位车道");
+    assert_eq!(i32::from_ne_bytes(ep), 0x102, "父端点车道(包装函数布局)");
+    assert_eq!(i32::from_ne_bytes(slot), 7, "槽位车道(包装函数布局)");
 }

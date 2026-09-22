@@ -8,7 +8,7 @@
 //! | test89(setuid 权限门) | 本文件 [`setuid_requires_match_or_superuser`] |
 //! | test46(getgroups/setgroups 专项) | 本文件 [`setgroups_superuser_only_and_getgroups_roundtrip`] |
 //! | setsid 与进程组(C 载体是 test42/77,编号套件无专项) | 本文件 [`setsid_binds_procgrp_and_getsid_resolves`](取 `getset.c:205-207` 实现语义) |
-//! | test11(exec 面的 UID/GID 语义) | exec 路径的 setuid 注入臂已由 `srv_fork.rs` 覆盖;文件权限判定归 `t_fs_dir_ops.rs`,此处不重复 |
+//! | test11(exec 面的 UID/GID 语义) | 凭证注入面已由 `srv_fork.rs`(SRV_FORK 的 setuid/setgid 后置,C vfs main.c:867-870)覆盖;文件权限判定归 `t_fs_dir_ops.rs`,此处不重复 |
 //!
 //! C ground truth:`minix3/minix/servers/pm/getset.c`(223 行,13 个调用)。
 //! errno 断言对照 C 值(EPERM/EINVAL/ESRCH)。交付门 = 编译;全部测试
@@ -153,7 +153,7 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
         .expect_err("降权后收不回 root");
     assert_eq!(err.to_errno(), minix_types::EPERM, "seteuid(0) → EPERM");
 
-    // 每次成功的 set 都转发 VFS(C getset.c:121-125)。
+    // 每次成功的 set 都经 tell_vfs 转发 VFS(C getset.c:219;PM_SETUID 报文填充在 121-125)。
     assert_eq!(vfs.forwarded.len(), 3, "seteuid/seteuid/setuid 三次转发");
 }
 

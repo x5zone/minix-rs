@@ -41,7 +41,7 @@ fn uds_admission_policy_and_slot_binding() {
     let again = hash_slot(0x301, 42);
     assert_eq!(first, again, "同键同槽(确定性)");
     assert!(first < minix_net_uds::core::HASH_SLOTS, "槽位落在界内");
-    // 不同 inode 在 16 槽位上大概率分散;这里只用两个键断言函数可区分。
+    // 不同 inode 在 64 槽位(C uds.h UDSHASH_SLOTS)上大概率分散;这里只用两个键断言函数可区分。
     let _ = hash_slot(0x301, 43);
 }
 

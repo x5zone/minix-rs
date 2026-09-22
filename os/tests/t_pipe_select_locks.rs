@@ -1,11 +1,12 @@
-//! minix3/minix/tests Rust 腿翻译 —— 管道/select/记录锁域(test7/8/19/40/50)。
+//! minix3/minix/tests Rust 腿翻译 —— 管道/select/记录锁域(test7/8/19/20/29/40)。
 //!
 //! # 翻译映射
 //!
 //! | C 测试 | 语义归宿 |
 //! |---|---|
-//! | test19/50(fcntl 标志位与参数门) | [`fcntl_flag_bits_and_arg_gates`] |
-//! | test19/50(fcntl 记录锁冲突矩阵) | [`record_locks_conflict_query_and_release`] |
+//! | test19 与 test7.c:224-234(F_SETFL 旗标、FD_CLOEXEC)| [`fcntl_flag_bits_and_arg_gates`] |
+//! | test7.c:321-377 与 test20(fcntl() 专项,锁跨 fork/exec)的记录锁 | [`record_locks_conflict_query_and_release`] |
+//! | test29(dup/dup2 专项;F_DUPFD 越界 EINVAL 载体) | [`fcntl_flag_bits_and_arg_gates`] |
 //! | test40(select 三集与就绪记账) | [`select_interest_and_ready_accounting`] |
 //! | test7/8(管道读写判定) | [`pipe_check_matrix_again_and_suspend`] |
 //!
@@ -24,12 +25,13 @@ use minix_vfs::read_write::RwDir;
 use minix_vfs::select::{FdKind, SelOps, classify, ops2tab_apply, tab2ops};
 
 // ---------------------------------------------------------------------------
-// test19/50 —— fcntl 标志位与参数门
+// test19/test7/test29 —— fcntl 标志位与参数门
 // ---------------------------------------------------------------------------
 
-/// C 语义(`servers/vfs/fcntl.c` 对位):F_SETFL 只许动 O_NONBLOCK|
-/// O_APPEND(其余标志存活);F_GETFL 读三比特;F_DUPFD 的 arg 越界
-/// → EINVAL;FD_CLOEXEC 位判定。
+/// C 语义(`servers/vfs/misc.c:158-176` 的 fcntl 臂;载 test19、test7、
+/// test29):F_SETFL 只替换 O_NONBLOCK|O_APPEND 两比特(其余标志存活);
+/// F_GETFL 读访问模式加两个行为位;F_DUPFD 的 arg 越界 → EINVAL(test29);
+/// FD_CLOEXEC 位判定。
 #[test]
 #[ignore = "点亮前提:VFS fcntl 臂随载体用户态点亮后复核"]
 fn fcntl_flag_bits_and_arg_gates() {
@@ -65,7 +67,7 @@ fn fcntl_flag_bits_and_arg_gates() {
 }
 
 // ---------------------------------------------------------------------------
-// test19/50 —— 记录锁冲突矩阵
+// test7/test20 —— 记录锁冲突矩阵
 // ---------------------------------------------------------------------------
 
 /// C 语义(`servers/vfs/lock.c` 对位):写锁独占;GETLK 报冲突者(类型/
@@ -166,7 +168,8 @@ fn record_locks_conflict_query_and_release() {
 
     // pid1 解锁:释放其在该 vnode 的全部锁。C 的按进程清扫在 free_proc
     // 释放面(filp 关闭连带),锁表本体的解锁与唤醒在 lock.c:100-133
-    // (unlocking 分支尾 `lock_revive()`,133)。
+    // (unlocking 分支尾 `lock_revive()`,133)。C 锁语义专项载体:
+    // test7.c:321-377 与 test20(fcntl 专项)。
     assert!(mgr.release_for(vnode, 1), "有锁可放");
     let out = mgr
         .lock_op_decision(
@@ -193,7 +196,7 @@ fn record_locks_conflict_query_and_release() {
 #[test]
 #[ignore = "点亮前提:VFS select 挂起续接随载体点亮后复核"]
 fn select_interest_and_ready_accounting() {
-    // 分类:C select.c:225-232 的表序(字符 > 套接字 > 常规 > 管道)。
+    // 分类:类型优先级表在 select.c:85-90,225-232 是逐类型应用环(字符 > 套接字 > 常规 > 管道)。
     assert_eq!(classify(true, false, false, false), Some(FdKind::Char));
     assert_eq!(
         classify(false, true, true, false),

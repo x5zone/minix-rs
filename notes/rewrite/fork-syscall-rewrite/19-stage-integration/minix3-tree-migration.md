@@ -150,10 +150,10 @@ C 腿的价值不因挂起而贬值:它是量尺,量尺的正确性不能依赖�
 |---|---|---|
 | `t_proc_lifecycle.rs` | test13/70 | VFS filp 共享继承 + test70 消息字段对账(C 父子各持独立文件,共享偏移为 POSIX 继承语义推论) |
 | `t_signals.rs` | test5/37/41/52 | PM 信号处置、掩码 pending、kill 权限、alarm |
-| `t_credentials.rs` | test11/89 | PM 凭证:saved-id 舞步、权限门、setgroups、setsid |
-| `t_fs_dir_ops.rs` | test14-36/43 选集 | MFS 真盘:目录/链接/symlink/chmod |
-| `t_fs_special.rs` | test43/58/61/78 | MFS 真盘:mknod rdev、lstat 本体、被删目录消解 |
-| `t_pipe_select_locks.rs` | test7/8/19/40/50 | VFS 决策面:管道矩阵、select 三集、记录锁 |
+| `t_credentials.rs` | test11/46/89 | PM 凭证:saved-id 舞步、权限门、setgroups、setsid |
+| `t_fs_dir_ops.rs` | test19/21/22/28/32/34/61/78 选集 | MFS 真盘:目录/链接/symlink/chmod |
+| `t_fs_special.rs` | test58/78 | MFS 真盘:mknod rdev、lstat 本体、被删目录消解 |
+| `t_pipe_select_locks.rs` | test7/8/19/20/29/40 | VFS 决策面:管道矩阵、select 三集、记录锁 |
 | `t_memory_vm.rs` | test6/44/64 | minix-sys brk/mmap/vm_fork 的 wire 字节契约 |
 | `t_tty_termios.rs` | test74/77 | termios 44 字节布局、tty ioctl 请求号 ABI |
 | `t_net_sockets.rs` | test48/56/90 策略面 | UDS 准入/环/控制长度、lwip 地址工具 |
@@ -193,7 +193,7 @@ test1/2/12 的 fork/wait 语义不重复翻译,由 `pm_vm_fork.rs` 与 `servers/
 | test14–test36(23 项) | 目录操作、link、rename、umask、时间戳(test16)、access(test33)、utime(test35)、mkdir/rmdir(test28)、chdir、sync、mkfifo、symlink、dup/fcntl——主题不随编号单调,逐个迁移前先核对头注释 | VFS + MFS;宿主接缝上可先行(Rust 腿) |
 | test43 | realpath(3) 解析(lstat 为其中一环) | VFS |
 | test46 | getgroups/setgroups 专项(root);rename 仅作写权限探针 | VFS + PM |
-| test50 | fcntl/lseek 大范围边角 | VFS |
+| test50 | truncate(2) 家族(ftruncate/ftruncate 到超界) | VFS + MFS |
 | test54、test55 | close/unlink、write 边角 | VFS |
 | test58 | 当前工作目录被删除/替换后的行为(`test58.c` 头注释) | VFS |
 | test61 | 悬空符号链接消解 + mknod 已存在名 EEXIST | VFS |

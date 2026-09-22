@@ -7,7 +7,7 @@
 //!
 //! | C 测试 | 语义归宿 |
 //! |---|---|
-//! | test78(chr/blk 节点经 mknod 建立并被 readdir 枚举) | [`mknod_device_file_records_type_and_rdev`](rdev 数值断言取 `mfs statdir.c:65` 的 st_rdev 语义,编号套件无数值断言) |
+//! | test78(chr/blk 节点经 mknod 建立并被 readdir 枚举) | [`mknod_device_file_records_type_and_rdev`](rdev 数值断言取 `mfs stadir.c:65` 的 st_rdev 语义,编号套件无数值断言) |
 //! | test78(DT_LNK 项经 lstat 取 S_IFLNK 位) | [`lstat_on_symlink_reports_link_not_target`](链接大小 = 目标串字节数为 POSIX 语义) |
 //! | test58(被删目录内名字消解) | [`removed_directory_names_stop_resolving`] |
 //! | (test61 的 mknod EEXIST 面、test73 为 VM 缓存黑盒测试,与 umask 无关,均不在本文件) | — |
@@ -50,8 +50,8 @@ fn zero_clock() -> i64 {
 // test78 —— mknod 设备文件
 // ---------------------------------------------------------------------------
 
-/// C test78:mkfifo/mknod(chr/blk)六类节点建立并被枚举;rdev 数值随
-/// stat 读回是 `mfs statdir.c:65` 的 st_rdev 语义(编号套件无数值断言)。
+/// C test78:六类节点(含 mknod 建 chr/blk/FIFO)建立并被枚举;rdev 数值随
+/// stat 读回是 `mfs stadir.c:65` 的 st_rdev 语义(编号套件无数值断言)。
 #[test]
 #[ignore = "点亮前提:VFS↔MFS 跨包桥点亮后由真路径驱动复核"]
 fn mknod_device_file_records_type_and_rdev() {
@@ -71,10 +71,10 @@ fn mknod_device_file_records_type_and_rdev() {
     assert_eq!(stat.mode & 0o170000, 0o020000, "stat 类型位一致");
     assert_eq!(
         stat.special, 0x2c01,
-        "stat 设备号一致(mfs statdir.c:65 的 st_rdev 语义)"
+        "stat 设备号一致(mfs stadir.c:65 的 st_rdev 语义)"
     );
 
-    // 块设备同型(C test61 的第二段)。
+    // 块设备同型(C test78.c:81 的 DT_BLK 段)。
     server
         .make_node(ROOT, "disk0", 0o060600, 0, 0, 0x30100)
         .expect("块设备 mknod 合法");

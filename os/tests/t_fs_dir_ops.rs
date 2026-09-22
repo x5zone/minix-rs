@@ -170,7 +170,7 @@ fn rename_replaces_target_and_moves_across_dirs() {
     let a = server.create(ROOT, "a", 0o100644, 0, 0).expect("建 a");
     let _b = server.create(ROOT, "b", 0o100644, 0, 0).expect("建 b");
 
-    // 同目录 rename 覆盖已有目标(C test21 的 replace 语义)。
+    // 同目录 rename 覆盖已有目标(C test32.c:88-99:目标先移除,旧编号接管)。
     server
         .rename(ROOT, "a", ROOT, "b")
         .expect("rename 覆盖合法");
@@ -219,7 +219,11 @@ fn symlink_roundtrip() {
         })
         .expect("readlink 合法");
     assert_eq!(len, 4, "目标串长度");
-    assert_eq!(target, b"/a/b".to_vec(), "目标串逐字节还原(C test43)");
+    assert_eq!(
+        target,
+        b"/a/b".to_vec(),
+        "目标串逐字节还原(C test74.c:171,套件唯一 readlink 载体)"
+    );
 }
 
 // ---------------------------------------------------------------------------
