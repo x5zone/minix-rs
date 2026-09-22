@@ -1,8 +1,9 @@
 //! `xtask image` — 把构建产物装配成可启动机镜像（E-IMGPKG / new_edge3
 //! NS8）。
 //!
-//! 包形（x86_64，UEFI 路径）：一张 FAT 盘镜像，内含
-//!   - `/EFI/BOOT/BOOTX64.EFI` ← boot-shim（固件默认加载项）
+//! 包形（UEFI 路径）：一张 FAT 盘镜像，内含
+//!   - `/EFI/BOOT/<固件默认加载项>` ← boot-shim（x86_64 =
+//!     `BOOTX64.EFI`，aarch64 = `BOOTAA64.EFI`，见 [`Arch::uefi_slots`]）
 //!   - `/EFI/minix/kernel.elf` ← 内核 ELF（boot-shim 按
 //!     `loader::KERNEL_PATH` 读取，`os/boot-shim/src/loader.rs:31`）
 //!   - `/EFI/minix/modules/<名>` ×12 ← 装机清单（[`crate::manifest`]）
@@ -15,7 +16,8 @@
 //! 镜像流出去。
 //!
 //! 生产开关：boot-shim 以 `--no-default-features --features
-//! fw-x86-uefi` 构建（X-2/NK5 的 feature 词汇表），链接进 boot-shim 的
+//! fw-x86-uefi`（aarch64 为 `fw-aarch64-uefi`）构建（X-2/NK5 的 feature
+//! 词汇表），链接进 boot-shim 的
 //! 内核半因此不带 mock（`boot-shim/Cargo.toml` 对 minix-kernel 已写死
 //! `default-features = false`）。模块逐包独立调用 cargo——规避 feature
 //! 统一陷阱（一次多 `-p` 会把 Mock 与生产类型拉进同一编译），也让
@@ -25,8 +27,8 @@ use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// 目标架构。三架构布局中 x86_64 是当前唯一有完整产出链的（boot-shim
-/// 的 UEFI bin 只有 `fw-x86-uefi` 一个门）；另两架构给出 honest bail
+/// 目标架构。x86_64 与 aarch64 有 UEFI 装机面（后者由 NK4-B P3 M3.3
+/// 放行）；riscv64 走 U-Boot fatload，不经 UEFI 盘形，装配时 honest bail
 /// 而不是装出不可启动机的镜像。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Arch {
@@ -62,6 +64,44 @@ impl Arch {
             Self::Riscv64 => "riscv64",
         }
     }
+
+    /// UEFI 装机面的四个架构常量。`None` = 本架构不走 UEFI 盘形。
+    ///
+    /// 这些值今天散在装配计划里写死成 x86 形态，放行 aarch64 就是把它们
+    /// 收成一张表（NK4-B P3 M3.3 决策四）。`loader` 名不是随意取的：
+    /// UEFI 规范按 CPU 架构规定默认加载项文件名，AAVMF 只认
+    /// `EFI/BOOT/BOOTAA64.EFI`。
+    fn uefi_slots(self) -> Option<UefiSlots> {
+        match self {
+            Self::X86_64 => Some(UefiSlots {
+                shim_target: "x86_64-unknown-uefi",
+                shim_feature: "fw-x86-uefi",
+                kernel_none_feature: "fw-x86-none",
+                loader: "BOOTX64.EFI",
+            }),
+            Self::Aarch64 => Some(UefiSlots {
+                shim_target: "aarch64-unknown-uefi",
+                shim_feature: "fw-aarch64-uefi",
+                kernel_none_feature: "fw-aarch64-none",
+                loader: "BOOTAA64.EFI",
+            }),
+            Self::Riscv64 => None,
+        }
+    }
+}
+
+/// 一个架构的 UEFI 装机面常量（见 [`Arch::uefi_slots`]）。
+#[derive(Clone, Copy, Debug)]
+struct UefiSlots {
+    /// boot-shim 的构建目标三元组。
+    shim_target: &'static str,
+    /// boot-shim 的对外特性名（生产开关）。
+    shim_feature: &'static str,
+    /// `kernel-image` 的对外特性名（目标三元组同 [`Arch::module_target`]，
+    /// 与 [`kernel_elf_path`] 的取件路径已经是同一假设）。
+    kernel_none_feature: &'static str,
+    /// ESP 内 `/EFI/BOOT/` 下的固件默认加载项文件名。
+    loader: &'static str,
 }
 
 /// 装配计划里的一步。计划先行、执行在后——`--dry-run` 打印同一份
@@ -152,22 +192,18 @@ pub fn plan(
     kernel_override: Option<&Path>,
     layout: &Layout,
 ) -> Result<(Vec<Action>, PathBuf)> {
-    // 三架构诚实话：aarch64 的 boot-shim UEFI bin 未产出（feature 门只有
-    // fw-x86-uefi），riscv64 走 U-Boot fatload + BootFileTable，不经 UEFI
-    // 装机形（载体机制见 qemu-tests/test-riscv64-uboot.sh）。布局参数在
-    // Arch 枚举里已备，产出链补齐后此处放行。
-    match arch {
-        Arch::X86_64 => {}
-        Arch::Aarch64 => bail!(
-            "aarch64 镜像暂不可装配：boot-shim 无 fw-aarch64-uefi 产出（os/boot-shim/Cargo.toml \
-             仅有 fw-x86-uefi 门）。补齐 shim 后布局参数（aarch64-unknown-none 模块 + \
-             BOOTAA64.EFI）已备。"
-        ),
-        Arch::Riscv64 => bail!(
-            "riscv64 镜像暂不可装配：启动路径是 U-Boot fatload + BootFileTable（非 UEFI 盘），\
-             载体机制见 os/qemu-tests/test-riscv64-uboot.sh。"
-        ),
-    }
+    // 三架构诚实话：riscv64 的启动路径是 U-Boot fatload + BootFileTable，
+    // 不经 UEFI 装机形（载体机制见 qemu-tests/test-riscv64-uboot.sh），
+    // 给它装一张 ESP 盘就是装不可启动机的镜像。x86_64 / aarch64 的四个
+    // 架构常量由 [`Arch::uefi_slots`] 一张表供值（aarch64 腿 = NK4-B P3
+    // M3.3 决策四放行，依赖 boot-shim 的 fw-aarch64-uefi 门）。
+    let Some(uefi) = arch.uefi_slots() else {
+        bail!(
+            "{} 镜像暂不可装配：启动路径不是 UEFI 盘形（riscv64 走 U-Boot fatload + \
+             BootFileTable，载体机制见 os/qemu-tests/test-riscv64-uboot.sh）。",
+            arch.slug()
+        );
+    };
 
     let image_dir = layout.target_root.join("image").join(arch.slug());
     let staging = image_dir.join("staging");
@@ -192,7 +228,7 @@ pub fn plan(
         );
     }
 
-    // 2. boot-shim（生产开关：关默认 feature，只开 fw-x86-uefi）。
+    // 2. boot-shim（生产开关：关默认 feature，只开本架构的 uefi 特性）。
     cargo_release(
         &mut actions,
         "boot-shim UEFI 载体构建（生产开关）",
@@ -200,15 +236,15 @@ pub fn plan(
             "-p",
             "boot-shim",
             "--target",
-            "x86_64-unknown-uefi",
+            uefi.shim_target,
             "--no-default-features",
             "--features",
-            "fw-x86-uefi",
+            uefi.shim_feature,
         ],
     );
 
     // 2b. 生产内核镜像（NS8-A 产出者：`-p kernel-image`，bin 门
-    //     fw-x86-none，产出 `target/x86_64-unknown-none/<profile>/kernel`）。
+    //     fw-<arch>-none，产出 `target/<none target>/<profile>/kernel`）。
     cargo_release(
         &mut actions,
         "生产内核镜像构建（kernel-image，NS8-A）",
@@ -216,9 +252,9 @@ pub fn plan(
             "-p",
             "kernel-image",
             "--target",
-            "x86_64-unknown-none",
+            arch.module_target(),
             "--features",
-            "fw-x86-none",
+            uefi.kernel_none_feature,
         ],
     );
 
@@ -326,29 +362,28 @@ pub fn plan(
     });
 
     // 9. boot-shim 入包为固件默认加载项 + 全部文件 mcopy 进 ESP。
+    let loader_path = staging.join(format!("EFI/BOOT/{}", uefi.loader));
     actions.push(Action::Copy {
         from: layout
             .target_root
-            .join("x86_64-unknown-uefi")
+            .join(uefi.shim_target)
             .join(profile)
             .join("boot-shim.efi"),
-        to: staging.join("EFI/BOOT/BOOTX64.EFI"),
+        to: loader_path.clone(),
         note: "boot-shim 入包为固件默认加载项",
     });
     // boot-shim 本体也是 ESP 文件：staging 只进了工作树，固件加载的是
-    // 盘上的 ::/EFI/BOOT/BOOTX64.EFI（首装配漏列即 UEFI Shell 落地，
+    // 盘上的 ::/EFI/BOOT/<本架构默认加载项>（首装配漏列即 UEFI Shell 落地，
     // test-cmd-smoke 首跑实证）。startup.nsh 是本固件的自动引导 belt-
     // and-suspenders（test-sysboot 判例：倒计时后逐行执行）。
+    let startup_nsh = format!("echo -off\r\nFS0:\r\ncd EFI\\BOOT\\\r\n{}\r\n", uefi.loader);
     actions.push(Action::Write {
         path: staging.join("startup.nsh"),
-        bytes: b"echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\nBOOTX64.EFI\r\n".to_vec(),
+        bytes: startup_nsh.into_bytes(),
         note: "startup.nsh（固件自动引导脚本，test-sysboot 判例）",
     });
     let mut copy_pairs: Vec<(PathBuf, String)> = vec![
-        (
-            staging.join("EFI/BOOT/BOOTX64.EFI"),
-            "::EFI/BOOT/BOOTX64.EFI".into(),
-        ),
+        (loader_path, format!("::EFI/BOOT/{}", uefi.loader)),
         (staging.join("startup.nsh"), "::startup.nsh".into()),
         (
             staging.join("EFI/minix/kernel.elf"),
@@ -514,7 +549,13 @@ pub fn run(release: bool, arch: Arch, kernel_override: Option<&Path>, dry_run: b
         println!("✅ 计划打印完毕（未落盘）。产出位：{}", esp_image.display());
     } else {
         println!("✅ 镜像就绪：{}", esp_image.display());
-        println!("   布局：/EFI/BOOT/BOOTX64.EFI + /EFI/minix/{{kernel.elf, imgrd, modules/×12}}");
+        let loader = arch.uefi_slots().map_or(String::from("(非 UEFI)"), |u| {
+            format!("/EFI/BOOT/{}", u.loader)
+        });
+        println!(
+            "   布局：{} + /EFI/minix/{{kernel.elf, imgrd, modules/×12}}",
+            loader
+        );
     }
     Ok(())
 }
@@ -598,12 +639,76 @@ mod tests {
         assert!(text.contains("BOOTX64.EFI") && text.contains("startup.nsh"));
     }
 
-    /// 非 x86_64 架构 honest bail：装机面不装不可启动机的镜像。
+    /// 非 UEFI 启动形（riscv64）honest bail：装机面不装不可启动机的镜像。
     #[test]
-    fn plan_bails_honestly_for_arch_without_bootshim_output() {
+    fn plan_bails_honestly_for_arch_without_uefi_path() {
         let (layout, _guard) = tempdir::create();
-        assert!(plan(Arch::Aarch64, true, None, &layout).is_err());
         assert!(plan(Arch::Riscv64, true, None, &layout).is_err());
+    }
+
+    /// aarch64 腿走自己的四常量（NK4-B P3 M3.3 决策四）：不是把 x86 的
+    /// 三元组与加载项名“顺手共用了”，而是整张表都切换。
+    #[test]
+    fn plan_aarch64_switches_every_uefi_slot() {
+        let (layout, _guard) = tempdir::create();
+        let (actions, esp) = plan(Arch::Aarch64, true, None, &layout).unwrap();
+        let text = format!("{actions:?}");
+
+        // 结构断言：定位到具体那一步的参值，不靠整串包含——否则 12 个
+        // 模块步骤的 `aarch64-unknown-none` 会替 kernel-image 步骤“顶包”，
+        // 把目标写回 x86 也测不出来。
+        let step_flag = |pkg: &str, flag: &str| -> String {
+            actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::Cargo { args, .. } => {
+                        if !args.windows(2).any(|w| w[0] == "-p" && w[1] == pkg) {
+                            return None;
+                        }
+                        args.windows(2).find(|w| w[0] == flag).map(|w| w[1].clone())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{pkg} 构建步不在计划里"))
+        };
+        assert_eq!(step_flag("boot-shim", "--target"), "aarch64-unknown-uefi");
+        assert_eq!(step_flag("boot-shim", "--features"), "fw-aarch64-uefi");
+        assert_eq!(
+            step_flag("kernel-image", "--target"),
+            "aarch64-unknown-none"
+        );
+        assert_eq!(
+            step_flag("kernel-image", "--features"),
+            "fw-aarch64-none",
+            "kernel-image 腿必须用 fw-aarch64-none（M3.2 定的词汇表）"
+        );
+        // 反向断言：x86 的四个写死值一个也不许出现（否则就是表没生效）。
+        for x86_only in [
+            "x86_64-unknown-uefi",
+            "fw-x86-uefi",
+            "fw-x86-none",
+            "BOOTX64.EFI",
+        ] {
+            assert!(
+                !text.contains(x86_only),
+                "aarch64 计划里不应残留 x86 写死值 {x86_only}"
+            );
+        }
+        // 加载项与自动引导脚本同名（名字写错 = AAVMF 根本不加载）。
+        assert!(
+            text.contains("BOOTAA64.EFI") && text.contains("startup.nsh"),
+            "ESP 默认加载项应为 BOOTAA64.EFI 且同步写进 startup.nsh"
+        );
+        // 其余构形与 x86_64 同调（12 模块 + shim + kernel-image + mkfs = 15）。
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::Cargo { .. }))
+                .count(),
+            15,
+            "aarch64 与 x86_64 的装配步骤数必须相同"
+        );
+        assert!(esp.ends_with("minix.img"));
     }
 
     /// 原型文法：两行头 + 目录递归收口 + console 设备行（major 4）。
