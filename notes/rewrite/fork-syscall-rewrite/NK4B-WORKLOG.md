@@ -1281,3 +1281,138 @@ T0.3 在起点 commit `388252b6b` 记下的 stage 判定行 + 串口尾部 12 �
 rs 自任 sig manager 收 SIGSEGV → `syscall_signal.rs:300` panic → 内核再踩
 vector 13 递归 panic。**没前进也没后退**：P1 的 x86_64 rc marker 断点仍在原处，
 仍等 A/B/C 裁决。
+
+---
+
+## P4 M4.1 — riscv64 载体现状点电（DONE，纯记录）
+
+**日期**：2026-09-22　**起点 HEAD**：`3b54a36e5`（本弧上一节 `582c92015`）
+**性质**：任务书 §4 把 M4.1 定义为「载体现状点电（uboot 载体跑通记录）」，
+所以本节只测量、只定性，不修任何东西。riscv64 的修复工作在 M4.2 之后。
+
+### 测了什么
+
+三条 riscv64 专用载体脚本各跑一次，rt-birth 再独立复跑一次（防偶发）；
+外加两件盘点：`run_all.sh:67` 那份 11 个 riscv64 包的构建点电，以及宿主机
+前置件盘点（用来解释 uboot 载体为什么不能跑）。
+
+| 载体 | 命令 | 退出码 | 结论 |
+|------|------|--------|------|
+| uboot 装载链 | `bash os/qemu-tests/test-riscv64-uboot.sh` | 2 = SKIP | 本机缺前置件，脚本按设计优雅跳过 |
+| timer 中断链 | `bash os/qemu-tests/test-timer-irq-riscv64.sh` | 0 = PASS | 5 次 tick + PASS marker，NK3 那条腿仍然活着 |
+| 出生链 | `bash os/qemu-tests/test-rt-birth-riscv64.sh` | 1 = FAIL | 走到调度交接后 panic 在 `CLOCK_STATE not initialized` |
+
+证据：`evidence/20260922-nk4b-p4-m41/`（`m41-uboot-run1.log`、
+`m41-timer-irq-run1.log`、`m41-rt-birth-run1.log`、`m41-rt-birth-run2.log`、
+`m41-build-sweep.log`、`m41-host-prereqs.log`、`m41-x86-rt-birth-control.log`）。
+
+### 事实一：任务书 §4 的「载体现成」只对一半
+
+任务书写「载体 `test-riscv64-uboot.sh` / `test-timer-irq-riscv64.sh` 现成」。
+timer 那条确实现成（PASS）。uboot 那条脚本本身现成、但**这台机器跑不了**：
+`mkimage` 与 `dtc` 都不在 PATH，`/usr/lib/u-boot`、`/usr/share/opensbi` 等
+四个候选目录全不存在（`m41-host-prereqs.log`）。脚本第 32 行的前置检查
+`command -v mkimage || skip "mkimage not found (apt install u-boot-tools)"`
+按设计退 2，注释第 18 行写明「hosts without them SKIP」，所以这不是缺陷，
+是环境缺口。**对 M4.3 的直接影响**：装载链要在能装 `u-boot-tools` +
+`u-boot-qemu` 的机器上做，或者把这两个包塞进 `minix-ci:1.94` 镜像。
+本机是 WSL2（`Linux 6.18.33.2-microsoft-standard-WSL2 x86_64`），装包需要
+用户授权，我没有擅自 apt install。
+
+### 事实二：rt-birth 的 FAIL 不是本弧造成的退化，且定位到「载体不对称」
+
+串口序列（run1 与 run2 逐字同形，见两份 log 尾部）：
+
+```
+  BKL held → table up → VM boot proc (rt-birth): runnable
+  entering scheduler (switch_to_user) → entering scheduler
+nk4a: pick->0x0000000000000008
+### PANIC in test-rt-birth-riscv64: kernel/src/lib.rs:0x000000000000075d
+    CLOCK_STATE not initialized — init_clock_and_interrupts must run first
+```
+
+三条证据链把它钉住：
+
+1. **归属**：`git log 873f3e947..HEAD --name-only` 里没有任何 `kernel/src`
+   文件——M3.3 之后本弧一行都没碰内核。这句 panic 文案在
+   `os/kernel/src/lib.rs:1867 / 1873 / 1885` 三个访问器里，都不是本弧加的。
+2. **载体不对称**（真正的根因）：x86_64 的同类载体
+   `os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth/src/main.rs:172`
+   调用了 `minix_kernel::init_clock_and_interrupts()`；而
+   `test-rt-birth-riscv64/src/main.rs` 与 `test-rt-birth-aarch64/src/main.rs`
+   里 `grep -c init_clock_and_interrupts` = **0**。也就是两个新架构载体
+   从建那天起就没有把时钟初始化接上，只是以前没必要、现在是有了。
+3. **「以前没必要」的时间点**：调度交接路径上第一处无条件读 CLOCK_STATE 的是
+   `account_process_stop` 里的 `crate::clock_state_with(section)`
+   （`os/kernel/src/lib.rs:3147`），`git blame` 归到 `1b44c2fd6a`
+   （2026-09-20，C-25 cpuavg 记账半）；它的调用点在
+   `os/kernel/src/lib.rs:3256`（`finish_and_restore`，`git blame` 归到
+   `225523743` 2026-09-20 C-26）。同一条 `pick->` 之后的路径上还有第二处
+   `clock_state_boot_unchecked`（`os/kernel/src/lib.rs:3732`，
+   `8c7c53ae5` 2026-09-22，KCALL_RESUME 重派臂）。这解释了 **2026-09-19**
+   那批「真机四载体全 PASS」记录为什么到今天变成 FAIL——登记处在三处：
+   `.review/claude/fork-syscall-rewrite/edge1-kfix.md:403`（K20 收口节，
+   明写 `test-rt-birth-riscv64 PASS`）、`notes/rewrite/fork-syscall-rewrite/edge1.md:33`
+   （K20 行同一句）、`notes/rewrite/fork-syscall-rewrite/edge4.md:72`
+   （K12b 接线行，「同日真机 PASS 3/3」）。结论不是有人改坏了 riscv64，而是
+   09-20/09-22 的周期记账给调度路径新增了对 CLOCK_STATE 的硬依赖，
+   而 riscv64/aarch64 载体的初始化序列没有跟着补。
+
+现场落在哪一处不能只凭 panic 文案定（内核本体不可离线符号化，
+`lib.rs:0x75d` 只是偏移）。按串口 `pick->0x8` 已经成功选到进程、没有走
+idle 分支来看，先命中 `finish_and_restore` 的 `account_process_stop`
+（每次派活都走），而 3732 那处只在 VM 挂起-重派臂上。两处的根因同一个：
+载体没初始化时钟。修哪、怎么修属 M4.4 范围。
+
+### 事实三：对照实验没做成，如实记录
+
+我想用 x86_64 同类载体做「同样缺时钟会不会炸」的活体对照，结论是
+**x86_64 载体到不了调度器**，它停在更早的地方：
+
+```
+kernel: step1+2 mappings ok
+### PANIC in test-rt-birth: kernel/src/dm_coverage.rs:0x0000000000000064
+    boot DM: VM window module coverage failed: InvalidAddress
+FAIL: guest never reached the scheduler hand-off      （EXIT=1）
+```
+
+（`m41-x86-rt-birth-control.log`）。这条对照虽然没隔离开我原本要隔离的变量，
+但它自己是一条独立事实：**x86_64 的 rt-birth 载体也是红的**，卡在 VM 窗口
+模块覆盖校验，跟 CLOCK_STATE 无关。所以「三个架构的 rt-birth 载体同时全绿」
+这个 P3/P4 隐含前提，目前一个都不满足，每个各卡一处：x86_64 卡 DM 覆盖、
+aarch64 卡平台描述符发现（= M3.4 待裁决那条 platform panic，见
+`evidence/20260922-nk4b-p3-m31/serial_a64_b1.log`）、riscv64 卡时钟初始化。
+
+### 事实四：构建点电 11/11 通过，其中一条是方法伪影
+
+`run_all.sh:67` 那份包列表逐个 `cargo build --target riscv64gc-unknown-none-elf
+--features fw-riscv64-none --release`：10 条 EXIT=0，`test-rt-birth-riscv64`
+EXIT=101。查证后是我的扫描方法缺了环境变量：该载体
+`src/main.rs:123` 用 `include_bytes!(env!("RT_BIRTH_ELF_PATH"))` 内嵌用户态
+ELF，必须由载体脚本第 35/38 行导出该变量。带上就构建成功（run1/run2 都是
+脚本驱动构建的）。**顺带一条既存事实**：`run_all.sh` 全文没有
+`RT_BIRTH_ELF_PATH` 赋值（`grep -c` = 0），所以它那行预构建对
+`test-rt-birth-riscv64` 必然走 `|| echo "(build failed)"` 分支，真正可用的
+二进制是后面特殊协议段（`run_all.sh:211-213`）重建的。不修（共享文件 +
+属 P6 接线范围），只登记。
+
+### 登记（只记不改）
+
+正文文档 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/33-syscall-caller-api.md:205-208`
+那张「真机验证」表到今天已与现实不符：四行里三行（`test-rt-birth` x86-64、
+`test-rt-birth-riscv64`、`test-rt-birth-aarch64`）仍写 PASS，而本节实测三条
+全部失败、各卡一处（见上表与事实三）。我不就地改它——那是 K20 战役的正文
+文档，改判定行要连同该文档的验证小节与对应设计记录一起改，属那条弧线的
+收口工作；这里只把漂移事实钉在案，供裁决方决定由谁在哪一轮补。
+
+### 上交裁决 / 提示（不自行定案）
+
+1. **M4.3 的前置件问题**：本机无 `u-boot-tools`/`u-boot-qemu`/`dtc`。要么授权
+   我在宿主 apt 安装，要么把这三个包加进 `minix-ci:1.94` 镜像，要么把 M4.3
+   挪到有这些包的机器上。我倾向第二个（CI 可复现，且 P6 run_all 接线本来就要
+   CI 环境），但装包属环境变更，需你点头。
+2. **rt-birth 三架构各卡一处的处理顺序**：x86_64 的 DM 覆盖那条与 P1/P2 的
+   rc marker 裁决同源（都要求装机面能真正把模块喂进 VM 窗口），建议并入 P1
+   裁决一起看；riscv64 的时钟初始化是纯载体侧补齐（照 x86 载体抄一行
+   `init_clock_and_interrupts`），风险低、可独立做，但按任务书属 M4.4，
+   我不动。

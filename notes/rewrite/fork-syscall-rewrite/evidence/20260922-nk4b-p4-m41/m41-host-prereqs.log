@@ -1,0 +1,28 @@
+# M4.1 宿主前置件盘点 2026-09-22T23:24:25+08:00（解释 uboot 载体为何 SKIP）
+$ uname -a
+Linux xzhao 6.18.33.2-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Thu Jun 18 21:54:43 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+qemu-system-riscv64    -> /usr/bin/qemu-system-riscv64
+qemu-system-aarch64    -> /usr/bin/qemu-system-aarch64
+mkimage                -> MISSING
+dtc                    -> MISSING
+mmd                    -> /usr/bin/mmd
+mkfs.vfat              -> /usr/sbin/mkfs.vfat
+--- 目录探测
+ABSENT /usr/lib/u-boot
+ABSENT /usr/share/u-boot
+ABSENT /usr/share/opensbi
+ABSENT /usr/lib/opensbi
+--- uboot 载体对前置件的要求（grep）
+15:# Prerequisites: qemu-system-riscv64, u-boot-qemu (U-Boot virt firmware),
+16:# u-boot-tools (mkimage), dosfstools (mkfs.vfat), mtools (mmd/mcopy).
+18:# riscv64-uboot); hosts without them SKIP.
+20:# Exit codes: 0 = PASS, 1 = FAIL, 2 = SKIP (prerequisites missing).
+28:skip() { echo "SKIP: $1"; exit 2; }
+32:command -v mkimage &>/dev/null || skip "mkimage not found (apt install u-boot-tools)"
+37:for c in /usr/lib/u-boot/qemu-riscv64_smode/uboot.elf \
+38:         /usr/lib/u-boot/qemu-riscv64/uboot.elf \
+39:         /usr/lib/u-boot/qemu-riscv64/u-boot.bin; do
+42:[ -n "$UBOOT" ] || skip "U-Boot riscv64 firmware not found (apt install u-boot-qemu)"
+55:# 2. FAT disk: kernel ELF + a boot.scr script image (mkimage wraps the
+68:mkimage -T script -C none -n "minix-rs uboot chain" \
+69:    -f "$WORK/boot.cmd" "$WORK/boot.scr.img" || fail "mkimage script failed"

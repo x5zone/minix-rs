@@ -1,0 +1,43 @@
+# M4.1 riscv64 载体全量构建点电 2026-09-22T23:24:51+08:00
+# cmd: 同 os/qemu-tests/run_all.sh:67 的包列表，逐个 cargo build --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release
+# 宿主 ulimit -v 3145728（uefi/none 构建走宿主）
+BUILD hello-boot-riscv64 EXIT=0
+BUILD test-memmap-riscv64 EXIT=0
+BUILD test-paging-enable-riscv64 EXIT=0
+BUILD test-kernel-map-riscv64 EXIT=0
+BUILD test-higher-half-riscv64 EXIT=0
+BUILD test-protection-riscv64 EXIT=0
+BUILD test-smp-topo-riscv64 EXIT=0
+BUILD test-smp-ipi-riscv64 EXIT=0
+BUILD test-rt-birth-riscv64 EXIT=101
+BUILD test-shutdown-riscv64 EXIT=0
+BUILD test-timer-irq-riscv64 EXIT=0
+
+### 判读补充$ cargo build -p test-rt-birth-riscv64 --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release（未带 env）
+error: environment variable `RT_BIRTH_ELF_PATH` not defined at compile time
+  --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:123:45
+  123 | static RT_BIRTH_ELF: &[u8] = include_bytes!(env!("RT_BIRTH_ELF_PATH"));
+
+### 判读补充 2026-09-22T23:26+08:00（rt-birth 那条 EXIT=101 是扫描方法伪影，不是构建断裂）
+$ cargo build -p test-rt-birth-riscv64 --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release   （未带 env）
+error: environment variable `RT_BIRTH_ELF_PATH` not defined at compile time
+  --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:123:45
+  123 | static RT_BIRTH_ELF: &[u8] = include_bytes!(env!("RT_BIRTH_ELF_PATH"));
+
+# 载体脚本自己导出该 env —— 所以由脚本驱动的构建是好的：
+$ grep -n RT_BIRTH_ELF_PATH os/qemu-tests/test-rt-birth-riscv64.sh
+  6:# into the carrier kernel (RT_BIRTH_ELF_PATH), and boots under QEMU virt
+  35:RT_BIRTH_ELF_PATH="$OS_ROOT/target/riscv64gc-unknown-none-elf/release/rt-birth"
+  37:echo "building test-rt-birth-riscv64 carrier (embeds $RT_BIRTH_ELF_PATH)…"
+  38:( cd "$OS_ROOT" && RT_BIRTH_ELF_PATH="$RT_BIRTH_ELF_PATH" \
+
+# 另一件既存事实：run_all.sh 的预构建列表（run_all.sh:67）包含 test-rt-birth-riscv64，
+# 但全文件没有任何 RT_BIRTH_ELF_PATH 赋值 —— 该预构建步必然走 `|| echo "(build failed)"`
+# 分支，真正的构建由后面的特殊协议脚本（run_all.sh:211 段）重做。
+$ grep -n RT_BIRTH_ELF_PATH os/qemu-tests/run_all.sh | wc -l
+  0
+$ grep -n test-rt-birth-riscv64 os/qemu-tests/run_all.sh
+  67:for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64 test-rt-birth-riscv64 test-shutdown-riscv64 test-timer-irq-riscv64; do
+  211:    echo "--- Running: test-rt-birth-riscv64 (special: birth-chain serial markers) ---"
+  213:    bash "$SCRIPT_DIR/test-rt-birth-riscv64.sh" || rc=$?
+  215:    elif [ "$rc" -eq 2 ]; then SKIP=$((SKIP + 1)); echo "(test-rt-birth-riscv64: skipped)"

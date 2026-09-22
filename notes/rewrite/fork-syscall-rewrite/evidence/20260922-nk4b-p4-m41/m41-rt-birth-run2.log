@@ -1,0 +1,1109 @@
+# M4.1 rt-birth-riscv64 第二次独立复跑 2026-09-22T23:23:17+08:00
+# cmd: bash os/qemu-tests/test-rt-birth-riscv64.sh
+building rt-birth (riscv64gc-unknown-none-elf)…
+    Finished `release` profile [optimized] target(s) in 0.30s
+building test-rt-birth-riscv64 carrier (embeds /home/xzhao/github/minix-rs/os/target/riscv64gc-unknown-none-elf/release/rt-birth)…
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+  --> plat/src/riscv64/interrupt.rs:84:9
+   |
+84 |         core::ptr::read_volatile((self.plic_base + offset) as *const u32)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> plat/src/riscv64/interrupt.rs:83:5
+   |
+83 |     unsafe fn plic_read32(&self, offset: usize) -> u32 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+  --> plat/src/riscv64/interrupt.rs:88:9
+   |
+88 |         core::ptr::write_volatile((self.plic_base + offset) as *mut u32, value);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> plat/src/riscv64/interrupt.rs:87:5
+   |
+87 |     unsafe fn plic_write32(&self, offset: usize, value: u32) {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0133`.
+warning: `minix-plat` (lib) generated 2 warnings (run `cargo fix --lib -p minix-plat` to apply 2 suggestions)
+warning: unnecessary parentheses around assigned value
+   --> arch/src/arch/boot.rs:423:34
+    |
+423 |             let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
+    |                                  ^
+424 |                 .min(page_size as usize - seg_start_in_page));
+    |                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+423 ~             let seg_bytes_here = ((seg.memsz - page_off as u64) as usize)
+424 ~                 .min(page_size as usize - seg_start_in_page);
+    |
+
+warning: unused import: `core::mem::offset_of`
+  --> arch/src/riscv64/trap_stub.rs:54:5
+   |
+54 | use core::mem::offset_of;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `FaultContext` and `RecoveryPoint`
+  --> arch/src/riscv64/exception.rs:11:39
+   |
+11 | use crate::exception::{ExceptionArch, FaultContext, RecoveryPoint};
+   |                                       ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> arch/src/riscv64/paging.rs:107:5
+    |
+107 |     core::ptr::read_volatile(table.add(idx))
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/riscv64/paging.rs:106:1
+    |
+106 | unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> arch/src/riscv64/paging.rs:107:30
+    |
+107 |     core::ptr::read_volatile(table.add(idx))
+    |                              ^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> arch/src/riscv64/paging.rs:111:5
+    |
+111 |     core::ptr::write_volatile(table.add(idx), val);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/riscv64/paging.rs:110:1
+    |
+110 | unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> arch/src/riscv64/paging.rs:111:31
+    |
+111 |     core::ptr::write_volatile(table.add(idx), val);
+    |                               ^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> arch/src/riscv64/paging.rs:230:5
+    |
+230 |     core::ptr::read_volatile(channel_to_ptr(paddr, channel))
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/riscv64/paging.rs:229:1
+    |
+229 | unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> arch/src/riscv64/paging.rs:242:5
+    |
+242 |     core::ptr::write_volatile(channel_to_ptr(paddr, channel), value);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/riscv64/paging.rs:241:1
+    |
+241 | unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/riscv64/trap_return.rs:63:9
+    |
+ 63 | /         core::arch::asm!(
+ 64 | |             // Park the register-file pointer in t6 (its user slot is
+ 65 | |             // gp_regs[GP_T6], loaded last as a self-referential load).
+ 66 | |             "mv t6, a1",
+...   |
+132 | |             options(noreturn)
+133 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/riscv64/trap_return.rs:55:5
+    |
+ 55 |     unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unnecessary `unsafe` block
+   --> arch/src/riscv64/clock.rs:142:9
+    |
+142 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary `unsafe` block
+   --> arch/src/riscv64/clock.rs:194:9
+    |
+194 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/riscv64/boot.rs:164:9
+    |
+164 | /         core::arch::asm!(
+165 | |             "li {tmp}, 0x4000", // FS=Initial = 0b01 << 13
+166 | |             "csrs sstatus, {tmp}",
+167 | |             tmp = out(reg) _,
+168 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/riscv64/boot.rs:163:5
+    |
+163 |     pub(super) unsafe fn set_sstatus_fs_initial() {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `get` is never used
+  --> arch/src/riscv64/protection.rs:70:25
+   |
+64 | impl Riscv64PrivilegeLevel {
+   | -------------------------- method in this implementation
+...
+70 |     pub(crate) const fn get(self) -> u8 {
+   |                         ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `cpu_count` is never read
+  --> arch/src/riscv64/protection.rs:87:5
+   |
+85 | pub struct Riscv64Protection {
+   |            ----------------- field in this struct
+86 |     /// Number of CPUs initialized (for SMP tracking).
+87 |     cpu_count: u32,
+   |     ^^^^^^^^^
+
+warning: fields `mtime_addr`, `mtimecmp_base`, and `mtimecmp_stride` are never read
+  --> arch/src/riscv64/clock.rs:83:5
+   |
+82 | pub struct Riscv64ClockArch {
+   |            ---------------- fields in this struct
+83 |     mtime_addr: usize,
+   |     ^^^^^^^^^^
+...
+86 |     mtimecmp_base: usize,
+   |     ^^^^^^^^^^^^^
+87 |     /// Byte distance between consecutive harts' `mtimecmp` registers.
+88 |     mtimecmp_stride: usize,
+   |     ^^^^^^^^^^^^^^^
+
+warning: constant `FPU_SIZE` is never used
+  --> arch/src/riscv64/fpu.rs:30:7
+   |
+30 | const FPU_SIZE: usize = 264;
+   |       ^^^^^^^^
+
+warning: `minix-arch` (lib) generated 17 warnings (run `cargo fix --lib -p minix-arch` to apply 9 suggestions)
+warning: unused import: `minix_arch::CpuContextArch as _`
+    --> kernel/src/proc.rs:1766:9
+     |
+1766 |     use minix_arch::CpuContextArch as _;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::syscall::KcallResult`
+  --> kernel/src/trap_dispatch.rs:40:5
+   |
+40 | use crate::syscall::KcallResult;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ExceptionArch` and `FaultContext`
+  --> kernel/src/trap_dispatch.rs:41:29
+   |
+41 | use minix_arch::exception::{ExceptionArch, FaultContext};
+   |                             ^^^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused imports: `ExceptionDispatcher`, `ExceptionOutcome`, and `ExceptionSignal`
+  --> kernel/src/trap_dispatch.rs:42:40
+   |
+42 | use minix_arch::exception_dispatcher::{ExceptionDispatcher, ExceptionOutcome, ExceptionSignal};
+   |                                        ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::TrapStyle`
+  --> kernel/src/trap_dispatch.rs:43:5
+   |
+43 | use minix_arch::TrapStyle;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CurrentDirectMap` and `DirectMapArch`
+    --> kernel/src/syscall.rs:2763:30
+     |
+2763 |             use minix_arch::{CurrentDirectMap, DirectMapArch};
+     |                              ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3305:13
+     |
+3305 |         use minix_arch::DirectMapArch as _;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3308:17
+     |
+3308 |             use minix_arch::DirectMapArch as _;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::sched::Scheduler`
+  --> kernel/src/smp.rs:55:5
+   |
+55 | use crate::sched::Scheduler;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicUsize` and `Ordering`
+  --> kernel/src/kmess.rs:21:26
+   |
+21 | use core::sync::atomic::{AtomicUsize, Ordering};
+   |                          ^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CrossSpaceResult`
+   --> kernel/src/kmess.rs:170:33
+    |
+170 |     use crate::vm::{AddressRef, CrossSpaceResult};
+    |                                 ^^^^^^^^^^^^^^^^
+
+warning: unused import: `PhysBytes`
+   --> kernel/src/kmess.rs:172:23
+    |
+172 |     use minix_types::{PhysBytes, VirBytes};
+    |                       ^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2457:21
+     |
+2457 |                 use core::ptr::addr_of;
+     |                     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2488:25
+     |
+2488 |                     use core::ptr::addr_of;
+     |                         ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `AtomicBool`
+  --> kernel/src/krandom.rs:31:26
+   |
+31 | use core::sync::atomic::{AtomicBool, Ordering};
+   |                          ^^^^^^^^^^
+
+warning: unused import: `AtomicI32`
+  --> kernel/src/globals.rs:16:38
+   |
+16 | use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
+   |                                      ^^^^^^^^^
+
+warning: unused import: `SyncUnsafeCell`
+  --> kernel/src/lib.rs:98:52
+   |
+98 |     PRIV_TABLE, PROC_TABLE, SMP_STATE, VM_RUNNING, SyncUnsafeCell,
+   |                                                    ^^^^^^^^^^^^^^
+
+warning: unused import: `minix_platform::platform_desc`
+   --> kernel/src/lib.rs:530:9
+    |
+530 |     use minix_platform::platform_desc;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `VmLoadError`
+    --> kernel/src/lib.rs:1325:22
+     |
+1325 |         load_vm_elf, VmLoadError,
+     |                      ^^^^^^^^^^^
+
+warning: unused import: `ProcName`
+    --> kernel/src/lib.rs:1327:31
+     |
+1327 |     use crate::proc::{ProcNr, ProcName, RtsFlagsBits, proc_nr, KERNEL_TASKS, BOOT_MODULE_PROC_NRS};
+     |                               ^^^^^^^^
+
+warning: unused import: `crate::proc_table::NR_TASKS`
+    --> kernel/src/lib.rs:1328:9
+     |
+1328 |     use crate::proc_table::NR_TASKS;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `VmBootRegions`
+    --> kernel/src/lib.rs:1544:78
+     |
+1544 |                 use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+     |                                                                              ^^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+   --> kernel/src/lib.rs:849:41
+    |
+849 |     use minix_platform::{platform_desc, PlatformDesc};
+    |                                         ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+    --> kernel/src/lib.rs:1237:41
+     |
+1237 |     use minix_platform::{platform_desc, PlatformDesc};
+     |                                         ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+    --> kernel/src/lib.rs:2439:41
+     |
+2439 |     use minix_platform::{platform_desc, PlatformDesc};
+     |                                         ^^^^^^^^^^^^
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> kernel/src/proc_table.rs:724:14
+    |
+724 |         &mut *core::ptr::addr_of_mut!(self.procs[idx])
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> kernel/src/proc_table.rs:715:5
+    |
+715 |     pub unsafe fn caller_slot_mut<'a>(&mut self, nr: ProcNr) -> &'a mut KProcess {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `trap_dispatch::riscv64_kernel_call_leg` is unsafe and requires unsafe block
+    --> kernel/src/trap_dispatch.rs:1460:13
+     |
+1460 |             riscv64_kernel_call_leg(frame);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+    --> kernel/src/trap_dispatch.rs:1451:1
+     |
+1451 | pub unsafe extern "C" fn riscv64_user_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `priv_table`
+   --> kernel/src/clock.rs:614:5
+    |
+614 |     priv_table: &crate::kpriv::PrivTable,
+    |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_priv_table`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `kernel_info`
+   --> kernel/src/lib.rs:529:14
+    |
+529 | pub fn kmain(kernel_info: &KernelInfo) -> ! {
+    |              ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_kernel_info`
+
+warning: variable does not need to be mutable
+    --> kernel/src/lib.rs:1245:9
+     |
+1245 |     let mut clock = ClockState::new();
+     |         ----^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fault_flush_va`
+    --> kernel/src/lib.rs:3303:27
+     |
+3303 |     let (ctx, return_seq, fault_flush_va) = {
+     |                           ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fault_flush_va`
+
+warning: function `nk4a_rs_trace_probe` is never used
+   --> kernel/src/trap_dispatch.rs:197:15
+    |
+197 | pub(crate) fn nk4a_rs_trace_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `nk4a_rs_anom_probe` is never used
+   --> kernel/src/trap_dispatch.rs:253:15
+    |
+253 | pub(crate) fn nk4a_rs_anom_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `nk4a_rs_leak_probe` is never used
+   --> kernel/src/trap_dispatch.rs:306:15
+    |
+306 | pub(crate) fn nk4a_rs_leak_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `forward_pagefault_to_vm` is never used
+   --> kernel/src/trap_dispatch.rs:975:4
+    |
+975 | fn forward_pagefault_to_vm(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `copy_msg_to_user` is never used
+    --> kernel/src/syscall.rs:3174:4
+     |
+3174 | fn copy_msg_to_user(caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: constant `CP_CPUSTATES` is never used
+   --> kernel/src/clock.rs:603:18
+    |
+603 | pub(crate) const CP_CPUSTATES: usize = 5;
+    |                  ^^^^^^^^^^^^
+
+warning: method `write_str` is never used
+  --> kernel/src/kmess.rs:66:12
+   |
+49 | impl KmessRing {
+   | -------------- method in this implementation
+...
+66 |     pub fn write_str(&mut self, s: &str) {
+   |            ^^^^^^^^^
+
+warning: function `record_str` is never used
+   --> kernel/src/kmess.rs:109:8
+    |
+109 | pub fn record_str(s: &str) {
+    |        ^^^^^^^^^^
+
+warning: function `console_write_str` is never used
+   --> kernel/src/kmess.rs:130:8
+    |
+130 | pub fn console_write_str(s: &str) {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `cursor` is never used
+   --> kernel/src/kmess.rs:149:8
+    |
+149 | pub fn cursor() -> (usize, usize) {
+    |        ^^^^^^
+
+warning: constant `EFAULT` is never used
+   --> kernel/src/kmess.rs:175:11
+    |
+175 |     const EFAULT: i32 = 14;
+    |           ^^^^^^
+
+warning: static `CLOCK_UPTIME` is never used
+   --> kernel/src/globals.rs:513:19
+    |
+513 | pub(crate) static CLOCK_UPTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^
+
+warning: static `CLOCK_REALTIME` is never used
+   --> kernel/src/globals.rs:518:19
+    |
+518 | pub(crate) static CLOCK_REALTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
+warning: static `CLOCK_BOOTTIME` is never used
+   --> kernel/src/globals.rs:524:19
+    |
+524 | pub(crate) static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
+warning: `minix-kernel` (lib) generated 45 warnings (run `cargo fix --lib -p minix-kernel` to apply 28 suggestions)
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+   --> boot-shim/src/opensbi_helpers.rs:298:19
+    |
+298 |     debug_assert!(BOOT_FILE_TABLE_PTR == 0, "install_boot_file_table called twice");
+    |                   ^^^^^^^^^^^^^^^^^^^ use of mutable static
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> boot-shim/src/opensbi_helpers.rs:292:1
+    |
+292 | pub unsafe fn install_boot_file_table(addr: u64) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+   --> boot-shim/src/opensbi_helpers.rs:342:19
+    |
+342 |     debug_assert!(DTB_PTR == 0, "install_dtb_ptr called twice");
+    |                   ^^^^^^^ use of mutable static
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> boot-shim/src/opensbi_helpers.rs:340:1
+    |
+340 | pub unsafe fn install_dtb_ptr(addr: u64) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `boot-shim` (lib) generated 2 warnings (run `cargo fix --lib -p boot-shim` to apply 2 suggestions)
+warning: unnecessary parentheses around function argument
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:405:58
+    |
+405 |         core::ptr::copy_nonoverlapping(buf as *const u8, (diagbuf as *mut u8), n);
+    |                                                          ^                  ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+405 -         core::ptr::copy_nonoverlapping(buf as *const u8, (diagbuf as *mut u8), n);
+405 +         core::ptr::copy_nonoverlapping(buf as *const u8, diagbuf as *mut u8, n);
+    |
+
+warning: unused doc comment
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:418:1
+    |
+418 |   /// The U-ecall handler symbol (asm-defined in this module).
+    |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+419 | / unsafe extern "C" {
+420 | |     fn uecall_handler();
+421 | | }
+    | |_- rustdoc does not generate documentation for extern blocks
+    |
+    = help: use `//` for a plain comment
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:301:34
+    |
+301 |         early_console::write_hex(*frame.add(IDX_SEPC));
+    |                                  ^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:283:1
+    |
+283 | unsafe extern "C" fn uecall_dispatch(frame: *mut u64) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:301:35
+    |
+301 |         early_console::write_hex(*frame.add(IDX_SEPC));
+    |                                   ^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:309:19
+    |
+309 |     let call_nr = *frame.add(IDX_A7) as usize;
+    |                   ^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:309:20
+    |
+309 |     let call_nr = *frame.add(IDX_A7) as usize;
+    |                    ^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:313:5
+    |
+313 |     *frame.add(IDX_SEPC) = (*frame.add(IDX_SEPC)).wrapping_add(4);
+    |     ^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:313:6
+    |
+313 |     *frame.add(IDX_SEPC) = (*frame.add(IDX_SEPC)).wrapping_add(4);
+    |      ^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:313:28
+    |
+313 |     *frame.add(IDX_SEPC) = (*frame.add(IDX_SEPC)).wrapping_add(4);
+    |                            ^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:313:30
+    |
+313 |     *frame.add(IDX_SEPC) = (*frame.add(IDX_SEPC)).wrapping_add(4);
+    |                              ^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:317:19
+    |
+317 |     let sstatus = *frame.add(IDX_SSTATUS);
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:317:20
+    |
+317 |     let sstatus = *frame.add(IDX_SSTATUS);
+    |                    ^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:322:13
+    |
+322 |             *frame.add(IDX_A0) = 0;
+    |             ^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:322:14
+    |
+322 |             *frame.add(IDX_A0) = 0;
+    |              ^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:323:13
+    |
+323 |             *frame.add(IDX_A1) = minix_kernel::kerninfo::KERNINFO_USER_VA;
+    |             ^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:323:14
+    |
+323 |             *frame.add(IDX_A1) = minix_kernel::kerninfo::KERNINFO_USER_VA;
+    |              ^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `kernel_call_leg` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:332:23
+    |
+332 |             let ret = kernel_call_leg(*frame.add(IDX_A0), &raw mut KMSG, &raw mut DIAGBUF);
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:332:39
+    |
+332 |             let ret = kernel_call_leg(*frame.add(IDX_A0), &raw mut KMSG, &raw mut DIAGBUF);
+    |                                       ^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:332:40
+    |
+332 |             let ret = kernel_call_leg(*frame.add(IDX_A0), &raw mut KMSG, &raw mut DIAGBUF);
+    |                                        ^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:337:13
+    |
+337 |             *frame.add(IDX_A0) = ret;
+    |             ^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:337:14
+    |
+337 |             *frame.add(IDX_A0) = ret;
+    |              ^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:339:13
+    |
+339 |             *frame.add(IDX_SSTATUS) = sstatus & SSTATUS_SUM_MASK;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:339:14
+    |
+339 |             *frame.add(IDX_SSTATUS) = sstatus & SSTATUS_SUM_MASK;
+    |              ^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:354:38
+    |
+354 |             early_console::write_hex(*frame.add(IDX_SEPC));
+    |                                      ^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:354:39
+    |
+354 |             early_console::write_hex(*frame.add(IDX_SEPC));
+    |                                       ^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:358:38
+    |
+358 |             early_console::write_hex(*frame.add(IDX_SSTATUS));
+    |                                      ^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:358:39
+    |
+358 |             early_console::write_hex(*frame.add(IDX_SSTATUS));
+    |                                       ^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:360:13
+    |
+360 |             *frame.add(IDX_A0) = ENOSYS;
+    |             ^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:360:14
+    |
+360 |             *frame.add(IDX_A0) = ENOSYS;
+    |              ^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:361:13
+    |
+361 |             *frame.add(IDX_A1) = 0;
+    |             ^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:361:14
+    |
+361 |             *frame.add(IDX_A1) = 0;
+    |              ^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:379:9
+    |
+379 |         (*kmsg)[4], (*kmsg)[5], (*kmsg)[6], (*kmsg)[7],
+    |         ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:369:1
+    |
+369 | unsafe fn kernel_call_leg(msg_user: u64, kmsg: *mut [u8; 64], diagbuf: *mut [u8; DIAGBUF_MAX]) -> u64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:379:21
+    |
+379 |         (*kmsg)[4], (*kmsg)[5], (*kmsg)[6], (*kmsg)[7],
+    |                     ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:379:33
+    |
+379 |         (*kmsg)[4], (*kmsg)[5], (*kmsg)[6], (*kmsg)[7],
+    |                                 ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:379:45
+    |
+379 |         (*kmsg)[4], (*kmsg)[5], (*kmsg)[6], (*kmsg)[7],
+    |                                             ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:385:9
+    |
+385 |         (*kmsg)[8], (*kmsg)[9], (*kmsg)[10], (*kmsg)[11],
+    |         ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:385:21
+    |
+385 |         (*kmsg)[8], (*kmsg)[9], (*kmsg)[10], (*kmsg)[11],
+    |                     ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:385:33
+    |
+385 |         (*kmsg)[8], (*kmsg)[9], (*kmsg)[10], (*kmsg)[11],
+    |                                 ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:385:46
+    |
+385 |         (*kmsg)[8], (*kmsg)[9], (*kmsg)[10], (*kmsg)[11],
+    |                                              ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:391:9
+    |
+391 |         (*kmsg)[16], (*kmsg)[17], (*kmsg)[18], (*kmsg)[19],
+    |         ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:391:22
+    |
+391 |         (*kmsg)[16], (*kmsg)[17], (*kmsg)[18], (*kmsg)[19],
+    |                      ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:391:35
+    |
+391 |         (*kmsg)[16], (*kmsg)[17], (*kmsg)[18], (*kmsg)[19],
+    |                                   ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:391:48
+    |
+391 |         (*kmsg)[16], (*kmsg)[17], (*kmsg)[18], (*kmsg)[19],
+    |                                                ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:392:9
+    |
+392 |         (*kmsg)[20], (*kmsg)[21], (*kmsg)[22], (*kmsg)[23],
+    |         ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:392:22
+    |
+392 |         (*kmsg)[20], (*kmsg)[21], (*kmsg)[22], (*kmsg)[23],
+    |                      ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:392:35
+    |
+392 |         (*kmsg)[20], (*kmsg)[21], (*kmsg)[22], (*kmsg)[23],
+    |                                   ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:392:48
+    |
+392 |         (*kmsg)[20], (*kmsg)[21], (*kmsg)[22], (*kmsg)[23],
+    |                                                ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:395:9
+    |
+395 |         (*kmsg)[24], (*kmsg)[25], (*kmsg)[26], (*kmsg)[27],
+    |         ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:395:22
+    |
+395 |         (*kmsg)[24], (*kmsg)[25], (*kmsg)[26], (*kmsg)[27],
+    |                      ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:395:35
+    |
+395 |         (*kmsg)[24], (*kmsg)[25], (*kmsg)[26], (*kmsg)[27],
+    |                                   ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:395:48
+    |
+395 |         (*kmsg)[24], (*kmsg)[25], (*kmsg)[26], (*kmsg)[27],
+    |                                                ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:396:9
+    |
+396 |         (*kmsg)[28], (*kmsg)[29], (*kmsg)[30], (*kmsg)[31],
+    |         ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:396:22
+    |
+396 |         (*kmsg)[28], (*kmsg)[29], (*kmsg)[30], (*kmsg)[31],
+    |                      ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:396:35
+    |
+396 |         (*kmsg)[28], (*kmsg)[29], (*kmsg)[30], (*kmsg)[31],
+    |                                   ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:396:48
+    |
+396 |         (*kmsg)[28], (*kmsg)[29], (*kmsg)[30], (*kmsg)[31],
+    |                                                ^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:409:25
+    |
+409 |     let bytes: &[u8] = &*diagbuf;
+    |                         ^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+
+warning: function `fail` is never used
+   --> qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:586:4
+    |
+586 | fn fail() -> ! {
+    |    ^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `test-rt-birth-riscv64` (bin "test-rt-birth-riscv64") generated 57 warnings (run `cargo fix --bin "test-rt-birth-riscv64" -p test-rt-birth-riscv64` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.16s
+QEMU 8.2.2 monitor - type 'help' for more information
+(qemu) ### TEST_RESULT: FAIL test-rt-birth-riscv64 ###
+  BKL held
+  table up
+  VM boot proc (rt-birth): runnable
+  entering scheduler (switch_to_user)
+entering scheduler
+nk4a: pick->0x0000000000000008
+### PANIC in test-rt-birth-riscv64: kernel/src/lib.rs:0x000000000000075d CLOCK_STATE not initialized — init_clock_and_interrupts must run first
+ ###
+qemu-system-riscv64: terminating on signal 15 from pid 1368597 (bash)
+RUN2-EXIT=1

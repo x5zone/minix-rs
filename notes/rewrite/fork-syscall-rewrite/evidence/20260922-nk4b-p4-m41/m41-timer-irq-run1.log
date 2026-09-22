@@ -1,0 +1,8 @@
+QEMU 8.2.2 monitor - type 'help' for more information
+(qemu)   tick: uptime = 0x0000000000000001
+  tick: uptime = 0x0000000000000002
+  tick: uptime = 0x0000000000000003
+  tick: uptime = 0x0000000000000004
+  tick: uptime = 0x0000000000000005
+### TEST_RESULT: PASS test-timer-irq-riscv64 ###
+qemu-system-riscv64: terminating on signal 15 from pid 1366394 (bash)
