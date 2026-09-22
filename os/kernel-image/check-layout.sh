@@ -70,39 +70,68 @@ arch_expect() {
     esac
 }
 
-# 从链接脚本里取 `SYM = 0x...;` 的常量值（取不到则输出空）。
-# 统一转小写：.ld 里习惯写大写十六进制，预期表写小写，输出对账时同一形态
-# 才好读（比较本身走 hex2dec，与大小写无关）。
-ld_const() {
+# 从链接脚本里取 `SYM = 0x...;` 形式的**全部**命中（空格分隔，转小写以便与
+# 预期表同形对读；比较本身走 hex2dec，与大小写无关）。
+#
+# 为什么不“先删注释行”：抽取是行级的、不认块注释，而实测表明删含 `*` 的行
+# 既不得到保护（注释正文里 ` * SYM = 0x0;` 这种形式本来就被上面的行首锚定
+# 挡住了），还会误删合法写法（真声明带行尾注释 `SYM = 0x..;  /* 说明 */` 会
+# 被丢成「实得 无」→ 假失败）。所以换个能站住的做法：要求命中数恰好为 1。
+# 出现两处以上（包括顶格写在块注释里、单靠行文本辨不出的那种）时 L0 直接
+# 判失败并列出命中值，而不是拿“第一处”的运气值去比较。
+# 前提约定（两个 .ld 均遵守）：基址声明写在文件顶部、顶格、独占一行、
+# 行尾不拼另一个声明。
+ld_values() {
     local file="$1" sym="$2"
     sed -n "s/^[[:space:]]*$sym[[:space:]]*=[[:space:]]*0x\([0-9a-fA-F]*\);.*/\1/p" "$file" \
-        | head -1 | tr 'A-F' 'a-f'
+        | tr 'A-F' 'a-f' | paste -sd' ' -
 }
 
 check_arch() {
     local arch="$1" triple feature machine ld ld_vsym ld_psym virt_base phys_base vma_mode
-    IFS='|' read -r triple feature machine ld ld_vsym ld_psym virt_base phys_base vma_mode < <(arch_expect "$arch")
+    local spec
+    spec="$(arch_expect "$arch")"
+    if [ -z "$spec" ]; then
+        # 扩展点：下面 case 加了新架构但忘了同步预期表 → 在此硬失败，
+        # 而不是拿着空 triple 去报「工件缺失」。
+        echo "  预期表里没有 $arch（先在 arch_expect() 里补一行）" >&2
+        FAIL=1; return
+    fi
+    IFS='|' read -r triple feature machine ld ld_vsym ld_psym virt_base phys_base vma_mode <<< "$spec"
     local elf="$OS_ROOT/target/$triple/release/kernel"
     local want_vma entry_want
-    if [ "$vma_mode" = "plus_phys" ]; then
-        want_vma=$(( $(hex2dec "$virt_base") + $(hex2dec "$phys_base") ))
-    else
-        want_vma=$(hex2dec "$virt_base")
-    fi
+    case "$vma_mode" in
+        plus_phys) want_vma=$(( $(hex2dec "$virt_base") + $(hex2dec "$phys_base") )) ;;
+        virt)      want_vma=$(hex2dec "$virt_base") ;;
+        *)
+            # 不兼容的惯例取值当错误报：未知值默认走 `virt` 会把第三架构的
+            # L3b/L6a 预期算错而不告警（riscv64 到 P4 M4.2 若惯例不同必须新增取值）。
+            echo "  未知的首段 VMA 惯例：$vma_mode（只认 plus_phys|virt）" >&2
+            FAIL=1; return ;;
+    esac
     want_vma="$(printf '%x' "$want_vma")"
     entry_want="$want_vma"   # 两个架构的入口都是镜像首字节（.text.boot 在 .text 首位）
 
     echo "== $arch：$elf"
 
-    # L0：预期基址与链接脚本声明对账
-    local script="$SCRIPT_DIR/$ld" got_v got_p
+    # L0：预期基址与链接脚本声明对账（命中必须恰好一处且值相等）
+    local script="$SCRIPT_DIR/$ld" got_v got_p n_v n_p ok0
     if [ ! -f "$script" ]; then
         check L0 "链接脚本存在：$ld" 0
     else
-        got_v="$(ld_const "$script" "$ld_vsym")"
-        got_p="$(ld_const "$script" "$ld_psym")"
-        check L0 "$ld 声明的 $ld_vsym/$ld_psym = $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")")（实得 ${got_v:-无}/${got_p:-无}）" \
-            "$([ "$(hex2dec "${got_v:-0}")" = "$(hex2dec "$virt_base")" ] && [ "$(hex2dec "${got_p:-0}")" = "$(hex2dec "$phys_base")" ] && echo 1 || echo 0)"
+        got_v="$(ld_values "$script" "$ld_vsym")"
+        got_p="$(ld_values "$script" "$ld_psym")"
+        n_v=$(printf '%s\n' "$got_v" | wc -w); n_p=$(printf '%s\n' "$got_p" | wc -w)
+        ok0=1
+        if [ "$n_v" = 1 ] && [ "$n_p" = 1 ]; then
+            # 只在命中唯一时做数值比较（多处命中时拼接串进不了 hex2dec）
+            [ "$(hex2dec "${got_v%% *}")" = "$(hex2dec "$virt_base")" ] || ok0=0
+            [ "$(hex2dec "${got_p%% *}")" = "$(hex2dec "$phys_base")" ] || ok0=0
+        else
+            ok0=0   # 零处或多处：声明本身不可辨，不能拿偶然的第一处去比对
+        fi
+        check L0 "$ld 里 $ld_vsym/$ld_psym 各恰好一处声明且等于 \
+$(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")")（命中 $n_v/$n_p 处：${got_v:-无} | ${got_p:-无}）" "$ok0"
     fi
 
     if [ "${SKIP_BUILD:-0}" != "1" ]; then

@@ -517,7 +517,7 @@ boot-shim 装载）。放独立脚本 `os/kernel-image/check-layout.sh`：构建
 | `os/kernel-image/build.rs` | 由「只认 x86_64 一个 target」改为按 `TARGET` 选脚本（match 两支） | 决策四 |
 | `os/kernel-image/Cargo.toml` | 新增内部特性 `fw-none-image` 由 bin 要求，`fw-x86-none` / `fw-aarch64-none` 各自隐含它 | 决策四 |
 | `os/kernel-image/src/main.rs` | 早期控制台 import 与入口 `global_asm!`、`halt()` 按 `target_arch` 分道；x86 侧逐字未变 | 决策三 |
-| `os/kernel-image/check-layout.sh` | 新增（宿主布局断言 L1–L8） | 决策五 |
+| `os/kernel-image/check-layout.sh` | 新增（宿主布局断言 L1–L8；本里程碑 CodeReview 后补了 L0，见下文两节闭环） | 决策五 |
 
 #### 产物与关键数字（`layout-raw.txt`）
 
@@ -543,8 +543,9 @@ aarch64 镜像 `os/target/aarch64-unknown-none/release/kernel`（1205672 字节�
    `0xffff800000000000`。两者都满足 boot-shim 的 `min(vaddr)` / `min(paddr)`
    契约（`os/boot-shim/src/loader.rs` 拿到的仍是同一组
    `kern_virt_base` / `kern_phys_base`），但**断言脚本的预期表必须按架构
-   分列**——`check-layout.sh` 的 `arch_expect()` 因此有六列而不是设计里说的
-   「首段虚拟地址等于内核高半基址」一条通吃。第一版脚本就是按设计写死的
+   分列**——`check-layout.sh` 的 `arch_expect()` 因此不能只写「首段虚拟
+   地址等于内核高半基址」一条通吃（评审后扩到九列：多出的四列是链接脚本名、
+   两个基址符号名与惯例标记，见下文 P2 闭环一节）。第一版脚本就是按设计写死的
    单一预期，实跑立刻报 x86_64 的 L3b/L3c 失败，这才暴露差别。
 2. **仓内还有一份更早的 aarch64 内核脚本没被设计引用。**
    `os/kernel/src/arch/aarch64/link.ld` 用的正是同一对基址
@@ -655,4 +656,56 @@ minix-arch 241 passed / 0 failed（与 P0 基线逐项相等）；
 本次编辑自己引入的两个小瑕（当场发现、当场修，不是新发现）：
 `ld_const` 的行续接反斜杠多写一个（`bash -n` 报回）、L0 输出大小写混排
 （`.ld` 习惯大写、预期表小写，对账行不好读，用 `tr 'A-F' 'a-f'` 归一）。
+
+### 评审复核（第二轮）：三条 P2 + 一处上一轮评审漏抓的换行符缺陷
+
+对修正提交 `aedbff11f` 再做一次评审，无 P0/P1，三条 P2；核查过程中另发现
+一个两边评审都没抓到的真缺陷。
+
+| 项 | 问题 | 处置 | 实测 |
+|----|------|------|------|
+| 评审 P2#1 | 本笔把预期表改成九列、加了 L0，但本节早期写的「`arch_expect()`
+  因此有六列」与改动表里的「断言 L1–L8」没同步，同一文档里自相矛盾
+  （是「改动使旧句变陈旧」的文档与代码不一致） | 两处旧句改为当前形态并标
+  「评审后追加」 | grep 确认本节内不再出现与实际不符的「六列」与孤立「L1–L8」 |
+| 评审 P2#2 | `ld_const` 用 sed 行级抽值，不认块注释 | **先试了评审建议的
+  「先删含 `*` 的行」，量出它反而有害，改判为要求命中数恰好为 1**
+  （函数改名 `ld_values`，返回全部命中；0 处或多处都判 L0 FAIL，不再拿
+  「第一处」的出现顺序运气去比对） | 两格实测：删含 `*` 行会把合法写法
+  `SYM = 0x..;  /* 说明 */` 误删成「实得 无」→ 假失败
+  （`check-layout-sideeffect-star-filter.log`）；新判据的四格矩阵里，只有
+  「多余声明写在真声明之后」一格出现新旧差异（旧默默 PASS、新 FAIL），
+  而 `tailcomment`/`stardecoy` 两格合法形态仍 PASS
+  （`check-layout-l0-uniqueness-matrix.log`） |
+| 评审 P2#3 | `vma_mode` 的 `if/else` 把任何非 `plus_phys` 值都当 `virt` 算，
+  第三架构引入新惯例时会静默算错 L3b/L6a 预期 | 改成 `case` 三分支，未知值
+  直接报「未知的首段 VMA 惯例」并退出；同时补了预期表缺行时的硬失败
+  （原本是拿空 triple 去报「工件缺失」，指不到真因） | 把表里的 `virt`
+  改成 `plus_weird` → 退出码 1、只报惯例不合法且不出现 L3b/L6a 判定行
+  （`check-layout-negative-unknown-vma-mode.log`） |
+| 自查发现 | `aarch64.ld` 以 **CRLF** 换行入库（全 94 行，`git ls-files --eol`
+  显示 `i/crlf`），而仓内其余 `.ld`（含 `x86_64.ld`、`os/kernel/src/arch/
+  aarch64/link.ld`）都是 LF。链接器能容忍，所以构建与断言全绿——
+  两侧评审都没拍到它 | 改为 LF（`sed -i 's/\r$//'`）。换行符不是语义，
+  但会污染 diff、并在 Windows 检出与工具链比较时制造噪声 | 改前后
+  aarch64 ELF 的 md5 **完全相同**（`44c945d8fc3a98629df20b2a8a1de1a6`），
+  即产物字节级不变；重建后 13 条断言仍全 PASS |
+
+这一轮的方法论教训记一笔（不是代码问题，是验收方法问题）：上一轮的 L0
+只做了「改预期值」一个反向实测，没做「改 `.ld` 源文本」那一侧，所以抽值
+函数的健壮性完全靠推理（推理出来的那个加固正是 P2#2 里被量出有害的那
+个）。本轮补上的做法：加固与回退都要有一格差异实测才准入（四格矩阵里
+只有 `decoy-after` 一格有差异，就把结论写成「买到的是不赌顺序」，而不是
+写成「防注入注释」）。
+
+本轮止态与回归：`check-layout-all.log`（不带 `SKIP_BUILD`，脚本自己走
+了一遍两架构的 `cargo build`）—— 13 条 ×2 全 PASS、`CHECK-LAYOUT=PASS（all）`、
+`CL-EXIT=0`；两个基址漂移变体与 nm shim 重跑后仍是预期结果（日志已刷新）。
+未改 `.rs` / `Cargo.toml` / `x86_64.ld`，且 x86_64 镜像不含 aarch64 内核
+（`xtask image --arch aarch64` 仍按 `os/xtask/src/image.rs:162-164` 拒绝），
+结合上面「ELF 字节相同」的实证，本笔对装机链与宿主测试计数无可达路径；
+宿主计数仍为上一笔实测的 809 / 241（本轮未重复跑，理由即此）。所有临时
+副本与注入诱饵的中间日志已清理（中间那一格「诱饵行新旧对比」的日志被后面的
+四格矩阵取代，已删），工作树只留三个文件的改动。
+
 

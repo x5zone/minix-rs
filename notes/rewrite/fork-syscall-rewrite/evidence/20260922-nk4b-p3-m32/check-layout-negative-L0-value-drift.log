@@ -1,5 +1,5 @@
 == aarch64：/home/xzhao/github/minix-rs/os/target/aarch64-unknown-none/release/kernel
-  [L0] FAIL  aarch64.ld 声明的 KERNEL_VIRT_BASE/KERNEL_PHYS_BASE = 0xffff800000000000/0x40000000（实得 ffff800000000000/40200000）
+  [L0] FAIL  aarch64.ld 里 KERNEL_VIRT_BASE/KERNEL_PHYS_BASE 各恰好一处声明且等于 0xffff800000000000/0x40000000（命中 1/1 处：ffff800000000000 | 40200000）
   [L1] PASS  ELF 类型 = EXEC（实得 EXEC）
   [L2] PASS  机器类型含 "AArch64"（实得 AArch64）
   [L3a] PASS  PT_LOAD 段数 >= 1（实得 4）

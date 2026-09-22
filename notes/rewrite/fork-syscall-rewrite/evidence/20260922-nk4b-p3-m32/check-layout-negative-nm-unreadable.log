@@ -1,4 +1,4 @@
 == aarch64：/home/xzhao/github/minix-rs/os/target/aarch64-unknown-none/release/kernel
-  [L0] PASS  aarch64.ld 声明的 KERNEL_VIRT_BASE/KERNEL_PHYS_BASE = 0xffff800000000000/0x40200000（实得 ffff800000000000/40200000）
+  [L0] PASS  aarch64.ld 里 KERNEL_VIRT_BASE/KERNEL_PHYS_BASE 各恰好一处声明且等于 0xffff800000000000/0x40200000（命中 1/1 处：ffff800000000000 | 40200000）
   nm 无法解析 /home/xzhao/github/minix-rs/os/target/aarch64-unknown-none/release/kernel（需 binutils-multiarch 或 llvm-nm）
 CHECK-LAYOUT=FAIL（aarch64）
