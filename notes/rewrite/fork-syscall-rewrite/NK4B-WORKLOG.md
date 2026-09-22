@@ -1105,3 +1105,37 @@ minix-plat **7**、boot-shim **14**；`cargo fmt -p xtask -- --check` 干净；�
 相同、aarch64 只差加载项文件名；镜像内容变了所以 AAVMF 再两次独立复跑
 （RUN=m33f / m33g），两行路标、EBS 后裸写腿、`kernel: kmain A/A.2` 计数全为 1，
 两轮路标序列逐行 diff 无差异。
+
+## M3.4 判据预核（只登记取证事实，本会话不进 M3.4 实现）
+
+状态：**PARTIAL — 判据字面已在 M3.3 取证中顺带达成，Phase A 未走完**。
+本会话不据此标 M3.4 DONE：验收的是「点电」，退出点还在 Phase A 内部。
+
+`NK4B-TODO.md` §3 的 M3.4 判据原文是「跳进生产内核 arch_boot → kmain Phase A
+（memmap/模块切割）。判据：串口出现内核 kmain 路标」。M3.3 第 4 步那四轮真机
+取证（RUN=m33d/m33e/m33f/m33g，证据 `serial_m33{d,e,f,g}.log`）已经把它字面
+覆盖了，逐条对账：
+
+| 串口行 | 代码锚点 | 真机 |
+|--------|----------|------|
+| `kernel: kmain Phase A enter` | `os/kernel/src/lib.rs:563` | 出现 |
+| `kernel: kmain A.1 validate ok` | `:569` | 出现 |
+| `kernel: kmain A.1b console+kinfo ok` | `:581` | 出现 |
+| `kernel: kmain A.2a memmap copy ok` | `:611` | 出现 |
+| `kernel: kmain A.2b module cuts ok` | `:621` | 出现 |
+| `kernel: kmain A/A.2 memmap+modules ok` | `:638` | 出现 |
+| `kernel: kmain A.5 platform ok` | `:648` | **未出现**（前一行 `:645` 的 `init_from_kinfo` panic） |
+
+四次独立复跑的 `kernel:` 行数恒为 14（validate/分页腿 8 行 + kmain 6 行），
+kmain 路标恒 6 行，四轮路标序列两两 diff 无差异（d==e、f==g）。
+
+任务书在 M3.4 那句后面还留了个括号问题——「NK4A 的 boot_stage 体系是三架构的
+吗？若 x86 专属则补 aarch64 等效路标」。**实测答案：是三架构的，不用补**。
+`boot_stage!` 定义在 `os/kernel/src/lib.rs:382`，只调
+`minix_plat::CurrentEarlyConsole::write_str`，本身无架构分支；aarch64 那侧的
+分道发生在 `minix-plat` 的 early_console（M3.3 决策二，`1a2a8eb61`）。这 14 行
+在 AAVMF 真机串口逐条落地就是证据，不需要新增任何探针。
+
+M3.4 剩下的实质工作 = 让 `:645` 那道 panic 变成 `:648`，即平台描述符来源问题，
+方案 A/B/C 与推荐项见上一里程碑的「上交裁决（M3.4 的架构级选择）」小节 —— 本
+会话按铁律不自行定案，等评审方选择后再进实现。
