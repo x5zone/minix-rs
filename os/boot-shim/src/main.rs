@@ -20,7 +20,7 @@ use core::panic::PanicInfo;
 use uefi::prelude::*;
 use minix_kernel::boot_alloc;
 use minix_boot::BootShim;
-use boot_shim::UefiBootShim;
+use boot_shim::{raw_serial_line, UefiBootShim};
 
 extern crate alloc;
 
@@ -110,41 +110,3 @@ fn panic(info: &PanicInfo) -> ! {
         core::hint::spin_loop();
     }
 }
-
-/// 逐字节裸写 COM1（带 THR 空等待 + `\n` 自动补 `\r`）。
-///
-/// 与 [`boot_shim::raw_serial`] 的区别：本函数不要求调用方自带 `\r\n`、
-/// 不等传输就绪（原实现快速连写会撞满 16550 发送缓冲丢字），且只吃
-/// `&str` 的字节流——panic 路径上无分配、无 UTF-8 重切分风险。
-fn raw_serial_line(text: &str) {
-    for byte in text.bytes() {
-        let mut emit = [byte, 0];
-        let n = if byte == b'\n' {
-            emit[0] = b'\r';
-            emit[1] = b'\n';
-            2
-        } else {
-            1
-        };
-        for &b in &emit[..n] {
-            // SAFETY: COM1（0x3F8/0x3F9）是 QEMU/PC 平台固定 I/O 资源；
-            // boot-shim 交棒后是唯一所有者。LSR bit5（THR 空）轮询保证
-            // 每个字节都进得了发送寄存器。
-            // NK4-A 取证：轮询有界（~10 万次即放弃，字节照写）——LSR
-            // 异常时丢个别字节，绝不把 panic 消息整个吞掉。
-            unsafe {
-                let mut spins: u32 = 0;
-                loop {
-                    let lsr: u8;
-                    core::arch::asm!("in al, dx", out("al") lsr, in("dx") 0x3f9u16, options(nomem, nostack));
-                    if lsr & 0x20 != 0 || spins >= 100_000 {
-                        break;
-                    }
-                    spins += 1;
-                }
-                core::arch::asm!("out dx, al", in("dx") 0x3f8u16, in("al") b, options(nomem, nostack));
-            }
-        }
-    }
-}
-

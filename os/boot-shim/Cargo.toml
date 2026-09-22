@@ -12,14 +12,29 @@ opensbi = []
 test-all = ["uefi", "opensbi"]
 # X-2/NK5 裸机隔离：bin 是 no_std UEFI 镜像（自带 panic_handler/global_allocator），
 # 宿主 `--workspace --bins` 必须跳过；真机构建成对传
-# `--target x86_64-unknown-uefi --features fw-x86-uefi`（与 test-kernels 同词汇表）。
-fw-x86-uefi = ["uefi"]
+# `--target <triple> --features fw-<arch>-uefi`（与 test-kernels 同词汇表）。
+#
+# `required-features` 是「全部必须开」的语义，一个 bin 不能让两个架构特性
+# 各自打开同一个门（NK4-B P3 M3.2 在 kernel-image 上踩过同一坑）。做法：
+# 抽出架构无关的内部特性 `fw-uefi-image` 由 bin 要求，`fw-x86-uefi` 与
+# `fw-aarch64-uefi` 都隐含它。对外零变化：`os/xtask/src/image.rs` 仍只传
+# `--features fw-x86-uefi`；riscv64 若走 UEFI（P4 目前走 OpenSBI，不用本
+# 词汇）可同形扩展。`fw-uefi-image` 单独打开也自洽（它隐含 `uefi`，而
+# `uefi` 就是 `main.rs`/`uefi_helpers` 需要的全部），不像 kernel-image 那个
+# 内部特性那样存在「打开但缺依赖」的组合。
+fw-uefi-image = ["uefi"]
+fw-x86-uefi = ["fw-uefi-image"]
+fw-aarch64-uefi = ["fw-uefi-image"]
 
 [dependencies]
 minix-types = { path = "../libs/minix-types" }
 minix-boot = { path = "../libs/minix-boot" }
 minix-arch = { path = "../arch", default-features = false }
 minix-kernel = { path = "../kernel", default-features = false }
+# 交棒后（ExitBootServices 之后）的裸串口通道：PL011 寄存器语义与发送节流
+# 住在 minix-plat 的 early_console 里，aarch64 腿直接复用（NK4-B P3 M3.3）。
+# x86_64 腿不依赖它——COM1 端口写仍在 `src/lib.rs` 里，逐字未变。
+minix-plat = { path = "../plat", default-features = false }
 minix-elf = { path = "../libs/minix-elf" }
 # Note: we do NOT enable uefi's "global_allocator" feature here.
 # In production, the UEFI allocator is set up in main.rs.
@@ -32,4 +47,4 @@ test = true
 [[bin]]
 name = "boot-shim"
 test = false
-required-features = ["fw-x86-uefi"]
+required-features = ["fw-uefi-image"]
