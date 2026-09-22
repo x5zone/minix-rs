@@ -390,3 +390,74 @@ bump 分配区（载体 :588-589）：0x8200_0000 .. 0x8400_0000 ⊂ 上面区�
   输出（该行不再有手工行号）。实测：无输出 ✓
 - (c) 沿用 §13.3(a) 原命令（在 `os/` 下）：`grep -rn --include=*.rs "cross_space::" kernel/src | grep -v "^kernel/src/cross_space.rs" | grep -cE ':[[:space:]]*(///|//!|//)'`
   仍须为 3（即 24 = 21 调用 + 3 注释 的拆分仍成立）。实测 3 ✓
+
+## 16. 追加（第六轮评审闭环）：§15 的计数自相矛盾与两处口径外溢
+
+**取代关系**：§15.5 末尾「七组…共九处」的说法作废，以本节 16.2 为准；§15.6(a) 的
+命令根从 `os/` 改为仓库根（16.1）；§15.5 第 2 行的「5 处」与第 7 行的存在性命令
+分别由 16.3、16.4 替换。
+
+### 16.1 「清零」的命令根与标签对齐（标签写「全仓」、命令只跑 `os/`）
+  $ grep -rn "kernel/memory\.c" . --include=*.rs | grep -v "^./\.git" | wc -l
+  0
+⇒ 结论事实上成立（含 `os/` 之外的 `examples/` 等），但 §15.6(a) 把命令根写成 `os/`
+  却把标签写成「全仓 .rs 清零」——正是本档 §9 立过的戒（「本仓 grep 默认从 os/ 起跑，
+  很容易把两个目录当成全仓」）。命令根已改为仓库根。
+
+### 16.2 计数口径重算（同一集合在三处被写成 7 / 8 / 9）
+  表格行数：7（WORKLOG「同类命中的登记」表 #1..#7）
+  其中 #1（`vm.rs:190` 的 `memory.c:325`）**不是缺陷**：
+  $ sed -n '325p' minix3/minix/kernel/arch/i386/memory.c
+  int vm_lookup(const struct proc *proc, const vir_bytes virtual,
+  ⇒ 行号本就正确，它只是「上一枚漏数的那一条」被顺手登记。
+⇒ 自洽口径：**登记不修 = 6 组**；已修 = 2 处（`vm.rs:228` 于 14de2eb9a，
+  `cross_space.rs:14` 于 399391a8f，两者都在表格之外）。「共九处」是把已修项与
+  非缺陷项一起加进「缺陷总数」，作废。
+
+### 16.3 「等 5 处写 `arch/i386/smp.c:65`」过度归因（且没附命令）
+  $ grep -rn "arch/i386/smp\.c:65" os/ --include=*.rs
+  os/arch/src/x86_64/smp.rs:180:        // C: arch_send_smp_schedule_ipi(cpu) — arch/i386/smp.c:65
+  ⇒ 带 `:65` 的只有 **1 处**。
+  $ grep -rn "arch/i386/smp\.c" os/ --include=*.rs | wc -l → 18
+  $ grep -rln "arch/i386/smp\.c" os/ --include=*.rs
+    os/arch/src/x86_64/smp.rs / os/arch/src/arch/smp.rs / os/arch/src/riscv64/smp.rs
+    os/arch/src/arm64/smp.rs / os/kernel/src/smp.rs
+  ⇒ 真实形状：**18 处引用（跨 5 个文件）指向一个不存在的 `arch/i386/smp.c`**，其中
+  仅 1 处带 `:65`。原表述把「5 个文件引用该路径」压缩成「5 处写 `:65`」，既夸大
+  了行号问题的波及面，又隐瞒了路径问题的真实规模——而且没附命令，恰好违反本档
+  16 节之前刚立的「归因必须附可复跑命令」。
+
+### 16.4 存在性要用存在性命令（§15.5 第 7 行换命令）
+  $ grep -rln "krandom.c" minix3/        → 无输出（这是**内容**检索，证不了文件不存在）
+  $ find minix3 -name krandom.c          → 无输出（这才是存在性检查）
+  $ find minix3 -name random.h | head -1
+    minix3/minix/drivers/system/random/random.h
+⇒ `krandom.c` 确不存在（结论不变，命令换对）；但 `random.h` **确实存在**（驱动的），
+  所以 `globals.rs:484` 的注释是「一半存在、一半不存在」，不能笼统说成凭空编的路径。
+
+### 16.5 不称「全量登记」（评审 O-2）
+  本档只扫了「路径不存在 / 行号错位」这一类引用缺陷。同一文件
+  `cross_space.rs:12-13` 仍用裸名+行号引 `memory.c`：
+  $ sed -n '690p' minix3/minix/kernel/arch/i386/memory.c   → int data_copy_vmcheck(struct proc * caller,
+  $ sed -n '595p' minix3/minix/kernel/arch/earm/memory.c   → int data_copy_vmcheck(struct proc * caller,
+  ⇒ 两条事实都成立（i386 精确、earm 写作 `590+` 是宽松下界），所以**不是缺陷**、
+  不进缺陷表；但「全量」二字会误导读者以为所有引用式样都过了，故 WORKLOG 标题
+  改为「同类命中的登记（本轮实测到的）」。
+
+### 16.6 判别性断言更新（在 §15.6 基础上加两条，替换其 (a) 的命令根）
+- (a′) `grep -rn "kernel/memory\.c" . --include=*.rs | grep -v "^./\.git"` 无输出（命令根 = 仓库根）✓
+- (b) 同 §15.6(b)（`vm.rs` 该行无手工行号）✓
+- (c) 同 §13.3(a)（cross_space:: 拆分 24 = 21 + 3）✓
+- (d) 新增：`grep -rn "arch/i386/smp\.c:65" os/ --include=*.rs | wc -l` 必须为 1；
+  `grep -rn "arch/i386/smp\.c" os/ --include=*.rs | wc -l` 必须为 18。两数任一变化 ⇒
+  WORKLOG 表格 #2 的表述需重算 ✓（实测 1 / 18）
+- (e) 新增：WORKLOG 里「登记不修」的组数必须与表格行数减「非缺陷行数」一致（7 − 1 = 6）。
+  数表格行要先把范围收到该表，不能对整份 WORKLOG 数：
+  $ grep -c "^\| [0-9] \|" notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md   → **18**
+  （命中的是别处里程碑的编号表：`:1571-1576` M4.2 交付表、`:1641-1645` M4.2 评审表、
+    `:2293-2299` 本表）
+  $ sed -n '2291,2299p' …/NK4B-WORKLOG.md | grep -c "^\| [0-9] \|"              → **7** ✓
+  正文写「登记不修的是六组」，与 7 − 1 = 6 相符 ✓
+  （(e) 初版把命令写成全文 `grep -c` 却断言「在本节内只数该表，实测 7 行」——命令与
+  断言不符，是本档「先写结论再补命令」这一根因的第九次复发，且这次复发在**专门用来
+  防它的判别断言里**。修正方式：改命令范围而非改数字，表格本身没动。）
