@@ -229,7 +229,13 @@ fn fork_chain_pm_vm_vfs_all_real() {
         parent.filps[0] = Some(7);
     }
     let child_ep = Endpoint(m7.m7i1);
-    let reply = minix_vfs::VfsPmHandler { table: &mut fproc }
+    let mut filps = minix_vfs::filp::FilpTable::new();
+    let mut vnodes = minix_vfs::vnode::VnodeTable::new();
+    let reply = minix_vfs::VfsPmHandler {
+        table: &mut fproc,
+        filp_table: &mut filps,
+        vnode_table: &mut vnodes,
+    }
         .handle(minix_types::VfsCall::Fork {
             child: child_ep,
             parent: Endpoint(m7.m7i2),

@@ -362,7 +362,13 @@ fn srv_fork_chain_rs_pm_vm_vfs_all_real() {
         reuid: m7.m7i4,
         regid: m7.m7i5,
     };
-    let reply = minix_vfs::VfsPmHandler { table: &mut fproc }
+    let mut filps = minix_vfs::filp::FilpTable::new();
+    let mut vnodes = minix_vfs::vnode::VnodeTable::new();
+    let reply = minix_vfs::VfsPmHandler {
+        table: &mut fproc,
+        filp_table: &mut filps,
+        vnode_table: &mut vnodes,
+    }
         .handle(vfs_call)
         .expect("VFS 应接受 PM 的 srv_fork 通知");
     assert!(

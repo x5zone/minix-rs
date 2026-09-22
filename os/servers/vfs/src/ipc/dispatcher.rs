@@ -23,7 +23,9 @@
 //! `ARCH A-4` (VfsState aggregation) keeps `fproc_table` + `reviving` in one
 //! place; `ARCH A-3` keeps `BlockedOn` typed.
 
+use crate::filp::{FilpId, FilpTable};
 use crate::fproc::{BlockedOn, FProc, FProcTable, FpFlags, PID_FREE};
+use crate::vnode::{VnodeId, VnodeTable};
 use minix_types::{Endpoint, Gid, Pid, Uid, UserSlot, VfsCall, VfsReply};
 
 /// PM → VFS dispatch error — maps to Minix errno for the `PM→REPLY` path.
@@ -122,13 +124,15 @@ pub trait PmHandler {
     }
 }
 
-/// Real handler — mutates the live `FProcTable` (and, when wired, `FilpTable` / `VnodeTable`).
+/// Real handler — mutates the live `FProcTable`, `FilpTable` and `VnodeTable`.
 ///
-/// `filp` sharing (`filp_count++`) and `vnode` dup (`dup_vnode`) are modelled
-/// as counts here; the actual `FilpTable::incr_ref` / `VnodeTable::dup` calls
-/// are DEFERRED to 04/05 and represented by the `CopyOutcome` counters.
+/// Fork 上的 filp 共享(`filp_count++`,`misc.c:616-617`)与 rd/wd 的
+/// `dup_vnode`(`misc.c:632-633`)在此真实落表;`CopyOutcome` 的计数继续
+/// 供调用方与测试对账。
 pub struct VfsPmHandler<'a> {
     pub table: &'a mut FProcTable,
+    pub filp_table: &'a mut FilpTable,
+    pub vnode_table: &'a mut VnodeTable,
 }
 
 impl<'a> PmHandler for VfsPmHandler<'a> {
@@ -245,7 +249,7 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
         child: Endpoint,
         child_pid: Pid,
     ) -> Result<CopyOutcome, PmError> {
-        handle_fork_inner(self.table, parent, child, child_pid)
+        handle_fork_inner(self.table, self.filp_table, self.vnode_table, parent, child, child_pid)
     }
 
     fn handle_exit(&mut self, endpoint: Endpoint) -> Result<(), PmError> {
@@ -386,22 +390,26 @@ pub struct MessageDispatcher;
 impl MessageDispatcher {
     pub fn dispatch(
         table: &mut FProcTable,
+        filp_table: &mut FilpTable,
+        vnode_table: &mut VnodeTable,
         request: minix_types::VfsRequest,
     ) -> minix_types::VfsResponse {
         match request {
             minix_types::VfsRequest::Fork {
                 parent_endpoint,
                 child_endpoint,
-            } => Self::handle_fork_request(table, parent_endpoint, child_endpoint),
+            } => Self::handle_fork_request(table, filp_table, vnode_table, parent_endpoint, child_endpoint),
         }
     }
 
     fn handle_fork_request(
         table: &mut FProcTable,
+        filp_table: &mut FilpTable,
+        vnode_table: &mut VnodeTable,
         parent_endpoint: Endpoint,
         child_endpoint: Endpoint,
     ) -> minix_types::VfsResponse {
-        match handle_fork(table, parent_endpoint, child_endpoint) {
+        match handle_fork(table, filp_table, vnode_table, parent_endpoint, child_endpoint) {
             Ok(()) => minix_types::VfsResponse::ForkOk,
             Err(e) => minix_types::VfsResponse::Error(e),
         }
@@ -414,10 +422,12 @@ impl MessageDispatcher {
 /// New code should use `VfsPmHandler::handle_fork` with `VfsCall`.
 pub fn handle_fork(
     table: &mut FProcTable,
+    filp_table: &mut FilpTable,
+    vnode_table: &mut VnodeTable,
     parent_endpoint: Endpoint,
     child_endpoint: Endpoint,
 ) -> Result<(), minix_types::VfsError> {
-    handle_fork_inner(table, parent_endpoint, child_endpoint, 0)
+    handle_fork_inner(table, filp_table, vnode_table, parent_endpoint, child_endpoint, 0)
         .map(|_| ())
         .map_err(|e| match e {
             PmError::BadEndpoint => minix_types::VfsError::InvalidEndpoint,
@@ -434,6 +444,8 @@ pub fn handle_fork(
 
 fn handle_fork_inner(
     table: &mut FProcTable,
+    filp_table: &mut FilpTable,
+    vnode_table: &mut VnodeTable,
     parent_endpoint: Endpoint,
     child_endpoint: Endpoint,
     child_pid: Pid,
@@ -457,7 +469,7 @@ fn handle_fork_inner(
     }
 
     // 3. Copy — preserve child's lock (slot-owned, ARCH A-6).
-    let outcome = copy_fproc(table, parent_slot, child_slot, child_endpoint);
+    let outcome = copy_fproc(table, filp_table, vnode_table, parent_slot, child_slot, child_endpoint);
     // 4. Fill child's new identity (when caller passes cpid==0, keep parent's pid
     // for legacy `VfsRequest::Fork` tests; real PM→VFS Fork always passes cpid).
     if child_pid != 0 {
@@ -475,6 +487,8 @@ fn handle_fork_inner(
 /// (08's `ARCH A-6` slot-owned lock, `fproc.rs` comment).
 fn copy_fproc(
     table: &mut FProcTable,
+    filp_table: &mut FilpTable,
+    vnode_table: &mut VnodeTable,
     parent_slot: UserSlot,
     child_slot: UserSlot,
     child_endpoint: Endpoint,
@@ -512,6 +526,11 @@ fn copy_fproc(
         )
     };
 
+    // C `misc.c:616-617`:每个继承的非空 `fp_filp[i]` → `filp_count++`。
+    for &idx in filps.iter().flatten() {
+        filp_table.inc_count(FilpId(idx));
+    }
+
     let filp_shared = filps.iter().filter(|f| f.is_some()).count();
     let mut vnodes_dupped = 0;
     if root_dir.is_some() {
@@ -519,6 +538,13 @@ fn copy_fproc(
     }
     if work_dir.is_some() {
         vnodes_dupped += 1;
+    }
+    // C `misc.c:632-633`:rd 与 wd 各 `dup_vnode` 一次(同一 vnode 时是两次)。
+    if let Some(rd) = root_dir {
+        vnode_table.dup(VnodeId(rd));
+    }
+    if let Some(wd) = work_dir {
+        vnode_table.dup(VnodeId(wd));
     }
 
     let child = table.get_mut(child_slot).unwrap();
@@ -607,8 +633,12 @@ mod tests {
     #[test]
     fn test_handle_fork_success() {
         let mut table = create_test_table_with_parent();
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
         let result = handle_fork(
             &mut table,
+            &mut filps,
+            &mut vnodes,
             Endpoint::from_generation_slot(1, 0),
             Endpoint::from_generation_slot(1, 1),
         );
@@ -622,8 +652,12 @@ mod tests {
     #[test]
     fn test_handle_fork_parent_not_found() {
         let mut table = FProcTable::new();
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
         let result = handle_fork(
             &mut table,
+            &mut filps,
+            &mut vnodes,
             Endpoint::from_generation_slot(1, 0),
             Endpoint::from_generation_slot(1, 1),
         );
@@ -640,7 +674,9 @@ mod tests {
             parent_endpoint: Endpoint::from_generation_slot(1, 0),
             child_endpoint: Endpoint::from_generation_slot(1, 1),
         };
-        let response = MessageDispatcher::dispatch(&mut table, request);
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let response = MessageDispatcher::dispatch(&mut table, &mut filps, &mut vnodes, request);
         assert!(matches!(response, minix_types::VfsResponse::ForkOk));
     }
 
@@ -653,8 +689,12 @@ mod tests {
         parent.ngroups = 2;
         parent.supplemental_groups[0] = 100;
         parent.supplemental_groups[1] = 200;
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
         copy_fproc(
             &mut table,
+            &mut filps,
+            &mut vnodes,
             UserSlot::new(0),
             UserSlot::new(1),
             Endpoint::from_generation_slot(1, 1),
@@ -673,8 +713,12 @@ mod tests {
     fn test_handle_fork_bogus_child() {
         let mut table = create_test_table_with_parent();
         // Child NONE has a synthetic slot 31743 >> NR_PROCS → SlotOutOfRange/BogusChild
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
         let result = handle_fork_inner(
             &mut table,
+            &mut filps,
+            &mut vnodes,
             Endpoint::from_generation_slot(1, 0),
             Endpoint::NONE,
             1234,
@@ -687,8 +731,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         // Occupy child slot 1
         table.get_mut(UserSlot::new(1)).unwrap().pid = 999;
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
         let result = handle_fork_inner(
             &mut table,
+            &mut filps,
+            &mut vnodes,
             Endpoint::from_generation_slot(1, 0),
             Endpoint::from_generation_slot(1, 1),
             1234,
@@ -700,8 +748,12 @@ mod tests {
     fn test_copy_fproc_lock_preserved() {
         let mut table = create_test_table_with_parent();
         let parent = table.get(UserSlot::new(0)).unwrap().clone();
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
         let outcome = copy_fproc(
             &mut table,
+            &mut filps,
+            &mut vnodes,
             UserSlot::new(0),
             UserSlot::new(1),
             Endpoint::from_generation_slot(1, 1),
@@ -719,8 +771,12 @@ mod tests {
         // Parent has 2 open fds
         table.get_mut(UserSlot::new(0)).unwrap().filps[0] = Some(7);
         table.get_mut(UserSlot::new(0)).unwrap().filps[3] = Some(9);
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
         let outcome = copy_fproc(
             &mut table,
+            &mut filps,
+            &mut vnodes,
             UserSlot::new(0),
             UserSlot::new(1),
             Endpoint::from_generation_slot(1, 1),
@@ -734,7 +790,13 @@ mod tests {
     #[test]
     fn test_handle_exit_free() {
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_exit(ep).unwrap();
         let fp = handler.table.get(UserSlot::new(0)).unwrap();
@@ -746,7 +808,13 @@ mod tests {
     #[test]
     fn test_handle_setuid() {
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setuid(ep, 2000, 3000).unwrap();
         let fp = handler.table.get(UserSlot::new(0)).unwrap();
@@ -757,7 +825,13 @@ mod tests {
     #[test]
     fn test_handle_setgid() {
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setgid(ep, 4000, 5000).unwrap();
         let fp = handler.table.get(UserSlot::new(0)).unwrap();
@@ -768,7 +842,13 @@ mod tests {
     #[test]
     fn test_handle_setgroups() {
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setgroups(ep, 2, &[10, 20]).unwrap();
         let fp = handler.table.get(UserSlot::new(0)).unwrap();
@@ -783,7 +863,13 @@ mod tests {
         // kernel IPC primitives land, the port fails closed with `ENOSYS`
         // and the fproc keeps its previous credentials.
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let err = handler
             .handle(VfsCall::SetGroups {
                 endpoint: Endpoint::from_generation_slot(1, 0),
@@ -802,7 +888,13 @@ mod tests {
         // C panics ("too much data to copy", misc.c:748-750); the rewrite
         // rejects with EINVAL before any copy attempt (10-pm-protocol.md D4).
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let r = handler.handle(VfsCall::SetGroups {
             endpoint: Endpoint::from_generation_slot(1, 0),
             group_no: crate::fproc::NGROUPS_MAX as i32 + 1,
@@ -814,7 +906,13 @@ mod tests {
     #[test]
     fn test_setgroups_zero_clears_without_copy() {
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setgroups(ep, 2, &[10, 20]).unwrap();
         let reply = handler
@@ -832,7 +930,13 @@ mod tests {
     #[test]
     fn test_handle_setsid() {
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.table.get_mut(UserSlot::new(0)).unwrap().tty = 7;
         handler.handle_setsid(ep).unwrap();
@@ -844,7 +948,13 @@ mod tests {
     #[test]
     fn test_handle_srv_fork_sets_ids() {
         let mut table = create_test_table_with_parent();
-        let mut handler = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut handler = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let p = Endpoint::from_generation_slot(1, 0);
         let c = Endpoint::from_generation_slot(1, 1);
         handler
@@ -882,7 +992,13 @@ mod tests {
         let p = Endpoint::from_generation_slot(1, 0);
         let c = Endpoint::from_generation_slot(1, 1);
         // Real handler succeeds
-        let mut real = VfsPmHandler { table: &mut table };
+        let mut filps = FilpTable::new();
+        let mut vnodes = VnodeTable::new();
+        let mut real = VfsPmHandler {
+            table: &mut table,
+            filp_table: &mut filps,
+            vnode_table: &mut vnodes,
+        };
         let ok = PmHandler::handle_fork(&mut real, p, c, 999);
         assert!(ok.is_ok());
         // Mock handler always fails — behaviourally different for same input
@@ -891,8 +1007,14 @@ mod tests {
         assert!(err.is_err());
         // Polymorphic dispatch via trait object
         let mut table2 = create_test_table_with_parent();
+        let mut filps2 = FilpTable::new();
+        let mut vnodes2 = VnodeTable::new();
         let handlers: Vec<Box<dyn PmHandler>> = vec![
-            Box::new(VfsPmHandler { table: &mut table2 }),
+            Box::new(VfsPmHandler {
+                table: &mut table2,
+                filp_table: &mut filps2,
+                vnode_table: &mut vnodes2,
+            }),
             Box::new(MockPmHandler),
         ];
         // Can't easily test both with same table mutably, but type checks: dyn

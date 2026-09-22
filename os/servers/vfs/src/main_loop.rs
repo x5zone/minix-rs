@@ -1155,7 +1155,11 @@ impl VfsState {
                     }
                     Ok(other) => {
                         let mut handler =
-                            crate::ipc::VfsPmHandler { table: &mut self.fproc_table };
+                            crate::ipc::VfsPmHandler {
+                                table: &mut self.fproc_table,
+                                filp_table: &mut self.filp_table,
+                                vnode_table: &mut self.vnode_table,
+                            };
                         match handler.handle(other) {
                             Ok(reply) => self.queue_reply_msg(msg.m_source, reply.encode()),
                             Err(e) => self.queue_reply(

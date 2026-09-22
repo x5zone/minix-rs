@@ -8,13 +8,12 @@
 //! | test13(pipe 加 fork 的描述符继承吞吐面) | 本文件 [`fork_shares_filp_entries_and_bumps_counts`](fd 继承面;pipe 语义本体归 `t_pipe_select_locks.rs`) |
 //! | test1/2/12(fork/wait/僵尸) | 已由 `pm_vm_fork.rs`(fork 全链)与 `servers/pm/tests/run_once_integration.rs`(exit 不回复僵尸化、wait4 回收带状态、ECHILD)覆盖,不重复断言 |
 //!
-//! # 翻译即发现的 C↔Rust 语义偏差(记录,不改产品代码)
+//! # 曾钉住的 C↔Rust 语义缺口(已修)
 //!
 //! C `misc.c:616-617`:pm_fork 对每个非空 `fp_filp[i]` 执行 `filp_count++`;
-//! C `misc.c:632-633`:对 `fp_rd`/`fp_wd` 各执行 `dup_vnode`。Rust 侧
-//! `servers/vfs/src/ipc/dispatcher.rs` 的 `copy_fproc` 只拷贝索引,两处计数
-//! 均未递增。测试 A 把 C 语义钉为断言——点亮时若失败,即该偏差的复核点,
-//! 须先修产品代码或经评审裁决,不得改断言迁就实现。
+//! C `misc.c:632-633`:对 `fp_rd`/`fp_wd` 各执行 `dup_vnode`。`copy_fproc`
+//! 曾只拷贝索引不递增(原 dispatcher.rs 文档标注 DEFERRED to 04/05),本
+//! 缺口已补齐:`VfsPmHandler` 现持有三表并在 fork 臂真实落计数。
 //!
 //! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
 
@@ -81,7 +80,6 @@ fn lseek_msg(slot: usize, offset: i64, fd: i32) -> Message {
 /// C 语义:子进程继承父的 fd 表(同一 filp 索引),每个继承项 `filp_count++`,
 /// root/working 目录 vnode 各 `dup_vnode`(引用计数 +1)。
 #[test]
-#[ignore = "点亮前提:copy_fproc 按 C misc.c:617/:632-633 补两处计数递增(当前缺,见文件头差异记录)"]
 fn fork_shares_filp_entries_and_bumps_counts() {
     let mut state = seeded_vfs_state();
     let fid = state.filp_table.alloc_filp(0o644).expect("filp 表有空位");
@@ -101,6 +99,8 @@ fn fork_shares_filp_entries_and_bumps_counts() {
 
     let reply = minix_vfs::VfsPmHandler {
         table: &mut state.fproc_table,
+        filp_table: &mut state.filp_table,
+        vnode_table: &mut state.vnode_table,
     }
     .handle(minix_types::VfsCall::Fork {
         child: child_ep(),
