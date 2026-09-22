@@ -46,13 +46,15 @@ use crate::fproc::{BlockedOn, FProcTable, FpFlags, PID_FREE};
 use crate::fs_comm::{CommError, FsTransport, GlobalComm};
 use crate::mount::{DevCodec, FsSuperblock, MountError, SuperblockReader};
 use crate::request::WireFsClient;
-use crate::vnode::VnodeTable;
 use crate::vmnt::{VmntFlags, VmntTable};
+use crate::vnode::VnodeTable;
+use crate::worker::WorkerPool;
 use minix_sef::SefEvent;
 use minix_sys::ipc::IpcTransport as _;
 use minix_sys::syscall::KernelCallTransport;
-use crate::worker::WorkerPool;
-use minix_types::{DevId, Endpoint, Gid, Message, NO_DEV, NR_PROCS, Uid, UserSlot, VfsPmInit, VfsPmInitError};
+use minix_types::{
+    DevId, Endpoint, Gid, Message, NO_DEV, NR_PROCS, Uid, UserSlot, VfsPmInit, VfsPmInitError,
+};
 
 /// C: `const.h:16-17` — uid_t/gid_t for system processes and INIT.
 const SYS_UID: Uid = 0;
@@ -138,8 +140,7 @@ pub fn lu_prepare(all_idle: bool, state: LuState) -> Result<(), UnblockError> {
 /// request-free state; ARCH A-1 makes the re-creation itself a no-op (slots
 /// are data), so this predicate only documents the C branch.
 pub fn lu_rollback_needs_workers(old: LuState, now: LuState) -> bool {
-    matches!(old, LuState::RequestFree | LuState::ProtocolFree)
-        && now == LuState::Null
+    matches!(old, LuState::RequestFree | LuState::ProtocolFree) && now == LuState::Null
 }
 
 /// `sef_cb_init_lu` (`main.c:343-358`): does the new instance re-create
@@ -197,12 +198,12 @@ pub enum NotifyKind {
     Other { endpoint: Endpoint },
 }
 
+#[cfg(test)]
+pub use crate::fs_comm::TestTransIdCodec;
 /// `TRNS_GET_ID` / `VFS_TRANSID` codec — canonical definition lives in
 /// `fs_comm.rs` (the protocol owner); re-exported here so the route layer
 /// and its tests share one contract (P2-6 convergence, `ARCH A-4`).
 pub use crate::fs_comm::{TransIdCodec, VfsTransIdCodec};
-#[cfg(test)]
-pub use crate::fs_comm::TestTransIdCodec;
 
 /// VFS startup phase.
 ///
@@ -442,7 +443,6 @@ impl VfsState {
             statvfs_buf: minix_types::StatvfsBuf::new(),
             pending_fs: None,
             pending_puts: alloc::vec::Vec::new(),
-
         }
     }
 
@@ -724,8 +724,16 @@ impl VfsState {
 
         // req_readsuper(vmp, "", dev, FALSE, FALSE)（mount.c:417）——确认往返，
         // 成功只回填 fs_flags；节点明细按 C 忽略。
-        let mut client = WireFsClient { grants: &mut self.grants, kernel, ipc: transport };
-        let mut sb = FsSuperblock { client: &mut client, fs_e: Endpoint::PFS, label: String::new() };
+        let mut client = WireFsClient {
+            grants: &mut self.grants,
+            kernel,
+            ipc: transport,
+        };
+        let mut sb = FsSuperblock {
+            client: &mut client,
+            fs_e: Endpoint::PFS,
+            label: String::new(),
+        };
         match sb.read_super(plan.dev, false, false) {
             Ok(info) => {
                 if let Some(v) = self.vmnt_table.get_mut(slot) {
@@ -761,7 +769,11 @@ impl VfsState {
                 .get(major)
                 .filter(|e| e.is_mapped())
                 .ok_or(MountError::Inval)?;
-            let end = entry.label.iter().position(|&b| b == 0).unwrap_or(entry.label.len());
+            let end = entry
+                .label
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(entry.label.len());
             alloc::string::String::from_utf8_lossy(&entry.label[..end]).into_owned()
         };
 
@@ -799,8 +811,11 @@ impl VfsState {
 
         // mount.c:270-272 — req_readsuper 往返（grant+sendrec+revoke）。
         let read = {
-            let mut client =
-                WireFsClient { grants: &mut self.grants, kernel, ipc: transport };
+            let mut client = WireFsClient {
+                grants: &mut self.grants,
+                kernel,
+                ipc: transport,
+            };
             let mut sb = FsSuperblock {
                 client: &mut client,
                 fs_e,
@@ -1154,8 +1169,11 @@ impl VfsState {
                         self.queue_reply_msg(msg.m_source, reply.encode());
                     }
                     Ok(other) => {
-                        let mut handler =
-                            crate::ipc::VfsPmHandler { table: &mut self.fproc_table };
+                        let mut handler = crate::ipc::VfsPmHandler {
+                            table: &mut self.fproc_table,
+                            filp_table: &mut self.filp_table,
+                            vnode_table: &mut self.vnode_table,
+                        };
                         match handler.handle(other) {
                             Ok(reply) => self.queue_reply_msg(msg.m_source, reply.encode()),
                             Err(e) => self.queue_reply(
@@ -1227,9 +1245,7 @@ impl VfsState {
         oflags: u32,
         trunc_done: bool,
     ) {
-        let access = match crate::open::OpenFlags::from_bits(oflags)
-            .and_then(|f| f.access().ok())
-        {
+        let access = match crate::open::OpenFlags::from_bits(oflags).and_then(|f| f.access().ok()) {
             Some(a) => a,
             None => {
                 self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
@@ -1293,21 +1309,20 @@ impl VfsState {
             crate::open::OpenOutcome::NeedTruncate => {
                 // C `common_open:150-157`：常规文件 + `O_TRUNC` → W 位门 →
                 // `truncate_vnode(vp, 0)`（**结果忽略**）→ 照常装配。
-                let (real_uid, eff_uid, real_gid, eff_gid, supp) = match fp_slot
-                    .and_then(|s| self.fproc_table.get(s))
-                {
-                    Some(fp) => (
-                        fp.real_uid,
-                        fp.eff_uid,
-                        fp.real_gid,
-                        fp.eff_gid,
-                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
-                    ),
-                    None => {
-                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
-                        return;
-                    }
-                };
+                let (real_uid, eff_uid, real_gid, eff_gid, supp) =
+                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                        Some(fp) => (
+                            fp.real_uid,
+                            fp.eff_uid,
+                            fp.real_gid,
+                            fp.eff_gid,
+                            fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                        ),
+                        None => {
+                            self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                            return;
+                        }
+                    };
                 let readonly_fs = self
                     .vmnt_table
                     .find_by_fs(node.fs_e)
@@ -1369,14 +1384,14 @@ impl VfsState {
                 // → 认领 fd/filp → `CDEV_OPEN` → worker 等待。
                 let dev = node.dev;
                 // `cdev_map`：`/dev/tty` 换成进程的控制终端（`tty_redirect`）。
-                let is_ctty = ((dev & 0x000fff00) >> 8) as u32
-                    == crate::device_map::CTTY_MAJOR as u32;
+                let is_ctty =
+                    ((dev & 0x000fff00) >> 8) as u32 == crate::device_map::CTTY_MAJOR as u32;
                 let fp_tty = fp_slot
                     .and_then(|s| self.fproc_table.get(s))
                     .map(|fp| fp.tty)
                     .filter(|t| *t != minix_types::NO_DEV);
-                let major_valid = (((dev & 0x000fff00) >> 8) as usize)
-                    < crate::device_map::NR_DEVICES;
+                let major_valid =
+                    (((dev & 0x000fff00) >> 8) as usize) < crate::device_map::NR_DEVICES;
                 let dev = match crate::cdev::tty_redirect(dev, is_ctty, fp_tty, major_valid) {
                     crate::cdev::RedirectVerdict::Keep(d)
                     | crate::cdev::RedirectVerdict::Substitute(d) => d,
@@ -1459,13 +1474,18 @@ impl VfsState {
                     })
                     .unwrap_or((false, false));
                 let requested = oflags & crate::open::OpenFlags::NOCTTY.bits() != 0;
-                let seen_elsewhere = self.dmap_table.get(major).map(|r| r.seen_tty).unwrap_or(false)
+                let seen_elsewhere = self
+                    .dmap_table
+                    .get(major)
+                    .map(|r| r.seen_tty)
+                    .unwrap_or(false)
                     && (0..minix_types::NR_PROCS).any(|i| {
                         self.fproc_table
                             .get(minix_types::UserSlot::new(i))
                             .is_some_and(|fp| fp.pid != 0 && fp.tty == dev)
                     });
-                let noctty = crate::cdev::noctty_force(is_leader, has_tty, requested, seen_elsewhere);
+                let noctty =
+                    crate::cdev::noctty_force(is_leader, has_tty, requested, seen_elsewhere);
                 let access = crate::cdev::access_bits(
                     bits.bits() & crate::open::R_BIT != 0,
                     bits.bits() & crate::open::W_BIT != 0,
@@ -1555,19 +1575,11 @@ impl VfsState {
                 // 走决策层（它带着 ENXIO 的判据）；端点本身取 dmap 行的
                 // `Endpoint`。
                 if crate::bdev::resolve_driver(major_valid, driver.map(|e| e.get())).is_err() {
-                    self.finish_worker_job(
-                        idx,
-                        fp_slot,
-                        crate::bdev::BdevError::NoDev.to_errno(),
-                    );
+                    self.finish_worker_job(idx, fp_slot, crate::bdev::BdevError::NoDev.to_errno());
                     return;
                 }
                 let Some(drv_e) = driver else {
-                    self.finish_worker_job(
-                        idx,
-                        fp_slot,
-                        crate::bdev::BdevError::NoDev.to_errno(),
-                    );
+                    self.finish_worker_job(idx, fp_slot, crate::bdev::BdevError::NoDev.to_errno());
                     return;
                 };
                 let access = crate::bdev::access_bits(
@@ -1827,8 +1839,16 @@ impl VfsState {
             .and_then(|fp| fp.root_dir)
             .and_then(|idx| self.vnode_table.get(crate::vnode::VnodeId(idx)));
         match vnode {
-            Some(v) => crate::path::RootDir { ino: v.ino, fs: v.fs, dev: v.dev },
-            None => crate::path::RootDir { ino: 0, fs: Endpoint::NONE, dev: 0 },
+            Some(v) => crate::path::RootDir {
+                ino: v.ino,
+                fs: v.fs,
+                dev: v.dev,
+            },
+            None => crate::path::RootDir {
+                ino: 0,
+                fs: Endpoint::NONE,
+                dev: 0,
+            },
         }
     }
 
@@ -1840,8 +1860,16 @@ impl VfsState {
             .and_then(|fp| fp.work_dir)
             .and_then(|idx| self.vnode_table.get(crate::vnode::VnodeId(idx)));
         match vnode {
-            Some(v) => crate::path::RootDir { ino: v.ino, fs: v.fs, dev: v.dev },
-            None => crate::path::RootDir { ino: 0, fs: Endpoint::NONE, dev: 0 },
+            Some(v) => crate::path::RootDir {
+                ino: v.ino,
+                fs: v.fs,
+                dev: v.dev,
+            },
+            None => crate::path::RootDir {
+                ino: 0,
+                fs: Endpoint::NONE,
+                dev: 0,
+            },
         }
     }
 
@@ -1979,20 +2007,24 @@ impl VfsState {
         if mode & crate::open::S_IFMT != crate::open::S_IFDIR {
             return minix_types::ENOTDIR;
         }
-        let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-            match self.fproc_table.get(slot) {
-                Some(fp) => (
-                    fp.real_uid,
-                    fp.real_gid,
-                    fp.eff_uid,
-                    fp.eff_gid,
-                    fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
-                ),
-                None => return minix_types::EINVAL,
-            };
+        let (real_uid, real_gid, eff_uid, eff_gid, supp) = match self.fproc_table.get(slot) {
+            Some(fp) => (
+                fp.real_uid,
+                fp.real_gid,
+                fp.eff_uid,
+                fp.eff_gid,
+                fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+            ),
+            None => return minix_types::EINVAL,
+        };
         let readonly_fs = self
             .vmnt_table
-            .find_by_fs(self.vnode_table.get(crate::vnode::VnodeId(new_vnode)).map(|v| v.fs).unwrap_or(Endpoint::NONE))
+            .find_by_fs(
+                self.vnode_table
+                    .get(crate::vnode::VnodeId(new_vnode))
+                    .map(|v| v.fs)
+                    .unwrap_or(Endpoint::NONE),
+            )
             .and_then(|v| self.vmnt_table.get(v))
             .map(|v| v.flags.contains(crate::vmnt::VmntFlags::READONLY))
             .unwrap_or(false);
@@ -2061,19 +2093,17 @@ impl VfsState {
         user_buf: u64,
         vmnt_idx: usize,
     ) -> i32 {
-        let (dev, readonly, fstype, mount_path, mount_dev) = match self
-            .vmnt_table
-            .get(crate::vmnt::VmntId(vmnt_idx))
-        {
-            Some(v) => (
-                v.dev,
-                v.flags.contains(crate::vmnt::VmntFlags::READONLY),
-                v.fstype.clone(),
-                v.mount_path.clone(),
-                v.mount_dev.clone(),
-            ),
-            None => return minix_types::EIO,
-        };
+        let (dev, readonly, fstype, mount_path, mount_dev) =
+            match self.vmnt_table.get(crate::vmnt::VmntId(vmnt_idx)) {
+                Some(v) => (
+                    v.dev,
+                    v.flags.contains(crate::vmnt::VmntFlags::READONLY),
+                    v.fstype.clone(),
+                    v.mount_path.clone(),
+                    v.mount_dev.clone(),
+                ),
+                None => return minix_types::EIO,
+            };
         let b = &mut self.statvfs_buf;
         if readonly {
             let f = b.get_u64(minix_types::statvfs_off::FLAG);
@@ -2235,10 +2265,7 @@ impl VfsState {
         let Some(vmnt_id) = self.vmnt_table.find_by_fs(minix_types::Endpoint::PFS) else {
             return Err(minix_types::EIO);
         };
-        let vnode = self
-            .vnode_table
-            .alloc()
-            .map_err(|_| minix_types::ENFILE)?;
+        let vnode = self.vnode_table.alloc().map_err(|_| minix_types::ENFILE)?;
         // C `get_fd(fp, 0, R_BIT | W_BIT, &fd, &filp)`。
         let (fd, filp) = {
             use crate::filedes::FdAllocPolicy;
@@ -2284,12 +2311,7 @@ impl VfsState {
             grant: 0,
             user,
             // C socket.c:134-136：`S_IFSOCK | ACCESSPERMS` 作为节点模式。
-            req: crate::request::encode_newnode(
-                dev,
-                crate::open::S_IFSOCK | 0o777,
-                uid,
-                gid,
-            ),
+            req: crate::request::encode_newnode(dev, crate::open::S_IFSOCK | 0o777, uid, gid),
         });
         Ok(())
     }
@@ -2311,8 +2333,8 @@ impl VfsState {
         len: u32,
         write_dir: bool,
     ) -> Result<(), i32> {
-        let drv_e = crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
-            .ok_or(minix_types::EIO)?;
+        let drv_e =
+            crate::device_map::smap_endpt_by_dev(&self.smap_table, dev).ok_or(minix_types::EIO)?;
         let (_, sock_id) = crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
         let user = fp_slot
             .and_then(|s| self.fproc_table.get(s))
@@ -2369,8 +2391,8 @@ impl VfsState {
         req_type: i32,
         param: i32,
     ) -> Result<(), i32> {
-        let drv_e = crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
-            .ok_or(minix_types::EIO)?;
+        let drv_e =
+            crate::device_map::smap_endpt_by_dev(&self.smap_table, dev).ok_or(minix_types::EIO)?;
         let (_, sock_id) = crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
         let user = fp_slot
             .and_then(|s| self.fproc_table.get(s))
@@ -2397,11 +2419,7 @@ impl VfsState {
     /// `get_sock`（C socket.c:276-302）：fd → filp → **必须是套接字**
     /// （否则 `ENOTSOCK`），返回它的设备号与打开标志。套接字族共用的第一道门
     /// ——全本地判定，没有驱动对话。
-    pub fn get_sock(
-        &self,
-        fp_slot: minix_types::UserSlot,
-        fd: i32,
-    ) -> Result<(u64, i32), i32> {
+    pub fn get_sock(&self, fp_slot: minix_types::UserSlot, fd: i32) -> Result<(u64, i32), i32> {
         if fd < 0 {
             return Err(minix_types::EBADF);
         }
@@ -2513,40 +2531,27 @@ impl VfsState {
             if ndomains > 8 {
                 // `NR_DOMAIN`（config.h:61 = 8）。
                 if major != minix_types::NO_DEV as u32 {
-                    let _ = crate::device_map::map_driver(
-                        &mut self.dmap_table,
-                        None,
-                        major,
-                        None,
-                    );
+                    let _ = crate::device_map::map_driver(&mut self.dmap_table, None, major, None);
                 }
                 return minix_types::EINVAL;
             }
             // 逐域检查（C smap.c:74-84）：越界/UNSPEC → EINVAL、被别人占了 → EBUSY。
-            let existing = crate::device_map::find_slot_by_label(&self.smap_table, label.as_bytes());
+            let existing =
+                crate::device_map::find_slot_by_label(&self.smap_table, label.as_bytes());
             let free = crate::device_map::find_free_slot(&self.smap_table);
             let checks: alloc::vec::Vec<crate::device_map::DomainCheck> = domains
                 .iter()
                 .map(|d| crate::device_map::check_domain(&self.smap_table, *d, existing))
                 .collect();
-            let old_endpt = existing
-                .and_then(|s| self.smap_table.entries[s as usize].endpt);
+            let old_endpt = existing.and_then(|s| self.smap_table.entries[s as usize].endpt);
             let plan = match crate::device_map::register_plan(
-                existing,
-                free,
-                &checks,
-                old_endpt,
-                endpoint,
+                existing, free, &checks, old_endpt, endpoint,
             ) {
                 Ok(p) => p,
                 Err(e) => {
                     if major != minix_types::NO_DEV as u32 {
-                        let _ = crate::device_map::map_driver(
-                            &mut self.dmap_table,
-                            None,
-                            major,
-                            None,
-                        );
+                        let _ =
+                            crate::device_map::map_driver(&mut self.dmap_table, None, major, None);
                     }
                     return e.to_errno();
                 }
@@ -2756,13 +2761,21 @@ impl VfsState {
             crate::path::Lookup::new(split.dir_path.clone(), crate::path::LookupFlags::NOFLAGS)
                 .map_err(|e| e.to_errno())?;
         let start = if resolve.path.starts_with('/') {
-            crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+            crate::path::LookupStart {
+                fs: rd.fs,
+                ino: rd.ino,
+                dev: rd.dev,
+            }
         } else {
             let wd = match fp_slot {
                 Some(slot) => self.work_dir_of(slot),
                 None => rd,
             };
-            crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+            crate::path::LookupStart {
+                fs: wd.fs,
+                ino: wd.ino,
+                dev: wd.dev,
+            }
         };
         let (uid, gid) = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
             Some(fp) => (fp.eff_uid, fp.eff_gid),
@@ -2770,12 +2783,21 @@ impl VfsState {
         };
         let (walk, step) = crate::path::LookupWalk::begin(start, resolve, rd, uid, gid)
             .map_err(|e| e.to_errno())?;
-        let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step else {
+        let crate::path::WalkStep::Send {
+            fs_e,
+            dir_ino,
+            root_ino,
+        } = step
+        else {
             return Err(minix_types::EIO);
         };
         if let Some(wp) = self.worker_pool.get_mut(idx) {
             wp.cont = Some(crate::worker::WorkerCont::Path);
-            wp.path = Some(crate::worker::PathPending { walk, grant: 0, follow });
+            wp.path = Some(crate::worker::PathPending {
+                walk,
+                grant: 0,
+                follow,
+            });
         }
         self.send_lookup_for_slot(idx, fp_slot, fs_e, dir_ino, root_ino)
     }
@@ -2863,8 +2885,8 @@ impl VfsState {
         call: crate::fproc::SdevCall,
         aux: crate::fproc::SdevAux,
     ) -> Result<(), i32> {
-        let drv_e = crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
-            .ok_or(minix_types::EIO)?;
+        let drv_e =
+            crate::device_map::smap_endpt_by_dev(&self.smap_table, dev).ok_or(minix_types::EIO)?;
         let (_, sock_id) = crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
         let user = fp_slot
             .and_then(|s| self.fproc_table.get(s))
@@ -3164,8 +3186,7 @@ impl VfsState {
                     // `addr_len > 0` 时改）再**整块拷回用户**；拷贝失败就把那个
                     // 错误当状态回（C 的 `status = r`）。宿主下这次拷贝不可达，
                     // 所以这里如实回 EIO/EINVAL。
-                    let update =
-                        crate::socket::recvmsg_update(ctl_len, rflags as u32, addr_len);
+                    let update = crate::socket::recvmsg_update(ctl_len, rflags as u32, addr_len);
                     let _ = update;
                     if let crate::fproc::SdevAux::Buf(msgbuf) = block.aux {
                         // 取回用户那份 msghdr（生产件是跨空间拷贝）。
@@ -3278,8 +3299,7 @@ impl VfsState {
                 .unwrap_or(None)
                 .ok_or(minix_types::ENXIO)?
         } else {
-            crate::device_map::smap_endpt_by_dev(&self.smap_table, dev)
-                .ok_or(minix_types::EIO)?
+            crate::device_map::smap_endpt_by_dev(&self.smap_table, dev).ok_or(minix_types::EIO)?
         };
         // C `asynsend3(dmap_driver, &mess, AMF_NOREPLY)`（失败 panic——
         // 模型里传输失败折 EIO，调用方记进 `se->error`）。
@@ -3303,7 +3323,7 @@ impl VfsState {
         want: crate::select::SelOps,
         block: bool,
     ) -> Result<crate::select::SelOps, i32> {
-        use crate::select::{filter_step, FilterOutcome, SelOps as SO};
+        use crate::select::{FilterOutcome, SelOps as SO, filter_step};
         let sdev = {
             let filp = self
                 .filp_table
@@ -3361,15 +3381,24 @@ impl VfsState {
                 // 空手而回（0 就绪位）——filter 判"现在没得问"或在途。
                 Ok(SO::empty())
             }
-            FilterOutcome::Query { rops, clear_update, set_busy, set_block, .. } => {
+            FilterOutcome::Query {
+                rops,
+                clear_update,
+                set_busy,
+                set_block,
+                ..
+            } => {
                 // 驱动 busy 门（select.c:508-510/547-549）：同一驱动同一
                 // 时刻只许一张查询在途。
                 let busy = if is_char {
                     let major = ((dev & 0x000fff00) >> 8) as u32;
-                    self.dmap_table.get(major).map(|r| r.sel_busy).unwrap_or(true)
+                    self.dmap_table
+                        .get(major)
+                        .map(|r| r.sel_busy)
+                        .unwrap_or(true)
                 } else {
-                    let (num, _) = crate::device_map::split_smap_dev(dev)
-                        .ok_or(minix_types::EIO)?;
+                    let (num, _) =
+                        crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
                     self.smap_table
                         .entries
                         .iter()
@@ -3408,9 +3437,12 @@ impl VfsState {
                             .filp_table
                             .get_mut(crate::filp::FilpId(filp_idx))
                             .ok_or(minix_types::EIO)?;
-                        filp.select_flags |=
-                            (block_bits | if set_busy { crate::filp::FsfFlags::BUSY.bits() } else { 0 })
-                                as u8;
+                        filp.select_flags |= (block_bits
+                            | if set_busy {
+                                crate::filp::FsfFlags::BUSY.bits()
+                            } else {
+                                0
+                            }) as u8;
                         if is_char {
                             let major = ((dev & 0x000fff00) >> 8) as u32;
                             if let Some(row) = self.dmap_table.get_mut(major) {
@@ -3418,8 +3450,8 @@ impl VfsState {
                                 row.sel_owner = Some(filp_idx);
                             }
                         } else {
-                            let (num, _) = crate::device_map::split_smap_dev(dev)
-                                .ok_or(minix_types::EIO)?;
+                            let (num, _) =
+                                crate::device_map::split_smap_dev(dev).ok_or(minix_types::EIO)?;
                             if let Some(row) =
                                 self.smap_table.entries.iter_mut().find(|r| r.num == num)
                             {
@@ -3439,7 +3471,9 @@ impl VfsState {
     /// 槽的"有 fd 在等驱动答复吗"（`is_deferred` 的第二参：任何参与 filp
     /// 带 `FSF_UPDATE | FSF_BUSY`）。
     pub(crate) fn select_any_update_or_busy(&self, s: usize) -> bool {
-        let Some(se) = self.select_table.get(s) else { return false };
+        let Some(se) = self.select_table.get(s) else {
+            return false;
+        };
         se.filps.iter().flatten().any(|e| {
             self.filp_table
                 .get(crate::filp::FilpId(e.filp))
@@ -3453,7 +3487,9 @@ impl VfsState {
 
     /// `restart_proc`（select.c:1303-1312）：有结果且不再 deferred 就收尾。
     fn select_restart_proc(&mut self, s: usize) {
-        let Some(se) = self.select_table.get(s) else { return };
+        let Some(se) = self.select_table.get(s) else {
+            return;
+        };
         let (nready, error, block) = (se.nready, se.error, se.block);
         let deferred = self.select_any_update_or_busy(s);
         if crate::select::should_return(nready, error != 0, block, deferred) {
@@ -3481,7 +3517,11 @@ impl VfsState {
                     ops: crate::select::SelOps::from_bits_truncate(f.select_ops),
                     flags: crate::filp::FsfFlags::from_bits_truncate(f.select_flags as u32),
                     pipe_ops: crate::select::SelOps::from_bits_truncate(f.pipe_select_ops),
-                    dev: if f.select_dev != 0 { Some(f.select_dev) } else { None },
+                    dev: if f.select_dev != 0 {
+                        Some(f.select_dev)
+                    } else {
+                        None
+                    },
                 };
                 let out = crate::select::cancel_one(&mut sel);
                 f.selectors = sel.selectors as u8;
@@ -3499,8 +3539,7 @@ impl VfsState {
                     row.sel_owner = None; // leave _busy set（C select.c:763）
                 }
                 if let Some((num, _)) = crate::device_map::split_smap_dev(dev)
-                    && let Some(row) =
-                        self.smap_table.entries.iter_mut().find(|r| r.num == num)
+                    && let Some(row) = self.smap_table.entries.iter_mut().find(|r| r.num == num)
                     && row.sel_owner == Some(filp_idx)
                 {
                     row.sel_owner = None;
@@ -3575,7 +3614,10 @@ impl VfsState {
                 false,
             );
         }
-        let fp = self.fproc_table.get_mut(fp_slot).ok_or(minix_types::EINVAL)?;
+        let fp = self
+            .fproc_table
+            .get_mut(fp_slot)
+            .ok_or(minix_types::EINVAL)?;
         fp.blocked_on = crate::fproc::BlockedOn::Select;
         // 释放 worker 槽（进程级挂起；与 `suspend_on_sdev` 同模式——
         // C 的 `suspend()` 之后 worker 作业即告终）。
@@ -3595,7 +3637,9 @@ impl VfsState {
     ) -> Result<i32, i32> {
         // 释放前取走收尾要的数据（cancel 会放掉槽）。
         let (error, nready, vir, sets) = {
-            let Some(se) = self.select_table.get(s) else { return Ok(0) };
+            let Some(se) = self.select_table.get(s) else {
+                return Ok(0);
+            };
             (
                 se.error,
                 se.nready,
@@ -3640,7 +3684,9 @@ impl VfsState {
     fn select_filp_status(&mut self, filp_idx: usize, status: i32) {
         let mut found = alloc::vec::Vec::new();
         for s in 0..crate::select::MAXSELECTS {
-            let Some(se) = self.select_table.get(s) else { continue };
+            let Some(se) = self.select_table.get(s) else {
+                continue;
+            };
             if se.requestor.is_none() {
                 continue;
             }
@@ -3657,14 +3703,16 @@ impl VfsState {
                     let nfds = se.nfds;
                     if fd < nfds {
                         let want = (
-                            se.vir_readfds != 0
-                                && crate::select::bit_of(&se.readfds, fd),
-                            se.vir_writefds != 0
-                                && crate::select::bit_of(&se.writefds, fd),
-                            se.vir_errorfds != 0
-                                && crate::select::bit_of(&se.errorfds, fd),
+                            se.vir_readfds != 0 && crate::select::bit_of(&se.readfds, fd),
+                            se.vir_writefds != 0 && crate::select::bit_of(&se.writefds, fd),
+                            se.vir_errorfds != 0 && crate::select::bit_of(&se.errorfds, fd),
                         );
-                        let (a, b, c, mut n) = (&mut se.ready_readfds, &mut se.ready_writefds, &mut se.ready_errorfds, se.nready);
+                        let (a, b, c, mut n) = (
+                            &mut se.ready_readfds,
+                            &mut se.ready_writefds,
+                            &mut se.ready_errorfds,
+                            se.nready,
+                        );
                         crate::select::ops2tab_store(ops, fd, want, (a, b, c), &mut n);
                         se.nready = n;
                     }
@@ -3681,12 +3729,13 @@ impl VfsState {
     /// `select_cdev_reply1`（select.c:1004-1070）：字符驱动的一型回复。
     /// 设备不匹配时**保持**在途标记（C 同款：等真正的回复）。
     pub fn select_cdev_reply1(&mut self, driver_e: Endpoint, minor: u32, status: i32) {
-        let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e)
-        else {
+        let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e) else {
             return;
         };
         let dev = (((major as u64) << 8) & 0x000fff00) | ((minor as u64) & 0xff);
-        let Some(row) = self.dmap_table.get(major) else { return };
+        let Some(row) = self.dmap_table.get(major) else {
+            return;
+        };
         if !row.sel_busy {
             return; // 没人等这张回复
         }
@@ -3762,7 +3811,11 @@ impl VfsState {
             f.select_ops = out.ops.bits();
             f.select_flags = out.flags.bits() as u8;
         }
-        let broadcast = if status < 0 { status } else { out.broadcast.to_status() };
+        let broadcast = if status < 0 {
+            status
+        } else {
+            out.broadcast.to_status()
+        };
         self.select_filp_status(filp_idx, broadcast);
     }
 
@@ -3773,8 +3826,7 @@ impl VfsState {
         if status == 0 {
             return; // C：weird status
         }
-        let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e)
-        else {
+        let Some(major) = crate::device_map::get_by_endpt(&self.dmap_table, driver_e) else {
             return;
         };
         let dev = (((major as u64) << 8) & 0x000fff00) | ((minor as u64) & 0xff);
@@ -3826,12 +3878,9 @@ impl VfsState {
                     let nfds = se.nfds;
                     if fd < nfds {
                         let want = (
-                            se.vir_readfds != 0
-                                && crate::select::bit_of(&se.readfds, fd),
-                            se.vir_writefds != 0
-                                && crate::select::bit_of(&se.writefds, fd),
-                            se.vir_errorfds != 0
-                                && crate::select::bit_of(&se.errorfds, fd),
+                            se.vir_readfds != 0 && crate::select::bit_of(&se.readfds, fd),
+                            se.vir_writefds != 0 && crate::select::bit_of(&se.writefds, fd),
+                            se.vir_errorfds != 0 && crate::select::bit_of(&se.errorfds, fd),
                         );
                         let (a, b, c, mut n) = (
                             &mut se.ready_readfds,
@@ -3858,9 +3907,7 @@ impl VfsState {
     pub fn select_restart_filps(&mut self) {
         for s in 0..crate::select::MAXSELECTS {
             let (filps, block, requestor) = match self.select_table.get(s) {
-                Some(se) if se.requestor.is_some() => {
-                    (se.filps.clone(), se.block, se.requestor)
-                }
+                Some(se) if se.requestor.is_some() => (se.filps.clone(), se.block, se.requestor),
                 _ => continue,
             };
             let deferred = self.select_any_update_or_busy(s);
@@ -3884,28 +3931,22 @@ impl VfsState {
                 if busy || !update {
                     continue;
                 }
-                if !matches!(kind, crate::select::FdKind::Char | crate::select::FdKind::Sock) {
+                if !matches!(
+                    kind,
+                    crate::select::FdKind::Char | crate::select::FdKind::Sock
+                ) {
                     // C 断言只处理字符/套接字（select.c:1237-1240）。
                     continue;
                 }
                 let is_char = kind == crate::select::FdKind::Char;
-                match self.select_request_driver(
-                    requestor,
-                    e.filp,
-                    is_char,
-                    ops,
-                    block,
-                ) {
+                match self.select_request_driver(requestor, e.filp, is_char, ops, block) {
                     Ok(ready) => {
                         if !ready.is_empty_real() {
                             let se = self.select_table.get_mut(s).unwrap();
                             let want = (
-                                se.vir_readfds != 0
-                                    && crate::select::bit_of(&se.readfds, fd),
-                                se.vir_writefds != 0
-                                    && crate::select::bit_of(&se.writefds, fd),
-                                se.vir_errorfds != 0
-                                    && crate::select::bit_of(&se.errorfds, fd),
+                                se.vir_readfds != 0 && crate::select::bit_of(&se.readfds, fd),
+                                se.vir_writefds != 0 && crate::select::bit_of(&se.writefds, fd),
+                                se.vir_errorfds != 0 && crate::select::bit_of(&se.errorfds, fd),
                             );
                             let (a, b, c, mut n) = (
                                 &mut se.ready_readfds,
@@ -3940,7 +3981,9 @@ impl VfsState {
         // 找最小非零 expiry。
         let mut min: Option<(usize, u64)> = None;
         for s in 0..crate::select::MAXSELECTS {
-            let Some(se) = self.select_table.get(s) else { continue };
+            let Some(se) = self.select_table.get(s) else {
+                continue;
+            };
             if se.requestor.is_none() || se.expiry == 0 {
                 continue;
             }
@@ -3948,11 +3991,15 @@ impl VfsState {
                 min = Some((s, se.expiry));
             }
         }
-        let Some((_, elapsed)) = min else { return false };
+        let Some((_, elapsed)) = min else {
+            return false;
+        };
         // 其余槽同减这段时间；到期的槽（expiry == elapsed）收尾。
         let mut fired = alloc::vec::Vec::new();
         for s in 0..crate::select::MAXSELECTS {
-            let Some(se) = self.select_table.get(s) else { continue };
+            let Some(se) = self.select_table.get(s) else {
+                continue;
+            };
             if se.requestor.is_none() || se.expiry == 0 {
                 continue;
             }
@@ -3964,7 +4011,9 @@ impl VfsState {
             }
         }
         for s in fired {
-            let Some(se) = self.select_table.get(s) else { continue };
+            let Some(se) = self.select_table.get(s) else {
+                continue;
+            };
             if se.requestor.is_none() {
                 continue;
             }
@@ -4011,9 +4060,7 @@ impl VfsState {
         // int32 sock_id@0; int status@4 }`（ipc.h）。
         let raw = unsafe { &msg.m_u.raw };
         match msg.m_type {
-            t if t == minix_chardriver::protocol::CdevReplyKind::SelectImmediate
-                as i32 =>
-            {
+            t if t == minix_chardriver::protocol::CdevReplyKind::SelectImmediate as i32 => {
                 let status = i32::from_le_bytes(raw[0..4].try_into().unwrap());
                 let minor = u32::from_le_bytes(raw[4..8].try_into().unwrap());
                 self.select_cdev_reply1(msg.m_source, minor, status);
@@ -4026,7 +4073,8 @@ impl VfsState {
                 return Ok(usize::MAX);
             }
             t if t == minix_sockdriver::sdev::SdevReply::SelectReply1 as i32
-                || t == minix_sockdriver::sdev::SdevReply::SelectReply2 as i32 => {
+                || t == minix_sockdriver::sdev::SdevReply::SelectReply2 as i32 =>
+            {
                 // C sdev.c:1017-1028：先按来源找 smap 行（`sp`），再拼
                 // `make_smap_dev(sp->smap_num, sock_id)`——注意用行的
                 // **一基 num 字段**，`smap_by_endpt` 给的是数组位置。
@@ -4247,11 +4295,19 @@ impl VfsState {
         }
         // C `do_chown:154-158`：`-1` 折算成现有值，然后界检查。
         let new_uid = crate::protect::keep_id(
-            if uid == crate::protect::ID_EXPIRED { None } else { Some(uid) },
+            if uid == crate::protect::ID_EXPIRED {
+                None
+            } else {
+                Some(uid)
+            },
             node_uid,
         );
         let new_gid = crate::protect::keep_id(
-            if gid == crate::protect::ID_EXPIRED { None } else { Some(gid) },
+            if gid == crate::protect::ID_EXPIRED {
+                None
+            } else {
+                Some(gid)
+            },
             node_gid,
         );
         if crate::protect::check_id_bounds(new_uid, new_gid).is_err() {
@@ -4393,12 +4449,12 @@ impl VfsState {
             .unwrap_or(false);
         // C `time.c:123-130` 的三条（顺序即优先级：属主门 → 写权限退化门 →
         // 只读门覆盖一切）。
-        let mut verdict: Result<(), i32> =
-            if node_uid == eff_uid || eff_uid == crate::link::SU_UID {
-                Ok(())
-            } else {
-                Err(minix_types::EPERM)
-            };
+        let mut verdict: Result<(), i32> = if node_uid == eff_uid || eff_uid == crate::link::SU_UID
+        {
+            Ok(())
+        } else {
+            Err(minix_types::EPERM)
+        };
         if verdict.is_err()
             && atime.1 == crate::open::UTIME_NOW
             && mtime.1 == crate::open::UTIME_NOW
@@ -4485,13 +4541,7 @@ impl VfsState {
             worker: idx,
             grant: 0, // 无数据面
             user,
-            req: crate::request::encode_utime(
-                ino,
-                actime,
-                modtime,
-                acnsec as u32,
-                modnsec as u32,
-            ),
+            req: crate::request::encode_utime(ino, actime, modtime, acnsec as u32, modnsec as u32),
         });
     }
 
@@ -4534,12 +4584,8 @@ impl VfsState {
             return;
         }
         // 非超级用户且文件不在自己的组里就清 setgid（protect.c:120-121）。
-        let new_mode = crate::protect::strip_setgid(
-            eff_uid == crate::link::SU_UID,
-            node_gid,
-            eff_gid,
-            mode,
-        );
+        let new_mode =
+            crate::protect::strip_setgid(eff_uid == crate::link::SU_UID, node_gid, eff_gid, mode);
         let vmnt = match self.vmnt_table.find_by_fs(fs_e) {
             Some(v) => v.0,
             None => {
@@ -4763,10 +4809,15 @@ impl VfsState {
                 crate::worker::WorkerCont::Status => {
                     // 纯状态：无载荷、无副作用——收尾的默认路径就够了。
                 }
-                crate::worker::WorkerCont::Freesp { vnode, zero_len, start } => {
+                crate::worker::WorkerCont::Freesp {
+                    vnode,
+                    zero_len,
+                    start,
+                } => {
                     // C misc.c:236-237：`F_FREESP` 的零长（`l_len == 0`）
                     // 在 `req_ftrunc` 成功后把 `v_size` 收到 `start`。
-                    if status == 0 && zero_len
+                    if status == 0
+                        && zero_len
                         && let Some(v) = self.vnode_table.get_mut(crate::vnode::VnodeId(vnode))
                         && (start < 0 || (start as u64) <= v.size)
                     {
@@ -4925,8 +4976,7 @@ impl VfsState {
                         match crate::bdev::RetryState(retries).step(dstatus) {
                             crate::bdev::RetryVerdict::Again => {
                                 let major = ((dev & 0x000fff00) >> 8) as u32;
-                                let drv_e =
-                                    self.dmap_table.get(major).and_then(|row| row.driver);
+                                let drv_e = self.dmap_table.get(major).and_then(|row| row.driver);
                                 let mut resent = false;
                                 if let Some(drv_e) = drv_e {
                                     // 重发**同一条**请求（C 的 `*mess_ptr =
@@ -4943,9 +4993,8 @@ impl VfsState {
                                             retries: retries + 1,
                                         });
                                     }
-                                    resent = self
-                                        .send_drv_for_slot(idx, fp_slot, drv_e, &m)
-                                        .is_ok();
+                                    resent =
+                                        self.send_drv_for_slot(idx, fp_slot, drv_e, &m).is_ok();
                                 }
                                 if resent {
                                     continue;
@@ -4981,7 +5030,12 @@ impl VfsState {
                         }
                     }
                 }
-                crate::worker::WorkerCont::BdevNewDriver { fd, filp, vnode, dev } => {
+                crate::worker::WorkerCont::BdevNewDriver {
+                    fd,
+                    filp,
+                    vnode,
+                    dev,
+                } => {
                     // C `open.c:210-216`：`req_newdriver` 成功就照常回 fd；
                     // 失败要**先给驱动发 `BDEV_CLOSE`** 把刚打开的设备关掉，
                     // 再回 `ENXIO`（close 的返回值被丢掉）。
@@ -5113,7 +5167,11 @@ impl VfsState {
                         status = i32::from_le_bytes(raw[4..8].try_into().unwrap());
                     }
                 }
-                crate::worker::WorkerCont::SdevSocket { pair, flags, smap_num } => {
+                crate::worker::WorkerCont::SdevSocket {
+                    pair,
+                    flags,
+                    smap_num,
+                } => {
                     // C `sdev_socket`（sdev.c:140-170）：回复号必须是
                     // `SDEV_SOCKET_REPLY`（否则 EIO），`sock_id < 0` 就是驱动
                     // 报的错误；成功后设备号 = `make_smap_dev(行号, sock_id)`。
@@ -5268,10 +5326,9 @@ impl VfsState {
                                     let _ = crate::filedes::close_fd(fp, fd0, &mut self.filp_table);
                                 }
                                 if let Some(wp) = self.worker_pool.get_mut(idx) {
-                                    wp.cont =
-                                        Some(crate::worker::WorkerCont::SdevCloseThenReply {
-                                            status: e,
-                                        });
+                                    wp.cont = Some(crate::worker::WorkerCont::SdevCloseThenReply {
+                                        status: e,
+                                    });
                                 }
                                 if self
                                     .send_sdev_simple(
@@ -5486,7 +5543,12 @@ impl VfsState {
                         value_reply = true;
                     }
                 }
-                crate::worker::WorkerCont::SyncMounts { targets, count, at, first_err } => {
+                crate::worker::WorkerCont::SyncMounts {
+                    targets,
+                    count,
+                    at,
+                    first_err,
+                } => {
                     // C `do_sync`/`do_fsync` 的循环在单线程模型里的形态：每条
                     // 回复到达就发下一条，发完报 `first_err`（C 把 `req_sync`
                     // 的返回值丢掉，只留加锁错误）。
@@ -5571,10 +5633,8 @@ impl VfsState {
                     // 路径遍历的续走：取出现场 → revoke → 解回复 →
                     // `walk.resume` → 再发一条 lookup（放回现场、继续挂起）
                     // 或做相位 2（`PathFollow`）。
-                    let Some(mut pending) = self
-                        .worker_pool
-                        .get_mut(idx)
-                        .and_then(|wp| wp.path.take())
+                    let Some(mut pending) =
+                        self.worker_pool.get_mut(idx).and_then(|wp| wp.path.take())
                     else {
                         continue;
                     };
@@ -5590,12 +5650,19 @@ impl VfsState {
                             Some(res) => {
                                 let rd = self.root_dir_of(fp_slot);
                                 let mounts = self.mounted_fs_list();
-                                pending.walk.resume(res, rd, &mounts).map_err(PathFail::Path)
+                                pending
+                                    .walk
+                                    .resume(res, rd, &mounts)
+                                    .map_err(PathFail::Path)
                             }
                             None => Err(PathFail::Status(status)),
                         };
                     match resumed {
-                        Ok(crate::path::WalkStep::Send { fs_e, dir_ino, root_ino }) => {
+                        Ok(crate::path::WalkStep::Send {
+                            fs_e,
+                            dir_ino,
+                            root_ino,
+                        }) => {
                             // 再发一条 REQ_LOOKUP（路径从 walk 的游标拷进槽内
                             // scratch + NUL），现场放回，继续挂起。
                             if let Some(wp) = self.worker_pool.get_mut(idx) {
@@ -5621,25 +5688,21 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENOTDIR);
                                     continue;
                                 }
-                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (
-                                            fp.real_uid,
-                                            fp.real_gid,
-                                            fp.eff_uid,
-                                            fp.eff_gid,
-                                            fp.supplemental_groups[..fp.ngroups.min(16)]
-                                                .to_vec(),
-                                        ),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (
+                                        fp.real_uid,
+                                        fp.real_gid,
+                                        fp.eff_uid,
+                                        fp.eff_gid,
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                                    ),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
                                 let readonly_fs = self
                                     .vmnt_table
                                     .find_by_fs(node.fs_e)
@@ -5684,11 +5747,7 @@ impl VfsState {
                                     ) {
                                         Ok(l) => l,
                                         Err(e) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                e.to_errno(),
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, e.to_errno());
                                             continue;
                                         }
                                     };
@@ -5697,11 +5756,7 @@ impl VfsState {
                                     ) {
                                         Ok(pair) => pair,
                                         Err(e) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                e.to_errno(),
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, e.to_errno());
                                             continue;
                                         }
                                     };
@@ -5740,12 +5795,7 @@ impl VfsState {
                                     continue;
                                 }
                                 if let Err(e) = self.send_unlink_for_slot(
-                                    idx,
-                                    fp_slot,
-                                    node.fs_e,
-                                    node.ino,
-                                    &entry,
-                                    rmdir,
+                                    idx, fp_slot, node.fs_e, node.ino, &entry, rmdir,
                                 ) {
                                     self.finish_worker_job(idx, fp_slot, e);
                                 }
@@ -5773,12 +5823,7 @@ impl VfsState {
                                     continue;
                                 }
                                 if let Err(e) = self.send_unlink_for_slot(
-                                    idx,
-                                    fp_slot,
-                                    dir_fs_e,
-                                    dir_ino,
-                                    &entry,
-                                    rmdir,
+                                    idx, fp_slot, dir_fs_e, dir_ino, &entry, rmdir,
                                 ) {
                                     self.finish_worker_job(idx, fp_slot, e);
                                 }
@@ -5803,7 +5848,8 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                     continue;
                                 };
-                                match self.begin_statvfs(idx, fp_slot, vmnt_idx.0, user_buf, flags) {
+                                match self.begin_statvfs(idx, fp_slot, vmnt_idx.0, user_buf, flags)
+                                {
                                     Ok(()) => {}
                                     Err(e) => self.finish_worker_job(idx, fp_slot, e),
                                 }
@@ -5826,37 +5872,28 @@ impl VfsState {
                                     ) {
                                         Ok(l) => l,
                                         Err(e) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                e.to_errno(),
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, e.to_errno());
                                             continue;
                                         }
                                     };
-                                    let (uid, gid) = match fp_slot
-                                        .and_then(|s| self.fproc_table.get(s))
-                                    {
-                                        Some(fp) => (fp.eff_uid, fp.eff_gid),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                    let (uid, gid) =
+                                        match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                            Some(fp) => (fp.eff_uid, fp.eff_gid),
+                                            None => {
+                                                self.finish_worker_job(
+                                                    idx,
+                                                    fp_slot,
+                                                    minix_types::EINVAL,
+                                                );
+                                                continue;
+                                            }
+                                        };
                                     let (walk2, step2) = match crate::path::LookupWalk::begin(
                                         start, resolve, rd, uid, gid,
                                     ) {
                                         Ok(pair) => pair,
                                         Err(e) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                e.to_errno(),
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, e.to_errno());
                                             continue;
                                         }
                                     };
@@ -5892,7 +5929,9 @@ impl VfsState {
                                     }
                                     continue;
                                 }
-                                self.rename_stage_two(idx, fp_slot, node.fs_e, node.ino, entry, &new_path);
+                                self.rename_stage_two(
+                                    idx, fp_slot, node.fs_e, node.ino, entry, &new_path,
+                                );
                                 continue;
                             }
                             crate::worker::PathFollow::RenameOldSticky { entry, new_path } => {
@@ -5909,7 +5948,9 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, e.to_errno());
                                     continue;
                                 }
-                                self.rename_stage_two(idx, fp_slot, node.fs_e, node.ino, entry, &new_path);
+                                self.rename_stage_two(
+                                    idx, fp_slot, node.fs_e, node.ino, entry, &new_path,
+                                );
                                 continue;
                             }
                             crate::worker::PathFollow::RenameNew {
@@ -5924,25 +5965,21 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EXDEV);
                                     continue;
                                 }
-                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (
-                                            fp.real_uid,
-                                            fp.real_gid,
-                                            fp.eff_uid,
-                                            fp.eff_gid,
-                                            fp.supplemental_groups[..fp.ngroups.min(16)]
-                                                .to_vec(),
-                                        ),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (
+                                        fp.real_uid,
+                                        fp.real_gid,
+                                        fp.eff_uid,
+                                        fp.eff_gid,
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                                    ),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
                                 let readonly_fs = self
                                     .vmnt_table
                                     .find_by_fs(node.fs_e)
@@ -5974,12 +6011,7 @@ impl VfsState {
                                     continue;
                                 }
                                 if let Err(e) = self.send_rename_for_slot(
-                                    idx,
-                                    fp_slot,
-                                    node.fs_e,
-                                    old_ino,
-                                    node.ino,
-                                    &old_name,
+                                    idx, fp_slot, node.fs_e, old_ino, node.ino, &old_name,
                                     &new_entry,
                                 ) {
                                     self.finish_worker_job(idx, fp_slot, e);
@@ -6010,16 +6042,24 @@ impl VfsState {
                                     }
                                 };
                                 let start = if resolve.path.starts_with('/') {
-                                    crate::path::LookupStart { fs: rd.fs, ino: rd.ino, dev: rd.dev }
+                                    crate::path::LookupStart {
+                                        fs: rd.fs,
+                                        ino: rd.ino,
+                                        dev: rd.dev,
+                                    }
                                 } else {
-                                    let wd = fp_slot
-                                        .map(|s| self.work_dir_of(s))
-                                        .unwrap_or(crate::path::RootDir {
+                                    let wd = fp_slot.map(|s| self.work_dir_of(s)).unwrap_or(
+                                        crate::path::RootDir {
                                             ino: rd.ino,
                                             fs: rd.fs,
                                             dev: rd.dev,
-                                        });
-                                    crate::path::LookupStart { fs: wd.fs, ino: wd.ino, dev: wd.dev }
+                                        },
+                                    );
+                                    crate::path::LookupStart {
+                                        fs: wd.fs,
+                                        ino: wd.ino,
+                                        dev: wd.dev,
+                                    }
                                 };
                                 let (uid, gid) = match fp_slot.and_then(|s| self.fproc_table.get(s))
                                 {
@@ -6038,7 +6078,11 @@ impl VfsState {
                                         continue;
                                     }
                                 };
-                                let crate::path::WalkStep::Send { fs_e, dir_ino, root_ino } = step2
+                                let crate::path::WalkStep::Send {
+                                    fs_e,
+                                    dir_ino,
+                                    root_ino,
+                                } = step2
                                 else {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                     continue;
@@ -6078,25 +6122,21 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, minix_types::EXDEV);
                                     continue;
                                 }
-                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (
-                                            fp.real_uid,
-                                            fp.real_gid,
-                                            fp.eff_uid,
-                                            fp.eff_gid,
-                                            fp.supplemental_groups[..fp.ngroups.min(16)]
-                                                .to_vec(),
-                                        ),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (
+                                        fp.real_uid,
+                                        fp.real_gid,
+                                        fp.eff_uid,
+                                        fp.eff_gid,
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                                    ),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
                                 let readonly_fs = self
                                     .vmnt_table
                                     .find_by_fs(node.fs_e)
@@ -6143,11 +6183,7 @@ impl VfsState {
                                     ) {
                                         Ok(g) => (g, len),
                                         Err(_) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EIO,
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                             continue;
                                         }
                                     }
@@ -6176,29 +6212,29 @@ impl VfsState {
                                 });
                                 continue;
                             }
-                            crate::worker::PathFollow::Slink { entry, target_addr, target_len } => {
+                            crate::worker::PathFollow::Slink {
+                                entry,
+                                target_addr,
+                                target_len,
+                            } => {
                                 // C `do_slink:411-414`：`forbidden(fp, vp,
                                 // W_BIT|X_BIT)` 过了才发 `req_slink`（父目录
                                 // 的类型由遍历/FS 把关，这里没有单独的类型门）。
-                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (
-                                            fp.real_uid,
-                                            fp.real_gid,
-                                            fp.eff_uid,
-                                            fp.eff_gid,
-                                            fp.supplemental_groups[..fp.ngroups.min(16)]
-                                                .to_vec(),
-                                        ),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (
+                                        fp.real_uid,
+                                        fp.real_gid,
+                                        fp.eff_uid,
+                                        fp.eff_gid,
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                                    ),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
                                 let readonly_fs = self
                                     .vmnt_table
                                     .find_by_fs(node.fs_e)
@@ -6250,11 +6286,7 @@ impl VfsState {
                                     ) {
                                         Ok(g) => (g, len),
                                         Err(_) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EIO,
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                             continue;
                                         }
                                     }
@@ -6302,26 +6334,27 @@ impl VfsState {
                                 });
                                 continue;
                             }
-                            crate::worker::PathFollow::Utimens { atime, mtime, flags } => {
+                            crate::worker::PathFollow::Utimens {
+                                atime,
+                                mtime,
+                                flags,
+                            } => {
                                 // C `do_utimens` 的路径半（time.c:74-96）：未知
                                 // 标志在入口就拒（这里再核一次，防 follow 被
                                 // 别处构造）；`AT_SYMLINK_NOFOLLOW` 的遍历语义
                                 // 已在入口用于选 flags。
                                 let _ = flags;
                                 self.finish_utimens(
-                                    idx,
-                                    fp_slot,
-                                    node.fs_e,
-                                    node.ino,
-                                    node.uid,
-                                    node.gid,
-                                    node.mode,
-                                    atime,
-                                    mtime,
+                                    idx, fp_slot, node.fs_e, node.ino, node.uid, node.gid,
+                                    node.mode, atime, mtime,
                                 );
                                 continue;
                             }
-                            crate::worker::PathFollow::Mknod { entry, mode_bits, dev } => {
+                            crate::worker::PathFollow::Mknod {
+                                entry,
+                                mode_bits,
+                                dev,
+                            } => {
                                 // C `do_mknod:543-552`：父目录类型门 → `W|X`
                                 // 权限门 → `req_mknod`（名字走 direct grant，
                                 // 回复只有状态）。
@@ -6329,25 +6362,21 @@ impl VfsState {
                                     self.finish_worker_job(idx, fp_slot, minix_types::ENOTDIR);
                                     continue;
                                 }
-                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (
-                                            fp.real_uid,
-                                            fp.real_gid,
-                                            fp.eff_uid,
-                                            fp.eff_gid,
-                                            fp.supplemental_groups[..fp.ngroups.min(16)]
-                                                .to_vec(),
-                                        ),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (
+                                        fp.real_uid,
+                                        fp.real_gid,
+                                        fp.eff_uid,
+                                        fp.eff_gid,
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                                    ),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
                                 let readonly_fs = self
                                     .vmnt_table
                                     .find_by_fs(node.fs_e)
@@ -6397,11 +6426,7 @@ impl VfsState {
                                     ) {
                                         Ok(g) => (g, len),
                                         Err(_) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EIO,
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                             continue;
                                         }
                                     }
@@ -6425,8 +6450,7 @@ impl VfsState {
                                     grant,
                                     user,
                                     req: crate::request::encode_mknod(
-                                        dev, node.ino, mode_bits, eff_uid, eff_gid, grant,
-                                        name_len,
+                                        dev, node.ino, mode_bits, eff_uid, eff_gid, grant, name_len,
                                     ),
                                 });
                                 continue;
@@ -6434,25 +6458,21 @@ impl VfsState {
                             crate::worker::PathFollow::Truncate { length } => {
                                 // C `do_truncate:311-316`：`forbidden(fp, vp,
                                 // W_BIT)` 过了才动文件；大小不变那条在发送半里。
-                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (
-                                            fp.real_uid,
-                                            fp.real_gid,
-                                            fp.eff_uid,
-                                            fp.eff_gid,
-                                            fp.supplemental_groups[..fp.ngroups.min(16)]
-                                                .to_vec(),
-                                        ),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (
+                                        fp.real_uid,
+                                        fp.real_gid,
+                                        fp.eff_uid,
+                                        fp.eff_gid,
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                                    ),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
                                 let readonly_fs = self
                                     .vmnt_table
                                     .find_by_fs(node.fs_e)
@@ -6497,9 +6517,7 @@ impl VfsState {
                                     // 已登记请求：等 FS 回复（续接体收尾）。
                                     Ok(true) => {}
                                     // 大小不变：C 回 `r = OK`，作业就地完结。
-                                    Ok(false) => {
-                                        self.finish_worker_job(idx, fp_slot, 0)
-                                    }
+                                    Ok(false) => self.finish_worker_job(idx, fp_slot, 0),
                                     Err(e) => self.finish_worker_job(idx, fp_slot, e),
                                 }
                                 continue;
@@ -6512,15 +6530,8 @@ impl VfsState {
                                     continue;
                                 };
                                 self.finish_chown(
-                                    idx,
-                                    fp_slot,
-                                    node.fs_e,
-                                    node.ino,
-                                    node.uid,
-                                    node.gid,
-                                    uid,
-                                    gid,
-                                    vnode,
+                                    idx, fp_slot, node.fs_e, node.ino, node.uid, node.gid, uid,
+                                    gid, vnode,
                                 );
                                 continue;
                             }
@@ -6537,7 +6548,11 @@ impl VfsState {
                                 );
                                 continue;
                             }
-                            crate::worker::PathFollow::Rdlink { user, buf, buf_size } => {
+                            crate::worker::PathFollow::Rdlink {
+                                user,
+                                buf,
+                                buf_size,
+                            } => {
                                 // C `do_rdlink`（link.c:496-506）：不是符号链接
                                 // 就是 EINVAL（`PATH_RET_SYMLINK` 已经让 FS 不
                                 // 跟进末组件，所以这里拿到的是链接本身），是
@@ -6582,31 +6597,30 @@ impl VfsState {
                                 });
                                 continue;
                             }
-                            crate::worker::PathFollow::Access { user: _acc_user, access } => {
+                            crate::worker::PathFollow::Access {
+                                user: _acc_user,
+                                access,
+                            } => {
                                 // C `do_access`（protect.c:216-231）的本地半：
                                 // 走完就判权限——`forbidden` 用**真实** uid/gid
                                 // （protect.c:255-256 的 `job_call_nr ==
                                 // VFS_ACCESS` 特例），根用户另有 rwx 全给的面。
                                 let _ = _acc_user;
-                                let (real_uid, real_gid, eff_uid, eff_gid, supp) =
-                                    match fp_slot.and_then(|s| self.fproc_table.get(s)) {
-                                        Some(fp) => (
-                                            fp.real_uid,
-                                            fp.real_gid,
-                                            fp.eff_uid,
-                                            fp.eff_gid,
-                                            fp.supplemental_groups[..fp.ngroups.min(16)]
-                                                .to_vec(),
-                                        ),
-                                        None => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EINVAL,
-                                            );
-                                            continue;
-                                        }
-                                    };
+                                let (real_uid, real_gid, eff_uid, eff_gid, supp) = match fp_slot
+                                    .and_then(|s| self.fproc_table.get(s))
+                                {
+                                    Some(fp) => (
+                                        fp.real_uid,
+                                        fp.real_gid,
+                                        fp.eff_uid,
+                                        fp.eff_gid,
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
+                                    ),
+                                    None => {
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
+                                        continue;
+                                    }
+                                };
                                 let readonly_fs = self
                                     .vmnt_table
                                     .find_by_fs(node.fs_e)
@@ -6637,17 +6651,20 @@ impl VfsState {
                                 self.finish_worker_job(idx, fp_slot, status);
                                 continue;
                             }
-                            crate::worker::PathFollow::Open { user: _open_user, oflags } => {
+                            crate::worker::PathFollow::Open {
+                                user: _open_user,
+                                oflags,
+                            } => {
                                 let _ = _open_user;
                                 self.finish_open_local(idx, fp_slot, &node, oflags);
                                 continue;
                             }
                             crate::worker::PathFollow::Creat {
-                                    user,
-                                    oflags,
-                                    mode,
-                                    path: _creat_path,
-                                } => {
+                                user,
+                                oflags,
+                                mode,
+                                path: _creat_path,
+                            } => {
                                 // `path` 只在阶段 1 失败（ENOENT）时用得到，
                                 // 那条路走的是 Err 分支里的同一字段。
                                 // 阶段 1 走通＝文件已存在：`O_EXCL` 即
@@ -6662,7 +6679,12 @@ impl VfsState {
                                 self.finish_open_local(idx, fp_slot, &node, oflags);
                                 continue;
                             }
-                            crate::worker::PathFollow::CreatInDir { user, oflags, mode, entry } => {
+                            crate::worker::PathFollow::CreatInDir {
+                                user,
+                                oflags,
+                                mode,
+                                entry,
+                            } => {
                                 // 阶段 2 走通（父目录在）：发 `REQ_CREATE`
                                 // （C `new_node` → `req_create`）。
                                 let (grant, name_len) = {
@@ -6699,7 +6721,8 @@ impl VfsState {
                                         continue;
                                     }
                                 };
-                                let (uid, gid) = match fp_slot.and_then(|s| self.fproc_table.get(s)) {
+                                let (uid, gid) = match fp_slot.and_then(|s| self.fproc_table.get(s))
+                                {
                                     Some(fp) => (fp.eff_uid, fp.eff_gid),
                                     None => {
                                         let _ = self.revoke_grant(grant);
@@ -6708,10 +6731,8 @@ impl VfsState {
                                     }
                                 };
                                 if let Some(wp) = self.worker_pool.get_mut(idx) {
-                                    wp.cont = Some(crate::worker::WorkerCont::Create {
-                                        user,
-                                        oflags,
-                                    });
+                                    wp.cont =
+                                        Some(crate::worker::WorkerCont::Create { user, oflags });
                                 }
                                 self.pending_fs = Some(PendingFs {
                                     vmnt,
@@ -6744,15 +6765,10 @@ impl VfsState {
                                         fp.eff_uid,
                                         fp.real_gid,
                                         fp.eff_gid,
-                                        fp.supplemental_groups[..fp.ngroups.min(16)]
-                                            .to_vec(),
+                                        fp.supplemental_groups[..fp.ngroups.min(16)].to_vec(),
                                     ),
                                     None => {
-                                        self.finish_worker_job(
-                                            idx,
-                                            fp_slot,
-                                            minix_types::EINVAL,
-                                        );
+                                        self.finish_worker_job(idx, fp_slot, minix_types::EINVAL);
                                         continue;
                                     }
                                 };
@@ -6779,11 +6795,7 @@ impl VfsState {
                                     },
                                 );
                                 if let Err(e) = forbid {
-                                    self.finish_worker_job(
-                                        idx,
-                                        fp_slot,
-                                        e.to_errno(),
-                                    );
+                                    self.finish_worker_job(idx, fp_slot, e.to_errno());
                                     continue;
                                 }
                                 // 最后组件名进槽内 scratch + NUL，授权给
@@ -6799,23 +6811,17 @@ impl VfsState {
                                     wp.path_scratch[n] = 0;
                                     let addr = wp.path_scratch.as_ptr() as u64;
                                     let len = n + 1;
-                                    let grant = self
-                                        .grants
-                                        .grant_direct(
-                                            &minix_sys::syscall::DirectKernelCallTransport,
-                                            node.fs_e.get(),
-                                            addr,
-                                            len as u64,
-                                            minix_types::CpFlags::READ,
-                                        );
+                                    let grant = self.grants.grant_direct(
+                                        &minix_sys::syscall::DirectKernelCallTransport,
+                                        node.fs_e.get(),
+                                        addr,
+                                        len as u64,
+                                        minix_types::CpFlags::READ,
+                                    );
                                     match grant {
                                         Ok(g) => (g, len),
                                         Err(_) => {
-                                            self.finish_worker_job(
-                                                idx,
-                                                fp_slot,
-                                                minix_types::EIO,
-                                            );
+                                            self.finish_worker_job(idx, fp_slot, minix_types::EIO);
                                             continue;
                                         }
                                     }
@@ -6906,11 +6912,7 @@ impl VfsState {
                                         ) {
                                             Ok(l) => l,
                                             Err(pe) => {
-                                                self.finish_worker_job(
-                                                    idx,
-                                                    fp_slot,
-                                                    pe.to_errno(),
-                                                );
+                                                self.finish_worker_job(idx, fp_slot, pe.to_errno());
                                                 continue;
                                             }
                                         };
@@ -6922,9 +6924,8 @@ impl VfsState {
                                                 dev: rd.dev,
                                             }
                                         } else {
-                                            let wd = fp_slot
-                                                .map(|s| self.work_dir_of(s))
-                                                .unwrap_or(rd);
+                                            let wd =
+                                                fp_slot.map(|s| self.work_dir_of(s)).unwrap_or(rd);
                                             crate::path::LookupStart {
                                                 fs: wd.fs,
                                                 ino: wd.ino,
@@ -6956,31 +6957,26 @@ impl VfsState {
                                                     );
                                                     continue;
                                                 };
-                                                if let Some(wp) =
-                                                    self.worker_pool.get_mut(idx)
-                                                {
-                                                    wp.path = Some(
-                                                        crate::worker::PathPending {
-                                                            walk: walk2,
-                                                            grant: 0,
-                                                            follow: crate::worker::PathFollow::CreatInDir {
+                                                if let Some(wp) = self.worker_pool.get_mut(idx) {
+                                                    wp.path = Some(crate::worker::PathPending {
+                                                        walk: walk2,
+                                                        grant: 0,
+                                                        follow:
+                                                            crate::worker::PathFollow::CreatInDir {
                                                                 user,
                                                                 oflags,
                                                                 mode,
                                                                 entry: split.entry,
                                                             },
-                                                        },
-                                                    );
+                                                    });
                                                 }
                                                 if self
                                                     .send_lookup_for_slot(
-                                                        idx, fp_slot, fs_e, dir_ino,
-                                                        root_ino,
+                                                        idx, fp_slot, fs_e, dir_ino, root_ino,
                                                     )
                                                     .is_err()
                                                 {
-                                                    if let Some(wp) =
-                                                        self.worker_pool.get_mut(idx)
+                                                    if let Some(wp) = self.worker_pool.get_mut(idx)
                                                     {
                                                         wp.path = None;
                                                         wp.cont = None;
@@ -6994,11 +6990,7 @@ impl VfsState {
                                                 continue;
                                             }
                                             Err(pe) => {
-                                                self.finish_worker_job(
-                                                    idx,
-                                                    fp_slot,
-                                                    pe.to_errno(),
-                                                );
+                                                self.finish_worker_job(idx, fp_slot, pe.to_errno());
                                                 continue;
                                             }
                                         }
@@ -7228,11 +7220,7 @@ impl VfsState {
     /// 驱动与 FS 回复带来的状态**已经是负值**（那些进程同样是 `_SYSTEM`
     /// 构建），原样透传——`Error(e)` 只在 `e > 0` 时取负，两条来源不会互相
     /// 打架。成功值是 fd/字节数/0，一律非负，`Ok(v)` 不动。
-    pub fn queue_reply(
-        &mut self,
-        target: Endpoint,
-        result: crate::call_table::SyscallResult,
-    ) {
+    pub fn queue_reply(&mut self, target: Endpoint, result: crate::call_table::SyscallResult) {
         use crate::call_table::SyscallResult;
         if target == Endpoint::NONE || target.to_user_slot().is_none() {
             return;
@@ -7256,7 +7244,13 @@ impl VfsState {
         if self.pending_reply.is_some() {
             return;
         }
-        self.queue_reply_msg(target, Message { m_type: code, ..Message::default() });
+        self.queue_reply_msg(
+            target,
+            Message {
+                m_type: code,
+                ..Message::default()
+            },
+        );
     }
 
     /// 入队一条**带载荷**的回复（C 的 `job_m_out` 在返回前被臂填字段，
@@ -7346,10 +7340,7 @@ impl VfsState {
             return Err(CommError::Deadlock);
         }
         {
-            let w = self
-                .worker_pool
-                .get_mut(slot)
-                .ok_or(CommError::NoWorker)?;
+            let w = self.worker_pool.get_mut(slot).ok_or(CommError::NoWorker)?;
             // comm.c:146 — `assert(self->w_sendrec == NULL)`。
             assert!(
                 w.state != crate::worker::WorkerState::WaitingForFs,
@@ -7357,7 +7348,9 @@ impl VfsState {
             );
             w.set_waiting(fs_ep, *req);
         }
-        transport.send_fs(vmnt, fs_ep, slot, req, &mut self.comm).map(|_| ())
+        transport
+            .send_fs(vmnt, fs_ep, slot, req, &mut self.comm)
+            .map(|_| ())
     }
 
     /// `send_work`（comm.c:37-47）× `fs_sendmore`（comm.c:66-87）的
@@ -7523,7 +7516,9 @@ pub struct VfsIpc {
 
 impl VfsIpc {
     pub const fn new() -> Self {
-        Self { inner: minix_sys::ipc::DirectTrapTransport }
+        Self {
+            inner: minix_sys::ipc::DirectTrapTransport,
+        }
     }
 }
 
@@ -7584,7 +7579,10 @@ pub fn run() -> ! {
     // 屏障，等的就是这一条——不发则 PM 启动链停在这里）。
     send_reply(
         Endpoint::PM,
-        Message { m_type: minix_types::OK, ..Message::default() },
+        Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        },
     );
 
     // ── Boot 会合段：RS_INIT 消费（main.c:455-467 的对位时序位）──
@@ -7631,11 +7629,12 @@ pub fn run() -> ! {
 
     // main.c:492-497 — do_init_root 经 worker_start 启动；C 失败即 panic
     // （main.c:519-520），这里同权。
-    state.finish_init(
-        &minix_sys::syscall::DirectKernelCallTransport,
-        &minix_sys::ipc::DirectTrapTransport,
-    )
-    .unwrap_or_else(|e| panic!("vfs: failed to initialize root: {e:?}"));
+    state
+        .finish_init(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            &minix_sys::ipc::DirectTrapTransport,
+        )
+        .unwrap_or_else(|e| panic!("vfs: failed to initialize root: {e:?}"));
 
     // 启动段(main.c:441):向 DS 订阅驱动上线事件(失败远端忽略)。
     // C 进程启动时的 grant 表注册（`sys_setgrant`，safecopies.c 的
@@ -7737,7 +7736,11 @@ impl crate::vnode::FsCtl for PutNodeSink<'_> {
         ino: u64,
         count: usize,
     ) -> Result<(), crate::vnode::VnodeError> {
-        self.0.push(crate::vnode::PutNodeReq { fs_e: fs, ino, count });
+        self.0.push(crate::vnode::PutNodeReq {
+            fs_e: fs,
+            ino,
+            count,
+        });
         Ok(())
     }
 }
@@ -7795,8 +7798,8 @@ pub(crate) fn warm_grants(state: &mut VfsState) {
 
 #[cfg(test)]
 mod tests {
-    use crate::call_table::VfsCallNum;
     use super::*;
+    use crate::call_table::VfsCallNum;
     use crate::worker::WorkerState;
     use minix_types::{Endpoint, VFS_PM_INIT};
 
@@ -7807,16 +7810,25 @@ mod tests {
         v.dev = 1; // DevId(u64),非 NO_DEV 即可
     }
 
-
     /// 播种 worker 槽并置 `WaitingForFs`(fs_sendrec 的 sendmsg 半)。
     fn seed_waiting(state: &mut VfsState, slot: usize, task: Endpoint) {
-        let req = Message { m_type: 0x503, ..Message::default() };
-        state.worker_pool.get_mut(slot).unwrap().set_waiting(task, req);
+        let req = Message {
+            m_type: 0x503,
+            ..Message::default()
+        };
+        state
+            .worker_pool
+            .get_mut(slot)
+            .unwrap()
+            .set_waiting(task, req);
     }
 
     /// 构造 FS 回复消息(m_type 高 16 请求号、低 16 transid)。
     fn reply_msg(req: u32, slot: usize, source: Endpoint) -> Message {
-        let mut m = Message { m_type: crate::fs_comm::TransId::add(req, slot) as i32, ..Message::default() };
+        let mut m = Message {
+            m_type: crate::fs_comm::TransId::add(req, slot) as i32,
+            ..Message::default()
+        };
         m.m_source = source;
         m
     }
@@ -7901,8 +7913,16 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let start = crate::path::LookupStart {
+            fs: Endpoint::MFS,
+            ino: 1,
+            dev: 0,
+        };
+        let rd = crate::path::RootDir {
+            ino: 1,
+            fs: Endpoint::MFS,
+            dev: 0,
+        };
 
         // 情形一：走到的不是目录 → ENOTDIR（C open.c:587-588）。
         let (walk, _) = crate::path::LookupWalk::begin(
@@ -7913,7 +7933,10 @@ mod tests {
             0,
         )
         .unwrap();
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): mode = S_IFREG（非目录）。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -7957,7 +7980,10 @@ mod tests {
             0,
         )
         .unwrap();
-        let mut reply2 = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply2 = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): mode = S_IFDIR。
         unsafe {
             let raw = &mut reply2.m_u.raw;
@@ -7997,12 +8023,18 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx2).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
-        assert!(state.worker_pool.get_mut(idx2).unwrap().is_idle(), "槽已释放");
+        assert!(
+            state.worker_pool.get_mut(idx2).unwrap().is_idle(),
+            "槽已释放"
+        );
         let (t2, m2) = state.take_reply().expect("回复");
         assert_eq!(t2, user);
         assert_eq!(m2.m_type, 0, "REQ_MKDIR 成功 → 用户拿 0");
@@ -8027,7 +8059,10 @@ mod tests {
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.cont = Some(WorkerCont::Status);
-            wp.sendrec = Some(Message { m_type: minix_types::EEXIST, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: minix_types::EEXIST,
+                ..Message::default()
+            });
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
@@ -8057,8 +8092,16 @@ mod tests {
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
         // 现场：一趟已走完的遍历（follow = Open，无 O_TRUNC）。
-        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let start = crate::path::LookupStart {
+            fs: Endpoint::MFS,
+            ino: 1,
+            dev: 0,
+        };
+        let rd = crate::path::RootDir {
+            ino: 1,
+            fs: Endpoint::MFS,
+            dev: 0,
+        };
         let (walk, _) = crate::path::LookupWalk::begin(
             start,
             crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
@@ -8068,7 +8111,10 @@ mod tests {
         )
         .unwrap();
         // 回复：OK + ino=5 + mode=S_IFREG|0644（四域 node_details）。
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): 按 lookup_reply_off 填 ino 与 mode。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -8165,14 +8211,21 @@ mod tests {
         assert_eq!(p.fs_e, Endpoint::MFS, "先发列表里的第一个");
         assert!(matches!(
             state.worker_pool.get_mut(idx).unwrap().cont,
-            Some(WorkerCont::SyncMounts { count: 2, at: 1, .. })
+            Some(WorkerCont::SyncMounts {
+                count: 2,
+                at: 1,
+                ..
+            })
         ));
 
         // 第一条回复到达 → 发第二条。
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -8186,7 +8239,10 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -8221,8 +8277,16 @@ mod tests {
                 fp.real_uid = eff_uid;
                 fp.real_gid = eff_uid;
             }
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/a".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -8235,7 +8299,10 @@ mod tests {
             (idx, walk)
         };
         let done_reply = |ino: u64, mode: u32, uid: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -8251,7 +8318,11 @@ mod tests {
         let plant = |state: &mut VfsState, idx: usize, walk, reply: Message, follow: PathFollow| {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.cont = Some(WorkerCont::Path);
-            wp.path = Some(PathPending { walk, grant: 9, follow });
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow,
+            });
             wp.sendrec = Some(reply);
             wp.state = crate::worker::WorkerState::Busy;
         };
@@ -8309,7 +8380,13 @@ mod tests {
         );
         state.run_worker_continuations();
         assert!(matches!(
-            state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
+            state
+                .worker_pool
+                .get_mut(idx)
+                .unwrap()
+                .path
+                .as_ref()
+                .map(|p| &p.follow),
             Some(PathFollow::RenameOldSticky { .. })
         ));
         assert_eq!(
@@ -8344,7 +8421,11 @@ mod tests {
                 ino: 1,
                 dev: 0,
             };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk2, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/b".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -8429,7 +8510,10 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -8463,8 +8547,16 @@ mod tests {
                 fp.real_uid = eff_uid;
                 fp.real_gid = eff_uid;
             }
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/s".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -8477,7 +8569,10 @@ mod tests {
             (idx, walk)
         };
         let done_reply = |ino: u64, mode: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -8491,7 +8586,11 @@ mod tests {
         let plant = |state: &mut VfsState, idx: usize, walk, reply: Message, follow: PathFollow| {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.cont = Some(WorkerCont::Path);
-            wp.path = Some(PathPending { walk, grant: 9, follow });
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow,
+            });
             wp.sendrec = Some(reply);
             wp.state = crate::worker::WorkerState::Busy;
         };
@@ -8508,12 +8607,20 @@ mod tests {
             idx,
             walk.clone(),
             done_reply(0x55, crate::open::S_IFREG | 0o644),
-            PathFollow::LinkSrc { dst_path: "/d/new".to_string() },
+            PathFollow::LinkSrc {
+                dst_path: "/d/new".to_string(),
+            },
         );
         state.run_worker_continuations();
         assert!(state.take_reply().is_none(), "转场不该回用户");
         assert!(matches!(
-            state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
+            state
+                .worker_pool
+                .get_mut(idx)
+                .unwrap()
+                .path
+                .as_ref()
+                .map(|p| &p.follow),
             Some(PathFollow::LinkDst { src_ino: 0x55, .. })
         ));
         assert_eq!(
@@ -8540,7 +8647,11 @@ mod tests {
                 ino: 1,
                 dev: 0,
             };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk2, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -8618,7 +8729,10 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -8652,8 +8766,16 @@ mod tests {
                 fp.real_uid = eff_uid;
                 fp.real_gid = eff_uid;
             }
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -8666,7 +8788,10 @@ mod tests {
             (idx, walk)
         };
         let done_reply = |mode: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -8698,7 +8823,12 @@ mod tests {
         seed_vmnt0(&mut state);
         crate::main_loop::warm_grants(&mut state);
         let (idx, walk) = mk(&mut state, 2000);
-        plant(&mut state, idx, walk.clone(), done_reply(crate::open::S_IFDIR | 0o755));
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFDIR | 0o755),
+        );
         state.run_worker_continuations();
         assert!(state.pending_fs.is_none());
         assert_eq!(
@@ -8708,7 +8838,12 @@ mod tests {
 
         // ② root → 发 REQ_SLINK，双 grant 都在请求里。
         let (idx, walk) = mk(&mut state, crate::link::SU_UID);
-        plant(&mut state, idx, walk.clone(), done_reply(crate::open::S_IFDIR | 0o755));
+        plant(
+            &mut state,
+            idx,
+            walk.clone(),
+            done_reply(crate::open::S_IFDIR | 0o755),
+        );
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_SLINK");
         assert_eq!(p.req.m_type, minix_types::REQ_SLINK);
@@ -8732,7 +8867,10 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -8849,7 +8987,10 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let plain = crate::path::NodeDetails { dev: 0x0405, ..node };
+        let plain = crate::path::NodeDetails {
+            dev: 0x0405,
+            ..node
+        };
         state.finish_open_local(idx, Some(slot), &plain, crate::open::O_RDONLY);
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
@@ -8969,14 +9110,14 @@ mod tests {
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
         let vnode_idx = state.intern_vnode(&node).unwrap();
-        let fid = state
-            .filp_table
-            .alloc_filp(crate::open::R_BIT)
-            .unwrap();
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
         state.filp_table.inc_count(fid);
         state.fproc_table.get_mut(slot).unwrap().filps[0] = Some(fid.get());
         state.filp_table.get_mut(fid).unwrap().vnode = Some(vnode_idx);
-        let mut reply = Message { m_type: 0x580, ..Message::default() }; // BDEV_REPLY
+        let mut reply = Message {
+            m_type: 0x580,
+            ..Message::default()
+        }; // BDEV_REPLY
         // SAFETY(test): `mess_lblockdriver_lbdev_reply { int status; int id; }`
         // ——状态在首字，OK 为 0。
         unsafe {
@@ -9027,14 +9168,14 @@ mod tests {
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
         let vnode_idx = state.intern_vnode(&node).unwrap();
-        let fid = state
-            .filp_table
-            .alloc_filp(crate::open::R_BIT)
-            .unwrap();
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
         state.filp_table.inc_count(fid);
         state.fproc_table.get_mut(slot).unwrap().filps[0] = Some(fid.get());
         state.filp_table.get_mut(fid).unwrap().vnode = Some(vnode_idx);
-        let reply = Message { m_type: 0x580, ..Message::default() };
+        let reply = Message {
+            m_type: 0x580,
+            ..Message::default()
+        };
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.cont = Some(WorkerCont::BdevOpen {
@@ -9072,18 +9213,17 @@ mod tests {
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
         let vnode_idx = state.intern_vnode(&node).unwrap();
-        let fid = state
-            .filp_table
-            .alloc_filp(crate::open::R_BIT)
-            .unwrap();
+        let fid = state.filp_table.alloc_filp(crate::open::R_BIT).unwrap();
         state.filp_table.inc_count(fid);
         state.fproc_table.get_mut(slot).unwrap().filps[0] = Some(fid.get());
         state.filp_table.get_mut(fid).unwrap().vnode = Some(vnode_idx);
-        let mut reply = Message { m_type: 0x580, ..Message::default() };
+        let mut reply = Message {
+            m_type: 0x580,
+            ..Message::default()
+        };
         // SAFETY(test): ERESTART 在载荷首字（线上是负值）。
         unsafe {
-            reply.m_u.raw[0..4]
-                .copy_from_slice(&(-minix_types::ERESTART).to_le_bytes());
+            reply.m_u.raw[0..4].copy_from_slice(&(-minix_types::ERESTART).to_le_bytes());
         }
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -9129,8 +9269,16 @@ mod tests {
                 fp.real_uid = eff_uid;
                 fp.real_gid = eff_uid;
             }
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -9143,7 +9291,10 @@ mod tests {
             (idx, walk)
         };
         let done_reply = |mode: u32, uid: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -9233,7 +9384,10 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -9268,8 +9422,16 @@ mod tests {
                 fp.eff_gid = eff_uid;
                 fp.real_gid = eff_uid;
             }
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/f".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -9282,7 +9444,10 @@ mod tests {
             (idx, walk)
         };
         let done_reply = |mode: u32, size: u64, uid: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode/size/uid。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -9344,7 +9509,10 @@ mod tests {
             Some((user, 0)),
             "C 回 OK（不是新长度）"
         );
-        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+        assert!(
+            state.worker_pool.get_mut(idx).unwrap().is_idle(),
+            "槽已释放"
+        );
 
         // ③ 属主 + 真要截断 → 登记 REQ_FTRUNC。
         warm_grants(&mut state);
@@ -9392,8 +9560,16 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let start = crate::path::LookupStart {
+            fs: Endpoint::MFS,
+            ino: 1,
+            dev: 0,
+        };
+        let rd = crate::path::RootDir {
+            ino: 1,
+            fs: Endpoint::MFS,
+            dev: 0,
+        };
         let (walk, _) = crate::path::LookupWalk::begin(
             start,
             crate::path::Lookup::new("/f".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
@@ -9402,7 +9578,10 @@ mod tests {
             0,
         )
         .unwrap();
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -9421,7 +9600,10 @@ mod tests {
             wp.path = Some(PathPending {
                 walk,
                 grant: 9,
-                follow: PathFollow::Chown { uid: 2000, gid: 200 },
+                follow: PathFollow::Chown {
+                    uid: 2000,
+                    gid: 200,
+                },
             });
             wp.sendrec = Some(reply);
             wp.state = crate::worker::WorkerState::Busy;
@@ -9467,8 +9649,16 @@ mod tests {
                 .worker_pool
                 .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
                 .unwrap();
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/d".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -9481,7 +9671,10 @@ mod tests {
             (slot, idx, walk)
         };
         let done_reply = |mode: u32, uid: u32, gid: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -9499,7 +9692,11 @@ mod tests {
         let plant = |state: &mut VfsState, idx: usize, walk, reply: Message, follow: PathFollow| {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.cont = Some(WorkerCont::Path);
-            wp.path = Some(PathPending { walk, grant: 9, follow });
+            wp.path = Some(PathPending {
+                walk,
+                grant: 9,
+                follow,
+            });
             wp.sendrec = Some(reply);
             wp.state = crate::worker::WorkerState::Busy;
         };
@@ -9521,7 +9718,10 @@ mod tests {
             idx,
             walk.clone(),
             done_reply(crate::open::S_IFREG | 0o777, 0, 0),
-            PathFollow::Unlink { entry: "x".to_string(), rmdir: false },
+            PathFollow::Unlink {
+                entry: "x".to_string(),
+                rmdir: false,
+            },
         );
         state.run_worker_continuations();
         assert_eq!(
@@ -9545,7 +9745,10 @@ mod tests {
             idx,
             walk.clone(),
             done_reply(crate::open::S_IFDIR | 0o755, 0, 0),
-            PathFollow::Unlink { entry: "x".to_string(), rmdir: false },
+            PathFollow::Unlink {
+                entry: "x".to_string(),
+                rmdir: false,
+            },
         );
         state.run_worker_continuations();
         assert_eq!(
@@ -9568,7 +9771,10 @@ mod tests {
             idx,
             walk.clone(),
             done_reply(crate::open::S_IFDIR | 0o777 | crate::open::S_ISVTX, 0, 0),
-            PathFollow::Unlink { entry: "x".to_string(), rmdir: true },
+            PathFollow::Unlink {
+                entry: "x".to_string(),
+                rmdir: true,
+            },
         );
         state.run_worker_continuations();
         assert!(state.take_reply().is_none(), "子遍历还没走完，不能回用户");
@@ -9586,8 +9792,18 @@ mod tests {
         }
         // 现场换成了阶段 2（父目录身份随行）。
         assert!(matches!(
-            state.worker_pool.get_mut(idx).unwrap().path.as_ref().map(|p| &p.follow),
-            Some(PathFollow::UnlinkSticky { dir_ino: 7, rmdir: true, .. })
+            state
+                .worker_pool
+                .get_mut(idx)
+                .unwrap()
+                .path
+                .as_ref()
+                .map(|p| &p.follow),
+            Some(PathFollow::UnlinkSticky {
+                dir_ino: 7,
+                rmdir: true,
+                ..
+            })
         ));
         // 清掉这一轮的挂起现场再进下一条用例：留着的话，下一轮
         // `run_worker_continuations` 会拿**陈旧的回复**把这个槽再跑一遍，
@@ -9617,7 +9833,10 @@ mod tests {
             idx,
             walk.clone(),
             done_reply(crate::open::S_IFDIR | 0o777, 0, 0),
-            PathFollow::Unlink { entry: "x".to_string(), rmdir: false },
+            PathFollow::Unlink {
+                entry: "x".to_string(),
+                rmdir: false,
+            },
         );
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_UNLINK");
@@ -9635,7 +9854,10 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -9645,7 +9867,10 @@ mod tests {
             Some((user, 0)),
             "REQ_UNLINK 成功 → 用户拿 0"
         );
-        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+        assert!(
+            state.worker_pool.get_mut(idx).unwrap().is_idle(),
+            "槽已释放"
+        );
 
         // ⑤ 阶段 2：受害者属主不是调用方（1000 vs 0）→ EPERM。
         let (slot, idx, walk) = mk(&mut state);
@@ -9720,8 +9945,16 @@ mod tests {
                 .worker_pool
                 .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
                 .unwrap();
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -9734,7 +9967,10 @@ mod tests {
             (slot, idx, walk)
         };
         let done_reply = |uid: u32, gid: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -9812,8 +10048,11 @@ mod tests {
             fp.eff_uid = 1000;
             fp.eff_gid = 1000;
         }
-        state.vmnt_table.get_mut(crate::vmnt::VmntId(0)).unwrap().flags =
-            crate::vmnt::VmntFlags::empty();
+        state
+            .vmnt_table
+            .get_mut(crate::vmnt::VmntId(0))
+            .unwrap()
+            .flags = crate::vmnt::VmntFlags::empty();
         plant(&mut state, idx, walk.clone(), 0o2664, done_reply(1000, 0));
         state.run_worker_continuations();
         let p = state.pending_fs.as_ref().expect("已登记 REQ_CHMOD");
@@ -9836,11 +10075,13 @@ mod tests {
             _ => panic!("续接标识应是 Chmod"),
         };
         state.pending_fs = None;
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): 按 chmod_reply_off 填实际模式（整字，含 S_IFREG）。
         unsafe {
-            reply.m_u.raw[0..4]
-                .copy_from_slice(&(crate::open::S_IFREG | 0o750).to_le_bytes());
+            reply.m_u.raw[0..4].copy_from_slice(&(crate::open::S_IFREG | 0o750).to_le_bytes());
         }
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
@@ -9853,7 +10094,11 @@ mod tests {
             Some((user, 0))
         );
         assert_eq!(
-            state.vnode_table.get(crate::vnode::VnodeId(vnode)).unwrap().mode,
+            state
+                .vnode_table
+                .get(crate::vnode::VnodeId(vnode))
+                .unwrap()
+                .mode,
             crate::open::S_IFREG | 0o750,
             "缓存里的模式跟着 FS 回的实际值走"
         );
@@ -9873,8 +10118,16 @@ mod tests {
                 .worker_pool
                 .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
                 .unwrap();
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::RET_SYMLINK)
@@ -9887,7 +10140,10 @@ mod tests {
             (slot, idx, walk)
         };
         let done_reply = |mode: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 ino/mode。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -9914,7 +10170,11 @@ mod tests {
             wp.path = Some(PathPending {
                 walk: walk.clone(),
                 grant: 9,
-                follow: PathFollow::Rdlink { user, buf: 0x5000, buf_size: 128 },
+                follow: PathFollow::Rdlink {
+                    user,
+                    buf: 0x5000,
+                    buf_size: 128,
+                },
             });
             wp.sendrec = Some(done_reply(crate::open::S_IFREG | 0o644));
             wp.state = crate::worker::WorkerState::Busy;
@@ -9941,7 +10201,11 @@ mod tests {
             wp.path = Some(PathPending {
                 walk,
                 grant: 9,
-                follow: PathFollow::Rdlink { user, buf: 0x5000, buf_size: 128 },
+                follow: PathFollow::Rdlink {
+                    user,
+                    buf: 0x5000,
+                    buf_size: 128,
+                },
             });
             wp.sendrec = Some(done_reply(crate::open::S_IFLNK | 0o777));
             wp.state = crate::worker::WorkerState::Busy;
@@ -9973,7 +10237,10 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): 按 rdlink_reply_off 填 nbytes。
         unsafe {
             reply.m_u.raw[0..8].copy_from_slice(&12u64.to_le_bytes());
@@ -9999,7 +10266,10 @@ mod tests {
         {
             let wp = state.worker_pool.get_mut(idx3).unwrap();
             wp.cont = Some(WorkerCont::Rdlink { grant: 6 });
-            wp.sendrec = Some(Message { m_type: minix_types::ENOENT, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: minix_types::ENOENT,
+                ..Message::default()
+            });
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
@@ -10023,8 +10293,16 @@ mod tests {
                 .worker_pool
                 .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
                 .unwrap();
-            let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-            let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+            let start = crate::path::LookupStart {
+                fs: Endpoint::MFS,
+                ino: 1,
+                dev: 0,
+            };
+            let rd = crate::path::RootDir {
+                ino: 1,
+                fs: Endpoint::MFS,
+                dev: 0,
+            };
             let (walk, _) = crate::path::LookupWalk::begin(
                 start,
                 crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS)
@@ -10040,7 +10318,10 @@ mod tests {
             (slot, idx, walk)
         };
         let done_reply = |mode: u32, uid: u32, gid: u32| {
-            let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+            let mut reply = Message {
+                m_type: minix_types::OK,
+                ..Message::default()
+            };
             // SAFETY(test): 按 lookup_reply_off 填 mode/uid/gid（ino 用不着）。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -10055,7 +10336,12 @@ mod tests {
             }
             reply
         };
-        let run = |state: &mut VfsState, idx: usize, slot: minix_types::UserSlot, walk, access: u32, reply: Message| {
+        let run = |state: &mut VfsState,
+                   idx: usize,
+                   slot: minix_types::UserSlot,
+                   walk,
+                   access: u32,
+                   reply: Message| {
             {
                 let wp = state.worker_pool.get_mut(idx).unwrap();
                 wp.cont = Some(WorkerCont::Path);
@@ -10068,7 +10354,10 @@ mod tests {
                 wp.state = crate::worker::WorkerState::Busy;
             }
             state.run_worker_continuations();
-            assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+            assert!(
+                state.worker_pool.get_mut(idx).unwrap().is_idle(),
+                "槽已释放"
+            );
             let _ = slot;
             state.take_reply().expect("回复").1.m_type
         };
@@ -10086,7 +10375,14 @@ mod tests {
             fp.eff_gid = 1000;
         }
         assert_eq!(
-            run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            run(
+                &mut state,
+                idx,
+                slot,
+                walk.clone(),
+                0o2,
+                done_reply(crate::open::S_IFREG | 0o644, 0, 0)
+            ),
             0,
             "access 用真实 id 判：真实 id 是属主 → W_OK 允许"
         );
@@ -10099,7 +10395,14 @@ mod tests {
             fp.real_gid = 1000;
         }
         assert_eq!(
-            run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            run(
+                &mut state,
+                idx,
+                slot,
+                walk.clone(),
+                0o2,
+                done_reply(crate::open::S_IFREG | 0o644, 0, 0)
+            ),
             -minix_types::EACCES,
             "非属主对 0644 无写权"
         );
@@ -10111,7 +10414,14 @@ mod tests {
             fp.real_gid = 1000;
         }
         assert_eq!(
-            run(&mut state, idx, slot, walk.clone(), 0o4, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            run(
+                &mut state,
+                idx,
+                slot,
+                walk.clone(),
+                0o4,
+                done_reply(crate::open::S_IFREG | 0o644, 0, 0)
+            ),
             0
         );
 
@@ -10129,7 +10439,14 @@ mod tests {
             v.flags = crate::vmnt::VmntFlags::READONLY;
         }
         assert_eq!(
-            run(&mut state, idx, slot, walk.clone(), 0o2, done_reply(crate::open::S_IFREG | 0o644, 0, 0)),
+            run(
+                &mut state,
+                idx,
+                slot,
+                walk.clone(),
+                0o2,
+                done_reply(crate::open::S_IFREG | 0o644, 0, 0)
+            ),
             -minix_types::EROFS
         );
     }
@@ -10157,8 +10474,16 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let start = crate::path::LookupStart {
+            fs: Endpoint::MFS,
+            ino: 1,
+            dev: 0,
+        };
+        let rd = crate::path::RootDir {
+            ino: 1,
+            fs: Endpoint::MFS,
+            dev: 0,
+        };
         // 遍历时带的 id 故意与回复里的属主不同（7777 vs 0）：权限判断必须
         // 按 `node_details` 的属主算（C `advance` 的 `v_uid = res.uid`），
         // 按遍历参数算会把"非属主"误判成属主。
@@ -10170,7 +10495,10 @@ mod tests {
             7777,
         )
         .unwrap();
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): 按 lookup_reply_off 填 ino/mode/uid/gid。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -10209,7 +10537,11 @@ mod tests {
             let ino = u64::from_le_bytes(raw[0..8].try_into().unwrap());
             let trc_start = i64::from_le_bytes(raw[8..16].try_into().unwrap());
             let trc_end = i64::from_le_bytes(raw[16..24].try_into().unwrap());
-            assert_eq!((ino, trc_start, trc_end), (5, 0, 0), "截到 0（C truncate_vnode(vp, 0)）");
+            assert_eq!(
+                (ino, trc_start, trc_end),
+                (5, 0, 0),
+                "截到 0（C truncate_vnode(vp, 0)）"
+            );
         }
         assert!(matches!(
             state.worker_pool.get_mut(idx).unwrap().cont,
@@ -10221,7 +10553,10 @@ mod tests {
         state.pending_fs = None;
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: minix_types::EIO, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: minix_types::EIO,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -10232,7 +10567,10 @@ mod tests {
         let fp = state.fproc_table.get(slot).unwrap();
         let filp_id = fp.filps[0].expect("fd 指向 filp");
         let f = state.filp_table.get(crate::filp::FilpId(filp_id)).unwrap();
-        assert_eq!(f.flags, oflags as i32, "filp_flags 写原始 oflags（含 O_TRUNC）");
+        assert_eq!(
+            f.flags, oflags as i32,
+            "filp_flags 写原始 oflags（含 O_TRUNC）"
+        );
         assert!(state.worker_pool.get_mut(idx).unwrap().is_idle());
     }
 
@@ -10259,8 +10597,16 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let start = crate::path::LookupStart {
+            fs: Endpoint::MFS,
+            ino: 1,
+            dev: 0,
+        };
+        let rd = crate::path::RootDir {
+            ino: 1,
+            fs: Endpoint::MFS,
+            dev: 0,
+        };
         let (walk, _) = crate::path::LookupWalk::begin(
             start,
             crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
@@ -10272,7 +10618,10 @@ mod tests {
             1000,
         )
         .unwrap();
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): 0644 且属主是 0 → 1000 号只读。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -10305,7 +10654,10 @@ mod tests {
             state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, -minix_types::EACCES))
         );
-        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+        assert!(
+            state.worker_pool.get_mut(idx).unwrap().is_idle(),
+            "槽已释放"
+        );
     }
 
     /// `WorkerCont::Path` 的收尾接线：走完（`Ok`）后进相位 2（这里 grant 在
@@ -10327,8 +10679,16 @@ mod tests {
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
         // 现场：一趟已走完的遍历（路径随便给，续接只用到 follow）。
-        let start = crate::path::LookupStart { fs: Endpoint::MFS, ino: 1, dev: 0 };
-        let rd = crate::path::RootDir { ino: 1, fs: Endpoint::MFS, dev: 0 };
+        let start = crate::path::LookupStart {
+            fs: Endpoint::MFS,
+            ino: 1,
+            dev: 0,
+        };
+        let rd = crate::path::RootDir {
+            ino: 1,
+            fs: Endpoint::MFS,
+            dev: 0,
+        };
         let (walk, _step) = crate::path::LookupWalk::begin(
             start,
             crate::path::Lookup::new("/x".to_string(), crate::path::LookupFlags::NOFLAGS).unwrap(),
@@ -10338,7 +10698,10 @@ mod tests {
         )
         .unwrap();
         // 回复：OK + ino=5（四域 node_details）。
-        let mut reply = Message { m_type: minix_types::OK, ..Message::default() };
+        let mut reply = Message {
+            m_type: minix_types::OK,
+            ..Message::default()
+        };
         // SAFETY(test): 按 lookup_reply_off 填 ino。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -10357,7 +10720,10 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
-        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+        assert!(
+            state.worker_pool.get_mut(idx).unwrap().is_idle(),
+            "槽已释放"
+        );
         assert_eq!(
             state.take_reply().map(|(t, m)| (t, m.m_type)),
             Some((user, -minix_types::EIO)),
@@ -10389,7 +10755,10 @@ mod tests {
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let mut reply = Message { m_type: 0, ..Message::default() };
+        let mut reply = Message {
+            m_type: 0,
+            ..Message::default()
+        };
         // SAFETY(test): 按 transfer_reply_off 填回复（写 0x40 字节到 0x140）。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -10420,14 +10789,20 @@ mod tests {
             "写方向：新位置越过旧大小 → 抬高 vnode 大小（C read.c:255-259）"
         );
         assert_eq!(state.filp_table.get(fid).unwrap().pos, 0x140);
-        assert_eq!(state.take_reply().map(|(t, m)| (t, m.m_type)), Some((user, 0x40)));
+        assert_eq!(
+            state.take_reply().map(|(t, m)| (t, m.m_type)),
+            Some((user, 0x40))
+        );
 
         // 反向对照：新位置**未**越过旧大小 → 大小不动。
         let idx2 = state
             .worker_pool
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
-        let mut reply2 = Message { m_type: 0, ..Message::default() };
+        let mut reply2 = Message {
+            m_type: 0,
+            ..Message::default()
+        };
         // SAFETY(test): 位置 0x110（小于当前 0x140），写 0x10 字节。
         unsafe {
             let raw = &mut reply2.m_u.raw;
@@ -10451,7 +10826,11 @@ mod tests {
             wp.state = crate::worker::WorkerState::Busy;
         }
         state.run_worker_continuations();
-        assert_eq!(state.vnode_table.get(vid).unwrap().size, 0x140, "大小不回退");
+        assert_eq!(
+            state.vnode_table.get(vid).unwrap().size,
+            0x140,
+            "大小不回退"
+        );
         let _ = state.take_reply();
     }
 
@@ -10478,7 +10857,10 @@ mod tests {
             .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
             .unwrap();
         // 回复载荷：seek_pos@0、nbytes@8（共享偏移表）。
-        let mut reply = Message { m_type: 0, ..Message::default() };
+        let mut reply = Message {
+            m_type: 0,
+            ..Message::default()
+        };
         // SAFETY(test): 按 transfer_reply_off 填回复。
         unsafe {
             let raw = &mut reply.m_u.raw;
@@ -10539,7 +10921,10 @@ mod tests {
                 .worker_pool
                 .assign_first_fit(slot, crate::worker::WorkerFunc::DoWork, &Message::default())
                 .expect("空闲槽");
-            let mut reply = Message { m_type: status, ..Message::default() };
+            let mut reply = Message {
+                m_type: status,
+                ..Message::default()
+            };
             // SAFETY(test): 按 getdents_reply_off 填 seek_pos/nbytes。
             unsafe {
                 let raw = &mut reply.m_u.raw;
@@ -10548,12 +10933,18 @@ mod tests {
             }
             {
                 let wp = state.worker_pool.get_mut(idx).unwrap();
-                wp.cont = Some(WorkerCont::Getdents { grant: 5, filp: fid.get() });
+                wp.cont = Some(WorkerCont::Getdents {
+                    grant: 5,
+                    filp: fid.get(),
+                });
                 wp.sendrec = Some(reply);
                 wp.state = crate::worker::WorkerState::Busy;
             }
             state.run_worker_continuations();
-            assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+            assert!(
+                state.worker_pool.get_mut(idx).unwrap().is_idle(),
+                "槽已释放"
+            );
             state.take_reply().expect("回复").1.m_type
         };
 
@@ -10596,7 +10987,10 @@ mod tests {
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
             wp.cont = Some(WorkerCont::Fstat { grant: 7 });
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = crate::worker::WorkerState::Busy;
         }
@@ -10606,7 +11000,10 @@ mod tests {
             Some((user, 0)),
             "Fstat 成功：状态 0 回用户"
         );
-        assert!(state.worker_pool.get_mut(idx).unwrap().is_idle(), "槽已释放");
+        assert!(
+            state.worker_pool.get_mut(idx).unwrap().is_idle(),
+            "槽已释放"
+        );
 
         // ERESTART 折 EIO（C comm.c:161-163）。
         let idx2 = state
@@ -10677,7 +11074,10 @@ mod tests {
         // 回复真到了（`handle_fs_reply` 的落槽形态）：这时才跑。
         {
             let wp = state.worker_pool.get_mut(idx).unwrap();
-            wp.sendrec = Some(Message { m_type: 0, ..Message::default() });
+            wp.sendrec = Some(Message {
+                m_type: 0,
+                ..Message::default()
+            });
             wp.task = None;
             wp.state = WorkerState::Busy;
         }
@@ -10783,14 +11183,20 @@ mod tests {
             Err(FsReplyError::WrongTask)
         );
         assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
-        assert_eq!(state.worker_pool.get(2).unwrap().state, WorkerState::WaitingForFs);
+        assert_eq!(
+            state.worker_pool.get(2).unwrap().state,
+            WorkerState::WaitingForFs
+        );
     }
 
     #[test]
     fn test_handle_fs_reply_spurious_transid() {
         // 低 16 位非 IS_VFS_FS_TRANSID → SpuriousTransid。
         let mut state = VfsState::new();
-        let mut msg = Message { m_type: 0x503, ..Message::default() };
+        let mut msg = Message {
+            m_type: 0x503,
+            ..Message::default()
+        };
         msg.m_source = Endpoint::MFS;
         assert_eq!(
             state.handle_fs_reply(&msg, &VfsTransIdCodec),
@@ -10832,7 +11238,9 @@ mod tests {
         fail: bool,
     }
     impl minix_sys::ipc::IpcTransport for FlushIpc {
-        fn send(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn send(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
         fn receive(
             &self,
             _s: Endpoint,
@@ -10840,8 +11248,16 @@ mod tests {
         ) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
             Err(minix_sys::ipc::TrapStatus(-1))
         }
-        fn sendrec(&self, _d: Endpoint, _m: &mut Message) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
-        fn notify(&self, _d: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
+        fn sendrec(
+            &self,
+            _d: Endpoint,
+            _m: &mut Message,
+        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
+        fn notify(&self, _d: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
         fn sendnb(&self, d: Endpoint, m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
             if self.fail {
                 return Err(minix_sys::ipc::TrapStatus(-5));
@@ -10849,8 +11265,15 @@ mod tests {
             self.sent.borrow_mut().push((d, *m));
             Ok(())
         }
-        fn senda(&self, _t: &[minix_sys::ipc::AsyncSlot]) -> Result<(), minix_sys::ipc::TrapStatus> { Ok(()) }
-        fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> { Ok(0) }
+        fn senda(
+            &self,
+            _t: &[minix_sys::ipc::AsyncSlot],
+        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+            Ok(())
+        }
+        fn query_kerninfo_page(&self) -> Result<u64, minix_sys::ipc::TrapStatus> {
+            Ok(0)
+        }
     }
 
     /// 回复落地 + 补发的闭环Fixture:vmnt0(MFS) + 槽 2 在飞。
@@ -10868,9 +11291,15 @@ mod tests {
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let mut probe = crate::fs_comm::IpcFsTransport {
-            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+            transport: FlushIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail: false,
+            },
         };
-        let req = Message { m_type: 0x503, ..Message::default() };
+        let req = Message {
+            m_type: 0x503,
+            ..Message::default()
+        };
         let r = state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 3, &req);
         assert_eq!(r, Ok(()));
         let w = state.worker_pool.get(3).unwrap();
@@ -10878,7 +11307,10 @@ mod tests {
         assert_eq!(w.task, Some(Endpoint::MFS));
         assert_eq!(state.comm.vmnts[0].cur_reqs, 1);
         assert_eq!(probe.transport.sent.borrow().len(), 1);
-        assert_eq!(probe.transport.sent.borrow()[0].1.m_type as u32, crate::fs_comm::TransId::add(0x503, 3));
+        assert_eq!(
+            probe.transport.sent.borrow()[0].1.m_type as u32,
+            crate::fs_comm::TransId::add(0x503, 3)
+        );
     }
 
     #[test]
@@ -10887,7 +11319,10 @@ mod tests {
         let mut state = VfsState::new();
         seed_vmnt0(&mut state);
         let mut probe = crate::fs_comm::IpcFsTransport {
-            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+            transport: FlushIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail: false,
+            },
         };
         let req = Message::default();
         assert_eq!(
@@ -10914,7 +11349,10 @@ mod tests {
         let w = state.worker_pool.get_mut(3).unwrap();
         w.fp_slot = Some(UserSlot::new(3));
         let mut probe = crate::fs_comm::IpcFsTransport {
-            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+            transport: FlushIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail: false,
+            },
         };
         let req = Message::default();
         assert_eq!(
@@ -10930,7 +11368,10 @@ mod tests {
         // comm.c:146 — `assert(self->w_sendrec == NULL)`。
         let mut state = dialogue_fixture(); // 槽 2 已 WaitingForFs
         let mut probe = crate::fs_comm::IpcFsTransport {
-            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+            transport: FlushIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail: false,
+            },
         };
         let req = Message::default();
         let _ = state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 2, &req);
@@ -10944,14 +11385,26 @@ mod tests {
         seed_vmnt0(&mut state);
         state.comm.vmnts[0].cur_reqs = 1; // max=1 已占满
         let mut probe = crate::fs_comm::IpcFsTransport {
-            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+            transport: FlushIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail: false,
+            },
         };
-        let req = Message { m_type: 0x604, ..Message::default() };
-        assert_eq!(state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req), Ok(()));
+        let req = Message {
+            m_type: 0x604,
+            ..Message::default()
+        };
+        assert_eq!(
+            state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req),
+            Ok(())
+        );
         assert!(probe.transport.sent.borrow().is_empty());
         assert_eq!(state.comm.sending, 1);
         assert_eq!(state.comm.vmnts[0].queued(), 1);
-        assert_eq!(state.worker_pool.get(4).unwrap().state, WorkerState::WaitingForFs);
+        assert_eq!(
+            state.worker_pool.get(4).unwrap().state,
+            WorkerState::WaitingForFs
+        );
     }
 
     #[test]
@@ -10963,11 +11416,20 @@ mod tests {
         seed_waiting(&mut state, 2, Endpoint::MFS);
         state.comm.vmnts[0].cur_reqs = 1;
         let mut probe = crate::fs_comm::IpcFsTransport {
-            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: false },
+            transport: FlushIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail: false,
+            },
         };
-        let req = Message { m_type: 0x604, ..Message::default() };
+        let req = Message {
+            m_type: 0x604,
+            ..Message::default()
+        };
         // 窗口满 → 槽 4 排队(请求存槽内,未 stamp)。
-        assert_eq!(state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req), Ok(()));
+        assert_eq!(
+            state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req),
+            Ok(())
+        );
         // 回复落地槽 2,窗口放行。
         let reply = reply_msg(0x503, 2, Endpoint::MFS);
         assert_eq!(state.handle_fs_reply(&reply, &VfsTransIdCodec), Ok(2));
@@ -10991,10 +11453,16 @@ mod tests {
         seed_waiting(&mut state, 2, Endpoint::MFS);
         state.comm.vmnts[0].cur_reqs = 1;
         let mut probe = crate::fs_comm::IpcFsTransport {
-            transport: FlushIpc { sent: core::cell::RefCell::new(alloc::vec::Vec::new()), fail: true },
+            transport: FlushIpc {
+                sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                fail: true,
+            },
         };
         let req = Message::default();
-        assert_eq!(state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req), Ok(()));
+        assert_eq!(
+            state.fs_sendrec(&mut probe, 0, Endpoint::MFS, 4, &req),
+            Ok(())
+        );
         let reply = reply_msg(0x503, 2, Endpoint::MFS);
         assert_eq!(state.handle_fs_reply(&reply, &VfsTransIdCodec), Ok(2));
         assert_eq!(state.flush_send_queue(&mut probe.transport), 0);
@@ -11394,11 +11862,7 @@ mod tests {
     }
 
     impl minix_sys::ipc::IpcTransport for BootScriptedIpc {
-        fn send(
-            &self,
-            _d: Endpoint,
-            _m: &Message,
-        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+        fn send(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
             Ok(())
         }
         fn receive(
@@ -11426,11 +11890,7 @@ mod tests {
         fn notify(&self, _d: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> {
             Ok(())
         }
-        fn sendnb(
-            &self,
-            _d: Endpoint,
-            _m: &Message,
-        ) -> Result<(), minix_sys::ipc::TrapStatus> {
+        fn sendnb(&self, _d: Endpoint, _m: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
             Ok(())
         }
         fn senda(
@@ -11449,11 +11909,19 @@ mod tests {
     fn boot_ready_state() -> (VfsState, BootScriptedIpc) {
         let mut state = VfsState::new();
         state.init_fresh();
-        let first =
-            VfsPmInit { slot: 0, pid: 8, endpoint: Endpoint::from_generation_slot(1, 0) }
-                .encode();
+        let first = VfsPmInit {
+            slot: 0,
+            pid: 8,
+            endpoint: Endpoint::from_generation_slot(1, 0),
+        }
+        .encode();
         state.pm_handshake_step(&first).unwrap();
-        let terminator = VfsPmInit { slot: 0, pid: 0, endpoint: Endpoint::NONE }.encode();
+        let terminator = VfsPmInit {
+            slot: 0,
+            pid: 0,
+            endpoint: Endpoint::NONE,
+        }
+        .encode();
         state.pm_handshake_step(&terminator).unwrap();
         seed_imgrd_driver(&mut state);
         (state, BootScriptedIpc::default())
@@ -11476,7 +11944,10 @@ mod tests {
         assert_eq!(state.have_root, 1);
 
         // vmnt 行：标签/路径/设备 + CANSTAT + 窗口（mount.c:297-305/318-325）。
-        let id = state.vmnt_table.find_by_dev(DEV_IMGRD).expect("root vmnt row");
+        let id = state
+            .vmnt_table
+            .find_by_dev(DEV_IMGRD)
+            .expect("root vmnt row");
         let v = state.vmnt_table.get(id).unwrap();
         assert_eq!(v.fs, Endpoint::MFS);
         assert_eq!(v.dev, DEV_IMGRD);
@@ -11490,7 +11961,10 @@ mod tests {
 
         // 根 vnode 七连填（mount.c:283-296）。
         let root_idx = v.root.expect("root vnode set");
-        let vn = state.vnode_table.get(crate::vnode::VnodeId(root_idx)).unwrap();
+        let vn = state
+            .vnode_table
+            .get(crate::vnode::VnodeId(root_idx))
+            .unwrap();
         assert_eq!(vn.ino, 1);
         assert_eq!(vn.mode, crate::open::S_IFDIR | 0o755);
         assert_eq!(vn.size, 4096);
@@ -11510,9 +11984,10 @@ mod tests {
     fn test_root_mount_without_driver_is_inval_and_gate_stays_closed() {
         let (mut state, ipc) = boot_ready_state();
         // 拔掉 dmap 行：boot 装配半（rproctab 消费）缺位时的诚实失败。
-        state
-            .dmap_table
-            .set(crate::device_map::MEMORY_MAJOR, crate::device_map::DmapEntry::empty());
+        state.dmap_table.set(
+            crate::device_map::MEMORY_MAJOR,
+            crate::device_map::DmapEntry::empty(),
+        );
         let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
 
         let r = state.do_init_root(&kernel, &ipc);
@@ -11534,7 +12009,10 @@ mod tests {
         assert_eq!(state.have_root, 1);
         assert_eq!(state.root_fs_e, Endpoint::MFS);
         // PFS 行仍站着（C：printf 后挂载照旧），fs_flags 未回填。
-        let pfs = state.vmnt_table.find_by_fs(Endpoint::PFS).expect("pfs row stands");
+        let pfs = state
+            .vmnt_table
+            .find_by_fs(Endpoint::PFS)
+            .expect("pfs row stands");
         assert_eq!(state.vmnt_table.get(pfs).unwrap().fs_flags, 0);
     }
 
@@ -12165,60 +12643,67 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_lu_prepare_matrix() {
-        // Idle pool + request-free/protocol-free → ready (`main.c:308-317`).
-        assert_eq!(lu_prepare(true, LuState::RequestFree), Ok(()));
-        assert_eq!(lu_prepare(true, LuState::ProtocolFree), Ok(()));
-        // Busy pool blocks the update (`main.c:310-312`).
-        assert_eq!(
-            lu_prepare(false, LuState::RequestFree),
-            Err(UnblockError::NotReady)
-        );
-        // Other states refuse (`main.c:320-321`).
-        assert_eq!(lu_prepare(true, LuState::Other), Err(UnblockError::NotReady));
-        assert_eq!(lu_prepare(true, LuState::Null), Err(UnblockError::NotReady));
-        // Rollback: leaving a request-free state back to Null re-creates
-        // workers in C (`main.c:330-339`); ARCH A-1 makes it a no-op.
-        assert!(lu_rollback_needs_workers(
-            LuState::RequestFree,
-            LuState::Null
-        ));
-        assert!(!lu_rollback_needs_workers(LuState::Null, LuState::Null));
-        assert!(!lu_rollback_needs_workers(
-            LuState::RequestFree,
-            LuState::RequestFree
-        ));
-        // New-instance init (`main.c:349-356`).
-        assert!(init_lu_needs_workers(LuState::ProtocolFree));
-        assert!(!init_lu_needs_workers(LuState::Other));
-        // ENOTREADY is the C answer (`:321`).
-        assert_eq!(UnblockError::NotReady.to_errno(), minix_types::ENOTREADY);
-    }
+#[test]
+fn test_lu_prepare_matrix() {
+    // Idle pool + request-free/protocol-free → ready (`main.c:308-317`).
+    assert_eq!(lu_prepare(true, LuState::RequestFree), Ok(()));
+    assert_eq!(lu_prepare(true, LuState::ProtocolFree), Ok(()));
+    // Busy pool blocks the update (`main.c:310-312`).
+    assert_eq!(
+        lu_prepare(false, LuState::RequestFree),
+        Err(UnblockError::NotReady)
+    );
+    // Other states refuse (`main.c:320-321`).
+    assert_eq!(
+        lu_prepare(true, LuState::Other),
+        Err(UnblockError::NotReady)
+    );
+    assert_eq!(lu_prepare(true, LuState::Null), Err(UnblockError::NotReady));
+    // Rollback: leaving a request-free state back to Null re-creates
+    // workers in C (`main.c:330-339`); ARCH A-1 makes it a no-op.
+    assert!(lu_rollback_needs_workers(
+        LuState::RequestFree,
+        LuState::Null
+    ));
+    assert!(!lu_rollback_needs_workers(LuState::Null, LuState::Null));
+    assert!(!lu_rollback_needs_workers(
+        LuState::RequestFree,
+        LuState::RequestFree
+    ));
+    // New-instance init (`main.c:349-356`).
+    assert!(init_lu_needs_workers(LuState::ProtocolFree));
+    assert!(!init_lu_needs_workers(LuState::Other));
+    // ENOTREADY is the C answer (`:321`).
+    assert_eq!(UnblockError::NotReady.to_errno(), minix_types::ENOTREADY);
+}
 
-    #[test]
-    fn test_route_enosys_and_rs_truth() {
-        let state = VfsState::new();
-        let codec = VfsTransIdCodec;
-        // An unknown raw past VFS_BASE answers ENOSYS — never a Read stand-in
-        // (`main.c:283-294`; P1-1 placeholder removed).
-        let msg = Message {
-            m_type: (crate::call_table::VFS_BASE + 200) as i32,
-            m_source: Endpoint::from_generation_slot(1, 2),
-            ..Message::default()
-        };
-        assert_eq!(
-            state.route_message(&msg, &codec),
-            Route::Enosys { raw: (crate::call_table::VFS_BASE + 200) as u32 }
-        );
-        // RS reply prefixes at the real C bases (`com.h:919/:963/:1038`).
-        assert!(VfsState::is_bdev_rs(0x580));
-        assert!(VfsState::is_cdev_rs(0x480));
-        assert!(VfsState::is_sdev_rs(0x1980));
-        // The bases must not collide with the syscall namespace.
-        assert!(!VfsState::is_bdev_rs(crate::call_table::VfsCallNum::Open as u32));
-        assert!(!VfsState::is_cdev_rs(0xA00)); // FS_REQ namespace (com.h:589)
-    }
+#[test]
+fn test_route_enosys_and_rs_truth() {
+    let state = VfsState::new();
+    let codec = VfsTransIdCodec;
+    // An unknown raw past VFS_BASE answers ENOSYS — never a Read stand-in
+    // (`main.c:283-294`; P1-1 placeholder removed).
+    let msg = Message {
+        m_type: (crate::call_table::VFS_BASE + 200) as i32,
+        m_source: Endpoint::from_generation_slot(1, 2),
+        ..Message::default()
+    };
+    assert_eq!(
+        state.route_message(&msg, &codec),
+        Route::Enosys {
+            raw: (crate::call_table::VFS_BASE + 200) as u32
+        }
+    );
+    // RS reply prefixes at the real C bases (`com.h:919/:963/:1038`).
+    assert!(VfsState::is_bdev_rs(0x580));
+    assert!(VfsState::is_cdev_rs(0x480));
+    assert!(VfsState::is_sdev_rs(0x1980));
+    // The bases must not collide with the syscall namespace.
+    assert!(!VfsState::is_bdev_rs(
+        crate::call_table::VfsCallNum::Open as u32
+    ));
+    assert!(!VfsState::is_cdev_rs(0xA00)); // FS_REQ namespace (com.h:589)
+}
 
 #[cfg(test)]
 mod run_once_tests {

@@ -30,15 +30,15 @@
 //! 真机链路（VM 真实参战）挂 edge4 T2 / E5；旧冗余死壳
 //! `pm_vm_fork_test.rs` 随本批删除（同内容注释件，复活产物即本文件）。
 
-use minix_pm::exit::KernelGateway;
-use minix_pm::fork::{do_fork, ForkCoordError};
-use minix_pm::mproc::{Lifecycle, ProcTable};
 use minix_pm::TestIpcTransport;
-use minix_vfs::PmHandler;
+use minix_pm::exit::KernelGateway;
+use minix_pm::fork::{ForkCoordError, do_fork};
+use minix_pm::mproc::{Lifecycle, ProcTable};
 use minix_types::{
-    DecodeFromM1, EncodeToM1, Endpoint, Message, UserSlot, VmForkIn, VmForkOut, ENOMEM, OK,
-    VFS_PM_FORK, VM_FORK,
+    DecodeFromM1, ENOMEM, EncodeToM1, Endpoint, Message, OK, UserSlot, VFS_PM_FORK, VM_FORK,
+    VmForkIn, VmForkOut,
 };
+use minix_vfs::PmHandler;
 
 // ---------------------------------------------------------------------------
 // 夹具
@@ -188,7 +188,11 @@ fn fork_chain_pm_vm_vfs_all_real() {
     assert_eq!(*vm_dest, Endpoint::VM);
     assert_eq!(vm_req.m_type, VM_FORK as i32);
     let req = VmForkIn::decode(unsafe { &vm_req.m_u.m_m1 });
-    assert_eq!(req.parent_endpoint, parent_endpoint(), "VMF_ENDPOINT = m1i1");
+    assert_eq!(
+        req.parent_endpoint,
+        parent_endpoint(),
+        "VMF_ENDPOINT = m1i1"
+    );
     assert_eq!(req.child_slot, child_slot(), "VMF_SLOTNO = m1i2");
 
     // ── 子进程槽位（PM 侧）──
@@ -229,13 +233,19 @@ fn fork_chain_pm_vm_vfs_all_real() {
         parent.filps[0] = Some(7);
     }
     let child_ep = Endpoint(m7.m7i1);
-    let reply = minix_vfs::VfsPmHandler { table: &mut fproc }
-        .handle(minix_types::VfsCall::Fork {
-            child: child_ep,
-            parent: Endpoint(m7.m7i2),
-            child_pid: m7.m7i3,
-        })
-        .expect("VFS 应接受 PM 的 fork 通知");
+    let mut filps = minix_vfs::filp::FilpTable::new();
+    let mut vnodes = minix_vfs::vnode::VnodeTable::new();
+    let reply = minix_vfs::VfsPmHandler {
+        table: &mut fproc,
+        filp_table: &mut filps,
+        vnode_table: &mut vnodes,
+    }
+    .handle(minix_types::VfsCall::Fork {
+        child: child_ep,
+        parent: Endpoint(m7.m7i2),
+        child_pid: m7.m7i3,
+    })
+    .expect("VFS 应接受 PM 的 fork 通知");
     assert!(
         matches!(reply, minix_types::VfsReply::Fork),
         "分发臂回 VfsReply::Fork"

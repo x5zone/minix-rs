@@ -235,28 +235,26 @@ pub fn break_via(
 /// Forks an address space (server-side call).
 ///
 /// C: `vm_fork` (`minix3/minix/lib/libsys/vm_fork.c:10-24`): store the
-/// endpoint and slot, run the server-side protocol, and read the child
-/// endpoint back from the reply. The child endpoint sits in the first four
-/// reply bytes.
+/// endpoint and slot in the `VMF_ENDPOINT`/`VMF_SLOTNO` lanes (`m1i1`/`m1i2`,
+/// `com.h:633-634`), run the server-side protocol, and read the child
+/// endpoint back from `VMF_CHILD_ENDPOINT` (`m1i3`, `com.h:635`). The named
+/// `mess_1` lanes carry the layout (`m1ull1` leads, so the integer lanes are
+/// not at raw offset zero).
 pub fn fork_address_space_via(
     transport: &impl IpcTransport,
     endpoint: Endpoint,
     slot: i32,
 ) -> Result<Endpoint, Errno> {
     let mut message = crate::syscall::cleared_message();
-    // SAFETY: two plain integers at bytes zero and four; exact bytes below.
-    unsafe {
-        message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
-        message.m_u.raw[4..8].copy_from_slice(&slot.to_ne_bytes());
-    }
+    message.m_u.m_m1.m1i1 = endpoint.0;
+    message.m_u.m_m1.m1i2 = slot;
     let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_FORK, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
-    // SAFETY: the reply payload is 56 readable bytes; the child endpoint
-    // sits at byte zero.
-    let child = unsafe { message.m_u.raw[..4].as_ptr().cast::<i32>().read() };
-    Ok(Endpoint(child))
+    // SAFETY: the reply's active arm is `m_m1` (VM writes `VMF_CHILD_ENDPOINT`
+    // = m1i3 back through the same lanes).
+    Ok(Endpoint(unsafe { message.m_u.m_m1.m1i3 }))
 }
 
 /// Ends address-space bookkeeping (server-side call).
@@ -346,7 +344,12 @@ pub fn reference_count_via(
         message.m_u.raw[..4].copy_from_slice(&endpoint.0.to_ne_bytes());
         message.m_u.raw[8..16].copy_from_slice(&address.0.to_ne_bytes());
     }
-    perform_syscall(transport, vm_endpoint(), VM_CALL_GET_REFERENCE, &mut message)?;
+    perform_syscall(
+        transport,
+        vm_endpoint(),
+        VM_CALL_GET_REFERENCE,
+        &mut message,
+    )?;
     // SAFETY: the reply carries the count in its first byte.
     let count = unsafe { message.m_u.raw[0] };
     Ok(count)
@@ -467,7 +470,12 @@ fn process_control_via(
         message.m_u.raw[28..32].copy_from_slice(&len.to_ne_bytes());
         message.m_u.raw[32..36].copy_from_slice(&flags.to_ne_bytes());
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_PROCESS_CONTROL, &mut message)?;
+    let reply = perform_taskcall(
+        transport,
+        vm_endpoint(),
+        VM_CALL_PROCESS_CONTROL,
+        &mut message,
+    )?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
@@ -762,9 +770,15 @@ mod tests {
     #[test]
     fn test_third_party_flag_added_only_for_others() {
         let caller = Endpoint(5);
-        let for_self = MapRequest { beneficiary: caller, ..request_for(5) };
+        let for_self = MapRequest {
+            beneficiary: caller,
+            ..request_for(5)
+        };
         assert_eq!(for_self.effective_flags(caller), 0);
-        let for_other = MapRequest { beneficiary: Endpoint(6), ..request_for(6) };
+        let for_other = MapRequest {
+            beneficiary: Endpoint(6),
+            ..request_for(6)
+        };
         assert_eq!(for_other.effective_flags(caller), MAP_FLAG_THIRD_PARTY);
     }
 
@@ -934,15 +948,18 @@ mod tests {
     fn test_fork_address_space_returns_child() {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
-        // SAFETY: test-only payload setup through the documented overlay.
-        unsafe {
-            reply.m_u.raw[..4].copy_from_slice(&9i32.to_ne_bytes());
-        }
+        reply.m_u.m_m1.m1i3 = 9;
         transport.reply_sendrec(Ok(reply));
         assert_eq!(
             fork_address_space_via(&transport, Endpoint(4), 3),
             Ok(Endpoint(9))
         );
+        let sent = transport.sent.borrow();
+        let (dest, request) = &sent[0];
+        assert_eq!(*dest, vm_endpoint());
+        // SAFETY(test): m1i1/m1i2 are the request's active lanes.
+        let lanes = unsafe { (request.m_u.m_m1.m1i1, request.m_u.m_m1.m1i2) };
+        assert_eq!(lanes, (4, 3));
     }
 
     #[test]
@@ -1048,10 +1065,7 @@ mod tests {
     fn test_procctl_clear_sends_operation_and_zeroed_payload() {
         let mut transport = CannedTransport::new();
         transport.reply_sendrec(Ok(reply_with_type(0)));
-        assert_eq!(
-            process_control_clear_via(&transport, Endpoint(3)),
-            Ok(())
-        );
+        assert_eq!(process_control_clear_via(&transport, Endpoint(3)), Ok(()));
         let sent = transport.sent.borrow();
         assert_eq!(sent[0].1.m_type, VM_CALL_PROCESS_CONTROL);
         // SAFETY: test-only payload read-back of the outgoing wire bytes.
@@ -1073,7 +1087,10 @@ mod tests {
         let sent = transport.sent.borrow();
         // SAFETY: test-only payload read-back of the outgoing wire bytes.
         let raw = unsafe { &sent[0].1.m_u.raw };
-        assert_eq!(&raw[16..20], &PROCESS_CONTROL_PARAM_HANDLE_MEM.to_ne_bytes());
+        assert_eq!(
+            &raw[16..20],
+            &PROCESS_CONTROL_PARAM_HANDLE_MEM.to_ne_bytes()
+        );
         assert_eq!(&raw[20..24], &3i32.to_ne_bytes());
         assert_eq!(&raw[24..28], &0x2000u32.to_ne_bytes());
         assert_eq!(&raw[28..32], &128i32.to_ne_bytes());
@@ -1257,9 +1274,7 @@ mod tests {
         assert_eq!(arm.forwhom, 12);
         assert_eq!(arm.addr, 0x0000_0001_4000_0000, "addr 高位保全");
     }
-
 }
-
 
 // ── E9 VmApi 分域:RS 服务进程管理的 VM 消息构造面 ──
 
@@ -1279,8 +1294,15 @@ pub fn vm_rs_set_priv_via(
         m2.m2l1 = mask_buf as i64;
         m2.m2i2 = is_sys;
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_SET_PRIV as i32, &mut message)?;
-    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    let reply = perform_taskcall(
+        transport,
+        vm_endpoint(),
+        minix_types::VM_RS_SET_PRIV as i32,
+        &mut message,
+    )?;
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
     Ok(())
 }
 
@@ -1305,8 +1327,15 @@ pub fn vm_rs_memctl_via(
         m1.m1i3 = len as i32;
         m1.m1p1 = addr;
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_MEMCTL as i32, &mut message)?;
-    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    let reply = perform_taskcall(
+        transport,
+        vm_endpoint(),
+        minix_types::VM_RS_MEMCTL as i32,
+        &mut message,
+    )?;
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
     Ok(())
 }
 
@@ -1326,8 +1355,15 @@ pub fn vm_rs_update_via(
         m2.m2i2 = dst.0;
         m2.m2i3 = flags;
     }
-    let reply = perform_taskcall(transport, vm_endpoint(), minix_types::VM_RS_UPDATE as i32, &mut message)?;
-    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    let reply = perform_taskcall(
+        transport,
+        vm_endpoint(),
+        minix_types::VM_RS_UPDATE as i32,
+        &mut message,
+    )?;
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
     Ok(())
 }
 
@@ -1348,7 +1384,9 @@ pub fn shm_unmap_via(
         _padding: [0; 44],
     };
     let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_SHARED_UNMAP, &mut message)?;
-    if reply < 0 { return Err(Errno::from_i32(-reply)); }
+    if reply < 0 {
+        return Err(Errno::from_i32(-reply));
+    }
     Ok(())
 }
 
