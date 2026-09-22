@@ -85,3 +85,7 @@ path = "t_tty_termios.rs"
 [[test]]
 name = "t_net_sockets"
 path = "t_net_sockets.rs"
+
+[[test]]
+name = "t_vfs_mfs_bridge"
+path = "t_vfs_mfs_bridge.rs"

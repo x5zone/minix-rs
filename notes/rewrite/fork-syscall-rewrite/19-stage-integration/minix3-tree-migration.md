@@ -164,7 +164,12 @@ C 腿的价值不因挂起而贬值:它是量尺,量尺的正确性不能依赖�
 | `t_tty_termios.rs` | test74/77 | termios 44 字节布局、tty ioctl 请求号 ABI |
 | `t_net_sockets.rs` | test48/56/90 策略面 | UDS 准入/环/控制长度、lwip 地址工具 |
 
-**跨包桥设计挂账(VFS↔MFS,宿主全链点亮的最后一块)**。两侧接缝均已存在:VFS 侧 `dispatch_syscall` 的 FS 请求经 `FsTransport` 缝发出(`pending_fs.req` 持编码消息);FS 侧 `os/fs/fs-rt` 已有完整 wire 适配(`wire.rs` 的 `decode_body` 把请求消息解成 `RequestBody`,`minix-fs/src/task.rs` 按 Body 分派到 `FsDriver`,`encode_reply` 编回应答,`RtIpc` 承载 grant 拷贝)。组装要点与两个未决:①请求类型映射——VFS 的 `REQ_*` 消息号到 fs-rt `RequestNumber` 的对照表;②grant 回放——路径/数据字节在 caller 地址空间(如 `encode_lookup` 的路径 grant),宿主上需要"用户内存"的宿主模型(脚本字节源或 `VfsState::grant_user_buffer` 语义延伸),这是设计决策入口。依赖顺序:②定案 → LOOKUP 单段探针 → 逐请求类型铺开。
+**跨包桥 v0(LOOKUP 段已通,`os/tests/t_vfs_mfs_bridge.rs`)**。桥的形态:外层循环"`flush_pending_fs` 发送半 → `task::run` 驱动 fs-rt 解码/分派 → `handle_fs_reply` + `run_worker_continuations` 续接",直到 syscall 完成。两项设计定案:
+
+1. **grant 宿主模型 = 真地址直读**。VFS 的 `GrantTable` 登记本就持有真实宿主地址(worker scratch、用户缓冲),桥经 `minix-sys` 新增的内核视角读取 API(`GrantTable::probe`)取窗后按裸指针直读直写,越界即 `EINVAL`——与 VFS 自身宿主模型及 mib_sysctl 裸指针回放判例一致。
+2. **请求映射 = FS_BASE 偏移**。`pending_fs.req` 的 m_type 经 `TransId::add` 盖 transid 章后,`TransactionId::decode` 拆出请求号,`- FS_BASE` 即 fs-rt `RequestNumber` 表索引(两套常量同源于 C `vfsif.h`)。
+
+扩展段(数据面读写、ReadSuper 经桥、Create/Delete 族)按同一循环逐请求类型接入;每接入一类,对应编号测试语义即可在宿主全链点亮。
 
 test1/2/12 的 fork/wait 语义不重复翻译,由 `pm_vm_fork.rs` 与 `servers/pm/tests/run_once_integration.rs` 承接(文件头映射表有对照)。翻译与产品实现的对账现状:VFS fork 全链计数(`copy_fproc` 递增、退出侧 `close_fd`/`put_vnode` 清减,对位 `misc.c:616-617`/`632-633`/`651-660`)、MFS `FsDriver::rename` 臂(引擎 `link.rs:429` 的入口)、`minix_sys::vm::fork_address_space_via` 的命名 `mess_1` 车道(`com.h:633-635`)三处与 C 对位;对应测试均为运行态转绿。
 

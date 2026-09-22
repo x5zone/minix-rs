@@ -15,11 +15,11 @@
 use alloc::vec::Vec;
 
 use minix_types::{
-    grant_id, grant_idx, grant_seq, grant_valid, CpFlags, CpGrant, CpGrantDirect, CpGrantFree,
-    CpGrantUnion, GRANT_INVALID, GRANT_MAX_SEQ,
+    CpFlags, CpGrant, CpGrantDirect, CpGrantFree, CpGrantUnion, GRANT_INVALID, GRANT_MAX_SEQ,
+    grant_id, grant_idx, grant_seq, grant_valid,
 };
 
-use crate::syscall::{perform_kernel_call, KernelCallTransport};
+use crate::syscall::{KernelCallTransport, perform_kernel_call};
 
 /// C: `GRANT_FAULTED` — safecopies.h:77. `cpf_revoke` returns this when a
 /// CPF_TRY grant saw a soft fault during its lifetime.
@@ -40,6 +40,17 @@ const fn access_check(access: CpFlags) -> bool {
 /// table address/size has been told to the kernel (C does it eagerly
 /// inside `cpf_prealloc`; the explicit flag lets the caller own the
 /// kernel-call timing — one `sys_setgrant` per grow, not per slot).
+/// `GrantTable::probe` 的窗口读数:授权的宿主地址窗与访问形状。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GrantProbe {
+    /// 授权内存窗:`(start, len)`(granter 地址空间的真实地址)。
+    pub granter_window: (u64, u64),
+    /// MAGIC 臂时为 `(who_to, who_from)`;DIRECT 臂为 `None`。
+    pub magic: Option<(i32, i32)>,
+    /// 授权含写(`CPF_WRITE`)。
+    pub writable: bool,
+}
+
 pub struct GrantTable {
     slots: Vec<CpGrant>,
     /// Next free slot index, or -1 when the table is full (C: `freelist`).
@@ -60,7 +71,11 @@ impl GrantTable {
     /// `NR_STATIC_GRANTS = 3` static slots; a `Vec` makes the static
     /// block unnecessary — growth is one realloc).
     pub fn new() -> Self {
-        Self { slots: Vec::new(), freelist: -1, unregistered: false }
+        Self {
+            slots: Vec::new(),
+            freelist: -1,
+            unregistered: false,
+        }
     }
 
     /// Current slot count (C: `ngrants`).
@@ -116,7 +131,11 @@ impl GrantTable {
                 seq: 0,
                 u: CpGrantUnion {
                     free: CpGrantFree {
-                        next: if g < new_size - 1 { g as i32 + 1 } else { self.freelist },
+                        next: if g < new_size - 1 {
+                            g as i32 + 1
+                        } else {
+                            self.freelist
+                        },
                     },
                 },
                 faulted: 0,
@@ -171,7 +190,11 @@ impl GrantTable {
         let seq = self.slots[g].seq;
         // SAFETY(test-shape): g < slots.len() by new_grantslot's contract.
         let slot = unsafe { self.slots.get_unchecked_mut(g) };
-        slot.u.direct = CpGrantDirect { who_to, start: addr, len: bytes };
+        slot.u.direct = CpGrantDirect {
+            who_to,
+            start: addr,
+            len: bytes,
+        };
         slot.faulted = GRANT_INVALID;
         // Commit point: flags word last (C's __insn_barrier + flags store).
         slot.flags = (access | CpFlags::DIRECT | CpFlags::USED | CpFlags::VALID).bits() as i32;
@@ -204,11 +227,52 @@ impl GrantTable {
         let seq = self.slots[g].seq;
         // SAFETY(test-shape): g < slots.len() by new_grantslot's contract.
         let slot = unsafe { self.slots.get_unchecked_mut(g) };
-        slot.u.magic = minix_types::CpGrantMagic { who_from, who_to, start, len };
+        slot.u.magic = minix_types::CpGrantMagic {
+            who_from,
+            who_to,
+            start,
+            len,
+        };
         slot.faulted = GRANT_INVALID;
         // Commit point: flags word last (C's __insn_barrier + flags store).
         slot.flags = (access | CpFlags::MAGIC | CpFlags::USED | CpFlags::VALID).bits() as i32;
         Ok(grant_id(g as u32, seq as u32))
+    }
+
+    /// 内核视角的 grant 读取:按 ID 解析授权窗口。C 里这是内核从特权结构
+    /// 读槽(`do_safecopy` 前的校验);宿主桥接层(VFS↔FS 的内存回放)以
+    /// 同一语义取窗后在真地址上直读直写。未用/未知 ID 返回 `None`。
+    pub fn probe(&self, grant: i32) -> Option<GrantProbe> {
+        if !grant_valid(grant) {
+            return None;
+        }
+        let g = grant_idx(grant) as usize;
+        let slot = self.slots.get(g)?;
+        if slot.seq as u32 != grant_seq(grant) || !slot.cp_flags().contains(CpFlags::USED) {
+            return None;
+        }
+        let flags = slot.cp_flags();
+        // SAFETY: flags 的 USED 提交点保证 direct/magic 联合体臂已定型;
+        // INDIRECT 臂在宿主桥接面未使用,按未授权回答。
+        unsafe {
+            if flags.contains(CpFlags::DIRECT) {
+                let d = &slot.u.direct;
+                Some(GrantProbe {
+                    granter_window: (d.start, d.len),
+                    magic: None,
+                    writable: flags.contains(CpFlags::WRITE),
+                })
+            } else if flags.contains(CpFlags::MAGIC) {
+                let m = &slot.u.magic;
+                Some(GrantProbe {
+                    granter_window: (m.start, m.len),
+                    magic: Some((m.who_to, m.who_from)),
+                    writable: flags.contains(CpFlags::WRITE),
+                })
+            } else {
+                None
+            }
+        }
     }
 
     /// Revoke a grant (C: `cpf_revoke` — safecopies.c:218-263). Returns
@@ -239,9 +303,17 @@ impl GrantTable {
         // (safecopies.c:245-254 — on revoke, not on allocation, because
         // live update relies on the first allocated grant having ID 0).
         slot.flags = 0;
-        slot.seq = if (slot.seq as u32) < GRANT_MAX_SEQ - 1 { slot.seq + 1 } else { 0 };
+        slot.seq = if (slot.seq as u32) < GRANT_MAX_SEQ - 1 {
+            slot.seq + 1
+        } else {
+            0
+        };
         // Back on the free list (single-headed: last freed, first reused).
-        slot.u = CpGrantUnion { free: CpGrantFree { next: self.freelist } };
+        slot.u = CpGrantUnion {
+            free: CpGrantFree {
+                next: self.freelist,
+            },
+        };
         self.freelist = g as i32;
         Ok(result)
     }
@@ -284,7 +356,14 @@ mod tests {
 
         let mut table = GrantTable::new();
         let gid = table
-            .grant_magic(&canned, 1 /* FS */, 5 /* user */, 0x4000, 128, CpFlags::WRITE)
+            .grant_magic(
+                &canned,
+                1, /* FS */
+                5, /* user */
+                0x4000,
+                128,
+                CpFlags::WRITE,
+            )
             .expect("first grant");
         assert_eq!(grant_idx(gid), 0);
         // SAFETY(test): MAGIC was just set on this slot.
@@ -303,12 +382,16 @@ mod tests {
         canned.reply(0);
 
         let mut table = GrantTable::new();
-        let g1 = table.grant_direct(&canned, 7, 0x4000, 128, CpFlags::READ).unwrap();
+        let g1 = table
+            .grant_direct(&canned, 7, 0x4000, 128, CpFlags::READ)
+            .unwrap();
         assert_eq!(table.revoke(g1), Ok(0));
 
         // Slot 0 is back on the free list (single-headed free list), so the
         // next grant reuses index 0 with sequence +1 (ABA guard, C:245-254).
-        let g2 = table.grant_direct(&canned, 9, 0x8000, 64, CpFlags::WRITE).unwrap();
+        let g2 = table
+            .grant_direct(&canned, 9, 0x8000, 64, CpFlags::WRITE)
+            .unwrap();
         assert_eq!(grant_idx(g2), 0);
         assert_eq!(grant_seq(g2), 1);
 
@@ -335,7 +418,9 @@ mod tests {
         let mut canned = CannedKernelCallTransport::new();
         canned.reply(0);
         let mut table = GrantTable::new();
-        table.grant_direct(&canned, 7, 0x4000, 8, CpFlags::READ).unwrap();
+        table
+            .grant_direct(&canned, 7, 0x4000, 8, CpFlags::READ)
+            .unwrap();
         // The growth path registered the table (addr = slots base, size).
         let sent = canned.sent.borrow();
         assert_eq!(sent[0].m_type, minix_types::SYS_SETGRANT);
