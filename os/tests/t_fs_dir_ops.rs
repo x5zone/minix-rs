@@ -34,7 +34,7 @@ use minix_fs::protocol::{CapabilityFlags, MountFlags};
 use minix_fs_mfs::mkfs::{build_image, plan_layout};
 use minix_fs_mfs::server::MfsServer;
 use minix_fs_rt::source::ImgrdBlockSource;
-use minix_types::{Errno, ENOENT};
+use minix_types::{ENOENT, Errno};
 
 const DEVICE: u64 = 0x301;
 const BLOCK_SIZE: usize = 4096; // 与 crate 自测一致(mount.rs/server.rs 判例)
@@ -77,27 +77,33 @@ fn mkdir_lookup_rmdir_lifecycle() {
     server
         .make_dir(ROOT, "d", 0o040755, 0, 0)
         .expect("mkdir 合法");
-    let (node, mount_point) = server
-        .lookup_child(ROOT, "d")
-        .expect("建好的目录可解析");
+    let (node, mount_point) = server.lookup_child(ROOT, "d").expect("建好的目录可解析");
     assert!(!mount_point, "普通目录不是挂载点");
     assert_eq!(node.mode & 0o170000, 0o040000, "类型位为目录");
 
     // 目录非空时删除:C test21 断言 rmdir 非空目录失败(MFS 语义)。
-    server.create(node.inode_number, "f", 0o100644, 0, 0).expect("目录内建文件");
+    server
+        .create(node.inode_number, "f", 0o100644, 0, 0)
+        .expect("目录内建文件");
     let err = server
         .remove_dir(ROOT, "d")
         .expect_err("非空目录必须拒绝删除");
-    assert_eq!(err, Errno::from_i32(minix_types::ENOTEMPTY), "非空 rmdir → ENOTEMPTY");
+    assert_eq!(
+        err,
+        Errno::from_i32(minix_types::ENOTEMPTY),
+        "非空 rmdir → ENOTEMPTY"
+    );
 
     // 清空后删除成功,名字消失。
     server.unlink(node.inode_number, "f").expect("清空文件");
     server.remove_dir(ROOT, "d").expect("空目录可删除");
-    let gone = server.lookup_child(ROOT, "d").err().expect("名字应消失");
+    let gone = server.lookup_child(ROOT, "d").expect_err("名字应消失");
     assert_eq!(gone, Errno::from_i32(ENOENT));
 
     // 删不存在的目录:ENOENT。
-    let err = server.remove_dir(ROOT, "nope").expect_err("删不存在的目录必须失败");
+    let err = server
+        .remove_dir(ROOT, "nope")
+        .expect_err("删不存在的目录必须失败");
     assert_eq!(err, Errno::from_i32(ENOENT));
 }
 
@@ -112,20 +118,17 @@ fn mkdir_lookup_rmdir_lifecycle() {
 fn link_unlink_persists_via_second_name() {
     let mut server = mounted_server();
 
-    let file = server
-        .create(ROOT, "f", 0o100644, 0, 0)
-        .expect("建文件");
+    let file = server.create(ROOT, "f", 0o100644, 0, 0).expect("建文件");
     server.write(file.inode_number, 0, b"abc").expect("写入");
 
     server.link(ROOT, "h", file.inode_number).expect("硬链接");
-    let via_h = server
-        .lookup_child(ROOT, "h")
-        .expect("别名可解析")
-        .0;
+    let via_h = server.lookup_child(ROOT, "h").expect("别名可解析").0;
     assert_eq!(via_h.inode_number, file.inode_number, "双名同 inode");
 
     let mut stat = minix_types::Stat::zeroed();
-    server.stat(file.inode_number, &mut stat).expect("stat 可读");
+    server
+        .stat(file.inode_number, &mut stat)
+        .expect("stat 可读");
     assert_eq!(stat.nlinks, 2, "链接计数 2(C test28 的 st_nlink 断言)");
 
     // 删原名:数据经别名存活。
@@ -133,11 +136,15 @@ fn link_unlink_persists_via_second_name() {
     assert!(server.lookup_child(ROOT, "f").is_err());
     let mut seen = Vec::new();
     let got = server
-        .read(file.inode_number, 0, 16, &mut |bytes: &[u8]| seen.extend_from_slice(bytes))
+        .read(file.inode_number, 0, 16, &mut |bytes: &[u8]| {
+            seen.extend_from_slice(bytes)
+        })
         .expect("别名存活则数据可读");
     assert_eq!(got, 3);
     assert_eq!(seen, b"abc".to_vec());
-    server.stat(file.inode_number, &mut stat).expect("stat 可读");
+    server
+        .stat(file.inode_number, &mut stat)
+        .expect("stat 可读");
     assert_eq!(stat.nlinks, 1, "删一名后计数回 1");
 
     // 删最后一个名字:名字消失。
@@ -163,12 +170,12 @@ fn rename_replaces_target_and_moves_across_dirs() {
     server
         .rename(ROOT, "a", ROOT, "b")
         .expect("rename 覆盖合法");
-    assert!(
-        server.lookup_child(ROOT, "a").is_err(),
-        "旧名字消失"
-    );
+    assert!(server.lookup_child(ROOT, "a").is_err(), "旧名字消失");
     let via_b = server.lookup_child(ROOT, "b").expect("目标名接管").0;
-    assert_eq!(via_b.inode_number, a.inode_number, "b 的 inode = a 的 inode(替换)");
+    assert_eq!(
+        via_b.inode_number, a.inode_number,
+        "b 的 inode = a 的 inode(替换)"
+    );
 
     // 跨目录移动(C test46:rename 涉及 root)。
     server.make_dir(ROOT, "d", 0o040755, 0, 0).expect("建目录");
@@ -203,7 +210,9 @@ fn symlink_roundtrip() {
 
     let mut target = Vec::new();
     let len = server
-        .read_link(node.inode_number, 128, &mut |bytes: &[u8]| target.extend_from_slice(bytes))
+        .read_link(node.inode_number, 128, &mut |bytes: &[u8]| {
+            target.extend_from_slice(bytes)
+        })
         .expect("readlink 合法");
     assert_eq!(len, 4, "目标串长度");
     assert_eq!(target, b"/a/b".to_vec(), "目标串逐字节还原(C test43)");
@@ -220,20 +229,26 @@ fn symlink_roundtrip() {
 fn chmod_chown_reflected_in_stat() {
     let mut server = mounted_server();
 
-    let file = server
-        .create(ROOT, "f", 0o100644, 0, 0)
-        .expect("建文件");
+    let file = server.create(ROOT, "f", 0o100644, 0, 0).expect("建文件");
 
     let _old_mode = server
         .change_mode(file.inode_number, 0o100600)
         .expect("chmod 合法");
     let mut stat = minix_types::Stat::zeroed();
-    server.stat(file.inode_number, &mut stat).expect("stat 可读");
+    server
+        .stat(file.inode_number, &mut stat)
+        .expect("stat 可读");
     assert_eq!(stat.mode, 0o100600, "chmod 后类型与权限位落盘");
 
     let _old_owner = server
         .change_owner(file.inode_number, 1000, 100)
         .expect("chown 合法");
-    server.stat(file.inode_number, &mut stat).expect("stat 可读");
-    assert_eq!((stat.owner, stat.group), (1000, 100), "属主属组落盘(C test34/35)");
+    server
+        .stat(file.inode_number, &mut stat)
+        .expect("stat 可读");
+    assert_eq!(
+        (stat.owner, stat.group),
+        (1000, 100),
+        "属主属组落盘(C test34/35)"
+    );
 }

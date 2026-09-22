@@ -15,7 +15,7 @@
 //! `#[ignore]`,点亮前提见各测试属性(本文件四测信息性运行均通过)。
 
 use minix_pm::credentials::{
-    do_get, do_set, CopyGroups, GetOp, GetResult, SetError, SetOp, VfsForwarder,
+    CopyGroups, GetOp, GetResult, SetError, SetOp, VfsForwarder, do_get, do_set,
 };
 use minix_pm::mproc::{Lifecycle, ProcTable};
 use minix_types::{Endpoint, UserSlot, VirBytes};
@@ -81,7 +81,9 @@ struct ScriptedGroups {
 
 impl ScriptedGroups {
     fn new() -> Self {
-        Self { written: Vec::new() }
+        Self {
+            written: Vec::new(),
+        }
     }
 }
 
@@ -90,11 +92,7 @@ impl CopyGroups for ScriptedGroups {
         self.written.push(gids.to_vec());
         Ok(())
     }
-    fn copy_from_user(
-        &mut self,
-        _ptr: VirBytes,
-        _ngroups: usize,
-    ) -> Result<Vec<u32>, SetError> {
+    fn copy_from_user(&mut self, _ptr: VirBytes, _ngroups: usize) -> Result<Vec<u32>, SetError> {
         Ok(Vec::new())
     }
 }
@@ -125,8 +123,7 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
         &mut vfs,
     )
     .expect("root seteuid(100) 合法");
-    let read = do_get(&table, caller, GetOp::GetUid, &mut copier)
-        .expect("getuid 可读");
+    let read = do_get(&table, caller, GetOp::GetUid, &mut copier).expect("getuid 可读");
     match read {
         GetResult::Uid { real, eff } => {
             assert_eq!((real, eff), (0, 100), "root 降权后 (real, eff) = (0, 100)");
@@ -135,14 +132,8 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
     }
 
     // 凭 saved(0)收回 root。
-    do_set(
-        &mut table,
-        caller,
-        SetOp::SetEUid(0),
-        &mut copier,
-        &mut vfs,
-    )
-    .expect("saved id 允许收回 root");
+    do_set(&mut table, caller, SetOp::SetEUid(0), &mut copier, &mut vfs)
+        .expect("saved id 允许收回 root");
     match do_get(&table, caller, GetOp::GetUid, &mut copier).expect("getuid 可读") {
         GetResult::Uid { real, eff } => assert_eq!((real, eff), (0, 0), "收回后 (0, 0)"),
         other => panic!("getuid 应返回 Uid,得 {other:?}"),
@@ -158,14 +149,8 @@ fn seteuid_saved_id_dance_lets_root_drop_and_regain() {
     )
     .expect("root setuid(100) 合法");
     // 降权后 seteuid(0) 被拒:0 ≠ real(100) 也 ≠ saved(100)。
-    let err = do_set(
-        &mut table,
-        caller,
-        SetOp::SetEUid(0),
-        &mut copier,
-        &mut vfs,
-    )
-    .expect_err("降权后收不回 root");
+    let err = do_set(&mut table, caller, SetOp::SetEUid(0), &mut copier, &mut vfs)
+        .expect_err("降权后收不回 root");
     assert_eq!(err.to_errno(), minix_types::EPERM, "seteuid(0) → EPERM");
 
     // 每次成功的 set 都转发 VFS(C getset.c:121-125)。
@@ -241,15 +226,25 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     do_set(
         &mut table,
         root,
-        SetOp::SetGroups { gids: vec![10, 11, 12] },
+        SetOp::SetGroups {
+            gids: vec![10, 11, 12],
+        },
         &mut copier,
         &mut vfs,
     )
     .expect("root setgroups 合法");
 
     // count==0 查询:返回组数,不拷贝(getset.c:63-66)。
-    match do_get(&table, root, GetOp::GetGroups { count: 0, ptr: VirBytes::new(0) }, &mut copier)
-        .expect("查询组数合法")
+    match do_get(
+        &table,
+        root,
+        GetOp::GetGroups {
+            count: 0,
+            ptr: VirBytes::new(0),
+        },
+        &mut copier,
+    )
+    .expect("查询组数合法")
     {
         GetResult::Groups { count } => assert_eq!(count, 3, "组数 3"),
         other => panic!("应返回 Groups,得 {other:?}"),
@@ -261,7 +256,10 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     let too_small = do_get(
         &table,
         root,
-        GetOp::GetGroups { count: 2, ptr: VirBytes::new(0x1000) },
+        GetOp::GetGroups {
+            count: 2,
+            ptr: VirBytes::new(0x1000),
+        },
         &mut copier,
     )
     .expect_err("缓冲不足必须拒绝");
@@ -270,11 +268,18 @@ fn setgroups_superuser_only_and_getgroups_roundtrip() {
     do_get(
         &table,
         root,
-        GetOp::GetGroups { count: 3, ptr: VirBytes::new(0x1000) },
+        GetOp::GetGroups {
+            count: 3,
+            ptr: VirBytes::new(0x1000),
+        },
         &mut copier,
     )
     .expect("拷贝合法");
-    assert_eq!(copier.written.last(), Some(&vec![10, 11, 12]), "组列表按序写回");
+    assert_eq!(
+        copier.written.last(),
+        Some(&vec![10, 11, 12]),
+        "组列表按序写回"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -294,8 +299,7 @@ fn setsid_binds_procgrp_and_getsid_resolves() {
     let mut copier = ScriptedGroups::new();
 
     // 首次 setsid:procgrp(0) ≠ pid(100) → 绑定成功。
-    do_set(&mut table, caller, SetOp::SetSid, &mut copier, &mut vfs)
-        .expect("首次 setsid 合法");
+    do_set(&mut table, caller, SetOp::SetSid, &mut copier, &mut vfs).expect("首次 setsid 合法");
     match do_get(&table, caller, GetOp::GetPgrp, &mut copier).expect("getpgrp 可读") {
         GetResult::Pgrp(pgrp) => assert_eq!(pgrp, 100, "procgrp 绑为自身 pid"),
         other => panic!("应返回 Pgrp,得 {other:?}"),

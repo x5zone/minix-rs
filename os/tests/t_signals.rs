@@ -14,15 +14,15 @@
 //! `alarm.c` 的函数锚),errno 断言一律对照 C 值(EINVAL/ESRCH/EPERM)。
 //! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
 
+use minix_pm::TestIpcTransport;
 use minix_pm::exit::KernelGateway;
-use minix_pm::mproc::{SigAction, SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK};
 use minix_pm::mproc::{Lifecycle, ProcTable};
+use minix_pm::mproc::{SIG_BLOCK, SIG_SETMASK, SIG_UNBLOCK, SigAction};
 use minix_pm::signal::do_kill;
 use minix_pm::signal_handlers::{
-    handle_sigaction, handle_sigpending, handle_sigprocmask, SigActionReq,
+    SigActionReq, handle_sigaction, handle_sigpending, handle_sigprocmask,
 };
-use minix_pm::timer::{cause_sigalrm, set_alarm, TimerCtl, SIGALRM};
-use minix_pm::TestIpcTransport;
+use minix_pm::timer::{SIGALRM, TimerCtl, cause_sigalrm, set_alarm};
 use minix_types::{Endpoint, VirBytes};
 
 // ---------------------------------------------------------------------------
@@ -74,10 +74,18 @@ impl KernelGateway for NoopKernelGateway {
     fn sys_abort(&mut self, _how: i32) -> Result<(), i32> {
         Ok(())
     }
-    fn proc_times(&mut self, _ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+    fn proc_times(
+        &mut self,
+        _ep: Endpoint,
+    ) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
         Ok((0, 0))
     }
-    fn copy_to_user(&mut self, _bytes: &[u8], _dst_ep: Endpoint, _dst_addr: u64) -> Result<(), i32> {
+    fn copy_to_user(
+        &mut self,
+        _bytes: &[u8],
+        _dst_ep: Endpoint,
+        _dst_addr: u64,
+    ) -> Result<(), i32> {
         Ok(())
     }
     fn sys_resume(&mut self, _ep: Endpoint) -> Result<(), i32> {
@@ -86,7 +94,13 @@ impl KernelGateway for NoopKernelGateway {
     fn sys_delay_stop(&mut self, _ep: Endpoint) -> Result<(), i32> {
         Ok(())
     }
-    fn sys_trace(&mut self, _req: i32, _ep: Endpoint, _addr: u64, _data: &mut i64) -> Result<(), i32> {
+    fn sys_trace(
+        &mut self,
+        _req: i32,
+        _ep: Endpoint,
+        _addr: u64,
+        _data: &mut i64,
+    ) -> Result<(), i32> {
         Ok(())
     }
     fn sys_vircopy(
@@ -99,7 +113,12 @@ impl KernelGateway for NoopKernelGateway {
     ) -> Result<(), i32> {
         Ok(())
     }
-    fn copy_from_user(&mut self, _src_ep: Endpoint, _src: u64, _bytes: &mut [u8]) -> Result<(), i32> {
+    fn copy_from_user(
+        &mut self,
+        _src_ep: Endpoint,
+        _src: u64,
+        _bytes: &mut [u8],
+    ) -> Result<(), i32> {
         Ok(())
     }
     fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32> {
@@ -256,22 +275,28 @@ fn masked_signal_parks_in_pending_until_unblocked() {
     seed(&mut table, 1, 100, 200);
 
     // 目标屏蔽 SIGUSR1。
-    let (old_mask, _effect) = handle_sigprocmask(
-        &mut table,
-        target,
-        SIG_BLOCK,
-        sig_bit(SIGUSR1),
-    )
-    .expect("SIG_BLOCK 合法");
+    let (old_mask, _effect) = handle_sigprocmask(&mut table, target, SIG_BLOCK, sig_bit(SIGUSR1))
+        .expect("SIG_BLOCK 合法");
     assert_eq!(old_mask, 0, "屏蔽前掩码为空");
 
     // kill 送达:掩码臂把信号停进 pending,目标不受扰。
-    let sent = do_kill(&mut table, caller, 100, SIGUSR1, &mut NoopKernelGateway, &mut TestIpcTransport::new())
-        .expect("有权限且目标存在");
+    let sent = do_kill(
+        &mut table,
+        caller,
+        100,
+        SIGUSR1,
+        &mut NoopKernelGateway,
+        &mut TestIpcTransport::new(),
+    )
+    .expect("有权限且目标存在");
     assert_eq!(sent, 1, "命中一个目标");
 
     let parked = handle_sigpending(&table, target);
-    assert_eq!(parked, sig_bit(SIGUSR1), "信号停于 pending(C signal.c:88-97 快照)");
+    assert_eq!(
+        parked,
+        sig_bit(SIGUSR1),
+        "信号停于 pending(C signal.c:88-97 快照)"
+    );
 
     let state = &table.procs[1];
     assert!(
@@ -281,13 +306,8 @@ fn masked_signal_parks_in_pending_until_unblocked() {
     assert_eq!(state.resources.signals.pending, sig_bit(SIGUSR1));
 
     // 解除屏蔽:返回旧掩码(C sigprocmask oact),SIG_SETMASK 清空。
-    let (prev, _effect) = handle_sigprocmask(
-        &mut table,
-        target,
-        SIG_SETMASK,
-        0,
-    )
-    .expect("SIG_SETMASK 合法");
+    let (prev, _effect) =
+        handle_sigprocmask(&mut table, target, SIG_SETMASK, 0).expect("SIG_SETMASK 合法");
     assert_eq!(prev, sig_bit(SIGUSR1), "旧掩码含被屏蔽位");
     assert_eq!(
         handle_sigprocmask(&mut table, target, SIG_UNBLOCK, 0)
@@ -322,8 +342,8 @@ fn kill_permission_eperm_esrch_and_probe() {
     assert_eq!(err.to_errno(), minix_types::EPERM, "跨用户 kill → EPERM");
 
     // 同用户:命中一个目标。
-    let hits = do_kill(&mut table, caller, 300, SIGTERM, &mut kern, &mut transport)
-        .expect("同用户可发");
+    let hits =
+        do_kill(&mut table, caller, 300, SIGTERM, &mut kern, &mut transport).expect("同用户可发");
     assert_eq!(hits, 1);
 
     // 存在探测(signo == 0):命中但不投递(C signal.c:630-631 探测分支),
@@ -331,13 +351,13 @@ fn kill_permission_eperm_esrch_and_probe() {
     // 免得前一段终止链的出站消息混入对账。
     seed(&mut table, 4, 400, 100);
     let mut probe_transport = TestIpcTransport::new();
-    let probe = do_kill(&mut table, caller, 400, 0, &mut kern, &mut probe_transport)
-        .expect("探测合法");
+    let probe =
+        do_kill(&mut table, caller, 400, 0, &mut kern, &mut probe_transport).expect("探测合法");
     assert_eq!(probe, 1);
-    assert!(matches!(
-        table.procs[4].state.lifecycle,
-        Lifecycle::Running
-    ), "探测不改变目标生命周期");
+    assert!(
+        matches!(table.procs[4].state.lifecycle, Lifecycle::Running),
+        "探测不改变目标生命周期"
+    );
     assert!(
         probe_transport.sent().is_empty(),
         "探测不产生出站消息(不投递语义)"
@@ -375,7 +395,11 @@ fn alarm_set_cancel_and_expiry_paths() {
     // 置位:内核定时器收到 (ep, 10),进程标记 ALARM_ON,到期时间 = now + 10。
     let mut tctl = ScriptedTimerCtl::new(1000);
     set_alarm(&mut table, target, 10, &mut tctl);
-    assert_eq!(tctl.sets, vec![(target_ep, 10)], "alarm(10) 挂 10 tick 定时器");
+    assert_eq!(
+        tctl.sets,
+        vec![(target_ep, 10)],
+        "alarm(10) 挂 10 tick 定时器"
+    );
     let timer = table.procs[1].resources.timer.as_ref().expect("ALARM_ON");
     assert_eq!(timer.expire_time, 1010, "到期时间 = now + ticks");
 
@@ -407,17 +431,23 @@ fn alarm_set_cancel_and_expiry_paths() {
     )
     .expect("SIGALRM 可设 SIG_IGN");
     let mut transport_ign = TestIpcTransport::new();
-    let delivered = cause_sigalrm(&mut table, target_ep, &mut tctl, &mut kern, &mut transport_ign);
+    let delivered = cause_sigalrm(
+        &mut table,
+        target_ep,
+        &mut tctl,
+        &mut kern,
+        &mut transport_ign,
+    );
     assert!(delivered, "ALARM_ON → 投递流程启动");
-    assert!(matches!(
-        table.procs[1].state.lifecycle,
-        Lifecycle::Running
-    ), "SIG_IGN 吞掉 SIGALRM,目标存活");
+    assert!(
+        matches!(table.procs[1].state.lifecycle, Lifecycle::Running),
+        "SIG_IGN 吞掉 SIGALRM,目标存活"
+    );
 
     // 默认处置:重挂警报后到期,SIGALRM 终止目标并告知 VFS(C
     // forkexit.c:350-358 的无条件 tell_vfs;终止链告知见 run_once_integration
     // ::kill_termination_tells_vfs_exit 判例)。
-    let mut target2_slot = minix_types::UserSlot::new(2);
+    let target2_slot = minix_types::UserSlot::new(2);
     seed(&mut table, 2, 101, 200);
     set_alarm(&mut table, target2_slot, 5, &mut tctl);
     let mut transport_term = TestIpcTransport::new();

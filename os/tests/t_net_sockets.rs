@@ -17,11 +17,11 @@
 //! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
 
 use minix_net_lwip::addr::{
-    address_scope, common_bits, normalize_prefix, prefix_from_netmask_v4, SCOPE_GLOBAL,
-    SCOPE_LINK_LOCAL,
+    SCOPE_GLOBAL, SCOPE_LINK_LOCAL, address_scope, common_bits, normalize_prefix,
+    prefix_from_netmask_v4,
 };
 use minix_net_uds::core::{domain_allowed, hash_slot};
-use minix_net_uds::io::{control_length_allowed, max_payload, ring_advance, RECEIVE_BUFFER};
+use minix_net_uds::io::{RECEIVE_BUFFER, control_length_allowed, max_payload, ring_advance};
 
 // ---------------------------------------------------------------------------
 // test56/90 —— UDS 准入策略与槽位绑定
@@ -92,7 +92,10 @@ fn lwip_address_utilities_prefix_and_scope() {
     assert_eq!(base, 0xC0A8_0100, "主机位清零");
     // 纯 v6 形:/64 保留高 64 位。
     let v6 = normalize_prefix(0x2001_0DB8_0000_0000_0000_0000_0000_0001, 64);
-    assert_eq!(v6, 0x2001_0DB8_0000_0000_0000_0000_0000_0000, "/64 清低 64 位");
+    assert_eq!(
+        v6, 0x2001_0DB8_0000_0000_0000_0000_0000_0000,
+        "/64 清低 64 位"
+    );
 
     // 公共前缀位:从最高端数起。v4 地址顶到 128 位高位(与 /24 对位):
     // 低 8 位分岔 → 共 24 位;完全相同 → 32 位。

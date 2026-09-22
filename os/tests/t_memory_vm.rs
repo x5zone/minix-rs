@@ -21,10 +21,10 @@
 
 use minix_sys::ipc::CannedTransport;
 use minix_sys::vm::{
-    break_via, fork_address_space_via, mmap_via, munmap_via, vm_endpoint, MapRequest,
-    MAP_FLAG_THIRD_PARTY,
+    MAP_FLAG_THIRD_PARTY, MapRequest, break_via, fork_address_space_via, mmap_via, munmap_via,
+    vm_endpoint,
 };
-use minix_types::{Message, MessMmap, VirBytes, ENOMEM, OK};
+use minix_types::{ENOMEM, MessMmap, Message, OK, VirBytes};
 
 const CALLER: minix_types::Endpoint = minix_types::Endpoint(0x102);
 
@@ -47,7 +47,7 @@ fn brk_short_circuits_and_adopts_approved_boundary() {
     let cached = VirBytes(0x1000_0000);
 
     // 捷径:请求 == 缓存 → 不产生任何 round trip。
-    let mut transport = CannedTransport::new();
+    let transport = CannedTransport::new();
     let got = break_via(&transport, cached, cached).expect("捷径直接成功");
     assert_eq!(got, cached);
     assert!(transport.sent.borrow().is_empty(), "捷径不上 wire");
@@ -88,10 +88,9 @@ fn mmap_carries_seven_lanes_and_third_party_flag() {
     // 自映射:不带第三方旗。
     let mut transport = CannedTransport::new();
     let mut reply = ok_reply();
-    // SAFETY(test): retaddr 是应答的活跃车道(C mmap.c:44-45)。
-    unsafe {
-        reply.m_u.m_mmap.retaddr = 0x5000_0000;
-    }
+    // 应答的活跃车道是 retaddr(C mmap.c:44-45);union 字段赋值无读,
+    // 不需要 unsafe。
+    reply.m_u.m_mmap.retaddr = 0x5000_0000;
     transport.reply_sendrec(Ok(reply));
 
     let request = MapRequest {
@@ -148,8 +147,7 @@ fn munmap_carries_addr_and_len() {
     let mut transport = CannedTransport::new();
     transport.reply_sendrec(Ok(ok_reply()));
 
-    munmap_via(&transport, VirBytes(0x5000_0000), VirBytes(0x10_0000))
-        .expect("munmap 成功");
+    munmap_via(&transport, VirBytes(0x5000_0000), VirBytes(0x10_0000)).expect("munmap 成功");
 
     let sent = transport.sent.borrow();
     let (_, msg) = &sent[0];

@@ -19,7 +19,7 @@ use minix_fs::protocol::{CapabilityFlags, MountFlags};
 use minix_fs_mfs::mkfs::{build_image, plan_layout};
 use minix_fs_mfs::server::MfsServer;
 use minix_fs_rt::source::ImgrdBlockSource;
-use minix_types::{Errno, ENOENT};
+use minix_types::{ENOENT, Errno};
 
 const DEVICE: u64 = 0x301;
 const BLOCK_SIZE: usize = 4096; // 与 crate 自测一致(mount.rs/server.rs 判例)
@@ -61,13 +61,13 @@ fn mknod_device_file_records_type_and_rdev() {
     server
         .make_node(ROOT, "tty0", 0o020600, 0, 0, 0x2c01)
         .expect("mknod 合法");
-    let (node, _) = server
-        .lookup_child(ROOT, "tty0")
-        .expect("设备节点可解析");
+    let (node, _) = server.lookup_child(ROOT, "tty0").expect("设备节点可解析");
     assert_eq!(node.mode & 0o170000, 0o020000, "类型位为字符设备");
 
     let mut stat = minix_types::Stat::zeroed();
-    server.stat(node.inode_number, &mut stat).expect("stat 可读");
+    server
+        .stat(node.inode_number, &mut stat)
+        .expect("stat 可读");
     assert_eq!(stat.mode & 0o170000, 0o020000, "stat 类型位一致");
     assert_eq!(stat.special, 0x2c01, "stat 设备号一致(C test61 的 st_rdev)");
 
@@ -97,7 +97,9 @@ fn lstat_on_symlink_reports_link_not_target() {
     let (node, _) = server.lookup_child(ROOT, "s").expect("链接名可解析");
 
     let mut stat = minix_types::Stat::zeroed();
-    server.stat(node.inode_number, &mut stat).expect("stat 可读");
+    server
+        .stat(node.inode_number, &mut stat)
+        .expect("stat 可读");
     assert_eq!(stat.mode & 0o170000, 0o120000, "stat 读到链接本体类型");
     assert_eq!(stat.size, 8, "链接大小 = 目标串字节数(/no/such)");
     assert_eq!(stat.nlinks, 1, "链接本体计数 1");
@@ -117,7 +119,9 @@ fn removed_directory_names_stop_resolving() {
 
     server.make_dir(ROOT, "d", 0o040755, 0, 0).expect("建目录");
     let (d, _) = server.lookup_child(ROOT, "d").expect("可解析");
-    server.create(d.inode_number, "f", 0o100644, 0, 0).expect("目录内建文件");
+    server
+        .create(d.inode_number, "f", 0o100644, 0, 0)
+        .expect("目录内建文件");
     server.unlink(d.inode_number, "f").expect("清空");
     server.remove_dir(ROOT, "d").expect("删目录");
 
@@ -126,7 +130,6 @@ fn removed_directory_names_stop_resolving() {
     assert!(server.lookup_child(ROOT, "d").is_err());
     let gone = server
         .lookup_child(d.inode_number, "f")
-        .err()
-        .expect("被删目录内名字必须失败");
+        .expect_err("被删目录内名字必须失败");
     assert_eq!(gone, Errno::from_i32(ENOENT));
 }

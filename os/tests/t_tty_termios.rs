@@ -28,7 +28,7 @@ use minix_sys::{TIOCGETA, TIOCSETA};
 #[ignore = "点亮前提:tty 服务器 ioctl 面随载体点亮后端到端复核"]
 fn termios_byte_layout_roundtrip_preserves_record() {
     use minix_types::types::termios::{
-        Termios, CS8, CREAD, ECHO, ICANON, ICRNL, ISIG, OPOST, VEOF, VINTR,
+        CREAD, CS8, ECHO, ICANON, ICRNL, ISIG, OPOST, Termios, VEOF, VINTR,
     };
 
     let mut record = Termios::new();

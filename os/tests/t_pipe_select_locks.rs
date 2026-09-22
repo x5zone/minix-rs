@@ -16,12 +16,12 @@
 
 use minix_types::Endpoint;
 use minix_vfs::fcntl::{
-    cloexec_apply, compute_region, dupfd_arg_check, status_get, status_set, LockOp, LockOutcome,
-    LockTable, LockType, O_ACCMODE, O_APPEND, O_NONBLOCK, VnodeKey,
+    LockOp, LockOutcome, LockTable, LockType, O_ACCMODE, O_APPEND, O_NONBLOCK, VnodeKey,
+    cloexec_apply, compute_region, dupfd_arg_check, status_get, status_set,
 };
-use minix_vfs::pipe::{pipe_check_decision, PipeCheckVerdict};
+use minix_vfs::pipe::{PipeCheckVerdict, pipe_check_decision};
 use minix_vfs::read_write::RwDir;
-use minix_vfs::select::{classify, ops2tab_apply, tab2ops, FdKind, SelOps};
+use minix_vfs::select::{FdKind, SelOps, classify, ops2tab_apply, tab2ops};
 
 // ---------------------------------------------------------------------------
 // test19/50 —— fcntl 标志位与参数门
@@ -36,9 +36,21 @@ fn fcntl_flag_bits_and_arg_gates() {
     // F_SETFL:整体替换 NONBLOCK|O_APPEND 两比特,访问模式位保留。
     let flags = O_ACCMODE & 0o2; // O_RDWR(基础态,无 APPEND/NONBLOCK)
     let after = status_set(flags, O_NONBLOCK | O_APPEND);
-    assert_eq!(status_get(after) & O_NONBLOCK, O_NONBLOCK, "NONBLOCK 位写入");
-    assert_eq!(after & O_ACCMODE, O_ACCMODE & 0o2, "访问模式位不被 F_SETFL 触碰");
-    assert_eq!(status_get(after) & O_APPEND, O_APPEND, "O_APPEND 随 arg 写入");
+    assert_eq!(
+        status_get(after) & O_NONBLOCK,
+        O_NONBLOCK,
+        "NONBLOCK 位写入"
+    );
+    assert_eq!(
+        after & O_ACCMODE,
+        O_ACCMODE & 0o2,
+        "访问模式位不被 F_SETFL 触碰"
+    );
+    assert_eq!(
+        status_get(after) & O_APPEND,
+        O_APPEND,
+        "O_APPEND 随 arg 写入"
+    );
     // arg 不带 O_APPEND 时该位被清(两比特整体替换语义)。
     let stripped = status_set(after, O_NONBLOCK);
     assert_eq!(stripped & O_APPEND, 0, "arg 缺失的比特被清");
@@ -87,7 +99,15 @@ fn record_locks_conflict_query_and_release() {
     // pid2 GETLK 写探查:命中 pid1 的写锁,区间/pid 逐项对账。
     let probe = compute_region(0, 10, 20).expect("区间合法");
     let out = mgr
-        .lock_op_decision(LockOp::Query { ltype: LockType::Write }, 2, vnode, probe, 3)
+        .lock_op_decision(
+            LockOp::Query {
+                ltype: LockType::Write,
+            },
+            2,
+            vnode,
+            probe,
+            3,
+        )
         .expect("探查不阻塞");
     match out {
         LockOutcome::QueryHit(answer) => {
@@ -173,10 +193,18 @@ fn record_locks_conflict_query_and_release() {
 fn select_interest_and_ready_accounting() {
     // 分类:C select.c:225-232 的表序(字符 > 套接字 > 常规 > 管道)。
     assert_eq!(classify(true, false, false, false), Some(FdKind::Char));
-    assert_eq!(classify(false, true, true, false), Some(FdKind::Sock), "表序在前");
+    assert_eq!(
+        classify(false, true, true, false),
+        Some(FdKind::Sock),
+        "表序在前"
+    );
     assert_eq!(classify(false, false, true, false), Some(FdKind::File));
     assert_eq!(classify(false, false, false, true), Some(FdKind::Pipe));
-    assert_eq!(classify(false, false, false, false), None, "无类型 → EBADF 路");
+    assert_eq!(
+        classify(false, false, false, false),
+        None,
+        "无类型 → EBADF 路"
+    );
 
     // 兴趣集编码:三比特独立。
     let interest = tab2ops(true, false, true);
@@ -185,8 +213,17 @@ fn select_interest_and_ready_accounting() {
 
     // 就绪记账:三守卫齐备才计新位。want=RD|WR,兴趣=RD|ERR,已记=空,
     // 指针=RD|ERR → 只有 RD 新计入(WR 无兴趣不计,ERR 无就绪不计)。
-    let marked = ops2tab_apply(SelOps::RD | SelOps::WR, interest, SelOps::empty(), SelOps::RD | SelOps::ERR);
-    assert_eq!(marked.newly, SelOps::RD, "RD 新计入,WR 无兴趣不计,ERR 无就绪不计");
+    let marked = ops2tab_apply(
+        SelOps::RD | SelOps::WR,
+        interest,
+        SelOps::empty(),
+        SelOps::RD | SelOps::ERR,
+    );
+    assert_eq!(
+        marked.newly,
+        SelOps::RD,
+        "RD 新计入,WR 无兴趣不计,ERR 无就绪不计"
+    );
     let none = ops2tab_apply(SelOps::RD, interest, SelOps::RD, SelOps::RD);
     assert_eq!(none.newly, SelOps::empty(), "已记录的不再计");
 }
@@ -209,7 +246,10 @@ fn pipe_check_matrix_again_and_suspend() {
 
     // 阻塞空读且有写者:挂起等数据(C pipe.c:217-235 的睡眠臂)。
     let verdict = pipe_check_decision(RwDir::Read, 0, 8192, true, true, false, false, 64, 0);
-    assert!(matches!(verdict, PipeCheckVerdict::Suspend { .. }), "阻塞空读挂起");
+    assert!(
+        matches!(verdict, PipeCheckVerdict::Suspend { .. }),
+        "阻塞空读挂起"
+    );
 
     // 非阻塞满写:容量 8,已有 8 字节,请求再写 → EAGAIN。
     let verdict = pipe_check_decision(RwDir::Write, 8, 8, true, true, true, false, 1, 0);

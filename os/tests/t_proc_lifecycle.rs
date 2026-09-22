@@ -19,11 +19,11 @@
 //! 交付门 = 编译;全部测试 `#[ignore]`,点亮前提见各测试属性。
 
 use minix_types::{Endpoint, Message, MessageM7, MessageUnion, UserSlot};
+use minix_vfs::PmHandler;
 use minix_vfs::call_table::{SyscallResult, VfsCallNum};
 use minix_vfs::main_loop::VfsState;
 use minix_vfs::vnode::VnodeId;
 use minix_vfs::worker::WorkerFunc;
-use minix_vfs::PmHandler;
 
 // ---------------------------------------------------------------------------
 // 夹具:复刻 crate 内 `seeded` 的公开 API 形态(syscalls.rs:5006)
@@ -112,8 +112,7 @@ fn fork_shares_filp_entries_and_bumps_counts() {
     let parent = state.fproc_table.get(UserSlot::new(0)).expect("slot 0");
     let child = state.fproc_table.get(UserSlot::new(1)).expect("slot 1");
     assert_eq!(
-        child.filps[3],
-        parent.filps[3],
+        child.filps[3], parent.filps[3],
         "继承 = 同一 filp 索引(C misc.c:613-617 的 Rust 面)"
     );
     assert_eq!(child.filps[3], Some(fid.get()));
@@ -152,7 +151,10 @@ fn lseek_alternating_processes_keep_shared_offset_consistent() {
 
     // 父子双 fproc,fd4 共享同一 filp——fork 后共享偏移的载体。
     for (slot, pid) in [(0usize, PARENT_PID), (1usize, CHILD_PID)] {
-        let fp = state.fproc_table.get_mut(UserSlot::new(slot)).expect("slot");
+        let fp = state
+            .fproc_table
+            .get_mut(UserSlot::new(slot))
+            .expect("slot");
         fp.pid = pid;
         fp.endpoint = ep_of(slot);
         fp.filps[4] = Some(fid.get());
@@ -186,7 +188,11 @@ fn lseek_alternating_processes_keep_shared_offset_consistent() {
             state.current_message = lseek_msg(slot, offset, 4);
             let worker = state
                 .worker_pool
-                .assign_first_fit(UserSlot::new(slot), WorkerFunc::DoWork, &state.current_message)
+                .assign_first_fit(
+                    UserSlot::new(slot),
+                    WorkerFunc::DoWork,
+                    &state.current_message,
+                )
                 .expect("worker 空闲");
             state.current_worker = Some(worker);
 
