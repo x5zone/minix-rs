@@ -412,3 +412,205 @@ kernel: step4 DM coverage ok
   未动 `minix3/`、未动 `os/etc/rc`、未放松任何冒烟判据（包壳只写串口，
   不改判据也不改版管脚本，原版脚本 `git diff` 为空）✅；未删既有探针
   ✅（只加 cfg 门）。
+
+## P3 M3.2 — kernel-image 产出 aarch64 内核镜像（设计要点先行，实现与实测随后追加）
+
+任务书判据（NK4B-TODO §3 M3.2）：`os/kernel-image/` 今天是 x86_64 专用
+（`fw-x86-none` 特性门 + `x86_64.ld`），要扩出 aarch64 的链接脚本与入口约定；
+设计要点先写本文，实现要宿主可测（产出 ELF + readelf 断言 entry/段布局）。
+本节只写设计与依据，实测结果之后追加。
+
+### 事实纠正：aarch64 的架构实现目录
+
+任务书 §3 写「对照 `os/arch/src/aarch64`」，仓内实际目录是
+`os/arch/src/arm64/`（模块名 `arm64`，Rust 目标三元组仍是 `aarch64-*`）。
+本弧线引用它时一律用真实路径，避免下位读者 `ls` 落空。
+
+### 决策一：内核虚拟基址 = `0xFFFF_8000_0000_0000`
+
+不发明新值，取仓内既有 aarch64 载体与分页实现共同钉住的那个：
+
+- 既有载体喂给内核的 `KernelInfo.kern_virt_base` 就是它
+  （`os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:506`，
+  六个 aarch64 载体同值）；
+- 分页实现为什么接受它：`os/arch/src/arm64/paging.rs:468-476` 说明本移植把
+  `TTBR0_EL1` 与 `TTBR1_EL1` 钉在同一张 L0 根表上，T1SZ=16 ⇒ 高半区
+  （VA ≥ `0xFFFF_0000_0000_0000`）正好落在 L0 表项 256..512；
+  `paging.rs:792` 进一步把内核直接映射窗口写死在
+  `0xFFFF_8000_0000_0000` = L0 slot 256（高半区第一个槽位）。
+- 与 x86_64 的 `KERNEL_HIGH_BASE`（`os/kernel-image/x86_64.ld:29`）同值，
+  但**语义不同**：x86_64 那是 4 级分页的 canonical 高半地址，arm64 这里是
+  T1SZ=16 的 L0 slot 256。同一个数字，两套各自成立的理由，不能互相引用为据。
+
+### 决策二：物理基址 = `0x4020_0000`（不是 x86_64 的 `0x200000`）
+
+x86_64 的 `KERNEL_PHYS_BASE = 0x200000` 在 aarch64 上是错的：QEMU virt
+（arm64）的内存从 `0x4000_0000` 起，`0x200000` 根本不是 RAM。链接脚本的
+PT_LOAD 物理地址（LMA）是 boot-shim 的装载目标
+（`os/boot-shim/src/loader.rs` 的 `load_segments_into_phys_memory` 按 LMA
+拷段体），所以 aarch64 必须落在 RAM 内。取仓内既有常量：
+
+- `hello-boot-aarch64/src/main.rs:43`、`test-higher-half-aarch64:42`、
+  `test-kernel-map-aarch64:45`（注释明写「2MB-aligned, within RAM」）、
+  `test-paging-enable-aarch64:41`、`test-protection-aarch64:325`、
+  `test-shutdown-aarch64:43` 全部用 `0x4020_0000`；
+- 它同时满足两件事：2MiB 对齐（arm64 4K 粒度的 stage-1 大页步长，与
+  `x86_64.ld` 的 2MiB 收口同形）、且不与 QEMU virt 的外设区冲突
+  （GICD 在 `0x8000_0000`，PL011 在 `0x0900_0000`）。
+
+因此 aarch64 的高半偏移不再是「`vaddr - 0xFFFF800000000000` 等于物理地址」
+这种 x86 关系，而是 `vaddr = 0xFFFF_8000_0000_0000 + (paddr - 0x4020_0000)`。
+内核页表把 `[kern_virt_base, +kern_size)` 映射到
+`[kern_phys_base, +kern_size)`（`x86_64.ld` 头部契约的同一条），
+`compute_kernel_layout` 取 `min(vaddr)`/`min(paddr)`，两者一致即可。
+
+### 决策三：入口符号 `.text.boot:_start`，立栈用链接脚本预留的栈区
+
+对齐 `x86_64.ld` 的三条布局约定，只换指令与段名细节：
+
+1. `ENTRY(_start)`，`.text.boot` 由 `KEEP` 钉在镜像最前；
+2. 引导栈在 `.bss` 里预留 64 KiB，符号
+   `kernel_boot_stack_bottom` / `kernel_boot_stack_top`（与 x86 同名，
+   入口与未来的栈越界检测都靠它）；
+3. 末段 `. = ALIGN(0x200000)` 收口，让 `kern_size` 落在大页阶梯上
+   （`x86_64.ld:70-77` 记的是 NK4-A 首亮的实断，arm64 同理）；
+4. `.eh_frame`/`.comment`/`.note` 丢弃，与 x86 脚本一致。
+
+入口指令序列用仓内 aarch64 既有写法（`test-rt-birth-aarch64/src/main.rs:250-251`
+的 `adrp` + `add x9, x9, :lo12:sym` 取栈顶），停机驻留用 `wfi`
+（x86 是 `cli`+`hlt`）。交付边界与 x86 版完全相同：`_start` 立栈、进 Rust 面
+打一条横幅后驻留，boot-shim → 内核镜像的跳转交接协议仍未接线（NK1/OQ-N6
+裁决范围，M3.3 之前不代决），所以本里程碑的判据只到「ELF 产出 + 布局断言」。
+
+### 决策四：包一个 bin、三种目标，靠 `--target` 选架构
+
+今天 `[[bin]] name = "kernel"` 被 `required-features = ["fw-x86-none"]`
+钉死，而 `required-features` 是「全部必须开」的语义，没法让两个特性各自
+打开同一个 bin。做法：新增内部特性 `fw-none-image` 由 bin 要求，
+`fw-x86-none` 与 `fw-aarch64-none` 都隐含它。对外零变化：既有调用
+（`os/xtask/src/image.rs:212-222` 用 `--features fw-x86-none`）与产物
+文件名 `target/<triple>/<profile>/kernel` 都不变，riscv64（P4 M4.2）可同形扩展。
+
+### 决策五：验证形式 = 独立脚本，不改 xtask、不动 run_all
+
+M3.2 的判据是宿主可测的 readelf 断言，不是真机（真机要等 M3.3 的
+boot-shim 装载）。放独立脚本 `os/kernel-image/check-layout.sh`：构建指定
+架构的内核镜像，再用 `readelf` 断言 ELF 头机器类型、入口地址、PT_LOAD 段数、
+每段 `vaddr - paddr` 偏移一致、首段虚拟地址等于内核高半基址、镜像跨距
+2MiB 对齐。不接进 `os/qemu-tests/run_all.sh`（P6 才接线），也不改
+`xtask image`：aarch64 装机仍按现状明确拒绝
+（`os/xtask/src/image.rs:162-164`，缺的是 boot-shim 的 `fw-aarch64-uefi`，
+正是 M3.3 的目标）。
+
+### 实现与实测（2026-09-22 同日追加）
+
+- 状态：**DONE**（判据 = 宿主产出 ELF + `readelf` 布局断言全绿；真机装载
+  本里程碑不要求，也无从要求——没有任何代码把 aarch64 镜像送进 QEMU）
+- commit：见本节末「落盘」
+- 证据：`evidence/20260922-nk4b-p3-m32/`（10 份，文件名在下文逐条引用）
+
+#### 改了哪五个文件
+
+| 文件 | 改动 | 依据 |
+|------|------|------|
+| `os/kernel-image/aarch64.ld` | 新增（94 行，含头部契约注释） | 决策一、二、三 |
+| `os/kernel-image/build.rs` | 由「只认 x86_64 一个 target」改为按 `TARGET` 选脚本（match 两支） | 决策四 |
+| `os/kernel-image/Cargo.toml` | 新增内部特性 `fw-none-image` 由 bin 要求，`fw-x86-none` / `fw-aarch64-none` 各自隐含它 | 决策四 |
+| `os/kernel-image/src/main.rs` | 早期控制台 import 与入口 `global_asm!`、`halt()` 按 `target_arch` 分道；x86 侧逐字未变 | 决策三 |
+| `os/kernel-image/check-layout.sh` | 新增（宿主布局断言 L1–L8） | 决策五 |
+
+#### 产物与关键数字（`layout-raw.txt`）
+
+aarch64 镜像 `os/target/aarch64-unknown-none/release/kernel`（1205672 字节）：
+
+- `Type: EXEC`、`Machine: AArch64`、入口 `0xffff800000000000`（= `_start` 符号）；
+- 4 个 PT_LOAD，首段 `VirtAddr 0xffff800000000000 / PhysAddr 0x40200000`；
+  每段 `vaddr - paddr` 都是 `0xffff7fffbfe00000`（= `KERNEL_VIRT_BASE -
+  KERNEL_PHYS_BASE`，正是决策二推导式 `vaddr = 高半基址 + (paddr - 物理基址)`
+  的常量平移）；
+- 末段 `VMA 0xffff8000000ff000 + memsz 0x101000` = `0xffff800000200000` ⇒
+  跨距恰好 2 MiB（`. = ALIGN(0x200000)` 收口生效）；
+- `kernel_boot_stack_bottom/top` = `0xffff800000143f00` / `0xffff800000153f00`
+  （差 65536 字节），`minix_kernel::arch_boot` 在符号表里 ⇒ 内核启动图未被
+  `--gc-sections` 裁出镜像。
+
+#### 与设计不符的地方（三条，都记下）
+
+1. **两架构的首段虚拟地址并不相等，设计里没算到这一条。** x86_64 脚本写的是
+   `vaddr = KERNEL_HIGH_BASE + paddr`，首段 VMA 因此是
+   `0xffff800000200000`（含物理基址）；aarch64 按决策二写成
+   `vaddr = KERNEL_VIRT_BASE + (paddr - KERNEL_PHYS_BASE)`，首段 VMA 就是
+   `0xffff800000000000`。两者都满足 boot-shim 的 `min(vaddr)` / `min(paddr)`
+   契约（`os/boot-shim/src/loader.rs` 拿到的仍是同一组
+   `kern_virt_base` / `kern_phys_base`），但**断言脚本的预期表必须按架构
+   分列**——`check-layout.sh` 的 `arch_expect()` 因此有六列而不是设计里说的
+   「首段虚拟地址等于内核高半基址」一条通吃。第一版脚本就是按设计写死的
+   单一预期，实跑立刻报 x86_64 的 L3b/L3c 失败，这才暴露差别。
+2. **仓内还有一份更早的 aarch64 内核脚本没被设计引用。**
+   `os/kernel/src/arch/aarch64/link.ld` 用的正是同一对基址
+   （`KERN_VIRT_BASE = 0xFFFF800000000000`、`KERN_PHYS_BASE = 0x40200000`），
+   比设计里引的六个测试载体更直接；`os/kernel/src/lib.rs:4184-4209` 的宿主测试
+   `test_linker_script_aarch64_constraints` 还把这两个值 + 2MiB 对齐断言成了
+   契约。这反过来印证了决策一/二（值不是我选的，是仓内既有约定）。但那份脚本
+   **没有 `AT()` 段分离**（LMA 等于 VMA），不能给 boot-shim 当装载用，所以
+   本里程碑另写 `aarch64.ld` 而不是复用它；两份脚本的分工差异未记进任何文档，
+   属 M3.3 之前该补的一条（本轮不顺手改它，避免动到 NK4-A 既有的测试语义）。
+3. **`fw-none-image` 的取舍在设计里只写了一句话，实现时先走错一步。** 我第一版
+   把 `required-features` 写成 `"fw-x86-none", "fw-aarch64-none"`（并列 = 两个
+   都得开），那会让 `os/xtask/src/image.rs:212-222` 的既有调用直接产不出 bin，
+   与「对外零变化」矛盾；已改回「内部特性 + 两个架构特性各自隐含」。最终形态下
+   光传 `--features fw-x86-none` 仍可用（实测见下），riscv64 到 P4 M4.2 只需
+   加 `fw-riscv64-none = ["fw-none-image"]` 与 `build.rs` 一支。
+
+#### 验证（逐项带证据文件名）
+
+- 宿主布局断言：`check-layout-all.log` —— x86_64 与 aarch64 各 L1–L8 全 PASS，
+  `CHECK-LAYOUT=PASS（all）`，`CL-EXIT=0`。
+- 断言的判别性（防「永远 PASS 的测试」）：`check-layout-negative-aarch64.log` ——
+  只把 aarch64 的预期首段物理地址改成 `0x40000000`（QEMU virt 的 DRAM 起点，
+  一个看起来合理的值）后重跑，结果 `[L3c] FAIL`、`CHECK-LAYOUT=FAIL`、
+  退出码 1，其余断言仍 PASS。说明 L3c 真在读段表，不是摆设。
+  （做法：临时副本 `os/kernel-image/.cl-neg.sh` 跑完即删，正式脚本未改）
+- 两架构构建本身：`build-aarch64-unknown-none.log`、`build-x86_64-unknown-none.log`
+  （各 657 / 367 行，内容全是既有 crate 的警告，`^error` 计数 0）；
+  `clippy-aarch64.log` —— `cargo clippy -p kernel-image --target
+  aarch64-unknown-none --features fw-aarch64-none` 退出码 0，且无任何指向
+  `kernel-image/` 的警告。
+- x86_64 生产装机链不受影响：`img-x86_64-build.log` —— `xtask image --arch
+  x86_64 --release` 的 `IMG-EXIT=0`，镜像仍含 `kernel.elf + imgrd + 12 模块`。
+- 真机两次独立复跑（同一镜像，`smoke-x86_64-r1.log` / `smoke-x86_64-r2.log`）：
+  两轮都 `serial: scheduler hand-off reached` → `FAIL: T4 marker 'rc: minimal
+  boot script marker' never appeared`，`SMOKE-EXIT=1`；r2 串口尾部的终态是
+  `kernel/src/trap_dispatch.rs:723:13` 的 `kernel exception vector 13` +
+  recursive panic —— 与 M3.1 归档的 `evidence/20260922-nk4b-p3-m31/serial_c28a.log:3921`
+  同一站点，即 P1 的已知断点，**不是本里程碑引入的回退**。r1 尾部停在
+  `nk4a: vm-pf recv`（PIT 抢占时序敏感，NK4A-TODO §8 记过同形抖动）。
+- 宿主回归：`host-test-counts.txt` —— minix-kernel 809 passed / 0 failed、
+  minix-arch 241 passed / 0 failed（与 P0 基线逐项相等）；
+  `cargo test -p kernel-image` 退出码 0 且无 `test result:` 行——本包无测试，
+  宿主 triple 下 bin 被 `required-features` 跳过，这正是 X-2/NK5 隔离未退化的
+  观测证据（若隔离破了，裸机 bin 在宿主会因缺 `eh_personality` 报 error）。
+
+#### 已知边界（不隐瞒）
+
+1. aarch64 镜像**从未被执行过**：boot-shim 的 `fw-aarch64-uefi` 还不存在
+   （M3.3），`xtask image --arch aarch64` 仍明确拒绝。本里程碑只证明「按契约
+   产出一个布局正确的 ELF」。
+2. `_start` 与内核本体之间仍未接线（NK1/OQ-N6 裁决），横幅打不出来；
+   `wfi` 驻留在真实入口态下是否被陷入（HCR/TDCR 配置）要等 M3.4 才知道。
+3. `check-layout.sh` 未接进 `os/qemu-tests/run_all.sh`（按任务书 P6 才接线），
+   今天靠手工调用；它与 `aarch64.ld` 的预期值是两处手写同一批常量，改脚本
+   基址时必须同步改脚本预期（没做自动一致性检查，登记为风险）。
+4. 环境事实（给下位读者）：`os/qemu-tests/test-cmd-smoke.sh` 的 `mktemp` 模板
+   硬写 `/tmp/...`，在 `/tmp` 只读的受限沙箱里会先报
+   `FAIL: guest never reached the scheduler hand-off`（QEMU 根本没起来）。
+   本轮第一次跑就撞上这条，换成可写 `/tmp` 后同一条命令即正常。别把它误读成
+   启动链回退。
+
+- 自检：fix-guard ✅（每条改动前读目标文件全文/目标行 ±5 行 + grep 确认；
+  一次一个逻辑单元，五个文件属同一里程碑但按「实现 + 验证脚本」两笔落盘）；
+  计数不减 ✅（kernel 809 / arch 241 持平）；两次复跑 ✅（真机 r1/r2 同形）；
+  IMG-EXIT=0 ✅；C 源对位 ✅（`aarch64.ld` 头部按 `x86_64.ld` 同一条契约写，
+  常量取自仓内既有 `os/kernel/src/arch/aarch64/link.ld`，非发明）；
+  FIXLOG 一条 ✅；证据 `git add -f` ✅；未动 `minix3/`、未动 `os/etc/rc`、
+  未放松任何冒烟判据 ✅；未新增探针（本里程碑是产出物，无需取证）✅。

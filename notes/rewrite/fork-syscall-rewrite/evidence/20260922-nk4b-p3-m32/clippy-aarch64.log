@@ -1,0 +1,1485 @@
+warning: large size difference between variants
+   --> libs/minix-types/src/ipc/vm.rs:663:1
+    |
+663 | /   pub enum VmReply {
+664 | |       Fork(VmForkOut),
+665 | |       Brk(VmBrkOut),
+666 | |       Mmap(VmMmapOut),
+...   |
+710 | | /     InfoUsage {
+711 | | |         total: VirBytes,
+712 | | |         common: VirBytes,
+713 | | |         shared: VirBytes,
+...   | |
+721 | | |         major_faults: u64,
+722 | | |     },
+    | | |_____- the second-largest variant contains at least 64 bytes
+723 | | /     InfoRegion {
+724 | | |         /// Up to `MAX_VRI_COUNT` (64, vm.h:66) regions per call.
+725 | | |         ///
+726 | | |         /// Inline 64-entry array (no heap allocation). The array is
+...   | |
+736 | | |         next: VirBytes,
+737 | | |     },
+    | | |_____- the largest variant contains at least 1552 bytes
+...   |
+743 | |       Error(VmError),
+744 | |   }
+    | |___^ the entire enum is at least 1560 bytes
+    |
+note: boxing a variant would require the type no longer be `Copy`
+   --> libs/minix-types/src/ipc/vm.rs:663:10
+    |
+663 | pub enum VmReply {
+    |          ^^^^^^^
+help: consider boxing the large fields or introducing indirection in some other way to reduce the total size of the enum
+   --> libs/minix-types/src/ipc/vm.rs:723:5
+    |
+723 | /     InfoRegion {
+724 | |         /// Up to `MAX_VRI_COUNT` (64, vm.h:66) regions per call.
+725 | |         ///
+726 | |         /// Inline 64-entry array (no heap allocation). The array is
+...   |
+736 | |         next: VirBytes,
+737 | |     },
+    | |_____^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#large_enum_variant
+    = note: `#[warn(clippy::large_enum_variant)]` on by default
+
+warning: this function has too many arguments (8/7)
+   --> libs/minix-types/src/types/boot.rs:399:5
+    |
+399 | /     pub const fn new_with_ident(
+400 | |         kernel_text_vbase: u64,
+401 | |         kernel_text_pbase: u64,
+402 | |         kernel_text_pages: usize,
+...   |
+407 | |         ident_count: usize,
+408 | |     ) -> Self {
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: unused variable: `lapic_base`
+   --> libs/minix-platform/src/acpi.rs:423:9
+    |
+423 |     let lapic_base = u32_le_from_slice(lapic_addr_bytes) as usize;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_lapic_base`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: this `if` statement can be collapsed
+   --> libs/minix-platform/src/device_tree.rs:386:9
+    |
+386 | /         if let Some(uart) = fdt.find_compatible(&["arm,pl011", "arm,primecell"]) {
+387 | |             if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
+388 | |                 return Some(MmioSerialDesc { mmio_base: base.starting_address as usize });
+389 | |             }
+390 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+386 ~         if let Some(uart) = fdt.find_compatible(&["arm,pl011", "arm,primecell"])
+387 ~             && let Some(base) = uart.reg().and_then(|mut r| r.next()) {
+388 |                 return Some(MmioSerialDesc { mmio_base: base.starting_address as usize });
+389 ~             }
+    |
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+  --> plat/src/arm64/interrupt.rs:99:9
+   |
+99 |         core::ptr::read_volatile((self.gicd_base + offset) as *const u32)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> plat/src/arm64/interrupt.rs:98:5
+   |
+98 |     unsafe fn gicd_read32(&self, offset: usize) -> u32 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> plat/src/arm64/interrupt.rs:103:9
+    |
+103 |         core::ptr::write_volatile((self.gicd_base + offset) as *mut u32, value);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> plat/src/arm64/interrupt.rs:102:5
+    |
+102 |     unsafe fn gicd_write32(&self, offset: usize, value: u32) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> plat/src/arm64/interrupt.rs:107:9
+    |
+107 |         core::ptr::read_volatile((self.gicr_base + offset) as *const u32)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> plat/src/arm64/interrupt.rs:106:5
+    |
+106 |     unsafe fn gicr_read32(&self, offset: usize) -> u32 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> plat/src/arm64/interrupt.rs:111:9
+    |
+111 |         core::ptr::write_volatile((self.gicr_base + offset) as *mut u32, value);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> plat/src/arm64/interrupt.rs:110:5
+    |
+110 |     unsafe fn gicr_write32(&self, offset: usize, value: u32) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: casting to the same type is unnecessary (`usize` -> `usize`)
+   --> plat/src/arm64/interrupt.rs:117:27
+    |
+117 |                 let reg = (irq / 32) as usize;
+    |                           ^^^^^^^^^^^^^^^^^^^ help: try: `(irq / 32)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+    = note: `#[warn(clippy::unnecessary_cast)]` on by default
+
+warning: casting to the same type is unnecessary (`usize` -> `usize`)
+   --> plat/src/arm64/interrupt.rs:121:27
+    |
+121 |                 let reg = (irq / 32) as usize;
+    |                           ^^^^^^^^^^^^^^^^^^^ help: try: `(irq / 32)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+
+warning: casting to the same type is unnecessary (`usize` -> `usize`)
+   --> plat/src/arm64/interrupt.rs:196:23
+    |
+196 |             let reg = (irq_num / 32) as usize;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^ help: try: `(irq_num / 32)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+
+warning: casting to the same type is unnecessary (`usize` -> `usize`)
+   --> plat/src/arm64/interrupt.rs:216:23
+    |
+216 |             let reg = (irq_num / 32) as usize;
+    |                       ^^^^^^^^^^^^^^^^^^^^^^^ help: try: `(irq_num / 32)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+
+warning: casting to the same type is unnecessary (`usize` -> `usize`)
+   --> plat/src/arm64/interrupt.rs:234:23
+    |
+234 |             let reg = (irq / 32) as usize;
+    |                       ^^^^^^^^^^^^^^^^^^^ help: try: `(irq / 32)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+
+For more information about this error, try `rustc --explain E0133`.
+warning: unnecessary parentheses around assigned value
+   --> arch/src/arch/boot.rs:423:34
+    |
+423 |             let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
+    |                                  ^
+424 |                 .min(page_size as usize - seg_start_in_page));
+    |                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+423 ~             let seg_bytes_here = ((seg.memsz - page_off as u64) as usize)
+424 ~                 .min(page_size as usize - seg_start_in_page);
+    |
+
+warning: unused import: `core::mem::offset_of`
+  --> arch/src/arm64/trap_stub.rs:58:5
+   |
+58 | use core::mem::offset_of;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `FaultContext` and `RecoveryPoint`
+  --> arch/src/arm64/exception.rs:12:39
+   |
+12 | use crate::exception::{ExceptionArch, FaultContext, RecoveryPoint};
+   |                                       ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:129:22
+    |
+129 |                 "mrs {fpsr}, fpsr",
+    |                      ^^^^^^
+...
+132 |                 fpsr = out(reg) dst.fpsr,
+    |                                 -------- for this argument
+    |
+    = help: use `{1:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{1:x}` to keep the default formatting of `x0` (for 64-bit values)
+    = note: `#[warn(asm_sub_register)]` on by default
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:130:22
+    |
+130 |                 "mrs {fpcr}, fpcr",
+    |                      ^^^^^^
+...
+133 |                 fpcr = out(reg) dst.fpcr,
+    |                                 -------- for this argument
+    |
+    = help: use `{2:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{2:x}` to keep the default formatting of `x0` (for 64-bit values)
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:166:28
+    |
+166 |                 "msr fpsr, {fpsr}",
+    |                            ^^^^^^
+...
+169 |                 fpsr = in(reg) fpsr,
+    |                                ---- for this argument
+    |
+    = help: use `{1:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{1:x}` to keep the default formatting of `x0` (for 64-bit values)
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:167:28
+    |
+167 |                 "msr fpcr, {fpcr}",
+    |                            ^^^^^^
+...
+170 |                 fpcr = in(reg) fpcr,
+    |                                ---- for this argument
+    |
+    = help: use `{2:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{2:x}` to keep the default formatting of `x0` (for 64-bit values)
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+  --> arch/src/arm64/paging.rs:96:5
+   |
+96 |     core::ptr::read_volatile(table.add(idx))
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> arch/src/arm64/paging.rs:95:1
+   |
+95 | unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+  --> arch/src/arm64/paging.rs:96:30
+   |
+96 |     core::ptr::read_volatile(table.add(idx))
+   |                              ^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:100:5
+    |
+100 |     core::ptr::write_volatile(table.add(idx), val);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/paging.rs:99:1
+    |
+ 99 | unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:100:31
+    |
+100 |     core::ptr::write_volatile(table.add(idx), val);
+    |                               ^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:216:5
+    |
+216 |     core::ptr::read_volatile(channel_to_ptr(paddr, channel))
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/paging.rs:215:1
+    |
+215 | unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:228:5
+    |
+228 |     core::ptr::write_volatile(channel_to_ptr(paddr, channel), value);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/paging.rs:227:1
+    |
+227 | unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/arm64/trap_return.rs:64:9
+    |
+ 64 | /         core::arch::asm!(
+ 65 | |             // Park the register-file pointer in X2 (its user slot is
+ 66 | |             // gp_regs[GP_X2], loaded last as a self-referential load).
+ 67 | |             "mov x2, x1",
+...   |
+125 | |             options(noreturn)
+126 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/trap_return.rs:56:5
+    |
+ 56 |     unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+  --> arch/src/arm64/smp.rs:99:5
+   |
+99 |     GICD_BASE = base;
+   |     ^^^^^^^^^ use of mutable static
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> arch/src/arm64/smp.rs:98:1
+   |
+98 | pub(crate) unsafe fn set_gicd_base(base: usize) {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+   --> arch/src/arm64/smp.rs:110:5
+    |
+110 |     GICD_BASE
+    |     ^^^^^^^^^ use of mutable static
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/smp.rs:109:1
+    |
+109 | unsafe fn gicd_base() -> usize {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/arm64/boot.rs:179:9
+    |
+179 | /         core::arch::asm!(
+180 | |             "mrs {tmp}, CPACR_EL1",
+181 | |             "orr {tmp}, {tmp}, #(0x3 << 20)", // FPEN = 0b01
+182 | |             "msr CPACR_EL1, {tmp}",
+183 | |             "isb",
+184 | |             tmp = out(reg) _,
+185 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/boot.rs:178:5
+    |
+178 |     pub(super) unsafe fn enable_cpacr_el1_fpen_user() {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/arm64/boot.rs:189:9
+    |
+189 | /         core::arch::asm!(
+190 | |             "mrs {tmp}, CPACR_EL1",
+191 | |             "bic {tmp}, {tmp}, #(0x3 << 20)", // FPEN = 0b00
+192 | |             "msr CPACR_EL1, {tmp}",
+193 | |             "isb",
+194 | |             tmp = out(reg) _,
+195 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/boot.rs:188:5
+    |
+188 |     pub(super) unsafe fn enable_cpacr_el1_fpen_kernel() {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `get` is never used
+  --> arch/src/arm64/protection.rs:59:25
+   |
+53 | impl AArch64PrivilegeLevel {
+   | -------------------------- method in this implementation
+...
+59 |     pub(crate) const fn get(self) -> u8 {
+   |                         ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `cpu_count` is never read
+  --> arch/src/arm64/protection.rs:74:5
+   |
+72 | pub struct AArch64Protection {
+   |            ----------------- field in this struct
+73 |     /// Number of CPUs initialized (for SMP tracking).
+74 |     cpu_count: u32,
+   |     ^^^^^^^^^
+
+warning: constant `FPSIMD_SIZE` is never used
+  --> arch/src/arm64/fpu.rs:30:7
+   |
+30 | const FPSIMD_SIZE: usize = 528;
+   |       ^^^^^^^^^^^
+
+warning: constant `GP_X11` is never used
+  --> arch/src/arm64/signal.rs:51:18
+   |
+51 | pub(super) const GP_X11: usize = 10;
+   |                  ^^^^^^
+
+warning: this function has too many arguments (8/7)
+   --> arch/src/arch/paging.rs:589:1
+    |
+589 | / pub fn map_kernel<P: Paging>(
+590 | |     pt: &mut P,
+591 | |     kernel_text_vbase: u64,
+592 | |     kernel_text_pbase: u64,
+...   |
+597 | |     ident_regions: &[minix_types::HandoffMemRegion],
+598 | | ) -> Result<(), PageTableError> {
+    | |_______________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+    = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: this `if` statement can be collapsed
+   --> arch/src/arch/boot.rs:437:13
+    |
+437 | /             if let Some((_pa, f)) = paging.query(v) {
+438 | |                 if !f.contains(crate::paging::PageFlags::USER_ACCESSIBLE) {
+...   |
+473 | |             }
+    | |_____________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+    = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+    |
+437 ~             if let Some((_pa, f)) = paging.query(v)
+438 ~                 && !f.contains(crate::paging::PageFlags::USER_ACCESSIBLE) {
+439 |                     // Supervisor-only page under a user segment VA =
+...
+471 |                         .map_err(|_| VmLoadError::MappingFailed)?;
+472 ~                 }
+    |
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> arch/src/arm64/paging.rs:313:18
+    |
+313 |     let l3_idx = ((vaddr >> 12) & 0x1FF) as u64;
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `((vaddr >> 12) & 0x1FF)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+    = note: `#[warn(clippy::unnecessary_cast)]` on by default
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+   --> arch/src/arm64/paging.rs:424:18
+    |
+424 |     let l3_idx = ((vaddr >> 12) & 0x1FF) as u64;
+    |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `((vaddr >> 12) & 0x1FF)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |               let tcr: u64 = (16 << 0)
+    |  ____________________________^
+521 | |                 | (0 << 6)
+522 | |                 | (0 << 7)
+523 | |                 | (1 << 8)
+...   |
+535 | |                 | (0 << 36)
+536 | |                 | (0 << 37);
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+    = note: `#[warn(clippy::identity_op)]` on by default
+help: consider reducing it to
+    |
+520 ~             let tcr: u64 = (16 << 0)
+521 +                 | (0 << 6)
+522 +                 | (0 << 7)
+523 +                 | (1 << 8)
+524 +                 | (1 << 10)
+525 +                 | (3 << 12)
+526 +                 | (0 << 14)
+527 +                 | (16 << 16)
+528 +                 | (0 << 22)
+529 +                 | (0 << 23)
+530 +                 | (1 << 24)
+531 +                 | (1 << 26)
+532 +                 | (3 << 28)
+533 +                 | (2 << 30)
+534 +                 | (5 << 32)
+535 ~                 | (0 << 36);
+    |
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |               let tcr: u64 = (16 << 0)
+    |  ____________________________^
+521 | |                 | (0 << 6)
+522 | |                 | (0 << 7)
+523 | |                 | (1 << 8)
+...   |
+534 | |                 | (5 << 32)
+535 | |                 | (0 << 36)
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+help: consider reducing it to
+    |
+520 ~             let tcr: u64 = ((16 << 0)
+521 +                 | (0 << 6)
+522 +                 | (0 << 7)
+523 +                 | (1 << 8)
+524 +                 | (1 << 10)
+525 +                 | (3 << 12)
+526 +                 | (0 << 14)
+527 +                 | (16 << 16)
+528 +                 | (0 << 22)
+529 +                 | (0 << 23)
+530 +                 | (1 << 24)
+531 +                 | (1 << 26)
+532 +                 | (3 << 28)
+533 +                 | (2 << 30)
+534 +                 | (5 << 32))
+    |
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |               let tcr: u64 = (16 << 0)
+    |  ____________________________^
+521 | |                 | (0 << 6)
+522 | |                 | (0 << 7)
+523 | |                 | (1 << 8)
+...   |
+528 | |                 | (0 << 22)
+529 | |                 | (0 << 23)
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+help: consider reducing it to
+    |
+520 ~             let tcr: u64 = ((16 << 0)
+521 +                 | (0 << 6)
+522 +                 | (0 << 7)
+523 +                 | (1 << 8)
+524 +                 | (1 << 10)
+525 +                 | (3 << 12)
+526 +                 | (0 << 14)
+527 +                 | (16 << 16)
+528 +                 | (0 << 22))
+    |
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |               let tcr: u64 = (16 << 0)
+    |  ____________________________^
+521 | |                 | (0 << 6)
+522 | |                 | (0 << 7)
+523 | |                 | (1 << 8)
+...   |
+527 | |                 | (16 << 16)
+528 | |                 | (0 << 22)
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+help: consider reducing it to
+    |
+520 ~             let tcr: u64 = ((16 << 0)
+521 +                 | (0 << 6)
+522 +                 | (0 << 7)
+523 +                 | (1 << 8)
+524 +                 | (1 << 10)
+525 +                 | (3 << 12)
+526 +                 | (0 << 14)
+527 +                 | (16 << 16))
+    |
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |               let tcr: u64 = (16 << 0)
+    |  ____________________________^
+521 | |                 | (0 << 6)
+522 | |                 | (0 << 7)
+523 | |                 | (1 << 8)
+524 | |                 | (1 << 10)
+525 | |                 | (3 << 12)
+526 | |                 | (0 << 14)
+    | |___________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+help: consider reducing it to
+    |
+520 ~             let tcr: u64 = ((16 << 0)
+521 +                 | (0 << 6)
+522 +                 | (0 << 7)
+523 +                 | (1 << 8)
+524 +                 | (1 << 10)
+525 +                 | (3 << 12))
+    |
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |               let tcr: u64 = (16 << 0)
+    |  ____________________________^
+521 | |                 | (0 << 6)
+522 | |                 | (0 << 7)
+    | |__________________________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+help: consider reducing it to
+    |
+520 ~             let tcr: u64 = ((16 << 0)
+521 +                 | (0 << 6))
+    |
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |               let tcr: u64 = (16 << 0)
+    |  ____________________________^
+521 | |                 | (0 << 6)
+    | |__________________________^ help: consider reducing it to: `((16 << 0))`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+
+warning: this operation has no effect
+   --> arch/src/arm64/paging.rs:520:28
+    |
+520 |             let tcr: u64 = (16 << 0)
+    |                            ^^^^^^^^^ help: consider reducing it to: `16`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#identity_op
+
+warning: doc list item without indentation
+  --> arch/src/arm64/fpu.rs:11:5
+   |
+11 | //! Total: 520 bytes (padded to 528 for 16-byte alignment)
+   |     ^
+   |
+   = help: if this is supposed to be its own paragraph, add a blank line
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+   = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+   |
+11 | //!   Total: 520 bytes (padded to 528 for 16-byte alignment)
+   |     ++
+
+warning: this `impl` can be derived
+  --> arch/src/arm64/fpu.rs:59:1
+   |
+59 | / impl Default for AArch64FpuState {
+60 | |     fn default() -> Self {
+61 | |         Self {
+62 | |             regs: [[0u64; 2]; 32],
+...  |
+68 | | }
+   | |_^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#derivable_impls
+   = note: `#[warn(clippy::derivable_impls)]` on by default
+help: replace the manual implementation with a derive attribute
+   |
+38 + #[derive(Default)]
+39 | pub struct AArch64FpuState {
+   |
+
+warning: field assignment outside of initializer for an instance created with Default::default()
+   --> arch/src/arm64/signal.rs:258:9
+    |
+258 |         sctx.sc_spsr = ctx.psr;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+note: consider initializing the variable with `arm64::signal::AArch64SigContext { sc_spsr: ctx.psr, sc_r0: ctx.r0, sc_r1: ctx.gp_regs[GP_X1], sc_r2: ctx.gp_regs[GP_X2], sc_r3: ctx.gp_regs[GP_X3], sc_r4: ctx.gp_regs[GP_X4], sc_r5: ctx.gp_regs[GP_X5], sc_r6: ctx.gp_regs[GP_X6], sc_r7: ctx.gp_regs[GP_X7], sc_r8: ctx.gp_regs[GP_X8], sc_r9: ctx.gp_regs[GP_X9], sc_r10: ctx.gp_regs[GP_X10], sc_r11: ctx.gp_regs[GP_X29], sc_r12: ctx.gp_regs[GP_X12], sc_usr_sp: ctx.sp, sc_usr_lr: ctx.gp_regs[GP_X30], sc_svc_lr: 0, sc_pc: ctx.pc, sc_r13: ctx.gp_regs[GP_X13], sc_r14: ctx.gp_regs[GP_X14], sc_r15: ctx.gp_regs[GP_X15], sc_r16: ctx.gp_regs[GP_X16], sc_r17: ctx.gp_regs[GP_X17], sc_r18: ctx.gp_regs[GP_X18], sc_r19: ctx.gp_regs[GP_X19], sc_r20: ctx.gp_regs[GP_X20], sc_r21: ctx.gp_regs[GP_X21], sc_r22: ctx.gp_regs[GP_X22], sc_r23: ctx.gp_regs[GP_X23], sc_r24: ctx.gp_regs[GP_X24], sc_r25: ctx.gp_regs[GP_X25], sc_r26: ctx.gp_regs[GP_X26], sc_r27: ctx.gp_regs[GP_X27], sc_r28: ctx.gp_regs[GP_X28], sc_mask: info.mask, sc_flags: 0, sc_magic: SC_MAGIC, ..Default::default() }` and removing relevant reassignments
+   --> arch/src/arm64/signal.rs:255:9
+    |
+255 |         let mut sctx = AArch64SigContext::default();
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#field_reassign_with_default
+    = note: `#[warn(clippy::field_reassign_with_default)]` on by default
+
+warning: manual implementation of `.is_multiple_of()`
+   --> arch/src/arm64/boot.rs:140:12
+    |
+140 |         if offset % 8 != 0 {
+    |            ^^^^^^^^^^^^^^^ help: replace with: `!offset.is_multiple_of(8)`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#manual_is_multiple_of
+    = note: `#[warn(clippy::manual_is_multiple_of)]` on by default
+
+warning: unused import: `minix_arch::CpuContextArch as _`
+    --> kernel/src/proc.rs:1766:9
+     |
+1766 |     use minix_arch::CpuContextArch as _;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::syscall::KcallResult`
+  --> kernel/src/trap_dispatch.rs:40:5
+   |
+40 | use crate::syscall::KcallResult;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ExceptionArch` and `FaultContext`
+  --> kernel/src/trap_dispatch.rs:41:29
+   |
+41 | use minix_arch::exception::{ExceptionArch, FaultContext};
+   |                             ^^^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused imports: `ExceptionDispatcher`, `ExceptionOutcome`, and `ExceptionSignal`
+  --> kernel/src/trap_dispatch.rs:42:40
+   |
+42 | use minix_arch::exception_dispatcher::{ExceptionDispatcher, ExceptionOutcome, ExceptionSignal};
+   |                                        ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::TrapStyle`
+  --> kernel/src/trap_dispatch.rs:43:5
+   |
+43 | use minix_arch::TrapStyle;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CurrentDirectMap` and `DirectMapArch`
+    --> kernel/src/syscall.rs:2763:30
+     |
+2763 |             use minix_arch::{CurrentDirectMap, DirectMapArch};
+     |                              ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3305:13
+     |
+3305 |         use minix_arch::DirectMapArch as _;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3308:17
+     |
+3308 |             use minix_arch::DirectMapArch as _;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: empty line after doc comment
+    --> kernel/src/ipc.rs:2243:1
+     |
+2243 | / /// - Else set bit in `priv(dst).s_notify_pending` for later delivery.
+2244 | |
+     | |_^
+2245 |   /// NK4-A C-3 迭代10 取证（task1-close 裁决删除）：限次一次性串口标记。
+2246 |   pub(crate) fn probe_mark(msg: &str) {
+     |   ------------------------ the comment documents this function
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#empty_line_after_doc_comments
+     = note: `#[warn(clippy::empty_line_after_doc_comments)]` on by default
+     = help: if the empty line is unintentional, remove it
+help: if the documentation should include the empty line include it in the comment
+     |
+2244 | ///
+     |
+
+warning: empty line after doc comment
+   --> kernel/src/clock.rs:589:1
+    |
+589 | / /// the common tail of context_stop, outside the quantum branches.
+...   |
+597 | |
+    | |_^
+598 |   pub(crate) const CP_USER: usize = 0;
+    |   ------------------------ the comment documents this constant item
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#empty_line_after_doc_comments
+    = help: if the empty line is unintentional, remove it
+help: if the doc comment should not document constant item `CP_USER` then comment it out
+    |
+582 ~ // /// D-9: [`decrement_quantum_in`] plus the context_stop TSC delta
+583 ~ // /// (C arch_clock.c:276 — `tsc_delta = tsc - *__tsc_ctr_switch`). The
+584 ~ // /// kbill_kcall consumption (C :279-281) attributes this same whole
+585 ~ // /// delta to the in-flight kernel call's process. Delta is `0` when no
+586 ~ // /// baseline exists yet (first call after boot) or the reading did not
+587 ~ // /// advance — consumers skip a zero delta. The delta is returned even on
+588 ~ // /// the kernel/idle-task exempt path (endpoint < 0): C's kbill block is
+589 ~ // /// the common tail of context_stop, outside the quantum branches.
+    |
+
+warning: unused import: `crate::sched::Scheduler`
+  --> kernel/src/smp.rs:55:5
+   |
+55 | use crate::sched::Scheduler;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicUsize` and `Ordering`
+  --> kernel/src/kmess.rs:21:26
+   |
+21 | use core::sync::atomic::{AtomicUsize, Ordering};
+   |                          ^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CrossSpaceResult`
+   --> kernel/src/kmess.rs:170:33
+    |
+170 |     use crate::vm::{AddressRef, CrossSpaceResult};
+    |                                 ^^^^^^^^^^^^^^^^
+
+warning: unused import: `PhysBytes`
+   --> kernel/src/kmess.rs:172:23
+    |
+172 |     use minix_types::{PhysBytes, VirBytes};
+    |                       ^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2457:21
+     |
+2457 |                 use core::ptr::addr_of;
+     |                     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2488:25
+     |
+2488 |                     use core::ptr::addr_of;
+     |                         ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `AtomicBool`
+  --> kernel/src/krandom.rs:31:26
+   |
+31 | use core::sync::atomic::{AtomicBool, Ordering};
+   |                          ^^^^^^^^^^
+
+warning: unused import: `AtomicI32`
+  --> kernel/src/globals.rs:16:38
+   |
+16 | use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
+   |                                      ^^^^^^^^^
+
+warning: empty line after doc comment
+   --> kernel/src/globals.rs:352:1
+    |
+352 | / /// estimate, faithfully kept). SMP: a single global mirrors
+353 | |
+    | |_^
+354 |   /// lands.
+355 |   pub(crate) static KBILL_KCALL: SyncUnsafeCell<Option<crate::proc::ProcNr>> = SyncUnsafeCell::new(None);
+    |   ----------------------------- the comment documents this static item
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#empty_line_after_doc_comments
+    = help: if the empty line is unintentional, remove it
+help: if the documentation should include the empty line include it in the comment
+    |
+353 | ///
+    |
+
+warning: empty lines after doc comment
+   --> kernel/src/globals.rs:449:1
+    |
+449 | / /// non-negative for user processes and small negative for kernel tasks).
+450 | |
+451 | |
+    | |_^
+...
+455 |   pub(crate) const ROOT_PHYS_UNSET: u64 = u64::MAX;
+    |   -------------------------------- the comment documents this constant item
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#empty_line_after_doc_comments
+    = help: if the empty lines are unintentional, remove them
+help: if the documentation should include the empty lines include them in the comment
+    |
+450 + ///
+451 + ///
+    |
+
+warning: unused import: `SyncUnsafeCell`
+  --> kernel/src/lib.rs:98:52
+   |
+98 |     PRIV_TABLE, PROC_TABLE, SMP_STATE, VM_RUNNING, SyncUnsafeCell,
+   |                                                    ^^^^^^^^^^^^^^
+
+warning: unused import: `minix_platform::platform_desc`
+   --> kernel/src/lib.rs:530:9
+    |
+530 |     use minix_platform::platform_desc;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `VmLoadError`
+    --> kernel/src/lib.rs:1325:22
+     |
+1325 |         load_vm_elf, VmLoadError,
+     |                      ^^^^^^^^^^^
+
+warning: unused import: `ProcName`
+    --> kernel/src/lib.rs:1327:31
+     |
+1327 |     use crate::proc::{ProcNr, ProcName, RtsFlagsBits, proc_nr, KERNEL_TASKS, BOOT_MODULE_PROC_NRS};
+     |                               ^^^^^^^^
+
+warning: unused import: `crate::proc_table::NR_TASKS`
+    --> kernel/src/lib.rs:1328:9
+     |
+1328 |     use crate::proc_table::NR_TASKS;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `VmBootRegions`
+    --> kernel/src/lib.rs:1544:78
+     |
+1544 |                 use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+     |                                                                              ^^^^^^^^^^^^^
+
+warning: empty line after doc comment
+    --> kernel/src/lib.rs:2624:1
+     |
+2624 | / /// `program_gs` in init_protection per CPU; mock/hosted: BSP).
+2625 | |
+     | |_^
+...
+2632 |   pub fn current_cpu_id() -> crate::proc::CpuId {
+     |   --------------------- the comment documents this function
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#empty_line_after_doc_comments
+     = help: if the empty line is unintentional, remove it
+help: if the documentation should include the empty line include it in the comment
+     |
+2625 | ///
+     |
+
+warning: unused import: `PlatformDesc`
+   --> kernel/src/lib.rs:849:41
+    |
+849 |     use minix_platform::{platform_desc, PlatformDesc};
+    |                                         ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+    --> kernel/src/lib.rs:1237:41
+     |
+1237 |     use minix_platform::{platform_desc, PlatformDesc};
+     |                                         ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+    --> kernel/src/lib.rs:2439:41
+     |
+2439 |     use minix_platform::{platform_desc, PlatformDesc};
+     |                                         ^^^^^^^^^^^^
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> kernel/src/proc_table.rs:724:14
+    |
+724 |         &mut *core::ptr::addr_of_mut!(self.procs[idx])
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> kernel/src/proc_table.rs:715:5
+    |
+715 |     pub unsafe fn caller_slot_mut<'a>(&mut self, nr: ProcNr) -> &'a mut KProcess {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `trap_dispatch::aarch64_kernel_body` is unsafe and requires unsafe block
+    --> kernel/src/trap_dispatch.rs:1684:9
+     |
+1684 |         aarch64_kernel_body(frame, class);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+    --> kernel/src/trap_dispatch.rs:1677:1
+     |
+1677 | / pub unsafe extern "C" fn aarch64_user_body(
+1678 | |     frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
+1679 | |     class: u64,
+1680 | | ) {
+     | |_^
+
+warning[E0133]: call to unsafe function `trap_dispatch::aarch64_kernel_call_leg` is unsafe and requires unsafe block
+    --> kernel/src/trap_dispatch.rs:1698:13
+     |
+1698 |             aarch64_kernel_call_leg(frame);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning: unused variable: `priv_table`
+   --> kernel/src/clock.rs:614:5
+    |
+614 |     priv_table: &crate::kpriv::PrivTable,
+    |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_priv_table`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `kernel_info`
+   --> kernel/src/lib.rs:529:14
+    |
+529 | pub fn kmain(kernel_info: &KernelInfo) -> ! {
+    |              ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_kernel_info`
+
+warning: variable does not need to be mutable
+    --> kernel/src/lib.rs:1245:9
+     |
+1245 |     let mut clock = ClockState::new();
+     |         ----^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fault_flush_va`
+    --> kernel/src/lib.rs:3303:27
+     |
+3303 |     let (ctx, return_seq, fault_flush_va) = {
+     |                           ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fault_flush_va`
+
+warning: function `nk4a_rs_trace_probe` is never used
+   --> kernel/src/trap_dispatch.rs:197:15
+    |
+197 | pub(crate) fn nk4a_rs_trace_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `nk4a_rs_anom_probe` is never used
+   --> kernel/src/trap_dispatch.rs:253:15
+    |
+253 | pub(crate) fn nk4a_rs_anom_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `nk4a_rs_leak_probe` is never used
+   --> kernel/src/trap_dispatch.rs:306:15
+    |
+306 | pub(crate) fn nk4a_rs_leak_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `forward_pagefault_to_vm` is never used
+   --> kernel/src/trap_dispatch.rs:975:4
+    |
+975 | fn forward_pagefault_to_vm(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `riscv64_timer_arm` is never used
+    --> kernel/src/trap_dispatch.rs:1483:4
+     |
+1483 | fn riscv64_timer_arm() {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `copy_msg_to_user` is never used
+    --> kernel/src/syscall.rs:3174:4
+     |
+3174 | fn copy_msg_to_user(caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: constant `CP_CPUSTATES` is never used
+   --> kernel/src/clock.rs:603:18
+    |
+603 | pub(crate) const CP_CPUSTATES: usize = 5;
+    |                  ^^^^^^^^^^^^
+
+warning: method `write_str` is never used
+  --> kernel/src/kmess.rs:66:12
+   |
+49 | impl KmessRing {
+   | -------------- method in this implementation
+...
+66 |     pub fn write_str(&mut self, s: &str) {
+   |            ^^^^^^^^^
+
+warning: function `record_str` is never used
+   --> kernel/src/kmess.rs:109:8
+    |
+109 | pub fn record_str(s: &str) {
+    |        ^^^^^^^^^^
+
+warning: function `console_write_str` is never used
+   --> kernel/src/kmess.rs:130:8
+    |
+130 | pub fn console_write_str(s: &str) {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `cursor` is never used
+   --> kernel/src/kmess.rs:149:8
+    |
+149 | pub fn cursor() -> (usize, usize) {
+    |        ^^^^^^
+
+warning: constant `EFAULT` is never used
+   --> kernel/src/kmess.rs:175:11
+    |
+175 |     const EFAULT: i32 = 14;
+    |           ^^^^^^
+
+warning: static `CLOCK_UPTIME` is never used
+   --> kernel/src/globals.rs:513:19
+    |
+513 | pub(crate) static CLOCK_UPTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^
+
+warning: static `CLOCK_REALTIME` is never used
+   --> kernel/src/globals.rs:518:19
+    |
+518 | pub(crate) static CLOCK_REALTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
+warning: static `CLOCK_BOOTTIME` is never used
+   --> kernel/src/globals.rs:524:19
+    |
+524 | pub(crate) static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
+warning: this function has too many arguments (8/7)
+    --> kernel/src/kpriv.rs:1147:5
+     |
+1147 | /     pub fn configure_boot_priv(
+1148 | |         &mut self,
+1149 | |         priv_id: PrivId,
+1150 | |         flags: ProcessCapability,
+...    |
+1155 | |         sig_mgr: Endpoint,
+1156 | |     ) {
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#too_many_arguments
+     = note: `#[warn(clippy::too_many_arguments)]` on by default
+
+warning: call to `std::mem::drop` with a value that does not implement `Drop`. Dropping such a type only extends its contained lifetimes
+   --> kernel/src/vm_handoff.rs:500:5
+    |
+500 |     drop(push);
+    |     ^^^^^^^^^^
+    |
+note: argument has type `{closure@kernel/src/vm_handoff.rs:472:20: 472:57}`
+   --> kernel/src/vm_handoff.rs:500:10
+    |
+500 |     drop(push);
+    |          ^^^^
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#drop_non_drop
+    = note: `#[warn(clippy::drop_non_drop)]` on by default
+
+warning: casting to the same type is unnecessary (`u64` -> `u64`)
+    --> kernel/src/trap_dispatch.rs:1696:19
+     |
+1696 |         let leg = frame.gpr[8] as u64; // x8 = call number register
+     |                   ^^^^^^^^^^^^^^^^^^^ help: try: `frame.gpr[8]`
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#unnecessary_cast
+     = note: `#[warn(clippy::unnecessary_cast)]` on by default
+
+warning: doc list item without indentation
+    --> kernel/src/ipc.rs:2245:5
+     |
+2245 | /// NK4-A C-3 迭代10 取证（task1-close 裁决删除）：限次一次性串口标记。
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+     = note: `#[warn(clippy::doc_lazy_continuation)]` on by default
+help: indent this line
+     |
+2245 | ///   NK4-A C-3 迭代10 取证（task1-close 裁决删除）：限次一次性串口标记。
+     |     ++
+
+warning: doc list item without indentation
+   --> kernel/src/smp.rs:906:5
+    |
+906 | /// per AP — mark BOOTING → install bootstrap → INIT/SIPI → bounded ack wait
+    |     ^
+    |
+    = help: if this is supposed to be its own paragraph, add a blank line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+    |
+906 | ///   per AP — mark BOOTING → install bootstrap → INIT/SIPI → bounded ack wait
+    |     ++
+
+warning: doc list item without indentation
+   --> kernel/src/smp.rs:907:5
+    |
+907 | /// (`SmpArch::STARTUP_TIMEOUT_MS`, C arch_smp.c:131-141 LAPIC one-shot
+    |     ^
+    |
+    = help: if this is supposed to be its own paragraph, add a blank line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+    |
+907 | ///   (`SmpArch::STARTUP_TIMEOUT_MS`, C arch_smp.c:131-141 LAPIC one-shot
+    |     ++
+
+warning: doc list item without indentation
+   --> kernel/src/smp.rs:908:5
+    |
+908 | /// parity) → READY 代置 (BSP sets CpuFlags.READY after observing the ack —
+    |     ^
+    |
+    = help: if this is supposed to be its own paragraph, add a blank line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+    |
+908 | ///   parity) → READY 代置 (BSP sets CpuFlags.READY after observing the ack —
+    |     ++
+
+warning: doc list item without indentation
+   --> kernel/src/smp.rs:909:5
+    |
+909 | /// NOT the AP) or WARNING + skip (C "CPU didn't boot" parity — the failed
+    |     ^
+    |
+    = help: if this is supposed to be its own paragraph, add a blank line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+    |
+909 | ///   NOT the AP) or WARNING + skip (C "CPU didn't boot" parity — the failed
+    |     ++
+
+warning: doc list item without indentation
+   --> kernel/src/smp.rs:910:5
+    |
+910 | /// AP is skipped, boot continues).
+    |     ^
+    |
+    = help: if this is supposed to be its own paragraph, add a blank line
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+    |
+910 | ///   AP is skipped, boot continues).
+    |     ++
+
+warning: doc list item without indentation
+    --> kernel/src/smp.rs:1445:5
+     |
+1445 | /// Non-blocking BKL acquisition — S-10's interrupt-context emulation of
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1445 | ///    Non-blocking BKL acquisition — S-10's interrupt-context emulation of
+     |     +++
+
+warning: doc list item without indentation
+    --> kernel/src/smp.rs:1446:5
+     |
+1446 | /// C's reentrant per-process BKL: an IRQ handler that fires while the BKL
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1446 | ///    C's reentrant per-process BKL: an IRQ handler that fires while the BKL
+     |     +++
+
+warning: doc list item without indentation
+    --> kernel/src/smp.rs:1447:5
+     |
+1447 | /// is FREE takes ownership (and must release before returning); one that
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1447 | ///    is FREE takes ownership (and must release before returning); one that
+     |     +++
+
+warning: doc list item without indentation
+    --> kernel/src/smp.rs:1448:5
+     |
+1448 | /// fires while the interrupted context holds it INHERITS ownership (no
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1448 | ///    fires while the interrupted context holds it INHERITS ownership (no
+     |     +++
+
+warning: doc list item without indentation
+    --> kernel/src/smp.rs:1449:5
+     |
+1449 | /// action, C counting-lock depth-1 parity). Returns `true` when the caller
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1449 | ///    action, C counting-lock depth-1 parity). Returns `true` when the caller
+     |     +++
+
+warning: doc list item without indentation
+    --> kernel/src/smp.rs:1450:5
+     |
+1450 | /// acquired it (and owes the release).
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1450 | ///    acquired it (and owes the release).
+     |     +++
+
+warning: the loop variable `i` is used to index `dst`
+  --> kernel/src/kmess.rs:79:18
+   |
+79 |         for i in 0..n {
+   |                  ^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_range_loop
+   = note: `#[warn(clippy::needless_range_loop)]` on by default
+help: consider using an iterator and enumerate()
+   |
+79 -         for i in 0..n {
+79 +         for (i, <item>) in dst.iter_mut().enumerate().take(n) {
+   |
+
+warning: the borrowed expression implements the required traits
+   --> kernel/src/kmess.rs:208:9
+    |
+208 |         &proc_cr3,
+    |         ^^^^^^^^^ help: change this to: `proc_cr3`
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#needless_borrows_for_generic_args
+    = note: `#[warn(clippy::needless_borrows_for_generic_args)]` on by default
+
+warning: this `if` statement can be collapsed
+    --> kernel/src/misc.rs:1036:5
+     |
+1036 | /     if let Some(smp) = smp {
+1037 | |         if (cpu as usize) < crate::smp::MAX_CPUS {
+1038 | |             let tsc_per_ms = crate::globals::TSC_PER_MS.load(Ordering::Acquire);
+1039 | |             let tsc_per_tick = u64::from(crate::clock::DEFAULT_HZ)
+...    |
+1051 | |     }
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+     = note: `#[warn(clippy::collapsible_if)]` on by default
+help: collapse nested if block
+     |
+1036 ~     if let Some(smp) = smp
+1037 ~         && (cpu as usize) < crate::smp::MAX_CPUS {
+1038 |             let tsc_per_ms = crate::globals::TSC_PER_MS.load(Ordering::Acquire);
+ ...
+1049 |             }
+1050 ~         }
+     |
+
+warning: doc list item without indentation
+    --> kernel/src/lib.rs:1223:5
+     |
+1223 | /// Initialize clock software state, the interrupt controller (every line
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1223 | ///    Initialize clock software state, the interrupt controller (every line
+     |     +++
+
+warning: doc list item without indentation
+    --> kernel/src/lib.rs:1224:5
+     |
+1224 | /// masked), and arch-init. C: init_clock() + intr_init(0) + arch_init().
+     |     ^
+     |
+     = help: if this is supposed to be its own paragraph, add a blank line
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#doc_lazy_continuation
+help: indent this line
+     |
+1224 | ///    masked), and arch-init. C: init_clock() + intr_init(0) + arch_init().
+     |     +++
+
+warning: this assertion has a constant value
+    --> kernel/src/lib.rs:1829:5
+     |
+1829 | /     assert!(
+1830 | |         CurrentDirectMap::VM_DIRECT_MAP_BASE != 0,
+1831 | |         "VM direct map base must be configured"
+1832 | |     );
+     | |_____^
+     |
+     = help: consider moving this into a const block: `const { assert!(..) }`
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#assertions_on_constants
+     = note: `#[warn(clippy::assertions_on_constants)]` on by default
+
+warning: this `if` statement can be collapsed
+    --> kernel/src/lib.rs:2803:5
+     |
+2803 | /     if is_billable(table, priv_table, picked) {
+2804 | |         if let Some(local) = smp.cpu_local_mut(cpu) {
+2805 | |             local.bill_ptr = Some(picked);
+2806 | |         }
+2807 | |     }
+     | |_____^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+2803 ~     if is_billable(table, priv_table, picked)
+2804 ~         && let Some(local) = smp.cpu_local_mut(cpu) {
+2805 |             local.bill_ptr = Some(picked);
+2806 ~         }
+     |
+
+warning: this `if` statement can be collapsed
+    --> kernel/src/lib.rs:3780:33
+     |
+3780 | / ...                   if let Some(p) = table.get(picked) {
+3781 | | ...                       if let Some(ctx) = p.p_vm_suspend.as_ref() {
+3782 | | ...                           C0::write_str("nk4a: susp-again st=");
+3783 | | ...                           let s: u8 = match ctx.state {
+...    |
+3795 | | ...                   }
+     | |_______________________^
+     |
+     = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.94.0/index.html#collapsible_if
+help: collapse nested if block
+     |
+3780 ~                                 if let Some(p) = table.get(picked)
+3781 ~                                     && let Some(ctx) = p.p_vm_suspend.as_ref() {
+3782 |                                         C0::write_str("nk4a: susp-again st=");
+ ...
+3793 |                                         C0::write_str("\n");
+3794 ~                                     }
+     |
+

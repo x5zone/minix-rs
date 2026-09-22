@@ -1,0 +1,657 @@
+warning: unused variable: `lapic_base`
+   --> libs/minix-platform/src/acpi.rs:423:9
+    |
+423 |     let lapic_base = u32_le_from_slice(lapic_addr_bytes) as usize;
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_lapic_base`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+  --> plat/src/arm64/interrupt.rs:99:9
+   |
+99 |         core::ptr::read_volatile((self.gicd_base + offset) as *const u32)
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> plat/src/arm64/interrupt.rs:98:5
+   |
+98 |     unsafe fn gicd_read32(&self, offset: usize) -> u32 {
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> plat/src/arm64/interrupt.rs:103:9
+    |
+103 |         core::ptr::write_volatile((self.gicd_base + offset) as *mut u32, value);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> plat/src/arm64/interrupt.rs:102:5
+    |
+102 |     unsafe fn gicd_write32(&self, offset: usize, value: u32) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> plat/src/arm64/interrupt.rs:107:9
+    |
+107 |         core::ptr::read_volatile((self.gicr_base + offset) as *const u32)
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> plat/src/arm64/interrupt.rs:106:5
+    |
+106 |     unsafe fn gicr_read32(&self, offset: usize) -> u32 {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> plat/src/arm64/interrupt.rs:111:9
+    |
+111 |         core::ptr::write_volatile((self.gicr_base + offset) as *mut u32, value);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> plat/src/arm64/interrupt.rs:110:5
+    |
+110 |     unsafe fn gicr_write32(&self, offset: usize, value: u32) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0133`.
+warning: unnecessary parentheses around assigned value
+   --> arch/src/arch/boot.rs:423:34
+    |
+423 |             let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
+    |                                  ^
+424 |                 .min(page_size as usize - seg_start_in_page));
+    |                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+423 ~             let seg_bytes_here = ((seg.memsz - page_off as u64) as usize)
+424 ~                 .min(page_size as usize - seg_start_in_page);
+    |
+
+warning: unused import: `core::mem::offset_of`
+  --> arch/src/arm64/trap_stub.rs:58:5
+   |
+58 | use core::mem::offset_of;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `FaultContext` and `RecoveryPoint`
+  --> arch/src/arm64/exception.rs:12:39
+   |
+12 | use crate::exception::{ExceptionArch, FaultContext, RecoveryPoint};
+   |                                       ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:129:22
+    |
+129 |                 "mrs {fpsr}, fpsr",
+    |                      ^^^^^^
+...
+132 |                 fpsr = out(reg) dst.fpsr,
+    |                                 -------- for this argument
+    |
+    = help: use `{1:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{1:x}` to keep the default formatting of `x0` (for 64-bit values)
+    = note: `#[warn(asm_sub_register)]` on by default
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:130:22
+    |
+130 |                 "mrs {fpcr}, fpcr",
+    |                      ^^^^^^
+...
+133 |                 fpcr = out(reg) dst.fpcr,
+    |                                 -------- for this argument
+    |
+    = help: use `{2:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{2:x}` to keep the default formatting of `x0` (for 64-bit values)
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:166:28
+    |
+166 |                 "msr fpsr, {fpsr}",
+    |                            ^^^^^^
+...
+169 |                 fpsr = in(reg) fpsr,
+    |                                ---- for this argument
+    |
+    = help: use `{1:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{1:x}` to keep the default formatting of `x0` (for 64-bit values)
+
+warning: formatting may not be suitable for sub-register argument
+   --> arch/src/arm64/fpu.rs:167:28
+    |
+167 |                 "msr fpcr, {fpcr}",
+    |                            ^^^^^^
+...
+170 |                 fpcr = in(reg) fpcr,
+    |                                ---- for this argument
+    |
+    = help: use `{2:w}` to have the register formatted as `w0` (for 32-bit values)
+    = help: or use `{2:x}` to keep the default formatting of `x0` (for 64-bit values)
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+  --> arch/src/arm64/paging.rs:96:5
+   |
+96 |     core::ptr::read_volatile(table.add(idx))
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> arch/src/arm64/paging.rs:95:1
+   |
+95 | unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+  --> arch/src/arm64/paging.rs:96:30
+   |
+96 |     core::ptr::read_volatile(table.add(idx))
+   |                              ^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:100:5
+    |
+100 |     core::ptr::write_volatile(table.add(idx), val);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/paging.rs:99:1
+    |
+ 99 | unsafe fn write_entry(table: *mut u64, idx: usize, val: u64) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::mut_ptr::<impl *mut T>::add` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:100:31
+    |
+100 |     core::ptr::write_volatile(table.add(idx), val);
+    |                               ^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning[E0133]: call to unsafe function `core::ptr::read_volatile` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:216:5
+    |
+216 |     core::ptr::read_volatile(channel_to_ptr(paddr, channel))
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/paging.rs:215:1
+    |
+215 | unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: call to unsafe function `core::ptr::write_volatile` is unsafe and requires unsafe block
+   --> arch/src/arm64/paging.rs:228:5
+    |
+228 |     core::ptr::write_volatile(channel_to_ptr(paddr, channel), value);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/paging.rs:227:1
+    |
+227 | unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/arm64/trap_return.rs:64:9
+    |
+ 64 | /         core::arch::asm!(
+ 65 | |             // Park the register-file pointer in X2 (its user slot is
+ 66 | |             // gp_regs[GP_X2], loaded last as a self-referential load).
+ 67 | |             "mov x2, x1",
+...   |
+125 | |             options(noreturn)
+126 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/trap_return.rs:56:5
+    |
+ 56 |     unsafe fn restore_to_user(frame: &Self::Frame, regs: &Self::RegisterFile) -> ! {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+  --> arch/src/arm64/smp.rs:99:5
+   |
+99 |     GICD_BASE = base;
+   |     ^^^^^^^^^ use of mutable static
+   |
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> arch/src/arm64/smp.rs:98:1
+   |
+98 | pub(crate) unsafe fn set_gicd_base(base: usize) {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of mutable static is unsafe and requires unsafe block
+   --> arch/src/arm64/smp.rs:110:5
+    |
+110 |     GICD_BASE
+    |     ^^^^^^^^^ use of mutable static
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: mutable statics can be mutated by multiple threads: aliasing violations or data races will cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/smp.rs:109:1
+    |
+109 | unsafe fn gicd_base() -> usize {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/arm64/boot.rs:179:9
+    |
+179 | /         core::arch::asm!(
+180 | |             "mrs {tmp}, CPACR_EL1",
+181 | |             "orr {tmp}, {tmp}, #(0x3 << 20)", // FPEN = 0b01
+182 | |             "msr CPACR_EL1, {tmp}",
+183 | |             "isb",
+184 | |             tmp = out(reg) _,
+185 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/boot.rs:178:5
+    |
+178 |     pub(super) unsafe fn enable_cpacr_el1_fpen_user() {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning[E0133]: use of inline assembly is unsafe and requires unsafe block
+   --> arch/src/arm64/boot.rs:189:9
+    |
+189 | /         core::arch::asm!(
+190 | |             "mrs {tmp}, CPACR_EL1",
+191 | |             "bic {tmp}, {tmp}, #(0x3 << 20)", // FPEN = 0b00
+192 | |             "msr CPACR_EL1, {tmp}",
+193 | |             "isb",
+194 | |             tmp = out(reg) _,
+195 | |         );
+    | |_________^ use of inline assembly
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: inline assembly is entirely unchecked and can cause undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> arch/src/arm64/boot.rs:188:5
+    |
+188 |     pub(super) unsafe fn enable_cpacr_el1_fpen_kernel() {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `get` is never used
+  --> arch/src/arm64/protection.rs:59:25
+   |
+53 | impl AArch64PrivilegeLevel {
+   | -------------------------- method in this implementation
+...
+59 |     pub(crate) const fn get(self) -> u8 {
+   |                         ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `cpu_count` is never read
+  --> arch/src/arm64/protection.rs:74:5
+   |
+72 | pub struct AArch64Protection {
+   |            ----------------- field in this struct
+73 |     /// Number of CPUs initialized (for SMP tracking).
+74 |     cpu_count: u32,
+   |     ^^^^^^^^^
+
+warning: constant `FPSIMD_SIZE` is never used
+  --> arch/src/arm64/fpu.rs:30:7
+   |
+30 | const FPSIMD_SIZE: usize = 528;
+   |       ^^^^^^^^^^^
+
+warning: constant `GP_X11` is never used
+  --> arch/src/arm64/signal.rs:51:18
+   |
+51 | pub(super) const GP_X11: usize = 10;
+   |                  ^^^^^^
+
+warning: unused import: `minix_arch::CpuContextArch as _`
+    --> kernel/src/proc.rs:1766:9
+     |
+1766 |     use minix_arch::CpuContextArch as _;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::syscall::KcallResult`
+  --> kernel/src/trap_dispatch.rs:40:5
+   |
+40 | use crate::syscall::KcallResult;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `ExceptionArch` and `FaultContext`
+  --> kernel/src/trap_dispatch.rs:41:29
+   |
+41 | use minix_arch::exception::{ExceptionArch, FaultContext};
+   |                             ^^^^^^^^^^^^^  ^^^^^^^^^^^^
+
+warning: unused imports: `ExceptionDispatcher`, `ExceptionOutcome`, and `ExceptionSignal`
+  --> kernel/src/trap_dispatch.rs:42:40
+   |
+42 | use minix_arch::exception_dispatcher::{ExceptionDispatcher, ExceptionOutcome, ExceptionSignal};
+   |                                        ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::TrapStyle`
+  --> kernel/src/trap_dispatch.rs:43:5
+   |
+43 | use minix_arch::TrapStyle;
+   |     ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `CurrentDirectMap` and `DirectMapArch`
+    --> kernel/src/syscall.rs:2763:30
+     |
+2763 |             use minix_arch::{CurrentDirectMap, DirectMapArch};
+     |                              ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3305:13
+     |
+3305 |         use minix_arch::DirectMapArch as _;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3308:17
+     |
+3308 |             use minix_arch::DirectMapArch as _;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::sched::Scheduler`
+  --> kernel/src/smp.rs:55:5
+   |
+55 | use crate::sched::Scheduler;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicUsize` and `Ordering`
+  --> kernel/src/kmess.rs:21:26
+   |
+21 | use core::sync::atomic::{AtomicUsize, Ordering};
+   |                          ^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CrossSpaceResult`
+   --> kernel/src/kmess.rs:170:33
+    |
+170 |     use crate::vm::{AddressRef, CrossSpaceResult};
+    |                                 ^^^^^^^^^^^^^^^^
+
+warning: unused import: `PhysBytes`
+   --> kernel/src/kmess.rs:172:23
+    |
+172 |     use minix_types::{PhysBytes, VirBytes};
+    |                       ^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2457:21
+     |
+2457 |                 use core::ptr::addr_of;
+     |                     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2488:25
+     |
+2488 |                     use core::ptr::addr_of;
+     |                         ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `AtomicBool`
+  --> kernel/src/krandom.rs:31:26
+   |
+31 | use core::sync::atomic::{AtomicBool, Ordering};
+   |                          ^^^^^^^^^^
+
+warning: unused import: `AtomicI32`
+  --> kernel/src/globals.rs:16:38
+   |
+16 | use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
+   |                                      ^^^^^^^^^
+
+warning: unused import: `SyncUnsafeCell`
+  --> kernel/src/lib.rs:98:52
+   |
+98 |     PRIV_TABLE, PROC_TABLE, SMP_STATE, VM_RUNNING, SyncUnsafeCell,
+   |                                                    ^^^^^^^^^^^^^^
+
+warning: unused import: `minix_platform::platform_desc`
+   --> kernel/src/lib.rs:530:9
+    |
+530 |     use minix_platform::platform_desc;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `VmLoadError`
+    --> kernel/src/lib.rs:1325:22
+     |
+1325 |         load_vm_elf, VmLoadError,
+     |                      ^^^^^^^^^^^
+
+warning: unused import: `ProcName`
+    --> kernel/src/lib.rs:1327:31
+     |
+1327 |     use crate::proc::{ProcNr, ProcName, RtsFlagsBits, proc_nr, KERNEL_TASKS, BOOT_MODULE_PROC_NRS};
+     |                               ^^^^^^^^
+
+warning: unused import: `crate::proc_table::NR_TASKS`
+    --> kernel/src/lib.rs:1328:9
+     |
+1328 |     use crate::proc_table::NR_TASKS;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `VmBootRegions`
+    --> kernel/src/lib.rs:1544:78
+     |
+1544 |                 use minix_arch::arch::frame::{VmBootAllocator, VmBootRegion, VmBootRegions};
+     |                                                                              ^^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+   --> kernel/src/lib.rs:849:41
+    |
+849 |     use minix_platform::{platform_desc, PlatformDesc};
+    |                                         ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+    --> kernel/src/lib.rs:1237:41
+     |
+1237 |     use minix_platform::{platform_desc, PlatformDesc};
+     |                                         ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+    --> kernel/src/lib.rs:2439:41
+     |
+2439 |     use minix_platform::{platform_desc, PlatformDesc};
+     |                                         ^^^^^^^^^^^^
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> kernel/src/proc_table.rs:724:14
+    |
+724 |         &mut *core::ptr::addr_of_mut!(self.procs[idx])
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> kernel/src/proc_table.rs:715:5
+    |
+715 |     pub unsafe fn caller_slot_mut<'a>(&mut self, nr: ProcNr) -> &'a mut KProcess {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `trap_dispatch::aarch64_kernel_body` is unsafe and requires unsafe block
+    --> kernel/src/trap_dispatch.rs:1684:9
+     |
+1684 |         aarch64_kernel_body(frame, class);
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+    --> kernel/src/trap_dispatch.rs:1677:1
+     |
+1677 | / pub unsafe extern "C" fn aarch64_user_body(
+1678 | |     frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
+1679 | |     class: u64,
+1680 | | ) {
+     | |_^
+
+warning[E0133]: call to unsafe function `trap_dispatch::aarch64_kernel_call_leg` is unsafe and requires unsafe block
+    --> kernel/src/trap_dispatch.rs:1698:13
+     |
+1698 |             aarch64_kernel_call_leg(frame);
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+     |
+     = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+     = note: consult the function's documentation for information on how to avoid undefined behavior
+
+warning: unused variable: `priv_table`
+   --> kernel/src/clock.rs:614:5
+    |
+614 |     priv_table: &crate::kpriv::PrivTable,
+    |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_priv_table`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `kernel_info`
+   --> kernel/src/lib.rs:529:14
+    |
+529 | pub fn kmain(kernel_info: &KernelInfo) -> ! {
+    |              ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_kernel_info`
+
+warning: variable does not need to be mutable
+    --> kernel/src/lib.rs:1245:9
+     |
+1245 |     let mut clock = ClockState::new();
+     |         ----^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fault_flush_va`
+    --> kernel/src/lib.rs:3303:27
+     |
+3303 |     let (ctx, return_seq, fault_flush_va) = {
+     |                           ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fault_flush_va`
+
+warning: function `nk4a_rs_trace_probe` is never used
+   --> kernel/src/trap_dispatch.rs:197:15
+    |
+197 | pub(crate) fn nk4a_rs_trace_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `nk4a_rs_anom_probe` is never used
+   --> kernel/src/trap_dispatch.rs:253:15
+    |
+253 | pub(crate) fn nk4a_rs_anom_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `nk4a_rs_leak_probe` is never used
+   --> kernel/src/trap_dispatch.rs:306:15
+    |
+306 | pub(crate) fn nk4a_rs_leak_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: function `forward_pagefault_to_vm` is never used
+   --> kernel/src/trap_dispatch.rs:975:4
+    |
+975 | fn forward_pagefault_to_vm(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `riscv64_timer_arm` is never used
+    --> kernel/src/trap_dispatch.rs:1483:4
+     |
+1483 | fn riscv64_timer_arm() {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `copy_msg_to_user` is never used
+    --> kernel/src/syscall.rs:3174:4
+     |
+3174 | fn copy_msg_to_user(caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: constant `CP_CPUSTATES` is never used
+   --> kernel/src/clock.rs:603:18
+    |
+603 | pub(crate) const CP_CPUSTATES: usize = 5;
+    |                  ^^^^^^^^^^^^
+
+warning: method `write_str` is never used
+  --> kernel/src/kmess.rs:66:12
+   |
+49 | impl KmessRing {
+   | -------------- method in this implementation
+...
+66 |     pub fn write_str(&mut self, s: &str) {
+   |            ^^^^^^^^^
+
+warning: function `record_str` is never used
+   --> kernel/src/kmess.rs:109:8
+    |
+109 | pub fn record_str(s: &str) {
+    |        ^^^^^^^^^^
+
+warning: function `console_write_str` is never used
+   --> kernel/src/kmess.rs:130:8
+    |
+130 | pub fn console_write_str(s: &str) {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `cursor` is never used
+   --> kernel/src/kmess.rs:149:8
+    |
+149 | pub fn cursor() -> (usize, usize) {
+    |        ^^^^^^
+
+warning: constant `EFAULT` is never used
+   --> kernel/src/kmess.rs:175:11
+    |
+175 |     const EFAULT: i32 = 14;
+    |           ^^^^^^
+
+warning: static `CLOCK_UPTIME` is never used
+   --> kernel/src/globals.rs:513:19
+    |
+513 | pub(crate) static CLOCK_UPTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^
+
+warning: static `CLOCK_REALTIME` is never used
+   --> kernel/src/globals.rs:518:19
+    |
+518 | pub(crate) static CLOCK_REALTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
+warning: static `CLOCK_BOOTTIME` is never used
+   --> kernel/src/globals.rs:524:19
+    |
+524 | pub(crate) static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
