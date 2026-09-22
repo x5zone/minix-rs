@@ -85,3 +85,32 @@ jobs:
 
       - name: Run U-Boot boot chain test
         run: bash os/qemu-tests/test-riscv64-uboot.sh
+
+  # NK4 OQ-1（回归评审 20260922 PART2）：三架构内核生产形态 build 门。
+  # 「公共路径 x86 取证代码打断跨架构编译」在本弧线发生过两次
+  # （9e115387e、ab79b40ba 前夜），人工 cfg 纪律两次失守——本 job 使该类
+  # 回归在 CI 层结构性不可能。必须用 build 而非 check：inline asm 的
+  # 寄存器/fixup 校验发生在 codegen 期，check 静默放过（已变异验证：
+  # check 0 错、build 报 invalid fixup）。
+  cross-arch-kernel-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-none, riscv64gc-unknown-none-elf
+
+      - name: Build kernel production face for aarch64
+        working-directory: os
+        run: cargo build -p minix-kernel --target aarch64-unknown-none --no-default-features
+
+      - name: Build kernel production face for riscv64
+        working-directory: os
+        run: cargo build -p minix-kernel --target riscv64gc-unknown-none-elf --no-default-features
+
+      - name: Build aarch64 UEFI carrier (M3.1 事故同脸)
+        working-directory: os
+        run: cargo build -p test-higher-half-aarch64 --target aarch64-unknown-uefi --features fw-aarch64-uefi
