@@ -1,0 +1,5 @@
+比对项 1：x86 raw_serial 函数体            相同
+比对项 2：x86 发射指令行
+   HEAD main.rs::raw_serial_line : ['letmutspins:u32=0;', 'letlsr:u8;', 'core::arch::asm!("inal,dx",out("al")lsr,in("dx")0x3f9u16,options(nomem,nostack));', 'iflsr&0x20!=0||spins>=100_000{', 'spins+=1;', 'core::arch::asm!("outdx,al",in("dx")0x3f8u16,in("al")b,options(nomem,nostack));']
+   当前 lib.rs::emit_byte        : ['letmutspins:u32=0;', 'letlsr:u8;', 'core::arch::asm!("inal,dx",out("al")lsr,in("dx")0x3f9u16,options(nomem,nostack));', 'iflsr&0x20!=0||spins>=100_000{', 'spins+=1;', 'core::arch::asm!("outdx,al",in("dx")0x3f8u16,in("al")b,options(nomem,nostack));']
+RESULT: PASS

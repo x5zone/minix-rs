@@ -876,3 +876,49 @@ ESP 盘镜像与 `-bios` 指向 AAVMF；串口采集方式照抄 x86_64 腿
 **无上限** `while (inb(COM1_BASE + 5) & 0x20) == 0 {}`——同一类缺陷在生产
 内核 x86 路径上仍然留着。不在本步修：它不在 M3.3 关键路径上，x86_64 装机链
 已翻绿，动它要按铁律补真机两次复跑，应与 P1 的 x86 侧修复批次一起做。
+## M3.3 实现（第 2 步：决策一 + 决策二落码 —— boot-shim 放行 aarch64 UEFI 腿）
+
+状态：**DONE**。commit `5ac5625f1`。
+
+### 改了什么
+
+| 文件 | 改动 | 为什么这样做 |
+|------|------|--------------|
+| `os/boot-shim/Cargo.toml` | 新增内部特性 `fw-uefi-image = ["uefi"]`，`fw-x86-uefi` / `fw-aarch64-uefi` 各自隐含它；bin 的 `required-features` 改为 `["fw-uefi-image"]`；新增依赖 `minix-plat`（`default-features = false`） | `required-features` 是「全部必须开」，两个架构专属名打不开同一个 bin（M3.2 已踩过）。与 `kernel-image` 的 `fw-none-image` 同形 |
+| `os/boot-shim/src/lib.rs` | `raw_serial` 按架构三分（x86 原样 / aarch64 走 plat / 其余空）；`raw_serial_line` 从 bin 搬进来，内层发射器抽为 `emit_byte`（同三分） | 架构分道只需要一个落点，否则 `raw_serial` 与 `raw_serial_line` 各写一遍 cfg |
+| `os/boot-shim/src/main.rs` | 删除本文件内的 `raw_serial_line`（其 x86 端口 asm 是无条件的，aarch64 编不过），改为 `use boot_shim::{raw_serial_line, UefiBootShim}` | 同上；panic handler 三处调用点逐字未变 |
+
+`fw-uefi-image` 与 M3.2 那个 `fw-none-image` 有一处实打实的差别：它**隐含
+`uefi`**，所以单独打开也自洽，不存在「打开了内部特性但缺依赖」的组合。这条
+差别不是设计美学，是 `main.rs` 与 `uefi_helpers` 全部挂在 `#[cfg(feature =
+"uefi")]` 上、而 bin 一定要它们——写文档时不能照抄 M3.2 的 caveat。
+
+### 验证（全部实跑）
+
+| 项 | 结果 | 证据 |
+|----|------|------|
+| aarch64 裸机构建 `--target aarch64-unknown-uefi --features fw-aarch64-uefi --release` | `A64-SHIM-EXIT=0`，工件 `PE32+ executable (EFI application) Aarch64`、924160 字节 | `m33-shim-gates.log` 第 1 节 |
+| x86_64 腿（对外入口名未变） | `X64-SHIM-EXIT=0`，`PE32+ EFI application x86-64` | 同上第 2 节 |
+| 宿主裸机隔离（X-2/NK5） | `cargo build --workspace --bins` `WS-BINS-EXIT=0`、`eh_personality`/`^error` 关键词 **0 条** | 同上第 3 节 |
+| 宿主测试计数 | 默认 14 passed、`--features test-all` 27 passed，均 0 failed | 同上第 3 节 |
+| x86 腿零语义变化（脚本对账） | ① `raw_serial` x86 函数体与 HEAD 去空白逐字符相同；② 发射指令行（`asm!`/端口 `0x3f8`/`0x3f9`/LSR bit5/上限 `100_000`）与 HEAD 的 `raw_serial_line` 逐字符相同 | `shim-move-x86-equiv.txt`（`RESULT: PASS`） |
+| 反向判别：门的有效性 | 门改回 `fw-x86-uefi` → 删工件后重建**不再生**（`Compiling boot-shim` 0 次）、退出码仍 0；门复原 → 工件再生 | `m33-shim-gate-negative.log` |
+
+### 一次自己造出来的假证据（记录以免下位读者重犯）
+
+第一版反向判别用 `cargo clean -p boot-shim` 造「无工件」现场，跑出来
+**正例与负例都有工件**（时间戳与链接数都指向同一次构建）——`clean -p` 没有
+删掉 `target/aarch64-unknown-uefi/release/` 下的 `.efi`，于是那节证据什么也
+没证明。处理方式：不删日志，在其尾部追加「第 4 节作废」的补记并指向替代品
+（`m33-shim-gates.log` 尾部）；重做版改成显式 `rm -f` 工件，并且**先证明
+「删了会再生」**再证明「门变异后删了不再生」——少了第一步，第二步的「没有」
+可能只是构建系统没动作。附带量到的坑：cargo 对裸机工件用硬链接复用
+`deps/` 下的同一份文件（链接数 2、mtime 保持原构建时刻），所以**不能用
+`date -r` 的时间戳判断是否重新产出**。
+
+### 顺带排除的一条嫌疑
+
+aarch64 构建有一条 `warning: unreachable expression`（`main.rs:69` 的
+`unreachable!()` 跟在 `-> !` 的 `arch_boot` 之后）。重跑 x86_64 腿确认同一条
+告警也在——非本笔引入、也不是架构差异（三架构的 `arch_boot` 都是 `-> !`），
+不记为缺陷。
