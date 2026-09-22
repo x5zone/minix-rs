@@ -1430,3 +1430,128 @@ ELF，必须由载体脚本第 35/38 行导出该变量。带上就构建成功�
 一条 P2 采纳：节标题原写「DONE，纯记录」，而任务书 §4 第 108 行的括号是
 「uboot 载体跑通记录」，本机 uboot 只拿到 SKIP，标题口径偏乐观。已把限定语
 写进标题。事实描述本身不改（SKIP 是环境缺口，不是记录缺失）。
+
+---
+
+## P4 M4.2 设计 — kernel-image 产出 riscv64 镜像（设计先行，实现待下一节）
+
+**任务书判据**（`NK4B-TODO.md:109-110`）：「M4.2 kernel-image riscv64 产出
+（Sv39 布局 + 入口约定；设计要点先写 WORKLOG）」。结构照 P3 M3.2：镜像只到
+「宿主可测的静态布局正确」为止，装载与启动属 M4.3/M4.4。
+
+### 现状盘点（全部带锚点）
+
+生产镜像的取件与布局链路今天已经支持两个架构，第三架构是**同形扩展**，
+不是新设计：
+
+| 接线点 | 现状 | riscv64 缺口 |
+|--------|------|--------------|
+| `os/kernel-image/build.rs:16-21` | `match TARGET` 只有 x86_64/aarch64 两条，注释已写「riscv64 在 P4 M4.2 同形扩展」 | 加一条 + `rerun-if-changed` |
+| `os/kernel-image/Cargo.toml:26-28` | `fw-none-image` 被 `fw-x86-none` / `fw-aarch64-none` 隐含 | 加 `fw-riscv64-none = ["fw-none-image"]` |
+| `os/kernel-image/src/main.rs:76-107` | 两份 `_start` global_asm（x86_64 / aarch64） | 加 riscv64 一份 |
+| `os/kernel-image/src/main.rs:125-140` | `halt()` 两架构分支 | 加 `wfi`（riscv 同名指令） |
+| `os/kernel-image/src/main.rs:48-51` | 早期控制台按架构 import | 加 `minix_plat::riscv64::early_console`（已存在：`os/plat/src/riscv64/mod.rs:3`，`write_str` 在 `early_console.rs:36`） |
+| `os/kernel-image/check-layout.sh:66-71` | `arch_expect()` 两行 | 加第三行 + 末尾 `case` 分支 |
+| `os/kernel/src/lib.rs:242-243` | `arch_boot(kernel_info, root_page) -> !` 的 riscv64 臂已存在（`not(feature="mock")`） | 无（镜像锚点 `KERNEL_ENTRY_ANCHOR` 直接能用） |
+
+内核侧的 riscv64 启动面（分页、higher-half、Sv39 页表）不是本里程碑的活，
+它已在 NK3/NL5② 落过判例（`os/kernel/Cargo.toml:26-33` 的注释指到那里）。
+
+### 决策一：新建 `kernel-image/riscv64.ld`，不复用 `os/kernel/src/arch/riscv64/link.ld`
+
+那份既有脚本**不能**直接拿来当生产镜像脚本，差三样（实测读文件所得）：
+
+1. **没有 `AT()` 的 LMA 表达**（它只写 `.` = KERN_VIRT_BASE）⇒ 所有段的
+   `p_paddr` 会等于虚拟高半地址。`os/boot-shim/src/loader.rs` 的
+   `load_segments_into_phys_memory` 按 `p_paddr` 拷贝段体，
+   `compute_kernel_layout` 取 `min(vaddr)/min(paddr)` 填
+   `KernelInfo.kern_virt_base/kern_phys_base`（契约抄在
+   `os/kernel-image/aarch64.ld:4-10` 头注释里）——paddr 是高半值就等于把
+   两个基址填成同一个数，装载面直接错。
+2. 没有 `KEEP(*(.text.boot))` 与 `.rodata.kernel_anchor` 的 KEEP ⇒
+   `--gc-sections` 会把入口和内核启动图锚点裁掉。
+3. 没有 `kernel_boot_stack_bottom/top` 预留 ⇒ `_start` 无处立栈，
+   check-layout 的 L7 也必然失败。
+
+**同时登记一条更值得裁决的事实**：`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld`
+三份脚本**没有任何构建引用**——全仓（排除 `target/`）`grep -rn "link.ld"`
+只命中两类读者：`os/arch/src/arch/direct_map.rs:72/102/134` 与
+`os/kernel/src/lib.rs:4151/4215` 的**文档注释**（把它们当基址事实来源），
+以及各载体自己目录下的 `link.ld`（`build.rs` 里 `-T{}/link.ld`，与这三份无关）。
+生产镜像用的是 `kernel-image/*.ld`。于是同一族常量存在两份表达，且旧的那份
+缺 LMA/KEEP/栈——它既不是死代码（文档锚点指着它）也不是活代码（不链接）。
+**上交裁决（不在本弧处理）**：(甲) 删除旧三份、把文档注释改指 `kernel-image/*.ld`
++ 宿主测试常量；(乙) 让生产 `.ld` 反向吸收旧脚本、二者合一；(丙) 维持现状并在
+旧脚本头部注明「仅文档参照，不参与链接」。我倾向 (丙) 最省事但留坑、(甲) 最干净
+但要改三处文档锚点与宿主测试注释；(乙) 风险最大（旧脚本语义与 boot-shim 契约
+本就不兼容）。按任务书「不自由发挥扩大范围」，我只实现 M4.2 并登记。
+
+### 决策二：两个基址沿用仓内既有值，不新发明
+
+- `KERNEL_VIRT_BASE = 0xFFFF_FFC0_0000_0000`（Sv39 canonical high，VPN[2]=256）
+  三处独立来源：`os/kernel/src/arch/riscv64/link.ld:24`、
+  `os/arch/src/arch/direct_map.rs:133`、宿主测试 `os/kernel/src/lib.rs:4215`。
+  旧脚本头部（同一文件 8-18 行）还写明了为什么不能取
+  `0xFFFF_C000_0000_0000`/`0xFFFF_FC00_0000_0000`（它们 VPN[2]=0，与低半
+  冲突）——这条约束我抄进新脚本注释，避免后人重踩。
+- `KERNEL_PHYS_BASE = 0x8020_0000`（QEMU virt DRAM 起点 `0x8000_0000` + 2 MiB，
+  2 MiB 对齐）来源：`os/kernel/src/lib.rs:4154/4216`，与
+  `os/arch/src/riscv64/paging.rs:883` 的测试地址族一致。
+
+### 决策三：首段 VMA 惯例取 `virt`（与 aarch64 同），不扩 `check_layout.sh` 的枚举
+
+`AT(ADDR(.sect) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)` ⇒
+`vaddr = KERNEL_VIRT_BASE + (paddr - KERNEL_PHYS_BASE)`，首段 VMA 就是高半基址。
+`check-layout.sh:103-111` 的 `vma_mode` 因此不必新增取值（它那个 `*` 分支的
+注释正好提示了这种可能性，实测两值够用）。
+
+**一个必须实测的算术风险**：`0xFFFF_FFC0_0000_0000 > i64::MAX`，
+`check-layout.sh:44` 的 `hex2dec()` 走 bash `$((16#...))`，会回绕成负数
+（`-17179869184`）。这不是新问题——x86_64 的 `0xFFFF800000000000` 今天就
+在同样回绕（且 `plus_phys` 那条还把它加了一次），断言两侧同形回绕所以比较
+仍然成立；跨距/平移量是差值，回绕相消。但 riscv64 的期望值只写在**一侧**的
+分支（`virt` 直接取 `virt_base`，不做加法），比 x86_64 路径更单纯。实现后
+必须看 L3b/L5/L6c 三条的实际输出，不接受「看起来 PASS」。
+
+### 决策四：入口 `_start` 的 riscv64 序列与边界
+
+OpenSBI 以 S-mode 跳进内核入口，`a0` = hartid、`a1` = DTB 物理指针
+（这条约定在本仓的 DTB 交接链上有实现：`os/boot-shim` 的 riscv64 侧与
+`os/libs/minix-platform/src/device_tree.rs` 走同一个 `PlatformDescSource`）。
+本镜像的 `_start` 与另两架构逐条同形：`la sp,kernel_boot_stack_top` →
+清 `ra`/`fp` → `call rust_image_main` → `2: wfi; jmp 2b`。
+**不做**的是：开分页、跳高半、把 `a1` 的 DTB 指针递进 `KernelInfo`——
+那是 boot-shim→内核的交接协议，与 x86_64/aarch64 同属未接线的
+NK1/OQ-N6 边界（`os/kernel-image/src/main.rs:14` 与 `:111-112` 已写明）。
+入口指令用 `la`（链接器松弛为 `auipc+addi`，PC 相对）而不是绝对地址装载，
+这样低半/高半两个执行视图下都能取到栈顶符号；这一点若与 M4.3 的装载实形
+冲突，回来改 `_start` 而不是改判据。
+
+### 决策五：xtask 的 riscv64 honest bail 保持不动
+
+`os/xtask/src/image.rs:195-203` 现在对 riscv64 明确拒绝装配镜像，理由是
+「启动路径不是 UEFI 盘形（riscv64 走 U-Boot fatload + BootFileTable）」。
+M4.2 不改它——改它等于把 M4.3（装载链）和 M4.1 刚记录的宿主前置件缺口
+（缺 `mkimage`/`u-boot-qemu`）一起吞掉。所以 M4.2 的验证**只**走
+`check-layout.sh riscv64`（内部就是 `cargo build -p kernel-image --target
+riscv64gc-unknown-none-elf --features fw-riscv64-none --release`），
+不跑 `xtask image --arch riscv64`，也不声称「riscv64 装机面可装配」。
+
+### 实现清单（下一节逐条做完并复跑）
+
+1. 新增 `os/kernel-image/riscv64.ld`（按决策一/二/三，头部写清与 aarch64.ld
+   的同形关系与 Sv39 canonical high 的来由）。
+2. `os/kernel-image/build.rs`：`riscv64gc-unknown-none-elf` → `riscv64.ld`，
+   并补 `rerun-if-changed=riscv64.ld`。
+3. `os/kernel-image/Cargo.toml`：`fw-riscv64-none = ["fw-none-image"]`，
+   并把那段「riscv64（P4 M4.2）可同形扩展」的注释改成既成事实。
+4. `os/kernel-image/src/main.rs`：riscv64 的 early_console import、`_start`
+   global_asm、`halt()` 分支，以及模块文档里「两架构」的措辞同步为三架构。
+5. `os/kernel-image/check-layout.sh`：`arch_expect()` riscv64 行 +
+   `case "$WHICH"` 分支 + usage 文案 + 头部断言清单里「两个架构」的措辞。
+6. 验证：`check-layout.sh riscv64` 与 `all`（三架构）全绿；反向判别
+   （拿 x86_64 工件去喂 riscv64 期望表必须 L2 FAIL）；宿主六包计数不降；
+   宿主隔离门 `cargo build --workspace --bins` 仍 0 error。
+
+**M4.2 不做**：真机装载、xtask 装机面、`os/etc/rc` 追加、run_all 接线
+（分别属 M4.3/M4.5/P6）。
