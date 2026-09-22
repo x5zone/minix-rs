@@ -112,6 +112,10 @@
   self=0，完整解释 `self=0x0 / cr2=0 / panic@endpoint_slot+0x176`。
   第六轮布防全部 5 类 IPC 状态寄存器写点，对 RS 零命中 →
   「写点踩用户活值」假说证伪，候选收窄为「save/restore 配对来源」。
+  同日再补一轮**零真机成本静态排查**：穷举 `ctx.rbx` 写者全集，发现
+  第 6 轮布防漏了 2 个全量存帧点（trap_dispatch.rs:697 异常→信号臂、
+  :1103 syscall 腿 VmSuspend 臂），并静态排除「syscall 瘦帧未填
+  rbx」与「apply_to_trap_frame 漏拷 rbx 导致交付 0」两条路径。
   本轮不做无定性修复。第四轮：静态定性出「IRQ/tick 入口不存帧 vs
   C mpx.S 每入口 SAVE_PROCESS_CTX」的真实 C 偏差并按对位修复（Fix #10，
   独立价值成立：入口保存不变量恢复 + 宿主防回归测试），但真机 c22a
@@ -400,6 +404,68 @@ endpoint 2 的同一重复 refault 事件上（c23a 最后一条在行 406，崩
   决定性实证（内核交付 RBX=0 给持活值的 RS）、1 个被证伪的假说
   （IPC 状态寄存器写点踩用户活值）、2 处对自身既往记录的更正、1 项
   自认的取证方法缺陷（探针上限两次被早期高频事件耗尽）。
+
+### 第六轮补充：零真机成本的 `ctx.rbx` 写者全枚举（静态，不开新真机轮）
+
+不开第 7 轮真机（铁律 #10），改为把「谁能把 0 写进某进程的
+`ctx.rbx`」在代码层面**穷举**，并顺带排除两条看似成立的路径。
+
+1. **差点误判的一处（已自证无害，必须记下以免后人重踩）**：
+   `apply_to_trap_frame`（arch/x86_64/boot.rs:149-166）只回填
+   rflags/cs/ss/rip/rsp，**不回填 rbx 与 gp_regs**——第一眼像「调度器
+   恢复时 RBX 恒为 0」的 P0。读恢复汇编证伪：
+   `restore_to_user`（arch/x86_64/trap_return.rs:79-131）的取数来源是
+   **分家的**——iretq 载荷（RIP/CS/RFLAGS/RSP/SS）取自 `frame`
+   （`rdi`），而 **RBX 与全部 GP 寄存器取自 `ctx`**（`rsi`，
+   `rbx_off = offset_of!(X86_64CpuContext, rbx)`，
+   trap_return.rs:109/144）。所以 frame 里 rbx 留默认值不影响交付。
+   顺带得到一条**结构性风险记录**（非本轮 issue）：frame 与 ctx 分管
+   不同寄存器，任何只更新其一的路径都会交付「撕裂的寄存器文件」；
+   `finish_and_restore` 里 frame 由 ctx 重建（kernel/lib.rs:3329-3330
+   + 3371），故该路径成对一致。
+2. **「syscall 腿的瘦帧没填 rbx，保存时把未初始化值写进 ctx」——静态
+   排除**：两个入口汇编都显式 `push rbx`
+   （`x86_trap_common`，trap_stub.rs:318-333；`x86_syscall_entry`，
+   trap_stub.rs:369-397），`save_frame_to_context` 的
+   `ctx.rbx = frame.rbx`（trap_stub.rs:543）拿到的永远是真实用户
+   RBX。
+3. **写者全集（穷举结果，非抽查）**：写 `ctx.rbx` 的只有这几类——
+   - 全量存帧原语 `save_frame_to_context`，内核侧 **5 个调用点**：
+     trap_dispatch.rs:127（irq 镜像）、:585（页故障 ForwardToVm）、
+     :697（异常→信号投递臂）、:887（int 0x21 臂）、:1103（syscall 腿
+     VmSuspend 停车臂），另有 arch 侧测试用点与 arch/src/lib.rs:341
+     的 trait 转发（非独立语义站点）；
+   - `clear_ipc_status_reg`（boot.rs:248-252 写 0）**内核侧唯一调用点**
+     ipc.rs:2087（plain-RECEIVE prologue）；其余 grep 命中全在测试；
+   - `or_ipc_status_reg`（`|=`，不可能把非 0 变 0）经
+     proc.rs:1790/1818 两个包装函数；
+   - `set_secondary_ipc_return`（boot.rs:254-260 **整体赋值**）内核侧
+     唯一调用点 syscall.rs:811，仅 `IpcCall::KernInfo` 分支，且
+     page 未发布时提前 EBADCALL 返回（不会写 0）；
+   - `write_user_register` 的 `72 => ctx.rbx = value`
+     （boot.rs:227），调用点 misc.rs:1797（T_SETUSER，需有人
+     ptrace）与 proc.rs:1767（`set_ipc_return_code`，走
+     offset 80=RAX，不碰 rbx）；
+   - 出生与信号：`build_cpu_context` 的
+     `rbx: entry.ps_strings.map(|v| v.0).unwrap_or(0)`
+     （boot.rs:143）、sigreturn 的 `ctx.rbx = sctx.sc_rbx`
+     （arch/x86_64/signal.rs:321）。
+4. **第 6 轮布防的漏洞（本轮发现，下一轮必修）**：上面 5 个存帧点
+   只布防了 3 个（:127 irq-save、:585 pf-save、:887 int33-save），
+   **:697（异常→信号臂）与 :1103（syscall 腿 VmSuspend 停车臂）
+   未布防** → 第六轮「五类写点零命中」的结论**不足以覆盖写者全集**，
+   不得当作已穷尽。
+5. **第 7 轮判别方案（覆盖上两条缺口，仍未执行）**：
+   - :697 与 :1103 各加一次 `nk4a_rbx_probe("sig-save", …)` /
+     `("syscall-vmss", …)`（复用现有函数，零新机制）；
+   - `pf-save` 改为 `ep == 2` 过滤 + 按 `(rip, rbx)` 去重 + 上限 64；
+   - 出生值核查：RS 属模块装载路径
+     （kernel/lib.rs:1513/1714 `EntrySpec::loaded(pc, sp, ps_strings)`），
+     打印一次 RS 的 `ctx.rbx` 出生值，判定 `unwrap_or(0)` 是否真的
+     被走到（若 RS 出生 RBX=0，则任何「从未存过帧的 ctx」被恢复都会
+     直接复现本崩溃）。
+6. **本轮性质**：纯静态阅读，零代码改动、零真机轮次、不做修复。Task C
+   维持 BLOCKED。
 
 
 
