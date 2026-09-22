@@ -2119,12 +2119,16 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
    的地方，根本进不到 `copy_msg_from_user`），说明该栈页在 `satp` 里 present 且
    U=1。同一个 VA，用户能读、内核读却故障——只剩 RISC-V 的那条规则：
    S 态访问 U=1 页必须 `sstatus.SUM=1`。
-5. **全仓核账**：`grep -rn --include=*.rs SUM arch/src kernel/src` 只剩三处注释
-   提到 SUM，**没有一处把它置起来**。三条落地路径都不置：返回用户只
+5. **生产侧核账**：`grep -rn --include=*.rs SUM os/arch/src os/kernel/src` 只剩三处注
+   释提到 SUM，**生产代码里没一处把它置起来**（注意范围：这条只适用于
+   `os/arch/src` 与 `os/kernel/src`；测试载体自己是有 SUM 窗口的，见下面的更正）。
+   三条生产落地路径都不置：返回用户只
    `csrc SPP`/`csrs SPIE`（`arch/src/riscv64/trap_return.rs:81-84`）；生产 trap
    双腿是存什么还什么（内核腿 `arch/src/riscv64/trap_stub.rs:193` 存、
    `:199-200` 还；用户腿 `:278` 存、`:289-290` 还），只往返不建立；per-process
    初值 `INIT_USER_SSTATUS = 0x20` 只有 SPIE（`arch/src/riscv64/boot.rs:24`）。
+   三处注释里有一处直接是一个未兑现的 promise：`arch/src/riscv64/protection.rs:36`
+   写着「sstatus.SUM is set later」，但全仓（生产侧）没有那个 later。
    而 `os/kernel/src/lib.rs:409-413` 已经因
    为这个限制把恒等映射做成 supervisor-only（注释原话：「Since we haven't set
    SUM, identity mapping must be supervisor-only」）——也就是说，这个缺件在分页
@@ -2132,9 +2136,45 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
 
 **这不是 riscv64 载体专属问题**：它住在生产内核的 IPC 拷贝路径上
 （`copy_msg_from_user` 直接 `read_volatile` 用户 VA），三架构生产链共用同一
-段代码。x86_64 今天能过是因为它没有这个开关（未启用 SMAP）；一旦
-M4.4 的生产交接（上一节的甲/乙/丙）接上，riscv64 仍会死在同一行。所以它
-是交接方案的**共同前置**，与事实五（入口不清 `.bss`）同性质。
+段代码。完整调用链已钉到行：生产用户腿 `riscv64_user_body`
+（`os/kernel/src/trap_dispatch.rs:1451`）收到 `KERNEL_CALL` 后进
+`riscv64_kernel_call_leg`（`:1528`），从 `frame.gpr[10]` 取用户消息址（`:1541`），
+把 `&KernelUserCopy` 递下去（`:1549`），最终落到
+`os/kernel/src/ipc.rs:1104` / `:1164` 的 `copy_msg_from_user`。
+x86_64 今天能过是因为它没有这个开关（未启用 SMAP）；一旦 M4.4 的生产交接
+（上一节的甲/乙/丙）接上，riscv64 仍会死在同一行。所以它是交接方案的
+**共同前置**，与事实五（入口不清 `.bss`）同性质。
+
+### 更正：提交后自查推翻了上面一句过宽断言（评审也没抓到）
+
+上面第 5 步初稿写的是「**全仓**三处提到 SUM，无一处把它置起来」——**错了**。
+它把 grep 范围限定在 `arch/src`/`kernel/src`，却用了「全仓」这个词。反例就在
+本报告用的同一份载体里：
+
+| 位置 | 内容 |
+|------|------|
+| `test-rt-birth-riscv64/src/main.rs:248` | `const SSTATUS_SUM: u64 = 1 << 18;` |
+| `:331` | `csrs sstatus, SSTATUS_SUM`——进 `kernel_call_leg` 前开窗 |
+| `:336` | `csrc sstatus, SSTATUS_SUM`——出来后关窗 |
+| `:340` | 回写 frame 时用 `SSTATUS_SUM_MASK` 保证 SUM 不会被带回用户 |
+
+也就是说，**乙案的形状在仓内已经有人写过**（同一个载体、同一个位、同一个
+「只在拷贝窗口内开」的粒度）。全仓（含 `qemu-tests/`）带 `SSTATUS_SUM` 的只有这一
+份载体，其余两架构载体与生产代码都没有。
+
+由此补一条更重要的机制事实，它同时解释「既然载体开了 SUM，为什么还是
+fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就被顶掉了**。
+`os/arch/src/riscv64/trap_return.rs:67-74` 在返回用户前把 `stvec` 改写指向生产
+用户腿（注释原话「Point stvec at the USER leg」），而载体是在 `init_protection`
+之后才把自己的 `uecall_handler` 写进 `stvec` 的（该载体 `:509-515`）——所以
+`switch_to_user` 一旦跑起来，U-ecall 进的是生产腿，不是载体腿；而生产腿的拷贝走
+`copy_msg_from_user`，那里没有 SUM 窗口。载体自己那份 `kernel_call_leg` 用的是
+`core::ptr::copy_nonoverlapping`（`:377`、`:406`），根本不经过
+`copy_msg_from_user`——这才是为什么 fault 点落在生产代码里。
+
+这条更正不改变裁决的结论（仍需你定甲/乙/丙），但改变了推荐项的证据：
+下面案乙的代价从「要新增一层抽象」下调为「仓内已有同位可抄的窗口模式，
+只是目前住在载体里、没提到 arch 层」。
 
 ### 上交裁决（新增一条：内核怎么访问用户内存，riscv64/aarch64 共用）
 
@@ -2143,13 +2183,22 @@ M4.4 的生产交接（上一节的甲/乙/丙）接上，riscv64 仍会死在�
 | 案 | 做法 | 代价 / 风险 |
 |----|------|------------|
 | 甲 | 按仓内已写明的意图落地：`INIT_USER_SSTATUS` 加 SUM 位，并在 `restore_to_user` 里把该进程的 SUM 应用到 `sstatus`（现在只改 SPP/SPIE） | 改动最小（一个常量 + 入口 asm 一条），与 `boot.rs:95-97` 注释的设计意图同名同形；但效果是「只要当前进程是用户进程，内核全程可读用户页」，粒度粗 |
-| 乙 | 只在拷贝窗口内开/关 SUM（Linux 的 `enable_user_access()`/`disable_user_access()` 对位），需要一个 arch 门控的 guard（或给 `UserCopy` trait 加一对方法） | 语义最精确、与现有「先软走页表再访问」的纪律最配；代价是要新增一层 kernel↔arch 抽象，三架构共用路径都得改签名 |
+| 乙 | 只在拷贝窗口内开/关 SUM（Linux 的 `enable_user_access()`/`disable_user_access()` 对位），需要一个 arch 门控的 guard（或给 `UserCopy` trait 加一对方法） | 语义最精确、与现有「先软走页表再访问」的纪律最配；**仓内已有同位可抄的窗口模式**（载体 `test-rt-birth-riscv64/src/main.rs:248,331,336,340`），只是它现在住在测试载体里、没提到 arch 层；代价是要新增一层 kernel↔arch 抽象并剔除掉载体那份副本 |
 | 丙 | 不碰 CSR：先把用户 VA 翻译成 PA，再从 Direct Map 窗口读（仓内已有模式：`kernel/src/vm.rs:403`、`ipc.rs:379-381` 的注释就把这条当作出路） | 不引入新位、跟仓内既有跨空间拷贝一致；代价是每次拷贝多一次 walk，且要先证实 Direct Map 窗口覆盖到用户页所在的物理址 |
 
 推荐 **乙**（安全语义上最接近现代 riscv64/Redox 做法，且与 `copy_msg_from_user`
 已有的「验证优先」分阶段结构同构）；若你希望本轮先把三架构点电到底、后续再收
 拢安全粒度，**甲** 是最低成本的临时形态（但必须同时在代码里标注它是临时形态，
 否则会被后人当成最终设计）。丙 需先做窗口覆盖取证，不能直接选。
+
+### 登记：riscv64 出生链载体的 `uecall_handler` 可能已是死腿（只登记，不修）
+
+按上面的机制：`restore_to_user` 会把 `stvec` 改写指向生产用户腿，所以载体自带的
+`uecall_handler`（及其 KERNINFO / DIAGCTL 两份应答）在首次调度交接后不再被触发。
+本弧线不修也不删：① 删它要看它是否还是 `init_protection` 之前那段窗口的唯一
+处理者；② 它跟本轮的 SUM 裁决纠缠在一起（若采乙案，载体这份副本应被提升到
+arch 层而不是删掉）。只把事实钉在案：`os/arch/src/riscv64/trap_return.rs:67-74`
+与载体 `src/main.rs:509-515` 的先后关系。
 
 ### 登记：aarch64 同型缺口（今日不可验证，不修）
 

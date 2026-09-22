@@ -89,3 +89,30 @@ const INIT_USER_SSTATUS: u64 = 0x0000_0020;
   ipc.rs:379-381  /// kernel-mode fault. Same discipline as the cross-space copy paths, which
   ipc.rs:379-381  /// software-walk the page table before their Direct Map window access.
   ipc.rs:379-381  ///
+
+## 9. 追加更正（commit 630ea3398 之后自查）：§4 的「全仓」是错的
+§4 结论初稿写「全仓三处提到 SUM，无一处把它置起来」——它用的 grep 只覆盖了
+`os/arch/src` 与 `os/kernel/src`，却用了「全仓」这个范围词。把范围扩到
+`os/qemu-tests` 后反例立即出现：
+
+命令：grep -rn --include=*.rs 'SSTATUS_SUM\|sstatus.SUM' qemu-tests/ | grep -v RESUME
+qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:247:/// sstatus.SUM (bit 18): S-mode may access user-mode pages while set.
+qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:248:const SSTATUS_SUM: u64 = 1 << 18;
+qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:251:const SSTATUS_SUM_MASK: u64 = !SSTATUS_SUM;
+qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:331:                asm!("csrs sstatus, {}", in(reg) SSTATUS_SUM, options(nomem, nostack));
+qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:336:                asm!("csrc sstatus, {}", in(reg) SSTATUS_SUM, options(nomem, nostack));
+qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:340:            *frame.add(IDX_SSTATUS) = sstatus & SSTATUS_SUM_MASK;
+
+⇒ 更正后的准确断言：**生产代码（`os/arch/src` + `os/kernel/src`）里没有一处把 SUM
+  置起来**；唯一个真的开/关 SUM 窗口的地方在测试载体里（只在
+  `kernel_call_leg` 前后开/关，正是「案乙」的形状）。本节标题与 §4 结论的
+  「全仓」两字按本追加节为准。
+
+⇒ 为什么载体开了 SUM 仍 fault（同一轮补的机制事实）：载体写 `stvec` 指向自己的
+  `uecall_handler`（载体 `:509-515`），但 `arch/src/riscv64/trap_return.rs:67-74` 在
+  首次返回用户前把 `stvec` 改写指向生产用户腿；且载体那份 `kernel_call_leg` 用的是
+  `core::ptr::copy_nonoverlapping`（`:377`、`:406`），根本不经过
+  `copy_msg_from_user`。所以 fault 一定落在生产腿上，与载体窗口无关。
+
+（本弧观察手段/表述踩坑第 6 次：否定式全称断言的范围词必须与 grep 实参一致；
+  本仓 grep 默认从 `os/` 起跑，很容易把「两个目录」当成「全仓」。）
