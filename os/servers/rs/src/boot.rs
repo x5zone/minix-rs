@@ -1050,10 +1050,14 @@ impl<'a> BootInit<'a> {
             if priv_.endpoint.is_kernel_task() {
                 continue; // C: iskerneln skip — main.c:354-356
             }
-            let id = self
-                .table
-                .endpoint_slot(priv_.endpoint)
-                .expect("boot service slot missing at step 2");
+            let id = self.table.endpoint_slot(priv_.endpoint).unwrap_or_else(|| {
+                panic!(
+                    "boot service slot missing at step 2: endpoint {:#x} slot {}; indexed={:?}",
+                    priv_.endpoint.0,
+                    priv_.endpoint.slot(),
+                    self.table.indexed_endpoints()
+                )
+            });
             let init_flags = self.table.get(id).priv_.init_flags;
             let gid = self.rinit.rproctab_gid;
             let ticks = sys.get_ticks()?;

@@ -198,6 +198,17 @@ impl RProcTable {
         self.by_endpoint[slot as usize]
     }
 
+    /// NK4-A C-3 迭代18 取证（task1-close 裁决删除）：列出全部已索引端点。
+    pub fn indexed_endpoints(&self) -> alloc::vec::Vec<(i32, usize)> {
+        let mut out = alloc::vec::Vec::new();
+        for (slot, id) in self.by_endpoint.iter().enumerate() {
+            if let Some(id) = id {
+                out.push((slot as i32, id.0));
+            }
+        }
+        out
+    }
+
     /// Writes the endpoint → row index.
     ///
     /// C: `rproc_ptr[_ENDPOINT_P(ep)] = rp` — glo.h:35 (ARCH A-4). Used by
