@@ -1,0 +1,42 @@
+# NK4-B P3 M3.3 评审闭环节（commit 2b33ee480，来源 = 里程碑 CodeReview P1 + P2）
+
+## 1) 逐字节契约测试的判别实测（脚本 tmp/nk4a/verify-m33-nsh-bytegate.sh）
+  正例：
+    test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  变异（把 2b6d98ffd 一度引入的尾反斜杠写回去）：
+    当前（已修）: 379:    let startup_nsh = format!("echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\n{}\r\n", uefi.loader);
+    变异后源文件行: let startup_nsh = format!("echo -off\r\nFS0:\r\ncd EFI\\BOOT\\\r\n{}\r\n", uefi.loader);
+    test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  还原复跑：
+    test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+## 2) 宿主三包计数（CI 镜像，cargo test -p xtask -p minix-plat -p boot-shim）
+  test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+  test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+  test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+## 3) 盘上 startup.nsh 字节实测（mtype + cmp 冻结原文）
+  x86_64：
+    与 873f3e947 冻结常量逐字节相同
+  aarch64：
+    与同一模板逐字节相同（只差加载项文件名）
+  xxd 现场（x86_64 盘）：
+    00000000: 6563 686f 202d 6f66 660d 0a46 5330 3a0d  echo -off..FS0:.
+    00000010: 0a63 6420 4546 495c 424f 4f54 0d0a 424f  .cd EFI\BOOT..BO
+    00000020: 4f54 5836 342e 4546 490d 0a              OTX64.EFI..
+
+## 4) 真机复验：镜像内容变更后 AAVMF 再两次独立复跑
+  ── RUN=m33f ──
+    image in use: /home/xzhao/github/minix-rs/os/target/image/aarch64/minix.img
+    ESP verified: BOOTAA64.EFI + kernel.elf + all 12 module names present
+    ### TEST_RESULT: PASS test-shim-bootmarks-aarch64 ###
+    路标1=1 路标2=1 EBS裸写腿=1 kmain_A2=1
+  ── RUN=m33g ──
+    image in use: /home/xzhao/github/minix-rs/os/target/image/aarch64/minix.img
+    ESP verified: BOOTAA64.EFI + kernel.elf + all 12 module names present
+    ### TEST_RESULT: PASS test-shim-bootmarks-aarch64 ###
+    路标1=1 路标2=1 EBS裸写腿=1 kmain_A2=1
+  两轮路标序列 diff：
+    无差异（同形）
