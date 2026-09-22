@@ -157,3 +157,21 @@ qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:340: 
 
 （第 7 次踩坑：初次写本节时把开窗那条写成 :393，实测 `sed -n '393p;404p'` 发现
   :393 是 mrs、bic 在 :394，已改。行的错一位与上一轮锚点自查表里记的是同一个模式。）
+
+## 11. 追加（第二轮评审 O1）：§10 的命令范围比断言范围窄，重跑确认结论不变
+§10 的自证命令把目录实参写成 `arch/src/arm64 kernel/src`，而断言声明的范围是
+「生产侧 = `os/arch/src` + `os/kernel/src`」。两者不一致（命令只盖了 arm64 子目
+录），按同一把尺子重跑：
+
+命令：grep -rn --include=*.rs PAN arch/src kernel/src | grep -vi 'resume\|assum\|summar\|consum\|COMPAN\|separ'
+arch/src/arm64/boot.rs:108:    // aarch64 equivalent is PSTATE.PAN, set per-process via SPSR
+kernel/src/lib.rs:2059:static PANIC_DIAG_ACTIVE: core::sync::atomic::AtomicBool =
+kernel/src/lib.rs:2096:    if PANIC_DIAG_ACTIVE.swap(true, Ordering::AcqRel) {
+#  ⇒ 共 3 行，与 §10 完全同集（多的两行是 `PANIC_` 子串误命中）。把 `arch/src` 整个
+#    目录（含 riscv64 / x86_64）扫进去，也没有多出任何真的翻 PAN 的指令。
+#    断言不变：生产侧无一处置 PAN。
+
+同步修正：WORKLOG 锚点自查表里 PAN 行的命令实参也已从 `arch/src/arm64` 改成
+`arch/src`（与断言范围对齐）。另外 §10 那句「生产侧只有一行意图注释」同理适用于
+SUM：把 `grep -rn --include=*.rs SUM arch/src kernel/src` 里的 riscv64 子目录限定
+去掉、扫整个 `arch/src`，结果仍是那 3 行注释（已实测）。

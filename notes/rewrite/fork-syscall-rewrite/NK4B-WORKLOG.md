@@ -2129,7 +2129,8 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
    `:199-200` 还；用户腿 `:278` 存、`:289-290` 还），只往返不建立；per-process
    初值 `INIT_USER_SSTATUS = 0x20` 只有 SPIE（`arch/src/riscv64/boot.rs:24`）。
    三处注释里有一处直接是一个未兑现的 promise：`arch/src/riscv64/protection.rs:36`
-   写着「sstatus.SUM is set later」，但全仓（生产侧）没有那个 later。
+   写着「sstatus.SUM is set later」，但生产侧（`os/arch/src` + `os/kernel/src`）
+   没有那个 later（测试载体有窗口，不在本条范围内）。
    而 `os/kernel/src/lib.rs:409-413` 已经因
    为这个限制把恒等映射做成 supervisor-only（注释原话：「Since we haven't set
    SUM, identity mapping must be supervisor-only」）——也就是说，这个缺件在分页
@@ -2245,7 +2246,7 @@ PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，�
 | `arch/src/riscv64/trap_stub.rs:193 / :199-200 / :278 / :289-290` | `grep -n "csrr t0, sstatus\|csrw sstatus, t0\|ld t0, 33\*8"` | 命中（初稿写的 193-200/291-292 偏了一行，已改） |
 | `arch/src/riscv64/boot.rs:24`（`INIT_USER_SSTATUS`） | `sed -n '24p'` | 命中 = `0x0000_0020` |
 | `arch/src/riscv64/boot.rs:95-97`（设计意图） | `sed -n '95,97p'` | 命中 |
-| `arch/src/arm64/boot.rs:108`（PAN 同型） | `grep -rn --include=*.rs PAN arch/src/arm64 kernel/src \| grep -vi 'resume\|assum\|summar\|consum\|COMPAN\|separ'` | 命中（生产侧仅这一行注释；PAN 窗口在 `qemu-tests/` 载体里，见上一节） |
+| `arch/src/arm64/boot.rs:108`（PAN 同型） | `grep -rn --include=*.rs PAN arch/src kernel/src \| grep -vi 'resume\|assum\|summar\|consum\|COMPAN\|separ'` | 命中（整目录 `arch/src` 而非仅 arm64 子目录；生产侧仅这一行注释，另两条 `PANIC_DIAG_ACTIVE` 是子串误命中；PAN 窗口在 `qemu-tests/` 载体里，见上一节） |
 | aarch64 载体 PAN 窗口 `test-rt-birth-aarch64/src/main.rs:391-408` | `sed -n '391,408p'` | 命中（评审追问后自查新增，初稿漏登记） |
 | `kernel/src/vm.rs:403`（Direct Map 模式） | `grep -n kernel_phys_to_virt` | 命中 |
 | 三载体 `grep -c init_clock_and_interrupts` = 1/1/0 | 逐目录 `grep -c` | 修后实测（修前 1/0/0） |
