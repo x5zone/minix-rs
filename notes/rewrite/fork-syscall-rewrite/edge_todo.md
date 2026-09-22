@@ -1121,3 +1121,58 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 > - **① 客户端半 ✅** minix-sys 新增 `sigaction_via/sigprocmask_via/sigsuspend_via/sigpending_via` + `SigActionWire`（C struct sigaction 用户镜像，PM sys_datacopy 契约）+ `MessLcPmSig/MessLcPmSigset/MessPmLcSigset` 三臂入 Message union（E-MINTYPES 范式）；7 个 wire 形状测试。
 > - **② 客户端半 ✅** `getuid_via`（m1i1/m1i2 回复对）/`setsid_via`（m_type 即会话 id）；init MinixSysHost getuid/setsid 接真实半。
 > - **剩余（04/14 阶段 + E5 联调）**：PM `dispatch_pm_call` 缺信号/uid 族 match 臂（handle_sigaction/sigprocmask logic 已在但未接消息解码）；minix-rt sigreturn 桩 + panic-handler 接线；端到端投递通电。init 侧 trampoline/静态 SignalState 已就绪，PM 臂闭单即活。
+
+## NK4-OPEN NK4 弧线与全系统开放项收拢账（2026-09-23 审计，评审方登记）
+
+> 来源：2026-09-23 全系统 todo 审计（执行 todo 已清零；本节收拢账本/弧线/
+> FIXLOG/仓级四个层面的开放项）。状态标记沿用本文件惯例。领取仍按文件头
+> 规则（claim → .wt 树内作业 → 合入 → release 销账 → 本节同步划掉）。
+
+### A. NK4 弧线里程碑级（细账见 NK4A/NK4B-WORKLOG.md 状态行）
+
+| 项 | 状态 | 阻塞点 / 下一步 |
+|----|------|----------------|
+| NK4A Task C：RS null-deref | ❌ BLOCKED | 六轮真机（c19a-c24a）收窄到写者集合；修复需架构裁决（ctx.rbx 写者布防证据在 WORKLOG 第六轮） |
+| NK4B P1：x86_64 rc marker | ❌ PARTIAL | 直接阻塞 = Task C；rc marker 是 NK4-A 翻绿判据 |
+| NK4B M3.4：aarch64 内核点电 | ❌ PARTIAL 等裁决 | 平台描述符通道三案 D1/B/A 上交（WORKLOG「上交裁决」节）；GICR 需 gic-version=3 已知 |
+| NK4B M4.4/M4.5：riscv64 点电/rc marker | ❌ BLOCKED | 2026-09-23 评审方已裁丙（收敛为镜像产出+装载链实证）；handoff 归 C-29/NK1-OQ-N6 统一设计；甲案（kernel-image 自任引导体）登记为下一弧线方向 |
+| NK4B P2：x86_64 命令面 | ❌ 未开始 | 前置 = P1 |
+| NK4B P5：三架构命令面 | ❌ 未开始 | 前置 = M3.6/M4.5 |
+| NK4B P6：run_all 接线 | ❌ 未开始 | 机械活，可随任一弧线顺带 |
+| task1-close：探针去留大裁决 | ❌ 未做 | 探针存量经两代 agent 暴涨（pf-exit/RBX 轨迹/拓扑 parse/boot-shim 路标等新组），须按 FIXLOG 最新存量段落重盘 |
+| 记账缺口 | ⏸ | NK4A/NK4B-TODO 共 39 个 checkbox 未回填勾选（qwen 用 WORKLOG 状态行跟踪）——下次动任务书时顺带回填 |
+
+### B. 协作账本开放行（指针，细账以各行原文为准）
+
+- new_edge1：NK4 主行 ⏸（本弧线主线，= 上表 P1 链）
+- new_edge2：NL5 行内未完子项
+- new_edge3：S31 / S32 / S33 / S35 / S36
+- new_edge4：C-29（=OQ-N6 handoff 设计轮，M4.4 丙裁决的归宿）、NL3③
+  （sigreturn trampoline）、NL4（wrapper 族）、NS4/NS5（挂根+exec）、
+  E5(d)/E5(e)/E5(h)、E5-SMP、E5-ARCH、C-2 / C-17 / C-18 / C-21 / C-22 /
+  C-23 / C-24 / C-26 / C-59
+
+### C. FIXLOG 登记未修发现（edge1 FIXLOG「Fix #9 评审发现登记」节及其后）
+
+| 项 | 级别 | 内容 |
+|----|------|------|
+| F10 | P0-wire | kernel call 正 errno 经 KcallResult::Ok(errno) 上线为正数——需全仓对账（dispatch 各臂 + reply_code 映射 + 各服务器网关检查） |
+| F2 | P1-design | VmDm flush 内核辅助通道未接线（VM 自有活地址空间页粒度 unmap/remap 缺 INVL/flush；boot 路径不触发） |
+| F3 | P1-security | 身份窗口 supervisor RWX（W^X 债；loader 段表拆 RX/RW 需扩 KernelInfo） |
+| F5 | P2 | kmain 影子 kernel_info——串口诊断复核 fix3 声称后删 shadow 或修本体 |
+| F6 | P2 | RESERVED_REGION_STORE[256] × MAX_CANDIDATES=256 手工耦合，补 const 断言（2026-09-23 复核仍未修） |
+| F7 | P2 | split_huge `(leaf_pa + i<<SHIFT)` 优先级惯用法，显式加括号+注对齐前提（复核待做） |
+
+### D. 仓级 / 杂项
+
+- notes/TODO.md：文件拆分整理尾项（improve_minix.md 删除或合并确认）
+- OQ：notes/study + notes/rewrite/archive_bak 是否正式收纳（33841ca07
+  分流时上交，.gitignore 已防复发，磁盘保留中）
+- OQ-N3 尾项：NS7/video-text/T4（见既有登记）
+
+### E. 已闭环（防止重复领取）
+
+执行 todo 6/6；NK4A Task A；NK4B P0 核账 / M3.1-M3.3 / M4.1-M4.3；
+NK4A 评审 F1/F4/F8（8e85a2241）/F13；迭代11-18 六缺陷；回归评审
+P2-1+P2-2（96ab522ac）；OQ-1 CI 三架构 build 门（5ba2644b8）；
+「9e115387e→ab79b40ba→OQ-1」跨架构编译回归事故类已结构性闭环。
