@@ -400,7 +400,8 @@ pub fn dispatch_exec(
             rp.set_boot_cpu_context(cpu_context);
             // C-3 F0 续修取证（task1-close 裁决删除）：store 后读回——
             // 区分"写入即零"（build/消息侧）与"槽错位/被覆盖"（恢复侧读零）。
-            #[cfg(not(feature = "mock"))]
+            // `probe_frame.rip`/`rsp` 是 x86 帧字段，按架构门编译（NK4-B M3.1）。
+            #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
             {
                 use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                 let mut probe_frame =

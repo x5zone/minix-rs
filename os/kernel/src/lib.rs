@@ -651,6 +651,10 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     // init_protection 后/RS 切换前）。current_cpu_id 的 gs:0x10 身份锚在
     // RS 首次切换后 PF@cr2=0x10（NK4-A 评审 F0，C-3 迭代1 M1-M2 二分），
     // 本采样判定 GS 是"从未编程"还是"中途被清"。
+    // GS_BASE/KERNEL_GS_BASE 是 x86 专属 MSR，rdmsr 只在 x86_64 编译
+    // （NK4-B P3 M3.1：aarch64 载体的 kernel lib 曾因本块缺架构门而
+    // 编译失败，见 NK4B-WORKLOG M3.1 节）。
+    #[cfg(target_arch = "x86_64")]
     {
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
         let (g_lo, g_hi): (u32, u32);
@@ -669,6 +673,7 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
 
     boot_stage!("kernel: kmain B clock+intr ok\n");
+    #[cfg(target_arch = "x86_64")]
     {
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
         let (g_lo, g_hi): (u32, u32);
@@ -3331,7 +3336,9 @@ fn finish_and_restore(
 
     // NK4-A fix26 取证路标（task1-close 裁决删除）：走到这里说明 Stage
     // 3-5 全程在 picked 的地址空间下活着，死点只剩 restore/iret。
-    #[cfg(not(feature = "mock"))]
+    // `frame.rip`/`frame.rsp` 是 x86 帧字段（aarch64 对应 elr_el1/sp_el0），
+    // 本路标服务 NK4-A/NK4-B 的 x86_64 取证，按架构门编译。
+    #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
     {
         use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
         // NK4-A Task C 第 5 轮判别（task1-close 裁决删除）：`rbx=` 是本次

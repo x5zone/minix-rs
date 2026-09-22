@@ -115,6 +115,11 @@ unsafe fn save_irq_frame_to_context(frame: &TrapFrame) {
 /// The testable core of [`save_irq_frame_to_context`]: the CPL gate plus
 /// the full-context mirror. Returns whether the frame was mirrored (the
 /// host-side test pins both branches without boot-global fixtures).
+///
+/// x86-64 only: the parameter is the x86 `TrapFrame`（`cs`/`rip`/`rbx` 字段）,
+/// 本函数与它的调用点都服务于 NK4-A/NK4-B 的 x86_64 取证，
+/// 按架构门编译（NK4-B M3.1 补上这道门）。
+#[cfg(target_arch = "x86_64")]
 fn mirror_irq_frame_into_proc(
     frame: &TrapFrame,
     proc: &mut crate::proc::KProcess,
@@ -201,8 +206,8 @@ pub(crate) fn nk4a_rs_trace_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
     static SEEN_RIP: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
     static SEEN_RBX: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
     static SEEN_SITE: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
-    /// 站点以首字节区分（pf2 / x33 / irq / sig / vms / rst 首字互不相同；
-    /// 探针的 site 首字必须唯一，否则去重会合并不同站点）。
+    // 站点以首字节区分（pf2 / x33 / irq / sig / vms / rst 首字互不相同；
+    // 探针的 site 首字必须唯一，否则去重会合并不同站点）。
     let site_key = site.as_bytes()[0];
     let n = N.load(AtomicOrd::Relaxed);
     let mut i = 0;
