@@ -1,0 +1,20 @@
+# M4.2 反向判别 2026-09-22T23:44:57+08:00：把 x86_64 工件放到 riscv64 取件位，SKIP_BUILD=1
+# 期望 = L2 FAIL（机器类型对不上），否则说明 L2 断言拦不住「拿错架构工件」
+$ cp target/x86_64-unknown-none/release/kernel target/riscv64gc-unknown-none-elf/release/kernel
+$ SKIP_BUILD=1 bash kernel-image/check-layout.sh riscv64
+== riscv64：/home/xzhao/github/minix-rs/os/target/riscv64gc-unknown-none-elf/release/kernel
+  [L0] PASS  riscv64.ld 里 KERNEL_VIRT_BASE/KERNEL_PHYS_BASE 各恰好一处声明且等于 0xffffffc000000000/0x80200000（命中 1/1 处：ffffffc000000000 | 80200000）
+  [L1] PASS  ELF 类型 = EXEC（实得 EXEC）
+  [L2] FAIL  机器类型含 "RISC-V"（实得 Advanced Micro Devices X86-64）
+  [L3a] PASS  PT_LOAD 段数 >= 1（实得 5）
+  [L3b] FAIL  首段 VMA = 0xffffffc000000000（实得 0xffff800000200000）
+  [L3c] FAIL  首段 LMA = 0x80200000（实得 0x0000000000200000）
+  [L4] PASS  所有 PT_LOAD 的 vaddr-paddr 平移量一致（= 0xffff800000000000，违例 0 段）
+  [L5] PASS  镜像跨距 2 MiB 且 2MiB 对齐（余 0 字节）
+  [L6a] FAIL  入口 = 0xffffffc000000000（实得 0xffff800000200000）
+  [L6b] PASS  符号 _start = 入口（实得 ffff800000200000）
+  [L6c] PASS  入口 0xffff800000200000 落在首段 [0xffff800000200000, +0x3933e) 内
+  [L7] PASS  引导栈 64 KiB（实得 65536 字节）且落在末段 [0xffff800000305000, +0xffff800000400000)（bottom=0xffff80000038bc00）
+  [L8] PASS  minix_kernel::arch_boot 在镜像里（命中 1 个符号）
+CHECK-LAYOUT=FAIL（riscv64）
+REVERSE-EXIT=1

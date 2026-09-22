@@ -1,0 +1,944 @@
+# M4.2 宿主隔离门 X-2/NK5 2026-09-22T23:46:14+08:00
+# cmd: cargo build --workspace --bins（宿主 triple，default features）
+# 期望：EXIT=0、^error 0 条、eh_personality 0 条（裸机 bin 被 required-features 门静默跳过）
+error: failed to write `/home/xzhao/github/minix-rs/os/target/debug/.fingerprint/minix-compress-1cb3540d4faf4c30/bin-compress`
+
+Caused by:
+  Permission denied (os error 13)
+GATE-EXIT=101
+## 第二次尝试：容器内干净 CARGO_TARGET_DIR（宿主 target/ 里有前几轮 root 属主残留，见下）
+# cmd: docker run --rm -u $(id -u):$(id -g) -v $PWD:/work -w /work -e CARGO_TARGET_DIR=/tmp/ct -m 2g minix-ci:1.94 cargo build --workspace --bins
+# 2026-09-22T23:46:32+08:00
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded anstyle v1.0.14
+  Downloaded bitflags v2.11.0
+  Downloaded cfg-if v1.0.4
+  Downloaded byteorder v1.5.0
+  Downloaded is_terminal_polyfill v1.70.2
+  Downloaded heck v0.5.0
+  Downloaded bitflags v1.3.2
+  Downloaded anstyle-query v1.1.5
+  Downloaded anyhow v1.0.102
+  Downloaded anstream v1.0.0
+  Downloaded anstyle-parse v1.0.0
+  Downloaded ucs2 v0.3.3
+  Downloaded quote v1.0.45
+  Downloaded proc-macro2 v1.0.106
+  Downloaded managed v0.8.0
+  Downloaded utf8parse v0.2.2
+  Downloaded uefi-macros v0.17.0
+  Downloaded stable_deref_trait v1.2.1
+  Downloaded hash32 v0.3.1
+  Downloaded thiserror-impl v2.0.20
+  Downloaded uguid v2.2.1
+  Downloaded uefi-raw v0.9.0
+  Downloaded defmt v1.1.1
+  Downloaded clap_derive v4.6.0
+  Downloaded clap v4.6.0
+  Downloaded defmt-macros v1.1.1
+  Downloaded fdt v0.1.5
+  Downloaded colorchoice v1.0.5
+  Downloaded thiserror v2.0.20
+  Downloaded ptr_meta_derive v0.2.0
+  Downloaded ptr_meta v0.2.0
+  Downloaded defmt-parser v1.0.0
+  Downloaded clap_lex v1.1.0
+  Downloaded unicode-ident v1.0.24
+  Downloaded strsim v0.11.1
+  Downloaded log v0.4.29
+  Downloaded bit_field v0.10.3
+  Downloaded syn v3.0.6
+  Downloaded smoltcp v0.14.0
+  Downloaded heapless v0.9.3
+  Downloaded clap_builder v4.6.0
+  Downloaded uefi v0.33.0
+  Downloaded syn v1.0.109
+  Downloaded syn v2.0.117
+   Compiling bitflags v2.11.0
+   Compiling minix-sys v0.1.0 (/work/libs/minix-sys)
+   Compiling proc-macro2 v1.0.106
+   Compiling minix-elf v0.1.0 (/work/libs/minix-elf)
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling byteorder v1.5.0
+   Compiling utf8parse v0.2.2
+   Compiling fdt v0.1.5
+   Compiling heapless v0.9.3
+   Compiling smoltcp v0.14.0
+   Compiling stable_deref_trait v1.2.1
+   Compiling colorchoice v1.0.5
+   Compiling log v0.4.29
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling anstyle-query v1.1.5
+   Compiling anstyle v1.0.14
+   Compiling anstyle-parse v1.0.0
+   Compiling managed v0.8.0
+   Compiling clap_lex v1.1.0
+   Compiling strsim v0.11.1
+   Compiling heck v0.5.0
+   Compiling minix-types v0.1.0 (/work/libs/minix-types)
+   Compiling hash32 v0.3.1
+   Compiling cfg-if v1.0.4
+   Compiling anyhow v1.0.102
+   Compiling bitflags v1.3.2
+   Compiling minix-crypt v0.1.0 (/work/libs/minix-crypt)
+   Compiling anstream v1.0.0
+   Compiling clap_builder v4.6.0
+   Compiling syn v2.0.117
+   Compiling minix-bdev v0.1.0 (/work/libs/minix-bdev)
+   Compiling minix-sockdriver v0.1.0 (/work/libs/minix-sockdriver)
+   Compiling minix-usb v0.1.0 (/work/libs/minix-usb)
+   Compiling minix-boot v0.1.0 (/work/libs/minix-boot)
+   Compiling minix-audiodriver v0.1.0 (/work/libs/minix-audiodriver)
+   Compiling minix-platform v0.1.0 (/work/libs/minix-platform)
+   Compiling minix-fs v0.1.0 (/work/libs/minix-fs)
+warning: field `sswi_setip_base` is never read
+  --> libs/minix-platform/src/device_tree.rs:77:5
+   |
+63 | pub struct DeviceTreeDesc {
+   |            -------------- field in this struct
+...
+77 |     sswi_setip_base: Option<usize>,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `DeviceTreeDesc` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `MADT_TYPE_GICC` is never used
+  --> libs/minix-platform/src/acpi.rs:66:7
+   |
+66 | const MADT_TYPE_GICC: u8 = 11;
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `MADT_TYPE_GICD` is never used
+  --> libs/minix-platform/src/acpi.rs:70:7
+   |
+70 | const MADT_TYPE_GICD: u8 = 12;
+   |       ^^^^^^^^^^^^^^
+
+   Compiling minix-plat v0.1.0 (/work/plat)
+warning: `minix-platform` (lib) generated 3 warnings
+   Compiling minix-arch v0.1.0 (/work/arch)
+warning: unnecessary parentheses around assigned value
+   --> arch/src/arch/boot.rs:423:34
+    |
+423 |             let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
+    |                                  ^
+424 |                 .min(page_size as usize - seg_start_in_page));
+    |                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+423 ~             let seg_bytes_here = ((seg.memsz - page_off as u64) as usize)
+424 ~                 .min(page_size as usize - seg_start_in_page);
+    |
+
+warning: unused import: `core::mem::offset_of`
+  --> arch/src/x86_64/trap_stub.rs:52:5
+   |
+52 | use core::mem::offset_of;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::DirectMapArch`
+  --> arch/src/x86_64/ap_early_entry.rs:28:5
+   |
+28 | use crate::DirectMapArch;
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_types::PhysBytes`
+  --> arch/src/x86_64/ap_early_entry.rs:30:5
+   |
+30 | use minix_types::PhysBytes;
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::X86_64DirectMap`
+  --> arch/src/x86_64/ap_early_entry.rs:31:5
+   |
+31 | use crate::X86_64DirectMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+   Compiling minix-sffs v0.1.0 (/work/libs/minix-sffs)
+   Compiling minix-vtreefs v0.1.0 (/work/libs/minix-vtreefs)
+   Compiling minix-rt v0.1.0 (/work/libs/minix-rt)
+   Compiling minix-driver-rt v0.1.0 (/work/libs/minix-driver-rt)
+   Compiling minix-sef v0.1.0 (/work/libs/minix-sef)
+   Compiling minix-driver-cmi8738 v0.1.0 (/work/drivers/audio/cmi8738)
+   Compiling minix-driver-fxp v0.1.0 (/work/drivers/net/fxp)
+   Compiling minix-driver-pci v0.1.0 (/work/drivers/bus/pci)
+   Compiling minix-driver-usbd v0.1.0 (/work/drivers/usb/usbd)
+   Compiling minix-driver-vbox v0.1.0 (/work/drivers/vmm_guest/vbox)
+   Compiling minix-driver-3c90x v0.1.0 (/work/drivers/net/3c90x)
+   Compiling minix-driver-rtl8169 v0.1.0 (/work/drivers/net/rtl8169)
+   Compiling minix-driver-es1371 v0.1.0 (/work/drivers/audio/es1371)
+   Compiling minix-driver-fbd v0.1.0 (/work/drivers/storage/fbd)
+warning: unused import: `EnumStage`
+  --> drivers/usb/usbd/src/char_face.rs:13:37
+   |
+13 | use crate::enumerate::{Enumeration, EnumStage};
+   |                                     ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `decode_daemon_message` and `decode_driver_request`
+  --> drivers/usb/usbd/src/char_face.rs:14:23
+   |
+14 | use crate::protocol::{decode_daemon_message, decode_driver_request};
+   |                       ^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `split_send_urb`
+  --> drivers/usb/usbd/src/char_face.rs:16:77
+   |
+16 | use minix_usb::wire::{fill_complete_urb, fill_send_urb, split_complete_urb, split_send_urb};
+   |                                                                             ^^^^^^^^^^^^^^
+
+   Compiling minix-driver-tsl2550 v0.1.0 (/work/drivers/sensors/tsl2550)
+warning: unused variable: `period_ms`
+  --> arch/src/x86_64/clock.rs:69:36
+   |
+69 |     fn init_local_timer(&mut self, period_ms: u32, tsc_per_ms: u64, _cpu_id: u32) -> u32 {
+   |                                    ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_period_ms`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `split_send_urb_slot` is never used
+  --> drivers/usb/usbd/src/char_face.rs:19:4
+   |
+19 | fn split_send_urb_slot(msg: &Message) -> Option<(i64, i64)> {
+   |    ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-fs-rt v0.1.0 (/work/fs/fs-rt)
+warning: unused variable: `bootstrap_pa`
+   --> arch/src/x86_64/ap_early_entry.rs:273:41
+    |
+273 | pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
+    |                                         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bootstrap_pa`
+
+   Compiling minix-ipc-server v0.1.0 (/work/servers/ipc-server)
+warning: constant `GDT_DESC_BYTES` is never used
+  --> arch/src/x86_64/ap_early_entry.rs:81:7
+   |
+81 | const GDT_DESC_BYTES: [u8; 10] =
+   |       ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-devman v0.1.0 (/work/servers/devman)
+   Compiling minix-chardriver v0.1.0 (/work/libs/minix-chardriver)
+   Compiling minix-netdriver v0.1.0 (/work/libs/minix-netdriver)
+   Compiling minix-blockdriver v0.1.0 (/work/libs/minix-blockdriver)
+warning: unused imports: `BAD_MINOR` and `NOT_DISK`
+  --> libs/minix-blockdriver/src/driver.rs:11:5
+   |
+11 |     BAD_MINOR, BdevRequest, BlockDriverType, DeviceExtent, DeviceId, DeviceMinor, NO_IOCTL_HOOK,
+   |     ^^^^^^^^^
+12 |     NO_TRANSFER_HOOK, NOT_DISK, OpenDeviceSet, PartitionGeometry, PartitionStyle, RequestId,
+   |                       ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `EINVAL` and `OK`
+  --> libs/minix-blockdriver/src/driver.rs:15:19
+   |
+15 | use minix_types::{EINVAL, OK};
+   |                   ^^^^^^  ^^
+
+   Compiling minix-driver-pckbd v0.1.0 (/work/drivers/hid/pckbd)
+warning: `minix-driver-usbd` (lib) generated 4 warnings (run `cargo fix --lib -p minix-driver-usbd` to apply 3 suggestions)
+   Compiling minix-is v0.1.0 (/work/servers/is)
+   Compiling minix-driver-sb16 v0.1.0 (/work/drivers/audio/sb16)
+   Compiling minix-input v0.1.0 (/work/servers/input)
+   Compiling minix-driver-virtio_blk v0.1.0 (/work/drivers/storage/virtio_blk)
+warning: `minix-blockdriver` (lib) generated 2 warnings (run `cargo fix --lib -p minix-blockdriver` to apply 2 suggestions)
+   Compiling minix-textfilter v0.1.0 (/work/commands/usr-bin/textfilter)
+warning: unused import: `status_to_code`
+  --> drivers/storage/virtio_blk/src/char_face.rs:16:37
+   |
+16 | use crate::request::{plan_transfer, status_to_code, ChainPlan};
+   |                                     ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-regex v0.1.0 (/work/commands/usr-bin/regex)
+warning: `minix-driver-virtio_blk` (lib) generated 1 warning (run `cargo fix --lib -p minix-driver-virtio_blk` to apply 1 suggestion)
+   Compiling minix-stdio-games v0.1.0 (/work/commands/games/stdio-games)
+   Compiling minix-fs-mfs v0.1.0 (/work/fs/mfs)
+   Compiling minix-doctools v0.1.0 (/work/commands/usr-bin/doctools)
+warning: unused import: `self`
+  --> commands/usr-bin/textfilter/src/column.rs:22:18
+   |
+22 | use alloc::vec::{self, Vec};
+   |                  ^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `ToString`
+  --> commands/usr-bin/textfilter/src/diff.rs:19:29
+   |
+19 | use alloc::string::{String, ToString};
+   |                             ^^^^^^^^
+
+warning: unused import: `alloc::format`
+  --> commands/usr-bin/textfilter/src/patch.rs:13:5
+   |
+13 | use alloc::format;
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `vec`
+  --> commands/usr-bin/textfilter/src/tsort.rs:16:13
+   |
+16 | use alloc::{vec, vec::Vec};
+   |             ^^^
+
+   Compiling minix-text-games v0.1.0 (/work/commands/games/text-games)
+warning: unused import: `KernelCallTransport`
+  --> servers/input/src/serve.rs:30:48
+   |
+30 |     sys_safecopyto, DirectKernelCallTransport, KernelCallTransport as _,
+   |                                                ^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-proctools v0.1.0 (/work/commands/bin/proctools)
+warning: function `send_from` is never used
+   --> servers/input/src/serve.rs:238:4
+    |
+238 | fn send_from(t: &mut dyn Transport, dst: Endpoint, message: &mut Message, self_ep: Endpoint) {
+    |    ^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> commands/bin/proctools/src/ptime.rs:18:9
+   |
+18 |     let mut put = |out: &mut [u8], written: &mut usize, byte: u8| -> Result<(), ProcError> {
+   |         ----^^^
+   |         |
+   |         help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> commands/bin/proctools/src/ptime.rs:26:9
+   |
+26 |     let mut number = |out: &mut [u8], written: &mut usize, mut value: u64| -> Result<(), ProcError> {
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> commands/bin/proctools/src/ptime.rs:44:9
+   |
+44 |     let mut pair = |out: &mut [u8], written: &mut usize, value: u64| -> Result<(), ProcError> {
+   |         ----^^^^
+   |         |
+   |         help: remove this `mut`
+
+   Compiling minix-driver-rtl8139 v0.1.0 (/work/drivers/net/rtl8139)
+   Compiling minix-fileops v0.1.0 (/work/commands/bin/fileops)
+warning: `minix-proctools` (lib) generated 3 warnings (run `cargo fix --lib -p minix-proctools` to apply 3 suggestions)
+   Compiling minix-editor v0.1.0 (/work/commands/bin/editor)
+   Compiling minix-driver-lance v0.1.0 (/work/drivers/net/lance)
+   Compiling minix-driver-virtio_net v0.1.0 (/work/drivers/net/virtio_net)
+   Compiling minix-driver-dp8390 v0.1.0 (/work/drivers/net/dp8390)
+warning: value assigned to `idx` is never read
+   --> commands/usr-bin/textfilter/src/col.rs:230:21
+    |
+230 |                     idx += 1;
+    |                     ^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `NetQueue`
+  --> drivers/net/virtio_net/src/char_face.rs:15:51
+   |
+15 | use crate::queues::{padded_length, refill_needed, NetQueue};
+   |                                                   ^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> commands/usr-bin/textfilter/src/col.rs:347:9
+    |
+347 |     let mut sorted_storage: Vec<Cell>;
+    |         ----^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-net-lwip v0.1.0 (/work/net/lwip)
+   Compiling minix-net-uds v0.1.0 (/work/net/uds)
+warning: `minix-driver-virtio_net` (lib) generated 1 warning (run `cargo fix --lib -p minix-driver-virtio_net` to apply 1 suggestion)
+   Compiling minix-driver-e1000 v0.1.0 (/work/drivers/net/e1000)
+warning: value assigned to `width` is never read
+   --> commands/usr-bin/textfilter/src/jot.rs:240:21
+    |
+240 |     let mut width = 0usize;
+    |                     ^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+   Compiling minix-sched v0.1.0 (/work/servers/sched)
+   Compiling minix-driver-tty v0.1.0 (/work/drivers/tty/tty)
+warning: variable does not need to be mutable
+   --> commands/usr-bin/textfilter/src/patch.rs:368:9
+    |
+368 |     let mut copy_till = |out: &mut Vec<String>, frozen: &mut usize, n: usize| {
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: `minix-arch` (lib) generated 8 warnings (run `cargo fix --lib -p minix-arch` to apply 7 suggestions)
+   Compiling minix-pm v0.1.0 (/work/servers/pm)
+warning: `minix-input` (lib) generated 2 warnings
+   Compiling minix-compress v0.1.0 (/work/commands/usr-bin/compress)
+   Compiling minix-shell v0.1.0 (/work/commands/bin/shell)
+   Compiling minix-driver-memory v0.1.0 (/work/drivers/storage/memory)
+   Compiling minix-mib v0.1.0 (/work/servers/mib)
+warning: value assigned to `new_file` is never read
+   --> fs/mfs/src/link.rs:501:13
+    |
+501 |             new_file = None;
+    |             ^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-termctl v0.1.0 (/work/commands/bin/termctl)
+warning: variable does not need to be mutable
+   --> commands/bin/editor/src/store.rs:306:13
+    |
+306 |         let mut copy_line = |owned: &mut [u8; MAX_TEXT + 256],
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-vfs v0.1.0 (/work/servers/vfs)
+warning: constant `NUM_LOCK` is never used
+  --> drivers/tty/tty/src/keyboard.rs:35:15
+   |
+35 |     pub const NUM_LOCK: u32 = 0x2;
+   |               ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `CAPS_LOCK` is never used
+  --> drivers/tty/tty/src/keyboard.rs:36:15
+   |
+36 |     pub const CAPS_LOCK: u32 = 0x4;
+   |               ^^^^^^^^^
+
+warning: constant `SCROLL_LOCK` is never used
+  --> drivers/tty/tty/src/keyboard.rs:37:15
+   |
+37 |     pub const SCROLL_LOCK: u32 = 0x8;
+   |               ^^^^^^^^^^^
+
+warning: field `len` is never read
+  --> commands/usr-bin/textfilter/src/diff.rs:91:5
+   |
+88 | struct Engine<'a> {
+   |        ------ field in this struct
+...
+91 |     len: [usize; 2],
+   |     ^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `dox` and `exhausted` are never read
+   --> commands/usr-bin/textfilter/src/jot.rs:410:5
+    |
+407 | pub struct Jot {
+    |            --- fields in this struct
+...
+410 |     dox: bool,
+    |     ^^^
+...
+415 |     exhausted: bool,
+    |     ^^^^^^^^^
+
+warning: variant `Eof` is never constructed
+   --> commands/usr-bin/textfilter/src/unifdef.rs:108:5
+    |
+ 96 | enum LT {
+    |      -- variant in this enum
+...
+108 |     Eof,
+    |     ^^^
+    |
+    = note: `LT` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+   Compiling minix-rs v0.1.0 (/work/servers/rs)
+   Compiling minix-ds v0.1.0 (/work/servers/ds)
+warning: `minix-driver-tty` (lib) generated 3 warnings
+   Compiling minix-vm v0.1.0 (/work/servers/vm)
+   Compiling minix-fs-pfs v0.1.0 (/work/fs/pfs)
+warning: `minix-editor` (lib) generated 1 warning (run `cargo fix --lib -p minix-editor` to apply 1 suggestion)
+   Compiling minix-driver-ahci v0.1.0 (/work/drivers/storage/ahci)
+   Compiling minix-fs-ptyfs v0.1.0 (/work/fs/ptyfs)
+warning: unused import: `crate::fproc::OPEN_MAX`
+    --> servers/vfs/src/syscalls.rs:4981:5
+     |
+4981 | use crate::fproc::OPEN_MAX;
+     |     ^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-diskfmt v0.1.0 (/work/commands/sbin/diskfmt)
+   Compiling minix-mountinfo v0.1.0 (/work/commands/sbin/mountinfo)
+   Compiling minix-fs-isofs v0.1.0 (/work/fs/isofs)
+   Compiling minix-fs-procfs v0.1.0 (/work/fs/procfs)
+warning: unexpected `cfg` condition value: `mock`
+    --> servers/vm/src/vm_server.rs:1344:31
+     |
+1344 |                     #[cfg(not(feature = "mock"))]
+     |                               ^^^^^^^^^^^^^^^^
+     |
+     = note: expected values for `feature` are: `bitmap_alloc`, `buddy_alloc`, `default`, `sanity_checks`, `segment_tree_alloc`, `vm_acl_audit`, and `vmstats`
+     = help: consider adding `mock` as a feature in `Cargo.toml`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+     = note: `#[warn(unexpected_cfgs)]` on by default
+
+warning: unnecessary `unsafe` block
+   --> servers/ds/src/server.rs:431:39
+    |
+431 |             RetrieveHit::Number(v) => unsafe { message.m_u.m_ds_reply.val_out = DsVal::number(v) },
+    |                                       ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: unexpected `cfg` condition value: `mock`
+    --> servers/vm/src/vm_server.rs:1365:31
+     |
+1365 |                     #[cfg(not(feature = "mock"))]
+     |                               ^^^^^^^^^^^^^^^^
+     |
+     = note: expected values for `feature` are: `bitmap_alloc`, `buddy_alloc`, `default`, `sanity_checks`, `segment_tree_alloc`, `vm_acl_audit`, and `vmstats`
+     = help: consider adding `mock` as a feature in `Cargo.toml`
+     = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+
+warning: unnecessary `unsafe` block
+   --> servers/ds/src/server.rs:432:39
+    |
+432 |             RetrieveHit::Label(ep) => unsafe {
+    |                                       ^^^^^^ unnecessary `unsafe` block
+
+warning: function `was_live_wide` is never used
+   --> servers/ds/src/server.rs:716:4
+    |
+716 | fn was_live_wide(store: &DsStore, slot: EntrySlot) -> bool {
+    |    ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `groups_ptr`
+   --> servers/pm/src/ipc/calls.rs:818:22
+    |
+818 |             let (ep, groups_ptr, ngroups) = super::decode::getepinfo(msg);
+    |                      ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_groups_ptr`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `value`
+   --> servers/pm/src/ipc/calls.rs:845:35
+    |
+845 |             let (req, field, len, value) = super::decode::sysuname(msg);
+    |                                   ^^^^^ help: if this is intentional, prefix it with an underscore: `_value`
+
+   Compiling minix-fs-ext2 v0.1.0 (/work/fs/ext2)
+   Compiling minix-driver-log v0.1.0 (/work/drivers/system/log)
+   Compiling clap_derive v4.6.0
+   Compiling minix-driver-pty v0.1.0 (/work/drivers/tty/pty)
+   Compiling minix-driver-gpio v0.1.0 (/work/drivers/system/gpio)
+warning: unused variable: `mem_size`
+   --> servers/pm/src/misc.rs:405:9
+    |
+405 |         mem_size: usize,
+    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_mem_size`
+
+warning: unused variable: `ctl`
+   --> servers/pm/src/misc.rs:486:5
+    |
+486 |     ctl: &dyn SysInfoCtl,
+    |     ^^^ help: if this is intentional, prefix it with an underscore: `_ctl`
+
+warning: unused import: `PairState`
+  --> drivers/tty/pty/src/char_face.rs:15:41
+   |
+15 | use crate::pair::{CloseEffect, PairEnd, PairState, PairTable};
+   |                                         ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-driver-fb v0.1.0 (/work/drivers/video/fb)
+   Compiling minix-driver-readclock v0.1.0 (/work/drivers/clock/readclock)
+   Compiling minix-driver-random v0.1.0 (/work/drivers/system/random)
+warning: field `stats` is never read
+   --> servers/pm/src/ipc/calls.rs:969:17
+    |
+968 |             struct StatsCtl<'a> {
+    |                    -------- field in this struct
+969 |                 stats: &'a [u8],
+    |                 ^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-driver-lan8710a v0.1.0 (/work/drivers/net/lan8710a)
+warning: `minix-ds` (lib) generated 3 warnings
+   Compiling minix-fs-hgfs v0.1.0 (/work/fs/hgfs)
+   Compiling minix-driver-tps65950 v0.1.0 (/work/drivers/power/tps65950)
+   Compiling minix-driver-als4000 v0.1.0 (/work/drivers/audio/als4000)
+   Compiling minix-driver-trident v0.1.0 (/work/drivers/audio/trident)
+   Compiling minix-driver-bmp085 v0.1.0 (/work/drivers/sensors/bmp085)
+   Compiling minix-driver-cs4281 v0.1.0 (/work/drivers/audio/cs4281)
+   Compiling minix-driver-vt6105 v0.1.0 (/work/drivers/net/vt6105)
+   Compiling minix-driver-sht21 v0.1.0 (/work/drivers/sensors/sht21)
+   Compiling minix-fs-vbfs v0.1.0 (/work/fs/vbfs)
+   Compiling minix-driver-usb_hub v0.1.0 (/work/drivers/usb/usb_hub)
+warning: `minix-driver-pty` (lib) generated 1 warning (run `cargo fix --lib -p minix-driver-pty` to apply 1 suggestion)
+   Compiling minix-driver-at_wini v0.1.0 (/work/drivers/storage/at_wini)
+   Compiling minix-driver-ip1000 v0.1.0 (/work/drivers/net/ip1000)
+   Compiling minix-driver-cat24c256 v0.1.0 (/work/drivers/eeprom/cat24c256)
+   Compiling minix-driver-filter v0.1.0 (/work/drivers/storage/filter)
+   Compiling minix-driver-tda19988 v0.1.0 (/work/drivers/video/tda19988)
+   Compiling minix-driver-usb_storage v0.1.0 (/work/drivers/usb/usb_storage)
+warning: `minix-fs-mfs` (lib) generated 1 warning
+   Compiling minix-driver-mmc v0.1.0 (/work/drivers/storage/mmc)
+   Compiling minix-driver-atl2 v0.1.0 (/work/drivers/net/atl2)
+   Compiling minix-driver-floppy v0.1.0 (/work/drivers/storage/floppy)
+warning: unused import: `Cbw`
+  --> drivers/usb/usb_storage/src/block_face.rs:19:48
+   |
+19 |     cdb_read10, cdb_write10, transfer_allowed, Cbw, TagPairing, COMMAND_BLOCK_LENGTH,
+   |                                                ^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary `unsafe` block
+    --> servers/vm/src/global.rs:1044:23
+     |
+1044 |             Ok(va) => unsafe { Self::align_up(va as usize, align) as *mut u8 },
+     |                       ^^^^^^ unnecessary `unsafe` block
+     |
+     = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling minix-driver-tps65217 v0.1.0 (/work/drivers/power/tps65217)
+   Compiling minix-driver-amddev v0.1.0 (/work/drivers/iommu/amddev)
+   Compiling minix-driver-vnd v0.1.0 (/work/drivers/storage/vnd)
+   Compiling minix-driver-printer v0.1.0 (/work/drivers/printer/printer)
+   Compiling minix-driver-dec21140a v0.1.0 (/work/drivers/net/dec21140a)
+   Compiling minix-driver-dpeth v0.1.0 (/work/drivers/net/dpeth)
+   Compiling minix-driver-acpi v0.1.0 (/work/drivers/power/acpi)
+   Compiling minix-driver-ti1225 v0.1.0 (/work/drivers/bus/ti1225)
+   Compiling minix-driver-es1370 v0.1.0 (/work/drivers/audio/es1370)
+   Compiling minix-driver-i2c v0.1.0 (/work/drivers/bus/i2c)
+warning: `minix-driver-usb_storage` (lib) generated 1 warning (run `cargo fix --lib -p minix-driver-usb_storage` to apply 1 suggestion)
+warning: `minix-textfilter` (lib) generated 11 warnings (run `cargo fix --lib -p minix-textfilter` to apply 6 suggestions)
+warning: unused variable: `operand`
+  --> commands/usr-bin/textfilter/src/bin/tee.rs:41:9
+   |
+41 |     for operand in &operands {
+   |         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_operand`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `minix_sys::read`
+  --> commands/usr-bin/textfilter/src/bin/sort.rs:23:5
+   |
+23 | use minix_sys::read;
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `minix-textfilter` (bin "tee") generated 1 warning (run `cargo fix --bin "tee" -p minix-textfilter` to apply 1 suggestion)
+warning: `minix-pm` (lib) generated 5 warnings (run `cargo fix --lib -p minix-pm` to apply 4 suggestions)
+warning: value assigned to `raw_out` is never read
+    --> servers/vfs/src/main_loop.rs:3175:47
+     |
+3175 | ...                   let mut raw_out = [0u8; crate::socket::MSGHDR_SIZE];
+     |                                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = help: maybe it is overwritten before being read?
+     = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+   Compiling clap v4.6.0
+   Compiling xtask v0.1.0 (/work/xtask)
+warning: `minix-textfilter` (bin "sort") generated 1 warning (run `cargo fix --bin "sort" -p minix-textfilter` to apply 1 suggestion)
+warning: unused import: `TsortError`
+  --> commands/usr-bin/textfilter/src/bin/tsort.rs:21:38
+   |
+21 | use minix_textfilter::tsort::{tsort, TsortError};
+   |                                      ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `minix-textfilter` (bin "tsort") generated 1 warning (run `cargo fix --bin "tsort" -p minix-textfilter` to apply 1 suggestion)
+warning: field `dev_paths` is never read
+  --> net/lwip/src/main.rs:37:5
+   |
+35 | struct ProductionHandler {
+   |        ----------------- field in this struct
+36 |     /// `-dev` 收下的过滤器设备路径（挂载消费随过滤器批）。
+37 |     dev_paths: Vec<String>,
+   |     ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> servers/vfs/src/syscalls.rs:2336:21
+     |
+2336 |                 let mut ctx = crate::filedes::CopyFdCtx {
+     |                     ----^^^
+     |                     |
+     |                     help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `minix-net-lwip` (bin "minix-net-lwip") generated 1 warning
+warning: unused import: `write`
+  --> commands/usr-bin/regex/src/bin/../bin_support.rs:20:23
+   |
+20 | use minix_sys::{read, write, Fd};
+   |                       ^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: `minix-regex` (bin "sed") generated 1 warning (1 duplicate)
+warning: `minix-regex` (bin "grep") generated 1 warning (run `cargo fix --bin "grep" -p minix-regex` to apply 1 suggestion)
+warning: `minix-vm` (lib) generated 3 warnings
+   Compiling minix-init v0.1.0 (/work/commands/sbin/init)
+warning: unused import: `WaitStatus`
+  --> commands/sbin/init/src/runcom.rs:20:46
+   |
+20 | use crate::wait::{EINTR, WNOHANG, WUNTRACED, WaitStatus};
+   |                                              ^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `SIGNAL_CONTINUE` and `SIGNAL_KILL`
+  --> commands/sbin/init/src/state_machine.rs:15:33
+   |
+15 |     SIGNAL_ABORT, SIGNAL_ALARM, SIGNAL_CONTINUE, SIGNAL_HANGUP, SIGNAL_KILL,
+   |                                 ^^^^^^^^^^^^^^^                 ^^^^^^^^^^^
+
+warning: function `request_for` is never used
+  --> commands/sbin/init/src/contracts.rs:23:8
+   |
+23 | pub fn request_for(signum: i32) -> Option<ShutdownRequest> {
+   |        ^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `shutdown_argv` is never used
+  --> commands/sbin/init/src/contracts.rs:36:8
+   |
+36 | pub fn shutdown_argv(request: ShutdownRequest) -> ParsedCommand {
+   |        ^^^^^^^^^^^^^
+
+warning: constant `SHUTDOWN_PATH` is never used
+  --> commands/sbin/init/src/contracts.rs:54:11
+   |
+54 | pub const SHUTDOWN_PATH: &str = "/sbin/shutdown";
+   |           ^^^^^^^^^^^^^
+
+warning: function `boot_argv` is never used
+  --> commands/sbin/init/src/contracts.rs:57:8
+   |
+57 | pub fn boot_argv() -> Vec<String> {
+   |        ^^^^^^^^^
+
+warning: fields `boot_args` and `console_ok` are never read
+  --> commands/sbin/init/src/driver.rs:42:9
+   |
+40 | pub struct DriverState {
+   |            ----------- fields in this struct
+41 |     /// Parsed boot flags (C: the `-s` seed and `runcom_mode`).
+42 |     pub boot_args: crate::entry::BootArgs,
+   |         ^^^^^^^^^
+...
+46 |     pub console_ok: bool,
+   |         ^^^^^^^^^^
+
+warning: method `collector` is never used
+  --> commands/sbin/init/src/driver.rs:85:12
+   |
+73 | impl DriverState {
+   | ---------------- method in this implementation
+...
+85 |     pub fn collector(&mut self) -> ChildCollector<'_> {
+   |            ^^^^^^^^^
+
+warning: struct `ScriptHost` is never constructed
+   --> commands/sbin/init/src/host.rs:557:12
+    |
+557 | pub struct ScriptHost {
+    |            ^^^^^^^^^^
+
+warning: associated function `parent_only` is never used
+   --> commands/sbin/init/src/host.rs:604:12
+    |
+601 | impl ScriptHost {
+    | --------------- associated function in this implementation
+...
+604 |     pub fn parent_only() -> ScriptHost {
+    |            ^^^^^^^^^^^
+
+warning: enum `DisasterAction` is never used
+  --> commands/sbin/init/src/log.rs:46:10
+   |
+46 | pub enum DisasterAction {
+   |          ^^^^^^^^^^^^^^
+
+warning: function `disaster` is never used
+  --> commands/sbin/init/src/log.rs:57:8
+   |
+57 | pub fn disaster(host: &mut dyn InitHost, sig: Signal) -> DisasterAction {
+   |        ^^^^^^^^
+
+warning: function `setctty` is never used
+  --> commands/sbin/init/src/multi_user.rs:52:8
+   |
+52 | pub fn setctty(host: &mut dyn InitHost, device: &str) {
+   |        ^^^^^^^
+
+warning: function `scheme_has_backend` is never used
+  --> commands/sbin/init/src/password.rs:65:8
+   |
+65 | pub fn scheme_has_backend(hash: &PasswordHash) -> bool {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: associated function `empty` is never used
+  --> commands/sbin/init/src/session.rs:20:12
+   |
+19 | impl SessionFlags {
+   | ----------------- associated function in this implementation
+20 |     pub fn empty() -> Self {
+   |            ^^^^^
+
+warning: enum `DbError` is never used
+  --> commands/sbin/init/src/session_db.rs:14:10
+   |
+14 | pub enum DbError {
+   |          ^^^^^^^
+
+warning: methods `open` and `is_open` are never used
+  --> commands/sbin/init/src/session_db.rs:20:8
+   |
+19 | pub trait SessionDb {
+   |           --------- methods in this trait
+20 |     fn open(&mut self) -> Result<(), DbError>;
+   |        ^^^^
+...
+24 |     fn is_open(&self) -> bool;
+   |        ^^^^^^^
+
+warning: struct `FakeDb` is never constructed
+  --> commands/sbin/init/src/session_db.rs:67:12
+   |
+67 | pub struct FakeDb {
+   |            ^^^^^^
+
+warning: methods `take_shutdown_request` and `take_clang` are never used
+   --> commands/sbin/init/src/signal_state.rs:82:12
+    |
+ 35 | impl SignalState {
+    | ---------------- methods in this implementation
+...
+ 82 |     pub fn take_shutdown_request(&self) -> Option<ShutdownRequest> {
+    |            ^^^^^^^^^^^^^^^^^^^^^
+...
+113 |     pub fn take_clang(&self) -> bool {
+    |            ^^^^^^^^^^
+
+warning: methods `signum` and `name` are never used
+  --> commands/sbin/init/src/state_machine.rs:78:12
+   |
+76 | impl Signal {
+   | ----------- methods in this implementation
+77 |     /// The Minix3 signum of this signal.
+78 |     pub fn signum(self) -> i32 {
+   |            ^^^^^^
+...
+92 |     pub fn name(self) -> String {
+   |            ^^^^
+
+warning: variant `Disaster` is never constructed
+   --> commands/sbin/init/src/state_machine.rs:126:5
+    |
+121 | pub enum HandlerKind {
+    |          ----------- variant in this enum
+...
+126 |     Disaster,
+    |     ^^^^^^^^
+    |
+    = note: `HandlerKind` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: function `get_securitylevel` is never used
+  --> commands/sbin/init/src/sysctl.rs:18:8
+   |
+18 | pub fn get_securitylevel(host: &dyn InitHost) -> Option<i32> {
+   |        ^^^^^^^^^^^^^^^^^
+
+warning: function `set_securitylevel` is never used
+  --> commands/sbin/init/src/sysctl.rs:28:8
+   |
+28 | pub fn set_securitylevel(host: &mut dyn InitHost, level: i32) -> bool {
+   |        ^^^^^^^^^^^^^^^^^
+
+warning: variant `Login` is never constructed
+  --> commands/sbin/init/src/utmp.rs:34:5
+   |
+30 | pub enum RecordType {
+   |          ---------- variant in this enum
+...
+34 |     Login,
+   |     ^^^^^
+   |
+   = note: `RecordType` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: method `as_number` is never used
+  --> commands/sbin/init/src/utmp.rs:43:12
+   |
+41 | impl RecordType {
+   | --------------- method in this implementation
+42 |     /// The C numeric value (`utmpx.h:57-64`).
+43 |     pub fn as_number(self) -> i32 {
+   |            ^^^^^^^^^
+
+warning: function `session_utmpx` is never used
+   --> commands/sbin/init/src/utmp.rs:109:8
+    |
+109 | pub fn session_utmpx(
+    |        ^^^^^^^^^^^^^
+
+warning: function `clear_session_logs` is never used
+   --> commands/sbin/init/src/utmp.rs:189:8
+    |
+189 | pub fn clear_session_logs(host: &mut dyn InitHost, device: &str, pid: i32, status: &WaitStatus, tv_secs: i64) -> bool {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: direct cast of function item into an integer
+   --> commands/sbin/init/src/signal_state.rs:136:16
+    |
+136 |     trampoline as usize
+    |                ^^^^^^^^
+    |
+    = note: `#[warn(function_casts_as_integer)]` on by default
+help: first cast to a pointer `as *const ()`
+    |
+136 |     trampoline as *const () as usize
+    |                ++++++++++++
+
+warning: `minix-vfs` (lib) generated 3 warnings (run `cargo fix --lib -p minix-vfs` to apply 2 suggestions)
+warning: `minix-init` (bin "minix-init") generated 28 warnings (run `cargo fix --bin "minix-init" -p minix-init` to apply 3 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.18s
+GATE2-EXIT=0

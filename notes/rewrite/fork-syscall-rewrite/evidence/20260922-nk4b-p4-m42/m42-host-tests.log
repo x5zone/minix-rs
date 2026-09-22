@@ -1,0 +1,1703 @@
+# M4.2 宿主回归（kernel + arch 两包）2026-09-22T23:45:30+08:00
+# cmd: docker run --rm -u $(id -u):$(id -g) -v $PWD:/work -w /work -m 2g minix-ci:1.94 cargo test -j 1 -p minix-kernel -p minix-arch
+# 基线（P0 实测）：kernel 809 / arch 241，只许涨不许降
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded bitflags v2.11.0
+  Downloaded fdt v0.1.5
+  Downloaded log v0.4.29
+warning: field `sswi_setip_base` is never read
+  --> libs/minix-platform/src/device_tree.rs:77:5
+   |
+63 | pub struct DeviceTreeDesc {
+   |            -------------- field in this struct
+...
+77 |     sswi_setip_base: Option<usize>,
+   |     ^^^^^^^^^^^^^^^
+   |
+   = note: `DeviceTreeDesc` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `MADT_TYPE_GICC` is never used
+  --> libs/minix-platform/src/acpi.rs:66:7
+   |
+66 | const MADT_TYPE_GICC: u8 = 11;
+   |       ^^^^^^^^^^^^^^
+
+warning: constant `MADT_TYPE_GICD` is never used
+  --> libs/minix-platform/src/acpi.rs:70:7
+   |
+70 | const MADT_TYPE_GICD: u8 = 12;
+   |       ^^^^^^^^^^^^^^
+
+warning: `minix-platform` (lib) generated 3 warnings
+   Compiling minix-arch v0.1.0 (/work/arch)
+warning: unnecessary parentheses around assigned value
+   --> arch/src/arch/boot.rs:423:34
+    |
+423 |             let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
+    |                                  ^
+424 |                 .min(page_size as usize - seg_start_in_page));
+    |                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+423 ~             let seg_bytes_here = ((seg.memsz - page_off as u64) as usize)
+424 ~                 .min(page_size as usize - seg_start_in_page);
+    |
+
+warning: unused import: `core::mem::offset_of`
+  --> arch/src/x86_64/trap_stub.rs:52:5
+   |
+52 | use core::mem::offset_of;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `crate::DirectMapArch`
+  --> arch/src/x86_64/ap_early_entry.rs:28:5
+   |
+28 | use crate::DirectMapArch;
+   |     ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_types::PhysBytes`
+  --> arch/src/x86_64/ap_early_entry.rs:30:5
+   |
+30 | use minix_types::PhysBytes;
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::X86_64DirectMap`
+  --> arch/src/x86_64/ap_early_entry.rs:31:5
+   |
+31 | use crate::X86_64DirectMap;
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `period_ms`
+  --> arch/src/x86_64/clock.rs:69:36
+   |
+69 |     fn init_local_timer(&mut self, period_ms: u32, tsc_per_ms: u64, _cpu_id: u32) -> u32 {
+   |                                    ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_period_ms`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bootstrap_pa`
+   --> arch/src/x86_64/ap_early_entry.rs:273:41
+    |
+273 | pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
+    |                                         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bootstrap_pa`
+
+warning: constant `GDT_DESC_BYTES` is never used
+  --> arch/src/x86_64/ap_early_entry.rs:81:7
+   |
+81 | const GDT_DESC_BYTES: [u8; 10] =
+   |       ^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `minix-arch` (lib) generated 8 warnings (run `cargo fix --lib -p minix-arch` to apply 7 suggestions)
+   Compiling minix-kernel v0.1.0 (/work/kernel)
+warning: unused import: `minix_arch::CpuContextArch as _`
+    --> kernel/src/proc.rs:1766:9
+     |
+1766 |     use minix_arch::CpuContextArch as _;
+     |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `CurrentDirectMap` and `DirectMapArch`
+    --> kernel/src/syscall.rs:2763:30
+     |
+2763 |             use minix_arch::{CurrentDirectMap, DirectMapArch};
+     |                              ^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3305:13
+     |
+3305 |         use minix_arch::DirectMapArch as _;
+     |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::DirectMapArch as _`
+    --> kernel/src/syscall.rs:3308:17
+     |
+3308 |             use minix_arch::DirectMapArch as _;
+     |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `crate::sched::Scheduler`
+  --> kernel/src/smp.rs:55:5
+   |
+55 | use crate::sched::Scheduler;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `minix_arch::smp::SmpArch as _`
+   --> kernel/src/smp.rs:921:13
+    |
+921 |         use minix_arch::smp::SmpArch as _;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `AP_STARTUP_VECTOR` and `ProtectionArch`
+   --> kernel/src/smp.rs:924:45
+    |
+924 |                 fill_bootstrap, install_at, AP_STARTUP_VECTOR, SCRATCH_LIN,
+    |                                             ^^^^^^^^^^^^^^^^^
+925 |             },
+926 |             CurrentSmpArch, ProtectionArch, SmpArch,
+    |                             ^^^^^^^^^^^^^^
+
+warning: unused imports: `AtomicUsize` and `Ordering`
+  --> kernel/src/kmess.rs:21:26
+   |
+21 | use core::sync::atomic::{AtomicUsize, Ordering};
+   |                          ^^^^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `CrossSpaceResult`
+   --> kernel/src/kmess.rs:170:33
+    |
+170 |     use crate::vm::{AddressRef, CrossSpaceResult};
+    |                                 ^^^^^^^^^^^^^^^^
+
+warning: unused import: `PhysBytes`
+   --> kernel/src/kmess.rs:172:23
+    |
+172 |     use minix_types::{PhysBytes, VirBytes};
+    |                       ^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2457:21
+     |
+2457 |                 use core::ptr::addr_of;
+     |                     ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `core::ptr::addr_of`
+    --> kernel/src/misc.rs:2488:25
+     |
+2488 |                     use core::ptr::addr_of;
+     |                         ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `AtomicBool`
+  --> kernel/src/krandom.rs:31:26
+   |
+31 | use core::sync::atomic::{AtomicBool, Ordering};
+   |                          ^^^^^^^^^^
+
+warning: unused import: `AtomicI32`
+  --> kernel/src/globals.rs:16:38
+   |
+16 | use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64};
+   |                                      ^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+    --> kernel/src/lib.rs:2439:41
+     |
+2439 |     use minix_platform::{platform_desc, PlatformDesc};
+     |                                         ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+   --> kernel/src/smp.rs:929:45
+    |
+929 |         use minix_platform::{platform_desc, PlatformDesc};
+    |                                             ^^^^^^^^^^^^
+
+warning: unused import: `PlatformDesc`
+   --> kernel/src/lib.rs:849:41
+    |
+849 |     use minix_platform::{platform_desc, PlatformDesc};
+    |                                         ^^^^^^^^^^^^
+
+warning[E0133]: dereference of raw pointer is unsafe and requires unsafe block
+   --> kernel/src/proc_table.rs:724:14
+    |
+724 |         &mut *core::ptr::addr_of_mut!(self.procs[idx])
+    |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ dereference of raw pointer
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: raw pointers may be null, dangling or unaligned; they can violate aliasing rules and cause data races: all of these are undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> kernel/src/proc_table.rs:715:5
+    |
+715 |     pub unsafe fn caller_slot_mut<'a>(&mut self, nr: ProcNr) -> &'a mut KProcess {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `trap_dispatch::x86_ipc_dispatch_body` is unsafe and requires unsafe block
+   --> kernel/src/trap_dispatch.rs:463:9
+    |
+463 |         x86_ipc_dispatch_body(frame, cur_nr);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> kernel/src/trap_dispatch.rs:364:1
+    |
+364 | pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `priv_table`
+   --> kernel/src/clock.rs:614:5
+    |
+614 |     priv_table: &crate::kpriv::PrivTable,
+    |     ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_priv_table`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `store_protection` is never used
+    --> kernel/src/lib.rs:1132:15
+     |
+1132 | pub(crate) fn store_protection(prot: minix_arch::x86_64::protection::X86_64Protection) {
+     |               ^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `store_trap_entry` is never used
+    --> kernel/src/lib.rs:1139:15
+     |
+1139 | pub(crate) fn store_trap_entry(trap: minix_arch::x86_64::trap_entry::X86_64TrapEntry) {
+     |               ^^^^^^^^^^^^^^^^
+
+warning: function `with_protection_mut` is never used
+    --> kernel/src/lib.rs:1160:15
+     |
+1160 | pub(crate) fn with_protection_mut<R>(
+     |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `push_exclusion` is never used
+    --> kernel/src/lib.rs:1304:4
+     |
+1304 | fn push_exclusion(
+     |    ^^^^^^^^^^^^^^
+
+warning: function `riscv64_timer_arm` is never used
+    --> kernel/src/trap_dispatch.rs:1483:4
+     |
+1483 | fn riscv64_timer_arm() {
+     |    ^^^^^^^^^^^^^^^^^
+
+warning: function `copy_msg_to_user` is never used
+    --> kernel/src/syscall.rs:3174:4
+     |
+3174 | fn copy_msg_to_user(caller_nr: ProcNr, proc_table: &mut crate::proc_table::ProcessTable, msg: &Message) {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: constant `CP_CPUSTATES` is never used
+   --> kernel/src/clock.rs:603:18
+    |
+603 | pub(crate) const CP_CPUSTATES: usize = 5;
+    |                  ^^^^^^^^^^^^
+
+warning: method `write_str` is never used
+  --> kernel/src/kmess.rs:66:12
+   |
+49 | impl KmessRing {
+   | -------------- method in this implementation
+...
+66 |     pub fn write_str(&mut self, s: &str) {
+   |            ^^^^^^^^^
+
+warning: function `record_str` is never used
+   --> kernel/src/kmess.rs:109:8
+    |
+109 | pub fn record_str(s: &str) {
+    |        ^^^^^^^^^^
+
+warning: function `console_write_str` is never used
+   --> kernel/src/kmess.rs:130:8
+    |
+130 | pub fn console_write_str(s: &str) {
+    |        ^^^^^^^^^^^^^^^^^
+
+warning: function `cursor` is never used
+   --> kernel/src/kmess.rs:149:8
+    |
+149 | pub fn cursor() -> (usize, usize) {
+    |        ^^^^^^
+
+warning: constant `EFAULT` is never used
+   --> kernel/src/kmess.rs:175:11
+    |
+175 |     const EFAULT: i32 = 14;
+    |           ^^^^^^
+
+warning: static `CLOCK_UPTIME` is never used
+   --> kernel/src/globals.rs:513:19
+    |
+513 | pub(crate) static CLOCK_UPTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^
+
+warning: static `CLOCK_REALTIME` is never used
+   --> kernel/src/globals.rs:518:19
+    |
+518 | pub(crate) static CLOCK_REALTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
+warning: static `CLOCK_BOOTTIME` is never used
+   --> kernel/src/globals.rs:524:19
+    |
+524 | pub(crate) static CLOCK_BOOTTIME: core::sync::atomic::AtomicU64 =
+    |                   ^^^^^^^^^^^^^^
+
+warning: direct cast of function item into an integer
+   --> kernel/src/smp.rs:978:83
+    |
+978 |                 rust_entry_va: minix_arch::x86_64::ap_early_entry::ap_early_entry as u64,
+    |                                                                                   ^^^^^^
+    |
+    = note: `#[warn(function_casts_as_integer)]` on by default
+help: first cast to a pointer `as *const ()`
+    |
+978 |                 rust_entry_va: minix_arch::x86_64::ap_early_entry::ap_early_entry as *const () as u64,
+    |                                                                                   ++++++++++++
+
+For more information about this error, try `rustc --explain E0133`.
+warning: `minix-kernel` (lib) generated 36 warnings (run `cargo fix --lib -p minix-kernel` to apply 18 suggestions)
+warning: unused import: `AtomicUsize`
+  --> kernel/src/clock.rs:41:26
+   |
+41 | use core::sync::atomic::{AtomicUsize, Ordering};
+   |                          ^^^^^^^^^^^
+
+warning: unused imports: `IrqId`, `IrqNotifyId`, and `PROFILE_CLOCK_IRQ`
+  --> kernel/src/clock.rs:42:29
+   |
+42 | use minix_plat::{IrqAction, IrqId, IrqNotifyId, IrqPolicy, PROFILE_CLOCK_IRQ};
+   |                             ^^^^^  ^^^^^^^^^^^             ^^^^^^^^^^^^^^^^^
+
+warning: unused import: `PerCpuInterruptUnit`
+    --> kernel/src/lib.rs:2285:39
+     |
+2285 |     use minix_plat::{InterruptRouter, PerCpuInterruptUnit};
+     |                                       ^^^^^^^^^^^^^^^^^^^
+
+warning: duplicated attribute
+    --> kernel/src/lib.rs:4542:5
+     |
+4542 |     #[test]
+     |     ^^^^^^^
+     |
+     = note: `#[warn(duplicate_macro_attributes)]` on by default
+
+warning: variable does not need to be mutable
+    --> kernel/src/proc.rs:1957:13
+     |
+1957 |         let mut proc = KProcess::new(ProcNr(1), Endpoint(1));
+     |             ----^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> kernel/src/clock.rs:1596:21
+     |
+1596 |         let (table, mut priv_table) = setup_globals();
+     |                     ----^^^^^^^^^^
+     |                     |
+     |                     help: remove this `mut`
+
+warning: variable does not need to be mutable
+    --> kernel/src/syscall_process.rs:1155:13
+     |
+1155 |         let mut proc_table = crate::test_helpers::test_proc_table();
+     |             ----^^^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: unused variable: `bkl_section`
+    --> kernel/src/syscall_process.rs:1416:13
+     |
+1416 |         let bkl_section = crate::smp::bkl_lock_section();
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bkl_section`
+
+warning: unused variable: `bkl_section`
+    --> kernel/src/syscall_process.rs:1448:13
+     |
+1448 |         let bkl_section = crate::smp::bkl_lock_section();
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bkl_section`
+
+warning: unused variable: `bkl_section`
+    --> kernel/src/syscall_process.rs:1479:13
+     |
+1479 |         let bkl_section = crate::smp::bkl_lock_section();
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bkl_section`
+
+warning: unused variable: `bkl_section`
+    --> kernel/src/syscall_process.rs:1798:13
+     |
+1798 |         let bkl_section = crate::smp::bkl_lock_section();
+     |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_bkl_section`
+
+warning: unnecessary `unsafe` block
+    --> kernel/src/syscall_copy.rs:2441:9
+     |
+2441 |         unsafe {
+     |         ^^^^^^ unnecessary `unsafe` block
+     |
+     = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary `unsafe` block
+    --> kernel/src/syscall_copy.rs:2456:9
+     |
+2456 |         unsafe {
+     |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> kernel/src/syscall_signal.rs:1209:9
+     |
+1209 |         unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
+     |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> kernel/src/syscall_signal.rs:1236:9
+     |
+1236 |         unsafe { msg.m_u.m_sigcalls.endpt = target_ep.get(); }
+     |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> kernel/src/syscall_signal.rs:1257:9
+     |
+1257 |         unsafe {
+     |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+    --> kernel/src/syscall_signal.rs:1277:9
+     |
+1277 |         unsafe {
+     |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:727:9
+    |
+727 |         unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:739:9
+    |
+739 |         unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 1000; }
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:741:9
+    |
+741 |         unsafe { msg.m_u.m_lsys_krn_sys_stime.boot_time = 2000; }
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:752:9
+    |
+752 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:768:9
+    |
+768 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:786:9
+    |
+786 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:806:9
+    |
+806 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:825:9
+    |
+825 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:846:9
+    |
+846 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:869:9
+    |
+869 |         unsafe { msg.m_u.m_m2.m2i1 = 99; } // 非 1/2
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:881:9
+    |
+881 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: unnecessary `unsafe` block
+   --> kernel/src/syscall_clock.rs:893:9
+    |
+893 |         unsafe {
+    |         ^^^^^^ unnecessary `unsafe` block
+
+warning: variable does not need to be mutable
+    --> kernel/src/lib.rs:5069:13
+     |
+5069 |         let mut p = crate::proc::KProcess::new(ProcNr(3), minix_types::Endpoint(3));
+     |             ----^
+     |             |
+     |             help: remove this `mut`
+
+warning: static `LOCAL_TICK_ICR` is never used
+  --> kernel/src/clock.rs:65:8
+   |
+65 | static LOCAL_TICK_ICR: core::sync::atomic::AtomicU64 =
+   |        ^^^^^^^^^^^^^^
+
+warning: `minix-kernel` (lib test) generated 67 warnings (36 duplicates) (run `cargo fix --lib -p minix-kernel --tests` to apply 11 suggestions)
+warning: unused import: `crate::DirectMapArch`
+  --> arch/src/x86_64/ap_early_entry.rs:28:5
+   |
+28 | use crate::DirectMapArch;
+   |     ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `page`
+    --> arch/src/x86_64/paging.rs:1526:13
+     |
+1526 |         let page = |offset: u64| -> u64 { base + offset };
+     |             ^^^^ help: if this is intentional, prefix it with an underscore: `_page`
+     |
+     = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `period_ms`
+  --> arch/src/x86_64/clock.rs:69:36
+   |
+69 |     fn init_local_timer(&mut self, period_ms: u32, tsc_per_ms: u64, _cpu_id: u32) -> u32 {
+   |                                    ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_period_ms`
+
+warning: function `record_fixture` is never used
+   --> arch/src/x86_64/ap_early_entry.rs:510:8
+    |
+510 |     fn record_fixture() -> ApBootstrap {
+    |        ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `minix-arch` (lib test) generated 8 warnings (4 duplicates) (run `cargo fix --lib -p minix-arch --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.72s
+     Running unittests src/lib.rs (target/debug/deps/minix_arch-84ca99ba078d26cd)
+
+running 241 tests
+test arch::ap_early_entry::tests::test_ap_bootstrap_layout_frozen ... ok
+test arch::ap_early_entry::tests::test_mailbox_magics_distinct ... ok
+test arch::boot::tests::elf_flags_r_only ... ok
+test arch::boot::tests::elf_flags_rwx_to_page_flags ... ok
+test arch::boot::tests::entry_spec_deferred_all_none ... ok
+test arch::boot::tests::entry_spec_kernel_task_all_none ... ok
+test arch::boot::tests::entry_spec_loaded_sets_all_some ... ok
+test arch::boot::tests::load_process_elf_oom_when_region_exhausted ... ok
+test arch::boot::tests::load_process_elf_two_images_same_va_no_collision ... ok
+test arch::boot::tests::load_vm_elf_allocates_strictly_descending_across_regions ... ok
+test arch::boot::tests::load_vm_elf_invalid_elf_returns_err ... ok
+test arch::boot::tests::load_vm_elf_out_of_memory_returns_err ... ok
+test arch::boot::tests::load_vm_elf_places_stack_and_ps_strings_like_c ... ok
+test arch::boot::tests::load_vm_elf_zeroes_bss_and_copies_filesz ... ok
+test arch::clock::tests::test_default_hz_value ... ok
+test arch::clock::tests::test_load_history_size ... ok
+test arch::clock::tests::test_read_tsc_default_delegates_to_read_ticks ... ok
+test arch::current::tests::test_arch_families_match_current_alias_selections ... ok
+test arch::current::tests::test_current_arch_implements_arch ... ok
+test arch::current::tests::test_derived_state_types_match_alias_selections ... ok
+test arch::dm_coverage::tests::driver::test_establish_conflict_propagates ... ok
+test arch::dm_coverage::tests::driver::test_establish_one_gb_single_leaf ... ok
+test arch::dm_coverage::tests::driver::test_establish_skips_hole_and_offsets_va ... ok
+test arch::dm_coverage::tests::driver::test_establish_window_pa_limit ... ok
+test arch::dm_coverage::tests::test_bootstrap_tree_fragment_coverage ... ok
+test arch::dm_coverage::tests::test_legacy_hole_never_swallowed ... ok
+test arch::dm_coverage::tests::test_one_gb_selection ... ok
+test arch::dm_coverage::tests::test_two_mb_region_uses_two_mb_units ... ok
+test arch::dm_coverage::tests::test_unaligned_fragments_degrade_to_4k ... ok
+test arch::dm_coverage::tests::test_window_clipping ... ok
+test arch::exception_dispatcher::tests::classify_all_vectors ... ok
+test arch::exception_dispatcher::tests::kernel_panic ... ok
+test arch::exception_dispatcher::tests::nested_debug_clear_tf ... ok
+test arch::exception_dispatcher::tests::nested_debug_not_traced ... ok
+test arch::exception_dispatcher::tests::nested_debug_traced_not_kts_none ... ok
+test arch::exception_dispatcher::tests::nested_fpu_restore ... ok
+test arch::exception_dispatcher::tests::nested_nm_panics ... ok
+test arch::exception_dispatcher::tests::nested_phys_copy ... ok
+test arch::exception_dispatcher::tests::nested_user_copy_msg ... ok
+test arch::exception_dispatcher::tests::spurious_nmi ... ok
+test arch::exception_dispatcher::tests::user_divide_error ... ok
+test arch::exception_dispatcher::tests::user_nm_fpu_trap ... ok
+test arch::exception_dispatcher::tests::user_page_fault ... ok
+test arch::exception_dispatcher::tests::vm_page_fault ... ok
+test arch::fpu_arch::tests::test_mock_fpu_enable_disable ... ok
+test arch::fpu_arch::tests::test_mock_fpu_init_is_noop ... ok
+test arch::fpu_arch::tests::test_mock_fpu_save_restore_roundtrip ... ok
+test arch::fpu_arch::tests::test_mock_fpu_state_is_zst ... ok
+test arch::frame::tests::allocator_crosses_multiple_region_boundaries ... ok
+test arch::frame::tests::allocator_crosses_to_next_region_when_exhausted ... ok
+test arch::frame::tests::allocator_cursor_starts_at_region_end ... ok
+test arch::frame::tests::allocator_descends_within_single_region ... ok
+test arch::frame::tests::allocator_first_frame_is_region_end_minus_page_size ... ok
+test arch::frame::tests::allocator_handoff_returns_full_regions_not_just_used ... ok
+test arch::frame::tests::allocator_new_panics_on_empty_regions ... ok
+test arch::frame::tests::allocator_out_of_memory_when_all_regions_exhausted ... ok
+test arch::frame::tests::allocator_used_and_remaining_track_correctly ... ok
+test arch::frame::tests::frame_virt_default_impl_matches_phys_to_virt ... ok
+test arch::frame::tests::phys_frame_contains_half_open ... ok
+test arch::frame::tests::phys_frame_size_constant ... ok
+test arch::frame::tests::region_frame_count_and_contains ... ok
+test arch::frame::tests::region_new_validates_alignment_and_range ... ok
+test arch::frame::tests::regions_empty_has_zero_len ... ok
+test arch::frame::tests::regions_from_sorted_accepts_descending_disjoint ... ok
+test arch::frame::tests::regions_from_sorted_rejects_ascending ... ok
+test arch::frame::tests::regions_from_sorted_rejects_over_capacity ... ok
+test arch::frame::tests::regions_from_sorted_rejects_overlapping ... ok
+test arch::frame::tests::regions_iter_yields_populated_prefix ... ok
+test arch::frame::tests::regions_sentinel_tail_is_outside_logic ... ok
+test arch::frame::tests::select_multi_aligns_partial_endpoints ... ok
+test arch::frame::tests::select_multi_boundary_touching_exclusions_are_clipped ... ok
+test arch::frame::tests::select_multi_cuts_exclusions_and_sorts_descending ... ok
+test arch::frame::tests::select_multi_empty_memmap_returns_none ... ok
+test arch::frame::tests::select_multi_into_writes_into_caller_buffer ... ok
+test arch::frame::tests::select_multi_no_exclusions_returns_all_descending ... ok
+test arch::frame::tests::select_multi_returns_none_when_nothing_survives ... ok
+test arch::frame::tests::select_multi_returns_too_many_regions_when_over_capacity ... ok
+test arch::frame::tests::select_multi_single_exclusion_in_the_middle ... ok
+test arch::paging::mock::tests::test_clone_range_already_mapped ... ok
+test arch::paging::mock::tests::test_clone_range_basic ... ok
+test arch::paging::mock::tests::test_clone_range_skips_unmapped ... ok
+test arch::paging::mock::tests::test_clone_range_unaligned ... ok
+test arch::paging::mock::tests::test_mock_alignment_check ... ok
+test arch::paging::mock::tests::test_mock_alloc_asid_monotonic ... ok
+test arch::paging::mock::tests::test_mock_double_map ... ok
+test arch::paging::mock::tests::test_mock_huge_pages_capability ... ok
+test arch::paging::mock::tests::test_mock_map_huge ... ok
+test arch::paging::mock::tests::test_mock_map_kernel ... ok
+test arch::paging::mock::tests::test_mock_map_range ... ok
+test arch::paging::mock::tests::test_mock_map_range_all_or_nothing ... ok
+test arch::paging::mock::tests::test_mock_map_unmap ... ok
+test arch::paging::mock::tests::test_mock_paging_new ... ok
+test arch::paging::mock::tests::test_mock_remap_new ... ok
+test arch::paging::mock::tests::test_mock_remap_replace ... ok
+test arch::paging::mock::tests::test_mock_root_paddr ... ok
+test arch::paging::mock::tests::test_mock_switch ... ok
+test arch::paging::mock::tests::test_mock_switch_with_asid ... ok
+test arch::paging::mock::tests::test_mock_unmap_range ... ok
+test arch::paging::mock::tests::test_mock_unmapped ... ok
+test arch::paging::mock::tests::test_mock_update_flags ... ok
+test arch::paging::mock::tests::test_page_flags_combination ... ok
+test arch::paging::mock::tests::test_page_flags_display ... ok
+test arch::paging::mock::tests::test_page_flags_presets ... ok
+test arch::paging::mock::tests::test_page_flags_size ... ok
+test arch::paging::mock::tests::test_paging_contract_double_map ... ok
+test arch::paging::mock::tests::test_paging_contract_map_query_unmap ... ok
+test arch::paging::mock::tests::test_paging_contract_map_range_all_or_nothing ... ok
+test arch::paging::mock::tests::test_paging_contract_remap_new ... ok
+test arch::paging::mock::tests::test_paging_contract_remap_replace ... ok
+test arch::paging::mock::tests::test_paging_contract_root_paddr_consistent ... ok
+test arch::paging::mock::tests::test_paging_contract_unaligned_vaddr ... ok
+test arch::paging::mock::tests::test_paging_contract_unmap_unmapped ... ok
+test arch::paging::mock::tests::test_paging_contract_update_flags ... ok
+test arch::paging::mock::tests::test_paging_contract_update_flags_unmapped ... ok
+test arch::pte_walk_arch::tests::test_pte_walk_arch_signature ... ok
+test arch::signal_context::tests::test_kts_trap_style_values ... ok
+test arch::signal_context::tests::test_mf_flag_values ... ok
+test arch::signal_context::tests::test_mock_signal_context_roundtrip ... ok
+test arch::signal_context::tests::test_sc_magic_value ... ok
+test arch::signal_context::tests::test_signal_info_default ... ok
+test arch::signal_context::tests::test_x86_flags_user_mask ... ok
+test arch::smp::tests::test_mock_smp_arch_impl ... ok
+test arch::smp::tests::test_trait_object_safety ... ok
+test arch::timer_irq_gate::tests::test_current_timer_irq_gate_compiles ... ok
+test arch::timer_irq_gate::tests::test_x86_64_timer_irq_gate_compiles ... ok
+test arch::tlb_arch::tests::test_mock_tlb_arch_flush_addr_compiles ... ok
+test arch::tlb_arch::tests::test_mock_tlb_arch_flush_all_compiles ... ok
+test arch::tlb_arch::tests::test_mock_tlb_arch_set_active_root_compiles ... ok
+test arch::tlb_arch::tests::test_tlb_arch_as_generic_constraint ... ok
+test arch::tlb_arch::tests::test_tlb_arch_set_active_root_as_generic_constraint ... ok
+test arch::trap_return::tests::test_mock_restore_panics_loudly - should panic ... ok
+test arch::trap_return::tests::test_trap_return_arch_as_generic_constraint ... ok
+test arch::trap_style::tests::test_trap_style_default_is_no_entry ... ok
+test arch::trap_style::tests::test_trap_style_from_raw_rejects_unknown_and_unmodeled ... ok
+test arch::trap_style::tests::test_trap_style_from_raw_roundtrip ... ok
+test arch::trap_style::tests::test_trap_style_raw_matches_c_kts_numbering ... ok
+test arch::trap_style::tests::test_trap_style_return_sequence_classification ... ok
+test x86_64::ap_early_entry::tests::test_far_jump_targets_hit_real_instruction_boundaries ... ok
+test x86_64::ap_early_entry::tests::test_gdt_desc_bytes_frozen ... ok
+test x86_64::ap_early_entry::tests::test_ladder_absolute_reads_match_record_layout ... ok
+test x86_64::ap_early_entry::tests::test_ladder_gdt_entries_frozen ... ok
+test x86_64::ap_early_entry::tests::test_placement_constants_within_low_identity ... ok
+test x86_64::ap_early_entry::tests::test_scratch_layout_mirror ... ok
+test x86_64::ap_early_entry::tests::test_scratch_layout_offsets_frozen ... ok
+test x86_64::boot::stacktrace_tests::test_current_frame_pointer_plausible ... ok
+test x86_64::boot::stacktrace_tests::test_stacktrace_frame_pointer_uses_gp_regs_5 ... ok
+test x86_64::boot::stacktrace_tests::test_stacktrace_walk_frames_caps_at_max ... ok
+test x86_64::boot::stacktrace_tests::test_stacktrace_walk_frames_emits_pc_and_chain ... ok
+test x86_64::boot::stacktrace_tests::test_stacktrace_walk_frames_stops_on_cycle ... ok
+test x86_64::boot::stacktrace_tests::test_stacktrace_walk_frames_stops_on_fault ... ok
+test x86_64::boot::stacktrace_tests::test_walk_frames_from_shared_loop ... ok
+test x86_64::boot::tests::apply_to_trap_frame_copies_registers ... ok
+test x86_64::boot::tests::default_ctx_is_kernel_task_shape ... ok
+test x86_64::boot::tests::enable_user_io_sets_iopl ... ok
+test x86_64::boot::tests::inherit_fpu_state_propagates_lazy_user_policy ... ok
+test x86_64::boot::tests::kernel_task_uses_init_task_psw ... ok
+test x86_64::boot::tests::set_secondary_ipc_return_assigns_rbx ... ok
+test x86_64::boot::tests::user_process_uses_init_psw ... ok
+test x86_64::cpu_identity::tests::test_decode_signature_extended_family ... ok
+test x86_64::cpu_identity::tests::test_decode_signature_family6_extended_model ... ok
+test x86_64::cpu_identity::tests::test_decode_signature_family_f ... ok
+test x86_64::cpu_identity::tests::test_decode_signature_nehalem ... ok
+test x86_64::exception::tests::exception_frame_size ... ok
+test x86_64::exception::tests::is_user_mode_kernel ... ok
+test x86_64::exception::tests::is_user_mode_user ... ok
+test x86_64::exception::tests::is_write_fault_read ... ok
+test x86_64::exception::tests::is_write_fault_write ... ok
+test x86_64::exception::tests::set_instruction_pointer ... ok
+test x86_64::exception::tests::vector_extraction ... ok
+test x86_64::fpu::tests::test_fpu_state_alignment ... ok
+test x86_64::fpu::tests::test_fpu_state_default_is_zeroed ... ok
+test x86_64::fpu::tests::test_fpu_state_size ... ok
+test x86_64::paging::tests::test_address_preserved_through_flag_roundtrip ... ok
+test x86_64::paging::tests::test_destroy_reclaims_intermediate_tables_and_root ... ok
+test x86_64::paging::tests::test_flag_roundtrip_kernel_executable ... ok
+test x86_64::paging::tests::test_flag_roundtrip_user_executable ... ok
+test x86_64::paging::tests::test_flag_roundtrip_user_read_write ... ok
+test x86_64::paging::tests::test_huge_page_flag_roundtrip ... ok
+test x86_64::paging::tests::test_nx_bit_clear_when_executable ... ok
+test x86_64::paging::tests::test_nx_bit_inverted_when_not_executable ... ok
+test x86_64::paging::tests::test_pd_index_2mb_boundary ... ok
+test x86_64::paging::tests::test_pdpt_index_1gb_boundary ... ok
+test x86_64::paging::tests::test_pml4_index_high_canonical ... ok
+test x86_64::paging::tests::test_vmdm_channel_map_writes_pte_without_invlpg ... ok
+test x86_64::paging::tests::test_walk_read_not_present_on_zero_root ... ok
+test x86_64::protection::tests::gdt_descriptors_are_flat_mode ... ok
+test x86_64::protection::tests::gdt_descriptors_have_correct_dpl ... ok
+test x86_64::protection::tests::gdt_null_entry_is_zero ... ok
+test x86_64::protection::tests::init_creates_tss_descriptor_in_gdt ... ok
+test x86_64::protection::tests::init_fills_gdt_correctly ... ok
+test x86_64::protection::tests::init_sets_cpu_count ... ok
+test x86_64::protection::tests::init_sets_tss_sp0_below_reserved_area ... ok
+test x86_64::protection::tests::init_stamps_bsp_cpu_id_on_stack_top ... ok
+test x86_64::protection::tests::privilege_level_roundtrip ... ok
+test x86_64::protection::tests::set_kernel_stack_panics_on_invalid_cpu_id - should panic ... ok
+test x86_64::protection::tests::set_kernel_stack_updates_sp0 ... ok
+test x86_64::protection::tests::tss64_offsets_correct ... ok
+test x86_64::protection::tests::tss64_size_is_104_bytes ... ok
+test x86_64::protection::tests::tss_descriptor_high_half_carries_base_above_4gib ... ok
+test x86_64::protection::tests::tss_descriptor_is_64bit ... ok
+test x86_64::protection::tests::tss_iobase_disables_io_bitmap ... ok
+test x86_64::pte::tests::test_flags_roundtrip ... ok
+test x86_64::pte::tests::test_index_calculation ... ok
+test x86_64::pte::tests::test_make_pte ... ok
+test x86_64::pte::tests::test_no_execute_roundtrip ... ok
+test x86_64::signal::tests::test_build_sigcontext_fills_from_ctx ... ok
+test x86_64::signal::tests::test_build_sigframe_computes_pointers ... ok
+test x86_64::signal::tests::test_check_magic ... ok
+test x86_64::signal::tests::test_get_sp_returns_rsp ... ok
+test x86_64::signal::tests::test_restore_sigcontext_merges_rflags ... ok
+test x86_64::signal::tests::test_roundtrip_build_then_restore ... ok
+test x86_64::signal::tests::test_setup_handler_entry_sets_sp_pc_fp ... ok
+test x86_64::signal::tests::test_sigcontext_size_nonzero ... ok
+test x86_64::signal::tests::test_sigframe_size_matches_struct ... ok
+test x86_64::signal::tests::test_sigframe_size_nonzero ... ok
+test x86_64::trap_entry::tests::configure_ipc_entry_sets_idt_gate_33 ... ok
+test x86_64::trap_entry::tests::idt_entry64_size_is_16_bytes ... ok
+test x86_64::trap_entry::tests::idt_init_breakpoint_has_dpl3 ... ok
+test x86_64::trap_entry::tests::idt_init_double_fault_uses_ist2 ... ok
+test x86_64::trap_entry::tests::idt_init_kernel_exceptions_have_dpl0 ... ok
+test x86_64::trap_entry::tests::idt_init_nmi_uses_ist1 ... ok
+test x86_64::trap_entry::tests::idt_init_overflow_has_dpl3 ... ok
+test x86_64::trap_entry::tests::idt_init_reserved_vectors_not_present ... ok
+test x86_64::trap_entry::tests::idt_init_sets_exception_gates ... ok
+test x86_64::trap_entry::tests::idt_init_sets_pic_vectors ... ok
+test x86_64::trap_entry::tests::idt_init_sets_syscall_ipc_vectors ... ok
+test x86_64::trap_entry::tests::idt_ptr_size_is_10_bytes ... ok
+test x86_64::trap_entry::tests::set_handler_sets_dpl_correctly ... ok
+test x86_64::trap_entry::tests::set_handler_writes_handler_address ... ok
+test x86_64::trap_return::tests::exception_frame_layout_matches_asm_offsets ... ok
+test x86_64::trap_return::tests::gp_register_index_order_matches_asm_strides ... ok
+test x86_64::trap_stub::save_frame_tests::save_frame_to_context_persists_all_fields ... ok
+test x86_64::trap_stub::save_frame_tests::saved_psw_reads_back_the_saved_rflags ... ok
+test x86_64::trap_stub::tests::test_errcode_classification_matches_sdm ... ok
+test x86_64::trap_stub::tests::test_gs_area_layout_frozen ... ok
+test x86_64::trap_stub::tests::test_irq_of_vector_mapping ... ok
+test x86_64::trap_stub::tests::test_stub_bytes_errcode_normalization ... ok
+test x86_64::trap_stub::tests::test_stub_coverage_matches_idt_gates ... ok
+test x86_64::trap_stub::tests::test_syscall_entry_opens_with_swapgs ... ok
+test x86_64::trap_stub::tests::test_trap_frame_layout_frozen ... ok
+test x86_64::trap_stub::tests::test_user_accessible_gate_set ... ok
+
+test result: ok. 241 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+     Running unittests src/lib.rs (target/debug/deps/minix_kernel-7b4539d2185462b1)
+
+running 817 tests
+test boot_alloc::tests::test_allocation_exhaustion ... ok
+test boot_alloc::tests::test_page_size_alignment ... ok
+test boot_alloc::tests::test_reinitialization ... ok
+test boot_alloc::tests::test_sequential_allocation ... ok
+test boot_alloc::tests::test_zero_size_region ... ok
+test capability::tests::capability_deferred_is_empty ... ok
+test capability::tests::capability_idle_has_idl_f_and_billable ... ok
+test capability::tests::capability_is_system_service_truth_table ... ok
+test capability::tests::capability_kernel_task_is_tsk_f_combo ... ok
+test capability::tests::capability_root_service_has_rsys_f ... ok
+test capability::tests::capability_vm_has_vm_f_and_is_system_service ... ok
+test capability::tests::ipc_mask_may_send_to ... ok
+test capability::tests::ipc_mask_union ... ok
+test capability::tests::kcall_mask_default_is_none ... ok
+test capability::tests::kcall_mask_wire_round_trip ... ok
+test capability::tests::process_capability_wire_round_trip ... ok
+test capability::tests::template_kcall_mask_idle_is_none ... ok
+test capability::tests::template_kcall_mask_vm_is_all ... ok
+test capability::tests::trap_mask_contains ... ok
+test capability::tests::trap_mask_wire_sign_extension ... ok
+test clock::clock_irq_handler_tests::test_clock_hook_registered_in_manager ... ignored, register_hook unmasks via the real controller (port I/O) — needs iopl/QEMU
+test clock::clock_irq_handler_tests::test_clock_irq_handler_delivers_alarm_notification ... ok
+test clock::tests::test_account_tsc_per_state_is_per_cpu ... ok
+test clock::tests::test_adjtime_slow_down ... ok
+test clock::tests::test_adjtime_speed_up ... ok
+test clock::tests::test_adjtime_zero_delta ... ok
+test clock::tests::test_alarm_reset_is_idempotent ... ok
+test clock::tests::test_alarm_same_exp_time_coexist ... ok
+test clock::tests::test_alarm_set_and_expire ... ok
+test clock::tests::test_ap_clock_state_no_global_time ... ok
+test clock::tests::test_ap_set_boottime_no_op ... ok
+test clock::tests::test_ap_state_set_alarm_timer_panics - should panic ... ok
+test clock::tests::test_billp_no_accounting_when_none ... ok
+test clock::tests::test_billp_prof_timer_decrement ... ok
+test clock::tests::test_billp_prof_timer_expiry_reports_prof ... ok
+test clock::tests::test_billp_sys_time_accounting ... ok
+test clock::tests::test_chain_expire_order_and_stop_at_head ... ok
+test clock::tests::test_chain_rearm_overwrites_old_timer ... ok
+test clock::tests::test_chain_set_reset_keeps_other_nodes ... ok
+test clock::tests::test_classify_cpu_state_buckets ... ok
+test clock::tests::test_clock_state_custom_hz ... ok
+test clock::tests::test_clock_state_hz_bounds ... ok
+test clock::tests::test_clock_state_init ... ok
+test clock::tests::test_decrement_quantum_decrements_cpu_time_left ... ok
+test clock::tests::test_decrement_quantum_first_call_no_baseline ... ok
+test clock::tests::test_decrement_quantum_multiple_ticks_accumulate ... ok
+test clock::tests::test_decrement_quantum_no_smp_state_returns_false ... ok
+test clock::tests::test_decrement_quantum_overshoot_saturates_to_zero ... ok
+test clock::tests::test_decrement_quantum_reports_exhaustion ... ok
+test clock::tests::test_decrement_quantum_skips_kernel_tasks ... ok
+test clock::tests::test_decrement_quantum_zero_delta_returns_false ... ok
+test clock::tests::test_load_update_accumulates ... ok
+test clock::tests::test_load_update_slot_rotation ... ok
+test clock::tests::test_multiple_timers_pop_order ... ok
+test clock::tests::test_read_tsc_returns_zero_in_test_build ... ok
+test clock::tests::test_set_boottime ... ok
+test clock::tests::test_set_realtime ... ok
+test clock::tests::test_tick_ap_no_uptime_update ... ok
+test clock::tests::test_tick_bsp_increments_uptime_realtime ... ok
+test clock::tests::test_tick_with_invokes_callback_on_expiry ... ok
+test clock::tests::test_tick_with_matches_tick_bsp_behavior ... ok
+test clock::tests::test_tick_with_no_callback_on_empty_expiry ... ok
+test clock::tests::test_timer_never_expires ... ok
+test clock::tests::test_user_time_accounting ... ok
+test clock::tests::test_vtimer_no_expiry_when_flag_not_set ... ok
+test clock::tests::test_vtimer_prof_expiry ... ok
+test clock::tests::test_vtimer_virtual_expiry ... ok
+test cross_space::tests::_ensure_kcall_result_import_used ... ok
+test cross_space::tests::test_completed_ok_matches_c_ok ... ok
+test cross_space::tests::test_cross_space_result_match_exhaustive ... ok
+test cross_space::tests::test_cross_space_result_variants ... ok
+test cross_space::tests::test_data_copy_vmcheck_parity_with_c ... ok
+test cross_space::tests::test_data_copy_vmcheck_preserves_copy_context ... ok
+test cross_space::tests::test_data_copy_vmcheck_sets_rts_vmrequest ... ok
+test cross_space::tests::test_suspended_dst_matches_c_vmsuspend_dst ... ok
+test cross_space::tests::test_suspended_src_matches_c_vmsuspend_src ... ok
+test cross_space::tests::test_vm_copy_context_construction ... ok
+test cross_space::tests::test_zero_byte_copy_returns_ok ... ok
+test debug::tests::test_write_misc_flags_empty ... ok
+test debug::tests::test_write_misc_flags_single ... ignored, hosted x86_64 selects the real COM1 console (port I/O without iopl → SIGSEGV); run under QEMU — same class as stacktrace tests
+test debug::tests::test_write_rts_flags_empty ... ok
+test debug::tests::test_write_rts_flags_single ... ignored, hosted x86_64 selects the real COM1 console (port I/O without iopl → SIGSEGV); run under QEMU — same class as stacktrace tests
+test dm_coverage::tests::test_boot_dm_aarch64_style_params ... ok
+test dm_coverage::tests::test_boot_dm_riscv64_style_params ... ok
+test dm_coverage::tests::test_boot_dm_x86_64_style_params ... ok
+test dm_coverage::tests::test_boot_module_candidates_union ... ok
+test dm_coverage::tests::test_kernel_dm_pa_end_covers_all_sources ... ok
+test dm_coverage::tests::test_union_drops_in_memmap_bump ... ok
+test dm_coverage::tests::test_union_keeps_full_bump_when_root_above_bump ... ok
+test globals::bkl_protected_tests::bkl_protected_approved_types_implement_trait ... ok
+test globals::bkl_protected_tests::bkl_protected_refcell_does_not_impl ... ok
+test grant::tests::test_cp_flags_access_check ... ok
+test grant::tests::test_cp_flags_bitflags ... ok
+test grant::tests::test_cp_grant_size ... ok
+test grant::tests::test_grant_id_manipulation ... ok
+test grant::tests::test_grantee_gate_any_authority_value ... ok
+test grant::tests::test_magic_granter_endpoints_match_c_com_h ... ok
+test grant::tests::test_may_create_magic_grant_vfs_mib_only ... ok
+test grant::tests::test_t8_verify_grant_range_exceeded_returns_eperm ... ok
+test grant::tests::test_t8_verify_grant_temp_table_mismatch_enotready ... ok
+test grant::tests::test_verify_grant_invalid_endpoint ... ok
+test grant::tests::test_verify_grant_invalid_grant_id ... ok
+test ipc::tests::test_caller_q_push_find_remove_fifo ... ok
+test ipc::tests::test_caller_q_remove_by_nr_unlinks ... ok
+test ipc::tests::test_check_ipc_permission_target_kernel_task_restriction ... ok
+test ipc::tests::test_d16_notify_filtered_stays_pending ... ok
+test ipc::tests::test_d16_senda_filtered_entry_stays_pending ... ok
+test ipc::tests::test_d16_whitelist_allows_listed_blocks_unlisted ... ok
+test ipc::tests::test_deadlock_mixed_chain_cycle ... ok
+test ipc::tests::test_deadlock_no_cycle_empty_table ... ok
+test ipc::tests::test_deadlock_no_cycle_when_target_runnable ... ok
+test ipc::tests::test_deadlock_receive_receive_two_cycle_is_deadlock ... ok
+test ipc::tests::test_deadlock_receive_send_two_cycle_not_deadlock ... ok
+test ipc::tests::test_deadlock_send_receive_two_cycle_not_deadlock ... ok
+test ipc::tests::test_deadlock_send_send_two_cycle_is_deadlock ... ok
+test ipc::tests::test_deadlock_send_state_mismatch ... ok
+test ipc::tests::test_deadlock_three_proc_send_cycle ... ok
+test ipc::tests::test_deliver_message_context_set_preserves_return_code ... ok
+test ipc::tests::test_deliver_message_first_page_fault ... ok
+test ipc::tests::test_deliver_message_second_consecutive_fault ... ok
+test ipc::tests::test_deliver_message_success ... ok
+test ipc::tests::test_deliver_result_variants ... ok
+test ipc::tests::test_do_ipc_receive_prologue_clears_reply_pend_and_status ... ok
+test ipc::tests::test_ipc_call_from_raw ... ok
+test ipc::tests::test_ipc_call_variants ... ok
+test ipc::tests::test_ipc_error_variants ... ok
+test ipc::tests::test_ipc_outcome_predicates ... ok
+test ipc::tests::test_kernel_user_copy_stub ... ok
+test ipc::tests::test_notify_delivers_when_target_receiving ... ok
+test ipc::tests::test_notify_never_blocks ... ok
+test ipc::tests::test_notify_records_bitmap_when_not_receiving ... ok
+test ipc::tests::test_receive_blocks_when_no_match ... ok
+test ipc::tests::test_receive_picks_async_second ... ok
+test ipc::tests::test_receive_picks_caller_q_last ... ok
+test ipc::tests::test_receive_picks_notify_first ... ok
+test ipc::tests::test_receive_plain_sender_has_no_pending_delay ... ok
+test ipc::tests::test_receive_sig_delay_sender_records_pending_delay ... ok
+test ipc::tests::test_receive_skips_notify_when_reply_pend ... ok
+test ipc::tests::test_send_detects_deadlock ... ok
+test ipc::tests::test_send_flags_p0_fix_values ... ok
+test ipc::tests::test_send_non_blocking_returns_not_ready ... ok
+test ipc::tests::test_send_to_blocked_receiver_writes_ok_return_code ... ok
+test ipc::tests::test_send_when_target_not_receiving ... ok
+test ipc::tests::test_send_when_target_receiving ... ok
+test ipc::tests::test_senda_delivers_to_receiving_target ... ok
+test ipc::tests::test_senda_other_without_mask_bit_denied ... ok
+test ipc::tests::test_senda_pending_sets_bitmap_and_retries_via_receive ... ok
+test ipc::tests::test_senda_requires_sys_proc ... ok
+test ipc::tests::test_senda_self_target_allowed_without_mask_bit ... ok
+test ipc::tests::test_sendrec_to_blocked_receiver_stamps_source_endpoint ... ok
+test ipc::tests::user_copy_range_readonly_read_and_rw_write_pass ... ok
+test ipc::tests::user_copy_range_rejects_kernel_half_as_out_of_bounds ... ok
+test ipc::tests::user_copy_range_rejects_range_end_overflow_as_out_of_bounds ... ok
+test ipc::tests::user_copy_range_second_page_unmapped_is_page_fault ... ok
+test ipc::tests::user_copy_range_supervisor_page_is_page_fault ... ok
+test ipc::tests::user_copy_range_unmapped_page_is_page_fault ... ok
+test ipc::tests::user_copy_range_without_active_root_passes_bound_only ... ok
+test ipc::tests::user_copy_range_write_to_readonly_page_is_page_fault ... ok
+test ipc_filter::tests::test_chain_allowed_blacklist_and_order_flip ... ok
+test ipc_filter::tests::test_chain_allowed_whitelist_blocks_unlisted ... ok
+test ipc_filter::tests::test_el_check_requires_a_match_flag ... ok
+test ipc_filter::tests::test_el_match_any_class_endpoints ... ok
+test ipc_filter::tests::test_el_match_type_and_source ... ok
+test ipc_filter::tests::test_free_chain_frees_whole_chain ... ok
+test ipc_filter::tests::test_ipc_filter_check_allowed ... ok
+test ipc_filter::tests::test_ipc_filter_check_no_targets ... ok
+test ipc_filter::tests::test_ipc_filter_pool_allocate_and_free ... ok
+test ipc_filter::tests::test_ipc_filter_pool_free_out_of_range_is_noop ... ok
+test ipc_filter::tests::test_ipc_filter_pool_new_is_empty ... ok
+test ipc_filter::tests::test_kcall_filter_check ... ok
+test ipc_filter::tests::test_kcall_filter_check_out_of_range ... ok
+test ipc_filter::tests::test_sys_bit_operations ... ok
+test ipc_filter::tests::test_sys_bit_out_of_range ... ok
+test irq_manager::tests::dispatch_claims_before_mask_and_completes_last ... ok
+test irq_manager::tests::enable_disable_irq ... ok
+test irq_manager::tests::generic_notify_handler_no_reenable_keeps_active ... ok
+test irq_manager::tests::generic_notify_handler_sends_notification ... ok
+test irq_manager::tests::multiple_hooks_same_irq ... ok
+test irq_manager::tests::not_completed_keeps_active ... ok
+test irq_manager::tests::register_and_dispatch ... ok
+test irq_manager::tests::remove_hook ... ok
+test irq_manager::tests::spurious_irq ... ok
+test kerninfo::kerninfo_tests::test_fill_kerninfo_page_content_contract ... ok
+test kerninfo::kerninfo_tests::test_kerninfo_page_layout ... ok
+test kmess::tests::test_kmess_snapshot_size_constant ... ok
+test kmess::tests::test_putc_sequential_accumulates ... ok
+test kmess::tests::test_putc_wraps_and_snapshot_reorders ... ok
+test kpriv::tests::test_configure_boot_priv_sets_masks ... ok
+test kpriv::tests::test_drop_unassigned_slot_is_normal ... ok
+test kpriv::tests::test_fill_sendto_mask_guard_case_keeps_target_bit ... ok
+test kpriv::tests::test_fill_sendto_mask_revocation_clears_reciprocal_bit ... ok
+test kpriv::tests::test_grant_capability_deferred_no_flags ... ok
+test kpriv::tests::test_grant_capability_duplicate_fails ... ok
+test kpriv::tests::test_grant_capability_idle ... ok
+test kpriv::tests::test_grant_capability_kernel_task_clock_system_csk_t ... ok
+test kpriv::tests::test_grant_capability_kernel_task_ipc_to_consistent_no_send ... ok
+test kpriv::tests::test_grant_capability_kernel_task_non_cs_gets_tsk_t ... ok
+test kpriv::tests::test_grant_capability_root_service ... ok
+test kpriv::tests::test_grant_capability_vm ... ok
+test kpriv::tests::test_grant_capability_vm_self_bit_cleared ... ok
+test kpriv::tests::test_io_range_new ... ok
+test kpriv::tests::test_is_static_priv_id ... ok
+test kpriv::tests::test_kpriv_alarm_timer_default_unset ... ok
+test kpriv::tests::test_kpriv_alarm_timer_node_carries_action ... ok
+test kpriv::tests::test_kpriv_flag_predicates ... ok
+test kpriv::tests::test_kpriv_is_sys_proc ... ok
+test kpriv::tests::test_kpriv_new ... ok
+test kpriv::tests::test_may_send_to ... ok
+test kpriv::tests::test_mem_range_new ... ok
+test kpriv::tests::test_priv_flag_set_idl ... ok
+test kpriv::tests::test_priv_flag_set_usr_no_sys_proc ... ok
+test kpriv::tests::test_priv_flag_set_vm ... ok
+test kpriv::tests::test_priv_table_assign_static ... ok
+test kpriv::tests::test_priv_table_assign_static_user_proc ... ok
+test kpriv::tests::test_priv_table_configure_boot_priv ... ok
+test kpriv::tests::test_priv_table_const_init_sets_per_slot_s_id ... ok
+test kpriv::tests::test_priv_table_new ... ok
+test kpriv::tests::test_set_sendto_bit_grants_pair_with_reply_capable_target ... ok
+test kpriv::tests::test_set_sendto_bit_receive_only_target_gets_no_reciprocal ... ok
+test kpriv::tests::test_set_sendto_bit_self_and_unassociated_requests_unset_own_bit ... ok
+test kpriv::tests::test_slot_is_occupied_agrees_with_binding ... ok
+test kpriv::tests::test_static_priv_id ... ok
+test kpriv::tests::test_unset_sendto_bit_clears_both_directions ... ok
+test kpriv::tests::test_update_priv_bad_count_fails_without_mask_fill ... ok
+test kpriv::tests::test_update_priv_wire_decode ... ok
+test kpriv::tests::test_user_priv_id ... ok
+test krandom::tests::test_get_randomness_advances_ring_and_saturates_size ... ok
+test krandom::tests::test_get_randomness_is_noop ... ok
+test krandom::tests::test_get_randomness_source_index_wraps ... ok
+test krandom::tests::test_krandomness_bin_layout ... ok
+test krandom::tests::test_krandomness_layout ... ok
+test krandom::tests::test_krandomness_new ... ok
+test krandom::tests::test_wipe_all ... ok
+test krandom::tests::test_wipe_bin ... ok
+test memmap::tests::test_add_memmap_alignment ... ok
+test memmap::tests::test_add_memmap_basic ... ok
+test memmap::tests::test_add_memmap_finds_first_empty ... ok
+test memmap::tests::test_add_memmap_no_slots ... ok
+test memmap::tests::test_add_memmap_no_truncation ... ok
+test memmap::tests::test_add_memmap_zero_length ... ok
+test memmap::tests::test_cut_memmap_alignment_round_down_start ... ok
+test memmap::tests::test_cut_memmap_alignment_round_up_end ... ok
+test memmap::tests::test_cut_memmap_full_overlap ... ok
+test memmap::tests::test_cut_memmap_middle_split ... ok
+test memmap::tests::test_cut_memmap_no_overlap ... ok
+test memmap::tests::test_cut_memmap_prefix_split ... ok
+test memmap::tests::test_cut_memmap_preserves_total_free_memory ... ok
+test memmap::tests::test_cut_memmap_spans_multiple_entries ... ok
+test memmap::tests::test_cut_memmap_suffix_split ... ok
+test memmap::tests::test_cut_memmap_zero_length_no_op ... ok
+test misc::tests::test_build_boot_image_matches_c_layout ... ok
+test misc::tests::test_cpu_info_entry_from_non_x86_is_unknown_zeroed ... ok
+test misc::tests::test_cpu_info_entry_from_x86_identity ... ok
+test misc::tests::test_cpu_info_entry_layout_matches_c ... ok
+test misc::tests::test_dispatch_getinfo_priv_wired_to_data_copy_vmcheck ... ok
+test misc::tests::test_dispatch_getinfo_privtab_wired_to_data_copy_vmcheck ... ok
+test misc::tests::test_dispatch_getinfo_proc_invalid_endpoint_returns_einval ... ok
+test misc::tests::test_dispatch_getinfo_proc_returns_proc_info ... ok
+test misc::tests::test_dispatch_getinfo_proctab_wired_to_data_copy_vmcheck ... ok
+test misc::tests::test_dispatch_getinfo_regs_invalid_endpoint_returns_einval ... ok
+test misc::tests::test_dispatch_getinfo_regs_wired_to_data_copy_vmcheck ... ok
+test misc::tests::test_dispatch_trace_detach_clears_sc_active_and_proc_stop ... ok
+test misc::tests::test_dispatch_trace_exit_returns_einval ... ok
+test misc::tests::test_dispatch_trace_getdata_aligned_wired_to_data_copy_vmcheck ... ok
+test misc::tests::test_dispatch_trace_getins_unaligned_no_alignment_check ... ok
+test misc::tests::test_dispatch_trace_getins_wired_to_data_copy_vmcheck ... ok
+test misc::tests::test_dispatch_trace_getuser_priv_struct ... ok
+test misc::tests::test_dispatch_trace_getuser_priv_struct_out_of_range ... ok
+test misc::tests::test_dispatch_trace_getuser_rejects_unaligned_address ... ok
+test misc::tests::test_dispatch_trace_rejects_invalid_request ... ok
+test misc::tests::test_dispatch_trace_rejects_invalid_target_endpoint ... ok
+test misc::tests::test_dispatch_trace_rejects_kernel_target ... ok
+test misc::tests::test_dispatch_trace_resume_clears_proc_stop ... ok
+test misc::tests::test_dispatch_trace_setdata_aligned_wired_to_data_copy_vmcheck ... ok
+test misc::tests::test_dispatch_trace_setins_unaligned_no_alignment_check ... ok
+test misc::tests::test_dispatch_trace_setuser_psw_succeeds ... ok
+test misc::tests::test_dispatch_trace_setuser_rejects_segment_register ... ok
+test misc::tests::test_dispatch_trace_setuser_rejects_unaligned_address ... ok
+test misc::tests::test_dispatch_trace_setuser_writes_rip ... ok
+test misc::tests::test_dispatch_trace_step_clears_proc_stop_and_sets_step_flag ... ok
+test misc::tests::test_dispatch_trace_stop_sets_proc_stop_and_clears_trace_flags ... ok
+test misc::tests::test_dispatch_trace_syscall_sets_sc_trace_and_clears_proc_stop ... ok
+test misc::tests::test_dispatch_unused ... ok
+test misc::tests::test_dispatch_update_preserves_alarm_timers_per_slot ... ok
+test misc::tests::test_dispatch_update_quiescent_swaps_slots ... ok
+test misc::tests::test_dispatch_update_reanchors_vmrequest_chain_entry ... ok
+test misc::tests::test_dispatch_update_rejects_busy_process ... ok
+test misc::tests::test_dispatch_update_rejects_none_src_endpoint ... ok
+test misc::tests::test_dispatch_update_rejects_self_swap ... ok
+test misc::tests::test_getinfo_monparams_copy_uses_c_buffer_length ... ok
+test misc::tests::test_getinfo_priv_rejects_invalid_endpoint ... ok
+test misc::tests::test_getinfo_proc_self_replaces_with_caller_endpoint ... ok
+test misc::tests::test_getinfo_request_try_from ... ok
+test misc::tests::test_monparams_snapshot_zero_pads_to_c_buffer_size ... ok
+test misc::tests::test_proc_is_updatable_kernel_blocked_returns_false ... ok
+test misc::tests::test_proc_is_updatable_receiving_only_returns_true ... ok
+test misc::tests::test_proc_is_updatable_user_mode_returns_true ... ok
+test misc::tests::test_profile_clock_tick_samples_stashed_pc ... ok
+test misc::tests::test_profile_clock_tick_without_current_process_only_acks ... ok
+test misc::tests::test_profile_clock_tick_without_pc_only_acks ... ok
+test misc::tests::test_profile_sample_buffer_full_marks_mem_used_minus1 ... ok
+test misc::tests::test_profile_sample_idle_increments_idle_samples ... ok
+test misc::tests::test_profile_sample_kernel_endpoint_saves_system_sample ... ok
+test misc::tests::test_profile_sample_noop_when_buffer_full ... ok
+test misc::tests::test_profile_sample_noop_when_not_profiling ... ok
+test misc::tests::test_profile_sample_runnable_sys_proc_saves_sample_and_proc ... ok
+test misc::tests::test_profile_sample_second_sample_does_not_resave_proc ... ok
+test misc::tests::test_profile_sample_user_process_increments_user_samples ... ok
+test misc::tests::test_sprof_double_start_returns_ebusy ... ok
+test misc::tests::test_sprof_rejects_unknown_action ... ok
+test misc::tests::test_sprof_start_clears_seen_flags ... ok
+test misc::tests::test_sprof_start_rejects_invalid_endpoint ... ok
+test misc::tests::test_sprof_start_rejects_unknown_intr_type ... ok
+test misc::tests::test_sprof_start_rollback_on_invalid_endpoint ... ok
+test misc::tests::test_sprof_start_valid_returns_ok ... ok
+test misc::tests::test_sprof_stop_after_start_returns_ok_or_vmsuspend ... ok
+test misc::tests::test_sprof_stop_returns_ebusy_when_not_running ... ok
+test misc::tests::test_sprof_stop_without_start_returns_ebusy ... ok
+test misc::tests::test_trace_request_try_from ... ok
+test page_fault::tests::test_build_vm_pagefault_msg_populates_fields ... ok
+test page_fault::tests::test_clear_pagefault_pending_clears_flag_and_addr ... ok
+test page_fault::tests::test_is_pagefault_pending_default_false ... ok
+test page_fault::tests::test_kernel_mode_pagefault_panic_msg_includes_endpoint_and_addr ... ok
+test page_fault::tests::test_pagefault_pending_idempotent_set ... ok
+test page_fault::tests::test_pagefault_pending_roundtrip_with_clear ... ok
+test page_fault::tests::test_pagefault_skips_kernel_proc_for_set ... ok
+test page_fault::tests::test_set_pagefault_pending_sets_flag_and_addr ... ok
+test proc::tests::test_accounting_enqueue_dequeue ... ok
+test proc::tests::test_accounting_ipc ... ok
+test proc::tests::test_accounting_new ... ok
+test proc::tests::test_accounting_reset ... ok
+test proc::tests::test_boot_module_proc_nrs_match_c_comh ... ok
+test proc::tests::test_clear_vm_suspend ... ok
+test proc::tests::test_clear_vm_suspend_does_not_clear_kcall_resume ... ok
+test proc::tests::test_cpu_mask_clear_and_set ... ok
+test proc::tests::test_cpu_mask_default_all_allows_any_cpu ... ok
+test proc::tests::test_cpu_mask_empty_allows_nothing ... ok
+test proc::tests::test_cycles_stats ... ok
+test proc::tests::test_drop_empty_slot_is_normal ... ok
+test proc::tests::test_fork_child_has_no_vm_suspend ... ok
+test proc::tests::test_fork_from_accounting_reset ... ok
+test proc::tests::test_fork_from_basic ... ok
+test proc::tests::test_fork_from_cycles_reset ... ok
+test proc::tests::test_fork_from_independent_queues ... ok
+test proc::tests::test_fork_from_inherits_fpu_state_when_initialized ... ok
+test proc::tests::test_fork_from_inherits_ipc_endpoints ... ok
+test proc::tests::test_fork_from_misc_flags_corrections ... ok
+test proc::tests::test_fork_from_rts_flags_corrections ... ok
+test proc::tests::test_fork_from_zeroes_fpu_state_when_parent_unused ... ok
+test proc::tests::test_is_vm_suspended_reflects_rts_flag ... ok
+test proc::tests::test_kprocess_accounting ... ok
+test proc::tests::test_kprocess_new ... ok
+test proc::tests::test_kprocess_priority ... ok
+test proc::tests::test_kprocess_runnable ... ok
+test proc::tests::test_priority_default ... ok
+test proc::tests::test_priority_is_kernel ... ok
+test proc::tests::test_priority_valid ... ok
+test proc::tests::test_quantum_allocate ... ok
+test proc::tests::test_quantum_consume ... ok
+test proc::tests::test_rts_flags_multiple ... ok
+test proc::tests::test_rts_flags_runnable ... ok
+test proc::tests::test_sched_fields_new ... ok
+test proc::tests::test_sched_fields_new_has_all_cpu_mask ... ok
+test proc::tests::test_slot_is_occupied_agrees_with_slot_free_bit ... ok
+test proc::tests::test_suspend_for_vm_sets_rts_and_context ... ok
+test proc::tests::test_suspend_for_vm_with_copy ... ok
+test proc::tests::test_time_stats ... ok
+test proc::tests::test_virt_timer ... ok
+test proc::tests::test_vm_suspend_context_mut ... ok
+test proc_table::tests::test_check_quantum_exhausted_delegates_to_no_time ... ok
+test proc_table::tests::test_check_quantum_with_time_left_is_noop ... ok
+test proc_table::tests::test_fork_child_rts_corrections ... ok
+test proc_table::tests::test_fork_integration_flow ... ok
+test proc_table::tests::test_is_empty_after_alloc ... ok
+test proc_table::tests::test_is_empty_new_table ... ok
+test proc_table::tests::test_is_kernel ... ok
+test proc_table::tests::test_is_kernel_task ... ok
+test proc_table::tests::test_is_valid_nr ... ok
+test proc_table::tests::test_is_valid_nr_boundaries ... ok
+test proc_table::tests::test_iter_counts ... ok
+test proc_table::tests::test_proc_nr_roundtrip ... ok
+test proc_table::tests::test_process_misc_flags_clears_delivermsg ... ok
+test proc_table::tests::test_process_misc_flags_clears_kcall_resume ... ok
+test proc_table::tests::test_process_misc_flags_clears_sc_defer ... ok
+test proc_table::tests::test_process_misc_flags_delivermsg_first_fault_no_signal ... ok
+test proc_table::tests::test_process_misc_flags_delivermsg_segfault_causes_sigsegv ... ok
+test proc_table::tests::test_process_misc_flags_empty_returns_true ... ok
+test proc_table::tests::test_process_misc_flags_sc_active_only_clears_and_runs ... ok
+test proc_table::tests::test_process_misc_flags_sc_defer_blocked_in_send_keeps_sig_delay ... ok
+test proc_table::tests::test_process_misc_flags_sc_defer_ends_sig_delay ... ok
+test proc_table::tests::test_process_misc_flags_sc_trace_causes_sigtrap ... ok
+test proc_table::tests::test_process_misc_flags_sc_trace_without_active_no_signal ... ok
+test proc_table::tests::test_process_misc_flags_unrunnable_returns_false ... ok
+test proc_table::tests::test_process_table_const_init_idle_name ... ok
+test proc_table::tests::test_process_table_const_init_per_slot_nr ... ok
+test proc_table::tests::test_process_table_idle ... ok
+test proc_table::tests::test_process_table_new ... ok
+test proc_table::tests::test_rts_set_idempotent ... ok
+test proc_table::tests::test_rts_set_unset ... ok
+test proc_table::tests::test_rts_set_unset_multiple_flags ... ok
+test proc_table::tests::test_set_bill_to_idle ... ok
+test proc_table::tests::test_sig_delay_done_clears_flag_and_causes_signdelay ... ok
+test proc_table::tests::test_vm_memreq_get_dequeues_pending_request ... ok
+test proc_table::tests::test_vm_memreq_get_empty_queue ... ok
+test proc_table::tests::test_vm_memreq_reply_completes_request ... ok
+test proc_table::tests::test_vm_memreq_reply_invalid_state ... ok
+test proc_table::tests::test_vm_swap_requestor_noop_when_both_or_neither ... ok
+test proc_table::tests::test_vm_swap_requestor_reanchors_stale_entry_at_head ... ok
+test proc_table::tests::test_vm_swap_requestor_rewrites_predecessor_link_mid_chain ... ok
+test pte_walk::tests::test_pte_addr_mask_correctness ... ok
+test pte_walk::tests::test_pte_constants_match_x86_64 ... ok
+test pte_walk::tests::test_pte_to_page_flags_2mb_huge ... ok
+test pte_walk::tests::test_pte_to_page_flags_kernel_global ... ok
+test pte_walk::tests::test_pte_to_page_flags_present_writable_user ... ok
+test pte_walk::tests::test_pte_to_phys_addr_mask_clears_flags ... ok
+test pte_walk::tests::test_pte_to_phys_not_present ... ok
+test pte_walk::tests::test_pte_to_phys_present ... ok
+test pte_walk::tests::test_vaddr_indices_layout ... ok
+test pte_walk::tests::test_vaddr_indices_low_address ... ok
+test pte_walk::tests::test_vaddr_indices_mid_address ... ok
+test pte_walk::tests::test_walk_x86_64_requires_unsafe_memory ... ok
+test sched::tests::test_dequeue_only_process ... ok
+test sched::tests::test_enqueue_empty_queue ... ok
+test sched::tests::test_enqueue_head ... ok
+test sched::tests::test_enqueue_non_empty_queue ... ok
+test sched::tests::test_enqueue_preemption_skipped_for_other_cpu ... ok
+test sched::tests::test_enqueue_preempts_preemptible_current ... ok
+test sched::tests::test_enqueue_shell_without_cpu_local_still_enqueues ... ok
+test sched::tests::test_enqueue_spares_non_preemptible_current ... ok
+test sched::tests::test_pick_proc_empty ... ok
+test sched::tests::test_pick_proc_highest_priority ... ok
+test sched::tests::test_proc_no_time_kernel_scheduled ... ok
+test sched::tests::test_proc_no_time_non_preemptible_priv_renews_quantum ... ok
+test sched::tests::test_proc_no_time_priority_zero_preemptible_notifies_scheduler ... ok
+test sched::tests::test_proc_no_time_user_scheduled_preemptible ... ok
+test sched::tests::test_sched_proc_c_parity_step9_no_quantum_cleared ... ok
+test sched::tests::test_sched_proc_cpu_fallback_without_smp_state ... ok
+test sched::tests::test_sched_proc_cpu_update ... ok
+test sched::tests::test_sched_proc_error_to_errno ... ok
+test sched::tests::test_sched_proc_niced_flag_set_and_clear ... ok
+test sched::tests::test_sched_proc_priority_change ... ok
+test sched::tests::test_sched_proc_priority_none_keeps_value ... ok
+test sched::tests::test_sched_proc_priority_overflow_rejected ... ok
+test sched::tests::test_sched_proc_priority_too_high_rejected ... ok
+test sched::tests::test_sched_proc_quantum_update_resets_cpu_time ... ok
+test sched::tests::test_sched_proc_quantum_zero_rejected ... ok
+test sched::tests::test_sched_proc_runnable_reenqueue_on_update ... ok
+test sched::tests::test_validate_cpu_param_none_always_ok ... ok
+test sched::tests::test_validate_cpu_param_range_and_readiness ... ok
+test smp::tests::d36_tests::test_with_ncpus_clamps_to_max ... ok
+test smp::tests::d36_tests::test_with_ncpus_multi_cpu_state ... ok
+test smp::tests::d36_tests::test_with_ncpus_single_cpu_compat ... ok
+test smp::tests::test_ap_finish_booting_publishes_online ... ok
+test smp::tests::test_bkl_guard_nested_release ... ok
+test smp::tests::test_bkl_guard_release_method ... ok
+test smp::tests::test_bkl_guard_releases_on_drop ... ok
+test smp::tests::test_bkl_guard_section_enables_with_accessors ... ok
+test smp::tests::test_bkl_guard_section_lifetime_tied_to_guard ... ok
+test smp::tests::test_bkl_lock_unlock ... ok
+test smp::tests::test_bkl_reentrant_is_caller_responsibility ... ok
+test smp::tests::test_bkl_section_drop_does_not_unlock ... ok
+test smp::tests::test_bkl_section_paired_unlock ... ok
+test smp::tests::test_bkl_section_provides_typed_access ... ok
+test smp::tests::test_boot_ack_publish_and_observe ... ok
+test smp::tests::test_boot_lock_sequential_reentry ... ok
+test smp::tests::test_cpu_flags ... ok
+test smp::tests::test_cpu_info_table_record_and_get ... ok
+test smp::tests::test_cpu_local ... ok
+test smp::tests::test_cpu_local_default ... ok
+test smp::tests::test_cpu_local_note_context_switch ... ok
+test smp::tests::test_cpu_local_set_running ... ok
+test smp::tests::test_cpu_local_set_running_does_not_bill ... ok
+test smp::tests::test_handle_sched_ipi ... ok
+test smp::tests::test_handle_sched_ipi_empty ... ok
+test smp::tests::test_ipi_sched_handler_idle_no_preempt ... ok
+test smp::tests::test_online_mask_completion ... ok
+test smp::tests::test_sched_handler_full_empty ... ok
+test smp::tests::test_sched_handler_full_stop_proc ... ok
+test smp::tests::test_sched_handler_full_vminhibit ... ok
+test smp::tests::test_sched_ipi_data ... ok
+test smp::tests::test_sched_ipi_flags ... ok
+test smp::tests::test_smp_arch_trait_mock ... ok
+test smp::tests::test_smp_state_multi_cpu ... ok
+test smp::tests::test_smp_state_single_cpu ... ok
+test smp::tests::test_startup_timeout_constant_is_five_seconds ... ok
+test smp::tests::test_wait_for_aps_single_cpu ... ok
+test stacktrace::tests::proc_stacktrace_empty_chain_does_not_panic ... ignored, EarlyConsole writes to COM1 via inb/outb — requires real hardware or iopl permission; see syscall.rs DIAGCTL test for parallel reason
+test stacktrace::tests::proc_stacktrace_empty_chain_user_path_does_not_panic ... ignored, user-space path requires real PteWalk — exercised end-to-end on real hardware
+test stacktrace::tests::read_word_kernel_never_dereferences_when_fp_zero ... ok
+test stacktrace::tests::read_word_kernel_round_trip ... ignored, requires real kernel Direct Map alias; mock arch returns unmapped host addresses
+test stacktrace::tests::read_word_routes_kernel_vs_user ... ok
+test stacktrace::tests::read_word_user_unmapped_returns_none ... ok
+test stacktrace::util_stacktrace_tests::util_stacktrace_walks_current_stack_without_panic ... ignored, requires real kernel Direct Map; mock arch maps host stack walks to unmapped addresses
+test syscall::tests::test_dispatch_diagctl_register_denied_without_sys_proc ... ok
+test syscall::tests::test_dispatch_diagctl_register_unregister_lifecycle ... ok
+test syscall::tests::test_dispatch_diagctl_stacktrace_invalid_endpoint ... ok
+test syscall::tests::test_dispatch_diagctl_stacktrace_valid_endpoint_returns_ok ... ignored, requires real page table infrastructure; mock PteWalk returns None causing cross_space_copy to SIGSEGV on dst address arithmetic
+test syscall::tests::test_dispatch_getmcontext_rejects_invalid_endpoint ... ok
+test syscall::tests::test_dispatch_getmcontext_rejects_kernel_target ... ok
+test syscall::tests::test_dispatch_getmcontext_user_target_suspends ... ok
+test syscall::tests::test_dispatch_ipc_entry_acquires_bkl ... ok
+test syscall::tests::test_dispatch_ipc_entry_bad_call_nr_returns_ebadcall ... ok
+test syscall::tests::test_dispatch_ipc_entry_kerninfo_published_returns_ok ... ok
+test syscall::tests::test_dispatch_ipc_entry_kerninfo_unpublished_returns_ebadcall ... ok
+test syscall::tests::test_dispatch_ipc_entry_routes_send_to_ipc_engine ... ok
+test syscall::tests::test_dispatch_ipc_receive_ends_sender_sig_delay ... ok
+test syscall::tests::test_dispatch_privctl_add_io_without_priv_id_returns_eperm ... ok
+test syscall::tests::test_dispatch_privctl_clear_ipc_refs_returns_ok ... ok
+test syscall::tests::test_dispatch_privctl_disallow_already_set_returns_eperm ... ok
+test syscall::tests::test_dispatch_privctl_disallow_sets_no_priv ... ok
+test syscall::tests::test_dispatch_privctl_query_mem_returns_eperm_no_ranges ... ok
+test syscall::tests::test_dispatch_privctl_rejects_non_sys_proc_caller ... ok
+test syscall::tests::test_dispatch_privctl_set_sys_fills_guarded_default_mask ... ok
+test syscall::tests::test_dispatch_privctl_set_sys_without_no_priv_returns_eperm ... ok
+test syscall::tests::test_dispatch_privctl_unknown_request_returns_einval ... ok
+test syscall::tests::test_dispatch_privctl_update_sys_without_arg_ptr_returns_einval ... ok
+test syscall::tests::test_dispatch_schedule_niced_wire_bit_sets_mf_niced ... ok
+test syscall::tests::test_dispatch_schedule_rejects_invalid_endpoint ... ok
+test syscall::tests::test_dispatch_schedule_rejects_non_sys_proc_caller ... ok
+test syscall::tests::test_dispatch_schedule_sys_proc_caller_passes_priv_check ... ok
+test syscall::tests::test_dispatch_setmcontext_allows_kernel_target ... ok
+test syscall::tests::test_dispatch_setmcontext_rejects_invalid_endpoint ... ok
+test syscall::tests::test_dispatch_setmcontext_user_target_suspends ... ok
+test syscall::tests::test_kcall_result_variants ... ok
+test syscall::tests::test_kernel_call_dispatch_bad_call ... ok
+test syscall::tests::test_kernel_call_dispatch_call_denied_no_priv ... ok
+test syscall::tests::test_kernel_call_dispatch_sets_kbill_marker ... ok
+test syscall::tests::test_kernel_call_wrapper ... ok
+test syscall::tests::test_padconf_unused_kernel_call_replies_ebadrequest ... ok
+test syscall::tests::test_syscall_enum_tracks_minix_types_kernel_call_family ... ok
+test syscall::tests::test_syscall_try_from_invalid ... ok
+test syscall::tests::test_syscall_try_from_valid ... ok
+test syscall::tests::test_syscall_values_match_c ... ok
+test syscall::tests::test_vmctl_clear_page_fault_requeues_target ... ok
+test syscall::tests::test_vmctl_vminhibit_local_arm_sets_both_flags ... ok
+test syscall::tests::test_vmctl_vminhibit_park_helper_does_not_touch_flush_tlb ... ok
+test syscall_clock::tests::test_clock_realtime ... ok
+test syscall_clock::tests::test_dispatch_setalarm_reset_timer ... ok
+test syscall_clock::tests::test_dispatch_times_self_replacement ... ok
+test syscall_clock::tests::test_ksc_caller_has_sys_proc_fresh_table_rejects_all ... ok
+test syscall_clock::tests::test_ksc_caller_has_sys_proc_no_priv_id_rejected ... ok
+test syscall_clock::tests::test_ksc_priv_flags_sys_proc_bit_definition ... ok
+test syscall_clock::tests::test_ksc_setalarm_non_sys_proc_returns_eperm ... ok
+test syscall_clock::tests::test_ksc_vtimer_non_sys_proc_returns_eperm ... ok
+test syscall_clock::tests::test_sys_times_self_sentinel_authority_pin ... ok
+test syscall_clock::tests::test_t6_setalarm_first_set_returns_ok_and_arms ... ok
+test syscall_clock::tests::test_t6_setalarm_second_set_returns_previous_time_left ... ok
+test syscall_clock::tests::test_t6_settime_adjtime_mode_sets_delta ... ok
+test syscall_clock::tests::test_t6_settime_correction_when_boottime_wrong ... ok
+test syscall_clock::tests::test_t6_settime_normal_sets_realtime ... ok
+test syscall_clock::tests::test_t6_settime_rejects_non_realtime_clock ... ok
+test syscall_clock::tests::test_t6_stime_last_write_wins ... ok
+test syscall_clock::tests::test_t6_stime_sets_boottime ... ok
+test syscall_clock::tests::test_t6_vtimer_invalid_type_returns_einval ... ok
+test syscall_clock::tests::test_t6_vtimer_virtual_set_then_get_roundtrip ... ok
+test syscall_clock::tests::test_vtimer_type_try_from ... ok
+test syscall_clock::tests::test_vtimer_type_values_match_c ... ok
+test syscall_copy::tests::test_dispatch_copy_accepts_none_endpoint ... ok
+test syscall_copy::tests::test_dispatch_copy_overflow_returns_e2big ... ok
+test syscall_copy::tests::test_dispatch_copy_rejects_invalid_dst_endpoint ... ok
+test syscall_copy::tests::test_dispatch_copy_rejects_invalid_src_endpoint ... ok
+test syscall_copy::tests::test_dispatch_copy_self_replacement_and_valid_endpoint ... ok
+test syscall_copy::tests::test_dispatch_copy_try_flag_returns_efault_on_fault ... ok
+test syscall_copy::tests::test_dispatch_memset_overflow_returns_e2big ... ok
+test syscall_copy::tests::test_dispatch_memset_pattern_truncation_accepted ... ok
+test syscall_copy::tests::test_dispatch_memset_physical_zero_bytes_is_noop ... ok
+test syscall_copy::tests::test_dispatch_memset_rejects_invalid_process ... ok
+test syscall_copy::tests::test_dispatch_memset_valid_process_returns_vm_suspend ... ok
+test syscall_copy::tests::test_dispatch_safecopy_from_no_grant_table_returns_eperm ... ok
+test syscall_copy::tests::test_dispatch_safecopy_from_rejects_invalid_granter ... ok
+test syscall_copy::tests::test_dispatch_safecopy_from_rejects_negative_grant_id ... ok
+test syscall_copy::tests::test_dispatch_safecopy_from_rejects_none_granter ... ok
+test syscall_copy::tests::test_dispatch_safecopy_to_no_grant_table_returns_eperm ... ok
+test syscall_copy::tests::test_dispatch_safecopy_to_rejects_invalid_granter ... ok
+test syscall_copy::tests::test_dispatch_safecopy_to_rejects_negative_grant_id ... ok
+test syscall_copy::tests::test_dispatch_safecopy_to_rejects_none_granter ... ok
+test syscall_copy::tests::test_dispatch_safememset_rejects_dst_without_grant_table ... ok
+test syscall_copy::tests::test_dispatch_safememset_rejects_invalid_dst_endpoint ... ok
+test syscall_copy::tests::test_dispatch_safememset_rejects_none_dst ... ok
+test syscall_copy::tests::test_dispatch_safememset_valid_setup_suspends_on_grant_read ... ok
+test syscall_copy::tests::test_dispatch_umap_rejects_non_self_non_grant ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_bogus_seg_index_for_vm_seg ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_grantee_any_rejected ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_grantee_invalid_endpoint_rejected ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_grantee_none_rejected ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_grantee_valid_for_grant_segment ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_invalid_segment_type ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_invalid_src_endpoint ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_self_endpoint_valid ... ok
+test syscall_copy::tests::test_dispatch_umap_remote_valid_src_endpoint ... ok
+test syscall_copy::tests::test_dispatch_vsafecopy_rejects_negative_vec_size ... ok
+test syscall_copy::tests::test_dispatch_vsafecopy_rejects_none_caller ... ok
+test syscall_copy::tests::test_dispatch_vsafecopy_rejects_overflow_vec_size ... ok
+test syscall_copy::tests::test_dispatch_vsafecopy_rejects_zero_vec_size ... ok
+test syscall_copy::tests::test_dispatch_vsafecopy_vec_copy_fails_without_real_page_tables ... ok
+test syscall_copy::tests::test_dispatch_vumap_clamps_oversize_vcount ... ok
+test syscall_copy::tests::test_dispatch_vumap_grant_source_suspends_on_copy_fault ... ok
+test syscall_copy::tests::test_dispatch_vumap_rejects_invalid_source_endpoint ... ok
+test syscall_copy::tests::test_dispatch_vumap_rejects_none_caller ... ok
+test syscall_copy::tests::test_dispatch_vumap_rejects_unknown_access ... ok
+test syscall_copy::tests::test_dispatch_vumap_rejects_zero_pmax ... ok
+test syscall_copy::tests::test_dispatch_vumap_rejects_zero_vcount ... ok
+test syscall_copy::tests::test_dispatch_vumap_self_source_suspends_on_copy_fault ... ok
+test syscall_copy::tests::test_grant_constants_match_c ... ok
+test syscall_copy::tests::test_max_indirect_depth ... ok
+test syscall_copy::tests::test_mess_lsys_krn_sys_copy_layout ... ok
+test syscall_copy::tests::test_mess_lsys_krn_sys_umap_layout ... ok
+test syscall_copy::tests::test_safecopy_access_flags ... ok
+test syscall_copy::tests::test_segment_constants_match_c ... ok
+test syscall_copy::tests::test_self_replacement_at_dispatcher ... ok
+test syscall_copy::tests::test_umap_security_check ... ok
+test syscall_copy::tests::test_vscp_vec_struct_size_matches_c_layout ... ok
+test syscall_device::tests::test_check_irq_permission_no_flag ... ok
+test syscall_device::tests::test_check_irq_permission_with_flag_allowed ... ok
+test syscall_device::tests::test_check_irq_permission_with_flag_denied ... ok
+test syscall_device::tests::test_devio_alignment_check ... ok
+test syscall_device::tests::test_devio_check_io_port_allowed ... ok
+test syscall_device::tests::test_devio_check_io_port_denied ... ok
+test syscall_device::tests::test_devio_input_byte_no_check ... ok
+test syscall_device::tests::test_devio_invalid_type ... ok
+test syscall_device::tests::test_devio_output_word_no_check ... ok
+test syscall_device::tests::test_dio_combined_request ... ok
+test syscall_device::tests::test_dispatch_irqctl_disable_owner_check ... ok
+test syscall_device::tests::test_dispatch_irqctl_enable_owner_check ... ok
+test syscall_device::tests::test_dispatch_irqctl_rejects_unknown_request ... ok
+test syscall_device::tests::test_dispatch_irqctl_rmpolicy_owner_check_and_removes ... ok
+test syscall_device::tests::test_dispatch_irqctl_setpolicy_no_priv_returns_eperm ... ok
+test syscall_device::tests::test_dispatch_irqctl_setpolicy_rejects_negative_irq ... ok
+test syscall_device::tests::test_dispatch_irqctl_setpolicy_rejects_too_high_irq ... ok
+test syscall_device::tests::test_dispatch_irqctl_setpolicy_writes_hook_id_to_dedicated_field ... ok
+test syscall_device::tests::test_io_direction_from_mask ... ok
+test syscall_device::tests::test_io_size_from_mask ... ok
+test syscall_device::tests::test_iopenable_explicit_endpoint_sets_iopl ... ok
+test syscall_device::tests::test_iopenable_invalid_endpoint_returns_einval ... ok
+test syscall_device::tests::test_iopenable_iopl_bits_only_affects_bits_12_13 ... ok
+test syscall_device::tests::test_iopenable_kernel_process_returns_eperm ... ok
+test syscall_device::tests::test_iopenable_self_endpoint_resolves_to_caller ... ok
+test syscall_device::tests::test_irq_reenable_flag ... ok
+test syscall_device::tests::test_irqctl_request_try_from ... ok
+test syscall_device::tests::test_readbios_outside_bios_range_returns_eperm ... ok
+test syscall_device::tests::test_readbios_overflow_returns_einval ... ok
+test syscall_device::tests::test_readbios_straddling_ranges_returns_eperm ... ok
+test syscall_device::tests::test_readbios_zero_size_returns_einval ... ok
+test syscall_device::tests::test_sdevio_check_io_port_denied ... ok
+test syscall_device::tests::test_sdevio_invalid_direction_returns_einval ... ok
+test syscall_device::tests::test_sdevio_invalid_endpoint_returns_einval ... ok
+test syscall_device::tests::test_sdevio_kernel_target_returns_eperm ... ok
+test syscall_device::tests::test_sdevio_long_type_returns_einval ... ok
+test syscall_device::tests::test_sdevio_safe_path_no_grant_table_returns_eperm ... ok
+test syscall_device::tests::test_sdevio_unaligned_port_returns_eperm ... ok
+test syscall_device::tests::test_sdevio_unsafe_target_not_caller_returns_eperm ... ok
+test syscall_process::tests::test_dispatch_clear_clears_ext_reg_on_target ... ok
+test syscall_process::tests::test_dispatch_clear_invalid_endpoint_returns_einval ... ok
+test syscall_process::tests::test_dispatch_clear_sets_target_slot_free ... ok
+test syscall_process::tests::test_dispatch_exec_invalid_endpoint ... ok
+test syscall_process::tests::test_dispatch_exec_operates_on_target ... ok
+test syscall_process::tests::test_dispatch_exit_returns_no_reply ... ok
+test syscall_process::tests::test_dispatch_exit_sets_sigabrt_and_notifies_manager ... ok
+test syscall_process::tests::test_dispatch_runctl_invalid_action ... ok
+test syscall_process::tests::test_dispatch_runctl_kernel_process_returns_eperm ... ok
+test syscall_process::tests::test_dispatch_runctl_resume ... ok
+test syscall_process::tests::test_dispatch_runctl_stop ... ok
+test syscall_process::tests::test_dispatch_schedctl_invalid_endpoint_returns_einval ... ok
+test syscall_process::tests::test_dispatch_schedctl_invalid_flags ... ok
+test syscall_process::tests::test_dispatch_schedctl_kernel_flag_calls_sched_proc_and_clears_scheduler ... ok
+test syscall_process::tests::test_dispatch_schedctl_kernel_flag_invalid_quantum_returns_einval ... ok
+test syscall_process::tests::test_dispatch_schedctl_kernel_flag_priority_256_truncation_rejected ... ok
+test syscall_process::tests::test_dispatch_schedctl_kernel_flag_propagates_sched_proc_error ... ok
+test syscall_process::tests::test_dispatch_schedctl_no_flag_sets_caller_as_scheduler_on_target ... ok
+test syscall_process::tests::test_dispatch_schedctl_preserves_minus_one_sentinels ... ok
+test syscall_process::tests::test_dispatch_statectl_add_ipc_filter_rejects_unaligned_length ... ok
+test syscall_process::tests::test_dispatch_statectl_add_ipc_filter_rejects_zero_length ... ok
+test syscall_process::tests::test_dispatch_statectl_add_ipc_filter_suspends_and_frees_on_copy_fault ... ok
+test syscall_process::tests::test_dispatch_statectl_invalid_request_returns_einval ... ok
+test syscall_process::tests::test_finalize_ipc_filter_appends_and_aggregates ... ok
+test syscall_process::tests::test_finalize_ipc_filter_invalid_source_rejected ... ok
+test syscall_process::tests::test_statectl_request_from_i32 ... ok
+test syscall_process::tests::test_t12_clear_idempotent_on_empty_slot ... ok
+test syscall_process::tests::test_t12_fork_creates_child_with_new_endpoint ... ok
+test syscall_process::tests::test_t12_fork_downgrades_sys_proc_child ... ok
+test syscall_process::tests::test_t12_fork_rejects_non_receiving_parent ... ok
+test syscall_process::tests::test_t12_runctl_rc_delay_returns_ebusy ... ok
+test syscall_signal::tests::test_cause_signal_dedup_does_not_notify_twice ... ok
+test syscall_signal::tests::test_cause_signal_external_path_notifies_manager ... ok
+test syscall_signal::tests::test_cause_signal_self_lethal_no_backup_panics - should panic ... ok
+test syscall_signal::tests::test_cause_signal_self_lethal_promotes_backup ... ok
+test syscall_signal::tests::test_cause_signal_self_path_non_lethal ... ok
+test syscall_signal::tests::test_endksig_clears_sig_pending_when_no_new_signal ... ok
+test syscall_signal::tests::test_endksig_keeps_sig_pending_when_new_signal_arrived ... ok
+test syscall_signal::tests::test_getksig_delivers_pending_then_reports_none ... ok
+test syscall_signal::tests::test_is_lethal ... ok
+test syscall_signal::tests::test_nsig ... ok
+test syscall_signal::tests::test_sig_mask ... ok
+test syscall_signal::tests::test_sigmsg_struct ... ok
+test syscall_signal::tests::test_signal_constants ... ok
+test syscall_signal::tests::test_sigreturn_invalid_endpoint ... ok
+test syscall_signal::tests::test_sigreturn_unmapped_sigctx_returns_vmsuspend ... ok
+test syscall_signal::tests::test_sigsend_invalid_endpoint ... ok
+test syscall_signal::tests::test_sigsend_kernel_process ... ok
+test syscall_signal::tests::test_sigsend_unmapped_sigctx_returns_vmsuspend ... ok
+test syscall_signal::tests::test_sigsend_unsaved_process_returns_einval ... ok
+test tests::test_account_process_stop_accumulates_p_cycles ... ok
+test tests::test_account_process_stop_accumulates_p_cycles ... ok
+test tests::test_account_process_stop_zero_delta_is_noop ... ok
+test tests::test_arch_boot_rejects_misaligned_phys - should panic ... ok
+test tests::test_arch_boot_rejects_misaligned_stack_top - should panic ... ok
+test tests::test_arch_boot_rejects_zero_kern_size - should panic ... ok
+test tests::test_boot_empty_memmap ... ok
+test tests::test_boot_flow_identity_and_kernel_map ... ok
+test tests::test_bsp_finish_booting_single_cpu_only_bsp_initialized ... ok
+test tests::test_bsp_finish_booting_step_5_7_side_effects ... ok
+test tests::test_consume_flush_tlb_flag_clears_without_flush ... ok
+test tests::test_consume_flush_tlb_flag_flushes_and_clears ... ok
+test tests::test_consume_flush_tlb_flag_noop_when_unset ... ok
+test tests::test_consume_kbill_ipc_attributes_delta ... ok
+test tests::test_consume_kbill_kcall_attributes_delta ... ok
+test tests::test_finish_and_restore_fast_syscall_style_is_loud_placeholder - should panic ... ok
+test tests::test_finish_and_restore_reaches_mock_restore - should panic ... ok
+test tests::test_finish_and_restore_refuses_dispatch_without_entry_style - should panic ... ok
+test tests::test_from_active_root_does_not_allocate_via_new_mock_path ... ok
+test tests::test_from_active_root_round_trip_root_paddr ... ok
+test tests::test_higher_half_trait_is_implementable ... ok
+test tests::test_identity_map_end_alignment ... ok
+test tests::test_idle_marks_cpu_idle_and_bills_idle_proc ... ok
+test tests::test_interrupt_stop_charges_interrupted_process ... ok
+test tests::test_interrupt_stop_exhausts_quantum_then_policy_applies ... ok
+test tests::test_interrupt_stop_no_current_proc_is_noop ... ok
+test tests::test_kbill_ipc_and_kcall_are_independent ... ok
+test tests::test_kernel_info_aarch64_phys_in_ram ... ok
+test tests::test_kernel_info_riscv64_identity ... ok
+test tests::test_kernel_info_x86_64_alignment ... ok
+test tests::test_linker_script_aarch64_constraints ... ok
+test tests::test_linker_script_riscv64_constraints ... ok
+test tests::test_linker_script_x86_64_constraints ... ok
+test tests::test_mock_paging_query_after_map ... ok
+test tests::test_needs_tlb_refresh_requires_flag_and_ptproc ... ok
+test tests::test_pick_and_bill_empty_queues_returns_none ... ok
+test tests::test_pick_and_bill_sets_bill_ptr_for_billable_process ... ok
+test tests::test_ptproc_comparison_branch_condition ... ok
+test tests::test_ptproc_set_is_idempotent ... ok
+test tests::test_ptproc_set_is_per_cpu ... ok
+test tests::test_ptproc_set_returns_vm_proc_nr ... ok
+test tests::test_ptproc_unset_returns_none_before_init ... ok
+test tests::test_register_panic_diagnostic_sets_hook ... ok
+test tests::test_requeue_not_preempted_is_noop ... ok
+test tests::test_requeue_preempted_unrunnable_not_enqueued ... ok
+test tests::test_requeue_preempted_with_quantum_reenters_queue_head ... ok
+test tests::test_requeue_preempted_without_quantum_reenters_queue_tail ... ok
+test tests::test_root_phys_sentinel_distinct_from_valid_addresses ... ok
+test tests::test_root_phys_set_is_idempotent ... ok
+test tests::test_root_phys_set_returns_recorded_value ... ok
+test tests::test_root_phys_unset_returns_none_before_boot ... ok
+test tests::test_switch_address_space_installs_root_and_tracks_ptproc ... ok
+test tests::test_switch_address_space_kernel_task_is_noop ... ok
+test tests::test_switch_address_space_same_root_skips_ptproc_update ... ok
+test tests::test_switch_to_user_full_loop_dispatches_first_runnable_process - should panic ... ok
+test trap_dispatch::tests::exception_frame_carries_cpu_tail ... ok
+test trap_dispatch::tests::exception_signal_maps_to_c_signum ... ok
+test trap_dispatch::tests::forward_pagefault_blocks_when_vm_not_receiving ... ok
+test trap_dispatch::tests::forward_pagefault_delivers_to_receiving_vm ... ok
+test trap_dispatch::tests::forward_pagefault_errors_on_dead_vm_slot ... ok
+test trap_dispatch::tests::irq_entry_mirrors_user_frame_but_skips_kernel_origin ... ok
+test trap_dispatch::tests::reply_code_none_is_a_wiring_bug_marker ... ok
+test trap_dispatch::tests::spurious_vector_dispatch_completes ... ok
+test vm::tests::check_resumed_caller_returns_ok_when_no_resume ... ok
+test vm::tests::check_resumed_caller_returns_result_when_resumed ... ok
+test vm::tests::copy_page_table_ref_returns_empty ... ok
+test vm::tests::cross_space_result_dst_suspended ... ok
+test vm::tests::cross_space_result_src_suspended ... ok
+test vm::tests::cross_space_result_suspended_is_separate_from_error ... ok
+test vm::tests::kernel_call_resume_returns_fault_on_failure ... ok
+test vm::tests::kernel_call_resume_returns_ok_on_success ... ok
+test vm::tests::memreq_get_dequeues_and_sets_fetched ... ok
+test vm::tests::memreq_get_returns_no_request_on_empty_queue ... ok
+test vm::tests::memreq_reply_delivermsg_requires_mf_delivermsg ... ok
+test vm::tests::memreq_reply_delivermsg_succeeds_with_flag ... ok
+test vm::tests::memreq_reply_rejects_completed_state ... ok
+test vm::tests::memreq_reply_rejects_pending_state ... ok
+test vm::tests::memreq_reply_transitions_fetched_to_completed_fault ... ok
+test vm::tests::memreq_reply_transitions_fetched_to_completed_ok ... ok
+test vm::tests::page_table_ref_default_has_no_cr3 ... ok
+test vm::tests::page_table_ref_new_has_no_cr3 ... ok
+test vm::tests::page_table_ref_page_table_vaddr ... ok
+test vm::tests::page_table_ref_set_and_clear_cr3 ... ok
+test vm::tests::physical_range_spanning_two_pages_needs_both ... ok
+test vm::tests::physical_range_unmapped_page_fails ... ok
+test vm::tests::physical_range_without_active_root_passes ... ok
+test vm::tests::physical_range_zero_len_passes_without_walk ... ok
+test vm::tests::resolve_physical_returns_physical_directly ... ok
+test vm::tests::resolve_physical_unknown_endpoint ... ok
+test vm::tests::test_vmctl_param_from_u32 ... ok
+test vm::tests::test_vmctl_result_variants ... ok
+test vm::tests::try_deliver_message_returns_false_without_flag ... ok
+test vm::tests::try_deliver_message_returns_true_with_flag ... ok
+test vm::tests::vm_check_params_write_flag_bool ... ok
+test vm::tests::vm_check_result_variants ... ok
+test vm::tests::vm_copy_context_new ... ok
+test vm::tests::vm_copy_error_variants_match_minix3 ... ok
+test vm::tests::vm_ctl_error_variants ... ok
+test vm::tests::vm_fault_type_variants ... ok
+test vm::tests::vm_request_queue_dequeue_filtered_empty ... ok
+test vm::tests::vm_request_queue_dequeue_filtered_returns_first_match ... ok
+test vm::tests::vm_request_queue_enqueue_returns_was_empty ... ok
+test vm::tests::vm_request_queue_new_is_empty ... ok
+test vm::tests::vm_request_queue_remove ... ok
+test vm::tests::vm_suspend_state_fetched_after_memreq_get ... ok
+test vm::tests::vm_suspend_state_fetched_to_completed ... ok
+test vm::tests::vm_suspend_state_pending_is_initial ... ok
+test vm::tests::vm_suspend_state_pending_to_fetched ... ok
+test vm::tests::vm_suspend_type_exhaustive_match ... ok
+test vm_handoff::tests::test_boot_image_table_layout ... ok
+test vm_handoff::tests::test_classification_clips_to_dm_window ... ok
+test vm_handoff::tests::test_classification_deducts_all_record_sources ... ok
+test vm_handoff::tests::test_classification_drops_out_of_window_region ... ok
+test vm_handoff::tests::test_classification_free_list_is_exact_complement ... ok
+test vm_handoff::tests::test_identity_windows_clip_sort_merge ... ok
+test vm_handoff::tests::test_identity_windows_empty_reserved_still_has_mmio ... ok
+
+test result: ok. 809 passed; 0 failed; 8 ignored; 0 measured; 0 filtered out; finished in 8.68s
+
+     Running tests/boot_integration.rs (target/debug/deps/boot_integration-48b499985a0489ce)
+
+running 6 tests
+test boot_simulation_full_flow ... ok
+test init_proc_and_boot_test ... ok
+test runqueues_ok_cpu_detects_dead_proc_on_queue ... ignored, 失败诊断经 CurrentEarlyConsole 输出——宿主 x86_64 上是真 COM1（plat/lib.rs:59 mock 臂排除 x86_64），SIGSEGV；QEMU 下移除本 ignore
+test runqueues_ok_cpu_detects_runnable_not_queued ... ignored, 同上：失败诊断在宿主 x86_64 触发真 COM1 SIGSEGV；QEMU 下移除本 ignore
+test runqueues_ok_cpu_positive_invariants_hold ... ok
+test runqueues_ok_cpu_rejects_invalid_cpu ... ignored, 同上：invalid CPU 分支也经 Console 诊断输出；QEMU 下移除本 ignore
+
+test result: ok. 3 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.91s
+
+   Doc-tests minix_arch
+warning: unnecessary parentheses around assigned value
+   --> arch/src/arch/boot.rs:423:34
+    |
+423 |             let seg_bytes_here = (((seg.memsz - page_off as u64) as usize)
+    |                                  ^
+424 |                 .min(page_size as usize - seg_start_in_page));
+    |                                                             ^
+    |
+    = note: `#[warn(unused_parens)]` (part of `#[warn(unused)]`) on by default
+help: remove these parentheses
+    |
+423 ~             let seg_bytes_here = ((seg.memsz - page_off as u64) as usize)
+424 ~                 .min(page_size as usize - seg_start_in_page);
+    |
+
+warning: 1 warning emitted
+
+
+running 2 tests
+test arch/src/arch/frame.rs - arch::frame (line 38) ... ignored
+test arch/src/arch/frame.rs - arch::frame (line 49) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.19s; merged doctests compilation took 0.19s
+   Doc-tests minix_kernel
+
+running 2 tests
+test kernel/src/errno.rs - errno (line 10) ... ignored
+test kernel/src/syscall.rs - syscall::CurrentArchSyscall (line 418) ... ignored
+
+test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+all doctests ran in 0.19s; merged doctests compilation took 0.18s
+HOSTTEST-EXIT=0

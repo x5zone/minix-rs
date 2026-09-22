@@ -1555,3 +1555,71 @@ riscv64gc-unknown-none-elf --features fw-riscv64-none --release`），
 
 **M4.2 不做**：真机装载、xtask 装机面、`os/etc/rc` 追加、run_all 接线
 （分别属 M4.3/M4.5/P6）。
+
+---
+
+## P4 M4.2 实现 — kernel-image 产出 riscv64 镜像（DONE）
+
+**日期**：2026-09-22　**设计节**：本节上一节（commit `d7668ec6a`）
+**代码 commit**：`907a4444e`　**状态**：DONE（判据 = 宿主可测的镜像产出 +
+readelf 布局断言，不含真机装载）
+
+上一节的实现清单六条逐条落地，形状完全照 aarch64（M3.2），没有新机制：
+
+| # | 接线点 | 做了什么 |
+|---|--------|----------|
+| 1 | `os/kernel-image/riscv64.ld`（新增 99 行） | 高半 VMA `0xFFFFFFC000000000` + `AT()` 把 LMA 拉到 `0x80200000` 起、`.text.boot`/`.rodata.kernel_anchor` 的 KEEP、64 KiB 引导栈、2 MiB 跨距收口 |
+| 2 | `os/kernel-image/build.rs:19-23` | `riscv64gc-unknown-none-elf → riscv64.ld`，并补 `rerun-if-changed=riscv64.ld` |
+| 3 | `os/kernel-image/Cargo.toml:31` | `fw-riscv64-none = ["fw-none-image"]`；把「riscv64 可同形扩展」的展望注释改成既成事实，并写清 riscv64 镜像只由 check-layout 取件 |
+| 4 | `os/kernel-image/src/main.rs` | riscv64 的 `early_console` import、`_start` global_asm、`halt()` 第三分支、模块文档「两架构」→三架构 + 取件方分道 |
+| 5 | `os/kernel-image/check-layout.sh:70` | `arch_expect()` 第三行 + `case` 分支 + usage 文案 |
+| 6 | 验证 | 见下 |
+
+`os/xtask/src/image.rs` 一行未改（决策五）：riscv64 的 honest bail 保持，
+本节不声称装机面能装配。
+
+### 实测（四组，全部入 `evidence/20260922-nk4b-p4-m42/`）
+
+1. **riscv64 布局断言 13 条全 PASS**（`m42-check-layout-riscv64.log`）：
+   入口 = `0xffffffc000000000` = `_start` 符号 = 首段 VMA；四条 PT_LOAD 的
+   `vaddr - paddr` 恒等（`0xffffffbf7fe00000` = `KERNEL_VIRT_BASE -
+   KERNEL_PHYS_BASE`，即 L4 断言真正在管的那件事）；跨距 2 MiB 且 2 MiB 对齐；
+   引导栈 65536 字节落在末段；`minix_kernel::arch_boot` 在镜像里（锚点没被
+   `--gc-sections` 裁掉）。
+2. **三架构 `all` 全绿**（`m42-check-layout-all.log`）：39 条 PASS、0 条 FAIL、
+   EXIT=0 —— 新脚本没碰坏 x86_64/aarch64 那两条既有腿。
+3. **反向判别**（`m42-reverse-x86-as-riscv.log`）：把 x86_64 工件复制到 riscv64
+   取件位、`SKIP_BUILD=1` 重跑 → **EXIT=1，四条同时 FAIL**
+   （L2 机器类型 `Advanced Micro Devices X86-64` / L3b 首段 VMA /
+   L3c 首段 LMA / L6a 入口）。断言不是摆设，这一格是判据有效性的证据。
+4. **宿主回归 + 隔离门**（`m42-host-tests.log`、`m42-host-isolation-gate.log`）：
+   `minix-kernel` 809 passed / `minix-arch` 241 passed，等于 P0 基线未降；
+   `cargo build --workspace --bins` 在容器内干净 `CARGO_TARGET_DIR` 下
+   142 个 crate、EXIT=0、`^error` 0 条、`eh_personality` 0 条，
+   `kernel-image` 的 bin 因 `required-features` 未满足被静默跳过（隔离门
+   未退化）。
+
+### 两条过程记录（不美化）
+
+- **写 `.ld` 时的一次自我纠正**：第一版把 riscv 的 `.sdata2` 和 `.sbss` 一起
+  塞进 `.bss`。`.bss` 是 NOBITS，放进去的 `.sdata2` 内容会在装载时被清零——
+  静默丢数据，而且要到 M4.4 真机跑起来才会暴露。改成按语义归位
+  （`.srodata`/`.sdata2` → `.rodata`，`.sdata` → `.data`，`.sbss` → `.bss`）。
+  实测产物里这四节**一个都不存在**（`readelf -S` 只有 `.text/.rodata/.data/
+  .bss`），因为 rustc 对 `riscv64gc-unknown-none-elf` 不启用小数据优化；
+  保留匹配器是防御性的，成本是四行注释。
+- **宿主隔离门第一次跑假失败**：`cargo build --workspace --bins` 在宿主退
+  101，`error: failed to write os/target/debug/.fingerprint/minix-compress-…
+  Permission denied`。这是 M3.4 那节已经登记过的坑（早前 `docker run -v
+  $PWD:/work` 以 root 写脏了 target）。**本轮改用 `-u $(id -u):$(id -g)`
+  跑容器**，之后的宿主构建不再被新污染，同时按已登记的判别法用容器内干净
+  `CARGO_TARGET_DIR=/tmp/ct` 复跑该门。建议后续所有宿主 docker 命令都带
+  `-u`，这条写进 FIXLOG 的环境注记。
+
+### 判据对账（NK4B-TODO:109-110）
+
+「kernel-image riscv64 产出（Sv39 布局 + 入口约定）」两条都在本节：布局由
+`riscv64.ld` + check-layout 的 L0~L8 钉住；入口约定 = `_start` 只做
+立栈/清链路/进 Rust 面/`wfi` 驻留，明确**不**做开分页与 DTB 交接
+（NK1/OQ-N6 边界，与 x86_64/aarch64 同形）。真机装载属 M4.3，本节的
+「DONE」不含该判据，也不声称任何真机行为。
