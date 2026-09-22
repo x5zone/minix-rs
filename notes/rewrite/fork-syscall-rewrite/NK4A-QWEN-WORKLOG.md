@@ -103,12 +103,30 @@
 - 状态：**未触发**——A 修复后两轮真机（c18a/c18b）未出现 boot.rs:1054
   panic；新断点为 RS null-deref → cause_sig panic，走 Task C 取证循环。
 
-## Task C — RS null-deref 取证（BLOCKED，三轮取证上限）
+## Task C — RS null-deref 取证（BLOCKED·第四轮：IRQ 假设对本例证伪，崩溃未除）
 
-- 状态：**BLOCKED**（铁律 #10：c19a/c20a/c21a 三轮取证已达上限。故障
-  形态与 corruption 窗口已定性到「调用方在 PM 迭代把 &self.table=0x0
-  传入 endpoint_slot」，但「表基址如何在 VM→PM 迭代之间变 0」的根因
-  机制未实证，不假修）。已排除项与证据链见下文三轮记录。
+- 状态：**BLOCKED（回归）**。第四轮：静态定性出「IRQ/tick 入口不存帧 vs
+  C mpx.S 每入口 SAVE_PROCESS_CTX」的真实 C 偏差并按对位修复（Fix #10，
+  独立价值成立：入口保存不变量恢复 + 宿主防回归测试），但真机 c22a
+  崩溃序列与 c21a **逐字节一致、rs-epslot self=0x0 复现** → 该偏差
+  非本崩溃根因，假设对本例证伪。Task C 累计四轮（c19a/c20a/c21a/c22a）
+  未消除崩溃，按铁律 #10 停。
+- c22a 新证据（对下一轮极有价值）：
+  1. **完全确定性**：c21a vs c22a 的 `vm-pf bytes` 序列、pre-restore
+     rip/rsp、崩溃行逐一相同——不是 PIT 抢占竞态，是可静态复现的逻辑
+     bug（铁律 #9 的时序敏感假设对本例不适用）；
+  2. `vm-pf bytes 3538353936303631` = ASCII "58596016" 文本字节、
+     `bytes 83c4105dc3cccccc` / `0048c783`——VM 消息 payload 读到的不是
+     尺寸而是**未初始化/错误偏移的堆块**，pf 消息通道内容可疑（C 对位
+     VM_PAGEFAULT 消息编码 VPF_ADDR/VPF_FLAGS/VPF_PID，对照
+     exception.c:112-129 与 vm/pagefaults.c 的取字段）；
+  3. 崩溃前最后一次 RS restore：rip=0x203bf0（asynsend 首指令 fetch pf
+     的 ForwardToVm 入口**全量 save 过 rbx=live**）→ 同进程恢复后
+     rbx=0——save/restore 之间 ctx.rbx 被改，或 restore 消费的 ctx 与
+     save 写入的 ctx 不是同一份/同一次。**下一轮判别探针（第 5 轮候选）**：
+     在内核 pre-restore 路标处一并打印 `ipc_status_register(&ctx)`
+     （恢复用 rbx 实际值）+ ForwardToVm save 时打印 frame.rbx，两值对照
+     即可裁决「保存即错」vs「保存后被改」vs「恢复读错源」。
 - C1 符号化（objdump + addr2line，rs 模块 not stripped）：
   - 故障 rip `0x20d0d5` → `minix_rs::boot::BootInit::init_fresh+0x975`
     （addr2line 确认；release 构建内联，无行号）。
@@ -212,6 +230,46 @@
 - 铁律 #10 裁决：同一问题三轮（c19a/c20a/c21a）无根因实证 →
   **Task C 标记 BLOCKED**，本轮产物（探针 + 三份串口日志 + 本节）
   commit 归档；不做无定性修复。
+
+### 第四轮：静态定性成功，BLOCKED 解除（2026-09-22 同日续查）
+
+三轮真机取证后，转入零成本静态对照（上节「下一步建议 1」），根因定性：
+
+- **缺陷**：本端口 IRQ/tick 臂从不把被中断的用户寄存器全存进
+  `cpu_context`（trap_dispatch.rs:262-265 注释自认「The Rust IRQ path
+  never saves the frame」；tick 0xF1 臂 229-258 同样无 save）。而
+  `finish_and_restore`（kernel/lib.rs:3294-3314）唤醒/切回时按
+  「从 arch-private context 重建 frame」恢复——tick quantum 强制
+  （check_quantum，trap_dispatch.rs:241-257）与 PM 调度器挪动之下，
+  被抢占进程从**陈旧 ctx** 恢复。
+- **RBX 是重灾区**：ctx.rbx 三重身份（出生 ps_strings——
+  `unwrap_or(0)`，arch/x86_64/boot.rs:143；IPC 状态寄存器——
+  RECEIVE prologue `clear_ipc_status_reg` 写 0，ipc.rs:2087；普通
+  callee-saved 活值——本端口 SysV ABI 下编译器必然用 rbx 存跨调用
+  指针）。陈旧 ctx 的 rbx 回灌用户寄存器 → 活指针变 0/IPC 状态值。
+- **C 对位**：mpx.S 每个 IRQ/tick stub 入口无条件
+  `SAVE_PROCESS_CTX(0, KTS_INT_HARD)`（mpx.S:77/137/355/540），宏体
+  `SAVE_GP_REGS`（含 EBX——i386 IPC_STATUS_REG 同为 bx，
+  ipcconst.h:10）+ 记 `p_kern_trap_style`（sconst.h:75-89）。C 的
+  p_reg 永远是「最近一次 trap 入口的全量快照」，故从 p_reg 恢复永远
+  正确；本端口 IRQ 不存 → 该不变量破裂。
+- **与全部真机证据一致**：c21a 窗口 = VM 迭代 asynsend 的 IPC+pf
+  往返（int 0x21 入口把 ctx.rbx 存成 wrapper 的 msgptr、pf 入口存的
+  是调用点 rbx），此后任一 tick/挪动窗口从该 ctx 恢复；崩溃值恰为
+  0x0（RECEIVE 清零/出生 0 语义或折叠后地址）；PIT 抢占时序敏感
+  （铁律 #9 同源）；「restore 到 0x2014ad（不可 fault 指令）」= 陈旧
+  ctx.rip 回放的形态之一。
+- **修法**：tick 0xF1 臂与 IRQ 臂加 user-origin 全量
+  `save_frame_to_context` + `trap_style=FullContext`（对齐 C 入口保存
+  不变量；内核来源不存——frame 是内核寄存器，对应用户 ctx 已由其
+  系统调用入口存过）。
+- **修复结果（c22a 真机验证，2026-09-22）**：IRQ/tick 入口保存修复
+  已实施（Fix #10，宿主 kernel 809 全绿 + 防回归测试
+  `irq_entry_mirrors_user_frame_but_skips_kernel_origin`），但 c22a
+  崩溃序列与 c21a 逐字节一致、`rs-epslot self=0x0` 原样复现 →
+  **该 C 偏差独立成立并修复，但不是 Task C 崩溃的根因**（假设证伪
+  于本例；且崩溃完全确定性、与抢占时序无关）。Task C 回到 BLOCKED，
+  证据增量见上节 1-3。
 
 
 
