@@ -103,4 +103,41 @@
 - 状态：**未触发**——A 修复后两轮真机（c18a/c18b）未出现 boot.rs:1054
   panic；新断点为 RS null-deref → cause_sig panic，走 Task C 取证循环。
 
+## Task C — RS null-deref 取证（进行中）
+
+- 状态：**IN_PROGRESS**（第一轮取证已定性故障形态与位置，根因待
+  §8 步 4 的 RS 侧探针 + 真机复跑二选一确认；未定性不假修）。
+- C1 符号化（objdump + addr2line，rs 模块 not stripped）：
+  - 故障 rip `0x20d0d5` → `minix_rs::boot::BootInit::init_fresh+0x975`
+    （addr2line 确认；release 构建内联，无行号）。
+  - 该地址落在 RS 主 text 段 `0x201270 R E size 0x1e88c`（readelf -l 实证）。
+- 故障指令反汇编（`objdump -d`，L 邻近）：
+  ```
+  20d011: mov 0x1048(%rbx),%r12   ; 保存某 Vec 指针
+  20d018: mov 0x1050(%rbx),%r14   ; 保存 len
+  20d01f: mov 0x1058(%rbx),%rbp
+  20d033: call *0x210ce0          ; = RProcTable::sync_pub_wire(self=rbx)
+  ...循环步进 0x18=24，读 0x10(%rdi) 作 endpoint，做 _ENDPOINT_P 范围检查...
+  20d0d5: cmpl $0x1,(%rbx,%rax,1) ; 读 in_use==1 → cr2=rbx+rax=0x0 → #PF
+  ```
+  即：step1 末尾 `sync_pub_wire`（boot.rs:1037）之后的 boot-slot /
+  endpoint 索引遍历里，被索引表基址（rbx 系）为 NULL。
+- 关键判据（非本轮引入）：cr2=0 的 deref 在 Task A 修复前就存在，只是
+  旧 noaddr 臂只回 Error 不清挂起 → RS 永停 → **静默死锁掩盖了它**；
+  Task A 补 SIGSEGV 收口后，同一 deref 变可见 panic。**这是暴露，不是
+  Task A 的回归**。SIGSEGV→cause_sig panic 本身是 C system.c:430 正确行为。
+- 两条待验假设（下一轮区分）：
+  1. **exec 数据页填充错位/漏填**：boot 期反复 `vm-pf bytes 0000000000000000`
+     命中，若承载 boot 表/allocator 旗标的 RW 段（RS `.bss` 0x2291c8，
+     memsz≈1MB；历史 FIXLOG 记录 allocator 旗标约 0x229708）未从 ELF
+     正确拷入，则表基址读出 0。（对照 vm_server.rs:761-841 段拷贝逻辑）
+  2. **RS init_fresh 真实空指针路径**：`endpoint_slot`/`activate_boot_slot`
+     某未注册端点索引到空槽（release 内联，源码行待探针定位）。
+- 下一步（§8 步 4）：在 RS 侧 init_fresh boot-slot 段加限次探针打印
+  被索引表基址与当前 endpoint（`#[cfg(not(feature="mock"))]` 门 + AtomicUsize
+  cap + 标「task1-close 裁决删除」），重建镜像真机复跑，分辨假设 1/2；
+  据读数定性后再对照 C `minix3/minix/servers/rs/` 修复。
+- 本轮取证产物：serial_c18a/c18b 日志已归档于
+  `evidence/20260922-nk4a-taskA-c17a-c18/`（Task A commit 84347cff2）。
+
 
