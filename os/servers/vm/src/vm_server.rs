@@ -1782,7 +1782,30 @@ impl VmServer {
 
     /// Pagefault dispatch — decodes VmPagefaultIn from Message, delegates to cow_exec_pf.
     /// C (main.c:147-156): do_pagefaults(&msg); continue;
+    // NK4-A Task A 探针（task1-close 裁决删除）：mock 门在本 crate 未声明
+    // feature（与既有 rcv 探针同款），函数级放行以零新增编译警告。
+    #[allow(unexpected_cfgs)] // 外属性：放行函数体内 mock 门 cfg
     fn dispatch_pagefault(&mut self, msg: &Message) -> VmReply {
+        // NK4-A Task A 取证（task1-close 裁决删除）：入口解出 fault 地址，
+        // 供各静默出口打印 cr2（停滞判据 = vm-pf recv 后无 bytes，需在每
+        // 个跳过 bytes 的出口定性）。
+        #[cfg(not(feature = "mock"))]
+        let pf_cr2 = minix_types::VmPagefaultIn::decode_message(msg).vaddr.0;
+        macro_rules! pf_exit {
+            ($tag:literal) => {
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static PF_EXIT_LOG: AtomicUsize = AtomicUsize::new(0);
+                    if PF_EXIT_LOG.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                        crate::bootmark::mark(&alloc::format!(
+                            concat!("nk4a: pf-exit ", $tag, " cr2={:#x}\n"),
+                            pf_cr2
+                        ));
+                    }
+                }
+            };
+        }
         // minix-rs: the kernel packs vpf_addr/vpf_flags in the dedicated
         // m_vm_pagefault union member (os/kernel/src/page_fault.rs:142-166);
         // the faulting endpoint is m_source (C: pagefaults.c:242).
@@ -1790,11 +1813,17 @@ impl VmServer {
         let table = VmProcTable::get_global();
         let slot = match table.vm_isokendpt(request.endpoint) {
             Ok(s) => s,
-            Err(_) => return VmReply::Error(VmError::InvalidProcess),
+            Err(_) => {
+                pf_exit!("badendpt");
+                return VmReply::Error(VmError::InvalidProcess);
+            }
         };
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
-            None => return VmReply::Error(VmError::InvalidProcess),
+            None => {
+                pf_exit!("inactive");
+                return VmReply::Error(VmError::InvalidProcess);
+            }
         };
         let proc_endpoint = proc.endpoint();
         let fault_addr = request.vaddr;
@@ -1819,6 +1848,7 @@ impl VmServer {
                 let _ = &e;
                 audit_log!("[VM PF] clear_pagefault failed: {e:?}");
             }
+            pf_exit!("wro");
             return VmReply::Error(VmError::AccessViolation);
         }
 
@@ -1831,7 +1861,10 @@ impl VmServer {
         let (regions, pt) = proc.mem_parts_mut();
         let region = match regions.find_mut(fault_addr) {
             Some(r) => r,
-            None => return VmReply::Error(VmError::InvalidAddress),
+            None => {
+                pf_exit!("noaddr");
+                return VmReply::Error(VmError::InvalidAddress);
+            }
         };
         let service_outcome = crate::cow_exec_pf::handle_pagefault(
             proc_endpoint, region, frames, page_alloc,
@@ -1866,6 +1899,10 @@ impl VmServer {
                 }
                 hex.push('\n');
                 crate::bootmark::mark(&hex);
+            } else {
+                // 成功出口但页表读不到 PTE——bytes 静默缺失的另一候选
+                // （task1-close 裁决删除）。
+                pf_exit!("ok-nopte");
             }
         }
         match service_outcome {
@@ -1878,8 +1915,13 @@ impl VmServer {
                 // (Linux counts major when I/O is required, not at
                 // completion). Access violations are not faults served.
                 match action {
-                    crate::cow_exec_pf::PagefaultAction::Suspended => proc.inc_major_fault(),
-                    crate::cow_exec_pf::PagefaultAction::AccessViolation => {}
+                    crate::cow_exec_pf::PagefaultAction::Suspended => {
+                        pf_exit!("susp");
+                        proc.inc_major_fault()
+                    }
+                    crate::cow_exec_pf::PagefaultAction::AccessViolation => {
+                        pf_exit!("accvio");
+                    }
                     crate::cow_exec_pf::PagefaultAction::Handled
                     | crate::cow_exec_pf::PagefaultAction::MappedNewPage
                     | crate::cow_exec_pf::PagefaultAction::CowResolved => proc.inc_minor_fault(),
@@ -1905,6 +1947,7 @@ impl VmServer {
                     {
                         let _ = &e;
                         audit_log!("[VM PF] clear_pagefault failed: {e:?}");
+                        pf_exit!("clrpf");
                     }
                 }
                 VmReply::Ok
