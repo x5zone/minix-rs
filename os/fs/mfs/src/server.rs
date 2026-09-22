@@ -941,6 +941,78 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
         Ok(())
     }
 
+    fn rename(
+        &mut self,
+        old_directory: u64,
+        old_name: &str,
+        new_directory: u64,
+        new_name: &str,
+    ) -> Result<(), Errno> {
+        let fs = self.mounted()?;
+        let (mut old_blocks, old_size) = Self::load_parent(fs, old_directory)?;
+        let same_dir = old_directory == new_directory;
+        if same_dir {
+            // 同目录:引擎探新名/落新名都走旧镜像(C new_dirp == old_dirp),
+            // 新映像参数空置(引擎自测同款)。
+            let mut scratch = Vec::new();
+            let outcome = {
+                let parts = fs.parts();
+                let mut ctx = LinkCtx {
+                    table: parts.inodes,
+                    cache: parts.cache,
+                    device: parts.device,
+                    io: parts.io,
+                    read_only: parts.read_only,
+                    block_size: parts.block_size,
+                    map: parts.map,
+                    range: parts.range,
+                };
+                crate::link::rename(
+                    &mut ctx,
+                    old_directory,
+                    &mut old_blocks,
+                    old_name.as_bytes(),
+                    new_directory,
+                    &mut scratch,
+                    new_name.as_bytes(),
+                )
+                .map_err(|error| error.to_errno())?
+            };
+            Self::store_parent(fs, old_directory, old_size, &mut old_blocks)?;
+            Self::reclaim_zones(fs, &outcome.reclaimed);
+            return Ok(());
+        }
+        // 跨目录:新旧父各自装载(顺序拿可变借用,装载完即释放)。
+        let (mut new_blocks, new_size) = Self::load_parent(fs, new_directory)?;
+        let outcome = {
+            let parts = fs.parts();
+            let mut ctx = LinkCtx {
+                table: parts.inodes,
+                cache: parts.cache,
+                device: parts.device,
+                io: parts.io,
+                read_only: parts.read_only,
+                block_size: parts.block_size,
+                map: parts.map,
+                range: parts.range,
+            };
+            crate::link::rename(
+                &mut ctx,
+                old_directory,
+                &mut old_blocks,
+                old_name.as_bytes(),
+                new_directory,
+                &mut new_blocks,
+                new_name.as_bytes(),
+            )
+            .map_err(|error| error.to_errno())?
+        };
+        Self::store_parent(fs, old_directory, old_size, &mut old_blocks)?;
+        Self::store_parent(fs, new_directory, new_size, &mut new_blocks)?;
+        Self::reclaim_zones(fs, &outcome.reclaimed);
+        Ok(())
+    }
+
     fn symbolic_link(
         &mut self,
         directory: u64,
