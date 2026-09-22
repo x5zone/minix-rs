@@ -798,12 +798,31 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     static PFRBX: AtomicUsize = AtomicUsize::new(0);
                     if PFRBX.fetch_add(1, AtomicOrd::Relaxed) < 48 {
                         use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                        let cr2: u64;
+                        // SAFETY: reading CR2 has no side effects.
+                        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
                         C0::write_str("nk4a: pf-save ep=");
                         C0::write_hex(proc.p_endpoint.0 as u64);
                         C0::write_str(" rbx=");
                         C0::write_hex(frame.rbx);
                         C0::write_str(" rip=");
                         C0::write_hex(frame.rip);
+                        C0::write_str(" cr2=");
+                        C0::write_hex(cr2);
+                        // NK4-C 第 12 轮：RS 全现场——wrapper 的栈写目标
+                        // （rsp/r8=slot/rdi/rsi）与 r10 状态车道。
+                        if proc.p_endpoint.0 == 2 {
+                            C0::write_str(" rsp=");
+                            C0::write_hex(frame.rsp);
+                            C0::write_str(" r8=");
+                            C0::write_hex(frame.r8);
+                            C0::write_str(" rdi=");
+                            C0::write_hex(frame.rdi);
+                            C0::write_str(" rsi=");
+                            C0::write_hex(frame.rsi);
+                            C0::write_str(" r10=");
+                            C0::write_hex(frame.r10);
+                        }
                         C0::write_str("\n");
                     }
                 }
