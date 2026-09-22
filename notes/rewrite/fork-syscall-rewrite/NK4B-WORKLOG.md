@@ -191,3 +191,90 @@ P1 的断点、已排除项、探针未覆盖的存帧站点、第 7 轮方案�
   两次复跑 N/A（P0 只要求实测记录）；FIXLOG 本轮无修复条目，N/A；
   WORKLOG ✅；真机/测试输出已 `git add -f` 归档到
   `evidence/20260922-nk4b-p0/`（冒烟 stdout + 六包 `test result:` 行）✅
+
+## P1 — x86_64 抵达 rc marker（状态：PARTIAL，取证三轮已定性到写者集合，修复需架构裁决）
+
+- 状态：**PARTIAL**（未达成 rc marker；根因候选已收窄到一个写者集合，
+  但怎么修属架构级裁决，不自行定案）
+- commit：探针 `chore(nk4b,p1): 第 7/8/9 轮 rs RBX 轨迹探针`、本文档与证据另一 commit
+- 真机轮次：c25a（第 7 轮）/ c26a（第 8 轮）/ c27a + c27b（第 9 轮，两次独立复跑）
+- 证据：`evidence/20260922-nk4b-p1-r7-9/`（四份串口日志 + 两份镜像构建日志）
+
+### 本轮上的三个探针（均在 `os/kernel/src/trap_dispatch.rs`，全部
+`#[cfg(not(feature = "mock"))]` + 限次 + 标「task1-close 裁决删除」）
+
+| 探针 | 过滤 | 去重键 | 上限 | 调用站点 |
+|------|------|--------|------|----------|
+| `nk4a_rs_trace_probe` | 仅 rs（端点 2） | `(site, rip, rbx)` | 64 | pf2 / x33 / irq / sig / vms / rst |
+| `nk4a_rs_anom_probe` | rs 且 `rbx < 0x10000` | `(site, rip, rbx)` | 48 | 同上 |
+| `nk4a_rs_leak_probe` | rs 且「指针量级→状态量级」跃变 | 跃变次计数 | 12 | 同上 |
+
+站点含义：`pf2` = 页故障转发前的存帧（`x86_trap_dispatch_body` 的
+ForwardToVm 臂）、`sig` = 异常→信号投递臂存帧、`vms` = syscall 腿
+VmSuspend 停车臂存帧、`x33` = int-33 IPC 入口存帧（`x86_ipc_dispatch_body`）、
+`irq` = tick/IRQ 镜像存帧（`mirror_irq_frame_into_proc`）、`rst` = 交付侧
+（`os/kernel/src/lib.rs` 的 `finish_and_restore` 紧接 iretq 前）。
+第 7/8 轮的 site 名 `i33` 与 `irq` 首字节相同，被去重表合并（计数丢数据），
+第 9 轮改为 `x33`。
+
+### 三轮得到的四条定性结论（均有串口行号可查）
+
+1. **存帧→恢复回路忠实**（c25a）：同一次循环里 `pf2`/`irq`/`x33` 采到的
+   `(rip, rbx)` 与紧随其后的 `rst` 交付值逐对相等（如第 187/221 行
+   `pf2 rbx=0x7fffffffefe0 rip=0x225280` → 第 247 行 `rst` 同值）。
+   →  NK4-A 第 5/6 轮的「内核在存帧与交付之间把 RBX 改写」分支持续
+   不成立（第 6 轮静态排除之外的真机佐证）。
+2. **出生值不是 0**（c25a 第 178 行 `rst n=0x0 rbx=0x7fffffffefe0`）：
+   `os/arch/src/x86_64/boot.rs` 里 `entry.ps_strings.map(|v| v.0).unwrap_or(0)`
+   走的是 `Some` 分支。→ NK4-A 第 7 轮方案里的「出生即 0」候选被证伪。
+3. **崩溃现场已拿到**（c26a 第 3872/3893/3896 行）：
+   `rs-anom pf2 rbx=0x0 rip=0x203bf0` → `rs-anom rst rbx=0x0 rip=0x203bf0`
+   → `rs-anom pf2 rbx=0x0 rip=0x216a76`（崩溃指令，`mov (%rdx,%rcx,1),%rax`
+   读虚存地址 0）。异常值从最早的 `rs-anom n=0x0`（第 577 行，
+   `rbx=0x7 rip=0x227b29`）就存在，到崩溃共 6 次异常采样。
+4. **跃变全部发生在未采样区段**（c27a 六条 + c27b 六条同形）：每次跃变
+   都报在存帧站（c27b 五次 `pf2` + 一次 `irq`），而上一采样点是
+   指针量级（如 c27b 第 4 条：`from_site=rst prev_rbx=0x7fffffff9d48
+   prev_rip=0x225979` → `rbx=0x0 rip=0x203bf0`）。即：RBX 从用户指针变成
+   小整数/0，发生在六个采样点**之间**。而内核写 ctx.rbx 的站点只有
+   `clear_ipc_status_reg`（`os/kernel/src/ipc.rs` 的 plain-RECEIVE 前奏）、
+   `or_ipc_status_reg`（`os/kernel/src/proc.rs` 的 `ipc_status_add_call` /
+   `ipc_status_add_flags`）、`set_secondary_ipc_return`（`os/kernel/src/syscall.rs`
+   的 KernInfo 腿）与 sigreturn——写的就是用户 callee-saved 寄存器的值。
+   异常值形态与此吻合：c27a 的 0x7 = `SEND(1)|RECEIVE(2)|SENDREC(4)` 的
+   OR 累积，c25a 第 285 行 `vms rbx=0x0000062c00007bff` 是一个用户指针
+   被高位标志 OR 过的合并值。
+
+### 为什么本轮不直接修（上交裁决）
+
+在 x86_64 上把 RBX 当 IPC 状态寄存器使用，本身就是一个与 C 不同
+的架构选择：C 只有 i386（`IPC_STATUS_REG = bx`，
+`minix3/minix/include/arch/i386/include/ipcconst.h:10`）与 earm（`= r1`，
+同目录 earm 版 `:7`）两个定义，仓内无 x86_64 版。i386 能安全使用 bx 的前提
+是用户侧包装函数在窗口内自行保存：`minix3/minix/kernel/arch/i386/
+usermapped_glo_ipc.S` 的 `IPCFUNC` 宏先 `push %ebx`、返点后 `mov %ebx,%ecx`
+取状态再 `pop %ebx`。本仓对位实现是 `os/libs/minix-sys/src/arch_trap.rs`
+的 `ipc_trap`（同为 push/pop 保护）。一旦内核在【非窗口内恢复点】
+写这个寄存器，用户态的 callee-saved 活值（这里是 `&self.table`）就被
+摧毁且会沿 push/pop 链上传。三个候选修法（需裁决，不自行定案）：
+
+| 方案 | 做法 | 代价 / 风险 |
+|------|------|------------|
+| A 换寄存器 | x86_64 的状态寄存器改为调用者不保存型寄存器（caller-saved，如 r10/r11，与 earm 的 `r1` 同思路） | 语义偏最小；需同步改 `arch_trap.rs` ABI 文档、三架构一致，属 `[ARCH]` 变更 |
+| B 限制写时机 | 仅当恢复点在 ipc_trap 窗口内才写/交付 RBX，否则走影子字段 | 内核要能判定“窗口内”，需额外记录与检查；易漏 |
+| C 存/复分离 | ctx 里单开一个状态字段，不进用户寄存器组，`restore_to_user` 不交付它 | 用户态得改从其他渠道取状态，与 C 行为偏离最大 |
+
+本弧线的 P2-P6 均硬依赖 x86_64 启动链翻绿（rs 不活 → init 不跑 →
+rc marker 不出），而上述三案都改变对外 ABI/行为契约，属架构级裁决，
+按任务书 §1 不自行定案。按铁律“同一问题 3 轮仍无定性则转下一个
+独立任务”，本轮已把问题从「未定性」推到「写者集合已封闭 + 修法需裁决」，
+下一步建议：裁决三案之一后按 fix-guard 单条修（并补宿主防回归测试：
+断言状态写入不侵入用户 callee-saved 寄存器），同时并行推 P3（aarch64
+M3.1 载体现状点电）——它与本断点无关。
+
+- 自检：fix-guard ✅（每条修改前读目标行 ±5 行 + grep；探针为单类型
+  改动单元，零删除行，`git diff --stat` 为 +228）；计数不减 ✅（kernel
+  809 passed / 0 failed，与 P0 基线持平）；两次复跑 ✅（c27a/c27b 同形，
+  且 c27b 首次启动产出空串口日志已复跑纠正）；IMG-EXIT=0 ✅；证据已
+  `git add -f` 归档 ✅；FIXLOG 本轮无修复条目（取证，非修复），N/A；
+  未动 `os/etc/rc`、未动冒烟脚本、未删既有探针 ✅。
