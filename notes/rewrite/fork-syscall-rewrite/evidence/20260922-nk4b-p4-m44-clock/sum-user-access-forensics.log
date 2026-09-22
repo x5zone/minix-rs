@@ -290,3 +290,35 @@ bump 分配区（载体 :588-589）：0x8200_0000 .. 0x8400_0000 ⊂ 上面区�
 必须得 3（若将来有人把那三条注释改成真调用或删掉，本文档的 21/24 拆分就要重算）。
 跑 `cd .. && grep -n "24 个调用方\|已用 24 处" notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md`
 必须无输出（旧的过宽归类必须清零）。
+## 14. 旁支修复：vm.rs:228 的 C 对位指向一个不存在的文件
+
+### 14.1 判别命令与输出
+  $ ls minix3/minix/kernel/memory.c
+  ls: cannot access 'minix3/minix/kernel/memory.c': No such file or directory
+  $ sed -n '377p' minix3/minix/kernel/arch/i386/memory.c
+  size_t vm_lookup_range(const struct proc *proc, vir_bytes vir_addr,
+  $ sed -n '353p;355p' minix3/minix/kernel/arch/earm/memory.c
+  *				vm_lookup_range				     *      (:353 banner)
+  size_t vm_lookup_range(const struct proc *proc, vir_bytes vir_addr,        (:355 定义)
+⇒ i386 的 :377 是函数定义行；earm 变体存在但行号不同（banner 353 / 定义 355）。
+
+### 14.2 同文件另三条 memory.c 引用的行号核对（确认不是同一类缺陷）
+  $ cd minix3/minix/kernel/arch/i386 && sed -n '377p;526p;592p' memory.c
+  377: size_t vm_lookup_range(...)
+  526: int vm_memset(struct proc* caller, endpoint_t who, phys_bytes ph, int c,
+  592: int virtual_copy_f(
+  $ grep -n "^size_t vm_lookup_range\|^int vm_memset\|^int virtual_copy_f" memory.c
+  377 / 526 / 592（与上引完全一致）
+⇒ `os/kernel/src/vm.rs:380`（virtual_copy_f — memory.c:592）、`:458`（vm_memset —
+  memory.c:526）、`:515`（virtual_copy_f — memory.c:592）三条行号均命中定义行，
+  只是按该文件局部约定省略目录前缀。省略前缀 ≠ 指向不存在的文件，不判缺陷。
+
+### 14.3 修法与验证
+  改 `os/kernel/src/vm.rs:228` 一行 doc 注释：
+  - /// C: `vm_lookup_range` — kernel/memory.c
+  + /// C: `vm_lookup_range` — kernel/arch/i386/memory.c:377（earm 变体在 arch/earm/memory.c:355）
+  宿主测试（纯 doc 改动，不需真机）：
+  $ docker run --rm -v "$PWD:/work" -w /work -m 2g minix-ci:1.94 cargo test -j 1 -p minix-kernel
+  TEST-EXIT=0
+  passed=812 failed=0 ignored=13（P0 基线 809，只涨不跌；增量为并发会话合入的
+  nt-tests 用例，非本枚引入）

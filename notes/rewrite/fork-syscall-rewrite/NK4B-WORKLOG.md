@@ -2246,11 +2246,20 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
 “先写结论再补命令”：我查了两份载体的窗口，却没查生产代码自己怎么处理其它用户
 内存访问——而答案就是“从不直接读用户 VA”。取证命令已逐条写进日志 §12。
 
-另登记一条旁支发现（不修，P2 级）：`kernel/src/vm.rs:228` 的 doc 把 C 对位写
+另登记一条旁支发现（P2 级，本轮已修）：`kernel/src/vm.rs:228` 的 doc 把 C 对位写
 成「`vm_lookup_range` — kernel/memory.c」，但 `minix3/minix/kernel/memory.c` 这个
-文件不存在，真实位置是 `minix3/minix/kernel/arch/i386/memory.c:377`（另有
-`arch/earm/memory.c:353` 等架构变体）。选 丙 后这段拷贝路径本来就要重动，届时
-一并改注释；现在单独改一行注释不值得走一轮真机。
+文件不存在（`ls` 直接报 No such file），真实位置是
+`minix3/minix/kernel/arch/i386/memory.c:377`（函数定义行实测；earm 变体的 banner 在
+`arch/earm/memory.c:353`、定义在 `:355`）。
+
+修它的理由不是「顺手」：错 C 对位在铁律 4 下是双向污染——后人拿它当坐标去
+`minix3/` 对账会找不到文件，进而怀疑整段拷贝路径的可信度。初版判「不修」的原
+因是「不值得为此走一轮真机」，这个判断把成本算错了：纯 doc 注释改动不影响
+codegen，只需宿主测试全绿（实测 `cargo test -j 1 -p minix-kernel` 得 passed=812 /
+failed=0，P0 基线 809 只涨不跌），不需真机。同文件的另三条 `memory.c:NNN`
+引用（`:380`/`:458`/`:515`）也逐个核了行号，均与 `arch/i386/memory.c` 实文一字
+不差（526 = `vm_memset`、592 = `virtual_copy_f`），按局部约定不展开目录前缀，
+不是缺陷，不动。
 
 ### 登记：riscv64 出生链载体的 `uecall_handler` 可能已是死腿（只登记，不修）
 
