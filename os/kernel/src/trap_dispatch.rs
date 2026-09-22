@@ -74,6 +74,62 @@ fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
 }
 
 #[cfg(target_arch = "x86_64")]
+/// C: the `SAVE_PROCESS_CTX(0, KTS_INT_HARD)` macro body every IRQ/clock
+/// stub in mpx.S runs at trap entry (mpx.S:77/137/355/540; sconst.h:75-89)
+/// — `SAVE_GP_REGS` mirrors ALL interrupted user registers into
+/// `saved_proc->p_reg` (EBX included; on i386 the IPC status register and
+/// a callee-saved GP are the same register, ipcconst.h:10) and records
+/// `p_kern_trap_style`, BEFORE any scheduling policy runs.
+///
+/// NK4-A Task C fix: the IRQ/tick arms of this port never saved the frame
+/// (the old comment at the profile-clock handoff admitted it), so a
+/// process moved by quantum expiry or the user scheduler woke through
+/// `finish_and_restore` (kernel/lib.rs, "rebuild the frame from the
+/// arch-private context") with a stale register file — RBX's live
+/// callee-saved value rolled back to whatever the last trap-entry save or
+/// the IPC-status/ps_strings semantics left there (real machine c19a-c21a:
+/// RS step2 saw `&self.table` = 0x0 after a pf/IPC round trip, crashing
+/// in `endpoint_slot`). Kernel-origin interrupts skip: the frame holds
+/// kernel registers there, and the process's user context was already
+/// saved in full by its own syscall/trap entry.
+///
+/// # Safety
+/// Caller is the A-path trap body with the BKL owned per the arm's
+/// contract (user-origin IRQs run under the interrupted context's lock —
+/// same witness `check_quantum` and `dispatch_hardware_irq` already use).
+unsafe fn save_irq_frame_to_context(frame: &TrapFrame) {
+    let section = unsafe { crate::smp::BklSection::assume_held() };
+    let cur_nr = {
+        let smp = crate::smp_state_with(&section);
+        smp.cpu_local(crate::current_cpu_id())
+            .and_then(|l| l.proc_ptr)
+    };
+    if let Some(nr) = cur_nr {
+        let table = crate::proc_table_with(&section);
+        if let Some(proc) = table.get_mut(nr) {
+            mirror_irq_frame_into_proc(frame, proc);
+        }
+    }
+}
+
+/// The testable core of [`save_irq_frame_to_context`]: the CPL gate plus
+/// the full-context mirror. Returns whether the frame was mirrored (the
+/// host-side test pins both branches without boot-global fixtures).
+fn mirror_irq_frame_into_proc(
+    frame: &TrapFrame,
+    proc: &mut crate::proc::KProcess,
+) -> bool {
+    if frame.cs & 3 != 3 {
+        // kernel re-entry: the frame holds kernel registers; the process's
+        // user context was already saved in full by its own trap entry.
+        return false;
+    }
+    minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+    proc.trap_style = TrapStyle::FullContext;
+    true
+}
+
+#[cfg(target_arch = "x86_64")]
 /// A-path body: exceptions, external IRQs, IPIs, soft-int gates, spurious.
 ///
 /// Registered via `minix_arch::register_trap_dispatchers` before
@@ -227,6 +283,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // SIE; the sret after the handler restores it (SPIE=1), so the
     // preempted process's instruction stream resumes without disruption.
     if vector == 0xF1 {
+        // C: every clock/IRQ stub in mpx.S runs SAVE_PROCESS_CTX at entry
+        // before any policy code (mpx.S:77/137/355/540) — do it before the
+        // quantum check so a preempt-and-wake dispatch never reads a stale
+        // register file (NK4-A Task C).
+        unsafe { save_irq_frame_to_context(frame) };
+
         // NK4-A C-3 迭代8 取证（一次性）：LAPIC tick 存活证明——RS 用户态
         // 裸转期间若 tick 从未触发，则无抢占、自旋独占 CPU。
         #[cfg(not(feature = "mock"))]
@@ -259,10 +321,16 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     }
 
     if let Some(irq) = minix_arch::x86_64::trap_stub::irq_of_vector(vector) {
+        // C parity: like the clock stub, every IRQ stub in mpx.S saves the
+        // full interrupted user context at entry (SAVE_PROCESS_CTX,
+        // sconst.h:75-89) before irq_int's policy code — the PIT clock line
+        // lands here, so the save must happen before anything that can lead
+        // to a quantum/preemption decision (NK4-A Task C).
+        unsafe { save_irq_frame_to_context(frame) };
         // Profile-clock PC handoff (C reads p->p_reg.pc, which the asm
-        // entry already saved into the process context; the Rust IRQ path
-        // never saves the frame, so the interrupted rip travels to
-        // `profile_clock_hook` through the one-shot slot instead). The
+        // entry saved into the process context — the save above mirrors
+        // that; the rip still travels to `profile_clock_hook` through the
+        // one-shot slot so the hook needs no table access). The
         // SPROFILING guard keeps a line fire outside an active profiling
         // run from leaving a stale value in the slot.
         if irq == minix_plat::PROFILE_CLOCK_IRQ.get()
@@ -1489,6 +1557,67 @@ mod tests {
         };
         // SAFETY: hosted test body; the frame is a local.
         unsafe { x86_trap_dispatch_body(&mut frame) };
+    }
+
+    #[test]
+    fn irq_entry_mirrors_user_frame_but_skips_kernel_origin() {
+        // NK4-A Task C 防回归（C: mpx.S 每个 IRQ/clock stub 入口
+        // SAVE_PROCESS_CTX — sconst.h:75-89）：user-origin tick/IRQ 必须在
+        // 任何调度决定前把全量寄存器（含 RBX 活值）镜像进进程 ctx，否则
+        // 被抢占/挪动后 finish_and_restore 从陈旧 ctx 恢复（真机 c19a-c21a
+        // RS step2 &self.table=0x0）；kernel-origin 中断不得镜像（frame 是
+        // 内核寄存器）。判别性：删 user 镜像 → 第一组断言失败；删 CPL 门 →
+        // 第二组（陈旧 rip 保留）失败。
+        let mut table = crate::test_helpers::test_proc_table();
+        let proc = table.get_mut(crate::proc::ProcNr(0)).unwrap();
+        // Pre-seed the context through the write seam (save with a
+        // sentinel frame): the kernel-visible read seams are
+        // ipc_status_register (RBX) / ipc_return_code (RAX).
+        let seed = TrapFrame {
+            rax: 7, rbx: 0xABCD_0000, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
+            r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+            vector: 0x50,
+            errcode: 0,
+            rip: 0x203bf0,
+            cs: 0x1B, // user CS → RPL3, must mirror
+            rflags: 0x202,
+            rsp: 0x7FFF_0000,
+            ss: 0x23,
+        };
+        assert!(
+            mirror_irq_frame_into_proc(&seed, proc),
+            "user-origin IRQ must mirror"
+        );
+        assert_eq!(
+            minix_arch::x86_64::trap_stub::ipc_status_register(&proc.cpu_context),
+            0xABCD_0000,
+            "RBX live value must survive into ctx"
+        );
+        assert_eq!(
+            minix_arch::x86_64::trap_stub::ipc_return_code(&proc.cpu_context),
+            7,
+            "RAX must be mirrored"
+        );
+        assert_eq!(proc.trap_style, TrapStyle::FullContext);
+        // Kernel CS + different register values → must NOT touch the ctx.
+        let mut kern = seed;
+        kern.cs = 0x08;
+        kern.rbx = 0;
+        kern.rax = 99;
+        assert!(
+            !mirror_irq_frame_into_proc(&kern, proc),
+            "kernel-origin IRQ must skip the mirror"
+        );
+        assert_eq!(
+            minix_arch::x86_64::trap_stub::ipc_status_register(&proc.cpu_context),
+            0xABCD_0000,
+            "kernel-origin must not overwrite RBX"
+        );
+        assert_eq!(
+            minix_arch::x86_64::trap_stub::ipc_return_code(&proc.cpu_context),
+            7,
+            "kernel-origin must not overwrite RAX"
+        );
     }
 
     #[test]
