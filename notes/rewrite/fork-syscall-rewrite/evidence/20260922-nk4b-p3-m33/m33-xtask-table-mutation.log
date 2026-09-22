@@ -1,0 +1,22 @@
+### 1) 正例：全表生效时 11 passed
+  EXIT=0
+    test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+    plan_aarch64_switches_every_uefi_slot → passed/未运行
+### 2) 变异 A：aarch64 的 ESP 加载项名改回 BOOTX64.EFI
+  EXIT=101
+    test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+    plan_aarch64_switches_every_uefi_slot → FAILED
+### 3) 变异 B：kernel-image 构建步的 --target 写回 x86 三元组
+  EXIT=101
+    test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+    plan_aarch64_switches_every_uefi_slot → FAILED
+### 4) 变异 C：boot-shim 构建步的 --target 写回 x86 三元组
+  EXIT=101
+    test result: FAILED. 10 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+    plan_aarch64_switches_every_uefi_slot → FAILED
+### 5) 还原复跑：必须回到 11 passed
+  RESTORE-OK
+  EXIT=0
+    test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+    plan_aarch64_switches_every_uefi_slot → passed/未运行
+ M os/xtask/src/image.rs

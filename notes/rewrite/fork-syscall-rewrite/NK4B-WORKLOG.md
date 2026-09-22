@@ -922,3 +922,58 @@ aarch64 构建有一条 `warning: unreachable expression`（`main.rs:69` 的
 `unreachable!()` 跟在 `-> !` 的 `arch_boot` 之后）。重跑 x86_64 腿确认同一条
 告警也在——非本笔引入、也不是架构差异（三架构的 `arch_boot` 都是 `-> !`），
 不记为缺陷。
+
+## M3.3 实现（第 3 步：决策四落码 —— xtask 装机面按架构取表，放行 aarch64）
+
+状态：**DONE**。commit `2b6d98ffd`。
+
+### 改了什么
+
+`os/xtask/src/image.rs` 的装配计划里有四处把 x86 形态写死：boot-shim 的构建
+目标三元组、boot-shim 的特性名、`kernel-image` 的特性名、ESP 内的固件默认加载
+项文件名。`plan()` 开头还有一段对 aarch64 的 `bail!`，理由正是「boot-shim 无
+`fw-aarch64-uefi` 产出」——那个前提在 `5ac5625f1` 之后已经不成立，所以本笔是同
+一处把前提和结论一起换掉。
+
+四处收成一个 `Arch::uefi_slots()` 访问器，返回 `UefiSlots` 结构（表见下），
+`riscv64` 返回 `None`，`plan()` 里的 `match` 换成 `let Some(uefi) = ... else {
+bail!(按架构 slug 打印原因) }`。这样「不走 UEFI 盘形」这件事只有一处表达，以
+后 riscv64（P4）要接装机面是往表里加一行，不是再改一次控制流。
+
+| 架构 | shim 目标 | shim 特性 | kernel-image 特性 | ESP 加载项 |
+|------|-----------|-----------|-------------------|------------|
+| x86_64 | `x86_64-unknown-uefi` | `fw-x86-uefi` | `fw-x86-none` | `BOOTX64.EFI` |
+| aarch64 | `aarch64-unknown-uefi` | `fw-aarch64-uefi` | `fw-aarch64-none` | `BOOTAA64.EFI` |
+| riscv64 | 无（honest bail） | — | — | — |
+
+对位关系：加载项文件名不是自创，UEFI 规范按 CPU 架构规定默认加载项，AAVMF 只
+认 `EFI/BOOT/BOOTAA64.EFI`；本仓 `os/xtask/src/qemu.rs:32-38` 早已按架构取固件
+路径表（AAVMF_CODE.fd / qemu-efi-aarch64），本笔是同一思路用在装机面上。
+`kernel-image` 的 `--target` 改用 `Arch::module_target()`：`kernel_elf_path()`
+（同文件 `image.rs:142`）取件时用的就是这个三元组，此前只是没人把它接进构建
+步骤，两处写死成同一个值所以没暴露。
+
+顺带把打印布局那行（`run()` 末尾）也参数化——它原来无条件打印 `BOOTX64.EFI`，
+放行后会对 aarch64 说假话。
+
+### 验证（全部实跑）
+
+| 项 | 结果 | 证据 |
+|----|------|------|
+| 宿主测试 `cargo test -p xtask` | 10 → **11 passed**，0 failed（新增 `plan_aarch64_switches_every_uefi_slot`） | `m33-xtask-aarch64-image.log` 第 1 节 |
+| aarch64 真装机 `xtask image --arch aarch64 --release` | `IMG-EXIT=0`；ESP 内 `BOOTAA64.EFI`（924160 字节）、`kernel.elf` 是 AArch64 ELF（入口 `0xffff800000000000`）、12 模块与 imgrd 全在 | 同上第 2 节（全量日志 `tmp/nk4a/img-a64-1.log`） |
+| x86_64 腿不回归 | `IMG-EXIT=0`，ESP 内仍是 `BOOTX64.EFI`（946176 字节） | 同上第 3 节 |
+| 判别性变异三条 | loader 名回退 `BOOTX64.EFI`、kernel-image 的 `--target` 回退 x86、boot-shim 的 `--target` 回退 x86——各自都让新测试 `FAILED`（10 passed / 1 failed），还原后回到 11 passed | `m33-xtask-table-mutation.log` |
+| 格式与 clippy | `cargo fmt -p xtask -- --check` 干净（该包只有 `image.rs` 需要格式化，不牵动其他文件）；`cargo clippy -p xtask --all-targets` 无本包告警（仅有的 2 条来自 `minix-types`，既有） | `tmp/nk4a/fmt-xtask-host.txt`、`tmp/nk4a/clip-xtask.txt` |
+
+新测试的一条设计取舍值得写下：一开始用 `text.contains("aarch64-unknown-none")`
+这种「整串包含」断言，判别性不够——12 个模块构建步都带这个三元组，把
+`kernel-image` 那一步的目标写回 x86 也照样「包含」，测不出来。改成按 `-p`
+定位到具体那一步、再取它的 `--target` / `--features` 值比对（变异 B 就是为这条
+准备的）。
+
+### 与 FIXLOG 的关系
+
+决策四不是修一个已存在的错误行为（x86_64 路径的对外契约一字未变），所以按
+FIXLOG 的口径不单独记一条修复；它的全部证据在本节与上表。真修的两条（PL011
+节流、boot-shim 的 x86 端口汇编挡住 aarch64 腿）在 FIXLOG 的 M3.3 补记与补记二。
