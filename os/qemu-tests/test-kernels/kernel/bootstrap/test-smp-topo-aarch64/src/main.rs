@@ -49,6 +49,47 @@ fn fail(msg: &str) -> ! {
     loop { unsafe { asm!("wfe", options(nomem, nostack)); } }
 }
 
+/// 诊断打印（NK4-B P3 M3.4 取证）：`parse_by_kind` 把内层错误压成
+/// `PlatformParseError::AcpiParse`，红灯在串口上只剩一句「parse failed」，
+/// 无法区分是 RSDP 取不到、MADT 没有，还是 `check_gic_madt`（C-38 引入的
+/// aarch64 GIC 门）拒绝。这里对同一个 RSDP 再走一次 `AcpiDesc::parse`，把
+/// 变体逐个打出来。**判据不变**——打印完仍然走原来的 fail 分支。
+fn dump_acpi_parse_error(source: &PlatformDescSource) {
+    if !matches!(source.kind(), minix_platform::RSDP) {
+        early_console::write_str("  diag: source kind is not RSDP, acpi dump skipped\n");
+        return;
+    }
+    early_console::write_str("  diag: AcpiParseError = ");
+    // SAFETY: 同一个 phys_addr，parse_by_kind 刚刚解引用过且仍在 boot
+    // services 存活窗口内（本测试内核不退出 boot services）。
+    match unsafe { minix_platform::AcpiDesc::parse(source.phys_addr().0 as usize) } {
+        Ok(_) => early_console::write_str("unexpected Ok (dispatch/parser disagree)\n"),
+        Err(minix_platform::AcpiParseError::BadRsdpSignature) => {
+            early_console::write_str("BadRsdpSignature\n");
+        }
+        Err(minix_platform::AcpiParseError::NoXsdtPointer) => {
+            early_console::write_str("NoXsdtPointer\n");
+        }
+        Err(minix_platform::AcpiParseError::MadtNotFound) => {
+            early_console::write_str("MadtNotFound\n");
+        }
+        Err(minix_platform::AcpiParseError::MadtTooShort) => {
+            early_console::write_str("MadtTooShort\n");
+        }
+        Err(minix_platform::AcpiParseError::GicdNotFound) => {
+            early_console::write_str("GicdNotFound\n");
+        }
+        Err(minix_platform::AcpiParseError::GicrNotFound) => {
+            early_console::write_str("GicrNotFound\n");
+        }
+        Err(minix_platform::AcpiParseError::GicVersionUnsupported(v)) => {
+            early_console::write_str("GicVersionUnsupported(");
+            early_console::write_hex(u64::from(v));
+            early_console::write_str(")\n");
+        }
+    }
+}
+
 #[entry]
 fn main() -> Status {
     early_console::write_str("### test_smp_topo (aarch64): topology discovery pin (ACPI via S-2b)\n");
@@ -68,7 +109,10 @@ fn main() -> Status {
     let source = &sources[0];
     let desc = match unsafe { parse_by_kind(*source) } {
         Ok(d) => d,
-        Err(_) => fail("platform source parse failed"),
+        Err(_) => {
+            dump_acpi_parse_error(source);
+            fail("platform source parse failed")
+        }
     };
     let topo = desc.cpu_topology();
     early_console::write_str("  nr_cpus = ");
