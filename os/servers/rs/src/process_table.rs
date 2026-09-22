@@ -190,8 +190,25 @@ impl RProcTable {
     /// the consumer's job, mirroring C: `caller_can_control` re-verifies
     /// `RS_IN_USE` (manager.c:52-60, access.rs), message-facing gates verify
     /// slot state before acting (06, R12).
+    #[allow(unexpected_cfgs)]
     pub fn endpoint_slot(&self, endpoint: Endpoint) -> Option<SlotId> {
         let slot = endpoint.slot();
+        // NK4-A Task C 取证（task1-close 裁决删除）：崩溃读
+        // `self.by_endpoint[slot]` 前的基址现场——打印 self 与 by_endpoint
+        // 裸指针，分辨「指针真为 0（布局/别名 bug）」vs「寄存器在
+        // pf 往返恢复后被踩坏（内核侧）」。限 4 次，仅真机。
+        #[cfg(not(feature = "mock"))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static PES_LOG: AtomicUsize = AtomicUsize::new(0);
+            if PES_LOG.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                let _ = minix_sys::syscall::sys_diagctl_write(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    &alloc::format!("nk4a: rs-epslot self={:p} bep={:p} slot={}\n",
+                        self, self.by_endpoint.as_ptr(), slot),
+                );
+            }
+        }
         if !(0..NR_PROCS as i32).contains(&slot) {
             return None; // kernel tasks + NONE/ANY/SELF are never services
         }
