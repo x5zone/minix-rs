@@ -896,8 +896,17 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                         }
                         if slot < 32 {
                             let k = RE_N[slot].fetch_add(1, AtomicOrd::Relaxed);
-                            if k >= 1 {
-                                crate::ipc::probe_mark("nk4a: pf-refault\n");
+                            if k >= 1 && k <= 2 {
+                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                                C0::write_str("nk4a: pf-refault va=");
+                                C0::write_hex(cr2);
+                                C0::write_str(" k=");
+                                C0::write_hex(k as u64);
+                                C0::write_str(" rbx=");
+                                C0::write_hex(frame.rbx);
+                                C0::write_str(" rip=");
+                                C0::write_hex(frame.rip);
+                                C0::write_str("\n");
                             }
                         }
                     }
