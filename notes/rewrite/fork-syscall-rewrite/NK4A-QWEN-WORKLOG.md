@@ -103,9 +103,16 @@
 - 状态：**未触发**——A 修复后两轮真机（c18a/c18b）未出现 boot.rs:1054
   panic；新断点为 RS null-deref → cause_sig panic，走 Task C 取证循环。
 
-## Task C — RS null-deref 取证（BLOCKED·第四轮：IRQ 假设对本例证伪，崩溃未除）
+## Task C — RS null-deref 取证（BLOCKED·六轮未定性；第五轮实证「内核交付 RBX=0」，第六轮证伪状态寄存器写点假说）
 
-- 状态：**BLOCKED（回归）**。第四轮：静态定性出「IRQ/tick 入口不存帧 vs
+- 状态：**BLOCKED（未解除，累计六轮 c19a/c20a/c21a/c22a/c23a/c24a，已超
+  铁律 #10 的 3 轮上限）**。第五轮用反汇编 + 交付值探针拿到决定性实证：
+  崩溃前最后一次 RS 交付是 `rip=asynsend+0, rbx=0`，而 LLVM 把
+  `&self.table` 常驻 RBX → 错值被 wrapper 的 push/pop 固化成
+  self=0，完整解释 `self=0x0 / cr2=0 / panic@endpoint_slot+0x176`。
+  第六轮布防全部 5 类 IPC 状态寄存器写点，对 RS 零命中 →
+  「写点踩用户活值」假说证伪，候选收窄为「save/restore 配对来源」。
+  本轮不做无定性修复。第四轮：静态定性出「IRQ/tick 入口不存帧 vs
   C mpx.S 每入口 SAVE_PROCESS_CTX」的真实 C 偏差并按对位修复（Fix #10，
   独立价值成立：入口保存不变量恢复 + 宿主防回归测试），但真机 c22a
   崩溃序列与 c21a **逐字节一致、rs-epslot self=0x0 复现** → 该偏差
@@ -270,6 +277,129 @@
   **该 C 偏差独立成立并修复，但不是 Task C 崩溃的根因**（假设证伪
   于本例；且崩溃完全确定性、与抢占时序无关）。Task C 回到 BLOCKED，
   证据增量见上节 1-3。
+
+### 第五轮：静态反汇编定性 + 交付值探针（c23a，决定性实证）（2026-09-22 同日续查）
+
+本轮做了两类零/低成本取证：先把全部崩溃地址用未 strip 的 RS ELF
+符号化（`os/target/image/x86_64/staging/EFI/minix/modules/rs`，
+objdump/nm），再在内核 restore 前的既有路标里加一个 `rbx=` 字段
+（`kernel/src/lib.rs:3345` 起的 `pre-restore-` 块）。
+
+**先纠正第四轮记录里的两处事实错误**（历史不删，按仓库惯例在此更正）：
+
+1. 上节「c22a 新证据 2」把 `nk4a: vm-pf bytes` 当成了「VM 消息 payload
+   读到的内容」。读源码证伪：该探针打印的是 VM **解析成功之后**用
+   `pt.query(aligned)` → `vm_phys_to_virt` 直读被映射物理页的前 8 字节
+   （`servers/vm/src/vm_server.rs:1916` 附近），所以它是「填进去的页
+   内容」的证词，与 pf 消息通道编码无关。全量统计既有各轮：该探针取值
+   共 1625 条为全零，非零值多为合法 x86-64 代码字节（如
+   `48b8306022000000` = `mov rax, imm64`），ASCII 例
+   `3538353936303631` 全数据集中只出现 1 次且 c21a/c22a 同位置
+   （确定性），不构成「payload 错位」证据。**「pf 消息通道内容可疑」
+   这条假设撤回。**
+2. 上一轮把崩溃读成「第二次进入 init_fresh step2」。实际：`rs-step2
+   pt=` 探针上限 8，整轮只出现 1 条；`rs-epslot` 上限 4，出现 3 条
+   → 崩溃发生在**同一次 step2 循环的第 3 个条目**，不是第二次调用。
+
+**反汇编证据链（全部为实测输出，RS 未 strip）**：
+
+- `0x203bf0` = `TrapKernelApi::asynsend` **函数首指令**；函数体
+  `sub $0x68,%rsp … rep movsq … push %rbx; mov %r8,%rbx; int $0x21;
+  mov %rbx,%rdx; pop %rbx` —— 即本端口的 `mini_senda` 对位 wrapper
+  （call_nr 0x10 = SENDA），它把 RBX 当 IPC 状态寄存器用，但**先
+  `push %rbx` 保存用户活值、返回后 `pop` 还原**。
+- `0x216a76` = `process_table::endpoint_slot+0x176`，故障指令
+  `mov (%rdx,%rcx,1),%rax`，其中 `0x216a6d: mov 0x10(%rsp),%rdx` 取的
+  是入口 spill 的 `self`，`rcx = slot*16` → 故障读地址 = `self +
+  slot*16`，`self=0` 时正是 cr2=0。
+- `0x20d2db`（`init_fresh+0x895` 内）= `mov %rbx,%rdi; movabs
+  $0x216900,%rax; call *%rax` —— **LLVM 把 `&self.table` 常驻在
+  RBX**（SysV callee-saved），step2 循环每次迭代都从 RBX 取回 self。
+  又 `by_endpoint` 在结构体内偏移 0，故 `self=0x0` 与 `bep=0x0` 不矛盾。
+- 于是本轮把崩溃现场完全解释闭合：交付给用户时 RBX=0 → asynsend 的
+  `push %rbx` 把 0 压栈、`pop` 又还原 0（**wrapper 反而把这个错值固化
+  成整个调用期间的 self**）→ init_fresh 后续调用拿到 self=0 → 读
+  VA 0 → VM `pf-exit noaddr cr2=0x0` → SIGSEGV → RS 自己是 sig manager
+  2 → `kernel/src/syscall_signal.rs:300` 自致命 panic。
+
+**c23a 真机决定性结果**（`tmp/nk4a/serial_c23a.log`）：
+
+- 行 3746：`nk4a: pre-restore- rip=0x0000000000203bf0
+  rsp=0x00007fffffff9d88 rbx=0x0000000000000000` —— 崩溃前最后一次
+  RS 交付，**RIP 恰是 asynsend 首指令、RBX 恰是 0**；
+- 行 192（同轮 VM）：`pre-restore- rip=0x00000000002014ad
+  rsp=0x00007fffffffc0b8 rbx=0x0000000000010001` —— 同一字段对 VM
+  交付的是有意义的值，反证该字段本身有效、不是打印 bug；
+- RS 更早几次交付 `rbx=0x00007fffffffc800`（栈地址，正常活值）。
+- **结论**：内核确实把一个 0 作为用户 RBX 交付给了一个持活值的进程，
+  且交付 RIP 落在 wrapper 的 `push %rbx` 之前。这把问题从「用户态自己
+  踩坏」收窄到「内核侧 (rip, rbx) 配对的来源」。
+
+**本轮取证方法缺陷（必须记下）**：新增的 `nk4a: pf-save`（页故障入口
+保存点打印 `ep/rbx/rip`）上限设为 8，结果 8 条全部消耗在启动前段
+endpoint 2 的同一重复 refault 事件上（c23a 最后一条在行 406，崩溃在
+行 3746 之后），**没拿到崩溃现场**。
+
+### 第六轮：IPC 状态寄存器写点排查（c24a，一个假说被证伪）（2026-09-22 同日续查）
+
+本轮目标：枚举内核**所有**会写 `ctx.rbx` 的站点，用统一探针捕获「谁把
+0 写进了 RS 的 RBX」。
+
+- 共用探针 `nk4a_rbx_probe(tag, ep, rbx, rip)`
+  （`kernel/src/trap_dispatch.rs:154`，`#[cfg(not(feature =
+  "mock"))]`、全局 `AtomicUsize` 上限 40、**只在 rbx==0 时打印**——
+  理由：`add-call`/`add-flags` 在 VM 每条投递上都会触发，不过滤则上限
+  会在启动前段耗尽）；
+- 接入 5 类站点：`irq-save`（`mirror_irq_frame_into_proc`）、
+  `int33-save`（int 0x21 臂保存点）、`int33-ret`
+  （`sync_status_register_to_frame` 之后）、`add-call` /
+  `add-flags`（`kernel/src/proc.rs` 两个状态寄存器 OR 站点，
+  `kernel/src/ipc.rs:1120/1137` 调用）、`recv-clear`
+  （`kernel/src/ipc.rs:2087` RECEIVE prologue 清零，额外加
+  `p_endpoint == 2` 门）；同时把 `pf-save` 上限 8 → 48。
+- C 对位核查（写 RBX 本身是否偏差）：C 的 SENDA 路径同样会写 caller
+  的 EBX（`minix3/minix/kernel/proc.c:690-692`
+  `arch_set_secondary_ipc_return`），且 C/i386 的 IPC 状态寄存器同为
+  bx（`minix3/minix/kernel/arch/i386/ipcconst.h:10`）→ **「内核写
+  ctx.rbx」不是偏差，问题只在交付的 (rip, rbx) 配对**。
+
+**c24a 真机结果**（`tmp/nk4a/serial_c24a.log`，崩溃第 3 次确定性复现：
+行 3808 `<unset> 0x2 0x216a76`、行 3810 `lethal signal 11`）：
+
+- `grep -o "rbxw [a-z0-9-]*" | sort | uniq -c` → 全轮**只有 4 条
+  `rbxw irq-save`**，且 4 条全是 `ep=0x0000000000000008
+  rbx=0x0 rip=0x000000000022b42d`（endpoint 8，不是 RS）；
+- 即：`int33-save`/`int33-ret`/`add-call`/`add-flags`/`recv-clear`
+  五类写点对 RS 零命中 → **「某个 IPC 状态寄存器写点把 0 写进 RS 的
+  RBX」这一假说被证伪**；
+- 信号路径（`syscall_signal.rs` 的 sigcontext 构建/恢复）在崩溃前
+  串口上无任何活动，一并排除；
+- `pf-save` 48 条仍然全部落在行 1306 之前（崩溃在 3808）——**探针上限
+  设计连续第二次犯同一错误**，崩溃现场仍未捕获。这是本轮唯一未能
+  达成目的的环节，也是本轮的自认缺陷，不得记成「已排查保存点」。
+- 附带新观察（**仅记录，不作结论**）：`pf-save ep=0x2
+  rip=0x0000000000227b29` 这一重复 refault 事件中，`rbx` 出现过
+  `0x22e000` / `0x7` / `0x8` 三种取值；`0x7`/`0x8` 形态上像 IPC 状态
+  位落进了 RBX，但未反汇编该 rip 对应的用户代码前不判定。
+
+**剩余候选（收窄后）**：交付的 `(rip=asynsend+0, rbx=0)` 既非状态寄存器
+写点所致，则来源只可能是「保存/恢复的配对」——即某一时刻合法、但已被
+后续更新覆盖丢失的陈旧上下文，或 restore 消费的 ctx 与 save 写入的 ctx
+不同一份。裁决需要崩溃前**最后一次 RS 页故障入口**的捕获值，即必须让
+`pf-save` 探针能活到崩溃现场。
+
+**第 7 轮判别方案（未执行，交下一会话）**：`pf-save` 改为
+`ep == 2` 过滤 + 按 `(rip, rbx)` 去重（静态小数组记录已打印组合）+
+上限提到 64，保证覆盖到崩溃前最后入口；同一轮再加一条
+`int33-entry`（int 0x21 入口 frame.rbx 原值，同样只打 RS）以区分
+「入口即 0」与「入口非 0、恢复时变 0」。
+
+- 铁律 #10 裁决：**Task C 累计六轮（c19a/c20a/c21a/c22a/c23a/c24a）
+  仍未定性根因，已远超「同一问题 3 轮」上限**。本节如实登记为
+  BLOCKED 未解除。本轮**不做任何无定性修复**，产物是：1 处已完成的
+  决定性实证（内核交付 RBX=0 给持活值的 RS）、1 个被证伪的假说
+  （IPC 状态寄存器写点踩用户活值）、2 处对自身既往记录的更正、1 项
+  自认的取证方法缺陷（探针上限两次被早期高频事件耗尽）。
 
 
 

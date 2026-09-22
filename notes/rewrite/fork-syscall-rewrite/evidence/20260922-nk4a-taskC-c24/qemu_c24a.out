@@ -1,0 +1,2 @@
+qemu pid=1159164
+qemu-system-x86_64: terminating on signal 15 from pid 1159147 ()
