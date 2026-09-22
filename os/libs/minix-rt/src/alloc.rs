@@ -242,7 +242,7 @@ impl<'a> FixedPoolSupplier<'a> {
         {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static N: AtomicUsize = AtomicUsize::new(0);
-            if N.fetch_add(1, AtomicOrd::Relaxed) < 48 {
+            if N.fetch_add(1, AtomicOrd::Relaxed) < 128 {
                 const HEX: &[u8; 16] = b"0123456789abcdef";
                 let mut line =
                     *b"nk4a: sup k=S idx=0x        n=0x     base=0x                \n";

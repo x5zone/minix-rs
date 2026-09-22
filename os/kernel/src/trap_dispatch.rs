@@ -880,6 +880,40 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     nk4a_rs_trace_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
                     nk4a_rs_anom_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
                     nk4a_rs_leak_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
+                    // 第 16 轮（task1-close 裁决删除）：VA 重复故障检测——
+                    // 同一页第 2+ 次故障意味着「填充后内容又丢了」（页被
+                    // 二次清零/重映射），直接打印次数与 rbx 现场。
+                    #[cfg(target_arch = "x86_64")]
+                    if proc.p_endpoint.0 == 2 {
+                        use core::sync::atomic::{
+                            AtomicU64, AtomicUsize, Ordering as AtomicOrd,
+                        };
+                        let cr2: u64;
+                        // SAFETY: reading CR2 has no side effects.
+                        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
+                        static RE_VA: [AtomicU64; 32] =
+                            [const { AtomicU64::new(0) }; 32];
+                        static RE_N: [AtomicUsize; 32] =
+                            [const { AtomicUsize::new(0) }; 32];
+                        let mut slot = 32;
+                        let mut i = 0;
+                        while i < 32 {
+                            if RE_VA[i].load(AtomicOrd::Relaxed) == cr2 {
+                                slot = i;
+                                break;
+                            }
+                            if RE_VA[i].load(AtomicOrd::Relaxed) == 0 && slot == 32 {
+                                slot = i;
+                            }
+                            i += 1;
+                        }
+                        if slot < 32 {
+                            let k = RE_N[slot].fetch_add(1, AtomicOrd::Relaxed);
+                            if k >= 1 {
+                                crate::ipc::probe_mark("nk4a: pf-refault\n");
+                            }
+                        }
+                    }
                 }
                 // C 对位：异常入口与 trap 入口同记返回样式（mpx.S 保存半
                 // p_kern_trap_style=KTS_FULLCONTEXT；restore 消费）。缺它则
