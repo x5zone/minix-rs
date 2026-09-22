@@ -1,0 +1,39 @@
+# NK4-B P3 M3.3 决策五反向判别：载体的 PASS 不是白来的
+# 判据：正例两行路标都出现才算过；下面三例都必须 FAIL（退出码 1）。
+
+## N1：喂 x86_64 的盘（ESP 里没有 BOOTAA64.EFI）→ Stage 2 必须 FAIL
+  命令：IMG=<x86_64 盘> bash os/qemu-tests/test-shim-bootmarks-aarch64.sh
+  using caller-provided image: /home/xzhao/github/minix-rs/os/target/image/x86_64/minix.img (assembly skipped)
+  image in use: /home/xzhao/github/minix-rs/os/target/image/x86_64/minix.img
+  FAIL: /EFI/BOOT/BOOTAA64.EFI missing from ESP
+  N1-EXIT=1
+
+## N2：aarch64 盘删掉 kernel.elf（mdel）→ Stage 2 的 kernel.elf 检查必须抓到
+  命令：mdel -i <盘副本> ::EFI/minix/kernel.elf && IMG=<盘副本> bash os/qemu-tests/test-shim-bootmarks-aarch64.sh
+  using caller-provided image: /home/xzhao/github/minix-rs/tmp/nk4a/neg-no-kernel.img (assembly skipped)
+  image in use: /home/xzhao/github/minix-rs/tmp/nk4a/neg-no-kernel.img
+  FAIL: kernel.elf missing from ESP
+  N2-EXIT=1
+
+## N3：kernel.elf 名字在、内容换成 10 字节垃圾（mcopy -o）→ 过了 Stage 2、死在 Stage 3
+  这才是「路标等待」的反例：固件确实加载了 BOOTAA64.EFI，但 shim 解析 ELF
+  失败，两行路标都不许出现，脚本必须 FAIL 而不是超时后假报。
+  using caller-provided image: /home/xzhao/github/minix-rs/tmp/nk4a/neg-junk-kernel.img (assembly skipped)
+  image in use: /home/xzhao/github/minix-rs/tmp/nk4a/neg-junk-kernel.img
+  ESP verified: BOOTAA64.EFI + kernel.elf + all 12 module names present
+  ### TEST_RESULT: FAIL test-shim-bootmarks-aarch64 ###
+  --- marker 1 [boot-shim: kernel loaded (entry staged)]：
+      未出现
+  --- marker 2 [boot-shim: 12 boot modules loaded]：
+      未出现
+  --- 串口尾部 20 行（去掉固件版本噪声）：
+  UEFI firmware (version 2024.02-2ubuntu0.9 built at 12:48:22 on Jun  2 2026)
+  [2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0001 "UEFI Non-Block Boot Device" from PciRoot(0x0)/Pci(0x1,0x0)
+  BdsDxe: starting Boot0001 "UEFI Non-Block Boot Device" from PciRoot(0x0)/Pci(0x1,0x0)
+  boot-shim: prepare_boot enter
+  boot-shim: root+bump allocated
+  boot-shim: loading kernel.elf from ESP&
+  boot-shim panic: panicked at boot-shim/src/uefi_helpers.rs:173:66:
+  Failed to load kernel ELF from ESP — check that the ESP contains /EFI/minix/kernel.elf (loader::KERNEL_PATH); firmware may have not mounted the FAT partition, or the build did not embed the kernel binary boot-shim panic: diagnostic hook not registered
+  qemu-system-aarch64: terminating on signal 15 from pid 1317975 (timeout)
+  N3-EXIT=1

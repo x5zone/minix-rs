@@ -977,3 +977,107 @@ bail!(按架构 slug 打印原因) }`。这样「不走 UEFI 盘形」这件事�
 决策四不是修一个已存在的错误行为（x86_64 路径的对外契约一字未变），所以按
 FIXLOG 的口径不单独记一条修复；它的全部证据在本节与上表。真修的两条（PL011
 节流、boot-shim 的 x86 端口汇编挡住 aarch64 腿）在 FIXLOG 的 M3.3 补记与补记二。
+
+## M3.3 实现（第 4 步：决策五落码 —— AAVMF 载体 + 真机两行路标）
+
+状态：**DONE，M3.3 判据达成**。commit `6e80b5e9c`。
+
+### 判据（NK4B-TODO §3 原文）
+
+> AAVMF 下 shim 打印 `kernel loaded` + `12 boot modules loaded`（现有路标）。
+
+真机串口逐字出现这两行：
+
+```
+boot-shim: kernel loaded (entry staged)
+boot-shim: 12 boot modules loaded
+```
+
+### 新载体 `os/qemu-tests/test-shim-bootmarks-aarch64.sh`
+
+三段式，每段都能单独 FAIL（退出码 0 = PASS / 1 = FAIL / 2 = 前置缺失 SKIP）：
+
+| 段 | 做什么 | 抄谁 |
+|----|--------|------|
+| 1 装盘 | `xtask image --arch aarch64 --release`；调用方给了 `IMG` 就跳过装盘直接用它 | `test-cmd-smoke.sh` Stage 1 |
+| 2 只读验盘 | `mdir` 查 `/EFI/BOOT/BOOTAA64.EFI`、`/EFI/minix/kernel.elf`、12 个模块名 | 同上 Stage 2（含它那条「mdir 会把长文件名撑开成两列，先 `tr -s ' '` 再匹配」的处理） |
+| 3 点火等路标 | AAVMF 下拉虚拟机，轮询串口直到两行都出现 | `test-timer-irq-aarch64.sh` 的 qemu 参数 |
+
+三处偏离被抄对象，都在脚本头注释里写了理由：内存取 512M（与 x86_64 冒烟腿
+一致，因为这里真装 kernel.elf + 12 模块 + bump 区，timer 载体的 256M 是给不
+装东西的测试内核用的）；临时文件落 `target/image/aarch64/` 内而非 `mktemp`
+（M3.2 记过的坑：`mktemp` 硬写 `/tmp`，受限沙箱下报假失败）；`-net none` 与
+`pkill -f '[q]emu-system'` 前置（任务书铁律）。`IMG` 覆盖口不是为方便而加，
+是为了能喂「故意缺件的盘」做反向判别。
+
+按任务书 §6，本脚本**不注册进 run_all.sh**（接线归 P6）。
+
+### 真机取证
+
+| 项 | 结果 | 证据 |
+|----|------|------|
+| 两次独立复跑 | `RUN=m33d`、`RUN=m33e` 均 `EXIT=0` + `### TEST_RESULT: PASS ###`；两行路标各出现 1 次；EBS 后的裸写腿 `[raw] boot services exited` 各出现 1 次 | `m33-carrier-pass.txt` 第 1 节、`serial_m33d.log`、`serial_m33e.log` |
+| 两轮同形 | 串口的 boot-shim/kernel 行（28 行）逐行 diff **无差异** | 同上 |
+| 反向判别 N1 | 喂 x86_64 的盘（无 BOOTAA64.EFI）→ Stage 2 `FAIL`，退出码 1 | `m33-carrier-negative.log` |
+| 反向判别 N2 | aarch64 盘 `mdel` 掉 kernel.elf → Stage 2 抓到，退出码 1 | 同上 |
+| 反向判别 N3 | kernel.elf 名字在、内容换成 10 字节垃圾 → 过了 Stage 2，两行路标都「未出现」，Stage 3 `FAIL` 退出码 1 | 同上 |
+
+N3 是关键那条：它证明「等路标」不是一句走过场的 grep——同一张盘在固件眼里
+完全合法（BOOTAA64.EFI 被加载、Shim 真的跑起来了），只在 shim 解析 ELF 失败
+处停住，此时脚本必须报 FAIL。
+
+### 超出判据但必须记录的真机事实
+
+1. **决策二的裸机串口在真机可用**：`ExitBootServices` 之后 shim 与内核打印的
+   每一行都经 PL011（基址 `0x0900_0000`）落到 `-serial file:`，且带 `^M`
+   （CRLF 转换生效）。风险清单第 3 条「AAVMF 是否已初始化 PL011」实测为
+   **是**，本仓不需要自己写 LCRH/IBRD 序列。
+2. **aarch64 一路走到 `kernel: kmain A/A.2 memmap+modules ok`**：validate 全
+   步、step0/step1+2/step4、kmain Phase A 的 A.1/A.1b/A.2a/A.2b 全部打印。
+   这已越过 M3.3、进到 M3.4 的地界，取证一次省下位重复劳动。
+3. **下一堵墙（M3.4 的起点）**：紧接着一行 panic —
+   `platform::init_from_kinfo: no platform source parsed successfully and not
+   a dev build (no QemuVirt fallback in release)`，对位
+   `os/libs/minix-platform/src/global.rs:250-279`：ACPI/DTB 两条来源都没解析
+   出描述符时，dev 构建回退 `QemuVirtDesc`、release 构建直接 panic。
+4. **一条文字噪声（非缺陷，记录即可）**：`uefi::println!` 里的省略号 `…`
+   在 AAVMF 的 ConOut 上打成 `&`（可见 `loading kernel.elf from ESP&`）。
+   只影响日志可读性，不影响任何判据（脚本匹配的都是纯 ASCII 子串）。留待处
+   理，不在本里程碑动。
+
+### 上交裁决（M3.4 的架构级选择，本会话不自行定案）
+
+release 装机 + QEMU 载体这条组合下，平台描述符从哪来？三案：
+
+| 案 | 做法 | 代价 |
+|----|------|------|
+| A | 载体脚本改用 dev 构建（`xtask image` 去 `--release`），走既有 `QemuVirtDesc` 回退 | 最快点电；但 M3.4 验的是 dev 形状的内核，与 P1 的 release 生产链不是同一件产物 |
+| B | 生产链补一条「QEMU virt 显式描述符」通道（装机面写入 KernelInfo 或 ESP 上的一个描述符文件，release 也认） | 语义最干净，但要动 KernelInfo 契约位，跨 shim/kernel/platform 三处 |
+| C | 让 AAVMF 提供可解析的来源：从 UEFI 配置表取 ACPI（现状取不到 GICR）或改由 `-kernel`/DTB 注入 | 最接近真机语义；被已知事实「AAVMF 的 ACPI GICR 恒 0」直接挡着，得先证实还能不能拿到别的字段 |
+
+推荐 B（A 只作 M3.4 的第一步点电手段，不作为交付形态）。等评审方定案后再进
+M3.4 实现。
+
+## M3.3 收口（五决策状态与提交清单）
+
+状态：**DONE**。判据（AAVMF 下两行路标）真机两次独立复跑达成。
+
+| 决策 | 内容 | 状态 | commit |
+|------|------|------|--------|
+| 一 | boot-shim 抽架构无关内部特性 `fw-uefi-image`，新增对外 `fw-aarch64-uefi` | DONE | `5ac5625f1` |
+| 二 | 串口发射按架构分道，aarch64 复用 `minix-plat` 的 PL011；前置真修 = PL011 发送前有界等 TXFF | DONE（真机追加确认：EBS 后裸写腿可用，见第 4 步事实 1） | `1a2a8eb61` + `5ac5625f1` |
+| 三 | 入口交接协议本里程碑不动 | 遵守：未动 `arch_boot` 及其交接语义，也未为「看起来能动」加桩 | — |
+| 四 | xtask 装机面按架构取 UEFI 四常量，放行 aarch64 | DONE | `2b6d98ffd` |
+| 五 | 新增专用 AAVMF 载体，只断言两行路标，不接 run_all | DONE | `6e80b5e9c` |
+
+宿主计数（相对 P0 基线只涨不跌）：`minix-plat` 4 → **7**、`xtask` 10 → **11**、
+`boot-shim` 默认 14 / `test-all` 27（持平）、`minix-kernel` **809**、
+`minix-arch` **241**（后两项在 `1a2a8eb61` 复测）。
+
+风险清单三条的最终判定：#1（`alloc_root_page`/`build_memmaps` 里的 x86 专属
+假设）——真机未暴露，两行路标之后的 memmap 与 KernelInfo 都走完；#2（aarch64
+下 `minix-kernel` 链进 shim 能否过链接）——已排除，`boot-shim.efi` 产出并加载；
+#3（AAVMF 是否已初始化 PL011）——实测为「已初始化」，无需自写寄存器序列。
+
+下一步：M3.4（内核点电）。起点就是本里程碑取证到的那行 platform panic，且
+需先有上面的「上交裁决」定案。
