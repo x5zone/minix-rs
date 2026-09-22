@@ -1139,3 +1139,86 @@ kmain 路标恒 6 行，四轮路标序列两两 diff 无差异（d==e、f==g）
 M3.4 剩下的实质工作 = 让 `:645` 那道 panic 变成 `:648`，即平台描述符来源问题，
 方案 A/B/C 与推荐项见上一里程碑的「上交裁决（M3.4 的架构级选择）」小节 —— 本
 会话按铁律不自行定案，等评审方选择后再进实现。
+
+## M3.4 根因取证节（把上交裁决的前提从推断升级为实测）
+
+状态：**取证 DONE；M3.4 实现仍 PARTIAL（等裁决）**。代码 commit `test(nk4b,m3.4)`
+（测试内核诊断），证据目录 `evidence/20260922-nk4b-p3-m34/`。
+
+### 为什么做这件事
+
+上一节我把 M3.4 的 A/B/C 三案上交，但那份裁决建立在一个**证据缺口**上：release
+装机串口只说 `no platform source parsed successfully`，而这句文案在
+`os/libs/minix-platform/src/global.rs:234-254` 同时覆盖「来源列表为空」和「所有
+来源都解析失败」两种情况——两者对应完全不同的方案（C 案可不可行全看是哪一种）。
+补这个缺口不需要定案，属取证。
+
+### 手法（零生产码改动）
+
+1. 发现 `os/libs/minix-platform/src/kind.rs:61-64` 的 S-2b 注释自带前人实证：
+   AAVMF 配置表 8 项、ACPI2 RSDP 在、两个 DTB GUID 都缺。若成立，则我的 panic 是
+   「解析失败」而非「没来源」。
+2. 顺着这条注释找到 `os/qemu-tests/test-kernels/.../test-smp-topo-aarch64`：它走的
+   正是生产同一条链（`find_platform_sources` → `parse_by_kind` → `AcpiDesc::parse`），
+   而且是 `run_all.sh:151` 注册的真机测试。**先跑它**——结果当场 FAIL
+   （`platform sources: 0x1` → `parse failed`），缺口不需要往生产链里插探针就合上了。
+3. 该测试的失败文案不带变体（`parse_by_kind` 把内层 `AcpiParseError` 压成
+   `PlatformParseError::AcpiParse`），所以给它的 fail 分支加一行诊断打印
+   （只增信息、判据不动），再用 `sed` 从 `run_qemu.sh` 派生一份只差
+   `-machine virt,gic-version=3` 的一次性副本做单变量对照
+   （脚本 `tmp/nk4a/verify-m34-gicgate.sh`，会把 diff 自证出来）。
+
+### 实测矩阵（腿 A 复跑一次，三跑同形）
+
+| 载体配置 | `platform sources` | `AcpiParseError` | 结果 |
+|----------|-------------------|------------------|------|
+| `-machine virt`（QEMU 默认 gic-version=2，run_qemu.sh 原样） | 1（RSDP） | `GicVersionUnsupported(2)` | FAIL |
+| `-machine virt,gic-version=3`（生产载体用的那个） | 1（RSDP） | `GicrNotFound` | FAIL |
+
+### 三条定性结论
+
+1. **我的 platform panic 根因钉在 `check_gic_madt`**（`acpi.rs:654-672`，C-38 =
+   commit `9b4b0c5b8`（2026-09-21）新增）。不是「AAVMF 没给来源」：来源恒有 1 个
+   （ACPI2 RSDP），是这道门把两种 GIC 配置都判死。
+2. **aarch64 的 ACPI 发现链在 QEMU virt + AAVMF 上没有任何一种 gic-version 能拿到
+   描述符**：GICv2 → 版本被拒；GICv3 → QEMU 把 MADT GICC 的 GICR 字段填 0，被零基址
+   拒绝。门的设计意图（不把不可驱动的 GICR 交给驱动）是对的，代价是这条发现链整体
+   出局——这才是 M3.4 的真墙，之前我只敢说「被已知事实挡着」。
+3. **DTB 通道：内容可行，缺的是交接**。QEMU 自己生成的 aarch64 DTB
+   （`dumpdtb`，离线取，证据 `virt-gic3.dtb`）里有 `arm,gic-v3`、
+   `arm,gic-v3-its`、`#redistributor-regions`，正是
+   `device_tree.rs:229-250` 的 `parse_gic` 要按 compatible 找、并取 `reg` 第二段当
+   gicr_base 的东西；缺的是 AAVMF 不把 FDT 装进配置表（实测 sources 只有 RSDP 一个，
+   与 S-2b 的字节级实证一致）。
+
+### 上交裁决增补：D 案（并把 A/B/C 的成本判断改实）
+
+| 案 | 做法 | 本取证后的成本判定 |
+|----|------|--------------------|
+| A | 载体改 dev 构建，走 `QemuVirtDesc` 回退 | 不变：最快，但验的不是 release 形状 |
+| B | 生产链补「QEMU virt 显式描述符」通道 | 不变：语义干净，跨 shim/kernel/KernelInfo 契约位 |
+| C | 让 AAVMF 提供可解析来源（ACPI 侧） | **判死**：上表两配置实测都不通过，除非改 `check_gic_madt` 的判定（那是把「不可驱动的 GICR 重新放行」，本弧不该做） |
+| **D（新增）** | **把 DTB 交进生产链**：D1 = 装机面把 `dumpdtb` 出来的 blob 当一个 DTB source 装进 ESP，shim 用现成 file loader 读出、按现有 `DTB` kind 交给内核（`kind.rs` 的 DTB 臂 aarch64 已编译）；D2 = 载体改 `-kernel` 直载、由固件/OpenSBI 式约定把 DTB 指针送进来（riscv64 腿已有 a1 传 DTB 的仓内对位实现） | D1 不动任何解析器代码，只动「来源从哪来」；代价是「把 QEMU 生成的 DTB 当固件来源」这件事本身要定性——真机 SBBR 平台不会这么来。D2 更贴近 riscv64 既有形状，但要放弃 AAVMF 这条 UEFI 腿 |
+
+推荐顺序更新为 **D1 > B > A**（C 撤下）。A 仍只作点电手段，不作交付形态。
+
+### 顺带发现的两条（都不归我修，登记 + 上交）
+
+1. **`test-smp-topo-aarch64` 自 `9b4b0c5b8`（C-38）起就是红的**，而 `run_all.sh`
+   注册着它：S-2b 记录的「PASS 2026-09-07」已被后续改动作废。本弧对
+   `minix-platform` 与该测试内核**零文件改动**（`git log 873f3e947..HEAD` 命中 0）。
+   修它 = 改门 = 架构决定，按铁律上交，不自行定案。
+2. **环境陷阱（可复用）**：`docker run -v $PWD:/work` 跑宿主测试会把
+   `os/target/debug/.fingerprint` 写成 root-owned（实测 1322 个文件），之后
+   `cargo build --workspace --bins` 无论宿主还是容器内复用同一 target 都会假失败
+   ——宿上报 `Permission denied`，容器内报 24 条 `E0463 can't find crate`。判别法：
+   单包 `cargo build -p minix-sched` 退 0 + 容器内
+   `-e CARGO_TARGET_DIR=/tmp/ct` 复跑 → `EXIT=0`、`^error` 0 条、
+   `eh_personality` 0 条（门本身是绿的）。别再拿脏 target 的退出码当判据。
+
+### 验证与下一步
+
+改动侧全部门：测试内核 aarch64-unknown-uefi 构建 `BUILD-EXIT=0`；两腿 + 腿 A 复跑
+同形；宿主隔离门（干净 target）绿。M3.4 实现等 D1/B/A 定案后开工，开工第一步就是
+把本节的 `diag:` 行作为回归基线（定了案、门过去了，这两腿应变 `nr_cpus = 4` 且
+不再打 diag）。
