@@ -376,7 +376,7 @@ pub fn plan(
     // 盘上的 ::/EFI/BOOT/<本架构默认加载项>（首装配漏列即 UEFI Shell 落地，
     // test-cmd-smoke 首跑实证）。startup.nsh 是本固件的自动引导 belt-
     // and-suspenders（test-sysboot 判例：倒计时后逐行执行）。
-    let startup_nsh = format!("echo -off\r\nFS0:\r\ncd EFI\\BOOT\\\r\n{}\r\n", uefi.loader);
+    let startup_nsh = format!("echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\n{}\r\n", uefi.loader);
     actions.push(Action::Write {
         path: staging.join("startup.nsh"),
         bytes: startup_nsh.into_bytes(),
@@ -709,6 +709,35 @@ mod tests {
             "aarch64 与 x86_64 的装配步骤数必须相同"
         );
         assert!(esp.ends_with("minix.img"));
+    }
+
+    /// 自动引导脚本逐字节契约：x86_64 腿的 `startup.nsh` 必须与放行 aarch64
+    /// 之前逐字节相同（NK4-A 翻绿链路的外部产物，不得被「表化」顺手改掉），
+    /// aarch64 腿只能差异在加载项文件名那一段。
+    #[test]
+    fn startup_nsh_bytes_are_the_frozen_template_per_loader_name() {
+        /// 放行前的 x86_64 常量原文（`git show 873f3e947:os/xtask/src/image.rs`
+        /// 里 `Action::Write` 的 `bytes`）——多一个尾反斜杠也是行为等价但契约
+        /// 已变，所以比的是字节而不是「能不能启动」。
+        const X86_FROZEN: &str = "echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\nBOOTX64.EFI\r\n";
+        let nsh = |arch: Arch| -> Vec<u8> {
+            let (layout, _guard) = tempdir::create();
+            let (actions, _) = plan(arch, true, None, &layout).unwrap();
+            actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::Write { path, bytes, .. } if path.ends_with("startup.nsh") => {
+                        Some(bytes.clone())
+                    }
+                    _ => None,
+                })
+                .expect("startup.nsh 写入步不在计划里")
+        };
+        assert_eq!(nsh(Arch::X86_64), X86_FROZEN.as_bytes());
+        assert_eq!(
+            nsh(Arch::Aarch64),
+            X86_FROZEN.replace("BOOTX64.EFI", "BOOTAA64.EFI").as_bytes()
+        );
     }
 
     /// 原型文法：两行头 + 目录递归收口 + console 设备行（major 4）。

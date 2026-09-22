@@ -10,8 +10,8 @@ const PL011_BASE: u64 = 0x0900_0000;
 const PL011_FR_OFFSET: u64 = 0x18;
 /// UARTFR bit5 = TXFF：发送 FIFO 满（PL011 的 FIFO 深度 16 字节）。
 const PL011_FR_TXFF: u8 = 1 << 5;
-/// 发送前的有界轮询上限。数量级跟 x86 侧对位实现（`os/boot-shim/src/main.rs`
-/// 的 `raw_serial_line`，~10 万次即放弃）一致：设备状态位异常时宁丢字节。
+/// 发送前的有界轮询上限。数量级跟 x86 侧对位实现（`os/boot-shim/src/lib.rs`
+/// 的 `emit_byte`，~10 万次即放弃）一致：设备状态位异常时宁丢字节。
 const PL011_TX_POLL_LIMIT: u32 = 100_000;
 
 /// 读 UARTFR 的 TXFF 位：发送 FIFO 是否已满。
