@@ -21,7 +21,20 @@ use minix_types::{Endpoint, Message, MessageM7, MessageUnion, UserSlot};
 use minix_vfs::PmHandler;
 use minix_vfs::call_table::{SyscallResult, VfsCallNum};
 use minix_vfs::main_loop::VfsState;
-use minix_vfs::vnode::VnodeId;
+use minix_vfs::vnode::{FsCtl, VnodeId};
+
+/// 空操作 vnode 归还通道(零引用跨界时的 REQ_PUTNODE 宿主替身)。
+struct NopCtl;
+impl FsCtl for NopCtl {
+    fn put_node(
+        &mut self,
+        _fs: Endpoint,
+        _ino: u64,
+        _count: usize,
+    ) -> Result<(), minix_vfs::vnode::VnodeError> {
+        Ok(())
+    }
+}
 use minix_vfs::worker::WorkerFunc;
 
 // ---------------------------------------------------------------------------
@@ -97,10 +110,12 @@ fn fork_shares_filp_entries_and_bumps_counts() {
         v.mode = 0o040755; // 目录
     }
 
+    let mut ctl = NopCtl;
     let reply = minix_vfs::VfsPmHandler {
         table: &mut state.fproc_table,
         filp_table: &mut state.filp_table,
         vnode_table: &mut state.vnode_table,
+        fs_ctl: &mut ctl,
     }
     .handle(minix_types::VfsCall::Fork {
         child: child_ep(),
@@ -130,6 +145,77 @@ fn fork_shares_filp_entries_and_bumps_counts() {
             .ref_count,
         4,
         "C misc.c:632-633:父持 2 + rd/wd 各 dup 一次 = 4"
+    );
+}
+
+/// C 语义(misc.c:651-660):子进程退出经 `close_fd` 逐 fd 清减、rd/wd
+/// 各 `put_vnode`——fork 时递增的共享计数在退出后完整归还。
+#[test]
+fn exit_releases_inherited_counts_back_to_pre_fork() {
+    let mut state = seeded_vfs_state();
+    let fid = state.filp_table.alloc_filp(0o644).expect("filp 表有空位");
+    state.filp_table.inc_count(fid);
+    {
+        let fp = state.fproc_table.get_mut(UserSlot::new(0)).expect("slot 0");
+        fp.filps[3] = Some(fid.get());
+        fp.root_dir = Some(0);
+        fp.work_dir = Some(0);
+    }
+    {
+        let v = state.vnode_table.get_mut(VnodeId(0)).expect("vnode slot 0");
+        v.ref_count = 2;
+        v.mode = 0o040755;
+    }
+
+    let mut ctl = NopCtl;
+    let reply = minix_vfs::VfsPmHandler {
+        table: &mut state.fproc_table,
+        filp_table: &mut state.filp_table,
+        vnode_table: &mut state.vnode_table,
+        fs_ctl: &mut ctl,
+    }
+    .handle(minix_types::VfsCall::Fork {
+        child: child_ep(),
+        parent: parent_ep(),
+        child_pid: CHILD_PID,
+    })
+    .expect("fork 通知接受");
+    assert!(matches!(reply, minix_types::VfsReply::Fork));
+    assert_eq!(state.filp_table.get(fid).expect("filp 存在").count, 2);
+    assert_eq!(
+        state
+            .vnode_table
+            .get(VnodeId(0))
+            .expect("vnode 存在")
+            .ref_count,
+        4
+    );
+
+    // 子退出:继承的计数完整归还(C misc.c:651-660)。
+    minix_vfs::VfsPmHandler {
+        table: &mut state.fproc_table,
+        filp_table: &mut state.filp_table,
+        vnode_table: &mut state.vnode_table,
+        fs_ctl: &mut NopCtl,
+    }
+    .handle(minix_types::VfsCall::Exit {
+        endpoint: child_ep(),
+    })
+    .expect("VFS 接受 PM 的 exit 通知");
+
+    assert_eq!(
+        state.filp_table.get(fid).expect("filp 存在").count,
+        1,
+        "子退出归还继承的 filp 引用"
+    );
+    assert_eq!(
+        state
+            .vnode_table
+            .get(VnodeId(0))
+            .expect("vnode 存在")
+            .ref_count,
+        2,
+        "子退出租还 rd/wd 的 vnode 引用"
     );
 }
 

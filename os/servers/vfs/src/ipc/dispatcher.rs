@@ -133,6 +133,8 @@ pub struct VfsPmHandler<'a> {
     pub table: &'a mut FProcTable,
     pub filp_table: &'a mut FilpTable,
     pub vnode_table: &'a mut VnodeTable,
+    /// vnode 零引用跨界的 `REQ_PUTNODE` 投递通道(C `put_vnode` 慢路径)。
+    pub fs_ctl: &'a mut dyn crate::vnode::FsCtl,
 }
 
 impl<'a> PmHandler for VfsPmHandler<'a> {
@@ -261,13 +263,31 @@ impl<'a> PmHandler for VfsPmHandler<'a> {
 
     fn handle_exit(&mut self, endpoint: Endpoint) -> Result<(), PmError> {
         let slot = endpoint.to_user_slot().ok_or(PmError::BadEndpoint)?;
-        let fp = self.table.get_mut(slot).ok_or(PmError::BadEndpoint)?;
-        if fp.pid == PID_FREE {
+        if self.table.get(slot).ok_or(PmError::BadEndpoint)?.pid == PID_FREE {
             return Err(PmError::BadEndpoint);
         }
-        // `free_proc(FP_EXITING)` — simplified: close fds + put vnodes
-        // counted via `CopyOutcome` fields; full `dmap/smap/worker/vmnt/tty`
-        // cascade is DEFERRED and represented by the `FreeKind::Exiting` path.
+        // C `free_proc` 前半(misc.c:651-660):逐 fd `close_fd`(错误忽略,
+        // 末次关闭 `dec_count` 落表),随后 rd/wd 各 `put_vnode`(零引用跨界
+        // 经 fs_ctl 排 `REQ_PUTNODE`)。后半 dmap/smap/worker/vmnt/tty 级联
+        // 仍 DEFERRED,由 `FreeKind::Exiting` 的槽位建模代表。
+        let VfsPmHandler {
+            table,
+            filp_table,
+            vnode_table,
+            fs_ctl,
+        } = self;
+        let fp = table.get_mut(slot).ok_or(PmError::BadEndpoint)?;
+        for i in 0..crate::fproc::OPEN_MAX {
+            if let Some(fd) = crate::filedes::Fd::new(i) {
+                let _ = crate::filedes::close_fd(fp, fd, filp_table);
+            }
+        }
+        if let Some(rd) = fp.root_dir.take() {
+            let _ = vnode_table.put(VnodeId(rd), &mut **fs_ctl);
+        }
+        if let Some(wd) = fp.work_dir.take() {
+            let _ = vnode_table.put(VnodeId(wd), &mut **fs_ctl);
+        }
         free_proc_inner(fp, FreeKind::Exiting);
         Ok(())
     }
@@ -647,6 +667,14 @@ fn free_proc_inner(fproc: &mut FProc, kind: FreeKind) {
 mod tests {
     use super::*;
     use crate::fproc::FpFlags;
+    use crate::vnode::{FsCtl, VnodeError};
+
+    struct NoCtl;
+    impl FsCtl for NoCtl {
+        fn put_node(&mut self, _fs: Endpoint, _ino: u64, _count: usize) -> Result<(), VnodeError> {
+            Ok(())
+        }
+    }
 
     fn create_test_table_with_parent() -> FProcTable {
         let mut table = FProcTable::new();
@@ -825,10 +853,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_exit(ep).unwrap();
@@ -843,10 +873,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setuid(ep, 2000, 3000).unwrap();
@@ -860,10 +892,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setgid(ep, 4000, 5000).unwrap();
@@ -877,10 +911,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setgroups(ep, 2, &[10, 20]).unwrap();
@@ -898,10 +934,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let err = handler
             .handle(VfsCall::SetGroups {
@@ -923,10 +961,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let r = handler.handle(VfsCall::SetGroups {
             endpoint: Endpoint::from_generation_slot(1, 0),
@@ -941,10 +981,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.handle_setgroups(ep, 2, &[10, 20]).unwrap();
@@ -965,10 +1007,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let ep = Endpoint::from_generation_slot(1, 0);
         handler.table.get_mut(UserSlot::new(0)).unwrap().tty = 7;
@@ -983,10 +1027,12 @@ mod tests {
         let mut table = create_test_table_with_parent();
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut handler = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let p = Endpoint::from_generation_slot(1, 0);
         let c = Endpoint::from_generation_slot(1, 1);
@@ -1027,10 +1073,12 @@ mod tests {
         // Real handler succeeds
         let mut filps = FilpTable::new();
         let mut vnodes = VnodeTable::new();
+        let mut ctl = NoCtl;
         let mut real = VfsPmHandler {
             table: &mut table,
             filp_table: &mut filps,
             vnode_table: &mut vnodes,
+            fs_ctl: &mut ctl,
         };
         let ok = PmHandler::handle_fork(&mut real, p, c, 999);
         assert!(ok.is_ok());
@@ -1042,11 +1090,13 @@ mod tests {
         let mut table2 = create_test_table_with_parent();
         let mut filps2 = FilpTable::new();
         let mut vnodes2 = VnodeTable::new();
+        let mut ctl2 = NoCtl;
         let handlers: Vec<Box<dyn PmHandler>> = vec![
             Box::new(VfsPmHandler {
                 table: &mut table2,
                 filp_table: &mut filps2,
                 vnode_table: &mut vnodes2,
+                fs_ctl: &mut ctl2,
             }),
             Box::new(MockPmHandler),
         ];

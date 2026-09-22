@@ -32,6 +32,20 @@
 
 use minix_pm::TestIpcTransport;
 use minix_pm::exit::KernelGateway;
+use minix_vfs::vnode::FsCtl;
+
+/// 空操作 vnode 归还通道(零引用跨界时的 REQ_PUTNODE 宿主替身)。
+struct NopCtl;
+impl FsCtl for NopCtl {
+    fn put_node(
+        &mut self,
+        _fs: Endpoint,
+        _ino: u64,
+        _count: usize,
+    ) -> Result<(), minix_vfs::vnode::VnodeError> {
+        Ok(())
+    }
+}
 use minix_pm::fork::{ForkCoordError, do_fork};
 use minix_pm::mproc::{Lifecycle, ProcTable};
 use minix_types::{
@@ -235,10 +249,12 @@ fn fork_chain_pm_vm_vfs_all_real() {
     let child_ep = Endpoint(m7.m7i1);
     let mut filps = minix_vfs::filp::FilpTable::new();
     let mut vnodes = minix_vfs::vnode::VnodeTable::new();
+    let mut ctl = NopCtl;
     let reply = minix_vfs::VfsPmHandler {
         table: &mut fproc,
         filp_table: &mut filps,
         vnode_table: &mut vnodes,
+        fs_ctl: &mut ctl,
     }
     .handle(minix_types::VfsCall::Fork {
         child: child_ep,

@@ -1169,10 +1169,12 @@ impl VfsState {
                         self.queue_reply_msg(msg.m_source, reply.encode());
                     }
                     Ok(other) => {
+                        let mut sink = put_node_sink(&mut self.pending_puts);
                         let mut handler = crate::ipc::VfsPmHandler {
                             table: &mut self.fproc_table,
                             filp_table: &mut self.filp_table,
                             vnode_table: &mut self.vnode_table,
+                            fs_ctl: &mut sink,
                         };
                         match handler.handle(other) {
                             Ok(reply) => self.queue_reply_msg(msg.m_source, reply.encode()),

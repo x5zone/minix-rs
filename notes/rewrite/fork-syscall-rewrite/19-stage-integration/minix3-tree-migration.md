@@ -166,7 +166,7 @@ C 腿的价值不因挂起而贬值:它是量尺,量尺的正确性不能依赖�
 
 **跨包桥设计挂账(VFS↔MFS,宿主全链点亮的最后一块)**。两侧接缝均已存在:VFS 侧 `dispatch_syscall` 的 FS 请求经 `FsTransport` 缝发出(`pending_fs.req` 持编码消息);FS 侧 `os/fs/fs-rt` 已有完整 wire 适配(`wire.rs` 的 `decode_body` 把请求消息解成 `RequestBody`,`minix-fs/src/task.rs` 按 Body 分派到 `FsDriver`,`encode_reply` 编回应答,`RtIpc` 承载 grant 拷贝)。组装要点与两个未决:①请求类型映射——VFS 的 `REQ_*` 消息号到 fs-rt `RequestNumber` 的对照表;②grant 回放——路径/数据字节在 caller 地址空间(如 `encode_lookup` 的路径 grant),宿主上需要"用户内存"的宿主模型(脚本字节源或 `VfsState::grant_user_buffer` 语义延伸),这是设计决策入口。依赖顺序:②定案 → LOOKUP 单段探针 → 逐请求类型铺开。
 
-test1/2/12 的 fork/wait 语义不重复翻译,由 `pm_vm_fork.rs` 与 `servers/pm/tests/run_once_integration.rs` 承接(文件头映射表有对照)。翻译钉出的三处 C↔Rust 缺口均已修复归档:VFS `copy_fproc` 的 filp/vnode 计数(原 `dispatcher.rs` 自注 DEFERRED)、MFS `FsDriver::rename` 臂接线(引擎在位,缺入口)、`minix_sys::vm::fork_address_space_via` 的裸偏移车道(改命名 `mess_1` 车道,对齐 `com.h:633-635`);对应测试摘帽转绿。
+test1/2/12 的 fork/wait 语义不重复翻译,由 `pm_vm_fork.rs` 与 `servers/pm/tests/run_once_integration.rs` 承接(文件头映射表有对照)。翻译与产品实现的对账现状:VFS fork 全链计数(`copy_fproc` 递增、退出侧 `close_fd`/`put_vnode` 清减,对位 `misc.c:616-617`/`632-633`/`651-660`)、MFS `FsDriver::rename` 臂(引擎 `link.rs:429` 的入口)、`minix_sys::vm::fork_address_space_via` 的命名 `mess_1` 车道(`com.h:633-635`)三处与 C 对位;对应测试均为运行态转绿。
 
 ### 7.3 编号测试全景清单(含决策驱动项)
 
