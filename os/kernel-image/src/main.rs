@@ -1,9 +1,13 @@
-//! 生产内核镜像 bin（NS8-A）：把 minix-kernel 链接成 boot-shim 契约位的
-//! 内核 ELF。boot-shim 从 `/EFI/minix/kernel.elf`（`os/boot-shim/src/loader.rs`
+//! 生产内核镜像 bin（NS8-A / NK4-B P3 M3.2 多架构）：把 minix-kernel 链接成
+//! boot-shim 契约位的内核 ELF。boot-shim 从
+//! `/EFI/minix/kernel.elf`（`os/boot-shim/src/loader.rs`
 //! `KERNEL_PATH`）读它做两件事：`compute_kernel_layout` 取布局填
 //! `KernelInfo`（kern_virt_base / kern_phys_base / kern_size），
 //! `load_segments_into_phys_memory` 按 PT_LOAD 的物理地址拷段体、清 BSS。
-//! 布局契约由同目录 `x86_64.ld` 定（高 VMA + 低物理 LMA，段间偏移一致）。
+//! 布局契约由同目录的架构脚本定（高 VMA + 低物理 LMA，段间偏移一致）：
+//! x86_64 用 `x86_64.ld`，aarch64 用 `aarch64.ld`，由 `build.rs` 按
+//! `--target` 选一份。Rust 面架构无关，只有入口指令序列与早期控制台
+//! 按 `target_arch` 分道。
 //!
 //! ## 交付边界（诚实登记）
 //!
@@ -37,8 +41,14 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use alloc::alloc::{GlobalAlloc, Layout};
 
 use minix_boot::KernelInfo;
-use minix_plat::x86_64::early_console;
 use minix_types::PhysBytes;
+
+// 早期控制台按架构取板级实现（两者同名 `write_str`，因此 Rust 面无需
+// 分道）：x86_64 = COM1 串口，aarch64 = PL011。
+#[cfg(target_arch = "x86_64")]
+use minix_plat::x86_64::early_console;
+#[cfg(target_arch = "aarch64")]
+use minix_plat::arm64::early_console;
 
 // ── 内核启动图锚点 ──────────────────────────────────────────────
 //
@@ -58,7 +68,12 @@ static KERNEL_ENTRY_ANCHOR: fn(&KernelInfo, PhysBytes) -> ! = minix_kernel::arch
 //
 // `kernel_boot_stack_top` 是链接脚本符号：在此处之外它无 Rust 声明，
 // 交给链接器解析（符号不存在时链接期即失败，符合 fail-fast）。
+//
+// 两个架构各一份指令序列，语义逐条对应：取栈顶 → 清帧指针 → 调 Rust
+// 面 → 停机驻留。aarch64 的 `adrp` + `add :lo12:` 取符号写法抄仓内既有
+// 载体（`os/qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs:250-251`）。
 
+#[cfg(target_arch = "x86_64")]
 core::arch::global_asm!(
     r#"
     .section .text.boot, "ax"
@@ -70,6 +85,23 @@ core::arch::global_asm!(
     2:  cli
         hlt
         jmp 2b
+    "#,
+    rust_image_main = sym rust_image_main,
+);
+
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    r#"
+    .section .text.boot, "ax"
+    .globl _start
+    _start:
+        adrp x9, kernel_boot_stack_top
+        add x9, x9, :lo12:kernel_boot_stack_top
+        mov sp, x9
+        mov x29, xzr
+        bl {rust_image_main}
+    2:  wfi
+        b 2b
     "#,
     rust_image_main = sym rust_image_main,
 );
@@ -92,8 +124,18 @@ fn rust_image_main() -> ! {
 
 fn halt() -> ! {
     loop {
-        // cli+hlt：中断全关的停机驻留。不改内存、不碰栈。
-        unsafe { asm!("cli", "hlt", options(nomem, nostack)) }
+        // 中断全关的停机驻留。不改内存、不碰栈。
+        // - x86_64：`cli` + `hlt`；
+        // - aarch64：`wfi`（本镜像未开 WFI 陷入控制，且入口态由未来的
+        //   交接协议定，属 NK1/OQ-N6 裁决范围；此处只需保证驻留）。
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            asm!("cli", "hlt", options(nomem, nostack))
+        }
+        #[cfg(target_arch = "aarch64")]
+        unsafe {
+            asm!("wfi", options(nomem, nostack))
+        }
     }
 }
 
