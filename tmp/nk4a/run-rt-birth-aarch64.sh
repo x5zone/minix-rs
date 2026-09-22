@@ -1,11 +1,19 @@
 #!/bin/bash
 # run-rt-birth-aarch64.sh — NK4-B P3 M3.1 取证包壳（非版管测试脚本）
 #
-# 与 os/qemu-tests/test-rt-birth-aarch64.sh 的差别只有一处：串口日志写到
-# tmp/nk4a/serial_a64_<TAG>.log 并保留（原版用 mktemp + trap 删除，跑完无档）。
-# 其余构建/分区/启动参数逐字照抄原版，QEMU 机器参数可由 A64_MACHINE 覆盖
-# （默认 "virt"，与原版一致；对照实验用 "virt,gic-version=3"，
-#  见 NK4B-TODO §3「AAVMF 载体必须 gic-version=3」）。
+# 与 os/qemu-tests/test-rt-birth-aarch64.sh 的差别（不止一处，本脚本只是
+# 取证记录器，不能取代原版测试）：
+#   1. 串口日志写到 tmp/nk4a/serial_a64_<TAG>.log 并保留（原版 mktemp +
+#      trap 删除，跑完无档）；
+#   2. 不做判据：无 5 个 marker 的 PASS/FAIL 判定、无 qemu/固件缺失时的
+#      SKIP 前置检查，只打印串口路径与行数；
+#   3. 不保留回退路径：固件硬写 /usr/share/AAVMF/*（原版还试
+#      /usr/share/qemu-efi-aarch64/QEMU_EFI.fd），也不含 mtools 缺失时的
+#      file=fat:rw: 回退；
+#   4. 默认等待 75 s（原版 TIMEOUT_RUN 默认 90 s）。
+# 构建命令、FAT 分区装配步骤与 QEMU 机器/CPU/内存/驱动器参数与原版一致；
+# 机器参数可由 A64_MACHINE 覆盖（默认 "virt"，与原版同值；对照实验用
+# "virt,gic-version=3"，见 NK4B-TODO §3「AAVMF 载体必须 gic-version=3」）。
 #
 # 用法：bash tmp/nk4a/run-rt-birth-aarch64.sh <TAG> [等待秒=75]
 set -uo pipefail

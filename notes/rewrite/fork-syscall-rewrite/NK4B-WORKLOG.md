@@ -324,7 +324,8 @@ mock 的 x86_64 镜像构建都覆盖不到 aarch64，因此断裂一路无人�
   985088 字节）；
 - 宿主 `cargo test -p minix-kernel` **809 passed / 0 failed**（与 P0 基线持平，
   `host-test-minix-kernel.txt`）；
-- x86_64 侧语义零变化的证据：镜像 IMG-EXIT=0 + 真机 c28a 串口 3922 行，
+- x86_64 侧语义零变化的证据：镜像 IMG-EXIT=0 + 真机 c28a 串口
+  （`wc -l` 计 3922 行；末行无换行符，编辑器计 3923），
   `rs-tr` 64 条（上限耗尽）/`rs-anom` 12 条/`rs-leak` 6 条，终态与 P1 的
   c27a/c27b 同形（rs SIGSEGV → 内核 vector 13 递归 panic），见
   `serial_c28a.log`。
@@ -334,7 +335,14 @@ mock 的 x86_64 镜像构建都覆盖不到 aarch64，因此断裂一路无人�
 原脚本第二轮（`test-script-after-fix.log`，1114 行，判据行
 `### TEST_RESULT: FAIL test-rt-birth-aarch64 ###`）与包壳两次复跑
 （`serial_a64_b1.log`、`serial_a64_b2.log`，各 817 字节，逐字相同）得到
-同一条到达序列，串口全文如下（原文行尾带回车符，此处不复制）：
+同一条到达序列。包壳 `tmp/nk4a/run-rt-birth-aarch64.sh` 与版管脚本的
+差别不止一处（逐条列，与它自己的输出形式匹配）：除把串口改写到持久
+路径外，它**不做判据**（无 5 个 marker 的 PASS/FAIL 判定、无 SKIP 前置
+检查、只打印串口路径与行数），**不保留回退路径**（固件硬写
+`/usr/share/AAVMF/*`，不含版管脚本的 `qemu-efi-aarch64` 候选；无 mtools
+缺失时的 `file=fat:rw:` 回退），**默认等待 75 s**（原版 90 s）。它只是
+取证记录器，不能取代原版测试；本机器两个前提（AAVMF 与 mtools 齐备）
+已在本宿主核实。串口全文如下（原文行尾带回车符，此处不复制）：
 
 ```
 ### test_rt_birth (aarch64): first minix-rt user binary on AAVMF
@@ -386,11 +394,21 @@ kernel: step4 DM coverage ok
   现在能编译（本里程碑成果），而它一旦被真正装载执行，可以跑到
   `paging enabled`。
 - 上交裁决：无。
+- 已知边界（本里程碑不修，事实先记下）：`os/kernel/src/trap_dispatch.rs`
+  的 `#[cfg(test)] mod tests` 整体不带架构门，但模块里至少 3 条测试直接
+  用 x86 专属类型（`:1791`/`:1832`/`:1857` 构 `TrapFrame`，`:1816-1823` 用
+  `X86_64ExceptionFrame`），即该模块在 aarch64/riscv64 宿主上
+  `cargo test -p minix-kernel` 本来就编不过（早于本里程碑，不是
+  `ab79b40ba` 引入）。不能简单把整模块改成 `all(test, target_arch =
+  "x86_64")`：那会连带关掉同模块里架构无关的 4 条测试
+  （`reply_code_none_is_a_wiring_bug_marker`、`exception_signal_maps_to_c_signum`、
+  三条 `forward_pagefault_*`）。真要开多架构宿主测试，应逐条给 x86 专属
+  测试加门；该工作属 P3 后面的宿主测试面，不在 M3.1 范围。
 - 自检：fix-guard ✅（四处修改各自先读目标行 ±5 行 + grep 确认，一次一修，
   修后 grep 复核 cfg 行在位；`git diff --stat` 为 3 files / +17 / -4）；
   计数不减 ✅（宿主 kernel 809/0failed 持平）；两次复跑 ✅
   （b1/b2 串口 817 字节逐字相同，另加原脚本 r2 一轮）；载体构建与
   IMG-EXIT=0 ✅；证据 `git add -f` 归档 ✅；FIXLOG 同日期一条 ✅；
-  未动 `minix3/`、未动 `os/etc/rc`、未放松任何冒烟判据（本里程碑只
-  新增了一个不改判据的取证包壳 `tmp/nk4a/run-rt-birth-aarch64.sh`，
-  原脚本逐字未改）✅；未删既有探针 ✅（只加 cfg 门）。
+  未动 `minix3/`、未动 `os/etc/rc`、未放松任何冒烟判据（包壳只写串口，
+  不改判据也不改版管脚本，原版脚本 `git diff` 为空）✅；未删既有探针
+  ✅（只加 cfg 门）。
