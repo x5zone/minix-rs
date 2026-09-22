@@ -15,6 +15,8 @@ minix-sef = { path = "../libs/minix-sef" }
 minix-fs = { path = "../libs/minix-fs" }
 minix-fs-mfs = { path = "../fs/mfs" }
 minix-fs-rt = { path = "../fs/fs-rt" }
+minix-net-uds = { path = "../net/uds" }
+minix-net-lwip = { path = "../net/lwip" }
 
 [dev-dependencies]
 
