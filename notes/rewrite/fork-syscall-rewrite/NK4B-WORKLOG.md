@@ -2040,8 +2040,9 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
 - 状态：**PARTIAL**。
 - 定性结论：riscv64 出生链载体的时钟缺件是「没人调用」而不是「调不动」，一行
   接上后旧 panic 消失、出生链前进到用户态第一次 IPC 拷贝；紧接着暴露的新断点
-  是内核态访问用户页所需的 `sstatus.SUM` 位全仓无人置起——这条要改生产内核的
-  IPC 拷贝路径，属架构级选择，按任务书上交裁决，本轮不自行定案。
+  是内核态访问用户页所需的 `sstatus.SUM` 位生产代码无人置起（范围：
+  `os/arch/src` + `os/kernel/src`；测试载体自带窗口，见下面的「更正」节）——这条
+  要改生产内核的 IPC 拷贝路径，属架构级选择，按任务书上交裁决，本轮不自行定案。
 
 ### 为什么这一条不属于「等裁决」那一批
 
@@ -2101,7 +2102,7 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
 确定（不是换个地方随机挂）。载体脚本本身仍是 FAIL：`RT-BIRTH MAIN OK` 等五个
 用户态 marker 一个都没出现，所以本节不能把 M4.4 判成 DONE。
 
-### 事实二：新断点 = 内核读用户页需要 `sstatus.SUM`，全仓无人置
+### 事实二：新断点 = 内核读用户页需要 `sstatus.SUM`，生产侧无人置
 
 取证过程在 `evidence/20260922-nk4b-p4-m44-clock/sum-user-access-forensics.log`，
 五步：
@@ -2203,9 +2204,20 @@ arch 层而不是删掉）。只把事实钉在案：`os/arch/src/riscv64/trap_r
 ### 登记：aarch64 同型缺口（今日不可验证，不修）
 
 `os/arch/src/arm64/boot.rs:108` 写着同一条未实现的意图：「aarch64 equivalent is
-PSTATE.PAN, set per-process via SPSR」。全仓同样无一处置 PAN。今天不可验证：
-aarch64 出生链卡在更早的平台描述符发现那一步（M3.4 的 D1/B/A 待裁决）。若裁决
-下来，建议两架构一并处理（它们是同一个缺口的两份形状）。
+PSTATE.PAN, set per-process via SPSR」。生产侧（`os/arch/src` + `os/kernel/src`）
+同样无一处置 PAN——该 grep 只剩这一行注释（另两条 `PANIC_DIAG_ACTIVE` 是子串
+误命中，与 PAN 无关）。注意范围词：测试载体不是零，aarch64 载体
+`test-rt-birth-aarch64/src/main.rs:391-408` 在 `KERNEL_CALL_TRAP_NR` 前后用
+`mrs/bic/orr/msr spsr_el1` 翻 SPSR_EL1 bit22（:394 清位开窗、:404 置位关窗），
+与 riscv64 载体的 SUM 窗口同位同型——同样是案乙的形状。但两份不完全同构：
+riscv64 的 `csrs sstatus, SUM` 作用于**当前**状态、紧接着的 load 就生效；aarch64
+那份写的是 **SPSR_EL1（备份寄存器）**，要到 `eret` 之后才变成 PSTATE，而它担保的
+拷贝发生在 `eret` 之前的 EL1（`kernel_call_leg` 用
+`core::ptr::copy_nonoverlapping`，`:424`、`:447`）。这条差异本会话不定性：
+PAN 是否真的处于置位态、以及它对该拷贝是否有拦截效果，都要等 aarch64 出生链
+能跑到那一步才能真机验证（今日卡在平台描述符发现，M3.4 的 D1/B/A 待裁决）。
+若裁决下来，建议两架构一并处理（它们是同一个缺口的两份形状），并先补上面那个
+开窗时机问题的取证。
 
 ### 本轮未做与不做
 
@@ -2233,7 +2245,8 @@ aarch64 出生链卡在更早的平台描述符发现那一步（M3.4 的 D1/B/A
 | `arch/src/riscv64/trap_stub.rs:193 / :199-200 / :278 / :289-290` | `grep -n "csrr t0, sstatus\|csrw sstatus, t0\|ld t0, 33\*8"` | 命中（初稿写的 193-200/291-292 偏了一行，已改） |
 | `arch/src/riscv64/boot.rs:24`（`INIT_USER_SSTATUS`） | `sed -n '24p'` | 命中 = `0x0000_0020` |
 | `arch/src/riscv64/boot.rs:95-97`（设计意图） | `sed -n '95,97p'` | 命中 |
-| `arch/src/arm64/boot.rs:108`（PAN 同型） | `grep -n PAN` | 命中 |
+| `arch/src/arm64/boot.rs:108`（PAN 同型） | `grep -rn --include=*.rs PAN arch/src/arm64 kernel/src \| grep -vi 'resume\|assum\|summar\|consum\|COMPAN\|separ'` | 命中（生产侧仅这一行注释；PAN 窗口在 `qemu-tests/` 载体里，见上一节） |
+| aarch64 载体 PAN 窗口 `test-rt-birth-aarch64/src/main.rs:391-408` | `sed -n '391,408p'` | 命中（评审追问后自查新增，初稿漏登记） |
 | `kernel/src/vm.rs:403`（Direct Map 模式） | `grep -n kernel_phys_to_virt` | 命中 |
 | 三载体 `grep -c init_clock_and_interrupts` = 1/1/0 | 逐目录 `grep -c` | 修后实测（修前 1/0/0） |
 

@@ -116,3 +116,44 @@ qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-riscv64/src/main.rs:340: 
 
 （本弧观察手段/表述踩坑第 6 次：否定式全称断言的范围词必须与 grep 实参一致；
   本仓 grep 默认从 `os/` 起跑，很容易把「两个目录」当成「全仓」。）
+
+## 10. 追加（评审闭环）：aarch64 同型缺口的 PAN 取证
+本节节名虽是 SUM，但 aarch64 那份是同一条缺口的另一形状，取证归此一处，
+免得裁决时被两份日志拆看。
+
+命令：grep -rn --include=*.rs PAN arch/src/arm64 kernel/src | grep -vi 'resume\|assum\|summar\|consum\|COMPAN\|separ'
+  arch/src/arm64/boot.rs:108:    // aarch64 equivalent is PSTATE.PAN, set per-process via SPSR
+  kernel/src/lib.rs:2059:static PANIC_DIAG_ACTIVE: ...     ← PANIC 子串误命中，与 PAN 无关
+  kernel/src/lib.rs:2096:    if PANIC_DIAG_ACTIVE.swap(...) ← 同上
+#  ⇒ 生产侧（arm64 + kernel）只有一行意图注释，无一处翻 PAN。
+
+命令：sed -n '391,408p' qemu-tests/test-kernels/kernel/bootstrap/test-rt-birth-aarch64/src/main.rs
+  391  unsafe {
+  392      asm!(
+  393          "mrs {t}, spsr_el1",
+  394          "bic {t}, {t}, #(1 << 22)",   // 清 PAN 位 = 开窗
+  395          "msr spsr_el1, {t}",
+  ...
+  400  let ret = kernel_call_leg(*frame.add(IDX_X0), &raw mut KMSG, &raw mut DIAGBUF);
+  401  unsafe {
+  402      asm!(
+  403          "mrs {t}, spsr_el1",
+  404          "orr {t}, {t}, #(1 << 22)",   // 置 PAN 位 = 关窗
+  405          "msr spsr_el1, {t}",
+  408      );
+  409  }
+#  ⇒ 与 §9 同构：“全仓无一处置 PAN”是错的，载体里有窗口，形状仍是案乙。
+
+与 riscv64 那份的两点差异（只记录，本会话不定性）：
+  (1) 生效时机：riscv64 `csrs sstatus, SUM`（载体 :331）改变的是当前状态，紧
+      跟的 load 就受它影响；aarch64 写的 SPSR_EL1 是备份寄存器，要到 eret 后
+      才成为 PSTATE，而它担保的拷贝在 eret 之前的 EL1 执行（载体 :424、:447
+      用的是 core::ptr::copy_nonoverlapping，不走生产拷贝路径）。
+  (2) 可验证性：riscv64 这份今天能真机跑（本目录 serial_clk*.log）；aarch64 出生链
+      卡在更早的平台描述符发现（M3.4 的 D1/B/A 待裁决），所以 PAN 当时是否真的
+      处于置位态、以及它对该拷贝有无拦截效果，今日无法用硬件证据回答。
+因此 WORKLOG「登记：aarch64 同型缺口」一节只登记不修（任务书禁止以制造完成为
+目的的不可验证修改）；若用户采纳案乙，两架构应一并处理，并先补 (1) 的取证。
+
+（第 7 次踩坑：初次写本节时把开窗那条写成 :393，实测 `sed -n '393p;404p'` 发现
+  :393 是 mrs、bic 在 :394，已改。行的错一位与上一轮锚点自查表里记的是同一个模式。）
