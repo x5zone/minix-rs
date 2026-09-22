@@ -820,3 +820,59 @@ ESP 盘镜像与 `-bios` 指向 AAVMF；串口采集方式照抄 x86_64 腿
 
 
 
+## M3.3 实现（第 1 步：决策二的前置真修 —— PL011 发送节流）
+
+状态：**DONE**。commit `1a2a8eb61`。设计节里的决策二要求「先给 PL011 补
+有界等待，再让 shim 复用 `minix-plat` 的早期控制台」，本步就是那件前置事，
+单独成一提交（一逻辑单元一 commit）。
+
+### 改了什么
+
+| 文件 | 改动 | 对位依据 |
+|------|------|----------|
+| `os/plat/src/early_console.rs` | 新增共享纯控制流 `tx_wait_then_send`（+ 宿主 `mod tests` 三条） | 决策二 |
+| `os/plat/src/arm64/early_console.rs` | `write_byte` 改为「先有界等 `UARTFR` bit5 TXFF 再写 DR」，上限 100_000 | x86 侧 `os/boot-shim/src/main.rs:135-146` 的有界轮询 |
+
+### 一处必须写下来的可测性事实（给后续所有 aarch64 修复）
+
+`os/plat/src/lib.rs:32` 的 `pub mod arm64` 带 `#[cfg(target_arch = "aarch64")]`
+⇒ **宿主编译单元里不存在该模块**，写在它内部的 `#[cfg(test)]` 永不执行。
+同目录 `arm64/interrupt.rs:252` 那个 `mod tests` 就是这种状态：宿主
+`cargo test -p minix-plat` 的 4 条全部来自 `x86_64::interrupt`。所以任何想
+被宿主测到的 aarch64 逻辑，都必须把判断部分放到 cfg 之外的共享模块里，
+寄存器访问以闭包注入——本步就是这么做的（否则只能得到「编译通过、测试为零」
+的假收敛）。
+
+### 验证（全部实跑，输出归档）
+
+| 项 | 结果 | 证据 |
+|----|------|------|
+| `cargo test -j 1 -p minix-plat`（宿主 docker） | 4 → **7 passed**，`PLAT-EXIT=0` | `pl011-host-tests.txt` |
+| `cargo test -j 1 -p minix-kernel -p minix-arch` | **809 / 241**（P0 基线持平，不减） | 同上文件后半 |
+| `cargo build --target aarch64-unknown-none -p kernel-image --features fw-aarch64-none --release` | `A64-BUILD-EXIT=0`，`early_console` 相关告警 0 条 | `pl011-aarch64-build.txt` |
+| `bash check-layout.sh aarch64`（含重新构建 + 13 条布局断言） | `CL=0`（L0–L8 全 PASS） | 同上（本轮未另存，值为 0 已记于此） |
+| 反向变异 A：`while tx_full() && false`（= 修复前「完全不等」） | 2 条 FAIL / 1 条 ok（空闲路径两实现同形，本就该 ok） | `pl011-throttle-negative-mutation.log` |
+| 反向变异 B：删掉 `if spins >= limit { break; }` | 1 条 FAIL，21.6 秒后死于假设备读计数器 u32 溢出 | 同上 |
+| 还原复跑 | 3 passed + `RESTORE-OK`（源文件与变异前备份逐字节相同） | 同上 |
+
+判别性说明（不夸写）：变异 B 在宿主上表现为「计数跑飞后 panic」而不是
+「超时挂死」——`FakeUart` 的读计数器是 `Cell<u32>`，debug 构建下先溢出。
+真机上同一缺陷的表现是 MMIO 读循环永不退出。两条测试对「先等后写」的时序
+断言靠 `reads_at_first_write`（第一次写入前已完成几次读取），只数读/写次数
+量不出「先写后等」。
+
+### 顺带量到的一件事（解释 ELF 变小，免得下位读者怀疑构建发虚）
+
+改后 aarch64 `kernel` 工件 1203016 字节，M3.2 记录的是 1205672 字节。
+用 `git show HEAD~1` 的两个旧版 `early_console.rs` 重现构建，实测回到
+1205672 ⇒ 差值确由本步引入。原因（合理推测，非断言）：release 下
+`write_byte` 原本是三指令 MMIO 写，会被内联进内核里每一处早期控制台调用；
+现在它含循环与闭包调用，不再内联，调用点从内联体退化为一次跳转，净体积变小。
+这是本步唯一的产物字节变化，布局断言（L0–L8）全通过说明契约面未动。
+
+### 划界（本步不做，理由写清楚）
+
+`os/plat/src/x86_64/early_console.rs:64` 的 `com1_write_byte` 至今是
+**无上限** `while (inb(COM1_BASE + 5) & 0x20) == 0 {}`——同一类缺陷在生产
+内核 x86 路径上仍然留着。不在本步修：它不在 M3.3 关键路径上，x86_64 装机链
+已翻绿，动它要按铁律补真机两次复跑，应与 P1 的 x86 侧修复批次一起做。

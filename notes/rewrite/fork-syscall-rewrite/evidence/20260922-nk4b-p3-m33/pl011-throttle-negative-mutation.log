@@ -1,0 +1,26 @@
+--- 变异 A：完全不等待（= 修复前行为）→ 期望「到限仍写」「等满才放行」两条 FAIL ---
+test early_console::tests::bounded_wait_gives_up_and_still_sends ... FAILED
+test early_console::tests::idle_device_sends_immediately ... ok
+test early_console::tests::waits_exactly_until_tx_drains ... FAILED
+thread 'early_console::tests::bounded_wait_gives_up_and_still_sends' (70) panicked at plat/src/early_console.rs:130:9:
+thread 'early_console::tests::waits_exactly_until_tx_drains' (72) panicked at plat/src/early_console.rs:142:9:
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+error: test failed, to rerun pass `-p minix-plat --lib`
+RUN-EXIT=101（124 = 超时 = 测试挂死）
+--- 变异 B：去掉上限 → 期望 RUN-EXIT=124（第一条测试就挂死） ---
+test early_console::tests::bounded_wait_gives_up_and_still_sends ... FAILED
+test early_console::tests::idle_device_sends_immediately ... ok
+test early_console::tests::waits_exactly_until_tx_drains ... ok
+thread 'early_console::tests::bounded_wait_gives_up_and_still_sends' (70) panicked at plat/src/early_console.rs:107:21:
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 4 filtered out; finished in 21.61s
+error: test failed, to rerun pass `-p minix-plat --lib`
+RUN-EXIT=101（124 = 超时 = 测试挂死）
+--- 还原后复跑 → 期望 3 passed ---
+test early_console::tests::bounded_wait_gives_up_and_still_sends ... ok
+test early_console::tests::idle_device_sends_immediately ... ok
+test early_console::tests::waits_exactly_until_tx_drains ... ok
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+RUN-EXIT=0（124 = 超时 = 测试挂死）
+=== 还原核对：SRC 应与变异前的备份逐字节相同 ===
+RESTORE-OK（变异已全部撤销）
+=== 本轮真实改动面（只有已宣布的文件）===
