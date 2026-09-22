@@ -1,0 +1,10 @@
+[P4] FAIL  os/tests 下有 .rs 未声明 [[test]]（cargo 不编译 = 假覆盖）: zz_mutation 
+[P3] FAIL  minix-sys SELF 未从 Endpoint::SELF 派生（化石值 -2 复发？）
+[P3] FAIL  发现 1 处端点哨兵字面量（= -2/-3，必须 Endpoint::* 派生）:
+[P5] FAIL  冒烟契约漂移：'rc: minimal boot script marker' 被 os/qemu-tests/test-cmd-smoke.sh 等待但 os/etc 下无 emit 点（T1 事故形态）
+[P6] FAIL  CI 门缺 riscv64 生产形态 build 腿
+[P6] FAIL  CI 门退化成 cargo check（check 不做 codegen，inline asm 错误静默放过）
+[P7] FAIL  新增退出码吞没（基线外）: os/qemu-tests/zz_mutation.sh:2:cargo build -p zz --release 2>\&1 || echo "(build failed)"
+=== 还原后 ===
+----
+PASS=9 FAIL=0 SKIP=1
