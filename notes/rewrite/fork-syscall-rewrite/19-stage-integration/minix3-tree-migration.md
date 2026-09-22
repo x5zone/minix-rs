@@ -140,6 +140,12 @@ man 手册、locale 数据、terminfo。手册面长期有价值(重写文档可
 
 C 腿的价值不因挂起而贬值:它是量尺,量尺的正确性不能依赖被测系统,翻译量尺反而引入翻译错误风险。
 
+**C 腿激活路径:复用树内 libc,不新写兼容层。** 点亮 C 腿的最短路径不是写一套 relibc 式薄层——自写层自己的缺陷会污染测试结果,量尺失真正是保持 C 原样的全部理由——而是把树里现成的 NetBSD libc(`lib/libc`)装上腿:Minix3 用户态用的就是它,本体是架构无关的 C,零重写。需要补的是三样:各架构陷阱桩(`libc/arch` 只有 arm/i386、`libsys/arch` 只有 earm/i386,三个目标架构都没有;x86_64 的 IPC 桩对齐 `minix-sys` 已定义的陷入面——其 IpcTransport 方法逐条对位 C `_ipc.S` 的寄存器约定,桩逻辑无需改)、C 的 crt0 对接 `minix-rt` 的 handoff ABI(kerninfo 页、栈与参数布局),以及交叉 C 构建胶水(项目至今是纯 Rust 构建面,引入 clang 交叉 + sysroot 是最大单项)。
+
+**这套 libc 的年代与冻结定位。** 抽样 RCS 标识跨 2004-2015(printf.c 2013、strftime.c 与 getaddrinfo.c 2015),主体是 NetBSD 6/7 时代随 Minix3 最终状态(约 2015)冻结的快照;今天上游已是 NetBSD 10/11。对本项目的用途,冻结是特性而非缺陷:C 编号测试与这套 libc 和头文件同步演化,断言里的 errno 值、结构布局、行为边角都是对着这个年代校准的——把 libc 升到上游新版本反而制造量尺与被测系统的代差。政策:**冻结快照,不追上游**;确证的缺陷个案选择性回补,个案在测试挂账里记录。arch 目录的古早(earm/i386)不参与构建,无影响。
+
+**64 位头文件是真正的适配工作。** 探针实证(libc 三个代表文件用现代 gcc 编译):`gen/errno.c` 干净通过,`stdio/printf.c` 仅告警通过——libc 的 C 本体与现代工具链兼容。拦截点是头文件树:用户态头(`include/`)是 32 位 i386 时代产物,64 位编译器下 `string.h` 的 memchr、`stdio.h` 的 fwrite 与内建声明冲突(gcc 判 error),`sys/sys/types.h` 引用的 `pthread_types.h` 树内缺失。这是已知形状的工作:参照上游 NetBSD 自身 amd64 化的演进给头文件做 LP64 化(尺寸类型加 `_LP64` 守卫、补缺失头)。依赖顺序不变:载体用户态可跑(进行中)→ test12 试点(fork/wait ×1000,libc 面最小,一次验证 fork/waitpid/stdio 三件事)→ 按域铺开。
+
 **Rust 腿(native 面直测,现在就可以动)。** 把编号测试的**语义内容**(不是逐行代码)翻译进 `os/tests/`,直接调用 `minix-rt`/`minix-sys` 的 native 接口驱动服务器真代码。现有 `os/tests/ds_publish_subscribe.rs` 已经示范了这个形态:宿主上跑真服务器逻辑,IPC 与 grant 传输用脚本接缝,测试文档注释里明确记录了"宿主半能跑、真机三链挂后续里程碑"的分工。Rust 腿的每个测试文件头标注它翻译自哪个 testN,与 C 腿共享编号空间,结果可比对。
 
 **关于 native 库的命名**:不需要新造名字。现有 `minix-rt`(crt0、alloc、signals)加 `minix-sys`(IPC、grant、系统调用面)已经是 native 用户态面的载体;未来若做 POSIX 兼容薄层,自然的名字是 `minix-libc`——这恰好复刻 C 树自身的三层结构(NetBSD libc 通用面 / libminc Minix 差异面 / libsys 桩面),Rust 侧对应为 minix-libc 兼容面 / minix-rt+minix-sys native 面。Redox 的 relibc 是同一思路的先例。
