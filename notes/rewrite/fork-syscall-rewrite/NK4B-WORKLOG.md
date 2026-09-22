@@ -1819,3 +1819,114 @@ vaddr = paddr = entry 三者同一）。而生产镜像按 M4.2 的设计 entry 
 只装载不跳转（改 `boot.scr` 用 `go`/自写交接），(c) 本弧线放弃 U-Boot 腿、三架构
 统一走 OpenSBI/boot-shim 一条装载链。这条与「装 mkimage/u-boot-qemu」那条前置件
 裁决可以合并处理。
+
+---
+
+## P4 M4.4 — riscv64 内核点电（前置勘察，状态：**BLOCKED 等裁决**；已把缺件钉到字段级）
+
+任务书判据（`NK4B-TODO.md:113`）：「M4.4 内核点电 → VM handoff → 首模块用户态」。
+本节只交付勘察与裁决项，不动生产代码：勘察结论是这一里程碑被一条**三架构共享的
+架构级缺件**卡住，不是我能在本会话定案的。下面每条都是本轮实测，不是引用设计文档。
+
+### 事实一：镜像到达入口之后没有往下走，是三架构同一处，不是 riscv64 特有
+
+`os/kernel-image/src/main.rs:139-148` 的 `rust_image_main` 做三件事：用
+`black_box` 读一次 `KERNEL_ENTRY_ANCHOR` 的**指针值**（`:142`）、打横幅（`:144-147`，
+横幅文字自带 `boot-shim handoff not wired yet — NK1/OQ-N6`）、`halt()`。
+也就是说：契约位已经锚定（`:69`
+`static KERNEL_ENTRY_ANCHOR: fn(&KernelInfo, PhysBytes) -> ! = minix_kernel::arch_boot`），
+但**从未被调用**。这段代码不分架构，所以 M4.4 的缺件在 x86_64 / aarch64 / riscv64
+三条腿上是同一条（x86_64 生产链今天能进内核，是因为它走的是另一条产线：
+`os/boot-shim/src/main.rs:66` 在进程内直接调 `minix_kernel::arch_boot`，
+不经过本镜像）。
+
+### 事实二：riscv64 生产形态的内核本体编得出来（差点写成一条假断言）
+
+本轮第一次试构：`cargo build -p minix-kernel --target riscv64gc-unknown-none-elf
+--release` → `minix-arch` 报 372 条错（`can't find crate for std`、大量
+`cannot find type Result/Option`）。我差点把这写成「riscv64 内核本体无法构建」。
+查 `os/kernel/Cargo.toml:30-32` 后当场推翻自己：`default = ["mock"]` 是**宿主测试
+形态**（带 `minix-plat/mock` 与 `minix-arch/runtime-window`），生产形态要显式
+`--no-default-features`（该处注释直接把这条判例写在上面：「生产形态 =
+`--no-default-features`（… riscv64gc/aarch64-unknown-none 判例见 NK8/NL5②）」）。
+重跑 `cargo build -p minix-kernel --target riscv64gc-unknown-none-elf
+--no-default-features --release` → **Finished `release` profile，仅 45 条 warning，
+0 error**（`KB2-EXIT=0`）。这也解释了为何 M4.2 的 kernel-image 能过：
+`os/kernel-image/Cargo.toml:32` 对本包就是 `default-features = false`。
+
+**登记为可复跑提醒**：任何人在本仓对 `minix-kernel` 做真机构建试探，必须带
+`--no-default-features`；不带得到的 372 条错是**方法伪影**，不是缺陷。
+
+### 事实三：riscv64 侧已有仓内对位实现，但它是测试形状，不能直接拿来当生产交接
+
+OpenSBI `-kernel` 直载形态下，既有测试内核**自己造交接件**——
+`os/qemu-tests/test-kernels/kernel/bootstrap/hello-boot-riscv64/src/main.rs`：
+
+| 片段 | 内容 | 生产可用性 |
+|------|------|------------|
+| `:114-117` | `static MEMMAP: [MemoryRegion; 1]` 硬写单块常规内存（`DRAM_BASE` + `DEFAULT_RAM_SIZE`） | 不可用：把 QEMU virt 的内存拓扑写进产物，真机不成立 |
+| `:110,119-129` | `BUMP_PTR = DRAM_BASE + 32MB`、自带 bump 分配器产 `root_page` 与 bump 区 | 形状可用（与 boot-shim 的 bump 同角色），但基址写死 |
+| `:154` | `boot_modules: &[]` | **直接撞内核契约**：`os/libs/minix-boot/src/kernel_info.rs:203-207` 的 `validate()` 要求 `!boot_modules.is_empty()` |
+| `:147-148` | `kern_virt_base = kern_phys_base = DRAM_BASE`（平坦） | 不可用：生产镜像按 M4.2 的设计 entry 是高半 `0xFFFFFFC000000000` |
+| `:174` | 调 `minix_kernel::arch_boot_impl::<Riscv64Paging>(&kernel_info, root_page)` | 注意它绕过了 `os/kernel/src/lib.rs:243` 的 `arch_boot`——因此也不走 `validate()` 与 `jump_to_kmain` |
+
+同形对位不是孤例：`test-paging-enable-riscv64/src/main.rs:102-129`、
+`test-protection-riscv64/src/main.rs:118-145`、`test-rt-birth-riscv64/src/main.rs:452-483`
+都是同一段写法（自构 `KernelInfo` + `arch_boot_impl`），并在 NK3 真机上跑过。
+**价值**：「谁来建表、递什么参数」在 riscv64 上并非无人知道答案，仓内已有三份可跑
+样本；**局限**：三份都停在 `arch_boot_impl`（只验分页），没有一份进到 `kmain`，
+因此都没碰过 `validate()` 的真实门槛。
+
+### 事实四：把 M4.4 拆开看，缺的是三件具体东西（不是“交接协议”这个抽象词）
+
+契约签名 `arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> !`
+（`os/kernel/src/lib.rs:243`，riscv64 臂）。要调它，按字段对账缺三件：
+
+1. **真实 memmap 来源**。x86_64 / aarch64 从 UEFI 内存图快照来；riscv64 的
+   OpenSBI 腿没有内存图 API。可行的来源是设备树 `/memory` 节点——固件已经把它
+   放进 `a1`（M4.3 实测串口 `Domain0 Next Arg1 : 0x000000008fe00000`），但
+   **本镜像今天完全没读 `a1`**（`os/kernel-image/src/main.rs` 的 riscv64 入口序列
+   `:119-133` 只立栈就进 Rust 面）。`KernelInfo::platform_sources` 字段就是为这件事
+   留的位（`kernel_info.rs:125`）。
+2. **十二个 boot_modules 的装载来源**。riscv64 装机面仍是 honest bail
+   （`os/xtask/src/image.rs:200-204`，上方 `:195-199` 的注释把理由写得很清楚：
+   riscv64 不是 UEFI 盘形）。
+   数量契约由 `kernel_info.rs:333` 的 `NR_BOOT_MODULES = 12` 锁住。所以这条不是
+   “写个空数组能诚”的那类：`validate()` 会当场 panic（`:203-207`）。
+3. **handoff 执行者是谁**。这一条才是真正的架构级选择，下面单独裁决。
+
+这三件里的前两件与 M3.4 的上交裁决（D1/B/A，见本文件「上交裁决（M3.4 的架构级
+选择）」节）**同族**：都落在「release 生产链从哪拿平台信息」这一条边界上。
+不同之处在于：aarch64 卡的是「拿不到平台描述符」（AAVMF 的 ACPI GICR 恒 0），而
+riscv64 卡的是「拿得到但没人递」。
+
+### 上交裁决（M4.4 的架构级选择，本会话不自行定案）
+
+| 案 | 做法 | 代价 / 风险 |
+|----|------|-----------|
+| 甲 | 让 kernel-image 自己当 handoff 执行者：入口先读 `a1` 的 DTB 解 memmap，再自接模块装载源，建表后调 `minix_kernel::arch_boot` | 对位实现存在（事实三的三份样本），但把镜像从「契约位产出者」变成「引导体」，与 boot-shim 的职责边界重叠；x86_64 生产链刚在 NK4-A 翻绿，动它风险直接传导到 P1 |
+| 乙 | 给 riscv64 写一个独立的 boot-shim 等价体（不是 UEFI，而是 OpenSBI payload），与 x86_64/aarch64 同形：“装载体造 KernelInfo，镜像只当产物” | 职责最干净，不碰现有两条腿；代价是新增一份引导体代码与它的装机面（xtask 要给 riscv64 开一条非 ESP 的产物通道） |
+| 丙 | 本弧线 riscv64 不点电：P4 的交付面收敛为「镜像产出 + 装载链实证（M4.2 / M4.3 已完成）」，handoff 等 NK1/OQ-N6 统一裁决后三架构一起做 | 不阻塞其他工作；代价是 M4.4/M4.5 标 BLOCKED，任务书终目标里的 riscv64 rc marker 本轮交不出 |
+
+**推荐：丙（本弧线）+ 甲（下一弧线方向）**。理由：甲要求先把「memmap 与十二模块
+的非 UEFI 来源」做出来，而那一件事与 M3.4 裁决的 B 案（生产链补显式描述符通道）
+是同一族工作；在 P1 的 x86_64 rc marker 裁决未定之前先动 handoff 协议，会让三条
+弧线互相阻塞。丙不拿 stub 制造完成：M4.4/M4.5 如实标 BLOCKED，不写“已过”。
+
+### 本轮未做与不做（防止被当成已做）
+
+- 没动 `os/kernel-image/` 下任何代码（包括没为“看起来能推进”加空 `KernelInfo`）；
+- 没读 `a1`、没解 DTB、没写 riscv64 装机面（均依赖上述裁决）；
+- M4.4 的下游两项（VM handoff、首模块用户态）未勘察——它们的前置（内核进 kmain）
+  未达成，勘察只会得到推论，而推论不入库为事实。
+- 本节只新增文档，不新增 commit 以外的产物；生产代码改动量 = 0。
+
+**锚点自查记录（写完就当场重跑了一遍）**：本节初稿有 8 处引用行号写偏，已逐条
+改实：`boot-shim/src/main.rs:63→:66`、`kernel/Cargo.toml:33-35→:30-32`、
+`kernel-image/Cargo.toml:33→:32`、`xtask/src/image.rs:195-203→:200-204`（拆成
+bail 块 + 上方注释两段）、`hello-boot-riscv64` 表格内三处（`boot_modules` 实为
+`:154` 不是 `:156`；基址对实为 `:147-148`；bump 实为 `:110,119-129`），以及表内
+「绕过 `arch_boot`」一栏补上完整文件路径（只写 `:243` 会被读成本文件行号，而那
+个文件只有 180 余行）。未偏的（已核为准确）：`NK4B-TODO.md:113`、
+`kernel/src/lib.rs:243`、`kernel_info.rs:125/203-207/333`、三份同形样本的起止行、
+`main.rs:69/119-133/139-148`。
