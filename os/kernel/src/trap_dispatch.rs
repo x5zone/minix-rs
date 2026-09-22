@@ -814,14 +814,50 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                         if proc.p_endpoint.0 == 2 {
                             C0::write_str(" rsp=");
                             C0::write_hex(frame.rsp);
+                            C0::write_str(" rax=");
+                            C0::write_hex(frame.rax);
+                            C0::write_str(" rcx=");
+                            C0::write_hex(frame.rcx);
+                            C0::write_str(" rdx=");
+                            C0::write_hex(frame.rdx);
                             C0::write_str(" r8=");
                             C0::write_hex(frame.r8);
                             C0::write_str(" rdi=");
                             C0::write_hex(frame.rdi);
                             C0::write_str(" rsi=");
                             C0::write_hex(frame.rsi);
+                            C0::write_str(" rbp=");
+                            C0::write_hex(frame.rbp);
                             C0::write_str(" r10=");
                             C0::write_hex(frame.r10);
+                            C0::write_str(" err=");
+                            C0::write_hex(frame.errcode);
+                            // 第 13 轮：memset(0x227af0..0x227b40) 无 prologue
+                            // 压栈，[rsp] 即调用者返回地址。
+                            if frame.rip >= 0x227_000 && frame.rip < 0x228_000 {
+                                // memset 无 prologue 压栈：[用户 rsp] 即调用
+                                // 者返回地址——经 RS 页表翻译后走 DM 读。
+                                let root = crate::proc_table_with(&section)
+                                    .get(cur_nr)
+                                    .map(|p| p.p_seg.phys_root);
+                                if let Some(root) = root {
+                                    match crate::pte_walk::walk_x86_64(
+                                        root,
+                                        minix_types::VirBytes(frame.rsp),
+                                    ) {
+                                        Some((pa, _)) => {
+                                            use minix_arch::DirectMapArch as _;
+                                            let va = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa.0));
+                                            let retaddr = unsafe {
+                                                core::ptr::read(va.0 as *const u64)
+                                            };
+                                            C0::write_str(" ret=");
+                                            C0::write_hex(retaddr);
+                                        }
+                                        None => C0::write_str(" ret=?"),
+                                    }
+                                }
+                            }
                         }
                         C0::write_str("\n");
                     }
