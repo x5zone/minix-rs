@@ -831,7 +831,13 @@ impl Paging for X86_64Paging {
                 unsafe {
                     write_pte_dm(
                         pd_phys.0 + (i as u64) * 8,
-                        (leaf_pa + (i as u64) << PD_SHIFT) | leaf_bits,
+                        // F7（NK4-C 阶段0，优先级实证后由风格项升级为潜伏
+                        // bug）：Rust 中 `+` 结合紧于 `<<`，裸写
+                        // `leaf_pa + i << PD_SHIFT` 解析为 `(leaf_pa+i)<<21`
+                        // ——对非零 1 GiB 对齐 leaf_pa 写出越界 PA（仅
+                        // leaf_pa==0 时侥幸等价）。显式括号钉死期望语义：
+                        // 目标 PA = leaf 基址 + i×2 MiB。
+                        leaf_pa + ((i as u64) << PD_SHIFT) | leaf_bits,
                         0,
                         ch,
                     )
@@ -865,7 +871,8 @@ impl Paging for X86_64Paging {
                 unsafe {
                     write_pte_dm(
                         pt_phys.0 + (i as u64) * 8,
-                        (leaf_pa + (i as u64) << 12) | leaf_bits,
+                        // F7：同上——显式括号钉死「leaf 基址 + i×4 KiB」。
+                        leaf_pa + ((i as u64) << 12) | leaf_bits,
                         0,
                         ch,
                     )
@@ -1383,6 +1390,20 @@ unsafe fn is_identity_table(pdpt: u64, i3: usize, vaddr: u64) -> bool { unsafe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F7 防回归（NK4-C 阶段0）：`leaf_pa + i << SHIFT` 在 Rust 里解析为
+    /// `(leaf_pa + i) << SHIFT`（`+` 结合紧于 `<<`），对非零对齐 leaf_pa
+    /// 写出越界 PA——split_huge 两处已改显式括号。本测试钉住语义差可判别：
+    /// 删括号还原裸写法时第一断言失败。
+    #[test]
+    fn split_huge_leaf_entry_arithmetic_is_base_plus_index_times_page() {
+        let leaf_pa: u64 = 0x4000_0000; // 1 GiB 对齐的非零基址
+        let i: u64 = 1;
+        let naive = (leaf_pa + i) << 21; // 修复前的裸解析形态
+        let fixed = leaf_pa + (i << 21); // 期望语义：基址 + i×2 MiB
+        assert_ne!(naive, fixed, "两种形态必须可判别，否则测试无效");
+        assert_eq!(fixed, leaf_pa + 0x20_0000);
+    }
 
     /// `flags_to_pte` and `pte_to_flags` must roundtrip for all common
     /// flag combinations. The NX bit (inverted) is the main risk.
