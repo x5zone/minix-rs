@@ -2032,3 +2032,160 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
 两份串口日志 md5 与 M4.3 那六轮同为 `e2e963c5ff44c0b6eccf3a2f4985c8df`，即本节
 只改文档、对行为零影响——`evidence/20260922-nk4b-p4-m44/m44-serial-m44a.log`
 与同目录的 `m44-serial-m44b.log`。
+
+---
+
+## P4 M4.4 载体侧补齐 — 时钟初始化接上，出生链前进一格后卡在内核读用户页（2026-09-22）
+
+- 状态：**PARTIAL**。
+- 定性结论：riscv64 出生链载体的时钟缺件是「没人调用」而不是「调不动」，一行
+  接上后旧 panic 消失、出生链前进到用户态第一次 IPC 拷贝；紧接着暴露的新断点
+  是内核态访问用户页所需的 `sstatus.SUM` 位全仓无人置起——这条要改生产内核的
+  IPC 拷贝路径，属架构级选择，按任务书上交裁决，本轮不自行定案。
+
+### 为什么这一条不属于「等裁决」那一批
+
+上一节的 M4.4 勘察把生产镜像链的交接执行者（甲/乙/丙）交了上去，那是因
+为它要在「谁来建页表、谁来递模块」之间选一条路。本节这条不是：riscv64 出
+生链载体 `test-rt-birth-riscv64` 已经自带一套手工交接（自己建 `BootPrepareResult`、
+自己调 `arch_boot_impl`、自己解析 DTB），它缺的只是初始化序列里少了一步。
+判据也不需要新约定：仓库里已有两份把同一步跑通过的实现可对照。
+
+### 事实一：缺的是调用，不是能力（三条独立对位）
+
+1. **同架构同函数的真机先例**：`os/qemu-tests/test-kernels/kernel/bootstrap/
+   test-timer-irq-riscv64/src/main.rs:300` 调 `minix_kernel::init_clock_and_interrupts()`，
+   M4.1 实测该载体 EXIT=0（5 次 tick + PASS marker，见
+   `evidence/20260922-nk4b-p4-m41/m41-timer-irq-run1.log`）。所以 riscv64 侧这个
+   函数本身能跑。
+2. **同族载体的不对称**：x86_64 出生链载体
+   `test-rt-birth/src/main.rs:172` 有这一行，riscv64 与 aarch64 两份没有
+   （`grep -c init_clock_and_interrupts` = 0/0）。这是 M4.1 事实二钉过的根因。
+3. **C 对位**：`minix3/minix/kernel/main.c:418` 的 `init_clock()` 与 `:472` 的
+   `intr_init(0)` 都排在进调度之前；本仓把这两件事合成为一个
+   `init_clock_and_interrupts`，函数 doc 自己就写着这条 C 区间
+   （`os/kernel/src/lib.rs:1202`：`C: init_clock() + intr_init(0) + arch_init() —
+   main.c:403-481`），函数体内逐步对位：`:1244` 标 `C: init_clock() — clock.c:48`、
+   `:1249` 标 `C: intr_init(0) — i8259.c:28`。放置位置也照 C 的顺序：保护腿之后、
+   进进程表之前，与两份既有实现同位。
+
+### 修法（一条，只动载体）
+
+在 `test-rt-birth-riscv64/src/main.rs` 的 Phase B 位置（`init_protection` 与其
+自带的 `stvec` 改写之后、`init_kerninfo` 之前）插入
+`minix_kernel::init_clock_and_interrupts()`，作为新的步骤 4，原有步骤号 4-7 顺
+移为 5-8；同时更正该文件头部文档里那句已被推翻的
+「clock init skipped（出生链是不打 tick 的单进程故事）」——不打 tick 这件事仍
+成立（载体不调 `boot_init_timer`），但时钟初始化不再是可选项。
+
+**为什么加这一行不会把载体自己的 `stvec` 腿弄坏**（这是动手前必须回答的安全问
+题，因为该载体的 `stvec` 指向它自带的 U-ecall 处理程序，不是生产腿）：
+`init_clock_and_interrupts` 不打开任何中断源。D-59（2026-09-09）之后，中断控制
+器 `init` 内部 `mask_all`、`arch_init` 不再写 `sie`，定时器门 `sie.STIE` 的唯一负
+责人是 `boot_init_timer`（`os/kernel/src/lib.rs:1205-1222` 的段注释把这条写死）。
+载体不调 `boot_init_timer`，所以加完这一步仍然没有中断源活着。
+
+### 真机验证（两次独立复跑 + 修前对照）
+
+证据：`evidence/20260922-nk4b-p4-m44-clock/`（`serial_clk1.log`、
+`serial_clk2.log`、`clk-discriminate.log`）。
+
+| 串口日志 | `clock + controller initialized` | `CLOCK_STATE not initialized` | panic 落点 |
+|----------|-------------------------------------------|-------------------------------|------------|
+| `m41-rt-birth-run1.log`（修前） | 0 | 1 | `kernel/src/lib.rs:0x75d` |
+| `m41-rt-birth-run2.log`（修前） | 0 | 1 | `kernel/src/lib.rs:0x75d` |
+| `serial_clk1.log`（修后） | 1 | **0** | `kernel/src/trap_dispatch.rs:0x62e` |
+| `serial_clk2.log`（修后） | 1 | **0** | `kernel/src/trap_dispatch.rs:0x62e` |
+
+两轮修后日志 md5 逐字节相同（`6e3118e3cd2ee219f3d2b80611bb3a37`），新落点也
+确定（不是换个地方随机挂）。载体脚本本身仍是 FAIL：`RT-BIRTH MAIN OK` 等五个
+用户态 marker 一个都没出现，所以本节不能把 M4.4 判成 DONE。
+
+### 事实二：新断点 = 内核读用户页需要 `sstatus.SUM`，全仓无人置
+
+取证过程在 `evidence/20260922-nk4b-p4-m44-clock/sum-user-access-forensics.log`，
+五步：
+
+1. **现场**：`kernel-leg trap scause=0xd stval=0x3fffffef6c sepc=0x8020d418
+   sstatus=0x200004100`。scause 13 = S 态 load 页故障；打印者是生产分发器
+   `os/kernel/src/trap_dispatch.rs:1438`（它只接定时器，其余一律 panic）。
+2. **符号化**：这个载体是恒等映射（vaddr = paddr = 运行址），所以内核文本可以
+   离线符号化（与「生产内核本体不可符号化」不矛盾）。`nm` 定位 sepc 落在
+   `<minix_kernel::ipc::KernelUserCopy as UserCopy>::copy_msg_from_user`，fault
+   指令是 `ld a6, 0x48(s1)`，`s1 = stval - 0x48 = 0x3fffffef24`，在 Sv39 用户半。
+3. **`sstatus` 位解码**：SUM(bit18)=0、SPP(bit8)=1（故障时确实在 S 态）、
+   FS=Clean、SPIE=0。
+4. **排除「页没映射」这一支**：用户态已经跑起来并发出了 ecall（否则会停在更早
+   的地方，根本进不到 `copy_msg_from_user`），说明该栈页在 `satp` 里 present 且
+   U=1。同一个 VA，用户能读、内核读却故障——只剩 RISC-V 的那条规则：
+   S 态访问 U=1 页必须 `sstatus.SUM=1`。
+5. **全仓核账**：`grep -rn --include=*.rs SUM arch/src kernel/src` 只剩三处注释
+   提到 SUM，**没有一处把它置起来**。三条落地路径都不置：返回用户只
+   `csrc SPP`/`csrs SPIE`（`arch/src/riscv64/trap_return.rs:81-84`）；生产 trap
+   双腿是存什么还什么（内核腿 `arch/src/riscv64/trap_stub.rs:193` 存、
+   `:199-200` 还；用户腿 `:278` 存、`:289-290` 还），只往返不建立；per-process
+   初值 `INIT_USER_SSTATUS = 0x20` 只有 SPIE（`arch/src/riscv64/boot.rs:24`）。
+   而 `os/kernel/src/lib.rs:409-413` 已经因
+   为这个限制把恒等映射做成 supervisor-only（注释原话：「Since we haven't set
+   SUM, identity mapping must be supervisor-only」）——也就是说，这个缺件在分页
+   那一层已经被绕开过一次，但 IPC 拷贝没处可绕。
+
+**这不是 riscv64 载体专属问题**：它住在生产内核的 IPC 拷贝路径上
+（`copy_msg_from_user` 直接 `read_volatile` 用户 VA），三架构生产链共用同一
+段代码。x86_64 今天能过是因为它没有这个开关（未启用 SMAP）；一旦
+M4.4 的生产交接（上一节的甲/乙/丙）接上，riscv64 仍会死在同一行。所以它
+是交接方案的**共同前置**，与事实五（入口不清 `.bss`）同性质。
+
+### 上交裁决（新增一条：内核怎么访问用户内存，riscv64/aarch64 共用）
+
+三案，都能让出生链跑过去，代价不同（本会话不下结论、不动生产代码）：
+
+| 案 | 做法 | 代价 / 风险 |
+|----|------|------------|
+| 甲 | 按仓内已写明的意图落地：`INIT_USER_SSTATUS` 加 SUM 位，并在 `restore_to_user` 里把该进程的 SUM 应用到 `sstatus`（现在只改 SPP/SPIE） | 改动最小（一个常量 + 入口 asm 一条），与 `boot.rs:95-97` 注释的设计意图同名同形；但效果是「只要当前进程是用户进程，内核全程可读用户页」，粒度粗 |
+| 乙 | 只在拷贝窗口内开/关 SUM（Linux 的 `enable_user_access()`/`disable_user_access()` 对位），需要一个 arch 门控的 guard（或给 `UserCopy` trait 加一对方法） | 语义最精确、与现有「先软走页表再访问」的纪律最配；代价是要新增一层 kernel↔arch 抽象，三架构共用路径都得改签名 |
+| 丙 | 不碰 CSR：先把用户 VA 翻译成 PA，再从 Direct Map 窗口读（仓内已有模式：`kernel/src/vm.rs:403`、`ipc.rs:379-381` 的注释就把这条当作出路） | 不引入新位、跟仓内既有跨空间拷贝一致；代价是每次拷贝多一次 walk，且要先证实 Direct Map 窗口覆盖到用户页所在的物理址 |
+
+推荐 **乙**（安全语义上最接近现代 riscv64/Redox 做法，且与 `copy_msg_from_user`
+已有的「验证优先」分阶段结构同构）；若你希望本轮先把三架构点电到底、后续再收
+拢安全粒度，**甲** 是最低成本的临时形态（但必须同时在代码里标注它是临时形态，
+否则会被后人当成最终设计）。丙 需先做窗口覆盖取证，不能直接选。
+
+### 登记：aarch64 同型缺口（今日不可验证，不修）
+
+`os/arch/src/arm64/boot.rs:108` 写着同一条未实现的意图：「aarch64 equivalent is
+PSTATE.PAN, set per-process via SPSR」。全仓同样无一处置 PAN。今天不可验证：
+aarch64 出生链卡在更早的平台描述符发现那一步（M3.4 的 D1/B/A 待裁决）。若裁决
+下来，建议两架构一并处理（它们是同一个缺口的两份形状）。
+
+### 本轮未做与不做
+
+- 不动 `copy_msg_from_user`、`restore_to_user`、`INIT_USER_SSTATUS` 中任何一个
+  （裁决定了我才知道改哪一处、改什么形状）。
+- 不给 aarch64 载体补时钟初始化：它卡在平台描述符发现，加了也跑不到那一步，
+  等于造一条无法验证的改动（任务书禁止以制造完成为目的的修改）。
+- 不改 `test-rt-birth-riscv64.sh` 的判据（只加了取证的包壳
+  `tmp/nk4a/wrap-rt-birth-riscv64.sh`，它只换日志路径与不删日志，判据逐字节
+  继承版管脚本）。
+- 不接 `run_all.sh`（属 P6）。
+
+### 锚点自查记录（写完当场逐条重跑）
+
+| 引用 | 核对命令 | 结果 |
+|------|----------|------|
+| `test-timer-irq-riscv64/src/main.rs:300` | `sed -n '300p'` | 命中调用行 |
+| `test-rt-birth/src/main.rs:172` | `sed -n '172p'` | 命中调用行 |
+| `minix3/minix/kernel/main.c:418 / :472` | `grep -n` | `init_clock();` / `intr_init(0);` |
+| `kernel/src/lib.rs:1202 / 1224 / 1230 / 1244 / 1249` | `grep -n` | 五条均命中（初稿写的 1226-1244 是错的区间，已按实测行号改） |
+| `kernel/src/lib.rs:1205-1222`（D-59 段注释） | `sed -n '1205,1222p'` | 命中（D-59/掩码/门责任人三条均在该段） |
+| `kernel/src/lib.rs:409-413` | `sed -n '409,413p'` | 命中（supervisor-only 理由就这四行注释 + `id_flags`） |
+| `kernel/src/trap_dispatch.rs:1438` | `grep -n "kernel-leg trap"` | 命中 `riscv64_diag_panic(frame, scause, "kernel-leg trap")` |
+| `arch/src/riscv64/trap_return.rs:81-84` | `sed -n '81,84p'` | 命中（只 `csrc SPP`/`csrs SPIE`） |
+| `arch/src/riscv64/trap_stub.rs:193 / :199-200 / :278 / :289-290` | `grep -n "csrr t0, sstatus\|csrw sstatus, t0\|ld t0, 33\*8"` | 命中（初稿写的 193-200/291-292 偏了一行，已改） |
+| `arch/src/riscv64/boot.rs:24`（`INIT_USER_SSTATUS`） | `sed -n '24p'` | 命中 = `0x0000_0020` |
+| `arch/src/riscv64/boot.rs:95-97`（设计意图） | `sed -n '95,97p'` | 命中 |
+| `arch/src/arm64/boot.rs:108`（PAN 同型） | `grep -n PAN` | 命中 |
+| `kernel/src/vm.rs:403`（Direct Map 模式） | `grep -n kernel_phys_to_virt` | 命中 |
+| 三载体 `grep -c init_clock_and_interrupts` = 1/1/0 | 逐目录 `grep -c` | 修后实测（修前 1/0/0） |
+
+

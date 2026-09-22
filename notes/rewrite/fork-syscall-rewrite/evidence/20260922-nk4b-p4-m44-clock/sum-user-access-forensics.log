@@ -1,0 +1,91 @@
+# NK4-B P4 M4.4 新断点取证：内核读用户页缺 sstatus.SUM（riscv64）
+# 生成: 2026-09-23T01:17:19+08:00  工件: target/riscv64gc-unknown-none-elf/release/test-rt-birth-riscv64（clk1/clk2 两轮同一构建）
+1b3b96305bf5d56618be5a2c5c9f3f90  target/riscv64gc-unknown-none-elf/release/test-rt-birth-riscv64
+
+## 1. fault 点符号化（该载体恒等映射：vaddr=paddr=运行址，可离线符号化）
+$ nm -n target/riscv64gc-unknown-none-elf/release/test-rt-birth-riscv64 | awk 'length($1)==16 && strtonum("0x"$1)<=strtonum("0x8020d418")' | tail -2
+000000008020d3a2 T _ZN81_$LT$minix_kernel..ipc..KernelUserCopy$u20$as$u20$minix_kernel..ipc..UserCopy$GT$18copy_msg_from_user17h29deb40817e5b719E
+000000008020d3b6 t .Lpcrel_hi68
+#  上一行是本地标签 .Lpcrel_hi68，真正的函数符号在它前面一行：
+000000008020d3a2 T _ZN81_$LT$minix_kernel..ipc..KernelUserCopy$u20$as$u20$minix_kernel..ipc..UserCopy$GT$18copy_msg_from_user17h29deb40817e5b719E
+#  去混编后 = <minix_kernel::ipc::KernelUserCopy as minix_kernel::ipc::UserCopy>::copy_msg_from_user
+#  （rustfilt 本机未装，故手写去混编结果；符号原样在上一行）
+
+## 2. fault 指令（sepc=0x8020d418：从 s1 指向的用户栈上 ld 一串字段）
+8020d416: 4a01         	li	s4, 0x0
+8020d418: 0484b803     	ld	a6, 0x48(s1)
+8020d41c: 0404b883     	ld	a7, 0x40(s1)
+#  stval=0x3fffffef6c ⇒ s1=0x3fffffef24，落在 Sv39 用户半（< 0x40_0000_0000）
+#  与 arch/src/riscv64/boot.rs 测试里 EntrySpec::loaded 的用户栈址同量级（0x4000_0000 之下）
+
+## 3. sstatus=0x200004100 位解码：SUM=0、SPP=1
+  SIE   bit1  = 0
+  SPIE  bit5  = 0
+  SPP   bit8  = 1
+  SUM   bit18 = 0
+  MXR   bit19 = 0
+  SD    bit63 = 0
+  FS bits[14:13]= 2  (0=Off 1=Initial 2=Clean 3=Dirty)
+
+## 4. 全仓有无任何代码置 sstatus.SUM
+命令：grep -rn --include=*.rs SUM arch/src kernel/src | grep -vi 'assum\|summar\|CONSUM\|RESUME'
+arch/src/riscv64/protection.rs:36://! | `init` (establish protection) | `csrw sscratch, ...` (kernel stack swap register) — no other setup needed (sstatus.SUM is set later) |
+arch/src/riscv64/boot.rs:96:    // riscv64 equivalent is sstatus.SUM, set per-process via the
+kernel/src/lib.rs:411:    // supervisor mode unless sstatus.SUM=1. Since we haven't set SUM,
+#  结论：全仓三处提到 SUM，无一处把它置起来。前两处是「本该怎么作」的意图
+#  注释；第三处（lib.rs:411，boot 分页路径）已经是已知限制的绕道写法，
+#  lib.rs:409-413 原文：
+#      // NOTE: We use kernel_read_write() (supervisor-only, no USER_ACCESSIBLE)
+#      // because on RISC-V Sv39, a page with U=1 cannot be executed by
+#      // supervisor mode unless sstatus.SUM=1. Since we haven't set SUM,
+#      // identity mapping must be supervisor-only.
+#      let id_flags = PageFlags::kernel_read_write() | PageFlags::EXECUTABLE;
+#  ⇒ 恒等映射故意不给 USER_ACCESSIBLE（U=0）就是为了避开 SUM；但
+#    copy_msg_from_user 直读用户 VA，没处可绕，于是要末置 SUM、要末改走
+#    Direct Map 窗口（见 §8）。
+#  （命令勘误：第一版漏了 RESUME 过滤，被 KCALL_RESUME 一类命中污染，输出与
+#    结论自相矛盾；当时结论写的还是「两条注释」，实际是三处——第 5 次栽在
+#    观察手段上，也是第一次栽在“结论计数没跟着输出修正”上）
+
+## 5. 设计意图原文：SUM 走 per-process sstatus 字段，不用全局开关
+  boot.rs:95-97      // enable_user_io: default no-op (riscv64 has no IOPL concept).
+  boot.rs:95-97      // riscv64 equivalent is sstatus.SUM, set per-process via the
+  boot.rs:95-97      // sstatus field rather than via a global flag.
+  protection.rs:36 //! | `init` (establish protection) | `csrw sscratch, ...` (kernel stack swap register) — no other setup needed (sstatus.SUM is set later) |
+
+## 6. 但三条落地路径都不置 SUM
+--- (a) 返回用户：只 csrc SPP / csrs SPIE（trap_return.rs:78-84）
+            // SPP=0 (return to U-mode) + SPIE=1 (interrupts enabled after
+            // sret). `csrci`/`csrsi` take 5-bit immediates, so SPP (0x100)
+            // goes through t0.
+            "li t0, {spp}",
+            "csrc sstatus, t0",
+            "li t0, {spie}",
+            "csrs sstatus, t0",
+--- (b) 生产 trap 双腿：入口 csrr sstatus 存档、出口 csrw sstatus 整体还原（原样往返，不建立）
+  trap_stub.rs:193:    "    csrr t0, sstatus",
+  trap_stub.rs:200:    "    csrw sstatus, t0",
+  trap_stub.rs:278:    "    csrr t0, sstatus",
+  trap_stub.rs:290:    "    csrw sstatus, t0",
+--- (c) per-process 初值：INIT_USER_SSTATUS = 0x20（只有 SPIE）
+/// Initial sstatus for kernel tasks: SPP=1 (return to S-mode on sret).
+const INIT_TASK_SSTATUS: u64 = 0x0000_0100;
+
+/// Initial sstatus for user processes: SPP=0, SPIE=1 (interrupts on).
+///
+/// Named `INIT_USER_SSTATUS` per 06-proc-init-boot-proc.md §3.4 to distinguish
+/// the user-process variant from the kernel-task variant.
+const INIT_USER_SSTATUS: u64 = 0x0000_0020;
+
+## 7. 为什么排除「页没映射」这一支
+#  用户态已经跑起来并发出了 ecall（否则不会进 copy_msg_from_user），
+#  说明该栈页在 satp 里 present 且 U=1；内核态再读同一 VA 而 fault，
+#  只剩「S 态访问 U 页需要 sstatus.SUM=1」这一条解释，与 §3 的 SUM=0 吻合。
+
+## 8. 仓内既有替代模式（不需要 SUM）：跨空间拷贝走 Direct Map 窗口
+  vm.rs:51:        self.cr3.map(|c| D::kernel_phys_to_virt(c))
+  vm.rs:403:    let src_vaddr = D::kernel_phys_to_virt(src_phys);
+  vm.rs:404:    let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
+  ipc.rs:379-381  /// kernel-mode fault. Same discipline as the cross-space copy paths, which
+  ipc.rs:379-381  /// software-walk the page table before their Direct Map window access.
+  ipc.rs:379-381  ///

@@ -32,9 +32,10 @@
 //! setup (K10 carrier shape) → hand-built `BootPrepareResult` (no
 //! U-Boot/BootFileTable in this scenario — hello-boot-riscv64 shape) →
 //! production phases in kmain order. Deviations from the x86 sibling,
-//! each bounded: clock init skipped (the birth chain is a no-tick,
-//! single-process story), `smp_init` skipped (no AP bring-up — one hart
-//! runs everything; AP parity rides the K11 round).
+//! each bounded: `smp_init` skipped (no AP bring-up — one hart runs
+//! everything; AP parity rides the K11 round), and no `boot_init_timer`
+//! (the birth chain is a no-tick, single-process story). The clock itself
+//! is NOT skipped any more — see step 4.
 //!
 //! PASS = the run script (qemu-tests/test-rt-birth-riscv64.sh) finds the
 //! birth chain's serial markers (descriptor parse, kerninfo ready +
@@ -530,18 +531,32 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     }
     early_console::write_str("  protection live; uecall handler on stvec\n");
 
-    // 4. Kernel information page (production Phase B.5) — publishes the
+    // 4. Clock + interrupt controller (kmain Phase B, the same position as
+    //    the x86 sibling `test-rt-birth/src/main.rs:172` and as
+    //    `test-timer-irq-riscv64/src/main.rs:300`): controller init with
+    //    every line masked + software clock into CLOCK_STATE. Required
+    //    before the scheduler hand-off, because `account_process_stop` on
+    //    the dispatch path reads CLOCK_STATE unconditionally
+    //    (`kernel/src/lib.rs:3147`) — a carrier that skips this panics in
+    //    `switch_to_user`. It opens no interrupt source (D-59: `arch_init`
+    //    no longer enables `sie.STIE`; the timer gate is `boot_init_timer`'s,
+    //    which this carrier deliberately does not call), so the
+    //    carrier-owned `stvec` uecall handler stays the only live leg.
+    minix_kernel::init_clock_and_interrupts();
+    early_console::write_str("  clock + controller initialized (lines masked)\n");
+
+    // 5. Kernel information page (production Phase B.5) — publishes the
     //    page the birth chain will trap-query.
     minix_kernel::init_kerninfo(&result.kernel_info);
     early_console::write_str("  kerninfo page published\n");
 
-    // 5. Process table (Phase C) — the VM branch loads the embedded
+    // 6. Process table (Phase C) — the VM branch loads the embedded
     //    rt-birth ELF (segments, 64 KiB stack, ps_strings, boot context).
     minix_kernel::init_proc_and_boot(&result.kernel_info);
     minix_kernel::init_smp_state();
     early_console::write_str("  proc table + smp state initialized\n");
 
-    // 6. BKL held (C main.c:149); make the VM boot process (rt-birth)
+    // 7. BKL held (C main.c:149); make the VM boot process (rt-birth)
     //    runnable. Full-context style per the boot-context contract.
     early_console::write_str("  acquiring BKL\n");
     minix_kernel::smp::bkl_lock().transfer();
@@ -562,7 +577,7 @@ extern "C" fn rust_main(_boot_hart: u64, dtb_phys: u64) -> ! {
     }
     early_console::write_str("  VM boot proc (rt-birth): runnable\n");
 
-    // 7. Hand the CPU over — sret into the ELF entry at 5 GiB, U-mode.
+    // 8. Hand the CPU over — sret into the ELF entry at 5 GiB, U-mode.
     early_console::write_str("  entering scheduler (switch_to_user)\n");
     minix_kernel::switch_to_user();
 }
