@@ -1,0 +1,37 @@
+# NK4-B P4 M4.3 反向判别：把 x86_64 生产工件喂进 riscv64 载体
+# 命令: SKIP_BUILD=1 RUN=m43rev2 TIMEOUT_BOOT=20 bash os/qemu-tests/
+#       test-kernel-image-riscv64.sh os/target/x86_64-unknown-none/release/kernel
+# 预期: 必须 FAIL（EXIT=1）。实测 REV2-EXIT=1。
+# 值得注意: A1 仍 PASS（固件 next-address 是 QEMU 约定值，与工件无关），
+#          对工件敏感的只有 A2/A3——脚本头注释已按此写实，不吹 A1。
+# ---
+expected next-address (from riscv64.ld): 0x0000000080200000
+qemu-system-riscv64: terminating on signal 15 from pid 1406355 (timeout)
+--- A1 固件跳入地址 = .ld 的 KERNEL_PHYS_BASE：
+    PASS（0x0000000080200000）
+--- A2 镜像入口横幅出现：
+    FAIL（未出现 '### minix-rs kernel image: entry reached'）
+--- A3 横幅排在 Next Address 之后（行号 无 > 40）：
+    FAIL
+### TEST_RESULT: FAIL test-kernel-image-riscv64 ###
+--- 串口尾部 20 行：
+Domain0 Region01          : 0x0000000080040000-0x000000008005ffff M: (R,W) S/U: ()
+Domain0 Region02          : 0x0000000080000000-0x000000008003ffff M: (R,X) S/U: ()
+Domain0 Region03          : 0x0000000000000000-0xffffffffffffffff M: (R,W,X) S/U: (R,W,X)
+Domain0 Next Address      : 0x0000000080200000
+Domain0 Next Arg1         : 0x000000008fe00000
+Domain0 Next Mode         : S-mode
+Domain0 SysReset          : yes
+Domain0 SysSuspend        : yes
+
+Boot HART ID              : 0
+Boot HART Domain          : root
+Boot HART Priv Version    : v1.12
+Boot HART Base ISA        : rv64imafdch
+Boot HART ISA Extensions  : time,sstc
+Boot HART PMP Count       : 16
+Boot HART PMP Granularity : 4
+Boot HART PMP Address Bits: 54
+Boot HART MHPM Count      : 16
+Boot HART MIDELEG         : 0x0000000000001666
+Boot HART MEDELEG         : 0x0000000000f0b509

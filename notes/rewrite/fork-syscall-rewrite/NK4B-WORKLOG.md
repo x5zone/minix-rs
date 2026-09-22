@@ -1655,3 +1655,88 @@ diff”了事，而是重跑了三架构全量布局断言：`check-layout.sh al
 上一节写作期还出过一次事故：改块注释里的两行时 `original_text` 少带了
 ` *     ` 续行前缀，把 `/* */` 块形状破坏了，是在复读 diff 时发现的，已补回。
 完整过程与两条可复跑判别断言写在 FIXLOG「NK4-B P4 M4.2 评审闭环节」。
+
+## P4 M4.3 — riscv64 装载链（PARTIAL：OpenSBI 腿已实证并载体化；U-Boot 腿与「+ 模块」半条等裁决）
+
+任务书判据（NK4B-TODO:111-112）：「**M4.3 装载链**：uboot/OpenSBI 侧装载
+kernel.elf + 模块（对照 uboot 载体的既有加载方式）」。本节把这条拆成三格分别
+定性，不整体宣布完成。
+
+### 事实一：OpenSBI 腿零新增依赖，且能把 M4.2 的生产镜像装载到入口
+
+上轮 M4.1 我把 M4.3 整个判成「等前置件裁决」，**那个结论偏保守**：任务书写的是
+「uboot/**OpenSBI**」两条腿任选其一可走，而 OpenSBI 腿用的是
+`test-timer-irq-riscv64.sh` 那条 `-bios default -kernel <ELF>`，只需要
+`qemu-system-riscv64`（本机已装）。实测结果：
+
+| 观测项 | 实得 |
+|--------|------|
+| 固件 | `OpenSBI v1.3`（QEMU `-bios default` 内置），串口 57 行 |
+| `Domain0 Next Address` | `0x0000000080200000` = `riscv64.ld` 的 `KERNEL_PHYS_BASE` |
+| `Domain0 Next Mode` | `S-mode` |
+| `Domain0 Next Arg1` | `0x000000008fe00000`（DTB 物理址，镜像尚未取用） |
+| 镜像横幅 | `### minix-rs kernel image: entry reached …` 出现在第 57 行 |
+
+为什么高半入口（`e_entry = 0xFFFFFFC000000000`）能在分页关闭时被跑起来：固件
+实际跳的是**物理基址首字节**（`.text.boot` 就是镜像首段首字节，M4.2 的
+L6a/L6b/L6c 断言钉的就是这条），而 riscv64 默认 medany 代码模型下所有镜像内
+引用（包括 `la sp, kernel_boot_stack_top`）被链接器松弛成 PC 相对的
+`auipc`+`addi`，按实际执行 PC 解析——M4.2 决策四里写下的那条「用 `la` 而不是
+绝对地址」的推测，到本轮才拿到真机证据。那一节当时还留了一句「这一点若与
+M4.3 的装载实形冲突，回来改 `_start` 而不是改判据」——本轮不冲突，`_start` 一行
+未改。另外该节对入口态的三条约定里，两条有固件输出直接对账
+（`Domain0 Next Mode : S-mode`、`Domain0 Next Arg1 : 0x000000008fe00000`）；
+第三条「`a0` = hartid」**本会话没观测**（镜像不打印寄存器），只能算 SBI
+约定 + 日志里的 `Boot HART ID : 0` 作旁证，不得当已验证事实引用。
+
+载体脚本已落盘：`os/qemu-tests/test-kernel-image-riscv64.sh`（新增 149 行，
+**不注册进 `run_all.sh`**，接线归 P6/T6.1）。三条断言与它们的边界：
+
+| 断言 | 内容 | 实测 | 边界（写进脚本头注释） |
+|------|------|------|------------------------|
+| A1 | 固件 `Domain0 Next Address` = `.ld` 的 `KERNEL_PHYS_BASE`（从脚本现取，不写第二份） | PASS | **不看工件内容**（反向实验里喂 x86_64 ELF 仍 PASS），它只护「两个基址声明不漂」 |
+| A2 | 镜像入口横幅出现在串口 | PASS | 唯一对工件敏感的断言；横幅文字取自 `.rodata`，段装错就读不出来 |
+| A3 | 横幅行号（57）> Next Address 行号（40） | PASS | 没这条，A2 可被日志里别处的 echo 污染 |
+
+验证次数（铁律：真机两次独立复跑）：`m43a`（含构建）/ `m43b`（含构建）/
+`m43c`（改完脚本注释后）/ `m43d`（提交态）四轮 EXIT=0、四份串口日志 md5 逐个
+相同（`e2e963c5ff44c0b6eccf3a2f4985c8df`）；反向判别喂 x86_64 工件得 **EXIT=1，
+A2/A3 FAIL、A1 仍 PASS**。证据全部在 `evidence/20260922-nk4b-p4-m43/`
+（`m43-serial-m43{a,b,c,d}.log`、`m43-reverse-x86-artifact.log`、
+`m43-exploratory-first-contact.log`、`m43-prereqs-{host,container}.log`）。
+
+### 事实二：M4.1 的前置件探错了包名（本节当场更正）
+
+`test-riscv64-uboot.sh:31-42` 的真实依赖是四项工具 + 一份固件 blob：`mkimage`
+（u-boot-tools）、`mkfs.vfat`（dosfstools）、`mmd`/`mcopy`（mtools）、
+`qemu-system-riscv64`，加 `/usr/lib/u-boot/**` 下的 `uboot.elf`。**根本没有
+`dtc`**——M4.1 那轮探的是 `mkimage`/`dtc` + 四个目录，`dtc` 是错误探针。宿主
+实测（`m43-prereqs-host.log`）：`mkfs.vfat`/`mmd`/`mcopy`/`qemu` 均 **PRESENT**
+（dosfstools 4.2-1.1build1、mtools 4.0.43-1build1 已装），只缺 `mkimage` 与
+U-Boot blob **两项**。另补探了容器（M4.1 只探宿主）：`minix-ci:1.94` 内
+`mkimage`/`dtc`/`fdtput`/`qemu-system-riscv64` 全 MISSING、`/usr/lib/u-boot`
+ABSENT（`m43-prereqs-container.log`）——意味着「加进 CI 镜像」那条裁决不是改个
+Dockerfile 就能跑 qemu，该镜像连 qemu 都没有。
+
+### 事实三：「+ 模块」这半条本轮不能做，也不是被前置件卡住
+
+x86_64 / aarch64 腿上的「装载 kernel.elf + 12 模块」是 boot-shim 干的
+（`os/boot-shim/src/loader.rs` 读 ESP 契约位，M3.3 的
+`test-shim-bootmarks-aarch64.sh` 断言的就是那两行）。riscv64 没有对应的 UEFI
+取件方：`os/xtask/src/image.rs:195-203` 对该架构仍 honest bail，且 boot-shim
+到内核的跳转交接协议本身属 NK1/OQ-N6（三架构同一条边界，见 M4.2 决策五）。也
+就是说：模块装载要等「内核真能跑起来并自己取件」，那判据属 M4.4（内核点电 →
+VM handoff → 首模块用户态），不是本轮补个工具链就能亮的灯。本节的「PARTIAL」
+不含任何 stub 或放松判据。
+
+### 上交裁决（更新 M4.1 那条）
+
+U-Boot 腿（`fatload → bootelf`）仍需要两个包：`u-boot-tools` + `u-boot-qemu`。
+与 M4.1 相比的变化在于：(a) 缺项从「三」误报更正为「二」（无 `dtc`）；
+(b) M4.3 的 OpenSBI 腿已先行完成，**U-Boot 腿不再是任何里程碑的前置条件**，它
+只是任务书里「对照」那一格的另一条腿。三个选项：
+
+1. **授权宿主 apt 装 `u-boot-tools u-boot-qemu`**（推荐：一次装完，M4.x 全部不
+   依赖它，只让 `test-riscv64-uboot.sh` 从 SKIP 变可跑，补齐「对照」这一格）；
+2. 不装，把 U-Boot 腿标为「既存 SKIP、非本弧线关键路径」，本弧线只交 OpenSBI 腿；
+3. CI 镜像加包（成本高：连 qemu 都不在该镜像里，需重建 `minix-ci`）。
