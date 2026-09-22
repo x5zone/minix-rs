@@ -1853,10 +1853,24 @@ mod tests {
         let proc = table.get_mut(crate::proc::ProcNr(0)).unwrap();
         // Pre-seed the context through the write seam (save with a
         // sentinel frame): the kernel-visible read seams are
-        // ipc_status_register (RBX) / ipc_return_code (RAX).
+        // ipc_status_register（NK4-C Task C A 案后 = R10 状态车道）/
+        // ipc_return_code (RAX) / callee_saved_rbx (RBX)。
         let seed = TrapFrame {
-            rax: 7, rbx: 0xABCD_0000, rcx: 0, rdx: 0, rsi: 0, rdi: 0, rbp: 0,
-            r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+            rax: 7,
+            rbx: 0xABCD_0000,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0x1111_0000,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
             vector: 0x50,
             errcode: 0,
             rip: 0x203bf0,
@@ -1870,9 +1884,14 @@ mod tests {
             "user-origin IRQ must mirror"
         );
         assert_eq!(
-            minix_arch::x86_64::trap_stub::ipc_status_register(&proc.cpu_context),
+            minix_arch::x86_64::trap_stub::callee_saved_rbx(&proc.cpu_context),
             0xABCD_0000,
-            "RBX live value must survive into ctx"
+            "RBX live value must survive into ctx (callee-saved完整性)"
+        );
+        assert_eq!(
+            minix_arch::x86_64::trap_stub::ipc_status_register(&proc.cpu_context),
+            0x1111_0000,
+            "R10 must be mirrored (A 案：R10 = IPC 状态车道)"
         );
         assert_eq!(
             minix_arch::x86_64::trap_stub::ipc_return_code(&proc.cpu_context),
@@ -1890,7 +1909,7 @@ mod tests {
             "kernel-origin IRQ must skip the mirror"
         );
         assert_eq!(
-            minix_arch::x86_64::trap_stub::ipc_status_register(&proc.cpu_context),
+            minix_arch::x86_64::trap_stub::callee_saved_rbx(&proc.cpu_context),
             0xABCD_0000,
             "kernel-origin must not overwrite RBX"
         );

@@ -54,7 +54,7 @@ pub fn errno_result(ret: i32) -> Result<(), super::ipc::TrapStatus> {
 }
 
 /// Execute the vector-33 IPC trap. `a1`/`a2` carry the two call-specific
-/// operands; the returned `usize` is the post-trap status register (RBX).
+/// operands; the returned `usize` is the post-trap IPC status (R10).
 ///
 /// # Safety
 ///
@@ -62,11 +62,18 @@ pub fn errno_result(ret: i32) -> Result<(), super::ipc::TrapStatus> {
 /// gate and a valid `a2` pointer for message-carrying calls.
 #[cfg(all(target_arch = "x86_64", kernel_trap))]
 pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
+    // ABI（NK4-C Task C A 案，[ARCH]）：R10 是 IPC 状态寄存器——入口由本
+    // 序列装载消息指针，内核完成时把状态字 OR 进同一寄存器并随恢复交付。
+    // R10 是 caller-saved：用户代码不能指望它跨调用存活（与 C earm 的
+    // IPC_STATUS_REG=r1 同思路），因此内核在任意恢复点写入它不破坏用户
+    // 活值——这正是把状态从 callee-saved 的 RBX 迁出的原因（RBX 迁移前
+    // 被内核状态写摧毁用户 callee-saved 活值：真机 RS `&self.table`=0，
+    // NK4A Task C 六轮取证）。消息指针仍走 RBX 车道（入口参数），本序列
+    // 继续 push/pop 保护调用者的 RBX。
+    //
     // RBX is reserved by LLVM on x86-64 and cannot be a declared operand
-    // (same constraint as cpu_identity.rs) — yet the ABI requires it as
-    // the message-pointer in / status-out register. The sequence saves
-    // LLVM's RBX, loads the operand, traps, captures the post-trap RBX
-    // (entry value OR-merged with IPC status by the kernel), and restores.
+    // (same constraint as cpu_identity.rs) — the manual push/pop around
+    // the int keeps LLVM's value intact.
     let ret: usize;
     let status: usize;
     unsafe {
@@ -74,12 +81,13 @@ pub unsafe fn ipc_trap(call_nr: i32, a1: usize, a2: usize) -> (i32, usize) {
             "push rbx",
             "mov rbx, {a2}",
             "int 0x21",
-            "mov {status}, rbx",
+            "mov {status}, r10",
             "pop rbx",
             a2 = in(reg) a2,
             status = out(reg) status,
             inlateout("rax") a1 => ret,
             in("rcx") call_nr as usize,
+            out("r10") _,
         );
     }
     (ret as i32, status)

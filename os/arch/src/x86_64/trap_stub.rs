@@ -566,8 +566,12 @@ pub fn ipc_return_code(ctx: &super::boot::X86_64CpuContext) -> u64 {
 /// Read back the saved RBX — the IPC status register (C ipcconst.h:10;
 /// `or_ipc_status_reg` OR-merges into it, the plain-RECEIVE prologue
 /// clears it — C proc.c:581). Same test seam as [`ipc_return_code`].
+/// Read back the saved IPC status register（NK4-C Task C A 案：R10，
+/// gp_regs[GP_R10=8]——C ipcconst.h:10 的 bx 车道迁移；`or_ipc_status_reg`
+/// OR-merges into it、plain-RECEIVE 序言清它——C proc.c:581）。同
+/// [`ipc_return_code`] 测试缝形态。
 pub fn ipc_status_register(ctx: &super::boot::X86_64CpuContext) -> u64 {
-    ctx.rbx
+    ctx.gp_regs[crate::x86_64::signal::GP_R10]
 }
 
 /// Read back the saved PSW (RFLAGS) from a saved context.
@@ -885,4 +889,10 @@ mod save_frame_tests {
         // body performs, pinned here at the seam.
         assert_ne!(saved_psw(&ctx) & 0x0100, 0);
     }
+}
+
+/// Read back the saved RBX（callee-saved 存活钉——NK4-C Task C A 案防回归：
+/// IPC 状态迁 R10 后，RBX 不得再被状态写触碰）。同 [`ipc_return_code`] 形态。
+pub fn callee_saved_rbx(ctx: &super::boot::X86_64CpuContext) -> u64 {
+    ctx.rbx
 }

@@ -239,23 +239,30 @@ impl CpuContextArch for X86_64CpuContextArch {
     }
 
     fn or_ipc_status_reg(ctx: &mut Self::CpuContext, value: u64) {
-        // C: `p->p_reg.IPC_STATUS_REG |= value` where IPC_STATUS_REG = bx
-        // (ipcconst.h:10). RBX also carries ps_strings at process startup;
-        // after the first IPC delivery, it is repurposed for IPC status.
-        ctx.rbx |= value;
+        // NK4-C Task C A 案（[ARCH]）：x86_64 的 IPC_STATUS_REG = R10
+        // （gp_regs[GP_R10]，caller-saved）。C 无 x86_64 定义（仅 i386=bx /
+        // earm=r1，ipcconst.h:7/:10）；本端口曾沿用 i386 的 bx——但 RBX 是
+        // callee-saved，内核在任意恢复点把状态写进它即摧毁用户 callee-
+        // saved 活值（真机 NK4A Task C：RS 的 &self.table 被交付成 0，
+        // 六轮取证 c19a-c27a）。caller-saved 的 R10 跨调用本就不保活，
+        // 状态写不再有破坏面；C earm=r1 同思路先例。
+        // R10 载体 = gp_regs[GP_R10=8]（与 trap_return 恢复序列同源）。
+        ctx.gp_regs[crate::x86_64::signal::GP_R10] |= value;
     }
 
     fn clear_ipc_status_reg(ctx: &mut Self::CpuContext) {
-        // C: `IPC_STATUS_CLEAR(p)` — `p_reg.bx = 0` (ipc.h:45; plain
-        // RECEIVE prologue, proc.c:581).
-        ctx.rbx = 0;
+        // C: `IPC_STATUS_CLEAR(p)` — plain RECEIVE 序言清状态寄存器
+        // （ipc.h:45；proc.c:581）。R10 载体（见 or_ipc_status_reg）。
+        ctx.gp_regs[crate::x86_64::signal::GP_R10] = 0;
     }
 
     fn set_secondary_ipc_return(ctx: &mut Self::CpuContext, value: u64) {
         // C: `arch_set_secondary_ipc_return` — arch_system.c:184-186,
         // i386 body `p->p_reg.bx = val`. Plain assignment (whole address,
         // not a flag merge); restored to the user by the trap-return
-        // RBX load (trap_return.rs, step 3).
+        // RBX load (trap_return.rs, step 3). 保持 RBX：MINIX_KERNINFO 页
+        // 地址是一次性出生消费（crt0 读后即弃），与 IPC 状态寄存器
+        // （R10）是两条独立车道。
         ctx.rbx = value;
     }
 }
