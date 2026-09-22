@@ -2025,3 +2025,10 @@ bail 块 + 上方注释两段）、`hello-boot-riscv64` 表格内三处（`boot_
 - **自查新增一条评审未列的事实**：即本节的「事实五」（入口不清 `.bss`，而
   `IMAGE_ALLOCATOR` 正好住在 `.bss`）。它不依赖裁决，但拿不出判别性断言，所以
   只登记不修；它是案甲与案乙的**共同前置**，开工第一步就要补。
+
+**提交态真机复跑（本轮无代码改动，跑载体只为确认未坏）**：重跑 kernel-image
+riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1`）
+两次独立复跑 **EXIT=0**，A1/A2/A3 全 PASS（横幅行号 57 > Next Address 行号 40）；
+两份串口日志 md5 与 M4.3 那六轮同为 `e2e963c5ff44c0b6eccf3a2f4985c8df`，即本节
+只改文档、对行为零影响——`evidence/20260922-nk4b-p4-m44/m44-serial-m44a.log`
+与同目录的 `m44-serial-m44b.log`。
