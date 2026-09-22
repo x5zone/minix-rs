@@ -30,16 +30,16 @@
 
 ## §1 P0 核账（强制第一步；只记录事实，不评价前棒）
 
-- [ ] T0.1 `git log --oneline -15` + `git status --short` 原样抄进 WORKLOG。
-- [ ] T0.2 宿主六包基线实测（命令见 NK4A-TODO §7），计数抄进 WORKLOG
+- [x] T0.1 `git log --oneline -15` + `git status --short` 原样抄进 WORKLOG。
+- [x] T0.2 宿主六包基线实测（命令见 NK4A-TODO §7），计数抄进 WORKLOG
       （kernel/arch/vm/rs/rt/sys；允许与 808/241/525/350/57/315 不同，
       如实记录即可——后续只要求"不减"以你实测的数为基线）。
-- [ ] T0.3 跑一次 x86_64 冒烟：
+- [x] T0.3 跑一次 x86_64 冒烟：
       `cd /home/xzhao/github/minix-rs && SMOKE_SKIP_BOOT=0 bash os/qemu-tests/test-cmd-smoke.sh`
       完整记录 exit code 与串口到达序列（哪 stage 过/挂），原样进 WORKLOG。
-- [ ] T0.4 读 `NK4A-QWEN-WORKLOG.md` 与 FIXLOG 尾部：只提炼「事实清单」
+- [x] T0.4 读 `NK4A-QWEN-WORKLOG.md` 与 FIXLOG 尾部：只提炼「事实清单」
       （改了哪些文件、声称修了什么、哪些有真机证据），**不写评价**。
-- [ ] T0.5 判定：T0.3 是否已到 rc marker？
+- [x] T0.5 判定：T0.3 是否已到 rc marker？
       - 已到 → P1 跳过，直接 P2；
       - 未到 → P1 按 NK4A-TODO §4 Task A-E 与 §8 取证循环修到 rc marker
         （不评价前棒——断点就是断点，修就是了）。
@@ -71,15 +71,15 @@
 - arm64 分页：TTBR0/TTBR1 同根页；内核半映射见
   `os/arch/src/aarch64/`（paging/boot）与 `inherit_supervisor_half`。
 
-- [ ] **M3.1 载体现状点电**：跑 `test-rt-birth-aarch64.sh`，记录现状
+- [x] **M3.1 载体现状点电**：跑 `test-rt-birth-aarch64.sh`，记录现状
       （过/挂、串口序列）。这是 P3 的事实基线。
-- [ ] **M3.2 kernel-image aarch64 产出**：`os/kernel-image/` 目前
+- [x] **M3.2 kernel-image aarch64 产出**：`os/kernel-image/` 目前
       x86_64 专用（fw-x86-none 门 + x86_64.ld）。扩展出 aarch64 的
       链接脚本与入口约定（设计要点先写 WORKLOG：arm64 内核虚拟基址
       选择、入口符号、段布局——**对照 os/arch/src/aarch64 既有分页
       实现**，不要发明新架构）。验证=宿主可测：产出 ELF + readelf
       断言（entry/段布局）进 cargo test 或独立脚本。
-- [ ] **M3.3 boot-shim aarch64 装载**：boot-shim 已有 aarch64 UEFI 面
+- [x] **M3.3 boot-shim aarch64 装载**：boot-shim 已有 aarch64 UEFI 面
       （fw-aarch64-uefi）。让 shim 在 aarch64 上装载 kernel.elf +
       12 模块 + imgrd（复用 x86_64 路径的 LOADER_DATA/memmap 快照
       结构；arm64 特有处=入口跳转方式与 KernelInfo 交接的字段语义）。
@@ -105,10 +105,10 @@ arm64 内核栈布局）→ 写进 WORKLOG「上交裁决」小节，给 2-3 方
 载体 `test-riscv64-uboot.sh` / `test-timer-irq-riscv64.sh` 现成；
 Sv39 用户限界 0x0000_0040_0000_0000（user_copy_range 已按 arch 分界）。
 
-- [ ] **M4.1 载体现状点电**（uboot 载体跑通记录）。
-- [ ] **M4.2 kernel-image riscv64 产出**（Sv39 布局 + 入口约定；
+- [x] **M4.1 载体现状点电**（uboot 载体跑通记录）。
+- [x] **M4.2 kernel-image riscv64 产出**（Sv39 布局 + 入口约定；
       设计要点先写 WORKLOG）。
-- [ ] **M4.3 装载链**：uboot/OpenSBI 侧装载 kernel.elf + 模块
+- [x] **M4.3 装载链**：uboot/OpenSBI 侧装载 kernel.elf + 模块
       （对照 uboot 载体的既有加载方式）。
 - [ ] **M4.4 内核点电 → VM handoff → 首模块用户态**。
 - [ ] **M4.5 riscv64 rc marker**。

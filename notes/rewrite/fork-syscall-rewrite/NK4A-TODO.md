@@ -67,33 +67,33 @@ c16a 同代码未复现。已埋带端点号的 panic 诊断（boot.rs:1054）+
 目标判据：RS 不再停在 PAGEFAULT；vm-pf recv 与 vm-pf bytes 成对出现；
 RS 继续向 boot 完成推进（kc 流水增长）。
 
-- [ ] **A1 读代码**：读 `os/servers/vm/src/vm_server.rs` 1740-1860
+- [x] **A1 读代码**：读 `os/servers/vm/src/vm_server.rs` 1740-1860
   （VM_PAGEFAULT 臂：`vm-pf recv` 打印 → `handle_pagefault` →
   `probe_ok` → `vm-pf bytes` 打印 → 结果分派）。列出所有
   **跳过 bytes 打印**的出口（每个出口注明行号与返回值去向）。
-- [ ] **A2 读子层**：读 `os/servers/vm/src/cow_exec_pf.rs` 的
+- [x] **A2 读子层**：读 `os/servers/vm/src/cow_exec_pf.rs` 的
   `handle_pagefault` + `sync_slot_pte` + `enqueue_fdio`；再读
   `os/servers/vm/src/memtype.rs` 中 ANON 的 `ev_pagefault`——
   回答：ANON 区域能否返回 `NeedVfsIo`？哪些 memtype/路径会返回 Suspended？
-- [ ] **A3 查帧池**：找出 VM 生产形态的 `PageFrames` 池大小与
+- [x] **A3 查帧池**：找出 VM 生产形态的 `PageFrames` 池大小与
   `alloc_pfn` 失败路径（VmContext 初始化处，搜 `page_frames`/`page_alloc`
   的构造）。估算当前消耗（12 个 boot 模块 exec 时**每段逐页 eagerly
   物化**——见 vm_server.rs exec_bootproc 物化循环——加 RS 运行期按需填充），
   判断枯竭是否可能。把池大小数字写进 WORKLOG。
-- [ ] **A4 加探针**：在 A1 列出的每个非成功出口加**限次探针**
+- [x] **A4 加探针**：在 A1 列出的每个非成功出口加**限次探针**
   （模式见 §5.4），打印：出口类型、fault 地址、`page_alloc` 剩余帧数
   （若可取）。命名 `nk4a: pf-exit <类型> cr2=…`。
-- [ ] **A5 复跑**：重建镜像 + QEMU（命令见 §7）。预期：停滞时刻串口
+- [x] **A5 复跑**：重建镜像 + QEMU（命令见 §7）。预期：停滞时刻串口
   出现 pf-exit 行 → 停滞原因定性。**把定性结论写进 WORKLOG 再动手修**。
-- [ ] **A6 修复**：按定性结果修。对照 C 语义（`minix3/minix/servers/vm/`
+- [x] **A6 修复**：按定性结果修。对照 C 语义（`minix3/minix/servers/vm/`
   的 pagefaults.c / main.c 对应路径）写明对位关系。一次修复一个 commit。
   - 若是 Suspended-等-VFS：boot 期 ANON 页不应走 VFS——查该页所在
     region 的 memtype 为何不是 ANON（exec/栈安装是否漏设），或
     NeedVfsIo 判定条件过宽；修最小处。
   - 若是帧池枯竭：对照 C 的 alloc_cycle 补充机制或扩池，附容量计算。
-- [ ] **A7 回归验证**：宿主 minix-vm/minix-kernel 全绿（计数不减）+
+- [x] **A7 回归验证**：宿主 minix-vm/minix-kernel 全绿（计数不减）+
   真机复跑 2 次（PIT 抢占时序敏感，**单次通过不算数**）。
-- [ ] **A8 FIXLOG + WORKLOG**：按 §6 格式补记。
+- [x] **A8 FIXLOG + WORKLOG**：按 §6 格式补记。
 
 ### Task B — step2 槽缺失复现定性【条件触发：A 修复后若出现 boot.rs:1054 panic 才做】
 
