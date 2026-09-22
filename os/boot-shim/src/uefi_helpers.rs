@@ -200,16 +200,14 @@ impl BootShim for UefiBootShim {
         // §6.0-A2). Fail fast while the boot-shim can still print.
         assert_bootstrap_outside_memmap(memmap, root_page.0, PAGE_SIZE);
         assert_bootstrap_outside_memmap(memmap, bump_base, bump_end - bump_base);
-        // F8 belt-and-braces（NK4 回归评审 PART2 §三线程 c）：kernel 段与
-        // boot 模块段同样必须不在 conventional 快照内。时点结构（快照拍在
-        // 全部 LOADER_DATA 分配之后，D-64②/fix27b）应已保证这一点，但
-        // "UEFI 改标正确"是固件行为假设——逐段断言让该假设的回归在此处
-        // 带着冲突区间 fail-fast，而不是下游内核 A2 分类把活页交给
-        // VM PMM 后静默腐蚀。
-        assert_bootstrap_outside_memmap(memmap, kern.kern_phys_base.0, kern.kern_size);
-        for module in boot_modules {
-            assert_bootstrap_outside_memmap(memmap, module.start.0, module.len as u64);
-        }
+        // F8 更正（NK4-C 阶段1 真机 d1a 证伪）：kernel 段与 boot 模块段
+        // **不在**本断言范围——本装载模型是「shim 直写 conventional RAM
+        // （不经 UEFI 分配），内核 A2 分类按 boot 占用逐段扣除」
+        // （vm_handoff `deducted` 计数）。曾按「UEFI 改标排除」假设加过
+        // 逐段断言，真机一发即误炸（conventional [0x100000,0x800000) 含
+        // kernel [0x200000,0x400000) 属预期形状）。root/bump 两笔是真正
+        // 的 UEFI LOADER_DATA 分配，D-64② 快照顺序保证其被排除，断言
+        // 保持。
 
         uefi::println!("boot-shim: building KernelInfo…");
 
