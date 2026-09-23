@@ -927,3 +927,15 @@ String downcast 未命中（panic=abort 下格式化载荷非 String）；Stage 
 ### 1.10i 补充（sched 侧定案方向）
 
 `dispatch_setalarm` 仅两种返回：OK / EPERM（两臂：无 SYS_PROC priv、priv_id None）。sched 的 `sys_setalarm failed: {errno}` ⇒ **errno=EPERM(1)**。sched 的 SYS_PROC 在 birth 前已 SetSys（F10 轮 `pctl req=3 tgt=4` 成功）——EPERM 说明**时点问题**：sched 的 setalarm 到达时其 priv 表现与预期不符，或 panic 站点并非首次 setalarm。下一轮：①sched `init_scheduling` 的 Err 臂改 diagctl 先打 errno 数值再 panic（PM pm-recv-err 同款配方）；②若确认 EPERM，对照 C schedule.c:340 的 `sys_setalarm` 权限链查 RS 对 sched 的 priv 时序。
+
+---
+
+## 1.10j 状态板（s15e，本轮终点）
+
+- **SCHED panic 重定位**：站点已移至 `servers/sched/src/server.rs`（run 循环的「IPC transport broken after N consecutive receive failures」）——与 PM 同族的 receive 连续失败 fail-fast；init_scheduling 的 hz/alarm 探针零输出（该二臂非本轮死点）。**「receive 连续失败」成为 SCHED+PM 共同的主根因形态**：int33 RECEIVE 对系统服务器返回 Err。
+- **PM/VFS 屏障**：阻塞 send 修复已落地（ad1d3b9a6），s15e 中 PM init.rs panic 仍在（分块 `servers/pm/src/i`+`nit.rs`）——阻塞 send 的回复内容/时序仍未达 PM barrier 缓冲（候选：PM 的 sendrec send 半被 drain 后 receive 半的恢复时序、或 VFS 阻塞 send 与 PM 未进 receive 的互等——单核下 VFS 停则 PM 不跑的互等需按 C sef_receive 时序重核）。
+- 1145 recvs、两 panic、无 rc marker（s15e）。所有探针在仓（pfc/pmstall/gtick/csig/rtsrs/schedctl/pfwd/p3drain/rcvblk/cir + sched/pm errno 打点）。
+
+### 下一轮入口（最高优先）
+
+①**收敛「receive 连续失败」**：sched+pm 同族——在 kernel `do_ipc` receive 的错误返回点（ELOCKED/EDEADSRCDST/EPERM/EFAULT 各臂）加 errno+caller 打点，一轮复跑即定位错误类别；②按错误类别修内核接收路径；③VFS 阻塞 send 屏障的互等分析（对照 C main.c:435-436 与 PM vfs_init_sync 的 receive 半时序）。修通后：boot 越过 PM↔VFS/sched 全链 → rc marker 冲刺（单元 B 余段）→ C-K。
