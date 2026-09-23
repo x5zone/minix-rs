@@ -62,10 +62,22 @@ use alloc::sync::Arc;
 fn run_init() -> ! {
     minix_rt::init();
     let mut host = MinixSysHost::default();
+    // NK4-C 1.10t 逐环仪器化（task1-close 裁决删除）：main 前段每步
+    // diagctl 打点——init 停在 receive(ANY) 未进状态机，定位卡死步骤。
+    macro_rules! imark {
+        ($s:expr) => {{
+            let _ = minix_sys::syscall::sys_diagctl_write(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                $s,
+            );
+        }};
+    }
+    imark!("nk4a: imain-0 rt-init\n");
 
     // C step 1: identity gate (init.c:242-249). getuid has no client
     // wrapper yet (E-INITSYS ②) — say so once and continue; pid 1 is
     // still verified whenever getpid answers.
+    imark!("nk4a: imain-1 getuid\n");
     match host.getuid() {
         Ok(0) => {}
         Ok(uid) => log::emergency(&mut host, &format!("init must run as root (uid {uid})")),
@@ -79,6 +91,7 @@ fn run_init() -> ! {
         }
     }
 
+    imark!("nk4a: imain-2 setsid\n");
     // C step 2: session leadership (init.c:255).
     if let Err(e) = host.setsid() {
         log::warning(&mut host, &format!("setsid unavailable: {e}"));
@@ -87,7 +100,9 @@ fn run_init() -> ! {
     // C step 3: device probe (init.c:269-270). ENOSYS counts as "no
     // console" and forces single-user, the same fallback as C's
     // missing console.
+    imark!("nk4a: imain-3 console\n");
     let console_ok = entry::ensure_console(&mut host, single_user::CONSOLE_PATH);
+    imark!("nk4a: imain-4 console-done\n");
 
     // C step 4: flag parsing (init.c:287-303). Args come from the
     // birth descriptor via minix-rt — no std env anywhere on the boot
@@ -117,6 +132,7 @@ fn run_init() -> ! {
     // C step 7: securelevel probe (init.c:353) — the level seeds the
     // single-user password gate (doc 12). C reads -1 when the kernel
     // has no level support.
+    imark!("nk4a: imain-5 passwd\n");
     let from_securitylevel = host.securitylevel().ok().flatten().unwrap_or(-1);
 
     // C step 8: transition() — never returns. The password verifier is
@@ -145,6 +161,7 @@ fn run_init() -> ! {
             .and_then(|hash| password::build_verifier(&hash)),
     };
 
+    imark!("nk4a: imain-6 transition\n");
     let initial = match decision.initial {
         InitialState::Runcom => StateKind::Runcom,
         InitialState::SingleUser => StateKind::SingleUser,
