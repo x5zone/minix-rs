@@ -87,8 +87,19 @@ pub trait IpcTransport {
     /// 阻塞直到消息到达（C 语义）；`IpcStatus` 供主循环判 notification。
     fn receive(&mut self) -> Result<(Message, IpcStatus), IpcTransportError>;
 
-    /// 发送消息。镜像 C `ipc_send(dest, &msg)`。
+    /// 非阻塞发送。镜像 C `ipc_sendnb(dest, &msg)`——SEF `reply()` 与
+    /// asynsend 风格的一次性投递用（目标尚未 receive 时返回
+    /// `ENOTREADY`，不挂起调用方）。PM 绝大多数 `send` 站点是回复
+    /// （exit/trace/signal/fork）或异步 tell_vfs，C 里都不阻塞，映射本
+    /// 方法；唯一需要阻塞的 `ipc_send` 见 `send_blocking`。
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError>;
+
+    /// 阻塞发送。镜像 C `ipc_send(dest, &msg)`（`SEND` 系统调用，
+    /// main.c:226）——目标未进 receive 时挂起调用方直到投递完成，
+    /// 用于吸收启动顺序竞态。仅 VFS_PM_INIT 握手用（PM 必须先于
+    /// VFS 起、逐条 send 得等 VFS 进入 receive）；回复/异步发送
+    /// 不得用本方法（会破坏 C 的非阻塞回复语义）。
+    fn send_blocking(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError>;
 
     /// 发送并等待回复（同步调用）。镜像 C `ipc_sendrec(dest, &msg)`。
     ///
@@ -136,9 +147,18 @@ impl IpcTransport for KernelIpcTransport {
     }
 
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError> {
-        // C: ipc_send(dest, &msg)（非阻塞发送）→ 后端 sendnb。
+        // C: ipc_sendnb(dest, &msg)（非阻塞，目标未 ready 返回 ENOTREADY）。
+        // PM 回复与异步 tell_vfs 站点均对位此语义（SEF reply() 不阻塞）。
         self.inner
             .sendnb(dest, msg)
+            .map_err(|trap| IpcTransportError::from_errno(trap.0))
+    }
+
+    fn send_blocking(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError> {
+        // C: ipc_send(dest, &msg)（main.c:226，SEND 系统调用）——目标未进
+        // receive 时挂起调用方。委托后端阻塞 send（SEND_NR），非 sendnb。
+        self.inner
+            .send(dest, msg)
             .map_err(|trap| IpcTransportError::from_errno(trap.0))
     }
 
@@ -235,6 +255,12 @@ impl IpcTransport for TestIpcTransport {
         Ok(())
     }
 
+    fn send_blocking(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcTransportError> {
+        // mock 不区分阻塞/非阻塞语义：只记录投递（send 一致）。
+        self.sent.push((dest, *msg));
+        Ok(())
+    }
+
     fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcTransportError> {
         self.send(dest, msg)?;
         // C: 回复写入同一消息缓冲（main.c:246-249 检查 `mess.m_type != OK`）。
@@ -273,6 +299,17 @@ mod tests {
         let mut t = TestIpcTransport::new();
         let msg = Message { m_type: 0x900, ..Message::default() }; // VFS_PM_INIT
         t.send(Endpoint::VFS, &msg).unwrap();
+        assert_eq!(t.sent().len(), 1);
+        assert_eq!(t.sent()[0].0, Endpoint::VFS);
+        assert_eq!(t.sent()[0].1.m_type, 0x900);
+    }
+
+    #[test]
+    fn test_mock_records_send_blocking() {
+        // 阻塞发送（VFS_PM_INIT 对位 C ipc_send）与 send 一样记录投递。
+        let mut t = TestIpcTransport::new();
+        let msg = Message { m_type: 0x900, ..Message::default() }; // VFS_PM_INIT
+        t.send_blocking(Endpoint::VFS, &msg).unwrap();
         assert_eq!(t.sent().len(), 1);
         assert_eq!(t.sent()[0].0, Endpoint::VFS);
         assert_eq!(t.sent()[0].1.m_type, 0x900);

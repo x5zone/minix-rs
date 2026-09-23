@@ -696,9 +696,12 @@ impl<T: IpcTransport> PmServer<T> {
     fn vfs_init_sync(&mut self) {
         let messages = self.vfs_init_messages();
         for msg in &messages[..messages.len() - 1] {
-            // C: main.c:226 — ipc_send(VFS_PROC_NR, &mess)，失败 panic。
+            // C: main.c:226 — ipc_send(VFS_PROC_NR, &mess)（阻塞），失败 panic。
+            // 必须用阻塞 send：PM 先于 VFS 起时 VFS 尚未进 receive，
+            // 非阻塞 sendnb 会拿到 ENOTREADY(201) 而 panic；C 靠阻塞挂起
+            // PM 直到 VFS ready 吸收这个启动顺序竞态。
             self.transport
-                .send(self.params.vfs_endpoint, msg)
+                .send_blocking(self.params.vfs_endpoint, msg)
                 .expect("PM: can't sync up with VFS (per-process send)");
         }
         // C: main.c:231-236 — 末条 sendrec，回复 m_type 必须为 OK。

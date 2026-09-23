@@ -554,6 +554,13 @@ mod tests {
             fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), crate::ipc::transport::IpcTransportError> {
                 Ok(())
             }
+            fn send_blocking(
+                &mut self,
+                _dest: Endpoint,
+                _msg: &Message,
+            ) -> Result<(), crate::ipc::transport::IpcTransportError> {
+                Ok(())
+            }
             fn sendrec(
                 &mut self,
                 _dest: Endpoint,
