@@ -978,3 +978,12 @@ Phase 3 drain 中，对 `REPLY_PEND` 的被摘发送者：**不完成 syscall**�
 ### 状态
 
 sched panic（server.rs receive-failure fail-fast）与 PM panic（SENDREC 缺口）同源于「tick 修通后 CLOCK notify 首次真实到达」触发的协议深水区。本轮仪器化与探针全部在仓；1.10i/j/k/l 全链可接手。
+
+---
+
+## 1.10m 新前沿：SEND 死锁检测误报 ELOCKED（s15g/s15f，2026-09-24）
+
+- ipcerr（s15f）：`PM err=ELOCKED`（PM 的 send 被死锁检测拒绝）+ `ds err=EDEADSRCDST ×3`（早期，独立）。
+- PM 的 send→VFS 被 `detect_deadlock(SEND, PM, VFS)` 判死锁——PM↔VFS 互等（VFS receive 等 PM 消息 + PM send 等 VFS receive）**本应互补解析**（C deadlock 对「dst 正 receive 自 src」不是死锁，send 恰是其解），Rust 判定误报 ⇒ PM 的 send 被拒 → 后续链停。
+- **下一轮首务**：①对照 C proc.c deadlock() 的 walk（dst 在 RECEIVE 且 getfrom==src ⇒ 非死锁，链在此终止）修 `detect_deadlock` SEND 分支的终止条件；②修后 PM↔VFS 屏障/sched 链应继续推进 → rc marker（单元 B）。
+- 附：sched panic（7483）与 PM panic（19310）在 s15g 仍各 1 次；ipcerr 探针（cap 24）已覆盖全部 IPC 错误类别输出。
