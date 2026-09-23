@@ -1221,6 +1221,23 @@ impl<'a> IpcEngine<'a> {
 
         // C: `if (deadlock(SEND, caller, dst_e)) return ELOCKED;` — proc.c:930-932.
         if self.detect_deadlock(IpcCall::Send, caller_nr, dst_endpoint).is_some() {
+            // NK4-C 1.10n 取证探针（task1-close 裁决删除）：ELOCKED 现场
+            // （caller/dst/被拒 send 的 m_type）。
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static EL_N: AtomicUsize = AtomicUsize::new(0);
+                if EL_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                    Console::write_str("nk4a: elock caller=");
+                    Console::write_hex(caller_nr.0 as u64);
+                    Console::write_str(" dst=");
+                    Console::write_hex(dst_endpoint.0 as u64);
+                    Console::write_str(" mt=");
+                    Console::write_hex(msg.m_type as u64);
+                    Console::write_str("\n");
+                }
+            }
             return IpcOutcome::Error(IpcError::Deadlock);
         }
 

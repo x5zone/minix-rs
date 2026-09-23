@@ -1043,3 +1043,12 @@ PM `real_main` → `BootParams::acquire_from(&DirectKernelCallTransport)`（内�
 ### 1.10p 补充（矛盾点登记）
 
 静态核查：`acquire_from`（init.rs:218）硬编码 `vfs_endpoint: Endpoint::VFS(1)` ✓；`Endpoint::VFS=1`、`Endpoint::SCHED=4` 常量正确。但 dd2m 实测 dst=4 ⇒ **运行时存在第二条到 ep4 的 0x900 发送路径，或 params 在 new/init 中被覆写**。候选：①`PmServer::new/init` 内重设 vfs_endpoint；②send_blocking 之外的某 send 站点复用了 0x900 消息但目标变量为 4（如 sched_ctl/taskcall 的目标变量被 0x900 消息误传——即 vfs_init_sync 与 sched_ctl 的消息/端点参数交错）；③初始化次序：vfs_init_sync 的 panic 与 sched_ctl 的时序交错。
+
+---
+
+## 1.10p 定案：PM↔sched 协议级阻塞发送交错（ELOCKED）（2026-09-24，serial_s15n）
+
+- elock 实锤：`PM → sched, m_type=0x3` 的阻塞 send 被死锁检测拒绝（sched 同时 SENDING→PM）。
+- **机制**：PM 的 m_type=3 消息（回复/通知类）与 sched 的反向 send 交错时，两侧阻塞 send 互等——C minix3 的 PM↔sched 协议用 kernel notify/异步避免此类交错；minix-rs 侧两侧均用阻塞 send。
+- **修复方向**：①PM 的 m_type=3 消息发送改 sendnb/异步（或 sched 侧）；②对照 C pm 的 m_type=3 消息语义（回复 or 通知）定协议归属；③修后两次复跑过 1.10 → rc marker（单元 B）。
+- 状态：探针族完备（elock/dd2m/dd2/ipcerr/gtick/pmstall2）；1.10 系全部取证在仓。
