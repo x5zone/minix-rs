@@ -1190,3 +1190,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 - elock 全量状态探针落地：`caller=0(PM) dst=4(sched) mt=3 src=0 d_rts=SENDING d_gf=NONE d_sto=PM c_gf=ANY`。
 - 1.10l（SENDREC 原子性：REPLY_PEND 发送者 drain 后转 receive 半停车）已生效入仓；VFS 屏障阻塞 send 修复已落地。
 - **下一轮配方（交接手，单点）**：elock 瞬间 PM↔sched 互卡的全状态已捕获——PM 的 mt=3 阻塞 send 与 sched 的反向 SENDING。下一轮：①dd2m 探针补 PM 侧该 send 的 m_type 来源（PM 的 p_sendmsg 0x900 残留已核为陈旧缓存）；②定位 PM 侧向 ep4 的阻塞 send 站点（grep PM 全部 send_blocking/sendrec 至 ep4 的调用，重点 sched_ctl taskcall 与 vfs barrier 的参数变量）；③按 C sched 协议修一侧异步/sendnb；④修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10x 定位完成（s15x2，2026-09-24）
+
+- ipcerr 扩量+caller 过滤（cap 64、caller∈{0,4}）一轮即中：**`ipcerr caller=0x0 err=ELOCKED`**（19221 行，仅 1 发）——PM 的 taskcall（SENDREC→sched）send 半被死锁检测拒绝，此时 sched 正 SENDING 其 EPERM 应答（m_type=1，1.10i 定性的 EPERM reply）。
+- **互撞对偶完整**：PM taskcall send 半 ↔ sched EPERM 应答 send——双向 SENDING 真死锁（检测器正确）。
+- **根因两层**：①sched 的 do_start/do_stop 处理返回 EPERM（应答 m_type=1）——sched 侧拒绝原因待查（`accept`/`sender_from` 校验或内核调用失败）；②EPERM 应答 send 与 PM 的下一 taskcall send 互撞的时序（两侧阻塞 send 交错）。
+
+### 下一轮配方（交接手）
+
+①定位 sched 侧 EPERM 的产生点：sched 的 do_start/do_stop/do_nice 的 `accept`/kernel 调用错误臂加打点（一轮复跑即得具体拒绝原因）；②按拒绝原因修 sched 侧（校验过严或内核调用时序）；③PM taskcall ELOCKED 臂对照 C schedule.c:340-341 改重试（sched 应答 sendnb 已修，重试窗口应极短）；④修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。

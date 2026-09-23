@@ -984,7 +984,9 @@ pub(crate) fn dispatch_ipc(
                 use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                 static IPCERR_N: AtomicUsize = AtomicUsize::new(0);
-                if IPCERR_N.fetch_add(1, AtomicOrd::Relaxed) < 24 {
+                if IPCERR_N.fetch_add(1, AtomicOrd::Relaxed) < 64
+                    && matches!(caller_nr.0, 0 | 4)
+                {
                     Console::write_str("nk4a: ipcerr caller=");
                     Console::write_hex(caller_nr.0 as u64);
                     Console::write_str(" err=");
