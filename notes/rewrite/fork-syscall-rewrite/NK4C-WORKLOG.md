@@ -1288,3 +1288,10 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 - **疑点收敛至 boot flags 传递链**：RS 的 boot.rs:1010 SetSys 用 `Privilege::boot_priv(priv_.flags, ...)`——`priv_.flags` 来自 boot 表（BootImageStruct 的 flags 字段）；sched 条目的 flags 若缺 system 位 ⇒ SetSys 后仍无 SYS_PROC ⇒ sched 的 setalarm/一切 SYS 调用 EPERM ⇒ sched 出生即死。
 - **旁证**：s15 系的 sched-alarm 探针（sched 侧 diagctl）静默失败与 sched 无 SYS_PROC（diagctl 权限拒）自洽——**sched 从出生起就无 SYS_PROC 权限**。
 - 下一轮：①对照 C table.c image[] 表的 flags 列（sched 条目应带 SYSTEMIC 位）核对 minix-rs 的 boot 模块 flags 源（xtask image 装配 / boot-shim loader / 内核 boot info 的 flags 字段链）；②修 flags 传递缺位；③修后两次复跑：sched 存活、无 EPERM、boot 越过 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10y2 收口（s16d 时代，2026-09-24）
+
+- **sched 侧一切 diagctl 打点静默失败的总根因候选**：RS 授予 sched 的 kcall mask（SRV_KC 模板）疑未含 SYS_DIAGCTL——sched 的 sys_diagctl_write 被内核拒绝（EPERM/CallDenied），`let _ =` 静默吞错 ⇒ sched 侧一切 errno 打点不可见。
+- **下一轮**：①kernel SYS_DIAGCTL dispatch 加 caller 打点（一轮定位：sched 的 diagctl 是否到达 kernel、返回何错）；②据结果修 RS 的 kcall mask 模板（SRV_KC 补 SYS_DIAGCTL）或 kernel diag handler；③sched 侧诊断通道打通后，errno 现形 → 修 init_scheduling 首个失败调用 → 两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
