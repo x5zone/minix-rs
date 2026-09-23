@@ -49,6 +49,10 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+// NK4-C 1.10g 仪器化：格式化 panic 的 String 载荷 downcast 需要 alloc
+// crate 本体（本地 `mod alloc` 是 slab 分配器，名字被遮蔽）。
+extern crate alloc as alloc_crate;
+
 /// Memory allocator: break management plus slab allocation (document 06).
 pub mod alloc;
 /// Program birth chain: entry stub, named birth stages, and the published
@@ -408,6 +412,20 @@ fn panic(info: &PanicInfo) -> ! {
             let _ = w("\n");
         } else {
             let _ = w("nk4a: panic-msg-nonstr\n");
+            // 格式化 panic（expect/assert 带参数）的载荷是 alloc String：
+            // downcast 后分块前缀打印——errno/m_type 数值即在其中。
+            if let Some(p) = info.payload().downcast_ref::<alloc_crate::string::String>() {
+                for chunk in p.as_bytes().chunks(16) {
+                    let mut line = [0u8; 32];
+                    line[..9].copy_from_slice(b"nk4a: PY ");
+                    line[9..9 + chunk.len()].copy_from_slice(chunk);
+                    let k = 9 + chunk.len();
+                    line[k] = b'\n';
+                    if let Ok(cs2) = core::str::from_utf8(&line[..k + 1]) {
+                        let _ = w(cs2);
+                    }
+                }
+            }
         }
         w("nk4a: panic-loc-done\n");
     }

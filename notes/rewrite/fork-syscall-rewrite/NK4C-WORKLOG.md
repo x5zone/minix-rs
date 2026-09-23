@@ -914,3 +914,12 @@ panic 入口仪器化（零 fmt 依赖：file 原串 16B 分块 + `nk4a: PF ` �
 ### 下一步（交接手）
 
 ①**sched**：查内核 `dispatch_setalarm`/alarm 臂为何 Err（EPERM 权限？CLOCK notify 链未接？）——对照 C schedule.c:340 与 kernel alarm 基建；注意 tick 修通后 alarm→CLOCK notify→sched 的链路首次真实运行。②**PM/VFS**：VFS 侧 VFS_PM_INIT 处理对末条 NONE 标记项的回复 m_type（对照 C main.c:231-236 与 vfs init 握手）——barrier 回复应为 OK。两修后两次复跑 → rc marker 冲刺（单元 B 余段）。
+
+### 1.10i 收口补充（s15a）
+
+String downcast 未命中（panic=abort 下格式化载荷非 String）；Stage 2 diagctl 连格式化消息也静默失败 ⇒ **诊断通道在 panic 上下文不可用**（独立 bug 登记：diagctl 需查明失败原因并加失败重试/降级）。位置+站点已锁定（1.10i 表），足够开工修复：
+
+1. **sched/src/main.rs:77**：`sys_setalarm` Err。查 kernel `dispatch_setalarm`（syscall_clock.rs:187）EPERM 臂（`caller_has_sys_proc_with_table`——sched 的 priv/SYS_PROC 在 setalarm 时点是否已置）与 alarm 基建（set_alarm_timer→CLOCK notify 链，tick 修通后首跑）。
+2. **pm/src/init.rs:739**：VFS 屏障回复 `m_type != 0`。查 VFS 对末条 VFS_PM_INIT（endpoint=NONE）的处理与回复（对照 C main.c:231-236）。
+
+两根因修复 + 两次复跑（判据：两 panic 消失、boot 越过 PM↔VFS/后段）→ rc marker（单元 B）。
