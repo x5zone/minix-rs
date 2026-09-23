@@ -439,7 +439,28 @@ impl<T: IpcTransport> PmServer<T> {
         // C: main.c:61 — sef_receive_status(ANY, &m_in, &ipc_status)。
         let (msg, rcv_sts) = match self.transport.receive() {
             Ok(v) => v,
-            Err(_) => return RunStep::ReceiveFailed,
+            Err(e) => {
+                // NK4-C 1.10f 取证探针（task1-close 裁决删除）：receive 失败
+                // 的 errno 数值前 4 次打印——裁决 PM fail-fast panic 的真实
+                // 错误（EPERM/EDEADSRCDST/EFAULT…各对位不同根因）。
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static RERR_N: AtomicUsize = AtomicUsize::new(0);
+                    let n = RERR_N.fetch_add(1, AtomicOrd::Relaxed);
+                    if n < 4 {
+                        let text = alloc::format!(
+                            "nk4a: pm-recv-err n={} errno={}\n",
+                            n,
+                            e.errno()
+                        );
+                        let _ = minix_sys::syscall::sys_diagctl_write(
+                            &minix_sys::syscall::DirectKernelCallTransport,
+                            &text,
+                        );
+                    }
+                }
+                return RunStep::ReceiveFailed;
+            }
         };
 
         // C: main.c:65-71 — is_ipc_notify：CLOCK → expire_timers（14）。
