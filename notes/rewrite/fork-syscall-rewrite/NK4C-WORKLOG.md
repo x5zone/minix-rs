@@ -1094,3 +1094,12 @@ rc 内容补 marker echo（或确认已有）。修后两次复跑判据 `minix-
 ### 下一轮配方
 
 ①grep os/commands/sbin/init 的 runcom/start 臂触发条件（等什么消息/状态）；②若 init 等 PM 的 spawn 通道而 PM 侧未发 → 补 PM 侧 init-startup 通知；③/bin/sh 在 imgrd 已就位、PM fork/exec 基建已通（sched taskcall 链已活）——rc marker 只差这一环。
+
+---
+
+## 1.10t 收口与下一步（s15q，2026-09-24）
+
+- s15q（sched sendnb 生效版）：形态不变（2 panic-enter、elock PM mt=3↔sched、1151 recvs、无 rc marker、picknone rs_flags=0x8）。
+- **关键未解点（1.10t 收口）**：init(11) 停在 receive(ANY)——其 driver 状态机（Runcom 臂含 runetcrc→fork/exec /bin/sh /etc/rc）**从未到达 Runcom 臂或卡在其内部**。elock 的 PM reply(m_type=3→sched) 与 sched 的反向 send 互卡是该停顿的表象。
+- **下一轮配方（单点仪器化，一次复跑）**：在 init 的 `run_transition`/`step` 各 StateKind 入口打 diagctl 打点（`nk4a: init-state <kind>`，每次迁移 cap 全打）——一次复跑即见 init 停在哪个状态、runetcrc 内部卡在哪（open /etc/rc？fork？wait？）。对照 C init.c:986-1012 的 runetcrc 时序修根因。
+- 附带登记：sched setalarm EPERM panic（1 panic-enter 之一）独立不阻塞 idle，但 sched 死亡会影响后续调度服务，随根因一并修。
