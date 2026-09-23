@@ -1348,18 +1348,22 @@ impl<'a> IpcEngine<'a> {
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
             let woken_sender = self.procs[sender_idx].p_nr;
             self.record_wake_target(woken_sender);
-            // NK4-C F15（1.9c）：删除 `set_ipc_return_code(sender, OK)`——
-            // C 的队列唤醒（proc.c:1082-1093 RTS_UNSET + sig_delay）**从不写
-            // retreg**：成功发送的返回码由发送者自己的 syscall 完成路径交付
-            // （int33 腿经 result.reply_code()→frame.rax；SYSCALL 腿经
-            // kernel_call_finish）。此处的额外写入会把 OK=0 打进发送者保存
-            // 上下文的 RAX——而 blocked-on-caller_q 的发送者不仅是 IPC 陷入
-            // （kernel 内部 FROM_KERNEL 转发同样入队：缺页腿
-            // forward_pagefault_to_vm 的 engine.send Path B），其保存上下文
-            // 是**用户态陷阱现场**（rt_birth 的 xchg 指令帧），RAX=0 恰把
-            // xchg 的锁地址寄存器清零：VM 服务缺页恢复后重试该指令 → 读
-            // [0] → cr2=0 err=4 → VM noaddr → SIGSEGV（s14f/s14g 实锤：9
-            // 进程全灭于 rt_birth+0x101，tex 读回真指令、rax 已被清零）。
+            // E1 slice 2 + NK4-C F15 修订：被队列唤醒的发送者的完成码交付
+            // 按「发送者是谁」分流。C 的阻塞 send 在停车时即写 retreg=OK
+            // （mini_send blocked 臂 return OK，proc.c:960），唤醒处不写
+            // （proc.c:1082-1093）；Rust 的 int33 door 对 Blocked「leave
+            // RAX untouched」，故真实 IPC 陷入的发送者（SEND/SENDREC）的
+            // OK 必须由本 drain 补写——否则恢复后 RAX 是垃圾（F15 首版
+            // 删除后 PM↔VFS 握手 NoPerm 回归，s14h）。而 kernel 内部
+            // FROM_KERNEL 伪发送者（缺页腿 forward_pagefault_to_vm 的
+            // Path B）没有 IPC 陷阱帧——其保存上下文是用户态陷阱现场，
+            // 写 OK=0 恰清掉 xchg 的锁地址寄存器：恢复重试读 [0] →
+            // cr2=0 → VM noaddr → SIGSEGV（1.9b/c 九进程全灭根因）。
+            // ⇒ 门控：SENDING_FROM_KERNEL 的发送者不写（其"syscall"不
+            // 经任何返回路径，PF 恢复由 VMCTL_CLEAR_PAGEFAULT 交付）。
+            if !sender_from_kernel {
+                crate::proc::set_ipc_return_code(&mut self.procs[sender_idx], OK as i64);
+            }
             // C: clear `SENDING_FROM_KERNEL` if it was set.
             self.procs[sender_idx].p_misc_flags.clear(MiscFlagsBits::SENDING_FROM_KERNEL);
             // C: proc.c:1070-1071 — determine call type and add to IPC status.
