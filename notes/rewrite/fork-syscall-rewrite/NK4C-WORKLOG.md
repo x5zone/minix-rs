@@ -1149,3 +1149,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 下一轮修复配方（交接手，单点）
 
 ①sched `settle` 的应答 sendnb 已落地（687a5bf51）但 PM taskcall 的 send 半仍 ELOCKED——核 Phase 3 drain 对 REPLY_PEND 发送者的 1.10l 转入 receive 半路径是否在 PM 的 taskcall 线上生效（probe：Phase 3 转入时打 PM 的 rts）；②若确认已生效而 ELOCKED 仍现，则 PM 的 taskcall send 半被拒发生在「sched 应答已 Path-A 交付但 PM 尚未消费」的窗口——修法=PM 的 taskcall ELOCKED 臂改为重试而非 fail-fast panic（对照 C schedule.c:340-341 的行为差异）；③两次复跑过 1.10 → rc marker（单元 B 完成）。
+
+---
+
+## 1.10w 收口（s15w3，2026-09-24）：互卡全现场已捕获，协议修复点明确
+
+- elock 全量状态（s15w3）：`caller=0(PM) dst=4(sched) mt=3 src=0 d_rts=SENDING(0x4) d_gf=NONE d_sto=0(PM) c_gf=ANY`——**PM 与 sched 双向阻塞 SENDING 互撞的全现场**。
+- PM 侧该 send 的 m_type=3：**PM 的 WAIT4 协议号（PM_CALL_WAIT4=3）**——PM 在向 sched 发送 WAIT4 语义的消息（候选：PM 的 sig_delay/wait 处理转发），而 sched 同时 SENDING 其应答（m_type=1=EPERM 拒绝应答）。
+- **定性**：PM↔sched 的消息序在「PM 发 WAIT4 语义消息 ↔ sched 发 EPERM 应答」处互撞——两侧阻塞 send 即死锁（检测器正确）。
+
+### 下一轮配方（交接手，聚焦三点）
+
+①grep PM 侧全部「向 ep4 发送 m_type=3」的站点：`grep -rn "PM_CALL_WAIT4\|m_type.*=.*3" os/servers/pm/src/` 定位该消息构造点（候选：PM 的 wait.rs 转发、sig_delay_done 应答、或 timer.rs 的 alarm 应答）；②按 C 协议修一侧异步（该类应答改 sendnb，或改 kernel notify）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
