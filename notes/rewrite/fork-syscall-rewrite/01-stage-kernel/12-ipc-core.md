@@ -119,8 +119,10 @@ SEND(A → B) 时：
 | 13-syscall-dispatch | `do_ipc` 系统调用入口 | 13 调用本节 §4.7 的 `do_ipc` |
 | 14-exception-interrupt | 系统调用陷入入口 | 14 的陷入路径最终进入 `do_ipc` |
 | 23-ipc-filter | IPC 过滤详过滤机制 | 23 详 `s_ipcf` 过滤器，本节只调用 |
+| 18-syscall-copy | 跨地址空间拷贝原语 `do_copy`（`SYS_VIRCOPY`）/ grant 授权拷贝 | 大块数据不进消息，经 18 的 vircopy 搬运（§1.1 两个量级） |
+| 13-stage-ipc（跨 stage）| SysV 信号量 / 共享内存的用户态对象管理 | 内核 IPC 默认不共享内存；确需共享内存走该服务（§1.1 环形缓冲对照） |
 
-**本文档边界**：只讲六原语核心机制（send/receive/notify/deadlock/delivermsg/senda），不讲权限详过滤（见 23）、syscall 陷入（见 14）、delivermsg 调用方（见 10）。
+**本文档边界**：只讲六原语核心机制（send/receive/notify/deadlock/delivermsg/senda），不讲权限详过滤（见 23）、syscall 陷入（见 14）、delivermsg 调用方（见 10）、大块数据搬运（见 18）、SysV 共享内存/信号量对象管理（见 13-stage-ipc）。
 
 ---
 
