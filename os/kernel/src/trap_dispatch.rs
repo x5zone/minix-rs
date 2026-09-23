@@ -799,6 +799,26 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             if let Some(nr) = tick_cur {
                 let table = crate::proc_table_with(&tick_section);
                 let priv_table = crate::priv_table_with(&tick_section);
+                // s14u：PM 唯一可跑自旋的调用链采样（g>5000 后 cap 2）。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+                    static GST_TICK: AtomicU64 = AtomicU64::new(0);
+                    static GST_N: AtomicUsize = AtomicUsize::new(0);
+                    let g2 = GST_TICK.fetch_add(1, AtomicOrd::Relaxed);
+                    if g2 > 5000
+                        && nr.0 == 0
+                        && GST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
+                    {
+                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                        Console::write_str("nk4a: pmstall2 tick=");
+                        Console::write_hex(g2);
+                        Console::write_str("\n");
+                        if let Some(p) = table.get(nr) {
+                            crate::stacktrace::proc_stacktrace(p);
+                        }
+                    }
+                }
                 if table.get(nr).is_some_and(|p| p.is_runnable()) {
                     table.check_quantum(nr, priv_table, &tick_section);
                 }

@@ -858,3 +858,20 @@ pmstall 探针（tick 臂内 PMST_TICK 计数 + tick>5000 且 current==PM 时打
 ### 下一步（交接手，单步即达）
 
 把 `proc_stacktrace(PM)` 从 clock 臂 pmstall 移入通用臂 gtick 分支（`g>5000 && nr==0 && cap2`，table/tick_section 已在作用域）→ 复跑抓 PM fmt 自旋调用链 → 沿链修 `{:?}` 站点的腐坏值 → 过 1.10 → 单元 B rc marker 冲刺。
+
+---
+
+## 1.10e 终定位：PM panic → exit_via 自旋，panic 原因被吞（2026-09-24，serial_s14u）
+
+### 定案
+
+pmstall2 栈回溯（gtick 分支）：PM 自旋 PC = **0x21c652 = `minix_sys::pm::exit_via`**（两次采样同 PC，5000+ tick 不动；回溯 pa=0xffff7fff803ffcc8 为 P2-diag 坏换算，仅 PC 可用）。exit_via 结构：发 PM_CALL_EXIT 给 `pm_endpoint()`（= PM 自己）后 `loop { spin_loop() }` 永久自旋（minix-sys/src/pm.rs 设计如此——普通进程语义正确；PM 自杀即自卡）。
+
+⇒ **完整因果链**：PM 在 boot 期某处 **panic** →（早前的 Debug::fmt 自旋 = panic 消息格式化，init.rs 修复后已过）→ exit_via 自旋。**真根因 = PM 的 panic 原因**，被「panic handler 不打印直接 exit 自旋」吞掉。
+
+### 下一步（交接手，两步）
+
+1. **审 minix-rt panic handler**（os/libs/minix-rt/）：确认它在 exit_via 之前把 PanicInfo 的 message+location 打到串口（diagctl）；不打就修——PM 一 panic 消息即现形。
+2. PM panic 消息现形后修根因（大概率是 PM↔VFS/VM 协议返回值的语义错配——对照 s14i 5990-6010 行触发上下文），过 1.10 → 单元 B rc marker 冲刺。
+
+注：timer 修复（1.10c/d）是本发现的前置——没有 tick 抢占，pmstall2 栈回溯无法采样。
