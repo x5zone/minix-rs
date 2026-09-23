@@ -1235,6 +1235,8 @@ impl<'a> IpcEngine<'a> {
                     Console::write_hex(dst_endpoint.0 as u64);
                     Console::write_str(" mt=");
                     Console::write_hex(msg.m_type as u64);
+                    Console::write_str(" src=");
+                    Console::write_hex(msg.m_source.0 as u64);
                     Console::write_str("\n");
                 }
             }

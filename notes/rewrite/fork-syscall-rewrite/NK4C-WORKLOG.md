@@ -1112,3 +1112,16 @@ rc 内容补 marker echo（或确认已有）。修后两次复跑判据 `minix-
 - 前段每个步骤都可能经 VFS/PM 的阻塞 IPC——任一环节的响应缺失即卡死。对照 C init.c:49-96 的启动步序逐环打点即可定位。
 - **下一轮配方**：main.rs 前段每步加 `nk4a: imain <step>` diagctl 打点（BootParams/console_ok/register_handlers/close_std_fds/securitylevel/read_file）→ 一次复跑定位卡死步骤 → 修根因 → Runcom 臂即可达（/bin/sh 已在 imgrd、PM↔VFS 已通）→ rc marker（单元 B 完成）。
 - 探针存量：init-state、pmvi、elock、dd2m、ipcerr 等全部在仓；kernel 811 全绿、xtask 12 全绿。
+
+---
+
+## 1.10q 最终定案（s15w，2026-09-24）
+
+elock 补 src 后完整图景：
+- `elock caller=0(PM) dst=4(sched) mt=3 src=0` + `dd2m xmt=0x1`。
+- **xmt=0x1 = PM_CALL_EXIT(1)**：sched 的 setalarm EPERM panic → panic handler → exit(1) → `exit_via`：sendrec(PM, PM_CALL_EXIT)——sched 的 EXIT send 在途。
+- **PM 的 mt=3 阻塞 send 发往 sched 与之互撞** → 双向 SENDING 死锁（检测器正确）。PM 的 m_type=3 发送站点仍未定位（PM 全量 grep 无 m_type=3 构造——值 3 来自运行时变量，候选=dispatcher result/errno 透传）。
+
+### 修复配方（下一轮，交接手）
+
+①PM 侧定位 m_type=3 send：在 PM 的 reply/send 站点加「dst==4 时打 m_type+调用点标记」的编译期探针（PM 侧 grep `reply(` 的全部 code 实参，值 3 者）；②按协议归属改异步/sendnb（PM 应答本应 sendnb——发现运行时仍有阻塞 send 路径即修）；③sched setalarm EPERM 根因（init_scheduling 的 get_hz/setalarm 之一）随探针继续。
