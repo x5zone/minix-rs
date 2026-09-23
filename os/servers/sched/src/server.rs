@@ -227,8 +227,27 @@ impl SchedServer {
                 // C 47-49: the balance round. A failed re-arm is fatal —
                 // C panics right there (367-368); the loop has no future
                 // without its bell.
-                self.balance_queues(kernel)
-                    .expect("sys_setalarm failed (schedule.c:367-368)");
+                // NK4-C 1.10z 取证（task1-close 裁决删除）：re-arm 失败的
+                // errno 数值打印——1.10z 定案 re-arm setalarm 失败致 sched
+                // 死亡，errno 类别定位。
+                if let Err(e) = self.balance_queues(kernel) {
+                    let mut line = [0u8; 24];
+                    line[..13].copy_from_slice(b"nk4a: rearmlen ");
+                    let v = e as u32;
+                    for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
+                        let hexs = b"0123456789abcdef";
+                        line[13 + i * 2] = hexs[(byte >> 4) as usize];
+                        line[14 + i * 2] = hexs[(byte & 0xf) as usize];
+                    }
+                    line[23] = b'\n';
+                    if let Ok(cs) = core::str::from_utf8(&line) {
+                        let _ = minix_sys::syscall::sys_diagctl_write(
+                            &minix_sys::syscall::DirectKernelCallTransport,
+                            cs,
+                        );
+                    }
+                    panic!("sys_setalarm failed (schedule.c:367-368)");
+                }
             } // C 50-52: any other notification passes in silence.
             return Step::Handled; // C 54: notifications are never answered.
         }
