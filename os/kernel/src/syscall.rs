@@ -2709,6 +2709,15 @@ pub(crate) fn nk4a_tail_dump(proc_table: &crate::proc_table::ProcessTable) {
             } else {
                 "no"
             });
+            // NK4-C 1.7 取证追加（task1-close 裁决删除）：打出进程名 +
+            // 阻塞等待图的边（to=向谁发、from=向谁收），用于定位
+            // PAGEFAULT 腿到底卡在谁、VM 自身处于什么状态。
+            Console::write_str(" name=");
+            Console::write_str(p.p_name.as_str());
+            Console::write_str(" to=");
+            Console::write_hex(p.p_sendto_e.0 as u64);
+            Console::write_str(" from=");
+            Console::write_hex(p.p_getfrom_e.0 as u64);
             Console::write_str("\n");
         }
         Console::write_str("nk4a: tail-dump end\n");
