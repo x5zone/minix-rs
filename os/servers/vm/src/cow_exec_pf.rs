@@ -109,6 +109,26 @@ pub(crate) fn sync_slot_pte(
         Some(_) => pt.remap(vaddr, paddr, flags).map(|_| ()),
         None => pt.map(vaddr, paddr, flags),
     };
+    // NK4-C 第 20 轮取证探针（task1-close 裁决删除）：写入回读验证。
+    // map/remap 报 Ok 但目标 PT 页不在 VM DM 窗口覆盖内时，写会静默
+    // 丢失（下次 walk 又见 PTE=0 → 同 VA refault 循环）。回读裁决
+    // 「写入未落地」vs「落地后被第三方清写」两个分支。
+    #[cfg(not(test))]
+    if result.is_ok() {
+        let readback = pt.query(vaddr).map(|(pa, _)| pa.0);
+        if readback != Some(paddr.0) {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static WBFAIL: AtomicUsize = AtomicUsize::new(0);
+            if WBFAIL.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: pte-wb-FAIL va={:#x} pa={:#x} read={:#?}\n",
+                    vaddr.0,
+                    paddr.0,
+                    readback
+                ));
+            }
+        }
+    }
     result.map_err(CowCoreError::PageTable)
 }
 

@@ -394,6 +394,16 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             C0::write_hex(cr2);
             C0::write_str(" rsp=");
             C0::write_hex(frame.rsp);
+            // 第 27 轮：CR3 直读——current_root_phys() 在故障风暴期返回
+            // None（整轮 walk= 缺席），打印真实活动根定位「哪个进程的
+            // 页表在故障」。
+            {
+                let cr3: u64;
+                // SAFETY: reading CR3 has no side effects.
+                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
+                C0::write_str(" cr3=");
+                C0::write_hex(cr3 & 0x000F_FFFF_FFFF_F000);
+            }
             // C-3 F0 迭代4：内核独立走当前 root 查 cr2 的 PTE——分辨
             // "VM 的 PTE 写未持久到内存"（walk NP）与"写生效但翻译/TLB
             // 不一致"（walk 命中）。
@@ -763,27 +773,11 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("pagefault from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
-                // NK4-C 第 11 轮金丝雀（task1-close 裁决删除）：仅当保存值
-                // 为 0 时注入哨兵——恢复交付哨兵 ⇒ 保存即 0（用户侧/陷阱帧
-                // 侧）；恢复交付 0 ⇒ 保存后被内核改写（写者实锤）。
-                #[cfg(not(feature = "mock"))]
-                {
-                    use minix_arch::{CpuContextArch, CurrentCpuContextArch};
-                    if proc.p_endpoint.0 == 2
-                        && minix_arch::x86_64::trap_stub::callee_saved_rbx(
-                            &proc.cpu_context,
-                        ) == 0
-                        && frame.rip >= 0x20_0000
-                        && frame.rip < 0x40_0000
-                    {
-                        let _ = <CurrentCpuContextArch as CpuContextArch>::write_user_register(
-                            &mut proc.cpu_context,
-                            72, // RBX（x86_64 offset map）
-                            0xDEAD_BEEF_CAFE_0001,
-                        );
-                        crate::ipc::probe_mark("nk4a: canary-set rbx=0\n");
-                    }
-                }
+                // NK4-C 第 11 轮金丝雀已于第 31 轮摘除：该探针在 rbx==0 时
+                // 改写保存上下文（write_user_register 注入
+                // 0xDEAD_BEEF_CAFE_0001），真机 c30b 实证它把哨兵当 RBX
+                // 恢复交付给 RS——探针本身成了上下文破坏源，干扰
+                // self=0 根因取证。仅保留被动观察探针。
                 // NK4-A Task C 第 5 轮判别（task1-close 裁决删除）：pf 转发
                 // 入口「保存即采到的 RBX」——与 lib.rs pre-restore 路标的
                 // `rbx=`（同一进程本次恢复交付值）对照，三分支裁决：两处同
@@ -1357,6 +1351,24 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
                 frame.rax = crate::errno::EFAULT as i64 as u64;
                 return;
             }
+        }
+    }
+    // NK4-C 第 31 轮判别探针（task1-close 裁决删除）：int-33 入口「保存
+    // 即采到的 RBX」——与 pre-restore 的交付 rbx 对照裁决：入口非 0 而
+    // 交付 0 ⇒ 停车期间被内核改写；入口即 0 ⇒ stub/帧/用户侧来源。
+    #[cfg(not(feature = "mock"))]
+    if cur_nr == crate::proc::ProcNr(2) {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static I33N: AtomicUsize = AtomicUsize::new(0);
+        if I33N.fetch_add(1, AtomicOrd::Relaxed) < 48 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: i33-save rip=");
+            C0::write_hex(frame.rip);
+            C0::write_str(" rbx=");
+            C0::write_hex(frame.rbx);
+            C0::write_str(" rsp=");
+            C0::write_hex(frame.rsp);
+            C0::write_str("\n");
         }
     }
     msg.m_type = call_nr;

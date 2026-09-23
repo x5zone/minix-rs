@@ -104,10 +104,58 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
         .expect("boot DM: kernel window module coverage failed");
     }
 
+    // NK4-C 第 27 轮取证探针（task1-close 裁决删除）：打印 VM DM 窗口的
+    // 实际覆盖清单（三源候选、窗口裁剪后的有效范围）。第 18 轮层级 dump
+    // 实锤故障 PT 页落在低内存 PA（lvl2=0x7d027 / lvl1=0），本探针裁决
+    // 该页是否在 VM 窗口覆盖内——不在则 VM 的 PTE 写静默丢失（refault
+    // 循环的直接机制）。mock 门：宿主测试无端口 I/O 控制台（其余探针
+    // 同一惯例），不带门 = 测试进程 SIGSEGV。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        C0::write_str("nk4a: dm-cov root=");
+        C0::write_hex(root.0);
+        C0::write_str(" vm_pa_limit=");
+        C0::write_hex(vm_pa_limit);
+        if let Some((base, end)) = boot_alloc::boot_alloc_region() {
+            C0::write_str(" bump=[");
+            C0::write_hex(base);
+            C0::write_str(",");
+            C0::write_hex(end);
+            C0::write_str(")");
+        }
+        C0::write_str("\n");
+        for r in memmap_candidates(kernel_info) {
+            if let Some(c) = r.clipped_to(vm_pa_limit) {
+                C0::write_str("nk4a: dm-mem [");
+                C0::write_hex(c.base);
+                C0::write_str(",");
+                C0::write_hex(c.base + c.len);
+                C0::write_str(")\n");
+            }
+        }
+        for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
+            if let Some(c) = r.clipped_to(vm_pa_limit) {
+                C0::write_str("nk4a: dm-bump [");
+                C0::write_hex(c.base);
+                C0::write_str(",");
+                C0::write_hex(c.base + c.len);
+                C0::write_str(")\n");
+            }
+        }
+        for r in boot_module_candidates(kernel_info, root) {
+            if let Some(c) = r.clipped_to(vm_pa_limit) {
+                C0::write_str("nk4a: dm-mod [");
+                C0::write_hex(c.base);
+                C0::write_str(",");
+                C0::write_hex(c.base + c.len);
+                C0::write_str(")\n");
+            }
+        }
+    }
+
     validate_bootstrap_tree(root);
 }
-
-/// Highest physical address end covered by the **kernel** DM window (the
 /// PA the per-process window mapping must reach; fix26, handoff v5).
 ///
 /// Reuses exactly the candidate set [`establish_boot_dm`] installs into
