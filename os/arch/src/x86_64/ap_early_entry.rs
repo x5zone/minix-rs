@@ -137,10 +137,23 @@ core::arch::global_asm!(
     "  mov eax, cr4",
     "  or eax, 0x20",
     "  mov cr4, eax",
-    // EFER.LME (MSR 0xC0000080, bit 8).
+    // EFER.LME (MSR 0xC0000080, bit 8) + EFER.NXE (bit 11).
+    //
+    // NXE is NOT optional on the APs: the BSP enters the kernel with
+    // EFER.NXE already set (inherited from UEFI long mode), but an AP
+    // cold-starts with EFER=0 and this asm is its only MSR programming
+    // point. With NXE=0, x86-64 treats bit 63 of EVERY paging-structure
+    // entry as RESERVED: any walk touching an NX-tagged leaf (W^X — the
+    // kernel DM window leaves and VM-mapped user data/stack pages carry
+    // NX) faults with #PF err=8 (RSVD) on that AP while the identical
+    // access succeeds on the BSP. That CPU-dependent split produced the
+    // NK4-C iteration-28 err=8 storm (RS "self=0" refault cascade) and
+    // the boot-to-boot "crash point drift" race (whichever CPU reaches
+    // the NX leaf first decides the failure shape).
     "  mov ecx, 0xC0000080",
     "  rdmsr",
     "  or eax, 0x100",
+    "  or eax, 0x800",
     "  wrmsr",
     // Paging on — identity continues the fetch (the scratch page is
     // identity RAM, so the absolute reads below keep working).

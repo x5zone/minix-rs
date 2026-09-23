@@ -581,6 +581,24 @@ impl Paging for X86_64Paging {
 
     unsafe fn enable(&self) -> PhysBytes {
         unsafe {
+            // EFER.NXE (bit 11) must be ON before any NX-tagged paging entry
+            // is walked: with NXE=0, bit 63 of every paging-structure entry is
+            // RESERVED (#PF err=8). W^X marks kernel DM leaves and user
+            // data/stack leaves with NX, so paging enable requires it. The
+            // UEFI handoff happens to leave NXE set on the BSP, but the
+            // invariant is ours, not the firmware's — set it explicitly
+            // (read-modify-write preserves firmware SCE/LME bits).
+            const MSR_EFER: u32 = 0xC000_0080;
+            const EFER_NXE: u64 = 1 << 11;
+            let mut efer: u64;
+            asm!("rdmsr",
+                 in("ecx") MSR_EFER,
+                 out("rax") efer, out("rdx") _,
+                 options(nostack));
+            asm!("wrmsr",
+                 in("ecx") MSR_EFER,
+                 in("rax") efer | EFER_NXE, in("rdx") 0u64,
+                 options(nostack));
             // Switch CR3 to our own root page table.
             // UEFI already runs in long mode (CR0.PG=1) with its own page
             // table; we must replace it with ours, which contains both the
