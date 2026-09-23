@@ -151,7 +151,7 @@ impl SchedServer {
             {
                 use minix_sys::syscall::{sys_diagctl_write, DirectKernelCallTransport};
                 let mut line = [0u8; 28];
-                line[..17].copy_from_slice(b"nk4a: sched-alarm ");
+                line[..18].copy_from_slice(b"nk4a: sched-alarm ");
                 let v = e as u32;
                 for (i, byte) in v.to_be_bytes().iter().enumerate() {
                     let hexs = b"0123456789abcdef";
