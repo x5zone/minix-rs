@@ -311,6 +311,9 @@ impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
 
     fn reply(&mut self, table: &mut ProcTable, slot: UserSlot, code: i32) {
         // C: reply(who_p, result)（exec.c:167 失败回复）。
+        // NK4-C 1.10p 语义注记：本 transport 的 `send` 即 sendnb 语义
+        //（trait 注释：PM 绝大多数 send 站点是回复，C 里都不阻塞）——
+        // 阻塞版仅 send_blocking（VFS_PM_INIT 握手专用）。
         let msg = Message {
             m_type: code,
             ..Default::default()

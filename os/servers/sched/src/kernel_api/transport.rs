@@ -56,6 +56,10 @@ pub trait IpcTransport {
 
     /// Send a message (C: `ipc_send`, `main.c:103` — the reply path).
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32>;
+
+    /// Non-blocking send (C: `ipc_sendnb`) — NK4-C 1.10p：应答改非阻塞，
+    /// 消除 PM↔sched 双向阻塞 send 互卡（ELOCKED 实锤）。
+    fn sendnb(&self, to: Endpoint, message: &Message) -> Result<(), i32>;
 }
 
 /// Maps a trap failure to the crate's errno convention.
@@ -123,6 +127,11 @@ impl IpcTransport for KernelIpcTransport {
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
         // C: ipc_send(who_e, m_ptr) — main.c:103.
         self.inner.send(to, message).map_err(trap_errno)
+    }
+
+    fn sendnb(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
+        // C: ipc_sendnb（应答非阻塞语义，1.10p）。
+        self.inner.sendnb(to, message).map_err(trap_errno)
     }
 }
 

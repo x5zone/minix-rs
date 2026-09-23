@@ -243,10 +243,10 @@ impl SchedServer {
         if let DispatchVerdict::Reply(code) = verdict {
             let mut reply = message;
             reply.m_type = code;
-            // C 101-106: a failed reply is logged and dropped — the loop
-            // moves on. The print has no Rust home (no logging facility);
-            // continue-on-failure is the observable half.
-            let _ = ipc.send(sender, &reply);
+            // NK4-C 1.10p：应答改 sendnb——阻塞应答与请求方下一 taskcall
+            // 的 send 互卡（双向 SENDING 死锁，elock 实锤）。C 101-106:
+            // 失败记录后继续，loop 不停。
+            let _ = ipc.sendnb(sender, &reply);
         }
         Step::Handled
     }
