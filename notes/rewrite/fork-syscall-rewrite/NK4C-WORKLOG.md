@@ -1279,3 +1279,12 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 - taskcall ELOCKED(208) 重试臂生效实锤：s16c elock 仅 1 发（此前预判的持续互卡未现）——**重试成功解开了那次瞬时互撞**；taskcall 最终返回非 208。
 - 剩余停点（1153 recvs）：panic-enter ×2（7494 sched 早期、19395 PM 晚期 barrier）——**PM barrier m_type≠0 panic（init.rs:739）仍在**；sched 早期 panic 仍在。
 - **下一轮**：①定位 PM barrier panic 的实际 m_type 值（init.rs:739 的 panic 消息经 1.10s 的 errno 打点应可见——grep s16c "final barrier"）；②sched 早期 panic 的根因（server.rs receive-failure 的连续失败——sc-rv/srcv-err 探针零输出待核：探针是否在 sched 的编译单元生效）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）。
+
+---
+
+## 1.11c 收口（2026-09-24）：sched setalarm EPERM 根因收敛至 boot flags 传递链
+
+- sched:77 panic（setalarm EPERM）的机制链闭合：`dispatch_setalarm` EPERM 臂 = `caller_has_sys_proc_with_table(sched)` 失败 ⇒ **sched 的 priv 无 SYS_PROC**。
+- **疑点收敛至 boot flags 传递链**：RS 的 boot.rs:1010 SetSys 用 `Privilege::boot_priv(priv_.flags, ...)`——`priv_.flags` 来自 boot 表（BootImageStruct 的 flags 字段）；sched 条目的 flags 若缺 system 位 ⇒ SetSys 后仍无 SYS_PROC ⇒ sched 的 setalarm/一切 SYS 调用 EPERM ⇒ sched 出生即死。
+- **旁证**：s15 系的 sched-alarm 探针（sched 侧 diagctl）静默失败与 sched 无 SYS_PROC（diagctl 权限拒）自洽——**sched 从出生起就无 SYS_PROC 权限**。
+- 下一轮：①对照 C table.c image[] 表的 flags 列（sched 条目应带 SYSTEMIC 位）核对 minix-rs 的 boot 模块 flags 源（xtask image 装配 / boot-shim loader / 内核 boot info 的 flags 字段链）；②修 flags 传递缺位；③修后两次复跑：sched 存活、无 EPERM、boot 越过 → rc marker（单元 B 完成）→ 单元 C-K。
