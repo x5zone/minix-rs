@@ -1125,3 +1125,7 @@ elock 补 src 后完整图景：
 ### 修复配方（下一轮，交接手）
 
 ①PM 侧定位 m_type=3 send：在 PM 的 reply/send 站点加「dst==4 时打 m_type+调用点标记」的编译期探针（PM 侧 grep `reply(` 的全部 code 实参，值 3 者）；②按协议归属改异步/sendnb（PM 应答本应 sendnb——发现运行时仍有阻塞 send 路径即修）；③sched setalarm EPERM 根因（init_scheduling 的 get_hz/setalarm 之一）随探针继续。
+
+### 1.10q 精化（elock mt=3 语义勘定）
+
+elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖进 m_type：3=SENDREC。⇒ elock 的死锁 send = **PM 的 taskcall（sendrec→sched）的 send 半**，与 sched 在途的上一应答 send 互撞。修复点收敛为：**PM taskcall 的 send 半被 ELOCKED 后，PM 的 init_scheduling/后续流程对该错误的处理路径**（当前：init_scheduling Err → panic → exit 自旋连累全链）。对照 C：sched 的应答用 ipc_sendnb（非阻塞）即不存在互撞——修复=sched settle 应答 sendnb 已落地（687a5bf51），若 ELOCKED 仍现说明互撞对偶的另一侧（PM 的 send 半）时序仍需核（PM 单线程下 taskcall #N+1 只能在 #N reply 后发出——需核 reply 的 Path A 交付时序）。
