@@ -813,6 +813,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             }
             Err(e) => panic!("trap_dispatch: IRQ dispatch error {e:?} (vector {vector:#04x})"),
         }
+        // NK4-C 1.10c：8259 EOI（C i8259.c pic_eoi 对位）——每个被服务的
+        // IRQ 必须回执，否则 PIC 不再投递后续中断。
+        minix_plat::pic_eoi(irq);
         return;
     }
 

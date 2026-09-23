@@ -69,6 +69,14 @@ pub use port_io::PortIo;
 ///   treat 0 as "no controller line" by design.
 #[cfg(target_arch = "x86_64")]
 pub const TIMER_IRQ: IrqVector = crate::x86_64::interrupt::TIMER_IRQ;
+#[cfg(target_arch = "x86_64")]
+pub fn pic_init() {
+    crate::x86_64::interrupt::pic_init()
+}
+#[cfg(target_arch = "x86_64")]
+pub fn pic_eoi(irq: u8) {
+    crate::x86_64::interrupt::pic_eoi(irq)
+}
 #[cfg(target_arch = "aarch64")]
 pub const TIMER_IRQ: IrqVector = crate::arm64::interrupt::TIMER_IRQ;
 #[cfg(target_arch = "riscv64")]

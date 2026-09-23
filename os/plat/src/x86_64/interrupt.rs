@@ -31,6 +31,91 @@ pub const IRQ0_VECTOR: u8 = 0x50;
 /// unmasked by the first-handler rule (interrupt.c:65).
 pub const TIMER_IRQ: IrqVector = IrqVector::new(0);
 
+// ── 8259A PIC bring-up（NK4-C 1.10c，C i8259.c intr_init 对位）──
+//
+// 历史：本文件假定 PIT 经 IOAPIC input 0 交付、由 register_hook 的
+// first-handler 规则解 mask（TimerIrqGate 的 no-op 注释）。但单核
+// QEMU+OVMF boot 走的是 **legacy 8259A**：固件把 PIC 留在 BIOS 向量
+// 或 mask 态，ICW 重映射/IMR/EOI 全部缺位 ⇒ IRQ0 从未到达 0x50 门
+// （s14n 实锤：150s 全程 tick 臂 <1000 次调用）。quantum 抢占被孤儿
+// 化，任何用户态自旋即永久垄断。
+
+const PIC1_CMD: u16 = 0x20;
+const PIC1_DATA: u16 = 0x21;
+const PIC2_CMD: u16 = 0xA0;
+const PIC2_DATA: u16 = 0xA1;
+const ICW1_INIT: u8 = 0x11; // 边沿触发 + 级联 + ICW4
+const ICW4_8086: u8 = 0x01; // 8086 模式
+const OCW2_EOI: u8 = 0x20; // 非 specific EOI
+
+/// 向 I/O 端口写字节。
+fn outb(port: u16, val: u8) {
+    // SAFETY: 仅写 PIC 的标准 I/O 端口（0x20/0x21/0xA0/0xA1）。
+    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") val) };
+}
+
+/// 初始化 8259A：重映射 master→0x50、slave→0x70（与 IDT 门一致，
+/// C: intr_init 的 ICW 序列），随后除 IRQ0（PIT）与 IRQ2（级联）外
+/// 全部 mask。必须在 `init_timer`（PIT 开始计数）之前调用。
+pub fn pic_init() {
+    unsafe {
+        outb(PIC1_CMD, ICW1_INIT);
+        io_wait();
+        outb(PIC2_CMD, ICW1_INIT);
+        io_wait();
+        outb(PIC1_DATA, IRQ0_VECTOR); // master ICW2：向量基 0x50
+        io_wait();
+        outb(PIC2_DATA, IRQ0_VECTOR + 8); // slave ICW2：向量基 0x70
+        io_wait();
+        outb(PIC1_DATA, 0x04); // master ICW3：IRQ2 接 slave
+        io_wait();
+        outb(PIC2_DATA, 0x02); // slave ICW3：级联身份 = 2
+        io_wait();
+        outb(PIC1_DATA, ICW4_8086);
+        io_wait();
+        outb(PIC2_DATA, ICW4_8086);
+        io_wait();
+        // IMR：全 mask（IRQ0/IRQ2 由 unmask_irq 按需打开）。
+        outb(PIC1_DATA, 0xFF);
+        outb(PIC2_DATA, 0xFF);
+    }
+    unmask_irq(0); // PIT
+    unmask_irq(2); // 级联线
+}
+
+/// 打开指定 IRQ 线（清 IMR 位）。
+pub fn unmask_irq(irq: u8) {
+    let (port, bit) = if irq < 8 {
+        (PIC1_DATA, irq)
+    } else {
+        (PIC2_DATA, irq - 8)
+    };
+    let mut imr = unsafe { read_imr(port) };
+    imr &= !(1 << bit);
+    outb(port, imr);
+}
+
+/// EOI：每个被服务的 IRQ 必须回执，否则 PIC 不再投递后续中断
+/// （level 锁死）。slave 线（IRQ>=8）需向两级各发一次。
+pub fn pic_eoi(irq: u8) {
+    if irq >= 8 {
+        outb(PIC2_CMD, OCW2_EOI);
+    }
+    outb(PIC1_CMD, OCW2_EOI);
+}
+
+/// 读 IMR（0x21/0xA1 数据口在 ICW/OCW 之外即为 IMR，可直读）。
+unsafe fn read_imr(port: u16) -> u8 {
+    let v: u8;
+    unsafe { core::arch::asm!("in al, dx", out("al") v, in("dx") port) };
+    v
+}
+
+/// 短等待（AT 时代 PIC 需要的 ~100ns 恢复间隔；现代平台无害）。
+fn io_wait() {
+    unsafe { core::arch::asm!("out dx, al", in("dx") 0x80u16, in("al") 0u8) };
+}
+
 /// The statistical-profiling clock's IRQ vector: the RTC (CMOS) periodic
 /// interrupt delivers through IOAPIC input 8, so the profile hook registers
 /// under IRQ 8 while profiling is active.

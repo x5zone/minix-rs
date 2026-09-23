@@ -2462,6 +2462,14 @@ pub fn boot_init_timer() {
     // (c) — gates last, handler already registered (see the Step 6 header
     // for the per-architecture semantics of this call).
     <CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq();
+
+    // NK4-C 1.10c 修复（timer bring-up 缺口，C i8259.c intr_init 对位）：
+    // 8259A PIC 此前从未初始化——固件遗留的向量基/mask 使 PIT 的 IRQ0
+    // 永远到不了 0x50 门（s14n：150s 全程 tick 臂 <1000 次调用）。重映射
+    // master→0x50 / slave→0x70 并只放行 IRQ0+级联线；init_timer 编程 PIT
+    // 后 tick 即流入。顺序：pic_init（重映射+mask）→ init_timer（PIT 计数
+    // 开始，IRQ0 已放行）。
+    minix_plat::pic_init();
 }
 
 
