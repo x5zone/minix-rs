@@ -1170,3 +1170,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 - s15w 复跑形态同前（elock caller=PM dst=4 mt=3 单发、1151 recvs、无 rc marker、picknone rs_flags=0x8）。
 - **定性保持**：ELOCKED = PM 的 taskcall（SENDREC→sched）send 半，与 sched 在途应答 send 互撞（双向 SENDING）——协议级真死锁，检测器正确。
 - **下一轮配方（接手即做，单点）**：①PM 的 taskcall 被 ELOCKED 后 init_scheduling 的 fail-fast 行为对照 C schedule.c:340-341 改重试/延迟语义；②sched 侧应答 sendnb 已落地，核 PM taskcall 的 sendrec 原子性修复（1.10l）是否覆盖 PM taskcall 场景（REPLY_PEND 门控路径）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10w2 状态固化（s15x，2026-09-24）
+
+- elock 补 PM 栈回溯实锤：ELOCKED 现场 PM 侧调用点 = **`PmServer::init` 内的 taskcall（sendrec→sched，SCHEDULING 家族）**；对侧 sched 的 SENDING 为其上一 taskcall 应答在途。
+- sched 侧独立 panic：`servers/sched/src/server.rs` 的 receive-failure fail-fast（连续 receive 失败上限）——sched 的 receive(ANY) 连续 Err 的错误类别待一轮 ipcerr 扩展（现 ipcerr cap=24 只打印 4 条即停，需放宽 cap 至 64 并补 caller=6 过滤）。
+- PM 栈回溯的坏 DM 换算（pa=0xffff7fff803ff668）为 P2-diag 登记的 kern_phys_base 偏移问题，回溯深度受限不影响 PC 定位。
+
+### 下一轮配方（交接手）
+
+①ipcerr cap 24→64 + 过滤 caller∈{0,4}：一轮定位 PM taskcall ELOCKED 与 sched receive 失败的错误类别；②按类别修（ELOCKED→taskcall 重试臂；EPERM→priv 时序；CallDenied→trap mask）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
