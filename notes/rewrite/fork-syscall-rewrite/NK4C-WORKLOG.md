@@ -1307,3 +1307,10 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 下一步（接手即做）
 
 ①核 srcv-err/sc-rv 打点的格式化是否产出空串（line[13..23] 的填充逻辑核对——v.to_be_bytes()[1..] 只填 6 字节但 line 有 24 字节、其余为零——**hex 编码位置偏移 bug**：应为 8 个 hex 字符，实际填了 6×2=12 字节越界一半——修正编码循环）；②复跑读 sched receive 失败 errno；③修根因 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.11b 状态固化（s16f，2026-09-24）
+
+- sched:77 panic 复现确认（LN=0x4d=77 ✓）：init_scheduling 返回 Err（get_hz 或 setalarm 之一），sched-hz/sched-alarm 探针因 sched 侧 diagctl 断路未现形。
+- **下一轮配方（接手即做，两步）**：①sched 侧诊断通道修复：grep sched 的 KernelIpcTransport 的 diag 通路（`sys_diagctl_write` 走 DirectKernelCallTransport → SYS_DIAGCTL kernel call——查 kernel dispatch_diagctl 对 caller=4 的返回（内核侧 ipcerr 式打点））；②按 errno 修 init_scheduling 首个失败调用；③修后 init 进 runcom → /bin/sh /etc/rc → rc marker（单元 B 完成）→ 单元 C-K。
