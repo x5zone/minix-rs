@@ -1264,3 +1264,10 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 修复（下一轮，接手即做）
 
 ①审计 RS 的 service 启动序：privctl SetSys（SYS_PROC）→ ALLOW → 服务器 unblock 的次序，补齐「priv 未就绪不得 unblock」的时序（对照 C do_exec 前置 priv 语义）；②补判别测试（priv 未就绪时 setalarm 必须 EPERM、就绪后必须 OK）；③修后两次复跑：sched 不再 panic、init 进 runcom、/bin/sh exec → **rc marker（单元 B 完成）** → 单元 C-K。
+
+---
+
+## 1.11b 收口（s16d 时代，2026-09-24）
+
+- sched:77 panic 的 errno 未现形：sched 侧 diagctl 打点静默失败（与 panic-handler Stage 2 同族）——sched→PM 的 SYS_DIAGCTL 调用本身异常（候选：PM 的 diagctl handler 对 sched 的请求处理缺失/返回错误）。**PM 的 diagctl（同族调用）在 PM 侧正常**（pmvi 打点可见）⇒ 差异在调用者身份或其 priv 的 diag 权限。
+- **下一轮配方**：①kernel SYS_DIAGCTL handler 加 caller 打点（一轮即见 sched 的 diagctl 是否到达 kernel 及返回值）；②据 errno 修 sched 的 init_scheduling 首个失败调用（get_hz 或 setalarm）；③修后 sched 不再 panic → init 进 runcom → /bin/sh /etc/rc → **rc marker（单元 B 完成）** → 单元 C-K。
