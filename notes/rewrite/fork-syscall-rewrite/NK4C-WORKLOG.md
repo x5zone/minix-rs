@@ -1008,3 +1008,9 @@ sched panic（server.rs receive-failure fail-fast）与 PM panic（SENDREC 缺�
 dd2 实锤（含 1.10l 后仍复现）：`caller=0(PM) fn=SEND(1) xp=4(sched) xp_rts=0x4`——PM 的**普通 SEND**（fn=1 非 SENDREC）与 sched 的 SEND 互撞。即：PM 存在**非 sendrec 的对 sched 阻塞 SEND** 站点（候选：PM 的 SCHEDULING 通知/或 send_blocking 变体），与 sched 的 taskcall 回复 send 互撞 → 双向 SEND 真死锁。
 
 **下一轮（交接手，单点）**：①grep PM 向 SCHED endpoint 的全部 send 站点定位该普通 SEND（候选：sched_ctl taskcall 的实现若是 send 而非 sendrec、或 PM 的 noquantum/sched 通知）；②修一侧为 sendnb/notify（对照 C：sched 的 reply 用 ipc_send 阻塞、PM 的 taskcall 用 ipc_sendrec 阻塞——时序上 PM 的 #N+1 只能在 #N reply 后发出，若 PM 提前发出即站点错误）；③修后两次复跑 → rc marker。
+
+### 1.10n 补充二（s15i 精读 + 站点排查）
+
+- PM 向 sched 的三个站点（sched_start/sched_stop/taskcall）**全部是 sendrec**——无裸 SEND 站点；fn=0x1 的普通 SEND 来源待下一轮 dd2 扩展（打印 send 的 m_type 与 msg 首字）确认（候选：PM 的 sched 相关 notify 经 SEND 语义、或某 reply 路径）。
+- s15i：dd2 仅 1 条（PM→sched，sched xp_rts=SENDING 双向互撞）、崩溃/NoPerm 零、1145 recvs——1.10l 修复后系统整体仍稳定推进。
+- **下一轮**：dd2 扩展（m_type+msg 首字）→ 定位 PM 侧站点与 sched 侧停发语义 → 按协议修一侧（对照 C：sched reply 用 ipc_send 阻塞、PM taskcall 用 sendrec——PM 不应在 sched reply 在途时发新请求；若发现 minix-rs 侧顺序颠倒即修）。
