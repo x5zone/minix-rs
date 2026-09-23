@@ -716,11 +716,24 @@ impl<T: IpcTransport> PmServer<T> {
     /// 行为一致。
     fn vfs_init_sync(&mut self) {
         let messages = self.vfs_init_messages();
-        for msg in &messages[..messages.len() - 1] {
-            // C: main.c:226 — ipc_send(VFS_PROC_NR, &mess)（阻塞），失败 panic。
-            // 必须用阻塞 send：PM 先于 VFS 起时 VFS 尚未进 receive，
-            // 非阻塞 sendnb 会拿到 ENOTREADY(201) 而 panic；C 靠阻塞挂起
-            // PM 直到 VFS ready 吸收这个启动顺序竞态。
+        // NK4-C 1.10q 逐环仪器化（task1-close 裁决删除）：逐条 INIT 发送
+        // 打点（sendnb 直写串口），与 VFS 侧握手 receive 计数对账。
+        for (idx, msg) in messages[..messages.len() - 1].iter().enumerate() {
+            let mut line = [0u8; 24];
+            line[..13].copy_from_slice(b"nk4a: pmvi k=");
+            let v = idx as u32;
+            for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
+                let hexs = b"0123456789abcdef";
+                line[13 + i * 2] = hexs[(byte >> 4) as usize];
+                line[14 + i * 2] = hexs[(byte & 0xf) as usize];
+            }
+            line[23] = b'\n';
+            if let Ok(cs) = core::str::from_utf8(&line) {
+                let _ = minix_sys::syscall::sys_diagctl_write(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    cs,
+                );
+            }
             self.transport
                 .send_blocking(self.params.vfs_endpoint, msg)
                 .expect("PM: can't sync up with VFS (per-process send)");
@@ -734,6 +747,13 @@ impl<T: IpcTransport> PmServer<T> {
             panic!(
                 "PM: can't sync up with VFS (final barrier) errno={}",
                 e.errno()
+            );
+        }
+        // NK4-C 1.10q：屏障过打点。
+        {
+            let _ = minix_sys::syscall::sys_diagctl_write(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                "nk4a: pmvi-barrier-done\n",
             );
         }
         assert_eq!(

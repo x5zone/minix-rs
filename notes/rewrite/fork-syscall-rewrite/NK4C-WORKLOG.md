@@ -1064,3 +1064,21 @@ ELOCKED 现场 = **PM 的 `reply(slot, code=3)`**（ipc/vfs.rs:312 `m_type=code`
 - sched sendnb 修复已生效入仓（trait+实现+settle 改非阻塞）；s15q 复跑：形态不变（2 panic-enter、elock PM→sched mt=3、1151 recvs、无 rc marker）。
 - dd2m 数据精读修正：`cmt=0x900` 为 PM 的**陈旧 p_sendmsg 缓存**（曾 blocked 的 VFS_PM_INIT Path-B 残留）——提示 **PM 的某条 VFS_PM_INIT send_blocking 曾长期 park 未被 VFS drain**（VFS 握手 receive 与 PM send_blocking 的时序错位）；`xmt=0x1` = sched 在发的消息 m_type=1（其 EPERM 类拒绝回复）。
 - **下一轮（交接手，聚焦三点）**：①PM `vfs_init_sync` 的 send_blocking 与 VFS 握手 receive 的逐条对账（哪条 INIT 未被吸收——probe：PM send_blocking 前/后打序号，VFS 侧 receive 计数）；②定位「PM 发 m_type=3 到 sched」的站点（PM 侧 grep 0x3 发送或 elock 探针补 m_source 链）；③修复后两次复跑 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10r 里程碑：系统完整 boot 进入正常 idle（2026-09-24，serial_s15r）
+
+- PM↔VFS 握手**完全通过**：`pmvi k=0..0xb` 12 条 INIT 全部流动 + **`pmvi-barrier-done`**（屏障 OK）。
+- 尾态（健康 idle）：**RS/VM/全部服务器 flags=0x8 RECEIVING 正常停车**（对比 1.9 时代 9 台 0x30 崩溃态）；`gtick k=0x3e8`（1000 ticks，timer 稳定）；1143 recvs；无 elock 风暴。
+- sched 仍有 1 次 panic-enter（setalarm EPERM 路径，独立问题登记不阻塞 idle）。
+- **定性：x86_64 内核+服务器栈已完整 boot 到多用户空闲态**——1.10 系（timer/SENDREC/协议序）修复全部生效。
+
+## rc marker 最后缺口（单元 B 余段，下一轮单点）
+
+**imgrd 缺 /bin/sh**（1.3 开局盘点已知）：`os/xtask/src/image.rs:425 generate_etc_proto` 的 proto 只播 `etc/{rc,ttys}`+`dev/console`。init 的 runcom 状态机已接线（driver.rs:294-302 → runcom::runcom）、rc 脚本（os/etc/rc:10）含 marker echo——**只差把 sh 二进制（os/commands/sh 构建产物）+ bin 目录播种进 proto**：
+```
+bin d--755 0 0
+sh ---755 0 0 <staging>/sh
+```
+rc 内容补 marker echo（或确认已有）。修后两次复跑判据 `minix-rs rc: minimal boot script marker` —— **单元 B 完成**。
