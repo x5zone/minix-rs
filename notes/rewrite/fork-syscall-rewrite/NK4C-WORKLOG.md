@@ -875,3 +875,9 @@ pmstall2 栈回溯（gtick 分支）：PM 自旋 PC = **0x21c652 = `minix_sys::p
 2. PM panic 消息现形后修根因（大概率是 PM↔VFS/VM 协议返回值的语义错配——对照 s14i 5990-6010 行触发上下文），过 1.10 → 单元 B rc marker 冲刺。
 
 注：timer 修复（1.10c/d）是本发现的前置——没有 tick 抢占，pmstall2 栈回溯无法采样。
+
+### 1.10f panic 原因落点：PM receive 连续失败 fail-fast（2026-09-24）
+
+panic 文本虽被双重遮蔽（Stage1 格式化早前自旋 + Stage2 diagctl 未达串口），但 PM run 循环（init.rs:398-418）唯一 fail-fast panic 即答案：**「IPC transport permanently broken: N consecutive receive failures」——PM 的 int33 RECEIVE 连续返回 Err**（非阻塞失败；C 语义下 receive 只有传输损坏才 Err）。
+
+**下一轮配方（两步，仪器化量小）**：①`init.rs` ReceiveFailed 臂加一次性 diagctl 打 `transport` 最后 Err 的 errno 数值（IpcTransportError 已有 `errno()` 方法）+ 计数——一次复跑即得真实错误码；②按错误码对位：EPERM/CallDenied ⇒ PM trap mask/ipc 权限被某路径（recovery DISALLOW？）破坏；EDEADSRCDST ⇒ endpoint 解析；EFAULT ⇒ int33 入口 copy_msg_from_user（PM 的 receive 缓冲页缺失——注意 PM 的 p_delivermsg_vir 语义与 F14 同步拷贝的交互）。**关联疑点**：tick 修通后 CLOCK notify 开始到达 PM（`is_notify` → expire_timers 路径首次真实运行）——失败可能与 notify 处理的交互有关（对照 C main.c:65-71）。
