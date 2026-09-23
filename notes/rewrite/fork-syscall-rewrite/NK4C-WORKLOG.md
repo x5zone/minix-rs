@@ -1023,3 +1023,19 @@ dd2 实锤（含 1.10l 后仍复现）：`caller=0(PM) fn=SEND(1) xp=4(sched) xp
 - **头号嫌疑（下一轮单点核查）**：PM 的 `vfs_endpoint` 参数值。若 params 把 vfs_endpoint 配成了 SCHED 的端点（4），则 PM 的全部 VFS_PM_INIT/屏障流量错投 sched：sched 的 receive(ANY) 吸收这些消息后按 SchedMsg 解码失败/自旋，PM 的 barrier reply 永不到达 ⇒ assert(m_type==0) panic ✓ 与全部观测吻合（VFS 侧从未见过 0x900、PM 反复 panic、exit_via 自旋）。
 - **核查点**：①`os/servers/pm/src/init.rs` 的 `self.params.vfs_endpoint` 来源（boot 参数/RS 传入）与实际值；②对照 `exec endpt=` 序列（vfs=1）与 RS boot 镜像里的 endpoint 分配；③若确认错配 → 修 vfs_endpoint 来源（RS boot 参数/PM params 构造）。
 - 修后判据不变：两次复跑无 `pm/init.rs:739` panic、boot 越过 PM↔VFS → rc marker（单元 B）→ 单元 C-K。
+
+---
+
+## 1.10p 根因闭合：PM 的 vfs_endpoint=4（sched）——启动参数错配（2026-09-24，serial_s15l）
+
+### dd2m 终版实锤
+
+`dd2m caller=0x0 dst=0x4 cmt=0x900(VFS_PM_INIT) xp=0x4 xmt=0x1` —— **PM 把 VFS_PM_INIT 发给了 endpoint 4（sched）**，walk 闭环节点=sched 自洽。全部历史矛盾（PM↔sched SEND-SEND 死锁、PM barrier panic、VFS 侧 0x900 消息缺失、sched 收到无法解码的消息后 receive-failure fail-fast）由此一条错配全部解释。
+
+### 根因链
+
+PM `real_main` → `BootParams::acquire_from(&DirectKernelCallTransport)`（内核 GETINFO 启动参数）→ 运行时 `vfs_endpoint=4`（sched 的端点，正确应为 VFS=1）⇒ PM 全部 VFS_PM_INIT/屏障流量错投 sched：sched receive(ANY) 吸收无法解码的消息 → 协议断裂 → receive 连续失败 fail-fast panic → exit_via 自旋；PM 屏障 reply 永不到达 → m_type≠0 panic；连累 PM↔VFS 全链与依赖方停摆。
+
+### 下一轮修复配方（交接手）
+
+①审计 `BootParams::acquire_from` 的端点解析（os/libs/minix-rt 或 pm 侧 boot params 结构）：vfs_endpoint 字段的来源行/偏移——对照内核 GETINFO 侧填充（kernel image table 的 endpoint 字段序）；②重点核 GET_HZ 同表的字段错位族（一次错位往往连坏多字段）；③修后判据：两次复跑 PM 不 panic、PM↔VFS 屏障过、`pm-recv-err`/`dd2m` 零输出、boot 越过 1145 → rc marker（单元 B）→ 单元 C-K。

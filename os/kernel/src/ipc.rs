@@ -1097,6 +1097,8 @@ impl<'a> IpcEngine<'a> {
                     if DD2_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
                         Console::write_str("nk4a: dd2m caller=");
                         Console::write_hex(caller_nr.0 as u64);
+                        Console::write_str(" dst=");
+                        Console::write_hex(dst_endpoint.0 as u64);
                         Console::write_str(" cmt=");
                         Console::write_hex(self.procs[caller_idx].p_sendmsg.m_type as u64);
                         Console::write_str(" xp=");
