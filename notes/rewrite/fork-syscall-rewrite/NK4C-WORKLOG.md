@@ -888,3 +888,12 @@ panic 文本虽被双重遮蔽（Stage1 格式化早前自旋 + Stage2 diagctl �
 - exit_via 自旋 = **panic handler Stage 3**（或 main 返回，但 run()->! 排除）。Stage 2 的 `sys_diagctl_write`（lib.rs:380-383）**静默失败**（`let _ =` 吞错）⇒ panic 消息从未上串口。
 - **下一轮（交接手，小改即可）**：①minix-rt panic handler Stage 2 的 diagctl 返回值改为打印失败标记+重试/换通道（port IO 或降级文本）；②在 panic handler 入口打 `info.location()` 的 file:line 原始字节（不经 fmt，直接逐字节 Console::write——fmt 已证不可靠）——一次复跑即得 PM panic 的位置与消息；③按 panic 原因修复后向 rc marker 推进（单元 B）。
 - 旁证：PM panic 的上游触发在 s14j log 5990-6010 行上下文（PM↔init/fork 交互期）；tick 修复（1.10c/d）后 PM 的死法从 Debug::fmt 自旋变为 exit_via 自旋——panic 处理在推进，根因临近。
+
+---
+
+## 1.10h 定案与下一步（s14r-t-x）：panic location 被 release 构建剥除
+
+- 分块写（16B chunks）后 `panic-enter` 仍 ×2，但 file/message 行依旧空 ⇒ **release（无 debuginfo）下 `Location::file()` 返回空串、line 无意义**——location 路线在 release 是死路（诊断基建本身工作正常：12B 短串可达，>16B 需分块，均已入仓）。
+- 已确认事实：**每轮恰 2 次 panic**（行 7343 与 18550 附近）；panic 后 PM 走 exit_via 自旋；第二次 panic 点附近伴随 PM/进程栈页零填充 fault 群（anon 栈首触，正常）与调度乱序。
+- **下一轮（单步）**：`os/Cargo.toml`（或 workspace profile）给 `[profile.release]` 加 `debug = 1`（仅行表，体积代价小）→ 复跑：`panic-enter` 后的 file:line 即真实定位 → 修 PM panic 根因 → 单元 B rc marker。
+- 若 panic 消息仍为 nonstr（`{:?}` 载荷），改用 PM 侧 panic 站点清单二分（PM init/fork/exit 路径的唯一 expect/assert 各已核）。

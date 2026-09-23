@@ -346,6 +346,65 @@ mod global_tests {
 #[cfg(all(not(test), not(feature = "std"), feature = "panic-handler"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    // NK4-C 1.10g 仪器化（task1-close 裁决删除）：入口零依赖直打——不经
+    // Stage 1 的 format_panic_report（其 fmt 已观测到自旋）、失败可观测。
+    // file 用原串、line 手工十六进制、message 原文（as_str 可得时）。
+    {
+        use minix_sys::syscall::{sys_diagctl_write, DirectKernelCallTransport};
+        let w = |s: &str| {
+            let r = sys_diagctl_write(&DirectKernelCallTransport, s);
+            if r.is_err() {
+                let _ = sys_diagctl_write(&DirectKernelCallTransport, "nk4a: diag-err\n");
+            }
+            r.is_ok()
+        };
+        w("nk4a: panic-enter\n");
+        // 长串分块：diagctl 对 >~16B 的写会静默丢弃（s14r/w 实测
+        // 12B 成功、file 路径失败），16 字节分块逐段写。
+        fn w_chunked(s: &str) {
+            for chunk in s.as_bytes().chunks(16) {
+                let _ = core::str::from_utf8(chunk);
+            }
+        }
+        let _ = w_chunked;
+        match info.location() {
+            Some(l) => {
+                for chunk in l.file().as_bytes().chunks(16) {
+                    // SAFETY 无：chunk 为 UTF-8 边界可能截半，但诊断路径
+                    // 只要求内核按原样写串口字节；非法 UTF-8 由内核忽略。
+                    let cs = unsafe { core::str::from_utf8_unchecked(chunk) };
+                    let _ = w(cs);
+                }
+                let mut lb = [0u8; 12];
+                let mut n = l.line();
+                let mut i = lb.len();
+                loop {
+                    lb[i - 1] = b"0123456789abcdef"[(n & 0xf) as usize];
+                    i -= 1;
+                    n >>= 4;
+                    if n == 0 {
+                        break;
+                    }
+                }
+                if let Ok(s) = core::str::from_utf8(&lb[i..]) {
+                    let _ = w(s);
+                }
+                let _ = w("\n");
+            }
+            None => {
+                let _ = w("nk4a: panic-no-loc\n");
+            }
+        }
+        if let Some(m) = info.message().as_str() {
+            for chunk in m.as_bytes().chunks(16) {
+                let cs = unsafe { core::str::from_utf8_unchecked(chunk) };
+                let _ = w(cs);
+            }
+            let _ = w("\n");
+        } else {
+            let _ = w("nk4a: panic-msg-nonstr\n");
+        }
+    }
     // Stage 1 (C: panic.c:34-46, message-then-newline): format the location
     // and message into stack memory through the crate's single formatting
     // home (see `diag::format_panic_report`). Stack memory only: no
