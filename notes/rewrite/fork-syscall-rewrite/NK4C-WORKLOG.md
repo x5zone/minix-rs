@@ -950,3 +950,13 @@ String downcast 未命中（panic=abort 下格式化载荷非 String）；Stage 
 ### 下一步（交接手，单点修复）
 
 ①读 kernel `do_ipc`/`IpcEngine` 对 RECEIVE 的权限预检（trap mask / `s_ipc_to` / call mask 三选哪个拒绝 PM）——对照 C：receive 不受 `s_ipc_to` 限制（只 SEND 受目的端检查），trap mask 需含 RECEIVE 位；②查 RS 对 PM 的 priv 配置（SetSys 时 `s_ipc_to`/trap mask 是否含 RECEIVE 位或 ANY）——minix-rs 若把 receive 也对 `s_ipc_to` 做了 AND 检查则对位偏差；③修复 + 两次复跑 → 1.10 消除 → rc marker（单元 B）。
+
+### 1.10k 补充（s15f 精读）
+
+- ipcerr 全程仅 4 条：ds EDEADSRCDST×3（line 10693，独立小项）+ **PM ECALLDENIED ×1（19277，恰在 PM panic 前）**。PM 连续失败需 16 次 kernel Err，但 kernel 错误仅 1 条 ⇒ 其余失败是**传输层/入口层**（trap ret<0 但非 dispatch_ipc 错误映射，或 copy_msg_from_user 阶段）。
+- PM 第二 panic 站点确认 = `servers/pm/src/init.rs`（barrier assert）；SCHED panic = `servers/sched/src/server.rs`（receive-failure fail-fast）。
+- 收敛判断：**两服务器（sched/pm）的 int33 RECEIVE 在特定时点返回 Err 的共同机制** = 权限层（CallDenied 仅 PM 1 次）+ 可能的入口层失败并存；与 tick 修通后 CLOCK notify 首次到达的时序强相关。
+
+### 下一步（不变，聚焦权限层）
+
+①`check_permission`（ipc.rs:2046-2115）Layer 3 trap mask：dump PM 的 `s_trap_mask`/`priv_id` 在 ECALLDENIED 瞬间的值（ipcerr 探针扩展）；②对照 RS SetSys 对 PM 的 mask 配置（是否含 RECEIVE 位）；③C proc.c:552 的 trap mask 语义对位。修后两次复跑 → rc marker。
