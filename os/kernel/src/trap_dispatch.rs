@@ -1157,6 +1157,47 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     C0::write_hex(pf.vaddr.0);
                     C0::write_str(" err=");
                     C0::write_hex(frame.errcode as u64);
+                    // NK4-C s14g 判别（task1-close 裁决删除）：经进程页表
+                    // 读 rip 处 8 字节。读到 00 00 00 00（add [rax],al）⇒
+                    // 帧被零填充抹写（走分配器双账本审计）；读到 xchg 真指令
+                    // ⇒ 上下文/寄存器腐坏（回 set_ipc_return_code 污染假设）。
+                    {
+                        use minix_arch::{DirectMapArch as _, PteWalkArch as _};
+                        let table = crate::proc_table_with(&section);
+                        let root = table
+                            .get(cur_nr)
+                            .map(|p| p.p_seg.phys_root.0)
+                            .unwrap_or(0);
+                        let pa = minix_arch::CurrentPteWalk::walk(
+                            minix_types::PhysBytes(root),
+                            minix_types::VirBytes(frame.rip),
+                        )
+                        .map(|(pa, _)| pa.0 & !0xFFF)
+                        .unwrap_or(0);
+                        C0::write_str(" tex");
+                        C0::write_hex(pa >> 12);
+                        C0::write_str("=");
+                        if pa != 0 {
+                            let va = minix_arch::CurrentDirectMap::kernel_phys_to_virt(
+                                minix_types::PhysBytes(pa + (frame.rip & 0xFFF)),
+                            );
+                            let mut b = [0u8; 8];
+                            // SAFETY: pa 来自页表 walk 的帧基址，+页内偏移后
+                            // 经内核 Direct Map 读 8 字节；只读。
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    va.0 as *const u8,
+                                    b.as_mut_ptr(),
+                                    8,
+                                );
+                            }
+                            for x in b {
+                                C0::write_hex(x as u64);
+                            }
+                        } else {
+                            C0::write_str("unmapped");
+                        }
+                    }
                     C0::write_str("\n");
                 }
             }
