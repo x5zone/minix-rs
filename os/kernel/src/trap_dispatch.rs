@@ -812,6 +812,53 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                         // NK4-C 第 12 轮：RS 全现场——wrapper 的栈写目标
                         // （rsp/r8=slot/rdi/rsi）与 r10 状态车道。
                         if proc.p_endpoint.0 == 2 {
+                            // 第 18 轮：RS 故障 VA 的四级页表层级逐级 dump
+                            // （PML4E/PDPTE/PDE/PTE present 位）——直接
+                            // 定位映射在哪一级丢失。走 DM 读物理页表页。
+                            {
+                                use minix_arch::DirectMapArch as _;
+                                let c2 = cr2;
+                                let i4 = (c2 >> 39) & 0x1FF;
+                                let i3 = (c2 >> 30) & 0x1FF;
+                                let i2 = (c2 >> 21) & 0x1FF;
+                                let i1 = (c2 >> 12) & 0x1FF;
+                                let root_pa = crate::proc_table_with(&section)
+                                    .get(cur_nr)
+                                    .map(|p| p.p_seg.phys_root.0)
+                                    .unwrap_or(0);
+                                let rd = |pa: u64| -> u64 {
+                                    let va = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa));
+                                    unsafe { core::ptr::read(va.0 as *const u64) }
+                                };
+                                let pml4e = rd(root_pa + i4 * 8);
+                                let mut l3pa = 0u64;
+                                if pml4e & 1 != 0 {
+                                    l3pa = pml4e & 0x000F_FFFF_FFFF_F000;
+                                }
+                                let pdpte = if l3pa != 0 { rd(l3pa + i3 * 8) } else { 0 };
+                                let mut l2pa = 0u64;
+                                if pdpte & 1 != 0 {
+                                    l2pa = pdpte & 0x000F_FFFF_FFFF_F000;
+                                }
+                                let pde = if l2pa != 0 { rd(l2pa + i2 * 8) } else { 0 };
+                                let mut l1pa = 0u64;
+                                if pde & 1 != 0 && pde & 0x80 == 0 {
+                                    l1pa = pde & 0x000F_FFFF_FFFF_F000;
+                                }
+                                let pte = if l1pa != 0 { rd(l1pa + i1 * 8) } else { 0 };
+                                C0::write_str(" lvl4=");
+                                C0::write_hex(pml4e);
+                                C0::write_str(" lvl3=");
+                                C0::write_hex(pdpte);
+                                C0::write_str(" lvl2=");
+                                C0::write_hex(pde);
+                                C0::write_str(" lvl1=");
+                                C0::write_hex(pte);
+                                C0::write_str(" lvl2pa=");
+                                C0::write_hex(l2pa);
+                                C0::write_str(" lvl1pa=");
+                                C0::write_hex(l1pa);
+                            }
                             C0::write_str(" rsp=");
                             C0::write_hex(frame.rsp);
                             C0::write_str(" rax=");
