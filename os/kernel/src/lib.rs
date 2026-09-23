@@ -3386,6 +3386,16 @@ fn finish_and_restore(
             minix_arch::ipc_status_register(&ctx),
             frame.rip,
         );
+        // NK4-C S2c 哨兵（task1-close 裁决删除）：RS 即将 iretq 回用户态，
+        // 交付前最后重读监视 PTE——若此处仍完好而下次 pf/x33 观测到损坏，
+        // 抹写落在 RS 用户态执行期间（反之则在内核代执行段）。
+        if picked_ep == 2 {
+            let watch_root = table
+                .get(picked)
+                .map(|p| p.p_seg.phys_root.0)
+                .unwrap_or(0);
+            crate::trap_dispatch::nk4a_pte_watch("rst", watch_root);
+        }
     }
     // NK4-A C-3 迭代4：故障页 invlpg——此刻 CR3 即被恢复进程自己的根
     // （switch_address_space 在 stage 2 已装），iretq 前的最后一点。

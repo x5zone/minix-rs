@@ -279,6 +279,11 @@ pub fn copy_to_user(
         let page_offset = (dst_offset & PAGE_OFFSET_MASK) as usize;
         let chunk = core::cmp::min(remaining, 0x1000 - page_offset);
 
+        // NK4-C S1 取证探针（task1-close 裁决删除）：vdevio/sdevio 结果回写
+        // 的目标 (va, root, pa) 去重记录，与同轮 PT 页对账。
+        #[cfg(not(feature = "mock"))]
+        crate::trap_dispatch::nk4a_user_write_probe("viow", root_paddr.0, dst_offset, phys.0);
+
         let kv = CurrentDirectMap::kernel_phys_to_virt(phys);
         // SAFETY: Direct Map is active; kv.0 is a valid kernel-virtual
         // pointer to the user's physical page (writable via Direct Map).

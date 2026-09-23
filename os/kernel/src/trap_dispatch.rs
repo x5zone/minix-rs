@@ -240,6 +240,156 @@ pub(crate) fn nk4a_rs_trace_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
 }
 
 #[cfg(not(feature = "mock"))]
+/// NK4-C S1 取证探针（task1-close 裁决删除）：内核未布防写点的
+/// 目标三元组 `(tag, va, root→pa)` 去重记录 —— 把每个不同页组合打
+/// 一条（上限 96），事后用 §7.3 脚本与同轮 `lvl1pa`（PT 页）对账：
+/// 命中即错页写实锤。
+///
+/// 布防对象是 §4.4 第 1 项穷举后仅剩的两条裸写通路（其余写点已有
+/// kdst/msgw）：`finw` = syscall.rs kernel_call_finish 的 errno 回执 DM
+/// 直写（p_delivermsg_vir，每次带错误码完成的系统调用必触发，正落在
+/// RS 持 CPU 的内核代执行窗口）；`viow` = pte_walk.rs copy_to_user
+///（SYS_VDEVIO/SYS_SDEVIO 结果回写）。站点首字互不相同，去重键
+/// `(site, va页, pa页)`，避免启动期重复事件吃光额度（prompt 铁律 2）。
+pub(crate) fn nk4a_user_write_probe(site: &str, root: u64, va: u64, pa: u64) {
+    const CAP: usize = 96;
+    use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    static SEEN_VA: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static SEEN_PA: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
+    static SEEN_SITE: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
+    let site_key = site.as_bytes()[0];
+    let va_page = va & !0xFFF;
+    let pa_page = pa & !0xFFF;
+    let n = N.load(AtomicOrd::Relaxed);
+    let mut i = 0;
+    while i < n && i < CAP {
+        if SEEN_VA[i].load(AtomicOrd::Relaxed) == va_page
+            && SEEN_PA[i].load(AtomicOrd::Relaxed) == pa_page
+            && SEEN_SITE[i].load(AtomicOrd::Relaxed) == site_key
+        {
+            return;
+        }
+        i += 1;
+    }
+    if n >= CAP {
+        return;
+    }
+    SEEN_VA[n].store(va_page, AtomicOrd::Relaxed);
+    SEEN_PA[n].store(pa_page, AtomicOrd::Relaxed);
+    SEEN_SITE[n].store(site_key, AtomicOrd::Relaxed);
+    N.fetch_add(1, AtomicOrd::Relaxed);
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: w-");
+    C0::write_str(site);
+    C0::write_str(" n=");
+    C0::write_hex(n as u64);
+    C0::write_str(" va=");
+    C0::write_hex(va);
+    C0::write_str(" root=");
+    C0::write_hex(root);
+    C0::write_str(" pa=");
+    C0::write_hex(pa);
+    C0::write_str("\n");
+}
+
+#[cfg(not(feature = "mock"))]
+#[cfg(target_arch = "x86_64")]
+/// NK4-C S2c 哨兵探针（task1-close 裁决删除）：在 RS 栈区三页
+/// （0x7fffffff9000 / a000 / c000）扫描「值等于 `self`（表地址
+/// 0x7fffffffc800）」的 u64 槽。每个内核观测点经 DM 逐页重扫，任一页
+/// 的「(条目在否, 命中数, 首命中偏移)」变化就打一条（上限 64）。
+///
+/// 选型依据：s2c 实证崩溃窗口内 c800 页的 PTE 条目与表首字全程
+/// 正常翻动，而 self 从栈 reload 后读出 0 —— 抹的是 self 存放槽的其
+/// 它栈页数据，槽偏移未知，故改为按值扫描。观测点在调用方按 RS
+/// 上下文门控；本函数只管按传入 root 读表，不做进程判定。
+pub(crate) fn nk4a_pte_watch(site: &str, root_pa: u64) {
+    const WATCH_SELF: u64 = 0x7fff_ffff_c800;
+    const PAGES: [u64; 3] = [0x7fff_ffff_9000, 0x7fff_ffff_a000, 0x7fff_ffff_c000];
+    const CAP: usize = 64;
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+    // 打包状态：bit63=条目不在，bits[12..22)=命中数（0xFFF=NP 哨兵），
+    // bits[0..12)=首命中槽字节偏移。
+    static LAST: [AtomicU64; 3] = [const { AtomicU64::new(u64::MAX) }; 3];
+    static N: AtomicUsize = AtomicUsize::new(0);
+    if root_pa == 0 {
+        return;
+    }
+    let rd = |pa: u64| -> u64 {
+        let v = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(
+            minix_types::PhysBytes(pa),
+        );
+        // SAFETY: DM 窗口覆盖全部物理内存；逐级表页都是已存在条目
+        // 指向的常驻页表页（每级先查 present 位再读）。
+        unsafe { core::ptr::read_volatile(v.0 as *const u64) }
+    };
+    let idx = |va: u64, sh: u64| (va >> sh) & 0x1FF;
+    let mut state = [0u64; 3];
+    for (si, page) in PAGES.iter().enumerate() {
+        let page = *page;
+        // x86-64 四级手动 walk（与 PF dump 同构）取该页 L1 条目。
+        let pml4e = rd(root_pa + idx(page, 39) * 8);
+        let mut frame_pa = 0u64;
+        if pml4e & 1 != 0 {
+            let pdpte = rd((pml4e & 0x000F_FFFF_FFFF_F000) + idx(page, 30) * 8);
+            if pdpte & 1 != 0 {
+                let pde = rd((pdpte & 0x000F_FFFF_FFFF_F000) + idx(page, 21) * 8);
+                if pde & 1 != 0 && pde & 0x80 == 0 {
+                    let pte = rd((pde & 0x000F_FFFF_FFFF_F000) + idx(page, 12) * 8);
+                    if pte & 1 != 0 {
+                        frame_pa = pte & 0x000F_FFFF_FFFF_F000;
+                    }
+                }
+            }
+        }
+        if frame_pa == 0 {
+            state[si] = (1 << 63) | (0xFFF << 12);
+            continue;
+        }
+        let mut cnt = 0u64;
+        let mut first = 0xFFF;
+        let mut off = 0u64;
+        while off < 0x1000 {
+            if rd(frame_pa + off) == WATCH_SELF {
+                if cnt == 0 {
+                    first = off;
+                }
+                cnt += 1;
+            }
+            off += 8;
+        }
+        state[si] = (cnt << 12) | first;
+    }
+    let mut changed = false;
+    for (si, st) in state.iter().enumerate() {
+        if LAST[si].load(AtomicOrd::Relaxed) != *st {
+            LAST[si].store(*st, AtomicOrd::Relaxed);
+            changed = true;
+        }
+    }
+    if !changed {
+        return;
+    }
+    let n = N.fetch_add(1, AtomicOrd::Relaxed);
+    if n >= CAP {
+        return;
+    }
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: pw-");
+    C0::write_str(site);
+    C0::write_str(" n=");
+    C0::write_hex(n as u64);
+    C0::write_str(" s9=");
+    C0::write_hex(state[0]);
+    C0::write_str(" sa=");
+    C0::write_hex(state[1]);
+    C0::write_str(" sc=");
+    C0::write_hex(state[2]);
+    C0::write_str("\n");
+}
+
+#[cfg(not(feature = "mock"))]
 /// NK4-B P1 第 8 轮异常轨迹探针（task1-close 裁决删除）：只看 rs，且只打
 /// 「RBX 不可能是用户指针」的存帧/交付现场（`rbx < 0x10000`，涵盖 0 与
 /// IPC 状态值两类），按 `(site, rbx, rip)` 去重、限 48 条。
@@ -257,7 +407,7 @@ pub(crate) fn nk4a_rs_anom_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
     if ep != RS_ENDPOINT || rbx >= ANOM_CEILING {
         return;
     }
-    use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering as AtomicOrd};
+    use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrd};
     static N: AtomicUsize = AtomicUsize::new(0);
     static SEEN_RIP: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
     static SEEN_RBX: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
@@ -852,6 +1002,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                                 C0::write_hex(l2pa);
                                 C0::write_str(" lvl1pa=");
                                 C0::write_hex(l1pa);
+                                // NK4-C S2c 哨兵（task1-close 裁决删除）：PF 入口
+                                // 顺带重读监视 VA 的 L1 条目，变化即夹住抹写窗口。
+                                nk4a_pte_watch("pf", root_pa);
                             }
                             C0::write_str(" rsp=");
                             C0::write_hex(frame.rsp);
@@ -1252,6 +1405,12 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             nk4a_rs_trace_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
             nk4a_rs_anom_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
             nk4a_rs_leak_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
+            // NK4-C S2c 哨兵（task1-close 裁决删除）：RS 进内核代执行入口
+            // 重读监视 PTE；与 kernel_call_finish 的出口观测夹住整个 IPC
+            // 服务窗口。LAST 状态全局，必须按 ep==2 门控避免错 root 串扰。
+            if caller.p_endpoint.0 == 2 {
+                nk4a_pte_watch("x33", caller.p_seg.phys_root.0);
+            }
         }
         // Record the ENTRY style (C: every mpx.S soft-int entry records
         // `p_kern_trap_style`; arch_system.c:585 consumes it at
@@ -1326,6 +1485,30 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         // (test-sysboot C-27: rx read Message::default poison, then its
         // sendnb(m_source) failed with EDEADSRCDST on the garbage source).
         // SENDA carries the table pointer in rbx instead (p_defer.r3 above).
+        // NK4-C S2g 现场打印（task1-close 裁决删除）：抹写窗口已钉死
+        // 在单次 int33 内核代执行段（s2e），候选抹写者是
+        // kernel_call_finish 的 DM 直写。判别 fresh/stale：本次入口的 r2、
+        // 调用号、是否 SENDA（SENDA 不存 delivermsg，fx 目标必为旧值）与
+        // 旧 p_delivermsg_vir 一并打出（仅 RS，与 fx 记录离线对账）。
+        // S2h：移出 !is_senda 块——s2g 零输出本身就是证据（窗口那次
+        // int33 疑似 SENDA），加 senda= 字段直接裁决。
+        #[cfg(not(feature = "mock"))]
+        if caller.p_endpoint.0 == 2 {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static XIN: AtomicUsize = AtomicUsize::new(0);
+            if XIN.fetch_add(1, AtomicOrd::Relaxed) < 4096 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: x33in call=");
+                C0::write_hex(call_nr as u64);
+                C0::write_str(" r2=");
+                C0::write_hex(r2);
+                C0::write_str(" old=");
+                C0::write_hex(caller.p_delivermsg_vir.0);
+                C0::write_str(" senda=");
+                C0::write_hex(is_senda as u64);
+                C0::write_str("\n");
+            }
+        }
         if !is_senda {
             caller.p_delivermsg_vir = VirBytes(r2);
         }

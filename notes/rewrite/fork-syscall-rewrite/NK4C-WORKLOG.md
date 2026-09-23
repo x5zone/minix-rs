@@ -8,15 +8,17 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：S0 ✅ 完成（Task C 崩溃两轮稳定复现）→ 下一步 S1（穷举内核直写用户 VA 站点加探针）
-- **⚠️ 复现环境硬约束（S0 新发现）**：**必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本**替换 §2.2 QEMU 命令里的 vars 槽（本文件「做法」段已写好完整命令）；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同）。复跑前 `cp tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd`，QEMU 用 `/tmp/nk4a/vars_run.fd`（QEMU 会写它，不要直接用仓库文件本体）
+- **阶段**：S1 ✅（直写站点穷举+探针）；S2 ✅ **根因已锁定**（抹写者 = 陈旧 `p_delivermsg_vir` 上的 `kernel_call_finish` 80 字节直写，完整时间线见 S2 节）→ 下一步 S3（修复方案多方案对比 + 实施 + 两次复跑判据）
+- **根因一句话**：RS 的一个同步 SYSTEM 调用（kernel_call）被 VM 缺页处理停住后，RS 被恢复回用户态继续事件循环，原调用栈帧弹出；之后内核补完成那个旧调用时，`kernel_call_finish` 仍拿着存于进程表的旧回执地址 `p_delivermsg_vir=0x7fffffff9da8` 直写 80 字节——该地址区段已被复用，存于 0x7fffffff9de0 的 `self` 活值被回执 padding 的零抹掉 → `endpoint_slot(0)` → SIGSEGV。Minix3 C 不踩此坑是因为 VMSUSPEND 停车的调用者**不返回用户态**（阻塞在 RTS_VMREQUEST，栈帧必活），且回执只写 64 字节（klib.S `copy_msg_to_user` 钉死）；minix-rs 停车路径把 RS 放回了用户态 + LP64 把回执加宽到 80 字节，两者合谋放大了越界。
+- **尚未完全收敛的点**：是谁/哪条路径在停车后把 RS 恢复回用户态（C 语义应对位「阻塞不恢复」），以及旧调用在哪次服务中被补完成——S3 第一步在代码里定位这两处，再定修复方案（候选：甲=对齐 C 阻塞语义不恢复停车调用者；乙=完成时校验/失效陈旧 delivermsg；丙=写长/边界对齐）
+- **⚠️ 复现环境硬约束（S0 发现，仍有效）**：必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本替换 §2.2 QEMU 命令里的 vars 槽（本文件 S0 节「做法」段已写好完整命令；QEMU 会写它，不要直接用仓库文件本体）；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同；该 fresh-vars 布局鲁棒性 bug 已登记不修）
 - **已修复**（commit）：
   - `1d25f433e` AP 入口补 EFER.NXE（bit11）+ BSP `enable()` 显式置位 —— err=8 保留位风暴 20+ → 0
   - `967a903e7` 摘除金丝雀探针（它在污染生产上下文）
   - `85a0d7cd8` 四张检测网（全部零命中，见排除账）
-- **已排除**（不要再重复排查）：DM 覆盖 / VM-内核树不一致 / 跨空间拷贝 `copy·memset·write` / IPC 消息投递 `copy_msg_to_user` / 分配器双重分配·归还·底层重用 / EFER.NXE / gdb 硬件观察点路线
+- **已排除**（不要再重复排查）：DM 覆盖 / VM-内核树不一致 / 分配器双重分配·归还·底层重用 / EFER.NXE / gdb 硬件观察点路线 / **PTE 条目被抹写形态**（S2c 实证崩溃窗口内监视 VA 的页表条目全程完好、无 refault，那 48 次 lvl1=0 全是正常 lazy 缺页——『统一解释』的第 1 条骨架需按 S2 结论修正：损的是栈数据，不是页表）/ IPC 消息投递站点 `copy_msg_to_user`·viow（S1-S2 对账无直接命中，真凶是同构的 kernel_call_finish DM 直写，见 S2）
 - **新登记（S0 顺带发现，暂不修）**：fresh-vars 布局下 `classify()` 产出 free n=0——与 §4.4 第 3 项「跨分配器双记账」候选直接相关，若后续修复涉及 memmap 扣减协议必须一并验证此场景
-- **下一步**：S1 按 §4.4 第 1 项穷举 `os/kernel/src/` 直写用户 VA 站点，逐个加 §7.1 三元组探针（注意铁律 2 去重）
+- **下一步（S3）**：①代码定位「停车后把 RS 恢复回用户态」的路径与「旧调用被补完成」的站点；②多方案对比（甲/乙/丙，见上）定修复；③两次真机复跑判据：`rs-epslot self=0x7fffffffc800` 活值 + 越过 step2；④探针保留至 task1-close 裁决，修复单独 commit
 - **阻塞/风险**：无阻塞；风险 = 探针采样饥饿（cap 被启动期重复事件吃光，见 prompt 铁律 2）与布局每轮漂移（禁止跨轮硬编码物理地址）
 
 ---
@@ -166,6 +168,73 @@ kernel panic: panicked at kernel/src/syscall_signal.rs:300:13
 ### 下一步
 
 S1：穷举内核直写用户 VA 站点（§4.4 第 1 项候选清单：syscall_signal.rs sigframe 写 / kerninfo / ps_strings / diagctl / syscall_copy.rs vumap 系列），逐站点加 §7.1 (va, root, pa) 探针（带去重）；S2 真机对账。
+
+---
+
+## S1 直写站点穷举 + 探针（2026-09-23，commit 见 git log）
+
+### 目标
+
+按 §4.4 第 1 项穷举 `os/kernel/src/` 里所有「内核拿用户 VA 直写」的站点，逐站点加 (va, root, pa) 三元组去重探针（`nk4a: w-<site>`，实现 `trap_dispatch::nk4a_user_write_probe`，CAP=96），另在 `kernel_call_finish` 直写循环前后加 finw/fina 观测；真机对账找抹写者。
+
+### 站点清单（探针已挂）
+
+- `syscall.rs kernel_call_finish`：errno 回执 DM 直写（finw/fina，本次主嫌）
+- `syscall_copy.rs`：VIRCOPY/SAFECOPYTO 系列（viow）
+- `syscall_signal.rs`：sigframe 搭建写用户栈
+- kerninfo / ps_strings / diagctl 写回点
+
+### 收尾验证（均过）
+
+- docker `cargo test -p minix-arch -p minix-kernel -p minix-vm`：242/809/526 全绿 0 failed（基线同前）
+- rustfmt：零新增差异点判据（HEAD 本体不过，探针区按期望归位后净少 1 个差异点）
+- clippy：生产形态（`--no-default-features --target x86_64-unknown-uefi`）告警集合与 HEAD 一致
+- 顺带修了一个 HEAD 存量破损：`vm.rs` kdst 探针三个调用点的 cfg 门与定义门不一致（`not(test)` vs `not(feature="mock")`），宿主 mock 构建必炸 E0425，已统一为 `not(feature="mock")`
+
+### 下一步
+
+S2 真机复跑对账。
+
+---
+
+## S2 哨兵四代迭代 → 根因锁定（2026-09-23，serial_s2a…s2h）
+
+### 目标
+
+S2a/S2b：两轮独立复跑 + finw/viow 对账。无直接命中（写目标全在正常业务缓冲区）。转入哨兵路线：直接盯被抹的 `self` 存放槽。
+
+### 哨兵演化链（每代被前一代的阴性结果重新定向）
+
+1. **s2c 盯监视 VA 的 PTE 条目**：崩溃窗口内条目全程完好、无 refault → 「PTE 抹写」形态证伪（那 48 次 lvl1=0 全是正常 lazy 缺页），损伤 = **栈数据抹写**
+2. **s2d 盯表首字**：`0x7fffffffc800` 是 asynsend 表本体（被 RS 活跃翻动），self 的存放槽在另一栈页
+3. **s2e 按值扫描**（`nk4a_pte_watch` 重写版：对 RS 栈三页 `0x7fffffff9000/a000/c000` 扫「值==表地址」的 u64 槽，打包状态变化即打 `pw-<site>`）：**决定性**——`pw-x33 s9=0x1de0`（int33 入口 1 命中@0x9de0）→ `pw-fina s9=0x0fff`（0 命中），抹写锁定在**单次 int33 的内核代执行窗口**（用户栈不动，唯一写者=内核）
+4. **s2f/s2g/s2h 现场打印**：fx（直写逐 chunk 打 va/pa/len/w0+尾字 t56/t64，cap 48→4096，48 条会在启动期耗尽——教训：判别窗口需无条件打印+足够 cap）、x33in（int33 入口打 call/r2/旧 p_delivermsg_vir/senda 标志）、pdmv-set（两个存值站点打新旧值）
+
+### 原始数据（s2h 死亡窗口原文，行序保持）
+
+```
+nk4a: pdmv-set krn m_user=0x00007fffffff9da8 old=0x00007fffffff9d88   ← 最后一次存值：同步 kernel_call 存 0x9da8
+nk4a: pick->0x0000000000000008 / pre-restore VM / vm-pf recv          ← 调用被 VM 缺页处理停住，RS 未 close
+nk4a: pick->0x0000000000000002
+nk4a: pre-restore- rip=0x0000000000203bf0 rsp=0x00007fffffff9d88 r10s=0x0000000000007bff rbx=0x0000000000000000   ← RS 被恢复回用户态（原调用帧死亡）
+nk4a: pw-x33 n=0x30 s9=0x0000000000001de0                              ← RS 重进 int33：self@0x9de0 尚活
+nk4a: x33in call=0x10 r2=0x00007fffffff9d28 old=0x00007fffffff9da8 senda=0x1   ← 本次是 SENDA（不更新 delivermsg，与 C 一致），旧值仍在表里
+nk4a: fx va=0x00007fffffff9da8 len=0x50 w0=0xfffffffe t56=0x0 t64=0x7fffffffe138   ← kernel_call_finish 补完成旧调用，80B 直写死帧地址
+nk4a: pw-fina n=0x31 s9=0x0000000000000fff                            ← 命中清零：self 被本次写的 +56 处零抹掉
+nk4a: pdmv-set krn m_user=0x00007fffffffa258 old=0x00007fffffff9da8    ← 抹写后 RS 才发起下一次调用
+rs-step2 ep=0x0 slot=0 → rs-epslot self=0x0 → SIGSEGV → panic syscall_signal.rs:300
+```
+
+### 结论（根因链）
+
+1. **抹写者实锤**：`kernel_call_finish` 对陈旧 `p_delivermsg_vir`（0x9da8，存于已弹出的同步调用帧）的 80 字节 DM 直写；写入内容 = errno 回执（m_type=-2），其 +56 处零字正落在 self 槽（0x9de0 = buf+0x38）。
+2. **与 C 的双重分叉**：①时机——C 的 VMSUSPEND 停车调用者阻塞在 RTS_VMREQUEST 不返回用户态（system.c:61-69），栈帧必活；minix-rs 停车后把 RS 恢复回用户态继续事件循环，帧死。②长度——C `copy_msg_to_user` 钉死 64B（klib.S:284）；Rust 写 `size_of::<Message>()`=80B（LP64 加宽，minix-types 测试 `test_message_total_size_pinned` 钉死）。两者叠加把陈旧指针的危害从「写回旧缓冲」放大成「踩死复用区」。
+3. **SENDA 自身无罪**：`x33in senda=1` 实证窗口那次 int33 不碰 delivermsg（与 C mini_senda 一致），它只是把旧炸弹带进了完成时机。
+4. 未收敛：停车后恢复 RS 的具体路径（pre-restore rip=0x203bf0 那条是哪条唤醒语义）与旧调用的补完成站点——S3 代码定位。
+
+### 下一步
+
+S3：定位上述两处代码 → 甲/乙/丙多方案对比（对齐 C 阻塞语义 / 完成时失效陈旧 delivermsg / 写长边界）→ 修复单独 commit → 两次复跑判据（rs-epslot 活值 + 越过 step2）。
 
 <!-- 追加示例：
 ## 1.2-<n> <标题>（<日期>，commit <hash>）

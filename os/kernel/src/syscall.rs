@@ -486,6 +486,31 @@ pub fn kernel_call(
 ) -> KcallResult {
     // C system.c:141 — save the user-space reply address. K20 caller-by-nr:
     // the caller slot is re-borrowed for each short access.
+    // NK4-C S2h 现场打印（task1-close 裁决删除）：抹写目标锁定为陈旧
+    // p_delivermsg_vir（fx 写的 0x9da8 ≠ 窗口内活缓冲 r2=0x9d28）——追
+    // 踪每个存值的来源时刻，与 fx 写目标离线对账。
+    #[cfg(not(feature = "mock"))]
+    #[cfg(target_arch = "x86_64")]
+    if proc_table
+        .get(caller_nr)
+        .is_some_and(|p| p.p_endpoint.0 == 2)
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static PSET: AtomicUsize = AtomicUsize::new(0);
+        if PSET.fetch_add(1, AtomicOrd::Relaxed) < 4096 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: pdmv-set krn m_user=");
+            C0::write_hex(m_user.0);
+            C0::write_str(" old=");
+            C0::write_hex(
+                proc_table
+                    .get(caller_nr)
+                    .map(|p| p.p_delivermsg_vir.0)
+                    .unwrap_or(0),
+            );
+            C0::write_str("\n");
+        }
+    }
     proc_table
         .get_mut(caller_nr)
         .expect("kernel_call: caller slot must exist")
@@ -3303,22 +3328,80 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         let root = proc_table.get(caller_nr).map(|p| p.p_seg.phys_root);
         let buf_va = proc_table.get(caller_nr).map(|p| p.p_delivermsg_vir.0);
         use minix_arch::DirectMapArch as _;
+        // NK4-C S2c 哨兵（task1-close 裁决删除）：若调用者是 RS，直写
+        // 前重读监视 PTE——回执 DM 直写自身就是候选抹写者，写前观测
+        // 能自证清白/有罪。LAST 状态全局，必须按 ep==2 门控。
+        #[cfg(not(feature = "mock"))]
+        #[cfg(target_arch = "x86_64")]
+        if let Some(r) = root.filter(|_| {
+            proc_table
+                .get(caller_nr)
+                .is_some_and(|p| p.p_endpoint.0 == 2)
+        }) {
+            crate::trap_dispatch::nk4a_pte_watch("finw", r.0);
+        }
         if let (Some(root), Some(buf_va)) = (root, buf_va) {
             let bytes = core::mem::size_of::<minix_types::Message>();
             use minix_arch::DirectMapArch as _;
+            // NK4-C S2e 现场打印（task1-close 裁决删除）：RS 回执直写的
+            // 每 chunk 目标与写入首字——去重探针会掩盖重复写，抹写
+            // 收尾阶段需要无条件逐次证据（S2g 提到 4096：48 条在启动期
+            // 耗尽，崩溃窗口无现场）。
+            #[cfg(not(feature = "mock"))]
+            #[cfg(target_arch = "x86_64")]
+            let rs_trace = proc_table
+                .get(caller_nr)
+                .is_some_and(|p| p.p_endpoint.0 == 2);
             let mut off = 0usize;
             while off < bytes {
                 let va = buf_va + off as u64;
                 // 调用者页表翻译（其 CR3 未激活时经 DM 直写物理页）。
-                match crate::pte_walk::walk_x86_64(
-                    root,
-                    minix_types::VirBytes(va),
-                ) {
+                match crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va)) {
                     Some((pa, _fl)) => {
-                        let chunk = core::cmp::min(
-                            bytes - off,
-                            (0x1000 - (va & 0xfff)) as usize,
-                        );
+                        // NK4-C S1 取证探针（task1-close 裁决删除）：errno 回执
+                        // DM 直写的目标 (va, root, pa) 去重记录，与同轮 PT 页对账。
+                        #[cfg(not(feature = "mock"))]
+                        crate::trap_dispatch::nk4a_user_write_probe("finw", root.0, va, pa.0);
+                        let chunk = core::cmp::min(bytes - off, (0x1000 - (va & 0xfff)) as usize);
+                        #[cfg(not(feature = "mock"))]
+                        #[cfg(target_arch = "x86_64")]
+                        if rs_trace {
+                            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                            static TXN: AtomicUsize = AtomicUsize::new(0);
+                            if TXN.fetch_add(1, AtomicOrd::Relaxed) < 4096 {
+                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                                let w0 = u64::from_le_bytes(*unsafe {
+                                    &*(&reply as *const minix_types::Message as *const u8)
+                                        .add(off)
+                                        .cast::<[u8; 8]>()
+                                });
+                                C0::write_str("nk4a: fx va=");
+                                C0::write_hex(va);
+                                C0::write_str(" pa=");
+                                C0::write_hex(pa.0);
+                                C0::write_str(" len=");
+                                C0::write_hex(chunk as u64);
+                                C0::write_str(" w0=");
+                                C0::write_hex(w0);
+                                // NK4-C S2g：抹写点落在 buf+56（self 槽），
+                                // 把回执行对 buf 基址 +56/+64 的字也打出来
+                                // （仅首 chunk），离线直接对照被写入的值。
+                                if off == 0 {
+                                    let wd = |o: usize| {
+                                        u64::from_le_bytes(*unsafe {
+                                            &*(&reply as *const minix_types::Message as *const u8)
+                                                .add(o)
+                                                .cast::<[u8; 8]>()
+                                        })
+                                    };
+                                    C0::write_str(" t56=");
+                                    C0::write_hex(wd(56));
+                                    C0::write_str(" t64=");
+                                    C0::write_hex(wd(64));
+                                }
+                                C0::write_str("\n");
+                            }
+                        }
                         let dm = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa.0)).0;
                         // SAFETY: DM 窗口覆盖全部物理内存；页为调用者
                         // 驻留的消息缓冲；跨页按页界分块。
@@ -3334,6 +3417,17 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                     None => break, // 尾页未驻留：C phys_copy 同样静默失败
                 }
             }
+        }
+        // NK4-C S2c 哨兵点（task1-close 裁决删除）：直写循环结束后再读
+        // 一次——与写前观测夹住本通路，它自身若是抹写者必现形。
+        #[cfg(not(feature = "mock"))]
+        #[cfg(target_arch = "x86_64")]
+        if let Some(r) = root.filter(|_| {
+            proc_table
+                .get(caller_nr)
+                .is_some_and(|p| p.p_endpoint.0 == 2)
+        }) {
+            crate::trap_dispatch::nk4a_pte_watch("fina", r.0);
         }
     }
 
