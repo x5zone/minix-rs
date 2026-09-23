@@ -1214,3 +1214,8 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 下一步（交接手，单点）
 
 ①balance_queues 的 re-arm `kernel.setalarm` 失败 errno 定位（Err 臂打 errno 数值，一轮）；②按 errno 修：EPERM ⇒ dispatch_setalarm 的 caller_has_sys_proc_with_table 在 re-arm 时点的 priv 状态；EINVAL ⇒ timeout_ticks 参数；③对照 C schedule.c:367-368（re-arm 失败即 panic——C 同语义，根因在 setalarm 本身失败的原因）。
+
+### 1.10w3 补充（s16a）
+
+- sched 侧用户态 diagctl 打点（srcv-err/sc-rv）**静默失败**（零输出）——sched 的诊断通道不可用（diagctl 失败被 `let _ =` 吞），与 panic-handler Stage 2 同族。⇒ sched 侧 errno 定位必须走**内核侧** ipcerr（已在仓，caller∈{0,4} 过滤 + cap 64）。
+- s16a 复跑：`rearmlen` 零输出 ⇒ balance_queues 未返回 Err（balance re-arm 非死因——1.10z 假设修正）；panic-enter ×1 仍在（sched 死因 = server.rs:182 receive-failure fail-fast 或其他 server.rs panic——PF chunks 指向 server.rs）。
