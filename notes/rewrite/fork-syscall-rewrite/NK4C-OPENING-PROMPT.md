@@ -30,12 +30,13 @@
 
 | 顺序 | 路径 | 读什么 |
 |------|------|--------|
-| 1 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` | **你的记忆文件**——已预填"当前状态 + 交接来源"（根因骨架、布局观测、探针存量、已证伪假设）。先通读 |
-| 2 | `.review/zcode/edge1/FIXLOG.md` **尾部 300 行** | 迭代 27-33 取证细节（`.review/` 被 gitignore，**只在本地**，不可提交；换工作树会丢，所以 WORKLOG 里有副本） |
-| 3 | `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §A（约 1133-1145 行） | 里程碑状态登记表（你每完成一项要更新它） |
-| 4 | `notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md` §1.3/§7 | 架构背景（VM handoff、boot 序） |
-| 5 | `os/kernel/src/ipc.rs` 的 `impl UserCopy for KernelUserCopy` | 内核直写用户内存的**唯一**生产实现 |
-| 6 | `os/kernel/src/vm.rs` 的 `cross_space_copy/memset/write` | 内核跨空间写三核心（已布防，见 §4.2） |
+| 1 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` | **你的记忆文件**——已含"当前状态 + 交接来源 + 1.2→1.7 全部记录"（Task C 已修复，当前 frontier = 阶段 1.3 的 449-livelock）。先通读 |
+| 2 | `notes/rewrite/fork-syscall-rewrite/NK4C-REVIEW-REPORT-20260923.md` | 上一轮评审报告：全量提交评审结论、进度口径重列（按计划编号）、下一步建议 |
+| 3 | `.review/zcode/edge1/FIXLOG.md` **尾部 300 行** | 迭代 27-33 取证细节（`.review/` 被 gitignore，**只在本地**，不可提交；换工作树会丢，所以 WORKLOG 里有副本） |
+| 4 | `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §A（约 1133-1145 行） | 里程碑状态登记表（你每完成一项要更新它） |
+| 5 | `notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md` §1.3/§7 | 架构背景（VM handoff、boot 序） |
+| 6 | `os/kernel/src/syscall.rs` 的 `kernel_call_finish_ipc_door` / `kernel_call_finish_holding_bkl` | Task C 修复的门纪律实现（理解 IPC 腿与 SYSCALL 腿的 finish 分叉） |
+| 7 | `os/kernel/src/vm.rs` 的 `cross_space_copy/memset/write` | 内核跨空间写三核心（已布防 `kdst` 探针） |
 
 **不要读** `minix3/`（C 原版）除非需要行为对位；**绝不可改** `minix3/`（ground truth）。
 `CLAUDE.md` + `AGENTS.md` 是本仓项目规范，动手前扫一眼其中与 review/commit 相关条款。
@@ -122,53 +123,38 @@ done
 
 ---
 
-## 4. 当前技术状态（截至 commit 56d6dec4c）
+## 4. 当前技术状态（Task C 已修复；frontier = 阶段 1.3 的 449-livelock）
 
-### 4.1 已修复并验证
+> 详细记录在 `NK4C-WORKLOG.md`（S0-S3、1.3-1.7 各节）与评审报告；此处只留骨架。
+
+### 4.1 已修复（三笔关键）
 
 | commit | 内容 | 验证 |
 |--------|------|------|
-| `1d25f433e` | **AP 入口补 EFER.NXE（bit11）** + BSP `enable()` 显式置位 | err=8（保留位）风暴 20+ → **0**；`-smp 4` 能推进到多 CPU 调度；`-smp 1` 干净复现 Task C |
-| `967a903e7` | 摘除金丝雀探针（它把 `0xDEAD_BEEF_CAFE_0001` 当 RBX 交付 RS——诊断代码写生产上下文） | 交付值恢复真实 |
-| `85a0d7cd8` | 四张检测网（见 §4.2） | 全部零命中 |
+| `1d25f433e` | AP 入口补 EFER.NXE（bit11）+ BSP 显式置位 | err=8 风暴 20+ → 0 |
+| `a470a8d9c`+`6be40748f` | **Task C 根因修复（门纪律）**：int33 陷阱腿的 finish 不做 eager 回执直写（`kernel_call_finish_ipc_door`），门标记 `resume_skip_eager_reply` 随挂起上下文传递 | 三次独立真机验证：`self` 全活值、零 SIGSEGV、RS step2 走完 12 endpoint |
+| `fc66eb148`/`6e51b723a`/`d9fc1f649`/`afa850c07`/`5d9d57d0f` | F10b+F10c（SYSCALL 腿数据码分离 + 内核栈 VA 走真实页表）/ F10d（privctl 绕过 RTS 宏）/ F11（VM 请求链双入链死锁）/ F12（minix-rt slab OOM 上限）/ F13（PM↔VFS 握手阻塞 send） | 每笔有真机前后对照与 C 对位 |
 
-### 4.2 已排除（**不要再重复这些排查**）
+### 4.2 Task C 根因（已闭环，供理解）
 
-| 假设 | 排除方式 | 结论 |
-|------|----------|------|
-| 内核 DM 窗口没覆盖 PT 页 | `dm-cov` 探针（三源候选 + 窗口裁剪） | PT 页都在覆盖内 |
-| VM 与内核用的不是同一棵树 | `sas-send` vs 内核 `sa0` root | **一致**（0x35fd000），无双轨 |
-| 跨空间拷贝写进 PT 页 | `kdst` 探针（目标 PA 全打，去重 33 组） | 零命中 |
-| IPC 消息投递 `copy_msg_to_user` 写错页 | `msgw` 探针（va/root/pa × 64） | 零命中 |
-| 分配器双重分配/归还 PT 页/底层重用 | `PT_SEEN` 位图三侧检测 | **零命中，分配器干净** |
-| EFER.NXE 导致 NX 叶保留位违例 | per-CPU EFER dump + 修复后复跑 | 已修复 |
-| gdb 硬件观察点抓写入者 | 三轮 720s | QEMU gdbstub 不可靠，废弃 |
+`kernel_call_finish` 的 eager 回执直写（errno 非零时把 `size_of::<Message>()`=80 字节写到 `p_delivermsg_vir`）在 C 里只存在于 SYSCALL 腿（system.c:83，入口 ：141 必刷新，目标结构性新鲜）；minix-rs 把 int33 陷阱腿统一接进同一 finish 机器丢了门纪律——SENDA 窗口（按 C 对位不刷新 delivermsg）的同步 errno 回执落写已弹出的陈旧栈帧 → 抹掉 self 槽 → `endpoint_slot(0)` → SIGSEGV。
+**教训**：交接期「PTE 物理消失」的骨架判断是错的（48 次 lvl1=0 是正常 lazy 缺页）——哨兵实验（盯槽位而非盯推论）才是决定性的。
 
-### 4.3 已证实的根因骨架（当前最强解释）
+### 4.3 当前阻塞：阶段 1.3 的 449-livelock（已定性，待修）
 
-1. **PTE 在物理层消失**：故障时内核层级 dump 显示 `lvl1=0`（PTE 不存在），`lvl2`（PD 项）稳定——不是"没填过"，是**填过又被抹**。
-   - ⚠️ dump 语义：`lvl2pa` 是 **PD 页**，`lvl1pa` 才是 **PT 页**（早前看错一级白跑一轮）。
-2. **抹写窗口 = RS 停车→唤醒之间**（此时只有内核在跑，VM 在 receive 上睡着）。
-3. **统一链**：RS 的 asynsend 表就在 `self` 指针同一 VA（`0x7fffffffc800`，栈上，也是栈 PT 覆盖的最后一页）。**栈页被抹 → 从栈重装 self 得 0 → `endpoint_slot(self=0)` → 访问 VA 0 → SIGSEGV**。这把"PTE 消失"与"self=0"合成一条链。
-4. 交付时序实证（`serial_c31c` 原文）：
-   ```
-   nk4a: pre-restore- rip=0x0000000000203bf0 rsp=0x00007fffffff9d88 r10s=0x0000000000007bff rbx=0x0000000000000000
-   nk4a: i33-save rip=0x0000000000203c2d rbx=0x00007fffffff9d28 rsp=0x00007fffffff9d18
-   nk4a: rs-epslot self=0x0 bep=0x0 slot=0
-   nk4a: pf-exit noaddr cr2=0x0
-   cause_sig: sig manager 2 gets lethal signal 11 for itself
-   ```
+boot 推进到第 **449** 轮缺页服务后完全停摆（150s vs 60s 字节级一致 = 硬 livelock）：**10 个进程 PAGEFAULT(to=VM)** + VM 处于 `RECEIVING(from=ANY)` 却永不 rendezvous + 5 内核 task 正常 PROC_STOP。tail-dump（name/to/from）已实锤矛盾形态：**缺页请求标着 to=VM 但未真正入 VM 的 caller 队列/未唤醒**。三个排查入口（按嫌疑排序）：
+1. **P1-ipc `clear_ipc_refs`**（`syscall.rs` ≈L1283）：裸 `p_rts_flags.clear(SENDING|RECEIVING)` 绕过 C `RTS_UNSET` 的入队半——与 F10d 同族、与缺页往返强相关（WORKLOG 早登记"1.4 开工优先验证"）。
+2. PAGEFAULT 腿 vs VMREQUEST 腿的投递代码路径比对——缺页腿是否漏了 `vm_enqueue_and_notify_vm`？
+3. `vm-pf recv` 449 次后新缺页请求是否入队（VM 已在 receive(ANY)，问题在请求侧）。
 
-### 4.4 未排除的写入者（**追捕清单**，按优先级）
+### 4.4 其它登记（别丢）
 
-1. **内核侧「经当前 CR3 直写用户 VA」的其它站点**：穷举 `os/kernel/src/` 下所有 `write_volatile` / `copy_nonoverlapping` / `write_bytes` 作用在用户 VA 的站点（候选：`syscall_signal.rs` 的 sigframe 写、kerninfo/ps_strings 写、diagctl 缓冲写、`syscall_copy.rs` 的 vumap 系列）。每个未布防的加 §7.1 同形 `(va, root, pa)` 探针。
-2. **VM 侧页清零路径的 memset 目标 PA**：VM 会把"新页"清零（`alloc_big` 的 63 页 memset、`refill`、`vm_pt_alloc` 的 `write_bytes`）。分配侧已证明干净，但**清零动作本身**没探过。
-3. **跨分配器双记账**：内核 boot bump（`os/kernel/src/boot_alloc.rs`）与 VM 池（`os/servers/vm/src/phys_mem/`）若对同一段 RAM 各记一份账，会出现"内核以为拿到新页、其实是 VM 的 PT 页"。检查 `build_vm_handoff` 的 `deducted=` 扣减协议覆盖范围。
-4. **VM 的 PTE 写路径本身**：`sync_slot_pte` 的 `update_flags` / `remap` 分支是否有 off-by-one（写到相邻 PT 页）。
-
-### 4.5 顺带发现的功能缺口（**记录，别顺手修**）
-
-`os/kernel/src/ipc.rs` 的 `KernelUserCopy`：`read_senda_entry` 恒返回 `Err(CopyError::PageFault)`（≈506 行）、`write_senda_result` 是空操作（≈515 行）——**生产路径下 SENDA（asynsend）不投递任何消息**。RS 的 asynsend 正是崩溃点调用。若 Task C 修完 rc marker 仍不通，这是首要功能缺口候选。
+- **P1-arch**：aarch64/riscv SYSCALL 腿仍用 `reply_code()` 未取负——阶段 2.1/3.1 开工前必须迁移 `reply_wire()`。
+- **P1-guard**：`vm_enqueue_and_notify_vm` 无重复入链运行期守卫（C 有活 assert）——同类故障复发仍是静默死锁。
+- **P1-trace**：`do_trace` 裸 set/clear 绕过 rts 协议（仅 trace 场景）。
+- **P2-diag**：内核栈→PA 的 `kern_phys_base` 偏移假定散布多处，应收敛 `AddressRef::Process`。
+- **fresh-vars 布局敏感 bug**：全新 OVMF vars 下 `vm_handoff free n=0` → VM boot panic（登记不修，但复现必须用仓库 `tmp/nk4a/vars.fd` 副本）。
+- **SENDA stub**：`KernelUserCopy` 的 `read_senda_entry` 恒 PageFault / `write_senda_result` 空操作——生产路径 SENDA 不投递（Task C 修复后若 rc marker 仍不通，首要功能缺口候选）。
 
 ---
 
@@ -219,14 +205,14 @@ done
 ### 阶段 1：x86_64 翻绿（关键路径）
 
 - **1.1 Task C A 案 [ARCH]** ✅ 已完成（状态寄存器 rbx→r10）。
-- **1.2 真机复跑：RS 越过 step2 → init_fresh 完成 → RS main** ← **你当前的位置**（被 §4.4 的抹写者阻塞）。
-  判据：`-smp 1` 两次复跑都出现 `rs-epslot self=0x7fffffffc800`（活值）且不再出现 `self=0x0`。
-- **1.3 rc marker 链**：sh 域最小版进 imgrd；`init` exec `/bin/sh` 达成 marker。
+- **1.2 真机复跑：RS 越过 step2 → init_fresh 完成 → RS main** ✅ 已完成（Task C 根因修复 `a470a8d9c`+`6be40748f`，三次独立真机验证）。
+- **1.3 rc marker 链** ← **你当前的位置**。boot 已推进到 12 服务器全 exec、449 轮缺页服务，但**硬 livelock**（§4.3）：修好 PAGEFAULT→VM 投递/唤醒腿后，sh 域最小版进 imgrd、`init` exec `/bin/sh` 达成 marker。
   判据：两次复跑串口出现 `minix-rs rc: minimal boot script marker`。**这是 x86_64 翻绿闸门**。
-- **1.4 F10 errno 全仓对账（P0-wire）**：dispatch 臂 + `reply_code` 映射 + 网关 `reply<0` 检查逐点对齐 C 负 errno，每处判别测试。
+- **1.4 F10 errno 全仓对账（P0-wire）**：x86_64 部分已由 F10b/c/d 完成；**余项 = aarch64/riscv SYSCALL 腿迁移 `reply_wire()`**（P1-arch）。dispatch 臂 + `reply_code` 映射 + 网关 `reply<0` 检查逐点对齐 C 负 errno，每处判别测试。
 - **1.5 P2 命令面**：marker 后核心命令（echo/ls/cat）执行，smoke 扩展，两次复跑。
 - **1.6 F3 W^X**：boot-shim 传段表（`KernelInfo` 扩展），身份窗口按节拆 RX/RW。
 - **1.7 C 腿 ABI 对账清单（test12 前置①）**：定稿陷入面 ABI（`rax=src/r10=status/rbx=msg/rcx=callnr`、kerninfo rbx、crt0 handoff：kerninfo 页 + 栈 + 参数）——C 陷阱桩与 crt0 按此实现。
+- **阶段 1 附属登记**（不单独占阶段，随关联阶段清偿）：P1-guard（VM 链重复入链运行期守卫）、P1-trace（do_trace 裸 rts 绕过）、P2-diag（内核栈→PA 偏移假定收敛）。
 
 ### 阶段 2：aarch64（M3.4 → M3.6）
 
@@ -338,22 +324,23 @@ print("HITS:", hits if hits else "NONE")
 
 ---
 
-## 8. 决策树（Task C 阶段）
+## 8. 决策树（当前位置：阶段 1.3 的 449-livelock）
 
 ```
-S0 复现成功？
-├─ 否 → 检查构建/QEMU 命令行（§2.1/§2.2），确认 -smp 1；仍失败 → 报告"环境异常"并停
-└─ 是 → 穷举内核写用户 VA 站点 → 逐站点加探针 → 真机对账
-对账命中 PT 页？
-├─ 是 → 修根因（S6）→ 两次复跑 → rc marker 验证
-└─ 否 → 转 §4.4 第 2 项（VM 清零面）→ 第 3 项（跨分配器）→ 第 4 项（VM PTE 写路径）
-         → 仍无命中 → 回到第 1 项扩充清单（含 VM 侧写用户内存的站点）并重复
-修复后两次复跑都越过 step2？
-├─ 是 → rc marker 验证（阶段 1.3）
-└─ 否 → 把修复 revert 回测一轮，写"假设被证伪"，回对账
-rc marker 出现？
-├─ 是 → 阶段 1.4 → 1.7 → 阶段 2 → 3 → 4 → 5（按 §6）
-└─ 否 → 检查 §4.5 的 SENDA stub 等候选功能缺口
+复跑一轮（§2.2），确认尾态仍是「449 轮 + 10×PAGEFAULT(to=VM) + VM RECEIVING(from=ANY)」？
+├─ 否（形态变了）→ 先按新形态定性（WORKLOG「当前状态」对照），再入下述分支
+└─ 是 → 修 PAGEFAULT→VM 投递/唤醒腿，按嫌疑顺序：
+   ① P1-ipc clear_ipc_refs（syscall.rs ≈L1283 裸 clear 绕过入队）
+      → 对位 F10d 修法：换调度器感知 rts_set/rts_unset；对照 C clear_ipc（proc.h RTS_* 宏语义）
+   ② 比对 PAGEFAULT 腿与 VMREQUEST 腿的投递代码路径（缺页腿漏 vm_enqueue_and_notify_vm？）
+   ③ 查第 449 轮前后 VM 队列状态（vm-pf recv 封顶时新请求是否入队）
+修复后两次复跑？
+├─ 越过 449 且继续推进 → 遇到下一个停点就按同法处理（每个停点：定性 → 定位 → 修 → 两次复跑）
+│   直到 rc marker 出现 → 阶段 1.4（补 aarch64/riscv reply_wire）→ 1.5 → 1.6 → 1.7 → 阶段 2 → 3 → 4 → 5
+└─ 仍卡 449 → 修复 revert 回测，写"假设被证伪"，换 ②/③ 入口
+rc marker 仍不通（livelock 已解但 marker 链断）？
+└─ 查 §4.4 的 SENDA stub（生产路径 asynsend 不投递）与 rc 链组件缺口（WORKLOG 1.3 开局节已盘点：
+   缺 /bin/sh 进 imgrd——`xtask image` 的 generate_etc_proto 只播 /etc/{rc,ttys}）
 ```
 
 **卡住怎么办**：不要反复跑同一条路。每轮真机都要带**新的判别信息**（新探针 / 新过滤 / 新对账维度）。连续两轮无新信息 → 停下，在 WORKLOG 写"当前方法失效，需要 X 级新手段"，列清试过什么、为什么不行，然后**换一个方向**（不要在同一方向继续消耗）。
