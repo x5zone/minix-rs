@@ -1145,6 +1145,7 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                 static PFC_N: AtomicUsize = AtomicUsize::new(0);
                 if matches!(cur_nr.0, 0 | 1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11)
+                    && pf.vaddr.0 == 0
                     && PFC_N.fetch_add(1, AtomicOrd::Relaxed) < 48
                 {
                     use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
