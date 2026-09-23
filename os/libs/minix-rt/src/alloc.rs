@@ -53,7 +53,16 @@ pub const SIZE_CLASSES: [usize; 9] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048];
 pub const MAX_SLAB_OBJECT_BYTES: usize = 2048;
 
 /// Maximum slabs one allocator tracks (one page per slab).
-pub const MAX_SLABS: usize = 64;
+///
+/// Must cover every pool page: a slab dedicates one page, so if this is
+/// smaller than the pool's page count the fixed `slabs` record table fills
+/// while pool bytes are still free, and a request fails with "out of memory"
+/// despite an 87%-empty pool. Real-machine NK4-C 1.5c (`nk4c: OOM-RT
+/// slabs=64/64 … px=65/512`, 2026-09-23): `MAX_SLABS=64` capped slab objects
+/// at ~256 KiB of a 2 MiB pool because the pool was grown to 512 pages
+/// (第12轮扰动实验) without raising this table. Tying it to the pool page
+/// count keeps tracking and byte capacity consistent.
+pub const MAX_SLABS: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 
 /// Maximum simultaneous whole-page allocations one allocator tracks.
 pub const MAX_BIG_BLOCKS: usize = 32;
@@ -69,6 +78,11 @@ pub const MAX_BIG_BLOCKS: usize = 32;
 /// VM-backed supplier is the follow-up (alloc.rs §module docs, "later,
 /// virtual memory mapping").
 pub const GLOBAL_POOL_BYTES: usize = 512 * PAGE_BYTES; // NK4-C 第12轮扰动实验
+
+/// Number of whole pages the global pool holds (`GLOBAL_POOL_BYTES` /
+/// [`PAGE_BYTES`]). Used to size the free-page stack and slab record table
+/// so neither caps before the pool bytes are exhausted.
+pub const GLOBAL_POOL_PAGES: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 
 /// Why an allocation or break adjustment failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +158,13 @@ pub trait PageSupplier {
     fn supply_pages(&mut self, page_count: usize) -> Option<*mut u8>;
     /// Returns a previously supplied page.
     fn release_page(&mut self, page: *mut u8);
+    /// NK4-C 1.5c 取证（task1-close 裁决删除）：池游标快照——(已 bump
+    /// 消耗的页数, 池总页数, 空闲栈里的可复用页数)。用于真机区分
+    /// 「运行期每轮真增长耗尽池」与「碎片化 / 跟踪数组上限」。
+    /// 默认实现面向不暴露内部游标的 supplier（返回全零，调用方忽略）。
+    fn pool_diag(&self) -> (usize, usize, usize) {
+        (0, 0, 0)
+    }
     /// Returns a previously supplied contiguous run.
     ///
     /// # Safety
@@ -199,7 +220,7 @@ pub struct FixedPoolSupplier<'a> {
     base: *mut u8,
     usable_len: usize,
     next_page: usize,
-    free_pages: [*mut u8; 64],
+    free_pages: [*mut u8; GLOBAL_POOL_PAGES],
     free_count: usize,
 }
 
@@ -216,7 +237,7 @@ impl<'a> FixedPoolSupplier<'a> {
             base: aligned as *mut u8,
             usable_len,
             next_page: 0,
-            free_pages: [core::ptr::null_mut(); 64],
+            free_pages: [core::ptr::null_mut(); GLOBAL_POOL_PAGES],
             free_count: 0,
         }
     }
@@ -244,8 +265,7 @@ impl<'a> FixedPoolSupplier<'a> {
             static N: AtomicUsize = AtomicUsize::new(0);
             if N.fetch_add(1, AtomicOrd::Relaxed) < 128 {
                 const HEX: &[u8; 16] = b"0123456789abcdef";
-                let mut line =
-                    *b"nk4a: sup k=S idx=0x        n=0x     base=0x                \n";
+                let mut line = *b"nk4a: sup k=S idx=0x        n=0x     base=0x                \n";
                 line[9] = kind;
                 {
                     let mut put = |at: usize, mut v: u64, digits: usize| {
@@ -319,8 +339,13 @@ impl PageSupplier for FixedPoolSupplier<'_> {
         }
         // When the free stack is full the page is dropped: the pool owns it,
         // so nothing leaks outside the pool; the supplier simply forgets one
-        // reusable page. The stack holds 64 entries, far above any
-        // realistic pool, so this branch is defensive only.
+        // reusable page. The stack holds one slot per pool page (see
+        // [`GLOBAL_POOL_PAGES`]), so it can never overflow before every page
+        // is returned; this branch is defensive only.
+    }
+
+    fn pool_diag(&self) -> (usize, usize, usize) {
+        (self.next_page, self.total_pages(), self.free_count)
     }
 }
 
@@ -592,6 +617,47 @@ impl<S: PageSupplier> SlabAllocator<S> {
         }
         panic!("minix-rt: free of a pointer this allocator never handed out");
     }
+
+    /// NK4-C 1.5c 取证（task1-close 裁决删除）：分配器状态快照——
+    /// 在用 slab 数 / 在用 big-block 数 / 池游标三元组。真机采样看
+    /// `slabs_in_use` 是否随事件计数单调爬升近 `MAX_SLABS`（跟踪数组
+    /// 上限/碎片化耗尽）还是 `pages_consumed` 近池总页数（字节耗尽）。
+    pub fn diag(&self) -> AllocDiag {
+        let mut slabs_in_use = 0;
+        let mut index = 0;
+        while index < MAX_SLABS {
+            if self.slabs[index].is_some() {
+                slabs_in_use += 1;
+            }
+            index += 1;
+        }
+        let mut big_in_use = 0;
+        index = 0;
+        while index < MAX_BIG_BLOCKS {
+            if self.big_blocks[index].is_some() {
+                big_in_use += 1;
+            }
+            index += 1;
+        }
+        let (pages_consumed, total_pages, free_pages) = self.supplier.pool_diag();
+        AllocDiag {
+            slabs_in_use,
+            big_in_use,
+            pages_consumed,
+            total_pages,
+            free_pages,
+        }
+    }
+}
+
+/// 快照输出（NK4-C 1.5c 取证，task1-close 裁决删除）。
+#[derive(Debug, Clone, Copy)]
+pub struct AllocDiag {
+    pub slabs_in_use: usize,
+    pub big_in_use: usize,
+    pub pages_consumed: usize,
+    pub total_pages: usize,
+    pub free_pages: usize,
 }
 
 #[cfg(test)]
@@ -684,8 +750,7 @@ mod tests {
         #[repr(align(4096))]
         struct AlignedPool([u8; 16384]);
         let mut pool = AlignedPool([0u8; 16384]);
-        let mut allocator =
-            SlabAllocator::new(FixedPoolSupplier::new(&mut pool.0));
+        let mut allocator = SlabAllocator::new(FixedPoolSupplier::new(&mut pool.0));
         let pointer = allocator.alloc(5000);
         assert!(!pointer.is_null());
         // The block starts a whole two-page run: page-aligned by the

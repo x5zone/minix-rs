@@ -1137,13 +1137,19 @@ unsafe impl GlobalAlloc for VmAllocator {
             // table — a boot-killing handle_alloc_error, fix17 forensics
             // 2026-09-21).
             if payload + align - 1 > Self::ARENA_BYTES {
-                return self.alloc_oversize(payload, align);
+                let p = self.alloc_oversize(payload, align);
+                if p.is_null() {
+                    // NK4-C 1.5c 取证（task1-close 裁决删除）
+                    crate::bootmark::mark("nk4c: OOM-VM-OVR\n");
+                }
+                return p;
             }
 
             if let Some(p) = self.try_alloc_from_free_list(payload, align) {
                 return p;
             }
             if !self.ensure_arena() {
+                crate::bootmark::mark("nk4c: OOM-VM-ENSR\n");
                 return core::ptr::null_mut();
             }
             loop {
@@ -1157,6 +1163,9 @@ unsafe impl GlobalAlloc for VmAllocator {
                 // before switching to a fresh arena.
                 self.free_tail();
                 if !self.refill_arena() {
+                    // NK4-C 1.5c 取证（task1-close 裁决删除）：refill 失败
+                    // = 物理页分配器（HEAP_ARENA.grow）耗尽。
+                    crate::bootmark::mark("nk4c: OOM-VM-REFILL\n");
                     return core::ptr::null_mut();
                 }
             }

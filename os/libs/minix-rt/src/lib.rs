@@ -49,17 +49,17 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
+/// Memory allocator: break management plus slab allocation (document 06).
+pub mod alloc;
 /// Program birth chain: entry stub, named birth stages, and the published
 /// process vectors ([`crt0`]; documents 02 + 03 wiring).
 pub mod crt0;
+/// Diagnostic output: buffering, number formatting, panic ladder (document 07).
+pub mod diag;
 /// Kernel handoff: kernel information page and initial stack (document 01).
 pub mod handoff;
 /// Runtime initialization: kernel page query and vector install (document 03).
 pub mod init;
-/// Memory allocator: break management plus slab allocation (document 06).
-pub mod alloc;
-/// Diagnostic output: buffering, number formatting, panic ladder (document 07).
-pub mod diag;
 /// Signal return trampoline: the handler-return stub whose address goes
 /// into the sigaction request ([`signals`]; C libc `__sigreturn`).
 pub mod signals;
@@ -103,7 +103,57 @@ pub fn init() {
 /// Assumes a single-threaded user process (same assumption as the rest of
 /// the startup path). Thread support will revisit this contract.
 pub fn alloc(size: usize) -> *mut u8 {
-    with_global_allocator(|allocator| allocator.alloc(size))
+    let ptr = with_global_allocator(|allocator| allocator.alloc(size));
+    // NK4-C 1.5c 取证（task1-close 裁决删除）：slab 分配失败锁定是否
+    // 落在用 minix-rt slab 的服务器（RS 等）。无分配：定长标签 + hex size。
+    #[cfg(all(not(feature = "mock"), not(test)))]
+    if ptr.is_null() {
+        nk4c_oom_tag(size);
+    }
+    ptr
+}
+
+/// NK4-C 1.5c 取证（task1-close 裁决删除）：无分配的 slab OOM 行打印。
+#[cfg(all(not(feature = "mock"), not(test)))]
+fn nk4c_oom_tag(size: usize) {
+    use minix_sys::syscall::{DirectKernelCallTransport, sys_diagctl_write};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    // 取当前分配器快照（diag 不分配，安全）。
+    let d = crate::global_alloc_diag();
+    let mut buf = [0u8; 96];
+    let mut n = 0usize;
+    macro_rules! lit {
+        ($s:expr) => {{
+            for &b in $s {
+                buf[n] = b;
+                n += 1;
+            }
+        }};
+    }
+    macro_rules! hex {
+        ($v:expr, $digits:expr) => {{
+            let v = $v;
+            for i in (0..$digits).rev() {
+                buf[n] = HEX[(v >> (i * 4)) & 0xf];
+                n += 1;
+            }
+        }};
+    }
+    lit!(b"nk4c: OOM-RT size=");
+    hex!(size, 6);
+    lit!(b" slabs=");
+    hex!(d.slabs_in_use, 2);
+    lit!(b"/40 big=");
+    hex!(d.big_in_use, 2);
+    lit!(b"/20 px=");
+    hex!(d.pages_consumed, 3);
+    lit!(b"/200 fp=");
+    hex!(d.free_pages, 2);
+    lit!(b"/40\n");
+    let _ = sys_diagctl_write(
+        &DirectKernelCallTransport,
+        core::str::from_utf8(&buf[..n]).unwrap_or("nk4c: OOM-RT\n"),
+    );
 }
 
 /// Frees memory previously allocated by [`alloc`].
@@ -134,9 +184,8 @@ struct PoolStorage(core::cell::UnsafeCell<[u8; alloc::GLOBAL_POOL_BYTES]>);
 // a single-threaded user process (see the threading contract on `alloc`).
 unsafe impl Sync for PoolStorage {}
 
-static POOL_STORAGE: PoolStorage = PoolStorage(core::cell::UnsafeCell::new(
-    [0u8; alloc::GLOBAL_POOL_BYTES],
-));
+static POOL_STORAGE: PoolStorage =
+    PoolStorage(core::cell::UnsafeCell::new([0u8; alloc::GLOBAL_POOL_BYTES]));
 
 /// Holder for the lazily created global allocator.
 ///
@@ -185,7 +234,9 @@ fn ensure_global_allocator() {
 }
 
 /// Runs `action` against the global allocator, creating it first if needed.
-fn with_global_allocator<R>(action: impl FnOnce(&mut alloc::SlabAllocator<alloc::FixedPoolSupplier<'static>>) -> R) -> R {
+fn with_global_allocator<R>(
+    action: impl FnOnce(&mut alloc::SlabAllocator<alloc::FixedPoolSupplier<'static>>) -> R,
+) -> R {
     ensure_global_allocator();
     // SAFETY: creation above precedes this read (same SeqCst ordering), and
     // single-threaded use rules out concurrent access.
@@ -195,6 +246,12 @@ fn with_global_allocator<R>(action: impl FnOnce(&mut alloc::SlabAllocator<alloc:
             .expect("global allocator is ready after ensure");
         action(allocator)
     }
+}
+
+/// NK4-C 1.5c 取证（task1-close 裁决删除）：读全局 slab 分配器状态快照，
+/// 供用户态服务器（VM/RS 等）在真机采样打印 free-bytes/slab-in-use。
+pub fn global_alloc_diag() -> alloc::AllocDiag {
+    with_global_allocator(|allocator| allocator.diag())
 }
 
 /// Binding of the runtime slab allocator to the `#[global_allocator]` slot
@@ -289,7 +346,8 @@ fn panic(info: &PanicInfo) -> ! {
     // allocator, no syscalls, safe to run from any state.
     let mut buffer = [0u8; 256];
     let length = diag::format_panic_report(
-        info.location().map(|location| (location.file(), location.line())),
+        info.location()
+            .map(|location| (location.file(), location.line())),
         info.message(),
         &mut buffer,
     );
