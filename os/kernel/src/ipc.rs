@@ -1344,10 +1344,27 @@ impl<'a> IpcEngine<'a> {
                     .p_misc_flags
                     .set(MiscFlagsBits::DELIVERMSG);
             }
+            // NK4-C 1.10l（SENDREC 原子性缺口修复）：REPLY_PEND 发送者的
+            // send 半被取走后 syscall 未完成——转入 receive 半（RECEIVING +
+            // getfrom=ANY 停车，等 REPLY 经 Path A 直投），不写 retreg、
+            // 不唤醒。C 对位：blocked sendrec 在 send 半被取走后于自身
+            // mini_sendrec 内 `goto receive` 重阻塞等 REPLY（proc.c:
+            // 1084-1093）——其 retreg/唤醒只在 REPLY 交付时发生。普通
+            // SEND 发送者维持 F15 现状（retreg OK + 唤醒，syscall 完成）。
+            let sender_reply_pend = self.procs[sender_idx]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::REPLY_PEND);
             // Wake up the sender. C: `RTS_UNSET(sender, RTS_SENDING)`.
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
             let woken_sender = self.procs[sender_idx].p_nr;
-            self.record_wake_target(woken_sender);
+            if sender_reply_pend {
+                // SENDREC：转入 receive 半停车。
+                let s = &mut self.procs[sender_idx];
+                s.p_getfrom_e = minix_types::Endpoint::ANY;
+                s.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            } else {
+                self.record_wake_target(woken_sender);
+            }
             // E1 slice 2 + NK4-C F15 修订：被队列唤醒的发送者的完成码交付
             // 按「发送者是谁」分流。C 的阻塞 send 在停车时即写 retreg=OK
             // （mini_send blocked 臂 return OK，proc.c:960），唤醒处不写
@@ -1361,7 +1378,11 @@ impl<'a> IpcEngine<'a> {
             // cr2=0 → VM noaddr → SIGSEGV（1.9b/c 九进程全灭根因）。
             // ⇒ 门控：SENDING_FROM_KERNEL 的发送者不写（其"syscall"不
             // 经任何返回路径，PF 恢复由 VMCTL_CLEAR_PAGEFAULT 交付）。
-            if !sender_from_kernel {
+            // NK4-C 1.10l：REPLY_PEND（SENDREC）发送者的 syscall 未完成，
+            // 不写完成码——其 retreg 由 REPLY 到达时的 Path A 交付写入。
+            if !sender_reply_pend
+                && !sender_from_kernel
+            {
                 crate::proc::set_ipc_return_code(&mut self.procs[sender_idx], OK as i64);
             }
             // C: clear `SENDING_FROM_KERNEL` if it was set.
