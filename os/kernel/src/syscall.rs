@@ -3057,7 +3057,19 @@ fn dispatch_diagctl(
                     }
                     KcallResult::Ok(0)
                 }
-                CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
+                CrossSpaceResult::Completed(Err(_)) => {
+                    // NK4-C 1.10y2 取证探针（task1-close 裁决删除）：diagctl
+                    // 拷贝失败（源页未映射）——sched 侧诊断打点静默失败的
+                    // 机制定位。
+                    #[cfg(not(feature = "mock"))]
+                    {
+                        use minix_plat::{CurrentEarlyConsole as Console2, EarlyConsole as _};
+                        Console2::write_str("nk4a: diag-efault caller=");
+                        Console2::write_hex(caller_nr.0 as u64);
+                        Console2::write_str("\n");
+                    }
+                    KcallResult::Ok(EFAULT)
+                }
                 CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
             }
         }
