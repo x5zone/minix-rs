@@ -8,18 +8,19 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：S3 ✅ **Task C 根因修复已实施，真机两次复跑（s3a/s3b）判据全过**——RS 走完全部 12 个 endpoint 的 step2，`rs-epslot self=0x7fffffffc800` 全程活值，无 SIGSEGV。下一步：本单元 commit + code-review，然后进阶段 1.3（rc marker 链）
+- **阶段**：S3 ✅ **Task C 根因修复完成全闭环**：修复 commit `a470a8d9c` → CodeReview（P0 零发现，P1 一条多段挂起缺口）→ P1 修复 commit `6be40748f`（stage 3a 从 ctx 读门标记驱动 eager）；真机三轮（s3a/s3b/s3c）判据全过——RS 走完全部 12 个 endpoint 的 step2，`rs-epslot self=0x7fffffffc800` 全程活值，无 SIGSEGV。**阶段 1.2 判据达成，下一步进阶段 1.3（rc marker 链）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（登记，阶段 1.3 处置）**：修复后 boot 推进到 RS 阻塞在 int33 receive（`rs_flags=0x8`，picknone 全停），旧崩溃点之后的第一个新问题；两轮流片均在 timeout 内无内核 panic
 - **⚠️ 复现环境硬约束（S0 发现，仍有效）**：必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本替换 §2.2 QEMU 命令里的 vars 槽（本文件 S0 节「做法」段已写好完整命令；QEMU 会写它，不要直接用仓库文件本体）；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同；该 fresh-vars 布局鲁棒性 bug 已登记不修）；另 QEMU 命令照 S0 节模板原样跑，自行加 `-machine q35 -m 512` 会导致 QEMU 启动即退（实测）
 - **已修复**（commit）：
+  - `a470a8d9c`+`6be40748f` Task C 根因：int33 陷阱腿恢复 C 门纪律（详见 S3 节）
   - `1d25f433e` AP 入口补 EFER.NXE（bit11）+ BSP `enable()` 显式置位 —— err=8 保留位风暴 20+ → 0
   - `967a903e7` 摘除金丝雀探针（它在污染生产上下文）
   - `85a0d7cd8` 四张检测网（全部零命中，见排除账）
 - **已排除**（不要再重复排查）：DM 覆盖 / VM-内核树不一致 / 分配器双重分配·归还·底层重用 / EFER.NXE / gdb 硬件观察点路线 / **PTE 条目被抹写形态**（S2c 实证崩溃窗口内监视 VA 的页表条目全程完好、无 refault，那 48 次 lvl1=0 全是正常 lazy 缺页——『统一解释』的第 1 条骨架需按 S2 结论修正：损的是栈数据，不是页表）/ IPC 消息投递站点 `copy_msg_to_user`·viow（S1-S2 对账无直接命中，真凶是同构的 kernel_call_finish DM 直写，见 S2）
 - **新登记（S0 顺带发现，暂不修）**：fresh-vars 布局下 `classify()` 产出 free n=0——与 §4.4 第 3 项「跨分配器双记账」候选直接相关，若后续修复涉及 memmap 扣减协议必须一并验证此场景
-- **下一步**：S3 修复 commit + code-review；然后阶段 1.3（rc marker 链：sh 域最小版进 imgrd，`init` exec `/bin/sh`，判据 `minix-rs rc: minimal boot script marker`）；新停点（RS receive 阻塞、picknone 全停）的排查并入 1.3 推进中做；探针保留至 task1-close 裁决
+- **下一步**：阶段 1.3（rc marker 链：sh 域最小版进 imgrd，`init` exec `/bin/sh`，判据 `minix-rs rc: minimal boot script marker`）；新停点（RS receive 阻塞、picknone 全停）的排查并入 1.3 推进中做；探针保留至 task1-close 裁决；`syscall.rs::kernel_call_resume`（无调用方，评审确认）登记进 task1-close 死代码裁决
 - **阻塞/风险**：无阻塞；风险 = 探针采样饥饿（cap 被启动期重复事件吃光，见 prompt 铁律 2）与布局每轮漂移（禁止跨轮硬编码物理地址）
 
 ---
