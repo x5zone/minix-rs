@@ -1313,9 +1313,37 @@ impl<'a> IpcEngine<'a> {
             let sender_from_kernel = self.procs[sender_idx]
                 .p_misc_flags
                 .is_set(MiscFlagsBits::SENDING_FROM_KERNEL);
-            self.procs[caller_idx].p_delivermsg = sender_msg;
-            self.procs[caller_idx].p_delivermsg.m_source = sender_ep;
-            self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
+            // NK4-C F14（449-livelock 根因修复）：排队消息在 drain 时同步
+            // 拷入接收者用户缓冲。C proc.c:1071-1095 的语义：receive 入口
+            // 已存 m_buff_usr（proc.c:983），队列命中（CANRECEIVE 检查拿的
+            // 就是 m_src_p=&sender->p_sendmsg）即把该消息直拷用户缓冲——
+            // 一个 drain 恰好交付一条消息。旧实现只做内核侧 p_delivermsg
+            // 沉降 + MF_DELIVERMSG，把用户拷贝推迟到接收者下次被挑中时
+            // （process_misc_flags DELIVERMSG 臂）；而 receive 是接收者
+            // 自己的陷入（完成后直接 restore、不经 pick），沉降的拷贝不会
+            // 在返回前发生：接收者拿到 OK 却读到旧缓冲内容，于是立即再收，
+            // 连续 drain 把单条 p_delivermsg 反复覆盖，除最后一条外全部
+            // 销毁。真机 s14a 实锤：9 台出生服务器的 VM_PAGEFAULT 被
+            // 背靠背 drain（p3drain×9）而无一次 dispatch（vm-pf recv 零
+            // 新增），9 进程永停 PAGEFAULT(0x400)+to=VM，VM 正常
+            // receive(ANY) 空等 → 全系统 449-livelock。
+            // 地址空间正确性：Phase 3 只运行在接收者自身的 IPC 陷入里
+            // （当前 root 即接收者页表），copy_msg_to_user 走
+            // current_root_phys 命中正确地址空间。拷贝失败（目标页未
+            // 映射）才退回沉降+DELIVERMSG，由 pick 时 delivermsg 臂
+            // （含 VmSuspend 映射重试）兜底——与 C「copy 失败进
+            // delivermsg」的分流同形（proc.c:278-282）。
+            if self
+                .user_copy
+                .copy_msg_to_user(self.procs[caller_idx].p_delivermsg_vir, &sender_msg)
+                .is_err()
+            {
+                self.procs[caller_idx].p_delivermsg = sender_msg;
+                self.procs[caller_idx].p_delivermsg.m_source = sender_ep;
+                self.procs[caller_idx]
+                    .p_misc_flags
+                    .set(MiscFlagsBits::DELIVERMSG);
+            }
             // Wake up the sender. C: `RTS_UNSET(sender, RTS_SENDING)`.
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
             let woken_sender = self.procs[sender_idx].p_nr;
@@ -2945,6 +2973,120 @@ mod tests {
         assert_eq!(engine.take_sig_delay_sender(), None, "record is one-shot");
         // The flag stays set — sig_delay_done (ProcessTable level) clears it.
         assert!(procs[0].p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY));
+    }
+
+    /// NK4-C F14（449-livelock 根因修复）判别测试：Phase 3 drain 必须把
+    /// 排队消息同步拷入接收者用户缓冲（C proc.c:1071-1095，m_buff_usr 直
+    /// 拷），且成功时**不**沉降 p_delivermsg/DELIVERMSG——沉降路径把用户
+    /// 拷贝推迟到接收者下次被挑中（process_misc_flags DELIVERMSG 臂），
+    /// 而 receive 是接收者自己的陷入、返回不经 pick：连续 drain 会把单条
+    /// p_delivermsg 反复覆盖，除最后一条外全部销毁（s14a 实锤：9 台服务
+    /// 器的 VM_PAGEFAULT 被 drain 后零 dispatch，永停 PAGEFAULT）。
+    /// 拷贝失败（目标页未映射）才允许沉降+DELIVERMSG 兜底。
+    #[test]
+    fn test_receive_caller_q_drain_copies_to_user_buffer_not_deposit() {
+        use core::cell::Cell as CoreCell;
+        struct SyncCopyOk {
+            copied: CoreCell<i32>,
+        }
+        impl UserCopy for SyncCopyOk {
+            fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> {
+                Ok(Message::default())
+            }
+            fn copy_msg_to_user(&self, _dst: VirBytes, msg: &Message) -> Result<(), CopyError> {
+                self.copied.set(msg.m_type);
+                Ok(())
+            }
+            fn read_senda_entry(
+                &self,
+                _table: VirBytes,
+                _index: usize,
+            ) -> Result<(Endpoint, Message, i32), CopyError> {
+                Err(CopyError::PageFault)
+            }
+            fn write_senda_result(
+                &self,
+                _t: VirBytes,
+                _i: usize,
+                _r: i32,
+                _f: i32,
+            ) -> Result<(), CopyError> {
+                Ok(())
+            }
+        }
+        struct SyncCopyFault;
+        impl UserCopy for SyncCopyFault {
+            fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> {
+                Ok(Message::default())
+            }
+            fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> {
+                Err(CopyError::PageFault)
+            }
+            fn read_senda_entry(
+                &self,
+                _table: VirBytes,
+                _index: usize,
+            ) -> Result<(Endpoint, Message, i32), CopyError> {
+                Err(CopyError::PageFault)
+            }
+            fn write_senda_result(
+                &self,
+                _t: VirBytes,
+                _i: usize,
+                _r: i32,
+                _f: i32,
+            ) -> Result<(), CopyError> {
+                Ok(())
+            }
+        }
+
+        // 成功拷贝形态：消息走用户缓冲，接收者无 DELIVERMSG 沉降。
+        let mut a = make_test_proc(0, Endpoint(1));
+        let mut b = make_test_proc(1, Endpoint(2));
+        a.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
+        a.p_sendto_e = Endpoint(2);
+        a.p_sendmsg = {
+            let mut m = Message::default();
+            m.m_type = 0xCFF;
+            m
+        };
+        b.p_rts_flags = RtsFlags::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        caller_q_push(&mut procs, 1, 0);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let copy = SyncCopyOk {
+            copied: CoreCell::new(0),
+        };
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &copy);
+        let outcome = engine.receive(test_nr(1), Endpoint::ANY);
+        assert!(outcome.is_delivered());
+        assert_eq!(
+            copy.copied.get(),
+            0xCFF,
+            "queued message must be copied to the user buffer at drain time"
+        );
+        assert!(
+            !procs[1].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
+            "successful sync copy must not deposit into p_delivermsg"
+        );
+
+        // 拷贝失败形态：退回沉降 + DELIVERMSG（delivermsg 臂兜底）。
+        let mut a = make_test_proc(0, Endpoint(1));
+        let mut b = make_test_proc(1, Endpoint(2));
+        a.p_rts_flags = RtsFlags::with(RtsFlagsBits::SENDING);
+        a.p_sendto_e = Endpoint(2);
+        a.p_sendmsg = Message::default();
+        b.p_rts_flags = RtsFlags::new();
+        let mut procs = crate::test_helpers::scratch_procs([a, b]);
+        caller_q_push(&mut procs, 1, 0);
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &SyncCopyFault);
+        let outcome = engine.receive(test_nr(1), Endpoint::ANY);
+        assert!(outcome.is_delivered());
+        assert!(
+            procs[1].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
+            "copy failure must fall back to the deposit + DELIVERMSG arm"
+        );
     }
 
     /// C: proc.c:1082-1083 — a sender *without* `MF_SIG_DELAY` must not be
