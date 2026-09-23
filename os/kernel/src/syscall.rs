@@ -976,6 +976,32 @@ pub(crate) fn dispatch_ipc(
         IpcOutcome::Delivered => KcallResult::Ok(OK),
         IpcOutcome::Blocked => KcallResult::NoReply,
         IpcOutcome::Error(e) => {
+            // NK4-C 1.10j 取证探针（task1-close 裁决删除）：IPC 错误返回
+            // 现场（caller 端点 + 错误类别）——SCHED/PM「receive 连续失败」
+            // fail-fast 的错误类别定位。
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static IPCERR_N: AtomicUsize = AtomicUsize::new(0);
+                if IPCERR_N.fetch_add(1, AtomicOrd::Relaxed) < 24 {
+                    Console::write_str("nk4a: ipcerr caller=");
+                    Console::write_hex(caller_nr.0 as u64);
+                    Console::write_str(" err=");
+                    match e {
+                        IpcError::Deadlock => Console::write_str("ELOCKED"),
+                        IpcError::DeadSrcDst => Console::write_str("EDEADSRCDST"),
+                        IpcError::NotReady => Console::write_str("ENOTREADY"),
+                        IpcError::BadCall => Console::write_str("EBADCALL"),
+                        IpcError::Fault => Console::write_str("EFAULT"),
+                        IpcError::CallDenied => Console::write_str("ECALLDENIED"),
+                        IpcError::TrapDenied => Console::write_str("ETRAPDENIED"),
+                        IpcError::Permission => Console::write_str("EPERM"),
+                        IpcError::Invalid => Console::write_str("EINVAL"),
+                    }
+                    Console::write_str("\n");
+                }
+            }
             let errno = match e {
                 IpcError::Deadlock => ELOCKED,
                 IpcError::DeadSrcDst => EDEADSRCDST,

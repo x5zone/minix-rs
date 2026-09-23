@@ -939,3 +939,14 @@ String downcast 未命中（panic=abort 下格式化载荷非 String）；Stage 
 ### 下一轮入口（最高优先）
 
 ①**收敛「receive 连续失败」**：sched+pm 同族——在 kernel `do_ipc` receive 的错误返回点（ELOCKED/EDEADSRCDST/EPERM/EFAULT 各臂）加 errno+caller 打点，一轮复跑即定位错误类别；②按错误类别修内核接收路径；③VFS 阻塞 send 屏障的互等分析（对照 C main.c:435-436 与 PM vfs_init_sync 的 receive 半时序）。修通后：boot 越过 PM↔VFS/sched 全链 → rc marker 冲刺（单元 B 余段）→ C-K。
+
+---
+
+## 1.10k 错误类别定案：PM receive = ECALLDENIED（权限层拒绝）（2026-09-24，serial_s15f）
+
+- 内核 `dispatch_ipc` Error 返回点打点（ipcerr）实锤：**`caller=0x0(pm) err=ECALLDENIED`**（PM 的 int33 RECEIVE 被权限层拒绝，run 循环连续失败即 fail-fast panic 根源）；另 `caller=0x6(ds) err=EDEADSRCDST ×3`（line ~10693，独立小项）。
+- 修通 timer 后 CLOCK notify 首次真实到达 → PM 的 receive 被权限检查拒绝 ⇒ 1.10 表象（PM 死→全链停）的直接机制。
+
+### 下一步（交接手，单点修复）
+
+①读 kernel `do_ipc`/`IpcEngine` 对 RECEIVE 的权限预检（trap mask / `s_ipc_to` / call mask 三选哪个拒绝 PM）——对照 C：receive 不受 `s_ipc_to` 限制（只 SEND 受目的端检查），trap mask 需含 RECEIVE 位；②查 RS 对 PM 的 priv 配置（SetSys 时 `s_ipc_to`/trap mask 是否含 RECEIVE 位或 ANY）——minix-rs 若把 receive 也对 `s_ipc_to` 做了 AND 检查则对位偏差；③修复 + 两次复跑 → 1.10 消除 → rc marker（单元 B）。
