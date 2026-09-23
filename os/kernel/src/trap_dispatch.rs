@@ -273,6 +273,13 @@ pub(crate) fn nk4a_user_write_probe(site: &str, root: u64, va: u64, pa: u64) {
         i += 1;
     }
     if n >= CAP {
+        // S2h 评审修复：配额触顶打一条现形标记——否则「没打印」与
+        // 「没命中」不可区分，阴性结论不可信。
+        if n == CAP {
+            N.fetch_add(1, AtomicOrd::Relaxed);
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: w-cap\n");
+        }
         return;
     }
     SEEN_VA[n].store(va_page, AtomicOrd::Relaxed);
@@ -307,7 +314,8 @@ pub(crate) fn nk4a_user_write_probe(site: &str, root: u64, va: u64, pa: u64) {
 pub(crate) fn nk4a_pte_watch(site: &str, root_pa: u64) {
     const WATCH_SELF: u64 = 0x7fff_ffff_c800;
     const PAGES: [u64; 3] = [0x7fff_ffff_9000, 0x7fff_ffff_a000, 0x7fff_ffff_c000];
-    const CAP: usize = 64;
+    // S2h 评审修复：64→256（s2g 时窗口已到 n=0x31，余量只剩 15 条）。
+    const CAP: usize = 256;
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
     // 打包状态：bit63=条目不在，bits[12..22)=命中数（0xFFF=NP 哨兵），
     // bits[0..12)=首命中槽字节偏移。
@@ -333,7 +341,8 @@ pub(crate) fn nk4a_pte_watch(site: &str, root_pa: u64) {
         let mut frame_pa = 0u64;
         if pml4e & 1 != 0 {
             let pdpte = rd((pml4e & 0x000F_FFFF_FFFF_F000) + idx(page, 30) * 8);
-            if pdpte & 1 != 0 {
+            // S2h 评审修复：补 PDPT 级 PS 位（1GiB 巨页不当表页下钻）。
+            if pdpte & 1 != 0 && pdpte & 0x80 == 0 {
                 let pde = rd((pdpte & 0x000F_FFFF_FFFF_F000) + idx(page, 21) * 8);
                 if pde & 1 != 0 && pde & 0x80 == 0 {
                     let pte = rd((pde & 0x000F_FFFF_FFFF_F000) + idx(page, 12) * 8);
@@ -343,7 +352,10 @@ pub(crate) fn nk4a_pte_watch(site: &str, root_pa: u64) {
                 }
             }
         }
-        if frame_pa == 0 {
+        // S2h 评审修复：表项内容已损时 frame_pa 可为任意值，对物理地址
+        // 加上界（本环境 RAM ≤ 4GiB，串口日志 memmap 实证）越界时按
+        // NP 处理——探针不能把被诊断的系统打死。
+        if frame_pa == 0 || frame_pa >= 0x1_0000_0000 {
             state[si] = (1 << 63) | (0xFFF << 12);
             continue;
         }
@@ -373,6 +385,11 @@ pub(crate) fn nk4a_pte_watch(site: &str, root_pa: u64) {
     }
     let n = N.fetch_add(1, AtomicOrd::Relaxed);
     if n >= CAP {
+        // S2h 评审修复：触顶现形标记（仅打一次，n==CAP 那一刻）。
+        if n == CAP {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: pw-cap\n");
+        }
         return;
     }
     use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
@@ -936,6 +953,14 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 // callee-saved 活值）；两处非 0 而用户仍崩 → 恢复读错源。
                 // 上限 8 在 c23a 于启动前 8 次内耗尽（崩溃在第 100+ 次），
                 // 第 6 轮提到 48，仅真机。
+                // S2h 评审修复（task1-close 裁决删除）：pw-pf 移出 PFRBX 的
+                // 48 配额块——旧挂法被全进程 PF 配额在启动期吃光，崩溃
+                // 窗口内必然失明（假阴性）；watch 自身只在变化时打印，
+                // 无需外部配额。
+                #[cfg(not(feature = "mock"))]
+                if proc.p_endpoint.0 == 2 {
+                    nk4a_pte_watch("pf", proc.p_seg.phys_root.0);
+                }
                 #[cfg(not(feature = "mock"))]
                 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
@@ -1002,9 +1027,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                                 C0::write_hex(l2pa);
                                 C0::write_str(" lvl1pa=");
                                 C0::write_hex(l1pa);
-                                // NK4-C S2c 哨兵（task1-close 裁决删除）：PF 入口
-                                // 顺带重读监视 VA 的 L1 条目，变化即夹住抹写窗口。
-                                nk4a_pte_watch("pf", root_pa);
                             }
                             C0::write_str(" rsp=");
                             C0::write_hex(frame.rsp);
@@ -1496,7 +1518,14 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         if caller.p_endpoint.0 == 2 {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static XIN: AtomicUsize = AtomicUsize::new(0);
-            if XIN.fetch_add(1, AtomicOrd::Relaxed) < 4096 {
+            // S2h 评审修复：4096→512 + 触顶现形标记（串口是同步 PIO，
+            // 最坏量级不能拖穿复跑 timeout）。
+            let xn = XIN.fetch_add(1, AtomicOrd::Relaxed);
+            if xn == 512 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: x33in-cap\n");
+            }
+            if xn < 512 {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                 C0::write_str("nk4a: x33in call=");
                 C0::write_hex(call_nr as u64);

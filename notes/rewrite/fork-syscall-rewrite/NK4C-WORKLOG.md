@@ -179,8 +179,8 @@ S1：穷举内核直写用户 VA 站点（§4.4 第 1 项候选清单：syscall_
 
 ### 站点清单（探针已挂）
 
-- `syscall.rs kernel_call_finish`：errno 回执 DM 直写（finw/fina，本次主嫌）
-- `syscall_copy.rs`：VIRCOPY/SAFECOPYTO 系列（viow）
+- `syscall.rs kernel_call_finish`：errno 回执 DM 直写（finw/fina，本次主嫌，已实锤）
+- `pte_walk.rs copy_to_user`：SYS_VDEVIO/SYS_SDEVIO 结果回写（viow）；VIRCOPY/SAFECOPYTO 走 `cross_space_copy`，由存量 kdst 探针覆盖
 - `syscall_signal.rs`：sigframe 搭建写用户栈
 - kerninfo / ps_strings / diagctl 写回点
 
@@ -210,7 +210,7 @@ S2a/S2b：两轮独立复跑 + finw/viow 对账。无直接命中（写目标全
 3. **s2e 按值扫描**（`nk4a_pte_watch` 重写版：对 RS 栈三页 `0x7fffffff9000/a000/c000` 扫「值==表地址」的 u64 槽，打包状态变化即打 `pw-<site>`）：**决定性**——`pw-x33 s9=0x1de0`（int33 入口 1 命中@0x9de0）→ `pw-fina s9=0x0fff`（0 命中），抹写锁定在**单次 int33 的内核代执行窗口**（用户栈不动，唯一写者=内核）
 4. **s2f/s2g/s2h 现场打印**：fx（直写逐 chunk 打 va/pa/len/w0+尾字 t56/t64，cap 48→4096，48 条会在启动期耗尽——教训：判别窗口需无条件打印+足够 cap）、x33in（int33 入口打 call/r2/旧 p_delivermsg_vir/senda 标志）、pdmv-set（两个存值站点打新旧值）
 
-### 原始数据（s2h 死亡窗口原文，行序保持）
+### 原始数据（s2h 死亡窗口，行序保持；fx 行为节录——省略 `pa=` 字段并缩写十六进制，全量原文见本地 `/tmp/nk4a/serial_s2h.log`）
 
 ```
 nk4a: pdmv-set krn m_user=0x00007fffffff9da8 old=0x00007fffffff9d88   ← 最后一次存值：同步 kernel_call 存 0x9da8

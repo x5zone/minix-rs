@@ -497,7 +497,13 @@ pub fn kernel_call(
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static PSET: AtomicUsize = AtomicUsize::new(0);
-        if PSET.fetch_add(1, AtomicOrd::Relaxed) < 4096 {
+        // S2h 评审修复：4096→512 + 触顶现形标记。
+        let ps = PSET.fetch_add(1, AtomicOrd::Relaxed);
+        if ps == 512 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: pdmv-cap\n");
+        }
+        if ps < 512 {
             use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
             C0::write_str("nk4a: pdmv-set krn m_user=");
             C0::write_hex(m_user.0);
@@ -3368,13 +3374,30 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                         if rs_trace {
                             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                             static TXN: AtomicUsize = AtomicUsize::new(0);
-                            if TXN.fetch_add(1, AtomicOrd::Relaxed) < 4096 {
+                            // S2h 评审修复：cap 4096→512（最坏串口耗时量级
+                            // 降到秒级，不拖穿 timeout）+ 触顶现形标记 +
+                            // 守卫字节读（S2f 旧形态按 [u8;8] 读在 buf_va 非
+                            // 8 对齐时会造未对齐引用并越出 reply 尾端）。
+                            let tn = TXN.fetch_add(1, AtomicOrd::Relaxed);
+                            if tn == 512 {
                                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                                let w0 = u64::from_le_bytes(*unsafe {
-                                    &*(&reply as *const minix_types::Message as *const u8)
-                                        .add(off)
-                                        .cast::<[u8; 8]>()
-                                });
+                                C0::write_str("nk4a: fx-cap\n");
+                            }
+                            if tn < 512 {
+                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                                let rb = |o: usize| -> u64 {
+                                    let base =
+                                        &reply as *const minix_types::Message as *const u8;
+                                    let mut b = [0u8; 8];
+                                    unsafe { // SAFETY: o+i<bytes 保证在 Message(80B) 对象内，逐字节读避免未对齐，越界部分补 0
+                                        for i in 0..8 {
+                                            if o + i < bytes {
+                                                b[i] = *base.add(o + i);
+                                            }
+                                        }
+                                    }
+                                    u64::from_le_bytes(b)
+                                };
                                 C0::write_str("nk4a: fx va=");
                                 C0::write_hex(va);
                                 C0::write_str(" pa=");
@@ -3382,22 +3405,15 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                                 C0::write_str(" len=");
                                 C0::write_hex(chunk as u64);
                                 C0::write_str(" w0=");
-                                C0::write_hex(w0);
+                                C0::write_hex(rb(off));
                                 // NK4-C S2g：抹写点落在 buf+56（self 槽），
                                 // 把回执行对 buf 基址 +56/+64 的字也打出来
                                 // （仅首 chunk），离线直接对照被写入的值。
                                 if off == 0 {
-                                    let wd = |o: usize| {
-                                        u64::from_le_bytes(*unsafe {
-                                            &*(&reply as *const minix_types::Message as *const u8)
-                                                .add(o)
-                                                .cast::<[u8; 8]>()
-                                        })
-                                    };
                                     C0::write_str(" t56=");
-                                    C0::write_hex(wd(56));
+                                    C0::write_hex(rb(56));
                                     C0::write_str(" t64=");
-                                    C0::write_hex(wd(64));
+                                    C0::write_hex(rb(64));
                                 }
                                 C0::write_str("\n");
                             }
