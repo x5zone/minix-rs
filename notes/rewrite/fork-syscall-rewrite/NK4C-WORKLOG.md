@@ -1327,3 +1327,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 下一步（接手即做）
 
 ①CallDenied ×2 的调用号定位（ipcerr 补 call_nr 打点，一轮）——修 PM 的 kcall mask 或调用点；②ELOCKED 臂的 taskcall 重试/异步语义修复（重试需 yield 让 sched 推进）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.11a sched 侧 EPERM 根因定位（2026-09-24）
+
+- sched replying EPERM(1) 的产生点：sched 的 `do_start/do_stop/do_nice` 处理 PM 的 SCHEDULING taskcall 时，内部 `kernel.schedctl`（SYS_SCHEDCTL）返回 EPERM——kernel 的 `caller != p_scheduler` 检查拒绝（syscall_process.rs:780-830：仅 `p_scheduler == None` 时放行任意 caller）。
+- **根因**：fork 子进程的 `p_sched.scheduler` 字段时序——sched 的 do_start 的 SYS_SCHEDCTL 要求 target 的 p_scheduler 已 = Some(sched)；该字段的设置链（PM fork 路径 / RS birth / SYS_SCHEDULE）未在 sched 的 do_start 前就位 → EPERM。
+- **对照 C**：C 的 sched_do_start 前置 `sched_init_proc`（proc.nr 的 p_scheduler 预设）；minix-rs 的对应设置链缺失/时序错位。
+
+### 修复配方（下一轮）
+
+①PM fork 路径（fork.rs）在 sched_ctl 前补 `SYS_SCHEDCTL`（caller=sched）设置子进程 p_scheduler（或 RS birth 协议补）；②对照 C schedule.c 的 sched_init_proc 语义核对；③修后两次复跑：sched 不再 EPERM → init fork 链通 → /bin/sh /etc/rc → rc marker（单元 B 完成）→ 单元 C-K。
