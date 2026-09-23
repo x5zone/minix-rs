@@ -1252,3 +1252,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 - **根因定位**：init 的 getuid sendrec parks 在 PM 的 caller_q；PM 主循环 receive 的 **Phase 3 `caller_q_find_allowed` 的 D-16 过滤链（chain_allowed）将其跳过**（未 drain）⇒ init 的 getuid 永不完成 ⇒ init 卡死 ⇒ PM↔VFS/sched 后续交互全部异常（含 1.10 的互撞表象）。
 - **对照 C**：C 的 receive-from-ANY 的 caller_q walk（proc.c:1077-1105）对**未配置过滤的进程默认放行**（filter 仅在显式配置后限制）；minix-rs 的 PM 若被 RS 配置了 whitelist（s_ipcf），init 的请求不在白名单 ⇒ 永久跳过。
 - **下一轮配方**：①ipcerr 探针扩 caller=11（init）：看 init→PM 的 send 是否 ECALLDENIED/CallDenied（filter 拒绝证据）；②对照 C ipc.h filter 语义修 chain_allowed 对「无过滤/默认」的处理，或修 RS 对 PM 的 filter 配置；③修后 init 的 getuid 应完成 → init 进 runcom → exec /bin/sh /etc/rc → **rc marker（单元 B 完成）**。
+
+---
+
+## 1.11a 根因定案：RS priv 设置与服务器 main 启动的时序竞态（s16b，2026-09-24）
+
+- panic location = `sched/src/server.rs:154` = `init_scheduling` 的 setalarm Err 臂（sched-alarm 探针区）——**sched 的 `sys_setalarm` 返回 EPERM**（dispatch_setalarm 仅 OK/EPERM；EPERM 臂 = `caller_has_sys_proc_with_table` 失败 = sched 的 priv 无 SYS_PROC 或 priv_id 未置）。
+- **时序竞态**：RS 对服务器的 priv 设置（SetSys→SYS_PROC）与服务器 main 启动（init_scheduling 的 setalarm）交错——sched main 先行、priv 未就绪 → setalarm EPERM → panic → sched 死亡。
+- **对照 C**：C 的 RS 在服务 exec 前完成 privilege 结构设置（do_exec 前置），服务器 main 运行时 SYS_PROC 必已就位；minix-rs 的 RS exec/ALLOW 流程缺该时序保证。
+
+### 修复（下一轮，接手即做）
+
+①审计 RS 的 service 启动序：privctl SetSys（SYS_PROC）→ ALLOW → 服务器 unblock 的次序，补齐「priv 未就绪不得 unblock」的时序（对照 C do_exec 前置 priv 语义）；②补判别测试（priv 未就绪时 setalarm 必须 EPERM、就绪后必须 OK）；③修后两次复跑：sched 不再 panic、init 进 runcom、/bin/sh exec → **rc marker（单元 B 完成）** → 单元 C-K。
