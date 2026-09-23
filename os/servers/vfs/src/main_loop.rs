@@ -7579,9 +7579,14 @@ pub fn run() -> ! {
     // C main.c:435-436 — `mess.m_type = OK; ipc_send(PM_PROC_NR, &mess)`：
     // 进程表收齐后把成功回给 PM（PM 侧 `vfs_init_sync` 的末条是 sendrec
     // 屏障，等的就是这一条——不发则 PM 启动链停在这里）。
-    send_reply(
+    // NK4-C 1.10 根因修复：屏障必须用**阻塞** send（C ipc_send 对位）。
+    // 原 send_reply 走 sendnb：PM 此刻在 sendrec 的 receive 半（未接收），
+    // ENOTREADY 被 `let _ =` 吞掉 ⇒ OK 回复丢失、PM 的 barrier 缓冲保持
+    // 旧内容 ⇒ m_type != 0 panic（1.10i 第二站点）。阻塞 send 使 VFS
+    // 挂起直到 PM 进 receive 收下回复——与 C 语义一致。
+    minix_sys::send(
         Endpoint::PM,
-        Message {
+        &Message {
             m_type: minix_types::OK,
             ..Message::default()
         },

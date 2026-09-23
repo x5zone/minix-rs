@@ -126,9 +126,45 @@ impl SchedServer {
     /// the rewrite keeps failures at the binary layer where every other
     /// startup failure already dies (01 D2's convention).
     pub fn init_scheduling(&mut self, kernel: &mut impl KernelApi) -> Result<(), i32> {
-        let hz = kernel.get_hz()?;
+        let hz = kernel.get_hz().map_err(|e| {
+            // NK4-C 1.10i 取证探针（task1-close 裁决删除）：get_hz Err 数值
+            // 十六进制打印（sched 无 alloc，手工编码）。
+            {
+                use minix_sys::syscall::{sys_diagctl_write, DirectKernelCallTransport};
+                let mut line = [0u8; 24];
+                line[..15].copy_from_slice(b"nk4a: sched-hz ");
+                let v = e as u32;
+                for (i, byte) in v.to_be_bytes().iter().enumerate() {
+                    let hexs = b"0123456789abcdef";
+                    line[15 + i * 2] = hexs[(byte >> 4) as usize];
+                    line[16 + i * 2] = hexs[(byte & 0xf) as usize];
+                }
+                line[23] = b'\n';
+                if let Ok(cs) = core::str::from_utf8(&line) {
+                    let _ = sys_diagctl_write(&DirectKernelCallTransport, cs);
+                }
+            }
+            e
+        })?;
         let balancer = Balancer::init(hz);
-        kernel.setalarm(balancer.timeout_ticks())?;
+        kernel.setalarm(balancer.timeout_ticks()).map_err(|e| {
+            {
+                use minix_sys::syscall::{sys_diagctl_write, DirectKernelCallTransport};
+                let mut line = [0u8; 28];
+                line[..17].copy_from_slice(b"nk4a: sched-alarm ");
+                let v = e as u32;
+                for (i, byte) in v.to_be_bytes().iter().enumerate() {
+                    let hexs = b"0123456789abcdef";
+                    line[17 + i * 2] = hexs[(byte >> 4) as usize];
+                    line[18 + i * 2] = hexs[(byte & 0xf) as usize];
+                }
+                line[27] = b'\n';
+                if let Ok(cs) = core::str::from_utf8(&line) {
+                    let _ = sys_diagctl_write(&DirectKernelCallTransport, cs);
+                }
+            }
+            e
+        })?;
         self.balancer = Some(balancer);
         Ok(())
     }
