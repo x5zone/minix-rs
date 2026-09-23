@@ -1137,6 +1137,28 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // FROM_KERNEL mini_send (exception.c:112-129). Send errors
             // panic here (C: panic "WARNING: pagefault: mini_send
             // returned %d").
+            // NK4-C 1.9 取证探针（task1-close 裁决删除）：pm+出生服务器的
+            // 每次 fault 现场三元组 (ep,rip,cr2)——s14d 实锤 9 进程 cr2=0x0
+            // 空指针崩溃（VM noaddr→SIGSEGV 正确），本探针定位崩溃指令 rip。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static PFC_N: AtomicUsize = AtomicUsize::new(0);
+                if matches!(cur_nr.0, 0 | 1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11)
+                    && PFC_N.fetch_add(1, AtomicOrd::Relaxed) < 48
+                {
+                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                    C0::write_str("nk4a: pfc ep=");
+                    C0::write_hex(cur_nr.0 as u64);
+                    C0::write_str(" rip=");
+                    C0::write_hex(frame.rip);
+                    C0::write_str(" cr2=");
+                    C0::write_hex(pf.vaddr.0);
+                    C0::write_str(" err=");
+                    C0::write_hex(frame.errcode as u64);
+                    C0::write_str("\n");
+                }
+            }
             if let Err(e) = forward_pagefault_to_vm(
                 crate::proc_table_with(&section),
                 crate::priv_table_with(&section),
