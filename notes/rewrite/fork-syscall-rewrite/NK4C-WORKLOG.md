@@ -9,7 +9,7 @@
 ## 当前状态（每次 commit 前更新，一屏读完）
 
 - **阶段**：S0 ✅ 完成（Task C 崩溃两轮稳定复现）→ 下一步 S1（穷举内核直写用户 VA 站点加探针）
-- **⚠️ 复现环境硬约束（S0 新发现）**：**必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本**跑 §2.2 命令；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同）。复跑前 `cp tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd`，QEMU 用 `/tmp/nk4a/vars_run.fd`（QEMU 会写它，不要直接用仓库文件本体）
+- **⚠️ 复现环境硬约束（S0 新发现）**：**必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本**替换 §2.2 QEMU 命令里的 vars 槽（本文件「做法」段已写好完整命令）；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同）。复跑前 `cp tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd`，QEMU 用 `/tmp/nk4a/vars_run.fd`（QEMU 会写它，不要直接用仓库文件本体）
 - **已修复**（commit）：
   - `1d25f433e` AP 入口补 EFER.NXE（bit11）+ BSP `enable()` 显式置位 —— err=8 保留位风暴 20+ → 0
   - `967a903e7` 摘除金丝雀探针（它在污染生产上下文）
@@ -114,6 +114,7 @@
 # 构建（宿主，docker 缺 uefi target）
 cd /home/xzhao/github/minix-rs/os && ulimit -v 3145728 && cargo run -q -p xtask -- image --arch x86_64 --release
 # 复现（关键：vars.fd 用仓库累积副本，不用全新 OVMF VARS）
+mkdir -p /tmp/nk4a
 cp /home/xzhao/github/minix-rs/tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd
 cd /home/xzhao/github/minix-rs/os && timeout 150 qemu-system-x86_64 -smp 1 \
   -drive if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE_4M.fd,readonly=on \
@@ -128,27 +129,38 @@ cd /home/xzhao/github/minix-rs/os && timeout 150 qemu-system-x86_64 -smp 1 \
 
 **第一轮坑（fresh vars，serial_s0a/s0b 两轮签名一致但不是 Task C）**：全新 `OVMF_VARS_4M.fd` 下 EFI 模块装载落点改变（reserved-big base=5eb5000/6d2e000/77ff000，conv=14），内核 `vm_handoff free n=0x0 deducted=0x17` → VM 在 `servers/vm/src/boot.rs:157: BootParams: no free memory regions` assert panic → RS 挂 `BOOTINHIBIT|VMINHIBIT`（picknone rs_flags=0x10200）→ 调度器 idle 循环 livelock（vs 采样器 400 tick 同一 kernel rip）。**这本身是一个布局敏感的鲁棒性 bug，已登记（见新登记）**。
 
-**改用仓库 `tmp/nk4a/vars.fd` 副本后（serial_s0c / serial_s0d 两轮独立复跑，签名一致）**：
+**改用仓库 `tmp/nk4a/vars.fd` 副本后（serial_s0c / serial_s0d 两轮独立复跑，签名一致）**。下面贴 s0c 死亡窗口全序列（从 `rs-epslot` 活值到最后，仅省略与因果无关的 kdst/probe 行，行序保持日志原序）：
 
 ```
 kernel: vm_handoff free n=0x7 deducted=0x16   （boot-shim: memmaps conv=13 reserved=121）
 nk4a: rs-step2 pt=0x2237d8 len=12 tbl=0x7fffffffc800
 nk4a: rs-epslot self=0x7fffffffc800 bep=0x7fffffffc800 slot=2   ← 活值（step2 期）
-nk4a: rs-epslot self=0x7fffffffc800 bep=0x7fffffffc800 slot=8
-nk4a: rs-anom pf2 n=0x28 rbx=0x0000000000000000 rip=0x0000000000203bf0   ← asynsend 首指令 rbx=0
-nk4a: vm-pf recv / vmpt2bf off=0x2bf0 ptroot=0x35fd000                    ← VM 填 asynsend 页
-nk4a: rs-epslot self=0x0 bep=0x0 slot=0                                   ← 栈页已被抹
+nk4a: rs-epslot self=0x7fffffffc800 bep=0x7fffffffc800 slot=8   ← 最后一次活值
+── 抹写窗口（无任何 pick：RS 未让出 CPU，内核正替它办事）──
+nk4a: rs-anom pf2 n=0x28 rbx=0x0000000000000000 rip=0x0000000000203bf0   ← PF 入口 ctx 的 rbx 已=0，栈页+文本页均已损
+nk4a: pick->0x0000000000000008                                          ← 损伤确认后才轮到 VM 填页
+nk4a: sa0-0x0000000000000008 root=0x0x0000000005e27000 cur=0x0x00000000035fd000
+nk4a: vm-pf recv
+nk4a: vmpt2bf off=0x2bf0 ptroot=0x35fd000                               ← VM 填 asynsend 页
+nk4a: vm-pf bytes 000000000048c783  fa=0x203bf0 fa8=4883ec6889f04c8d
+nk4a: pick->0x0000000000000002                                          ← 切回 RS
+nk4a: pre-restore- rip=0x0000000000203bf0 rsp=0x00007fffffff9d88 r10s=0x0000000000007bff rbx=0x0000000000000000
+nk4a: i33-save rip=0x0000000000203c2d rbx=0x00007fffffff9d28 rsp=0x00007fffffff9d18
+nk4a: rs-step2 ep=0x0 slot=0                                            ← 栈上 self 已是 0
+nk4a: rs-epslot self=0x0 bep=0x0 slot=0
 nk4a: pf-exit noaddr cr2=0x0
 cause_sig: sig manager 2 gets lethal signal 11 for itself
 kernel panic: panicked at kernel/src/syscall_signal.rs:300:13
 ```
+
+（s0d 同窗口行序一致，仅部分计数器值不同；全量日志在本地 `/tmp/nk4a/serial_s0c.log`、`serial_s0d.log`，仓库 `tmp/nk4a/*.log` 被 gitignore，关键内容以上述摘录为准。）
 
 本轮布局基准（s0c=s0d 同构，两轮 cr3 一致）：RS root=`0x35fd000`（历史两形态之一）、VM root=`0x5e27000`、故障 lvl1pa（PT 页）=`0x1c08000`×42 + `0x1c05000`×3、lvl2pa（PD 页）=`0x35b6000`×44 + `0x1c06000`×3。用户 VA 全部跨轮稳定（`0x7fffffffc800` / `0x203bf0`）。
 
 ### 结论
 
 - **Task C 按交接签名稳定复现**（需 repo vars.fd 环境，判据满足：两轮同签名）。
-- 抹写窗口再次实证：`rs-epslot` 活值（slot=8 之后）→ `rs-anom pf2`（rip=0x203bf0 处 rbx=0）之间，栈页内容被抹；其间只有 VM pick 服务 asynsend 页 PF（`pick->0x8` → `vmpt2bf` → `pick->0x2`）。
+- 抹写窗口收窄（与交接描述不同，本轮实证）：`rs-epslot` 活值（slot=8）→ `rs-anom pf2`（PF 入口 ctx rbx=0，栈与 asynsend 文本页均已损）之间**没有任何进程切换**（无 pick 行）——抹写发生在 RS 持续持有 CPU 期间，即**替 RS 执行系统调用/页故障处理的内核代码**（或 VM 醒来服务本次 PF 的内核代执行段）。VM 的 `vmpt2bf` 填页发生在损伤确认之后，不是嫌疑窗口内动作。这把 §4.4 第 1 项（内核直写用户 VA 站点）的优先级再抬高一级，且提示新线索：**内核在 RS 上下文里的 PF/IPC 处理路径自身就是嫌疑人**。另注意更早的 `rs-anom rst n=27 rbx=0`（rip=0x2266e0 恢复点）说明同类损伤在窗口前已间歇出现，计数器 27→2b 连续，值得回溯 rs-anom 探针语义。
 - fresh-vars livelock 是独立的可复现环境敏感性，佐证 §4.4 第 3 项方向（VM pool 扣减与 memmap 的交互在别的布局下会把 free 清单切光）。
 
 ### 下一步
