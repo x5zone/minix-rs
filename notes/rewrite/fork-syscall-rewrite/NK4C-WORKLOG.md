@@ -793,3 +793,7 @@ rt_birth+0x101 崩溃九进程的机制闭环：服务器因缺页腿 FROM_KERNE
 ### 下一步（交接手）
 
 ①grep `os/servers/pm/src/ipc/transport.rs` sendrec 错误臂的 format!/`{:?}` 站点，定位被格式化的值与错误来源；②该错误发生在 boot 第 ~1100 次缺页后（PM↔init/fork 交互期），对照 s14j 5990-6010 行上下文找触发 syscall；③修复错误本身后，fmt 死循环作为健壮性问题单独评估（审计 Debug 载荷边界）。
+
+### 1.10 补充（fmt 死循环站点定位）
+
+fmt 自旋 = `init.rs:710-711` VFS 屏障 `sendrec(...).expect("PM: can't sync up with VFS (final barrier)")` 的 Err 分支——`Result::expect` 用 `{:?}` 格式化 `IpcTransportError`（符号 `<&T as Debug>::fmt` 实锤）。两层问题：①**真实错误被遮蔽**（屏障 sendrec 出错的具体 errno 未知；候选 = VFS 未进 receive 时 sendrec 立即失败而非阻塞等待——对照 F13 的 send_blocking 教训）；②expect/panic 的 Debug 格式化在腐坏/未知 errno 载荷上自旋（健壮性债：错误类型 Debug 对未知值应封闭）。**下一轮**：临时把 expect 消息改为只打 errno 数值（或先 `map_err` 取 `trap.0` 打整数再 panic）复跑一轮拿真实错误码，再修 barrier 语义（对照 C main.c:231-236 阻塞屏障）。
