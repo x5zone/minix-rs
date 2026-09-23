@@ -440,6 +440,10 @@ pub fn cross_space_copy<D: DirectMapArch>(
             return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
         }
     };
+    // 探针门必须与 nk4a_kdst_probe 定义门（not(feature = "mock")）一致：
+    // 宿主 mock 构建下 not(test) 对普通 lib 编译为真，会引用已被裁掉的
+    // 定义导致 E0425（HEAD 存量破损，2026-09 宿主测试基线跑出）。task1-close 裁决删除
+    #[cfg(not(feature = "mock"))]
     nk4a_kdst_probe("copy", dst_phys.0, bytes);
 
     let src_vaddr = D::kernel_phys_to_virt(src_phys);
@@ -515,8 +519,8 @@ pub fn cross_space_memset<D: DirectMapArch>(
 
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
 
-    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除）
-    #[cfg(not(test))]
+    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除；门与定义一致）
+    #[cfg(not(feature = "mock"))]
     nk4a_kdst_probe("memset", dst_phys.0, count);
 
     // Caller-supplied physical ranges (NONE endpoint) are validated against
@@ -572,8 +576,8 @@ pub fn cross_space_write<D: DirectMapArch>(
             return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
         }
     };
-    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除）
-    #[cfg(not(test))]
+    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除；门与定义一致）
+    #[cfg(not(feature = "mock"))]
     nk4a_kdst_probe("write", dst_phys.0, src.len());
 
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
