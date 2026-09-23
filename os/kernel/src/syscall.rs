@@ -1084,6 +1084,26 @@ fn dispatch_schedule(
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
+    // NK4-C 1.9 取证探针（task1-close 裁决删除）：SYS_SCHEDULE 全轨迹——
+    // s14b/c 尾态 RS runnable=yes queued=no 的「幽灵 CPU 队列」假设判别
+    // （p_sched.cpu 被迁到非 BSP 即成永不可挑）。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static SCHED_N: AtomicUsize = AtomicUsize::new(0);
+        if SCHED_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+            C0::write_str("nk4a: schedctl caller=");
+            C0::write_hex(caller_nr.0 as u64);
+            C0::write_str(" tgt=");
+            C0::write_hex(target_nr.0 as u64);
+            C0::write_str(" cpu=");
+            C0::write_hex(sched.cpu as u64);
+            C0::write_str(" prio=");
+            C0::write_hex(sched.priority as u64);
+            C0::write_str("\n");
+        }
+    }
 
     // C: do_schedule.c:18-19 — `caller != p->p_scheduler` check.
     // In Rust: target.scheduler is Option<ProcNr>; None matches C's

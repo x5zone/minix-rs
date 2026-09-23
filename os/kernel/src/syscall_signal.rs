@@ -342,6 +342,22 @@ pub(crate) fn cause_signal(
 
     // C: system.c:443 — if (!RTS_ISSET(rp, RTS_SIGNALED))
     if !was_signaled {
+        // NK4-C 1.9 取证探针（task1-close 裁决删除）：cause_signal 现场——
+        // 谁被挂 SIGNALED|SIG_PENDING、什么信号。s14b/c 尾态 pm+9 服务器全
+        // 停 0x30 无人交付，本探针裁决信号源。
+        #[cfg(not(feature = "mock"))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static CSIG_N: AtomicUsize = AtomicUsize::new(0);
+            if CSIG_N.fetch_add(1, AtomicOrd::Relaxed) < 24 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: csig tgt=");
+                C0::write_hex(target_nr.0 as u64);
+                C0::write_str(" sig=");
+                C0::write_hex(sig_nr as u64);
+                C0::write_str("\n");
+            }
+        }
         // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)
         proc_table.rts_set(target_nr, RtsFlagsBits::SIGNALED | RtsFlagsBits::SIG_PENDING);
 

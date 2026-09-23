@@ -439,6 +439,22 @@ impl ProcessTable {
             p.p_rts_flags.set(flags);
         }
         let is_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+        // NK4-C 1.9 取证探针（task1-close 裁决删除）：RS 的 rts_set 全轨迹
+        // ——s14b/c 尾态 RS flags=0x0 runnable=yes queued=no（F10d 同族
+        // 未入队），本探针捕捉每次 RS 标志跃迁与入/出队判定。
+        #[cfg(not(feature = "mock"))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static RS_SET_N: AtomicUsize = AtomicUsize::new(0);
+            if nr.0 == 2 && RS_SET_N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: rtsrs set fl=0x");
+                C0::write_hex(flags.bits() as u64);
+                C0::write_str(" now=0x");
+                C0::write_hex(self.get(nr).map(|p| p.p_rts_flags.get().bits()).unwrap_or(0) as u64);
+                C0::write_str("\n");
+            }
+        }
         if was_runnable && !is_runnable
             && self.is_in_scheduler(nr) {
                 // C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the process's
@@ -505,6 +521,27 @@ impl ProcessTable {
             p.p_rts_flags.clear(flags);
         }
         let is_runnable = self.get(nr).is_some_and(|p| p.is_runnable());
+        // NK4-C 1.9 取证探针（task1-close 裁决删除）：RS 的 rts_unset 全
+        // 轨迹——重点看跃迁 runnable 后 enqueue 是否发生、目标 CPU 是谁。
+        #[cfg(not(feature = "mock"))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static RS_UNSET_N: AtomicUsize = AtomicUsize::new(0);
+            if nr.0 == 2 && RS_UNSET_N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: rtsrs unset fl=0x");
+                C0::write_hex(flags.bits() as u64);
+                C0::write_str(" now=0x");
+                C0::write_hex(self.get(nr).map(|p| p.p_rts_flags.get().bits()).unwrap_or(0) as u64);
+                let enq = !was_runnable && is_runnable;
+                let cpu = self.get(nr).map(|p| p.p_sched.cpu.load(Ordering::Acquire)).unwrap_or(0);
+                C0::write_str(" enq=");
+                C0::write_str(if enq { "y" } else { "n" });
+                C0::write_str(" cpu=");
+                C0::write_hex(cpu as u64);
+                C0::write_str("\n");
+            }
+        }
         if !was_runnable && is_runnable {
             let cpu_id = self.get(nr).map_or(CpuId::BSP, |p| {
                 CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
