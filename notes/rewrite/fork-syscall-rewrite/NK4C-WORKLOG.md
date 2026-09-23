@@ -29,7 +29,7 @@
 - **新登记（F10d 评审发现，同 rts 绕过形态）**：
   - **P1-ipc**：`clear_ipc_refs`（syscall.rs L1283）裸 `p_rts_flags.clear(SENDING|RECEIVING)` 绕过 C `clear_ipc`=RTS_UNSET 的入队半——被唤醒进程跃迁 runnable 却不入队。**与 1.4 VM 缺页循环强相关**（解故障往返若经 IPC clear 会重现 runnable=yes queued=no），1.4 开工优先验证
   - **P1-trace**：`do_trace`（misc.rs L1494-1531）对 PROC_STOP 裸 set/clear 绕过 rts_set/rts_unset（T_STOP 缺出队、T_DETACH/T_RESUME/T_STEP/T_SYSCALL 缺入队）；仅 trace 场景触发，不在 boot 关键路径，待专修
-- **下一步**：**1.4 新停点**：调查 VM 缺页解决循环——s13f 尾态服务器全停 PAGEFAULT(0x400)、VM 停 VMREQUEST(0x800)、RS 停 RECEIVING(0x8)、`do-memory enter` 仅 1 次；查 VM 处理一次内存请求后为何自停、PAGEFAULT 进程的 ClearPageFault 谁来驱动、VM 自身 VMREQUEST 的解决路径；继续推进至 rc marker；探针保留至 task1-close 裁决；`syscall.rs::kernel_call_resume`（无调用方）+ 双次 `vm_enqueue_and_notify_vm` 登记 task1-close 死代码裁决
+- **下一步**：**1.4 根因 hunt**（开局分析已入 1.4 节）：主假设=VM 自身页未全映射，`delivermsg`（C proc.c:270 形态）给 VM 投递消息时挂起 VM 自己（VMREQUEST）→ 唯一服务者停摆=稳定死锁。下一轮：在 VM(0x100) 被置 VMREQUEST 处打 suspend type(DELIVERMSG/COPY/CHECK)+故障地址，比对 VM 初始页表覆盖 vs C；顺带验 P1-ipc。继续推进至 rc marker；探针保留至 task1-close 裁决；`kernel_call_resume`（无调用方）+ 双次 `vm_enqueue_and_notify_vm` 登记 task1-close 死代码裁决
 - **阻塞/风险**：无阻塞；风险 = 探针采样饥饿（cap 被启动期重复事件吃光，见 prompt 铁律 2）与布局每轮漂移（禁止跨轮硬编码物理地址）
 
 ---
