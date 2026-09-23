@@ -1236,3 +1236,10 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 状态板
 
 系统 boot 全链健康（全服务器 birth 完成、PM↔VFS 屏障过、timer 133Hz）；仅 PM↔sched taskcall ELOCKED 一点未通。探针族 16 种在仓；kernel 811/xtask 12 全绿；daily.todo.md 未触碰。
+
+---
+
+## 1.10x2 状态（s16d，2026-09-24）
+
+- taskcall 无界 ELOCKED 重试版复跑：形态不变（1144 recvs、panic ×1、无 rc marker）——**重试未解互卡**：PM 重试自旋期间 sched 未取得推进条件（sched 的 receive 半未就绪的原因在更深处——sched 自身停在什么等待待查）。
+- **下一轮配方（交接手）**：①probe sched 的 run_once 主循环推进位置（gtick 已证 timer 活；sched 的 receive 停在什么状态——sched 侧已有 sc-rv/srcv-err 打点零输出 = sched 的 run_once 在 receive Err 臂与 Reply 臂均未到达 ⇒ **sched 的 run_once 卡在 receive Ok 之后的处理分支**——读 sched 的 SchedMsg::from_raw(收到的 m_type) 分支处理定位）；②PM taskcall 的 ELOCKED 重试语义保留（无害），根因在 sched 侧推进条件；③修后两次复跑过 1.10 → rc marker（单元 B）。

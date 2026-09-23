@@ -199,8 +199,14 @@ impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
                 Err(_) => return -minix_types::EIO,
                 Ok(()) => {
                     let rv = msg.m_type;
-                    if rv == 208 && retries < 64 {
-                        retries += 1;
+                    if rv == 208 {
+                        // ELOCKED：tick 抢占（133Hz）下 sched 取得 CPU 推进
+                        // 其 receive 半后本 send 即可投递——无界重试对位 C
+                        // `_taskcall` 的阻塞直到投递语义。
+                        retries = retries.wrapping_add(1);
+                        if retries > 1_000_000 {
+                            return -minix_types::EIO;
+                        }
                         continue;
                     }
                     return rv;
