@@ -838,3 +838,23 @@ pmstall 探针（tick 臂内 PMST_TICK 计数 + tick>5000 且 current==PM 时打
 - 已落地（128df8a5b + 本轮）：①通用 IRQ 臂 TIMER 分支补 `local_tick`+`check_quantum`；②plat 层 `pic_init`（ICW 重映射 0x50/0x70+IMR 只放行 IRQ0/级联，boot_init_timer 尾调用）+ IRQ 臂 `pic_eoi`；③`lapic_eoi()` 全局助手接入 TIMER 分支（edge 交付必需回执）。kernel 811 全绿、fmt 零新增。
 - **s14p/s14q 实测：`tick k=` 仍零、1141 recvs 不变** ⇒ 交付链 PIT→8259→IOAPIC pin2→LAPIC→0x50 仍有断环。已证：IDT 门在、IOAPIC RTE pin2 已编程 vector 0x50（mask 态，unmask 经 isa_irq_to_pin(0)→pin2 映射正确）、LAPIC SVR 使能。
 - **下一轮逐环仪器化**（每环一行探针）：①确认 `pic_init`/`boot_init_timer` 真被调用（入口打点）；②pic_init 后读 IMR 回显；③register_hook 后读 pin2 RTE 回显（mask 位应已清）；④init_ioapic 的 `mask_all`（lib.rs:395 init() 尾）**是否在 register_hook unmask 之后又把 pin2 重新 mask**（初始化次序竞态——init() 与 register_hook 的调用顺序待核！）；⑤PIT 端口写是否真达设备（QEMU 追踪或回读）。
+
+---
+
+## 1.10d 里程碑：timer 交付链修通（2026-09-24，serial_s14r/s14t）
+
+### 逐环仪器化结果（s14r）
+
+- `bit-enter` ×2 / `pit-programmed` ✓——**`boot_init_timer` 此前根本不在活 boot 路径**（唯一调用点在 `#[allow(dead_code)]` 的 `bsp_finish_booting` 分歧路径）；活路径 `kmain→init_clock_and_interrupts`（lib.rs:673）只做 route+mask_all，**D-59 三段序列（PIT 编程/hook 注册/unmask）从未执行**。
+- **修复（f2c1b4183 前置 + 本次）**：活路径 `init_clock_and_interrupts()` 后补调 `boot_init_timer()`（lib.rs:675）。
+- 回读全对：`rte pin2=0x50`（mask 位已清 ✓）、`pic-imr m=0xfa`（IRQ0+级联放行 ✓）、`pit-programmed` ✓。
+
+### s14t 实锤
+
+- 通用臂 gtick：20 打点（cap）= **≥20000 ticks/150s ≈ 133Hz** —— PIT→8259→IOAPIC pin2→LAPIC→0x50→通用臂 TIMER 分支**全线打通**（128df8a5b+e0fc5f268+lapic_eoi）。
+- PM 仍停 1141 recvs：PM 是**唯一可跑者**，tick 抢占后仍只有 PM 可选——自旋继续但不再永久垄断（tick 打断成立）。
+- pmstall（clock 臂）零输出 = 仪器化缺口：tick 现走通用臂。
+
+### 下一步（交接手，单步即达）
+
+把 `proc_stacktrace(PM)` 从 clock 臂 pmstall 移入通用臂 gtick 分支（`g>5000 && nr==0 && cap2`，table/tick_section 已在作用域）→ 复跑抓 PM fmt 自旋调用链 → 沿链修 `{:?}` 站点的腐坏值 → 过 1.10 → 单元 B rc marker 冲刺。
