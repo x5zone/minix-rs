@@ -1202,3 +1202,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 下一轮配方（交接手）
 
 ①定位 sched 侧 EPERM 的产生点：sched 的 do_start/do_stop/do_nice 的 `accept`/kernel 调用错误臂加打点（一轮复跑即得具体拒绝原因）；②按拒绝原因修 sched 侧（校验过严或内核调用时序）；③PM taskcall ELOCKED 臂对照 C schedule.c:340-341 改重试（sched 应答 sendnb 已修，重试窗口应极短）；④修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10z 定案：sched balance_queues re-arm setalarm 失败 panic（s15z，2026-09-24）
+
+- PF chunks 定位：sched 的 panic 在 `server.rs` 的 **balance_queues re-arm**（`.expect("sys_setalarm failed (schedule.c:367-368)")`）——**初始武装成功（alarm 触发、balance round 跑了），re-arm 失败** → sched 死亡。
+- srcv-err 零输出 ⇒ sched 的 receive 从未 Err——**sched 的 receive-failure fail-fast 假设证伪**；sched 死因单一 = balance re-arm setalarm 失败。
+- sched 死后：系统 idle（全服务器 RECEIVING、gtick 稳定）——其余链路健康。
+
+### 下一步（交接手，单点）
+
+①balance_queues 的 re-arm `kernel.setalarm` 失败 errno 定位（Err 臂打 errno 数值，一轮）；②按 errno 修：EPERM ⇒ dispatch_setalarm 的 caller_has_sys_proc_with_table 在 re-arm 时点的 priv 状态；EINVAL ⇒ timeout_ticks 参数；③对照 C schedule.c:367-368（re-arm 失败即 panic——C 同语义，根因在 setalarm 本身失败的原因）。

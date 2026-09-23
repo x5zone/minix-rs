@@ -198,9 +198,26 @@ impl SchedServer {
         // ── receive (C 38-42) ──
         let (mut message, status) = match ipc.receive() {
             Ok(arrival) => arrival,
-            // A failed receive loses one turn; `run` counts. (C panics at
-            // 39-40; the bound is the documented deviation above.)
-            Err(_) => return Step::ReceiveFailed,
+            // NK4-C 1.10y 取证探针（task1-close 裁决删除）：receive Err 的
+            // errno 数值前 4 次打印——sched receive 连续失败类别定位。
+            Err(e) => {
+                let mut line = [0u8; 24];
+                line[..15].copy_from_slice(b"nk4a: srcv-err ");
+                let v = e as u32;
+                for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
+                    let hexs = b"0123456789abcdef";
+                    line[15 + i * 2] = hexs[(byte >> 4) as usize];
+                    line[16 + i * 2] = hexs[(byte & 0xf) as usize];
+                }
+                line[23] = b'\n';
+                if let Ok(cs) = core::str::from_utf8(&line) {
+                    let _ = minix_sys::syscall::sys_diagctl_write(
+                        &minix_sys::syscall::DirectKernelCallTransport,
+                        cs,
+                    );
+                }
+                return Step::ReceiveFailed;
+            }
         };
         let sender = message.m_source; // C 41
 
@@ -243,9 +260,28 @@ impl SchedServer {
         if let DispatchVerdict::Reply(code) = verdict {
             let mut reply = message;
             reply.m_type = code;
-            // NK4-C 1.10p：应答改 sendnb——阻塞应答与请求方下一 taskcall
-            // 的 send 互卡（双向 SENDING 死锁，elock 实锤）。C 101-106:
-            // 失败记录后继续，loop 不停。
+            // NK4-C 1.10y 取证探针（task1-close 裁决删除）：应答 verdict
+            // 数值打印（cap 8）——sched 拒绝码（EPERM=1 等）定位。
+            {
+                let mut line = [0u8; 24];
+                line[..11].copy_from_slice(b"nk4a: sc-rv ");
+                let v = code as u32;
+                for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
+                    let hexs = b"0123456789abcdef";
+                    line[11 + i * 2] = hexs[(byte >> 4) as usize];
+                    line[12 + i * 2] = hexs[(byte & 0xf) as usize];
+                }
+                line[23] = b'\n';
+                if let Ok(cs) = core::str::from_utf8(&line) {
+                    let _ = minix_sys::syscall::sys_diagctl_write(
+                        &minix_sys::syscall::DirectKernelCallTransport,
+                        cs,
+                    );
+                }
+            }
+            // C 101-106: a failed reply is logged and dropped — the loop
+            // moves on. The print has no Rust home (no logging facility);
+            // continue-on-failure is the observable half.
             let _ = ipc.sendnb(sender, &reply);
         }
         Step::Handled
