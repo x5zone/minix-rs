@@ -65,6 +65,13 @@ pub const MAX_SLAB_OBJECT_BYTES: usize = 2048;
 pub const MAX_SLABS: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 
 /// Maximum simultaneous whole-page allocations one allocator tracks.
+///
+/// NOTE (known, same class as the F12 slab fix): each big block holds >=1
+/// page and the pool has [`GLOBAL_POOL_PAGES`] pages, but this table caps at
+/// 32 — so a workload with >32 concurrent big blocks would hit the same
+/// "record table full while pool bytes free" premature OOM that `MAX_SLABS`
+/// just had. Left at 32 because real-machine NK4-C 1.5c evidence was
+/// `big=0` (the path is untouched). Revisit if a big-block-heavy server lands.
 pub const MAX_BIG_BLOCKS: usize = 32;
 
 /// Initial heap pool for the global allocator, in bytes (256 pages).

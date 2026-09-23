@@ -108,7 +108,13 @@ pub fn alloc(size: usize) -> *mut u8 {
     // 落在用 minix-rt slab 的服务器（RS 等）。无分配：定长标签 + hex size。
     #[cfg(all(not(feature = "mock"), not(test)))]
     if ptr.is_null() {
-        nk4c_oom_tag(size);
+        // NK4-C 1.5c 取证：OOM 后上层若有重试会刷屏，与同 crate
+        // `nk4a_supply_log` 一致地封顶（task1-close 裁决删除）。
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        if N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
+            nk4c_oom_tag(size);
+        }
     }
     ptr
 }
@@ -142,14 +148,14 @@ fn nk4c_oom_tag(size: usize) {
     lit!(b"nk4c: OOM-RT size=");
     hex!(size, 6);
     lit!(b" slabs=");
-    hex!(d.slabs_in_use, 2);
-    lit!(b"/40 big=");
+    hex!(d.slabs_in_use, 3);
+    lit!(b"/200 big=");
     hex!(d.big_in_use, 2);
     lit!(b"/20 px=");
     hex!(d.pages_consumed, 3);
     lit!(b"/200 fp=");
-    hex!(d.free_pages, 2);
-    lit!(b"/40\n");
+    hex!(d.free_pages, 3);
+    lit!(b"/200\n");
     let _ = sys_diagctl_write(
         &DirectKernelCallTransport,
         core::str::from_utf8(&buf[..n]).unwrap_or("nk4c: OOM-RT\n"),
