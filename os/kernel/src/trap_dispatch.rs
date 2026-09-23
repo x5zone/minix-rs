@@ -1737,19 +1737,21 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                     Console::write_str(if state_pending { "y" } else { "n" });
                     Console::write_str("\n");
                 }
-                // C RTS_SET 的 dequeue 半：挂起后进程必须移出就绪队列，否则
-                // 调度器对已停排进程 spin-pick（dequeue_if_blocked 文档记录
-                // 的同症状；NK4-A C-3 真机：RS 挂起后 pick->2 刷屏，
-                // 2026-09-22）。
-                table.dequeue_if_blocked(cur_nr);
-                // C kernel_call_finish 的 VmSuspend 半（system.c:60-63 +
-                // D-20 vm_enqueue_and_notify_vm）：挂起上下文入 VM 请求链并
-                // 以 SIGKMEM 通知 VM。快路径不走 finish，缺此步则 VM 永不
-                // 服务、RS 永久 Pending（真机：sys-susp 后系统静默）。
-                table.vm_enqueue_and_notify_vm(
-                    cur_nr,
-                    unsafe { crate::priv_table_boot_unchecked() },
-                );
+                // NK4-C 1.4 根因修复：入链 / 出队 / 通知 VM 三半不在这里做。
+                // C 的 vm_suspend（proc.c:241）对同一挂起只跑一次（其
+                // assert(!RTS_VMREQUEST) 保证）；Rust 把它拆成 suspend_for_vm
+                // （置标志 + 建 ctx）+ vm_enqueue_and_notify_vm（入链 + 出队 +
+                // 通知）。后者的唯一归属是 kernel_call_finish（syscall.rs:3446），
+                // 而 kernel_call（syscall.rs:600）对 VmSuspend 必调 finish，故本
+                // SYSCALL 快路径同样已经过一次入链。此处（迭代 7 50ee0e470 在
+                // “快路径不走 finish”的旧假设下补的）再次入链会让同一节点被
+                // 头插两次 → p_next[nr] 自指成环 → vm_memreq_get 摘头后 head 仍
+                // 落回该自环节点、永不归 None → was_empty 恒 false → 后续请求者
+                // 入链不再唤醒 VM，VM 停在 RECEIVING 空等 = 稳定死锁（真机
+                // s13g：ProcNr2 双入链成环，随后 ProcNr0 ven 无 memreq-notify）。
+                // 停车出队 / 入链 / 通知已由 finish 承担，本臂只补 SYSCALL 腿
+                // 特有的上下文保存（save_frame_to_context / trap_style /
+                // saved_m_user），不重复簿记。
             }
             crate::scheduler_loop(crate::current_cpu_id());
         }
