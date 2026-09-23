@@ -1339,3 +1339,7 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 修复配方（下一轮）
 
 ①PM fork 路径（fork.rs）在 sched_ctl 前补 `SYS_SCHEDCTL`（caller=sched）设置子进程 p_scheduler（或 RS birth 协议补）；②对照 C schedule.c 的 sched_init_proc 语义核对；③修后两次复跑：sched 不再 EPERM → init fork 链通 → /bin/sh /etc/rc → rc marker（单元 B 完成）→ 单元 C-K。
+
+### 1.11a 补充（下一轮探针配方精确化）
+
+elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（PM 的 rts）与 `c_rpv`（PM 的 REPLY_PEND 位）——判定 PM 的 taskcall 是否被 1.10l 正确转入 receive 半；②`x_rpv`（sched 的 REPLY_PEND 位）——判定 sched 的 SENDING 是否为其 taskcall 应答（应为否，sched 不 taskcall PM）。字段齐后按 1.11a 修复配方实施。
