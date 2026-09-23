@@ -8,13 +8,15 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：S0 待开始（环境自检 + 崩溃复现）→ 之后按 §路线图 推进（不逐项汇报）
+- **阶段**：S0 ✅ 完成（Task C 崩溃两轮稳定复现）→ 下一步 S1（穷举内核直写用户 VA 站点加探针）
+- **⚠️ 复现环境硬约束（S0 新发现）**：**必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本**跑 §2.2 命令；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同）。复跑前 `cp tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd`，QEMU 用 `/tmp/nk4a/vars_run.fd`（QEMU 会写它，不要直接用仓库文件本体）
 - **已修复**（commit）：
   - `1d25f433e` AP 入口补 EFER.NXE（bit11）+ BSP `enable()` 显式置位 —— err=8 保留位风暴 20+ → 0
   - `967a903e7` 摘除金丝雀探针（它在污染生产上下文）
   - `85a0d7cd8` 四张检测网（全部零命中，见排除账）
 - **已排除**（不要再重复排查）：DM 覆盖 / VM-内核树不一致 / 跨空间拷贝 `copy·memset·write` / IPC 消息投递 `copy_msg_to_user` / 分配器双重分配·归还·底层重用 / EFER.NXE / gdb 硬件观察点路线
-- **下一步**：S0 构建镜像 + `-smp 1` 复现崩溃，记录本轮布局基准（root / `lvl1pa`）
+- **新登记（S0 顺带发现，暂不修）**：fresh-vars 布局下 `classify()` 产出 free n=0——与 §4.4 第 3 项「跨分配器双记账」候选直接相关，若后续修复涉及 memmap 扣减协议必须一并验证此场景
+- **下一步**：S1 按 §4.4 第 1 项穷举 `os/kernel/src/` 直写用户 VA 站点，逐个加 §7.1 三元组探针（注意铁律 2 去重）
 - **阻塞/风险**：无阻塞；风险 = 探针采样饥饿（cap 被启动期重复事件吃光，见 prompt 铁律 2）与布局每轮漂移（禁止跨轮硬编码物理地址）
 
 ---
@@ -99,6 +101,59 @@
 ---
 
 ## 记录（按时间顺序追加；每节模板见下）
+
+## S0 环境自检 + Task C 崩溃复现（2026-09-23，commit 待回填）
+
+### 目标
+
+构建 x86_64 可启动镜像，`-smp 1` 复现 Task C 崩溃（两轮独立复跑），记录本轮布局基准。
+
+### 做法（可复制的命令）
+
+```bash
+# 构建（宿主，docker 缺 uefi target）
+cd /home/xzhao/github/minix-rs/os && ulimit -v 3145728 && cargo run -q -p xtask -- image --arch x86_64 --release
+# 复现（关键：vars.fd 用仓库累积副本，不用全新 OVMF VARS）
+cp /home/xzhao/github/minix-rs/tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd
+cd /home/xzhao/github/minix-rs/os && timeout 150 qemu-system-x86_64 -smp 1 \
+  -drive if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE_4M.fd,readonly=on \
+  -drive if=pflash,format=raw,unit=1,file=/tmp/nk4a/vars_run.fd \
+  -drive file=target/image/x86_64/minix.img,format=raw,media=disk \
+  -serial file:/tmp/nk4a/serial_<标签>.log -display none -no-reboot -device isa-debug-exit
+```
+
+环境自检全过：docker OK（minix-ci 可用）、cargo 1.94.1、QEMU 8.2.2、OVMF 4M 对在位。
+
+### 原始数据
+
+**第一轮坑（fresh vars，serial_s0a/s0b 两轮签名一致但不是 Task C）**：全新 `OVMF_VARS_4M.fd` 下 EFI 模块装载落点改变（reserved-big base=5eb5000/6d2e000/77ff000，conv=14），内核 `vm_handoff free n=0x0 deducted=0x17` → VM 在 `servers/vm/src/boot.rs:157: BootParams: no free memory regions` assert panic → RS 挂 `BOOTINHIBIT|VMINHIBIT`（picknone rs_flags=0x10200）→ 调度器 idle 循环 livelock（vs 采样器 400 tick 同一 kernel rip）。**这本身是一个布局敏感的鲁棒性 bug，已登记（见新登记）**。
+
+**改用仓库 `tmp/nk4a/vars.fd` 副本后（serial_s0c / serial_s0d 两轮独立复跑，签名一致）**：
+
+```
+kernel: vm_handoff free n=0x7 deducted=0x16   （boot-shim: memmaps conv=13 reserved=121）
+nk4a: rs-step2 pt=0x2237d8 len=12 tbl=0x7fffffffc800
+nk4a: rs-epslot self=0x7fffffffc800 bep=0x7fffffffc800 slot=2   ← 活值（step2 期）
+nk4a: rs-epslot self=0x7fffffffc800 bep=0x7fffffffc800 slot=8
+nk4a: rs-anom pf2 n=0x28 rbx=0x0000000000000000 rip=0x0000000000203bf0   ← asynsend 首指令 rbx=0
+nk4a: vm-pf recv / vmpt2bf off=0x2bf0 ptroot=0x35fd000                    ← VM 填 asynsend 页
+nk4a: rs-epslot self=0x0 bep=0x0 slot=0                                   ← 栈页已被抹
+nk4a: pf-exit noaddr cr2=0x0
+cause_sig: sig manager 2 gets lethal signal 11 for itself
+kernel panic: panicked at kernel/src/syscall_signal.rs:300:13
+```
+
+本轮布局基准（s0c=s0d 同构，两轮 cr3 一致）：RS root=`0x35fd000`（历史两形态之一）、VM root=`0x5e27000`、故障 lvl1pa（PT 页）=`0x1c08000`×42 + `0x1c05000`×3、lvl2pa（PD 页）=`0x35b6000`×44 + `0x1c06000`×3。用户 VA 全部跨轮稳定（`0x7fffffffc800` / `0x203bf0`）。
+
+### 结论
+
+- **Task C 按交接签名稳定复现**（需 repo vars.fd 环境，判据满足：两轮同签名）。
+- 抹写窗口再次实证：`rs-epslot` 活值（slot=8 之后）→ `rs-anom pf2`（rip=0x203bf0 处 rbx=0）之间，栈页内容被抹；其间只有 VM pick 服务 asynsend 页 PF（`pick->0x8` → `vmpt2bf` → `pick->0x2`）。
+- fresh-vars livelock 是独立的可复现环境敏感性，佐证 §4.4 第 3 项方向（VM pool 扣减与 memmap 的交互在别的布局下会把 free 清单切光）。
+
+### 下一步
+
+S1：穷举内核直写用户 VA 站点（§4.4 第 1 项候选清单：syscall_signal.rs sigframe 写 / kerninfo / ps_strings / diagctl / syscall_copy.rs vumap 系列），逐站点加 §7.1 (va, root, pa) 探针（带去重）；S2 真机对账。
 
 <!-- 追加示例：
 ## 1.2-<n> <标题>（<日期>，commit <hash>）
