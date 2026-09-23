@@ -470,6 +470,31 @@ impl UserCopy for KernelUserCopy {
             /* need_write = */ true,
             minix_arch::CurrentPteWalk::walk,
         )?;
+        // NK4-C 第 33 轮守卫探针（task1-close 裁决删除）：消息投递写的
+        // (VA, 当前 root, walk 得到的物理页)。清零者必在内核侧且本函数
+        // 是停车-唤醒窗口里唯一直写用户内存的路径——若 pa 落在 PT 页
+        // （与同轮 pf dump 的 lvl1pa 对账），即「消息写错树/错页」实锤。
+        {
+            use core::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
+            static NW: AtomicU64 = AtomicU64::new(0);
+            if NW.fetch_add(1, AtomicOrd::Relaxed) < 64 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
+                let pa = minix_arch::CurrentPteWalk::walk(
+                    minix_types::PhysBytes(root),
+                    dst,
+                )
+                .map(|(pa, _)| pa.0 & !0xFFF)
+                .unwrap_or(0);
+                C0::write_str("nk4a: msgw va=");
+                C0::write_hex(dst.0);
+                C0::write_str(" root=");
+                C0::write_hex(root);
+                C0::write_str(" pa=");
+                C0::write_hex(pa);
+                C0::write_str("\n");
+            }
+        }
         unsafe { core::ptr::write_volatile(dst.0 as *mut Message, *msg) };
         Ok(())
     }

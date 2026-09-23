@@ -29,11 +29,35 @@ use crate::region::{PfnAllocator, PfnAllocError, PAGE_SIZE};
 /// VA from `findhole()`, which recursed. minix-rs uses the Direct Map
 /// (`[ARCH: A-1]`): the VA is a constant offset (`VM_DIRECT_MAP_BASE + phys`),
 /// so allocation is a single non-recursive path regardless of init phase.
+/// NK4-C 第 33 轮取证探针共享位图（task1-close 裁决删除）：记录每个曾
+/// 被 vm_pt_alloc 分配的页表页 PFN（覆盖 0..32768 = 128MB 池空间）。
+/// 分配侧查重（二次从本钩子返回 = 双重分配实锤）、归还侧查归（任何把
+/// PT 页 PFN 还给分配器的路径都是 self=0 候选写者）。
+#[cfg(not(test))]
+static PT_SEEN: [core::sync::atomic::AtomicU64; 512] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 512];
+
 pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTableError> {
     // V11/T30: C pagetable.c:375 allocates page-table pages through
     // `alloc_mem` (the reclaim-retry funnel), so the Rust hook does too.
     let pfn = alloc_pfn_reclaiming(crate::global::page_alloc_mut())
         .map_err(|_| PageTableError::AllocationFailed)?;
+    // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：PT 页重复分配
+    // 检测器（共享位图见模块级 PT_SEEN）。
+    #[cfg(not(test))]
+    {
+        use core::sync::atomic::Ordering as AtomicOrd;
+        if (pfn as usize) < 512 * 64 {
+            let word = pfn as usize / 64;
+            let bit = 1u64 << (pfn as usize % 64);
+            let prev = PT_SEEN[word].fetch_or(bit, AtomicOrd::Relaxed);
+            if prev & bit != 0 {
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: ptalloc-DUP pfn={pfn:#x}\n"
+                ));
+            }
+        }
+    }
     let phys = AlignedPhysBytes::new(pfn as u64 * PAGE_SIZE);
     let virt = vm_phys_to_virt(phys);
     // Zero-fill via the Direct Map. `Paging::walk_alloc` (x86_64/paging.rs)
@@ -76,6 +100,21 @@ impl VmPageAllocator {
         &mut self, clicks: usize, flags: PageAllocFlags,
     ) -> Result<AlignedPhysBytes, AllocError> {
         let result = self.phys_alloc.alloc_mem(clicks, flags);
+        // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：底层分配漏斗
+        // 返回曾作 PT 页的 PFN = 双重分配实锤（本路径不走 vm_pt_alloc，
+        // DUP 检测器看不见这类重复）。
+        #[cfg(not(test))]
+        if let Ok(ref phys) = result {
+            use core::sync::atomic::Ordering as AtomicOrd;
+            let base_pfn = (phys.as_u64() / PAGE_SIZE) as usize;
+            if base_pfn < 512 * 64 && PT_SEEN[base_pfn / 64].load(AtomicOrd::Relaxed)
+                & (1u64 << (base_pfn % 64)) != 0
+            {
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: alloc-reuse-PT pfn={base_pfn:#x} clicks={clicks}\n"
+                ));
+            }
+        }
         match &result {
             Ok(_) => self.stats.record_alloc(clicks),
             Err(_) => self.stats.record_failure(),
@@ -107,6 +146,21 @@ impl VmPageAllocator {
     }
 
     pub(crate) fn free_pages(&mut self, phys: AlignedPhysBytes, clicks: usize) {
+        // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：任何把页表页
+        // PFN 归还分配器的路径都是 self=0 候选写者（共享位图见模块级
+        // PT_SEEN）。
+        #[cfg(not(test))]
+        {
+            use core::sync::atomic::Ordering as AtomicOrd;
+            let base_pfn = (phys.as_u64() / PAGE_SIZE) as usize;
+            if base_pfn < 512 * 64 && PT_SEEN[base_pfn / 64].load(AtomicOrd::Relaxed)
+                & (1u64 << (base_pfn % 64)) != 0
+            {
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: ptfree-PT pfn={base_pfn:#x} clicks={clicks}\n"
+                ));
+            }
+        }
         self.phys_alloc.free_mem(phys, clicks);
         self.stats.record_dealloc(clicks);
     }

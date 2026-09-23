@@ -24,6 +24,46 @@ use minix_arch::PteWalkArch;
 
 use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits};
 
+/// NK4-C 第 33 轮守卫探针（task1-close 裁决删除）：内核跨空间写的每个
+/// 目标物理地址。清零者必在内核侧（抹写发生在 RS 停车、仅内核运行的
+/// 窗口），本探针把每次写的 PA 落串口，与同轮 pf dump 的 lvl1pa（PT
+/// 页 PA）离线对账——命中即抓住把用户数据写进页表页的 walk/解码 bug。
+#[cfg(not(feature = "mock"))]
+pub(crate) fn nk4a_kdst_probe(tag: &str, dst_pa: u64, len: usize) {
+    use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering as AtomicOrd};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    static SEEN_PA: [AtomicU64; 128] = [const { AtomicU64::new(0) }; 128];
+    static SEEN_LEN: [AtomicU64; 128] = [const { AtomicU64::new(0) }; 128];
+    static SEEN_TAG: [AtomicU8; 128] = [const { AtomicU8::new(0) }; 128];
+    let tag_key = tag.as_bytes()[0];
+    let n = N.load(AtomicOrd::Relaxed);
+    let mut i = 0;
+    while i < n && i < 128 {
+        if SEEN_PA[i].load(AtomicOrd::Relaxed) == dst_pa
+            && SEEN_LEN[i].load(AtomicOrd::Relaxed) == len as u64
+            && SEEN_TAG[i].load(AtomicOrd::Relaxed) == tag_key
+        {
+            return;
+        }
+        i += 1;
+    }
+    if n >= 128 {
+        return;
+    }
+    SEEN_PA[n].store(dst_pa, AtomicOrd::Relaxed);
+    SEEN_LEN[n].store(len as u64, AtomicOrd::Relaxed);
+    SEEN_TAG[n].store(tag_key, AtomicOrd::Relaxed);
+    N.fetch_add(1, AtomicOrd::Relaxed);
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: kdst ");
+    C0::write_str(tag);
+    C0::write_str(" pa=");
+    C0::write_hex(dst_pa);
+    C0::write_str(" len=");
+    C0::write_hex(len as u64);
+    C0::write_str("\n");
+}
+
 // ── 02-page-table-kernel types ──
 
 pub struct PageTableRef {
@@ -400,6 +440,7 @@ pub fn cross_space_copy<D: DirectMapArch>(
             return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
         }
     };
+    nk4a_kdst_probe("copy", dst_phys.0, bytes);
 
     let src_vaddr = D::kernel_phys_to_virt(src_phys);
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
@@ -474,6 +515,10 @@ pub fn cross_space_memset<D: DirectMapArch>(
 
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
 
+    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除）
+    #[cfg(not(test))]
+    nk4a_kdst_probe("memset", dst_phys.0, count);
+
     // Caller-supplied physical ranges (NONE endpoint) are validated against
     // the Direct Map window before the access — C's memset_fault recovery
     // (klib.S:377) made unnecessary by preventing the fault.
@@ -527,6 +572,9 @@ pub fn cross_space_write<D: DirectMapArch>(
             return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
         }
     };
+    // NK4-C 第 33 轮守卫探针（task1-close 裁决删除）
+    #[cfg(not(test))]
+    nk4a_kdst_probe("write", dst_phys.0, src.len());
 
     let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
 

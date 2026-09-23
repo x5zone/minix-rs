@@ -752,6 +752,17 @@ impl VmServer {
                 proc.page_table_mut(),
             )
             .0;
+        // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：SetAddrSpace
+        // 发送值。c33a 实锤矛盾：VM ptalloc 首批 64 个 PT 页全无
+        // 0x35fd0（内核持有的 RS root），而内核 SetAddrSpace 忠实写
+        // p_seg——故 0x35fd000 必是 VM 发的。本探针直接打印发送值，
+        // 裁决「VM 发错 root」vs「内核存错 root」。
+        #[cfg(not(test))]
+        crate::bootmark::mark(&alloc::format!(
+            "nk4a: sas-send ep={} root={:#x}\n",
+            ip.endpoint.0,
+            ptroot_phys
+        ));
         self.ctx
             .gateway
             .borrow_mut()

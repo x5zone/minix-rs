@@ -36,6 +36,27 @@ pub(crate) fn handle_pagefault(
 ) -> Result<PagefaultAction, CowError> {
     let offset = VirBytes(fault_addr.0 - region.vaddr.0);
 
+    // NK4-C 第 32 轮取证探针（task1-close 裁决删除）：RS（ep2）缺页
+    // 进入时打印 VM 句柄里该进程页表根的物理地址。第 31 轮真机对照：
+    // 内核侧 48 条 RS 故障的层级 dump 全部 lvl1=0（RS 自己的根里 PTE
+    // 不在），而 VM 写入回读全程静默（VM 认为写成功）。本轮专打
+    // asynsend 首指令页（0x203bf0，refault 主角）——vmpt2 全量版被
+    // 启动早期 32 次填充耗尽额度，后段 refault 没采到（c32a 教训）。
+    // 内核侧对照锚点：sa0-0x2 root=0x35fd000。
+    #[cfg(not(test))]
+    if proc_endpoint.0 == 2 && fault_addr.0 == 0x203bf0 {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static P2N: AtomicUsize = AtomicUsize::new(0);
+        if P2N.fetch_add(1, AtomicOrd::Relaxed) < 48 {
+            use minix_arch::paging::Paging as _;
+            crate::bootmark::mark(&alloc::format!(
+                "nk4a: vmpt2bf off={:#x} ptroot={:#x}\n",
+                offset.0,
+                pt.root_paddr().0
+            ));
+        }
+    }
+
     let memtype = region.def_memtype
         .ok_or(CowError::NoMemType)?;
 
