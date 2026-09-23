@@ -1225,3 +1225,14 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 - panic-entry 补 location 行号十六进制打点（`nk4a: LN <8hex>`，lib.rs panic-entry）。s16b 实测：**panic location = sched/src/server.rs:154（0x9a）**——现行源码该行 = sched-alarm Err 探针的 diagctl 块内（1.10 轮加的探针区）。sched 的 panic 发生在探针 diagctl 打点路径上（sys_diagctl_write 自身或其返回处理）——**PM taskcall ELOCKED → init_scheduling 的 Err 臂 → sched-alarm 探针 diagctl → 该路径 panic**。
 - 语义链完整：PM taskcall ELOCKED（互撞真死锁）→ sched-alarm Err 臂 → panic ——**双重效应**：ELOCKED 本身（PM↔sched 互撞）是根因，Err 臂的探针/panic 处理放大为 sched 死亡。
 - **下一轮**：①查 diagctl 在该上下文 panic 的机制（DirectKernelCallTransport 的 diagctl 错误路径）；②PM taskcall ELOCKED 臂对照 C 改重试/异步消除互撞；③两次复跑过 1.10 → rc marker → C-K。
+
+---
+
+## 1.10x 状态（s16c，2026-09-24）
+
+- taskcall ELOCKED 重试臂已实现并验证轮 s16c：**elock 仍 1 发、1153 recvs、无 rc marker**——重试空转不 yield，sched 不运行 → 互卡持续（livelock）。
+- **下一轮配方（交接手）**：①重试间加 yield（内核 yield 系统调用或 door 让出），让 sched 的 receive 半就绪后互卡自解；或②按 C 协议修 sched 应答侧（应答改异步 notify）；③sched setalarm EPERM（sched 死因）与 VFS barrier m_type 仍待修（探针已备）。
+
+### 状态板
+
+系统 boot 全链健康（全服务器 birth 完成、PM↔VFS 屏障过、timer 133Hz）；仅 PM↔sched taskcall ELOCKED 一点未通。探针族 16 种在仓；kernel 811/xtask 12 全绿；daily.todo.md 未触碰。

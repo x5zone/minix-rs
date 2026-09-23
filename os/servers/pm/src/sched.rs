@@ -188,16 +188,24 @@ impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
 
     /// 一次 taskcall：发出 → 回复 `m_type` 即 rv（OK = 0，拒绝码非 0）。
     fn taskcall(&mut self, sched: Endpoint, mut msg: Message) -> i32 {
-        match self.transport.sendrec(sched, &mut msg) {
-            // C `_taskcall` 传输失败返回负 errno；这里折负 EIO。
-            Err(_) => -minix_types::EIO,
-            // C taskcall.c:17-20：`if (status != 0) return (status);
-            // return (msgptr->m_type);`——rv 就是回复的 m_type。SCHED 的
-            // 拒绝码（EDEADEPT/EPERM/EINVAL；C 系统进程 wire 带负号，本仓
-            // 统一正值，非零即失败）必须经此透传：吞掉它会把每次拒绝读成
-            // 成功，schedule.c:44-47 的拒绝告警与 main.c:373 的失败传播
-            // 双双失活。
-            Ok(()) => msg.m_type,
+        // NK4-C 1.10w 修复：ELOCKED(208) 重试——对照 C `_taskcall` 的阻塞
+        // 直到投递/应答语义。PM↔sched 的应答/下一请求时序错位（1.10n/
+        // 1.10u elock 实锤）时，重试等 sched 的 receive 半就绪后自行
+        // 解开；tick 活跃提供抢占，不会永久互卡。
+        let mut retries: u32 = 0;
+        loop {
+            match self.transport.sendrec(sched, &mut msg) {
+                // C `_taskcall` 传输失败返回负 errno；这里折负 EIO。
+                Err(_) => return -minix_types::EIO,
+                Ok(()) => {
+                    let rv = msg.m_type;
+                    if rv == 208 && retries < 64 {
+                        retries += 1;
+                        continue;
+                    }
+                    return rv;
+                }
+            }
         }
     }
 }
