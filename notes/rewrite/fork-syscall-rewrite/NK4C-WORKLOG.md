@@ -1082,3 +1082,15 @@ bin d--755 0 0
 sh ---755 0 0 <staging>/sh
 ```
 rc 内容补 marker echo（或确认已有）。修后两次复跑判据 `minix-rs rc: minimal boot script marker` —— **单元 B 完成**。
+
+---
+
+## 1.10s /bin/sh 已播种；下一环 = init 侧 rc 触发（s15s，2026-09-24）
+
+- /bin/sh 已入 imgrd（proto 增 bin/sh，xtask 12 测试全绿含新断言）；s15s 形态同前（1143 recvs、1 panic=sched setalarm EPERM 独立项、系统 idle）。
+- **下一环定性**：init(11) 停在 receive(ANY) 等 PM——rc 执行链 = init fork/exec /bin/sh /etc/rc 需经 PM fork+exec；init 未主动发起 ⇒ 需审 init 的 runcom 启动臂（driver.rs:294-302 → runcom::runcom）在等待什么（PM 的 spawn 通知？RS_INIT 后的启动事件？）。
+- **对照 C**：init.c 主循环读 /etc/ttytab 前 `exec /etc/rc`（init 自己 fork+exec 经 PM）——init 侧应有主动 fork/exec 动作；minix-rs init 的该臂状态待核。
+
+### 下一轮配方
+
+①grep os/commands/sbin/init 的 runcom/start 臂触发条件（等什么消息/状态）；②若 init 等 PM 的 spawn 通道而 PM 侧未发 → 补 PM 侧 init-startup 通知；③/bin/sh 在 imgrd 已就位、PM fork/exec 基建已通（sched taskcall 链已活）——rc marker 只差这一环。
