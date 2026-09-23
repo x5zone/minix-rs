@@ -786,6 +786,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     table.check_quantum(nr, priv_table, &tick_section);
                 }
             }
+            // LAPIC EOI：edge 交付的 tick 处理完必须回执，否则 LAPIC 拒收
+            // 后续 tick（C: lapic_eoi，apic.c）。
+            minix_plat::lapic_eoi();
         }
         // Profile-clock PC handoff (C reads p->p_reg.pc, which the asm
         // entry saved into the process context — the save above mirrors

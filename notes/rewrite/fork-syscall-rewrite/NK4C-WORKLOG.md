@@ -832,3 +832,9 @@ pmstall 探针（tick 臂内 PMST_TICK 计数 + tick>5000 且 current==PM 时打
 - 但 dispatch 侧：PIT(IRQ0→vector 0x50) 落**通用 IRQ 臂**（trap_dispatch.rs:722 `irq_of_vector` → `dispatch_hardware_irq(TIMER_IRQ)` → `clock_irq_handler` 软件时钟推进）——该臂**不做 `local_tick`/`check_quantum`**；带 `local_tick`+quantum 抢占的 **clock 臂（702）只由专用 clock stub 进入，实际几乎不被调用**（s14n：<1000 次/150s）。
 - ⇒ tick 到达但抢占逻辑被孤儿化：quantum 永不过期 → 单进程用户态自旋即永久垄断 → 全部历史静默死锁形态的总根因。
 - **修复（下一轮，最小面）**：通用 IRQ 臂的 TIMER_IRQ 分支补齐 clock 臂语义（`local_tick` + `check_quantum`），或把 0x50 门改绑 clock stub（后者需动 asm 绑定表，面大）。修后判据：tick k= 打点恢复节奏、PM fmt 自旋被打断/可 dump、boot 越过 1.10。
+
+### 1.10c 补充四（s14o/s14q）：PIC bring-up 首轮修复未通，交付链逐环待测
+
+- 已落地（128df8a5b + 本轮）：①通用 IRQ 臂 TIMER 分支补 `local_tick`+`check_quantum`；②plat 层 `pic_init`（ICW 重映射 0x50/0x70+IMR 只放行 IRQ0/级联，boot_init_timer 尾调用）+ IRQ 臂 `pic_eoi`；③`lapic_eoi()` 全局助手接入 TIMER 分支（edge 交付必需回执）。kernel 811 全绿、fmt 零新增。
+- **s14p/s14q 实测：`tick k=` 仍零、1141 recvs 不变** ⇒ 交付链 PIT→8259→IOAPIC pin2→LAPIC→0x50 仍有断环。已证：IDT 门在、IOAPIC RTE pin2 已编程 vector 0x50（mask 态，unmask 经 isa_irq_to_pin(0)→pin2 映射正确）、LAPIC SVR 使能。
+- **下一轮逐环仪器化**（每环一行探针）：①确认 `pic_init`/`boot_init_timer` 真被调用（入口打点）；②pic_init 后读 IMR 回显；③register_hook 后读 pin2 RTE 回显（mask 位应已清）；④init_ioapic 的 `mask_all`（lib.rs:395 init() 尾）**是否在 register_hook unmask 之后又把 pin2 重新 mask**（初始化次序竞态——init() 与 register_hook 的调用顺序待核！）；⑤PIT 端口写是否真达设备（QEMU 追踪或回读）。

@@ -111,6 +111,16 @@ unsafe fn read_imr(port: u16) -> u8 {
     v
 }
 
+/// LAPIC EOI——IOAPIC 交付的 edge 中断（PIT→8259→IOAPIC pin 2→LAPIC）
+/// 每次处理后必须回执，否则 LAPIC 拒收后续同类中断（整 boot 只见一次
+/// tick 的直接原因）。C: lapic_eoi()（apic.c）。
+pub fn lapic_eoi() {
+    unsafe {
+        let apic_base = wrmsr_msr_read(MSR_IA32_APIC_BASE) & IA32_APIC_BASE_ADDR_MASK;
+        lapic_write(apic_base as usize, LAPIC_REG_EOI, 0);
+    }
+}
+
 /// 短等待（AT 时代 PIC 需要的 ~100ns 恢复间隔；现代平台无害）。
 fn io_wait() {
     unsafe { core::arch::asm!("out dx, al", in("dx") 0x80u16, in("al") 0u8) };
