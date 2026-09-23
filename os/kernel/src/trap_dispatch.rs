@@ -712,6 +712,30 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         if let Some(nr) = cur_nr {
             let table = crate::proc_table_with(&section);
             let priv_table = crate::priv_table_with(&section);
+            // NK4-C 1.10 取证探针（task1-close 裁决删除）：PM 恢复后静默
+            // 270s（s14k）且无任何 pick/tick 迹象。本探针在 tick>5000 后
+            // 对 current==PM(0) 的 tick 打保存上下文栈回溯（cap 2）：
+            // 有输出 ⇒ tick 活着、PM 在用户态自旋（栈回溯给出 fmt 调用
+            // 链）；零输出 ⇒ timer 中断死（另一独立 bug）。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+                static PMST_TICK: AtomicU64 = AtomicU64::new(0);
+                static PMST_N: AtomicUsize = AtomicUsize::new(0);
+                let tick = PMST_TICK.fetch_add(1, AtomicOrd::Relaxed);
+                if tick > 5000
+                    && nr.0 == 0
+                    && PMST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
+                {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    Console::write_str("nk4a: pmstall tick=");
+                    Console::write_hex(tick);
+                    Console::write_str("\n");
+                    if let Some(p) = table.get(nr) {
+                        crate::stacktrace::proc_stacktrace(p);
+                    }
+                }
+            }
             if table.get(nr).is_some_and(|p| p.is_runnable()) {
                 table.check_quantum(nr, priv_table, &section);
             }

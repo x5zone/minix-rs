@@ -801,3 +801,21 @@ fmt 自旋 = `init.rs:710-711` VFS 屏障 `sendrec(...).expect("PM: can't sync u
 ### 1.10 补充二（s14l：init.rs:711 假设证伪）
 
 errno 暴露版（init.rs 屏障 expect 改 panic! 打 errno 数值）复跑：仍停 1141 recvs、新 panic 行未出现 ⇒ **自旋的 Debug::fmt 不在 711 站点**，PM 在进入 711 之前已在某 `{:?}` 格式化中自旋（候选：panic handler 对 PanicInfo 的格式化、audit_log! 的 Debug 参数、其他错误臂）。init.rs 的 errno 暴露加固保留（封闭格式化面仍有价值）。**下一轮**：①kernel 侧对「PM 恢复后 N 秒静默」打 PM 保存上下文完整栈回溯（stacktrace 探针已有基建）拿到 fmt 的调用链 rip；②沿调用链找具体 `{:?}` 站点与被格式化的腐坏值。
+
+---
+
+## 1.10c 覆盖性根因：timer 中断早期死亡（2026-09-24，serial_s14m）
+
+### 判别
+
+pmstall 探针（tick 臂内 PMST_TICK 计数 + tick>5000 且 current==PM 时打栈回溯，cap 2）420s 全程**零输出**。结合 rbxw irq-save 仅在早期出现（s14m 13 次，最后一条在 ~5021 行，ep=0x8 rip=0x22d24d=VM receive 空闲点）：**timer IRQ 在 boot ~5000 行（birth-burst 相位）后彻底停止**；其后 ~14000 行全部无 tick 运行。
+
+### 定性
+
+- PM 的 fmt 自旋是**受害者**：tick 死后无任何中断能打断用户态自旋（无抢占、无 picknone、无 tail-dump——全部自洽）。
+- 1.10 的 PM↔VM fault 循环、fmt 死循环、乃至更早的多个「静默死锁」形态，都可能只是这一覆盖性根因的不同投影：**任何 CPU 忙循环（哪怕几十毫秒）在 tick 死后都变成永久垄断**。
+- 候选死因：①tick 臂 hook 链（clock task 唤醒路径）某分支 mask 了 IRQ 行未恢复 / EOI 缺失 → PIC 锁死；②`save_irq_frame_to_context` 在特定 interrupted 状态（kernel-origin tick）下破坏现场后异常返回；③PIT 编程被某处重编程关闭。tick 死亡的精确时刻可探：PMST_TICK 每 1000 次打 tick 计数+current ep（cap 20），死亡点前后事件对齐。
+
+### 下一步（交接手）
+
+①s14n：tick 臂加每-1000-tick 打点（tick 计数+current ep），定位 tick 停止的精确事件；②审计 tick 臂 hook 链（irq_manager dispatch → clock hooks）的 mask/EOI 配对与错误路径；③对照 C clock.c 的 tick 处理（任务唤醒 vs 内联记账）查 minix-rs 懒任务模型的 tick 消费缺口。
