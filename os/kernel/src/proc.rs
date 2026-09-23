@@ -1495,6 +1495,7 @@ impl KProcess {
             state: VmSuspendState::Pending,
             saved_msg,
             saved_m_user: None,
+            resume_skip_eager_reply: false,
             copy_context: None,
         });
 
@@ -1525,6 +1526,7 @@ impl KProcess {
             state: VmSuspendState::Pending,
             saved_msg,
             saved_m_user: None,
+            resume_skip_eager_reply: false,
             copy_context: Some(copy_ctx),
         });
 

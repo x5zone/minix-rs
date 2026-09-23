@@ -1901,6 +1901,7 @@ mod tests {
                 let target_ep = proc.p_endpoint;
                 proc.p_vm_suspend = Some(VmSuspendContext {
                 saved_m_user: None,
+                resume_skip_eager_reply: false,
                     state: VmSuspendState::Pending,
                     suspend_type: VmSuspendType::KernelCall,
                     target: target_ep,
@@ -1947,6 +1948,7 @@ mod tests {
                 let target_ep = proc.p_endpoint;
                 proc.p_vm_suspend = Some(VmSuspendContext {
                 saved_m_user: None,
+                resume_skip_eager_reply: false,
                     state: VmSuspendState::Pending,
                     suspend_type: VmSuspendType::KernelCall,
                     target: target_ep,
@@ -2021,6 +2023,7 @@ mod tests {
             proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
             proc.p_vm_suspend = Some(VmSuspendContext {
                 saved_m_user: None,
+                resume_skip_eager_reply: false,
                 state: VmSuspendState::Pending,
                 suspend_type: VmSuspendType::KernelCall,
                 target: target_ep,
@@ -2066,6 +2069,7 @@ mod tests {
             proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
             proc.p_vm_suspend = Some(VmSuspendContext {
                 saved_m_user: None,
+                resume_skip_eager_reply: false,
                 state: VmSuspendState::Fetched,
                 suspend_type: VmSuspendType::KernelCall,
                 target: Endpoint(100),
@@ -2105,6 +2109,7 @@ mod tests {
             proc.p_rts_flags.set(RtsFlagsBits::VMREQUEST);
             proc.p_vm_suspend = Some(VmSuspendContext {
                 saved_m_user: None,
+                resume_skip_eager_reply: false,
                 state: VmSuspendState::Pending,
                 suspend_type: VmSuspendType::KernelCall,
                 target: Endpoint(100),

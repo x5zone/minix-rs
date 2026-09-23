@@ -3583,6 +3583,7 @@ mod tests {
             let target_ep = p.p_endpoint;
             p.p_vm_suspend = Some(VmSuspendContext {
                 saved_m_user: None,
+                resume_skip_eager_reply: false,
                 state: VmSuspendState::Pending,
                 suspend_type: VmSuspendType::KernelCall,
                 target: target_ep,

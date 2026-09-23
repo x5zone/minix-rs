@@ -712,6 +712,15 @@ pub struct VmSuspendContext {
     /// 此字段（saved_msg 承载）。
     pub saved_m_user: Option<u64>,
 
+    /// NK4-C S3 门纪律标记：本次挂起是否源自 int-33 IPC 腿
+    /// （`kernel_call_finish_ipc_door`，门语义见其文档）。C 对位：
+    /// `copy_msg_to_user(p_delivermsg_vir)` 只存在于 `kernel_call()` 腿
+    /// （system.c:83）——该腿每次入口都先刷新 p_delivermsg_vir
+    /// （system.c:141），陷阱腿（proc.c mini_*）从不写调用者消息缓冲。
+    /// 置真时 stage 3a 补完成同样跳过 eager 回执直写，杜绝恢复后向陈旧
+    /// p_delivermsg_vir（如 SENDA 窗内不刷新者）落写 80 字节。
+    pub resume_skip_eager_reply: bool,
+
     /// Current state of the suspend request.
     /// C: `p_vmrequest.vmresult` (three-state int)
     pub state: VmSuspendState,

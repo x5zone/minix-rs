@@ -3770,6 +3770,9 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                         result,
                         priv_table,
                         false,
+                        // 门归属由 ctx.resume_skip_eager_reply 裁决（kernel_call
+                        // 腿默认 eager，IPC 腿挂起的在 finish 内跳过）。
+                        true,
                     );
                     match result.reply_code() {
                         // 完成：交付 RAX + 清挂起态，随后正常 restore。

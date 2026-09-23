@@ -1591,9 +1591,13 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
 
     // BKL: dispatch_ipc_entry acquires and transfers out (held across
     // kernel_call_finish, which releases it on every non-VmSuspend path).
+    // NK4-C S3 门纪律：陷阱腿用 `kernel_call_finish_ipc_door`——C 的
+    // proc.c mini_* 从不执行 kernel_call 腿的 eager 回执直写（状态经
+    // h_errno/寄存器，真回执经 MF_DELIVERMSG 投递），陈旧
+    // p_delivermsg_vir（SENDA 不刷新）因此在结构上不可达。
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
     let result = crate::syscall::dispatch_ipc_entry(cur_nr, table, &mut msg, priv_table);
-    crate::syscall::kernel_call_finish(cur_nr, table, &msg, result, priv_table);
+    crate::syscall::kernel_call_finish_ipc_door(cur_nr, table, &msg, result, priv_table);
 
     // Delivered (reply code): errno rides RAX out through the stub's
     // iretq; the IPC status bits were ORed into the saved context's RBX by

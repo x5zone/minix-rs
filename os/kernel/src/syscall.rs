@@ -3237,7 +3237,37 @@ pub fn kernel_call_finish(
     result: KcallResult,
     priv_table: &mut PrivTable,
 ) {
-    kernel_call_finish_holding_bkl(caller_nr, proc_table, msg, result, priv_table, true);
+    kernel_call_finish_holding_bkl(caller_nr, proc_table, msg, result, priv_table, true, true);
+}
+
+/// `kernel_call_finish` for the int-33 IPC trap door (mini_send /
+/// mini_receive / mini_senda leg in `trap_dispatch`).
+///
+/// C parity (NK4-C S3 根因修复): the eager reply copy
+/// `copy_msg_to_user(msg, p_delivermsg_vir)` exists ONLY on the
+/// `kernel_call()` leg (system.c:83) — that leg always refreshes
+/// `p_delivermsg_vir` at entry (system.c:141), so the target is by
+/// construction a live buffer. The C trap leg (proc.c `mini_*`) never
+/// writes the caller's message buffer from a finish path: status rides
+/// `h_errno`/registers back through the stub, and a real reply rides the
+/// `MF_DELIVERMSG` delivery machinery. Rust routed the int-33 door
+/// through the same finish machine without the door discipline, so a
+/// SENDA window (which deliberately does NOT refresh `p_delivermsg_vir`,
+/// C parity proc.c:983) could complete an errno reply into a *stale*
+/// delivermsg address — an already-popped user stack frame (real-machine
+/// Task C: 80-byte reply clobbered a live slot, `self=0` SIGSEGV).
+/// This variant keeps every other bookkeeping step (VmSuspend parking,
+/// NoReply dequeue, saved_msg cleanup, BKL release) but skips the eager
+/// reply write, and stamps the door onto a freshly parked suspend
+/// context so a later stage-3a re-dispatch of the same call skips it too.
+pub fn kernel_call_finish_ipc_door(
+    caller_nr: ProcNr,
+    proc_table: &mut crate::proc_table::ProcessTable,
+    msg: &Message,
+    result: KcallResult,
+    priv_table: &mut PrivTable,
+) {
+    kernel_call_finish_holding_bkl(caller_nr, proc_table, msg, result, priv_table, true, false);
 }
 
 /// `kernel_call_finish` without the BKL release, for re-dispatch contexts
@@ -3253,6 +3283,7 @@ pub(crate) fn kernel_call_finish_holding_bkl(
     result: KcallResult,
     priv_table: &mut PrivTable,
     release_bkl: bool,
+    eager_reply_copy: bool,
 ) {
     // B1: the dispatch entry transferred a held BKL into this chain
     // (kernel_call_dispatch / dispatch_ipc_entry via `transfer()`); the
@@ -3269,6 +3300,13 @@ pub(crate) fn kernel_call_finish_holding_bkl(
             .as_mut()
         {
             ctx.saved_msg = Some(*msg);
+            // 门纪律（NK4-C S3）：IPC 陷阱腿的挂起要把门标记带上——
+            // stage 3a 补完成时同样不得 eager 直写回执（否则恢复后
+            // 向陈旧 p_delivermsg_vir 落写）。粘性置位，不随重挂起清除
+            //（同一 ctx 生命周期内门归属不变）。
+            if !eager_reply_copy {
+                ctx.resume_skip_eager_reply = true;
+            }
         }
         proc_table
             .get_mut(caller_nr)
@@ -3321,7 +3359,19 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         proc_table.dequeue_if_blocked(caller_nr);
     }
 
-    if let Some(errno) = result.reply_code() {
+    if let Some(errno) = result.reply_code().filter(|_| {
+        // 门纪律（NK4-C S3，见 `kernel_call_finish_ipc_door` 文档）：
+        // eager 回执直写只属于 kernel_call()/SYSCALL 腿；IPC 陷阱腿
+        //（eager_reply_copy=false）与被它挂起的调用恢复重派
+        //（resume_skip_eager_reply）都不写——错误已经随 RAX 交付，
+        // 真回执由 MF_DELIVERMSG 投递机制负责。
+        let door_skip = proc_table.get(caller_nr).is_some_and(|p| {
+            p.p_vm_suspend
+                .as_ref()
+                .is_some_and(|c| c.resume_skip_eager_reply)
+        });
+        eager_reply_copy && !door_skip
+    }) {
         let mut reply = *msg;
         reply.m_source = Endpoint::SYSTEM;
         reply.m_type = errno;
