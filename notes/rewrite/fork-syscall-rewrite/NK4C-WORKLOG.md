@@ -442,10 +442,10 @@ F10d 修复 runnable=yes queued=no 停点。新停点（阶段 1.4）= VM 缺页
 
 ### 机制与假设（待下一轮真机探针裁定）
 
+0. **两条独立机制（本轮静态厘清）**：缺页腿 `forward_pagefault_to_vm`（trap_dispatch.rs L1320）=`rts_set(PAGEFAULT)` + `mini_send(VM_PAGEFAULT → VM)`（C `pagefault()` exception.c:112-129），走 VM **主 receive 循环**；而内核调用 VmSuspend（拷贝等）走 `vm_enqueue_and_notify_vm` + SIGKMEM → `do_memory`（MEMREQ_GET）。9 进程 flags=0x400（**纯 PAGEFAULT无 SENDING 位**）= 它们的 VM_PAGEFAULT 消息已**投递给 VM**（非阻塞在发送队列），即 VM 确实收到并开始逐个处理。
 1. **notify 守卫正确**：`vm_enqueue_and_notify_vm`（proc_table.rs L321）仅 `was_empty`（链空→非空）时 notify VM，忠实 C proc.c:253。`vm_memreq_get`（L223-229）取走时确实从链上摘除。→ 协议本身无丢失。
-2. **矛盾点**：只有 1 次 notify 但 9 进程停 PAGEFAULT。可能：(a) 这 9 个是在 VM 自死（0x100 进 VMREQUEST）之后才缺页，此时唯一服务者 VM 已挂起，新缺页入链但 notify 目标 VM 已不自立；(b) 缺页腿设了 RTS_PAGEFAULT 但未全部入 vm_request_queue。
-3. **主疑：VM 自suspend**：VM 做某内核调用（SYS_VMCTL / do_memory 内的跨空间拷贝）触发自身页表需解→VmSuspend → VM 把自己入链。一旦 VMREQUEST 挂在 VM 身上，无人再能清它（只有 VM 能服务链，而 VM 已停）→ 全系统孤儿。C 里 VM 自身工作集预映射/自故障不走同一 suspend 路径，需 grep `minix3/servers/vm` 对位。
-4. **P1-ipc 关联**：`clear_ipc_refs`（syscall.rs L1283）裸 clear(SENDING|RECEIVING) 绕过 RTS_UNSET 入队半（F10d 同型）。若解故障往返经 IPC clear 唤醒会重现 runnable=yes queued=no。
+2. **主疑：VM 解缺页时自suspend（看门人看自己）**：VM 收到 VM_PAGEFAULT 开解时，某内核操作（映射/拷贝）触发一个需 VM 解的 VmSuspend → VM 自己被置 VMREQUEST 入链。一旦 VMREQUEST 挂在 VM（唯一 receive+do_memory 服务者）身上，无人能清它 → 剩余 VM_PAGEFAULT 消息无人再收、已入链的 memreq 无人再服务 → 全系统孤儿。**C 里 VM 解缺页的内核调用不应 VmSuspend 回自身**，需 grep `minix3/servers/vm`（do_pagefault / 映射路径）对位 Rust 是否多绕了一次会自挂起的内核调用。
+3. **P1-ipc 关联**：`clear_ipc_refs`（syscall.rs L1283）裸 clear(SENDING|RECEIVING) 绕过 RTS_UNSET 入队半（F10d 同型）。若解故障往返经 IPC clear 唤醒会重现 runnable=yes queued=no。
 
 ### 下一步探针计划（未实施）
 
