@@ -81,6 +81,14 @@ pub fn pic_eoi(irq: u8) {
 pub fn lapic_eoi() {
     crate::x86_64::interrupt::lapic_eoi()
 }
+#[cfg(target_arch = "x86_64")]
+pub fn ioapic_rte_read(pin: u8) -> u64 {
+    crate::x86_64::interrupt::ioapic_rte_read(pin)
+}
+#[cfg(target_arch = "x86_64")]
+pub fn pic_imr_read() -> (u8, u8) {
+    crate::x86_64::interrupt::pic_imr_read()
+}
 #[cfg(target_arch = "aarch64")]
 pub const TIMER_IRQ: IrqVector = crate::arm64::interrupt::TIMER_IRQ;
 #[cfg(target_arch = "riscv64")]

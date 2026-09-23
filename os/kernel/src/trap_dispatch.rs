@@ -772,6 +772,23 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // （C proc.c:418-424）。save_irq_frame_to_context 已在本臂入口
         // 保存被中断现场，抢占恢复安全。
         if irq == minix_plat::TIMER_IRQ.get() {
+            // s14t：通用臂 tick 计数打点（clock 臂的 tick k= 只覆盖专用
+            // stub 路径；本臂的 tick 此前不可见）。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+                static GTICK: AtomicU64 = AtomicU64::new(0);
+                static GTICK_K: AtomicUsize = AtomicUsize::new(0);
+                let g = GTICK.fetch_add(1, AtomicOrd::Relaxed);
+                if g % 1000 == 0
+                    && GTICK_K.fetch_add(1, AtomicOrd::Relaxed) < 20
+                {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    Console::write_str("nk4a: gtick k=");
+                    Console::write_hex(g);
+                    Console::write_str("\n");
+                }
+            }
             crate::clock::local_tick(crate::current_cpu_id());
             let tick_section = unsafe { crate::smp::BklSection::assume_held() };
             let tick_cur = {

@@ -672,6 +672,14 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
 
+    // NK4-C 1.10c 根因修复：活 boot 路径补 D-59 三段序列（PIT 编程 +
+    // register_hook 解 IOAPIC pin2 mask + gate）。`boot_init_timer` 的
+    // 唯一旧调用点在 `bsp_finish_booting`——那是 `#[allow(dead_code)]`
+    // 的分歧路径，活路径（本函数）从不执行 ⇒ timer hook 从未注册、
+    // pin2 mask 从未解除，tick 从未到达（s14r：bit-enter 零输出实锤；
+    // quantum 抢占孤儿化 = 历史全部用户态自旋永久垄断的总根因）。
+    boot_init_timer();
+
     boot_stage!("kernel: kmain B clock+intr ok\n");
     #[cfg(target_arch = "x86_64")]
     {
@@ -2438,9 +2446,21 @@ pub fn boot_init_timer() {
     use minix_arch::{ClockArch, CurrentClockArch, CurrentTimerIrqGate, TimerIrqGate};
     use minix_platform::{platform_desc, PlatformDesc};
     use minix_types::Endpoint;
+    // NK4-C 1.10c 逐环仪器化（task1-close 裁决删除）：timer 交付链逐环
+    // 打点（PIT→8259→IOAPIC pin2→LAPIC→0x50），断环定位。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("nk4a: bit-enter\n");
+    }
     let pd = platform_desc();
     let mut clock_arch = CurrentClockArch::new(pd.timer());
     clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("nk4a: pit-programmed\n");
+    }
 
     // D-46 (Step 1.5.7 landed, 2026-09-06 — software half): register the
     // clock IRQ hook with the global IrqManager. The handler
@@ -2459,6 +2479,18 @@ pub fn boot_init_timer() {
             minix_plat::IrqPolicy::REENABLE,
         )
         .expect("register clock IRQ hook: no free slots in IRQ_MANAGER");
+    // NK4-C 1.10c 逐环仪器化（task1-close 裁决删除）：register_hook 后
+    // 回读 IOAPIC pin2 RTE——ISA IRQ0 经 pin2 进（vector 0x50，bit16=mask
+    // 应已由 first-handler unmask 清除）。mask 位仍 1 ⇒ unmask 断链。
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        let rte = minix_plat::ioapic_rte_read(2);
+        Console::write_str("nk4a: rte pin2=0x");
+        Console::write_hex(rte);
+        Console::write_str("
+");
+    }
     // (c) — gates last, handler already registered (see the Step 6 header
     // for the per-architecture semantics of this call).
     <CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq();
@@ -2470,6 +2502,16 @@ pub fn boot_init_timer() {
     // 后 tick 即流入。顺序：pic_init（重映射+mask）→ init_timer（PIT 计数
     // 开始，IRQ0 已放行）。
     minix_plat::pic_init();
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        let (m_imr, s_imr) = minix_plat::pic_imr_read();
+        Console::write_str("nk4a: pic-imr m=0x");
+        Console::write_hex(m_imr as u64);
+        Console::write_str(" s=0x");
+        Console::write_hex(s_imr as u64);
+        Console::write_str("\n");
+    }
 }
 
 
