@@ -298,10 +298,19 @@ pub fn plan(
     // 7. /etc 原型 + mkfs_mfs 播种 imgrd。
     let proto_path = image_dir.join("imgrd.proto");
     let imgrd = image_dir.join("imgrd.img");
+    // NK4-C 1.10r（rc marker 缺口）：imgrd 播种 /bin/sh——init 的
+    // runcom 状态机 exec /bin/sh 跑 /etc/rc，缺件即 marker 链断。
+    let sh_rel = format!("target/{}/{}/sh", arch.module_target(), profile);
+    if !layout.os_root.join(&sh_rel).is_file() {
+        bail!(
+            "装配缺件（fail-fast）：/bin/sh 宿主产物 {} 不存在",
+            layout.os_root.join(&sh_rel).display()
+        );
+    }
     actions.push(Action::Write {
         path: proto_path.clone(),
-        bytes: generate_etc_proto(&layout.os_root.join("etc"))?,
-        note: "imgrd 原型文件（/etc 最小集 + /dev/console）",
+        bytes: generate_etc_proto(&layout.os_root.join("etc"), &sh_rel)?,
+        note: "imgrd 原型文件（/etc 最小集 + /bin/sh + /dev/console）",
     });
     actions.push(Action::Tool {
         program: layout
@@ -422,7 +431,7 @@ pub fn plan(
 /// 收口；设备行 `名 c--权限 uid gid major minor`。console 设备号对位
 /// C dmap 表的 TTY_MAJOR=4（`minix3/minix/include/minix/dmap.h:25`，
 /// ttys 族），惯例次设备号 0。
-pub fn generate_etc_proto(etc_dir: &Path) -> Result<Vec<u8>> {
+pub fn generate_etc_proto(etc_dir: &Path, sh_host_rel: &str) -> Result<Vec<u8>> {
     // 存在性在此验证；内容由 mkfs_mfs 的 StdHost 播种时从宿主读取。
     for required in ["rc", "ttys"] {
         let path = etc_dir.join(required);
@@ -434,7 +443,8 @@ pub fn generate_etc_proto(etc_dir: &Path) -> Result<Vec<u8>> {
         }
     }
 
-    let proto = "minix-rs imgrd\n\
+    let proto = format!(
+        "minix-rs imgrd\n\
                  2048 0\n\
                  d--755 0 0\n\
                  etc d--755 0 0\n\
@@ -444,8 +454,12 @@ pub fn generate_etc_proto(etc_dir: &Path) -> Result<Vec<u8>> {
                  dev d--755 0 0\n\
                  console c--600 0 0 4 0\n\
                  $\n\
-                 $\n";
-    Ok(proto.as_bytes().to_vec())
+                 bin d--755 0 0\n\
+                 sh ---755 0 0 {sh_host_rel}\n\
+                 $\n\
+                 $\n"
+    );
+    Ok(proto.into_bytes())
 }
 
 /// 执行装配计划。`dry_run` 只打印不落盘。
@@ -597,10 +611,22 @@ mod tests {
         }
     }
 
+    /// NK4-C 1.10r：在 tempdir 布局中植出 /bin/sh 宿主产物（plan 的
+    /// 缺件 fail-fast 需要它存在；内容无关——proto 只引用路径）。
+    fn plant_sh(layout: &Layout, module_target: &str, profile: &str) {
+        let dir = layout
+            .target_root
+            .join(module_target)
+            .join(profile);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("sh"), b"").unwrap();
+    }
+
     /// 计划完整性：构建/装机/播种/ESP 组装各环节齐全，生产开关在位。
     #[test]
     fn plan_x86_64_contains_all_contract_steps() {
         let (layout, _guard) = tempdir::create();
+        plant_sh(&layout, "x86_64-unknown-none", "release");
         let (actions, esp) = plan(Arch::X86_64, true, None, &layout).unwrap();
 
         let text = format!("{actions:?}");
@@ -651,6 +677,7 @@ mod tests {
     #[test]
     fn plan_aarch64_switches_every_uefi_slot() {
         let (layout, _guard) = tempdir::create();
+        plant_sh(&layout, "aarch64-unknown-none", "release");
         let (actions, esp) = plan(Arch::Aarch64, true, None, &layout).unwrap();
         let text = format!("{actions:?}");
 
@@ -720,8 +747,9 @@ mod tests {
         /// 里 `Action::Write` 的 `bytes`）——多一个尾反斜杠也是行为等价但契约
         /// 已变，所以比的是字节而不是「能不能启动」。
         const X86_FROZEN: &str = "echo -off\r\nFS0:\r\ncd EFI\\BOOT\r\nBOOTX64.EFI\r\n";
-        let nsh = |arch: Arch| -> Vec<u8> {
+        let nsh = |arch: Arch, module_target: &str| -> Vec<u8> {
             let (layout, _guard) = tempdir::create();
+            plant_sh(&layout, module_target, "release");
             let (actions, _) = plan(arch, true, None, &layout).unwrap();
             actions
                 .iter()
@@ -733,9 +761,9 @@ mod tests {
                 })
                 .expect("startup.nsh 写入步不在计划里")
         };
-        assert_eq!(nsh(Arch::X86_64), X86_FROZEN.as_bytes());
+        assert_eq!(nsh(Arch::X86_64, "x86_64-unknown-none"), X86_FROZEN.as_bytes());
         assert_eq!(
-            nsh(Arch::Aarch64),
+            nsh(Arch::Aarch64, "aarch64-unknown-none"),
             X86_FROZEN.replace("BOOTX64.EFI", "BOOTAA64.EFI").as_bytes()
         );
     }
@@ -744,8 +772,10 @@ mod tests {
     #[test]
     fn etc_proto_grammar_and_console_device_line() {
         let (layout, _guard) = tempdir::create();
-        let proto =
-            String::from_utf8(generate_etc_proto(&layout.os_root.join("etc")).unwrap()).unwrap();
+        let proto = String::from_utf8(
+            generate_etc_proto(&layout.os_root.join("etc"), "target/sh").unwrap(),
+        )
+        .unwrap();
         let mut lines = proto.lines();
         assert_eq!(
             lines.next().unwrap(),
@@ -765,8 +795,8 @@ mod tests {
         let body: Vec<&str> = lines.collect();
         assert_eq!(
             body.iter().filter(|l| **l == "$").count(),
-            3,
-            "etc/dev/root 三层收口"
+            4,
+            "etc/dev/bin/root 四层收口（1.10r：+bin 装载 /bin/sh）"
         );
         assert!(
             body.contains(&"console c--600 0 0 4 0"),
@@ -776,6 +806,10 @@ mod tests {
             body.contains(&"rc ---755 0 0 etc/rc"),
             "rc 经宿主路径 etc/rc 播种"
         );
+        assert!(
+            body.contains(&"bin d--755 0 0") && body.contains(&"sh ---755 0 0 target/sh"),
+            "/bin/sh 播种（rc marker 链：init runcom exec /bin/sh）"
+        );
     }
 
     /// /etc 最小集缺件时原型生成必须报错（装机面不造缺 rc 的镜像）。
@@ -783,6 +817,6 @@ mod tests {
     fn etc_proto_requires_rc_and_ttys() {
         let (layout, guard) = tempdir::create();
         std::fs::remove_file(guard.0.join("etc/rc")).unwrap();
-        assert!(generate_etc_proto(&layout.os_root.join("etc")).is_err());
+        assert!(generate_etc_proto(&layout.os_root.join("etc"), "target/sh").is_err());
     }
 }
