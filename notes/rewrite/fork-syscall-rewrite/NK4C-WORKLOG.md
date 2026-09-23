@@ -1314,3 +1314,16 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 
 - sched:77 panic 复现确认（LN=0x4d=77 ✓）：init_scheduling 返回 Err（get_hz 或 setalarm 之一），sched-hz/sched-alarm 探针因 sched 侧 diagctl 断路未现形。
 - **下一轮配方（接手即做，两步）**：①sched 侧诊断通道修复：grep sched 的 KernelIpcTransport 的 diag 通路（`sys_diagctl_write` 走 DirectKernelCallTransport → SYS_DIAGCTL kernel call——查 kernel dispatch_diagctl 对 caller=4 的返回（内核侧 ipcerr 式打点））；②按 errno 修 init_scheduling 首个失败调用；③修后 init 进 runcom → /bin/sh /etc/rc → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10x3 状态固化（s15x2，2026-09-24）
+
+- ipcerr 扩量+caller 过滤落地（s15x2）：`caller=0x0 err=ELOCKED`（PM taskcall send 半 ↔ sched EPERM 应答互撞）+ `caller=0x0 err=ECALLDENIED ×2`——**PM 的内核调用被 CallDenied**（kcall mask 缺口候选：SYS_SCHEDCTL/SYS_DIAGCTL 家族）。
+- elock 全量状态探针入仓（0111b476e/ba0071680）：PM↔sched 双向 SENDING 互撞全现场。
+- diag-efault 探针入仓（s16e 零命中=sched 的 diagctl 拷贝未 EFAULT——诊断静默失败机制在更深处）。
+- WORKLOG 1.7-1.10y2 全链同步；kernel 811 全绿、xtask 12 全绿；`AI-chats/daily.todo.md` 与外来文件全程未触碰。
+
+### 下一步（接手即做）
+
+①CallDenied ×2 的调用号定位（ipcerr 补 call_nr 打点，一轮）——修 PM 的 kcall mask 或调用点；②ELOCKED 臂的 taskcall 重试/异步语义修复（重试需 yield 让 sched 推进）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
