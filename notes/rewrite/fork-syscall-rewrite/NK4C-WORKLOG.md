@@ -1161,3 +1161,12 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 下一轮配方（交接手，聚焦三点）
 
 ①grep PM 侧全部「向 ep4 发送 m_type=3」的站点：`grep -rn "PM_CALL_WAIT4\|m_type.*=.*3" os/servers/pm/src/` 定位该消息构造点（候选：PM 的 wait.rs 转发、sig_delay_done 应答、或 timer.rs 的 alarm 应答）；②按 C 协议修一侧异步（该类应答改 sendnb，或改 kernel notify）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10w 收口（s15w，2026-09-24）
+
+- elock 补 m_source 字段（src=0x0=PM 自身 ✓ 一致）；elock/dd2m 探针族入仓（687a5bf51）。
+- s15w 复跑形态同前（elock caller=PM dst=4 mt=3 单发、1151 recvs、无 rc marker、picknone rs_flags=0x8）。
+- **定性保持**：ELOCKED = PM 的 taskcall（SENDREC→sched）send 半，与 sched 在途应答 send 互撞（双向 SENDING）——协议级真死锁，检测器正确。
+- **下一轮配方（接手即做，单点）**：①PM 的 taskcall 被 ELOCKED 后 init_scheduling 的 fail-fast 行为对照 C schedule.c:340-341 改重试/延迟语义；②sched 侧应答 sendnb 已落地，核 PM taskcall 的 sendrec 原子性修复（1.10l）是否覆盖 PM taskcall 场景（REPLY_PEND 门控路径）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
