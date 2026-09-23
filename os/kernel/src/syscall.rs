@@ -1673,43 +1673,47 @@ fn privctl_allow(
     priv_table: &crate::kpriv::PrivTable,
     target_nr: ProcNr,
 ) -> KcallResult {
-    let target = proc_table.get_mut(target_nr);
-    match target {
-        Some(p) => {
-            // C: if (!RTS_ISSET(rp, RTS_NO_PRIV) || priv(rp)->s_proc_nr == NONE)
-            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
-                return KcallResult::Ok(EPERM);
-            }
-            // Check s_proc_nr != NONE (C: priv(rp)->s_proc_nr == NONE)
-            let has_priv = p.priv_id
+    // Pre-checks with immutable borrows so the target slot is free for the
+    // scheduler-aware rts_unset below (it needs &mut self to enqueue).
+    let (has_no_priv, has_priv) = match proc_table.get(target_nr) {
+        Some(p) => (
+            p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV),
+            p.priv_id
                 .and_then(|id| priv_table.get(id))
                 .map(|kp| kp.identity.s_proc_nr.is_some())
-                .unwrap_or(false);
-            if !has_priv {
-                return KcallResult::Ok(EPERM);
-            }
-            p.p_rts_flags.clear(crate::proc::RtsFlagsBits::NO_PRIV);
-            KcallResult::Ok(0)
-        }
-        None => KcallResult::Ok(EINVAL),
+                .unwrap_or(false),
+        ),
+        None => return KcallResult::Ok(EINVAL),
+    };
+    // C: if (!RTS_ISSET(rp, RTS_NO_PRIV) || priv(rp)->s_proc_nr == NONE)
+    //    return(EPERM);
+    if !has_no_priv || !has_priv {
+        return KcallResult::Ok(EPERM);
     }
+    // C: RTS_UNSET(rp, RTS_NO_PRIV) — clear + enqueue when the process
+    // transitions non-runnable → runnable. A raw flag clear left the woken
+    // server runnable but off the run queue forever (real machine NK4-C 1.3:
+    // 8 servers runnable=yes queued=no after Allow returned OK).
+    proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::NO_PRIV);
+    KcallResult::Ok(0)
 }
 
 /// SYS_PRIV_DISALLOW — set RTS_NO_PRIV (refuse unless already set → EPERM).
 ///
 /// C: do_privctl.c:75-79.
 fn privctl_disallow(proc_table: &mut ProcessTable, target_nr: ProcNr) -> KcallResult {
-    let target = proc_table.get_mut(target_nr);
-    match target {
-        Some(p) => {
-            if p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
-                return KcallResult::Ok(EPERM);
-            }
-            p.p_rts_flags.set(crate::proc::RtsFlagsBits::NO_PRIV);
-            KcallResult::Ok(0)
-        }
-        None => KcallResult::Ok(EINVAL),
+    // C: if (RTS_ISSET(rp, RTS_NO_PRIV)) return(EPERM);
+    let has_no_priv = match proc_table.get(target_nr) {
+        Some(p) => p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV),
+        None => return KcallResult::Ok(EINVAL),
+    };
+    if has_no_priv {
+        return KcallResult::Ok(EPERM);
     }
+    // C: RTS_SET(rp, RTS_NO_PRIV) — set + dequeue when the process was
+    // runnable (scheduler-aware mirror in proc_table::rts_set).
+    proc_table.rts_set(target_nr, crate::proc::RtsFlagsBits::NO_PRIV);
+    KcallResult::Ok(0)
 }
 
 /// SYS_PRIV_YIELD — allow the target and suspend the caller in its place.
@@ -1722,37 +1726,28 @@ fn privctl_yield(
     priv_table: &crate::kpriv::PrivTable,
     target_nr: ProcNr,
 ) -> KcallResult {
-    let target = proc_table.get(target_nr);
-    match target {
-        Some(p) => {
-            if !p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV) {
-                return KcallResult::Ok(EPERM);
-            }
-            let has_priv = p.priv_id
+    // Pre-checks with immutable borrows so the slots stay free for the
+    // scheduler-aware rts_set/rts_unset below.
+    let (has_no_priv, has_priv) = match proc_table.get(target_nr) {
+        Some(p) => (
+            p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::NO_PRIV),
+            p.priv_id
                 .and_then(|id| priv_table.get(id))
                 .map(|kp| kp.identity.s_proc_nr.is_some())
-                .unwrap_or(false);
-            if !has_priv {
-                return KcallResult::Ok(EPERM);
-            }
-            // C: RTS_SET(caller, RTS_NO_PRIV) — suspend caller (K20: slot).
-            proc_table
-                .get_mut(caller_nr)
-                .expect("privctl_yield: caller slot must exist")
-                .p_rts_flags
-                .set(crate::proc::RtsFlagsBits::NO_PRIV);
-            // C: RTS_UNSET(rp, RTS_NO_PRIV) — allow target
-            let target = proc_table.get_mut(target_nr);
-            match target {
-                Some(p) => {
-                    p.p_rts_flags.clear(crate::proc::RtsFlagsBits::NO_PRIV);
-                }
-                None => return KcallResult::Ok(EINVAL),
-            }
-            KcallResult::Ok(0)
-        }
-        None => KcallResult::Ok(EINVAL),
+                .unwrap_or(false),
+        ),
+        None => return KcallResult::Ok(EINVAL),
+    };
+    // C: if (!RTS_ISSET(rp, RTS_NO_PRIV) || priv(rp)->s_proc_nr == NONE)
+    //    return(EPERM);
+    if !has_no_priv || !has_priv {
+        return KcallResult::Ok(EPERM);
     }
+    // C: RTS_SET(caller, RTS_NO_PRIV) — suspend caller (dequeue if runnable).
+    proc_table.rts_set(caller_nr, crate::proc::RtsFlagsBits::NO_PRIV);
+    // C: RTS_UNSET(rp, RTS_NO_PRIV) — allow target (enqueue if now runnable).
+    proc_table.rts_unset(target_nr, crate::proc::RtsFlagsBits::NO_PRIV);
+    KcallResult::Ok(0)
 }
 
 /// SYS_PRIV_QUERY_MEM — may the target map the physical range

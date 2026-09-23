@@ -8,15 +8,16 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 推进中（F10b/F10c 完成，SetSys/Allow 已通）**：S3 ✅ Task C 根因修复全闭环（`a470a8d9c`+`6be40748f`）。阶段 1.3 探针（tail-dump）裁决 RS 卡 NO_PRIV，根因锁定 SYSCALL 腿 errno 取负破坏数据码（F10b `KcallResult::Data(i32)` + `reply_wire()` 修复，do_memory 服务成功），再暴露内核栈 VA virt_to_phys bug（F10c `copy_struct_from_user`/`dispatch_getmcontext`/`dispatch_setmcontext` 改用 AddressRef::Process 走真实页表，SetSys 成功，NO_PRIV 已清）。s13e 真机：10 服务器 Allow 成功 tf=0x0，RS/VM RECEIVING，**新停点 = 8 服务器 runnable=yes queued=no 等待调度**
+- **阶段**：**1.3 推进中（F10b/F10c/F10d 完成，服务器已跑起来）**：S3 ✅ Task C 根因修复全闭环（`a470a8d9c`+`6be40748f`）。阶段 1.3 探针（tail-dump）裁决 RS 卡 NO_PRIV，根因锁定 SYSCALL 腿 errno 取负破坏数据码（F10b `KcallResult::Data(i32)` + `reply_wire()` 修复，do_memory 服务成功），再暴露内核栈 VA virt_to_phys bug（F10c `copy_struct_from_user`/`dispatch_getmcontext`/`dispatch_setmcontext` 改用 AddressRef::Process 走真实页表，SetSys 成功，NO_PRIV 已清）。s13e 真机：10 服务器 Allow 成功 tf=0x0 但 **runnable=yes queued=no**（F10d 根因：`privctl_allow`/`yield`/`disallow` 用 raw `p_rts_flags.clear/set(NO_PRIV)` 绕过 C 的 `RTS_UNSET`/`RTS_SET` 宏携带的 enqueue/dequeue 协议）→ F10d 改用调度器感知的 `proc_table::rts_unset`/`rts_set`，s13f 真机：服务器不再卡 queued=no，全部跑起来进入正常缺页/IPC 流程（NO_PRIV=0x80 全消失，转 PAGEFAULT/VMREQUEST/RECEIVING）
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
-- **新停点（登记，阶段 1.3 处置）**：~~修复后 boot 推进到 RS 阻塞在 int33 receive~~ → **F10c 后 s13e 新停点**：8 服务器 runnable=yes queued=no（已清 NO_PRIV，但调度器不捞起）；RS(0x102)/VM(0x108) RECEIVING，正常等待；需要调查 queued=no 原因（run_queue 添加逻辑）
+- **新停点（登记，阶段 1.4 处置）**：~~修复后 boot 推进到 RS 阻塞在 int33 receive~~ → ~~F10c 后 s13e：8 服务器 runnable=yes queued=no~~ → **F10d 后 s13f 新停点 = VM 缺页解决循环**：服务器已跑起来，尾态 VM(0x100) VMREQUEST(0x800)、多数服务器 PAGEFAULT(0x400) 等 VM 解故障、RS(0x102/0x108) RECEIVING(0x8)、`picknone rs_flags=0x8`（RS 空转等消息）、`do-memory enter` 全程仅 1 次（VM 处理一次内存请求后自停）。需查 VM 与 PAGEFAULT 进程的故障解决握手是否闭环（VM 自身 VMREQUEST 谁驱动）
 - **⚠️ 复现环境硬约束（S0 发现，仍有效）**：必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本替换 §2.2 QEMU 命令里的 vars 槽（本文件 S0 节「做法」段已写好完整命令；QEMU 会写它，不要直接用仓库文件本体）；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同；该 fresh-vars 布局鲁棒性 bug 已登记不修）；另 QEMU 命令照 S0 节模板原样跑，自行加 `-machine q35 -m 512` 会导致 QEMU 启动即退（实测）
 - **已修复**（commit）：
   - `a470a8d9c`+`6be40748f` Task C 根因：int33 陷阱腿恢复 C 门纪律（详见 S3 节）
   - **F10b**（待 commit）：`KcallResult::Data(i32)` + `reply_wire()` — 数据码原样，错误码取负；`vmctl_memreq_get` ENOENT/VMPTYPE_CHECK 改 Data 路径，do_memory 服务成功
-  - **F10c**（待 commit）：`copy_struct_from_user` + `dispatch_getmcontext/setmcontext` 改用 AddressRef::Process 走 caller CR3 页表解内核栈 PA，SetSys 不再 EFAULT，Allow 清 NO_PRIV 成功
+  - **F10c**（commit `fc66eb148`）：`copy_struct_from_user` + `dispatch_getmcontext/setmcontext` 改用 AddressRef::Process 走 caller CR3 页表解内核栈 PA，SetSys 不再 EFAULT，Allow 清 NO_PRIV 成功
+  - **F10d**（待 commit）：`privctl_allow`/`privctl_yield`/`privctl_disallow` 改用调度器感知的 `proc_table::rts_unset`/`rts_set`，镜像 C `RTS_UNSET`/`RTS_SET` 宏的 enqueue/dequeue 半（proc.h:206-224），修复 NO_PRIV 清除后服务器 runnable 却永不入 run queue（runnable=yes queued=no）
   - `1d25f433e` AP 入口补 EFER.NXE（bit11）+ BSP `enable()` 显式置位 —— err=8 保留位风暴 20+ → 0
   - `967a903e7` 摘除金丝雀探针（它在污染生产上下文）
   - `85a0d7cd8` 四张检测网（全部零命中，见排除账）
@@ -25,7 +26,7 @@
 - **新登记（F10b/F10c 评审发现，阶段 2/3 前必须修）**：
   - **P1-arch**：AArch64 (`trap_dispatch.rs` aarch64 SYSCALL 臂) 和 RISC-V 的 SYSCALL 腿仍用 `reply_code()` 不取负，与 x86_64 负 errno ABI 不一致；阶段 2.1/3.1 开工时必须迁移到 `reply_wire()`
   - **P2-diag**：`dispatch_diagctl` 的内核栈→PA 走 `kern_phys_base + (va - kern_virt_base)` 方式，隐式假定栈在 image span 内；应收敛到 `AddressRef::Process` 统一方案（同形态：`grant.rs`/`syscall_device.rs`/`syscall_signal.rs`/`misc.rs` 等处），另开 todo
-- **下一步**：**1.3 新停点**：调查 8 服务器 runnable=yes queued=no（为什么调度器不捞起）；若 NO_QUANTUM 在 Allow 后需要 replenish 则对位 C 的 timeslic 机制；继续推进至 rc marker；探针保留至 task1-close 裁决；`syscall.rs::kernel_call_resume`（无调用方）+ 双次 `vm_enqueue_and_notify_vm` 登记 task1-close 死代码裁决
+- **下一步**：**1.4 新停点**：调查 VM 缺页解决循环——s13f 尾态服务器全停 PAGEFAULT(0x400)、VM 停 VMREQUEST(0x800)、RS 停 RECEIVING(0x8)、`do-memory enter` 仅 1 次；查 VM 处理一次内存请求后为何自停、PAGEFAULT 进程的 ClearPageFault 谁来驱动、VM 自身 VMREQUEST 的解决路径；继续推进至 rc marker；探针保留至 task1-close 裁决；`syscall.rs::kernel_call_resume`（无调用方）+ 双次 `vm_enqueue_and_notify_vm` 登记 task1-close 死代码裁决
 - **阻塞/风险**：无阻塞；风险 = 探针采样饥饿（cap 被启动期重复事件吃光，见 prompt 铁律 2）与布局每轮漂移（禁止跨轮硬编码物理地址）
 
 ---
@@ -366,4 +367,59 @@ F10b+F10c 彻底修复了 NO_PRIV 停点。s13e 全 4572 行日志：无 panic�
 
 1. 调查 queued=no：`pick` 函数如何从 `proc_base` 链表捞 runnable 进程，新启动进程是否被加入 `run_qh` 队列；或 `runnable=yes` 是否只是无阻塞标志但没有在 per-CPU queue 中。
 2. commit F10b+F10c，对 commit 做 code-review。
+
+---
+
+## 1.3 F10d：privctl 三函数绕过 RTS 宏的 enqueue/dequeue 协议 → runnable=yes queued=no（2026-09-23，serial_s13f）
+
+### 现象（承 s13e）
+
+F10c 后 Allow 全成功（tf=0x0，NO_PRIV 已清），但 s13e 尾态 8 服务器 `runnable=yes queued=no`——无阻塞标志却不被调度器捞起，系统空转。
+
+### 根因
+
+C 的 `RTS_UNSET`/`RTS_SET` 宏（`minix3/minix/kernel/proc.h:206-224`）**不是单纯的标志位读写**，而是携带调度器簿记：
+
+```c
+/* Clear flag and enqueue if the process was not runnable but is now. */
+#define RTS_UNSET(rp, f) do {                     \
+    int rts = (rp)->p_rts_flags;                  \
+    (rp)->p_rts_flags &= ~(f);                     \
+    if(!rts_f_is_runnable(rts) && proc_is_runnable(rp)) \
+        enqueue(rp);   /* ← 最后一道阻塞标志清除时入队 */ \
+} while(0)
+```
+
+`do_privctl.c` 的 ALLOW（L63）/YIELD（L71-72）/DISALLOW（L78）全部走这两个宏。而 minix-rs 的 `privctl_allow`/`privctl_yield`/`privctl_disallow` 用裸的 `p.p_rts_flags.clear(NO_PRIV)` / `.set(NO_PRIV)`，**丢了这个 enqueue/dequeue 半**：Allow 清掉 NO_PRIV 后进程结构性 runnable，却从未被加入 per-CPU run queue → 调度器 `pick_proc` 扫 `run_q_head` 永远看不到它。
+
+### 已有正确构件（无需新写）
+
+`proc_table.rs` 早已存在 `rts_set`（L436，clear→非 runnable 时 dequeue）与 `rts_unset`（L502，clear→runnable 时 `sched_enqueue`），是 C 两个宏的完整镜像；`vmctl_clear_page_fault`（syscall.rs L2522）就是用 `rts_unset` 关闭缺页环的工作参照，注释 L2504-2505 明确记录了同一 bug 形态："The primitive flag clear alone left the process dequeued forever"。
+
+### 修复
+
+三函数改为：预检用不可变借用（`get`）读标志 + priv 状态，实际清/置标志改调 `proc_table.rts_unset(target_nr, NO_PRIV)` / `rts_set(...)`，让调度器簿记随之发生。`privctl_yield` 的 caller 侧改 `rts_set`（dequeue），target 侧改 `rts_unset`（enqueue），与 C L71-72 逐行对位。
+
+### 真机数据（s13f，4717 行，timeout 150s，无 panic/SIGSEGV）
+
+```
+nr=0x100 flags=0x800 (VMREQUEST)  runnable=no queued=no
+nr=0x101 flags=0x400 (PAGEFAULT)  runnable=no queued=no
+nr=0x102 flags=0x8   (RECEIVING)  runnable=no queued=no   ← RS 空转等消息
+nr=0x103..0x107 flags=0x400 (PAGEFAULT)                   ← 服务器已跑起来后停缺页
+nr=0x108 flags=0x8   (RECEIVING)
+picknone rs_flags=0x8   ← RS 在 RECEIVING 正常等待
+do-memory enter 全程 1 次
+```
+
+关键：NO_PRIV(0x80) **全部消失**，服务器不再停 `runnable=yes queued=no`，而是运行后进入合法阻塞态（PAGEFAULT/VMREQUEST/RECEIVING）。调度器现在能捞起被 Allow 的服务器 = F10d 修复奏效，boot 实质前进到下一环。
+
+### 结论
+
+F10d 修复 runnable=yes queued=no 停点。新停点（阶段 1.4）= VM 缺页解决循环：多数服务器停 PAGEFAULT 等 VM 解故障，VM 自身停 VMREQUEST，`do-memory` 仅 1 次 → VM 处理一次内存请求后自停，握手未闭环。
+
+### 下一步（1.4）
+
+1. 查 VM 处理一次内存请求后为何自停（VMREQUEST 0x800 是谁给它置的、ClearPageFault 驱动路径）。
+2. 查 PAGEFAULT 进程 → VM 解故障 → 回清 PAGEFAULT 的完整往返是否闭合（同 F10d 形态的其他 rts 绕过点？）。
 
