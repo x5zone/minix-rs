@@ -1271,3 +1271,11 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 
 - sched:77 panic 的 errno 未现形：sched 侧 diagctl 打点静默失败（与 panic-handler Stage 2 同族）——sched→PM 的 SYS_DIAGCTL 调用本身异常（候选：PM 的 diagctl handler 对 sched 的请求处理缺失/返回错误）。**PM 的 diagctl（同族调用）在 PM 侧正常**（pmvi 打点可见）⇒ 差异在调用者身份或其 priv 的 diag 权限。
 - **下一轮配方**：①kernel SYS_DIAGCTL handler 加 caller 打点（一轮即见 sched 的 diagctl 是否到达 kernel 及返回值）；②据 errno 修 sched 的 init_scheduling 首个失败调用（get_hz 或 setalarm）；③修后 sched 不再 panic → init 进 runcom → /bin/sh /etc/rc → **rc marker（单元 B 完成）** → 单元 C-K。
+
+---
+
+## 1.10x2 状态（s16c，2026-09-24）
+
+- taskcall ELOCKED(208) 重试臂生效实锤：s16c elock 仅 1 发（此前预判的持续互卡未现）——**重试成功解开了那次瞬时互撞**；taskcall 最终返回非 208。
+- 剩余停点（1153 recvs）：panic-enter ×2（7494 sched 早期、19395 PM 晚期 barrier）——**PM barrier m_type≠0 panic（init.rs:739）仍在**；sched 早期 panic 仍在。
+- **下一轮**：①定位 PM barrier panic 的实际 m_type 值（init.rs:739 的 panic 消息经 1.10s 的 errno 打点应可见——grep s16c "final barrier"）；②sched 早期 panic 的根因（server.rs receive-failure 的连续失败——sc-rv/srcv-err 探针零输出待核：探针是否在 sched 的编译单元生效）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）。
