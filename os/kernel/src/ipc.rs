@@ -1086,6 +1086,26 @@ impl<'a> IpcEngine<'a> {
                         return None;
                     }
                 }
+                // NK4-C 1.10n 逐环仪器化（task1-close 裁决删除）：死锁判定
+                // 现场补发双方消息类型——caller 在发的 m_type 与 xp 在发的
+                // m_type（p_sendmsg），定位协议互撞的具体消息。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static DD2_N: AtomicUsize = AtomicUsize::new(0);
+                    if DD2_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                        Console::write_str("nk4a: dd2m caller=");
+                        Console::write_hex(caller_nr.0 as u64);
+                        Console::write_str(" cmt=");
+                        Console::write_hex(self.procs[caller_idx].p_sendmsg.m_type as u64);
+                        Console::write_str(" xp=");
+                        Console::write_hex(self.procs[target_idx].p_nr.0 as u64);
+                        Console::write_str(" xmt=");
+                        Console::write_hex(self.procs[target_idx].p_sendmsg.m_type as u64);
+                        Console::write_str("\n");
+                    }
+                }
                 return Some(DeadlockCycle {
                     chain,
                     chain_len,

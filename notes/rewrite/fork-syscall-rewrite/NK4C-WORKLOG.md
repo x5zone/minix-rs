@@ -1014,3 +1014,12 @@ dd2 实锤（含 1.10l 后仍复现）：`caller=0(PM) fn=SEND(1) xp=4(sched) xp
 - PM 向 sched 的三个站点（sched_start/sched_stop/taskcall）**全部是 sendrec**——无裸 SEND 站点；fn=0x1 的普通 SEND 来源待下一轮 dd2 扩展（打印 send 的 m_type 与 msg 首字）确认（候选：PM 的 sched 相关 notify 经 SEND 语义、或某 reply 路径）。
 - s15i：dd2 仅 1 条（PM→sched，sched xp_rts=SENDING 双向互撞）、崩溃/NoPerm 零、1145 recvs——1.10l 修复后系统整体仍稳定推进。
 - **下一轮**：dd2 扩展（m_type+msg 首字）→ 定位 PM 侧站点与 sched 侧停发语义 → 按协议修一侧（对照 C：sched reply 用 ipc_send 阻塞、PM taskcall 用 sendrec——PM 不应在 sched reply 在途时发新请求；若发现 minix-rs 侧顺序颠倒即修）。
+
+---
+
+## 1.10o 交付链定案与下一轮配方（s15j，2026-09-24）
+
+- dd2m 实锤：PM 的 send m_type=**0x900（VFS_PM_INIT）**，闭环节点 xp=**sched(4)**，xp_rts=SENDING。即：**PM 的 VFS_PM_INIT 屏障 sendrec 的 walk 经 sched 闭合** —— PM 侧该 send 的 dst 疑似 = sched 的端点！
+- **头号嫌疑（下一轮单点核查）**：PM 的 `vfs_endpoint` 参数值。若 params 把 vfs_endpoint 配成了 SCHED 的端点（4），则 PM 的全部 VFS_PM_INIT/屏障流量错投 sched：sched 的 receive(ANY) 吸收这些消息后按 SchedMsg 解码失败/自旋，PM 的 barrier reply 永不到达 ⇒ assert(m_type==0) panic ✓ 与全部观测吻合（VFS 侧从未见过 0x900、PM 反复 panic、exit_via 自旋）。
+- **核查点**：①`os/servers/pm/src/init.rs` 的 `self.params.vfs_endpoint` 来源（boot 参数/RS 传入）与实际值；②对照 `exec endpt=` 序列（vfs=1）与 RS boot 镜像里的 endpoint 分配；③若确认错配 → 修 vfs_endpoint 来源（RS boot 参数/PM params 构造）。
+- 修后判据不变：两次复跑无 `pm/init.rs:739` panic、boot 越过 PM↔VFS → rc marker（单元 B）→ 单元 C-K。
