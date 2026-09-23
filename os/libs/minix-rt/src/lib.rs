@@ -370,10 +370,15 @@ fn panic(info: &PanicInfo) -> ! {
         match info.location() {
             Some(l) => {
                 for chunk in l.file().as_bytes().chunks(16) {
-                    // SAFETY 无：chunk 为 UTF-8 边界可能截半，但诊断路径
-                    // 只要求内核按原样写串口字节；非法 UTF-8 由内核忽略。
-                    let cs = unsafe { core::str::from_utf8_unchecked(chunk) };
-                    let _ = w(cs);
+                    // 定长栈缓冲拼前缀（panic 路径零分配）。
+                    let mut line = [0u8; 32];
+                    line[..9].copy_from_slice(b"nk4a: PF ");
+                    line[9..9 + chunk.len()].copy_from_slice(chunk);
+                    let k = 9 + chunk.len();
+                    line[k] = b'\n';
+                    if let Ok(cs2) = core::str::from_utf8(&line[..k + 1]) {
+                        let _ = w(cs2);
+                    }
                 }
                 let mut lb = [0u8; 12];
                 let mut n = l.line();
@@ -404,6 +409,7 @@ fn panic(info: &PanicInfo) -> ! {
         } else {
             let _ = w("nk4a: panic-msg-nonstr\n");
         }
+        w("nk4a: panic-loc-done\n");
     }
     // Stage 1 (C: panic.c:34-46, message-then-newline): format the location
     // and message into stack memory through the crate's single formatting

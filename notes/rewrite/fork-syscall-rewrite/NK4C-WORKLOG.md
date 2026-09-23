@@ -897,3 +897,20 @@ panic 文本虽被双重遮蔽（Stage1 格式化早前自旋 + Stage2 diagctl �
 - 已确认事实：**每轮恰 2 次 panic**（行 7343 与 18550 附近）；panic 后 PM 走 exit_via 自旋；第二次 panic 点附近伴随 PM/进程栈页零填充 fault 群（anon 栈首触，正常）与调度乱序。
 - **下一轮（单步）**：`os/Cargo.toml`（或 workspace profile）给 `[profile.release]` 加 `debug = 1`（仅行表，体积代价小）→ 复跑：`panic-enter` 后的 file:line 即真实定位 → 修 PM panic 根因 → 单元 B rc marker。
 - 若 panic 消息仍为 nonstr（`{:?}` 载荷），改用 PM 侧 panic 站点清单二分（PM init/fork/exit 路径的唯一 expect/assert 各已核）。
+
+---
+
+## 1.10i 两个 panic 站点锁定（2026-09-24，serial_s14z2）
+
+panic 入口仪器化（零 fmt 依赖：file 原串 16B 分块 + `nk4a: PF ` 前缀 + line 手工十六进制）复跑即得：
+
+| # | 站点 | panic 内容（代码即得） |
+|---|------|----------------------|
+| 1（早） | `servers/sched/src/main.rs:77`（hex 0x4d） | `sys_setalarm failed: {errno}`——sched 出生期 `init_scheduling` 武装 5s 告警被内核拒绝（C schedule.c:340-341 同样 panic） |
+| 2（晚） | `servers/pm/src/init.rs:739`（hex 0x2e3） | VFS 屏障 `assert_eq!(barrier.m_type, 0)`——VFS 对末条 VFS_PM_INIT（endpoint=NONE 标记项）的回复非 OK |
+
+两 panic 后各自 exit_via 自旋（发 PM_EXIT 给自己），连累依赖方停摆。
+
+### 下一步（交接手）
+
+①**sched**：查内核 `dispatch_setalarm`/alarm 臂为何 Err（EPERM 权限？CLOCK notify 链未接？）——对照 C schedule.c:340 与 kernel alarm 基建；注意 tick 修通后 alarm→CLOCK notify→sched 的链路首次真实运行。②**PM/VFS**：VFS 侧 VFS_PM_INIT 处理对末条 NONE 标记项的回复 m_type（对照 C main.c:231-236 与 vfs init 握手）——barrier 回复应为 OK。两修后两次复跑 → rc marker 冲刺（单元 B 余段）。
