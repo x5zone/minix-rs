@@ -3763,16 +3763,17 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                     // C: kernel_call_resume 尾部 kernel_call_finish
                     // （system.c:636）——完成半的 reply 拷贝 / VmSuspend
                     // 再挂起簿记 / NoReply 出队都由它做。
+                    // S3 评审修复（P1）：门归属从挂起上下文读出后驱动
+                    // finish——IPC 腿挂起的调用补完成时不 eager 直写；
+                    // 重派再次挂起时（suspend_for_vm 新建 ctx，不继承
+                    // 门标记）finish 的 VmSuspend 臂凭 eager=false 在
+                    // 新 ctx 上重新置位，封死多段挂起路径。
+                    let door_skip = table
+                        .get(picked)
+                        .and_then(|p| p.p_vm_suspend.as_ref())
+                        .is_some_and(|c| c.resume_skip_eager_reply);
                     crate::syscall::kernel_call_finish_holding_bkl(
-                        picked,
-                        table,
-                        &msg,
-                        result,
-                        priv_table,
-                        false,
-                        // 门归属由 ctx.resume_skip_eager_reply 裁决（kernel_call
-                        // 腿默认 eager，IPC 腿挂起的在 finish 内跳过）。
-                        true,
+                        picked, table, &msg, result, priv_table, false, !door_skip,
                     );
                     match result.reply_code() {
                         // 完成：交付 RAX + 清挂起态，随后正常 restore。

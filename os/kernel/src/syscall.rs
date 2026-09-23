@@ -3301,9 +3301,10 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         {
             ctx.saved_msg = Some(*msg);
             // 门纪律（NK4-C S3）：IPC 陷阱腿的挂起要把门标记带上——
-            // stage 3a 补完成时同样不得 eager 直写回执（否则恢复后
-            // 向陈旧 p_delivermsg_vir 落写）。粘性置位，不随重挂起清除
-            //（同一 ctx 生命周期内门归属不变）。
+            // 补完成时同样不得 eager 直写回执（否则恢复后向陈旧
+            // p_delivermsg_vir 落写）。重派再次挂起时新建的 ctx 不继承
+            // 此标记，门归属由 stage 3a 从旧 ctx 读出后以 eager=false
+            // 重新落到新 ctx 上（见 lib.rs KCALL_RESUME 消费块）。
             if !eager_reply_copy {
                 ctx.resume_skip_eager_reply = true;
             }
