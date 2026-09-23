@@ -1243,3 +1243,12 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 
 - taskcall 无界 ELOCKED 重试版复跑：形态不变（1144 recvs、panic ×1、无 rc marker）——**重试未解互卡**：PM 重试自旋期间 sched 未取得推进条件（sched 的 receive 半未就绪的原因在更深处——sched 自身停在什么等待待查）。
 - **下一轮配方（交接手）**：①probe sched 的 run_once 主循环推进位置（gtick 已证 timer 活；sched 的 receive 停在什么状态——sched 侧已有 sc-rv/srcv-err 打点零输出 = sched 的 run_once 在 receive Err 臂与 Reply 臂均未到达 ⇒ **sched 的 run_once 卡在 receive Ok 之后的处理分支**——读 sched 的 SchedMsg::from_raw(收到的 m_type) 分支处理定位）；②PM taskcall 的 ELOCKED 重试语义保留（无害），根因在 sched 侧推进条件；③修后两次复跑过 1.10 → rc marker（单元 B）。
+
+---
+
+## 1.11 根因收敛：init 的 getuid 被 PM 的 caller_q 过滤跳过（1.11，s16c 实证）
+
+- 时间线（s16c）：7086 init rt-init → 7094 imain-1 getuid（此后 init 永久消失）→ 7494 sched receive-failure panic → 19000+ PM↔VFS 握手完成 → 19221+ PM taskcall ELOCKED → 19395 PM panic → 停摆。
+- **根因定位**：init 的 getuid sendrec parks 在 PM 的 caller_q；PM 主循环 receive 的 **Phase 3 `caller_q_find_allowed` 的 D-16 过滤链（chain_allowed）将其跳过**（未 drain）⇒ init 的 getuid 永不完成 ⇒ init 卡死 ⇒ PM↔VFS/sched 后续交互全部异常（含 1.10 的互撞表象）。
+- **对照 C**：C 的 receive-from-ANY 的 caller_q walk（proc.c:1077-1105）对**未配置过滤的进程默认放行**（filter 仅在显式配置后限制）；minix-rs 的 PM 若被 RS 配置了 whitelist（s_ipcf），init 的请求不在白名单 ⇒ 永久跳过。
+- **下一轮配方**：①ipcerr 探针扩 caller=11（init）：看 init→PM 的 send 是否 ECALLDENIED/CallDenied（filter 拒绝证据）；②对照 C ipc.h filter 语义修 chain_allowed 对「无过滤/默认」的处理，或修 RS 对 PM 的 filter 配置；③修后 init 的 getuid 应完成 → init 进 runcom → exec /bin/sh /etc/rc → **rc marker（单元 B 完成）**。
