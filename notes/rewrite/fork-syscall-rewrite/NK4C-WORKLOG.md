@@ -960,3 +960,21 @@ String downcast 未命中（panic=abort 下格式化载荷非 String）；Stage 
 ### 下一步（不变，聚焦权限层）
 
 ①`check_permission`（ipc.rs:2046-2115）Layer 3 trap mask：dump PM 的 `s_trap_mask`/`priv_id` 在 ECALLDENIED 瞬间的值（ipcerr 探针扩展）；②对照 RS SetSys 对 PM 的 mask 配置（是否含 RECEIVE 位）；③C proc.c:552 的 trap mask 语义对位。修后两次复跑 → rc marker。
+
+---
+
+## 1.10l 根因定案：SENDREC 原子性缺口（PM barrier panic 机制）（2026-09-24）
+
+### 机制
+
+PM 的 VFS 屏障 = `sendrec`（单陷阱 send+receive 原子）。minix-rs `engine.sendrec` Blocked 臂：SEND 停车 + `MF_REPLY_PEND`。但 **Phase 3 drain 把 PM 摘下时直接完成其 syscall**（`set_ipc_return_code(PM, OK)` + `record_wake_target(PM)` 唤醒）——sendrec 的 **receive 半被跳过**：PM 提前带 OK 返回、barrier 缓冲仍是旧内容 → `assert_eq!(m_type, 0)` panic（1.10i 站点 2 = pm/src/init.rs:739）→ exit_via 自旋。
+
+C 对位：blocked sendrec 的 send 半被取走时（proc.c:1084-1093），发送者在**自身** mini_sendrec 内 `goto receive` 重新阻塞等 REPLY——syscall 直到回复到达才完成。Rust 的 drain-wake 把两段性打破。
+
+### 修复方向（下一轮首务）
+
+Phase 3 drain 中，对 `REPLY_PEND` 的被摘发送者：**不完成 syscall**——改为转入 receive 半（置 RECEIVING、getfrom=ANY，保持停车、不写 retreg、不唤醒）；VFS 随后的 OK 阻塞 send（1.10j 已改）经 Path A 直投 PM 的 parked receive → PM 带真回复醒来。普通 SEND（无 REPLY_PEND）维持现状（send 成功即完成）。同型审查：`sendrec` 的 Path A 直投臂（1728 行 send Delivered → receive(ANY)）语义不变。
+
+### 状态
+
+sched panic（server.rs receive-failure fail-fast）与 PM panic（SENDREC 缺口）同源于「tick 修通后 CLOCK notify 首次真实到达」触发的协议深水区。本轮仪器化与探针全部在仓；1.10i/j/k/l 全链可接手。
