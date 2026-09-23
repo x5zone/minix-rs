@@ -770,3 +770,26 @@ rt_birth+0x101 崩溃九进程的机制闭环：服务器因缺页腿 FROM_KERNE
 ### 下一步
 
 ①s14i 复跑 #2 确认；②定性 PM↔VM fault 循环（VM 侧 dump 该 VA 的 PTE 与 region 槽状态，对照 F2）；③过门后按总计划单元 B 推进 rc marker。
+
+---
+
+## 1.10 定性：PM sendrec 错误报告路径 Debug::fmt 死循环（2026-09-24，serial_s14k）
+
+### 判别过程
+
+- s14j/s14i 尾部 fa 全部唯一（0x22f9b0/0x21a000/0x222d1c/0x21fe00/0x2252a0/0x2200b0/0x209500 各一次）——**同 VA 重复 fault 假设证伪**。
+- s14k 420s 长跑：19214 行 vs 150s 轮 19191 行——**270s 零新事件，非慢，真卡死**；无 picknone = 有进程烧 CPU（livelock 非 deadlock）。
+- 两轮日志逐字节比对：分歧仅在 boot 布局噪声，最终事件完全一致：
+  ```
+  vm-pf recv fa=0x209500（服务成功，bytes=真指令）→ pick->0x0 → PM 恢复 rip=0x209500
+  → w-finw n=0x21 → 静默 270s（无 tick 打断、无重 pick）
+  ```
+- 符号化：pm 0x209500 = `<&T as core::fmt::Debug>::fmt`，紧邻前一符号 `KernelIpcTransport::sendrec`（0x2094c0）——**PM sendrec 错误路径在格式化 Debug 值时死循环**（纯计算自旋，无串口输出；疑似腐坏长度 slice / 循环结构的 `{:?}`），其试图上报的 sendrec 真实错误被遮蔽。
+
+### 定性
+
+非缺页问题（1.10 初猜证伪）；F2 flush 缺失假设暂无证据。真停点 = **PM 在 sendrec 错误处理里格式化腐坏 Debug 载荷死循环**。这同时意味着 sendrec 确实出错了——错误本身才是下一个根因。
+
+### 下一步（交接手）
+
+①grep `os/servers/pm/src/ipc/transport.rs` sendrec 错误臂的 format!/`{:?}` 站点，定位被格式化的值与错误来源；②该错误发生在 boot 第 ~1100 次缺页后（PM↔init/fork 交互期），对照 s14j 5990-6010 行上下文找触发 syscall；③修复错误本身后，fmt 死循环作为健壮性问题单独评估（审计 Debug 载荷边界）。
