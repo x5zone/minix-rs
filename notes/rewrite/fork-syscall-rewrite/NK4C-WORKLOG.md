@@ -923,3 +923,7 @@ String downcast 未命中（panic=abort 下格式化载荷非 String）；Stage 
 2. **pm/src/init.rs:739**：VFS 屏障回复 `m_type != 0`。查 VFS 对末条 VFS_PM_INIT（endpoint=NONE）的处理与回复（对照 C main.c:231-236）。
 
 两根因修复 + 两次复跑（判据：两 panic 消失、boot 越过 PM↔VFS/后段）→ rc marker（单元 B）。
+
+### 1.10i 补充（sched 侧定案方向）
+
+`dispatch_setalarm` 仅两种返回：OK / EPERM（两臂：无 SYS_PROC priv、priv_id None）。sched 的 `sys_setalarm failed: {errno}` ⇒ **errno=EPERM(1)**。sched 的 SYS_PROC 在 birth 前已 SetSys（F10 轮 `pctl req=3 tgt=4` 成功）——EPERM 说明**时点问题**：sched 的 setalarm 到达时其 priv 表现与预期不符，或 panic 站点并非首次 setalarm。下一轮：①sched `init_scheduling` 的 Err 臂改 diagctl 先打 errno 数值再 panic（PM pm-recv-err 同款配方）；②若确认 EPERM，对照 C schedule.c:340 的 `sys_setalarm` 权限链查 RS 对 sched 的 priv 时序。
