@@ -763,6 +763,30 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // lands here, so the save must happen before anything that can lead
         // to a quantum/preemption decision (NK4-A Task C).
         unsafe { save_irq_frame_to_context(frame) };
+        // NK4-C 1.10c 修复（timer bring-up 缺口）：PIT(IRQ0→0x50) 落本臂
+        // 而非 clock 臂——本臂此前只推进软件时钟（clock_irq_handler），
+        // **缺 local_tick + check_quantum 调度半**：quantum 永不过期，
+        // 任何用户态自旋即永久垄断（s14k/s14m/s14n 实锤：PM fmt 自旋
+        // 静默 270s、tick 臂 <1000 次/150s、无 pick 无抢占）。补齐
+        // clock 臂（702）同款 tick 语义：bill + quantum 到期抢占
+        // （C proc.c:418-424）。save_irq_frame_to_context 已在本臂入口
+        // 保存被中断现场，抢占恢复安全。
+        if irq == minix_plat::TIMER_IRQ.get() {
+            crate::clock::local_tick(crate::current_cpu_id());
+            let tick_section = unsafe { crate::smp::BklSection::assume_held() };
+            let tick_cur = {
+                let smp = crate::smp_state_with(&tick_section);
+                smp.cpu_local(crate::current_cpu_id())
+                    .and_then(|l| l.proc_ptr)
+            };
+            if let Some(nr) = tick_cur {
+                let table = crate::proc_table_with(&tick_section);
+                let priv_table = crate::priv_table_with(&tick_section);
+                if table.get(nr).is_some_and(|p| p.is_runnable()) {
+                    table.check_quantum(nr, priv_table, &tick_section);
+                }
+            }
+        }
         // Profile-clock PC handoff (C reads p->p_reg.pc, which the asm
         // entry saved into the process context — the save above mirrors
         // that; the rip still travels to `profile_clock_hook` through the
