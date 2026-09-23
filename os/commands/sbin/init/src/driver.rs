@@ -209,6 +209,24 @@ pub fn run_transition(host: &mut dyn InitHost, state: &mut DriverState, first: S
         ledger.runlevel(host, current, next);
         current = Some(next);
 
+        // NK4-C 1.10t 仪器化（task1-close 裁决删除）：状态机迁移打点——
+        // init 停在 receive(ANY) 时定位其所处状态与卡点。
+        #[cfg(not(test))]
+        {
+            let _ = minix_sys::syscall::sys_diagctl_write(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                match next {
+                    StateKind::Runcom => "nk4a: init-state Runcom\n",
+                    StateKind::SingleUser => "nk4a: init-state SingleUser\n",
+                    StateKind::ReadTtys => "nk4a: init-state ReadTtys\n",
+                    StateKind::MultiUser => "nk4a: init-state MultiUser\n",
+                    StateKind::CleanTtys => "nk4a: init-state CleanTtys\n",
+                    StateKind::Death => "nk4a: init-state Death\n",
+                    StateKind::Catatonia => "nk4a: init-state Catatonia\n",
+                },
+            );
+        }
+
         next = step(host, state, next);
     }
 }

@@ -1103,3 +1103,12 @@ rc 内容补 marker echo（或确认已有）。修后两次复跑判据 `minix-
 - **关键未解点（1.10t 收口）**：init(11) 停在 receive(ANY)——其 driver 状态机（Runcom 臂含 runetcrc→fork/exec /bin/sh /etc/rc）**从未到达 Runcom 臂或卡在其内部**。elock 的 PM reply(m_type=3→sched) 与 sched 的反向 send 互卡是该停顿的表象。
 - **下一轮配方（单点仪器化，一次复跑）**：在 init 的 `run_transition`/`step` 各 StateKind 入口打 diagctl 打点（`nk4a: init-state <kind>`，每次迁移 cap 全打）——一次复跑即见 init 停在哪个状态、runetcrc 内部卡在哪（open /etc/rc？fork？wait？）。对照 C init.c:986-1012 的 runetcrc 时序修根因。
 - 附带登记：sched setalarm EPERM panic（1 panic-enter 之一）独立不阻塞 idle，但 sched 死亡会影响后续调度服务，随根因一并修。
+
+---
+
+## 1.10t-b 精确定位：init 未进入状态机，卡在 main 前段（s15m2，2026-09-24）
+
+- `init-state` 打点零输出 ⇒ **init 的 `run_transition` 从未运行**——init 卡在 main.rs 前段（BootParams::acquire_from / console 探针 / register_handlers / securitylevel / read_file("/etc/passwd") 等早期步骤之一，其 receive(ANY) 停车即在此）。
+- 前段每个步骤都可能经 VFS/PM 的阻塞 IPC——任一环节的响应缺失即卡死。对照 C init.c:49-96 的启动步序逐环打点即可定位。
+- **下一轮配方**：main.rs 前段每步加 `nk4a: imain <step>` diagctl 打点（BootParams/console_ok/register_handlers/close_std_fds/securitylevel/read_file）→ 一次复跑定位卡死步骤 → 修根因 → Runcom 臂即可达（/bin/sh 已在 imgrd、PM↔VFS 已通）→ rc marker（单元 B 完成）。
+- 探针存量：init-state、pmvi、elock、dd2m、ipcerr 等全部在仓；kernel 811 全绿、xtask 12 全绿。
