@@ -705,10 +705,16 @@ impl<T: IpcTransport> PmServer<T> {
                 .expect("PM: can't sync up with VFS (per-process send)");
         }
         // C: main.c:231-236 — 末条 sendrec，回复 m_type 必须为 OK。
+        // NK4-C 1.10：expect 的 `{:?}` 曾对未知错误载荷格式化死循环
+        // （rt_birth 时代 Debug::fmt 自旋，符号 <&T as Debug>::fmt）——
+        // 改为只打 errno 数值，既封闭格式化面又直接暴露真实错误码。
         let mut barrier = *messages.last().expect("at least final barrier message");
-        self.transport
-            .sendrec(self.params.vfs_endpoint, &mut barrier)
-            .expect("PM: can't sync up with VFS (final barrier)");
+        if let Err(e) = self.transport.sendrec(self.params.vfs_endpoint, &mut barrier) {
+            panic!(
+                "PM: can't sync up with VFS (final barrier) errno={}",
+                e.errno()
+            );
+        }
         assert_eq!(
             barrier.m_type, 0, /* OK */
             "VFS did not confirm PM init (m_type = {})",
