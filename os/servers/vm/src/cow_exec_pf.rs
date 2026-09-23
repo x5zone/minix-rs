@@ -76,7 +76,7 @@ pub(crate) fn handle_pagefault(
 /// 三路分派：同帧不同位 → `update_flags`（WMF_WRITEFLAGSONLY）；换帧 →
 /// `remap`（WMF_OVERWRITE，单操作替换、无"无映射"窗口）；未映射 → `map`。
 /// 写权限判定用 `is_page_writable`（C `pr_writable`，region.c:130-133）。
-fn sync_slot_pte(
+pub(crate) fn sync_slot_pte(
     region: &VirRegion,
     frames: &PageFrames,
     offset: VirBytes,
