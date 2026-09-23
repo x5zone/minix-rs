@@ -819,3 +819,9 @@ pmstall 探针（tick 臂内 PMST_TICK 计数 + tick>5000 且 current==PM 时打
 ### 下一步（交接手）
 
 ①s14n：tick 臂加每-1000-tick 打点（tick 计数+current ep），定位 tick 停止的精确事件；②审计 tick 臂 hook 链（irq_manager dispatch → clock hooks）的 mask/EOI 配对与错误路径；③对照 C clock.c 的 tick 处理（任务唤醒 vs 内联记账）查 minix-rs 懒任务模型的 tick 消费缺口。
+
+### 1.10c 补充二（s14n 定案）：timer 从未正常工作
+
+`tick k=` 每-1000-打点零输出 ⇒ 150s 全程 tick 臂（clock stub → local_tick 臂）调用 **< 1000 次**（大概率 ≈0）。rbxw irq-save 的 13-21 次事件走的是**通用 IRQ 臂**（line 722 save_irq_frame_to_context），非 clock 臂。⇒ **PIT/clock 线从未接到 clock 臂（或 PIT 未编程/被 mask）**——整个系统历来靠 trap 驱动调度（fault+IPC）运行；任何用户态自旋即刻永久垄断。这是覆盖历史全部「静默死锁/picknone」形态的底层 bring-up 缺口，优先级高于 1.10 表象本身。
+
+**下一轮（最高优先）**：审计 x86 timer bring-up——①PIT(i8254) channel 0 编程点是否存在/频率正确；②PIC IRQ0 unmask 与 vector 路由（clock stub 绑定）；③`irq_manager` TIMER_IRQ hook 链注册；④对照 C i8254.c/clock.c 与 minix-rs boot-shim/kernel 的初始化分工。修好后：tick 驱动抢占恢复 → PM fmt 自旋会被打断（或至少可 dump 栈）→ 按 1.10 原路继续。

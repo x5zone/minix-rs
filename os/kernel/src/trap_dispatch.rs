@@ -722,7 +722,20 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
                 static PMST_TICK: AtomicU64 = AtomicU64::new(0);
                 static PMST_N: AtomicUsize = AtomicUsize::new(0);
+                static PMST_K: AtomicUsize = AtomicUsize::new(0);
                 let tick = PMST_TICK.fetch_add(1, AtomicOrd::Relaxed);
+                // s14n：每 1000 tick 打点（计数+current ep）——定位 timer
+                // 死亡的精确事件（死亡点前后 log 对齐）。
+                if tick % 1000 == 0
+                    && PMST_K.fetch_add(1, AtomicOrd::Relaxed) < 20
+                {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    Console::write_str("nk4a: tick k=");
+                    Console::write_hex(tick);
+                    Console::write_str(" cur=");
+                    Console::write_hex(nr.0 as u64);
+                    Console::write_str("\n");
+                }
                 if tick > 5000
                     && nr.0 == 0
                     && PMST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
