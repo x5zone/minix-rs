@@ -1237,6 +1237,19 @@ impl<'a> IpcEngine<'a> {
                     Console::write_hex(msg.m_type as u64);
                     Console::write_str(" src=");
                     Console::write_hex(msg.m_source.0 as u64);
+                    // NK4-C 1.10t：互卡双方全量状态——PM 的 rts/getfrom、
+                    // sched 的 rts/getfrom/sendto（判定时序错位的直接证据）。
+                    if let Some(dp) = self.idx_by_endpoint(dst_endpoint) {
+                        Console::write_str(" d_rts=0x");
+                        Console::write_hex(self.procs[dp].p_rts_flags.get().bits() as u64);
+                        Console::write_str(" d_gf=0x");
+                        Console::write_hex(self.procs[dp].p_getfrom_e.0 as u64);
+                        Console::write_str(" d_sto=0x");
+                        Console::write_hex(self.procs[dp].p_sendto_e.0 as u64);
+                    }
+                    let c_gf = self.procs[caller_idx].p_getfrom_e.0 as u64;
+                    Console::write_str(" c_gf=0x");
+                    Console::write_hex(c_gf);
                     Console::write_str("\n");
                 }
             }
