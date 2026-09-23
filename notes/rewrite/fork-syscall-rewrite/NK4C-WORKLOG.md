@@ -1039,3 +1039,7 @@ PM `real_main` → `BootParams::acquire_from(&DirectKernelCallTransport)`（内�
 ### 下一轮修复配方（交接手）
 
 ①审计 `BootParams::acquire_from` 的端点解析（os/libs/minix-rt 或 pm 侧 boot params 结构）：vfs_endpoint 字段的来源行/偏移——对照内核 GETINFO 侧填充（kernel image table 的 endpoint 字段序）；②重点核 GET_HZ 同表的字段错位族（一次错位往往连坏多字段）；③修后判据：两次复跑 PM 不 panic、PM↔VFS 屏障过、`pm-recv-err`/`dd2m` 零输出、boot 越过 1145 → rc marker（单元 B）→ 单元 C-K。
+
+### 1.10p 补充（矛盾点登记）
+
+静态核查：`acquire_from`（init.rs:218）硬编码 `vfs_endpoint: Endpoint::VFS(1)` ✓；`Endpoint::VFS=1`、`Endpoint::SCHED=4` 常量正确。但 dd2m 实测 dst=4 ⇒ **运行时存在第二条到 ep4 的 0x900 发送路径，或 params 在 new/init 中被覆写**。候选：①`PmServer::new/init` 内重设 vfs_endpoint；②send_blocking 之外的某 send 站点复用了 0x900 消息但目标变量为 4（如 sched_ctl/taskcall 的目标变量被 0x900 消息误传——即 vfs_init_sync 与 sched_ctl 的消息/端点参数交错）；③初始化次序：vfs_init_sync 的 panic 与 sched_ctl 的时序交错。
