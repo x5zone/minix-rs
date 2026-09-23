@@ -1056,3 +1056,11 @@ PM `real_main` → `BootParams::acquire_from(&DirectKernelCallTransport)`（内�
 ### 1.10p 补充（elock 定性精确化）
 
 ELOCKED 现场 = **PM 的 `reply(slot, code=3)`**（ipc/vfs.rs:312 `m_type=code` + 阻塞 `transport.send`）→ sched，与 sched 的反向 send 互卡。PM 的 reply 是请求-应答协议的应答半：应答阻塞本应被请求方的 receive 半吸收——互卡说明 **sched 在未收到 #N 应答时已发出下一请求**（应答丢失/时序错位）或 **PM 的应答目标/时序错位**。下一轮：①grep sched 请求 PM 的站点（其应答 m_type=3 的请求语义）与 PM dispatcher result=3 的来源；②对照 C reply 协议（C 同为阻塞 ipc_send 但时序由 sef_receive 互锁保证）定错位侧。
+
+---
+
+## 1.10q 收口状态（s15q，2026-09-24）
+
+- sched sendnb 修复已生效入仓（trait+实现+settle 改非阻塞）；s15q 复跑：形态不变（2 panic-enter、elock PM→sched mt=3、1151 recvs、无 rc marker）。
+- dd2m 数据精读修正：`cmt=0x900` 为 PM 的**陈旧 p_sendmsg 缓存**（曾 blocked 的 VFS_PM_INIT Path-B 残留）——提示 **PM 的某条 VFS_PM_INIT send_blocking 曾长期 park 未被 VFS drain**（VFS 握手 receive 与 PM send_blocking 的时序错位）；`xmt=0x1` = sched 在发的消息 m_type=1（其 EPERM 类拒绝回复）。
+- **下一轮（交接手，聚焦三点）**：①PM `vfs_init_sync` 的 send_blocking 与 VFS 握手 receive 的逐条对账（哪条 INIT 未被吸收——probe：PM send_blocking 前/后打序号，VFS 侧 receive 计数）；②定位「PM 发 m_type=3 到 sched」的站点（PM 侧 grep 0x3 发送或 elock 探针补 m_source 链）；③修复后两次复跑 → rc marker（单元 B 完成）→ 单元 C-K。
