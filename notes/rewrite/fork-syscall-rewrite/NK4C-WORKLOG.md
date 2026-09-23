@@ -679,3 +679,17 @@ birth 进度：birth s3 runtime ok、birth s5 -> main（birth 协议已运行）
 3. 修复方向预告：Phase 3 对「发送者是 PAGEFAULT-parked 进程」的 set_ipc_return_code 本就不该写（它的非 IPC 陷阱帧里 RAX 是用户代码现场）——对位 C：`RTS_UNSET(sender, RTS_SENDING)` 不写 retreg（只有 clear_ipc_refs 的 EDEADSRCDST 路径写）。核实并修。
 
 探针存量：pfc（cr2==0 过滤）、csig、rtsrs、schedctl、pfwd、p3drain、rcvblk、cir 全部在仓，task1-close 统一裁决删除。
+
+### 1.9b 补充（objdump 实锤，同 commit）
+
+mfs 0x221d71（=rt_birth+0x101）反汇编：
+
+```
+221d5e: mov (%rdx),%r13
+221d61: mov 0x10(%rdx),%r12
+221d65: movabs $0x233638,%rax      ← 锁地址（进程数据段，各二进制同偏移）
+221d6f: mov $0x1,%cl
+221d71: xchg %cl,(%rax)            ← 崩溃指令：test-and-set 自旋锁获取
+```
+
+= minix-rt `crate::init()`（Stage 2 分配器一次性初始化）的**初始化自旋锁**位于未映射数据页。两个矛盾待下一轮裁：①pfc 打的 cr2=0x0 与 xchg 目标 0x233638 不符（内核 pf.vaddr 来源疑似陈旧——cr2 读取链路本身是候选 bug）；②err=0x4（读）与 xchg RMW（应为写 0x6）不符。**修复候选方向**：exec/loader 未把服务器镜像的 .data/.bss 段登记进 VM region 表（缺页服务应映射数据段而 VM 无 region → noaddr）或 rt 的锁页应预映射。下一步：查 RS exec 的 region 登记范围（text+stack+? 对照 loader 契约）+ 内核 PF 腿 cr2 读取时点。
