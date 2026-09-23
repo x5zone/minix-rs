@@ -991,3 +991,14 @@ sched panic（server.rs receive-failure fail-fast）与 PM panic（SENDREC 缺�
 ### 1.10m 补充（静态复核 + 下一轮探针设计）
 
 静态复核：Rust 2-cycle XOR 测试与 C 逐位等价（`(xp_rts ^ (fn<<2)) & SENDING`）；ANY 终止 ✓；chain-end（blocked_on None）✓。**ELOCKED 的实际触发需运行时数据**：下一轮在 `detect_deadlock` 的 2-cycle 分支加一次性 dump（xp_rts/function/group_size/caller，cap 4），即可见 PM send 被拒时 VFS 的实际 rts 与判定路径；同时 ipcerr 全量（cap 提到 64）看 PM ELOCKED 前后的完整 IPC 错误序列。
+
+---
+
+## 1.10n 定案：PM↔sched SEND-SEND 真死锁（协议层）（2026-09-24，serial_s15i）
+
+- dd2 实锤：`caller=0(PM) fn=SEND xp=4(sched) xp_rts=0x4`——PM send→sched 被 ELOCKED，因 **sched 同时 blocked SENDING（向 PM）**：PM↔sched 互发 = SEND-SEND 真死锁。**检测器正确**（C XOR 判定同样报死锁；2-cycle 互补仅覆盖 SEND↔RECEIVE）。1.10m「误报」假设证伪。
+- 真问题 = **boot 协议层的 PM↔sched 消息序**：sched 出生期 setalarm 成功后其 balancer 定时（tick 已活）→ sched 发消息给 PM？同时 PM 在向 sched 发？两侧同步 send 互撞。此前 tick 死亡时该死锁不可达（sched 的定时器根本不触发）——**timer 修复暴露了这一协议缺陷**。
+
+### 下一步（交接手）
+
+①dd2 探针扩展：打印该 send 的 m_type/目标消息（kernel 侧 send 时 msg 可得）+ sched 侧被 ELOCKED 后的重试行为；②读 sched 的 balancer 到期处理（server.rs run_once 的 tick 分支）与 PM run_once 中向 sched 发消息的站点，对位 C（sched 的 balancer 消息在 C 是 notify PM？还是 PM 主动向 sched？）；③修协议序（一侧改 async/sendnb 或加 receive 窗口），两次复跑 → rc marker（单元 B）。

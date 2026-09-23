@@ -1062,6 +1062,26 @@ impl<'a> IpcEngine<'a> {
                     // SEND↔RECEIVE (normal request/reply) and NOT a deadlock.
                     let xp_rts = self.procs[target_idx].p_rts_flags.get().bits();
                     let function_shifted = (function as u32) << 2;
+                    // NK4-C 1.10m 取证探针（task1-close 裁决删除）：2-cycle
+                    // 判定现场（caller/fn/xp/xp_rts）——PM send ELOCKED 误报
+                    // 定位。
+                    #[cfg(not(feature = "mock"))]
+                    {
+                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                        static DD_N: AtomicUsize = AtomicUsize::new(0);
+                        if DD_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                            Console::write_str("nk4a: dd2 caller=");
+                            Console::write_hex(caller_nr.0 as u64);
+                            Console::write_str(" fn=");
+                            Console::write_hex(function as u64);
+                            Console::write_str(" xp=");
+                            Console::write_hex(self.procs[target_idx].p_nr.0 as u64);
+                            Console::write_str(" xp_rts=0x");
+                            Console::write_hex(xp_rts as u64);
+                            Console::write_str("\n");
+                        }
+                    }
                     if (xp_rts ^ function_shifted) & RtsFlagsBits::SENDING.bits() != 0 {
                         return None;
                     }
