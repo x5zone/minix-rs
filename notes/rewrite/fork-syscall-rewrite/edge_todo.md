@@ -1132,7 +1132,7 @@ C 的消费侧语义：`update_tables` 每 tick 至多一次 + 失败闩锁（ta
 
 | 项 | 状态 | 阻塞点 / 下一步 |
 |----|------|----------------|
-| NK4A Task C：RS null-deref | ❌ BLOCKED | 六轮真机（c19a-c24a）收窄到写者集合；修复需架构裁决（ctx.rbx 写者布防证据在 WORKLOG 第六轮） |
+| NK4A Task C：RS null-deref | ❌ BLOCKED | **2026-09-23 换代**：根因收窄为「RS 停车-唤醒窗口内 PTE 被物理抹写」，已排除六类（DM 覆盖/树不一致/跨空间拷贝/消息投递/分配器双分配/gdb 观察点，详见 `NK4C-WORKLOG.md` §交接来源）；接手 prompt = `NK4C-OPENING-PROMPT.md`（S0-S9 步骤梯，每步 commit + 报告） |
 | NK4B P1：x86_64 rc marker | ❌ PARTIAL | 直接阻塞 = Task C；rc marker 是 NK4-A 翻绿判据 |
 | NK4B M3.4：aarch64 内核点电 | ❌ PARTIAL 等裁决 | 平台描述符通道三案 D1/B/A 上交（WORKLOG「上交裁决」节）；GICR 需 gic-version=3 已知 |
 | NK4B M4.4/M4.5：riscv64 点电/rc marker | ❌ BLOCKED | 2026-09-23 评审方已裁丙（收敛为镜像产出+装载链实证）；handoff 归 C-29/NK1-OQ-N6 统一设计；甲案（kernel-image 自任引导体）登记为下一弧线方向 |
