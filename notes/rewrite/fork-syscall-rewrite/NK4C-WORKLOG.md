@@ -1137,3 +1137,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 - elock 全量状态版（s15w3）：`elock caller=0(PM) dst=4(sched) mt=3 src=0 d_rts=0x4 d_gf=0x7bff(NONE) d_sto=0x0 c_gf=0x7c00(ANY)`——**PM 与 sched 双向阻塞 SENDING 互撞的全现场**：sched 的反向 send 目标=PM(0)、PM 的 getfrom=ANY（在等任意来源的请求/消息）。
 - 系统形态：boot 全链健康（无崩溃、无 0x30 群、全服务器 RECEIVING 停车），仅 PM↔sched 的消息序互卡点未通。
 - **下一轮配方（接手即做）**：①dd2m/elock 上下文（前后 ~40 行）取 PM 该 send 的 m_type=3 与 sched 在途 send 的 m_type=1 语义对照（sched 侧 grep reply/code=1 的构造——EPERM 应答 or exit 残留）；②按 C sched 协议修一侧（sched 应答改 sendnb 已落地；若互卡仍在，查 PM 侧对 sched 的阻塞 send 站点——grep PM 全部 `send_blocking`/sendrec 至 ep4 的调用）；③修后两次复跑 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10u 定案：PM↔sched taskcall send 半 ELOCKED（协议互撞完整闭环）（s15x，2026-09-24）
+
+- elock 补 PM 栈回溯实锤：**ELOCKED 现场 = `PmServer::init` 内的 taskcall（sendrec→sched，SCHEDULING 家族）send 半**——PM 处理 init fork 链时对 sched 的 SCHEDULING taskcall，与 sched 在途的上一 taskcall 应答 send 互撞（双向 SENDING，dd2m：cmt=0x900 残留缓存/xmt=0x1=sched 应答 EPERM）。
+- elock 的 mt=3 勘定 = **陷阱层盖的调用号**（3=SENDREC），非协议消息号——mt 打点消歧完成。
+- **协议缺陷本质**：PM 的 taskcall#N+1 send 半在 sched 应答 #N 仍在途时即发出并被 ELOCKED——应答/请求时序错位一拍。C 同形时序下不发生：C taskcall 应答由 sef_receive 互锁保证（应答 sendnb 或时序互锁）。
+
+### 下一轮修复配方（交接手，单点）
+
+①sched `settle` 的应答 sendnb 已落地（687a5bf51）但 PM taskcall 的 send 半仍 ELOCKED——核 Phase 3 drain 对 REPLY_PEND 发送者的 1.10l 转入 receive 半路径是否在 PM 的 taskcall 线上生效（probe：Phase 3 转入时打 PM 的 rts）；②若确认已生效而 ELOCKED 仍现，则 PM 的 taskcall send 半被拒发生在「sched 应答已 Path-A 交付但 PM 尚未消费」的窗口——修法=PM 的 taskcall ELOCKED 臂改为重试而非 fail-fast panic（对照 C schedule.c:340-341 的行为差异）；③两次复跑过 1.10 → rc marker（单元 B 完成）。

@@ -1251,6 +1251,15 @@ impl<'a> IpcEngine<'a> {
                     Console::write_str(" c_gf=0x");
                     Console::write_hex(c_gf);
                     Console::write_str("\n");
+                    // PM 侧栈回溯：定位是 PM 哪个函数在发（cap 2 一次性）。
+                    if EL_N.load(AtomicOrd::Relaxed) <= 2
+                        && let Some(p) = crate::proc_table_with(
+                            &unsafe { crate::smp::BklSection::assume_held() },
+                        )
+                        .get(caller_nr)
+                    {
+                        crate::stacktrace::proc_stacktrace(p);
+                    }
                 }
             }
             return IpcOutcome::Error(IpcError::Deadlock);
