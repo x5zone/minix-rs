@@ -1364,6 +1364,29 @@ fn forward_pagefault_to_vm(
             Console::write_str("\n");
         }
     }
+    // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：出生服务器
+    // （p_nr 1,3,4,5,6,7,9,10,11）的缺页转发结果三分——D=Path A 直接投递、
+    // B=Path B 入 VM caller_q、E=错误。真机尾态这 9 个进程全停纯
+    // PAGEFAULT(0x400)+to=VM，本探针裁决「消息从未投递」还是「投递后被丢」。
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static PFW_N: AtomicUsize = AtomicUsize::new(0);
+        if matches!(cur_nr.0, 1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11)
+            && PFW_N.fetch_add(1, AtomicOrd::Relaxed) < 40
+        {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: pfwd nr=");
+            C0::write_hex(cur_nr.0 as u64);
+            C0::write_str(" out=");
+            match &outcome {
+                crate::ipc::IpcOutcome::Delivered => C0::write_str("D"),
+                crate::ipc::IpcOutcome::Blocked => C0::write_str("B"),
+                crate::ipc::IpcOutcome::Error(_) => C0::write_str("E"),
+            }
+            C0::write_str("\n");
+        }
+    }
     match outcome {
         crate::ipc::IpcOutcome::Error(e) => Err(e),
         delivered_or_blocked => Ok(delivered_or_blocked),

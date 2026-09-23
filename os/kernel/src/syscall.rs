@@ -1279,6 +1279,25 @@ pub(crate) fn clear_ipc_refs(
             continue;
         }
         if proc.blocked_on() == Some(target_ep) {
+            // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：裸清现场
+            // ——谁被清、目标端点、清前 flags。裸清不摘 caller_q、不入队
+            // （C clear_ipc = 摘链 + RTS_UNSET 入队半，system.c:601-605），
+            // 是幽灵队列条目的候选来源。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static CIR_N: AtomicUsize = AtomicUsize::new(0);
+                if CIR_N.fetch_add(1, AtomicOrd::Relaxed) < 24 {
+                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                    C0::write_str("nk4a: cir tgt_ep=");
+                    C0::write_hex(target_ep.0 as u64);
+                    C0::write_str(" nr=");
+                    C0::write_hex(proc.p_nr.0 as u64);
+                    C0::write_str(" fl=");
+                    C0::write_hex(proc.p_rts_flags.load() as u64);
+                    C0::write_str("\n");
+                }
+            }
             // C: clear_ipc(rp) — RTS_UNSET(rp, RTS_SENDING | RTS_RECEIVING)
             proc.p_rts_flags.clear(RtsFlagsBits::SENDING | RtsFlagsBits::RECEIVING);
             // C: rp->p_reg.retreg = caller_ret — see design gap note above.

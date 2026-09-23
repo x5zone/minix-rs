@@ -1357,6 +1357,29 @@ impl<'a> IpcEngine<'a> {
                 self.sig_delay_sender = Some(self.procs[sender_idx].p_nr);
             }
             crate::ipc::probe_mark("nk4a: rcv-p3\n");
+            // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：caller_q
+            // drain 命中出生服务器（p_nr 1,3,4,5,6,7,9,10,11）的现场。若
+            // 本探针有输出而串口无对应服务器的 vm-pf recv，即 drain 后消息
+            // 丢失的直接证据。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static P3_N: AtomicUsize = AtomicUsize::new(0);
+                if matches!(
+                    self.procs[sender_idx].p_nr.0,
+                    1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11
+                ) && P3_N.fetch_add(1, AtomicOrd::Relaxed) < 24
+                {
+                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                    C0::write_str("nk4a: p3drain dst=");
+                    C0::write_hex(self.procs[caller_idx].p_endpoint.0 as u64);
+                    C0::write_str(" snd=");
+                    C0::write_hex(self.procs[sender_idx].p_endpoint.0 as u64);
+                    C0::write_str(" mt=");
+                    C0::write_hex(sender_msg.m_type as u64);
+                    C0::write_str("\n");
+                }
+            }
             return IpcOutcome::Delivered;
         }
 
@@ -1364,6 +1387,31 @@ impl<'a> IpcEngine<'a> {
         // C-3 迭代10 取证：Phase 4 阻塞到达（一次性）。
         #[cfg(not(feature = "mock"))]
         crate::ipc::probe_mark("nk4a: rcv-p4\n");
+        // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：receive 停车
+        // 时 caller_q 非空 = Phase 3 刚扫过全队却没取走任何条目（全部被
+        // 过滤或幽灵），直接证据。健康系统停车前队列应为空。
+        #[cfg(not(feature = "mock"))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static RBLK_N: AtomicUsize = AtomicUsize::new(0);
+            let mut qlen: usize = 0;
+            let mut cur = self.procs[caller_idx].caller_q_head;
+            while let Some(nr) = cur {
+                qlen += 1;
+                match nr_to_idx(nr) {
+                    Some(i) => cur = self.procs[i].send_q_link,
+                    None => break,
+                }
+            }
+            if qlen > 0 && RBLK_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: rcvblk ep=");
+                C0::write_hex(self.procs[caller_idx].p_endpoint.0 as u64);
+                C0::write_str(" qlen=");
+                C0::write_hex(qlen as u64);
+                C0::write_str("\n");
+            }
+        }
         self.procs[caller_idx].p_getfrom_e = src_endpoint;
         self.procs[caller_idx].p_rts_flags.set(RtsFlagsBits::RECEIVING);
         IpcOutcome::Blocked
