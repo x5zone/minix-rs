@@ -3578,19 +3578,26 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                 }
                 // NK4-A C-3 迭代8 取证（一次性）：pick 空手时打印 RS 的
                 // RTS flags——"run enter"后调度器静默的判别仪器。
+                // NK4-C 1.3 扩展（task1-close 裁决删除）：第 2/4 次空手
+                // 时追加全表尾态采样，分辨「boot 尾段瞬时态」与「最终
+                // 静默态」（第 4 次仍无变化即坐死静态停点）。
                 #[cfg(not(feature = "mock"))]
                 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                     static PICKNONE: AtomicUsize = AtomicUsize::new(0);
-                    if PICKNONE.fetch_add(1, AtomicOrd::Relaxed) == 0 {
-                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                        C0::write_str("nk4a: picknone rs_flags=0x");
-                        let fl = table
-                            .get(crate::proc::proc_nr::RS_PROC_NR)
-                            .map(|p| p.p_rts_flags.get().bits())
-                            .unwrap_or(0xFFFF);
-                        C0::write_hex(fl as u64);
-                        C0::write_str("\n");
+                    match PICKNONE.fetch_add(1, AtomicOrd::Relaxed) {
+                        0 => {
+                            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                            C0::write_str("nk4a: picknone rs_flags=0x");
+                            let fl = table
+                                .get(crate::proc::proc_nr::RS_PROC_NR)
+                                .map(|p| p.p_rts_flags.get().bits())
+                                .unwrap_or(0xFFFF);
+                            C0::write_hex(fl as u64);
+                            C0::write_str("\n");
+                        }
+                        1 | 3 => crate::syscall::nk4a_tail_dump(table),
+                        _ => {}
                     }
                 }
                 idle(&section, table, smp, priv_table, cpu);
@@ -3775,11 +3782,17 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                     crate::syscall::kernel_call_finish_holding_bkl(
                         picked, table, &msg, result, priv_table, false, !door_skip,
                     );
-                    match result.reply_code() {
+                    match result.reply_wire() {
                         // 完成：交付 RAX + 清挂起态，随后正常 restore。
-                        Some(code) => {
+                        // NK4-C F10b（P0-wire）：本路径是 SYSCALL 腿的延迟
+                        // 完成，RAX 与同腿 eager 回执同号（`reply_wire()` 已
+                        // 按错误码/数据码约定处理，不再取负）。
+                        Some(wire) => {
                             if let Some(p) = table.get_mut(picked) {
-                                crate::proc::set_ipc_return_code(p, code as i64);
+                                crate::proc::set_ipc_return_code(
+                                    p,
+                                    wire as i64,
+                                );
                             }
                             if let Some(p) = table.get_mut(picked) {
                                 p.clear_vm_suspend();

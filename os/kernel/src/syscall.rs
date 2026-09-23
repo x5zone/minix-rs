@@ -196,8 +196,15 @@ const _: () = {
 /// - ECALLDENIED (210): no permission for system call
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KcallResult {
-    /// Call completed with return value (C: result >= 0 or result == OK).
+    /// Call completed with an **error** return code (C: `return(EPERM)` etc.).
+    /// SYSCALL 腿线上交付时取负（见 `syscall_leg_wire`），用户态 `reply < 0` 拦截。
     Ok(i32),
+    /// Call completed with a **data** return code (C: `VMPTYPE_CHECK` 等正值语义码）。
+    /// SYSCALL 腿线上交付时**不取负**——用户态用 `reply == expected_data` 判别，
+    /// 与 C 的 `m_type = result` 直接传递正值等价。NK4-C F10b：与 `Ok(i32)` 区分，
+    /// 使 ENOENT（空队列数据信号）、VMPTYPE_CHECK（1）、GetPdbr 物理地址等正值
+    /// 不被 F10 取负，从而保持 `reply == ENOENT` 等 C 语义的用户态判断有效。
+    Data(i32),
     /// Call requires VM assistance (C: VMSUSPEND = -996).
     VmSuspend,
     /// No reply should be sent (C: EDONTREPLY).
@@ -219,11 +226,49 @@ impl KcallResult {
     pub(crate) fn reply_code(&self) -> Option<i32> {
         match self {
             KcallResult::Ok(ret) => Some(*ret),
+            KcallResult::Data(v) => Some(*v),
             KcallResult::BadCall => Some(EBADREQUEST),
             KcallResult::CallDenied => Some(ECALLDENIED),
             KcallResult::NoReply | KcallResult::VmSuspend => None,
         }
     }
+
+    /// SYSCALL 腿的**线上值**（F10b）：已按交付约定处理完毕，写入
+    /// `frame.rax`/eager `m_type`/`set_ipc_return_code` 时直接使用，不再取负。
+    ///
+    /// - `Ok(code)`：错误码，线上取负（`syscall_leg_wire`）→ 用户态 `reply < 0` 拦截。
+    /// - `Data(v)`：数据码（VMPTYPE_CHECK、ENOENT-as-empty、GetPdbr 地址等正值），
+    ///   原样传递 → 用户态 `reply == expected` 判别，与 C 的 `m_type = result` 同义。
+    /// - `BadCall`/`CallDenied`：簿记错误码，同样取负。
+    /// - `NoReply`/`VmSuspend`：`None`（本腿不交付回执）。
+    pub(crate) fn reply_wire(&self) -> Option<i32> {
+        match self {
+            KcallResult::Ok(ret) => Some(syscall_leg_wire(*ret)),
+            KcallResult::Data(v) => Some(*v),
+            KcallResult::BadCall => Some(syscall_leg_wire(EBADREQUEST)),
+            KcallResult::CallDenied => Some(syscall_leg_wire(ECALLDENIED)),
+            KcallResult::NoReply | KcallResult::VmSuspend => None,
+        }
+    }
+}
+
+/// NK4-C F10（P0-wire）：SYSCALL 腿（kernel_call）回执的**线上形式**。
+///
+/// 内核内部统一携带正 errno（C `do_privctl` 等 handler 的 `return(EPERM)`
+/// 同形）；但交付给用户态的那一腿按本项目 ABI 契约走**负 errno**——
+/// `servers/rs/src/trap_api.rs` 头注第 2 条「`sys_*` 内核调用 wrapper：
+/// 裸 i32，负 = errno」，用户态 21+ 处 `reply < 0` 门控都建在这条契约上
+///（s13b 实证：privctl SET_SYS 的 EFAULT=14 以正数上线后被 `< 0` 门控
+/// 吞掉，RS 静默把失败当成功，boot 尾 10 服务器卡 NO_PRIV）。
+///
+/// 与 C 的关系如实登记：C 线上是正 errno + 调用方 `!= OK` 判定
+///（system.c:79 `msg->m_type = result` + libsys 全仓 `r != OK`）；minix-rs
+/// 用户态选择负 errno 契约后，腿内取负是两边自洽的最小改动面（改动点
+/// 集中在这一条腿的交付侧，而不是散落的用户态判定）。int33 陷阱腿
+/// 不取负——它的 rax 车道携带 IPC 状态位（正 bitfield，见
+/// `kernel_call_finish_ipc_door` 的门纪律文档）。
+pub(crate) const fn syscall_leg_wire(code: i32) -> i32 {
+    code.wrapping_neg()
 }
 
 // ── Architecture-specific syscall dispatch trait (D6) ──
@@ -1120,7 +1165,6 @@ fn copy_struct_from_user(
     kernel_buf: *mut u8,
     bytes: usize,
 ) -> crate::vm::CrossSpaceResult {
-    use minix_arch::{CurrentDirectMap, DirectMapArch};
     use minix_types::VirBytes;
     use crate::vm::AddressRef;
 
@@ -1132,14 +1176,21 @@ fn copy_struct_from_user(
         .get(caller_nr)
         .map(|p| p.p_seg.phys_root)
         .expect("copy_struct_from_user: caller slot must exist");
-    let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(kernel_buf as u64));
     let src = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(user_ptr),
     };
-    let dst = AddressRef::Physical(dst_phys);
-    // K20: value-capturing closure (the callee asks only for src's endpoint;
-    // dst is Physical and never consults the closure — vm.rs resolve_physical).
+    // NK4-C F10c：kernel_buf 是内核栈上的局部变量，VA 在 higher-half 段
+    // [KERN_VIRT_BASE, KERNEL_DIRECT_MAP_BASE)——`virt_to_phys` 的 DM 算术
+    // 在该段越界得到错误 PA（`0xffff7fff...` 形态）→ `Completed(Err(_))`
+    // → EFAULT。改为 AddressRef::Process：caller 的 CR3 同时映射了内核
+    // higher-half（SYSCALL 不切页表），`resolve_physical` 走真实页表得正确
+    // PA，`kernel_phys_to_virt` 再经 DM 访问同一物理内存。语义等价 C
+    // `vircopyf(VMIO_READ, user_ptr, size, &priv)`（&priv 是内核栈地址）。
+    let dst = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(kernel_buf as u64),
+    };
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
                 Some(caller_cr3)
@@ -1526,7 +1577,7 @@ fn dispatch_privctl(
     };
 
     // C: do_privctl.c:54 — switch on request
-    match request {
+    let dispatch_result = match request {
         // SYS_PRIV_ALLOW = 1: Allow process to run.
         // C: do_privctl.c:56-64 — check RTS_NO_PRIV set + s_proc_nr != NONE,
         // then RTS_UNSET(rp, RTS_NO_PRIV)
@@ -1581,7 +1632,37 @@ fn dispatch_privctl(
         // Unknown request
         // C: do_privctl.c:270-273 — printf + return EINVAL
         _ => KcallResult::Ok(EINVAL),
+    };
+    // NK4-C 1.3 取证探针（task1-close 裁决删除）：boot 尾停点裁决——
+    // s13a tail-dump 坐死 10 个服务器终态 flags=0x80（NO_PRIV 未清），
+    // 而 RS 侧 post-privctl 照打（`?` 未拦截）。本探针打出每次 privctl
+    // 分发的 request/target/结果/目标终态 flags，分清「Allow 返回 EPERM
+    // 但错误没传到 RS」与「Allow 成功但事后被重设」两种形态。
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static PCTL_LOG: AtomicUsize = AtomicUsize::new(0);
+        if let KcallResult::Ok(code) = dispatch_result {
+            if (1..=4).contains(&request)
+                && PCTL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 24
+            {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: pctl req=");
+                C0::write_hex(request as u64);
+                C0::write_str(" tgt=");
+                C0::write_hex(target_nr.0 as u64);
+                C0::write_str(" r=");
+                C0::write_hex(code as u64);
+                let fl = proc_table
+                    .get(target_nr)
+                    .map_or(0xFFFF_FFFF, |p| p.p_rts_flags.load());
+                C0::write_str(" tf=0x");
+                C0::write_hex(fl as u64);
+                C0::write_str("\n");
+            }
+        }
     }
+    dispatch_result
 }
 
 /// SYS_PRIV_ALLOW — clear RTS_NO_PRIV after eligibility checks.
@@ -2372,7 +2453,7 @@ fn dispatch_vmctl(
             // Return the target process's page table root physical address.
             // This is a simple field read — no arch operation needed.
             match proc_table.get(target_nr) {
-                Some(p) => KcallResult::Ok(p.p_seg.phys_root.0 as i32),
+                Some(p) => KcallResult::Data(p.p_seg.phys_root.0 as i32), // data: physical address, not an error code
                 None => KcallResult::Ok(EINVAL),
             }
         }
@@ -2476,9 +2557,9 @@ fn vmctl_memreq_get(
             m1.m1p3 = requestor_ep as u64;             // SVMCTL_MRG_REQUESTOR
 
             // C: return rp->p_vmrequest.req_type (= VMPTYPE_CHECK = 1)
-            KcallResult::Ok(1) // VMPTYPE_CHECK
+            KcallResult::Data(1) // VMPTYPE_CHECK: request found (data code, not negated on wire)
         }
-        Err(crate::vm::VmCtlError::NoRequest) => KcallResult::Ok(ENOENT),
+        Err(crate::vm::VmCtlError::NoRequest) => KcallResult::Data(ENOENT), // empty queue (data signal, not an error)
         Err(crate::vm::VmCtlError::InvalidState) => KcallResult::Ok(EINVAL),
         Err(crate::vm::VmCtlError::InvalidEndpoint) => KcallResult::Ok(EINVAL),
     }
@@ -2601,6 +2682,43 @@ fn nk4a_flags_mark(
         Console::write_str("\n");
     }
     let _ = (tag, proc_table, nr);
+}
+
+/// NK4-C 1.3 取证探针（task1-close 裁决删除）：boot 尾态一次性全表采样。
+///
+/// s3a-s3c 串口实证：RS exec 完 12 服务器后进 main receive，但整轮 `pick->`
+/// 只出现过 RS(2)/VM(8)——其余服务器出生后再未被调度，而出生快照只有 init
+/// 一条（flags=0x8080 NO_PRIV|NO_QUANTUM）。本探针在 pick 空手时打印全部
+/// 非 free 槽的最终 rts_flags/runnable/queued，裁决「卡 NO_PRIV 未清」vs
+/// 「已 runnable 但阻塞在 receive」。只用 write_str/write_hex（同
+/// nk4a_flags_mark：bump 堆耗尽，format! 即分配失败）。
+pub(crate) fn nk4a_tail_dump(proc_table: &crate::proc_table::ProcessTable) {
+    #[cfg(not(feature = "mock"))]
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("nk4a: tail-dump begin\n");
+        for p in proc_table.procs_slice() {
+            if p.p_rts_flags.load() & crate::proc::rts::SLOT_FREE != 0 {
+                continue;
+            }
+            let nr = p.p_nr;
+            Console::write_str("nk4a: tail nr=");
+            Console::write_hex((nr.0 + 256) as u64);
+            Console::write_str(" flags=0x");
+            Console::write_hex(p.p_rts_flags.load() as u64);
+            Console::write_str(" runnable=");
+            Console::write_str(if p.is_runnable() { "yes" } else { "no" });
+            Console::write_str(" queued=");
+            Console::write_str(if proc_table.is_in_scheduler(nr) {
+                "yes"
+            } else {
+                "no"
+            });
+            Console::write_str("\n");
+        }
+        Console::write_str("nk4a: tail-dump end\n");
+    }
+    let _ = proc_table;
 }
 
 /// VmInhibitClear — clear RTS_VMINHIBIT on the target.
@@ -2992,7 +3110,6 @@ fn dispatch_getmcontext(
     proc_table: &mut crate::proc_table::ProcessTable,
     msg: &Message,
 ) -> KcallResult {
-    use minix_arch::{CurrentDirectMap, DirectMapArch};
     use minix_arch::{CurrentSignalContext as SC, SignalContext};
     use crate::cross_space::data_copy_vmcheck;
     use crate::vm::{AddressRef, CrossSpaceResult};
@@ -3032,15 +3149,17 @@ fn dispatch_getmcontext(
 
     let mut mc = <SC as SignalContext>::Mcontext::default();
     let mc_size = core::mem::size_of_val(&mc);
-    let mc_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-        &mut mc as *mut _ as u64,
-    ));
+    // NK4-C F10c：mc 是内核栈局部变量，VA 在 higher-half 段 [KERN_VIRT_BASE,
+    // KERNEL_DM_BASE)，`virt_to_phys` 对该段做 VM_DM 减法得到错误 PA。
+    // 改为 AddressRef::Process：caller 的 CR3 同时映射内核 higher-half，
+    // resolve_physical 走真实页表得正确 PA（同 copy_struct_from_user 修法）。
+    // addr_of_mut! 不构造 shared 引用（评审 P1）：copy 向 mc 写入不应与 &mc 共存。
+    let mc_vaddr = core::ptr::addr_of_mut!(mc) as u64;
 
     // First copy: user → kernel.
     {
-        // K20: value-capturing closure — the callee consults it only for
-        // the endpoints of src/dst; `src` is caller_endpt and `dst` is
-        // Physical (never consults the closure), so no table borrow.
+        // K20: value-capturing closure — `src` 和 `dst` 均使用 caller_endpt，
+        // 闭包直接返回 caller_cr3，不咨询 proc_table。
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ept: Endpoint| {
             if ept == caller_endpt {
                 Some(caller_cr3)
@@ -3054,7 +3173,10 @@ fn dispatch_getmcontext(
             endpoint: Endpoint(endpt),
             offset: VirBytes(ctx_ptr),
         };
-        let dst = AddressRef::Physical(mc_phys);
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(mc_vaddr),
+        };
         match data_copy_vmcheck(caller_nr, &mut *proc_table, src, dst, mc_size, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => {}
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
@@ -3078,7 +3200,10 @@ fn dispatch_getmcontext(
                     .map(|p| p.p_seg.phys_root)
             }
         };
-        let src = AddressRef::Physical(mc_phys);
+        let src = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(mc_vaddr),
+        };
         let dst = AddressRef::Process {
             endpoint: Endpoint(endpt),
             offset: VirBytes(ctx_ptr),
@@ -3110,7 +3235,6 @@ fn dispatch_setmcontext(
     proc_table: &mut crate::proc_table::ProcessTable,
     msg: &Message,
 ) -> KcallResult {
-    use minix_arch::{CurrentDirectMap, DirectMapArch};
     use minix_arch::{CurrentSignalContext as SC, SignalContext};
     use crate::cross_space::data_copy_vmcheck;
     use crate::vm::{AddressRef, CrossSpaceResult};
@@ -3142,11 +3266,14 @@ fn dispatch_setmcontext(
 
     let mut mc = <SC as SignalContext>::Mcontext::default();
     let mc_size = core::mem::size_of_val(&mc);
-    let mc_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-        &mut mc as *mut _ as u64,
-    ));
+    // NK4-C F10c：mc 是内核栈局部变量，VA 在 higher-half 段 [KERN_VIRT_BASE,
+    // KERNEL_DM_BASE)，`virt_to_phys` 对该段做 VM_DM 减法得到错误 PA。
+    // 改为 AddressRef::Process：caller 的 CR3 同时映射内核 higher-half，
+    // resolve_physical 走真实页表得正确 PA（同 copy_struct_from_user 修法）。
+    // addr_of_mut! 不构造 shared 引用（评审 P1）：copy 向 mc 写入不应与 &mc 共存。
+    let mc_vaddr = core::ptr::addr_of_mut!(mc) as u64;
 
-    // K20: value-capturing closure (see the getmcontext note).
+    // K20: value-capturing closure — src 和 dst 均使用 caller_endpt，闭包返回 caller_cr3，不咨询 proc_table。
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ept: Endpoint| {
             if ept == caller_endpt {
                 Some(caller_cr3)
@@ -3160,7 +3287,10 @@ fn dispatch_setmcontext(
         endpoint: Endpoint(endpt),
         offset: VirBytes(ctx_ptr),
     };
-    let dst = AddressRef::Physical(mc_phys);
+    let dst = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(mc_vaddr),
+    };
     match data_copy_vmcheck(caller_nr, &mut *proc_table, src, dst, mc_size, proc_cr3) {
         CrossSpaceResult::Completed(Ok(())) => {}
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
@@ -3360,7 +3490,7 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         proc_table.dequeue_if_blocked(caller_nr);
     }
 
-    if let Some(errno) = result.reply_code().filter(|_| {
+    if let Some(wire) = result.reply_wire().filter(|_| {
         // 门纪律（NK4-C S3，见 `kernel_call_finish_ipc_door` 文档）：
         // eager 回执直写只属于 kernel_call()/SYSCALL 腿；IPC 陷阱腿
         //（eager_reply_copy=false）与被它挂起的调用恢复重派
@@ -3375,7 +3505,9 @@ pub(crate) fn kernel_call_finish_holding_bkl(
     }) {
         let mut reply = *msg;
         reply.m_source = Endpoint::SYSTEM;
-        reply.m_type = errno;
+        // NK4-C F10b（P0-wire）：SYSCALL 腿线上值由 `reply_wire()` 给出：
+        // 错误码（Ok）取负，数据码（Data，如 VMPTYPE_CHECK/ENOENT-as-data）原样传递。
+        reply.m_type = wire;
         // C system.c:71-77 对位：结果消息 phys_copy 直写调用者用户缓冲
         // （p_delivermsg_vir），不经 DELIVERMSG。旧实现经 p_delivermsg+
         // DELIVERMSG 投递——调用者（VM）的 sef_receive 随即消费自己的
@@ -4787,5 +4919,38 @@ mod tests {
             vmctl_clear_page_fault(&mut proc_table, ProcNr(1)),
             KcallResult::Ok(EINVAL)
         );
+    }
+
+    /// NK4-C F10/F10b（P0-wire）判别测试：SYSCALL 腿线上交付约定。
+    ///
+    /// s13b 真机实证的吞错形态：privctl SET_SYS 失败返 EFAULT=14，正数
+    /// 上线后被用户态 `reply < 0` 门控吞掉（RS 把失败当成功，boot 尾
+    /// 10 服务器静默卡 NO_PRIV）。
+    ///
+    /// s13c 真机实证的破坏形态：F10 对所有码一视同仁取负，
+    /// VMCTL_MEMREQ_GET 的数据码 ENOENT=2 取负后变为 -2，
+    /// 触发 `reply < 0` 误入错误分支 → do_memory 不服务 → RS 永久 VMREQUEST。
+    ///
+    /// F10b 修复：`reply_wire()` 区分 Ok(错误码)→取负 和 Data(数据码)→原样传递。
+    #[test]
+    fn test_syscall_leg_wire_negates_nonzero_errno() {
+        // 内部携正 errno（C handler `return(EPERM)` 同形）……
+        assert_eq!(KcallResult::Ok(EFAULT).reply_code(), Some(EFAULT));
+        // ……线上必须负：14 → -14，用户态 `reply < 0` 才能拦截。
+        assert_eq!(syscall_leg_wire(EFAULT), -EFAULT);
+        assert_eq!(syscall_leg_wire(EPERM), -EPERM);
+        // 成功/数据零码不变号。
+        assert_eq!(syscall_leg_wire(0), 0);
+        // 簿记类回执（EBADREQUEST/ECALLDENIED）同样取负。
+        assert_eq!(syscall_leg_wire(EBADREQUEST), -(EBADREQUEST as i32));
+        assert!(syscall_leg_wire(ECALLDENIED) < 0);
+        // F10b：`reply_wire()` 错误码取负……
+        assert_eq!(KcallResult::Ok(EFAULT).reply_wire(), Some(-EFAULT));
+        assert_eq!(KcallResult::Ok(EPERM).reply_wire(), Some(-EPERM));
+        // ……数据码原样传递（C 语义：`reply == ENOENT` / `reply == VMPTYPE_CHECK`）。
+        assert_eq!(KcallResult::Data(ENOENT).reply_wire(), Some(ENOENT));
+        assert_eq!(KcallResult::Data(1).reply_wire(), Some(1)); // VMPTYPE_CHECK
+        // 数据码 OK(0) 等价于成功，reply_wire() = Some(0)
+        assert_eq!(KcallResult::Data(0).reply_wire(), Some(0));
     }
 }

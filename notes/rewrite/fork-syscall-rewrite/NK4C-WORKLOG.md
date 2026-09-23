@@ -8,19 +8,24 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：S3 ✅ **Task C 根因修复完成全闭环**：修复 commit `a470a8d9c` → CodeReview（P0 零发现，P1 一条多段挂起缺口）→ P1 修复 commit `6be40748f`（stage 3a 从 ctx 读门标记驱动 eager）；真机三轮（s3a/s3b/s3c）判据全过——RS 走完全部 12 个 endpoint 的 step2，`rs-epslot self=0x7fffffffc800` 全程活值，无 SIGSEGV。**阶段 1.2 判据达成，下一步进阶段 1.3（rc marker 链）**
+- **阶段**：**1.3 推进中（F10b/F10c 完成，SetSys/Allow 已通）**：S3 ✅ Task C 根因修复全闭环（`a470a8d9c`+`6be40748f`）。阶段 1.3 探针（tail-dump）裁决 RS 卡 NO_PRIV，根因锁定 SYSCALL 腿 errno 取负破坏数据码（F10b `KcallResult::Data(i32)` + `reply_wire()` 修复，do_memory 服务成功），再暴露内核栈 VA virt_to_phys bug（F10c `copy_struct_from_user`/`dispatch_getmcontext`/`dispatch_setmcontext` 改用 AddressRef::Process 走真实页表，SetSys 成功，NO_PRIV 已清）。s13e 真机：10 服务器 Allow 成功 tf=0x0，RS/VM RECEIVING，**新停点 = 8 服务器 runnable=yes queued=no 等待调度**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
-- **新停点（登记，阶段 1.3 处置）**：修复后 boot 推进到 RS 阻塞在 int33 receive（`rs_flags=0x8`，picknone 全停），旧崩溃点之后的第一个新问题；两轮流片均在 timeout 内无内核 panic
+- **新停点（登记，阶段 1.3 处置）**：~~修复后 boot 推进到 RS 阻塞在 int33 receive~~ → **F10c 后 s13e 新停点**：8 服务器 runnable=yes queued=no（已清 NO_PRIV，但调度器不捞起）；RS(0x102)/VM(0x108) RECEIVING，正常等待；需要调查 queued=no 原因（run_queue 添加逻辑）
 - **⚠️ 复现环境硬约束（S0 发现，仍有效）**：必须用仓库内 `tmp/nk4a/vars.fd`（累积过的 UEFI vars）的副本替换 §2.2 QEMU 命令里的 vars 槽（本文件 S0 节「做法」段已写好完整命令；QEMU 会写它，不要直接用仓库文件本体）；用全新 `OVMF_VARS_4M.fd` 会让 EFI 模块装载落点改变 → 内核 `vm_handoff free n=0` → VM 在 `boot.rs:157` assert panic → 全系统 livelock（比 Task C 更早的死法，签名完全不同；该 fresh-vars 布局鲁棒性 bug 已登记不修）；另 QEMU 命令照 S0 节模板原样跑，自行加 `-machine q35 -m 512` 会导致 QEMU 启动即退（实测）
 - **已修复**（commit）：
   - `a470a8d9c`+`6be40748f` Task C 根因：int33 陷阱腿恢复 C 门纪律（详见 S3 节）
+  - **F10b**（待 commit）：`KcallResult::Data(i32)` + `reply_wire()` — 数据码原样，错误码取负；`vmctl_memreq_get` ENOENT/VMPTYPE_CHECK 改 Data 路径，do_memory 服务成功
+  - **F10c**（待 commit）：`copy_struct_from_user` + `dispatch_getmcontext/setmcontext` 改用 AddressRef::Process 走 caller CR3 页表解内核栈 PA，SetSys 不再 EFAULT，Allow 清 NO_PRIV 成功
   - `1d25f433e` AP 入口补 EFER.NXE（bit11）+ BSP `enable()` 显式置位 —— err=8 保留位风暴 20+ → 0
   - `967a903e7` 摘除金丝雀探针（它在污染生产上下文）
   - `85a0d7cd8` 四张检测网（全部零命中，见排除账）
 - **已排除**（不要再重复排查）：DM 覆盖 / VM-内核树不一致 / 分配器双重分配·归还·底层重用 / EFER.NXE / gdb 硬件观察点路线 / **PTE 条目被抹写形态**（S2c 实证崩溃窗口内监视 VA 的页表条目全程完好、无 refault，那 48 次 lvl1=0 全是正常 lazy 缺页——『统一解释』的第 1 条骨架需按 S2 结论修正：损的是栈数据，不是页表）/ IPC 消息投递站点 `copy_msg_to_user`·viow（S1-S2 对账无直接命中，真凶是同构的 kernel_call_finish DM 直写，见 S2）
 - **新登记（S0 顺带发现，暂不修）**：fresh-vars 布局下 `classify()` 产出 free n=0——与 §4.4 第 3 项「跨分配器双记账」候选直接相关，若后续修复涉及 memmap 扣减协议必须一并验证此场景
-- **下一步**：阶段 1.3（rc marker 链：sh 域最小版进 imgrd，`init` exec `/bin/sh`，判据 `minix-rs rc: minimal boot script marker`）；新停点（RS receive 阻塞、picknone 全停）的排查并入 1.3 推进中做；探针保留至 task1-close 裁决；`syscall.rs::kernel_call_resume`（无调用方，评审确认）登记进 task1-close 死代码裁决
+- **新登记（F10b/F10c 评审发现，阶段 2/3 前必须修）**：
+  - **P1-arch**：AArch64 (`trap_dispatch.rs` aarch64 SYSCALL 臂) 和 RISC-V 的 SYSCALL 腿仍用 `reply_code()` 不取负，与 x86_64 负 errno ABI 不一致；阶段 2.1/3.1 开工时必须迁移到 `reply_wire()`
+  - **P2-diag**：`dispatch_diagctl` 的内核栈→PA 走 `kern_phys_base + (va - kern_virt_base)` 方式，隐式假定栈在 image span 内；应收敛到 `AddressRef::Process` 统一方案（同形态：`grant.rs`/`syscall_device.rs`/`syscall_signal.rs`/`misc.rs` 等处），另开 todo
+- **下一步**：**1.3 新停点**：调查 8 服务器 runnable=yes queued=no（为什么调度器不捞起）；若 NO_QUANTUM 在 Allow 后需要 replenish 则对位 C 的 timeslic 机制；继续推进至 rc marker；探针保留至 task1-close 裁决；`syscall.rs::kernel_call_resume`（无调用方）+ 双次 `vm_enqueue_and_notify_vm` 登记 task1-close 死代码裁决
 - **阻塞/风险**：无阻塞；风险 = 探针采样饥饿（cap 被启动期重复事件吃光，见 prompt 铁律 2）与布局每轮漂移（禁止跨轮硬编码物理地址）
 
 ---
@@ -310,3 +315,55 @@ CodeReview 子代理评审结论：P0 无发现（门控覆盖全仓三类 finis
 ### 结论
 ### 下一步
 -->
+
+---
+
+## 1.3-F10b-F10c：SYSCALL 腿数据码 + 内核栈地址修复（2026-09-23）
+
+### 目标
+
+修复 s13c 新停点：boot 推进到 RS `do_memory` 循环后，RS 的 VmSuspend 无法被 VM 服务，全系统卡在 NO_PRIV。分析根因并修复。
+
+### 做法
+
+1. **s13c 取证**：tail-dump 探针在 picknone 第 2/4 次空手时触发，打出全表 flags/runnable/queued 快照。观察到：VM RECEIVING=0x8、RS VMREQUEST=0x800，其余 10 服务器全 NO_PRIV|NO_QUANTUM=0x8080。串口日志没有 `do-memory enter` 行 → VM `do_memory` 从未进入 `memreq_get` 循环。
+
+2. **F10b 根因（syscall_leg_wire 取负破坏数据码）**：VM 在 `do_memory` 中调用 `sys_vmctl_memreq_get`（SYSCALL 腿）。内核空队列时返回 `KcallResult::Ok(ENOENT=2)`。F10 取负：`syscall_leg_wire(2)` = -2，用户态 `reply < 0` 拦截 → `Err(-2)` → `do_memory` 立即退出，永远不服务 RS 请求。同理 VMPTYPE_CHECK=1 也被取负。
+
+3. **F10b 修复**：`KcallResult` 新增 `Data(i32)` 变体（专用于正值数据码交付），`reply_wire()` 方法统一三条交付点逻辑：`Ok(code)` → `-code`（错误码取负），`Data(v)` → `v`（原样）。`vmctl_memreq_get`、`GetPdbr` 改为 `Data(...)` 路径。`trap_dispatch.rs`、`lib.rs` 的 frame.rax/set_ipc_return_code 改用 `reply_wire()`。
+
+4. **s13d（F10b 后）**：`do-memory enter` → `memreq target=2 ok=1` → `do-memory done`——VM 服务成功！boot 推进到 privctl SetSys 阶段。但 `pctl req=3 tgt=0 r=0xe(EFAULT)`——SetSys 失败。
+
+5. **F10c 根因（`copy_struct_from_user` 内核栈 virt_to_phys bug）**：`privctl_set_sys` 调用 `copy_struct_from_user(caller, arg_ptr, &mut req, size)` 把 RS 用户空间的 `PrivUpdateRequest` 结构读到内核栈。函数内部 `dst_phys = CurrentDirectMap::virt_to_phys(&req)`。`&req` VA ≈ `0xFFFF8000003FF890`（内核 higher-half 段），但 `virt_to_phys` 只认 `KERNEL_DM_BASE(0xFFFF808000000000)` 以上的 DM 地址，低于此的落入 VM_DM 分支做 `va - 0x80000000` 得垃圾 PA `0xffff7fff803ff890` → 页表访问失败 → EFAULT。
+
+6. **F10c 修复**：`copy_struct_from_user`、`dispatch_getmcontext`、`dispatch_setmcontext` 三处把 `AddressRef::Physical(virt_to_phys(kernel_buf))` 改为 `AddressRef::Process { endpoint: caller_endpt, offset: VirBytes(kernel_buf as u64) }`——用 caller（RS）的 CR3 走真实页表解内核栈 PA（RS 的 PML4[511] 包含内核 higher-half 映射），`cross_space_copy` 得到正确 PA 后通过 `kernel_phys_to_virt` 经 DM 写入同一物理内存。语义等价 C `vircopyf(VMIO_READ, user_ptr, size, &priv)`。
+
+### 原始数据（s13e 串口关键段）
+
+```
+nk4a: do-memory enter
+nk4a: memreq target=2 start=0x224008 len=0x11 ok=1
+nk4a: do-memory done
+...
+nk4a: pctl req=0x0000000000000003 tgt=0x0000000000000000 r=0x0000000000000000 tf=0x0x0000000000008080   ← SetSys OK, tgt=0 (DS)
+nk4a: pctl req=0x0000000000000003 tgt=0x0000000000000004 r=0x0000000000000000 tf=0x0x0000000000008080   ← SetSys OK, tgt=4
+...
+nk4a: pctl req=0x0000000000000001 tgt=0x0000000000000000 r=0x0000000000000000 tf=0x0x0000000000000000   ← Allow OK, NO_PRIV 已清
+nk4a: pctl req=0x0000000000000001 tgt=0x0000000000000004 r=0x0000000000000000 tf=0x0x0000000000000000   ← Allow OK
+...
+nk4a: picknone rs_flags=0x0x0000000000000008   ← RS RECEIVING
+nk4a: tail nr=0x100 flags=0x0 runnable=yes queued=no   ← DS 已 runnable
+nk4a: tail nr=0x103 flags=0x0 runnable=yes queued=no   ← sched 已 runnable
+nk4a: tail nr=0x108 flags=0x8 runnable=no queued=no    ← VM RECEIVING
+nk4a: tail nr=0x10b flags=0x0 runnable=yes queued=no   ← init 已 runnable
+```
+
+### 结论
+
+F10b+F10c 彻底修复了 NO_PRIV 停点。s13e 全 4572 行日志：无 panic、无 SIGSEGV，12 服务器全 exec，SetSys 全成功，Allow 全成功 tf=0x0（NO_PRIV 清除）。新停点 = 服务器 runnable=yes queued=no（调度器未捞起），登记待下一步处理。
+
+### 下一步
+
+1. 调查 queued=no：`pick` 函数如何从 `proc_base` 链表捞 runnable 进程，新启动进程是否被加入 `run_qh` 队列；或 `runnable=yes` 是否只是无阻塞标志但没有在 per-CPU queue 中。
+2. commit F10b+F10c，对 commit 做 code-review。
+

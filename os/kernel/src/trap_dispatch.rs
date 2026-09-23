@@ -1685,8 +1685,11 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
     // 重入调度器；VM 服务完成后 KCALL_RESUME 阶段重派调用并经
     // set_ipc_return_code 交付 RAX（NK4-A C-3 迭代6，此前此臂 panic）。
     // NoReply 不在此腿出现（receive 型调用走 int-33）。
-    match result.reply_code() {
-        Some(code) => frame.rax = code as i64 as u64,
+    // NK4-C F10b（P0-wire）：SYSCALL 腿线上取负由 `reply_wire()` 统一处理：
+    // 错误码（Ok）取负，数据码（Data）原样传递；int33 腿不取负（rax 携带 IPC
+    // 状态位语义，用户态按正 errno 消费）。
+    match result.reply_wire() {
+        Some(wire) => frame.rax = wire as i64 as u64,
         None => {
             if !matches!(result, KcallResult::VmSuspend) {
                 panic!("trap_dispatch: syscall returned {result:?} with no reply code");
