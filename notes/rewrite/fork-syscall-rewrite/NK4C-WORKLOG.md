@@ -1295,3 +1295,15 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 
 - **sched 侧一切 diagctl 打点静默失败的总根因候选**：RS 授予 sched 的 kcall mask（SRV_KC 模板）疑未含 SYS_DIAGCTL——sched 的 sys_diagctl_write 被内核拒绝（EPERM/CallDenied），`let _ =` 静默吞错 ⇒ sched 侧一切 errno 打点不可见。
 - **下一轮**：①kernel SYS_DIAGCTL dispatch 加 caller 打点（一轮定位：sched 的 diagctl 是否到达 kernel、返回何错）；②据结果修 RS 的 kcall mask 模板（SRV_KC 补 SYS_DIAGCTL）或 kernel diag handler；③sched 侧诊断通道打通后，errno 现形 → 修 init_scheduling 首个失败调用 → 两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10y2-b 本轮收口总结（s16e，2026-09-24）
+
+- 本轮仪器化全部落地并验证：elock 全量状态（PM rts/getfrom + sched rts/getfrom/sendto + PM 栈回溯）、dd2m（dst/cmt/xmt）、ipcerr（cap 64 + caller∈{0,4} 过滤）、diag-efault、imain-0..6、init-state ×7、pmvi k=0..b+barrier-done、srcv-err/sc-rv、rearmlen、gtick。
+- **s16e 定案**：diag-efault 零命中 ⇒ sched 的 diagctl 写未 EFAULT——诊断静默失败机制在更深处（diagctl 返回路径/调用号戳/或 len==0 短路——注意 len==0 时 dispatch_diagctl 直接返回 Ok(0) 不打印：**若 sched 侧格式化产出了空串，diagctl 静默成功**——srcv-err/sc-rv 的格式化可能产出了空内容）。
+- **当前停点不变**：PM↔sched 双向 SENDING 互撞（ELOCKED 单发）+ 全链健康 idle，1143-1151 recvs。
+
+### 下一步（接手即做）
+
+①核 srcv-err/sc-rv 打点的格式化是否产出空串（line[13..23] 的填充逻辑核对——v.to_be_bytes()[1..] 只填 6 字节但 line 有 24 字节、其余为零——**hex 编码位置偏移 bug**：应为 8 个 hex 字符，实际填了 6×2=12 字节越界一半——修正编码循环）；②复跑读 sched receive 失败 errno；③修根因 → rc marker（单元 B 完成）→ 单元 C-K。
