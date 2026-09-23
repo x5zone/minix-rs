@@ -1182,3 +1182,11 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 下一轮配方（交接手）
 
 ①ipcerr cap 24→64 + 过滤 caller∈{0,4}：一轮定位 PM taskcall ELOCKED 与 sched receive 失败的错误类别；②按类别修（ELOCKED→taskcall 重试臂；EPERM→priv 时序；CallDenied→trap mask）；③修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.10y 状态固化（s15w3，2026-09-24）
+
+- elock 全量状态探针落地：`caller=0(PM) dst=4(sched) mt=3 src=0 d_rts=SENDING d_gf=NONE d_sto=PM c_gf=ANY`。
+- 1.10l（SENDREC 原子性：REPLY_PEND 发送者 drain 后转 receive 半停车）已生效入仓；VFS 屏障阻塞 send 修复已落地。
+- **下一轮配方（交接手，单点）**：elock 瞬间 PM↔sched 互卡的全状态已捕获——PM 的 mt=3 阻塞 send 与 sched 的反向 SENDING。下一轮：①dd2m 探针补 PM 侧该 send 的 m_type 来源（PM 的 p_sendmsg 0x900 残留已核为陈旧缓存）；②定位 PM 侧向 ep4 的阻塞 send 站点（grep PM 全部 send_blocking/sendrec 至 ep4 的调用，重点 sched_ctl taskcall 与 vfs barrier 的参数变量）；③按 C sched 协议修一侧异步/sendnb；④修后两次复跑过 1.10 → rc marker（单元 B 完成）→ 单元 C-K。
