@@ -1747,6 +1747,23 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 
 **CodeReview**：无 P0/P1（与 B8/B9/B9b 联合评审覆盖，REPLY_PEND 清除点唯一、语义正确、无副作用——只清 dst 接收方、不影响并发 sendrec 的 sender 侧）。
 
-**新前沿 B13**：stat("/dev/console") 现在能完成（不再挂），但返回 ENOENT（lookup 失败），导致 `ensure_console` 返回 `console_ok=false` → SingleUser → rc marker 仍不可达。imgrd 已嵌入 MFS 且 mount 成功（不 panic、不 EIO），但 MFS 的目录路径解析 `/` → `dev` → `console` 某环节查找失败。下一入口：排查 MFS 的 `do_lookup`/`search_dir` 逻辑或直接检查 imgrd 内 mfs 目录结构 inode 布局。
+**新前沿 B13（诊断进行中，初步已排除+候选方向）**：stat("/dev/console") 现在能完成（不再挂），但返回 ENOENT（lookup 失败），导致 `ensure_console` 返回 `console_ok=false` → SingleUser → rc marker 仍不可达。
+
+**已排除（静态分析+宿主测试，2026-09-24 续会话）**：
+- imgrd 未嵌入/空：确认 MFS 二进制 8.6MB（imgrd 8MB via include_bytes!）；build.rs + imgrd_data.rs 正确。
+- superblock 格式/magic 错误：hexdump 确认 magic=0x4D5A(V3)、block_size=4096。
+- mkfs proto 逻辑：`test_proto_seeds_tree_with_all_entry_types`（177 MFS 测试全绿）验证 6 条根 entry 含 dev/console。
+- VFS 路径分割：`next_component("/dev/console")` → ("dev","/console") → ("console","") 正确。
+- MFS mount 失败：imain-4 可达 = stat 完成而非 panic，mount 成功（不 EIO）。
+- `map_file_block` zone 映射：直接区返回 `zones[file_block]`（绝对块号），MINIX V3 语义正确；`load_dir_blocks` 用它做 `BlockKey::new(device, zone)` 读缓存。
+- `names_equal` 60B bounded 比较：零填充匹配短查询，逻辑无误。
+
+**候选方向（按优先级）**：
+1. **宿主集成测试复现**：用真实 `target/image/x86_64/imgrd.img` 字节构建 `ImgrdBlockSource::from_static` → `mount` → `lookup_child(1, "dev")` → `lookup_child(dev_ino, "console")`，看是否 ENOENT 可复现。若可复现→ 纯逻辑/布局 bug；若不可复现→ 差异在 target 运行时。
+2. **target 运行时差异**：(a) `cache.source_block_size()` 是否返回 4096（`ImgrdBlockSource::block_size()` 与 mkfs 一致？）；(b) `pool_buffers` 是否过小致 `load_dir_blocks` acquire 失败→EIO→被 `lookup_child` 映射为 ENOENT；(c) `include_bytes!` 在 target 二进制中的字节与宿主 imgrd.img 逐字一致（MD5 校验）。
+3. **VFS→MFS REQ_LOOKUP 线格式**：`wire.rs` 中 `start_directory` 是否传了正确 ino=1（而非 0 或其他）；grant 传路径时 NUL 截断是否导致空名→NotFound。
+4. **`InodeTable::get` 对 ino=1 加载**：slot 是否命中正确磁盘位置（`InodeIo::from_superblock` 的 `table_block`/`per_block` 参数与 mkfs 一致）。
+
+**下一 agent 入口**：先做候选 1（30 min 内可定案），若宿主不可复现则上真机 diagctl 打印 `lookup_child(1,"dev")` 的 size/zones[0]/found/ENOENT 臂。
 
 **本 commit 文件清单**：`os/kernel/src/ipc.rs`、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
