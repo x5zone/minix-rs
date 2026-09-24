@@ -1422,9 +1422,17 @@ impl<'a> IpcEngine<'a> {
         // queued and the scan continues with the next one.
         if let Some(sender_idx) = self.caller_q_find_allowed(caller_idx, src_endpoint) {
             caller_q_remove(self.procs, caller_idx, sender_idx);
-            // Copy sender's cached message into caller's deliver buffer.
-            let sender_msg = self.procs[sender_idx].p_sendmsg;
+            // NK4-C 1.11d（getuid 无回执根因）：同步拷贝前必须盖 m_source。
+            // C proc.c:1071-1075 把 sender->p_sendmsg 拷进 p_delivermsg 后
+            // `p_delivermsg.m_source = sender->p_endpoint`——发送者的用户
+            // 缓冲里 m_source 恒为 0（用户态不填，内核投递时盖章）。F14
+            // 同步拷贝绕过 p_delivermsg 直写用户缓冲时漏了这一步：PM 收到
+            // init 的 GETUID 但 m_source=0 → 回错槽位 → init 永停 receive
+            // 半（s17n `pm 00600` 实锤：mt=6 src=00，而 init 实际端点 0xb）。
+            // 拷贝失败回退臂（下方）早已盖章，唯同步臂漏。
+            let mut sender_msg = self.procs[sender_idx].p_sendmsg;
             let sender_ep = self.procs[sender_idx].p_endpoint;
+            sender_msg.m_source = sender_ep;
             let sender_from_kernel = self.procs[sender_idx]
                 .p_misc_flags
                 .is_set(MiscFlagsBits::SENDING_FROM_KERNEL);

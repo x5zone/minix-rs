@@ -1381,3 +1381,17 @@ elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（P
 - 尾态（两轮快照一致）：12 服务 + PM 全部 RECEIVING 空闲、runnable=no、无 picknone 之前的任何 panic；init(0x10b) 停车 RECEIVING from=0（1.10x 停车腿 ✓）。
 - 探针链：`p3park s=0xb gf=0x0`（PM 的 receive(ANY) 把 init 的 getuid drain 走，F14 同步拷贝应已落 PM 用户缓冲）→ **此后 PM 零输出**，无 reply（init 永停 receive 半）。PM 未 panic、未 ENOSYS——疑似 PM dispatcher 收到 m_type 后静默忽略（或同步拷贝落点/字节数不对，PM 收到 m_type=0 一类野值直接跳过）。
 - 下一步（一轮探针定案）：PM dispatcher 入口打 `nk4a: pmrecv mt=<m_type> src=<m_source>`（≤16B，cap 8）——判定「PM 收到什么」与「GETUID 臂是否进入」。若 mt=0/野值 → 查 F14 同步拷贝的 p_delivermsg_vir 新鲜度（PM 该次 receive 的缓冲指针）；若 mt=GETUID(24) 正常进臂 → 查 reply 腿（sendnb 目的端点/reply 构造）。修后两次复跑 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.11d-fix m_source 盖章（2026-09-24，serial_s17m…s17p，commit 本轮）
+
+- **根因**：Phase 3 drain 的 F14 同步拷贝直写用户缓冲时漏盖 `m_source`——C proc.c:1071-1075 对 p_delivermsg 盖 `m_source = sender->p_endpoint`，而发送者用户缓冲里 m_source 恒 0。PM 收到 init 的 GETUID 后 `pm 00600`（mt=6 src=0，init 实际端点 0xb）→ 回错槽位 → init 永停。
+- **修**：ipc.rs drain 臂 `sender_msg.m_source = sender_ep` 后再 copy_msg_to_user（回退臂原有盖章不动）。docker kernel 813 全绿、fmt 88/88 零新增。
+- **验证（s17o）**：`pm 0060b`（GETUID src=init ✓）→ `pm 0040b`（GETPID ✓）——init 与 PM 的调用链首次打通。
+
+## 1.12 新停点（s17o/s17p 双签名）：Path A 唤醒丢入队（F10d 家族）+ VFS↔RS 请求链
+
+- **s17o**：init getuid/getpid 过，随后的 VFS 请求使 init SENDING to=VFS(1)；VFS 停车 RECEIVING from=RS(2)（VFS 的 sendrec-to-RS receive 半）——RS 空闲 RECEIVING(ANY) 却未消费 VFS 的请求。
+- **s17p（时序变体）**：PM 的 sched taskcall send 半 Path A 直投后 sched 被唤醒但 **runnable=yes queued=no**（F10d 同族：rts 原始 clear 与入队半脱节）→ sched 永不跑 → taskcall 无 reply → PM 停车 receive-from-sched → init 的 getuid 停在 PM 的 caller_q。
+- **下一步（下一轮）**：①内核 `take_wake_target` 入队臂打点（`wake enq nr=X`，cap 16）+ Path A 直投臂打点，判定丢入队的站点（多 wake 覆盖？rts_unset 条件分支？）；②VFS 停车 from=RS 的 sendrec 语义核对（VFS 为何向 RS 发 sendrec、RS 为何不收）；③修后两次复跑 → rc marker（单元 B 完成）→ 单元 C-K。
