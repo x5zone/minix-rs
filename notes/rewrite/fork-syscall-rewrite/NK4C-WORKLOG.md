@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（F14+F15 已修，各两次独立真机验证 s14b-s14j；当前 frontier = 1.10「PM↔VM 缺页服务循环」——PM 在 0x209500/0x2200b0 反复 fault、VM 反复服务成功但不收敛，疑似 served PTE 不持久/缺 flush（对位 R2 登记 F2 + sync_slot_pte 无使用者），见 1.9d 节）**：历史——S3 Task C → F10b/c/d → F11 → F12 → F13 → **F14（Phase 3 drain 同步拷贝，1.7/1.8 节）** → **F15（队列唤醒完成码按 SENDING_FROM_KERNEL 门控，1.9 节）**：boot 从 449 livelock 推进至 birth 协议全过、PM↔VFS 同步、~19200 行无崩溃无 picknone
+- **阶段**：**1.3 rc marker 链（当前 frontier = 1.11d「init 的 getuid 被 PM 收下后无回执」——12 服务全出生、PM↔VFS barrier 过、PM↔sched sendrec 往返闭环（s17k `p4a src=4 gf=4 rpv=y` 实锤），init(0xb) 在 getuid 的停车 receive 半上永停，PM 收下请求（`p3park s=0xb gf=0x0`）后零输出，见 1.10z/1.11d 节；下一轮探针：PM dispatcher 入口 `pmrecv mt/src`）**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → **1.10z 三根因连修（①drain 停车 getfrom=目的地；②RS WirePrivUpdate s_id i32→u16 修 SYS_PROC 剥旗（sched setalarm EPERM 根因）；③sendrec 快路径 receive 半 ANY→目的地修 ENOSYS ping-pong）**：boot 从 449 livelock 推进至全服务出生 + PM 主循环空闲
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1343,3 +1343,41 @@ elock 的 `mt` 打的是 `msg.m_type`——int33 陷阱入口把**调用号**盖
 ### 1.11a 补充（下一轮探针配方精确化）
 
 elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（PM 的 rts）与 `c_rpv`（PM 的 REPLY_PEND 位）——判定 PM 的 taskcall 是否被 1.10l 正确转入 receive 半；②`x_rpv`（sched 的 REPLY_PEND 位）——判定 sched 的 SENDING 是否为其 taskcall 应答（应为否，sched 不 taskcall PM）。字段齐后按 1.11a 修复配方实施。
+
+---
+
+## 1.10z 三根因连修：互卡 / 伪 reply / 权限剥旗（2026-09-24，serial_s17a…s17k）
+
+> 本轮三个独立根因一起收敛，全部有真机探针链实证。修复后 boot 首次到达「12 服务全出生 + PM 主循环空闲」层；新停点见 1.11d 节。
+
+### 根因① 1.10x：Phase 3 drain 的 SENDREC 停车 getfrom=ANY → 目的地端点
+
+- C 对位 proc.c:1104-1107：SENDREC 发送者自身的 mini_receive 以 `src_e`（=sendrec 目的地）阻塞，不是 ANY。旧 1.10l 停车写 ANY → 任一第三方发往 PM 的 Path A 直投（is_willing_to_receive 只认 getfrom）冒充 reply 完成 PM 的 sendrec（s16g 的 PM↔sched 互 SENDING ELOCKED livelock + init 永停 imain-1 同根）。
+- 修：`ipc.rs` drain 停车腿 `s.p_getfrom_e = caller（drainer）endpoint`。单测 `test_sendrec_parked_receive_half_getfrom_locks_to_destination`。
+
+### 根因② RS WirePrivUpdate s_id 宽度错位 → 全服务 SYS_PROC 被剥 → sched setalarm EPERM
+
+- 内核 `SysId = u16`（kpriv.rs:10），RS 镜像 `s_id: i32` → repr(C) 头部错位 4 字节：内核把 rs s_id 高半字读成 s_flags（小 id 恒 0），SET_SYS 覆盖后所有服务 flags=0。`s_ipc_to` 恰在 24 字节处重新对齐 → IPC 掩码正常、症状只在 flags/sig_mgr 腿（极迷惑）。
+- 实锤：s17b `setsys tgt=4 req_fl=0x0 eff_fl=0x0`；修后 s17c `req_fl=0x12 eff_fl=0x12`（SRV_F=SYS_PROC|PREEMPTIBLE）。sched 的 `sys_setalarm`（init_scheduling，main.rs）EPERM panic 随之消失。
+- 修：`servers/rs/src/trap_api.rs` s_id: u16 + `offset_of!` 三点守卫（s_flags@2 / s_init_flags@4 / s_ipc_to@24）+ size 守卫，漂移即编译失败。
+
+### 根因③ sendrec 快路径 receive 半 ANY → 目的地（本轮主根因）
+
+- `engine.sendrec()` 秒达分支 `self.receive(caller, ANY)`——C proc.c:569-583 SENDREC 落入 RECEIVE 臂用**同一 src_dst_e**。真机 s17j 铁证：PM sendrec(sched) 秒达后 receive(ANY) 把 init 排队在 PM caller_q 上的请求当 reply 消费（`p3park s=0xb gf=0x0` 在 `s4r` 后出现），sched 真 reply（`p4a src=4 gf=ANY rpv=n`）落进 PM 主循环成野请求 → PM 依协议回 ENOSYS(78) → sched no_sys 再回 ENOSYS → **ENOSYS ping-pong livelock**（s17e/s17f/s17g 反复 rv 004e×28）。
+- 修：`self.receive(caller_nr, dst_endpoint)`。单测 `test_sendrec_fast_path_receive_half_scopes_to_destination`。
+- 旁案：MinixSchedCtl::taskcall 的 1.10w ELOCKED 重试读 `rv == 208`（reply 语义），而内核 deadlock 检查以 **syscall 错误**返回 ELOCKED（走 `Err(_) => -EIO` 臂）——重试从未生效。本轮未修（taskcall 路径已被根因③疏通），登记 1.11e。
+
+### 探针自身事故（教训入档）
+
+- sched server.rs 的 sc-rv/srcv/rearm/mt 取证探针多处 `line[..N].copy_from_slice(b"...")` 长度不匹配——copy_from_slice 即 panic。**s17c/s17d 的 "server.rs:285/286 panic" 是探针自己**，非协议臂；且 >16B 的 diagctl 写被内核静默丢弃（s14r/w 已知），rearmlen 18B 的 errno 从未上串口。已全改 ≤16B 并逐一核对字面量长度。假 panic 消耗两轮真机，后续探针必须先本地核对 `line[..N]` 与字面量等长。
+
+### 验证
+
+- docker：kernel **813**（811 基线 + 2 新单测）/ arch 242 / vm 526 全绿；rustfmt nightly --check 六文件 hunk 数与 HEAD 持平（零新增漂移）。
+- 真机 s17j / s17k 两轮：panic 清零、ENOSYS ping-pong 清零、elock 清零；`p4a src=4 gf=4 rpv=y` 实锤 PM↔sched sendrec 往返闭环。
+
+## 1.11d 新停点（s17k）：init 的 getuid 被 PM 收下后无回执（下一轮主攻）
+
+- 尾态（两轮快照一致）：12 服务 + PM 全部 RECEIVING 空闲、runnable=no、无 picknone 之前的任何 panic；init(0x10b) 停车 RECEIVING from=0（1.10x 停车腿 ✓）。
+- 探针链：`p3park s=0xb gf=0x0`（PM 的 receive(ANY) 把 init 的 getuid drain 走，F14 同步拷贝应已落 PM 用户缓冲）→ **此后 PM 零输出**，无 reply（init 永停 receive 半）。PM 未 panic、未 ENOSYS——疑似 PM dispatcher 收到 m_type 后静默忽略（或同步拷贝落点/字节数不对，PM 收到 m_type=0 一类野值直接跳过）。
+- 下一步（一轮探针定案）：PM dispatcher 入口打 `nk4a: pmrecv mt=<m_type> src=<m_source>`（≤16B，cap 8）——判定「PM 收到什么」与「GETUID 臂是否进入」。若 mt=0/野值 → 查 F14 同步拷贝的 p_delivermsg_vir 新鲜度（PM 该次 receive 的缓冲指针）；若 mt=GETUID(24) 正常进臂 → 查 reply 腿（sendnb 目的端点/reply 构造）。修后两次复跑 → rc marker（单元 B 完成）→ 单元 C-K。

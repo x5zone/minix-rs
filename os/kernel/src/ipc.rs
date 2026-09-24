@@ -1163,6 +1163,33 @@ impl<'a> IpcEngine<'a> {
         // 消息不投递，发送方落入 Path B（阻塞/排队，proc.c:895→925+），
         // 即被过滤的发送者在队列中等待，与"未命中 receive"同形。
         if Self::is_willing_to_receive(&self.procs[dst_idx], caller_endpoint) {
+            // NK4-C 1.10 取证探针（task1-close 裁决删除）：Path A 直投到
+            // PM(ep 0) 的现场（src + getfrom + REPLY_PEND）——sched reply
+            // 落主循环而非停车 receive 半的定位。
+            #[cfg(not(feature = "mock"))]
+            if dst_idx == crate::proc_table::nr_to_idx(ProcNr(0)).unwrap_or(usize::MAX) {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                static P4A_N: AtomicUsize = AtomicUsize::new(0);
+                if P4A_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                    Console::write_str("nk4a: p4a src=");
+                    Console::write_hex(caller_endpoint.0 as u64);
+                    Console::write_str(" gf=");
+                    Console::write_hex(self.procs[dst_idx].p_getfrom_e.0 as u64);
+                    Console::write_str(" rpv=");
+                    Console::write_str(
+                        if self.procs[dst_idx]
+                            .p_misc_flags
+                            .is_set(MiscFlagsBits::REPLY_PEND)
+                        {
+                            "y"
+                        } else {
+                            "n"
+                        },
+                    );
+                    Console::write_str("\n");
+                }
+            }
             // C: `copy_msg_from_user` (user path) or direct copy (FROM_KERNEL).
             let m = if !flags.contains(SendFlags::FROM_KERNEL) {
                 // User-origin send: route through UserCopy trait.
@@ -1250,6 +1277,11 @@ impl<'a> IpcEngine<'a> {
                     let c_gf = self.procs[caller_idx].p_getfrom_e.0 as u64;
                     Console::write_str(" c_gf=0x");
                     Console::write_hex(c_gf);
+                    let c_rpv = self.procs[caller_idx]
+                        .p_misc_flags
+                        .is_set(MiscFlagsBits::REPLY_PEND);
+                    Console::write_str(" c_rpv=");
+                    Console::write_str(if c_rpv { "y" } else { "n" });
                     Console::write_str("\n");
                     // PM 侧栈回溯：定位是 PM 哪个函数在发（cap 2 一次性）。
                     if EL_N.load(AtomicOrd::Relaxed) <= 2
@@ -1441,10 +1473,34 @@ impl<'a> IpcEngine<'a> {
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
             let woken_sender = self.procs[sender_idx].p_nr;
             if sender_reply_pend {
-                // SENDREC：转入 receive 半停车。
+                // SENDREC：转入 receive 半停车。停车 receive 的 getfrom 必须是
+                // 本次 sendrec 的目的地（=本 drain 的接收者）：C 对位
+                // proc.c:1104-1107——SENDREC 发送者自身的 mini_receive 以
+                // src_e（即 sendrec 目的地）阻塞。若 ANY，任一第三方发往
+                // 本发送者的 Path A 直投（is_willing_to_receive 只认
+                // getfrom）就会冒充 reply 完成其 sendrec——真机 s16g 实锤：
+                // PM 的 sched taskcall 停车期间 init 的 getuid 请求直投
+                // PM，被当 reply 消费，PM 带着未达的 sched reply 进入下一
+                // 个 taskcall，与 sched 的 reply 腿互成 SENDING → ELOCKED
+                // 重试 livelock（init 同时永停 imain-1）。
+                let dst_endpoint = self.procs[caller_idx].p_endpoint;
                 let s = &mut self.procs[sender_idx];
-                s.p_getfrom_e = minix_types::Endpoint::ANY;
+                s.p_getfrom_e = dst_endpoint;
                 s.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+                // NK4-C 1.10 取证探针（task1-close 裁决删除）：drain 停车腿。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    static P3PARK_N: AtomicUsize = AtomicUsize::new(0);
+                    if P3PARK_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                        Console::write_str("nk4a: p3park s=");
+                        Console::write_hex(s.p_endpoint.0 as u64);
+                        Console::write_str(" gf=");
+                        Console::write_hex(dst_endpoint.0 as u64);
+                        Console::write_str("\n");
+                    }
+                }
             } else {
                 self.record_wake_target(woken_sender);
             }
@@ -1868,8 +1924,15 @@ impl<'a> IpcEngine<'a> {
 
         match send_outcome {
             IpcOutcome::Delivered => {
-                // SEND phase delivered; now RECEIVE-ANY for the reply.
-                self.receive(caller_nr, Endpoint::ANY)
+                // SEND phase delivered; now receive the reply. C: the
+                // SENDREC arm falls through to RECEIVE with the SAME
+                // src_dst_e（proc.c:569-583——send 半与 receive 半共用
+                // src_dst_e，reply 只能来自 sendrec 目的地）。ANY 会把
+                // caller_q 上其它进程的排队请求当 reply 消费（真机 s17j
+                // 实锤：PM sendrec(sched) 秒达后 receive(ANY) 抢走 init
+                // 的排队请求，sched 真 reply 落进 PM 主循环成野请求，
+                // ENOSYS ping-pong livelock）。
+                self.receive(caller_nr, dst_endpoint)
             }
             IpcOutcome::Blocked => {
                 // Caller is blocked in SENDING. When the reply arrives,
@@ -2279,14 +2342,32 @@ impl<'a> IpcEngine<'a> {
         }
 
         match call {
-            IpcCall::Send | IpcCall::SendNb => self.send(
-                caller_nr, dst_endpoint, msg,
-                if call == IpcCall::SendNb {
-                    flags | SendFlags::NON_BLOCKING
-                } else {
-                    flags
-                },
-            ),
+            IpcCall::Send | IpcCall::SendNb => {
+                // NK4-C 1.10 取证探针（task1-close 裁决删除）：进入 sched
+                // (ep 4) 的每条 send 前 8 条（caller + m_type）——m_type
+                // 0x4e(ENOSYS) 泛滥的发送方定位。
+                #[cfg(not(feature = "mock"))]
+                if dst_endpoint.0 == 4 {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    static S4IN_N: AtomicUsize = AtomicUsize::new(0);
+                    if S4IN_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                        Console::write_str("nk4a: s4in c=");
+                        Console::write_hex(caller_nr.0 as u64);
+                        Console::write_str(" mt=");
+                        Console::write_hex(msg.m_type as u32 as u64);
+                        Console::write_str("\n");
+                    }
+                }
+                self.send(
+                    caller_nr, dst_endpoint, msg,
+                    if call == IpcCall::SendNb {
+                        flags | SendFlags::NON_BLOCKING
+                    } else {
+                        flags
+                    },
+                )
+            }
             IpcCall::Receive => {
                 // C: proc.c:578-583 — the plain-RECEIVE prologue in
                 // `sys_call`: clear MF_REPLY_PEND (SENDREC's protection,
@@ -2320,7 +2401,24 @@ impl<'a> IpcEngine<'a> {
                 }
                 self.receive(caller_nr, dst_endpoint)
             }
-            IpcCall::SendRec => self.sendrec(caller_nr, dst_endpoint, msg),
+            IpcCall::SendRec => {
+                // NK4-C 1.10 取证探针：同 s4in，SENDREC 腿（boot taskcall
+                // 走这条）。
+                #[cfg(not(feature = "mock"))]
+                if dst_endpoint.0 == 4 {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    static S4R_N: AtomicUsize = AtomicUsize::new(0);
+                    if S4R_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                        Console::write_str("nk4a: s4r c=");
+                        Console::write_hex(caller_nr.0 as u64);
+                        Console::write_str(" mt=");
+                        Console::write_hex(msg.m_type as u32 as u64);
+                        Console::write_str("\n");
+                    }
+                }
+                self.sendrec(caller_nr, dst_endpoint, msg)
+            }
             IpcCall::Notify => self.notify(caller_nr, dst_endpoint),
             // SendA was intercepted above the permission layer (C do_ipc
             // switch order, proc.c:673-684 before proc.c:503-541); this arm
@@ -4164,5 +4262,120 @@ mod tests {
         for p in table.procs_slice_mut().iter_mut() {
             p.p_rts_flags.set(crate::proc::RtsFlagsBits::SLOT_FREE);
         }
+    }
+
+    /// NK4-C 1.10x：SENDREC 发送半被 drain 后停车的 receive 半必须以
+    /// sendrec 目的地为 getfrom（C proc.c:1104-1107，src_e 阻塞），不得
+    /// ANY——否则第三方发往该发送者的消息经 Path A 直投冒充 reply，
+    /// 完成一个语义上未完成的 sendrec（s16g 真机互卡根因）。
+    #[test]
+    fn test_sendrec_parked_receive_half_getfrom_locks_to_destination() {
+        // pm = idx 0 (ep 10), sched = idx 1 (ep 11), init = idx 2 (ep 12).
+        let mut procs = crate::test_helpers::scratch_procs([
+            make_test_proc(0, Endpoint(10)),
+            make_test_proc(1, Endpoint(11)),
+            make_test_proc(2, Endpoint(12)),
+        ]);
+        for p in procs.iter_mut() {
+            p.p_rts_flags = RtsFlags::new();
+        }
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
+
+        // 1. pm sendrec(sched)：sched 未收 → 发送半阻塞，REPLY_PEND。
+        let mut req = Message::default();
+        req.m_type = 0x21;
+        assert!(matches!(
+            engine.sendrec(test_nr(0), Endpoint(11), &req),
+            IpcOutcome::Blocked
+        ));
+        assert!(
+            engine.procs[0]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::REPLY_PEND)
+        );
+
+        // 2. sched receive(ANY)：Phase 3 drain 取走 pm 的发送半 → pm 转入
+        //    receive 半停车，getfrom 锁定为目的地 sched 的端点。
+        assert!(matches!(
+            engine.receive(test_nr(1), Endpoint::ANY),
+            IpcOutcome::Delivered
+        ));
+        assert!(!engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::SENDING));
+        assert!(engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+        assert_eq!(engine.procs[0].p_getfrom_e, Endpoint(11));
+
+        // 3. init 发往 pm：getfrom 锁定 → 不得直投冒充 reply，init 阻塞。
+        //    （测试态 user copy 恒返回零消息，判定靠 m_source 盖章。）
+        let mut stray = Message::default();
+        stray.m_type = 0x33;
+        assert!(matches!(
+            engine.send(test_nr(2), Endpoint(10), &stray, SendFlags::NONE),
+            IpcOutcome::Blocked
+        ));
+        assert!(engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+        assert_ne!(engine.procs[0].p_delivermsg.m_source, Endpoint(12));
+
+        // 4. sched 回复：getfrom 命中 → Path A 直投完成 pm 的 sendrec。
+        let mut reply = Message::default();
+        reply.m_type = 0x7c;
+        assert!(matches!(
+            engine.send(test_nr(1), Endpoint(10), &reply, SendFlags::NONE),
+            IpcOutcome::Delivered
+        ));
+        assert!(!engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+        assert_eq!(engine.procs[0].p_delivermsg.m_source, Endpoint(11));
+    }
+
+    /// NK4-C 1.10x b：SENDREC 秒达（发送半 Path A 直投）时，receive 半必须
+    /// 只收 sendrec 目的地（C proc.c:571-583 同一 src_dst_e）——不得
+    /// receive(ANY) 把 caller_q 上第三方排队请求当 reply 消费（s17j 实锤
+    /// 的 PM↔sched ENOSYS ping-pong 根因）。
+    #[test]
+    fn test_sendrec_fast_path_receive_half_scopes_to_destination() {
+        // pm = idx 0 (ep 10), sched = idx 1 (ep 11), init = idx 2 (ep 12).
+        let mut procs = crate::test_helpers::scratch_procs([
+            make_test_proc(0, Endpoint(10)),
+            make_test_proc(1, Endpoint(11)),
+            make_test_proc(2, Endpoint(12)),
+        ]);
+        for p in procs.iter_mut() {
+            p.p_rts_flags = RtsFlags::new();
+        }
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        let mut engine = IpcEngine::new(&mut procs[..], &mut priv_table, &KernelUserCopy);
+
+        // 1. sched receive(ANY) 停车（待命收 taskcall）。
+        assert!(matches!(
+            engine.receive(test_nr(1), Endpoint::ANY),
+            IpcOutcome::Blocked
+        ));
+        // 2. init send(pm)：pm 未收 → init 阻塞入 pm 的 caller_q。
+        let mut stray = Message::default();
+        stray.m_type = 0x33;
+        assert!(matches!(
+            engine.send(test_nr(2), Endpoint(10), &stray, SendFlags::NONE),
+            IpcOutcome::Blocked
+        ));
+        // 3. pm sendrec(sched)：发送半秒达（Path A）→ receive 半以目的地
+        //    sched 过滤：init 的排队请求（src 12 ≠ 11）不得消费 → 阻塞。
+        let mut req = Message::default();
+        req.m_type = 0x21;
+        assert!(matches!(
+            engine.sendrec(test_nr(0), Endpoint(11), &req),
+            IpcOutcome::Blocked
+        ));
+        assert!(engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+        assert_eq!(engine.procs[0].p_getfrom_e, Endpoint(11));
+        assert_ne!(engine.procs[0].p_delivermsg.m_source, Endpoint(12));
+        // 4. sched 回复 → Path A 命中 getfrom 完成 sendrec。
+        let mut reply = Message::default();
+        reply.m_type = 0x7c;
+        assert!(matches!(
+            engine.send(test_nr(1), Endpoint(10), &reply, SendFlags::NONE),
+            IpcOutcome::Delivered
+        ));
+        assert!(!engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+        assert_eq!(engine.procs[0].p_delivermsg.m_source, Endpoint(11));
     }
 }

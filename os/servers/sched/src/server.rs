@@ -199,18 +199,19 @@ impl SchedServer {
         let (mut message, status) = match ipc.receive() {
             Ok(arrival) => arrival,
             // NK4-C 1.10y 取证探针（task1-close 裁决删除）：receive Err 的
-            // errno 数值前 4 次打印——sched receive 连续失败类别定位。
+            // errno 前 4 次打印。≤16 字节约束（diagctl >16B 静默丢弃，
+            // s14r/w）：b"nk4a: srcv " = 11B + 4 hex + \n = 16B。旧版本
+            // [..15]/15B 字面量错位（copy_from_slice 即 panic）。
             Err(e) => {
-                let mut line = [0u8; 24];
-                line[..15].copy_from_slice(b"nk4a: srcv-err ");
-                let v = e as u32;
-                for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
-                    let hexs = b"0123456789abcdef";
-                    line[15 + i * 2] = hexs[(byte >> 4) as usize];
-                    line[16 + i * 2] = hexs[(byte & 0xf) as usize];
-                }
-                line[23] = b'\n';
-                if let Ok(cs) = core::str::from_utf8(&line) {
+                const HEXS: &[u8; 16] = b"0123456789abcdef";
+                let v = e as u16 as u32;
+                let mut line = [0u8; 16];
+                line[..11].copy_from_slice(b"nk4a: srcv ");
+                line[11] = HEXS[((v >> 8) & 0xf) as usize];
+                line[12] = HEXS[((v >> 4) & 0xf) as usize];
+                line[13] = HEXS[(v & 0xf) as usize];
+                line[14] = b'\n';
+                if let Ok(cs) = core::str::from_utf8(&line[..15]) {
                     let _ = minix_sys::syscall::sys_diagctl_write(
                         &minix_sys::syscall::DirectKernelCallTransport,
                         cs,
@@ -231,15 +232,14 @@ impl SchedServer {
                 // errno 数值打印——1.10z 定案 re-arm setalarm 失败致 sched
                 // 死亡，errno 类别定位。
                 if let Err(e) = self.balance_queues(kernel) {
-                    let mut line = [0u8; 24];
-                    line[..13].copy_from_slice(b"nk4a: rearmlen ");
-                    let v = e as u32;
-                    for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
-                        let hexs = b"0123456789abcdef";
-                        line[13 + i * 2] = hexs[(byte >> 4) as usize];
-                        line[14 + i * 2] = hexs[(byte & 0xf) as usize];
-                    }
-                    line[23] = b'\n';
+                    // ≤16 字节约束（diagctl >16B 静默丢弃，s14r/w 实测）：
+                    // b"nk4a: rearm " = 12B + 2 hex + \n = 15B。
+                    const HEXS: &[u8; 16] = b"0123456789abcdef";
+                    let mut line = [0u8; 15];
+                    line[..12].copy_from_slice(b"nk4a: rearm ");
+                    line[12] = HEXS[((e >> 4) & 0xf) as usize];
+                    line[13] = HEXS[(e & 0xf) as usize];
+                    line[14] = b'\n';
                     if let Ok(cs) = core::str::from_utf8(&line) {
                         let _ = minix_sys::syscall::sys_diagctl_write(
                             &minix_sys::syscall::DirectKernelCallTransport,
@@ -253,6 +253,32 @@ impl SchedServer {
         }
 
         // ── dispatch (C 57-87) ──
+        // NK4-C 1.10 取证探针（task1-close 裁决删除）：来件 m_type+来源
+        // 前 8 件（≤15B：diagctl >16B 静默丢弃）——rv 0x4e(ENOSYS) 重试
+        // 的 wild m_type 定位。
+        {
+            static MT_N: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+            use core::sync::atomic::Ordering as AtomicOrd;
+            if MT_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                const HEXS: &[u8; 16] = b"0123456789abcdef";
+                let mt = message.m_type as u16 as u32;
+                let se = (sender.0 & 0xff) as u32;
+                let mut line = [0u8; 15];
+                line[..9].copy_from_slice(b"nk4a: mt ");
+                line[9] = HEXS[((mt >> 8) & 0xf) as usize];
+                line[10] = HEXS[((mt >> 4) & 0xf) as usize];
+                line[11] = HEXS[(mt & 0xf) as usize];
+                line[12] = HEXS[(se >> 4) as usize];
+                line[13] = HEXS[(se & 0xf) as usize];
+                line[14] = b'\n';
+                if let Ok(cs) = core::str::from_utf8(&line) {
+                    let _ = minix_sys::syscall::sys_diagctl_write(
+                        &minix_sys::syscall::DirectKernelCallTransport,
+                        cs,
+                    );
+                }
+            }
+        }
         let message_type = message.m_type;
         let verdict = match SchedMsg::from_raw(message_type) {
             Some(SchedMsg::NoQuantum) => {
@@ -281,16 +307,20 @@ impl SchedServer {
             reply.m_type = code;
             // NK4-C 1.10y 取证探针（task1-close 裁决删除）：应答 verdict
             // 数值打印（cap 8）——sched 拒绝码（EPERM=1 等）定位。
+            // ≤16 字节约束（diagctl >16B 静默丢弃，s14r/w）：b"nk4a: rv "
+            // = 9B + 4 hex + \n = 14B。旧版 [..11]/12B 字面量错位，
+            // copy_from_slice 首 panic——s17c/s17d 的 server.rs:285/286
+            // 假 panic 即此，非协议臂。
             {
-                let mut line = [0u8; 24];
-                line[..11].copy_from_slice(b"nk4a: sc-rv ");
-                let v = code as u32;
-                for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
-                    let hexs = b"0123456789abcdef";
-                    line[11 + i * 2] = hexs[(byte >> 4) as usize];
-                    line[12 + i * 2] = hexs[(byte & 0xf) as usize];
-                }
-                line[23] = b'\n';
+                const HEXS: &[u8; 16] = b"0123456789abcdef";
+                let v = code as u16 as u32;
+                let mut line = [0u8; 14];
+                line[..9].copy_from_slice(b"nk4a: rv ");
+                line[9] = HEXS[((v >> 12) & 0xf) as usize];
+                line[10] = HEXS[((v >> 8) & 0xf) as usize];
+                line[11] = HEXS[((v >> 4) & 0xf) as usize];
+                line[12] = HEXS[(v & 0xf) as usize];
+                line[13] = b'\n';
                 if let Ok(cs) = core::str::from_utf8(&line) {
                     let _ = minix_sys::syscall::sys_diagctl_write(
                         &minix_sys::syscall::DirectKernelCallTransport,

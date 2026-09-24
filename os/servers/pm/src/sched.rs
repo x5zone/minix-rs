@@ -188,6 +188,29 @@ impl<'a, T: IpcTransport> MinixSchedCtl<'a, T> {
 
     /// 一次 taskcall：发出 → 回复 `m_type` 即 rv（OK = 0，拒绝码非 0）。
     fn taskcall(&mut self, sched: Endpoint, mut msg: Message) -> i32 {
+        // NK4-C 1.10 取证探针（task1-close 裁决删除）：每次发出的 m_type
+        // 前 8 件（≤15B：diagctl >16B 静默丢弃）——sched 侧收到 m_type
+        // 0x4e(ENOSYS) 的发送方定位。
+        {
+            static TC_N: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+            use core::sync::atomic::Ordering as AtomicOrd;
+            if TC_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                const HEXS: &[u8; 16] = b"0123456789abcdef";
+                let mt = msg.m_type as u16 as u32;
+                let mut line = [0u8; 13];
+                line[..9].copy_from_slice(b"nk4a: tc ");
+                line[9] = HEXS[((mt >> 8) & 0xf) as usize];
+                line[10] = HEXS[((mt >> 4) & 0xf) as usize];
+                line[11] = HEXS[(mt & 0xf) as usize];
+                line[12] = b'\n';
+                if let Ok(cs) = core::str::from_utf8(&line) {
+                    let _ = minix_sys::syscall::sys_diagctl_write(
+                        &minix_sys::syscall::DirectKernelCallTransport,
+                        cs,
+                    );
+                }
+            }
+        }
         // NK4-C 1.10w 修复：ELOCKED(208) 重试——对照 C `_taskcall` 的阻塞
         // 直到投递/应答语义。PM↔sched 的应答/下一请求时序错位（1.10n/
         // 1.10u elock 实锤）时，重试等 sched 的 receive 半就绪后自行

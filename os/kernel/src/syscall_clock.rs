@@ -199,10 +199,39 @@ pub fn dispatch_setalarm(
     let use_abs_time = req.abs_time != 0;
 
     // C: do_setalarm.c:33 — SYS_PROC permission check
-    if !proc_table
+    let sa_caller_sys = proc_table
         .get(caller_nr)
-        .is_some_and(|c| caller_has_sys_proc_with_table(c, priv_table))
+        .is_some_and(|c| caller_has_sys_proc_with_table(c, priv_table));
+    // NK4-C 1.10y 取证探针（task1-close 裁决删除）：每次 setalarm 的
+    // caller/priv_id/生效 flags——boot 首臂 OK 而 5s 平衡轮 re-arm EPERM
+    // 的「中途剥旗」定位（s17c：SET_SYS 落 0x12 后 re-arm 仍死）。
+    #[cfg(not(feature = "mock"))]
     {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        static SAC_N: AtomicUsize = AtomicUsize::new(0);
+        if SAC_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+            Console::write_str("nk4a: sa-call caller=");
+            Console::write_hex(caller_nr.0 as u64);
+            if let Some(c) = proc_table.get(caller_nr) {
+                Console::write_str(" pid=");
+                match c.priv_id {
+                    Some(id) => Console::write_hex(id as u64),
+                    None => Console::write_str("none"),
+                }
+                if let Some(id) = c.priv_id {
+                    if let Some(kp) = priv_table.get(id) {
+                        Console::write_str(" fl=0x");
+                        Console::write_hex(kp.flags.s_flags.bits() as u64);
+                    }
+                }
+            }
+            Console::write_str(" sys=");
+            Console::write_str(if sa_caller_sys { "y" } else { "n" });
+            Console::write_str("\n");
+        }
+    }
+    if !sa_caller_sys {
         return KcallResult::Ok(EPERM);
     }
 

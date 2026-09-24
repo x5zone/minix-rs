@@ -56,13 +56,17 @@ struct WireMemRange {
 /// 内核侧权威布局:`os/kernel/src/kpriv.rs` `PrivUpdateRequest`
 /// (repr(C);内核注释明确"独立 struct,只需与 RS 服务端载荷布局内部
 /// 自洽")。本镜像逐域对应 rs 的 [`Privilege`](crate::privilege::Privilege)
-/// (privilege.rs:362-395 注释"逐域可比")——字段顺序与内核镜像严格
-/// 一致,repr(C) 布局由相同字段序自然对齐。GET_PRIV 的线上 wire
-/// (`PrivInfoStruct`,56 字节)拿不回 init_flags/io/irq/mem,故
-/// SetSys 全量下发、getpriv 增量回读是既定分工。
+/// (privilege.rs:362-395 注释"逐域可比")。**字段宽度必须逐域对齐内核
+/// (不只字段序)**:内核 `s_id: SysId = u16`(kpriv.rs:10),镜像也必须是
+/// u16——s16g/s17b 真机实锤的旧缺陷:i32 的 s_id 使 repr(C) 头部错位
+/// 4 字节,内核把 rs s_id 的高半字读成 s_flags(恒 0),SET_SYS 覆盖后
+/// 全部服务 SYS_PROC 归零 → sched `sys_setalarm` EPERM panic(main.rs
+/// init_scheduling 臂);`s_ipc_to` 恰在 24 字节处重新对齐,故 IPC 掩码
+/// 正常、症状只在 flags/sig_mgr 腿,极具迷惑性。`offset_of!` 守卫把
+/// 头部三个偏移钉死,漂移即编译失败。
 #[repr(C)]
 struct WirePrivUpdate {
-    s_id: i32,
+    s_id: u16,
     s_flags: u16,
     s_init_flags: i32,
     s_sig_mgr: i32,
@@ -78,11 +82,19 @@ struct WirePrivUpdate {
     s_mem_tab: [WireMemRange; 20],
 }
 
+// 头部偏移守卫:与内核 PrivUpdateRequest(kpriv.rs,repr(C),
+// SysId=u16)逐字节对齐的证据。s_flags 必须 @2、s_init_flags @4、
+// s_ipc_to @24(与内核首个 8 字节对齐域重合)。
+const _: () = assert!(core::mem::offset_of!(WirePrivUpdate, s_flags) == 2);
+const _: () = assert!(core::mem::offset_of!(WirePrivUpdate, s_init_flags) == 4);
+const _: () = assert!(core::mem::offset_of!(WirePrivUpdate, s_ipc_to) == 24);
+const _: () = assert!(core::mem::size_of::<WirePrivUpdate>() == core::mem::size_of::<[u64; 119]>());
+
 impl WirePrivUpdate {
     /// [`Privilege`] → wire 全量编码(SetSys/UpdateSys 载荷)。
     fn encode(priv_: &Privilege) -> Self {
         Self {
-            s_id: priv_.id.0,
+            s_id: priv_.id.0 as u16,
             s_flags: priv_.flags.bits(),
             s_init_flags: priv_.init_flags as i32,
             s_sig_mgr: priv_.sig_mgr.0,

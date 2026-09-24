@@ -2004,6 +2004,26 @@ fn privctl_set_sys(
                 && priv_table.update_priv(actual_id, &priv_id).is_err() {
                     return KcallResult::Ok(EINVAL);
                 }
+            // NK4-C 1.10y 取证探针（task1-close 裁决删除）：SET_SYS 落点
+            // ——目标端点 + 覆盖后的生效 flags（sched setalarm EPERM 判定：
+            // RS 下发的 SRV_F(0x12) 是否真的落到 priv 槽）。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                static SETSYS_N: AtomicUsize = AtomicUsize::new(0);
+                if SETSYS_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                    Console::write_str("nk4a: setsys tgt=");
+                    Console::write_hex(target_nr.0 as u64);
+                    Console::write_str(" req_fl=0x");
+                    Console::write_hex(priv_id.s_flags as u64);
+                    if let Some(kp) = priv_table.get(actual_id) {
+                        Console::write_str(" eff_fl=0x");
+                        Console::write_hex(kp.flags.s_flags.bits() as u64);
+                    }
+                    Console::write_str("\n");
+                }
+            }
             KcallResult::Ok(0)
         }
         Err(ENOSPC) => KcallResult::Ok(ENOSPC),
