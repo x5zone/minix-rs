@@ -172,9 +172,12 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
                 0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
                 _ => ENOSYS,
             };
-            let _ = self
-                .ipc
-                .send_nb(Endpoint::RS, &minix_sef::sef_init_reply(result));
+            // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
+            // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466）——非普通 send。
+            // sendrec 停在 receive(RS) 半等 RS catch 出口的 OK 唤醒，避免
+            // RS 的 reply 无人认领被野消费→回声投回 RS→step3 panic。
+            let mut reply = minix_sef::sef_init_reply(result);
+            let _ = self.ipc.send_rec(Endpoint::RS, &mut reply);
             return (Turn::Handled, Incoming::Birth);
         }
         let status = rx.status as u32;
@@ -650,7 +653,8 @@ mod tests {
             Ok(())
         }
 
-        fn send_rec(&mut self, _peer: Endpoint, _message: &mut Message) -> Result<(), i32> {
+        fn send_rec(&mut self, _peer: Endpoint, message: &mut Message) -> Result<(), i32> {
+            self.sent.borrow_mut().push(*message);
             Ok(())
         }
     }
@@ -684,7 +688,8 @@ mod tests {
 
     /// E-BIRTHFACE（NS1）：RS 的出生请求按注册面应答——fresh/restart
     /// 同体（main.c:419/425）→ OK；LU 未注册 → ENOSYS（sef_init.c:324-327）。
-    /// 应答经 send_nb 回 RS（process_init 尾部 sef_init.c:113-117）。
+    /// 应答经 send_rec（C ipc_sendrec，B9b）回 RS（process_init 尾部
+    /// sef_init.c:113-117 + sef_cb_init_response_rs_reply sef_init.c:458-466）。
     #[test]
     fn test_rs_init_birth_answered_by_registration() {
         let mut birth = mib_msg(minix_types::RS_INIT);

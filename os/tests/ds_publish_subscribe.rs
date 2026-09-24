@@ -82,6 +82,10 @@ impl DsIpc for ScriptedIpc {
         self.sent.borrow_mut().push((to, *message));
         Ok(())
     }
+    fn send_rec(&self, to: Endpoint, message: &mut Message) -> Result<(), i32> {
+        self.sent.borrow_mut().push((to, *message));
+        Ok(())
+    }
     fn notify(&self, who: Endpoint) -> Result<(), i32> {
         self.notified.borrow_mut().push(who);
         Ok(())

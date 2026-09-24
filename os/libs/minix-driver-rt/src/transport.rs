@@ -25,6 +25,11 @@ pub trait DriverTransport {
     /// Blocking send (`send`).
     fn send(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;
 
+    /// Send-and-receive (`ipc_sendrec`). NK4-C B9b: the RS birth-report
+    /// leg uses this so the driver parks in receive(RS) for RS's catch
+    /// reply (C `sef_cb_init_response_rs_reply`, sef_init.c:458-466).
+    fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;
+
     /// Non-blocking send without a reply (`asynsend3(AMF_NOREPLY)`):
     /// character-driver replies ride this (`chardriver_reply_task`).
     fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32>;

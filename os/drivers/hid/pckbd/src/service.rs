@@ -253,6 +253,11 @@ mod tests {
             self.sends.push((dst, msg.m_type, id, page, code, value));
             Ok(())
         }
+        fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
+            // Birth-report leg; not exercised by these service-loop tests.
+            let _ = (dst, msg);
+            Ok(())
+        }
         fn asynsend(&mut self, _dst: Endpoint, _msg: &mut Message) -> Result<(), i32> {
             // The input protocol never sends a one-way reply.
             Ok(())

@@ -450,6 +450,10 @@ mod tests {
             let _ = (dst, msg);
             Ok(())
         }
+        fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
+            let _ = (dst, msg);
+            Ok(())
+        }
         fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
             self.replies.push((
                 dst,

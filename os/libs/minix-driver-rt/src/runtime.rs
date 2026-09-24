@@ -166,7 +166,9 @@ impl<T: DriverTransport> DriverRuntime<T> {
             ..Message::default()
         };
         reply.m_u.m_rs_init.result = result;
-        self.transport.send(Endpoint::RS, &mut reply)?;
+        // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）——发
+        // RS_INIT 后停在 receive(RS) 半等 RS catch 出口的 OK 唤醒。
+        self.transport.send_rec(Endpoint::RS, &mut reply)?;
         if result != 0 {
             return Err(result);
         }
@@ -221,6 +223,11 @@ mod tests {
         }
 
         fn send(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
+            self.sent.push((dst, msg.m_type));
+            Ok(())
+        }
+
+        fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
             self.sent.push((dst, msg.m_type));
             Ok(())
         }

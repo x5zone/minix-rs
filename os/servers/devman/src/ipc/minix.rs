@@ -288,9 +288,10 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 // `m_rs_init`（process_init 尾部：
                 // `m.m_type = RS_INIT; m.m_rs_init.result = result;`）。
                 reply.m_u.m_rs_init.result = result;
-                // C 经 `sef_cb_init_response` 的 `ipc_sendnb`（sef_init.c
-                // 尾部）；RS 在 sendrec 里等，`send` 的阻塞语义在此等价。
-                let _ = self.kernel.send(Endpoint::RS, &reply);
+                // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
+                // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466），非普通 send：
+                // 发 RS_INIT 后停在 receive(RS) 半等 RS catch 出口的 OK 唤醒。
+                let _ = self.kernel.sendrec(Endpoint::RS, &mut reply);
                 if result == minix_types::OK {
                     continue; // 出生已应答，吞掉这条，服务循环继续
                 }
@@ -704,8 +705,8 @@ mod tests {
         assert!(matches!(incoming, Incoming::Devman { msg: None, .. }));
 
         let kernel = t.kernel;
-        assert_eq!(kernel.sent.len(), 1, "出生回信恰好一条");
-        let (dest, reply) = &kernel.sent[0];
+        assert_eq!(kernel.sendrecs.len(), 1, "出生回信恰好一条（sendrec）");
+        let (dest, reply) = &kernel.sendrecs[0];
         assert_eq!(*dest, Endpoint::RS);
         assert_eq!(reply.m_type, minix_types::RS_INIT);
         // SAFETY(test): 回信臂 `m_rs_init.result`。
@@ -731,8 +732,9 @@ mod tests {
         let mut t = MinixTransport::new(kernel);
         assert!(t.next().is_none(), "init 被拒 → 循环停机");
         // 回信仍是 RS_INIT + ENOSYS（RS 按崩溃处置，不假装就绪）。
+        // NK4-C B9b：出生腿走 sendrec，记入 sendrecs。
         let kernel = t.kernel;
-        let (dest, reply) = &kernel.sent[0];
+        let (dest, reply) = &kernel.sendrecs[0];
         assert_eq!(*dest, Endpoint::RS);
         // SAFETY(test): 同上。
         unsafe {

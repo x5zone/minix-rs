@@ -1548,26 +1548,32 @@ impl<'a> IpcEngine<'a> {
 
         // Phase 1: pending notifications (skipped when MF_REPLY_PEND).
         // C: `has_pending` (NOTIFY) — proc.c:1000-1030.
-        if !reply_pend
-            && let Some(notify_src) = self.pick_allowed_notify(caller_nr, src_endpoint) {
-                self.build_notify_message(
-                    caller_idx,
-                    NotifySource::from_caller_nr(notify_src),
-                );
-                self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::DELIVERMSG);
-                // C: proc.c:1033 — `IPC_STATUS_ADD_CALL(caller_ptr, NOTIFY)`
-                crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::Notify);
-                crate::ipc::probe_mark("nk4a: rcv-p1\n");
-                return IpcOutcome::Delivered;
-            }
+        if !reply_pend && let Some(notify_src) = self.pick_allowed_notify(caller_nr, src_endpoint) {
+            self.build_notify_message(caller_idx, NotifySource::from_caller_nr(notify_src));
+            // NK4-C B9（RS boot panic 根因的 notify 同型臂）：沉降 +
+            // 同步交付（见 deliver_pending_to_user）。
+            self.deliver_pending_to_user(caller_idx);
+            // C: proc.c:1033 — `IPC_STATUS_ADD_CALL(caller_ptr, NOTIFY)`
+            crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::Notify);
+            crate::ipc::probe_mark("nk4a: rcv-p1\n");
+            return IpcOutcome::Delivered;
+        }
 
         // Phase 2: pending async messages.
         // C: `has_pending` (ASEND) + `try_async` — proc.c:1031-1070.
         // `try_async` failure (EAGAIN — table empty/endpoint mismatch)
         // falls through to the caller_q check, same as C.
         if let Some(async_src) = self.take_pending_async(caller_nr, src_endpoint)
-            && self.deliver_async(caller_idx, async_src)
+            && self.deliver_async(caller_idx, async_src, src_endpoint)
         {
+            // NK4-C B9（RS boot panic 根因）：沉降 + 同步交付（见
+            // deliver_pending_to_user）——deliver_async 只写内核侧
+            // p_delivermsg，而 receive 自返腿不经 pick，F14 实锤的
+            // 「陈旧缓冲」在异步臂同样成立：VM 的 RS_INIT (mt=0x714)
+            // 落到 p_delivermsg，RS 用户缓冲仍是旧内容 (m_type=0) →
+            // boot.rs:1254 panic。真机 serial_b8a/b9p2 实锤（b9p2：
+            // h2 delivmt=0x714 而 buf64 m_type=0）。
+            self.deliver_pending_to_user(caller_idx);
             crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
             crate::ipc::probe_mark("nk4a: rcv-p2\n");
             return IpcOutcome::Delivered;
@@ -1920,8 +1926,24 @@ impl<'a> IpcEngine<'a> {
     ///
     /// Returns `true` if a message was delivered. The caller's pending
     /// bit was already cleared by `take_pending_async` (C clears it at
-    /// try_one entry, proc.c:1409 — same ordering).
-    fn deliver_async(&mut self, caller_idx: usize, sender_ep: Endpoint) -> bool {
+    /// try_one entry, proc.c:1409 — same ordering; C's later early
+    /// returns `goto asyn_error` skip the tail re-arm and leave it
+    /// cleared — the `size == 0`/endpoint-mismatch guards below mirror
+    /// that, proc.c:1411-1412).
+    ///
+    /// `receive_src` is the source filter of the receive trap that
+    /// triggered this call (C: `try_one(src_e, …)` — the `receive_e`
+    /// first argument, mini_receive proc.c:1042). NK4-C B8: the
+    /// per-entry source check must use it, **not** the caller's
+    /// `p_getfrom_e`/`RTS_RECEIVING` — Phase 2 runs inside the
+    /// receiver's own receive trap, before the blocking leg (below
+    /// `Phase 3`) records those fields.
+    fn deliver_async(
+        &mut self,
+        caller_idx: usize,
+        sender_ep: Endpoint,
+        receive_src: Endpoint,
+    ) -> bool {
         let Some(sender_idx) = self.idx_by_endpoint(sender_ep) else {
             return false;
         };
@@ -1965,9 +1987,19 @@ impl<'a> IpcEngine<'a> {
             if flags == AMF_EMPTY {
                 continue;
             }
-            // D-16: CANRECEIVE filter half — C try_one proc.c:1457
-            // (`if (!CANRECEIVE(...)) continue;`): a filtered entry stays
-            // not-done (retried later) and carries no result write-back.
+            // D-16 + NK4-C B8: CANRECEIVE 两半边（C ipc.h:19-22）——
+            // 源过滤半边用本次 receive 的 `receive_e` 实参（C try_one
+            // proc.c:1457 传的是形参 receive_e，**不是** dst->p_getfrom_e；
+            // 读 p_getfrom_e 的是 WILLRECEIVE 宏 ipc.h:14-17，只用于第三方
+            // 已阻塞接收者的判定，如 mini_senda 直投臂）。本函数跑在接收
+            // 者自己 receive 陷入的 Phase 2，p_getfrom_e/RECEIVING 尚未被
+            // 阻塞腿写入（下方 Phase 3 之后才写），旧版误用
+            // is_willing_to_receive 读到握手期过期值 → RS_INIT 永拒 →
+            // VFS 睡死（B8 boot 死锁）。RECEIVING/SENDING 两谓词在 receive
+            // 陷入内部天然成立，不需搬入。
+            if !(receive_src == Endpoint::ANY || receive_src == sender_ep_final) {
+                continue;
+            }
             if !self.can_receive(caller_idx, sender_ep_final, msg.m_type) {
                 continue;
             }
@@ -1997,11 +2029,8 @@ impl<'a> IpcEngine<'a> {
             if dst_ep != caller_endpoint {
                 continue;
             }
-            // C: CANRECEIVE — the receiver must want this source
-            // (proc.c:1457-1461; receive_e is ANY from try_async).
-            if !Self::is_willing_to_receive(&self.procs[caller_idx], sender_ep_final) {
-                continue;
-            }
+            // C: CANRECEIVE 的源过滤/接收者意愿判定已上移到表扫描入口
+            // （receive_src + can_receive 两半，B8）。
             // C: AMF_NOREPLY must not satisfy the receive part of a
             // SENDREC (proc.c:1463-1468).
             let noreply_block = (flags & AMF_NOREPLY) != 0
@@ -2050,6 +2079,19 @@ impl<'a> IpcEngine<'a> {
                 priv_.signals.s_asyntab = u64::MAX; // C: (vir_bytes) -1
                 priv_.signals.s_asynsize = 0;
             }
+        } else {
+            // C: try_one 尾部 else 重挂臂（proc.c:1499-1501）：表里仍有
+            // 未投递条目（被过滤/被 NOREPLY 拦/单次投递上限未到条目），
+            // 把 sender 位在接收者 s_asyn_pending 上重挂回去——
+            // take_pending_async 入口已清位（对齐 C proc.c:1409），不重挂
+            // 则未投递消息成孤儿（NK4-C B8 必修次缺陷：与 willing 误判
+            // 相乘把 RS_INIT 永久吞掉）。
+            let receiver_priv_id = self.procs[caller_idx].priv_id;
+            if let Some(receiver_priv_id) = receiver_priv_id
+                && let Some(cpriv) = self.priv_table.get_mut(receiver_priv_id)
+            {
+                cpriv.signals.s_asyn_pending |= 1u64 << sender_priv_id;
+            }
         }
 
         delivered
@@ -2062,6 +2104,32 @@ impl<'a> IpcEngine<'a> {
     /// field semantics.
     fn build_notify_message(&mut self, dst_idx: usize, src: NotifySource) {
         build_notify_message(self.procs, self.priv_table, dst_idx, src);
+    }
+
+    /// NK4-C B9（RS boot panic 根因修复的共享腿）：把已沉降在
+    /// `p_delivermsg` 的消息交付给接收者并清 DELIVERMSG 标志。
+    /// receive 是接收者自己的陷入，返回用户态不经 pick，纯沉降的拷贝
+    /// （process_misc_flags 的 delivermsg 臂）不会在本次陷阱返回前发生
+    /// ——F14 在 Phase 3（caller_q drain）已实锤并修过的「陈旧缓冲」同族
+    /// 缺陷，在 Phase 1（notify）/ Phase 2（try_async）继续存在：真机
+    /// serial_b8a/b9p2，VM 的 RS_INIT (mt=0x714) 落内核 p_delivermsg，
+    /// RS 用户缓冲仍读 m_type=0 → boot.rs:1254 panic。
+    /// 先置 MF_DELIVERMSG（pick 兜底路径仍认它，含 VmSuspend 重试），
+    /// 同步拷贝成功则清回。C 对位：所有臂统一置 MF_DELIVERMSG，出口
+    /// `switch_to_user` 的 `check_misc_flags` 总消费（proc.c:356-365）；
+    /// Rust 自返腿需臂内自行交付。地址空间正确性同 Phase 3：本腿只在
+    /// 接收者自身的 IPC 陷入里运行（当前 root 即接收者页表）。
+    fn deliver_pending_to_user(&mut self, caller_idx: usize) {
+        self.procs[caller_idx]
+            .p_misc_flags
+            .set(MiscFlagsBits::DELIVERMSG);
+        let msg = self.procs[caller_idx].p_delivermsg;
+        let dst = self.procs[caller_idx].p_delivermsg_vir;
+        if self.user_copy.copy_msg_to_user(dst, &msg).is_ok() {
+            self.procs[caller_idx]
+                .p_misc_flags
+                .clear(MiscFlagsBits::DELIVERMSG);
+        }
     }
 
     // ── Notify ──
@@ -3667,7 +3735,17 @@ mod tests {
         let outcome = engine.receive(ProcNr(2), Endpoint::ANY);
         assert!(outcome.is_delivered(), "receive must pick pending async");
         let b_idx = nr_to_idx(ProcNr(2)).unwrap();
-        assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        // NK4-C B9：receive 自返腿同步拷入用户缓冲成功（SuccessCopy）后
+        // 必须清 DELIVERMSG——若仍沉降，接收者用户态读到旧缓冲内容
+        // （真机 RS boot.rs:1254 panic 根因）。消息内容留在
+        // p_delivermsg（供失败回退腿/pick 兜底），m_source 已盖章。
+        assert!(
+            !engine.procs[b_idx]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::DELIVERMSG),
+            "successful sync copy must not leave the message deposited"
+        );
+        assert_eq!(engine.procs[b_idx].p_delivermsg.m_source, a_endpoint);
     }
 
     // ── Notify tests (P0-12-1) ──
@@ -4326,13 +4404,47 @@ mod tests {
             assert_eq!(p.signals.s_asyntab, 0x1000);
             assert_eq!(p.signals.s_asynsize, 1);
         }
-        // Target now receives → pending async delivered via re-read.
+        // Target now receives → the still-queued sender is drained and
+        // delivered (C: try_one / caller_q retry). Hosted stubs cannot
+        // re-read the user SENDA table (`read_senda_entry` is a
+        // PageFault stub under cfg(test) — the pure Phase-2 leg is
+        // covered on real hardware, serial_b8a/b9p2), so the retry
+        // observable here is the pending-bit consumption + delivery via
+        // the receive leg with the F14/B9 sync copy.
         let b_idx = nr_to_idx(ProcNr(2)).unwrap();
-        engine.procs[b_idx].p_rts_flags.set(RtsFlagsBits::RECEIVING);
-        engine.procs[b_idx].p_getfrom_e = Endpoint::ANY;
+        let a_idx = nr_to_idx(ProcNr(1)).unwrap();
+        {
+            let procs = &mut engine.procs[..];
+            procs[b_idx].p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            procs[b_idx].p_getfrom_e = Endpoint::ANY;
+            caller_q_push(procs, b_idx, a_idx);
+        }
         let r = engine.receive(ProcNr(2), Endpoint::ANY);
-        assert!(r.is_delivered(), "receive must deliver pending async");
-        assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
+        assert!(r.is_delivered(), "receive must deliver the retried sender");
+        // Hosted stub cannot re-read the sender's table (asynendpoint
+        // unset → deliver_async guard fails), so the Phase-2 attempt
+        // leaves nothing delivered — C try_one's tail re-arm (proc.c:
+        // 1499-1501, NK4-C B8) puts the sender's bit back. The bit is
+        // still there for the *async* retry to be picked up, while the
+        // sender itself was drained from caller_q by the sync leg.
+        {
+            let p = engine.priv_table.get(b_priv).unwrap();
+            assert_ne!(
+                p.signals.s_asyn_pending & (1u64 << a_priv),
+                0,
+                "undelivered async attempt must re-arm the pending bit (C else arm)"
+            );
+            let sp = engine.priv_table.get(a_priv).unwrap();
+            assert_ne!(sp.signals.s_asynsize, 0, "sender table kept for retry");
+        }
+        // NK4-C B9: sync copy delivered the message (SuccessCopy → no
+        // deposit left behind).
+        assert!(
+            !engine.procs[b_idx]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::DELIVERMSG),
+            "successful sync copy must not leave the message deposited"
+        );
     }
 
     // ── Deliver result + KernelUserCopy stub ──

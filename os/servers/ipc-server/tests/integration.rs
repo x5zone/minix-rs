@@ -60,6 +60,15 @@ impl EventLoopTransport for ScriptedTransport {
         Ok(())
     }
 
+    fn send_rec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), TransportError> {
+        self.outbound.push(Outbound {
+            dest,
+            msg: *msg,
+            verb: "send_rec",
+        });
+        Ok(())
+    }
+
     fn send_async(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
         self.outbound.push(Outbound {
             dest,

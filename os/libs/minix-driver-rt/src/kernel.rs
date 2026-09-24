@@ -9,7 +9,7 @@
 use minix_sys::ds::DsClient;
 use minix_sys::ipc::{AsyncSendQueue, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
 use minix_sys::syscall::{sys_safecopyfrom, sys_safecopyto, DirectKernelCallTransport};
-use minix_sys::{receive, send};
+use minix_sys::{receive, send, sendrec};
 use minix_types::{Endpoint, Message};
 
 use crate::transport::DriverTransport;
@@ -50,6 +50,13 @@ impl DriverTransport for KernelTransport {
     fn send(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
         msg.m_source = self.self_endpoint;
         send(dst, msg).map_err(|_| -minix_types::EIO)
+    }
+
+    fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
+        msg.m_source = self.self_endpoint;
+        // NK4-C B9b：出生回报腿 C `ipc_sendrec`（sef_init.c:458-466）——
+        // 单陷阱 send+receive，停在 receive(RS) 半等 RS catch 的 OK。
+        sendrec(dst, msg).map_err(|_| -minix_types::EIO)
     }
 
     fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {

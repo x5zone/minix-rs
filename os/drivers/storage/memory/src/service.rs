@@ -466,6 +466,11 @@ mod tests {
             ));
             Ok(())
         }
+        fn send_rec(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
+            // Birth-report leg; not exercised by these service-loop tests.
+            let _ = (dst, msg);
+            Ok(())
+        }
         fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
             self.replies.push((
                 dst,

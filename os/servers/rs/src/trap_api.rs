@@ -530,11 +530,16 @@ impl IpcApi for TrapKernelApi {
         result: i32,
         payload: &Message,
     ) -> Result<(), Errno> {
-        // C reply(utility.c:318-345)是阻塞 ipc_send——用 send 而非
-        // sendnb,handler 变异后的请求消息带 result 型回传。
+        // C: `reply` 是**非阻塞** `ipc_sendnb(who, m_ptr)`（utility.c:324），
+        // handler 变异后的请求消息带 result 型回传。早先误注为「阻塞
+        // ipc_send」（utility.c 全文用的是 sendnb）；出生回报握手（NK4-C
+        // B9b）要求服务侧用 sendrec parked 在 receive(RS)，RS 出口这
+        // 一发 sendnb 经 Path A 直投唤醒 parked 的服务——与 C 同构。
         let mut m = *payload;
         m.m_type = result;
-        self.ipc.send(target, &m).map_err(|t| Errno::from_i32(t.0))
+        self.ipc
+            .sendnb(target, &m)
+            .map_err(|t| Errno::from_i32(t.0))
     }
 
     fn notify(&mut self, endpoint: Endpoint) -> Result<(), Errno> {

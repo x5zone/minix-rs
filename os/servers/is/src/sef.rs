@@ -109,6 +109,10 @@ pub trait SefTransport {
     fn receive(&mut self, inbox: &mut Message) -> Result<(Endpoint, i32), i32>;
     /// Send a reply. C: `ipc_send(who, &m_out)` — main.c:143.
     fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32>;
+    /// Send-and-receive. C: `ipc_sendrec` — sef_cb_init_response_rs_reply
+    /// (sef_init.c:458-466). NK4-C B9b: the birth-report leg parks in
+    /// receive(RS) for RS's catch reply instead of a fire-and-forget send.
+    fn send_rec(&mut self, dest: Endpoint, reply: &mut Message) -> Result<(), i32>;
     /// Emit the illegal-request warning. C: `printf("IS: warning, got
     /// illegal request %d from %d\n", ...)` — main.c:60-61.
     fn warn_illegal(&mut self, call_nr: i32, sender: Endpoint);
@@ -214,6 +218,11 @@ impl SefTransport for SysSefTransport {
         self.ipc.inner.send(dest, reply).map_err(|t| t.0)
     }
 
+    fn send_rec(&mut self, dest: Endpoint, reply: &mut Message) -> Result<(), i32> {
+        use minix_sys::ipc::IpcTransport as _;
+        self.ipc.inner.sendrec(dest, reply).map_err(|t| t.0)
+    }
+
     fn warn_illegal(&mut self, call_nr: i32, sender: Endpoint) {
         // C main.c:60-61 文案。
         use core::fmt::Write as _;
@@ -260,6 +269,10 @@ impl SefTransport for UnimplementedTransport {
 
     fn send(&mut self, _dest: Endpoint, _reply: &Message) -> Result<(), i32> {
         panic!("IS transport: ipc_send wiring pending (01-is-init-main.md §3 D2)");
+    }
+
+    fn send_rec(&mut self, _dest: Endpoint, _reply: &mut Message) -> Result<(), i32> {
+        panic!("IS transport: ipc_sendrec wiring pending (01-is-init-main.md §3 D2)");
     }
 
     fn warn_illegal(&mut self, _call_nr: i32, _sender: Endpoint) {

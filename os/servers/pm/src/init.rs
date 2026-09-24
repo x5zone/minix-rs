@@ -550,9 +550,11 @@ impl<T: IpcTransport> PmServer<T> {
                 0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
                 _ => minix_types::ENOSYS,
             };
-            let birth = minix_sef::sef_init_reply(result);
+            // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
+            // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466），非普通 send。
+            let mut birth = minix_sef::sef_init_reply(result);
             self.transport
-                .send(Endpoint::RS, &birth)
+                .sendrec(Endpoint::RS, &mut birth)
                 .expect("PM: can't reply RS_INIT birth report to RS");
             return RunStep::Handled;
         }

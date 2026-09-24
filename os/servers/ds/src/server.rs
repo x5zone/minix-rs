@@ -50,6 +50,10 @@ pub trait DsIpc {
     fn receive(&mut self) -> Result<Message, i32>;
     /// Send a message (C: `reply`'s `ipc_send`, main.c:123-131).
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32>;
+    /// Send-and-receive (C: `ipc_sendrec`, sef_cb_init_response_rs_reply
+    /// sef_init.c:458-466). NK4-C B9b: the birth-report leg uses this so
+    /// the service parks in receive(RS) for RS's catch reply.
+    fn send_rec(&self, to: Endpoint, message: &mut Message) -> Result<(), i32>;
     /// Wake a subscriber (C: `ipc_notify`, store.c:222).
     fn notify(&self, who: Endpoint) -> Result<(), i32>;
 }
@@ -181,7 +185,9 @@ impl DsServer {
                 0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
                 _ => minix_types::ENOSYS,
             };
-            let _ = ipc.send(caller, &minix_sef::sef_init_reply(result));
+            let mut reply = minix_sef::sef_init_reply(result);
+            // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
+            let _ = ipc.send_rec(caller, &mut reply);
             return Step::Handled;
         }
 
@@ -749,6 +755,10 @@ impl<T: SysIpcTransport> DsIpc for SysIpc<T> {
         self.inner.send(to, message).map_err(|t| t.0)
     }
 
+    fn send_rec(&self, to: Endpoint, message: &mut Message) -> Result<(), i32> {
+        self.inner.sendrec(to, message).map_err(|t| t.0)
+    }
+
     fn notify(&self, who: Endpoint) -> Result<(), i32> {
         self.inner.notify(who).map_err(|t| t.0)
     }
@@ -883,6 +893,10 @@ mod tests {
             Ok(self.inbox.borrow_mut().remove(0))
         }
         fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
+            self.sent.borrow_mut().push((to, message.clone()));
+            Ok(())
+        }
+        fn send_rec(&self, to: Endpoint, message: &mut Message) -> Result<(), i32> {
             self.sent.borrow_mut().push((to, message.clone()));
             Ok(())
         }

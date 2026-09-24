@@ -7583,6 +7583,16 @@ fn send_reply(target: Endpoint, reply: Message) {
     let _ = minix_sys::ipc::DirectTrapTransport.sendnb(target, &reply);
 }
 
+/// 出生回报腿（NK4-C B9b）：C `sef_cb_init_response_rs_reply` =
+/// `ipc_sendrec(RS, &m)`（sef_init.c:458-466）。与业务回复的 sendnb 不
+/// 同：sendrec 让 VFS 发出 RS_INIT 后停在 receive(RS) 半（内核置
+/// REPLY_PEND、getfrom=RS），等 RS catch 出口回的那一发 OK 唤醒——避免
+/// RS 的 reply 无人认领被野消费→回声投回 RS→step3 panic。
+fn send_birth_reply(mut reply: Message) {
+    use minix_sys::ipc::IpcTransport;
+    let _ = minix_sys::ipc::DirectTrapTransport.sendrec(Endpoint::RS, &mut reply);
+}
+
 pub fn run() -> ! {
     let mut state = VfsState::new();
     state.init_fresh();
@@ -7657,7 +7667,7 @@ pub fn run() -> ! {
                 )
                 .unwrap_or_else(|e| panic!("vfs: boot rproctab consumption failed: {e:?}"));
         }
-        send_reply(Endpoint::RS, minix_sef::sef_init_reply(result));
+        send_birth_reply(minix_sef::sef_init_reply(result));
         break;
     }
 
@@ -7727,7 +7737,7 @@ pub fn run() -> ! {
                 if result == 0 {
                     state.init_fresh();
                 }
-                send_reply(Endpoint::RS, minix_sef::sef_init_reply(result));
+                send_birth_reply(minix_sef::sef_init_reply(result));
             }
             SefEvent::PingInvalid => {}
         }

@@ -114,13 +114,16 @@ impl IpcTransport for KernelIpcTransport {
         // no-handler default is OK, so sef.c:232-237 `continue`s). A
         // surfaced signal would earn a no_sys reply C never sends.
         //
-        // 出生应答的发送腿：C `sef_cb_init_response` 缺省实现是
-        // `ipc_sendnb(RS_PROC_NR, &m)`（sef_init.c:121，SEF_CB_INIT_
-        // RESPONSE_DEFAULT）——阻塞 send 在此等价（RS 发出 init 后阻塞
-        // 在 catch 收应答）。
+        // 出生应答的发送腿：C `sef_cb_init_response_rs_reply` 缺省实现是
+        // `ipc_sendrec(RS_PROC_NR, &m)`（sef_init.c:458-466，SEF_CB_INIT_
+        // RESPONSE_DEFAULT=sef.h:90）——不是普通 send。sendrec 两阶段语义：
+        // 发出 RS_INIT 后停在 receive(RS) 半（内核置 REPLY_PEND、getfrom=RS），
+        // 等 RS catch 出口回的那一发 OK 唤醒。旧实现用阻塞 send 不建立
+        // REPLY_PEND，RS 的 reply 无人认领→服务野消费→回声投回 RS→
+        // step3 catch 收到非 RS_INIT → boot.rs:1254 panic（NK4-C B9b）。
         let mut sef = SefIpcAdapter { inner: self.inner };
         let mut send_reply =
-            |m: &Message| self.inner.send(Endpoint::RS, m).map_err(trap_errno);
+            |m: &mut Message| self.inner.sendrec(Endpoint::RS, m).map_err(trap_errno);
         sef_filtered_receive(&mut sef, &mut send_reply)
     }
 
@@ -174,7 +177,7 @@ impl minix_sef::SefIpc for SefIpcAdapter {
 /// fail-closed 对应）。
 fn sef_filtered_receive<S: minix_sef::SefIpc>(
     sef: &mut S,
-    send_reply: &mut dyn FnMut(&Message) -> Result<(), i32>,
+    send_reply: &mut dyn FnMut(&mut Message) -> Result<(), i32>,
 ) -> Result<(Message, IpcStatus), i32> {
     loop {
         let mut message = blank_message();
@@ -197,7 +200,7 @@ fn sef_filtered_receive<S: minix_sef::SefIpc>(
             // `m_rs_init`（process_init 尾部：`m.m_type = RS_INIT;
             // m.m_rs_init.result = result;`）。
             reply.m_u.m_rs_init.result = result;
-            send_reply(&reply)?;
+            send_reply(&mut reply)?;
             if result == minix_types::OK {
                 continue; // 出生已应答，吞掉这条，主循环继续
             }
@@ -454,7 +457,7 @@ mod sef_filter_tests {
         ];
         let mut sef = ScriptedSef::new(script);
         let (message, _status) =
-            sef_filtered_receive(&mut sef, &mut |_: &Message| Ok(())).expect("真调用浮出");
+            sef_filtered_receive(&mut sef, &mut |_: &mut Message| Ok(())).expect("真调用浮出");
         assert_eq!(message.m_type, minix_types::SCHEDULING_START);
         assert_eq!(
             sef.notified.borrow().as_slice(),
@@ -469,7 +472,7 @@ mod sef_filter_tests {
         let mut sef = ScriptedSef::new(std::vec::Vec::new());
         assert!(
             matches!(
-                sef_filtered_receive(&mut sef, &mut |_: &Message| Ok(())),
+                sef_filtered_receive(&mut sef, &mut |_: &mut Message| Ok(())),
                 Err(e) if e == minix_types::EIO
             ),
             "底座断链 → Err 原样上浮"
@@ -497,7 +500,7 @@ mod sef_filter_tests {
         let script = vec![(0, birth), business];
         let mut sef = ScriptedSef::new(script);
         let replied: RefCell<std::vec::Vec<Message>> = RefCell::new(std::vec::Vec::new());
-        let mut send = |m: &Message| {
+        let mut send = |m: &mut Message| {
             replied.borrow_mut().push(*m);
             Ok(())
         };
@@ -526,7 +529,7 @@ mod sef_filter_tests {
         birth.m_u.m_rs_init.type_ = 1;
         let mut sef = ScriptedSef::new(vec![(0, birth)]);
         let replied: RefCell<std::vec::Vec<Message>> = RefCell::new(std::vec::Vec::new());
-        let mut send = |m: &Message| {
+        let mut send = |m: &mut Message| {
             replied.borrow_mut().push(*m);
             Ok(())
         };
@@ -555,7 +558,7 @@ mod sef_filter_tests {
         impostor.m_u.m_rs_init.type_ = 0;
         let mut sef = ScriptedSef::new(vec![(0, impostor)]);
         let replied: RefCell<std::vec::Vec<Message>> = RefCell::new(std::vec::Vec::new());
-        let mut send = |m: &Message| {
+        let mut send = |m: &mut Message| {
             replied.borrow_mut().push(*m);
             Ok(())
         };
@@ -623,6 +626,11 @@ pub(crate) mod mock {
         }
 
         fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
+            self.sent.borrow_mut().push((to, *message));
+            self.send_result
+        }
+
+        fn sendnb(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
             self.sent.borrow_mut().push((to, *message));
             self.send_result
         }

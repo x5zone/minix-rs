@@ -100,6 +100,10 @@ pub trait EventLoopTransport {
     fn receive(&mut self) -> Result<(Message, IpcStatus), TransportError>;
     /// Send a reply, non-blocking (C: `ipc_sendnb` — main.c:273).
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
+    /// Send-and-receive (C: `ipc_sendrec` — sef_cb_init_response_rs_reply,
+    /// sef_init.c:458-466). NK4-C B9b: the birth-report leg parks in
+    /// receive(RS) for RS's catch reply instead of a fire-and-forget sendnb.
+    fn send_rec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), TransportError>;
     /// Send an asynchronous acknowledgement (C: `asynsend3(AMF_NOREPLY)` —
     /// main.c:207-208).
     fn send_async(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
@@ -324,8 +328,14 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
                 0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
                 _ => ENOSYS,
             };
-            let birth = minix_sef::sef_init_reply(result);
-            if self.transport.borrow_mut().send_reply(Endpoint::RS, &birth).is_err() {
+            let mut birth = minix_sef::sef_init_reply(result);
+            // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非 sendnb）。
+            if self
+                .transport
+                .borrow_mut()
+                .send_rec(Endpoint::RS, &mut birth)
+                .is_err()
+            {
                 self.note_dropped();
             }
             return RunStep::Handled;
@@ -478,6 +488,10 @@ mod tests {
         // message; the sendnb/asynsend3 distinction only matters at the
         // production boundary.
         fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
+            self.push_outbound(dest, msg)
+        }
+
+        fn send_rec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), TransportError> {
             self.push_outbound(dest, msg)
         }
 

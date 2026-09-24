@@ -504,6 +504,11 @@ impl EventLoopTransport for SysEventLoopTransport {
             .map_err(|_| TransportError)
     }
 
+    fn send_rec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), TransportError> {
+        // NK4-C B9b：出生回报腿 C `ipc_sendrec`（sef_init.c:458-466）。
+        self.inner.sendrec(dest, msg).map_err(|_| TransportError)
+    }
+
     fn send_async(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
         let slot = AsyncSlot {
             flags: AsyncSlotFlags(AsyncSlotFlags::VALID.0 | AsyncSlotFlags::NO_REPLY.0),

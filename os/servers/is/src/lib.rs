@@ -192,8 +192,9 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 let info = SefInitInfo::default();
                 let reply_result =
                     self.init_fresh(kind, &info).unwrap_or_else(|e| e.to_i32());
-                let birth_reply = minix_sef::sef_init_reply(reply_result);
-                if self.transport.send(Endpoint::RS, &birth_reply).is_err() {
+                let mut birth_reply = minix_sef::sef_init_reply(reply_result);
+                // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
+                if self.transport.send_rec(Endpoint::RS, &mut birth_reply).is_err() {
                     panic!("IS: can't reply RS_INIT birth report to RS");
                 }
                 EDONTREPLY
@@ -585,6 +586,14 @@ mod tests {
         }
 
         fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32> {
+            if self.fail_send {
+                return Err(-1);
+            }
+            self.sends.push((dest, reply.m_type));
+            Ok(())
+        }
+
+        fn send_rec(&mut self, dest: Endpoint, reply: &mut Message) -> Result<(), i32> {
             if self.fail_send {
                 return Err(-1);
             }
