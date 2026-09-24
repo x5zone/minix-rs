@@ -1409,3 +1409,13 @@ elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（P
 - 尾态链：init(0xb) SENDING to=VFS(1)（getuid/getpid 后的首个 VFS 请求，疑似 open/stat 类）→ VFS(1) RECEIVING **from=RS(2)**（停车 receive 半或主循环限定源收 RS——`p3park s=1` 不在尾窗，非 drain 停车）→ RS(2) RECEIVING(ANY) 空闲。
 - 疑点两分支：①VFS↔RS 的 RS_INIT/启动协议缺一条消息（RS 发完 INIT 即回 receive，VFS 等第二条；或 VFS 的请求 RS 已处理但 reply 臂缺失）；②VFS 的 sendrec-to-RS 请求 RS 收下后处理失败且无 reply。
 - **下一轮探针配方（一轮定案）**：RS dispatcher 入口 `nk4a: rsm mt/src`（≤15B cap 16）+ VFS dispatcher 入口同款 `vfm mt/src`——看 RS 是否收到 VFS 的请求/收到什么 m_type；RS 的 reply 腿是否发出。随后按缺失臂修复 → 两次复跑 → rc marker（单元 B 完成）→ 单元 C-K（aarch64/riscv reply_wire → 命令面 → W^X → ABI 清单 → 三架构 marker → 测试上机 → 收尾）。
+
+---
+
+## 1.12c SENDA 实现尝试与回退（2026-09-24，serial_s17s/s17t，WIP 存 `tmp/nk4c-1.12-senda-wip.patch`）
+
+- **定性升级**：`KernelUserCopy::read_senda_entry` 是**永久 stub**（恒 PageFault）——SENDA 从未在生产可用；RS 的 RS_INIT 经 `asynsend→senda` 全部静默丢失，VFS 的 boot `receive(RS)` 永等 → 1.12b 停点的直接根因。
+- **WIP 内容**（已写好、未过真机，patch 在 tmp）：①trait 加 `root: PhysBytes`（C A_RETR 按发送者段读；deliver_async 跑在接收者陷入里必须显式传发送者 root）；②KernelUserCopy 真实现（`user_copy_range_mapped` + WireAsyncSlot repr(C) 镜像：flags@0/dst@4/result@8/msg@16，offset_of 守卫）；③minix-sys `AsyncSlot` 补 `#[repr(C)]`；④两消费点传 root；⑤RS/VFS dispatcher 探针（rsm/vfm）。
+- **s17t 回退原因**：真机 GP fault（vector 13，trap_dispatch.rs:1004 dispatch_body，rip 0x5abd639 kernel text，紧随 `pdmv-set krn`、pfwd out=B 之后，boot 大幅提前死亡）——senda 真读/探针二者之一引入，根因未定位；248 行 patch 保留待查。
+- **下一轮入口**：①patch 二分（先只上 rsm/vfm 探针不上 senda 真读，跑一轮定界）；②检查 `user_copy_range_mapped` 对非当前 root 的走表是否安全（deliver_async 场景）——GP 而非 PF 说明可能有内核态非法访问未走校验臂；③`AsyncSlot` 补 repr(C) 后 `size_of` 与 WireAsyncSlot 80 断言对齐核实。
+- 验证基线不变：HEAD（839ecbd4b）= s17q/s17r 两轮稳定（init↔PM GETUID/GETPID 通、无 panic），docker 813/242/526 全绿。
