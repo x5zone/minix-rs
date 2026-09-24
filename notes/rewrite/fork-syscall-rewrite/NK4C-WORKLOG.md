@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（当前 frontier = 1.13「VM 出生报告 send(RS) 失败 panic vm_server.rs:1604」——B3 定性纠偏：前代标注的「多进程同一栈页缺页死循环」是幻影（pf# 逐条 rip 推进、只叶子 PTE 缺 = 正常按需分页），真停点 = RS `catch_boot_init_ready` 因 VM(src=8) 的 RS_INIT rproctab safecopyfrom 回 ESRCH → boot.rs:1254 fail-closed panic。B4 根因：`verify_grant` 把内核栈 `grant_entry` 经 `CurrentDirectMap::virt_to_phys` 当 copy 目标，而内核数据在 Direct Map 窗口之外 → 其别名未映射 → `DstPageFault` → EPERM。修复：新增读侧 mirror `cross_space_read`（进程 src 走 PTE+DM、内核局部 dst 直读自身 VA，并按物理连续段分片对齐 C `lin_lin_copy`）+ `read_from_process_vmcheck`，verify_grant 改用它。真机 b4d/b4e（修前签名）→ b4f/b4g（评审后加跨页分片，签名逐字一致）：readfail/vm-rswire/rs-initfail 全消失、`vg st fl=0x1301 wto=0x7c00(ANY) len=0xa00` 读通，docker 242/813/526、fmt 零新增漂移。boot 推进一层至 B5。前代 1.12e：SENDA 方向互换已修（RS_INIT 首次经 senda 投递 + apend 实锤，s19a/s19b 签名一致）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通
+- **阶段**：**1.3 rc marker 链（当前 frontier = 1.14「B6：boot 后期全员 `runnable=no queued=no`、只剩 idle 可跑，`rs-pm post-privctl pre-initsrv` 之后 IPC 阻塞待定性」——B5 已修并真机验证（VM RS_INIT 出生报告按 C `sef_cb_init_response_rs_asyn_once`/`asynsend3(AMF_NOREPLY)` 改用异步腿，去 `unwrap_or_else` panic；CodeReview 拦下 P0-1 栈局部槽延迟重放 UB，改持久 `AsyncSendQueue`；docker 242/813/528、fmt 零新增漂移、真机 b5c/b5d 逐字一致，出生报告 panic 消失、boot 推进至 VM 主循环服务 1169 缺页 + 进程表建到 nr=0x10b）。前代 1.13「VM 出生报告 send(RS) 失败 panic vm_server.rs:1604」——B3 定性纠偏：前代标注的「多进程同一栈页缺页死循环」是幻影（pf# 逐条 rip 推进、只叶子 PTE 缺 = 正常按需分页），真停点 = RS `catch_boot_init_ready` 因 VM(src=8) 的 RS_INIT rproctab safecopyfrom 回 ESRCH → boot.rs:1254 fail-closed panic。B4 根因：`verify_grant` 把内核栈 `grant_entry` 经 `CurrentDirectMap::virt_to_phys` 当 copy 目标，而内核数据在 Direct Map 窗口之外 → 其别名未映射 → `DstPageFault` → EPERM。修复：新增读侧 mirror `cross_space_read`（进程 src 走 PTE+DM、内核局部 dst 直读自身 VA，并按物理连续段分片对齐 C `lin_lin_copy`）+ `read_from_process_vmcheck`，verify_grant 改用它。真机 b4d/b4e（修前签名）→ b4f/b4g（评审后加跨页分片，签名逐字一致）：readfail/vm-rswire/rs-initfail 全消失、`vg st fl=0x1301 wto=0x7c00(ANY) len=0xa00` 读通，docker 242/813/526、fmt 零新增漂移。boot 推进一层至 B5。前代 1.12e：SENDA 方向互换已修（RS_INIT 首次经 senda 投递 + apend 实锤，s19a/s19b 签名一致）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通 + B5 出生报告异步化（VM 进主循环）
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1534,3 +1534,34 @@ boot 推进一层：VM 成功读回 rproctab 后，自身 `ipc_send() failed (RS
 - **B4 同根因家族（P1-2）**：内核栈/局部 VA 经 `CurrentDirectMap::virt_to_phys` 当 copy 端点的写法在内核里尚有约 14 处：`syscall_copy.rs:592`（`write_soft_fault_marker`，且 `let _ =` 吞错）/696/1101/1233、`syscall_signal.rs:619/696/813`（sigframe 写用户栈）、`syscall_device.rs:626/768/1073`（VDEVIO/SDEVIO）、`syscall_process.rs:328/948`、`misc.rs:1600/1633/1665/1700`（trace）、`kmess.rs:190`、`stacktrace.rs:249`。正确解法本轮已备（写侧 `write_to_process_vmcheck`、读侧新 `read_from_process_vmcheck`），boot 走到后统一切换；建议加 grep 门禁新增 `virt_to_phys(\s*VirBytes\(&` 形态。
 - **cross_space_copy/write 的跨页分片（P1-1 家族）**：本轮只给新写的 `cross_space_read` 做了源分片；既有 `cross_space_copy`/`cross_space_write` 仍是单次 resolve（≤一页的对象安全，跨页对象会静默读/写相邻帧），随上面家族一并收敛。
 - **ipc.rs `copy_via_root_pages` 的 `to_kernel` 参数命名反义（P1-4，1.12e 已 commit 代码）**：布尔量真实含义是 `to_user`，与名字相反、与 doc 也不一致，仅靠调用点取值撑住正确性——极易二次翻车。改名 `to_user` 是纯重命名零行为变化，待下一轮顺带处理。
+
+---
+
+## 1.14 VM 出生报告改用异步腿（B5 修复落地 + 评审 P0 修正）（2026-09-24，serial_b5a/b5b 修复前 → b5c/b5d 修复后）
+
+### 现象
+
+上一轮（1.13）把停点定性为 B5：VM 在 RS_INIT 握手成功后向 RS 发出生报告时走**阻塞 send**，此刻 RS 仍是 PAGEFAULT|SENDING 不在 receive，内核判二周期死锁（EDEADLOCK）→ `transport.send` 返回错误 → 原代码 `unwrap_or_else` 直接 panic（`os/servers/vm/src/vm_server.rs:1604`）→ VM 死 → #GP 级联。
+
+### 修复
+
+按 C 的规定把这一腿改成异步发送（对齐 `minix3/minix/servers/vm/main.c:225-229` 注册的一次性异步回调 `sef_cb_init_response_rs_asyn_once`，其实现 `minix3/minix/lib/libsys/sef_init.c:471-483` 就是 `asynsend3(RS, AMF_NOREPLY)`）：
+
+1. `os/servers/vm/src/ipc/transport.rs`：`IpcTransport` 加 `asynsend` 一条腿。生产实现 `KernelIpcTransport::asynsend` 委托 `DirectTrapTransport::senda`；测试实现 `TestIpcTransport::asynsend` 记录消息并自增 `async_sends` 计数，配合既有 `sent` 内容断言区分「异步腿 vs 阻塞 send」。
+2. `os/servers/vm/src/vm_server.rs`：RS_INIT 成功臂与失败臂都把「阻塞 send + 死锁即 panic」改为「`asynsend` + 失败仅计数与审计」，去掉 panic（对齐 C——启动死锁不会把 VM 直接杀掉）。两臂之后返回 Suspend/NoReply，VM 立刻回事件循环进 receive，替 RS 解缺页，死锁环被打断。
+
+### 评审 P0-1（CodeReview 拦截，提交前修正）
+
+第一版把 `AsyncSlot` 建成 `asynsend` 的**栈上局部变量**再交给 `senda`。评审指出这是错的：内核的异步发送**不拷贝槽内容**，只记下发送者用户表地址，等目标（RS）进入 receive 时才用发送者页表**重新读该地址并回写 `result|AMF_DONE`**（`os/kernel/src/ipc.rs:1945-1999`）。函数一返回栈帧就失效，内核读到的会是垃圾、并往已弹出的栈写 12 字节。修正：改用 `minix_sys::ipc::AsyncSendQueue`（C `static asynmsg_t msgtable[ASYN_NR]` 的忠实移植，`os/libs/minix-sys/src/ipc.rs:287-436`）作为 `KernelIpcTransport` 的**持久字段**，`enqueue` 保证先写目标与消息、`VALID` 最后写，再把 `pending_slice()` 交给 `senda`。（本次真机里出生报告其实在同步 `senda` 陷入内就被 RS 立即接收、栈帧尚存活，所以修复前后行为一致；但延迟投递那条路径的未定义行为是确凿隐患，必须修。）
+
+评审 P1-1 顺带修：失败臂的 `asynsend` 失败是与握手失败相互独立的第二次丢弃，之前只审计不计数，现补上计数，两条腿记账口径一致。「生产构建里这条腿失败无串口痕迹」属既有 `[A-14]` 审计通道缺口（`audit_log!` 无 feature 时整体编译掉），未私搭临时 bootmark 脚手架（那是 task1-close 要整删的取证件），登记待审计通道落地。评审 P1-2（C 的「异步一次后回同步腿」）：RS_INIT 在每次启动只发生一次，加一个永不回切的一次性标志会成死代码，登记为已记录偏差。
+
+### 验证
+
+- docker 单测（`cargo test -p minix-kernel -p minix-arch -p minix-vm`）：arch 242 / kernel 813 / vm 528（较基线 526 增 2，即新增的 `kernel_transport_asynsend_guards` 与 `kernel_transport_asynsend_enqueues_then_delegates`），0 失败。
+- rustfmt nightly `--edition 2024`：transport.rs cur=7==head=7、vm_server.rs cur=119<head=120，零新增漂移。
+- 两轮独立真机（修复后镜像，`/tmp/nk4a/serial_b5c.log`、`serial_b5d.log`）：`vm_server.rs:1604` 出生报告 panic 全程 0 次；`rs-pm post-privctl`=8、`pre-initsrv`=8、`vm-pf recv`=1169、`init done`=1 两轮逐字一致。修复前镜像（serial_b5a/b5b）与修复后签名相同——印证 P0-1 在当前启动路径不改变外部行为（立即投递），修正针对的是延迟路径的隐患。
+
+### 新停点（1.14-newstall = B6）
+
+B5 消除后，boot 大幅推进：VM 进入主事件循环（`init done`→`run enter`→`ipc-entry nr=2 caller=8`）、服务 1169 次缺页、RS 走过出生报告继续 `rs-pm post-privctl pre-initsrv`，进程表建到 nr=0x10b。但两轮最终都进入**全阻塞态**：`tail-dump` 周期快照显示所有非 free 进程 `runnable=no queued=no`，只剩 idle 可跑，此后只有 `gtick` 时钟在走，150s 内零新事件。这是一个与 B5 正交的**新前沿 B6**（启动后期所有服务器/进程被挂住、无进程可调度），下一轮按 /debug 起 DebugAgent 定性（首个入口：`rs-pm post-privctl pre-initsrv` 之后 RS 对 PM 的 initsrv 到底发出没有、阻塞在哪条 IPC 腿；对照已登记的 P1-ipc `clear_ipc_refs` 裸清标志家族）。

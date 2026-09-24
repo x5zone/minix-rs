@@ -125,6 +125,20 @@ pub(crate) trait IpcTransport {
     /// `ipc_send(dest, &msg)`.
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError>;
 
+    /// Asynchronously send a message (fire-and-forget, no reply expected).
+    ///
+    /// Mirrors C `asynsend3(dest, &msg, AMF_NOREPLY)` (a one-slot SENDA
+    /// table with the no-reply flag). This is the leg VM uses for its
+    /// **first** RS_INIT birth report — C registers `sef_cb_init_response_rs_asyn_once`
+    /// at `vm/main.c:225-229` "to avoid a deadlock at boot time": RS is
+    /// still `PAGEFAULT|SENDING` (not `RECEIVING`) while the whole boot
+    /// fan-out resolves, so a *blocking* `send` there is a 2-cycle
+    /// EDEADLOCK. The async leg hands the message to the kernel's senda
+    /// queue and returns immediately, letting VM re-enter `receive` to
+    /// service RS's pending page fault; the kernel delivers the birth
+    /// report once RS reaches `catch_boot_init_ready`'s receive.
+    fn asynsend(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError>;
+
     /// Mark the transport as ready before the main loop starts.
     ///
     /// C: SEF startup (`__minix_init`, main.c:480) initializes the IPC
@@ -162,6 +176,17 @@ pub(crate) struct KernelIpcTransport {
     /// 64 位 trap wiring 落地（edge E1，stage plan A-6）前返回 EIO——
     /// 本类型已经按真实调用形态委托，E1 落地时无需再改这里。
     inner: minix_sys::ipc::DirectTrapTransport,
+    /// Persistent SENDA message table — the faithful port of C's
+    /// `static asynmsg_t msgtable[ASYN_NR]` (asynsend.c:18). The kernel does
+    /// NOT copy the slot: `senda` records the *user address* of this table
+    /// and, once `dest` enters receive, `deliver_async` re-reads the entry
+    /// through the sender's page tables and writes back `result | AMF_DONE`
+    /// to it (ipc.rs:1945-1999). So the slot MUST outlive the `asynsend`
+    /// call — building it on the stack would hand the kernel a dead frame
+    /// (garbage on re-read + a 12-byte write into popped stack). The VM
+    /// transport is a single-threaded event loop, so this queue lives as
+    /// long as the server (NK4-C B5 review P0-1).
+    queue: minix_sys::ipc::AsyncSendQueue<8>,
 }
 
 impl KernelIpcTransport {
@@ -169,6 +194,7 @@ impl KernelIpcTransport {
         Self {
             initialized: false,
             inner: minix_sys::ipc::DirectTrapTransport,
+            queue: minix_sys::ipc::AsyncSendQueue::new(),
         }
     }
 }
@@ -213,6 +239,30 @@ impl IpcTransport for KernelIpcTransport {
             return Err(IpcError::Unimplemented);
         }
         self.inner.send(dest, msg).map_err(|trap| IpcError::Kernel(trap.0))
+    }
+
+    fn asynsend(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
+        if dest == Endpoint::NONE {
+            return Err(IpcError::InvalidEndpoint);
+        }
+        if !self.initialized {
+            return Err(IpcError::Unimplemented);
+        }
+        // C: asynsend3(dest, &msg, AMF_NOREPLY) — enqueue into the
+        // persistent msgtable with NO_REPLY (VALID is OR-ed in last by
+        // `enqueue`, matching asynsend.c:124-131), then hand the pending
+        // slice to the kernel: `senda_reload` passes `&msgtable[first]`
+        // (asynsend.c:154). The kernel delivers once `dest` enters receive;
+        // the caller does not block, which is what breaks the VM<->RS boot
+        // deadlock. The queue lives in `self`, so the slot stays valid for
+        // the kernel's later read-back (P0-1).
+        self.queue
+            .enqueue(dest, *msg, minix_sys::ipc::AsyncSlotFlags::NO_REPLY)
+            .map_err(|_| IpcError::Kernel(minix_types::EBUSY))?;
+        let table = self.queue.pending_slice();
+        self.inner
+            .senda(table)
+            .map_err(|trap| IpcError::Kernel(trap.0))
     }
 
     fn notify(&mut self, dest: Endpoint) -> Result<(), IpcError> {
@@ -285,6 +335,7 @@ impl TestIpcTransport {
                 ),
                 sent: core::cell::RefCell::new(alloc::vec::Vec::new()),
                 notifies: core::cell::RefCell::new(alloc::vec::Vec::new()),
+                async_sends: core::cell::Cell::new(0),
                 should_fail: core::cell::Cell::new(false),
             }),
         }
@@ -322,6 +373,9 @@ struct TestTransportShared {
     sent: core::cell::RefCell<alloc::vec::Vec<(Endpoint, Message)>>,
     /// Recorded notify destinations (SEF ping-pong pongs).
     notifies: core::cell::RefCell<alloc::vec::Vec<Endpoint>>,
+    /// Count of `asynsend` calls (SENDA leg) — lets a test assert the RS_INIT
+    /// birth report went out asynchronously, not via a blocking `send`.
+    async_sends: core::cell::Cell<usize>,
     should_fail: core::cell::Cell<bool>,
 }
 
@@ -351,6 +405,11 @@ impl TestTransportHandle {
     /// Return a snapshot of the recorded sends (oldest first).
     pub fn sent(&self) -> alloc::vec::Vec<(Endpoint, Message)> {
         self.shared.sent.borrow().clone()
+    }
+
+    /// Number of messages sent via the async (`asynsend`/SENDA) leg.
+    pub fn async_sends(&self) -> usize {
+        self.shared.async_sends.get()
     }
 
     /// Make `receive` return `Err(Unimplemented)`.
@@ -386,6 +445,16 @@ impl IpcTransport for TestIpcTransport {
 
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
         self.shared.sent.borrow_mut().push((dest, *msg));
+        Ok(())
+    }
+
+    fn asynsend(&mut self, dest: Endpoint, msg: &Message) -> Result<(), IpcError> {
+        // Record into `sent` too so content assertions on the birth report
+        // hold regardless of leg; `async_sends` distinguishes the leg.
+        self.shared.sent.borrow_mut().push((dest, *msg));
+        self.shared
+            .async_sends
+            .set(self.shared.async_sends.get() + 1);
         Ok(())
     }
 }
@@ -429,6 +498,35 @@ mod tests {
         t.mark_initialized();
         let r = t.send(Endpoint::NONE, &Message::default());
         assert!(matches!(r, Err(IpcError::InvalidEndpoint)));
+    }
+
+    #[test]
+    fn kernel_transport_asynsend_guards() {
+        // NK4-C B5: the async leg must reject NONE (C asynsend3 goes
+        // through the same endpoint validation) and refuse work before the
+        // transport is initialised — same contract as `send`.
+        let mut t = KernelIpcTransport::new();
+        let r = t.asynsend(Endpoint::NONE, &Message::default());
+        assert!(matches!(r, Err(IpcError::InvalidEndpoint)));
+        let r = t.asynsend(Endpoint(8), &Message::default());
+        assert!(matches!(r, Err(IpcError::Unimplemented)));
+    }
+
+    #[test]
+    fn kernel_transport_asynsend_enqueues_then_delegates() {
+        // Host builds do not enable `kernel_trap`, so the delegated
+        // `DirectTrapTransport::senda` answers EIO (the edge-E1 stub).
+        // That the call reaches the trap at all — rather than panicking or
+        // silently succeeding — is what pins the persistent-queue
+        // construction: enqueue must return Ok (single slot never fills),
+        // then the error surfaces from the trap, not from the queue.
+        let mut t = KernelIpcTransport::new();
+        t.mark_initialized();
+        let r = t.asynsend(Endpoint(8), &Message::default());
+        assert!(
+            matches!(r, Err(IpcError::Kernel(e)) if e == minix_types::EIO),
+            "asynsend should reach the senda trap and surface its EIO, got {r:?}"
+        );
     }
 
     #[test]

@@ -1587,37 +1587,53 @@ impl VmServer {
             let init = minix_types::RsInit::decode_message(msg);
             match self.rs_handshake(&init) {
                 Ok(()) => {
-                    // E-BIRTHFACE（NS1）出生应答半：C 的 do_sef_init_request
-                    // 内部 process_init 尾部先回 RS_INIT+result
-                    //（sef_init.c:113-117），主循环的 SUSPEND
-                    //（vm/main.c:150-152 "do not reply to RS"）压的是
-                    // 第二回复。本臂此前只学 SUSPEND 半，RS boot step3
-                    // 等不到应答。应答失败 = RS 已不在，同 Reply 臂
-                    // fail-fast（vm/main.c:195-197 panic 同款）。
-                    self.transport
+                    // E-BIRTHFACE（NS1）出生应答半：C 的 process_init 尾部对
+                    // RS 回**唯一一次** RS_INIT+result（sef_init.c:110-119）。
+                    // VM 特殊——为避开 boot 死锁，这**第一次**应答走异步腿
+                    // `asynsend3(AMF_NOREPLY)`：VM 在 vm/main.c:225-229
+                    // 注册 sef_cb_init_response_rs_asyn_once（sef_init.c:471-483
+                    // = asynsend3 后恢复默认同步腿）。此刻 RS 仍在
+                    // PAGEFAULT|SENDING、未进 catch_boot_init_ready 的 receive，
+                    // 阻塞 send 会被内核判 2-cycle EDEADLOCK（NK4-C B5 根因）。
+                    // 异步腿把消息交给内核 senda 队列即返回，VM 随即回 receive
+                    // 替 RS 解缺页；内核在 RS 进 receive 时投递该消息。返回
+                    // Suspend 压掉主循环的第二回复（vm/main.c:150）。
+                    // 异步腿正常不会失败；仅在 senda 表满等极端情况按
+                    // asynsend.c:76-79 降级为计数+审计，不 panic（C 亦不会因
+                    // boot 死锁把 VM panic 掉）。
+                    if let Err(e) = self
+                        .transport
                         .borrow_mut()
-                        .send(
-                            RS_PROC_NR,
-                            &minix_sef::sef_init_reply(minix_types::OK),
-                        )
-                        .unwrap_or_else(|_| {
-                            panic!("ipc_send() failed (RS_INIT birth report)")
-                        });
+                        .asynsend(RS_PROC_NR, &minix_sef::sef_init_reply(minix_types::OK))
+                    {
+                        self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
+                        audit_log!("[VM RS] birth report asynsend failed: {:?}", e);
+                    }
                     return DispatchAction::Suspend;
                 }
                 Err(e) => {
                     // NS2/E-RPROCTAB: C's process_init replies RS_INIT+result
                     // to RS *unconditionally* — success or failure
-                    // (sef_init.c:110-119; VM registers the async-response
-                    // variant, main.c:229 "avoid a boot-time deadlock") — and
-                    // only then does the main loop treat the failure as fatal
-                    // (main.c:151). Reply with the mapped errno first so RS's
-                    // catch_boot_init_ready fails visibly on the non-OK
-                    // result (main.c:805-807) instead of blocking forever.
-                    self.transport
+                    // (sef_init.c:110-119). For VM the **first** such reply
+                    // uses the async leg `asynsend3(AMF_NOREPLY)`
+                    // (vm/main.c:225-229 registers sef_cb_init_response_rs_asyn_once,
+                    // sef_init.c:471-483) precisely to "avoid a boot-time
+                    // deadlock" — the same 2-cycle EDEADLOCK as the Ok arm
+                    // (NK4-C B5). Reply with the mapped errno first (async)
+                    // so RS's catch_boot_init_ready fails visibly on the
+                    // non-OK result (main.c:805-807) without blocking.
+                    if let Err(se) = self
+                        .transport
                         .borrow_mut()
-                        .send(RS_PROC_NR, &minix_sef::sef_init_reply(e.to_errno()))
-                        .unwrap_or_else(|_| panic!("ipc_send() failed (RS_INIT birth report)"));
+                        .asynsend(RS_PROC_NR, &minix_sef::sef_init_reply(e.to_errno()))
+                    {
+                        // A failed birth report is a second, independent drop
+                        // event (distinct from the handshake failure counted
+                        // below): count it symmetrically with the Ok arm so
+                        // the two legs share one accounting rule.
+                        self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
+                        audit_log!("[VM RS] failure birth report asynsend failed: {:?}", se);
+                    }
                     // [A-14] fail-closed continues after the reply: C panics
                     // here (main.c:151); minix-rs drops + counts + audits —
                     // no second reply, VM stays alive minus the whole-system
@@ -3815,13 +3831,20 @@ mod tests {
             assert_eq!(vfs_rprocpub_call_mask(), 0x0000_0300_0000_00ff);
 
             // E-BIRTHFACE（NS1）：成功握手的同轮必须回出生报告
-            //（process_init 尾部 sef_init.c:113-117）——RS boot step3
+            //（process_init 尾部 sef_init.c:110-119）——RS boot step3
             // 等的就是它；SUSPEND 只压主循环的第二回复。
             let sent = handle.sent();
             assert_eq!(sent.len(), 1, "恰好一条出生应答");
             assert_eq!(sent[0].0, Endpoint::RS);
             assert_eq!(sent[0].1.m_type, RS_INIT as i32);
             assert_eq!(sent[0].1.rs_init_result(), Some(minix_types::OK));
+            // NK4-C B5：出生报告必须走**异步腿**（asynsend3/AMF_NOREPLY），
+            // 不是阻塞 send——否则 RS 在 PAGEFAULT|SENDING 时 2-cycle EDEADLOCK。
+            assert_eq!(
+                handle.async_sends(),
+                1,
+                "birth report must go out via the async (SENDA) leg, not a blocking send"
+            );
 
             reset_boot_slots();
         });
@@ -3944,6 +3967,8 @@ mod tests {
                 "safecopy failure maps to InvalidEndpoint → ESRCH (ipc/vm.rs)"
             );
             assert_eq!(server.dropped_messages(), 1, "failed handshake must be counted");
+            // NK4-C B5：失败臂的出生报告同样走异步腿（与 C 首次应答一致）。
+            assert_eq!(handle.async_sends(), 1, "failure birth report must use the async leg");
 
             reset_boot_slots();
         });
