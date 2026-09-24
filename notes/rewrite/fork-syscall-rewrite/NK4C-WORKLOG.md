@@ -8,6 +8,8 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
+- **B14 前沿（1.25 诊断修正，无代码改动）**：阻塞 rc marker 的真因 = `stat("/dev/console")` 返 **EBUSY(16)** → init `console_present` 非 `Ok(true)` → `ensure_console` MAKEDEV 回退(boot 期 sh 不可 exec)→ `decide_entry` 判 **SingleUser** 而非 **Runcom**，而 marker 只由 Runcom 态 `exec /bin/sh /etc/rc` 产出 → 结构性不可达。⚠️ §1.24 记的「proc 自旋/SCHED 活锁」与「DriverBusy 候选」**已被推翻**：`r10s=0x4`=NOTIFY 是 CLOCK 5 秒 balance 心跳（healthy idle，非活锁），**勿动 SCHED/IPC 状态位/B12**；**init 不改**（忠实镜像 C）。下一手 = 在 VFS 返 EBUSY 的臂（`worker.rs:824`/`tll.rs:249-253`/`device_map.rs:776`）定点探针钉死，再按 C 改阻塞/排队。详见 §1.25。代码 frontier 仍 = 1.24 commit `5de52ddb5`。
+
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
@@ -1861,4 +1863,32 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 
 **三件套**：docker `minix-kernel 813 / minix-arch 242 / minix-vm 528`，**0 failed**；rustfmt 改动文件全 `cur=0`（lib.rs HEAD 原净、其余整档规范化）零新增漂移；真机两次复跑签名一致。
 
-**新前沿 B14**：`stat("/dev/console")` 现返回 **EBUSY(16)**（非 EIO）——grant 已通、FS 可达并回执，但 VFS 得 `DriverBusy`/`tll Busy`（候选：`fs_comm.rs:339`、`tll.rs:249/253`）。尾部 `pick->0x4` 固定 `rip=0x202d68` 自旋（proc 4 反复同址恢复，疑某阻塞调用返 EBUSY 后 tight-retry）。下一入口：①定性 EBUSY 是 MFS/FS 未就绪的正常时序还是死循环；②排查 RS 发布缝临时表是否劫持 s_grant_table 加剧之；③若 init `path_exists` 对 EBUSY（非 ENOENT）走了 Err 分支导致 ensure_console 循环，核对 init 的重试/收敛。
+**新前沿 B14**：`stat("/dev/console")` 现返回 **EBUSY(16)**（非 EIO）——grant 已通、FS 可达并回执，但 VFS 得 `DriverBusy`/`tll Busy`（候选：`fs_comm.rs:339`、`tll.rs:249/253`）。尾部 `pick->0x4` 固定 `rip=0x202d68` 自旋（proc 4 反复同址恢复，疑某阻塞调用返 EBUSY 后 tight-retry）。下一入口：①定性 EBUSY 是 MFS/FS 未就绪的正常时序还是死循环；②排查 RS 发布缝临时表是否劫持 s_grant_table 加剧之；③若 init `path_exists` 对 EBUSY（非 ENOENT）走了 Err 分支导致 ensure_console 循环，核对 init 的重试/收敛。**（⚠️ 本行的「proc 自旋/活锁」与「DriverBusy 候选」判断已被 §1.25 推翻，以 §1.25 为准。）**
+
+---
+
+## 1.25 B14 根因修正：rc marker 不可达 = `stat("/dev/console")` EBUSY → init 判 SingleUser（**非 SCHED 活锁**）（2026-09-25，Debug 子代理真机取证，纯诊断未改生产代码）
+
+**推翻 §1.24 的两处 B14 判断**（Debug 子代理 serial_d1–d4 真机取证）：
+1. **「尾部 pick->0x4 固定 rip=0x202d68 = proc 自旋/活锁」是误读。** proc 4 = SCHED（`proc.rs:115` SCHED_PROC_NR=4），rip=0x202d68 落在 sched 二进制 `KernelIpcTransport::receive`（符号起点 0x202c80）出口。交付 `r10s=0x4` = `IpcCall::NOTIFY`（`ipc.rs` 低 6 位 call type；**非** REPLY_PEND/RECEIVING/SENDING，与 B12 家族无关）。真机探针（已撤）实锤：反复给 SCHED 发 NOTIFY 的是 **CLOCK**（caller=0xfffffffffffffffd），`setalarm exp=500` 且 uptime 每次精确 **+500 单调不回退**（hz=100 → **5 秒 balance 心跳**，`balancer.rs` timeout=5×hz）。tail-dump 全 boot server `RECEIVING(from=ANY)`、runnable=no = **健康的 idle + 心跳系统，不是活锁**。因 init 卡 SingleUser 从不发脚本请求，SCHED 5 秒心跳成唯一可被 pick 的活动 → 日志末段刷满屏被误读为 livelock。**不要动 SCHED/IPC 状态位/B12 区域——那里没病。**
+2. **`fs_comm.rs:339 DriverBusy` 从未在本路径产出，排除。**
+
+**真根因链（Verified，代码 + 日志双向实锤）**：
+1. `commands/sbin/init/src/main.rs:104` → `entry::ensure_console(host, "/dev/console")`。
+2. `host.rs:453-466 path_exists`：stat `Ok→true` / `ENOENT→false` / **其它错（含 EBUSY）原样 `Err` 上抛**。
+3. `entry.rs:112-114 console_present = matches!(path_exists, Ok(true))` —— `Err(EBUSY)` 非 `Ok(true)` → **false**。
+4. `entry.rs:125-164 ensure_console`：console 不在 → fork/exec `/bin/sh /dev/MAKEDEV`（boot 期 sh 尚不可 exec）→ 复查仍 false → **返回 false**。
+5. `entry.rs:90-105 decide_entry(console_ok=false)`（且无 `-s`）→ **`InitialState::SingleUser`**。
+6. `main.rs:104-105` 的 `imain-4 console-done` 在 ensure_console 返回后**无条件打印**（与返回布尔无关）——正是把 EBUSY 误读成「console 设置完成」的来源。
+7. `os/etc/rc:10` 的 `echo "minix-rs rc: minimal boot script marker"` **只由 `Runcom` 态 `exec /bin/sh /etc/rc` 产出** → SingleUser 下 **marker 结构性不可达**。
+
+**判据修正**：boot 的「成功」不是到达 `SingleUser`（那其实是 EBUSY 误路由的结果），而是出现 `init-state Runcom` + `minix-rs rc: minimal`。serial_c1 计数：`SingleUser`=1、`Runcom`=**0**、`panic`=0、`imain-3/-4` 各 1（ensure_console 一次性触发，之后系统 idle）。
+
+**修复方向（不改 init——init 忠实镜像 C init.c:269-270）**：病根在 EBUSY 产出方。让 boot 期 `stat("/dev/console")` 返 Ok：多半是 **VFS 在 FS/驱动就绪前对设备 stat 过早返忙**，应按 C `fs_sendrec` 阻塞/排队语义等待而非立即 EBUSY。**EBUSY 确切臂尚未二分化定点**——候选 `worker.rs:824 TargetNotIdle`、`tll.rs:249/253 Busy/WouldBlock`、`device_map.rs:776 Busy`（stat 设备节点查 dmap 时驱动未映射；注意设备节点 stat 通常 VFS 自答、不下驱动，故优先查 dmap/resolve 就绪态）。
+
+**下一入口（接手 agent 直接可执行）**：
+1. 在 VFS 上述几处返 EBUSY 的臂打 `nk4c: eb <site> mt=<m_type>`（cap 8，前缀 nk4c），一次复跑把确切产出臂钉死；serial 用 `grep -a` 并过滤遗留 `nk4a:` 噪音。
+2. 按 C 语义把该臂从「过早返 EBUSY」改为「驱动/FS 未就绪时阻塞式 fs_sendrec 或让 init 的 stat 等待进入 receive」。
+3. §1.24 CodeReview 折叠的 RS 发布缝临时表劫持与本 EBUSY **大概率无关**（stat /dev/console 走 VFS→tty/MFS，不经 RS），可解耦另查。
+
+**本 turn 状态**：纯诊断，Debug 子代理所有 `nk4c:` 探针已撤销、`ipc.rs`/`syscall_clock.rs` 与 HEAD 字节一致、工作树干净、**未 commit 任何生产代码**。frontier 仍 = 1.24（B13 修复 commit `5de52ddb5`）；1.25 是 B14 诊断记录（无代码改动）。
