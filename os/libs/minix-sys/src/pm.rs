@@ -225,11 +225,19 @@ pub fn waitpid_via(
 
 /// Asks for the caller's own process identifier.
 ///
-/// C: `getpid` (`minix3/minix/lib/libc/sys/getpid.c`): clear a message and
-/// run the protocol; the reply message type is the identifier.
+/// C: `getpid` (`minix3/minix/lib/libc/sys/getpid.c`) returns the pid in the
+/// reply type. Our PM server diverges — same payload convention as
+/// [`getuid_via`]/[`getppid_via`]: the `GetResult::Pid` arm prefills
+/// `m1i1 = self pid`, `m1i2 = parent pid` and replies with `m_type = 0`
+/// (`ipc/calls.rs` `get_result_intent`). The self pid therefore lives in the
+/// reply payload; reading `m_type` would return the status code `0`.
 pub fn getpid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
     let mut message = crate::syscall::cleared_message();
-    perform_syscall(transport, pm_endpoint(), PM_CALL_GETPID, &mut message)
+    perform_syscall(transport, pm_endpoint(), PM_CALL_GETPID, &mut message)?;
+    // SAFETY: the PM prefills `m_m1` (m1i1=self pid, m1i2=parent) on this
+    // call — the same reply overlay getppid_via reads for `m1i2`.
+    let self_pid = unsafe { message.m_u.m_m1.m1i1 };
+    Ok(self_pid)
 }
 
 /// PM_SETUID(5):设置调用者自身的 uid(C `minix3/minix/lib/libc` 的
@@ -408,8 +416,9 @@ pub fn sigpending_via(transport: &impl IpcTransport) -> Result<[u32; 4], Errno> 
     Ok(pending)
 }
 
-/// 建立新会话并成为其首进程(C: `setsid(2)`;回复值为新会话 id,与
-/// PM 的 `Reply(procgrp)` 回复约定一致,见 getpid_via 的 m_type 读法)。
+/// 建立新会话并成为其首进程(C: `setsid(2)`;回复值为新会话 id,PM 的
+/// `GetResult::Sid`→`Reply(p)` 把值走 m_type——区别于 `GetResult::Pid`
+/// 的 payload 约定)。
 pub fn setsid_via(transport: &impl IpcTransport) -> Result<Pid, Errno> {
     let mut message = crate::syscall::cleared_message();
     perform_syscall(transport, pm_endpoint(), PM_CALL_SETSID, &mut message)
@@ -882,10 +891,16 @@ mod tests {
     }
 
     #[test]
-    fn test_getpid_returns_reply_type() {
+    fn test_getpid_reads_m1i1_payload() {
+        // PM's GetResult::Pid replies m_type=0 (status) with the self pid in
+        // m1i1 (same wire getppid_via reads m1i2 from); getpid_via must read
+        // the payload, not the reply type.
         let mut transport = CannedTransport::new();
-        transport.reply_sendrec(Ok(reply_with_type(7)));
-        assert_eq!(getpid_via(&transport), Ok(7));
+        let mut reply = reply_with_type(0);
+        reply.m_u.m_m1.m1i1 = 1; // self pid
+        reply.m_u.m_m1.m1i2 = 0; // parent pid (getppid_via's channel)
+        transport.reply_sendrec(Ok(reply));
+        assert_eq!(getpid_via(&transport), Ok(1));
     }
 
     #[test]
