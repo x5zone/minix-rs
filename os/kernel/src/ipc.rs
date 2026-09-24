@@ -588,17 +588,23 @@ impl UserCopy for KernelUserCopy {
         // 窗口」**，绝不直接解引用用户 VA——deliver_async 跑在接收者的
         // receive 陷入里，current CR3 是接收者的，同一用户 VA 落到错误
         // 地址空间（s17t GP fault vector 13 根因）。布局对位 C ipc.h:2745
-        // `asynmsg`：flags@0 / dst@4 / result@8 / msg@16，槽距 80；
+        // `asynmsg`：flags@0 / dst@4 / result@8 / msg@16，槽距 =
+        // `size_of::<WireAsyncSlot>()`（本项目 `Message`=80B → 槽 96B）；
         // WireAsyncSlot 镜像 + offset_of 守卫钉死（同 RS WirePrivUpdate
-        // 判例）。
-        const SLOT: usize = 80;
+        // 判例）。C 用 `sizeof(asynmsg_t)` 由类型推导步长（proc.c:1176
+        // A_RETR），这里同样必须派生自类型：旧版硬编码 `SLOT=80`（C 32 位
+        // 旧布局凑出来的值）会让 slot[i≥1] 按 80 错位读、并用 80 字节缓冲
+        // `read_volatile` 一个 96 字节结构（越界 UB）——NK4-C B7 启动死锁
+        // 真根因（RS_INIT→VFS 落 slot≥1 永读不出 → VFS 永停 receive(RS)）。
+        const SLOT: usize = core::mem::size_of::<WireAsyncSlot>();
         let base: u64 = table.0 + (index as u64) * (SLOT as u64);
         let mut out = [0u8; SLOT];
         copy_via_root_pages::<minix_arch::CurrentDirectMap>(
             root, base, &mut out, false,
         )?;
-        // SAFETY: out 是本函数栈上的 80 字节缓冲，由上面的分页拷贝填充；
-        // WireAsyncSlot 为 repr(C) 且 size 断言 == 16+size_of::<Message>()。
+        // SAFETY: out 是本函数栈上的 `size_of::<WireAsyncSlot>()` 字节缓冲，
+        // 由上面的分页拷贝填充；WireAsyncSlot 为 repr(C) 且 size 断言
+        // == 16+size_of::<Message>()（与 minix-sys AsyncSlot 逐字节一致）。
         let slot = unsafe { core::ptr::read_volatile(out.as_ptr() as *const WireAsyncSlot) };
         Ok((slot.destination, slot.message, slot.flags as i32))
     }
@@ -623,8 +629,11 @@ impl UserCopy for KernelUserCopy {
     ) -> Result<(), CopyError> {
         // C A_INSRT（proc.c:1307）：回写 result + AMF_DONE——只写槽头
         // flags@0 与 result@8 两域（dst/msg 不动）。同读腿：发送者 root
-        // 翻译 → DM 窗口写，不解引用用户 VA。
-        const SLOT: usize = 80;
+        // 翻译 → DM 窗口写，不解引用用户 VA。步长同样派生自
+        // `size_of::<WireAsyncSlot>()`（旧硬编码 80 会让 slot[i≥1] 写错地址，
+        // 见 `read_senda_entry` 注释）。flags/result 偏移不变（flags@0、
+        // result@8 仍落在槽头 12 字节内）。
+        const SLOT: usize = core::mem::size_of::<WireAsyncSlot>();
         let base: u64 = table.0 + (index as u64) * (SLOT as u64);
         let mut head = [0u8; 12];
         copy_via_root_pages::<minix_arch::CurrentDirectMap>(

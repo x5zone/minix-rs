@@ -24,7 +24,7 @@
 //! (sys_getmachine/sys_privctl/sched_start/...) 与
 //! `minix3/minix/servers/rs/manager.c` 的 `_taskcall(PM/VM)` 面。
 
-use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, IpcTransport as _};
+use minix_sys::ipc::{AsyncSendQueue, AsyncSlotFlags, IpcTransport as _};
 use minix_sys::syscall::{self, DirectKernelCallTransport};
 use minix_sys::{pm as sys_pm, vm as sys_vm};
 use minix_types::{Clock, Endpoint, Errno, GrantId, Message, Pid};
@@ -149,6 +149,16 @@ pub struct TrapKernelApi {
     priv_wire: WirePrivUpdate,
     /// `vm_rs_set_priv` 的掩码缓冲(VM datacopy 回读 8 字节,2×u32 LE)。
     mask_wire: [u8; 8],
+    /// 异步发送的持久 SENDA 环表 —— C `static asynmsg_t msgtable[ASYN_NR]`
+    /// (`asynsend.c:18`) 的忠实移植(同 VM B5 `KernelIpcTransport::queue`)。
+    /// 内核 `senda` 只记本表的用户态地址,目标进 receive 时才回读该地址并写回
+    /// `result|AMF_DONE`(ipc.rs `deliver_async`),故槽必须活得比 `asynsend`
+    /// 调用更久。栈上现造的单槽会在下一发 `senda` 重注册 `s_asyntab` 时冲刷掉
+    /// 尚未投递的旧消息(NK4-C B7:RS 开机连发 RS_INIT,dst=VFS 那条被后一发
+    /// 覆盖 + 栈帧失效 → RS_INIT 永久丢失 → VFS 永停 receive(RS) →
+    /// INIT→VFS→RS 启动死锁)。容量 32 覆盖开机 fan-out(全部 SYS_PROC 服务器,
+    /// ~12)并留裕度。
+    senda_queue: AsyncSendQueue<32>,
 }
 
 impl TrapKernelApi {
@@ -180,6 +190,7 @@ impl TrapKernelApi {
                 s_mem_tab: [WireMemRange { base: 0, limit: 0 }; 20],
             },
             mask_wire: [0; 8],
+            senda_queue: AsyncSendQueue::new(),
         }
     }
 }
@@ -531,15 +542,20 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn asynsend(&mut self, endpoint: Endpoint, message: &Message) -> Result<(), Errno> {
-        // C rs_asynsend(utility.c:62)的一次性单槽形态(照抄 input
-        // serve.rs 先例):flags 最后写 VALID;NO_REPLY = 不等回执。
-        let slot = AsyncSlot {
-            flags: AsyncSlotFlags(AsyncSlotFlags::VALID.0 | AsyncSlotFlags::NO_REPLY.0),
-            destination: endpoint,
-            message: *message,
-            result: 0,
-        };
-        self.ipc.senda(&[slot]).map_err(|t| Errno::from_i32(t.0))
+        // C: rs_asynsend(utility.c:223-242) 两条分支都经 asynsend3 → 持久
+        // 多条目 `static msgtable[ASYN_NR]`(asynsend.c:18):新消息追加到
+        // next_slot,从不冲刷前一条;senda_reload 每轮把整段未完成表
+        // (`&msgtable[first_slot]`, len) 重注册给内核(asynsend.c:144-155)。
+        // 早先误读为"一次性单槽"(栈上现造),下一发 senda 会覆盖 s_asyntab
+        // 并让旧栈帧失效——RS 开机 burst 连发 RS_INIT 正是此路径(NK4-C B7)。
+        // 改持持久 AsyncSendQueue 字段:先 enqueue(VALID 由 enqueue 最后或上,
+        // 对应 asynsend.c:124-131),再把 pending_slice 交给 senda。
+        self.senda_queue
+            .enqueue(endpoint, *message, AsyncSlotFlags::NO_REPLY)
+            .map_err(|_| Errno::from_i32(minix_types::EBUSY))?;
+        self.ipc
+            .senda(self.senda_queue.pending_slice())
+            .map_err(|t| Errno::from_i32(t.0))
     }
 
     fn safecopy_from(&mut self, source: Endpoint, addr: usize, buf: &mut [u8]) -> Result<(), Errno> {
@@ -640,5 +656,29 @@ impl IpcApi for TrapKernelApi {
             &mut msg,
         )
         .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod trap_api_tests {
+    use super::*;
+
+    /// NK4-C B7 regression: consecutive `asynsend` calls accumulate into the
+    /// persistent ring rather than the later send flushing the earlier one.
+    /// The old stack-local single-slot form could only ever hold one entry —
+    /// the confirmed boot-deadlock root cause (RS_INIT to VFS dropped by the
+    /// next re-registration). Host builds answer EIO on the delegated `senda`,
+    /// but `enqueue` succeeds for both, so `pending_count` reaches 2.
+    #[test]
+    fn asynsend_accumulates_without_flush() {
+        let mut api = TrapKernelApi::new();
+        let m = Message::default();
+        let _ = api.asynsend(Endpoint::VM, &m);
+        let _ = api.asynsend(Endpoint::DS, &m);
+        assert_eq!(
+            api.senda_queue.pending_count(),
+            2,
+            "second asynsend must append, not flush the first (persistent ring)"
+        );
     }
 }

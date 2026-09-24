@@ -7,7 +7,7 @@
 //! (`servers/input/src/serve.rs`), which is the field-proven template.
 
 use minix_sys::ds::DsClient;
-use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
+use minix_sys::ipc::{AsyncSendQueue, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
 use minix_sys::syscall::{sys_safecopyfrom, sys_safecopyto, DirectKernelCallTransport};
 use minix_sys::{receive, send};
 use minix_types::{Endpoint, Message};
@@ -19,12 +19,24 @@ pub struct KernelTransport {
     /// Endpoint of this process, stamped on outgoing messages
     /// (`m_source`; the kernel fills it on delivery, replies need it).
     pub self_endpoint: Endpoint,
+    /// Persistent SENDA ring table — the faithful port of C's
+    /// `static asynmsg_t msgtable[ASYN_NR]` (`asynsend.c:18`). The kernel
+    /// records only the user address of this table and re-reads it once the
+    /// destination enters receive, so a stack-local single slot would be
+    /// flushed by the next `senda` re-registration (NK4-C B7 same-shape
+    /// defect; on RS it was the confirmed boot-deadlock root cause). The
+    /// `DriverRuntime<T>` owns this transport for the driver's whole
+    /// lifetime, so the slots outlive each `asynsend` call.
+    senda_queue: AsyncSendQueue<16>,
 }
 
 impl KernelTransport {
     /// Transport bound to this process's endpoint.
     pub const fn new(self_endpoint: Endpoint) -> Self {
-        KernelTransport { self_endpoint }
+        KernelTransport {
+            self_endpoint,
+            senda_queue: AsyncSendQueue::new(),
+        }
     }
 }
 
@@ -42,17 +54,19 @@ impl DriverTransport for KernelTransport {
 
     fn asynsend(&mut self, dst: Endpoint, msg: &mut Message) -> Result<(), i32> {
         msg.m_source = self.self_endpoint;
-        // C: `asynsend3(endpt, &m, AMF_NOREPLY)` — a one-slot SENDA table
-        // with the no-reply flag set (`ipc.rs:202`, flag value 8). SENDA
-        // 客户端接线落地（input 794d3eb91 同型）：宿主构建诚实 -EIO，
-        // real-trap 通电即走内核 SENDA。
-        let slot = AsyncSlot {
-            flags: AsyncSlotFlags(AsyncSlotFlags::VALID.0 | AsyncSlotFlags::NO_REPLY.0),
-            destination: dst,
-            result: 0,
-            message: *msg,
-        };
-        DirectTrapTransport.senda(&[slot]).map_err(|_| -minix_types::EIO)
+        // C: driver asynsend → asynsend3 uses the **process-global persistent**
+        // multi-entry `static msgtable[ASYN_NR]` (asynsend.c:18) — appends,
+        // never flushes. The prior stack-local single slot got overwritten by
+        // the next `senda` (stale `s_asyntab` + dead frame → lost pending
+        // message; NK4-C B7 same-shape defect). Route through the persistent
+        // `AsyncSendQueue`: `enqueue` (VALID OR-ed last, asynsend.c:124-131)
+        // then hand `pending_slice` to `senda` (asynsend.c:154).
+        self.senda_queue
+            .enqueue(dst, *msg, AsyncSlotFlags::NO_REPLY)
+            .map_err(|_| -minix_types::EBUSY)?;
+        DirectTrapTransport
+            .senda(self.senda_queue.pending_slice())
+            .map_err(|_| -minix_types::EIO)
     }
 
     fn copy_from_grant(
@@ -125,6 +139,27 @@ mod kernel_transport_tests {
         let mut t = KernelTransport::new(Endpoint::PM);
         let mut msg = Message::default();
         assert_eq!(t.asynsend(Endpoint::DS, &mut msg), Err(-minix_types::EIO));
+    }
+
+    /// NK4-C B7 regression: two async sends must BOTH stay pending in the
+    /// persistent ring — the second `senda` must not flush the first. The old
+    /// stack-local single-slot form could only ever hold one entry (the
+    /// confirmed boot-deadlock root cause on RS); this pins the fix at the
+    /// wiring level. Host builds answer EIO on the trap, but `enqueue`
+    /// succeeds for both, so `pending_count` reaches 2.
+    #[test]
+    fn test_asynsend_accumulates_without_flush() {
+        let mut t = KernelTransport::new(Endpoint::PM);
+        let mut m1 = Message::default();
+        let mut m2 = Message::default();
+        m2.m_type = 7;
+        let _ = t.asynsend(Endpoint::DS, &mut m1);
+        let _ = t.asynsend(Endpoint::VM, &mut m2);
+        assert_eq!(
+            t.senda_queue.pending_count(),
+            2,
+            "second asynsend must append, not flush the first (persistent ring)"
+        );
     }
 
     /// DS announce 腿经双载体 DsClient：宿主下 grant 生命线首跳即
