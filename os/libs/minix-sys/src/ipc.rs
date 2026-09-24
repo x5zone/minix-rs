@@ -246,6 +246,7 @@ impl AsyncSlotFlags {
 /// written by the kernel; the sender must not read it before the done bit
 /// appears.
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 pub struct AsyncSlot {    /// State flags; written last when publishing a slot.
     pub flags: AsyncSlotFlags,
     /// Destination endpoint.

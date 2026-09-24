@@ -2474,6 +2474,7 @@ mod tests {
         }
         fn read_senda_entry(
             &self,
+            _root: minix_types::PhysBytes,
             _table: minix_types::VirBytes,
             _index: usize,
         ) -> Result<(Endpoint, minix_types::Message, i32), crate::ipc::CopyError> {
@@ -2481,6 +2482,7 @@ mod tests {
         }
         fn write_senda_result(
             &self,
+            _root: minix_types::PhysBytes,
             _table: minix_types::VirBytes,
             _index: usize,
             _result: i32,
@@ -2510,6 +2512,7 @@ mod tests {
         }
         fn read_senda_entry(
             &self,
+            _root: minix_types::PhysBytes,
             _table: minix_types::VirBytes,
             _index: usize,
         ) -> Result<(Endpoint, minix_types::Message, i32), crate::ipc::CopyError> {
@@ -2517,6 +2520,7 @@ mod tests {
         }
         fn write_senda_result(
             &self,
+            _root: minix_types::PhysBytes,
             _table: minix_types::VirBytes,
             _index: usize,
             _result: i32,

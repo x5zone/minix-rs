@@ -1419,3 +1419,39 @@ elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（P
 - **s17t 回退原因**：真机 GP fault（vector 13，trap_dispatch.rs:1004 dispatch_body，rip 0x5abd639 kernel text，紧随 `pdmv-set krn`、pfwd out=B 之后，boot 大幅提前死亡）——senda 真读/探针二者之一引入，根因未定位；248 行 patch 保留待查。
 - **下一轮入口**：①patch 二分（先只上 rsm/vfm 探针不上 senda 真读，跑一轮定界）；②检查 `user_copy_range_mapped` 对非当前 root 的走表是否安全（deliver_async 场景）——GP 而非 PF 说明可能有内核态非法访问未走校验臂；③`AsyncSlot` 补 repr(C) 后 `size_of` 与 WireAsyncSlot 80 断言对齐核实。
 - 验证基线不变：HEAD（839ecbd4b）= s17q/s17r 两轮稳定（init↔PM GETUID/GETPID 通、无 panic），docker 813/242/526 全绿。
+
+---
+
+## 1.12d SENDA 真读修复 + 探针链诊断（2026-09-24，serial_s18a…s18i，WIP 已入仓）
+
+### 已完成（本 commit 入仓，未过 rc marker）
+
+1. **senda 真读实现（根因修复方向正确）**：`KernelUserCopy::read_senda_entry`/`write_senda_result` 从永久 stub 改为真实现，**但必须走「发送者 root 翻译 → 物理地址 → Direct Map 窗口」**，不能直接解引用用户 VA——`deliver_async` 跑在接收者的 receive 陷入里，current CR3 是接收者的，同一 VA 落到错误地址空间（这正是 s17t 的 GP fault vector 13 根因，见 1.12c）。新增辅助 `copy_via_root_pages<D>`（kernel/src/ipc.rs）：
+   - 逐页 `CurrentPteWalk::walk(root, va)` → `pa`（**注意 x86_64 `walk_translate` 返回的 pa 已含页内偏移**，`pte&ADDR_MASK | vaddr&0xFFF`；再叠一次 offset 会错位——首版踩过）
+   - `D::kernel_phys_to_virt(pa)` → DM 窗口 VA → `copy_nonoverlapping`
+   - 边界：`USER_ADDRESS_SPACE_LIMIT` + `checked_add`（防回绕）+ `USER_ACCESSIBLE` 标志位
+2. **trait 扩展**：`UserCopy::read_senda_entry/write_senda_result` 增加 `root: PhysBytes` 参数（C A_RETR/A_INSRT 按发送者段读；senda 传 caller 自己的 root，deliver_async 传 sender 的 root）。全部实现点（KernelUserCopy 生产/测试双形态、proc_table 两个 stub、ipc.rs 测试 stub×4）已同步。
+3. **`AsyncSlot` 补 `#[repr(C)]`**（libs/minix-sys/src/ipc.rs）——原缺 repr，布局不保证；配 `WireAsyncSlot` 镜像 + `offset_of!` 守卫（destination@4 / message@16 / size == 16+size_of::<Message>()）。
+4. **验证**：docker kernel **813 全绿**；真机 s18d **零 GP fault**（对比 s17t 的 vector 13）——跨地址空间读的安全性修复**已被真机证实**。
+
+### 诊断链（s18e…s18i，全部探针入仓，可直接复跑）
+
+| 探针 | 位置 | 结果 |
+|------|------|------|
+| `saread` | read_senda_entry 内 | s18c：`root=0x35f8000 tbl=0x7fffffff5d20 v=y`（校验通过） |
+| `apend` | take_pending_async（bitmap≠0 才打） | **零输出** → VFS 上 pending 位从未被设置 |
+| `saent` | senda 逐条 dst 解析后 | **零输出** → 循环体从未执行到该点 |
+| `sa-in` | senda 入口 | s18h/i：`c=0x2 n=0x1`（RS，count=1）——**入口到达** |
+| `sa-out` | senda 四条早退门（e1-idx/e2-priv/e3-nosys/e4-clr） | **零输出** → 四条早退都没走 |
+| `sa-readfail` | senda 循环内 `Err(_)` 臂 | **零输出** → 表读**没有失败** |
+
+**结论（闭合）**：`senda` 被调用、入口门全过、表读**成功返回**，但 `flags` 解出 **0 = AMF_EMPTY** → `continue` → 循环结束 → `done` 仍 true → 返回 Delivered，**一条消息都没投**。即 **`copy_via_root_pages` 读回全零**（不是读失败，是读到了零内容）。
+
+**下一步（下一手 agent 的第一件事）**：定位「读回全零」。
+- 优先怀疑：①`self.procs[caller_idx].p_seg.phys_root` 不是活 root（对当前进程应等于 `current_root_phys()`）——加探针对拍两者；②DM 窗口 VA 是否真映射了该物理页（读回的零是「映射到零页」还是「窗口偏移错」）；③`walk` 返回的 pa 是否已含偏移（已确认 x86_64 含；需核对另两架构）。
+- 手法：在 `copy_via_root_pages` 内加「walk 出的 pa / DM VA / 读回首 4 字节」三联探针，一轮即可定案。
+
+### 环境备注
+
+- `/tmp/nk4a` 会被清（WSL 重启）；复跑前需 `mkdir -p /tmp/nk4a && cp tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd`。
+- 当前 frontier 基线：HEAD = 本 commit；docker 813/242/526 全绿。

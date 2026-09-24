@@ -310,8 +310,13 @@ pub trait UserCopy {
     ///
     /// Returns `(dst_endpoint, message, flags)` — C: `asynmsg_t.dst`,
     /// `.msg`, `.flags`. Flag values are `AMF_*` (ipc.h:2754-2761).
+    /// `root` = the SENDER's page-table root (C reads the sender's table
+    /// through the sender's segment — A_RETR runs `umap(sender)`); at the
+    /// senda syscall the caller IS the sender, at `deliver_async` the
+    /// receiver's own root would be wrong.
     fn read_senda_entry(
         &self,
+        root: minix_types::PhysBytes,
         table: VirBytes,
         index: usize,
     ) -> Result<(Endpoint, Message, i32), CopyError>;
@@ -323,6 +328,7 @@ pub trait UserCopy {
     /// ("Copy results to caller; ignore errors").
     fn write_senda_result(
         &self,
+        root: minix_types::PhysBytes,
         table: VirBytes,
         index: usize,
         result: i32,
@@ -429,6 +435,65 @@ fn user_copy_range_mapped(
     Ok(())
 }
 
+/// Copy `buf.len()` bytes between a user VA (translated via `root`'s page
+/// tables) and `buf`. Read direction (`to_kernel = false`) fills `buf` from
+/// user memory; write direction stores `buf` into user memory.
+///
+/// NK4-C 1.12：跨地址空间访问的唯一正确姿势——每页经 `walk(root, va)`
+/// 翻译为物理地址，再经 Direct Map 窗口访问（`kernel_phys_to_virt`）。
+/// 直接解引用用户 VA 只在「current root == 该 root」时成立；deliver_async
+/// 等跨进程场景在接收者陷入里运行，同一 VA 落到错误地址空间（s17t
+/// vector 13 根因）。C 同形：umap(sender) + phys 拷贝（proc.c:1244）。
+#[cfg(not(test))]
+fn copy_via_root_pages<D: minix_arch::DirectMapArch>(
+    root: minix_types::PhysBytes,
+    va: u64,
+    buf: &mut [u8],
+    to_kernel: bool,
+) -> Result<(), CopyError> {
+    use minix_arch::paging::PageFlags;
+
+    const PAGE: u64 = 4096;
+    let len = buf.len() as u64;
+    // User-half bound（同 user_copy_range_mapped：checked_add 防回绕）。
+    match va.checked_add(len) {
+        Some(end) if va < USER_ADDRESS_SPACE_LIMIT && end <= USER_ADDRESS_SPACE_LIMIT => {}
+        _ => return Err(CopyError::OutOfBounds),
+    }
+    let mut done: u64 = 0;
+    while done < len {
+        let cur = va + done;
+        let page_off = cur & (PAGE - 1);
+        let chunk = core::cmp::min(len - done, PAGE - page_off) as usize;
+        let Some((pa, flags)) =
+            minix_arch::CurrentPteWalk::walk(minix_types::PhysBytes(root.0), VirBytes(cur))
+        else {
+            return Err(CopyError::PageFault);
+        };
+        if !flags.contains(PageFlags::USER_ACCESSIBLE) {
+            return Err(CopyError::PageFault);
+        }
+        // walk 返回 cur 的完整物理地址（页内偏移已折入，x86_64
+        // walk_translate：pte&ADDR_MASK | vaddr&0xFFF）——DV 即 cur 的
+        // DM 窗口映照，不再加页内偏移。
+        let dv = D::kernel_phys_to_virt(pa);
+        let _ = page_off;
+        // SAFETY: DM 窗口 VA 由内核直映，pa 来自页表 walk（该页
+        // USER_ACCESSIBLE）；chunk 不越过 cur 所在页。
+        unsafe {
+            let src = dv.0 as *const u8;
+            let dst = buf.as_mut_ptr().add(done as usize);
+            if to_kernel {
+                core::ptr::copy_nonoverlapping(src, dst, chunk);
+            } else {
+                core::ptr::copy_nonoverlapping(dst as *const u8, src as *mut u8, chunk);
+            }
+        }
+        done += chunk as u64;
+    }
+    Ok(())
+}
+
 impl UserCopy for KernelUserCopy {
     #[cfg(not(test))]
     fn copy_msg_from_user(&self, src: VirBytes) -> Result<Message, CopyError> {
@@ -503,26 +568,97 @@ impl UserCopy for KernelUserCopy {
         // Hosted test: no-op stub.
         Ok(())
     }
+    #[cfg(not(test))]
     fn read_senda_entry(
         &self,
+        root: minix_types::PhysBytes,
+        table: VirBytes,
+        index: usize,
+    ) -> Result<(Endpoint, Message, i32), CopyError> {
+        // NK4-C 1.12：真实现。C A_RETR（proc.c:1244）按发送者的段读
+        // `asynmsg_t`。关键：**读走「发送者 root 翻译 → 物理 → Direct Map
+        // 窗口」**，绝不直接解引用用户 VA——deliver_async 跑在接收者的
+        // receive 陷入里，current CR3 是接收者的，同一用户 VA 落到错误
+        // 地址空间（s17t GP fault vector 13 根因）。布局对位 C ipc.h:2745
+        // `asynmsg`：flags@0 / dst@4 / result@8 / msg@16，槽距 80；
+        // WireAsyncSlot 镜像 + offset_of 守卫钉死（同 RS WirePrivUpdate
+        // 判例）。
+        const SLOT: usize = 80;
+        let base: u64 = table.0 + (index as u64) * (SLOT as u64);
+        let mut out = [0u8; SLOT];
+        copy_via_root_pages::<minix_arch::CurrentDirectMap>(
+            root, base, &mut out, false,
+        )?;
+        // SAFETY: out 是本函数栈上的 80 字节缓冲，由上面的分页拷贝填充；
+        // WireAsyncSlot 为 repr(C) 且 size 断言 == 16+size_of::<Message>()。
+        let slot = unsafe { core::ptr::read_volatile(out.as_ptr() as *const WireAsyncSlot) };
+        Ok((slot.destination, slot.message, slot.flags as i32))
+    }
+    #[cfg(test)]
+    fn read_senda_entry(
+        &self,
+        _root: minix_types::PhysBytes,
         _table: VirBytes,
         _index: usize,
     ) -> Result<(Endpoint, Message, i32), CopyError> {
-        // Stub: kernel-origin path never triggers SENDA table reads.
-        // Real SENDA flows inject an arch-specific `UserCopy`.
+        // Hosted test: no real address space (同 copy_msg_from_user)。
         Err(CopyError::PageFault)
     }
+    #[cfg(not(test))]
     fn write_senda_result(
         &self,
+        root: minix_types::PhysBytes,
+        table: VirBytes,
+        index: usize,
+        result: i32,
+        flags: i32,
+    ) -> Result<(), CopyError> {
+        // C A_INSRT（proc.c:1307）：回写 result + AMF_DONE——只写槽头
+        // flags@0 与 result@8 两域（dst/msg 不动）。同读腿：发送者 root
+        // 翻译 → DM 窗口写，不解引用用户 VA。
+        const SLOT: usize = 80;
+        let base: u64 = table.0 + (index as u64) * (SLOT as u64);
+        let mut head = [0u8; 12];
+        copy_via_root_pages::<minix_arch::CurrentDirectMap>(
+            root, base, &mut head, false,
+        )?;
+        head[0..4].copy_from_slice(&(flags as u32).to_ne_bytes());
+        head[8..12].copy_from_slice(&result.to_ne_bytes());
+        copy_via_root_pages::<minix_arch::CurrentDirectMap>(
+            root, base, &mut head, true,
+        )?;
+        Ok(())
+    }
+    #[cfg(test)]
+    fn write_senda_result(
+        &self,
+        _root: minix_types::PhysBytes,
         _table: VirBytes,
         _index: usize,
         _result: i32,
         _flags: i32,
     ) -> Result<(), CopyError> {
-        // Stub: symmetric with `read_senda_entry`.
+        // Hosted test: no-op stub。
         Ok(())
     }
 }
+
+/// SENDA 用户表槽位的内核侧镜像（C `asynmsg_t` — ipc.h:2745-2751）。
+/// 仅在 `read_senda_entry`/`write_senda_result` 解码用户表用；`repr(C)`
+/// + offset_of 守卫保证与 minix-sys `AsyncSlot`（同序字段）逐字节一致。
+#[repr(C)]
+struct WireAsyncSlot {
+    flags: u32,
+    destination: Endpoint,
+    result: i32,
+    message: Message,
+}
+const _: () = assert!(core::mem::offset_of!(WireAsyncSlot, destination) == 4);
+const _: () = assert!(core::mem::offset_of!(WireAsyncSlot, message) == 16);
+const _: () = assert!(
+    core::mem::size_of::<WireAsyncSlot>()
+        == 16 + core::mem::size_of::<Message>()
+);
 
 /// Result of `IpcEngine::deliver_message`. C: `delivermsg` is `void`;
 /// Rust makes the failure path explicit so `switch_to_user` can route
@@ -1714,6 +1850,24 @@ impl<'a> IpcEngine<'a> {
             let caller_priv = self.priv_table.get(caller_priv_id)?;
             caller_priv.signals.s_asyn_pending
         };
+        // NK4-C 1.12 取证探针（task1-close 裁决删除）：asyn pending 位图
+        // 非 0 的每次 receive（caller + 位图 + 请求源）——RS_INIT pending
+        // 是否到 VFS、是否被取走。
+        #[cfg(not(feature = "mock"))]
+        if bitmap != 0 {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static APEND_N: AtomicUsize = AtomicUsize::new(0);
+            if APEND_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+                Console::write_str("nk4a: apend c=");
+                Console::write_hex(caller_nr.0 as u64);
+                Console::write_str(" bm=");
+                Console::write_hex(bitmap);
+                Console::write_str(" src=");
+                Console::write_hex(src_endpoint.0 as u64);
+                Console::write_str("\n");
+            }
+        }
         if bitmap == 0 {
             return None;
         }
@@ -1780,9 +1934,12 @@ impl<'a> IpcEngine<'a> {
         let mut do_notify = false;
         let mut delivered = false;
 
+        // 1.12：A_RETR 按发送者 root 读（deliver_async 跑在接收者的
+        // receive 陷入里，current root 是接收者——C 用 umap(sender) 同理）。
+        let sender_root = self.procs[sender_idx].p_seg.phys_root;
         for i in 0..size {
             // C: A_RETR(i) — per-entry copy-in; failure skips the entry.
-            let (dst_ep, msg, flags) = match self.user_copy.read_senda_entry(table, i) {
+            let (dst_ep, msg, flags) = match self.user_copy.read_senda_entry(sender_root, table, i) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
@@ -1811,7 +1968,7 @@ impl<'a> IpcEngine<'a> {
                 // C: goto store_result with r = EINVAL (proc.c:1451-1452).
                 let _ = self
                     .user_copy
-                    .write_senda_result(table, i, EINVAL, flags | AMF_DONE);
+                    .write_senda_result(sender_root, table, i, EINVAL, flags | AMF_DONE);
                 // C: do_notify on NOTIFY / error+NOTIFY_ERR (proc.c:1486-1487).
                 if (flags & AMF_NOTIFY) != 0 {
                     do_notify = true;
@@ -1847,7 +2004,9 @@ impl<'a> IpcEngine<'a> {
             delivered = true;
 
             // C: store_result (proc.c:1479-1488) — result OK + AMF_DONE.
-            let _ = self.user_copy.write_senda_result(table, i, OK, flags | AMF_DONE);
+            let _ = self
+                .user_copy
+                .write_senda_result(sender_root, table, i, OK, flags | AMF_DONE);
             if (flags & AMF_NOTIFY) != 0 {
                 do_notify = true;
             }
@@ -1987,15 +2146,46 @@ impl<'a> IpcEngine<'a> {
     /// or the duplicated size sanity check (C: `EDOM`, proc.c:1233;
     /// primary check is the SENDA syscall path — proc.c:681).
     pub fn senda(&mut self, caller_nr: ProcNr, table: VirBytes, size: usize) -> IpcOutcome {
+        // NK4-C 1.12 取证探针（task1-close 裁决删除）：senda 入口前 4 次
+        // （caller/count）——s18f/g 零 saent：入口未达还是循环前早退。
+        #[cfg(not(feature = "mock"))]
+        {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static SA_N: AtomicUsize = AtomicUsize::new(0);
+            if SA_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                Console::write_str("nk4a: sa-in c=");
+                Console::write_hex(caller_nr.0 as u64);
+                Console::write_str(" n=");
+                Console::write_hex(size as u64);
+                Console::write_str("\n");
+            }
+        }
         // C: mini_senda — SYS_PROC check (proc.c:1331-1342).
+        macro_rules! sa_exit {
+            ($tag:expr, $val:expr) => {{
+                #[cfg(not(feature = "mock"))]
+                {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static SAX_N: AtomicUsize = AtomicUsize::new(0);
+                    if SAX_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                        Console::write_str("nk4a: sa-out ");
+                        Console::write_str($tag);
+                        Console::write_str("\n");
+                    }
+                }
+                $val
+            }};
+        }
         let caller_idx = match self.idx_of(caller_nr) {
             Some(i) => i,
-            None => return IpcOutcome::Error(IpcError::DeadSrcDst),
+            None => return sa_exit!("e1-idx", IpcOutcome::Error(IpcError::DeadSrcDst)),
         };
         let caller_priv_id = match self.procs[caller_idx].priv_id {
             Some(id) => id,
             // C: "caller has no privilege structure" → EPERM (proc.c:1337).
-            None => return IpcOutcome::Error(IpcError::Permission),
+            None => return sa_exit!("e2-priv", IpcOutcome::Error(IpcError::Permission)),
         };
         let caller_is_sys = self
             .priv_table
@@ -2003,7 +2193,7 @@ impl<'a> IpcEngine<'a> {
             .map(KPriv::is_sys_proc)
             .unwrap_or(false);
         if !caller_is_sys {
-            return IpcOutcome::Error(IpcError::Permission);
+            return sa_exit!("e3-nosys", IpcOutcome::Error(IpcError::Permission));
         }
         let caller_endpoint = self.procs[caller_idx].p_endpoint;
 
@@ -2011,7 +2201,7 @@ impl<'a> IpcEngine<'a> {
         // entries remain undelivered (proc.c:1320-1323).
         {
             let Some(priv_) = self.priv_table.get_mut(caller_priv_id) else {
-                return IpcOutcome::Error(IpcError::Permission);
+                return sa_exit!("e4-clr", IpcOutcome::Error(IpcError::Permission));
             };
             priv_.signals.s_asyntab = u64::MAX; // C: (vir_bytes) -1
             priv_.signals.s_asynsize = 0;
@@ -2036,9 +2226,31 @@ impl<'a> IpcEngine<'a> {
             // C: A_RETR(i) — per-entry copy-in. On copy failure C
             // complains and skips the entry (asyn_error has no result
             // write-back); the entry stays un-DONE for retry.
-            let (mut dst_ep, msg, flags) = match self.user_copy.read_senda_entry(table, i) {
+            // 1.12：senda 的 caller 即发送者，root 取其进程表值（与
+            // current root 一致，显式传递防漂移）。
+            let (mut dst_ep, msg, flags) =
+                match self
+                    .user_copy
+                    .read_senda_entry(self.procs[caller_idx].p_seg.phys_root, table, i)
+                {
                 Ok(t) => t,
-                Err(_) => continue,
+                Err(_) => {
+                    // NK4-C 1.12 取证探针：表读失败（errno root/walk 类别）。
+                    #[cfg(not(feature = "mock"))]
+                    {
+                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                        static SARE_N: AtomicUsize = AtomicUsize::new(0);
+                        if SARE_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                            Console::write_str("nk4a: sa-readfail root=");
+                            Console::write_hex(self.procs[caller_idx].p_seg.phys_root.0);
+                            Console::write_str(" tbl=");
+                            Console::write_hex(table.0);
+                            Console::write_str("\n");
+                        }
+                    }
+                    continue;
+                }
             };
 
             // C: flags == 0 → skip empty entries (proc.c:1248).
@@ -2097,6 +2309,27 @@ impl<'a> IpcEngine<'a> {
                 r = EDEADSRCDST;
             }
 
+            // NK4-C 1.12 取证探针（task1-close 裁决删除）：senda 逐条去向
+            // （cap 16，含错误臂）——RS_INIT 落 pending 位还是被错臂吞掉。
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static SAENT_N: AtomicUsize = AtomicUsize::new(0);
+                if SAENT_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                    Console::write_str("nk4a: saent dst=");
+                    match dst_idx_opt {
+                        Some(di) => Console::write_hex(self.procs[di].p_endpoint.0 as u64),
+                        None => Console::write_str("none"),
+                    }
+                    Console::write_str(" r=");
+                    Console::write_hex(r as u32 as u64);
+                    Console::write_str(" mt=");
+                    Console::write_hex(msg.m_type as u32 as u64);
+                    Console::write_str("\n");
+                }
+            }
+
             // C: check if dst is blocked waiting for this message
             // (proc.c:1276-1291). AMF_NOREPLY must not satisfy the
             // receive part of a SENDREC (MF_REPLY_PEND).
@@ -2153,7 +2386,13 @@ impl<'a> IpcEngine<'a> {
             //   A_INSRT ignores copy errors.
             let _ = self
                 .user_copy
-                .write_senda_result(table, i, r, flags | AMF_DONE);
+                .write_senda_result(
+                    self.procs[caller_idx].p_seg.phys_root,
+                    table,
+                    i,
+                    r,
+                    flags | AMF_DONE,
+                );
             // C: proc.c:1301-1305 — AMF_NOTIFY 恒通知；AMF_NOTIFY_ERR 仅
             // 失败项通知。C 原文两分支同为 `do_notify = TRUE`（宏展开遗留），
             // Rust 重写合并为单一布尔表达式（V12-A3）。
@@ -3232,6 +3471,7 @@ mod tests {
             }
             fn read_senda_entry(
                 &self,
+                _root: minix_types::PhysBytes,
                 _table: VirBytes,
                 _index: usize,
             ) -> Result<(Endpoint, Message, i32), CopyError> {
@@ -3239,6 +3479,7 @@ mod tests {
             }
             fn write_senda_result(
                 &self,
+                _root: minix_types::PhysBytes,
                 _t: VirBytes,
                 _i: usize,
                 _r: i32,
@@ -3257,6 +3498,7 @@ mod tests {
             }
             fn read_senda_entry(
                 &self,
+                _root: minix_types::PhysBytes,
                 _table: VirBytes,
                 _index: usize,
             ) -> Result<(Endpoint, Message, i32), CopyError> {
@@ -3264,6 +3506,7 @@ mod tests {
             }
             fn write_senda_result(
                 &self,
+                _root: minix_types::PhysBytes,
                 _t: VirBytes,
                 _i: usize,
                 _r: i32,
@@ -3503,10 +3746,10 @@ mod tests {
     impl UserCopy for SuccessCopy {
         fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
         fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
-        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+        fn read_senda_entry(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
             Ok((Endpoint(2), Message::default(), AMF_VALID))
         }
-        fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
+        fn write_senda_result(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
     }
 
     // ── D-16: receive 侧过滤集成测试 ─────────────────────────────────
@@ -3642,10 +3885,10 @@ mod tests {
         impl UserCopy for RecordingCopy {
             fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
             fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
-            fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+            fn read_senda_entry(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
                 Ok((Endpoint(0x30), Message::default(), AMF_VALID))
             }
-            fn write_senda_result(&self, _t: VirBytes, _i: usize, _r: i32, _f: i32) -> Result<(), CopyError> {
+            fn write_senda_result(&self, _root: minix_types::PhysBytes, _t: VirBytes, _i: usize, _r: i32, _f: i32) -> Result<(), CopyError> {
                 self.delivered.set(true);
                 Ok(())
             }
@@ -3712,10 +3955,10 @@ mod tests {
     impl UserCopy for SelfEntryCopy {
         fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
         fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
-        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+        fn read_senda_entry(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
             Ok((Endpoint::SELF, Message::default(), AMF_VALID))
         }
-        fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
+        fn write_senda_result(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Ok(()) }
     }
 
     /// D-17 fixture: entry aimed at a fixed endpoint; captures the
@@ -3727,10 +3970,10 @@ mod tests {
     impl UserCopy for CapturingCopy {
         fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Ok(Message::default()) }
         fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Ok(()) }
-        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
+        fn read_senda_entry(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> {
             Ok((self.target, Message::default(), AMF_VALID))
         }
-        fn write_senda_result(&self, _table: VirBytes, _index: usize, result: i32, _flags: i32) -> Result<(), CopyError> {
+        fn write_senda_result(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize, result: i32, _flags: i32) -> Result<(), CopyError> {
             self.result.set(Some(result));
             Ok(())
         }
@@ -3741,8 +3984,8 @@ mod tests {
     impl UserCopy for PageFaultCopy {
         fn copy_msg_from_user(&self, _src: VirBytes) -> Result<Message, CopyError> { Err(CopyError::PageFault) }
         fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> { Err(CopyError::PageFault) }
-        fn read_senda_entry(&self, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> { Err(CopyError::PageFault) }
-        fn write_senda_result(&self, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Err(CopyError::PageFault) }
+        fn read_senda_entry(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize) -> Result<(Endpoint, Message, i32), CopyError> { Err(CopyError::PageFault) }
+        fn write_senda_result(&self, _root: minix_types::PhysBytes, _table: VirBytes, _index: usize, _result: i32, _flags: i32) -> Result<(), CopyError> { Err(CopyError::PageFault) }
     }
 
     #[test]
@@ -4084,9 +4327,10 @@ mod tests {
         let _msg = copier.copy_msg_from_user(VirBytes::new(0)).unwrap();
         copier.copy_msg_to_user(VirBytes::new(0), &Message::default()).unwrap();
         // SENDA stub: reads fault (no real user table in tests), writes
-        // succeed (C ignores A_INSRT errors).
-        assert!(copier.read_senda_entry(VirBytes::new(0), 0).is_err());
-        copier.write_senda_result(VirBytes::new(0), 0, 0, 0).unwrap();
+        // succeed (C ignores A_INSRT errors). 1.12：root 参数（PhysBytes）。
+        let root = minix_types::PhysBytes(0);
+        assert!(copier.read_senda_entry(root, VirBytes::new(0), 0).is_err());
+        copier.write_senda_result(root, VirBytes::new(0), 0, 0, 0).unwrap();
     }
 
     // ── user_copy_range_mapped: validate-first user-buffer checks ──
