@@ -2466,7 +2466,7 @@ impl VfsState {
             minix_sys::syscall::DirectKernelCallTransport,
             Endpoint::DS,
         );
-        let (endpoint, _flags) = ds.retrieve_label_endpt(label).ok()?;
+        let (endpoint, _flags) = ds.retrieve_label_endpt(&mut self.grants, label).ok()?;
         // 幂等 upsert：同名更新（驱动重启换端点），新名追加。
         match self
             .driver_labels
@@ -7692,7 +7692,11 @@ pub fn run() -> ! {
         minix_sys::syscall::DirectKernelCallTransport,
         Endpoint::DS,
     );
-    let _ = ds.subscribe("drv\\.[bc]..\\..*", {
+    // DS 订阅腿复用**进程主 grant 表**（`state.grants`，7813 已向内核
+    // 注册）——NK4-C 1.24 修复：DsClient 不再自带私有表，否则其
+    // `SYS_SETGRANT` 会覆盖内核 `s_grant_table`，令后续 lookup 的 safecopy
+    // 读到错表（fl=0→EPERM→copy_from→wire EIO）。
+    let _ = ds.subscribe(&mut state.grants, "drv\\.[bc]..\\..*", {
         (minix_types::DsFlags::INITIAL | minix_types::DsFlags::OVERWRITE).bits() as i32
     });
 

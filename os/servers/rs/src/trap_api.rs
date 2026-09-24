@@ -589,7 +589,13 @@ impl IpcApi for TrapKernelApi {
     }
 
     fn ds_lookup_by_label(&mut self, label: &str) -> Option<Endpoint> {
-        self.ds.retrieve_label_endpt(label).ok().map(|(ep, _)| ep)
+        // DS 查表复用进程主 grant 表（NK4-C 1.24：DsClient 不再自带私有
+        // 表，否则其注册会覆盖内核 `s_grant_table`，与本结构 `grant_read`
+        // 用的 `self.grants` 错位——与 VFS B13 同根）。
+        self.ds
+            .retrieve_label_endpt(&mut self.grants, label)
+            .ok()
+            .map(|(ep, _)| ep)
     }
 
     fn sendrec_to(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), Errno> {

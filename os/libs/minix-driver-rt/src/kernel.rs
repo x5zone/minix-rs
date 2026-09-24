@@ -8,7 +8,7 @@
 
 use minix_sys::ds::DsClient;
 use minix_sys::ipc::{AsyncSendQueue, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
-use minix_sys::syscall::{sys_safecopyfrom, sys_safecopyto, DirectKernelCallTransport};
+use minix_sys::syscall::{DirectKernelCallTransport, sys_safecopyfrom, sys_safecopyto};
 use minix_sys::{receive, send, sendrec};
 use minix_types::{Endpoint, Message};
 
@@ -118,8 +118,14 @@ impl DriverTransport for KernelTransport {
         // register）上浮正 errno、taskcall 链上浮负状态——此处归一为本
         // trait 其余动词的负状态约定。
         let mut ds = DsClient::new(DirectTrapTransport, DirectKernelCallTransport, Endpoint::DS);
-        ds.publish_label(label, Endpoint::NONE, minix_types::DsFlags::empty())
-            .map_err(|e| -(e.unsigned_abs() as i32))
+        let mut grants = minix_sys::grant::GrantTable::new();
+        ds.publish_label(
+            &mut grants,
+            label,
+            Endpoint::NONE,
+            minix_types::DsFlags::empty(),
+        )
+        .map_err(|e| -(e.unsigned_abs() as i32))
     }
 
     fn lookup_label(&mut self, label: &str) -> Option<Endpoint> {
@@ -130,7 +136,10 @@ impl DriverTransport for KernelTransport {
         // the caller reads as C's "ignore the message" (`get_service_endpt`
         // failure path) — hosted builds (no DS) honestly get `None`.
         let mut ds = DsClient::new(DirectTrapTransport, DirectKernelCallTransport, Endpoint::DS);
-        ds.retrieve_label_endpt(label).map(|(endpoint, _)| endpoint).ok()
+        let mut grants = minix_sys::grant::GrantTable::new();
+        ds.retrieve_label_endpt(&mut grants, label)
+            .map(|(endpoint, _)| endpoint)
+            .ok()
     }
 }
 

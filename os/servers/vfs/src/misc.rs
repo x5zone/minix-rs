@@ -36,7 +36,9 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
-use minix_types::{DmapSnap, Endpoint, FProcSnap, NR_DEVICES as DMAP_NR_DEVICES, NR_PROCS, VirBytes};
+use minix_types::{
+    DmapSnap, Endpoint, FProcSnap, NR_DEVICES as DMAP_NR_DEVICES, NR_PROCS, VirBytes,
+};
 
 use crate::device_map::{IOC_IN, IOC_OUT};
 use crate::fproc::FProcTable;
@@ -176,10 +178,7 @@ pub fn do_getsysinfo(
                 // SAFETY: `FProcSnap` is a 52-byte repr(C) POD; the byte
                 // view feeds the copy seam only (D-29 同款 wire 展开).
                 let bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        core::ptr::addr_of!(wire) as *const u8,
-                        WIRE,
-                    )
+                    core::slice::from_raw_parts(core::ptr::addr_of!(wire) as *const u8, WIRE)
                 };
                 cpy.copy_to_user(bytes, VirBytes(dst.0 + (idx * WIRE) as u64))?;
             }
@@ -196,18 +195,13 @@ pub fn do_getsysinfo(
             for major in 0..dmap.len() {
                 let entry = dmap.get(major as u32).ok_or(MiscError::Inval)?;
                 let wire = DmapSnap {
-                    dmap_driver: entry
-                        .driver
-                        .map_or(Endpoint::NONE.get(), |ep| ep.get()),
+                    dmap_driver: entry.driver.map_or(Endpoint::NONE.get(), |ep| ep.get()),
                     dmap_label: entry.label,
                 };
                 // SAFETY: `DmapSnap` is a 20-byte repr(C) POD; the byte view
                 // feeds the copy seam only (ProcTab 臂同款展开).
                 let bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        core::ptr::addr_of!(wire) as *const u8,
-                        WIRE,
-                    )
+                    core::slice::from_raw_parts(core::ptr::addr_of!(wire) as *const u8, WIRE)
                 };
                 cpy.copy_to_user(bytes, VirBytes(dst.0 + (major * WIRE) as u64))?;
             }
@@ -226,10 +220,7 @@ pub fn do_getsysinfo(
                 // SAFETY: `FprocLightSnap` is a 16-byte repr(C) POD; the
                 // byte view feeds the copy seam only (ProcTab 臂同款展开)。
                 let bytes = unsafe {
-                    core::slice::from_raw_parts(
-                        core::ptr::addr_of!(wire) as *const u8,
-                        WIRE,
-                    )
+                    core::slice::from_raw_parts(core::ptr::addr_of!(wire) as *const u8, WIRE)
                 };
                 cpy.copy_to_user(bytes, VirBytes(dst.0 + (idx * WIRE) as u64))?;
             }
@@ -851,19 +842,28 @@ pub fn ds_event_action(kind: DsDriverKind, value: u32) -> Option<DsUpTarget> {
 /// 用脚本化替身。
 pub trait DsEventSource {
     /// 取一条待处理事件:`Ok(Some(owner))` 时 `key` 已被 DS 写回;
-    /// `Ok(None)` = 无待处理。
-    fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32>;
+    /// `Ok(None)` = 无待处理。`grants` 是宿主进程唯一的 grant 表。
+    fn next_event(
+        &mut self,
+        grants: &mut minix_sys::grant::GrantTable,
+        key: &mut [u8],
+    ) -> Result<Option<Endpoint>, i32>;
     /// 取 key 对应的 u32 值(C: `ds_retrieve_u32`)。
-    fn event_value(&mut self, key: &str) -> Result<u32, i32>;
+    fn event_value(
+        &mut self,
+        grants: &mut minix_sys::grant::GrantTable,
+        key: &str,
+    ) -> Result<u32, i32>;
 }
 
 pub fn ds_drain(
     client: &mut dyn DsEventSource,
+    grants: &mut minix_sys::grant::GrantTable,
     sink: &mut dyn FnMut(Endpoint, DsUpTarget),
 ) -> Result<(), i32> {
     let mut key = [0u8; minix_types::DS_MAX_KEYLEN];
     loop {
-        let owner = match client.next_event(&mut key) {
+        let owner = match client.next_event(grants, &mut key) {
             Ok(Some(o)) => o,
             Ok(None) => return Ok(()),
             Err(minix_types::ENOENT) => return Ok(()), // 排空(C 的正常出口)
@@ -876,7 +876,7 @@ pub fn ds_drain(
             continue;
         };
         // C misc.c:971-974 — ds_retrieve_u32,失败 printf+break。
-        let value = client.event_value(key_str)?;
+        let value = client.event_value(grants, key_str)?;
         // C misc.c:975-982 — 非 DRIVER_UP 跳过;命中交执行体。
         if let Some(target) = ds_event_action(kind, value) {
             sink(owner, target);
@@ -888,14 +888,20 @@ pub fn ds_drain(
 impl<I: minix_sys::ipc::IpcTransport, K: minix_sys::syscall::KernelCallTransport> DsEventSource
     for minix_sys::ds::DsClient<I, K>
 {
-    fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
-        Ok(self
-            .check(key)?
-            .map(|r| Endpoint(r.owner)))
+    fn next_event(
+        &mut self,
+        grants: &mut minix_sys::grant::GrantTable,
+        key: &mut [u8],
+    ) -> Result<Option<Endpoint>, i32> {
+        Ok(self.check(grants, key)?.map(|r| Endpoint(r.owner)))
     }
 
-    fn event_value(&mut self, key: &str) -> Result<u32, i32> {
-        self.retrieve_u32(key).map(|(v, _)| v)
+    fn event_value(
+        &mut self,
+        grants: &mut minix_sys::grant::GrantTable,
+        key: &str,
+    ) -> Result<u32, i32> {
+        self.retrieve_u32(grants, key).map(|(v, _)| v)
     }
 }
 
@@ -1207,9 +1213,8 @@ mod tests {
             assert_eq!(bytes.len(), WIRE);
         }
         // Occupied slot round-trips through the wire bytes.
-        let row3 = unsafe {
-            core::ptr::read_unaligned(cpy.copies[3].1.as_ptr() as *const FProcSnap)
-        };
+        let row3 =
+            unsafe { core::ptr::read_unaligned(cpy.copies[3].1.as_ptr() as *const FProcSnap) };
         assert_eq!(row3, table.slots()[3].to_fproc_snap());
         assert_eq!(row3.fp_pid, 77);
         assert_eq!(row3.nfds, 1);
@@ -1273,26 +1278,71 @@ mod tests {
 
         let mut cpy = RecordingCopy { copies: Vec::new() };
         assert_eq!(
-            do_getsysinfo(&table, &dmap, &smap, false, SysinfoWhat::ProcTab, wire, VirBytes(0), &mut cpy),
+            do_getsysinfo(
+                &table,
+                &dmap,
+                &smap,
+                false,
+                SysinfoWhat::ProcTab,
+                wire,
+                VirBytes(0),
+                &mut cpy
+            ),
             Err(MiscError::Perm)
         );
         assert_eq!(
-            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::ProcTab, wire - 1, VirBytes(0), &mut cpy),
+            do_getsysinfo(
+                &table,
+                &dmap,
+                &smap,
+                true,
+                SysinfoWhat::ProcTab,
+                wire - 1,
+                VirBytes(0),
+                &mut cpy
+            ),
             Err(MiscError::Inval)
         );
         assert_eq!(
-            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::ProcTab, wire + 1, VirBytes(0), &mut cpy),
+            do_getsysinfo(
+                &table,
+                &dmap,
+                &smap,
+                true,
+                SysinfoWhat::ProcTab,
+                wire + 1,
+                VirBytes(0),
+                &mut cpy
+            ),
             Err(MiscError::Inval)
         );
         assert_eq!(
-            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::DmapTab, wire, VirBytes(0), &mut cpy),
+            do_getsysinfo(
+                &table,
+                &dmap,
+                &smap,
+                true,
+                SysinfoWhat::DmapTab,
+                wire,
+                VirBytes(0),
+                &mut cpy
+            ),
             Err(MiscError::Inval),
             "DMAP 的长度门是整表宽度，FProc 表宽会被拒"
         );
         // light 表的长度门是自己的整表宽度（16B×NR_PROCS），FProc 表宽
         // 会被拒（C-22 后半：生产臂已真装）。
         assert_eq!(
-            do_getsysinfo(&table, &dmap, &smap, true, SysinfoWhat::ProcLightTab, wire, VirBytes(0), &mut cpy),
+            do_getsysinfo(
+                &table,
+                &dmap,
+                &smap,
+                true,
+                SysinfoWhat::ProcLightTab,
+                wire,
+                VirBytes(0),
+                &mut cpy
+            ),
             Err(MiscError::Inval)
         );
         assert!(cpy.copies.is_empty(), "no copy on any refused path");
@@ -1590,139 +1640,182 @@ mod tests {
     }
 }
 
-    #[test]
-    fn test_ds_event_classification() {
-        // Prefix gates (`misc.c:958-968`): the three driver families.
-        assert_eq!(classify_ds_key("drv.blk.0"), Some(DsDriverKind::Blk));
-        assert_eq!(classify_ds_key("drv.chr.4"), Some(DsDriverKind::Chr));
-        assert_eq!(classify_ds_key("drv.sck.1"), Some(DsDriverKind::Sck));
-        assert_eq!(classify_ds_key("drv.net.0"), None);
-        assert_eq!(classify_ds_key("random"), None);
-        // Up-gate + dispatch target (`misc.c:976-982`).
-        assert_eq!(
-            ds_event_action(DsDriverKind::Blk, DS_DRIVER_UP),
-            Some(DsUpTarget::Dmap { is_blk: true })
-        );
-        assert_eq!(
-            ds_event_action(DsDriverKind::Chr, DS_DRIVER_UP),
-            Some(DsUpTarget::Dmap { is_blk: false })
-        );
-        assert_eq!(
-            ds_event_action(DsDriverKind::Sck, DS_DRIVER_UP),
-            Some(DsUpTarget::Smap)
-        );
-        // Non-up values skip (`misc.c:976-977`).
-        assert_eq!(ds_event_action(DsDriverKind::Blk, 0), None);
-    }
+#[test]
+fn test_ds_event_classification() {
+    // Prefix gates (`misc.c:958-968`): the three driver families.
+    assert_eq!(classify_ds_key("drv.blk.0"), Some(DsDriverKind::Blk));
+    assert_eq!(classify_ds_key("drv.chr.4"), Some(DsDriverKind::Chr));
+    assert_eq!(classify_ds_key("drv.sck.1"), Some(DsDriverKind::Sck));
+    assert_eq!(classify_ds_key("drv.net.0"), None);
+    assert_eq!(classify_ds_key("random"), None);
+    // Up-gate + dispatch target (`misc.c:976-982`).
+    assert_eq!(
+        ds_event_action(DsDriverKind::Blk, DS_DRIVER_UP),
+        Some(DsUpTarget::Dmap { is_blk: true })
+    );
+    assert_eq!(
+        ds_event_action(DsDriverKind::Chr, DS_DRIVER_UP),
+        Some(DsUpTarget::Dmap { is_blk: false })
+    );
+    assert_eq!(
+        ds_event_action(DsDriverKind::Sck, DS_DRIVER_UP),
+        Some(DsUpTarget::Smap)
+    );
+    // Non-up values skip (`misc.c:976-977`).
+    assert_eq!(ds_event_action(DsDriverKind::Blk, 0), None);
+}
 
-    /// 脚本化事件源:按序出事件,key 由"DS 写回"。
-    #[cfg(test)]
-    struct ScriptedSource {
-        events: alloc::vec::Vec<Result<Option<(Endpoint, &'static str)>, i32>>,
-        values: alloc::vec::Vec<u32>,
-    }
-    #[cfg(test)]
-    impl DsEventSource for ScriptedSource {
-        fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
-            match self.events.remove(0) {
-                Ok(Some((owner, k))) => {
-                    let n = k.len().min(key.len());
-                    key[..n].copy_from_slice(k.as_bytes());
-                    Ok(Some(owner))
-                }
-                Ok(None) => Ok(None),
-                Err(e) => Err(e),
+/// 脚本化事件源:按序出事件,key 由"DS 写回"。
+#[cfg(test)]
+struct ScriptedSource {
+    events: alloc::vec::Vec<Result<Option<(Endpoint, &'static str)>, i32>>,
+    values: alloc::vec::Vec<u32>,
+}
+#[cfg(test)]
+impl DsEventSource for ScriptedSource {
+    fn next_event(
+        &mut self,
+        _grants: &mut minix_sys::grant::GrantTable,
+        key: &mut [u8],
+    ) -> Result<Option<Endpoint>, i32> {
+        match self.events.remove(0) {
+            Ok(Some((owner, k))) => {
+                let n = k.len().min(key.len());
+                key[..n].copy_from_slice(k.as_bytes());
+                Ok(Some(owner))
             }
-        }
-        fn event_value(&mut self, _key: &str) -> Result<u32, i32> {
-            Ok(self.values.remove(0))
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
         }
     }
+    fn event_value(
+        &mut self,
+        _grants: &mut minix_sys::grant::GrantTable,
+        _key: &str,
+    ) -> Result<u32, i32> {
+        Ok(self.values.remove(0))
+    }
+}
 
-    #[test]
-    fn test_ds_drain_dispatches_up_events() {
-        // C misc.c:949-986 主链:blk 上线 + chr 非 UP 跳过 + sck 上线 +
-        // 非驱动 key 跳过 → 排空终止(ENOENT/None 同判)。
-        let mut src = ScriptedSource {
-            events: alloc::vec![
-                Ok(Some((Endpoint(4), "drv.blk.0"))),
-                Ok(Some((Endpoint(4), "drv.chr.2"))),
-                Ok(Some((Endpoint(9), "drv.sck.1"))),
-                Ok(Some((Endpoint(5), "drv.net.0"))),
-                Ok(None),
-            ],
-            values: alloc::vec![DS_DRIVER_UP, 0, DS_DRIVER_UP],
-        };
-        let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
-        ds_drain(&mut src, &mut |o, t| hits.push((o, t))).unwrap();
-        assert_eq!(
-            hits,
-            alloc::vec![
-                (Endpoint(4), DsUpTarget::Dmap { is_blk: true }),
-                (Endpoint(9), DsUpTarget::Smap),
-            ]
-        );
-    }
+#[test]
+fn test_ds_drain_dispatches_up_events() {
+    // C misc.c:949-986 主链:blk 上线 + chr 非 UP 跳过 + sck 上线 +
+    // 非驱动 key 跳过 → 排空终止(ENOENT/None 同判)。
+    let mut src = ScriptedSource {
+        events: alloc::vec![
+            Ok(Some((Endpoint(4), "drv.blk.0"))),
+            Ok(Some((Endpoint(4), "drv.chr.2"))),
+            Ok(Some((Endpoint(9), "drv.sck.1"))),
+            Ok(Some((Endpoint(5), "drv.net.0"))),
+            Ok(None),
+        ],
+        values: alloc::vec![DS_DRIVER_UP, 0, DS_DRIVER_UP],
+    };
+    let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
+    ds_drain(
+        &mut src,
+        &mut minix_sys::grant::GrantTable::new(),
+        &mut |o, t| hits.push((o, t)),
+    )
+    .unwrap();
+    assert_eq!(
+        hits,
+        alloc::vec![
+            (Endpoint(4), DsUpTarget::Dmap { is_blk: true }),
+            (Endpoint(9), DsUpTarget::Smap),
+        ]
+    );
+}
 
-    #[test]
-    fn test_ds_drain_propagates_retrieve_failure() {
-        // C misc.c:971-974 — retrieve_u32 失败 printf+break(错误上抛)。
-        struct FailRetrieve;
-        impl DsEventSource for FailRetrieve {
-            fn next_event(&mut self, key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
-                key[..9].copy_from_slice(b"drv.blk.0");
-                Ok(Some(Endpoint(4)))
-            }
-            fn event_value(&mut self, _key: &str) -> Result<u32, i32> {
-                Err(minix_types::EACCES)
-            }
+#[test]
+fn test_ds_drain_propagates_retrieve_failure() {
+    // C misc.c:971-974 — retrieve_u32 失败 printf+break(错误上抛)。
+    struct FailRetrieve;
+    impl DsEventSource for FailRetrieve {
+        fn next_event(
+            &mut self,
+            _grants: &mut minix_sys::grant::GrantTable,
+            key: &mut [u8],
+        ) -> Result<Option<Endpoint>, i32> {
+            key[..9].copy_from_slice(b"drv.blk.0");
+            Ok(Some(Endpoint(4)))
         }
-        let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
-        assert_eq!(
-            ds_drain(&mut FailRetrieve, &mut |o, t| hits.push((o, t))),
+        fn event_value(
+            &mut self,
+            _grants: &mut minix_sys::grant::GrantTable,
+            _key: &str,
+        ) -> Result<u32, i32> {
             Err(minix_types::EACCES)
-        );
-        assert!(hits.is_empty());
-    }
-
-    #[test]
-    fn test_ds_drain_enoent_is_clean_exit() {
-        // C misc.c:984-985 — ds_check 返回 ENOENT 是正常排空出口。
-        struct Empty;
-        impl DsEventSource for Empty {
-            fn next_event(&mut self, _key: &mut [u8]) -> Result<Option<Endpoint>, i32> {
-                Err(minix_types::ENOENT)
-            }
-            fn event_value(&mut self, _key: &str) -> Result<u32, i32> {
-                unreachable!()
-            }
         }
-        let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
-        assert!(ds_drain(&mut Empty, &mut |o, t| hits.push((o, t))).is_ok());
-        assert!(hits.is_empty());
     }
+    let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
+    assert_eq!(
+        ds_drain(
+            &mut FailRetrieve,
+            &mut minix_sys::grant::GrantTable::new(),
+            &mut |o, t| hits.push((o, t))
+        ),
+        Err(minix_types::EACCES)
+    );
+    assert!(hits.is_empty());
+}
 
-    #[test]
-    fn test_reboot_sequence_shape() {
-        // The demolition order (`misc.c:510-572`): sync → leaf processes →
-        // sync → non-forced sweep → servers → forced sweep → reply.
-        assert_eq!(REBOOT_SEQUENCE.len(), 8);
-        assert_eq!(REBOOT_SEQUENCE[0], RebootStep::Sync);
-        assert_eq!(REBOOT_SEQUENCE[1], RebootStep::FreeNonMountSources);
-        assert_eq!(REBOOT_SEQUENCE[3], RebootStep::UnmountAll);
-        assert_eq!(REBOOT_SEQUENCE[4], RebootStep::FreeAll);
-        assert_eq!(REBOOT_SEQUENCE[5], RebootStep::Sync);
-        assert_eq!(REBOOT_SEQUENCE[6], RebootStep::UnmountAllForced);
-        assert_eq!(REBOOT_SEQUENCE[7], RebootStep::NotifyPm);
-        // Three sync barriers (`:514/:534/:552`).
-        assert_eq!(
-            REBOOT_SEQUENCE.iter().filter(|s| **s == RebootStep::Sync).count(),
-            3
-        );
-        // Pass predicates: mount sources survive round 1, fall in round 2.
-        assert!(!free_pass1_eligible(true, true));
-        assert!(free_pass1_eligible(true, false));
-        assert!(!free_pass1_eligible(false, false));
-        assert!(free_pass2_eligible(true));
-        assert!(!free_pass2_eligible(false));
+#[test]
+fn test_ds_drain_enoent_is_clean_exit() {
+    // C misc.c:984-985 — ds_check 返回 ENOENT 是正常排空出口。
+    struct Empty;
+    impl DsEventSource for Empty {
+        fn next_event(
+            &mut self,
+            _grants: &mut minix_sys::grant::GrantTable,
+            _key: &mut [u8],
+        ) -> Result<Option<Endpoint>, i32> {
+            Err(minix_types::ENOENT)
+        }
+        fn event_value(
+            &mut self,
+            _grants: &mut minix_sys::grant::GrantTable,
+            _key: &str,
+        ) -> Result<u32, i32> {
+            unreachable!()
+        }
     }
+    let mut hits: alloc::vec::Vec<(Endpoint, DsUpTarget)> = alloc::vec::Vec::new();
+    assert!(
+        ds_drain(
+            &mut Empty,
+            &mut minix_sys::grant::GrantTable::new(),
+            &mut |o, t| hits.push((o, t))
+        )
+        .is_ok()
+    );
+    assert!(hits.is_empty());
+}
+
+#[test]
+fn test_reboot_sequence_shape() {
+    // The demolition order (`misc.c:510-572`): sync → leaf processes →
+    // sync → non-forced sweep → servers → forced sweep → reply.
+    assert_eq!(REBOOT_SEQUENCE.len(), 8);
+    assert_eq!(REBOOT_SEQUENCE[0], RebootStep::Sync);
+    assert_eq!(REBOOT_SEQUENCE[1], RebootStep::FreeNonMountSources);
+    assert_eq!(REBOOT_SEQUENCE[3], RebootStep::UnmountAll);
+    assert_eq!(REBOOT_SEQUENCE[4], RebootStep::FreeAll);
+    assert_eq!(REBOOT_SEQUENCE[5], RebootStep::Sync);
+    assert_eq!(REBOOT_SEQUENCE[6], RebootStep::UnmountAllForced);
+    assert_eq!(REBOOT_SEQUENCE[7], RebootStep::NotifyPm);
+    // Three sync barriers (`:514/:534/:552`).
+    assert_eq!(
+        REBOOT_SEQUENCE
+            .iter()
+            .filter(|s| **s == RebootStep::Sync)
+            .count(),
+        3
+    );
+    // Pass predicates: mount sources survive round 1, fall in round 2.
+    assert!(!free_pass1_eligible(true, true));
+    assert!(free_pass1_eligible(true, false));
+    assert!(!free_pass1_eligible(false, false));
+    assert!(free_pass2_eligible(true));
+    assert!(!free_pass2_eligible(false));
+}

@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（当前 frontier = **1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
+- **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1841,3 +1841,24 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 3. 若**同值** → 机制② → dump 内核读到的原始 slot0 字节 vs VFS 写后 slot0 字节，定位 VFS 堆 VA→PA 一致性。
 
 **工作树现状（本 turn 未改任何生产代码，未 commit）**：6 个诊断文件未提交——`minix-sys/lib.rs`（`cstr_path` **实质修复须保留**）、`init/host.rs`(pe)、`vfs/syscalls.rs`(rdsl)、`vfs/main_loop.rs`(lkfs/lkgb/fsfail/ptst)、`fs-rt/ipc.rs`(mc)、`mfs/dir_io.rs`(db)（后 5 个为诊断，根因修毕 task1-close 删）。内核 `nk4a: vg` 探针**已在仓**（前代 B4 交付），本 turn 靠它取证。`test_seeded_imgrd_resolve_path_dev_console` 已在 `0c6b58bd8`。
+
+---
+
+## 1.24 B13 Bug2(EIO) 修复落地：每进程单一 grant 表（机制①地址错位实锤+根治），真机验证 EIO 消除、boot 前进到 SingleUser（2026-09-25，b17a 取证 + b18a/b18b + b19a/b19b 复跑）
+
+**根因（机制①地址错位，真机铁证）**：§1.23 的下一步探针 `nk4c: vp`（VFS `state.grants.slots.as_ptr()`）vs 内核 `nk4a: vg gtab`（`priv(VFS).s_grant_table`）在 b16a 显示 **vp=0x39a000 vs gtab=0x39a100，差 0x100**。定论：VFS（一进程、一 priv）持有**多张 `GrantTable` 实例**——主表 `state.grants`（lookup 授权用）+ `DsClient.grants`（DS 订阅/查表用，`main_loop.rs:7817` 于 `state.grants.register()`(7813) 之后创建并注册，last-writer-wins 覆盖内核 `s_grant_table`）+ `ds_fill_label`(`2551`) 每次**新建一次性 DsClient**（其表注册后随函数返回 drop → 内核持悬垂地址）。内核按最后注册的（DS 侧 0x39a100）读，而 lookup 写进主表（0x39a000）→ 读到无关/陈旧槽 `flags=0` → `verify_grant` EPERM → `copy_from` 失败 → wire decode `map_err(EIO)` → MFS 回执 EIO → init stat("/dev/console") 得 EIO。**C 不变量**：每进程一个全局 `grants`（safecopies.c），`sys_setgrant` 只注册一次；Rust 端口把它碎片成 per-component `GrantTable`，破坏该不变量。rs 同病（`trap_api.rs` 并存 `ds:DsClient`(自带表) 与 `grants:GrantTable`）。
+
+**修复（恢复不变量）**：`DsClient` **不再独占 `GrantTable`**，改为每个授权动词方法接收注入的 `grants: &mut GrantTable` 参数（`ds.rs`：`invoke` + publish_*/retrieve_*/delete/subscribe/check 全量加参）。调用点全部改为复用宿主进程主表：
+- **VFS**：`main_loop.rs` `ds.subscribe(&mut state.grants,...)`、`ds_fill_label` 的 `retrieve_label_endpt(&mut self.grants,...)`；`misc.rs` 的 `DsEventSource` trait + `ds_drain` + `DsClient impl` 透传 `grants`。
+- **rs**：`trap_api.rs` `ds_lookup_by_label` 用 `&mut self.grants`（不相交字段借用，消除主路径错位）。
+- **mib**：`SysServices` 新增 `grants: GrantTable` 字段（进程唯一表），`ds_retrieve_label_name` 传 `&mut self.grants`。
+- **input / driver-rt / fmtchk**：DS 仅在一次性 announce/lookup 用，进程内无竞争主表 → 局部 `GrantTable::new()`（等价旧 DsClient 自带表行为）。
+- 保留 `lib.rs` 的 `cstr_path`（Bug1 ENAMETOOLONG 修复，一并入仓）。回滚全部 B13 诊断探针（lkfs/lkgb/vp/fsfail/ptst + pe/mc/db/rdsl + 内核 gtab/cap48 + diag_table_ptr），内核 `nk4a: vg` 既有探针留待 task1-close。
+
+**真机验证**（b17a 带探针复跑）：`nk4c: vp39a000` 现与内核 `nk4a: vg gtab gr=0x01 gid=0x39a000` **完全一致**（错位消除）；`ptst` 由 `+005`(EIO) 变 `+016`(EBUSY)；`init-state SingleUser` 后进入 pm/vm/sched 活动（boot 大幅前进）。去探针后 b18a/b18b、b19a/b19b 四次复跑签名一致（`SingleUser` 达、`panic=0`、`rc: minimal`=0）。
+
+**CodeReview**：发现 RS `shell_request.rs` 两处（`do_down` unpublish L1366、`start_service` publish 闭包 L1546）仍 `GrantTable::new()` 建临时表——**属改动前既有行为**（DsClient 本就自带私有表），本轮未恶化 VFS-blocking 路径亦未回归 HEAD，但确实未把不变量贯彻到 RS 发布缝。**publish 闭包单表化需改 `CreateEffects`/`PublishFn` 管道**（闭包 `move` 捕获 + `start_service(self.kernel.as_mut(), &mut effects)` 与借 `self.kernel.grants` 冲突），是独立重构单元。故本 commit **作用域诚实界定为：VFS(B13 boot 阻塞，已根治+验证) + 移除 DsClient 隐藏私有表机制 + rs 主路径/mib 单表化**；RS 发布缝临时表显式登记为遗留，**折叠进 B14 前沿**（RS s_grant_table 若被 publish 临时表劫持，会破坏 RS 后续 safecopy，疑与 B14 EBUSY/自旋相关）。
+
+**三件套**：docker `minix-kernel 813 / minix-arch 242 / minix-vm 528`，**0 failed**；rustfmt 改动文件全 `cur=0`（lib.rs HEAD 原净、其余整档规范化）零新增漂移；真机两次复跑签名一致。
+
+**新前沿 B14**：`stat("/dev/console")` 现返回 **EBUSY(16)**（非 EIO）——grant 已通、FS 可达并回执，但 VFS 得 `DriverBusy`/`tll Busy`（候选：`fs_comm.rs:339`、`tll.rs:249/253`）。尾部 `pick->0x4` 固定 `rip=0x202d68` 自旋（proc 4 反复同址恢复，疑某阻塞调用返 EBUSY 后 tight-retry）。下一入口：①定性 EBUSY 是 MFS/FS 未就绪的正常时序还是死循环；②排查 RS 发布缝临时表是否劫持 s_grant_table 加剧之；③若 init `path_exists` 对 EBUSY（非 ENOENT）走了 Err 分支导致 ensure_console 循环，核对 init 的重试/收敛。

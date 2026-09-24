@@ -130,6 +130,9 @@ pub struct SysTransport;
 pub struct SysServices {
     ipc: minix_sys::ipc::DirectTrapTransport,
     ds: DsClient<minix_sys::ipc::DirectTrapTransport, minix_sys::syscall::DirectKernelCallTransport>,
+    /// 本进程唯一的 grant 表（NK4-C 1.24：DsClient 不再自带私有表，
+    /// 由调用方注入；C 的 `grants` 全局在每进程只一份）。
+    grants: minix_sys::grant::GrantTable,
 }
 
 impl Default for SysServices {
@@ -141,6 +144,7 @@ impl Default for SysServices {
                 minix_sys::syscall::DirectKernelCallTransport,
                 Endpoint::DS,
             ),
+            grants: minix_sys::grant::GrantTable::new(),
         }
     }
 }
@@ -216,7 +220,7 @@ impl MibServices for SysServices {
     fn ds_retrieve_label_name(&mut self, who: Endpoint, buf: &mut [u8]) -> Result<usize, i32> {
         // C remote.c:88 ds_retrieve_label_name(who)——register 的第一
         // 步(remote.rs label_fits 的输入)。DS 侧在 S22 通电后为真。
-        self.ds.retrieve_label_name(who, buf)
+        self.ds.retrieve_label_name(&mut self.grants, who, buf)
     }
 
     fn remote_info(

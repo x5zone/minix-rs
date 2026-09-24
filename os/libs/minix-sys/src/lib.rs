@@ -63,39 +63,27 @@ pub use minix_types::types::errno::*;
 /// this crate adds no constants and never forks a value.
 pub use minix_types::types::termios::*;
 
-/// Inter-process communication primitives (document 04).
-pub mod ipc;
-/// System call protocol above send-and-receive (document 05).
-pub mod syscall;
-/// Process manager call group (document 08).
-pub mod pm;
-/// File system call group (document 09).
-pub mod vfs;
-/// Working-directory traversal behind `getcwd` (C
-/// `minix3/minix/lib/libc/sys/__getcwd.c`).
-pub mod getcwd;
-/// Run-time configurable path variables behind `pathconf`/`fpathconf`
-/// (C `minix3/minix/lib/libc/sys/{pathconf.c,fpathconf.c}`).
-pub mod pathconf;
-/// System control transport face and the by-name walk (C
-/// `minix3/minix/lib/libc/sys/__sysctl.c`,
-/// `minix3/minix/lib/libc/gen/sysctlgetmibinfo.c`).
-pub mod sysctl;
-/// Virtual memory call group (document 10).
-pub mod vm;
-/// Miscellaneous calls: sleeping, server control, clock reads (document 11).
-pub mod misc;
-/// Process CPU-time accounting behind `times` (C
-/// `minix3/minix/lib/libc/gen/times.c` and
-/// `minix3/minix/lib/libc/sys/getrusage.c`).
-pub mod time;
-/// Initial-stack frame construction (E-BOOTFRAME — `minix_stack_params`/
-/// `minix_stack_fill`, libc stack_utils.c).
-pub mod stack;
-pub mod tty;
 /// User-side trap bodies (E1 slice 3 — the `int 0x21`/`syscall`
 /// instruction sequences behind the direct transports).
 pub mod arch_trap;
+/// Data Store client (C libsys ds.c, E-DSWIRE transport half).
+#[cfg(feature = "ds")]
+pub mod ds;
+/// Working-directory traversal behind `getcwd` (C
+/// `minix3/minix/lib/libc/sys/__getcwd.c`).
+pub mod getcwd;
+/// User-space grant table (C libsys safecopies.c) — the transport half for
+/// every granting client (E-DSWIRE: DS first; devman/RS/VM clients follow).
+pub mod grant;
+/// Inter-process communication primitives (document 04).
+pub mod ipc;
+/// Miscellaneous calls: sleeping, server control, clock reads (document 11).
+pub mod misc;
+/// Run-time configurable path variables behind `pathconf`/`fpathconf`
+/// (C `minix3/minix/lib/libc/sys/{pathconf.c,fpathconf.c}`).
+pub mod pathconf;
+/// Process manager call group (document 08).
+pub mod pm;
 /// Reincarnation server queries: lookup and endpoint questions (document 12).
 pub mod rs;
 /// User-space socket call policy: call list, flag handling, fallback rule
@@ -103,12 +91,24 @@ pub mod rs;
 /// device fallback is documented but never taken ([ARCH] N-2).
 #[cfg(feature = "socket")]
 pub mod socket;
-/// User-space grant table (C libsys safecopies.c) — the transport half for
-/// every granting client (E-DSWIRE: DS first; devman/RS/VM clients follow).
-pub mod grant;
-/// Data Store client (C libsys ds.c, E-DSWIRE transport half).
-#[cfg(feature = "ds")]
-pub mod ds;
+/// Initial-stack frame construction (E-BOOTFRAME — `minix_stack_params`/
+/// `minix_stack_fill`, libc stack_utils.c).
+pub mod stack;
+/// System call protocol above send-and-receive (document 05).
+pub mod syscall;
+/// System control transport face and the by-name walk (C
+/// `minix3/minix/lib/libc/sys/__sysctl.c`,
+/// `minix3/minix/lib/libc/gen/sysctlgetmibinfo.c`).
+pub mod sysctl;
+/// Process CPU-time accounting behind `times` (C
+/// `minix3/minix/lib/libc/gen/times.c` and
+/// `minix3/minix/lib/libc/sys/getrusage.c`).
+pub mod time;
+pub mod tty;
+/// File system call group (document 09).
+pub mod vfs;
+/// Virtual memory call group (document 10).
+pub mod vm;
 
 /// devman client library: driver-side registration + bind handling
 /// (11-stage-devman/10-libdevman-client.md).
@@ -217,7 +217,11 @@ pub fn exit(status: i32) -> ! {
 /// means the restoration did not happen; like [`exit`], the function then
 /// parks instead of unwinding into a signal frame that is no longer valid.
 pub fn sigreturn(ctx: u64) -> ! {
-    let _ = pm::sigprocmask_via(&ipc::DirectTrapTransport, pm::SIG_SETMASK, Some(&[u32::MAX; 4]));
+    let _ = pm::sigprocmask_via(
+        &ipc::DirectTrapTransport,
+        pm::SIG_SETMASK,
+        Some(&[u32::MAX; 4]),
+    );
     let _ = pm::sigreturn_via(&ipc::DirectTrapTransport, ctx);
     loop {
         core::hint::spin_loop();
@@ -226,8 +230,7 @@ pub fn sigreturn(ctx: u64) -> ! {
 
 /// Waits for a child process, reporting how it ended in `status`.
 pub fn waitpid(pid: Pid, status: &mut i32, options: i32) -> Result<Pid, Errno> {
-    let (child, child_status) =
-        pm::waitpid_via(&ipc::DirectTrapTransport, pid, options, 0)?;
+    let (child, child_status) = pm::waitpid_via(&ipc::DirectTrapTransport, pid, options, 0)?;
     *status = child_status;
     Ok(child)
 }
@@ -244,16 +247,37 @@ pub fn kill(pid: Pid, sig: i32) -> Result<(), Errno> {
 // user programs pass their own buffers, whose addresses the server reads
 // through granted memory.
 
+/// Maximum path length for the NUL-terminated wire buffer (matches VFS
+/// `PATH_MAX`).
+const WIRE_PATH_MAX: usize = 1024;
+
+/// C-convention NUL-terminated path: Rust `&str` has no trailing NUL, but
+/// VFS `decode_name`/`fetch_name` checks `buf[len-1] == '\0'` (utility.c:
+/// 49-52, :84-87). This helper copies the path into a stack buffer whose
+/// next byte is guaranteed zero, then returns (ptr, len_including_nul).
+/// Returns `ENAMETOOLONG` if the path doesn't fit.
+#[inline]
+fn cstr_path(path: &str) -> Result<([u8; WIRE_PATH_MAX], usize), Errno> {
+    if path.len() >= WIRE_PATH_MAX {
+        return Err(Errno::from_i32(minix_types::ENAMETOOLONG));
+    }
+    let mut buf = [0u8; WIRE_PATH_MAX];
+    buf[..path.len()].copy_from_slice(path.as_bytes());
+    // buf[path.len()] == 0 (NUL), already zeroed.
+    Ok((buf, path.len() + 1))
+}
+
 /// Opens a file.
 ///
 /// Opens a path, dispatching on the create flag (see `vfs::dispatch_open`):
 /// the create and open-existing paths carry their own wire layouts, and the
 /// inline-capable open-existing path answers with the new descriptor.
 pub fn open(path: &str, flags: i32, mode: u32) -> Result<Fd, Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::open_via(
         &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         flags,
         mode,
     )
@@ -281,112 +305,95 @@ pub fn pipe2(flags: i32) -> Result<(Fd, Fd), Errno> {
 
 /// Deletes a directory entry (C: `unlink`).
 pub fn unlink(path: &str) -> Result<(), Errno> {
-    vfs::unlink_via(
-        &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
-    )
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::unlink_via(&ipc::DirectTrapTransport, cbuf.as_ptr() as u64, clen)
 }
 
 /// Removes an empty directory (C: `rmdir`).
 pub fn rmdir(path: &str) -> Result<(), Errno> {
-    vfs::rmdir_via(
-        &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
-    )
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::rmdir_via(&ipc::DirectTrapTransport, cbuf.as_ptr() as u64, clen)
 }
 
 /// Changes the working directory (C: `chdir`).
 pub fn chdir(path: &str) -> Result<(), Errno> {
-    vfs::chdir_via(
-        &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
-    )
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::chdir_via(&ipc::DirectTrapTransport, cbuf.as_ptr() as u64, clen)
 }
 
 /// Changes the process root directory (C: `chroot`).
 pub fn chroot(path: &str) -> Result<(), Errno> {
-    vfs::chroot_via(
-        &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
-    )
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::chroot_via(&ipc::DirectTrapTransport, cbuf.as_ptr() as u64, clen)
 }
 
 /// Creates a directory; the umask narrows the permission bits
 /// server-side (C: `mkdir`).
 pub fn mkdir(path: &str, mode: u32) -> Result<(), Errno> {
-    vfs::mkdir_via(
-        &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
-        mode,
-    )
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::mkdir_via(&ipc::DirectTrapTransport, cbuf.as_ptr() as u64, clen, mode)
 }
 
 /// Sets a path's permission bits (C: `chmod`).
 pub fn chmod(path: &str, mode: u32) -> Result<(), Errno> {
-    vfs::chmod_via(
-        &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
-        mode,
-    )
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::chmod_via(&ipc::DirectTrapTransport, cbuf.as_ptr() as u64, clen, mode)
 }
 
 /// Checks real-uid access bits (`R_OK|W_OK|X_OK` or `F_OK`) without
 /// opening the file (C: `access`).
 pub fn access(path: &str, amode: i32) -> Result<(), Errno> {
-    vfs::access_via(
-        &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
-        amode,
-    )
+    let (cbuf, clen) = cstr_path(path)?;
+    vfs::access_via(&ipc::DirectTrapTransport, cbuf.as_ptr() as u64, clen, amode)
 }
 
 /// Creates a hard link from `old` to `new` (C: `link`).
 pub fn link(old: &str, new: &str) -> Result<(), Errno> {
+    let (ob, ol) = cstr_path(old)?;
+    let (nb, nl) = cstr_path(new)?;
     vfs::link_via(
         &ipc::DirectTrapTransport,
-        old.as_ptr() as u64,
-        old.len().saturating_add(1),
-        new.as_ptr() as u64,
-        new.len().saturating_add(1),
+        ob.as_ptr() as u64,
+        ol,
+        nb.as_ptr() as u64,
+        nl,
     )
 }
 
 /// Creates a symbolic link at `linkpath` pointing at `target` (C:
 /// `symlink`).
 pub fn symlink(target: &str, linkpath: &str) -> Result<(), Errno> {
+    let (tb, tl) = cstr_path(target)?;
+    let (lb, ll) = cstr_path(linkpath)?;
     vfs::symlink_via(
         &ipc::DirectTrapTransport,
-        target.as_ptr() as u64,
-        target.len().saturating_add(1),
-        linkpath.as_ptr() as u64,
-        linkpath.len().saturating_add(1),
+        tb.as_ptr() as u64,
+        tl,
+        lb.as_ptr() as u64,
+        ll,
     )
 }
 
 /// Moves `old` to `new` (C: `rename`).
 pub fn rename(old: &str, new: &str) -> Result<(), Errno> {
+    let (ob, ol) = cstr_path(old)?;
+    let (nb, nl) = cstr_path(new)?;
     vfs::rename_via(
         &ipc::DirectTrapTransport,
-        old.as_ptr() as u64,
-        old.len().saturating_add(1),
-        new.as_ptr() as u64,
-        new.len().saturating_add(1),
+        ob.as_ptr() as u64,
+        ol,
+        nb.as_ptr() as u64,
+        nl,
     )
 }
 
 /// Sets a path's owner and group (C: `chown`).
 pub fn chown(path: &str, owner: u32, group: u32) -> Result<(), Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::chown_via(
         &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         owner,
         group,
     )
@@ -394,10 +401,11 @@ pub fn chown(path: &str, owner: u32, group: u32) -> Result<(), Errno> {
 
 /// Sets a path's length (C: `truncate`).
 pub fn truncate(path: &str, length: i64) -> Result<(), Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::truncate_via(
         &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         length,
     )
 }
@@ -421,10 +429,11 @@ pub fn umask(mask: u32) -> Result<u32, Errno> {
 /// count written (C: `readlink`; the NUL terminator is *not* added, as in
 /// C).
 pub fn readlink(path: &str, buf: &mut [u8]) -> Result<usize, Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::readlink_via(
         &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         buf.as_mut_ptr() as u64,
         buf.len(),
     )
@@ -433,10 +442,11 @@ pub fn readlink(path: &str, buf: &mut [u8]) -> Result<usize, Errno> {
 /// Creates a special file node; `mode` carries the file-type bits
 /// (C: `mknod`).
 pub fn mknod(path: &str, mode: u32, device: u64) -> Result<(), Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::mknod_via(
         &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         mode,
         device,
     )
@@ -578,11 +588,12 @@ pub fn utimensat(
     flags: i32,
 ) -> Result<(), Errno> {
     let [atime, mtime] = times.unwrap_or(NOW_TIMESPEC);
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::utimensat_via(
         &ipc::DirectTrapTransport,
         dirfd,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         atime.0,
         atime.1,
         mtime.0,
@@ -610,7 +621,12 @@ pub fn futimens(fd: Fd, times: Option<[TimeSpec; 2]>) -> Result<(), Errno> {
 /// `minix3/minix/lib/libc/sys/utimes.c:9-35` — the C conversion is
 /// `usec * 1000`, and `tv = None` answers "set both to now").
 pub fn utimes(path: &str, times: Option<[(i64, i64); 2]>) -> Result<(), Errno> {
-    let converted = times.map(|[a, b]| [(a.0, a.1.saturating_mul(1000)), (b.0, b.1.saturating_mul(1000))]);
+    let converted = times.map(|[a, b]| {
+        [
+            (a.0, a.1.saturating_mul(1000)),
+            (b.0, b.1.saturating_mul(1000)),
+        ]
+    });
     utimensat(vfs::AT_FDCWD, path, converted, 0)
 }
 
@@ -618,7 +634,12 @@ pub fn utimes(path: &str, times: Option<[(i64, i64); 2]>) -> Result<(), Errno> {
 /// `futimes`, `minix3/minix/lib/libc/sys/futimes.c` — same
 /// microsecond-to-nanosecond conversion as [`utimes`]).
 pub fn futimes(fd: Fd, times: Option<[(i64, i64); 2]>) -> Result<(), Errno> {
-    let converted = times.map(|[a, b]| [(a.0, a.1.saturating_mul(1000)), (b.0, b.1.saturating_mul(1000))]);
+    let converted = times.map(|[a, b]| {
+        [
+            (a.0, a.1.saturating_mul(1000)),
+            (b.0, b.1.saturating_mul(1000)),
+        ]
+    });
     futimens(fd, converted)
 }
 
@@ -638,7 +659,6 @@ pub fn isatty(fd: Fd) -> bool {
     let mut termios = minix_types::types::termios::Termios::default();
     tcgetattr(fd, &mut termios).is_ok()
 }
-
 
 /// Terminal ioctl request: get the `struct termios`
 /// (`ttycom.h:88`, `_IOR('t', 19, struct termios)` — `IOC_OUT` 0x4000_0000,
@@ -673,10 +693,7 @@ pub fn tcgetattr(fd: Fd, termios: &mut minix_types::types::termios::Termios) -> 
 
 /// Applies the terminal attributes to `fd` immediately (`termios.h`
 /// `tcsetattr(fd, TCSANOW, …)` face over `TIOCSETA`).
-pub fn tcsetattr(
-    fd: Fd,
-    termios: &minix_types::types::termios::Termios,
-) -> Result<(), Errno> {
+pub fn tcsetattr(fd: Fd, termios: &minix_types::types::termios::Termios) -> Result<(), Errno> {
     let mut bytes = [0u8; 44];
     if termios.to_bytes(&mut bytes).is_none() {
         return Err(Errno::EINVAL);
@@ -720,10 +737,11 @@ pub fn write(fd: Fd, buf: &[u8]) -> Result<usize, Errno> {
 /// The path length travels NUL-inclusive, matching the C convention; the
 /// server fills `buf` through a grant, so the reply is just the verdict.
 pub fn stat(path: &str, buf: &mut Stat) -> Result<(), Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::stat_via(
         &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         buf as *mut Stat as u64,
     )
 }
@@ -731,10 +749,11 @@ pub fn stat(path: &str, buf: &mut Stat) -> Result<(), Errno> {
 /// Retrieves file status by path without following the final symlink
 /// (C: `lstat`).
 pub fn lstat(path: &str, buf: &mut Stat) -> Result<(), Errno> {
+    let (cbuf, clen) = cstr_path(path)?;
     vfs::lstat_via(
         &ipc::DirectTrapTransport,
-        path.as_ptr() as u64,
-        path.len().saturating_add(1),
+        cbuf.as_ptr() as u64,
+        clen,
         buf as *mut Stat as u64,
     )
 }
@@ -843,7 +862,7 @@ pub fn sysctlbyname(
 
 /// The `who` selectors and the report types of the `times` face (C
 /// `sys/resource.h:56-57` and `sys/sys/times.h:49-54`).
-pub use time::{Rusage, Tms, RUSAGE_CHILDREN, RUSAGE_SELF};
+pub use time::{RUSAGE_CHILDREN, RUSAGE_SELF, Rusage, Tms};
 
 /// Reports resource usage of the calling process or of its reaped
 /// children (C: `getrusage` — mechanism and wire in the [`time`] module

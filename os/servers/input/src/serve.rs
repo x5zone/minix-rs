@@ -22,15 +22,15 @@
 //! previous generation's callers, and `TTY_INPUT_UP` goes blocking to the
 //! terminal driver (`input.c:672-677`).
 
-use crate::dispatcher::{complete_grant_copy, handle_arrival, Arrival, Outcome};
+use crate::dispatcher::{Arrival, Outcome, complete_grant_copy, handle_arrival};
 use crate::effects::Effect;
+use alloc::vec::Vec;
 use minix_sys::ds::DsClient;
 use minix_sys::ipc::{AsyncSlot, AsyncSlotFlags, DirectTrapTransport, IpcTransport as _};
-use minix_sys::syscall::{
-    sys_safecopyto, DirectKernelCallTransport, KernelCallTransport as _,
+use minix_sys::syscall::{DirectKernelCallTransport, KernelCallTransport as _, sys_safecopyto};
+use minix_types::{
+    Endpoint, INPUT_EVENT, INPUT_SETLEDS, Message, decode_input_event, decode_setleds,
 };
-use minix_types::{decode_input_event, decode_setleds, Endpoint, Message, INPUT_EVENT, INPUT_SETLEDS};
-use alloc::vec::Vec;
 
 /// CDEV reply message types. C: `com.h:935-937` —
 /// `CDEV_REPLY = CDEV_RS_BASE(0x480)`、`CDEV_SEL2_REPLY = CDEV_RS_BASE + 2`.
@@ -115,7 +115,14 @@ impl Transport for KernelTransport {
     }
 
     fn write_grant(&mut self, granter: Endpoint, grant: i32, bytes: &[u8]) -> Result<(), i32> {
-        sys_safecopyto(&self.kernel, granter.get(), grant, 0, bytes.as_ptr() as u64, bytes.len() as u64)
+        sys_safecopyto(
+            &self.kernel,
+            granter.get(),
+            grant,
+            0,
+            bytes.as_ptr() as u64,
+            bytes.len() as u64,
+        )
     }
 
     fn publish_label(&mut self, name: &str) -> Result<(), i32> {
@@ -123,24 +130,46 @@ impl Transport for KernelTransport {
         // 本聚合的 `ipc` 载体，grant 腿直接挂 SYSCALL 载体——两载体均为
         // 零尺寸，按值重组免费。
         let mut ds = DsClient::new(self.ipc, self.kernel, Endpoint::DS);
-        ds.publish_label(name, Endpoint::NONE, minix_types::DsFlags::empty())
+        let mut grants = minix_sys::grant::GrantTable::new();
+        ds.publish_label(
+            &mut grants,
+            name,
+            Endpoint::NONE,
+            minix_types::DsFlags::empty(),
+        )
     }
 }
 
 impl minix_sys::ipc::IpcTransport for KernelTransport {
-    fn send(&self, destination: Endpoint, message: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+    fn send(
+        &self,
+        destination: Endpoint,
+        message: &Message,
+    ) -> Result<(), minix_sys::ipc::TrapStatus> {
         self.ipc.send(destination, message)
     }
-    fn receive(&self, source: Endpoint, message: &mut Message) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
+    fn receive(
+        &self,
+        source: Endpoint,
+        message: &mut Message,
+    ) -> Result<minix_sys::ipc::IpcStatus, minix_sys::ipc::TrapStatus> {
         self.ipc.receive(source, message)
     }
-    fn sendrec(&self, destination: Endpoint, message: &mut Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+    fn sendrec(
+        &self,
+        destination: Endpoint,
+        message: &mut Message,
+    ) -> Result<(), minix_sys::ipc::TrapStatus> {
         self.ipc.sendrec(destination, message)
     }
     fn notify(&self, destination: Endpoint) -> Result<(), minix_sys::ipc::TrapStatus> {
         self.ipc.notify(destination)
     }
-    fn sendnb(&self, destination: Endpoint, message: &Message) -> Result<(), minix_sys::ipc::TrapStatus> {
+    fn sendnb(
+        &self,
+        destination: Endpoint,
+        message: &Message,
+    ) -> Result<(), minix_sys::ipc::TrapStatus> {
         self.ipc.sendnb(destination, message)
     }
     fn senda(&self, table: &[AsyncSlot]) -> Result<(), minix_sys::ipc::TrapStatus> {
@@ -168,18 +197,20 @@ pub fn classify(msg: &Message) -> Option<Arrival> {
         return Some(Arrival::DriverStoreChanged);
     }
     match msg.m_type {
-        INPUT_EVENT => decode_input_event(msg).map(
-            |(id, page, code, value, flags)| Arrival::DriverReport {
+        INPUT_EVENT => {
+            decode_input_event(msg).map(|(id, page, code, value, flags)| Arrival::DriverReport {
                 source: msg.m_source,
                 id,
                 page,
                 code,
                 value,
                 flags,
-            },
-        ),
-        INPUT_SETLEDS => decode_setleds(msg)
-            .map(|mask| Arrival::TerminalSetleds { source: msg.m_source, mask }),
+            })
+        }
+        INPUT_SETLEDS => decode_setleds(msg).map(|mask| Arrival::TerminalSetleds {
+            source: msg.m_source,
+            mask,
+        }),
         minix_types::TTY_FKEY_CONTROL => {
             // SAFETY: `m_lsys_tty_fkey_ctl` is the active arm for the
             // F-key control request (request/fkeys/sfkeys, C
@@ -323,7 +354,10 @@ pub fn serve(t: &mut dyn Transport, self_ep: Endpoint, server: &mut crate::dispa
         };
         match outcome {
             Outcome::Done(effects) => perform_all(&effects, t, self_ep),
-            Outcome::GrantCopy { copy: grant_copy, leading } => {
+            Outcome::GrantCopy {
+                copy: grant_copy,
+                leading,
+            } => {
                 perform_all(&leading, t, self_ep);
                 // Move the planned events through the reader's grant, then
                 // let the completion decide commit vs. discard.
@@ -373,7 +407,10 @@ mod serve_tests {
                 value,
                 flags,
             }) => {
-                assert_eq!((source.0, id, page, code, value, flags), (9, 3, 1, 30, 2, 1));
+                assert_eq!(
+                    (source.0, id, page, code, value, flags),
+                    (9, 3, 1, 30, 2, 1)
+                );
             }
             other => panic!("expected DriverReport, got {other:?}"),
         }
@@ -399,7 +436,10 @@ mod serve_tests {
                 fkeys,
                 sfkeys,
             }) => {
-                assert_eq!((source.0, request, fkeys, sfkeys), (9, minix_types::FKEY_MAP, 0b10, 0));
+                assert_eq!(
+                    (source.0, request, fkeys, sfkeys),
+                    (9, minix_types::FKEY_MAP, 0b10, 0)
+                );
             }
             other => panic!("expected FkeyControl, got {other:?}"),
         }
@@ -427,10 +467,23 @@ mod serve_tests {
             msg
         };
         // MAP F1：回复 OK、位图清零。
-        match handle_arrival(&mut server, classify(&mk(minix_types::FKEY_MAP, 0b10, 0)).unwrap()) {
+        match handle_arrival(
+            &mut server,
+            classify(&mk(minix_types::FKEY_MAP, 0b10, 0)).unwrap(),
+        ) {
             Outcome::Done(effects) => match &effects[..] {
-                [Effect::FkeyControlReply { caller, result, fkeys, sfkeys }] => {
-                    assert_eq!((caller.0, *result, *fkeys, *sfkeys), (9, minix_types::OK, 0, 0));
+                [
+                    Effect::FkeyControlReply {
+                        caller,
+                        result,
+                        fkeys,
+                        sfkeys,
+                    },
+                ] => {
+                    assert_eq!(
+                        (caller.0, *result, *fkeys, *sfkeys),
+                        (9, minix_types::OK, 0, 0)
+                    );
                 }
                 other => panic!("expected one reply effect, got {other:?}"),
             },
@@ -456,9 +509,19 @@ mod serve_tests {
             other => panic!("expected Done, got {other:?}"),
         }
         // EVENTS：pending 位回到 IS 手里，计数清零。
-        match handle_arrival(&mut server, classify(&mk(minix_types::FKEY_EVENTS, 0, 0)).unwrap()) {
+        match handle_arrival(
+            &mut server,
+            classify(&mk(minix_types::FKEY_EVENTS, 0, 0)).unwrap(),
+        ) {
             Outcome::Done(effects) => match &effects[..] {
-                [Effect::FkeyControlReply { result, fkeys, sfkeys, .. }] => {
+                [
+                    Effect::FkeyControlReply {
+                        result,
+                        fkeys,
+                        sfkeys,
+                        ..
+                    },
+                ] => {
                     assert_eq!((*result, *fkeys, *sfkeys), (minix_types::OK, 0b10, 0));
                 }
                 other => panic!("expected one reply effect, got {other:?}"),
@@ -472,9 +535,6 @@ mod serve_tests {
     fn test_classify_notify_is_store_changed() {
         let mut msg = Message::default();
         msg.m_type = 0x1000 + 7;
-        assert!(matches!(
-            classify(&msg),
-            Some(Arrival::DriverStoreChanged)
-        ));
+        assert!(matches!(classify(&msg), Some(Arrival::DriverStoreChanged)));
     }
 }

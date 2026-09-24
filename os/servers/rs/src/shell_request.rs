@@ -1363,7 +1363,8 @@ impl RsServer {
                 Endpoint::DS,
             );
             if let Some(name) = state.table.get(id).pub_.label.as_str() {
-                let _ = ds.delete(name, minix_types::DsFlags::TYPE_LABEL);
+                let mut grants = minix_sys::grant::GrantTable::new();
+                let _ = ds.delete(&mut grants, name, minix_types::DsFlags::TYPE_LABEL);
             }
             // C manager.c:896-914 —— devman unbind 半:devman_id 非零时
             // 向 devman 发 DEVMAN_UNBIND(m4:RESULT@0/DEVICE_ID@8/
@@ -1542,6 +1543,7 @@ impl RsServer {
             minix_sys::syscall::DirectKernelCallTransport,
             Endpoint::DS,
         );
+        let mut grants = minix_sys::grant::GrantTable::new();
         {
             let mut effects = crate::service_create::CreateEffects {
                 publish: alloc::boxed::Box::new(move |table: &crate::process_table::RProcTable, sid: crate::service_slot::SlotId| {
@@ -1550,6 +1552,7 @@ impl RsServer {
                         return Ok(());
                     };
                     let _ = ds.publish_label(
+                        &mut grants,
                         name,
                         pub_.endpoint,
                         minix_types::DsFlags::empty(),
@@ -1566,7 +1569,7 @@ impl RsServer {
                         && let Some(devman_id) = pub_.devman_id
                     {
                         use minix_sys::ipc::IpcTransport;
-                        match ds.retrieve_label_endpt("devman") {
+                        match ds.retrieve_label_endpt(&mut grants, "devman") {
                             Ok((devman_ep, _)) => {
                                 let mut bind = crate::publish::devman_bind_message(
                                     devman_id,
