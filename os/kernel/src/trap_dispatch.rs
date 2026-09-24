@@ -1512,8 +1512,13 @@ fn forward_pagefault_to_vm(
     // enqueue_if_woken 同款）。漏掉这半：VM 被解锁但从未入就绪队列，
     // 调度器无人可选 → idle 停机（NK4-A C-3 真机：fwd Delivered 后全静默，
     // 2026-09-22）。
-    let woken_target = engine.take_wake_target();
-    if let Some(woken_nr) = woken_target {
+    // 1.12：engine 多槽 wake 记录全量入队（同 syscall 多唤醒不互覆）。
+    // 先收集（engine 借用 procs slice），后入队（规避叠加可变借用）。
+    let mut woken = [None; 4];
+    for slot in woken.iter_mut() {
+        *slot = engine.take_wake_target();
+    }
+    for woken_nr in woken.into_iter().flatten() {
         proc_table.enqueue_if_woken(woken_nr);
     }
     // 锚点括值：本函数运行时地址（一次性，供 #GP rip 离线定位）。

@@ -964,7 +964,11 @@ pub(crate) fn dispatch_ipc(
         // The engine may also have WOKEN a parked process (clearing
         // RTS_RECEIVING/RTS_SENDING with the primitive setter) — take the
         // record so the ProcessTable-level code below can enqueue it.
-        let woken = engine.take_wake_target();
+        // 1.12：收集全部 wake 记录（多唤醒不互覆）。
+        let mut woken = [None; 4];
+        for slot in woken.iter_mut() {
+            *slot = engine.take_wake_target();
+        }
         (outcome, pending, woken)
     };
 
@@ -1029,7 +1033,10 @@ pub(crate) fn dispatch_ipc(
     // Complete the wake ENQUEUE half for a process the engine unparked
     // (C: RTS_UNSET's enqueue — see ProcessTable::enqueue_if_woken). Runs
     // under the same BKL discipline as sig_delay_done above.
-    if let Some(woken_nr) = woken_target {
+    // 1.12：engine 的 wake 记录为 4 槽（同一次 syscall 可能唤醒多个
+    // 进程——sendrec 的 send 腿 + receive 腿 drain），必须全部入队；
+    // 旧的单次 if let 丢多 wake。
+    for woken_nr in woken_target.into_iter().flatten() {
         proc_table.enqueue_if_woken(woken_nr);
     }
 

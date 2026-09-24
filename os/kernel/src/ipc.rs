@@ -838,15 +838,20 @@ pub struct IpcEngine<'a> {
     /// dispatcher (`dispatch_ipc`) completes the protocol after `do_ipc`
     /// returns. At most one sender is delivered per IPC operation.
     sig_delay_sender: Option<ProcNr>,
-    /// The process the engine just woke by clearing a blocking RTS flag
+    /// The processes the engine just woke by clearing a blocking RTS flag
     /// (`RTS_RECEIVING` / `RTS_SENDING`) with the primitive setter. The
     /// engine holds a procs slice without run-queue access, so the wake's
     /// ENQUEUE half (C `RTS_UNSET` macro — clear + enqueue-when-runnable)
     /// must be completed by the `ProcessTable`-level dispatcher via
     /// [`Self::take_wake_target`] — the wake-direction mirror of
-    /// `ProcessTable::dequeue_if_blocked` (the block direction). At most
-    /// one target is woken per IPC operation.
-    wake_target: Option<ProcNr>,
+    /// `ProcessTable::dequeue_if_blocked` (the block direction).
+    ///
+    /// NK4-C 1.12：单槽 Option 会被同一次 syscall 内的第二次唤醒覆盖
+    /// （sendrec = send 腿唤醒目的地 + receive 腿 drain 唤醒发送者；
+    /// 丢掉的进程 rts 已清却永不入队 → runnable=yes queued=no，F10d
+    /// 同族，s17p 实锤 sched 卡死）。C 的 RTS_UNSET 在每个 clear 现场
+    /// 立即入队，无此丢失窗口；这里以 4 槽记录 + 调用方 drain 全部。
+    wake_targets: [Option<ProcNr>; 4],
 }
 
 impl<'a> IpcEngine<'a> {
@@ -862,7 +867,7 @@ impl<'a> IpcEngine<'a> {
             user_copy,
             filter_pool: None,
             sig_delay_sender: None,
-            wake_target: None,
+            wake_targets: [None; 4],
         }
     }
 
@@ -947,13 +952,19 @@ impl<'a> IpcEngine<'a> {
     /// the wake by enqueueing it (C: `RTS_UNSET`'s enqueue half,
     /// proc.h:216-224) — see `ProcessTable::enqueue_if_woken`.
     pub fn take_wake_target(&mut self) -> Option<ProcNr> {
-        self.wake_target.take()
+        // Drain order: first non-empty slot (all slots get enqueued by the
+        // caller's loop — order is irrelevant for run-queue insertion).
+        self.wake_targets.iter_mut().find_map(|slot| slot.take())
     }
 
     /// Record a wake target (engine-internal helper for the primitive
     /// flag clears at the delivery sites).
     fn record_wake_target(&mut self, nr: ProcNr) {
-        self.wake_target = Some(nr);
+        // 1.12：满了就丢最旧的（4 槽上限远超单次 IPC 的真实唤醒数——
+        // sendrec 最坏 2 个；保留防御性容量），不静默覆盖最新。
+        if let Some(slot) = self.wake_targets.iter_mut().find(|s| s.is_none()) {
+            *slot = Some(nr);
+        }
     }
 
     // ── Helpers ──

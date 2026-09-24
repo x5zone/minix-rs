@@ -1395,3 +1395,17 @@ elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（P
 - **s17o**：init getuid/getpid 过，随后的 VFS 请求使 init SENDING to=VFS(1)；VFS 停车 RECEIVING from=RS(2)（VFS 的 sendrec-to-RS receive 半）——RS 空闲 RECEIVING(ANY) 却未消费 VFS 的请求。
 - **s17p（时序变体）**：PM 的 sched taskcall send 半 Path A 直投后 sched 被唤醒但 **runnable=yes queued=no**（F10d 同族：rts 原始 clear 与入队半脱节）→ sched 永不跑 → taskcall 无 reply → PM 停车 receive-from-sched → init 的 getuid 停在 PM 的 caller_q。
 - **下一步（下一轮）**：①内核 `take_wake_target` 入队臂打点（`wake enq nr=X`，cap 16）+ Path A 直投臂打点，判定丢入队的站点（多 wake 覆盖？rts_unset 条件分支？）；②VFS 停车 from=RS 的 sendrec 语义核对（VFS 为何向 RS 发 sendrec、RS 为何不收）；③修后两次复跑 → rc marker（单元 B 完成）→ 单元 C-K。
+
+---
+
+## 1.12a 多唤醒互覆修复（2026-09-24，serial_s17q/s17r）
+
+- **根因**：engine 的 `wake_target` 是单槽 `Option`——同一次 syscall 内第二次 `record_wake_target` 覆盖第一次（sendrec 的 send 腿唤醒目的地 + receive/drain 腿唤醒发送者；sendnb-reply+drain 同理），被覆盖者 rts 已清却永不入队 → `runnable=yes queued=no`（s17p 实锤 sched 卡死；F10d 家族新形态：不是绕过入队而是入队记录被覆写）。C 的 `RTS_UNSET` 在每个 clear 现场立即入队，无此窗口。
+- **修**：ipc.rs `wake_targets: [Option<ProcNr>; 4]`（满丢最旧，防御容量）；`take_wake_target` 单槽 drain；syscall.rs/trap_dispatch.rs 两个消费点改循环全量入队（trap_dispatch 先收集后入队规避叠加借用）。docker kernel 813 全绿、fmt 三文件 hunk 总数与 HEAD 持平（228/228）。
+- **验证**：s17q/s17r 两轮签名一致且 s17p 的 sched 饿死变体未再复现；init↔PM 的 GETUID/GETPID 打通稳定复现（`pm 0060b`/`pm 0040b`）。
+
+## 1.12b 新停点固化（s17o/q/r 三轮一致）：init→VFS 阻塞在 VFS 的 from=RS 停车后面
+
+- 尾态链：init(0xb) SENDING to=VFS(1)（getuid/getpid 后的首个 VFS 请求，疑似 open/stat 类）→ VFS(1) RECEIVING **from=RS(2)**（停车 receive 半或主循环限定源收 RS——`p3park s=1` 不在尾窗，非 drain 停车）→ RS(2) RECEIVING(ANY) 空闲。
+- 疑点两分支：①VFS↔RS 的 RS_INIT/启动协议缺一条消息（RS 发完 INIT 即回 receive，VFS 等第二条；或 VFS 的请求 RS 已处理但 reply 臂缺失）；②VFS 的 sendrec-to-RS 请求 RS 收下后处理失败且无 reply。
+- **下一轮探针配方（一轮定案）**：RS dispatcher 入口 `nk4a: rsm mt/src`（≤15B cap 16）+ VFS dispatcher 入口同款 `vfm mt/src`——看 RS 是否收到 VFS 的请求/收到什么 m_type；RS 的 reply 腿是否发出。随后按缺失臂修复 → 两次复跑 → rc marker（单元 B 完成）→ 单元 C-K（aarch64/riscv reply_wire → 命令面 → W^X → ABI 清单 → 三架构 marker → 测试上机 → 收尾）。
