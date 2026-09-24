@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（当前 frontier = **1.22「B13 深入诊断完成：宿主测试 PASS 证实 MFS 逻辑正确，ENOENT 根因缩小至 VFS→MFS 传输层（候选 A=MAKEROOT 时序/dir_ino=0 概率最高，候选 B=grant 传回全零路径，候选 C=mount 状态异常，详见 §1.22 修复配方）」**；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
+- **阶段**：**1.3 rc marker 链（当前 frontier = **1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1820,4 +1820,24 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 - 排除候选空间从 7 项缩到 3 项（A/B/C），A 概率最高且验证成本最低
 - 真机证据：serial_b12f2（21578 行）imain-0..6 + SingleUser + rc marker=0 稳定复现
 
-**本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
+- **本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
+
+## 1.23 B13 Bug2(EIO) 根因锁定：VFS DIRECT grant 表被内核读到陈旧快照 → copy_from EPERM → wire decode EIO（2026-09-25，宿主复现测试 + 已入仓 `nk4a: vg` 探针取证，纯诊断未改代码）
+
+**前置状态**：Bug1（Rust `&str` 无 NUL → VFS `ENAMETOOLONG`）已由工作树内 `minix-sys/lib.rs` 的 `cstr_path` 修复（待 commit，实质修复）。修复后 `stat("/dev/console")` 可见错误从 `ENAMETOOLONG`/`ENOENT` 变为 **`EIO(5)`**（真机 `pe05` + `ptst+005` 双重证实）。
+
+**决定性证据链（本 turn 三件套）**：
+1. **宿主复现测试（临时，已 `git checkout` 删除，结论留存）**：读真实 `os/target/image/x86_64/imgrd.img` 字节 → `BootBlockSource::from_boot_image` → `MfsServer::new`（pool=`DEFAULT_POOL_BUFFERS`=1024）→ `mount(READ_ONLY)`（对位 MAKEROOT，`request.rs:462` 根挂载带 `REQ_RDONLY`）→ `resolve_path(start=1, "/dev/console")` → **PASS**。首次误用 `MountFlags::EMPTY`（读写）触发 `EROFS(30)`（Static boot 源只读），改 READ_ONLY 即过——顺带证实 target 根挂载是只读、mount 不会因此失败。→ **排除**：镜像字节、mkfs 布局（xtask 外部 `mkfs_mfs` 与宿主测试同用 `mkfs::build_image_seeded`，`generate_etc_proto` 与测试 proto 仅 `sh` 路径不同，块数/inode/block_size 全同）、`resolve_path`/`lookup_child`/`map_file_block`/`load_dir_blocks`（§1.22 候选 B 的 MFS 内部腿、候选 C）。
+2. **真机 `serial_b15a.log` 探针时序**：3 次 lookup 皆 `lkfs 0a1`（fs=0x0a=MFS、dir_ino 正常，**候选 A=dir_ino 0 排除**）+ `lkgb 0000`（VFS `grant_direct` 成功返回非 -1 句柄）→ 但 `ptst +005`（MFS 回 EIO）。`db` 探针 0 命中。读 `transport.rs:215-234`：decode_body 出错时**直接 `encode_reply(e.to_i32(), transaction)` 回执，不进 task dispatch/resolve_path**。→ EIO 出自 MFS **wire decode 的 `copy_from`**（`wire.rs:130` `fetch_bytes`→`.map_err(|_| EIO)`），`load_dir_blocks` 根本没被调用（db 0 命中是**真没到**，非 cap 饥饿）。
+3. **已入仓内核 B4 探针 `nk4a: vg st`**（`os/kernel/src/grant.rs:344-357`，committed）直接 dump verify_grant 读到的 grant 表项。3 次 lookup（`gr=0x01`=VFS、`gid` 高 12 位 seq=2/3/4、`idx=0`）内核读到：**`fl=0x00000000`**（不满足 `USED|VALID` → `grant.rs:361` EPERM），且 `seq=0x01`、`wto=0x01`、`len=0x10` —— 这是 VFS slot0 **冻结在早期生成**的陈旧快照（gen0 撤销后 flags=0/seq→1，union 残留一次 `who_to=VFS(self)` 的 16B 授权），与 VFS 当前活写（`who_to=0x0a=MFS`、`len=n+1=13`、`seq=2/3/4`、`flags=READ|DIRECT|USED|VALID` 非零）**整体错位 2+ 个生成代**。`mc` 探针 `res=0x01` 佐证 `sys_safecopyfrom` 原始返回 EPERM(1)（wire 层把任意 copy_from 错误压平成 EIO）。
+
+**定性根因（§1.22 候选 B 确认 + 精化）**：`sys_safecopyfrom(granter=VFS, ...)` 返 **EPERM**，因内核从 VFS 注册的 `priv(VFS).s_grant_table` 读到**陈旧内容**——即 **VFS 用户态 `GrantTable::slots` 的活写入，内核侧看不到**。两个候选机制（`read_from_process_vmcheck` 成功读到 VFS 内存、非 readfail 腿，故翻译通路本身工作；且 **RS 的 grant 读完全正常**，同 `proc_cr3` 机制，故为 **VFS 特有**）：
+- **①地址错位**：`grow_and_register`（`minix-sys/src/grant.rs:115-150`）realloc 后 `register` 送新 `slots.as_ptr()`，但内核 `s_grant_table` 未更新到最新缓冲（重注册未生效 / VFS 有多次 grow 而注册只认旧址）。
+- **②VFS 堆翻译/一致性**：注册地址与 VFS 当前 `slots` 缓冲一致，但内核按 VFS CR3 解出的 VA→PA 落在旧物理页（realloc 后旧页重用）。
+
+**下一步（接手 agent 直接可执行，先①）**：
+1. 在 VFS `register`/`grow_and_register` 里打 `nk4c: gt <as_ptr低6字节>`，并在内核 `dispatch_setgrant`（`syscall.rs:2362`）打 `nk4c: kgt <s_grant_table低6字节>`；同 lookup 时对比两值。
+2. 若**不同值** → 机制① → 修 VFS grant 表：改为固定容量静态槽数组（对位 C `NR_STATIC_GRANTS`）根除 realloc，或确保每次 realloc 后强制重注册生效。
+3. 若**同值** → 机制② → dump 内核读到的原始 slot0 字节 vs VFS 写后 slot0 字节，定位 VFS 堆 VA→PA 一致性。
+
+**工作树现状（本 turn 未改任何生产代码，未 commit）**：6 个诊断文件未提交——`minix-sys/lib.rs`（`cstr_path` **实质修复须保留**）、`init/host.rs`(pe)、`vfs/syscalls.rs`(rdsl)、`vfs/main_loop.rs`(lkfs/lkgb/fsfail/ptst)、`fs-rt/ipc.rs`(mc)、`mfs/dir_io.rs`(db)（后 5 个为诊断，根因修毕 task1-close 删）。内核 `nk4a: vg` 探针**已在仓**（前代 B4 交付），本 turn 靠它取证。`test_seeded_imgrd_resolve_path_dev_console` 已在 `0c6b58bd8`。
