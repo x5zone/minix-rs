@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（当前 frontier = **1.21「B12 修复已落地：sendrec Path A delivery 后清 REPLY_PEND，消除 INIT 被 VM 误停车。真机 imain-0..6 全达 panic=0，stat 不再挂。新前沿 B13 = stat(“/dev/console”) 返回 ENOENT（MFS 目录 lookup 失败，详见 §1.21）」**；前代 1.20「B11 imgrd 零拷贝嵌入 MFS」；前代 1.18「B10 修复已落地：init 身份门 getpid 线格式读错→Ok(0)自杀，修复后 imain-0..6 全达」；1.19「B11 诊断定案」；1.17「B8+B9+B9b 出生回报握手全链路」；1.16「B7 多条目异步 SENDA」；...）**前代 1.17「B8+B9+B9b 出生回报握手全链路修复已落地，boot 越过 RS fail-closed panic 进入 post-boot（B10 init 身份门自杀机制已由 1.18 定案：客户端 getpid 线格式读错，非「PM 回 pid≠1」；前代「VFS livelock」标注已证伪，详见 §1.17）」**——**B8**：`deliver_async` 源过滤改用 `receive_e` 实参走 CANRECEIVE 两半判定 + 补 C `try_one` 尾部 else `s_asyn_pending` 重挂臂（proc.c:1499-1501），打破 VFS boot receive 源过滤读过期 `p_getfrom_e` 拒收 async-pending 的死锁环；**B9**：新增 `deliver_pending_to_user` 同步拷贝 helper，Phase1(notify)/Phase2(async) 沉降后 set DELIVERMSG + copy_msg_to_user + clear，把 parked 消息同步拷回用户缓冲，修 receive 回 EIO；**B9b**：全部非 VM 服务的「出生回报 RS」IPC 腿从 `send`/`sendnb` 改 `sendrec`（对齐 C `sef_cb_init_response_rs_reply = ipc_sendrec(RS_PROC_NR, m)`，sef_init.c:458-466），为此给 `DsIpc`/`SefTransport`/`EventLoopTransport`/`DriverTransport` 新增 `send_rec` 并补齐所有生产 impl 与 test mock 记账；RS `reply` 腿 `send→sendnb`（对齐 C `ipc_sendnb`，utility.c:324）。验证：docker arch242/kernel813/vm528/rs351/driver14 全绿、fmt 零新增漂移（ipc.rs 95<98 反改善）、真机 b9b1/b9b2 两轮签名逐字一致（`panic`/`boot.rs:1254`/`rs-initfail` 全 0，boot 推进至 post-boot；注：尾态 `pick->0x4` 是 SCHED(ProcNr 4) 心跳症状、`sa-call fl=0x12`=SYS_SETALARM（前代「VFS(0x4)/sys_getinfo」误标已证伪：0x4=SCHED、fl=0x12=SETALARM、pid=0x9=priv_id），真停点=init 身份门 `getpid()!=1` 自杀（`imain-1` 有、`imain-2` 永无，serial 实锤），见 §1.17 新停点）。**CodeReview 无 P0**（P1 syscall.rs 环形探针系过期 session diff，磁盘零净改动；P2 调试探针属 HEAD 既有跨文件项，留 code-excellence 独立清理）。**前代 1.16「B7 多条目异步 SENDA 端到端修复已落地」**——B7 三处一逻辑单元：①真根因 = 内核 `read_senda_entry`/`write_senda_result` 把 SENDA 用户表槽距硬编码 80（C 32 位旧布局凑值），真实 `WireAsyncSlot` = 16+`Message`(80) = 96 → slot[i≥1] 错位读垃圾 + 80 字节缓冲 `read_volatile` 96 字节结构 = 栈越界 UB；RS_INIT→VFS 落 slot≥1 永读不出 → VFS 永停 receive(RS) → INIT 永停 send(VFS)。修复 = 步长派生自 `size_of::<WireAsyncSlot>()`（对齐 C `sizeof(asynmsg_t)` 类型推导 proc.c:1176）。②③D1 持久化（被真机否证为根因但本身是正确修复、同批落地）：RS `trap_api.rs` + driver-rt `kernel.rs` 的 asynsend 栈上单槽表改持久 `AsyncSendQueue` 字段（对齐 C `static msgtable`，同 VM B5 P0-1）。验证：docker 242/813/528 + rs 351 + driver 14、fmt 三文件零新增（ipc 98==98、trap_api 12==12、kernel.rs 3→2）、真机 b7s1/b7f2 两轮一致 + 探针实证内核行为改变（`saent dst=0x1 r=0x0` 读对、`apend c=0x1 bm=0x80` pending 位置上 14 次）。**B8 新一环**：VFS async-pending 位图 `bm=0x80`（sender priv_id 7）已置，但 VFS boot receive 源过滤 `src=0x0` 与 sender 不匹配 → `take_pending_async` 返回 None 保留位 → VFS 仍睡。下一入口：VFS boot receive(src) 是谁设定的 + priv_id↔proc_nr 映射；遗留登记：deliver_async 缺 C try_one 尾部 else `s_asyn_pending` 重挂臂（proc.c:1499-1501，多条待投路径会咬）。前代 1.15「B7 待定性 p_nr=4 ping-pong」——定性纠偏：p_nr=4（SCHED）心跳是症状非根因，真死锁环 = INIT(send→VFS)/VFS(receive←RS)/RS(receive ANY 空闲)，经 DebugAgent 再诊断命中步长根因。B6 已修并真机验证（notify 裸清 RECEIVING 不补入队半家族：clock 到期 alarm / cause_signal 两臂 / irq_manager 设备 IRQ 各补 `enqueue_if_woken`，ipc.rs senda 两处 ASYNCM 通知改走 `Self::notify`；docker 242/813/528、fmt 六文件零新增漂移（lib/ipc 反各减 1）、真机 b6d/b6e/b7a/b7b 全程 `runnable=yes queued=no`=0 `panic!`=0 逐字一致）——B5 已修并真机验证（VM RS_INIT 出生报告按 C `sef_cb_init_response_rs_asyn_once`/`asynsend3(AMF_NOREPLY)` 改用异步腿，去 `unwrap_or_else` panic；CodeReview 拦下 P0-1 栈局部槽延迟重放 UB，改持久 `AsyncSendQueue`；docker 242/813/528、fmt 零新增漂移、真机 b5c/b5d 逐字一致，出生报告 panic 消失、boot 推进至 VM 主循环服务 1169 缺页 + 进程表建到 nr=0x10b）。前代 1.13「VM 出生报告 send(RS) 失败 panic vm_server.rs:1604」——B3 定性纠偏：前代标注的「多进程同一栈页缺页死循环」是幻影（pf# 逐条 rip 推进、只叶子 PTE 缺 = 正常按需分页），真停点 = RS `catch_boot_init_ready` 因 VM(src=8) 的 RS_INIT rproctab safecopyfrom 回 ESRCH → boot.rs:1254 fail-closed panic。B4 根因：`verify_grant` 把内核栈 `grant_entry` 经 `CurrentDirectMap::virt_to_phys` 当 copy 目标，而内核数据在 Direct Map 窗口之外 → 其别名未映射 → `DstPageFault` → EPERM。修复：新增读侧 mirror `cross_space_read`（进程 src 走 PTE+DM、内核局部 dst 直读自身 VA，并按物理连续段分片对齐 C `lin_lin_copy`）+ `read_from_process_vmcheck`，verify_grant 改用它。真机 b4d/b4e（修前签名）→ b4f/b4g（评审后加跨页分片，签名逐字一致）：readfail/vm-rswire/rs-initfail 全消失、`vg st fl=0x1301 wto=0x7c00(ANY) len=0xa00` 读通，docker 242/813/526、fmt 零新增漂移。boot 推进一层至 B5。前代 1.12e：SENDA 方向互换已修（RS_INIT 首次经 senda 投递 + apend 实锤，s19a/s19b 签名一致）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通 + B5 出生报告异步化（VM 进主循环）
+- **阶段**：**1.3 rc marker 链（当前 frontier = **1.22「B13 深入诊断完成：宿主测试 PASS 证实 MFS 逻辑正确，ENOENT 根因缩小至 VFS→MFS 传输层（候选 A=MAKEROOT 时序/dir_ino=0 概率最高，候选 B=grant 传回全零路径，候选 C=mount 状态异常，详见 §1.22 修复配方）」**；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1764,6 +1764,60 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 3. **VFS→MFS REQ_LOOKUP 线格式**：`wire.rs` 中 `start_directory` 是否传了正确 ino=1（而非 0 或其他）；grant 传路径时 NUL 截断是否导致空名→NotFound。
 4. **`InodeTable::get` 对 ino=1 加载**：slot 是否命中正确磁盘位置（`InodeIo::from_superblock` 的 `table_block`/`per_block` 参数与 mkfs 一致）。
 
-**下一 agent 入口**：先做候选 1（30 min 内可定案），若宿主不可复现则上真机 diagctl 打印 `lookup_child(1,"dev")` 的 size/zones[0]/found/ENOENT 臂。
+**已完成候选 1（宿主集成测试 PASS）——MFS lookup 逻辑正确，差异在 VFS→MFS 传输层或运行时状态，详见 §1.22**。
 
-**本 commit 文件清单**：`os/kernel/src/ipc.rs`、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
+---
+
+## 1.22 B13 深入诊断：宿主测试 PASS 证实 MFS 逻辑正确，根因缩小至 VFS→MFS 传输/运行时（2026-09-24，host 测试 + 真机 serial_b12f2 复现 + 静态链路分析）
+
+**症状**（真机 b12f2 复现）：B12 修复后 imain-0..6 全达 + `SingleUser` 打印 + `panic=0`。`stat("/dev/console")` 不再挂（B12 修好 REPLY_PEND），但返回 **ENOENT**（`ensure_console` → `path_exists` → `minix_sys::stat` → `Err(ENOENT)` → `Ok(false)` → SingleUser）。`rc: minimal` = 0（rc marker 不可达）。
+
+**候选 1 验证（已完成，PASS）**：在 `os/fs/mfs/src/server.rs` 新增 `test_seeded_imgrd_resolve_path_dev_console` 宿主集成测试——用 `xtask/image.rs` 的 `generate_etc_proto` 输出的真实 proto 文本（含 `dev d--755 0 0` + `console c--600 0 0 4 0`）→ `build_image_seeded` → `RamDisk` → `mount` → `resolve_path(start=1, "/dev/console")` → 断言 `Found(char_dev)`。**结果：PASS**（178 MFS 测试全绿）。
+
+**imgrd 嵌入字节验证（已完成，PASS）**：Python 脚本用 superblock 偏移（byte 1024+）的独特魔节在 MFS release 二进制中搜索，确认 imgrd 8MB 从 byte 155280 起完整匹配宿主 `imgrd.img`。初始假阳性（前 1024 字节全零导致 find 在错误位置匹配）已纠正。
+
+**新结论**：MFS 的 `resolve_path`、`lookup_child`、`map_file_block`、`names_equal`、`load_dir_blocks`、superblock/inode table 逻辑**全部正确**。ENOENT 不出在 MFS 内部，必在 VFS→MFS 传输层或 VFS 自身的状态管理。
+
+**已排除（全量清单，含本轮新增）**：
+1. imgrd 未嵌入/空（本轮：二进制字节全量匹配）
+2. superblock 格式/magic（前轮：hexdump 确认 0x4D5A）
+3. mkfs proto 逻辑（177→178 MFS 测试全绿）
+4. VFS 路径分割 `next_component`（静态分析 + resolve_path 测试覆盖）
+5. MFS mount 失败（imain-4 可达 = 请求完成而非 EIO panic）
+6. `map_file_block` zone 映射（前轮：直接区绝对块号逻辑正确）
+7. `names_equal` 60B bounded 比较（前轮：零填充短名匹配无误）
+8. `REPLY_PEND` 导致 stat 挂起（B12 修复→不再挂，但返回 ENOENT）
+
+**缩小后的候选根因（按优先级排序，接手 agent 直接可操作）**：
+
+**候选 A（最可能）：VFS MAKEROOT 时序 / root_dir_of 对 init 返回错误值**
+- VFS `finish_init` 序列：`init_phase2()` 清 root_dir=None → `do_init_root` → `mount_fs_root` → MAKEROOT 为 `pid != PID_FREE` 的槽设 root_dir=Some(root_vnode)
+- MAKEROOT 只看 PM handshake 时已注册的进程槽。如果 init(pid=1) 在 PM handshake 完成后才进 fproc_table（例如 PM 报 VFS_PM_INIT 时未包含 init），则 init 的 `root_dir=None` → `root_dir_of` 返回 `ino=0, fs=Endpoint::NONE`
+- 但：`fs=NONE` → `send_lookup_for_slot` 中 `vmnt_table.find_by_fs(NONE)` → 返回 None → EIO，**非 ENOENT**
+- 另一种变体：`ino=0` + `fs=MFS`（init 的 slot 恰好被某个非-MAKEROOT 路径设了 fs 但 ino=0）→ MFS 收到 `start_directory=0` → inode 0 不存在 → 返回 ENOENT ✓ **匹配症状**
+- **验证方法**：真机 diagctl 在 VFS `send_lookup_for_slot` 入口打 `dir_ino`（8B）；或在 MFS `wire.rs` decode 后打 `start_directory`（8B）。若 =0 → 确认此候选
+
+**候选 B：grant_buf/copy_from 在 target 传回空/全零路径**
+- VFS 把路径写入 `wp.path_scratch` → `grant_direct` → MFS 通过 `ipc.copy_from(peer=VFS, grant, 0, buf)` 读回
+- 若 copy_from 返回全零（grant 地址映射失败但 IPC 不报错），MFS 的 path="" → resolve_path 走 `lookup_child(start, ".")` 成功（返回当前节点），loop 第一次 `remaining.is_empty()` → `Action::Done` → `Found(start_node)` → **不报 ENOENT**
+- 若 path 被截断到 "\0dev/console"（前导 NUL）→ `resolve_path` 的 working_path[0]=0 → `from_utf8` OK → `next_component("\0dev/console")` → trimmed="\0dev/console" → component="\0dev" → names_equal 与 "dev" 不匹配 → ENOENT ✓ **也匹配症状**
+- **验证方法**：diagctl 在 MFS wire decode 后打印 path 的前 8 字节
+
+**候选 C：MFS dispatch 的 `server.state.mount` 未正确报告 root_inode**
+- 若 `mount` 处于 `Unmounted` → `filesystem_root=0` → resolve_path 的 ".." 逃逸判定异常；但 boot 期 mount 已成功（否则不会到达 imain-4）
+- 低概率
+
+**修复配方（接手 agent 直接可执行）**：
+1. 上真机 diagctl：在 VFS `send_lookup_for_slot`（`main_loop.rs:1919`，函数入口）或 MFS `wire.rs:276`（Lookup decode 之后）打 ≤14B：`[dir_ino_low8, path_first4]`
+2. `--release` 构建 + 跑 QEMU → 看 serial
+3. 若 `dir_ino=0`：根因=候选 A → 修 MAKEROOT 或 lookup 起点取法（确保 init 的 root_dir 在第一个 stat 前已设）
+4. 若 `dir_ino=1` + path 首字节 ≠ '/'：根因=候选 B → 修 grant/copy_from 链路
+5. 若 `dir_ino=1` + path='/dev/c'：需进一步诊断（打 lookup_child 结果 + inode 内容）
+
+**本轮交付**：
+- 新增宿主集成测试 `test_seeded_imgrd_resolve_path_dev_console`（回归保护，确认 MFS 核心逻辑）
+- 全链路静态分析：VFS stat → root_dir_of → LookupWalk::begin → send_lookup_for_slot → encode_lookup → wire decode → resolve_path 全通读
+- 排除候选空间从 7 项缩到 3 项（A/B/C），A 概率最高且验证成本最低
+- 真机证据：serial_b12f2（21578 行）imain-0..6 + SingleUser + rc marker=0 稳定复现
+
+**本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。

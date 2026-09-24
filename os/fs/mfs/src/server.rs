@@ -1611,4 +1611,113 @@ mod tests {
         assert_eq!(error.to_i32(), EINVAL);
         let _ = seen;
     }
+
+    // ---- B13: integration test using real proto-seeded imgrd image ----
+
+    /// A minimal ProtoHost for the B13 integration test.
+    struct SeedHost {
+        files: Vec<(&'static str, &'static [u8], i32)>,
+    }
+
+    impl crate::mkfs::ProtoHost for SeedHost {
+        fn read_file(
+            &mut self,
+            path: &str,
+            out: &mut [u8],
+        ) -> Result<crate::mkfs::HostFile, crate::mkfs::MkfsError> {
+            let Some((_, bytes, mtime)) = self.files.iter().find(|(p, _, _)| *p == path) else {
+                return Err(crate::mkfs::MkfsError::HostFile);
+            };
+            if bytes.len() > out.len() {
+                return Err(crate::mkfs::MkfsError::BufferTooSmall);
+            }
+            out[..bytes.len()].copy_from_slice(bytes);
+            Ok(crate::mkfs::HostFile {
+                len: bytes.len(),
+                mtime: *mtime,
+            })
+        }
+    }
+
+    /// B13: verify that `resolve_path` (full VFS→MFS lookup chain) works on
+    /// a real proto-seeded image. Tests the exact flow triggered by
+    /// `stat("/dev/console")`: LookupInput{start=1, path="/dev/console"}.
+    #[test]
+    fn test_seeded_imgrd_resolve_path_dev_console() {
+        use crate::mkfs;
+        use minix_fs::lookup::{Credentials, LookupInput, resolve_path};
+        use minix_fs::protocol::LookupFlags;
+
+        let proto = "minix-rs imgrd\n\
+                     2048 0\n\
+                     d--755 0 0\n\
+                     etc d--755 0 0\n\
+                     rc ---755 0 0 etc/rc\n\
+                     ttys ---644 0 0 etc/ttys\n\
+                     $\n\
+                     dev d--755 0 0\n\
+                     console c--600 0 0 4 0\n\
+                     $\n\
+                     bin d--755 0 0\n\
+                     sh ---755 0 0 target/sh\n\
+                     $\n\
+                     $\n";
+        let mut host = SeedHost {
+            files: alloc::vec![
+                ("etc/rc", b"#!/bin/sh\necho marker\n" as &[u8], 1700i32),
+                ("etc/ttys", b"console\n", 1700),
+                ("target/sh", b"\x7fELF_fake", 1700),
+            ],
+        };
+        let header = mkfs::proto_header(proto).unwrap();
+        let inodes = if header.inodes == 0 {
+            None
+        } else {
+            Some(header.inodes)
+        };
+        let plan = mkfs::plan_layout(header.blocks, inodes, 4096).unwrap();
+        let image = mkfs::build_image_seeded(&plan, proto, &mut host, 1000).unwrap();
+
+        let bs = 4096usize;
+        let block_count = image.len() / bs;
+        let mut disk = RamDisk::new(block_count, bs).unwrap();
+        for i in 0..block_count {
+            disk.block_mut(i)
+                .unwrap()
+                .copy_from_slice(&image[i * bs..(i + 1) * bs]);
+        }
+
+        let mut server = MfsServer::with_pool(disk, 8, zero_clock);
+        let mut caps = CapabilityFlags::EMPTY;
+        let root = server.mount(DEVICE, MountFlags::EMPTY, &mut caps).unwrap();
+        assert_eq!(root.inode_number, 1);
+
+        // Exercise the full resolve_path (same call that `dispatch` makes
+        // when VFS sends REQ_LOOKUP with path="/dev/console"):
+        let input = LookupInput {
+            start_directory: 1,
+            root_inode: 1,
+            filesystem_root: 1,
+            path: "/dev/console",
+            flags: LookupFlags(0),
+            credentials: Credentials {
+                user: 0,
+                group: 0,
+                extra_groups: [0; 16],
+                extra_group_count: 0,
+            },
+        };
+        let outcome = resolve_path(&mut server, &input)
+            .expect("B13: resolve_path(\"/dev/console\") failed on host");
+        match outcome {
+            minix_fs::lookup::LookupOutcome::Found(node) => {
+                assert!(
+                    node.mode & 0o170000 == 0o020000,
+                    "console should be char device, got mode {:o}",
+                    node.mode
+                );
+            }
+            other => panic!("expected Found, got {:?}", other),
+        }
+    }
 }
