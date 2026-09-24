@@ -1519,7 +1519,15 @@ C 锚点：`minix3/minix/kernel/system/do_safecopy.c:116-128` 用 `data_copy(gra
 
 ### 新停点（1.13-newstall = B5）
 
-boot 推进一层：VM 成功读回 rproctab 后，自身 `ipc_send() failed (RS_INIT birth report)` panic（`os/servers/vm/src/vm_server.rs:1604`，RS_INIT dispatch 的 Ok 臂向 RS **同步 send 出生报告**失败）→ VM 死 → 内核 pagefault `mini_send returned Deadlock`（trap_dispatch.rs:1420）+ vector 13 #GP 级联（rip 0x5aadff9 cs=0x8 递归 panic，trap_dispatch.rs:1080）。签名：b4f/b4g 均在 4755 行附近 `panic-enter` + `vm_server.rs:1604`。下一手第一动作：查 RS 此刻是否在可收 send 的状态（RS_INIT 是异步投递，RS 已进 `catch_boot_init_ready` 处理链，可能尚未回到 receive）；对照 C `main.c:229`（VM 对 RS_INIT 的回信语义）核实 VM 出生报告该用 send 还是 sendnb/reply 腿。
+boot 推进一层：VM 成功读回 rproctab 后，自身 `ipc_send() failed (RS_INIT birth report)` panic（`os/servers/vm/src/vm_server.rs:1604`，RS_INIT dispatch 的 Ok 臂向 RS **同步 send 出生报告**失败）→ VM 死 → 内核 pagefault `mini_send returned Deadlock`（trap_dispatch.rs:1420）+ vector 13 #GP 级联（rip 0x5aadff9 cs=0x8 递归 panic，trap_dispatch.rs:1080）。签名：b4f/b4g 均在 4755 行附近 `panic-enter` + `vm_server.rs:1604`。真机内核证据：`dd2 caller=0x8 fn=0x1(SAY_SEND) xp=0x2(RS) xp_rts=0x404(PAGEFAULT|SENDING)`、`elock ... d_gf=0x7bff(NONE，RS 不在 receive) c_gf=0x7c00(ANY)` → 2-cycle EDEADLOCK。
+
+**B5 根因（本轮 DebugAgent + 亲自核 C 已实锤）**：VM 对 RS_INIT 的出生报告应答走错了 IPC 腿——用了**阻塞 send**（`transport.send`→SEND_NR），而 C 明确规定这一腿**必须是异步的**。C 锚点：`minix3/minix/servers/vm/main.c:225-229`（"In order to avoid a deadlock at boot time, send the first RS_INIT reply to RS **asynchronously**"，`if(__vm_init_fresh) sef_setcb_init_response(sef_cb_init_response_rs_asyn_once)`）；`minix3/minix/lib/libsys/sef_init.c:471-483`（asyn_once = `asynsend3(RS_PROC_NR, m_ptr, AMF_NOREPLY)`，发完恢复默认同步腿）；`sef_init.c:458-463`（默认腿 = 阻塞 `ipc_sendrec`）。RS 侧配套契约：`minix3/minix/servers/rs/main.c:809-815`——RS 给所有服务回 reply，**唯独 VM 不回**（"which sent the reply asynchronously. Synchronous replies could lead to deadlocks there"）。此刻 RS 正 PAGEFAULT|SENDING 不在 receive，VM 阻塞 send → 内核判 2-cycle EDEADLOCK → `transport.send` 返回 `Err(Kernel(EDEADLOCK))` → `unwrap_or_else` panic。属「同步/异步腿选错」家族（与 F13 PM `VFS_PM_INIT` 同病根反向）。
+
+**B5 修复配方（已确认全部零件就绪，decision-complete，下一轮实施）**：
+1. `os/servers/vm/src/ipc/transport.rs`：`IpcTransport` trait（:119-126）加异步腿 `asynsend(&mut self, dest, msg)`；`KernelIpcTransport`（:207-216 旁）委托 `minix_sys::ipc::DirectTrapTransport::senda(&[AsyncSlot{flags: VALID|NO_REPLY, destination, result:0, message}])`——slot 构造逐字照 `os/libs/minix-driver-rt/src/kernel.rs:44-56`（已实现 `asynsend3(AMF_NOREPLY)`），`AsyncSlot`/`AsyncSlotFlags::{VALID,NO_REPLY}` 见 `libs/minix-sys/src/ipc.rs:196-260`；test/mock impl（:387 旁）记录该调用。
+2. `os/servers/vm/src/vm_server.rs`：Ok 臂（:1597-1605）与 Err 臂（:1617-1620）把 `transport.send(...)`+panic 改为 `transport.asynsend(...)`（异步腿不因 RS 未 ready 失败，去掉 `unwrap_or_else(panic)`，仅在 senda 表满等极端情况按 C `asynsend.c:76-79` 降级）；两臂返回 `DispatchAction::Suspend`/`NoReply` 后 VM 立即回事件循环进 receive，内核在 RS 下次 receive 时投递排队消息，环被打断。
+3. 顺带核 minix-rs RS 是否对 VM 也 reply（若是，第二处 boot 死锁隐患，须按 `rs/main.c:812` 跳过对 VM 的 reply）；修正 vm_server.rs:1590-1596 与 1611-1612 两处对「C 应答同步/异步」互相矛盾的注释（Err 臂注释其实是对的、代码是错的）。
+4. 验证：docker + fmt + 两轮真机看 `vm_server.rs:1604` panic 消失、boot 越过 RS_INIT 握手进入后续 VM_PAGEFAULT 正常服务；建议探针 `nk4c-b5: vm birth asynsend3`（确认走 senda 非 SEND_NR）+ 内核 `mini_senda` 投递 VM→RS 闭环打点。
 
 ### 遗留登记（评审同根因家族，阶段 2/3 前专修，不在本轮 commit）
 
