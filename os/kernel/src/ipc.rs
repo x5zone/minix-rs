@@ -1400,6 +1400,16 @@ impl<'a> IpcEngine<'a> {
             // E1 slice 2: the woken receiver's RECEIVE completes with OK
             // (same completion-path return-code rule as the sender wake).
             crate::proc::set_ipc_return_code(&mut self.procs[dst_idx], OK as i64);
+            // NK4-C B12: Path A delivery completing a sendrec's receive half.
+            // In C, `mini_sendrec` ends with `MF_CLREPLYPRIV(pr)` (proc.c) that
+            // clears MF_REPLY_PEND unconditionally at sendrec completion.  In the
+            // Rust async model, the sendrec's receive half completes exactly here
+            // when the reply is delivered via Path A to a parked receiver.  Without
+            // this clear, a stale REPLY_PEND causes VM drain to mis-park the
+            // process on its next page fault (forward_pagefault_to_vm → Path B →
+            // VM receive → drain sees REPLY_PEND → parks RECEIVING+getfrom=VM
+            // forever).
+            self.procs[dst_idx].p_misc_flags.clear(MiscFlagsBits::REPLY_PEND);
             return IpcOutcome::Delivered;
             }
         }
