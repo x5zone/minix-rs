@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（当前 frontier = 1.12d「SENDA 表读回全零」——RS 的 RS_INIT 经 asynsend→senda 全部丢失，VFS boot 期 `receive(RS)` 永等；探针链已闭合：senda 入口到达（`sa-in c=2 n=1`）、四条早退门全过、表读未失败（`sa-readfail` 零输出），但 `flags` 解出 0=AMF_EMPTY → 空转返回，即 `copy_via_root_pages` 读回全零；跨 root 翻译+DM 窗口的安全性修复已被真机证实（s18d 零 GP fault，对比 s17t vector 13）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读；boot 从 449 livelock 推进至 12 服务全出生 + init 用户态跑通 GETUID/GETPID
+- **阶段**：**1.3 rc marker 链（当前 frontier = 1.12e-newstall「多进程同一栈页缺页死循环」——SENDA 方向互换已修（1.12e commit），RS_INIT 首次经 senda 投递并被 VFS 记 pending（saent 十连投 + apend 实锤，s19a/s19b 两轮签名一致）；boot 新增一层：RS 侧 1 次 panic-enter + init/VFS 等多进程反复对同一用户栈页 fa=0x7fffffffea68 缺页（fa8 全零、bytes 返 0），尾态全服务器 RECEIVING(ANY) 饿死。前代停点 1.12d 定性：根因是 `copy_via_root_pages` 的 `to_kernel` 两臂与 doc/调用点约定互换，读腿实为把清零缓冲写进用户槽位（破坏性 A_RETR）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1455,3 +1455,33 @@ elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（P
 
 - `/tmp/nk4a` 会被清（WSL 重启）；复跑前需 `mkdir -p /tmp/nk4a && cp tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd`。
 - 当前 frontier 基线：HEAD = 本 commit；docker 813/242/526 全绿。
+
+---
+
+## 1.12e SENDA 读方向互换修复（2026-09-24，serial_s19a/s19b）
+
+### 现象
+
+1.12d 探针链已把卡点收敛到「`copy_via_root_pages` 读回全零」。本轮未先上真机探针，改派 Debug 子代理做静态根因侦察，直接定位到方向互换（与 s18 全部探针签名逐条吻合），修复后真机两轮实锤：`saent` 首次出现且十连投（dst=0x1/3/4/5/6/7/8/9/a + none，mt=0x714=RS_INIT），`apend` 首次出现（VFS 的 s_asyn_pending 位被置起）。
+
+### 根因
+
+`copy_via_root_pages` 的 `to_kernel` 参数两臂内容与 doc 注释、与全部 4 个调用点的约定**恰好互换**：实现里 `to_kernel=true` 执行的是页→buf（读），`false` 执行 buf→页（写）；而 doc（ipc.rs:438-440）与调用点（`read_senda_entry` 传 false、`write_senda_result` 先 false 预读后 true 回写）约定 false=读。于是读腿拿到的 `out` 永远是初始化零 → flags=0=AMF_EMPTY → senda 一条不投；且**更破坏性**：写臂把清零的 80 字节写进用户栈槽位，把 RS 刚填好的 asynmsg 抹掉（用户槽 flags 真值应为 AMF_VALID|AMF_NO_REPLY=9）。C 锚点：`minix3/minix/kernel/proc.c:1244`（A_RETR 把表项拷进内核 tabent，方向 page→buf）与 `proc.c:1307`（A_INSRT 回写）。Rust 侧偏离：1.12d 首版跨地址空间改造时把两臂写反，且预置的真机探针只看到「读回全零」——因为全零是**自己写进去的**。
+
+排他性佐证（Debug 子代理静态对拍，均不成立）：RS `p_seg.phys_root` 与切表后 CR3 一致（s18i `sa0-`/`sa1-after` 探针）；x86_64 walk 逐级查 PRESENT 位不会静默返零（paging.rs:265-337）；DM 窗口覆盖该物理页；用户侧表 VA/count/线格式（WireAsyncSlot offset_of 守卫）全部对位。
+
+### 修复
+
+`os/kernel/src/ipc.rs` 的 `copy_via_root_pages` 交换两臂（true → buf 写页，false → 页读进 buf），与 doc/调用点对齐；不改调用点（4 处 + trait doc 是多数方）。`write_senda_result` 同一函数两腿自动恢复。另登记不修：read_senda_entry 的 `read_volatile(out.as_ptr() as *const WireAsyncSlot)` 对非对齐字节缓冲转指针形式上 over-aligned，当前 codegen 良性，建议后续 `read_unaligned` 化（task1-close 候选）。
+
+### 验证
+
+- docker：kernel **813** / arch **242** / vm **526**（基线持平，0 failed）
+- rustfmt：kernel/src/ipc.rs hunk 数 HEAD=99 NEW=99（零新增漂移）
+- 真机：serial_s19a / serial_s19b 两轮签名一致——`saent`×10、`apend`×8、无 vector 13；rc marker 未出现（新的更深层停点，见下）
+- commit 后 CodeReview：无 P0；P1×1（新 unsafe 块同时构造 `buf.as_ptr()`/`as_mut_ptr()`，Stacked Borrows 下读腿指针在写腿借用后使用属别名违规）→ 已改为两臂共用单次可变再借用 `base`，同镜像再跑 s19c/s19d 两轮签名一致（saent×10/apend×8/panic×1/v13×0）
+
+### 新停点（1.12e-newstall）
+
+1. **RS 侧 1 次 panic-enter**（s19a:4880，紧随 `pdmv-set krn m_user=0x7fffffff5b58` + fx/kdst 证据，panic-msg-nonstr）——疑似 Task C/S3 家族的 eager 直写腿在新投递量下重现，需定性。
+2. **多进程同一栈页缺页循环**：init/VFS 等（snd=0x1/3/4/5/6/7/9/a）反复对 fa=0x7fffffffea68（用户栈页）缺页，VM 服务但 `fa8` 读回全零、回复 bytes=0；尾态全服务器 RECEIVING(ANY) 饿死。下一手第一动作：对 fa=0x7fffffffea68 这个 VA 打 VM 侧 region 槽状态 + 该次 fault 的 vm 应答内容探针（对照 1.10「PM↔VM 缺页循环」节的入口配方：dump 该 VA 的 PTE 与 region 槽，查同 VA 重复 = PTE 丢失/映射被拒），并先定性 panic-enter 是否与循环同根。

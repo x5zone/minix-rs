@@ -481,12 +481,20 @@ fn copy_via_root_pages<D: minix_arch::DirectMapArch>(
         // SAFETY: DM 窗口 VA 由内核直映，pa 来自页表 walk（该页
         // USER_ACCESSIBLE）；chunk 不越过 cur 所在页。
         unsafe {
-            let src = dv.0 as *const u8;
-            let dst = buf.as_mut_ptr().add(done as usize);
+            let page = dv.0 as *mut u8;
+            // 只保留一次可变再借用（commit 后评审 P1：同时构造
+            // as_ptr/as_mut_ptr 按 Stacked Borrows 会使前者标签失效）；
+            // 可变指针可作 *const 读源，两臂共用 base。
+            let base = buf.as_mut_ptr().add(done as usize);
+            // NK4-C 1.12e：方向按 doc 契约——to_kernel=true 把 buf 写入
+            // 用户页，false 把用户页读进 buf。此前两臂互换：读腿
+            // （read_senda_entry/write_senda_result 的 head 预读传 false）
+            // 实际把清零缓冲写进用户槽位（A_RETR 变破坏性写），flags
+            // 恒解出 0=AMF_EMPTY → senda 一条不投（s18 系列全零签名）。
             if to_kernel {
-                core::ptr::copy_nonoverlapping(src, dst, chunk);
+                core::ptr::copy_nonoverlapping(base, page, chunk);
             } else {
-                core::ptr::copy_nonoverlapping(dst as *const u8, src as *mut u8, chunk);
+                core::ptr::copy_nonoverlapping(page as *const u8, base, chunk);
             }
         }
         done += chunk as u64;
