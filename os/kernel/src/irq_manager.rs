@@ -180,6 +180,16 @@ impl IrqNotify for KernelNotifier {
         // its next RECEIVE. We ignore the Rust `IpcOutcome` to match C's
         // void-return semantics.
         let _ = crate::ipc::kernel_mini_notify(crate::proc::proc_nr::KERNEL, dst);
+        // C: `mini_notify`'s `RTS_UNSET(..., RTS_RECEIVING)` carries the
+        // enqueue half (proc.h). `kernel_mini_notify` is the primitive slice
+        // clear with no scheduler access, so the caller must supply the
+        // enqueue half — otherwise a device-IRQ-notified server parked in
+        // RECEIVE is woken but left `runnable=yes queued=no` and never picked
+        // (NK4-C B6 lost-wakeup family; runs on every hardware IRQ).
+        let proc_table = crate::proc_table_with(&section);
+        if let Some(nr) = proc_table.endpoint_to_nr(dst) {
+            proc_table.enqueue_if_woken(nr);
+        }
     }
 }
 

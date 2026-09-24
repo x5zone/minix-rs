@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（当前 frontier = 1.14「B6：boot 后期全员 `runnable=no queued=no`、只剩 idle 可跑，`rs-pm post-privctl pre-initsrv` 之后 IPC 阻塞待定性」——B5 已修并真机验证（VM RS_INIT 出生报告按 C `sef_cb_init_response_rs_asyn_once`/`asynsend3(AMF_NOREPLY)` 改用异步腿，去 `unwrap_or_else` panic；CodeReview 拦下 P0-1 栈局部槽延迟重放 UB，改持久 `AsyncSendQueue`；docker 242/813/528、fmt 零新增漂移、真机 b5c/b5d 逐字一致，出生报告 panic 消失、boot 推进至 VM 主循环服务 1169 缺页 + 进程表建到 nr=0x10b）。前代 1.13「VM 出生报告 send(RS) 失败 panic vm_server.rs:1604」——B3 定性纠偏：前代标注的「多进程同一栈页缺页死循环」是幻影（pf# 逐条 rip 推进、只叶子 PTE 缺 = 正常按需分页），真停点 = RS `catch_boot_init_ready` 因 VM(src=8) 的 RS_INIT rproctab safecopyfrom 回 ESRCH → boot.rs:1254 fail-closed panic。B4 根因：`verify_grant` 把内核栈 `grant_entry` 经 `CurrentDirectMap::virt_to_phys` 当 copy 目标，而内核数据在 Direct Map 窗口之外 → 其别名未映射 → `DstPageFault` → EPERM。修复：新增读侧 mirror `cross_space_read`（进程 src 走 PTE+DM、内核局部 dst 直读自身 VA，并按物理连续段分片对齐 C `lin_lin_copy`）+ `read_from_process_vmcheck`，verify_grant 改用它。真机 b4d/b4e（修前签名）→ b4f/b4g（评审后加跨页分片，签名逐字一致）：readfail/vm-rswire/rs-initfail 全消失、`vg st fl=0x1301 wto=0x7c00(ANY) len=0xa00` 读通，docker 242/813/526、fmt 零新增漂移。boot 推进一层至 B5。前代 1.12e：SENDA 方向互换已修（RS_INIT 首次经 senda 投递 + apend 实锤，s19a/s19b 签名一致）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通 + B5 出生报告异步化（VM 进主循环）
+- **阶段**：**1.3 rc marker 链（当前 frontier = 1.15「B7：B6 丢唤醒修复后 p_nr=4 复活并活锁——调度器反复 pick p_nr=4、同一 `rip=0x202d68 r10s=0x4` ping-pong，1920 次 pick 不收敛、150s 未达 rc marker，待起 DebugAgent 定性 p_nr=4 身份与该 ping-pong 根因」——B6 已修并真机验证（notify 裸清 RECEIVING 不补入队半家族：clock 到期 alarm / cause_signal 两臂 / irq_manager 设备 IRQ 各补 `enqueue_if_woken`，ipc.rs senda 两处 ASYNCM 通知改走 `Self::notify`；docker 242/813/528、fmt 六文件零新增漂移（lib/ipc 反各减 1）、真机 b6d/b6e/b7a/b7b 全程 `runnable=yes queued=no`=0 `panic!`=0 逐字一致）——B5 已修并真机验证（VM RS_INIT 出生报告按 C `sef_cb_init_response_rs_asyn_once`/`asynsend3(AMF_NOREPLY)` 改用异步腿，去 `unwrap_or_else` panic；CodeReview 拦下 P0-1 栈局部槽延迟重放 UB，改持久 `AsyncSendQueue`；docker 242/813/528、fmt 零新增漂移、真机 b5c/b5d 逐字一致，出生报告 panic 消失、boot 推进至 VM 主循环服务 1169 缺页 + 进程表建到 nr=0x10b）。前代 1.13「VM 出生报告 send(RS) 失败 panic vm_server.rs:1604」——B3 定性纠偏：前代标注的「多进程同一栈页缺页死循环」是幻影（pf# 逐条 rip 推进、只叶子 PTE 缺 = 正常按需分页），真停点 = RS `catch_boot_init_ready` 因 VM(src=8) 的 RS_INIT rproctab safecopyfrom 回 ESRCH → boot.rs:1254 fail-closed panic。B4 根因：`verify_grant` 把内核栈 `grant_entry` 经 `CurrentDirectMap::virt_to_phys` 当 copy 目标，而内核数据在 Direct Map 窗口之外 → 其别名未映射 → `DstPageFault` → EPERM。修复：新增读侧 mirror `cross_space_read`（进程 src 走 PTE+DM、内核局部 dst 直读自身 VA，并按物理连续段分片对齐 C `lin_lin_copy`）+ `read_from_process_vmcheck`，verify_grant 改用它。真机 b4d/b4e（修前签名）→ b4f/b4g（评审后加跨页分片，签名逐字一致）：readfail/vm-rswire/rs-initfail 全消失、`vg st fl=0x1301 wto=0x7c00(ANY) len=0xa00` 读通，docker 242/813/526、fmt 零新增漂移。boot 推进一层至 B5。前代 1.12e：SENDA 方向互换已修（RS_INIT 首次经 senda 投递 + apend 实锤，s19a/s19b 签名一致）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通 + B5 出生报告异步化（VM 进主循环）
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1565,3 +1565,31 @@ boot 推进一层：VM 成功读回 rproctab 后，自身 `ipc_send() failed (RS
 ### 新停点（1.14-newstall = B6）
 
 B5 消除后，boot 大幅推进：VM 进入主事件循环（`init done`→`run enter`→`ipc-entry nr=2 caller=8`）、服务 1169 次缺页、RS 走过出生报告继续 `rs-pm post-privctl pre-initsrv`，进程表建到 nr=0x10b。但两轮最终都进入**全阻塞态**：`tail-dump` 周期快照显示所有非 free 进程 `runnable=no queued=no`，只剩 idle 可跑，此后只有 `gtick` 时钟在走，150s 内零新事件。这是一个与 B5 正交的**新前沿 B6**（启动后期所有服务器/进程被挂住、无进程可调度），下一轮按 /debug 起 DebugAgent 定性（首个入口：`rs-pm post-privctl pre-initsrv` 之后 RS 对 PM 的 initsrv 到底发出没有、阻塞在哪条 IPC 腿；对照已登记的 P1-ipc `clear_ipc_refs` 裸清标志家族）。
+
+## 1.15 notify 裸清丢唤醒家族修复（B6 落地）（2026-09-24，serial_b6a 探针定性 → b6d/b6e 时钟修复 → b7a/b7b 家族全量）
+
+### 现象与定性
+
+B6 前沿（boot 后期无进程可调度）经 DebugAgent 定性为「**notify 裸清 RECEIVING 却不补入队半**」家族病。诊断探针（`mini_notify_core` chokepoint 打印 caller/dst_nr）在 serial_b6a 实锤：`ntfy caller=0xfffffffffffffffd(-3=CLOCK) dst_nr=0x4 dep=0x4`——时钟到期 alarm 唤醒 p_nr=4 时清掉其 `RTS_RECEIVING`，但 p_nr=4 从此停在 `runnable=yes queued=no`（可运行却永不进 run queue、永不被 pick），全系统最终只剩 idle。
+
+### 根因
+
+C 的 `mini_notify` 经 `RTS_UNSET(p, RTS_RECEIVING)` 宏投递，宏体自带「进程变可运行则 `enqueue`」的入队半（`minix3/minix/kernel/proc.h:215-224`）。本仓把 `mini_notify_core` 拆成只清标志切片的 primitive（无调度器访问），**调用方**必须补 `enqueue_if_woken(nr)`。多个裸调点漏了这半，构成同族丢唤醒。正确模板早存在于 `proc_table.rs:330-361`（VM notify）与 `syscall.rs:1040`（dispatch 的 wake-target drain）。
+
+### 修复（五处入队腿 + 一处测试隔离）
+
+1. `os/kernel/src/clock.rs:1542`：到期 alarm notify 循环后补 `endpoint_to_nr`+`enqueue_if_woken`（B6 主因，探针实锤的那条）。
+2. `os/kernel/src/syscall_signal.rs:330 / 399`：`cause_signal` 的 SELF 臂与外部臂（唤醒信号管理器）各补同一入队腿。
+3. `os/kernel/src/irq_manager.rs:182`：设备硬件中断通知 `kernel_mini_notify`（`mini_notify_core` 薄包装，无调度器）后补入队腿——评审 P1-1 指出这是家族里**频次最高**的一只（每个设备 IRQ 都走），boot 一旦驱动外设即以同形态复发。
+4. `os/kernel/src/ipc.rs:2028 / 2414`：`deliver_async`/`mini_senda` 的 ASYNCM(-5) 通知改走 `Self::notify`（其内部 `mini_notify_core`+`record_wake_target`），使被异步完成唤醒的发送者经 syscall.rs 的 wake drain 正常入队（评审 P1-2，与 B5 senda 前沿同轴）。原先两处直调裸 `mini_notify_core`，唤醒被记录不到。
+5. 测试隔离：B6 让 `clock_irq_handler`（跑真实调度器感知原语、用全局 `PROC_TABLE`）合法地把 p_nr=4 留在全局 run queue 且不清理，泄漏污染下游端到端测试 `test_switch_to_user_full_loop_dispatches_first_runnable_process`（其 pick 到残留 NoEntry 进程 → `no entry trap style known`）。新增 `ProcessTable::drain_run_queues_for_test()`（按队列头弹出，panic-proof），在污染源 `clock.rs setup_globals` 与受害方该测试起始各调一次，落实该测试模块本就声明的「global-state hygiene at each test's start」。
+
+### 验证
+
+- docker 单测（`cargo test -p minix-kernel -p minix-arch -p minix-vm`）：arch 242 / kernel 813 / vm 528，0 失败（回归前 kernel 曾因该测试 812/1FAILED，修隔离后回 813 绿）。
+- rustfmt nightly `--edition 2024`：六文件零新增漂移——clock 51==51、syscall_signal 37==37、proc_table 71==71、irq_manager 20==20，且 lib.rs 1168<head 1169、ipc.rs 98<head 99（本轮反而更少）。
+- 真机四轮：时钟单修复镜像 serial_b6d/b6e + 家族全量镜像 serial_b7a/b7b，`runnable=yes queued=no` 全程 0（p_nr=4 不再丢唤醒、被正常 pick）、`panic!` 0、`pre-initsrv`=8、pick 分布与总数逐字一致。p_nr=4 的唤醒不再被吞即证明 B6 主因消除。
+
+### 新停点（1.15-newstall = B7）
+
+B6 消除丢唤醒后，前沿从「p_nr=4 死锁 / init↔PM 阻塞」推进为「**p_nr=4 复活后活锁**」：真机尾态是调度器反复 pick p_nr=4、每次 `pre-restore rip=0x202d68 rsp=0x7fffffff9178 r10s=0x4`（同一用户上下文、IPC 返回码 4），1920 次 pick 后仍不收敛，150s 未达 rc marker。b6d/b6e（仅时钟修复）与 b7a/b7b（家族全量）尾态一致——irq/senda 腿在本 boot 未额外改变结果（p_nr=4 活锁发生更靠前）。B7 待起 DebugAgent 定性：p_nr=4 是谁（哪个服务器）、为何在固定 `rip` 上用户态↔内核 ping-pong、`r10s=4` 是哪条 syscall/reply 的返回（对照信号交付链与 sendrec 语义）。遗留家族登记：`clear_ipc_refs`（P1-ipc）与 `do_trace`（P1-trace）此前已记，本轮 irq/senda 已并入修复；评审 P2-1（`mini_notify_core` 两臂都回 `Delivered`、入队只能无条件挂，安全性依赖「pick 不出队」这一实现事实——SMP 收口/改「选中即出队」时须显式加 `was_runnable` 门）与 P2-2（`endpoint_to_nr` 排除 `SLOT_FREE` 而 `mini_notify_core` 槽查找不排除，判据不一致）登记待 SMP 阶段专修。

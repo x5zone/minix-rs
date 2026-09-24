@@ -1524,6 +1524,14 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
 
     // Deliver alarm notifications from the CLOCK source (post-tick — the
     // notify needs the process slice, which the tick no longer borrows).
+    // C: an expired alarm wakes the owner through `notify()`, whose
+    // `RTS_UNSET(..., RTS_RECEIVING)` carries the enqueue half (proc.h).
+    // `mini_notify_core` here is the primitive slice clear with no
+    // scheduler access, so the caller must supply the enqueue half—otherwise
+    // the expired-alarm process ends up `runnable=yes queued=no` and is
+    // never picked (NK4-C B6: clock notify bare-cleared p_nr=4 without
+    // enqueue, the system's only runnable process → picknone → whole-boot
+    // deadlock).
     for ep in batch.iter().flatten().take(n_batch) {
         let _ = crate::ipc::mini_notify_core(
             table.procs_slice_mut(),
@@ -1531,6 +1539,9 @@ pub fn clock_irq_handler(ctx: &mut IrqHookContext) -> IrqAction {
             crate::proc::proc_nr::CLOCK,
             *ep,
         );
+        if let Some(nr) = table.endpoint_to_nr(*ep) {
+            table.enqueue_if_woken(nr);
+        }
     }
 
     // C: generic_handler returns hook->policy & IRQ_REENABLE
@@ -1577,6 +1588,12 @@ mod clock_irq_handler_tests {
                 slot.p_rts_flags.set(RtsFlagsBits::SLOT_FREE);
                 slot.p_misc_flags.clear(MiscFlagsBits::DELIVERMSG);
             }
+            // A real alarm expiry now wakes its owner through the notify
+            // enqueue half (NK4-C B6), so `clock_irq_handler` can leave a
+            // process on the shared run queue. Reset the queue here too —
+            // RTS-flag reset alone does not, and the residue would pollute
+            // this table's next reader.
+            table.drain_run_queues_for_test();
             (table, priv_table)
         }
     }

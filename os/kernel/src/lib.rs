@@ -5212,6 +5212,15 @@ mod tests {
         {
             let table = unsafe { crate::proc_table_boot_unchecked() };
             let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+            // Global-state hygiene (B6): the shared scheduler run queue is
+            // not part of the root-mirror reset. A prior test that drives a
+            // real scheduler-aware primitive against the shared PROC_TABLE
+            // (e.g. `clock_irq_handler` waking an expired-alarm owner through
+            // the notify enqueue half, NK4-C B6) legitimately leaves a process
+            // queued. Drain every run queue so this loop's pick sees only the
+            // single runnable+queued process seeded below (the test's stated
+            // precondition), immune to upstream ordering.
+            table.drain_run_queues_for_test();
             make_runnable_billable(table, priv_table, ProcNr(0), crate::proc::priority::USER_Q, 5000);
             table.get_mut(ProcNr(0)).unwrap().p_seg.phys_root = minix_types::PhysBytes(0x6000);
             // Simulate a prior kernel entry (see test_finish_and_restore_

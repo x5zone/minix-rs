@@ -323,6 +323,13 @@ pub(crate) fn cause_signal(
             crate::proc::proc_nr::SYSTEM,
             ep,
         );
+        // C: `mini_notify`'s `RTS_UNSET(..., RTS_RECEIVING)` carries the
+        // enqueue half; `mini_notify_core` is the primitive slice clear, so
+        // supply it here (NK4-C B6 family — a woken-but-not-enqueued process
+        // is `runnable=yes queued=no` and never picked).
+        if let Some(nr) = proc_table.endpoint_to_nr(ep) {
+            proc_table.enqueue_if_woken(nr);
+        }
         return;
     }
 
@@ -386,6 +393,12 @@ pub(crate) fn cause_signal(
                 crate::proc::proc_nr::SYSTEM,
                 sig_mgr_ep,
             );
+            // Same enqueue half as C's RTS_UNSET (B6 family): the notify may
+            // have cleared the sig manager's RECEIVING, so it must be pushed
+            // onto the run queue if it just became runnable.
+            if let Some(sig_mgr_nr) = proc_table.endpoint_to_nr(sig_mgr_ep) {
+                proc_table.enqueue_if_woken(sig_mgr_nr);
+            }
         }
     }
 }

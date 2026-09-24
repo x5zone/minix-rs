@@ -2025,12 +2025,13 @@ impl<'a> IpcEngine<'a> {
         if do_notify {
             // C: mini_notify(proc_addr(ASYNCM), src_ptr->p_endpoint)
             // — proc.c:1493-1494. ASYNCM = -5 (com.h:47).
-            let _ = mini_notify_core(
-                self.procs,
-                self.priv_table,
-                ProcNr(-5),
-                sender_ep_final,
-            );
+            //
+            // Go through `Self::notify` (not the bare `mini_notify_core`)
+            // so the ASYNCM-woken sender is recorded via
+            // `record_wake_target` and enqueued by the dispatcher's wake
+            // drain (NK4-C B6 family: a primitive slice clear leaves it
+            // `runnable=yes queued=no`).
+            let _ = self.notify(ProcNr(-5), sender_ep_final);
         }
 
         if done {
@@ -2411,7 +2412,12 @@ impl<'a> IpcEngine<'a> {
         if do_notify {
             // C: mini_notify(proc_addr(ASYNCM), caller_ptr->p_endpoint)
             // — proc.c:1317-1318. ASYNCM = -5 (com.h:47).
-            let _ = mini_notify_core(self.procs, self.priv_table, ProcNr(-5), caller_endpoint);
+            //
+            // Route through `Self::notify` so the ASYNCM-woken caller is
+            // recorded and enqueued by the dispatcher's wake drain
+            // (NK4-C B6 family — a bare primitive clear leaves it
+            // `runnable=yes queued=no`).
+            let _ = self.notify(ProcNr(-5), caller_endpoint);
         }
 
         if !done {

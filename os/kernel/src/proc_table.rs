@@ -510,6 +510,26 @@ impl ProcessTable {
         }
     }
 
+    /// Test-only: drain every ready queue by popping its head.
+    ///
+    /// Tests that drive a *real* scheduler-aware primitive against the
+    /// shared global `PROC_TABLE` (e.g. `clock_irq_handler` expiring an
+    /// alarm, which now wakes its owner through the notify enqueue half —
+    /// NK4-C B6) legitimately leave a process on the run queue. Because
+    /// the table is a `static` shared across the sequential test run
+    /// (`--test-threads=1`), that residue pollutes any later test that
+    /// assumes a clean queue. Popping by queue head (rather than scanning
+    /// every `nr` and reverse-looking-up its priority) is panic-proof: a
+    /// head is by construction in the queue matching its priority.
+    #[cfg(test)]
+    pub(crate) fn drain_run_queues_for_test(&mut self) {
+        for q in 0..crate::proc::priority::NR_SCHED_QUEUES {
+            while let Some(nr) = self.sched.queue_head(q) {
+                self.sched_dequeue(nr, CpuId::BSP);
+            }
+        }
+    }
+
     /// Clear RTS flags on a process. If the process transitions from
     /// non-runnable to runnable, automatically enqueues it in the scheduler.
     ///
