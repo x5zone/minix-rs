@@ -18,7 +18,7 @@
 use alloc::vec::Vec;
 
 use minix_fs::cache::{BlockKey, BlockSource};
-use minix_types::{EIO, Errno};
+use minix_types::{EIO, EROFS, Errno};
 
 /// A block source that refuses every transfer.
 #[derive(Debug, Default, Clone, Copy)]
@@ -54,36 +54,70 @@ impl BlockSource for PendingBlockSource {
 /// directly; when the channel lands, servers switch to `minix-fs`'s
 /// `BdevBlockSource` and this type stays the boot-image form factor.
 ///
-/// Writes land in the image bytes and live as long as the process does —
-/// the RAM disk contract (contents lost at shutdown), like C's
-/// `m_vaddrs`-backed device. A read of untouched image bytes returns what
-/// was booted; the source never invents blocks it was not given.
+/// B11: the packaged imgrd (8 MB) is embedded in the MFS binary via
+/// `include_bytes!` (static rdata). To avoid a 8 MB heap allocation that
+/// exceeds the slab pool, `from_static` wraps the reference zero-copy.
+/// Writes are `EROFS` on the static variant (boot media is read-only);
+/// the owned variant (used in tests) supports in-place mutation like C's
+/// `m_vaddrs`-backed device.
 #[derive(Debug)]
 pub struct ImgrdBlockSource {
-    image: Vec<u8>,
+    inner: ImageData,
     block_size: usize,
 }
 
+#[derive(Debug)]
+enum ImageData {
+    /// Owned copy (tests, or future write-back scenarios).
+    Owned(Vec<u8>),
+    /// Zero-copy static reference (packaged boot image, E-IMGPKG B11).
+    Static(&'static [u8]),
+}
+
+impl ImageData {
+    fn as_bytes(&self) -> &[u8] {
+        match self {
+            Self::Owned(v) => v,
+            Self::Static(s) => s,
+        }
+    }
+}
+
 impl ImgrdBlockSource {
-    /// Wrap `image` bytes as the device. `block_size` is the file system
-    /// block size the mount path validates against the superblock (C's
-    /// `mount.c:52` adoption check — the Rust cache compares sizes instead
-    /// of reconfiguring). An empty image or a zero block size is `EINVAL`.
+    /// Wrap owned `image` bytes as the device (test/dev path). `block_size`
+    /// is the file system block size the mount path validates against the
+    /// superblock. An empty image or a zero block size is `EINVAL`.
     pub fn new(image: Vec<u8>, block_size: usize) -> Result<Self, Errno> {
         if image.is_empty() || block_size == 0 {
             return Err(Errno::EINVAL);
         }
-        Ok(Self { image, block_size })
+        Ok(Self {
+            inner: ImageData::Owned(image),
+            block_size,
+        })
+    }
+
+    /// Wrap a static image reference zero-copy (the packaged boot image,
+    /// B11). Avoids heap allocation for large imgrd blobs. Writes return
+    /// `EROFS` since the backing store is in read-only rdata.
+    pub fn from_static(image: &'static [u8], block_size: usize) -> Result<Self, Errno> {
+        if image.is_empty() || block_size == 0 {
+            return Err(Errno::EINVAL);
+        }
+        Ok(Self {
+            inner: ImageData::Static(image),
+            block_size,
+        })
     }
 
     /// Device size in bytes — the imgrd geometry (`memory.c:149`).
     pub fn size_bytes(&self) -> u64 {
-        self.image.len() as u64
+        self.inner.as_bytes().len() as u64
     }
 
     /// The image bytes as loaded.
     pub fn image(&self) -> &[u8] {
-        &self.image
+        self.inner.as_bytes()
     }
 }
 
@@ -96,16 +130,17 @@ impl BlockSource for ImgrdBlockSource {
         if out.len() != self.block_size {
             return Err(Errno::EINVAL);
         }
+        let image = self.inner.as_bytes();
         let start = key.block.saturating_mul(self.block_size as u64);
-        if start >= self.image.len() as u64 {
+        if start >= image.len() as u64 {
             // Entirely past the device end: the transfer answers zero
             // (`memory.c:442-443`), so the block reads as zeros.
             out.fill(0);
             return Ok(());
         }
         let start = start as usize;
-        let surviving = (self.image.len() - start).min(self.block_size);
-        out[..surviving].copy_from_slice(&self.image[start..start + surviving]);
+        let surviving = (image.len() - start).min(self.block_size);
+        out[..surviving].copy_from_slice(&image[start..start + surviving]);
         out[surviving..].fill(0);
         Ok(())
     }
@@ -114,15 +149,23 @@ impl BlockSource for ImgrdBlockSource {
         if data.len() != self.block_size {
             return Err(Errno::EINVAL);
         }
+        let image = match &mut self.inner {
+            ImageData::Owned(v) => v,
+            // Static boot image is read-only rdata (B11): the packaged
+            // imgrd cannot be mutated. C's RAM disk does allow writes,
+            // but only after the bdev channel (E-FSBDEV full half) lands
+            // and MFS gets a writable overlay.
+            ImageData::Static(_) => {
+                return Err(Errno::from_i32(EROFS));
+            }
+        };
         let start = key.block.saturating_mul(self.block_size as u64);
-        if start >= self.image.len() as u64 {
-            // Entirely past the end: nothing survives, zero bytes copied
-            // (`memory.c:442-443`).
+        if start >= image.len() as u64 {
             return Ok(());
         }
         let start = start as usize;
-        let surviving = (self.image.len() - start).min(self.block_size);
-        self.image[start..start + surviving].copy_from_slice(&data[..surviving]);
+        let surviving = (image.len() - start).min(self.block_size);
+        image[start..start + surviving].copy_from_slice(&data[..surviving]);
         Ok(())
     }
 }
@@ -143,9 +186,10 @@ pub enum BootBlockSource {
 
 impl BootBlockSource {
     /// Pick the arm for `image`. Empty slices — the unpackaged default —
-    /// start fail-closed; anything else becomes the imgrd device.
+    /// start fail-closed; anything else becomes the imgrd device (zero-copy
+    /// static reference, B11).
     pub fn from_boot_image(image: &'static [u8], block_size: usize) -> Self {
-        match ImgrdBlockSource::new(image.to_vec(), block_size) {
+        match ImgrdBlockSource::from_static(image, block_size) {
             Ok(source) => Self::Imgrd(source),
             Err(_) => Self::Pending(PendingBlockSource),
         }
@@ -290,8 +334,18 @@ mod tests {
         let mut out = [0u8; BS];
         src.read_block(BlockKey::new(0, 1), &mut out).unwrap();
         assert!(out.iter().all(|&b| b == 0x5A));
-        // Writes reach the enum's imgrd arm: the block reads back through
-        // the same enum with the written bytes.
+        // from_boot_image yields a zero-copy static source (B11): writes
+        // are EROFS (the packaged imgrd is read-only rdata).
+        let wr = src.write_block(BlockKey::new(0, 0), &[0x11u8; BS]);
+        assert_eq!(wr.unwrap_err().to_i32(), EROFS);
+    }
+
+    #[test]
+    fn test_imgrd_source_owned_variant_supports_writes() {
+        // The owned variant (used in tests / future writable scenarios)
+        // does support write_block in-place.
+        let image = vec![0x5Au8; 2 * BS];
+        let mut src = ImgrdBlockSource::new(image, BS).unwrap();
         src.write_block(BlockKey::new(0, 0), &[0x11u8; BS]).unwrap();
         let mut back = [0u8; BS];
         src.read_block(BlockKey::new(0, 0), &mut back).unwrap();

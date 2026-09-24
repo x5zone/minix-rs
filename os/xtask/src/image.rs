@@ -8,8 +8,8 @@
 //!     `loader::KERNEL_PATH` 读取，`os/boot-shim/src/loader.rs:31`）
 //!   - `/EFI/minix/modules/<名>` ×12 ← 装机清单（[`crate::manifest`]）
 //!   - `/EFI/minix/imgrd` ← mfs 根盘（mkfs_mfs 播种 `/etc` 最小集）。
-//!     imgrd 的启动期消费通道（基址/尺寸如何进内核再进 memory 驱动）
-//!     归 new_edge3 NS6 设计；装机面只保证工件在包内有确定路径。
+//!     B11（E-IMGPKG）：mfs 的 build.rs 在编译期 include_bytes!
+//!     把 imgrd 字节喂进 BOOT_IMGRD 静态量，消费通道已落地。
 //!
 //! 与 boot-shim 的 fail-fast 同语义：模块缺件在装配期报错点名
 //! （`os/boot-shim/src/loader.rs:280-288` 的运行期对位），不让半包
@@ -219,14 +219,24 @@ pub fn plan(
         actions.push(Action::Cargo { args, note });
     };
 
-    // 1. 逐包构建 12 模块（guest 用户态目标；失败点名到包）。
-    for entry in crate::manifest::BOOT_MODULES.iter() {
+    // 1a. 逐包构建 11 模块 + sh（guest 用户态目标；失败点名到包）。
+    //     mfs 推迟到 imgrd 生成后构建（B11：build.rs include_bytes!）。
+    for entry in crate::manifest::BOOT_MODULES
+        .iter()
+        .filter(|e| e.package != "minix-fs-mfs")
+    {
         cargo_release(
             &mut actions,
-            "装配清单模块构建",
+            "装配清单模块构建（mfs 除外）",
             &["-p", entry.package, "--target", arch.module_target()],
         );
     }
+    // /bin/sh 不是 boot 模块，但 imgrd 播种需要其 ELF 二进制（proto 路径引用）。
+    cargo_release(
+        &mut actions,
+        "sh 命令构建（imgrd /bin/sh 播种）",
+        &["-p", "minix-shell", "--target", arch.module_target()],
+    );
 
     // 2. boot-shim（生产开关：关默认 feature，只开本架构的 uefi 特性）。
     cargo_release(
@@ -265,6 +275,42 @@ pub fn plan(
         &["-p", "minix-diskfmt"],
     );
 
+    // 3b. /etc 原型 + mkfs_mfs 播种 imgrd（先于 mfs 构建——build.rs 需 imgrd 就位）。
+    let proto_path = image_dir.join("imgrd.proto");
+    let imgrd = image_dir.join("imgrd.img");
+    let sh_rel = format!("target/{}/{}/sh", arch.module_target(), profile);
+    actions.push(Action::Write {
+        path: proto_path.clone(),
+        bytes: generate_etc_proto(&layout.os_root.join("etc"), &sh_rel)?,
+        note: "imgrd 原型文件（/etc 最小集 + /bin/sh + /dev/console）",
+    });
+    actions.push(Action::Tool {
+        program: layout
+            .target_root
+            .join(profile)
+            .join("mkfs_mfs")
+            .to_string_lossy()
+            .into_owned(),
+        args: vec![
+            imgrd.to_string_lossy().into_owned(),
+            "2048".into(), // 块数：2048 × 4KiB = 8MiB，装机最小集宽裕
+            "0".into(),    // inode 数 0 = mkfs 缺省阶梯（mkfs.rs proto_header 文档）
+            "4096".into(), // 块大小
+            "-p".into(),
+            proto_path.to_string_lossy().into_owned(),
+        ],
+        cwd: Some(layout.os_root.clone()),
+        note: "mkfs_mfs 播种 imgrd（B11：先于 mfs 构建）",
+    });
+
+    // 3c. mfs 构建（build.rs 此时可发现 target/image/<arch>/imgrd.img，
+    //     经 include_bytes! 喂 BOOT_IMGRD）。E-IMGPKG 落地。
+    cargo_release(
+        &mut actions,
+        "mfs 构建（imgrd include_bytes!，B11）",
+        &["-p", "minix-fs-mfs", "--target", arch.module_target()],
+    );
+
     // 4. staging 目录树。
     let modules_dir = staging.join("EFI/minix/modules");
     actions.push(Action::Mkdir {
@@ -295,45 +341,11 @@ pub fn plan(
         note: "内核 ELF 装机（loader::KERNEL_PATH 契约位）",
     });
 
-    // 7. /etc 原型 + mkfs_mfs 播种 imgrd。
-    let proto_path = image_dir.join("imgrd.proto");
-    let imgrd = image_dir.join("imgrd.img");
-    // NK4-C 1.10r（rc marker 缺口）：imgrd 播种 /bin/sh——init 的
-    // runcom 状态机 exec /bin/sh 跑 /etc/rc，缺件即 marker 链断。
-    let sh_rel = format!("target/{}/{}/sh", arch.module_target(), profile);
-    if !layout.os_root.join(&sh_rel).is_file() {
-        bail!(
-            "装配缺件（fail-fast）：/bin/sh 宿主产物 {} 不存在",
-            layout.os_root.join(&sh_rel).display()
-        );
-    }
-    actions.push(Action::Write {
-        path: proto_path.clone(),
-        bytes: generate_etc_proto(&layout.os_root.join("etc"), &sh_rel)?,
-        note: "imgrd 原型文件（/etc 最小集 + /bin/sh + /dev/console）",
-    });
-    actions.push(Action::Tool {
-        program: layout
-            .target_root
-            .join(profile)
-            .join("mkfs_mfs")
-            .to_string_lossy()
-            .into_owned(),
-        args: vec![
-            imgrd.to_string_lossy().into_owned(),
-            "2048".into(), // 块数：2048 × 4KiB = 8MiB，装机最小集宽裕
-            "0".into(),    // inode 数 0 = mkfs 缺省阶梯（mkfs.rs proto_header 文档）
-            "4096".into(), // 块大小
-            "-p".into(),
-            proto_path.to_string_lossy().into_owned(),
-        ],
-        cwd: Some(layout.os_root.clone()), // 原型里的宿主文件路径相对 os/ 根
-        note: "mkfs_mfs 播种 imgrd（装机消费 S32 决定半）",
-    });
+    // 7. imgrd 入 staging（生成已在 step 3b 完成，此处只拷贝）。
     actions.push(Action::Copy {
         from: imgrd,
         to: staging.join("EFI/minix/imgrd"),
-        note: "imgrd 入包（消费通道归 NS6 设计）",
+        note: "imgrd 入包 staging（供 ESP mcopy 消费）",
     });
 
     // 8. FAT 盘镜像组装（mtools；与 run_qemu.sh 的真盘镜像优先路径同词汇，
@@ -344,11 +356,11 @@ pub fn plan(
             "if=/dev/zero".into(),
             format!("of={}", esp_image.to_string_lossy()),
             "bs=1M".into(),
-            "count=64".into(),
+            "count=128".into(),
             "status=none".into(),
         ],
         cwd: None,
-        note: "64MiB 空盘",
+        note: "128MiB 空盘（B11：mfs 含 8MB imgrd 嵌入后 ESP 总需 >86MB）",
     });
     actions.push(Action::Tool {
         program: "mkfs.vfat".into(),
@@ -639,8 +651,8 @@ mod tests {
                 .iter()
                 .filter(|a| matches!(a, Action::Cargo { .. }))
                 .count()),
-            15,
-            "12 模块 + boot-shim + kernel-image + mkfs_mfs = 15 步 cargo 构建"
+            16,
+            "11 模块(不含 mfs) + sh + boot-shim + kernel-image + mkfs_mfs + mfs(B11 后构) = 16 步 cargo 构建"
         );
         // 生产开关与 uefi 目标。
         assert!(text.contains("fw-x86-uefi") && text.contains("x86_64-unknown-uefi"));
@@ -726,13 +738,13 @@ mod tests {
             text.contains("BOOTAA64.EFI") && text.contains("startup.nsh"),
             "ESP 默认加载项应为 BOOTAA64.EFI 且同步写进 startup.nsh"
         );
-        // 其余构形与 x86_64 同调（12 模块 + shim + kernel-image + mkfs = 15）。
+        // 其余构形与 x86_64 同调（11 模块 + sh + shim + kernel + mkfs + mfs = 16）。
         assert_eq!(
             actions
                 .iter()
                 .filter(|a| matches!(a, Action::Cargo { .. }))
                 .count(),
-            15,
+            16,
             "aarch64 与 x86_64 的装配步骤数必须相同"
         );
         assert!(esp.ends_with("minix.img"));

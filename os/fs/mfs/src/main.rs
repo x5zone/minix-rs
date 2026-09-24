@@ -8,11 +8,11 @@
 //!
 //! Two deliberate stand-ins, both honest failures rather than pretend
 //! successes:
-//! - the block source starts fail-closed (`EIO`) until the packaging
-//!   supplies the boot image (the tracked E-IMGPKG item): `BOOT_IMGRD`
-//!   below is the supply point, and `minix_fs_rt::source::BootBlockSource`
-//!   switches to the imgrd RAM disk
-//!   (`minix_fs_rt::source::ImgrdBlockSource`) the moment it is filled;
+//! - the block source starts fail-closed (`EIO`) when no packaged image is
+//!   available (dev/test build); when `xtask image` runs, its build.rs
+//!   discovers the generated imgrd and `include_bytes!` fills `BOOT_IMGRD`
+//!   with real bytes, switching `BootBlockSource` to the imgrd RAM disk
+//!   (`minix_fs_rt::source::ImgrdBlockSource`). (E-IMGPKG landed B11.);
 //! - the signal hook ignores notifications for now — the C handler
 //!   terminates on `SIGTERM` (`main.c:70-78`), but process signals reach
 //!   it through the signal-manager pull whose kernel wrappers are not
@@ -43,17 +43,21 @@ use alloc::boxed::Box;
 #[global_allocator]
 static GLOBAL: std::alloc::System = std::alloc::System;
 
-/// The packaged boot image, empty until image assembly lands (E-IMGPKG).
-/// C carries the same bytes as the memory driver's linked-in
-/// `_binary_imgrd_mfs_*` blob (`drivers/storage/memory/local.h:5-9`); the
-/// Rust packaging fills this slot instead.
+// The packaged boot image, empty until image assembly lands (E-IMGPKG).
+// C carries the same bytes as the memory driver's linked-in
+// `_binary_imgrd_mfs_*` blob (`drivers/storage/memory/local.h:5-9`); the
+// Rust packaging fills this slot instead — `build.rs` emits
+// `BOOT_IMGRD_DATA` via `include_bytes!` when a packaged imgrd is present
+// at `target/image/<arch>/imgrd.img`, or falls back to `&[]` for dev/test.
+include!(concat!(env!("OUT_DIR"), "/imgrd_data.rs"));
 #[cfg(not(test))]
-static BOOT_IMGRD: &[u8] = &[];
+static BOOT_IMGRD: &[u8] = BOOT_IMGRD_DATA;
 
-/// Smallest MFS block (`minix3/minix/fs/mfs/const.h`'s block era) — the
-/// pre-mount block size the mount path validates against the superblock.
+/// The imgrd filesystem block size (`mkfs_mfs` default, `const.h` 4 KiB
+/// era). Must match the superblock's declared `s_block_size` or mount
+/// fails with `BlockSizeMismatch` (`mount.rs:387`).
 #[cfg(not(test))]
-const BOOT_BLOCK_SIZE: usize = 512;
+const BOOT_BLOCK_SIZE: usize = 4096;
 
 // 入口按目标拆双形：none 侧满足 crt0 Consumer contract（名字+Rust
 // ABI+`-> i32`，os/libs/minix-rt/src/crt0.rs:38）；宿主/测试侧保持
