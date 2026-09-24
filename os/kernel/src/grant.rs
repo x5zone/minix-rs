@@ -10,7 +10,7 @@
 //! # Design Decisions
 //!
 //! - **D1**: `CpGrant` is `#[repr(C)]` to match C's `cp_grant_t` exactly,
-//!   allowing `data_copy_vmcheck` to read it directly from user space.
+//!   allowing `read_from_process_vmcheck` to read it directly from user space.
 //! - **D2**: `VerifyGrantOutcome` enum distinguishes `Ok` / `Err(code)` /
 //!   `Suspended(VmFaultType)` — C conflates error and suspend in a single
 //!   `int` return; Rust separates them for type safety.
@@ -24,11 +24,18 @@
 //!
 //! # Anti-translate
 //!
-//! C uses `data_copy(granter, s_grant_table + sizeof(g) * grant_idx, ...)`
-//! to read the grant entry. Rust uses `data_copy_vmcheck` with
-//! `AddressRef::Process { endpoint: granter, offset: grant_table_addr }`,
-//! which performs the same cross-address-space copy via Direct Map + PTE
-//! walk, and additionally handles page faults via VMSUSPEND.
+//! C reads the entry with `data_copy(granter, s_grant_table + sizeof(g) *
+//! grant_idx, KERNEL, (vir_bytes)&g, sizeof(g))` — the `KERNEL` destination
+//! is the kernel's own stack struct, touched **directly by its virtual
+//! address**. Rust mirrors this with `read_from_process_vmcheck` (→
+//! `cross_space_read`): the process source is PTE-resolved + Direct-Map
+//! aliased (copied one physically-contiguous run at a time, C's
+//! `lin_lin_copy`), while the kernel-local destination is written directly by
+//! its own VA. Routing the kernel stack variable through
+//! `DirectMapArch::virt_to_phys` (as earlier revisions did) is wrong — kernel
+//! data sits outside the Direct Map window, so its alias faults as
+//! `DstPageFault` (the NK4-C B4 root cause). Source page faults suspend via
+//! VMSUSPEND.
 //!
 //! C's `verify_grant` returns `int` (OK or errno). Rust returns
 //! `VerifyGrantOutcome` which separates `Suspended` from `Err` — this is
@@ -38,8 +45,7 @@
 
 use minix_types::{Endpoint, PhysBytes, VirBytes};
 
-use minix_arch::DirectMapArch;
-use crate::cross_space::data_copy_vmcheck;
+use crate::cross_space::read_from_process_vmcheck;
 use crate::kpriv::PrivTable;
 use crate::proc_table::ProcessTable;
 use crate::vm::{AddressRef, CrossSpaceResult, VmFaultType};
@@ -86,8 +92,9 @@ pub enum VerifyGrantOutcome {
     /// Verification failed with an error code (EINVAL, EPERM, ELOOP, etc.).
     Err(i32),
     /// Page fault while reading grant entry from granter's address space.
-    /// The caller has been marked `RTS_VMREQUEST` by `data_copy_vmcheck`;
-    /// the syscall will be retried after VM resolves the fault.
+    /// The caller has been marked `RTS_VMREQUEST` by
+    /// `read_from_process_vmcheck`; the syscall will be retried after VM
+    /// resolves the fault.
     Suspended(VmFaultType),
 }
 
@@ -146,7 +153,8 @@ const MEM_TOP: u64 = u64::MAX;
 /// C: `verify_grant()` — do_safecopy.c:41-266
 ///
 /// This function reads the grant entry from the granter's user-space
-/// grant table via `data_copy_vmcheck`, validates it, and returns the
+/// grant table via `read_from_process_vmcheck` (kernel-local destination,
+/// C's `KERNEL` side touched by its own VA), validates it, and returns the
 /// resolved virtual address for the caller to use in a subsequent
 /// `data_copy_vmcheck` call.
 ///
@@ -175,10 +183,15 @@ const MEM_TOP: u64 = u64::MAX;
 ///
 /// # Anti-translate
 ///
-/// C uses `data_copy(granter, grant_table_addr, KERNEL, &g, sizeof(g))`
-/// to read the grant entry. Rust uses `data_copy_vmcheck` with
-/// `AddressRef::Process` source and `AddressRef::Physical` destination
-/// (a kernel stack variable's physical address via Direct Map).
+/// C reads the grant entry with `data_copy(granter, grant_table_addr,
+/// KERNEL, &g, sizeof(g))` — the `KERNEL` destination is the kernel's own
+/// stack struct, touched directly by its VA. Rust mirrors this with
+/// `read_from_process_vmcheck` (→ `cross_space_read`): an `AddressRef::Process`
+/// source copied one contiguous physical run at a time into a kernel-local
+/// `&mut [u8]` destination. It does NOT route the kernel stack variable
+/// through `DirectMapArch::virt_to_phys` — kernel data sits outside the Direct
+/// Map window, so that alias faults as `DstPageFault` (the NK4-C B4 root
+/// cause of the EPERM that stalled boot).
 ///
 /// C's loop `do { ... } while(g.cp_flags & CPF_INDIRECT)` is replaced
 /// with an explicit `for depth in 0..MAX_INDIRECT_DEPTH` loop that
@@ -270,39 +283,78 @@ pub fn verify_grant(
 
         let mut grant_entry = CpGrant::default();
 
-        // Read the grant entry via data_copy_vmcheck.
-        // Source: granter's user space at grant_entry_addr.
-        // Dest: kernel stack variable (physical address via Direct Map).
-        let dst_phys = minix_arch::CurrentDirectMap::virt_to_phys(VirBytes(
-            &mut grant_entry as *mut CpGrant as u64,
-        ));
-
+        // Read the grant entry from the granter's address space into this
+        // kernel-local struct. Source: granter's user space at
+        // grant_entry_addr. Dest: `&mut grant_entry` accessed DIRECTLY by
+        // its own kernel virtual address.
+        //
+        // NK4-C 1.13 root cause: the previous code routed the kernel stack
+        // destination through `CurrentDirectMap::virt_to_phys` and
+        // `AddressRef::Physical`, but a kernel stack/data VA sits OUTSIDE the
+        // Direct Map window, so its "physical" is bogus and `cross_space_copy`
+        // rejects the DM alias as `DstPageFault` → EPERM (VM's RS_INIT
+        // rproctab safecopyfrom failed with ESRCH, RS then fail-closed
+        // panicked at boot.rs:1254). C's `data_copy(..., KERNEL, &g, ...)`
+        // touches the kernel side by direct VA; `read_from_process_vmcheck`
+        // is the faithful mirror (same pattern as `cross_space_write`).
         let src = AddressRef::Process {
             endpoint: granter,
             offset: VirBytes(grant_entry_addr),
         };
-        let dst = AddressRef::Physical(dst_phys);
-
-        match data_copy_vmcheck(
+        match read_from_process_vmcheck(
             caller_nr, proc_table,
+            // SAFETY: `grant_entry` is a live kernel-local `CpGrant`; view it
+            // as its byte representation for the copy (repr(C) POD, no
+            // alignment requirement for u8 access).
+            unsafe {
+                core::slice::from_raw_parts_mut(
+                    &mut grant_entry as *mut CpGrant as *mut u8,
+                    core::mem::size_of::<CpGrant>(),
+                )
+            },
             src,
-            dst,
-            core::mem::size_of::<CpGrant>(),
             proc_cr3,
         ) {
             CrossSpaceResult::Suspended(fault) => {
                 return VerifyGrantOutcome::Suspended(fault);
             }
-            CrossSpaceResult::Completed(Err(_)) => {
+            CrossSpaceResult::Completed(Err(e)) => {
                 // C: do_safecopy.c:126 — "hide the fact that granter has
                 // (presumably) set an invalid grant table entry by
                 // returning EPERM"
+                // NK4-C B4 取证（task1-close 裁决删除）：区分「读 grant
+                // 表页失败」这一 EPERM 腿，并把具体 VmCopyError 落串口。
+                #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+                crate::grant::nk4a_vg_probe(
+                    "readfail",
+                    granter.0 as u64,
+                    crate::grant::nk4a_vcopy_code(&e),
+                );
+                #[cfg(not(all(not(feature = "mock"), target_arch = "x86_64")))]
+                let _ = &e;
                 return VerifyGrantOutcome::Err(EPERM);
             }
             CrossSpaceResult::Completed(Ok(())) => {} // proceed
         }
 
         let g_flags = grant_entry.cp_flags();
+
+        // NK4-C B4 取证（task1-close 裁决删除）：读出 grant 表项后把决定
+        // 性状态落串口，分辨 USED|VALID / seq / access / range 哪一腿 EPERM。
+        #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+        {
+            let _d = grant_entry.cp_direct();
+            crate::grant::nk4a_vg_probe_state(
+                granter.0 as u64,
+                grant_id as u64,
+                g_idx as u64,
+                g_flags.bits() as u64,
+                grant_entry.seq as u64,
+                _d.who_to as u64,
+                _d.len,
+                bytes,
+            );
+        }
 
         // C: do_safecopy.c:130-135 — check CPF_USED | CPF_VALID.
         let required = CpFlags::USED | CpFlags::VALID;
@@ -417,6 +469,77 @@ pub fn verify_grant(
 
     // C: do_safecopy.c:150-155 — exceeded maximum indirect depth.
     VerifyGrantOutcome::Err(ELOOP)
+}
+
+// ── NK4-C B4 取证探针（task1-close 裁决删除）──
+
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub(crate) fn nk4a_vcopy_code(e: &crate::vm::VmCopyError) -> u64 {
+    use crate::vm::VmCopyError::*;
+    match e {
+        SrcPageFault => 1,
+        DstPageFault => 2,
+        InvalidAddress => 3,
+        PermissionDenied => 4,
+        UnknownEndpoint => 5,
+    }
+}
+
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub(crate) fn nk4a_vg_cap_bump() -> bool {
+    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+    static VG_N: AtomicUsize = AtomicUsize::new(0);
+    VG_N.fetch_add(1, AtomicOrd::Relaxed) < 8
+}
+
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+pub(crate) fn nk4a_vg_probe(site: &str, granter: u64, grant_id: u64) {
+    if !nk4a_vg_cap_bump() {
+        return;
+    }
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: vg ");
+    C0::write_str(site);
+    C0::write_str(" gr=");
+    C0::write_hex(granter);
+    C0::write_str(" gid=");
+    C0::write_hex(grant_id);
+    C0::write_str("\n");
+}
+
+#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn nk4a_vg_probe_state(
+    granter: u64,
+    grant_id: u64,
+    g_idx: u64,
+    g_flags: u64,
+    seq: u64,
+    who_to: u64,
+    dlen: u64,
+    bytes: u64,
+) {
+    if !nk4a_vg_cap_bump() {
+        return;
+    }
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: vg st gr=");
+    C0::write_hex(granter);
+    C0::write_str(" gid=");
+    C0::write_hex(grant_id);
+    C0::write_str(" idx=");
+    C0::write_hex(g_idx);
+    C0::write_str(" fl=");
+    C0::write_hex(g_flags);
+    C0::write_str(" seq=");
+    C0::write_hex(seq);
+    C0::write_str(" wto=");
+    C0::write_hex(who_to);
+    C0::write_str(" len=");
+    C0::write_hex(dlen);
+    C0::write_str(" bts=");
+    C0::write_hex(bytes);
+    C0::write_str("\n");
 }
 
 /// Build soft fault info for CPF_TRY grants.

@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **阶段**：**1.3 rc marker 链（当前 frontier = 1.12e-newstall「多进程同一栈页缺页死循环」——SENDA 方向互换已修（1.12e commit），RS_INIT 首次经 senda 投递并被 VFS 记 pending（saent 十连投 + apend 实锤，s19a/s19b 两轮签名一致）；boot 新增一层：RS 侧 1 次 panic-enter + init/VFS 等多进程反复对同一用户栈页 fa=0x7fffffffea68 缺页（fa8 全零、bytes 返 0），尾态全服务器 RECEIVING(ANY) 饿死。前代停点 1.12d 定性：根因是 `copy_via_root_pages` 的 `to_kernel` 两臂与 doc/调用点约定互换，读腿实为把清零缓冲写进用户槽位（破坏性 A_RETR）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通
+- **阶段**：**1.3 rc marker 链（当前 frontier = 1.13「VM 出生报告 send(RS) 失败 panic vm_server.rs:1604」——B3 定性纠偏：前代标注的「多进程同一栈页缺页死循环」是幻影（pf# 逐条 rip 推进、只叶子 PTE 缺 = 正常按需分页），真停点 = RS `catch_boot_init_ready` 因 VM(src=8) 的 RS_INIT rproctab safecopyfrom 回 ESRCH → boot.rs:1254 fail-closed panic。B4 根因：`verify_grant` 把内核栈 `grant_entry` 经 `CurrentDirectMap::virt_to_phys` 当 copy 目标，而内核数据在 Direct Map 窗口之外 → 其别名未映射 → `DstPageFault` → EPERM。修复：新增读侧 mirror `cross_space_read`（进程 src 走 PTE+DM、内核局部 dst 直读自身 VA，并按物理连续段分片对齐 C `lin_lin_copy`）+ `read_from_process_vmcheck`，verify_grant 改用它。真机 b4d/b4e（修前签名）→ b4f/b4g（评审后加跨页分片，签名逐字一致）：readfail/vm-rswire/rs-initfail 全消失、`vg st fl=0x1301 wto=0x7c00(ANY) len=0xa00` 读通，docker 242/813/526、fmt 零新增漂移。boot 推进一层至 B5。前代 1.12e：SENDA 方向互换已修（RS_INIT 首次经 senda 投递 + apend 实锤，s19a/s19b 签名一致）。**接手入口 = `NK4C-RESUME-PROMPT.md`**（200k 上下文专用交接件，含读法/纪律/任务分解/命令速查/陷阱清单））**：历史——S3 → F10b/c/d → F11 → F12 → F13 → F14 → F15 → 1.10z 三根因 → 1.11d m_source → 1.12a wake 4 槽 → 1.12d SENDA 真读 → 1.12e SENDA 方向修复；boot 从 449 livelock 推进至 12 服务全出生 + RS_INIT 投递链跑通
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
 - **修复（方案甲，门纪律）**：新增 `kernel_call_finish_ipc_door`（int33 腿专用，跳 eager 直写，其余簿记不变）+ `VmSuspendContext.resume_skip_eager_reply` 门标记（IPC 腿挂起的调用被 stage 3a 补完成时同样不写）；详见 S3 节
 - **新停点（1.10 处置，待定性）**：F15 修订后 s14i/s14j 两次复跑：0 崩溃 0 NoPerm、无 picknone、~19200 行持续推进，150s 时限未到 rc marker。死点活动 = PM(0)↔VM(8) 缺页循环（fa=0x209500/0x2200b0，VM bytes 显示真内容服务成功但不收敛）。入口：①VM 侧 dump 该 VA 的 PTE 与 region 槽状态（对照 F2「页粒度 remap 缺 INVL/flush」+ sync_slot_pte 无使用者）；②确认 PM 的 fault 是同 VA 重复（=PTE 丢失）还是相邻 VA 推进（=正常但慢）。历史「RS queued=no」在 s14h-j 未复现（F15 修订消除），降级观察。
@@ -1485,3 +1485,44 @@ elock 现场补两字段即可定案互撞的双方请求语义：①`c_rts`（P
 
 1. **RS 侧 1 次 panic-enter**（s19a:4880，紧随 `pdmv-set krn m_user=0x7fffffff5b58` + fx/kdst 证据，panic-msg-nonstr）——疑似 Task C/S3 家族的 eager 直写腿在新投递量下重现，需定性。
 2. **多进程同一栈页缺页循环**：init/VFS 等（snd=0x1/3/4/5/6/7/9/a）反复对 fa=0x7fffffffea68（用户栈页）缺页，VM 服务但 `fa8` 读回全零、回复 bytes=0；尾态全服务器 RECEIVING(ANY) 饿死。下一手第一动作：对 fa=0x7fffffffea68 这个 VA 打 VM 侧 region 槽状态 + 该次 fault 的 vm 应答内容探针（对照 1.10「PM↔VM 缺页循环」节的入口配方：dump 该 VA 的 PTE 与 region 槽，查同 VA 重复 = PTE 丢失/映射被拒），并先定性 panic-enter 是否与循环同根。
+
+---
+
+## 1.13 RS_INIT rproctab grant 读 EPERM（Direct Map 窗口外内核栈别名）修复（2026-09-24，serial_b4d/b4e → b4f/b4g）
+
+### 现象
+
+1.12e 修好 SENDA 方向后，boot 停点仍在 RS 侧一次 panic-enter。s20b 取证推翻 1.12e-newstall 的「多进程同一栈页缺页死循环」假设：那 20 条 `pf#` 的 rip 逐条推进、中间层页表逐级建出、只有叶子 PTE(lvl1)=0，是**正常按需分页**、不是同页死循环——该假设为幻影。加 `rs-initfail` 探针（boot.rs:1252 前打 `m_source`+result，绕开 `{m:?}` 的 `panic-msg-nonstr`）实锤：真停点 = RS `catch_boot_init_ready`（boot.rs:1234-1275）收到 `src=8 res=3`——VM(src=8) 的 RS_INIT 回了 ESRCH(3) → boot.rs:1254 fail-closed panic。VM 侧 `vm-rswire` 探针显示 `sys_safecopyfrom(Endpoint::RS, gid=0, buf, len=680)`（读 rproctab）返回内核 EPERM(-1)，真 errno 被 VM 的 `map_err` 吞成 ESRCH 上报。内核 `grant.rs` 的 `nk4a_vcopy_code` 把该 EPERM 落到具体腿：`vg readfail gr=0x2 code=2` → code=2 = **DstPageFault**，位置 = `verify_grant` 读 granter grant 表项。
+
+### 根因
+
+`verify_grant` 读 granter 用户空间的 grant 表项到内核栈局部 `grant_entry` 时，把**内核栈变量的 VA 经 `CurrentDirectMap::virt_to_phys` 转成 `AddressRef::Physical`** 当作 copy 目标，再走 `cross_space_copy` 的 Direct-Map 窗口守卫。内核栈/数据 VA（PML4[256]，`0xFFFF_8000_...`）落在 Direct Map 窗口（`KERNEL_DIRECT_MAP_BASE = 0xFFFF_8080_...`）之外，`virt_to_phys` 对高半区镜像 VA 产出一个无意义的「物理地址」，其 DM 别名未被映射 → 守卫判 `DstPageFault` → `verify_grant` 返回 EPERM（do_safecopy.c:126「隐藏 granter 设了非法 grant 表项」的错误路径）→ VM 的 rproctab safecopyfrom 失败 → 回 ESRCH → RS fail-closed panic。
+
+C 锚点：`minix3/minix/kernel/system/do_safecopy.c:116-128` 用 `data_copy(granter, s_grant_table + sizeof(g)*idx, KERNEL, (vir_bytes)&g, sizeof(g))`——`KERNEL` 侧的 `&g` 是内核直接用**自身 VA** 访问的栈变量，不经 DM 别名（`memory.c` 的 `virtual_copy`/`lin_lin_copy` 对 KERNEL 端就是本机 memcpy）。Rust 早期实现误把内核栈 VA 伪装成物理地址走 DM，是对 C `KERNEL` 语义的偏离。
+
+### 修复
+
+补上读侧的 mirror（此前只有写侧 `cross_space_write`/`write_to_process_vmcheck`）：
+
+1. `os/kernel/src/vm.rs::cross_space_read<D>` —— src 是进程地址（PTE 解析 + DM 别名 + 窗口守卫），dst 是内核局部 `&mut [u8]`（**直接用自身 VA 写**，不加 DM 守卫）；**按物理连续段分片**（`lookup_range_in_table` 逐段解析），忠实对位 C 的 `lin_lin_copy`；`AddressRef::Physical` 源走单段直拷快路。
+2. `os/kernel/src/cross_space.rs::read_from_process_vmcheck` —— 封装 `cross_space_read`，`Suspended(Src)` 时按 `check_params{start, length=dst.len(), write_flag:false}` 调 `suspend_for_vm_with_copy`，逐字段镜像 `write_to_process_vmcheck`。
+3. `os/kernel/src/grant.rs::verify_grant` —— 改用 `read_from_process_vmcheck` 把 40 字节 `CpGrant` 从 granter 用户空间直读进内核局部；删除误用的 `data_copy_vmcheck` + 孤儿 `DirectMapArch` import；同步修正模块头 Anti-translate + `verify_grant` 函数 doc（原文仍描述被删掉的错误设计）。
+
+方案对比：候选 A = 把内核栈也映射进 DM 窗口（改 `establish_boot_dm`，影响面大、偏离 C）；候选 B = 在 `cross_space_copy` 内对 KERNEL 目标特判（把地址空间语义塞进通用 copy，破坏抽象）；选 C = 新增读侧 primitive（与既有写侧对称，改动局部、语义忠实）。诊断探针 `nk4a_vg_probe`/`_probe_state`/`nk4a_vcopy_code`（rs/boot.rs、vm/vm_server.rs 的 rs-initfail/rs-rswire/vm-rswire）标注 task1-close 裁决删除。
+
+### 验证
+
+- docker：kernel **813** / arch **242** / vm **526**（基线持平，0 failed）
+- rustfmt 零新增漂移：vm.rs HEAD=28 NEW=28、grant.rs HEAD=17 NEW=15（文档改动还减了 2）、cross_space.rs HEAD=14 NEW=14
+- 真机四轮：修前 b4d/b4e + 评审后加跨页分片重跑 b4f/b4g，**签名逐字一致**——`readfail`/`vm-rswire`/`rs-initfail` 全消失、`vg st gr=0x2 gid=0 idx=0 fl=0x1301 seq=0 wto=0x7c00(ANY) len=0xa00 bts=0x2a8` 读成功（USED|VALID|DIRECT 齐、who_to=ANY、range 覆盖）
+- commit 前 CodeReview：无 P0。P1 处理：P1-1（`cross_space_read` 单次 resolve 会静默读跨页相邻物理帧）→ 本轮按物理连续段分片修复；P1-3（grant.rs 文档仍描述被删的错误设计）→ 本轮已改
+
+### 新停点（1.13-newstall = B5）
+
+boot 推进一层：VM 成功读回 rproctab 后，自身 `ipc_send() failed (RS_INIT birth report)` panic（`os/servers/vm/src/vm_server.rs:1604`，RS_INIT dispatch 的 Ok 臂向 RS **同步 send 出生报告**失败）→ VM 死 → 内核 pagefault `mini_send returned Deadlock`（trap_dispatch.rs:1420）+ vector 13 #GP 级联（rip 0x5aadff9 cs=0x8 递归 panic，trap_dispatch.rs:1080）。签名：b4f/b4g 均在 4755 行附近 `panic-enter` + `vm_server.rs:1604`。下一手第一动作：查 RS 此刻是否在可收 send 的状态（RS_INIT 是异步投递，RS 已进 `catch_boot_init_ready` 处理链，可能尚未回到 receive）；对照 C `main.c:229`（VM 对 RS_INIT 的回信语义）核实 VM 出生报告该用 send 还是 sendnb/reply 腿。
+
+### 遗留登记（评审同根因家族，阶段 2/3 前专修，不在本轮 commit）
+
+- **B4 同根因家族（P1-2）**：内核栈/局部 VA 经 `CurrentDirectMap::virt_to_phys` 当 copy 端点的写法在内核里尚有约 14 处：`syscall_copy.rs:592`（`write_soft_fault_marker`，且 `let _ =` 吞错）/696/1101/1233、`syscall_signal.rs:619/696/813`（sigframe 写用户栈）、`syscall_device.rs:626/768/1073`（VDEVIO/SDEVIO）、`syscall_process.rs:328/948`、`misc.rs:1600/1633/1665/1700`（trace）、`kmess.rs:190`、`stacktrace.rs:249`。正确解法本轮已备（写侧 `write_to_process_vmcheck`、读侧新 `read_from_process_vmcheck`），boot 走到后统一切换；建议加 grep 门禁新增 `virt_to_phys(\s*VirBytes\(&` 形态。
+- **cross_space_copy/write 的跨页分片（P1-1 家族）**：本轮只给新写的 `cross_space_read` 做了源分片；既有 `cross_space_copy`/`cross_space_write` 仍是单次 resolve（≤一页的对象安全，跨页对象会静默读/写相邻帧），随上面家族一并收敛。
+- **ipc.rs `copy_via_root_pages` 的 `to_kernel` 参数命名反义（P1-4，1.12e 已 commit 代码）**：布尔量真实含义是 `to_user`，与名字相反、与 doc 也不一致，仅靠调用点取值撑住正确性——极易二次翻车。改名 `to_user` 是纯重命名零行为变化，待下一轮顺带处理。

@@ -46,7 +46,7 @@ use minix_types::{Endpoint, PhysBytes, VirBytes};
 
 use crate::proc::ProcNr;
 use crate::proc_table::ProcessTable;
-use crate::vm::{AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy, cross_space_memset, cross_space_write};
+use crate::vm::{AddressRef, CrossSpaceResult, VmCopyContext, VmFaultType, VmSuspendType, cross_space_copy, cross_space_memset, cross_space_read, cross_space_write};
 use minix_arch::CurrentDirectMap;
 
 // ── Kernel-internal cross-process copy ──
@@ -227,6 +227,59 @@ pub fn write_to_process_vmcheck(
         proc_table
             .get_mut(caller_nr)
             .expect("data_copy_vmcheck: caller slot must exist")
+            .suspend_for_vm_with_copy(
+                VmSuspendType::KernelCall,
+                target,
+                check_params,
+                None,
+                copy_ctx,
+            );
+    }
+
+    result
+}
+
+/// Process → kernel-local copy with VM check.
+///
+/// Read-side mirror of [`write_to_process_vmcheck`] — C's
+/// `data_copy(src, ptr, KERNEL, &local, bytes)` where the kernel reads a
+/// process page into its own stack/heap buffer (the `verify_grant` grant-table
+/// read, do_safecopy.c:121-127). Only the source is PTE-resolved, so only a
+/// source fault can suspend; on `Suspended(Src)` this records the fault range
+/// and suspends `caller` for VM exactly like the source arm of
+/// [`data_copy_vmcheck`]. The kernel-local destination is accessed directly by
+/// its own VA (see [`cross_space_read`]).
+pub fn read_from_process_vmcheck(
+    caller_nr: ProcNr,
+    proc_table: &mut ProcessTable,
+    dst: &mut [u8],
+    src: AddressRef,
+    proc_cr3: impl Fn(&ProcessTable, Endpoint) -> Option<PhysBytes>,
+) -> CrossSpaceResult {
+    let result = cross_space_read::<CurrentDirectMap>(dst, &src, proc_table, &proc_cr3);
+
+    if let CrossSpaceResult::Suspended(fault_type) = result {
+        // Kernel-local destination cannot fault — only the source can.
+        debug_assert!(matches!(fault_type, VmFaultType::Src));
+        let (target, start) = src
+            .as_process()
+            .expect("kernel-local destination cannot fault; src must be a process address");
+        let check_params = crate::vm::VmCheckParams {
+            start,
+            length: VirBytes(dst.len() as u64),
+            write_flag: false,
+        };
+        // The destination is kernel-local (not an AddressRef) — the context's
+        // dst half is unused on retry; the resume path re-runs the copy.
+        let copy_ctx = VmCopyContext::new(
+            src,
+            AddressRef::Physical(PhysBytes(0)),
+            dst.len(),
+            fault_type,
+        );
+        proc_table
+            .get_mut(caller_nr)
+            .expect("read_from_process_vmcheck: caller slot must exist")
             .suspend_for_vm_with_copy(
                 VmSuspendType::KernelCall,
                 target,

@@ -2149,9 +2149,22 @@ fn ipc_call_rs_init(server: &mut VmServer, rproctab_gid: i32) -> Result<RprocTab
     let mut buf = alloc::vec![0u8; ENTRIES * ENTRY_SIZE];
     {
         let mut gateway = server.ctx.gateway.borrow_mut();
-        gateway
-            .sys_safecopyfrom(Endpoint::RS, rproctab_gid, 0, &mut buf)
-            .map_err(|_| VmError::InvalidEndpoint)?;
+        let res = gateway.sys_safecopyfrom(Endpoint::RS, rproctab_gid, 0, &mut buf);
+        // NK4-C B4 取证（task1-close 裁决删除）：真 errno 被下游
+        // `map_err(|_| InvalidEndpoint)` 吞掉——VM 无论内核回什么都
+        // 统一上报 ESRCH(3)，RS 侧只看到“init 失败”看不到根因。
+        // 这里把内核原始返回码 + gid + 请求字节数落串口，分辨
+        // 坏 grant / 越界拷贝 / endpoint 不存在。不改判定链。
+        #[cfg(not(feature = "mock"))]
+        if let Err(crate::kernel_gateway::GatewayError::Kernel(code)) = res {
+            crate::bootmark::mark(&alloc::format!(
+                "nk4a: vm-rswire gid={} len={} err={}\n",
+                rproctab_gid,
+                buf.len(),
+                code,
+            ));
+        }
+        res.map_err(|_| VmError::InvalidEndpoint)?;
     }
     let mut tab = RprocTab::EMPTY;
     for (i, entry) in tab.entries.iter_mut().enumerate() {

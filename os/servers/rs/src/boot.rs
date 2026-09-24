@@ -973,6 +973,16 @@ impl<'a> BootInit<'a> {
         let wire = self.table.pub_wire_bytes();
         let gid = sys.grant_read(Endpoint::ANY, wire.as_ptr() as u64, wire.len() as u64)?;
         self.rinit.rproctab_gid = Some(gid as u32);
+        // NK4-C B4 取证（task1-close 裁决删除）：与 VM 侧 `vm-rswire`
+        // 探针配对——这里落 RS 实际授权的 gid 与字节数，两边
+        // 对账即可判定 VM 拷贝是否越出 grant 边界 / gid 是否一致。
+        #[cfg(not(feature = "mock"))]
+        {
+            let _ = minix_sys::syscall::sys_diagctl_write(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                &alloc::format!("nk4a: rs-rswire gid={} len={}\n", gid, wire.len()),
+            );
+        }
         Ok(())
     }
 
@@ -1250,6 +1260,28 @@ impl<'a> BootInit<'a> {
             panic!("unexpected reply from service: {m:?}");
         };
         if result != 0 {
+            // NK4-C B3 取证（task1-close 裁决删除）：C main.c:806 的
+            // `panic("...: %d", m.m_source)` 直接把失败服务号写进静态格式串，
+            // 永远可读；本端口移植成 `{m:?}` 走 `fmt::Arguments`，minix-rt 的
+            // panic handler 既取不到 `as_str()` 也 downcast 不出 `String`
+            // （真机 s20b `panic-msg-nonstr`），导致「谁 init 回非零」不可见。
+            // 这里在 panic 前用已验证可达的 SYS_DIAGCTL 串口腿显式打出
+            // m_source + result，锁定失败服务与 errno，不改判定逻辑本身。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static INITFAIL_LOG: AtomicUsize = AtomicUsize::new(0);
+                if INITFAIL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                    let _ = minix_sys::syscall::sys_diagctl_write(
+                        &minix_sys::syscall::DirectKernelCallTransport,
+                        &alloc::format!(
+                            "nk4a: rs-initfail src={:x} res={}\n",
+                            m.m_source.0,
+                            result,
+                        ),
+                    );
+                }
+            }
             // C: main.c:805-807 — a failed boot-time init is fatal for RS.
             panic!("unable to complete init for service: {m:?}");
         }

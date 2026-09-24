@@ -607,6 +607,118 @@ pub fn cross_space_write<D: DirectMapArch>(
     CrossSpaceResult::Completed(Ok(()))
 }
 
+/// Copy `dst.len()` bytes from a process address space into a kernel-local
+/// buffer.
+///
+/// Read-side mirror of [`cross_space_write`] — C's `data_copy(granter, ptr,
+/// KERNEL, &local, bytes)` (do_safecopy.c:121-127 `verify_grant` grant-table
+/// read; the `KERNEL` endpoint means the kernel touches `&local` by its own
+/// virtual address). Only the SOURCE needs PTE resolution + the Direct Map
+/// alias; the destination is kernel-local memory (a stack/heap `struct` the
+/// kernel owns) and is written **directly by its own VA**. Routing a kernel
+/// stack VA through `DirectMapArch::virt_to_phys` yields a bogus physical
+/// whose DM alias is not mapped (kernel data sits outside the Direct Map
+/// window — see the note on [`cross_space_write`]), which the DM-window guard
+/// would reject as `DstPageFault`.
+///
+/// C: `virtual_copy_f()` destination-side KERNEL branch — memory.c
+pub fn cross_space_read<D: DirectMapArch>(
+    dst: &mut [u8],
+    src: &AddressRef,
+    proc_table: &crate::proc_table::ProcessTable,
+    proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
+) -> CrossSpaceResult {
+    // Copy the source one *physically-contiguous* run at a time into the
+    // always-contiguous kernel-local destination — C's `virtual_copy` /
+    // `lin_lin_copy` walk (memory.c). A single-shot resolve would silently
+    // read the neighbouring physical frame when the object straddles a page
+    // boundary (e.g. a 40-byte `CpGrant` whose slot crosses a 4 KiB edge),
+    // because the DM window covers all RAM and would still validate the
+    // bogus tail. `lookup_range_in_table` stops at the first non-contiguous
+    // / unmapped page, so each chunk stays inside one physical run.
+    let (cr3, base_va) = match src {
+        AddressRef::Physical(src_phys) => {
+            // A pre-resolved physical address is contiguous by definition;
+            // no page-table walk, just the DM alias (guarded) + copy.
+            let src_vaddr = D::kernel_phys_to_virt(*src_phys);
+            #[cfg(not(test))]
+            if !physical_range_in_dm_window(
+                crate::current_root_phys(),
+                src_vaddr,
+                dst.len(),
+                minix_arch::CurrentPteWalk::walk,
+            ) {
+                return CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault));
+            }
+            // SAFETY: `src_vaddr` is the DM alias of a physical frame; `dst`
+            // is kernel-local memory the kernel owns exclusively under the
+            // BKL, is not a DM alias and cannot overlap `src_vaddr`; u8 has
+            // no alignment requirement.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    src_vaddr.0 as *const u8,
+                    dst.as_mut_ptr(),
+                    dst.len(),
+                );
+            }
+            return CrossSpaceResult::Completed(Ok(()));
+        }
+        AddressRef::Process { endpoint, offset } => {
+            let cr3 = match proc_cr3(proc_table, *endpoint) {
+                Some(c) => c,
+                None => return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)),
+            };
+            (cr3, offset.0)
+        }
+    };
+
+    let total = dst.len();
+    let mut done = 0usize;
+    while done < total {
+        let va = VirBytes(base_va + done as u64);
+        // Longest contiguous run at `va`, capped at the bytes still needed.
+        let (phys, chunk) = match lookup_range_in_table::<D>(cr3, va, total - done) {
+            Some(r) => r,
+            // First byte of this run is on an unmapped page → source fault.
+            None => return CrossSpaceResult::Suspended(VmFaultType::Src),
+        };
+        if chunk == 0 {
+            return CrossSpaceResult::Suspended(VmFaultType::Src);
+        }
+        let src_vaddr = D::kernel_phys_to_virt(phys);
+        // Validate this chunk's DM alias is mapped under the active root
+        // before touching it (mirrors the source arm of `cross_space_copy`).
+        // The kernel-local destination is not a DM alias, so it needs no guard.
+        #[cfg(not(test))]
+        if !physical_range_in_dm_window(
+            crate::current_root_phys(),
+            src_vaddr,
+            chunk,
+            minix_arch::CurrentPteWalk::walk,
+        ) {
+            return CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault));
+        }
+        // SAFETY:
+        // - `src_vaddr` is the Direct Map alias of `chunk` bytes of a
+        //   page-backed, physically-contiguous run returned by
+        //   `lookup_range_in_table`.
+        // - `dst[done..done + chunk]` is kernel-local memory the kernel owns
+        //   exclusively under the BKL; it is not a DM alias and cannot
+        //   overlap `src_vaddr`.
+        // - u8 has no alignment requirements.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src_vaddr.0 as *const u8,
+                dst.as_mut_ptr().add(done),
+                chunk,
+            );
+        }
+        done += chunk;
+    }
+
+    CrossSpaceResult::Completed(Ok(()))
+}
+
 pub fn copy_page_table_ref(_as: &PageTableRef) -> PageTableRef {
     PageTableRef::new()
 }
