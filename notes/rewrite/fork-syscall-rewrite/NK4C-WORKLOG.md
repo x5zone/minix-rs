@@ -14,7 +14,7 @@
 
 - **B16 部分修（1.30 落地，含代码；仅 Fork/SrvFork 两臂取负）**：候选根因确认——PM `Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno())` 传正 errno、`reply()` 无取负写 `msg.m_type = 正` → init `perform_syscall` 判 `m_type ≥ 0` 走 Ok 分支、将 EAGAIN/ESRCH 当 child_pid → 假成功父无子、waitpid 卡（与 C `_syscall`/F10b `reply_wire()` 契约失配）。修复：`calls.rs` L234-247 的 `PmCall::Fork` 与 `PmCall::SrvFork` `Err(e) => ReplyIntent::Reply(-PmError::from(e).to_errno())`；测试 `test_dispatch_fork_parent_unknown_is_error_reply` 断言同步；`cargo test -p minix-pm --lib` **417/417 pass**。**真机 c8/c9**：两次签名一致（`init-state Runcom` 各 1、`nk4a: pm 0140b` 各 8）；c8 35863 行 vs c7 25013 = **活动 +43%（子/兄弟进程真在跑：`pfwd nr=1..9 out=B` 全 boot 模块页 fault 转发到 VM 服务）**——fork 链已通、系统进入下一停点 B17（rc marker 仍未出）。
 
-- **B17 前沿（fork 后 rc marker 仍缺）**：B16 部分修后 boot 越过 fork 假 Ok、进入子/兄弟执行；但 60s 内仍未见 `minix-rs rc: minimal boot script marker`。候选：①exec /bin/sh 未起（exec 路径错误臂同样正 errno——`calls.rs` L264/L303/L317 与 `dispatcher.rs` L110/L114 等未修）；②exec 起但 sh 未 echo marker；③sh 起但 fd 1 未 wire 到 console。**下一入口**：全量扫 PM 错误臂取负（`calls.rs` ~30 处 `Err(e) => Reply(e.to_errno())` + `positive_errno(...)` 站点 + `dispatcher.rs` ENOSYS 两处；考虑 `ReplyIntent::Reply` 拆 `Reply/ReplyErr` 两臂架构修法）+ 二次真机 c10/c11 若 marker 出即 B17 解决；否则探针 B 定位 exec 半链。
+- **B17 前沿（vm_fork 在 VM 侧 fork::do_fork 内部失败；PM 侧探测被布局脆弱性阻断）**：承 §1.32（c12 实锤 `dF:vmF` 是唯一 Err 臂，proc 表容量/空闲槽正常）。本轮试图在 PM `vm_fork` dump VM 回复的真实 m_type 以一轮裁决候选，**取得两条关键结论**：①**读码排除候选1（ACL 拒/未接线）**——`rs/boot.rs:2989` `SRV_VC = CallMask::all()` 含 VM_FORK，PM 必过 VM `vm_server.rs:1694` 的 `acl_check`，故 VM 确进 `dispatch_fork`→`fork::do_fork` 并**在内部返 Err**（候选缩至 `InvalidSlot/SlotInUse/PageTableInit/fork_regions/PageTableMap/sys_fork(KernelCall)/handle_memory_once`，其中依赖内核 `sys_fork` 输出 `fork_msgaddr` 的后两者与 F11/F13 内核 IPC 腿同族、最可疑）；②**新登记布局鲁棒性 bug（阻断性）**——给 PM 增加任何代码（探针首版 `alloc::format!` 引 `core::fmt` 大幅膨胀；改用无 fmt 定长栈缓冲后 PM 模块仍从 277840B(68 页)→278864B(69 页)，跨 278528 边界）**确定性**破坏 boot：PM 发完 12 条 VFS_PM_INIT per-process send 后卡在末条 barrier `sendrec(VFS)`（`init.rs:778`，无 `pmvi-barrier-done`）→ PM 挂死 → init 永不达 Runcom。真机 6/6 探针 run 失败（c13 停 SCHED receive、c13b rip=0 崩溃自环、c13c/c15/c15b/c15c SCHED 活锁）vs 干净 HEAD 7/7 达 Runcom（c8–c12 + 本 session git-stash 重建的 c14/c14b）；排除环境漂移。**这扩展了原「fresh-vars 布局鲁棒性」登记：累积 vars 下 PM 代码体积/地址布局同样能触发服务加载/IPC 投递异常**（sendrec 半与 VFS rendezvous 疑依赖固定地址假设，或模块加载有 68 页硬边界），属 bring-up 稳定性债、本轮未修（探针已全部 `git checkout` 回滚，工作树=HEAD）。**下一入口**：(A) 优先攻 PM 布局脆弱性（否则一切 PM 探测/开发被阻断）——查 sendrec/barrier 路径是否隐含 code/data 固定地址假设、模块加载是否有页上限；(B) 或改从 **VM 侧**探测 `fork::do_fork` 的 `VmError` 变体（VM 代码膨胀是否同样脆弱待验；若脆弱则退化到内核 `sys_fork` 腿观测）；(C) rc marker 仍未达，frontier 仍 1.30。
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
@@ -2198,5 +2198,42 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 - WORKLOG 顶部不动（B17 前沿 bullet 已在 §1.30 落地），仅本节 §1.32 追加；
 - **纯侦察 doc commit**（同 §1.25/§1.28/§1.29/§1.31 先例）——无生产代码、无三件套、无 CodeReview；
 - frontier 仍在 1.30；rc marker 未达，B17 完整链下一轮修复。
+
+---
+
+## 1.33 · B17 侦察 D（PM 侧 dump vm_fork 回复 m_type）——ACL 候选排除 + 新登记 PM 布局脆弱性（探针回滚）
+
+### 目的
+承 §1.32（c12 实锤 vm_fork 是唯一 Err 臂）。拟在 PM `vm_fork` dump VM 回复的真实 `m_type`（正 errno 直接映射 VM 侧 `VmError` 变体 → `fork::do_fork` 失败点），一轮裁决候选 1/2/3。
+
+### 探针实现（两版）
+1. **首版**：`ForkCoordError::VmError` 改为携带 i32（`VmError(msg.m_type)`，transport 失败用 `-1` 哨兵）；`do_fork`/`srv_fork` 在 `Err(VmError(code))` 臂用 `kern.diag_write(&alloc::format!("nk4c:vmF={}", code))` 打点。
+2. **lean 版**（发现回归后改）：`nk4c_probe(kern, prefix, code)` 手写定长栈缓冲 itoa，**不引 `core::fmt`**（与既有 `nk4a: pmvi` 探针 init.rs:755 同形）。
+
+### 关键发现 A：boot 确定性回归（探针被阻断）
+**两版探针都令 boot 不达 init Runcom**，且回归与“向 PM 加代码”强相关：
+- 干净 HEAD（`git stash` 同 session 重建）c14/c14b 两次均 **Runcom=1、~35200 行、无 rip=0、SCHEDstall=28 一致**；
+- 探针 build 6/6 失败：c13（停 SCHED receive、picknone 0x8）、c13b（rip=0 err=0x10 用户态取指崩溃 rsp 递减自环、exit=0）、c13c/c15/c15b/c15c（exit=124、SCHED 活锁）；
+- 停点定位：c15c 里 PM 发完 12 条 `nk4a: pmvi k=0..0xb`（`init.rs:753` VFS_PM_INIT per-process send）后，卡在**末条 barrier `sendrec(VFS)`**（`init.rs:778`）——**无 `nk4a: pmvi-barrier-done`** → PM 挂死 → init 拿不到进程表同步 → 永不 Runcom；
+- 体量线索：lean 版 PM 模块仅 277840B(68 页)→278864B(69 页)，跨 278528=68×4096 边界即触发。+1KB 就破坏 boot → 非单纯“大爆炸”、而是**按页/地址粒度敏感的脆弱性**。
+
+**定性**：这是 WORKLOG 已登记“fresh-vars 布局鲁棒性 bug”的**新形态**——原仅限全新 vars；本轮实锤**累积 vars 下 PM 代码体积/地址布局同样能触发服务加载/IPC 投递异常**。候选根因：sendrec 半与 VFS rendezvous 疑依赖固定地址假设（与 1.10z “sendrec 快路径 receive 半 ANY→目的地”、B13 栏陈旧快照、rip=0x202d68∈KernelIpcTransport::receive 同族），或模块加载有 68 页硬边界。**属 bring-up 稳定性债，本轮未修**（它是下一轮真正的阻断项：不修则一切 PM 侧探测/开发都被卡）。探针已全部 `git checkout` 回滚，工作树=HEAD。
+
+### 关键发现 B：读码排除候选 1（ACL 拒/未接线）
+无需探针即可裁决：
+- VM 收到任意 VM_* 调用先过 `vm_server.rs:1684` `callnr` 定序 + `1694` `acl_check`；被拒则回 `VmError::NotImplemented`→ENOSYS(38)。
+- 但 `rs/boot.rs:2989` “SRV_VC = ALL_C → full vm_call_mask”（对位 C main.c:317-319/priv.h:78-80），**boot 服务槽拿 `CallMask::all()`**，含 VM_FORK 位（`acl.rs:65` DEFAULT 也含 VM_FORK）→ PM 必过 acl_check。
+- ∴ **候选 1 排除**：VM 确进 `dispatch_fork`→`fork::do_fork`，失败在**其内部返 Err**。候选缩至：`InvalidSlot`/`SlotInUse`(EINVAL=22)、`PageTableInitFailed`/`PageTableMapFailed`(EIO)、`fork_regions` 错、`sys_fork → VmForkError::KernelCall`(gateway 失败)、`handle_memory_once`(msgaddr 预故障 EFAULT/CowAllocFailed)。其中依赖内核 `sys_fork` 输出 `fork_msgaddr` 的后两者与 F11/F13 内核 IPC 腿同族、**最可疑**。
+
+### 下一入口（fix B17，不再动 PM）
+1. **优先 (A)：攻 PM 布局脆弱性**——定位 sendrec/barrier 路径的固定地址假设或模块加载页上限；不修则 PM 一切后续开发被卡（不只本探针）。
+2. **(B)：改从 VM 侧探测 `fork::do_fork` 的 `VmError` 变体**（用无 fmt 定长栈缓冲）——先验 VM 代码膨胀是否同样脆弱；若 VM 也脆弱，退化到内核 `sys_fork` 腿观测。
+3. **(C)：纯读码推进候选**——优先查 VM `gateway.sys_fork`（`kernel_gateway.rs`）与内核侧 fork 实现是否接线/返回正确 `(child_endpoint, fork_msgaddr)`（与 E-FORKMSG/do_fork.c:112 对位）。
+
+### 本 turn 行量
+- 2 处代码变更（`fork.rs` VmError(i32)+nk4c_probe+两 Err 臂打点、`dispatcher.rs` vm_fork 携带 m_type+两测断言）→ **本 turn 末全部 `git checkout --` 回滚**，工作树=HEAD；
+- WORKLOG 顶部 B17 前沿 bullet 重写（vm_fork 内部失败+布局脆弱性阻断+ACL 排除）+ 本节 §1.33 追加；
+- **纯侦察 doc commit**（同 §1.25/§1.28/§1.29/§1.31/§1.32 先例）——无生产代码、无三件套、无 CodeReview；
+- frontier 仍在 1.30；rc marker 未达。
 
 ---
