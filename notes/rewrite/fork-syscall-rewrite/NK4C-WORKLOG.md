@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B35 已修（`supply_pages` 对 `page_count==1` 委托 `supply_page`，打通 freed 单页与 big-block 路径）→ 真机首次 **OOM-RT=0·panic=0**、历史最深推进 72495 行 → 翻出 B36 rc `Runcom` 15 轮循环（新头号前沿）（1.61，含代码·minix-rt）**：§1.60 把 B34 停在保守绑界 64 后，真机 bn23 OOM 换签 `size=001000 px=400/400 fp=39c/400`（十六进制＝恰好 1 页、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）。根因＝`FixedPoolSupplier::supply_pages`（run）只走 bump、**从不查 free-stack**，而 `alloc_big`→`supply_pages(1)` 对 1 页请求也走此路→游标耗尽后即使有可复用单页也返 null（与自身注释「free-stack reserved for single-page requests」意图相悖＝逻辑缺陷）。修＝`page_count==1` 委托 `supply_page`（1 页无邻接要求、与 `release_pages(p,1)` 逐页 push 对称、零化等价；多页 run 仍 bump-only；Linux/Redox order-0 从 free list 弹为同构做法）+ 新测。**重建镜像真机 `-m 512M -smp 1` 双跑 bn24/bn24b 签名一致**（72495/72494 行、pre-restore 7209/7209、**OOM-RT=0、panic=0（此前 6 次全消）、pagefault-in-VM=0**），boot 从 58507→**72495（历史最深）**。**新墙 B36**＝`Runcom=15`（每 ~3150 行重入 `init-state Runcom`）+`marker=0`+bogus=0——OOM 掩盖去除后 §1.55 的 rc 15 轮循环重现，现在不是 OOM、而是 B31/B32/B33b 修后的下游新失败因（runcom→exec→echo 腿哪步非 OOM 地失败）。三件套绿（mock minix-rt **59·0fail** 基线+1 / fmt WT0==HEAD0 / clippy Finished / 镜像重建+双跑一致）+ CodeReview **PASSED 0 MUST 0 SHOULD**。原则解 A/B（boot eager 物化 / VM-backed supplier）仍挂（多页 run 仍 bump-only，现因单页路径已足撑当前工作集未触发）。rc marker 仍未达。详见 §1.60/§1.61。
+> **⚠ 最新前沿 = B36 取证闭环（三探针收窄）→ 坐实 rc marker 阻塞真身 = §1.58 登记的 B33a 符号掩盖：`exec /bin/sh` 恒返 EIO，实为 exec 链回复携带正值 errno `m_type=+45`（＝EOPNOTSUPP）命中 `exec_via` 的 `Ok(_) => EIO` 车道被掩盖（1.62，纯取证 doc·探针已回滚）**：§1.61 修 B35 后真机首次 OOM-RT=0·panic=0·72495 行历史最深，翻出 B36＝`Runcom=15`+`marker=0`。本轮三探针定位：bn25p 捕获 15 个 rc 子全 `Exited{code:5}`（＝`runcom.rs:147-152` exec 失败腿）；bn26p 捕获 `exec-fail err=5 disp=EIO path=/bin/sh` ×15；bn27p 区分探针（给 `new_image_stack_top` 失败腿 + `exec_via` `perform_syscall` 两臂各打点）捕获 **`exec_via-OK mtype=45` ×45、零 `stack_top-fail`、零 `exec_via-ERR`**。三层结论：① kerninfo 腿清白（§1.54 交付链正常）；② 掩盖点＝`exec_via`（`pm.rs:594`）成功车道把非负 `m_type` 吞成 EIO（契约 `syscall.rs:107` `m_type<0→Err`）；③ **真错误码＝45＝EOPNOTSUPP**（`errno.rs:59`）——exec 链回正值未取负，根在服务端 reply 符号（C `_syscall` 亦视正 `m_type` 为成功），客户端 `Ok→EIO` 是二次掩盖。**B36 两层**：Layer 1＝B33a 符号掩盖（修向＝归一化 exec 回复符号使真 errno 从 Err 车道浮出）；Layer 2＝exec `/bin/sh` 实际报 EOPNOTSUPP 本身（VFS `NotSup` 是 dispatch 保留拒绝位 `open.rs:558`/`read_write.rs:454`，常规文件不该命中，需顺 PM `exec.rs` `svc.reply(.., result)` 与 VFS exec bail 腿二分定位）。`Runcom=15` 非回归＝OOM 崩溃截断消失后 rc 循环首次完整可见。**新头号前沿＝B33a 修复单元**（先追 Layer 2 定 EOPNOTSUPP 产生腿，再定纯客户端符号归一化 vs 服务端 reply 也需改；触 IPC 符号约定，对照 C `execve.c`/`_syscall` + Ground Truth 链 + CodeReview + 三件套 + 真机双跑）。三探针全回滚、工作树干净、HEAD 未动。rc marker 仍未达。详见 §1.61/§1.62。
+>
+> **⚠（1.61 历史·其头号前沿 B36 已于 §1.62 取证闭环＝真身 B33a 符号掩盖＋下层 EOPNOTSUPP）B35 已修（`supply_pages` 对 `page_count==1` 委托 `supply_page`，打通 freed 单页与 big-block 路径）→ 真机首次 **OOM-RT=0·panic=0**、历史最深推进 72495 行 → 翻出 B36 rc `Runcom` 15 轮循环（1.61，含代码·minix-rt）**：§1.60 把 B34 停在保守绑界 64 后，真机 bn23 OOM 换签 `size=001000 px=400/400 fp=39c/400`（十六进制＝恰好 1 页、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）。根因＝`FixedPoolSupplier::supply_pages`（run）只走 bump、**从不查 free-stack**，而 `alloc_big`→`supply_pages(1)` 对 1 页请求也走此路→游标耗尽后即使有可复用单页也返 null（与自身注释「free-stack reserved for single-page requests」意图相悖＝逻辑缺陷）。修＝`page_count==1` 委托 `supply_page`（1 页无邻接要求、与 `release_pages(p,1)` 逐页 push 对称、零化等价；多页 run 仍 bump-only；Linux/Redox order-0 从 free list 弹为同构做法）+ 新测。**重建镜像真机 `-m 512M -smp 1` 双跑 bn24/bn24b 签名一致**（72495/72494 行、pre-restore 7209/7209、**OOM-RT=0、panic=0（此前 6 次全消）、pagefault-in-VM=0**），boot 从 58507→**72495（历史最深）**。**新墙 B36**＝`Runcom=15`（每 ~3150 行重入 `init-state Runcom`）+`marker=0`+bogus=0——OOM 掩盖去除后 §1.55 的 rc 15 轮循环重现，现在不是 OOM、而是 B31/B32/B33b 修后的下游新失败因（runcom→exec→echo 腿哪步非 OOM 地失败）。三件套绿（mock minix-rt **59·0fail** 基线+1 / fmt WT0==HEAD0 / clippy Finished / 镜像重建+双跑一致）+ CodeReview **PASSED 0 MUST 0 SHOULD**。原则解 A/B（boot eager 物化 / VM-backed supplier）仍挂（多页 run 仍 bump-only，现因单页路径已足撑当前工作集未触发）。rc marker 仍未达。详见 §1.60/§1.61。
 >
 > **⚠（1.60 历史·其头号前沿 B35 已于 §1.61 修复）B34 已采「保守容量 round」落地（`MAX_BIG_BLOCKS` 32→64，消除 big=32/32 记录表 premature-OOM，boot 零回归，真机推进 30068→58507 行）（1.60，含代码·minix-rt）**：§1.59 把 B34 停在「待用户定 A/B/C」；本轮厘清——**A（boot eager 物化）/B（VM-backed heap supplier）触及 boot/VM 内存外部契约需 [ARCH]、确属架构裁决；C（纯分配器内部数组尺寸）与 §1.55 两个容量 round 同类、非裁决**，故自主采 C：`MAX_BIG_BLOCKS` 抬到覆盖观测峰值（big 峰值 47）的 64（每槽 `Option<BigBlock>` 实测 24 B，(64−32)×24=+768 B<1 页不跨未物化页，另加编译期不变量锁死「增长<1 页」）+ 回归测。**真机 `-m 512M -smp 1` 双跑 bn23/bn23b 签名一致**（58507/58511 行、`pagefault-in-VM=0`、EXIT=124、推进到 57715 才 OOM vs bn20 的 29010）。**新墙 B35**＝OOM-RT 换签 `big=2f/40 px=400/400 fp=39c/400`（表未满 47/64、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）——`alloc_big`→`supply_pages` 只从 bump 区发 run、1 页 big 请求也不查 `supply_page` 的单页 free-stack（§1.55 记录碎片的同族再现）。下一配方＝给 `alloc_big` 失败路径加「表满 vs 游标尽而 free-stack 有货」diag，再判修向（1 页 run 委托 `supply_page`？还是原则解 A/B）。三件套绿（mock minix-rt **58·0fail** 基线+1 / fmt WT0==HEAD0 / clippy exit0 / 双跑一致）+ CodeReview **0 MUST、1 SHOULD 采纳**（`Option<BigBlock>` 尺寸 16B→实测 24B、doc 数值全据实修正）、CONSIDER(diag) 留 B35。rc marker 仍未达。详见 §1.59/§1.60。
 >
@@ -3186,6 +3188,38 @@ OOM 掩盖去除后暴露 `Runcom=15`（每 ~3150 行重入 `nk4a: init-state Ru
 ### 三件套 + CodeReview
 
 静态三件套绿（mock minix-rt **59·0fail** 基线+1 只增不减 / fmt alloc.rs WT0==HEAD0 / clippy Finished 无新错 / 镜像重建+真机双跑 bn24==bn24b 签名一致）。**CodeReview PASSED：0 MUST、0 SHOULD**（逐项核过邻接契约/supply-release 对称/零化语义/游标无双重计数/multi-page与 slab 零回归/测钉不变量/hex 解码/与 Linux-Redox order-0 对照）。**注**：本修法只解 1 页 big 请求；多页 run 仍 bump-only（碎片未治），真正原则解仍是 A(boot eager 物化)/B(VM-backed supplier)，现因单页路径已足撑当前工作集而未触发。rc marker 仍未达。详见 §1.60/§1.61。
+
+---
+
+## §1.62 B36 取证闭环——rc marker 阻塞真身：exec 回复携带正值 errno（+45＝EOPNOTSUPP）被 exec_via 成功车道吞成 EIO（B33a 实锤·纯取证 doc·探针已回滚）
+
+§1.61 修掉 B35 后，真机首次 **OOM-RT=0、panic=0**、推进到 72495 行（历史最深），随即翻出 **B36**：init 状态机 `Runcom` 重入 15 轮、`marker=0`。本轮通过三枚真机探针把 B36 逐层收窄到一条确定性结论——**rc 起的 `/bin/sh` 从未 exec 成功，其 exec 系统调用被客户端车道把真实错误码掩盖成了 EIO**。这是 §1.58 登记的 **B33a 符号掩盖** follow-up 的实锤闭环。本节为纯取证，未改任何生产码，探针全部回滚、工作树干净、HEAD 仍 `1d78948a4`（模式同 §1.59 `bad22e56c`）。
+
+### 探针链与真机证据
+
+1. **退出码探针（bn25p）**：在 `runcom.rs` 判定 rc 子进程退出的地方打印 `WaitStatus`。捕获 **15 个 rc 子进程全部 `Exited { code: 5 }`**。code 5 来自 `runcom.rs:147-152` 的 exec 失败腿——子进程 `host.exec(&cmd)` 返回后无条件 `stall(...)` + `exit_process(5)`，即 **exec 这一步失败**，脚本（连同其中打印 marker 的 `echo`）从未跑起来。
+2. **errno 探针（bn26p）**：在 exec 失败腿把 `host.exec` 的返回码打出来。捕获 `nk4a: b36 exec-fail err=5 disp=EIO argv=["sh","/etc/rc","autoboot"] path=/bin/sh` ×15——`host.exec` 恒返 **EIO(5)**。
+3. **区分探针（bn27p）**：EIO 有多个可能来源，须定位是哪一条腿。`exec_command`（`execve.rs:269-313`）按序走 `new_image_stack_top`（kerninfo 查询，失败则 L195-215 四站点返 EIO）→ `prepare_exec` → `exec_via`。给 `new_image_stack_top` 失败腿和 `exec_via` 的 `perform_syscall` 两条臂（`pm.rs:593-596`）各插一枚打点。真机捕获 **`nk4a: b33a exec_via-OK mtype=45` ×45，零 `stack_top-fail`、零 `exec_via-ERR`**。
+
+### 结论：掩盖点坐实 + 真错误码浮现
+
+- **kerninfo 腿清白**：`new_image_stack_top` 全程成功（无 `stack_top-fail`）——§1.54 修好的 kerninfo 交付链在当前 boot 正常，EIO 不来自它。
+- **掩盖点＝`exec_via` 成功车道**：`perform_syscall` 返回 `Ok(45)`——因为消息 `m_type` 等于 **45（非负）**，命中 `pm.rs:594` 的 `Ok(_) => Errno::EIO`，把真实值 **丢弃、换成 EIO**。这正是 B33a「成功车道吞掉错误」的机制（`perform_syscall` 契约：`syscall.rs:107` `m_type < 0 → Err(errno)`，否则视为成功 `Ok`）。
+- **真错误码＝45＝EOPNOTSUPP**（`errno.rs:59`）：**exec 链给客户端回了正值 45**（Operation not supported），而不是负 errno。按 C 黄金参照，`_syscall`（`execve.c` 走的就是它）同样把正 `m_type` 当成功——所以 **根子在服务端回了错误码却忘了取负**，客户端的 `Ok→EIO` 只是二次掩盖。真错误本身（为何对 `/bin/sh` 的 exec 报 EOPNOTSUPP）是下一层。
+
+### 定性：B36＝B33a（符号掩盖）＋其下的 EOPNOTSUPP，两层
+
+- **Layer 1（B33a·已实锤）**：exec 的真实 errno（此处 45）以正值回流，被 `exec_via` 的 `Ok` 车道吞成 EIO。修复方向＝归一化 exec 回复符号，让真实 errno 从 `Err` 车道浮出（对齐 C 的「失败回 `-errno`」约定），而非继续用 EIO 掩盖。
+- **Layer 2（真错误·待追）**：exec `/bin/sh` 实际返 **EOPNOTSUPP**。VFS 侧 `NotSup` 是 dispatch 的保留拒绝位（`open.rs:558`、`read_write.rs:454`），常规文件不该命中；需下一单元顺 PM exec 回复组装点（`exec.rs` 的 `svc.reply(.., result)` 之 `result` 来源）与 VFS exec 各 bail 腿二分，定位是谁把 EOPNOTSUPP 填进了回复。
+
+### Runcom 15 轮循环非回归
+
+`Runcom=15` 不是新缺陷，而是 OOM 崩溃截断消失后 **rc 循环首次完整可见**：每轮 `exec /bin/sh` 失败 → `exit(5)` → 父判非零退出 → `Attempt::SingleUser` → 状态机 `ProceedRuncomFastboot` 回 `Runcom`（`driver.rs` 状态迁移），如此 15 次直至超时。此前 §1.55 的 15 轮由 OOM 掩盖、§1.58 的 `Runcom=1` 因 B33b 让 `/bin/sh` 短暂获控但随即被 B34 OOM 崩溃截断——B35 清掉 OOM 后，命令面这条 exec 腿的真实失败（EOPNOTSUPP 被掩盖成 EIO）成了挡 marker 的头号前沿。
+
+### 下一前沿与单元收尾
+
+**新头号前沿＝B33a 修复单元**：先追 Layer 2 定位 EOPNOTSUPP 产生腿（决定是纯客户端符号归一化即可、还是服务端 reply 也需改），修后 rc marker 才能浮出真错误乃至成功。触及 IPC 符号约定，须对照 C `execve.c`/`_syscall` 回复约定 + Ground Truth 优先链 + CodeReview + 三件套 + 真机双跑。本取证单元：三探针（runcom.rs×2、pm.rs、execve.rs）全部 `git checkout` 回滚、工作树干净、HEAD 未动，无生产码改动故测基线不变。rc marker 仍未达。详见 §1.61。
+
 
 
 
