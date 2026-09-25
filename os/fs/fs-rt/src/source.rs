@@ -15,10 +15,11 @@
 //! form the packaged image fills once image assembly (E-IMGPKG) lands.
 //! [`BootBlockSource`] is the construction-time choice between the two.
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use minix_fs::cache::{BlockKey, BlockSource};
-use minix_types::{EIO, EROFS, Errno};
+use minix_types::{EIO, Errno};
 
 /// A block source that refuses every transfer.
 #[derive(Debug, Default, Clone, Copy)]
@@ -57,13 +58,24 @@ impl BlockSource for PendingBlockSource {
 /// B11: the packaged imgrd (8 MB) is embedded in the MFS binary via
 /// `include_bytes!` (static rdata). To avoid a 8 MB heap allocation that
 /// exceeds the slab pool, `from_static` wraps the reference zero-copy.
-/// Writes are `EROFS` on the static variant (boot media is read-only);
-/// the owned variant (used in tests) supports in-place mutation like C's
-/// `m_vaddrs`-backed device.
+///
+/// B15: C's RAM disk is writable — the memory driver serves imgrd out of
+/// its own buffer, and clean-rw mount clears `FLAG_CLEAN` then stores
+/// block 0 back (`mfs/src/mount.rs:417-420`, mirroring C `mount.c:90-95`).
+/// The static rdata base cannot be mutated, so a bounded copy-on-write
+/// `overlay` shadows modified blocks: reads check the overlay first and
+/// fall through to the base; static writes land in the overlay (clip at
+/// the device end, matching `memory.c:442-443`). Owned writes stay
+/// in-place and never populate the overlay. Dirty-mount touches only
+/// block 0, so the overlay holds a handful of block-size entries — well
+/// within the slab pool.
 #[derive(Debug)]
 pub struct ImgrdBlockSource {
     inner: ImageData,
     block_size: usize,
+    /// B15: CoW overlay keyed by block number. Only the static arm
+    /// populates it; owned writes mutate `inner` in place.
+    overlay: BTreeMap<u64, Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -94,12 +106,14 @@ impl ImgrdBlockSource {
         Ok(Self {
             inner: ImageData::Owned(image),
             block_size,
+            overlay: BTreeMap::new(),
         })
     }
 
     /// Wrap a static image reference zero-copy (the packaged boot image,
-    /// B11). Avoids heap allocation for large imgrd blobs. Writes return
-    /// `EROFS` since the backing store is in read-only rdata.
+    /// B11). Avoids heap allocation for large imgrd blobs. Writes are
+    /// served by a bounded CoW overlay (B15) so clean-rw mount's
+    /// dirty-mark on block 0 succeeds without mutating read-only rdata.
     pub fn from_static(image: &'static [u8], block_size: usize) -> Result<Self, Errno> {
         if image.is_empty() || block_size == 0 {
             return Err(Errno::EINVAL);
@@ -107,6 +121,7 @@ impl ImgrdBlockSource {
         Ok(Self {
             inner: ImageData::Static(image),
             block_size,
+            overlay: BTreeMap::new(),
         })
     }
 
@@ -130,6 +145,16 @@ impl BlockSource for ImgrdBlockSource {
         if out.len() != self.block_size {
             return Err(Errno::EINVAL);
         }
+        // B15: the overlay shadows the base for any block that was
+        // written through the static arm. A clipped tail (write reaching
+        // past the device end) zero-fills the rest, matching the base's
+        // own edge rule (`memory.c:442-443`).
+        if let Some(buf) = self.overlay.get(&key.block) {
+            let n = buf.len().min(out.len());
+            out[..n].copy_from_slice(&buf[..n]);
+            out[n..].fill(0);
+            return Ok(());
+        }
         let image = self.inner.as_bytes();
         let start = key.block.saturating_mul(self.block_size as u64);
         if start >= image.len() as u64 {
@@ -149,24 +174,31 @@ impl BlockSource for ImgrdBlockSource {
         if data.len() != self.block_size {
             return Err(Errno::EINVAL);
         }
-        let image = match &mut self.inner {
-            ImageData::Owned(v) => v,
-            // Static boot image is read-only rdata (B11): the packaged
-            // imgrd cannot be mutated. C's RAM disk does allow writes,
-            // but only after the bdev channel (E-FSBDEV full half) lands
-            // and MFS gets a writable overlay.
-            ImageData::Static(_) => {
-                return Err(Errno::from_i32(EROFS));
+        match &mut self.inner {
+            ImageData::Owned(v) => {
+                let start = key.block.saturating_mul(self.block_size as u64);
+                if start >= v.len() as u64 {
+                    return Ok(());
+                }
+                let start = start as usize;
+                let surviving = (v.len() - start).min(self.block_size);
+                v[start..start + surviving].copy_from_slice(&data[..surviving]);
+                Ok(())
             }
-        };
-        let start = key.block.saturating_mul(self.block_size as u64);
-        if start >= image.len() as u64 {
-            return Ok(());
+            // B15: static rdata is read-only, so a write is served from
+            // the CoW overlay — matching C's memory driver mutating its
+            // own RAM-disk buffer. Clip at the device end like the base
+            // transfer; a write entirely past the end writes nothing.
+            ImageData::Static(base) => {
+                let start = key.block.saturating_mul(self.block_size as u64);
+                if start >= base.len() as u64 {
+                    return Ok(());
+                }
+                let surviving = (base.len() as u64 - start).min(self.block_size as u64) as usize;
+                self.overlay.insert(key.block, data[..surviving].to_vec());
+                Ok(())
+            }
         }
-        let start = start as usize;
-        let surviving = (image.len() - start).min(self.block_size);
-        image[start..start + surviving].copy_from_slice(&data[..surviving]);
-        Ok(())
     }
 }
 
@@ -334,10 +366,16 @@ mod tests {
         let mut out = [0u8; BS];
         src.read_block(BlockKey::new(0, 1), &mut out).unwrap();
         assert!(out.iter().all(|&b| b == 0x5A));
-        // from_boot_image yields a zero-copy static source (B11): writes
-        // are EROFS (the packaged imgrd is read-only rdata).
-        let wr = src.write_block(BlockKey::new(0, 0), &[0x11u8; BS]);
-        assert_eq!(wr.unwrap_err().to_i32(), EROFS);
+        // B15: the static arm is served by a bounded CoW overlay —
+        // writes succeed and shadow the base on subsequent reads,
+        // untouched blocks still read from the base.
+        src.write_block(BlockKey::new(0, 0), &[0x11u8; BS]).unwrap();
+        let mut back = [0u8; BS];
+        src.read_block(BlockKey::new(0, 0), &mut back).unwrap();
+        assert!(back.iter().all(|&b| b == 0x11));
+        let mut other = [0u8; BS];
+        src.read_block(BlockKey::new(0, 1), &mut other).unwrap();
+        assert!(other.iter().all(|&b| b == 0x5A));
     }
 
     #[test]
@@ -350,5 +388,76 @@ mod tests {
         let mut back = [0u8; BS];
         src.read_block(BlockKey::new(0, 0), &mut back).unwrap();
         assert!(back.iter().all(|&b| b == 0x11));
+    }
+
+    #[test]
+    fn test_static_source_overlay_write_shadows_base_readback() {
+        // B15: writes on the static arm land in the CoW overlay and are
+        // served by subsequent reads, without mutating the base image.
+        static IMAGE: [u8; 4 * BS] = [0x5Au8; 4 * BS];
+        let mut src = ImgrdBlockSource::from_static(&IMAGE, BS).unwrap();
+        let mut before = [0u8; BS];
+        src.read_block(BlockKey::new(0, 2), &mut before).unwrap();
+        assert!(before.iter().all(|&b| b == 0x5A));
+        src.write_block(BlockKey::new(0, 2), &[0xABu8; BS]).unwrap();
+        let mut after = [0u8; BS];
+        src.read_block(BlockKey::new(0, 2), &mut after).unwrap();
+        assert!(after.iter().all(|&b| b == 0xAB));
+        // Adjacent blocks still read the base.
+        let mut neigh = [0u8; BS];
+        src.read_block(BlockKey::new(0, 1), &mut neigh).unwrap();
+        assert!(neigh.iter().all(|&b| b == 0x5A));
+        src.read_block(BlockKey::new(0, 3), &mut neigh).unwrap();
+        assert!(neigh.iter().all(|&b| b == 0x5A));
+        // Base image untouched.
+        assert!(src.image().iter().all(|&b| b == 0x5A));
+    }
+
+    #[test]
+    fn test_static_source_overlay_write_clip_short_final_block() {
+        // A write reaching past the device end is clipped (matches C
+        // `memory.c:442-443`); the overlay stores only the surviving
+        // bytes and reads zero-fill the rest.
+        static IMAGE: [u8; 600] = [0x5Au8; 600];
+        let mut src = ImgrdBlockSource::from_static(&IMAGE, BS).unwrap();
+        src.write_block(BlockKey::new(0, 1), &[0xEEu8; BS]).unwrap();
+        let mut out = [0u8; BS];
+        src.read_block(BlockKey::new(0, 1), &mut out).unwrap();
+        assert!(out[..88].iter().all(|&b| b == 0xEE));
+        assert!(out[88..].iter().all(|&b| b == 0));
+        assert_eq!(src.size_bytes(), 600);
+    }
+
+    #[test]
+    fn test_static_source_overlay_write_entirely_past_end_is_noop() {
+        // B15 keeps the base's edge rule: a write entirely past the
+        // device end writes nothing; a read of that block still
+        // answers zero (via base fall-through).
+        static IMAGE: [u8; BS] = [0x5Au8; BS];
+        let mut src = ImgrdBlockSource::from_static(&IMAGE, BS).unwrap();
+        src.write_block(BlockKey::new(0, 5), &[0xEEu8; BS]).unwrap();
+        let mut out = [0xABu8; BS];
+        src.read_block(BlockKey::new(0, 5), &mut out).unwrap();
+        assert!(out.iter().all(|&b| b == 0));
+        assert!(src.image().iter().all(|&b| b == 0x5A));
+    }
+
+    #[test]
+    fn test_static_source_overlay_multiple_writes_independent_blocks() {
+        // Dirty-mark writes block 0; a future write to block 3 would
+        // shadow independently, keeping the overlay per-block.
+        static IMAGE: [u8; 4 * BS] = [0u8; 4 * BS];
+        let mut src = ImgrdBlockSource::from_static(&IMAGE, BS).unwrap();
+        src.write_block(BlockKey::new(0, 0), &[0x11u8; BS]).unwrap();
+        src.write_block(BlockKey::new(0, 3), &[0x33u8; BS]).unwrap();
+        let mut b0 = [0u8; BS];
+        src.read_block(BlockKey::new(0, 0), &mut b0).unwrap();
+        assert!(b0.iter().all(|&b| b == 0x11));
+        let mut b3 = [0u8; BS];
+        src.read_block(BlockKey::new(0, 3), &mut b3).unwrap();
+        assert!(b3.iter().all(|&b| b == 0x33));
+        let mut b1 = [0u8; BS];
+        src.read_block(BlockKey::new(0, 1), &mut b1).unwrap();
+        assert!(b1.iter().all(|&b| b == 0x00));
     }
 }

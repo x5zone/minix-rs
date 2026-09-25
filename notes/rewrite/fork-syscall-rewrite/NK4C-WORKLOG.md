@@ -10,7 +10,9 @@
 
 - **B14 已修（1.26 落地，含代码）**：VFS 同步挂载路径 `WireFsClient::send`（`request.rs`）两处缺陷根治——**A**：裸 `m_type=REQ_READSUPER(0xA1C)` 经 `sendrec` 直发，绕过 C `fs_sendrec` 的 `TRNS_ADD_ID`（把 request 号抬到高 16 位）→ MFS 侧 `TransactionId::decode`(call=raw>>16) 解出 call=0、index 下溢 → `Unserved`→回 ENOSYS，read_super 从未抵达 MFS 挂载门；修=`sendrec` 前 `msg.m_type = trns_add_id(REQ_READSUPER, 0)`（同步靠阻塞往返匹配、id=0 安全，CodeReview 独立确认 id=0 < `IS_VFS_FS_TRANSID` 的 0xB02 下界不误路由）。**B**：`decode_readsuper_reply` 旧无视回复状态字无条件返 Ok，把 ENOSYS 当挂载成功让 `do_init_root` 带病开门；修=sendrec 后 `trns_del_id(msg.m_type)!=0` 即 `Err(FsError::Io(status))` 上抛（恢复 C `req_readsuper` `if (r!=OK) return r;`，boot 应 panic 见 main.c:519-520）。**真机取证**：加探针（已删）实测 PFS readsuper 回 `0x00000000`(status0=OK 通过)、MFS 回 `0x001e0000`(status=30=**EROFS**) 正确上抛——**Fix B 无假阴性、Fix A 已让 MFS 真服务**。三件套绿（docker 813/242/528·0fail / fmt request.rs 17=17、main_loop.rs 1=1 零新增 / 两次真机 c1/c2 签名一致=23313 行、`main_loop.rs:7681 failed to initialize root: Io`）。CodeReview 无 MUST-FIX。**boot 现诚实停在下一步 B15。**⚠️ 本 bullet 前代 §1.25 把症状记为 **EBUSY(16)**：本轮实测本 build 根挂载失败真码是 **EROFS(30)**（EBUSY 是「已挂载再挂」旧时相的下游表现），见 §1.26。
 
-- **B15 前沿（1.26 定位完成，未修）**：`do_init_root`→`mount_fs_root` 的 MFS readsuper 现真抵达 MFS 并回 **EROFS(30)**。根因（代码实锤）：`fs/mfs/src/mount.rs:417-420`——**clean 文件系统以读写挂载**时按 C `mount.c:90-95` 要 dirty-mark（清 `FLAG_CLEAN` 并 `store_superblock` 写回块 0）；写落到 `fs/fs-rt/src/source.rs:148-160` `ImgrdBlockSource::write_block`，而打包 imgrd 是 `ImageData::Static`（**B11 零拷贝只读 rdata**，8 MB）→ 返 EROFS。C 里 RAM 盘可写（memory 驱动服务自有缓冲），本端口零拷贝破了可写性（source.rs:154-157 注释自陈「待 bdev 通道+E-FSBDEV 半 + MFS 可写 overlay」）。**下一步修向（C 忠实、非缩窄）**：给 imgrd 加**有界写覆盖层**（CoW：读透读 Static 基座、写落「已改块→缓冲」小映射，脏-mark 只改块 0，内存有界不 OOM），使 clean-rw 挂载不再 EROFS → MFS 真挂载 → init `stat(/dev/console)` 命中 → Runcom → rc marker。勿动 SCHED/IPC/B12、勿动 init/task.rs 挂载门（皆忠实镜像 C）。详见 §1.26。
+- **B15 已修（1.27 落地，含代码）**：MFS 根挂载 dirty-mark 不再 EROFS——`fs/fs-rt/src/source.rs::ImgrdBlockSource` 加**有界 CoW 覆盖层**（`overlay: BTreeMap<u64, Vec<u8>>`）。修向：`read_block` 先查 overlay、miss 落 Static 基座（clip 短尾零填，保持 C `memory.c:442-443` 边界规则）；`write_block` 分 arm——`Owned` 就地写不 populate overlay（测试/future writeback 路径）、`Static` 不再返 EROFS 而是写落 overlay（部分越界存 surviving、整块越界 no-op）；`from_static` 构造点初始化空 overlay；`EROFS` import 删除。**dirty-mount 只写块 0 → overlay 1 条 ≈ block_size + 树节点，内存有界**（vs 8 MB base 无法 Owned 化、2 MB slab pool 装不下）。C 忠实性：memory 驱动自有缓冲的 RAM 盘可写；本 overlay 是 bdev 通道未接前的过渡形态，进程终止即丢=与 C 语义一致。宿主 fs-rt 27/27 pass（新增 4 测：overlay 遮蔽读写 / clip 短尾 / 整块越界 no-op / 多块独立），mfs 133/fs 178/vfs 530 全绿。三件套绿（docker 813/242/528·0fail / fmt source.rs HEAD=1 NEW=1 零新增 / 两次真机 c3/c4 签名一致=25213 行、`init-state Runcom` @24127 同位、无 panic/EROFS/Failed to init）。CodeReview PASSED 无 MUST-FIX（SHOULD-CONSIDER=Owned 热路径多做一次 overlay get 可加注释；NICE-TO-HAVE=image() doc 说明不含 overlay——均非破坏性，本轮保持 diff 最小不采纳）。**boot 现前进到 `init Runcom` 相位**。⚠️ 不选「改根挂载只读」缩窄目标路径（非 C 忠实、破坏单元 D/I 写需求）。
+
+- **B16 前沿（1.27 观察到，未定位）**：B15 修后 boot 抵达 `init-state Runcom`（c3/c4 @24127 同位、单次出现），但 **rc marker `minix-rs rc: minimal boot script marker` 未打出**；24127 之后 serial 反复 `cr3-done / pre-restore rip=0x2073d2 rsp=... r10s=0x1 rbx=...` + `pm 0140b` / `pm 0020b` + SCHED idle pick->4 循环——`init` 已进入 `Runcom` 但 `exec("/bin/sh", ["/bin/sh", "/etc/rc"])` 腿未完成到子进程打印 marker。候选：①`Runcom` 里的 `fork+exec` 未成功 fork 出子进程（PM 侧 `pm 0140b` = 0x140b 十进制 5131 = 与 PM 请求表对号；`0020b` 同理）；②exec 成功但 imgrd 里 `/bin/sh` 或 `/etc/rc` 文件不存在/不可读（imgrd 已烘但 `mfs` 目录条目解析可能仍缺）；③子进程 stdout 未 wire 到 serial（marker 打了但串口看不到）。**下一入口**：给 `init.c::Runcom` 的 fork/exec 前后 + `exec` 系统调用返回处打 `nk4c:` 短探针，钉死到底停在哪一步；同查 imgrd 里 `/bin/sh`、`/etc/rc` 是否存在（mkfs 脚本可复现性）。**勿动**：SCHED/IPC/B12、init 状态机（忠实镜像 C）、`task.rs` 挂载门、VFS readsuper（1.26 已修）。
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
@@ -1926,4 +1928,43 @@ B13 修复后 boot 到 SingleUser 但无 rc marker（§1.25 定为 init `path_ex
 ### 新前沿 B15（已定位，未修）
 B14 修复后 boot 诚实停在 **MFS 根挂载本体回 EROFS(30)**。根因（代码实锤）：`fs/mfs/src/mount.rs:417-420`——**clean 文件系统以读写挂载**时按 C `mount.c:90-95` dirty-mark（清 `FLAG_CLEAN` + `store_superblock` 写回块 0）；写落 `fs/fs-rt/src/source.rs:148-160` `ImgrdBlockSource::write_block`，而打包 imgrd 是 `ImageData::Static`（B11 零拷贝只读 rdata，8 MB）→ EROFS。（mount.rs:380-383：若超级块非 CLEAN 会自动降级 read-only 跳过写；我们镜像是 CLEAN → 不降级 → rw 写 → EROFS。）C 里 RAM 盘可写（memory 驱动服务自有缓冲），本端口零拷贝破了可写性（source.rs:154-157 注释自陈「待 bdev 通道 + E-FSBDEV 半 + MFS 可写 overlay」）。
 **下一入口**：给 imgrd 加**有界写覆盖层**（CoW：读透 Static 基座、写落「已改块→缓冲」小映射；dirty-mark 只改块 0）使 clean-rw 挂载不再 EROFS → MFS 真挂载 → init `stat(/dev/console)` 命中（需 imgrd 已烘 `/dev/console`、`/bin/sh`、`/etc/rc`）→ Runcom → rc marker。**勿动**：SCHED/IPC/B12、init（忠实镜像 C）、`task.rs` 挂载门（忠实镜像 `fsdriver.c:46-47`）。注意：若图省事改成「根挂载只读」会缩窄目标（C 是读写挂载，且后续单元 D/I 命令面+测试需写），**不是** C 忠实修向。
+
+---
+
+## 1.27 B15 修复落地：imgrd Static 加有界 CoW 覆盖层，clean-rw 挂载 dirty-mark 不再 EROFS；boot 抵达 `init Runcom`（新停点 B16）（2026-09-25，c3/c4 无探针签名一致）
+
+### 现象
+B14 修复（§1.26）后 boot 诚实 panic 于 `main_loop.rs:7681 vfs: failed to initialize root: Io`，取证探针实锤 MFS readsuper 回 status=30=EROFS。根因链（代码实锤）：`fs/mfs/src/mount.rs:417-420` clean-rw 挂载按 C `mount.c:90-95` dirty-mark（清 `FLAG_CLEAN` + `store_superblock` 写回块 0）→ `fs/fs-rt/src/source.rs:148-160` `ImgrdBlockSource::write_block` 对 `ImageData::Static` 返 EROFS。
+
+### 修向（C 忠实、非缩窄）
+C 里 RAM 盘完全可写（memory 驱动服务自有缓冲）。本端口零拷贝（B11）破了可写性——8 MB base 无法 Owned 化（超 2 MiB slab pool）。修向 = **有界 CoW 覆盖层**：
+- 读透 Static 基座；
+- 写落「已改块 → 缓冲」小映射（`overlay: BTreeMap<u64, Vec<u8>>`）；
+- dirty-mount 只写块 0 → overlay 仅 1 条 ≈ block_size + 树节点，内存有界。
+
+不选「改根挂载只读」（缩窄目标、非 C 忠实、破坏后续单元 D/I 命令面+测试的写需求）。不选「Owned 化」（8 MB > 2 MiB slab pool 会 OOM）。
+
+### 修复（`os/fs/fs-rt/src/source.rs`）
+1. **新增字段**：`ImgrdBlockSource` 加 `overlay: BTreeMap<u64, Vec<u8>>`；`new`/`from_static` 构造点初始化空。import 删 `EROFS`（不再使用）、加 `alloc::collections::BTreeMap`。
+2. **`read_block` overlay-first**：先查 `self.overlay.get(&key.block)`，命中则拷入 `out` 并零填尾部（处理部分越界写入的 short-final 情形）；miss 落 base（原有 `memory.c:442-443` 边界处理不变）。整块越界读仍落 base fall-through → 零。
+3. **`write_block` 分 arm**：
+   - `Owned` 保持就地写、**不 populate overlay**（测试/future writeback 路径）；
+   - `Static` 不再返 EROFS——写落 overlay：先 clip 到 device end，`start ≥ base.len()` 整块越界 no-op，否则 `overlay.insert(key.block, data[..surviving].to_vec())`。
+4. **doc 注释**：`ImgrdBlockSource` 顶部写清 B15 语义与 C `mount.c:90-95`、`memory.c:442-443` 对应关系；`from_static` doc 删旧「Writes return EROFS」。
+5. **测试**：
+   - 旧 `test_boot_source_supplied_image_serves_imgrd_arm` 断言从「write → EROFS」改为「write Ok → read_block 回读到新数据 + 邻块仍读基座」（与 B15 新语义同步）。
+   - 新增 4 测：`test_static_source_overlay_write_shadows_base_readback`（overlay 遮蔽读写 + 邻块基座不变 + `image()` 基座未变）、`test_static_source_overlay_write_clip_short_final_block`（部分越界存 surviving + 零填）、`test_static_source_overlay_write_entirely_past_end_is_noop`（整块越界 no-op + read 回 base fall-through 零）、`test_static_source_overlay_multiple_writes_independent_blocks`（多块 overlay 独立）。fs-rt 宿主 27/27 pass。
+
+### 验证（三件套）
+- docker `minix-ci:1.94 cargo test -j 1 -p minix-kernel -p minix-arch -p minix-vm`：**813/242/528·0 failed**（基线只增不减）。
+- rustfmt `--edition 2024 --check`：source.rs HEAD=1 NEW=1（基线预存 `test_pending` 长行）——**零新增漂移**。
+- 宿主 `cargo test -p minix-fs-rt -p minix-fs-mfs -p minix-fs -p minix-vfs`：27 + 133 + 178 + 530 全绿。
+- 真机 c3/c4 两次独立复跑签名一致：**25213 行**（vs B14 时的 23313 行，boot 前进了 ~1900 行）、`init-state Runcom` @24127 同位、**无 panic / EROFS / Failed to init**；非探针行 diff 完全为空（grep 过滤 `nk4a:` 后两份 serial 无差异）。
+- 镜像 `xtask image --arch x86_64 --release` 构建通过。
+
+### CodeReview
+**PASSED 无 MUST-FIX**。逐项验证 7 项约束（语义正确性 / C 忠实性 / 内存有界性 / 回归面 / import 残留 / 测试覆盖 / BlockCache 集成）均 ✅。SHOULD-CONSIDER：`read_block` 在 Owned 热路径多做一次 `overlay.get`（无影响、boot I/O 量极低）。NICE-TO-HAVE：`image()` doc 补充不含 overlay 语义。本轮保持 diff 最小不采纳（两项均非破坏性）。CodeReview 确认：BTreeMap 无泄漏路径（struct 随进程 drop）；base 永不 flush = 与 C RAM disk 在 driver 终止即丢一致；`EROFS` 在 fs-rt crate 内无残留（grep 0 命中）；BTreeMap 属 `alloc::collections` 匹配 no_std + extern crate alloc。
+
+### 新前沿 B16（观察到，未定位）
+B15 修后 boot 抵达 `init-state Runcom` 但 **rc marker `minix-rs rc: minimal boot script marker` 未打出**。尾态：24127 之后反复 `cr3-done / pre-restore rip=0x2073d2 rsp=... r10s=0x1` + `pm 0140b` / `pm 0020b` + SCHED idle pick->4 循环。**候选**：①Runcom 里 `fork+exec` 未成功 fork 出子进程（PM `0140b` = 5131 与 PM 请求表对号）；②exec 成功但 imgrd 里 `/bin/sh` 或 `/etc/rc` 不存在/不可读；③子进程 stdout 未 wire 到 serial。**下一入口**：给 init `Runcom` fork/exec 前后 + `exec` syscall 返回处打 `nk4c:` 短探针钉死停点；同查 imgrd 里 `/bin/sh`、`/etc/rc` 是否已烘。**勿动**：SCHED/IPC/B12、init 状态机、`task.rs` 挂载门、VFS readsuper（1.26 已修）。
 
