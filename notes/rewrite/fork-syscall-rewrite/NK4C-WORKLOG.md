@@ -26,7 +26,7 @@
 
 - **B21 已修（1.40 落地，含代码·arch 侧）**：根因坐实——`sync_status_register_to_frame`（`os/arch/src/x86_64/trap_stub.rs`）是 IPC 状态车道 **RBX→R10 迁移的陈旧漏改**：状态位现由 `or_ipc_status_reg`/`clear_ipc_status_reg`/`ipc_status_register` 读写 `gp_regs[GP_R10=8]`、trap 出口 asm `pop r10`、userspace `ipc_trap`（arch_trap.rs:84 `mov status,r10`）从 R10 读 status，但该 sync 仍做 `frame.rbx = ctx.rbx`。在接收进程**自身** int-33 receive 陷阱返回臂（内核 `trap_dispatch.rs:1810` reply-code 路径，唯一调用点）上，内核已把投递的 `IpcCall::Notify` 位 OR 进 `gp_regs[GP_R10]`，却只把 RBX 拉回帧 → `frame.r10` 停在 RECEIVE 序言清零的旧值 → userspace `is_ipc_notify` 读到 0 误判非通知 → 那条 `mini_notify_core` 直投的 HARDWARE notify（m_type=0x1000、src=KERNEL/HARDWARE=-1、被 init.rs:452 探针低12位截断打成 `pm 000ff`）下探到 `pm_isokendpt(KERNEL)` 失败 → init.rs:567 panic。修=改 `frame.r10 = ctx.gp_regs[crate::x86_64::signal::GP_R10]`（同步用户真正读的状态车道）+ 诚实化函数注释 + 回归守卫单测 `sync_status_register_copies_r10_lane_not_rbx`（`ctx.rbx` 干扰值双向锁死「R10 收到状态、RBX 不被污染」+ 复刻 `is_ipc_notify` 的 6-bit 掩码断言）。**真机 c31/c32 决定性**：`panic-enter`=0（PM 不再崩）、那条 `nk4a: pm 000ff` 命中 1 次后被正确识别跳过、`pre-restore- r10s=0x0000000000000004`（Notify status 正确交付进 R10）出现 115 次，两次行数 25284/25285 同构=签名一致。三件套绿（docker arch **243**(head 242 +1 新测)/kernel 816/vm 528·0fail / fmt trap_stub.rs cur=17=head=17 零新增 / 真机 c31==c32 签名一致）。CodeReview **PASSED**（无 W/S；N1 陈旧 RBX 注释多在 pre-existing 内核侧、不阻塞，本轮已采纳修自身新增 rustdoc 的 broken intra-doc link）。⚠️ 修复只动 arch crate、不碰 PM（规避 §1.33 PM 布局脆弱性债）。**新前沿 B22**：见下条。
 
-- **B22 前沿（⚠ 根因再纠正=INIT fork 子空指针 SIGSEGV、作废前「入队违例」方向、详见 §1.43）**：B21 修复后 PM 存活、boot 推进至 ~25285 行 timeout（EXIT=124），末态全系统静态死锁（§1.42）。§1.42 猜「child queued=no=入队违例」**已作废**：核对 C 黄金参照 `minix3/minix/kernel/proc.h:169 rts_f_is_runnable(flg)==((flg)==0)`——SIGNALED 置位即非 runnable 是 **C 忠实正确**（信号交 PM 经 GETKSIG 的 `rts_unset(SIGNALED)` 入队半唤醒子），child `flags=0x30 queued=no` 无违例。**真根因坐实（§1.43）**：c32 全 boot 唯一一条 `csig tgt=0xc sig=0xb`，`sig 11=SIGSEGV`；现场上文 `pf-exit noaddr cr2=0x0`→**INIT fork 子(12) fork 后解引用空指针**、VM 判 noaddr→`cause_signal(SIGSEGV)`→子永停 0x30。addr2line `0x21b3e4`=`minix_sys::fork`、objdump 该处=`int $0x21` 后 `mov %r10,%rsi`（**子从 fork sendrec 正常返回、fork 链已通**），SIGSEGV 崩在子返回后 INIT 用户代码下游。exec 探针覆盖 nr 0x5/7/9/a/b 但**无 0xc**→子从未 exec /bin/sh→rc marker 不可达（与「无 sh/rc exec 痕迹」闭环）。次生：PM 空闲未 `sys_getksig` 清理该 SIGSEGV，但对 marker 已次要（子已崩）。**下一入口（精确）**：`pfc` 崩溃-rip 探针过滤器加 12 +build+跑 c33→**实锤 child 崩于 rip=0x21b3e4 cr2=0x0 err=0x4**（详 §1.44）。addr2line+objdump：0x21b3e4=`minix_sys::fork` 内 `int $0x21`（sendrec-to-PM）**返回后首条** `mov %r10,%rsi`（本身不访存）——即子从 fork sendrec 的 trap-return 臂未正常完成，内核把 PM fork REPLY 拷回子消息缓冲时子的 reply-buffer/描述符指针（应=rsp+8 栈址）=**0**→读地址0 fault（延续 B20 `fork_from` 子帧继承链：`cpu_context:parent.cpu_context` 整体拷贝未带 reply-buffer 指针）。**下轮取证**：dump child 崩溃时完整用户帧（rdx/rsp/r10）与父同点对比坐实。rc marker `minix-rs rc: minimal boot script marker` 仍未打印，frontier 仍 1.30。
+- **B22 前沿（⚠ 根因再纠正=INIT fork 子空指针 SIGSEGV、作废前「入队违例」方向、详见 §1.43）**：B21 修复后 PM 存活、boot 推进至 ~25285 行 timeout（EXIT=124），末态全系统静态死锁（§1.42）。§1.42 猜「child queued=no=入队违例」**已作废**：核对 C 黄金参照 `minix3/minix/kernel/proc.h:169 rts_f_is_runnable(flg)==((flg)==0)`——SIGNALED 置位即非 runnable 是 **C 忠实正确**（信号交 PM 经 GETKSIG 的 `rts_unset(SIGNALED)` 入队半唤醒子），child `flags=0x30 queued=no` 无违例。**真根因坐实（§1.43）**：c32 全 boot 唯一一条 `csig tgt=0xc sig=0xb`，`sig 11=SIGSEGV`；现场上文 `pf-exit noaddr cr2=0x0`→**INIT fork 子(12) fork 后解引用空指针**、VM 判 noaddr→`cause_signal(SIGSEGV)`→子永停 0x30。addr2line `0x21b3e4`=`minix_sys::fork`、objdump 该处=`int $0x21` 后 `mov %r10,%rsi`（**子从 fork sendrec 正常返回、fork 链已通**），SIGSEGV 崩在子返回后 INIT 用户代码下游。exec 探针覆盖 nr 0x5/7/9/a/b 但**无 0xc**→子从未 exec /bin/sh→rc marker 不可达（与「无 sh/rc exec 痕迹」闭环）。次生：PM 空闲未 `sys_getksig` 清理该 SIGSEGV，但对 marker 已次要（子已崩）。**下一入口（精确）**：`pfc` 崩溃-rip 探针过滤器加 12 +build+跑 c33→**实锤 child 崩于 rip=0x21b3e4 cr2=0x0 err=0x4**（详 §1.44）。addr2line+objdump：0x21b3e4=`minix_sys::fork` 内 `int $0x21`（sendrec-to-PM）**返回后首条** `mov %r10,%rsi`（本身不访存）——即子从 fork sendrec 的 trap-return 臂未正常完成，内核把 PM fork REPLY 拷回子消息缓冲时子的 reply-buffer/描述符指针（应=rsp+8 栈址）=**0**→读地址0 fault（延续 B20 `fork_from` 子帧继承链：`cpu_context:parent.cpu_context` 整体拷贝未带 reply-buffer 指针）。**下轮取证**：dump child 崩溃时完整用户帧（rdx/rsp/r10）与父同点对比坐实。rc marker `minix-rs rc: minimal boot script marker` 仍未打印，frontier 仍 1.30。【→ 本行已于 §1.45 闭环：c34 帧 dump 实锤 **child(12) 切进时 `p_seg.phys_root=0`（无任何自有页表）**→以空 cr3 跑首个用户访存即 SIGSEGV（确定性、非竞态）。根因=VM 腿 `fork.rs:344 sys_fork(parent, child.slot())` **不传 PFF_VMINHIBIT 且未为子发 SetAddrSpace 绑页表**，而未实现 C 的「VMINHIBIT 持子至绑页表后清」配套纪律。修复方向（下轮、需真机验 rc marker）：VM sys_fork 传 PFF_VMINHIBIT + 为子绑页表后再 VmInhibitClear（或 fork_from 继父 phys_root 共享，与 C `*rpc=*rpp` 一致）。】
 
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
@@ -2524,6 +2524,36 @@ nk4a: csig tgt=0xc sig=0xb
 - 无生产代码（真机取证 c33：临时内核探针已回滚、tracked diff 空）；
 - WORKLOG 顶部 B22 bullet 崩溃 rip 更新 + 本节 §1.44；
 - 纯侦察 doc commit、免三件套（§1.25/28/41/42/43 先例）；rc marker 未达，frontier 仍 1.30。
+
+---
+
+## §1.45 B22 根因彻底闭环（真机 c34 帧 dump + 读码交叉验证 C·纯侦察 doc）
+
+沿 §1.44 登记的下一入口，临时在 `trap_dispatch.rs` pfc 块后加 child(12) 完整帧 dump 探针（内核侧、§1.33 不阻），build+跑 c34。**取证探针已 `git checkout` 回滚（tracked diff 空）**。
+
+**c34 铁证一（调度器切子时页表根=0）**：
+```
+nk4a: pick->0xc
+nk4a: sa0-0xc root=0x0 cur=0x3355000   ← 子 p_seg.phys_root = 0（NULL页表！）
+nk4a: sa1-after cr3=0x3355000          ← 内核见 root=0 未切换、沿用陈旧 cr3
+nk4a: pre-restore- rip=0x21b3e4 rsp=0x7fffffffa608
+```
+**c34 铁证二（子崩溃帧）**：`c33fr rip=0x21b3e4 rax=0x0 rdx=0x7fffffffa618 rsi=0x10 rdi=0x7fffffffa9a0 rsp=0x7fffffffa608 rbp=0x7fffffffa7f4 r10=0x22a7e5 rbx=0x7fffffffa618`。与 pfc `tex=unmapped` 合看：**子根本没有任何自己的页表（phys_root=0）**，以空/陈旧 cr3 跑首个用户访存即 fault（rax=0、cr2=0）。非竞态（c32/c33/c34 确定性同崩）。
+
+**读码交叉验证坐实根因链（C vs minix-rs）**：
+1. C `do_fork.c:63 *rpc=*rpp` 拷全 proc（含 p_seg），但 line 126 `rpc->p_seg.p_cr3=0` 又显式清零，**同时 line 115-116 `if(flags & PFF_VMINHIBIT) RTS_SET(rpc, RTS_VMINHIBIT)` 把子挡在调度外**，直到 VM 给子绑新页表（SYS_VIRGIN/pt_bind）后发 VmInhibitClear 清 VMINHIBIT。**两件事配套**：清零 cr3 安全，因为有 VMINHIBIT 持住。
+2. minix-rs `fork_from`(proc.rs:1617) 置 `p_seg: default()`→phys_root=0（与 C 一致）；`complete_fork_setup`(proc.rs:1750) **确实**按 `flags & fork_flags::VMINHIBIT(0x01)` 置 VMINHIBIT。
+3. **但 VM 腿 `os/servers/vm/src/fork.rs:344 gateway.sys_fork(parent.endpoint(), child.slot())` 只传 2 参、不传任何 PFF flags** → dispatch_fork 收到的 `fork_req.flags`=0 → `complete_fork_setup` **从不置 VMINHIBIT** → 子 fork 完即叮 runnable。子能 `pick->0xc`（c34 实锤）正因无 VMINHIBIT。
+4. 且子 phys_root 始终=0 说明 VM fork 腿**从未为子发 SetAddrSpace VMCTL**（`vmctl_vminhibit_clear`/设 phys_root 的 SetAddrSpace 腿在 syscall.rs:2831/lib.rs:1722 存在，但未对 fork 子调用）。
+
+**根因定性**：B22 = **VM/内核 fork 腿未落实 C 的「VMINHIBIT 持子 + 绑页表后清」配套纪律**：VM sys_fork 不传 PFF_VMINHIBIT 且不为子绑页表（phys_root 永为 0）→ INIT fork 子一被调度即以空页表 SIGSEGV→从未 exec /bin/sh→rc marker 不可达。同 B16/B17 VM-fork 家族延续。
+
+**修复方向（下轮实施·需真机验证 rc marker、不投机）**：使 minix-rs 对齐 C——① VM `fork.rs` 的 sys_fork 路径传 PFF_VMINHIBIT（使 `complete_fork_setup` 给子置 VMINHIBIT），且为子发 SetAddrSpace 绑真页表（填 phys_root），再 VmInhibitClear；或②若本设计采用“A1 采纳语义、sys_fork 内就完成地址空间登记”（fork.rs:325-327 注释），则修正 `fork_from` 不置 phys_root=0而继承父 phys_root（共享页表、COW 由 VM 管）与 C `*rpc=*rpp` 语义一致。两方案均需：先定位 VM 对子到底有无 SetAddrSpace 腿（读 vm fork.rs:300-320 `write_page_table_mappings` 是否真把子页表回写内核），再选最小忠实方案 + 三件套（docker 只增不减 + fmt 零新增 + 两次真机签名且子真 exec sh 达 rc marker）+ CodeReview。
+
+### §1.45 本 turn 行量
+- 无生产代码（真机取证 c34：临时内核帧-dump 探针已回滚、tracked diff 空）；
+- WORKLOG 顶部 B22 bullet 根因闭环 + 本节 §1.45；
+- 纯侦察 doc commit、免三件套（§1.25/28/41/42/43/44 先例）；rc marker 未达，frontier 仍 1.30。
 
 ---
 
