@@ -2166,3 +2166,37 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 - frontier 仍在 1.30；rc marker 未达。
 
 ---
+
+## 1.32 · B17 侦察 C（PM 侧 do_fork Err 臂定位探针）——vm_fork 是唯一命中臂
+
+### 现象
+§1.31 探针 B 实锤 init 现真收 `Err(-errno)` 走 `rc:frkE` 分支，do_fork 实际 Err——但具体 Err 臂未定。候选：`can_alloc_for_user` / `find_free_slot` / `vm_fork`。
+
+### 探针 C（本轮，PM fork.rs 3 点）
+`nk4c_fm("dF:canA")`（`can_alloc_for_user` 失败）+ `nk4c_fm("dF:ffs")`（`find_free_slot` 返 None）+ `nk4c_fm("dF:vmF")`（`vm_fork` sendrec 或 m_type!=OK）——cap 8，走内核 diagctl 串口直写。
+
+### 真机 c12 命中矩阵（35607 行）
+| 探针 | c12 |
+|---|---|
+| dF:canA（表满容量）| **0** |
+| dF:ffs（无空闲槽）| **0** |
+| **dF:vmF（VM 拒绝）**| **1 命中** |
+
+### 结论
+**根因缩窄至 `vm_fork` 单点**——proc 表容量与非空闲槽都正常（`procs_in_use < LAST_FEW`、`find_free_slot` 返 Some），失败发生在 `dispatcher.rs::vm_fork` 内的 `transport.sendrec(Endpoint::VM, &mut msg)` 或 `msg.m_type != OK` 分支。
+
+### 下一入口（fix B17 完整链）
+候选：
+1. **VM 服务未接线 VM_FORK**：`Endpoint::VM` receive 循环对 `VM_FORK = ?` 未实现 → 回 ENOSYS 或 ESIGN 使 `msg.m_type != OK` 走 VmError；
+2. **VM 未进 receive**：`transport.sendrec` 阻塞拿到 ENOTREADY(201)（与 F13 PM↔VFS 同形态但 VM 侧）；
+3. **VM 分配子地址空间失败**：真语义 ENOMEM（VM 侧 region 池不足，与 §F12 slab 上限相关）。
+
+诊断：VM 侧 `vm_fork` 处理入口加"vmF-in / vmF-ok / vmF-err"三点短探针 + dump reply m_type；一轮即可裁决候选 1/2/3。
+
+### 本 turn 行量
+- 1 处代码变更（`fork.rs` `nk4c_fm` 辅助 + 3 处 Err 臂探针）→ **本 turn 末已 `git checkout --` 回滚**；
+- WORKLOG 顶部不动（B17 前沿 bullet 已在 §1.30 落地），仅本节 §1.32 追加；
+- **纯侦察 doc commit**（同 §1.25/§1.28/§1.29/§1.31 先例）——无生产代码、无三件套、无 CodeReview；
+- frontier 仍在 1.30；rc marker 未达，B17 完整链下一轮修复。
+
+---
