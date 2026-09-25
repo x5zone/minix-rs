@@ -231,11 +231,27 @@ pub fn plan(
             &["-p", entry.package, "--target", arch.module_target()],
         );
     }
-    // /bin/sh 不是 boot 模块，但 imgrd 播种需要其 ELF 二进制（proto 路径引用）。
+    // /bin/sh、/bin/echo 不是 boot 模块，但 imgrd 播种需要其 ELF 二进制
+    // （proto 路径引用）。NK4-C 1.56 B31：本重写的 shell 目前只有
+    // exit/cd 两个内建（commands/bin/shell/src/bin/sh.rs 的 eval 臂），
+    // rc 里的 `echo marker` 因此走外部命令腿；C 的 ash 虽有 echo 内建
+    // （`minix3/bin/sh/builtins.def` 的 `echocmd`，无 TINY/SMALL 门），
+    // 但其镜像同样独立装 /bin/echo（`minix3/bin/echo/`），播种即对位
+    // ——内建化留待 shell 扩内建面时裁决。此前盘上只播 sh：一旦
+    // init→sh 的 exec 腿（B32）修通，rc 的 echo 会 PATH 全 ENOENT →
+    // sh 退 127 → runcom 回落 SingleUser。当前循环的近因是 B32，
+    // 本缺件是它下游的独立实锤障碍。
     cargo_release(
         &mut actions,
-        "sh 命令构建（imgrd /bin/sh 播种）",
-        &["-p", "minix-shell", "--target", arch.module_target()],
+        "sh/echo 命令构建（imgrd /bin 播种）",
+        &[
+            "-p",
+            "minix-shell",
+            "-p",
+            "minix-fileops",
+            "--target",
+            arch.module_target(),
+        ],
     );
 
     // 2. boot-shim（生产开关：关默认 feature，只开本架构的 uefi 特性）。
@@ -278,11 +294,14 @@ pub fn plan(
     // 3b. /etc 原型 + mkfs_mfs 播种 imgrd（先于 mfs 构建——build.rs 需 imgrd 就位）。
     let proto_path = image_dir.join("imgrd.proto");
     let imgrd = image_dir.join("imgrd.img");
-    let sh_rel = format!("target/{}/{}/sh", arch.module_target(), profile);
+    let bin_rel = |name: &str| format!("target/{}/{}/{name}", arch.module_target(), profile);
     actions.push(Action::Write {
         path: proto_path.clone(),
-        bytes: generate_etc_proto(&layout.os_root.join("etc"), &sh_rel)?,
-        note: "imgrd 原型文件（/etc 最小集 + /bin/sh + /dev/console）",
+        bytes: generate_etc_proto(
+            &layout.os_root.join("etc"),
+            &[("sh", &bin_rel("sh")), ("echo", &bin_rel("echo"))],
+        )?,
+        note: "imgrd 原型文件（/etc 最小集 + /bin/sh,/bin/echo + /dev/console）",
     });
     actions.push(Action::Tool {
         program: layout
@@ -442,8 +461,11 @@ pub fn plan(
 /// 行**（仅 mode uid gid，无名字）；其后是根目录条目，目录递归以 `$`
 /// 收口；设备行 `名 c--权限 uid gid major minor`。console 设备号对位
 /// C dmap 表的 TTY_MAJOR=4（`minix3/minix/include/minix/dmap.h:25`，
-/// ttys 族），惯例次设备号 0。
-pub fn generate_etc_proto(etc_dir: &Path, sh_host_rel: &str) -> Result<Vec<u8>> {
+/// ttys 族），惯例次设备号 0。`bin_entries` 是 /bin 下要播种的条目
+/// （盘上名, 宿主相对路径），一律 0755——本表只播可执行文件；
+/// NK4-C 1.56 B31 起含 `sh` 与 `echo`（rc 外部命令腿），列表化以便
+/// 后续命令面（18-stage）按需上收；非 exec 文件需先带 mode 入表。
+pub fn generate_etc_proto(etc_dir: &Path, bin_entries: &[(&str, &str)]) -> Result<Vec<u8>> {
     // 存在性在此验证；内容由 mkfs_mfs 的 StdHost 播种时从宿主读取。
     for required in ["rc", "ttys"] {
         let path = etc_dir.join(required);
@@ -455,22 +477,23 @@ pub fn generate_etc_proto(etc_dir: &Path, sh_host_rel: &str) -> Result<Vec<u8>> 
         }
     }
 
-    let proto = format!(
+    let mut proto = String::from(
         "minix-rs imgrd\n\
-                 2048 0\n\
-                 d--755 0 0\n\
-                 etc d--755 0 0\n\
-                 rc ---755 0 0 etc/rc\n\
-                 ttys ---644 0 0 etc/ttys\n\
-                 $\n\
-                 dev d--755 0 0\n\
-                 console c--600 0 0 4 0\n\
-                 $\n\
-                 bin d--755 0 0\n\
-                 sh ---755 0 0 {sh_host_rel}\n\
-                 $\n\
-                 $\n"
+         2048 0\n\
+         d--755 0 0\n\
+         etc d--755 0 0\n\
+         rc ---755 0 0 etc/rc\n\
+         ttys ---644 0 0 etc/ttys\n\
+         $\n\
+         dev d--755 0 0\n\
+         console c--600 0 0 4 0\n\
+         $\n\
+         bin d--755 0 0\n",
     );
+    for (name, host_rel) in bin_entries {
+        proto.push_str(&format!("{name} ---755 0 0 {host_rel}\n"));
+    }
+    proto.push_str("$\n$\n");
     Ok(proto.into_bytes())
 }
 
@@ -623,8 +646,9 @@ mod tests {
         }
     }
 
-    /// NK4-C 1.10r：在 tempdir 布局中植出 /bin/sh 宿主产物（plan 的
-    /// 缺件 fail-fast 需要它存在；内容无关——proto 只引用路径）。
+    /// NK4-C 1.10r：在 tempdir 布局中植出 /bin 宿主产物（plan 的
+    /// 缺件 fail-fast 需要它们存在；内容无关——proto 只引用路径）。
+    /// NK4-C 1.56 B31：+echo（rc 外部命令播种腿）。
     fn plant_sh(layout: &Layout, module_target: &str, profile: &str) {
         let dir = layout
             .target_root
@@ -632,6 +656,7 @@ mod tests {
             .join(profile);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("sh"), b"").unwrap();
+        std::fs::write(dir.join("echo"), b"").unwrap();
     }
 
     /// 计划完整性：构建/装机/播种/ESP 组装各环节齐全，生产开关在位。
@@ -652,7 +677,7 @@ mod tests {
                 .filter(|a| matches!(a, Action::Cargo { .. }))
                 .count()),
             16,
-            "11 模块(不含 mfs) + sh + boot-shim + kernel-image + mkfs_mfs + mfs(B11 后构) = 16 步 cargo 构建"
+            "11 模块(不含 mfs) + sh/echo（minix-shell+minix-fileops 一步） + boot-shim + kernel-image + mkfs_mfs + mfs(B11 后构) = 16 步 cargo 构建"
         );
         // 生产开关与 uefi 目标。
         assert!(text.contains("fw-x86-uefi") && text.contains("x86_64-unknown-uefi"));
@@ -785,7 +810,11 @@ mod tests {
     fn etc_proto_grammar_and_console_device_line() {
         let (layout, _guard) = tempdir::create();
         let proto = String::from_utf8(
-            generate_etc_proto(&layout.os_root.join("etc"), "target/sh").unwrap(),
+            generate_etc_proto(
+                &layout.os_root.join("etc"),
+                &[("sh", "target/sh"), ("echo", "target/echo")],
+            )
+            .unwrap(),
         )
         .unwrap();
         let mut lines = proto.lines();
@@ -822,6 +851,10 @@ mod tests {
             body.contains(&"bin d--755 0 0") && body.contains(&"sh ---755 0 0 target/sh"),
             "/bin/sh 播种（rc marker 链：init runcom exec /bin/sh）"
         );
+        assert!(
+            body.contains(&"echo ---755 0 0 target/echo"),
+            "/bin/echo 播种（NK4-C 1.56 B31：rc 唯一外部命令，缺它 sh 退 127）"
+        );
     }
 
     /// /etc 最小集缺件时原型生成必须报错（装机面不造缺 rc 的镜像）。
@@ -829,6 +862,6 @@ mod tests {
     fn etc_proto_requires_rc_and_ttys() {
         let (layout, guard) = tempdir::create();
         std::fs::remove_file(guard.0.join("etc/rc")).unwrap();
-        assert!(generate_etc_proto(&layout.os_root.join("etc"), "target/sh").is_err());
+        assert!(generate_etc_proto(&layout.os_root.join("etc"), &[("sh", "target/sh")]).is_err());
     }
 }
