@@ -168,8 +168,7 @@ pub fn copy_snapshot_to_caller(
     use crate::cross_space::data_copy_vmcheck;
     use crate::syscall::KcallResult;
     use crate::vm::{AddressRef, CrossSpaceResult};
-    use minix_arch::{CurrentDirectMap, DirectMapArch};
-    use minix_types::{PhysBytes, VirBytes};
+    use minix_types::VirBytes;
 
     const E2BIG: i32 = 7;
     const EFAULT: i32 = 14;
@@ -185,9 +184,11 @@ pub fn copy_snapshot_to_caller(
     snap[..4].copy_from_slice(&(next as i32).to_le_bytes());
     snap[4..8].copy_from_slice(&(size as i32).to_le_bytes());
 
-    // SAFETY: 快照缓冲在内核堆(直映射可达);拷至调用方缓冲为单次跨
-    // 空间拷,caller 的 cr3 由 proc_cr3 解析(与 dispatch_trace 同款)。
-    let snap_phys = CurrentDirectMap::virt_to_phys(VirBytes(snap.as_ptr() as u64));
+    // SAFETY: 快照缓冲在内核堆 `IMAGE_HEAP`(`.bss`,落 image 高半区，两个
+    // Direct Map 窗口之外)——`virt_to_phys` 会产伪物理地址(NK4-C 1.51 B27 残留
+    // 根因)。改用 AddressRef::Process(caller CR3 映射内核 higher-half，
+    // resolve_physical 走真页表得正确 PA)。拷至调用方缓冲为单次跨空间拷，
+    // caller 的 cr3 由 proc_cr3 解析(与 dispatch_trace 同款)。
     let caller_endpt = proc_table
         .get(caller_nr)
         .map(|p| p.p_endpoint)
@@ -202,7 +203,7 @@ pub fn copy_snapshot_to_caller(
     let r = data_copy_vmcheck(
         caller_nr,
         proc_table,
-        AddressRef::Physical(snap_phys),
+        AddressRef::Process { endpoint: caller_endpt, offset: VirBytes(snap.as_ptr() as u64) },
         AddressRef::Process { endpoint: caller_endpt, offset: VirBytes(val_ptr) },
         KMESS_SNAPSHOT_SIZE,
         &proc_cr3,

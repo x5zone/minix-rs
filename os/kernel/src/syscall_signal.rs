@@ -24,9 +24,7 @@ use crate::syscall::{KcallResult, Syscall};
 use crate::cross_space::data_copy_vmcheck;
 use crate::vm::{AddressRef, CrossSpaceResult};
 
-use minix_arch::{
-    CurrentSignalContext, CurrentDirectMap, DirectMapArch, SignalContext, SignalInfo, TrapStyle,
-};
+use minix_arch::{CurrentSignalContext, SignalContext, SignalInfo, TrapStyle};
 
 // ── Minix3 error codes ──
 // Centralized in `crate::errno` to prevent value drift (FIX-01: R-02/R-09/R-18).
@@ -629,9 +627,6 @@ pub fn dispatch_sigsend(
     // C: do_sigsend.c:36-39 — data_copy_vmcheck(caller, caller_ep, sigctx, KERNEL, &smsg, sizeof)
     let smsg: SigMsg = SigMsg::default();
     {
-        let smsg_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-            &smsg as *const SigMsg as u64,
-        ));
         let caller_endpt = proc_table
             .get(caller_nr)
             .map(|p| p.p_endpoint)
@@ -653,7 +648,13 @@ pub fn dispatch_sigsend(
             endpoint: caller_endpt,
             offset: VirBytes(sigctx_addr),
         };
-        let dst = AddressRef::Physical(smsg_phys);
+        // NK4-C 1.51 (B27 残留根因): smsg 是内核栈局部，VA 落在 higher-half 内核
+        // image 段（两个 DM 窗口之外），`virt_to_phys` 产伪物理地址 → copy 野写。
+        // 改用 AddressRef::Process（caller CR3 映射内核 higher-half，走真页表）。
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(&smsg as *const SigMsg as u64),
+        };
         match data_copy_vmcheck(
             caller_nr, proc_table,
             src,
@@ -706,9 +707,6 @@ pub fn dispatch_sigsend(
     // May VMSUSPEND — the frame is on the kernel stack, so re-execution
     // after resume will rebuild it idempotently.
     {
-        let frame_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-            &frame as *const _ as u64,
-        ));
         let caller_endpt = proc_table
             .get(caller_nr)
             .map(|p| p.p_endpoint)
@@ -726,7 +724,12 @@ pub fn dispatch_sigsend(
                     .map(|p| p.p_seg.phys_root)
             }
         };
-        let src = AddressRef::Physical(frame_phys);
+        // NK4-C 1.51: frame 是内核栈局部（image 高半区），`virt_to_phys` 产伪物理
+        // 地址。改用 AddressRef::Process（caller CR3 映射内核 higher-half）。
+        let src = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(&frame as *const _ as u64),
+        };
         let dst = AddressRef::Process {
             endpoint: Endpoint(endpt),
             offset: VirBytes(frame_addr),
@@ -823,9 +826,6 @@ pub fn dispatch_sigreturn(
     let sctx: <CurrentSignalContext as SignalContext>::SigContext = Default::default();
     let sctx_size = core::mem::size_of_val(&sctx);
     {
-        let sctx_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-            &sctx as *const _ as u64,
-        ));
         let caller_endpt = proc_table
             .get(caller_nr)
             .map(|p| p.p_endpoint)
@@ -847,7 +847,12 @@ pub fn dispatch_sigreturn(
             endpoint: Endpoint(endpt),
             offset: VirBytes(sigctx_addr),
         };
-        let dst = AddressRef::Physical(sctx_phys);
+        // NK4-C 1.51: sctx 是内核栈局部（image 高半区），`virt_to_phys` 产伪物理
+        // 地址。改用 AddressRef::Process（caller CR3 映射内核 higher-half）。
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(&sctx as *const _ as u64),
+        };
         match data_copy_vmcheck(caller_nr, proc_table, src, dst, sctx_size, proc_cr3) {
             CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
             CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),

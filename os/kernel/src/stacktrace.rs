@@ -240,13 +240,18 @@ fn make_read_word(
 
         // ── user process: cross the page table ──
         //
-        // `cross_space_copy` writes into the destination physical
-        // address we hand it. We recover the stack-allocated scratch
-        // buffer's address from the cell, hand the corresponding
-        // physical address to `cross_space_copy`, then read the bytes
-        // back from the same address.
+        // `cross_space_copy` writes into the destination we hand it. We
+        // recover the stack-allocated scratch buffer's address from the
+        // cell and use it as the destination, then read the bytes back
+        // from the same address.
+        //
+        // NK4-C 1.51 (B27 残留根因): `scratch_ptr` 是 `proc_stacktrace` 帧的
+        // 内核栈局部（image 高半区，两个 Direct Map 窗口之外），
+        // `virt_to_phys` 会产伪物理地址（真机 c61 实测该伪 dst 经
+        // `cross_space_copy` 写坏 → 级联出 `rip=0xffff7fff…` 野值）。改用
+        // `AddressRef::Process`：target 的 CR3 已映射内核 higher-half，
+        // `resolve_physical` 走真页表得正确 PA。
         let scratch_ptr = scratch_cell.get();
-        let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(scratch_ptr as u64));
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == target_endpt { Some(target_cr3) } else { None }
         };
@@ -254,7 +259,10 @@ fn make_read_word(
             endpoint: target_endpt,
             offset: VirBytes(vaddr),
         };
-        let dst = AddressRef::Physical(dst_phys);
+        let dst = AddressRef::Process {
+            endpoint: target_endpt,
+            offset: VirBytes(scratch_ptr as u64),
+        };
         // The closure ignores the table (it resolves one known endpoint),
         // but the callee's signature carries it: hand over the live table
         // through the sanctioned boot accessor (BKL-held panic path).

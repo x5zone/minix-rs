@@ -606,7 +606,6 @@ pub fn dispatch_vdevio<PI: PortIo>(
     // suspend/resume for lazy-allocated pages, matching C's `data_copy`.
     use crate::cross_space::data_copy_vmcheck;
     use crate::vm::{AddressRef, CrossSpaceResult};
-    use minix_arch::{CurrentDirectMap, DirectMapArch};
     use minix_types::{Endpoint, VirBytes};
 
     // SAFETY (applies to every pair/word cast below): `IoBatchBuf` is
@@ -623,9 +622,9 @@ pub fn dispatch_vdevio<PI: PortIo>(
         .map(|p| p.p_seg.phys_root)
         .expect("dispatch_vdevio: caller slot must exist");
 
-    let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-        buf.as_mut_ptr() as u64,
-    ));
+    // NK4-C 1.51 (B27 残留根因): buf 是内核栈局部数组（image 高半区，两个 DM
+    // 窗口之外），`virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller
+    // CR3 映射内核 higher-half，resolve_physical 走真页表得正确 PA）。
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
@@ -639,7 +638,10 @@ pub fn dispatch_vdevio<PI: PortIo>(
         endpoint: caller_endpt,
         offset: VirBytes(vec_addr),
     };
-    let dst = AddressRef::Physical(dst_phys);
+    let dst = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(buf.as_mut_ptr() as u64),
+    };
 
     match data_copy_vmcheck(caller_nr, proc_table, src, dst, bytes, proc_cr3) {
         CrossSpaceResult::Completed(Ok(())) => {}
@@ -765,9 +767,8 @@ pub fn dispatch_vdevio<PI: PortIo>(
     // Uses `data_copy_vmcheck` (kernel→user direction) for the same
     // reasons as the user→kernel copy above.
     if dir == IoDirection::Input {
-        let src_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-            buf.as_ptr() as u64,
-        ));
+        // NK4-C 1.51 (B27 残留根因): buf 内核栈局部（image 高半区），改用
+        // AddressRef::Process（caller CR3 映射内核 higher-half）。
         let proc_cr3 = |pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
             if ep == caller_endpt {
                 Some(caller_cr3)
@@ -777,7 +778,10 @@ pub fn dispatch_vdevio<PI: PortIo>(
                     .map(|p| p.p_seg.phys_root)
             }
         };
-        let src = AddressRef::Physical(src_phys);
+        let src = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(buf.as_ptr() as u64),
+        };
         let dst = AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(vec_addr),
@@ -1007,7 +1011,6 @@ pub fn dispatch_sdevio<PI: PortIo>(
         use crate::grant::{verify_grant, VerifyGrantOutcome, CpFlags};
         use crate::cross_space::data_copy_vmcheck;
         use crate::vm::{AddressRef, CrossSpaceResult};
-        use minix_arch::{CurrentDirectMap, DirectMapArch};
         use minix_types::VirBytes;
 
         let total_bytes = match (vec_size as usize).checked_mul(size) {
@@ -1070,9 +1073,10 @@ pub fn dispatch_sdevio<PI: PortIo>(
         // `total_bytes > SDEVIO_BUF_MAX → E2BIG` check above bounds the
         // cast's `vec_size * 2` within the buffer.
         let mut buf = IoBatchBuf::<SDEVIO_BUF_MAX>::zeroed();
-        let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-            buf.as_mut_ptr() as u64,
-        ));
+        // NK4-C 1.51 (B27 残留根因): buf 是内核栈局部数组（image 高半区，两个
+        // DM 窗口之外），`virt_to_phys` 产伪物理地址。拷贝两侧都走 Process，
+        // 其中 buf 侧复用 granter endpoint（granter 的 CR3 已映射内核 higher-half，
+        // 且 src 本就走 granter）。
 
         // For output: copy grant buffer → kernel, then write to I/O port.
         if !is_input {
@@ -1080,7 +1084,10 @@ pub fn dispatch_sdevio<PI: PortIo>(
                 endpoint: granter,
                 offset: granter_vaddr,
             };
-            let dst = AddressRef::Physical(buf_phys);
+            let dst = AddressRef::Process {
+                endpoint: granter,
+                offset: VirBytes(buf.as_mut_ptr() as u64),
+            };
             match data_copy_vmcheck(caller_nr, proc_table, src, dst, total_bytes, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {}
                 CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
@@ -1115,7 +1122,10 @@ pub fn dispatch_sdevio<PI: PortIo>(
 
         // For input: copy kernel buffer → grant buffer.
         if is_input {
-            let src = AddressRef::Physical(buf_phys);
+            let src = AddressRef::Process {
+                endpoint: granter,
+                offset: VirBytes(buf.as_ptr() as u64),
+            };
             let dst = AddressRef::Process {
                 endpoint: granter,
                 offset: granter_vaddr,

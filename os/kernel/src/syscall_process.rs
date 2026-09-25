@@ -321,7 +321,6 @@ pub fn dispatch_exec(
     {
         use crate::cross_space::data_copy_vmcheck;
         use crate::vm::{AddressRef, CrossSpaceResult};
-        use minix_arch::{CurrentDirectMap, DirectMapArch};
         use minix_types::VirBytes;
         use crate::proc::{ProcName, PROC_NAME_LEN};
 
@@ -338,9 +337,6 @@ pub fn dispatch_exec(
             .expect("dispatch_exec: caller slot must exist");
 
         let mut name_buf = [0u8; PROC_NAME_LEN];
-        let dst_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-            name_buf.as_mut_ptr() as u64,
-        ));
 
         let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt { Some(caller_cr3) } else { None }
@@ -350,7 +346,19 @@ pub fn dispatch_exec(
             endpoint: caller_endpt,
             offset: VirBytes(name_ptr),
         };
-        let dst = AddressRef::Physical(dst_phys);
+        // NK4-C 1.51 (B27 残留根因): name_buf 是内核栈局部，VA 落在 higher-half
+        // 内核 image 段 [KERN_VIRT_BASE, KERNEL_DIRECT_MAP_BASE)——该段在两个
+        // Direct Map 窗口之外，`CurrentDirectMap::virt_to_phys` 的 DM 减法得到伪
+        // 物理地址（真机 c57 实锤 `virt=0xffff8000003ffb30 -> phys=0xffff7fff803ffb30`，
+        // c56 `ktorn dst=phys` 带 bit47）→ cross_space_copy 野写 → 早期 boot
+        // panic。改为 AddressRef::Process：caller 的 CR3 同时映射内核
+        // higher-half（SYSCALL 不切页表），resolve_physical 走真实页表得正确 PA。
+        // 语义等价 C `data_copy(..., (vir_bytes)&name, ...)`（内核栈地址直用）。
+        // 与 syscall.rs copy_struct_from_user 的 F10c 修复同款。
+        let dst = AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(name_buf.as_mut_ptr() as u64),
+        };
 
         match data_copy_vmcheck(caller_nr, proc_table, src, dst, PROC_NAME_LEN, proc_cr3) {
             CrossSpaceResult::Completed(Ok(())) => {
@@ -924,7 +932,6 @@ fn add_ipc_filter_arm(
 ) -> KcallResult {
     use crate::cross_space::data_copy_vmcheck;
     use crate::vm::{AddressRef, CrossSpaceResult};
-    use minix_arch::{CurrentDirectMap, DirectMapArch};
     use minix_types::VirBytes;
 
     // C system.c:708-717 — validate length (byte-aligned to the element
@@ -957,17 +964,21 @@ fn add_ipc_filter_arm(
         .expect("syscall_process: caller slot must exist");
 
     // C system.c:729-731 — data_copy elements directly into the slot.
-    let dst_phys = match pool.get_mut(new_idx) {
-        Some(slot) => CurrentDirectMap::virt_to_phys(VirBytes(
-            slot.elements.as_mut_ptr() as u64,
-        )),
+    // NK4-C 1.51 (B27 残留根因): pool slot 元素缓冲是内核静态数据（image 高半
+    // 区，两个 DM 窗口之外），`virt_to_phys` 产伪物理地址。改用 AddressRef::Process
+    // （caller CR3 映射内核 higher-half，resolve_physical 走真页表得正确 PA）。
+    let dst_kva = match pool.get_mut(new_idx) {
+        Some(slot) => slot.elements.as_mut_ptr() as u64,
         None => unreachable!("slot was just allocated"),
     };
     let src = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(sc.address),
     };
-    let dst = AddressRef::Physical(dst_phys);
+    let dst = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(dst_kva),
+    };
 
     match data_copy_vmcheck(caller_nr, proc_table, src, dst, length, |_pt, endpt| {
         if endpt == caller_endpt { Some(caller_cr3) } else { None }

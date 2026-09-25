@@ -23,21 +23,18 @@
 //! - **D9**: `Option<SoftFaultInfo>` for CPF_TRY scenarios
 
 use minix_types::{
-    Endpoint, Message, PhysBytes, VirBytes,
-    MessLsysKrnSysCopy, MessLsysKrnSysUmap, MessLsysKernSafecopy,
-    MessLsysKrnSysMemset, MessSysSafememset, MessLsysKrnSysVumap, MessLsysKernVsafecopy,
+    Endpoint, MessLsysKernSafecopy, MessLsysKernVsafecopy, MessLsysKrnSysCopy,
+    MessLsysKrnSysMemset, MessLsysKrnSysUmap, MessLsysKrnSysVumap, MessSysSafememset, Message,
+    PhysBytes, VirBytes,
 };
 
+use crate::grant::{CpFlags, SoftFaultInfo, VerifyGrantOutcome, verify_grant};
 use crate::kpriv::PrivTable;
 use crate::syscall::{KcallResult, Syscall};
 use crate::vm::{
-    AddressRef, CrossSpaceResult, VmCopyError, cross_space_copy,
-    lookup_in_table, lookup_range_in_table,
+    AddressRef, CrossSpaceResult, VmCopyError, cross_space_copy, lookup_in_table,
+    lookup_range_in_table,
 };
-use crate::grant::{
-    CpFlags, SoftFaultInfo, VerifyGrantOutcome, verify_grant,
-};
-use minix_arch::DirectMapArch;
 
 // =========================================================================
 // Cross-process copy dispatch — implementation status.
@@ -274,24 +271,21 @@ fn dispatch_copy(
     // C: for(i=_SRC_; i<=_DST_; i++) { if(!isokendpt(vir_addr[i].proc_nr_e, &p)) return EINVAL; }
     // isokendpt checks: 1) proc_nr in range, 2) slot occupied, 3) generation matches.
     // ProcessTable::endpoint_to_nr() performs all three checks.
-    if src_endpt != NONE
-        && proc_table.endpoint_to_nr(Endpoint(src_endpt)).is_none() {
-            return KcallResult::Ok(EINVAL);
-        }
-    if dst_endpt != NONE
-        && proc_table.endpoint_to_nr(Endpoint(dst_endpt)).is_none() {
-            return KcallResult::Ok(EINVAL);
-        }
+    if src_endpt != NONE && proc_table.endpoint_to_nr(Endpoint(src_endpt)).is_none() {
+        return KcallResult::Ok(EINVAL);
+    }
+    if dst_endpt != NONE && proc_table.endpoint_to_nr(Endpoint(dst_endpt)).is_none() {
+        return KcallResult::Ok(EINVAL);
+    }
 
     // C: do_copy.c:77 — overflow check: src_addr + nr_bytes must not wrap.
     // On 64-bit, vir_bytes == phys_bytes; the check is still needed to
     // prevent `copy_nonoverlapping` from wrapping around.
     if nr_bytes > 0
-        && (src_addr.checked_add(nr_bytes).is_none()
-            || dst_addr.checked_add(nr_bytes).is_none())
-        {
-            return KcallResult::Ok(E2BIG);
-        }
+        && (src_addr.checked_add(nr_bytes).is_none() || dst_addr.checked_add(nr_bytes).is_none())
+    {
+        return KcallResult::Ok(E2BIG);
+    }
 
     // Build AddressRef: NONE → Physical (raw physical address), else → Process.
     // C: do_copy.c:66 — `proc_addr[i] = NULL` when `proc_nr_e == NONE`,
@@ -327,14 +321,14 @@ fn dispatch_copy(
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
 
     // C: do_copy.c:80-85 — CP_FLAG_TRY handling.
     // Try-copy mode (VFS-only): calls virtual_copy_f directly (no vmcheck
@@ -345,7 +339,11 @@ fn dispatch_copy(
     if try_mode {
         // Call cross_space_copy directly — no VMSUSPEND side effect.
         let result = cross_space_copy::<minix_arch::CurrentDirectMap>(
-            &src, &dst, nr_bytes as usize, proc_table, &proc_cr3,
+            &src,
+            &dst,
+            nr_bytes as usize,
+            proc_table,
+            &proc_cr3,
         );
         return match result {
             CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
@@ -358,7 +356,8 @@ fn dispatch_copy(
     // C: do_copy.c:86-89 — normal copy with VM check.
     // virtual_copy_vmcheck(caller, &vir_addr[_SRC_], &vir_addr[_DST_], bytes)
     let result = crate::cross_space::data_copy_vmcheck(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         src,
         dst,
         nr_bytes as usize,
@@ -473,14 +472,14 @@ fn safecopy_common_impl(
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
 
     // C: do_safecopy.c:305-312 — verify_grant(granter, grantee, grantid,
     // bytes, access, g_offset, &v_offset, &new_granter, &sfinfo).
@@ -489,7 +488,8 @@ fn safecopy_common_impl(
         .map(|c| c.p_endpoint)
         .expect("syscall_copy: caller slot must exist");
     let outcome = verify_grant(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         Endpoint(granter_ep),
         grantee,
         grant_id,
@@ -516,14 +516,26 @@ fn safecopy_common_impl(
     let (src, dst) = if access.contains(CpFlags::READ) {
         // READ: copy from granter@v_offset to caller@addr
         (
-            AddressRef::Process { endpoint: effective_granter, offset: v_offset },
-            AddressRef::Process { endpoint: grantee, offset: VirBytes(addr) },
+            AddressRef::Process {
+                endpoint: effective_granter,
+                offset: v_offset,
+            },
+            AddressRef::Process {
+                endpoint: grantee,
+                offset: VirBytes(addr),
+            },
         )
     } else {
         // WRITE: copy from caller@addr to granter@v_offset
         (
-            AddressRef::Process { endpoint: grantee, offset: VirBytes(addr) },
-            AddressRef::Process { endpoint: effective_granter, offset: v_offset },
+            AddressRef::Process {
+                endpoint: grantee,
+                offset: VirBytes(addr),
+            },
+            AddressRef::Process {
+                endpoint: effective_granter,
+                offset: v_offset,
+            },
         )
     };
 
@@ -531,7 +543,11 @@ fn safecopy_common_impl(
     if let Some(ref sfinfo) = result.sfinfo {
         // C: virtual_copy (no vmcheck) — EFAULT on fault, no VMSUSPEND.
         let copy_result = cross_space_copy::<minix_arch::CurrentDirectMap>(
-            &src, &dst, bytes as usize, proc_table, &proc_cr3,
+            &src,
+            &dst,
+            bytes as usize,
+            proc_table,
+            &proc_cr3,
         );
         match copy_result {
             CrossSpaceResult::Completed(Ok(())) => return KcallResult::Ok(OK),
@@ -549,7 +565,8 @@ fn safecopy_common_impl(
 
     // C: do_safecopy.c:371 — virtual_copy_vmcheck(caller, &v_src, &v_dst, bytes).
     let result = crate::cross_space::data_copy_vmcheck(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         src,
         dst,
         bytes as usize,
@@ -586,15 +603,17 @@ fn write_soft_fault_marker(
             endpoint: sfinfo.endpoint,
             offset: VirBytes(sfinfo.addr),
         };
-        // Use a kernel stack variable's physical address as the source.
-        // C: data_copy(KERNEL, (vir_bytes)&sfinfo.value, sfinfo.endpt,
-        //     sfinfo.addr, sizeof(sfinfo.value))
-        let marker_phys = minix_arch::CurrentDirectMap::virt_to_phys(VirBytes(
-            &marker as *const i32 as u64,
-        ));
-        let src = AddressRef::Physical(marker_phys);
+        // NK4-C 1.51 (B27 残留根因): marker 是内核栈局部（image 高半区，两个 DM
+        // 窗口之外），`virt_to_phys` 产伪物理地址。改用 AddressRef::Process（
+        // granter 的 CR3 已映射内核 higher-half，dst 本就走它）。语义等价 C
+        // `data_copy(KERNEL, (vir_bytes)&sfinfo.value, ...)`（内核栈地址直用）。
+        let src = AddressRef::Process {
+            endpoint: sfinfo.endpoint,
+            offset: VirBytes(&marker as *const i32 as u64),
+        };
         let _ = crate::cross_space::data_copy_vmcheck(
-            caller_nr, proc_table,
+            caller_nr,
+            proc_table,
             src,
             dst,
             core::mem::size_of::<i32>(),
@@ -668,7 +687,12 @@ pub fn dispatch_vsafecopy(
     // on resume). SCPVEC_NR × sizeof(VscpVec) = 64 × 40 = 2560 bytes,
     // well within kernel stack limits.
     let mut vec: [VscpVec; SCPVEC_NR] = [VscpVec {
-        v_from: 0, v_to: 0, v_gid: 0, v_bytes: 0, v_offset: 0, v_addr: 0,
+        v_from: 0,
+        v_to: 0,
+        v_gid: 0,
+        v_bytes: 0,
+        v_offset: 0,
+        v_addr: 0,
     }; SCPVEC_NR];
 
     // C: do_safecopy.c:417-419 — virtual_copy_vmcheck to copy the vector.
@@ -684,25 +708,29 @@ pub fn dispatch_vsafecopy(
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
 
-    let vec_dst_phys = minix_arch::CurrentDirectMap::virt_to_phys(VirBytes(
-        vec.as_mut_ptr() as u64,
-    ));
+    // NK4-C 1.51 (B27 残留根因): vec 是内核栈局部数组（image 高半区），
+    // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller CR3 映射
+    // 内核 higher-half）。
     let copy_result = crate::cross_space::data_copy_vmcheck(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(vec_addr),
         },
-        AddressRef::Physical(vec_dst_phys),
+        AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(vec.as_mut_ptr() as u64),
+        },
         bytes,
         proc_cr3,
     );
@@ -737,9 +765,7 @@ pub fn dispatch_vsafecopy(
         elem_msg.m_u.m_lsys_kern_safecopy.offset = elem.v_offset;
         elem_msg.m_u.m_lsys_kern_safecopy.address = elem.v_addr;
 
-        let result = safecopy_common_impl(
-            caller_nr, proc_table, &elem_msg, priv_table, access,
-        );
+        let result = safecopy_common_impl(caller_nr, proc_table, &elem_msg, priv_table, access);
         match result {
             KcallResult::Ok(OK) => continue,
             KcallResult::Ok(e) => return KcallResult::Ok(e),
@@ -924,7 +950,8 @@ fn dispatch_umap_remote_impl(
 
         let grant_id = offset as i32;
         let outcome = verify_grant(
-            caller_nr, proc_table,
+            caller_nr,
+            proc_table,
             target_endpoint,
             grantee_endpoint,
             grant_id,
@@ -965,13 +992,11 @@ fn dispatch_umap_remote_impl(
         None => return KcallResult::Ok(EFAULT),
     };
 
-    let phys_addr = match lookup_in_table::<minix_arch::CurrentDirectMap>(
-        cr3,
-        VirBytes(lookup_addr),
-    ) {
-        Some((pa, _)) => pa,
-        None => return KcallResult::Ok(EFAULT),
-    };
+    let phys_addr =
+        match lookup_in_table::<minix_arch::CurrentDirectMap>(cr3, VirBytes(lookup_addr)) {
+            Some((pa, _)) => pa,
+            None => return KcallResult::Ok(EFAULT),
+        };
 
     // C: do_umap_remote.c:98-99 — panic on zero physical address.
     // We return EFAULT instead of panicking (safer for the kernel).
@@ -1048,8 +1073,16 @@ pub fn dispatch_vumap(
     if vcount <= 0 || pmax <= 0 {
         return KcallResult::Ok(EINVAL);
     }
-    let vcount = if (vcount as usize) > MAPVEC_NR { MAPVEC_NR as i32 } else { vcount };
-    let pmax = if (pmax as usize) > MAPVEC_NR { MAPVEC_NR as i32 } else { pmax };
+    let vcount = if (vcount as usize) > MAPVEC_NR {
+        MAPVEC_NR as i32
+    } else {
+        vcount
+    };
+    let pmax = if (pmax as usize) > MAPVEC_NR {
+        MAPVEC_NR as i32
+    } else {
+        pmax
+    };
 
     // C: do_vumap.c:54-60 — access flag translation.
     let access = match access_raw {
@@ -1061,10 +1094,7 @@ pub fn dispatch_vumap(
 
     // C: do_vumap.c:79 — if source != SELF, the granter must exist.
     // C does this lazily inside verify_grant; we pre-check for early EINVAL.
-    if source != SELF
-        && source != NONE
-        && proc_table.endpoint_to_nr(Endpoint(source)).is_none()
-    {
+    if source != SELF && source != NONE && proc_table.endpoint_to_nr(Endpoint(source)).is_none() {
         return KcallResult::Ok(EINVAL);
     }
 
@@ -1087,27 +1117,31 @@ pub fn dispatch_vumap(
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
 
     // Copy vvec from caller's user space.
     // C: data_copy(endpt, vaddr, KERNEL, (vir_bytes) vvec, size).
-    let vvec_dst_phys = minix_arch::CurrentDirectMap::virt_to_phys(VirBytes(
-        vvec.as_mut_ptr() as u64,
-    ));
+    // NK4-C 1.51 (B27 残留根因): vvec 是内核栈局部数组（image 高半区），
+    // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller CR3 映射内核
+    // higher-half，等价 C 的 KERNEL 端点不切页表）。
     let vvec_copy = crate::cross_space::data_copy_vmcheck(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(vaddr),
         },
-        AddressRef::Physical(vvec_dst_phys),
+        AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(vvec.as_mut_ptr() as u64),
+        },
         vvec_bytes,
         proc_cr3,
     );
@@ -1140,7 +1174,8 @@ pub fn dispatch_vumap(
         // C: do_vumap.c:79-87 — resolve grant or use direct address.
         let (mut vir_addr, granter) = if source != SELF {
             let outcome = verify_grant(
-                caller_nr, proc_table,
+                caller_nr,
+                proc_table,
                 Endpoint(source),
                 caller_endpt,
                 vv.vv_grant(),
@@ -1199,7 +1234,7 @@ pub fn dispatch_vumap(
                     // C: return vm_check_range(caller, procp, vir_addr, size, 1).
                     // In Rust, we suspend_for_vm — the call is retried after
                     // VM resolves the fault (kernel_call_resume).
-                    use crate::vm::{VmSuspendType, VmCheckParams};
+                    use crate::vm::{VmCheckParams, VmSuspendType};
                     let check_params = VmCheckParams {
                         start: VirBytes(vir_addr),
                         length: VirBytes(size as u64),
@@ -1208,12 +1243,7 @@ pub fn dispatch_vumap(
                     proc_table
                         .get_mut(caller_nr)
                         .expect("dispatch_vumap: caller slot must exist")
-                        .suspend_for_vm(
-                        VmSuspendType::KernelCall,
-                        granter,
-                        check_params,
-                        None,
-                    );
+                        .suspend_for_vm(VmSuspendType::KernelCall, granter, check_params, None);
                     return KcallResult::VmSuspend;
                 }
             }
@@ -1230,12 +1260,16 @@ pub fn dispatch_vumap(
 
     // C: do_vumap.c:123-125 — data_copy_vmcheck of pvec[] from KERNEL to caller.
     let pvec_bytes = pcount * core::mem::size_of::<VumapPhys>();
-    let pvec_src_phys = minix_arch::CurrentDirectMap::virt_to_phys(VirBytes(
-        pvec.as_ptr() as u64,
-    ));
+    // NK4-C 1.51 (B27 残留根因): pvec 是内核栈局部数组（image 高半区），
+    // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（caller CR3 映射内核
+    // higher-half，等价 C 的 KERNEL 源端点）。
     let pvec_copy = crate::cross_space::data_copy_vmcheck(
-        caller_nr, proc_table,
-        AddressRef::Physical(pvec_src_phys),
+        caller_nr,
+        proc_table,
+        AddressRef::Process {
+            endpoint: caller_endpt,
+            offset: VirBytes(pvec.as_ptr() as u64),
+        },
         AddressRef::Process {
             endpoint: caller_endpt,
             offset: VirBytes(paddr),
@@ -1252,9 +1286,7 @@ pub fn dispatch_vumap(
             msg.m_u.m_krn_lsys_sys_vumap.pcount = pcount as i32;
             KcallResult::Ok(OK)
         }
-        CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => {
-            KcallResult::Ok(EINVAL)
-        }
+        CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => KcallResult::Ok(EINVAL),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
     }
@@ -1278,7 +1310,10 @@ pub struct VumapVir {
 
 impl VumapVir {
     /// Zeroed element (for array initialization).
-    pub const ZERO: Self = Self { vv_u: 0, vv_size: 0 };
+    pub const ZERO: Self = Self {
+        vv_u: 0,
+        vv_size: 0,
+    };
 
     /// Interpret `vv_u` as a grant ID. C: `vv_grant` (= `vv_u.u_grant`).
     pub fn vv_grant(&self) -> i32 {
@@ -1305,7 +1340,10 @@ pub struct VumapPhys {
 
 impl VumapPhys {
     /// Zeroed element (for array initialization).
-    pub const ZERO: Self = Self { vp_addr: 0, vp_size: 0 };
+    pub const ZERO: Self = Self {
+        vp_addr: 0,
+        vp_size: 0,
+    };
 }
 
 /// VUMAP access flags.
@@ -1349,10 +1387,9 @@ pub fn dispatch_memset(
     }
 
     // C: vm_memset:540-541 — endpoint_lookup for the target process.
-    if process != NONE
-        && proc_table.endpoint_to_nr(Endpoint(process)).is_none() {
-            return KcallResult::Ok(ESRCH);
-        }
+    if process != NONE && proc_table.endpoint_to_nr(Endpoint(process)).is_none() {
+        return KcallResult::Ok(ESRCH);
+    }
 
     // C: vm_memset:543 — pattern & 0xFF (truncate to single byte).
     let pattern_byte = (pattern & 0xFF) as u8;
@@ -1389,18 +1426,19 @@ pub fn dispatch_memset(
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
 
     // C: vm_memset:553-580 — memset via Direct Map + PTE walk.
     let result = crate::cross_space::memset_vmcheck(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         dst,
         pattern_byte,
         count as usize,
@@ -1438,11 +1476,11 @@ pub fn dispatch_safememset(
 ) -> KcallResult {
     let m = msg_safememset(msg);
     // C: do_safememset.c:24-29 — extract parameters
-    let dst_endpt = m.dst_endpt;     // SMS_DST
-    let grant_id = m.grant_id;       // SMS_GID
-    let offset = m.offset;           // SMS_OFFSET
-    let pattern = m.pattern;         // SMS_PATTERN
-    let bytes = m.bytes;             // SMS_BYTES
+    let dst_endpt = m.dst_endpt; // SMS_DST
+    let grant_id = m.grant_id; // SMS_GID
+    let offset = m.offset; // SMS_OFFSET
+    let pattern = m.pattern; // SMS_PATTERN
+    let bytes = m.bytes; // SMS_BYTES
 
     // C: do_safememset.c:36-37 — endpoint validation (NONE check)
     if dst_endpt == NONE
@@ -1484,14 +1522,14 @@ pub fn dispatch_safememset(
     // K20: value-capturing closure (the callee asks only for src's endpoint;
     // dst is Physical and never consults the closure — vm.rs resolve_physical).
     let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
-            if endpt == caller_endpt {
-                Some(caller_cr3)
-            } else {
-                pt.endpoint_to_nr(endpt)
-                    .and_then(|nr| pt.get(nr))
-                    .map(|p| p.p_seg.phys_root)
-            }
-        };
+        if endpt == caller_endpt {
+            Some(caller_cr3)
+        } else {
+            pt.endpoint_to_nr(endpt)
+                .and_then(|nr| pt.get(nr))
+                .map(|p| p.p_seg.phys_root)
+        }
+    };
 
     // C: do_safememset.c:48-49 — verify_grant(CPF_WRITE).
     // C: offset/bytes are `long` in the message (m2_l1/m2_l2) but
@@ -1501,7 +1539,8 @@ pub fn dispatch_safememset(
         .map(|c| c.p_endpoint)
         .expect("syscall_copy: caller slot must exist");
     let outcome = verify_grant(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         Endpoint(dst_endpt),
         grantee,
         grant_id,
@@ -1527,7 +1566,8 @@ pub fn dispatch_safememset(
     };
 
     let memset_result = crate::cross_space::memset_vmcheck(
-        caller_nr, proc_table,
+        caller_nr,
+        proc_table,
         dst,
         pattern_byte,
         bytes as usize,
@@ -1595,20 +1635,29 @@ mod tests {
 
     #[test]
     fn test_mess_lsys_krn_sys_copy_layout() {
-        use core::mem::{size_of, align_of};
+        use core::mem::{align_of, size_of};
         // Verify the struct fits within the 56-byte message payload
         // C: sizeof(message) - sizeof(m_source) - sizeof(m_type) = 64 - 4 - 4 = 56
-        assert!(size_of::<MessLsysKrnSysCopy>() <= 56,
-            "MessLsysKrnSysCopy size {} exceeds 56-byte payload", size_of::<MessLsysKrnSysCopy>());
-        assert_eq!(align_of::<MessLsysKrnSysCopy>(), 8,
-            "MessLsysKrnSysCopy alignment must be 8");
+        assert!(
+            size_of::<MessLsysKrnSysCopy>() <= 56,
+            "MessLsysKrnSysCopy size {} exceeds 56-byte payload",
+            size_of::<MessLsysKrnSysCopy>()
+        );
+        assert_eq!(
+            align_of::<MessLsysKrnSysCopy>(),
+            8,
+            "MessLsysKrnSysCopy alignment must be 8"
+        );
     }
 
     #[test]
     fn test_mess_lsys_krn_sys_umap_layout() {
         use core::mem::size_of;
-        assert!(size_of::<MessLsysKrnSysUmap>() <= 56,
-            "MessLsysKrnSysUmap size {} exceeds 56-byte payload", size_of::<MessLsysKrnSysUmap>());
+        assert!(
+            size_of::<MessLsysKrnSysUmap>() <= 56,
+            "MessLsysKrnSysUmap size {} exceeds 56-byte payload",
+            size_of::<MessLsysKrnSysUmap>()
+        );
     }
 
     #[test]
@@ -1671,9 +1720,9 @@ mod tests {
     #[test]
     fn test_dispatch_copy_self_replacement_and_valid_endpoint() {
         // C: do_copy.c:64-65 — SELF → caller endpoint, then isokendpt
+        use crate::proc::RtsFlagsBits;
         use minix_types::Endpoint;
         use minix_types::Message;
-        use crate::proc::RtsFlagsBits;
 
         let mut proc_table = crate::test_helpers::test_proc_table();
         // Activate a slot so endpoint_to_nr can find it
@@ -1968,7 +2017,9 @@ mod tests {
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
             // Assign a static privilege slot for the dst process.
             // assign_static maps proc_nr → priv_id (NR_TASKS + proc_nr).
-            let priv_id = priv_table.assign_static(ProcNr(1)).expect("static priv slot 1");
+            let priv_id = priv_table
+                .assign_static(ProcNr(1))
+                .expect("static priv slot 1");
             p.priv_id = Some(priv_id);
         }
         let msg = build_safememset_msg(200, 0, 0i64, 0, 0i64);
@@ -1992,7 +2043,9 @@ mod tests {
         if let Some(p) = proc_table.get_mut(ProcNr(1)) {
             p.p_endpoint = Endpoint(200);
             p.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
-            let priv_id = priv_table.assign_static(ProcNr(1)).expect("static priv slot 1");
+            let priv_id = priv_table
+                .assign_static(ProcNr(1))
+                .expect("static priv slot 1");
             // Set s_grant_endpoint = granter's endpoint to avoid the
             // temporary-grant-table ENOTREADY path, so verify_grant
             // proceeds to read the grant entry (which suspends in test env).
@@ -2447,8 +2500,11 @@ mod tests {
             msg.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
         }
         let r = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
-        assert_eq!(r, KcallResult::Ok(EFAULT),
-            "SELF 已替换为 caller endpoint（校验通过 → TRY 拷贝页失败 → EFAULT）");
+        assert_eq!(
+            r,
+            KcallResult::Ok(EFAULT),
+            "SELF 已替换为 caller endpoint（校验通过 → TRY 拷贝页失败 → EFAULT）"
+        );
 
         // 对照：dst=777（非 SELF 且不在表）→ EINVAL。
         let mut msg2 = Message::default();
@@ -2461,7 +2517,10 @@ mod tests {
             msg2.m_u.m_lsys_krn_sys_copy.flags = CP_FLAG_TRY as i32;
         }
         let r2 = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg2);
-        assert_eq!(r2, KcallResult::Ok(EINVAL),
-            "非 SELF 的未知 endpoint 直接 EINVAL（对照判据）");
+        assert_eq!(
+            r2,
+            KcallResult::Ok(EINVAL),
+            "非 SELF 的未知 endpoint 直接 EINVAL（对照判据）"
+        );
     }
 }

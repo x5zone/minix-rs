@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B27 部分修（1.50，含代码·内核侧）**：坐实 B27 一类真根因=中断/陷阱入口用 `bkl_try_lock()`（单 AtomicBool CAS）无法区分「本 CPU 内核帧持有（继承）」与「别的 CPU 持有（须自旋获取）」，user/idle-origin 陷入误继承 peer 锁→两 CPU 并发 `&mut PROC_TABLE` 撕裂写。修=`smp.rs` 新增 `BKL_OWNER: AtomicI32` owner 跟踪 + `bkl_lock_or_inherit()`（owner==self 才继承、否则自旋获取），把 clock 0xF1 臂/PIT TIMER 臂/`save_irq_frame_to_context`/SCHED_IPI 臂/int33 IPC 入口/irq_manager dispatch·claim ×3/riscv·aarch 同型站点全换用之。**真机决定性**：原 B27 签名（`cr2=0xffff807f85d7b6a8` IpcEngine::send 读坏表指针）**从干净重建消失**，崩溃收敛为**确定性**（c54/c55 同 172 行、同一根腐蚀点）。**残留 B27 未闭环**：崩于进程 birth 期 `cross_space_copy`→`resolve_physical` 页表 walk 读到带 **bit47 脏位的伪物理地址**（`kdst copy pa=0x0000800005d90a30`）=VM 并发改页表 vs 内核 walk 竞态（候选=VMINHIBIT 持页表协议在 birth 路径的缺口，非纯 BKL）。三件套绿（docker kernel **819**/·0fail 只增不减 / fmt 3 文件零新增漂移 / 两次真机 c54==c55 确定性签名）+ CodeReview PASSED（无 MUST-FIX）。**下一硬门（须先于任何 idle-wake 稳定性验证关闭）**：CodeReview SHOULD-FIX——`bkl_unlock`/`bkl_lock` 中 `BKL_OWNER`+`BKL_LOCKED` 两步写在 IF=1 窗口（idle 唤醒后调度循环）可致同 CPU 自死锁，boot 全程 IF=0 不触发（故不影响本轮），根治=合并为单 `AtomicIsize`（-1=空闲、≥0=持有者 CPU）。详见 §1.50。rc marker 仍未达。
+> **⚠ 最新前沿 = B27 copy 层根因修复（1.51，含代码·内核侧）**：**证伪 §1.50 的「SMP 页表竞态 / VMINHIBIT 缺口」假设**——B27 里那个每次必现、卡死 boot 于 172 行的 `kdst copy pa=0x0000800005d90a30`（bit47 伪物理地址）真根因是**确定性 code bug**：`os/arch/src/arch/direct_map.rs` 的 `DirectMapArch::virt_to_phys` 只认两个 Direct Map 窗口（kernel DM `0xffff808000000000` / VM DM `0x80000000`），对**内核 image 高半区 VA**（内核栈/BSS/`IMAGE_HEAP` 堆，全在 `0xffff800000000000+`、两窗口之外）走 else 分支盲减 VM 基址 → 伪 PA。c56/c57 探针直取 `virt_to_phys(virt=0xffff8000003ffb30) -> 0xffff7fff803ffb30` 坐实。**修=18 个 boot-path copy 站点**统一从 `AddressRef::Physical(virt_to_phys(内核VA))` 改 `AddressRef::Process { endpoint, offset: VirBytes(内核VA) }`（进程 CR3 同时映射内核 higher-half，`resolve_physical` 走真页表得正确 PA；范式对位 `os/kernel/src/syscall.rs` dispatch_diagctl 的 boot-span 恒等式注释）：`syscall_process.rs`×2(exec name_buf/IPC filter)、`syscall_signal.rs`×3、`syscall_copy.rs`×4、`misc.rs`×7(getinfo/trace×4/sprof×2)、`syscall_device.rs`×3(vdevio/sdevio)、`kmess.rs`×1(kmess 快照堆)、`stacktrace.rs`×1(user 回栈 scratch)。**真机决定性**：原确定性 corrupt 归零，boot 从「每次卡死 172 行」前进到**全部 17-18 服务诞生 + 进入用户态 exec**；stacktrace.rs:249 修复另消除 c61 的 `rip=0xffff7fff…` 伪回栈野值（c62/c63 归零坐实）。**残留=新前沿（非本 bug）**：c60-c65 六次中仅 c64 出现 **1 次（1/6 低频、不阻塞 boot）** 的 birth 期 `copy pa=0x0000800005d90a30`——结构上是 bit47 落在 `ADDR_MASK` 内被当地址、**非 `virt_to_phys` 算术输出**（后者产 `0xffff7fff…` 形态），指向 birth 页表 walk 偶读到被 free/复用的中间表页（这才是 §1.50「页表生命周期」假设的**真实、低频、异机制**版本，side-conversation「诊断二」在此点上部分成立）。三件套绿（mock kernel **819**/·0fail 只增不减 / fmt 全 7 文件零新增漂移、syscall_copy 反而 44→0 / 真机 c64+c65 签名一致=17 服务 + `pagefault VM rip=0 cpu3`）+ CodeReview PASSED（无 MUST/SHOULD-FIX）。**下一前沿（按序）**：① 低频 birth 页表-walk bit47（用 walk 前后同址双采 PTE 探针定位是哪一级被并发 free）；② `pagefault for VM rip=0 cr2=0 err=0x15`（B26 家族用户态 null 取指）；③ `stacktrace.rs:150 kernel_direct_read_word` 的 `virt_to_phys→kernel_phys_to_virt` 往返对 image 高半区内核栈产野地址（c60 `recursive panic` 源，本 unit 未盲改）；④ BKL 两步写单原子硬门（§1.50 SHOULD-FIX）。rc marker 仍未达。详见 §1.51。
+>
+> **⚠（1.50 历史·部分结论已被 §1.51 证伪）B27 部分修（含代码·内核侧）**：坐实 B27 一类真根因=中断/陷阱入口用 `bkl_try_lock()`（单 AtomicBool CAS）无法区分「本 CPU 内核帧持有（继承）」与「别的 CPU 持有（须自旋获取）」，user/idle-origin 陷入误继承 peer 锁→两 CPU 并发 `&mut PROC_TABLE` 撕裂写。修=`smp.rs` 新增 `BKL_OWNER: AtomicI32` owner 跟踪 + `bkl_lock_or_inherit()`（owner==self 才继承、否则自旋获取），把 clock 0xF1 臂/PIT TIMER 臂/`save_irq_frame_to_context`/SCHED_IPI 臂/int33 IPC 入口/irq_manager dispatch·claim ×3/riscv·aarch 同型站点全换用之。**真机决定性**：原 B27 签名（`cr2=0xffff807f85d7b6a8` IpcEngine::send 读坏表指针）**从干净重建消失**，崩溃收敛为**确定性**（c54/c55 同 172 行、同一根腐蚀点）。~~**残留 B27**：birth 期页表 walk bit47 = VM 并发改页表竞态（候选 VMINHIBIT 缺口）~~ **【§1.51 纠正：该「每次必现、卡死 172 行」的 bit47 corrupt 实为确定性 `virt_to_phys(image VA)` code bug，非竞态，已修；仅 1/6 低频 birth 残留才是页表生命周期家族】**。三件套绿 + CodeReview PASSED（无 MUST-FIX）。**BKL 两步写硬门**（`bkl_unlock`/`bkl_lock` 中 `BKL_OWNER`+`BKL_LOCKED` 两步写在 IF=1 窗口可致同 CPU 自死锁，boot 全程 IF=0 不触发，根治=合并单 `AtomicIsize`）仍未做、排 §1.51 后续。详见 §1.50。
 >
 > （1.49 历史）B27 起因：为取 B26 崩溃 rip 加内核探针，意外发现回滚至干净 HEAD `ef07f760f` 全量重建 + 同镜像三连（c46/c46b/c46c）稳定复现早期内核 panic（`rip≈0x5c3f309 err=0 cr2=0xffff807f85d7b6a8 walk=NP` cs=0x8），即 §1.48「c43/c43b 真机签名一致」不可从干净重建复现、真机签名对构建产物敏感。前代「B26 RBX=0 根因」误判已作废（RBX=0 全进程普遍，含正常 0xc）。
 
@@ -2715,6 +2717,58 @@ B27 早期内核 panic 的一类根因 = **中断/陷阱入口的 BKL 获取语�
 3. B27 稳后回 B26（slot 0xd exec_command `cr2=0x1` null+1 deref + PM↔VFS 乒乓）。rc marker（`minix-rs rc: minimal boot script marker`）仍未达。
 
 **取证产物**（`/tmp/nk4a/`，gitignore）：`serial_c54.log`/`serial_c55.log`（确定性 172 行签名 + bit47 kdst copy 证据）。本工作树**无新增探针**（3 文件均为生产锁修复；既有 nk4a 探针在 HEAD，task1-close 统一裁决删除）。
+
+---
+
+## §1.51 B27 copy 层根因修复：`virt_to_phys(内核 image 高半区 VA)` 确定性伪 PA → 18 站点改 `AddressRef::Process`（含代码·内核侧）
+
+### 根因（证伪 §1.50「SMP 竞态 / VMINHIBIT 缺口」假设）
+
+§1.50 把「每次必现、卡死 boot 于 172 行」的 `kdst copy pa=0x0000800005d90a30`（bit47 伪物理地址）猜成「VM 并发改页表 vs 内核 walk 的竞态」。**错**。c56/c57 取证探针直接坐实这是**确定性 code bug**：
+
+- `os/arch/src/arch/direct_map.rs::DirectMapArch::virt_to_phys` 只识别两个 Direct Map 窗口：kernel DM `KERNEL_DIRECT_MAP_BASE=0xffff_8080_0000_0000`、VM DM `VM_DIRECT_MAP_BASE=0x8000_0000`。
+- 内核 **image 高半区 VA**（内核栈、`.bss`、`IMAGE_HEAP` 静态堆——`os/kernel-image/src/main.rs:193` `static IMAGE_HEAP: [u8; …]` 落 `.bss`，故所有 `alloc::vec` 指针也在 `0xffff_8000_0000_0000+`）位于 **两个窗口之外**，走 else 分支 `virt - 0x8000_0000` → 伪 PA。
+- c57 铁证：`virt_to_phys(virt=0xffff8000003ffb30) -> phys=0xffff7fff803ffb30`（一个内核栈 VA 被减成非规范野值）。
+- c56 铁证：`kdst dst=phys sep=0x8 sva=0x23be48`——corrupt 值从 caller **直接以 `AddressRef::Physical` 传入** `resolve_physical`（原样返回 `Ok(*paddr)`），**不经页表 walk**，故与「并发改页表」无因果。
+
+### 修复范式
+
+沿用 `os/kernel/src/syscall.rs::dispatch_diagctl` 早先承认同类问题的 boot-span 恒等式思路（L3072-3077 注释明确写「DirectMap `virt_to_phys` 转换分支不适用于 higher-half kernel-image VA——那里会产垃圾地址」），但 copy 站点统一改走**更通用的 `AddressRef::Process`**：内核栈/BSS/堆 VA 用 `AddressRef::Process { endpoint, offset: VirBytes(内核VA) }` 替换 `AddressRef::Physical(virt_to_phys(内核VA))`。因每个进程的 CR3 都映射内核 higher-half（SYSCALL 不切页表），`resolve_physical` 对 Process 走真页表 walk 即得正确 PA。
+
+### 18 个 boot-path copy 站点（本 unit + 上一 session 的 16 + 本轮补 2）
+
+| 文件 | 站点 | 缓冲区性质 |
+|---|---|---|
+| `syscall_process.rs` | ×2 | exec `name_buf`（栈局部）、IPC filter pool |
+| `syscall_signal.rs` | ×3 | `smsg`/`frame`/`sctx`（栈局部） |
+| `syscall_copy.rs` | ×4 | soft-fault marker / vsafecopy vec / vvec / vumap pvec |
+| `misc.rs` | ×7 | getinfo `cpu_context` / trace ×4 / sprof ×2 |
+| `syscall_device.rs` | ×3 | vdevio output+input / sdevio（CodeReview 指出 `IoBatchBuf` 栈局部同类） |
+| `kmess.rs` | ×1（本轮）| `snap = alloc::vec![0u8; …]` → `IMAGE_HEAP`(`.bss`) → image 高半区（CodeReview 指出） |
+| `stacktrace.rs` | ×1（本轮）| user 回栈 `scratch_ptr`（`proc_stacktrace` 帧栈局部） |
+
+### 真机决定性（c60–c65）
+
+- **c60/c61**（kmess+stacktrace 修复前后各一次）：`kdst copy` 全为干净低位 PA（`pa=0x00000000003ffc60`），原 `0x0000800005d90a30` 确定性 corrupt 归零；**全部 18 服务名出现**（kernel/clock/system/idle/memory/sched/vm/pm/rs/ds/tty/mib/init/pfs/mfs/vfs/asyncm）。
+- **c61 → c62/c63**（stacktrace.rs:249 修复）：c61 有 `rip=0xffff7fff…` 伪回栈野值（伪 dst 经 `cross_space_copy` 写坏放大崩溃级联），c62/c63 该野值**归零**——坐实 stacktrace.rs:249 是其来源，修复有效。
+- **c64/c65**（死引用清理后重建，最终树）：签名一致=17 服务 + `pagefault for VM rip=0 cr2=0 err=0x15`（新前沿）。
+- **c64 残留（新前沿）**：六次运行中**仅 c64 一次（1/6）**出现 `kdst copy pa=0x0000800005d90a30`（birth s5→main，len=0x11）。低频、**不阻塞 boot**（仍达 17 服务 + 用户 exec）。结构上 bit47 落在 `ADDR_MASK=0x000F_FFFF_FFFF_F000` 内被当地址，**非 `virt_to_phys` 算术输出**（后者产 `0xffff7fff…` 形态）——指向 birth 页表 walk 偶读到被 free/复用的**中间表页**（这才是 §1.50「页表生命周期」假设的真实、低频、异机制版本）。
+
+### 三件套 + CodeReview
+
+- mock：kernel 816 lib + 3 integration = **819** 通过，0 fail（基线只增不减）。
+- fmt：全 7 编辑文件**零新增漂移**（nightly rustfmt，方法=同文件 HEAD hunk 数 == WORKTREE hunk 数）；`syscall_copy.rs` 反而 44→0（编辑顺带整理进 rustfmt 风格），`kmess.rs`/`stacktrace.rs` 各 3/8=3/8。稳定版 rustfmt 连未改文件都大量 flag（项目基线用 nightly）。
+- 真机：c64 + c65 两次签名一致。
+- CodeReview：**PASSED 无 MUST/SHOULD-FIX**；确认 stacktrace panic 路径用 target CR3 walk 严格更安全（最坏返回 None 打占位符，绝不比旧 `Physical(伪PA)` 更易递归 panic）。CONSIDER=清理 `syscall_device.rs` L609/L1015 + `syscall_copy.rs` L38 移除 `virt_to_phys` 后的死 import（**本 unit 已采纳清理**）。
+
+### 本 unit 未做（诚实登记，转下轮）
+
+1. **低频 birth 页表-walk bit47（c64）**：需专探针——在 `resolve_physical` walk 前后对同一 leaf 槽 `read_pte_raw` 双采 + 打印每级中间指针原值；两次不同=值撕裂，两次相同但带 bit47=中间表页被复用。据此再裁决修向（补 birth 期 VMINHIBIT vs 中间表页引用计数）。
+2. **`stacktrace.rs:150 kernel_direct_read_word`**：`virt_to_phys→kernel_phys_to_virt` 往返对 image 高半区内核栈产野地址（c60 `recursive panic` 源）。正确修法是「直接读已映射的内核栈 VA」而非往返 DM，属 panic 回栈诊断码的重设计，mock 测 `#[ignore]` 无法覆盖，本 unit 不盲改。line 332 是 `#[ignore]` 真机测且喂 DM 区地址（本就正确）。
+3. **`pagefault for VM rip=0 cr2=0 err=0x15`**：本 unit 侦察定位=**VM server 自身（ring 3）rip=0 取指 fault**，走 `os/kernel/src/trap_dispatch.rs:1039-1057` 的 `ExceptionOutcome::VmPageFault` 臂 → `panic!("pagefault in VM")`（**忠实对位 C `exception.c:101-118`**：VM 无法服务自己页表的缺页 → 必 panic，非未处理的用户 fault）。err=0x15=present+user+IFETCH、cr2=0、发生在 cpu 3。下一步 = 查 VM server 控制流何故跳到 null（被损坏的函数指针/返回地址），与 §1.49「exec_command null+1 deref」家族相关。属新独立前沿，非 copy 层。
+4. **BKL 两步写单原子硬门**：§1.50 SHOULD-FIX（`BKL_OWNER`+`BKL_LOCKED` 合并为单 `AtomicIsize`），IF=1 idle-wake 前必关。
+
+**取证产物**（`os/target/nk4a-runs/`，gitignore）：`serial_c60.log`–`serial_c65.log`。工作树探针状态：仅改生产 copy 站点（+ 少量既有 `nk4a_kdst_probe` 在 HEAD，task1-close 统一裁决删除）。
 
 ---
 

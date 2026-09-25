@@ -34,7 +34,6 @@ use crate::syscall::{KcallResult, Syscall};
 use crate::cross_space::{data_copy_vmcheck, write_to_process_vmcheck};
 use crate::vm::{AddressRef, CrossSpaceResult};
 use crate::clock::ClockState;
-use minix_arch::{CurrentDirectMap, DirectMapArch};
 use minix_arch::cpu_identity::{CpuIdentity, X86Vendor};
 
 // ── Minix3 error codes ──
@@ -962,18 +961,18 @@ fn getinfo_regs(
         Some(nr) => nr,
         None => return KcallResult::Ok(EINVAL),
     };
-    // Extract the physical address and size of cpu_context before
-    // calling data_copy_vmcheck. The cpu_context lives in the
-    // process table (a stable, direct-mapped allocation), so the
-    // physical address remains valid across a VmSuspend retry —
-    // unlike a stack-local source, this is safe to resume from.
-    let (reg_phys, reg_size) = match proc_table.get(target_nr) {
+    // Extract the virtual address and size of cpu_context before calling
+    // data_copy_vmcheck. NK4-C 1.51 (B27 残留根因): the process table is a
+    // kernel static array living in the higher-half image segment — OUTSIDE
+    // both Direct Map windows — so `virt_to_phys` on it yields a bogus
+    // physical. Route the copy through `AddressRef::Process` with the
+    // caller's CR3 (which maps the kernel higher-half too), so
+    // `resolve_physical` walks a real page table to the correct PA.
+    let (reg_kva, reg_size) = match proc_table.get(target_nr) {
         Some(p) => {
             let size = core::mem::size_of_val(&p.cpu_context);
-            let phys = CurrentDirectMap::virt_to_phys(
-                VirBytes(&p.cpu_context as *const _ as u64),
-            );
-            (phys, size)
+            let kva = &p.cpu_context as *const _ as u64;
+            (kva, size)
         }
         None => return KcallResult::Ok(EINVAL),
     };
@@ -997,7 +996,10 @@ fn getinfo_regs(
                     .map(|p| p.p_seg.phys_root)
             }
         };
-    let src = AddressRef::Physical(reg_phys);
+    let src = AddressRef::Process {
+        endpoint: caller_endpt,
+        offset: VirBytes(reg_kva),
+    };
     let dst = AddressRef::Process {
         endpoint: caller_endpt,
         offset: VirBytes(val_ptr),
@@ -1597,9 +1599,6 @@ fn trace_copy_word_from_proc(
     tr_addr: u64,
 ) -> KcallResult {
     let mut buf: u64 = 0;
-    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-        &mut buf as *mut u64 as u64,
-    ));
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
         if ep == target_endpoint { Some(target_cr3) } else { None }
     };
@@ -1607,7 +1606,12 @@ fn trace_copy_word_from_proc(
         endpoint: target_endpoint,
         offset: VirBytes(tr_addr),
     };
-    let dst = AddressRef::Physical(buf_phys);
+    // NK4-C 1.51: buf 是内核栈局部（image 高半区），`virt_to_phys` 产伪物理地址。
+    // 改用 AddressRef::Process（target CR3 映射内核 higher-half）。
+    let dst = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(&mut buf as *mut u64 as u64),
+    };
     match data_copy_vmcheck(caller_nr, proc_table, src, dst, TRACE_WORD_SIZE as usize, proc_cr3) {
         CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
@@ -1630,13 +1634,15 @@ fn trace_copy_word_to_proc(
     tr_data: i64,
 ) -> KcallResult {
     let buf: u64 = tr_data as u64;
-    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-        &buf as *const u64 as u64,
-    ));
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
         if ep == target_endpoint { Some(target_cr3) } else { None }
     };
-    let src = AddressRef::Physical(buf_phys);
+    // NK4-C 1.51: buf 是内核栈局部，改用 AddressRef::Process（target CR3 映射
+    // 内核 higher-half）。
+    let src = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(&buf as *const u64 as u64),
+    };
     let dst = AddressRef::Process {
         endpoint: target_endpoint,
         offset: VirBytes(tr_addr),
@@ -1662,11 +1668,6 @@ fn trace_copy_byte_from_proc(
     tr_addr: u64,
 ) -> KcallResult {
     let mut buf: u8 = 0;
-    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-        // R-16 (2026-08-12): SAFETY: this is a 64-bit kernel, so
-        // `*mut u8` is 64-bit and `as u64` cannot truncate.
-        &mut buf as *mut u8 as u64,
-    ));
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
         if ep == target_endpoint { Some(target_cr3) } else { None }
     };
@@ -1674,7 +1675,12 @@ fn trace_copy_byte_from_proc(
         endpoint: target_endpoint,
         offset: VirBytes(tr_addr),
     };
-    let dst = AddressRef::Physical(buf_phys);
+    // NK4-C 1.51: buf 是内核栈局部，改用 AddressRef::Process（target CR3 映射内核
+    // higher-half）。R-16: 64-bit kernel, `*mut u8` is 64-bit, `as u64` no truncation.
+    let dst = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(&mut buf as *mut u8 as u64),
+    };
     match data_copy_vmcheck(caller_nr, proc_table, src, dst, 1, proc_cr3) {
         CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
@@ -1697,13 +1703,15 @@ fn trace_copy_byte_to_proc(
     tr_data: i64,
 ) -> KcallResult {
     let buf: u8 = tr_data as u8;
-    let buf_phys = CurrentDirectMap::virt_to_phys(VirBytes(
-        &buf as *const u8 as u64,
-    ));
     let proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
         if ep == target_endpoint { Some(target_cr3) } else { None }
     };
-    let src = AddressRef::Physical(buf_phys);
+    // NK4-C 1.51: buf 是内核栈局部，改用 AddressRef::Process（target CR3 映射内核
+    // higher-half）。
+    let src = AddressRef::Process {
+        endpoint: target_endpoint,
+        offset: VirBytes(&buf as *const u8 as u64),
+    };
     let dst = AddressRef::Process {
         endpoint: target_endpoint,
         offset: VirBytes(tr_addr),
@@ -2451,17 +2459,17 @@ pub fn dispatch_profile(
             // SAFETY: BKL is held; SPROF_INFO is a static that was reset during
             // PROF_START and is only written by the profiling ISR
             // (`profile_clock_hook`, via `profile_sample`).
-            let info_src_phys = {
-                use minix_arch::{CurrentDirectMap, DirectMapArch};
-                use minix_types::VirBytes;
-                use core::ptr::addr_of;
-                let ptr = SPROF_INFO.get() as u64;
-                CurrentDirectMap::virt_to_phys(VirBytes(ptr))
-            };
+            // NK4-C 1.51 (B27 残留根因): SPROF_INFO 是内核静态（image 高半区），
+            // `virt_to_phys` 产伪物理地址。改用 AddressRef::Process（sprof_ep
+            // 的 CR3=caller_cr3 映射内核 higher-half）。
+            let info_src_kva = SPROF_INFO.get() as u64;
             let info_proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
                 if ep == sprof_ep { Some(caller_cr3) } else { None }
             };
-            let info_src = crate::vm::AddressRef::Physical(info_src_phys);
+            let info_src = crate::vm::AddressRef::Process {
+                endpoint: sprof_ep,
+                offset: minix_types::VirBytes(info_src_kva),
+            };
             let info_dst = crate::vm::AddressRef::Process {
                 endpoint: sprof_ep,
                 offset: minix_types::VirBytes(info_addr),
@@ -2482,17 +2490,16 @@ pub fn dispatch_profile(
             //
             // If no samples were collected (mem_used == 0), this is a no-op.
             if mem_used > 0 {
-                let buf_src_phys = {
-                    use minix_arch::{CurrentDirectMap, DirectMapArch};
-                    use minix_types::VirBytes;
-                    use core::ptr::addr_of;
-                    let ptr = SPROF_SAMPLE_BUFFER.get() as u64;
-                    CurrentDirectMap::virt_to_phys(VirBytes(ptr))
-                };
+                // NK4-C 1.51: SPROF_SAMPLE_BUFFER 是内核静态，改用
+                // AddressRef::Process（sprof_ep 的 CR3 映射内核 higher-half）。
+                let buf_src_kva = SPROF_SAMPLE_BUFFER.get() as u64;
                 let buf_proc_cr3 = |_pt: &crate::proc_table::ProcessTable, ep: Endpoint| {
                     if ep == sprof_ep { Some(caller_cr3) } else { None }
                 };
-                let buf_src = crate::vm::AddressRef::Physical(buf_src_phys);
+                let buf_src = crate::vm::AddressRef::Process {
+                    endpoint: sprof_ep,
+                    offset: minix_types::VirBytes(buf_src_kva),
+                };
                 let buf_dst = crate::vm::AddressRef::Process {
                     endpoint: sprof_ep,
                     offset: minix_types::VirBytes(data_addr),
