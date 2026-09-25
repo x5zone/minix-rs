@@ -225,13 +225,15 @@ impl IrqNotify for KernelNotifier {
 ///   The caller should panic.
 pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
     let mut notifier = KernelNotifier;
-    // A1 chain root + S-10: the trap entry path either ALREADY holds the BKL
-    // (interrupted-context inheritance — the timer-inside-kernel case) or
-    // arrives during the idle halt window where the loop RELEASED it. C
-    // models this with a reentrant counting lock; the non-reentrant CAS
-    // lock emulates depth-1 with try-or-inherit: acquire if free (release
-    // before returning), inherit otherwise.
-    let acquired = crate::smp::bkl_try_lock();
+    // A1 chain root + S-10 + NK4-C B27: this handler mutates shared state
+    // (the global IrqManager, and via the hook chain the proc tables), so it
+    // must run under the BKL. Use owner-aware inherit-or-acquire: inherit
+    // ONLY when THIS CPU's interrupted kernel frame already owns the lock
+    // (the timer-inside-kernel case), otherwise spin-acquire it even while a
+    // peer CPU holds it. The old bare `bkl_try_lock` conflated "peer holds
+    // it" with "inherited", letting two CPUs enter the chain at once under
+    // early SMP (the aliasing behind B27).
+    let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
     // C-26：中断入口的 context_stop 半。`acquired` 为真说明打断的是**用户态或
     // idle**（BKL 空闲）——按 C `hwint_master` 的 `TEST_INT_IN_KERNEL` 语义把
@@ -260,7 +262,7 @@ pub fn dispatch_hardware_irq(irq: IrqVector) -> Result<(), IrqError> {
 /// state and needs no lock for its own correctness; the window only guards
 /// access to the global manager.
 pub fn claim_hardware_irq() -> Option<u32> {
-    let acquired = crate::smp::bkl_try_lock();
+    let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let mgr = crate::irq_manager_with(&section);
     let claimed = mgr.controller_claim();
@@ -276,7 +278,7 @@ pub fn claim_hardware_irq() -> Option<u32> {
 /// call completes is exactly the one the caller read.
 pub fn dispatch_claimed_hardware_irq(irq: IrqVector, claimed: Option<u32>) -> Result<(), IrqError> {
     let mut notifier = KernelNotifier;
-    let acquired = crate::smp::bkl_try_lock();
+    let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
     if acquired {
         crate::account_interrupt_stop(&section);

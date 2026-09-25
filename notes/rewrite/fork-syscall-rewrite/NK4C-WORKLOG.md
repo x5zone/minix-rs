@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B27（1.49）**：为取 B26（slot 0xd exec_command `cr2=0x1` SIGSEGV）崩溃 rip 而加内核探针，意外发现——**回滚至干净 HEAD `ef07f760f` 后全量重建镜像 + QEMU 同镜像三连（c46/c46b/c46c）稳定复现早期内核 panic**（`rip≈0x5c3f309 err=0 cr2=0xffff807f85d7b6a8 walk=NP` cs=0x8，Direct Map 基址下≈2GB 处未映射指针）。即 §1.48「c43/c43b 真机签名一致」**不可从干净重建复现**，真机签名对构建产物敏感。**须先重建可复现无 panic 基线（B27），再回到 B26**。前代「RBX=0 根因」误判已作废（RBX=0 全进程普遍，含正常 0xc）。rc marker 仍未达。详见 §1.49。
+> **⚠ 最新前沿 = B27 部分修（1.50，含代码·内核侧）**：坐实 B27 一类真根因=中断/陷阱入口用 `bkl_try_lock()`（单 AtomicBool CAS）无法区分「本 CPU 内核帧持有（继承）」与「别的 CPU 持有（须自旋获取）」，user/idle-origin 陷入误继承 peer 锁→两 CPU 并发 `&mut PROC_TABLE` 撕裂写。修=`smp.rs` 新增 `BKL_OWNER: AtomicI32` owner 跟踪 + `bkl_lock_or_inherit()`（owner==self 才继承、否则自旋获取），把 clock 0xF1 臂/PIT TIMER 臂/`save_irq_frame_to_context`/SCHED_IPI 臂/int33 IPC 入口/irq_manager dispatch·claim ×3/riscv·aarch 同型站点全换用之。**真机决定性**：原 B27 签名（`cr2=0xffff807f85d7b6a8` IpcEngine::send 读坏表指针）**从干净重建消失**，崩溃收敛为**确定性**（c54/c55 同 172 行、同一根腐蚀点）。**残留 B27 未闭环**：崩于进程 birth 期 `cross_space_copy`→`resolve_physical` 页表 walk 读到带 **bit47 脏位的伪物理地址**（`kdst copy pa=0x0000800005d90a30`）=VM 并发改页表 vs 内核 walk 竞态（候选=VMINHIBIT 持页表协议在 birth 路径的缺口，非纯 BKL）。三件套绿（docker kernel **819**/·0fail 只增不减 / fmt 3 文件零新增漂移 / 两次真机 c54==c55 确定性签名）+ CodeReview PASSED（无 MUST-FIX）。**下一硬门（须先于任何 idle-wake 稳定性验证关闭）**：CodeReview SHOULD-FIX——`bkl_unlock`/`bkl_lock` 中 `BKL_OWNER`+`BKL_LOCKED` 两步写在 IF=1 窗口（idle 唤醒后调度循环）可致同 CPU 自死锁，boot 全程 IF=0 不触发（故不影响本轮），根治=合并为单 `AtomicIsize`（-1=空闲、≥0=持有者 CPU）。详见 §1.50。rc marker 仍未达。
+>
+> （1.49 历史）B27 起因：为取 B26 崩溃 rip 加内核探针，意外发现回滚至干净 HEAD `ef07f760f` 全量重建 + 同镜像三连（c46/c46b/c46c）稳定复现早期内核 panic（`rip≈0x5c3f309 err=0 cr2=0xffff807f85d7b6a8 walk=NP` cs=0x8），即 §1.48「c43/c43b 真机签名一致」不可从干净重建复现、真机签名对构建产物敏感。前代「B26 RBX=0 根因」误判已作废（RBX=0 全进程普遍，含正常 0xc）。
 
 - **B14 已修（1.26 落地，含代码）**：VFS 同步挂载路径 `WireFsClient::send`（`request.rs`）两处缺陷根治——**A**：裸 `m_type=REQ_READSUPER(0xA1C)` 经 `sendrec` 直发，绕过 C `fs_sendrec` 的 `TRNS_ADD_ID`（把 request 号抬到高 16 位）→ MFS 侧 `TransactionId::decode`(call=raw>>16) 解出 call=0、index 下溢 → `Unserved`→回 ENOSYS，read_super 从未抵达 MFS 挂载门；修=`sendrec` 前 `msg.m_type = trns_add_id(REQ_READSUPER, 0)`（同步靠阻塞往返匹配、id=0 安全，CodeReview 独立确认 id=0 < `IS_VFS_FS_TRANSID` 的 0xB02 下界不误路由）。**B**：`decode_readsuper_reply` 旧无视回复状态字无条件返 Ok，把 ENOSYS 当挂载成功让 `do_init_root` 带病开门；修=sendrec 后 `trns_del_id(msg.m_type)!=0` 即 `Err(FsError::Io(status))` 上抛（恢复 C `req_readsuper` `if (r!=OK) return r;`，boot 应 panic 见 main.c:519-520）。**真机取证**：加探针（已删）实测 PFS readsuper 回 `0x00000000`(status0=OK 通过)、MFS 回 `0x001e0000`(status=30=**EROFS**) 正确上抛——**Fix B 无假阴性、Fix A 已让 MFS 真服务**。三件套绿（docker 813/242/528·0fail / fmt request.rs 17=17、main_loop.rs 1=1 零新增 / 两次真机 c1/c2 签名一致=23313 行、`main_loop.rs:7681 failed to initialize root: Io`）。CodeReview 无 MUST-FIX。**boot 现诚实停在下一步 B15。**⚠️ 本 bullet 前代 §1.25 把症状记为 **EBUSY(16)**：本轮实测本 build 根挂载失败真码是 **EROFS(30)**（EBUSY 是「已挂载再挂」旧时相的下游表现），见 §1.26。
 
@@ -2667,6 +2669,52 @@ slot 0xd（INIT 第二个 fork 子，gen=1 slot=13）正常缺页服务后二次
 1. **B27 优先**：定位 `cr2=0xffff807f85d7b6a8`（≈phys 0x85d7b6a8）指向的内核数据结构（页表 walk 目标 / boot info memmap / slab 元数据），判明是真 bug 还是 `-smp 4` 早期竞态（干净 `CARGO_TARGET_DIR` 重建 + 单核/多核对照）；恢复一个**可复现无 panic** 的真机基线。
 2. **B26 次之**：在稳定基线上，用一个**只打印寄存器、绝不做内存读**的内核缺页探针捕获 slot 12/13 且 vaddr≤0x1000 的 faulting rip，坐实 0xd 在 exec_command 的 null+1 deref 具体指令；并分析 PM↔VFS 乒乓活锁（子死后 INIT waitpid 不可达，PM/VFS 互等）。
 3. rc marker（`minix-rs rc: minimal boot script marker`）仍未达，三架构均未启动打印。frontier 名义 1.30，实际可复现停点已早于 B22 之前的 Runcom。
+
+---
+
+## §1.50 B27 部分修：BKL owner 跟踪消除 PROC_TABLE 别名 + 残留页表撕裂前沿（含代码·内核侧）
+
+**模式**：含生产码修复的逻辑单元，走三件套 + CodeReview。
+
+### 根因坐实（一类真 bug，非探针假象、非架构裁决级）
+
+B27 早期内核 panic 的一类根因 = **中断/陷阱入口的 BKL 获取语义错误**。原代码在 clock/IRQ/IPI/IPC 陷阱入口用 `crate::smp::bkl_try_lock()`（对单个 `static BKL_LOCKED: AtomicBool` 做 CAS）：
+- CAS 成功 → 本 CPU 新获取（欠 release）；
+- CAS 失败 → 代码当作「继承被中断上下文已持有的锁」（不欠 release）。
+
+但 CAS 失败**无法区分**两种截然不同的状态：(a) **本 CPU 的内核帧**正持锁（打断发生在内核态 → 应继承，重获取会在非重入 spinlock 上自死锁）；(b) **另一个 CPU** 正持锁（打断发生在 user/idle 态，本 CPU 根本不持锁 → 必须自旋获取后才能碰共享表）。把 (b) 误当 (a) 处理，就让**两个 CPU 同时对全局 `PROC_TABLE` 取 `&mut`** → 撕裂写坏某进程的表内指针 → 内核态数据读缺页 panic（原签名 `cr2=0xffff807f85d7b6a8` = 读一个被写坏的伪指针）。单核（`-smp 1`）无对手，故 c51s1 零 panic —— 与「真机签名对 `-smp 4` 敏感」一致。
+
+**C 黄金参照**：`minix3/minix/kernel/arch/i386/arch_clock.c:226-263` clock handler 明确分支——`p == proc_addr(KERNEL)` 时继承（不取锁、`must_bkl_unlock=1`），否则 `BKL_LOCK()`；`mpx.S` 用 `TEST_INT_IN_KERNEL`（CPL）判源。C 的 BKL 是非重入单 spinlock（`smp.c:27` `SPINLOCK_DEFINE(big_kernel_lock)`）。本 Rust 端的**异常臂**（trap_dispatch.rs:906-910）早已按 `is_user → bkl_lock_section() vs assume_held()` 正确分源，唯独中断/IPC 入口用 try_lock 歧义原语。
+
+### 修复（owner-CPU 跟踪）
+
+1. `smp.rs`：新增 `static BKL_OWNER: AtomicI32 = -1`（`#[cfg(not(mock))]`）；`bkl_lock`/`bkl_try_lock` 获取成功后 `store(current_cpu_id().raw())`；`bkl_unlock` 释放前 `store(-1)`。审计确认 `BKL_LOCKED` 的全部 store(true) 都在这三个获取函数内（smp.rs:1603 为 `#[cfg(test)]` test-only），无绕道置位导致 owner 漏设。
+2. `smp.rs` 新增 `pub fn bkl_lock_or_inherit() -> bool`：`BKL_OWNER==self` → 返 false（继承本 CPU 内核帧的锁，不欠 release）；否则自旋 CAS 获取直到本 CPU 拥有 → 返 true（欠 release）。**即使 peer 持有也自旋等待，绝不继承 peer 的锁**。mock 下回退 `bkl_try_lock()`（单线程宿主无 owner 语义需求）。
+3. 把所有中断/陷阱入口的共享表变更点从 `bkl_try_lock()`/裸 `assume_held()` 换成 `bkl_lock_or_inherit()` + 出口/早退点按 `acquired` 配对 release：
+   - `trap_dispatch.rs`：SCHED_IPI 臂、LAPIC clock 0xF1 臂的 quantum 段、PIT TIMER 臂的 quantum 段、`save_irq_frame_to_context`（推翻旧「user-origin IRQ 运行在被中断上下文锁下」错误前提，改为自锁自放）、int33 `x86_ipc_dispatch_body` 入口（三处早退 EBADCALL/EFAULT/正常 dispatch 前均补 release + `debug_assert!(ipc_bkl)` 守护「int33 恒从 DPL=3 到达、必新获取」前提）、riscv64/aarch64 两处同型 quantum 站点；
+   - `irq_manager.rs`：`dispatch_hardware_irq`/`claim_hardware_irq`/`dispatch_claimed_hardware_irq` ×3。
+4. int33 IPC 入口获取锁后，在调用 `dispatch_ipc_entry`（其内部重新获取）之前先 release（BKL 非重入，跨该调用持有会自死锁），两释放点之间不碰表故互斥不破。
+
+### 真机证据（决定性）
+
+- **原 B27 别名签名消失**：干净 HEAD 全量重建 + 本修复后跑 smp4，崩溃不再是 `IpcEngine::send` 读 `cr2=0xffff807f85d7b6a8`（表指针被撕裂）——该签名从复现中**根除**。
+- **崩溃收敛为确定性**：c51/c52/c53（前 session，含未完整修复态）签名各异、非确定性；本修复后 **c54/c55 两次同 172 行、同一根腐蚀点**（下游最终 panic 表现 c54=pagefault-for-VM、c55=直接 GPF 略抖）。
+- **残留根腐蚀点定位**：崩溃前串口打 `nk4a: birth enter` → `nk4a: kdst copy pa=0x0000800005d90a30`（正常应 `0x0000000005d90a30`，此处 **bit47=0x800000000000 被 OR 进物理地址字段**）→ `birth s3 runtime ok` → 崩。`kdst copy` 探针（vm.rs:447 `nk4a_kdst_probe("copy", dst_phys.0, ...)`）打印的是 `cross_space_copy`→`resolve_physical` 页表 walk 解出的目标物理地址——**带 bit47 脏位 = 页表项地址字段被撕裂读**。即进程 birth 期间 **VM 并发改页表 vs 内核 `cross_space_copy` walk 同一页表**的竞态（bit47 落在 12–51 地址位内、非标准 PTE flag，故为 corrupted mapping）。这**不是纯 BKL 问题**：候选 = C 的 VMINHIBIT「持进程页表禁 VM 改动」协议在 birth/copy 路径的缺口（与 B22 的 fork VMINHIBIT 家族相邻，但此处是 copy 期的 map/unmap 竞态）。
+
+### 三件套 + CodeReview
+
+- docker：`cargo test -p minix-kernel --features mock` = **819 passed / 0 failed**（基线 816，只增不减）。
+- fmt：`cargo +nightly fmt --check` 逐文件漂移数 HEAD==工作树完全相同（smp 24=24 / trap_dispatch 35=35 / irq_manager 20=20，全局 1196=1196）= **零新增漂移**。
+- 非 mock 镜像重建：`cargo run -p xtask -- image --arch x86_64 --release` BUILD_EXIT=0；两次真机 c54/c55 确定性签名一致（见上）。单核无回归（前 session c51s1 578 行健康 tick）。
+- **CodeReview：PASSED，无 MUST-FIX**。采纳其 CONSIDER（IPC 入口 `debug_assert!(ipc_bkl)`）。**SHOULD-FIX 未在本轮关闭、记为下一硬门**：`bkl_unlock`（先 owner=-1 后 locked=false）/`bkl_lock`（先 locked=true 后 owner=me）的两步写在 **IF=1 窗口**（idle 唤醒后的调度循环，lib.rs `idle()`→`idle_halt()` sti;hlt 之后）若恰在两 store 之间被同 CPU 外部中断打断，handler 的 `bkl_lock_or_inherit` 读到 owner≠self 且 locked=true → 自旋等一个被冻结、永不置 owner 的持锁者 → 同 CPU 自死锁。**boot 全程经 interrupt gate（IF=0）进入 handler，本轮修复场景不受影响**（故不阻塞合入），但**须先于任何 idle-wake / 多核压力稳定性验证关闭**。根治（CodeReview 方案 1，推荐）=合并为单个 `AtomicIsize`（-1=空闲、≥0=持有者 CPU id），acquire=`compare_exchange(-1,me)`、release=`store(-1)`、inherit 判 `load()==me`，消除两步不一致窗口，语义等价 C `spin_lock_irqsave`。因预算与本 session 已在确定性真机证据上收敛，不为塞入未经验证的大重构，留作下一单元。
+
+### 新前沿（严格按序）
+
+1. **B27 残留（下一步）**：`cross_space_copy`/`resolve_physical` 页表 walk 与 VM 改页表的 birth 期竞态（bit47 撕裂）。方向：查 C 如何在 safecopy 期用 VMINHIBIT/其他机制阻止 VM 改动被拷贝进程的页表；对照本 Rust 端 birth→copy 路径缺哪道持制。用只打印寄存器/PA 的安全探针（严禁在缺页 handler 内做内存读，§1.49 教训）在 walk 前后各采一次同址 PTE 坐实是哪一级页表项被并发改。目标：恢复可复现**无 panic** 真机基线。
+2. **idle-wake 前的 BKL 单原子硬门**（上述 SHOULD-FIX）。
+3. B27 稳后回 B26（slot 0xd exec_command `cr2=0x1` null+1 deref + PM↔VFS 乒乓）。rc marker（`minix-rs rc: minimal boot script marker`）仍未达。
+
+**取证产物**（`/tmp/nk4a/`，gitignore）：`serial_c54.log`/`serial_c55.log`（确定性 172 行签名 + bit47 kdst copy 证据）。本工作树**无新增探针**（3 文件均为生产锁修复；既有 nk4a 探针在 HEAD，task1-close 统一裁决删除）。
 
 ---
 

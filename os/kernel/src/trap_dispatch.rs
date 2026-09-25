@@ -94,10 +94,15 @@ fn exception_frame_of(frame: &TrapFrame) -> X86_64ExceptionFrame {
 /// saved in full by its own syscall/trap entry.
 ///
 /// # Safety
-/// Caller is the A-path trap body with the BKL owned per the arm's
-/// contract (user-origin IRQs run under the interrupted context's lock —
-/// same witness `check_quantum` and `dispatch_hardware_irq` already use).
+/// Mirrors the interrupted frame into the shared `PROC_TABLE`, so it must
+/// run under the BKL. NK4-C B27: it acquires the lock itself via
+/// [`crate::smp::bkl_lock_or_inherit`] (inheriting only when THIS CPU's
+/// interrupted kernel frame already owns it) — the previous "user-origin
+/// IRQs run under the interrupted context's lock" premise was false: a CPU
+/// in user/idle does NOT own the BKL, so a bare `assume_held` here mutated
+/// the table concurrently with a peer CPU.
 unsafe fn save_irq_frame_to_context(frame: &TrapFrame) {
+    let acquired = crate::smp::bkl_lock_or_inherit();
     let section = unsafe { crate::smp::BklSection::assume_held() };
     let cur_nr = {
         let smp = crate::smp_state_with(&section);
@@ -109,6 +114,9 @@ unsafe fn save_irq_frame_to_context(frame: &TrapFrame) {
         if let Some(proc) = table.get_mut(nr) {
             mirror_irq_frame_into_proc(frame, proc);
         }
+    }
+    if acquired {
+        crate::smp::bkl_unlock();
     }
 }
 
@@ -650,11 +658,14 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // S-10: scheduler IPI (C SMP_SCHED_IPI_VECTOR) → the target CPU's own
     // sched_handler_full (loads flags, applies STOP/SAVE_CTX/VM_INHIBIT,
     // clears pending — the schedule_sync waiter's completion signal).
-    // BKL: try-or-inherit (depth-1 emulation of C's counting lock — the AP
-    // may be in its idle window with the BKL released, or interrupted while
-    // the kernel held it).
+    // BKL: `sched_handler_full` mutates the shared proc table (RTS_SET), so
+    // it must run under the lock. NK4-C B27: use owner-aware inherit-or-acquire
+    // — inherit only if THIS CPU's interrupted frame owns the BKL (kernel
+    // origin), otherwise spin-acquire it even when a peer holds it. The old
+    // bare `bkl_try_lock` mis-inherited a peer's lock, letting two CPUs
+    // `&mut PROC_TABLE` at once (the early-SMP corruption behind B27).
     if vector == minix_arch::x86_64::smp::SCHED_IPI_VECTOR as u8 {
-        let acquired = crate::smp::bkl_try_lock();
+        let acquired = crate::smp::bkl_lock_or_inherit();
         {
             let section = unsafe { crate::smp::BklSection::assume_held() };
             let table = crate::proc_table_with(&section);
@@ -703,6 +714,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         // Quantum enforcement (C proc.c:418-424): the tick CPU evaluates
         // its own running process — if the quantum is exhausted, the
         // process is preempted (NO_QUANTUM set, scheduler notified).
+        // NK4-C B27: the quantum check mutates the shared proc table, so it
+        // must run under the BKL. Inherit only if THIS CPU's interrupted
+        // frame owns it, otherwise spin-acquire — a bare `assume_held` here
+        // ran lock-free on a user/idle-origin tick and let two CPUs `&mut`
+        // the table at once (the early-SMP corruption behind B27).
+        let tick_acquired = crate::smp::bkl_lock_or_inherit();
         let section = unsafe { crate::smp::BklSection::assume_held() };
         let cur_nr = {
             let smp = crate::smp_state_with(&section);
@@ -753,6 +770,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 table.check_quantum(nr, priv_table, &section);
             }
         }
+        if tick_acquired {
+            crate::smp::bkl_unlock();
+        }
         return;
     }
 
@@ -790,6 +810,10 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 }
             }
             crate::clock::local_tick(crate::current_cpu_id());
+            // NK4-C B27: same lock discipline as the LAPIC 0xF1 arm — the
+            // quantum check below mutates the shared proc table, so acquire
+            // the BKL (or inherit it only if this CPU already owns it).
+            let tick_acquired = crate::smp::bkl_lock_or_inherit();
             let tick_section = unsafe { crate::smp::BklSection::assume_held() };
             let tick_cur = {
                 let smp = crate::smp_state_with(&tick_section);
@@ -822,6 +846,9 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 if table.get(nr).is_some_and(|p| p.is_runnable()) {
                     table.check_quantum(nr, priv_table, &tick_section);
                 }
+            }
+            if tick_acquired {
+                crate::smp::bkl_unlock();
             }
             // LAPIC EOI：edge 交付的 tick 处理完必须回执，否则 LAPIC 拒收
             // 后续 tick（C: lapic_eoi，apic.c）。
@@ -1602,6 +1629,28 @@ fn current_ipc_proc_nr() -> crate::proc::ProcNr {
 /// TrapFrame built by the asm stub on this CPU's kernel stack, and the
 /// per-CPU `proc_ptr` anchor names the interrupted process.
 unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::ProcNr) {
+    // NK4-C B27: the int-33 IPC trap arrives from USER mode, where this CPU
+    // does NOT own the BKL. The entry below mutates the shared PROC_TABLE
+    // (saves the register file into `caller.cpu_context`, sets `trap_style`,
+    // `p_defer.r2/r3`, `p_delivermsg_vir`) before `dispatch_ipc_entry`
+    // acquires the lock. Under early SMP that left two CPUs writing the same
+    // slot at once — the aliasing that corrupted a per-proc table pointer and
+    // crashed `IpcEngine::send` (B27). Acquire here (inherit only if a nested
+    // caller already owns it), and hand the lock to `dispatch_ipc_entry` by
+    // releasing just before it (which acquires fresh — the BKL is
+    // non-reentrant, so we must not hold it across that call).
+    let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+    // NK4-C B27 review guard: int-33 reaches this body only from the DPL=3
+    // IPC gate, so this CPU never owns the BKL on entry and `ipc_bkl` must be
+    // true (we always freshly acquire). If a future bug let int-33 fire from
+    // kernel context, `ipc_bkl` would be false and `dispatch_ipc_entry`'s
+    // fresh `bkl_lock()` below would self-deadlock on the non-reentrant
+    // spinlock — assert the invariant loudly in debug instead.
+    debug_assert!(
+        ipc_bkl,
+        "int-33 IPC reached from kernel context (BKL inherited) — \
+         dispatch_ipc_entry's fresh acquire would self-deadlock"
+    );
     let table = unsafe { crate::proc_table_boot_unchecked() };
 
     // Decision 3: persist the user register file before any dispatch side
@@ -1666,6 +1715,11 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         }
     }
     if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
+        // NK4-C B27: release the entry acquisition before this early exit
+        // (no dispatch_ipc_entry runs, so nothing else will drop the lock).
+        if ipc_bkl {
+            crate::smp::bkl_unlock();
+        }
         frame.rax = crate::errno::EBADCALL as i64 as u64;
         return;
     }
@@ -1784,6 +1838,11 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
                     table,
                     unsafe { crate::priv_table_boot_unchecked() },
                 );
+                // NK4-C B27: release the entry acquisition before this
+                // SIGSEGV/EFAULT early exit.
+                if ipc_bkl {
+                    crate::smp::bkl_unlock();
+                }
                 frame.rax = crate::errno::EFAULT as i64 as u64;
                 return;
             }
@@ -1815,10 +1874,18 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
 
     // BKL: dispatch_ipc_entry acquires and transfers out (held across
     // kernel_call_finish, which releases it on every non-VmSuspend path).
+    // NK4-C B27: release the entry's acquisition here so `dispatch_ipc_entry`
+    // can take a fresh lock (the BKL is non-reentrant — holding ours across
+    // its internal acquire would self-deadlock). Mutual exclusion is never
+    // broken: the table is unlocked only for the instant between this release
+    // and dispatch_ipc_entry's acquire, and we do not touch it in between.
     // NK4-C S3 门纪律：陷阱腿用 `kernel_call_finish_ipc_door`——C 的
     // proc.c mini_* 从不执行 kernel_call 腿的 eager 回执直写（状态经
     // h_errno/寄存器，真回执经 MF_DELIVERMSG 投递），陈旧
     // p_delivermsg_vir（SENDA 不刷新）因此在结构上不可达。
+    if ipc_bkl {
+        crate::smp::bkl_unlock();
+    }
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
     let result = crate::syscall::dispatch_ipc_entry(cur_nr, table, &mut msg, priv_table);
     crate::syscall::kernel_call_finish_ipc_door(cur_nr, table, &msg, result, priv_table);
@@ -2117,10 +2184,10 @@ fn riscv64_timer_arm() {
         }
         Err(e) => panic!("riscv64 timer arm: IRQ dispatch error {e:?}"),
     }
-    // Quantum check under try-or-inherit BKL (the SCHED_IPI shape): the
-    // tick may interrupt the kernel with the BKL held (inherit) or an
-    // idle window without it (acquire → release).
-    let acquired = crate::smp::bkl_try_lock();
+    // Quantum check under owner-aware inherit-or-acquire BKL (the SCHED_IPI
+    // shape, NK4-C B27): inherit only if THIS CPU's interrupted kernel frame
+    // owns the lock, else spin-acquire it even when a peer holds it.
+    let acquired = crate::smp::bkl_lock_or_inherit();
     {
         let section = unsafe { crate::smp::BklSection::assume_held() };
         let smp = crate::smp_state_with(&section);
@@ -2265,7 +2332,7 @@ pub unsafe extern "C" fn aarch64_kernel_body(
                 // Quantum enforcement for a timer tick (C proc.c:418-424;
                 // try-or-inherit BKL — the SCHED_IPI shape).
                 if is_timer {
-                    let acquired = crate::smp::bkl_try_lock();
+                    let acquired = crate::smp::bkl_lock_or_inherit();
                     {
                         let section = unsafe { crate::smp::BklSection::assume_held() };
                         let smp = crate::smp_state_with(&section);

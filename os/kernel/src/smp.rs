@@ -1227,6 +1227,25 @@ pub(crate) fn cpu_identity(cpu: CpuId) -> Option<CpuIdentity> {
 ///   CPU that acquires the lock.
 static BKL_LOCKED: AtomicBool = AtomicBool::new(false);
 
+/// Which CPU currently owns [`BKL_LOCKED`] (`-1` = free).
+///
+/// NK4-C B27: the single `AtomicBool` cannot answer the question an
+/// interrupt-context handler actually needs — "is the lock held by *this*
+/// CPU (so I inherited it from the interrupted kernel frame and must NOT
+/// re-acquire or release) or by *another* CPU (so I must NOT touch the
+/// shared tables without acquiring it first)?" A bare `compare_exchange`
+/// try-lock conflates the two: it fails both when we already own it and
+/// when a peer owns it, and treating "peer owns it" as "inherited" lets two
+/// CPUs `&mut` `PROC_TABLE` at once (the early-SMP aliasing that corrupted
+/// a per-proc table pointer and crashed `IpcEngine::send`). Recording the
+/// owner CPU lets [`bkl_lock_or_inherit`] distinguish the cases, matching
+/// C's user-origin clock handler which acquires the lock (`BKL_LOCK()`,
+/// arch_clock.c:242) instead of inheriting a peer's.
+///
+/// Only meaningful under real SMP (`current_cpu_id()`); mock builds leave it
+/// at `-1` and fall back to the plain CAS try-lock in [`bkl_lock_or_inherit`].
+static BKL_OWNER: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-1);
+
 /// Guard returned by [`bkl_lock`]. RAII: dropping releases the BKL.
 ///
 /// R-05 (2026-08-12): `BklGuard` is now RAII by default — `Drop` calls
@@ -1449,9 +1468,59 @@ pub fn smp_state_with<'a, 'b>(
 /// action, C counting-lock depth-1 parity). Returns `true` when the caller
 /// acquired it (and owes the release).
 pub fn bkl_try_lock() -> bool {
-    BKL_LOCKED
+    let acquired = BKL_LOCKED
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_ok()
+        .is_ok();
+    #[cfg(not(feature = "mock"))]
+    if acquired {
+        BKL_OWNER.store(crate::current_cpu_id().raw() as i32, Ordering::Release);
+    }
+    #[cfg(feature = "mock")]
+    let _ = acquired;
+    acquired
+}
+
+/// Interrupt-context BKL entry (NK4-C B27 fix; C parity).
+///
+/// Returns `true` when the caller newly acquired the lock and therefore
+/// owes a [`bkl_unlock`] before returning; `false` when it INHERITED a lock
+/// the interrupted context on THIS CPU already owned (no action owed).
+///
+/// Unlike [`bkl_try_lock`], this distinguishes the two states a single
+/// `AtomicBool` conflates. C's BKL is a non-reentrant spinlock
+/// (`big_kernel_lock`, smp.c:27), so a handler that interrupts the kernel
+/// must inherit (re-acquiring would self-deadlock) while a handler that
+/// interrupts user/idle must acquire (C: arch_clock.c:226-263 branches on
+/// `p == proc_addr(KERNEL)` vs `BKL_LOCK()`). Owner tracking reproduces
+/// exactly that: we inherit only when the recorded owner is THIS CPU, and
+/// otherwise block (spin) until we own it — even when a peer currently
+/// holds the lock. That is the discipline whose absence let two CPUs mutate
+/// `PROC_TABLE` concurrently and produced the early-SMP panic this closes.
+///
+/// Safe against deadlock: BKL critical sections never sleep, and
+/// `schedule_sync` releases the BKL before waiting on a target CPU
+/// (smp.c:103), so a peer that owns the lock always releases it and our
+/// spin terminates.
+pub fn bkl_lock_or_inherit() -> bool {
+    #[cfg(not(feature = "mock"))]
+    {
+        let me = crate::current_cpu_id().raw() as i32;
+        if BKL_OWNER.load(Ordering::Acquire) == me {
+            return false; // this CPU's interrupted kernel frame owns it
+        }
+        // Free, or owned by another CPU: spin until we own it (never
+        // inherit a peer's lock — that is the aliasing bug).
+        while BKL_LOCKED
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        BKL_OWNER.store(me, Ordering::Release);
+        true
+    }
+    #[cfg(feature = "mock")]
+    bkl_try_lock()
 }
 
 pub fn bkl_lock() -> BklGuard {
@@ -1471,6 +1540,8 @@ pub fn bkl_lock() -> BklGuard {
         // compiler maps `hint::spin_loop()` to the right barrier.
         core::hint::spin_loop();
     }
+    #[cfg(not(feature = "mock"))]
+    BKL_OWNER.store(crate::current_cpu_id().raw() as i32, Ordering::Release);
     BklGuard { active: true }
 }
 
@@ -1496,6 +1567,8 @@ pub fn bkl_unlock() {
         BKL_LOCKED.load(Ordering::Acquire),
         "bkl_unlock() called but BKL is not held — double unlock or missing bkl_lock()"
     );
+    #[cfg(not(feature = "mock"))]
+    BKL_OWNER.store(-1, Ordering::Release);
     BKL_LOCKED.store(false, Ordering::Release);
 }
 
