@@ -52,10 +52,6 @@ use minix_types::{CpFlags, Endpoint, Message};
 /// 首读缓冲的页数：`static char hdr[10*PAGE_SIZE] __aligned(8)`（exec.c:738）。
 const HEADER_BUF_PAGES: usize = 10;
 
-/// `SECTOR_SIZE`（`exec_elf.c:21`）——phdr 表必须整体住在首扇区内
-/// （`elf_sane`，exec_elf.c:34-38）。
-const SECTOR_SIZE: u64 = 512;
-
 /// `PT_INTERP`（`sys/exec_elf.h`）——动态解释器段在场即 dyn 二进制
 /// （`elf_has_interpreter`，exec_elf.c:73-110）。
 const PT_INTERP: u32 = 3;
@@ -82,6 +78,21 @@ const PROT_RWX: u32 = 0x1 | 0x2 | 0x4;
 /// `sizeof(struct stat)` 的 LP64 值——req_stat 的 magic grant 窗口
 /// （request.c:1087 同样按 `sizeof(struct stat)` 授权）。
 const STAT_BUF_SIZE: u64 = 144;
+
+/// VFS 给**自己缓冲**建 magic grant 时的 `who_from`：必须是**具体端点**
+/// `Endpoint::VFS`，绝不能用 `Endpoint::SELF` 哨兵。
+///
+/// **B37 根因**：内核 `verify_grant` 把 magic grant 的 `who_from` 原样装为
+/// `effective_granter`（`kernel/src/grant.rs:461`），随后的数据拷贝用它在
+/// 该端点的页表里解析 `start` 地址。`Endpoint::SELF` 是哨兵
+/// （`ENDPOINT_SLOT_TOP - 3`，`is_valid() == false`），不是任何真实进程——
+/// 内核拿它解析页表必失败，而 FS 侧 `copy_out` 吞掉拷贝错误
+/// （`let _ = ipc.copy_to(..)`，`fs-rt/src/transport.rs:272`）→ grant 目标
+/// 缓冲一字节未落、`req_read` 却回 `Ok`。真机 bn34p 实锤
+/// `after-read hdr[0..8]=00 00 00 00`（exec 首块读）即此。C `map_header`
+/// （exec.c:755）用 `VFS_PROC_NR` 具体号，本常量对齐之。段装载读走
+/// `target_e`（目标进程具体端点，exec.c:709-711）本就是对的，不在此列。
+const VFS_LOCAL_WHO_FROM: Endpoint = Endpoint::VFS;
 
 /// 统一把任何符号的结果折成**负 errno**（C `pm_exec` 的 `return r` 语义：
 /// worker 把返回值原样折进 `VFS_PM_STATUS`，PM 按 `result != OK` 收）。
@@ -183,8 +194,16 @@ impl<'a> ElfHead<'a> {
         }
         let e_phoff = u64_at(buf, 32);
         let e_phnum = u16_at(buf, 56) as u64;
-        // phdr 表整体住在首扇区（exec_elf.c:34-38）。
-        if e_phoff > SECTOR_SIZE || e_phoff.saturating_add(e_phnum * 56) > SECTOR_SIZE {
+        // phdr 表必须整体住在**已加载的首块缓冲**里。C `elf_sane`
+        // （exec_elf.c:34-38）以 `SECTOR_SIZE`（512）为界，但 C 是 32 位时代
+        // （`__ELF_WORD_SIZE 32`、`Elf32_Phdr` 32 字节），phdr 表 ≤512 天然成立；
+        // minix-rs 是 LP64（`e_phentsize`=56），正常二进制的 phdr 表（如 10 项
+        // =624B）合法超过 512，而 `map_header`（exec.c:738）本就加载 10 页
+        // （`buf.len()`）。故界取实际加载的头缓冲长——正是 C `elf_unpack` 里
+        // 那条被 `#if 0` 停用的 `phdr + phnum >= hdr_len` 检查（exec_elf.c）的
+        // 本意（32 位下 SECTOR_SIZE 够用故被注释，LP64 下必须按缓冲长校验）。
+        let hdr_loaded = buf.len() as u64;
+        if e_phoff > hdr_loaded || e_phoff.saturating_add(e_phnum * 56) > hdr_loaded {
             return Err(enoexec);
         }
         Ok(Self { buf })
@@ -741,7 +760,7 @@ where
             .grant_magic(
                 kernel,
                 fs_e.get(),
-                Endpoint::SELF.get(),
+                VFS_LOCAL_WHO_FROM.get(),
                 hdr_buf.as_ptr() as u64,
                 STAT_BUF_SIZE,
                 CpFlags::WRITE,
@@ -772,7 +791,7 @@ where
 
     // 首块（`map_header`，exec.c:736-763）：min(v_size, 10 pages) 直读进
     // VFS 缓冲——`req_readwrite` 的 user 是 VFS 自己（exec.c:755 的
-    // `VFS_PROC_NR`）。
+    // `VFS_PROC_NR`，即 [`VFS_LOCAL_WHO_FROM`] 具体端点，非 SELF 哨兵）。
     let hdr_len = (v.size as usize).min(hdr_buf.len());
     if let Err(e) = req_read(
         st,
@@ -782,7 +801,7 @@ where
         0,
         hdr_buf.as_ptr() as u64,
         hdr_len,
-        Endpoint::SELF,
+        VFS_LOCAL_WHO_FROM,
     ) {
         bail_open!(e);
     }
@@ -791,7 +810,9 @@ where
 
 /// `req_read`（`req_readwrite_actual` 的 READING 半，request.c:834-873）：
 /// magic grant + `REQ_READ` + revoke。`who_from` 按 C 的 user 参数化——
-/// 首块读是 VFS 自己（exec.c:755），段装载读是**目标进程**
+/// 首块读是 VFS 自己（exec.c:755，具体端点 [`VFS_LOCAL_WHO_FROM`]，B37：
+/// 绝不能用 `Endpoint::SELF` 哨兵，否则内核按哨兵解析页表失败、FS 吞错、
+/// 缓冲零字节而本函数仍回 `Ok`），段装载读是**目标进程**
 /// （exec.c:709-711：FS 把文件字节直写目标的新地址空间，VFS 不中转）。
 #[allow(clippy::too_many_arguments)]
 fn req_read<K, T>(
@@ -1151,7 +1172,7 @@ mod tests {
         let mut bad = good.clone();
         bad[0] = b'M';
         assert!(ElfHead::parse(&bad).is_err());
-        // phdr 表出首扇区（elf_sane 的 peculiar phoff）。
+        // phdr 表越过加载缓冲（本例 120B，e_phoff=600 在外）→ 拒。
         let mut far = good.clone();
         far[32..40].copy_from_slice(&600u64.to_le_bytes());
         assert!(ElfHead::parse(&far).is_err());
@@ -1165,6 +1186,36 @@ mod tests {
         assert!(ElfHead::parse(&et_dyn).is_ok());
         // 截断镜像。
         assert!(ElfHead::parse(&good[..32]).is_err());
+    }
+
+    /// B37b 回归 pin：LP64 的 10 项 phdr 表（`e_phoff` 64 + 10×56 = 624 > 512）
+    /// 必须能 parse——真实 `/bin/sh` 首块（`map_header` 加载 10 页 = 40960
+    /// 缓冲）装得下；旧 `SECTOR_SIZE`（512）界是 32 位时代遗留（`Elf32_Phdr`
+    /// 32B），会把合法 LP64 头误判 ENOEXEC（真机 bn37p 实锤：首块字节已落入
+    /// `7f454c46` 后仍 ENOEXEC 的那条腿）。新界 = 实际加载的头缓冲长。
+    #[test]
+    fn test_elfhead_parse_lp64_phdr_table_beyond_sector_size() {
+        let phdrs: Vec<(u32, u32, u64, u64, u64, u64)> = (0..10)
+            .map(|i| {
+                (
+                    minix_elf::PT_LOAD,
+                    PF_X,
+                    0x1000 + i as u64 * 0x100,
+                    0x401_000 + i as u64 * 0x100,
+                    0x100,
+                    0x100,
+                )
+            })
+            .collect();
+        let img = make_test_elf(0x401_000, &phdrs);
+        assert_eq!(img.len(), 64 + 10 * 56, "10 项 LP64 phdr 表 = 624B > 旧 512 界");
+        let head = ElfHead::parse(&img)
+            .expect("LP64 10 项 phdr 表必须 parse（超 512 但 ≤ 缓冲长）");
+        assert_eq!(head.phnum(), 10);
+        // 真越界（e_phoff 顶到加载缓冲之外）仍须拒。
+        let mut oob = img.clone();
+        oob[32..40].copy_from_slice(&2000u64.to_le_bytes());
+        assert!(ElfHead::parse(&oob).is_err(), "phdr 表越过加载缓冲界必须拒");
     }
 
     /// 脚本化 IPC：按对端 m_type 落 canned 回复，并记录全部 sendrec。
@@ -1300,6 +1351,64 @@ mod tests {
             .filter(|m| m.m_type == minix_types::SYS_MEMSET)
             .count();
         assert_eq!(memsets, 1, "tail clear only (vaddr page-aligned)");
+    }
+
+    /// B37 回归 pin：exec 首块读 / stat 的 VFS-local magic grant 用**具体
+    /// 端点** [`VFS_LOCAL_WHO_FROM`]（= `Endpoint::VFS`）作 `who_from`，绝不能
+    /// 用 `Endpoint::SELF` 哨兵——内核把 `magic.who_from` 原样装为
+    /// `effective_granter`（`kernel/src/grant.rs:461`）解析页表；SELF 非合法
+    /// 端点（`is_valid() == false`）→ 拷贝失败被 FS 吞（transport.rs:272）
+    /// → hdr_buf 零字节而 `req_read` 仍回 `Ok`（真机 bn34p 实锤，翻案前
+    /// 误疑 phdr 表超 512）。
+    #[test]
+    fn test_vfs_local_who_from_is_concrete_endpoint() {
+        assert_eq!(VFS_LOCAL_WHO_FROM, Endpoint::VFS);
+        assert!(
+            VFS_LOCAL_WHO_FROM.is_valid(),
+            "VFS-local grant 的 who_from 必须是具体端点，否则内核页表解析失败"
+        );
+        assert!(
+            !Endpoint::SELF.is_valid(),
+            "SELF 哨兵不可作 magic grant who_from（B37 回归即此）"
+        );
+    }
+
+    /// 驱动 `req_read` 首块读腿（VFS-local）：seeded vnode + 具体 `who_from`
+    /// 应恰发一条打包后的 `REQ_READ` 到 MFS 并回 `Ok`（canned 传输不搬字
+    /// 节，故只 pin 线形状与不报错；数据背流由真机双跑验证）。
+    #[test]
+    fn test_req_read_first_block_wires_with_concrete_who_from() {
+        let mut state = VfsState::new();
+        crate::main_loop::seed_ready_state(&mut state);
+        let vid = state.vnode_table.alloc().unwrap();
+        {
+            let vn = state.vnode_table.get_mut(vid).unwrap();
+            vn.fs = Endpoint::MFS;
+            vn.ino = 8;
+            vn.dev = 1;
+            vn.mode = crate::open::S_IFREG | 0o755;
+            vn.size = 0x2000;
+            vn.ref_count = 1;
+        }
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        let ipc = ExecScriptedIpc::new();
+        let mut buf = [0u8; 512];
+        let r = req_read(
+            &mut state,
+            &kernel,
+            &ipc,
+            vid,
+            0,
+            buf.as_mut_ptr() as u64,
+            buf.len(),
+            VFS_LOCAL_WHO_FROM,
+        );
+        assert_eq!(r, Ok(()));
+        assert_eq!(
+            ipc.types_of(Endpoint::MFS),
+            vec![minix_types::trns_add_id(minix_types::REQ_READ, 0)],
+            "首块读应恰发一条打包后的 REQ_READ 到 MFS"
+        );
     }
 
     /// B32 回归 pin：VFS→FS 事务打包往返。出向 `fs_trans_stamp` 把
