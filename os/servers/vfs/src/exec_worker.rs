@@ -509,6 +509,46 @@ fn fetch_name<K: KernelCallTransport>(
         .map_err(|_| ExecError::NoExec.to_errno())
 }
 
+/// exec 开卷三检之二：执行权限判决（C `exec.c:128` `forbidden(fp, vp, X_BIT)`）。
+///
+/// 抽成纯函数，是为了让「`access` 必须落在低 3 位三元组」这个 B33b 缺陷点
+/// 直接进入单测射程：`access` 常量藏在内联的 `ForbidInput` 构造里时，回退
+/// 成 9 位模式位（`0o100`）不会让任何测试变红（既有单测都绕过三检门直调
+/// `load_elf_segments`）。本函数把带常量的构造与判决封进一个可用原语驱动
+/// 的单元，改错 `access` 立即测红。
+fn exec_forbid_check(
+    file_mode: u32,
+    file_uid: u32,
+    file_gid: u32,
+    real_uid: u32,
+    real_gid: u32,
+    eff_uid: u32,
+    eff_gid: u32,
+) -> Result<(), crate::protect::ProtectError> {
+    forbidden_decision(&ForbidInput {
+        real_uid,
+        real_gid,
+        eff_uid,
+        eff_gid,
+        is_access_call: false,
+        file_uid,
+        file_gid,
+        mode: file_mode & 0o777,
+        // C `forbidden` 的 `access_desired` 传 `X_BIT`（=0o1，`const.h:119`），
+        // 与 `perm_bits`（root 为 `R|W|X`、否则 `(mode >> shift) & RWX_BITS`）
+        // 同处低 3 位三元组，末判据 `(perm | access) != perm` 要 access ⊆ perm。
+        // 传 9 位模式的 owner-X 位（`0o100`）会使 root/owner 的 `perm=0o7` 恒判
+        // 失败 → 误拒 EACCES（真机实锤 mode=0o100755、euid=0、root 自有文件被拒）。
+        // 全仓其余 `forbidden_decision` 调用点（`main_loop.rs` 11 处）传的均为
+        // `crate::open::*` 低 3 位常量（`R_BIT`/`W_BIT`/`X_BIT` 或其 OR），无一
+        // 用 9 位模式值；exec 按 C `exec.c:128` 取 `X_BIT`。
+        access: crate::protect::X_BIT,
+        is_dir: false,
+        supp: &[],
+        readonly_fs: false,
+    })
+}
+
 /// 开卷 + 三项检查 + suid/sgid 提议 + 首块读
 /// （`get_read_vp`，exec.c:89-154；`map_header`，:736-763）。
 ///
@@ -658,20 +698,7 @@ where
         bail_open!(ExecError::NoExec.to_errno());
     }
     // 三检之二：执行权限（exec.c:128-129 `forbidden(fp, vp, X_BIT)`）。
-    if let Err(e) = forbidden_decision(&ForbidInput {
-        real_uid,
-        real_gid,
-        eff_uid: uid,
-        eff_gid: gid,
-        is_access_call: false,
-        file_uid: v.uid,
-        file_gid: v.gid,
-        mode: v.mode & 0o777,
-        access: 0o100, // X_BIT（protect.rs 的九位权限梯 X 档）
-        is_dir: false,
-        supp: &[],
-        readonly_fs: false,
-    }) {
+    if let Err(e) = exec_forbid_check(v.mode, v.uid, v.gid, real_uid, real_gid, uid, gid) {
         bail_open!(e.to_errno());
     }
 
@@ -1033,6 +1060,27 @@ mod tests {
     use super::*;
     use crate::main_loop::VfsState;
     use alloc::format;
+
+    /// B33b 调用点回归 pin：`exec_forbid_check` 的 `access` 必须是低 3 位
+    /// `X_BIT`。既有单测都绕过三检门直调 `load_elf_segments`，从不驱动这段
+    /// `ForbidInput` 构造；本测直接驱动它，跨 root/owner/其他档验证“执行
+    /// 意图”。若把内部 `access` 改回 9 位模式位 `0o100`，root/owner 执行
+    /// `0o755` 会被恒误拒，本测立即变红（真机缺陷为 mode=0o100755、euid=0）。
+    #[test]
+    fn test_exec_forbid_check_uses_low_three_bit_access() {
+        // root 执行自己 owned 的 0o755（真机场景）：应放行。
+        assert_eq!(
+            exec_forbid_check(0o100755, 0, 0, 0, 0, crate::link::SU_UID, 0),
+            Ok(())
+        );
+        // 非 root owner 执行自己 0o755（owner 档 shift=6 → perm=0o7）：应放行。
+        assert_eq!(exec_forbid_check(0o755, 100, 100, 100, 100, 100, 100), Ok(()));
+        // 非 root owner 执行无可执行位的 0o644（perm=0o6，X 不属包含）：应拒。
+        assert_eq!(
+            exec_forbid_check(0o644, 100, 100, 100, 100, 100, 100),
+            Err(crate::protect::ProtectError::Acces)
+        );
+    }
 
     /// 最小 ELF64 镜像头（Ehdr 64B + phdr 表 56B/项，全部落首扇区）。
     fn make_test_elf(entry: u64, phdrs: &[(u32, u32, u64, u64, u64, u64)]) -> Vec<u8> {

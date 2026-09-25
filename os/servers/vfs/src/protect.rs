@@ -590,6 +590,34 @@ mod tests {
         assert!(readonly_gate(true, false).is_ok());
     }
 
+    /// B33 回归 pin：`forbidden_decision` 的 `access` 必须是**低 3 位**
+    /// 的 R/W/X（`X_BIT`/`R_BIT`/`W_BIT`），与 `perm_bits` 同档。exec 开
+    /// 卷腿曾误传 9 位模式的 owner-X 位（`0o100`），使 root/owner 的
+    /// `perm=0o7` 恒判 `(perm|access)!=perm` 而误拒 EACCES（真机
+    /// 实锤 mode=0o100755、euid=0、root 自有文件都拒）。本测锁定：
+    /// 同一 root 执行 0o755 普通文件，`X_BIT` 通过、`0o100` 误拒。
+    #[test]
+    fn test_exec_access_bit_is_low_three_not_nine_bit() {
+        let mk = |access: u8| ForbidInput {
+            real_uid: 0,
+            real_gid: 0,
+            eff_uid: SU_UID,
+            eff_gid: 0,
+            is_access_call: false,
+            file_uid: 0,
+            file_gid: 0,
+            mode: 0o755,
+            access,
+            is_dir: false,
+            supp: &[],
+            readonly_fs: false,
+        };
+        // 正确编码：低 3 位 X_BIT → root 执行 0o755 放行。
+        assert_eq!(forbidden_decision(&mk(X_BIT)), Ok(()));
+        // 错误编码（B33 历史缺陷）：9 位 owner-X 位 0o100 → 误拒。
+        assert_eq!(forbidden_decision(&mk(0o100)), Err(ProtectError::Acces));
+    }
+
     #[test]
     fn test_fs_dialogue() {
         // L2 contract through any FS: chmod reports the applied mode.
