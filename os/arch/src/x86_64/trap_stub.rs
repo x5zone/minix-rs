@@ -549,12 +549,26 @@ pub fn save_frame_to_context(frame: &TrapFrame, ctx: &mut super::boot::X86_64Cpu
 }
 
 /// Pull the IPC status register from a saved context into the outgoing
-/// trap frame (E1: the stub's iretq must restore the up-to-date RBX).
+/// trap frame so the stub's `pop r10`/`iretq` restores the up-to-date
+/// value.
+///
+/// The IPC status lane is R10 (`gp_regs[GP_R10]` — see
+/// `or_ipc_status_reg` / [`ipc_status_register`]). It was historically
+/// RBX (C i386 `p_reg.bx`), and this function's RBX→RBX copy was a stale
+/// leftover of the RBX→R10 migration: on the receiving process's *own*
+/// int-33 receive-trap return (`trap_dispatch` reply-code path), the
+/// kernel had ORed the delivery's `IpcCall` bits into `gp_regs[GP_R10]`,
+/// but only RBX was pulled into the frame — so userspace's `mov status,
+/// r10` read the stale (RECEIVE-prologue-cleared) R10, `is_ipc_notify`
+/// misfired, and a notification fell through to endpoint validation.
+/// NK4-C B21 root cause: sync the status lane the userspace actually
+/// reads.
 pub fn sync_status_register_to_frame(
     ctx: &super::boot::X86_64CpuContext,
     frame: &mut TrapFrame,
 ) {
-    frame.rbx = ctx.rbx;
+    // C: status lives in p_reg (i386 bx / our R10); return it to user.
+    frame.r10 = ctx.gp_regs[crate::x86_64::signal::GP_R10];
 }
 
 /// Read back the saved RAX (E1 slice 2 test seam — kernel-side callers
@@ -888,6 +902,52 @@ mod save_frame_tests {
         // Trace bit visible through the accessor — the check the kernel
         // body performs, pinned here at the seam.
         assert_ne!(saved_psw(&ctx) & 0x0100, 0);
+    }
+
+    /// NK4-C B21 regression guard: the IPC status lane is R10
+    /// (`gp_regs[GP_R10]`), not RBX. On a receive-trap return the kernel
+    /// ORs the delivery's `IpcCall` bits into `gp_regs[GP_R10]`; the sync
+    /// that feeds the stub's `pop r10` must copy *that* lane into the
+    /// outgoing frame. The pre-fix RBX→RBX copy left `frame.r10` stale so
+    /// userspace's `is_ipc_notify` misfired on a hardware notification and
+    /// it fell through to endpoint validation (PM panic). This pins:
+    /// (1) frame.r10 receives the status lane, (2) frame.rbx is NOT
+    /// clobbered from ctx.rbx (RBX is a user callee-saved register).
+    #[test]
+    fn sync_status_register_copies_r10_lane_not_rbx() {
+        let notify_status: u64 = 4; // IpcCall::Notify → (4 & 0x3F) << 0
+        let mut ctx = super::super::boot::X86_64CpuContext::new();
+        ctx.gp_regs[crate::x86_64::signal::GP_R10] = notify_status;
+        ctx.rbx = 0xdead_beef; // distractor: must NOT reach the frame
+        let mut frame = TrapFrame {
+            rax: 0,
+            rbx: 0,
+            rcx: 0,
+            rdx: 0,
+            rsi: 0,
+            rdi: 0,
+            rbp: 0,
+            r8: 0,
+            r9: 0,
+            r10: 0,
+            r11: 0,
+            r12: 0,
+            r13: 0,
+            r14: 0,
+            r15: 0,
+            vector: 33,
+            errcode: 0,
+            rip: 0x2000,
+            cs: 0x1B,
+            rflags: 0x202,
+            rsp: 0x7fff_0000,
+            ss: 0x23,
+        };
+        sync_status_register_to_frame(&ctx, &mut frame);
+        assert_eq!(frame.r10, notify_status, "status lane R10 must be synced");
+        assert_eq!(frame.rbx, 0, "RBX must not be clobbered from ctx.rbx");
+        // is_ipc_notify must now observe the notification bit through R10.
+        assert_eq!(frame.r10 & 0x3F, 4, "notify call bits visible in R10");
     }
 }
 
