@@ -89,6 +89,32 @@ fn neg(v: i32) -> i32 {
     if v > 0 { -v } else { v.max(-0x7fff_ffff) }
 }
 
+/// FS 往返的事务打包（B32 修复）。C 的每一条 VFS→FS 请求都在
+/// `sendmsg` 里做 `TRNS_ADD_ID`（`comm.c:21`）——REQ 号移进 `m_type`
+/// 高 16、transid 落低 16；回复则统一 `TRNS_DEL_ID`（`main.c:88`）从
+/// 高 16 取真实 status。`exec_worker` 的同步 `ipc.sendrec(fs_e, …)`
+/// 绕过了 `fs_comm::send_fs` 的戳入/拆封，直接发 `m_type = REQ_xxx`
+/// （高位为 0），FS 侧 `TransactionId::decode` 按 `m_type >> 16` 路由就
+/// 解析出 call=0（无法路由），而回复的 `m_type` 又被原样当 errno 折进
+/// 结果——真机实锤 status=`0x4E0A1A`，低 16 恰是 `REQ_LOOKUP`（FS_BASE
+/// 0xA00+26=0xA1A）的回显。这两个助手补齐这两步，**直接委托 `minix_types`
+/// 的 `trns_add_id`/`trns_del_id`**（vfsif.h 三行宏的权威逐行落地，改一处
+/// 须同步其它处）。transid 取 **0**（与姊妹同步腿 `request.rs` 的
+/// REQ_READSUPER 同一裁决）：同步 sendrec 靠阻塞往返自匹配回复、
+/// 不看 transid；且 0 不在 `VFS_TRANSID + slot` 的 worker 号空间（slot 0
+/// 会撞 `encode(0)=0xB01`、与主循环 `handle_fs_reply` 按低 16 反解 worker
+/// 槽相冲），错投时会被判非法 transid 丢弃而非污染 worker 0。仅 FS
+/// 腿需要——VM/PM 是 taskcall 风格服务器，`m_type` 直接是结果，不打包事务。
+fn fs_trans_stamp(msg: &mut Message) {
+    msg.m_type = minix_types::trns_add_id(msg.m_type, 0);
+}
+
+/// 从 FS 回复的 `m_type` 取真实 status（C `TRNS_DEL_ID = (short)(m_type >> 16)`，
+/// 委托 `minix_types::trns_del_id` 权威件）。
+fn fs_trans_status(msg: &Message) -> i32 {
+    minix_types::trns_del_id(msg.m_type)
+}
+
 /// 成功终局：PM `exec_restart` 需要的三元组（com.h:570-575 的
 /// `VFS_PM_PC`/`VFS_PM_NEWSP`/`VFS_PM_NEWPS_STR`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -574,6 +600,7 @@ where
                     .map_err(|_e| PathError::Inval)?;
                 let mut msg =
                     crate::request::encode_lookup(grant, n + 1, dir_ino, root_ino, lk.flags.bits());
+                fs_trans_stamp(&mut msg);
                 let r = ipc.sendrec(fs_e, &mut msg);
                 let _ = st.grants.revoke(grant);
                 if let Err(t) = r {
@@ -583,7 +610,8 @@ where
                 // 回读 FS 写回的剩余路径——C 的 grant 就是 VFS 的 `l_path`
                 // 本体，FS 写完 VFS 直接继续走（C request.c:494-499）。
                 let end = scratch[..].iter().position(|&b| b == 0).unwrap_or(0);
-                match crate::request::decode_lookup_reply(msg.m_type, &msg) {
+                let status = fs_trans_status(&msg);
+                match crate::request::decode_lookup_reply(status, &msg) {
                     Some(found) => {
                         if !matches!(found, LookupRes::Ok { .. })
                             && let Ok(tail) = core::str::from_utf8(&scratch[..end])
@@ -594,7 +622,7 @@ where
                     }
                     None => {
                         // 负 errno（或不可解的回复）——原始值留给上层。
-                        last_errno.set(neg(msg.m_type));
+                        last_errno.set(neg(status));
                         Err(PathError::Inval)
                     }
                 }
@@ -665,11 +693,14 @@ where
             )
             .map_err(neg)?;
         let mut msg = crate::request::encode_stat(ino, grant);
+        fs_trans_stamp(&mut msg);
         let r = ipc.sendrec(fs_e, &mut msg);
         let _ = st.grants.revoke(grant);
         match r {
             Err(t) => bail_open!(neg(t.0)),
-            Ok(()) if msg.m_type != minix_types::OK => bail_open!(neg(msg.m_type)),
+            Ok(()) if fs_trans_status(&msg) != minix_types::OK => {
+                bail_open!(neg(fs_trans_status(&msg)))
+            }
             Ok(()) => {}
         }
     }
@@ -750,11 +781,12 @@ where
         )
         .map_err(neg)?;
     let mut msg = crate::request::encode_read(ino, grant, off as i64, seg_bytes);
+    fs_trans_stamp(&mut msg);
     let r = ipc.sendrec(fs_e, &mut msg);
     let _ = st.grants.revoke(grant);
     match r {
         Err(t) => Err(neg(t.0)),
-        Ok(()) if msg.m_type != minix_types::OK => Err(neg(msg.m_type)),
+        Ok(()) if fs_trans_status(&msg) != minix_types::OK => Err(neg(fs_trans_status(&msg))),
         Ok(()) => Ok(()),
     }
 }
@@ -837,11 +869,14 @@ where
             )
             .map_err(neg)?;
         let mut msg = crate::request::encode_read(ino, grant, p_offset as i64, p_filesz as usize);
+        fs_trans_stamp(&mut msg);
         let r = ipc.sendrec(fs_e, &mut msg);
         let _ = grants.revoke(grant);
         match r {
             Err(t) => return Err(neg(t.0)),
-            Ok(()) if msg.m_type != minix_types::OK => return Err(neg(msg.m_type)),
+            Ok(()) if fs_trans_status(&msg) != minix_types::OK => {
+                return Err(neg(fs_trans_status(&msg)));
+            }
             Ok(()) => {}
         }
 
@@ -1175,8 +1210,12 @@ mod tests {
         let vm_types = ipc.types_of(Endpoint::VM);
         assert_eq!(vm_types, vec![minix_types::VM_MMAP as i32]);
         // REQ_READ 一条：FS 写目标进程内存（REQ_READ @ inode 42）。
+        // 出向 m_type 已按 B32 修复做事务打包（TRNS_ADD_ID：REQ 号
+        // 进高 16、transid 进低 16）——用真机线形状常量
+        // `trns_add_id(REQ_READ, 0)` pin 住形状，回归裸发（m_type=REQ_READ）
+        // 即测红。
         let fs_types = ipc.types_of(Endpoint::MFS);
-        assert_eq!(fs_types, vec![minix_types::REQ_READ]);
+        assert_eq!(fs_types, vec![minix_types::trns_add_id(minix_types::REQ_READ, 0)]);
         // clearmem：页内头隙 0、尾隙 4096-0x100=0xF00 → 恰 1 次 sys_memset。
         let memsets = kernel
             .sent
@@ -1185,6 +1224,46 @@ mod tests {
             .filter(|m| m.m_type == minix_types::SYS_MEMSET)
             .count();
         assert_eq!(memsets, 1, "tail clear only (vaddr page-aligned)");
+    }
+
+    /// B32 回归 pin：VFS→FS 事务打包往返。出向 `fs_trans_stamp` 把
+    /// REQ 号移到高 16（FS 按 `m_type >> 16` 路由）、低 16 落 0（同步腿
+    /// 自匹配、不占 worker transid 空间）；入向 `fs_trans_status` 从高 16
+    /// 取真实 status。真机缺陷形态是 status 字段被误当成裸 errno——
+    /// 旧代码直接读 `msg.m_type`（=0x4E0A1A）会折出 5114394 的伪 errno；
+    /// 修复后应只看到高 16 的真实 status（=78）。
+    #[test]
+    fn test_fs_transaction_pack_roundtrip() {
+        // 出向：REQ_LOOKUP 移到高 16，低 16 = 0（非 worker transid 空间）。
+        let mut req = Message {
+            m_type: minix_types::REQ_LOOKUP,
+            ..Message::default()
+        };
+        fs_trans_stamp(&mut req);
+        assert_eq!(
+            minix_types::trns_del_id(req.m_type),
+            minix_types::REQ_LOOKUP,
+            "FS 路由用的 call 必须在高 16"
+        );
+        assert_eq!(
+            minix_types::trns_get_id(req.m_type),
+            0,
+            "同步腿 transid 取 0，不能落入 VFS_TRANSID+slot 的 worker 号空间"
+        );
+        // 入向：模拟 FS 成功回复（status=0）。
+        let ok = Message {
+            m_type: minix_types::trns_add_id(0, 0),
+            ..Message::default()
+        };
+        assert_eq!(fs_trans_status(&ok), minix_types::OK);
+        // 入向：模拟真机伪值 0x4E0A1A（=(78<<16)|REQ_LOOKUP）——
+        // 提取出的 status = 78（而非旧代码的裸值 5114394）。
+        let bogus = Message {
+            m_type: 0x4E0A_1A,
+            ..Message::default()
+        };
+        assert_eq!(fs_trans_status(&bogus), 0x4E);
+        assert_eq!(neg(fs_trans_status(&bogus)), -0x4E, "折成负 errno 而非指针值");
     }
 
     /// NS5-A 车道 pin：栈映射的 VM_MMAP 请求在 64 位车道上承载 >4 GiB
