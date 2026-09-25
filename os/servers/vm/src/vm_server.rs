@@ -1221,7 +1221,20 @@ impl VmServer {
                 "nk4a: memreq target={} start={:#x} len={:#x} ok={}\n",
                 req.target.0, req.start, req.length, ok as u8
             ));
-            if let Err(e) = self.ctx.gateway.borrow_mut().sys_vmctl_memreq_reply(req.target, ok) {
+            // B23（1.48）：回包 WHO 必须是「请求者」（被挂起、持有 VMREQUEST
+            // 上下文的进程），不是「故障页所属空间」。C: pagefaults.c:206 —
+            // `sys_vmctl(state->requestor, VMCTL_MEMREQ_REPLY, result)`；内核
+            // do_vmctl.c MEMREQ_REPLY 臂按 WHO 槽位读挂起上下文并清
+            // RTS_VMREQUEST。此前误回 req.target：凡 target ≠ requestor
+            // （跨进程拷贝挂起，如 PM 向 INIT 消息缓冲写回包）回包砸在没
+            // 有挂起上下文的槽上 → EINVAL → 本循环 return 弃排空 → 真请求
+            // 者永卡 VMREQUEST = 全系统死锁（真机 c35/c36 终态）。
+            if let Err(e) = self
+                .ctx
+                .gateway
+                .borrow_mut()
+                .sys_vmctl_memreq_reply(req.requestor, ok)
+            {
                 let _ = &e; // audit_log! compiles args away without features
                 audit_log!("[VM SIGKMEM] memreq_reply failed: {e:?}");
                 return;
@@ -2710,7 +2723,9 @@ mod tests {
                 m1.m1p1 = 0x3000_0000;
                 m1.m1p2 = 0x2000;
                 m1.m1i3 = 1;
-                m1.m1p3 = 0;
+                // B23 回归：requestor（挂起者）故意 ≠ target（故障空间），
+                // REPLY 的 WHO 必须跟随 requestor（C pagefaults.c:206）。
+                m1.m1p3 = 0x100;
             }
             canned.reply_message(check);
             canned.reply(0);
@@ -2736,7 +2751,10 @@ mod tests {
             {
                 // SAFETY: reply wire inspection (SYS_VMCTL M1 fields).
                 let m1 = unsafe { &sent[1].m_u.m_m1 };
-                assert_eq!(m1.m1i1, ep.0, "reply targets the fetched request");
+                assert_eq!(
+                    m1.m1i1, 0x100,
+                    "reply WHO carries the requestor, not the fault target (C pagefaults.c:206)"
+                );
                 assert_eq!(m1.m1i2, 15, "VMCTL_MEMREQ_REPLY");
                 assert_eq!(m1.m1i3, 0, "valid writable range → OK verdict");
             }
@@ -4099,7 +4117,8 @@ mod tests {
                 m1.m1p1 = 0x3000_0000;
                 m1.m1p2 = 0x2000;
                 m1.m1i3 = 1;
-                m1.m1p3 = 0;
+                // B23 回归：requestor ≠ target（跨进程挂起形态）。
+                m1.m1p3 = 0x100;
             }
             // Script per kernel call: GET (payload) → REPLY (OK) → GET
             // (ENOENT terminates the drain). The canned transport's
@@ -4122,7 +4141,14 @@ mod tests {
             {
                 // SAFETY: reply wire inspection (SYS_VMCTL M1 fields).
                 let m1 = unsafe { &sent[1].m_u.m_m1 };
-                assert_eq!(m1.m1i1, ep.0, "reply targets the fetched request");
+                assert_eq!(
+                    m1.m1i1, 0x100,
+                    "reply WHO carries the requestor, not the fault target (C pagefaults.c:206)"
+                );
+                assert_ne!(
+                    m1.m1i1, ep.0,
+                    "cross-process script: requestor differs from target"
+                );
                 assert_eq!(m1.m1i2, 15, "VMCTL_MEMREQ_REPLY");
                 assert_eq!(m1.m1i3, 0, "valid writable range → OK verdict");
             }
@@ -4164,7 +4190,7 @@ mod tests {
                 m1.m1p1 = 0x5000_0000; // no region covers this
                 m1.m1p2 = 0x2000;
                 m1.m1i3 = 1;
-                m1.m1p3 = 0;
+                m1.m1p3 = 0x100; // requestor ≠ target（跨进程形态，B23）
             }
             // GET (payload) → REPLY (OK) → GET (ENOENT); see test above
             // for why every call is scripted explicitly.

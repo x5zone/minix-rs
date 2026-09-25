@@ -1378,7 +1378,8 @@ impl<'a> IpcEngine<'a> {
                 crate::proc::ipc_status_add_flags(&mut self.procs[dst_idx], IPC_FLG_MSG_FROM_KERNEL);
             }
             // C: proc.c:911-913 — determine call type and add to IPC status.
-            //   call = (MF_REPLY_PEND ? SENDREC : (NON_BLOCKING ? SENDNB : SEND))
+            //   call = (caller_ptr->p_misc_flags & MF_REPLY_PEND ? SENDREC
+            //       : (flags & NON_BLOCKING ? SENDNB : SEND));
             //   IPC_STATUS_ADD_CALL(dst_ptr, call)
             //
             // Rust extension: SENDA flag overrides to IpcCall::SendA, matching
@@ -1485,6 +1486,19 @@ impl<'a> IpcEngine<'a> {
         }
         self.procs[caller_idx].p_rts_flags.set(RtsFlagsBits::SENDING);
         self.procs[caller_idx].p_sendto_e = dst_endpoint;
+        // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT 发送半
+        // 停车现场：dst + pdmv（sendrec 应随后经 SENDING 门停 receive 半）。
+        #[cfg(not(feature = "mock"))]
+        if self.procs[caller_idx].p_endpoint.0 == 0xb {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: snd-init dst=");
+            C0::write_hex(dst_endpoint.0 as u64);
+            C0::write_str(" pdmv=");
+            C0::write_hex(self.procs[caller_idx].p_delivermsg_vir.0);
+            C0::write_str(" mt=");
+            C0::write_hex(msg.m_type as u64);
+            C0::write_str("\n");
+        }
         caller_q_push(self.procs, dst_idx, caller_idx);
         IpcOutcome::Blocked
     }
@@ -1536,6 +1550,40 @@ impl<'a> IpcEngine<'a> {
         let reply_pend = self.procs[caller_idx]
             .p_misc_flags
             .is_set(MiscFlagsBits::REPLY_PEND);
+
+        // B24（NK4-C 1.48）：C `mini_receive` 的整段扫描都在
+        // `if (!RTS_ISSET(caller_ptr, RTS_SENDING))` 之内（proc.c:999）——
+        // 阻塞 SENDREC 的陷入腿（do_ipc SENDREC 臂在 send 半停车后仍
+        // fall through 到 mini_receive，proc.c:569-583）带着 SENDING 进来，
+        // 跳过 notify/async/caller_q 三面检查直接落到停车臂
+        // （getfrom=src_e + RECEIVING）。少了这道门，sendrec 的 receive 半
+        // 会在自己请求还在队上时扫 caller_q 抢第三方排队消息冒充 reply
+        // （s17j 同型）。真机 c35/c37 实锤的连锁：receive 半从不在陷入腿
+        // 停车 → drain 腿代停车但不存 p_delivermsg_vir → 回包投递砸在
+        // 从未存值的 0x0 上 → DeliverMsg 挂起 start=0x0 → VM 必失 →
+        // 代投者（PM）吃 SIGSEGV 全系统崩。
+        if self.procs[caller_idx]
+            .p_rts_flags
+            .is_set(RtsFlagsBits::SENDING)
+        {
+            crate::ipc::probe_mark("nk4a: rcv-sndg\n");
+            // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT 经
+            // SENDING 门停车（B24 receive 半）的现场：src + pdmv。
+            #[cfg(not(feature = "mock"))]
+            if self.procs[caller_idx].p_endpoint.0 == 0xb {
+                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                C0::write_str("nk4a: sndg-init src=");
+                C0::write_hex(src_endpoint.0 as u64);
+                C0::write_str(" pdmv=");
+                C0::write_hex(self.procs[caller_idx].p_delivermsg_vir.0);
+                C0::write_str("\n");
+            }
+            self.procs[caller_idx].p_getfrom_e = src_endpoint;
+            self.procs[caller_idx]
+                .p_rts_flags
+                .set(RtsFlagsBits::RECEIVING);
+            return IpcOutcome::Blocked;
+        }
 
         // Phase 0: an already-deposited delivery (C: mini_receive 首检
         // MF_DELIVERMSG——proc.c:999 之前，notify/send 先于 receive 到达
@@ -1660,36 +1708,16 @@ impl<'a> IpcEngine<'a> {
             // Wake up the sender. C: `RTS_UNSET(sender, RTS_SENDING)`.
             self.procs[sender_idx].p_rts_flags.clear(RtsFlagsBits::SENDING);
             let woken_sender = self.procs[sender_idx].p_nr;
-            if sender_reply_pend {
-                // SENDREC：转入 receive 半停车。停车 receive 的 getfrom 必须是
-                // 本次 sendrec 的目的地（=本 drain 的接收者）：C 对位
-                // proc.c:1104-1107——SENDREC 发送者自身的 mini_receive 以
-                // src_e（即 sendrec 目的地）阻塞。若 ANY，任一第三方发往
-                // 本发送者的 Path A 直投（is_willing_to_receive 只认
-                // getfrom）就会冒充 reply 完成其 sendrec——真机 s16g 实锤：
-                // PM 的 sched taskcall 停车期间 init 的 getuid 请求直投
-                // PM，被当 reply 消费，PM 带着未达的 sched reply 进入下一
-                // 个 taskcall，与 sched 的 reply 腿互成 SENDING → ELOCKED
-                // 重试 livelock（init 同时永停 imain-1）。
-                let dst_endpoint = self.procs[caller_idx].p_endpoint;
-                let s = &mut self.procs[sender_idx];
-                s.p_getfrom_e = dst_endpoint;
-                s.p_rts_flags.set(RtsFlagsBits::RECEIVING);
-                // NK4-C 1.10 取证探针（task1-close 裁决删除）：drain 停车腿。
-                #[cfg(not(feature = "mock"))]
-                {
-                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                    static P3PARK_N: AtomicUsize = AtomicUsize::new(0);
-                    if P3PARK_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                        Console::write_str("nk4a: p3park s=");
-                        Console::write_hex(s.p_endpoint.0 as u64);
-                        Console::write_str(" gf=");
-                        Console::write_hex(dst_endpoint.0 as u64);
-                        Console::write_str("\n");
-                    }
-                }
-            } else {
+            // B24（NK4-C 1.48）：此处曾在 drain 腿代 SENDREC 发送者停
+            // receive 半（RECEIVING + getfrom=接收者）—— C 的 receive 半
+            // 在发送者自己的陷入腿里早已停完（do_ipc fall-through，
+            // proc.c:569-583；上方 B24 修复），drain 腿（proc.c:1069）只
+            // `RTS_UNSET(sender, RTS_SENDING)`，不碰 RECEIVING/getfrom。
+            // 代停反而制造污染：接收者永远以「自己收过的每个消息源」
+            // 覆写停车发送者的 getfrom（真机 c37 实锤：init sendrec(PM)
+            // 被 PM drain 停成 gf=0，后又被 VFS drain 覆成 gf=1，PM 真
+            // reply 到达时 getfrom 错位）。
+            if !sender_reply_pend {
                 self.record_wake_target(woken_sender);
             }
             // E1 slice 2 + NK4-C F15 修订：被队列唤醒的发送者的完成码交付
@@ -1801,7 +1829,31 @@ impl<'a> IpcEngine<'a> {
             }
         }
         self.procs[caller_idx].p_getfrom_e = src_endpoint;
-        self.procs[caller_idx].p_rts_flags.set(RtsFlagsBits::RECEIVING);
+        self.procs[caller_idx]
+            .p_rts_flags
+            .set(RtsFlagsBits::RECEIVING);
+        // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT 经 Phase 4
+        // 普通停车腿的现场：src + pdmv + rts（判「谁把 INIT 停成 gf=0」）。
+        #[cfg(not(feature = "mock"))]
+        if self.procs[caller_idx].p_endpoint.0 == 0xb {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: p4-init src=");
+            C0::write_hex(src_endpoint.0 as u64);
+            C0::write_str(" pdmv=");
+            C0::write_hex(self.procs[caller_idx].p_delivermsg_vir.0);
+            C0::write_str(" rpv=");
+            C0::write_str(
+                if self.procs[caller_idx]
+                    .p_misc_flags
+                    .is_set(MiscFlagsBits::REPLY_PEND)
+                {
+                    "y"
+                } else {
+                    "n"
+                },
+            );
+            C0::write_str("\n");
+        }
         IpcOutcome::Blocked
     }
 
@@ -2168,13 +2220,16 @@ impl<'a> IpcEngine<'a> {
 
     // ── SendRec ──
 
-    /// Atomic SEND + RECEIVE. C: `mini_sendrec()` — proc.c:1135-1175.
+    /// Atomic SEND + RECEIVE. C: `do_ipc` 的 SENDREC 臂 — proc.c:569-583
+    /// （`mini_send` 后无论送达与否都 fall through 到 `mini_receive`）。
     ///
-    /// 1. `send(caller, dst, msg, NONE)`.
+    /// 1. `send(caller, dst, msg, NONE)`。
     /// 2. If send delivered synchronously (dst was in RECEIVE), proceed
-    ///    to `receive(caller, ANY)`.
-    /// 3. If send blocked caller, set `MF_REPLY_PEND` so the eventual
-    ///    reply routes through the SENDREC shortcut in `receive`.
+    ///    to `receive(caller, dst)`。
+    /// 3. If send blocked caller (SENDING set), still proceed to
+    ///    `receive(caller, dst)`：mini_receive 顶部的 SENDING 门（B24）
+    ///    让它只落停车臂（getfrom=dst + RECEIVING），与 C 同形。
+    ///    `MF_REPLY_PEND` 保留至 reply 到达（跳过 notify 检查）。
     ///
     /// # MF_REPLY_PEND semantics (P0-12-5 fix)
     ///
@@ -2209,14 +2264,18 @@ impl<'a> IpcEngine<'a> {
                 self.receive(caller_nr, dst_endpoint)
             }
             IpcOutcome::Blocked => {
-                // Caller is blocked in SENDING. When the reply arrives,
-                // the target's `send` path will deliver directly (caller
-                // is in RECEIVE for the reply). Set MF_REPLY_PEND so
-                // caller's `receive` skips notify checks (preserving
-                // SENDREC atomicity — the reply should come from the
-                // target, not be intercepted by a pending notify).
+                // B24（NK4-C 1.48）：C do_ipc 的 SENDREC 臂在 mini_send 停车
+                // 后仍 fall through 到 mini_receive（proc.c:569-583）——
+                // receive 半在发送者自己的陷入腿里就地停车：存
+                // p_delivermsg_vir（int33 入口已存 m_ptr）、置
+                // getfrom=dst（停车臂）。mini_receive 顶部的 SENDING 门
+                // （proc.c:999，上方 B24 注释）保证此处只落停车臂，不会
+                // 扫到自己还在队列上的发送半。此前这里直接 return
+                // Blocked，把 receive 半推迟到 drain 腿代停——而代停腿
+                // 无法存 p_delivermsg_vir（消息指针在发送者陷入帧里），
+                // 回包投递因此砸在从未存值的 0x0 上（真机 c35/c37）。
                 self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
-                IpcOutcome::Blocked
+                self.receive(caller_nr, dst_endpoint)
             }
             IpcOutcome::Error(e) => IpcOutcome::Error(e),
         }
@@ -2923,7 +2982,7 @@ pub(crate) fn probe_mark(msg: &str) {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         use minix_plat::EarlyConsole as _;
         static N: AtomicUsize = AtomicUsize::new(0);
-        if N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+        if N.fetch_add(1, AtomicOrd::Relaxed) < 64 {
             minix_plat::CurrentEarlyConsole::write_str(msg);
         }
     }

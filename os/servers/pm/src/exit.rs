@@ -758,11 +758,26 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
         rusage[16..24].copy_from_slice(&(s_usec / 1_000_000).to_ne_bytes());
         rusage[24..32].copy_from_slice(&(s_usec % 1_000_000).to_ne_bytes());
     }
-    if let Err(r) = kern.copy_to_user(&rusage, parent_ep, addr.0) {
-        // datacopy 失败：reply(parent, errno) + FALSE（forkexit.c:699-701），
-        // 子进程保持 ZOMBIE，父进程可重试 wait。
-        let _ = transport.send(parent_ep, &Message { m_type: r, ..Default::default() });
-        return false;
+    // B25（NK4-C 1.48，真机 c37-c41 根因）：C 在 forkexit.c:692 用
+    // `if (addr)` 守卫整段 rusage 拷贝——waitpid(pid, NULL, 0) 的
+    // rusage_addr==0 是合法输入，必须跳过拷贝直接回复。旧实现无守卫，
+    // 对父进程地址 0x0 发 SYS_VIRCOPY → 内核挂起 PM 问 VM 要页 → VM
+    // 拒绝 → 本函数失败臂向 INIT 投 errno 消息 → INIT 的 DELIVERMSG
+    // 写自己陈旧 p_delivermsg_vir=0x0 → memreq 再失败 → SIGSEGV →
+    // 全系统崩（真机 c41 现场：susp-krn mt=15 tgt=0xb st=0x0 ln=0x90）。
+    if addr.0 != 0 {
+        if let Err(r) = kern.copy_to_user(&rusage, parent_ep, addr.0) {
+            // datacopy 失败：reply(parent, errno) + FALSE（forkexit.c:699-701），
+            // 子进程保持 ZOMBIE，父进程可重试 wait。
+            let _ = transport.send(
+                parent_ep,
+                &Message {
+                    m_type: r,
+                    ..Default::default()
+                },
+            );
+            return false;
+        }
     }
 
     // C: forkexit.c:707-709 — 状态写 mp_reply.m_pm_lc_wait4.status（载荷，
@@ -1059,6 +1074,46 @@ mod tests {
         assert_eq!((s_sec, s_usec), (0, 120000));
         // 其余 112 字节保持零（C 同样 memset 后只填两字段）
         assert!(copied[32..].iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_tell_parent_null_rusage_addr_skips_datacopy() {
+        // B25（真机 c37-c41 根因）：C forkexit.c:692 的 `if (addr)` 守卫——
+        // waitpid(pid, NULL, 0) 时 rusage_addr==0 是合法输入，必须跳过
+        // rusage 拷贝直接回复；若仍对 0x0 发 VIRCOPY，内核挂起 PM 问 VM
+        // 要页 → 失败臂向 INIT 投 errno → INIT DELIVERMSG 写陈旧 pdmv=0
+        // → SIGSEGV 全系统崩。
+        let mut table = ProcTable::new();
+        table.system_hz = 100;
+        running_proc(&mut table, 5, 42);
+        let mut transport = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        table.procs[5].resources.child_utime = 30;
+        table.procs[5].resources.child_stime = 12;
+        table.procs[5].state.lifecycle = Lifecycle::Zombie {
+            exit_code: 7,
+            sig_status: 0,
+        };
+
+        let told = tell_parent(
+            &mut table,
+            UserSlot::new(5),
+            VirBytes(0),
+            &mut transport,
+            &mut kern,
+        );
+
+        assert!(told, "NULL rusage must still tell parent");
+        assert!(
+            kern.copied_bytes.is_none(),
+            "addr==0 must not issue any datacopy (C: if (addr) guard, forkexit.c:692)"
+        );
+        // 父进程收到 reply(pid) 且退出状态载荷照常交付（C: forkexit.c:707-709）。
+        let pid = table.procs[5].identity.id.pid;
+        assert!(
+            transport.sent().iter().any(|(_, m)| m.m_type == pid),
+            "parent must receive the pid reply"
+        );
     }
 
     #[test]

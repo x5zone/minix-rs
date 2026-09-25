@@ -1284,6 +1284,30 @@ impl ProcessTable {
                         // preceding `self.get(nr)` read at the loop top
                         // proves the slot is present.
                         let r = self.get_mut(nr).unwrap();
+                        // c40 探针（task1-close 裁决删除）：DeliverMsg 挂起
+                        // 时 start(pdmv)==0 且接收者是 INIT（ep 0xb）即现形，
+                        // 打全量现场（gf/to/rpv）——与 pdmv-set krn-i 双向夹住
+                        // 「谁把 INIT pdmv 清 0」。
+                        #[cfg(not(feature = "mock"))]
+                        #[cfg(target_arch = "x86_64")]
+                        if r.p_delivermsg_vir.0 == 0 {
+                            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                            static DM0: AtomicUsize = AtomicUsize::new(0);
+                            if DM0.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                                C0::write_str("nk4a: dm0 nr=0x");
+                                C0::write_hex(r.p_nr.0 as u64);
+                                C0::write_str(" ep=0x");
+                                C0::write_hex(r.p_endpoint.0 as u64);
+                                C0::write_str(" gf=0x");
+                                C0::write_hex(r.p_getfrom_e.0 as u64);
+                                C0::write_str(" to=0x");
+                                C0::write_hex(r.p_sendto_e.0 as u64);
+                                C0::write_str(" rts=");
+                                C0::write_hex(r.p_rts_flags.get().bits() as u64);
+                                C0::write_str("\n");
+                            }
+                        }
                         r.suspend_for_vm(
                             crate::vm::VmSuspendType::DeliverMsg,
                             r.p_getfrom_e,

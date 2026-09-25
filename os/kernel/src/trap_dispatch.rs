@@ -1734,8 +1734,36 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
                 C0::write_str("\n");
             }
         }
+        #[cfg(not(feature = "mock"))]
+        let pdmv_before = caller.p_delivermsg_vir;
+        #[cfg(feature = "mock")]
+        let _pdmv_before = caller.p_delivermsg_vir;
         if !is_senda {
             caller.p_delivermsg_vir = VirBytes(r2);
+        }
+        // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT（ep 0xb）
+        // 的 int33 陷入腿全量现形——c38 复盘实锤 INIT 停在 RECEIVING+gf=0
+        // 但没有 rcvblk ep=0xb（全局 probe_mark 上限 8 被早期耗尽不可信），
+        // 本探针独立计数器，打印陷入时的调用号/RBX/入口前 pdmv/getfrom/
+        // rts，直接裁决「INIT 到底进没进过 int33、停车时消息指针是什么」。
+        #[cfg(not(feature = "mock"))]
+        if caller.p_endpoint.0 == 0xb {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            static INIT33: AtomicUsize = AtomicUsize::new(0);
+            if INIT33.fetch_add(1, AtomicOrd::Relaxed) < 48 {
+                C0::write_str("nk4a: i33-init call=");
+                C0::write_hex(call_nr as u64);
+                C0::write_str(" rbx=");
+                C0::write_hex(r2);
+                C0::write_str(" opdmv=");
+                C0::write_hex(pdmv_before.0);
+                C0::write_str(" gf=");
+                C0::write_hex(caller.p_getfrom_e.0 as u64);
+                C0::write_str(" rts=");
+                C0::write_hex(caller.p_rts_flags.get().bits() as u64);
+                C0::write_str("\n");
+            }
         }
     }
 

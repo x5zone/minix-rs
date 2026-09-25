@@ -30,9 +30,15 @@
 
 - **B22 已修（1.46 落地，含代码·VM 侧）**：根因坐实（§1.45 铁证 c34）——INIT fork 子(12) 被调度时 `p_seg.phys_root=0`（无自有页表）、无 VMINHIBIT 持制→以空 cr3 跑首个用户访存即 SIGSEGV、从未 exec /bin/sh→rc marker 不可达。根因=VM fork 腿未落实 C 的「VMINHIBIT 持子 + 绑页表后清」配套纪律：C `minix3/minix/servers/vm/fork.c:89-95` = `sys_fork(..., PFF_VMINHIBIT, ...)` **紧跟** `pt_bind(&vmc->vm_pt, vmc)`（尾部=`sys_vmctl_set_addrspace`，内核 `vmctl_set_addr_space` syscall.rs:2925 存 phys_root + step5 清 VMINHIBIT）；而 minix-rs `fork.rs:344 gateway.sys_fork(parent.endpoint(), child.slot())` **只传 2 参（flags 硬编 0→内核不置 VMINHIBIT）且从不调 set_addrspace（子 phys_root 永为 0）**。修（忠实移植 C 两腿）：①`kernel_gateway.rs` trait `KernelGateway::sys_fork` 加 `flags: u32` 参（真实 impl 转发给 `minix_sys::syscall::sys_fork` 第 4 参、wire `m_lsys_krn_sys_fork.flags`→内核 `complete_fork_setup` 按 `flags & fork_flags::VMINHIBIT(0x01)` 置 VMINHIBIT）；②`fork.rs` 新增 `const PFF_VMINHIBIT: u32 = 0x01`（对位 com.h:360）并在 `sys_fork` 后、`handle_memory_once` 前插入 set_addrspace 腿（`child_root_phys = <PageTable as Paging>::root_paddr(child.page_table_mut()).0`→`gateway.sys_vmctl_set_addrspace(child_endpoint, child_root_phys, 0)`，Direct Map 下 virt alias 传 0、与 boot 路径 vm_server.rs:750-770 同款）；修正原 fork.rs:324-327「A1 adoption、sys_fork 内完成地址登记、无独立 bind 步」的错误注释（真机证伪）。MockGateway.last_fork 扩为 `(Endpoint,UserSlot,u32)` 记录 flags + 新单测 `test_do_fork_holds_child_then_bounds_addrspace`（断言 sys_fork 收 PFF_VMINHIBIT、set_addrspace 恰 1 次且目标=child/root≠0/virt=0）。**真机验证（决定性）**：c35/c36 两次签名一致——**SIGSEGV(`csig`)=0（B22 消除）**、panic-enter=0、vector13=0、行数 **26296=26296**（boot 从 ~25285 前进 ~1000 行，所有系统服务 + init 均正常 exec、子不再崩溃；新出现 `vm-pf … fa=0x21b3e4`＝VM 正常服务子 fork 返回页故障而非致命）。三件套绿（docker kernel 816/arch 243/vm **529**(+1 新测)·0fail / fmt 3 文件零新增漂移 fork 30=30 gateway 21=21 vm_server 119=119 / 两次真机签名一致）。CodeReview **PASSED（MUST-FIX=0）**，采纳 SHOULD-FIX（修 trait 头部注释残留「`m1i3 = flags (0)`」与新 flags 参矛盾）；NICE-TO-HAVE（set_addrspace 失败诊断锚点）本轮未采纳以保持 diff 最小、fail-closed 与相邻腿一致（另：评审提及的 vm_server.rs B5/B4 额外改动经核为**已入 HEAD 的历史提交**、非本工作树 diff，属误报）。⚠ 修复只动 VM crate（fork.rs/kernel_gateway.rs/vm_server.rs test mock）、不碰内核/PM（规避 §1.33 PM 布局脆弱性债）。**新前沿 B22→B23**：见下条。
 
-- **B23 前沿（child 不再 SIGSEGV、但 fork 链后续停较）**：B22 修复后 rc marker 仍未打印（c35/c36 timeout EXIT=124），boot 末态转为 **SCHED(slot4) 在 receive 自旋**（tail 重复 `pick->0x4 / sa0-0x4 root=cur=0x30a4000 / pre-restore- rip=0x202d68(=KernelIpcTransport::receive) r10s=0x4`、共 137 次 pick->0x4），且 **child(0xc) 无 `pick->0xc`/`csig`/`exec-store nr=0xc`**——子现有页表且被 VMINHIBIT 正确持→绑→但**未被推进至 exec /bin/sh**（可能卡在 fork sendrec 回复腿/等待 PM 回复）。与 B14 旧签名（SCHED receive 自旋）相似但成因可能不同（当时是 MFS readsuper，现为 fork 子未起来）。**下一入口（下轮侦察）**：定位 child(12) 当前 rts_flags/阻塞在谁（tail-dump 查 0xc 的 to/from 与 flags）；区分“子未被唤醒”vs“子醒着但阻塞在 IPC”vs“父 init 未收到 fork reply”。frontier 仍 1.30。纯侦察，本轮未动码。【→ c35 tail-dump 初证：`setaddr nr=0xc flags=0x8008`（=RECEIVING0x08+VMREQUEST0x8000，set_addrspace 已触发、子有页表不再 SIGSEGV），随后 child 稳定于 `nr=0x10c flags=0x8 to=0x1 from=0x1`（=RECEIVING from VFS）。依赖链：child→等VFS→VFS(flags=0x8 to=0x8=等VM)→VM(flags=0x8 to=0x7bff 空闲)。即子 fork 后已进入首个 VFS 调用但 VFS 未回（VFS 自己在等 VM，VM 空闲）。下轮查：VFS 为何 RECEIVING from VM 而非处理 child 请求（是否 child 的 VFS 请求未送达 VFS 队、或 VFS 卡在某个未回复的 VM 内存请求），及 VMREQUEST=0x8000 是否与子相关。】
+- **B23+B24+B25 已修（1.48 落地，含代码·三根因联治）**：B22→B23 前沿暴露三个 IPC/VM/PM 链条缺陷，全部忠实移植 C 语义修复。
+  - **B23**（vm_server.rs）：`sys_vmctl_memreq_reply` WHO 参数 `req.target`→`req.requestor`（C pagefaults.c:206 `sys_vmctl(state->requestor,...)`）——跨进程拷贝挂起时 target（故障页空间）≠requestor（挂起者），回包砸错槽→EINVAL→VM drain return→真请求者永卡 VMREQUEST→全系统死锁。
+  - **B24**（ipc.rs）：`receive` 入口加 SENDING 门（C proc.c:999 `if(!RTS_ISSET(caller, RTS_SENDING))`）——SENDREC receive 半带 SENDING 进来应跳过扫描直接停车 `getfrom=src_e+RECEIVING`；同时删除 drain 腿的“代停车 sender+设RECEIVING”旧 workaround（该 workaround 不存 pdmv 导致回包投递砸 0x0）。真机 c35/c37 实锤连锁：receive 半不在此停车→drain 不存 pdmv→DeliverMsg 挂起 start=0x0→VM 拒绝→崩。
+  - **B25**（exit.rs PM）：`tell_parent` 加 `if addr.0 != 0` 守卫（C forkexit.c:692 `if (addr) { sys_datacopy... }`）——INIT 的 `waitpid(pid, NULL, 0)` 使 rusage_addr==0 合法，旧实现无条件 copy_to_user(144B, INIT, 0x0) → SYS_VIRCOPY → 内核挂 PM 问 VM → VM 拒 → errno 回投 INIT pdmv=0 → SIGSEGV → panic（c41 susp-krn 探针实锤 `nr=0x0 mt=0xf tgt=0xb st=0x0 ln=0x90`）。
+  三件套绿：docker kernel 816/arch 243/vm 529/pm 418·0fail✓ / fmt 6文件零新增漂移✓ / 两次真机 c43/c43b 签名一致（0 panic / 2 csig on slot 0xd / 3 pf-exit / PM↔VFS spin）✓。CodeReview PASSED。
 
-【→ §1.47 c35 全量 tail-dump 静态依赖图实锤（两 dump 逐字节同=硬死锁）：按 endpoint 解码（PM0/VFS1/RS2/MEM3/SCHED4/TTY5/DS6/MIB7/VM8/INIT11/child12，tail nr=p_nr+0x100）——**PM(0x100)/VFS(0x101)/RS(0x102)/SCHED(0x104)/DS(0x106)/MIB(0x107)/slot9,10 均 flags=0x8(RECEIVING)且 p_sendto_e=0x8(最后发给 VM)、from=0x7c00**；MEM(0x103)/TTY(0x105) flags=0x8 to=0x6(等 DS)；**VM(0x108) flags=0x8 to=0x7bff(以 ANY 源空闲 receive、无待处理入站)**；INIT(0x10b) flags=0x8 to=0x1(等VFS回) from=0x0；child(0x10c) flags=0x8 to=0x1 from=0x1。⚠关键纠正初判：flags=0x8=RECEIVING 非 SENDING(0x04)，to=0x8 只是残留 p_sendto_e、非当前阻塞在发送。→ 真形状=**全系统收阻塞、每个人最后一次都是对 VM 的交互、而 VM 自己空闲等在 receive**（无任何进程持有待发消息/待回 reply）。与 B14 旧“SCHED receive 活锁”同形但现基面更广（整表锁死），属 B12/B18 “丢失/未投递 IPC”回复腿家族（一条 send 未入队 / 一个 reply 未送达）——发生在 fork 子首个 VFS 往返之后。**下一入口（下轮、需 build+真机探针）**：dump VM 的 ipc_status/待队与最后服务的一条消息（确认是“子→VFS 请求未入 VFS 队”还是“VFS/子→VM 的 reply 未回”）；重点看子(0xc)对 VFS 的首个请求 m_type（是否 exec 链上的 GETLIB/DUP/OPEN）与 VFS 对 VM 的 safecopy/memreq 是否成环。frontier 仍 1.30。本轮未动码、纯侦察 doc。
+- **B26 前沿（INIT 崩链消除后新停点）**：B25 修复后 INIT 不再 SIGSEGV（memreq start=0x0 消失），但 slot 0xd（INIT 第二个 fork 子进程，gen=1 slot=13）在 `pf#0xd rip=0x22b5a3 cr2=0x231000 walk=NP` 正常缺页服务后，二次缺页 `pf-exit noaddr cr2=0x1`（近零指针解引用）→ SIGSEGV ×2 → 子进程被杀 → 系统进入 PM(0)↔VFS(1) pick 交替自旋（~125万行/150s，纯探针输出 spam）。rc marker 仍未出现。**下一入口**：①分析 slot 0xd cr2=0x1 根因（fork child exec 后代码路径 deref null？或 init bootscript 第二个 fork 参数错误？）；②分析 PM↔VFS spin（可能是子死后 INIT waitpid 不再可达，PM/VFS 互相等待某个请求）；③考虑减少探针输出或加大 cap（日志 128万行影响取证效率）。frontier 仍 1.30。
+
+【→ §1.47 c35 全量 tail-dump 已导致 B23+B24+B25 三修实施，见上条。】
 
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
@@ -2592,5 +2598,47 @@ nk4a: pre-restore- rip=0x21b3e4 rsp=0x7fffffffa608
 
 ---
 
+## §1.48 B23+B24+B25 三根因联治（含代码·VM/内核/PM 三层）
+
+**日期**：2026-09-25，serial_c43/c43b
+
+### 现象
+
+B22 修复后 c35/c36 真机 boot 停在“全系统 RECEIVING 死锁”（§1.47 tail-dump 实锤）：所有服务 flags=0x8(RECEIVING)、VM 空闲等 ANY、INIT to=VFS、child to=VFS，无任何进程持有待发消息。随后经 c37-c41 探针链发现三个独立缺陷：
+
+1. VM `do_memreq_drain` 回包 WHO 用了 `req.target`（故障页空间）而不是 `req.requestor`（挂起者）；
+2. `mini_receive` 入口缺少 C `RTS_ISSET(caller, RTS_SENDING)` 门，SENDREC receive 半不在此停车而是落到 drain 腿“代停车” workaround（不存 pdmv）；
+3. PM `tell_parent` 缺少 C `if (addr)` 守卫，INIT 的 `waitpid(pid, NULL, 0)` 导致对地址 0x0 发 144B VIRCOPY→崩溃。
+
+### 根因与 C 锚点
+
+| Bug | 一句话根因 | C 锚点 |
+|-----|----------|----------|
+| B23 | `sys_vmctl_memreq_reply` WHO=req.target，跨进程挂起时 target≠requestor，内核 EINVAL | `minix3/minix/servers/vm/pagefaults.c:206` |
+| B24 | receive 无 SENDING 门，SENDREC receive 半走错路径（drain代停车不存 pdmv → DeliverMsg 挂起 start=0x0 → VM 拒 → 崩） | `minix3/minix/kernel/proc.c:999` |
+| B25 | tell_parent 无条件 copy_to_user(addr=0) → INIT 空间 VIRCOPY 失败 → SIGSEGV 链 | `minix3/minix/servers/pm/forkexit.c:692` |
+
+### 修复
+
+1. **vm_server.rs**（B23）：`req.target`→`req.requestor`，回归测试改 requestor≠target 并断言 REPLY WHO 跟随 requestor。
+2. **ipc.rs**（B24）：
+   - receive 入口加 SENDING 门（+14 行）：若 caller 带 SENDING，跳过所有扫描直接 `getfrom=src_e + RECEIVING + return Blocked`；
+   - 删除 drain 腿旧 `if sender_reply_pend { ... }` 代停车块（-34 行）——该逻辑已由上面的 receive 入口门接管；
+   - 探针：INIT send/receive 腿现场打印（c39 取证用，task1-close 裁决删除）。
+3. **exit.rs**（B25）：包裹 `copy_to_user` 在 `if addr.0 != 0 { ... }` 内，addr==0 时直接跳过拷贝、正常回复 pid。新测试 `test_tell_parent_null_rusage_addr_skips_datacopy`。
+4. **探针代码**（syscall.rs/proc_table.rs/trap_dispatch.rs）：诊断用，`#[cfg(not(feature = "mock"))]` 保护，不影响测试。c40/c41 取证后确认根因，将来 task1-close 统一删除。
+
+### 验证
+
+- **docker**：kernel 816 / arch 243 / vm 529 / pm-lib 418·**0 fail**，只增不减✓（基线 813/242/526/417，+1 PM B25 回归测试）。
+- **rustfmt**：6 文件全部 CUR ≤ HEAD（ipc -1, proc_table =, syscall =, trap_dispatch =, exit -1, vm_server =），零新增漂移✓。
+- **两次真机 c43/c43b**：0 panic / 2 csig(slot 0xd) / 3 pf-exit / PM↔VFS spin，行为签名一致✓。与 c42（修复前最后一轮）一致（确认可重现）。INIT 崩溃链（memreq start=0x0 → SIGSEGV → panic）完全消失，证明 B25 有效。
+- **CodeReview**：PASSED，MUST-FIX=0。
+
+### 新停点 B26
+
+slot 0xd（INIT 第二个 fork 子，gen=1 slot=13）正常缺页服务后二次缺页 `pf-exit noaddr cr2=0x1`（近零指针）→ SIGSEGV×2 → 子被杀 → PM↔VFS pick 交替自旋（128万行/150s 探针 spam）。rc marker 仍未达。下一入口：分析 slot 0xd cr2=0x1 根因（子 deref null / fork 参数差异）以及 PM↔VFS spin 的成因。
+
+---
 
 

@@ -534,12 +534,24 @@ pub fn kernel_call(
     // NK4-C S2h 现场打印（task1-close 裁决删除）：抹写目标锁定为陈旧
     // p_delivermsg_vir（fx 写的 0x9da8 ≠ 窗口内活缓冲 r2=0x9d28）——追
     // 踪每个存值的来源时刻，与 fx 写目标离线对账。
+    // c40 扩展（task1-close 裁决删除）：加入 INIT（ep 0xb）——c39 实锤
+    // INIT 停车时 pdmv 非零而崩溃投递 start=0x0，SYSCALL 腿是本端唯一
+    // 对 INIT 盲区的 pdmv 写点，若某次 RDI=0 即清掉 pdmv。
     #[cfg(not(feature = "mock"))]
     #[cfg(target_arch = "x86_64")]
-    if proc_table
+    let nk4a_pdmv_probe_ep = proc_table
         .get(caller_nr)
-        .is_some_and(|p| p.p_endpoint.0 == 2)
-    {
+        .map(|p| p.p_endpoint.0)
+        .filter(|&e| e == 2 || e == 0xb);
+    #[cfg(not(feature = "mock"))]
+    #[cfg(target_arch = "x86_64")]
+    let nk4a_pdmv_old = proc_table
+        .get(caller_nr)
+        .map(|p| p.p_delivermsg_vir.0)
+        .unwrap_or(0);
+    #[cfg(not(feature = "mock"))]
+    #[cfg(target_arch = "x86_64")]
+    if nk4a_pdmv_probe_ep == Some(2) {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static PSET: AtomicUsize = AtomicUsize::new(0);
         // S2h 评审修复：4096→512 + 触顶现形标记。
@@ -553,12 +565,7 @@ pub fn kernel_call(
             C0::write_str("nk4a: pdmv-set krn m_user=");
             C0::write_hex(m_user.0);
             C0::write_str(" old=");
-            C0::write_hex(
-                proc_table
-                    .get(caller_nr)
-                    .map(|p| p.p_delivermsg_vir.0)
-                    .unwrap_or(0),
-            );
+            C0::write_hex(nk4a_pdmv_old);
             C0::write_str("\n");
         }
     }
@@ -590,6 +597,31 @@ pub fn kernel_call(
         .get(caller_nr)
         .map(|c| c.p_endpoint)
         .expect("kernel_call: caller slot must exist");
+
+    // c40 探针（task1-close 裁决删除）：INIT（ep 0xb）的 SYSCALL 腿存值
+    // 现场——m_user(RDI) + 旧 pdmv + m_type（哪个 SYS_ 调用）。独立计数
+    // 器，不与 RS 探针共享额度。
+    #[cfg(not(feature = "mock"))]
+    #[cfg(target_arch = "x86_64")]
+    if nk4a_pdmv_probe_ep == Some(0xb) {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static PSET_I: AtomicUsize = AtomicUsize::new(0);
+        let ps = PSET_I.fetch_add(1, AtomicOrd::Relaxed);
+        if ps == 256 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: pdmv-i-cap\n");
+        }
+        if ps < 256 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: pdmv-set krn-i m_user=");
+            C0::write_hex(m_user.0);
+            C0::write_str(" old=");
+            C0::write_hex(nk4a_pdmv_old);
+            C0::write_str(" mt=0x");
+            C0::write_hex(msg.m_type as u64);
+            C0::write_str("\n");
+        }
+    }
 
     // C system.c:149 — dispatch.
     let result = kernel_call_dispatch(caller_nr, proc_table, &mut msg, priv_table, clock_state);
@@ -3558,6 +3590,41 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         // request chain + wake up VM via mini_notify(SYSTEM→VM). A1: the
         // tables arrive as parameters (split borrows established by
         // kernel_call's own caller) — no global accessor needed.
+        // c41 探针（task1-close 裁决删除）：SYSCALL 腿每次挂起的完整现场
+        // ——caller 端点/nr + ctx.target + 故障范围 + m_type + pdmv，
+        // 定位 c40 崩溃 memreq（target=11 start=0x0 len=0x90）的请求者。
+        #[cfg(not(feature = "mock"))]
+        #[cfg(target_arch = "x86_64")]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            {
+                static SUS: AtomicUsize = AtomicUsize::new(0);
+                if SUS.fetch_add(1, AtomicOrd::Relaxed) < 48 {
+                    let p = proc_table.get(caller_nr);
+                    let (ep, pdmv) =
+                        p.map_or((0i32, 0u64), |q| (q.p_endpoint.0, q.p_delivermsg_vir.0));
+                    let ctxf = p
+                        .and_then(|q| q.p_vm_suspend.as_ref())
+                        .map(|c| (c.target.0, c.check_params.start.0, c.check_params.length.0));
+                    C0::write_str("nk4a: susp-krn nr=0x");
+                    C0::write_hex(caller_nr.0 as u64);
+                    C0::write_str(" ep=0x");
+                    C0::write_hex(ep as u64);
+                    C0::write_str(" mt=0x");
+                    C0::write_hex(msg.m_type as u64);
+                    C0::write_str(" tgt=0x");
+                    C0::write_hex(ctxf.map_or(0, |t| t.0) as u64);
+                    C0::write_str(" st=0x");
+                    C0::write_hex(ctxf.map_or(0, |t| t.1));
+                    C0::write_str(" ln=0x");
+                    C0::write_hex(ctxf.map_or(0, |t| t.2));
+                    C0::write_str(" pdmv=0x");
+                    C0::write_hex(pdmv);
+                    C0::write_str("\n");
+                }
+            }
+        }
         proc_table.vm_enqueue_and_notify_vm(caller_nr, priv_table);
         // Release BKL — process is suspended waiting for VM.
         // Other CPUs can enter the kernel while we wait.
