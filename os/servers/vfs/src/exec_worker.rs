@@ -247,17 +247,45 @@ fn progname_of(fullpath: &str) -> String {
     }
 }
 
+/// `pm_exec` 的公共入口：把 [`pm_exec_inner`] 管线的失败腿统一折成**负 errno**。
+///
+/// **B33a 修复（符号掩盖）**：[`ExecErrno`] 的类型契约与 main_loop.rs
+/// 「失败为负 errno」注释均要求 exec 失败以**负 errno** 直达 PM（PM
+/// `exec_restart` 将 status 原样写进回复 `m_type`，init `perform_syscall`
+/// 按 `m_type < 0` 判 `Err`）。但 inner 体内多条静态腿（`enoexec` 裸
+/// 值与 `ExecError::*::to_errno()`，真机 bn28p 实锤 status=**+8** ENOEXEC）
+/// 泄漏了**正值**，被 init 侧 `exec_via` 的 `Ok(_) => EIO` 成功车道吞成
+/// EIO——真 errno 永远浮不出来。在此单点用 [`neg`] 折负（对已为负的
+/// IPC 往返腿幂等），使真 errno（如 ENOEXEC）从 `perform_syscall` 的 Err
+/// 车道浮现。选公共边界而非逐腿修：一条腿一个折叠点既易漏又 churn 高。
+#[inline]
+pub fn pm_exec<K, T>(
+    st: &mut crate::main_loop::VfsState,
+    kernel: &K,
+    ipc: &T,
+    req: ExecRequest,
+) -> Result<ExecLoaded, ExecErrno>
+where
+    K: KernelCallTransport,
+    T: IpcTransport,
+{
+    pm_exec_inner(st, kernel, ipc, req).map_err(neg)
+}
+
 /// `pm_exec` 本体（exec.c:185-402）。
 ///
 /// 借用全来自 [`crate::main_loop::VfsState`]（ARCH A-4 聚合）——以独立的
 /// `impl` 块挂在该类型上，判定知识留 [`crate::exec`]。成功返回
-/// [`ExecLoaded`]；失败返回**负 errno**。
+/// [`ExecLoaded`]；失败返回 mixed-sign errno（正值静态腿由 [`pm_exec`] 边界统一折负）。
 ///
 /// 全程铁律：任何失败路径都先归还已领的 vnode 引用（C `pm_execfinal` 的
 /// `unlock_vnode + put_vnode`，exec.c:392-395——归还经 `PutNodeSink` 进
 /// `pending_puts` 队列，主循环统一投）。装载中途失败的再拆半装镜像
 /// （exec_elf.c:279-281/293-295 的失败支重跑 clearproc）。
-pub fn pm_exec<K, T>(
+///
+/// 注：本体内多条静态失败腿（`enoexec` 裸值、`ExecError::*::to_errno()`）
+/// 返回**正值**，统一由 [`pm_exec`] 边界折负——见该函数 B33a 契约说明。
+fn pm_exec_inner<K, T>(
     st: &mut crate::main_loop::VfsState,
     kernel: &K,
     ipc: &T,
@@ -1457,10 +1485,40 @@ mod tests {
             ps_str: 0,
             stack_high: 0x7fff_ffff_f000,
         };
+        // 死目标走 `enoexec` 裸正腿（inner 体），公共边界 `pm_exec` 折负（B33a）：
+        // 断言 -ENOEXEC（原固化成 +8 的泄漏已消除）。
         assert_eq!(
             pm_exec(&mut state, &kernel, &ipc, req),
-            Err(ExecError::NoExec.to_errno())
+            Err(-ExecError::NoExec.to_errno())
         );
         assert!(ipc.types_of(Endpoint::VM).is_empty());
+    }
+
+    /// B33a 回归：inner 体的正值静态腿（`enoexec`/`ExecError::*::to_errno()`）
+    /// 经公共 `pm_exec` 边界必折成负 errno——否则真 errno 会被 init 侧
+    /// `exec_via` 的 `Ok(_) => EIO` 成功车道吞成 EIO，永远浮不出来。
+    #[test]
+    fn test_pm_exec_boundary_folds_positive_errno_negative() {
+        let mut state = VfsState::new();
+        crate::main_loop::seed_ready_state(&mut state);
+        let kernel = minix_sys::syscall::CannedKernelCallTransport::new();
+        let ipc = ExecScriptedIpc::new();
+        let req = ExecRequest {
+            target: Endpoint(7), // 无 fproc 行 → inner 泄漏 +ENOEXEC
+            path_addr: 0,
+            path_len: 0,
+            frame_addr: 0,
+            frame_len: 8,
+            ps_str: 0,
+            stack_high: 0x7fff_ffff_f000,
+        };
+        match pm_exec(&mut state, &kernel, &ipc, req) {
+            // 折叠点前 inner 返 +8（真机 bn28p 实测），折叠后必为负。
+            Err(errno) => assert!(
+                errno < 0,
+                "exec 失败必须以负 errno 直达 PM，实得 {errno}"
+            ),
+            Ok(_) => panic!("死目标应失败"),
+        }
     }
 }

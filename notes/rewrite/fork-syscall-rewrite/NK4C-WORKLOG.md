@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B36 取证闭环（三探针收窄）→ 坐实 rc marker 阻塞真身 = §1.58 登记的 B33a 符号掩盖：`exec /bin/sh` 恒返 EIO，实为 exec 链回复携带正值 errno `m_type=+45`（＝EOPNOTSUPP）命中 `exec_via` 的 `Ok(_) => EIO` 车道被掩盖（1.62，纯取证 doc·探针已回滚）**：§1.61 修 B35 后真机首次 OOM-RT=0·panic=0·72495 行历史最深，翻出 B36＝`Runcom=15`+`marker=0`。本轮三探针定位：bn25p 捕获 15 个 rc 子全 `Exited{code:5}`（＝`runcom.rs:147-152` exec 失败腿）；bn26p 捕获 `exec-fail err=5 disp=EIO path=/bin/sh` ×15；bn27p 区分探针（给 `new_image_stack_top` 失败腿 + `exec_via` `perform_syscall` 两臂各打点）捕获 **`exec_via-OK mtype=45` ×45、零 `stack_top-fail`、零 `exec_via-ERR`**。三层结论：① kerninfo 腿清白（§1.54 交付链正常）；② 掩盖点＝`exec_via`（`pm.rs:594`）成功车道把非负 `m_type` 吞成 EIO（契约 `syscall.rs:107` `m_type<0→Err`）；③ **真错误码＝45＝EOPNOTSUPP**（`errno.rs:59`）——exec 链回正值未取负，根在服务端 reply 符号（C `_syscall` 亦视正 `m_type` 为成功），客户端 `Ok→EIO` 是二次掩盖。**B36 两层**：Layer 1＝B33a 符号掩盖（修向＝归一化 exec 回复符号使真 errno 从 Err 车道浮出）；Layer 2＝exec `/bin/sh` 实际报 EOPNOTSUPP 本身（VFS `NotSup` 是 dispatch 保留拒绝位 `open.rs:558`/`read_write.rs:454`，常规文件不该命中，需顺 PM `exec.rs` `svc.reply(.., result)` 与 VFS exec bail 腿二分定位）。`Runcom=15` 非回归＝OOM 崩溃截断消失后 rc 循环首次完整可见。**新头号前沿＝B33a 修复单元**（先追 Layer 2 定 EOPNOTSUPP 产生腿，再定纯客户端符号归一化 vs 服务端 reply 也需改；触 IPC 符号约定，对照 C `execve.c`/`_syscall` + Ground Truth 链 + CodeReview + 三件套 + 真机双跑）。三探针全回滚、工作树干净、HEAD 未动。rc marker 仍未达。详见 §1.61/§1.62。
+> **⚠ 最新前沿＝B37（Layer 2：ENOEXEC 根因）——B33a 符号掩盖已修（pm_exec 边界单点折负，去 `exec_via` `Ok(_)→EIO` 吞没），真错误 **ENOEXEC(8)** 诚实浮现，但 `/bin/sh`（readelf 实测＝静态链接 ELF EXEC·无 PT_INTERP）仍装载失败、marker 仍未出（1.63，含代码·VFS 侧）**：§1.62 实锤 rc 阻塞真身＝B33a 符号掩盖（`pm_exec` 回正值 errno 被 init `exec_via` `Ok(_) => EIO` 吞掉）。本单元在 `pm_exec` 公共边界 `map_err(neg)` 单点折负（体内约 15 腿符号混合：IPC 腿已 `neg()`、`enoexec` 裸值与 `ExecError::*::to_errno()`/`ElfHead::parse` 正值腿泄漏），`neg()` 对已负腿幂等→不动既有正确腿；`ExecErrno`「负 errno 直通 PM」契约与 main_loop「失败为负 errno」注释自此真实成立。**真机 bn30p 探针（跑后回滚）捕获 `exec_via errno=8 name=Some("ENOEXEC")`×45——EIO 掩盖端到端消除**；bn29/bn29b 双跑签名一致（73081/73096 行·panic=0·oom=0·runcom=15·marker=0，boot 零回归）。三件套绿（mock vfs lib **534·0fail** 基线+1 / fmt WT0 / clippy 零新增）+ CodeReview **0 MUST·1 SHOULD 已采纳**（pm_exec_inner doc 自相矛盾→mixed-sign）。**新头号前沿＝B37**：去掩盖后真错误 ENOEXEC(8) 浮现但 sh 仍 bail——非脚本/dyn 后置腿（L351/360，已排除），而是 `pm_exec` 更深装载 bail 腿（首疑全 phdr 预检 `p_offset+p_filesz>v_size` L371／imgrd 播种 sh 首块读边界，次疑 `ElfHead::parse` 校验 L167-189）；需探针/读码二分定位具体腿、修向方能让 sh 真 exec、marker 浮出。rc marker 仍未达。详见 §1.62/§1.63。
 >
 > **⚠（1.61 历史·其头号前沿 B36 已于 §1.62 取证闭环＝真身 B33a 符号掩盖＋下层 EOPNOTSUPP）B35 已修（`supply_pages` 对 `page_count==1` 委托 `supply_page`，打通 freed 单页与 big-block 路径）→ 真机首次 **OOM-RT=0·panic=0**、历史最深推进 72495 行 → 翻出 B36 rc `Runcom` 15 轮循环（1.61，含代码·minix-rt）**：§1.60 把 B34 停在保守绑界 64 后，真机 bn23 OOM 换签 `size=001000 px=400/400 fp=39c/400`（十六进制＝恰好 1 页、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）。根因＝`FixedPoolSupplier::supply_pages`（run）只走 bump、**从不查 free-stack**，而 `alloc_big`→`supply_pages(1)` 对 1 页请求也走此路→游标耗尽后即使有可复用单页也返 null（与自身注释「free-stack reserved for single-page requests」意图相悖＝逻辑缺陷）。修＝`page_count==1` 委托 `supply_page`（1 页无邻接要求、与 `release_pages(p,1)` 逐页 push 对称、零化等价；多页 run 仍 bump-only；Linux/Redox order-0 从 free list 弹为同构做法）+ 新测。**重建镜像真机 `-m 512M -smp 1` 双跑 bn24/bn24b 签名一致**（72495/72494 行、pre-restore 7209/7209、**OOM-RT=0、panic=0（此前 6 次全消）、pagefault-in-VM=0**），boot 从 58507→**72495（历史最深）**。**新墙 B36**＝`Runcom=15`（每 ~3150 行重入 `init-state Runcom`）+`marker=0`+bogus=0——OOM 掩盖去除后 §1.55 的 rc 15 轮循环重现，现在不是 OOM、而是 B31/B32/B33b 修后的下游新失败因（runcom→exec→echo 腿哪步非 OOM 地失败）。三件套绿（mock minix-rt **59·0fail** 基线+1 / fmt WT0==HEAD0 / clippy Finished / 镜像重建+双跑一致）+ CodeReview **PASSED 0 MUST 0 SHOULD**。原则解 A/B（boot eager 物化 / VM-backed supplier）仍挂（多页 run 仍 bump-only，现因单页路径已足撑当前工作集未触发）。rc marker 仍未达。详见 §1.60/§1.61。
 >
@@ -3219,6 +3219,36 @@ OOM 掩盖去除后暴露 `Runcom=15`（每 ~3150 行重入 `nk4a: init-state Ru
 ### 下一前沿与单元收尾
 
 **新头号前沿＝B33a 修复单元**：先追 Layer 2 定位 EOPNOTSUPP 产生腿（决定是纯客户端符号归一化即可、还是服务端 reply 也需改），修后 rc marker 才能浮出真错误乃至成功。触及 IPC 符号约定，须对照 C `execve.c`/`_syscall` 回复约定 + Ground Truth 优先链 + CodeReview + 三件套 + 真机双跑。本取证单元：三探针（runcom.rs×2、pm.rs、execve.rs）全部 `git checkout` 回滚、工作树干净、HEAD 未动，无生产码改动故测基线不变。rc marker 仍未达。详见 §1.61。
+
+---
+
+## §1.63 B33a 修复——pm_exec 边界单点折负，去 exec_via EIO 符号掩盖（含代码·VFS 侧）
+
+承接 §1.62 取证，本单元落 **Layer 1（B33a 符号掩盖）的修复**。Layer 2（真 errno 本身，见下修正）作为新前沿续追。
+
+### 根因精确化（bn28p/bn30p 修正 §1.62 的 45 读数）
+
+§1.62 依 bn27p 记「真错误码＝45＝EOPNOTSUPP」。后续 bn28p 双探针（VFS `main_loop` pm_exec Err 臂 + PM `exec_restart` 入口）与修后 bn30p init 侧 `exec_via` 返回码探针一致读数 **errno=8＝ENOEXEC**（非 45）——45 系前一轮另一 exec 目标或探针 cap 截断下的异读，本轮多点交叉以 **ENOEXEC** 为准。**掩盖机制不变且与真值无关**：`pm_exec` 回**正值** errno → PM `exec_restart` 原样写进回复 `m_type`（正）→ init `perform_syscall`（`syscall.rs:107` `m_type<0→Err`）判非负走 `Ok` → `exec_via`（`pm.rs:594`）`Ok(_) => EIO` 吞成 EIO。无论内层是 8 还是 45，只要以正值回流就被吞成 EIO、真值永不浮现。
+
+### Ground Truth 对照
+
+C `minix3/minix/servers/vfs/exec.c:401` `pm_exec` **正返回** `ENOEXEC`；C `minix3/minix/servers/pm/exec.c:156-170` `exec_restart` 原样 `reply(rmp-mproc, result)`。即 C 的 pm_exec 本身回正值，符号折叠发生在 C libc 边界。minix-rs 未沿用该形态，而是确立「**负 errno 入 `m_type`**」为全项目 IPC 约定（`perform_syscall` `m_type<0→Err`；§B16 既往已在 PM fork 回复点 `-PmError::to_errno()` 取负）。本修沿用该约定：exec 失败须以负 errno 出 `pm_exec`。
+
+### 修复：公共边界单点折负
+
+`exec_worker.rs` 体内约 15 条静态失败腿符号**混合**——IPC 往返腿（`vm_mmap`/`vm_procctl_clear`/`load_elf_segments`/`pm_newexec`/`req_read`）已用私有 `neg()`（L88）折负，但 `enoexec` 裸值（`.ok_or` L273/275/277、`bail!` L351/360/372）与 `ExecError::*::to_errno()`/`ElfHead::parse` 正值腿（L169/178/182/188 等）泄漏正号。逐腿补 `neg()` churn 高且易漏。采**公共边界单点折负**：原 `pub fn pm_exec` 更名 `fn pm_exec_inner`，新增同名 `pub fn pm_exec = pm_exec_inner(...).map_err(neg)`。`neg()` 对已负腿幂等（`v<0` 原样返），故不动既有正确腿；正值静态腿统一折负。`ExecErrno` 契约（L151「负 errno 直通 PM」）与 `main_loop.rs:1153` 注释（「失败为负 errno」）自此真实成立，`main_loop` 侧无需改动、原样透传即可。
+
+### 三件套 + CodeReview
+
+- **mock**：`cargo test -p minix-vfs --lib` **534 passed/0 fail**（基线 533 **+1**：既有两测 `test_pm_exec_frame_gate_enomem`/fetch 门已断言 `Err(neg(..))`，本单元把固化正泄漏的 `test_pm_exec_rejects_dead_target` 改为断言 `Err(-ENOEXEC)`，新增 `test_pm_exec_boundary_folds_positive_errno_negative` 显式 pin 边界折负不变量）。
+- **fmt**：nightly rustfmt `--check` exec_worker.rs **0 Diff**（WT 全格式化）。
+- **clippy**：改动区间零新增 warning（存量 23 条系他文件）。
+- **真机**：重建镜像 `-m 512M -smp 1` 双跑 **bn29/bn29b 签名一致**（73081/73096 行、panic=0/oom=0/runcom=15/marker=0，boot 零回归、比 bn24 的 72495 略深）；**bn30p 临时探针**（init `exec_via` 返回码，跑后 `git checkout` 回滚）捕获 **`exec_via errno=8 name=Some("ENOEXEC")`×45**——EIO 掩盖端到端消除、真 errno 浮现的决定性证据（45＝15 rc 子×每子 cap 3，fork 拷贝 .data 使计数器逐子归零）。
+- **CodeReview 子代理**：**0 MUST-FIX / 1 SHOULD-FIX 已采纳**（`pm_exec_inner` doc 原「失败返回负 errno」与新增「静态腿返回正值」自相矛盾 → 改为「失败返回 mixed-sign errno（正值静态腿由 `pm_exec` 边界统一折负）」）。
+
+### 新前沿＝B37（Layer 2：ENOEXEC 根因）
+
+B33a 去掩盖后，真错误 **ENOEXEC(8)** 诚实浮现，但 `/bin/sh` 仍装载失败、marker 仍未出。readelf 实测 `/bin/sh` 为**静态链接 ELF EXEC、无 PT_INTERP**（非脚本、非 dyn），故 ENOEXEC 来自 `pm_exec` 更深的装载 bail 腿而非脚本/dyn 后置分支（L351/360）。下一单元定位具体 bail 腿：`ElfHead::parse` 校验（魔数/e_type/phoff 界 L167-189）、全 phdr 预检 `p_offset+p_filesz > v_size`（L371，最可疑——imgrd 播种的 sh 首块/段数据与实际镜像读边界）、或 `open_exec` 的 stat/首块读腿。探针/读码二分定位后修向方能让 `/bin/sh` 真 exec、marker 浮出。rc marker 仍未达，frontier＝§1.63。
 
 
 
