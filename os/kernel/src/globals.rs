@@ -144,6 +144,11 @@ mod bkl_protected {
         // once by `store_kernel_info` during boot, read-only afterwards —
         // same contract as KernelInfo itself.
         minix_boot::MemoryRegion,
+        // NK4-C landing-pad payload for the `boot_modules` slice (POD: a
+        // `&'static str` name fat-pointer plus a u64+usize pair — the name
+        // bytes themselves land in `BOOT_MODULE_NAME_STORE`). Written once
+        // by `store_kernel_info`, read-only afterwards.
+        minix_boot::BootModule,
 
         // BKL-serialized mutation (kernel-internal types):
         crate::proc_table::ProcessTable,
@@ -304,6 +309,52 @@ pub(crate) static RESERVED_REGION_STORE: SyncUnsafeCell<
         len: 0,
     }; RESERVED_REGION_STORE_LEN],
 );
+
+/// NK4-C (2026-09-25) `.bss` landing pads for the [`KERNEL_INFO`] `memmap`
+/// and `boot_modules` payloads — the same disease fix27c landed
+/// `reserved_regions` for, now with real-machine proof.
+///
+/// All three slices are built in the boot-shim's UEFI-pool heap and handed
+/// over as `&'static`. Those pages do not survive the rest of boot: real
+/// machine run vh1 (`-smp 1`) showed all 15 conventional memmap entries
+/// still intact at DM-coverage establishment (Step 4 `dm-mem` probes) but
+/// reading back length 0 at the `vm_handoff::classify` point — the VM free
+/// list collapsed to zero regions and VM panicked at
+/// `servers/vm/src/boot.rs:159` (`BootParams: no free memory regions`).
+/// `store_kernel_info` deep-copies both payloads here (kernel `.bss`,
+/// mapped for the whole run) and repoints the global copy's slices, so no
+/// consumer ever dereferences firmware-heap memory past the handoff.
+pub(crate) const MEMMAP_REGION_STORE_LEN: usize = crate::memmap::MAXMEMMAP;
+
+pub(crate) static MEMMAP_REGION_STORE: SyncUnsafeCell<
+    [minix_boot::MemoryRegion; MEMMAP_REGION_STORE_LEN],
+> = SyncUnsafeCell::new(
+    [minix_boot::MemoryRegion {
+        base: minix_types::PhysBytes(0),
+        len: 0,
+    }; MEMMAP_REGION_STORE_LEN],
+);
+
+/// Module-name byte pool backing the [`KERNEL_INFO`] `boot_modules` names
+/// after the NK4-C landing (one fixed slot per module). Names are copied
+/// truncated to `BOOT_MODULE_NAME_LEN - 1` bytes — the same strlcpy-style
+/// bound as `vm_handoff::copy_name`'s 16-byte `proc_name` field, so the
+/// landing never tightens any existing length contract.
+pub(crate) const BOOT_MODULE_NAME_LEN: usize = 16;
+
+pub(crate) static BOOT_MODULE_STORE: SyncUnsafeCell<
+    [minix_boot::BootModule; minix_boot::NR_BOOT_MODULES],
+> = SyncUnsafeCell::new(
+    [minix_boot::BootModule {
+        name: "",
+        start: minix_types::PhysBytes(0),
+        len: 0,
+    }; minix_boot::NR_BOOT_MODULES],
+);
+
+pub(crate) static BOOT_MODULE_NAME_STORE: SyncUnsafeCell<
+    [[u8; BOOT_MODULE_NAME_LEN]; minix_boot::NR_BOOT_MODULES],
+> = SyncUnsafeCell::new([[0u8; BOOT_MODULE_NAME_LEN]; minix_boot::NR_BOOT_MODULES]);
 
 /// Global process table — C's `EXTERN struct proc proc[NR_TASKS + NR_PROCS]`.
 ///

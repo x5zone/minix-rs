@@ -332,6 +332,7 @@ pub struct MemoryRegion {
 /// C: `NR_BOOT_MODULES` — the user-module tail of `image[NR_BOOT_PROCS]`.
 pub const NR_BOOT_MODULES: usize = 12;
 
+#[derive(Debug, Clone, Copy)]
 pub struct BootModule {
     pub name: &'static str,
     pub start: PhysBytes,

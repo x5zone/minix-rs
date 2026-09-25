@@ -505,8 +505,55 @@ pub fn store_kernel_info(kernel_info: &KernelInfo) {
         if src.as_ptr() != store.as_ptr() {
             core::ptr::copy(src.as_ptr(), store.as_mut_ptr(), src.len());
         }
+        // NK4-C (2026-09-25): the same disease takes the `memmap` and
+        // `boot_modules` payloads — both live in the boot-shim's UEFI-pool
+        // heap and their pages do not survive the rest of boot (real
+        // machine vh1: all conventional memmap entries read back length 0
+        // at the `vm_handoff::classify` point while still intact at Step 4
+        // DM-coverage establishment → VM free list empty → VM panic at
+        // `servers/vm/src/boot.rs:159`). Land both here before publishing
+        // the global copy; module names go into a fixed byte pool, copied
+        // strlcpy-style (15-byte bound, same as `vm_handoff::copy_name`).
+        let mstore = &mut *crate::globals::MEMMAP_REGION_STORE.get();
+        let msrc = kernel_info.memmap;
+        assert!(
+            msrc.len() <= mstore.len(),
+            "store_kernel_info: memmap exceeds the .bss landing pad"
+        );
+        if msrc.as_ptr() != mstore.as_ptr() {
+            core::ptr::copy(msrc.as_ptr(), mstore.as_mut_ptr(), msrc.len());
+        }
+        let bstore = &mut *crate::globals::BOOT_MODULE_STORE.get();
+        let bnames = crate::globals::BOOT_MODULE_NAME_STORE.get();
+        let bsrc = kernel_info.boot_modules;
+        assert!(
+            bsrc.len() <= bstore.len(),
+            "store_kernel_info: boot_modules exceeds the .bss landing pad"
+        );
+        if bsrc.as_ptr() != bstore.as_ptr() {
+            for (i, module) in bsrc.iter().enumerate() {
+                let bytes = module.name.as_bytes();
+                let n = bytes.len().min(crate::globals::BOOT_MODULE_NAME_LEN - 1);
+                // The pool reference goes through the raw pointer so the
+                // landed `&'static str` is derived from the `static` itself
+                // (store-lifetime backing), not from a local borrow.
+                let slot = &mut (*bnames)[i];
+                slot[..n].copy_from_slice(&bytes[..n]);
+                // SAFETY: boot-module names are ASCII literals (boot-shim
+                // `MODULE_NAMES`), so a 15-byte truncation cannot split a
+                // multi-byte sequence; the copied prefix is valid UTF-8.
+                let name: &'static str = core::str::from_utf8_unchecked(&slot[..n]);
+                bstore[i] = minix_boot::BootModule {
+                    name,
+                    start: module.start,
+                    len: module.len,
+                };
+            }
+        }
         let mut k = *kernel_info;
         k.reserved_regions = core::slice::from_raw_parts(store.as_ptr(), src.len());
+        k.memmap = core::slice::from_raw_parts(mstore.as_ptr(), msrc.len());
+        k.boot_modules = core::slice::from_raw_parts(bstore.as_ptr(), bsrc.len());
         *KERNEL_INFO.get() = Some(k);
     }
 }
@@ -4079,6 +4126,69 @@ mod tests {
         // access since this is single-threaded test code.
         let root_phys = unsafe { paging.enable() };
         assert_eq!(root_phys, PhysBytes(0));
+    }
+
+    /// NK4-C regression: `store_kernel_info` must deep-land the
+    /// firmware-heap payloads (`memmap`, `boot_modules`) into the kernel
+    /// `.bss` pads — the published global copy may never keep pointing at
+    /// boot-shim heap memory (real machine vh1: every conventional memmap
+    /// entry read back length 0 at the `vm_handoff::classify` point,
+    /// collapsing VM's free list to zero regions).
+    #[test]
+    fn test_store_kernel_info_lands_firmware_slices() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        static MEMMAP: &[minix_boot::MemoryRegion] = &[
+            minix_boot::MemoryRegion { base: PhysBytes(0x10_0000), len: 0x40_0000 },
+            minix_boot::MemoryRegion { base: PhysBytes(0x1000_0000), len: 0x20_0000 },
+        ];
+        static MODULES: &[minix_boot::BootModule] = &[
+            minix_boot::BootModule { name: "rs", start: PhysBytes(0x20_0000), len: 0x1000 },
+            minix_boot::BootModule { name: "vm", start: PhysBytes(0x21_0000), len: 0x2000 },
+        ];
+        let info = KernelInfo {
+            memmap: MEMMAP,
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200_000),
+            kern_size: 0x200000,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: MODULES,
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: &[],
+        };
+        store_kernel_info(&info);
+        let stored = crate::kernel_info().expect("store_kernel_info published the global copy");
+        assert_ne!(
+            stored.memmap().as_ptr(),
+            MEMMAP.as_ptr(),
+            "memmap must be repointed to the .bss landing pad"
+        );
+        assert_eq!(stored.memmap().len(), 2);
+        assert_eq!(stored.memmap()[0].base, PhysBytes(0x10_0000));
+        assert_eq!(stored.memmap()[1].len, 0x20_0000);
+        assert_ne!(
+            stored.boot_modules().as_ptr(),
+            MODULES.as_ptr(),
+            "boot_modules must be repointed to the .bss landing pad"
+        );
+        assert_eq!(stored.boot_modules().len(), 2);
+        assert_eq!(stored.boot_modules()[0].name, "rs");
+        assert_eq!(stored.boot_modules()[1].start, PhysBytes(0x21_0000));
+        assert_eq!(stored.boot_modules()[1].len, 0x2000);
+        // kmain re-stores the global copy itself: idempotent, no double copy.
+        store_kernel_info(stored);
+        let again = crate::kernel_info().expect("re-store republished");
+        assert_eq!(again.memmap().as_ptr(), stored.memmap().as_ptr());
+        assert_eq!(again.boot_modules().as_ptr(), stored.boot_modules().as_ptr());
+        assert_eq!(again.boot_modules()[1].name, "vm");
+        // Release the one-shot slot for other boot-global tests.
+        // SAFETY: boot-globals lock held; single writer.
+        unsafe { *crate::globals::KERNEL_INFO.get() = None };
     }
 
     /// Verify empty memmap is handled gracefully (identity pass is a no-op).
