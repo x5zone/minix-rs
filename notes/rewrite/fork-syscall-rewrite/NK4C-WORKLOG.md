@@ -12,7 +12,7 @@
 
 - **B15 已修（1.27 落地，含代码）**：MFS 根挂载 dirty-mark 不再 EROFS——`fs/fs-rt/src/source.rs::ImgrdBlockSource` 加**有界 CoW 覆盖层**（`overlay: BTreeMap<u64, Vec<u8>>`）。修向：`read_block` 先查 overlay、miss 落 Static 基座（clip 短尾零填，保持 C `memory.c:442-443` 边界规则）；`write_block` 分 arm——`Owned` 就地写不 populate overlay（测试/future writeback 路径）、`Static` 不再返 EROFS 而是写落 overlay（部分越界存 surviving、整块越界 no-op）；`from_static` 构造点初始化空 overlay；`EROFS` import 删除。**dirty-mount 只写块 0 → overlay 1 条 ≈ block_size + 树节点，内存有界**（vs 8 MB base 无法 Owned 化、2 MB slab pool 装不下）。C 忠实性：memory 驱动自有缓冲的 RAM 盘可写；本 overlay 是 bdev 通道未接前的过渡形态，进程终止即丢=与 C 语义一致。宿主 fs-rt 27/27 pass（新增 4 测：overlay 遮蔽读写 / clip 短尾 / 整块越界 no-op / 多块独立），mfs 133/fs 178/vfs 530 全绿。三件套绿（docker 813/242/528·0fail / fmt source.rs HEAD=1 NEW=1 零新增 / 两次真机 c3/c4 签名一致=25213 行、`init-state Runcom` @24127 同位、无 panic/EROFS/Failed to init）。CodeReview PASSED 无 MUST-FIX（SHOULD-CONSIDER=Owned 热路径多做一次 overlay get 可加注释；NICE-TO-HAVE=image() doc 说明不含 overlay——均非破坏性，本轮保持 diff 最小不采纳）。**boot 现前进到 `init Runcom` 相位**。⚠️ 不选「改根挂载只读」缩窄目标路径（非 C 忠实、破坏单元 D/I 写需求）。
 
-- **B16 前沿（1.27 观察到，未定位）**：B15 修后 boot 抵达 `init-state Runcom`（c3/c4 @24127 同位、单次出现），但 **rc marker `minix-rs rc: minimal boot script marker` 未打出**；24127 之后 serial 反复 `cr3-done / pre-restore rip=0x2073d2 rsp=... r10s=0x1 rbx=...` + `pm 0140b` / `pm 0020b` + SCHED idle pick->4 循环——`init` 已进入 `Runcom` 但 `exec("/bin/sh", ["/bin/sh", "/etc/rc"])` 腿未完成到子进程打印 marker。候选：①`Runcom` 里的 `fork+exec` 未成功 fork 出子进程（PM 侧 `pm 0140b` = 0x140b 十进制 5131 = 与 PM 请求表对号；`0020b` 同理）；②exec 成功但 imgrd 里 `/bin/sh` 或 `/etc/rc` 文件不存在/不可读（imgrd 已烘但 `mfs` 目录条目解析可能仍缺）；③子进程 stdout 未 wire 到 serial（marker 打了但串口看不到）。**下一入口**：给 `init.c::Runcom` 的 fork/exec 前后 + `exec` 系统调用返回处打 `nk4c:` 短探针，钉死到底停在哪一步；同查 imgrd 里 `/bin/sh`、`/etc/rc` 是否存在（mkfs 脚本可复现性）。**勿动**：SCHED/IPC/B12、init 状态机（忠实镜像 C）、`task.rs` 挂载门、VFS readsuper（1.26 已修）。
+- **B16 前沿（1.27 观察到，未定位）**：B15 修后 boot 抵达 `init-state Runcom`（c3/c4 @24127 同位、单次出现），但 **rc marker `minix-rs rc: minimal boot script marker` 未打出**；24127 之后 serial 反复 `cr3-done / pre-restore rip=0x2073d2 rsp=... r10s=0x1 rbx=...` + `pm 0140b` / `pm 0020b` + SCHED idle pick->4 循环——`init` 已进入 `Runcom` 但 `exec("/bin/sh", ["/bin/sh", "/etc/rc"])` 腿未完成到子进程打印 marker。候选：①`Runcom` 里的 `fork+exec` 未成功 fork 出子进程（PM 侧 `pm 0140b` = 0x140b 十进制 5131 = 与 PM 请求表对号；`0020b` 同理）；②exec 成功但 imgrd 里 `/bin/sh` 或 `/etc/rc` 文件不存在/不可读（imgrd 已烘但 `mfs` 目录条目解析可能仍缺）；③子进程 stdout 未 wire 到 serial（marker 打了但串口看不到）。**下一入口**：给 `init.c::Runcom` 的 fork/exec 前后 + `exec` 系统调用返回处打 `nk4c:` 短探针，钉死到底停在哪一步；同查 imgrd 里 `/bin/sh`、`/etc/rc` 是否存在（mkfs 脚本可复现性）。**勿动**：SCHED/IPC/B12、init 状态机（忠实镜像 C）、`task.rs` 挂载门、VFS readsuper（1.26 已修）。详 §1.28 侦察补（addr2line 归属 + 可观察性射 + 候选缩窄至 fd 1 wire）。
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
@@ -1967,4 +1967,43 @@ C 里 RAM 盘完全可写（memory 驱动服务自有缓冲）。本端口零拷
 
 ### 新前沿 B16（观察到，未定位）
 B15 修后 boot 抵达 `init-state Runcom` 但 **rc marker `minix-rs rc: minimal boot script marker` 未打出**。尾态：24127 之后反复 `cr3-done / pre-restore rip=0x2073d2 rsp=... r10s=0x1` + `pm 0140b` / `pm 0020b` + SCHED idle pick->4 循环。**候选**：①Runcom 里 `fork+exec` 未成功 fork 出子进程（PM `0140b` = 5131 与 PM 请求表对号）；②exec 成功但 imgrd 里 `/bin/sh` 或 `/etc/rc` 不存在/不可读；③子进程 stdout 未 wire 到 serial。**下一入口**：给 init `Runcom` fork/exec 前后 + `exec` syscall 返回处打 `nk4c:` 短探针钉死停点；同查 imgrd 里 `/bin/sh`、`/etc/rc` 是否已烘。**勿动**：SCHED/IPC/B12、init 状态机、`task.rs` 挂载门、VFS readsuper（1.26 已修）。
+
+---
+
+## 1.28 B16 侦察补（addr2line + console 通道射可观察性）——候选缩窄至 fd 1 wire 缺失，下一手=diagctl 直接探针绕开 fd 1（2026-09-25，纯侦察无代码改动）
+
+### 事件重排（c3/c4 serial 定位）
+- `imain-6 transition` @24106→ `init-state Runcom` @24127（单次，无重复）→ 无更多 init 侧打印→ 反复：`pre-restore- rip=0x2073d2 r10s=0x1 rbx=0x…8210` + `pm 0140b` 两次 + `pm 0020b`，随后 `rip=0x208bbb` 、`rip=0x20f9c0` 与 SCHED idle 循环。c4 与 c3 同位同形。
+
+### addr2line 归属（`os/target/image/x86_64/staging/EFI/minix/modules/init`，release）
+| rip | 符号归属 | 行号 |
+|---|---|---|
+| 0x2073d2 | `minix_init::utmp::utmpx_set_runlevel` | `??:?`（内联不准） |
+| 0x207f5f | `<MinixSysHost as InitHost>::register_handlers` | `??:?` |
+| 0x208bbb | `<MinixSysHost as InitHost>::init_root` | `??:?` |
+| 0x20f9c0 | `minix_init::driver::run_transition` | `??:?` |
+| 0x21b5ec | `minix_sys::open` | `??:?` |
+
+release 内联使归属不100% 可靠，但 **init 主循环反复在 syscall 边界恢复**（同一 rip 反复）信号成立。
+
+### 可观察性射（关键）
+- `init-state Runcom` 探针走 `minix_sys::syscall::sys_diagctl_write`（driver.rs L216-227）→ **直达内核串口**，不依 tty。因此若 init 进入了 Runcom，串口一定能看到。
+- `init` 用户态的 `warning`/`stall`/`emergency` 走 `host.console_write(Severity, msg)`（host.rs L468-474）= `minix_sys::write(1, msg)` = **写 fd 1（stdout）**，依赖 boot 环境将 fd 1 wire 到 tty → /dev/console → 串口。若 fd 1 → tty → serial 链任一环不通则信息**静默失败**（`let _ = ...`）。
+- 子进程 `sh /etc/rc` 的 stdout 同样默认 fd 1 → 需 wire。marker `echo "minix-rs rc: …"` 经 sh 的 write(1)，同一依赖。
+
+### 候选缩窄
+- **候选② 排除**：`xtask image` 的 `generate_etc_proto`（image.rs L446-470）已烘 `bin/sh` + `etc/rc` + `etc/ttys` + `dev/console`（L823 测名 “/bin/sh 播种（rc marker 链）”；L811 “etc/dev/bin/root 四层收口”），imgrd 文件存在不缺。
+- **候选①（fork 失败）中 fork-fail stall 不走 diagctl**（走 fd 1）→ 需专探。
+- **候选③ (fork+exec 后子进程 stdout 未 wire 到 serial) 增强**：init-state Runcom 能打（diagctl），但子进程 stdout 走 fd 1，若 tty/serial 链未通则 fork-fail stall / exec-fail stall / sh 里 echo marker / waitpid 失败 warning — **均看不到**。rip=0x21b5ec(minix_sys::open) 反复 = open 可能在 init 侧 sh 侧均能发生，不能区分。
+
+### 下一入口（两阶段诊断，下一 turn）
+**A. 优先**（1 次 build）：给 init `runcom.rs::runetcrc` 的关键分支加 **≤ 16B `nk4c:` 前缀 diagctl 探针**（绕开 fd 1、直达内核）：
+  - fork 后分岔：Ok(0) 子一印 `nk4c:rc:c`；Ok(pid) 父一印 `nk4c:rc:p<pid nib 4hex>`；Err 一印 `nk4c:rc:F`
+  - exec 失败一印 `nk4c:rc:xE`
+  - 父 waitpid 循环里收到 wpid==pid 时一印 `nk4c:rc:W<status nib 4hex>`
+  cap 8，task1-close 时回滚。一次复跑 c5 即可钉死：**子有没有起来 / exec 成没成 / 父等到什么**。若全部正常 = 确认候选③（fd 1 wire 问题）。
+
+**B. 若 A 确认子起来且 exec 成功、sh 卡或 stdout 不通**：同法给 `sh` 入口与 `rc` 文件 open 加 diagctl 探针；或给 `MinixSysHost::console_write` 添一行 `sys_diagctl_write` fallback——后者同时修复可观察性链（若 tty wire 属已知未完，可接受先走 diagctl）。
+
+**不改生产代码本 turn**：§1.28 纯侦察，无代码修改，无三件套（本 doc commit = §1.25 先例）。frontier = 1.27（B15 修复 commit `ad2965e0d`）。
 
