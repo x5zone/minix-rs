@@ -3904,7 +3904,7 @@ mod tests {
                 ) -> Result<(), crate::kernel_gateway::GatewayError> {
                     Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO))
                 }
-                fn sys_fork(&mut self, _: Endpoint, _: UserSlot)
+                fn sys_fork(&mut self, _: Endpoint, _: UserSlot, _: u32)
                     -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
                 { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
                 fn sys_exec(&mut self, _: Endpoint, _: u64, _: u64, _: u64, _: u64)
@@ -4249,10 +4249,10 @@ mod tests {
                 .borrow_mut()
                 .sys_safecopyfrom(granter, grant_id, offset, buf)
         }
-        fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
+        fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot, flags: u32)
             -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
         {
-            self.0.borrow_mut().sys_fork(parent, child_slot)
+            self.0.borrow_mut().sys_fork(parent, child_slot, flags)
         }
         fn sys_exec(&mut self, endpt: Endpoint, ip: u64, stack: u64, name_ptr: u64, ps_str: u64)
             -> Result<(), crate::kernel_gateway::GatewayError>

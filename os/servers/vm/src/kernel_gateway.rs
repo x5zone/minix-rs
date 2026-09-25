@@ -73,7 +73,8 @@ pub(crate) trait KernelGateway {
     ///
     /// C: `sys_fork()` (libsys) → kernel `do_fork()`
     /// (kernel/src/syscall_process.rs:122-215). Wire (M1): `m1i1` = parent
-    /// endpoint, `m1i2` = child slot, `m1i3` = flags (0). Reply: `m_type` =
+    /// endpoint, `m1i2` = child slot, `m1i3` = flags (the C `PFF_*` fork
+    /// flag — see below). Reply: `m_type` =
     /// child endpoint on success, negative errno on failure
     /// (KcallResult::Ok(child_endpoint.0) → reply_code()).
     ///
@@ -84,7 +85,13 @@ pub(crate) trait KernelGateway {
     /// the reply (`m_krn_lsys_sys_fork.msgaddr`, do_fork.c:112), so the
     /// trap implementation returns `Some` from the reply arm; tests may
     /// still script `None` to drive the skip path.
-    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
+    ///
+    /// `flags` is C's fourth `sys_fork` argument (`PFF_VMINHIBIT`,
+    /// com.h:360), forwarded verbatim to the kernel `m_lsys_krn_sys_fork
+    /// .flags`. do_fork passes `PFF_VMINHIBIT` so the kernel holds the
+    /// child off the run queue (RTS_VMINHIBIT) until VM binds its page
+    /// table via `sys_vmctl_set_addrspace` (C `pt_bind`, fork.c:89-95).
+    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot, flags: u32)
         -> Result<(Endpoint, Option<u64>), GatewayError>;
 
     /// Notify the kernel of a process's new image (entry point + stack).
@@ -225,11 +232,11 @@ pub(crate) struct TrapKernelGateway<T: KernelCallTransport> {
 }
 
 impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
-    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot) -> Result<(Endpoint, Option<u64>), GatewayError> {
+    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot, flags: u32) -> Result<(Endpoint, Option<u64>), GatewayError> {
         // E2: consume the minix-sys wrapper — the request arm construction
         // and the E-FORKMSG reply-arm parsing (endpt + msgaddr, C
         // do_fork.c:111-112) live in one place now.
-        minix_sys::syscall::sys_fork(&self.transport, parent.0, child_slot.get() as i32, 0)
+        minix_sys::syscall::sys_fork(&self.transport, parent.0, child_slot.get() as i32, flags)
             .map(|(endpt, msgaddr)| (Endpoint(endpt), Some(msgaddr)))
             .map_err(GatewayError::Kernel)
     }
@@ -470,8 +477,10 @@ const VMCTL_SETADDRSPACE: i32 = 29;
 pub(crate) struct MockGateway {
     /// Endpoint returned on the next `sys_fork`.
     pub fork_reply: Result<Endpoint, GatewayError>,
-    /// Last (parent, child_slot) seen, for call-shape assertions.
-    pub last_fork: core::cell::Cell<Option<(Endpoint, UserSlot)>>,
+    /// Last (parent, child_slot, flags) seen, for call-shape assertions.
+    /// `flags` captures the C `PFF_*` fork flag (B22: do_fork must pass
+    /// PFF_VMINHIBIT so the kernel parks the child until addrspace bind).
+    pub last_fork: core::cell::Cell<Option<(Endpoint, UserSlot, u32)>>,
     /// msgaddr handed back by `sys_fork` (V11/T33; `None` = pre-E-FORKMSG).
     pub fork_msgaddr: core::cell::Cell<Option<u64>>,
     /// Diagnostic text recorded by `diag_write` (V11/T15).
@@ -559,10 +568,10 @@ impl KernelGateway for MockGateway {
         Ok(())
     }
 
-    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot)
+    fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot, flags: u32)
         -> Result<(Endpoint, Option<u64>), GatewayError>
     {
-        self.last_fork.set(Some((parent, child_slot)));
+        self.last_fork.set(Some((parent, child_slot, flags)));
         // V11/T33: hand back the scripted msgaddr so tests can drive the
         // eager-CoW phase end to end (None = pre-E-FORKMSG shape).
         self.fork_reply.clone().map(|ep| (ep, self.fork_msgaddr.get()))
@@ -673,7 +682,7 @@ mod tests {
         arm.msgaddr = 0x7000;
         canned.reply_message(reply);
         let mut g = TrapKernelGateway { transport: canned };
-        let (ep, msgaddr) = g.sys_fork(Endpoint(10), UserSlot::new(3)).unwrap();
+        let (ep, msgaddr) = g.sys_fork(Endpoint(10), UserSlot::new(3), 0).unwrap();
         assert_eq!(ep, Endpoint(77));
         assert_eq!(msgaddr, Some(0x7000));
     }
@@ -697,7 +706,7 @@ mod tests {
             transport: DirectKernelCallTransport,
         };
         assert_eq!(
-            g.sys_fork(Endpoint(10), UserSlot::new(3)),
+            g.sys_fork(Endpoint(10), UserSlot::new(3), 0),
             Err(GatewayError::Kernel(-minix_types::EIO))
         );
     }

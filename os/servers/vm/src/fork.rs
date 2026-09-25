@@ -16,6 +16,12 @@ use crate::cow_exec_pf::cow_resolve_core;
 use crate::vmproc::VmProcTable;
 use alloc::vec::Vec;
 
+/// C: `PFF_VMINHIBIT` (minix/com.h:360) — the `sys_fork` flag telling the
+/// kernel to set RTS_VMINHIBIT on the child so it is not scheduled until VM
+/// binds its page table (matches the kernel's `fork_flags::VMINHIBIT`,
+/// proc.rs:1720). Passed as C fork.c:90's fourth argument.
+const PFF_VMINHIBIT: u32 = 0x01;
+
 /// Ensure a virtual address range is mapped and (optionally) writable.
 ///
 /// Corresponds to Minix3's `handle_memory_once()` (pagefaults.c:245-252).
@@ -321,10 +327,19 @@ pub(crate) fn do_fork(
 
     // `write_page_table_mappings` failing above is the last recoverable
     // point — after `sys_fork` the kernel has committed the child process
-    // and rollback is no longer possible. There is no separate bind step:
-    // the kernel-side address-space registration happens in `sys_fork`
-    // itself (A1 adoption semantics; Minix3's `pt_bind()` step-5
-    // notification is subsumed by the VMCTL SetAddrSpace path).
+    // and rollback is no longer possible.
+    //
+    // C fork.c:89-95 pairs two coordinated steps that the kernel cannot do
+    // on its own: `sys_fork(..., PFF_VMINHIBIT, ...)` holds the child off
+    // the run queue (kernel sets RTS_VMINHIBIT — see dispatch_fork →
+    // complete_fork_setup, proc.rs:1750), and `pt_bind(&vmc->vm_pt, vmc)`
+    // binds the child's freshly built page table. Under Direct Map the
+    // substance of `pt_bind` is the `sys_vmctl_set_addrspace` VMCTL (its
+    // kernel handler stores p_seg.phys_root AND clears RTS_VMINHIBIT —
+    // C setcr3, arch_do_vmctl.c:19-33). Both legs are mandatory: without
+    // VMINHIBIT the child is scheduled immediately with p_seg still zeroed
+    // by `fork_from` (phys_root = 0 → SIGSEGV on its first user access);
+    // without SetAddrSpace the child never receives a page-table root.
 
     // C: fork.c:57-63 — sys_fork commits the child in the kernel and
     // returns its endpoint. minix-rs routes the call through the gateway
@@ -340,10 +355,30 @@ pub(crate) fn do_fork(
     // into the reply (E-FORKMSG, do_fork.c:112), and pre-E1 no real reply
     // exists so the trap stub's -EIO error surfaces before any msgaddr
     // could be consumed.
+    //
+    // `PFF_VMINHIBIT` (com.h:360) is C fork.c:90's fourth argument — it
+    // parks the child on the kernel side until the SetAddrSpace below.
     let (child_endpoint, fork_msgaddr) = gateway
-        .sys_fork(parent.endpoint(), child.slot())
+        .sys_fork(parent.endpoint(), child.slot(), PFF_VMINHIBIT)
         .map_err(VmForkError::KernelCall)?;
     child.set_endpoint(child_endpoint);
+
+    // C: fork.c:94-95 — `pt_bind(&vmc->vm_pt, vmc)`, whose substance is the
+    // `sys_vmctl_set_addrspace(endpoint, pt_dir_phys, pdes)` notification
+    // (pagetable.c:1421). This stores the child's page-table root into
+    // p_seg and clears RTS_VMINHIBIT (the pairing described above). `pdes`
+    // (kernel-visible PDE alias) has no meaning under the Direct Map, so 0
+    // travels as `virt_root = None` (same documented deviation as the boot
+    // path, exit.rs:242-247 / vm_server.rs:750-770). C panics on failure;
+    // minix-rs propagates fail-closed (post-commit, same posture as the
+    // sys_fork error above).
+    let child_root_phys = <crate::pagetable::PageTable as crate::pagetable::Paging>::root_paddr(
+        child.page_table_mut(),
+    )
+    .0;
+    gateway
+        .sys_vmctl_set_addrspace(child_endpoint, child_root_phys, 0)
+        .map_err(VmForkError::KernelCall)?;
 
     // C: fork.c:100-108 — pre-fault the deliver-message buffer for child
     // and parent (in that order). After sys_fork both sides' buffer pages
@@ -587,6 +622,56 @@ mod tests {
             .get_slot(VirBytes(0)).and_then(|s| s.pfn()).unwrap();
         assert_eq!(frames.get(src_slot).map(|s| s.refcount), Some(2),
             "CoW-sharing must be untouched without a msgaddr");
+    }
+
+    /// B22: the two coordinated legs C fork.c:89-95 pairs must both fire —
+    /// `sys_fork` carries `PFF_VMINHIBIT` (kernel parks the child off the
+    /// run queue) and do_fork then binds the child's page table via
+    /// `sys_vmctl_set_addrspace` (kernel stores p_seg.phys_root AND clears
+    /// VMINHIBIT). Missing either leg SIGSEGVs the child on its first
+    /// scheduled access (phys_root = 0). This is the C-faithful regression
+    /// guard for the INIT-fork-child crash that stalled the rc marker.
+    #[test]
+    fn test_do_fork_holds_child_then_bounds_addrspace() {
+        let table = VmProcTable::get_global();
+        let mut frames = make_frames(16);
+        let mut alloc = TestAlloc { next: 5 };
+        let (parent_slot, child_slot) = (UserSlot::new(78), UserSlot::new(79));
+
+        let parent_ep = init_fork_parent(parent_slot, &mut frames, &mut alloc);
+        let child_ep = Endpoint::from_generation_slot(2, child_slot.get() as i32);
+
+        let gateway = update_gateway();
+        gateway.borrow_mut().fork_reply = Ok(child_ep);
+        // fork_msgaddr stays None: this test isolates the hold/bind legs.
+
+        let got_child = do_fork(
+            &mut *gateway.borrow_mut(),
+            table,
+            &mut frames,
+            &mut alloc,
+            parent_ep,
+            child_slot,
+        )
+        .unwrap();
+        assert_eq!(got_child, child_ep);
+
+        // Leg 1: sys_fork was handed PFF_VMINHIBIT (kernel sets VMINHIBIT).
+        let last = gateway.borrow().last_fork.get();
+        assert_eq!(
+            last.map(|(_, _, flags)| flags),
+            Some(PFF_VMINHIBIT),
+            "do_fork must pass PFF_VMINHIBIT so the kernel parks the child"
+        );
+
+        // Leg 2: the child's page table was bound via SetAddrSpace with a
+        // non-zero physical root (Direct Map → virt_root alias 0/None).
+        let sets = gateway.borrow().addrspace_sets.borrow().clone();
+        assert_eq!(sets.len(), 1, "exactly one SetAddrSpace for the child");
+        let (ep, root_phys, root_virt) = sets[0];
+        assert_eq!(ep, child_ep, "SetAddrSpace targets the child endpoint");
+        assert_ne!(root_phys, 0, "child page-table root must be non-zero");
+        assert_eq!(root_virt, 0, "Direct Map: virt_root alias is 0");
     }
 
     #[test]
