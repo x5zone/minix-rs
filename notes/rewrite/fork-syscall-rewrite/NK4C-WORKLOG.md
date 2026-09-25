@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝B37（Layer 2：ENOEXEC 根因）——B33a 符号掩盖已修（pm_exec 边界单点折负，去 `exec_via` `Ok(_)→EIO` 吞没），真错误 **ENOEXEC(8)** 诚实浮现，但 `/bin/sh`（readelf 实测＝静态链接 ELF EXEC·无 PT_INTERP）仍装载失败、marker 仍未出（1.63，含代码·VFS 侧）**：§1.62 实锤 rc 阻塞真身＝B33a 符号掩盖（`pm_exec` 回正值 errno 被 init `exec_via` `Ok(_) => EIO` 吞掉）。本单元在 `pm_exec` 公共边界 `map_err(neg)` 单点折负（体内约 15 腿符号混合：IPC 腿已 `neg()`、`enoexec` 裸值与 `ExecError::*::to_errno()`/`ElfHead::parse` 正值腿泄漏），`neg()` 对已负腿幂等→不动既有正确腿；`ExecErrno`「负 errno 直通 PM」契约与 main_loop「失败为负 errno」注释自此真实成立。**真机 bn30p 探针（跑后回滚）捕获 `exec_via errno=8 name=Some("ENOEXEC")`×45——EIO 掩盖端到端消除**；bn29/bn29b 双跑签名一致（73081/73096 行·panic=0·oom=0·runcom=15·marker=0，boot 零回归）。三件套绿（mock vfs lib **534·0fail** 基线+1 / fmt WT0 / clippy 零新增）+ CodeReview **0 MUST·1 SHOULD 已采纳**（pm_exec_inner doc 自相矛盾→mixed-sign）。**新头号前沿＝B37**：去掩盖后真错误 ENOEXEC(8) 浮现但 sh 仍 bail——非脚本/dyn 后置腿（L351/360，已排除），而是 `pm_exec` 更深装载 bail 腿（首疑全 phdr 预检 `p_offset+p_filesz>v_size` L371／imgrd 播种 sh 首块读边界，次疑 `ElfHead::parse` 校验 L167-189）；需探针/读码二分定位具体腿、修向方能让 sh 真 exec、marker 浮出。rc marker 仍未达。详见 §1.62/§1.63。
+> **⚠ 最新前沿＝B37（Layer 2：ENOEXEC 根因）——B33a 符号掩盖已修（pm_exec 边界单点折负，去 `exec_via` `Ok(_)→EIO` 吞没），真错误 **ENOEXEC(8)** 诚实浮现，但 `/bin/sh`（readelf 实测＝静态链接 ELF EXEC·无 PT_INTERP）仍装载失败、marker 仍未出（1.63，含代码·VFS 侧）**：§1.62 实锤 rc 阻塞真身＝B33a 符号掩盖（`pm_exec` 回正值 errno 被 init `exec_via` `Ok(_) => EIO` 吞掉）。本单元在 `pm_exec` 公共边界 `map_err(neg)` 单点折负（体内约 15 腿符号混合：IPC 腿已 `neg()`、`enoexec` 裸值与 `ExecError::*::to_errno()`/`ElfHead::parse` 正值腿泄漏），`neg()` 对已负腿幂等→不动既有正确腿；`ExecErrno`「负 errno 直通 PM」契约与 main_loop「失败为负 errno」注释自此真实成立。**真机 bn30p 探针（跑后回滚）捕获 `exec_via errno=8 name=Some("ENOEXEC")`×45——EIO 掩盖端到端消除**；bn29/bn29b 双跑签名一致（73081/73096 行·panic=0·oom=0·runcom=15·marker=0，boot 零回归）。三件套绿（mock vfs lib **534·0fail** 基线+1 / fmt WT0 / clippy 零新增）+ CodeReview **0 MUST·1 SHOULD 已采纳**（pm_exec_inner doc 自相矛盾→mixed-sign）。**新头号前沿＝B37（§1.64 四探针翻案）**：去掩盖后真错误 ENOEXEC(8) 浮现但 sh 仍 bail——初疑的 phdr 表超 512（readelf 实算 624>512）**已被探针推翻**：`parse-enter len=40960 b0..3=00 00 00 00`（hdr_buf 全零、parse 在魔数腿 L178 就 bail、早于 phdr 腿 L187）；`firstblock ino=8 vsize=131968 hdr_len=40960`（vnode size 正确、非 size=0 早退）；`after-read hdr[0..8]=00 00 00 00 无 req_read-ERR`。**真根因＝`open_exec` 首块读（`req_read(who_from=SELF)`→FS Endpoint(10)）返 Ok 却没把字节拷进 VFS-self grant 缓冲**。关键对照：init 能读 /etc/rc（FS→VFS 读路对小文件可用），缺口特定于 exec 首块**大块 40960（跨 10 页）grant 写回**或 `req_read` 大块分页读。下单元＝读 MFS Endpoint(10) REQ_READ 处理腿的 grant 写回机制 + `grant_magic(who_from=SELF)` 建权语义，对照 C `map_header`（exec.c:736-763），先确证「FS 是否真读到块、拷往哪个端点」再定修向。rc marker 仍未达。详见 §1.62/§1.63/§1.64。
 >
 > **⚠（1.61 历史·其头号前沿 B36 已于 §1.62 取证闭环＝真身 B33a 符号掩盖＋下层 EOPNOTSUPP）B35 已修（`supply_pages` 对 `page_count==1` 委托 `supply_page`，打通 freed 单页与 big-block 路径）→ 真机首次 **OOM-RT=0·panic=0**、历史最深推进 72495 行 → 翻出 B36 rc `Runcom` 15 轮循环（1.61，含代码·minix-rt）**：§1.60 把 B34 停在保守绑界 64 后，真机 bn23 OOM 换签 `size=001000 px=400/400 fp=39c/400`（十六进制＝恰好 1 页、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）。根因＝`FixedPoolSupplier::supply_pages`（run）只走 bump、**从不查 free-stack**，而 `alloc_big`→`supply_pages(1)` 对 1 页请求也走此路→游标耗尽后即使有可复用单页也返 null（与自身注释「free-stack reserved for single-page requests」意图相悖＝逻辑缺陷）。修＝`page_count==1` 委托 `supply_page`（1 页无邻接要求、与 `release_pages(p,1)` 逐页 push 对称、零化等价；多页 run 仍 bump-only；Linux/Redox order-0 从 free list 弹为同构做法）+ 新测。**重建镜像真机 `-m 512M -smp 1` 双跑 bn24/bn24b 签名一致**（72495/72494 行、pre-restore 7209/7209、**OOM-RT=0、panic=0（此前 6 次全消）、pagefault-in-VM=0**），boot 从 58507→**72495（历史最深）**。**新墙 B36**＝`Runcom=15`（每 ~3150 行重入 `init-state Runcom`）+`marker=0`+bogus=0——OOM 掩盖去除后 §1.55 的 rc 15 轮循环重现，现在不是 OOM、而是 B31/B32/B33b 修后的下游新失败因（runcom→exec→echo 腿哪步非 OOM 地失败）。三件套绿（mock minix-rt **59·0fail** 基线+1 / fmt WT0==HEAD0 / clippy Finished / 镜像重建+双跑一致）+ CodeReview **PASSED 0 MUST 0 SHOULD**。原则解 A/B（boot eager 物化 / VM-backed supplier）仍挂（多页 run 仍 bump-only，现因单页路径已足撑当前工作集未触发）。rc marker 仍未达。详见 §1.60/§1.61。
 >
@@ -3249,6 +3249,25 @@ C `minix3/minix/servers/vfs/exec.c:401` `pm_exec` **正返回** `ENOEXEC`；C `m
 ### 新前沿＝B37（Layer 2：ENOEXEC 根因）
 
 B33a 去掩盖后，真错误 **ENOEXEC(8)** 诚实浮现，但 `/bin/sh` 仍装载失败、marker 仍未出。readelf 实测 `/bin/sh` 为**静态链接 ELF EXEC、无 PT_INTERP**（非脚本、非 dyn），故 ENOEXEC 来自 `pm_exec` 更深的装载 bail 腿而非脚本/dyn 后置分支（L351/360）。下一单元定位具体 bail 腿：`ElfHead::parse` 校验（魔数/e_type/phoff 界 L167-189）、全 phdr 预检 `p_offset+p_filesz > v_size`（L371，最可疑——imgrd 播种的 sh 首块/段数据与实际镜像读边界）、或 `open_exec` 的 stat/首块读腿。探针/读码二分定位后修向方能让 `/bin/sh` 真 exec、marker 浮出。rc marker 仍未达，frontier＝§1.63。
+
+> 【§1.64 翻案】本节初拟的「首疑 phdr 预检 / phdr 表超 512」**已被四探针推翻**——真根因更上游：exec 首块 FS 读根本没把字节读进 hdr_buf。详见 §1.64。
+
+---
+
+## §1.64 B37 取证翻案——真根因＝exec 首块 FS 读（REQ_READ→VFS-self grant）返 Ok 却零字节落入，非 phdr 界（纯取证 doc·探针已回滚）
+
+§1.63 尾把 B37 头号嫌疑定在 `ElfHead::parse` 的 phdr-界校验（`e_phoff+e_phnum*56 > SECTOR_SIZE`，readelf 实测 /bin/sh＝10 phdr→624>512）。本单元四枚真机探针**推翻该假设**、把根因前移到更上游的**首块数据读取**：缓冲区拿到的是全零，`ElfHead::parse` 在**魔数腿**（L178，早于 phdr 腿 L187）就 bail ENOEXEC——所以我的 phdr 探针根本不触发。取证链（均 `nk4a:` 前缀·`#[cfg(not(feature="mock"))]`·AtomicUsize cap·跑后全回滚）：
+
+1. **bn31p**（在 L187 phdr 界打点）：**无** `b37 phdr-bound` 输出（grep 命中的 `b37` 是字节串巧合）→ phdr 界腿未触发。
+2. **bn32p**（在 `ElfHead::parse` 入口打 `buf.len()`+首 4 字节）：捕获 **`parse-enter len=40960 b0..3=00 00 00 00`**——hdr_buf 全零（非 `7f 45 4c 46`），坐实魔数检查失败才是 bail 腿。
+3. **bn33p**（在 open_exec 首块读前打 `v.size`/`hdr_len`）：捕获 **`firstblock ino=8 vsize=131968 hdr_len=40960 fs=Endpoint(10)`**——vnode size **正确**（＝/bin/sh 真实字节数 131968，证明 imgrd 播种含文件内容、非「size=0 早退」）、hdr_len 非零、FS 端点 10。
+4. **bn34p**（在首块 `req_read` 之后打 hdr_buf 内容 + Err 分支）：捕获 **`after-read hdr[0..8]=00 00 00 00 00 00 00 00 hdr_len=40960`** 且**无** `req_read-ERR`——即 req_read 向 FS 发 REQ_READ 返回 **Ok**（`fs_trans_status==OK`）、无错误，但读后 hdr_buf 仍**全零**。
+
+### 定性结论（不越位声称修法）
+
+exec `/bin/sh` 报 ENOEXEC 的**真根因**＝`open_exec` 的首块读（`req_read(who_from=Endpoint::SELF)`：对 VFS 自身 hdr_buf 建 magic grant→发 REQ_READ 到 FS Endpoint(10)→revoke）**返回成功却没有把文件字节拷进 grant 目标**——FS 侧要么未把数据 virto-copy 回 VFS-self 缓冲、要么大块（40960 跨 10 页）grant 拷贝路径有缺口。这**不是** ELF 布局/phdr 计数问题（那些在数据落地后才相关）。
+
+**关键对照**：init runcom 能成功读 `/etc/rc`（否则解析不出 `echo` 命令、走不到 exec）→ FS→VFS 读路对**小文件**可用；故缺口特定于 exec 首块的**大块 grant（40960）写回 VFS-self 地址空间**这条路径，或 VFS→FS `req_read` 大块分页读的实现。下一单元顺此定位：读 FS（MFS Endpoint(10)）`REQ_READ` 处理腿的 grant 写回机制 + `grant_magic(who_from=SELF)` 建权语义，对照 C `map_header`（exec.c:736-763）用 `VFS_PROC_NR` 自读语义；先确证「FS 是否真收到 REQ_READ 并读到块、拷往哪个端点」再定修向（不预设结论）。本取证单元：四探针全 `git checkout` 回滚、工作树干净、HEAD 未动（`9714fe40d`），无生产码改动故测基线不变。rc marker 仍未达。
 
 
 
