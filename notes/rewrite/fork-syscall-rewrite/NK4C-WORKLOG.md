@@ -2411,3 +2411,25 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 
 ---
 
+## §1.41　B22 侦察（读码 + c32 日志裁决）：终态 SCHED(proc4) 独占调度饿死 rc 脚本 exec 链
+
+**受控读法接续**：本 turn 从 §1.40（B21 修复，commit 13bdba063）后的 B22 前沿起步。HEAD=13bdba063。**纯侦察、无生产代码改动**（§1.25/§1.28 doc commit 先例，无三件套）。
+
+**c32 日志裁决推翻「notify 风暴」初判**：
+- `nk4a: rearm`=0、`nk4a: srcv`=0、`panic-enter`=0 → SCHED 的 CLOCK 臂 `balance_queues`/re-arm **未失败**、receive **无 Err**、无任何 panic；
+- 全文件 `r10s=0x...04`（Notify 交付）仅 **115** 次/150s → **低频**，非紧风暴；
+- 全文件 pick 目标 **各槽 0..12 均被调度**（PM(0)=313、VFS(1)=437、SCHED(4)=137、VM(8)=765、INIT(11)=64、子(12)=**1**）→ 系统真活着、远超 SingleUser、fork 链已起子（slot12 被 pick 过）。
+- **决定性末态**：tail 300 行 pick 目标 **只有 `pick->0x4`**（37 次），无其它槽 → SCHED 终态**独占调度器选取**。
+
+**根因假设（待下轮真机/读码坐实）**：B21 修复后 SCHED 现能正确识别投递的 Notify（run_once：`is_notify` 且 sender≠CLOCK → 静默 return Handled；sender==CLOCK → balance_queues+rearm 后 return Handled，**永不对通知回信**，server.rs:226-253）。SCHED 处理完通知后回到 `ipc.receive()`——若 receive **立即返回**（内核侧有一项 persistent/never-cleared 的 pending notify 状态，或 `clear_ipc_status_reg` 未在 SCHED receive 重入时清除 gp_regs[GP_R10] 的 Notify 位），则 SCHED 永不真正阻塞、恒 runnable，调度器每轮都选中它→**饿死正等 SCHED 推进量子/调度的 INIT(11)/子(12) 的 exec 链**→rc 脚本 marker 不可达。子 slot12 全程仅被 pick 1 次=exec 起步即停。
+
+**下一入口（精确）**：①先确认末态 `pick->0x4` 时 SCHED receive 收到的 notify **源**（CLOCK vs 其它）——若 CLOCK 但 re-arm 未失败而仍不停→查 sys_setalarm 重挂是否真产生下一次到期（否则就是同一通知反复投）；②查内核 receive 重入路径（Phase-1 自发 receive 陷阱序言 `clear_ipc_status_reg`）是否清掉了 gp_regs[GP_R10] 的 Notify 位——若未清，`is_notify` 会粘滞为真→SCHED 假“收到通知”死循环（与 B21 同一状态车道、新形态）；③对齐 C sched `main.c:35-96`：处理完通知后 receive 应真阻塞等下一事件。取证优先读码/内核侧（§1.33 PM 阻断不影响 SCHED/内核）。
+
+### §1.41 本 turn 行量
+- 无生产代码（纯侦察）；
+- WORKLOG 本节 §1.41（精化顶部 B22 前沿的根因假设与下一入口）；
+- 纯侦察 doc commit、无三件套；rc marker 未达，frontier 仍 1.30。
+
+---
+
+
