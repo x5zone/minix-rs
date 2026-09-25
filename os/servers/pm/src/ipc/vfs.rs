@@ -435,8 +435,13 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
         // main.c:373 — `sched_start_user(rmp->mp_scheduler, rmp)`：决策件
         // 内部做 nice→queue 换算并发 SCHEDULING_INHERIT（生产 MinixSchedCtl
         // 经 IPC 到调度器，S10 假面转真）。
+        // C 的 rmp->mp_endpoint（子进程自身端点）即本处 child_ep；
+        // 旧代码误传 sched（=scheduler 字段）作为 schedulee 导致 SCHED
+        // 对 Endpoint::SCHED(slot4) 而非子进程(slot12+) 做 schedctl。
+        let child_ep = self.table.procs[slot.get()].endpoint();
         let mut ctl = crate::sched::MinixSchedCtl::new(self.transport);
-        crate::sched::sched_start_user(self.table, sched, slot, &mut ctl).map_err(|e| e.to_errno())
+        crate::sched::sched_start_user(self.table, child_ep, slot, &mut ctl)
+            .map_err(|e| e.to_errno())
     }
 
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool) {

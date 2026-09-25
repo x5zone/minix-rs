@@ -334,8 +334,9 @@ pub fn sched_init(table: &mut ProcTable, sched: &mut dyn SchedCtl) -> Vec<(UserS
 
 /// `sched_start_user` (`schedule.c:55-84` D2)。
 ///
-/// `ep` 形参 = 目标进程**继承自父进程**的调度器 endpoint（C 的调用点
-/// main.c:371-373 先守卫 KERNEL/NONE，再把 `rmp->mp_scheduler` 传入）；
+/// `ep` 形参 = 目标进程自身的 endpoint（C: `rmp->mp_endpoint`），作为
+/// SCHEDULING_INHERIT 载荷的 schedulee 字段传给调度器。调度器地址
+///（C: `rmp->mp_scheduler`）由函数内部从 `resources.scheduler` 读取。
 /// KERNEL/NONE 表示父进程无用户态调度器，C 直接跳过（main.c:370-371）。
 /// V3-P2-3 之前硬编码 `SCHED_PROC_NR` 且无守卫——父调度器非 SCHED 时
 /// 语义分叉。成功后 `resources.scheduler` 回写实际调度器（C 的出参语义）。
