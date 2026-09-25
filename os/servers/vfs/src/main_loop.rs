@@ -1166,9 +1166,14 @@ impl VfsState {
                                 newps_str: 0,
                             },
                         };
-                        self.queue_reply_msg(msg.m_source, reply.encode());
+                        self.queue_reply_msg(msg.m_source, reply.encode_reply_for(endpoint));
                     }
                     Ok(other) => {
+                        // C `service_pm`：回复需把请求的目标端点回显进
+                        // `VFS_PM_ENDPT`（m7_i1），PM 才能解析出挂
+                        // `VFS_CALL` 的槽位。`other` 将被 move 进 `handle`，
+                        // 故先取端点（fork/srv_fork → 子端点）。
+                        let target = other.endpoint();
                         let mut sink = put_node_sink(&mut self.pending_puts);
                         let mut handler = crate::ipc::VfsPmHandler {
                             table: &mut self.fproc_table,
@@ -1177,7 +1182,10 @@ impl VfsState {
                             fs_ctl: &mut sink,
                         };
                         match handler.handle(other) {
-                            Ok(reply) => self.queue_reply_msg(msg.m_source, reply.encode()),
+                            Ok(reply) => self.queue_reply_msg(
+                                msg.m_source,
+                                reply.encode_reply_for(target.unwrap_or(Endpoint::NONE)),
+                            ),
                             Err(e) => self.queue_reply(
                                 msg.m_source,
                                 crate::call_table::SyscallResult::Error(

@@ -749,6 +749,26 @@ impl VfsReply {
         }
         msg
     }
+
+    /// 编码为带回显目标端点的 IPC 回复。
+    ///
+    /// C `service_pm`（main.c）的每一路回复都做
+    /// `proc_e = m_in.VFS_PM_ENDPT; ... m_out.VFS_PM_ENDPT = proc_e;`
+    /// ——把请求携带的目标进程端点原样回填进回复的 `VFS_PM_ENDPT`
+    /// （`m7_i1`）。PM 侧 `handle_vfs_reply`（main.c:315-321）正是从
+    /// `m_in.VFS_PM_ENDPT` 取端点 `pm_isokendpt` 解析槽位，再断言该槽
+    /// 挂着 `VFS_CALL`。[`Self::encode`] 是裸回复形态（`m7_i1` 保持 0），
+    /// 直接投递会让 PM 解析到 slot 0 并 `panic("reply without request")`。
+    /// 本方法在裸回复之上补写 `m7_i1 = target`，恢复 C 的端点回显契约。
+    ///
+    /// `target` 取自 `VfsCall::endpoint()`（fork/srv_fork 为**子**端点，
+    /// 与 PM 把 `VFS_CALL` 挂在子槽的语义一致）。
+    pub fn encode_reply_for(&self, target: Endpoint) -> Message {
+        let mut msg = self.encode();
+        // SAFETY: `encode` 刚刚以 `m_m7` 臂构造了该 union，读改同一臂有效。
+        unsafe { msg.m_u.m_m7.m7i1 = target.get() };
+        msg
+    }
 }
 
 /// `VfsReply::decode` / `handle_vfs_reply` 错误。
@@ -797,6 +817,32 @@ mod vfs_call_reply_tests {
         // 裸回复（C reply() 的 memset 语义）也是同形往返。
         let bare = VfsReply::Fork.encode();
         assert_eq!(VfsReply::decode(&bare), Ok(VfsReply::Fork));
+    }
+
+    /// B18 回归：`service_pm` 每一路回复必须把目标进程端点回显进
+    /// `VFS_PM_ENDPT`（m7_i1），否则 PM `handle_vfs_reply` 会解析到 slot 0
+    /// 并 `panic("reply without request")`。`encode_reply_for` 恢复该契约。
+    #[test]
+    fn test_vfs_reply_encode_reply_for_echoes_endpoint() {
+        let target = Endpoint::from_generation_slot(1, 12); // fork 子端点
+        // 裸 encode 不携带端点（旧 bug：m7_i1=0 → PM 误解析 slot 0）。
+        let bare = VfsReply::Fork.encode();
+        assert_eq!(unsafe { bare.m_u.m_m7 }.m7i1, 0);
+        // encode_reply_for 回显端点；载荷 m_type 与裸回复一致。
+        let reply = VfsReply::Fork.encode_reply_for(target);
+        assert_eq!(reply.m_type, VFS_PM_FORK_REPLY);
+        assert_eq!(unsafe { reply.m_u.m_m7 }.m7i1, target.get());
+        // Exec 额外载荷（status/pc/newsp）不受影响，m7_i1 仍为端点。
+        let exec = VfsReply::Exec {
+            status: 0,
+            pc: 0x401_000,
+            newsp: 0x7fff_ffff_e000,
+            newps_str: 0,
+        }
+        .encode_reply_for(target);
+        let m7 = unsafe { exec.m_u.m_m7 };
+        assert_eq!(m7.m7i1, target.get());
+        assert_eq!(m7.m7p1, 0x401_000);
     }
 
     #[test]
