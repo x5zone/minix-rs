@@ -26,7 +26,7 @@
 
 - **B21 已修（1.40 落地，含代码·arch 侧）**：根因坐实——`sync_status_register_to_frame`（`os/arch/src/x86_64/trap_stub.rs`）是 IPC 状态车道 **RBX→R10 迁移的陈旧漏改**：状态位现由 `or_ipc_status_reg`/`clear_ipc_status_reg`/`ipc_status_register` 读写 `gp_regs[GP_R10=8]`、trap 出口 asm `pop r10`、userspace `ipc_trap`（arch_trap.rs:84 `mov status,r10`）从 R10 读 status，但该 sync 仍做 `frame.rbx = ctx.rbx`。在接收进程**自身** int-33 receive 陷阱返回臂（内核 `trap_dispatch.rs:1810` reply-code 路径，唯一调用点）上，内核已把投递的 `IpcCall::Notify` 位 OR 进 `gp_regs[GP_R10]`，却只把 RBX 拉回帧 → `frame.r10` 停在 RECEIVE 序言清零的旧值 → userspace `is_ipc_notify` 读到 0 误判非通知 → 那条 `mini_notify_core` 直投的 HARDWARE notify（m_type=0x1000、src=KERNEL/HARDWARE=-1、被 init.rs:452 探针低12位截断打成 `pm 000ff`）下探到 `pm_isokendpt(KERNEL)` 失败 → init.rs:567 panic。修=改 `frame.r10 = ctx.gp_regs[crate::x86_64::signal::GP_R10]`（同步用户真正读的状态车道）+ 诚实化函数注释 + 回归守卫单测 `sync_status_register_copies_r10_lane_not_rbx`（`ctx.rbx` 干扰值双向锁死「R10 收到状态、RBX 不被污染」+ 复刻 `is_ipc_notify` 的 6-bit 掩码断言）。**真机 c31/c32 决定性**：`panic-enter`=0（PM 不再崩）、那条 `nk4a: pm 000ff` 命中 1 次后被正确识别跳过、`pre-restore- r10s=0x0000000000000004`（Notify status 正确交付进 R10）出现 115 次，两次行数 25284/25285 同构=签名一致。三件套绿（docker arch **243**(head 242 +1 新测)/kernel 816/vm 528·0fail / fmt trap_stub.rs cur=17=head=17 零新增 / 真机 c31==c32 签名一致）。CodeReview **PASSED**（无 W/S；N1 陈旧 RBX 注释多在 pre-existing 内核侧、不阻塞，本轮已采纳修自身新增 rustdoc 的 broken intra-doc link）。⚠️ 修复只动 arch crate、不碰 PM（规避 §1.33 PM 布局脆弱性债）。**新前沿 B22**：见下条。
 
-- **B22 前沿（⚠ 已纠正定性=静态全系统死锁、非 SCHED 活锁/风暴、详见 §1.42）**：B21 修复后 PM 存活、boot 推进至 ~25285 行 timeout（EXIT=124）。本 bullet 初判（上轮 §1.41）「某进程反复收 Notify 活锁/风暴」已被 tail-dump **推翻**：末态 **全 13 进程 `runnable=no queued=no`**、仅 1 次 `picknone` + 2 次逐字节相同的 tail-dump = **静态死锁**；尾部反复 `pick->0x4` 只是时钟 tick 短暂唤醒 SCHED 服务 Clock-notify（SCHED 是唯一被唤者）、非活锁。**决定性线索**：child(12)/0x10c `flags=0x30` 仅 SIGNALED|SIG_PENDING、**不含任何阻塞 IPC 位**（无 SENDING(0x4)/RECEIVING(0x8)/PAGEFAULT(0x400)）却 `runnable=no queued=no`——本应可跑却没入队（与 P1-ipc/F10d「置/清标志绕过 rts_set/rts_unset 入队半」同族）；INIT(11)/0x10b `flags=0x8` RECEIVING 等 `from=PM(0)` 而 PM 空闲在 receive(ANY)。**下一入口**：①查谁给 child 置 SIGNALED|SIG_PENDING 却未 `make_runnable`+enqueue（信号投递腿，参 WORKLOG P1-ipc `clear_ipc_refs` 同族）；②INIT 阻塞等 PM 而 PM 空闲=丢唤醒/rendezvous 不闭合（对齐 C PM 对 INIT 的 WAIT4/回信腿）；③child `to=VFS from=PM` 的真实含义（sendrec 残留还是信号停）。取证优先读码/内核侧（§1.33 PM 阻断不影响内核/SCHED）。rc marker `minix-rs rc: minimal boot script marker` 仍未打印，frontier 仍 1.30。
+- **B22 前沿（⚠ 根因再纠正=INIT fork 子空指针 SIGSEGV、作废前「入队违例」方向、详见 §1.43）**：B21 修复后 PM 存活、boot 推进至 ~25285 行 timeout（EXIT=124），末态全系统静态死锁（§1.42）。§1.42 猜「child queued=no=入队违例」**已作废**：核对 C 黄金参照 `minix3/minix/kernel/proc.h:169 rts_f_is_runnable(flg)==((flg)==0)`——SIGNALED 置位即非 runnable 是 **C 忠实正确**（信号交 PM 经 GETKSIG 的 `rts_unset(SIGNALED)` 入队半唤醒子），child `flags=0x30 queued=no` 无违例。**真根因坐实（§1.43）**：c32 全 boot 唯一一条 `csig tgt=0xc sig=0xb`，`sig 11=SIGSEGV`；现场上文 `pf-exit noaddr cr2=0x0`→**INIT fork 子(12) fork 后解引用空指针**、VM 判 noaddr→`cause_signal(SIGSEGV)`→子永停 0x30。addr2line `0x21b3e4`=`minix_sys::fork`、objdump 该处=`int $0x21` 后 `mov %r10,%rsi`（**子从 fork sendrec 正常返回、fork 链已通**），SIGSEGV 崩在子返回后 INIT 用户代码下游。exec 探针覆盖 nr 0x5/7/9/a/b 但**无 0xc**→子从未 exec /bin/sh→rc marker 不可达（与「无 sh/rc exec 痕迹」闭环）。次生：PM 空闲未 `sys_getksig` 清理该 SIGSEGV，但对 marker 已次要（子已崩）。**下一入口（精确）**：`pfc` 崩溃-rip 探针过滤器不含 12，加 12（或专设子 fault-rip 探针）+build+一次真机→得崩溃指令 addr2line→定位 init 子哪行 deref null（候选：子上下文残留出参指针=0 延续 B20 链 / init fork-child 分支空 arg-env 指针）；取证走内核侧。rc marker `minix-rs rc: minimal boot script marker` 仍未打印，frontier 仍 1.30。
 
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
@@ -2453,6 +2453,43 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 - 无生产代码（纯侦察）；
 - WORKLOG 顶部 B22 bullet 纠正定性 + 本节 §1.42（tail-dump 实锤全系统静态死锁、推翻 §1.41 风暴假设）；
 - 纯侦察 doc commit、无三件套；rc marker 未达，frontier 仍 1.30。
+
+---
+
+## §1.43 B22 侦察纠正——推翻「child queued=no=入队违例」定性，坐实真根因=INIT fork 子空指针 SIGSEGV（纯侦察 doc）
+
+本轮沿 §1.42「最锐利线索」深入，**推翻其自身假设并坐实真根因**。
+
+**决定性纠正①：`is_runnable()=load()==0` 是 C 忠实、child queued=no 非违例**。§1.42 猜「SIGNALED 非阻塞位、child 本应 runnable+入队」。核对 vendored C 黄金参照 `minix3/minix/kernel/proc.h:169-170`：
+```c
+#define rts_f_is_runnable(flg)	((flg) == 0)
+#define proc_is_runnable(p)	(rts_f_is_runnable((p)->p_rts_flags))
+```
+C 里 `is_runnable` 就是 **flags 全 0**——SIGNALED(0x10) 置位即非 runnable，进程被移出就绪队列是**设计如此**（信号不靠运行被信号进程本身投递，而是交其 sig_mgr=PM 处理，PM 调 SYS_GETKSIG 经 `rts_unset(SIGNALED)` 的入队半唤醒子）。Rust `RtsFlags::is_runnable`(proc.rs:1245 `load()==0`) 与之逐字对齐，**无违例**。child(12) `flags=0x30 queued=no` 是 C 正确终态。§1.42 的「入队丢半/P1-ipc 同族」方向作废。
+
+**决定性纠正②：真根因=child(12) fork 后空指针 SIGSEGV**。c32 全日志仅**一条** `nk4a: csig tgt=0xc sig=0xb`（cause_signal 探针，CSIG_N<24 未封顶，全 boot 唯一信号）。`sig=0xb=11=SIGSEGV`（`syscall_signal.rs:66 SIGSEGV=11`、`minix-types/signal.rs:47 SIGNAL_SEGMENT_VIOLATION=11`）。csig 现场上文：
+```
+nk4a: pick->0xc
+nk4a: pre-restore- rip=0x21b3e4 rsp=0x7fffffffa608   ← 子从 fork sendrec 正常返回(见下)
+... 若干调度 ...
+nk4a: vm-pf recv
+nk4a: pf-exit noaddr cr2=0x0                          ← 子触发 cr2=0 空指针缺页，VM 判 noaddr
+nk4a: csig tgt=0xc sig=0xb                            ← 内核 cause_signal(SIGSEGV) 给子
+```
+即 child 走 `pf-exit noaddr cr2=0x0` → VM 拒 noaddr → `cause_signal(SIGSEGV)` → 子被挂 SIGNALED|SIG_PENDING 停 0x30。
+
+**fork 链本身已通（旁证 B18/B19/B20 修复有效）**：addr2line `0x21b3e4`→`minix_sys::fork`（init ELF）；objdump 该地址=`int $0x21` 后第一条 `mov %r10,%rsi`（寄存器移动、不可能 fault）——即**子从 `fork()` sendrec-to-PM 正常返回**（rax=pid/r10=status），`fork()` 成功。SIGSEGV 崩在子返回后的 **INIT 用户代码下游**（子 exec /bin/sh 前的某段 init 代码 deref 了地址 0）。
+
+**为何从未 exec /bin/sh**：exec 探针 `nk4a: exec-store` 覆盖到 nr 0x5/0x7/0x9/0xa/0xb（各 boot 服务 + init），**无 0xc**——子 fork 后即 SIGSEGV，从未走到 exec(/bin/sh) → rc 脚本从未运行 → marker 不可达。这与「无 /bin/sh、/etc/rc exec 痕迹」日志观察闭环。
+
+**PM 侧次生死锁（对 marker 而言已次要）**：PM 空闲在 receive(ANY)、最后活动止于 `pm 000ff`（硬中断 notify，B21 已正确 is_notify 跳过），**从未调 `sys_getksig`**（exit.rs:257 的 reap/sig-check 腿）清理这条 SIGSEGV——故 child 永停 0x30。但即便 PM 清了 child 信号，子已崩、exec 未发生，marker 仍不可达；主因是子的 SIGSEGV，非 PM 未 reap。
+
+**下一入口（精确·优先级）**：捕获 child(12) 的**崩溃 rip**（现 `pfc` 探针过滤器 `matches!(cur_nr.0, 0|1|3|4|5|6|7|9|10|11)` **不含 12**，未记）。做法：把 12 加入 pfc 过滤器（或另设子专用 fault-rip 探针），build+一次真机即得崩溃指令地址 → addr2line 定位 INIT 子代码哪一行 deref null。假设备选：①子从 fork 返回后读到的某出参指针（如 `&mut pid`/env 表/sigaction 数组）被子上下文置 0（延续 B20 子帧继承链的残留字段）；②init 程序 fork-child 分支里 `exec` 前置的空 arg/env 指针。取证走内核侧（§1.33 PM 布局脆弱性、且根因在用户态 init 非 PM）。
+
+### §1.43 本 turn 行量
+- 无生产代码（纯侦察 + 读码交叉验证 C `proc.h:169`）；
+- WORKLOG 顶部 B22 bullet 再次纠正（作废「入队违例」方向、指向子 SIGSEGV）+ 本节 §1.43；
+- 纯侦察 doc commit、免三件套（§1.25/28/41/42 先例）；rc marker 未达，frontier 仍 1.30。
 
 ---
 
