@@ -21,11 +21,12 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use minix_types::{
-    is_fs_rq, Endpoint, Message, REQ_BREAD, REQ_BPEEK, REQ_BWRITE, REQ_CHMOD, REQ_CHOWN, REQ_CREATE,
-    REQ_FLUSH, REQ_FTRUNC, REQ_GETDENTS, REQ_GETNODE, REQ_INHIBREAD, REQ_LINK, REQ_LOOKUP,
-    REQ_MKDIR, REQ_MKNOD, REQ_MOUNTPOINT, REQ_NEWNODE, REQ_NEW_DRIVER, REQ_PEEK, REQ_PUTNODE,
-    REQ_RDLINK, REQ_READ, REQ_READSUPER, REQ_RENAME, REQ_RMDIR, REQ_SLINK, REQ_STAT,
-    REQ_STATVFS, REQ_SYNC, REQ_UNLINK, REQ_UNMOUNT, REQ_UTIME, REQ_WRITE,
+    is_fs_rq, trns_add_id, trns_del_id, Endpoint, Message, REQ_BREAD, REQ_BPEEK, REQ_BWRITE,
+    REQ_CHMOD, REQ_CHOWN, REQ_CREATE, REQ_FLUSH, REQ_FTRUNC, REQ_GETDENTS, REQ_GETNODE,
+    REQ_INHIBREAD, REQ_LINK, REQ_LOOKUP, REQ_MKDIR, REQ_MKNOD, REQ_MOUNTPOINT, REQ_NEWNODE,
+    REQ_NEW_DRIVER, REQ_PEEK, REQ_PUTNODE, REQ_RDLINK, REQ_READ, REQ_READSUPER, REQ_RENAME,
+    REQ_RMDIR, REQ_SLINK, REQ_STAT, REQ_STATVFS, REQ_SYNC, REQ_UNLINK, REQ_UNMOUNT, REQ_UTIME,
+    REQ_WRITE,
 };
 
 bitflags::bitflags! {
@@ -1267,12 +1268,29 @@ impl<
             .map_err(FsError::Io)?;
         // C request.c:797-810 — 消息四件套 flags/grant/device/path_len。
         let mut msg = encode_readsuper(dev, len, grant_id, readonly, isroot);
+        // C `fs_sendrec`（comm.c）在往返前把线上 `m_type` 戳上 transid 高 16
+        // 位：`TRNS_ADD_ID(call, id)`。FS 侧（`fs-rt::transport::receive`）按
+        // `TransactionId::decode`（call = raw >> 16）分派——不戳则 call=0、
+        // `index = 0.wrapping_sub(FS_BASE)` 下溢 → `Unserved` → 回 ENOSYS，
+        // read_super 从未真正抵达 MFS 的挂载门（`task.rs:429`），MFS 的
+        // `is_mounted()` 因此恒假。同步 sendrec 靠阻塞往返匹配回复（非
+        // transid），故 id 取 0 即可。
+        msg.m_type = trns_add_id(REQ_READSUPER, 0);
         // C request.c:813 — `fs_sendrec`（同步往返，worker 上下文）。
         let r = self.ipc.sendrec(fs_e, &mut msg);
         // C request.c:814 — 回复无关成败都先 revoke（C 同样先 revoke 再查 r）。
         let _ = self.grants.revoke(grant_id);
         if let Err(t) = r {
             return Err(FsError::Io(t.0));
+        }
+        // C `req_readsuper`（request.c:813-816）：`fs_sendrec` 抽出的回复状态
+        // 非 OK 即原样上抛，**先于**解出载荷。回复 `m_type =
+        // TRNS_ADD_ID(status, id)`，剥 id 取 status（高 16 位）。旧代码无视
+        // 状态字直接 `decode_readsuper_reply` 返 Ok，把 ENOSYS 也当挂载成功，
+        // 让 `do_init_root` 带病开门（boot 应 panic，见 main.c:519-520）。
+        let status = trns_del_id(msg.m_type);
+        if status != 0 {
+            return Err(FsError::Io(status));
         }
         match decode_readsuper_reply(&msg, fs_e) {
             resp @ FsResp::ReadSuper { .. } => Ok(resp),

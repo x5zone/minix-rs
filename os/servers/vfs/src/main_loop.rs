@@ -12076,8 +12076,28 @@ mod tests {
         let (mfs_dst, mfs_req) = &sent[1];
         assert_eq!(*pfs_dst, Endpoint::PFS);
         assert_eq!(*mfs_dst, Endpoint::MFS);
-        assert_eq!(pfs_req.m_type, minix_types::REQ_READSUPER as i32);
-        assert_eq!(mfs_req.m_type, minix_types::REQ_READSUPER as i32);
+        // 线上 `m_type` 带 transid 高 16 位戳记（C `fs_sendrec` 的
+        // `TRNS_ADD_ID(call, id)`）：FS 侧按 `TransactionId::decode`（call =
+        // raw >> 16）分派，裸 `REQ_READSUPER` 会因 call=0 落入 `Unserved`。
+        // 同步 sendrec 用 id=0，故线上值 = `trns_add_id(REQ_READSUPER, 0)`。
+        assert_eq!(
+            minix_types::trns_del_id(pfs_req.m_type),
+            minix_types::REQ_READSUPER as i32,
+            "剥 transid 后为 REQ_READSUPER"
+        );
+        assert_eq!(
+            minix_types::trns_del_id(mfs_req.m_type),
+            minix_types::REQ_READSUPER as i32,
+            "剥 transid 后为 REQ_READSUPER"
+        );
+        assert_eq!(
+            pfs_req.m_type,
+            minix_types::trns_add_id(minix_types::REQ_READSUPER, 0)
+        );
+        assert_eq!(
+            mfs_req.m_type,
+            minix_types::trns_add_id(minix_types::REQ_READSUPER, 0)
+        );
 
         // 线上形状（request.c:780-813）：device@0、flags@8、path_len@16、grant@24。
         let raw = unsafe { &mfs_req.m_u.raw };

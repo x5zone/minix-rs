@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-- **B14 前沿（1.25 诊断修正，无代码改动）**：阻塞 rc marker 的真因 = `stat("/dev/console")` 返 **EBUSY(16)** → init `console_present` 非 `Ok(true)` → `ensure_console` MAKEDEV 回退(boot 期 sh 不可 exec)→ `decide_entry` 判 **SingleUser** 而非 **Runcom**，而 marker 只由 Runcom 态 `exec /bin/sh /etc/rc` 产出 → 结构性不可达。⚠️ §1.24 记的「proc 自旋/SCHED 活锁」与「DriverBusy 候选」**已被推翻**：`r10s=0x4`=NOTIFY 是 CLOCK 5 秒 balance 心跳（healthy idle，非活锁），**勿动 SCHED/IPC 状态位/B12**；**init 不改**（忠实镜像 C）。下一手 = 在 VFS 返 EBUSY 的臂（`worker.rs:824`/`tll.rs:249-253`/`device_map.rs:776`）定点探针钉死，再按 C 改阻塞/排队。详见 §1.25。代码 frontier 仍 = 1.24 commit `5de52ddb5`。
+- **B14 已修（1.26 落地，含代码）**：VFS 同步挂载路径 `WireFsClient::send`（`request.rs`）两处缺陷根治——**A**：裸 `m_type=REQ_READSUPER(0xA1C)` 经 `sendrec` 直发，绕过 C `fs_sendrec` 的 `TRNS_ADD_ID`（把 request 号抬到高 16 位）→ MFS 侧 `TransactionId::decode`(call=raw>>16) 解出 call=0、index 下溢 → `Unserved`→回 ENOSYS，read_super 从未抵达 MFS 挂载门；修=`sendrec` 前 `msg.m_type = trns_add_id(REQ_READSUPER, 0)`（同步靠阻塞往返匹配、id=0 安全，CodeReview 独立确认 id=0 < `IS_VFS_FS_TRANSID` 的 0xB02 下界不误路由）。**B**：`decode_readsuper_reply` 旧无视回复状态字无条件返 Ok，把 ENOSYS 当挂载成功让 `do_init_root` 带病开门；修=sendrec 后 `trns_del_id(msg.m_type)!=0` 即 `Err(FsError::Io(status))` 上抛（恢复 C `req_readsuper` `if (r!=OK) return r;`，boot 应 panic 见 main.c:519-520）。**真机取证**：加探针（已删）实测 PFS readsuper 回 `0x00000000`(status0=OK 通过)、MFS 回 `0x001e0000`(status=30=**EROFS**) 正确上抛——**Fix B 无假阴性、Fix A 已让 MFS 真服务**。三件套绿（docker 813/242/528·0fail / fmt request.rs 17=17、main_loop.rs 1=1 零新增 / 两次真机 c1/c2 签名一致=23313 行、`main_loop.rs:7681 failed to initialize root: Io`）。CodeReview 无 MUST-FIX。**boot 现诚实停在下一步 B15。**⚠️ 本 bullet 前代 §1.25 把症状记为 **EBUSY(16)**：本轮实测本 build 根挂载失败真码是 **EROFS(30)**（EBUSY 是「已挂载再挂」旧时相的下游表现），见 §1.26。
+
+- **B15 前沿（1.26 定位完成，未修）**：`do_init_root`→`mount_fs_root` 的 MFS readsuper 现真抵达 MFS 并回 **EROFS(30)**。根因（代码实锤）：`fs/mfs/src/mount.rs:417-420`——**clean 文件系统以读写挂载**时按 C `mount.c:90-95` 要 dirty-mark（清 `FLAG_CLEAN` 并 `store_superblock` 写回块 0）；写落到 `fs/fs-rt/src/source.rs:148-160` `ImgrdBlockSource::write_block`，而打包 imgrd 是 `ImageData::Static`（**B11 零拷贝只读 rdata**，8 MB）→ 返 EROFS。C 里 RAM 盘可写（memory 驱动服务自有缓冲），本端口零拷贝破了可写性（source.rs:154-157 注释自陈「待 bdev 通道+E-FSBDEV 半 + MFS 可写 overlay」）。**下一步修向（C 忠实、非缩窄）**：给 imgrd 加**有界写覆盖层**（CoW：读透读 Static 基座、写落「已改块→缓冲」小映射，脏-mark 只改块 0，内存有界不 OOM），使 clean-rw 挂载不再 EROFS → MFS 真挂载 → init `stat(/dev/console)` 命中 → Runcom → rc marker。勿动 SCHED/IPC/B12、勿动 init/task.rs 挂载门（皆忠实镜像 C）。详见 §1.26。
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
@@ -1892,3 +1894,36 @@ PM 给 init 槽回了 pid≠1。PM `credentials.rs:133-136` GetPid 直返 `table
 3. §1.24 CodeReview 折叠的 RS 发布缝临时表劫持与本 EBUSY **大概率无关**（stat /dev/console 走 VFS→tty/MFS，不经 RS），可解耦另查。
 
 **本 turn 状态**：纯诊断，Debug 子代理所有 `nk4c:` 探针已撤销、`ipc.rs`/`syscall_clock.rs` 与 HEAD 字节一致、工作树干净、**未 commit 任何生产代码**。frontier 仍 = 1.24（B13 修复 commit `5de52ddb5`）；1.25 是 B14 诊断记录（无代码改动）。
+
+> **⚠️ §1.26 更正**：本节多处把 init `stat("/dev/console")` 的错误码说成 **EBUSY(16)**。1.26 落地时真机取证发现：本 build 根挂载失败的真码是 **EROFS(30)**（VFS readsuper 状态字），EBUSY 是「MFS 已挂载再挂」旧时相的另一表现。**根同为 MFS 从未真正挂载**（现定位到 MFS 挂载本体回 EROFS，见 §1.26）。本节“下一入口=VFS 返 EBUSY 的臂定点探针”已被 §1.26 的 readsuper transid/状态字修复取代。
+
+---
+
+## 1.26 B14 修复落地：VFS 同步 readsuper 补 transid 线格式 + 去状态字遮蔽（诚实报错），真机验证 boot 前进到 MFS 挂载真失败（EROFS）的新停点 B15（2026-09-25，c1/c2 无探针复跑 + p1 带探针取证）
+
+### 现象
+B13 修复后 boot 到 SingleUser 但无 rc marker（§1.25 定为 init `path_exists` 非 `Ok(true)` → SingleUser）。本轮按 §1.25 配方修 VFS 同步挂载路径后，boot 不再静默达 SingleUser，而是 **VFS `do_init_root` 诚实 panic**：`servers/vfs/src/main_loop.rs:7681: vfs: failed to initialize root: Io`（c1/c2 两次无探针复跑同签名，23313 行）。带临时取证探针（已删）实锤两条 readsuper 回复：PFS 回 `0x00000000`（status=0=OK），MFS 回 `0x001e0000`（status=30=EROFS）。
+
+### 根因（两环，代码 + 日志双向）
+1. **transid 线格式缺失**（症状的直接根因）：`WireFsClient::send`（`os/servers/vfs/src/request.rs`）旧用裸 `m_type=REQ_READSUPER(0xA1C)` 经 `ipc.sendrec` 直发 MFS，绕过 C `fs_sendrec`（`comm.c:21`）内部 `TRNS_ADD_ID(m_type, worker)` 把 request 号抬到高 16 位的契约。MFS 侧 `fs-rt::transport::receive` 按 `TransactionId::decode(raw)`（`call = raw >> 16`）分派：裸值 → call=0、`index = 0.wrapping_sub(FS_BASE)` 下溢 → `RequestNumber::from_index`=None → `Incoming::Unserved` → 回 **ENOSYS(78)**（`task.rs:419-421`）。read_super 从未真正抵达 MFS 挂载门。
+2. **状态字遮蔽**（让 boot 带病继续的共犯）：`decode_readsuper_reply`（`request.rs:1144-1162`）无视回复状态字无条件返 `FsResp::ReadSuper`（Ok）→ `do_init_root` 误以为挂载成功开门 → MFS `is_mounted()` 恒假 → init 后续 REQ_LOOKUP 撞 `minix-fs/src/task.rs:429-432` 挂载门 → 报错 → path_exists 非 Ok(true) → SingleUser。C `req_readsuper`（request.c:813-816）本应 `fs_sendrec` 抽出非 OK 状态即原样上抛（`if (r != OK) return r;`），C `main.c:519-520` 对挂载失败 panic。
+
+### 修复（`request.rs`，恢复 C 不变量）
+- **A**：`sendrec` 前 `msg.m_type = trns_add_id(REQ_READSUPER, 0);`（`minix_types::trns_add_id` 与 C `TRNS_ADD_ID` 逐位同）。同步 sendrec 靠阻塞往返匹配回复、非 transid，故 id=0；CodeReview 独立确认 id=0 低于异步 `IS_VFS_FS_TRANSID` 下界 0xB02、不会被 `handle_fs_reply` 误路由。
+- **B**：sendrec 后、`decode_readsuper_reply` 前 `let status = trns_del_id(msg.m_type); if status != 0 { return Err(FsError::Io(status)); }`（`trns_del_id` 与 C `TRNS_DEL_ID` 的 `(short)` 有符号截断一致）。恢复 C 错误传播，不再把 ENOSYS/EROFS 当成功。
+- **测试**：`main_loop.rs::test_root_mount_wire_shape` 断言从裸 `REQ_READSUPER` 改为兼验 `trns_del_id(线上值)==REQ_READSUPER` 且 `线上值==trns_add_id(REQ_READSUPER,0)`（可逆性）。`BootScriptedIpc` 默认回复 m_type=0 → status=0 → 走成功分支，`do_init_root` 等既有测试不破。
+- **取证探针（`nk4c:rs` + 8 hex，≤16B）属临时，已删**（本 commit 不含）。
+
+### 验证（三件套）
+- docker：`minix-kernel 813 / minix-arch 242 / minix-vm 528`，**0 failed**（基线 813/242/526，只增不减）；minix-vfs 宿主 **530 pass / 0 fail**（含更新后的 wire_shape 断言）。
+- rustfmt（nightly，`^Diff in` 计数）：request.rs HEAD=17 NEW=17、main_loop.rs HEAD=1 NEW=1——**零新增漂移**。
+- 真机：c1/c2 两次独立复跑签名一致（均 23313 行、`main_loop.rs:7681 failed to initialize root: Io`；非探针行差异仅 boot-shim UEFI 内存布局 ASLR 噪声）。p1 取证轮定位 EROFS。
+- 镜像 `xtask image --arch x86_64 --release` 构建通过（no_std 目标编译含本次改动）。
+
+### CodeReview
+无 MUST-FIX。逐项确认：修复 A/B 与 C `TRNS_ADD_ID`/`TRNS_DEL_ID`/`req_readsuper` 逐位一致；假阴性不存在（sendrec 同步、id=0 不入异步路由范围）；回归面可控（read_super 是唯一走 WireFsClient::send 的同步路径）；测试断言恰当。
+
+### 新前沿 B15（已定位，未修）
+B14 修复后 boot 诚实停在 **MFS 根挂载本体回 EROFS(30)**。根因（代码实锤）：`fs/mfs/src/mount.rs:417-420`——**clean 文件系统以读写挂载**时按 C `mount.c:90-95` dirty-mark（清 `FLAG_CLEAN` + `store_superblock` 写回块 0）；写落 `fs/fs-rt/src/source.rs:148-160` `ImgrdBlockSource::write_block`，而打包 imgrd 是 `ImageData::Static`（B11 零拷贝只读 rdata，8 MB）→ EROFS。（mount.rs:380-383：若超级块非 CLEAN 会自动降级 read-only 跳过写；我们镜像是 CLEAN → 不降级 → rw 写 → EROFS。）C 里 RAM 盘可写（memory 驱动服务自有缓冲），本端口零拷贝破了可写性（source.rs:154-157 注释自陈「待 bdev 通道 + E-FSBDEV 半 + MFS 可写 overlay」）。
+**下一入口**：给 imgrd 加**有界写覆盖层**（CoW：读透 Static 基座、写落「已改块→缓冲」小映射；dirty-mark 只改块 0）使 clean-rw 挂载不再 EROFS → MFS 真挂载 → init `stat(/dev/console)` 命中（需 imgrd 已烘 `/dev/console`、`/bin/sh`、`/etc/rc`）→ Runcom → rc marker。**勿动**：SCHED/IPC/B12、init（忠实镜像 C）、`task.rs` 挂载门（忠实镜像 `fsdriver.c:46-47`）。注意：若图省事改成「根挂载只读」会缩窄目标（C 是读写挂载，且后续单元 D/I 命令面+测试需写），**不是** C 忠实修向。
+
