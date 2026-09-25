@@ -20,7 +20,9 @@
 
 - **B19 已修（1.37 落地，含代码·PM 侧）**：根因——`PmServices::sched_start_user`（`vfs.rs:439`）传给 `crate::sched::sched_start_user` 的 `ep` 参数 = `resources.scheduler`（=Endpoint::SCHED）而非子进程自身端点。C `schedule.c:55` `sched_start_user(scheduler, rmp)` 载荷 `m.SCHED_ENDPOINT=rmp->mp_endpoint`，本实现误将 scheduler 当 schedulee，导致 SCHED 收到 INHERIT 后对 SCHED 自身(slot4) 而非子进程(slot12+) 做 schedctl→**子进程 NO_QUANTUM 永不消除→永不调度**。修=传 `table.procs[slot].endpoint()`（子自身端点）。**证据**：c20/c21 确认 `schedctl caller=0x4 tgt=0x0c`（子槽）、`pick->0xc`（子被调度），post-Runcom 结构签名一致。三件套绿（docker 815/242/528·0fail / fmt 789=789 零新增 / PM 417测全绿）。**新前沿 B20**：子进程首次执行即触发 kernel GP fault（vector 13, rip=0x1dbf5f49, errcode=0x0）——内核上下文切换到子时崩（可能与 VM_FORK 后子的页表/CR3/寄存器状态设置有关）。rc marker 未达，frontier 仍 1.30。
 
-- **B20 前沿（子进程首次执行 GP fault）**：c20/c21 fork 链完全走通（PM→VM→VFS→PM→SCHED→子被调度），但子进程(slot 12) 首次 pick 后内核立即 #GP(vector13, rip=0x1dbf5f49, errcode=0, "no entry trap style known")→kernel panic。可能原因：① VM_FORK 未正确设置子的 CR3/页表；② fork_from 拷贝的 p_reg 包含无效 RIP/RSP/CS；③ 内核 context_switch 对 p_cr3=0 或新建子的处理缺失。**下一入口**：读内核 schedule 后的 context switch 代码，查 `pick->0xc` 时子进程的 CR3/RIP/RSP 状态；确认 VM do_fork 是否设置了 p_seg.p_cr3。
+- **B20 已修（1.38 落地，含代码·内核侧）**：根因坐实+C 交叉验证——内核 `KProcess::fork_from`（`proc.rs:1594`）把子的 `cpu_context` 塞 `CurrentCpuContext::default()`（**全零：rip=0/rsp=0**）、`trap_style` 塞 `TrapStyle::NoEntry`。调度器首次 pick 子后走 `finish_and_restore`/`restore_user_context`（`lib.rs:3357-3382`）：`NoEntry` 的 `return_sequence()` 返 None → `panic!("no entry trap style known")`（对位 C `arch_system.c:597-598`），即观察到的 kernel #GP(vector13, cs=0x8 内核态, "no entry trap style known")。C `minix3/minix/kernel/system/do_fork.c:63` `*rpc = *rpp` **整体拷贝父 proc 结构含 `p_reg` 全部寄存器与 `p_kern_trap_style`**，line 74 仅重置 `rpc->p_reg.retreg = 0`（子见 pid=0 走 child 分支）。修=`fork_from` 改 `cpu_context: parent.cpu_context` + `trap_style: parent.trap_style`（继承父帧，子在其上首次调度即从父陷入点返回用户态），并在函数返回前 `set_ipc_return_code(&mut child, 0)`（写 RAX=0，经 `write_user_register` offset 80=gp_regs[0]=RAX，对应 C retreg=0）。**证据（决定性）**：c22/c23 两次真机签名一致——**#GP/`no entry trap` 彻底消除**、子进程 `pick->0xc` 后**真实执行用户代码**（`pre-restore- rip=0x204b52/0x226d50/0x227c80` 等真实代码地址、VM 服务其 `vm-pf` 页故障），post-Runcom probe 序列同构（仅页帧地址 run-to-run 抖动）。三件套绿（docker kernel **816**(新增测 `test_fork_from_inherits_register_frame_and_trap_style`)/arch 242/vm 528·0fail / fmt proc.rs 43=43 零新增 / 两次真机 c22==c23 签名一致、panic 碎片逐字节相同）。CodeReview **PASSED 无 MUST/SHOULD-FIX**（确认继承语义=C `*rpc=*rpp`、`set_ipc_return_code` 位置不冲突、父 fork 时刻 trap_style 恒为 FullContext 不会继承到 NoEntry/Syscall）。NICE-TO-HAVE=断言子 RAX==0 未采纳（arch 无 `read_user_register`、`gp_regs` 系 pub(super) 跨 crate 不可读，强加将扩 diff）。**新前沿 B21**：见下条。
+
+- **B21 前沿（子真跑后 PM 对一条非法端点消息 panic）**：c22/c23 确定性签名——子进程运行、VM 服务页故障若干轮后，PM 主循环打印 `nk4a: pm 0030b`（WAIT4 from INIT=0xb）紧接 `nk4a: pm 000ff`（**m_type=0x000、source=0xff=255**）→ `panic-enter`（PF 碎片拼出 loc 串长 `0x1a`=26 字符=`servers/pm/src/init.rs:NNN`，两跑字节相同）→ PM 死 → `ipcerr caller=0x0 err=ECALLDENIED` → `pmstall2` 自旋至 timeout（EXIT=124，boot 停 ~24402/24405 行）。**疑**：init.rs run-loop 两 panic 闸之一——`L567 panic!("PM got message from invalid endpoint: {}", …)`（`pm_isokendpt(255)` 失败）或 `L594 panic!("handle_vfs_reply failed: {:?}", …)`。source=0xff 是 `Endpoint::NONE`(-1 低字节)/未初始化端点：子/sh 真跑后首次发出的某条消息携带了非法/未设源，PM 忠实 fail-fast（C 同型）。**非 B20 引入的回归**（此前子根本跑不到这里）。**下一入口**：①先精确坐死 panic 行（PF 碎片不可靠——考虑在 VFS/内核侧而非 PM 加 ≤16B 探针，或用更稳的 panic-loc 转储；§1.33 PM 布局脆弱性阻断 PM 侧探针）；②读 init.rs:560-597 两 panic 闸与 `is_vfs_pm_rs`/`pm_isokendpt` 判据，查 source=0xff 消息从何而来（子 exec 前 `set_controlling_tty`? sh 首条 syscall? PM 自发?）；③对照 C `main.c:74-77` 对非法端点的处理是否真该 panic（抑或应静默丢弃 stale/notify 消息）。rc marker 未达（`minix-rs rc: minimal boot script marker` 仍未打印），frontier 仍 1.30。
 
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
@@ -2339,6 +2341,40 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 ### §1.36 本 turn 行量
 - 生产代码 2 文件（`minix-types/ipc/vfs.rs` 新增方法+测 + `vfs/main_loop.rs` 两站点改用）；
 - WORKLOG 顶部 B18→已修 bullet + B19 前沿 bullet + 本节 §1.36；
+- 三件套全绿 + CodeReview PASSED；**含代码修改的 fix commit**。
+
+---
+
+## §1.38　B20 修复：内核 fork_from 塞 default cpu_context + NoEntry trap_style→子首次调度即 #GP
+
+**受控读法接续**：本 turn 从 §1.37（B19 已修，commit 967b613c9）后的 B20 前沿下一入口起步（读内核 schedule 后 context switch + VM do_fork 是否设子 p_cr3）。HEAD=967b613c9，工作树 clean 起步。
+
+**addr2line + 日志钉死终态**：c22 尾 `no entry trap style known` + `trap: vector 0xd err 0x0 rip 0x1dbf5f49 cs 0x8`（cs=8=内核代码段、rsp=0xffff8000003ff8b0=内核栈）→ 非用户态崩，是内核 `restore_user_context` 路径 panic（`lib.rs:3382`，PF 碎片化的 `no entry trap style known` 先于外层 `trap_dispatch.rs:1004` 的 vector13 报告）。`ELF` 加载基址与链接地址 0xffff8000002xxxxx 不同（物理低位 0x1dcxxxxx），addr2line 直接解需 slide，但 panic 串已自证落点，未纠缠。
+
+**根因（读码坐实 + C 交叉验证）**：
+- `KProcess::fork_from`（`proc.rs:1594`）构造子时 line 1662-1663 塞 `cpu_context: CurrentCpuContext::default()`（x86_64 default = 全零 gp_regs + rip=0/rsp=0）+ `trap_style: TrapStyle::NoEntry`；
+- `dispatch_fork`（`syscall_process.rs:205-234`）在 fork_from 之后**无任何**补设子 cpu_context/trap_style 的站点（line 237 注释谎称「retreg=0 set by fork_from via p_reg initialization」——default 根本不拷父帧）；
+- 调度器 pick 子 → `finish_and_restore`（`lib.rs:3353-3383`）读 `p.trap_style`，`NoEntry.return_sequence()` 返 `None` → `panic!("no entry trap style known")`（对位 C `arch_system.c:597-598`）；
+- **C `do_fork.c:63` `*rpc = *rpp` 整体拷贝父 proc 结构**（含 `p_reg` 全部寄存器 + `p_kern_trap_style`），仅 `do_fork.c:74 rpc->p_reg.retreg = 0`。子因此从父陷入点返回用户态、retreg=0 走 child 分支。Rust 版把这两处丢成了 default/NoEntry。
+
+**修复**（`os/kernel/src/proc.rs::fork_from`）：
+1. `cpu_context: parent.cpu_context` + `trap_style: parent.trap_style`（继承父帧，忠实 `*rpc = *rpp`）；
+2. FPU 继承块之后、函数返回前调 `set_ipc_return_code(&mut child, 0)`（现成 API，经 `write_user_register` offset 80=gp_regs[0]=RAX，对位 C retreg=0）；
+3. 新单测 `test_fork_from_inherits_register_frame_and_trap_style`：给父设 `trap_style=FullContext` + 写 rip/rsp，fork 后断言子 `trap_style==FullContext` 且 `apply_to_trap_frame` 后 frame.rip/rsp 继承父值（守护 B20 回归）。
+
+**CodeReview 确认（PASSED 无 MUST/SHOULD）**：`set_ipc_return_code` 位置安全（x86_64 `inherit_fpu_state` 仅拷 fpu_policy 不碰 gp_regs；`complete_fork_setup` 仅改 flags/name；dispatch_fork 尾部仅 move）；C `do_fork.c` `*rpc=*rpp` 后显式重置的字段（p_nr/endpoint/时间/misc mask/NO_QUANTUM/cycles/cpuavg/信号标志/p_pending/页表/privilege）在 fork_from/dispatch_fork 均有对位处理，cpu_context/trap_style 系本轮补齐的两个遗漏；父进 dispatch_fork 前已验证 RECEIVING→经 IPC 入口→`trap_dispatch.rs:133` 恒置 FullContext，且生产无路径置 Syscall（S-8 deferred），故子继承到的必为 FullContext（可派发），不会继承 NoEntry/Syscall。
+
+**三件套取证**：
+- 镜像 build：`xtask image x86_64 release` EXIT=0 ✅；
+- Docker：kernel **816**（+1 新测 ✓）/ arch **242** / vm **528** = **0 fail**（基线 815/242/528 只增不减 ✓）；
+- fmt 零新增漂移：proc.rs cur=43=head=43；
+- 真机 c22/c23 两次：EXIT=124、24402/24405 行、**`vector 13`/`no entry trap`=0**（GP 彻底消除）、子进程 `pick->0xc` 后真实执行（`pre-restore- rip=0x204b52/0x226d50/0x227c80` 真实代码地址 + VM 服务 `vm-pf`）、post-Runcom probe 序列同构、panic 碎片（`servers/pm/src/i`+`nit.rs`+len=0x1a+`237`+len=0x1）**逐字节相同**（确定性）。
+
+**新前沿 B21**：子真跑后 PM 主循环对 `pm 000ff`（m_type=0x000、source=0xff=255 非法端点）panic（init.rs run-loop L567 invalid-endpoint 或 L594 handle_vfs_reply，loc 串 26 字符），PM 死→ECALLDENIED→pmstall2 自旋至 timeout。非 B20 回归（此前子跑不到此）。rc marker `minix-rs rc: minimal boot script marker` 仍未打印，frontier 仍 1.30。
+
+### §1.38 本 turn 行量
+- 生产代码 1 文件 2 处（`kernel/src/proc.rs::fork_from` 继承父帧 + retreg=0）+ 1 新单测；
+- WORKLOG 顶部 B20→已修 bullet + B21 前沿 bullet + 本节 §1.38；
 - 三件套全绿 + CodeReview PASSED；**含代码修改的 fix commit**。
 
 ---

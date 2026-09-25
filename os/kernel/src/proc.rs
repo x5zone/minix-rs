@@ -1659,8 +1659,16 @@ impl KProcess {
             // C: fork copies p_vmrequest but child never has RTS_VMREQUEST set
             p_next_requestor: None,
             p_vm_suspend: None,
-            cpu_context: CurrentCpuContext::default(),
-            trap_style: TrapStyle::NoEntry,
+            // C: do_fork.c:63 — `*rpc = *rpp` copies the ENTIRE proc struct,
+            // including `p_reg` (the parent's saved user register frame: rip/
+            // rsp/cs/…) and `p_kern_trap_style`. The child therefore resumes
+            // at the parent's kernel-entry point on its first schedule. A
+            // zeroed `cpu_context` + `NoEntry` trap style would make the
+            // return-to-user dispatch hit `panic("no entry trap style known")`
+            // (arch_system.c:597-598 / lib.rs:3382) the moment the scheduler
+            // picks the child — which is exactly the B20 kernel #GP.
+            cpu_context: parent.cpu_context,
+            trap_style: parent.trap_style,
             fpu_state: CurrentFpuState::default(),
         };
 
@@ -1694,6 +1702,13 @@ impl KProcess {
             child.fpu_state = parent.fpu_state;
             child.p_misc_flags.set(MiscFlagsBits::EXT_REG_INITIALIZED);
         }
+
+        // C: do_fork.c:74 — `rpc->p_reg.retreg = 0;` the child sees pid = 0
+        // so its fork() wrapper takes the child branch. The child inherited
+        // the parent's full register frame above; overwrite only the return
+        // register (RAX) so the resume lands at the parent's kernel-entry PC
+        // with a 0 result.
+        set_ipc_return_code(&mut child, 0);
 
         child
     }
@@ -2173,6 +2188,54 @@ mod tests {
 
         assert_eq!(child.p_getfrom_e, Endpoint::PM);
         assert_eq!(child.p_sendto_e, Endpoint::VFS);
+    }
+
+    #[test]
+    fn test_fork_from_inherits_register_frame_and_trap_style() {
+        // C: do_fork.c:63 `*rpc = *rpp` copies the parent's saved register
+        // frame and `p_kern_trap_style`; do_fork.c:74 then zeroes only
+        // retreg. Regression guard for B20: a zeroed `cpu_context` +
+        // `TrapStyle::NoEntry` child panics the return-to-user dispatch
+        // (`no entry trap style known`, lib.rs:3382) the instant the
+        // scheduler picks it.
+        let mut parent = KProcess::new(ProcNr(5), Endpoint(5));
+        parent.trap_style = TrapStyle::FullContext;
+        // x86-64 reg map (arch/x86_64/boot.rs write_user_register): 56=rip,
+        // 64=rsp. Plant a recognizable frame in the parent.
+        assert!(
+            <CurrentCpuContextArch as CpuContextArch>::write_user_register(
+                &mut parent.cpu_context,
+                56,
+                0x1122_3344,
+            )
+            .is_ok()
+        );
+        assert!(
+            <CurrentCpuContextArch as CpuContextArch>::write_user_register(
+                &mut parent.cpu_context,
+                64,
+                0x5566_7788,
+            )
+            .is_ok()
+        );
+
+        let child = crate::test_helpers::scratch_kproc(KProcess::fork_from(
+            &parent,
+            ProcNr(10),
+            Endpoint::from_generation_slot(1, 10),
+        ));
+
+        // Trap style inherited verbatim → child is dispatchable (was NoEntry).
+        assert_eq!(child.trap_style, TrapStyle::FullContext);
+        // Register frame inherited (not zeroed) → child resumes at the
+        // parent's kernel-entry point.
+        let mut frame = <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
+        <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(
+            &child.cpu_context,
+            &mut frame,
+        );
+        assert_eq!(frame.rip, 0x1122_3344);
+        assert_eq!(frame.rsp, 0x5566_7788);
     }
 
     #[test]

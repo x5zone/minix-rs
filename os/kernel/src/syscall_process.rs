@@ -233,12 +233,11 @@ pub fn dispatch_fork(
     // Write child back to process table
     *proc_table.get_mut(child_slot).unwrap() = child;
 
-    // C: do_fork.c:74 — child sees pid = 0
-    // rpc->p_reg.retreg = 0 — set by fork_from via p_reg initialization
-
-    // C: do_fork.c:122 — clear signal flags
-    // RTS_UNSET(rpc, RTS_SIGNALED | RTS_SIG_PENDING | RTS_P_STOP)
-    // Already handled by fork_from()
+    // C: do_fork.c:63 `*rpc = *rpp` — child inherits the parent's register
+    // frame + trap style; do_fork.c:74 `retreg = 0` — both done inside
+    // `fork_from` (child sees pid = 0 → takes the child branch).
+    // C: do_fork.c:122 — clear signal flags (RTS_SIGNALED|SIG_PENDING|P_STOP)
+    // already handled by fork_from().
 
     // C: do_fork.c:111-112 — write the reply fields in place:
     // `m_krn_lsys_sys_fork.endpt = rpc->p_endpoint` and
