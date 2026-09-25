@@ -49,7 +49,7 @@
 //! - IPC sendrecv suspend/resume paths
 //! - Per-CPU run queue cross-CPU access
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 
 use crate::proc::{proc_nr, CpuId, MiscFlagsBits, ProcNr, RtsFlagsBits};
 use crate::sched::Scheduler;
@@ -1203,7 +1203,8 @@ pub(crate) fn cpu_identity(cpu: CpuId) -> Option<CpuIdentity> {
 ///
 /// # Design (16-smp.md D1)
 ///
-/// `AtomicBool` + CAS spinlock. C uses `SPINLOCK_DEFINE(big_kernel_lock)`
+/// `AtomicIsize` + CAS spinlock; the value encodes the owning CPU id
+/// (`-1` = free). C uses `SPINLOCK_DEFINE(big_kernel_lock)`
 /// (`smp.c:27`); this is the Rust equivalent. Avoids the `spin` crate
 /// to keep the kernel `no_std` and dependency-free.
 ///
@@ -1215,6 +1216,23 @@ pub(crate) fn cpu_identity(cpu: CpuId) -> Option<CpuIdentity> {
 /// Single-CPU builds are unaffected: `bkl_lock` CAS succeeds on first
 /// try (no contention), spin loop body never executes.
 ///
+/// # Representation (NK4-C BKL hard gate)
+///
+/// A single `AtomicIsize` encodes both "is the lock held" and "who holds
+/// it" in one word: `-1` = free, `>= 0` = the id of the owning CPU. Merging
+/// the previous split `BKL_LOCKED: AtomicBool` + `BKL_OWNER: AtomicI32`
+/// removes the window where the two words disagreed — the two-step
+/// `bkl_lock` (CAS `locked` true, *then* store `owner`) and `bkl_unlock`
+/// (store `owner = -1`, *then* clear `locked`) let an interrupt handler that
+/// landed between the two stores observe `owner != me` while `locked ==
+/// true`, conclude it must not inherit, spin acquiring a lock whose only
+/// holder was the very kernel frame it interrupted, and self-deadlock on a
+/// single CPU. The boot path enters handlers through interrupt gates with
+/// `IF = 0`, so it never hits the window; the idle-wake / SMP-pressure
+/// scheduling loop runs with `IF = 1` and would. With one word there is no
+/// intermediate state: acquire is a single `compare_exchange`, release a
+/// single `store` — structurally equivalent to C's `spin_lock_irqsave`.
+///
 /// # Memory ordering
 ///
 /// - `compare_exchange` with `Ordering::Acquire` on the success path:
@@ -1225,26 +1243,20 @@ pub(crate) fn cpu_identity(cpu: CpuId) -> Option<CpuIdentity> {
 /// - `store` with `Ordering::Release` on unlock: guarantees that all
 ///   prior writes (inside the critical section) are visible to the next
 ///   CPU that acquires the lock.
-static BKL_LOCKED: AtomicBool = AtomicBool::new(false);
+///
+/// Only meaningful under real SMP (`current_cpu_id()`); mock builds never
+/// call it and mark the lock held with the sentinel [`BKL_MOCK_HOLDER`]
+/// (any value other than [`BKL_FREE`] still reads as "locked" to
+/// [`bkl_is_locked`], and the inherit branch is compiled out under mock).
+static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE);
 
-/// Which CPU currently owns [`BKL_LOCKED`] (`-1` = free).
-///
-/// NK4-C B27: the single `AtomicBool` cannot answer the question an
-/// interrupt-context handler actually needs — "is the lock held by *this*
-/// CPU (so I inherited it from the interrupted kernel frame and must NOT
-/// re-acquire or release) or by *another* CPU (so I must NOT touch the
-/// shared tables without acquiring it first)?" A bare `compare_exchange`
-/// try-lock conflates the two: it fails both when we already own it and
-/// when a peer owns it, and treating "peer owns it" as "inherited" lets two
-/// CPUs `&mut` `PROC_TABLE` at once (the early-SMP aliasing that corrupted
-/// a per-proc table pointer and crashed `IpcEngine::send`). Recording the
-/// owner CPU lets [`bkl_lock_or_inherit`] distinguish the cases, matching
-/// C's user-origin clock handler which acquires the lock (`BKL_LOCK()`,
-/// arch_clock.c:242) instead of inheriting a peer's.
-///
-/// Only meaningful under real SMP (`current_cpu_id()`); mock builds leave it
-/// at `-1` and fall back to the plain CAS try-lock in [`bkl_lock_or_inherit`].
-static BKL_OWNER: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(-1);
+/// Sentinel value meaning "the BKL is free".
+const BKL_FREE: isize = -1;
+
+/// Holder value mock builds store to mark the BKL locked. Distinct from
+/// [`BKL_FREE`] and from every real cpu id (`>= 0`).
+#[cfg(feature = "mock")]
+const BKL_MOCK_HOLDER: isize = -2;
 
 /// Guard returned by [`bkl_lock`]. RAII: dropping releases the BKL.
 ///
@@ -1467,17 +1479,20 @@ pub fn smp_state_with<'a, 'b>(
 /// fires while the interrupted context holds it INHERITS ownership (no
 /// action, C counting-lock depth-1 parity). Returns `true` when the caller
 /// acquired it (and owes the release).
+///
+/// NOTE: because `BKL` now carries the owner id, `false` here means only
+/// "not acquired" — the lock may be held by *this* CPU's interrupted frame
+/// (safe to treat as inherited) *or* by a peer CPU (must NOT be treated as
+/// inherited). Interrupt/trap entry points must use [`bkl_lock_or_inherit`],
+/// which distinguishes the two; this primitive is the mock fallback and a
+/// plain non-blocking try only.
 pub fn bkl_try_lock() -> bool {
-    let acquired = BKL_LOCKED
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_ok();
     #[cfg(not(feature = "mock"))]
-    if acquired {
-        BKL_OWNER.store(crate::current_cpu_id().raw() as i32, Ordering::Release);
-    }
+    let me = crate::current_cpu_id().raw() as isize;
     #[cfg(feature = "mock")]
-    let _ = acquired;
-    acquired
+    let me = BKL_MOCK_HOLDER;
+    BKL.compare_exchange(BKL_FREE, me, Ordering::Acquire, Ordering::Relaxed)
+        .is_ok()
 }
 
 /// Interrupt-context BKL entry (NK4-C B27 fix; C parity).
@@ -1504,19 +1519,20 @@ pub fn bkl_try_lock() -> bool {
 pub fn bkl_lock_or_inherit() -> bool {
     #[cfg(not(feature = "mock"))]
     {
-        let me = crate::current_cpu_id().raw() as i32;
-        if BKL_OWNER.load(Ordering::Acquire) == me {
+        let me = crate::current_cpu_id().raw() as isize;
+        if BKL.load(Ordering::Acquire) == me {
             return false; // this CPU's interrupted kernel frame owns it
         }
         // Free, or owned by another CPU: spin until we own it (never
-        // inherit a peer's lock — that is the aliasing bug).
-        while BKL_LOCKED
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+        // inherit a peer's lock — that is the aliasing bug). The single CAS
+        // both tests and sets ownership, so there is no intermediate state
+        // where `locked` and `owner` disagree.
+        while BKL
+            .compare_exchange(BKL_FREE, me, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
             core::hint::spin_loop();
         }
-        BKL_OWNER.store(me, Ordering::Release);
         true
     }
     #[cfg(feature = "mock")]
@@ -1531,8 +1547,12 @@ pub fn bkl_lock() -> BklGuard {
     // the first try (followed by one `Ordering::Acquire` fence). The
     // spin loop body only executes when another CPU is holding the BKL,
     // which cannot happen on a single-CPU build.
-    while BKL_LOCKED
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+    #[cfg(not(feature = "mock"))]
+    let me = crate::current_cpu_id().raw() as isize;
+    #[cfg(feature = "mock")]
+    let me = BKL_MOCK_HOLDER;
+    while BKL
+        .compare_exchange(BKL_FREE, me, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         // Hint the CPU that we are in a busy-wait. The x86 `pause`
@@ -1540,8 +1560,6 @@ pub fn bkl_lock() -> BklGuard {
         // compiler maps `hint::spin_loop()` to the right barrier.
         core::hint::spin_loop();
     }
-    #[cfg(not(feature = "mock"))]
-    BKL_OWNER.store(crate::current_cpu_id().raw() as i32, Ordering::Release);
     BklGuard { active: true }
 }
 
@@ -1564,12 +1582,12 @@ pub fn bkl_unlock() {
     // If this fires, someone called bkl_unlock() without a matching bkl_lock(),
     // or released the BKL twice on the same code path.
     debug_assert!(
-        BKL_LOCKED.load(Ordering::Acquire),
+        BKL.load(Ordering::Acquire) != BKL_FREE,
         "bkl_unlock() called but BKL is not held — double unlock or missing bkl_lock()"
     );
-    #[cfg(not(feature = "mock"))]
-    BKL_OWNER.store(-1, Ordering::Release);
-    BKL_LOCKED.store(false, Ordering::Release);
+    // Single store clears ownership and the lock together — no intermediate
+    // state where a peer/this-CPU handler could see them disagree.
+    BKL.store(BKL_FREE, Ordering::Release);
 }
 
 // R-05: bkl_lock_raii() and BklGuardRaii have been removed.
@@ -1588,7 +1606,7 @@ pub fn bkl_unlock() {
 /// (`assume_held`, `kernel_call_finish`) depend on it. For control flow,
 /// the witness (`BklSection`) remains the compile-time proof.
 pub fn bkl_is_locked() -> bool {
-    BKL_LOCKED.load(Ordering::Acquire)
+    BKL.load(Ordering::Acquire) != BKL_FREE
 }
 
 /// Test-only: force the BKL to the unlocked state.
@@ -1600,7 +1618,7 @@ pub fn bkl_is_locked() -> bool {
 /// crate-wide so lib.rs scheduler-loop tests can share it.
 #[cfg(test)]
 pub(crate) fn bkl_lock_reset_for_test() {
-    BKL_LOCKED.store(false, Ordering::Release);
+    BKL.store(BKL_FREE, Ordering::Release);
 }
 
 // ── Tests ──
@@ -1818,7 +1836,7 @@ mod tests {
 
     // ── BKL tests (D1 framework) ──
     //
-    // BKL tests share the global `BKL_LOCKED` AtomicBool and must be
+    // BKL tests share the global `BKL` AtomicIsize and must be
     // serialized to prevent parallel `cargo test` races. We use a
     // simple spinlock (`BKL_TEST_LOCK`) acquired in setup and released
     // in teardown — same pattern as `SPROF_TEST_LOCK` in misc.rs.
@@ -1833,12 +1851,12 @@ mod tests {
             core::hint::spin_loop();
         }
         // Ensure BKL starts unlocked (clean up after a panicked test).
-        BKL_LOCKED.store(false, Ordering::Release);
+        BKL.store(BKL_FREE, Ordering::Release);
         true
     }
 
     fn bkl_test_teardown() {
-        BKL_LOCKED.store(false, Ordering::Release);
+        BKL.store(BKL_FREE, Ordering::Release);
         BKL_TEST_LOCK.store(false, Ordering::Release);
     }
 

@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B27 copy 层根因修复（1.51，含代码·内核侧）**：**证伪 §1.50 的「SMP 页表竞态 / VMINHIBIT 缺口」假设**——B27 里那个每次必现、卡死 boot 于 172 行的 `kdst copy pa=0x0000800005d90a30`（bit47 伪物理地址）真根因是**确定性 code bug**：`os/arch/src/arch/direct_map.rs` 的 `DirectMapArch::virt_to_phys` 只认两个 Direct Map 窗口（kernel DM `0xffff808000000000` / VM DM `0x80000000`），对**内核 image 高半区 VA**（内核栈/BSS/`IMAGE_HEAP` 堆，全在 `0xffff800000000000+`、两窗口之外）走 else 分支盲减 VM 基址 → 伪 PA。c56/c57 探针直取 `virt_to_phys(virt=0xffff8000003ffb30) -> 0xffff7fff803ffb30` 坐实。**修=18 个 boot-path copy 站点**统一从 `AddressRef::Physical(virt_to_phys(内核VA))` 改 `AddressRef::Process { endpoint, offset: VirBytes(内核VA) }`（进程 CR3 同时映射内核 higher-half，`resolve_physical` 走真页表得正确 PA；范式对位 `os/kernel/src/syscall.rs` dispatch_diagctl 的 boot-span 恒等式注释）：`syscall_process.rs`×2(exec name_buf/IPC filter)、`syscall_signal.rs`×3、`syscall_copy.rs`×4、`misc.rs`×7(getinfo/trace×4/sprof×2)、`syscall_device.rs`×3(vdevio/sdevio)、`kmess.rs`×1(kmess 快照堆)、`stacktrace.rs`×1(user 回栈 scratch)。**真机决定性**：原确定性 corrupt 归零，boot 从「每次卡死 172 行」前进到**全部 17-18 服务诞生 + 进入用户态 exec**；stacktrace.rs:249 修复另消除 c61 的 `rip=0xffff7fff…` 伪回栈野值（c62/c63 归零坐实）。**残留=新前沿（非本 bug）**：c60-c65 六次中仅 c64 出现 **1 次（1/6 低频、不阻塞 boot）** 的 birth 期 `copy pa=0x0000800005d90a30`——结构上是 bit47 落在 `ADDR_MASK` 内被当地址、**非 `virt_to_phys` 算术输出**（后者产 `0xffff7fff…` 形态），指向 birth 页表 walk 偶读到被 free/复用的中间表页（这才是 §1.50「页表生命周期」假设的**真实、低频、异机制**版本，side-conversation「诊断二」在此点上部分成立）。三件套绿（mock kernel **819**/·0fail 只增不减 / fmt 全 7 文件零新增漂移、syscall_copy 反而 44→0 / 真机 c64+c65 签名一致=17 服务 + `pagefault VM rip=0 cpu3`）+ CodeReview PASSED（无 MUST/SHOULD-FIX）。**下一前沿（按序）**：① 低频 birth 页表-walk bit47（用 walk 前后同址双采 PTE 探针定位是哪一级被并发 free）；② `pagefault for VM rip=0 cr2=0 err=0x15`（B26 家族用户态 null 取指）；③ `stacktrace.rs:150 kernel_direct_read_word` 的 `virt_to_phys→kernel_phys_to_virt` 往返对 image 高半区内核栈产野地址（c60 `recursive panic` 源，本 unit 未盲改）；④ BKL 两步写单原子硬门（§1.50 SHOULD-FIX）。rc marker 仍未达。详见 §1.51。
+> **⚠ 最新前沿 = BKL 单原子化硬门 + §1.49 SMP 竞态实锤（1.52，含代码·内核侧）**：关闭 §1.50 登记的 SHOULD-FIX「BKL 两步写自死锁硬门」——`BKL_LOCKED: AtomicBool`+`BKL_OWNER: AtomicI32` 两分离原子的 `bkl_lock`(CAS locked 后 store owner)/`bkl_unlock`(store owner 后清 locked) 两步写在 `IF=1`（idle 唤醒调度循环）留「locked≠owner」窗口，同 CPU 中断落入即自旋等自己持有的锁=单核自死锁（boot 全程 `IF=0` 不触发）。**修=合并为单个 `static BKL: AtomicIsize`**（-1=空闲/≥0=持有者CPU id；acquire 单 CAS、release 单 store、inherit `load==me`），locked 与 owner 物理同字、窗口结构性消失，等价 C `spin_lock_irqsave`；改动全局部 `smp.rs` 六函数、调用方零改动（grep 确认两 static 仅内部引用）。**并做控制实验钉死 §1.49 悬案**：修后 SMP 同镜像两次签名发散（c66 15.9MB OOM / c67 13KB picknone），遂 stash 回 HEAD 原样重建对照——**控制组 HEAD 自身 `-smp 4` 亦 2-3 次 kernel panic**、而 `-smp 1` 四次全部 `kernel panic=0` 且结构签名一致（size 33185，含我的改动 bk==control，diff 仅 UEFI 一页基址抖动）⇒ **§1.49「早期 boot panic 是真 bug 还是 `-smp 4` 竞态」定性实锤=多核启动竞态，非确定性 bug**。方法论：单核 `-smp 1` 是可复现确定性测试台（`xtask qemu` 硬编 `-smp 4`，直呼 qemu 绕过）。三件套绿（mock **819**·0fail / fmt `smp.rs` HEAD=0==WT=0 / 真机改单核基线零回归坐实）+ CodeReview **PASSED 0 MUST/SHOULD-FIX**（采纳 CONSIDER#2 澄清 `bkl_try_lock` doc 旧「peer=继承」混淆态）。**下一前沿（按序，详见 §1.52）**：① **头号（单核测试台本轮立即掘出）= VM handoff free-list 布局鲁棒性**——单核 `-smp 1` 轨迹实锤 `kernel: vm_handoff free n=0x0 deducted=0x17` → VM 崩于 `servers/vm/src/boot.rs:159` `free_regions.is_empty()`（=`boot-shim` 装载点本页后移一页，内核 free-list 扣减把 15 条 usable 全扣光；S0 登记不修的布局鲁棒 bug 重现，**非 BKL 回归**，是挡 rc marker 的确定性头号前沿）；② SMP 早期启动竞态本体（`-smp 4`+只打印寄存器探针定位 BSP/AP bringup 时序，独立于 BKL 的另类竞态）；③ §1.51 遗留（低频 birth bit47 / `stacktrace.rs:150` 往返野地址 / `pagefault VM rip=0 cpu3`〔本轮证据属 SMP 竞态家族〕）。rc marker 仍未达。详见 §1.52。
+>
+> **⚠（1.51 历史·其「SMP 页表竞态」定性已被 §1.52 控制实验细化：现存 SMP panic 确为多核竞态、但独立于本 unit 关的 BKL 自死锁窗口）最新前沿 = B27 copy 层根因修复（1.51，含代码·内核侧）**：**证伪 §1.50 的「SMP 页表竞态 / VMINHIBIT 缺口」假设**——B27 里那个每次必现、卡死 boot 于 172 行的 `kdst copy pa=0x0000800005d90a30`（bit47 伪物理地址）真根因是**确定性 code bug**：`os/arch/src/arch/direct_map.rs` 的 `DirectMapArch::virt_to_phys` 只认两个 Direct Map 窗口（kernel DM `0xffff808000000000` / VM DM `0x80000000`），对**内核 image 高半区 VA**（内核栈/BSS/`IMAGE_HEAP` 堆，全在 `0xffff800000000000+`、两窗口之外）走 else 分支盲减 VM 基址 → 伪 PA。c56/c57 探针直取 `virt_to_phys(virt=0xffff8000003ffb30) -> 0xffff7fff803ffb30` 坐实。**修=18 个 boot-path copy 站点**统一从 `AddressRef::Physical(virt_to_phys(内核VA))` 改 `AddressRef::Process { endpoint, offset: VirBytes(内核VA) }`（进程 CR3 同时映射内核 higher-half，`resolve_physical` 走真页表得正确 PA；范式对位 `os/kernel/src/syscall.rs` dispatch_diagctl 的 boot-span 恒等式注释）：`syscall_process.rs`×2(exec name_buf/IPC filter)、`syscall_signal.rs`×3、`syscall_copy.rs`×4、`misc.rs`×7(getinfo/trace×4/sprof×2)、`syscall_device.rs`×3(vdevio/sdevio)、`kmess.rs`×1(kmess 快照堆)、`stacktrace.rs`×1(user 回栈 scratch)。**真机决定性**：原确定性 corrupt 归零，boot 从「每次卡死 172 行」前进到**全部 17-18 服务诞生 + 进入用户态 exec**；stacktrace.rs:249 修复另消除 c61 的 `rip=0xffff7fff…` 伪回栈野值（c62/c63 归零坐实）。**残留=新前沿（非本 bug）**：c60-c65 六次中仅 c64 出现 **1 次（1/6 低频、不阻塞 boot）** 的 birth 期 `copy pa=0x0000800005d90a30`——结构上是 bit47 落在 `ADDR_MASK` 内被当地址、**非 `virt_to_phys` 算术输出**（后者产 `0xffff7fff…` 形态），指向 birth 页表 walk 偶读到被 free/复用的中间表页（这才是 §1.50「页表生命周期」假设的**真实、低频、异机制**版本，side-conversation「诊断二」在此点上部分成立）。三件套绿（mock kernel **819**/·0fail 只增不减 / fmt 全 7 文件零新增漂移、syscall_copy 反而 44→0 / 真机 c64+c65 签名一致=17 服务 + `pagefault VM rip=0 cpu3`）+ CodeReview PASSED（无 MUST/SHOULD-FIX）。**下一前沿（按序）**：① 低频 birth 页表-walk bit47（用 walk 前后同址双采 PTE 探针定位是哪一级被并发 free）；② `pagefault for VM rip=0 cr2=0 err=0x15`（B26 家族用户态 null 取指）；③ `stacktrace.rs:150 kernel_direct_read_word` 的 `virt_to_phys→kernel_phys_to_virt` 往返对 image 高半区内核栈产野地址（c60 `recursive panic` 源，本 unit 未盲改）；④ BKL 两步写单原子硬门（§1.50 SHOULD-FIX）。rc marker 仍未达。详见 §1.51。
 >
 > **⚠（1.50 历史·部分结论已被 §1.51 证伪）B27 部分修（含代码·内核侧）**：坐实 B27 一类真根因=中断/陷阱入口用 `bkl_try_lock()`（单 AtomicBool CAS）无法区分「本 CPU 内核帧持有（继承）」与「别的 CPU 持有（须自旋获取）」，user/idle-origin 陷入误继承 peer 锁→两 CPU 并发 `&mut PROC_TABLE` 撕裂写。修=`smp.rs` 新增 `BKL_OWNER: AtomicI32` owner 跟踪 + `bkl_lock_or_inherit()`（owner==self 才继承、否则自旋获取），把 clock 0xF1 臂/PIT TIMER 臂/`save_irq_frame_to_context`/SCHED_IPI 臂/int33 IPC 入口/irq_manager dispatch·claim ×3/riscv·aarch 同型站点全换用之。**真机决定性**：原 B27 签名（`cr2=0xffff807f85d7b6a8` IpcEngine::send 读坏表指针）**从干净重建消失**，崩溃收敛为**确定性**（c54/c55 同 172 行、同一根腐蚀点）。~~**残留 B27**：birth 期页表 walk bit47 = VM 并发改页表竞态（候选 VMINHIBIT 缺口）~~ **【§1.51 纠正：该「每次必现、卡死 172 行」的 bit47 corrupt 实为确定性 `virt_to_phys(image VA)` code bug，非竞态，已修；仅 1/6 低频 birth 残留才是页表生命周期家族】**。三件套绿 + CodeReview PASSED（无 MUST-FIX）。**BKL 两步写硬门**（`bkl_unlock`/`bkl_lock` 中 `BKL_OWNER`+`BKL_LOCKED` 两步写在 IF=1 窗口可致同 CPU 自死锁，boot 全程 IF=0 不触发，根治=合并单 `AtomicIsize`）仍未做、排 §1.51 后续。详见 §1.50。
 >
@@ -2769,6 +2771,54 @@ B27 早期内核 panic 的一类根因 = **中断/陷阱入口的 BKL 获取语�
 4. **BKL 两步写单原子硬门**：§1.50 SHOULD-FIX（`BKL_OWNER`+`BKL_LOCKED` 合并为单 `AtomicIsize`），IF=1 idle-wake 前必关。
 
 **取证产物**（`os/target/nk4a-runs/`，gitignore）：`serial_c60.log`–`serial_c65.log`。工作树探针状态：仅改生产 copy 站点（+ 少量既有 `nk4a_kdst_probe` 在 HEAD，task1-close 统一裁决删除）。
+
+---
+
+## §1.52 BKL 单原子化硬门落地（含代码·内核侧）+ §1.49 早期 boot panic 定性实锤 = SMP 竞态（控制实验）
+
+### 本 unit 做了什么
+
+关闭 §1.50 登记、§1.51 顺延的 SHOULD-FIX「BKL 两步写自死锁硬门」，并用一次控制实验把 §1.49 悬而未决的「早期 boot panic 是真 bug 还是 `-smp 4` 竞态」钉死为后者。
+
+### 一、BKL 两步写自死锁硬门修复（`os/kernel/src/smp.rs`）
+
+**根因（side-conversation 诊断一 + §1.50 独立登记，两处一致）**：`BKL_LOCKED: AtomicBool` 与 `BKL_OWNER: AtomicI32` 是**两个分离原子**。`bkl_lock` 先 CAS `locked` false→true、**后** `store owner=me`；`bkl_unlock` 先 `store owner=-1`、**后** `store locked=false`。两步写之间有「locked 与 owner 不一致」窗口。在 `IF=1`（idle 唤醒后的调度循环）窗口，若本 CPU 恰在 `bkl_lock` 的两条 store 之间被中断，中断处理程序进 `bkl_lock_or_inherit` 读到 `owner != me`（仍是 -1 或旧 peer）→ 判为**非继承**→ 去 CAS `BKL_LOCKED`→ 而 locked 已被被打断的本 CPU 内核帧置 true → CAS 恒失败 → **同 CPU 自旋等一个自己持有的锁 = 单核自死锁**。boot 全程经 `IF=0` 的 interrupt gate 进 handler 故不触发（这也是它不阻塞 §1.50/§1.51 合入的原因），但它是任何 idle-wake / SMP 压力稳定性验证之前必须关的硬门。
+
+**修法（CodeReview 方案 1，已核等价）**：合并为**单个 `static BKL: AtomicIsize`**（`-1` = 空闲 / `>= 0` = 持有者 CPU id）。acquire = 单条 `compare_exchange(BKL_FREE, me, Acquire, Relaxed)`；release = 单条 `store(BKL_FREE, Release)`；inherit 判定 = `load(Acquire) == me`。「locked 位」与「owner」**物理上同一字**，不一致窗口结构性消失，语义等价 C `spin_lock_irqsave`。改动全局部于 `smp.rs` 六函数（`bkl_try_lock`/`bkl_lock`/`bkl_lock_or_inherit`/`bkl_unlock`/`bkl_is_locked`/`bkl_lock_reset_for_test`）+ `BklGuard`/测试 setup/teardown；`BKL_LOCKED`/`BKL_OWNER` 经 grep 确认仅 `smp.rs` 内部引用，**调用方零改动**。mock（单 CPU，不调 `current_cpu_id()`）用哨兵 `BKL_MOCK_HOLDER=-2` 标记持锁（`!= BKL_FREE` 即 locked）。
+
+**CodeReview 采纳**：CONSIDER#2——`bkl_try_lock` doc 原写「peer 持有 = INHERITS」是旧 bool-only 模型混淆态；补 NOTE 澄清「合并后 false 仅表示『未获取』（可能本 CPU 帧或 peer），中断/陷阱入口须用 `bkl_lock_or_inherit`」。CONSIDER#1（`bkl_unlock` debug_assert 顺带验所有权）示例用了 `debug_assert!` 内嵌 `#[cfg]` 不合法 Rust，未采纳（结构性目标「消除不一致窗口」已由单字达成）。
+
+### 二、§1.49 悬案定性实锤：早期 boot panic = `-smp 4` 启动竞态（控制实验·无生产码改动）
+
+修完 BKL 后建镜像上真机，本想做「两次签名一致」三件套，结果 c66（15.9 MB、birth 后 OOM 刷屏）与 c67（13 KB、卡在 picknone）**同一镜像两次签名天差地别**。据此做了严格控制实验（`git stash` 掉 BKL 改动 → 用 HEAD dade6883f 原样重建 → 同法跑）：
+
+| 运行 | 构建 | 核数 | 结果 |
+|------|------|------|------|
+| c68ctl / c69ctl | **HEAD（无我的改动）** | `-smp 4` | 均 `picknone`+`tail-dump`+**2–3 次 kernel panic**（11 KB / 29 KB 互不相同）|
+| c66 / c67 | 含 BKL 改动 | `-smp 4` | 15.9 MB OOM 刷屏 / 13 KB picknone（互不相同）|
+| s1a / s1b | HEAD（无改动） | **`-smp 1`** | **结构确定**：size 33185==33185，**0 kernel panic**，birth=1，idle gtick 计数 |
+| bk1 / bk2 | 含 BKL 改动 | `-smp 1` | size 33185==33185，**0 kernel panic**，与 control 仅差 UEFI 一页基址抖动（`0x4920000`→`0x4921000`）|
+
+**结论（钉死 §1.49）**：早期内核 panic 是 **`-smp 4` 多核启动竞态，不是确定性 boot 逻辑 bug**。证据链：(a) **控制组 HEAD 自身**在 SMP 下也复现 kernel panic（证明与我的改动无关）；(b) 同一镜像 SMP 两次结果发散（证明运行时非确定性 = 时序竞态）；(c) 单核四次全部 `kernel panic=0`、结构签名一致（证明去掉 SMP 即去掉竞态）。§1.49「判明是真 bug 还是 `-smp 4` 竞态」的取证配方（干净重建 + 单/多核对照）本轮执行完毕。
+
+**方法论收获**：单核 `-smp 1`（`xtask qemu` 里硬编 `-smp 4`，绕过 xtask 直呼 `qemu-system-x86_64 -smp 1` + 同 drive 参数）是一个**确定性可复现的测试台**——SMP 噪声消除后，任何 boot 逻辑改动都能用「单核 size 33185 + 0 panic 基线」做无歧义 A/B。本 unit 的 BKL 改动经此台验证为**零回归**（bk==control）。
+
+### 三、三件套
+
+- **mock**：kernel 816 lib + 3 integration = **819** 通过，0 fail（只增不减）。`cargo check -p minix-kernel --features mock` exit 0（仅 `warning[E0133]` 既有裸指针告警，非本改动）。
+- **fmt**：`smp.rs` nightly rustfmt **HEAD=0 == WT=0**（零新增漂移）。
+- **真机**：SMP 非确定性（控制组亦崩）故无法对本语义中性改动做 A/B 门；改用**单核确定性基线**验证——bk1/bk2 size 33185 == control s1a/s1b、`kernel panic=0`、diff 仅 UEFI 一页基址抖动 → 零回归坐实。
+- **CodeReview**：**PASSED，0 MUST-FIX / 0 SHOULD-FIX**（2 CONSIDER：#2 已采纳，#1 示例不合法未采纳）。
+
+### 四、下一前沿（本 unit 未做，按序转下轮）
+
+> **本 unit 用单核测试台立即掘出确定性根因**：单核 `-smp 1`（bk1/bk2 与 control s1a/s1b 同一签名）轨迹实锤——`vm enter`（bk1 line 106）后紧接 `kernel: vm_handoff free n=0x0 deducted=0x17`（line 79）→ VM server `panic-enter`（line 109）→ 崩于 `os/servers/vm/src/boot.rs:159` `assert!(!self.free_regions.is_empty(), "BootParams: no free memory regions (C: mmap_size > 0)")`。此前记的「birth=1 后 picknone、gtick 空转」是该 panic 的**下游**（VM 死→无内存服务→INIT 无从调度→idle）。**非 BKL 回归**（control 亦同签名），即 S0 登记的「vm_handoff free n=0 → boot.rs assert → livelock」**内存交接布局鲁棒性 bug**（当时归因 fresh-vars，现本 build 亦触发：本次重建令模块装载点整体后移一页 `0x4920000→0x4921000`，把 free-list 裁到 0）。
+
+1. **头号前沿（挡 rc marker，且现可确定性复现）= VM handoff free-list 布局鲁棒性**：内核 `vm_handoff.rs` 的 `build_*`/free-list 扣减（log `deducted=0x17`=23）在特定 memmap 布局下把 15 条 usable 全扣光→`free n=0`→VM `boot.rs:159` 必崩。修法方向（下轮设计）：扣减只应剔除「内核 image / boot modules / 页表 / VM 自alloc / MMIO hole」，**模块上方到 `vm_pa_limit`(0x40000000=1GB) 的空闲 RAM 必须至少保留一条**；核对 `boot-shim: memmaps conv=15 reserved=121` 与 23 条扣减记录的来源，找过度扣减项。有单核 size 33185 + `free n=` 日志作为无噪 A/B 基线。
+2. **SMP 早期启动竞态本体**（`-smp 4` 独有、与 #1 正交）：§1.52 证实现存 SMP panic 是**另一类**早期竞态（HEAD 亦崩、同镜像两次发散）。需 `-smp 4` + 只打印寄存器探针（守探针纪律）比对 BSP/AP bringup 与首轮 `bkl_lock_or_inherit` 时序。BKL 单原子化关的是「同 CPU 自死锁窗口」这一类，但非本竞态本体。待 #1 打通单核 rc marker 后再攻。
+3. §1.51 遗留：低频 birth 页表-walk bit47（c64 1/6）、`stacktrace.rs:150` 往返野地址、`pagefault VM rip=0 cpu3`（本轮证据：SMP 单发，属竞态家族，待 #2 收敛后复看）。
+
+**取证产物**（gitignore）：`serial_c66.log`–`c69ctl.log`、`serial_s1a/s1b/bk1/bk2.log`。工作树：仅 `smp.rs` 一处生产改动（BKL 单原子化），控制实验的 stash 已 pop 回、无残留。
 
 ---
 
