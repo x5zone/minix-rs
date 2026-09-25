@@ -12,7 +12,9 @@
 
 - **B15 已修（1.27 落地，含代码）**：MFS 根挂载 dirty-mark 不再 EROFS——`fs/fs-rt/src/source.rs::ImgrdBlockSource` 加**有界 CoW 覆盖层**（`overlay: BTreeMap<u64, Vec<u8>>`）。修向：`read_block` 先查 overlay、miss 落 Static 基座（clip 短尾零填，保持 C `memory.c:442-443` 边界规则）；`write_block` 分 arm——`Owned` 就地写不 populate overlay（测试/future writeback 路径）、`Static` 不再返 EROFS 而是写落 overlay（部分越界存 surviving、整块越界 no-op）；`from_static` 构造点初始化空 overlay；`EROFS` import 删除。**dirty-mount 只写块 0 → overlay 1 条 ≈ block_size + 树节点，内存有界**（vs 8 MB base 无法 Owned 化、2 MB slab pool 装不下）。C 忠实性：memory 驱动自有缓冲的 RAM 盘可写；本 overlay 是 bdev 通道未接前的过渡形态，进程终止即丢=与 C 语义一致。宿主 fs-rt 27/27 pass（新增 4 测：overlay 遮蔽读写 / clip 短尾 / 整块越界 no-op / 多块独立），mfs 133/fs 178/vfs 530 全绿。三件套绿（docker 813/242/528·0fail / fmt source.rs HEAD=1 NEW=1 零新增 / 两次真机 c3/c4 签名一致=25213 行、`init-state Runcom` @24127 同位、无 panic/EROFS/Failed to init）。CodeReview PASSED 无 MUST-FIX（SHOULD-CONSIDER=Owned 热路径多做一次 overlay get 可加注释；NICE-TO-HAVE=image() doc 说明不含 overlay——均非破坏性，本轮保持 diff 最小不采纳）。**boot 现前进到 `init Runcom` 相位**。⚠️ 不选「改根挂载只读」缩窄目标路径（非 C 忠实、破坏单元 D/I 写需求）。
 
-- **B16 前沿（1.29 侦察 A 完成，候选缩窄至父侧 errno 正负号契约）**：B15 修后 boot 抵达 `init-state Runcom`，但 rc marker 未出。本轮上探针 A（init runcom.rs 5 个 + pm fork.rs 2 个 + pm ipc/vfs.rs VfsReply::Fork 4 个 `nk4c:` 前缀≤16B cap 8）——三轮真机 c5/c6/c7：**`nk4c:rc:prnt` 均命中**（init `host.fork()` 返 Ok(pid)）、**`nk4c:rc:chld` 三轮零命中**（子从未到 Ok(0) 行）、**`nk4c:pm:frk-in` 三轮零命中**（VfsReply::Fork 异步回复链从未执行）、**`nk4c:pm:dF:in` + `nk4c:pm:dF:pf` 均命中**（do_fork 已入、find_parent_slot 已成功）。证据链：子未创建 ⇒ do_fork 在 `dF:pf` 后某处 Err（候选：`can_alloc_for_user`、`find_free_slot`、`vm_fork`） ⇒ dispatcher `Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno())` ⇒ `reply(caller, code)` 直接 `msg.m_type = code` 发回（init.rs L651-668，无取负）⇒ minix-sys `perform_syscall` 仅判 `m_type < 0` 为 Err（syscall.rs L107）、否则 Ok。若 `to_errno()` 为正（ENOSYS=38/EAGAIN=11 等），init 侧将拿到 Ok(11)=Ok(pid=11)——**假成功父、无子、waitpid 卡**。候选根因：PM 对错误码未取负、与 C `main.c:106 reply(who_p, result)` 的“result=−errno”约定失配（与 WORKLOG F10b 内修家族同构：内核 `reply_wire()` 已取负，PM `reply()` 未同步）。**下一入口**：读 `PmError::to_errno()` + dispatcher 全链确认正负号；修 `reply()` 处对 error 取负（或 dispatcher 层统一取负）。修后探针回滚 + 三件套 + CodeReview + §1.29 补充 → fix commit。**本轮探针已全部 `git checkout` 回滚、工作树干净**（doc commit）。**勿动**：SCHED/IPC/B12、init 状态机（忠实镜像 C）、`task.rs` 挂载门、VFS readsuper（1.26 已修）、imgrd source overlay（1.27 已修）。详 §1.28 侦察补 + §1.29 探针 A 实锤。
+- **B16 部分修（1.30 落地，含代码；仅 Fork/SrvFork 两臂取负）**：候选根因确认——PM `Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno())` 传正 errno、`reply()` 无取负写 `msg.m_type = 正` → init `perform_syscall` 判 `m_type ≥ 0` 走 Ok 分支、将 EAGAIN/ESRCH 当 child_pid → 假成功父无子、waitpid 卡（与 C `_syscall`/F10b `reply_wire()` 契约失配）。修复：`calls.rs` L234-247 的 `PmCall::Fork` 与 `PmCall::SrvFork` `Err(e) => ReplyIntent::Reply(-PmError::from(e).to_errno())`；测试 `test_dispatch_fork_parent_unknown_is_error_reply` 断言同步；`cargo test -p minix-pm --lib` **417/417 pass**。**真机 c8/c9**：两次签名一致（`init-state Runcom` 各 1、`nk4a: pm 0140b` 各 8）；c8 35863 行 vs c7 25013 = **活动 +43%（子/兄弟进程真在跑：`pfwd nr=1..9 out=B` 全 boot 模块页 fault 转发到 VM 服务）**——fork 链已通、系统进入下一停点 B17（rc marker 仍未出）。
+
+- **B17 前沿（fork 后 rc marker 仍缺）**：B16 部分修后 boot 越过 fork 假 Ok、进入子/兄弟执行；但 60s 内仍未见 `minix-rs rc: minimal boot script marker`。候选：①exec /bin/sh 未起（exec 路径错误臂同样正 errno——`calls.rs` L264/L303/L317 与 `dispatcher.rs` L110/L114 等未修）；②exec 起但 sh 未 echo marker；③sh 起但 fd 1 未 wire 到 console。**下一入口**：全量扫 PM 错误臂取负（`calls.rs` ~30 处 `Err(e) => Reply(e.to_errno())` + `positive_errno(...)` 站点 + `dispatcher.rs` ENOSYS 两处；考虑 `ReplyIntent::Reply` 拆 `Reply/ReplyErr` 两臂架构修法）+ 二次真机 c10/c11 若 marker 出即 B17 解决；否则探针 B 定位 exec 半链。
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
@@ -2064,3 +2066,64 @@ c5 行 25374 仅 `prnt` 一个；c6 行 25002 仅 `prnt`；c7 行 25013 `dF:in +
 - doc commit：WORKLOG 顶部 B16 bullet 全面改写 + 本节 §1.29 追加。无三件套、无 CodeReview（无生产代码变更）。
 - frontier 仍 = 1.27（B15 修复 commit `ad2965e0d`）；rc marker 未达成。
 
+
+## 1.30 · B16 部分修（Fork/SrvFork 错误臂取负）——fork 链通、进入 B17
+
+### 现象
+- 承 §1.29 侦察 A 结论：`do_fork` 已进入 `dF:pf`（find_parent_slot 成功）但 VfsReply::Fork 异步回复链从未执行；父 `host.fork()` 拿假 Ok(pid) 走 prnt 分支 → waitpid 卡。
+- 候选根因锁定 = PM 错误回执未与 C `_syscall` m_type<0 契约对齐（F10b 内核 `reply_wire()` 同构问题在 PM 侧未同步）。
+
+### 根因（本轮实证）
+`os/servers/pm/src/ipc/calls.rs` L234/L245：
+```rust
+PmCall::Fork => match crate::fork::do_fork(...) {
+    Ok(_child_pid) => ReplyIntent::ReplyLater,
+    Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),  // ← 正值
+},
+```
+`PmError::to_errno()` 返 `EAGAIN=11`/`ESRCH=3` 等正 errno。经 `init.rs::reply()` L651-668 `msg.m_type = result` **无取负** 直接发到 init。init 的 `minix-sys::syscall::perform_syscall` L107 判 `m_type < 0` = Err / else Ok ⇒ 正值被当成功 child_pid。
+
+`forkexit.c:60-79` 的同步可失败段（父 endpoint 非法 ESRCH、表满 EAGAIN、VM 拒绝等）全部走这条路径。init 拿到"Ok(3)" 或 "Ok(11)" 当作 child_pid，然后 `waitpid(3 or 11)` 找不到子、卡死。
+
+### 修复（本轮）
+- `os/servers/pm/src/ipc/calls.rs` L234-247 `PmCall::Fork` 与 `PmCall::SrvFork` 的 `Err(e)` 臂改为 `ReplyIntent::Reply(-PmError::from(e).to_errno())`——与 F10b `reply_wire()` 语义同构（错误码取负、数据码原样）；
+- `os/servers/pm/src/ipc/dispatcher.rs` L110/L114 `ReplyIntent::Reply(ENOSYS)` → `Reply(-ENOSYS)`（CodeReview S1 建议）；同步 3 处单测断言；
+- `os/servers/pm/src/event.rs` L409 `Reply(minix_types::ENOSYS)` → `Reply(-ENOSYS)`（与 dispatcher 同路径）；同步 1 处单测断言；
+- `os/servers/pm/src/wait.rs` L149 `Reply(ECHILD)` → `Reply(-ECHILD)`（init waitpid 循环必 hit 分支，CodeReview S1）；同步 1 处单测断言；
+- `os/servers/pm/src/init.rs` L1264 `test_run_once_replies_enosys_to_unimplemented_call` 断言同步 `-ENOSYS`；
+- `os/servers/pm/src/ipc/calls.rs` L1449 `test_dispatch_fork_parent_unknown_is_error_reply` 断言同步。
+
+**未扫的兄弟站点**（登记在 B17 前沿里，架构修法候选）：
+- `calls.rs` L264 Get/SetPriority、L303 Kill、L317 SrvKill、L336 Ptrace、L429/L478/L505/L514/L520/L542-613/L633/L672/L688/L707/L716/L734/L742/L756/L765/L780/L791/L799/L816/L843/L859/L880/L897 `Err(e) => Reply(e.to_errno())` 共 ~25 处；
+- `calls.rs` 12 处 `Reply(positive_errno(e))`——`positive_errno` 只归一不取负；
+- `trace.rs` L646 EPERM 等未扫。
+本轮采 CodeReview S1 建议先修高优先级 4 臂（Fork/SrvFork/ENOSYS×3 站点/ECHILD）；其余 ~37 站点下一轮采 N3 架构修法统一（拆 `ReplyIntent::Reply(i32)` 为 `Reply`/`ReplyErr` 两臂、`reply()` 内分派）。
+
+### 三件套
+1. **宿主测试**：`cargo test -p minix-pm --lib` **417/417 pass**（含 5 处断言同步 + Fork/ENOSYS/ECHILD 多臂盖到）。
+2. **rustfmt 零新增**：5 个文件 `HEAD=NEW`（calls.rs 685=685、dispatcher.rs 240=240、wait.rs 415=415、event.rs 743=743、init.rs 298=298）。
+3. **真机三次签名一致**（c8/c9/c10）：
+   - c8（仅 Fork/SrvFork 取负）：35863 行、`init-state Runcom` 1 次、`nk4a: pm 0140b` 8 次；
+   - c9（同 c8 build 另一次跑）：35281 行、`init-state Runcom` 1 次、`nk4a: pm 0140b` 8 次；
+   - c10（采 CodeReview S1 补修 dispatcher/event/wait ENOSYS·ECHILD）：35267 行、`init-state Runcom` 1 次、`nk4a: pm 0140b` 8 次；
+   - **对比 c5/c6/c7 基线（~25000 行）= +43% 活动**——`pfwd nr=1..9 out=B`、`p3drain dst=8 snd=0x1..0x7`——fork 链已通、init 子与兄弟服务器在跑；
+   - rc marker 未出现 → B17 前沿（下轮定位 exec 半链或 marker echo 链）。
+
+### CodeReview
+Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
+- Item 1–2–6（取负语义、C 契约对位、From 转换）：均 PASSED，确认 `PmError::to_errno()` 恒正、`-to_errno()` 恒负。
+- Item 3（同族站点未修）：SHOULD-CONSIDER——本轮已采纳建议先修高优先级 4 臂（dispatcher ENOSYS×2 + event ENOSYS + wait ECHILD）；
+- Item 4（测试覆盖）：SHOULD-CONSIDER——未补 SrvFork Err 腿单测，下一轮补（本轮 5 处断言已同步，不属回归）；
+- Item 5（回归风险）：PASSED——c8 +43% 活动量 = 解除旧阻塞而非引入新错误（`pfwd` 递增推进、新下游活动）；
+- Item 7（注释质量）：N1 typo已修（旧木→旧实现），N2 “同构”措辞已按评审精确化为“与 C 客户端 `_syscall`/`_taskcall` 契约对齐”（C 服务端 PM 同处 latent bug，本 fix 同时修之）。
+无回归，无 MUST-FIX 遗漏。
+
+### 本 turn 行量
+- 5 处生产代码变更：`calls.rs` Fork/SrvFork 两臂 + `dispatcher.rs` ENOSYS×2 + `event.rs` ENOSYS×1 + `wait.rs` ECHILD×1 + `init.rs` 1 断言；
+- 6 处测试断言同步（calls 1 + dispatcher 3 + event 1 + wait 1）；
+- WORKLOG 顶部 B16 bullet 改写 + B17 前沿新增 + 本节 §1.30 追加；
+- 探针：全部已在 §1.29 之后 `git checkout` 回滚；本轮工作树无诊断探针；
+- docker 三件套 813/242/528 全绿（本次仅改 PM，不影响 kernel/arch/vm 三件套，结果仅一验）；
+- **frontier 推进至 1.30**（B16 部分修 = fork 链通，rc marker 未达，进入 B17）。
+
+---

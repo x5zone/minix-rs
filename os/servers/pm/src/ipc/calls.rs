@@ -227,9 +227,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         // 05 的 VFS_PM_FORK_REPLY（handle_vfs_reply，main.c:369-394）
         // 异步完成。失败（表满/内存不足/VM 拒绝）同步回复 errno
         //（forkexit.c:60-79 的 `return EAGAIN/ENOMEM/s`）。
+        //
+        // NK4-C 1.30 B16：错误回执与 C 客户端 `_syscall`/`_taskcall` 契约对齐（m_type<0
+        // = −errno），与 F10b 内核 `reply_wire()` 同构。旧实现回正 errno 使调用方将
+        // `Ok(positive)` 当有效数据（例如 init 将 EAGAIN=11 当 child_pid）。
         PmCall::Fork => match crate::fork::do_fork(table, msg.m_source, transport, kern) {
             Ok(_child_pid) => ReplyIntent::ReplyLater,
-            Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
+            Err(e) => ReplyIntent::Reply(-PmError::from(e).to_errno()),
         },
         // C: do_srv_fork（forkexit.c:237/239）——与 fork 相反：立即
         // reply(child, OK) 后同步返回 pid。
@@ -238,7 +242,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let params = crate::mproc::SrvForkParams { uid, gid };
             match crate::fork::do_srv_fork(table, msg.m_source, params, transport, kern) {
                 Ok(child_pid) => ReplyIntent::Reply(child_pid),
-                Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno()),
+                Err(e) => ReplyIntent::Reply(-PmError::from(e).to_errno()),
             }
         }
         // C: do_getsetpriority（misc.c:239-286）——GET 返回 nice-PRIO_MIN，
@@ -1442,7 +1446,7 @@ mod tests {
         );
         assert_eq!(
             intent,
-            ReplyIntent::Reply(minix_types::PmError::InvalidEndpoint.to_errno())
+            ReplyIntent::Reply(-minix_types::PmError::InvalidEndpoint.to_errno())
         );
     }
 

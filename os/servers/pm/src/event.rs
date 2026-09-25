@@ -405,8 +405,9 @@ impl EventRegistry {
         assert_eq!(self.nested, 0, "do_proc_event_reply: nested must be 0");
 
         // 1. 仅系统服务可回复（event.c:232-233 → ENOSYS）
+        // NK4-C 1.30 B16：与 C `_syscall` 契约同构取负（m_type<0 = errno）。
         if !table.procs[caller.get()].is_kernel_process() {
-            return ReplyIntent::Reply(minix_types::ENOSYS);
+            return ReplyIntent::Reply(-minix_types::ENOSYS);
         }
 
         // 解码 m_pm_lsys_proc_event（event.c:240）
@@ -889,7 +890,7 @@ mod tests {
         // default privilege is User (non-kernel)
         let msg = reply_msg(Endpoint::from_generation_slot(1, 5), ProcEvent::Exit);
         let intent = reg.do_proc_event_reply(&msg, caller, &mut table, &mut transport, &mut kern);
-        assert_eq!(intent, ReplyIntent::Reply(ENOSYS));
+        assert_eq!(intent, ReplyIntent::Reply(-ENOSYS));
         // still blocked
         assert!(table.procs[tgt.get()].state.block.is_event_blocked());
     }

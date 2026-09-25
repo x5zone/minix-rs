@@ -107,11 +107,12 @@ pub fn dispatch_message<T: IpcTransport>(
             Some(call) => {
                 dispatch_pm_call(call, table, events, transport, kern, timers, caller, msg)
             }
-            None => ReplyIntent::Reply(ENOSYS),
+            // NK4-C 1.30 B16：未接线的 PM 号→ENOSYS 与 C `_syscall` 契约同构取负（m_type<0 = errno）。
+            None => ReplyIntent::Reply(-ENOSYS),
         }
     } else {
-        // C: main.c:102-103 — 非 PM 调用 → ENOSYS。
-        ReplyIntent::Reply(ENOSYS)
+        // C: main.c:102-103 — 非 PM 调用 → ENOSYS（NK4-C 1.30 同构取负）。
+        ReplyIntent::Reply(-ENOSYS)
     }
 }
 
@@ -352,7 +353,7 @@ mod tests {
             UserSlot::new(3),
             &msg_with(0x980 + 7, Endpoint::RS),
         );
-        assert_eq!(intent, ReplyIntent::Reply(ENOSYS));
+        assert_eq!(intent, ReplyIntent::Reply(-ENOSYS));
     }
 
     #[test]
@@ -392,7 +393,7 @@ mod tests {
             UserSlot::new(3),
             &msg_with(PROC_EVENT_REPLY, Endpoint::RS),
         );
-        assert_eq!(intent, ReplyIntent::Reply(ENOSYS));
+        assert_eq!(intent, ReplyIntent::Reply(-ENOSYS));
     }
 
     #[test]
@@ -440,7 +441,7 @@ mod tests {
                 UserSlot::new(3),
                 &msg_with(0x100, ep)
             ),
-            ReplyIntent::Reply(ENOSYS)
+            ReplyIntent::Reply(-ENOSYS)
         );
     }
 

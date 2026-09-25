@@ -1260,7 +1260,8 @@ mod tests {
         let sent = server.transport.sent();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].0, ep); // 回复发给 caller endpoint
-        assert_eq!(sent[0].1.m_type, ENOSYS);
+        // NK4-C 1.30 B16：未接线 PM 号同构取负，线上 m_type<0 = errno。
+        assert_eq!(sent[0].1.m_type, -ENOSYS);
     }
 
     #[test]

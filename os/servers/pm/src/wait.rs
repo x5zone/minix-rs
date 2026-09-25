@@ -146,7 +146,8 @@ pub fn do_wait4<T: crate::ipc::IpcTransport + ?Sized>(
         table.procs[caller.get()].state.wait.rusage_addr = rusage_addr;
         ReplyIntent::ReplyLater
     } else {
-        ReplyIntent::Reply(ECHILD)
+        // NK4-C 1.30 B16：无子 → ECHILD 与 C `_syscall` 契约同构取负。
+        ReplyIntent::Reply(-ECHILD)
     }
 }
 
@@ -196,7 +197,7 @@ mod tests {
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = NoopKernelGateway;
         let intent = do_wait4(&mut table, UserSlot::new(0), -1, 0, VirBytes(0), &mut transport, &mut kern);
-        assert_eq!(intent, ReplyIntent::Reply(ECHILD));
+        assert_eq!(intent, ReplyIntent::Reply(-ECHILD));
     }
 
     #[test]
