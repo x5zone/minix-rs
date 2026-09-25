@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B33b 已修（exec 权限检查传低 3 位 X_BIT 不再传 9 位 owner-X 位 0o100，root 执行 0o100755 不再被误拒 EACCES，/bin/sh 首次获控 Runcom 15→1）→ 翻出 B34 运行期堆 OOM-RT（新头号前沿）（1.58，含代码·VFS 侧）**：§1.57 头号 **B33 残余 EIO** 拆为两层。**B33b（真阻塞，已修）**＝`exec_worker.rs:670` 调用 `forbidden_decision` 时传 `access: 0o100`（9 位模式 owner-可执行位），而 `forbidden_decision`（`protect.rs:229-261`，与 C `protect.c:238-287` 逐行一致）末判据 `(perm | access) != perm` 要求 access 与 perm 同在**低 3 位**三元组；root 的 `perm=0o7`，`0o7|0o100=0o107≠0o7`→恒 `EACCES`。两枚探针实锤（已回滚）：bn18 `nk4a: b33 E0000000d`＝Err 臂、正值 13(EACCES)；bn19 `nk4a: b33m 000081ed 0000 0000`＝mode `0o100755`（可执行位齐）、euid=0、file_uid=0——root 执行自己 owned 的可执行文件被误拒。修＝`access: crate::protect::X_BIT`（全仓其余 `forbidden_decision` 调用点传的均为 `crate::open::*` 低 3 位常量、无一用 9 位模式值，唯此腿错档），并把带常量的 `ForbidInput` 构造抽成纯函数 `exec_forbid_check` 令调用点进入单测射程 + 两条回归测。**B33a（符号掩盖，登记 follow-up 未修）**＝`ExecError::to_errno()` 返回正值经 INIT 成功车道吞成 EIO，真实 errno 被掩盖；修复方向＝归一化 `pm_exec` 的 `Err` 臂为负。真机无探针双跑 **bn20/bn20b 签名一致**：`Runcom` 15→**1**（`/bin/sh` 首次获控、无循环）、`bogus=0`、`eacces=0`、`marker=0`、`panic-enter=2`（30068/30066 行）。三件套绿（mock vfs lib **533·0fail** 基线+2 只增不减 / fmt exec_worker.rs+protect.rs WT0==HEAD0 / clippy exit 0 / 镜像重建+真机双跑 bn21/bn21b 与 bn20 同签名）。**CodeReview 0 MUST、2 SHOULD 全采纳**（① 修正失真注释“均传 open::X_BIT”→可核表述；② 测只钉被调方不钉调用点→抽 `exec_forbid_check`+调用点回归测）。**新头号前沿 B34**＝panic 现场 `nk4c: OOM-RT size=001000 slabs=008/400 big=20/20 px=094/400 fp=03f/400`——sh 执行 rc 的真实工作集撑爆固定内存池（`big=20/20` 满），与 §1.55 B29 同签名＝已登记结构债「VM-backed heap supplier / `MAX_BIG_BLOCKS`」家族复现（非本单元权限改动引入）。rc marker 仍未达。详见 §1.58。
+> **⚠ 最新前沿 = B33b 已修（exec 权限检查传低 3 位 X_BIT 不再传 9 位 owner-X 位 0o100，root 执行 0o100755 不再被误拒 EACCES，/bin/sh 首次获控 Runcom 15→1）→ 翻出 B34 运行期堆 OOM-RT（新头号前沿）（1.58，含代码·VFS 侧）**：§1.57 头号 **B33 残余 EIO** 拆为两层。**B33b（真阻塞，已修）**＝`exec_worker.rs:670` 调用 `forbidden_decision` 时传 `access: 0o100`（9 位模式 owner-可执行位），而 `forbidden_decision`（`protect.rs:229-261`，与 C `protect.c:238-287` 逐行一致）末判据 `(perm | access) != perm` 要求 access 与 perm 同在**低 3 位**三元组；root 的 `perm=0o7`，`0o7|0o100=0o107≠0o7`→恒 `EACCES`。两枚探针实锤（已回滚）：bn18 `nk4a: b33 E0000000d`＝Err 臂、正值 13(EACCES)；bn19 `nk4a: b33m 000081ed 0000 0000`＝mode `0o100755`（可执行位齐）、euid=0、file_uid=0——root 执行自己 owned 的可执行文件被误拒。修＝`access: crate::protect::X_BIT`（全仓其余 `forbidden_decision` 调用点传的均为 `crate::open::*` 低 3 位常量、无一用 9 位模式值，唯此腿错档），并把带常量的 `ForbidInput` 构造抽成纯函数 `exec_forbid_check` 令调用点进入单测射程 + 两条回归测。**B33a（符号掩盖，登记 follow-up 未修）**＝`ExecError::to_errno()` 返回正值经 INIT 成功车道吞成 EIO，真实 errno 被掩盖；修复方向＝归一化 `pm_exec` 的 `Err` 臂为负。真机无探针双跑 **bn20/bn20b 签名一致**：`Runcom` 15→**1**（`/bin/sh` 首次获控、无循环）、`bogus=0`、`eacces=0`、`marker=0`、`panic-enter=2`（30068/30066 行）。三件套绿（mock vfs lib **533·0fail** 基线+2 只增不减 / fmt exec_worker.rs+protect.rs WT0==HEAD0 / clippy exit 0 / 镜像重建+真机双跑 bn21/bn21b 与 bn20 同签名）。**CodeReview 0 MUST、2 SHOULD 全采纳**（① 修正失真注释“均传 open::X_BIT”→可核表述；② 测只钉被调方不钉调用点→抽 `exec_forbid_check`+调用点回归测）。**新头号前沿 B34**＝panic 现场 `nk4c: OOM-RT … big=20/20 px=094/400`（十六进制：`big=0x20/0x20`=32/32 记录表满、`px=0x94/0x400`=148/1024 空闲页仍在）。【§1.59 取证】根因实锤＝`minix-rt` 的 `big_blocks` 跟踪表硬编 32 先于池字节填满的 premature-OOM（与已修 `MAX_SLABS` 同类，非池字节耗尽）；但按 `MAX_SLABS` 纪律把表绑到 `GLOBAL_POOL_PAGES`（32→1024）后**真机确定性从 30090 行崩回 124 行**（对照 bn22ctl 实锤）——分配器静态实例变大平移 VM 的 .bss/用户栈基址，撞上 boot 未 eager 物化 VM 自身栈/.bss 尾页的缺口（PREALLOC demand-fill 分歧）。正解被反复 defer 的结构债（boot eager 物化 / VM-backed heap supplier）挡住，属**架构裁决级**：已回退未提交（改动存 `stash@{0}`），待用户定 A(boot eager 物化)/B(VM-backed 长堆)/C(保守绑界64+修自栈缺页)。rc marker 仍未达。详见 §1.58/§1.59。
 >
 > **⚠（1.57 历史·其头号前沿 B33 已于 §1.58 修 B33b、翻出 B34）B32 已修（exec_worker 同步 FS 腿补回事务打包 TRNS_ADD_ID/DEL_ID，伪指针 errno 归零翻为合法 EIO）→ 翻出 B33 残余 EIO（exec_via Ok→EIO 掩盖，VFS status 符号待取证）（1.57，含代码·VFS 侧）**：§1.56 头号 **B32（exec 回复携带伪 errno `-5114394`＝用户堆指针 0x4E0A1A）根因实锤并修复**。静态算术实锤：`FS_BASE=0xA00`、`REQ_LOOKUP=0xA1A=2586`，伪值 `0x4E0A1A`＝`(78 status << 16) | REQ_LOOKUP` 的事务打包形态；C 黄金参照 `minix3/minix/servers/vfs/comm.c:21` TRNS_ADD_ID / `main.c:88` TRNS_DEL_ID。根因＝`exec_worker.rs` 同步 `ipc.sendrec(fs_e)` 绕过 `fs_comm::send_fs` 异步路径的事务戳入/拆封，裸发 `m_type=REQ_xxx`（FS 按 `m_type>>16` 路由→call=0 无法路由）且把回复 `m_type` 原样 `neg()` 当 errno。修＝`neg()` 后新增 `fs_trans_stamp`/`fs_trans_status` 两助手，对 4 个同步 FS 腿（lookup/stat/req_read/ELF segment-read）接入；**VM 腿（vm_mmap/procctl_clear）与 PM 腿（pm_newexec）taskcall 风格不打包、保持不变**。运行时硬证（bn16 临时探针已回滚）：`b32 exec path=/bin/sh errno=5` 命中 44 次全干净 errno 5、伪指针归零；无探针双跑 bn15/bn15b 签名一致（79303/79319行、panic=0、bogus=0、Runcom=15、marker=0）。三件套绿（mock vfs lib 531·0fail 基线+1 新回归测 `test_fs_transaction_pack_roundtrip` 只增不减 / fmt exec_worker.rs WT0==HEAD0 零新增 / clippy exit 0 / 镜像重建+双跑一致）。**新头号前沿 B33**：exec_via 现返回**合法 errno 5（EIO）**而非伪指针，marker 仍未达——init `exec_via` 将任何正/零回复（Ok 车道）映射为 EIO（对位 C `execve.c:53-58`，成功路径永不返回），真问题＝VFS `pm_exec` 现返回正 status 被 Ok 车道吞成 EIO、或某下游腿（stat/read/mmap）失败被 EIO 掩盖；下一取证配方＝在 VFS pm_exec 各 bail 站点与 `queue_reply_msg` 终局打印 status 符号与来源腿。rc marker 仍未达。详见 §1.57。
 >
@@ -3096,3 +3096,42 @@ mock vfs lib **533·0fail**（基线 531 + B33b 两条新回归测 `test_exec_ac
 ### 下一前沿（按序）
 
 ① **头号＝B34 运行期堆 `OOM-RT`**：panic 现场 `nk4c: OOM-RT size=001000 slabs=008/400 big=20/20 px=094/400 fp=03f/400`——`/bin/sh` 获控后执行 rc 的真实工作集撑爆固定内存池（`big=20/20` 满），与 §1.55 的 B29（VFS 堆 OOM）同签名，属已登记结构债「VM-backed heap supplier / `MAX_BIG_BLOCKS`」家族复现。这是执行深度推进（B33b 让 sh 真跑起来）必然暴露的下游容量问题，非本单元权限改动引入。② B33a 符号归一化；③ init sleep 腿疑似不睡；④ VM PREALLOC 语义缺口裁决；⑤ SMP 早期竞态（§1.52）；⑥ §1.51 遗留。
+
+---
+
+## 1.59 B34 根因实锤（big-block 记录表 premature-OOM，非池耗尽）+ 朴素修法回归 boot（已回退、未提交，待结构裁决）（取证单元，含对照实验）
+
+### 一句话
+
+B34 的 OOM-RT 打印值是**十六进制**：`big=20/20`＝`0x20/0x20`＝**32/32**（`MAX_BIG_BLOCKS` 记录表满），而 `px=094/400`＝`0x94/0x400`＝**148/1024 空闲页仍在**——即不是池字节耗尽，而是 `minix-rt` 分配器的 `big_blocks` 跟踪表（硬编 32）先于池字节填满，造成 premature-OOM。这正是 `alloc.rs` 早年登记的「big-block-heavy server 到来时 revisit」同型缺陷（与已修的 `MAX_SLABS` 一类）。把它按 `MAX_SLABS` 纪律绑到池页数（`32→GLOBAL_POOL_PAGES`）后，**真机确定性地从 30090 行崩回 124 行**（VM 服务器早期 `pagefault in VM`）——因分配器静态实例变大平移了 VM 的 .bss/用户栈基址，撞上 boot **未 eager 物化初始栈/.bss 尾页**的缺口（§1.55 已登记的 PREALLOC 只记位不 `ev_new`、demand-fill-on-first-touch 分歧）。故 B34 的正解被反复 defer 的结构债（boot eager 物化 / VM-backed heap supplier）挡住，属**架构裁决级**，本轮不提交回归、保留取证，待方向确认。
+
+### 根因链（静态实锤，`os/libs/minix-rt/src/alloc.rs`）
+
+- `alloc_big(size)`（L523-546）：先 `supplier.supply_pages(pages)` 从池拿页（**成功**，bn20 现场 px=148/1024 空闲页充裕），再在 `big_blocks[0..MAX_BIG_BLOCKS]` 里找空记录槽；找不到就 `release_pages` 归还刚拿的页并返 null → 上层 OOM。**约束在记录表，不在池字节**。
+- `MAX_BIG_BLOCKS: usize = 32`（旧值）；`4 KiB` 单页分配走 `alloc_big`（`class_for(4096)` 因 `MAX_SLAB_OBJECT_BYTES=2048` 落 None）。sh 运行期并发 big block 超 32 → 表满 premature-OOM。
+- 与 `MAX_SLABS`（L65，已＝`GLOBAL_POOL_BYTES/PAGE_BYTES`）严格同类：每个 big block ≥1 页，故并发上限＝池总页数，表应绑到 `GLOBAL_POOL_PAGES`。
+
+### 已试修法（存于 `stash@{0}`，未提交）与真机回归
+
+改动本体（2 行 + 文档 + 一测）：
+- `alloc.rs:75` `MAX_BIG_BLOCKS: usize = 32` → `= GLOBAL_POOL_PAGES`；
+- `lib.rs:161,163` OOM 打印 `big` 分子/分母宽度 `2`→`3`（否则 `0x400` 被截成“00”，污染签名对账，同 L154 注释对 slabs 的警告）；
+- 新增回归测 `test_big_block_table_tracks_pool_pages_not_capped_at_32`（48 页池连分 40 个单页 big block，旧码第 33 个即 null）。静态三件套绿（minix-rt mock 58·0fail / fmt alloc.rs+lib.rs WT0==HEAD0 / clippy exit 0）。
+
+**真机确定性回归**（同镜像连跑）：
+- bn22：`lines=126`、Runcom=0、panic=2、OOM-RT=0——**没到 Runcom 就死**。现场：`pf rip=0x2346db err=0x6 cr2=0x7ffffffeef88 walk=NP`（紧邻 rsp、非 present+write+user）→ `trap_dispatch.rs:1059 panic!("pagefault in VM")` → vector 13 GP @`rip=0x1dc73e79` 递归 panic。
+- bn22b：`lines=124` 同签名（确定性）。
+- **对照实验 bn22ctl**（`git stash` 掉本改动、重建、同镜像）：`lines=30090`、Runcom=1、panic=2、OOM-RT=1——**与 bn20/bn21 一致**，坐实回归由本改动引入。
+
+### 机制定性
+
+`GlobalAllocator` 是每服务器的 `static`（`lib.rs:239`，内含 `SlabAllocator` 的 `slabs[1024]`+`big_blocks[N]`+`FixedPoolSupplier.free_pages[1024]`）。`big_blocks` 从 32→1024 使该静态约 +16KB，平移了 VM 镜像的段/用户栈布局；而 boot 对 VM 自身镜像是 demand-fill-on-first-touch（未 eager 物化），VM 在启动初期用到那个新落入未映射页的栈/.bss 地址时缺页，而 VM 自己是缺页服务者→无法服务自身→递归 panic（C `exception.c:101-118` 忠实行为）。即：**不是容量不够，是 boot 未把 VM 自身的栈/.bss 尾页预先映好**，一有尺寸扰动就暴露。
+
+### 为何停下（架构裁决级）
+
+三个修法方向各有权衷，且都触及 boot/VM 内存契约（需 [ARCH] 三处一致），反复被 defer：
+- **A（boot eager 物化）**：给 boot/VM 的初始镜像段与初始栈 eager 预映（补 `ev_new`/PREALLOC 真预分配，对位 C `region.c:492-499`），让尺寸扰动不再触发自缺页。直接、且是 §1.55 登记分歧的根治，但改 boot 映页路径。
+- **B（VM-backed heap supplier）**：真正实现 C `brk`/`VM_BRK` 按需长堆，堆不再受固定 `.bss` 池限（最大单元，之前定性为“客户端 supplier=大单元”）。
+- **C（保守绑界）**：`MAX_BIG_BLOCKS` 只抬到不跨未物化页的值（如 64）+ 修 VM 自栈缺页；能清当前 32/32 但仍留脆性、非原则解。
+本轮采“不提交回归 + 保留取证”；改动存 `stash@{0}`（可 `git stash pop` 恢复），待用户定 A/B/C 方向。rc marker 仍未达（bn20 系列 30090 行、OOM-RT 非唯一卡点，深度推进后另有下游）。
+
