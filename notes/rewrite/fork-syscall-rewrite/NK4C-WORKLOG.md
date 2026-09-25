@@ -16,7 +16,7 @@
 
 - **B17 已修（1.34 落地，含代码·内核侧）**：根因坐实——内核 `syscall_process.rs::dispatch_fork`（SYS_FORK）把 **RECEIVING 校验、`fork_from` 拷贝源、`parent_is_sys_proc` priv 解析、应答 `msgaddr` 取值**四处全错用 `caller_nr`，而 minix-rs 里 **VM 代表父进程陷入 SYS_FORK**（`vm/fork.rs:343 gateway.sys_fork(parent.endpoint(),…)`），故 `caller_nr`=VM ≠ 被 fork 的父。C `do_fork.c` 四处一律用 `isokendpt` 从消息 `endpt` 解出的父 `rpp`（L41/44/51/63/105/112），从不用 `caller`（旧 Rust 注释「C guarantees rpp==caller」是假前提）。运行时 VM 不处于 RECEIVING → 返 `KcallResult::Ok(EINVAL)`（SYSCALL 腿经 `syscall_leg_wire` 取负成 `-EINVAL`，`minix-sys::sys_fork` 的 `reply<0` 正确判错，故**错误契约本就对、非 bug**）→ VM `VmForkError::KernelCall` → PM `dF:vmF` → fork 永久失败。修=`let parent_nr = proc_table.endpoint_to_nr(Endpoint(fork_req.endpt))`（isokendpt 等价、已排除 SLOT_FREE 故覆盖 C `isemptyp(rpp)`），四处改用 `parent_nr`；`caller_nr` 形参改名 `_caller_nr`（对齐 C 未用的 `caller`）。**证据链**：宿主 `endpoint_to_nr`/位比较语义核对 + 新增 2 测（`test_t12_fork_resolves_parent_from_endpt_not_caller` 旧码下必挂、`test_t12_fork_rejects_unresolvable_parent_endpt`）+ 修好被掏空的 `rejects_non_receiving_parent`（令其真达 RECEIVING 闸，CodeReview W1 采纳）。**真机（决定性）**：干净 HEAD 基线 c14 vs 修后 c16/c17——slot 1..0xa pick 计数**逐位相同**（slot8=763/763 等）=无早/boot 回归；仅 B17 活锁的 slot0↔slotb ping-pong 从 **907/665 → 311/63** 坍缩=**fork 不再 EINVAL、子真被创建**。三件套绿（docker kernel **815**/arch 242/vm 528·0fail / fmt syscall_process 54=54 零新增 / 两次真机 c16==c17 签名一致；c17 之后的改动全是 `#[cfg(test)]` 体与注释、release 内核二进制逐字节不变，签名沿用）。⚠️ **探针布局脆弱性登记仍有效**（§1.33）：本修刻意只动内核+minix-types 语义、不碰 PM，正是绕开该债。
 
-- **B18 前沿（fork 已通、下游新停点）**：修后 boot 过 Runcom、fork 链通，但 rc marker 仍未出——尾态出现 **`handle_vfs_reply: reply without request (slot 0)`（`pm/src/ipc/vfs.rs:385`）+ `nk4a: ipcerr caller=0 err=ECALLDENIED` + `pmstall2`**，slot0/slotb 仍短程 ping-pong（c16 24332 行至 gtick 0x3e80 时 PM 停滞）。基线 c14 尾亦有 `ipcerr caller=4 err=EDEADSRCDST`，故 IPC 错误非本修独有、疑为既有下游问题浮现（fork 真起子进程后才走到）。**下一入口**：①查 slot0 身份（`endpoint_slot(0)`/boot 槽表）与其被 ECALLDENIED 拒的具体 kernel call/`k_call_mask`；②`reply without request (slot 0)`=PM 收到无匹配请求的 VFS 回执，查 fork 子进程的 VFS 请求路由/`srv_fork` 回链；③注意任何 PM 侧探测仍受布局脆弱性阻断（§1.33），优先内核/读码/宿主测。rc marker 未达，frontier 仍 1.30。
+- **B18 前沿（fork 已通、下游新停点；1.35 侦察已钉死终态机制）**：修后 boot 过 Runcom、fork 链通，但 rc marker 仍未出。**终态实锤=PM panic**：`servers/pm/src/ipc/vfs.rs:385: handle_vfs_reply: reply without request (slot 0)`（c16 第 24310 行，日志止于 24332；行首带 `file:line:` 前缀=标准 panic 格式，非 diagctl）。这是 C `main.c:324` `assert(p->P_flags & VFS_CALL)` 的忠实对位——**PM 收到一条 VFS 回执，其 `m_u.m_m7.m7i1` 端点经 `pm_isokendpt` 解析到 PM UserSlot 0（该槽 `endpoint()==回执端点` 且 `is_in_use()` 成立，但 `ipc_blocked` 非 `VfsCall`）→ `take_vfs_call` panic**。panic 后 PM 终止/自旋：紧随 `nk4a: ipcerr caller=0x0 err=ECALLDENIED`（caller 0=内核槽位 PM 自身，其 panic 后 IPC 被 `!GET_BIT(s_k_call_mask)` 拒）→ 内核 `pmstall2`（trap_dispatch.rs:814，检测内核 slot0=PM 连续 running>5000 tick=自旋）→ gtick 空转至超时、boot 死。`Endpoint::PM=Endpoint(0)`/`INIT=Endpoint(11)`（endpoint.rs:61/72），故 **slot 0 ≠ init，而是 PM 自身槽位**；且 fork 子端点 `slot()` 应为 12+（boot 0..11 已占），**故触发 panic 的回执并非 `VFS_PM_FORK_REPLY` 本身，而是另一条携带 slot-0 端点的 VFS 回执**（疑 PM 代表某进程发起、VFS 却以 PM 端点回投递，或代际/端点错配）。PM `do_fork`（fork.rs:23）已读通：`child_endpoint=vm_fork(...)`→`copy_mproc` 设子 PM 端点→`tell_vfs(UserSlot::new(child_slot), VfsCall::Fork{child,parent,child_pid})` 把 VFS_CALL 挂**子槽**、发 `VFS_PM_FORK`。⚠️ **取证阻断**：§1.33 登记的 PM 布局脆弱性阻断一切 PM 侧探针，无法取「panic 回执的 opcode/m7i1 具体值」现场。**下一入口（关键）**：VFS **服务端**（`fs/` 系，非 PM、**不受 PM 布局脆弱性阻断**）是 VFS_PM_FORK/EXEC 回执 `m7i1` 端点的构造方——下轮优先读 VFS `req_fork`/`req_exec`/投递回执的 encode 站点，查其 echo 的端点从请求哪个字段取（是 `child`、`m_source`、还是请求者 PM 端点？），坐实「哪条回执带 slot-0 端点、为何」。基线 c14 尾亦有 `ipcerr caller=4 err=EDEADSRCDST`，故 IPC 错误非本修独有、系 fork 真起子进程后才走到的既有下游浮现。rc marker 未达，frontier 仍 1.30。
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
@@ -2268,5 +2268,37 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 - 生产代码 1 处（`syscall_process.rs::dispatch_fork` 四处 caller_nr→parent_nr + 新增 endpoint_to_nr 解析 + `_caller_nr` 改名）+ 新增/修正 3 测 + 若干注释修正；
 - WORKLOG 顶部 B17→已修 bullet + B18 前沿 bullet + 本节 §1.34；
 - 三件套全绿（docker 815/242/528·0fail / fmt 54=54 / 真机 c16==c17）+ CodeReview W1/S2/S3 已采纳；**含代码修改的 fix commit**。
+
+---
+
+## §1.35　B18 侦察：PM panic `reply without request (slot 0)` 终态机制钉死
+
+**受控读法接续**：本 turn 从 §1.34 B18 前沿三条下一入口起步（HEAD=83ca265e5，工作树 clean）。纯读码 + 关联既有真机日志（c16/c17），无生产代码改动。
+
+**终态钉死（c16 日志 24154→24310→24332）**：
+- `24154: nk4a: init-state Runcom`（init 进入 Runcom，fork+exec rc 脚本）；
+- 中间 ~156 行为页故障/调度活动（fork 链已通、子/兄弟进程真在跑，与 §1.30「活动 +43%」一致）；
+- `24310: servers/pm/src/ipc/vfs.rs:385: handle_vfs_reply: reply without request (slot 0)`——**行首带 `file:line:` 前缀 = Rust `panic!` 标准输出格式**（非 `nk4a: PF` 分块 diagctl，说明 panic 走 `format_panic_report` 路径成功落盘），日志随即止于 24332（仅余 gtick 空转 + `pmstall2` ×2）。
+
+**PM panic 的语义（C 忠实对位）**：`take_vfs_call`（`pm/src/ipc/vfs.rs:380-390`）对应 C `main.c:324` `assert(p->P_flags & VFS_CALL)`。触发条件（读 `pm_isokendpt`，`table.rs:203`）：`handle_vfs_reply` 从回执 `msg.m_u.m_m7.m7i1` 取端点→`endpoint.slot()` 得 slot→要求 `procs[slot].endpoint()==端点`（**含代际精确相等**）且 `procs[slot].is_in_use()` 成立、`slot_of_endpoint` 才返回 `Some(slot)`；随即 `take_vfs_call(slot)` 发现该槽 `ipc_blocked` 非 `IpcBlockReason::VfsCall{..}` → panic。即 **PM 收到一条 VFS 主动回执，声称关于「PM UserSlot 0」这个进程，但该进程此刻没有挂起的 VFS 请求**。
+
+**slot 0 身份澄清（关键）**：`Endpoint::PM=Endpoint(0)`、`INIT=Endpoint(11)`（`endpoint.rs:61/72`）；PM UserSlot 按 `endpoint.slot()` 索引，故 **panic 的 slot 0 = 端点 slot 位为 0 的进程 = PM 自身在 mproc 表的槽位，绝非 init**（纠正 §1.34 前沿 bullet 里「slot0=init」的口头误记）。而 fork 子进程 `child_slot` 取自 `find_free_slot`/`next_child`，boot 槽 0..11 已占 → 首个子 slot ≥12 → `child_endpoint.slot()`≥12，**回执若关于子进程会解析到 ≥12 槽、不会 panic 在 slot 0**。故**触发 panic 的回执并非 `VFS_PM_FORK_REPLY` 本身**，而是另一条携带 slot-0（PM 端点）的 VFS 回执。
+
+**PM do_fork 链已读通**（`pm/src/fork.rs:23`）：`child_endpoint=vm_fork(transport,parent_endpoint,UserSlot::new(child_slot))`（sendrec VM_FORK，回复子端点在 m1i3）→ `debug_assert child_endpoint.slot()==child_slot` → `copy_mproc(table,parent_slot,child_slot,0,child_endpoint)` 设子 PM 端点 → `tell_vfs(table, UserSlot::new(child_slot), VfsCall::Fork{child:child_endpoint,parent:parent_endpoint,child_pid}, transport)`——**VFS_CALL 挂在子槽、发 `VFS_PM_FORK`**。VFS 回 `VFS_PM_FORK_REPLY` 携 `m7i1`→PM `handle_vfs_reply` 解析。VFS 回执里 echo 的端点究竟取请求哪个字段（`child`？`m_source`=PM？），决定回投递落点。
+
+**取证阻断（诚实登记）**：§1.33 的 PM 布局脆弱性阻断一切 PM 侧探针，无法在 `handle_vfs_reply` 入口 dump「panic 回执的 opcode + `m7i1` 具体值」以一眼定死。**因此本轮不臆造未验证的修复**（违反诚实证据纪律），仅钉死终态机制 + 缩窄触发面。
+
+**下一入口（决定性、且绕开 PM 脆弱性）**：**VFS 服务端**（`fs/` 系 crate——独立于 PM，**不受 §1.33 布局脆弱性阻断**）是 `VFS_PM_FORK`/`VFS_PM_EXEC`/`VFS_PM_EXIT` 等回执 `m7i1` 端点的**构造方**。下轮优先：
+1. 读 VFS 侧处理 `VFS_PM_FORK`/`VFS_PM_EXEC` 并 encode 回执的站点（grep `VFS_PM_FORK_REPLY`/`m7i1`/`m_m7` 的写入方），查其 echo 的端点从请求的哪个字段取；
+2. 核对是否存在「PM 代表子/他进程发起 VFS 请求，但 VFS 用请求的 `m_source`（=PM 端点 slot 0）而非载荷端点回执」的失配，或代际/端点编码错配；
+3. 若 VFS 侧读码仍不确定，可在 VFS（非 PM）加 ≤16B nk4c 探针 dump 回执 opcode+m7i1（VFS 不受 PM 布局脆弱性影响，但需先验 VFS 自身是否同类脆弱——若 build/boot 回归则退化到纯读码裁决）。
+
+**结论**：B18 终态机制 = **PM 因一条带 slot-0（PM 端点）却无挂起 VFS 请求的回执而 panic（C 对位 `assert(VFS_CALL)`），panic 后 ECALLDENIED caller=0 + pmstall2 自旋、boot 死**；rc marker 未达，frontier 仍 1.30。修复入口缩窄至「VFS 回执端点 echo 语义」，下轮从 VFS 服务端读码/探针起步（不受 PM 阻断）。
+
+### §1.35 本 turn 行量
+- 纯侦察：读 c16/c17 真机日志尾 + `pm/src/ipc/vfs.rs`(handle_vfs_reply/take_vfs_call) + `pm/src/mproc/table.rs`(pm_isokendpt) + `minix-types/endpoint.rs` + `pm/src/fork.rs`(do_fork) + 内核 `syscall.rs`(ipcerr 探针)/`trap_dispatch.rs`(pmstall2 探针)；
+- **无生产代码改动、无探针增删**（既有 `nk4a:` 取证探针系前代 commit 已入仓，非本轮新增）；
+- WORKLOG 顶部 B18 bullet 精确化（钉死终态 + 澄清 slot0=PM 非 init）+ 本节 §1.35；
+- **纯侦察 doc commit**（同 §1.25/§1.28/§1.29/§1.31/§1.32/§1.33 先例）——无三件套、无 CodeReview；frontier 仍在 1.30；rc marker 未达。
 
 ---
