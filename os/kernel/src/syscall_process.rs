@@ -131,12 +131,16 @@ fn msg_schedctl(msg: &Message) -> MessLsysKrnSchedctl {
 /// the request message (`m_krn_lsys_sys_fork.{endpt,msgaddr}` — C
 /// do_fork.c:111-112) and `Ok(0)` is returned, so `kernel_call_finish`
 /// copies the message back with `m_type = OK` and both out-params on
-/// board — exactly C's shape. `msgaddr` is the caller's
-/// `p_delivermsg_vir` (the buffer the reply itself is copied over; VM
-/// pre-faults it eagerly to avoid a CoW fault inside the reply copy —
-/// fork.c:100-108).
+/// board — exactly C's shape. `msgaddr` is the **parent's**
+/// `p_delivermsg_vir`, an out-param VM uses to eagerly CoW the deliver
+/// buffer in both the parent's and the child's page tables
+/// (fork.c:100-108); the kernel's own reply is written into the caller
+/// (VM)'s deliver buffer, not this one. Note the parent is resolved from the request
+/// `endpt` (C: `rpp`), *not* `caller_nr`: in this design VM issues
+/// SYS_FORK on the parent's behalf, so the caller and the parent are
+/// different processes (C's `do_fork` likewise never touches `caller`).
 pub fn dispatch_fork(
-    caller_nr: ProcNr,
+    _caller_nr: ProcNr,
     proc_table: &mut ProcessTable,
     msg: &mut Message,
     priv_table: &PrivTable,
@@ -153,14 +157,24 @@ pub fn dispatch_fork(
     let child_slot: ProcNr = ProcNr(fork_req.slot); // C: m_lsys_krn_sys_fork.slot
     let fork_flags = fork_req.flags; // C: m_lsys_krn_sys_fork.flags
 
-    // Validate parent endpoint
+    // Resolve the parent process from the request endpoint — C `rpp`.
+    // The caller (VM) is only the agent issuing SYS_FORK on the parent's
+    // behalf, so every parent-specific operation below keys off this slot,
+    // not `caller_nr` (matching C do_fork.c:41,44, which derives `rpp` from
+    // the message and never uses `caller`).
     // C: do_fork.c:41 — isokendpt(m_ptr->m_lsys_krn_sys_fork.endpt, &p_proc)
-    let _parent_ep = Endpoint(parent_endpt_i);
+    // (`endpoint_to_nr` also excludes free slots, covering C's isemptyp(rpp)
+    // guard at do_fork.c:46.)
+    let parent_nr = match proc_table.endpoint_to_nr(Endpoint(parent_endpt_i)) {
+        Some(nr) => nr,
+        None => return KcallResult::Ok(EINVAL),
+    };
 
-    // Validate: parent must be receiving (synchronous fork)
+    // Validate: parent must be receiving (synchronous fork) — so we know
+    // where its deliver-message buffer is (C uses rpp, not the caller).
     // C: do_fork.c:51
     if !proc_table
-        .get(caller_nr)
+        .get(parent_nr)
         .is_some_and(|c| c.p_rts_flags.is_set(RtsFlagsBits::RECEIVING))
     {
         return KcallResult::Ok(EINVAL);
@@ -187,21 +201,19 @@ pub fn dispatch_fork(
     let child_endpoint = Endpoint::fork_new_endpoint(child_old_endpoint, child_slot.0);
 
     // C: do_fork.c:63 — *rpc = *rpp (copy parent to child)
-    // Use fork_from to create child from parent with corrections.
-    // C guarantees rpp == caller (parent is the one calling SYS_FORK),
-    // so using caller directly is correct.
+    // Use fork_from to create child from the parent (rpp) with corrections.
     let mut child = KProcess::fork_from(
         proc_table
-            .get(caller_nr)
-            .expect("dispatch_fork: caller slot must exist"),
+            .get(parent_nr)
+            .expect("dispatch_fork: parent slot must exist"),
         child_slot,
         child_endpoint,
     );
 
     // C: do_fork.c:105-107 — if parent is SYS_PROC, downgrade child privilege
-    // Check parent's privilege flags to determine if child needs downgrade.
+    // Check the parent's privilege flags to determine if child needs downgrade.
     let parent_is_sys_proc = proc_table
-        .get(caller_nr)
+        .get(parent_nr)
         .and_then(|c| c.priv_id)
         .and_then(|id| priv_table.get(id))
         .map(|p| p.flags.s_flags.contains(ProcessCapability::SYS_PROC))
@@ -230,19 +242,21 @@ pub fn dispatch_fork(
 
     // C: do_fork.c:111-112 — write the reply fields in place:
     // `m_krn_lsys_sys_fork.endpt = rpc->p_endpoint` and
-    // `m_krn_lsys_sys_fork.msgaddr = rpp->p_delivermsg_vir`. C guarantees
-    // rpp == caller, so the deliver-message address is the caller's own.
-    // kernel_call_finish then stamps m_type = OK over this same message
-    // and copies it back — the user reads both out-params from the reply.
+    // `m_krn_lsys_sys_fork.msgaddr = rpp->p_delivermsg_vir` — the deliver
+    // message address comes from the parent (rpp) and rides back as an
+    // out-param so VM can eagerly CoW that buffer in both the parent's and
+    // the child's page tables (fork.c:100-108); the kernel's reply itself is
+    // copied into the caller (VM)'s deliver buffer. kernel_call_finish then
+    // stamps m_type = OK over this same message and copies it back.
     {
         // SAFETY: arm selection is by this function's contract (SYS_FORK);
         // the union arm is plain-old-data.
         let reply_arm = unsafe { &mut msg.m_u.m_krn_lsys_sys_fork };
         reply_arm.endpt = child_endpoint.0;
         reply_arm.msgaddr = proc_table
-            .get(caller_nr)
+            .get(parent_nr)
             .map(|c| c.p_delivermsg_vir.0)
-            .expect("dispatch_fork: caller slot must exist");
+            .expect("dispatch_fork: parent slot must exist");
     }
 
     // C: do_fork.c returns OK — the child endpoint rides in the reply
@@ -1678,8 +1692,8 @@ mod tests {
     fn test_t12_fork_creates_child_with_new_endpoint() {
         // C do_fork.c:69-72 — 子 endpoint 代际 +1：gen0 slot3 → (1<<15)+3。
         // E-FORKMSG:应答形状对齐 C do_fork.c:111-112 + :135 —— 返回 OK(0),
-        // endpt/msgaddr 原地写进 m_krn_lsys_sys_fork 应答臂(msgaddr 是
-        // 调用方的 p_delivermsg_vir)。
+        // endpt/msgaddr 原地写进 m_krn_lsys_sys_fork 应答臂(msgaddr 是父进程
+        // 的 p_delivermsg_vir；本测 caller 即父，slot 0)。
         let mut proc_table = crate::test_helpers::test_proc_table();
         // K20 caller-by-nr: the caller's identity/state lives on slot 0.
         {
@@ -1710,14 +1724,93 @@ mod tests {
     }
 
     #[test]
+    fn test_t12_fork_resolves_parent_from_endpt_not_caller() {
+        // B17 regression. In minix-rs VM issues SYS_FORK *on the parent's
+        // behalf*, so `caller_nr` (VM) is a different, non-receiving process
+        // from the forking parent. C `do_fork` derives `rpp` from the request
+        // endpt (do_fork.c:41,44) and keys the RECEIVING check, the struct
+        // copy and the `msgaddr` reply off that parent — never the caller.
+        // The prior Rust code used `caller_nr` throughout, which only worked
+        // because the other tests set caller == parent.
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        // Parent on slot 2: endpoint 500, occupied (SLOT_FREE cleared) and
+        // RECEIVING, with a distinctive deliver buffer.
+        {
+            let parent = proc_table.get_mut(ProcNr(2)).unwrap();
+            parent.p_endpoint = Endpoint(500);
+            parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            parent.p_rts_flags.set(RtsFlagsBits::RECEIVING);
+            parent.p_delivermsg_vir = minix_types::VirBytes::new(0xBEEF_0000);
+        }
+        // Caller on VM_PROC_NR (ProcNr(8)): NOT receiving, with a different
+        // deliver buffer so a wrong caller-based msgaddr read is detectable.
+        proc_table.get_mut(ProcNr(8)).unwrap().p_delivermsg_vir =
+            minix_types::VirBytes::new(0xDEAD);
+
+        let priv_table = crate::test_helpers::test_priv_table();
+
+        let mut msg = Message::default();
+        msg.m_u.m_lsys_krn_sys_fork.endpt = 500; // parent endpoint
+        msg.m_u.m_lsys_krn_sys_fork.slot = 3; // child slot
+        msg.m_u.m_lsys_krn_sys_fork.flags = 0;
+
+        // caller_nr = VM (slot 8), which is not receiving — the old code
+        // returned EINVAL here; the fix resolves the parent from the endpt.
+        let result = dispatch_fork(ProcNr(8), &mut proc_table, &mut msg, &priv_table);
+        assert_eq!(
+            result,
+            KcallResult::Ok(0),
+            "fork must key off parent, not caller"
+        );
+
+        // SAFETY(测试):m_type 未变(SYS_FORK),读应答臂是构造的镜像。
+        let reply_arm = unsafe { msg.m_u.m_krn_lsys_sys_fork };
+        assert_eq!(
+            reply_arm.msgaddr, 0xBEEF_0000u64,
+            "msgaddr must be the parent's deliver buffer, not the caller's"
+        );
+        assert_eq!(
+            reply_arm.endpt,
+            (1 << 15) + 3,
+            "应答臂 endpt = (gen+1)<<15 | slot"
+        );
+        let child = proc_table.get(ProcNr(3)).unwrap();
+        assert_eq!(child.p_endpoint.0, (1 << 15) + 3);
+        assert_eq!(child.p_nr, ProcNr(3));
+    }
+
+    #[test]
     fn test_t12_fork_rejects_non_receiving_parent() {
         // C do_fork.c:51 — 父进程非 RECEIVING（非同步 fork 点）→ EINVAL。
-        // 不置 RECEIVING
+        // 让父槽可解析（occupied、端点匹配）但不置 RECEIVING，控制流才会
+        // 落到 RECEIVING 这道闸（而非更早的端点解析 EINVAL）。
         let mut proc_table = crate::test_helpers::test_proc_table();
+        {
+            let parent = proc_table.get_mut(ProcNr(0)).unwrap();
+            parent.p_endpoint = Endpoint(100);
+            parent.p_rts_flags.clear(RtsFlagsBits::SLOT_FREE);
+            // 故意不置 RECEIVING
+        }
         let priv_table = crate::test_helpers::test_priv_table();
 
         let mut msg = Message::default();
         msg.m_u.m_lsys_krn_sys_fork.endpt = 100;
+        msg.m_u.m_lsys_krn_sys_fork.slot = 3;
+        msg.m_u.m_lsys_krn_sys_fork.flags = 0;
+
+        let result = dispatch_fork(ProcNr(0), &mut proc_table, &mut msg, &priv_table);
+        assert_eq!(result, KcallResult::Ok(EINVAL));
+    }
+
+    #[test]
+    fn test_t12_fork_rejects_unresolvable_parent_endpt() {
+        // C do_fork.c:41 — isokendpt 失败（端点解析不到占用槽）→ EINVAL，
+        // 早于 RECEIVING 校验。端点 999 无对应占用槽。
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let priv_table = crate::test_helpers::test_priv_table();
+
+        let mut msg = Message::default();
+        msg.m_u.m_lsys_krn_sys_fork.endpt = 999;
         msg.m_u.m_lsys_krn_sys_fork.slot = 3;
         msg.m_u.m_lsys_krn_sys_fork.flags = 0;
 
