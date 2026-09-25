@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B26 kerninfo 双缺陷闭环 + B28 PM 位掩码→枚举语义坍缩修复，boot 推进 20 倍停在 B29 运行时 OOM（1.54，含代码·arch/kernel/PM 三侧）**：§1.53 头号前沿「B26 PM↔VFS 乒乓」根因反转两次收敛——**乒乓是下游后果，真凶＝kerninfo 交付链双缺陷**。缺陷 A（车道断链）：`set_secondary_ipc_return` 写 `ctx.rbx`，但 int33 立即返回臂只同步 RAX+R10（§1.40 迁移遗留）→ 页地址永达不到用户，用户 `ipc_trap` 从 R10 拿陷阱残留垃圾 → `new_image_stack_top` deref 崩（bn1 实锤 rip=0x204e61=`cmpq $0x10,(%rax)`、rax=1）；修=车道改 `gp_regs[GP_R10]`（C i386 %ebx 一条车道兼状态+secondary 两职、按调用互斥，`ipc_minix_kerninfo.S`+`proc.c:685-693` 对位）。缺陷 B（新根缺映射）：VM 建的根 `PDPT[2]==0`——kerninfo.rs 模块 doc 登记的「mapping responsibility 随 VM 接管转移」从未发生（C 经 VMCTL_KERN_PHYSMAP 把 `.usermapped` 映进每进程空间，i386 memory.c:746/847）；修=内核在 `vmctl_set_addr_space` 唯一提交点先查后装注入（`KERNINFO_PAGE_PHYS` 缓存 + read_only + boot_pt_alloc）。签名翻转链 bn4（A 修后翻为 noaddr cr2=0x200000040＝B 实锤）→ bn5（全消、init done/run enter、18 服务全诞）。bn5 尾暴露 **B28**：PM panic `assert(EXITING)`（slot 13 正常退出）——根因＝`Lifecycle` 互斥枚举把 C `mp_flags` OR 位语义压成替换语义：`zombify` 后（C `forkexit.c:619/621` 只 OR ZOMBIE、EXITING 位直到 cleanup 才清）VFS EXIT 回复到达时 `is_exiting()` 已 false。修=`is_exiting()` 覆盖全死亡窗口（Exiting|TraceZombie|Zombie|ToldParent），15 调用点逐一对位 C 位测试，两测试随 C 对齐（`process_ksig` 终止子现返 EDEADEPT＝signal.c:372-378 忠实形态，旧 ok 断言是缺陷镜像）。**真机 bn6-bn8**：notEXITING=0、活动 27998→47853 行（+71%），停在下一前沿 **B29＝VFS 运行时堆 OOM**（40KB 分配失败 `px=200/200 fp=0aa/200`），bn7==bn8 无探针双跑签名逐字确定。三件套绿（mock kernel **820**/pm lib **418**/arch **243**·0fail / fmt 九改动文件 HEAD==WT 零新增漂移 / 镜像重建+双跑一致）+ CodeReview **1 MUST-FIX 已修**（qemu-tests `test-user-trap` 手编 payload 仍读 RBX 车道→`mov rax,r10`/`mov rax,[r10]` 字节替换+sh/注释同步）+1 SHOULD（trap_dispatch 陈旧注释）。side 报告对账：诊断一＝§1.52 已落地；诊断二（B27 页表竞态/VMINHIBIT）与本单元实测无关（B26 真根因为 kerninfo 链）；「syscall_process.rs 未提交」不实。登记存量：minix-tests `pm_sched` 编译 E0046（HEAD 同红）、run_once_integration 2 失败（m_type errno 符号约定存量）。**下一前沿（按序）**：① 头号＝**B29 VFS OOM**（512 页 .bss 池 bump 耗尽＋170 空闲页不可复用＝big-block 连续性/碎片问题；对位已登记 follow-up＝VM-backed heap supplier（alloc.rs 模块 doc）+ `MAX_BIG_BLOCKS=32` 同族债）；② SMP 早期启动竞态本体（§1.52）；③ §1.51 遗留低频 bit47 / `stacktrace.rs:150`；④ latent `platform_sources`。rc marker 仍未达。详见 §1.54。
+> **⚠ 最新前沿 = B29 VFS 堆 OOM + B30 内核页表池耗尽，双容量扰动落地后真机首次零 panic 跑到 7.7 万行（1.55，含代码·minix-rt/boot-shim 两参数）**：§1.54 头号前沿 **B29 定性实锤＝合法工作集超固定池、非泄漏**——三行取证：① 40960 失败分配主＝`exec_worker.rs:296 hdr_buf`（`HEADER_BUF_PAGES=10` 页，签名 `size=00a000` 逐位吻合）；② VFS 静态表足迹实测（临时 size_of 测试，跑毕回滚）`FProc`4368B×256＋`Filp`96B×1024＋`Vnode`120B×1024≈**327 页** vs 池 512 页，且 `FProc` 翻倍元凶＝`filps: [Option<usize>;255]` 16B/槽（C 指针 8B）；③ `supply_pages` 连续 run 只从 bump 区发、free 栈只养单页（alloc.rs L328 注释自陈）⇒ bump 耗尽后散页 170 无法拼 10 页 run=必炸。C 对位：表在 BSS、堆经 VM brk 无上限（`brk.c _syscall(VM_PROC_NR,VM_BRK)`；RS 默认就要 8MiB prealloc map `rs/const.h:83`）。**修（本单元＝容量扰动，结构修记 follow-up）**：`GLOBAL_POOL_BYTES` 512→1024 页。签名翻出 **B30**（bn9m）：`vmctl_set_addr_space … AllocationFailed`——B26 fix-B 每次新根 kerninfo 注入从 boot-shim 的 `boot_pt_alloc`（仅 128 页、纯 bump 无 free）烧 1-3 页，~40 次 bind 耗尽=确定性内核 panic；扩 `prepare_boot(128→1024)`（代价：`vm_handoff` 整段从 VM free list 扣除，每 boot 多占 4MiB）。附带物理预算钉桩：bn9（默认 128M）死 `exec_bootproc boot segment page allocation failed`＝bootproc 腿 eager materialize 随池扩容线性涨页，**测试台标准配置自此为 `-m 512M`**。真机 bn10/bn10b/bn11/bn11b 四轮 **0 panic**（77418/77996/75882/77757 行，签名一致），boot 历史首次推过全部已知崩溃点。**新前沿 B31 现场已刻画**：birth 停在第 8446 行（26 个），尾部 6.9 万行＝多服务事件循环 pick spam（slot 8/1/0/a/b 分布、非活锁死形），rc marker 未出。取证中还原两处事实错误：旧注释「池页按需物化不占物理」对 bootproc 腿不成立；本重写 VM 的 `MAP_PREALLOC` 只记位不预取帧（C `region.c:492` 真预取）＝**PREALLOC 语义缺口**新存量（demand-fill 使其外部行为近似等价，登记待裁决是否补实现）。三件套绿（mock kernel 820/rt 57·0fail / fmt 三文件零新增漂移 / 镜像重建+双跑一致×2）+ CodeReview **1 MUST-FIX 已修**（`nk4c_oom_tag` 探针分母写死 `/200`＝扩容后打 `px=400/200` 非法形态污染签名判据→改派生常量真值）+3 SHOULD 全采纳（PREALLOC 断言精确化/WORKLOG 登记（本节）/bump 扣除代价入注释）+2 NIT（hex 记法/PoolStorage 陈旧 doc）。**下一前沿（按序）**：① 头号＝**B31 rc marker 未达**——birth 停 26 后 INIT 命令面卡在哪一步（bn11 尾部 VFS/PM 活动正常，需定位 init runcom 的等待点）；② 结构债三件套：VM-backed heap supplier（C brk 保真）、boot bump 可回收/映射责任移交 VM、`MAX_BIG_BLOCKS=32` 同族；③ VM PREALLOC 语义缺口裁决；④ SMP 早期启动竞态（§1.52）；⑤ §1.51 遗留。rc marker 仍未达。详见 §1.55。
+>
+> **⚠（1.54 历史·其头号前沿「B29 VFS 运行时堆 OOM」已于 §1.55 容量定性+扰动修复，并翻出 B30 同族）最新前沿 = B26 kerninfo 双缺陷闭环 + B28 PM 位掩码→枚举语义坍缩修复，boot 推进 20 倍停在 B29 运行时 OOM（1.54，含代码·arch/kernel/PM 三侧）**：§1.53 头号前沿「B26 PM↔VFS 乒乓」根因反转两次收敛——**乒乓是下游后果，真凶＝kerninfo 交付链双缺陷**。缺陷 A（车道断链）：`set_secondary_ipc_return` 写 `ctx.rbx`，但 int33 立即返回臂只同步 RAX+R10（§1.40 迁移遗留）→ 页地址永达不到用户，用户 `ipc_trap` 从 R10 拿陷阱残留垃圾 → `new_image_stack_top` deref 崩（bn1 实锤 rip=0x204e61=`cmpq $0x10,(%rax)`、rax=1）；修=车道改 `gp_regs[GP_R10]`（C i386 %ebx 一条车道兼状态+secondary 两职、按调用互斥，`ipc_minix_kerninfo.S`+`proc.c:685-693` 对位）。缺陷 B（新根缺映射）：VM 建的根 `PDPT[2]==0`——kerninfo.rs 模块 doc 登记的「mapping responsibility 随 VM 接管转移」从未发生（C 经 VMCTL_KERN_PHYSMAP 把 `.usermapped` 映进每进程空间，i386 memory.c:746/847）；修=内核在 `vmctl_set_addr_space` 唯一提交点先查后装注入（`KERNINFO_PAGE_PHYS` 缓存 + read_only + boot_pt_alloc）。签名翻转链 bn4（A 修后翻为 noaddr cr2=0x200000040＝B 实锤）→ bn5（全消、init done/run enter、18 服务全诞）。bn5 尾暴露 **B28**：PM panic `assert(EXITING)`（slot 13 正常退出）——根因＝`Lifecycle` 互斥枚举把 C `mp_flags` OR 位语义压成替换语义：`zombify` 后（C `forkexit.c:619/621` 只 OR ZOMBIE、EXITING 位直到 cleanup 才清）VFS EXIT 回复到达时 `is_exiting()` 已 false。修=`is_exiting()` 覆盖全死亡窗口（Exiting|TraceZombie|Zombie|ToldParent），15 调用点逐一对位 C 位测试，两测试随 C 对齐（`process_ksig` 终止子现返 EDEADEPT＝signal.c:372-378 忠实形态，旧 ok 断言是缺陷镜像）。**真机 bn6-bn8**：notEXITING=0、活动 27998→47853 行（+71%），停在下一前沿 **B29＝VFS 运行时堆 OOM**（40KB 分配失败 `px=200/200 fp=0aa/200`），bn7==bn8 无探针双跑签名逐字确定。三件套绿（mock kernel **820**/pm lib **418**/arch **243**·0fail / fmt 九改动文件 HEAD==WT 零新增漂移 / 镜像重建+双跑一致）+ CodeReview **1 MUST-FIX 已修**（qemu-tests `test-user-trap` 手编 payload 仍读 RBX 车道→`mov rax,r10`/`mov rax,[r10]` 字节替换+sh/注释同步）+1 SHOULD（trap_dispatch 陈旧注释）。side 报告对账：诊断一＝§1.52 已落地；诊断二（B27 页表竞态/VMINHIBIT）与本单元实测无关（B26 真根因为 kerninfo 链）；「syscall_process.rs 未提交」不实。登记存量：minix-tests `pm_sched` 编译 E0046（HEAD 同红）、run_once_integration 2 失败（m_type errno 符号约定存量）。**下一前沿（按序）**：① 头号＝**B29 VFS OOM**（512 页 .bss 池 bump 耗尽＋170 空闲页不可复用＝big-block 连续性/碎片问题；对位已登记 follow-up＝VM-backed heap supplier（alloc.rs 模块 doc）+ `MAX_BIG_BLOCKS=32` 同族债）；② SMP 早期启动竞态本体（§1.52）；③ §1.51 遗留低频 bit47 / `stacktrace.rs:150`；④ latent `platform_sources`。rc marker 仍未达。详见 §1.54。
 >
 > **⚠（1.53 历史·其头号前沿「B26 乒乓」已于 §1.54 闭环＝kerninfo 双缺陷，乒乓为下游后果）最新前沿 = VM free-list 空真根因 = firmware-heap 腐化（非扣减过度），fix27c 同病第三发已修（1.53，含代码·内核侧）**：§1.52 登记的头号前沿「VM handoff free-list 布局鲁棒性」**根因反转**——带探针单核实跑（vh1）显示 `classify()` 时刻原始 memmap 快照**本身就是空的**（15 条 conventional 条目全部读回 length 0），根本不是「扣减把 usable 扣光」。真根因＝**fix27c 同病第三发**：`KernelInfo` 的 `memmap`/`boot_modules` 两个 `&'static` slice 指向 boot-shim 的 UEFI 池堆（`Box/Vec leak`），这些页在内核启动推进后被破坏——同一 run 内 Step 4 DM-coverage 还能经 `kernel_info.memmap()` 打出 16 条真数据（dm-mem 行），到 `vm_handoff::classify` 就全零，而 `KernelInfo` 结构体本身（同堆 `Box::leak`）其它字段仍完好＝**payload 页被复用/破坏、非结构损坏**。`reserved_regions` 早被 fix27c 用 `.bss` landing pad 保护过（当时就注明「固件池堆撑不过 boot」），`memmap`/`boot_modules` 是漏网同病。**修＝扩展 landing pad 范式到全部 payload**：`store_kernel_info` 在 arch_boot 入口（数据尚完好时）把 `memmap`（`ptr::copy` 到 `MEMMAP_REGION_STORE`，上限 `MAXMEMMAP=128` fail-fast）、`boot_modules`（逐条拷到 `BOOT_MODULE_STORE`，name 字节落 `BOOT_MODULE_NAME_STORE` 定长池、15 字节 strlcpy 式截断与 `vm_handoff::copy_name` 同界）深拷贝进 kernel `.bss` 并重指全局副本；re-store 幂等守卫与 fix27c 同款。`BootModule` 加 `#[derive(Debug,Clone,Copy)]`。**真机决定性**：修后单核 `classify` 时刻 memmap 16 条实数据、`vm_handoff free n=8`（原 0）、`boot.rs:159` panic 消失，boot 从「VM 崩于诞生前」推进到 **11 boot exec 全过 + runtime birth 链（slot 0xd–0x15）+ 空闲轮转**；残留形态＝INIT/runcom 后 PM(0)↔VFS(1) 轮转主导（pick 各 ≈4.5 万次）＝**B26 家族 livelock 现场复现**（§1.49-A 登记的 exec_command null deref 下游），成为新头号前沿。三件套绿（mock **820**·0fail 只增不减·+1 为 landing 回归测试 / fmt 三文件 HEAD==WT 零新增漂移（globals.rs 一处 16→17 已对齐）/ 镜像重建无探针两次单核签名一致 fm1==fm2 `kernel panic=0`·`no free memory`=0·exec=11）+ 探针版 lh1 机制验证后按纪律回滚 + CodeReview **PASSED 0 MUST/SHOULD-FIX**（确认：unsafe 裸指针生命周期/幂等/截断无消费者分叉/`param_buf` 两路径硬编 `&[]` 无风险/`platform_sources` 同病但零 post-boot 消费者＝登记隐患非本 unit）。**下一前沿（按序）**：① **头号＝B26 PM↔VFS 乒乓活锁**（本轮单核已把它重新推到主路径：用只打印寄存器探针抓 INIT(runcom) 在 `exec_command` 的 null+1 deref 指令现场，§1.49-A 已有半条证据链）；② SMP 早期启动竞态本体（§1.52）；③ §1.51 遗留低频 birth bit47 / `stacktrace.rs:150`；④ latent：`platform_sources` 未 landing（当前零消费者）。rc marker 仍未达。详见 §1.53。
 >
@@ -2917,5 +2919,83 @@ bn5 终态：PM panic `servers/pm/src/ipc/vfs.rs:473 handle_vfs_reply: EXIT/CORE
 4. latent：`platform_sources` 未 landing（零消费者）。
 
 **取证产物**（gitignore）：`serial_bn1..bn8.log` + `bn1..bn8.txt`。工作树：本单元生产改动 = arch 2 文件 + kernel 2 文件 + minix-sys 2 文件（注释）+ PM 2 文件 + qemu-tests 2 文件（payload 字节 + 注释），探针零残留。
+
+---
+
+## §1.55 B29 VFS 堆 OOM + B30 boot 页表池耗尽：双容量扰动，真机首次零 panic（含代码·minix-rt/boot-shim）
+
+### 一句话
+
+B29 定性＝合法工作集超固定池（非泄漏），`GLOBAL_POOL_BYTES` 512→1024 页翻面；翻面后暴露同族 B30（boot 页表 bump 池 128 页无 free，kerninfo 注入烧尽），`prepare_boot(128→1024)` 再翻面；四轮真机 0 panic，boot 历史首次推过全部已知崩溃点，新前沿 B31＝rc marker 前的命令面卡点。
+
+### B29 取证（三行定性）
+
+1. **分配主**：`size=00a000`（40960）＝`servers/vfs/src/exec_worker.rs:296` 的 `hdr_buf = Box::new([0u8; HEADER_BUF_PAGES(10) * 4096])`——每次 exec 的 ELF 头读缓冲，10 页 big-block，与 OOM 签名逐位吻合。
+2. **足迹量化**（临时 `size_of` 测试实测后回滚）：`FProc` 4368B × `NR_PROCS` 256 ＝ 273 页；`Filp` 96B × 1024 ＝ 24 页；`Vnode` 120B × 1024 ＝ 30 页（含对齐）→ 三表 ≈ **327 页**，占 512 页池的 64%。`FProc` 大的元凶是 `filps: [Option<usize>; 255]`——`Option<usize>` 无 niche 每槽 16B，C 的 `file_desc *` 仅 8B，同一张表 Rust 天然翻倍。
+3. **碎片机制**（`alloc.rs` `supply_pages` L328 注释自陈）：连续 run 只从 bump 区发，free-page 栈只收单页。bn7/bn8 签名 `px=200/200 fp=0aa/200`＝bump 512 页全耗尽、170 散页躺 free 栈、10 页连续请求无从拼起 → premature OOM 必现。
+
+**C 对位**：C 的 fproc/filp/vnode 表在 VFS 的 BSS（exec 时 mmap），malloc 堆经 `brk()`→`_syscall(VM_PROC_NR, VM_BRK)` 无上限生长（`minix3/minix/lib/libc/sys/brk.c:24-30`）；minix-rs 把它们全塞进 2MiB 固定池＝容量墙是重写引入的。RS 在 C 默认即申请 8MiB 预映射（`rs/const.h:83 RS_VM_DEFAULT_MAP_PREALLOC_LEN (1024*1024*8)`）。VM 服务端 `VM_BRK` 臂已接线完整（`servers/vm/src/brk.rs` 435 行 + dispatcher:688），缺的是**客户端 heap supplier 腿**（allocator 里发 IPC 有再入约束，独立单元）。
+
+**修（扰动实验）**：`GLOBAL_POOL_BYTES` 512→1024 页（`MAX_SLABS`/free 栈/记录表全部经 `GLOBAL_POOL_BYTES` 派生自动跟随，无表满旧债）。物理代价见 B30 侧账。
+
+### B30 签名翻转与同族扰动
+
+池 1024 后 bn9（测试台默认内存 128M）死 `vm_server.rs:647 exec_bootproc: pfs failed: boot segment page allocation failed`——**bootproc 腿 eager materialize**（`vm_server.rs` boot segment 循环逐页 `alloc_pfn`+拷贝，含 .bss 全段）随池扩容线性涨页，128M 预算翻越不过去。对照跑 `-m 512M`（bn9m）：boot 服务 11 exec 全过、panic 移位为
+
+```
+vmctl_set_addr_space: failed to map the kerninfo page into the new root: AllocationFailed   (syscall.rs:2990)
+```
+
+即 B26 fix-B 的 kerninfo 注入腿从 `boot_pt_alloc` 拿中间表页——该池 boot-shim 只给 **128 页**（`prepare_boot(128)`），boot 期 identity/high/DM 建立已耗大头，此后**每次新根绑定点 1-3 页、纯 bump 无任何 free 路径**（旧根页永不回收），~40 次 bind 后确定性 `.expect` panic。本单元同样以扰动续命：`prepare_boot(128→1024)`，注释钉死三件事：选值算式、`vm_handoff` 把整段从 VM free list 扣除的代价（每 boot 多占 4MiB）、「这只是推迟确定性 panic」。结构性修法（页表页可回收 / 把 kerninfo 映射责任移交 VM——`kerninfo.rs` 模块 doc 登记的 responsibility 转移）列 B30 follow-up。
+
+**测试台标准配置自此变更：`-m 512M -smp 1`**（§1.52 单核台 + 本轮内存钉桩），命令见本节末。
+
+### 取证中还原的两处事实错误（存量登记）
+
+1. 旧 `GLOBAL_POOL_BYTES` 注释「池页按需物化、名义大小不占物理内存」——对 **bootproc 腿不成立**（eager materialize 全段）；bn9 死因即为此。alloc.rs 新注释已按 bootproc eager / 常规 exec 两条腿分开表述。
+2. **本重写 VM 未实现 PREALLOC 语义**：`MmapFlags::PREALLOC` 只翻译成 `VrFlags::PREALLOC_MAP` 记账位（`mmap.rs:110`），`map_region` 不取帧，anon 段 memtype `AnonymousMemory` 无 `ev_new`（`memtype.rs:228` doc 自陈按需分页）；C 的 `region.c:492-499` 收 `MF_PREALLOC` 即 `map_handle_memory` 预取全部帧。二者行为差＝页物化时机（首次触碰 vs mmap 时），外部可观察语义近似等价，故暂按 Refactor 级登记，是否补实现待后续裁决（若做「exec 时预占防 later-OOM」的 C 语义时需要）。
+
+### 真机验证（bn9-bn11b）
+
+| 轮 | 配置 | 结果 |
+|---|---|---|
+| bn9 | 池1024, 128M | 669 行，`exec_bootproc … page allocation failed`（物理预算） |
+| bn9m | 池1024, 512M | 54002 行，VFS OOM 消失；死 B30 `AllocationFailed`（kerninfo 注入） |
+| bn10/10b | 池1024+bump1024, 512M | **0 panic**，77418/77996 行（+43% vs bn9m） |
+| bn11/11b | 同上（含 CodeReview MUST 修后重建） | **0 panic**，75882/77757 行，签名一致 |
+
+**B31 新前沿现场**：bn11 里 birth 事件停在第 8446 行（累计 26 个），其余 ≈6.9 万行是多服务事件循环 pick spam（尾部 pick 分布 slot8=2370/slot1=1404/slot0=807/slot a·b 数百，rip 多样=非双进程活锁）；rc marker（`minix-rs rc: minimal boot script marker`）仍未打印——INIT runcom 命令面停在某等待点，定位是下一单元第一动作。
+
+### 三件套与 CodeReview
+
+- mock：`minix-kernel` 817+3=**820** 0 fail（基线不降）；`minix-rt` **57** 0 fail；clippy 改动前后同为 122 存量告警（stash 对照）。
+- fmt：`alloc.rs`/`lib.rs`/`boot-shim/main.rs` nightly `--check` HEAD==WT 零新增漂移。
+- 镜像重建 + 真机双跑×2（bn10 系与 bn11 系）零 panic、签名一致。
+- CodeReview（本单元）：**MUST-FIX 1 已修**——`nk4c_oom_tag` 探针把分母写死 `/200`，池扩容后会打 `px=400/200` 非法形态污染逐字签名判据，改为 `MAX_SLABS`/`MAX_BIG_BLOCKS`/`total_pages`/`GLOBAL_POOL_PAGES` 派生真值（`lib.rs`）。SHOULD 3 全采纳（PREALLOC 断言精确化、WORKLOG §1.55 登记、bump 扣除代价与算式入注释）；NIT 2 采纳（diag 引原始 hex、`PoolStorage` doc「sixteen pages」更新）。
+
+### 命令（测试台标准配置更新）
+
+```bash
+# 建镜像
+cd os && cargo run -q -p xtask -- image --arch x86_64 --release
+# 真机（单核 + 512M，EXIT=124 正常）
+timeout 150 qemu-system-x86_64 -m 512M -smp 1 \
+  -drive if=pflash,format=raw,unit=0,file=/usr/share/OVMF/OVMF_CODE_4M.fd,readonly=on \
+  -drive if=pflash,format=raw,unit=1,file=target/image/x86_64/fw_vars.fd \
+  -drive file=target/image/x86_64/minix.img,format=raw,media=disk \
+  -serial file:target/nk4a-runs/serial_bnN.log -display none -no-reboot -device isa-debug-exit
+# 去噪
+tr -cd '\11\12\15\40-\176' < serial_bnN.log > bnN.txt
+```
+
+### 下一前沿入口（按序）
+
+1. **头号 B31**：bn11 尾部定位 INIT 命令面卡点（runcom 哪一步、等谁的回复；对照 `notes` 的 18-stage 期望），rc marker 三连是终目标①。
+2. 结构债三件套：VM-backed heap supplier（allocator→VM_BRK 客户端腿，注意 alloc 再入）；boot bump 可回收或 kerninfo 映射责任移交 VM；`MAX_BIG_BLOCKS=32` 同族。
+3. VM PREALLOC 语义缺口裁决（存量 2）。
+4. SMP 早期启动竞态本体（§1.52 遗留）。
+5. §1.51 遗留：低频 birth bit47 / `stacktrace.rs:150`；`platform_sources` latent。
+
+**取证产物**（gitignore）：`serial_bn9*.log`/`serial_bn1*` + 对应 `.txt`。工作树生产改动＝`alloc.rs`（池常量+注释）、`lib.rs`（探针分母）、`boot-shim/main.rs`（bump 页数+注释）三文件，无探针残留。
 
 ---

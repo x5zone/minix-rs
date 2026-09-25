@@ -151,15 +151,25 @@ fn nk4c_oom_tag(size: usize) {
     }
     lit!(b"nk4c: OOM-RT size=");
     hex!(size, 6);
+    // 分母取派生常量真值（NK4-C 1.55：池 512→1024 后写死的 `/200`
+    // 会打出 px=400/200 的非法形态，签名对账判据即被污染）。
     lit!(b" slabs=");
     hex!(d.slabs_in_use, 3);
-    lit!(b"/200 big=");
+    lit!(b"/");
+    hex!(alloc::MAX_SLABS, 3);
+    lit!(b" big=");
     hex!(d.big_in_use, 2);
-    lit!(b"/20 px=");
+    lit!(b"/");
+    hex!(alloc::MAX_BIG_BLOCKS, 2);
+    lit!(b" px=");
     hex!(d.pages_consumed, 3);
-    lit!(b"/200 fp=");
+    lit!(b"/");
+    hex!(d.total_pages, 3);
+    lit!(b" fp=");
     hex!(d.free_pages, 3);
-    lit!(b"/200\n");
+    lit!(b"/");
+    hex!(alloc::GLOBAL_POOL_PAGES, 3);
+    lit!(b"\n");
     let _ = sys_diagctl_write(
         &DirectKernelCallTransport,
         core::str::from_utf8(&buf[..n]).unwrap_or("nk4c: OOM-RT\n"),
@@ -183,8 +193,10 @@ pub fn free(ptr: *mut u8) {
 
 /// The C heap starts at the linker-provided `_end` symbol and grows through
 /// the virtual memory server. Until that server channel lands, this embedded
-/// pool plays the role of the initial heap: sixteen pages owned by the
-/// binary itself, with virtual memory mapping chained behind it later.
+/// pool plays the role of the initial heap: [`alloc::GLOBAL_POOL_BYTES`]
+/// of `.bss` owned by the binary itself (NK4-C 1.55: was sixteen pages,
+/// grown through the 512- and 1024-page capacity rounds), with virtual
+/// memory mapping chained behind it later.
 /// Page-aligned so the same memory can later be described to the virtual
 /// memory server without copying.
 #[repr(align(4096))]

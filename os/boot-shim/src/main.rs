@@ -36,7 +36,7 @@ fn main() -> Status {
     // 1. UEFI boot preparation via BootShim trait
     //    Internally: GetMemoryMap → AllocatePages → load kernel ELF from ESP
     //    → load boot modules → build KernelInfo → ExitBootServices
-    // 128 pages (512 KiB): the identity mapping, the kernel high mapping,
+    // 1024 pages (4 MiB): the identity mapping, the kernel high mapping,
     // DM coverage establishment (kernel + VM windows), the NK4-A
     // boot-identity eviction (ELF segment pages + the 64 MiB VM heap
     // window at 4 KiB granularity ≈ one PT page per 2 MiB slice ≈ 33
@@ -46,7 +46,19 @@ fn main() -> Status {
     // one PT page per 2 MiB region per window — which the former 16/64
     // pages cannot cover (the kernel's fallback bump is 1 MiB = 256
     // pages, FALLBACK_BUMP_LEN — this pool stays in the same order).
-    let result = UefiBootShim::prepare_boot(128);
+    // NK4-C 1.55 B30: 128 pages sufficed for boot alone, but B26 fix-B
+    // also draws the kerninfo-injection chain (1–3 pages) from this
+    // pool at EVERY new-root bind, and the pool has no free path — the
+    // real machine died `AllocationFailed` after ~40 binds (bn9m).
+    // 1024 = boot needs (~100) + per-bind chain (≤3) × bind ceiling
+    // (exec 重建根每子进程一次;数百量级) × safety; runway is not
+    // free though: vm_handoff deducts the WHOLE region from the VM free
+    // list whether used or not (vm_handoff.rs 模块 doc), so this costs
+    // every boot 4 MiB of VM-selectable memory. Before the structural
+    // fix lands (reclaimable page-table pages / moving the kerninfo
+    // mapping responsibility to VM per kerninfo.rs doc — WORKLOG 1.55
+    // follow-up) this pool only postpones the deterministic panic.
+    let result = UefiBootShim::prepare_boot(1024);
 
     // --- Below this point, UEFI boot services are gone ---
 

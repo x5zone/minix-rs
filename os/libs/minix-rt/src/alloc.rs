@@ -74,17 +74,42 @@ pub const MAX_SLABS: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 /// `big=0` (the path is untouched). Revisit if a big-block-heavy server lands.
 pub const MAX_BIG_BLOCKS: usize = 32;
 
-/// Initial heap pool for the global allocator, in bytes (256 pages).
+/// Initial heap pool for the global allocator, in bytes (1024 pages).
 ///
-/// The pool is `.bss` storage: pages materialize only when touched (the
-/// VM demand-fills them), so the nominal size costs no physical memory for
-/// binaries that stay small. The former 16-page pool OOM'd real servers —
+/// The pool is `.bss` storage, so its size charges each binary's image
+/// segment. The bootproc leg materializes every segment page eagerly
+/// (VM `exec_bootproc` copies the ELF image through freshly allocated
+/// PFNs), and C additionally preallocates at mmap time for anything
+/// carrying `MAP_PREALLOC` (C's image memmap leg is
+/// `MAP_ANON|MAP_PREALLOC|MAP_UNINITIALIZED|MAP_FIXED`,
+/// `minix3/minix/lib/libexec/exec_general.c:25`; `region.c:492-499`
+/// takes the frames right there) — although this rewrite's VM currently
+/// only records the PREALLOC bit and demand-fills on first touch
+/// (`mmap.rs` `PREALLOC_MAP`, `memtype.rs` `AnonymousMemory` has no
+/// `ev_new`), a divergence registered with NK4-C 1.55. Either way the
+/// bootproc leg prices the pool in real pages at exec time, which caps
+/// how far it may grow until the VM-backed supplier lands (C's RS asks
+/// for an 8 MiB prealloc map outright — `rs/const.h:83
+/// RS_VM_DEFAULT_MAP_PREALLOC_LEN`).
+/// The former 16-page pool OOM'd real servers —
 /// RS's boot allocates a 256512-byte table and aborted before its main
 /// loop (real machine NK4-A C-3 c12a: "memory allocation of 256512 bytes
 /// failed", 2026-09-22). C servers grow a real heap through VM `brk`; a
 /// VM-backed supplier is the follow-up (alloc.rs §module docs, "later,
 /// virtual memory mapping").
-pub const GLOBAL_POOL_BYTES: usize = 512 * PAGE_BYTES; // NK4-C 第12轮扰动实验
+///
+/// 512 pages died on the real machine NK4-C 1.55 (bn7/bn8: VFS panic
+/// `memory allocation of 40960 bytes failed`, raw hex diag
+/// `size=00a000 slabs=009/200 big=06/20 px=200/200 fp=0aa/200`): VFS's
+/// own tables alone consume ~327 pages — `FProc` is
+/// 4368 B (`filps: [Option<usize>; 255]` costs 16 B per slot where C's
+/// `file_desc` pointer costs 8 B) × 256 slots, plus `filp[1024]` and
+/// `vnode[1024]` — and the freed exec buffers cannot be reused for the
+/// next multi-page `hdr_buf` run because the free stack only serves
+/// single pages (see `supply_pages`). A legal working set, not a leak:
+/// C keeps those tables in BSS and never caps its heap. 1024 pages
+/// doubles the runway; the faithful fix is the VM-backed supplier.
+pub const GLOBAL_POOL_BYTES: usize = 1024 * PAGE_BYTES; // NK4-C 1.55 B29 扩容扰动实验
 
 /// Number of whole pages the global pool holds (`GLOBAL_POOL_BYTES` /
 /// [`PAGE_BYTES`]). Used to size the free-page stack and slab record table
