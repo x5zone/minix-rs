@@ -2127,3 +2127,42 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 - **frontier 推进至 1.30**（B16 部分修 = fork 链通，rc marker 未达，进入 B17）。
 
 ---
+
+## 1.31 · B17 侦察（探针确认 do_fork 现真 Err，非假 Ok）
+
+### 现象
+承 §1.30 修复落地后（HEAD `71ae0dc8b`），fork 假 Ok 已消除——init 不再把 EAGAIN/ESRCH 当 child_pid 卡 waitpid。但 rc marker 仍缺，boot 停在 `init-state Runcom`。候选缩窄：
+- ① do_fork 返 Err 被 init 正确消费 → init 走 `Attempt::SingleUser` → 再 fork 再 Err 循环；
+- ② 或 do_fork 返 Ok 但 VfsReply::Fork 异步回复链仍未起。
+
+### 探针 B（本轮，5 点 runcom.rs）
+`nk4c_mark("rc:chld" | "rc:before-exec" | "rc:exec-ret" | "rc:frkE" | "rc:prnt" | "rc:hitw")`——同 §1.29 模式，走内核 diagctl 串口直写不依 tty/fd 1 wire，cap 8。
+
+### 真机 c11 命中矩阵
+| 探针 | c5/c6/c7（修前）| **c11（修后）** |
+|---|---|---|
+| rc:prnt（父 Ok 分支）| 3 轮全命中 | **0 命中** |
+| rc:frkE（Err 分支）| 0 | **1 命中** |
+| rc:chld（子 Ok(0)）| 0 | 0 |
+| rc:before-exec / rc:exec-ret | 未测 | 0 |
+| rc:hitw（waitpid 命中）| 未测 | 0 |
+| init-state Runcom | 命中 | 命中 |
+
+**关键翻转**：`prnt` 归零 + `frkE` 首次命中 = **§1.30 取负修复实锤生效**：init 现收到 `Err(-errno)` → 走 `Attempt::SingleUser` 分支 → emergency + `waitpid(-1, WNOHANG).is_ok() {}` 排空 zombie → sleep(STALL_TIMEOUT) → 回 SingleUser 状态。
+
+### 结论
+- **B16 修复完全正确**：错误回执不再被误当合法 child_pid；init 状态机按 C `init.c:911-922` "can't fork → reap + sleep + single_user" 走通。
+- **B17 真前沿**：do_fork 现**实际**返回 Err（前只是 Err 被误当 Ok），但**具体哪个 Err 臂**仍未知——候选 `can_alloc_for_user`（VM/proc 表内存）、`find_free_slot`（proc 表满）、`vm_fork`（VM sendrec 失败）——都需 PM 侧下一层探针。init 侧 fork 已正确失败。
+
+### 下一入口（fix B17）
+1. PM 侧 `fork.rs` 里 `do_fork` 在 `find_parent_slot` 之后的每个 Err 站点加 `nk4c:` 探针（`dF:canA`/`dF:ffs`/`dF:vmF`/`dF:tell`）——一次真机跑即可钉死停点；
+2. 依数据裁决修复：若 `vm_fork` 失败 → 查 VM 侧 VmFork 语义（可能与 §1.24 grant table 单点性相关）；若 `find_free_slot` → 查 proc 表容量与 boot 模块数量匹配；若 `can_alloc_for_user` → 查 VM 内存配额；
+3. 修后三件套 + CodeReview + §1.32 + fix commit；期望 c12 见 `rc:chld` 命中且 `rc:before-exec` 后**不**再命中 `rc:exec-ret`（=exec 成功、marker 由 sh 打印）。
+
+### 本 turn 行量
+- 1 处代码变更（`runcom.rs` 探针 + `nk4c_mark` 辅助）→ **本 turn 末已 `git checkout --` 回滚**，工作树与 HEAD 相同；
+- WORKLOG 顶部不动（B17 前沿 bullet 已存在，仅本节 §1.31 追加）；
+- **纯侦察 doc commit**（同 §1.25/§1.28/§1.29 先例）——无生产代码变更、无三件套、无 CodeReview。
+- frontier 仍在 1.30；rc marker 未达。
+
+---
