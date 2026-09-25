@@ -371,9 +371,22 @@ impl PageSupplier for FixedPoolSupplier<'_> {
         if page_count == 0 {
             return None;
         }
-        // Only the bump region hands out contiguous runs: recycled single
-        // pages on the free stack are not necessarily adjacent, so they are
-        // reserved for single-page requests.
+        // A one-page run carries no adjacency requirement, so it is exactly
+        // the "single-page request" the comment below reserves the free
+        // stack for: delegate to `supply_page`, which pops a recycled page
+        // first and only then advances the bump cursor. Without this a
+        // single-page big-block request fails the moment the bump cursor
+        // reaches the pool end even though freed pages sit on the free stack
+        // (real machine NK4-C 1.60 **B35**: `size=0x1000` refused while
+        // `px=400/400` bump exhausted and `fp=39c/400`=924 pages stranded).
+        if page_count == 1 {
+            return self.supply_page();
+        }
+        // Multi-page runs still need contiguity the scattered free stack
+        // cannot promise, so they come only from the fresh bump region:
+        // recycled single pages on the free stack are not necessarily
+        // adjacent. Serving runs from a coalesced free list (or a
+        // VM-backed heap) is the deferred structural fix.
         if self.next_page + page_count <= self.total_pages() {
             let first = self.page_at(self.next_page);
             self.next_page += page_count;
@@ -808,6 +821,39 @@ mod tests {
         }
         // 全释放后仍可分配一个 big block（记录表槽回收生效）。
         assert!(!allocator.alloc(PAGE_BYTES).is_null());
+    }
+
+    /// B35 回归 pin：单页 big block 必须能复用 free-stack。旧
+    /// `supply_pages` 只走 bump 游标，游标撞池尾后即使 free-stack 有
+    /// 空闲页也拒绝对 1 页请求供货（真机 `size=0x1000` 而 `fp=924`
+    /// 搁浅）。本测用 4 页池：先填满 bump（4 个单页 big block），释
+    /// 放一个回 free-stack，再取一个必须从回收页成功。
+    #[test]
+    fn test_single_page_big_block_reuses_free_stack() {
+        let mut pool = [0u8; 4 * PAGE_BYTES];
+        let mut allocator = test_allocator(&mut pool);
+        // 填满 bump 区：4 个单页 big block，游标至池尾。
+        let mut held = [core::ptr::null_mut::<u8>(); 4];
+        for slot in held.iter_mut() {
+            let p = allocator.alloc(PAGE_BYTES); // 4 KiB → 1 页 big block
+            assert!(!p.is_null(), "fill must succeed while bump has room");
+            *slot = p;
+        }
+        // 释放一个→回 free-stack；此时 bump 已尽，新请求只能来
+        // 自回收页（旧码 `supply_pages(1)` 在此必返 null）。
+        allocator.free(held[0]);
+        held[0] = core::ptr::null_mut();
+        let reused = allocator.alloc(PAGE_BYTES);
+        assert!(
+            !reused.is_null(),
+            "1-page big block must reuse a page from the free stack"
+        );
+        allocator.free(reused);
+        for p in held {
+            if !p.is_null() {
+                allocator.free(p);
+            }
+        }
     }
 
     #[test]

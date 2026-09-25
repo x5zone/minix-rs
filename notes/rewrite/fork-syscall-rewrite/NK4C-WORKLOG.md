@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿 = B34 已采「保守容量 round」落地（`MAX_BIG_BLOCKS` 32→64，消除 big=32/32 记录表 premature-OOM，boot 零回归，真机推进 30068→58507 行）→ 翻出 B35 `supply_pages` 碎片化墙（新头号前沿）（1.60，含代码·minix-rt）**：§1.59 把 B34 停在「待用户定 A/B/C」；本轮厘清——**A（boot eager 物化）/B（VM-backed heap supplier）触及 boot/VM 内存外部契约需 [ARCH]、确属架构裁决；C（纯分配器内部数组尺寸）与 §1.55 两个容量 round 同类、非裁决**，故自主采 C：`MAX_BIG_BLOCKS` 抬到覆盖观测峰值（big 峰值 47）的 64（每槽 `Option<BigBlock>` 实测 24 B，(64−32)×24=+768 B<1 页不跨未物化页，另加编译期不变量锁死「增长<1 页」）+ 回归测。**真机 `-m 512M -smp 1` 双跑 bn23/bn23b 签名一致**（58507/58511 行、`pagefault-in-VM=0`、EXIT=124、推进到 57715 才 OOM vs bn20 的 29010）。**新墙 B35**＝OOM-RT 换签 `big=2f/40 px=400/400 fp=39c/400`（表未满 47/64、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）——`alloc_big`→`supply_pages` 只从 bump 区发 run、1 页 big 请求也不查 `supply_page` 的单页 free-stack（§1.55 记录碎片的同族再现）。下一配方＝给 `alloc_big` 失败路径加「表满 vs 游标尽而 free-stack 有货」diag，再判修向（1 页 run 委托 `supply_page`？还是原则解 A/B）。三件套绿（mock minix-rt **58·0fail** 基线+1 / fmt WT0==HEAD0 / clippy exit0 / 双跑一致）+ CodeReview **0 MUST、1 SHOULD 采纳**（`Option<BigBlock>` 尺寸 16B→实测 24B、doc 数值全据实修正）、CONSIDER(diag) 留 B35。rc marker 仍未达。详见 §1.59/§1.60。
+> **⚠ 最新前沿 = B35 已修（`supply_pages` 对 `page_count==1` 委托 `supply_page`，打通 freed 单页与 big-block 路径）→ 真机首次 **OOM-RT=0·panic=0**、历史最深推进 72495 行 → 翻出 B36 rc `Runcom` 15 轮循环（新头号前沿）（1.61，含代码·minix-rt）**：§1.60 把 B34 停在保守绑界 64 后，真机 bn23 OOM 换签 `size=001000 px=400/400 fp=39c/400`（十六进制＝恰好 1 页、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）。根因＝`FixedPoolSupplier::supply_pages`（run）只走 bump、**从不查 free-stack**，而 `alloc_big`→`supply_pages(1)` 对 1 页请求也走此路→游标耗尽后即使有可复用单页也返 null（与自身注释「free-stack reserved for single-page requests」意图相悖＝逻辑缺陷）。修＝`page_count==1` 委托 `supply_page`（1 页无邻接要求、与 `release_pages(p,1)` 逐页 push 对称、零化等价；多页 run 仍 bump-only；Linux/Redox order-0 从 free list 弹为同构做法）+ 新测。**重建镜像真机 `-m 512M -smp 1` 双跑 bn24/bn24b 签名一致**（72495/72494 行、pre-restore 7209/7209、**OOM-RT=0、panic=0（此前 6 次全消）、pagefault-in-VM=0**），boot 从 58507→**72495（历史最深）**。**新墙 B36**＝`Runcom=15`（每 ~3150 行重入 `init-state Runcom`）+`marker=0`+bogus=0——OOM 掩盖去除后 §1.55 的 rc 15 轮循环重现，现在不是 OOM、而是 B31/B32/B33b 修后的下游新失败因（runcom→exec→echo 腿哪步非 OOM 地失败）。三件套绿（mock minix-rt **59·0fail** 基线+1 / fmt WT0==HEAD0 / clippy Finished / 镜像重建+双跑一致）+ CodeReview **PASSED 0 MUST 0 SHOULD**。原则解 A/B（boot eager 物化 / VM-backed supplier）仍挂（多页 run 仍 bump-only，现因单页路径已足撑当前工作集未触发）。rc marker 仍未达。详见 §1.60/§1.61。
+>
+> **⚠（1.60 历史·其头号前沿 B35 已于 §1.61 修复）B34 已采「保守容量 round」落地（`MAX_BIG_BLOCKS` 32→64，消除 big=32/32 记录表 premature-OOM，boot 零回归，真机推进 30068→58507 行）（1.60，含代码·minix-rt）**：§1.59 把 B34 停在「待用户定 A/B/C」；本轮厘清——**A（boot eager 物化）/B（VM-backed heap supplier）触及 boot/VM 内存外部契约需 [ARCH]、确属架构裁决；C（纯分配器内部数组尺寸）与 §1.55 两个容量 round 同类、非裁决**，故自主采 C：`MAX_BIG_BLOCKS` 抬到覆盖观测峰值（big 峰值 47）的 64（每槽 `Option<BigBlock>` 实测 24 B，(64−32)×24=+768 B<1 页不跨未物化页，另加编译期不变量锁死「增长<1 页」）+ 回归测。**真机 `-m 512M -smp 1` 双跑 bn23/bn23b 签名一致**（58507/58511 行、`pagefault-in-VM=0`、EXIT=124、推进到 57715 才 OOM vs bn20 的 29010）。**新墙 B35**＝OOM-RT 换签 `big=2f/40 px=400/400 fp=39c/400`（表未满 47/64、bump 游标 1024/1024 耗尽、而 free-stack 搁浅 924 单页）——`alloc_big`→`supply_pages` 只从 bump 区发 run、1 页 big 请求也不查 `supply_page` 的单页 free-stack（§1.55 记录碎片的同族再现）。下一配方＝给 `alloc_big` 失败路径加「表满 vs 游标尽而 free-stack 有货」diag，再判修向（1 页 run 委托 `supply_page`？还是原则解 A/B）。三件套绿（mock minix-rt **58·0fail** 基线+1 / fmt WT0==HEAD0 / clippy exit0 / 双跑一致）+ CodeReview **0 MUST、1 SHOULD 采纳**（`Option<BigBlock>` 尺寸 16B→实测 24B、doc 数值全据实修正）、CONSIDER(diag) 留 B35。rc marker 仍未达。详见 §1.59/§1.60。
 >
 > **⚠（1.58/1.59 历史·其头号前沿 B34 已于 §1.60 采保守绑界 64 落地、翻出 B35）B33b 已修（exec 权限检查传低 3 位 X_BIT 不再传 9 位 owner-X 位 0o100，root 执行 0o100755 不再被误拒 EACCES，/bin/sh 首次获控 Runcom 15→1）→ 翻出 B34 运行期堆 OOM-RT（1.58，含代码·VFS 侧）**：§1.57 头号 **B33 残余 EIO** 拆为两层。**B33b（真阻塞，已修）**＝`exec_worker.rs:670` 调用 `forbidden_decision` 时传 `access: 0o100`（9 位模式 owner-可执行位），而 `forbidden_decision`（`protect.rs:229-261`，与 C `protect.c:238-287` 逐行一致）末判据 `(perm | access) != perm` 要求 access 与 perm 同在**低 3 位**三元组；root 的 `perm=0o7`，`0o7|0o100=0o107≠0o7`→恒 `EACCES`。两枚探针实锤（已回滚）：bn18 `nk4a: b33 E0000000d`＝Err 臂、正值 13(EACCES)；bn19 `nk4a: b33m 000081ed 0000 0000`＝mode `0o100755`（可执行位齐）、euid=0、file_uid=0——root 执行自己 owned 的可执行文件被误拒。修＝`access: crate::protect::X_BIT`（全仓其余 `forbidden_decision` 调用点传的均为 `crate::open::*` 低 3 位常量、无一用 9 位模式值，唯此腿错档），并把带常量的 `ForbidInput` 构造抽成纯函数 `exec_forbid_check` 令调用点进入单测射程 + 两条回归测。**B33a（符号掩盖，登记 follow-up 未修）**＝`ExecError::to_errno()` 返回正值经 INIT 成功车道吞成 EIO，真实 errno 被掩盖；修复方向＝归一化 `pm_exec` 的 `Err` 臂为负。真机无探针双跑 **bn20/bn20b 签名一致**：`Runcom` 15→**1**（`/bin/sh` 首次获控、无循环）、`bogus=0`、`eacces=0`、`marker=0`、`panic-enter=2`（30068/30066 行）。三件套绿（mock vfs lib **533·0fail** 基线+2 只增不减 / fmt exec_worker.rs+protect.rs WT0==HEAD0 / clippy exit 0 / 镜像重建+真机双跑 bn21/bn21b 与 bn20 同签名）。**CodeReview 0 MUST、2 SHOULD 全采纳**（① 修正失真注释“均传 open::X_BIT”→可核表述；② 测只钉被调方不钉调用点→抽 `exec_forbid_check`+调用点回归测）。**新头号前沿 B34**＝panic 现场 `nk4c: OOM-RT … big=20/20 px=094/400`（十六进制：`big=0x20/0x20`=32/32 记录表满、`px=0x94/0x400`=148/1024 空闲页仍在）。【§1.59 取证】根因实锤＝`minix-rt` 的 `big_blocks` 跟踪表硬编 32 先于池字节填满的 premature-OOM（与已修 `MAX_SLABS` 同类，非池字节耗尽）；但按 `MAX_SLABS` 纪律把表绑到 `GLOBAL_POOL_PAGES`（32→1024）后**真机确定性从 30090 行崩回 124 行**（对照 bn22ctl 实锤）——分配器静态实例变大平移 VM 的 .bss/用户栈基址，撞上 boot 未 eager 物化 VM 自身栈/.bss 尾页的缺口（PREALLOC demand-fill 分歧）。正解被反复 defer 的结构债（boot eager 物化 / VM-backed heap supplier）挡住，属**架构裁决级**：已回退未提交（改动存 `stash@{0}`），待用户定 A(boot eager 物化)/B(VM-backed 长堆)/C(保守绑界64+修自栈缺页)。rc marker 仍未达。详见 §1.58/§1.59。
 >
@@ -3160,5 +3162,30 @@ OOM-RT 换签为 `big=2f/40 px=400/400 fp=39c/400`（十六进制：`big=0x2f/0x
 ### 三件套 + CodeReview
 
 静态三件套绿（mock minix-rt **58·0fail** 基线+1 只增不减 / fmt alloc.rs WT0==HEAD0 零新增漂移 / clippy exit 0 无新增警告 / `MAX_BIG_BLOCKS` 值与 bn23/bn23b 双跑一致——本轮在双跑后仅改注释+零运行时影响的编译期断言，二进制行为不变，另重建镜像确认断言在 `x86_64-unknown-none` 目标编译通过）。**CodeReview 0 MUST、1 SHOULD 采纳**：`Option<BigBlock>` 每槽尺寸断言 16B 有误→实测 24B，doc 数值 `+512B→+768B`、`~16KB→~24KB` 全部据实修正并锁进编译期不变量；1 CONSIDER（`alloc_big` 加表满/池空区分 diag）留作 B35 取证面。rc marker 仍未达。详见 §1.59/§1.60。
+
+---
+
+## 1.61 B35 `supply_pages` 不查 free-stack 碎片修复（单页 big block 委托 `supply_page`）→ 真机首次 OOM-RT=0·panic=0·推进 72495 行 → 翻出 B36 rc 15 轮循环（含代码·minix-rt）
+
+### 根因（静态+签名双坐实，无需探针）
+
+§1.60 把 B34 停在保守绑界 64 后，真机 bn23 OOM 换签为 `size=001000 … px=400/400 fp=39c/400`（十六进制：`size=0x1000`＝**恰好 1 页**、`px=0x400/0x400`＝bump 游标 1024/1024 **耗尽**、`fp=0x39c/0x400`＝free-stack **924 单页搁浅**）。根因＝`FixedPoolSupplier` 两供货接口分工失衡：`supply_page`（单页）**先弹 free-stack 再推 bump**，`supply_pages`（run）**只走 bump、从不查 free-stack**（其注释自陈 free-stack「reserved for single-page requests」）。而 `add_slab`→`supply_page`，`alloc_big`→`supply_pages(size.div_ceil(PAGE_BYTES))`——于是一个 4 KiB（1 页）的 big-block 请求走 `supply_pages(1)`，游标耗尽后即使 free-stack 有 924 可复用单页也返 null。即「freed 单页永不被 big-block 路径复用」，与自身注释意图相悖＝逻辑缺陷，非池字节耗尽。
+
+### 修：`supply_pages` 对 `page_count==1` 委托 `supply_page`
+
+在 `supply_pages` 开头加 `if page_count == 1 { return self.supply_page(); }`。1 页 run 无邻接要求（trivially 连续的 1 页），契约正确；且 `free()` 归还大块走 `release_pages(p,1)`（默认逐页 push 回 free-stack），与委托路径对称；零化（`supply_page` 两分支均 `write_bytes`）与旧 `supply_pages(1)` 等价。多页 run 仍只走 bump（散页无法保证邻接）；coalesced free list / VM-backed heap 是延后的结构修（已在注释登记）。对照：Linux `__alloc_pages` order-0 / Redox buddy order-0 / Minix3 per-page cache 均优先从 free list 弹单页，**邻接约束仅对多页 run 存在**——本修法是最简实现。新测 `test_single_page_big_block_reuses_free_stack`（4 页池填满 bump→释放 1 页→再取 1 页 big block 必成功；旧码此时 `4+1<=4` 必返 null）。
+
+### 真机双跑：OOM-RT 彻底归零、panic 6→0、历史最深推进
+
+重建镜像后 `-m 512M -smp 1` 双跑 **bn24/bn24b 签名一致**（72495/72494 行、pre-restore 7209/7209）：**`OOM-RT=0`（上轮还有 1）、`panic=0`（此前 6 次全消）、`pagefault-in-VM=0`、EXIT=124**。boot 从 bn23 的 58507 推进到 **72495 行（历史最深）**。free-stack 与 big-block 路径打通后，之前因一次 1 页拷贝失败引发的 OOM→panic 链彻底消失。
+
+### 新头号前沿 B36：rc `Runcom` 15 轮循环、marker 仍未出
+
+OOM 掩盖去除后暴露 `Runcom=15`（每 ~3150 行重入 `nk4a: init-state Runcom`，与 bn20 的 Runcom=1 不同）、`marker=0`——即 §1.55 描述的 **rc 15 轮循环**形态重现：init runcom 反复重入因外部命令（marker echo）仍未跑完，**但现在不是 OOM、而是 B31/B32/B33b 修后的下游新失败因**。需下一单元探针取证（runcom→exec→echo 腿现有哪步非 OOM 地失败）。bogus=0（B32 伪指针未再现）。
+
+### 三件套 + CodeReview
+
+静态三件套绿（mock minix-rt **59·0fail** 基线+1 只增不减 / fmt alloc.rs WT0==HEAD0 / clippy Finished 无新错 / 镜像重建+真机双跑 bn24==bn24b 签名一致）。**CodeReview PASSED：0 MUST、0 SHOULD**（逐项核过邻接契约/supply-release 对称/零化语义/游标无双重计数/multi-page与 slab 零回归/测钉不变量/hex 解码/与 Linux-Redox order-0 对照）。**注**：本修法只解 1 页 big 请求；多页 run 仍 bump-only（碎片未治），真正原则解仍是 A(boot eager 物化)/B(VM-backed supplier)，现因单页路径已足撑当前工作集而未触发。rc marker 仍未达。详见 §1.60/§1.61。
+
 
 
