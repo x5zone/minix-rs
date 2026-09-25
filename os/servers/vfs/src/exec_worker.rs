@@ -65,8 +65,10 @@ const PF_X: u32 = 0x1;
 /// mmap 标志位（权威值 = VM `MmapFlags` 位表，`os/servers/vm/src/mmap.rs:59-66`；
 /// C 对位 mman.h/vm.h 的 Linux 兼容位型）。
 mod map_flags {
+    pub const PRIVATE: u32 = 0x0002;
     pub const FIXED: u32 = 0x0010;
     pub const ANON: u32 = 0x1000;
+    pub const THIRDPARTY: u32 = 0x0080_0000;
     pub const PREALLOC: u32 = 0x0008_0000;
     pub const UNINITIALIZED: u32 = 0x0004_0000;
 }
@@ -995,7 +997,28 @@ fn vm_mmap<T: IpcTransport>(
         m.addr = addr;
         m.len = len;
         m.prot = prot as i32;
-        m.flags = (map_flags::ANON | map_flags::FIXED | extra_flags) as i32;
+        // B38 修复（两个遗漏的必带位）：exec 为**目标子进程**建地址空间
+        // 映射（段与栈），本 helper 手写 `m_mmap` 臂、`forwhom = target_e`。
+        //   • `MAP_THIRDPARTY`（`0x800000`）：VM 仅按此位决定映射落进谁的
+        //     地址空间（`os/servers/vm/src/mmap.rs:283-291` `target = if
+        //     THIRDPARTY { forwhom } else { caller }`，`caller = m_source`
+        //     即 VFS 自身）。缺此位会把子的段静默装进 VFS 自己、子仍空。
+        //     C `minix_mmap_for`（`mmap.c:36-38`）在 `forwhom != SELF` 时必
+        //     加此位；本路径 `forwhom` 恒为子（非 VFS），故无条件置。VFS 是
+        //     execpriv（`mmap.rs:280`），THIRDPARTY 放行。
+        //   • `MAP_PRIVATE`：minix-rs VM `is_valid`（`mmap.rs:88-92`，doc 20
+        //     §3.6 收紧）要求 SHARED/PRIVATE 恰有其一，否则回 EINVAL。而
+        //     `to_vr_flags`（`mmap.rs:102-126`）不消费 PRIVATE（新映射永不
+        //     置 VR_SHARED，与 C `do_mmap` 同语义），故携 PRIVATE 产出的
+        //     region 与 C 逐位一致（C 不传此位但也不校验）。
+        // 真机 bn40/bn41 实锤：旧代码无 THIRDPARTY，携 PRIVATE 后 mmap 不再
+        // EINVAL（过 is_valid）但仍落错对象→子空→`exec_via` 取指 noaddr→
+        // PM↔VFS 乒乓活锁；补 THIRDPARTY 后方真正把镜像装入子。
+        m.flags = (map_flags::ANON
+            | map_flags::FIXED
+            | map_flags::PRIVATE
+            | map_flags::THIRDPARTY
+            | extra_flags) as i32;
         m.fd = -1;
         m.forwhom = forwhom.get();
     }
@@ -1336,6 +1359,26 @@ mod tests {
         // VM_MMAP 一条：forwhom=目标、页对齐 vaddr、ANON|PREALLOC|UNINIT|FIXED。
         let vm_types = ipc.types_of(Endpoint::VM);
         assert_eq!(vm_types, vec![minix_types::VM_MMAP as i32]);
+        // B38 回归 pin：exec 段映射为**子进程**建（非 VFS 自身），
+        // VM_MMAP 必同时带 MAP_THIRDPARTY（否则 VM 把段静默装进 caller=VFS）
+        // 与 MAP_PRIVATE（否则被 VM `is_valid` 拒 EINVAL）。真机 bn40/bn41
+        // 实锤这两个遗漏位共同导致子地址空间为空→`exec_via` noaddr 活锁。
+        {
+            let vm_msgs = ipc.vm_sent.borrow();
+            let mmap_flags = unsafe { vm_msgs[0].m_u.m_mmap.flags };
+            assert_eq!(
+                mmap_flags,
+                (map_flags::ANON
+                    | map_flags::FIXED
+                    | map_flags::PRIVATE
+                    | map_flags::THIRDPARTY
+                    | map_flags::PREALLOC
+                    | map_flags::UNINITIALIZED) as i32,
+            );
+            // 映射受益人必须是目标子（INIT），不是 VFS 自己。
+            let forwhom = unsafe { vm_msgs[0].m_u.m_mmap.forwhom };
+            assert_eq!(forwhom, Endpoint::INIT.get());
+        }
         // REQ_READ 一条：FS 写目标进程内存（REQ_READ @ inode 42）。
         // 出向 m_type 已按 B32 修复做事务打包（TRNS_ADD_ID：REQ 号
         // 进高 16、transid 进低 16）——用真机线形状常量
@@ -1479,7 +1522,13 @@ mod tests {
         assert_eq!(req.length.0, exec::DEFAULT_STACK_LIMIT);
         assert_eq!(req.forwhom, Endpoint(5));
         assert_eq!(req.prot, PROT_RWX);
-        assert_eq!(req.flags, map_flags::ANON | map_flags::FIXED);
+        // B38：helper 统一补齐 `MAP_PRIVATE`（过 is_valid）与
+        // `MAP_THIRDPARTY`（映射落到 forwhom=目标而非 caller）。车道
+        // 断言同步包含两位。
+        assert_eq!(
+            req.flags,
+            map_flags::ANON | map_flags::FIXED | map_flags::PRIVATE | map_flags::THIRDPARTY
+        );
         assert_eq!(req.fd, -1);
         // 截断回归钉：旧 u32 臂会把请求写坏成低 32 位。
         assert_ne!((stack_low as u32) as u64, stack_low);

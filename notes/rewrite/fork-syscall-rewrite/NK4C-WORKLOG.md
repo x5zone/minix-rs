@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝B38 修复（fork 子取指缺页 noaddr 致 PM↔VFS 乒乓收尸活锁）——§1.66 已用调度路径周期性全表快照探针（真机 bn39，855288 行）钉死机制链：exec `/bin/sh` 成功后，init 的 fork 子（ProcNr 0xc）在 `minix_sys::pm::exec_via`（`cr2=0x20c4d1`，`addr2line -e modules/init` 坐实）取指缺页，VM 对已有物理字节的 VA 报 `pf-exit noaddr`（缺页 walk：PML4E/PDPTE/PDE 三级 present、末级 leaf PTE=0，err=0x14=用户态取指）→ SIGSEGV(csig tgt=0xc sig=0xb) → 子卡 PAGEFAULT(0x400) to=VM 永不解决 → PM(ProcNr0)↔VFS(ProcNr1) 乒乓 46k 次/150s 收尸活锁（`gtick` 存活＝非硬死机、窗内几乎无消息事件）。方向＝fork/exec 子地址空间 leaf PTE 落地缺口（B22 同族，§1.46 fork 绑 phys_root）。下一单元＝读码定位 VM noaddr/find_vma + PM do_newimage 落地链。详见 §1.66。rc marker 仍未达。**
+> **⚠ 最新前沿＝B39（exec 真生效后新程序运行 → PM 自身收 SIGSEGV → 内核 `syscall_signal.rs:298` assert panic）——§1.67 已闭环 B38、§1.68 登记 B39。** B38 修复＝`exec_worker.rs` 的 `vm_mmap` helper 手写 `m_mmap` 臂遗漏两个必带位：（a）**缺 `MAP_PRIVATE`**→被 VM `is_valid`（`mmap.rs:88-92`，要求 SHARED/PRIVATE 恰有其一）拒 EINVAL(-22)（真机探针 bn40/bn41 实锤 `seg-mmap-fail e=-22 va=0x200000`）；（b）**缺 `MAP_THIRDPARTY`(0x800000)**→VM（`mmap.rs:283-291` `target=if THIRDPARTY{forwhom}else{caller}`, `caller=m_source`=VFS）会把子段**静默装进 VFS 而非子**（CodeReview MUST-FIX 拦出，对位 C `mmap.c:36-38`/库件 `effective_flags`）。两者叠加⇒段装载被拒⇒`bail!`⇒子带已清空 region 从 `exec_via`(init `0x20c4d1`) 复活取指⇒noaddr⇒PM↔VFS 乒乓（§1.66 现场）。修＝helper flags 补 `PRIVATE|THIRDPARTY`（行为等价 C：`to_vr_flags` 不消费 PRIVATE、THIRDPARTY 对位 `minix_mmap_for`）+ 回归测 pin。**真机 bn44/bn44b 双跑确定：noaddr=0（活锁消除，85万→~27.8k 行）、marker=0、kpanic=2**。三件套绿（mock vfs **537/0fail** / fmt 0 / clippy 无新告警）+ CodeReview 终版 **PASSED 0 MUST·1 SHOULD登记**（mmap_via 下沉重构）。**新头号前沿＝B39**：补 THIRDPARTY 后子镜像真装入并运行→一个服务 panic-enter→`csig tgt=0x0 sig=0xb`（PM 自身收 SIGSEGV）→`cause_sig: sig manager gets lethal signal 11 for itself`→内核 `syscall_signal.rs:298:13` assert panic + 二次 GP fault（`trap_dispatch.rs:1033:13` vector 13）。下单元＝只打印寄存器探针抓 PM 第一条缺页/GP 现场 + 判 `syscall_signal.rs:298` assert 是 PM 逻辑 bug 还是下游崩溃收尸放大，对照 C 正常 boot 下 PM 是否可能被投 SIGSEGV。详见 §1.67/§1.68。rc marker 仍未达。**
+>
+> **⚠（1.66 历史·其 B38 机制链已钉死、修复已于 §1.67 落地）——B38 取证：fork 子取指缺页 noaddr 致 PM↔VFS 乒乓收尸活锁——§1.66 已用调度路径周期性全表快照探针（真机 bn39，855288 行）钉死机制链：exec `/bin/sh` 成功后，init 的 fork 子（ProcNr 0xc）在 `minix_sys::pm::exec_via`（`cr2=0x20c4d1`，`addr2line -e modules/init` 坐实）取指缺页，VM 对已有物理字节的 VA 报 `pf-exit noaddr`（缺页 walk：PML4E/PDPTE/PDE 三级 present、末级 leaf PTE=0，err=0x14=用户态取指）→ SIGSEGV(csig tgt=0xc sig=0xb) → 子卡 PAGEFAULT(0x400) to=VM 永不解决 → PM(ProcNr0)↔VFS(ProcNr1) 乒乓 46k 次/150s 收尸活锁（`gtick` 存活＝非硬死机、窗内几乎无消息事件）。方向＝fork/exec 子地址空间 leaf PTE 落地缺口（B22 同族，§1.46 fork 绑 phys_root）。下一单元＝读码定位 VM noaddr/find_vma + PM do_newimage 落地链。详见 §1.66。rc marker 仍未达。**
 >
 > **⚠（1.65 历史·其头号前沿 B38 机制已于 §1.66 钉死）——B37 两个堆叠根因全修（§1.65），`/bin/sh` 首次真正装载并运行，rc 15 轮循环崩解为 1 轮，但两进程陷入紧密活锁、marker 仍未出（1.65，含代码·VFS 侧）**：承 §1.64（首块 FS 读返 Ok 零字节），本单元定位并修复 **B37a + B37b 两个堆叠缺陷**。**B37a（VFS-local magic grant 的 `who_from` 用错哨兵）**：`open_exec` 首块读与 stat 用 `grant_magic(who_from=Endpoint::SELF)` 给 VFS 自己的 `hdr_buf` 建权，但内核 `verify_grant`（`os/kernel/src/grant.rs:461`）把 `magic.who_from` 原样装为 `effective_granter` 去解析页表，而 `Endpoint::SELF` 是哨兵（`ENDPOINT_SLOT_TOP-3`、`is_valid()==false`）非真实端点 → 拷贝失败被 FS 侧吞（`let _ = ipc.copy_to`，`os/fs/fs-rt/src/transport.rs:272`）→ `hdr_buf` 全零、`req_read` 仍回 `Ok`（正合 §1.64 `after-read 00 00 00 00`）。修＝引入 `const VFS_LOCAL_WHO_FROM = Endpoint::VFS`（具体端点，对齐 C `map_header` 的 `VFS_PROC_NR`，exec.c:755）替两处 `Endpoint::SELF`；段装载读走 `target_e`（目标进程具体端点）本就正确未动；`sys_datacopy` 的 `SELF`（内核自解析 caller）是不同路径不受影响。**B37b（LP64 phdr 表界遗留 32 位假设）**：修好 B37a 后 `bn37p` 探针实锤首块字节已落入 `hdr0..8=7f454c46 02010100`（ELF 魔数），但 exec 仍回 ENOEXEC——真机探针（已回滚）区分出这是一条**更下游的独立腿**：`ElfHead::parse` 的 phdr 界用 `SECTOR_SIZE`(512) 校验（`e_phoff + phnum*56 <= 512`），而 C `elf_sane` 是 32 位时代（`__ELF_WORD_SIZE 32`、`Elf32_Phdr` 32B），LP64 下 `e_phentsize`=56、`/bin/sh` 的 10 项 phdr 表=624>512 被误拒。修＝界改为实际加载头缓冲长 `buf.len()`（`map_header` 本就加载 10 页=40960），删 `SECTOR_SIZE`；C `elf_unpack` 里被 `#if 0` 停用的 `phdr+phnum >= hdr_len` 检查正是本修法的设计本意。**两修叠加→真机 bn38/bn38b 双跑签名一致：`runcom` 15→**1**（循环崩解、`/bin/sh` 首次装载运行）、`ENOEXEC`=0（端到端消除）、`panic`=0、`oom`=0**。三件套绿（mock vfs lib **537·0fail** 基线+3 新测 / fmt WT0 / clippy 零新增）+ CodeReview **PASSED 0 MUST·0 SHOULD**。**新头号前沿＝B38**：`/bin/sh` 装载成功后，日志翻为 85 万行（bn38=858099/bn38b=849854，差异系活锁密度非签名漂移）**全是内核逐上下文切换诊断探针 spam**（`nk4a: pick/sa0/sa1/cr3/gs2/probe/pre-restore`，系 HEAD 既有诊断非本单元引入），两进程页表根 `0x2149000`/`0x2c26000` 各对敲 ~4.6 万次/150s = **紧密活锁**，`pre-restore rip=0x2016d6` 高重复，marker 未出。下单元＝判明哪两进程在敲（`0x2016d6` 属哪个 ELF/哪条 syscall 往返）、是 init↔PM↔VFS↔sh 的哪条 IPC 环，及是否 B31/B32 家族外部命令 exec（echo）腿的下游再现。rc marker 仍未达。详见 §1.64/§1.65。
 >
@@ -3333,6 +3335,36 @@ B37a 修复后临时探针 `bn37p`（`open_exec` 首块读后打 `hdr_buf[0..8]`
 
 **修复侦察进展示（本单元静态补充，未上真机）**：排掉两个浅假设——（a）`readelf -lW modules/init` 实测大可执行段 `0x201270–0x21c130` **覆盖** `0x20c4d1`（＝`exec_via`），不是段未覆盖；（b）`vm/src/fork.rs:239-270` 的 `do_fork` **确实**把父全部 region 复制入子，不是 fork 丢 region。→ `noaddr`（`vm_server.rs:1926-1936`，`regions.find_mut` 返 None）必是**子此刻 region 表被拆过/端点归因错位**。最自洽新假设＝**exec 失败路径遗留已清空间的子**：`exec_worker.rs:425` `vm_procctl_clear(target)` 先拆子旧地址空间→再逐段装载；若某后续步失败 `bail!`，子带着**已清空 region**从 `exec_via`（init 代码 `0x20c4d1`）恢复取指→noaddr。下一取证＝在 VM `dispatch_pagefault` noaddr 出口打子 slot 的 region 数 + 首末 region 界 + 故障 endpoint，并在 VFS exec `bail!` 腿打失败阶段，二分“拆后未装” vs“装成功但新程序自有缺页”。
 rc marker 仍未达，frontier＝§1.66（B38 修复）。探针已 `git checkout` 回滚，工作树干净。
+
+---
+
+## §1.67 B38 修复——exec `vm_mmap` 缺两个必带位（`MAP_PRIVATE` 过 is_valid + `MAP_THIRDPARTY` 让段落入子而非 VFS）（含代码·VFS 侧）
+
+承 §1.66 的修复侦察。真机取证探针（已 `git checkout` 回滚）把「exec 成功后子取指 noaddr 活锁」钉到 **`load_elf_segments` 对第一个 PT_LOAD 段调 `vm_mmap` 被 VM 拒 EINVAL(-22)**：一级探针 `nk4a: b38 pre-clear tgt=32780 → F load-seg-fail e=-22`；二级探针 `nk4a: b38 seg-mmap-fail e=-22 va=0x200000`（`exec_worker.rs` 的 `vm_mmap` helper 手写的 `m_mmap` 臂，`forwhom = target_e`）。
+
+**根因＝helper 遗漏两个必带位（单靠 §1.66 假设「拆后未装」不够精确，实为「装被拒→bail→子带已清空空间复活」**：`exec_worker.rs:425` 先 `vm_procctl_clear` 拆旧空间（对位 C `exec_elf.c:169` clearproc，是不可回头点），随后段装载 `vm_mmap` 被拒 → `bail!` → 子带**已清空** region 从 `exec_via`（init 代码 `0x20c4d1`）恢复取指 → noaddr → SIGSEGV → PAGEFAULT 冻结 → PM↔VFS 乒乓。
+
+- **缺 `MAP_PRIVATE`(0x2)**：minix-rs VM `is_valid()`（`os/servers/vm/src/mmap.rs:88-92`）要求 SHARED(0x1)/PRIVATE(0x2) **恰有其一**，否则 `InvalidFlags`→EINVAL。旧 flags 只有 `ANON|FIXED|extra` → 必拒。而 `to_vr_flags`（`mmap.rs:102-126`）**不消费 PRIVATE**（新映射永不置 `VR_SHARED`），故携 PRIVATE 产出的 region 与 C **逐位一致**（C `exec_general.c:22-26` 用 `MAP_ANON|MAP_PREALLOC|MAP_UNINITIALIZED|MAP_FIXED` 不传 PRIVATE，但 C `do_mmap` 也不校验）。
+- **缺 `MAP_THIRDPARTY`(0x800000)**：VM `mmap.rs:283-291` 按 `target = if THIRDPARTY { request.forwhom } else { request.caller }` 决定映射落进谁，`caller = msg.m_source`（`os/libs/minix-types/src/ipc/vm.rs:1022` `decode_message`）即 **VFS 自身**。缺此位会把子的段**静默装进 VFS 自己**、子仍空。C `minix_mmap_for`（`minix3/minix/lib/libsys/mmap.c:36-38`，库件对位 `os/libs/minix-sys/src/vm.rs` `MapRequest::effective_flags` L143-152）在 `beneficiary != caller` 时必加此位。本路径 `forwhom` 恒为子（非 VFS），故无条件置；VFS 是 execpriv（`mmap.rs:280`），THIRDPARTY 放行。**此位系 CodeReview MUST-FIX 拦出**——第一版只补 PRIVATE，`bn43` 仍 marker=0，reviewer 指出「把响亮 EINVAL 变成静默映射错对象」，核实 `decode_message` 的 caller 来源 + `effective_flags` 后采纳。
+
+**修复**（`os/servers/vfs/src/exec_worker.rs`）：`mod map_flags` 补 `PRIVATE`/`THIRDPARTY` 两 const；`vm_mmap` helper flags 改为 `ANON|FIXED|PRIVATE|THIRDPARTY|extra_flags`（带完整 B38 注释）；回归 pin：`test_load_elf_segment_wires` 加 flags **全等**断言（含 PRIVATE+THIRDPARTY，任一去位即红）+ `forwhom==Endpoint::INIT` 断言受益人；`test_vm_mmap_stack_lanes_carry_above_4gib` flags 断言同步含两位。
+
+**真机验证（单核确定性测试台，§1.52 方法论）**：bn44/bn44b 双跑签名逐字确定——`noaddr`=0（B38 乒乓活锁**消除**，日志从修前 85 万行回落到 ~27.8k 行）、`runcom`=1、`marker`=0、`kpanic`=**2**。panic=2 非 B38 回归（THIRDPARTY 经 C 源核证正确、noaddr 已归零），而是 exec **真生效后暴露的下游新前沿 B39**。
+
+**三件套绿**：mock minix-vfs lib **537 passed / 0 failed**（基线守住，加断言未减）/ nightly rustfmt `exec_worker.rs` **0 Diff** / clippy 无 `exec_worker.rs` 新告警（`syscalls.rs:4981`、`main_loop.rs:7632` 两告警为既有、非本改动文件）。**CodeReview 终版（含 THIRDPARTY）：PASSED 0 MUST-FIX**；1 SHOULD-FIX（长期把手写 `m_mmap` 臂下沉到库件 `mmap_via`/`effective_flags`，令 THIRDPARTY 由单一权威点派生、杜绝同类漏位——因涉 NS5-A 64 位 addr/len 车道线宽核对，属独立重构，登记不阻塞本单元）。
+
+---
+
+## §1.68（新头号前沿）B39——exec 真生效后新程序运行 → PM 自身收 SIGSEGV → 内核 `syscall_signal.rs:298` assert panic（未取证）
+
+bn44/bn44b 补 THIRDPARTY 后，子镜像正确装入（noaddr=0），被 exec 的程序**真正开始运行**，随即暴露下一层：一个服务 panic-enter → `csig tgt=0x0 sig=0xb`（**ProcNr 0＝PM 自身**收 SIGSEGV）→ `cause_sig: sig manager gets lethal signal 11 for itself` → 内核 `os/kernel/src/syscall_signal.rs:298:13` assert panic + 二次 GP fault（`trap_dispatch.rs:1033:13` vector 13）。`marker`=0、`kpanic`=2。
+
+**待侦察（下一单元）**：
+- 读 `syscall_signal.rs:298` assert 的触发条件（PM 给自己投致命信号时的不变式），判它是「PM 逻辑 bug」还是「下游真崩溃的收尸放大」；
+- 定位 PM(sig=0xb SIGSEGV) 的**第一条**缺页/GP fault 现场（哪个 VA、PM 在跑什么代码路径触发的段错误），用只打印寄存器探针（守 §1.49 探针纪律：缺页 handler 内严禁页表 walk）；
+- 对照 C：正常 boot 序列下 PM 是否可能被投 SIGSEGV（`minix3/minix/servers/pm/` 的信号处置 + kernel 对 server 崩溃的处理）。
+
+rc marker 仍未达，frontier＝§1.68（B39 取证）。本单元（B38）工作树改动＝`exec_worker.rs` 单文件（PRIVATE+THIRDPARTY 终版修复 + 回归测），探针全回滚。
 
 
 
