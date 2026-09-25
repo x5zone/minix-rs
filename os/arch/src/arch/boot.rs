@@ -285,7 +285,8 @@ pub trait CpuContextArch {
     /// status above — because each call returns one whole address.
     ///
     /// The channel is the same register family as the IPC status register
-    /// (x86-64: RBX), mirroring C. No cross-use hazard: each use's consumer
+    /// (x86-64: R10 — NK4-C 1.54/B26; C i386 的 bx 兼两职，状态迁 R10 后
+    /// secondary 随同), mirroring C. No cross-use hazard: each use's consumer
     /// is the library wrapper of its own call, which reads the register
     /// before the process issues any further IPC — status after a delivery,
     /// the info page address after a kerninfo query.

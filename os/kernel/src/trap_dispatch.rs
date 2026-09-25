@@ -641,8 +641,10 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // (SENDA: count), RBX = message pointer (SENDA: table pointer),
     // RCX = IPC call number (design doc 18, decision 2; C:
     // usermapped_glo_ipc.S IPCARGS/SENDA_ARGS). errno returns in RAX;
-    // IPC status rides the saved-context RBX channel as already wired
-    // (or_ipc_status_reg / set_secondary_ipc_return).
+    // IPC status rides the saved-context R10 channel（NK4-C Task C/§1.40
+    // 从 RBX 迁至 caller-saved 的 R10；MINIX_KERNINFO secondary 同车道
+    // 兼任，1.54/B26），随返回同步进帧（sync_status_register_to_frame，
+    // or_ipc_status_reg / set_secondary_ipc_return）。
     if vector == IPC_VECTOR_GATE {
         let cur_nr = current_ipc_proc_nr();
         x86_ipc_dispatch_body(frame, cur_nr);
@@ -1732,7 +1734,10 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
     // Body-less calls: the stubs trap with rbx = 0 (no message buffer) —
     // C `ipc_minix_kerninfo.S:8-10` zeroes eax/ebx before `int`, and the
     // notify stub passes 0 the same way ("notify without a message body").
-    // KernInfo's result returns through the secondary RBX channel; the
+    // KernInfo's result returns through the secondary R10 channel
+    // (NK4-C 1.54/B26: the int-33 return arm syncs RAX + R10, and R10
+    // doubles as the status lane — the two roles are per-call exclusive,
+    // same sharing as C's i386 %ebx); the
     // service arm documents "No message buffer is read or written"
     // (syscall.rs). Copying 64 bytes from VA 0 was the SIGSEGV this door
     // delivered to every birth-time kerninfo query on real machine

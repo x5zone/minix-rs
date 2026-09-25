@@ -7,7 +7,8 @@
 # the scheduling loop, and the payload traps twice through vector 33:
 #   round 1: undefined call 99  → EBADCALL(209) in RAX
 #   round 2: MINIX_KERNINFO (6) → OK(0) in RAX, user-mapped page VA in
-#            RBX (secondary return channel, proc.c:690-692); the payload
+#            R10 (secondary return channel, proc.c:690-692; x86-64 lane
+#            per NK4-C 1.54/B26); the payload
 #            then reads KERNINFO_MAGIC from the page at CPL3
 # and runs the E8 SYSCALL leg (GetInfo GET_HZ → hz written back).
 # Results land in a user mailbox page (physical 0x400_1000): round-1
@@ -121,9 +122,9 @@ echo "$GDB_OUT" | grep -q "0x00000000000000d1" || { pass=0; echo "FAIL: round-1 
 echo "$GDB_OUT" | grep -q "0x000000000000dead" || { pass=0; echo "FAIL: completion marker != 0xDEAD"; }
 echo "$GDB_OUT" | grep -q "0x0000000000000064" || { pass=0; echo "FAIL: hz != 100 (E8 SYSCALL-leg write-back)"; }
 # Round 2 (MINIX_KERNINFO, E-KERNINFO kernel half): OK(0) in RAX, the
-# user-mapped page VA in RBX (secondary return channel), and the page
+# user-mapped page VA in R10 (secondary return channel), and the page
 # readable at CPL3 (KERNINFO_MAGIC at offset 0).
-echo "$GDB_OUT" | grep -q "0x0000000200000000" || { pass=0; echo "FAIL: kerninfo page VA != 0x2_0000_0000 (secondary return RBX)"; }
+echo "$GDB_OUT" | grep -q "0x0000000200000000" || { pass=0; echo "FAIL: kerninfo page VA != 0x2_0000_0000 (secondary return R10)"; }
 echo "$GDB_OUT" | grep -q "0x00000000fc3b84bf" || { pass=0; echo "FAIL: KERNINFO_MAGIC not readable from CPL3"; }
 
 if [ "$pass" -eq 1 ]; then

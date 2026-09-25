@@ -2961,6 +2961,36 @@ fn vmctl_set_addr_space(
             None
         };
 
+        // ── NK4-C 1.54（B26 fix B）：把 kerninfo 页的用户只读映射复制进
+        // 每个新根。C 把 `.usermapped` 段经 VMCTL_KERN_PHYSMAP 协议映射
+        // 进每个进程地址空间（i386 memory.c arch_phys_map + VM per-space
+        // map）；本重写由内核在本唯一提交点代做（kerninfo.rs 模块 doc
+        // 登记的 mapping-responsibility 转移尚未发生，不新增外部契约）。
+        // 先查后装（重绑同一根幂等；子根 virtual_copy 继承过则跳过）。
+        // 中间表页经 boot_pt_alloc（其区域已从 VM free list 扣减，
+        // §1.53 boot_alloc_used_bytes 记账）。
+        if let Some(ki_pa) = crate::kerninfo::kerninfo_page_phys() {
+            use minix_arch::paging::Paging as _;
+            let mut target_paging = minix_arch::CurrentPaging::from_active_root(
+                minix_types::PhysBytes(ptroot_phys),
+            );
+            let needs_map = match target_paging.query(minix_types::VirBytes(
+                crate::kerninfo::KERNINFO_USER_VA,
+            )) {
+                Some((cur, _flags)) => cur.0 != ki_pa,
+                None => true,
+            };
+            if needs_map {
+                target_paging
+                    .map(
+                        minix_types::VirBytes(crate::kerninfo::KERNINFO_USER_VA),
+                        minix_types::PhysBytes(ki_pa),
+                        minix_arch::paging::PageFlags::read_only(),
+                    )
+                    .expect("vmctl_set_addr_space: failed to map the kerninfo page into the new root");
+            }
+        }
+
         // Step 3: If target is the current ptproc, reload the
         // hardware root register (CR3/TTBR0/satp) so the new
         // page table takes effect immediately.
@@ -4769,8 +4799,9 @@ mod tests {
         // page address goes out through the secondary IPC return channel.
         // C: proc.c:690-692 — `arch_set_secondary_ipc_return(caller_ptr,
         // minix_kerninfo_user); return OK;`. The register write itself
-        // (x86-64: saved RBX, whole-value assignment) is pinned at the
-        // arch layer — `test_set_secondary_ipc_return_assigns_rbx` in
+        // (x86-64: saved R10 状态车道按调用兼任, whole-value assignment;
+        // NK4-C 1.54/B26) is pinned at the arch layer —
+        // `set_secondary_ipc_return_assigns_status_lane` in
         // arch/src/x86_64/boot.rs; this test pins the dispatch decision
         // and the OK outcome (no message is read or written either way).
         let mut priv_table = crate::test_helpers::test_priv_table();

@@ -1025,7 +1025,15 @@ mod tests {
         let mut t = crate::ipc::TestIpcTransport::default();
         let target_ep = table.procs[5].identity.endpoint;
         let res = process_ksig(&mut table, target_ep, SIGSNDELAY, &mut novt, &mut kern, &mut t);
-        assert!(res.is_ok());
+        // C signal.c:372-378 尾部存活检查：check_pending 把 SIGTERM 默认处置
+        // 走完整 exit 链后进程持有 EXITING 位（zombify 只 OR 位不清），
+        // `(IN_USE|EXITING) != IN_USE` → EDEADEPT（NK4-C 1.54 B28：
+        // is_exiting 改 C 位语义后此处才与 C 对齐，旧断言 ok 是 Exiting-
+        // only 建模缺陷的镜像）。
+        assert!(
+            matches!(res, Err(KillError::InvalidEndpoint)),
+            "terminated process must report EDEADEPT, got {res:?}"
+        );
         // DELAY_CALL 必须清（C signal.c:351）；exit_proc 的 tell_vfs 随后
         // 以 VFS_CALL 占位（exit.rs step 8），不能断言整个 ipc_blocked 为空。
         assert!(

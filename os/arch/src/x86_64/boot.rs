@@ -259,11 +259,16 @@ impl CpuContextArch for X86_64CpuContextArch {
     fn set_secondary_ipc_return(ctx: &mut Self::CpuContext, value: u64) {
         // C: `arch_set_secondary_ipc_return` — arch_system.c:184-186,
         // i386 body `p->p_reg.bx = val`. Plain assignment (whole address,
-        // not a flag merge); restored to the user by the trap-return
-        // RBX load (trap_return.rs, step 3). 保持 RBX：MINIX_KERNINFO 页
-        // 地址是一次性出生消费（crt0 读后即弃），与 IPC 状态寄存器
-        // （R10）是两条独立车道。
-        ctx.rbx = value;
+        // not a flag merge).
+        // NK4-C 1.54（B26）：车道从 RBX 改 R10。int33 立即返回臂只把
+        // rax + R10（sync_status_register_to_frame）同步进返回帧，
+        // ctx.rbx 永远达不到用户——写在 RBX 的页地址实测丢失（bn2/bn3：
+        // 用户 r10 拿陷阱残留垃圾→ deref 崩）。C 的 i386 bx 本就是
+        // 「返回路径同步的那条」且兼状态+secondary 两职；Task C 把
+        // 状态迁到 caller-saved 的 R10 后，secondary 的 64 位对位就是
+        // 同一条 R10：两职按调用互斥（状态只在交付 OR，secondary 只在
+        // KERNINFO 写），与 C 同一语义。
+        ctx.gp_regs[crate::x86_64::signal::GP_R10] = value;
     }
 }
 
@@ -304,9 +309,11 @@ mod tests {
     }
 
     #[test]
-    fn set_secondary_ipc_return_assigns_rbx() {
+    fn set_secondary_ipc_return_assigns_status_lane() {
         // C: arch_set_secondary_ipc_return — arch_system.c:184-186, i386
-        // body `p->p_reg.bx = val`. Whole-value assignment (used by the
+        // body `p->p_reg.bx = val`；x86-64 对位车道 = R10（NK4-C 1.54：
+        // int33 返回路径只同步 rax+R10，RBX 写法实测丢值，见 boot.rs
+        // 实现注释）。Whole-value assignment (used by the
         // MINIX_KERNINFO arm, proc.c:691): a second call overwrites the
         // first — an OR-merge would corrupt the address.
         let mut ctx = X86_64CpuContextArch::build_cpu_context(
@@ -319,9 +326,10 @@ mod tests {
             ),
         );
         X86_64CpuContextArch::set_secondary_ipc_return(&mut ctx, 0x0000_7000_2000);
-        assert_eq!(ctx.rbx, 0x0000_7000_2000);
+        assert_eq!(ctx.gp_regs[crate::x86_64::signal::GP_R10], 0x0000_7000_2000);
+        assert_eq!(ctx.rbx, 0x7ffe_ffe0, "RBX（entry ps_strings）不得被污染");
         X86_64CpuContextArch::set_secondary_ipc_return(&mut ctx, 0x0000_7000_3000);
-        assert_eq!(ctx.rbx, 0x0000_7000_3000);
+        assert_eq!(ctx.gp_regs[crate::x86_64::signal::GP_R10], 0x0000_7000_3000);
     }
 
     #[test]

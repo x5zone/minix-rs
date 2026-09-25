@@ -33,7 +33,7 @@
 //! `MINIX_KERNINFO_USER`) is unchanged by that transition.
 
 use core::mem::size_of;
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use minix_arch::paging::PageFlags;
 use minix_arch::{CurrentPaging, paging::Paging as _};
@@ -93,6 +93,14 @@ impl KerninfoPage {
 
 static KERNINFO_PAGE: SyncUnsafeCell<KerninfoPage> = SyncUnsafeCell::new(KerninfoPage::new());
 
+/// Physical frame of [`KERNINFO_PAGE`], cached by [`map_and_publish`].
+///
+/// `0` = not yet established (pre-`init_kerninfo`). Consumers that must
+/// re-map the page into a *foreign* root (VMCTL SetAddrSpace, NK4-C 1.54
+/// B26) read this instead of re-translating the static VA through the
+/// caller's CR3 — the frame never moves, so one boot-time store suffices.
+static KERNINFO_PAGE_PHYS: AtomicU64 = AtomicU64::new(0);
+
 /// Fill the page content from boot information.
 ///
 /// C parity: `kuserinfo` is filled at cstart from `kinfo.user_sp`
@@ -135,6 +143,7 @@ fn map_and_publish() {
     let (page_phys, _flags) = paging
         .query(VirBytes(page_virt))
         .expect("init_kerninfo: kerninfo page VA not mapped in the active root");
+    KERNINFO_PAGE_PHYS.store(page_phys.0, Ordering::Relaxed);
     paging
         .map(VirBytes(KERNINFO_USER_VA), page_phys, PageFlags::read_only())
         .expect("init_kerninfo: failed to map the kernel info page user read-only");
@@ -164,6 +173,19 @@ fn map_and_publish() {
 pub fn init_kerninfo(kernel_info: &KernelInfo) {
     fill_kerninfo_page(kernel_info);
     map_and_publish();
+}
+
+/// Cached physical frame of the kernel info page, or `None` before
+/// [`init_kerninfo`] established it. Read by the VMCTL SetAddrSpace
+/// replication hook (NK4-C 1.54 B26: C maps `.usermapped` into every
+/// process address space via the VMCTL_KERN_PHYSMAP protocol, i386
+/// memory.c `arch_phys_map`; this rewrite keeps the kernel as the
+/// mapper — see the module doc's mapping-responsibility note).
+pub(crate) fn kerninfo_page_phys() -> Option<u64> {
+    match KERNINFO_PAGE_PHYS.load(Ordering::Relaxed) {
+        0 => None,
+        pa => Some(pa),
+    }
 }
 
 #[cfg(test)]

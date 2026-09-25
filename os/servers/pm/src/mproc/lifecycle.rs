@@ -114,9 +114,31 @@ impl Lifecycle {
         matches!(self, Self::Zombie { .. } | Self::TraceZombie { .. })
     }
     
-    /// Checks if exiting.
+    /// Checks if the C `EXITING` bit is set — true for the whole death
+    /// window from `exit_proc` mark until slot release.
+    ///
+    /// C models `mp_flags` as a bitmask and `zombify` only ORs in
+    /// `ZOMBIE`/`TRACE_ZOMBIE` (`forkexit.c:619/621`), never dropping
+    /// `EXITING` — the bit dies only in `cleanup()` when the slot is
+    /// freed. So an exiting process passes through Exiting →
+    /// (Trace)Zombie → ToldParent with `EXITING` continuously true. The
+    /// exclusive-enum lifecycle must reproduce that: every post-exit
+    /// variant reports here, otherwise the VFS EXIT/CORE reply — which
+    /// arrives AFTER `exit_proc` synchronously zombified the process —
+    /// fails `assert(mp_flags & EXITING)` (`main.c:362`, NK4-C 1.54 B28:
+    /// slot 13's normal exit panicked PM exactly here under the old
+    /// Exiting-only semantics). Call sites mapping C bit tests
+    /// (`& EXITING` / `(IN_USE|EXITING) != IN_USE`) all want this
+    /// inclusive reading; variant-strict checks stay as explicit
+    /// `matches!` on the concrete arm.
     pub fn is_exiting(&self) -> bool {
-        matches!(self, Self::Exiting { .. })
+        matches!(
+            self,
+            Self::Exiting { .. }
+                | Self::TraceZombie { .. }
+                | Self::Zombie { .. }
+                | Self::ToldParent { .. }
+        )
     }
 }
 
@@ -185,7 +207,9 @@ mod tests {
         let state = Lifecycle::ToldParent { exit_code: 0, sig_status: 0 };
         assert!(state.is_in_use());
         assert!(!state.is_zombie());
-        assert!(!state.is_exiting());
+        // C: tell_parent 只 OR TOLD_PARENT，EXITING 位直到 cleanup 才清
+        //（forkexit.c:711-716 + 位定义）——ToldParent 仍在死亡窗口内。
+        assert!(state.is_exiting());
         assert_eq!(state.exit_code(), Some((0, 0)));
     }
 }

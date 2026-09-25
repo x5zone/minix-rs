@@ -645,8 +645,9 @@ impl IpcTransport for DirectTrapTransport {
     }
     fn query_kerninfo_page(&self) -> Result<u64, TrapStatus> {
         // MINIX_KERNINFO: the page address comes back through the
-        // secondary return register (RBX on x86, a1 on riscv64) — see
-        // set_secondary_ipc_return.
+        // secondary return register — x86-64 上是 R10（状态车道的按调用
+        // 兼任，NK4-C 1.54/B26；内核 set_secondary_ipc_return 写同一条）,
+        // riscv64/aarch64 是 a1/x1——即 `ipc_trap` 的第二返回值。
         #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {
             let (ret, page) =

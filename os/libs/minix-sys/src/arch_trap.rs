@@ -41,7 +41,8 @@ pub const NOTIFY_NR: i32 = 4;
 pub const SENDNB_NR: i32 = 5;
 pub const SENDA_NR: i32 = 16;
 /// MINIX_KERNINFO — kernel info page query; the page address comes back
-/// through the secondary return register (RBX), C ipcconst.h:12.
+/// through the secondary return register (x86-64: R10 status-lane 兼任,
+/// C ipcconst.h:12; NK4-C 1.54 — 与 `ipc_trap` 第二返回值同车道).
 pub const KERNINFO_NR: i32 = 6;
 
 /// Map a trap errno to the transport result shape.
