@@ -66,13 +66,34 @@ pub const MAX_SLABS: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 
 /// Maximum simultaneous whole-page allocations one allocator tracks.
 ///
-/// NOTE (known, same class as the F12 slab fix): each big block holds >=1
-/// page and the pool has [`GLOBAL_POOL_PAGES`] pages, but this table caps at
-/// 32 — so a workload with >32 concurrent big blocks would hit the same
-/// "record table full while pool bytes free" premature OOM that `MAX_SLABS`
-/// just had. Left at 32 because real-machine NK4-C 1.5c evidence was
-/// `big=0` (the path is untouched). Revisit if a big-block-heavy server lands.
-pub const MAX_BIG_BLOCKS: usize = 32;
+/// A premature "out of memory" is confirmed on real machine NK4-C 1.58
+/// (**B34**): after B33b let `/bin/sh` run, a cross-space `kdst copy` of a
+/// 4 KiB run hit `nk4c: OOM-RT size=001000 … big=20/20 px=094/400`（十六
+/// 进制：`big=0x20/0x20`=32/32 记录表满，而 `px=0x94/0x400`=148/1024
+/// 空闲页仍在）——即早期登记的「big-block-heavy server 到来时 revisit」
+/// 同型缺陷，与已修的 `MAX_SLABS`（见上）一类：每个 big block ≥ 1 页，
+/// 所以原则上的上限应是 [`GLOBAL_POOL_PAGES`]。
+///
+/// 但未直接绑到 `GLOBAL_POOL_PAGES`：那会把分配器静态实例（`GlobalAllocator`
+/// 里的 `big_blocks` 数组）撑大——每个 `Option<BigBlock>` 槽在 x86_64 上是
+/// 24 B（`*mut u8` 无 niche，`Option` 需独立 discriminant），从 32 槽到
+/// 1024 槽 ≈ +24 KB，平移每个用户服务器的 .bss/用户栈基址；而 boot 对服务
+/// 镜像是 demand-fill-on-first-touch（未 eager 物化），实测确定性地让 VM 在
+/// 启动初期自缺页递归 panic（从 30090 行崩回 124 行，§1.59 对照实验
+/// bn22ctl 坐实）。那属反复被 defer 的结构债（boot eager 物化 / VM-backed
+/// heap supplier）。因此本轮采用与 B29/B30 同类的“保守容量 round”：抬到
+/// 覆盖真机观测峰值（big 峰值 47）的 64——(64−32)×24 B = +768 B <
+/// 一页，不跨未物化页。原则解 = 待 boot eager 物化落地后改绑
+/// `GLOBAL_POOL_PAGES`。
+pub const MAX_BIG_BLOCKS: usize = 64;
+
+/// 容量 round 的硬不变量：从旧上限 32 抬到 [`MAX_BIG_BLOCKS`] 带来的静态
+/// `big_blocks` 数组增长必须小于一页，才不会改写跨未物化页的边界（见上
+/// 常量文档）。把这条判据锁到编译期：未来若有人把该常量调大到增长超
+/// 一页，构建直接失败而非退化为 §1.59 的启动 panic。
+const _: () = assert!(
+    (MAX_BIG_BLOCKS - 32) * core::mem::size_of::<Option<BigBlock>>() < PAGE_BYTES
+);
 
 /// Initial heap pool for the global allocator, in bytes (1024 pages).
 ///
@@ -763,6 +784,30 @@ mod tests {
         let second = allocator.alloc(8);
         // Last-in-first-out reuse: the same slot comes back.
         assert_eq!(first, second);
+    }
+
+    /// B34 回归 pin：`big_blocks` 记录表早先硬编 32，会在池字节仍充裕时
+    /// 因表满而 premature-OOM（真机 `nk4c: OOM-RT size=001000 big=20/20
+    /// px=094/400`，十六进制＝32/32 表满而 148/1024 空闲页仍在）。本轮按
+    /// 常量文档采用「保守容量 round」把表抬到 64（覆盖真机峰值 32/32），
+    /// 原则解（绑 [`GLOBAL_POOL_PAGES`]）待 boot eager 物化落地。本测从 48
+    /// 页池连续分配 40 个单页 big block（旧码 32 上限会在第 33 个返
+    /// null），全部必须成功，且全释放后记录表槽可回收再分配。
+    #[test]
+    fn test_big_block_table_not_capped_at_32() {
+        let mut pool = [0u8; 48 * PAGE_BYTES];
+        let mut allocator = test_allocator(&mut pool);
+        let mut ptrs = [core::ptr::null_mut::<u8>(); 40];
+        for slot in ptrs.iter_mut() {
+            let p = allocator.alloc(PAGE_BYTES); // 4 KiB → 单个 big block
+            assert!(!p.is_null(), "big block >32 must not premature-OOM");
+            *slot = p;
+        }
+        for p in ptrs {
+            allocator.free(p);
+        }
+        // 全释放后仍可分配一个 big block（记录表槽回收生效）。
+        assert!(!allocator.alloc(PAGE_BYTES).is_null());
     }
 
     #[test]
