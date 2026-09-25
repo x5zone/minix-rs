@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝B39（exec 真生效后新程序运行 → PM 自身收 SIGSEGV → 内核 `syscall_signal.rs:298` assert panic）——§1.67 已闭环 B38、§1.68 登记 B39。** B38 修复＝`exec_worker.rs` 的 `vm_mmap` helper 手写 `m_mmap` 臂遗漏两个必带位：（a）**缺 `MAP_PRIVATE`**→被 VM `is_valid`（`mmap.rs:88-92`，要求 SHARED/PRIVATE 恰有其一）拒 EINVAL(-22)（真机探针 bn40/bn41 实锤 `seg-mmap-fail e=-22 va=0x200000`）；（b）**缺 `MAP_THIRDPARTY`(0x800000)**→VM（`mmap.rs:283-291` `target=if THIRDPARTY{forwhom}else{caller}`, `caller=m_source`=VFS）会把子段**静默装进 VFS 而非子**（CodeReview MUST-FIX 拦出，对位 C `mmap.c:36-38`/库件 `effective_flags`）。两者叠加⇒段装载被拒⇒`bail!`⇒子带已清空 region 从 `exec_via`(init `0x20c4d1`) 复活取指⇒noaddr⇒PM↔VFS 乒乓（§1.66 现场）。修＝helper flags 补 `PRIVATE|THIRDPARTY`（行为等价 C：`to_vr_flags` 不消费 PRIVATE、THIRDPARTY 对位 `minix_mmap_for`）+ 回归测 pin。**真机 bn44/bn44b 双跑确定：noaddr=0（活锁消除，85万→~27.8k 行）、marker=0、kpanic=2**。三件套绿（mock vfs **537/0fail** / fmt 0 / clippy 无新告警）+ CodeReview 终版 **PASSED 0 MUST·1 SHOULD登记**（mmap_via 下沉重构）。**新头号前沿＝B39**：补 THIRDPARTY 后子镜像真装入并运行→一个服务 panic-enter→`csig tgt=0x0 sig=0xb`（PM 自身收 SIGSEGV）→`cause_sig: sig manager gets lethal signal 11 for itself`→内核 `syscall_signal.rs:298:13` assert panic + 二次 GP fault（`trap_dispatch.rs:1033:13` vector 13）。下单元＝只打印寄存器探针抓 PM 第一条缺页/GP 现场 + 判 `syscall_signal.rs:298` assert 是 PM 逻辑 bug 还是下游崩溃收尸放大，对照 C 正常 boot 下 PM 是否可能被投 SIGSEGV。详见 §1.67/§1.68。rc marker 仍未达。**
+> **⚠ 最新前沿＝B39（IPC 消息投递路径 SIGSEGV）——§1.67 已闭环 B38、§1.68 已取证 B39。** B39 机制链（真机 bn44 行 27720–27789 实测）＝内核 `DeliverMsg` 腿（`proc_table.rs:1311`）把 incoming 消息写到目标进程**栈上接收缓冲** `p_delivermsg_vir≈0x7ffffffdc1c0`（高栈 VA、len 0x50），VM `do-memory` 地址检查拒（`memreq ... ok=0`）→ `DeliverResult::Segfault`（`proc_table.rs:1328`）→ `WARNING wrong user pointer ... <unset>`（对位 C `proc.c:273`）→ `cause_signal(SIGSEGV)`；该进程 `s_sig_mgr==SELF`（自管理）且 `s_bak_sig_mgr==NONE` → `syscall_signal.rs:298` panic（**对位 C `system.c:430` 忠实终止行为、非内核 bug 本身**）。对比：boot server 投递缓冲落低模块区 0x2xxxxx ok=1；失败两次落高栈 0x7ffffffd/9xxxx。**次级 bug**：`syscall_signal.rs:294` panic 前 `proc_stacktrace` 自身 GP fault（vector 13、recursive panic），与注释"诊断路径应比崩溃更健壮"矛盾。下单元＝探针抓该 `<unset>` 进程（endpoint 0/2）slot/region 表 + `p_delivermsg_vir` 来源，定位栈接收页为何未映射（B22/B38 同族），及为何无 backup sig mgr。**（B38 修复＝`exec_worker.rs` vm_mmap 补 `MAP_PRIVATE`+`MAP_THIRDPARTY`，真机 bn44/bn44b 确定 noaddr=0、活锁消除 85万→~27.8k 行，commit 45bc489c5。）** rc marker 仍未达。**
 >
 > **⚠（1.66 历史·其 B38 机制链已钉死、修复已于 §1.67 落地）——B38 取证：fork 子取指缺页 noaddr 致 PM↔VFS 乒乓收尸活锁——§1.66 已用调度路径周期性全表快照探针（真机 bn39，855288 行）钉死机制链：exec `/bin/sh` 成功后，init 的 fork 子（ProcNr 0xc）在 `minix_sys::pm::exec_via`（`cr2=0x20c4d1`，`addr2line -e modules/init` 坐实）取指缺页，VM 对已有物理字节的 VA 报 `pf-exit noaddr`（缺页 walk：PML4E/PDPTE/PDE 三级 present、末级 leaf PTE=0，err=0x14=用户态取指）→ SIGSEGV(csig tgt=0xc sig=0xb) → 子卡 PAGEFAULT(0x400) to=VM 永不解决 → PM(ProcNr0)↔VFS(ProcNr1) 乒乓 46k 次/150s 收尸活锁（`gtick` 存活＝非硬死机、窗内几乎无消息事件）。方向＝fork/exec 子地址空间 leaf PTE 落地缺口（B22 同族，§1.46 fork 绑 phys_root）。下一单元＝读码定位 VM noaddr/find_vma + PM do_newimage 落地链。详见 §1.66。rc marker 仍未达。**
 >
@@ -3355,16 +3355,23 @@ rc marker 仍未达，frontier＝§1.66（B38 修复）。探针已 `git checkou
 
 ---
 
-## §1.68（新头号前沿）B39——exec 真生效后新程序运行 → PM 自身收 SIGSEGV → 内核 `syscall_signal.rs:298` assert panic（未取证）
+## §1.68（新头号前沿）B39——IPC 消息投递路径把 incoming 消息写到未映射的高栈接收缓冲（`p_delivermsg_vir≈0x7ffffffdc1c0`）→ VM 拒 → 自管理进程收 SIGSEGV → `syscall_signal.rs:298` panic（已取证）
 
-bn44/bn44b 补 THIRDPARTY 后，子镜像正确装入（noaddr=0），被 exec 的程序**真正开始运行**，随即暴露下一层：一个服务 panic-enter → `csig tgt=0x0 sig=0xb`（**ProcNr 0＝PM 自身**收 SIGSEGV）→ `cause_sig: sig manager gets lethal signal 11 for itself` → 内核 `os/kernel/src/syscall_signal.rs:298:13` assert panic + 二次 GP fault（`trap_dispatch.rs:1033:13` vector 13）。`marker`=0、`kpanic`=2。
+bn44/bn44b 补 THIRDPARTY 后，子镜像正确装入（noaddr=0）、B38 乒乓活锁彻底消除（全日志仅 **2 次** wrong-pointer、都在最末端，对比修前 85 万行）。真机取证（bn44 行 27720–27789）把终局事件钉定为**不是"某进程执行中崩溃"、而是 IPC 消息投递路径**（非§1.68 初稿误标的"PM 执行 SIGSEGV"）：
+
+**机制链（实测）**：
+1. **投递缓冲 VA 被 VM 拒**：内核 `DeliverMsg` 腿（`proc_table.rs:1311` `suspend_for_vm(DeliverMsg, start=p_delivermsg_vir, len=80, write)`）把一条** incoming 消息写到目标进程栈上的接收缓冲** `p_delivermsg_vir≈0x7ffffffdc1c0`（高栈地址、len=0x50）。VM `do-memory` 地址检查报 **`memreq target=31744 start=0x7ffffffdc1c0 len=0x50 ok=0`**（ok=0 即拒），回到内核即 `DeliverResult::Segfault`（`proc_table.rs:1328`）→ `WARNING wrong user pointer 0x7ffffffdc1c0 from process <unset> / 0x0`（对位 C `proc.c:273`）→ `cause_signal(nr, SIGSEGV)`。
+2. **自管理 + 无 backup → panic**：该进程 `s_sig_mgr==SELF`（解析为自身 endpoint，`proc_table.rs:597`）即**自管理信号**（server 角色默认），收致命 SIGSEGV 且 `s_bak_sig_mgr==NONE` → `syscall_signal.rs:298` panic（**对位 C `system.c:430` 的忠实终止行为、非内核 bug 本身**）。panic 消息 `sig manager 2 gets lethal signal 11 for itself`（`ep.0`=2）；两次 wrong-pointer 分别属 endpoint 0 与 endpoint 2（均 `p_name=<unset>`）。
+3. **次级真实 bug：panic 诊断路径自身崩**：`syscall_signal.rs:294` 在 panic 前调 `proc_stacktrace(rp)`，但该回栈在内核态 GP fault（`kernel exception vector 13 at rip 0x1dc73e79`→ `trap_dispatch.rs:1033:13`→`recursive panic`）。与注释宣称的"诊断路径必须比崩溃更健壮"矛盾——回栈读到一个不可读地址就二次崩。`kpanic`=2。
+
+**对比证据（为何 boot server 不炸）**：`memreq target=2/11/9/7/3 start=0x2xxxxx len=0x11 ok=1`——启动 server 的投递缓冲落在**低模块区已映射页**（0x2xxxxx）故 ok；失败的两次投递缓冲在**高栈 VA 0x7ffffffd/9xxxx**（len 0x50）——栈接收页未映射/不在 VM 认可的 region 内。`p_name=<unset>` 暗示是刚 fork/exec 尚未设名的子（而非已命名的 boot server）。
 
 **待侦察（下一单元）**：
-- 读 `syscall_signal.rs:298` assert 的触发条件（PM 给自己投致命信号时的不变式），判它是「PM 逻辑 bug」还是「下游真崩溃的收尸放大」；
-- 定位 PM(sig=0xb SIGSEGV) 的**第一条**缺页/GP fault 现场（哪个 VA、PM 在跑什么代码路径触发的段错误），用只打印寄存器探针（守 §1.49 探针纪律：缺页 handler 内严禁页表 walk）；
-- 对照 C：正常 boot 序列下 PM 是否可能被投 SIGSEGV（`minix3/minix/servers/pm/` 的信号处置 + kernel 对 server 崩溃的处理）。
+- **主问题**：为何某（自管理、`<unset>` 名）进程的 IPC 接收缓冲 `p_delivermsg_vir`（高栈 VA ~0x7ffffffdxxxx）在 VM 眼中未映射？方向＝栈 region 落地缺口（B22/B38 同族）或 `p_delivermsg_vir` 初始化指向未映射栈顶；先用只打印寄存器探针（守 §1.49 纪律）抓该进程 slot/endpoint/region 表与 `p_delivermsg_vir` 来源；
+- 确认该进程身份（endpoint 0/2 且名 `<unset>`——是 init 子还是未命名 boot 过程）；为何它是自己 sig manager 且无 backup（对照 C：正常 boot 下自管理 server 的 `s_bak_sig_mgr` 是否应非 NONE）；
+- **次级（独立可修）**：`proc_stacktrace` 在 panic 路径二次 GP fault（vector 13）——回栈健壮性 bug，应保证读失败时打占位符而非递归崩（注释已声明此不变式但未落实）。
 
-rc marker 仍未达，frontier＝§1.68（B39 取证）。本单元（B38）工作树改动＝`exec_worker.rs` 单文件（PRIVATE+THIRDPARTY 终版修复 + 回归测），探针全回滚。
+rc marker 仍未达，frontier＝§1.68（B39 取证：投递缓冲未映射→自管理进程 SIGSEGV panic）。本单元（B38）工作树改动＝`exec_worker.rs` 单文件（PRIVATE+THIRDPARTY 终版修复 + 回归测），探针全回滚。
 
 
 
