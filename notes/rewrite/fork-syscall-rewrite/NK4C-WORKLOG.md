@@ -8,6 +8,8 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
+> **⚠ 最新前沿 = B27（1.49）**：为取 B26（slot 0xd exec_command `cr2=0x1` SIGSEGV）崩溃 rip 而加内核探针，意外发现——**回滚至干净 HEAD `ef07f760f` 后全量重建镜像 + QEMU 同镜像三连（c46/c46b/c46c）稳定复现早期内核 panic**（`rip≈0x5c3f309 err=0 cr2=0xffff807f85d7b6a8 walk=NP` cs=0x8，Direct Map 基址下≈2GB 处未映射指针）。即 §1.48「c43/c43b 真机签名一致」**不可从干净重建复现**，真机签名对构建产物敏感。**须先重建可复现无 panic 基线（B27），再回到 B26**。前代「RBX=0 根因」误判已作废（RBX=0 全进程普遍，含正常 0xc）。rc marker 仍未达。详见 §1.49。
+
 - **B14 已修（1.26 落地，含代码）**：VFS 同步挂载路径 `WireFsClient::send`（`request.rs`）两处缺陷根治——**A**：裸 `m_type=REQ_READSUPER(0xA1C)` 经 `sendrec` 直发，绕过 C `fs_sendrec` 的 `TRNS_ADD_ID`（把 request 号抬到高 16 位）→ MFS 侧 `TransactionId::decode`(call=raw>>16) 解出 call=0、index 下溢 → `Unserved`→回 ENOSYS，read_super 从未抵达 MFS 挂载门；修=`sendrec` 前 `msg.m_type = trns_add_id(REQ_READSUPER, 0)`（同步靠阻塞往返匹配、id=0 安全，CodeReview 独立确认 id=0 < `IS_VFS_FS_TRANSID` 的 0xB02 下界不误路由）。**B**：`decode_readsuper_reply` 旧无视回复状态字无条件返 Ok，把 ENOSYS 当挂载成功让 `do_init_root` 带病开门；修=sendrec 后 `trns_del_id(msg.m_type)!=0` 即 `Err(FsError::Io(status))` 上抛（恢复 C `req_readsuper` `if (r!=OK) return r;`，boot 应 panic 见 main.c:519-520）。**真机取证**：加探针（已删）实测 PFS readsuper 回 `0x00000000`(status0=OK 通过)、MFS 回 `0x001e0000`(status=30=**EROFS**) 正确上抛——**Fix B 无假阴性、Fix A 已让 MFS 真服务**。三件套绿（docker 813/242/528·0fail / fmt request.rs 17=17、main_loop.rs 1=1 零新增 / 两次真机 c1/c2 签名一致=23313 行、`main_loop.rs:7681 failed to initialize root: Io`）。CodeReview 无 MUST-FIX。**boot 现诚实停在下一步 B15。**⚠️ 本 bullet 前代 §1.25 把症状记为 **EBUSY(16)**：本轮实测本 build 根挂载失败真码是 **EROFS(30)**（EBUSY 是「已挂载再挂」旧时相的下游表现），见 §1.26。
 
 - **B15 已修（1.27 落地，含代码）**：MFS 根挂载 dirty-mark 不再 EROFS——`fs/fs-rt/src/source.rs::ImgrdBlockSource` 加**有界 CoW 覆盖层**（`overlay: BTreeMap<u64, Vec<u8>>`）。修向：`read_block` 先查 overlay、miss 落 Static 基座（clip 短尾零填，保持 C `memory.c:442-443` 边界规则）；`write_block` 分 arm——`Owned` 就地写不 populate overlay（测试/future writeback 路径）、`Static` 不再返 EROFS 而是写落 overlay（部分越界存 surviving、整块越界 no-op）；`from_static` 构造点初始化空 overlay；`EROFS` import 删除。**dirty-mount 只写块 0 → overlay 1 条 ≈ block_size + 树节点，内存有界**（vs 8 MB base 无法 Owned 化、2 MB slab pool 装不下）。C 忠实性：memory 驱动自有缓冲的 RAM 盘可写；本 overlay 是 bdev 通道未接前的过渡形态，进程终止即丢=与 C 语义一致。宿主 fs-rt 27/27 pass（新增 4 测：overlay 遮蔽读写 / clip 短尾 / 整块越界 no-op / 多块独立），mfs 133/fs 178/vfs 530 全绿。三件套绿（docker 813/242/528·0fail / fmt source.rs HEAD=1 NEW=1 零新增 / 两次真机 c3/c4 签名一致=25213 行、`init-state Runcom` @24127 同位、无 panic/EROFS/Failed to init）。CodeReview PASSED 无 MUST-FIX（SHOULD-CONSIDER=Owned 热路径多做一次 overlay get 可加注释；NICE-TO-HAVE=image() doc 说明不含 overlay——均非破坏性，本轮保持 diff 最小不采纳）。**boot 现前进到 `init Runcom` 相位**。⚠️ 不选「改根挂载只读」缩窄目标路径（非 C 忠实、破坏单元 D/I 写需求）。
@@ -36,7 +38,12 @@
   - **B25**（exit.rs PM）：`tell_parent` 加 `if addr.0 != 0` 守卫（C forkexit.c:692 `if (addr) { sys_datacopy... }`）——INIT 的 `waitpid(pid, NULL, 0)` 使 rusage_addr==0 合法，旧实现无条件 copy_to_user(144B, INIT, 0x0) → SYS_VIRCOPY → 内核挂 PM 问 VM → VM 拒 → errno 回投 INIT pdmv=0 → SIGSEGV → panic（c41 susp-krn 探针实锤 `nr=0x0 mt=0xf tgt=0xb st=0x0 ln=0x90`）。
   三件套绿：docker kernel 816/arch 243/vm 529/pm 418·0fail✓ / fmt 6文件零新增漂移✓ / 两次真机 c43/c43b 签名一致（0 panic / 2 csig on slot 0xd / 3 pf-exit / PM↔VFS spin）✓。CodeReview PASSED。
 
-- **B26 前沿（INIT 崩链消除后新停点）**：B25 修复后 INIT 不再 SIGSEGV（memreq start=0x0 消失），但 slot 0xd（INIT 第二个 fork 子进程，gen=1 slot=13）在 `pf#0xd rip=0x22b5a3 cr2=0x231000 walk=NP` 正常缺页服务后，二次缺页 `pf-exit noaddr cr2=0x1`（近零指针解引用）→ SIGSEGV ×2 → 子进程被杀 → 系统进入 PM(0)↔VFS(1) pick 交替自旋（~125万行/150s，纯探针输出 spam）。rc marker 仍未出现。**下一入口**：①分析 slot 0xd cr2=0x1 根因（fork child exec 后代码路径 deref null？或 init bootscript 第二个 fork 参数错误？）；②分析 PM↔VFS spin（可能是子死后 INIT waitpid 不再可达，PM/VFS 互相等待某个请求）；③考虑减少探针输出或加大 cap（日志 128万行影响取证效率）。frontier 仍 1.30。
+- **B26 侦察纠正（1.49 纯侦察·无生产码，作废前代「RBX=0 根因」误判）**：前代 compacted 会话记「slot 0xd cpu_context RBX=0 是根因」——**本轮 c43 探针输出直接证伪**：`rbxw int33-save/irq-save` 探针显示 **RBX=0 对全系统每个进程普遍成立**（ep=0x1/0x2/0x5/0xa/0xb 均 rbx=0，连**正常工作的 slot 0xc** 也 rbx=0），而紧邻的 `pre-restore-` 行（读自待恢复的 cpu_context）里 0xd 的 rbx=0x7fffffffa540（真实栈/消息缓冲地址）。⇒ `rbxw` 探针读的是 int33 陷阱帧入口的 RBX（syscall 序言前），非用户态消息缓冲指针，RBX=0 与崩溃无因果。**真崩溃链**（c43 line 26806-26819）：0xd `int33-save/ret rip=0x204e3f`（syscall 门，与 0xc 同址）→ VM 服务其腿 `vm-pf recv` → `pf-exit noaddr cr2=0x1` → `csig tgt=0xd sig=0xb(SIGSEGV)` ×2。addr2line(init ELF) 0xd 崩溃前后 rip：0x20c510=`RawVec::grow_one`、0x204e61/0x2014c1=`execve::exec_command`、0x2245c0=`Vec::from_iter`、0x2067a0=`fmt::format_inner`——即 0xd（INIT 第二个 fork 子，runcom 的 `runetcrc(true)` chroot 分支）在 **`exec_command` 路径 deref 近零指针（addr 0x1）**。cr2=0x1 = null+1（结构体偏移 1 处读空指针）。**未定案**：现有 `pfc` 探针过滤 `cur_nr∈{0,1,3..11}&&vaddr==0`，不含 12/13 且不含 vaddr=0x1，故 c43 未捕获 0xd 的确切 faulting rip；本轮试图扩探针取证——**见 B27（该取证尝试反而暴露更硬的阻塞）**。
+
+- **B27 新阻塞（1.49 实锤，⚠ 取代 B26 成为头号前沿·比 B26 更早）**：为取 0xd 崩溃 rip，加了两版内核探针（先扩 `pfc` 过滤器、再改独立安全探针），**均导致早期 boot 内核 panic**（rip≈0x5c34005/0x5c51309，cs=0x8，`walk=NP`，多 CPU panic 处理竞态致 rip/计数漂移）。一度疑为探针引入，**但 `git checkout` 回滚至干净 HEAD `ef07f760f` 后重跑 `xtask image --release` + QEMU（c46/c46b/c46c 同镜像三连）复现同样早期 panic**（panic 计数 2/3/4、行数量 208/202/211 微抖=正常，故障本身确定）：**决定性根因签名** = 内核数据读 `rip=0x5c3f309 err=0x0 cr2=0xffff807f85d7b6a8 walk=NP`（Direct Map 基址 0xffff808000000000 之下≈2GB 处一个未映射高半区指针，cs=0x8 内核态读，`pfm1-gate..pfm5-dump` 崩于 pagefault 处理中）。**⇒ 重大流程发现**：§1.48「c43/c43b 两次真机签名一致」的三件套验证**不可从干净重建复现**——真机签名对**构建产物敏感**（增量构建陈旧 artifact vs 全量重建、或工具链/registry 漂移，令同一 commit 的 boot 相位从「推进至 Runcom+0xd」退化到「早期内核 panic」）。**这意味着 ef07f760f 名义上「三件套绿」实则未固化一个稳定可复现的无 panic 基线。**
+  - **下一入口（B27 优先，须先于 B26）**：①先重建**可复现无 panic 基线**——回滚到 §1.48 之前那个能跑到 Runcom 的镜像来源，比对 `xtask image` 全量 vs 增量、锁定 `cr2=0xffff807f85d7b6a8`（≈DirectMap 基址下 2GB 处）是哪块内核数据结构的指针（页表 walk 目标 / boot info memmap / slab 元数据）；②判明是**真 bug** 还是 `-smp 4` 早期启动竞态（可试 `CARGO_TARGET_DIR` 干净重建 + 单/多核对照）；③在稳定基线之上再回到 B26（0xd exec_command cr2=0x1 取证 + PM↔VFS 乒乓活锁）。**取证探针纪律重申**：内核缺页探针内**严禁页表 walk/DirectMap 读内存**（c44 证伪：会在非预期 fault 上下文递归 panic），只可打印寄存器。
+  rc marker 仍未出现（`minix-rs rc: minimal boot script marker`），且现退化至早期 boot panic，frontier 名义仍 1.30 但**实际可复现停点早于 B22 之前的 Runcom**。本轮无生产码改动（工作树干净），纯侦察 doc，免三件套。
+
 
 【→ §1.47 c35 全量 tail-dump 已导致 B23+B24+B25 三修实施，见上条。】
 
@@ -2641,4 +2648,25 @@ slot 0xd（INIT 第二个 fork 子，gen=1 slot=13）正常缺页服务后二次
 
 ---
 
+
+## §1.49 B26 误判作废 + B27 新阻塞（纯侦察·无生产码）
+
+**模式**：纯侦察 doc，工作树全程干净（探针两次编辑均 `git checkout` 回滚），免三件套（§1.25/28/41-46 先例）。
+
+**取证产物**（`/tmp/nk4a/`，gitignore，换树会丢——关键结论已入上文状态板）：
+- `c43.txt` / `serial_c43.log`：committed HEAD 的「good」签名（推进至 Runcom、0xd SIGSEGV、PM↔VFS 125万行 spin）。
+- `serial_c44.log` / `c44b.log`：扩 `pfc` 过滤器（含页表 walk 读）→ 早期内核递归 panic（页表 walk/DirectMap 读在非预期 fault 上下文递归崩溃，**探针纪律教训**）。
+- `serial_c45.log`：改独立安全探针（仅打印寄存器）→ 仍早期 panic（b26p 从未触发，证明与探针无关）。
+- `serial_c46.log` / `c46b.log` / `c46c.log`：**回滚至干净 HEAD `ef07f760f` 全量重建 + 同镜像三连**——稳定复现早期内核 panic（panic 计数 2/3/4、行 208/202/211 微抖，故障确定）。
+
+**两条硬结论**：
+1. **B26「RBX=0 根因」作废**：`rbxw` 探针读 int33 陷阱帧入口 RBX（syscall 序言前），全系统每进程普遍 =0（含正常工作的 slot 0xc），与 0xd 崩溃无因果。真崩溃 = 0xd（INIT 第二 fork 子，`runetcrc(true)` chroot 分支）在 `execve::exec_command` 路径 deref `cr2=0x1`（null+1）→ VM `pf-exit noaddr` → SIGSEGV×2 → 子死 → PM(0)↔VFS(1) 乒乓活锁。**确切 faulting rip 未捕获**（`pfc` 过滤器不含 slot 12/13 与 vaddr=0x1）。
+2. **B27 取代 B26 成头号前沿**：committed HEAD 全量重建后**不再复现 c43 无 panic 签名**，退化为早期内核数据读缺页 `rip≈0x5c3f309 cr2=0xffff807f85d7b6a8 walk=NP`（cs=0x8，Direct Map 基址下≈2GB 处未映射指针）。真机三件套验证**对构建产物敏感**——§1.48「c43/c43b 签名一致」实为增量构建陈旧 artifact 侥幸，未固化稳定无 panic 基线。
+
+**接手者下一步（严格按序）**：
+1. **B27 优先**：定位 `cr2=0xffff807f85d7b6a8`（≈phys 0x85d7b6a8）指向的内核数据结构（页表 walk 目标 / boot info memmap / slab 元数据），判明是真 bug 还是 `-smp 4` 早期竞态（干净 `CARGO_TARGET_DIR` 重建 + 单核/多核对照）；恢复一个**可复现无 panic** 的真机基线。
+2. **B26 次之**：在稳定基线上，用一个**只打印寄存器、绝不做内存读**的内核缺页探针捕获 slot 12/13 且 vaddr≤0x1000 的 faulting rip，坐实 0xd 在 exec_command 的 null+1 deref 具体指令；并分析 PM↔VFS 乒乓活锁（子死后 INIT waitpid 不可达，PM/VFS 互等）。
+3. rc marker（`minix-rs rc: minimal boot script marker`）仍未达，三架构均未启动打印。frontier 名义 1.30，实际可复现停点已早于 B22 之前的 Runcom。
+
+---
 
