@@ -26,7 +26,7 @@
 
 - **B21 已修（1.40 落地，含代码·arch 侧）**：根因坐实——`sync_status_register_to_frame`（`os/arch/src/x86_64/trap_stub.rs`）是 IPC 状态车道 **RBX→R10 迁移的陈旧漏改**：状态位现由 `or_ipc_status_reg`/`clear_ipc_status_reg`/`ipc_status_register` 读写 `gp_regs[GP_R10=8]`、trap 出口 asm `pop r10`、userspace `ipc_trap`（arch_trap.rs:84 `mov status,r10`）从 R10 读 status，但该 sync 仍做 `frame.rbx = ctx.rbx`。在接收进程**自身** int-33 receive 陷阱返回臂（内核 `trap_dispatch.rs:1810` reply-code 路径，唯一调用点）上，内核已把投递的 `IpcCall::Notify` 位 OR 进 `gp_regs[GP_R10]`，却只把 RBX 拉回帧 → `frame.r10` 停在 RECEIVE 序言清零的旧值 → userspace `is_ipc_notify` 读到 0 误判非通知 → 那条 `mini_notify_core` 直投的 HARDWARE notify（m_type=0x1000、src=KERNEL/HARDWARE=-1、被 init.rs:452 探针低12位截断打成 `pm 000ff`）下探到 `pm_isokendpt(KERNEL)` 失败 → init.rs:567 panic。修=改 `frame.r10 = ctx.gp_regs[crate::x86_64::signal::GP_R10]`（同步用户真正读的状态车道）+ 诚实化函数注释 + 回归守卫单测 `sync_status_register_copies_r10_lane_not_rbx`（`ctx.rbx` 干扰值双向锁死「R10 收到状态、RBX 不被污染」+ 复刻 `is_ipc_notify` 的 6-bit 掩码断言）。**真机 c31/c32 决定性**：`panic-enter`=0（PM 不再崩）、那条 `nk4a: pm 000ff` 命中 1 次后被正确识别跳过、`pre-restore- r10s=0x0000000000000004`（Notify status 正确交付进 R10）出现 115 次，两次行数 25284/25285 同构=签名一致。三件套绿（docker arch **243**(head 242 +1 新测)/kernel 816/vm 528·0fail / fmt trap_stub.rs cur=17=head=17 零新增 / 真机 c31==c32 签名一致）。CodeReview **PASSED**（无 W/S；N1 陈旧 RBX 注释多在 pre-existing 内核侧、不阻塞，本轮已采纳修自身新增 rustdoc 的 broken intra-doc link）。⚠️ 修复只动 arch crate、不碰 PM（规避 §1.33 PM 布局脆弱性债）。**新前沿 B22**：见下条。
 
-- **B22 前沿（PM 存活后某进程 receive 收 notify 活锁）**：B21 修复后 PM 存活、boot 推进至 ~25285 行 timeout（EXIT=124）。尾态确定性签名：反复 `pre-restore- rip=0x202d68 rsp=0x7fffffff9178 r10s=0x4`（rip=0x202d68 落在 `KernelIpcTransport::receive`，与 B14 家族同签名；r10s=0x4=`IpcCall::Notify`）——即某进程（疑 SCHED proc4/slot4）在 receive 中被反复交付 Notify(status=4)、返回后立刻又 receive、通知持续到达不收敛（疑时钟/硬件 IRQ notify 风暴、或该服务器对通知的消费/再挂接收臂不推进 rc 脚本执行）。rc marker `minix-rs rc: minimal boot script marker` 仍未打印，frontier 仍 1.30。**下一入口**：①addr2line 确认反复收 notify 的进程身份（rip=0x202d68 + 该 rsp 归属，是否 SCHED）；②读该服务器主循环对 `is_ipc_notify` 的处理是否对齐 C `main.c:64`（notify 静默 continue 后仍应推进收 VFS/INIT 消息、不该饿死 rc 脚本 exec 链）；③查通知为何不断（时钟周期 vs 真风暴）。取证优先内核/读码侧（§1.33 PM 阻断）。
+- **B22 前沿（⚠ 已纠正定性=静态全系统死锁、非 SCHED 活锁/风暴、详见 §1.42）**：B21 修复后 PM 存活、boot 推进至 ~25285 行 timeout（EXIT=124）。本 bullet 初判（上轮 §1.41）「某进程反复收 Notify 活锁/风暴」已被 tail-dump **推翻**：末态 **全 13 进程 `runnable=no queued=no`**、仅 1 次 `picknone` + 2 次逐字节相同的 tail-dump = **静态死锁**；尾部反复 `pick->0x4` 只是时钟 tick 短暂唤醒 SCHED 服务 Clock-notify（SCHED 是唯一被唤者）、非活锁。**决定性线索**：child(12)/0x10c `flags=0x30` 仅 SIGNALED|SIG_PENDING、**不含任何阻塞 IPC 位**（无 SENDING(0x4)/RECEIVING(0x8)/PAGEFAULT(0x400)）却 `runnable=no queued=no`——本应可跑却没入队（与 P1-ipc/F10d「置/清标志绕过 rts_set/rts_unset 入队半」同族）；INIT(11)/0x10b `flags=0x8` RECEIVING 等 `from=PM(0)` 而 PM 空闲在 receive(ANY)。**下一入口**：①查谁给 child 置 SIGNALED|SIG_PENDING 却未 `make_runnable`+enqueue（信号投递腿，参 WORKLOG P1-ipc `clear_ipc_refs` 同族）；②INIT 阻塞等 PM 而 PM 空闲=丢唤醒/rendezvous 不闭合（对齐 C PM 对 INIT 的 WAIT4/回信腿）；③child `to=VFS from=PM` 的真实含义（sendrec 残留还是信号停）。取证优先读码/内核侧（§1.33 PM 阻断不影响内核/SCHED）。rc marker `minix-rs rc: minimal boot script marker` 仍未打印，frontier 仍 1.30。
 
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
@@ -2431,5 +2431,30 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 - 纯侦察 doc commit、无三件套；rc marker 未达，frontier 仍 1.30。
 
 ---
+
+## §1.42　B22 侦察纠正：推翻 §1.41「SCHED 风暴/活锁」——c32 tail-dump 实锤=静态全系统死锁
+
+**受控读法接续**：本 turn 从 §1.41（B22 侦察，commit 055fd91b9）后的 B22 下一入口起步。**纯侦察、无生产代码**（§1.25/§1.28/§1.41 doc commit 先例、无三件套）。
+
+**读码排除 §1.41 假设②（R10 粘滞）**：plain-RECEIVE 序言（ipc.rs:2730-2761）对每次 fresh receive **确实** `clear_ipc_status_reg`（清 gp_regs[GP_R10]）+ 清 REPLY_PEND；`pick_allowed_notify`（ipc.rs:1818-1862）扫 `s_notify_pending` 位→命中即 `&= !(1<<bit)` **消费即清位**（除非 CANRECEIVE 过滤则保留）。→ 状态车道无粘滞。
+
+**c32 tail-dump 实锤推翻「活锁/风暴」（决定性）**：
+- `picknone`=1、`tail-dump begin`=2，且**两次 tail-dump 逐字节相同**（=冻结、非慢）→ **静态全系统死锁**，非 §1.41 猜的 SCHED 风暴；
+- 尾部反复 `pick->0x4` 只是**时钟 tick 短暂唤醒 SCHED 服务 Clock-notify**（SCHED 是唯一被唤者，其余全 runnable=no queued=no），与早期 WORKLOG「449-livelock/picknone 同族」尾态一致。
+
+**末态 13 进程 wait-for 图（flags 解码 RECEIVING=0x8 SIGNALED=0x10 SIG_PENDING=0x20）**：
+- 大多数服务（PM0/VFS1/RS2/MEM3/SCHED4/TTY5/DS6/MIB7/VM8/9/10）均 `flags=0x8` RECEIVING = **空闲等信**；VM(8) from=ANY(to=NONE) 纯 receive。
+- **INIT(11)/0x10b**：`flags=0x8` RECEIVING、to=VFS(1)、from=PM(0)、runnable=no queued=no。
+- **child(12)/0x10c**（`*F` forked）：`flags=0x30` = SIGNALED|SIG_PENDING、to=VFS(1)、from=PM(0)、runnable=no queued=no。
+
+**最锐利线索（待下轮坐实）**：child(12) 只有 SIGNALED|SIG_PENDING、**不含任何阻塞 IPC 位**（无 SENDING/RECEIVING/PAGEFAULT）却 runnable=no queued=no——一个仅被标信号的进程本应 runnable+入队（SIGNALED 非阻塞位）。与 WORKLOG 已登记的 **P1-ipc**（`clear_ipc_refs` syscall.rs L1283 裸清标志绕过 `clear_ipc`=RTS_UNSET 入队半）/ **F10d**同族=置/清标志丢入队。**下一入口（优先级）**：①定位 fork 后给 child 置 SIGNALED|SIG_PENDING 的腿（信号投递 / PM `mprocs_run` 唤醒 INIT 子），查其是否漏 `make_runnable`+enqueue；②若 child 本应可跑，INIT 为何阻塞等 from=PM（PM 空闲 receive ANY）——查 PM 对 INIT 的 WAIT4/回信腿丢唤醒。取证优先内核/读码侧（§1.33 PM 阻断不影响内核）。
+
+### §1.42 本 turn 行量
+- 无生产代码（纯侦察）；
+- WORKLOG 顶部 B22 bullet 纠正定性 + 本节 §1.42（tail-dump 实锤全系统静态死锁、推翻 §1.41 风暴假设）；
+- 纯侦察 doc commit、无三件套；rc marker 未达，frontier 仍 1.30。
+
+---
+
 
 
