@@ -2229,6 +2229,7 @@ Subagent CodeReview 报 **PASSED、无 MUST-FIX**，逐项结论：
 1. **优先 (A)：攻 PM 布局脆弱性**——定位 sendrec/barrier 路径的固定地址假设或模块加载页上限；不修则 PM 一切后续开发被卡（不只本探针）。
 2. **(B)：改从 VM 侧探测 `fork::do_fork` 的 `VmError` 变体**（用无 fmt 定长栈缓冲）——先验 VM 代码膨胀是否同样脆弱；若 VM 也脆弱，退化到内核 `sys_fork` 腿观测。
 3. **(C)：纯读码推进候选**——优先查 VM `gateway.sys_fork`（`kernel_gateway.rs`）与内核侧 fork 实现是否接线/返回正确 `(child_endpoint, fork_msgaddr)`（与 E-FORKMSG/do_fork.c:112 对位）。
+   - **本轮 (C) 读码已得精确候选（未真机/宿主测验证，下轮首要）**：内核 `syscall_process.rs::dispatch_fork` 两处早期校验失败都返 **`KcallResult::Ok(EINVAL)`（正值 22、非负错误码）**——L162-167「caller(VM) 必须 RECEIVING」与 L171-173「child 槽必须空」。而 VM `minix-sys::sys_fork`（syscall.rs:597-603）只在 `reply < 0` 判错→ **正值 EINVAL 被当成功**、去读**从未写入的应答臂** `m_krn_lsys_sys_fork.{endpt,msgaddr}`（garbage）→ VM fork::do_fork 带垃圾 msgaddr 继续→ `handle_memory_once` 失败→ VM 回 Err → PM `dF:vmF`。其中 L162 RECEIVING 校验最可疑：VM 经 SYSCALL/int33 腿（非 IPC receive）调 sys_fork 时多半不在 RECEIVING 态（与 S3「int33 vs IPC 腿门纪律」/F10b「`KcallResult::Data` vs 错误取负」同族）。**候选修法**：校验失败应返真正错误语义（`KcallResult::Err(-EINVAL)` 或使 `kernel_call_finish` 取负），而非 `Ok(EINVAL)` 正值；需先核 C `do_fork.c:46/51` 的返回是走 `errno`（正值、_syscall 自返 OK 后查 errnoc）还是 m_type——并确认 VM sys_fork 是否真处 RECEIVING。**下一步：先写一个宿主/真机最小实验坐实 dispatch_fork 到底命中哪条 Ok(EINVAL)（或根本不命中的话 vm_fork 失败另有其因），再定修法。**（注：该修法若动 PM 侧代码会撞本轮登记的 PM 布局脆弱性；但 dispatch_fork 在内核、sys_fork wrapper 在 minix-sys，不属 PM，可先改这两处验证。）
 
 ### 本 turn 行量
 - 2 处代码变更（`fork.rs` VmError(i32)+nk4c_probe+两 Err 臂打点、`dispatcher.rs` vm_fork 携带 m_type+两测断言）→ **本 turn 末全部 `git checkout --` 回滚**，工作树=HEAD；
