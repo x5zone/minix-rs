@@ -12,7 +12,7 @@
 
 - **B15 已修（1.27 落地，含代码）**：MFS 根挂载 dirty-mark 不再 EROFS——`fs/fs-rt/src/source.rs::ImgrdBlockSource` 加**有界 CoW 覆盖层**（`overlay: BTreeMap<u64, Vec<u8>>`）。修向：`read_block` 先查 overlay、miss 落 Static 基座（clip 短尾零填，保持 C `memory.c:442-443` 边界规则）；`write_block` 分 arm——`Owned` 就地写不 populate overlay（测试/future writeback 路径）、`Static` 不再返 EROFS 而是写落 overlay（部分越界存 surviving、整块越界 no-op）；`from_static` 构造点初始化空 overlay；`EROFS` import 删除。**dirty-mount 只写块 0 → overlay 1 条 ≈ block_size + 树节点，内存有界**（vs 8 MB base 无法 Owned 化、2 MB slab pool 装不下）。C 忠实性：memory 驱动自有缓冲的 RAM 盘可写；本 overlay 是 bdev 通道未接前的过渡形态，进程终止即丢=与 C 语义一致。宿主 fs-rt 27/27 pass（新增 4 测：overlay 遮蔽读写 / clip 短尾 / 整块越界 no-op / 多块独立），mfs 133/fs 178/vfs 530 全绿。三件套绿（docker 813/242/528·0fail / fmt source.rs HEAD=1 NEW=1 零新增 / 两次真机 c3/c4 签名一致=25213 行、`init-state Runcom` @24127 同位、无 panic/EROFS/Failed to init）。CodeReview PASSED 无 MUST-FIX（SHOULD-CONSIDER=Owned 热路径多做一次 overlay get 可加注释；NICE-TO-HAVE=image() doc 说明不含 overlay——均非破坏性，本轮保持 diff 最小不采纳）。**boot 现前进到 `init Runcom` 相位**。⚠️ 不选「改根挂载只读」缩窄目标路径（非 C 忠实、破坏单元 D/I 写需求）。
 
-- **B16 前沿（1.27 观察到，未定位）**：B15 修后 boot 抵达 `init-state Runcom`（c3/c4 @24127 同位、单次出现），但 **rc marker `minix-rs rc: minimal boot script marker` 未打出**；24127 之后 serial 反复 `cr3-done / pre-restore rip=0x2073d2 rsp=... r10s=0x1 rbx=...` + `pm 0140b` / `pm 0020b` + SCHED idle pick->4 循环——`init` 已进入 `Runcom` 但 `exec("/bin/sh", ["/bin/sh", "/etc/rc"])` 腿未完成到子进程打印 marker。候选：①`Runcom` 里的 `fork+exec` 未成功 fork 出子进程（PM 侧 `pm 0140b` = 0x140b 十进制 5131 = 与 PM 请求表对号；`0020b` 同理）；②exec 成功但 imgrd 里 `/bin/sh` 或 `/etc/rc` 文件不存在/不可读（imgrd 已烘但 `mfs` 目录条目解析可能仍缺）；③子进程 stdout 未 wire 到 serial（marker 打了但串口看不到）。**下一入口**：给 `init.c::Runcom` 的 fork/exec 前后 + `exec` 系统调用返回处打 `nk4c:` 短探针，钉死到底停在哪一步；同查 imgrd 里 `/bin/sh`、`/etc/rc` 是否存在（mkfs 脚本可复现性）。**勿动**：SCHED/IPC/B12、init 状态机（忠实镜像 C）、`task.rs` 挂载门、VFS readsuper（1.26 已修）。详 §1.28 侦察补（addr2line 归属 + 可观察性射 + 候选缩窄至 fd 1 wire）。
+- **B16 前沿（1.29 侦察 A 完成，候选缩窄至父侧 errno 正负号契约）**：B15 修后 boot 抵达 `init-state Runcom`，但 rc marker 未出。本轮上探针 A（init runcom.rs 5 个 + pm fork.rs 2 个 + pm ipc/vfs.rs VfsReply::Fork 4 个 `nk4c:` 前缀≤16B cap 8）——三轮真机 c5/c6/c7：**`nk4c:rc:prnt` 均命中**（init `host.fork()` 返 Ok(pid)）、**`nk4c:rc:chld` 三轮零命中**（子从未到 Ok(0) 行）、**`nk4c:pm:frk-in` 三轮零命中**（VfsReply::Fork 异步回复链从未执行）、**`nk4c:pm:dF:in` + `nk4c:pm:dF:pf` 均命中**（do_fork 已入、find_parent_slot 已成功）。证据链：子未创建 ⇒ do_fork 在 `dF:pf` 后某处 Err（候选：`can_alloc_for_user`、`find_free_slot`、`vm_fork`） ⇒ dispatcher `Err(e) => ReplyIntent::Reply(PmError::from(e).to_errno())` ⇒ `reply(caller, code)` 直接 `msg.m_type = code` 发回（init.rs L651-668，无取负）⇒ minix-sys `perform_syscall` 仅判 `m_type < 0` 为 Err（syscall.rs L107）、否则 Ok。若 `to_errno()` 为正（ENOSYS=38/EAGAIN=11 等），init 侧将拿到 Ok(11)=Ok(pid=11)——**假成功父、无子、waitpid 卡**。候选根因：PM 对错误码未取负、与 C `main.c:106 reply(who_p, result)` 的“result=−errno”约定失配（与 WORKLOG F10b 内修家族同构：内核 `reply_wire()` 已取负，PM `reply()` 未同步）。**下一入口**：读 `PmError::to_errno()` + dispatcher 全链确认正负号；修 `reply()` 处对 error 取负（或 dispatcher 层统一取负）。修后探针回滚 + 三件套 + CodeReview + §1.29 补充 → fix commit。**本轮探针已全部 `git checkout` 回滚、工作树干净**（doc commit）。**勿动**：SCHED/IPC/B12、init 状态机（忠实镜像 C）、`task.rs` 挂载门、VFS readsuper（1.26 已修）、imgrd source overlay（1.27 已修）。详 §1.28 侦察补 + §1.29 探针 A 实锤。
 
 - **阶段**：**1.3 rc marker 链（当前 frontier = **1.24「B13 Bug2(EIO) 修复落地：每进程单一 grant 表——DsClient 去私有 `GrantTable` 改注入 `grants:&mut` 参数（恢复 C `sys_setgrant` 一次不变量）；真机 vp==gtab 地址一致、EIO→EBUSY、boot 达 SingleUser；三件套绿(docker 813/242/528·0fail / fmt 全 cur=0 / 两次复跑签名一致)；CodeReview 确认 RS 发布缝临时表为遗留→折叠 B14」；前代 1.23「B13 Bug2(EIO) 根因锁定：宿主复现证实 resolve_path 正确；真机已入仓 `nk4a: vg` 探针实锤 `sys_safecopyfrom(VFS)` 读到 VFS grant 表**陈旧快照**（内核读到 `fl=0x00` 不满足 USED|VALID → grant.rs:361 EPERM，且 seq/wto/len 整体错位 2+ 个生成代），VFS 当前活写（who_to=0x0a=MFS/len=13/seq=2/3/4/flags非零）内核看不到；失败发生在 MFS wire decode 的 `copy_from`（wire.rs:130 `.map_err(EIO)`），`transport.rs:221-234` 证实 decode 错即 `encode_reply(EIO)` 回执、**不经 resolve_path/load_dir_blocks**（db 探针 0 命中=真没到，非 cap 饥饿）→ §1.22 候选 B 确认；下一步：①对比 VFS `slots.as_ptr()` vs 内核 `priv(VFS).s_grant_table` 是否同值（realloc 后重注册是否生效），②若同值则查 VFS 堆 VA→PA 翻译」**；前代 1.22「宿主测试 PASS 证实 MFS resolve_path 正确，候选缩至传输层 A/B/C」；前代 1.21「B12 sendrec Path A delivery 清 REPLY_PEND」；1.20「B11 imgrd 零拷贝嵌入 MFS」；1.18「B10 getpid 线格式修复」；...）**
 - **根因最终版（S3 定位修正 S2 第 4 点未收敛项）**：`kernel_call_finish` 的 eager 回执直写（errno 非零时把 80 字节回执写到进程表的 `p_delivermsg_vir`）在 C 里只存在于 `kernel_call()`/SYSCALL 腿（system.c:83），且该腿每次入口都先刷新 `p_delivermsg_vir`（system.c:141），目标结构性新鲜；C 的 int33 陷阱腿（proc.c `mini_*`）从不执行这条直写（状态经 h_errno/寄存器，真回执经 MF_DELIVERMSG 投递）。minix-rs 把 int33 腿（含 SENDA）统一接进同一 finish 机器而丢了这条**门纪律**：SENDA 入口按 C 对位故意不刷新 `p_delivermsg_vir`（trap_dispatch.rs 的 `!is_senda` 存储臂），于是 SENDA 窗内的同步 errno 回执落写上一次 SYSCALL 腿调用留下的陈旧地址（帧已弹出、区域已复用）→ self 槽被回执零字抹掉 → `endpoint_slot(0)` → SIGSEGV。完整证据链与修正说明见 S3 节
@@ -2006,4 +2006,61 @@ release 内联使归属不100% 可靠，但 **init 主循环反复在 syscall �
 **B. 若 A 确认子起来且 exec 成功、sh 卡或 stdout 不通**：同法给 `sh` 入口与 `rc` 文件 open 加 diagctl 探针；或给 `MinixSysHost::console_write` 添一行 `sys_diagctl_write` fallback——后者同时修复可观察性链（若 tty wire 属已知未完，可接受先走 diagctl）。
 
 **不改生产代码本 turn**：§1.28 纯侦察，无代码修改，无三件套（本 doc commit = §1.25 先例）。frontier = 1.27（B15 修复 commit `ad2965e0d`）。
+
+
+## 1.29 B16 侦察 A 完成：探针三轮 c5/c6/c7 实锤“子未起、父假 Ok”（PM reply 无取负候选）（2026-09-25，探针已全部 `git checkout` 回滚、本轮无代码变更 = §1.25/§1.28 doc commit 先例）
+
+### 探针 A 落地（取证后已全部回滚）
+
+1. **init `runcom.rs::runetcrc`**：新局部 `nk4c_mark(s)`（cap 8、`nk4c:` 前缀、走 `sys_diagctl_write` 直达内核串口，绕开 fd 1 wire 依赖）；五个分岔位：
+   - `Ok(0)` 子入处一行 `nk4c:rc:chld\n`
+   - `Ok(pid)` 父入处一行 `nk4c:rc:prnt\n`
+   - `Err(_)` 一行 `nk4c:rc:frkE\n`
+   - `host.exec(&cmd)` 下行（exec 返回=失败）一行 `nk4c:rc:exeE\n`
+   - `waitpid` 命中 `wpid==pid` 一行 `nk4c:rc:hitw\n`
+2. **PM `ipc/vfs.rs::handle_vfs_reply` 的 `VfsReply::Fork`** 四处：入行 `nk4c:pm:frk-in\n`、sched Err 行 `nk4c:pm:frk-ser\n`、`reply(slot, OK)` 下行 `nk4c:pm:frk-chd\n`、`reply_to_guardian` 下行 `nk4c:pm:frk-par\n`（均 cap 8）。
+3. **PM `fork.rs::do_fork`** 两处：入口处 `nk4c:pm:dF:in\n`、`find_parent_slot` 下行 `nk4c:pm:dF:pf\n`。为跨模块调用新增 `pub(crate) fn nk4c_fm_pub` wrapper。
+
+### 三轮真机结果（cap 8 内，日志全量 grep）
+
+| 探针 | c5 | c6 | c7 |
+|---|---|---|---|
+| `nk4c:rc:prnt` | ✓ | ✓ | ✓ |
+| `nk4c:rc:chld` | 零 | 零 | 零 |
+| `nk4c:rc:frkE` | 零 | 零 | 零 |
+| `nk4c:rc:exeE` | 零 | 零 | 零 |
+| `nk4c:rc:hitw` | 零 | 零 | 零 |
+| `nk4c:pm:frk-in` | — (c5 未上) | 零 | 零 |
+| `nk4c:pm:frk-chd` | — | 零 | 零 |
+| `nk4c:pm:frk-par` | — | 零 | 零 |
+| `nk4c:pm:dF:in` | — | — (c6 未上) | ✓ |
+| `nk4c:pm:dF:pf` | — | — | ✓ |
+
+c5 行 25374 仅 `prnt` 一个；c6 行 25002 仅 `prnt`；c7 行 25013 `dF:in + dF:pf + prnt`。三轮日志中 `grep -a 'nk4c:' | wc -l` 均 ≤ 3。
+
+### 证据链与候选缩窄
+
+**do_fork 已入、find_parent_slot 已成功 ⇒ 子未创建 ⇒ do_fork 在 `pf` 后 Err ⇒ dispatcher 向父发了一个正 m_type 回执**（因 `Ok(pid)` 分岔已命中，perform_syscall 仅将 m_type<0 当 Err）。do_fork 内 Err 候选（均为 `?` 传播）：
+1. `!table.can_alloc_for_user(is_root)` → `ForkCoordError::ProcTableFull` → `PmError::ProcTableFull`
+2. `find_free_slot().ok_or(...)` → 同上
+3. `vm_fork(...)?` → `ForkCoordError::VmError` 或其它
+
+`PmError::from(e).to_errno()` 将 Err 映到一个“errno”值。**若该值正** ⇒ dispatcher `self.reply(caller, code)` 写入 `msg.m_type = code`（init.rs L651-668 **无取负**） ⇒ init `perform_syscall` 判 `if m_type < 0 { Err } else { Ok(m_type) }` ⇒ **拿 Ok(正整数)** 当“child_pid” ⇒ init 进 Ok(pid) 分支、fire `prnt`、开始 `waitpid(-1, WUNTRACED)` 卡等不存在的子。
+
+与 C 契约失配：`minix3/sbin/init.c` 内所有 syscall wrapper 都假设“server reply 的 m_type 为负时=errno”，`_taskcall`/`_syscall` 判 `m_type < 0` 后取 `errno = -m_type` 才报失败。WORKLOG F10b 已记录内核侧 `reply_wire()` 修复同构问题（“数据码原样、错误码取负”）——**PM `reply()` 同层修复尚未同步**。
+
+### 下一入口（fix B16 实施）
+
+1. 读 `PmError::to_errno()` 实现确认它否返回正值（很可能就是 `minix_types::*` 里 `EINVAL/EAGAIN/ENOMEM` 等正 errno）。
+2. 确认修复点：
+   - **首选**：PM `init.rs::reply(&mut self, slot, result)` 内部将 `result` 归一——若 result 属于 PmError 枚举映到的“errno”正数，写 m_type 前取负。但 reply 不区分 result 语义（成功码=pid/0 也走同一接口）——需 dispatcher 将 ReplyIntent 拆为 `Reply(i32)` (成功码) 与 `ReplyErr(errno)` 两臂，或在 `PmCall::Fork => Err(e) => ReplyIntent::Reply(-(errno))` 处取负。
+   - **对位参考**：内核 `reply_wire()` (F10b)。PM 侧需同构 helper。
+3. 全量扫 `ReplyIntent::Reply(` 所有调用点，确保错误臂都取负（getpid/setuid/… 共 30+ 处）。
+4. 修后回行“三件套”(docker 813/242/528 + fmt 零新增 + 真机 c8/c9 签名一致、**且 c8 里 `nk4c:rc:chld` 应命中——无探针时以真 marker 代替**) + CodeReview + §1.30 + fix commit。
+
+### 本 turn 行量
+
+- 3 处代码变更（init/runcom.rs + pm/fork.rs + pm/ipc/vfs.rs）**仅诊断探针**（cap 8 + `nk4c:` 前缀 + task1-close 回滚 + 无业务语义），取证已全部 `git checkout -- <file>` 回滚。工作树 HEAD 不变、跟踪文件层面干净。
+- doc commit：WORKLOG 顶部 B16 bullet 全面改写 + 本节 §1.29 追加。无三件套、无 CodeReview（无生产代码变更）。
+- frontier 仍 = 1.27（B15 修复 commit `ad2965e0d`）；rc marker 未达成。
 
