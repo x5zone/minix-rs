@@ -3681,4 +3681,34 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 本单元纯侦察（真机 bn62 定量 + 读码分析，无改码），工作树净。rc marker 仍未达。
 
+### 1.82 B44→B27 重定向（真机取证 bn64-bn71+clean1·探针全回滚·工作树净）
+
+**side-thread 只读诊断参考**（用户转发，非新指令）三条：诊断一 BKL 两步写死锁（§1.52 已闭环）、诊断二 birth/copy 期页表 walk 缺 VMINHIBIT（TOCTOU 假设）、诊断三工作区未提交（本会话探针，已回滚）。
+
+**取证链（本会话）——三假设逐一证伪 + 一处真根因浮出**：
+
+1. **ps_str 截断假设 = 证伪**。逐段核链：段1 PM `decode::exec`（decode.rs:121 读 offset32 u64）✓；段2 `VfsCall::Exec`（types encode `(ps>>32)|ps` hi/lo ✓，decode 重建 u64 ✓）；段3 `VfsReply::Exec` newps_str u64 ✓；段4 PM `ExecServices::exec` 传 `ps.0` 全 u64 → 内核 `MessLsysKrnSysExec.ps_str: u64`（message.rs:1737）→ `dispatch_exec` `EntrySpec::loaded(.., ps_str)` 原样种 RBX。**六处 B43 全修，wire 无截断**。
+
+2. **VFS ENOENT 非路径查找错**：b44rd 探针确证 rd.fs=0x0a(MFS) 恒对、mounts=2 对；但 `fetch_name`（exec_worker.rs:529）`sys_datacopy` 从子进程地址空间读 path：请求 10 字节（"/bin/echo\0"）实得 6 字节（"/bin/e"+NUL）——**读回的数据被污染**，非 VFS 逻辑错。bn64 的 `-02` ENOENT 是该污染的下游症状。
+
+3. **B27 页表 walk TOCTOU 假设（side-thread 诊断二）= 证伪**。在 `walk_read`（arch/x86_64/paging.rs）4K 末级 + Huge1G + Huge2M **三个返回点全布 bit47 dump 探针**（b45walk），真机同轮（bn70）复现 corrupt `kdst copy pa=0x0000800005d94790`，但 **b45walk 一次未触发** → corrupt PA **不经 x86_64 页表 walk**。
+
+4. **真根因浮出（b45res 探针，vm.rs resolve_physical）**：corrupt PA 走 `AddressRef::Physical` 分支（`b45res phys=1`，in_b=pa=0x0000800005d80790）——调用方直接传入带 bit47 的伪物理地址。全内核唯一手算 Physical dst 站点 = **`dispatch_diagctl`（syscall.rs:3116）**：
+   ```rust
+   let stack_va = diagbuf.as_mut_ptr() as u64;         // 内核栈局部数组
+   let dst_phys = PhysBytes(kern_phys_base + (stack_va - kern_virt_base));  // image-segment identity 公式
+   let dst = AddressRef::Physical(dst_phys);
+   ```
+   `diagbuf` 是内核**栈**局部，不在 `[kern_virt_base, +kern_size)` 的 image 段内 → `stack_va - kern_virt_base` 越界/下溢得 bit47 伪 PA。与 §1.51/F10c「内核栈 VA 经错误转换得伪 PA → 野写」完全同源（syscall.rs:1277 / mcontext 两处已改 `AddressRef::Process`），**此站漏网**。SYSCALL 不切页表 → caller CR3 同时映射内核栈，修法同款：`dst = AddressRef::Process { endpoint: caller_endpt, offset: VirBytes(stack_va) }`，让 resolve_physical 走真实页表解正确 PA。
+
+**Heisenbug 判别（关键）**：回滚全部 b44/b45 探针、干净重建（clean1.log，仅剩既有已提交探针）**仍复现** `kdst copy pa=0x00008...` + 新签名 `trap vector 0x0e`（内核 #PF）rip=0x5c407b8 rsp 递减死循环（栈逐页 fault）。→ **B27 是真实既存缺陷，非纯探针自污染**；`dispatch_diagctl` bit47 Physical 是确凿贡献者之一（sys_diagctl_write 被广泛诊断/printf 路径调用），但 clean1 的 vector-14 栈 fault 环提示**可能还有第二条腿**（PF handler 内自身递归缺页 / 栈页未映射），须下轮分离。
+
+**下一单元配方（B45 修复）**：
+- 改 `dispatch_diagctl`（syscall.rs:3108-3134）dst 为 `AddressRef::Process{caller_endpt, stack_va}`（对齐 F10c 三处先例），删手算 identity 与 debug_assert；
+- 真机跑验证 corrupt `kdst copy pa=0x00008` 是否归零；
+- 若 clean 的 `vector 0x0e` 栈 fault 环仍在 → 转查 trap_dispatch PF handler 递归（另一前沿）；
+- 全绿后三件套（types309/pm418/vfs537 基线只增 + nightly fmt 零漂移 + 双真机签名一致）+ CodeReview + commit + 验 rc marker。
+
+本单元纯取证 + 根因定位（探针 bn64-bn71/clean1，全部回滚），工作树净（HEAD 不变）。rc marker 仍未达，frontier 由「B44 VFS ENOENT」重定向为「B27/B45 dispatch_diagctl bit47 伪物理地址野写」。
+
 
