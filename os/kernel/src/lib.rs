@@ -2526,39 +2526,23 @@ pub fn boot_init_timer() {
             minix_plat::IrqPolicy::REENABLE,
         )
         .expect("register clock IRQ hook: no free slots in IRQ_MANAGER");
-    // NK4-C 1.10c 逐环仪器化（task1-close 裁决删除）：register_hook 后
-    // 回读 IOAPIC pin2 RTE——ISA IRQ0 经 pin2 进（vector 0x50，bit16=mask
-    // 应已由 first-handler unmask 清除）。mask 位仍 1 ⇒ unmask 断链。
-    #[cfg(not(feature = "mock"))]
-    {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-        let rte = minix_plat::ioapic_rte_read(2);
-        Console::write_str("nk4a: rte pin2=0x");
-        Console::write_hex(rte);
-        Console::write_str("
-");
-    }
     // (c) — gates last, handler already registered (see the Step 6 header
     // for the per-architecture semantics of this call).
     <CurrentTimerIrqGate as TimerIrqGate>::enable_timer_irq();
 
-    // NK4-C 1.10c 修复（timer bring-up 缺口，C i8259.c intr_init 对位）：
-    // 8259A PIC 此前从未初始化——固件遗留的向量基/mask 使 PIT 的 IRQ0
-    // 永远到不了 0x50 门（s14n：150s 全程 tick 臂 <1000 次调用）。重映射
-    // master→0x50 / slave→0x70 并只放行 IRQ0+级联线；init_timer 编程 PIT
-    // 后 tick 即流入。顺序：pic_init（重映射+mask）→ init_timer（PIT 计数
-    // 开始，IRQ0 已放行）。
+    // x86_64 timer bring-up 缺口修复（C i8259.c intr_init 对位）：8259A PIC
+    // 此前从未初始化——固件遗留的向量基/mask 使 PIT 的 IRQ0 永远到不了
+    // 0x50 门（s14n：150s 全程 tick 臂 <1000 次调用）。重映射 master→0x50 /
+    // slave→0x70 并只放行 IRQ0+级联线；init_timer 编程 PIT 后 tick 即流入。
+    // 顺序：pic_init（重映射+mask）→ init_timer（PIT 计数开始，IRQ0 已放行）。
+    //
+    // 仅 x86_64：aarch64/riscv64 无 8259 PIC——ARM generic timer 走 GIC PPI
+    // 30、riscv64 S-mode timer 是 CPU-local 中断（gated by sie.STIE，无 PLIC
+    // source），二者的时钟门控由上面 enable_timer_irq() 完成，无需 PIC 重映射
+    // （ground truth：minix3 i8259.c 属 arch/i386；per-arch TIMER_IRQ 语义见
+    // plat/src/lib.rs:60-69）。
+    #[cfg(target_arch = "x86_64")]
     minix_plat::pic_init();
-    #[cfg(not(feature = "mock"))]
-    {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-        let (m_imr, s_imr) = minix_plat::pic_imr_read();
-        Console::write_str("nk4a: pic-imr m=0x");
-        Console::write_hex(m_imr as u64);
-        Console::write_str(" s=0x");
-        Console::write_hex(s_imr as u64);
-        Console::write_str("\n");
-    }
 }
 
 
