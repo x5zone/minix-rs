@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r9-fix 诊断翻案（§1.98）：side-thread 报告(基于过期§1.50前沿)的两条建议(BKL死锁/B27 VMINHIBIT)已在§1.51-52闭环。本轮重新 scoping：发现 C boot dmap 机制＝VFS 自身 init 时 sys_safecopyfrom(RS, rproctab_gid) 读 RS 表并 map_driver()——此路径 Rust 已完整接线(`map_boot_services` main_loop.rs:611-700)。§1.97r 把 mapdriver 加在 RS publish 闭包是错的。真根因经探针实干＝`open("/dev/console")` 返回 ENXIO(errno6)——非 TIOCSCTTY 阻断而是 dmap[4].driver==None(查 dmap 时驱动端点缺失)。VFS TIOCSCTTY 本地拦截(§1.98 fix)仍保留(对 C parity)。下轮方向＝排查 `map_boot_services` 是否实际被调用+pub_wire 内容是否正确(RS step0 grant 时序问题：grant 在 sync_pub_wire 之前创建、Vec 可能被重分配导致指针失效)。** 历史链：…→§1.96 r8→§1.97 r9 scoping→§1.97r r9-fix attempt1(publish路径错)→§1.98 翻案+TIOCSCTTY fix+探针诊断。rc marker 三条终目标仍未达，goal 保持 active。**
+> **⚠ 最新前沿＝§1.99 真根因修复（console open 腿已通）：§1.98「dmap[4] 未填 / grant Vec 指针时效性」两大前提被本轮真机探针逐条证伪——grant ptr==postsync ptr（不 realloc）、safecopy 数据完美（dev4_mask=0040 第6行 TTY dev_nr=4 正解）、dmap[4] 实际已映射（char-open 探针 row4=1）。真根因翻案＝char open 时 `node.dev` 的 major=0（不是4）：`mfs/server.rs::lookup_child` 构造 `FileNode::new(...)` 把 device 硬编码为 `0`，丢掉了 C `path.c:37 fn_dev=(dev_t)rip->i_zone[0]` 应带出的特殊设备号（`/dev/console` 的 `zones[0]=0x400`=major4 minor0）→ VFS `get_by_major(dmap,0)` 找不到 TTY 驱动 → ENXIO。修复：`0`→`child.zones[0]`（CodeReview 0 P0/0 P1）+ 回归测 `assert_eq(node.device,0x400)`。真机验证：char-open 探针翻成 `op 04x11m`→major=04、驱动命中、open 不再 ENXIO。三件套绿（mock 178/0fail、rustfmt 我的 server.rs 零新增漂移、镜像重建+两次真机语义签名一致 `1998df6c`）+探针全回滚。⚠ rc marker 仍未打出：open 之后 boot 停在 `pick->4` 调度空转、且 committed `nk4a:` 每上下文切换探针刷屏（~460行/秒）淹没串口——下轮＝清 boot 关键路径上的 committed nk4a 噪声探针 + 追 runcom→读/etc/rc→fork/exec echo 下游。历史链：…→§1.97r→§1.98 翻案(dmap误判)→§1.99 真根因(mfs lookup device=0)修复+open 通。rc marker 三条终目标仍未达，goal 保持 active。**
 >
 > **（历史·§1.95）⚠ r7b 闭环：premature-OOM + VM 栈 runway 两大前置全清——`VM_STACK_SIZE` 64KiB→256KiB + `MAX_BIG_BLOCKS`=GLOBAL_POOL_PAGES=1024 + §1.60 assert 退役；真机首次 OOM-RT=0·panic=0·46931行达Runcom+exec sh。新前沿 r8=wrong user pointer（§1.96 已修）。**
 >
@@ -4185,4 +4185,55 @@ sys.grant_read(ANY, wire.as_ptr(), wire.len())
 - 真机：release 镜像 bn98=262709 行，panic=0，达 sh exec，rc marker 仍 0（ENXIO 未消）
 
 **rc marker 三条终目标仍未达；frontier 翻案精确定位=dmap[4] 运行时未填（grant Vec 指针时效性嫌疑）；goal 保持 active。**
+
+---
+
+## §1.99 · r9fix-next 真机探针决定性翻案 + 真根因修复（mfs lookup 设备号硬编码 0）
+
+### 探针取证（全部 `#[cfg(not(feature="mock"))]`，本轮末已 `git checkout HEAD` 全回滚）
+
+按 §1.98 下轮配方逐环打无堆 diagctl 探针（含一次自坑：探针 `copy_from_slice` 长度算错静默 panic，一度误判「函数被调用但探针不打」，修正缓冲区布局后信号干净），单核 `-smp 1 -m 512M` 真机跑，得到**逐条推翻 §1.98 前提**的实锤：
+
+1. **grant Vec 指针时效性 = 证伪**：RS `rs-rswire` grant 创建时 `wire.as_ptr()` 与 `sync_pub_wire()` 后 `pub_wire.as_ptr()` **完全相等**（`ptr=2bf000`==`2bf000`）。`pub_wire` 是 `vec![RprocpubSnap::default(); NR_SYS_PROCS]` 固定容量、`sync_pub_wire` 只做索引赋值不 realloc → 逻辑上也不可能失效。
+2. **safecopy 数据完美**：VFS `map_boot_services` 探针 `nk4c: mbs 0c0fff0040010004` → 12 行 in_use、`inuse_mask=0fff`、**`dev4_mask=0040`（第 6 行 TTY dev_nr=4 正确解出）**、row0 in_use=1。decode 布局/字节序无偏差。
+3. **dmap[4] 实际已正确映射**：char-open 探针 `nk4c: op 00x01m` → `row4=1`（`get_by_major(dmap,4).is_some()==true`）。§1.98「dmap[4].driver 运行时仍为 None」是**误判**。
+4. **真阻断现形**：同一条 `nk4c: op` 探针显示 **major=00**（不是 4）。char open 用 `node.dev` 算 `major=((dev&0x000fff00)>>8)`，`node.dev` 的 major 是 **0** → `get_by_major(dmap,0)`→None→ENXIO。dmap[4] 填得再好也没用，因为查表键是 0。
+
+### 真根因（Ground Truth 优先链确诊）
+
+`node.dev` 源自 FS REQ_LOOKUP 回复的 device 字段。追链：VFS `decode_lookup_reply`(`request.rs:977 dev: rd8(off::DEVICE)`) ← FS `wire.rs:464 put8(lookup_reply_off::DEVICE, node.device)` ← **`mfs/server.rs:648 lookup_child` 构造 `FileNode::new(..., 0)` 把 device 硬编码为 0**。
+
+C ground truth：`minix3/minix/fs/mfs/path.c:37` `node->fn_dev = (dev_t) rip->i_zone[0];`（注释：对块/字符特殊文件存 inode 首 zone，普通文件也无害）。设备号在 `create_device`→`new_node` 时被钉进 `zones[0]`（`open.rs:202`）。proto `console c--600 0 0 4 0` → `mkfs.rs:752 dev=(4<<8)|0=0x400` → `zones[0]=0x400`。Rust 侧 `lookup_child` 丢了这个值、恒报 0。
+
+### 修复（单条逻辑改动 + 回归锁定）
+
+`os/fs/mfs/src/server.rs::lookup_child`：`FileNode::new(...)` 第 6 参 `0` → **`child.zones[0]`**（对齐 C `fn_dev = i_zone[0]`）。附因果注释。
+
+回归测 `test_seeded_imgrd_resolve_path_dev_console`：该测原本只断言 char-mode、**没查设备号**——正是 bug 漏网处。补 `assert_eq!(node.device, 0x400)` 锁死特殊设备号（改前必挂、改后过）。
+
+真机验证：修复后同一条 char-open 探针翻成 `nk4c: op 04x11m` → **major=04**（正确）、this_map=1、row4=1 → 驱动命中、open 不再 ENXIO。
+
+### CodeReview（子代理）
+
+核心修复 **0 P0/0 P1**（逐条核对 `child.zones[0]` 是设备号存放位置、u64 类型、C parity、VFS 仅在 char/block 分支读 node.dev）。两条登记为后续前沿：
+- **P1（同类潜伏）**：`os/servers/vfs/src/path.rs::advance()`（L506）仍把特殊设备号 `details.dev` 写进 `v.dev`、`v.sdev` 恒 0——与 `intern_vnode` 已修的同型错误。当前 `advance`/`eat_path` 唯一非测试调用方是 `exec_worker.rs:668`（可执行文件路径、不穿设备节点），**不在 boot console 腿上、不阻本轮**，但是潜伏同类 bug（修需给 `advance` 补 mount_dev 入参，回归半径独立）。
+- **P2**：回归测可再覆盖块设备行 + 有数据块普通文件的 `zones[0]`（当前仅字符设备 minor=0）。
+
+### 三件套
+
+- **mock**：`minix-fs-mfs` 178 passed / 0 fail（含新 `assert_eq(node.device,0x400)`，基线只增不减）。
+- **rustfmt**：`cargo +nightly fmt --check` 中 `server.rs` **不在 diff 列表**（我的改动零新增漂移；该 crate fsck/mkfs 等预存漂移非本次触碰、不并入本单元）。
+- **clippy**：`minix-fs-mfs` Finished、无新告警。
+- **镜像 + 两次真机签名**：`image --release` 重建 → 同镜像跑两次 `-smp 1`，语义里程碑一致（execs=22、达 init-state Runcom=1、real-boot 57 行）；归一化内存地址后两次 md5 **完全相同**（`1998df6c…`）。地址方差为 UEFI memmap 环境非确定性、非本次改动引入。
+- 探针：`git checkout HEAD` 全回滚，工作树仅 `os/fs/mfs/src/server.rs`。
+
+### 下轮方向（r9fix-next2）
+
+**console open 已通（major=04、驱动命中），但 rc marker 仍未在 60-175s 真机窗口内打出**。open 之后 boot 停在 `pick->4` 的调度空转、`nk4a:` 每上下文切换探针刷屏（~460 行/秒、34k 行/60s）严重拖慢 guest 且淹没 marker 输出。下一前沿候选：
+1. **清理 boot 关键路径上的 committed `nk4a:` 每切换探针**（sa0/sa1/gs2/probe text|stk|dm/pick/cr3-done/pre-restore 族，散在 `os/kernel/src/{lib,trap_dispatch,ipc,syscall}.rs`）——它们违反「committed 码内不得留探针」、且正在 DoS 掉串口使 rc marker 不可见。属跨会话历史遗留、独立评估回归半径后清。
+2. 若清噪后仍不出 marker：追 runcom 打开 console 之后的**读 `/etc/rc` + fork/exec `echo`** 下游命令面（回到 §1.89 的 echo exec 线）。
+3. 顺带收 P1（`advance` v.dev/v.sdev 同类）。
+
+**rc marker 三条终目标仍未达（open 腿本轮实修，串口可见性受 committed 探针噪声阻）；goal 保持 active。**
+
 

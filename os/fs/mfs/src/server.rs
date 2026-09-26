@@ -645,13 +645,19 @@ impl<S: BlockSource> FsDriver for MfsServer<S> {
             .get(parts.cache, parts.device, found as u64, &parts.io)
             .map_err(|_| Errno::from_i32(ENOENT))?;
         let child = parts.inodes.slot(child_slot);
+        // C `fs_lookup`（path.c:37）把 `fn_dev = (dev_t) rip->i_zone[0]` 无条件
+        // 带出——设备号对块/字符特殊文件存在 inode 首 zone（`create_device` →
+        // `new_node` 把 dev 钉进 `zones[0]`），普通文件的 `i_zone[0]` 只是首数据
+        // 块、VFS 不会拿它当设备号路由，所以 C 注释说"always set 也无害"。先前
+        // 这里硬编码 0，使 `/dev/console` 的 `v_sdev` 退化成 major 0 →
+        // `cdev_get` 在 dmap 里找不到驱动 → `open` 回 ENXIO。
         let node = FileNode::new(
             child.number,
             child.mode as u32,
             child.size,
             child.owner as u32,
             child.group as u32,
-            0,
+            child.zones[0],
         );
         let mount_point = child.mountpoint;
         Ok((node, mount_point))
@@ -1715,6 +1721,16 @@ mod tests {
                     node.mode & 0o170000 == 0o020000,
                     "console should be char device, got mode {:o}",
                     node.mode
+                );
+                // 回归锁定（§1.99）：字符设备节点的 `fn_dev` 必须是存在 inode
+                // 首 zone 的特殊设备号——proto `console c--600 0 0 4 0` → major 4
+                // minor 0 → `(4 << 8) | 0` = 0x400（`mkfs.rs`）。C `fs_lookup`
+                // path.c:37 无条件带出 `i_zone[0]`；先前 `lookup_child` 硬编码
+                // device=0 使 VFS `cdev_get` 按 major 0 找不到 TTY 驱动 →
+                // `open("/dev/console")` 回 ENXIO。这里必须见到 0x400。
+                assert_eq!(
+                    node.device, 0x400,
+                    "console special dev should be major<<8|minor = 0x400"
                 );
             }
             other => panic!("expected Found, got {:?}", other),
