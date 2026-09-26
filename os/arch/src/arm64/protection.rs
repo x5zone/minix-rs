@@ -25,10 +25,10 @@
 //!
 //! | OS concern (trait method) | ARM64 mechanism (this file's impl) |
 //! |---------------------------|--------------------------------------|
-//! | `init` (establish protection) | `msr SP_EL1, ...` (kernel stack) — must save/restore SP because SPSel=1 makes SP_EL1 the active SP |
-//! | `set_kernel_stack` (switch kernel stack) | Same `msr SP_EL1, ...` with save/restore dance |
+//! | `init` (establish protection) | no-op under the EL1h model — `SPSel=1` makes `SP_EL1` the *active* stack pointer, which the higher-half `jump_to_kmain` already loaded with `mov sp, kern_stack_top`; a banked `msr SP_EL1, ...` is architecturally UNDEFINED at `SPSel=1` and traps |
+//! | `set_kernel_stack` (switch kernel stack) | no-op under EL1h — the active SP is the exception stack, so relocating it from a returning Rust fn would orphan the caller frame; the switch is owned by the vector-entry trampoline (`trap_stub`) |
 //! | `load` (make protection effective) | `isb` (instruction synchronization barrier) — no separate load needed since SP_EL1 is active immediately |
-//! | `init_ap` (AP startup) | Same `msr SP_EL1, ...` + `isb` to ensure visibility on the new AP |
+//! | `init_ap` (AP startup) | no-op under EL1h — each AP's stack is established by its own early-entry assembly before reaching Rust |
 //!
 //! # Why ARM64 has no GDT/TSS
 //!
@@ -95,50 +95,42 @@ impl ProtectionArch for AArch64Protection {
     }
 
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // SAFETY: MSR write to SP_EL1 is safe because:
-        // - We are executing at EL1 (kernel mode), required for MSR access.
-        // - SP_EL1 is the dedicated register for EL1 stack pointer,
-        //   used automatically on exception entry from EL0.
-        // - kernel_stack_top is a valid kernel virtual address.
-        //
-        // CRITICAL: When SPSel=1 (the default), SP_EL1 IS the current stack
-        // pointer. Writing to SP_EL1 changes the active SP immediately.
-        // We must save the old SP, write the new value, then restore SP
-        // to avoid corrupting the caller's stack frame.
-        unsafe {
-            asm!(
-                "mov {tmp}, sp",          // save current SP
-                "msr SP_EL1, {newval}",   // write new SP_EL1 (also changes current SP!)
-                "mov sp, {tmp}",          // restore current SP from saved value
-                tmp = out(reg) _,
-                newval = in(reg) kernel_stack_top.get(),
-                options(nostack, preserves_flags),
-            );
-        }
-
+        // EL1h model (`SPSel=1`): `SP_EL1` *is* the active stack pointer, so
+        // it is not bank-accessible via `msr SP_EL1, Xt` — ARMv8 D1.5 declares
+        // that encoding UNDEFINED when `SPSel=1`, and executing it raises a
+        // synchronous exception (this is exactly the boot trap that pinned
+        // NK4-C §1.109). The kernel stack the exception entry will use is
+        // therefore the running SP, which the higher-half transition already
+        // established with `mov sp, kern_stack_top`
+        // (kernel/src/arch/aarch64/higher_half.rs). There is nothing to
+        // program here: `kernel_stack_top` is reference-only (it equals the
+        // live SP).
+        let _ = kernel_stack_top;
         Self { cpu_count: cpu_id + 1 }
     }
 
     fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
-        // SAFETY: Same as init() — SP_EL1 write at EL1 with valid address.
-        // Must save/restore SP to avoid stack corruption (see init() comment).
-        unsafe {
-            asm!(
-                "mov {tmp}, sp",
-                "msr SP_EL1, {newval}",
-                "mov sp, {tmp}",
-                tmp = out(reg) _,
-                newval = in(reg) stack_top.get(),
-                options(nostack, preserves_flags),
-            );
-        }
+        // EL1h model: the kernel's exception stack *is* the active SP, so a
+        // per-context stack switch cannot be performed by relocating SP from
+        // a returning Rust function — `mov sp, ...` here would orphan the
+        // caller frame (the function epilogue would pop x29/x30 from the new
+        // stack). The outgoing SP is saved by the switch trampoline and the
+        // incoming task's SP is reloaded in the vector entry path
+        // (`arm64/trap_stub.rs` frames on the EL1 entry stack), which is the
+        // sole owner of the EL1h stack switch. This trait method is therefore
+        // a documented no-op on AArch64; `stack_top` is accepted for trait
+        // shape parity with x86 (where it writes TSS.sp0, pure data).
+        let _ = stack_top;
     }
 
     fn load(&self) {
         // On ARM64, VBAR_EL1 is set by TrapEntryArch::load() after
-        // the exception vector table is initialized. SP_EL1 is already
-        // set by init(). There is no separate "load" operation needed
-        // for protection structures on ARM64.
+        // the exception vector table is initialized. The kernel's active
+        // stack (SP_EL1 under EL1h) is established by the higher-half
+        // transition (`mov sp, kern_stack_top` in
+        // kernel/src/arch/aarch64/higher_half.rs), not by ProtectionArch::init.
+        // There is no separate "load" operation needed for protection
+        // structures on ARM64.
         //
         // SAFETY: ISB is always safe — it is an instruction synchronization
         // barrier that ensures previous system register writes are visible.
@@ -148,20 +140,13 @@ impl ProtectionArch for AArch64Protection {
     }
 
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        // SAFETY: Same as init() — SP_EL1 write at EL1 with valid address.
-        // Must save/restore SP to avoid stack corruption (see init() comment).
-        // ISB ensures the write is visible before returning.
-        unsafe {
-            asm!(
-                "mov {tmp}, sp",
-                "msr SP_EL1, {newval}",
-                "mov sp, {tmp}",
-                "isb",
-                tmp = out(reg) _,
-                newval = in(reg) kernel_stack_top.get(),
-                options(nostack, preserves_flags),
-            );
-        }
+        // EL1h model (see `set_kernel_stack`): each AP's kernel stack is
+        // established by its own early-entry assembly before it reaches Rust,
+        // so relocating SP from this returning method would corrupt the AP's
+        // caller frame. No-op here; the per-CPU stack is owned by the AP entry
+        // trampoline. `kernel_stack_top`/`cpu_id` accepted for trait-shape
+        // parity with x86 (per-CPU TSS/GS programming).
+        let _ = kernel_stack_top;
         let _ = cpu_id;
     }
 }
@@ -192,10 +177,10 @@ mod tests {
 
     #[test]
     fn protection_has_cpu_count() {
-        // AArch64Protection only tracks cpu_count; SP_EL1 is a hardware register.
-        // We can verify the struct exists and init() returns a valid instance
-        // (but cannot call init() in unit tests because it uses msr SP_EL1).
-        // Instead, verify the type can be constructed manually.
+        // AArch64Protection only tracks cpu_count; the exception stack is the
+        // active SP_EL1 (a hardware register, no per-instance table). init()
+        // is a no-op under the EL1h model and this module is aarch64-only, so
+        // the host unit test just verifies the struct can be constructed.
         let prot = AArch64Protection { cpu_count: 1 };
         assert_eq!(prot.cpu_count, 1);
     }

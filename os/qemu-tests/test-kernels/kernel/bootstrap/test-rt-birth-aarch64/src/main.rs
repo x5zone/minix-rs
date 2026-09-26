@@ -546,13 +546,16 @@ fn main() -> Status {
     // 3. Protection + trap entry.
     //
     // DEVIATION from the x86/riscv64 siblings (platform constraint, live
-    // probed): the production `init_protection` drives
-    // `AArch64Protection::init`, whose body is a single `msr SP_EL1`
+    // probed): the earlier production `init_protection` drove
+    // `AArch64Protection::init`, whose body then was a single `msr SP_EL1`
     // write. On AAVMF that instruction takes a Synchronous Exception from
     // the firmware's EL1 context — the UEFI firmware owns SP_EL1 (it runs
     // with SPSel=1 on its own EL1 stack) and the write is rejected; the
     // probe bracketing pinned the fault to exactly that instruction
-    // (fault PC == the `msr`, no output between the two markers).
+    // (fault PC == the `msr`, no output between the two markers). This is
+    // the same root cause fixed in the production tree (NK4-C §1.109):
+    // `AArch64Protection::init` is now a no-op under the EL1h model, since
+    // `msr SP_EL1` is architecturally UNDEFINED when SPSel=1.
     //
     // The carrier therefore skips the production call and performs the
     // one thing the trap leg actually needs: install its own vector
