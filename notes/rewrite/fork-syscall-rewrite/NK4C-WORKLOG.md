@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝B48 fork 子堆页绑到内容陈旧的异物理帧＝rc marker 真阻断（§1.87 单核 diagctl 三点探针决定性翻案·精化 §1.86·纯取证无改码）。** 同一 command[0] VA（supSk base=0x220000 堆页·ptr 父子相同）父 pre-fork/parent-post 均读到 `6563686f`（"echo"）17/17、子读到 `65353335`（"e535"）17/17，且**父 fork 返回后仍干净** ⇒ 父子把同 VA 映射到**不同物理帧**（排除第三方野写共享帧、排除 memcpy 单字节腐蚀）；子帧持非零陈旧残留 ⇒ fork 给子堆页绑了未按父正确 populate 的复用帧（B22/B38 家族）。**下单元＝r4d 帧绑定取证**：VM `write_page_table_mappings`（`vmproc_handle.rs:529`）对堆页 region 打印父 slot pfn vs 子 slot pfn + 子 `pt.map` 后 query 解出 paddr + DM 读帧字节，判「子 slot pfn≠父（`fork_region` 未生效）」vs「同 pfn 但读回异（pt.map/回收复用 bug）」。（§1.86 旧「单字节 0x63→0x00」刻画已被 §1.87 证伪修正：实为整帧内容≠父、非单字节 0x00。）以下 §1.86 原文保留为历史。
+> **⚠ 最新前沿＝B48 根因确诊＝fork 缺父侧 COW 写保护（父共享帧 PTE 未降级为只读→父 fork 后写直接漏进子视图）＝rc marker 真阻断（§1.88 VM 双探针 bn83 实锤 pfn 相等＋C ground truth 对质·纯取证无改码）。** 上一轮 §1.87 猜「子页绑到内容陈旧的异帧」已被 §1.88 推翻：VM 探针实打实显示 `fork-heap` 对堆页 0x220000 **每周期 parent_pfn == child_pfn**⇒ `fork_region`/`write_page_table_mappings` 正确共享、绑帧无误。既然同 VA→同 pfn→同帧而子读到异字节，只能是共享帧在 fork 后被父写改。读码＋设计文档对质坐实：`vm-region-management.md` L963 明写 C fork 后「页表: 只读（两个进程都是）」，而 Rust `do_fork` 只对子跑 `setup_cow_for_all_regions`+`child.write_page_table_mappings`，**从不降级父页表的共享帧 PTE 可写位**（`fork_region` L144 只作用子 dst）⇒ 父持可写 PTE 直指共享帧、父后续复用堆缓冲的写永不触发父侧 COW、直接漏进子。**非 [ARCH] 外部契约变更（内部 COW 语义未对齐 C）。下单元＝r5 修复**：`do_fork` 建完子页表后对父页表本次共享（refcount>1）页 PTE 清可写位+刷父 TLB（与子对称），补 mock 回归测（父共享页不可写+父写触发 COW）+三件套+单核真机验 rc marker 首现。（历史链：§1.86 单字节腐蚀→§1.87 绑异帧→§1.88 确诊父侧写保护缺失。）以下 §1.87/§1.86 原文保留为历史。
+>
+> **⚠（历史·§1.87·其「子页绑异帧」假设已被 §1.88 推翻）最新前沿＝B48 fork 子堆页绑到内容陈旧的异物理帧＝rc marker 真阻断（§1.87 单核 diagctl 三点探针决定性翻案·精化 §1.86·纯取证无改码）。** 同一 command[0] VA（supSk base=0x220000 堆页·ptr 父子相同）父 pre-fork/parent-post 均读到 `6563686f`（"echo"）17/17、子读到 `65353335`（"e535"）17/17，且**父 fork 返回后仍干净** ⇒ 父子把同 VA 映射到**不同物理帧**（排除第三方野写共享帧、排除 memcpy 单字节腐蚀）；子帧持非零陈旧残留 ⇒ fork 给子堆页绑了未按父正确 populate 的复用帧（B22/B38 家族）。**下单元＝r4d 帧绑定取证**：VM `write_page_table_mappings`（`vmproc_handle.rs:529`）对堆页 region 打印父 slot pfn vs 子 slot pfn + 子 `pt.map` 后 query 解出 paddr + DM 读帧字节，判「子 slot pfn≠父（`fork_region` 未生效）」vs「同 pfn 但读回异（pt.map/回收复用 bug）」。（§1.86 旧「单字节 0x63→0x00」刻画已被 §1.87 证伪修正：实为整帧内容≠父、非单字节 0x00。）以下 §1.86 原文保留为历史。
 >
 > **（历史·§1.86·其「单字节腐蚀」刻画已被 §1.87 修正）** B48 fork 子进程用户页拷贝单字节确定性腐蚀＝rc marker 真阻断（§1.86 单核 diagctl 探针实锤·纯取证无改码）。 单核 `-smp 1` 已解耦 B27（§1.85：SMP-only 早期竞态、单核 0 panic/115k 行），命令面暴露真根因：init `Runcom↔SingleUser` 循环、`/bin/sh` 入口 `0x20ef60` 反复进、`/bin/echo` 入口 `0x206b20` 零出现（kernel 硬证 echo 从未 exec）。逐层排除（镜像 `/bin/echo` 真 ELF 已播种 ✅、`/etc/rc` 末行 `echo` 干净 ASCII ✅、shell lexer/expand 对 "echo" host 单测正确 ✅）后，diagctl 通道探针（bn80）坐实：`parent-cmd-w0 addr=221040 hex=6563686f`（父"echo"对）vs `post-fork-w0 addr=221040 hex=6500686f`（子同 VA byte[1] 0x63→0x00），每轮完全一致。⇒ **fork 给用户堆页拷贝时单字节被写成 0x00（非用户态逻辑、唯内核 fork/birth 拷贝路径可解释）**，sh 据腐蚀程序名搜 PATH 全 ENOENT→子 exit127→静默 SingleUser→循环。**下单元＝B48 取证**：定位 fork 子页拷贝腿（`vm.rs cross_space_copy`/`write_page_table_mappings`/`do_newimage`），源父页 vs 目标子页逐 8 字节 diff（syscall 上下文可安全读、严禁缺页 handler 内 walk），单核手敲取净信号，补多页字节完整性 mock 回归测。旁证：`supSk base=0x221000` 区、腐蚀总在 index-1。次级待查：常规用户 fd→console→串口路径疑不通（marker/`sh:` 零输出经 dup2 仍不达，唯 diagctl 落串口）。**（历史·B27 第二腿 vector-14 #PF panic＝SMP-only，B45 §1.83 已修 bit47 野写、B46 §1.84 已修 stacktrace 二次故障、单核 §1.85 已解耦，非命令面阻断。）**
 >
@@ -3808,5 +3810,24 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 - 修好后单核 `-smp 1` 验 parent-post==child==echo → echo exec 成功 → rc marker 应出。
 
 **旁证·待清理登记**：cow_exec_pf.rs 仍留有历史「NK4-C 第 20/32 轮取证探针（task1-close 裁决删除）」（handle_pagefault ep2 缺页 dump、sync_slot_pte pte-wb 写回读），均 `#[cfg(not(test))]` 在 target build 活跃、耗 AtomicUsize 额度且上串口噪声。属已 commit 的历史遗留（非本轮所加），另立清理单元，勿与 B48 混改。**三件套**：本单元纯取证（VM/sh 探针均 git checkout 回滚＝工作树净）。**rc marker 仍未达；frontier 精化：B48 从「fork 用户页单字节拷贝腐蚀」翻案为「fork 子堆页绑到内容陈旧的异物理帧（整帧错绑/漏拷，B22/B38 家族）」。**
+
+### 1.88 【根因确诊】B48＝fork 缺父侧 COW 写保护（父共享帧 PTE 未降级为只读，父 fork 后写直接漏进子视图）（VM 双探针 bn83 实锤 pfn 相等＋C ground truth 对质·无改码·工作树净）
+
+承 §1.87 r4d。在 VM 两侧加探针（均已 `git checkout` 回滚），单核 `-smp 1` 跑 bn83。
+
+**探针实锤**（`os/servers/vm/src/fork.rs` do_fork + `vmproc/vmproc_handle.rs` write_page_table_mappings）：
+- `fork-heap`：对堆页 0x220000 打印父/子 region 该 slot 的 pfn——**每一周期 `parent_pfn == child_pfn`**（105924/104238/101843/…），⇒ `fork_region`+`write_page_table_mappings` **正确把子堆页绑到父的同一帧**（共享无误）。**推翻 §1.87「绑到异帧」假设**——绑帧是对的。
+- `child-map`：子页表项 pfn 与父一致（本 build 无 sh 探针、堆布局移位，读 +0x28 得无关堆字节，但证实子 PTE pfn==父）。
+
+**机制闭环**：既然同 VA → 同 pfn → 同一物理帧，子读到与父不同的字节只可能是——**该共享帧在 fork 后被父写改**（子探针时已晚）。而 `do_fork` 全程只对**子**跑 `setup_cow_for_all_regions`（`vmproc_handle.rs:512`，将子页标 COW）+ `child.write_page_table_mappings`（子 PTE 因 `is_page_writable` 对 refcount==2 返 false 而建为只读），**从不降级父已运行页表里那些共享帧 PTE 的可写位**（`fork_region` L144 `dst.set_writable(false)` 只作用于子 dst region）。⇒ 父保留可写 PTE 直指共享帧，父 fork 后继续 shell 循环、释放/复用 command 堆缓冲时**直接写入共享帧、永不触发父侧 COW**，子（尚未被调度、持同一帧）读到父的新/部分写内容。完美解释全部证据：同 VA 同 pfn、父探针时（fork 刚返回、尚未复用）= "echo"、子稍后被调度时 = "e535"（父下一轮复用同缓冲写的残留）。单核调度下父先跑完一轮再切子，时序吻合。
+
+**C ground truth 对质（实锤）**：设计文档 `notes/study/vm/vm-region-management.md` COW 状态转换图（L963）明写：状态 2 fork 后共享 `phys_block refcount:2 / 页表: 只读（两个进程都是）`；状态 3「进程 A 写入时」才 COW 拿私有帧。即 **C 在 fork 时把父、子双方 PTE 都置只读**。本仓 Rust `do_fork` 只保护了子、漏了父 ⇒ **内部 COW 语义未对齐 C 的正确性 bug**（非外部契约/[ARCH] 变更，无需用户裁决）。
+
+**下单元＝r5 修复**（frontier 收敛到具体改码）：
+- 在 `do_fork` 建完子页表后，对**父**的页表中本次被共享（refcount>1）的页 PTE 清除可写位（降级为只读），并刷父 TLB 对应页——使父下次写触发父侧 COW（与子对称）。需先读码确认：(a) 写页表 API（`PageTable` 的 update_flags/remap）对父 root 的可用腿；(b) TLB 失效腿（父为当前阻塞的 fork 发起者，VM 代其处理时父不在跑，修改其页表安全）；(c) `setup_cow_for_all_regions` 是否应同时作用于父（而非仅子）。
+- 对齐 C `map_copy` 双侧只读语义；补 mock 回归测（断 fork 后父共享页 PTE 不可写 + 父写触发 COW 得私有帧）。
+- 三件套：docker/mock 基线只增不减 / nightly rustfmt 零新增漂移 / 镜像重建 + 单核真机验 parent-post==child=="echo" → echo exec 成功 → **rc marker 首现** + CodeReview + WORKLOG §1.89 + commit。
+
+**旁证·仍待查**：① 常规用户 fd→console→串口路径疑不通（影响终目标① marker 可观测性——若修好 exec 但 echo 的 stdout 不达串口，marker 仍不可见；需伴行验/或让 rc 腿兼走 diagctl）；② cow_exec_pf.rs 历史遗留探针（第 20/32 轮 task-close 裁决删除）另立清理单元。**三件套**：本单元纯取证（VM 双探针均 git checkout 回滚＝工作树净，仅改 WORKLOG）。**rc marker 仍未达；frontier 从「B48 子页绑异帧（假设）」确诊为「B48 fork 缺父侧 COW 写保护」，r5＝实现父侧只读降级修复。**
 
 
