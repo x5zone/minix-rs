@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝§1.104 VFS 全链路洗清、阻塞点转移到 TTY 驱动不应答 `CDEV_OPEN`**（接 §1.103 commit `49897aaeb`）：四张一次性 diagctl 串口探针（`handle_fs_reply` 的 slot/task/src 三分叉 + `flush_pending_fs` 的待发对话与结果 + `WorkerCont::Path` 续接分支 + `send_drv_for_slot` 驱动端点与同步 send 结果；全在 `servers/vfs/src/main_loop.rs`，用后 `git checkout` 全回滚、工作树净，无功能码变更）。单核稳定复现 exec=33/oom=0/panic=0/**marker=0**。**逐环结论**：①`handle_fs_reply` 4/4 全 `hfr000a0a`（task==src==MFS、decode 命中）⇒ **§1.102/§1.103 遗留的「reply 匹配/投递失败」假设彻底证伪**；②child(0x800c→slot12) 的 `open()` 发出 lookup（`fls000aO` Ok）→ MFS 回复（`vfmb010a`）→ `handle_fs_reply Ok` → `ptc00D`=**`WalkStep::Done` 走完遍历** → `PathFollow::Open` 相位 2 `finish_open_local`；③Char 分支解析出 **`dmap[4].driver=TTY(5)` 已接通（§1.98「None」假设经 §1.99 已解决）**；④`drv05O`=VFS→TTY 同步 `send(CDEV_OPEN)` **返回 Ok**（VFS 未卡在 send）；⑤此后**全系统静默**。**⇒ 真阻断钉死为「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复 VFS」**，内核 IPC / VFS↔MFS lookup / VFS 侧投递匹配全部排除。**下轮 §1.105** 追 TTY（`drivers/tty/tty/src/service.rs`+`main.rs`，ground truth `minix3/servers/rs232/`）：①TTY 根本没收到 `CDEV_OPEN`（查 TTY 是否进 receive、ep5 与 dmap[4].driver 一致性、getfrom 覆盖）；②TTY 收到却不走 Open 分派/回复错端点/卡在自身下游调用。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.102 定位 sendrec 回复腿(纯文档 `78b36d2a7`)→§1.103 推翻「回复未投递」锁 child 卡 VFS stat(纯文档 `49897aaeb`)→**§1.104 VFS 全链路洗清、阻塞转移到 TTY 不应答 `CDEV_OPEN`**。
+> **✅ 最新前沿＝§1.105 真根因修复：`CDEV_OPEN` 线路类型号写错致 TTY 收不到可解的请求、永不回复——x86_64 rc marker 真机首次出现**（接 §1.104 commit `1841af3d5`）：承 §1.104 钉死「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复」，本轮静态审查驱动运行时 `serve`→`TtyService::dispatch`→`minix_chardriver::classify` 定位根因——**`servers/vfs/src/cdev.rs::open_request` 用 `CdevRequest::Open as i32`（fieldless enum 判别值＝**索引 0**）作 `m_type`，而非 `.message_type()`（线路类型号＝base 0x400+索引＝**0x400**）**。VFS 发出的 `m_type=0` 到 TTY 侧 `CdevRequest::decode(0)`（`0-0x400`→`_=>None`）→ `classify` 归 `Route::Other` → dispatch `pending=None` → **不发任何回复** → VFS 卡 `WaitingForFs` 永等。C ground truth `cdev.c:195 dev_mess.m_type = op`（op=CDEV_OPEN=0x400）。**修复**：`cdev.rs:165` `Open as i32`→`Open.message_type()`；同族潜伏 bug `main_loop.rs:3284` `CdevRequest::Select as i32`（＝6，select 走 asynsend 一发不等，危害较小但同类错）一并→`.message_type()`（0x406）。**辨析**：`SdevRequest` 有显式 `#[repr(u32)]＝SDEV_RQ_BASE＋N`，其 `as i32` 本就正确，不改（`main_loop.rs:3286` else 分支保留）。**新增回归测试** `test_open_request_wire_type_is_cdev_open_not_index`（钉 `m_type==0x400`、驱动侧 `decode`→`Some(Open)`、payload 四域布局）——此 bug 类此前无测试覆盖。**CodeReview（PASSED，MUST/SHOULD/NIT 0）** 并复核 VFS/block 侧 `CdevRequest/BdevRequest as i32` 零漏网、sdev 25 处 `as i32` 全合法。**三件套全绿**：mock minix-vfs **538/0fail**（+1 新回归测试只增）·nightly rustfmt minix-vfs 漂移 **270＝基线 270** 零新增（我编辑区 cdev.rs:165/测试、main_loop.rs:3284 均无漂移）·镜像 `--release` 重建＋**两次单核真机签名一致：`minix-rs rc: minimal boot script marker` 出现（marker=1·oom=0·panic=0）**。**⇒ §1.97→§1.104 追了 8 轮的 console 设备链阻断彻底解决，x86_64 三终目标之一（rc marker）达成（单核）**。**未解**：`-smp 4`（xtask 默认多核）触发 VM 内核缺页 panic（`trap_dispatch.rs:981`），与本次 m_type 修复正交，属多核路径独立问题（下轮查）；18-stage 命令面（echo/ls/cat 真跑通）、aarch64/riscv64 两架构、minix3 tests 上机仍未达。**下轮 §1.106**：①单核 rc marker 已通→验 18-stage echo/ls/cat 是否随之跑通（读 rc 脚本实际执行到哪条）；②多核 VM 缺页 panic 独立取证；③aarch64/riscv64 同构检查。**历史链**：…→§1.103 推翻「回复未投递」锁 child 卡 VFS stat(`49897aaeb`)→§1.104 VFS 全链路洗清、阻塞转移到 TTY 不应答(`1841af3d5`)→**§1.105 真根因(m_type=as i32=0 非 message_type=0x400)修复，x86_64 rc marker 首次出现**。
+>
+> **（历史·§1.104 摘要，详文见文末）⚠ VFS 全链路洗清、阻塞点转移到 TTY 驱动不应答 `CDEV_OPEN`**（接 §1.103 commit `49897aaeb`）：四张一次性 diagctl 串口探针（`handle_fs_reply` 的 slot/task/src 三分叉 + `flush_pending_fs` 的待发对话与结果 + `WorkerCont::Path` 续接分支 + `send_drv_for_slot` 驱动端点与同步 send 结果；全在 `servers/vfs/src/main_loop.rs`，用后 `git checkout` 全回滚、工作树净，无功能码变更）。单核稳定复现 exec=33/oom=0/panic=0/**marker=0**。**逐环结论**：①`handle_fs_reply` 4/4 全 `hfr000a0a`（task==src==MFS、decode 命中）⇒ **「reply 匹配/投递失败」假设彻底证伪**；②child(0x800c→slot12) 的 `open()` 发出 lookup（`fls000aO` Ok）→ MFS 回复 → `handle_fs_reply Ok` → `ptc00D`=**`WalkStep::Done` 走完遍历** → `PathFollow::Open` 相位 2 `finish_open_local`；③Char 分支解析出 **`dmap[4].driver=TTY(5)` 已接通（§1.98「None」假设经 §1.99 已解决）**；④`drv05O`=VFS→TTY 同步 `send(CDEV_OPEN)` **返回 Ok**（VFS 未卡在 send）；⑤此后**全系统静默**。**⇒ 真阻断钉死为「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复 VFS」**，内核 IPC / VFS↔MFS lookup / VFS 侧投递匹配全部排除（§1.105 据此在 TTY dispatch 定位到 `m_type` 根因并修复）。
 >
 > **（历史·§1.103 摘要，详文见文末）⚠ 推翻 §1.102「回复未投递」假设、精确锁定 child 卡在 VFS `stat()`**（接 §1.102 commit `78b36d2a7`）：三张一次性窄作用域探针（`ipc.rs::send()` 入口分腿 + Path A 出口 `FILTER`/`DELIVERED` 判决 + `lib.rs::idle()` 终端等待图含 caller_q 与 `p_sendmsg.m_type`；用后全 `git checkout` 回滚、工作树净）。**结论一**：`FILTER`=0、`DELIVERED` 全成功——child(0x800c) 从 PM/VFS 实收 reply 且 Path A 直投唤醒，**§1.102「VFS→child reply 未投递」被推翻**，排除整类内核 IPC 投递/过滤/唤醒 bug。**结论二**（两次 idle 快照相同=稳态）：child(12) `rts=RECEIVING sto=1(VFS) gf=1(VFS)`、**`p_sendmsg.m_type=0x115=VFS_BASE(0x100)+21=VfsCallNum::Stat`**——**child 停在 `sendrec(VFS)` 接收半等自己发出的 `stat()` 的回复**；全体 server+MFS(10)+PFS(9) `RECEIVING` idle、caller_q 全 −1（无排队未 drain）。
 >
@@ -4461,3 +4463,54 @@ VFS 侧本轮被逐环证据**完全洗清**：路径遍历 → FS 往返 → �
 - 三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。历史链：…→§1.102 定位 sendrec 回复腿(纯文档 `78b36d2a7`)→§1.103 推翻「回复未投递」锁 child 卡 VFS stat(纯文档 `49897aaeb`)→**§1.104 VFS 全链路洗清、阻塞转移到 TTY 不应答 `CDEV_OPEN`（纯取证，四探针全回滚、工作树净）**。
 
 **本单元以逐环串口证据把真阻断从「VFS↔MFS REQ_LOOKUP 腿」推进并钉死为「child 的 console `open()` 卡在 VFS→TTY 的 `CDEV_OPEN` 回复腿」，同时证实 §1.98 的 dmap[4] 已修复、整类内核 IPC 与 VFS 侧投递/匹配 bug 全部排除；四张探针全回滚、工作树净，取得实质进展、非阻塞；goal 保持 active。**
+
+---
+
+## §1.105：真根因修复——`CDEV_OPEN` 线路类型号写成枚举索引、TTY 永不回复，x86_64 rc marker 真机首次出现（含逻辑码，接 §1.104 `1841af3d5`）
+
+### 起手：先修 commit hygiene（上一轮遗留）
+
+上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（pathspec 形式仅提交 WORKLOG），使 7 个非本 agent 文件退回预暂存 A 状态、不进入本 agent 提交。新提交 `1841af3d5`（1 file changed, 41 insertions(+), 1 deletion(-)）。
+
+### 静态定位根因（不靠探针，直接读代码）
+
+承 §1.104 钉死「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复」，本轮从 TTY 的接收-分派-回复链静态审查：
+
+1. **驱动运行时主循环** `os/libs/minix-driver-rt/src/runtime.rs::serve`：`announce` → `run_birth`（RS 出生握手）→ `loop { receive(&mut msg); handler.handle(&mut transport, &msg) }`。
+2. **TTY handler** `os/drivers/tty/tty/src/service.rs::dispatch`：`classify(notification, notify, msg.m_type, minor, &opened)` → `Route::Request(req)` 才 `handle_request` 出回复；`Route::Stale | Route::Other` → `pending=None` → **不发任何回复**。
+3. **分类核** `os/libs/minix-chardriver/src/driver.rs::classify`：非通知、非 BLOCK_OPEN 时，先 `CdevRequest::decode(message_type)`；解不出（`None`）即返回 `Route::Other`。
+4. **协议** `protocol.rs`：`CdevRequest` 是 **fieldless enum 无显式判别值**（`Open, Close, ..., Select` → 判别值 0..6）；线路类型号是 `message_type() = CDEV_REQUEST_BASE(0x400) + index`；`decode(t)` 靠 `t - 0x400` 匹配 0..6，`is_char_request(t)` 判 `(t & !0x7f) == 0x400`。
+
+**VFS 侧的错**：`os/servers/vfs/src/cdev.rs::open_request`（L165）用 `CdevRequest::Open as i32` 作 `m_type`——因 `CdevRequest::Open` 判别值是 **索引 0**，`as i32` 得 **0**（不是 0x400）。VFS 发出的 `CDEV_OPEN` 消息 `m_type=0` 到 TTY：`decode(0)` → `0-0x400` 落 `_ => None` → `classify` 归 `Route::Other` → dispatch `pending=None` → **不发回复** → VFS 卡 `WaitingForFs` 永等。**根因与 §1.104 观察 100% 吻合**（VFS send 返回 Ok、TTY 收得到但静默）。
+
+C ground truth 佐证：`minix3/minix/servers/vfs/cdev.c:195` `dev_mess.m_type = op;`，op 即 `CDEV_OPEN`（= `com.h` 的 `CDEV_RQ_BASE + 0` = 0x400）。VFS 发的是 0，显然错。
+
+### 修复（逻辑码 2 处 + 回归测试 1 条）
+
+1. `cdev.rs:165`：`CdevRequest::Open as i32` → `CdevRequest::Open.message_type()`（0x400）。加注释钉死「判别值是索引非线路号」。
+2. `main_loop.rs:3284`（`send_select_query` 的 `is_char` 分支）：`CdevRequest::Select as i32`（=6）→ `.message_type()`（0x406）。同族潜伏 bug——select 走 `asynsend` 一发不等，VFS 不卡但查询被驱动归 Other 丢弃，仍是同类错。
+3. **辨析保留**：`main_loop.rs:3286` else 分支 `SdevRequest::Select as i32` **不改**——`SdevRequest`（`minix-sockdriver/src/sdev.rs:40-74`）有显式 `#[repr(u32)] = SDEV_RQ_BASE + N`，`as i32` 得 0x1900+16 本就正确。
+4. **新增回归测试** `cdev.rs::tests::test_open_request_wire_type_is_cdev_open_not_index`：钉 `m_type == CDEV_REQUEST_BASE == 0x400 == message_type()`、驱动侧 `CdevRequest::decode(m.m_type) == Some(Open)`（保证不再被归 Other）、payload 四域（ID/USER/MINOR/ACCESS）逐字节回读与 `lchardriver_openclose_off` 一致。此 bug 类此前无任何测试覆盖。
+
+`grep` 穷尽核对：VFS 内 `CdevRequest::<variant> as i32` 仅上述两处（已修），其余 9 处均走 `message_type()`；block 侧 `BdevRequest as i32` 零命中；sdev 侧 25 处 `SdevRequest as i32` 全合法。
+
+### CodeReview（含逻辑码，强制派发）
+
+结论 **PASSED，MUST-FIX / SHOULD / NIT 均 0**。核心修复对齐 C ground truth（0x400/0x406），`SdevRequest` 保留 `as i32` 判定正确，同类漏网排查（VFS/block/sdev）全部覆盖，回归测试精确钉住 bug 复现面（m_type + decode 往返 + payload）。
+
+### 三件套验证（全绿）
+
+1. **mock 基线只增不减**：`cargo test -p minix-vfs --lib` → **538 passed / 0 failed**（原 537 + 新回归测试 1）。
+2. **nightly rustfmt 零新增漂移**：`cargo +nightly fmt --check -p minix-vfs` → 修复前后均 **270 漂移 hunk**（其中 cdev.rs+main_loop.rs 均为 3，与基线相同；我编辑的 cdev.rs:165/新增测试/main_loop.rs:3284 区域**零漂移**）。方法：`git stash push --` 我改的两文件取基线、再 pop 对比。
+3. **镜像重建 + 两次真机签名一致**：`cargo run -p xtask -- image --release` 重建 → 手动 **单核** QEMU（`-smp 1`，xtask 无 `--single-core` flag、默认 `-smp 4`）跑两次：
+   - 第 1 次：`minix-rs rc: minimal boot script marker` **count=1**；
+   - 第 2 次：**marker=1、panic=0、OOM=0**；两次签名一致。
+   - **⇒ x86_64 rc marker 真机首次出现**：console open 成功 → INIT 达 `imain-3 console`/`imain-4 console-done` → rc 脚本 echo 落串口。
+
+### 遗留与下轮（§1.106）
+
+- **多核独立问题（本轮暴露、与 m_type 正交）**：`-smp 4`（xtask 默认）触发 VM 内核缺页 panic（`kernel/src/trap_dispatch.rs:981` "pagefault in VM kernel on CPU 0"）。单核完全干净。属多核 SMP 路径的独立缺陷，下轮取证。
+- **三终目标进度**：x86_64 rc marker ✅（单核首次达成）；aarch64/riscv64 两架构、18-stage 命令面（echo/ls/cat 真跑通、需读 rc 脚本确认实际执行到哪条）、minix3 tests 上机仍未达。
+- **下轮方向**：①单核 marker 已通 → 验 18-stage echo/ls/cat 是否随之跑通；②多核 VM 缺页 panic 独立取证；③aarch64/riscv64 同构检查（rc marker）。
+
+**本单元承 §1.104 逐环证据、以静态代码审查钉死真根因（`CdevRequest::Open as i32`＝索引 0 而非线路号 0x400，致 TTY `decode` 归 Other 永不回复），逻辑码修复 2 处 + 新增回归测试 1 条 + CodeReview PASSED（0 问题）+ 三件套全绿（mock 538/0fail、rustfmt 漂移 270＝基线、两次单核真机签名一致 marker=1/oom=0/panic=0）——§1.97→§1.104 追了 8 轮的 console 设备链阻断彻底解决，x86_64 rc marker 首次出现；工作树仅 2 个明确逻辑文件 + WORKLOG 改动、commit 仅 add 明确文件；三条终目标之一达成、余两条与多核 panic 待追，goal 保持 active。**

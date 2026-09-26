@@ -3281,7 +3281,10 @@ impl VfsState {
     ) -> Result<(), i32> {
         let mut m = Message {
             m_type: if is_char {
-                minix_chardriver::protocol::CdevRequest::Select as i32
+                // 字符侧同 §1.105 教训：`CdevRequest::Select as i32` = 6（索引），
+                // 驱动解 6 归类 Other 不回；必走 `message_type()`(0x406)。
+                // 套接字侧 `SdevRequest` 有显式 `#[repr(u32)]` 判别值，`as i32` 仍对。
+                minix_chardriver::protocol::CdevRequest::Select.message_type()
             } else {
                 minix_sockdriver::sdev::SdevRequest::Select as i32
             },

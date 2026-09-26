@@ -162,7 +162,12 @@ pub fn open_request(
     access: u8,
 ) -> minix_types::Message {
     let mut m = minix_types::Message {
-        m_type: minix_chardriver::protocol::CdevRequest::Open as i32,
+        // `CdevRequest` 的判别值是 0..6 的**索引**（非线路类型号），
+        // `as i32` 会得到 0——驱动 `CdevRequest::decode(0)` 解不出、
+        // 归类 `Route::Other` 直接不回，VFS 卡等 CDEV_OPEN 回复（§1.105
+        // boot 死锁根因）。线路类型号 = base(0x400)+索引，必走
+        // `message_type()`（C `cdev_opcl:195` `m_type = op`）。
+        m_type: minix_chardriver::protocol::CdevRequest::Open.message_type(),
         ..minix_types::Message::default()
     };
     // SAFETY: `mess_vfs_lchardriver_openclose` 无专属 union 成员，按共享
@@ -489,5 +494,31 @@ mod tests {
         for (err, errno) in cases {
             assert_eq!(err.to_errno(), errno, "{err:?}");
         }
+    }
+
+    /// §1.105 回归钉：`CDEV_OPEN` 的线路类型号必须是 `message_type()`
+    /// （base 0x400 + 索引 0），**不是**枚举判别值 `as i32`（=0）。曾犯
+    /// `as i32` 使驱动 `CdevRequest::decode(0)` 归类 `Route::Other` 直接
+    /// 不回，VFS 永等 CDEV_OPEN 回复 → boot 死锁。同时钉 payload 布局
+    /// （id/user=端点、minor 第三位、access 第四位）。
+    #[test]
+    fn test_open_request_wire_type_is_cdev_open_not_index() {
+        use minix_chardriver::protocol::CdevRequest;
+        use minix_types::lchardriver_openclose_off as oc;
+        let user = minix_types::Endpoint(0x800c);
+        let access = (CDEV_R_BIT | CDEV_W_BIT) as u8;
+        let m = open_request(3, user, access);
+        // 线路类型号 = 0x400，驱动侧能解回 Open（否则收到即丢、永不回复）。
+        assert_eq!(m.m_type, minix_types::CDEV_REQUEST_BASE);
+        assert_eq!(m.m_type, CdevRequest::Open.message_type());
+        assert_eq!(CdevRequest::decode(m.m_type), Some(CdevRequest::Open));
+        // payload 四个 4 字节域逐格回读。
+        let raw = unsafe { m.m_u.raw };
+        let rd_i32 = |off: usize| i32::from_le_bytes(raw[off..off + 4].try_into().unwrap());
+        let rd_u32 = |off: usize| u32::from_le_bytes(raw[off..off + 4].try_into().unwrap());
+        assert_eq!(rd_i32(oc::ID), user.0);
+        assert_eq!(rd_i32(oc::USER), user.0);
+        assert_eq!(rd_u32(oc::MINOR), 3);
+        assert_eq!(rd_i32(oc::ACCESS), access as i32);
     }
 }
