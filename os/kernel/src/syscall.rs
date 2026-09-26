@@ -3099,23 +3099,16 @@ fn dispatch_diagctl(
                 .expect("dispatch_diagctl: caller slot must exist");
 
             let mut diagbuf = [0u8; DIAGBUFSIZE];
-            // Kernel-stack VA → phys via the boot span identity
-            // (kern_phys_base + va - kern_virt_base). The DirectMap
-            // `virt_to_phys` conversion branch does NOT apply to
-            // higher-half kernel-image VAs — it yields a garbage address
-            // there (E8 precedent: same misuse fixed in
-            // copy_struct_to_caller).
-            let kernel_info = unsafe { *crate::globals::KERNEL_INFO.get() }
-                .expect("dispatch_diagctl: KERNEL_INFO unset");
+            // `diagbuf` is a kernel-STACK local, not a kernel-image VA, so the
+            // boot-span identity `kern_phys_base + (va - kern_virt_base)` (valid
+            // only for the linearly-mapped image) under-flows here and yields a
+            // stray-bit47 pseudo-phys; writing through it would clobber an
+            // arbitrary physical page. SYSCALL does not switch CR3, so the
+            // caller's page table maps the kernel higher-half including this
+            // stack frame — resolve the destination through `AddressRef::Process`
+            // on `caller_endpt` (a real page-table walk → the true phys), the same
+            // pattern as the `copy_struct_from_user` and mcontext sites.
             let stack_va = diagbuf.as_mut_ptr() as u64;
-            debug_assert!(
-                stack_va >= kernel_info.kern_virt_base().0
-                    && stack_va - kernel_info.kern_virt_base().0 < kernel_info.kern_size(),
-                "diagbuf outside the kernel image span",
-            );
-            let dst_phys = PhysBytes(
-                kernel_info.kern_phys_base().0 + (stack_va - kernel_info.kern_virt_base().0),
-            );
 
             let proc_cr3 = |pt: &crate::proc_table::ProcessTable, endpt: Endpoint| {
             if endpt == caller_endpt {
@@ -3131,7 +3124,10 @@ fn dispatch_diagctl(
                 endpoint: caller_endpt,
                 offset: VirBytes(diag_msg.buf),
             };
-            let dst = AddressRef::Physical(dst_phys);
+            let dst = AddressRef::Process {
+                endpoint: caller_endpt,
+                offset: VirBytes(stack_va),
+            };
 
             match data_copy_vmcheck(caller_nr, proc_table, src, dst, len, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {
