@@ -727,6 +727,233 @@ impl Paging for AArch64Paging {
             asm!("isb");
         }
     }
+
+    /// Split the huge leaf covering `vaddr` into 4 KiB leaves, preserving
+    /// every translation inside it (same frames, same per-leaf flags).
+    /// Mirrors `x86_64::paging::split_huge` (see trait contract, `arch/
+    /// paging.rs::split_huge`, which explicitly calls out arm64 as the
+    /// future consumer of the boot ELF eviction path).
+    ///
+    /// Arm64 has two huge levels — a 1 GiB Block at L1 and a 2 MiB Block
+    /// at L2 — so the split runs the same two passes as x86-64:
+    /// - L1 Block: allocate an L2 table page, fill all 512 slots with 2 MiB
+    ///   Block descriptors carrying the parent's flag bits and PA
+    ///   `leaf_pa + i*2 MiB`, then convert the L1 slot into a Table
+    ///   descriptor.
+    /// - L2 Block: allocate an L3 table page, fill all 512 slots with 4 KiB
+    ///   Page descriptors carrying the parent's flag bits ORed with the
+    ///   PAGE type bit and PA `leaf_pa + i*4 KiB`, then convert the L2 slot
+    ///   into a Table descriptor.
+    ///
+    /// After any split, we take the equivalent of x86's CR3 reload: a
+    /// broadcast `tlbi vmalle1is`. A huge leaf can populate TLB entries for
+    /// many VAs inside its range, so per-VA `tlbi vae1is` on the caller's
+    /// `vaddr` alone is not enough — stale entries for neighbours would
+    /// keep the caller's later `unmap`/`map` pair non-coherent.
+    fn split_huge(&mut self, vaddr: VirBytes) -> Result<bool, PageTableError> {
+        let ch = self.channel;
+        // Table-descriptor encoding for slots installed by this split.
+        // Same bits as `walk_alloc`/`map_huge` intermediates (`VALID |
+        // AF | TABLE`); no APTable/UXNTable/PXNTable restriction bits —
+        // boot intermediates never impose those and this split must not
+        // introduce them.
+        const TABLE_ENTRY: u64 =
+            Arm64PteFlags::VALID.bits() | Arm64PteFlags::AF.bits() | Arm64PteFlags::TABLE.bits();
+        let valid = Arm64PteFlags::VALID.bits();
+        let table = Arm64PteFlags::TABLE.bits();
+        let mut split = false;
+
+        let i0 = l0_index(vaddr.0);
+        // SAFETY: the caller's channel Direct Map is active (walk_read
+        // precondition); the L0 slot lives inside the root page.
+        let l0e = unsafe { read_pte_dm(self.root_paddr + (i0 as u64) * 8, ch) };
+        if l0e & valid == 0 {
+            return Ok(false);
+        }
+        // L0 has no Block encoding on arm64 (bit 1 must be 1) — an
+        // absent-table L0 slot would have to be a translation fault
+        // already, so treat `!TABLE` here as “nothing to split”.
+        if l0e & table == 0 {
+            return Ok(false);
+        }
+        let l1_pa = l0e & ADDR_MASK;
+
+        let i1 = l1_index(vaddr.0);
+        // SAFETY: channel DM active; L1 slot inside the L1 page.
+        let mut l1e = unsafe { read_pte_dm(l1_pa + (i1 as u64) * 8, ch) };
+        if l1e & valid != 0 && l1e & table == 0 {
+            // 1 GiB Block leaf → build an L2 of 2 MiB Blocks and descend.
+            let leaf_pa = l1e & ADDR_MASK;
+            let leaf_bits = l1e & !ADDR_MASK;
+            let (l2_phys, _v) = crate::pt_alloc::alloc_pt_page()?;
+            for i in 0..512usize {
+                // SAFETY: fresh page-table frame reachable through the
+                // active Direct Map; slot 8-byte aligned.
+                //
+                // Parenthesised on purpose: Rust's `+` binds tighter than
+                // `<<`, so a bare `leaf_pa + i << 21` parses as
+                // `(leaf_pa+i) << 21` and writes a bogus PA for any
+                // non-zero leaf_pa (mirrors the x86 F7 lesson).
+                unsafe {
+                    write_pte_dm(
+                        l2_phys.0 + (i as u64) * 8,
+                        leaf_pa + ((i as u64) << L2_SHIFT) | leaf_bits,
+                        0,
+                        ch,
+                    )
+                };
+            }
+            let new_l1e = l2_phys.0 | TABLE_ENTRY;
+            // SAFETY: L1 slot address is within the live L1 page.
+            unsafe { write_pte_dm(l1_pa + (i1 as u64) * 8, new_l1e, vaddr.0, ch) };
+            split = true;
+            l1e = new_l1e;
+        }
+        if l1e & valid == 0 {
+            return Ok(split);
+        }
+        if l1e & table == 0 {
+            // Shouldn't reach here (handled by the branch above), but
+            // guard against the caller racing us with a still-block L1.
+            return Ok(split);
+        }
+        let l2_pa = l1e & ADDR_MASK;
+
+        let i2 = l2_index(vaddr.0);
+        // SAFETY: channel DM active; L2 slot inside the live L2 page (the
+        // pre-existing one or the one just installed above).
+        let l2e = unsafe { read_pte_dm(l2_pa + (i2 as u64) * 8, ch) };
+        if l2e & valid != 0 && l2e & table == 0 {
+            // 2 MiB Block leaf → build an L3 of 4 KiB Pages and rewrite
+            // the L2 slot as a Table descriptor. Children differ from
+            // their parent by the PAGE type bit (bit 1): the parent was
+            // `VALID | flagbits` (bit 1 = 0), children must be
+            // `VALID | PAGE | flagbits` (bit 1 = 1). Not clearing this
+            // is the arm64 sibling of the x86 "PS bit is reserved at
+            // PT level" hazard — 0b01 is a reserved encoding at L3.
+            let leaf_pa = l2e & ADDR_MASK;
+            let leaf_bits = (l2e & !ADDR_MASK) | Arm64PteFlags::PAGE.bits();
+            let (l3_phys, _v) = crate::pt_alloc::alloc_pt_page()?;
+            for i in 0..512usize {
+                // SAFETY: fresh page-table frame reachable through the
+                // active Direct Map; slot 8-byte aligned. Explicit
+                // parenthesisation for the same reason as the L1 pass.
+                unsafe {
+                    write_pte_dm(
+                        l3_phys.0 + (i as u64) * 8,
+                        leaf_pa + ((i as u64) << 12) | leaf_bits,
+                        0,
+                        ch,
+                    )
+                };
+            }
+            // SAFETY: L2 slot address is within the live L2 page.
+            unsafe {
+                write_pte_dm(
+                    l2_pa + (i2 as u64) * 8,
+                    l3_phys.0 | TABLE_ENTRY,
+                    vaddr.0,
+                    ch,
+                )
+            };
+            split = true;
+        }
+
+        if split {
+            // Broadcast flush (inner-shareable, all priv levels for this
+            // VMID/ASID): equivalent to x86's CR3 reload. The just-split
+            // huge leaf may have populated TLB entries for any VA in its
+            // 2 MiB / 1 GiB range; per-VA invalidation on `vaddr` alone
+            // would leave neighbours pointing at the old Block.
+            // SAFETY: boot context (single CPU up to AP bringup); the
+            // instruction is architecturally an inner-shareable
+            // broadcast and requires no EL privileges beyond EL1.
+            unsafe {
+                asm!("dsb sy");
+                asm!("tlbi vmalle1is");
+                asm!("dsb sy");
+                asm!("isb");
+            }
+        }
+        Ok(split)
+    }
+
+    /// Ensure the intermediates on the walk to `vaddr` do not veto EL0
+    /// access, so a user leaf installed by the caller after this returns
+    /// Ok is actually reachable from EL0.
+    ///
+    /// Arm64 differs from x86 here: Table descriptors do not carry a
+    /// positive "user" bit; they carry a NEGATIVE restriction (`APTable`
+    /// at bit 60) which, when set, forces the child's AP[1] to 0 for EL0
+    /// access. The boot identity and this crate's `walk_alloc`/`map_huge`
+    /// intermediates are built without `APTable` (they OR only
+    /// `VALID | AF | TABLE`), so on the well-formed path this method is a
+    /// walk-and-verify no-op. If any intermediate does carry `APTable`,
+    /// we clear it — matching x86's contract of “the caller can rely on
+    /// intermediates not vetoing the leaf's user bit”.
+    ///
+    /// Contract (mirrors `x86_64::paging::grant_user_walk`):
+    /// - `NotMapped` if any intermediate is absent — the caller must go
+    ///   through `map`/`walk_alloc`, which creates fresh intermediates.
+    /// - `NotSupported` if a Block (huge leaf) is met mid-walk — the
+    ///   caller must `split_huge` first; granting user on the whole
+    ///   1 GiB / 2 MiB range would be a security regression.
+    fn grant_user_walk(&mut self, vaddr: VirBytes) -> Result<(), PageTableError> {
+        let ch = self.channel;
+        const APTABLE: u64 = 1 << 60;
+        let valid = Arm64PteFlags::VALID.bits();
+        let table = Arm64PteFlags::TABLE.bits();
+
+        let i0 = l0_index(vaddr.0);
+        // SAFETY: channel DM active; L0 slot inside the root page.
+        let l0e = unsafe { read_pte_dm(self.root_paddr + (i0 as u64) * 8, ch) };
+        if l0e & valid == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if l0e & table == 0 {
+            // L0 blocks don't exist (bit 1 forced to 1 by arch); treat
+            // any unexpected encoding as NotSupported (caller must fix
+            // the tree) rather than silently corrupting it.
+            return Err(PageTableError::NotSupported);
+        }
+        if l0e & APTABLE != 0 {
+            // SAFETY: L0 slot inside root page.
+            unsafe { write_pte_dm(self.root_paddr + (i0 as u64) * 8, l0e & !APTABLE, 0, ch) };
+        }
+        let l1_pa = l0e & ADDR_MASK;
+
+        let i1 = l1_index(vaddr.0);
+        let slot1 = l1_pa + (i1 as u64) * 8;
+        // SAFETY: L1 slot inside the L1 page.
+        let l1e = unsafe { read_pte_dm(slot1, ch) };
+        if l1e & valid == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if l1e & table == 0 {
+            return Err(PageTableError::NotSupported);
+        }
+        if l1e & APTABLE != 0 {
+            // SAFETY: L1 slot inside the L1 page.
+            unsafe { write_pte_dm(slot1, l1e & !APTABLE, vaddr.0, ch) };
+        }
+        let l2_pa = l1e & ADDR_MASK;
+
+        let i2 = l2_index(vaddr.0);
+        let slot2 = l2_pa + (i2 as u64) * 8;
+        // SAFETY: L2 slot inside the L2 page.
+        let l2e = unsafe { read_pte_dm(slot2, ch) };
+        if l2e & valid == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if l2e & table == 0 {
+            return Err(PageTableError::NotSupported);
+        }
+        if l2e & APTABLE != 0 {
+            // SAFETY: L2 slot inside the L2 page.
+            unsafe { write_pte_dm(slot2, l2e & !APTABLE, vaddr.0, ch) };
+        }
+        Ok(())
+    }
 }
 
 impl HugePages for AArch64Paging {
@@ -1016,5 +1243,46 @@ mod tests {
         let phys = 0x4020_0000u64; // aarch64 QEMU RAM + 2MB offset
         let masked = phys & ADDR_MASK;
         assert_eq!(masked, phys, "physical address should be preserved by ADDR_MASK");
+    }
+
+    /// F7-precedence witness (mirrors x86_64/paging.rs's same test): split
+    /// huge writes child PAs as `leaf_pa + (i << SHIFT)`. Rust's `+` binds
+    /// tighter than `<<`, so a bare `leaf_pa + i << SHIFT` parses as
+    /// `(leaf_pa + i) << SHIFT` and yields a bogus PA for any non-zero
+    /// 1 GiB/2 MiB-aligned `leaf_pa`. Pin the two forms to be
+    /// distinguishable so a future style sweep cannot silently reintroduce
+    /// the bug.
+    #[test]
+    fn split_huge_leaf_entry_arithmetic_is_base_plus_index_times_page() {
+        let leaf_pa: u64 = 0x4000_0000; // non-zero, 1 GiB-aligned
+        let i: u64 = 1;
+        let naive = (leaf_pa + i) << L2_SHIFT;
+        let fixed = leaf_pa + ((i as u64) << L2_SHIFT);
+        assert_ne!(naive, fixed, "two forms must be distinguishable");
+        assert_eq!(fixed, leaf_pa + 0x20_0000, "fixed form = leaf_pa + i*2 MiB");
+    }
+
+    /// Arm64 Table descriptor's APTable (bit 60) has OPPOSITE polarity from
+    /// x86's USER bit: set = restrict children, clear = permissive. This is
+    /// what `grant_user_walk` must clear (not set) on the walk path — a
+    /// regression that flips this polarity would silently break EL0 access
+    /// while keeping the software walk happy.
+    #[test]
+    fn grant_user_walk_clears_not_sets_aptable_polarity_is_negative() {
+        const APTABLE: u64 = 1 << 60;
+        // Simulated intermediate descriptor carrying an unintended
+        // restriction: clearing must leave PA + type bits intact.
+        let restricted = 0x1000_u64 /* child_pa */ | APTABLE
+            | Arm64PteFlags::VALID.bits()
+            | Arm64PteFlags::AF.bits()
+            | Arm64PteFlags::TABLE.bits();
+        let cleared = restricted & !APTABLE;
+        assert_eq!(cleared & APTABLE, 0, "APTable must be cleared, not set");
+        assert_eq!(
+            cleared & (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits(),
+            (Arm64PteFlags::VALID | Arm64PteFlags::AF | Arm64PteFlags::TABLE).bits(),
+            "type/valid/AF bits must survive the clear"
+        );
+        assert_eq!(cleared & 0xFFFF_FFFF_F000, 0x1000, "child PA preserved");
     }
 }

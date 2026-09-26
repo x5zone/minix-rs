@@ -67,7 +67,14 @@ pub fn command(arch: Arch, image: &Path, serial: &Path) -> Result<(Command, Vec<
         Arch::X86_64 => args.extend(["-smp".into(), "4".into()]),
         Arch::Aarch64 => args.extend([
             "-machine".into(),
-            "virt".into(),
+            // `gic-version=3` is a boot contract, not a tuning knob:
+            // `AcpiDesc::parse`'s aarch64 gate (`check_gic_madt`) rejects
+            // GICv1/v2 (`GicVersionUnsupported`) because the driver is
+            // GICv3-only (per-CPU redistributor via GICR stride, ICCT
+            // MMIO), and QEMU virt defaults to GICv2. Without this flag
+            // the kernel panics in `init_from_kinfo` on "no platform
+            // source parsed successfully" (NK4-C §1.110 forensics).
+            "virt,gic-version=3".into(),
             "-cpu".into(),
             "cortex-a72".into(),
             "-smp".into(),

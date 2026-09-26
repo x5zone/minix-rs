@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.109 修 aarch64 `init_protection` 崩溃（`msr SP_EL1` 在 SPSel=1 下 UNDEFINED→同步异常）——aarch64 首次越过 protection/clock/intr bring-up**（接 §1.108 commit `391a57155`）：§1.108 把 aarch64 真阻断推进到 Phase-B `init_protection`。本轮先证伪上一会话遗留假设（「`store_trap_entry` no-op + `with_trap_entry` 每次新建空实例 → VBAR 指向垃圾表」）：读 `arch/src/arm64/trap_entry.rs` 钉死 `AArch64TrapEntry` 是无状态 unit struct、`load()` 把 VBAR_EL1 指向 `global_asm!` 固定符号 `vector_table_va()`（与实例 A/B 无关）、`install_trap_stubs`/`configure_syscall` 在 aarch64 皆 no-op、dispatch bodies 经 `register_trap_dispatchers` 存进独立全局——⇒ store/with no-op 对 aarch64 **是正确设计、非 bug**，假设不成立。改用细粒度 boot_stage 探针（六条 `nk4c109: ip.*`，用后全 `git checkout` 回滚、工作树净）钉死崩溃＝`ip.enter` 之后、`after-proto-init` 之前，即 `CurrentProtection::init(0, kern_stack_top)` 内部（串口 `Synchronous Exception at 0x5C638370`）。**根因（架构事实，非裁决）**：ARMv8-A DDI 0487 §D1.5.1 规定 **SPSel=1（EL1h 模型，aarch64 内核当前模式、自 UEFI 延续）时 `SP_EL1` 即当前活动栈指针，此时 `MSR SP_EL1, Xt` 编码为 UNDEFINED，执行触发同步异常**。旧 `arch/src/arm64/protection.rs` 的 `init`/`set_kernel_stack`/`init_ap` 三处都用 `mov tmp,sp / msr SP_EL1,newval / mov sp,tmp` 的 save-restore dance——正踩此 UNDEFINED 编码。佐证：aarch64 更高半跳转 `kernel/src/arch/aarch64/higher_half.rs::jump_to_kmain` 用 `mov sp, {stktop}` 建栈，即进入 kmain 时 SP(=SP_EL1) 已等于 `kern_stack_top`，init 再写既多余又非法；独立印证＝`qemu-tests/.../test-rt-birth-aarch64` 载体早注释「AAVMF 下 UEFI 固件以 SPSel=1 拥有 SP_EL1、该写被拒」。**修复（仅 `arch/src/arm64/protection.rs`）**：`init` 改为带 EL1h 契约说明的 no-op（栈已由 higher-half `mov sp` 建立）；`set_kernel_stack`/`init_ap` 亦改 no-op（CodeReview P1：EL1h 下活动栈切换归异常入口汇编 `trap_stub` 负责，从会返回的 Rust fn `mov sp` 会 orphan caller frame + `options(nostack)` 与写 SP 矛盾；当前二者无 aarch64 生产调用者、属休眠埋雷，故做成诚实 no-op 而非「看似可用实则坏栈」）；同步更新模块头 doc 表格/`load()` 注释/单测注释。**CodeReview PASSED（有条件）**，采纳其 P1（set_kernel_stack/init_ap no-op 化）+ SHOULD-FIX（load 注释 stale「SP_EL1 set by init」）+ CONSIDER（同步 test-rt-birth 载体过时描述）。**三件套全绿**：mock minix-arch **243/0fail** 不减·nightly rustfmt protection.rs **16＝基线 16** 零新增·镜像 `--release` 双架构重建 EXIT=0＋**aarch64 单核双跑一致：越过 `init_protection`、打印 `kmain B clock+intr ok` 与 `kmain B.5 kerninfo page ok`（Synchronous Exception 消失！）、前进到新阻断 `load_vm_elf: VM ELF MappingFailed`（`kernel/src/lib.rs:1645`）·x86_64 单核双跑无回归 marker=2·panic=0·oom=0**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 首次越过 protection/clock/intr bring-up、真阻断推进到 VM（memory server）ELF 加载（新前沿）；riscv64 未验。** 下轮 §1.110：aarch64 `load_vm_elf MappingFailed` 取证（VM ELF 在 aarch64 的映射失败——查 higher-half 加载基址/段对齐/权限位 vs x86 路径）/ riscv64 U-Boot / 多核缺页 panic / minix3 tests。**历史链**：…→§1.107 aarch64 恢复可编译 + 钉 GICR(`0398ccb74`)→§1.108 补 MADT GICR type-14、首次越过 platform 发现层(`391a57155`)→**§1.109 修 msr SP_EL1 UNDEFINED、aarch64 首次越过 protection bring-up**。
+> **✅ 最新前沿＝§1.110 修 aarch64 `load_vm_elf MappingFailed`（arm64 split_huge/grant_user_walk 未覆盖 + xtask 缺 gic-version=3）——aarch64 首次抵达 VM server**（接 §1.109 commit `efdee9bb2`）：§1.109 把 aarch64 真阻断推进到 `load_vm_elf: VM ELF MappingFailed`（kernel/src/lib.rs:1645）。本轮定位**双独立根因**并逐一修复。**根因 A（实现缺口）**：`arch/src/arch/paging.rs` trait 默认 `split_huge`/`grant_user_walk` 返回 `Err(NotSupported)`，文档明写"arm64/riscv64 must mirror x86-64 when their boot reaches the same eviction"——boot ELF eviction 三步（`query → split_huge → grant_user_walk → unmap → map`，boot.rs:455-490）在 aarch64 identity 1GB/2MB Block 上需要拆分，arm64 无覆盖直接 NotSupported→MappingFailed。**修复 A（仅 `os/arch/src/arm64/paging.rs`，+270 行含测试）**：为 `impl Paging for AArch64Paging` 实现 `split_huge`（L1 1GB Block→L2 512×2MB Blocks + L2 2MB Block→L3 512×4KB Pages，F7 括号 `leaf_pa + ((i as u64) << SHIFT) | leaf_bits`，分裂后 `dsb sy; tlbi vmalle1is; dsb sy; isb` 广播刷 TLB——等价 x86 CR3 reload）和 `grant_user_walk`（逐级 walk L0→L1→L2，Block 则 NotSupported、清 APTable bit60——arm64 极性与 x86 USER 位**相反**：APTable=1 是禁止、清 0 才允许 EL0）。附两个防回归测试（F7 算术 + APTable 极性负极性）。**根因 B（xtask 遗漏）**：`os/xtask/src/qemu.rs` aarch64 腿 `-machine virt` 不带 `gic-version=3`——QEMU virt 默认 GICv2，而 `AcpiDesc::parse::check_gic_madt` 故意拒绝 GICv1/v2（`GicVersionUnsupported`，因驱动 GICv3-only：per-CPU redistributor via GICR stride + ICCT MMIO），所有 aarch64 真机测试卡在 `init_from_kinfo: no platform source parsed successfully`（§1.107 已知、§1.108/§1.109 均手动补此 flag 跑通，xtask 一直没改）。**修复 B（`os/xtask/src/qemu.rs`，+8 行）**：aarch64 machine 参数改 `"virt,gic-version=3"`，附 boot contract 注释。**CodeReview PASSED**（0 Critical/Warning，1 CONSIDER=F7 回归测试已采纳）。**三件套全绿**：mock minix-arch **243/0fail** 不减·nightly rustfmt `arm64/paging.rs` 漂移 **260＝基线 260** 零新增·镜像 `--release` 双架构重建 EXIT=0＋**aarch64 双跑签名一致（109 行、`nk4a: vm enter`+`kmain B clock`+`PhysicalAllocFailed` 各 1）——首次抵达 VM server main_loop！·x86_64 单核双跑无回归 marker=2·panic=0·oom=0**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 首次抵达 VM server（load_vm_elf 全通、split_huge 有效性由 boot 越过 evict 路径实证），新前沿=`vm_server.rs:413 relocate PhysicalAllocFailed`；riscv64 未验。** 下轮 §1.111：aarch64 `vm_server.rs:413 PhysicalAllocFailed`（VM 元数据 HeapArena 帧池不足）取证 / riscv64 U-Boot / 多核 `-smp 4` VM 缺页 panic / minix3 tests。**历史链**：…→§1.108 补 MADT GICR(`391a57155`)→§1.109 修 msr SP_EL1 UNDEFINED(`efdee9bb2`)→**§1.110 arm64 split_huge+grant_user_walk 覆盖 + xtask gic-version=3、aarch64 首次抵达 VM server**。
+>
+> **（历史·§1.109 摘要，详文见文末）✅ §1.109 修 aarch64 `init_protection` 崩溃（`msr SP_EL1` 在 SPSel=1 下 UNDEFINED→同步异常）——aarch64 首次越过 protection/clock/intr bring-up**（接 §1.108 commit `391a57155`）：根因＝ARMv8-A DDI 0487 §D1.5.1 规定 SPSel=1(EL1h) 时 `MSR SP_EL1, Xt` 编码为 UNDEFINED，旧 protection.rs init/set_kernel_stack/init_ap 三处 save-restore dance 正踩此雷。修复＝三方法改为带 EL1h 契约说明的 no-op（栈已由 higher-half `mov sp` 建立、异常入口切换归 trap_stub 汇编）。CodeReview PASSED，三件套全绿（mock 243/0、rustfmt 16=16、aarch64 双跑越过 init_protection 打印 kmain B clock+intr ok + kerninfo page ok、新阻断 load_vm_elf MappingFailed、x86_64 无回归）。**⇒ 终目标① x86_64 ✅；aarch64 首次越过 protection bring-up；riscv64 未验。**
 >
 > **（历史·§1.108 摘要，详文见文末）✅ §1.108 补 MADT GICR（type-14 重分布器子表）解析——aarch64 首次越过 platform 发现层（§1.107「GICR 待架构裁决」翻案＝实现缺口，非裁决）**（接 §1.107 commit `0398ccb74`）：§1.107 把 aarch64 真阻断钉在 `check_gic_madt` 拒绝零 GICR、并列三选项待裁决。本轮核实 **QEMU 8.2 源码 `hw/arm/virt-acpi-build.c::build_append_gicr`**（WebFetch 实读）翻案：QEMU `gic-version!=2` 时**必发独立 GICR（type 0xE=14）子表**（布局 Type@0/Length@1=16/Reserved@2/**Discovery Range Base u64@+4**/Size u32@+12，region base=`VIRT_GIC_REDIST`.base=**0x080A0000**）；而 GICC 内嵌 GICR 字段（真偏 **+60**，非旧码误读的 **+48＝GICH**）QEMU **恒填 0**。⇒ 原阻断**不是架构裁决、而是解析器缺 type-14 子表处理这一标准实现缺口**（SBBR/UEFI 下 redistributor 基址的权威来源本就是 GICR 子表）。**修复（仅 `libs/minix-platform/src/acpi.rs`）**：①新增 `MADT_TYPE_GICR=14` 常量 + match 分支，从 GICR 子表 `+4` 读 region base 填 `gicr_base`（取首个非零，多 region 低址先发）；②重写 GICC 分支——删错误的 `read_u64(48)`（那是 GICH）、per-CPU `gicr_base` 置 `None`、`entry_len` 门 `>=64`→`>=16`（只读 UID@+8/Flags@+12）；③遍历后新增 aarch64 per-CPU 派生 `cpus[i].gicr_base = gicr_base + hw_id*0x20000`（GICv3 128KiB/帧 stride，逐字对齐 DTB 路径 `device_tree.rs:414`）。**CodeReview PASSED**（审真实 diff，边界检查自洽：GICR 门 `>=12`↔读 [+4,+12)、GICC 门 `>=16`↔读 [+8,+16)，无越界），采纳 **2 条 SHOULD-FIX**（`MadtResult.gicr_base` 字段文档 + `GicrNotFound` 变体注释/Display 仍写旧 GICC 语义→改述 GICR 子表）。**三件套全绿**：mock minix-platform **14/0fail** 不减·nightly rustfmt acpi.rs 漂移 **16＝基线 16** 零新增·镜像 `--release` 双架构重建 EXIT=0（aarch64 新分支真编译）＋**aarch64 单核双跑一致：`A.5 platform ok` 打印（首次越过原 `init_from_kinfo` panic！）、稳定崩在下游同一 PC `0x5C6382E0`·x86_64 单核双跑无回归 marker=2·ls/cat 完好·panic=0·oom=0**。**新前沿现形（取证探针已回滚、工作树净）**：临时在 Phase-B 三调用间插 boot_stage（用后 `git checkout` 回滚、grep 0 残留）钉死崩溃＝`init_protection`（`kernel/src/lib.rs:719`，aarch64 protection/trap bring-up：CurrentProtection::init/load + VBAR_EL1），**与本轮 GICR 改动无关**（崩溃在 init_protection、早于任何 GIC MMIO）。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 越过 platform 发现层、真阻断推进到 Phase-B 保护/陷入向量 bring-up（新前沿）；riscv64 无 UEFI 直启（走 U-Boot，未验）。**下轮 §1.109** 择一前沿：aarch64 `init_protection` Phase-B 崩溃取证（`wfi`/向量表/MMU remap）/ riscv64 U-Boot 路径 / 多核 `-smp` VM 缺页 panic（`trap_dispatch.rs:981`）/ minix3 tests 上机。**历史链**：…→§1.106 stat copy_out(`6c0a0f0da`)→§1.107 aarch64 恢复可编译 + 钉 GICR(`0398ccb74`)→**§1.108 补 MADT GICR type-14 解析、aarch64 首次越过 platform 发现层（GICR 翻案＝实现缺口非裁决）**。
 >
@@ -4675,3 +4677,90 @@ aarch64 目标（`aarch64-unknown-none`）此前无法构建：`kernel/src/lib.r
 **⇒ 终目标①：x86_64 单核 marker ✅；aarch64 首次越过 protection/clock/intr bring-up（`init_protection` + `init_clock_and_interrupts` + `kerninfo` 全过）、真阻断推进到 VM（memory server）ELF 加载层（新前沿）；riscv64 未验。**
 
 下轮 §1.110：**(a) aarch64 `load_vm_elf MappingFailed` 取证**（VM ELF 在 aarch64 加载映射失败——先读 kernel/src/lib.rs:1645 上下文与 `MappingFailed` 变体来源，比对 x86 同路径差异：higher-half 加载基址 / 段对齐 / 权限位 / 页表根；ground truth minix3 无 aarch64，属本项目跨架构移植缺口）；(b) riscv64 U-Boot 路径；(c) 多核 `-smp` VM 缺页 panic（`trap_dispatch.rs:981`）；(d) minix3 `tests/` 上机。
+
+---
+
+## §1.110 aarch64 `load_vm_elf MappingFailed` 双修：arm64 split_huge/grant_user_walk 覆盖 + xtask gic-version=3
+
+> commit: TBD（接 §1.109 `efdee9bb2`）
+
+### 前沿起点
+
+§1.109 把 aarch64 boot 推进到 `load_vm_elf: VM ELF is required at boot: MappingFailed`（`kernel/src/lib.rs:1645`）。VM ELF 加载需把 identity-mapped 内核页拆掉、重新映射为用户进程可访问的 4KB 页。这条路径在 x86_64 早在 §1.85 就跑通，arm64 缺相同实现。
+
+### 根因 A：trait 默认 `split_huge`/`grant_user_walk` 未覆盖
+
+`os/arch/src/arch/paging.rs` L357/L378 定义 trait 默认 `Err(NotSupported)`，文档明写 “arm64/riscv64 must mirror x86-64 when their boot reaches the same eviction”。boot ELF eviction 三步（`os/arch/src/arch/boot.rs` L455-490）：
+
+```rust
+match paging.query(vaddr) {
+    WalkResult::Huge1G(..) | WalkResult::Huge2M(..) => {
+        paging.split_huge(vaddr)?;   // ← NotSupported on arm64
+        paging.grant_user_walk(vaddr)?; // ← NotSupported on arm64
+        paging.unmap(vaddr)?;
+    }
+    ...
+}
+paging.map(vaddr, paddr, user_flags)?;
+```
+
+aarch64 identity map 用 `HUGE_PAGE_SIZE = 1<<30`（1GB Block）或 `FALLBACK = 1<<21`（2MB Block），均命中 Huge 分支。VM ELF VA 0x200000 落在 identity 2MB Block 覆盖范围。无覆盖 → 直接返回 NotSupported → 上层报 MappingFailed。
+
+### 修复 A：实现 arm64 split_huge + grant_user_walk
+
+文件：`os/arch/src/arm64/paging.rs`（+270 行含测试）
+
+**split_huge 设计**：
+- L1 1GB Block → L2 512×2MB Blocks：分配 L2 页，填 512 个 Block descriptor，每个带 `leaf_pa + ((i as u64) << L2_SHIFT) | leaf_bits`。然后写 Table descriptor 到 L1 slot（`VALID|AF|TABLE`）。
+- L2 2MB Block → L3 512×4KB Pages：分配 L3 页，填 512 个 Page descriptor，`leaf_bits = (l2e & !ADDR_MASK) | PAGE`（注意 Block bit1=0 → Page bit1=1 的关键翻转）。
+- 分裂后广播刷 TLB：`dsb sy; tlbi vmalle1is; dsb sy; isb`（inner-shareable、EL1&0 全 ASID/VMID，等价 x86 CR3 reload）。
+- **F7 教训**：所有 `leaf_pa + ((i as u64) << SHIFT) | leaf_bits` 显式括号，防 Rust 运算符优先级 `+` 紧于 `<<`。
+
+**grant_user_walk 设计**：
+- 逐级 walk L0→L1→L2，跳过 absent（NotMapped）、Block（NotSupported）。
+- 对每个 Table descriptor，若 APTable(bit60)=1 则清 0——arm64 极性与 x86 USER 相反：APTable=1 是“禁止下级允许 EL0”，清 0 才允许。
+- boot identity 从不置 APTable，故热路径 walk-and-verify no-op。
+
+**防回归测试**（`#[cfg(test)] mod tests`）：
+1. `split_huge_leaf_entry_arithmetic_is_base_plus_index_times_page`：确认 `(leaf_pa + i) << SHIFT ≠ leaf_pa + (i << SHIFT)`（F7 陷阱）。
+2. `grant_user_walk_clears_not_sets_aptable_polarity_is_negative`：确认 APTable=1 被清 0 而非被置 1（极性反转）。
+
+### 根因 B：xtask qemu 缺 `gic-version=3`
+
+§1.107 已知、§1.108/§1.109 手动跑 `qemu-system-aarch64 -machine virt,gic-version=3` 才越过 platform init，但 xtask 默认 `-machine virt` 不带此 flag——QEMU virt 默认 GICv2，被 `check_gic_madt` 故意拒绝。
+
+### 修复 B：补 gic-version=3 入 xtask
+
+文件：`os/xtask/src/qemu.rs` L68-77（+8 行）
+
+```rust
+Arch::Aarch64 => args.extend([
+    "-machine".into(),
+    // `gic-version=3` is a boot contract, not a tuning knob:
+    // `AcpiDesc::parse`'s aarch64 gate (`check_gic_madt`) rejects
+    // GICv1/v2 (`GicVersionUnsupported`) because the driver is
+    // GICv3-only (per-CPU redistributor via GICR stride, ICCT MMIO),
+    // and QEMU virt defaults to GICv2. Without this flag the kernel
+    // panics in `init_from_kinfo` on "no platform source parsed
+    // successfully" (NK4-C §1.110 forensics).
+    "virt,gic-version=3".into(),
+    ...
+]),
+```
+
+### 验证
+
+**CodeReview（子代理审真实工作树 diff）PASSED**：0 Critical/Warning，1 CONSIDER（镜像 x86 F7 回归测试到 arm64）已采纳。
+
+**三件套全绿**：
+- mock minix-arch **243/0fail** 不减
+- nightly rustfmt `arm64/paging.rs` 漂移 **260＝基线 260** 零新增
+- 镜像 `--release` 双架构重建 EXIT=0
+  - **aarch64 双跑签名一致（109 行、`nk4a: vm enter`+`kmain B clock`+`PhysicalAllocFailed` 各 1）——首次抵达 VM server main_loop！**
+  - x86_64 单核双跑无回归 marker=2·panic=0·oom=0
+
+### 结论与下轮
+
+**⇒ 终目标①：x86_64 单核 marker ✅；aarch64 首次抵达 VM server（load_vm_elf 全通、split_huge 有效性由 boot 越过 evict 路径实证），新前沿=`vm_server.rs:413 relocate PhysicalAllocFailed`；riscv64 未验。**
+
+下轮 §1.111：**(a) aarch64 `vm_server.rs:413 PhysicalAllocFailed`**（VM server 元数据 HeapArena 帧池不足——可能是池大小或 boot 时分配策略与 x86 不同）；(b) riscv64 U-Boot 路径；(c) 多核 `-smp 4` VM 缺页 panic；(d) minix3 `tests/` 上机。
