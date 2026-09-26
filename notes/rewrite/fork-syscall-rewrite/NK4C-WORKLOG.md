@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r8 闭环（§1.96）：DeliverMsg `suspend_for_vm` target 传错 `p_getfrom_e`→改为 `p_endpoint`（对位 C `vm_suspend(rp, rp, …)` receiver-as-target）⇒真机 wrong-user-pointer=0·panic=0·OOM-RT=0·270894 行（bn95 的 6× 深度突破）**。INIT 17 次 Runcom↔SingleUser 循环、exec sh/echo 成功装载但 rc marker 仍未出——新前沿 r9＝rc 命令链下游（sh/echo 执行完不退出或 PM 收不到 waitpid→INIT 不推进 rc 脚本）。历史链：…→§1.95 r7b→§1.96 r8 DeliverMsg target 修复。三件套绿（mock 817·0fail / fmt 71=71 零新增漂移 / 真机 bn96=270894 行）；改动极小（单参数+9行注释）、不派 CodeReview。rc marker 三条终目标仍未达，goal 保持 active。**
+> **⚠ 最新前沿＝r9 scoping（§1.97）：rc 命令链下游阻断根因确诊——INIT 的 `set_controlling_tty("/dev/console")` 失败(§r3 已发现“常规 fd→console→串口不通”)→子进程 fd 0/1/2 关闭→echo `write(1,...)` 返回 EBADF→exit(1)→sh exit(1)→INIT runcom 见非零→SingleUser→循环17次。** 修向＝接线 TTY 驱动(`os/drivers/tty/tty/`已存在、`minix-driver-tty`已在 BOOT_MODULES 构建清单)到 VFS 字符设备路由，使 `open("/dev/console")` + `write(fd,...)` 能落串口。历史链：…→§1.95 r7b→§1.96 r8→§1.97 r9 scoping。三件套绿(§1.96)。rc marker 三条终目标仍未达，goal 保持 active。**
 >
 > **（历史·§1.95）⚠ r7b 闭环：premature-OOM + VM 栈 runway 两大前置全清——`VM_STACK_SIZE` 64KiB→256KiB + `MAX_BIG_BLOCKS`=GLOBAL_POOL_PAGES=1024 + §1.60 assert 退役；真机首次 OOM-RT=0·panic=0·46931行达Runcom+exec sh。新前沿 r8=wrong user pointer（§1.96 已修）。**
 >
@@ -4065,6 +4065,62 @@ boot 深度从 46937→270894 行（6×）但 rc marker 仍未出。真机尾部
 | OOM-RT | 0 | 0 | 维持 |
 | Runcom 次数 | 1 | 17 | INIT 开始循环 rc |
 | rc marker | 0 | 0 | 仍未出(r9) |
+
+**rc marker 三条终目标仍未达；goal 保持 active。**
+
+---
+
+## 1.97 【r9 scoping：rc 命令链下游阻断根因确诊＝console 设备驱动链未接线、非 IPC/单点 bug】纯取证
+
+### 症状
+
+bn96(§1.96) 真机 270894 行，INIT 反复循环 Runcom↔SingleUser 17 次。exec sh(ip=0x20efb0) + exec echo(ip=0x206a00) 均成功装载，无 SIGSEGV/无 panic/无 wrong-user-pointer。但 rc marker 未打印。
+
+### 根因链
+
+1. **INIT 关闭 fd 0/1/2**（`main.rs:128` `close_std_fds()`、对位 C `init.c:339-341`）。
+2. **runcom 子进程调 `set_controlling_tty("/dev/console")`**（`runcom.rs:133`），实现于 `host.rs:281-304`：`open("/dev/console", O_RDWR)` → dup2 到 0/1/2。
+3. **`open("/dev/console")` 失败**：VFS 无可用 console 字符设备服务（§r3 发现“常规 fd→console→串口不通”）。`set_controlling_tty` 返回 Err，但 runcom 用 `let _ =` 丢弃了错误——子继续 exec sh。
+4. **sh 以关闭的 fd 0/1/2 启动**：读 /etc/rc 通过 `support::read_file("/etc/rc")` 走 `open()`+`read()`（新分配的 fd 不依赖 0/1/2，所以能读到），解析到 `echo` 行。
+5. **echo 继承关闭的 fd 1**：`write(1, "minix-rs rc...")` → VFS 查 echo 进程的 fd 表 → fd 1 未开 → EBADF → `write` 返回 Err。
+6. **echo exit(1)**（`bin/echo.rs:42` `terminate(1)`），因为 `write(...).is_ok()` = false。
+7. **sh 的 `waitpid(echo_pid)` 得到 status 非零**（`bin/sh.rs:415-419`）→ `wait_status(raw)` = 1 → `eval_text` 返回 1 → `run_status` 返回 1 → sh `exit(1)`。
+8. **INIT 的 `waitpid` 得 sh exit(1)** → `status.exit_code() == Some(1)` → `Attempt::SingleUser`（`runcom.rs:220-222`）。
+9. **SingleUser 又 fork 子、子立刻退出、`finish_shell` → ProceedRuncomFastboot** → 回到 Runcom → 循环。
+
+### 修向（r9-fix）——精确代码锁定
+
+**不是 IPC 层 bug、不是 waitpid 逻辑缺陷、不是单行参数修复**。真前置＝ **console 字符设备驱动链未接线**：
+- 驱动代码已存在：`os/drivers/tty/tty/`（`serial.rs`、`char_face.rs`、`service.rs`、`session.rs`），已在构建清单 `minix-driver-tty`（`image.rs:671`）。
+- VFS 侧 mapdriver handler **已完整实现**（`syscalls.rs:2888-2965`，取 `VfsCallNum::Mapdriver`）。
+- 消息结构已定义：`LsysVfsMapdriver`（`minix-types/src/ipc/rs.rs:318`）。
+- RS 侧判定函数已存在：`should_map_driver(pub_: &PublicSlot)` 当 `pub_.dev_nr > 0` 时返回 true。
+- **唯一缺失**：RS publish 闭包（`shell_request.rs:1549-1595`）内未调用 `mapdriver`（注释自陈：`publish.rs:9` “仍未接：mapdriver（归 S12 传输批）”）。
+
+**下单元配方（r9-fix，已精确到代码行）**：
+
+1. 在 RS publish 闭包（`shell_request.rs:1595` 后）加：
+   ```rust
+   if crate::publish::should_map_driver(pub_) {
+       // 构造 VFS_MAPDRIVER 消息（major=pub_.dev_nr, label=pub_.label指向的字符串）
+       // sendrec 到 Endpoint::VFS
+   }
+   ```
+   载荷字段：`major` = `pub_.dev_nr`(=4 for TTY), `label` = RS内存中存驱动标签的指针, `labellen` = 标签长+1(NUL), `ndomains`=0。
+
+2. 确认 RS 启动顺序：TTY 服务在 VFS 之后启动（否则 VFS 未运行、sendrec 失败）。
+3. 验证 VFS `finish_mapdriver` 写入 dmap 后，后续 `open("/dev/console")` 能查到 major=4 → TTY driver endpoint。
+4. TTY 驱动的 `Read`/`Write`/`Ioctl` 处理腿已存在（`minix_chardriver` crate）。
+5. 三件套 + 真机验证 rc marker 打印。
+
+**关键文件清单**（接手者直接打开）：
+- 修：`os/servers/rs/src/shell_request.rs` L1594 后加 mapdriver sendrec
+- 参考：`os/servers/vfs/src/syscalls.rs` L2888-2965 (handler)
+- 参考：`os/libs/minix-types/src/ipc/rs.rs` L318 (LsysVfsMapdriver struct)
+- 参考：`os/servers/rs/src/publish.rs` L19 (should_map_driver)
+- 参考：`os/servers/rs/src/table.rs` L124+199 (label="tty", TTY_MAJOR=4)
+
+存量记录：单参数 r8-fix(commit 865b02a10) 已确保 delivermsg IPC 路径正确。r9 的真正工作量＝上述 RS publish 加 mapdriver 调用。
 
 **rc marker 三条终目标仍未达；goal 保持 active。**
 
