@@ -61,13 +61,23 @@ const MADT_SIGNATURE: [u8; 4] = *b"APIC";
 const MADT_TYPE_IOAPIC: u8 = 1;
 
 /// GICC (Generic Interrupt Controller CPU interface) structure type — aarch64.
-/// ACPI 6.x §5.2.12.5: 80-byte record, MPIDR at offset 56, GICR base at 48,
-/// Flags at offset 12 (bit 0 = Processor Enabled).
+/// ACPI 6.x §5.2.12.14: 80-byte record. Per-CPU identity is read from the ACPI
+/// Processor UID (u32 at +8); Flags (bit 0 = Processor Enabled) at +12. QEMU
+/// zeroes the embedded GICR Base field (+60) for GICv3, so the redistributor
+/// base is NOT sourced here — see [`MADT_TYPE_GICR`].
 const MADT_TYPE_GICC: u8 = 11;
 
-/// GIC Distributor structure type — aarch64. ACPI 6.x §5.2.12.14 (24 bytes,
-/// distributor base at offset 12).
+/// GIC Distributor structure type — aarch64. ACPI 6.x §5.2.12.15 (24 bytes:
+/// GIC ID u32 at +4, Physical Base Address u64 at +8, GIC version u8 at +20).
 const MADT_TYPE_GICD: u8 = 12;
+
+/// GIC Redistributor structure type — aarch64. ACPI 6.x §5.2.12.16, 16 bytes as
+/// emitted by QEMU `build_append_gicr` (Reserved u16 at +2, Discovery Range Base
+/// Address u64 at +4, Discovery Range Length u32 at +12). This is the
+/// authoritative GICv3 redistributor source: the GICC embedded GICR field is
+/// zero on QEMU virt (and only carries a v4.1 compatibility value on real
+/// firmware), so this subtable is the only discovery route that boots aarch64.
+const MADT_TYPE_GICR: u8 = 14;
 
 /// LAPIC (processor local APIC) structure type in MADT.
 const MADT_TYPE_LAPIC: u8 = 0;
@@ -243,9 +253,9 @@ impl AcpiDesc {
         }
         #[cfg(target_arch = "aarch64")]
         {
-            // GICv3: distributor from the GICD entry; redistributor base from
-            // the first GICC's GICR field; stride/nr_irqs mirror the DTB path
-            // (device_tree.rs parse_gic) so both discovery routes produce
+            // GICv3: distributor from the GICD entry; redistributor region base
+            // from the GICR (type 14) subtable; stride/nr_irqs mirror the DTB
+            // path (device_tree.rs parse_gic) so both discovery routes produce
             // identical descriptor values on the same machine.
             let ic = Gicv3Desc {
                 gicd_base: entries.gicd_base,
@@ -384,7 +394,8 @@ struct MadtResult {
     /// aarch64: GICD base from the `GIC Distributor` entry (0 = absent).
     #[cfg(target_arch = "aarch64")]
     gicd_base: usize,
-    /// aarch64: GICR base from the first `GICC` entry (redistributor region).
+    /// aarch64: GICR redistributor region base from the first GICR (type 14)
+    /// subtable (0 = absent).
     #[cfg(target_arch = "aarch64")]
     gicr_base: usize,
 }
@@ -428,7 +439,7 @@ unsafe fn parse_madt(
     #[cfg(target_arch = "aarch64")]
     let mut gicd_base = 0usize; // Filled by the GICD entry (0 = absent).
     #[cfg(target_arch = "aarch64")]
-    let mut gicr_base = 0usize; // Filled by the first GICC entry.
+    let mut gicr_base = 0usize; // Filled by the first GICR (type 14) entry.
     #[cfg(target_arch = "aarch64")]
     let mut gic_version = 0u8; // Filled by the GICD entry (0 = not read).
     let mut nr_cpus = 0u32;
@@ -527,44 +538,58 @@ unsafe fn parse_madt(
             }
             #[cfg(target_arch = "aarch64")]
             MADT_TYPE_GICC => {
-                // GICC (80 bytes), ACPICA `acpi_madt_generic_cpu_interface`
-                // layout: Flags u32 at +12 (bit 0 = Processor Enabled),
-                // GICR base u64 at +48. Hardware ID: ACPICA puts the MPIDR
-                // at +56, but QEMU's GICv2 MADT leaves it zeroed (GICv2 has
-                // no MPIDR-driven discovery) — the ACPI Processor UID (u32
-                // at +8) is the usable per-CPU identity there and matches
-                // the DTB MPIDR Aff0 on QEMU virt, so it is used as hw_id
-                // (S-2b, byte-verified against the live AAVMF MADT).
-                if entry_len >= 64 {
+                // GICC (80 bytes), ACPI 6.x §5.2.12.14. Per-CPU identity is the
+                // ACPI Processor UID (u32 at +8): QEMU's GICv3 MADT zeroes the
+                // MPIDR field (+68) for GICv2 and the embedded GICR Base (+60)
+                // for both, so UID is the usable hardware id and equals the
+                // redistributor frame index (S-2b, byte-verified against the
+                // live AAVMF MADT). Flags (bit 0 = Processor Enabled) at +12.
+                // The redistributor base itself is NOT read here — the GICC
+                // field is zero on QEMU; see the MADT_TYPE_GICR arm below.
+                if entry_len >= 16 {
                     let base = (madt_phys + offset) as *const u8;
-                    // SAFETY: entry_len >= 64, bounds checked.
-                    let read_u64 = |off: usize| -> u64 {
-                        let bytes = unsafe {
-                            core::slice::from_raw_parts(base.add(off), 8)
-                        };
-                        u64::from_le_bytes(bytes.try_into().unwrap())
-                    };
+                    // SAFETY: entry_len >= 16, bounds checked.
                     let flags_bytes = unsafe {
                         core::slice::from_raw_parts(base.add(12), 4)
                     };
                     let flags = u32_le_from_slice(flags_bytes);
+                    // Bit 0 of flags = "Processor Enabled".
                     let enabled = (flags & 1) != 0;
                     if enabled && (nr_cpus as usize) < MAX_CPUS {
                         let uid_bytes = unsafe {
                             core::slice::from_raw_parts(base.add(8), 4)
                         };
                         let hw_id = u64::from(u32_le_from_slice(uid_bytes));
-                        let cpu_gicr = read_u64(48);
                         if nr_cpus == 0 {
                             bsp_id = hw_id as u32;
-                            gicr_base = cpu_gicr as usize;
                         }
                         cpus[nr_cpus as usize] = CpuInfo {
                             hw_id,
-                            gicr_base: Some(cpu_gicr as usize),
+                            // Per-CPU redistributor base is filled after the
+                            // loop from the GICR region base + index * stride
+                            // (mirrors the DTB path, device_tree.rs:414).
+                            gicr_base: None,
                             mtimecmp_addr: None,
                         };
                         nr_cpus += 1;
+                    }
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            MADT_TYPE_GICR => {
+                // GIC Redistributor subtable (16 bytes), ACPI 6.x §5.2.12.16.
+                // Discovery Range Base Address (u64 at +4) is the frame-0
+                // redistributor base; this is the authoritative GICv3 source
+                // (the GICC embedded GICR field is zero on QEMU virt). Take the
+                // first GICR subtable's base — a machine with multiple
+                // redistributor regions still has its low-address region first.
+                if entry_len >= 12 {
+                    let base = (madt_phys + offset) as *const u8;
+                    // SAFETY: entry_len >= 12 guarantees bytes [+4, +12).
+                    let bytes = unsafe { core::slice::from_raw_parts(base.add(4), 8) };
+                    let region = u64::from_le_bytes(bytes.try_into().unwrap()) as usize;
+                    if gicr_base == 0 {
+                        gicr_base = region;
                     }
                 }
             }
@@ -610,6 +635,22 @@ unsafe fn parse_madt(
         nr_cpus = 1;
     }
 
+    // aarch64: derive each enabled CPU's redistributor base from the GICR
+    // region base, using the GICv3 per-frame stride (SGI_base 64 KiB + RD_base
+    // 64 KiB = 128 KiB). QEMU virt indexes redistributors by physical CPU
+    // position and its GICC UID equals that position, so hw_id is a safe stride
+    // multiplier (mirrors the DTB path, device_tree.rs:414). The GICv3 driver
+    // programs the BSP via Gicv3Desc::gicr_base (frame 0); these per-CPU values
+    // are what SMP redistributor bring-up will read. Only filled when a GICR
+    // region base was actually discovered (gicr_base != 0).
+    #[cfg(target_arch = "aarch64")]
+    if gicr_base != 0 {
+        const GICR_STRIDE: usize = 0x2_0000;
+        for i in 0..nr_cpus as usize {
+            cpus[i].gicr_base = Some(gicr_base + (cpus[i].hw_id as usize) * GICR_STRIDE);
+        }
+    }
+
     Ok(MadtResult {
         #[cfg(target_arch = "x86_64")]
         lapic_base,
@@ -640,9 +681,12 @@ unsafe fn parse_madt(
 ///   driver's first GICR write land in a reserved frame and externally
 ///   abort, so a v1/v2 controller is refused outright (mirroring the DTB
 ///   path, which only matches the `arm,gic-v3` compatible string).
-/// - Even with `gic-version=3`, QEMU fills the GICC GICR field with 0. A
-///   zero base is rejected instead of being passed to the driver (whose own
-///   zero-base assert would only fire later, away from the discovery site).
+/// - With `gic-version=3`, QEMU leaves the GICC embedded GICR field zeroed but
+///   emits a separate GICR (type 14) subtable carrying the redistributor region
+///   base; `parse_madt` sources `gicr_base` from that subtable, so a valid
+///   GICv3 machine passes. A zero base reaching this gate means the GICR
+///   subtable is genuinely absent — rejected rather than handed to the driver
+///   (whose own zero-base assert would only fire later, away from the site).
 ///
 /// Version 0 means "byte not read" (entry shorter than 21 bytes); such a
 /// table falls through to the zero-GICR check, which a GICv2 machine only
@@ -702,9 +746,10 @@ pub enum AcpiParseError {
     /// aarch64: MADT lists CPUs but no GIC Distributor record — the
     /// interrupt controller base would be missing for every consumer.
     GicdNotFound,
-    /// aarch64: MADT GICC entries carry a zero GICR base (QEMU fills the
-    /// field with 0 even for `gic-version=3`) — no redistributor frame
-    /// exists to drive.
+    /// aarch64: MADT exposes CPUs but no GICR (type 14) subtable (or its
+    /// region base is zero) — no redistributor frame exists to drive. (The
+    /// GICC embedded GICR field is zero on QEMU virt, so the standalone GICR
+    /// subtable is the only source.)
     GicrNotFound,
     /// aarch64: MADT GICD reports a GICv1/v2 controller; the
     /// redistributor-based (GICv3) interrupt driver cannot drive such a
@@ -720,7 +765,7 @@ impl fmt::Display for AcpiParseError {
             Self::MadtNotFound => write!(f, "MADT (APIC) table not found"),
             Self::MadtTooShort => write!(f, "MADT table too short"),
             Self::GicdNotFound => write!(f, "MADT has CPUs but no GICD record"),
-            Self::GicrNotFound => write!(f, "MADT GICC carries a zero GICR base"),
+            Self::GicrNotFound => write!(f, "MADT has no GICR subtable / zero region base"),
             Self::GicVersionUnsupported(v) => {
                 write!(f, "MADT GICD reports GICv{}; GICv3+ required", v)
             }
@@ -783,7 +828,7 @@ mod tests {
 
     /// Decision table of `check_gic_madt` — the aarch64 post-MADT-walk gate.
     ///
-    /// The GICC/GICD entry arms are `#[cfg(target_arch = "aarch64")]`, so a
+    /// The GICC/GICD/GICR entry arms are `#[cfg(target_arch = "aarch64")]`, so a
     /// host (x86_64) run cannot exercise the full `parse_madt` aarch64 path;
     /// the pure decision function is ungated precisely so this table runs
     /// everywhere. Live-firmware coverage (AAVMF v2 table rejected, v3
@@ -797,16 +842,21 @@ mod tests {
         // redistributor base (QEMU virt gic-version=3 layout: 0x080A_0000).
         assert_eq!(check_gic_madt(1, 0x0800_0000, 0x080A_0000, 3), Ok(()));
 
-        // QEMU gic-version=3 observed shape: GICR field filled with 0.
+        // A GICv3 machine whose GICR (type 14) subtable is genuinely absent:
+        // gicr_base reaches this gate as 0, so the redistributor is refused
+        // rather than handed to the driver (real QEMU gic-version=3 always
+        // emits the GICR subtable, so its gicr_base is the nonzero 0x080A_0000
+        // asserted above).
         assert_eq!(
             check_gic_madt(1, 0x0800_0000, 0, 3),
             Err(AcpiParseError::GicrNotFound)
         );
 
         // QEMU virt GICv2 (default) observed shape: version byte 2 and the
-        // GICV frame base (0x0803_0000) parked in the GICC GICR slot — the
-        // exact shape that externally aborted on the first GICR write
-        // before this gate existed.
+        // GICV frame base (0x0803_0000) — GICv2 has no redistributor, so the
+        // version check refuses it before any bogus base reaches the driver
+        // (the exact shape that externally aborted on the first GICR write
+        // before this gate existed).
         assert_eq!(
             check_gic_madt(1, 0x0800_0000, 0x0803_0000, 2),
             Err(AcpiParseError::GicVersionUnsupported(2))
