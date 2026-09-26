@@ -3381,7 +3381,9 @@ rc marker 仍未达，frontier＝§1.66（B38 修复）。探针已 `git checkou
 
 **次级独立可修（不阻塞主修）**：`syscall_signal.rs:294` panic 路径里 `proc_stacktrace` 自身 GP fault（vector 13→recursive panic），违反注释「诊断路径须比崩溃更健壮」的不变式，应保证回栈不可读时打占位符而非二次崩。
 
-rc marker 仍未达。本单元（B39 取证）**未改任何产品代码**（VFS 侧无辜已坐实，探针全回滚，工作树净）；frontier 转入 §1.69 的 VM/pager 物理帧隔离修复单元。
+**§1.69 侦察初步（本轮读码所得，待下轮真机验证）**：崩溃 memset 串口回显 `kdst memset pa=0x19725698`——这是**具体、低位、可信的物理地址**（非 §1.51 的 `0xffff7fff…` 假 PA、非 bit47 形态），即 `resolve_physical` 走 RS 页表**已成功解析到一个已 populate 的帧**。故上面第二条「未映射 PTE → 恒等式盲算」分支**被排除**：RS 的 4MB 区是真被分配/映射了物理帧，只是那帧与 VFS 在用帧重合。⇒ 嫌疑锁定到 **VM 帧供给把已在用帧二次分发**。结构性头号嫌疑：`kernel/src/vm_handoff.rs:91` 的自由帧池 `build_vm_handoff` 在**首个 boot-image load 之前**就冻结扣减集（只覆盖当时已占的页：kernel image / boot bump / 模块 blob / 页表 / handoff 页）；若 server 运行时栈/heap 增长落在该冻结扣减集未覆盖、却被当作 free 移交给了 VM 的区间，VM 即可能把 VFS 实际在用的帧再分给 RS。下轮验证：比对 pa=0x19725698 是否落在 boot bump/全局池/移交 free-list 的边界内，并查 VM 侧 `alloc_page.rs`（`PhysAlloc::alloc_mem`）取出帧后是否真从 free 集移除 + 是否与 server 运行时堆分配器（B34/B35 的 `GLOBAL_POOL_PAGES`）共用同一段物理。**未真机验证前不作定论**。
+
+rc marker 仍未达。
 
 
 
