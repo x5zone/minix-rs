@@ -3739,4 +3739,24 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 **新前沿（-smp 4 非确定性控制流踩踏）**：各轮命中不同早期崩点——bn72/73 vector-14 DM-#PF、bn74 vector-6 #UD 伴垃圾 rip（0x1/0x3f8/0x11051、cs=0x8 内核段）、bn75 `pagefault in VM`（VM 自身 rip=0 cr2=0 跳空）。共性＝**早期 SMP 竞态踩坏内核控制流/返回地址**（非 stacktrace 读本身）。下轮配方＝单核隔离（xtask qemu 硬编 `-smp 4`，需临时改 qemu.rs 或添 --smp 透传），先确现单核是否复现；若仅多核→查早期启动多核共享结构（idle 唤醒/页表池并发 bump）；真机验 rc marker 仍需。三件套：镜像✅/mock817✅/fmt stacktrace.rs WT8==HEAD8 零新增/clippy src/stacktrace.rs 零告警/双真机 bit47 归零。**rc marker 仍未达。**
 
+### 1.85 B27 定性实锤＝-smp 4 早期启动竞态（单核隔离取证 bn76_s1·无改码·工作树净）
+
+承 §1.84 配方，用手敲 QEMU `-smp 1 -m 512M`（xtask 硬编 `-smp 4`，不改工具避免工具类评审）跑**同一镜像**：
+
+| 签名 | -smp 4 (bn72-75) | -smp 1 (bn76_s1) |
+|---|---|---|
+| kernel panic | 每轮现 | **0** |
+| vector-14 DM-#PF | 现 | **0** |
+| vector-6 #UD 垃圾 rip | 现(bn74) | **0** |
+| 串口行数 | ~172-210（早崩） | **115340** |
+| bit47 corrupt | 0(B45后) | 0 |
+
+**结论（ground truth）**：B27 崩溃是【SMP-only 早期启动竞态】，单核完全不现且推进深两个数量级（无硬死锁：11302 次调度 pick、非活锁死形）。它一直在**遮蔽单核命令面真进展**——单核无崩但 rc marker 仍不出，尾部回到 `init-state Runcom×18 ↔ SingleUser×17` 循环（同 B31/B36/B44 命令面家族）。
+
+**战略分岔（下轮按序）**：
+1. **优先走单核路径追 rc marker**（终目标①②本身不强制 -smp 4）：Runcom↔SingleUser 循环为何 marker 不出——即 init runcom 执行 /etc/rc 到 echo 外部命令腿（§1.80 B44 曾定位 0xd echo 子未 exec-store、但当时被 B27 污染数据误导；现单核无污染可重验）；`rip=0x202d68`×194 属 shell exec_via 腿待 addr2line。
+2. **SMP 竞态（B27 本体）单独立单元**：若终目标不要求多核则可缓；否则查早期启动多核共享结构（idle 唤醒时序 / boot-shim 页表池 bump 并发 / per-CPU 初化）。
+
+本单元纯取证（单核对照实验），无改码、工作树净。建议：真机验证统一改走 `-smp 1` 手敲或给 xtask 加 `--smp` 透传（工具类改动），以解锁命令面可见度。rc marker 仍未达。
+
 
