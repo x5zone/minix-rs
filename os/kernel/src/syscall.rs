@@ -2805,52 +2805,6 @@ fn nk4a_flags_mark(
     let _ = (tag, proc_table, nr);
 }
 
-/// NK4-C 1.3 取证探针（task1-close 裁决删除）：boot 尾态一次性全表采样。
-///
-/// s3a-s3c 串口实证：RS exec 完 12 服务器后进 main receive，但整轮 `pick->`
-/// 只出现过 RS(2)/VM(8)——其余服务器出生后再未被调度，而出生快照只有 init
-/// 一条（flags=0x8080 NO_PRIV|NO_QUANTUM）。本探针在 pick 空手时打印全部
-/// 非 free 槽的最终 rts_flags/runnable/queued，裁决「卡 NO_PRIV 未清」vs
-/// 「已 runnable 但阻塞在 receive」。只用 write_str/write_hex（同
-/// nk4a_flags_mark：bump 堆耗尽，format! 即分配失败）。
-pub(crate) fn nk4a_tail_dump(proc_table: &crate::proc_table::ProcessTable) {
-    #[cfg(not(feature = "mock"))]
-    {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-        Console::write_str("nk4a: tail-dump begin\n");
-        for p in proc_table.procs_slice() {
-            if p.p_rts_flags.load() & crate::proc::rts::SLOT_FREE != 0 {
-                continue;
-            }
-            let nr = p.p_nr;
-            Console::write_str("nk4a: tail nr=");
-            Console::write_hex((nr.0 + 256) as u64);
-            Console::write_str(" flags=0x");
-            Console::write_hex(p.p_rts_flags.load() as u64);
-            Console::write_str(" runnable=");
-            Console::write_str(if p.is_runnable() { "yes" } else { "no" });
-            Console::write_str(" queued=");
-            Console::write_str(if proc_table.is_in_scheduler(nr) {
-                "yes"
-            } else {
-                "no"
-            });
-            // NK4-C 1.7 取证追加（task1-close 裁决删除）：打出进程名 +
-            // 阻塞等待图的边（to=向谁发、from=向谁收），用于定位
-            // PAGEFAULT 腿到底卡在谁、VM 自身处于什么状态。
-            Console::write_str(" name=");
-            Console::write_str(p.p_name.as_str());
-            Console::write_str(" to=");
-            Console::write_hex(p.p_sendto_e.0 as u64);
-            Console::write_str(" from=");
-            Console::write_hex(p.p_getfrom_e.0 as u64);
-            Console::write_str("\n");
-        }
-        Console::write_str("nk4a: tail-dump end\n");
-    }
-    let _ = proc_table;
-}
-
 /// VmInhibitClear — clear RTS_VMINHIBIT on the target.
 ///
 /// C: do_vmctl.c:132-160. C's assert on RTS_VMINHIBIT converts to EINVAL;

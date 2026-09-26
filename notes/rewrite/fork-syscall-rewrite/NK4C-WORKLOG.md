@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝§1.99 真根因修复（console open 腿已通）：§1.98「dmap[4] 未填 / grant Vec 指针时效性」两大前提被本轮真机探针逐条证伪——grant ptr==postsync ptr（不 realloc）、safecopy 数据完美（dev4_mask=0040 第6行 TTY dev_nr=4 正解）、dmap[4] 实际已映射（char-open 探针 row4=1）。真根因翻案＝char open 时 `node.dev` 的 major=0（不是4）：`mfs/server.rs::lookup_child` 构造 `FileNode::new(...)` 把 device 硬编码为 `0`，丢掉了 C `path.c:37 fn_dev=(dev_t)rip->i_zone[0]` 应带出的特殊设备号（`/dev/console` 的 `zones[0]=0x400`=major4 minor0）→ VFS `get_by_major(dmap,0)` 找不到 TTY 驱动 → ENXIO。修复：`0`→`child.zones[0]`（CodeReview 0 P0/0 P1）+ 回归测 `assert_eq(node.device,0x400)`。真机验证：char-open 探针翻成 `op 04x11m`→major=04、驱动命中、open 不再 ENXIO。三件套绿（mock 178/0fail、rustfmt 我的 server.rs 零新增漂移、镜像重建+两次真机语义签名一致 `1998df6c`）+探针全回滚。⚠ rc marker 仍未打出：open 之后 boot 停在 `pick->4` 调度空转、且 committed `nk4a:` 每上下文切换探针刷屏（~460行/秒）淹没串口——下轮＝清 boot 关键路径上的 committed nk4a 噪声探针 + 追 runcom→读/etc/rc→fork/exec echo 下游。历史链：…→§1.97r→§1.98 翻案(dmap误判)→§1.99 真根因(mfs lookup device=0)修复+open 通。rc marker 三条终目标仍未达，goal 保持 active。**
+> **⚠ 最新前沿＝§1.100 去噪清障 + 真阻断现形（全局栈缺页死锁，非 livelock）**：清除散在 `os/kernel/src/{lib,trap_dispatch,syscall}.rs` 的 committed `nk4a:` fork 调试探针——lib.rs 每上下文切换/恢复族 219 行（pick->/picknone/sa0/gs2/probe text|stk|dm/sa1-after/cr3-done/pre-restore/susp-again）+ trap_dispatch.rs 缺页 handler 内页表 walk 违规调试 370 行（pf# 块含 `walk_x86_64`、vs 采样、pf-save 块含手动 PTE 逐级 dump+`walk_x86_64`、rs_trace/anom/leak+pf-refault、pfc 块含 `CurrentPteWalk::walk`、gp-byte、sig rs_trace）+ syscall.rs 失去唯一调用者的死码 `nk4a_tail_dump` 46 行。全部 `#[cfg(not(feature="mock"))]` 纯调试（write_str/读寄存器/walk 仅取证，零功能副作用）。**功能码完整保留**（CodeReview MUST-FIX 0）：ForwardToVm 臂 `save_frame_to_context→trap_style=FullContext→forward_pagefault_to_vm→scheduler_loop` 对位 C `pagefault()`；Signal 臂真实 `user exception:` 崩溃报告 + `cause_signal` 保留；tick/quantum 功能（`local_tick`/`check_quantum`/`bkl_lock_or_inherit`/`save_irq_frame_to_context`）保留。三件套：mock **817/0fail** 不减（改动全在非 mock）·rustfmt 删除-only 两文件漂移 hunk 数**低于基线**（lib 162<166、trap 29<35）零新增·镜像重建 + **三次真机（clean1/2/3）里程碑语义签名 md5 完全相同 `a47b6a84`**（11 exec 全成功含 init/mfs/mib/pfs/tty、init-state Runcom×1、**无 panic/无 OOM/无 wrong-user-pointer/无 pagefault-in-VM**），地址方差仍是已知 UEFI memmap 环境非确定性。**真阻断现形**：去噪后 boot 不再 livelock 刷屏，串口干净读出——12 服务器全 exec 完、init 达 Runcom 一次，随后 init(11)+boot 服务器(1,4,5,6) 在**用户栈增长 VA（`fa=0x7fffffffc/dxxx`）连续缺页 → `pfwd nr=X out=B`（Blocked）转发给 VM(dst=8)**，VM `vm-pf recv` 收下却始终不清 fault → 全体挂起、只剩 `gtick` 空转（CPU idle、无人可跑）。⇒ §1.98/§1.99 看到的「`pick->4` 调度空转」其实是**探针串口 DoS 掩盖了这个真死锁**。三条终目标仍未达（rc marker 需 init→fork 子→exec sh /etc/rc→exec echo 写 console，卡在子/服务器栈增长 fault 未被 VM 服务）。**下轮＝追用户栈增长缺页服务腿**：sh 栈基址 `0x7fffffffea78`、fault 在 0x1000-0x3000 之下（在 §1.93-95 的 256KiB runway 内应已预映却仍 fault）→ 查 fork 子/newimage 的初始栈是否真按 runway 预映、VM 栈增长 handle、`SYS_VMCTL ClearPageFault` 重入队腿。历史链：…→§1.98 翻案(dmap误判)→§1.99 真根因(mfs lookup device=0)修复+open 通→§1.100 去噪清障暴露栈增长缺页全局死锁。**
+>
+> **（历史·§1.99）⚠ 真根因修复（console open 腿已通）：§1.98「dmap[4] 未填 / grant Vec 指针时效性」两大前提被本轮真机探针逐条证伪——grant ptr==postsync ptr（不 realloc）、safecopy 数据完美（dev4_mask=0040 第6行 TTY dev_nr=4 正解）、dmap[4] 实际已映射（char-open 探针 row4=1）。真根因翻案＝char open 时 `node.dev` 的 major=0（不是4）：`mfs/server.rs::lookup_child` 构造 `FileNode::new(...)` 把 device 硬编码为 `0`，丢掉了 C `path.c:37 fn_dev=(dev_t)rip->i_zone[0]` 应带出的特殊设备号（`/dev/console` 的 `zones[0]=0x400`=major4 minor0）→ VFS `get_by_major(dmap,0)` 找不到 TTY 驱动 → ENXIO。修复：`0`→`child.zones[0]`（CodeReview 0 P0/0 P1）+ 回归测 `assert_eq(node.device,0x400)`。真机验证：char-open 探针翻成 `op 04x11m`→major=04、驱动命中、open 不再 ENXIO。三件套绿（mock 178/0fail、rustfmt 我的 server.rs 零新增漂移、镜像重建+两次真机语义签名一致 `1998df6c`）+探针全回滚。⚠ rc marker 仍未打出：open 之后 boot 停在 `pick->4` 调度空转、且 committed `nk4a:` 每上下文切换探针刷屏（~460行/秒）淹没串口——下轮＝清 boot 关键路径上的 committed nk4a 噪声探针 + 追 runcom→读/etc/rc→fork/exec echo 下游。历史链：…→§1.97r→§1.98 翻案(dmap误判)→§1.99 真根因(mfs lookup device=0)修复+open 通。rc marker 三条终目标仍未达，goal 保持 active。**
 >
 > **（历史·§1.95）⚠ r7b 闭环：premature-OOM + VM 栈 runway 两大前置全清——`VM_STACK_SIZE` 64KiB→256KiB + `MAX_BIG_BLOCKS`=GLOBAL_POOL_PAGES=1024 + §1.60 assert 退役；真机首次 OOM-RT=0·panic=0·46931行达Runcom+exec sh。新前沿 r8=wrong user pointer（§1.96 已修）。**
 >
@@ -4237,3 +4239,67 @@ C ground truth：`minix3/minix/fs/mfs/path.c:37` `node->fn_dev = (dev_t) rip->i_
 **rc marker 三条终目标仍未达（open 腿本轮实修，串口可见性受 committed 探针噪声阻）；goal 保持 active。**
 
 
+---
+
+## §1.100 去噪清障 + 真阻断现形：committed nk4a 探针清除（含缺页 handler 页表 walk 违规），暴露用户栈增长缺页全局死锁（2026-09-26）
+
+### 背景：接续 §1.99「console open 已通、rc marker 仍未出、boot 停在 `pick->4` 调度空转 + `nk4a:` 每切换探针刷屏」
+
+上一轮判定「串口被 committed `nk4a:` 每上下文切换探针 DoS（~460 行/秒、34k 行/60s）淹没 marker、且拖慢 guest」。本单元执行 WORKLOG §1.99 记录的下轮方向 ①：清除 boot 关键路径上的 committed fork 调试探针，取干净信号。
+
+### 真机开局取证（清理前 sig_run1.log）
+
+读 HEAD 基线（§1.99 镜像）真机日志尾部：停点是七行完全相同的循环
+```
+nk4a: pick->0x4 / sa0-0x4 / gs2 / probe text|stk|dm / sa1-after cr3 / pre-restore rip=0x202d68
+```
+`rip` 恒定 = proc 4 恢复到同一指令、用户态零推进。表面像 livelock。**但先假设是探针 DoS 掩盖真信号**——不除噪无法证伪。
+
+### 探针清单与删除（全部 `#[cfg(not(feature="mock"))]` 纯调试）
+
+- **os/kernel/src/lib.rs（-219 行）**：每切换/恢复族
+  - `set_active_root_tracked` 内 `cr3-done`（每次 CR3 切换 write_str）
+  - 调度循环 `pick->`（每次成功 pick）+ `picknone`（AtomicUsize 门控 + `nk4a_tail_dump` 调用）
+  - `switch_address_space` 前后 `sa0-`（含 `rdmsr GS_BASE`、`.text/stk/dm` 三页 `walk_x86_64`）+ `sa1-after`（CR3 读回）
+  - restore 路径 `pre-restore-`（RIP/RSP/RBX 采样 + `nk4a_rs_trace/anom/leak_probe` + `nk4a_pte_watch("rst")` 页表 walk）
+  - VM suspend 重入 `susp-again`
+- **os/kernel/src/trap_dispatch.rs（-370 行）**：缺页 handler 内页表 walk **违规**族（硬约束「缺页 handler 内严禁页表 walk」）
+  - `pf#` 块（vector==14 早期探针，内含 `walk_x86_64(root,cr2)`）
+  - `vs` 采样器（PIT tick 打被中断者 rip）
+  - ForwardToVm 臂：`nk4a_pte_watch("pf")` + `pf-save` 块（手动 PML4E/PDPTE/PDE/PTE 逐级 DM dump + `walk_x86_64` 读 [rsp]）+ `rs_trace/anom/leak("pf2")` + `pf-refault`
+  - `pfc` 块（含 `CurrentPteWalk::walk` 读 rip 处 8 字节）
+  - Signal 臂 `gp-byte` 块（`walk_x86_64` 读 #GP rip）+ `rs_trace/anom/leak("sig")`
+- **os/kernel/src/syscall.rs（-46 行）**：`nk4a_tail_dump`（唯一调用者=被删的 `picknone` 分支，成死码——CodeReview SHOULD 采纳，直接删而非 `#[allow(dead_code)]`）
+
+### 功能码完整保留（CodeReview MUST-FIX 0 逐条核对）
+
+- ForwardToVm 臂：`save_frame_to_context` → `proc.trap_style = FullContext` → `forward_pagefault_to_vm` → `panic on Err` → `scheduler_loop`，对位 C `pagefault()`（`minix3/.../exception.c:112-129`）。
+- Signal 臂：真实 `Console::write_str("user exception: vector ...")` 崩溃报告块（**非 nk4a 探针**，是有效诊断，保留）+ `save_frame_to_context` + `cause_signal` + `scheduler_loop`。
+- tick/quantum 功能：`clock::local_tick`、`table.check_quantum`、`smp::bkl_lock_or_inherit`、`save_irq_frame_to_context` 全部保留（tick/gtick 探针删了但调度功能半留）。
+- lib.rs：`set_current_root_phys`、`pick_and_bill→break p`+`idle`、`tlb_must_refresh`+`switch_address_space`、`fault_flush_va` invlpg 全保留。
+
+### 三件套
+
+- **mock**：`minix-kernel --features mock` **817 passed / 0 fail**（改动全在 `cfg(not(mock))`，mock 码零变化、基线只不减）。
+- **rustfmt**：`cargo +nightly fmt --check` 中 lib.rs 漂移 hunk 162 < HEAD 基线 166、trap_dispatch.rs 29 < 35（删除-only、未新增任何漂移；整仓既有基线漂移非本次触碰）。
+- **镜像 + 真机签名**：`image --release` 重建 → 单核 `-smp 1` 跑 **三次**（clean1/2/3，含 syscall.rs 死码删除后重建的 clean3），里程碑语义签名 md5 **完全相同 `a47b6a84`**（11 exec 全成功含 init/mfs/mib/pfs/tty、init-state Runcom×1、**无 panic / 无 OOM / 无 wrong-user-pointer / 无 pagefault-in-VM**）。原始日志差异仅落在已知 UEFI memmap 环境非确定性（`conv=12/14`、`reserved=119/121`）及其引发的 IRQ 采样时序抖动。
+
+### 真阻断现形（去噪后的干净串口）
+
+去噪后 boot **不再 livelock 刷屏**。100s 单核跑（5428 行，可读）尾部：只剩 `nk4a: gtick k=` 递增（CPU idle、无人可跑）。最后一次真实事件序列：
+- 12 服务器全部 exec 完成（`exec endpt=5 tty / 7 mib / 9 pfs / a mfs / b init`，init=nr11）；
+- `init-state Runcom` 一次；
+- 随后 `pfwd nr=0xb(11) out=B` / `nr=1/6/5/4 out=B`（多进程缺页转发结果=Blocked）+ `snd-init dst=0x8`(向 VM 发) + 反复 `vm-pf recv fa=0x7fffffffda38`/`fa=0x7fffffffca38`（**用户栈增长 VA**）。
+
+⇒ **真阻断 = init(11) + 若干 boot 服务器在用户栈增长缺页上被转发给 VM(dst=8) 后永久阻塞、VM 收下 fault 却不清 → 全局死锁**。§1.98/§1.99 看到的「`pick->4` 空转」其实是**探针串口 DoS 掩盖了这个真死锁**。
+
+### 下轮方向（r10：追用户栈增长缺页服务腿）
+
+`exec` 探针显示子/服务器栈基址 `stack=0x7fffffffea78`。fault 在 `0x7fffffffd-ca` = 基址之下 0x1000–0x3000 内，**本应落在 §1.93-95 扩到的 256KiB 栈 runway 内却仍缺页**。候选排查：
+1. exec/newimage 腿给**子进程/sh** 铺的初始栈是否真按 256KiB runway 预映（§1.93 的 runway 只作用 boot 服务初始栈、未必作用 fork+exec 出的 sh）；
+2. VM 栈增长（region grow-down）handle 对这些 VA 是否走到、`vm-pf recv` 后为何不 `ClearPageFault` 回重入队；
+3. `pfwd ... out=B` 的 B（Blocked）语义——forward 后进程停 RTS_PAGEFAULT，等 VM 的 `SYS_VMCTL ClearPageFault` 再入队；确认 VM 是否处理了这批栈页 fault 请求但重入队腿断。
+
+其它遗留（后续独立单元）：仍有 committed `nk4a:` 探针散在 `ipc.rs/vm.rs/proc.rs/syscall.rs/grant.rs` 等（`pdmv-set/fx/rtsrs/msgw/rcv-p4/sa-call/rs-step2` 等），本单元先清 boot 关键路径的洪泛 + 缺页违规者；余者「committed 不留探针」应继续收，但它们目前恰好是 r10 面包屑。
+
+**rc marker 三条终目标仍未达（本单元去噪清障 + 修复缺页 handler 页表 walk 违规 + 暴露真死锁，取得实质进展、非阻塞）；goal 保持 active。**

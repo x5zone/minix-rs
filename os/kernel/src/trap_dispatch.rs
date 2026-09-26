@@ -539,64 +539,6 @@ pub(crate) fn nk4a_rs_leak_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
 pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     let vector = frame.vector as u8;
 
-    // NK4-A fix27e+ 取证路标（task1-close 裁决删除）：cr3 切换后内核在
-    // VM 页表上运行到 1dac2b12 空指针 #PF，handler 树又在 1dae6869 二次
-    // #PF 递归（int_fix35 CR2=0x10 ×4686）。本探针证明 PF 是否到达
-    // kernel body 并打印原始 RIP/err——若真机只见 12 条后静默，则崩溃点
-    // 在 asm stub/dispatcher 层（探针前），本身即证词。mock（宿主）下
-    // console 是真实端口写，编译掉（同 lib.rs 路标惯例）。
-    // C-3 迭代1（评审 F0 续修）：补 CR2（故障 VA——判定是否恒 0x10）与
-    // RSP（栈耗尽可见性），上限 12→20；并加 M1-M5 分段路标（各限 4 次）
-    // 把递归点二分到 body 前段 / smp 读取 / 表读取 / handle / panic 渲染
-    // 之一（每轮最后出现的路标 = 故障段）。
-    #[cfg(not(feature = "mock"))]
-    if vector == 14 {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static PF_MARK: AtomicUsize = AtomicUsize::new(0);
-        let n = PF_MARK.fetch_add(1, AtomicOrd::Relaxed);
-        if n < 20 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            let cr2: u64;
-            // SAFETY: reading CR2 has no side effects.
-            unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack)) };
-            C0::write_str("nk4a: pf#");
-            C0::write_hex(n as u64);
-            C0::write_str(" rip=");
-            C0::write_hex(frame.rip);
-            C0::write_str(" err=");
-            C0::write_hex(frame.errcode);
-            C0::write_str(" cr2=");
-            C0::write_hex(cr2);
-            C0::write_str(" rsp=");
-            C0::write_hex(frame.rsp);
-            // 第 27 轮：CR3 直读——current_root_phys() 在故障风暴期返回
-            // None（整轮 walk= 缺席），打印真实活动根定位「哪个进程的
-            // 页表在故障」。
-            {
-                let cr3: u64;
-                // SAFETY: reading CR3 has no side effects.
-                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack)) };
-                C0::write_str(" cr3=");
-                C0::write_hex(cr3 & 0x000F_FFFF_FFFF_F000);
-            }
-            // C-3 F0 迭代4：内核独立走当前 root 查 cr2 的 PTE——分辨
-            // "VM 的 PTE 写未持久到内存"（walk NP）与"写生效但翻译/TLB
-            // 不一致"（walk 命中）。
-            if let Some(root) = crate::current_root_phys() {
-                match crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(cr2)) {
-                    Some((pa, fl)) => {
-                        C0::write_str(" walk=0x");
-                        C0::write_hex(pa.0);
-                        C0::write_str("/0x");
-                        C0::write_hex(fl.bits() as u64);
-                    }
-                    None => C0::write_str(" walk=NP"),
-                }
-            }
-            C0::write_str("\n");
-        }
-    }
-
     // C-3 迭代1 分段路标：每个站点独立计数（static 展开在各站点），限 4 次。
     // 用法：nk4a_stage_mark!("pfm2") —— 串口打 "nk4a: pfm2"。
     #[cfg(not(feature = "mock"))]
@@ -612,26 +554,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 C0::write_str("\n");
             }
         }};
-    }
-
-    // NK4-A C-3 迭代9 取证（task1-close 裁决删除）：全向量采样器（限 40）
-    // ——验证 PIT/时钟中断是否触发（tick 活性），并采样被中断用户态
-    // （RS）的 rip 推进轨迹。
-    #[cfg(not(feature = "mock"))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static VEC_SAMPLE: AtomicUsize = AtomicUsize::new(0);
-        let vn = VEC_SAMPLE.fetch_add(1, AtomicOrd::Relaxed);
-        // 迭代10：只采样 PIT（v=0x50）——每个时钟 tick 打印被打断者的
-        // rip，即 RS 用户态自旋点的周期采样（RS ELF 可符号化）。
-        if vector == 0x50 && vn < 400 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: vs");
-            C0::write_hex(vn as u64);
-            C0::write_str(" rip=0x");
-            C0::write_hex(frame.rip);
-            C0::write_str("\n");
-        }
     }
 
     // E1 trap bridge: vector 33 (IPC_VECTOR) from user mode is the IPC
@@ -1073,193 +995,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("pagefault from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
-                // NK4-C 第 11 轮金丝雀已于第 31 轮摘除：该探针在 rbx==0 时
-                // 改写保存上下文（write_user_register 注入
-                // 0xDEAD_BEEF_CAFE_0001），真机 c30b 实证它把哨兵当 RBX
-                // 恢复交付给 RS——探针本身成了上下文破坏源，干扰
-                // self=0 根因取证。仅保留被动观察探针。
-                // NK4-A Task C 第 5 轮判别（task1-close 裁决删除）：pf 转发
-                // 入口「保存即采到的 RBX」——与 lib.rs pre-restore 路标的
-                // `rbx=`（同一进程本次恢复交付值）对照，三分支裁决：两处同
-                // 为 0 → 保存即错（故障点用户 RBX 已是 0）；保存非 0 而恢复
-                // 0 → 保存后被内核改写（RBX 的 IPC 状态寄存器语义踩掉用户
-                // callee-saved 活值）；两处非 0 而用户仍崩 → 恢复读错源。
-                // 上限 8 在 c23a 于启动前 8 次内耗尽（崩溃在第 100+ 次），
-                // 第 6 轮提到 48，仅真机。
-                // S2h 评审修复（task1-close 裁决删除）：pw-pf 移出 PFRBX 的
-                // 48 配额块——旧挂法被全进程 PF 配额在启动期吃光，崩溃
-                // 窗口内必然失明（假阴性）；watch 自身只在变化时打印，
-                // 无需外部配额。
-                #[cfg(not(feature = "mock"))]
-                if proc.p_endpoint.0 == 2 {
-                    nk4a_pte_watch("pf", proc.p_seg.phys_root.0);
-                }
-                #[cfg(not(feature = "mock"))]
-                {
-                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    static PFRBX: AtomicUsize = AtomicUsize::new(0);
-                    if PFRBX.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                        let cr2: u64;
-                        // SAFETY: reading CR2 has no side effects.
-                        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
-                        C0::write_str("nk4a: pf-save ep=");
-                        C0::write_hex(proc.p_endpoint.0 as u64);
-                        C0::write_str(" rbx=");
-                        C0::write_hex(frame.rbx);
-                        C0::write_str(" rip=");
-                        C0::write_hex(frame.rip);
-                        C0::write_str(" cr2=");
-                        C0::write_hex(cr2);
-                        // NK4-C 第 12 轮：RS 全现场——wrapper 的栈写目标
-                        // （rsp/r8=slot/rdi/rsi）与 r10 状态车道。
-                        if proc.p_endpoint.0 == 2 {
-                            // 第 18 轮：RS 故障 VA 的四级页表层级逐级 dump
-                            // （PML4E/PDPTE/PDE/PTE present 位）——直接
-                            // 定位映射在哪一级丢失。走 DM 读物理页表页。
-                            {
-                                use minix_arch::DirectMapArch as _;
-                                let c2 = cr2;
-                                let i4 = (c2 >> 39) & 0x1FF;
-                                let i3 = (c2 >> 30) & 0x1FF;
-                                let i2 = (c2 >> 21) & 0x1FF;
-                                let i1 = (c2 >> 12) & 0x1FF;
-                                let root_pa = crate::proc_table_with(&section)
-                                    .get(cur_nr)
-                                    .map(|p| p.p_seg.phys_root.0)
-                                    .unwrap_or(0);
-                                let rd = |pa: u64| -> u64 {
-                                    let va = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa));
-                                    unsafe { core::ptr::read(va.0 as *const u64) }
-                                };
-                                let pml4e = rd(root_pa + i4 * 8);
-                                let mut l3pa = 0u64;
-                                if pml4e & 1 != 0 {
-                                    l3pa = pml4e & 0x000F_FFFF_FFFF_F000;
-                                }
-                                let pdpte = if l3pa != 0 { rd(l3pa + i3 * 8) } else { 0 };
-                                let mut l2pa = 0u64;
-                                if pdpte & 1 != 0 {
-                                    l2pa = pdpte & 0x000F_FFFF_FFFF_F000;
-                                }
-                                let pde = if l2pa != 0 { rd(l2pa + i2 * 8) } else { 0 };
-                                let mut l1pa = 0u64;
-                                if pde & 1 != 0 && pde & 0x80 == 0 {
-                                    l1pa = pde & 0x000F_FFFF_FFFF_F000;
-                                }
-                                let pte = if l1pa != 0 { rd(l1pa + i1 * 8) } else { 0 };
-                                C0::write_str(" lvl4=");
-                                C0::write_hex(pml4e);
-                                C0::write_str(" lvl3=");
-                                C0::write_hex(pdpte);
-                                C0::write_str(" lvl2=");
-                                C0::write_hex(pde);
-                                C0::write_str(" lvl1=");
-                                C0::write_hex(pte);
-                                C0::write_str(" lvl2pa=");
-                                C0::write_hex(l2pa);
-                                C0::write_str(" lvl1pa=");
-                                C0::write_hex(l1pa);
-                            }
-                            C0::write_str(" rsp=");
-                            C0::write_hex(frame.rsp);
-                            C0::write_str(" rax=");
-                            C0::write_hex(frame.rax);
-                            C0::write_str(" rcx=");
-                            C0::write_hex(frame.rcx);
-                            C0::write_str(" rdx=");
-                            C0::write_hex(frame.rdx);
-                            C0::write_str(" r8=");
-                            C0::write_hex(frame.r8);
-                            C0::write_str(" rdi=");
-                            C0::write_hex(frame.rdi);
-                            C0::write_str(" rsi=");
-                            C0::write_hex(frame.rsi);
-                            C0::write_str(" rbp=");
-                            C0::write_hex(frame.rbp);
-                            C0::write_str(" r10=");
-                            C0::write_hex(frame.r10);
-                            C0::write_str(" err=");
-                            C0::write_hex(frame.errcode);
-                            // 第 13 轮：memset(0x227af0..0x227b40) 无 prologue
-                            // 压栈，[rsp] 即调用者返回地址。
-                            if frame.rip >= 0x227_000 && frame.rip < 0x228_000 {
-                                // memset 无 prologue 压栈：[用户 rsp] 即调用
-                                // 者返回地址——经 RS 页表翻译后走 DM 读。
-                                let root = crate::proc_table_with(&section)
-                                    .get(cur_nr)
-                                    .map(|p| p.p_seg.phys_root);
-                                if let Some(root) = root {
-                                    match crate::pte_walk::walk_x86_64(
-                                        root,
-                                        minix_types::VirBytes(frame.rsp),
-                                    ) {
-                                        Some((pa, _)) => {
-                                            use minix_arch::DirectMapArch as _;
-                                            let va = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(minix_types::PhysBytes(pa.0));
-                                            let retaddr = unsafe {
-                                                core::ptr::read(va.0 as *const u64)
-                                            };
-                                            C0::write_str(" ret=");
-                                            C0::write_hex(retaddr);
-                                        }
-                                        None => C0::write_str(" ret=?"),
-                                    }
-                                }
-                            }
-                        }
-                        C0::write_str("\n");
-                    }
-                }
-                #[cfg(not(feature = "mock"))]
-                {
-                    nk4a_rs_trace_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                    nk4a_rs_anom_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                    nk4a_rs_leak_probe("pf2", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                    // 第 16 轮（task1-close 裁决删除）：VA 重复故障检测——
-                    // 同一页第 2+ 次故障意味着「填充后内容又丢了」（页被
-                    // 二次清零/重映射），直接打印次数与 rbx 现场。
-                    #[cfg(target_arch = "x86_64")]
-                    if proc.p_endpoint.0 == 2 {
-                        use core::sync::atomic::{
-                            AtomicU64, AtomicUsize, Ordering as AtomicOrd,
-                        };
-                        let cr2: u64;
-                        // SAFETY: reading CR2 has no side effects.
-                        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)) };
-                        static RE_VA: [AtomicU64; 32] =
-                            [const { AtomicU64::new(0) }; 32];
-                        static RE_N: [AtomicUsize; 32] =
-                            [const { AtomicUsize::new(0) }; 32];
-                        let mut slot = 32;
-                        let mut i = 0;
-                        while i < 32 {
-                            if RE_VA[i].load(AtomicOrd::Relaxed) == cr2 {
-                                slot = i;
-                                break;
-                            }
-                            if RE_VA[i].load(AtomicOrd::Relaxed) == 0 && slot == 32 {
-                                slot = i;
-                            }
-                            i += 1;
-                        }
-                        if slot < 32 {
-                            let k = RE_N[slot].fetch_add(1, AtomicOrd::Relaxed);
-                            if k >= 1 && k <= 2 {
-                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                                C0::write_str("nk4a: pf-refault va=");
-                                C0::write_hex(cr2);
-                                C0::write_str(" k=");
-                                C0::write_hex(k as u64);
-                                C0::write_str(" rbx=");
-                                C0::write_hex(frame.rbx);
-                                C0::write_str(" rip=");
-                                C0::write_hex(frame.rip);
-                                C0::write_str("\n");
-                            }
-                        }
-                    }
-                }
                 // C 对位：异常入口与 trap 入口同记返回样式（mpx.S 保存半
                 // p_kern_trap_style=KTS_FULLCONTEXT；restore 消费）。缺它则
                 // 转发后重入队的进程在下次 dispatch 撞 "no entry trap style
@@ -1270,70 +1005,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             // FROM_KERNEL mini_send (exception.c:112-129). Send errors
             // panic here (C: panic "WARNING: pagefault: mini_send
             // returned %d").
-            // NK4-C 1.9 取证探针（task1-close 裁决删除）：pm+出生服务器的
-            // 每次 fault 现场三元组 (ep,rip,cr2)——s14d 实锤 9 进程 cr2=0x0
-            // 空指针崩溃（VM noaddr→SIGSEGV 正确），本探针定位崩溃指令 rip。
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static PFC_N: AtomicUsize = AtomicUsize::new(0);
-                if matches!(cur_nr.0, 0 | 1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11)
-                    && pf.vaddr.0 == 0
-                    && PFC_N.fetch_add(1, AtomicOrd::Relaxed) < 48
-                {
-                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                    C0::write_str("nk4a: pfc ep=");
-                    C0::write_hex(cur_nr.0 as u64);
-                    C0::write_str(" rip=");
-                    C0::write_hex(frame.rip);
-                    C0::write_str(" cr2=");
-                    C0::write_hex(pf.vaddr.0);
-                    C0::write_str(" err=");
-                    C0::write_hex(frame.errcode as u64);
-                    // NK4-C s14g 判别（task1-close 裁决删除）：经进程页表
-                    // 读 rip 处 8 字节。读到 00 00 00 00（add [rax],al）⇒
-                    // 帧被零填充抹写（走分配器双账本审计）；读到 xchg 真指令
-                    // ⇒ 上下文/寄存器腐坏（回 set_ipc_return_code 污染假设）。
-                    {
-                        use minix_arch::{DirectMapArch as _, PteWalkArch as _};
-                        let table = crate::proc_table_with(&section);
-                        let root = table
-                            .get(cur_nr)
-                            .map(|p| p.p_seg.phys_root.0)
-                            .unwrap_or(0);
-                        let pa = minix_arch::CurrentPteWalk::walk(
-                            minix_types::PhysBytes(root),
-                            minix_types::VirBytes(frame.rip),
-                        )
-                        .map(|(pa, _)| pa.0 & !0xFFF)
-                        .unwrap_or(0);
-                        C0::write_str(" tex");
-                        C0::write_hex(pa >> 12);
-                        C0::write_str("=");
-                        if pa != 0 {
-                            let va = minix_arch::CurrentDirectMap::kernel_phys_to_virt(
-                                minix_types::PhysBytes(pa + (frame.rip & 0xFFF)),
-                            );
-                            let mut b = [0u8; 8];
-                            // SAFETY: pa 来自页表 walk 的帧基址，+页内偏移后
-                            // 经内核 Direct Map 读 8 字节；只读。
-                            unsafe {
-                                core::ptr::copy_nonoverlapping(
-                                    va.0 as *const u8,
-                                    b.as_mut_ptr(),
-                                    8,
-                                );
-                            }
-                            for x in b {
-                                C0::write_hex(x as u64);
-                            }
-                        } else {
-                            C0::write_str("unmapped");
-                        }
-                    }
-                    C0::write_str("\n");
-                }
-            }
             if let Err(e) = forward_pagefault_to_vm(
                 crate::proc_table_with(&section),
                 crate::priv_table_with(&section),
@@ -1370,38 +1041,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                 Console::write_str(" rflags ");
                 Console::write_hex(frame.rflags);
                 Console::write_str("\n");
-                // NK4-A C-3 迭代5 取证（task1-close 裁决删除）：#GP 时直读
-                // rip 处 8 字节（走当前 root 的 PTE + DM 窗口）——对照 ELF
-                // 字节判别"特权指令执行态"还是"页内容/视图不一致"。RS 入口
-                // ELF 字节应为 48 83 e4 f0（and rsp,-0x10）。
-                if vector == 13 {
-                    if let Some(root) = crate::current_root_phys() {
-                        match crate::pte_walk::walk_x86_64(
-                            root,
-                            minix_types::VirBytes(frame.rip),
-                        ) {
-                            Some((pa, fl)) => {
-                                Console::write_str("nk4a: gp-byte@0x");
-                                Console::write_hex(pa.0);
-                                Console::write_str(" fl=0x");
-                                Console::write_hex(fl.bits() as u64);
-                                Console::write_str(" bytes=");
-                                use minix_arch::DirectMapArch;
-                                let base = <minix_arch::CurrentDirectMap as DirectMapArch>::kernel_phys_to_virt(pa).0;
-                                for i in 0..8u64 {
-                                    let b = unsafe {
-                                        ((base + i) as *const u8).read_volatile()
-                                    };
-                                    Console::write_hex(b as u64);
-                                }
-                                Console::write_str("\n");
-                            }
-                            None => {
-                                Console::write_str("nk4a: gp rip unmapped\n");
-                            }
-                        }
-                    }
-                }
             }
             // Persist first: the signal manager's later SIGSEND delivery
             // builds the handler trampoline on top of the fault-time
@@ -1413,15 +1052,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .unwrap_or_else(|| panic!("exception from invalid proc nr {cur_nr:?}"));
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
-                // NK4-B P1 第 7 轮（task1-close 裁决删除）：本臂与下面的
-                // VmSuspend 臂是第 6 轮静态穷举发现、当时未取证的两个存帧
-                // 站点（NK4B-WORKLOG T0.4）。
-                #[cfg(not(feature = "mock"))]
-                {
-                    nk4a_rs_trace_probe("sig", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                    nk4a_rs_anom_probe("sig", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                    nk4a_rs_leak_probe("sig", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                }
                 // 同 ForwardToVm 臂：异常入口记返回样式（C mpx.S 对位），
                 // 信号暂停后的下次 dispatch 恢复需要它。
                 proc.trap_style = minix_arch::TrapStyle::FullContext;

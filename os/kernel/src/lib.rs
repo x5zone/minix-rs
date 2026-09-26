@@ -2863,16 +2863,6 @@ pub(crate) fn set_active_root_tracked(root: PhysBytes) {
     unsafe {
         minix_arch::CurrentTlbArch::set_active_root(root);
     }
-    // NK4-A fix26 取证路标（task1-close 裁决删除）：serial_fix26e 的旧两
-    // 分显示 rs 的切换死在 sa0 与 sa1 之间。本路标把区间收窄到 `mov cr3`
-    // 本身：cr3-done 缺失 = 切换指令或紧随其后的取指/栈访问在新表下死。
-    #[cfg(not(feature = "mock"))]
-    {
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-        C0::write_str("nk4a: cr3-done-0x");
-        C0::write_hex(root.0);
-        C0::write_str("\n");
-    }
     set_current_root_phys(root);
 }
 
@@ -3431,69 +3421,6 @@ fn finish_and_restore(
     let mut frame = <CurrentCpuContextArch as CpuContextArch>::TrapFrame::default();
     <CurrentCpuContextArch as CpuContextArch>::apply_to_trap_frame(&ctx, &mut frame);
 
-    // NK4-A fix26 取证路标（task1-close 裁决删除）：走到这里说明 Stage
-    // 3-5 全程在 picked 的地址空间下活着，死点只剩 restore/iret。
-    // `frame.rip`/`frame.rsp` 是 x86 帧字段（aarch64 对应 elr_el1/sp_el0），
-    // 本路标服务 NK4-A/NK4-B 的 x86_64 取证，按架构门编译。
-    #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-    {
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-        // NK4-A Task C 第 5 轮判别（task1-close 裁决删除）：`rbx=` 是本次
-        // restore 将交付给用户的 RBX —— `restore_to_user` 无条件
-        // `mov rbx, [ctx + rbx_off]`（arch/x86_64/trap_return.rs），而本端口
-        // 把 RBX 同时用作内核维护的 IPC 状态寄存器（boot.rs
-        // or/clear_ipc_status_reg）。RS 真机 c21a/c22a：step2 循环里 LLVM 把
-        // `&self.table` 常驻 RBX（反汇编 0x20d2db `mov %rbx,%rdi` 传
-        // endpoint_slot 的 self），崩溃那次恢复后 self=0x0 —— 本字段裁决
-        // 「内核交付了 0」vs「交付值正确、用户态随后自行踩坏」。
-        C0::write_str("nk4a: pre-restore- rip=");
-        C0::write_hex(frame.rip);
-        C0::write_str(" rsp=");
-        C0::write_hex(frame.rsp);
-        // NK4-C Task C A 案后语义拆分：r10s=R10 状态车道交付值，
-        // rbx=用户 callee-saved RBX 交付值（真值，callee_saved_rbx）。
-        C0::write_str(" r10s=");
-        C0::write_hex(minix_arch::ipc_status_register(&ctx));
-        C0::write_str(" rbx=");
-        C0::write_hex(minix_arch::x86_64::trap_stub::callee_saved_rbx(&ctx));
-        C0::write_str("\n");
-        // NK4-B P1 第 7 轮（task1-close 裁决删除）：把「交付侧」也放进与
-        // 存帧侧共享的去重轨迹（site=rst）。rs 出生值一并回答：本进程
-        // 最早那条 rst 的 rbx 就是 boot 装配的 ctx.rbx（不必在 arch 层
-        // 写控制台）。
-        let picked_ep = table
-            .get(picked)
-            .map(|p| p.p_endpoint.0 as u64)
-            .unwrap_or(u64::MAX);
-        crate::trap_dispatch::nk4a_rs_trace_probe(
-            "rst",
-            picked_ep,
-            minix_arch::ipc_status_register(&ctx),
-            frame.rip,
-        );
-        crate::trap_dispatch::nk4a_rs_anom_probe(
-            "rst",
-            picked_ep,
-            minix_arch::ipc_status_register(&ctx),
-            frame.rip,
-        );
-        crate::trap_dispatch::nk4a_rs_leak_probe(
-            "rst",
-            picked_ep,
-            minix_arch::ipc_status_register(&ctx),
-            frame.rip,
-        );
-        // NK4-C S2c 哨兵（task1-close 裁决删除）：RS 即将 iretq 回用户态，
-        // 交付前最后重读监视 PTE——若此处仍完好而下次 pf/x33 观测到损坏，
-        // 抹写落在 RS 用户态执行期间（反之则在内核代执行段）。
-        if picked_ep == 2 {
-            let watch_root = table
-                .get(picked)
-                .map(|p| p.p_seg.phys_root.0)
-                .unwrap_or(0);
-            crate::trap_dispatch::nk4a_pte_watch("rst", watch_root);
-        }
-    }
     // NK4-A C-3 迭代4：故障页 invlpg——此刻 CR3 即被恢复进程自己的根
     // （switch_address_space 在 stage 2 已装），iretq 前的最后一点。
     #[cfg(target_arch = "x86_64")]
@@ -3661,41 +3588,7 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             // C: proc.c:338-340 — `while (!(p = pick_proc())) idle();`
             let picked = loop {
                 if let Some(p) = pick_and_bill(table, smp, priv_table, cpu) {
-                    // NK4-A 取证路标（task1-close 裁决删除）：pick 命中谁。
-                    // serial_fix25c 显示 rs 已入队却从未上 CPU，本路标
-                    // 分辨"pick 从未轮到它"与"pick 了但恢复上下文失败"。
-                    #[cfg(not(feature = "mock"))]
-                    {
-                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                        C0::write_str("nk4a: pick->");
-                        C0::write_hex(p.0 as u64);
-                        C0::write_str("\n");
-                    }
                     break p;
-                }
-                // NK4-A C-3 迭代8 取证（一次性）：pick 空手时打印 RS 的
-                // RTS flags——"run enter"后调度器静默的判别仪器。
-                // NK4-C 1.3 扩展（task1-close 裁决删除）：第 2/4 次空手
-                // 时追加全表尾态采样，分辨「boot 尾段瞬时态」与「最终
-                // 静默态」（第 4 次仍无变化即坐死静态停点）。
-                #[cfg(not(feature = "mock"))]
-                {
-                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    static PICKNONE: AtomicUsize = AtomicUsize::new(0);
-                    match PICKNONE.fetch_add(1, AtomicOrd::Relaxed) {
-                        0 => {
-                            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                            C0::write_str("nk4a: picknone rs_flags=0x");
-                            let fl = table
-                                .get(crate::proc::proc_nr::RS_PROC_NR)
-                                .map(|p| p.p_rts_flags.get().bits())
-                                .unwrap_or(0xFFFF);
-                            C0::write_hex(fl as u64);
-                            C0::write_str("\n");
-                        }
-                        1 | 3 => crate::syscall::nk4a_tail_dump(table),
-                        _ => {}
-                    }
                 }
                 idle(&section, table, smp, priv_table, cpu);
             };
@@ -3712,100 +3605,8 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
             tlb_must_refresh = table
                 .get(picked)
                 .is_some_and(|p| p.needs_tlb_refresh(crate::current_ptproc_nr()));
-            // NK4-A fix26 取证路标（task1-close 裁决删除）：serial_fix26 证
-            // 明 DM 窗口真值已入表但 rs 被 pick 后仍静默死。下面三点二分
-            // 死亡区间：sa1-after 缺失 = CR3 切换指令自身死；出现则死点在
-            // 切换后的续跑路径（Stage 3-5 / restore）。root= 打印 CR3 将收
-            // 到的页表根（serial_fix26b 死在 sa0/sa1 之间，需知写入了什么）。
-            // x86_64 门：walk_x86_64 与 RSP 强读都是 x86 取证语义（NK4-A
-            // 评审 F1——无架构门曾打断 aarch64/riscv64 载体编译）。
-            #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-            {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                let root_dbg = table
-                    .get(picked)
-                    .map_or(0xFFFF_FFFF_FFFF_FFFF, |p| p.p_seg.phys_root.0);
-                let cur_dbg = crate::current_root_phys().map_or(0, |r| r.0);
-                C0::write_str("nk4a: sa0-");
-                C0::write_hex(picked.0 as u64);
-                C0::write_str(" root=0x");
-                C0::write_hex(root_dbg);
-                C0::write_str(" cur=0x");
-                C0::write_hex(cur_dbg);
-                C0::write_str("\n");
-                // serial_fix26d：rs 的 sa1（CR3 读回）缺失 = 切换后首条
-                // 取指即死。切换前用 Direct Map 渠道（不依赖 CR3）walk 目
-                // 标表的三个紧随切换而被访问的样本 VA：本函数代码页
-                // (.text)、当前内核栈页 (.bss)、内核 DM 首样本页。缺页
-                // 打 NP+flags，命中打 PA — 与期望线性 PA 对照即知
-                // map_kernel 铺哪一段坏了。
-                if root_dbg != 0 {
-                    use crate::pte_walk::walk_x86_64;
-                    // C-3 F0 取证：切换前 GS.BASE 采样（与 kmain gs0/gs1
-                    // 对比——判定 GS 何时为零）。
-                    let (g_lo, g_hi): (u32, u32);
-                    // SAFETY: rdmsr probe, read-only.
-                    unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
-                    C0::write_str("nk4a: gs2 gsbase=0x");
-                    C0::write_hex(((g_hi as u64) << 32) | g_lo as u64);
-                    C0::write_str("\n");
-                    let probe_text = switch_address_space as *const () as u64;
-                    let stack_va: u64;
-                    // SAFETY: reading RSP has no side effects.
-                    unsafe { core::arch::asm!("mov {}, rsp", out(reg) stack_va, options(nomem, nostack, preserves_flags)) };
-                    let stack_va = stack_va & !0xFFF;
-                    let dm_probe = {
-                        let b = minix_arch::CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
-                        b + 0x20_0000 // kernel image PA 0x200000 的 DM VA
-                    };
-                    for (tag, va) in [
-                        (" text", probe_text & !0xFFF),
-                        (" stk", stack_va),
-                        (" dm", dm_probe),
-                    ] {
-                        match walk_x86_64(
-                            minix_types::PhysBytes(root_dbg),
-                            minix_types::VirBytes(va),
-                        ) {
-                            Some((pa, f)) => {
-                                C0::write_str("nk4a: probe");
-                                C0::write_str(tag);
-                                C0::write_str(" va=0x");
-                                C0::write_hex(va);
-                                C0::write_str(" -> pa=0x");
-                                C0::write_hex(pa.0);
-                                C0::write_str(" fl=0x");
-                                C0::write_hex(f.bits() as u64);
-                                C0::write_str("\n");
-                            }
-                            None => {
-                                C0::write_str("nk4a: probe");
-                                C0::write_str(tag);
-                                C0::write_str(" va=0x");
-                                C0::write_hex(va);
-                                C0::write_str(" -> NP\n");
-                            }
-                        }
-                    }
-                }
-            }
             // C: proc.c:349 — switch_address_space(p).
             switch_address_space(table, picked);
-            // x86_64 门：CR3 读回是 x86 语义（AArch64 对位是 TTBR0_EL1、
-            // riscv64 是 satp；NK4-A 评审 F1——无架构门曾打断载体编译）。
-            #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-            {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                // serial_fix26c：rs 死在 sa0 之后 sa1 之前。sa2 打印
-                // switch 后的 CR3 读回值——出现且值正确 = mov to cr3 与
-                // 紧随取指都活了，死点在更后的续跑；未出现 = 切换瞬间死。
-                let cr3_now: u64;
-                // SAFETY: reading CR3 has no side effects.
-                unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3_now, options(nomem, nostack, preserves_flags)) };
-                C0::write_str("nk4a: sa1-after cr3=0x");
-                C0::write_hex(cr3_now);
-                C0::write_str("\n");
-            }
         }
         let picked = current.expect("scheduler loop: proc_ptr seeded or picked above");
 
@@ -3902,26 +3703,6 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                         // 栈会耗尽）——continue 平级重挑：本进程已停排
                         // 不会被选中，VM 可运行、会得到 CPU。
                         None => {
-                            #[cfg(not(feature = "mock"))]
-                            {
-                                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                                if let Some(p) = table.get(picked) {
-                                    if let Some(ctx) = p.p_vm_suspend.as_ref() {
-                                        C0::write_str("nk4a: susp-again st=");
-                                        let s: u8 = match ctx.state {
-                                            crate::vm::VmSuspendState::Pending => 0,
-                                            crate::vm::VmSuspendState::Fetched => 1,
-                                            crate::vm::VmSuspendState::Completed(_) => 2,
-                                        };
-                                        C0::write_hex(s as u64);
-                                        C0::write_str(" start=0x");
-                                        C0::write_hex(ctx.check_params.start.0);
-                                        C0::write_str(" len=0x");
-                                        C0::write_hex(ctx.check_params.length.0);
-                                        C0::write_str("\n");
-                                    }
-                                }
-                            }
                             continue;
                         }
                     }
