@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r5 修好 B48 后 echo 已能运行；真阻断＝minix-rt premature-OOM（§1.91 探针 bn89 翻案 §1.90）。** §1.90 猜「exec 成功但 echo 入口 text 末级 PTE 永不映射→首条取指定死」**已被单核 diagctl 探针推翻**：入口缺页 `va=0x22a250` **命中可执行 region `[0x227000,0x22b000) exec=true`、进入 `handle_pagefault`**，`vm-pf bytes` 实打故障地址处＝**正确 ELF 代码**（`4883e4f0…`）⇒ demand-paging 正常、text 内容已载入（`lvl1=0x0` 只是 pre-fault 态、非永不映射）；boot 深入多进程真实调度。**真终局＝RS panic：`nk4c: OOM-RT size=001000 big=40/40 px=077/400`＋`alloc.rs:566 memory allocation of 4096 bytes failed`**＝B34/B35 同型 **premature-OOM**：`MAX_BIG_BLOCKS=64` 记录表满而 ~905 空闲页仍在（纯容量瓶颈、非真内存）。`alloc.rs:77-88` 已自证原则解（绑 `GLOBAL_POOL_PAGES=1024`）被 defer—抬高静态 `big_blocks` 数组会平移 .bss 跨未物化页→boot 自缺页递归 panic（§1.59 bn22ctl）。**下单元＝r7：落地 boot eager 物化 / VM-backed heap supplier（对位 C `MAP_PREALLOC` image memmap 腿 `exec_general.c:25`+`region.c:492-499`；本仓 `mmap.rs PREALLOC_MAP` 仅记位/`AnonymousMemory` 无 `ev_new`＝defer 点），解锁 big-block 天花板；修后双跑验 OOM-RT=0·panic=0 且推进超 bn89。** 本单元纯取证（探针已回滚、工作树净）。历史链：…→§1.89 修复腐蚀→§1.90 (误诊 text)→§1.91 翻案确诊 premature-OOM。**rc marker 三条终目标仍未达，goal 保持 active。**
+> **⚠ 最新前沿＝r7 动手实锤：premature-OOM 能被原则解消除（`MAX_BIG_BLOCKS`→`GLOBAL_POOL_PAGES`=1024 ⇒ `OOM-RT`=0 真机坐实），但纯抬常量撞 boot 剃刀边缘——1024/128 均确定性 `pagefault in VM` 崩于 ~119 行，控制组 64 全新重建复现 29685 行至 premature-OOM（排除构建产物敏感性）。真前置＝boot 初始栈 eager runway（§1.92·`install_boot_stack` 只 eager 映 1 个 frame 页、4MiB 栈区其余 demand-fill）。** §1.91 猜「exec_bootproc memsz eager ⇒ 撞未物化页顾虑对 boot 腿不成立」**被本轮真机推翻**：memsz eager 只覆盖 PT_LOAD/.bss 段、**不覆盖初始栈 runway**；§1.59「一有尺寸扰动 VM 就自缺页」被真机钉死为真。本轮据此把常量维持 **64（非回退、唯一不崩的已知值）**、`alloc.rs` **仅改文档注释**记录实验矩阵与不变量。历史链：…→§1.91 翻案确诊 premature-OOM→§1.92 r7 动手否证 memsz-eager 假设、确诊栈 runway 缺腿。**下单元＝r7b（真正原则解）**：给 boot 服务初始栈 eager 预映一段 runway（对位 C `main.c:400 handle_memory_once`+image `MAP_PREALLOC`，本仓 §1.55 已登记 `mmap.rs PREALLOC_MAP` 仅记位/`AnonymousMemory` 无 `ev_new`＝分歧点），使 `.bss`/布局扰动不再触发 VM 自缺页；届时再把 `MAX_BIG_BLOCKS` 绑到 `GLOBAL_POOL_PAGES`。此改动触及 boot/VM 映页语义、非纯分配器面、回归半径大，**动手前必读 CLAUDE.md+review-core/process+fix-guard，三件套齐+CodeReview**。rc marker 三条终目标仍未达，goal 保持 active。以下旧前沿保留为历史。
+>
+> **（历史·§1.91）⚠ 前沿＝r5 修好 B48 后 echo 已能运行；真阻断＝minix-rt premature-OOM（§1.91 探针 bn89 翻案 §1.90）。** §1.90 猜「exec 成功但 echo 入口 text 末级 PTE 永不映射→首条取指定死」**已被单核 diagctl 探针推翻**：入口缺页 `va=0x22a250` **命中可执行 region `[0x227000,0x22b000) exec=true`、进入 `handle_pagefault`**，`vm-pf bytes` 实打故障地址处＝**正确 ELF 代码**（`4883e4f0…`）⇒ demand-paging 正常、text 内容已载入（`lvl1=0x0` 只是 pre-fault 态、非永不映射）；boot 深入多进程真实调度。**真终局＝RS panic：`nk4c: OOM-RT size=001000 big=40/40 px=077/400`＋`alloc.rs:566 memory allocation of 4096 bytes failed`**＝B34/B35 同型 **premature-OOM**：`MAX_BIG_BLOCKS=64` 记录表满而 ~905 空闲页仍在（纯容量瓶颈、非真内存）。`alloc.rs:77-88` 已自证原则解（绑 `GLOBAL_POOL_PAGES=1024`）被 defer—抬高静态 `big_blocks` 数组会平移 .bss 跨未物化页→boot 自缺页递归 panic（§1.59 bn22ctl）。**下单元＝r7：落地 boot eager 物化 / VM-backed heap supplier（对位 C `MAP_PREALLOC` image memmap 腿 `exec_general.c:25`+`region.c:492-499`；本仓 `mmap.rs PREALLOC_MAP` 仅记位/`AnonymousMemory` 无 `ev_new`＝defer 点），解锁 big-block 天花板；修后双跑验 OOM-RT=0·panic=0 且推进超 bn89。** 本单元纯取证（探针已回滚、工作树净）。历史链：…→§1.89 修复腐蚀→§1.90 (误诊 text)→§1.91 翻案确诊 premature-OOM。**rc marker 三条终目标仍未达，goal 保持 active。**
 >
 > **⚠（历史·§1.89/§1.90）最新前沿＝B48 腐蚀修复已落地并真机验证（§1.89），但 rc marker 暴露下游新阻断＝`/bin/echo` 二进制 exec 侧失败（命令名已正确仍不 exec）＝当前 rc marker 真阻断。** §1.88 确诊的「fork 缺父侧 COW 写保护」已修：`do_fork` 补 `parent.protect_cow_pages`（＝C `map_writept(src)`，`region.c:995-996`，父子两侧共享页 PTE 皆只读）。**真机实锤（单核 `-smp 1`）：bn85 临时 sh diagctl 探针打 `b48child hex=6563686f`＝子读到完整正确 "echo"（修复前 §1.87 为腐蚀 `65353335`）＝腐蚀机制根除**；bn84/bn86（CodeReview SHOULD#2 重构前后无探针）`kernel panic=0`、达 sh exec `0x20ef60`、行数同形＝重构零回归。三件套绿（mock **531**/0fail 含新回归测 `test_do_fork_downgrades_parent_shared_pte` · rustfmt 两改动文件零新增漂移 · clippy/target 无我文件新告警）·CodeReview **0 MUST-FIX**（采纳 SHOULD#2 只清写位重构 · SHOULD#1 `fork_region` remaps/id · NIT#4 SMP shootdown 各登记为独立前沿）。**但 `/bin/echo` 入口 `0x206b20` 三跑皆 0、rc marker 仍=0⇒腐蚀必要非充分**：子拿正确名后 exec /bin/echo **仍失败于下游**（子 slot d `0x800d` 持续 int33/vm-pf 但从不进 echo 入口）。**下单元＝r6**：在子侧 exec 路径（PM `exec`→VFS `open_exec`/newimage）打 diagctl 探针，定位带正确 "echo" 的 exec 请求在哪一环报错（回指 §1.81 B44 候选）；旁行验常规 fd→console→串口可达性。历史链：§1.86 单字节腐蚀→§1.87 绑异帧→§1.88 确诊父侧写保护缺失→§1.89 修复落地真机验证腐蚀消除。**rc marker 三条终目标仍未达，goal 保持 active。** 以下旧前沿保留为历史。
 >
@@ -3890,5 +3892,30 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 - **关键修正 §1.59 顾虑**：`vm_server.rs:696 exec_bootproc` 段循环 **L773 `seg_len = seg.memsz`**（含 NOBITS .bss 尾）、L785 `pages = (va_end-va_base).div_ceil(PS)`、L825-835 逐页 `alloc_pfn()+map_page()`＝**已对每个 boot 服务的 PT_LOAD 段按 memsz eager 物化**（非仅 filesz）。故 boot 服务（含 RS）的 .bss 尾**本就 eager 落地**⇒「抬高 `MAX_BIG_BLOCKS` 撑大 .bss 跨未物化页→boot 自缺页 panic」对 **boot 服务腿很可能已不成立**（alloc.rs:101-108 的 demand-fill 措辞指的是 mmap/heap `MAP_PREALLOC` 腿＝`mmap.rs PREALLOC_MAP` 仅记位/`AnonymousMemory` 无 `ev_new`，非 exec_bootproc 段循环）。§1.59 崩因或系当时段循环用 filesz、或纯帧耗尽，需 bn 复验。
 - **真正拦路＝编译期护栏**：`alloc.rs:94-96` `const _: () = assert!((MAX_BIG_BLOCKS - 32) * size_of::<Option<BigBlock>>() < PAGE_BYTES)`。抬到 1024 ⇒ `(1024-32)*24=23808 ≥ 4096` **直接构建失败**。该 assert 正是 §1.59 保守约束的固化。
 - **r7 首个实验（最低风险探路）**：把 `MAX_BIG_BLOCKS` 从 64 抬到能覆盖真机峰值（bn89 已 `big=64/64`、§1.60 记峰值 47，真并发 live big-block > 64）——先试 128/256 并同步放宽 assert（或改 assert 为按 eager 物化成立的预算），**重建镜像 + 单核双跑**：若 `OOM-RT=0·panic=0` 且推进超 bn89 ⇒ §1.59 顾虑确已被 eager-memsz 化解，继续向 `GLOBAL_POOL_PAGES` 抬；若 boot 早崩回小行数 ⇒ 坐实仍有未物化页腿，则转「exec_bootproc 全 .bss eager 覆盖」或「VM-backed 增长堆」原则解。**动手前先读 CLAUDE.md + review-core/process + fix-guard；改常量+护栏属分配器面、回归半径中等，三件套齐（mock minix-rt 基线只增 · rustfmt 零新漂移 · 双跑签名一致）+ CodeReview。**
+
+---
+
+## 1.92 【r7 动手实验·决定性否证 §1.91 假设，坐实 §1.59＝boot 初始栈未 eager 物化】纯抬 `MAX_BIG_BLOCKS` 撞墙：1024→`OOM-RT`=0 但 VM 启动栈自缺页崩（含代码·分配器文档，常量维持 64 非回归基线）
+
+**承接 §1.91 r7-scoping 动手。结论：原则解（绑 `GLOBAL_POOL_PAGES`=1024）确能消除 premature-OOM（`OOM-RT`=0 实测坐实），但被一个真实的 boot 结构缺陷挡住——`exec_bootproc` 的 eager `memsz` 只覆盖 PT_LOAD/.bss，不覆盖 boot 服务的初始栈 runway（§1.91 假设因此被推翻、§1.59 顾虑被真机钉死为真）。本轮据此把常量留在 64（唯一不崩的已知值），把常量抬升与 eager-runway 修复绑为 r7b。**
+
+**实验矩阵（单核 `-smp 1`·同镜像·全量重建·docker/宿主 mock 与真机对齐）**：
+
+| 常量 | 编译 | 行数 | OOM-RT | panic | 签名 |
+|---|---|---|---|---|---|
+| **1024**（=GLOBAL_POOL_PAGES，删 §1.60 assert） | ✅过（+22.5KB 静态 .bss） | bn90=116 / bn91=117 | **0** | 2 | `pagefault in VM` rip=0x23581b cr2=rsp=0x7ffffffeef88 err=0x6(not-present) |
+| **128**（+(128−64)×24=+1536B，保留 assert） | ✅过 | bn92=119 / bn93=119 | 0 | 2 | 同上（rip/cr2 逐字相同） |
+| **64**（HEAD·控制组·全新重建） | ✅ | **bn94=29685** | **1** | 1 | 达 premature-OOM（与 §1.91 bn89=29701 同态） |
+
+**关键取证判读**：
+1. **排除构建产物敏感性**：控制组 64 全新重建复现 29685 行至 premature-OOM（≈bn89），证明「崩在 ~119 行」不是 rebuild 抖动、而是**常量本身是回归因**（守 §1.49「签名对构建产物敏感」教训做的对照）。
+2. **128 与 1024 崩在同一 rip/cr2**＝现场与抬升幅度无关，只与「是否偏离 64 那个恰好不跨界的布局」有关⇒ boot 布局是**剃刀边缘**：VM 启动栈的下降恰好越过 `install_boot_stack` 唯一 eager 映的那一个 frame 页，落到未物化页，而 VM 是缺页服务者无法服务自身启动缺页→递归 panic（`trap_dispatch.rs:1059`）。
+3. **`OOM-RT`=0 于 1024** 实锤 §1.91 对真阻断（premature-OOM）的诊断正确——记录表容量确是拦路；只是修它的**前置**（boot 栈 eager runway）没到位。
+
+**读码坐实缺陷点**（`os/servers/vm/src/vm_server.rs:929-936`）：`install_boot_stack` 为 boot 服务映 **4 MiB** `DEFAULT_STACK_LIMIT` 栈 **region**，但注释自证「pages materialize on demand; **only the frame page is eagerly materialized**」——L974-985 只 `alloc_pfn()+map_page()` 帧页一页。故 §1.91「exec_bootproc memsz eager ⇒ .bss 腿不成立」的推断**局部正确**（PT_LOAD 段是 eager）但**结论错**（栈 runway 非段、仍 demand-fill）。
+
+**修向定夺（r7b·真正原则解）**：给 boot 服务的初始栈 eager 预映一段 runway（对位 C `main.c:400 handle_memory_once` + image memmap `MAP_PREALLOC`——本仓 §1.55 已登记 `mmap.rs PREALLOC_MAP` 仅记位/`AnonymousMemory` 无 `ev_new` 的分歧），使 `.bss`/布局扰动不再触发 VM 自缺页；届时把 `MAX_BIG_BLOCKS` 绑到 `GLOBAL_POOL_PAGES`（alloc.rs 文档已记此不变量与前置）。此改动触及 boot/VM 映页语义、非纯分配器面，回归半径大，须独立单元 + CodeReview + 三件套。
+
+**本轮落地面**：`alloc.rs` **仅改文档注释**（常量维持 64＝非回退、唯一不崩值），把上述实验矩阵与「eager memsz 不覆盖栈 runway」的钉死结论写进 `MAX_BIG_BLOCKS` 文档块，防后人再走「纯抬常量」死路。三件套：mock minix-rt **59·0fail**（基线只增不减）/ rustfmt 我的 diff **零新增漂移**（唯 `MAX_BIG_BLOCKS` assert 一处为 §1.60 遗留存量漂移，pristine HEAD 与 WT 逐字同、非本轮引入，未越界去动）/ 真机＝本轮已重建并跑过 bn90-bn94（常量维持 64 的镜像与 HEAD 二进制逐字同＝注释不改 codegen，控制组 bn94=29685 即已提交态签名）。**rc marker 三条终目标仍未达；frontier：premature-OOM 根因与修法（1024 消 OOM-RT）已实锤，真前置＝boot 初始栈 eager runway（r7b）。goal 保持 active。**
 
 

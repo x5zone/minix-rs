@@ -85,6 +85,20 @@ pub const MAX_SLABS: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 /// 覆盖真机观测峰值（big 峰值 47）的 64——(64−32)×24 B = +768 B <
 /// 一页，不跨未物化页。原则解 = 待 boot eager 物化落地后改绑
 /// `GLOBAL_POOL_PAGES`。
+///
+/// r7 实测把「boot eager 物化」的确切缺口钉死（单核重建·同镜像双跑）：本
+/// 常量抬到 `GLOBAL_POOL_PAGES`=1024 → `OOM-RT`=0（premature-OOM 消失），
+/// 但 boot 于 ~116 行确定性 `pagefault in VM`（rip=0x23581b、
+/// cr2=rsp=0x7ffffffeef88、err=0x6 not-present）；抬到 128 同样崩（同一现
+/// 场）、改回 64 全新重建复现 29685 行至 premature-OOM（`OOM-RT`=1）＝
+/// 排除构建产物敏感性、坐实常量本身是回归因。根因＝`install_boot_stack`
+/// 只为每个 boot 服务 eager 映**一个** frame 页、4 MiB 栈区其余页按需缺页，
+/// 而 VM 无法服务自身启动缺页；`exec_bootproc` 的 eager `memsz` 只覆盖
+/// PT_LOAD/.bss，**不覆盖初始栈 runway**（§1.91 猜「memsz eager 已化解 §1.59」
+/// 因此被推翻）。⇒ 原则解的真前置是「boot 初始栈 eager runway 物化」（对位
+/// C `handle_memory_once`/`MAP_PREALLOC`，§1.55 分歧），非纯抬本常量。
+/// 故本轮仍留 64（非回退、是唯一不崩的已知值），把常量抬升与 eager-runway
+/// 修复绑为一个单元（r7b）。
 pub const MAX_BIG_BLOCKS: usize = 64;
 
 /// 容量 round 的硬不变量：从旧上限 32 抬到 [`MAX_BIG_BLOCKS`] 带来的静态
