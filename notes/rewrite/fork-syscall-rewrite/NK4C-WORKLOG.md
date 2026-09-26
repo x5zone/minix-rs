@@ -3886,4 +3886,9 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 **旁证·仍待查（未变）**：① 常规用户 fd→console→串口可达性（rc marker stdout 可观测性，须伴行验/rc 腿兼走 diagctl）；② cow_exec_pf.rs/vm_server.rs 历史遗留探针群（第 10/12/20/32 轮 + Task A/C-3 若干，bn89 日志 29701 行绝大多数是 `pick/sa0/sa1/cr3/gs2/probe/pre-restore` 既有诊断 spam）另立清理单元。**三件套**：本单元纯取证（探针已 git checkout 回滚＝工作树净，仅改 WORKLOG）。**rc marker 三条终目标仍未达；frontier 从「§1.90 echo text 未映射（误诊）」翻案确诊为「r5 修好后 echo 已运行、真阻断＝minix-rt big-block 记录表 premature-OOM＝B34/B35 同族」，r7＝落地 eager 物化/VM-backed supplier 解锁该天花板。goal 保持 active。**
 
+**§1.91 r7-scoping（读 `exec_bootproc` 坐实，供下单元直接接手）**：
+- **关键修正 §1.59 顾虑**：`vm_server.rs:696 exec_bootproc` 段循环 **L773 `seg_len = seg.memsz`**（含 NOBITS .bss 尾）、L785 `pages = (va_end-va_base).div_ceil(PS)`、L825-835 逐页 `alloc_pfn()+map_page()`＝**已对每个 boot 服务的 PT_LOAD 段按 memsz eager 物化**（非仅 filesz）。故 boot 服务（含 RS）的 .bss 尾**本就 eager 落地**⇒「抬高 `MAX_BIG_BLOCKS` 撑大 .bss 跨未物化页→boot 自缺页 panic」对 **boot 服务腿很可能已不成立**（alloc.rs:101-108 的 demand-fill 措辞指的是 mmap/heap `MAP_PREALLOC` 腿＝`mmap.rs PREALLOC_MAP` 仅记位/`AnonymousMemory` 无 `ev_new`，非 exec_bootproc 段循环）。§1.59 崩因或系当时段循环用 filesz、或纯帧耗尽，需 bn 复验。
+- **真正拦路＝编译期护栏**：`alloc.rs:94-96` `const _: () = assert!((MAX_BIG_BLOCKS - 32) * size_of::<Option<BigBlock>>() < PAGE_BYTES)`。抬到 1024 ⇒ `(1024-32)*24=23808 ≥ 4096` **直接构建失败**。该 assert 正是 §1.59 保守约束的固化。
+- **r7 首个实验（最低风险探路）**：把 `MAX_BIG_BLOCKS` 从 64 抬到能覆盖真机峰值（bn89 已 `big=64/64`、§1.60 记峰值 47，真并发 live big-block > 64）——先试 128/256 并同步放宽 assert（或改 assert 为按 eager 物化成立的预算），**重建镜像 + 单核双跑**：若 `OOM-RT=0·panic=0` 且推进超 bn89 ⇒ §1.59 顾虑确已被 eager-memsz 化解，继续向 `GLOBAL_POOL_PAGES` 抬；若 boot 早崩回小行数 ⇒ 坐实仍有未物化页腿，则转「exec_bootproc 全 .bss eager 覆盖」或「VM-backed 增长堆」原则解。**动手前先读 CLAUDE.md + review-core/process + fix-guard；改常量+护栏属分配器面、回归半径中等，三件套齐（mock minix-rt 基线只增 · rustfmt 零新漂移 · 双跑签名一致）+ CodeReview。**
+
 
