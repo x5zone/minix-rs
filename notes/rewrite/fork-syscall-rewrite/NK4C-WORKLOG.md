@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r7b 取证钉死（§1.93）：阻塞 premature-OOM 根除的真前置＝本仓 VM 缺 C 的 `MAP_PREALLOC` eager 取帧腿（`memtype.rs AnonymousMemory` 无 `ev_new`、§1.55 已登记分歧）⇒ boot 服务初始栈只映一帧页、全交 demand-fill、而 VM 无法服务自身启动缺页（C 同样 panic、非 bug；C `main.c:400` 也只映 frame_size、两边同）。三路对质已排除「常量面/panic 面/frame_size 映射面」＝确认是 boot/VM memtype/region 子系统的真实重构。属架构裁决级（改 VM 区域物化契约 + 帧预算权衡 + [ARCH] 三处一致），已按硬约束上报用户选方 A（原则、对位 C region.c:492-499）或 B（局部 eager runway）。** 历史链：…→§1.92 r7 动手否证 memsz-eager→§1.93 三路对质确诊缺 PREALLOC-eager 腿。工作树净（HEAD 仅含 §1.92 alloc.rs 文档注释），常量维持 64（premature-OOM 仍阻于 r7b）。rc marker 三条终目标仍未达，goal 保持 active。
+> **⚠ 最新前沿＝r7b 动手前置纠错（§1.94）：`install_boot_stack` 运行期对 VM 从不调用（`init_boot_procs` vm_server.rs:633 显式 `continue` 跳过 `VM_PROC_NR`）⇒ §1.93 方案 A（memtype `ev_new` 段 PREALLOC 腿）与方案 B（`install_boot_stack` runway）**都摸错点**——都不是 VM 自身栈的落点（也正是上轮把整 4MiB eager 塞进 `install_boot_stack` 只炸了装 PFS 的 mock 测、VM 崩溃现场纹丝不动的原因）。VM 自身初始栈源自**内核调度 VM 前建好并启用的 bootstrap root**（`vm_server.rs:284 init_vm_self_pt` 采纳；`vm_self_mappages` 只被 HeapArena 扩堆调用、**从不映栈**）；C 靠 `alloc.c reservedqueue.mappedin` 预留页自映射兜住 VM 自栈下降（**非** 段 PREALLOC 腿）。⇒ r7b 真落点＝**os/kernel 侧给 VM 铺初始栈的那条腿**（扩 runway 对位 C `mappedin` 自映射语义），非 `vm_server.rs`；修后再把 `MAX_BIG_BLOCKS` 绑 `GLOBAL_POOL_PAGES`=1024 根除 premature-OOM。工作树净（纯取证）。**
+>
+> **（历史·§1.93）⚠ r7b 取证：阻塞 premature-OOM 根除的真前置＝本仓 VM 缺 C 的 `MAP_PREALLOC` eager 取帧腿（`memtype.rs AnonymousMemory` 无 `ev_new`、§1.55 已登记分歧）⇒ boot 服务初始栈只映一帧页、全交 demand-fill、而 VM 无法服务自身启动缺页（C 同样 panic、非 bug；C `main.c:400` 也只映 frame_size、两边同）。三路对质已排除「常量面/panic 面/frame_size 映射面」＝确认是 boot/VM memtype/region 子系统的真实重构。属架构裁决级（改 VM 区域物化契约 + 帧预算权衡 + [ARCH] 三处一致），已按硬约束上报用户选方 A（原则、对位 C region.c:492-499）或 B（局部 eager runway）。** 历史链：…→§1.92 r7 动手否证 memsz-eager→§1.93 三路对质确诊缺 PREALLOC-eager 腿。工作树净（HEAD 仅含 §1.92 alloc.rs 文档注释），常量维持 64（premature-OOM 仍阻于 r7b）。rc marker 三条终目标仍未达，goal 保持 active。
 >
 > **（历史·§1.92）⚠ 前沿＝r7 动手实锤：premature-OOM 能被原则解消除（`MAX_BIG_BLOCKS`→`GLOBAL_POOL_PAGES`=1024 ⇒ `OOM-RT`=0 真机坐实），但纯抬常量撞 boot 剃刀边缘——1024/128 均确定性 `pagefault in VM` 崩于 ~119 行，控制组 64 全新重建复现 29685 行至 premature-OOM（排除构建产物敏感性）。真前置＝boot 初始栈 eager runway（§1.92·`install_boot_stack` 只 eager 映 1 个 frame 页、4MiB 栈区其余 demand-fill）。** §1.91 猜「exec_bootproc memsz eager ⇒ 撞未物化页顾虑对 boot 腿不成立」**被本轮真机推翻**：memsz eager 只覆盖 PT_LOAD/.bss 段、**不覆盖初始栈 runway**；§1.59「一有尺寸扰动 VM 就自缺页」被真机钉死为真。本轮据此把常量维持 **64（非回退、唯一不崩的已知值）**、`alloc.rs` **仅改文档注释**记录实验矩阵与不变量。历史链：…→§1.91 翻案确诊 premature-OOM→§1.92 r7 动手否证 memsz-eager 假设、确诊栈 runway 缺腿。**下单元＝r7b（真正原则解）**：给 boot 服务初始栈 eager 预映一段 runway（对位 C `main.c:400 handle_memory_once`+image `MAP_PREALLOC`，本仓 §1.55 已登记 `mmap.rs PREALLOC_MAP` 仅记位/`AnonymousMemory` 无 `ev_new`＝分歧点），使 `.bss`/布局扰动不再触发 VM 自缺页；届时再把 `MAX_BIG_BLOCKS` 绑到 `GLOBAL_POOL_PAGES`。此改动触及 boot/VM 映页语义、非纯分配器面、回归半径大，**动手前必读 CLAUDE.md+review-core/process+fix-guard，三件套齐+CodeReview**。rc marker 三条终目标仍未达，goal 保持 active。以下旧前沿保留为历史。
 >
@@ -3937,6 +3939,21 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 - **方案 B（局部、快但非 C-同构）**：仅在 `install_boot_stack` 里把栈区从「只映帧页」改为 eager 逐页映到足够 runway（覆盖实测 ~65KB 下降、留 4× 余量）。改动小、但偏离 C 的通用 PREALLOC 语义、且 runway 尺寸是启发式（剃刀边缘未根治）。
 
 **本轮（1.93）纯取证**：只读 C 源（main.c/pagefaults.c/region.c 锁定位）+ Rust trap_dispatch.rs/vm_server.rs，无改码。工作树净（HEAD 7fa910a1b 仅含 §1.92 的 alloc.rs 文档注释）。**因 r7b 锁定为架构裁决级（改 VM 区域物化契约、帧预算权衡、[ARCH] 三处一致），按硬约束「架构裁决级决策停下问用户」上报用户选择方案 A/B（及 runway 尺寸/是否接受帧预算上升）；goal 保持 active，不停、不自作主张选一个半做完。rc marker 三条终目标仍未达。**
+
+---
+
+## 1.94 【r7b 动手前置·关键纠错：`install_boot_stack` 对 VM 从不调用⇒§1.93 方案 A/B 落点皆错，真落点在 os/kernel 侧给 VM 铺初始栈的腿】（纯取证·无改码·工作树净）
+
+**承接 §1.93（用户选方案 A）。动手前复核落点，发现 §1.93 把修复锚在 vm_server.rs（无论 memtype `ev_new` 还是 `install_boot_stack` runway）是**错的**：**
+
+1. **`install_boot_stack` 运行期对 VM 自身从不调用**：`os/servers/vm/src/vm_server.rs:633` `init_boot_procs` 循环首行 `if ip.proc_nr < 0 || ip.proc_nr == VM_PROC_NR || ip.endpoint.is_none() { continue; }`——VM 被显式跳过。`install_boot_stack` 只为**别的** boot 服务（RS/init/PFS…）建栈。故 §1.93 方案 B「在 `install_boot_stack` 加 VM 栈 runway」改的是 VM 永远不走的路径。
+2. **反证上一轮失败实验**：上单元把整 4MiB eager 塞进 `install_boot_stack` 循环、炸了 mock 的 `test_install_boot_stack_writes_frame_and_exec_values`——该测装的是 **PFS（Endpoint::PFS）非 VM**、256 页 arena（`TEST_TOTAL_PAGES`）撑不住 1024 页。正说明该函数服务的是别的服务、VM 的崩溃现场根本不在此。
+3. **VM 自身初始栈来自内核建的 bootstrap root**：`vm_server.rs:284` `init_vm_self_pt(params.root_paddr)` 采纳**内核**在调度 VM 前建好并启用的页表根（A1 adoption，见 `vm_self_map.rs` 模块文档 L9-22）。`vm_self_mappages`（`vm_self_map.rs:203`）只被 **HeapArena::grow 扩堆**调用（L5-7 文档自证），**从不映栈**。⇒ 撑爆的栈页（cr2=0x7ffffffeef88）是**内核**给 VM 铺的初始栈 runway 不够、VM 自降越界，落点在 os/kernel。
+4. **C 侧对照补正 §1.93 点3**：C 的 `MF_PREALLOC`（region.c:492-499 实测 `map_handle_memory(vmp, newregion, 0, length, 1)`）确实整区取帧，但那是**段 image**；C 的 boot **栈**同样只 `handle_memory_once(vsp, frame_size)`（main.c:400）。C 的 VM 之所以不自栈缺页，靠的是 **alloc.c `reservedqueue` 的 `mappedin` 预留页自映射**（VM 启动前把自身工作内存整片映好，MAXRESERVEDPAGES=300/队列），**不是** 段 PREALLOC 腿。Rust 无此 VM 预留自映射（§1.55 家族）。
+
+**⇒ r7b 真落点（交下单元·跨 crate）**：内核侧建立 VM 初始栈映射的那条腿——**已定位 `load_vm_elf`**（`minix_arch`，由 `os/kernel/src/lib.rs:1637` `init_proc_and_boot` 调用，把 VM 的 ELF 段映进 bootstrap 页表；栈 runway 就在它内部或其邻腿，下单元进 `os/arch/**/…load_vm_elf` 查它给 VM 铺了多少栈页、基址如何）。修法＝把 VM 自身初始栈 runway 扩到覆盖启动下降（对位 C `reservedqueue.mappedin` 自映射语义），**而非** 动 `install_boot_stack`/memtype `ev_new`。修后回到把 `MAX_BIG_BLOCKS` 绑 `GLOBAL_POOL_PAGES`=1024 根除 premature-OOM。此为跨 os/kernel↔vm 的取证/改动，非 vm_server.rs 内部；不新增外部契约、属方案 A 精神（让 VM 自身栈全 backed）的精确落点修正，故不再就「是否停」重问用户。
+
+**本轮纯取证**：只读（`init_boot_procs` L623-637 / `vm_self_map.rs` 全文 / C `alloc.c` reservedqueue·`region.c:460-522`·`main.c:340-415`·`exec_general.c`），无改码，工作树净。**§1.93 方案 A/B 落点错误的纠正登记在案，防接手者再在 vm_server.rs 上白费一轮。** rc marker 三条终目标仍未达；goal 保持 active。
 
 
 
