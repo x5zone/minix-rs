@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝B39（IPC 消息投递路径 SIGSEGV）——§1.67 已闭环 B38、§1.68 已取证 B39。** B39 机制链（真机 bn44 行 27720–27789 实测）＝内核 `DeliverMsg` 腿（`proc_table.rs:1311`）把 incoming 消息写到目标进程**栈上接收缓冲** `p_delivermsg_vir≈0x7ffffffdc1c0`（高栈 VA、len 0x50），VM `do-memory` 地址检查拒（`memreq ... ok=0`）→ `DeliverResult::Segfault`（`proc_table.rs:1328`）→ `WARNING wrong user pointer ... <unset>`（对位 C `proc.c:273`）→ `cause_signal(SIGSEGV)`；该进程 `s_sig_mgr==SELF`（自管理）且 `s_bak_sig_mgr==NONE` → `syscall_signal.rs:298` panic（**对位 C `system.c:430` 忠实终止行为、非内核 bug 本身**）。对比：boot server 投递缓冲落低模块区 0x2xxxxx ok=1；失败两次落高栈 0x7ffffffd/9xxxx。**次级 bug**：`syscall_signal.rs:294` panic 前 `proc_stacktrace` 自身 GP fault（vector 13、recursive panic），与注释"诊断路径应比崩溃更健壮"矛盾。下单元＝探针抓该 `<unset>` 进程（endpoint 0/2）slot/region 表 + `p_delivermsg_vir` 来源，定位栈接收页为何未映射（B22/B38 同族），及为何无 backup sig mgr。**（B38 修复＝`exec_worker.rs` vm_mmap 补 `MAP_PRIVATE`+`MAP_THIRDPARTY`，真机 bn44/bn44b 确定 noaddr=0、活锁消除 85万→~27.8k 行，commit 45bc489c5。）** rc marker 仍未达。**
+> **⚠ 最新前沿＝B39（翻案后定性根因：exec RS 的 ~4MB `.bss` 触发 VM/pager 物理帧双分配，BSS 清零 memset 踩穿 VFS 栈）——§1.68 已取证翻案、§1.69 转入 VM 侧修复单元。** **零扰动取证（bn47–bn51，探针全回滚、工作树净）坐实**：提交构建确定性签名 `exec_worker.rs:255 range start index 32 out of range for slice of length 0` 的**真根因不在 VFS**——`load_elf_segments` 装载 **RS**（`readelf modules/rs` 末段 FileSiz `0xa698`／MemSiz `0x40b9f0`≈4MB `.bss`）时，对那段做大 BSS 清零的 `sys_memset`（长度合法、公式对齐 C `exec_elf.c:213-297`）**物理上把 VFS 栈上持有 `elf`(ElfHead) 的 16 字节 fat 指针整块清零**（bn51 本地断言：`i=7 len=0 ptr=0x0`，ptr/len 双双=0，非仅 len）→ 下一次 `phdr` 的 `u64_at(self.buf,32)` 见空切片 panic。commit f80c9ccab 曾误记为「IPC `DeliverMsg` 投未映射高栈缓冲→SIGSEGV」——本轮证明那是 VFS 被踩坏后的**二阶级联**。**VFS exec 逻辑无 bug（受害者）**；修点在 **VM/pager 帧隔离**：RS 新 `vm_mmap(PREALLOC)` 的 4MB 区解析出的物理帧与 VFS 栈帧冲突（把在用帧当空闲再分配的双分配，B29/B30/B35 页池生命周期家族的隔离正确性分支）。**下单元＝§1.69 VM 侧侦察**：追 VFS→VM `mmap.rs` 到 populate 物理帧链路，比对 RS 4MB 区帧号 vs VFS 栈帧号，并判 `resolve_physical` 命中未 populate PTE 是 Suspend 还是走 higher-half 恒等式盲算（§1.51 假 PA 家族）。次级独立可修：`syscall_signal.rs:294` panic 路径 `proc_stacktrace` 自身 GP fault(vector13→recursive panic)。**（B38 修复＝`exec_worker.rs` vm_mmap 补 `MAP_PRIVATE`+`MAP_THIRDPARTY`，真机 bn44/bn44b 确定 noaddr=0、活锁消除 85万→~27.8k 行，commit 45bc489c5。）** rc marker 仍未达。**
 >
 > **⚠（1.66 历史·其 B38 机制链已钉死、修复已于 §1.67 落地）——B38 取证：fork 子取指缺页 noaddr 致 PM↔VFS 乒乓收尸活锁——§1.66 已用调度路径周期性全表快照探针（真机 bn39，855288 行）钉死机制链：exec `/bin/sh` 成功后，init 的 fork 子（ProcNr 0xc）在 `minix_sys::pm::exec_via`（`cr2=0x20c4d1`，`addr2line -e modules/init` 坐实）取指缺页，VM 对已有物理字节的 VA 报 `pf-exit noaddr`（缺页 walk：PML4E/PDPTE/PDE 三级 present、末级 leaf PTE=0，err=0x14=用户态取指）→ SIGSEGV(csig tgt=0xc sig=0xb) → 子卡 PAGEFAULT(0x400) to=VM 永不解决 → PM(ProcNr0)↔VFS(ProcNr1) 乒乓 46k 次/150s 收尸活锁（`gtick` 存活＝非硬死机、窗内几乎无消息事件）。方向＝fork/exec 子地址空间 leaf PTE 落地缺口（B22 同族，§1.46 fork 绑 phys_root）。下一单元＝读码定位 VM noaddr/find_vma + PM do_newimage 落地链。详见 §1.66。rc marker 仍未达。**
 >
@@ -3355,23 +3355,33 @@ rc marker 仍未达，frontier＝§1.66（B38 修复）。探针已 `git checkou
 
 ---
 
-## §1.68（新头号前沿）B39——IPC 消息投递路径把 incoming 消息写到未映射的高栈接收缓冲（`p_delivermsg_vir≈0x7ffffffdc1c0`）→ VM 拒 → 自管理进程收 SIGSEGV → `syscall_signal.rs:298` panic（已取证）
+## §1.68（B39 翻案 + 定性根因）B39——exec **RS**（~4MB `.bss`）时，装载循环里清 BSS 的 `sys_memset` **物理上把 VFS 栈上的 `elf`（ElfHead，16 字节 fat 指针 ptr=0/len=0）整块清零** → 提交构建表现为 `u64_at` 越界 panic（已取证，VFS 侧无辜）
 
-bn44/bn44b 补 THIRDPARTY 后，子镜像正确装入（noaddr=0）、B38 乒乓活锁彻底消除（全日志仅 **2 次** wrong-pointer、都在最末端，对比修前 85 万行）。真机取证（bn44 行 27720–27789）把终局事件钉定为**不是"某进程执行中崩溃"、而是 IPC 消息投递路径**（非§1.68 初稿误标的"PM 执行 SIGSEGV"）：
+> **【纠正 §1.68 初稿与 commit f80c9ccab 的归因】**：f80c9ccab 把 B39 记为「IPC `DeliverMsg` 把消息写到未映射高栈接收缓冲 → 自管理进程 SIGSEGV panic」。本轮零扰动取证（bn47–bn51）证明**那条 DeliverMsg-SIGSEGV 是二阶级联**（VFS 已被踩坏后的下游表现），**不是第一块多米诺**。真正确定性的根 domino 见下。
 
-**机制链（实测）**：
-1. **投递缓冲 VA 被 VM 拒**：内核 `DeliverMsg` 腿（`proc_table.rs:1311` `suspend_for_vm(DeliverMsg, start=p_delivermsg_vir, len=80, write)`）把一条** incoming 消息写到目标进程栈上的接收缓冲** `p_delivermsg_vir≈0x7ffffffdc1c0`（高栈地址、len=0x50）。VM `do-memory` 地址检查报 **`memreq target=31744 start=0x7ffffffdc1c0 len=0x50 ok=0`**（ok=0 即拒），回到内核即 `DeliverResult::Segfault`（`proc_table.rs:1328`）→ `WARNING wrong user pointer 0x7ffffffdc1c0 from process <unset> / 0x0`（对位 C `proc.c:273`）→ `cause_signal(nr, SIGSEGV)`。
-2. **自管理 + 无 backup → panic**：该进程 `s_sig_mgr==SELF`（解析为自身 endpoint，`proc_table.rs:597`）即**自管理信号**（server 角色默认），收致命 SIGSEGV 且 `s_bak_sig_mgr==NONE` → `syscall_signal.rs:298` panic（**对位 C `system.c:430` 的忠实终止行为、非内核 bug 本身**）。panic 消息 `sig manager 2 gets lethal signal 11 for itself`（`ep.0`=2）；两次 wrong-pointer 分别属 endpoint 0 与 endpoint 2（均 `p_name=<unset>`）。
-3. **次级真实 bug：panic 诊断路径自身崩**：`syscall_signal.rs:294` 在 panic 前调 `proc_stacktrace(rp)`，但该回栈在内核态 GP fault（`kernel exception vector 13 at rip 0x1dc73e79`→ `trap_dispatch.rs:1033:13`→`recursive panic`）。与注释宣称的"诊断路径必须比崩溃更健壮"矛盾——回栈读到一个不可读地址就二次崩。`kpanic`=2。
+**确定性复现（干净 HEAD 逐字一致）**：bn44/bn45（提交构建，无探针）稳定签名 = `servers/vfs/src/exec_worker.rs:255: range start index 32 out of range for slice of length 0`，即 `ElfHead::phdr` 里 `u64_at(self.buf, 32)` 读到 `self.buf.len()==0`。前序怀疑「陈旧产物」→ 干净重建 bn45 逐字复现（lines≈27786、range32=1、panic=2、marker=0），坐实 B39 真实且确定性。
 
-**对比证据（为何 boot server 不炸）**：`memreq target=2/11/9/7/3 start=0x2xxxxx len=0x11 ok=1`——启动 server 的投递缓冲落在**低模块区已映射页**（0x2xxxxx）故 ok；失败的两次投递缓冲在**高栈 VA 0x7ffffffd/9xxxx**（len 0x50）——栈接收页未映射/不在 VM 认可的 region 内。`p_name=<unset>` 暗示是刚 fork/exec 尚未设名的子（而非已命名的 boot server）。
+**取证链（守探针纪律：全部 `#[cfg(not(mock))]` + AtomicUsize cap + `nk4a:` 前缀，热循环内改用零扰动本地 `panic!` 断言而非 IPC diagctl，单元末已 `git checkout` 全回滚）**：
+1. **caller-tag 定位调用点**（bn47/bn48）：`parse` 入口见 `buf.len=0xa000`(40960 定长 `hdr_buf`)；`phdr` 入口对 i=0..6 均见 `self.buf.len=0xa000`，**唯独 i=7 见 `self.buf.len=0`**。因 `for i in 0..elf.phnum()` 的 Range 在循环入口只求值一次，i=6 与 i=7 之间不再读 `self.buf`，故腐化发生在 **load_elf_segments 的 i=6 循环体内**。
+2. **逐步插桩定位到 memset**（bn49）：在 vm_mmap 后 / sendrec 后 / 循环底各打 `elf.buf.len`——i=6 在 **sendrec 后仍 =0xa000（完好）**，但循环底 `m` 探针**缺失**（未执行到）→ 崩在 i=6 的 `sys_memset`（head/tail 清零）阶段。串口实证其后紧跟 `nk4a: kdst memset pa=0x19725698 len=0x00402968`（**~4MB 写零**）。
+3. **本地断言坐实是整条 fat 指针被覆写**（bn51，零扰动）：`exec_worker.rs:232: B39PHDR i=7 len=0 ptr=0x0` → `elf.buf` 的 **ptr 与 len 双双=0**（非仅 len 半字），即持有 ElfHead 的 **VFS 栈 16 字节被整块零填充**。这与 i=6 那次 ~4MB 全零 memset 的写入数据（值=0）形态完全吻合。
+4. **段值核算 = 合法大 `.bss`、公式对齐 C**（bn50）：i=6 段 `p_vaddr=0x213000 p_filesz=0xa698 p_memsz=0x40c010`，`tail=vmemend-vfileend=0x402968`。与 C `minix3/minix/lib/libexec/exec_elf.c:213-297` 的 `seg_membytes=roundup(p_memsz+page_offset)`、`clearmem(vfileend, vmemend-vfileend)` 逐项一致——**VFS 算出的 memset 长度合法，VFS exec 逻辑无 bug（它是受害者）**。
+5. **锁定被 exec 的是 RS**：`readelf -lW modules/rs` 末段 `LOAD ... FileSiz=0x00a698 MemSiz=0x40b9f0 RW`——filesz `0xa698` 与崩溃段**逐位吻合**、memsz ~4MB 即 RS 的大 `.bss`（`p_vaddr` 差为 exec 期 `load_offset`）。故崩溃时 init 正经 execve 启动 **RS**。
 
-**待侦察（下一单元）**：
-- **主问题**：为何某（自管理、`<unset>` 名）进程的 IPC 接收缓冲 `p_delivermsg_vir`（高栈 VA ~0x7ffffffdxxxx）在 VM 眼中未映射？方向＝栈 region 落地缺口（B22/B38 同族）或 `p_delivermsg_vir` 初始化指向未映射栈顶；先用只打印寄存器探针（守 §1.49 纪律）抓该进程 slot/endpoint/region 表与 `p_delivermsg_vir` 来源；
-- 确认该进程身份（endpoint 0/2 且名 `<unset>`——是 init 子还是未命名 boot 过程）；为何它是自己 sig manager 且无 backup（对照 C：正常 boot 下自管理 server 的 `s_bak_sig_mgr` 是否应非 NONE）；
-- **次级（独立可修）**：`proc_stacktrace` 在 panic 路径二次 GP fault（vector 13）——回栈健壮性 bug，应保证读失败时打占位符而非递归崩（注释已声明此不变式但未落实）。
+**内核 memset 路径核对（非 caller 页表误用）**：`dispatch_memset`（`syscall_copy.rs:1367`）对 `process=target_e(RS)` 构造 `AddressRef::Process{RS, vfileend}`，`proc_cr3` 闭包按 RS 端点取 **RS 的 `phys_root`**（`syscall_copy.rs:1428-1436`）→ 走 RS 页表解析 vfileend→物理 `pa≈0x19725698` 写零。**逻辑正确**（写 RS 声明的空间）。VFS 栈被清零 ⇒ **RS 这段新 `vm_mmap` PREALLOC 的 4MB 区解析出的物理帧，与 VFS 自己栈所在物理帧冲突**——即 VM/pager 把一个仍在用（VFS 拥有）的帧重复分配给了 RS 的新 region（物理帧隔离/生命周期 bug）。
 
-rc marker 仍未达，frontier＝§1.68（B39 取证：投递缓冲未映射→自管理进程 SIGSEGV panic）。本单元（B38）工作树改动＝`exec_worker.rs` 单文件（PRIVATE+THIRDPARTY 终版修复 + 回归测），探针全回滚。
+## §1.69（新头号前沿）B39 修复单元——VM/pager 物理帧隔离：RS 的 ~4MB BSS 区与 VFS 栈帧双分配（B29/B30/B35 页池生命周期家族）
+
+**定性**：B39 = **`vm_mmap(PREALLOC)` 给新 exec 进程（RS）的多 MB region 分配到了仍被别的进程（VFS 栈）占用的物理帧**，导致该 region 的 BSS 清零 `sys_memset` 踩穿 VFS。属 §1.52 遗留「页池 free-list/帧生命周期」家族（B29 池容量、B30 boot bump 池、B35 supply_pages 碎片化）的**隔离正确性**分支（前几支是容量/碎片，这一支是「把在用帧当空闲再分配」的双分配）。
+
+**下一单元侦察配方（VM 侧，读码 + 寄存器/物理地址探针，勿在缺页 handler 内做页表 walk）**：
+- 在 RS exec 的 `vm_mmap`（VFS→VM，`mmap.rs`）到 VM 真正 populate 物理帧的链路上，打印该 4MB region 每页分配到的物理帧号，与 VFS 当前栈/heap 的物理帧号比对，定位是哪一步把已映射帧放进了 VM 的 free 供给（疑点：PREALLOC/UNINITIALIZED 是否真 populate，还是留未映射 PTE 让 memset 的 `resolve_physical` 走空/落到 Direct Map 恒等式）；
+- 关键判据：memset 若命中 RS 未 populate 的 PTE，`resolve_physical` 的行为是「Suspend 交 VM 补页」还是「按 higher-half 恒等式盲算物理」（§1.51 `virt_to_phys(image VA)` 假 PA 家族）——后者会让 4MB 写零直接落到与 VFS 栈重合的低位物理；
+- 对照 C：C 的 `allocmem_prealloc_junk` + `clearmem` 从不踩穿别的进程，因其帧由 VM 独占分配；核 minix-rs 帧分配是否缺「已映射帧不得入 free-list」的引用计数控。
+
+**次级独立可修（不阻塞主修）**：`syscall_signal.rs:294` panic 路径里 `proc_stacktrace` 自身 GP fault（vector 13→recursive panic），违反注释「诊断路径须比崩溃更健壮」的不变式，应保证回栈不可读时打占位符而非二次崩。
+
+rc marker 仍未达。本单元（B39 取证）**未改任何产品代码**（VFS 侧无辜已坐实，探针全回滚，工作树净）；frontier 转入 §1.69 的 VM/pager 物理帧隔离修复单元。
 
 
 
