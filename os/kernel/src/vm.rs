@@ -404,6 +404,51 @@ enum ResolveError {
     UnknownEndpoint,
 }
 
+/// One resolved side of a cross-space copy: either a caller-supplied physical
+/// base (contiguous by definition) or a process virtual base plus the
+/// page-table root to walk.
+///
+/// B39 (§1.70): the copy path advances each side one *physically-contiguous
+/// run* at a time via [`lookup_range_in_table`], so a virtual range whose pages
+/// are scattered in physical memory is never written linearly off its first
+/// frame (the Direct Map is linear in *physical*). This mirrors C's `vm_copy`
+/// re-translating the target page table per window through `createpde`.
+#[derive(Debug, Clone, Copy)]
+enum CopySide {
+    Physical(PhysBytes),
+    Process { cr3: PhysBytes, base: VirBytes },
+}
+
+impl CopySide {
+    fn resolve(
+        addr: &AddressRef,
+        proc_table: &crate::proc_table::ProcessTable,
+        proc_cr3: &impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
+    ) -> Option<Self> {
+        match addr {
+            AddressRef::Physical(p) => Some(CopySide::Physical(*p)),
+            AddressRef::Process { endpoint, offset } => {
+                let cr3 = proc_cr3(proc_table, *endpoint)?;
+                Some(CopySide::Process { cr3, base: *offset })
+            }
+        }
+    }
+
+    /// Physical address of the byte at offset `done`, plus the length (≤
+    /// `remaining`) of the physically-contiguous run starting there. A
+    /// `Process` side yields `(x, 0)` when that page is unmapped or the run
+    /// breaks immediately — the caller suspends on it.
+    fn chunk<D: DirectMapArch>(&self, done: usize, remaining: usize) -> (PhysBytes, usize) {
+        match *self {
+            CopySide::Physical(p) => (PhysBytes(p.0 + done as u64), remaining),
+            CopySide::Process { cr3, base } => {
+                let va = VirBytes(base.0 + done as u64);
+                lookup_range_in_table::<D>(cr3, va, remaining).unwrap_or((PhysBytes(0), 0))
+            }
+        }
+    }
+}
+
 /// Perform a cross-address-space memory copy.
 ///
 /// Resolves source and destination physical addresses via Direct Map,
@@ -426,13 +471,23 @@ pub fn cross_space_copy<D: DirectMapArch>(
     proc_table: &crate::proc_table::ProcessTable,
     proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
-    let src_phys = match resolve_physical::<D>(src, proc_table, &proc_cr3) {
-        Ok(p) => p,
-        Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Src),
-        Err(ResolveError::UnknownEndpoint) => {
-            return CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
-        }
-    };
+    // B39 (§1.70): both sides may be *virtual* ranges whose pages map to
+    // non-adjacent physical frames. A single-shot resolve + linear
+    // `copy_nonoverlapping(bytes)` runs off each first frame into neighbouring
+    // physical memory. Walk each side one physically-contiguous run at a time
+    // and copy the intersection (C: `vm_copy` / `lin_lin_copy` re-translating
+    // the page table per window). `resolve_physical` still pre-validates both
+    // endpoints and their first pages (preserving UnknownEndpoint /
+    // first-page-suspend error ordering) and feeds the guard probe the first
+    // destination PA.
+    if let Err(e) = resolve_physical::<D>(src, proc_table, &proc_cr3) {
+        return match e {
+            ResolveError::PageFault => CrossSpaceResult::Suspended(VmFaultType::Src),
+            ResolveError::UnknownEndpoint => {
+                CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint))
+            }
+        };
+    }
     let dst_phys = match resolve_physical::<D>(dst, proc_table, &proc_cr3) {
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
@@ -445,51 +500,66 @@ pub fn cross_space_copy<D: DirectMapArch>(
     // 定义导致 E0425（HEAD 存量破损，2026-09 宿主测试基线跑出）。task1-close 裁决删除
     #[cfg(not(feature = "mock"))]
     nk4a_kdst_probe("copy", dst_phys.0, bytes);
+    let _ = dst_phys;
 
-    let src_vaddr = D::kernel_phys_to_virt(src_phys);
-    let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
-
-    // Caller-supplied physical ranges (NONE endpoint) are validated against
-    // the Direct Map window before the access — see
-    // `physical_range_in_dm_window` (C: phys_copy_fault recovery, made
-    // unnecessary here because the fault is prevented).
-    #[cfg(not(test))]
-    {
-        let active_root = crate::current_root_phys();
-        if !physical_range_in_dm_window(
-            active_root,
-            src_vaddr,
-            bytes,
-            minix_arch::CurrentPteWalk::walk,
-        ) {
-            return CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault));
-        }
-        if !physical_range_in_dm_window(
-            active_root,
-            dst_vaddr,
-            bytes,
-            minix_arch::CurrentPteWalk::walk,
-        ) {
-            return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
-        }
+    if bytes == 0 {
+        return CrossSpaceResult::Completed(Ok(()));
     }
 
-    // SAFETY:
-    // - src_vaddr and dst_vaddr are derived from DirectMapArch::kernel_phys_to_virt()
-    //   on physical addresses returned by lookup_in_table, which are valid page-backed
-    //   addresses in the Direct Map region.
-    // - Caller must ensure the memory regions [src_vaddr, src_vaddr+bytes) and
-    //   [dst_vaddr, dst_vaddr+bytes) do not overlap. If the same physical page is
-    //   mapped at both src and dst (e.g., shared memory), the caller must use a
-    //   copy-to-temporary-then-copy-from-temporary strategy instead.
-    // - BKL ensures no concurrent mutation of these memory regions.
-    // - Both regions are valid for u8 access (no alignment requirements).
-    unsafe {
-        core::ptr::copy_nonoverlapping(
-            src_vaddr.0 as *const u8,
-            dst_vaddr.0 as *mut u8,
-            bytes,
-        );
+    let src_side = CopySide::resolve(src, proc_table, &proc_cr3).expect("src endpoint validated");
+    let dst_side = CopySide::resolve(dst, proc_table, &proc_cr3).expect("dst endpoint validated");
+
+    let mut done = 0usize;
+    while done < bytes {
+        let remaining = bytes - done;
+        let (sp, srun) = src_side.chunk::<D>(done, remaining);
+        let (dp, drun) = dst_side.chunk::<D>(done, remaining);
+        let chunk = core::cmp::min(srun, drun);
+        if chunk == 0 {
+            // A side stopped at an unmapped / run-breaking page; suspend on it.
+            return if srun == 0 {
+                CrossSpaceResult::Suspended(VmFaultType::Src)
+            } else {
+                CrossSpaceResult::Suspended(VmFaultType::Dst)
+            };
+        }
+        let src_vaddr = D::kernel_phys_to_virt(sp);
+        let dst_vaddr = D::kernel_phys_to_virt(dp);
+        #[cfg(not(test))]
+        {
+            let active_root = crate::current_root_phys();
+            if !physical_range_in_dm_window(
+                active_root,
+                src_vaddr,
+                chunk,
+                minix_arch::CurrentPteWalk::walk,
+            ) {
+                return CrossSpaceResult::Completed(Err(VmCopyError::SrcPageFault));
+            }
+            if !physical_range_in_dm_window(
+                active_root,
+                dst_vaddr,
+                chunk,
+                minix_arch::CurrentPteWalk::walk,
+            ) {
+                return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+            }
+        }
+        // SAFETY:
+        // - src_vaddr/dst_vaddr are Direct Map aliases of page-backed
+        //   physically-contiguous runs returned by `lookup_range_in_table`.
+        // - Caller must ensure the two regions do not overlap (unchanged caveat
+        //   from the pre-loop code); same-page shared-memory copies need a
+        //   temporary on the caller side.
+        // - BKL ensures no concurrent mutation; u8 has no alignment requirement.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                src_vaddr.0 as *const u8,
+                dst_vaddr.0 as *mut u8,
+                chunk,
+            );
+        }
+        done += chunk;
     }
 
     CrossSpaceResult::Completed(Ok(()))
@@ -509,6 +579,16 @@ pub fn cross_space_memset<D: DirectMapArch>(
     proc_table: &crate::proc_table::ProcessTable,
     proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
+    // B39 (§1.70): a `Process` destination is a *virtual* range whose pages are
+    // scattered across non-adjacent physical frames. The Direct Map is linear in
+    // *physical*, so a single-shot resolve + `write_bytes(count)` runs off the
+    // first frame into whatever physical memory follows it — this is what
+    // trampled VFS's stack during RS's ~4 MiB BSS clear. Walk the destination
+    // one physically-contiguous run at a time via `lookup_range_in_table` (C:
+    // `vm_memset` re-translation per window through `createpde`, memory.c:526).
+    // `resolve_physical` still validates the endpoint and the first page up
+    // front (preserving UnknownEndpoint / first-page-suspend error ordering)
+    // and gives the guard probe its first target PA.
     let dst_phys = match resolve_physical::<D>(dst, proc_table, &proc_cr3) {
         Ok(p) => p,
         Err(ResolveError::PageFault) => return CrossSpaceResult::Suspended(VmFaultType::Dst),
@@ -517,33 +597,68 @@ pub fn cross_space_memset<D: DirectMapArch>(
         }
     };
 
-    let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
-
     // NK4-C 第 33 轮守卫探针（task1-close 裁决删除；门与定义一致）
     #[cfg(not(feature = "mock"))]
     nk4a_kdst_probe("memset", dst_phys.0, count);
+    let _ = dst_phys;
 
-    // Caller-supplied physical ranges (NONE endpoint) are validated against
-    // the Direct Map window before the access — C's memset_fault recovery
-    // (klib.S:377) made unnecessary by preventing the fault.
-    #[cfg(not(test))]
-    if !physical_range_in_dm_window(
-        crate::current_root_phys(),
-        dst_vaddr,
-        count,
-        minix_arch::CurrentPteWalk::walk,
-    ) {
-        return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+    if count == 0 {
+        return CrossSpaceResult::Completed(Ok(()));
     }
 
-    // SAFETY:
-    // - dst_vaddr is derived from DirectMapArch::kernel_phys_to_virt() on a valid
-    //   physical address returned by lookup_in_table.
-    // - The memory region [dst_vaddr, dst_vaddr+count) is valid for write.
-    // - BKL ensures no concurrent mutation of this memory region.
-    // - u8 has no alignment requirements.
-    unsafe {
-        core::ptr::write_bytes(dst_vaddr.0 as *mut u8, value, count);
+    // Physical destinations are contiguous by definition — a single guarded
+    // linear write is correct (matches C's NONE/`phys_memset` fast path).
+    if let AddressRef::Physical(base) = dst {
+        let dst_vaddr = D::kernel_phys_to_virt(*base);
+        #[cfg(not(test))]
+        if !physical_range_in_dm_window(
+            crate::current_root_phys(),
+            dst_vaddr,
+            count,
+            minix_arch::CurrentPteWalk::walk,
+        ) {
+            return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+        }
+        // SAFETY: `dst_vaddr` is the Direct Map alias of a caller-supplied
+        // physical range validated present above; u8 has no alignment
+        // requirement; BKL excludes concurrent mutation of this region.
+        unsafe {
+            core::ptr::write_bytes(dst_vaddr.0 as *mut u8, value, count);
+        }
+        return CrossSpaceResult::Completed(Ok(()));
+    }
+
+    // Process (virtual) destination: walk one contiguous run at a time.
+    let (endpoint, base_va) = dst.as_process().expect("non-physical arm checked above");
+    let cr3 = proc_cr3(proc_table, endpoint).expect("endpoint validated by resolve_physical");
+    let mut done = 0usize;
+    while done < count {
+        let va = VirBytes(base_va.0 + done as u64);
+        let (phys, chunk) = match lookup_range_in_table::<D>(cr3, va, count - done) {
+            Some(r) => r,
+            None => return CrossSpaceResult::Suspended(VmFaultType::Dst),
+        };
+        if chunk == 0 {
+            return CrossSpaceResult::Suspended(VmFaultType::Dst);
+        }
+        let dst_vaddr = D::kernel_phys_to_virt(phys);
+        #[cfg(not(test))]
+        if !physical_range_in_dm_window(
+            crate::current_root_phys(),
+            dst_vaddr,
+            chunk,
+            minix_arch::CurrentPteWalk::walk,
+        ) {
+            return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+        }
+        // SAFETY: `dst_vaddr` is the Direct Map alias of `chunk` bytes of a
+        // page-backed, physically-contiguous run returned by
+        // `lookup_range_in_table`; u8 has no alignment requirement; BKL
+        // excludes concurrent mutation.
+        unsafe {
+            core::ptr::write_bytes(dst_vaddr.0 as *mut u8, value, chunk);
+        }
+        done += chunk;
     }
 
     CrossSpaceResult::Completed(Ok(()))
@@ -579,29 +694,64 @@ pub fn cross_space_write<D: DirectMapArch>(
     // NK4-C 第 33 轮守卫探针（task1-close 裁决删除；门与定义一致）
     #[cfg(not(feature = "mock"))]
     nk4a_kdst_probe("write", dst_phys.0, src.len());
+    let _ = dst_phys;
 
-    let dst_vaddr = D::kernel_phys_to_virt(dst_phys);
-
-    // Same Direct Map window validation as `cross_space_copy` — the
-    // destination may be a caller-supplied physical address (NONE endpoint).
-    #[cfg(not(test))]
-    if !physical_range_in_dm_window(
-        crate::current_root_phys(),
-        dst_vaddr,
-        src.len(),
-        minix_arch::CurrentPteWalk::walk,
-    ) {
-        return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+    // B39 (§1.70): a `Process` destination is virtual and its pages are
+    // physically scattered — walk it one contiguous run at a time from the
+    // contiguous kernel-local `src` (C: `virtual_copy` dst-side `createpde`
+    // re-translation). A `Physical` destination is contiguous by definition.
+    let bytes = src.len();
+    if bytes == 0 {
+        return CrossSpaceResult::Completed(Ok(()));
     }
-
-    // SAFETY:
-    // - dst_vaddr is derived from DirectMapArch::kernel_phys_to_virt() on a
-    //   physical address returned by lookup_in_table (page-backed).
-    // - `src` is kernel-local memory the kernel owns exclusively under the
-    //   BKL; it cannot overlap the DM alias of a process page.
-    // - u8 has no alignment requirements.
-    unsafe {
-        core::ptr::copy_nonoverlapping(src.as_ptr(), dst_vaddr.0 as *mut u8, src.len());
+    if let AddressRef::Physical(base) = dst {
+        let dst_vaddr = D::kernel_phys_to_virt(*base);
+        #[cfg(not(test))]
+        if !physical_range_in_dm_window(
+            crate::current_root_phys(),
+            dst_vaddr,
+            bytes,
+            minix_arch::CurrentPteWalk::walk,
+        ) {
+            return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+        }
+        // SAFETY: `dst_vaddr` is the DM alias of a physical range validated
+        // present above; `src` is kernel-local and cannot overlap that alias;
+        // BKL excludes concurrent mutation; u8 has no alignment requirement.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr(), dst_vaddr.0 as *mut u8, bytes);
+        }
+        return CrossSpaceResult::Completed(Ok(()));
+    }
+    let (endpoint, base_va) = dst.as_process().expect("non-physical arm checked above");
+    let cr3 = proc_cr3(proc_table, endpoint).expect("endpoint validated by resolve_physical");
+    let mut done = 0usize;
+    while done < bytes {
+        let va = VirBytes(base_va.0 + done as u64);
+        let (phys, chunk) = match lookup_range_in_table::<D>(cr3, va, bytes - done) {
+            Some(r) => r,
+            None => return CrossSpaceResult::Suspended(VmFaultType::Dst),
+        };
+        if chunk == 0 {
+            return CrossSpaceResult::Suspended(VmFaultType::Dst);
+        }
+        let dst_vaddr = D::kernel_phys_to_virt(phys);
+        #[cfg(not(test))]
+        if !physical_range_in_dm_window(
+            crate::current_root_phys(),
+            dst_vaddr,
+            chunk,
+            minix_arch::CurrentPteWalk::walk,
+        ) {
+            return CrossSpaceResult::Completed(Err(VmCopyError::DstPageFault));
+        }
+        // SAFETY: `dst_vaddr` aliases `chunk` bytes of a page-backed contiguous
+        // run; `src[done..done+chunk]` is kernel-local and cannot overlap it;
+        // BKL excludes concurrent mutation; u8 has no alignment requirement.
+        unsafe {
+            core::ptr::copy_nonoverlapping(src.as_ptr().add(done), dst_vaddr.0 as *mut u8, chunk);
+        }
+        done += chunk;
     }
 
     CrossSpaceResult::Completed(Ok(()))
