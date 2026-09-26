@@ -3438,3 +3438,18 @@ rc marker 仍未达。
 
 **次级独立可修（登记）**：PM `exec.rs:267` 对 `sys_exec` 失败仍 `panic!` 打死整个 PM（C 只回错/杀子不 panic 服务循环）——本单元只做等价 C 的最小接线（sys_exec 现已成功，panic 臂暂不触发）；优雅化留后续。
 
+## §1.73（B41 侦察·只读 + bn55 日志定量）尾部 `vm-pf` 循环收敛为单点：一个 server 的**指令页** `VA=0x20ef60` 反复缺页（内容已对、映射自认成功）
+
+**定量（bn55，无新探针，仅既有诊断探针）**：2060 次 `vm-pf recv` 中 **619 次钉在 `fa=0x20ef60`**（其余地址如栈页 `0x7fffffffeXXX` 各仅 ~11 次即解决＝正常 demand-paging 工作）。关键读数：`vm-pf bytes 0000000000000000 fa=0x20ef60 fa8=4883e4f04889dfe8`——`fa8`（vm_server.rs:2004-2017，沿**同一 Direct Map 别名**读故障地址偏移 0xf60 处的 8 字节）= `4883e4f04889dfe8` 是**正确 ELF 代码字节**（页首 0 只是合法 gap/对齐填充）。⇒ 物理帧内容**正确存在**。
+
+**排除的分支**（据实证据）：① **非零填充错页**——`fa8` 内容对；② **非 PTE 写丢失**——`pte-wb-FAIL=0`（cow_exec_pf.rs:144 回读探针未触发，VM 记账页表 `pt.query` 回读与写入 PA 一致）；③ **非 noaddr/wro/accvio/susp**——这些 `pf_exit!` 标签**全部 0**，也无 `vm-pf err`——即每次缺页都走**成功出口**（`handle_pagefault`→`Ok(Handled/MappedNewPage/CowResolved)`）。进程被 ClearPageFault 重新入队后，CPU **再次在同址缺页**。
+
+**收窄到两个候选机制**（均需一次真机区分性探针，读 VM 自身记账/寄存器，**不在缺页 handler 内做页表 walk**，合规）：
+- **(a) present-but-NX**：`sync_slot_pte`（cow_exec_pf.rs:123-127）按 `region.is_page_writable()` 定标——可写段 `read_write()`（**NX**），非可写段 `read_only()|EXECUTABLE`。若 `0x20ef60` 所在 region 被误判为可写 → 映射为 RW+NX → 取指恒 #PF（present 但不可执行），VM 又“成功”重映射同 flags → **无限取指缺页循环**（内容对、回读对、无错误标签，完全吻合现象）。此即 :118-127 注释自陈的 x86-64 NXE 陷阱。
+- **(b) VM 页表实例 ≠ CPU live CR3**：PTE 写进了 VM 维护的 `pt`，但该进程实际加载的 CR3 根表非此实例 → CPU 视图无此映射。（弱候选：进程已 exec 并跑通数千指令至 0x20ef60，根表大体正确；仅该 demand-page 的落地存疑。）
+
+**下单元取证配方（判 (a) vs (b)）**：在 `sync_slot_pte` 成功出口（result.is_ok() 且 readback 匹配处）加临时探针打印**写入的 `flags` 位**（尤其 EXECUTABLE/NX 位是否置）+ `region.is_page_writable()` 值 + `vaddr`（限 `0x20ef60` 附近 cap N 次）。若 flags 缺 EXECUTABLE（NX）→ 坐实 (a)，修向＝纠正该 region 的可写性判定 / exec 时装载 text 段的 prot（对齐 C `exec_elf.c` 段 flags→VRF writable 映射）；若 flags 含 EXECUTABLE 仍 refault → 转 (b)，打印 VM `pt` 根 PA vs 内核 `proc_table` 该进程 `phys_root` 比对。server 身份待探针带 endpoint 或从 0x20ef60 落入哪个窄 text 段反推（readelf 实测该址在多模块 ~4MB .bss LOAD 内，段表判据不足，需运行时 endpoint）。
+
+rc marker 仍未达。
+
+
