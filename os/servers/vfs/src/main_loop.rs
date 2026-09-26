@@ -6870,7 +6870,7 @@ impl VfsState {
                                     node.fs_e,
                                     user,
                                     buf,
-                                    88, // LP64 struct stat
+                                    minix_types::Stat::USER_STAT_SIZE as u64,
                                     minix_types::CpFlags::WRITE | minix_types::CpFlags::TRY,
                                 ) {
                                     Ok(g) => g,

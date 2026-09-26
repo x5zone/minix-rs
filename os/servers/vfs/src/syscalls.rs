@@ -1168,7 +1168,10 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                 .map(|fp| fp.endpoint)
                 .unwrap_or(minix_types::Endpoint::NONE);
             // magic grant：FS 往用户 stat 缓冲写（`CPF_WRITE | CPF_TRY`）。
-            const STRUCT_STAT_SIZE: u64 = 88; // sys/stat.h 的 LP64 struct stat
+            // 授权窗口 = 用户 `struct stat` 全尺寸（FS 侧 `write_user_stat`
+            // 按 C 布局落这么多字节；旧值 88 是 fs_driver 序列化 SIZE，
+            // 非 C `struct stat`——那会截断 st_size@112 之后的字段）。
+            const STRUCT_STAT_SIZE: u64 = minix_types::Stat::USER_STAT_SIZE as u64;
             let grant = match state.grant_user_buffer(
                 fs_e,
                 user_e,

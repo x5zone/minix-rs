@@ -299,9 +299,14 @@ pub fn plan(
         path: proto_path.clone(),
         bytes: generate_etc_proto(
             &layout.os_root.join("etc"),
-            &[("sh", &bin_rel("sh")), ("echo", &bin_rel("echo"))],
+            &[
+                ("sh", &bin_rel("sh")),
+                ("echo", &bin_rel("echo")),
+                ("ls", &bin_rel("ls")),
+                ("cat", &bin_rel("cat")),
+            ],
         )?,
-        note: "imgrd 原型文件（/etc 最小集 + /bin/sh,/bin/echo + /dev/console）",
+        note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat} + /dev/console）",
     });
     actions.push(Action::Tool {
         program: layout

@@ -77,9 +77,12 @@ mod map_flags {
 /// （exec_general.c:9-31）。
 const PROT_RWX: u32 = 0x1 | 0x2 | 0x4;
 
-/// `sizeof(struct stat)` 的 LP64 值——req_stat 的 magic grant 窗口
-/// （request.c:1087 同样按 `sizeof(struct stat)` 授权）。
-const STAT_BUF_SIZE: u64 = 144;
+/// `sizeof(struct stat)` 的值——req_stat 的 magic grant 窗口
+/// （request.c:1087 同样按 `sizeof(struct stat)` 授权）。取权威
+/// `minix_types::Stat::USER_STAT_SIZE`（= `types::stat::Stat` 的 `size_of`，
+/// LP64 为 152），与 FS 侧 `write_user_stat` 落字节量同源——内核 grant 越界
+/// 是硬失败（EPERM，`grant.rs:452`），窗口小于 FS 写入量会导致整块拷贝被拒。
+const STAT_BUF_SIZE: u64 = minix_types::Stat::USER_STAT_SIZE as u64;
 
 /// VFS 给**自己缓冲**建 magic grant 时的 `who_from`：必须是**具体端点**
 /// `Endpoint::VFS`，绝不能用 `Endpoint::SELF` 哨兵。

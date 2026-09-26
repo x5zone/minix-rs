@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.105 真根因修复：`CDEV_OPEN` 线路类型号写错致 TTY 收不到可解的请求、永不回复——x86_64 rc marker 真机首次出现**（接 §1.104 commit `1841af3d5`）：承 §1.104 钉死「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复」，本轮静态审查驱动运行时 `serve`→`TtyService::dispatch`→`minix_chardriver::classify` 定位根因——**`servers/vfs/src/cdev.rs::open_request` 用 `CdevRequest::Open as i32`（fieldless enum 判别值＝**索引 0**）作 `m_type`，而非 `.message_type()`（线路类型号＝base 0x400+索引＝**0x400**）**。VFS 发出的 `m_type=0` 到 TTY 侧 `CdevRequest::decode(0)`（`0-0x400`→`_=>None`）→ `classify` 归 `Route::Other` → dispatch `pending=None` → **不发任何回复** → VFS 卡 `WaitingForFs` 永等。C ground truth `cdev.c:195 dev_mess.m_type = op`（op=CDEV_OPEN=0x400）。**修复**：`cdev.rs:165` `Open as i32`→`Open.message_type()`；同族潜伏 bug `main_loop.rs:3284` `CdevRequest::Select as i32`（＝6，select 走 asynsend 一发不等，危害较小但同类错）一并→`.message_type()`（0x406）。**辨析**：`SdevRequest` 有显式 `#[repr(u32)]＝SDEV_RQ_BASE＋N`，其 `as i32` 本就正确，不改（`main_loop.rs:3286` else 分支保留）。**新增回归测试** `test_open_request_wire_type_is_cdev_open_not_index`（钉 `m_type==0x400`、驱动侧 `decode`→`Some(Open)`、payload 四域布局）——此 bug 类此前无测试覆盖。**CodeReview（PASSED，MUST/SHOULD/NIT 0）** 并复核 VFS/block 侧 `CdevRequest/BdevRequest as i32` 零漏网、sdev 25 处 `as i32` 全合法。**三件套全绿**：mock minix-vfs **538/0fail**（+1 新回归测试只增）·nightly rustfmt minix-vfs 漂移 **270＝基线 270** 零新增（我编辑区 cdev.rs:165/测试、main_loop.rs:3284 均无漂移）·镜像 `--release` 重建＋**两次单核真机签名一致：`minix-rs rc: minimal boot script marker` 出现（marker=1·oom=0·panic=0）**。**⇒ §1.97→§1.104 追了 8 轮的 console 设备链阻断彻底解决，x86_64 三终目标之一（rc marker）达成（单核）**。**未解**：`-smp 4`（xtask 默认多核）触发 VM 内核缺页 panic（`trap_dispatch.rs:981`），与本次 m_type 修复正交，属多核路径独立问题（下轮查）；18-stage 命令面（echo/ls/cat 真跑通）、aarch64/riscv64 两架构、minix3 tests 上机仍未达。**下轮 §1.106**：①单核 rc marker 已通→验 18-stage echo/ls/cat 是否随之跑通（读 rc 脚本实际执行到哪条）；②多核 VM 缺页 panic 独立取证；③aarch64/riscv64 同构检查。**历史链**：…→§1.103 推翻「回复未投递」锁 child 卡 VFS stat(`49897aaeb`)→§1.104 VFS 全链路洗清、阻塞转移到 TTY 不应答(`1841af3d5`)→**§1.105 真根因(m_type=as i32=0 非 message_type=0x400)修复，x86_64 rc marker 首次出现**。
+> **✅ 最新前沿＝§1.106 18-stage 命令面：修 stat 回复腿从不 copy_out→`ls` 判目录失败——x86_64 单核 echo/ls/cat 三者全真机跑通**（接 §1.105 commit `b09f7601b`）：承 §1.105 x86_64 rc marker 已现，本轮推进终目标②（18-stage echo/ls/cat）。**接线**：`xtask/src/image.rs` imgrd 播种列表 `[sh,echo]`→`[sh,echo,ls,cat]`（Cargo 自动发现 `commands/bin/fileops/src/bin/{ls,cat}.rs` 为 bin，`-p minix-fileops` 已构建，无需改 Cargo.toml）；`os/etc/rc` marker 置首（护既有冒烟 gate）后追加 `ls /bin` + `cat /etc/rc`。**首验**：cat（open+read）一次即通（逐行打印 rc 内容），但 `ls /bin` 只打印 `/bin`（operand 自身名）、无目录条目。**根因（静态定位，无探针）**：`ls.rs::is_directory` 经 `stat(path)` 读 `st_mode & S_IFMT==S_IFDIR`；而 FS 回复腿 `libs/minix-fs/src/task.rs::RequestBody::Stat` 此前 `adapt_stat` 填好局部 `minix_types::Stat` 后 **`Ok(()) => zero()` 纯状态回复、从不 `copy_out` 到用户经 magic grant 授权的 `struct stat` 缓冲**（`ReplyPayload` 无 Stat 变体，stat 本应像 read 数据一样走 `transport.copy_out`）→ 用户缓冲停留 `mem::zeroed()` → `st_mode=0` → 判非目录 → `ls` 走「非目录打印自身名」腿；cat 不依赖 stat 故正常。fs_driver::Stat 有个 `write_to`（mode@0 自定义 88 字节布局）但**全仓无调用者=死代码**，且其布局与用户 `types::stat::Stat`（C struct stat，st_mode@8，152 字节，`offset_of` 测试钉死；ground truth `minix3/sys/sys/stat.h:59-97`）不符。**修复**：①`fs_driver.rs` 删死 `Stat::SIZE`/`write_to`，加 `USER_STAT_SIZE = size_of::<types::stat::Stat>()`（=152）与 `write_user_stat()`（`mem::zeroed` 构造 repr(C) 用户 struct stat 再逐公开字段映射：device→st_dev、mode→st_mode、inode→st_ino、block_size(u64)→st_blksize(i32)、blocks(u64)→st_blocks(i64)…，缺项纳秒/创建时间/flags/gen/spare 留零）；②`task.rs` Stat 臂 `Ok` 后 `write_user_stat()→from_raw_parts 字节视图→transport.copy_out(0,bytes)→zero()`；③VFS 三处 REQ_STAT magic grant 窗口从写死 88/144 统一为 `USER_STAT_SIZE`（`main_loop.rs:6873` stat/lstat 路、`syscalls.rs:1171` fstat、`exec_worker.rs:82` exec 路）——**内核 grant 越界是硬失败非截断（`grant.rs:452 end>magic.len→EPERM`、`copy_out` 吞错），故窗口必须≥FS 落字节量，否则整块拷贝被拒**（旧值 88 是 fs_driver 序列化 SIZE、非 C struct stat）。**新增回归测试** `test_stat_streams_struct_stat_through_copy_out`（ScriptedTransport 捕 copy_out，断 `out_bytes[8..12]`==st_mode、`[112..120]`==st_size）。**CodeReview（无 MUST-FIX）**采纳两条 SHOULD-FIX：①exec_worker 144→152（防 exec stat 拷贝因越界静默 EPERM）；②Stat 腿按 C `call.c:734` 预填 `st_ino`（驱动忘填也正确，对齐 C；st_dev 按既有契约由各 FS 自填，MFS 已填）；同族 `RequestBody::StatVfs` 也是 `Ok(()) => zero()` 丢 vfs（df/statvfs 用户缓冲恒零）但非 18-stage 核心且须走真实 `statvfs_off` C 偏移，已留 TODO 锚点拆为独立后续。**三件套全绿**：mock minix-fs **134/0fail**（+1 新测只增）·minix-types 309/0fail·nightly rustfmt 五文件漂移 **165＝基线 165** 零新增·镜像 `--release` 重建＋**两次单核真机签名一致：`ls /bin` 打印出 `cat`/`echo`/`ls`/`sh` 四条目（stat 判目录成功→getdents 遍历）、`cat /etc/rc` 逐行回显文件内容、marker 现（marker=2=echo 真标记+cat 回显 rc 里的 echo 行·oom=0·panic=0）**。**⇒ 终目标②的 x86_64 单核 echo/ls/cat 三个核心命令面全部真机跑通**。**未解**：①多核 `-smp 4` VM 缺页 panic（`trap_dispatch.rs:981`，正交）；②aarch64/riscv64 两架构 rc marker；③minix3 tests 上机；④statvfs(df) 同类零回填。**下轮 §1.107**：择一前沿推进（多核缺页 / aarch64-riscv64 同构 rc marker / minix3 tests / statvfs 同族修复）。**历史链**：…→§1.104 VFS 全链路洗清(`1841af3d5`)→§1.105 修 CDEV_OPEN m_type、x86_64 rc marker 首现(`b09f7601b`)→**§1.106 修 stat 回复腿从不 copy_out、18-stage echo/ls/cat 单核全跑通**。
+>
+> **（历史·§1.105 摘要，详文见文末）✅ 真根因修复：`CDEV_OPEN` 线路类型号写错致 TTY 永不回复——x86_64 rc marker 真机首次出现**（接 §1.104 commit `1841af3d5`）：承 §1.104 钉死「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复」，静态审查驱动运行时 `serve`→`TtyService::dispatch`→`minix_chardriver::classify` 定位根因——**`servers/vfs/src/cdev.rs::open_request` 用 `CdevRequest::Open as i32`（fieldless enum 判别值＝索引 0）作 `m_type`，而非 `.message_type()`（线路类型号＝base 0x400+索引＝0x400）**。VFS 发出 `m_type=0` → TTY 侧 `decode(0)`→None→`Route::Other`→`pending=None`→不发回复→VFS 卡 `WaitingForFs`。C ground truth `cdev.c:195 dev_mess.m_type = op`。**修复** `cdev.rs:165` `Open as i32`→`.message_type()`；同族 `main_loop.rs:3284` `Select as i32`（=6）→`.message_type()`(0x406)；`SdevRequest` 有 `#[repr(u32)]` 故 `as i32` 合法不改。新增回归测试 `test_open_request_wire_type_is_cdev_open_not_index`。CodeReview PASSED(0)。三件套：mock minix-vfs 538/0fail·rustfmt 270=270·镜像重建两次单核真机 marker=1/oom=0/panic=0。**⇒ §1.97→§1.104 追 8 轮的 console 设备链阻断彻底解决，x86_64 rc marker 达成（单核）**。
 >
 > **（历史·§1.104 摘要，详文见文末）⚠ VFS 全链路洗清、阻塞点转移到 TTY 驱动不应答 `CDEV_OPEN`**（接 §1.103 commit `49897aaeb`）：四张一次性 diagctl 串口探针（`handle_fs_reply` 的 slot/task/src 三分叉 + `flush_pending_fs` 的待发对话与结果 + `WorkerCont::Path` 续接分支 + `send_drv_for_slot` 驱动端点与同步 send 结果；全在 `servers/vfs/src/main_loop.rs`，用后 `git checkout` 全回滚、工作树净，无功能码变更）。单核稳定复现 exec=33/oom=0/panic=0/**marker=0**。**逐环结论**：①`handle_fs_reply` 4/4 全 `hfr000a0a`（task==src==MFS、decode 命中）⇒ **「reply 匹配/投递失败」假设彻底证伪**；②child(0x800c→slot12) 的 `open()` 发出 lookup（`fls000aO` Ok）→ MFS 回复 → `handle_fs_reply Ok` → `ptc00D`=**`WalkStep::Done` 走完遍历** → `PathFollow::Open` 相位 2 `finish_open_local`；③Char 分支解析出 **`dmap[4].driver=TTY(5)` 已接通（§1.98「None」假设经 §1.99 已解决）**；④`drv05O`=VFS→TTY 同步 `send(CDEV_OPEN)` **返回 Ok**（VFS 未卡在 send）；⑤此后**全系统静默**。**⇒ 真阻断钉死为「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复 VFS」**，内核 IPC / VFS↔MFS lookup / VFS 侧投递匹配全部排除（§1.105 据此在 TTY dispatch 定位到 `m_type` 根因并修复）。
 >
@@ -4513,4 +4515,51 @@ C ground truth 佐证：`minix3/minix/servers/vfs/cdev.c:195` `dev_mess.m_type =
 - **三终目标进度**：x86_64 rc marker ✅（单核首次达成）；aarch64/riscv64 两架构、18-stage 命令面（echo/ls/cat 真跑通、需读 rc 脚本确认实际执行到哪条）、minix3 tests 上机仍未达。
 - **下轮方向**：①单核 marker 已通 → 验 18-stage echo/ls/cat 是否随之跑通；②多核 VM 缺页 panic 独立取证；③aarch64/riscv64 同构检查（rc marker）。
 
-**本单元承 §1.104 逐环证据、以静态代码审查钉死真根因（`CdevRequest::Open as i32`＝索引 0 而非线路号 0x400，致 TTY `decode` 归 Other 永不回复），逻辑码修复 2 处 + 新增回归测试 1 条 + CodeReview PASSED（0 问题）+ 三件套全绿（mock 538/0fail、rustfmt 漂移 270＝基线、两次单核真机签名一致 marker=1/oom=0/panic=0）——§1.97→§1.104 追了 8 轮的 console 设备链阻断彻底解决，x86_64 rc marker 首次出现；工作树仅 2 个明确逻辑文件 + WORKLOG 改动、commit 仅 add 明确文件；三条终目标之一达成、余两条与多核 panic 待追，goal 保持 active。**
+**本单元承 §1.104 逐环证据、以静态代码审查钉死真根因（`CdevRequest::Open as i32`＝索引 0 而非线路号 0x400，致 TTY `decode` 归 Other 永不回复），逻辑码修复 2 处 + 新增回归测试 1 条 + CodeReview PASSED（0 问题）+ 三件套全绿（mock 538/0fail、rustfmt 漂移 270＝基线、两次单核真机签名一致 marker=1/oom=0/panic=0）——§1.97→§1.104 追了 8 轮的 console 设备链阻断彻底解决，x86_64 rc marker 首次出现；工作树仅 2 个明确逻辑文件 + WORKLOG 改动、commit 仅 add 明确文件；三条终目标之一达成、余两条与多核 panic 未达，goal 保持 active。**
+
+---
+
+## §1.106 — 18-stage 命令面：修 stat 回复腿从不 copy_out → `ls` 判目录失败（x86_64 单核 echo/ls/cat 三者全真机跑通）
+
+> 承 §1.105（commit `b09f7601b`，x86_64 rc marker 已现）。本轮推进**终目标②**（18-stage echo/ls/cat 命令面）。
+
+### 接线（播种 + rc 脚本）
+
+1. **imgrd 播种** `os/xtask/src/image.rs`：`generate_etc_proto` 的 plant 列表 `[sh,echo]` → `[sh,echo,ls,cat]`。`ls`/`cat` 由 Cargo **自动发现** `os/commands/bin/fileops/src/bin/{ls,cat}.rs` 为 bin（fileops Cargo.toml 无显式 `[[bin]]`），`-p minix-fileops` 构建即产出，`bin_rel("ls")`/`bin_rel("cat")` 引用可解析，无需改 Cargo.toml。
+2. **rc 脚本** `os/etc/rc`：marker 行**置首**（护既有冒烟 gate，marker 不能被后续命令的失败阻断），其后追加 `ls /bin` + `cat /etc/rc` 两条主动验证。shell（`os/commands/bin/shell`）支持多行文本、word splitting、外部命令 PATH 搜索（`DEFAULT_PATH=/bin:/usr/bin`）+ fork/exec/wait，`ls`/`cat` 播在 `/bin` 能 PATH 命中。
+
+### 首验：cat 通、ls 只出 operand 名
+
+镜像 `--release` 重建 → 单核 QEMU 双跑：`cat /etc/rc` **逐行回显文件内容**（open+read 一次即通）；但 `ls /bin` **只打印 `/bin`（operand 自身名）、无目录条目**。日志含控制字符须 `grep -a`。
+
+### 根因（静态定位，无探针）
+
+`ls.rs::list_one`（L90）：`if !is_directory(operand) { emit(operand); return 0 }`；`is_directory`（L149）经 `minix_sys::stat(path, &mut st)`（`st` 初始 `mem::zeroed`）读 `st.st_mode & S_IFMT==S_IFDIR`（`S_IFMT=0o170000`、`S_IFDIR=0o040000`）。stat 失败或 `st_mode=0` 都判非目录 → 走「打印自身名」腿；单 operand `headers=false` 不打印头，故只见 `/bin`。
+
+追 stat 数据腿：`minix_sys::stat` → `VFS_STAT(0x115)` → VFS `PathFollow::Stat` 相位2 用 magic grant 把**用户 `struct stat` 缓冲**授权给 FS 直写 → `REQ_STAT` → MFS `FsDriver::stat` 填 `fs_driver::Stat`。**命中根因**：`os/libs/minix-fs/src/task.rs::RequestBody::Stat` 此前 `adapt_stat` 填好局部 `minix_types::Stat` 后 **`Ok(()) => zero()` 纯状态回复、从不 `copy_out` 到用户 grant**（`ReplyPayload` 只有 Empty/Transfer/Node/Lookup，无 Stat 变体，stat 本应像 read 数据一样走 `transport.copy_out`）→ 用户缓冲停留 `mem::zeroed()` → `st_mode=0` → 判非目录。cat（open+read）不依赖 stat 故正常。
+
+死代码确认：`fs_driver::Stat::write_to`（mode@0 自定义 88 字节布局）+ `SIZE=88` **全仓无调用者**，且布局与用户 `types::stat::Stat`（C struct stat，`st_mode@8`，**152 字节**，`offset_of` 测试钉死；ground truth `minix3/sys/sys/stat.h:59-97`）不符。
+
+**关键事实**：内核 grant 越界是**硬失败非截断**——`os/kernel/src/grant.rs:452` `if end > magic.len { return Err(EPERM) }`，且 fs-rt `transport.copy_out` 用 `let _ = ipc.copy_to(...)` 吞错。**故 magic grant 窗口必须 ≥ FS 落字节量**，否则整块拷贝被拒（这是把三处写死 88/144 的 grant 尺寸统一改为 152 的根因，非可选）。
+
+### 修复（序列化器 + 回复腿 + 三处 grant 尺寸 + 回归测试）
+
+1. **`os/libs/minix-types/src/ipc/fs_driver.rs`**：删死 `Stat::SIZE`/`write_to`；加 `pub const USER_STAT_SIZE: usize = size_of::<crate::types::stat::Stat>()`（=152）与 `write_user_stat(&self) -> types::stat::Stat`（`mem::zeroed` 构造 repr(C) 用户 struct stat，逐公开字段映射：device→st_dev、mode→st_mode、inode→st_ino、block_size(u64)→st_blksize(i32)、blocks(u64)→st_blocks(i64)…；私有 padding 与时钟纳秒/创建时间/flags/gen/spare 留零）。
+2. **`os/libs/minix-fs/src/task.rs`** Stat 臂：`adapt_stat` `Ok` 后 `write_user_stat()` → `from_raw_parts` 字节视图 → `transport.copy_out(0, bytes)` → `zero()`；并按 C `call.c:734` 预填 `stat.inode = inode`（驱动忘填也正确，st_dev 按既有契约由各 FS 自填，MFS 已填）。
+3. **VFS 三处 REQ_STAT magic grant 窗口** 从写死统一为 `minix_types::Stat::USER_STAT_SIZE`：`main_loop.rs:6873`（stat/lstat 路，原 88）、`syscalls.rs:1171`（fstat，原 `const STRUCT_STAT_SIZE=88`）、`exec_worker.rs:82`（exec 路，原 `STAT_BUF_SIZE=144`）。
+4. **`RequestBody::StatVfs`** 加同根因 TODO 锚点（df/statvfs 用户缓冲恒零，但非 18-stage 核心且须走真实 `statvfs_off` C 偏移，拆独立后续）。
+5. **新增回归测试** `test_stat_streams_struct_stat_through_copy_out`：`StatDriver` 填 mode=`0o040755`/size=4096，跑 ReadSuper+Stat 两请求，`ScriptedTransport` 捕 copy_out，断 `out_bytes[8..12]`==u32 LE `0o040755`（st_mode@8）、`[112..120]`==i64 LE 4096（st_size@112）、reply status 0。
+
+### CodeReview（含逻辑码，强制派发；无 MUST-FIX）
+
+核心 unsafe/布局/字段映射/死代码删除/同类路径覆盖判为通过。采纳两条 SHOULD-FIX：①`exec_worker` 144→152（防 exec stat 拷贝因越界静默 EPERM）；②Stat 腿按 C `call.c:734` 预填 `st_ino`。CONSIDER 未采纳（留后续）：write_user_stat 全 safe 化 + 改名 to_user_stat；`doc_rerank_glm.md:147 K-190` 「88字节」文档口径同步；statvfs 同族仅留锚点未修。
+
+### 三件套验证（全绿）
+
+1. **mock 基线只增不减**：`cargo test -p minix-fs` → **134 passed / 0 failed**（+1 新回归测试）；`cargo test -p minix-types` → **309 passed / 0 failed**。
+2. **nightly rustfmt 零新增漂移**：5 改动文件 `cargo +nightly fmt --check` 修复前后均 **165 漂移 hunk**（`git stash push --` 对比法），零新增。
+3. **镜像重建 + 两次真机签名一致**：`cargo run -p xtask -- image --release` 重建 → 手动单核 QEMU（`-smp 1`）双跑，两次完全一致：**`ls /bin` 打印出 `cat`/`echo`/`ls`/`sh` 四条目**（stat 判目录成功 → getdents 遍历）、`cat /etc/rc` 逐行回显、marker=2（echo 真标记 + cat 回显 rc 里的 echo 行）、panic=0、oom=0、达 MultiUser。
+
+### 结论与下轮
+
+**⇒ 终目标②的 x86_64 单核 echo/ls/cat 三个核心命令面全部真机跑通**（echo §1.105、cat+ls 本轮）。未解：①多核 `-smp 4` VM 缺页 panic（`trap_dispatch.rs:981`，正交）；②aarch64/riscv64 两架构 rc marker；③minix3 tests 上机；④statvfs(df) 同类零回填。下轮 §1.107 择一前沿推进。

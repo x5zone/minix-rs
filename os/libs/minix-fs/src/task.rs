@@ -811,8 +811,29 @@ fn dispatch<D: FsDriver, T: FsTransport>(
         }
         RequestBody::Stat { inode } => {
             let mut stat = minix_types::Stat::zeroed();
+            // C `fsdriver_stat`（call.c:733-734）在问驱动前先预填 `st_ino`
+            // （`st_dev` 取 `fsdriver_device`，框架侧无该通道，按 call.rs 既有
+            // 契约由各 FS 驱动自填——MFS 即如此）。预填 inode 零成本且对齐 C。
+            stat.inode = inode;
             match adapt_stat(&mut server.driver, inode, &mut stat) {
-                Ok(()) => zero(),
+                Ok(()) => {
+                    // C `fsdriver_stat`（call.c:717-741）：驱动填好后，magic
+                    // grant 把**用户 `struct stat`** 缓冲授权给 FS 直写——FS
+                    // 必须按 C 布局（`st_mode@8`…）copy_out 到调用方缓冲，
+                    // 否则用户缓冲停留在零值（`st_mode=0` → 目录判型失败，
+                    // 18-stage `ls` 把 `/bin` 当普通文件的根因）。
+                    let user = stat.write_user_stat();
+                    // SAFETY: `user` 是 `#[repr(C)]` 无不变量 POD，取其字节
+                    // 视图写入 grant；长度用 `USER_STAT_SIZE` 与授权窗口对齐。
+                    let bytes = unsafe {
+                        core::slice::from_raw_parts(
+                            &user as *const _ as *const u8,
+                            minix_types::Stat::USER_STAT_SIZE,
+                        )
+                    };
+                    transport.copy_out(0, bytes);
+                    zero()
+                }
                 Err(e) => err(e),
             }
         }
@@ -839,6 +860,11 @@ fn dispatch<D: FsDriver, T: FsTransport>(
             Err(e) => err(e),
         },
         RequestBody::StatVfs => {
+            // TODO 同 `RequestBody::Stat` 本轮修复的根因：此腿也只 `zero()`
+            // 丢弃 `vfs`、从不按 C `struct statvfs` 布局 copy_out 到 grant →
+            // `df`/`statvfs` 用户缓冲恒零。df 不属 18-stage 核心命令面（echo/ls/cat），
+            // 且须走 `minix_types::statvfs_off` 的真实 C 偏移（非已死的
+            // `StatVfs::write_to` 那个 10×u64 自定义布局），故拆为独立后续。
             let mut vfs = minix_types::StatVfs::zeroed();
             match adapt_stat_vfs(&mut server.driver, &mut vfs) {
                 Ok(()) => zero(),
@@ -1164,6 +1190,67 @@ mod tests {
                 transferred: 8,
             })
         );
+    }
+
+    /// stat 回复必须像 read 一样经 `copy_out` 落进用户的 magic grant 缓冲，
+    /// 且按 C `struct stat` 布局（`st_mode@8`、`st_size@112`）。此前此腿只
+    /// 回 status、从不落字节，导致用户缓冲停留在 `st_mode=0`——18-stage
+    /// `ls` 把 `/bin` 目录判成普通文件、只打印自身名的根因回归针。
+    #[test]
+    fn test_stat_streams_struct_stat_through_copy_out() {
+        struct StatDriver;
+
+        impl crate::driver::FsDriver for StatDriver {
+            fn mount(
+                &mut self,
+                device: u64,
+                _flags: MountFlags,
+                capabilities: &mut CapabilityFlags,
+            ) -> Result<FileNode, Errno> {
+                *capabilities = CapabilityFlags::EMPTY;
+                Ok(FileNode::new(1, 0o040755, 0, 0, 0, device))
+            }
+
+            fn stat(&mut self, _inode: u64, stat: &mut minix_types::Stat) -> Result<(), Errno> {
+                stat.mode = 0o040755; // S_IFDIR | 0755
+                stat.size = 4096;
+                Ok(())
+            }
+        }
+
+        let incoming = vec![
+            Incoming::Request(
+                envelope(raw(RequestNumber::ReadSuper, 1)),
+                RequestBody::ReadSuper {
+                    device: 4,
+                    flags: MountFlags::EMPTY,
+                    label: alloc::string::String::new(),
+                },
+            ),
+            Incoming::Request(
+                envelope(raw(RequestNumber::Stat, 2)),
+                RequestBody::Stat { inode: 1 },
+            ),
+        ];
+        let mut transport = ScriptedTransport::new(incoming);
+        let mut server: Server<StatDriver> = Server::new(StatDriver);
+        run(&mut server, &mut transport);
+        // 整个用户 `struct stat` 缓冲应落到 grant（至少覆盖 st_size@112）。
+        assert!(
+            transport.out_bytes.len() >= 120,
+            "stat 字节必须经 copy_out 达 grant"
+        );
+        assert_eq!(
+            u32::from_le_bytes(transport.out_bytes[8..12].try_into().unwrap()),
+            0o040755,
+            "st_mode 必须落在 C struct stat 偏移 8"
+        );
+        assert_eq!(
+            i64::from_le_bytes(transport.out_bytes[112..120].try_into().unwrap()),
+            4096,
+            "st_size 必须落在 C struct stat 偏移 112"
+        );
+        assert_eq!(transport.replies[1].1.status, 0);
     }
 
     #[test]

@@ -850,8 +850,9 @@ mod tests {
 }
 
 /// 文件状态回复的类型化结构（`fs_stat` 的载荷，字段集与 C `struct stat`
-/// 一致；字节布局为稳定小端序，由 [`Stat::write_to`] 写出，虚拟文件系统
-/// 服务按同一布局解码）。
+/// 一致）。这是 **VFS↔FS 驱动侧**的字段承载体；交付给调用进程时须按用户
+/// `struct stat`（[`crate::types::stat::Stat`]，本项目对 C `struct stat` 的
+/// 字节镜像，`st_mode@8`）布局写出，见 [`Stat::write_user_stat`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stat {
     /// 设备号（`st_dev`）。
@@ -883,8 +884,10 @@ pub struct Stat {
 }
 
 impl Stat {
-    /// 写出所需的字节数。
-    pub const SIZE: usize = 88;
+    /// 交付给调用进程的字节数：等于用户 `struct stat`
+    /// （[`crate::types::stat::Stat`]）的 `size_of`（LP64 为 152）——即
+    /// C `req_stat_actual`（request.c:1087）授权给 FS 直写的 magic grant 窗口。
+    pub const USER_STAT_SIZE: usize = core::mem::size_of::<crate::types::stat::Stat>();
 
     /// 全零状态：由调用方逐字段填充。
     pub const fn zeroed() -> Self {
@@ -905,25 +908,34 @@ impl Stat {
         }
     }
 
-    /// 按稳定小端序写出全部字段。缓冲区不足八十八字节报无效参数。
-    pub fn write_to(&self, out: &mut [u8]) -> Result<(), crate::Errno> {
-        if out.len() < Self::SIZE {
-            return Err(crate::Errno::from_i32(crate::EINVAL));
-        }
-        out[0..2].copy_from_slice(&self.mode.to_le_bytes());
-        out[2..4].copy_from_slice(&(self.nlinks as u16).to_le_bytes());
-        out[4..6].copy_from_slice(&(self.owner as u16).to_le_bytes());
-        out[6..8].copy_from_slice(&(self.group as u16).to_le_bytes());
-        out[8..16].copy_from_slice(&self.device.to_le_bytes());
-        out[16..24].copy_from_slice(&self.inode.to_le_bytes());
-        out[24..32].copy_from_slice(&self.special.to_le_bytes());
-        out[32..40].copy_from_slice(&(self.size as u64).to_le_bytes());
-        out[40..48].copy_from_slice(&self.accessed.to_le_bytes());
-        out[48..56].copy_from_slice(&self.modified.to_le_bytes());
-        out[56..64].copy_from_slice(&self.changed.to_le_bytes());
-        out[64..72].copy_from_slice(&self.block_size.to_le_bytes());
-        out[72..80].copy_from_slice(&self.blocks.to_le_bytes());
-        Ok(())
+    /// 序列化为**用户态 `struct stat`**（[`crate::types::stat::Stat`]）值，
+    /// 供 FS 经 magic grant 直写调用方缓冲。
+    ///
+    /// C `req_stat_actual`（request.c:1087）把调用进程的 `struct stat` 缓冲
+    /// 授权给 FS 直写，故 FS 落盘的字节布局必须严格对齐 C `struct stat`
+    /// （`st_mode@8`、`st_size@112`……）——即本项目的 `types::stat::Stat`，
+    /// 由 `#[repr(C)]` + 布局测试钉死，无需手算偏移。驱动侧未提供的字段
+    /// （时间纳秒、创建时间 `st_birthtim`、`st_flags`/`st_gen`/`st_spare`）
+    /// 按 C 惯例留零。此前 `ls` 把 `/bin` 当普通文件，正是因为该腿从未
+    /// 落字节、用户缓冲停留在 `st_mode=0`。
+    pub fn write_user_stat(&self) -> crate::types::stat::Stat {
+        // SAFETY: `types::stat::Stat` 是 `#[repr(C)]` 的无不变量 POD，全零
+        // 是合法初值；下方逐个覆盖公开字段，私有 padding 保持零。
+        let mut s: crate::types::stat::Stat = unsafe { core::mem::zeroed() };
+        s.st_dev = self.device;
+        s.st_mode = self.mode;
+        s.st_ino = self.inode;
+        s.st_nlink = self.nlinks;
+        s.st_uid = self.owner;
+        s.st_gid = self.group;
+        s.st_rdev = self.special;
+        s.st_atim.tv_sec = self.accessed;
+        s.st_mtim.tv_sec = self.modified;
+        s.st_ctim.tv_sec = self.changed;
+        s.st_size = self.size;
+        s.st_blocks = self.blocks as i64;
+        s.st_blksize = self.block_size as i32;
+        s
     }
 }
 
