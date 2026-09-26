@@ -98,7 +98,8 @@ pub fn proc_stacktrace(rp: &KProcess) {
     Console::write_str(" ");
 
     // iskernel branch selection: C: iskernelp(whichproc) (proc.h:275)
-    // - kernel task → stack in Direct Map, direct kernel-Direct-Map alias read
+    // - kernel task → stack in the higher-half image region (mapped in the
+    //   active root); resolve it through a page-table walk, then the DM alias
     // - user process → stack in user AS, must cross the page table
     let is_kernel = rp.is_kernel_task();
 
@@ -134,25 +135,32 @@ pub fn proc_stacktrace(rp: &KProcess) {
     Console::write_str("\n");
 }
 
-/// Read a 64-bit word from the kernel Direct Map (fault-free path: the
-/// Direct Map aliases all physical RAM, so any mapped kernel address
-/// reads; the walker treats `Some` as authoritative).
+/// Read a 64-bit word at a kernel address, fault-free.
+///
+/// Kernel stacks live in the higher-half image region, which is mapped in
+/// the active page-table root (we run on this very stack) but is NOT inside
+/// either Direct Map window, so a `virt_to_phys` direct-map subtraction on
+/// such a VA produces a stray pseudo-phys whose alias read faults — turning
+/// the diagnostic into a second crash. Resolve the VA through a real
+/// page-table walk of the active root instead; if any level is absent the
+/// walk returns `None`, the walker prints its placeholder and stops.
 ///
 /// Shared by [`proc_stacktrace`]'s kernel branch (via
 /// [`make_read_word`]) and [`util_stacktrace`]'s self-walk (D-47).
 fn kernel_direct_read_word() -> impl Fn(u64) -> Option<u64> {
     move |vaddr: u64| -> Option<u64> {
-        // SAFETY: The kernel Direct Map aliases all physical RAM with
-        // the supervisor privileges needed to read it. The target stack
-        // was live in this map when the process ran; reading through the
-        // alias is observationally equivalent to the C PRCOPY memcpy
-        // branch.
-        let phys = CurrentDirectMap::virt_to_phys(VirBytes(vaddr));
+        // Active root absent (pre-paging / fault storm) → None so the walk
+        // terminates gracefully rather than dereferencing an unknown table.
+        let root = crate::current_root_phys()?;
+        let (phys, _flags) = crate::vm::lookup_in_table::<CurrentDirectMap>(root, VirBytes(vaddr))?;
+        // SAFETY: `phys` is the physical page the active page tables
+        // translate `vaddr` to (the walk just proved every level present),
+        // and the Direct Map aliases all physical RAM with supervisor
+        // privileges, so the alias read observes the same byte the running
+        // kernel would and cannot fault. Reading through the alias mirrors
+        // C's PRCOPY memcpy branch; `volatile` keeps the read from being
+        // elided across the diagnostic's console side effects.
         let mapped = CurrentDirectMap::kernel_phys_to_virt(phys);
-        // SAFETY: `mapped.0` is a valid kernel Direct Map address for
-        // the physical page backing `vaddr`. The page was live in
-        // the Direct Map at the time we entered the panic path, and
-        // we hold BKL so no concurrent unmapping.
         let bytes: [u8; 8] = unsafe {
             core::ptr::read_volatile(mapped.0 as *const [u8; 8])
         };
@@ -199,10 +207,10 @@ pub fn util_stacktrace() {
 ///
 /// # Two paths
 ///
-/// - **Kernel task** (`is_kernel = true`): the stack lives in the kernel
-///   Direct Map. We resolve the virtual address with
-///   [`DirectMapArch::virt_to_phys`] + `kernel_phys_to_virt` and read 8
-///   bytes with `core::ptr::read_volatile` (the `volatile` qualifier
+/// - **Kernel task** (`is_kernel = true`): the stack lives in the higher-half
+///   image region, mapped in the active root. [`kernel_direct_read_word`]
+///   walks the active root to get the real phys, then reads 8 bytes through
+///   the Direct Map alias with `core::ptr::read_volatile` (the `volatile` qualifier
 ///   matches C's bare `memcpy` reading arbitrary kernel memory; the
 ///   compiler is not allowed to elide the read because the surrounding
 ///   diagnostic could in principle observe the side effect of the

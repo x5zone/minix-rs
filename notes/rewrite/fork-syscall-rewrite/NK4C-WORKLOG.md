@@ -3729,4 +3729,14 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 **CodeReview（B45）**：0 MUST-FIX、3 SHOULD。**SHOULD#3 已采**（本单元内）——注释先例引用纠错：真同款是 `copy_struct_from_user`（syscall.rs:1266-1290 src/dst 双 `AddressRef::Process{caller_endpt}`）而非 `copy_struct_to_caller`（后者 `write_to_process_vmcheck` 内核侧直读自身 VA、不构造 AddressRef），并删 review 编号/修复史叙事（fix-guard 第5条）。**SHOULD#1/#2 登记为下单元前沿**：#1=`stacktrace.rs::kernel_direct_read_word`（L137-161）仍对内核高半区栈 VA 走 `CurrentDirectMap::virt_to_phys` 减法→ 同族 bit47 伪 PA→`kernel_phys_to_virt` 回绕为非规范地址→`read_volatile` #GP（**极可能即 vector-14/递归 panic 第二腿**：`proc_stacktrace` 在 `cause_signal` fatal SELF panic + DIAGCTL_STACKTRACE 路径被调，在最需诊断输出时二次故障）；#2=caller_cr3==0（内核 task slot -5..-1）时 `lookup_in_table(PA0,…)` 以 null 根 walk 可能偶然解出错 PA（sys_diagctl 实由 server 调、cr3 非零，且 F10c 先例亦未守卫，保持同构不改）。CONSIDER（#4 vmctl 新根 `.expect` 用户态可触达 panic 面、#5 int-33 自死锁仅 debug_assert 护）登记待后。
 
+### 1.84 B46 修复落地（含代码·内核侧 `os/kernel/src/stacktrace.rs`·真机 bn74/bn75·诊断不再二次故障）
+
+**承 §1.83 CodeReview SHOULD#1**：`kernel_direct_read_word`（被 `proc_stacktrace` kernel 分支与 `util_stacktrace` 自栈回溯调用）旧对传入的 vaddr 走 `CurrentDirectMap::virt_to_phys` + `kernel_phys_to_virt` DM 减法。但**内核栈在 higher-half image 段（两个 Direct Map 窗口之外）**，`virt_to_phys` 对该段得伪 PA（bit47 形态，与 B45 同族）→ 别名 `read_volatile` 踩非规范/未映射地址→缺页→ panic handler 递归（`(stacktrace skipped: recursive panic)`，**诊断自身成为第二次故障**，遮蔽真因）。
+
+**修复（stacktrace.rs:137-166）**：改用活跃根真页表 walk——`let root = crate::current_root_phys()?; let (phys,_)=crate::vm::lookup_in_table::<CurrentDirectMap>(root, VirBytes(vaddr))?;` 再 `kernel_phys_to_virt(phys)` 经 DM 别名读。higher-half 映在每个根（我们正跑在此栈）→ 活跃根可解；**任一级缺失→walk 返 None→walker 打印占位并停**（符模块头「诊断不得成为第二次故障」契约，比旧码无条件 fault 严格更安全）。同步修正 L101/L206 两处错误前提注释（“栈在 Direct Map用 virt_to_phys”→“higher-half、经页表 walk”）。`#[ignore]` 测试 `read_word_kernel_round_trip`（L348）传的 vaddr 本就是 DM 窗口地址、virt_to_phys 正确，未动。
+
+**真机双跑（bn74/bn75 -smp 4）**：bit47 corrupt 保持 0；**诊断可观测性实证提升**——bn75 panic 末尾 `kernel on CPU 0x...: 0x5c5850b 0x2b` 是 `util_stacktrace` **打出真实返回地址帧**（旧码直接 recursive、无帧输出）。
+
+**新前沿（-smp 4 非确定性控制流踩踏）**：各轮命中不同早期崩点——bn72/73 vector-14 DM-#PF、bn74 vector-6 #UD 伴垃圾 rip（0x1/0x3f8/0x11051、cs=0x8 内核段）、bn75 `pagefault in VM`（VM 自身 rip=0 cr2=0 跳空）。共性＝**早期 SMP 竞态踩坏内核控制流/返回地址**（非 stacktrace 读本身）。下轮配方＝单核隔离（xtask qemu 硬编 `-smp 4`，需临时改 qemu.rs 或添 --smp 透传），先确现单核是否复现；若仅多核→查早期启动多核共享结构（idle 唤醒/页表池并发 bump）；真机验 rc marker 仍需。三件套：镜像✅/mock817✅/fmt stacktrace.rs WT8==HEAD8 零新增/clippy src/stacktrace.rs 零告警/双真机 bit47 归零。**rc marker 仍未达。**
+
 
