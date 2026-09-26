@@ -3413,6 +3413,11 @@ rc marker 仍未达，frontier＝§1.66（B38 修复）。探针已 `git checkou
 
 **现象**（bn52/bn52b 确定）：RS exec 走过 B39（VFS 不再被踩），但 init/PM 侧对某目标 exec 时 `servers/pm/src/exec.rs:268: sys_exec failed: 78`（需先查 78 对应哪个 errno：Linux 78=ENOSYS，Minix3 需核 `minix3/include/minix/errno.h`），紧接 PM 自身在 `exec.rs` 内 page-fault panic（`PF servers/pm/src/exec.rs:...`，被 panic 路径分行），再 `ipcerr caller=0x0 err=ECALLDENIED` → `pmstall2`（内核检测 PM slot0 running>5000 tick 自旋）。**未取证，下一单元先定位 78 的真实 errno 与 PM exec.rs 崩溃行（先读 `servers/pm/src/exec.rs:240-280` 上下文 + 对照 C `do_exec`/`exec_new`）。**
 
+**§1.71 侦察初步（本轮只读定位，修正上段“page-fault”描述）**：`exec.rs:264-269` 实读——`let r = svc.exec(ep, sp, pc, ps_str, &name); if r != OK { panic!("sys_exec failed: {}", r); }`。故：
+1. **78 = ENOSYS**（`os/libs/minix-types/src/types/errno.rs:92` Minix3 `ENOSYS=78`），非内存损坏——**真根因 = VFS 的 exec 服务腿对当前这个 exec 请求返回 `ENOSYS`（函数未实现/未接线）**，属 B32/B33 家族的“某 exec opcode 未服务”。日志里的 `PF servers/pm/src/exec.rs:...` 是 panic 位置回显（非缺页），下单元需区分：若确为缺页则另当别论。
+2. **次级 PM 健壮性缺陷**（不阻塞主修但必修）：PM 对单进程 exec 失败直接 `panic!`会打死整个 PM→`ECALLDENIED`→`pmstall2`（全系统停摆）；C `do_exec`/`exec_new`（`pm/exec.c`）失败只给被 exec 的子发 SIGSEGV/SIGSTOP（`m_ptr` 回错），绝不 panic 服务循环。应改为优雅回错/杀子。
+3. **下单元取证配方**：先定 VFS `exec` 服务端哪个分支返 ENOSYS（grep VFS `ENOSYS`/未实现臂，对比 `pm_exec` 已接线路径），并确认 `svc.exec` 传的 opcode/参数；再对照 C `do_exec` 修正 PM 失败处理。rc marker 仍未达。
+
 rc marker 仍未达。
 
 
