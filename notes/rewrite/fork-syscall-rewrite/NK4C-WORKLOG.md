@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝§1.100 去噪清障 + 真阻断现形（全局栈缺页死锁，非 livelock）**：清除散在 `os/kernel/src/{lib,trap_dispatch,syscall}.rs` 的 committed `nk4a:` fork 调试探针——lib.rs 每上下文切换/恢复族 219 行（pick->/picknone/sa0/gs2/probe text|stk|dm/sa1-after/cr3-done/pre-restore/susp-again）+ trap_dispatch.rs 缺页 handler 内页表 walk 违规调试 370 行（pf# 块含 `walk_x86_64`、vs 采样、pf-save 块含手动 PTE 逐级 dump+`walk_x86_64`、rs_trace/anom/leak+pf-refault、pfc 块含 `CurrentPteWalk::walk`、gp-byte、sig rs_trace）+ syscall.rs 失去唯一调用者的死码 `nk4a_tail_dump` 46 行。全部 `#[cfg(not(feature="mock"))]` 纯调试（write_str/读寄存器/walk 仅取证，零功能副作用）。**功能码完整保留**（CodeReview MUST-FIX 0）：ForwardToVm 臂 `save_frame_to_context→trap_style=FullContext→forward_pagefault_to_vm→scheduler_loop` 对位 C `pagefault()`；Signal 臂真实 `user exception:` 崩溃报告 + `cause_signal` 保留；tick/quantum 功能（`local_tick`/`check_quantum`/`bkl_lock_or_inherit`/`save_irq_frame_to_context`）保留。三件套：mock **817/0fail** 不减（改动全在非 mock）·rustfmt 删除-only 两文件漂移 hunk 数**低于基线**（lib 162<166、trap 29<35）零新增·镜像重建 + **三次真机（clean1/2/3）里程碑语义签名 md5 完全相同 `a47b6a84`**（11 exec 全成功含 init/mfs/mib/pfs/tty、init-state Runcom×1、**无 panic/无 OOM/无 wrong-user-pointer/无 pagefault-in-VM**），地址方差仍是已知 UEFI memmap 环境非确定性。**真阻断现形**：去噪后 boot 不再 livelock 刷屏，串口干净读出——12 服务器全 exec 完、init 达 Runcom 一次，随后 init(11)+boot 服务器(1,4,5,6) 在**用户栈增长 VA（`fa=0x7fffffffc/dxxx`）连续缺页 → `pfwd nr=X out=B`（Blocked）转发给 VM(dst=8)**，VM `vm-pf recv` 收下却始终不清 fault → 全体挂起、只剩 `gtick` 空转（CPU idle、无人可跑）。⇒ §1.98/§1.99 看到的「`pick->4` 调度空转」其实是**探针串口 DoS 掩盖了这个真死锁**。三条终目标仍未达（rc marker 需 init→fork 子→exec sh /etc/rc→exec echo 写 console，卡在子/服务器栈增长 fault 未被 VM 服务）。**下轮＝追用户栈增长缺页服务腿**：sh 栈基址 `0x7fffffffea78`、fault 在 0x1000-0x3000 之下（在 §1.93-95 的 256KiB runway 内应已预映却仍 fault）→ 查 fork 子/newimage 的初始栈是否真按 runway 预映、VM 栈增长 handle、`SYS_VMCTL ClearPageFault` 重入队腿。历史链：…→§1.98 翻案(dmap误判)→§1.99 真根因(mfs lookup device=0)修复+open 通→§1.100 去噪清障暴露栈增长缺页全局死锁。**
+> **⚠ 最新前沿＝§1.101 boot-OOM 根因修复（eager 物化 4MB heap/BSS 预留段 × 12 撑爆帧池）**：接手时对 §1.100「全局栈缺页死锁」判读做取证复核，发现两处**判读错误**并锁定真根因。(1) §1.100 idle-dump 快照里 `fl=0x8` 被误读为 PAGEFAULT——实际 **PAGEFAULT=0x400、0x8=RECEIVING**（`proc.rs:132/139`），全体 server 只是正常阻塞在 `receive(ANY)`；(2) 干净 HEAD（ad3595a92）连跑两次（含 fresh fw_vars 重置）**确定性在第 8 台 mib 报 `exec_bootproc: mib failed: boot segment page allocation failed` panic、exec 只到 7**——§1.100 的「无 OOM / 11 exec」签名是 memmap 侥幸宽裕那次的产物。**统一真根因**：`os/servers/vm/src/vm_server.rs::exec_bootproc` 的段 eager 循环按 **memsz**（`for i in 0..pages`）逐页 `alloc_pfn`，但每台 boot server 末段是 heap+BSS 预留（readelf 实锤 ds：`FileSiz=0x10098≈64KB` 而 `MemSiz=0x410a80≈4.07MB`），12 台 × ~1041 页 ≈ 48MB，几乎吃满 VM 从内核拿到的 **14319 帧池**（pool probe 实锤 total_pages=14319）——memmap 紧则第 8 台 OOM、memmap 宽则挤到 11-12 台但把 §1.100 看到的下游 stall 一并埋下。**修复（对位 C libexec：exec_image 只对文件页 physcopy、其余 demand-fault）**：新增 `file_pages`（按 filesz 计页），eager 上界 `pages→file_pages`，region 仍覆盖整段 memsz 使页对齐 .bss/堆尾走按需缺页。**CodeReview（MUST-FIX 采纳）**：MUST-1(b) 首/末页页内 .bss 空洞（`[page_va,lo)`+`[hi,page_va+PS)`，末文件页已 `map_page` 置 present 永不再缺页）用 `write_bytes` 显式清零（对位 C `clearmem` 头/尾，中间页 head/tail 长 0 为 no-op）；SHOULD-2 `file_pages.min(pages)` 防 `filesz>memsz` 畸形段 `map_page` 裸下标 OOB panic；MUST-1(a) 页对齐整页尾的零填依赖 ANON demand-fault 给零页——boot 期无页缓存可回收故行为不变，把 demand-fault 显式接 `PAF_CLEAR`（对位 C `VR_UNINITIALIZED`，仓库 `to_alloc_flags()` 现为 dead code）列为后续加固。**三件套全绿**：mock **817/0fail** 不减 + vm **531/0fail**·rustfmt 漂移 **119=基线119** 零新增·镜像重建 + **两次真机里程碑语义签名一致 `df35843c`（exec=11·oom=0·panic=0·init-state Runcom×1）**、所有 TEMP 探针（lib idle-dump / ipc reply-drain / vm pool / vm seg）已回滚、工作树仅剩明确文件改动。**新真阻断（marker 仍 0）**：boot 稳定过第 8 台后仍停在 init fork→sh/echo 未落到 console。恢复 §1.100 遗留的窄作用域取证（reply 未发 vs 发了未投）作下轮方向：proc12↔VFS、INIT↔PM 的 sendrec `fl=RECEIVING` 稳态互等 + `vg st ... wto=0xa`（VFS 等 MFS）+ 反复 `sa-call caller=4` idle 量子钟。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.99 真根因(mfs device=0)修复→§1.100 去噪清障(误判栈缺页死锁)→**§1.101 纠正判读+真根因 boot-OOM(eager 4MB×12)修复,boot 7→11 exec 稳定**。**
+>
+> **（历史·§1.100）⚠ 去噪清障 +（当时误判的）真阻断现形**：清除散在 `os/kernel/src/{lib,trap_dispatch,syscall}.rs` 的 committed `nk4a:` fork 调试探针——lib.rs 每上下文切换/恢复族 219 行（pick->/picknone/sa0/gs2/probe text|stk|dm/sa1-after/cr3-done/pre-restore/susp-again）+ trap_dispatch.rs 缺页 handler 内页表 walk 违规调试 370 行（pf# 块含 `walk_x86_64`、vs 采样、pf-save 块含手动 PTE 逐级 dump+`walk_x86_64`、rs_trace/anom/leak+pf-refault、pfc 块含 `CurrentPteWalk::walk`、gp-byte、sig rs_trace）+ syscall.rs 失去唯一调用者的死码 `nk4a_tail_dump` 46 行。全部 `#[cfg(not(feature="mock"))]` 纯调试（write_str/读寄存器/walk 仅取证，零功能副作用）。**功能码完整保留**（CodeReview MUST-FIX 0）：ForwardToVm 臂 `save_frame_to_context→trap_style=FullContext→forward_pagefault_to_vm→scheduler_loop` 对位 C `pagefault()`；Signal 臂真实 `user exception:` 崩溃报告 + `cause_signal` 保留；tick/quantum 功能（`local_tick`/`check_quantum`/`bkl_lock_or_inherit`/`save_irq_frame_to_context`）保留。三件套：mock **817/0fail** 不减（改动全在非 mock）·rustfmt 删除-only 两文件漂移 hunk 数**低于基线**（lib 162<166、trap 29<35）零新增·镜像重建 + **三次真机（clean1/2/3）里程碑语义签名 md5 完全相同 `a47b6a84`**（11 exec 全成功含 init/mfs/mib/pfs/tty、init-state Runcom×1、**无 panic/无 OOM/无 wrong-user-pointer/无 pagefault-in-VM**），地址方差仍是已知 UEFI memmap 环境非确定性。**真阻断现形**：去噪后 boot 不再 livelock 刷屏，串口干净读出——12 服务器全 exec 完、init 达 Runcom 一次，随后 init(11)+boot 服务器(1,4,5,6) 在**用户栈增长 VA（`fa=0x7fffffffc/dxxx`）连续缺页 → `pfwd nr=X out=B`（Blocked）转发给 VM(dst=8)**，VM `vm-pf recv` 收下却始终不清 fault → 全体挂起、只剩 `gtick` 空转（CPU idle、无人可跑）。⇒ §1.98/§1.99 看到的「`pick->4` 调度空转」其实是**探针串口 DoS 掩盖了这个真死锁**。三条终目标仍未达（rc marker 需 init→fork 子→exec sh /etc/rc→exec echo 写 console，卡在子/服务器栈增长 fault 未被 VM 服务）。**下轮＝追用户栈增长缺页服务腿**：sh 栈基址 `0x7fffffffea78`、fault 在 0x1000-0x3000 之下（在 §1.93-95 的 256KiB runway 内应已预映却仍 fault）→ 查 fork 子/newimage 的初始栈是否真按 runway 预映、VM 栈增长 handle、`SYS_VMCTL ClearPageFault` 重入队腿。历史链：…→§1.98 翻案(dmap误判)→§1.99 真根因(mfs lookup device=0)修复+open 通→§1.100 去噪清障暴露栈增长缺页全局死锁。**
 >
 > **（历史·§1.99）⚠ 真根因修复（console open 腿已通）：§1.98「dmap[4] 未填 / grant Vec 指针时效性」两大前提被本轮真机探针逐条证伪——grant ptr==postsync ptr（不 realloc）、safecopy 数据完美（dev4_mask=0040 第6行 TTY dev_nr=4 正解）、dmap[4] 实际已映射（char-open 探针 row4=1）。真根因翻案＝char open 时 `node.dev` 的 major=0（不是4）：`mfs/server.rs::lookup_child` 构造 `FileNode::new(...)` 把 device 硬编码为 `0`，丢掉了 C `path.c:37 fn_dev=(dev_t)rip->i_zone[0]` 应带出的特殊设备号（`/dev/console` 的 `zones[0]=0x400`=major4 minor0）→ VFS `get_by_major(dmap,0)` 找不到 TTY 驱动 → ENXIO。修复：`0`→`child.zones[0]`（CodeReview 0 P0/0 P1）+ 回归测 `assert_eq(node.device,0x400)`。真机验证：char-open 探针翻成 `op 04x11m`→major=04、驱动命中、open 不再 ENXIO。三件套绿（mock 178/0fail、rustfmt 我的 server.rs 零新增漂移、镜像重建+两次真机语义签名一致 `1998df6c`）+探针全回滚。⚠ rc marker 仍未打出：open 之后 boot 停在 `pick->4` 调度空转、且 committed `nk4a:` 每上下文切换探针刷屏（~460行/秒）淹没串口——下轮＝清 boot 关键路径上的 committed nk4a 噪声探针 + 追 runcom→读/etc/rc→fork/exec echo 下游。历史链：…→§1.97r→§1.98 翻案(dmap误判)→§1.99 真根因(mfs lookup device=0)修复+open 通。rc marker 三条终目标仍未达，goal 保持 active。**
 >
@@ -4303,3 +4305,49 @@ nk4a: pick->0x4 / sa0-0x4 / gs2 / probe text|stk|dm / sa1-after cr3 / pre-restor
 其它遗留（后续独立单元）：仍有 committed `nk4a:` 探针散在 `ipc.rs/vm.rs/proc.rs/syscall.rs/grant.rs` 等（`pdmv-set/fx/rtsrs/msgw/rcv-p4/sa-call/rs-step2` 等），本单元先清 boot 关键路径的洪泛 + 缺页违规者；余者「committed 不留探针」应继续收，但它们目前恰好是 r10 面包屑。
 
 **rc marker 三条终目标仍未达（本单元去噪清障 + 修复缺页 handler 页表 walk 违规 + 暴露真死锁，取得实质进展、非阻塞）；goal 保持 active。**
+
+---
+
+## §1.101 纠正上一轮误判 + 真根因修复：启动期内存耗尽（eager 物化 4MB 堆/未初始化数据预留段 × 12 台撑爆帧池）（2026-09-26）
+
+### 背景：接手时对上一轮结论做取证复核
+
+上一轮（§1.100）留下的判断是「去噪后串口干净，暴露真死锁＝用户栈增长缺页转发给虚拟内存服务器后全局挂起」。本轮接手第一件事不是顺着这个方向查，而是先复核它赖以成立的两条证据，结果两条都站不住。
+
+**判读错误一：把运行状态标志位读成了缺页。** 上一轮从空闲转储快照里读到若干进程 `fl=0x8`，判为「卡在缺页」。回到 `os/kernel/src/proc.rs:132/139` 的标志位定义核对：缺页位是 `PAGEFAULT=0x400`，而 `0x8` 是 `RECEIVING`（正在等收消息）。也就是说那些服务器根本不是卡在缺页，只是正常地阻塞在「等待任意来源的消息」上——这是事件循环空闲时的常态，不是故障。
+
+**判读错误二：「无内存耗尽、十一台全部成功」是一次侥幸内存映射的产物。** 把带调试探针的工作树完全撤净、回到干净的上一提交（`ad3595a92`），重建镜像后连跑两次（并把固件变量文件重置为原始模板以排除环境累积），两次都在**第 8 台（mib）**报同一句致命错误：`exec_bootproc: mib failed: boot segment page allocation failed`，可执行映像只加载到第 7 台就 panic 中止。这是确定性复现，不是偶发。结论：上一轮看到的「十一台全过」只是那次虚拟机内存映射恰好宽裕，掩盖了真正的启动期内存耗尽问题；而所谓的「栈增长缺页全局死锁」根本没机会出现——系统在更早的加载阶段就已经崩了。
+
+### 根因定位：帧池充足，但每台服务器被过度实体化
+
+先确认不是池子太小。在虚拟内存服务器主循环入口打印它从内核拿到的总帧数：**14319 帧**（约 56MB），对启动期而言绰绰有余。再在按段加载映像的循环里逐段打印实际分配的页数：每台启动服务器的**最后一个段都消耗约 1042/1043 页**（约 4MB）。用 `readelf` 核对可执行文件的段头，实锤了这个 4MB 的来源——末段的文件尺寸只有 `0x10098`（约 64KB），内存尺寸却是 `0x410a80`（约 4.07MB）。差额那约 4MB 是**堆和未初始化数据段的预留空间**，文件里根本没有对应内容。
+
+回到加载代码 `os/servers/vm/src/vm_server.rs::exec_bootproc`：按段加载时，它先按段的**内存尺寸**算出总页数 `pages`，然后 `for i in 0..pages` 逐页分配物理帧并建立映射。问题正在于此——它把只该按需拿到的堆和未初始化数据预留，在加载那一刻就全部实体化了。十二台启动服务器每台这样铺约 4MB，合计约 48MB，把 14319 帧的池子吃到第 8 台就见底。**内存映射宽裕时能多撑几台、勉强过到十一台，但把下游的进程早已埋进临界耗帧；映射紧张时直接第 8 台崩溃。**
+
+### 对齐 C 的原始语义
+
+Minix3 的库加载器（`libexec`）在做同一件事时只拷贝**文件里真正存在的页**；文件尺寸到内存尺寸之间的未初始化数据与堆，是留给运行时按需缺页时才分配物理帧的。本仓库的加载代码把这两件事合并成了一步 eager 分配，偏离了这个语义。修复方向就是把「实体化文件页」和「预留未初始化尾」重新拆开。
+
+### 修复
+
+在按段循环里新增按文件尺寸计算的页数 `file_pages`，把逐页分配的上界从 `pages` 收紧到 `file_pages`；段的地址区间仍然覆盖整个内存尺寸，让那截页对齐的未初始化数据/堆尾重新走按需缺页。这样加载阶段每台服务器只铺它文件实际占用的那几十页，十二台合计远低于帧池容量。
+
+### 代码评审与采纳
+
+派 CodeReview 子代理审这段改动，提出三项：
+
+- **必改一(b)**：既然末段的首/末页已经被建立映射（标记为在页），它们页内没被文件覆盖的那截未初始化数据空洞**永远不会再触发缺页**，读到的是上一任物理帧的脏数据。修复：在拷贝文件字节之后，用 `write_bytes` 显式把每页未被覆盖的前缀与后缀清零（对齐 C 库加载器清头清尾的做法；中间整页这两段长度都为零，是无操作，无需分支）。
+- **应改二**：段迭代器不校验文件尺寸是否不超过内存尺寸，一个畸形的末段会让 `file_pages` 超过区间总页数 `pages`，导致建页映射时数组下标越界直接 panic（虚拟内存服务器起不来＝全系统停摆）。修复：`file_pages` 钳到 `pages`，保持旧实现「静默丢弃多余文件字节」的容错语义。
+- **必改一(a)**（审慎处理，未过度承诺）：页对齐的整页未初始化数据尾，其清零依赖匿名内存缺页时返回零页。启动期没有任何页缓存可回收，退化下来拿到的都是全新的、内容本就为零的物理帧，所以行为不变。真正把它显式接上「缺页即清」标志（对齐 C 的未初始化区语义；仓库里那个转换函数目前是死代码）列为后续加固项，不谎称本单元已解决。
+
+### 三件套
+
+- **单元测试基线只增不减**：`minix-kernel`（mock 特性）817 通过 / 0 失败；`minix-vm` 531 通过 / 0 失败。
+- **格式零新增漂移**：`cargo +nightly fmt --check` 中 `vm_server.rs` 的漂移块数 119＝改动前基线 119（整仓既有基线漂移，非本次触碰）。
+- **镜像重建 + 两次真机签名一致**：`image --release` 重建后单核连跑两次，里程碑语义签名 md5 均为 `df35843c`——可执行映像加载 **11 台全部成功**、内存耗尽 **0**、panic **0**、init 到达运行脚本阶段 **1 次**。本轮所有临时探针（内核空闲转储、进程间通信回复-抽取、虚拟内存池计数、逐段页计数）已全部回滚，工作树只剩明确的功能改动。
+
+### 效果与新的真阻断
+
+修复前启动确定性卡在第 7 台（内存耗尽崩溃），修复后稳定过到第 11 台、init 进入运行脚本阶段。但这只揭开了掩盖层——**rc 标记仍未打出**：启动过了第 8 台之后，停在 init 派生子进程、子进程执行 shell 与 echo，最终输出没有落到控制台。这不是内存问题了，是下游的进程间通信交互卡住。证据形态：若干进程与虚拟文件系统服务、初始化进程与进程管理服务之间的「发送并等待回复」出现稳态互等（双方都在 `RECEIVING` 等对方），虚拟文件系统服务自身在等块设备文件服务，同时看到大量空闲时间片轮转。**下一轮方向**＝恢复上一轮遗留的窄作用域进程间通信取证，分辨是「回复根本没发」还是「发了没能投递」，定位这个下游互等到底断在哪一条回复链上。
+
+**rc 标记三条终目标仍未达（本单元纠正上一轮双重误判、锁定并修复启动期内存耗尽真根因、启动从崩溃中止推进到全部服务器加载完成，取得实质进展、非阻塞）；goal 保持 active。**

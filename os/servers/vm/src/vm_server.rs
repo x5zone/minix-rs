@@ -783,6 +783,30 @@ impl VmServer {
             let va_base = seg.vaddr & !(PS as u64 - 1);
             let va_end = seg.vaddr + seg_len;
             let pages = (va_end - va_base).div_ceil(PS as u64) as usize;
+            // NK4-C §1.101 boot-OOM 根因修复：region 覆盖整段 memsz（含
+            // heap/BSS 预留尾，读 elf 末段 FileSiz=64K / MemSiz=4M），但只有
+            // 文件页需要 eager 实体化；memsz 与 filesz 之间的页对齐尾部（未
+            // 初始化 .bss + 堆）留给按需缺页（对位 C libexec：exec_image 只对
+            // 文件页 physcopy，其余 demand-fault）。旧实现对 0..pages 全量
+            // alloc_pfn + map_page，12 台 boot server 各 eager 铺 ~4MB → 12×
+            // 1041 页撑爆 14319 帧池于第 8 台（mib）报 "boot segment page
+            // allocation failed"（exec 只到 7）。首/末页页内 .bss 空洞由下方
+            // write_bytes 显式清零（对位 C clearmem 头/尾）；页对齐整页尾的零
+            // 填依赖 ANON demand-fault 给零页——boot 期无页缓存可回收、
+            // alloc_pfn_reclaiming 退化为全新帧，故行为不变；把 demand-fault
+            // 显式接 PAF_CLEAR（对位 C VR_UNINITIALIZED）列为后续加固项。
+            let file_pages = if seg.filesz == 0 {
+                0
+            } else {
+                ((seg.vaddr + seg.filesz - va_base) as usize)
+                    .div_ceil(PS)
+                    // SHOULD（CodeReview）：minix-elf SegmentIter 不校验
+                    // filesz<=memsz；畸形末段会让 file_pages 超出 region
+                    // 长度 pages，map_page 裸下标 index-OOB panic（VM 起不来
+                    // = 全系统停摆）。钳到 pages 保持旧「静默丢多余文件字节」
+                    // 的容错语义。
+                    .min(pages)
+            };
             let vaddr = minix_types::VirBytes(va_base);
 
             // Region per segment (C: libexec_alloc_vm_prealloc → map_page_region).
@@ -822,7 +846,7 @@ impl VmServer {
             // Direct Map (C: libexec_copy_physcopy per page).
             let pfn_alloc = &mut self.ctx.page_alloc;
             let seg_vr = proc.regions_mut().find_mut(vaddr).unwrap();
-            for i in 0..pages {
+            for i in 0..file_pages {
                 let offset = minix_types::VirBytes((i * PS) as u64);
                 let pfn = pfn_alloc
                     .alloc_pfn()
@@ -858,6 +882,24 @@ impl VmServer {
                             (dst_va.0 as *mut u8).add(dst_off),
                             copy_len,
                         );
+                    }
+                }
+                // NK4-C §1.101 CodeReview MUST-1(b)：页内 .bss 空洞清零（对位
+                // C libexec clearmem 头/尾）。本页未被文件覆盖的前缀
+                // [page_va,lo) 与后缀 [hi,page_va+PS) 必须显式写零——该页已经
+                // map_page 置 present，首/末页页内 .bss 之后**永不再触发缺
+                // 页**，不在此清零则读到上一任物理帧脏数据。中间页
+                // lo==page_va && hi==page_va+PS ⇒ head_len=0/tail_len=0 为
+                // no-op，故统一处理无需分支。
+                {
+                    let base_ptr = dst_va.0 as *mut u8;
+                    let head_len = (lo - page_va) as usize;
+                    let tail_start = (hi - page_va) as usize;
+                    // SAFETY: 同一新分配页 Direct Map 窗口 [0, PS) 内，
+                    // head_len <= tail_start <= PS，两段不重叠且不越页界。
+                    unsafe {
+                        core::ptr::write_bytes(base_ptr, 0, head_len);
+                        core::ptr::write_bytes(base_ptr.add(tail_start), 0, PS - tail_start);
                     }
                 }
             }
