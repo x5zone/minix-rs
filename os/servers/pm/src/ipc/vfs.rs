@@ -290,18 +290,27 @@ pub(crate) struct ExecServices<'a, T: IpcTransport> {
 }
 
 impl<T: IpcTransport> crate::exec::KernelExec for ExecServices<'_, T> {
-    fn exec(
-        &mut self,
-        _ep: Endpoint,
-        _sp: VirBytes,
-        _pc: VirBytes,
-        _ps: VirBytes,
-        _name: &[u8],
-    ) -> i32 {
-        // C: sys_exec（exec.c:197）——内核调用面未落地（edge_todo.md E6）：
-        // 返回 -ENOSYS，由 exec_restart 尾部的 panic（C `exec.c:198`
-        // panic("sys_exec failed") 同型）承接——失败可观测，不伪造成功。
-        minix_types::ENOSYS
+    fn exec(&mut self, ep: Endpoint, sp: VirBytes, pc: VirBytes, ps: VirBytes, name: &[u8]) -> i32 {
+        // C: sys_exec（exec.c:197；libsys sys_exec.c 的
+        // m_lsys_krn_sys_exec {endpt, stack, name, ip, ps_str}）。
+        // B40 (§1.72)：内核 SYS_EXEC face 已落地（kernel syscall_process.rs
+        // `dispatch_exec` + minix-sys `sys_exec` 包装），此前桩返 ENOSYS 是
+        // edge E6 未接线遗留（已过时）。`name` 指针指向 PM 进程表内的名字
+        // 缓冲，内核按 caller(PM) 的 CR3 data_copy 读取——对齐 C 传
+        // `(vir_bytes)rmp->mp_name`。失败原 errno（perform_kernel_call 返回
+        // 的负 reply）上抛给 exec_restart 尾部的 panic（C exec.c:198 同型），
+        // 不伪造成功。
+        match minix_sys::syscall::sys_exec(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            ep.0,
+            pc.0,
+            sp.0,
+            name.as_ptr() as u64,
+            ps.0,
+        ) {
+            Ok(()) => OK,
+            Err(e) => e,
+        }
     }
 
     fn kill(&mut self, _ep: Endpoint, _sig: i32) {
