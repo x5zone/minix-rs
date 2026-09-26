@@ -99,15 +99,19 @@ pub const MAX_SLABS: usize = GLOBAL_POOL_BYTES / PAGE_BYTES;
 /// C `handle_memory_once`/`MAP_PREALLOC`，§1.55 分歧），非纯抬本常量。
 /// 故本轮仍留 64（非回退、是唯一不崩的已知值），把常量抬升与 eager-runway
 /// 修复绑为一个单元（r7b）。
-pub const MAX_BIG_BLOCKS: usize = 64;
+///
+/// r7b 已落地（本轮）：在正确落点 `os/arch/src/arch/boot.rs` 把 VM 自身初
+/// 始栈 eager runway `VM_STACK_SIZE` 64 KiB→256 KiB（覆盖 §1.92 实测 ~65 KiB
+/// 启动栈下降）。§1.94 纠正：真落点是 kernel `load_vm_elf`（`install_boot_stack`
+/// 对 VM 从不调用），非 memtype `ev_new`。前置既解除 → 本常量直绑
+/// `GLOBAL_POOL_PAGES` 根除 premature-OOM（下表为其旧保守 round 的历史叙述）。
+pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 
-/// 容量 round 的硬不变量：从旧上限 32 抬到 [`MAX_BIG_BLOCKS`] 带来的静态
-/// `big_blocks` 数组增长必须小于一页，才不会改写跨未物化页的边界（见上
-/// 常量文档）。把这条判据锁到编译期：未来若有人把该常量调大到增长超
-/// 一页，构建直接失败而非退化为 §1.59 的启动 panic。
-const _: () = assert!(
-    (MAX_BIG_BLOCKS - 32) * core::mem::size_of::<Option<BigBlock>>() < PAGE_BYTES
-);
+/// §1.60 护栏退役：旧编译期断言要求 `(MAX_BIG_BLOCKS - 32)` 的数组增长小于
+/// 一页，以规避一个启动 panic。但 §1.92-§1.94 实证该 panic 源于 VM 自身初
+/// 始栈 runway 不足（已在 `boot.rs` `VM_STACK_SIZE` 修），**非**本数组增长跨
+/// 未物化页——VM 的 `.bss` 由 `load_vm_elf` 段循环按 memsz 整段 eager 物化。
+/// 绑 `GLOBAL_POOL_PAGES`（每池页一条记录）才是原则天花板，一页护栏遂删除。
 
 /// Initial heap pool for the global allocator, in bytes (1024 pages).
 ///

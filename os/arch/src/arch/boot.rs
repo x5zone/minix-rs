@@ -356,8 +356,26 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     vm_alloc: &mut VmBootAllocator,
     access: &A,
 ) -> Result<VmLoadResult, VmLoadError> {
-    /// Default VM user-stack size (matches Minix3).
-    const VM_STACK_SIZE: u64 = 64 * 1024;
+    /// VM user-stack eager runway.
+    ///
+    /// C: the kernel initially backs the boot VM stack with 64 KiB
+    /// (`protect.c:402 execi.stack_size = 64 * 1024`), but C's VM never
+    /// runs out because `reservedqueue.mappedin` (alloc.c) lets VM grow
+    /// its OWN stack on demand at runtime. This port has no VM stack
+    /// self-grow yet — `vm_self_mappages` is wired only to HeapArena heap
+    /// expansion, never to the stack (§1.55 family) — so a descent past
+    /// the eager runway becomes a `pagefault in VM` recursive panic
+    /// (VM is the fault server, cannot serve itself; C parity
+    /// exception.c:101-118). `load_vm_elf` itself is VM-only (the VM boot
+    /// process is the fault server this runway protects), but this const
+    /// lives in the `load_elf_into` shared body, so `load_process_elf`
+    /// (e.g. test-sysboot loading RS directly) also gets a 256 KiB initial
+    /// user stack — +48 physical pages per such load, harmless (still well
+    /// under `install_boot_stack`'s 4 MiB window, and eager). 256 KiB
+    /// covers the measured ~65 KiB VM boot descent (§1.92
+    /// cr2=0x7ffffffeef88, ~4 KiB past the old 64 KiB) with ~4x margin.
+    /// Stopgap until VM stack self-map lands.
+    const VM_STACK_SIZE: u64 = 256 * 1024;
 
     /// `sizeof(struct ps_strings)` on 64-bit LP64: two pointers (16 B)
     /// + two ints (8 B) = 24 B, padded to 8-byte alignment → 32 B.
@@ -550,11 +568,15 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     }
 
     // Map the user stack: [stack_high - VM_STACK_SIZE, stack_high).
-    // C: `execi.stack_size = 64 * 1024` (protect.c:402) — libexec
-    // preallocates the same 64 KiB region.
+    // C kernel seeds 64 KiB and lets VM self-grow (reservedqueue.mappedin);
+    // we lack the self-grow, so the eager runway IS the whole allowance
+    // (see VM_STACK_SIZE doc above for the §1.55 rationale).
     // R-07 (2026-08-12): Use getter method (preferred API).
     let stack_high = kernel_info.user_sp();
-    let stack_bottom = stack_high.0 - VM_STACK_SIZE;
+    // Defensive: a caller-supplied `user_sp` below the runway clamps the
+    // window to [0, stack_high) rather than underflowing the subtraction
+    // (production `user_sp` = 0x7fffffff_f000, far above VM_STACK_SIZE).
+    let stack_bottom = stack_high.0.saturating_sub(VM_STACK_SIZE);
 
     let stack_flags = crate::paging::PageFlags::read_write();
     let stack_align = stack_bottom & !(page_size - 1);
@@ -895,13 +917,15 @@ mod tests {
         let access = MockAccess { dm_base };
 
         // Region [0x1000, 0x200000) carries the entire VM image plus
-        // the 64 KiB stack — enough for this minimal-ELF test.
+        // the 256 KiB VM boot-stack runway — enough for this minimal-ELF
+        // test. user_sp sits above the runway so stack_bottom stays
+        // non-negative (0x50000 - 0x40000 = 0x10000).
         let region = VmBootRegion::new(PhysBytes(0x1000), PhysBytes(0x200000)).unwrap();
         let regions = VmBootRegions::from_sorted(&[region])
             .expect("test: single region is descending & disjoint");
         let mut vm_alloc = VmBootAllocator::new(regions);
 
-        let user_sp = VirBytes(0x19000); // VM VA stack high
+        let user_sp = VirBytes(0x5_0000); // VM VA stack high (above the 256 KiB runway)
 
         let kinfo = KernelInfo {
             memmap: &[minix_boot::MemoryRegion {
@@ -930,7 +954,7 @@ mod tests {
         // Public geometry the loader contract promises.
         assert_eq!(result.ps_strings.0, user_sp.0 - 32); // stack_high - 32
         assert_eq!(result.sp.0, user_sp.0 - 52); // stack_high - (32 + 20)
-        assert!(result.allocated_bytes >= 64 * 1024);
+        assert!(result.allocated_bytes >= 256 * 1024);
 
         // ---- happy path through `paging.query` + `PhysAccess` ----
         //
@@ -1010,14 +1034,14 @@ mod tests {
         }
         let access = MockAccess { dm_base };
 
-        // Frames for two full loads (root + segment + 64 KiB stack each)
+        // Frames for two full loads (root + segment + 256 KiB stack each)
         // out of one region.
         let region = VmBootRegion::new(PhysBytes(0x1000), PhysBytes(0x200000)).unwrap();
         let regions = VmBootRegions::from_sorted(&[region])
             .expect("test: single region is descending & disjoint");
         let mut vm_alloc = VmBootAllocator::new(regions);
 
-        let user_sp = VirBytes(0x19000);
+        let user_sp = VirBytes(0x5_0000); // above the 256 KiB runway
         let kinfo = KernelInfo {
             memmap: &[minix_boot::MemoryRegion {
                 base: PhysBytes(0x1000),
@@ -1063,8 +1087,8 @@ mod tests {
         assert_eq!(a.ps_strings.0, user_sp.0 - 32);
         assert_eq!(b.ps_strings.0, user_sp.0 - 32);
         // Each load accounted its own root page on top of image + stack.
-        assert!(a.allocated_bytes >= 64 * 1024 + 0x1000 + 0x1000);
-        assert!(b.allocated_bytes >= 64 * 1024 + 0x1000 + 0x1000);
+        assert!(a.allocated_bytes >= 256 * 1024 + 0x1000 + 0x1000);
+        assert!(b.allocated_bytes >= 256 * 1024 + 0x1000 + 0x1000);
     }
 
     /// The root page comes out of the same bootstrap allocator; a
@@ -1106,7 +1130,7 @@ mod tests {
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
             free_upper_idx: None,
-            user_sp: VirBytes(0x19000),
+            user_sp: VirBytes(0x5_0000),
             kern_stack_top: VirBytes(0),
             syscall_entry: VirBytes(0),
             boot_modules: &[],
@@ -1210,7 +1234,7 @@ mod tests {
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
             free_upper_idx: None,
-            user_sp: VirBytes(0x19000),
+            user_sp: VirBytes(0x5_0000),
             kern_stack_top: VirBytes(0),
             syscall_entry: VirBytes(0),
             boot_modules: &[],
@@ -1276,7 +1300,7 @@ mod tests {
     ///
     /// High region: PA [0x100000, 0x200000) — 256 frames. Low region:
     /// PA [0x010000, 0x011000) — 1 frame. The 3-frame BSS PT_LOAD
-    /// and 16-frame 64 KiB stack both fit in the high region (19 ≤
+    /// and 64-frame 256 KiB stack both fit in the high region (67 ≤
     /// 256), so the low region is never consumed; this confirms the
     /// descending-within-region monotonicity. A separate
     /// frame-level test (`allocator_crosses_to_next_region_when_exhausted`)
@@ -1299,7 +1323,7 @@ mod tests {
             len: image.len(),
         };
 
-        // Two regions: high (lots of room for ELF + 64 KiB stack) and
+        // Two regions: high (lots of room for ELF + 256 KiB stack) and
         // low (4 KiB scratch we never reach).
         let high = VmBootRegion::new(PhysBytes(0x100000), PhysBytes(0x200000))
             .expect("region must be valid");
@@ -1334,7 +1358,7 @@ mod tests {
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
             free_upper_idx: None,
-            user_sp: VirBytes(0x19000),
+            user_sp: VirBytes(0x5_0000),
             kern_stack_top: VirBytes(0),
             syscall_entry: VirBytes(0),
             boot_modules: &[],
@@ -1357,7 +1381,7 @@ mod tests {
         let pa2 = paging.query(VirBytes(vaddr + 0x2000))
             .expect("page2 mapped").0;
         // All three came from the high region (it has 0x100 frames,
-        // way more than 3 + 16 stack), so they are at PA
+        // way more than 3 + 64 stack), so they are at PA
         // 0x1FF000, 0x1FE000, 0x1FD000 in that order.
         assert_eq!(pa0, PhysBytes(0x1FF000));
         assert_eq!(pa1, PhysBytes(0x1FE000));
@@ -1371,7 +1395,7 @@ mod tests {
         assert_eq!(vm_alloc.current_region_idx(), 0);
 
         // Sanity: total hand-out equals the full ELF+stack footprint.
-        let pages_consumed = 3 + 16;
+        let pages_consumed = 3 + 64;
         assert_eq!(vm_alloc.used_frames() as usize, pages_consumed);
     }
 
@@ -1417,7 +1441,7 @@ mod tests {
             kern_phys_base: PhysBytes(0),
             kern_size: 0,
             free_upper_idx: None,
-            user_sp: VirBytes(0x19000),
+            user_sp: VirBytes(0x5_0000),
             kern_stack_top: VirBytes(0),
             syscall_entry: VirBytes(0),
             boot_modules: &[],

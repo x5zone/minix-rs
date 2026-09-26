@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r7b 动手前置纠错（§1.94）：`install_boot_stack` 运行期对 VM 从不调用（`init_boot_procs` vm_server.rs:633 显式 `continue` 跳过 `VM_PROC_NR`）⇒ §1.93 方案 A（memtype `ev_new` 段 PREALLOC 腿）与方案 B（`install_boot_stack` runway）**都摸错点**——都不是 VM 自身栈的落点（也正是上轮把整 4MiB eager 塞进 `install_boot_stack` 只炸了装 PFS 的 mock 测、VM 崩溃现场纹丝不动的原因）。VM 自身初始栈源自**内核调度 VM 前建好并启用的 bootstrap root**（`vm_server.rs:284 init_vm_self_pt` 采纳；`vm_self_mappages` 只被 HeapArena 扩堆调用、**从不映栈**）；C 靠 `alloc.c reservedqueue.mappedin` 预留页自映射兜住 VM 自栈下降（**非** 段 PREALLOC 腿）。⇒ r7b 真落点＝**os/kernel 侧给 VM 铺初始栈的那条腿**（扩 runway 对位 C `mappedin` 自映射语义），非 `vm_server.rs`；修后再把 `MAX_BIG_BLOCKS` 绑 `GLOBAL_POOL_PAGES`=1024 根除 premature-OOM。工作树净（纯取证）。**
+> **⚠ 最新前沿＝r7b 闭环（§1.95）：premature-OOM + VM 栈 runway 两大前置全清——`load_elf_into` 给 VM 铺初始栈 `VM_STACK_SIZE` 64KiB→**256KiB**（对位 C `reservedqueue.mappedin` 有界 stopgap）+ `MAX_BIG_BLOCKS` 绑 `GLOBAL_POOL_PAGES`=**1024** + §1.60 编译期护栏退役⇒真机首次 OOM-RT=0·pagefault-in-VM=0·panic=0·46931 行达 Runcom+exec sh。** rc marker 距出仅差一层下游 execve→command-face 腿：exec sh 后 `WARNING wrong user pointer 0x7ffffffdd408 from process sh / 0x800c` + proc 0x4 调度循环（`pick->0x4` gtick 活到超时）＝新前沿 r8。**下单元＝r8**：定位 wrong user pointer 是哪条 IPC/grant/页表解析失败（与 §1.69 cross_space 或 B38 noaddr 同族），修通 sh→runcom→rc 命令链。** 历史链：…→§1.94 纠错落点→§1.95 r7b 实现+验证+CodeReview。三件套绿（mock arch243/rt59/vm531·0fail / fmt boot25=25+alloc1→0 零新增漂移 / 真机 bn95=46937·bn95b=46931 双跑签名一致）+ CodeReview 0 MUST·1 SHOULD(共享体文档精确化)·2 NIT(注释/assert/doc)。rc marker 三条终目标仍未达，goal 保持 active。**
+>
+> **（历史·§1.94）⚠ r7b 动手前置纠错：`install_boot_stack` 运行期对 VM 从不调用（`init_boot_procs` vm_server.rs:633 显式 `continue` 跳过 `VM_PROC_NR`）⇒ §1.93 方案 A/B 落点皆错。VM 自身初始栈源自内核 `load_vm_elf`(`os/arch/src/arch/boot.rs`)。工作树净（纯取证）。**
 >
 > **（历史·§1.93）⚠ r7b 取证：阻塞 premature-OOM 根除的真前置＝本仓 VM 缺 C 的 `MAP_PREALLOC` eager 取帧腿（`memtype.rs AnonymousMemory` 无 `ev_new`、§1.55 已登记分歧）⇒ boot 服务初始栈只映一帧页、全交 demand-fill、而 VM 无法服务自身启动缺页（C 同样 panic、非 bug；C `main.c:400` 也只映 frame_size、两边同）。三路对质已排除「常量面/panic 面/frame_size 映射面」＝确认是 boot/VM memtype/region 子系统的真实重构。属架构裁决级（改 VM 区域物化契约 + 帧预算权衡 + [ARCH] 三处一致），已按硬约束上报用户选方 A（原则、对位 C region.c:492-499）或 B（局部 eager runway）。** 历史链：…→§1.92 r7 动手否证 memsz-eager→§1.93 三路对质确诊缺 PREALLOC-eager 腿。工作树净（HEAD 仅含 §1.92 alloc.rs 文档注释），常量维持 64（premature-OOM 仍阻于 r7b）。rc marker 三条终目标仍未达，goal 保持 active。
 >
@@ -3955,5 +3957,53 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 **本轮纯取证**：只读（`init_boot_procs` L623-637 / `vm_self_map.rs` 全文 / C `alloc.c` reservedqueue·`region.c:460-522`·`main.c:340-415`·`exec_general.c`），无改码，工作树净。**§1.93 方案 A/B 落点错误的纠正登记在案，防接手者再在 vm_server.rs 上白费一轮。** rc marker 三条终目标仍未达；goal 保持 active。
 
+---
 
+## 1.95 【r7b 实现+真机验证+CodeReview：premature-OOM + VM 栈 runway 两大前置全清，boot 历史首次 46931 行达 Runcom+exec sh】含代码（arch/boot.rs + rt/alloc.rs）
+
+**承接 §1.94 纠错，在真落点 `load_elf_into` 执行修复。**
+
+### 修复内容
+
+1. **`os/arch/src/arch/boot.rs`**：
+   - `VM_STACK_SIZE` 64KiB → **256KiB**（覆盖 §1.92 实测 ~65KiB VM boot 栈下降×4 余量，对位 C `reservedqueue.mappedin` 的有界 stopgap）；
+   - `stack_bottom` 改 `saturating_sub(VM_STACK_SIZE)`（防御 caller 传入低于 runway 的 user_sp 时下溢）；
+   - CodeReview SHOULD 采纳：文档精确化——本常量在 `load_elf_into` 共享体内，`load_process_elf`（test-sysboot 直载 RS）同样获得 256KiB 初始栈（+48 帧/进程，无害、仍远低于 `install_boot_stack` 4MiB 窗口）；
+   - 6 个 mock 测 fixture 同步：`user_sp` 统一抬至 `0x5_0000`、pages_consumed `3+16`→`3+64`、`allocated_bytes` 断言 `64*1024`→`256*1024`。
+
+2. **`os/libs/minix-rt/src/alloc.rs`**：
+   - `MAX_BIG_BLOCKS` 64 → `GLOBAL_POOL_PAGES`（=1024，每池页一条记录才是原则天花板）；
+   - §1.60 编译期护栏 `const _: () = assert!(…)` 退役（其守护对象“数组增长跨未物化页”经 §1.92-§1.94 实证不是真崩因，真因是 VM 栈 runway 不足——已在 boot.rs 修）。
+
+### 三件套验证
+
+| 层 | 结果 |
+|---|---|
+| **mock** | `cargo test -p minix-arch` 243·0fail、`-p minix-rt` 59·0fail、`-p minix-vm` 531·0fail |
+| **rustfmt** | `boot.rs` 25 hunks = HEAD 25 hunks（零新增漂移）；`alloc.rs` 1→0（§1.60 assert 存量漂移随删除消失） |
+| **真机双跑** | `-smp 1 -m 512M`，bn95=46937 行、bn95b=46931 行——签名一致：OOM-RT=**0**、pagefault-in-VM=**0**、panic=**0**、init-state Runcom=**1**、sh-exec=**1** |
+
+### CodeReview
+
+- **0 MUST-FIX**
+- **1 SHOULD-FIX**（已采纳）：`VM_STACK_SIZE` 文档说“仅 VM”但 `load_elf_into` 是共享体、影响 `load_process_elf`。修=重写文档注明确切影响。
+- **2 NIT**（已采纳）：L1034 陈旧注释 “64 KiB”→改 “256 KiB”；L1087 `assert!` 仅 `>= 256*1024` 太弱→改为 `>= 256*1024 + 0x1000 + 0x1000`。
+
+### 新前沿暴露
+
+boot 历史首次推过 premature-OOM 墙和 VM 栈缺页墙，深入 Runcom+exec sh。但 rc marker 仍未出，下游新阻断：
+```
+WARNING wrong user pointer 0x7ffffffdd408 from process sh / 0x800c
+```
+随后进入 proc 0x4 调度循环 `pick->0x4` + gtick 活到超时。此形态与 §1.69 cross_space / B38 noaddr 同族——sh fork 子 execve 后 IPC grant 解析或页表查询失败。**下单元＝r8**：定位 wrong user pointer 是哪条腿产生（PM/VFS/RS execve 链路）、查其页表解析逻辑、修通 sh→runcom→rc 命令链。
+
+### 实验矩阵补充（对照 §1.92）
+
+| 常量 | VM_STACK_SIZE | 行数 | OOM-RT | panic | 备注 |
+|---|---|---|---|---|---|
+| 64 | 64KiB | 29685 | 1 | 1 | §1.92 控制组：premature-OOM |
+| 1024 | 64KiB | 119 | 0 | 2 | §1.92：`pagefault in VM` |
+| **1024** | **256KiB** | **46937/46931** | **0** | **0** | **§1.95 r7b 闭环** |
+
+**结论：两缺陷共同拦截——单独修任何一个都不够（栈 runway 不够→崩 119，常量不够→崩 29685），只有两者同时到位才能推过 46931 行至深 boot。rc marker 三条终目标仍未达；goal 保持 active。**
 
