@@ -3851,4 +3851,6 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 **下一前沿（rc marker 真阻断已从「fork 腐蚀」推进至「echo 二进制 exec 下游失败」）**：即便命令名正确，`/bin/echo` 仍未 exec——回指 §1.81 B44 候选（动态 exec /bin/echo 在 VFS 侧失败：fproc root_dir 未继承 / PM→VFS endpoint 解析 / prepare_exec 前置失败）。下单元＝在子侧 exec 路径（PM `exec` → VFS `open_exec`/`do_fork` newimage）打 diagctl 探针，定位带正确 "echo" 的 exec 请求在哪一环返回错误。旁证仍待查：常规用户 fd→console→串口疑不通（即便 echo exec 成功，marker stdout 可达性需伴行验/或 rc 腿兼走 diagctl）；`fork_region` remaps/id 与 SMP shootdown 各另立单元。**rc marker 三条终目标仍未达，goal 保持 active。**
 
+**§1.89 r6-scoping（从 bn86 无探针日志预定位，未新插桩）**：echo 子＝slot d（`0x800d`）已走完 `birth enter`→`kdst copy`→`setaddr nr=0xd flags=0x8008 runnable=no queued=no`，并有 `exec rs ok`；紧接 `pf#0xd rip=0x22a250 err=0x14 cr2=0x22a250 walk=NP`（err=0x14＝用户态取指＋present 位相关、且 `rip==cr2`＝取指目标页不在）、`rs-anom rst n=0xd`。⇒ **新映像的 text 页未被正确 populate/映射到可执行，exec 后首条取指即 NP**——r6 探针落点＝VM newimage 建立子页表时对 echo 正文段的映射腿（与 §1.89 SHOULD#1 无关：那是 shm；此为 exec 新建地址空间）。入口 `0x206b20`（echo _start）从不出现＝进程在跳向入口前就已因取指缺页被 kill/重启。下轮先核 `pf err=0x14` 的 present/protection 位语义再定探针。
+
 
