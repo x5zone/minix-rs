@@ -792,9 +792,21 @@ impl VmServer {
             // .data 页映射成只读，用户态首次写即 PF(err=7) → VM 判违例 →
             // SIGSEGV（真机 NK4-A C-3 c10a 轮：RS ensure_global_allocator
             // 的分配器旗标 xchg 于 0x229708 二连故障，2026-09-22）。
+            //
+            // B42（§1.77）：可执行性同理必须从 ELF 段旗标（PF_X=1）承接——
+            // C 在 i386 无 NX，boot 文本天然全可执行；x86-64 NXE 下若 boot
+            // 段 region 不置 EXECUTABLE，则 sync_slot_pte（cow_exec_pf.rs:129-
+            // 135）对文本页组 read_only 且不加 EXECUTABLE → PTE present 但 NX
+            // → boot server 取指恒 #PF 活锁（真机 bn60b：RS 入口文本 0x227980
+            // 命中 71287 次）。此即 B41 present-but-NX 同型缺陷换到 boot 腿，
+            // B41 只修了动态 exec_worker→to_vr_flags 腿。数据段无 PF_X 保持
+            // NX（正确 W^X），文本段 PF_X → EXECUTABLE，行为等价 C。
             let mut seg_flags = crate::region::VrFlags::ANON;
             if seg.flags & minix_elf::PF_W != 0 {
                 seg_flags |= crate::region::VrFlags::WRITABLE;
+            }
+            if seg.flags & minix_elf::PF_X != 0 {
+                seg_flags |= crate::region::VrFlags::EXECUTABLE;
             }
             let region = crate::region::VirRegion::with_memtype(
                 vaddr,
