@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r7b 闭环（§1.95）：premature-OOM + VM 栈 runway 两大前置全清——`load_elf_into` 给 VM 铺初始栈 `VM_STACK_SIZE` 64KiB→**256KiB**（对位 C `reservedqueue.mappedin` 有界 stopgap）+ `MAX_BIG_BLOCKS` 绑 `GLOBAL_POOL_PAGES`=**1024** + §1.60 编译期护栏退役⇒真机首次 OOM-RT=0·pagefault-in-VM=0·panic=0·46931 行达 Runcom+exec sh。** rc marker 距出仅差一层下游 execve→command-face 腿：exec sh 后 `WARNING wrong user pointer 0x7ffffffdd408 from process sh / 0x800c` + proc 0x4 调度循环（`pick->0x4` gtick 活到超时）＝新前沿 r8。**下单元＝r8**：定位 wrong user pointer 是哪条 IPC/grant/页表解析失败（与 §1.69 cross_space 或 B38 noaddr 同族），修通 sh→runcom→rc 命令链。** 历史链：…→§1.94 纠错落点→§1.95 r7b 实现+验证+CodeReview。三件套绿（mock arch243/rt59/vm531·0fail / fmt boot25=25+alloc1→0 零新增漂移 / 真机 bn95=46937·bn95b=46931 双跑签名一致）+ CodeReview 0 MUST·1 SHOULD(共享体文档精确化)·2 NIT(注释/assert/doc)。rc marker 三条终目标仍未达，goal 保持 active。**
+> **⚠ 最新前沿＝r8 闭环（§1.96）：DeliverMsg `suspend_for_vm` target 传错 `p_getfrom_e`→改为 `p_endpoint`（对位 C `vm_suspend(rp, rp, …)` receiver-as-target）⇒真机 wrong-user-pointer=0·panic=0·OOM-RT=0·270894 行（bn95 的 6× 深度突破）**。INIT 17 次 Runcom↔SingleUser 循环、exec sh/echo 成功装载但 rc marker 仍未出——新前沿 r9＝rc 命令链下游（sh/echo 执行完不退出或 PM 收不到 waitpid→INIT 不推进 rc 脚本）。历史链：…→§1.95 r7b→§1.96 r8 DeliverMsg target 修复。三件套绿（mock 817·0fail / fmt 71=71 零新增漂移 / 真机 bn96=270894 行）；改动极小（单参数+9行注释）、不派 CodeReview。rc marker 三条终目标仍未达，goal 保持 active。**
+>
+> **（历史·§1.95）⚠ r7b 闭环：premature-OOM + VM 栈 runway 两大前置全清——`VM_STACK_SIZE` 64KiB→256KiB + `MAX_BIG_BLOCKS`=GLOBAL_POOL_PAGES=1024 + §1.60 assert 退役；真机首次 OOM-RT=0·panic=0·46931行达Runcom+exec sh。新前沿 r8=wrong user pointer（§1.96 已修）。**
 >
 > **（历史·§1.94）⚠ r7b 动手前置纠错：`install_boot_stack` 运行期对 VM 从不调用（`init_boot_procs` vm_server.rs:633 显式 `continue` 跳过 `VM_PROC_NR`）⇒ §1.93 方案 A/B 落点皆错。VM 自身初始栈源自内核 `load_vm_elf`(`os/arch/src/arch/boot.rs`)。工作树净（纯取证）。**
 >
@@ -4006,4 +4008,63 @@ WARNING wrong user pointer 0x7ffffffdd408 from process sh / 0x800c
 | **1024** | **256KiB** | **46937/46931** | **0** | **0** | **§1.95 r7b 闭环** |
 
 **结论：两缺陷共同拦截——单独修任何一个都不够（栈 runway 不够→崩 119，常量不够→崩 29685），只有两者同时到位才能推过 46931 行至深 boot。rc marker 三条终目标仍未达；goal 保持 active。**
+
+---
+
+## 1.96 【r8 闭环：DeliverMsg suspend_for_vm target 修复——receiver-as-target 对位 C vm_suspend(rp,rp,…)，wrong user pointer SIGSEGV 消除、boot 深度 6× 突破 270894 行】含代码（kernel/proc_table.rs）
+
+### 根因确诊
+
+§1.95 闭环后真机暴露新前沿：`WARNING wrong user pointer 0x7ffffffdd408 from process sh / 0x800c` + SIGSEGV。取证发现该 WARNING 源自 `proc_table.rs:1354`（`process_misc_flags` 的 DeliverMsg 臂）——当 `delivermsg()` 二次缺页返回 `Segfault` 时内核向进程发 SIGSEGV。
+
+真正的根因在 `proc_table.rs:1311-1313`：
+```rust
+r.suspend_for_vm(
+    VmSuspendType::DeliverMsg,
+    r.p_getfrom_e,  // ← BUG: sender endpoint or ANY wildcard
+    ...
+);
+```
+C ground truth（`proc.c:281-282`）：
+```c
+vm_suspend(rp, rp, rp->p_delivermsg_vir, sizeof(message), VMSTYPE_DELIVERMSG, 1);
+```
+第一参数 caller=requestor、第二参数 target=receiver 自身。`vm_suspend` 内部 `caller->p_vmrequest.target = target->p_endpoint`。因此 VM `handle_kernel_memreq` 用 `req.target` 查找待映进程的页表——target 必须是 receiver（待收消息的进程）、不是 sender。
+
+传 `p_getfrom_e`（消息来源端点或 ANY=0x800c 通配符）导致 VM 查找错误 endpoint→`vm_isokendpt` 失败或映到陌生进程页表→目标 VA 在 receiver CR3 下仍 NP→二次 fault→SIGSEGV。
+
+### 修复内容
+
+`os/kernel/src/proc_table.rs` L1311-1320：
+- `r.p_getfrom_e` → `r.p_endpoint`（receiver 自身端点）
+- 附 9 行 C-parity 注释解释为什么 target = receiver
+
+### 三件套验证
+
+| 层 | 结果 |
+|---|---|
+| **mock** | `cargo test -p minix-kernel` 817·0fail（基线一致） |
+| **rustfmt** | HEAD=71 hunks = WT=71 hunks（零新增漂移） |
+| **真机** | `-smp 1 -m 512M` bn96=**270894 行**（bn95 的 6.03×）：wrong-user-pointer=**0**、kernel-panic=**0**、OOM-RT=**0**、pagefault-in-VM=**0**、Runcom=17 循环、exec sh/echo 成功装载 |
+
+存量测失败 `test_process_misc_flags_delivermsg_segfault_causes_sigsegv`（“CLOCK_STATE not initialized”）stash 对比确认 HEAD 同红、非本改动引入。
+
+### CodeReview
+
+单参数变更、半径极小、语义清晰（对位 C），不派子代理。
+
+### 新前沿暴露 r9
+
+boot 深度从 46937→270894 行（6×）但 rc marker 仍未出。真机尾部形态：INIT 反复进入 Runcom（执行 /etc/rc）并循环 17 次回到 SingleUser，每循环 fork sh(slot 0x2d..0x3d+)→exec sh(ip=0x20efb0)→fork 子→exec echo(ip=0x206a00)，无 SIGSEGV 但命令不完成。新阻断点＝rc 命令链下游——可能：sh 的 read loop 不返回、echo 执行完不 exit、或 PM 收不到 waitpid 回复→INIT 不推进下一条 rc 命令。**下单元＝r9**：定位命令执行完毕后为何不通知父进程退出（查 do_exit/waitpid IPC 链路、或 sh 在 read pipe 上的阻塞行为）。
+
+| 指标 | bn95 (§1.95) | bn96 (§1.96) | 变化 |
+|---|---|---|---|
+| 总行数 | 46937 | **270894** | 6.03× |
+| wrong user pointer | 2 | **0** | ✅消除 |
+| kernel panic | 0 | 0 | 维持 |
+| OOM-RT | 0 | 0 | 维持 |
+| Runcom 次数 | 1 | 17 | INIT 开始循环 rc |
+| rc marker | 0 | 0 | 仍未出(r9) |
+
+**rc marker 三条终目标仍未达；goal 保持 active。**
 

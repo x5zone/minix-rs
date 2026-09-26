@@ -1308,9 +1308,17 @@ impl ProcessTable {
                                 C0::write_str("\n");
                             }
                         }
+                        // C: vm_suspend(rp, rp, ...) — proc.c:281-282.
+                        // Second arg = target whose page table VM must
+                        // map into = the RECEIVER itself. Passing
+                        // p_getfrom_e (the sender/ANY wildcard) caused
+                        // VM to look up the wrong endpoint, fail or map
+                        // in a foreign address space, and the kernel
+                        // retry with the receiver's own CR3 still saw
+                        // NP → second fault → SIGSEGV (§1.96 r8).
                         r.suspend_for_vm(
                             crate::vm::VmSuspendType::DeliverMsg,
-                            r.p_getfrom_e,
+                            r.p_endpoint,
                             crate::vm::VmCheckParams {
                                 start: r.p_delivermsg_vir,
                                 length: minix_types::VirBytes(msg_size as u64),
