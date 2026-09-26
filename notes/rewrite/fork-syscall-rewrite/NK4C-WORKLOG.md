@@ -3503,4 +3503,26 @@ rc marker 仍未达；探针已回滚，工作树净，HEAD 仍 `2158208d2`。
 
 rc marker 仍未达；本单元代码已提交。
 
+---
+
+## §1.76（B42 侦察·只读）活锁双方定位 = RS(slot2)↔VM(slot8)，但 `0x227980` 真实 flags 静态不可判——须真机探针
+
+**先处理一条外部只读诊断报告（side-thread 转发）**：三条经核全部对**当前码**闭环，不复处理——
+- 诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）：报告推荐的修法**正是已落地实现**。[smp.rs:1219-1252](../../../os/kernel/src/smp.rs) 现为 `static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE)`（`-1`=空闲 / `>=0`=持有 CPU id），acquire 单条 `compare_exchange`、release 单条 `store`，注释原文即在描述报告所指的“两步 store 中间态致中断 handler 误判非继承→同 CPU 自旋死锁”窗口。§1.52 commit 917de5e83 已合入。
+- 诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）：报告自陈“非新的独立 bug 定案，是把‘VM 并发改页表’假设收紧”。该假设家族已 §1.51 泛化证伪、真根因链改判至 §1.70（`cross_space` 逐连续段 walk 目标页表，commit 6b667e430）+ §1.74/§1.75（present-but-NX 修复）。配方针对的病灶已被处理。
+- 诊断三（`syscall_process.rs` 未提交）：当前工作树跟踪文件净，无该改动。
+
+**B42 活锁双方**：`grep BOOT_MODULE_PROC_NRS` 于 [proc.rs:111-124](../../../os/kernel/src/proc.rs) 实锤——boot server 保留 C `com.h` 固定号（PM=0/VFS=1/**RS=2**/MEM=3/SCHED=4/TTY=5/DS=6/MIB=7/**VM=8**/PFS=9/MFS=10/INIT=11）。故 `fa=0x227980` 的 pick slot `0x2↔0x8` 乒乓 = **RS↔VM**。`0x227980` 落在 base `0x200000` 镜像内偏移 ~0x27980（各 boot 模块同基址，`readelf` 已核）。
+
+**关键嫌疑（静态未证，须探针区分）**：B41 修复命中 `exec_worker.rs:928 PROT_RWX → mmap.rs:102 to_vr_flags 消费 PROT_EXEC` 这条**动态 exec 腿**。但 **RS 等 boot server 的初始地址空间并非由 `exec_worker→to_vr_flags` 装配**——boot 镜像腿在 [misc.rs](../../../os/kernel/src/misc.rs) 的 `p_seg.phys_root` 装配带 + [vm_handoff.rs](../../../os/kernel/src/vm_handoff.rs)（首次 boot-image load 前后帧池发布），是否经 `to_vr_flags` 组 EXECUTABLE 静态未定位到确证点（`rs.rs:545` 命中的是 heap/prealloc 匿名数据腿，`READ|WRITE` 无 EXEC 属正确，非文本腿）。
+
+**为何不能只靠静态收口**：现有诊断探针 `fl=0x41b` 读的是**固定 probe 地址**（非 `0x227980`），`0x227980` 在 RS live 页表里的真实 flags **未知**。故 B42 与 B41 是否同因（boot 腿同缺 EXECUTABLE）无法静态判定。
+
+**下一取证配方（真机探针，`nk4a:` 前缀 + AtomicUsize cap + `#[cfg(not(feature="mock"))]`，单元收尾回滚）**：在 VM 侧 `dispatch_pagefault`（`vm_server.rs`）对 RS slot 的**成功出口**打印 `0x227980` 处 PTE 原始 64 位 + walk 后 `is_executable` 判定。据此三分：
+- (a) `0x227980` PTE present 但缺 NXE(bit3=0) → boot 腿同缺 EXECUTABLE → 扩 B41 修至 boot 建表腿；
+- (b) PTE flags 正常但仍同址 refault → 转查 VM 页表实例是否 `!= live CR3`（B41 已排除过的 (b) 家族在 boot 腿重现）；
+- (c) 均否 → 立新前沿。
+
+本单元纯只读，无代码改动，工作树净。rc marker 仍未达。
+
 
