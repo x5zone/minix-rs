@@ -1117,7 +1117,7 @@ impl<T: IpcTransport + ?Sized> crate::exec::VfsExec for SysVfsExec<'_, T> {
             path_len: req.path_len as i32,
             frame: req.frame.0,
             frame_len: req.frame_len as i32,
-            ps_str: req.ps_str.0 as i32,
+            ps_str: req.ps_str.0,
         };
         crate::ipc::vfs::tell_vfs(table, caller, call, self.transport);
         Ok(ReplyIntent::ReplyLater)

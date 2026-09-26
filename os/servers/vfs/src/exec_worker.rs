@@ -136,8 +136,10 @@ pub struct ExecLoaded {
     pub pc: u64,
     /// `*newsp` — 新栈指针（exec.c:371）。
     pub newsp: u64,
-    /// `*ps_str` — C 的 `UNUSED(ps_str)`（exec.c:186），原样带回。
-    pub newps_str: i32,
+    /// `*ps_str` — caller（`exec_via` 的 `process_strings_address`）已按**新栈**
+    /// 算好的绝对 ps_strings 地址，VFS 原样带回给 PM（供内核种进子 RBX）。
+    /// LP64 下须为完整 64 位（B43：旧 `i32` 会把 `0x0000_7fff_xxxx` 截断+PM 符号扩展）。
+    pub newps_str: u64,
 }
 
 /// 一次 exec 的载荷（`VfsCall::Exec` 六域 + 栈顶解析缝）。
@@ -153,8 +155,8 @@ pub struct ExecRequest {
     pub frame_addr: u64,
     /// 帧长（`VFS_PM_FRAME_LEN`，m7_i3）。
     pub frame_len: usize,
-    /// ps_strings 指针（`VFS_PM_PS_STR`，m7_i5）。
-    pub ps_str: i32,
+    /// ps_strings 指针（`VFS_PM_PS_STR`）。LP64 下完整 64 位（B43，见 `ExecLoaded::newps_str`）。
+    pub ps_str: u64,
     /// 栈顶。C 取 kerninfo `user_sp`（exec.c:205 经 `minix_get_user_sp`，
     /// kernel_utils.c:40-60）；kerninfo 用户映射归 E-KERNINFO 波次，这里
     /// 显式作缝：调用方（生产：kerninfo 读半；测试：定值）供给。

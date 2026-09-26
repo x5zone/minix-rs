@@ -359,8 +359,11 @@ pub enum VfsCall {
         frame: u64,
         /// 帧大小（VFS_PM_FRAME_LEN = m7_i3）。
         frame_len: i32,
-        /// ps_strings 指针（VFS_PM_PS_STR = m7_i5）。
-        ps_str: i32,
+        /// ps_strings 指针（VFS_PM_PS_STR）。LP64 下是完整 64 位用户指针
+        /// （x86-64 用户栈 ps_strings 落在 `0x0000_7fff_xxxx_xxxx`，47 位），
+        /// C i386 时代塞 `m7_i5`（32 位指针无损），LP64 移植须保 64 位——
+        /// 编码拆到 `m7_i4`（高 32 位）+ `m7_i5`（低 32 位）两槽（B43）。
+        ps_str: u64,
     },
     /// VFS_PM_EXIT — 进程退出（forkexit.c:351）。
     Exit {
@@ -475,7 +478,15 @@ impl VfsCall {
                 frame,
                 frame_len,
                 ps_str,
-            } => (endpoint.get(), path_len, frame_len, 0, ps_str, path, frame),
+            } => (
+                endpoint.get(),
+                path_len,
+                frame_len,
+                (ps_str >> 32) as i32,
+                ps_str as i32,
+                path,
+                frame,
+            ),
             Self::Exit { endpoint } => (endpoint.get(), 0, 0, 0, 0, 0, 0),
             Self::DumpCore {
                 endpoint,
@@ -560,7 +571,7 @@ impl VfsCall {
                 path_len: m7.m7i2,
                 frame: m7.m7p2,
                 frame_len: m7.m7i3,
-                ps_str: m7.m7i5,
+                ps_str: ((m7.m7i4 as u32 as u64) << 32) | (m7.m7i5 as u32 as u64),
             },
             VFS_PM_EXIT => Self::Exit {
                 endpoint: Endpoint(m7.m7i1),
@@ -624,8 +635,9 @@ pub enum VfsReply {
         pc: u64,
         /// 可能更新的栈指针（VFS_PM_NEWSP = m7_p2）。
         newsp: u64,
-        /// 可能更新的 ps_strings 指针（VFS_PM_NEWPS_STR = m7_i5）。
-        newps_str: i32,
+        /// 可能更新的 ps_strings 指针（VFS_PM_NEWPS_STR）。LP64 下完整 64 位，
+        /// 编码拆 `m7_i4`（高）+ `m7_i5`（低）（B43，见 `VfsCall::Exec::ps_str`）。
+        newps_str: u64,
     },
     /// VFS_PM_CORE_REPLY — 携带 core dump 状态（main.c:409-415）。
     Core {
@@ -683,7 +695,7 @@ impl VfsReply {
                 status: m7.m7i2,
                 pc: m7.m7p1,
                 newsp: m7.m7p2,
-                newps_str: m7.m7i5,
+                newps_str: ((m7.m7i4 as u32 as u64) << 32) | (m7.m7i5 as u32 as u64),
             },
             VFS_PM_CORE_REPLY => Self::Core { status: m7.m7i2 },
             VFS_PM_EXIT_REPLY => Self::Exit,
@@ -730,7 +742,8 @@ impl VfsReply {
                 m7.m7i2 = status;
                 m7.m7p1 = pc;
                 m7.m7p2 = newsp;
-                m7.m7i5 = newps_str;
+                m7.m7i4 = (newps_str >> 32) as i32;
+                m7.m7i5 = newps_str as i32;
             }
             Self::Core { status } => {
                 let m7 = unsafe { &mut msg.m_u.m_m7 };
@@ -805,11 +818,12 @@ mod vfs_call_reply_tests {
     /// `handle_vfs_reply` 的消费格式，com.h:570-575 槽位）。
     #[test]
     fn test_vfs_reply_exec_encode_decode_roundtrip() {
+        // B43：newps_str 用 LP64 高地址（高 32 位非零）验证 m7_i4/m7_i5 拆分往返。
         let reply = VfsReply::Exec {
             status: 0,
             pc: 0x401_000,
             newsp: 0x7fff_ffff_e000,
-            newps_str: 0x1234,
+            newps_str: 0x0000_7fff_ffff_efe0,
         };
         let msg = reply.encode();
         assert_eq!(msg.m_type, VFS_PM_EXEC_REPLY);
@@ -897,7 +911,7 @@ mod vfs_call_reply_tests {
             path_len: 12,
             frame: 0x4000_1000,
             frame_len: 256,
-            ps_str: 0x7fff_0000i32,
+            ps_str: 0x0000_7fff_ffff_efe0,
         });
         roundtrip(VfsCall::Exit {
             endpoint: Endpoint::from_generation_slot(1, 5),
@@ -949,13 +963,17 @@ mod vfs_call_reply_tests {
 
     #[test]
     fn test_vfs_call_exec_layout() {
+        // B43 回归：x86-64 LP64 下用户 ps_strings 落在 `0x0000_7fff_xxxx_xxxx`
+        // （47 位），必须完整穿 `m7_i4`（高 32 位）+ `m7_i5`（低 32 位）两槽；
+        // 旧 `i32` 承载会截成 `0xffff_efe0` 再被 PM 符号扩展为 `0xffff_ffff_ffff_efe0`。
+        let ps: u64 = 0x0000_7fff_ffff_efe0;
         let msg = VfsCall::Exec {
             endpoint: Endpoint::from_generation_slot(1, 5),
             path: 0x4000_0000,
             path_len: 12,
             frame: 0x4000_1000,
             frame_len: 256,
-            ps_str: 0x7fff_0000i32,
+            ps_str: ps,
         }
         .encode();
         let m7 = unsafe { &msg.m_u.m_m7 };
@@ -963,7 +981,14 @@ mod vfs_call_reply_tests {
         assert_eq!(m7.m7i3, 256);
         assert_eq!(m7.m7p1, 0x4000_0000);
         assert_eq!(m7.m7p2, 0x4000_1000);
-        assert_eq!(m7.m7i5, 0x7fff_0000i32);
+        assert_eq!(m7.m7i4, (ps >> 32) as u32 as i32, "高 32 位落 m7_i4");
+        assert_eq!(m7.m7i5, ps as u32 as i32, "低 32 位落 m7_i5");
+        match VfsCall::decode(&msg).unwrap() {
+            VfsCall::Exec { ps_str, .. } => {
+                assert_eq!(ps_str, ps, "B43: 64 位 ps_str 无损往返");
+            }
+            _ => panic!("decode 不匹配 Exec"),
+        }
     }
 
     /// C-6（OQ-5 裁决）：DumpCore 按值名字的字节位——名字落载荷尾

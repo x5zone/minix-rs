@@ -68,8 +68,10 @@ pub struct ExecRestartArgs {
     pub pc: u64,
     /// 可能更新的用户栈指针（`VFS_PM_NEWSP = m7_p2`）。
     pub newsp: u64,
-    /// 可能更新的 ps_strings 指针（`VFS_PM_NEWPS_STR = m7_i5`）。
-    pub newps_str: i32,
+    /// 可能更新的 ps_strings 指针（`VFS_PM_NEWPS_STR`）。LP64 下完整 64
+    /// 位（B43：旧 `i32` 截断 + 下游 `as u64` 符号扩展会毁掉 x86-64 用户
+    /// ps_strings 地址）。
+    pub newps_str: u64,
 }
 
 /// PM 回复 VFS 时的效果端口（六边形架构：状态机是纯逻辑，效果经此端口施加）。
@@ -541,7 +543,7 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
             args.status,
             VirBytes(args.pc),
             VirBytes(args.newsp),
-            VirBytes(args.newps_str as u64),
+            VirBytes(args.newps_str),
             &mut svc,
         );
     }
