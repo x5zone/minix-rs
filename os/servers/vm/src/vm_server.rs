@@ -176,6 +176,17 @@ pub struct VmServer {
     ///
     /// C: `mem_add_total_pages()` call points (main.c:485-495).
     boot_extra_pages: usize,
+    /// Real usable physical page count = Σ of the free-region page counts.
+    ///
+    /// This is C's accounting `total_pages` (`mem_init()` —
+    /// `total_pages += chunks[i].c_pages`, alloc.c:319), the value behind
+    /// `vsi_total` (utility.c:118). It is deliberately kept separate from
+    /// `BootParams::total_pages`, which is the bitmap *capacity* (the
+    /// highest absolute page index) and must span address space with a
+    /// non-zero RAM base (aarch64 @ PA 0x40000000). Using the capacity for
+    /// the accounting total would inflate `vsi_total` by every reserved hole
+    /// below the highest free page (NK4-C §1.111 CodeReview P1).
+    boot_usable_pages: usize,
     /// IPC transport for the main loop.
     ///
     /// `Rc<RefCell<...>>` (V10-P0-2, V9-P1-2): the previous process-global
@@ -300,6 +311,13 @@ impl VmServer {
             initialized: false,
             boot_procs,
             boot_extra_pages: params.extra_pages(),
+            // C accounting total (Σ usable pages) — distinct from the
+            // bitmap capacity in `params.total_pages` (see field doc).
+            boot_usable_pages: params
+                .free_regions
+                .iter()
+                .map(|r| r.size / CLICK_SIZE)
+                .sum(),
             kernel_layout,
             transport,
         }
@@ -561,8 +579,14 @@ impl VmServer {
 
     fn init_global_state(&mut self) {
         // SAFETY: init() must be called exactly once during VM startup.
+        // Seed the global total with C's accounting figure (Σ usable pages,
+        // `boot_usable_pages`), NOT the bitmap capacity
+        // (`page_alloc.total_pages()`). The latter spans address space to
+        // cover absolute page indices and would overstate `vsi_total` by
+        // every reserved hole below the top free page. `account_boot_memory`
+        // then adds the boot-module extras (C `mem_add_total_pages`).
         unsafe {
-            crate::global::init(self.ctx.page_alloc.total_pages());
+            crate::global::init(self.boot_usable_pages);
         }
 
         // Initialize the kernel memory layout used by `init_page_table()`.

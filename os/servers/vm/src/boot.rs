@@ -69,10 +69,20 @@ pub struct BootParams<'a> {
     /// so kernel-built mappings (VM DM window, handoff page, ELF) remain
     /// visible in VM's address space.
     pub root_paddr: PhysBytes,
-    /// Total physical memory pages.
+    /// Address-space page capacity for the physical memory bitmap.
     ///
-    /// C: `total_pages`, accumulated by `mem_init()` from the memory
-    /// chunks (alloc.c:319-331): `total_pages += chunks[i].size`.
+    /// Equal to the highest physical page index + 1 that the bitmap must
+    /// cover: `max((region.base + region.size) / CLICK_SIZE)` across all
+    /// free regions. This sizes the bitmap metadata (one bit per physical
+    /// page slot), ensuring that absolute page indices from regions with
+    /// non-zero base (e.g. aarch64 RAM starting at PA 0x40000000) are
+    /// representable.
+    ///
+    /// C: the bitmap equivalent is the fixed-size `free_pages_bitmap[NUMBER_PHYSICAL_PAGES]`
+    /// (alloc.c:33–35, 4 GiB / page_size); `total_pages` in C is a separate
+    /// accounting counter (alloc.c:319). Our Rust code uses this field for
+    /// bitmap capacity; the available-page counter lives inside the
+    /// allocator as `free_pages`.
     pub total_pages: usize,
     /// Free physical memory regions (page-aligned).
     ///
@@ -162,16 +172,22 @@ impl<'a> BootParams<'a> {
             r.validate();
         }
 
-        // C: total_pages = Σ chunk sizes — mem_init() (alloc.c:319-331)
-        let region_pages: usize = self
+        // Bitmap capacity must equal the highest free-region page index:
+        // physical pages are addressed by absolute PA / CLICK_SIZE, and
+        // architectures with non-zero RAM base (aarch64 PA 0x40000000+)
+        // need the bitmap to span that address space. C achieves this via
+        // a fixed-size bitmap covering the entire 32-bit PA space
+        // (NUMBER_PHYSICAL_PAGES = 4 GiB / page_size, alloc.c:33).
+        let max_page_index: usize = self
             .free_regions
             .iter()
-            .map(|r| r.size / CLICK_SIZE)
-            .sum();
+            .map(|r| (r.base + r.size) / CLICK_SIZE)
+            .max()
+            .unwrap_or(0);
         assert_eq!(
-            self.total_pages, region_pages,
-            "BootParams: total_pages ({}) must equal the free-region page sum ({})",
-            self.total_pages, region_pages
+            self.total_pages, max_page_index,
+            "BootParams: total_pages ({}) must equal the highest free-region page index ({})",
+            self.total_pages, max_page_index
         );
 
         // Boot processes must fit the process table (C: init_proc panic —
@@ -292,9 +308,15 @@ pub fn read_boot_params() -> BootParams<'static> {
 
     let params = BootParams {
         root_paddr: PhysBytes::new(handoff.root_paddr),
-        // C: total_pages accumulated by mem_init() from the memory chunks
-        // (alloc.c:319-331) — the handoff free list IS the chunk list.
-        total_pages: free_regions.iter().map(|r| r.size / CLICK_SIZE).sum(),
+        // Bitmap capacity: highest physical page index across all free
+        // regions. On architectures with non-zero RAM base (aarch64 at PA
+        // 0x40000000) this exceeds the sum of free pages; the bitmap must
+        // span absolute page indices for alloc/free to work correctly.
+        total_pages: free_regions
+            .iter()
+            .map(|r| (r.base + r.size) / CLICK_SIZE)
+            .max()
+            .unwrap_or(0),
         free_regions,
         boot_procs: &handoff.boot_procs[..],
         modules,

@@ -219,6 +219,25 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
 /// Write a PTE at the given physical address via the Direct Map, with
 /// a TLB invalidation for the affected virtual address.
 ///
+/// Flush behavior is pinned to the channel, mirroring how the channel
+/// itself pins the execution context (see the x86-64 sibling of this
+/// function, which this documents identically):
+/// - `KernelDm` handles run at EL1, so `tlbi vae1is` is legal and kept
+///   for present→X transitions defense-in-depth.
+/// - `VmDm` handles are exercised by VM at EL0, where `tlbi` is a
+///   privileged instruction — executing it raises a synchronous exception
+///   (EC=0 "Unknown reason"; live-found on the aarch64 boot: VM
+///   `relocate` → `heap_arena_grow` → `map` faulted at `tlbi vae1is` with
+///   `esr=0x02000000 far=0x0 spsr=0x60000000` (EL0t)). No flush is needed
+///   there: the only writes such a handle performs during boot are
+///   not-present → present (`map` refuses `AlreadyMapped`, and `walk_alloc`
+///   only creates absent intermediates), and ARMv8 never caches a
+///   translation derived from an invalid descriptor, so no stale TLB entry
+///   can exist for the newly-installed one.
+///   present→X transitions on a `VmDm` handle (unmap/remap of VM's own
+///   live address space) would need a kernel-assisted flush, which is not
+///   wired — the same VmDm flush gap as x86-64.
+///
 /// SAFETY: the channel's Direct Map window must be active; `paddr` must be
 /// a valid 8-byte aligned PTE address. `vaddr_for_flush` is the virtual
 /// address the PTE covers (used for TLB invalidation; pass 0 for
@@ -226,16 +245,20 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
 #[inline]
 unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) {
     core::ptr::write_volatile(channel_to_ptr(paddr, channel), value);
-    // Flush any stale TLB entry for this virtual address. For intermediate
-    // table descriptors (L0/L1/L2 table entries), no leaf TLB entry exists
-    // yet, so the flush is a conservative no-op. For leaf PTE entries, this
-    // ensures stale mappings are evicted.
-    unsafe {
-        asm!("dsb ishst");
-        asm!("tlbi vae1is, {}", in(reg) vaddr_for_flush);
-        asm!("dsb ish");
-        asm!("isb");
+    if channel == PteChannel::KernelDm {
+        // Flush any stale TLB entry for this virtual address. For intermediate
+        // table descriptors (L0/L1/L2 table entries), no leaf TLB entry exists
+        // yet, so the flush is a conservative no-op. For leaf PTE entries, this
+        // ensures stale mappings are evicted.
+        unsafe {
+            asm!("dsb ishst");
+            asm!("tlbi vae1is, {}", in(reg) vaddr_for_flush);
+            asm!("dsb ish");
+            asm!("isb");
+        }
     }
+    // VmDm: see doc comment — `tlbi` at EL0 faults, and the writes this
+    // channel performs during boot (not-present → present) need no flush.
 }
 
 /// Result of a read-only walk down the 4-level ARM64 page table.
@@ -752,6 +775,16 @@ impl Paging for AArch64Paging {
     /// keep the caller's later `unmap`/`map` pair non-coherent.
     fn split_huge(&mut self, vaddr: VirBytes) -> Result<bool, PageTableError> {
         let ch = self.channel;
+        // The broadcast `tlbi vmalle1is` below is an EL1 privileged
+        // instruction, so a `VmDm` (EL0) handle would fault exactly like
+        // `write_pte_dm`'s flush does (§1.111). Every current caller is a
+        // kernel-context handle (`kernel/src/lib.rs` boot eviction,
+        // `arch::boot`); assert the invariant here rather than only in
+        // prose so a future VmDm caller is caught in debug builds.
+        debug_assert!(
+            matches!(ch, PteChannel::KernelDm),
+            "split_huge requires a KernelDm (EL1) handle; VmDm would fault at tlbi"
+        );
         // Table-descriptor encoding for slots installed by this split.
         // Same bits as `walk_alloc`/`map_huge` intermediates (`VALID |
         // AF | TABLE`); no APTable/UXNTable/PXNTable restriction bits —

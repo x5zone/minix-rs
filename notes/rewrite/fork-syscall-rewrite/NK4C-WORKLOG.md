@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.110 修 aarch64 `load_vm_elf MappingFailed`（arm64 split_huge/grant_user_walk 未覆盖 + xtask 缺 gic-version=3）——aarch64 首次抵达 VM server**（接 §1.109 commit `efdee9bb2`）：§1.109 把 aarch64 真阻断推进到 `load_vm_elf: VM ELF MappingFailed`（kernel/src/lib.rs:1645）。本轮定位**双独立根因**并逐一修复。**根因 A（实现缺口）**：`arch/src/arch/paging.rs` trait 默认 `split_huge`/`grant_user_walk` 返回 `Err(NotSupported)`，文档明写"arm64/riscv64 must mirror x86-64 when their boot reaches the same eviction"——boot ELF eviction 三步（`query → split_huge → grant_user_walk → unmap → map`，boot.rs:455-490）在 aarch64 identity 1GB/2MB Block 上需要拆分，arm64 无覆盖直接 NotSupported→MappingFailed。**修复 A（仅 `os/arch/src/arm64/paging.rs`，+270 行含测试）**：为 `impl Paging for AArch64Paging` 实现 `split_huge`（L1 1GB Block→L2 512×2MB Blocks + L2 2MB Block→L3 512×4KB Pages，F7 括号 `leaf_pa + ((i as u64) << SHIFT) | leaf_bits`，分裂后 `dsb sy; tlbi vmalle1is; dsb sy; isb` 广播刷 TLB——等价 x86 CR3 reload）和 `grant_user_walk`（逐级 walk L0→L1→L2，Block 则 NotSupported、清 APTable bit60——arm64 极性与 x86 USER 位**相反**：APTable=1 是禁止、清 0 才允许 EL0）。附两个防回归测试（F7 算术 + APTable 极性负极性）。**根因 B（xtask 遗漏）**：`os/xtask/src/qemu.rs` aarch64 腿 `-machine virt` 不带 `gic-version=3`——QEMU virt 默认 GICv2，而 `AcpiDesc::parse::check_gic_madt` 故意拒绝 GICv1/v2（`GicVersionUnsupported`，因驱动 GICv3-only：per-CPU redistributor via GICR stride + ICCT MMIO），所有 aarch64 真机测试卡在 `init_from_kinfo: no platform source parsed successfully`（§1.107 已知、§1.108/§1.109 均手动补此 flag 跑通，xtask 一直没改）。**修复 B（`os/xtask/src/qemu.rs`，+8 行）**：aarch64 machine 参数改 `"virt,gic-version=3"`，附 boot contract 注释。**CodeReview PASSED**（0 Critical/Warning，1 CONSIDER=F7 回归测试已采纳）。**三件套全绿**：mock minix-arch **243/0fail** 不减·nightly rustfmt `arm64/paging.rs` 漂移 **260＝基线 260** 零新增·镜像 `--release` 双架构重建 EXIT=0＋**aarch64 双跑签名一致（109 行、`nk4a: vm enter`+`kmain B clock`+`PhysicalAllocFailed` 各 1）——首次抵达 VM server main_loop！·x86_64 单核双跑无回归 marker=2·panic=0·oom=0**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 首次抵达 VM server（load_vm_elf 全通、split_huge 有效性由 boot 越过 evict 路径实证），新前沿=`vm_server.rs:413 relocate PhysicalAllocFailed`；riscv64 未验。** 下轮 §1.111：aarch64 `vm_server.rs:413 PhysicalAllocFailed`（VM 元数据 HeapArena 帧池不足）取证 / riscv64 U-Boot / 多核 `-smp 4` VM 缺页 panic / minix3 tests。**历史链**：…→§1.108 补 MADT GICR(`391a57155`)→§1.109 修 msr SP_EL1 UNDEFINED(`efdee9bb2`)→**§1.110 arm64 split_huge+grant_user_walk 覆盖 + xtask gic-version=3、aarch64 首次抵达 VM server**。
+> **✅ 最新前沿＝§1.111 修 aarch64 VM 启动两道独立崩溃（`total_pages` 位图容量语义 + `write_pte_dm` 在 EL0 发射特权 TLB 指令）——aarch64 首次越过 `relocate` 抵达 VM 主循环**（接 §1.110 commit `a537f8ba5`）：§1.110 把 aarch64 真阻断推进到 `vm_server.rs:413 relocate PhysicalAllocFailed`。本轮逐一钉死**两道独立根因**并修复，再补一处 CodeReview 发现的记账语义回归。**根因一（位图容量，上一会话已改、本轮验证并提交）**：`os/servers/vm/src/boot.rs` 的 `BootParams.total_pages` 旧值＝「Σ(区域大小/页大小)」（对位 C `mem_init` 的记账累加，alloc.c:319），但物理页在位图里按**绝对页号**（PA/页大小）寻址——aarch64 RAM 基址 PA 0x40000000 使页号自 262144 起，远超以 2800 为容量的位图，分配与释放全部越界 → `PhysicalAllocFailed`。修复＝`total_pages` 改为「`max((区域基址+大小)/页大小)`」即位图**容量**（地址空间最高页号），三处同步（字段文档、`validate()` 断言、`read_boot_params()` 构造）。**根因二（EL0 特权指令，本轮真机取证定位）**：修好帧分配后真机冒出新的 `user sync exception esr=0x02000000 far=0x0 elr=0x23fb38 spsr=0x60000000`（`esr` 高 6 位 EC=0 即「未识别原因」、`spsr` 低位 0 即 EL0t 用户态）。用 llvm-objdump 反汇编 VM 镜像 ELF，`elr=0x23fb38` 精确命中 `AArch64Paging::map` 内联的 `write_pte_dm` 里那条 `tlbi vae1is, x8`。根因＝`os/arch/src/arm64/paging.rs` 的 `write_pte_dm` **无条件**发射 `tlbi`，而 `tlbi` 是 EL1 特权指令；VM 用 `VmDm`（用户态直通映射窗口）通道在 EL0 调 `map`（`relocate → heap_arena_grow → vm_self_mappages`）时发射它即触发同步异常。修复＝把刷新块（`dsb/tlbi/dsb/isb`）包进 `if channel == PteChannel::KernelDm`——完全对齐 x86_64 版同名函数（`os/arch/src/x86_64/paging.rs:188` 早有此门控，`invlpg` 仅在 `KernelDm` 发射）。理由：`VmDm` 通道启动期只做「不存在→存在」的写（`map` 拒绝 `AlreadyMapped`、`walk_alloc` 只新建缺失的中间表页），ARMv8 不缓存来自无效描述符的翻译，故无需失效；「存在→改」的场景（`unmap`/`remap`/`update_flags`）需内核代刷、与 x86 同为未接线的已知缺口。**CodeReview 发现并修的回归（P1）**：`total_pages` 改成容量后，同一个值仍喂给记账用的 `global::init`（→ `VM_INFO` 的 `vsi_total`，C utility.c:118），会把 `vsi_total` 凭空抬高「地址空间最高页号 − 真实可用页数」那么多个保留洞（aarch64 +262144 页＝1 GiB）。而 C 里这本就是**两个量**：位图固定覆盖整个地址空间、`total_pages` 记账只累加可用页。修复＝在 `VmServer` 新增 `boot_usable_pages`（Σ 可用页，对位 C 记账口径）专供 `global::init`，位图容量（`page_alloc.total_pages()`）继续供 `PageFrames`（按绝对页号索引，容量式反而修正了一处隐性越界）。顺带采纳两条 P2：`write_pte_dm` 的 VmDm 注释措辞「legally」改「during boot」（因 `unmap` 等仍合法走此通道）、`split_huge` 顶部加 `debug_assert!(matches!(ch, KernelDm))`（它同样无条件发射 `tlbi vmalle1is`，现网仅内核态调用，断言写进代码而非只靠注释）。**CodeReview 结论**：改动一、二可提交，P1 已按方案 A（拆字段）修净。**三件套全绿**：mock minix-vm **531/0fail**·minix-arch **243/0fail** 均不减·nightly rustfmt 我改动的三处（`boot.rs` total_pages 块、`arm64/paging.rs` 门控与断言、`vm_server.rs` `boot_usable_pages` 字段与字面量）在 diff 中 **0 命中**＝零新增漂移（全仓其余漂移是本机 nightly 版本与入库格式器不一致所致、HEAD 已存在）·镜像 `--release` 双架构重建 EXIT=0＋**aarch64 双跑签名一致（`relocate ok`=1、原 `user sync exception` tlbi 崩溃=0）——首次越过 relocate 抵达 VM 主循环**·**x86_64 单核双跑无回归 marker=2·panic=0·oom=0**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 首次越过 relocate 抵达 VM 主循环（但主循环 `receive` 立即返回 EIO=errno5，64 次后 `run()` 主动 panic 退出）；riscv64 未验。** **新前沿（本轮取证锁定，未修）**：aarch64 VM 主循环收信 64 次全 `rcv-err 5`（EIO）——两层缺口：①用户态 `libs/minix-sys/src/ipc.rs` 六个 IPC 原语（`send`/`receive`/`sendrec`/`notify`/`sendnb`/`senda`）的真陷入分支只门控 `#[cfg(all(target_arch="x86_64", kernel_trap))]`，aarch64/riscv64 落 `Err(EIO)` 短路、连陷入都没发；②内核 `os/kernel/src/trap_dispatch.rs` 的 `aarch64_user_body` 对 SVC 的 EC=0x15 分支只处理 `KERNEL_CALL`（x8=0 消息腿，已接线），其余原始 IPC 调用号返回 `-ENOSYS`（注释「x86-only IPC bridge」）。而 `arch_trap::ipc_trap`/`kernel_call_trap` 的 aarch64 汇编体（`svc #0`）**已存在**、`query_kerninfo_page` 已开 aarch64/riscv64 腿可作模板。下轮 §1.112＝接通 aarch64 原始 IPC 桥（放开 ipc.rs 六原语的 arch 门控 + 把 x86 的 `x86_ipc_dispatch_body` 解码/派发逻辑复用到 `aarch64_user_body` 的非-KERNEL_CALL 分支），随后同构推到 riscv64。**历史链**：…→§1.109 修 msr SP_EL1 UNDEFINED(`efdee9bb2`)→§1.110 arm64 split_huge+grant_user_walk 覆盖 + xtask gic-version=3(`a537f8ba5`)→**§1.111 修 aarch64 VM 两道启动崩溃（位图容量 + EL0 tlbi）+ CodeReview P1 记账口径拆分、aarch64 首次抵达 VM 主循环**。
+>
+> **（历史·§1.110 摘要，详文见文末）✅ 最新前沿＝§1.110 修 aarch64 `load_vm_elf MappingFailed`（arm64 split_huge/grant_user_walk 未覆盖 + xtask 缺 gic-version=3）——aarch64 首次抵达 VM server**（接 §1.109 commit `efdee9bb2`）：§1.109 把 aarch64 真阻断推进到 `load_vm_elf: VM ELF MappingFailed`（kernel/src/lib.rs:1645）。本轮定位**双独立根因**并逐一修复。**根因 A（实现缺口）**：`arch/src/arch/paging.rs` trait 默认 `split_huge`/`grant_user_walk` 返回 `Err(NotSupported)`，文档明写"arm64/riscv64 must mirror x86-64 when their boot reaches the same eviction"——boot ELF eviction 三步（`query → split_huge → grant_user_walk → unmap → map`，boot.rs:455-490）在 aarch64 identity 1GB/2MB Block 上需要拆分，arm64 无覆盖直接 NotSupported→MappingFailed。**修复 A（仅 `os/arch/src/arm64/paging.rs`，+270 行含测试）**：为 `impl Paging for AArch64Paging` 实现 `split_huge`（L1 1GB Block→L2 512×2MB Blocks + L2 2MB Block→L3 512×4KB Pages，F7 括号 `leaf_pa + ((i as u64) << SHIFT) | leaf_bits`，分裂后 `dsb sy; tlbi vmalle1is; dsb sy; isb` 广播刷 TLB——等价 x86 CR3 reload）和 `grant_user_walk`（逐级 walk L0→L1→L2，Block 则 NotSupported、清 APTable bit60——arm64 极性与 x86 USER 位**相反**：APTable=1 是禁止、清 0 才允许 EL0）。附两个防回归测试（F7 算术 + APTable 极性负极性）。**根因 B（xtask 遗漏）**：`os/xtask/src/qemu.rs` aarch64 腿 `-machine virt` 不带 `gic-version=3`——QEMU virt 默认 GICv2，而 `AcpiDesc::parse::check_gic_madt` 故意拒绝 GICv1/v2（`GicVersionUnsupported`，因驱动 GICv3-only：per-CPU redistributor via GICR stride + ICCT MMIO），所有 aarch64 真机测试卡在 `init_from_kinfo: no platform source parsed successfully`（§1.107 已知、§1.108/§1.109 均手动补此 flag 跑通，xtask 一直没改）。**修复 B（`os/xtask/src/qemu.rs`，+8 行）**：aarch64 machine 参数改 `"virt,gic-version=3"`，附 boot contract 注释。**CodeReview PASSED**（0 Critical/Warning，1 CONSIDER=F7 回归测试已采纳）。**三件套全绿**：mock minix-arch **243/0fail** 不减·nightly rustfmt `arm64/paging.rs` 漂移 **260＝基线 260** 零新增·镜像 `--release` 双架构重建 EXIT=0＋**aarch64 双跑签名一致（109 行、`nk4a: vm enter`+`kmain B clock`+`PhysicalAllocFailed` 各 1）——首次抵达 VM server main_loop！·x86_64 单核双跑无回归 marker=2·panic=0·oom=0**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 首次抵达 VM server（load_vm_elf 全通、split_huge 有效性由 boot 越过 evict 路径实证），新前沿=`vm_server.rs:413 relocate PhysicalAllocFailed`；riscv64 未验。** 下轮 §1.111：aarch64 `vm_server.rs:413 PhysicalAllocFailed`（VM 元数据 HeapArena 帧池不足）取证 / riscv64 U-Boot / 多核 `-smp 4` VM 缺页 panic / minix3 tests。**历史链**：…→§1.108 补 MADT GICR(`391a57155`)→§1.109 修 msr SP_EL1 UNDEFINED(`efdee9bb2`)→**§1.110 arm64 split_huge+grant_user_walk 覆盖 + xtask gic-version=3、aarch64 首次抵达 VM server**。
 >
 > **（历史·§1.109 摘要，详文见文末）✅ §1.109 修 aarch64 `init_protection` 崩溃（`msr SP_EL1` 在 SPSel=1 下 UNDEFINED→同步异常）——aarch64 首次越过 protection/clock/intr bring-up**（接 §1.108 commit `391a57155`）：根因＝ARMv8-A DDI 0487 §D1.5.1 规定 SPSel=1(EL1h) 时 `MSR SP_EL1, Xt` 编码为 UNDEFINED，旧 protection.rs init/set_kernel_stack/init_ap 三处 save-restore dance 正踩此雷。修复＝三方法改为带 EL1h 契约说明的 no-op（栈已由 higher-half `mov sp` 建立、异常入口切换归 trap_stub 汇编）。CodeReview PASSED，三件套全绿（mock 243/0、rustfmt 16=16、aarch64 双跑越过 init_protection 打印 kmain B clock+intr ok + kerninfo page ok、新阻断 load_vm_elf MappingFailed、x86_64 无回归）。**⇒ 终目标① x86_64 ✅；aarch64 首次越过 protection bring-up；riscv64 未验。**
 >
@@ -4764,3 +4766,55 @@ Arch::Aarch64 => args.extend([
 **⇒ 终目标①：x86_64 单核 marker ✅；aarch64 首次抵达 VM server（load_vm_elf 全通、split_huge 有效性由 boot 越过 evict 路径实证），新前沿=`vm_server.rs:413 relocate PhysicalAllocFailed`；riscv64 未验。**
 
 下轮 §1.111：**(a) aarch64 `vm_server.rs:413 PhysicalAllocFailed`**（VM server 元数据 HeapArena 帧池不足——可能是池大小或 boot 时分配策略与 x86 不同）；(b) riscv64 U-Boot 路径；(c) 多核 `-smp 4` VM 缺页 panic；(d) minix3 `tests/` 上机。
+
+## §1.111 aarch64 VM 启动两道独立崩溃：`total_pages` 位图容量语义 + EL0 发射特权 `tlbi`
+
+> commit: TBD（接 §1.110 `a537f8ba5`）
+
+### 前沿起点
+
+§1.110 把 aarch64 真阻断推进到 `vm_server.rs:413 relocate PhysicalAllocFailed`。本轮逐一钉死**两道独立根因**（帧分配越界 + EL0 特权指令），并修复一处 CodeReview 发现的记账语义回归。
+
+### 根因一：`BootParams.total_pages` 语义错位（位图容量 vs 记账累加）
+
+`os/servers/vm/src/boot.rs` 旧值＝「Σ(区域大小/页大小)」（对位 C `mem_init` 的记账累加，`minix3/servers/vm/arch/i386/.../alloc.c:319`）。但物理页在位图里按**绝对页号**（PA/页大小）寻址：aarch64 RAM 基址 PA `0x40000000` 使页号自 `262144` 起，远超以 `2800` 为容量的位图，分配与释放全部越界 → `PhysicalAllocFailed`。
+
+修复＝`total_pages` 改为「`max((区域基址+大小)/页大小)`」即位图**容量**（地址空间最高页号），三处同步：字段文档、`validate()` 断言、`read_boot_params()` 构造。
+
+### 根因二：`write_pte_dm` 在 EL0 发射 `tlbi`（特权指令）
+
+修好帧分配后真机冒出 `user sync exception esr=0x02000000 far=0x0 elr=0x23fb38 spsr=0x60000000`（`esr` 高 6 位 EC=0「未识别原因」、`spsr` 低位 0＝EL0t）。llvm-objdump 反汇编 VM 镜像 ELF，`elr=0x23fb38` 精确命中 `AArch64Paging::map` 内联的 `write_pte_dm` 里那条 `tlbi vae1is, x8`。
+
+根因＝`os/arch/src/arm64/paging.rs` 的 `write_pte_dm` **无条件**发射 `tlbi`，而 `tlbi` 是 EL1 特权指令；VM 用 `VmDm`（用户态直通映射窗口）通道在 EL0 调 `map`（`relocate → heap_arena_grow → vm_self_mappages`）时发射它即触发同步异常。
+
+修复＝刷新块（`dsb/tlbi/dsb/isb`）包进 `if channel == PteChannel::KernelDm`——完全对齐 x86_64 版同名函数（`os/arch/src/x86_64/paging.rs:188` 早有此门控，`invlpg` 仅在 `KernelDm` 发射）。理由：`VmDm` 通道启动期只做「不存在→存在」的写（`map` 拒绝 `AlreadyMapped`、`walk_alloc` 只新建缺失的中间表页），ARMv8 不缓存来自无效描述符的翻译，故无需失效；「存在→改」需内核代刷，与 x86 同为未接线已知缺口。
+
+### CodeReview 发现并修的回归（P1）：`total_pages` 记账口径
+
+`total_pages` 改成容量后，同一个值仍喂给记账用的 `global::init`（→ `VM_INFO` 的 `vsi_total`，C `utility.c:118`），会把 `vsi_total` 凭空抬高「地址空间最高页号 − 真实可用页数」那么多个保留洞（aarch64 +262144 页＝1 GiB）。C 里这本就是**两个量**：位图固定覆盖整个地址空间、`total_pages` 记账只累加可用页。
+
+修复＝在 `VmServer` 新增 `boot_usable_pages`（Σ 可用页，对位 C 记账口径）专供 `global::init`，位图容量（`page_alloc.total_pages()`）继续供 `PageFrames`（按绝对页号索引，容量式反而修正了一处隐性越界）。
+
+### 采纳的两条 P2
+
+1. `write_pte_dm` 的 VmDm 注释措辞「legally」改「during boot」（因 `unmap` 等仍合法走此通道）。
+2. `split_huge` 顶部加 `debug_assert!(matches!(ch, PteChannel::KernelDm))`（它同样无条件发射 `tlbi vmalle1is`，现网仅内核态调用，断言写进代码而非只靠注释）。
+
+### 验证
+
+**CodeReview（子代理审真实工作树 diff）**：改动一、二可提交，P1 已按方案 A（拆字段）修净。
+
+**三件套全绿（两轮）**：
+- mock minix-vm **531/0fail**·minix-arch **243/0fail** 均不减
+- nightly rustfmt 三处改动（`boot.rs` total_pages 块、`arm64/paging.rs` 门控与断言、`vm_server.rs` `boot_usable_pages` 字段与字面量）diff 中 **0 命中**＝零新增漂移
+- 镜像 `--release` 双架构重建 EXIT=0
+  - **aarch64 双跑签名一致（`relocate ok`=1、原 `user sync exception` tlbi 崩溃=0）——首次越过 relocate 抵达 VM 主循环**
+  - x86_64 单核双跑无回归 marker=2·panic=0·oom=0
+
+### 结论与下轮
+
+**⇒ 终目标①：x86_64 单核 marker ✅；aarch64 首次越过 relocate 抵达 VM 主循环（但主循环 `receive` 立即返回 EIO=errno5，64 次后 `run()` 主动 panic 退出）；riscv64 未验。**
+
+**新前沿（本轮取证锁定，未修）**：aarch64 VM 主循环收信 64 次全 `rcv-err 5`（EIO）——两层缺口：①用户态 `libs/minix-sys/src/ipc.rs` 六个 IPC 原语真陷入分支只门控 `#[cfg(all(target_arch="x86_64", kernel_trap))]`，aarch64/riscv64 落 `Err(EIO)` 短路、连陷入都没发；②内核 `os/kernel/src/trap_dispatch.rs` 的 `aarch64_user_body` 对 SVC 的 EC=0x15 分支只处理 `KERNEL_CALL`（x8=0 消息腿，已接线），其余原始 IPC 调用号返回 `-ENOSYS`。而 `arch_trap::ipc_trap`/`kernel_call_trap` 的 aarch64 汇编体（`svc #0`）已存在、`query_kerninfo_page` 已开 aarch64/riscv64 腿可作模板。
+
+下轮 §1.112＝**接通 aarch64 原始 IPC 桥**（放开 ipc.rs 六原语的 arch 门控 + 把 x86 的 `x86_ipc_dispatch_body` 解码/派发逻辑复用到 `aarch64_user_body` 的非-KERNEL_CALL 分支），随后同构推到 riscv64。
