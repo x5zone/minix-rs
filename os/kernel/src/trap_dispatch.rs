@@ -1549,6 +1549,10 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
 #[cfg(target_arch = "x86_64")]
 /// Re-acquire the BKL (released by `kernel_call_finish`) and enter the
 /// scheduling loop — the unified exit for blocked IPC (design decision 3).
+/// x86-only: the int-33 leg diverges here safely because every later trap
+/// reloads RSP from TSS.sp0. The aarch64 leg cannot do this on its single
+/// EL1h stack and stops with an explicit panic until the switch-after-pop
+/// asm lands (NK4-C §1.113).
 fn reenter_scheduler() -> ! {
     // scheduler_loop consumes the held-BKL convention (assume_held witness
     // inside); the guard is forgotten deliberately — ownership passes to
@@ -1696,9 +1700,10 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
 //   enforcement (C proc.c:418-424, the x86 0xF1 shape).
 // - **syscall arm**: the KERNEL_CALL message leg (a7/x8 == 0, message at
 //   a0/x0 per `minix_sys::arch_trap`) → `kernel_call`, reply code in
-//   a0/x0. The raw IPC legs (a7/x8 1..16) are a registered gap — the
-//   int-33 IPC bridge is x86-only so far — and answer -ENOSYS (the same
-//   contract the K12b carriers observed).
+//   a0/x0. The raw IPC legs (a7/x8 1..16): aarch64 dispatches through
+//   `aarch64_ipc_dispatch_body` (NK4-C §1.112, EL1 mirror of the x86 int-33
+//   bridge); riscv64 is still a registered gap and answers -ENOSYS (the
+//   same contract the K12b carriers observed).
 // - **faults**: panic with the architectural diagnostics. The acting
 //   arms (ForwardToVm / cause_signal — NK2, x86-only) are the downstream
 //   "页故障回路三架构化" wave; reaching them here is a registered gap,
@@ -1708,8 +1713,9 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
 // semantics per arch are documented on `register_trap_dispatchers`.
 
 /// -ENOSYS on the trap ABI return register (minix_types::errno parity;
-/// the carriers pin the same value).
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+/// the carriers pin the same value). riscv64-only now: aarch64 dispatches
+/// its raw IPC legs instead of answering -ENOSYS (NK4-C §1.112).
+#[cfg(target_arch = "riscv64")]
 const ENOSYS_CODE: u64 = 38;
 /// KERNEL_CALL message-leg trap number (minix_sys::arch_trap).
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
@@ -2024,10 +2030,10 @@ pub unsafe extern "C" fn aarch64_user_body(
         if leg == KERNEL_CALL_TRAP {
             aarch64_kernel_call_leg(frame);
         } else {
-            // Raw IPC legs / MINIX_KERNINFO: registered gap (x86-only
-            // IPC bridge) — -ENOSYS on the x0/x1 return pair.
-            frame.gpr[0] = (-(ENOSYS_CODE as i64)) as u64;
-            frame.gpr[1] = 0;
+            // Raw IPC legs + MINIX_KERNINFO (x8 = 1..16): the EL1 mirror
+            // of the x86 int-33 bridge (NK4-C §1.112). An unknown call
+            // number is rejected inside the body (EBADCALL).
+            aarch64_ipc_dispatch_body(frame);
         }
         return;
     }
@@ -2075,6 +2081,163 @@ unsafe fn aarch64_kernel_call_leg(frame: &mut minix_arch::arm64::trap_stub::AArc
         Some(code) => code as i64 as u64,
         None => panic!("aarch64 kernel call returned {result:?} with no reply code"),
     };
+}
+
+/// The raw-IPC leg (SVC with x8 = 1..16): the EL1 mirror of
+/// [`x86_ipc_dispatch_body`] (NK4-C §1.112). Register ABI per
+/// `minix-sys::arch_trap::ipc_trap` (aarch64): x8 = call number, x0 =
+/// src/dst endpoint (SENDA: count), x1 = message pointer (SENDA: table
+/// pointer); errno returns in x0 and IPC status rides x1 (the X1 status
+/// lane). `svc` already advanced ELR, so — unlike the riscv64 `ecall`
+/// leg — the PC must NOT be stepped here.
+///
+/// # Safety
+///
+/// Same invariants as `aarch64_kernel_call_leg`: `frame` is the live
+/// lower-EL frame and the current proc is scheduled.
+#[cfg(target_arch = "aarch64")]
+unsafe fn aarch64_ipc_dispatch_body(
+    frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
+) {
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "aarch64 IPC trap before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+
+    // The SVC arrives from EL0 where this CPU does NOT own the BKL. The
+    // entry below mutates the shared PROC_TABLE before dispatch_ipc_entry
+    // acquires it fresh — acquire now (x86 B27 shape), release just before
+    // the dispatch hand-off (the BKL is non-reentrant).
+    let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+    debug_assert!(
+        ipc_bkl,
+        "aarch64 SVC IPC reached from kernel context (BKL inherited) — \
+         dispatch_ipc_entry's fresh acquire would self-deadlock"
+    );
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+
+    // Persist the user register file before any dispatch side effect —
+    // delivery paths OR IPC status into this saved context (the resume asm
+    // reads it back before `eret`). Record the ENTRY style so a
+    // door-parked caller resumes through the entry-style gate.
+    {
+        let caller = table
+            .get_mut(cur_nr)
+            .unwrap_or_else(|| panic!("aarch64 IPC from invalid proc nr {cur_nr:?}"));
+        minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
+        caller.trap_style = TrapStyle::FullContext;
+    }
+
+    // Pre-decode: unknown call numbers exit before any dispatch (C
+    // proc.c:602-606 do_ipc default — EBADCALL without entering the engine).
+    let call_nr = frame.gpr[8] as i32;
+    if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
+        if ipc_bkl {
+            crate::smp::bkl_unlock();
+        }
+        frame.gpr[0] = crate::errno::EBADCALL as i64 as u64;
+        return;
+    }
+
+    let r1 = frame.gpr[0]; // src/dst endpoint, or SENDA count
+    let r2 = frame.gpr[1]; // message pointer, or SENDA table pointer
+    let is_senda = call_nr == (crate::ipc::IpcCall::SendA as i32);
+    // Body-less calls (kerninfo / notify / senda) trap with the message
+    // register unused — no user buffer is copied (C ipc_minix_kerninfo.S
+    // zeroes the operand regs; notify passes no body).
+    let is_bodyless = is_senda
+        || call_nr == (crate::ipc::IpcCall::KernInfo as i32)
+        || call_nr == (crate::ipc::IpcCall::Notify as i32);
+    {
+        let caller = table
+            .get_mut(cur_nr)
+            .expect("aarch64 IPC: caller slot must exist");
+        caller.p_defer.r2 = r1 as usize;
+        caller.p_defer.r3 = if is_senda { r2 as usize } else { 0 };
+        if !is_senda {
+            caller.p_delivermsg_vir = VirBytes(r2);
+        }
+    }
+
+    // Copy the user message (kernel-side copy, TOCTOU defense — the same
+    // shape as the x86 leg). SENDA carries no message buffer.
+    let mut msg = minix_types::Message::default();
+    if !is_bodyless {
+        use crate::ipc::UserCopy as _;
+        match crate::ipc::KernelUserCopy.copy_msg_from_user(VirBytes(r2)) {
+            Ok(m) => msg = m,
+            Err(_) => {
+                // C system.c:152-155 parity: SIGSEGV + EFAULT, without
+                // entering IPC dispatch.
+                crate::syscall_signal::cause_signal(
+                    cur_nr,
+                    crate::syscall_signal::SIGSEGV,
+                    table,
+                    unsafe { crate::priv_table_boot_unchecked() },
+                );
+                if ipc_bkl {
+                    crate::smp::bkl_unlock();
+                }
+                frame.gpr[0] = crate::errno::EFAULT as i64 as u64;
+                return;
+            }
+        }
+    }
+    msg.m_type = call_nr;
+    msg.m_source = table
+        .get(cur_nr)
+        .map(|c| c.p_endpoint)
+        .expect("aarch64 IPC: caller slot must exist");
+
+    // Release the entry acquisition so dispatch_ipc_entry takes a fresh
+    // lock (non-reentrant BKL); mutual exclusion is unbroken for the
+    // instant we hold nothing (we do not touch the table in between).
+    if ipc_bkl {
+        crate::smp::bkl_unlock();
+    }
+    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+    let result = crate::syscall::dispatch_ipc_entry(cur_nr, table, &mut msg, priv_table);
+    crate::syscall::kernel_call_finish_ipc_door(cur_nr, table, &msg, result, priv_table);
+
+    // Delivered: errno rides x0 out via `eret`; the IPC status bits were
+    // ORed into the saved context's X1 by the delivery path — pull that
+    // lane back into the frame (sync_status_register_to_frame).
+    if let Some(code) = result.reply_code() {
+        frame.gpr[0] = code as i64 as u64;
+        let ctx = &table
+            .get(cur_nr)
+            .expect("aarch64 IPC: caller slot must exist")
+            .cpu_context;
+        minix_arch::sync_status_register_to_frame(ctx, frame);
+    } else {
+        // Blocked (NoReply): the caller parked, so the EL1 leg must switch
+        // to another process WITHOUT this frame on the resume path. The x86
+        // leg diverges straight into `reenter_scheduler` and is safe only
+        // because every later trap reloads RSP from TSS.sp0; aarch64 runs
+        // the EL1h single-stack model whose `EL0BODY` entry `sub sp, 34*8`
+        // is popped ONLY by that leg's epilogue — diverging here instead of
+        // returning would strand those 288 bytes (plus the call chain) on
+        // the kernel stack every idle-loop receive, walking SP_EL1 down
+        // into the kernel .bss (PROC_TABLE / function pointers) until an
+        // indirect branch lands on garbage. Until the switch-after-pop asm
+        // leg lands (NK4-C §1.113: record a reschedule flag, return through
+        // the epilogue, then enter `scheduler_loop` after the frame is
+        // popped — the C `mpx.S` `SAVE_PROCESS_CTX → jmp switch_to_user`
+        // shape), stop loudly rather than silently corrupt memory.
+        panic!(
+            "aarch64 blocked IPC (parked receiver) awaits switch-after-pop \
+             stack discipline (NK4-C §1.113) — diverging into \
+             reenter_scheduler would leak the EL0BODY frame on the single \
+             EL1h stack"
+        );
+    }
 }
 
 /// Console diagnostics + panic for unreached causes (riscv64 sibling

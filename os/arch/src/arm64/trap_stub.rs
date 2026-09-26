@@ -88,6 +88,50 @@ impl AArch64TrapFrame {
     }
 }
 
+/// Persist an interrupted aarch64 user register file into the per-process
+/// saved context — the EL1 mirror of
+/// [`crate::x86_64::trap_stub::save_frame_to_context`] (design decision 3:
+/// `CpuContext` is the single user-state truth; the scheduler restore asm
+/// in [`crate::arm64::trap_return`] reads `r0`/`gp_regs`/`pc`/`psr`/`sp`
+/// back out of it before `eret`).
+///
+/// [`AArch64CpuContext`] stores X0 separately (`r0`) and X1..X30 in
+/// `gp_regs[0..30]` (so `gp_regs[i]` = X(i+1)), matching
+/// [`crate::arm64::boot`]’s `write_user_register` offset convention. SP is
+/// not a GPR on ARM64: the interrupted EL0 sp travels in
+/// [`AArch64TrapFrame::sp`] and lands in `ctx.sp` (SP_EL0).
+pub fn save_frame_to_context(
+    frame: &AArch64TrapFrame,
+    ctx: &mut super::boot::AArch64CpuContext,
+) {
+    ctx.r0 = frame.gpr[0];
+    let mut i = 0;
+    while i < super::boot::AArch64CpuContext::GP_REGS_LEN {
+        ctx.gp_regs[i] = frame.gpr[i + 1];
+        i += 1;
+    }
+    ctx.sp = frame.sp;
+    ctx.pc = frame.elr;
+    ctx.psr = frame.spsr;
+}
+
+/// Pull the IPC status register from a saved context into the outgoing
+/// trap frame so the `eret` leg returns the up-to-date value — the EL1
+/// mirror of [`crate::x86_64::trap_stub::sync_status_register_to_frame`].
+///
+/// The aarch64 status lane is X1 (`gp_regs[GP_X1]`, the analogue of x86's
+/// R10): the delivery path ORs `IpcCall` status bits into it via
+/// `AArch64CpuContextArch::or_ipc_status_reg`, and the plain-RECEIVE
+/// prologue clears it. On the receiving process's own trap return the
+/// entry save happened before that OR, so the frame's X1 is stale and must
+/// be refreshed from the context.
+pub fn sync_status_register_to_frame(
+    ctx: &super::boot::AArch64CpuContext,
+    frame: &mut AArch64TrapFrame,
+) {
+    frame.gpr[1] = ctx.gp_regs[crate::arm64::signal::GP_X1];
+}
+
 // ── Dispatcher registration gate (x86_64::trap_stub shape) ──────────────
 //
 // Per-arch slot semantics: the KERNEL leg (current-EL entries: kernel

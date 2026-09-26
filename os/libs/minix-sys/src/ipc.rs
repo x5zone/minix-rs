@@ -539,9 +539,17 @@ pub struct DirectTrapTransport;
 #[allow(unused_variables)]
 impl IpcTransport for DirectTrapTransport {
     fn send(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
-        // E1 slice 3: the real trap branch (hosted builds keep the -EIO
-        // fallback — `int` in a hosted process is not a kernel boundary).
-        #[cfg(all(target_arch = "x86_64", kernel_trap))]
+        // E1 slice 3 / NK4-C §1.112: the real trap branch is arch-generic
+        // over the wired legs — `arch_trap::ipc_trap` carries the identical
+        // `(nr, op1, op2)` ABI on x86-64 (`int 0x21`/SYSEXIT) and aarch64
+        // (`svc #0`); riscv64 has the `ecall` body but its *kernel* IPC leg
+        // is still a registered gap (`riscv64_user_body` answers -ENOSYS),
+        // so riscv64 is deliberately excluded until that lands (§1.113).
+        // Hosted builds (no `kernel_trap`) keep the -EIO fallback.
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            kernel_trap
+        ))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -560,7 +568,10 @@ impl IpcTransport for DirectTrapTransport {
         source: Endpoint,
         message: &mut Message,
     ) -> Result<IpcStatus, TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", kernel_trap))]
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            kernel_trap
+        ))]
         {
             let (ret, status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -582,7 +593,10 @@ impl IpcTransport for DirectTrapTransport {
         destination: Endpoint,
         message: &mut Message,
     ) -> Result<(), TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", kernel_trap))]
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            kernel_trap
+        ))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -597,7 +611,10 @@ impl IpcTransport for DirectTrapTransport {
         Err(TrapStatus(minix_types::EIO))
     }
     fn notify(&self, destination: Endpoint) -> Result<(), TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", kernel_trap))]
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            kernel_trap
+        ))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -612,7 +629,10 @@ impl IpcTransport for DirectTrapTransport {
         Err(TrapStatus(minix_types::EIO))
     }
     fn sendnb(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
-        #[cfg(all(target_arch = "x86_64", kernel_trap))]
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            kernel_trap
+        ))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -629,7 +649,10 @@ impl IpcTransport for DirectTrapTransport {
     fn senda(&self, table: &[AsyncSlot]) -> Result<(), TrapStatus> {
         // C: `eax = count, ebx = table` (SENDA_ARGS) — count rides the
         // endpoint register, the table pointer the message-pointer one.
-        #[cfg(all(target_arch = "x86_64", kernel_trap))]
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "aarch64"),
+            kernel_trap
+        ))]
         {
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
@@ -647,21 +670,13 @@ impl IpcTransport for DirectTrapTransport {
         // MINIX_KERNINFO: the page address comes back through the
         // secondary return register — x86-64 上是 R10（状态车道的按调用
         // 兼任，NK4-C 1.54/B26；内核 set_secondary_ipc_return 写同一条）,
-        // riscv64/aarch64 是 a1/x1——即 `ipc_trap` 的第二返回值。
-        #[cfg(all(target_arch = "x86_64", kernel_trap))]
-        {
-            let (ret, page) =
-                unsafe { crate::arch_trap::ipc_trap(crate::arch_trap::KERNINFO_NR, 0, 0) };
-            if ret == 0 {
-                return Ok(page as u64);
-            }
-            return Err(TrapStatus(ret));
-        }
-        // K12b riscv64/aarch64 legs: same query through the arch boundary
-        // (riscv64: a7 = KERNINFO_NR / aarch64: x8 = KERNINFO_NR,
-        // secondary return in a1/x1).
+        // riscv64/aarch64 是 a1/x1——即 `ipc_trap` 的第二返回值。NK4-C
+        // §1.112: single arch-generic leg over the wired targets (x86-64 +
+        // aarch64), replacing the old duplicated x86-only + riscv/aarch
+        // legs. riscv64 is now excluded to match its unwired kernel IPC leg
+        // (§1.113) — it falls back to the documented -EIO.
         #[cfg(all(
-            any(target_arch = "riscv64", target_arch = "aarch64"),
+            any(target_arch = "x86_64", target_arch = "aarch64"),
             kernel_trap
         ))]
         {

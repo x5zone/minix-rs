@@ -340,7 +340,14 @@ pub fn save_frame_to_context(
 ) {
     crate::x86_64::trap_stub::save_frame_to_context(frame, ctx);
 }
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub fn save_frame_to_context(
+    frame: &arm64::trap_stub::AArch64TrapFrame,
+    ctx: &mut CurrentCpuContext,
+) {
+    crate::arm64::trap_stub::save_frame_to_context(frame, ctx);
+}
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn save_frame_to_context(_frame: &(), _ctx: &mut CurrentCpuContext) {}
 
 /// Pull the IPC status register from a process's saved context into the
@@ -354,7 +361,14 @@ pub fn sync_status_register_to_frame(
 ) {
     crate::x86_64::trap_stub::sync_status_register_to_frame(ctx, frame);
 }
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+pub fn sync_status_register_to_frame(
+    ctx: &CurrentCpuContext,
+    frame: &mut arm64::trap_stub::AArch64TrapFrame,
+) {
+    crate::arm64::trap_stub::sync_status_register_to_frame(ctx, frame);
+}
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut ()) {}
 
 /// Read back the saved RAX of a process's saved user context (E1 slice 2

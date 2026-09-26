@@ -170,6 +170,20 @@ impl CpuContextArch for AArch64CpuContextArch {
         // RECEIVE prologue, proc.c:581).
         ctx.gp_regs[crate::arm64::signal::GP_X1] = 0;
     }
+
+    fn set_secondary_ipc_return(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `arch_set_secondary_ipc_return` (arch_system.c:184-186, i386
+        // body `p->p_reg.bx = val`) — the MINIX_KERNINFO arm writes the
+        // returned page address through this secondary lane (whole-value
+        // assignment, not an OR-merge: a second call overwrites the first).
+        // aarch64 secondary lane = X1 (`gp_regs[GP_X1]`), the same register
+        // `ipc_trap` reads back as its second return value and
+        // `sync_status_register_to_frame` pulls into the outgoing frame.
+        // NK4-C §1.112 CodeReview W2: without this override the trait
+        // default no-op dropped the page address, so aarch64
+        // `query_kerninfo_page` would falsely return Ok(0).
+        ctx.gp_regs[crate::arm64::signal::GP_X1] = value;
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
