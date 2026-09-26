@@ -44,8 +44,12 @@ pub const NR_DOMAIN: usize = 8;
 /// `LABEL_MAX` (`const.h:34`): label size including the NUL.
 pub const LABEL_MAX: usize = 16;
 
+/// `TTY_MAJOR` (`dmap.h:25`): /dev/tty00, physical terminal driver.
+pub const TTY_MAJOR: u32 = 4;
 /// `CTTY_MAJOR` (`dmap.h:26`): `/dev/tty` is handled by VFS itself.
 pub const CTTY_MAJOR: u32 = 5;
+/// `PTY_MAJOR` (`dmap.h:30`): /dev/ptyp0, pseudo-terminal driver.
+pub const PTY_MAJOR: u32 = 9;
 
 /// `MEMORY_MAJOR` (`dmap.h:22` = 1): the memory driver owns this major —
 /// `/dev/imgrd` (the boot ramdisk block device) lives under it, so the

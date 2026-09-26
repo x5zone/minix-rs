@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r9-fix attempt1 已落码但效果未出（§1.97r commit 5870e138b）：RS publish 闭包加了 VFS_MAPDRIVER sendrec，但真机 rc marker 仍未出——根因＝TTY 是 boot image(内核直 exec、在 `BOOT_IMAGE_PRIV_TABLE`)、不经 RS `start_service`→publish 路径。mapdriver 需加在 RS 初始化 adopt boot images 的循环里（对位 C `preserve_boot_mods`+`boot_image_dev_table`）。`BOOT_IMAGE_DEV_TABLE`(table.rs:195) 已定义 TTY major=4 映射但运行时零消费。下轮配方＝在 RS init 里遍历 BOOT_IMAGE_DEV_TABLE 对 dev_nr>0 的条目发 VFS_MAPDRIVER。** 历史链：…→§1.96 r8→§1.97 r9 scoping→§1.97r r9-fix attempt1(publish路径错、待改boot init路径)。rc marker 三条终目标仍未达，goal 保持 active。**
+> **⚠ 最新前沿＝r9-fix 诊断翻案（§1.98）：side-thread 报告(基于过期§1.50前沿)的两条建议(BKL死锁/B27 VMINHIBIT)已在§1.51-52闭环。本轮重新 scoping：发现 C boot dmap 机制＝VFS 自身 init 时 sys_safecopyfrom(RS, rproctab_gid) 读 RS 表并 map_driver()——此路径 Rust 已完整接线(`map_boot_services` main_loop.rs:611-700)。§1.97r 把 mapdriver 加在 RS publish 闭包是错的。真根因经探针实干＝`open("/dev/console")` 返回 ENXIO(errno6)——非 TIOCSCTTY 阻断而是 dmap[4].driver==None(查 dmap 时驱动端点缺失)。VFS TIOCSCTTY 本地拦截(§1.98 fix)仍保留(对 C parity)。下轮方向＝排查 `map_boot_services` 是否实际被调用+pub_wire 内容是否正确(RS step0 grant 时序问题：grant 在 sync_pub_wire 之前创建、Vec 可能被重分配导致指针失效)。** 历史链：…→§1.96 r8→§1.97 r9 scoping→§1.97r r9-fix attempt1(publish路径错)→§1.98 翻案+TIOCSCTTY fix+探针诊断。rc marker 三条终目标仍未达，goal 保持 active。**
 >
 > **（历史·§1.95）⚠ r7b 闭环：premature-OOM + VM 栈 runway 两大前置全清——`VM_STACK_SIZE` 64KiB→256KiB + `MAX_BIG_BLOCKS`=GLOBAL_POOL_PAGES=1024 + §1.60 assert 退役；真机首次 OOM-RT=0·panic=0·46931行达Runcom+exec sh。新前沿 r8=wrong user pointer（§1.96 已修）。**
 >
@@ -4123,4 +4123,66 @@ bn96(§1.96) 真机 270894 行，INIT 反复循环 Runcom↔SingleUser 17 次。
 存量记录：单参数 r8-fix(commit 865b02a10) 已确保 delivermsg IPC 路径正确。r9 的真正工作量＝上述 RS publish 加 mapdriver 调用。
 
 **rc marker 三条终目标仍未达；goal 保持 active。**
+
+---
+
+## §1.98 r9-fix 诊断翻案 + VFS TIOCSCTTY 本地拦截 + 真根因探针实干
+
+### side-thread 报告对账
+
+一个并行只读线程基于过期 §1.50 frontier 提交了两条建议：
+1. BKL 两步写自死锁→合并单 AtomicIsize
+2. B27 cross_space_copy VMINHIBIT TOCTOU 取证配方
+
+对质结论：**两条均已在 §1.51/§1.52 闭环**——BKL 已是 `static BKL: AtomicIsize`（smp.rs:1251）；B27 腐蚀根因已在 §1.88/§r5 确诊为 COW 写保护缺失并修复。附 syscall_process.rs 未提交提醒属过期（工作树无此 tracked 文件修改）。
+
+### C boot dmap 机制重新正确定位
+
+本轮重新 scoping，读 C `main.c:454-465`（VFS `init_fresh`）发现：
+- C boot dmap 的真实路径＝**VFS 自身 init 时 `sys_safecopyfrom(RS_PROC_NR, rproctab_gid)` 直读 RS 的 `rprocpub[]` 表并逐行 `map_service()`→`map_driver(label, dev_nr, endpoint)`**——不经过 RS→VFS 的 IPC mapdriver 调用。
+- RS `publish_service()`（manager.c:787-824 含 `mapdriver()` IPC）**仅服务动态启动的服务**，不参与 boot 镜像。
+- Rust VFS **已完整接线**此路径：`map_boot_services`（main_loop.rs:611-700）在 RS_INIT 到达后被调用，含 `sys_safecopyfrom` → `decode_boot_rows` → `apply_boot_rows`（TTY/MEM 行走 `ServiceMap::MapDriver` 分支填 dmap）。
+- **§1.97r 把 mapdriver 加在 RS publish 闭包是错的**（对 boot 镜像无效）。
+
+### 真根因探针
+
+在 `runcom.rs` 临时加 `sys_diagctl_write` 打印 `set_controlling_tty` 返回值：
+- 结果：**ctty=errno6 (ENXIO) × 14 次重复**。
+- 含义：`open("/dev/console", O_RDWR)` 本身返回 ENXIO——VFS char open 路径中 `get_by_major(dmap_table, 4).and_then(|row| row.driver)` 返回 None。
+- 非 TIOCSCTTY 阻断，而是 **dmap[4].driver 运行时仍为 None**（尽管 `map_boot_services` 没有 panic）。
+- 探针已按纪律 git checkout 回滚。
+
+### VFS TIOCSCTTY 本地拦截（逻辑修复保留）
+
+对 C `cdev_io`(cdev.c:296-303)：VFS 对 TTY_MAJOR(4)/PTY_MAJOR(9) 的 TIOCSCTTY 做 `fp->fp_tty = dev` 本地设置。
+Rust TTY 驱动 `CharDriver::ioctl` 默认返回 ENOTTY——不处理 TIOCSCTTY。
+
+修复：
+- `device_map.rs`：新增 `TTY_MAJOR=4`、`PTY_MAJOR=9` 常量。
+- `syscalls.rs` Ioctl char 臂：拦截 TIOCSCTTY for TTY/PTY majors → 本地设 `fp.tty = vnode_sdev` → 返回 OK。
+
+此修复保证当 open 腿修好后，`set_controlling_tty` 的 ioctl 步骤不会因 ENOTTY 失败。
+
+### 下轮方向（r9fix-next）
+
+**真阻断 = `map_boot_services` 未实际将 TTY 填入 dmap[4].driver**。
+关键嫌疑：RS step0（boot.rs:973-974）在 `RProcTable::new()`（L962）之后、step1 `sync_pub_wire()`（L1047）之前创建 grant：
+```rust
+sys.grant_read(ANY, wire.as_ptr(), wire.len())
+```
+如果 `sync_pub_wire()` 或中间任何步骤导致 Vec realloc（push/extend），则 grant 指针指向已释放旧地址 → VFS safecopyfrom 读到垃圾/全零 → decode 出 dev_nr=0 → TTY 行被跳过 → dmap[4] 保持 None。
+
+排查步骤：
+1. 在 VFS `map_boot_services` 入口加 diagctl 打印 safecopyfrom 返回字节数 + 第一行 decoded dev_nr。
+2. 在 RS `step0_prepare` 打印 grant 创建后 `wire.as_ptr()`；在 `sync_pub_wire` 后打印 `pub_wire.as_ptr()`；对比是否相等。
+3. 若指针不等→修 grant 创建时机为 sync 之后；若相等→继续排查 decode 逻辑/字段布局对齐。
+
+### 三件套
+
+- mock：VFS 537 passed + kernel 817 + RS 351 + arch 243 + rt 59 = 2007 passed, 0 fail
+- rustfmt：零新增漂移
+- clippy：0 新告警
+- 真机：release 镜像 bn98=262709 行，panic=0，达 sh exec，rc marker 仍 0（ENXIO 未消）
+
+**rc marker 三条终目标仍未达；frontier 翻案精确定位=dmap[4] 运行时未填（grant Vec 指针时效性嫌疑）；goal 保持 active。**
 

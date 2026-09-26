@@ -2428,6 +2428,21 @@ pub fn dispatch_syscall(state: &mut VfsState, call: VfsCallNum) -> SyscallResult
                     // `minor = ((dev & 0xfff00000) >> 12) | (dev & 0xff)`。
                     let major = ((vnode_sdev & 0x000fff00) >> 8) as u32;
                     let minor = (((vnode_sdev & 0xfff0_0000) >> 12) | (vnode_sdev & 0xff)) as u32;
+                    // C `cdev_io` (cdev.c:296-303): VFS handles TIOCSCTTY
+                    // locally for TTY/PTY majors — sets fp->fp_tty and
+                    // (C also forwards, but our TTY driver returns ENOTTY
+                    // on unhandled ioctls; the semantic effect — recording
+                    // the controlling terminal — is the only thing INIT
+                    // needs from this call, so short-circuit with OK).
+                    if req == minix_sys::tty::TIOCSCTTY
+                        && (major == crate::device_map::TTY_MAJOR
+                            || major == crate::device_map::PTY_MAJOR)
+                    {
+                        if let Some(fp) = state.fproc_table.get_mut(fp_slot) {
+                            fp.tty = vnode_sdev;
+                        }
+                        return SyscallResult::Ok(minix_types::OK);
+                    }
                     let drv_e = match crate::device_map::get_by_major(&state.dmap_table, major)
                         .and_then(|row| row.driver)
                     {
