@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝§1.102 下游死锁精确定位：sendrec 回复投递腿**（接 §1.101 commit `0018efa10`）：重建带 boot-OOM 修复的镜像、单核 fresh vars 稳定复现（exec=11/oom=0/panic=0/init-state Runcom×1/**marker=0**）。在 `lib.rs::idle()` 加一次性全占用进程等待图探针（n=1500/4000 双快照，逐进程 nr/ep/flags/sendto/getfrom；非缺页 handler、有界、纯取证，**取完已 `git checkout` 回滚、工作树净**）。两次快照完全相同⇒稳态死锁。**定位**：INIT(11) `fl=RECEIVING getfrom=0x0(PM)` send 半已完成、停 receive 半等 PM 回复；子进程 sh/echo(12, ep=0x800c) `getfrom=0x1(VFS)` 等 VFS 回复；而全体 boot 服务器（含 PM/VFS）已回 `getfrom=0x7c00(ANY)` 主循环 idle、`elock=0`（非死锁误拒）、`is_willing_to_receive` 对特指 getfrom 成立⇒**卡点收敛为 sendrec 回复腿：PM→INIT、VFS→child 两条 REPLY 未唤醒停在接收半的请求者**（非请求未投、非死锁误判）。**下轮 §1.103**＝在 reply syscall 路径加一次性窄探针区分「reply 未发 vs 发了未唤醒」二选一钉死（前者→查 init sendrec(PM) 是哪个内核调用/PM 是否该回；后者→Path A 交付 wakeup 记账 `record_wake_target`/`set_ipc_return_code`/`REPLY_PEND` 清理腿）。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.100 去噪清障(误判栈缺页死锁)→§1.101 纠正判读+真根因 boot-OOM(eager 4MB×12)修复,boot 7→11 exec 稳定(commit `0018efa10`)→**§1.102 定位下游=sendrec 回复腿(INIT↔PM/sh↔VFS,elock=0)**。
+> **⚠ 最新前沿＝§1.103 推翻 §1.102「回复未投递」假设、精确锁定 child 卡在 VFS `stat()`**（接 §1.102 commit `78b36d2a7`）：三张一次性窄作用域探针（`ipc.rs::send()` 入口分腿 + Path A 出口 `FILTER`/`DELIVERED` 判决 + `lib.rs::idle()` 终端等待图含 caller_q 与 `p_sendmsg.m_type`；用后全 `git checkout` 回滚、工作树净）。**结论一**：`FILTER`=0、`DELIVERED` 全成功——child(0x800c) 从 PM/VFS 实收 reply 且 Path A 直投唤醒，**§1.102「VFS→child reply 未投递」被推翻**，排除整类内核 IPC 投递/过滤/唤醒 bug。**结论二**（两次 idle 快照相同=稳态）：child(12) `rts=RECEIVING sto=1(VFS) gf=1(VFS)`、**`p_sendmsg.m_type=0x115=VFS_BASE(0x100)+21=VfsCallNum::Stat`**——**child 停在 `sendrec(VFS)` 接收半等自己发出的 `stat()` 的回复**；INIT(11) `gf=PM m_type=3` 等子进程退出（正常下游后果）；全体 server+MFS(10)+PFS(9) `RECEIVING` idle、**caller_q 全 −1（无排队未 drain）**。（纠正一处误读：`sa-call` 探针 `pid=` 实为 caller priv_id、`fl=0x12` 是 capability 位非 RTS，PFS-STOP 假设作废。）**下轮 §1.104**＝child 的 `stat()` 经 VFS `syscalls.rs:991-1100`（`SysPathFetcher` 取路径→`LookupWalk::begin`→`send_lookup_for_slot` 向 `fs_e`（=root/work dir 的 fs）发首条 `REQ_LOOKUP`→Suspend），追 VFS↔MFS 的 REQ_LOOKUP 腿二选一：①`fs_e` 不是/未服务 MFS（查 boot 期 root 挂载 `root_dir_of` 的 fs/dev 是否落 MFS，对位 C `mountroot`）；②`fs_e` 是 MFS 但 MFS 收 lookup 不回复（查 `send_lookup_for_slot` sendrec 投达 + MFS lookup handler 回复腿）。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.101 boot-OOM 修复(commit `0018efa10`)→§1.102 定位下游=sendrec 回复腿(纯文档 commit `78b36d2a7`)→**§1.103 推翻回复未投递、锁定 child 卡 VFS stat()、指向 VFS↔MFS REQ_LOOKUP 腿**。
+>
+> **（历史·§1.102 摘要，详文见文末）⚠ 下游死锁精确定位：sendrec 回复投递腿**（接 §1.101 commit `0018efa10`）：重建带 boot-OOM 修复的镜像、单核 fresh vars 稳定复现（exec=11/oom=0/panic=0/init-state Runcom×1/**marker=0**）。在 `lib.rs::idle()` 加一次性全占用进程等待图探针（n=1500/4000 双快照，逐进程 nr/ep/flags/sendto/getfrom；非缺页 handler、有界、纯取证，**取完已 `git checkout` 回滚、工作树净**）。两次快照完全相同⇒稳态死锁。**定位**：INIT(11) `fl=RECEIVING getfrom=0x0(PM)` send 半已完成、停 receive 半等 PM 回复；子进程 sh/echo(12, ep=0x800c) `getfrom=0x1(VFS)` 等 VFS 回复；而全体 boot 服务器（含 PM/VFS）已回 `getfrom=0x7c00(ANY)` 主循环 idle、`elock=0`（非死锁误拒）、`is_willing_to_receive` 对特指 getfrom 成立⇒**卡点收敛为 sendrec 回复腿：PM→INIT、VFS→child 两条 REPLY 未唤醒停在接收半的请求者**（非请求未投、非死锁误判）。**下轮 §1.103**＝在 reply syscall 路径加一次性窄探针区分「reply 未发 vs 发了未唤醒」二选一钉死（前者→查 init sendrec(PM) 是哪个内核调用/PM 是否该回；后者→Path A 交付 wakeup 记账 `record_wake_target`/`set_ipc_return_code`/`REPLY_PEND` 清理腿）。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.100 去噪清障(误判栈缺页死锁)→§1.101 纠正判读+真根因 boot-OOM(eager 4MB×12)修复,boot 7→11 exec 稳定(commit `0018efa10`)→**§1.102 定位下游=sendrec 回复腿(INIT↔PM/sh↔VFS,elock=0)**。
 >
 > **（历史·§1.101 摘要，详文见文末）boot-OOM 根因修复（eager 物化 4MB heap/BSS 预留段 × 12 撑爆帧池，commit `0018efa10`）**：接手时对 §1.100「全局栈缺页死锁」判读做取证复核，发现两处**判读错误**并锁定真根因。(1) §1.100 idle-dump 快照里 `fl=0x8` 被误读为 PAGEFAULT——实际 **PAGEFAULT=0x400、0x8=RECEIVING**（`proc.rs:132/139`），全体 server 只是正常阻塞在 `receive(ANY)`；(2) 干净 HEAD（ad3595a92）连跑两次（含 fresh fw_vars 重置）**确定性在第 8 台 mib 报 `exec_bootproc: mib failed: boot segment page allocation failed` panic、exec 只到 7**——§1.100 的「无 OOM / 11 exec」签名是 memmap 侥幸宽裕那次的产物。**统一真根因**：`os/servers/vm/src/vm_server.rs::exec_bootproc` 的段 eager 循环按 **memsz**（`for i in 0..pages`）逐页 `alloc_pfn`，但每台 boot server 末段是 heap+BSS 预留（readelf 实锤 ds：`FileSiz=0x10098≈64KB` 而 `MemSiz=0x410a80≈4.07MB`），12 台 × ~1041 页 ≈ 48MB，几乎吃满 VM 从内核拿到的 **14319 帧池**（pool probe 实锤 total_pages=14319）——memmap 紧则第 8 台 OOM、memmap 宽则挤到 11-12 台但把 §1.100 看到的下游 stall 一并埋下。**修复（对位 C libexec：exec_image 只对文件页 physcopy、其余 demand-fault）**：新增 `file_pages`（按 filesz 计页），eager 上界 `pages→file_pages`，region 仍覆盖整段 memsz 使页对齐 .bss/堆尾走按需缺页。**CodeReview（MUST-FIX 采纳）**：MUST-1(b) 首/末页页内 .bss 空洞（`[page_va,lo)`+`[hi,page_va+PS)`，末文件页已 `map_page` 置 present 永不再缺页）用 `write_bytes` 显式清零（对位 C `clearmem` 头/尾，中间页 head/tail 长 0 为 no-op）；SHOULD-2 `file_pages.min(pages)` 防 `filesz>memsz` 畸形段 `map_page` 裸下标 OOB panic；MUST-1(a) 页对齐整页尾的零填依赖 ANON demand-fault 给零页——boot 期无页缓存可回收故行为不变，把 demand-fault 显式接 `PAF_CLEAR`（对位 C `VR_UNINITIALIZED`，仓库 `to_alloc_flags()` 现为 dead code）列为后续加固。**三件套全绿**：mock **817/0fail** 不减 + vm **531/0fail**·rustfmt 漂移 **119=基线119** 零新增·镜像重建 + **两次真机里程碑语义签名一致 `df35843c`（exec=11·oom=0·panic=0·init-state Runcom×1）**、所有 TEMP 探针（lib idle-dump / ipc reply-drain / vm pool / vm seg）已回滚、工作树仅剩明确文件改动。**新真阻断（marker 仍 0）**：boot 稳定过第 8 台后仍停在 init fork→sh/echo 未落到 console。恢复 §1.100 遗留的窄作用域取证（reply 未发 vs 发了未投）作下轮方向：proc12↔VFS、INIT↔PM 的 sendrec `fl=RECEIVING` 稳态互等 + `vg st ... wto=0xa`（VFS 等 MFS）+ 反复 `sa-call caller=4` idle 量子钟。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.99 真根因(mfs device=0)修复→§1.100 去噪清障(误判栈缺页死锁)→**§1.101 纠正判读+真根因 boot-OOM(eager 4MB×12)修复,boot 7→11 exec 稳定**。**
 >
@@ -4384,3 +4386,38 @@ Minix3 的库加载器（`libexec`）在做同一件事时只拷贝**文件里�
 注意：ground truth 对位 C `mini_sendrec`（proc.c:1084-1093 send 半取走后 `goto receive` 重阻塞）与 REPLY 经 Path A 直投的唤醒点。历史链：…→§1.101 纠正误判+真根因 boot-OOM 修复(commit `0018efa10`)→**§1.102 定位下游=sendrec 回复腿(INIT↔PM/sh↔VFS,elock=0)**。
 
 **rc 标记三条终目标仍未达（本单元把下游阻断从「模糊互等」精确定位到「sendrec 回复投递腿 + 二选一待钉」，探针已回滚、工作树净，取得实质进展、非阻塞）；goal 保持 active。**
+
+---
+
+## §1.103 推翻 §1.102「回复未投递」假设 + 精确锁定 child 卡在 VFS `stat()`（纯取证轮，无功能代码变更）（2026-09-26）
+
+### 取证手段（三张一次性窄作用域探针，用后全部 `git checkout` 回滚，工作树净）
+
+1. **`ipc.rs::send()` 入口分腿探针**：child 腿（dst≥0x8000 动态用户进程）与 INIT 腿（dst=11）各用独立计数器/预算（避免 INIT 流量遮蔽 child 腿），打印 caller/cep/dst/m_type + caller 的 `REPLY_PEND`（rp=y 表明本次 send 是 sendrec 的回复半）+ 目标 `is_willing_to_receive` + 目标 getfrom/flags。
+2. **`ipc.rs::send()` Path A 出口判决探针**：在 `can_receive` 返回 false（→落 Path B）与 Path A 真投递+唤醒两处分别打印 `FILTER` / `DELIVERED`，钉死 will=y 的回复到底投没投。
+3. **`lib.rs::idle()` 终端等待图探针**（深 idle n=4000/8000 双快照，逐进程 nr/ep/rts/sendto/getfrom + **caller_q 队头** + **`p_sendmsg.m_type`/m_source**）——补上 §1.102 等待图缺的 caller_q 维度与「等待者最后发出的是什么调用」。
+
+### 结论一：回复投递完全正常，§1.102「VFS→child reply 未投递」被推翻
+
+分腿探针证明 **VFS 确实向 child(0x800c) 发出过 send/reply 且 `is_willing_to_receive`=true**；Path A 出口探针显示 **`FILTER` 事件为 0、`DELIVERED` 全部成功**（child 从 PM 收 2 条、从 VFS 收 1 条，INIT 从 PM/VFS/MIB 收多条，均 Path A 直投唤醒）。⇒ §1.102 二选一钉死为**「发了且投递成功」**，**排除** Path A 交付匹配 / IPC 过滤器丢弃 / `record_wake_target` 记账缺失这类内核 IPC bug。内核 IPC 腿是清白的。
+
+### 结论二：终端稳态 = child 卡在发往 VFS 的 `stat()`
+
+两次 idle 快照完全相同（稳态）。关键进程：
+
+- **INIT(11)**：`rts=RECEIVING sto=0(PM) gf=0(PM)`、`p_sendmsg.m_type=3`（发往 PM 的请求，等 PM 回复）。INIT 在 runcom 里等子进程，是 child 卡死的**下游正常后果**。
+- **child(12, ep=0x800c)**：`rts=RECEIVING sto=1(VFS) gf=1(VFS)`、**`p_sendmsg.m_type=0x115`**（发往 VFS 的请求，等 VFS 回复）。`VFS_BASE=0x100=256`（`servers/vfs/src/call_table.rs:16`），`0x115−0x100=21` → **`VfsCallNum::Stat`**（`call_table.rs:50`）。⇒ **child 停在 `sendrec(VFS)` 的接收半，等它自己发出的 `stat()` 的回复**。
+- **全体 server + MFS(10) + PFS(9) 均 `RECEIVING` idle 主循环，caller_q 队头全 = −1（无任何被排队未 drain 的发送者）** ⇒ 不是「请求堆在某服务器队列没被 receive 取走」的 drain bug。
+
+（顺带纠正一处探针误读：committed `nk4a: sa-call` 探针里的 `pid=` 字段是 **caller 的 priv_id**、`fl=0x12` 是 **privilege capability 位**（非 RTS flags），`sys=y` 表示 caller 有 SYS_PROC——SCHED 反复 setalarm 是正常量子钟，非「PFS 被 PROC_STOP 卡住」。此前据此的 PFS-STOP 假设作废。）
+
+### 定位与下一轮方向（§1.104）
+
+child 的 `stat()` 进入 VFS 后（`servers/vfs/src/syscalls.rs:991-1100`）：`SysPathFetcher` 跨空间取路径字符串 → `LookupWalk::begin` → **`send_lookup_for_slot(worker, fp_slot, fs_e, dir_ino, root_ino)` 向文件系统 server（`fs_e`＝`state.root_dir_of`/`work_dir_of(fp_slot).fs`）发出首条 `REQ_LOOKUP` → 返回 `Suspend`**（后续由 `handle_fs_reply` + `WorkerCont::Path` 续接）。既然 child 停在 VFS 且 VFS 已回 idle 主循环，则 VFS 已把该 lookup 作业挂起、等文件系统回复；而 MFS 也 idle 且无排队。**⇒ 下一轮（§1.104）追 VFS↔MFS 的 `REQ_LOOKUP` 腿，二选一**：
+- VFS 发的 `REQ_LOOKUP` 目标 `fs_e` **不是 MFS（或指向未被服务的 fs）**：查 boot 期 root/`/` 挂载时 `root_dir_of` 的 `fs`/`dev` 是否正确落到 MFS（对位 C 早期 `mountroot`）；
+- `fs_e` 确是 MFS 但 MFS **收了 lookup 却没回复 / 根本没收到**：查 `send_lookup_for_slot` 的 sendrec 是否真投达 MFS、MFS lookup handler 是否走到回复。
+
+需 VFS 侧 diagctl/串口探针（用户服务器，比内核探针重一档）。ground truth 对位 C `stadir.c:140-165 do_stat` + `path.c` 遍历的每步 `REQ_LOOKUP`。历史链：…→§1.101 boot-OOM 修复(commit `0018efa10`)→§1.102 定位下游=sendrec 回复腿(纯文档 commit `78b36d2a7`)→**§1.103 推翻「回复未投递」、精确锁定 child 卡 VFS `stat()`、指向 VFS↔MFS REQ_LOOKUP 腿**。
+
+**rc 标记三条终目标仍未达（本单元以确凿证据排除内核 IPC 投递/过滤/唤醒整类 bug、把真阻断从「sendrec 回复腿模糊互等」收敛到「child 的 stat() 卡在 VFS↔MFS 的 REQ_LOOKUP 腿」这一具体可查方向，三张探针全回滚、工作树净，取得实质进展、非阻塞）；goal 保持 active。**
+
