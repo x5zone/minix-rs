@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝r9 scoping（§1.97）：rc 命令链下游阻断根因确诊——INIT 的 `set_controlling_tty("/dev/console")` 失败(§r3 已发现“常规 fd→console→串口不通”)→子进程 fd 0/1/2 关闭→echo `write(1,...)` 返回 EBADF→exit(1)→sh exit(1)→INIT runcom 见非零→SingleUser→循环17次。** 修向＝接线 TTY 驱动(`os/drivers/tty/tty/`已存在、`minix-driver-tty`已在 BOOT_MODULES 构建清单)到 VFS 字符设备路由，使 `open("/dev/console")` + `write(fd,...)` 能落串口。历史链：…→§1.95 r7b→§1.96 r8→§1.97 r9 scoping。三件套绿(§1.96)。rc marker 三条终目标仍未达，goal 保持 active。**
+> **⚠ 最新前沿＝r9-fix attempt1 已落码但效果未出（§1.97r commit 5870e138b）：RS publish 闭包加了 VFS_MAPDRIVER sendrec，但真机 rc marker 仍未出——根因＝TTY 是 boot image(内核直 exec、在 `BOOT_IMAGE_PRIV_TABLE`)、不经 RS `start_service`→publish 路径。mapdriver 需加在 RS 初始化 adopt boot images 的循环里（对位 C `preserve_boot_mods`+`boot_image_dev_table`）。`BOOT_IMAGE_DEV_TABLE`(table.rs:195) 已定义 TTY major=4 映射但运行时零消费。下轮配方＝在 RS init 里遍历 BOOT_IMAGE_DEV_TABLE 对 dev_nr>0 的条目发 VFS_MAPDRIVER。** 历史链：…→§1.96 r8→§1.97 r9 scoping→§1.97r r9-fix attempt1(publish路径错、待改boot init路径)。rc marker 三条终目标仍未达，goal 保持 active。**
 >
 > **（历史·§1.95）⚠ r7b 闭环：premature-OOM + VM 栈 runway 两大前置全清——`VM_STACK_SIZE` 64KiB→256KiB + `MAX_BIG_BLOCKS`=GLOBAL_POOL_PAGES=1024 + §1.60 assert 退役；真机首次 OOM-RT=0·panic=0·46931行达Runcom+exec sh。新前沿 r8=wrong user pointer（§1.96 已修）。**
 >
