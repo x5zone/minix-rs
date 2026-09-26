@@ -3853,4 +3853,15 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 
 **§1.89 r6-scoping（从 bn86 无探针日志预定位，未新插桩）**：echo 子＝slot d（`0x800d`）已走完 `birth enter`→`kdst copy`→`setaddr nr=0xd flags=0x8008 runnable=no queued=no`，并有 `exec rs ok`；紧接 `pf#0xd rip=0x22a250 err=0x14 cr2=0x22a250 walk=NP`（err=0x14＝用户态取指＋present 位相关、且 `rip==cr2`＝取指目标页不在）、`rs-anom rst n=0xd`。⇒ **新映像的 text 页未被正确 populate/映射到可执行，exec 后首条取指即 NP**——r6 探针落点＝VM newimage 建立子页表时对 echo 正文段的映射腿（与 §1.89 SHOULD#1 无关：那是 shm；此为 exec 新建地址空间）。入口 `0x206b20`（echo _start）从不出现＝进程在跳向入口前就已因取指缺页被 kill/重启。下轮先核 `pf err=0x14` 的 present/protection 位语义再定探针。
 
+---
+
+### 1.90 【r6 取证·探针实锤】rc marker 真阻断精确定位＝exec /bin/echo **成功**、但 echo 入口 text 页**末级 PTE 未映射**（lvl1=0x0，中间级 present）→ 首条取指 NP → 进程未跑一条指令即死（单核 diagctl 双探针 bn88·无改码·工作树净）
+
+**取证手段**：在 sh `child_exec` 候选循环放 **pre-exec + post-exec 两枚 diagctl 探针**（pre 恒打「将 exec cand」；post 仅当 `exec_candidate` 返回＝exec 失败时才打 errno）。单核 `-smp 1` bn88 结果：
+- `nk4a: r6pre cand=[/bin/echo]` 打印 1 次；`nk4a: r6exec ...` **零打印**。⇒ **exec_candidate 从不返回＝exec /bin/echo 成功**（映像已替换，exec 后的用户态代码不再执行）。这**推翻 §1.81 B44「VFS open_exec 侧失败致 exec 返回错误」假设**——exec 没失败，是成功后新映像不可执行。
+- 紧随 `pf#0xd rip=0x22a250 err=0x14 cr2=0x22a250 walk=NP`，`pf-save` 逐层页表：`lvl4=0x3098027 lvl3=0x3097027 lvl2=0x19983027 lvl1=0x0` ⇒ **中间三级 PML4E/PDPT/PDE 全 present（标志 …027），唯独末级 PTE=0x0 未映射**。`rax=0x22a250`（入口）、`rcx=0x21ec00`、`rdi=0x22c690` 均落 0x22xxxx＝echo 镜像 text 区。
+- **echo 真实入口＝`0x22a250`（非早先误记的 `0x206b20`）**；该入口页从未被映为末级 present ⇒ 进程 iret 到入口取第一条指即 #PF(P=0)、转发 VM 未补上该叶 ⇒ SIGSEGV/重启，`0x206b20`/echo 任何代码永不执行。
+
+**根因候选（下单元 r6 修复前需读码裁决）**：exec 的 text 段映射走哪条腿——(a) PM `do_exec` 建映射时漏映 echo 正文段末级页；或 (b) 设计为 mmap 文件段＋按需缺页，但 VM `handle_pagefault` 对 exec 后入口 text 的 NP 取指腿未把文件页 fault-in（region 缺可 fault-in 的文件后备）。已排除：`VM_EXEC_NEWMEM`（`dispatcher.rs:456-465`＝NotImplemented/ENOSYS，注释称对位 C main.c 未注册）——说明本仓 exec 不走它，须找 exec 实际经哪条 VM 调用建子地址空间。**下单元＝读 PM `do_exec`→VM 调用链坐实映射腿，再定 (a)/(b) 修复；补 mock 回归测（exec 后可执行入口页应 present）**。探针已按纪律 git checkout 回滚，工作树净。**rc marker 三条终目标仍未达，goal 保持 active。**
+
 
