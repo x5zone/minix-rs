@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝B48 fork 子进程用户页拷贝单字节确定性腐蚀＝rc marker 真阻断（§1.86 单核 diagctl 探针实锤·纯取证无改码）。** 单核 `-smp 1` 已解耦 B27（§1.85：SMP-only 早期竞态、单核 0 panic/115k 行），命令面暴露真根因：init `Runcom↔SingleUser` 循环、`/bin/sh` 入口 `0x20ef60` 反复进、`/bin/echo` 入口 `0x206b20` 零出现（kernel 硬证 echo 从未 exec）。逐层排除（镜像 `/bin/echo` 真 ELF 已播种 ✅、`/etc/rc` 末行 `echo` 干净 ASCII ✅、shell lexer/expand 对 "echo" host 单测正确 ✅）后，diagctl 通道探针（bn80）坐实：`parent-cmd-w0 addr=221040 hex=6563686f`（父"echo"对）vs `post-fork-w0 addr=221040 hex=6500686f`（子同 VA byte[1] 0x63→0x00），每轮完全一致。⇒ **fork 给用户堆页拷贝时单字节被写成 0x00（非用户态逻辑、唯内核 fork/birth 拷贝路径可解释）**，sh 据腐蚀程序名搜 PATH 全 ENOENT→子 exit127→静默 SingleUser→循环。**下单元＝B48 取证**：定位 fork 子页拷贝腿（`vm.rs cross_space_copy`/`write_page_table_mappings`/`do_newimage`），源父页 vs 目标子页逐 8 字节 diff（syscall 上下文可安全读、严禁缺页 handler 内 walk），单核手敲取净信号，补多页字节完整性 mock 回归测。旁证：`supSk base=0x221000` 区、腐蚀总在 index-1。次级待查：常规用户 fd→console→串口路径疑不通（marker/`sh:` 零输出经 dup2 仍不达，唯 diagctl 落串口）。**（历史·B27 第二腿 vector-14 #PF panic＝SMP-only，B45 §1.83 已修 bit47 野写、B46 §1.84 已修 stacktrace 二次故障、单核 §1.85 已解耦，非命令面阻断。）**
+> **⚠ 最新前沿＝B48 fork 子堆页绑到内容陈旧的异物理帧＝rc marker 真阻断（§1.87 单核 diagctl 三点探针决定性翻案·精化 §1.86·纯取证无改码）。** 同一 command[0] VA（supSk base=0x220000 堆页·ptr 父子相同）父 pre-fork/parent-post 均读到 `6563686f`（"echo"）17/17、子读到 `65353335`（"e535"）17/17，且**父 fork 返回后仍干净** ⇒ 父子把同 VA 映射到**不同物理帧**（排除第三方野写共享帧、排除 memcpy 单字节腐蚀）；子帧持非零陈旧残留 ⇒ fork 给子堆页绑了未按父正确 populate 的复用帧（B22/B38 家族）。**下单元＝r4d 帧绑定取证**：VM `write_page_table_mappings`（`vmproc_handle.rs:529`）对堆页 region 打印父 slot pfn vs 子 slot pfn + 子 `pt.map` 后 query 解出 paddr + DM 读帧字节，判「子 slot pfn≠父（`fork_region` 未生效）」vs「同 pfn 但读回异（pt.map/回收复用 bug）」。（§1.86 旧「单字节 0x63→0x00」刻画已被 §1.87 证伪修正：实为整帧内容≠父、非单字节 0x00。）以下 §1.86 原文保留为历史。
+>
+> **（历史·§1.86·其「单字节腐蚀」刻画已被 §1.87 修正）** B48 fork 子进程用户页拷贝单字节确定性腐蚀＝rc marker 真阻断（§1.86 单核 diagctl 探针实锤·纯取证无改码）。 单核 `-smp 1` 已解耦 B27（§1.85：SMP-only 早期竞态、单核 0 panic/115k 行），命令面暴露真根因：init `Runcom↔SingleUser` 循环、`/bin/sh` 入口 `0x20ef60` 反复进、`/bin/echo` 入口 `0x206b20` 零出现（kernel 硬证 echo 从未 exec）。逐层排除（镜像 `/bin/echo` 真 ELF 已播种 ✅、`/etc/rc` 末行 `echo` 干净 ASCII ✅、shell lexer/expand 对 "echo" host 单测正确 ✅）后，diagctl 通道探针（bn80）坐实：`parent-cmd-w0 addr=221040 hex=6563686f`（父"echo"对）vs `post-fork-w0 addr=221040 hex=6500686f`（子同 VA byte[1] 0x63→0x00），每轮完全一致。⇒ **fork 给用户堆页拷贝时单字节被写成 0x00（非用户态逻辑、唯内核 fork/birth 拷贝路径可解释）**，sh 据腐蚀程序名搜 PATH 全 ENOENT→子 exit127→静默 SingleUser→循环。**下单元＝B48 取证**：定位 fork 子页拷贝腿（`vm.rs cross_space_copy`/`write_page_table_mappings`/`do_newimage`），源父页 vs 目标子页逐 8 字节 diff（syscall 上下文可安全读、严禁缺页 handler 内 walk），单核手敲取净信号，补多页字节完整性 mock 回归测。旁证：`supSk base=0x221000` 区、腐蚀总在 index-1。次级待查：常规用户 fd→console→串口路径疑不通（marker/`sh:` 零输出经 dup2 仍不达，唯 diagctl 落串口）。**（历史·B27 第二腿 vector-14 #PF panic＝SMP-only，B45 §1.83 已修 bit47 野写、B46 §1.84 已修 stacktrace 二次故障、单核 §1.85 已解耦，非命令面阻断。）**
 >
 > **⚠（历史·B45 已闭环 §1.83）B27 第二腿 vector-14 #PF panic。** `dispatch_diagctl`（syscall.rs:3101-3132）dst 从手算 image-segment identity 的 `AddressRef::Physical`（内核栈局部 `diagbuf` 减 `kern_virt_base` 下溢得 bit47 伪 PA → 每次 sys_diagctl 野写污染内存）改为 `AddressRef::Process{caller_endpt, stack_va}`（对齐 F10c 三处先例逐行结构一致，走 caller CR3 真实页表解正确 PA）。真机双跑 bn72/bn73 **bit47 corrupt `kdst copy pa=0x00008000...` 归零**、fmt/clippy 零新增、镜像编译通过。**下单元＝vector-14 #PF panic**（bit47 消失后两轮仍复现＝与 B45 正交的 B27 主腿，§1.49 签名 `cr2=0xffff807f...` DM 窗口读缺页）：addr2line 定 fault rip 归属（减加载基址）、判 DM 窗口未映射 vs 栈页未 populate vs PF handler 自递归，恢复无 panic 真机基线后方谈 rc marker。次级登记：`diag-efault caller=8`（diagctl 修复后诚实报 EFAULT，疑 src 侧，非关键路径）。**旧前沿 B44（§1.80/§1.81）与 B45 取证（§1.82）均已闭环为历史。**
 >
@@ -3784,5 +3786,27 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 - sh 探针复现法（临时）：`os/commands/bin/shell/src/bin/sh.rs` 加 `nkmark`(diagctl write)/`nkhex`(打 hex+ptr)，`main`、`eval_line` expanded[0]、`run_pipeline` command[0]、`child_exec` stage[0] 四处对照；task-close 前 `git checkout` 回滚。
 
 **旁证登记**：`supSk=S idx=.. base=0x221000`（既有内核探针）显示这些 String 挤在 0x221000 紧接其上的小窗，腐蚀总在 (base+0x41)/(base+0x31) 一类 index-1 位——提示拷贝粒度/偏移与该区布局相关，供 B48 参考。**三件套**：本单元纯取证无改码（sh.rs 已回滚＝净）；镜像重建仅编过探针版验证通道可用（当前 HEAD 镜像已复原，下次重建自然干净）。**rc marker 仍未达；frontier 由「B27 第二腿 vector-14（SMP-only，单核已解耦）」推进为「B48 fork 用户页拷贝单字节腐蚀（命令面真阻断）」。**
+
+### 1.87 【决定性翻案·精化 B48】子页非「单字节拷成 0x00」而是「整帧内容 ≠ 父帧」＝fork 子页绑到陈旧异物理帧（单核 diagctl 三点探针 bn82·无改码·工作树净）
+
+承 §1.86 下单元（r4）。本轮先走 VM COW 腿、再走 sh 三点腿，把机制从「拷贝字节腐蚀」收紧到「子页帧绑定错误」。**§1.86 的「单字节 0x63→0x00」刻画被本轮证伪并修正。**
+
+**取证过程**：
+1. **VM `cow_resolve_core` 探针（第一次尝试·错腿已 `git checkout` 回滚）**：在 COW 私有拷贝点 dump 源帧/目标帧字节，硬编目标页 0x221000。单核 bn81 仅命中 1 次 `va=0x221025 src=0000000000000000 dst=0000000000000000`（无关零页 COW）。**方法学坑**：0x221000 是 §1.86 带 sh 探针旧二进制测出的 VA；回滚 sh 探针后 sh 堆布局移位，腐蚀串不在此页——且 COW-share 模型下子读共享帧根本不触发 `cow_resolve_core`，此腿探不到。遂弃。
+2. **内核 `dispatch_fork`（`syscall_process.rs:142`）读码**：只做 `child = KProcess::fork_from(parent)`（C `*rpc=*rpp` 寄存器结构拷贝）+ 绑 endpoint/priv/VMINHIBIT，无任何物理用户页拷贝——确认 fork 是 VM 侧 COW-share，用户页落哪块帧由 VM `do_fork`/`write_page_table_mappings` 决定。
+3. **sh 三点 diagctl 探针（bn82·决定性）**：回滚 VM 探针后，在 `sh.rs` 的 `run_pipeline` `match fork()` 三点（pre-fork / Ok(pid) parent-post / Ok(0) child 首条语句）复读同一 command[0]，打 as_ptr + 前 8 字节 hex。单核 `-smp 1` 跑，17 个循环周期完全一致：
+   - `pre-fork    ptr=220028 hex=6563686f`（父·echo 正确）
+   - `parent-post ptr=220028 hex=6563686f`（父 fork 返回后仍干净）
+   - `child       ptr=220028 hex=65353335`（子·同 VA、字节 = e535，非 §1.86 的 e\x00ho）
+   - String 结构完好（as_ptr 父子相同 0x220028/0x220038，落在 supSk base=0x220000 堆页），只有数据字节不同。
+
+**结论（ground truth·修正 §1.86）**：同一 VA 上父读 echo、子读 e535，且父在 fork 返回后仍保持干净 ⇒ 父子把该 VA 映射到不同物理帧（若共享同一帧，任一方复读必同值）。这彻底排除「第三方野写共享帧」家族（那会连父一起腐）；也推翻 §1.86「子帧该字节被拷成 0x00」——子帧内容是非零的陈旧数据 e535（byte[0]=e 恰与父同，byte[1..3] 为残留），像一块分配后未按父页正确 populate/拷贝、持旧残留的复用帧。⇒ **B48 精化＝fork 给子进程的堆页绑到了一块内容 ≠ 父帧的物理帧**（整帧错绑/漏拷），属 B22（fork 子 set_addrspace 绑 phys_root）/B38（子地址空间 PTE 落地）家族的正主，而非 memcpy 字节腐蚀。子探针是 Ok(0) 臂首条语句（在任何写/dup2 syscall 前），腐坏在 fork 返回时已烘焙进子页表＝非 fork 后的竞态写。
+
+**下单元＝B48 帧绑定取证（frontier r4d）**：
+- 在 VM `do_fork`→`fork_regions`→`write_page_table_mappings`（`vmproc_handle.rs:529`）腿，对堆区页（region vaddr base 命中 0x220000）打印：父 region 该 slot 的 pfn vs 子 region 该 slot 的 pfn，以及子 pt.map 后 query(vaddr) 解出的 paddr，并经 DM vm_phys_to_virt 读该帧偏移处 8 字节。若子 slot pfn ≠ 父 pfn ⇒ fork_region 的 dst.physblocks[i]=*slot（fork.rs:140）在此 shape 未生效/被覆盖；若子 pfn==父 pfn 但读回≠父 ⇒ pt.map 把子 VA 落到了不同物理页（页表写入腿 bug）或帧在 fork 与子读之间被 VM 回收复用（refcount 缺口，B22 家族）。
+- 探针纪律照旧：`#[cfg(not(test))]`、nk4a- 前缀、AtomicUsize cap；write_page_table_mappings 在 syscall 上下文（非缺页 handler）可安全 DM 读；git checkout 回滚、工作树净。
+- 修好后单核 `-smp 1` 验 parent-post==child==echo → echo exec 成功 → rc marker 应出。
+
+**旁证·待清理登记**：cow_exec_pf.rs 仍留有历史「NK4-C 第 20/32 轮取证探针（task1-close 裁决删除）」（handle_pagefault ep2 缺页 dump、sync_slot_pte pte-wb 写回读），均 `#[cfg(not(test))]` 在 target build 活跃、耗 AtomicUsize 额度且上串口噪声。属已 commit 的历史遗留（非本轮所加），另立清理单元，勿与 B48 混改。**三件套**：本单元纯取证（VM/sh 探针均 git checkout 回滚＝工作树净）。**rc marker 仍未达；frontier 精化：B48 从「fork 用户页单字节拷贝腐蚀」翻案为「fork 子堆页绑到内容陈旧的异物理帧（整帧错绑/漏拷，B22/B38 家族）」。**
 
 
