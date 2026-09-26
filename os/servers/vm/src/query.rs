@@ -458,7 +458,12 @@ pub(crate) fn handle_info(
                     addr: VirBytes(vr.vaddr.0 + first.offset().0),
                     length: VirBytes(used_len),
                     // C: vri_prot = PROT_READ | (VR_WRITABLE ? PROT_WRITE : 0)
-                    // (region.c:1476-1478). PROT_EXEC is never set.
+                    // (region.c:1493-1498). PROT_EXEC is never set — faithful
+                    // by design. B41 (§1.75) 新增的 `VrFlags::EXECUTABLE` 是
+                    // x86-64 NXE 下的**内部页表建模位**（供 sync_slot_pte /
+                    // write_page_table_mappings 组 PTE），**有意不外泄到 vri_prot**：
+                    // i386 C 从不跟踪可执行性，coredump/`ps`/dump_vm 等对外契约
+                    // 保持逐位 C 忠实。勿在此按 EXECUTABLE 补 PROT_EXEC（那会偏离 C）。
                     prot: if vr.flags.contains(VrFlags::WRITABLE) {
                         PROT_READ | PROT_WRITE
                     } else {

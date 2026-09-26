@@ -549,11 +549,18 @@ impl<'a> ActiveProc<'a> {
                     // and mapped never-writable pages (MappedFile) RW.
                     let writable =
                         region.is_page_writable(frames, VirBytes(i as u64 * PAGE_SIZE));
-                    let flags = if writable {
+                    let mut flags = if writable {
                         PageFlags::read_write()
                     } else {
                         PageFlags::read_only()
                     };
+                    // B41 (§1.74/§1.75)：fork eager-PTE 腿与缺页腿
+                    // （`sync_slot_pte`）同缺口——须按 region 承接的 PROT_EXEC
+                    // 置 EXECUTABLE，否则子进程可执行段在本腿落地时丢可执行位
+                    // →取指恒 #PF。与缺页腿保持同一派生规则。
+                    if region.is_executable() {
+                        flags |= PageFlags::EXECUTABLE;
+                    }
 
                     mappings.push((vaddr, paddr, flags));
                 }

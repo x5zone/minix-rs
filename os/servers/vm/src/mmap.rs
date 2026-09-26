@@ -104,6 +104,14 @@ impl ProtFlags {
         if self.contains(Self::WRITE) {
             vr |= VrFlags::WRITABLE;
         }
+        // B41 (§1.74/§1.75)：承接 PROT_EXEC。C 的 VM（i386 无 NX）从不
+        // 消费可执行位；x86-64 NXE（[ARCH] fix27e W^X）下缺页/ fork 腿
+        // 需按此位显式给页表置 EXECUTABLE，否则可执行文本被判 NX 取指
+        // 恒 #PF 活锁。exec 装载每段 PROT_RWX（C 忠实）→ 本位使装载页
+        // 成 RWX（等价 C 无-NX），而 caller 未请求 EXEC 的映射保留 NX。
+        if self.contains(Self::EXEC) {
+            vr |= VrFlags::EXECUTABLE;
+        }
         if flags.contains(MmapFlags::UNINITIALIZED) {
             vr |= VrFlags::UNINITIALIZED;
         }

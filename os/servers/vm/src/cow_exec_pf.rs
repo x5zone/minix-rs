@@ -117,14 +117,23 @@ pub(crate) fn sync_slot_pte(
     let paddr = frames.pfn_to_phys(pfn);
     // C i386 的 P|U 天然可执行（无 NX）；x86-64 NXE 下 EXECUTABLE 必须显式
     // 给出，否则用户 text 首次取指即 #PF(err=0x15)（NK4-A C-3 真机
-    // 2026-09-22：RS 入口页 PTE=NX，walk=0x5，fetch 拒绝）。W^X 方向与
-    // fix27e 身份窗口 [ARCH] 一致：非可写段=RX（text），可写段=RW（NX，
-    // 数据/栈不可注入执行）。
-    let flags = if region.is_page_writable(frames, offset) {
+    // 2026-09-22：RS 入口页 PTE=NX，walk=0x5，fetch 拒绝）。B41（§1.74/
+    // §1.75）修正：可执行性不再从“非可写”间接推断（那会把 exec 装载的
+    // PROT_RWX 文本因“可写”误判 NX → 取指恒 #PF 活锁），而是直接取 region
+    // 承接的 PROT_EXEC（`is_executable`）。语义＝“caller 请求 EXEC 才可执
+    // 行”：未请求 EXEC 的映射（如裸 mmap 数据/栈）保持 NX；但 exec 装载腿
+    // （`exec_worker.rs` 每段 + 栈均 PROT_RWX，C 忠实）会产出 RWX，与
+    // i386 C 无-NX 等价，**非严格用户页 W^X**（fix27e [ARCH] 的 W^X 作
+    // 用于内核 identity window，不约束此 C 忠实路径）；若要恢复严格用户
+    // 页 W^X，需专开一单元在 exec_worker 按 ELF p_flags/PT_GNU_STACK 分派 prot。
+    let mut flags = if region.is_page_writable(frames, offset) {
         PageFlags::read_write()
     } else {
-        PageFlags::read_only() | PageFlags::EXECUTABLE
+        PageFlags::read_only()
     };
+    if region.is_executable() {
+        flags |= PageFlags::EXECUTABLE;
+    }
     let result = match pt.query(vaddr) {
         Some((cur_paddr, _)) if cur_paddr == paddr => pt.update_flags(vaddr, flags),
         Some(_) => pt.remap(vaddr, paddr, flags).map(|_| ()),
@@ -703,6 +712,42 @@ mod tests {
         assert_eq!(paddr, frames.pfn_to_phys(pfn));
         assert!(flags.contains(PageFlags::PRESENT));
         assert!(flags.contains(PageFlags::WRITABLE), "private writable page must get a RW PTE");
+    }
+
+    /// B41 (§1.74/§1.75) 回归：exec 装载每段 PROT_RWX（C 忠实，
+    /// `exec_general.c:23-24`），region 需同时携 WRITABLE+EXECUTABLE，
+    /// `sync_slot_pte` 必须据此产出可执行 PTE——否则 PROT_RWX 文本因
+    /// “可写”被旧逻辑判 NX → 取指恒 #PF 活锁（真机 0x20ef60 现场）。
+    /// 同时验证未请求 EXEC 的可写区（堆/栈）仍保持 NX，不破坏 W^X。
+    #[test]
+    fn test_sync_slot_pte_honors_executable_region_flag() {
+        let mut frames = make_frames(8);
+        let mut alloc = TestAlloc { next: 0 };
+        let mut pt = <crate::pagetable::PageTable as crate::pagetable::Paging>::new().unwrap();
+
+        // Exec-loaded text: WRITABLE + EXECUTABLE → PTE 必须带 EXECUTABLE。
+        let mut text = VirRegion::new(
+            VirBytes(0x1000),
+            VirBytes(0x4000),
+            VrFlags::WRITABLE | VrFlags::EXECUTABLE,
+        );
+        text.def_memtype = Some(&MEM_TYPE_ANON);
+        let tpfn = alloc.alloc_pfn().unwrap();
+        text.map_page(&mut frames, VirBytes(0x0000), tpfn, &MEM_TYPE_ANON);
+        sync_slot_pte(&text, &frames, VirBytes(0x0000), &mut pt).unwrap();
+        let (_, tflags) = pt.query(VirBytes(0x1000)).expect("text PTE mapped");
+        assert!(tflags.contains(PageFlags::WRITABLE), "RWX text stays writable (C-faithful)");
+        assert!(tflags.contains(PageFlags::EXECUTABLE), "PROT_EXEC region must map executable (B41)");
+
+        // Plain writable data (no EXEC) → 必须保持 NX，不注入可执行。
+        let mut data = VirRegion::new(VirBytes(0x2000), VirBytes(0x4000), VrFlags::WRITABLE);
+        data.def_memtype = Some(&MEM_TYPE_ANON);
+        let dpfn = alloc.alloc_pfn().unwrap();
+        data.map_page(&mut frames, VirBytes(0x0000), dpfn, &MEM_TYPE_ANON);
+        sync_slot_pte(&data, &frames, VirBytes(0x0000), &mut pt).unwrap();
+        let (_, dflags) = pt.query(VirBytes(0x2000)).expect("data PTE mapped");
+        assert!(dflags.contains(PageFlags::WRITABLE));
+        assert!(!dflags.contains(PageFlags::EXECUTABLE), "non-exec writable page stays NX (W^X)");
     }
 
     #[test]

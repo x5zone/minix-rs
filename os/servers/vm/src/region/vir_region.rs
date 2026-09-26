@@ -49,6 +49,7 @@ bitflags::bitflags! {
         const ANON = 0x100;
         const DIRECT = 0x200;
         const PREALLOC_MAP = 0x400;
+        const EXECUTABLE = 0x800;
     }
 }
 
@@ -182,6 +183,16 @@ impl VirRegion {
 
     pub(crate) fn is_writable(&self) -> bool {
         self.flags.contains(VrFlags::WRITABLE)
+    }
+
+    /// B41 (§1.74/§1.75)：region 是否请求可执行性（承载 `PROT_EXEC`）。
+    /// C 在 i386 无 NX，`allocmem_prealloc_junk` 恒以 R|W|X 装载，故从不
+    /// 建模可执行位；x86-64 启用 NXE（[ARCH] fix27e W^X）后，取指缺页要求
+    /// 页表显式带 `EXECUTABLE`。该位由 `to_vr_flags` 从 `ProtFlags::EXEC`
+    /// 承接，供两条 PTE 构造路径（`sync_slot_pte` 缺页腿、
+    /// `write_page_table_mappings` fork 腿）按 caller 真实 prot 组 flags。
+    pub(crate) fn is_executable(&self) -> bool {
+        self.flags.contains(VrFlags::EXECUTABLE)
     }
 
     // V10-P2-1: no callers yet (flag checks are done via `flags()`
