@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝§1.103 推翻 §1.102「回复未投递」假设、精确锁定 child 卡在 VFS `stat()`**（接 §1.102 commit `78b36d2a7`）：三张一次性窄作用域探针（`ipc.rs::send()` 入口分腿 + Path A 出口 `FILTER`/`DELIVERED` 判决 + `lib.rs::idle()` 终端等待图含 caller_q 与 `p_sendmsg.m_type`；用后全 `git checkout` 回滚、工作树净）。**结论一**：`FILTER`=0、`DELIVERED` 全成功——child(0x800c) 从 PM/VFS 实收 reply 且 Path A 直投唤醒，**§1.102「VFS→child reply 未投递」被推翻**，排除整类内核 IPC 投递/过滤/唤醒 bug。**结论二**（两次 idle 快照相同=稳态）：child(12) `rts=RECEIVING sto=1(VFS) gf=1(VFS)`、**`p_sendmsg.m_type=0x115=VFS_BASE(0x100)+21=VfsCallNum::Stat`**——**child 停在 `sendrec(VFS)` 接收半等自己发出的 `stat()` 的回复**；INIT(11) `gf=PM m_type=3` 等子进程退出（正常下游后果）；全体 server+MFS(10)+PFS(9) `RECEIVING` idle、**caller_q 全 −1（无排队未 drain）**。（纠正一处误读：`sa-call` 探针 `pid=` 实为 caller priv_id、`fl=0x12` 是 capability 位非 RTS，PFS-STOP 假设作废。）**下轮 §1.104**＝child 的 `stat()` 经 VFS `syscalls.rs:991-1100`（`SysPathFetcher` 取路径→`LookupWalk::begin`→`send_lookup_for_slot` 向 `fs_e`（=root/work dir 的 fs）发首条 `REQ_LOOKUP`→Suspend），追 VFS↔MFS 的 REQ_LOOKUP 腿二选一：①`fs_e` 不是/未服务 MFS（查 boot 期 root 挂载 `root_dir_of` 的 fs/dev 是否落 MFS，对位 C `mountroot`）；②`fs_e` 是 MFS 但 MFS 收 lookup 不回复（查 `send_lookup_for_slot` sendrec 投达 + MFS lookup handler 回复腿）。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.101 boot-OOM 修复(commit `0018efa10`)→§1.102 定位下游=sendrec 回复腿(纯文档 commit `78b36d2a7`)→**§1.103 推翻回复未投递、锁定 child 卡 VFS stat()、指向 VFS↔MFS REQ_LOOKUP 腿**。
+> **⚠ 最新前沿＝§1.104 VFS 全链路洗清、阻塞点转移到 TTY 驱动不应答 `CDEV_OPEN`**（接 §1.103 commit `49897aaeb`）：四张一次性 diagctl 串口探针（`handle_fs_reply` 的 slot/task/src 三分叉 + `flush_pending_fs` 的待发对话与结果 + `WorkerCont::Path` 续接分支 + `send_drv_for_slot` 驱动端点与同步 send 结果；全在 `servers/vfs/src/main_loop.rs`，用后 `git checkout` 全回滚、工作树净，无功能码变更）。单核稳定复现 exec=33/oom=0/panic=0/**marker=0**。**逐环结论**：①`handle_fs_reply` 4/4 全 `hfr000a0a`（task==src==MFS、decode 命中）⇒ **§1.102/§1.103 遗留的「reply 匹配/投递失败」假设彻底证伪**；②child(0x800c→slot12) 的 `open()` 发出 lookup（`fls000aO` Ok）→ MFS 回复（`vfmb010a`）→ `handle_fs_reply Ok` → `ptc00D`=**`WalkStep::Done` 走完遍历** → `PathFollow::Open` 相位 2 `finish_open_local`；③Char 分支解析出 **`dmap[4].driver=TTY(5)` 已接通（§1.98「None」假设经 §1.99 已解决）**；④`drv05O`=VFS→TTY 同步 `send(CDEV_OPEN)` **返回 Ok**（VFS 未卡在 send）；⑤此后**全系统静默**。**⇒ 真阻断钉死为「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 从不回复 VFS」**，内核 IPC / VFS↔MFS lookup / VFS 侧投递匹配全部排除。**下轮 §1.105** 追 TTY（`drivers/tty/tty/src/service.rs`+`main.rs`，ground truth `minix3/servers/rs232/`）：①TTY 根本没收到 `CDEV_OPEN`（查 TTY 是否进 receive、ep5 与 dmap[4].driver 一致性、getfrom 覆盖）；②TTY 收到却不走 Open 分派/回复错端点/卡在自身下游调用。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.102 定位 sendrec 回复腿(纯文档 `78b36d2a7`)→§1.103 推翻「回复未投递」锁 child 卡 VFS stat(纯文档 `49897aaeb`)→**§1.104 VFS 全链路洗清、阻塞转移到 TTY 不应答 `CDEV_OPEN`**。
+>
+> **（历史·§1.103 摘要，详文见文末）⚠ 推翻 §1.102「回复未投递」假设、精确锁定 child 卡在 VFS `stat()`**（接 §1.102 commit `78b36d2a7`）：三张一次性窄作用域探针（`ipc.rs::send()` 入口分腿 + Path A 出口 `FILTER`/`DELIVERED` 判决 + `lib.rs::idle()` 终端等待图含 caller_q 与 `p_sendmsg.m_type`；用后全 `git checkout` 回滚、工作树净）。**结论一**：`FILTER`=0、`DELIVERED` 全成功——child(0x800c) 从 PM/VFS 实收 reply 且 Path A 直投唤醒，**§1.102「VFS→child reply 未投递」被推翻**，排除整类内核 IPC 投递/过滤/唤醒 bug。**结论二**（两次 idle 快照相同=稳态）：child(12) `rts=RECEIVING sto=1(VFS) gf=1(VFS)`、**`p_sendmsg.m_type=0x115=VFS_BASE(0x100)+21=VfsCallNum::Stat`**——**child 停在 `sendrec(VFS)` 接收半等自己发出的 `stat()` 的回复**；全体 server+MFS(10)+PFS(9) `RECEIVING` idle、caller_q 全 −1（无排队未 drain）。
 >
 > **（历史·§1.102 摘要，详文见文末）⚠ 下游死锁精确定位：sendrec 回复投递腿**（接 §1.101 commit `0018efa10`）：重建带 boot-OOM 修复的镜像、单核 fresh vars 稳定复现（exec=11/oom=0/panic=0/init-state Runcom×1/**marker=0**）。在 `lib.rs::idle()` 加一次性全占用进程等待图探针（n=1500/4000 双快照，逐进程 nr/ep/flags/sendto/getfrom；非缺页 handler、有界、纯取证，**取完已 `git checkout` 回滚、工作树净**）。两次快照完全相同⇒稳态死锁。**定位**：INIT(11) `fl=RECEIVING getfrom=0x0(PM)` send 半已完成、停 receive 半等 PM 回复；子进程 sh/echo(12, ep=0x800c) `getfrom=0x1(VFS)` 等 VFS 回复；而全体 boot 服务器（含 PM/VFS）已回 `getfrom=0x7c00(ANY)` 主循环 idle、`elock=0`（非死锁误拒）、`is_willing_to_receive` 对特指 getfrom 成立⇒**卡点收敛为 sendrec 回复腿：PM→INIT、VFS→child 两条 REPLY 未唤醒停在接收半的请求者**（非请求未投、非死锁误判）。**下轮 §1.103**＝在 reply syscall 路径加一次性窄探针区分「reply 未发 vs 发了未唤醒」二选一钉死（前者→查 init sendrec(PM) 是哪个内核调用/PM 是否该回；后者→Path A 交付 wakeup 记账 `record_wake_target`/`set_ipc_return_code`/`REPLY_PEND` 清理腿）。三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。**历史链**：…→§1.100 去噪清障(误判栈缺页死锁)→§1.101 纠正判读+真根因 boot-OOM(eager 4MB×12)修复,boot 7→11 exec 稳定(commit `0018efa10`)→**§1.102 定位下游=sendrec 回复腿(INIT↔PM/sh↔VFS,elock=0)**。
 >
@@ -4421,3 +4423,41 @@ child 的 `stat()` 进入 VFS 后（`servers/vfs/src/syscalls.rs:991-1100`）：
 
 **rc 标记三条终目标仍未达（本单元以确凿证据排除内核 IPC 投递/过滤/唤醒整类 bug、把真阻断从「sendrec 回复腿模糊互等」收敛到「child 的 stat() 卡在 VFS↔MFS 的 REQ_LOOKUP 腿」这一具体可查方向，三张探针全回滚、工作树净，取得实质进展、非阻塞）；goal 保持 active。**
 
+---
+
+## §1.104 VFS 全链路洗清 + 阻塞点转移到 TTY 驱动（纯取证轮，无功能代码变更）（2026-09-26）
+
+### 取证手段（四张一次性窄作用域 diagctl 串口探针，用后全部 `git checkout` 回滚，工作树净）
+
+全部落在 `servers/vfs/src/main_loop.rs`（用户服务器，非缺页 handler，有界，纯取证）：
+
+1. `hfr`：`handle_fs_reply` 入口打印「`decode` 出的 worker slot / 该槽 `wp.task` / 回复来源 `m_source`」——分辨 `SpuriousTransid`（slot=ff）vs `WrongTask`（task≠src）vs 命中。
+2. `fls`：`flush_pending_fs` 打印「待发 FS 对话的 worker 槽 + 目标 `fs_e`」及 `fs_sendrec` 结果（`>`=发前 / `O`=Ok / `v`/`d`/`w`/`e`=各类 Err）。
+3. `ptc`：`WorkerCont::Path` 续接臂打印分支（`N`=path 丢失静默跳 / `S`=再发 lookup / `D`=WalkStep::Done 进 follow 相位 2 / `p`=PathError / `t`=状态错）。
+4. `drv`：`send_drv_for_slot` 打印驱动端点 + `send` 结果（`>`=send 前 / `O`=Ok / `E`=Err）——分辨 VFS 是否卡在向驱动的**同步 send**。
+
+单核 `-smp 1` fresh vars，稳定复现 exec=33 / oom=0 / panic=0 / **marker=0**。**关键读法**：committed `nk4a: vfm` 探针打的是 `m_type as u16`（低 16 位）——对用户请求即 VfsCallNum，对 FS 回复即 transid（`VFS_TRANSID 0xB01`+slot，`fs_comm.rs:29-32`）。
+
+### 逐环结论：VFS→MFS→VFS→follow→VFS→TTY 全部走通
+
+完整时间线（去 boot 注册噪声，`b01`=MFS 回复 slot0）：
+
+- **`handle_fs_reply` 完美**：4 条 FS 回复全部 `hfr000a0a`（slot=00、task=0a=MFS、src=0a=MFS）⇒ `task==src` 非 WrongTask、decode 非 None ⇒ **每次都 `Ok(slot0)`**。**§1.102/§1.103 遗留的「reply 匹配/投递失败」假设被彻底证伪**（连同 §1.104 起手时对 `handle_fs_reply` transid→worker 错配的怀疑）。
+- **child 的 `open()` 确实发出并拿回 lookup**：child（ep=0x800c→slot12）请求序列 `vfm11e0c`(Select)→`vfm1030c`(Open)，Open 触发第 4 条 `fls000a>`→`fls000aO`（VFS→MFS REQ_LOOKUP，sendnb **Ok**）→ `vfmb010a`（MFS 回复）→ `hfr000a0a`（`handle_fs_reply Ok`）。
+- **路径遍历走完了**：紧随 `ptc00D`＝`WorkerCont::Path` 续接 `resumed = Ok(WalkStep::Done(node))` ⇒ 进 `PathFollow::Open` 相位 2（`main_loop.rs:6684` → `finish_open_local`）。（对比 INIT 某 Open 是 `ptc00t`＝状态错、MFS 回了非 OK——正常错误路径，非挂死。）
+- **console 字符设备链已接通（§1.98 假设解决）**：`finish_open_local` 的 Char 分支解析出 `dmap[4].driver = TTY(endpoint 5)`——**不再是 §1.98 猜的 None**（§1.99 console 设备接线见效）。
+- **VFS→TTY 的 `CDEV_OPEN` 发送成功**：`drv05>`→`drv05O`＝`send_drv_for_slot(drv_e=TTY)` 的**同步 `DirectTrapTransport.send` 返回 Ok**（VFS 没卡在 send；send 未返回则 `O` 不会打印）。
+
+### 定位结论：阻塞点从 VFS 彻底转移到 TTY 服务
+
+`drv05O` 之后**全系统静默**（无任何后续 `vfm`/`fls`/`ptc`/`drv`）。VFS 已把 child 的 open 作业挂成 `WaitingForFs`（`task=TTY`）、回到 `receive(ANY)` 等 TTY 回复；而 **TTY 收到 `CDEV_OPEN` 却从不回复 VFS**（VFS 侧无 src=0x05 的入站）。⇒ **child 的 `open("/dev/console")` 卡在「VFS 已把 `CDEV_OPEN` 交给 TTY、TTY 不应答」这一条驱动回复腿上**，与内核 IPC、与 VFS↔MFS 的 lookup 腿均已无关。
+
+VFS 侧本轮被逐环证据**完全洗清**：路径遍历 → FS 往返 → 回复匹配 → 类型分派 → 设备映射 → 驱动投递，每一环都正确。
+
+### 下一轮方向（§1.105）：TTY 服务收到 `CDEV_OPEN` 为何不回复
+
+- **静态**：`drivers/tty/tty/src/service.rs`（receive-classify-dispatch-reply 结构，`CdevRequest::Open` 有 `write_reply`，设计上应答）+ `main.rs` 事件循环。ground truth 对位 `minix3/servers/rs232/`。
+- **二选一取证**：①TTY 根本没收到 `CDEV_OPEN`（查 TTY 是否在 boot 后进入 `receive`、endpoint 5 是否与 `dmap[4].driver` 一致、其 `getfrom` 是否覆盖 VFS）；②TTY 收到但走不进 Open 分派 / 回复发错端点（查 TTY 的分类臂、`reply` 目标 `m_source` 是否为 VFS=1、有无卡在自身向 devman/其它服务的下游调用）。
+- 三条终目标（rc marker / 18-stage 命令面 / minix3 tests 上机）仍未达。历史链：…→§1.102 定位 sendrec 回复腿(纯文档 `78b36d2a7`)→§1.103 推翻「回复未投递」锁 child 卡 VFS stat(纯文档 `49897aaeb`)→**§1.104 VFS 全链路洗清、阻塞转移到 TTY 不应答 `CDEV_OPEN`（纯取证，四探针全回滚、工作树净）**。
+
+**本单元以逐环串口证据把真阻断从「VFS↔MFS REQ_LOOKUP 腿」推进并钉死为「child 的 console `open()` 卡在 VFS→TTY 的 `CDEV_OPEN` 回复腿」，同时证实 §1.98 的 dmap[4] 已修复、整类内核 IPC 与 VFS 侧投递/匹配 bug 全部排除；四张探针全回滚、工作树净，取得实质进展、非阻塞；goal 保持 active。**
