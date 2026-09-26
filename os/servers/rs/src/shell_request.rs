@@ -1592,6 +1592,36 @@ impl RsServer {
                             Err(_) => return Err(Errno::from_i32(minix_types::EIO)),
                         }
                     }
+                    // C: manager.c:832-838 — VFS_MAPDRIVER registration.
+                    // RS calls VFS to map this driver's major device number
+                    // to its endpoint, populating VFS's dmap table so that
+                    // open("/dev/console") + write(fd) can be routed.
+                    if crate::publish::should_map_driver(pub_) {
+                        const VFS_MAPDRIVER: i32 = 0x100 + 45; // VFS_BASE + 45
+                        use minix_sys::ipc::IpcTransport;
+                        let mut mapmsg = minix_types::Message::default();
+                        mapmsg.m_type = VFS_MAPDRIVER;
+                        // Payload layout (C mess_lsys_vfs_mapdriver):
+                        //   major(u32@0) pad labellen(u64@8) label(u64@16)
+                        //   ndomains(i32@24) domains[8](@28)
+                        {
+                            // SAFETY: writing the raw byte view of a union
+                            // field — the VFS handler reads the same bytes.
+                            let raw = unsafe { &mut mapmsg.m_u.raw };
+                            raw[0..4].copy_from_slice(&pub_.dev_nr.to_le_bytes());
+                            let labellen = (name.len() + 1) as u64; // NUL included
+                            raw[8..16].copy_from_slice(&labellen.to_le_bytes());
+                            let label_ptr = pub_.label.as_bytes().as_ptr() as u64;
+                            raw[16..24].copy_from_slice(&label_ptr.to_le_bytes());
+                            // ndomains = 0 (char devices carry no socket domains)
+                        }
+                        let transport = minix_sys::ipc::DirectTrapTransport;
+                        // C: mapdriver failure is non-fatal (printf only).
+                        let _ = transport.sendrec(
+                            minix_types::Endpoint::VFS,
+                            &mut mapmsg,
+                        );
+                    }
                     Ok(())
                 }),
                 asynsend: alloc::boxed::Box::new(
