@@ -325,6 +325,26 @@ pub(crate) fn do_fork(
         return Err(VmForkError::PageTableMapFailed);
     }
 
+    // C: `map_proc_copy_range` calls `map_writept(src)` on the parent as well
+    // as `map_writept(dst)` on the child (`region.c:995-996`). B48: minix-rs
+    // historically did only the `dst` half above, so `fork_region`'s refcount
+    // bump never reached the parent's writable PTEs — the parent kept writing
+    // straight into the CoW-shared frames and silently corrupted the child's
+    // view (the `sh` echo child read a heap buffer the parent had recycled).
+    // Downgrade the parent's now-shared pages so its next write CoW-faults.
+    // SAFETY: `parent` is Active with an initialized page table and is blocked
+    // handling this fork (RTS_RECEIVING), not executing on any CPU; the kernel
+    // reloads its CR3 on the next context switch, picking up the cleared write
+    // bits without a cross-CPU shootdown. Rolls back the same way as the child
+    // mapping failure above (pre-`sys_fork`, kernel state untouched).
+    if unsafe { parent.protect_cow_pages(frames) }.is_err() {
+        // SAFETY: child page table freshly built, no CR3 points to it yet.
+        unsafe {
+            child.free_page_table();
+        }
+        return Err(VmForkError::PageTableMapFailed);
+    }
+
     // `write_page_table_mappings` failing above is the last recoverable
     // point — after `sys_fork` the kernel has committed the child process
     // and rollback is no longer possible.
@@ -622,6 +642,70 @@ mod tests {
             .get_slot(VirBytes(0)).and_then(|s| s.pfn()).unwrap();
         assert_eq!(frames.get(src_slot).map(|s| s.refcount), Some(2),
             "CoW-sharing must be untouched without a msgaddr");
+    }
+
+    /// B48 (§1.88): fork must clear the write bit on the PARENT's CoW-shared
+    /// pages, mirroring C `map_proc_copy_range` calling `map_writept` on BOTH
+    /// `src` and `dst` (`region.c:995-996`). Historically `do_fork` only ran
+    /// the child (`dst`) half, so the parent kept writable PTEs straight into
+    /// the shared frames and its post-fork writes silently corrupted the
+    /// child's view. Regression guard: after a shared (msgaddr=None) fork the
+    /// parent's PTE for the shared page stays present but is no longer
+    /// writable — the exact state the pre-fix code failed to reach.
+    #[test]
+    fn test_do_fork_downgrades_parent_shared_pte() {
+        use minix_arch::paging::{PageFlags, Paging};
+        let table = VmProcTable::get_global();
+        let mut frames = make_frames(16);
+        let mut alloc = TestAlloc { next: 5 };
+        let (parent_slot, child_slot) = (UserSlot::new(80), UserSlot::new(81));
+
+        let parent_ep = init_fork_parent(parent_slot, &mut frames, &mut alloc);
+
+        // Simulate the parent's real running state: its page table already
+        // carries the mapping. Refcount is still 1 (sole owner) so this maps
+        // it read-write — the state B48 left writable across the fork.
+        {
+            let mut parent = table.get_active(parent_slot).unwrap();
+            unsafe {
+                parent.write_page_table_mappings(&frames).unwrap();
+            }
+        }
+        let pre = table
+            .get_active(parent_slot)
+            .unwrap()
+            .page_table_mut()
+            .query(VirBytes(0x3000_0000));
+        let (_, pre_flags) = pre.expect("parent shared page must be mapped pre-fork");
+        assert!(
+            pre_flags.contains(PageFlags::WRITABLE),
+            "parent page must start writable (sole owner, refcount 1)"
+        );
+
+        // msgaddr stays None → eager CoW skipped → both sides stay shared
+        // (refcount 2), so the parent's page must be downgraded.
+        let gateway = update_gateway();
+        gateway.borrow_mut().fork_reply = Ok(Endpoint::from_generation_slot(2, 81));
+        do_fork(
+            &mut *gateway.borrow_mut(),
+            table,
+            &mut frames,
+            &mut alloc,
+            parent_ep,
+            child_slot,
+        )
+        .unwrap();
+
+        let post = table
+            .get_active(parent_slot)
+            .unwrap()
+            .page_table_mut()
+            .query(VirBytes(0x3000_0000));
+        let (_, post_flags) = post.expect("parent shared page must stay mapped after fork");
+        assert!(
+            !post_flags.contains(PageFlags::WRITABLE),
+            "B48: parent CoW-shared page must be downgraded to read-only after fork"
+        );
     }
 
     /// B22: the two coordinated legs C fork.c:89-95 pairs must both fire —

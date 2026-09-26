@@ -574,6 +574,91 @@ impl<'a> ActiveProc<'a> {
         Ok(())
     }
 
+    /// Downgrade this process's now-shared pages to read-only in its existing
+    /// page table. C: `map_writept(src)` in `map_proc_copy_range`
+    /// (`region.c:995`) — after `map_copy_region`/`fork_region` bumps the
+    /// shared frames' refcounts to 2, `map_writept` is called on BOTH `src`
+    /// (the parent) and `dst` (the child); the parent's writable PTEs for
+    /// pages that are no longer `pr_writable` (`VR_WRITABLE && memtype->
+    /// writable`, and anon `writable` is `refcount == 1`) are cleared so the
+    /// parent's next write raises a CoW fault.
+    ///
+    /// minix-rs' `do_fork` historically only ran `write_page_table_mappings`
+    /// on the child (`dst`), never the parent half — so the parent kept
+    /// writable PTEs straight into the shared frames and its post-fork writes
+    /// silently corrupted the child's view (B48: the `sh` child read a
+    /// heap buffer the parent had already recycled). This method is the
+    /// missing `map_writept(src)`.
+    ///
+    /// Unlike `write_page_table_mappings` (which builds a fresh table via
+    /// `map`), the parent's entries are already present; C `map_writept` clears
+    /// only the write bit, so this reuses each live PTE's own flags and drops
+    /// `WRITABLE` — never rebuilding NX/USER/exec bits from region metadata
+    /// (avoids the B41-class coupling where a flag-derivation drift would flip
+    /// a parent text page to NX). Entries that were never mapped in
+    /// (demand-zero slots) and entries whose frame drifted from the slot are
+    /// left untouched; the page-fault path reconciles the latter.
+    ///
+    /// Scope note (B48 follow-up): the `remaps > 0` (shared-memory) shortcut in
+    /// `is_page_writable` keeps those pages writable here, which matches C for
+    /// the *parent* (a shm source stays writable). The child-side divergence is
+    /// in `fork_region` (`dst.remaps = src.remaps`, where C `region_new` uses
+    /// `remaps = 0`) — a pre-existing gap outside this method, tracked as the
+    /// next frontier, not silently assumed fixed here.
+    ///
+    /// # Safety
+    /// Caller must ensure the page table is initialized. The parent is
+    /// blocked handling its own `sys_fork` (RTS_RECEIVING), so it is not
+    /// executing on any CPU; under the current pre-PCID model its next context
+    /// switch reloads CR3 and picks up the cleared write bits. NOTE (SMP):
+    /// `switch_address_space` early-returns on a `root == 0` (idle/kernel) hop,
+    /// so a peer AP that ran the parent could retain a stale writable TLB entry
+    /// across such a hop; a cross-CPU shootdown (`VMCTL FLUSHTLB`) is required
+    /// before SMP correctness is claimed — the guarantee above holds only for
+    /// the single-core boot this fix is validated on.
+    pub(crate) unsafe fn protect_cow_pages(
+        &mut self,
+        frames: &crate::region::PageFrames,
+    ) -> Result<(), minix_arch::paging::PageTableError> {
+        use minix_arch::paging::PageFlags;
+        use minix_types::{PhysBytes, VirBytes};
+
+        const PAGE_SIZE: u64 = <PageTable as Paging>::PAGE_SIZE as u64;
+
+        // Collect (vaddr, expected paddr) for the pages fork made non-writable
+        // (refcount > 1) first, so the immutable `regions()` borrow is released
+        // before `page_table_mut()`.
+        let mut downgrades: alloc::vec::Vec<(VirBytes, PhysBytes)> = alloc::vec::Vec::new();
+        for region in self.regions().iter() {
+            for (i, slot) in region.physblocks.iter().enumerate() {
+                let Some(pfn) = slot.pfn() else { continue };
+                let offset = VirBytes(i as u64 * PAGE_SIZE);
+                // Only pages that fork made non-writable (refcount > 1) need
+                // the write bit cleared; sole-owned writable pages stay as-is.
+                if region.is_page_writable(frames, offset) {
+                    continue;
+                }
+                let vaddr = VirBytes(region.vaddr.0 + i as u64 * PAGE_SIZE);
+                downgrades.push((vaddr, frames.pfn_to_phys(pfn)));
+            }
+        }
+
+        let pt = self.page_table_mut();
+        for (vaddr, expected_paddr) in downgrades {
+            // Clear only WRITABLE on the live leaf, keeping every other bit.
+            // Skip pages that are not mapped as a leaf (query's paddr drifts
+            // from the slot, e.g. a huge mapping or an unfaulted demand-zero
+            // slot) rather than erroring the whole fork.
+            if let Some((cur_paddr, cur)) = pt.query(vaddr) {
+                if cur_paddr == expected_paddr {
+                    let read_only = (cur & !PageFlags::WRITABLE) | PageFlags::PRESENT;
+                    pt.update_flags(vaddr, read_only)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Adds a memory region to the process's region map.
     ///
     /// Creates an empty region (no physical pages mapped). Physical pages

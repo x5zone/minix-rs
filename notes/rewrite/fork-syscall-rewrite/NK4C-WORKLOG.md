@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠ 最新前沿＝B48 根因确诊＝fork 缺父侧 COW 写保护（父共享帧 PTE 未降级为只读→父 fork 后写直接漏进子视图）＝rc marker 真阻断（§1.88 VM 双探针 bn83 实锤 pfn 相等＋C ground truth 对质·纯取证无改码）。** 上一轮 §1.87 猜「子页绑到内容陈旧的异帧」已被 §1.88 推翻：VM 探针实打实显示 `fork-heap` 对堆页 0x220000 **每周期 parent_pfn == child_pfn**⇒ `fork_region`/`write_page_table_mappings` 正确共享、绑帧无误。既然同 VA→同 pfn→同帧而子读到异字节，只能是共享帧在 fork 后被父写改。读码＋设计文档对质坐实：`vm-region-management.md` L963 明写 C fork 后「页表: 只读（两个进程都是）」，而 Rust `do_fork` 只对子跑 `setup_cow_for_all_regions`+`child.write_page_table_mappings`，**从不降级父页表的共享帧 PTE 可写位**（`fork_region` L144 只作用子 dst）⇒ 父持可写 PTE 直指共享帧、父后续复用堆缓冲的写永不触发父侧 COW、直接漏进子。**非 [ARCH] 外部契约变更（内部 COW 语义未对齐 C）。下单元＝r5 修复**：`do_fork` 建完子页表后对父页表本次共享（refcount>1）页 PTE 清可写位+刷父 TLB（与子对称），补 mock 回归测（父共享页不可写+父写触发 COW）+三件套+单核真机验 rc marker 首现。（历史链：§1.86 单字节腐蚀→§1.87 绑异帧→§1.88 确诊父侧写保护缺失。）以下 §1.87/§1.86 原文保留为历史。
+> **⚠ 最新前沿＝B48 腐蚀修复已落地并真机验证（§1.89），但 rc marker 暴露下游新阻断＝`/bin/echo` 二进制 exec 侧失败（命令名已正确仍不 exec）＝当前 rc marker 真阻断。** §1.88 确诊的「fork 缺父侧 COW 写保护」已修：`do_fork` 补 `parent.protect_cow_pages`（＝C `map_writept(src)`，`region.c:995-996`，父子两侧共享页 PTE 皆只读）。**真机实锤（单核 `-smp 1`）：bn85 临时 sh diagctl 探针打 `b48child hex=6563686f`＝子读到完整正确 "echo"（修复前 §1.87 为腐蚀 `65353335`）＝腐蚀机制根除**；bn84/bn86（CodeReview SHOULD#2 重构前后无探针）`kernel panic=0`、达 sh exec `0x20ef60`、行数同形＝重构零回归。三件套绿（mock **531**/0fail 含新回归测 `test_do_fork_downgrades_parent_shared_pte` · rustfmt 两改动文件零新增漂移 · clippy/target 无我文件新告警）·CodeReview **0 MUST-FIX**（采纳 SHOULD#2 只清写位重构 · SHOULD#1 `fork_region` remaps/id · NIT#4 SMP shootdown 各登记为独立前沿）。**但 `/bin/echo` 入口 `0x206b20` 三跑皆 0、rc marker 仍=0⇒腐蚀必要非充分**：子拿正确名后 exec /bin/echo **仍失败于下游**（子 slot d `0x800d` 持续 int33/vm-pf 但从不进 echo 入口）。**下单元＝r6**：在子侧 exec 路径（PM `exec`→VFS `open_exec`/newimage）打 diagctl 探针，定位带正确 "echo" 的 exec 请求在哪一环报错（回指 §1.81 B44 候选）；旁行验常规 fd→console→串口可达性。历史链：§1.86 单字节腐蚀→§1.87 绑异帧→§1.88 确诊父侧写保护缺失→§1.89 修复落地真机验证腐蚀消除。**rc marker 三条终目标仍未达，goal 保持 active。** 以下旧前沿保留为历史。
+>
+> **（历史·§1.88）⚠ 最新前沿＝B48 根因确诊＝fork 缺父侧 COW 写保护（父共享帧 PTE 未降级为只读→父 fork 后写直接漏进子视图）＝rc marker 真阻断（§1.88 VM 双探针 bn83 实锤 pfn 相等＋C ground truth 对质·纯取证无改码）。** 上一轮 §1.87 猜「子页绑到内容陈旧的异帧」已被 §1.88 推翻：VM 探针实打实显示 `fork-heap` 对堆页 0x220000 **每周期 parent_pfn == child_pfn**⇒ `fork_region`/`write_page_table_mappings` 正确共享、绑帧无误。既然同 VA→同 pfn→同帧而子读到异字节，只能是共享帧在 fork 后被父写改。读码＋设计文档对质坐实：`vm-region-management.md` L963 明写 C fork 后「页表: 只读（两个进程都是）」，而 Rust `do_fork` 只对子跑 `setup_cow_for_all_regions`+`child.write_page_table_mappings`，**从不降级父页表的共享帧 PTE 可写位**（`fork_region` L144 只作用子 dst）⇒ 父持可写 PTE 直指共享帧、父后续复用堆缓冲的写永不触发父侧 COW、直接漏进子。**非 [ARCH] 外部契约变更（内部 COW 语义未对齐 C）。下单元＝r5 修复**：`do_fork` 建完子页表后对父页表本次共享（refcount>1）页 PTE 清可写位+刷父 TLB（与子对称），补 mock 回归测（父共享页不可写+父写触发 COW）+三件套+单核真机验 rc marker 首现。（历史链：§1.86 单字节腐蚀→§1.87 绑异帧→§1.88 确诊父侧写保护缺失。）以下 §1.87/§1.86 原文保留为历史。
 >
 > **⚠（历史·§1.87·其「子页绑异帧」假设已被 §1.88 推翻）最新前沿＝B48 fork 子堆页绑到内容陈旧的异物理帧＝rc marker 真阻断（§1.87 单核 diagctl 三点探针决定性翻案·精化 §1.86·纯取证无改码）。** 同一 command[0] VA（supSk base=0x220000 堆页·ptr 父子相同）父 pre-fork/parent-post 均读到 `6563686f`（"echo"）17/17、子读到 `65353335`（"e535"）17/17，且**父 fork 返回后仍干净** ⇒ 父子把同 VA 映射到**不同物理帧**（排除第三方野写共享帧、排除 memcpy 单字节腐蚀）；子帧持非零陈旧残留 ⇒ fork 给子堆页绑了未按父正确 populate 的复用帧（B22/B38 家族）。**下单元＝r4d 帧绑定取证**：VM `write_page_table_mappings`（`vmproc_handle.rs:529`）对堆页 region 打印父 slot pfn vs 子 slot pfn + 子 `pt.map` 后 query 解出 paddr + DM 读帧字节，判「子 slot pfn≠父（`fork_region` 未生效）」vs「同 pfn 但读回异（pt.map/回收复用 bug）」。（§1.86 旧「单字节 0x63→0x00」刻画已被 §1.87 证伪修正：实为整帧内容≠父、非单字节 0x00。）以下 §1.86 原文保留为历史。
 >
@@ -3829,5 +3831,24 @@ C. **prepare_exec 本身在用户态就失败**（kerninfo 不可达 / stack_par
 - 三件套：docker/mock 基线只增不减 / nightly rustfmt 零新增漂移 / 镜像重建 + 单核真机验 parent-post==child=="echo" → echo exec 成功 → **rc marker 首现** + CodeReview + WORKLOG §1.89 + commit。
 
 **旁证·仍待查**：① 常规用户 fd→console→串口路径疑不通（影响终目标① marker 可观测性——若修好 exec 但 echo 的 stdout 不达串口，marker 仍不可见；需伴行验/或让 rc 腿兼走 diagctl）；② cow_exec_pf.rs 历史遗留探针（第 20/32 轮 task-close 裁决删除）另立清理单元。**三件套**：本单元纯取证（VM 双探针均 git checkout 回滚＝工作树净，仅改 WORKLOG）。**rc marker 仍未达；frontier 从「B48 子页绑异帧（假设）」确诊为「B48 fork 缺父侧 COW 写保护」，r5＝实现父侧只读降级修复。**
+
+---
+
+### 1.89 【修复落地·真机验证腐蚀消除】B48＝do_fork 补父侧 COW 写保护（`protect_cow_pages`＝C `map_writept(src)`），但 rc marker 暴露下游新阻断（/bin/echo exec 侧）（含代码·VM 侧·fork.rs+vmproc_handle.rs·CodeReview 0 MUST）
+
+**修复本体（对位 C `map_proc_copy_range` 双侧 `map_writept`，`region.c:995-996`）**：
+- `vmproc_handle.rs` 新增 `pub(crate) unsafe fn protect_cow_pages(&mut self, frames)`：遍历本进程 regions，对「slot 有 pfn 且 `!is_page_writable`（refcount>1）」的页，**复用其现 PTE flags、仅清 `WRITABLE`（保 PRESENT，不动 NX/USER/exec）**经 `update_flags` 降级；带 paddr 漂移守卫（`query` 解出 paddr≠slot 帧则跳过，交缺页腿收敛），跳过未 fault-in 的 demand-zero 页与 huge 页（不 `?` 打掉整个 fork）。
+- `fork.rs` `do_fork` 在 `child.write_page_table_mappings` 成功后、`sys_fork` 前调 `parent.protect_cow_pages(frames)`，失败对称回滚（free child PT + `PageTableMapFailed`）。至此父/子两侧共享页 PTE 皆只读＝B48 腐蚀机制根除。
+
+**CodeReview（子代理·0 MUST-FIX）**：逐条核对 `is_page_writable`↔C `pr_writable`（含 anon `remaps>0` 捷径对位 `mem_anon.c:105-113`）、EXECUTABLE 规则、借用/别名、eager-CoW 时序、unsafe shootdown 契约，全部一致。**采纳 SHOULD#2**：`update_flags` 是整片替换属性（重造 NX/G/U/P），原「合成 read_only[|EXECUTABLE]」写法硬耦合 `is_executable` 保真度（B41 旧坑）且 `query` 对 huge 页返 Some 会让 `update_flags` 返 `NotMapped` 打掉 fork——改为「只清写位、保留现位、paddr 守卫」，删 EXECUTABLE 分支。**SHOULD#1 记录不本单元修**：`remaps>0`（shm）子侧偏差在既存 `fork_region`（`dst.remaps = src.remaps`，C `region_new` 用 `remaps=0`；`dst.id` 亦同）——独立前沿。**NIT#4 软化注释**：SMP 下 `switch_address_space` 的 `root==0` 早退可让 AP 留陈旧可写 TLB，「无需 shootdown」仅对当前单核成立，SMP 里程碑前需 `VMCTL FLUSHTLB`。
+
+**三件套绿**：① mock `cargo test -p minix-vm` **531/0fail**（基线 530＋新回归测 `test_do_fork_downgrades_parent_shared_pte`：refcount==1 时父 PTE 可写、msgaddr=None 共享 fork 后断言父 PTE present 但 write 位已清）；② nightly rustfmt 两改动文件**零新增漂移**（块数 WT==HEAD：fork.rs 30==30、vmproc_handle.rs 20==20，采纳 SHOULD#2 后曾 +1 已修回）；③ target `cargo build --release -p minix-vm --target x86_64-unknown-none` 无我文件告警、clippy 无我文件新告警。
+
+**真机决定性（单核 `-smp 1`）**：
+- **bn85（impl-A＋临时 sh diagctl 探针）**：`nk4a: b48child len=4 hex=6563686f`＝子进程读到**完整正确的 "echo"**（修复前 §1.87 为腐蚀 `65353335`/`6500686f`）⇒ **B48 腐蚀机制在真机上根除、§1.88 根因诊断实锤正确**。
+- **bn84（impl-A 无探针）/ bn86（impl-B 无探针·CodeReview 重构后）**：`kernel panic=0`、到达 sh（slot c）`exec-store rip=0x20ef60`、行数 29684/29689 同形 ⇒ **SHOULD#2 重构对真机零回归**（新旧实现对 anon 数据页逐位等价）。
+- **但 `/bin/echo` 入口 `0x206b20` 在三跑皆 0、rc marker 仍=0** ⇒ 腐蚀只是**必要非充分**：子拿到正确 "echo" 后，exec /bin/echo **仍失败于下游**（子 slot d `0x800d` 持续 int33/vm-pf 但从不进 echo 入口）。探针已按纪律 git checkout 回滚，工作树净。
+
+**下一前沿（rc marker 真阻断已从「fork 腐蚀」推进至「echo 二进制 exec 下游失败」）**：即便命令名正确，`/bin/echo` 仍未 exec——回指 §1.81 B44 候选（动态 exec /bin/echo 在 VFS 侧失败：fproc root_dir 未继承 / PM→VFS endpoint 解析 / prepare_exec 前置失败）。下单元＝在子侧 exec 路径（PM `exec` → VFS `open_exec`/`do_fork` newimage）打 diagctl 探针，定位带正确 "echo" 的 exec 请求在哪一环返回错误。旁证仍待查：常规用户 fd→console→串口疑不通（即便 echo exec 成功，marker stdout 可达性需伴行验/或 rc 腿兼走 diagctl）；`fork_region` remaps/id 与 SMP shootdown 各另立单元。**rc marker 三条终目标仍未达，goal 保持 active。**
 
 
