@@ -130,6 +130,8 @@ impl AddressRef {
 /// - `InvalidAddress` ← `EFAULT` (14), generic address error
 /// - `PermissionDenied` ← `EPERM` (1), from `do_safecopy.c` grant check
 /// - `UnknownEndpoint` ← `ESRCH` (3), endpoint not found
+/// - `Domain` ← `EDOM` (33), `virtual_copy_f` zero-length rejection,
+///   memory.c:607 (`if (bytes <= 0) return(EDOM);`)
 ///
 /// Note: Minix3's `VMSUSPEND` (-996) is NOT represented here. In C,
 /// `VMSUSPEND` is a separate return value that triggers `vm_suspend()`;
@@ -145,6 +147,13 @@ pub enum VmCopyError {
     /// into the copy path.
     PermissionDenied,
     UnknownEndpoint,
+    /// Zero-length copy rejected up front. C: `virtual_copy_f()` returns
+    /// `EDOM` for `bytes <= 0` (memory.c:607) *before* any endpoint check
+    /// or address translation, so a 0-byte copy never suspends and never
+    /// reaches VM — even when one side is a dangling pointer (e.g. a
+    /// zero-size `Vec`'s sentinel address, as issued by VFS select's
+    /// fdset fetch when `nfds == 0`).
+    Domain,
 }
 
 impl core::fmt::Display for VmCopyError {
@@ -155,6 +164,7 @@ impl core::fmt::Display for VmCopyError {
             VmCopyError::InvalidAddress => write!(f, "invalid address (EFAULT)"),
             VmCopyError::PermissionDenied => write!(f, "permission denied (EPERM)"),
             VmCopyError::UnknownEndpoint => write!(f, "unknown endpoint (ESRCH)"),
+            VmCopyError::Domain => write!(f, "out-of-domain, zero-length copy (EDOM)"),
         }
     }
 }
@@ -471,6 +481,18 @@ pub fn cross_space_copy<D: DirectMapArch>(
     proc_table: &crate::proc_table::ProcessTable,
     proc_cr3: impl Fn(&crate::proc_table::ProcessTable, Endpoint) -> Option<PhysBytes>,
 ) -> CrossSpaceResult {
+    // C: `virtual_copy_f()` first check — memory.c:607 `if (bytes <= 0)
+    // return(EDOM);` — runs before endpoint validation and any page-table
+    // walk. A zero-length copy must therefore never resolve addresses,
+    // never suspend on VM, and never fault the requestor, regardless of
+    // the pointer values (the aarch64 rc-chain incident: VFS select's
+    // 0-byte fdset fetch carried a zero-size `Vec` dangling sentinel as
+    // destination, which previously walked pages, suspended on VM, and
+    // escalated to a SIGSEGV-then-panic instead of an EDOM reply).
+    if bytes == 0 {
+        return CrossSpaceResult::Completed(Err(VmCopyError::Domain));
+    }
+
     // B39 (§1.70): both sides may be *virtual* ranges whose pages map to
     // non-adjacent physical frames. A single-shot resolve + linear
     // `copy_nonoverlapping(bytes)` runs off each first frame into neighbouring
@@ -501,10 +523,6 @@ pub fn cross_space_copy<D: DirectMapArch>(
     #[cfg(not(feature = "mock"))]
     nk4a_kdst_probe("copy", dst_phys.0, bytes);
     let _ = dst_phys;
-
-    if bytes == 0 {
-        return CrossSpaceResult::Completed(Ok(()));
-    }
 
     let src_side = CopySide::resolve(src, proc_table, &proc_cr3).expect("src endpoint validated");
     let dst_side = CopySide::resolve(dst, proc_table, &proc_cr3).expect("dst endpoint validated");
@@ -1596,6 +1614,32 @@ mod tests {
         };
         let result = resolve_physical::<MockDirectMap>(&addr, &crate::test_helpers::test_proc_table(), |_pt: &crate::proc_table::ProcessTable, _| None);
         assert_eq!(result, Err(ResolveError::UnknownEndpoint));
+    }
+
+    #[test]
+    fn zero_length_copy_rejects_with_domain_before_any_resolution() {
+        // C: `virtual_copy_f` — memory.c:607: `if (bytes <= 0) return(EDOM)`
+        // is the *first* check, ahead of endpoint validation and page-table
+        // walks. So a zero-length copy must come back as `Err(Domain)` even
+        // when both sides are unresolvable endpoints and dangling offsets
+        // (the aarch64 rc-chain incident had VFS select's 0-byte fdset
+        // fetch passing a zero-size `Vec` sentinel as destination).
+        use minix_arch::direct_map::MockDirectMap;
+        let bad = AddressRef::Process {
+            endpoint: Endpoint::from_generation_slot(1, 9999),
+            offset: VirBytes::new(1),
+        };
+        let result = cross_space_copy::<MockDirectMap>(
+            &bad,
+            &bad,
+            0,
+            &crate::test_helpers::test_proc_table(),
+            |_pt: &crate::proc_table::ProcessTable, _| None,
+        );
+        assert_eq!(
+            result,
+            CrossSpaceResult::Completed(Err(VmCopyError::Domain))
+        );
     }
 
     #[test]

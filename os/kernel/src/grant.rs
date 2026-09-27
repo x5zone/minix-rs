@@ -482,6 +482,7 @@ pub(crate) fn nk4a_vcopy_code(e: &crate::vm::VmCopyError) -> u64 {
         InvalidAddress => 3,
         PermissionDenied => 4,
         UnknownEndpoint => 5,
+        Domain => 6,
     }
 }
 

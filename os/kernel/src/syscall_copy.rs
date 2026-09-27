@@ -347,6 +347,7 @@ fn dispatch_copy(
         );
         return match result {
             CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
+            CrossSpaceResult::Completed(Err(VmCopyError::Domain)) => KcallResult::Ok(EDOM),
             CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
             // CP_FLAG_TRY: VMSUSPEND → EFAULT (no suspend).
             CrossSpaceResult::Suspended(_) => KcallResult::Ok(EFAULT),
@@ -367,6 +368,10 @@ fn dispatch_copy(
     match result {
         CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
         CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => KcallResult::Ok(EINVAL),
+        // C: memory.c:607 — `virtual_copy_f` rejects a zero-length copy
+        // with EDOM before any address work; `cross_space_copy` mirrors
+        // that up front, every copy edge surfaces it here.
+        CrossSpaceResult::Completed(Err(VmCopyError::Domain)) => KcallResult::Ok(EDOM),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
     }
@@ -551,6 +556,9 @@ fn safecopy_common_impl(
         );
         match copy_result {
             CrossSpaceResult::Completed(Ok(())) => return KcallResult::Ok(OK),
+            CrossSpaceResult::Completed(Err(VmCopyError::Domain)) => {
+                return KcallResult::Ok(EDOM);
+            }
             CrossSpaceResult::Completed(Err(_)) => {
                 write_soft_fault_marker(caller_nr, proc_table, sfinfo, &proc_cr3);
                 return KcallResult::Ok(EFAULT);
@@ -576,6 +584,7 @@ fn safecopy_common_impl(
     match result {
         CrossSpaceResult::Completed(Ok(())) => KcallResult::Ok(OK),
         CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => KcallResult::Ok(EINVAL),
+        CrossSpaceResult::Completed(Err(VmCopyError::Domain)) => KcallResult::Ok(EDOM),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
     }
@@ -739,6 +748,7 @@ pub fn dispatch_vsafecopy(
         CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => {
             return KcallResult::Ok(EINVAL);
         }
+        CrossSpaceResult::Completed(Err(VmCopyError::Domain)) => return KcallResult::Ok(EDOM),
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
     }
@@ -1150,6 +1160,7 @@ pub fn dispatch_vumap(
         CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => {
             return KcallResult::Ok(EINVAL);
         }
+        CrossSpaceResult::Completed(Err(VmCopyError::Domain)) => return KcallResult::Ok(EDOM),
         CrossSpaceResult::Completed(Err(_)) => return KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => return KcallResult::VmSuspend,
     }
@@ -1287,6 +1298,7 @@ pub fn dispatch_vumap(
             KcallResult::Ok(OK)
         }
         CrossSpaceResult::Completed(Err(VmCopyError::UnknownEndpoint)) => KcallResult::Ok(EINVAL),
+        CrossSpaceResult::Completed(Err(VmCopyError::Domain)) => KcallResult::Ok(EDOM),
         CrossSpaceResult::Completed(Err(_)) => KcallResult::Ok(EFAULT),
         CrossSpaceResult::Suspended(_) => KcallResult::VmSuspend,
     }
@@ -1760,6 +1772,26 @@ mod tests {
         msg.m_u.m_lsys_krn_sys_copy.flags = 0;
         let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
         assert_eq!(result, KcallResult::Ok(E2BIG));
+    }
+
+    #[test]
+    fn test_dispatch_copy_zero_bytes_returns_edom() {
+        // C chain: do_copy.c endpoint checks pass, then `virtual_copy_f`
+        // (memory.c:607) rejects `bytes <= 0` with EDOM before touching any
+        // address — the requestor is never suspended, so VM can never
+        // SIGSEGV it (aarch64 rc-chain incident: a 0-byte copy from VFS
+        // select used to walk a dangling dst and kill VFS).
+        let mut proc_table = crate::test_helpers::test_proc_table();
+        let mut msg = Message::default();
+        msg.m_type = Syscall::Vircopy as i32;
+        msg.m_u.m_lsys_krn_sys_copy.src_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.dst_endpt = NONE;
+        msg.m_u.m_lsys_krn_sys_copy.src_addr = 0x1;
+        msg.m_u.m_lsys_krn_sys_copy.dst_addr = 0x1;
+        msg.m_u.m_lsys_krn_sys_copy.nr_bytes = 0;
+        msg.m_u.m_lsys_krn_sys_copy.flags = 0;
+        let result = dispatch_vircopy(ProcNr(0), &mut proc_table, &msg);
+        assert_eq!(result, KcallResult::Ok(EDOM));
     }
 
     #[test]

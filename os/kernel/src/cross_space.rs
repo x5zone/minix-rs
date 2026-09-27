@@ -445,8 +445,10 @@ mod tests {
     fn test_data_copy_vmcheck_parity_with_c() {
         let mut table = caller_table();
 
-        // OK 态：零字节物理→物理（无解析、无内存访问）。
-        let ok = data_copy_vmcheck(
+        // EDOM state: zero bytes — C `virtual_copy_f` (memory.c:607)
+        // rejects `bytes <= 0` before any address work, so even a
+        // physical→physical 0-byte copy comes back Err(Domain).
+        let edom = data_copy_vmcheck(
             ProcNr(0),
             &mut table,
             AddressRef::Physical(PhysBytes(0x2000)),
@@ -454,7 +456,10 @@ mod tests {
             0,
             |_pt: &crate::proc_table::ProcessTable, _| Some(PhysBytes(0)),
         );
-        assert_eq!(ok, CrossSpaceResult::Completed(Ok(())));
+        assert_eq!(
+            edom,
+            CrossSpaceResult::Completed(Err(crate::vm::VmCopyError::Domain))
+        );
 
         // EFAULT 态：endpoint 无 cr3 → Completed(Err(UnknownEndpoint))。
         let fault = data_copy_vmcheck(
@@ -529,10 +534,14 @@ mod tests {
         let _ = RtsFlagsBits::VMREQUEST; // 引用避免未用告警（本测试聚焦上下文）
     }
 
-    /// 边界：零字节拷贝返回 Completed(Ok)。注意与 C 的差异——解析先于
-    /// 字节数检查，故零字节仅在物理地址（免解析）上有确定语义。
+    /// Boundary: a zero-byte copy is rejected with EDOM before either
+    /// side is resolved — C `virtual_copy_f` first check, memory.c:607
+    /// (`if (bytes <= 0) return(EDOM);`). Pre-fix this returned
+    /// Completed(Ok) *after* resolution, which let a dangling dst (e.g. a
+    /// zero-size `Vec` sentinel) suspend into a VM check and get the
+    /// requestor SIGSEGV'd on aarch64.
     #[test]
-    fn test_zero_byte_copy_returns_ok() {
+    fn test_zero_byte_copy_returns_edom() {
         let mut table = caller_table();
         let r = data_copy_vmcheck(
             ProcNr(0),
@@ -542,7 +551,7 @@ mod tests {
             0,
             |_pt: &crate::proc_table::ProcessTable, _| None,
         );
-        assert_eq!(r, CrossSpaceResult::Completed(Ok(())));
+        assert_eq!(r, CrossSpaceResult::Completed(Err(crate::vm::VmCopyError::Domain)));
     }
 }
 
