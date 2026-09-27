@@ -29,6 +29,8 @@
 #   P11 diff   新增行 C 锚点 file.c:NNN 存在性与落窗抽查
 #   P12 report 共享路径 asm/rdmsr 无架构门（M3.1 事故形态；基线对账）
 #   P13 diff   新增行反引号全大写常量符号存在性抽查（虚构符号事故）
+#   P14 gate+  RTS 裸 set/clear 绕过 rts_set/rts_unset（F10d 家族；基线对账）
+#   P15 gate   vendored 依赖源码防线（.dockercargo 跟踪 0 + gitignore 条目；d6f176451 事故）
 # 带 "+" 的检查基线豁免（tools/pattern-gate-baseline.txt，key=检查名|路径|cksum）。
 
 set -u
@@ -125,6 +127,13 @@ P2_TESTS=(
   trampoline_address_is_nonzero                         # NL3  sigreturn trampoline
   test_dispatch_times_self_replacement                  # NK8  判别补强
   test_check_gic_madt_decision_table                    # C-38 GICR 空洞决策表
+  test_phantom_seats_beyond_topology                    # NK4-C §1.118 幽灵 CPU（扫描界未钉 processors_count）
+  test_open_request_wire_type_is_cdev_open_not_index    # NK4-C §1.105 消息号=枚举序数（第三发）
+  test_stat_streams_struct_stat_through_copy_out        # NK4-C §1.106 stat 回复腿从不 copy_out
+  test_do_fork_downgrades_parent_shared_pte             # NK4-C B48 fork 父侧 COW 写保护
+  test_boot_params_validate_total_pages_mismatch        # NK4-C §1.111 位图容量 vs 记账双口径
+  test_entity_fork_failure_reap_loop_exits_on_zero      # NK4-C §1.117 `.is_ok()` 误译 waitpid>0
+  test_runetcrc_fork_failure_reap_loop_exits_on_zero    # NK4-C §1.117 同族（runcom 腿）
 )
 check_p2() {
   local root="$1" missing=0 t hits
@@ -351,8 +360,11 @@ collect_p12() {
   for rel in $P12_FILES; do
     f="$root/$rel"
     [ -f "$f" ] || continue
+    # 排除纯注释行（C-62 误报修正：doc 注释里的 naked_asm! 等词不是代码）；
+    # 窗口 6→12 行（C-62 误报修正：块头 cfg 门可隔长注释块，如 lib.rs GS 采样探针）
     while IFS=: read -r ln content; do
-      back=$(awk -v n="$ln" 'NR>=n-6 && NR<n' "$f" | grep -c 'target_arch' || true)
+      printf '%s' "$content" | grep -qE '^[[:space:]]*(//|/\*|\*)' && continue
+      back=$(awk -v n="$ln" 'NR>=n-12 && NR<n' "$f" | grep -c 'target_arch' || true)
       [ "${back:-0}" -gt 0 ] && continue
       printf '%s:%s|%s\n' "$rel" "$ln" "$(printf '%s' "$content" | tr -s ' \t' ' ' | cksum | cut -d' ' -f1)"
     done < <(grep -nE 'asm!|rdmsr|wrmsr' "$f")
@@ -389,6 +401,48 @@ check_p13() {
   done < "$tokfile"
   [ "$bad" -eq 0 ] && ok P13 "增量反引号常量符号存在性通过（检查 $n 个 token）"
   rm -f "$tokfile"
+  return 0
+}
+
+# --------------------------------------------------------------- P14 RTS 裸操作（report+基线）
+# 事故：F10d 家族三种变体——绕过 rts_set/rts_unset（含入队/出队半）裸 set/clear
+# p_rts_flags → runnable 却不入调度队（privctl/clear_ipc_refs/do_trace，NK4C-RESUME-PROMPT §9.8）。
+# collect 只抓 proc.rs（helper 定义/实现域）之外的 kernel 文件；存量对账基线，新增即抓人审。
+collect_p14() {
+  local root="$1"
+  ( cd "$root" && grep -rnE 'p_rts_flags\.(set|clear|insert|remove)\(' os/kernel/src \
+    --include='*.rs' 2>/dev/null | grep -v '^os/kernel/src/proc.rs:' | sort -u )
+}
+check_p14() {
+  local root="$1" line path content key known=0 new=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    path="${line%%:*}"
+    content=$(printf '%s' "$line" | sed 's/^[^:]*:[0-9]*://')
+    key="P14|$path|$(cksum_of "$content")"
+    if baseline_has "$key"; then known=$((known+1)); detail "P14 已知(基线): $line"
+    else fail P14 "RTS 裸 set/clear 绕过 rts_set/rts_unset（基线外；核对入队/出队半，F10d 家族）: $line"; new=$((new+1)); fi
+    baseline_add "$key"
+  done < <(collect_p14 "$root")
+  [ "$new" -eq 0 ] && ok P14 "RTS 裸操作对账通过（存量 ${known} 处在基线）"
+  return 0
+}
+
+# --------------------------------------------------------------- P15 误提交防线（vendored/依赖源码）
+# 事故：d6f176451 `git add -A os/` 误将 os/.dockercargo/registry/（158 文件 4.7MB crates.io
+# 依赖源码）提交入库且 .gitignore 无条目（NK4C R3 评审 §一 唯一卫生违规）。
+check_p15() {
+  local root="$1" bad=0 n=0
+  if git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    n=$(git -C "$root" ls-files 'os/.dockercargo/' 2>/dev/null | wc -l)
+    [ "$n" -eq 0 ] || { fail P15 "vendored 依赖源码被跟踪（git rm -r --cached os/.dockercargo + gitignore）：${n} 文件"; bad=1; }
+  else
+    skip P15 "非 git 仓库（self-test 沙箱），跳过 ls-files 半"
+  fi
+  if [ -f "$root/.gitignore" ]; then
+    grep -q 'dockercargo' "$root/.gitignore" || { fail P15 ".gitignore 缺 os/.dockercargo/ 条目（git add -A 防线）"; bad=1; }
+  fi
+  [ "$bad" -eq 0 ] && ok P15 "vendored 目录防线在位（跟踪 0 + gitignore 条目）"
   return 0
 }
 
@@ -483,6 +537,24 @@ YAML
   printf 'A_REAL_SYMBOL\n' > "$F/.p13_tokens"
   out=$(check_p13 "$F" "$F/.p13_tokens"); st_expect "P13-ok" "[P13] PASS" "$out"
 
+  # --- P14 ---
+  mkdir -p "$F/os/kernel/src"
+  printf 'slot.p_rts_flags.set(RtsFlagsBits::RECEIVING);\n' > "$F/os/kernel/src/clock.rs"
+  printf 'fn rts_set() {}\np.p_rts_flags.clear(SLOT_FREE);\n' > "$F/os/kernel/src/proc.rs"
+  out=$(collect_p14 "$F")
+  st_expect "P14-detect"  "clock.rs" "$out"
+  if printf '%s' "$out" | grep -q "proc.rs"; then
+    printf '  [case] %-22s FAIL 定义文件 proc.rs 不应被抓\n' "P14-scope"; ST_FAIL=$((ST_FAIL+1))
+  else
+    printf '  [case] %-22s PASS（定义文件豁免）\n' "P14-scope"
+  fi
+
+  # --- P15（gitignore 半；ls-files 半在真树变异验证）---
+  printf '.wt/\n/tmp/*\n!/tmp/nk4a/\nos/.dockercargo/\n' > "$F/.gitignore"
+  out=$(check_p15 "$F"); st_expect "P15-ok" "[P15] PASS" "$out"
+  printf '.wt/\n/tmp/*\n' > "$F/.gitignore"
+  out=$(check_p15 "$F"); st_expect "P15-missing" "[P15] FAIL" "$out"
+
   rm -f "$F/.p11_tokens" "$F/.p13_tokens"
   echo "----"
   if [ "$ST_FAIL" -gt 0 ]; then
@@ -510,6 +582,8 @@ check_p8 "$ROOT"
 check_p9 "$ROOT"
 report_p10 "$ROOT"
 check_p12 "$ROOT"
+check_p14 "$ROOT"
+check_p15 "$ROOT"
 
 if [ "$DO_DIFF" -eq 1 ]; then
   added=$(diff_added_lines "$ROOT" "$RANGE")

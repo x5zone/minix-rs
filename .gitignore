@@ -90,3 +90,5 @@ qpid5
 .patch_doc07.py
 check_references.sh
 /examples/
+# docker CARGO_HOME 挂载目录（vendored crates.io 依赖源码，d6f176451 误提交，R3 评审待办 1）
+os/.dockercargo/
