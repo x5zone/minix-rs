@@ -100,14 +100,58 @@ P1 机械对账全过（声明=事实）；抽查 10 笔探针类 commit：cap �
 
 ---
 
-## 三、P3 增量评审（123 笔）——进行中
+## 三、P3 增量评审（123 笔：64 笔含代码改动，其中深审 16 笔 + 机械对账 48 笔）
 
-（G1 x86_64 收官链 / G2 aarch64 bring-up / G3 散件；下一工作单元填充）
+### 3.1 深审判定表（高爆炸半径优先）
 
-## 四、P4 架构专项——进行中
+| commit | 内容 | C 锚点 / 设计 | 判定 |
+|--------|------|---------------|------|
+| `6b667e430` B39 | cross_space 逐连续段 walk 重写（+257/-95） | C vm_copy/createpde 每窗口重翻译（memory.c:526/69） | **PASS**。CopySide{Physical,Process}+chunk() 设计与 C 同构；错误次序保留（resolve_physical 预校验→UnknownEndpoint 先于 PageFault）；chunk==0 正确分流 VmSuspend(Src/Dst)；DM 窗口守卫逐段保留。登记：分段循环的多页离散帧 mock 测试被作者自登记 N3 延后（建议补） |
+| `150502c5f` B41 | region 承接 PROT_EXEC（W^X 接缝） | C region.c:1493-1498（vri_prot 从不报 EXEC） | **PASS**。[ARCH] 流程完整：取证 commit 提请用户裁决→Option A 落地；EXECUTABLE 内部建模位 + query 边界有意不外泄 + 回归测试；"严格 W^X 待专单元"诚实登记 |
+| `796ea8e7e` B42 | boot-server 文本 PF_X→EXECUTABLE | 行为等价 C i386 无 NX；比 B41 动态腿更严格（数据段保持 NX） | **PASS**。真机 71287 次 refault→~15；两支死探针清理登记在案 |
+| `1f911f775` B48 | do_fork 父侧 COW 写保护 | C region.c:995-996 map_writept(src+dst) 双侧 | **PASS**。失败对称回滚（pre-sys_fork 内核态零污染）；"父阻塞 RTS_RECEIVING 无需 shootdown"SAFETY 论证成立，NIT#4 SMP shootdown 诚实登记为独立前沿；回归测试在案 |
+| `0018efa10` 1.101 | exec_bootproc 只 eager filesz | C libexec 语义（region 覆盖 memsz、尾走按需缺页） | **PASS**。MUST/SHOULD 全采纳（页内 .bss 空洞清零、file_pages.min OOB 防线）；PAF_CLEAR 登记后续 |
+| `6c0a0f0da` 1.106 | stat 回复腿 copy_out（**marker+echo/ls/cat 达成件**） | C struct stat 布局（sys/stat.h:59-97）+ call.c:734 st_ino 预填 | **PASS**。静态定位零探针；死代码（write_to 88B 伪布局）连根删除；grant 越界硬失败非截断的事实约束写明；StatVfs 同根因 TODO 锚点诚实登记 |
+| `330085bfc` 1.17 | 出生回报握手全链（B8/B9/B9b，20 文件） | proc.c:1499-1501 s_asyn_pending 重挂臂；sef_init.c:458-466 sendrec | **PASS**。四 transport 加 send_rec 全 impl+mock；RS reply 改 sendnb 对位 utility.c:324 |
+| `dade6883f` 1.51 | 18 站点 virt_to_phys→AddressRef::Process | F10c/d 同族系统性收口（DM 减法对内核栈/高半 VA 不适用） | **PASS**（message+stat 级；机械替换模式统一） |
+| `52934500b` 1.53 | 固件池堆 landing pad（memmap/boot_modules .bss 落地） | fix27c 同病第三发收口 | **PASS**（message 级）。unsafe 生命周期/幂等/截断分叉 CodeReview 逐条记录；15 字节 strlcpy 截断与 vm_handoff::copy_name 同界零分叉 |
+| `865b02a10` 1.96 | DeliverMsg suspend target=receiver | C vm_suspend(rp,rp,...) | **PASS**（message 级） |
+| `7b7cb8653` B12 | Path A 交付完成清 REPLY_PEND | C mini_sendrec 末尾 MF_CLREPLYPRIV 无条件清 | **PASS**。故障链（残留→VM Path B→drain 误判→INIT 永停）描述精确，修在唯一正确站点 |
+| `3ddca06a6` 1.117 | WAIT4 `Ok(0)` 忙等→`pid>0` | C init.c:920/:818 `waitpid(...)>0` | **PASS**。并主动清扫同族 RS SIGCHLD 排空环（request.c:1063 对位）——一次修复两处同族 |
+| `2b34922b9` 1.116 | aarch64 #PF→VM 路由腿 | x86 vector-14 ForwardToVm 对位 | **PASS**。诚实翻案上一轮误诊 |
+| `6182f7b73` 1.113 | aarch64 park ABI + switch-after-pop（16 文件） | x86 int33 door 停车语义的 aarch64 镜像 | **PASS**（message 级；Park ABI 与 EL1h TPIDR 栈基 rebase 为后续 1.117/1.118 取证的前提，交叉引用自洽） |
+| `d8e032b09` 1.114 | 首切根崩溃根因 + MMIO 高半 + 方案 A 裁决 | 对照 x86 inherit_supervisor_half 免疫机理 | **PASS**。探针用后全回滚；MMIO 修复为 aarch64-only cfg 门控 x86 零影响 |
+| `2b34922b9`/`391a57155` GICR/GIC | MADT type-14 GICR 子表解析 | **QEMU virt-acpi-build.c 源码 ground truth（WebFetch 实读）** | **PASS**——用上游源码钉死 QEMU 行为而非猜规格，方法论 exemplary |
 
-## 五、P5 卫生审计——进行中
+### 3.2 机械对账类（48 笔，B11-B38/1.13-1.46 链小修复）
 
-## 六、P6 独立验证——进行中
+全部通过 P1 对账（声明=事实）；message 均带 C 锚点与三件套/真机验证声明；抽查 B12 深审合格，其余按 1-2 文件小修复归类为"对账+message 级核验"。**正面结论**：B 编号链（B11→B48）每笔的"新前沿→下轮侦察"交接连续性完整，无断链。
 
-## 七、结论与移交——待 P3-P6 完成
+### 3.3 增量段正面总评
+
+1. **里程碑真实性**：x86_64 rc marker（§1.105/§1.106）与 echo/ls/cat 上机均有双跑签名记录；§1.114 明确"x86_64 单核双跑 marker=2"。
+2. **方法论纪律**：探针"用后全回滚、tracked 净"执行率 100%（P1 对账）；取证轮与修复轮分离清晰；**误诊诚实翻案**至少 3 次（§1.116 翻 §1.115 末、§1.101 纠 §1.100 双重误判、§1.118续 翻 §1.118 park 假设）——这是健康的取证文化。
+3. **ground truth 优先**：QEMU 源码实读（GICR）、C 源逐行对位（waitpid/init.c:920）执行到位。
+
+## 四、P4 架构专项（5 项判定）
+
+| # | 专项 | 判定 |
+|---|------|------|
+| 1 | **W^X 决策链（B41/B42）** | ✅ 闭环。用户裁决 Option A 在案；EXECUTABLE 内部位 + query 边界 C 对位 + boot 腿按真实 PF_X（比动态腿更严）；"严格 W^X 待专单元"登记未开——**建议列入单元 E（1.6 F3 W^X）的范围说明** |
+| 2 | **aarch64 方案 A（独立 ELF 高半启动）** | ✅ 实质闭环（用户拍板 OQ-N6 交接、设计文档 02-higher-half-kernel.md 既定路径、WORKLOG §1.114 决策记录）。⚠️ 两处轻微缺口：①代码侧无 `[ARCH:]` 字面标注（kernel-image aarch64 入口契约注释质量高但未挂标注）；②`kernel-image/src/main.rs:17-19` 模块头"交付边界：_start 目前立栈后驻留"未更新双架构状态（aarch64 已接线、x86_64 仍未接线）——**一行 doc 修** |
+| 3 | **exec_bootproc eager filesz（1.101）** | ✅ 闭环（见 3.1） |
+| 4 | **内存双账本演进** | ✅ 系统性收敛中：固件池堆 landing pad（1.53，fix27c 同病第三发收口）、池容量绑 GLOBAL_POOL_PAGES（B29/B30/1.92/1.95）、cross_space 逐页 walk（B39）、AddressRef::Process 统一（1.51）。原登记"跨分配器双记账"债的四个形态逐一清偿或有界登记 |
+| 5 | **SMP -smp 4 OQ（§1.118续）** | ⚠️ **上交用户**：两候选修法未拍板（(a) xtask aarch64 -smp 1 对齐 x86 口径；(b) 修 SCHED pick 健壮性/次核 bringup——且 §1.119 已翻案"次核未就绪"定性、真缺陷在 pick 返回未就绪/越界 cpu）。单核绕过不达 marker，**必须裁决后才能继续终目标①的 aarch64 线**。评审意见：**(b) 的 pick 健壮性是架构中立正确修法（x86 单核只是恰好免疫）；(a) 可作为验证口径并行——但归属用户拍板** |
+
+**附带登记（未决，非阻塞）**：x86_64 是否迁移方案 A 挂 OQ（WORKLOG:5087 侧线程建议"riscv64 先行、x86 等消费方出现"——评审认同该口径，不建议预防性重构）。
+
+## 五、P5 卫生审计
+
+1. **探针**：160 处引用/29 文件。TEMP 取证探针执行率 100% 回滚（P1）；committed 探针（schedctl/en/rcvi 等取证基础设施）为有意保留。B41/B42 登记的两支死探针（`vmpt2bf` cow_exec_pf.rs:53、`sas-send` vm_server.rs:786）**仍在**——与作者"登记清理"一致，归属阶段 5 task1-close 大裁决，非违规。
+2. **死代码**：1.106 主动删除 fs_driver 死代码（write_to 伪布局）；1.100 清除 219+370+46 行 committed 调试探针并修复缺页 handler 禁 walk 违规——卫生动作主动且及时。
+3. **仓库卫生**：唯一违规 = 交接方 `d6f176451` 的 `os/.dockercargo/`（§一）。**建议修复（等续跑 agent 会话间隙执行，避免 index 干扰）**：`.gitignore` 加 `os/.dockercargo/` + `git rm -r --cached os/.dockercargo`（盘面文件保留，docker 构建不受影响）。
+4. **文档同步**：WORKLOG 5175 行持续维护、顶部状态始终最新（每次 commit 前更新纪律执行到位）；⚠️ kernel-image 模块头交付边界未随 1.115 更新（见 P4#2）；⚠️ 本评审新登记 1.12a 注释矛盾（§二 F-SELF-3）。
+
+## 六、P6 独立验证——进行中（docker 三件套后台执行；x86_64 marker 复跑待镜像重建）
+
+## 七、结论与移交——待 P6 完成
