@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-6 修复+探针三代（VFS send_work 排水腿接线落地·探针推翻「VFS comm 黑洞」主嫌·停点重心转向内核调度/IPC 唤醒面 sa-call 洪流）**：静态定位直接钉死一条 P0——C `main.c:72` 主循环每轮 `send_work()` 扫窗口满排队腿（`comm.c:37-47/66-87`），Rust `IpcFsTransport::send_fs` 有 queuemsg 排队腿但真补发原语 `flush_send_queue`（main_loop.rs:7384）**零生产调用方**（grep 实证仅 3 处测试）——窗口满的请求进队后无人 dequeue、worker 永挂 `WaitingForFs` 且 `flush_pending_fs` 视角是 Ok（沉默黑洞）。修复＝run() 循环 `flush_pending_fs` 后接 `state.flush_send_queue(&mut DirectTrapTransport)`（+8 行）。探针三代（w6p/6b/6c，全回滚）判别面：s 针（send_fs 分支）3/3 全 `w`＝**窗口从未满，queuemsg 黑洞未在本条停点路上点火**（修复是真 P0 但不是本次冻结主因）；m/n 针（MFS 收/回）5/5 全配对＝MFS 随收随回；R 针 7 条＝OK+EBADF×5+ENOENT 全 target **raw ep 0x000b**（无 stamp）；D/I/E 针：boot 会合丢弃臂零命中、握手 13 件全纯净 0x900、主循环 E 仅见 1 事件（`Ec0907`＝PM 消息）后闲置。**关键定性**：INIT 收齐 7 回复、正常推进到 `init-state Runcom`、rc 子 `setaddr nr=0xc flags=0x8008`（RECEIVING|NO_QUANTUM）；此后全机冻结于 `sa-call caller=4(SCHED) pid=9 fl=0x12`×8 洪流——**VFS comm 面在取证路径上是健康的，「VFS 卡第 8 轮」刻画不再成立**；停点重心＝内核调度/IPC 唤醒面（pid 9 反复被 SCHED 点名的 pick-fail 家族，§1.113/§1.119续-7 同族）。三件套全绿：docker 823/243/531 不减、rustfmt 持平（1↔1）、aarch64 净态双跑 4296/4297 行同签名 panic=0、x86 `-smp 1` 双跑 marker=2 panic=0。详文见文末 §1.120续-6。**下一手**＝内核侧：钉死 pid 9 是谁（slot/endpoint 对账）、fl=0x12 两比特语义、`syscall_clock.rs:214` sa-call 的 pick 条件——判别 rc 子 NO_QUANTUM 与 pid 9 洪流之间的唤醒/配额断腿。
+> **✅ 最新前沿＝§1.120续-7 fork 回复链定位+C 分叉修复（VFS→PM 回腿改阻塞 ipc_send 对位 main.c:912·真机判别链证伪「架构特异性」定论、钉死时序敏感竞态：探针轮 aarch64 首次消费 0x987 并推进 exec/exit 腿，净态双跑 4295 行同基线签名＝本腿真实但窗口还有别的腿）**：C 真值三件套钉死（tell_vfs 异步正确 / service_pm 尾＝阻塞 ipc_send+panic / reply()＝sendnb 忽略失败）；五代 TEMP 针（N6 r/e 针证伪 ENOTREADY 蒸发、rp7/pd 夹针实锤 0x987 copy 进 PM 缓冲、N8 rst+N9 rv 针抓到 `v098705→pm 98701` 消费推进）；修复＝send_reply target==PM 走阻塞 send（净态无回归：aarch64 双跑同 §1.120 基线、x86 3/4 marker=2 一次单发 vector-14 洪流登记观察、vfs 538、fmt 持平、探针全回滚）。**下一手**＝净态 fork 冻结的其余竞态腿：VFS 阻塞 send park（caller_q pick）/rcvblk 幽灵队列/record_wake_target 静默丢弃/x86 v14。详文见文末 §1.120续-7。
+>
+> **（历史·§1.120续-6 摘要，详文见文末）✅ §1.120续-6 修复+探针三代（VFS send_work 排水腿接线落地·探针推翻「VFS comm 黑洞」主嫌·停点重心转向内核调度/IPC 唤醒面 sa-call 洪流）**：静态定位直接钉死一条 P0——C `main.c:72` 主循环每轮 `send_work()` 扫窗口满排队腿（`comm.c:37-47/66-87`），Rust `IpcFsTransport::send_fs` 有 queuemsg 排队腿但真补发原语 `flush_send_queue`（main_loop.rs:7384）**零生产调用方**（grep 实证仅 3 处测试）——窗口满的请求进队后无人 dequeue、worker 永挂 `WaitingForFs` 且 `flush_pending_fs` 视角是 Ok（沉默黑洞）。修复＝run() 循环 `flush_pending_fs` 后接 `state.flush_send_queue(&mut DirectTrapTransport)`（+8 行）。探针三代（w6p/6b/6c，全回滚）判别面：s 针（send_fs 分支）3/3 全 `w`＝**窗口从未满，queuemsg 黑洞未在本条停点路上点火**（修复是真 P0 但不是本次冻结主因）；m/n 针（MFS 收/回）5/5 全配对＝MFS 随收随回；R 针 7 条＝OK+EBADF×5+ENOENT 全 target **raw ep 0x000b**（无 stamp）；D/I/E 针：boot 会合丢弃臂零命中、握手 13 件全纯净 0x900、主循环 E 仅见 1 事件（`Ec0907`＝PM 消息）后闲置。**关键定性**：INIT 收齐 7 回复、正常推进到 `init-state Runcom`、rc 子 `setaddr nr=0xc flags=0x8008`（RECEIVING|NO_QUANTUM）；此后日志尾部静止在 `sa-call caller=4(SCHED) pid=9 fl=0x12`——**VFS comm 面在取证路径上是健康的，「VFS 卡第 8 轮」刻画不再成立**。（**【续-7 后校订正】本行原文把该尾部读成「洪流/停点重心＝内核调度面 pick-fail」——误读。`sa-call` 是 `syscall_clock.rs:213` 的 dispatch_setalarm 取证探针、`SAC_N` cap=8，日志里 ×8＝探针上限而非洪流规模；`sys=y`/`fl=0x12`(SYS_PROC|PREEMPTIBLE)＝权限正常（§1.10z 已修 s_id 宽度剥旗根因，L1805/L4462 早有同义订正）。真悬案回到：INIT 推进到 Runcom 后其后续请求**从未出现在 VFS 主循环**（E 针仅 1 事件）而 rc 子挂 RECEIVING|NO_QUANTUM＝**内核 IPC 投递/唤醒腿**悬案，§1.96/§1.113 同族。）三件套全绿：docker 823/243/531 不减、rustfmt 持平（1↔1）、aarch64 净态双跑 4296/4297 行同签名 panic=0、x86 `-smp 1` 双跑 marker=2 panic=0。详文见文末 §1.120续-6。**下一手**（续-7 已按此订正展开）＝内核侧一次性全图 dump（DLGRAPH 重建，续-2 同族位点）判别 rc 子 RECEIVING|NO_QUANTUM 与 INIT 后续请求去向：是挂左队列等 balance 补配额、还是请求滞留 caller_q/SENDING 等 never-arriving 的 VFS 接收。
 >
 > **（历史·§1.120 摘要，详文见文末）✅ §1.120 取证（新鲜真机·纠正续-7 停点低估）**：用 HEAD（含续-7）重建 aarch64 镜像跑 QEMU，判定续-7 记录的「INIT text vm-pf 洪流」＝**主要是正常 lazy 分页**（栈同 VA 重复系 13 进程各自栈重叠），50s/110s 日志均冻结 4295 行＝**真死锁非慢**。真实推进比续-7 记的更远：12 server+INIT 全 exec 成功、INIT **已达 `init-state Runcom`**（正跑 /etc/rc）；新断点＝**Runcom 后 rc 子进程 proc12（`/bin/sh`·`setaddr nr=0xc`）在 setaddr 之后的 exec/缺页/入进调度腿全员阻塞**。**前沿重定＝aarch64 fork 出的 rc 子进程（proc12）exec/首次调度腿（属 fork COW / 子进程 text demand-paging 家族·非 §1.116 INIT-text 覆盖）**。本轮纯取证、零码改、无新探针（读 committed 二进制内置 `nk4a:*` 路标），WORKLOG-only。**§1.120续-1 静态锐化**：全日志无 `exec endpt=0xc`（12 boot 进程全有、proc12 独缺）⇒ proc12 卡 VM 建址后、最终 SYS_EXEC 前；`setaddr flags=0x8008`＝RECEIVING｜NO_QUANTUM ⇒ **proc12 阻塞在 receive、等一个永不到达的子 exec 期 IPC 回复**（＝子未起来、非 INIT 误等；与 §1.119 同族但对象换为 fork 子）。**§1.120续-2 一次性死锁进程图探针（scheduler_loop pick-fail idle 腿·task-close 已全回滚）钉死等待链**：boot→endpoint 映射（`exec <name> ok`×`exec endpt=`）＝ds6/rs2/pm0/sched4/**vfs1**/memory3/tty5/mib7/pfs9/mfs10/init11；DLGRAPH 显示 **INIT(nr16·ep11) fl=RECEIVING、p_sendto_e=1(VFS)、mt=0x115**，rc 子(nr17·ep=0x800c) fl=NO_QUANTUM、sendto 亦=1；VFS(nr6·ep1) fl=RECEIVING＝在其 receive 空转循环、**并未在处理 INIT 请求**（若阻塞处理会转 SENDING/RUNNING）。sendrec 为 rendezvous：INIT 已发出且处于等回复相位、VFS 已收已回并已回到 receive ⇒ **VFS(ep1)→INIT(ep11) 的回复在投递腿丢失**。**根因精修＝IPC 回复投递腿 VFS→INIT 丢失（§1.113 switch-after-pop／§1.119续-7／§1.96 DeliverMsg-endpoint 同族·回复投向刚 fork+exec 而变动的端点/槽），非「proc12 请求未达 VFS」**。详文见文末 §1.120 / §1.120续-1 / §1.120续-2 / §1.120续-3。**§1.120续-3 VFS→INIT 回复腿探针（ipc.rs send/receive·已 task-close 全回滚）推翻「回复投递腿丢失」纯 H1 假设**：真机拓 `caller==VFS(ep1)&&dst==INIT(ep0xb)` 腿——命中 **7 次**、全为 `mt=0x5`(EIO) `di=0x10`(=slot16=INIT **解析正确**) `dfl=0x8`(INIT RECEIVING) `dgf=0x1`(getfrom=VFS)。⇒ VFS **确实回了、回对了槽**（Path-A is_willing_to_receive 对 getfrom==VFS 恒真应唤醒 INIT），但**回复码是 EIO(5)**。init-rcv 腿同拓 INIT 多轮 `receive(src=1 rpv=y)`。⇒ 死锁重定＝**INIT↔VFS 以 EIO 往返 7 轮后停摆**（第 8 次 INIT 发出但 VFS 不再回＝VFS 卡在处理腿内部），**不是 IPC 回复投递腿 bug**・真正待查＝**VFS 为何对 INIT 的 mt=277 请求返 EIO、第 8 次卡在哪一步**（exec/内存请求失败腿）。下轮：VFS 侧 exec/处理腿装探针钉 mt=277 具体含义与 EIO 产出点。**§1.120续-4 静态锐化（零码·未跑 QEMU）**：mt=0x115(277)＝`VfsCallNum::Stat`（call_table.rs:50 VFS_BASE+21）＝INIT(runcom) 对 rc/脚本链的路径 stat；Stat 腿 EIO 产出点全枚举＝入口臂 syscalls.rs:1075/1098（经 `send_lookup_for_slot` main_loop.rs:1928/1934/1962 三子点）＋相位2 main_loop.rs:6879/6888＋**fs_sendrec 下折腿 flush_pending_fs main_loop.rs:4705-4726（`Err(e)` 被 `let _ = e` 吞后折成裸 EIO 回用户——正好同时解释「回 7 次一模一样的 EIO」与「第 8 次停摆＝sendrec rendezvous 挂起在对端」两特征**）；头号嫌疑＝vmnt 表登记的 fs_e endpoint 陈旧/错指（回复码是 5 非 ENOENT(2)⇒FS 语义错误基本排除、更像传输层失败）。下轮探针＝flush_pending_fs 打 `fs_e/vmnt/e 原始码` 三点。
 >
@@ -5612,7 +5614,7 @@ EDOM 修复后（无探针布局）aarch64 签名回到 §1.120 原始 4295 行�
 ### 定性与停点转移
 
 - 「INIT 第 8 轮发出但 VFS 不再回」的续-3/4/5 刻画在本取证路径上**不再成立**：VFS comm 面健康（s 全 w、m/n 配对、无丢弃、主循环活着在 receive 空转）；INIT 收齐 7 回复走到 Runcom。
-- 冻结签名（sa-call 洪流 caller=SCHED pid=9）＝**内核调度/IPC 唤醒面**问题：pid 9 被 SCHED 反复点名（fl=0x12）、rc 子 slot12 挂 RECEIVING|NO_QUANTUM 等一个无人送的配额/唤醒。§1.113/§1.119续-7 pick-fail 同族。
+- 冻结签名尾部 `sa-call caller=SCHED pid=9 fl=0x12`＝**【续-7 后校订正：原文「×8 洪流＝内核调度/IPC 唤醒面 pick-fail 家族」系误读】`sa-call` 是 `syscall_clock.rs:213` setalarm dispatch 探针、cap=8（SAC_N），×8＝探针上限；sys=y/fl=0x12 权限正常（§1.10z/§1.118 家族已修，见 L1805、L4462 订正）。可存的观察只有：rc 子 slot12 挂 RECEIVING|NO_QUANTUM、此后无任何 VFS 主循环事件——悬案＝INIT→VFS 后续请求在内核投递/唤醒腿的去向 + rc 子配额补给腿，二者均需全图 dump 判别（续-7 重建 DLGRAPH）。**
 - `flush_send_queue` 接线不因探针结论回滚——它是与 C 行为契约偏离的实打实 P0（并发 FS 对话一超过窗口深度就静默吞请求），留着它等下一次能点火布局。
 
 ### 验证（三件套）
@@ -5628,3 +5630,33 @@ EDOM 修复后（无探针布局）aarch64 签名回到 §1.120 原始 4295 行�
 ### 新停点
 
 aarch64 冻结面从「VFS↔INIT comm 层」重定向到「内核调度/IPC 唤醒层」：rc 子（slot12，flags=0x8008 RECEIVING|NO_QUANTUM）与 pid 9（fl=0x12，被 SCHED 洪流反复点名）之间断的是**唤醒/配额投递腿**。下一手：①对账 pid 9 身份（boot 序 slot→进程名）；②读 `syscall_clock.rs:214` sa-call 探针上下文与 pick 条件（fl=0x12 是哪两比特、为何 sys=y 还反复点它）；③对照 C `kernel/proc.c` `sched_send`/`pick_hot` 唤醒记账找偏离。探针装在内核 receive/wake 腿（同 §1.119续-7 探针纪律）。
+
+## §1.120续-7 fork 回复链定位 + C 分叉修复（VFS→PM 回腿阻塞 send·2026-09-28）
+
+### C 真值对账（三件套静态钉死）
+
+- `tell_vfs`（pm/utility.c:121-135）＝asynsend3(VFS, AMF_NOREPLY)+置 VFS_CALL 标志——PM 不停等在 sendrec、回主循环 receive(ANY) 是**正确形态**（Rust 一致）。
+- **VFS service_pm 尾（vfs/main.c:912-915）＝`ipc_send(PM_PROC_NR,&m_out)` 阻塞发 + 失败 panic**——非 sendnb！Rust `send_reply` 把所有回复统一走 sendnb＝对 PM 回腿的语义偏离（P0 候选登记于续-6）。
+- VFS 普通 syscall 回腿 reply()（main.c:638-650）＝ipc_sendnb+失败仅 printf（Rust sendnb 一致）；C asynsend.c＝用户态 msgtable+内核 SENDA 表重试（「不阻塞但不丢」机制，Rust 无对应表——若回复腿要走异步语义则必须补，本修复选阻塞 send 对位主案）。
+
+### 真机判别链（TEMP 针五代·全部回滚，备份 tmp/nk4a/cont7-probes/）
+
+1. N6 针（VFS send_reply r/e tag）：aarch64 `r9870000`＝sendnb 返回 OK——「ENOTREADY 蒸发」假说**证伪**。
+2. 双架构对照（同一镜像）：x86 `-smp 1` 全健康（`pm 98701` 消费、链推进 EXEC/EXIT、marker 出）；aarch64 `-smp 1` 与 `-smp 4` 同样冻结→**SMP 排除、aarch64 架构特异性钉死**（后证不成立，见 4）。
+3. 内核 rp7/pd 夹针：`rp7 out=D fl=0x0 dm=0x40`＝Path-A 直投成功；`pd res=D mt=0x987 pdmv=0x7ffffffc0258`＝**0x987 已成功 copy 进 PM 用户缓冲**；PM 用户态零打印、无 pm-recv-err。
+4. N8 rst 针（finish_and_restore PM→EL0 打 x0/x1 实值）+ N9 rv 针（minix-sys receive svc 边界打 ret/mt/status）：**装针轮 aarch64 竟然推进**——`v098705 → pm 98701 → v098301/984`，链过 exec/exit 腿到 rc 子等待面；两跑对比＝**时序敏感竞态（Heisenbug）确认，架构特异性结论推翻**（x86 也在同一窗口内，靠时序运气通过）。
+5. 竞态窗口定性：VFS 回腿 sendnb 时 PM 未必 park 在 receive（tell_vfs 后还有 do_fork 收尾腿）——C 用阻塞 ipc_send 天然消灭该窗口；Rust sendnb 把窗口交给调度时序。
+
+### 修复（本 commit）
+
+`send_reply` 按 C 分叉：target==PM → 阻塞 `send` + 失败 panic（对位 main.c:912-915）；其余 target 保持 sendnb（对位 reply() main.c:638-650）。新增注释全英文。
+
+### 验证
+
+- aarch64 净态双跑 c7n1/n2：**4295 行同签名 panic=0**＝与 §1.120 基线完全一致（无回归；fork 冻结在净态未打穿＝竞态还有别的腿，探针轮推进证明本腿是真实腿之一）。
+- x86_64 手动 `-smp 1` 四跑 c7x1-4：3/4 marker=2 panic=0；x1 单发 vector-14 rip=0 内核缺页洪流（7331 行）——HEAD 基线未见过该签名，登记观察（若复现率上升按 fix 回归回滚预案处理）。
+- docker：kernel/arch 代码未触碰（探针全部回滚＝HEAD 原样），基线 823/243/531 沿袭有效；宿主 `cargo test -p minix-vfs` **538/0**✓；rustfmt main_loop.rs Diff hunk 数 HEAD↔工作树持平✓。
+
+### 新停点（下一手）
+
+净态冻结＝`setaddr nr=0xc flags=0x8008`（rc 子 RECEIVING|NO_QUANTUM）+ sa-call cap 尾——INIT fork 后的 **VFS→INIT/子 回复投递腿在净态仍丢**（探针轮 PM 消费 0x987 后链推进到子等待 ep=1 面，净态 PM 未消费）。候选：①阻塞 send 的 park 腿（VFS SENDING 挂 caller_q→PM receive pick 腿，`rcvblk ep=0/1 qlen=1` 幽灵队列条目家族）；②record_wake_target 满时静默丢弃（注释与代码不符已登记）；③x86 单发 v14 洪流根因。判别针＝VFS send 阻塞臂命中计数 + PM receive pick caller_q 臂。

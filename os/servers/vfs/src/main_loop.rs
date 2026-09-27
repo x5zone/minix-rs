@@ -7595,14 +7595,39 @@ impl minix_sef::SefIpc for VfsIpc {
 ///
 /// Corresponds to Minix3's `main()` function (main.c:54-118): SEF 启动 →
 /// 握手阻塞循环(main.c:410-436)→ `sef_receive(ANY)` 主循环(main.c:601)。
-/// 生产回复发送（C `reply` 的 `ipc_sendnb` 半，main.c）。
+/// 生产回复发送，按 C 分双轨（Ground Truth）：PM 控制腿 = 阻塞
+/// `ipc_send` + 失败 panic（`service_pm()` 尾，main.c:912-915）；其余
+/// 调用者腿 = `ipc_sendnb` + 忽略失败（通用 `reply()`，main.c:638-650）。
 ///
 /// 应答只带 `m_type`（C 的 `reply` 同样是 `memset(&m, 0, sizeof(m));
 /// m.m_type = result` 的裸回复）——数据面早已由各臂自己拷出或经
 /// FS 应答落地。
 fn send_reply(target: Endpoint, reply: Message) {
     use minix_sys::ipc::IpcTransport;
-    // 非阻塞发（C `ipc_sendnb`）：调用方在 sendrec 里等着，不会拒绝接收。
+    // C split (Ground Truth): the `service_pm()` tail replies to PM
+    // with a BLOCKING `ipc_send` and panics on failure
+    // (vfs/main.c:912-915); only the generic `reply()` uses
+    // `ipc_sendnb` and ignores failures (main.c:638-650). Routing the
+    // PM leg through sendnb was a semantic deviation: when PM was not
+    // parked in receive yet (its tell_vfs leg still running), the
+    // reply raced. Real machine NK4-C §1.120-cont.7: aarch64 froze at
+    // VFS_PM_FORK_REPLY (0x987) while x86 crossed the same window by
+    // timing luck -- a two-arch Heisenbug signature of this split.
+    // Invariant (NK4-C §1.120-cont.7 review): unlike C, where only VFS's
+    // main thread blocks here while worker threads keep serving, this
+    // server is single-threaded — the whole loop stalls until PM takes
+    // the reply. Safe today because PM's tell_vfs leg is a one-way send
+    // that always returns to receive (its sendrec-on-VFS legs precede
+    // tell_vfs); any future PM->VFS sendrec leg that waits on this loop
+    // would deadlock here.
+    if target == Endpoint::PM {
+        minix_sys::ipc::DirectTrapTransport
+            .send(target, &reply)
+            .expect("VFS service_pm: ipc_send to PM failed"); // C: panic
+        return;
+    }
+    // Non-blocking send (C `ipc_sendnb`): the caller is waiting in
+    // sendrec and will not refuse the delivery.
     let _ = minix_sys::ipc::DirectTrapTransport.sendnb(target, &reply);
 }
 
