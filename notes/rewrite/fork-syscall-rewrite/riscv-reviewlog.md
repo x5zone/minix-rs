@@ -46,16 +46,27 @@ NK4A 群四份（riscv 零命中，仅存档参照）。`.zcode` 侧：
 | 第 1 轮 | 2026-09-27 | 真值输入全量（`NK4C-WORKLOG.md` §1.78–§1.119 + 两份 fixlog）＋ os/arch riscv64 全部 17 文件 ＋ os/plat riscv 腿 ＋ 内核 arch_boot/trap_dispatch/with_protection ＋ minix-sys ipc.rs 门控 ＋ 装机链（riscv64.ld、boot-shim、xtask、minix-boot）＋ VM 帧池/TTY 串口/init 用户态抽查 ＋ 生产配方 cargo check | 见 §A/§B/§C 全部锚点；编译性证据见 §A.0 | §A 各「有缺口」项待主线程排期；D1–D6 待用户拍板；真机待验表未启动 |
 | 第 2 轮 | 2026-09-27 | 补扫 17 份 N\*/\*RE\* 日志（NK4B-WORKLOG 精读 2446 行、回归评审×2、R3 评审报告、NK4C 开局/续跑 prompt、NK4B-TODO、PATTERN-SCAN、NK4A 评审报告、20260923 两份评审）＋ .zcode 六日日志排查（riscv 零命中）＋ 4 项现场复核 | sstatus.SUM 缺口（C25）、reply_wire 未迁移（C24）、M4.3 OpenSBI 腿已实证、M4.4 三件缺件＋.bss 清零、a1 状态车道选型免疫（C26）、riscv64.ld CRLF 基线（C32）、NK4C prompt 阶段 3 既定裁决（甲案＋SUM 丙案） | D7 新增；C 表 24–31 行；A.1/A.3/A.6 修订；A.0 补 CI 门建议 |
 | 第 3 轮 | 2026-09-27 | WORKLOG 结构债深度分析（§D 全新章）：8 笔债的现状锚点核验（reservedqueue/quiet_wait/发射端口/ev_new 缺席/link.ld 引用面/handoff 契约等 10 项 grep 实测）＋ 五参照系对照 ＋ 每债 ≥3 方案 ＋ 修复批次矩阵 | D.1–D.9；`impl MemType for AnonymousMemory` 无 eager 物化复核（memtype.rs:253 起）；boot-shim lib.rs:136 错端口 0x3f9 在 HEAD 复核 | D 节各「裁决归属」待用户/主线程认领；批次建议入 §D.9 |
-| 第 4 轮 | 2026-09-27 | 外部复核抽验通过后补账 4 笔遗漏债：债⑨ PAF_CLEAR（管线三层建成、漏斗一接头未插——三后端 CLEAR 分支全在、`to_alloc_flags` 仍 `allow(dead_code)`、`alloc_pfn_reclaiming` 无 flags 形参）、债⑩ 缓存维护（全仓 fence.i/cvau/iallu 零命中，riscv 面首次入账）、债⑪ 代刷腿翻案（vmctl FlushTlb/InvlPg 三架构已在＝FIX-24，V13-P2-1「零调用者是有意设计」的依据在 VmDm 通道不成立）、债⑫ 吞错家族目录（~30 站点/12 文件＋旗舰两点锚点修正） | D.10–D.13＋D.0/D.9 扩表；fs-rt transport.rs:272/250/262、pm ipc/vfs.rs:270、syscall.rs:2555-2592/2767-2774、arch_do_vmctl.c:51、cow_exec_pf.rs:281-297、vir_region.rs:59-71、三分配器 CLEAR 行 | 债⑫ 续轮逐点展开（30 站点三问表）；移交项待主线程改口（见下待办区） |
+| 第 4 轮 | 2026-09-27 | 外部复核抽验通过后补账 4 笔遗漏债：债⑨ PAF_CLEAR（管线三层建成、漏斗一接头未插——三后端 CLEAR 分支全在、`to_alloc_flags` 仍 `allow(dead_code)`、`alloc_pfn_reclaiming` 无 flags 形参）、债⑩ 缓存维护（全仓 fence.i/cvau/iallu 零命中【第 5 轮已修正：fence.i 实有 2 行命中，见 D.11】，riscv 面首次入账）、债⑪ 代刷腿翻案（vmctl FlushTlb/InvlPg 三架构已在＝FIX-24，V13-P2-1「零调用者是有意设计」的依据在 VmDm 通道不成立）、债⑫ 吞错家族目录（~30 站点/12 文件＋旗舰两点锚点修正） | D.10–D.13＋D.0/D.9 扩表；fs-rt transport.rs:272/250/262、pm ipc/vfs.rs:270、syscall.rs:2555-2592/2767-2774、arch_do_vmctl.c:51、cow_exec_pf.rs:281-297、vir_region.rs:59-71、三分配器 CLEAR 行 | 债⑫ 续轮逐点展开（30 站点三问表）；移交项待主线程改口（见下待办区） |
 | 第 5 轮 | 2026-09-27 | 外部复核驱动修正债⑩：riscv 散点 fence.i 翻案（higher_half.rs:54 活指令＋:38 注释，boot 腿 hart0 一次性）→ D.11 现状段重写、方案表对位列更新、推荐收紧为甲；主动扫描 WORKLOG/FIXLOG 补漏：债⑬ 新立（bump 池无回收＋kerninfo 责任移交，「结构债三件套」第二件）、B33a 入债⑫家族（正 errno 成功车道）、债⑥ 方案乙补三件套锚点 | 修正版分模式 grep（fence.i=2、cvau/iallu=0）＋第 4 轮原命令噪声定量（2960 行）；kerninfo.rs:24-31；exec.rs:53-62；x86_64/aarch64 higher_half.rs 无散点核查 | D.11 误判教训入 misc_concepts 候选（移交项）；os/kernel/src/arch/ 三架构文件除 higher_half 外仍欠逐行对账（附录欠账区） |
+| 第 6 轮 | 2026-09-27 | 编辑补账三笔（D.14 移至 D.13 后、跨债总结句改十三笔并移全章文末、快照第 4 轮行加注不改写）＋债⑫ 大件交付：逐点处置表 31 站/13 文件（乙 7＋维持 23＋甲 1；B33a 调用侧复核＝calls.rs:633 不取负现症实锤；同线过滤口径修正——跨行拆分调用漏计 devman 3 站）；**收敛声明：§D 结构债扫描线按停止规则收敛** | D.13 逐点处置表两批；pm calls.rs:631-634；devman 跨行补计；移交项三笔列全 | §D 线收敛；后续价值在批次实施即时修正；§A 范围挂账项不动 |
 
-**移交项（本线程无权限做，交主线程）**：NK4C-WORKLOG §1.115「债②」的口径「riscv64
-同构接入先行＝让 BootHandoff 获得第二消费者」与本文件 §D.2 触发条件 3 的发现冲突
-——prompt 已裁的 riscv 甲案是 kernel-image 自当引导体、**不经 BootHandoff 跨镜像
-交接**，故甲案落地并不构成第二消费者。请主线程在下一次触碰 WORKLOG 时顺手改口
-（建议改述为「riscv 甲案落地可验证『kernel-image 自引导』这一第三形态，BootHandoff
-的第二消费者仍等 x86 迁移或其它消费方」），并加反向引用
-`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md §D.2`，保双向引用闭环。
+**移交项（本线程无权限做，交主线程一次性收口；第 6 轮列全为三笔）**：
+
+1. **WORKLOG §1.115 债② 口径**：原文「riscv64 同构接入先行＝让 BootHandoff 获得第二
+   消费者」与本文件 §D.2 触发条件 3 的发现冲突——prompt 已裁的 riscv 甲案是
+   kernel-image 自当引导体、**不经 BootHandoff 跨镜像交接**，甲案落地不构成第二消费
+   者。改述建议：「riscv 甲案落地可验证『kernel-image 自引导』这一第三形态，
+   BootHandoff 的第二消费者仍等 x86 迁移或其它消费方」，并加反向引用
+   `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md §D.2`。
+2. **NK4C-WORKLOG §1.111 的「未接线已知缺口」措辞**：第 4 轮债⑪（本文件 §D.12）
+   翻案钉死——vmctl FlushTlb/InvlPg 内核腿三架构已实现（FIX-24，
+   `syscall.rs:2555-2592`），VM 侧零调用者是有意设计（V13-P2-1），真实缺口是
+   「V13-P2-1 的刷新依据在 VmDm 通道不成立」。主线程下次触碰 §1.111 相关文本时按
+   §D.12 措辞修正，反向引用 `riscv-reviewlog.md §D.12`。
+3. **misc_concepts.md 教训条目**（第 5 轮登记，本线程无权写该文件）：「多模式 grep
+   的负结论必须按模式拆分计数，且禁止出自被 `head` 截断的输出」——第 4 轮债⑩
+   「全仓 fence.i 零命中」误判的完整因果（2960 行子串噪声＋截断＋未验证即下负结论），
+   详见本文件 §D.11 自审段。
 
 **移交项二（第 5 轮，misc_concepts 候选，本线程无权写该文件）**：「多模式 grep 的
 负结论必须按模式拆分计数，且禁止出自被 `head` 截断的输出」——第 4 轮债⑩「全仓
@@ -833,7 +844,7 @@ aarch64 共用同一次改动）；本表无异议，仅补一条实施提醒—
 | 债⑨ | PAF_CLEAR 缺页即清腿（管线建成、漏斗一个接头未插） | NK4C §1.101 CodeReview MUST-1(a) | 登记后续加固 | 中（riscv boot 同依赖） |
 | 债⑩ | 数据→指令切换的缓存维护（fence.i / dc cvau / x86 免疫） | NK4C §1.115 CONSIDER-5（仅 aarch64 面） | aarch64 已登记、riscv/x86 面未入账 | **高（riscv 面是本轮新发现）** |
 | 债⑪ | DM「存在→改」的代刷腿（腿在、VM 不用、论断在 VmDm 不成立） | NK4C §1.111（原文「未接线」——第 4 轮翻案） | 方案三档待裁 | **高（与 C 表第 4 行同一改动面）** |
-| 债⑫ | 静默吞错家族（`let _ =` 包 IPC/copy/回复 ＋ 字面 −1 兜底 ＋ 正 errno 成功车道） | NK4C §1.106＋§1.118续/§1.119＋§1.57（B33a，第 5 轮补） | 本轮只立家族目录，续轮展开 | 中（取证可信度根因） |
+| 债⑫ | 静默吞错家族（`let _ =` 包 IPC/copy/回复 ＋ 字面 −1 兜底 ＋ 正 errno 成功车道） | NK4C §1.106＋§1.118续/§1.119＋§1.57（B33a，第 5 轮补） | **逐点处置表已出（第 6 轮，D.13）**：31 站＝乙 7＋维持 23＋甲 1 | 中（取证可信度根因） |
 | 债⑬ | boot bump 池无回收路径＋kerninfo 映射责任移交 VM 未落地（「结构债三件套」第二件） | NK4C §1.55/§1.56 三件套＋kerninfo.rs:24-31 既定设计（第 5 轮主动扫描补入） | 设计已在（移交触发点写明），实施未排 | 中（甲案下债随形态迁移而非消失） |
 
 ## D.1 债① 三种 boot 进入形态并存（[ARCH: boot-form-unification]）
@@ -1131,58 +1142,6 @@ riscv 投影：D5（非串口可靠记账）落地时，第 2 层的纪律直接
 | VM handoff 收口批 | **债⑬ 甲（kerninfo 映射责任移交 VM，kerninfo.rs:24-31 既定设计补实施）**；债⑥ 甲（eager 物化）如裁决随批 | VM 接管用户 PTE 工作时（既定触发点） | 设计已在，排期归主线程 |
 | OQ 悬置 | D.1 甲／D.2（x86 形态统一）——按触发条件清单再议 | 触发条件出现 | 用户 |
 
-跨债的一句话总结：**这十二笔债共享同一个病根——「引导与诊断的契约面在移植过程中长出了
-多份平行实现，而把平行实现压回单一契约的机制（表驱动、契约测试、分层制度）在仓内已有
-成功先例（xtask `uefi_slots`、check-layout L0、`tx_wait_then_send`）」**。因此每个
-方案的实现成本都不高，真正稀缺的是裁决节奏与真机验证批次——这正是把它们记成结构债
-而非随手修掉的原因。
-
-## D.14 债⑬ boot bump 池无回收路径＋kerninfo 映射责任移交未落地（「结构债三件套」第二件，第 5 轮主动扫描补入）
-
-### 现状静态刻画（第 5 轮实测）
-
-- **登记处**：NK4C-WORKLOG「结构债三件套」（:3082/:3115/:3137 反复重申）——
-  ① VM-backed heap supplier（＝债⑥ 方案乙，C `brk` 保真）；② **boot bump 可回收、
-  或 kerninfo 映射责任移交 VM**（本债）；③ `MAX_BIG_BLOCKS` 同族（已于 §1.95 闭环）。
-- **bump 无 free 路径**：boot-shim 的页表页池是纯 bump——`prepare_boot(1024)`
-  （`os/boot-shim/src/main.rs:61`），`:53-60` 注释自证三件事：「the pool has no free
-  path — the real machine died `AllocationFailed` after ~40 binds」（B26 fix-B 的
-  kerninfo 注入链每次 bind 烧 1-3 页）、「this pool only postpones the deterministic
-  panic」、「`vm_handoff` deducts the WHOLE region from the VM free list whether
-  used or not … this costs every boot 4 MiB」。`os/kernel/src/boot_alloc.rs` 头部
-  自证「Simple bump allocator」——全文件无 free API。
-- **责任移交的设计已在、实施未排**：`os/kernel/src/kerninfo.rs:24-31` 注释明文：
-  「C's VM maps the section into every process and tells the kernel where; this
-  kernel bootstrap has no VM yet … When VM takes over [the mapping responsibility]
-  moves to VM together with the rest of the user PTE work」——引导期由内核代管是
-  声明过的 bootstrap 阶段妥协，移交触发点（VM 接管）已写死在设计里。
-- **容量扰动解在先**：§1.55 的 B30 修复把池从 128 页扩到 1024 页——确定性 panic 从
-  「~40 次 bind」推迟到更远，代价是每 boot 固定 4 MiB 从 VM 帧池永久扣除。
-
-### 为什么是结构债
-
-「无 free 的 bump＋整段扣除」把两次成本焊死在每一次启动上（4 MiB 帧池损失＋bind 次
-数上限），且 kexec/reboot/镜像重载类功能一出现即撞天花板。C 对位（kerninfo.rs 注释
-原文）里这个职责本就归 VM；Linux 的同形问题是标准的「引导内存移交」——memblock 把
-init 页表/引导分配器内存归还伙伴系统（`free_init_pages` 族）。OS 理论：bootstrap
-allocator 可以无 free，但必须有显式的移交（handover）时刻——本仓有设计、缺实施。
-
-### 方案（概要级，与债⑥ 联动）
-
-| 方案 | 机制 | 对位 | 代价/风险 | 相容 |
-|---|---|---|---|---|
-| 甲：kerninfo 映射责任移交 VM | 按 kerninfo.rs:24-31 既定设计，VM 接管用户 PTE 工作时一并接管 kerninfo 页映射，内核 bootstrap 的 bind 注入链消失 | C（VM 管映射）＋仓内既定设计 | VM 侧需补 publish/映射腿；`[ARCH]` 面（kerninfo 契约） | 好 |
-| 乙：boot 页表页可回收 | DM 建立完成后把 bump 池剩余页归还 VM 帧池 | Linux memblock 移交 | 需追踪「哪些 bump 页仍被引用」（kerninfo blob、handoff 页） | 中 |
-| 丙：容量再扰动＋账本 | 现状延续，池尺寸按 bind 上限重估 | §1.55 形状 | 成本焊死、天花板照旧 | 差（只配短期） |
-
-### riscv64 投影与推荐
-
-甲案（kernel-image 自当引导体）下债**随形态迁移而非消失**：boot-shim 的池换成
-kernel-image/OpenSBI 库里的 `BUMP_PTR`（`opensbi_helpers.rs:364-365`，同款无 free、
-同款无回收），债的本体不变。推荐：**甲**（既定设计补实施），随 VM handoff 收口批
-排期；乙作为甲实施前的过渡可选。裁决归属：设计已在（kerninfo.rs），实施排期归
-主线程。
-
 ## D.10 债⑨ PAF_CLEAR 缺页即清腿（管线建成、漏斗一个接头未插）
 
 ### 现状静态刻画（第 4 轮实测）
@@ -1357,7 +1316,7 @@ C minix3 是 VM 自刷＋MF_FLUSH_TLB 双轨。推荐：**甲（riscv 批次内�
 改动面顺手落）**，乙/丙留 SMP 里程碑再议（彼时有真机判据与多核 TLB 现实）。裁决
 归属：主线程自主批（甲是单点门控＋注释）。
 
-## D.13 债⑫ 静默吞错家族（错误路径纪律——本轮只立家族目录，续轮展开）
+## D.13 债⑫ 静默吞错家族（错误路径纪律；逐点处置表已出——第 6 轮）
 
 ### 现状静态刻画（第 4 轮实测）
 
@@ -1413,8 +1372,157 @@ OS 理论：fail-stop 优于 fail-silent——静默错误把调试成本转嫁�
 | 丙：家族清点器进基线 | grep 模式（`let _ =` ×copy/send/reply ＋ 字面 −1 回复腿）进 pattern-gate 家族，存量入基线、新增即拦 | 最小 | 好 |
 
 推荐：**丙立即 → 乙（旗舰两点）→ 甲列 S 单元**。裁决归属：丙/乙主线程自主批；
-甲 `[ARCH]` 级需走三处一致。续轮任务：把 30 处逐个过「硬失败？路径？C 对位」三问，
-产出逐点处置表。
+甲 `[ARCH]` 级需走三处一致。
+
+### 逐点处置表（第 6 轮交付；三问＝①吞的是硬失败还是尽力而为／②是否在 boot/marker 路径／③C 对位是否真检查；处置档＝乙诊断面｜甲签名改造｜维持并注释）
+
+**计数口径修正（第 6 轮）**：第 4 轮的「~30 站点」是同线过滤口径（`let _ = ` 与调用
+号同在一行）；跨行拆分调用（`let _ = self.kernel` 换行接 `.send(...)`）被漏计——仅
+devman 一文件即补出 3 站。本表按第 6 轮逐点采集实录，**代码站 30＋B33a 1＝31 站/
+13 文件**（另有 exec_worker.rs:95 一处为文档注释非代码站；fs-rt 三处旗舰已在 D.13
+上文现状段，不重复入表；C 对位列只断言本轮实测，未核处如实标注）。
+
+**优先批（boot/marker 相关 crate）**：
+
+| 站点 | 吞的调用 | ①硬失败? | ②marker 路径? | ③C 对位 | 处置 |
+|---|---|---|---|---|---|
+| `pm/ipc/calls.rs:633`（B33a） | `Err(e) => ReplyIntent::Reply(e.to_errno())`——`exec.rs:53-62` 返回**正值**，走成功车道 | 硬失败被改写成伪成功 | 是（exec 链） | C `do_exec` 返回负 errno 直回 | **乙＋一行修**：`Reply(-e.to_errno())`（与 C24 同族线上编码，建议随 riscv 甲案批） |
+| `pm/exit.rs:772` | `send(parent_ep, ...)` 子进程退出通知 | 尽力而为，但丢事件＝父永不收尸 | 是（INIT waitpid 依赖） | C `exit.c` 父通知腿 [未逐行核] | 乙 |
+| `pm/exit.rs:791` | `send(parent_ep, &reply_msg)` | 尽力而为 | 是 | 同上 [未核] | 乙 |
+| `pm/exit.rs:825` | `send(tracer_ep, &reply_msg)` | 尽力而为 | 否（tracer 腿） | C ptrace 腿 [未核] | 维持并注释 |
+| `pm/exit.rs:882` | `let _ = reply_to_new_parent;`（变量绑定，测试件） | 非生产路径 | 否 | — | 维持（测试件） |
+| `vfs/main_loop.rs:1219` | `handle_fs_reply(msg, codec)` 返回值 | 硬失败可吞（FS 回复处理错误） | 是（VFS 主循环＝open/stat 腿） | C vfs 主循环 [未核] | **乙**（marker 路径优先） |
+| `vfs/main_loop.rs:4745` | `sendrec(p.fs_e, putnode)` | 尽力而为（释放通知） | 否（unmount 面） | C putnode [未核] | 维持并注释 |
+| `vfs/main_loop.rs:7594` | `sendnb(target, &reply)` | 尽力而为 | 视 target 而定 | [未核] | 乙 |
+| `vfs/main_loop.rs:7604` | `sendrec(RS, &mut reply)` | 尽力而为 | 否（RS 侧查询） | [未核] | 维持并注释 |
+| `sched/server.rs:334` | `sendnb(sender, &reply)` | 尽力而为，但丢回复＝taskcall 侧超时 | 是（fork inherit 腿，aarch64 §1.118 的通道） | C sched 非阻塞回复 [未核] | 乙 |
+| `devman/ipc/minix.rs:294` | `sendrec(RS, &mut reply)`（出生应答） | 尽力而为（注释已自陈「吞掉这条」） | boot 出生链 | 无 C 直接对位（devman 属 Rust 侧新增面，登记存疑） | 维持并注释（注释已在） |
+| `devman/ipc/minix.rs:379-381` | `kernel.send(source, &reply_msg(status, ...))` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `devman/ipc/minix.rs:409` | `send(current_source, &reply_msg(EFAULT, ...))` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `devman/ipc/minix.rs:425` | `send(current_source, &m)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `devman/ipc/minix.rs:429` | `send(dest, msg)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `ipc-server/boundary.rs:341` | `sendnb(endpoint, &msg)` | 尽力而为 | 否 | 无 C 直接对位（ipc-server 属 Rust 侧新增面） | 维持并注释 |
+| `ipc-server/boundary.rs:371` | `sendnb(to, msg)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `vfs/exec_worker.rs:95` | （文档注释，非代码站） | — | — | — | 维持（注释本身是真机实证记录） |
+
+**第二批（非 marker 路径）**：
+
+| 站点 | 吞的调用 | ① | ② | ③ | 处置 |
+|---|---|---|---|---|---|
+| `rs/lib.rs:335` | `kernel.reply(who_e, result, msg)` | 尽力而为，但 RS 是出生/信号枢纽 | boot 出生链间接相关 | C rs（manager.c）回复腿 [未核] | 乙 |
+| `rs/lib.rs:465` | `kernel.notify(ep)` | 尽力而为 | 否 | [未核] | 维持并注释 |
+| `rs/recovery.rs:605` | `kernel.reply(endpoint, 0, default)`（LATEREPLY 清账） | 尽力而为 | 否 | C rs recovery [未核] | 维持并注释 |
+| `rs/recovery.rs:1019` | `kernel.reply(caller, r, default)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `rs/shell_update.rs:192` | `kernel.reply(m.m_source, 0, m)` | 尽力而为 | 否 | [未核] | 维持并注释 |
+| `rs/live_update.rs:1863` | `kernel.reply(surviving_ep, result, ...)` | 尽力而为 | 否（live-update 面） | C rs live update [未核] | 维持并注释 |
+| `rs/live_update.rs:1881` | `kernel.reply(ep, EDEADEPT, ...)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `rs/live_update.rs:2130` | `kernel.reply(last_slot_ep, result, ...)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `input/serve.rs:302` | `send(Endpoint::TTY, &mut m)` | 尽力而为 | 否（input→TTY） | 无 C 直接对位 [未核] | 维持并注释 |
+| `input/serve.rs:323` | `sendnb(*caller, &mut m)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `input/serve.rs:328` | `notify(*target)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `ds/server.rs:190` | `send_rec(caller, &mut reply)` | 尽力而为 | 否（DS 查询腿） | C ds 目录在（`minix3/minix/servers/ds/`），逐行未核 | 维持并注释 |
+| `ds/server.rs:207` | `send(caller, &message)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `ds/server.rs:515` | `notify(ep)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+| `ds/server.rs:575` | `notify(source_ep)` | 尽力而为 | 否 | 同上 | 维持并注释 |
+
+**汇总**：31 站中判「乙（诊断面下限）」＝7 站（pm/exit.rs:772/:791、pm calls.rs:633
+的 B33a 一行修、vfs/main_loop.rs:1219/:7594、sched/server.rs:334、rs/lib.rs:335）；
+判「维持并注释」＝23 站（含 1 测试件、1 文档注释）；判「甲（签名改造）」仍只
+fs-rt 旗舰一处（D.13 现状段）。分布与三问自洽：吞错面绝大多数是「尽力而为通知/
+回复」的 C 惯例形态，真正要修的是三个硬失败/关键路径点（B33a calls.rs:633、
+vfs:1219、fs-rt:272）加四个「丢了会卡 marker 通道」的通知点。
+
+## D.14 债⑬ boot bump 池无回收路径＋kerninfo 映射责任移交未落地（「结构债三件套」第二件，第 5 轮主动扫描补入）
+
+### 现状静态刻画（第 5 轮实测）
+
+- **登记处**：NK4C-WORKLOG「结构债三件套」（:3082/:3115/:3137 反复重申）——
+  ① VM-backed heap supplier（＝债⑥ 方案乙，C `brk` 保真）；② **boot bump 可回收、
+  或 kerninfo 映射责任移交 VM**（本债）；③ `MAX_BIG_BLOCKS` 同族（已于 §1.95 闭环）。
+- **bump 无 free 路径**：boot-shim 的页表页池是纯 bump——`prepare_boot(1024)`
+  （`os/boot-shim/src/main.rs:61`），`:53-60` 注释自证三件事：「the pool has no free
+  path — the real machine died `AllocationFailed` after ~40 binds」（B26 fix-B 的
+  kerninfo 注入链每次 bind 烧 1-3 页）、「this pool only postpones the deterministic
+  panic」、「`vm_handoff` deducts the WHOLE region from the VM free list whether
+  used or not … this costs every boot 4 MiB」。`os/kernel/src/boot_alloc.rs` 头部
+  自证「Simple bump allocator」——全文件无 free API。
+- **责任移交的设计已在、实施未排**：`os/kernel/src/kerninfo.rs:24-31` 注释明文：
+  「C's VM maps the section into every process and tells the kernel where; this
+  kernel bootstrap has no VM yet … When VM takes over [the mapping responsibility]
+  moves to VM together with the rest of the user PTE work」——引导期由内核代管是
+  声明过的 bootstrap 阶段妥协，移交触发点（VM 接管）已写死在设计里。
+- **容量扰动解在先**：§1.55 的 B30 修复把池从 128 页扩到 1024 页——确定性 panic 从
+  「~40 次 bind」推迟到更远，代价是每 boot 固定 4 MiB 从 VM 帧池永久扣除。
+
+### 为什么是结构债
+
+「无 free 的 bump＋整段扣除」把两次成本焊死在每一次启动上（4 MiB 帧池损失＋bind 次
+数上限），且 kexec/reboot/镜像重载类功能一出现即撞天花板。C 对位（kerninfo.rs 注释
+原文）里这个职责本就归 VM；Linux 的同形问题是标准的「引导内存移交」——memblock 把
+init 页表/引导分配器内存归还伙伴系统（`free_init_pages` 族）。OS 理论：bootstrap
+allocator 可以无 free，但必须有显式的移交（handover）时刻——本仓有设计、缺实施。
+
+### 方案（概要级，与债⑥ 联动）
+
+| 方案 | 机制 | 对位 | 代价/风险 | 相容 |
+|---|---|---|---|---|
+| 甲：kerninfo 映射责任移交 VM | 按 kerninfo.rs:24-31 既定设计，VM 接管用户 PTE 工作时一并接管 kerninfo 页映射，内核 bootstrap 的 bind 注入链消失 | C（VM 管映射）＋仓内既定设计 | VM 侧需补 publish/映射腿；`[ARCH]` 面（kerninfo 契约） | 好 |
+| 乙：boot 页表页可回收 | DM 建立完成后把 bump 池剩余页归还 VM 帧池 | Linux memblock 移交 | 需追踪「哪些 bump 页仍被引用」（kerninfo blob、handoff 页） | 中 |
+| 丙：容量再扰动＋账本 | 现状延续，池尺寸按 bind 上限重估 | §1.55 形状 | 成本焊死、天花板照旧 | 差（只配短期） |
+
+### riscv64 投影与推荐
+
+甲案（kernel-image 自当引导体）下债**随形态迁移而非消失**：boot-shim 的池换成
+kernel-image/OpenSBI 库里的 `BUMP_PTR`（`opensbi_helpers.rs:364-365`，同款无 free、
+同款无回收），债的本体不变。推荐：**甲**（既定设计补实施），随 VM handoff 收口批
+排期；乙作为甲实施前的过渡可选。裁决归属：设计已在（kerninfo.rs），实施排期归
+主线程。
+
+### 跨债的一句话总结（第 6 轮随 D.14 移位一并移至全章文末，改十三笔）
+
+**这十三笔债共享同一个病根——「引导与诊断的契约面在移植过程中长出了多份平行实现，
+而把平行实现压回单一契约的机制（表驱动、契约测试、分层制度）在仓内已有成功先例
+（xtask `uefi_slots`、check-layout L0、`tx_wait_then_send`）」**。因此每个方案的
+实现成本都不高，真正稀缺的是裁决节奏与真机验证批次——这正是把它们记成结构债而非
+随手修掉的原因。
+
+**收敛声明（第 6 轮，按停止规则）**：第 5 轮新增发现 1 笔（债⑬，无 P1 级误判）、
+第 6 轮处置表交付后同轮新 P0/P1＝0（唯一翻案性发现 fence.i 散点系第 5 轮已结案），
+连续两轮新 P1 ≤ 1 条件满足，**§D 结构债扫描线就此收敛**——后续价值在批次实施时的
+即时修正（各债「裁决归属」已定），不再安排独立扫描轮。附录「已知未覆盖」中属 §A
+范围的条目（device_tree 节点审计、SMP 生效性、18-stage 命令对账、fpu/signal 全量）
+按原样挂账，不属本线收敛范畴。
+
+# E. 用户预裁决记录（2026-09-27 追加，不经扫描轮）
+
+> 本章是用户对 §D 挂起裁决项的**条件式预裁**，由旁支会话经用户口头授权代录
+> （授权语境：本文件第 6 轮收敛后，用户决定不再开扫描轮、直接改档）。目的＝把
+> 「要不要开始想」这类低信息量打断从主线程的执行路径上摘掉，把用户留在真正的
+> 终局裁决点上。三条纪律：其一，**预裁不是终裁**——凡依赖尚未产生的真机证据的
+> 裁决一律不写死（对照 B-D1 条的显式不预裁）；其二，本章与 §D 各债的「裁决归属」
+> 段冲突时**以本章为准**，冲突处由后续维护者在本章条目下补勘误注，不回改 §D 正文；
+> 其三，本章条目的修订与撤销须用户本人同意，扫描线与主线程均无权单方面改本章。
+
+## E.1 债②（x86_64 是否迁移方案 A，D.2/OQ）——半预裁
+
+触发条件（同时满足）：aarch64 方案 A 在真机上稳定运行不少于 10 个验证轮次，且
+x86_64 当时没有在途的 boot 类调试战役（避免 §1.119续-6 那类布局敏感扰动与形态迁移
+叠加）。触发后**授权主线程直接立项迁移评估**（多方案对比文档，规格同 D.2），不再
+询问「要不要开始想」；评估产出的终局裁决（迁移或挂起）仍报用户。
+
+## E.2 债①（三种 boot 进入形态并存，D.1）——顺序预裁
+
+裁定三点：riscv 甲案收口之前**不启动**三形态统一（公共腿流沙期不碰引导形态）；
+收口之后以 §A.13 真机待验表的数据为前提**单独立项**，不在其它修复批次中搭车；
+终态选型（统一到哪一种形态）属终局裁决，届时按立项产出报用户，本章不预裁。
+
+## E.3 B-D1（riscv 装机与交棒形态的终态：候选 1 对 候选 2）——显式不预裁
+
+本条是本章唯一的「不写」决定，且刻意为之：候选 1 与候选 2 的取舍依赖 riscv 真机
+bring-up 的实测结果（OpenSBI/U-Boot 行为面，仓内静态分析无法替代，任务书铁律 6），
+现在写死就是在制造空壳断言——misc_concepts 已登记的「裁决前置的文档拖着执行不落
+最后留下空壳」正是本条要避开的形态。判据落位：§A.13 待验表跑完、D.1 立项产出时，
+与 E.2 的终局裁决合并为一次咨询。
 
 ## 附：扫描方法与边界声明
 
