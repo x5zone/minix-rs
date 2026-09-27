@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-8 取证轮（证伪「fork 回复冻结」主假设·aarch64 fork/PM 投递-唤醒腿实测健康·真死锁定形于 Runcom 后 INIT↔VFS Stat EIO 腿＝续-4 未修债）**：承续-7 净态未打穿，本轮装五代 `nk4c8:` TEMP 针（N10a-e 引擎 send/receive/pick、N11a Path A 投递后 PM 现场、N11b syscall wake 入队腿、N11c finish_and_restore PM restore、N12 用户 svc 边界）+ 一次性重编 aarch64 镜像取净数据。**三处决定性反证**：①0x987（VFS_PM_FORK_REPLY）经 Path A 直投 PM 成功，**投递瞬间 PM `rts=0x0`（runnable）非任何 inhibit 旗**（N11a `nk4c8:wake r0=0 x1=1 rts=0`）；②PM 随即被 **`finish_and_restore` 真实恢复执行**、PC 逐轮前进（N11c `nk4c8:rst pc=0x21c52c→0x222000`），fork 回复链**没有冻结**；③此前读到的 `nk4c8:wq run=0 rts=0x400`×146＝PM **正常 demand-paging**（PAGEFAULT 0x400，非 VMINHIBIT），VM 经 `vm-pf recv`/`do-memory` 逐一解决、`enqueue_if_woken`/`rts_unset` 对 PAGEFAULT 挂起者**不入队是正确语义**（C RTS_ISSET 同形），非断链。**真死锁定形**：200s 长跑与 55s 短跑**逐字节同为 4869 行、尾部完全一致**＝**硬死锁非慢**；越过全部 12 server exec＋INIT `init-state Runcom`＋rc 子 proc12（`setaddr nr=0xc` RECEIVING|NO_QUANTUM 正常 parked），**最后一条活作＝`memreq target=11`（INIT）`do-memory done` 后全员静默**——正落在 §1.120续-3/4 已钉但**从未真正修复**的腿：**INIT(runcom) 对 rc 链发 `mt=0x115`(VFS Stat) 得 EIO(5)、`flush_pending_fs`（main_loop.rs:4705-4726）把 `Err(e)` 吞成裸 EIO 回用户**（续-5/6/7 转去修 send_work 排水/send_reply C 分叉＝相邻真 P0 但非本冻结主因）。**⇒ 下一手（续-9）回到续-4 未闭债**：给 `flush_pending_fs` 下折腿装探针打 `fs_e/vmnt/e 原始码`，钉死「VFS 对 INIT mt=277 Stat 返 EIO 的真实产出点＝vmnt 表 fs_e endpoint 陈旧/错指 还是 FS 语义错误被折叠」，据此裁决修复。**本轮纯取证、tracked 净（四探针文件 `git checkout` 全回滚、`caller_q_len` cfg 复原 `#[cfg(test)]`、`nk4c8_probe_lane` accessor 删、`NK4C8_FORK_SENT` 删）、零逻辑改动、WORKLOG-only（无生产码改＝免 CodeReview）**。详文见文末 §1.120续-8。
+> **✅ 最新前沿＝§1.120续-9 取证轮（以真机硬证据扫除整族旧假设：flush_pending_fs 从不报错、handle_fs_reply 解码 MFS 回复 OK/ENOENT、INIT 达 Runcom、fork 成（proc12 已建）——Stat-EIO/VFS-comm/fork-reply 全家消灭；真挂＝rc 子 proc12 RECEIVING|NO_QUANTUM + VFS 阻塞收队列卡 1 条消息（rcvblk ep1 qlen1）＝caller_q/幽灵队列排水腿）**：承续-8 收敛至「INIT mt=0x115 Stat 得 flush_pending_fs 折叠的裸 EIO」，本轮在该腿装两枚 `nk9*:` TEMP 探针（flush_pending_fs Err 臂 EV/MT/FS/VF/UU + handle_fs_reply 入口/Ok transid解码）+ 重编 aarch64 取净数据。**结果＝续-4 假设证伪**：①`flush_pending_fs` Err 臂**零命中**（nk9: 无输出＝FS-send 腿健康，fs_sendrec 从不 NoVmnt/Deadlock/IpcError）；②`handle_fs_reply` Ok 解码 **3 条全来自 MFS（src 0xa）slot0**：`nk9r2 00 0a 0`×2（result=**OK**）+`nk9r2 02 0a 0`（result=**ENOENT**，stat 不存在路径属正常）——**INIT 的 Stat 往返正常拿到 OK/ENOENT、根本不是 EIO**；③日志尾部 `vfm1150b`（mt=115 收）→3 条 r2 回复→`imain-6 transition`→`init-state Runcom`＝**INIT 确实推进到 Runcom**。**⇒ §1.120续-3/4/5/6/7 追的整族（Stat EIO / flush_pending_fs 折叠 / VFS comm 黑洞 / send_reply fork-reply）在当前 HEAD 均已不再现**（旧刻画来自更早构建、已失效）。**真挂实测（本轮新的权威定位）**：exec endpt 全集 0x0–0xb（12 boot 全进），**独缺 0xc**＝rc 子 proc12 从未完成 exec；`setaddr nr=0xc flags=0x8008`（RECEIVING|NO_QUANTUM、runnable=no queued=no）——`is_runnable()==(load()==0)`（proc.rs:1244）⇒ **两个旗都需清才能跑**：RECEIVING 等 exec 期 IPC 回复、NO_QUANTUM 等 SCHED start；**且日志见 `rcvblk ep=0x1 qlen=0x1`×4**＝端点 1（VFS）阻塞收队列卡 1 条消息排不出（＝续-7 候选①「caller_q 幽灵队列排水腿」现形）。SingleUser/can't-fork/WAIT4 洪流均=0（§1.117/§1.118/§1.119 旧症状已消）。**⇒ 下一手（续-10）**＝针对 rc 子 proc12 的 **exec 期 IPC 回复投递/caller_q 排水腿**（谁向 ep1 发了那条卡住的 qlen=1 消息、VFS 为何阻塞收不排）——非 Stat、非 send_reply。本轮纯取证、零码改、`nk9*:` 探针全 `git checkout` 回滚 tracked 净、WORKLOG-only（无生产码改＝免 CodeReview）。详文见文末 §1.120续-9。
+>
+> **（历史·§1.120续-8 摘要，详文见文末）✅ 最新前沿＝§1.120续-8 取证轮（证伪「fork 回复冻结」主假设·aarch64 fork/PM 投递-唤醒腿实测健康·真死锁定形于 Runcom 后 INIT↔VFS Stat EIO 腿＝续-4 未修债）**：承续-7 净态未打穿，本轮装五代 `nk4c8:` TEMP 针（N10a-e 引擎 send/receive/pick、N11a Path A 投递后 PM 现场、N11b syscall wake 入队腿、N11c finish_and_restore PM restore、N12 用户 svc 边界）+ 一次性重编 aarch64 镜像取净数据。**三处决定性反证**：①0x987（VFS_PM_FORK_REPLY）经 Path A 直投 PM 成功，**投递瞬间 PM `rts=0x0`（runnable）非任何 inhibit 旗**（N11a `nk4c8:wake r0=0 x1=1 rts=0`）；②PM 随即被 **`finish_and_restore` 真实恢复执行**、PC 逐轮前进（N11c `nk4c8:rst pc=0x21c52c→0x222000`），fork 回复链**没有冻结**；③此前读到的 `nk4c8:wq run=0 rts=0x400`×146＝PM **正常 demand-paging**（PAGEFAULT 0x400，非 VMINHIBIT），VM 经 `vm-pf recv`/`do-memory` 逐一解决、`enqueue_if_woken`/`rts_unset` 对 PAGEFAULT 挂起者**不入队是正确语义**（C RTS_ISSET 同形），非断链。**真死锁定形**：200s 长跑与 55s 短跑**逐字节同为 4869 行、尾部完全一致**＝**硬死锁非慢**；越过全部 12 server exec＋INIT `init-state Runcom`＋rc 子 proc12（`setaddr nr=0xc` RECEIVING|NO_QUANTUM 正常 parked），**最后一条活作＝`memreq target=11`（INIT）`do-memory done` 后全员静默**——正落在 §1.120续-3/4 已钉但**从未真正修复**的腿：**INIT(runcom) 对 rc 链发 `mt=0x115`(VFS Stat) 得 EIO(5)、`flush_pending_fs`（main_loop.rs:4705-4726）把 `Err(e)` 吞成裸 EIO 回用户**（续-5/6/7 转去修 send_work 排水/send_reply C 分叉＝相邻真 P0 但非本冻结主因）。**⇒ 下一手（续-9）回到续-4 未闭债**：给 `flush_pending_fs` 下折腿装探针打 `fs_e/vmnt/e 原始码`，钉死「VFS 对 INIT mt=277 Stat 返 EIO 的真实产出点＝vmnt 表 fs_e endpoint 陈旧/错指 还是 FS 语义错误被折叠」，据此裁决修复。**本轮纯取证、tracked 净（四探针文件 `git checkout` 全回滚、`caller_q_len` cfg 复原 `#[cfg(test)]`、`nk4c8_probe_lane` accessor 删、`NK4C8_FORK_SENT` 删）、零逻辑改动、WORKLOG-only（无生产码改＝免 CodeReview）**。详文见文末 §1.120续-8。
 >
 > **（历史·§1.120续-7 摘要，详文见文末）✅ §1.120续-7 fork 回复链定位+C 分叉修复（VFS→PM 回腿改阻塞 ipc_send 对位 main.c:912·真机判别链证伪「架构特异性」定论、钉死时序敏感竞态：探针轮 aarch64 首次消费 0x987 并推进 exec/exit 腿，净态双跑 4295 行同基线签名＝本腿真实但窗口还有别的腿）**：C 真值三件套钉死（tell_vfs 异步正确 / service_pm 尾＝阻塞 ipc_send+panic / reply()＝sendnb 忽略失败）；五代 TEMP 针（N6 r/e 针证伪 ENOTREADY 蒸发、rp7/pd 夹针实锤 0x987 copy 进 PM 缓冲、N8 rst+N9 rv 针抓到 `v098705→pm 98701` 消费推进）；修复＝send_reply target==PM 走阻塞 send（净态无回归：aarch64 双跑同 §1.120 基线、x86 3/4 marker=2 一次单发 vector-14 洪流登记观察、vfs 538、fmt 持平、探针全回滚）。**下一手**＝净态 fork 冻结的其余竞态腿：VFS 阻塞 send park（caller_q pick）/rcvblk 幽灵队列/record_wake_target 静默丢弃/x86 v14。详文见文末 §1.120续-7。
 >
@@ -5693,3 +5695,33 @@ aarch64 冻结面从「VFS↔INIT comm 层」重定向到「内核调度/IPC 唤
 - 五代 `nk4c8:` 探针全部 `git checkout` 回滚（ipc.rs/lib.rs/syscall.rs/arch boot.rs 四文件）、`caller_q_len` cfg 复原 `#[cfg(test)]`、`nk4c8_probe_lane` accessor 删、`NK4C8_FORK_SENT` 删、minix-sys N12 上轮已删——`grep nk4c8` tracked 零残留、工作树与 HEAD 逐字节等价。
 - 本轮 tracked 净＝WORKLOG-only（无生产码改＝免 CodeReview）；三件套沿袭 cd613370d 基线（kernel/arch/vfs 码未动→mock 823/243/531/vfs 538 不燄、rustfmt 持平）。
 - **N12 用户态 receive 探针自污染教训**：diagctl 往返会制造空 receive 洪流，用户态探针优先不用、靠内核侧 wq/wake/pA/rst 净数据定性。
+
+---
+
+## §1.120续-9 取证轮（以真机硬证据扫除整族旧假设：Stat-EIO / flush_pending_fs 折叠 / VFS comm / fork-reply 全家消灭·真挂重定位至 rc 子 proc12 exec 期回腿 + caller_q 幽灵队列·2026-09-28）
+
+### 定性
+
+承续-8 裁决「续-9 闭续-4 未修债＝INIT mt=0x115 Stat 得 flush_pending_fs 折叠的裸 EIO」。本轮在两条腿装两代 `nk9*:` TEMP 探针（第一轮：flush_pending_fs Err 臂；第二轮：handle_fs_reply 入口/Ok 解码）+ 两次重编 aarch64 各跑 55s。**结果＝续-4 假设本身证伪**：Stat-EIO 链在当前 HEAD 根本不成立，且连带把 §1.120续-3/4/5/6/7 追的整族旧刻画一并消灭——那些刻画来自更早构建的快照，此后 send_work 排水（续-6）/send_reply C 分叉（续-7）等修复落地后已不再现。真挂被重新权威定位（见下）。
+
+### 定位（带 C 锚点）
+
+- **轮 1（flush_pending_fs Err 臂探针，EV/MT/FS/VF/UU 14B 模板）**：55s 跑 **零 `nk9:` 命中** ⇒ `fs_sendrec`（main_loop.rs:7333，CommError 产出点＝NoVmnt(vmnt 缺或 `v.fs != fs_ep`)/Deadlock(fs_ep==自身)/NoWorker/IpcError）对 INIT 的 Stat 请求**从未失败**，`flush_pending_fs`（L4701-4728）Err 折叠腿（`let _ = e;` → 裸 EIO）零点火。FS-send 腿健康。
+- **取证陷阱（本轮钉档）**：`strings` 在镜像里查不到 `nk9:`（而 `nk4a`/`vfm` 可见）≠ 探针未编进——rustc `--release` 把 ≤4 字节字面量 inline 成 immediates 不进 .rodata；判探针活性只能看运行期串口输出。
+- **轮 2（handle_fs_reply 入口 `nk9r1` + Ok 解码 `nk9r2` 探针，11B 模板 mt_h/mt_l/src_h/src_l/slot）**：`nk9r2` 解码 **3 条全来自 MFS（src 0xa）slot0**：`nk9r2 00 0a 0`×2（result=**OK**）+`nk9r2 02 0a 0`（result=**ENOENT**，stat 不存在路径属正常语义）——**INIT 的 Stat 往返正常拿到 OK/ENOENT、根本不是 EIO**；handle_fs_reply（L7444，transid 解码→vmnt 查找→WrongTask→`trns_del_id` 剥壳→`wp.sendrec` 交付）工作正常。`nk9r1` 入口零输出＝diagctl 突发丢弃 9B 短行（不影响 r2 结论）。日志尾部序列 `vfm1150b`（mt=0x115 收）→ 3 条 r2 回复 → `imain-6 transition` → `init-state Runcom` ＝ **INIT 确实推进到 Runcom**。
+- **真挂新的权威定位（用既有数据挖到底，零新探针）**：
+  1. **rc 子 proc12 从未完成 exec**：exec 事件端点全集 0x0–0xb（12 boot 进程全进），**独缺 0xc**；`setaddr nr=0xc flags=0x8008`＝RECEIVING(0x8)|NO_QUANTUM(0x8000)、runnable=no queued=no。`is_runnable()==(load()==0)`（proc.rs:1244）⇒ 两旗皆需清：RECEIVING 等 exec 期 IPC 回复、NO_QUANTUM 等 SCHED start（fork 子初设 proc.rs:1600、SCHED 清 sched.rs:488）。
+  2. **VFS 阻塞收队列卡死**：`rcvblk ep=0x1 qlen=0x1`×4＝端点 1（VFS）的 receive 阻塞队列挂着 1 条消息排不出——**续-7 候选①「caller_q 幽灵队列排水腿」首次现形**（C 对位：kernel 收队列在 park→pick→wake 链上若条目无人 dequeue，后续同端点 rendezvous 全部旁落）。
+  3. **旧症状全消确认**：SingleUser / can't-fork / WAIT4 洪流计数均=0（§1.117/§1.118/§1.119 家族已闭）；SCHED setalarm `sa-call`×5 系 SAC_N cap 探针上限非洪流（续-6 校订再证）。
+
+### 裁决（本轮零码改、下一手＝续-10）
+
+续-4 债以「假设证伪」方式关闭（EIO 折叠腿从未命中＋回复实测 OK/ENOENT），不修不存在的病。新债登记与下一手：
+1. **续-10 目标**＝rc 子 proc12 exec 期 IPC 回复投递 / **caller_q 排水腿**：装探针钉死「谁向 ep1(VFS) 发了那条卡住的 qlen=1 消息、VFS 为何阻塞收不排」——候选＝park 腿入队与 pick 腿匹配条件（getfrom/mask/REPLY_PEND 窗口）、以及 proc12 的 RECEIVING 回复（等 PM？等 VFS？）投递时序。
+2. 判别证据已在手：exec endpt 缺 0xc、setaddr flags=0x8008、rcvblk ep=1 qlen=1×4；探针应装内核 ipc.rs park/pick 腿（nk4c8 家族同位点，前缀换 `nk10`）。
+3. 验净态 aarch64 行签名越过 4869/4318 基线且最终出 rc marker `minix-rs rc: minimal boot script marker`。
+
+### 纪律
+
+- 两代 `nk9:`/`nk9r1`/`nk9r2` 探针（main_loop.rs 单文件）全部 `git checkout` 回滚，`grep nk9` tracked 零残留；本轮 tracked 净＝WORKLOG-only（无生产码改＝免 CodeReview）。
+- 布局敏感纪律再兑现：本轮拒绝在「Stat EIO」旧刻画上盲修——若按续-8 裁决直接改 flush_pending_fs 折叠腿，会修一条零命中的死码路径。两轮探针皆「负结果」，但每轮以硬证据消灭整族假设、把前沿真实推进（真挂从 VFS-comm 面移回内核 park/pick 面）。
