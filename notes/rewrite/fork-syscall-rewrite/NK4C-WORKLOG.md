@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-13 取证轮（nk13 三点针端到端实锤 VFS→PM 0x987 FORK_REPLY 完成腿健康闭合——证伪续-12「fork-reply 从不闭合」＝把 nk12 exec 臂零命中误读为 fork 腿失败；真挂权威重定位＝子 proc12 fork 完成腿 sched_start_user 返 Ok 后从不 exec）**：承续-12 裁决（靶心＝0x987 fork-reply 完成腿为何不闭合），本轮装**按 m_type 过滤、不会被 boot 洪流耗尽 cap 的三点 `nk13:` 探针**（VFS `receive` 命中 0x907→`nk13:v`；VFS `send_reply` PM 腿发出前打 m_type 低字节→`nk13:s`；PM `handle_vfs_reply` 入口打 m_type 低字节→`nk13:r`；PM `VfsReply::Fork` 臂捕获 `sched_start_user` 结果→`nk13:F`），重编 aarch64 连跑 run1–2。**决定性数据（2 跑逐字同形 4042 行＝基线 4038＋4 针行、marker＝0、exec endpt 恒 11）**：四点针**全命中且各一次**——`nk13:v 00 00`（VFS 确实收进 PM 的 VFS_PM_FORK 0x907）→`nk13:s 87 00`（VFS handle_fork 后确实发出 0x987）→`nk13:r 87 00`（PM handle_vfs_reply 确实收进 0x987）→`nk13:F 0c 0b`（**PM VfsReply::Fork 臂对 slot0xc proc12 跑 `sched_start_user` 且返回 Ok** b=0x0b）。⇒ **整条 VFS→PM fork-reply 完成腿端到端闭合、健康**（VFS 收 0x907→发 0x987→内核投递→PM 解码→Fork 臂 sched Ok）——**续-12「此腿从不闭合」的结论被本证伪**（续-12 只装了 exec 腿针 nk12:e/s零命中，就误推为 fork-reply 腿断；实际上 exec 臂（子 exec VFS_PM_EXEC_REPLY）与 fork 完成臂（VFS_PM_FORK_REPLY）是两条不同的腿，前者零命中只说明**子从不发起 exec**）。续-11 的「PM fork 完成腿健康」本轮被独立重现（非 Heisenbug）——**上一轮续-12 对续-11 的推翻本身需被推翻**。**真挂权威重定位＝子 proc12 fork 完成腿 sched_start_user 返 Ok 后从不 exec**：exec endpt 仍 0x0–0xb、无 0xc（子从未进 dispatch_exec）；尾部 `p4-init src=0 rpv=y`＋`sa-call`（CLOCK）永环。**具体嫌疑（续-14）**＝`sched_start_user`（sched.rs:346 C main.c:370-371）在 `scheduler==KERNEL||NONE` 时**直接返 Ok 不做 inherit**——nk13:F 的「Ok」可能正是这条跳过腿，子拿不到 SCHED 注册→NO_QUANTUM 未真清→子从不得 CPU→从不 exec。本轮纯取证、零码改、`nk13:` 探针全 `git checkout` 回滚 tracked 净（grep 零残留）、run1–2 同基线、WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-13。**⇒ 下一手（续-14）**＝①钉子的 `resources.scheduler` 实际值（INIT 是否 kernel/scheduler 是否 NONE，定 sched_start_user 走跳过腿还是真 inherit）；②若走跳过腿＝对比 C do_fork 子的调度器继承与 NO_QUANTUM 清除链（哪一步真正使子可跑）；③若真 inherit 了仍不跑＝SCHED 投运/内核清 NO_QUANTUM 腿探针（判子是否真得 CPU）。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
+> **✅ 最新前沿＝§1.120续-14/续-15 取证轮（nk15 四点针彻底证伪续-14「子 scheduler=KERNEL 走跳过腿/INIT 停留 KERNEL」·实锤 PM fork 全链端到端健康：INIT.sched=SCHED→子继承 SCHED(0x04)→Fork 臂 sched_start_user 真 inherit 返 Ok→reply(OK) 发出·真挂权威重定位至内核侧子唤醒腿）**：承续-13/续-14（疑子走 sched_start_user 跳过腿），续-14 装 `nk14:` 针得 `ff 00` 误判「子=KERNEL」，续-15 装 `nk15:` 针直读 `init_scheduling`/`sched_start`/`copy_mproc`/Fork 臂四点，**推翻续-14 整条根因链**。**决定性数据（2 跑同基线 4041 行、marker=0）**：`nk15:x 04 00`＝sched_start 对 INIT 返 Ok、`nk15:x 0b 04`＝`procs[11].scheduler=Endpoint::SCHED` 写入成功（**INIT 确迁 SCHED**）；`nk15:p 04 00`＋`nk15:c 0c 04`/`0d 04`＝父(INIT)sched=SCHED(User 特权)→子 slot12/13 **继承 SCHED(0x04) 非 KERNEL**；`nk15:r 0c 00`/`0d 00`＝Fork 臂 `sched_start_user(child)` **走真 inherit 腿返 Ok**（非跳过腿）⇒ 子已注册进 SCHED、PM `reply(slot,OK)` 发出。⇒ **PM 用户态 fork 面无一切点**（续-11/13/15 三度证健康）。**编码陷阱教训**：`nk15_mark` 把 usize 槽号（十进制 11）当 hex nibble 打印成 `0b`，与 scheduler 值 `04` 混淆，续-14 因误读 `ff`/`0b` 自造 KERNEL 假象——探针标签须区分「索引(十进制)/值(十六进制)」。**真挂权威重定位＝内核侧子唤醒腿**：PM 已把 fork 返回 0 的 OK 回复投向子，但子从未跑到用户态 fork 返回→`/bin/sh` crt0→exec（exec endpt 恒 0x0–0xb、无 0xc）。丢失腿＝内核把 PM OK 回复投递给子并清 NO_QUANTUM/置子 runnable→子首次执行——属 §1.96/§1.113/§1.120续-2 同族（刚 fork 子 endpoint/槽的内核 IPC 投递/唤醒）；C 参照：子 NO_QUANTUM 由 `fork_from` 置、真正清除＝VM fork completion 回内核 `rts_unset(NO_QUANTUM)`（proc_table.rs:1751）。本轮纯取证、零码改、`nk14:`/`nk15:` 探针全 `git checkout` 回滚 tracked 净（grep 零残留）、三件套沿袭（PM mock 419/0、净态双跑 4041 同、rustfmt 持平）、WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-14/续-15。**⇒ 下一手（续-16）**＝内核侧子唤醒腿探针：①子 slot12 在 PM reply(OK) 之后的内核 rts_flags（RECEIVING/NO_QUANTUM/占位）、PM 的 OK 回复内核是否 Path A 投进子缓冲、子是否被置 runnable/上 CPU；②对照 C `do_fork`（内核）子 NO_QUANTUM 清除链 + `pick`/`balance` 何时使刚 fork 的子可跑（aarch64 SMP/配额）；③不得盲改已三度证健康的 PM fork 完成腿。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
+>
+> **（历史·§1.120续-13 摘要，详文见文末；✅ 其「VFS→PM 0x987 fork-reply 完成腿端到端健康闭合、证伪续-12」结论仍成立；⚠️ 其登记的「具体嫌疑＝子 sched_start_user 走跳过腿(scheduler==KERNEL/NONE)→从不 exec」已被续-15 证伪——实测子 scheduler=SCHED(0x04)、走真 inherit 腿返 Ok）**：承续-12 裁决，本轮装按 m_type 过滤的三点 `nk13:` 探针（VFS receive 0x907→`nk13:v`；VFS send_reply PM 腿→`nk13:s`；PM handle_vfs_reply 入口→`nk13:r`；PM Fork 臂 sched 结果→`nk13:F`）重编跑 run1–2，四点针全命中各一次（`v 00 00→s 87 00→r 87 00→F 0c 0b`）⇒ VFS→PM fork-reply 完成腿端到端闭合，续-12「从不闭合」被证伪（exec 臂≠fork 臂），续-11「fork 完成腿健康」独立重现（非 Heisenbug）。真挂重定位＝子 fork 完成后从不 exec（此结论续-15 仍持，但成因非跳过腿）。纯取证、探针全回滚、WORKLOG-only。
 >
 > **（历史·§1.120续-12 摘要，详文见文末；⚠️ 其「fork-reply 完成腿从不闭合/推翻续-11」结论已被续-13 三点针证伪——fork-reply 腿实测端到端健康，续-12 将 nk12 exec 臂零命中误读为 fork 腿断裂）**本轮只装最小 `nk12:` exec 腿探针（`nk12:e` VfsReply::Exec 臂入口、`nk12:s` KernelExec::exec Ok/Err）重编跑 run1–4，得 4× 逐字同 4038 行确定性基线、nk12:e/s 零命中、exec endpt 恒 11、子 `flags=0x8008` 仅一次无 `schedctl tgt=0xc`——当时据此推断“真挂早于 exec、在 fork-reply 完成腿从不闭合”。续-13 用三点针证明该推断错：fork-reply 腿全链闭合、nk12:e 零命中的真实含义＝子发起不了 exec（非 fork 腿断）。同时排除 rs-bigalloc/OOM-RT 红鲱鱼（续-11 那次 size=0xfffe25c0 ptr=0 在干净 build 从未再现）。保留此段仅作取证轨迹记录。
 >
@@ -5843,3 +5845,36 @@ aarch64 冻结面从「VFS↔INIT comm 层」重定向到「内核调度/IPC 唤
 
 - 三点 `nk13:` 探针（PM vfs.rs 一处、VFS main_loop.rs 两处＋两 helper）全部 `git checkout` 回滚，`grep -rn nk13 os/servers/{pm,vfs}/src/`＝零残留、tracked 净；本轮无生产码改＝WORKLOG-only（免 CodeReview）。
 - **方法论教训（自我证伪的必要）**：本轮推翻了上一轮（续-12）自己的结论——**先排除式证伪也包括对自己刚下的结论复验**。探针必须按目标 m_type 过滤（旧 cap16 洪流针会隐藏稀疏事件）；单腿零命中不可跨腿外推（exec 臂零命中≠fork 臂断裂，两条腿需各自直证）。靶心第六次修正（…→续-12 fork-reply 不闭合→续-13 fork-reply 健康、真挂＝子 sched 后从不 exec）。
+
+---
+
+## §1.120续-14/续-15 取证轮（nk14/nk15 探针彻底证伪续-14「子 scheduler=KERNEL 走跳过腿」·实锤 PM fork 全链健康：INIT=SCHED→子继承 SCHED→sched_start_user 真 inherit 返 Ok·真挂重定位至内核侧子唤醒腿·2026-09-28）
+
+### 定性
+
+续-14 装 `nk14:` 针于生产 `sched_start_user`（读子 scheduler 低字节），得 `nk14:x ff 00`，据此推断「子 scheduler=KERNEL(0xff)、走跳过腿、从不 inherit、从不 exec」，并追溯至「INIT 自身 scheduler 停留 KERNEL（`init_scheduling`→`sched_start` 未成功、Err 被 `let _ = rv` 静默吞）」。续-15 装 `nk15:` 针直读 `init_scheduling`/`sched_start`/`copy_mproc`/Fork 臂四点，**同时推翻续-14 的整条根因链**——PM 侧 fork 全链彻底健康，真丢失腿重定位到**内核侧子进程唤醒腿**。
+
+### 决定性数据（nk15 四点针，2 跑同基线 4041 行、marker=0）
+
+1. **`init_scheduling`/`sched_start`（init.rs）**：`nk15:x 04 00`＝`sched_start(endpoint,parent)` 对 INIT 返 **Ok**（非 Err）；随后 match Ok 臂 `procs[11].resources.scheduler = Endpoint::SCHED` **成功写入**（`nk15:x 0b 04`＝写入槽 index 11、该槽 `endpoint.slot()`=11）。⇒ **INIT 确实从 KERNEL 迁移到 SCHED**，续-14「INIT 停留 KERNEL」**证伪**。
+   - ⚠️ **编码陷阱（本轮踩坑实录）**：`nk15_mark` 把 `init_slot`/`parent_slot` 等 **usize 值（十进制 11）** 当 hex nibble 打印 ⇒ 屏幕 `0b`＝十进制 11（slot 号），而 scheduler 值 `0x04` 打印 `04`（＝Endpoint::SCHED 真值）。续-14 早期把屏幕 `ff` 误配到 slot，又误读 `0b`——**教训：探针须在标签里区分「索引（十进制）」与「值（十六进制 Endpoint 低字节）」**，否则自欺。
+2. **`copy_mproc`（fork.rs，父=INIT）**：`nk15:p 04 00`＝父 scheduler 低字节 0x04(SCHED)、父特权非 kernel（User）；走继承 `else` 支 ⇒ `nk15:c 0c 04`/`nk15:c 0d 04`＝**子 slot12/13 scheduler=0x04(SCHED)**，非 KERNEL。⇒ 续-14「子=KERNEL」**证伪**（PM 的 fork 继承逻辑与 C forkexit.c:96-100 一致、健康）。
+3. **Fork 完成臂（ipc/vfs.rs `VfsReply::Fork`）**：`nk15:r 0c 00`/`nk15:r 0d 00`＝对子 slot12/13 跑生产 `sched_start_user` **返 Ok**（真 inherit 腿 `crate::sched::sched_start_user`→`sched.inherit(SCHED, child_ep, inherit_from, maxprio)` 返 0，**非跳过腿**）。⇒ 子**已注册进 SCHED**、PM 随后 `svc.reply(slot, OK)` 把 fork 完成回复发给子。
+
+### 关键裁决
+
+- **续-14 结论整链作废**：`nk14:x ff 00` 的 `ff` 并非「子=KERNEL」——续-15 用同一套 `(sched.0 & 0xff)` 编码在 copy_mproc/Fork 臂直读到子 sched=**0x04(SCHED)**、sched_start_user 返 **Ok**。续-14「INIT 停留 KERNEL→子继承 KERNEL→跳过腿→从不 exec」的根因叙事被三点直证推翻。**续-13 登记的「具体嫌疑＝跳过腿」亦证伪**（走的是真 inherit 成功腿）。
+- **PM 侧 fork 全链＝端到端彻底健康**（续-13 证 fork-reply 腿闭合 → 续-15 证 sched_start_user 真 inherit Ok + reply(OK) 发出）。至此 PM 用户态 fork 面无一切点。
+- **真挂权威重定位＝内核侧子唤醒腿**：PM 已 `reply(slot, OK)`（fork 返回值 0）投递给子，但子从未在用户态跑到 fork 返回→`/bin/sh` crt0→发起 exec（exec endpt 恒 0x0–0xb、无 0xc）。丢失点在**内核把 PM 的 OK 回复投递给子并唤醒子（清 NO_QUANTUM/使其可运行）→子首次执行**这条腿——属 §1.96/§1.113/§1.120续-2 同族（刚 fork 的子 endpoint/槽的内核 IPC 投递/唤醒）。C 参照：fork 子 NO_QUANTUM 由 `fork_from` 置、真正清除＝VM fork completion 回内核 `rts_unset(NO_QUANTUM)`（proc_table.rs:1751 集成测试注释），子须被内核置为 runnable 才能收 PM 的 reply 并跑起来。
+
+### 裁决（本轮零码改、下一手＝续-16）
+
+1. **内核侧子唤醒腿探针**：子 slot12 在 PM reply(OK) 之后的内核态——其 rts_flags（RECEIVING/NO_QUANTUM/占位）、PM 的 OK 回复内核是否 Path A 投进子缓冲、子是否被置 runnable/上 CPU。判「回复丢失」vs「回复达但子不被唤醒」vs「唤醒后立刻再 park」。
+2. **对照 C**：`do_fork`（内核）子 NO_QUANTUM 清除链 + `pick`/`balance` 何时使刚 fork 的子可跑；aarch64 是否因 SMP/配额未把子排进 run-queue。
+3. 不得盲改已三度证健康的 PM fork 完成腿（续-11/13/15）。
+
+### 纪律
+
+- `nk14:`/`nk15:` 探针（init.rs、fork.rs、ipc/vfs.rs 多点＋helper）全部 `git checkout` 回滚，`grep -rn "nk14\|nk15" os/servers/pm/src/`＝零残留、tracked 净。
+- 三件套：本轮 tracked 净＝HEAD（零生产码改）⇒ kernel/arch/vm/vfs docker 基线 823/243/531/vfs 538 沿袭有效；`cargo test -p minix-pm --lib` **419/0** 不减；rustfmt 持平（无码改）；aarch64 `--release` 净态双跑 **4041 行逐字同**、marker=0、nk15 零残留（探针扰动＝0）。纯取证＝WORKLOG-only（免 CodeReview）。
+- **方法论教训**：探针输出须自带「索引(十进制)/值(十六进制)」语义标签——本轮因把 usize 槽号当 hex 打印，一度自造「INIT/子=KERNEL」假象、险些误修已健康的腿。自我证伪须直读**每一环的实际值**（copy_mproc 父/子 sched、Fork 臂 inherit 返回），不可由单点 `ff` 跨环节外推根因。靶心第七次修正（续-14 子=KERNEL 跳过腿→续-15 子=SCHED 真 inherit Ok、真挂＝内核侧子唤醒腿）。
