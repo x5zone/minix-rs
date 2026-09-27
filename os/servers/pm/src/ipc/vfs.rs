@@ -122,6 +122,15 @@ pub trait VfsReplyServices {
     /// 启动新进程调度（main.c:373）。返回 `Err` 表示调度失败（main.c:378-386）。
     fn sched_start_user(&mut self, slot: UserSlot) -> Result<(), i32>;
 
+    /// 摘除子进程的调度器归属（置 `scheduler = NONE`），main.c:380
+    /// `rmp->mp_scheduler = NONE; /* don't try to stop scheduling */`。
+    /// 仅在 `sched_start_user` 失败的 fork 拆除腿调用：子进程从未成功在
+    /// 调度器注册，退出链后续的 `exit_restart` sched_stop 门（forkexit.c:425
+    /// / exit.rs:499）不得对它发 `SCHEDULING_STOP`（否则调度器收到对
+    /// 未知进程的停止请求）。NONE 需保持到 VFS EXIT 回复后的 `exit_restart`
+    /// 才生效，故必须先于 `exit_proc` 施加，与 C 的语句顺序一致。
+    fn detach_scheduler(&mut self, slot: UserSlot);
+
     /// 推进进程退出（main.c:381/379 → `exit_proc(rmp, -1, FALSE)` 或 CORE/EXIT 路径）。
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool);
 
@@ -251,7 +260,12 @@ pub fn handle_vfs_reply<S: VfsReplyServices>(
         VfsReply::Fork => {
             // main.c:369-396：调度新进程，再回复子进程与父进程
             if svc.sched_start_user(slot).is_err() {
-                // 调度失败：拆除新进程，向父进程回复失败（除非父已死）
+                // 调度失败：先摘除调度器归属（main.c:380 `mp_scheduler =
+                // NONE`——子进程从未成功注册，退出链后续的 exit_restart
+                // 不得对它发 SCHEDULING_STOP），再拆除新进程，向父进程回复
+                // 失败（除非父已死）。回复码 -1 与 C main.c:385 `reply(...,
+                // -1)` 同号。
+                svc.detach_scheduler(slot);
                 svc.exit_proc(slot, -1, false);
                 svc.reply_to_guardian(slot, new_parent, -1);
                 return Ok(()); // 提前 return
@@ -455,6 +469,14 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
             .map_err(|e| e.to_errno())
     }
 
+    fn detach_scheduler(&mut self, slot: UserSlot) {
+        // C: main.c:380 — fork 调度失败腿在 exit_proc 前置 NONE，令退出链
+        // 后续的 exit_restart sched_stop 门（forkexit.c:425 / exit.rs `if
+        // scheduler != KERNEL && != NONE`）跳过，不对从未成功注册的子进程
+        // 发 SCHEDULING_STOP。
+        self.table.procs[slot.get()].resources.scheduler = Endpoint::NONE;
+    }
+
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool) {
         // C: main.c:381 — fork 调度失败路径 `exit_proc(rmp, -1, FALSE
         // /*dump_core*/)`：直接走二阶段退出（09 的 exit_proc 全链：sys_stop
@@ -613,6 +635,7 @@ pub enum RecordedEffect {
     Reply { slot: UserSlot, code: i32 },
     ReplyToGuardian { slot: UserSlot, suppressed: bool, code: i32 },
     SchedStartUser { slot: UserSlot, result: Result<(), i32> },
+    DetachScheduler { slot: UserSlot },
     ExitProc { slot: UserSlot, status: i32, dump_core: bool },
     SetCoreFlag { slot: UserSlot },
     AssertExiting { slot: UserSlot },
@@ -694,6 +717,10 @@ impl VfsReplyServices for RecordingServices {
         let r = self.next_sched_result;
         self.effects.push(RecordedEffect::SchedStartUser { slot, result: r });
         r
+    }
+
+    fn detach_scheduler(&mut self, slot: UserSlot) {
+        self.effects.push(RecordedEffect::DetachScheduler { slot });
     }
 
     fn exit_proc(&mut self, slot: UserSlot, status: i32, dump_core: bool) {
@@ -852,6 +879,8 @@ mod tests {
             code: 1234,
         }));
         assert!(svc.effects.contains(&RecordedEffect::RestartSignals { slot: UserSlot::new(1) }));
+        // sched 成功腿不得摘除调度器归属（detach 仅属失败腿）。
+        assert!(!svc.effects.contains(&RecordedEffect::DetachScheduler { slot: UserSlot::new(1) }));
     }
 
     #[test]
@@ -879,12 +908,34 @@ mod tests {
         svc.next_sched_result = Err(-1);
         let msg = reply_msg(VFS_PM_FORK_REPLY, Endpoint::from_generation_slot(1, 1));
         handle_vfs_reply(&mut svc, &msg).unwrap();
-        // sched 失败 → exit_proc(slot, -1, false) + reply_to_guardian(parent, false, -1) + return
+        // sched 失败 → detach_scheduler + exit_proc(slot, -1, false) + reply_to_guardian(parent, false, -1) + return
         assert!(svc.effects.contains(&RecordedEffect::ExitProc {
             slot: UserSlot::new(1),
             status: -1,
             dump_core: false,
         }));
+        // C main.c:380 保真：失败腿必须先 detach_scheduler（置 scheduler=NONE）
+        // 再 exit_proc，否则 exit_proc 的 sched_stop 门会对从未注册的子进程
+        // 误发 SCHEDULING_STOP。定序断言防回归。
+        assert!(svc.effects.contains(&RecordedEffect::DetachScheduler {
+            slot: UserSlot::new(1),
+        }));
+        let detach_at = svc.effects.iter().position(|e| {
+            *e == RecordedEffect::DetachScheduler {
+                slot: UserSlot::new(1),
+            }
+        });
+        let exit_at = svc.effects.iter().position(|e| {
+            *e == RecordedEffect::ExitProc {
+                slot: UserSlot::new(1),
+                status: -1,
+                dump_core: false,
+            }
+        });
+        assert!(
+            detach_at.is_some() && exit_at.is_some() && detach_at < exit_at,
+            "detach_scheduler 必须先于 exit_proc（C main.c:380-381 语句顺序）"
+        );
         assert!(svc.effects.contains(&RecordedEffect::ReplyToGuardian {
             slot: UserSlot::new(1),
             suppressed: false,

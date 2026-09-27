@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.119 取证（新鲜真机·翻案静态刻画·纯取证未修）**：三探针（sufe/ssu/fo-rv+seed）＋清洁 committed 镜像多跑钉死＝**INIT 自身 `fork()` 返回 EPERM(1)**（sufe 直证）、非「fork 成功后子进程死亡」（翻案上小节静态刻画）；`-smp 1` 与 `-smp 4` **皆现** `init-state SingleUser×~15000/40s` 洪流＋零 panic/oom＝**此 bug 非 SMP**（§1.118 幽灵-CPU 修复未彻底解决）。`-smp 1` 下 `pick` 短路 cpu0、fanout `rv=0`（committed `schedctl rv 0000` 亦证）⇒ **EPERM 不可能来自 §1.118 fanout/CPU 腿**；`ssu`/`seed` 探针一装即翻为「runcom fork 成功、卡 rc 子进程 /bin/sh text 缺页」——**build-layout 敏感**（同 committed 源仅 PM/SCHED 码字节位移即翻转 失败↔成功）。排除：非子进程死/非 SMP/非 admit sender_ok/非 fanout rv≠0。**收敛嫌疑＝§1.113 switch-after-pop 家族阻塞 IPC 回复投递腿**（PM `inherit` taskcall park→SCHED 回 0→PM 读回回复码被间歇曲解为错→回字面 −1→INIT EPERM）。下轮＝内核 SCHED→PM 回复投递腿对 fork-inherit 往返做非串口可靠记账（承 §1.118续 m_type 分区方法论）钉死断点＋查 `ipc/vfs.rs:256` 字面 −1 吞真码。详节见文末 §1.119 取证。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119＝INIT fork EPERM 非 SMP·layout 敏感·收敛至阻塞 IPC 回复腿（未达 marker）；riscv64 未验。**
+> **✅ 最新前沿＝§1.119续（静态追踪回复投递腿＋发现并修复相邻 C 保真缺口）**：接 §1.119 取证收敛。本轮**纯静态**追通 PM sendrec→SCHED→Path-A 回复投递全链（不装探针·因 §1.119 已证探针扰动 build），三发现：①**翻案「`ipc/vfs.rs:256` 字面 −1 吞真码是 bug」**——C `main.c:385` 失败腿**同样 `reply(parent,-1)`**，−1→父 Errno(1)＝EPERM 是忠实于 C、非偏差，上轮「吞真码」假设作废；②**Path-A 同步投递（`ipc.rs:1372-1374`）只写内核侧 `p_delivermsg`+置 `DELIVERMSG`、延迟到调度循环 Stage-3 `process_misc_flags`→`delivermsg`（`ipc.rs:713/722`）冲刷进 PM 用户缓冲**——纸面正确、符合 C `switch_to_user` 延迟模型，暂未静态找到可解释 layout 敏感的确定缺陷（§1.113 恢复腿是否漏跑冲刷＝下轮唯一剩余静态可查点）；③**发现并修复一个独立的真实 C 保真缺口**——fork 失败腿 `sched_start_user` Err 后未先置 `mp_scheduler=NONE`（C `main.c:380` `don't try to stop scheduling`）即调 `exit_proc`→退出链 `exit_restart` 的 sched_stop 门（`exit.rs:499`/`forkexit.c:425`）会对**从未成功注册的子进程误发 `SCHEDULING_STOP`**。修复＝`VfsReplyServices` 加 `detach_scheduler(slot)`（置 `scheduler=NONE`）、Fork 失败腿 `exit_proc` 前调用、+两回归测试（失败腿定序 DetachScheduler<ExitProc·成功腿不含）。**三件套全绿**：PM mock **418/0**·vfs.rs nightly rustfmt **零新增漂移**（37=HEAD 基线）·x86_64 单核 **双跑 marker=2·panic=0·oom=0** 无回归。**aarch64 `--release` `-smp 4` 真机＝活锁洪流依旧（`SingleUser×9525`、marker=0、panic=0）——如实证实本修复不解决 §1.119 根 EPERM（它在失败腿·根因是 `sched_start_user` 仍返 Err）；且关键：不同于 §1.119 的 diagctl 探针会把 build 翻成功态，本次真实逻辑改动未扰动到成功态、活锁签名稳定复现**。CodeReview（审 vfs.rs 真实 diff）**PASSED·零 BLOCKER**，采纳 CONSIDER（sched_stop 门归因 `exit_proc`→`exit_restart`/forkexit.c:425 注释修正）；SHOULD-FIX 提及的 sched.rs「探针」经核实＝整包 `cargo fmt` 误伤的**纯 fmt churn**（见方法论事故），已 `git checkout` 复原。**⚠️ 方法论事故（本轮·已完全恢复）**：为提取 fmt 规范形态误跑 `cargo +nightly fmt -p minix-pm`（**无 `--check`**）两次于整包，因整包有巨量既有漂移（789 处）→**重排全部 35 个 PM 文件**→立即 `git checkout HEAD` 复原除 vfs.rs 外全部（tracked-modified 复归净）。教训＝**该 PM crate 基线严重未格式化，任何 `cargo fmt` 必须 `--check` only、或 `rustfmt` 单文件、绝不整包裸 fmt**。**下轮＝§1.113 aarch64 恢复/switch-after-pop 腿是否漏跑 `process_misc_flags` DELIVERMSG 冲刷（唯一剩余静态可查点）→否则须非串口记账（回复 m_type 回传码分区·承 §1.118续）钉死 SCHED 回 0/PM 读成错的断点**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续＝回复投递腿纸面正确·根因未破·相邻 C 保真缺口已修（未达 marker）；riscv64 未验。**
+>
+> **（历史·§1.119 取证）：三探针（sufe/ssu/fo-rv+seed）＋清洁 committed 镜像多跑钉死＝**INIT 自身 `fork()` 返回 EPERM(1)**（sufe 直证）、非「fork 成功后子进程死亡」（翻案上小节静态刻画）；`-smp 1` 与 `-smp 4` **皆现** `init-state SingleUser×~15000/40s` 洪流＋零 panic/oom＝**此 bug 非 SMP**（§1.118 幽灵-CPU 修复未彻底解决）。`-smp 1` 下 `pick` 短路 cpu0、fanout `rv=0`（committed `schedctl rv 0000` 亦证）⇒ **EPERM 不可能来自 §1.118 fanout/CPU 腿**；`ssu`/`seed` 探针一装即翻为「runcom fork 成功、卡 rc 子进程 /bin/sh text 缺页」——**build-layout 敏感**（同 committed 源仅 PM/SCHED 码字节位移即翻转 失败↔成功）。排除：非子进程死/非 SMP/非 admit sender_ok/非 fanout rv≠0。**收敛嫌疑＝§1.113 switch-after-pop 家族阻塞 IPC 回复投递腿**（PM `inherit` taskcall park→SCHED 回 0→PM 读回回复码被间歇曲解为错→回字面 −1→INIT EPERM）。下轮＝内核 SCHED→PM 回复投递腿对 fork-inherit 往返做非串口可靠记账（承 §1.118续 m_type 分区方法论）钉死断点＋查 `ipc/vfs.rs:256` 字面 −1 吞真码。详节见文末 §1.119 取证。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119＝INIT fork EPERM 非 SMP·layout 敏感·收敛至阻塞 IPC 回复腿（未达 marker）；riscv64 未验。**
 >
 > **（历史·§1.118 修复）✅ §1.118 修复 aarch64 INIT fork EPERM 部分根因钉死并修复＝SCHED `pick` 扫描界未钉 `processors_count`·选中幽灵 CPU**（接 §1.118续 取证 commit `956e4a57f`）：**翻案上轮「根因＝次核 bringup 未就绪」定性**——未就绪只是触发器。真根因＝SCHED 账本 `loads: [CpuLoad; MAX_CPUS=32]` 初始化 `[Some(0);32]`，旧 `pick`（`os/servers/sched/src/cpu.rs`）选座循环 `loads.iter().enumerate()` **不受 `topo.processors_count` 约束**；4 核机 fanout 重试环把真实非-BSP 核 1,2,3 `mark_dead` 后 re-pick **扫到幽灵核 4..31（从未存在、仍 Some(0)、负载最轻）→ 选 `cpu=4`** → 内核 `validate_cpu_param`（`os/kernel/src/sched.rs:292`）判 `v>=ncpus`→**EINVAL(22)**→PM `si` 读 `res=902+22=924`→回 −1→父 EPERM→INIT 活锁。**C ground truth**：`pick_cpu`（`schedule.c:67`）`for(c=0;c<machine.processors_count;c++)` 只在真实核数内循环、全死回落 BSP、绝不选 ≥ncpus；Rust 迭代满 32 数组破坏契约（`server.rs:41-44` 注释「pick only reads what exists」修复前是谎）。**修复（架构中立）**＝`pick` 扫描界 `let ncpus=(processors_count).min(loads.len())`+`.take(ncpus)`+`bsp` 夹取改基 `ncpus`，等价 C；真实非-BSP 全死则回落 BSP（次核未就绪只用 BSP、fork 正常）。**三件套全绿**：sched mock **88/0**（+回归测试 `test_phantom_seats_beyond_topology`·两断言旧代码均失败）·cpu.rs nightly rustfmt **零漂移**（transport.rs 既有基线未触碰）·aarch64 `--release` **`-smp 4` 双跑一致＝`init-state` 现达 `SingleUser`（fork EINVAL 消除·INIT 首次多核越 fork）**·x86_64 单核 **marker=2·panic=0·oom=0** 无回归。**CodeReview（子代理审 cpu.rs 真实 diff）PASSED·零 BLOCKER·零 SHOULD-FIX**，逐项证 `take(ncpus)`/`bsp` 夹取/tie-break 与 C 等价、回归测试真钉 bug、caller 无遗漏假设；采纳唯一 CONSIDER（锚点 `schedule.c:64`→`:67` 注释级修正）。**关键方法论承前**：committed `nk4a: schedctl` 探针（`dispatch_schedule` SYS_SCHEDULE 入口）真机被 p4-init 洪流丢弃（0 行），判定不靠串口打印靠逻辑链+修复签名。**新前沿 §1.119（多核 aarch64 现暴露·更新）**＝fork EINVAL 消除后 INIT 达 SingleUser，但真机仍现 `nk4a: p4-init src=0x0/0x1 pdmv=... rpv=n` 活锁洪流（~6.3 万行/40s·双跑量级一致）＝SingleUser 阶段围绕 INIT(ep0)/PM(ep1) 的新 receive 活锁（非 fork 腿）；下轮在 `-smp 4` 现场钉死谁空转、`rpv=n` 语义、是否 §1.117 reap 环新路径复发或 rc-shell/exec 下游新问题。**aarch64 rc marker 仍未达·本修复推进一格暴露下一格。** 详节见文末 §1.118 修复。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 fork CPU 调度真根因修复（INIT 达 SingleUser、未达 marker·下游 §1.119 p4-init 活锁）；riscv64 未验。**
 >
@@ -5235,3 +5237,44 @@ fork EINVAL 消除后 INIT 达 SingleUser，但真机仍现 `nk4a: p4-init src=0
 layout 敏感＋跨单/多核＋错误码恒 EPERM(1)→**最强嫌疑＝§1.113 switch-after-pop 家族的阻塞 IPC 回复投递/返回腿**：PM `MinixSchedCtl::inherit` 经 `taskcall(SCHED, SCHEDULING_INHERIT)` 发送并 park，SCHED 回 `rv=0`，但 PM 侧读回的回复 m_type/码在 aarch64 上被**间歇性曲解为错误**（→`sched_start_user` 误判 Err→PM 回字面 −1→INIT EPERM）。下轮＝在内核 SCHED→PM 回复投递腿（`sendrec` 回复半 / switch-after-pop 弹帧后返回码寄存器 X0）对 fork-inherit 这一具体往返做非串口可靠记账（回复 m_type 回传码分区，承 §1.118续 方法论），钉死 SCHED 回 0 而 PM 读成错 的确切断点；并查 `os/servers/pm/src/ipc/vfs.rs:256` 字面 `-1` 吞真码是否掩盖了「其实 sched_start_user 返回的是 IPC 层曲解码」。
 
 **本轮零代码改动·三处 TEMP 探针 task-close 全 `git checkout` 回滚·tracked 净·三件套未跑（无逻辑改动）。** **⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119 翻案钉死＝INIT fork EPERM 非 SMP、layout 敏感、收敛至 §1.113 阻塞 IPC 回复投递腿（未达 marker）；riscv64 未验。**
+
+---
+
+## §1.119续（纯静态追通回复投递腿＋发现并修复相邻 C 保真缺口·本轮有逻辑改动）
+
+接 §1.119 取证收敛至「阻塞 IPC 回复投递腿」。本轮**不装任何探针**（§1.119 已证 diagctl 探针扰动 build 即翻转复现态），纯静态追通 PM sendrec→SCHED→Path-A 回复投递全链，得三结论：
+
+### 1. 翻案：`ipc/vfs.rs:256` 字面 `-1` **不是** bug（忠实于 C）
+上轮记「字面 `-1` 吞真码、疑掩盖 IPC 层曲解码」。核 C ground truth `minix3/minix/servers/pm/main.c:378-385`：
+```c
+if (r != OK) {
+    rmp->mp_scheduler = NONE;   /* ← 见 §3 */
+    exit_proc(rmp, -1, FALSE);
+    if (!new_parent) reply(rmp->mp_parent, -1);   /* ← C 也回字面 -1 */
+}
+```
+C 失败腿**同样 `reply(parent, -1)`**→父收 Errno(1)＝EPERM。故 INIT 见 EPERM(1) 与 C 一致，`-1` 非偏差、上轮「吞真码」假设作废。
+
+### 2. Path-A 回复投递腿：延迟冲刷模型·纸面正确
+- SCHED 回复＝`ipc.sendnb(sender, &reply)`（`servers/sched/src/server.rs:334`，`reply.m_type=code`）——本设计无独立 IPC_REPLY 陷阱（`IpcCall::from_raw` 无 9），回复折进 sendnb 直投。
+- PM sendrec park：send 半被 drain 取走（`ipc.rs:1687` copy 请求进 SCHED 用户缓冲）后，REPLY_PEND 发送者**不被唤醒、不写 retreg**（`ipc.rs:1705-1741`），转入自身 receive 半 RECEIVING+getfrom=ANY 停等。
+- SCHED 的 sendnb reply 命中 PM（Path-A·`ipc.rs:1355-1414`）：`can_receive` 过 → **只写内核侧 `p_delivermsg`+置 `DELIVERMSG`+清 RECEIVING+`set_ipc_return_code(OK)`+清 REPLY_PEND**，**不同步 copy 用户缓冲**。
+- 用户缓冲拷贝延迟到 PM 被 pick 时经调度循环 Stage-3 `process_misc_flags`→`delivermsg`（`ipc.rs:713/722` `copy_msg_to_user`）冲刷，再 `restore_to_user`（`lib.rs:3918→3634`）。
+- **判定**：这套延迟冲刷与 C `switch_to_user` 的 delivermsg 阶段同形（`proc.c:263-294`），纸面**正确**。若冲刷被跳过，PM 会读到自己发出的原始 `m_type=0xf05(3845)≠0`→`sched_start_user` 误判 Err→回 `-1`→INIT EPERM——**这正是可解释 layout 敏感的机制候选**，但唯一能静态证伪的点是「aarch64 §1.113 恢复/switch-after-pop 腿是否必经 Stage-3 冲刷」，下轮专查。若静态不能定死，须转非串口记账（回复 m_type 回传码分区，承 §1.118续）。
+
+### 3. 发现并修复：fork 失败腿漏 `mp_scheduler=NONE`（C `main.c:380` 保真）
+静态核 `main.c:380` 发现 Rust 端口 Fork 失败腿（`ipc/vfs.rs:262`）在 `sched_start_user` Err 后**直接 `exit_proc`，未先置 `scheduler=NONE`**。而 `exit_restart` 的 sched_stop 门（`os/servers/pm/src/exit.rs:499`：`if scheduler != KERNEL && != NONE`→发 `SCHEDULING_STOP`；对位 `forkexit.c:425`）会对**从未成功在 SCHED 注册的子进程误发停止请求**，偏离 C（C 注释明写 `don't try to stop scheduling`）。
+- **修复**：`VfsReplyServices` trait 加 `detach_scheduler(&mut self, slot)`；`PmServices` impl 置 `table.procs[slot].resources.scheduler = Endpoint::NONE`；`RecordingServices`（测试 mock）记 `RecordedEffect::DetachScheduler`；Fork 失败腿 `exit_proc` **之前**调用（严格对位 C `main.c:380→381` 语句顺序）。
+- **回归测试**（`ipc/vfs.rs` test 模块）：失败腿断言 `DetachScheduler` 存在**且定序先于 `ExitProc`**（`detach_at < exit_at`·旧代码不含 DetachScheduler 必失败）；成功腿断言**不含** `DetachScheduler`（对位 C else 分支不动 `mp_scheduler`）。
+- **诚实定框**：此修复在**失败腿**，不解决 §1.119 根 EPERM（根因是 `sched_start_user` 仍返 Err）；它是追根过程中发现的、相邻的、独立正确的 C 保真缺口，按 code-excellence 即刻修复，非缩小前沿。
+
+### 三件套 + CodeReview
+- **mock**：PM `cargo test -p minix-pm --lib` **418 passed / 0 failed**（只增不减·含 2 新断言）。
+- **rustfmt**：vfs.rs nightly `--check` 漂移数 **37＝HEAD 基线**（该文件本就严重未格式化·本轮零新增漂移）。
+- **真机双签名**：x86_64 单核（手动 `-smp 1`·xtask 默认 `-smp 4` 是 §1.106 已记 pre-existing 多核 VM panic 无关本轮）**双跑 marker=2·panic=0·oom=0** 无回归（失败腿在 x86 不触发·证成功路径未受扰）；aarch64 `--release` `-smp 4` **活锁洪流依旧（`init-state SingleUser×9525`、marker=0、panic=0）**——如实证实本修复不解决根 EPERM，**且不同于 §1.119 的 diagctl 探针会把 build 翻成功态，本次真实逻辑改动未扰动到成功态、活锁签名稳定复现**（PM 失败腿字节改动扰动量远小于贯穿式 console 探针）。
+- **CodeReview**（子代理审 vfs.rs 真实 diff）**PASSED·零 BLOCKER**；逐条证 ①与 C `main.c:380-381` 语句顺序严格一致 ②直接写 `resources.scheduler=NONE` 不破坏 exit 链不变式（exit_proc 前半不读 scheduler·NONE 稳定保持到 exit_restart 生效点）③成功腿不 detach 正确 ④trait 无其他漏实现 impl（无默认实现·漏则编译失败）⑤回归断言真能捕获。采纳 CONSIDER：sched_stop 门归因由 `exit_proc` 修正为 `exit_restart`/`forkexit.c:425`（三处注释）。
+
+### ⚠️ 方法论事故（本轮·已完全恢复）
+为提取我新增代码的 fmt 规范形态，误跑 `cargo +nightly fmt -p minix-pm`（**漏了 `--check`**）两次于**整包**——因该 PM crate 有巨量既有基线漂移（`--check` 报 789 处 Diff），裸 fmt 一次性**重排了全部 35 个 PM 文件**（`git status` 见 35 文件 ` M`）。立即 `git checkout HEAD --` 复原除 `ipc/vfs.rs` 外全部 34 文件（tracked-modified 复归仅 vfs.rs）。CodeReview 见 `sched.rs:355-377`「TEMP §1.118 探针」实为整包 fmt churn 的**既有 committed 码**（非本轮改动），已随 revert 复原。**教训（永久）**＝该 PM crate 基线严重未格式化，任何格式化检查**必须 `cargo fmt -- --check` only**、或 `rustfmt --check` 单文件，**绝不对整包/单包裸跑 `cargo fmt`**；提取规范形态应 `cp` 副本到工作区内（`/tmp` 沙箱只读）再 fmt 副本。
+
+**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续＝回复投递腿纸面正确·根因未破·相邻 C 保真缺口（fork 失败腿漏 scheduler=NONE）已修（未达 marker）；riscv64 未验。** 下轮＝静态专查 §1.113 aarch64 恢复/switch-after-pop 腿是否漏跑 `process_misc_flags` DELIVERMSG 冲刷（唯一剩余静态可查点）→否则转非串口记账钉死 SCHED 回 0/PM 读成错的断点。**历史链**：…→§1.118 修复 `pick` 幽灵-CPU(`ad9d37429`)→§1.119 取证翻案 INIT fork EPERM·layout 敏感(`a1b8b1663`)→**§1.119续 纯静态追通回复腿·翻案 −1 掩码·修复相邻 main.c:380 scheduler=NONE 保真缺口**。
