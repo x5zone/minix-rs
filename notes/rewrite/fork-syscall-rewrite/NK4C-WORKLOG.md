@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.119续-7（真实修复落地：PM sched_start 补校 SCHED 回复码→破 EDEADEPT/SingleUser 活锁·非布局扰动）**：承 §1.119续-6「EDEADEPT 系布局敏感非稳定根」推断→本轮回根因。**静态钉死 C 保真缺口**：PM `init_scheduling`→`sched_start`（init.rs 私有方法）用裸 `transport.sendrec` 发 SCHEDULING_START 后、旧码 `Ok(())=>Ok(Endpoint::SCHED)` **完全不校回复 `m_type`**（与 §1.119续-4/5 五轮追的「假登记 scheduler=SCHED」根吻合）；而 C `libsys/sched_start.c:87` 明写 `if ((rv = _taskcall(...))) return rv;`。**修复**：`Ok(())` 腿拆为 `msg.m_type != OK => Err(msg.m_type)`（透传拒绝码）/ `=> Ok(SCHED)`；返回类型 `Result<Endpoint,()>`→`<,i32>`；调用方 `Err(())`→`Err(rv)`（schedule.c:60-67 仅告警不 panic）；新增单测 `test_sched_start_propagates_denied_reply_code`。**CodeReview PASSED**（0 BLOCKER/0 SHOULD）采纳 CONSIDER——同形 `sched.rs::taskcall` 补 ELOCKED(208) 有界重试（boot 时序敏感语境下防御必要）。**三件套全绿**：mock pm **--lib 419/0**（+1 新测·另有 2 个 `run_once_integration` 预存失败经 stash 对比证实与本改无关、属主回复腿号符约定预存债）·init.rs rustfmt **0=0** 零新漂·**aarch64 `--release` `-smp 4` 双跑完全一致＝EDEADEPT(00d7)×0、SingleUser×0（活锁彻底破除）、`rv 004e`×1（SCHED 对 INIT START 回 ENOSYS·PM 现正确不假登记）、日志从 12.7万行降至 4295 行、panic=0**、新尾部 `vm-pf`×3419（fa≈0x221xxx 用户 text 页·转 §1.116 前沿）·x86 单核双跑 marker=2·panic=0·oom=0 无回归。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-7＝五轮活的 EDEADEPT/SingleUser 活锁首次由真实 C 保真修复破除（非探针扰动）·新前沿＝INIT 用户 text 缺页洪流 vm-pf（§1.116）；riscv64 未验。** 详节见文末 §1.119续-7。
+> **✅ 最新前沿＝§1.120 取证（新鲜真机·纠正续-7 停点低估）**：用 HEAD（含续-7）重建 aarch64 镜像跑 QEMU，判定续-7 记录的「INIT text vm-pf 洪流」＝**主要是正常 lazy 分页**（栈同 VA 重复系 13 进程各自栈重叠），50s/110s 日志均冻结 4295 行＝**真死锁非慢**。真实推进比续-7 记的更远：12 server+INIT 全 exec 成功、INIT **已达 `init-state Runcom`**（正跑 /etc/rc）；新断点＝**Runcom 后 rc 子进程 proc12（`/bin/sh`·`setaddr nr=0xc`）在 setaddr 之后的 exec/缺页/入进调度腿全员阻塞**。**前沿重定＝aarch64 fork 出的 rc 子进程（proc12）exec/首次调度腿（属 fork COW / 子进程 text demand-paging 家族·非 §1.116 INIT-text 覆盖）**。本轮纯取证、零码改、无新探针（读 committed 二进制内置 `nk4a:*` 路标），WORKLOG-only。详文见文末 §1.120。
+>
+> **（历史·§1.119续-7·修复里程碑）（真实修复落地：PM sched_start 补校 SCHED 回复码→破 EDEADEPT/SingleUser 活锁·非布局扰动）**：承 §1.119续-6「EDEADEPT 系布局敏感非稳定根」推断→本轮回根因。**静态钉死 C 保真缺口**：PM `init_scheduling`→`sched_start`（init.rs 私有方法）用裸 `transport.sendrec` 发 SCHEDULING_START 后、旧码 `Ok(())=>Ok(Endpoint::SCHED)` **完全不校回复 `m_type`**（与 §1.119续-4/5 五轮追的「假登记 scheduler=SCHED」根吻合）；而 C `libsys/sched_start.c:87` 明写 `if ((rv = _taskcall(...))) return rv;`。**修复**：`Ok(())` 腿拆为 `msg.m_type != OK => Err(msg.m_type)`（透传拒绝码）/ `=> Ok(SCHED)`；返回类型 `Result<Endpoint,()>`→`<,i32>`；调用方 `Err(())`→`Err(rv)`（schedule.c:60-67 仅告警不 panic）；新增单测 `test_sched_start_propagates_denied_reply_code`。**CodeReview PASSED**（0 BLOCKER/0 SHOULD）采纳 CONSIDER——同形 `sched.rs::taskcall` 补 ELOCKED(208) 有界重试（boot 时序敏感语境下防御必要）。**三件套全绿**：mock pm **--lib 419/0**（+1 新测·另有 2 个 `run_once_integration` 预存失败经 stash 对比证实与本改无关、属主回复腿号符约定预存债）·init.rs rustfmt **0=0** 零新漂·**aarch64 `--release` `-smp 4` 双跑完全一致＝EDEADEPT(00d7)×0、SingleUser×0（活锁彻底破除）、`rv 004e`×1（SCHED 对 INIT START 回 ENOSYS·PM 现正确不假登记）、日志从 12.7万行降至 4295 行、panic=0**、新尾部 `vm-pf`×3419（fa≈0x221xxx 用户 text 页·转 §1.116 前沿）·x86 单核双跑 marker=2·panic=0·oom=0 无回归。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-7＝五轮活的 EDEADEPT/SingleUser 活锁首次由真实 C 保真修复破除（非探针扰动）·新前沿＝INIT 用户 text 缺页洪流 vm-pf（§1.116）；riscv64 未验。** 详节见文末 §1.119续-7。
 >
 > **（历史·§1.119续-6）（决定性反转：EDEADEPT/INIT-未登记降级为 build-layout/时序敏感症状·非稳定根因）**：承 §1.119续-5「查 INIT SCHEDULING_START 腿」。给 PM `init_scheduling`（init.rs）加两枚 TEMP 探针 `nk4a: si `[in_use][is_priv][endpoint低字节]+`nk4a: ss `[sched_start O/E] 后重建 aarch64 `--release` `-smp 4`，**症状彻底翻转且 r1/r2 双跑确定性复现**：`nk4a: rv 0000`×2 现（SCHED inherit 成功）、EDEADEPT×14 洪流消失、SingleUser 活锁消失（仅 `init-state Runcom`×1）、零 panic、marker=0，日志尾部转为重复 `nk4a: sa-call caller=0x4 pid=0x9` 循环（4319 行 vs 上轮 127611 行）。**判读＝这是 §1.119 早记的 build-layout/时序敏感**——给 PM 加字节恰好位移翻转了症状（EDEADEPT-洪流↔inherit-成功+新下游循环），**证明续-4/续-5 钉死的 EDEADEPT 非稳定根因，而是潜在 boot 期 ordering/未初始化竞争的布局依赖表现**；新前沿 `sa-call caller=4(SCHED) pid=9` 实际比 EDEADEPT 更靠后（已越过 INIT fork）。**TEMP 探针全回滚·tracked 净·零逻辑改动**。**下轮＝从更靠后的 `sa-call caller=4 pid=9` 循环切入（更近 marker），或转非布局敏感的稳定手段（如固定随机种子/移除 diagctl 依赖的位点）定位 underlying boot 时序/未初始化竞争**。**⇒ aarch64 §1.119续-6＝EDEADEPT 降级为布局相关症状·前沿收敛至 sa-call pid=9（未达 marker）。** 详节见文末 §1.119续-6。
 >
@@ -5435,4 +5437,25 @@ match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
 
 **方法学回报**：续-6 的“布局敏感”不是拒绝修复的理由，而是提示——真正的 C 保真 bug（漏校回复码）会在不同布局下时隐时现；固定它后才能得到不依赖探针扰动的稳定签名。新前沿＝INIT 用户 text 缺页洪流 vm-pf（接 §1.116：查 aarch64 load_vm_elf/grant_user_walk 对 INIT 高 text 地址 0x221xxx–0x22dxxx 的映射覆盖）。
 
-**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-7＝EDEADEPT/SingleUser 活锁首次由真实 C 保真修复破除（非探针扰动）·新前沿＝INIT 用户 text 缺页洪流 vm-pf（§1.116）；riscv64 未验。** **历史链**：…→§1.119续-5 dx 钉 INIT-未登记(`218260616`)→§1.119续-6 PM 探针扰动致症状翻转·EDEADEPT 降级布局敏感(`1492d2791`)→**§1.119续-7 PM sched_start 补校回复码、真实破除活锁（含修复）**。
+。→**§1.120 取证＝纠正续-7 停点低估（非 INIT text 缺页而是已过缺页抵 Runcom·真死锁重定至 rc 子进程 proc12 exec 腿）**。
+
+---
+
+## §1.120 取证（新鲜真机·纠正续-7 前沿刻画·纯取证未修·无新探针·对 HEAD 二进制内置 nk4a:* 路标取证）
+
+**动机**：续-7 把新前沿记为「INIT 用户 text 缺页洪流 vm-pf（§1.116）」并建议去查 load_vm_elf/grant_user_walk 映射覆盖。本轮用 HEAD（含续-7）重建 aarch64 `--release` 镜像、`-smp 4` 跑 QEMU，先判该 3419 vm-pf 是「同页反复缺的活锁」还是「正常 lazy 分页后卡别处」。
+
+**取证方法与现场**：`tmp/nk4a/a64-frontier.log`（50s timeout＝4295 行）与 `tmp/nk4a/a64-long.log`（180s timeout 内、累计 110s 观测）。
+
+**决定性发现**：
+1. **慢—排除·坐实死锁**：50s 与 110s 两次采样日志均**冻结在 4295 行、字节数不增**，串口全静置＝全员阻塞的真死锁（非 aarch64 TCG 慢、非打印循环）。拉长 timeout 不会到 marker。
+2. **推进比续-7 记录更远**：12 boot server + INIT（endpt=0xb、ip=0x229e24）**全部 exec 成功**（L105–163）；第 4271 行出现 `init-state Runcom`＝INIT **真进入 Runcom 态**（`runcom()`→`runetcrc`：fork 子进程声明 console 并 exec `/bin/sh` 跑 `/etc/rc`）。故 3419 vm-pf **主要是正常 lazy 分页**（文本页 0x22xxxx + 栈页 0x7fffffff_xxxx；栈同 VA 重复 ~11 次是 **13 进程各自栈重叠**、非单进程死循环），INIT text 缺页被 VM 正常解决、得以一路跑到 Runcom。续-7 的「抵 INIT text 缺页」低估了已越过的阶段。
+3. **新断点钉定＝rc 子进程 proc12 exec/运行腿**：Runcom 后尾序列 `setaddr nr=0xc`（proc 12＝boot 0–11 之后首个动态进程＝INIT 为跑 /etc/rc fork 的 `/bin/sh` 子进程）→ VM 正在为其 SetAddrSpace（此刻 runnable=no/queued=no 属正常瞬态）→ `do-memory target=11`（回服务 INIT）→ 8× `sa-call caller=0x4(SCHED) pid=0x9 fl=0x12 sys=y`→ 全静置。死锁位于 **proc12（`/bin/sh` rc 子）在 setaddr 之后的 exec/缺页/入进调度腿**。suf e/SSU/fo-rv 探针（已回滚）未参与本轮，现场为 committed 二进制自含路标。
+
+**前沿重定**：新前沿**不是** §1.116 INIT-text 映射覆盖（INIT text 缺页服务正常）。真缺口＝aarch64 **fork 出的 rc 子进程（proc12 `/bin/sh`）setaddr 后能否完成 exec / 被子页缺页服务 / 变 runnable 入进调度**（属 fork COW / 子进程 text demand-paging / 子进程首次调度家族；与 x86 已跑通的同一 rc 路径对比，差异应在 aarch64 子进程侧）。
+
+**下轮取证方向**：对 proc12 加低扰探针（非缺页 handler 内）：setaddr 后子是否发 exec？自身 text/stack 缺页有无被服务？rts_flags 能否达 runnable 并进队列？INIT 是否已进 `runetcrc` 的 wait4（等一个永不推进的子）？先钉死「子未起来 vs 子起来了但 INIT 误等」再选修。
+
+**本轮零代码改动**（对 committed HEAD 二进制跑真机、读其内置 `nk4a:*` 路标，未新增/回滚任何探针）；WORKLOG-only。三件套基线（HEAD `07c9e6649`）沿用。
+
+**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.120 取证＝纠正续-7 停点低估、死锁重定至 rc 子进程 proc12 exec 腿（未达 marker）；riscv64 未验。** **历史链**：…→§1.119续-6 症状翻转·EDEADEPT 降级布局敏感(`1492d2791`)→§1.119续-7 PM sched_start 补校回复码、真实破除活锁(`07c9e6649`)→**§1.120 取证＝纠正续-7 低估·死锁重定 rc 子 proc12（本轮纯取证·WORKLOG-only）**。
