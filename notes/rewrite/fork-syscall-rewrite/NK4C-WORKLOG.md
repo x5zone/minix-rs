@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120 取证（新鲜真机·纠正续-7 停点低估）**：用 HEAD（含续-7）重建 aarch64 镜像跑 QEMU，判定续-7 记录的「INIT text vm-pf 洪流」＝**主要是正常 lazy 分页**（栈同 VA 重复系 13 进程各自栈重叠），50s/110s 日志均冻结 4295 行＝**真死锁非慢**。真实推进比续-7 记的更远：12 server+INIT 全 exec 成功、INIT **已达 `init-state Runcom`**（正跑 /etc/rc）；新断点＝**Runcom 后 rc 子进程 proc12（`/bin/sh`·`setaddr nr=0xc`）在 setaddr 之后的 exec/缺页/入进调度腿全员阻塞**。**前沿重定＝aarch64 fork 出的 rc 子进程（proc12）exec/首次调度腿（属 fork COW / 子进程 text demand-paging 家族·非 §1.116 INIT-text 覆盖）**。本轮纯取证、零码改、无新探针（读 committed 二进制内置 `nk4a:*` 路标），WORKLOG-only。**§1.120续-1 静态锐化**：全日志无 `exec endpt=0xc`（12 boot 进程全有、proc12 独缺）⇒ proc12 卡 VM 建址后、最终 SYS_EXEC 前；`setaddr flags=0x8008`＝RECEIVING｜NO_QUANTUM ⇒ **proc12 阻塞在 receive、等一个永不到达的子 exec 期 IPC 回复**（＝子未起来、非 INIT 误等；与 §1.119 同族但对象换为 fork 子）。详文见文末 §1.120 / §1.120续-1。
+> **✅ 最新前沿＝§1.120 取证（新鲜真机·纠正续-7 停点低估）**：用 HEAD（含续-7）重建 aarch64 镜像跑 QEMU，判定续-7 记录的「INIT text vm-pf 洪流」＝**主要是正常 lazy 分页**（栈同 VA 重复系 13 进程各自栈重叠），50s/110s 日志均冻结 4295 行＝**真死锁非慢**。真实推进比续-7 记的更远：12 server+INIT 全 exec 成功、INIT **已达 `init-state Runcom`**（正跑 /etc/rc）；新断点＝**Runcom 后 rc 子进程 proc12（`/bin/sh`·`setaddr nr=0xc`）在 setaddr 之后的 exec/缺页/入进调度腿全员阻塞**。**前沿重定＝aarch64 fork 出的 rc 子进程（proc12）exec/首次调度腿（属 fork COW / 子进程 text demand-paging 家族·非 §1.116 INIT-text 覆盖）**。本轮纯取证、零码改、无新探针（读 committed 二进制内置 `nk4a:*` 路标），WORKLOG-only。**§1.120续-1 静态锐化**：全日志无 `exec endpt=0xc`（12 boot 进程全有、proc12 独缺）⇒ proc12 卡 VM 建址后、最终 SYS_EXEC 前；`setaddr flags=0x8008`＝RECEIVING｜NO_QUANTUM ⇒ **proc12 阻塞在 receive、等一个永不到达的子 exec 期 IPC 回复**（＝子未起来、非 INIT 误等；与 §1.119 同族但对象换为 fork 子）。**§1.120续-2 一次性死锁进程图探针（scheduler_loop pick-fail idle 腿·task-close 已全回滚）钉死等待链**：boot→endpoint 映射（`exec <name> ok`×`exec endpt=`）＝ds6/rs2/pm0/sched4/**vfs1**/memory3/tty5/mib7/pfs9/mfs10/init11；DLGRAPH 显示 **INIT(nr16·ep11) fl=RECEIVING、p_sendto_e=1(VFS)、mt=0x115**，rc 子(nr17·ep=0x800c) fl=NO_QUANTUM、sendto 亦=1；VFS(nr6·ep1) fl=RECEIVING＝在其 receive 空转循环、**并未在处理 INIT 请求**（若阻塞处理会转 SENDING/RUNNING）。sendrec 为 rendezvous：INIT 已发出且处于等回复相位、VFS 已收已回并已回到 receive ⇒ **VFS(ep1)→INIT(ep11) 的回复在投递腿丢失**。**根因精修＝IPC 回复投递腿 VFS→INIT 丢失（§1.113 switch-after-pop／§1.119续-7／§1.96 DeliverMsg-endpoint 同族·回复投向刚 fork+exec 而变动的端点/槽），非「proc12 请求未达 VFS」**。详文见文末 §1.120 / §1.120续-1 / §1.120续-2。下轮：sys_reply/DeliverMsg 腿装探针钉「VFS 回复 dst 端点 vs INIT 现端点是否错配」再定修。
 >
 > **（历史·§1.119续-7·修复里程碑）（真实修复落地：PM sched_start 补校 SCHED 回复码→破 EDEADEPT/SingleUser 活锁·非布局扰动）**：承 §1.119续-6「EDEADEPT 系布局敏感非稳定根」推断→本轮回根因。**静态钉死 C 保真缺口**：PM `init_scheduling`→`sched_start`（init.rs 私有方法）用裸 `transport.sendrec` 发 SCHEDULING_START 后、旧码 `Ok(())=>Ok(Endpoint::SCHED)` **完全不校回复 `m_type`**（与 §1.119续-4/5 五轮追的「假登记 scheduler=SCHED」根吻合）；而 C `libsys/sched_start.c:87` 明写 `if ((rv = _taskcall(...))) return rv;`。**修复**：`Ok(())` 腿拆为 `msg.m_type != OK => Err(msg.m_type)`（透传拒绝码）/ `=> Ok(SCHED)`；返回类型 `Result<Endpoint,()>`→`<,i32>`；调用方 `Err(())`→`Err(rv)`（schedule.c:60-67 仅告警不 panic）；新增单测 `test_sched_start_propagates_denied_reply_code`。**CodeReview PASSED**（0 BLOCKER/0 SHOULD）采纳 CONSIDER——同形 `sched.rs::taskcall` 补 ELOCKED(208) 有界重试（boot 时序敏感语境下防御必要）。**三件套全绿**：mock pm **--lib 419/0**（+1 新测·另有 2 个 `run_once_integration` 预存失败经 stash 对比证实与本改无关、属主回复腿号符约定预存债）·init.rs rustfmt **0=0** 零新漂·**aarch64 `--release` `-smp 4` 双跑完全一致＝EDEADEPT(00d7)×0、SingleUser×0（活锁彻底破除）、`rv 004e`×1（SCHED 对 INIT START 回 ENOSYS·PM 现正确不假登记）、日志从 12.7万行降至 4295 行、panic=0**、新尾部 `vm-pf`×3419（fa≈0x221xxx 用户 text 页·转 §1.116 前沿）·x86 单核双跑 marker=2·panic=0·oom=0 无回归。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-7＝五轮活的 EDEADEPT/SingleUser 活锁首次由真实 C 保真修复破除（非探针扰动）·新前沿＝INIT 用户 text 缺页洪流 vm-pf（§1.116）；riscv64 未验。** 详节见文末 §1.119续-7。
 >
@@ -5474,4 +5474,33 @@ match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
 
 **本轮零代码改动**（纯日志×码交叉静态锐化·未新增/回滚探针·未重跑 QEMU）；WORKLOG-only。三件套基线（HEAD `07c9e6649`）沿用。
 
-**⇒ 终目标① x86_64 marker ✅；aarch64 §1.120续-1＝锐化至 proc12 卡 RECEIVING、子 exec 回复投递腿未达（非 INIT 误等）；riscv64 未验。** **历史链**：…→§1.119续-7 真实破除活锁(`07c9e6649`)→§1.120 纠正低估·死锁重定 rc 子 proc12(`07c87b3cc`)→**§1.120续-1 静态锐化＝proc12 RECEIVING、子 exec 回复腿（WORKLOG-only）**。
+**⇒ 终目标① x86_64 marker ✅；aarch64 §1.120续-1＝锐化至 proc12 卡 RECEIVING、子 exec 回复投递腿未达（非 INIT 误等）；riscv64 未验。** **历史链**：…→§1.119续-7 真实破除活锁(`07c9e6649`)→§1.120 纠正低估·死锁重定 rc 子 proc12(`07c87b3cc`)→§1.120续-1 静态锐化(`a054fc62d`)→**§1.120续-2 一次性死锁进程图探针钉死等待链＝VFS→INIT 回复投递腿丢失（WORKLOG-only）**。
+
+---
+
+## §1.120续-2（一次性死锁进程图探针·钉死等待链·task-close 全回滚）
+
+**目标**：续-1 停在「proc12 等一个永不到达的子 exec IPC 回复」的静态推断，本轮装一个真机探针直接读出死锁现场的完整等待链，避免 §1.119续-6「静态猜布局敏感」教训。
+
+**探针设计**（`os/kernel/src/lib.rs` scheduler_loop pick-fail idle 循环 L3781-3786·TEMP·已 `git checkout` 全回滚）：
+- 位置＝`while (!(p = pick_proc())) idle();` 等价循环内、`idle()` 返回后；非缺页 handler、不页表 walk（严守探针纪律）。
+- 门控＝静态 `AtomicBool`：首次抵达 idle 打一条 `DLGRAPH idle-reached` 哨兵（证明该腿真被触达）；仅当观测到 slot 12 已建且 RECEIVING 即刻全图 dump **一次**（防 §1.117 式 flood）。
+- dump 字段＝每个非 SLOT_FREE 槽的 `nr / p_rts_flags.bits() / p_endpoint.0 / p_sendto_e.0 / p_getfrom_e.0 / p_sendmsg.m_type`——sendto/getfrom 给出 sendrec 伙伴、直接读出去等待边。
+
+**两轮收敛过程**：首版用 idle 空转 10 万次门槛→55s 无 DLGRAPH 输出、日志仍冻 4295 行（否定证据：调度器不在 idle 里空转）→改「首次抵达 idle 且 proc12 RECEIVING 即刻 dump」→触发（日志 4317 行、DLGRAPH 21 行）。
+
+**boot→endpoint 映射**（`exec <name> ok` 与 `exec endpt=` 交错对齐）：ds=6, rs=2, pm=0, sched=4, **vfs=1**, memory=3, tty=5, mib=7, pfs=9, mfs=10, init=11。rc 子（fork+exec 中）未获得低段 endpoint，现于 slot 17、ep=0x800c（exec 未完成期的过渡态）。
+
+**DLGRAPH 关键行**（均在死锁时刻）：
+- `nr=0..4 fl=0x2(PROC_STOP)`＝5 个系统 task（IDLE 等），非 runnable。
+- `nr=5..15 fl=0x8(RECEIVING)`＝11 server 均在 receive(ANY) 空转（**正常**），其中 **nr=6=VFS(ep1)**。
+- `nr=16 fl=0x8 ep=11 sendto=1 mt=0x115`＝**INIT 阻塞在 receive、已 sendrec 给 endpoint 1(VFS)、等 VFS 回复**。
+- `nr=17 fl=0x8000(NO_QUANTUM) ep=0x800c sendto=1 mt=0x115`＝rc 子、亦指向 VFS。
+
+**逻辑闭合推断**：sendrec 为 rendezvous——INIT 处于「等回复」相位⇒它已发出；VFS fl=RECEIVING（在自身 receive 循环）⇒VFS 已收 INIT 请求、处理完、回复、并回到 receive。但 INIT 仍 RECEIVING⇒**VFS(ep1)→INIT(ep11) 的回复在投递腿丢失**（若 VFS 卡在处理会转 SENDING/RUNNING，事实不然）。mt=0x115(277) 为 INIT 发往 VFS 的请求类型（待下轮对照具体 FS_/SYS_ 常量）。
+
+**根因重定**：从续-1「proc12 等永不到达回复」精确化为——**等回复的是 INIT（与 rc 子），掉线的是 VFS→INIT 回复投递腿**；属 §1.113 switch-after-pop／§1.119续-7／§1.96 DeliverMsg-endpoint 同族（回复投向因刚发生 fork+exec 而端点/槽变动的接收者）。
+
+**下轮（待装探针·task-close 全回滚）**：在 `sys_reply`/`DeliverMsg` 腿打——VFS 调用回复时传的 dst 端点 vs INIT 当前 `p_endpoint` 是否错配；并核 slot 17 ep=0x800c 的来源（是否为 exec 中途 endpoint 重分配使回复 dst 陈旧）。钉死错配具体形式后再定修（候选：reply 按 slot 而非 endpoint 索引、或 switch-after-pop 后 p_endpoint 未及时同步）。
+
+**本轮代码处置**：探针为 TEMP 取证、**已全回滚（`git checkout os/kernel/src/lib.rs`·grep DLGRAPH=0·工作树净）**；零逻辑码改动；WORKLOG-only。三件套基线（HEAD `07c9e6649`）沿用。纯取证轮不派 CodeReview。
