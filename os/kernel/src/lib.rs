@@ -1166,6 +1166,10 @@ pub fn init_protection(kernel_info: &KernelInfo) {
         trap_dispatch::aarch64_kernel_body,
         trap_dispatch::aarch64_user_body,
     );
+    // aarch64 §1.113: the diverging thunk `EL0BODY`'s park branch jumps to
+    // after unwinding a blocked-receiver frame (switch-after-pop).
+    #[cfg(target_arch = "aarch64")]
+    minix_arch::register_resched_entry(trap_dispatch::aarch64_resched_thunk);
     store_trap_entry(trap);
     with_trap_entry(|trap| trap.load());
 }
@@ -2533,8 +2537,13 @@ pub fn boot_init_timer() {
     // x86_64 timer bring-up 缺口修复（C i8259.c intr_init 对位）：8259A PIC
     // 此前从未初始化——固件遗留的向量基/mask 使 PIT 的 IRQ0 永远到不了
     // 0x50 门（s14n：150s 全程 tick 臂 <1000 次调用）。重映射 master→0x50 /
-    // slave→0x70 并只放行 IRQ0+级联线；init_timer 编程 PIT 后 tick 即流入。
-    // 顺序：pic_init（重映射+mask）→ init_timer（PIT 计数开始，IRQ0 已放行）。
+    // slave→0x70 并只放行 IRQ0+级联线。
+    //
+    // 调用位置在本阶段末尾（init_timer 编程 PIT + register_hook +
+    // enable_timer_irq 之后）：PIC 重映射只改 8259 的向量基/mask，与 PIT
+    // 计数器编程、IrqManager hook 注册互不依赖；只要在实际投递 timer IRQ
+    // 前（此处 timer 门已开，但 IRQ 需 EOI 循环驱动，pic_init 紧随其后即
+    // 时生效）完成即可，故放在最后不改变正确性。
     //
     // 仅 x86_64：aarch64/riscv64 无 8259 PIC——ARM generic timer 走 GIC PPI
     // 30、riscv64 S-mode timer 是 CPU-local 中断（gated by sie.STIE，无 PLIC

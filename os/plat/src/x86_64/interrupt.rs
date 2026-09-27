@@ -121,23 +121,6 @@ pub fn lapic_eoi() {
     }
 }
 
-/// NK4-C 1.10c 逐环仪器化：init_ioapic 记录的 IOAPIC MMIO 基址。
-static IOAPIC_BASE_STORE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-
-/// 读 IOAPIC 指定 pin 的 RTE 原始 64 位（含 mask 位）——交付链回读。
-pub fn ioapic_rte_read(pin: u8) -> u64 {
-    let base = IOAPIC_BASE_STORE.load(core::sync::atomic::Ordering::Relaxed);
-    if base == 0 {
-        return 0;
-    }
-    unsafe { ioapic_read_redtbl(base as usize, pin) }
-}
-
-/// 回读 8259 IMR：(master, slave)。
-pub fn pic_imr_read() -> (u8, u8) {
-    unsafe { (read_imr(PIC1_DATA), read_imr(PIC2_DATA)) }
-}
-
 /// 短等待（AT 时代 PIC 需要的 ~100ns 恢复间隔；现代平台无害）。
 fn io_wait() {
     unsafe { core::arch::asm!("out dx, al", in("dx") 0x80u16, in("al") 0u8) };
@@ -270,8 +253,6 @@ impl X86_64InterruptController {
         for pin in 0..IOAPIC_NUM_PINS {
             self.ioapic_route_and_mask(pin);
         }
-        // NK4-C 1.10c 逐环仪器化：记录 base 供 ioapic_rte_read 回读。
-        IOAPIC_BASE_STORE.store(self.ioapic_base as u64, core::sync::atomic::Ordering::Relaxed);
     }}
 
     /// Program redirection entry `pin` with its C-parity delivery vector and

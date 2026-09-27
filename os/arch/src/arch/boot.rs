@@ -295,6 +295,33 @@ pub trait CpuContextArch {
     fn set_secondary_ipc_return(_ctx: &mut Self::CpuContext, _value: u64) {
         // default: no-op (overridden by each arch)
     }
+
+    /// Assign the primary IPC return register (the syscall return-value
+    /// lane) of a saved user context.
+    ///
+    /// C: the wake sites set `p->p_reg.retreg` directly (proc.c:969 /
+    /// :1097) when completing a blocked RECEIVE / SEND. The register is
+    /// architecture-specific — x86-64 RAX, aarch64 X0, riscv64 A0 — and
+    /// is the *same* lane the restore path loads into the outgoing return
+    /// register (`ldr x0, [ctx, #r0_off]` on aarch64, `movq #GP(0) ... RAX`
+    /// on x86-64). Callers must not hard-code a `write_user_register`
+    /// offset here, because the byte-offset-to-register map is arch-
+    /// private (offset 80 is RAX on x86-64 but X7 on aarch64 — the
+    /// NK4-C §1.113 code-review BLOCKER that motivated this method).
+    ///
+    /// Default: no-op (arch must override to enable IPC wake return).
+    fn set_ipc_return_reg(_ctx: &mut Self::CpuContext, _value: u64) {
+        // default: no-op (overridden by each arch)
+    }
+
+    /// Read the primary IPC return register of a saved user context
+    /// (test seam — mirrors [`Self::set_ipc_return_reg`]).
+    ///
+    /// Default: 0 (arch must override to enable readback reconciliation).
+    fn ipc_return_reg(_ctx: &Self::CpuContext) -> u64 {
+        // default: 0 (overridden by each arch)
+        0
+    }
 }
 
 /// Load a VM ELF binary into the bootstrap page table.

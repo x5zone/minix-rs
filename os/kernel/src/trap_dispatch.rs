@@ -1934,13 +1934,16 @@ fn riscv64_diag_panic(
 pub unsafe extern "C" fn aarch64_kernel_body(
     frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
     class: u64,
-) {
+) -> u64 {
+    // Kernel-origin legs never park (a blocked IPC is a lower-EL event);
+    // every exit restores/returns normally, so the park decision is NONE.
+    use minix_arch::arm64::trap_stub::PARK_NONE;
     if class == minix_arch::arm64::trap_stub::TRAP_CLASS_IRQ {
         let claimed = crate::irq_manager::claim_hardware_irq();
         match claimed {
             // Spurious: nothing claimable, nothing to complete (K8).
-            None => return,
-            Some(id) if id == GIC_SPURIOUS_INTID => return,
+            None => return PARK_NONE,
+            Some(id) if id == GIC_SPURIOUS_INTID => return PARK_NONE,
             Some(id) => {
                 // INTIDs ≥ NR_IRQ_VECTORS cannot be enabled (the
                 // controller clamps its line count at the manager bound)
@@ -1995,7 +1998,7 @@ pub unsafe extern "C" fn aarch64_kernel_body(
                 }
             }
         }
-        return;
+        return PARK_NONE;
     }
     aarch64_diag_panic(frame, "kernel sync exception");
 }
@@ -2010,12 +2013,13 @@ pub unsafe extern "C" fn aarch64_kernel_body(
 pub unsafe extern "C" fn aarch64_user_body(
     frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
     class: u64,
-) {
+) -> u64 {
     if class == minix_arch::arm64::trap_stub::TRAP_CLASS_IRQ {
         // Interrupts arriving from EL0 route through the same GIC
-        // claim/route as kernel-origin ones.
-        aarch64_kernel_body(frame, class);
-        return;
+        // claim/route as kernel-origin ones. Timer-driven preemption does
+        // not yet switch here (returns PARK_NONE); quantum flags are set
+        // and the process is rescheduled at its next voluntary IPC.
+        return aarch64_kernel_body(frame, class);
     }
     // Synchronous: discriminate by ESR_EL1 EC (bits [31:26]).
     // EC 0x15 = SVC from AArch64; `svc` DOES advance ELR — no PC step
@@ -2028,16 +2032,39 @@ pub unsafe extern "C" fn aarch64_user_body(
     if ec == EC_SVC_AARCH64 {
         let leg = frame.gpr[8] as u64; // x8 = call number register
         if leg == KERNEL_CALL_TRAP {
+            // The message leg always answers with a reply code (never
+            // parks), so return normally.
             aarch64_kernel_call_leg(frame);
-        } else {
-            // Raw IPC legs + MINIX_KERNINFO (x8 = 1..16): the EL1 mirror
-            // of the x86 int-33 bridge (NK4-C §1.112). An unknown call
-            // number is rejected inside the body (EBADCALL).
-            aarch64_ipc_dispatch_body(frame);
+            return minix_arch::arm64::trap_stub::PARK_NONE;
         }
-        return;
+        // Raw IPC legs + MINIX_KERNINFO (x8 = 1..16): the EL1 mirror
+        // of the x86 int-33 bridge (NK4-C §1.112). An unknown call
+        // number is rejected inside the body (EBADCALL). The body's
+        // park decision (§1.113) rides x0 back to `EL0BODY`.
+        return aarch64_ipc_dispatch_body(frame);
     }
     aarch64_diag_panic(frame, "user sync exception");
+}
+
+/// The diverging park-and-reschedule thunk (NK4-C §1.113), registered with
+/// the aarch64 `EL0BODY` entry stub. Reached via `aarch64_resched_entry`
+/// after asm has unwound a blocked-receiver's EL0 frame back to the clean
+/// entry base, so the rest of the switch runs on a non-drifting EL1h
+/// stack. Re-acquires the BKL that `kernel_call_finish_ipc_door` released
+/// (`scheduler_loop` consumes the held-BKL convention) and enters the
+/// scheduling loop — the aarch64 twin of the x86 `reenter_scheduler` body.
+///
+/// # Safety
+///
+/// Called only from the `EL0BODY` park branch (single, well-defined SP_EL1
+/// base; BKL not held; current proc already parked/dequeued by the IPC
+/// engine).
+#[cfg(target_arch = "aarch64")]
+pub unsafe extern "C" fn aarch64_resched_thunk() -> ! {
+    let guard = crate::smp::bkl_lock();
+    core::mem::forget(guard);
+    let cpu = crate::current_cpu_id();
+    crate::scheduler_loop(cpu)
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -2098,7 +2125,8 @@ unsafe fn aarch64_kernel_call_leg(frame: &mut minix_arch::arm64::trap_stub::AArc
 #[cfg(target_arch = "aarch64")]
 unsafe fn aarch64_ipc_dispatch_body(
     frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
-) {
+) -> u64 {
+    use minix_arch::arm64::trap_stub::{PARK_NONE, PARK_RESCHEDULE};
     let smp = unsafe { crate::smp_state_boot_unchecked() };
     let cpu = crate::current_cpu_id();
     let cur_nr = smp
@@ -2143,7 +2171,7 @@ unsafe fn aarch64_ipc_dispatch_body(
             crate::smp::bkl_unlock();
         }
         frame.gpr[0] = crate::errno::EBADCALL as i64 as u64;
-        return;
+        return PARK_NONE;
     }
 
     let r1 = frame.gpr[0]; // src/dst endpoint, or SENDA count
@@ -2186,7 +2214,7 @@ unsafe fn aarch64_ipc_dispatch_body(
                     crate::smp::bkl_unlock();
                 }
                 frame.gpr[0] = crate::errno::EFAULT as i64 as u64;
-                return;
+                return PARK_NONE;
             }
         }
     }
@@ -2208,7 +2236,21 @@ unsafe fn aarch64_ipc_dispatch_body(
 
     // Delivered: errno rides x0 out via `eret`; the IPC status bits were
     // ORed into the saved context's X1 by the delivery path — pull that
-    // lane back into the frame (sync_status_register_to_frame).
+    // lane back into the frame (sync_status_register_to_frame), then let
+    // `EL0BODY` restore normally (PARK_NONE).
+    //
+    // Blocked (NoReply): the caller was parked by
+    // `kernel_call_finish_ipc_door` (dequeued, context already saved above
+    // via `save_frame_to_context`). Request the §1.113 switch-after-pop:
+    // `EL0BODY` unwinds this EL0 frame back to the clean entry base and
+    // branches to the registered resched thunk, which re-acquires the BKL
+    // and runs `scheduler_loop` — picking another runnable process. This
+    // is the aarch64 EL1h analogue of the x86 leg diverging into
+    // `reenter_scheduler`; the difference is only that the single EL1h
+    // stack (unlike x86's TSS.sp0-reloading entry) must have the frame
+    // popped before the switch, so the decision rides x0 back to asm
+    // instead of diverging here. The parked process resumes later through
+    // `finish_and_restore` when a delivery makes it runnable again.
     if let Some(code) = result.reply_code() {
         frame.gpr[0] = code as i64 as u64;
         let ctx = &table
@@ -2216,34 +2258,19 @@ unsafe fn aarch64_ipc_dispatch_body(
             .expect("aarch64 IPC: caller slot must exist")
             .cpu_context;
         minix_arch::sync_status_register_to_frame(ctx, frame);
+        PARK_NONE
     } else {
-        // Blocked (NoReply): the caller parked, so the EL1 leg must switch
-        // to another process WITHOUT this frame on the resume path. The x86
-        // leg diverges straight into `reenter_scheduler` and is safe only
-        // because every later trap reloads RSP from TSS.sp0; aarch64 runs
-        // the EL1h single-stack model whose `EL0BODY` entry `sub sp, 34*8`
-        // is popped ONLY by that leg's epilogue — diverging here instead of
-        // returning would strand those 288 bytes (plus the call chain) on
-        // the kernel stack every idle-loop receive, walking SP_EL1 down
-        // into the kernel .bss (PROC_TABLE / function pointers) until an
-        // indirect branch lands on garbage. Until the switch-after-pop asm
-        // leg lands (NK4-C §1.113: record a reschedule flag, return through
-        // the epilogue, then enter `scheduler_loop` after the frame is
-        // popped — the C `mpx.S` `SAVE_PROCESS_CTX → jmp switch_to_user`
-        // shape), stop loudly rather than silently corrupt memory.
-        panic!(
-            "aarch64 blocked IPC (parked receiver) awaits switch-after-pop \
-             stack discipline (NK4-C §1.113) — diverging into \
-             reenter_scheduler would leak the EL0BODY frame on the single \
-             EL1h stack"
-        );
+        PARK_RESCHEDULE
     }
 }
 
 /// Console diagnostics + panic for unreached causes (riscv64 sibling
 /// carries the rationale).
 #[cfg(target_arch = "aarch64")]
-fn aarch64_diag_panic(frame: &minix_arch::arm64::trap_stub::AArch64TrapFrame, origin: &str) {
+fn aarch64_diag_panic(
+    frame: &minix_arch::arm64::trap_stub::AArch64TrapFrame,
+    origin: &str,
+) -> ! {
     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
     let far = aarch64_read_far();
     Console::write_str(origin);

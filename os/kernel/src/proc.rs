@@ -1776,14 +1776,16 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
 /// E1 slice 2: the Rust engine's wake sites now do the same; without it a
 /// resumed caller observes whatever RAX held at trap entry.
 ///
-/// The register write goes through the PTRACE-style `write_user_register`
-/// contract — offset 80 is `gp_regs[0]` = RAX on x86-64 (the documented
-/// register map in the arch impl).
+/// The register write goes through the arch's `set_ipc_return_reg` trait
+/// method, which owns the arch-private return-lane mapping (x86-64 RAX,
+/// aarch64 X0, riscv64 A0). Hard-coding `write_user_register(offset 80)`
+/// would be RAX on x86-64 but X7 on aarch64 — the NK4-C §1.113 code-
+/// review BLOCKER, live for the first time now that aarch64 receivers can
+/// park and be woken.
 pub fn set_ipc_return_code(proc: &mut KProcess, code: i64) {
     use minix_arch::CpuContextArch as _;
-    let _ = <CurrentCpuContextArch as CpuContextArch>::write_user_register(
+    <CurrentCpuContextArch as CpuContextArch>::set_ipc_return_reg(
         &mut proc.cpu_context,
-        80,
         code as u64,
     );
 }

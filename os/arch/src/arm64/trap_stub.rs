@@ -89,21 +89,17 @@ impl AArch64TrapFrame {
 }
 
 /// Persist an interrupted aarch64 user register file into the per-process
-/// saved context — the EL1 mirror of
-/// [`crate::x86_64::trap_stub::save_frame_to_context`] (design decision 3:
-/// `CpuContext` is the single user-state truth; the scheduler restore asm
-/// in [`crate::arm64::trap_return`] reads `r0`/`gp_regs`/`pc`/`psr`/`sp`
-/// back out of it before `eret`).
+/// saved context — the EL1 mirror of the x86-64 `save_frame_to_context`
+/// (design decision 3: `CpuContext` is the single user-state truth; the
+/// scheduler restore asm in [`crate::arm64::trap_return`] reads
+/// `r0`/`gp_regs`/`pc`/`psr`/`sp` back out of it before `eret`).
 ///
 /// [`AArch64CpuContext`] stores X0 separately (`r0`) and X1..X30 in
 /// `gp_regs[0..30]` (so `gp_regs[i]` = X(i+1)), matching
 /// [`crate::arm64::boot`]’s `write_user_register` offset convention. SP is
 /// not a GPR on ARM64: the interrupted EL0 sp travels in
 /// [`AArch64TrapFrame::sp`] and lands in `ctx.sp` (SP_EL0).
-pub fn save_frame_to_context(
-    frame: &AArch64TrapFrame,
-    ctx: &mut super::boot::AArch64CpuContext,
-) {
+pub fn save_frame_to_context(frame: &AArch64TrapFrame, ctx: &mut super::boot::AArch64CpuContext) {
     ctx.r0 = frame.gpr[0];
     let mut i = 0;
     while i < super::boot::AArch64CpuContext::GP_REGS_LEN {
@@ -146,7 +142,17 @@ pub fn sync_status_register_to_frame(
 // x86 vector number in the frame): the sync and IRQ slots of a group
 // share one thunk/body pair, and ARM64 has no IRQ syndrome register, so
 // the class travels as an explicit operand instead.
-type DispatchFn = unsafe extern "C" fn(&mut AArch64TrapFrame, u64);
+/// The `u64` return is the park decision (NK4-C §1.113): `0` means
+/// "restore this frame and `eret` normally"; nonzero means the dispatcher
+/// already saved the process context and requests a switch-after-pop (a
+/// blocked IPC receiver) — `EL0BODY` then unwinds the frame without
+/// restoring and branches to the registered resched entry instead of
+/// `eret`-ing back. Kernel-origin legs always return `0`.
+type DispatchFn = unsafe extern "C" fn(&mut AArch64TrapFrame, u64) -> u64;
+/// Park decision: return to the interrupted context normally (`eret`).
+pub const PARK_NONE: u64 = 0;
+/// Park decision: switch-after-pop into the scheduler (blocked IPC).
+pub const PARK_RESCHEDULE: u64 = 1;
 /// Exception class operand: a synchronous exception (syndrome in
 /// ESR_EL1).
 pub const TRAP_CLASS_SYNC: u64 = 0;
@@ -154,6 +160,13 @@ pub const TRAP_CLASS_SYNC: u64 = 0;
 pub const TRAP_CLASS_IRQ: u64 = 1;
 static KERNEL_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 static USER_DISPATCH: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
+
+/// The park-and-reschedule entry (NK4-C §1.113). Registered by the kernel
+/// with a diverging thunk (re-acquire BKL + `scheduler_loop`); `EL0BODY`
+/// branches here after unwinding a blocked-receiver frame instead of
+/// `eret`-ing back to the parked process.
+type ReschedFn = unsafe extern "C" fn() -> !;
+static RESCHED_ENTRY: AtomicPtr<()> = AtomicPtr::new(core::ptr::null_mut());
 
 /// Register the kernel-side dispatch bodies (policy layer) with the entry
 /// stubs (mechanics layer). `trap` = current-EL leg, `syscall` = lower-EL
@@ -163,6 +176,12 @@ pub fn register_dispatchers(kernel: DispatchFn, user: DispatchFn) {
     USER_DISPATCH.store(user as *mut (), Ordering::Release);
 }
 
+/// Register the diverging resched thunk the park branch jumps to. Must run
+/// before `TrapEntryArch::load()` alongside [`register_dispatchers`].
+pub fn register_resched_entry(f: ReschedFn) {
+    RESCHED_ENTRY.store(f as *mut (), Ordering::Release);
+}
+
 /// Current-EL (kernel) dispatch thunk.
 ///
 /// # Safety
@@ -170,12 +189,14 @@ pub fn register_dispatchers(kernel: DispatchFn, user: DispatchFn) {
 /// Forwarded from the asm stub: `frame` points at the live frame this leg
 /// built below the interrupted kernel stack pointer.
 #[unsafe(no_mangle)]
-unsafe extern "C" fn aarch64_kernel_trap_dispatch(frame: &mut AArch64TrapFrame, class: u64) {
+unsafe extern "C" fn aarch64_kernel_trap_dispatch(frame: &mut AArch64TrapFrame, class: u64) -> u64 {
     let f = KERNEL_DISPATCH.load(Ordering::Acquire);
     assert!(
         !f.is_null(),
         "aarch64 kernel trap dispatched before register_dispatchers()"
     );
+    // Kernel-origin legs never park; the returned code is ignored by the
+    // `EL1BODY` epilogue. Forward it unchanged for ABI symmetry.
     unsafe { (core::mem::transmute::<*mut (), DispatchFn>(f))(frame, class) }
 }
 
@@ -184,15 +205,35 @@ unsafe extern "C" fn aarch64_kernel_trap_dispatch(frame: &mut AArch64TrapFrame, 
 /// # Safety
 ///
 /// Forwarded from the asm stub: `frame` points at the live frame this leg
-/// built on the EL1 entry stack (interrupted EL0 sp in `frame.sp`).
+/// built on the EL1 entry stack (interrupted EL0 sp in `frame.sp`). The
+/// body's park decision (x0) is forwarded to `EL0BODY` (§1.113).
 #[unsafe(no_mangle)]
-unsafe extern "C" fn aarch64_user_trap_dispatch(frame: &mut AArch64TrapFrame, class: u64) {
+unsafe extern "C" fn aarch64_user_trap_dispatch(frame: &mut AArch64TrapFrame, class: u64) -> u64 {
     let f = USER_DISPATCH.load(Ordering::Acquire);
     assert!(
         !f.is_null(),
         "aarch64 user trap dispatched before register_dispatchers()"
     );
     unsafe { (core::mem::transmute::<*mut (), DispatchFn>(f))(frame, class) }
+}
+
+/// The park branch's destination (NK4-C §1.113). `EL0BODY` jumps here
+/// (tail, `b`) after unwinding a blocked-receiver frame; it forwards to
+/// the kernel-registered diverging thunk. `-> !`, so the never-returning
+/// `b` in the asm is well-formed.
+///
+/// # Safety
+///
+/// Called only from `EL0BODY`'s park branch with SP_EL1 restored to the
+/// clean entry base; requires `register_resched_entry()` to have run.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn aarch64_resched_entry() -> ! {
+    let f = RESCHED_ENTRY.load(Ordering::Acquire);
+    assert!(
+        !f.is_null(),
+        "aarch64 park before register_resched_entry() — wiring bug"
+    );
+    unsafe { (core::mem::transmute::<*mut (), ReschedFn>(f))() }
 }
 
 // ── The exception vector table (E-3ARCHTRAP: all 16 slots wired) ────────
@@ -331,6 +372,22 @@ core::arch::global_asm! {
     "mov x0, sp",
     "mov x1, #\\class",
     "bl  \\handler",
+    // NK4-C §1.113 switch-after-pop: a nonzero return (x0) from the
+    // handler is a park-and-reschedule request (blocked IPC receiver).
+    // The dispatcher already saved this process's register state into its
+    // cpu_context, so discard the EL0 frame WITHOUT restoring registers
+    // and WITHOUT eret. Unwinding SP_EL1 back to its clean entry base (the
+    // 34*8 frame + the 16-byte x9/x10 pocket) is mandatory: unlike x86,
+    // whose every later trap reloads RSP from TSS.sp0, the EL1h model runs
+    // on a single kernel stack loaded once by jump_to_kmain, so leaving
+    // the frame in place would ratchet SP_EL1 down into .bss one blocked
+    // receive at a time. The parked process resumes later through
+    // finish_and_restore when a delivery wakes it.
+    "cbz x0, 9f",
+    "add sp, sp, #(34*8)",
+    "add sp, sp, #16",
+    "b   aarch64_resched_entry",    // -> ! (never returns here)
+    "9:",
     "ldr x9, [sp, #264]",
     "msr spsr_el1, x9",
     "ldr x9, [sp, #256]",

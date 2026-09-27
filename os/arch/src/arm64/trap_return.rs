@@ -62,9 +62,40 @@ impl TrapReturnArch for AArch64TrapReturn {
         //   before `eret` — see the liveness notes in the module docs.
         // - The BKL has been released by the caller before this call.
         core::arch::asm!(
+            // NK4-C §1.113: mask all async exceptions (D/A/I/F) for the rest
+            // of this context switch. Rebasing `SP_EL1` below (the EL1h stack
+            // fix) moves the active SP *up* to the stack base, so any incoming
+            // exception would push its frame on top of the frame/register-file
+            // locals this routine still reads through X0/X2 — corrupting the
+            // state about to be `eret`'d (observed: silent hang after the first
+            // restore, no `sync exception`). IRQ is not the only reachable leg:
+            // FIQ (GIC Group 0) and SError have real EL1/EL0 entry vectors in
+            // trap_stub.rs, so masking must cover the full DAIF set, not just
+            // I. Mirrors x86, whose `switch_to` runs interrupts-off across the
+            // stack handoff; `eret` restores DAIF from SPSR (which the mode-
+            // switch triple below clears A/I/F/D via `bic`), so a pending timer
+            // is simply deferred to the next EL1 entry in the user context.
+            "msr daifset, #0xf",
             // Park the register-file pointer in X2 (its user slot is
             // gp_regs[GP_X2], loaded last as a self-referential load).
             "mov x2, x1",
+            // NK4-C §1.113: reload SP_EL1 from this CPU's kernel-stack base
+            // (TPIDR_EL1, programmed by protection::init) before eret. The
+            // EL1h model has no hardware switch-to-kernel-stack: x86 reloads
+            // RSP from TSS.sp0 on every CPL3→0, but aarch64 keeps running on
+            // the single SP_EL1 that jump_to_kmain loaded once. Without this
+            // rebase the scheduler→finish_and_restore→restore_to_user chain
+            // leaves SP_EL1 at its local depth, so each later trap (and each
+            // park→resched switch-after-pop) stacks another scheduler frame
+            // below it, ratcheting SP_EL1 into .bss.
+            //
+            // Safe here: we are still at EL1 (SPSel=1, so `sp` names SP_EL1);
+            // the frame and register-file reads below address memory through
+            // X0/X2, never SP; and X16 is the documented system-register
+            // scratch (reclaimed for elr immediately after). This function is
+            // `-> !`, so the running Rust epilogue never sees the relocated SP.
+            "mrs x16, tpidr_el1",
+            "mov sp, x16",
             // ── Mode-switch triple: ELR / SPSR / SP_EL0 ──
             "ldr x16, [x0, {elr_off}]",
             "msr elr_el1, x16",

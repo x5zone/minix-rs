@@ -184,6 +184,21 @@ impl CpuContextArch for AArch64CpuContextArch {
         // `query_kerninfo_page` would falsely return Ok(0).
         ctx.gp_regs[crate::arm64::signal::GP_X1] = value;
     }
+
+    fn set_ipc_return_reg(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `p->p_reg.retreg = val` (proc.c:969/:1097 wake sites). On
+        // aarch64 the return lane is X0, stored separately as `ctx.r0`
+        // (NOT in `gp_regs`) — the restore path loads it via
+        // `ldr x0, [ctx, #r0_off]` (trap_return.rs). Hard-coded
+        // `write_user_register(offset 80)` would land on X7 here
+        // (NK4-C §1.113 CodeReview BLOCKER); this method keeps the OS
+        // layer off the arch-private register map.
+        ctx.r0 = value;
+    }
+
+    fn ipc_return_reg(ctx: &Self::CpuContext) -> u64 {
+        ctx.r0
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

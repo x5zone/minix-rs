@@ -371,17 +371,16 @@ pub fn sync_status_register_to_frame(
 #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut ()) {}
 
-/// Read back the saved RAX of a process's saved user context (E1 slice 2
-/// test seam — the write side is kernel `set_ipc_return_code`, which goes
-/// through `write_user_register` offset 80; the register file itself is
-/// arch-private). Mock/other-arch: 0.
-#[cfg(target_arch = "x86_64")]
+/// Read back the saved IPC return register of a process's saved user
+/// context (E1 slice 2 test seam — the write side is kernel
+/// `set_ipc_return_code`, which goes through the arch's
+/// `set_ipc_return_reg` trait method; the register file itself is
+/// arch-private). Routed through the same trait so the readback matches
+/// the write on every arch (NK4-C §1.113: the old x86-only `offset 80`
+/// reader returned 0 on aarch64, masking the X0/X7 write mismatch).
 pub fn ipc_return_code(ctx: &CurrentCpuContext) -> u64 {
-    crate::x86_64::trap_stub::ipc_return_code(ctx)
-}
-#[cfg(not(target_arch = "x86_64"))]
-pub fn ipc_return_code(_ctx: &CurrentCpuContext) -> u64 {
-    0
+    use crate::arch::boot::CpuContextArch as _;
+    <CurrentCpuContextArch as CpuContextArch>::ipc_return_reg(ctx)
 }
 
 /// Read back the saved IPC status register of a process's saved user
@@ -420,13 +419,25 @@ pub fn register_trap_dispatchers(
 }
 #[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
 pub fn register_trap_dispatchers(
-    trap: unsafe extern "C" fn(&mut arm64::trap_stub::AArch64TrapFrame, u64),
-    syscall: unsafe extern "C" fn(&mut arm64::trap_stub::AArch64TrapFrame, u64),
+    trap: unsafe extern "C" fn(&mut arm64::trap_stub::AArch64TrapFrame, u64) -> u64,
+    syscall: unsafe extern "C" fn(&mut arm64::trap_stub::AArch64TrapFrame, u64) -> u64,
 ) {
     // Slot semantics: `trap` = current-EL (kernel) leg, `syscall` =
     // lower-EL (user) leg — the vector table splits by origin group. The
-    // second operand is the exception class (sync/IRQ) the slot ran.
+    // second operand is the exception class (sync/IRQ) the slot ran. The
+    // u64 return is the §1.113 park decision.
     crate::arm64::trap_stub::register_dispatchers(trap, syscall);
+}
+
+/// Register the diverging park-and-reschedule thunk (NK4-C §1.113) with the
+/// aarch64 `EL0BODY` entry stub. No-op elsewhere: the switch-after-pop
+/// park path is an aarch64 EL1h single-stack concern (x86 diverges safely
+/// via TSS.sp0 reload, riscv64 lands with its own IPC bridge).
+#[cfg(not(all(not(feature = "runtime-window"), target_arch = "aarch64")))]
+pub fn register_resched_entry(_f: unsafe extern "C" fn() -> !) {}
+#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
+pub fn register_resched_entry(f: unsafe extern "C" fn() -> !) {
+    crate::arm64::trap_stub::register_resched_entry(f);
 }
 #[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub fn register_trap_dispatchers(

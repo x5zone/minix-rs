@@ -175,7 +175,10 @@ pub fn cpu_time_to_ms(cycles: u64) -> u32 {
 ///
 /// C: `cpuid` — `get_cpulocal_var(cpu)` index. In single-CPU builds this is
 /// always the BSP (0). SMP builds (16-smp.md) will read it from a CPU-local
-/// register (x86-64: GS base; aarch64: TPIDR_EL1; riscv64: scratch CSR).
+/// register (x86-64: GS base; riscv64: scratch CSR). AArch64 must **not**
+/// use TPIDR_EL1 for this — it is claimed by the per-CPU kernel-stack base
+/// as of NK4-C §1.113 (`arch/arm64/protection.rs::set_entry_sp`); a future
+/// aarch64 SMP id needs another vehicle.
 ///
 /// Returns 0 until `SMP_STATE` is initialized (e.g. in test contexts).
 pub fn current_cpuid() -> CpuId {

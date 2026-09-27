@@ -129,7 +129,12 @@ pub trait SmpArch {
     /// highest address). Rust uses per-architecture mechanisms:
     ///
     /// - x86_64: read from GS segment base (per-CPU GSBASE stores CPU ID)
-    /// - aarch64: read from TPIDR_EL1 (per-CPU thread pointer)
+    /// - aarch64: **not** TPIDR_EL1 (that register is claimed by the
+    ///   per-CPU kernel-stack base as of NK4-C §1.113; see
+    ///   `arch/arm64/protection.rs::set_entry_sp`). A future aarch64 SMP
+    ///   implementation must pick another vehicle (TPIDR_EL0, an MPIDR
+    ///   lookup, or `SmpState::cpu_local`); today
+    ///   `ap_cpu_id_readback` returns a constant 0.
     /// - riscv64: read from CSR `sscratch` (per-CPU scratch register)
     ///
     /// Returns 0 (BSP) if SMP is not yet initialized or the architecture

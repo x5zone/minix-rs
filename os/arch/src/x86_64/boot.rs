@@ -270,6 +270,17 @@ impl CpuContextArch for X86_64CpuContextArch {
         // KERNINFO 写），与 C 同一语义。
         ctx.gp_regs[crate::x86_64::signal::GP_R10] = value;
     }
+
+    fn set_ipc_return_reg(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `p->p_reg.retreg = val` (proc.c:969/:1097 wake sites). On
+        // x86-64 the return lane is RAX = `gp_regs[0]`, the same slot
+        // `write_user_register(offset 80)` maps to (boot.rs register map).
+        ctx.gp_regs[0] = value;
+    }
+
+    fn ipc_return_reg(ctx: &Self::CpuContext) -> u64 {
+        ctx.gp_regs[0]
+    }
 }
 
 #[cfg(test)]

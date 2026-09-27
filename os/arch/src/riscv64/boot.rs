@@ -155,6 +155,17 @@ impl CpuContextArch for Riscv64CpuContextArch {
         // RECEIVE prologue, proc.c:581).
         ctx.gp_regs[crate::riscv64::signal::GP_A1] = 0;
     }
+
+    fn set_ipc_return_reg(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `p->p_reg.retreg = val` (proc.c:969/:1097 wake sites). On
+        // riscv64 the return lane is A0, stored separately as `ctx.a0`
+        // (write_user_register offset 24) — NOT in `gp_regs`.
+        ctx.a0 = value;
+    }
+
+    fn ipc_return_reg(ctx: &Self::CpuContext) -> u64 {
+        ctx.a0
+    }
 }
 
 #[cfg(target_arch = "riscv64")]

@@ -85,14 +85,15 @@ pub enum Privilege {
 ///
 /// | Method              | x86-64                    | ARM64              | RISC-V          |
 /// |---------------------|---------------------------|--------------------|-----------------|
-/// | `init()`            | Clear GDT, fill segment   | Configure SP_EL0/  | Configure       |
-/// |                     | descriptors, create TSS   | SP_EL1, set up     | sscratch, set   |
-/// |                     |                           | exception regs     | up trap regs    |
-/// | `set_kernel_stack()`| Update TSS.sp0            | Update SP_EL1      | Update sscratch |
-/// | `load()`            | lgdt, lldt, ltr, reload   | msr SP_EL1, ensure | csrw sscratch,  |
-/// |                     | segment registers         | VBAR_EL1 set       | ensure stvec    |
-/// | `init_ap()`         | Per-CPU TSS/GDT entry,    | Per-CPU SP_EL1     | Per-CPU         |
-/// |                     | load selectors            |                    | sscratch        |
+/// | `init()`            | Clear GDT, fill segment   | Park stack base in | Configure       |
+/// |                     | descriptors, create TSS   | TPIDR_EL1 (EL1h)   | sscratch, set   |
+/// |                     |                           |                    | up trap regs    |
+/// | `set_kernel_stack()`| Update TSS.sp0            | no-op (single SP,  | Update sscratch |
+/// |                     |                           | reloaded in eret)  |                 |
+/// | `load()`            | lgdt, lldt, ltr, reload   | isb (VBAR_EL1 set  | csrw sscratch,  |
+/// |                     | segment registers         | by TrapEntryArch)  | ensure stvec    |
+/// | `init_ap()`         | Per-CPU TSS/GDT entry,    | Per-CPU TPIDR_EL1  | Per-CPU         |
+/// |                     | load selectors            | stack base         | sscratch        |
 ///
 /// # Initialization order
 ///
