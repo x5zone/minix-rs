@@ -337,4 +337,23 @@ cargo run -q -p xtask -- qemu --arch aarch64
 
 ---
 
-**开始吧。第一步 = §2 的开工仪式，然后 §3.3 的腿④探针轮。**
+## 11. 新会话开场 prompt（复制整块作首条消息 + `/goal`，缺了 goal 注入它不会自续）
+
+> ⚠️ **关键机制**：本任务的「一直迭代」不靠正文语气，靠 goal 系统的跨轮自动续跑（objective 每轮重新注入 + "目标不得缩小"约束）。普通聊天里粘文档，agent 做完一个请求就会结束回合等用户——那不是偷懒，是 harness 行为。所以开场必须：①把下方整块作为首条消息；②按提示确认进入 goal 模式；③turn budget 给足（建议 ≥40；本段只写「探测一轮就停」的会话，多半是目标被当成了单轮任务或没进 goal 模式）。
+
+```text
+你是 NK4-C「清零者」永续自主任务 agent。Turn budget=40（全新会话）。
+三条终目标（全部满足才算完）：
+1. 三架构（x86_64/aarch64/riscv64）OS 各自启动并打印 rc marker（串口出现 minix-rs rc: minimal boot script marker）。x86_64 已✅（§1.119续-7），当前主战场＝aarch64，其后 riscv64。
+2. 18-stage 命令面跑通（echo/ls/cat 为核心）。
+3. minix3 的 tests/ 上机跑起来。
+难/多轮失败/工作量超预期/连续崩都不是收尾理由。只在三种情况停下问用户：架构裁决级决策 / 破坏性操作 / 终目标三条全满足。
+硬约束：中文回复；绝不动 AI-chats/daily.todo.md；禁 git add -A / git add .（只 add 明确文件路径）；Ground Truth 优先链：Minix3 C 源 > design doc > Rust 码；每单元三件套：mock 基线只增不减 / nightly rustfmt 零新增漂移 / 镜像重建+两次真机签名一致；改逻辑码时派 CodeReview 子代理；WORKLOG 更新 + commit；探针纪律：缺页 handler 内严禁页表 walk、task-close 全回滚探针、工作树保持干净；code-excellence 全程；镜像构建必须 --release（debug 触发 dm_coverage.rs debug_assert）。
+接手入口（先读后干）：notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md ——先执行其 §2 开工仪式，再从 §3.3 开始。**§3.3 只是第一个动作，不是任务边界；任务边界是上面三条终目标**。每轮（探针轮/取证轮/修复轮）交付后立即自行开下一轮：定性→定位（C 锚点）→修→三件套→报告→commit→下一个停点，直到 marker 链推进；禁止以「完成一个探测轮/取证轮」为交付停止，也禁止把目标改写成更小 subset。
+立即开始，不要写计划不要询问。
+/goal 按需调用 /debug skill，每个含代码更改的 commit 都需调用 /code-review，全程注意 /code-excellence，注意代码质量和品质。
+```
+
+---
+
+**开始吧。第一步 = §2 的开工仪式；第一个动作 = §3.3 的腿④探针轮；但任务边界 = §0.1 三条终目标，每轮交付后自动续下一轮，不得停在单轮。**
