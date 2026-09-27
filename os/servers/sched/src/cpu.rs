@@ -56,20 +56,34 @@ pub type CpuLoad = Option<u32>;
 ///    same rule with `bsp_id == 0`).
 /// 2. A system child → the BSP (`60-64`; systems stay where they were
 ///    born, 05's parentage test decides).
-/// 3. Anyone else → the least-loaded *available* non-BSP CPU, ties to
-///    the lowest index (the strict `>` at `68` keeps the first minimum);
-///    with no better seat, the BSP (`65-76`, fallback included).
+/// 3. Anyone else → the least-loaded *available* non-BSP CPU within
+///    `processors_count`, ties to the lowest index (the strict `>` at `68`
+///    keeps the first minimum); with no better seat, the BSP (`65-76`,
+///    fallback included).
 ///
-/// `loads` is a view over the caller's table (`len` entries for `len`
-/// CPUs); `is_system` arrives decided (05's predicate, not re-derived).
-/// The BSP index is clamped into the view — an out-of-range `bsp_id`
-/// cannot happen from a real `sys_getmachine`, and clamping keeps the
-/// function total instead of panicking on a broken caller. An empty view
-/// yields CPU 0 by the same clamp (documented, unreachable in practice:
-/// callers always pass the real table).
+/// `loads` may be wider than the machine (the server keeps a `MAX_CPUS`
+/// ledger); the walk is clamped to `topo.processors_count` so seats past
+/// the real CPU count — nonexistent, not idle — can never win. `is_system`
+/// arrives decided (05's predicate, not re-derived). The BSP index is
+/// clamped into the real seat range — an out-of-range `bsp_id` cannot happen
+/// from a real `sys_getmachine`, and clamping keeps the function total
+/// instead of panicking on a broken caller. An empty view yields CPU 0 by
+/// the same clamp.
 pub fn pick(is_system: bool, topo: &MachineTopology, loads: &[CpuLoad]) -> CpuId {
-    // The only seat, clamped into the view (see above).
-    let bsp = topo.bsp_id.min(loads.len().saturating_sub(1) as u32);
+    // The real seat count on this machine — C's loop bound `c <
+    // machine.processors_count` (`schedule.c:67`). The caller's `loads` view
+    // may be wider than the machine: the server keeps a `MAX_CPUS`-length
+    // ledger regardless of topology, so seats past `processors_count` are
+    // nonexistent, not merely idle. Walking the full array would treat a
+    // phantom seat as an empty one, brand it as the choice, and hand the
+    // kernel an out-of-range `cpu` — which `validate_cpu_param` rejects
+    // `EINVAL` (`v >= ncpus`). Clamping the walk to the topology is what
+    // C's bounded `for` does and what the retry ring's contract needs: when
+    // every real non-BSP seat is dead, fall back to the BSP, never invent a
+    // CPU beyond the machine.
+    let ncpus = (topo.processors_count as usize).min(loads.len());
+    // The only seat, clamped into the real view (see above).
+    let bsp = topo.bsp_id.min(ncpus.saturating_sub(1) as u32);
     if topo.processors_count <= 1 {
         return CpuId(bsp);
     }
@@ -78,7 +92,7 @@ pub fn pick(is_system: bool, topo: &MachineTopology, loads: &[CpuLoad]) -> CpuId
     }
     let mut best = bsp;
     let mut best_load = u32::MAX;
-    for (index, load) in loads.iter().enumerate() {
+    for (index, load) in loads.iter().enumerate().take(ncpus) {
         let cpu = index as u32;
         // Dead seats never win (`68-69`); the BSP never displaces
         // (`c != bsp_id` at `68`); strictly-lighter displaces, ties
@@ -192,6 +206,35 @@ mod tests {
             CpuId(2)
         );
         assert_eq!(pick(false, &four, &[None, None, None, None]), CpuId(0));
+    }
+
+    #[test]
+    fn test_phantom_seats_beyond_topology() {
+        // The regression (§1.118): the server keeps a `MAX_CPUS`-length ledger,
+        // so `loads` is wider than a real 4-CPU machine. Once the retry ring
+        // brands the (present but not-ready) non-BSP seats dead, the phantom
+        // seats 4..`loads.len` are still `Some(0)` — an unbounded walk picks
+        // one, the kernel rejects `cpu >= ncpus` with `EINVAL`, and a fork
+        // never starts. The walk must clamp to `processors_count` and fall
+        // back to the BSP instead (C's bounded `for`, schedule.c:67).
+        let four = topo(4, 0);
+        let mut loads = [Some(0); 32];
+        // Ring has tried and branded the real non-BSP seats 1..3 dead.
+        for cpu in [CpuId(1), CpuId(2), CpuId(3)] {
+            mark_dead(&mut loads, cpu);
+        }
+        // Phantom seats 4.. remain Some(0); a bounded pick ignores them.
+        assert_eq!(pick(false, &four, &loads), CpuId(0));
+        // Even with a lighter phantom seat (4.. are Some(0), lighter than the
+        // real cpu 2), the bounded walk ignores it and takes the best *real*
+        // non-BSP seat. An unbounded walk would grab cpu 4 (a phantom) and the
+        // kernel would reject it.
+        let mut mixed = [Some(0); 32];
+        mixed[0] = Some(5); // BSP, never displaces
+        mixed[1] = None; // dead
+        mixed[2] = Some(3); // best real available non-BSP
+        mixed[3] = Some(9); // real but heavier
+        assert_eq!(pick(false, &four, &mixed), CpuId(2));
     }
 
     #[test]
