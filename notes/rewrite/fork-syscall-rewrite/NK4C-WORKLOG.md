@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.119续-5（dx 探针钉死＝SCHED procs[INIT.slot] 从未登记·槽空闲端点=0）**：承 §1.119续-4。先破一个取证陷阱：committed `nk4a: mt ` 探针零输出≠二进制陈旧（`strings` 证实镜像 sched 含 mt 串）＝mt 落最早 8 条 boot 活锁洪流区被 diagctl 非确定性丢弃；**推论：“无 rv 0000”也不能单独断证 START 失败**（可被同一洪流吞）→需直接测。TEMP `nk4a: dx `[in_use][name_match][passed低字节][stored低字节] 现场 **`000b00`×14**＝in_use=0、passed=0x0b(INIT✓)、stored=0x00（Free 默认）⇒**SCHED `procs[11]` 行空闲端点=0＝INIT 从未登记**（排除 generation 不符、坐实 `!in_use`）。断点必在 **INIT 自身 SCHEDULING_START 腿**（唯一非-inherit 回复＝单条 ENOSYS 强支持“START 未达 do_start·m_type 未被 from_raw 识别”）；PM `init_scheduling`/`sched_start`（init.rs:893）用裸 sendrec 不校回复 m_type→假登记 scheduler=SCHED。**下轮＝do_start 入口(区分 inherit=false)+`None=>` ENOSYS 臂各加一枚低撞针探针（不在洪流区）抓 START 是否达 SCHED 及实际 m_type**→若 ENOSYS 查 aarch64 IPC m_type 传送/RS_INIT 时序。纯取证·TEMP 全回滚·tracked 净·零逻辑改动。**⇒ aarch64 §1.119续-5＝INIT-未登记坐实·上游收敛至 SCHEDULING_START/m_type（未达 marker）。** 详节见文末 §1.119续-5。
+> **✅ 最新前沿＝§1.119续-6（决定性反转：EDEADEPT/INIT-未登记降级为 build-layout/时序敏感症状·非稳定根因）**：承 §1.119续-5「查 INIT SCHEDULING_START 腿」。给 PM `init_scheduling`（init.rs）加两枚 TEMP 探针 `nk4a: si `[in_use][is_priv][endpoint低字节]+`nk4a: ss `[sched_start O/E] 后重建 aarch64 `--release` `-smp 4`，**症状彻底翻转且 r1/r2 双跑确定性复现**：`nk4a: rv 0000`×2 现（SCHED inherit 成功）、EDEADEPT×14 洪流消失、SingleUser 活锁消失（仅 `init-state Runcom`×1）、零 panic、marker=0，日志尾部转为重复 `nk4a: sa-call caller=0x4 pid=0x9` 循环（4319 行 vs 上轮 127611 行）。**判读＝这是 §1.119 早记的 build-layout/时序敏感**——给 PM 加字节恰好位移翻转了症状（EDEADEPT-洪流↔inherit-成功+新下游循环），**证明续-4/续-5 钉死的 EDEADEPT 非稳定根因，而是潜在 boot 期 ordering/未初始化竞争的布局依赖表现**；新前沿 `sa-call caller=4(SCHED) pid=9` 实际比 EDEADEPT 更靠后（已越过 INIT fork）。**TEMP 探针全回滚·tracked 净·零逻辑改动**。**下轮＝从更靠后的 `sa-call caller=4 pid=9` 循环切入（更近 marker），或转非布局敏感的稳定手段（如固定随机种子/移除 diagctl 依赖的位点）定位 underlying boot 时序/未初始化竞争**。**⇒ aarch64 §1.119续-6＝EDEADEPT 降级为布局相关症状·前沿收敛至 sa-call pid=9（未达 marker）。** 详节见文末 §1.119续-6。
+>
+> **（历史·§1.119续-5）（dx 探针钉死＝SCHED procs[INIT.slot] 从未登记·槽空闲端点=0）**：承 §1.119续-4。先破一个取证陷阱：committed `nk4a: mt ` 探针零输出≠二进制陈旧（`strings` 证实镜像 sched 含 mt 串）＝mt 落最早 8 条 boot 活锁洪流区被 diagctl 非确定性丢弃；**推论：“无 rv 0000”也不能单独断证 START 失败**（可被同一洪流吞）→需直接测。TEMP `nk4a: dx `[in_use][name_match][passed低字节][stored低字节] 现场 **`000b00`×14**＝in_use=0、passed=0x0b(INIT✓)、stored=0x00（Free 默认）⇒**SCHED `procs[11]` 行空闲端点=0＝INIT 从未登记**（排除 generation 不符、坐实 `!in_use`）。断点必在 **INIT 自身 SCHEDULING_START 腿**（唯一非-inherit 回复＝单条 ENOSYS 强支持“START 未达 do_start·m_type 未被 from_raw 识别”）；PM `init_scheduling`/`sched_start`（init.rs:893）用裸 sendrec 不校回复 m_type→假登记 scheduler=SCHED。**下轮＝do_start 入口(区分 inherit=false)+`None=>` ENOSYS 臂各加一枚低撞针探针（不在洪流区）抓 START 是否达 SCHED 及实际 m_type**→若 ENOSYS 查 aarch64 IPC m_type 传送/RS_INIT 时序。纯取证·TEMP 全回滚·tracked 净·零逻辑改动。**⇒ aarch64 §1.119续-5＝INIT-未登记坐实·上游收敛至 SCHEDULING_START/m_type（未达 marker）。** 详节见文末 §1.119续-5。
 >
 > **（历史·§1.119续-4）（首次非串口记账兑现·根 EPERM 决定性重定向钉死＝SCHED 对 PM INHERIT 回 EDEADEPT·非 IPC 回复腿）**：承 §1.119续-3 登记的「转非串口记账」下轮。用既有 committed `nk4a: rv`/`tc` 探针（**零新探针**）在当前构建 aarch64 `--release` `-smp 4` **双跑签名完全一致**＝`tc f05`×8（PM 发 SCHEDULING_INHERIT）·`rv 00d7`×14（**EDEADEPT=215**）+`rv 004e`×1（ENOSYS 首条）·**零 `rv 0000` 成功**·SingleUser×1.3万·marker=0·panic=0。根因链＝`sched_start_user`（PM sched.rs:354）taskcall 读回复 rv=EDEADEPT≠0→Err→`ipc/vfs.rs` Fork 腿回字面 −1→INIT EPERM→活锁。**TEMP 窄探针 `nk4a: dl `[child][parent]verdict 现场＝`0D`×14**＝child 空槽通过·**parent(INIT) `probe_occupied` 判 Dead**（`check_occupied !name_match||!in_use`）→锁定 EDEADEPT 腿。**静态根因收窄**＝SCHED procs 表 INIT 行从未登记 occupied（与零 rv 0000 一致·INIT 自身 SCHEDULING_START 首条竟回 ENOSYS）；PM `init_scheduling` 的 `sched_start` 只看 sendrec 网络成功不校验回复 m_type（init.rs:893）→假登记 scheduler=SCHED→后续 fork 必撞 parent-Dead。**推翻 §1.118续→§1.119续-3 五轮追的 IPC 回复投递/寄存器腿方向（那三处 REPLY_PEND C 保真修复真实但非本因）**。**本轮纯取证·TEMP 探针全回滚·tracked 净·零逻辑改动**。**下轮＝查 INIT 的 SCHEDULING_START 为何未成功登记进 SCHED（首条 ENOSYS 线索：m_type 是否被 RS_INIT/握手抢先或 init_scheduling 时序早于 SCHED 接收循环）→修复登记链→验 rv 0000 现且 EDEADEPT 消**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-4＝根 EPERM 决定性重定向至 SCHED INHERIT/INIT-未登记（未达 marker）；riscv64 未验（前置对账就绪 `riscv-reviewlog.md`）。** 详节见文末 §1.119续-4。
 >
@@ -5098,7 +5100,7 @@ aarch64 尾态稳定为 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12 sys=y`（sysca
 - **债①【双 boot 形态并存的维护面风险】**：同一份 `minix_kernel` crate 现存**三种进入形态**——(a) x86_64 内联（kernel 以 rlib 链进 boot-shim PE、进程内 `arch_boot`/`kmain`）；(b) aarch64 跨镜像（standalone `kernel.elf` + `BootHandoff`，入口 `os/kernel/src/lib.rs::bootstrap_to_kernel_image`，`#[cfg(all(not(feature="mock"),target_arch="aarch64"))]`＝lib.rs:258-259）；(c) riscv64 内联 + 镜像仅契约位产出（装机属 M4.3）。`os/boot-shim/src/main.rs:82` 注释原话「x86_64 / riscv64 keep the inlined arch_boot path」。**后果**：每条 boot 腿改动（handoff 契约、bump 游标接续、高半映射）需在两种形态各自过真机签名，维护面 ×2；公共 boot 逻辑（`build_bootstrap_root_and_enable`，lib.rs:265 调用）虽已抽共享 helper，但两形态各自 `.bss` 副本陷阱（§1.115 增量 2 `set_current_root_phys` 教训）在 x86 腿不存在、属**隐性分叉**。登记为结构债，不判修。
 - **债②【x86_64 是否迁移方案 A 的待裁决议项（挂 OQ）】**：aarch64 走独立 ELF 是因 §1.114 真硬件差异（TTBR0/TTBR1 双根、内联形态从未进 TTBR1）；x86_64 今天免疫靠 CR3 单根 + `inherit_supervisor_half` 拷 PML4 高半 + global 页强制继承。目前**无 pain point 驱动 x86 迁移**，但长期双形态是显式代价。建议口径（侧线程观点，供用户或后续裁决）：**riscv64 同构接入先行**（前沿计划已含「随后同构推 riscv64」，届时 `BootHandoff` 获得第二消费者、验证契约架构中立性），**x86_64 迁移挂 OQ**、等消费方出现（度量启动 / reboot 复用 / 内联形态再暴露 bug）再议；**不建议为统一而预防性重构**。
 
-> **riscv 前置对账就绪 = `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.9（8 笔债·每债 ≥3 方案五参照系对照＋修复批次矩阵·裁决前分析零代码改动））。**系必要非充分条件，不替代真机判据；D1–D7 决策点与 D 节各「裁决归属」条目待用户/主线程拍板后方可实施**。未来任何 riscv 轮的「前沿起点」段先查此清单对应阶段再开工——判「已就绪」的阶段可跳过探索直接真机对账，判「有缺口/需真机」的按清单索引进场。
+> **riscv 前置对账就绪 = `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.14（第 1–5 轮逐轮累加：第 3 轮 D.1–D.9 8 笔债基线、第 4 轮补账债⑨–⑫（PAF_CLEAR/缓存维护/代刷腿翻案/吞错家族）、第 5 轮外部复核修正债⑩＋新立债⑬ bump 池无回收·kerninfo 责任移交；每债 ≥3 方案五参照系对照＋修复批次矩阵·裁决前分析零代码改动））。**侧线程另交两项移交待主线程改口**：①NK4C-WORKLOG §1.115「债②」口径与 riscv 甲案（kernel-image 自引导、不经 BootHandoff 跨镜像交接）冲突，建议改述「riscv 甲案可验证『kernel-image 自引导』第三形态，BootHandoff 第二消费者仍等 x86 迁移」并加反向引用；②misc_concepts 候选「多模式 grep 负结论需按模式拆分计数、禁出自 head 截断输出」。**系必要非充分条件，不替代真机判据；D1–D7 决策点与 D 节各「裁决归属」条目待用户/主线程拍板后方可实施**。未来任何 riscv 轮的「前沿起点」段先查此清单对应阶段再开工——判「已就绪」的阶段可跳过探索直接真机对账，判「有缺口/需真机」的按清单索引进场。
 
 ---
 
@@ -5376,3 +5378,29 @@ Rust 旧 `if IpcEngine::is_willing_to_receive(&procs[dst_idx], caller_endpoint) 
 **下一步定位（未定死）**：passed 端点值正确(0x0b)而行未登记，断点必在 **INIT 自己的 SCHEDULING_START 腿**——要么 START 未达 do_start(inherit=false)（从 `None=>` ENOSYS 臂弹出＝m_type 未被 `from_raw` 识别），要么 START 达了但 plan_start/register/schedctl 某腿失败且未写槽。唯一非-inherit 回复恰为单条 `rv 004e`(ENOSYS)，强烈支持前者。注：PM `init_scheduling` 的 `sched_start`（init.rs:882-898）用裸 `transport.sendrec`、**不经 taskcall**（故 `nk4a: tc ` 看不到 START），且**不校验回复 m_type**（L893 `Ok(())=>Ok(SCHED)`）→即便 START 回 ENOSYS，PM 仍会假登记 scheduler=SCHED→后续 fork 必撞 parent-Dead。**下轮＝在 do_start 入口（区分 inherit=false）+ `None=>` ENOSYS 臂各加一枚低撞针探针（不在活锁洪流区、不会被丢），抓 START 是否达 SCHED 及其实际 m_type**→若 ENOSYS 则查 aarch64 IPC m_type 传送/RS_INIT 时序。本轮纯取证·TEMP 探针全回滚·tracked 净·零逻辑改动。
 
 **⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-5＝dx 探针钉死 SCHED procs[INIT] 槽空闲端点=0·INIT 从未登记（坐实 EDEADEPT 上游＝START 未落表·未达 marker）；riscv64 未验。** **历史链**：…→§1.119续-4 非串口记账定根 EDEADEPT(`432fd59dd`)→**§1.119续-5 dx 探针钉死 INIT-未登记/START 未落表（取证轮）**。
+
+## §1.119续-6（决定性反转：EDEADEPT/INIT-未登记降级为 build-layout/时序敏感症状·非稳定根因）
+
+承 §1.119续-5 登记的「查 INIT SCHEDULING_START 腿」。本轮按计划给 PM `init_scheduling`（init.rs）加两枚 TEMP 取证探针，旨在直接测 INIT 槽状态与 sched_start 结果：
+
+- `nk4a: si `[in_use 1/0][is_priv 1/0][endpoint 低字节 2hex]（仅当 `slot == INIT_PROC_NR` 时打）——定死 INIT 在 `init_scheduling` 循环里是否被当 priv 跳过或本就 `!in_use`；
+- `nk4a: ss `[O/E]（sched_start 调用之后）——定死 START 是否抵达 sched_start 及其 `is_ok()`。
+
+**决定性观察＝症状彻底翻转，且 r1/r2 双跑确定性复现**（同二进制·`--release` `-smp 4`）：
+
+| 签名 | 续-4/续-5（无 PM 探针） | 续-6（加 si/ss 后） |
+|---|---|---|
+| `nk4a: rv 0000`（SCHED inherit 成功） | **零条** | **×2** |
+| `nk4a: rv 00d7`（EDEADEPT 洪流） | ×14 | **消失** |
+| `SingleUser` 活锁 | ×1.3万 | **消失**（仅 `init-state Runcom`×1） |
+| panic / marker | 0 / 0 | 0 / 0 |
+| 日志尾部 | EDEADEPT×14 循环 | **`nk4a: sa-call caller=0x4 pid=0x9` 循环** |
+| 日志行数 | 127611 | 4319 |
+
+尾部还夹 `nk4a: tc f05`→`schedctl caller=4 tgt=0xc`→`rv 0000`→`do-memory enter/done`→`memreq target=11 start=0x7ffffffe2578 len=0x50 ok=1`——表明 inherit 确实成功且有内存请求活动，boot 已推进到 pid=9（越过 INIT fork）。
+
+**判读（本轮最重要结论）**＝这是 §1.119 早已登记的 **build-layout/时序敏感**现象——给 PM 加几十字节恰好位移了代码/数据布局，就翻转了症状（EDEADEPT-洪流+SingleUser 活锁 ↔ inherit-成功+新下游 sa-call pid=9 循环）。这**直接推翻续-4/续-5 把 EDEADEPT/INIT-未登记当稳定根因的框架**：若 EDEADEPT 是确定性根因，加不相关模块（PM）的字节不应翻转它。因此 **EDEADEPT 实为潜在 boot 期 ordering/未初始化竞争的一种布局依赖表现**，而 `sa-call caller=4(SCHED) pid=9` 循环是另一布局快照下的下游表现，且**离 marker 更近**（已越过 INIT fork）。
+
+**取证方法学教训（待入 misc_concepts 候选）**：布局敏感的活锁不能用「加探针看症状」定性根因——探针自身会改变布局。需非扰动手段（固定随机种子、去除 diagctl 丢弃竞争、或将疑点断言内建为 panic 看是否触发）。
+
+**TEMP 探针全回滚（`git checkout servers/pm/src/init.rs`）·tracked 净·零逻辑改动**。**下轮＝从更靠后的 `sa-call caller=4 pid=9` 循环切入（已近 marker），静态审 SCHED 对 pid=9 的反复 schedctl/调度往返为何不成进；或用非布局敏感手段定位 underlying boot 时序/未初始化竞争**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-6＝EDEADEPT 降级为布局依赖症状（推翻续-4/5 “EDEADEPT即根”框架）·前沿收敛至 sa-call pid=9（未达 marker）；riscv64 未验。** **历史链**：…→§1.119续-5 dx 钉 INIT-未登记(`218260616`)→**§1.119续-6 PM 探针扰动致症状翻转·EDEADEPT 降级为布局敏感·前沿收敛 sa-call pid=9（取证轮·WORKLOG-only）**。
