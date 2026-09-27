@@ -7379,6 +7379,12 @@ impl VfsState {
         &mut self,
         transport: &mut T,
     ) -> usize {
+        // C `send_work()` comm.c:42 — `if (sending == 0) return;`: the
+        // common case (nothing parked) must cost zero, especially now that
+        // this sweep runs once per main-loop event.
+        if self.comm.sending == 0 {
+            return 0;
+        }
         let mut sent = 0;
         for idx in 0..crate::vmnt::NR_MNTS {
             // C fs_sendmore:79 `if (vmp->m_fs_e == NONE) return` 的
@@ -7391,6 +7397,12 @@ impl VfsState {
                 continue;
             }
             while let Some(slot) = self.comm.fs_sendmore(idx) {
+                // Invariant: every parked slot was created by
+                // `fs_sendrec`'s `set_waiting()` (which always stores the
+                // request), so `worker`/`sendrec` are `Some`. The `continue`
+                // arms below are unreachable while that holds; `fs_sendmore`
+                // already charged the window, so hitting them would strand
+                // it — keep this in mind before routing anything new here.
                 let Some(worker) = self.worker_pool.get(slot) else {
                     continue;
                 };
@@ -7733,6 +7745,14 @@ pub fn run() -> ! {
                     transport: minix_sys::ipc::DirectTrapTransport,
                 };
                 state.flush_pending_fs(&mut fs_ipc);
+                // C `send_work()` (main.c:72) runs on *every* main-loop
+                // iteration, re-sending requests that `send_fs` parked via
+                // `queuemsg` when the mount window was full (comm.c:37-47,
+                // 66-87). Without this sweep a window-full request is
+                // enqueued, `flush_pending_fs` sees `Ok`, and the worker
+                // hangs in `WaitingForFs` forever — the drain leg was
+                // implemented (`flush_send_queue`) but never wired in.
+                state.flush_send_queue(&mut minix_sys::ipc::DirectTrapTransport);
                 // put_vnode 慢路径的 REQ_PUTNODE 投递（sendrec 直连，
                 // 回复只查错——C vnode.c:278 的 worker 内同步 sendrec）。
                 state.flush_pending_puts(&minix_sys::ipc::DirectTrapTransport);

@@ -257,6 +257,11 @@ impl GlobalComm {
 
     /// `send_work` — `for(vmnt) fs_sendmore` sweep (comm.c:37).
     ///
+    /// NOTE: bookkeeping only — it pops parked slots and adjusts the
+    /// window counters but never delivers the request. The production
+    /// counterpart of C `send_work()` is `VfsState::flush_send_queue`
+    /// (main_loop.rs), which also stamps the transid and `sendnb`s.
+    ///
     /// Returns number of requests actually sent.
     pub fn send_work(&mut self) -> usize {
         if self.sending == 0 {
