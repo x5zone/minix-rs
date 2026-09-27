@@ -867,10 +867,16 @@ impl<T: IpcTransport> PmServer<T> {
             let new_sched = self.sched_start(endpoint, parent_endpoint);
             match new_sched {
                 Ok(scheduler) => self.table.procs[slot].resources.scheduler = scheduler,
-                Err(()) => {
+                Err(rv) => {
                     // C: schedule.c:60-67 — 失败仅打印警告，不 panic。
                     #[cfg(test)]
-                    pm_diag!("PM: SCHED denied taking over scheduling of slot {}", slot);
+                    pm_diag!(
+                        "PM: SCHED denied taking over scheduling of slot {} (rv {})",
+                        slot,
+                        rv
+                    );
+                    #[cfg(not(test))]
+                    let _ = rv;
                 }
             }
         }
@@ -879,7 +885,7 @@ impl<T: IpcTransport> PmServer<T> {
     /// `sched_start` 调用点（C libsys/sched_start.c:46-88：SCHEDULING_START，
     /// 四域 endpoint/parent/maxprio/quantum；成功时调度器可能经回复转交，
     /// 模型取**发去的调度器**——INIT 的调度器就是 SCHED，无转交场景）。
-    fn sched_start(&mut self, schedulee: Endpoint, parent: Endpoint) -> Result<Endpoint, ()> {
+    fn sched_start(&mut self, schedulee: Endpoint, parent: Endpoint) -> Result<Endpoint, i32> {
         let mut msg = Message::default();
         msg.m_u.m_lsys_sched_scheduling_start =
             minix_types::ipc::MessLsysSchedSchedulingStart {
@@ -890,10 +896,34 @@ impl<T: IpcTransport> PmServer<T> {
                 _padding: [0; 40],
             };
         msg.m_type = minix_types::SCHEDULING_START;
-        match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
-            Ok(()) => Ok(Endpoint::SCHED),
-            // C 的启动路径 taskcall 失败即 panic（sef_startup 同级 fatal）。
-            Err(_) => Err(()),
+        // C `_taskcall` 的「阻塞直到投递/应答」语义：SCHED 尚未进 receive 时
+        // sendrec 会以 Ok + 回复 `m_type`=ELOCKED(208) 返回，需重试至真正
+        // 应答（同形 `sched.rs::MinixSchedCtl::taskcall` 的 ELOCKED 重试；
+        // boot 期 tick 抢占提供前进保证，不会永久互卡）。先于通用拒绝
+        // 码臂判 208，否则会被当作拒绝码误返 Err 而不登记调度器。
+        let mut retries: u32 = 0;
+        loop {
+            match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
+                Ok(()) if msg.m_type == 208 => {
+                    retries = retries.wrapping_add(1);
+                    if retries > 1_000_000 {
+                        return Err(-minix_types::EIO);
+                    }
+                }
+                // C libsys/sched_start.c:87 — `_taskcall` 回传 SCHED 的回复码即
+                // rv，`if ((rv = _taskcall(scheduler_e, SCHEDULING_START, &m))) return
+                // rv;`。旧码不看回复 `m_type` 即 `Ok(SCHED)`＝§1.119 追的「INIT 假
+                // 登记 scheduler=SCHED」根因（SCHED 回 ENOSYS/EDEADEPT 也当成功→
+                // 后续 fork 必撞 parent-Dead 活锁）。回复 `m_type` 语义同
+                // `MinixSchedCtl::taskcall` 腿（OK=0 / 拒绝码非 0）。
+                Ok(()) if msg.m_type != minix_types::OK => return Err(msg.m_type),
+                // C 成功回读 `*newsched_e = m.m_sched_lsys_scheduling_start.scheduler`；
+                // INIT 的调度器恒为 SCHED（无转交场景），故直接返回 Endpoint::SCHED。
+                Ok(()) => return Ok(Endpoint::SCHED),
+                // 传输本身失败（C 启动路径同级 fatal）：折 -EIO 交调用方按
+                // schedule.c:60-67 仅告警、不 panic。
+                Err(_) => return Err(-minix_types::EIO),
+            }
         }
     }
 }
@@ -1063,6 +1093,26 @@ mod tests {
         // 线性缩放端点（main.c:281-289）：(q-7)*41/16，C 向零截断。
         assert_eq!(nice_from_queue(MAX_USER_Q), -17);
         assert_eq!(nice_from_queue(MIN_USER_Q), 20);
+    }
+
+    /// §1.119 C 保真回归：PM `sched_start` 必须校验 SCHED 回复码
+    /// （C libsys/sched_start.c:87 `if ((rv = _taskcall(...))) return rv;`）。
+    /// 旧码不看回复 `m_type` 即 `Ok(SCHED)`→INIT 假登记调度器→后续 fork
+    /// 必撞 parent-Dead 活锁。
+    #[test]
+    fn test_sched_start_propagates_denied_reply_code() {
+        // 1) SCHED 拒绝（ENOSYS）→ Err(ENOSYS)，不透传成 Ok(SCHED)。
+        let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
+        server.transport.set_reply_type(ENOSYS);
+        assert_eq!(
+            server.sched_start(Endpoint::INIT, Endpoint::INIT),
+            Err(ENOSYS),
+            "SCHED 拒绝 INIT START 时 PM 不得假登记调度器"
+        );
+        // 2) SCHED 接受（OK）→ Ok(SCHED)。
+        let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
+        server.transport.set_reply_type(OK);
+        assert_eq!(server.sched_start(Endpoint::INIT, Endpoint::INIT), Ok(Endpoint::SCHED));
     }
 
     #[test]

@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.119续-6（决定性反转：EDEADEPT/INIT-未登记降级为 build-layout/时序敏感症状·非稳定根因）**：承 §1.119续-5「查 INIT SCHEDULING_START 腿」。给 PM `init_scheduling`（init.rs）加两枚 TEMP 探针 `nk4a: si `[in_use][is_priv][endpoint低字节]+`nk4a: ss `[sched_start O/E] 后重建 aarch64 `--release` `-smp 4`，**症状彻底翻转且 r1/r2 双跑确定性复现**：`nk4a: rv 0000`×2 现（SCHED inherit 成功）、EDEADEPT×14 洪流消失、SingleUser 活锁消失（仅 `init-state Runcom`×1）、零 panic、marker=0，日志尾部转为重复 `nk4a: sa-call caller=0x4 pid=0x9` 循环（4319 行 vs 上轮 127611 行）。**判读＝这是 §1.119 早记的 build-layout/时序敏感**——给 PM 加字节恰好位移翻转了症状（EDEADEPT-洪流↔inherit-成功+新下游循环），**证明续-4/续-5 钉死的 EDEADEPT 非稳定根因，而是潜在 boot 期 ordering/未初始化竞争的布局依赖表现**；新前沿 `sa-call caller=4(SCHED) pid=9` 实际比 EDEADEPT 更靠后（已越过 INIT fork）。**TEMP 探针全回滚·tracked 净·零逻辑改动**。**下轮＝从更靠后的 `sa-call caller=4 pid=9` 循环切入（更近 marker），或转非布局敏感的稳定手段（如固定随机种子/移除 diagctl 依赖的位点）定位 underlying boot 时序/未初始化竞争**。**⇒ aarch64 §1.119续-6＝EDEADEPT 降级为布局相关症状·前沿收敛至 sa-call pid=9（未达 marker）。** 详节见文末 §1.119续-6。
+> **✅ 最新前沿＝§1.119续-7（真实修复落地：PM sched_start 补校 SCHED 回复码→破 EDEADEPT/SingleUser 活锁·非布局扰动）**：承 §1.119续-6「EDEADEPT 系布局敏感非稳定根」推断→本轮回根因。**静态钉死 C 保真缺口**：PM `init_scheduling`→`sched_start`（init.rs 私有方法）用裸 `transport.sendrec` 发 SCHEDULING_START 后、旧码 `Ok(())=>Ok(Endpoint::SCHED)` **完全不校回复 `m_type`**（与 §1.119续-4/5 五轮追的「假登记 scheduler=SCHED」根吻合）；而 C `libsys/sched_start.c:87` 明写 `if ((rv = _taskcall(...))) return rv;`。**修复**：`Ok(())` 腿拆为 `msg.m_type != OK => Err(msg.m_type)`（透传拒绝码）/ `=> Ok(SCHED)`；返回类型 `Result<Endpoint,()>`→`<,i32>`；调用方 `Err(())`→`Err(rv)`（schedule.c:60-67 仅告警不 panic）；新增单测 `test_sched_start_propagates_denied_reply_code`。**CodeReview PASSED**（0 BLOCKER/0 SHOULD）采纳 CONSIDER——同形 `sched.rs::taskcall` 补 ELOCKED(208) 有界重试（boot 时序敏感语境下防御必要）。**三件套全绿**：mock pm **--lib 419/0**（+1 新测·另有 2 个 `run_once_integration` 预存失败经 stash 对比证实与本改无关、属主回复腿号符约定预存债）·init.rs rustfmt **0=0** 零新漂·**aarch64 `--release` `-smp 4` 双跑完全一致＝EDEADEPT(00d7)×0、SingleUser×0（活锁彻底破除）、`rv 004e`×1（SCHED 对 INIT START 回 ENOSYS·PM 现正确不假登记）、日志从 12.7万行降至 4295 行、panic=0**、新尾部 `vm-pf`×3419（fa≈0x221xxx 用户 text 页·转 §1.116 前沿）·x86 单核双跑 marker=2·panic=0·oom=0 无回归。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-7＝五轮活的 EDEADEPT/SingleUser 活锁首次由真实 C 保真修复破除（非探针扰动）·新前沿＝INIT 用户 text 缺页洪流 vm-pf（§1.116）；riscv64 未验。** 详节见文末 §1.119续-7。
+>
+> **（历史·§1.119续-6）（决定性反转：EDEADEPT/INIT-未登记降级为 build-layout/时序敏感症状·非稳定根因）**：承 §1.119续-5「查 INIT SCHEDULING_START 腿」。给 PM `init_scheduling`（init.rs）加两枚 TEMP 探针 `nk4a: si `[in_use][is_priv][endpoint低字节]+`nk4a: ss `[sched_start O/E] 后重建 aarch64 `--release` `-smp 4`，**症状彻底翻转且 r1/r2 双跑确定性复现**：`nk4a: rv 0000`×2 现（SCHED inherit 成功）、EDEADEPT×14 洪流消失、SingleUser 活锁消失（仅 `init-state Runcom`×1）、零 panic、marker=0，日志尾部转为重复 `nk4a: sa-call caller=0x4 pid=0x9` 循环（4319 行 vs 上轮 127611 行）。**判读＝这是 §1.119 早记的 build-layout/时序敏感**——给 PM 加字节恰好位移翻转了症状（EDEADEPT-洪流↔inherit-成功+新下游循环），**证明续-4/续-5 钉死的 EDEADEPT 非稳定根因，而是潜在 boot 期 ordering/未初始化竞争的布局依赖表现**；新前沿 `sa-call caller=4(SCHED) pid=9` 实际比 EDEADEPT 更靠后（已越过 INIT fork）。**TEMP 探针全回滚·tracked 净·零逻辑改动**。**下轮＝从更靠后的 `sa-call caller=4 pid=9` 循环切入（更近 marker），或转非布局敏感的稳定手段（如固定随机种子/移除 diagctl 依赖的位点）定位 underlying boot 时序/未初始化竞争**。**⇒ aarch64 §1.119续-6＝EDEADEPT 降级为布局相关症状·前沿收敛至 sa-call pid=9（未达 marker）。** 详节见文末 §1.119续-6。
 >
 > **（历史·§1.119续-5）（dx 探针钉死＝SCHED procs[INIT.slot] 从未登记·槽空闲端点=0）**：承 §1.119续-4。先破一个取证陷阱：committed `nk4a: mt ` 探针零输出≠二进制陈旧（`strings` 证实镜像 sched 含 mt 串）＝mt 落最早 8 条 boot 活锁洪流区被 diagctl 非确定性丢弃；**推论：“无 rv 0000”也不能单独断证 START 失败**（可被同一洪流吞）→需直接测。TEMP `nk4a: dx `[in_use][name_match][passed低字节][stored低字节] 现场 **`000b00`×14**＝in_use=0、passed=0x0b(INIT✓)、stored=0x00（Free 默认）⇒**SCHED `procs[11]` 行空闲端点=0＝INIT 从未登记**（排除 generation 不符、坐实 `!in_use`）。断点必在 **INIT 自身 SCHEDULING_START 腿**（唯一非-inherit 回复＝单条 ENOSYS 强支持“START 未达 do_start·m_type 未被 from_raw 识别”）；PM `init_scheduling`/`sched_start`（init.rs:893）用裸 sendrec 不校回复 m_type→假登记 scheduler=SCHED。**下轮＝do_start 入口(区分 inherit=false)+`None=>` ENOSYS 臂各加一枚低撞针探针（不在洪流区）抓 START 是否达 SCHED 及实际 m_type**→若 ENOSYS 查 aarch64 IPC m_type 传送/RS_INIT 时序。纯取证·TEMP 全回滚·tracked 净·零逻辑改动。**⇒ aarch64 §1.119续-5＝INIT-未登记坐实·上游收敛至 SCHEDULING_START/m_type（未达 marker）。** 详节见文末 §1.119续-5。
 >
@@ -5404,3 +5406,33 @@ Rust 旧 `if IpcEngine::is_willing_to_receive(&procs[dst_idx], caller_endpoint) 
 **取证方法学教训（待入 misc_concepts 候选）**：布局敏感的活锁不能用「加探针看症状」定性根因——探针自身会改变布局。需非扰动手段（固定随机种子、去除 diagctl 丢弃竞争、或将疑点断言内建为 panic 看是否触发）。
 
 **TEMP 探针全回滚（`git checkout servers/pm/src/init.rs`）·tracked 净·零逻辑改动**。**下轮＝从更靠后的 `sa-call caller=4 pid=9` 循环切入（已近 marker），静态审 SCHED 对 pid=9 的反复 schedctl/调度往返为何不成进；或用非布局敏感手段定位 underlying boot 时序/未初始化竞争**。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-6＝EDEADEPT 降级为布局依赖症状（推翻续-4/5 “EDEADEPT即根”框架）·前沿收敛至 sa-call pid=9（未达 marker）；riscv64 未验。** **历史链**：…→§1.119续-5 dx 钉 INIT-未登记(`218260616`)→**§1.119续-6 PM 探针扰动致症状翻转·EDEADEPT 降级为布局敏感·前沿收敛 sa-call pid=9（取证轮·WORKLOG-only）**。
+
+## §1.119续-7（真实修复：PM sched_start 补校 SCHED 回复码→破 EDEADEPT/SingleUser 活锁）
+
+承 §1.119续-6 的推断（EDEADEPT 是布局依赖症状、非稳定根）。本轮不再靠探针看症状，而是静态对账 Ground Truth 直接修一个五轮来反复点名、但从未真正修掉的 **C 保真缺口**。
+
+**根因（静态钉死）**：PM `init_scheduling`（init.rs）对 INIT 调 `sched_start`（本文件私有方法）发 `SCHEDULING_START` 走的是**裸 `transport.sendrec`**（不经 `MinixSchedCtl::taskcall`，故 §1.119 五轮的 `nk4a: tc ` 探针看不到 START），且旧代码：
+```rust
+match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
+    Ok(()) => Ok(Endpoint::SCHED),   // ❌ 从不看 msg.m_type（SCHED 回复码）
+    Err(_) => Err(()),
+}
+```
+而 C `libsys/sched_start.c:87` 明写 `if ((rv = _taskcall(scheduler_e, SCHEDULING_START, &m))) return rv;`——**必须透传 SCHED 拒绝码**。后果＝即便 SCHED 回 ENOSYS/EDEADEPT，PM 仍假登记 `INIT.resources.scheduler=SCHED`，于是后续每次 fork 的 `sched_start_user`→SCHEDULING_INHERIT 都发到 SCHED、撞 parent(INIT) 在 SCHED 表未登记→EDEADEPT→`ipc/vfs.rs` Fork 腿回 −1→INIT EPERM→SingleUser 活锁。这正是 §1.119续-4/续-5 反复描述但本轮才真正闭开的假登记腿。
+
+**修复**（`os/servers/pm/src/init.rs`）：
+- `Ok(())` 腿拆为 `Ok(()) if msg.m_type != minix_types::OK => Err(msg.m_type)`（透传拒绝码）+ `Ok(()) => Ok(Endpoint::SCHED)`（成功）；
+- 返回类型 `Result<Endpoint,()>`→`Result<Endpoint,i32>`；`Err(_) => Err(-minix_types::EIO)`（与 `sched.rs::taskcall` 同形）；
+- 调用方 `Err(())`→`Err(rv)`，测试态 diag 带 rv、非测试态 `let _ = rv;`（C schedule.c:44-47 仅告警、不 panic）；
+- **CodeReview 采纳 CONSIDER**：补 ELOCKED(208) 有界重试环（同形 `sched.rs::MinixSchedCtl::taskcall`）——鉴于整个 §1.119  saga 就是 boot 时序竞争，若 INIT START 撞 SCHED 未进 receive 回 208、不误判为拒绝码而不登记调度器；需先于通用 `!= OK` 臂判 208。
+
+**回归单测** `test_sched_start_propagates_denied_reply_code`：`set_reply_type(ENOSYS)`→`sched_start==Err(ENOSYS)`；`set_reply_type(OK)`→`==Ok(Endpoint::SCHED)`。旧码（无回复校验）无法通过断言 1。
+
+**三件套**：
+- **mock**：`cargo test -p minix-pm --lib` **419 passed/0 failed**（+1 新测）。另有 **2 个 `run_once_integration` 预存失败**（`wait4_without_children_replies_echild` 期 ECHILD(10) 得 −10、`unwired_call_replies_enosys` 期 ENOSYS(78) 得 −78）——经 `git stash init.rs` 对比证实**在 HEAD(`1492d2791`) 已如此失败**、与本改无关，属主回复腿正/负 errno 号符约定的**预存债**（与 §1.119 收敛的正 errno `rv 00d7` 相左，下一轮可单独开线核）。
+- **rustfmt**：init.rs 单文件 nightly `--check` 漂移 **WORK 0＝HEAD 0**（含本改动全已格式合规）。
+- **双跑真机**：aarch64 `--release` `-smp 4` 修复前（HEAD）＝EDEADEPT×14 洪流 + SingleUser×1.3万活锁（12.7万行）；**修复后 r1≡r2＝4295 行、EDEADEPT(00d7)×0、SingleUser×0、`rv 004e`×1（SCHED 对 INIT START 回 ENOSYS·PM 现正确不假登记）、panic=0**；新尾部 `vm-pf`×3419（fa≈0x221xxx 用户 text 指令页·含 `sa-call caller=4 pid=9 sys=y`）＝boot 已越过活锁、抵 INIT 用户态 text 缺页（§1.116 同族）。x86_64 `-smp 1` 双跑 marker=2·panic=0·oom=0 无回归（x86 上 START 回 OK、行为不变）。
+
+**方法学回报**：续-6 的“布局敏感”不是拒绝修复的理由，而是提示——真正的 C 保真 bug（漏校回复码）会在不同布局下时隐时现；固定它后才能得到不依赖探针扰动的稳定签名。新前沿＝INIT 用户 text 缺页洪流 vm-pf（接 §1.116：查 aarch64 load_vm_elf/grant_user_walk 对 INIT 高 text 地址 0x221xxx–0x22dxxx 的映射覆盖）。
+
+**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-7＝EDEADEPT/SingleUser 活锁首次由真实 C 保真修复破除（非探针扰动）·新前沿＝INIT 用户 text 缺页洪流 vm-pf（§1.116）；riscv64 未验。** **历史链**：…→§1.119续-5 dx 钉 INIT-未登记(`218260616`)→§1.119续-6 PM 探针扰动致症状翻转·EDEADEPT 降级布局敏感(`1492d2791`)→**§1.119续-7 PM sched_start 补校回复码、真实破除活锁（含修复）**。
