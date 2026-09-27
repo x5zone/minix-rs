@@ -5499,6 +5499,10 @@ match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
 
 **逻辑闭合推断**：sendrec 为 rendezvous——INIT 处于「等回复」相位⇒它已发出；VFS fl=RECEIVING（在自身 receive 循环）⇒VFS 已收 INIT 请求、处理完、回复、并回到 receive。但 INIT 仍 RECEIVING⇒**VFS(ep1)→INIT(ep11) 的回复在投递腿丢失**（若 VFS 卡在处理会转 SENDING/RUNNING，事实不然）。mt=0x115(277) 为 INIT 发往 VFS 的请求类型（待下轮对照具体 FS_/SYS_ 常量）。
 
+**【续-2 后校验修正·哨兵值解码】**：`Endpoint` 哨兵由 `MAX_NR_TASKS=1023`（endpoint.rs:27）定：`ANY=0x7c00(31744)`、`NONE=0x7bff(31743)`。故 DLGRAPH 里 INIT(nr16) `getfrom=0x7c00` **是 ANY 非垃圾**——INIT 实为停在 `receive(ANY)`（SEF 主循环下一拍），`sendto=1(VFS)`/`mt=0x115` 是上一条已发消息的残留快照。这**推翻**上段「回复因 willing 检查（要求 getfrom==dst）落空」的推断：INIT 停在 ANY，VFS 回复（源 ep1）经 `send` Path-A 时 `is_willing_to_receive` 对 getfrom==ANY **恒为真**、本应唤醒 INIT。同理 nr=5..15 server 的 getfrom=0x7c00=ANY 均为正常 receive(ANY) 空转。rc 子(nr17) getfrom=0x0=PM、ep=0x800c、fl=NO_QUANTUM＝exec 进行中过渡态。
+
+**⇒ 存活假设收敛为二（需下轮探针判别、不再静态猜）**：H1 **VFS 从未真正发出该回复**（VFS 侧处理腿在 mt=277 请求上提前回到 receive(ANY) 或静默丢弃——INIT sendto=1 而 VFS 无对应出向 send）；H2 **VFS 发了回复但 dst 解析错**（回复 m_source/目标端点非 INIT ep11，落错槽或被 NO_ENDPOINT 拒——§1.111/F14 「m_source=0 回错槽」家族）。两者对 DLGRAPH 同形（INIT 永停 receive(ANY)）。
+
 **根因重定**：从续-1「proc12 等永不到达回复」精确化为——**等回复的是 INIT（与 rc 子），掉线的是 VFS→INIT 回复投递腿**；属 §1.113 switch-after-pop／§1.119续-7／§1.96 DeliverMsg-endpoint 同族（回复投向因刚发生 fork+exec 而端点/槽变动的接收者）。
 
 **下轮（待装探针·task-close 全回滚）**：在 `sys_reply`/`DeliverMsg` 腿打——VFS 调用回复时传的 dst 端点 vs INIT 当前 `p_endpoint` 是否错配；并核 slot 17 ep=0x800c 的来源（是否为 exec 中途 endpoint 重分配使回复 dst 陈旧）。钉死错配具体形式后再定修（候选：reply 按 slot 而非 endpoint 索引、或 switch-after-pop 后 p_endpoint 未及时同步）。
