@@ -215,3 +215,82 @@ selftest 18/18 全绿；真树变异 6 组（P3/P4/P5/P6/P7 注入真实违规�
   同步三端派生文件并跑 check-review-rules.sh，另开任务。
 - run_all.sh 三处吞退出码（P7 基线）在 P6 清理后出基线转真拦。
 - P8 基线里 riscv64.ld 与 4 个 .rs 的 CRLF 建议顺手转 LF 后出基线。
+
+---
+
+## §7 增量扫描（C-62；截断面 3643c9331→a1b8b1663，NK4-C 274 笔）
+
+> 承接 §1-§6 的首轮（C-61，截断面 3643c9331）。本轮为**增量轮**：语料边界=git log 3643c9331..a1b8b1663
+>（274 笔，主体 NK4-C）+ 下表新增/增长文件。方法同 §1：全文/定向精读 → 对照 §2 六族 34 模式判新旧 →
+> 可机械化者落 gate。**结论先行：无全新失败家族，新增模式全部可归并进既有六族（多数是高频家族的第 3-5 次
+> 独立复发——复发频次本身印证了目录的价值）；机械面新增 2 个检查（P14/P15）、P2 清单 +7、P12 启发式修正。**
+
+### 7.1 增量语料
+
+| 语料 | 形态 | 说明 |
+|---|---|---|
+| `NK4C-WORKLOG.md` | **新**，5237 行 | 顶部「当前状态」摘要链（§1.89-§1.119）+ S0-S3 精读；164 节正文按 grep 定点取用 |
+| `NK4C-REVIEW-REPORT-20260927-R3.md` | **新**，196 行 | 全文精读。214 笔机械对账（213 过/1 卫生违规/2 正则误报澄清）+ 交接方自审 4 项实锤 |
+| `NK4C-REVIEW-REPORT-20260923{,-R2}.md` | **新** | 前两轮评审（R2 覆盖至 e90efbcd8） |
+| `NK4C-RESUME-PROMPT.md` | **新**，361 行 | 全文精读。§4.2 探针纪律 + §9 已知陷阱清单（10 条）——纪律固化文档本身 |
+| `NK4C-OPENING-PROMPT.md` | **新**，366 行 | 铁律与停止条件（与 NK4A/B 同构，增量读） |
+| `.review/zcode/edge1/FIXLOG.md` | 2219→2640 行 | 迭代22-25 补记（NK4-C 阶段 0-1.2：A 案 R10 + Task C 第 10-19 轮取证） |
+| `01-stage-kernel/firmware-heap-corruption.md` | **新** | 固件堆腐化教学文档（跨页表 `&'static` 失效 → landing pad，fix27c 同病第 3 发的固化） |
+| `NK4A-HANDOFF-STATUS.md` | **新**，435 行 | 移交状态（佐证用） |
+| `edge_todo.md` / `new_edge4.md` | 增量 | C-6x 登记行更新 |
+
+### 7.2 新增模式（全部归并进 §2 既有族；标注第 N 次独立复发）
+
+**B 族（wire/常量/协议）——复发密集区：**
+
+| 归并 | 新实例（NK4-C 条目） | 说明 |
+|---|---|---|
+| B1（第 3 发）| §1.105 `CdevRequest::Open as i32`＝索引 0 ≠ 消息号 0x400；同族 `Select as i32` | 与 NS7-A（Ioctl 0x404）、edge3 #97「驱动消息位次是猜的」同一模式三次独立发生——fieldless enum 判别值冒充线路类型号。**机械面**：P2 清单新增 `test_open_request_wire_type_is_cdev_open_not_index` |
+| B2（回复载荷丢失）| §1.106 stat 回复腿 `Ok(()) => zero()` 纯状态回复、从不 copy_out 到用户缓冲 → `ls` 判目录失败；同族 StatVfs 同病登记 TODO | 「回复＝状态码」而忘了载荷半。配套发现死代码 `write_to` 88B 伪布局（全仓无调用者）。**机械面**：P2 + `test_stat_streams_struct_stat_through_copy_out` |
+| B7（repr(C)/布局）| 1.12d `SLOT=80` 与同文件 size 断言 `16+size_of=96` 自相矛盾（越界 UB）+ 方向互换两臂与 doc 契约相反（R3 F-SELF-1）；§1.115 BootHandoff 嵌套类型 repr(Rust)→4 类型补 `#[repr(C)]` | R3 判词：**「const 断言必须作为常量来源而非事后证明」**——断言写对了但代码不消费它。**机械面**：offset_of!/size 断言守卫测试已是仓内范式（P2 既有清单覆盖形态） |
+| B3（载荷语义）| §1.117 `while waitpid(-1).is_ok()` 误译 C `while waitpid(...)>0`——`Ok(0)`（有活子无退出）永真 → INIT 忙等 6 万次/40s | **Ok 类型 ≠ 业务成功：成功语义在载荷不在 Result 类型**。修复主动清扫同族 RS SIGCHLD 排空环（一次修复两处同族）。**机械面**：P2 + `test_{entity,runetcrc}_fork_failure_reap_loop_exits_on_zero` |
+
+**E 族（内核语义/根因）：**
+
+| 归并 | 新实例 | 说明 |
+|---|---|---|
+| E 族·新形态「容量 ≠ 拓扑」| §1.118 SCHED `loads:[CpuLoad; MAX_CPUS=32]` 初始化满容量，`pick` 迭代不受 `processors_count` 约束 → 4 核机选中幽灵核 4..31 → EINVAL → INIT fork EPERM 活锁 | C `pick_cpu`（schedule.c:67）只循环 `processors_count`；数组满容量初始化 + 满容量遍历破坏契约。修复带双向判别回归测试。**机械面**：P2 + `test_phantom_seats_beyond_topology` |
+| E 族·新形态「容量 vs 记账双口径」| §1.111 `total_pages` 旧值=记账累加（对位 C mem_init），但位图按绝对页号寻址——aarch64 RAM 基址 0x40000000 页号自 262144 起 → 容量 2800 位图全面越界；修复后又暴露 vsi_total 记账口径混淆（抬高 1GiB）→ 拆双字段 | **位图容量（最高绝对页号）与可用页记账是两个量**，C 里本就分开。**机械面**：P2 + `test_boot_params_validate_total_pages_mismatch` |
+| E1（置旗/入队配对半·持续复发）| F10d 家族三种变体（privctl 绕过 RTS 宏 → runnable=yes queued=no；`clear_ipc_refs` 裸 clear；`do_trace` 裸 set/clear）——RESUME-PROMPT §9.8 已固化为陷阱条款 | **机械面（本轮新增 P14）**：grep `p_rts_flags.(set|clear|insert|remove)` 非 proc.rs 定义域的调用点，基线对账（存量 219 处冻结，新增即抓人审）。启发式无法判「是否补了入队出队半」（语义判断），门的价值是强制改 RTS 语义者过审视线 |
+| E2/E3（上下文/移植语义）| §1.112/113：aarch64 无 TSS.sp0 硬件重装，阻塞腿不弹帧 → SP_EL1 每轮空闲 receive 泄漏 288B 下行踩 .bss（x86 免疫的跨架构不对称）；§1.109 `msr SP_EL1` 在 SPSel=1 UNDEFINED；§1.115 `tlbi alle1is` 刷 stage-2 在 EL1-only 体系 UNDEFINED；§1.110 APTable 极性与 x86 USER 位相反（=1 是禁止）；§1.111 `write_pte_dm` 无条件发射 tlbi 而 x86 同名函数早有 KernelDm 门控（跨架构同形函数的隐式前提） | CodeReview Critical-1 抓住栈纪律；「把静默内存踩踏换成显式 panic」是本轮反复出现的正面范式（fail-fast 优先于静默） |
+| E 族·新形态「additive resume」| §1.115 kernel-image 调 `arch_boot` 把**已装载进 TTBR 的 L0 清零**摧毁自身高半映射；正解=`arch_boot_resume_high_half` 纯 additive + 各镜像独立 .bss 副本 | **重初始化路径不得清正激活的状态；跨镜像交接数据必须落本镜像自己的存储** |
+| E4（取证仪器）| §1.99→§1.100 committed 探针每秒 ~460 行刷屏**掩盖了真死锁**（探针 DoS = observer effect）；§1.118 aarch64 userland `console_write` 根本不落 serial（唯 diagctl 可见）→「先前所有靠 console 串推的退出形态皆不可信」；diagctl 在活锁洪流下非确定性丢弃（同码一次 14 行一次 0 行）→ 正解=IPC reply m_type 回传码分区 | 新形态：**取证通道本身要先验证**（E4 原形态是上限耗尽，本轮是通道可达性/可靠性）；「洪流下串口不可靠，用带内通道回传判定值」已固化为 NK4-C 方法论 |
+
+**C 族（测试有效性）：**
+
+| 归并 | 新实例 | 说明 |
+|---|---|---|
+| C2（修复侧新形态）| 1.11e：taskcall ELOCKED 重试**两版从未实际生效**——重试读 reply 语义（rv==208）而内核走 syscall 错误臂 | 「修复是否生效」要验证失败路径真的走到修复代码；与「碰巧通过的测试」同根：验证点与执行路径错位 |
+| C2（架构级判词）| R3 F-SELF-2：drain 代停车在偏离 C 的架构内把补丁打对（真机验证通过），后被 B24 按 C proc.c:569-583 结构性取代 | **「验证通过 ≠ 架构正确」**——局部正确性无法救赎架构偏差；应更早对照 C 质疑架构本身 |
+| C1（取证判别力）| R3 F-SELF-1①：探针链只验证了 range check 未验证数据内容（「探针验证了检查通过却没验证读到的字节」）——方向互换漏诊 | 探针断言的判别力要与缺陷形态匹配（守卫缺陷验守卫、载荷缺陷验载荷） |
+
+**D/F 族（流程/环境）：**
+
+| 归并 | 新实例 | 说明 |
+|---|---|---|
+| D1（git add -A）| d6f176451 `git add -A os/` 误提交 `os/.dockercargo/registry/` 158 文件 4.7MB vendored 依赖源码且 .gitignore 无条目（R3 唯一卫生违规，登记待清） | **机械面（本轮新增 P15）**：vendored 目录跟踪数=0 + gitignore 条目在位；本单已执行 R3 待办 1（git rm -r --cached + gitignore），门从出生即真拦 |
+| F3（CRLF 第 4 发）| `os/libs/minix-boot/src/handoff.rs`（§1.115 新文件）CRLF 入库——本轮 P8 首跑即抓 | 与 aarch64.ld→riscv64.ld→4×.rs 同族持续蔓延；进基线（NK4-C 活跃文件不触碰），建议 NK4-C 收线时统一转 LF |
+| D6/P12（架构门第 3 发）| §1.107 `boot_init_timer` 无条件调用 x86 专属 `pic_init` 等（aarch64 E0425）——同族第三次；本轮 P12 对 HEAD 实跑新抓 6 处形态命中，人工复核=2 处启发式误报（doc 注释里的 `naked_asm!`、cfg 门在 >6 行窗外的 GS 采样探针）+ 其余为 committed 取证基础设施 | **机械面（本轮修正 P12 启发式）**：排除纯注释行 + 窗口 6→12 行；修正后存量 3 处进基线（boot-shim asm、方案 A 跳板、cr2 探针）。结构性拦截仍靠 P6 的 CI build 门 |
+| F6（证据命令伪影）| R3 P6：日志含 NUL 字节时 grep 计数不可靠（以 python 字节级统计为准）；R3 对账脚本正则误报 2 笔（未豁免 message 明写「含代码」的 commit） | F6 族持续积累：证据工具的隐性语义 |
+
+**正面范式沉淀（§5 补充）**：金丝雀/毒化实验（第 10-16 轮：canary 注入判「保存即错 vs 保存后被改」、毒化扩散追踪级联损伤、PA 别名检测）——强判别力取证实验的设计模板；哨兵分区法（`si res=902+22=924` 用哨兵值+错误码分区钉死错误来源层）；误诊诚实翻案文化（§1.116 翻 §1.115、§1.118续 翻 §1.118、§1.119 翻静态刻画，R3 确认「未发现虚构取证」）；QEMU 上游源码实读钉死 GICR 行为（R3 评语 exemplary）。
+
+### 7.3 机械面变化汇总
+
+| 变化 | 内容 |
+|---|---|
+| P12 修正 | 启发式排除纯注释行 + cfg 门窗口 6→12 行（本轮 6 处 FAIL 人工复核 2 处误报驱动）；修正后实抓 3 处 committed 取证基础设施进基线 |
+| P14 新增 | RTS 裸 set/clear 对账（F10d 家族三变体驱动）；存量 219 处冻结——启发式不判语义合法性，门价值=新增强制过审；selftest 正反例 + 真树变异验证 |
+| P15 新增 | vendored 目录防线（d6f176451 事故驱动）；ls-files 半 + gitignore 半；本单执行 R3 待办 1 后从出生即绿 |
+| P2_TESTS +7 | phantom_seats（§1.118）/ open_request_wire_type（§1.105）/ stat_streams（§1.106）/ do_fork_downgrades（B48）/ total_pages_mismatch（§1.111）/ reap_loop×2（§1.117）——全部 grep 实证在位后入列，27/27 |
+| baseline 重生成 | 222 keys（P7×3 + P8×6 + P12×3 + P14×219 + ……）；P8 新增 handoff.rs |
+| .dockercargo 修复 | gitignore 条目 + `git rm -r --cached`（158 文件解除跟踪，盘面保留，docker 构建不受影响）——执行 NK4C R3 报告 §7.3 待办 1 |
+
+### 7.4 判别证据（evidence/20260927-c62-pattern-gate/）
+
+selftest 24 例（+P14×2/P15×2）正反矩阵全绿；真树变异：P14 新增裸 set 即 FAIL、P15 gitignore 删条目即 FAIL、还原复绿；full 模式 PASS=11 FAIL=0 SKIP=1（worktree）/ 主树合并后终验。**过程事故如实记**：变异还原用 `git checkout -- .gitignore` 把自己未提交的 gitignore 条目一并冲掉（P15 假 FAIL 一次）——变异脚本的还原必须用「改前备份/改后还原」，对未提交在制禁 checkout（D2 模式第 N 次现世，本次受害者是检查者自己）。
