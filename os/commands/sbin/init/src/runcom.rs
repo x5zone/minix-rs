@@ -159,7 +159,12 @@ fn runetcrc(
                 host,
                 &format!("can't fork for `{RC_SHELL_PATH}' on `{RUNCOM_SCRIPT}'"),
             );
-            while host.waitpid(-1, WNOHANG).is_ok() {}
+            // C: init.c:920 `while (waitpid(-1, NULL, WNOHANG) > 0)` — reap
+            // only already-exited children. A WNOHANG answer of 0 (live
+            // children, none changed) or an error (ECHILD) ends the loop.
+            // `.is_ok()` would spin forever on `Ok((0, _))` — the aarch64
+            // §1.117 livelock (INIT flooded PM with ~60k WAIT4/40s).
+            while matches!(host.waitpid(-1, WNOHANG), Ok((pid, _)) if pid > 0) {}
             let _ = host.sleep_secs(crate::log::STALL_TIMEOUT_SECS);
             return Attempt::SingleUser;
         }
@@ -362,6 +367,32 @@ mod tests {
         let (mut host, mut sessions, mut db, signals) = fixture();
         host.fork_outcomes.push(Err(Errno::EAGAIN));
         host.wait_errors.push(Errno::ESRCH); // reap loop ends
+        let mut collector = collector(&mut sessions, &mut db, "/");
+        let mut seen = false;
+        let ledger = Ledger::new(&mut seen);
+        let deps = RuncomDeps {
+            mode: RuncomMode::Autoboot,
+            rootdir: "/",
+            signals: &signals,
+        };
+        assert_eq!(
+            runetcrc(&mut host, false, &mut collector, &deps),
+            Attempt::SingleUser
+        );
+        assert_eq!(host.slept, vec![30]);
+    }
+
+    #[test]
+    fn test_runetcrc_fork_failure_reap_loop_exits_on_zero() {
+        // NK4-C §1.117: the WNOHANG reap loop must stop the moment no more
+        // children have exited. A single `Ok((0, _))` (a live child, none
+        // changed) is the exit signal (C `waitpid(...) > 0`); the old
+        // `.is_ok()` guard would call waitpid again, draining the empty mock
+        // queue and panicking — i.e. an unbounded spin. Passing without a
+        // second waitpid proves the loop broke on pid == 0.
+        let (mut host, mut sessions, mut db, signals) = fixture();
+        host.fork_outcomes.push(Err(Errno::EAGAIN));
+        host.wait_outcomes.push(Ok((0, WaitStatus::Exited { code: 0 })));
         let mut collector = collector(&mut sessions, &mut db, "/");
         let mut seen = false;
         let ledger = Ledger::new(&mut seen);

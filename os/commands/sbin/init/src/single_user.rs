@@ -112,7 +112,11 @@ pub fn single_user(host: &mut dyn InitHost, deps: SingleUserDeps) -> SingleUserO
             // C: "seriously hosed" — reap what is already dead and try
             // the whole state again (init.c:814-821).
             emergency(host, "can't fork single-user shell, trying again");
-            while host.waitpid(-1, WNOHANG).is_ok() {}
+            // C: init.c:818 `while (waitpid(-1, NULL, WNOHANG) > 0)` — reap
+            // only already-exited children; WNOHANG returning 0 (live child,
+            // none changed) or an error ends the loop. `.is_ok()` would spin
+            // forever on `Ok((0, _))` (NK4-C §1.117 same mistranslation).
+            while matches!(host.waitpid(-1, WNOHANG), Ok((pid, _)) if pid > 0) {}
             let restore = restore_spec(&[sig::SIGNAL_HANGUP, sig::SIGNAL_TERMINAL_STOP]);
             let _ = host.register_handlers(&restore);
             return SingleUserOutcome::Restart;
@@ -370,6 +374,29 @@ mod tests {
         };
         assert_eq!(single_user(&mut host, deps), SingleUserOutcome::Restart);
         assert!(host.console.iter().any(|(_, m)| m.contains("can't fork")));
+    }
+
+    #[test]
+    fn test_entity_fork_failure_reap_loop_exits_on_zero() {
+        // NK4-C §1.117: the WNOHANG reap loop breaks the moment no child has
+        // exited. A single `Ok((0, _))` (live child, none changed) ends it
+        // (C `waitpid(...) > 0`); the old `.is_ok()` guard would call waitpid
+        // again and drain the empty mock queue (panic) — an unbounded spin.
+        let mut host = ScriptHost::default();
+        host.fork_outcomes.push(Err(Errno::EAGAIN));
+        host.wait_outcomes.push(Ok((0, WaitStatus::Exited { code: 0 })));
+        let mut sessions: Vec<Session> = Vec::new();
+        let mut db = SessionMapDb::default();
+        let signals = std::sync::Arc::new(SignalState::default());
+        let mut collector = fresh_collector(&mut sessions, &mut db);
+        let deps = SingleUserDeps {
+            verify_password: None,
+            console_secure: false,
+            from_securitylevel: 0,
+            collector: &mut collector,
+            requested: &signals,
+        };
+        assert_eq!(single_user(&mut host, deps), SingleUserOutcome::Restart);
     }
 
     #[test]

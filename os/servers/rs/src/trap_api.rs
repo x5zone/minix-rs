@@ -462,11 +462,14 @@ impl PmApi for TrapKernelApi {
 
     fn waitpid(&mut self) -> Option<Pid> {
         // C request.c:1063 do_sigchld 排空循环:waitpid(-1, &status,
-        // WNOHANG)。trait 无错误通道:ECHILD(无更多子进程)正常终止;
+        // WNOHANG) > 0。trait 无错误通道:ECHILD(无更多子进程)正常终止;
         // 其余错误同样终止排空(与 C 的循环退出形状一致)。
+        // NK4-C §1.117: WNOHANG 有活子但无退出时回 pid==0——C 的 `> 0`
+        // 条件此时退出排空环。`Some(0)` 会让调用方 `while let Some(_)`
+        // 无界忙等(同 init runetcrc/single_user reap 环),故 0 也归 None。
         match sys_pm::waitpid_via(&self.ipc, -1, minix_sys::wait::WNOHANG, 0) {
-            Ok((pid, _status)) => Some(pid),
-            Err(_) => None,
+            Ok((pid, _status)) if pid > 0 => Some(pid),
+            _ => None,
         }
     }
 
