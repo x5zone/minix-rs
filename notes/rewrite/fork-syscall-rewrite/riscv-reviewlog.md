@@ -45,6 +45,7 @@ NK4A 群四份（riscv 零命中，仅存档参照）。`.zcode` 侧：
 |---|---|---|---|---|
 | 第 1 轮 | 2026-09-27 | 真值输入全量（`NK4C-WORKLOG.md` §1.78–§1.119 + 两份 fixlog）＋ os/arch riscv64 全部 17 文件 ＋ os/plat riscv 腿 ＋ 内核 arch_boot/trap_dispatch/with_protection ＋ minix-sys ipc.rs 门控 ＋ 装机链（riscv64.ld、boot-shim、xtask、minix-boot）＋ VM 帧池/TTY 串口/init 用户态抽查 ＋ 生产配方 cargo check | 见 §A/§B/§C 全部锚点；编译性证据见 §A.0 | §A 各「有缺口」项待主线程排期；D1–D6 待用户拍板；真机待验表未启动 |
 | 第 2 轮 | 2026-09-27 | 补扫 17 份 N\*/\*RE\* 日志（NK4B-WORKLOG 精读 2446 行、回归评审×2、R3 评审报告、NK4C 开局/续跑 prompt、NK4B-TODO、PATTERN-SCAN、NK4A 评审报告、20260923 两份评审）＋ .zcode 六日日志排查（riscv 零命中）＋ 4 项现场复核 | sstatus.SUM 缺口（C25）、reply_wire 未迁移（C24）、M4.3 OpenSBI 腿已实证、M4.4 三件缺件＋.bss 清零、a1 状态车道选型免疫（C26）、riscv64.ld CRLF 基线（C32）、NK4C prompt 阶段 3 既定裁决（甲案＋SUM 丙案） | D7 新增；C 表 24–31 行；A.1/A.3/A.6 修订；A.0 补 CI 门建议 |
+| 第 3 轮 | 2026-09-27 | WORKLOG 结构债深度分析（§D 全新章）：8 笔债的现状锚点核验（reservedqueue/quiet_wait/发射端口/ev_new 缺席/link.ld 引用面/handoff 契约等 10 项 grep 实测）＋ 五参照系对照 ＋ 每债 ≥3 方案 ＋ 修复批次矩阵 | D.1–D.9；`impl MemType for AnonymousMemory` 无 eager 物化复核（memtype.rs:253 起）；boot-shim lib.rs:136 错端口 0x3f9 在 HEAD 复核 | D 节各「裁决归属」待用户/主线程认领；批次建议入 §D.9 |
 
 下一轮建议入口：按 §A.7（park 与栈模型，最高优先缺口）与 §A.5（帧池页表通道 sfence）准备
 修复排期清单；B 表待用户裁决后把选定方案展开成实施配方。第 2 轮修正：D1/D7 的裁决项
@@ -787,6 +788,329 @@ aarch64 共用同一次改动）；本表无异议，仅补一条实施提醒—
    CRLF），行为无损但污染对账，全数登记交主线程。
 
 ---
+
+# D. WORKLOG 结构债深度分析（第 3 轮新增）
+
+## D.0 范围、方法与债务总表
+
+本章把两条工作日志里**显式挂「结构债」名目**的条目（NK4C-WORKLOG §1.115 遗留小节的
+债①债②）与 NK4B/NK4C 各轮**登记待裁、且性质是架构级而非单行修复**的条目（平台描述符
+来源通道、链接脚本双份、早控制台发射面、VM 自举内存预映、init 收尾腿忙等、探针治理）
+合起来做一次静态深分析。方法论按 code-excellence 约定：对每笔债先钉死 HEAD 现状锚点，
+然后问「如果今天重写会怎么设计」，给出不少于三个候选方案（机制、对位、代价、与
+「公共腿不动、架构层进 trait」铁律的相容性），并对照五个参照系——minix3 C 源
+（ground truth）、Linux、Redox、Rust 社区惯例、操作系统理论——最后给 riscv64 投影与
+推荐序。**架构级裁决归用户**；凡触及对外契约的方案按仓规标 `[ARCH: ...]`（三处一致：
+文档、设计、代码），本章只做裁决前分析、不改任何代码。
+
+| 债 | 名目 | 来源登记处 | 裁决状态 | riscv64 相关性 |
+|---|---|---|---|---|
+| 债① | 三种 boot 进入形态并存、维护面 ×2 | NK4C §1.115 债① | 未裁 | 高（甲案落地将产生第四变体） |
+| 债② | x86_64 是否迁移方案 A | NK4C §1.115 债②（OQ） | 挂 OQ（R3 认同不预防性重构） | 中（触发条件与 riscv 联动） |
+| 债③ | 平台描述符与内存图的固件来源通道 | NK4B M3.4（D1>B>A）＋ M4.4 事实一 | aarch64 待 D1/B，riscv 已裁甲案 | 高（A.1/A.4 的上游） |
+| 债④ | 链接脚本双份常量表达（旧三份 link.ld 无构建引用） | NK4B M4.2 决策一（甲/乙/丙） | 未裁 | 中（riscv64.ld 在内） |
+| 债⑤ | 早期控制台三套发射实现（x86 错端口＋无上限轮询） | NK4B M3.3 评审登记＋第 1 步划界 | 未裁（留给 x86 修复批次） | 低（SBI 后端合规） |
+| 债⑥ | VM 自举内存预映缺件（C reservedqueue／MAP_PREALLOC） | NK4C §1.93–§1.95（r7b 只落 stopgap） | 修复方向已裁方案 A 精神、未实施 | 低（stopgap 共享，DM 覆盖真机已过） |
+| 债⑦ | init 收尾腿忙等（quiet_wait 应为停车） | NK4C §1.117 修复轮 CodeReview #2 | 登记待办 | 低（marker 路径不经 death 腿） |
+| 债⑧ | committed 探针与诊断设施治理（160 处/29 文件） | R3 §五.1＋各轮 task1-close 登记 | 既定 task1-close 大裁决 | 中（取证通道质量＝D5 的载体） |
+
+## D.1 债① 三种 boot 进入形态并存（[ARCH: boot-form-unification]）
+
+### 现状静态刻画
+
+同一份 `minix_kernel` crate 今天有三种进入形态，全部在 HEAD 可验：
+
+- **形态一（x86_64 内联）**：内核以 rlib 链进 boot-shim PE，进程内直调
+  `arch_boot`/`kmain`——`os/boot-shim/src/main.rs:85-86`
+  `#[cfg(not(target_arch = "aarch64"))] minix_kernel::arch_boot(...)`（riscv64 同落此臂，
+  尽管该 bin 的 UEFI 形态对 riscv 根本不产出，属「写着但不构成 riscv 生产路径」）。
+- **形态二（aarch64 跨镜像）**：boot-shim 只建表+开分页，写 `BootHandoff` 载荷
+  （`#[repr(C)]`＋单页尺寸编译期断言，`os/libs/minix-boot/src/handoff.rs:48/:74`），
+  绝对跳进独立链接的高半 `kernel.elf`；`os/kernel/src/lib.rs:258-259`
+  `#[cfg(all(not(feature="mock"), target_arch="aarch64"))] pub fn bootstrap_to_kernel_image`
+  与 `lib.rs:328-329` `arch_boot_resume_high_half` 成对出现——两镜像各自持有 `.bss`
+  副本，靠 `BootAlloc::resume`/`boot_alloc_next` 接续 bump 游标。
+- **形态三（riscv64 内联＋镜像契约位）**：`main.rs:82` 注释「x86_64 / riscv64 keep the
+  inlined arch_boot path」，但 riscv 的 UEFI bin 不存在；生产镜像只产出布局契约位
+  （M4.2），甲案落地后 riscv 将是 **kernel-image 自当引导体**的第四变体（不经 boot-shim）。
+
+隐性分叉的机制（不是风格问题）：两种形态的内核代码各自实例化全局态。§1.115 增量 2 的
+真机踩坑是判例——kernel-image 侧若调共享的 `build_bootstrap_root_and_enable`，会对**已
+激活**的根页执行 `new_from_page` 的清零（riscv 同款在 `os/arch/src/riscv64/paging.rs:455-459`
+`write_bytes(ptr, 0, 512)`），当场摧毁自身高半映射；正解是 additive 续跑专用入口
+（`arch_boot_resume_high_half`，内含 `set_current_root_phys` 不补则 panic 的第二坑）。
+这类坑在每个共享 boot helper 的签名上都是隐形的——它在「两个 `.bss` 世界」的假设差异里。
+
+### 如果今天重写
+
+唯一形态：固件适配层（每架构一个 boot-shim/引导体，只负责到「分页已开＋信息递齐」）→
+唯一内核 ELF 契约（`BootHandoff`）→ additive 续跑。每个 boot 特性在真机矩阵里占一格，
+不是两格。
+
+### 五参照系对照
+
+- **C ground truth**：minix3 单形态——boot monitor 装载唯一内核镜像，内核自带未分页
+  启动段（`kinfo.bootstrap_start/bootstrap_len`，C `pre_init.c:114-116`），装完后回收。
+  形态二象性是移植过程的产物，不是 C 的语义要求。
+- **Linux**：唯一产物链。x86_64 的 `head_64.S` 在内核**内部**建初始页表、跳
+  `__START_KERNEL_map` 高半（早期引导期低半身份映射→高半的切换是内核自己的启动代码，
+  不是外部交接协议）；arm64/riscv64 用 Image 头＋自重定位。引导器只递
+  `boot_params`/DTB——「形态」从不分叉。
+- **Redox**：最接近统一形态的现役系统——redox-bootloader（Rust，BIOS 与 UEFI 统一）
+  装载唯一 kernel ELF、建页表（含内核高半）、递内存信息；内核无第二形态。
+- **Rust 社区**：bootloader crate（统一 BIOS/UEFI 的内核加载器）、Hermit 的 loader
+  分工同形；契约类型用 `#[repr(C)]`＋编译期断言（本仓 handoff.rs 已合规）；cfg 卫生
+  的惯例是「同一 lib、每架构一个 bin、差异压进 bin」而不是「差异渗进 lib 的全局态」。
+- **OS 理论**：引导分级（固件→二级引导→内核入口）的交接协议应单向收敛——二级引导
+  负责到「分页开启＋信息规范」，内核入口契约最小化（两个寄存器＋一页载荷）。形态唯一性
+  的收益是可测试性：双形态意味着每个 boot 回归都要双份真机签名（NK4C 债① 原文
+  「维护面 ×2」）。
+
+### 方案对比
+
+| 方案 | 机制 | 对位 | 代价/风险 | 铁律相容 |
+|---|---|---|---|---|
+| 甲：统一到独立 ELF＋BootHandoff（三架构全迁） | x86 放弃内联，boot-shim 变纯建表器 | Redox；§1.115 aarch64 已走通的全套零件（handoff.rs、resume 入口、boot_alloc resume） | x86 生产链刚翻绿（R3 独立复证 marker×2），迁移重付真机验证；`[ARCH: boot-form-unification]` 三处一致 | 好（公共腿不动，boot-shim 归装机层） |
+| 乙：保持多形态，把分叉显式化 | 共享 boot helper 全部提为 crate 公共 API＋两形态各跑宿主等价测试；内联形态编译期断言不触碰 handoff 面 | 本仓 M3.3「行为等价不是不改的理由」教训的推广——把形态等价变成契约测试 | 改动小，但双份真机签名维护面照旧；断言只能守住已知的 `.bss` 坑类 | 最好 |
+| 丙：统一到内联 | aarch64 回退 | — | **否决**：TTBR0/TTBR1 双根下内联形态已被 §1.114 真机证死，回退是技术倒退 | — |
+| 丁：riscv 落甲案、x86/aarch64 维持，形态数记入账本 | riscv kernel-image 自当引导体（第四变体）；xtask/check-layout 表驱动钉住；等价性断言照乙案加 | NK4C prompt 阶段 3.1 已裁的甲案；债② OQ 继续挂 | 形态数暂时 +1；换来 riscv 不被 boot-shim 组装工作阻塞 | 好 |
+
+### riscv64 投影与推荐
+
+riscv 甲案落地时把「共享 boot helper 是否有第二个调用形态」作为验收检查项（乙案的
+等价性断言顺手落地）；x86 迁移与否完全由债② 的 OQ 触发条件决定（见 D.2）。推荐序：
+**丁（短期，已裁路线）→ 乙（随丁落地）→ 甲（仅当债② 触发）**。裁决归属：债② OQ
+（用户）；丁不需要新裁决。
+
+## D.2 债② x86_64 迁移方案 A（挂 OQ）
+
+### 现状与免疫情机理
+
+x86_64 今天免疫切根，靠三件事叠加：CR3 单根、`inherit_supervisor_half` 拷贝
+PML4[256..512]（`os/arch/src/x86_64/paging.rs:546`）、global 页强制继承——进程根永远
+带着内核高半。aarch64 之所以必须方案 A，是 TTBR0/TTBR1 双根＋内联形态从未进 TTBR1 的
+硬件现实（§1.114 钉死）；riscv 单 `satp`＋高半继承（`paging.rs:486-505`）天然免疫，
+**与 x86 同属「不需要方案 A」组**。NK4C 债② 与 R3 评审一致口径：不预防性重构。
+
+### 触发条件清单（把 OQ 变成可观测的判据）
+
+1. 内联形态再出 boot 期难以定位的缺陷（特别是 `.bss`/重定位类——形态一的 ADRP/PC 相对
+   语义与形态二不同的老坑家族）。
+2. 出现需要独立内核 ELF 的消费方：启动度量、reboot 复用启动段、双内核 A/B 装载。
+3. `BootHandoff` 契约需要第三个真实消费者验证架构中立性——**注意：riscv 甲案不是
+   BootHandoff 消费者**（kernel-image 自当引导体、不跨镜像交接），所以甲案落地不满足
+   这条；NK4C 债② 原文的「riscv64 同构接入先行」与 prompt 裁决的甲案形状有这个偏差，
+   本条把偏差点明。
+4. x86_64 装机面需要换固件形态（脱离 UEFI 盘形）。
+
+### 方案与推荐
+
+三案：维持 OQ（推荐，条件触发再议）／联动债①甲案全迁／半迁移（出 standalone 产物但不
+切默认——半成品形态，不建议：正好制造第四、第五变体）。对照：Linux x86_64 高半由内核
+自建无外部契约（形态内聚）；Redox 全架构统一（形态唯一）；理论判据＝形态数与回归矩阵
+的乘积。推荐：**维持 OQ**，触发条件入账本，R3 同口径。
+
+## D.3 债③ 平台描述符与内存图的固件来源通道
+
+### 现状静态刻画
+
+「release 生产链从哪拿平台信息（中断控制器/时钟/控制台/拓扑/内存图）」这一条边界，
+三架构三个答案：
+
+- x86/aarch64（UEFI）：配置表 ACPI/DTB——AAVMF 不插 DTB GUID、GICR 字段恒 0（M3.4
+  实测矩阵把 ACPI 侧判死），故 aarch64 判决为 D1（dumpdtb 出的 blob 当 ESP 文件喂给
+  现成 file loader）> B（显式描述符通道）> A（dev 回退仅点电）。
+- riscv（OpenSBI）：固件把 DTB 物理址递在 `a1`（M4.3 固件串口实证 `0x8fe00000`），但
+  生产入口零读取（本轮复核 `kernel-image/src/main.rs` grep 零命中）；boot-shim 的
+  OpenSBI 库 `build_memmap` 则硬编码 QEMU virt 单区 128 MiB
+  （`os/boot-shim/src/opensbi_helpers.rs:61-64/:397-403`）。
+- 通道本身已经存在且架构中立：`KernelInfo.platform_sources`＋`parse_by_kind`
+  （`os/libs/minix-platform/src/kind.rs:49`）——缺的从来不是抽象，是每架构「把固件
+  事实递进来」的最后一根线。
+
+### 如果今天重写与对照
+
+- C ground truth：boot monitor 铺好 `kinfo`（`pre_init.c`），内核不挑固件。
+- Linux：内核**自己**解析三源（E820/boot_params、DTB、ACPI），固件只递指针——
+  「解析在内核、递送在固件」的分工；本仓的 `parse_by_kind` 形状与此同构。
+- Redox：bootloader 统一产出规范化内存信息，内核只认一种。
+- OS 理论：引导信息契约的单调收敛（firmware facts → normalized descriptor）；
+  内存图是安全面（帧池位图容量、§1.111 教训），来源说谎＝启动期隐性 OOM（§1.101）。
+
+### 方案
+
+| 方案 | 机制 | 对位 | 代价/风险 | 相容 |
+|---|---|---|---|---|
+| 甲：每架构固件源归一（现状方向） | riscv 入口读 `a1`→DTB 源→memmap 一并解析（载体先例 test-rt-birth-riscv64:426,493-501 逐行可抄）；aarch64 走 D1；x86 维持配置表 | Linux 的「解析在内核」＋仓内既有 `PlatformDescSource` | 每架构各接各的线；memmap 来源与 DTB 解析耦合 | 好 |
+| 乙：B 案显式描述符通道 | 装机面写规范化描述符文件/字段，release 直接认 | Redox 的 bootloader 统一信息 | 动 KernelInfo 契约位（`[ARCH]`）；riscv 无 UEFI 盘概念，依赖 U-Boot fatload 装机形 | 中（契约变更需三处一致） |
+| 丙：硬编码＋dev 回退（现状 boot-shim 形状） | QEMU virt 常量＋release 拒 | 无（说谎面） | §1.101「侥幸内存映射掩盖真问题」的温床；仅可作点电 | 差（只配 dev） |
+
+### riscv64 投影与推荐
+
+riscv 走甲案（prompt 已裁），落地时把 `DEFAULT_RAM_SIZE` 硬编码一并换成 DTB memory
+节点真值源（对齐 §B D6 推荐）；aarch64 的 D1 是主线程既定批次。推荐序：**甲（riscv，
+已裁）→ D1（aarch64，已裁）→ 乙（仅当跨架构描述符需求出现）**。
+
+## D.4 债④ 链接脚本双份常量表达
+
+### 现状
+
+`os/kernel/src/arch/{x86_64,aarch64,riscv64}/link.ld` 三份**无任何构建引用**（本轮
+grep：仅 `os/arch/src/arch/direct_map.rs:72/:102/:134` 的文档注释与内核宿主测试的常量
+断言引用它们）；生产镜像用 `os/kernel-image/*.ld`。旧三份缺 `AT()` 段分离、缺
+`KEEP`、缺引导栈预留（NK4B M4.2 决策一逐条实测）——既不是死代码（文档锚点指着它）
+也不是活代码（不链接），是「第二份事实」。
+
+### 方案
+
+| 方案 | 机制 | 对位 | 代价 | 相容 |
+|---|---|---|---|---|
+| 甲：删旧三份＋文档改指 `kernel-image/*.ld` | 单一事实源 | Linux（每架构单份 vmlinux.lds）、Redox、C minix3（Makefile 单份） | 改三处文档锚点＋宿主测试注释 | 好 |
+| 乙：合并吸收 | 旧脚本反向吸收新契约 | — | 风险最大（旧脚本语义与 boot-shim 契约本不兼容） | 差 |
+| 丙：头部注记「仅文档参照」 | 双份保留＋明示 | — | 最省但留坑（NK4B 自评） | 好 |
+| 丁（本线程新增）：宿主测试改读生产脚本 | `test_linker_script_*_constraints` 把读的对象从旧脚本换成 `kernel-image/*.ld`——把 check-layout 的 L0「脚本↔预期表对账」思想拉进 Rust 宿主测试，旧三份随之自然失去事实源地位 | 本仓 M3.2 L0 断言先例 | 小（测试改读取路径）；单源化由测试强制而非注释约定 | 最好 |
+
+对照 Rust 社区惯例：常量单源＋构建期断言（`const _: () = assert!` 本仓已用于基址
+互检，direct_map.rs:155-160）正是丁案的精神。推荐：**丁（或甲）**，乙否决。裁决归属：
+低风险批次，可交主线程顺手处理。
+
+## D.5 债⑤ 早期控制台三套发射实现
+
+### 现状
+
+- boot-shim x86 发射器：`os/boot-shim/src/lib.rs:136` 轮询读端口 `0x3f9`——16550 的
+  LSR 在 `0x3fd`，`0x3f9` 是 IER，其 bit5 恒 0 → 每字节空转满上限 10 万次才放行，
+  节流形同虚设（M3.3 评审登记，非本批引入；QEMU 串口同步排空所以生产链仍绿）。
+- plat x86_64 早控制台：`os/plat/src/x86_64/early_console.rs:64` **无上限**
+  `while (inb(COM1_BASE + 5) & 0x20) == 0 {}`——真机串口异常时死循环（M3.3 第 1 步
+  划界明确不修、留给 x86 批次）。
+- PL011：已修为「共享纯函数 `tx_wait_then_send`＋有界等待」（`1a2a8eb61`），判断力
+  抽到宿主可测层——本债的正面先例。
+- riscv64：SBI console_putchar ecall（`plat/src/riscv64/early_console.rs:9-33`），
+  固件代管流控，本债无关；唯 `kernel-image/src/main.rs:52-57` 注释与实现不符（C31）。
+
+### 如果今天重写与对照
+
+一个 `EarlyConsole` trait（已存在）＋每架构后端＋**发射契约收敛在共享层**（有界等待、
+上限、CRLF 归一），boot-shim 不再自带端口汇编。对照：Linux 的 early_printk 每架构各自
+实现但共享 putchar 协议与 `console_init` 分层；Redox 早控制台单一驱动接口；C minix3
+`printf→putk→rs232` 单链。Rust 社区：`embedded-hal` 式「契约在 trait、实现在后端、
+时序约束写成可测纯函数」——`tx_wait_then_send` 已是这个形状。
+
+### 方案
+
+| 方案 | 机制 | 代价/风险 | 相容 |
+|---|---|---|---|
+| 甲：boot-shim 统一走 minix-plat 后端 | x86 后端在 plat 补 `0x3fd`＋有界；boot-shim `raw_serial` 变薄壳（aarch64 先例 `5ac5625f1` 的推广） | 改 x86 发射面需真机双跑批次；契约测试随 `tx_wait_then_send` 模式推广 | 好 |
+| 乙：仅修两处（原划界计划） | `0x3f9→0x3fd`＋无上限改有界，不动结构 | 最小；三套实现并存的维护面保留 | 最好 |
+| 丙：冻结＋契约测试 | 发射时序抽宿主可测纯函数＋字节冻结测试（M3.3 startup.nsh 先例） | 不修只锁；错端口照样错 | 好 |
+
+推荐：**乙先修（与 x86 修复批同车）→ 甲作为 S 类结构单元另立**。riscv 投影：零改动，
+仅注释对齐一行。
+
+## D.6 债⑥ VM 自举内存预映缺件（C reservedqueue ／ MAP_PREALLOC）
+
+### 现状静态刻画
+
+C 的完整形态有两层：`minix3/minix/servers/vm/alloc.c:57` `MAXRESERVEDPAGES=300` 的
+reservedqueue，`:64` `int mappedin` 字段＋`:127` `rq->mappedin = mapped`——VM 启动前
+把自身工作内存整片**预映**，因为用户态缺页服务者无法服务自身缺页（self-paging）；以及
+libexec/region 的 `MAP_PREALLOC` 当场取帧（`region.c:492-499`）。Rust 侧两层都缺：
+`os/servers/vm/src/mmap.rs:118-119` 对 PREALLOC 只记 `VrFlags::PREALLOC_MAP` 位；
+`impl MemType for AnonymousMemory`（`os/servers/vm/src/memtype.rs:253` 起）只有
+name/writable/ev_unreference/缺页处理（demand-fill），无 eager 物化。§1.92–§1.95 落的
+是两层 stopgap：`VM_STACK_SIZE=256KiB` runway（`os/arch/src/arch/boot.rs:405`，共享
+装载体、riscv 同享）＋`MAX_BIG_BLOCKS` 绑 `GLOBAL_POOL_PAGES`（§1.95）。VM 自身页表页
+与元数据的运行期增长走 `heap_arena`→`vm_self_mappages`（活的、非本债范围）。
+
+### 为什么是结构债
+
+stopgap 的边界是启发式（runway 尺寸、布局敏感）——§1.92 的实验矩阵证明 64/128/1024
+常量在「剃刀边缘布局」上翻转崩溃形态。C 的 reservedqueue 是原则解：预映语义不依赖
+布局运气。OS 理论上这是 self-paging deadlock 的标准三解之一（预留池／内核代服务／
+预映）——本仓实际是混合体：内核 bootstrap root＋`establish_boot_dm` 承担了部分
+「内核代服务」，reservedqueue 的「预留池」腿缺位。
+
+### 方案
+
+| 方案 | 机制 | 对位 | 代价/风险 | 相容 |
+|---|---|---|---|---|
+| 甲：补 eager 物化 | `AnonymousMemory` 对 PREALLOC 区在 mmap 时逐页 `alloc_pfn+map_page`（C `region.c` 对位） | C MAP_PREALLOC | 帧预算上升（§1.59 家族）；需判别性回归测 | 好 |
+| 乙：VM-backed 增长堆 | 堆供给走 VM 服务 | — | 更大重构 | 中 |
+| 丙：诚实关闭 stopgap | runway 语义写入设计文档为「已评估的临时形态」＋布局敏感警示 | — | 无代码；风险是后人误当终态 | 好 |
+| 丁：内核代服务扩展 | 把 `establish_boot_dm` 的 bootstrap 语义延伸到 VM 运行期 | 本仓已有半形 | 模糊内核/VM 职责边界 | 差 |
+
+对照：Linux 无此问题形态（内核自管 memblock reserve、无用户态缺页服务者）；Redox
+的内存服务（memory:）同样是用户态进程，其自举由内核初始映射承担——与本仓
+bootstrap root 同形。推荐：**丙立即（文档）＋甲列为 S 类单元（带判别测试才动）**。
+riscv 投影：stopgap 共享已覆盖，DM 覆盖真机通过（NK4B serial_clk1），不阻塞 riscv。
+
+## D.7 债⑦ init 收尾腿忙等（quiet_wait）
+
+### 现状
+
+`os/commands/sbin/init/src/driver.rs:383-388`：
+
+```rust
+fn quiet_wait(host: &mut dyn InitHost) -> ! {
+    loop {
+        let _ = host.waitpid(-1, 0);
+    }
+}
+```
+
+注释自称对位 C `init.c:850-856` 的 `sigfillset + for(;;) sigsuspend`——但 C 的形态是
+**睡眠等信号**（无子进程事件时零开销驻留），Rust 版每轮一次阻塞 `waitpid` 往返
+（阻塞在 PM）＝事件驱动的 IPC 轮询；信号投递腿不活时即纯忙转。§1.117 修复轮的
+CodeReview #2 已把它登记为待办结构债（「正解是 park 非退避，不草率改时序」）。
+
+### 方案
+
+| 方案 | 机制 | 对位 | 代价 | 相容 |
+|---|---|---|---|---|
+| 甲：对位 C 停车 | 阻塞 receive 等 SIGCHLD/sigsuspend 语义——依赖信号投递腿（aarch64 §1.116 BLOCKER-1 已证明 FullContext 存帧缺失会让信号永投不出） | C `sigsuspend` | 需 park 腿＋信号腿先行 | 好 |
+| 乙：WNOHANG＋定时退避 | 非阻塞轮询＋睡眠 | — | 不贴 C、仍忙转（只是降频） | 差 |
+| 丙：保持＋文档标注 | death 腿非 marker 关键路径，先记账 | — | 无 | 好 |
+
+对照：Linux 用户态 init 死亡态直接 panic 内核（无此腿）；OS 理论：收尾路径同样不该
+空转（耗电/抢占噪声）。推荐：**丙立即＋甲随 park 落地批次**。riscv 投影：同文件架构
+中立，marker 路径不经 death 腿——非阻塞项。
+
+## D.8 债⑧ committed 探针与诊断设施治理
+
+### 现状
+
+160 处引用/29 文件（R3 §五.1）；其中 committed 取证基础设施（schedctl/en/rcvi 等）是
+有意保留的诊断面，两支登记死探针（`vmpt2bf`/`sas-send`）等 task1-close 大裁决；
+§1.100 已示范过一次 635 行的清理批次。§1.119 的教训给这条债加了权重：串口证据在洪流
+下不可靠——**探针体系的可信度直接决定取证轮的成本**（D5 证据通道的载体就是它）。
+
+### 方案
+
+| 方案 | 机制 | 对位 | 代价 | 相容 |
+|---|---|---|---|---|
+| 甲：task1-close 大裁决（既定） | 逐支判定保留/删除 | 本仓既定节奏 | 一次性大评审 | 好 |
+| 乙：分层诊断制度 | 三层契约——永久 boot 路标（`boot_stage!`）/限次取证探针（cap＋门＋回滚纪律）/committed 诊断设施（正式 API 化）——配清单生成脚本进 pattern-gate 家族 | Linux `pr_debug`/dyndbg 的编译期分层；Rust `log`/`tracing` 门控 | 制度成本；存量要先归类 | 好 |
+| 丙：全清 | 删除一切非路标探针 | — | 丢掉活面包屑（§1.100 后 r10 面包屑论） | 差 |
+
+推荐：**乙的分层契约为甲的裁决提供准绳**（先定「什么可以 committed」，再逐支判）。
+riscv 投影：D5（非串口可靠记账）落地时，第 2 层的纪律直接复用。
+
+## D.9 汇总：修复批次建议与裁决归属
+
+| 批次 | 内容 | 前置 | 裁决 |
+|---|---|---|---|
+| 立即（文档级，可随任意批次搭车） | D.4 丁/甲（链接脚本单源）、D.5 注释对齐（C31）、D.6 丙（stopgap 语义文档化）、D.7 丙（quiet_wait 记账）、kernel-image 模块头交付边界更新（R3 7.3 项 3） | 无 | 主线程自主 |
+| riscv 甲案落地批（NK4C prompt 阶段 3.1） | D.3 甲（a1→DTB→memmap 真值源，含 D6 常量换真值）＋ D.1 乙案等价性断言＋ D.8 乙案第 2 层纪律复用 | 甲案开工 | 已裁（prompt 阶段 3） |
+| park/信号批 | D.7 甲（quiet_wait 停车化） | park ABI＋信号投递腿 | 架构中立，随批次 |
+| x86 修复批（既定划界） | D.5 乙（0x3f9→0x3fd＋无上限改有界）＋ D.5 甲作为后续 S 单元 | x86 批次开工 | 主线程自主 |
+| OQ 悬置 | D.1 甲／D.2（x86 形态统一）——按触发条件清单再议 | 触发条件出现 | 用户 |
+
+跨债的一句话总结：**这八笔债共享同一个病根——「引导与诊断的契约面在移植过程中长出了
+多份平行实现，而把平行实现压回单一契约的机制（表驱动、契约测试、分层制度）在仓内已有
+成功先例（xtask `uefi_slots`、check-layout L0、`tx_wait_then_send`）」**。因此每个
+方案的实现成本都不高，真正稀缺的是裁决节奏与真机验证批次——这正是把它们记成结构债
+而非随手修掉的原因。
 
 ## 附：扫描方法与边界声明
 
