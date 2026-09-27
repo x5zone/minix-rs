@@ -118,6 +118,7 @@ pub const RSDP: PlatformDescKind = PlatformDescKind::new(2);
 /// and using only that one for device enumeration. minix-rs follows the same
 /// model: `KernelInfo.platform_sources` is a list ordered by boot-shim's
 /// preference; the kernel takes the first source that parses successfully.
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct PlatformDescSource {
     kind: PlatformDescKind,

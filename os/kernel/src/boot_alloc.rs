@@ -53,6 +53,21 @@ impl BootAlloc {
         self.end.store(end, Ordering::Relaxed);
     }
 
+    /// Resume a bump allocator whose region was already partly consumed by a
+    /// previous stage (§1.115 方案 A cross-image handoff).
+    ///
+    /// The boot-shim builds the bootstrap page tables from this bump region and
+    /// then hands off to the high-half kernel image, which links its *own* copy
+    /// of this allocator (separate `.bss`). Without resuming the cursor, the
+    /// kernel image would re-hand-out pages the boot-shim's page tables (and the
+    /// handoff blob) already occupy. `next` is the boot-shim's post-build cursor;
+    /// the caller guarantees `base <= next <= end`.
+    pub fn resume(&self, base: u64, next: u64, end: u64) {
+        self.base.store(base, Ordering::Relaxed);
+        self.next.store(next, Ordering::Relaxed);
+        self.end.store(end, Ordering::Relaxed);
+    }
+
     /// The configured bump region `[base, end)`, or `None` if uninitialized.
     ///
     /// Boot-path access for DM coverage candidate registration: the bump
@@ -138,9 +153,26 @@ pub fn boot_alloc_region() -> Option<(u64, u64)> {
 /// Bytes handed out by the global boot allocator so far.
 ///
 /// Zero before [`init_boot_pt_alloc`]. Consumed by the VM boot handoff
-/// (`kernel_allocated_bytes_dynamic`).
+/// (`kernel_allocated_bytes_dynamic`) and by the §1.115 方案 A cross-image
+/// handoff (the boot-shim records the cursor so the kernel image can resume).
 pub fn boot_alloc_used_bytes() -> u64 {
     BOOT_ALLOC.used_bytes()
+}
+
+/// Current `next` cursor (raw physical address of the next free page) of the
+/// global boot allocator. Zero before initialization.
+pub fn boot_alloc_next() -> u64 {
+    let (base, _) = BOOT_ALLOC.region().unwrap_or((0, 0));
+    base + BOOT_ALLOC.used_bytes()
+}
+
+/// Resume the global boot allocator from a cross-image handoff (§1.115 方案 A).
+///
+/// Aarch64-only entry used by the high-half kernel image to continue the bump
+/// region the boot-shim left off in. Must be called before the image's first
+/// `map`/`map_huge`.
+pub fn resume_boot_pt_alloc(base: u64, next: u64, end: u64) {
+    BOOT_ALLOC.resume(base, next, end);
 }
 
 #[cfg(test)]

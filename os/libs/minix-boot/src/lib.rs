@@ -11,10 +11,12 @@ extern crate alloc;
 
 pub mod kernel_info;
 pub mod boot_shim;
+pub mod handoff;
 pub mod platform;
 
 pub use kernel_info::*;
 pub use boot_shim::*;
+pub use handoff::BootHandoff;
 pub use platform::{
     PlatformDescKind, PlatformDescSource, PlatformDesc, PlatformSource,
     InterruptControllerDesc, TimerDesc, ConsoleDesc,

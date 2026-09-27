@@ -9,6 +9,15 @@ use crate::platform::PlatformDescSource;
 
 // ── Data structures ──
 
+// `#[repr(C)]` pins the field ORDER (and each POD field's offset) so the
+// boot-shim's by-value write and the high-half kernel image's read (§1.115
+// 方案 A cross-image handoff) agree. Same-toolchain/profile builds are already
+// deterministic, but making it explicit removes the compiler's freedom to
+// reorder fields between the two separate `cargo` invocations. NOTE: the
+// `&'static [T]` fields' internal (ptr, len) order is still toolchain-defined;
+// the cross-image contract therefore relies on both images being produced by
+// one `xtask image` run (identical rustc + profile) — see `handoff` module doc.
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelInfo {
     /// Free physical memory regions (kernel + modules already excluded).
@@ -304,6 +313,7 @@ impl KernelInfo {
     pub fn platform_sources(&self) -> &'static [PlatformDescSource] { self.platform_sources }
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryRegion {
     pub base: PhysBytes,
@@ -332,6 +342,7 @@ pub struct MemoryRegion {
 /// C: `NR_BOOT_MODULES` — the user-module tail of `image[NR_BOOT_PROCS]`.
 pub const NR_BOOT_MODULES: usize = 12;
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct BootModule {
     pub name: &'static str,

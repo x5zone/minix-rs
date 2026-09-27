@@ -75,6 +75,14 @@ fn main() -> Status {
     //    arch_boot 若先于内核第一条串口输出就卡死，本行是最后一根
     //    可见路标（ConOut 已实证落在 QEMU 串口）。
     uefi::println!("boot-shim: handing control to kernel arch_boot");
+    // §1.115 方案 A (aarch64): do NOT enter the inlined `arch_boot`/kmain, which
+    // would run the kernel at the PE's low identity address and die on the first
+    // root switch (§1.114). Instead build the bootstrap tables, enable paging,
+    // and absolutely jump into the standalone high-half `kernel.elf` `_start`
+    // with a handoff blob. x86_64 / riscv64 keep the inlined arch_boot path.
+    #[cfg(target_arch = "aarch64")]
+    minix_kernel::bootstrap_to_kernel_image(&result.kernel_info, result.root_page);
+    #[cfg(not(target_arch = "aarch64"))]
     minix_kernel::arch_boot(&result.kernel_info, result.root_page);
 
     // This line should never be reached.

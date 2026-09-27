@@ -50,14 +50,15 @@
 //! ```
 //!
 //! On x86-64, `write_cr3(cr3)` reloads CR3 which flushes all non-global TLB
-//! entries. On aarch64, the equivalent is `msr TTBR0_EL1, root` + `tlbi alle1is`
-//! (TLB flush is not implicit on TTBR0 write). On riscv64, `csrw satp, value`
+//! entries. On aarch64, the equivalent is `msr TTBR0_EL1, root` + `tlbi
+//! vmalle1is` (TLB flush is not implicit on TTBR0 write; the stage-1-only form
+//! is required at EL1 — see `arm64::tlb`). On riscv64, `csrw satp, value`
 //! + `sfence.vma zero, zero`.
 //!
 //! # Three-architecture coverage
 //!
 //! - **x86_64**: `mov cr3, rax` (flush all / set root) / `invlpg [addr]` (single page)
-//! - **aarch64**: `tlbi alle1is` (flush all) / `msr TTBR0_EL1` + `tlbi alle1is` (set root) / `tlbi vaae1is, <va>` (single page)
+//! - **aarch64**: `tlbi vmalle1is` (flush all) / `msr TTBR0_EL1` + `tlbi vmalle1is` (set root) / `tlbi vaae1is, <va>` (single page)
 //! - **riscv64**: `sfence.vma zero, zero` (flush all) / `csrw satp` + `sfence.vma` (set root) / `sfence.vma <va>, zero` (single page)
 
 use minix_types::{PhysBytes, VirBytes};
@@ -78,7 +79,7 @@ use minix_types::{PhysBytes, VirBytes};
 pub trait TlbArch {
     /// Flush all non-global TLB entries on the current CPU.
     ///
-    /// C: `write_cr3(read_cr3())` (x86) / `tlbi alle1is` (aarch64) /
+    /// C: `write_cr3(read_cr3())` (x86) / `tlbi vmalle1is` (aarch64) /
     ///    `sfence.vma zero, zero` (riscv64)
     ///
     /// # Safety
@@ -109,7 +110,8 @@ pub trait TlbArch {
     ///
     /// On x86-64, writing CR3 implicitly flushes all non-global TLB entries.
     /// On aarch64, writing TTBR0_EL1 does *not* flush TLB; the implementation
-    /// follows with `tlbi alle1is` to invalidate stale entries. On riscv64,
+    /// follows with a stage-1 broadcast `tlbi vmalle1is` to invalidate stale
+    /// entries. On riscv64,
     /// writing satp also does not flush; the implementation follows with
     /// `sfence.vma zero, zero`.
     ///

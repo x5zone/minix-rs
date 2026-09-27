@@ -239,6 +239,134 @@ pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
 }
 
+/// §1.115 方案 A boot-shim-side bootstrap (aarch64 only): build the bootstrap
+/// page tables, enable paging, then *absolutely jump* into the standalone
+/// high-half `kernel.elf` image's `_start` and hand it a [`BootHandoff`] blob.
+///
+/// This is the load-bearing fix for §1.114: the aarch64 kernel previously ran
+/// inline in the boot-shim PE at a low, switchable identity address, so the
+/// first `switch_address_space` (which swaps TTBR0 + `tlbi alle1is`) destroyed
+/// the kernel's own instruction-fetch mapping. Here the boot-shim does *only*
+/// what must run in the firmware/PE context — collect info already done, build
+/// tables, enable — then transfers execution to `kern_virt_base`, which lives
+/// in the never-switched TTBR1 half. From that instruction the *entire* kernel
+/// boot runs at high virtual addresses and is immune to root switches.
+///
+/// The standalone kernel image performs the remaining boot phases (store the
+/// KernelInfo into its own `.bss`, establish the direct map, enter `kmain`) —
+/// it links its own copy of this crate, so nothing here shares `.bss` with it.
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub fn bootstrap_to_kernel_image(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+    use minix_arch::arm64::paging::AArch64Paging;
+    // Steps 0-3: validate + build identity/kernel-high/MMIO tables + enable.
+    // Same helper the inlined `arch_boot_impl` uses, so both build identical
+    // bootstrap roots. We deliberately stop before Step 4 (DM) and `kmain`.
+    let kern_huge = boot_validate_and_prepare::<AArch64Paging>(kernel_info);
+    build_bootstrap_root_and_enable::<AArch64Paging>(kernel_info, root_page, kern_huge);
+    // Paging is now live: TTBR0/TTBR1 = root_page, with identity (0..4GB) +
+    // kernel high half + MMIO window present in the single bootstrap root.
+    //
+    // Bump-allocate one page for the handoff blob; the cursor advances past it
+    // so the kernel image's resumed allocator never reuses it. Read the final
+    // bump state *after* the allocation.
+    let (blob_phys, _) = boot_alloc::boot_pt_alloc()
+        .expect("bootstrap_to_kernel_image: handoff blob page alloc failed");
+    let (bump_base, bump_end) = boot_alloc::boot_alloc_region()
+        .expect("bootstrap_to_kernel_image: bump region not registered");
+    let bump_next = boot_alloc::boot_alloc_next();
+    let handoff = minix_boot::BootHandoff {
+        kernel_info: *kernel_info,
+        root_page: root_page.0,
+        bump_base,
+        bump_next,
+        bump_end,
+    };
+    // SAFETY: `blob_phys` is a freshly bump-allocated, otherwise-unoccupied 4KiB
+    // page; under the live identity mapping VA==PA and it is writable, and it is
+    // below IDENTITY_MAP_END (the bump region is DM-admissible). `*kernel_info`
+    // holds `&'static` slices into the boot-services pool, which survives EBS
+    // for the boot window, so the pointer fields remain dereferenceable by the
+    // kernel image before the first root switch.
+    unsafe { core::ptr::write(blob_phys.0 as *mut minix_boot::BootHandoff, handoff) };
+    // Absolute jump into the high-half image `_start` (= `kern_virt_base`). The
+    // target VA has bit55 set, so the MMU resolves it through TTBR1 — the same
+    // bootstrap root that already maps `kern_virt_base -> kern_phys_base`, so
+    // the branch itself cannot fault. `x0` carries the blob pointer (AAPCS64
+    // first argument); the image `_start` reads it before touching the stack.
+    let entry = kernel_info.kern_virt_base().0;
+    // SAFETY: paging is enabled and `entry` maps the executable kernel-image
+    // `_start`; `blob_phys` is a valid `BootHandoff`; this never returns. The
+    // blob pointer is bound to a *fixed* `x0` (same style as `jump_to_kmain`)
+    // rather than written to `x0` inside the block: an implicit `mov x0, …`
+    // would be undeclared clobber, and LLVM is free to allocate `{entry}` to
+    // `x0` too, in which case the move would overwrite the branch target.
+    unsafe {
+        core::arch::asm!(
+            "isb",
+            "br {entry}",
+            in("x0") blob_phys.0,
+            entry = in(reg) entry,
+            options(noreturn)
+        );
+    }
+}
+
+/// §1.115 方案 A kernel-image-side high-half boot resume (aarch64 only).
+///
+/// The boot-shim already built the bootstrap page-table root and enabled
+/// paging; that root is *currently loaded* in TTBR0/TTBR1 and maps *this* code.
+/// This entry runs only the boot phases that are purely *additive* on the live
+/// root — validate/register allocators, land the KernelInfo into this image's
+/// `.bss`, establish the direct map, then enter `kmain`. It must NOT rebuild the
+/// tables: calling [`build_bootstrap_root_and_enable`] here would
+/// `new_from_page(root_page)` and zero-fill the *active* root (including the L0
+/// slot holding this very function and the MMIO window), so the next
+/// instruction fetch would fault. Because this image links in the TTBR1 high
+/// half, `jump_to_kmain`'s `{kmain}` resolves to the real high virtual address
+/// and execution proceeds immune to the first `switch_address_space` — the
+/// §1.114 root cause, fixed at its source.
+#[cfg(all(not(feature = "mock"), target_arch = "aarch64"))]
+pub fn arch_boot_resume_high_half(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
+    use crate::aarch64::higher_half::AArch64HigherHalf;
+    use crate::boot::HigherHalf;
+    use minix_arch::arm64::paging::AArch64Paging;
+    // Validate KernelInfo + (idempotently) register the resumed bump allocator
+    // and pt_alloc. This helper touches no page table — safe on a live root.
+    let _kern_huge = boot_validate_and_prepare::<AArch64Paging>(kernel_info);
+    // Record the already-active bootstrap root in *this image's* global. The
+    // inline boot records it inside `build_bootstrap_root_and_enable`, which we
+    // deliberately skip; without this, downstream `init_kerninfo` (and every
+    // other `current_root_phys()` consumer) sees `None` and panics, because the
+    // boot-shim set the value only in its own (separate) `.bss` copy.
+    set_current_root_phys(root_page);
+    // Land the KernelInfo slices into this image's `.bss` before anything reads
+    // them: the handoff copy's fat pointers still reference the boot-shim's
+    // boot-services pool, which we re-home here so they survive past the PE.
+    store_kernel_info(kernel_info);
+    let kinfo: &'static KernelInfo = crate::kernel_info()
+        .expect("arch_boot_resume_high_half: KERNEL_INFO store failed — one-shot");
+    register_panic_diagnostic();
+    // Step 4: add direct-map coverage to the *active* bootstrap root (additive;
+    // `establish_boot_dm` wraps `root_page` and only writes new PTEs).
+    // This entry sits above the `boot_stage!` definition, so it writes the
+    // early console directly (the whole fn is already `not(mock)`-gated).
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("kernel-image: step4 DM coverage (additive on active root)\n");
+    }
+    crate::dm_coverage::establish_boot_dm(kinfo, root_page);
+    {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("kernel-image: DM ok, jumping to kmain (high half)\n");
+    }
+    // SAFETY: paging is already live via the boot-shim's identical bootstrap
+    // root; kinfo is this image's high-half-resident `.bss` copy;
+    // `kern_stack_top` is the same high VA the inline boot used successfully,
+    // and `{kmain}` now links to the high half so execution never returns to a
+    // switchable identity window.
+    unsafe { AArch64HigherHalf::jump_to_kmain(kinfo, kinfo.kern_stack_top) }
+}
+
 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
 pub fn arch_boot(kernel_info: &KernelInfo, root_page: PhysBytes) -> ! {
     use minix_arch::riscv64::paging::Riscv64Paging;
@@ -395,6 +523,40 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     let kern_huge = boot_validate_and_prepare::<P>(kernel_info);
     boot_stage!("kernel: step0 validate ok\n");
 
+    // Steps 1-3: build the bootstrap root (identity + kernel high half + the
+    // aarch64 MMIO window), enable paging, and record the active root. Shared
+    // verbatim with the §1.115 方案 A boot-shim→kernel-image handoff so both
+    // paths build byte-identical tables.
+    build_bootstrap_root_and_enable::<P>(kernel_info, root_page, kern_huge);
+
+    // Step 4: Establish Direct Map coverage on the bootstrap root.
+    // 07-paging_init_design §6.1 (D8-②): kernel DM first (supervisor RW,
+    // full PA span), then VM DM (user RW, PA span clipped to the window).
+    // Candidates are the two-source union: resource-classified memmap
+    // ranges + explicit bootstrap PhysAccess ranges (self root + boot
+    // bump region). All PTE writes go through the identity write channel.
+    // Must run after `enable()` (writes VA=PA through the live root) and
+    // before any VM physical access through the windows.
+    crate::dm_coverage::establish_boot_dm(kernel_info, root_page);
+    boot_stage!("kernel: step4 DM coverage ok\n");
+
+    // Return kernel_info so the caller can decide what to do next.
+    kernel_info
+}
+
+/// Build the bootstrap page-table root and enable paging (Steps 1-3 of the
+/// generic boot). Extracted from [`arch_boot_impl`] so the §1.115 方案 A
+/// boot-shim→high-half-kernel-image handoff can run the exact same table
+/// construction without also running Step 4 (DM) or entering `kmain` — both of
+/// which the standalone kernel image performs itself, in the high half.
+///
+/// On return, paging is enabled with TTBR0/TTBR1 (x86: CR3) both pointing at
+/// `root_page`, and the active root is recorded in the kernel global.
+fn build_bootstrap_root_and_enable<P: HugePages>(
+    kernel_info: &KernelInfo,
+    root_page: PhysBytes,
+    kern_huge: u64,
+) {
     let mut paging = P::new_from_page(root_page);
 
     // Step 1: Identity mapping — VA = PA for the first 4GB of address space.
@@ -513,20 +675,6 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // TTBR1-resident alias so serial output survives `switch_address_space`.
     #[cfg(target_arch = "aarch64")]
     minix_plat::arm64::early_console::use_high_mmio_window();
-
-    // Step 4: Establish Direct Map coverage on the bootstrap root.
-    // 07-paging_init_design §6.1 (D8-②): kernel DM first (supervisor RW,
-    // full PA span), then VM DM (user RW, PA span clipped to the window).
-    // Candidates are the two-source union: resource-classified memmap
-    // ranges + explicit bootstrap PhysAccess ranges (self root + boot
-    // bump region). All PTE writes go through the identity write channel.
-    // Must run after `enable()` (writes VA=PA through the live root) and
-    // before any VM physical access through the windows.
-    crate::dm_coverage::establish_boot_dm(kernel_info, root_page);
-    boot_stage!("kernel: step4 DM coverage ok\n");
-
-    // Return kernel_info so the caller can decide what to do next.
-    kernel_info
 }
 
 /// Stores the boot `KernelInfo` into the process-global slot.

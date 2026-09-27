@@ -136,6 +136,7 @@ core::arch::global_asm!(
 ///
 /// 交接协议未接线（见模块文档"交付边界"），到达这里说明镜像已被
 /// 执行——这是 NK1 跳转链路联调时的第一观测点，横幅就是串口证据。
+#[cfg(not(target_arch = "aarch64"))]
 fn rust_image_main() -> ! {
     // 触达锚点：运行路径上引用一次，保证锚点静态与其指向的内核
     // 启动图在归档成员粒度上也被拉入链接（KEEP 是链接期第二道保险）。
@@ -146,6 +147,51 @@ fn rust_image_main() -> ! {
          wired yet — NK1/OQ-N6); halting\n",
     );
     halt()
+}
+
+/// §1.115 方案 A aarch64 镜像入口：boot-shim 建表 + enable 后绝对跳进本镜像
+/// 高半 `_start`，`x0`＝[`BootHandoff`] blob 物理指针（identity 可达）。_start
+/// 的 `bl` 不改动 `x0`，故它作为首参传入。
+///
+/// 本镜像链接在高半（`aarch64.ld` 的 `KERN_VIRT_BASE`），故此处调用
+/// `minix_kernel::arch_boot_resume_high_half` 时，其内部的 `sym kmain`、异常
+/// 向量、`.bss` 全局全部解析为真高半地址——执行流全程走永不切换的 TTBR1，
+/// 免疫 `switch_address_space`（这正是 §1.114 内联 PE 低半执行模型的反面）。
+///
+/// 交接契约：
+/// 1. 先把 boot-shim 留下的 bump 游标 `resume` 到本镜像自己的 `BOOT_ALLOC`
+///    副本，令后续 DM 建页避开 boot-shim 已占的页表页/blob 页。
+/// 2. `arch_boot_resume_high_half` 只做 *additive* 阶段（store KernelInfo →
+///    DM 覆盖 → `jump_to_kmain`），绝不重建 bootstrap 根——根已被 boot-shim
+///    建好且此刻正激活，`new_from_page` 清零会当场摧毁自身取指映射。
+#[cfg(target_arch = "aarch64")]
+fn rust_image_main(handoff: *const minix_boot::BootHandoff) -> ! {
+    let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
+    // 走 §1.114 的 TTBR1 高半 MMIO 别名（本镜像自己的 HIGH_MMIO_LIVE 全局），
+    // 证明跨镜像高半控制台可用；resume 路径内部会再次置位（幂等）。
+    early_console::use_high_mmio_window();
+    if handoff.is_null() {
+        early_console::write_str("### minix-rs kernel-image: handoff blob NULL — aborting\n");
+        return halt();
+    }
+    // SAFETY: boot-shim wrote a valid BootHandoff to a bump-allocated identity
+    // page and passed its physical address in x0; identity (0..4GB) is live in
+    // the shared bootstrap root's TTBR0 until the first root switch, which has
+    // not happened yet. The blob is Copy/POD.
+    let h = unsafe { &*handoff };
+    // Resume the boot bump allocator from the boot-shim's post-build cursor so
+    // the additive DM phase never reuses a page already in service. This must
+    // precede the resume call so its Step 0 sees the region already registered
+    // and skips the fallback `init` (which would reset the cursor).
+    minix_kernel::boot_alloc::resume_boot_pt_alloc(h.bump_base, h.bump_next, h.bump_end);
+    early_console::write_str(
+        "### minix-rs kernel-image: resuming high-half boot (additive §1.115 A)\n",
+    );
+    // Hand the boot KernelInfo (slices point into stable identity-mapped
+    // physical memory) + the already-live bootstrap root back to the kernel
+    // crate, which now runs the remaining phases entirely at high virtual
+    // addresses — without rebuilding (which would clobber) the active root.
+    minix_kernel::arch_boot_resume_high_half(&h.kernel_info, PhysBytes(h.root_page))
 }
 
 fn halt() -> ! {
@@ -172,10 +218,42 @@ fn halt() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    // 镜像期 panic 面走不进格式化 machinery（无堆依赖）：一行横幅
-    // 即证据，然后与入口同款驻留。
-    early_console::write_str("### minix-rs kernel image: PANIC — halting\n");
+fn panic(info: &PanicInfo) -> ! {
+    // 镜像期 panic 面走不进格式化 machinery（无堆依赖）：用定长栈缓冲
+    // 把 panic 消息 + 位置写进早期控制台再驻留（§1.115 调试需求：仅一行
+    // "PANIC" 无助于定位，必须带 payload）。
+    early_console::write_str("### minix-rs kernel image: PANIC — ");
+    struct StackWriter<'a> {
+        buf: &'a mut [u8],
+        pos: usize,
+    }
+    impl core::fmt::Write for StackWriter<'_> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            for &b in s.as_bytes() {
+                if self.pos >= self.buf.len() {
+                    break;
+                }
+                self.buf[self.pos] = b;
+                self.pos += 1;
+            }
+            Ok(())
+        }
+    }
+    let mut buf = [0u8; 200];
+    let mut w = StackWriter { buf: &mut buf, pos: 0 };
+    // `write_fmt` on `PanicInfo` renders the message; append the location.
+    let _ = core::fmt::write(&mut w, format_args!("{info}"));
+    let n = w.pos;
+    // The 200-byte cap can truncate mid-`char`, so validate rather than
+    // assume ASCII: a non-UTF-8 tail falls back to a shorter valid prefix
+    // (`utf8::floor`-style loop) instead of UB via `from_utf8_unchecked`.
+    let mut end = n;
+    while end > 0 && core::str::from_utf8(&buf[..end]).is_err() {
+        end -= 1;
+    }
+    let text = core::str::from_utf8(&buf[..end]).unwrap_or("");
+    early_console::write_str(text);
+    early_console::write_str(" — halting\n");
     halt()
 }
 
