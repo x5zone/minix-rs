@@ -1,0 +1,25 @@
+== pattern-gate --self-test（夹具根 /tmp/pattern-gate-selftest.8NFhp3）==
+  [case] P1-healthy             PASS（含「[P1] PASS」）
+  [case] P1-dup-header          PASS（含「[P1] FAIL」）
+  [case] P1-consec-repeat       PASS（含「[P1] FAIL」）
+  [case] P4-ok                  PASS（含「[P4] PASS」）
+  [case] P4-orphan              PASS（含「未声明 [[test]]」）
+  [case] P4-ghost               PASS（含「不存在的 [[test]]」）
+  [case] P5-ok                  PASS（含「[P5] PASS」）
+  [case] P5-drift               PASS（含「[P5] FAIL」）
+  [case] P6-ok                  PASS（含「[P6] PASS」）
+  [case] P6-check-degrade       PASS（含「[P6] FAIL」）
+  [case] P7-detect              PASS（含「|| echo "(build failed)"」）
+  [case] P9-ok                  PASS（含「[P9] PASS」）
+  [case] P9-missing-rule        PASS（含「[P9] FAIL」）
+  [case] P11-missing-file       PASS（含「锚点文件不存在: ghost.c」）
+  [case] P11-line-overflow      PASS（含「memory.c:99」）
+  [case] P11-ok                 PASS（含「[P11] PASS」）
+  [case] P13-phantom            PASS（含「全仓不存在: A_PHANTOM_SYMBOL」）
+  [case] P13-ok                 PASS（含「[P13] PASS」）
+  [case] P14-detect             PASS（含「clock.rs」）
+  [case] P14-scope              PASS（定义文件豁免）
+  [case] P15-ok                 PASS（含「[P15] PASS」）
+  [case] P15-missing            PASS（含「[P15] FAIL」）
+----
+self-test 全绿

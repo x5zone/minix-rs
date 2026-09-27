@@ -134,6 +134,7 @@ P2_TESTS=(
   test_boot_params_validate_total_pages_mismatch        # NK4-C §1.111 位图容量 vs 记账双口径
   test_entity_fork_failure_reap_loop_exits_on_zero      # NK4-C §1.117 `.is_ok()` 误译 waitpid>0
   test_runetcrc_fork_failure_reap_loop_exits_on_zero    # NK4-C §1.117 同族（runcom 腿）
+  classification_matches_the_expected_dfsc_table        # NK4-C §1.116 64 项 DFSC 期望表（空断言对分组写反照样过）
 )
 check_p2() {
   local root="$1" missing=0 t hits
