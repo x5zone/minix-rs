@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120 取证（新鲜真机·纠正续-7 停点低估）**：用 HEAD（含续-7）重建 aarch64 镜像跑 QEMU，判定续-7 记录的「INIT text vm-pf 洪流」＝**主要是正常 lazy 分页**（栈同 VA 重复系 13 进程各自栈重叠），50s/110s 日志均冻结 4295 行＝**真死锁非慢**。真实推进比续-7 记的更远：12 server+INIT 全 exec 成功、INIT **已达 `init-state Runcom`**（正跑 /etc/rc）；新断点＝**Runcom 后 rc 子进程 proc12（`/bin/sh`·`setaddr nr=0xc`）在 setaddr 之后的 exec/缺页/入进调度腿全员阻塞**。**前沿重定＝aarch64 fork 出的 rc 子进程（proc12）exec/首次调度腿（属 fork COW / 子进程 text demand-paging 家族·非 §1.116 INIT-text 覆盖）**。本轮纯取证、零码改、无新探针（读 committed 二进制内置 `nk4a:*` 路标），WORKLOG-only。详文见文末 §1.120。
+> **✅ 最新前沿＝§1.120 取证（新鲜真机·纠正续-7 停点低估）**：用 HEAD（含续-7）重建 aarch64 镜像跑 QEMU，判定续-7 记录的「INIT text vm-pf 洪流」＝**主要是正常 lazy 分页**（栈同 VA 重复系 13 进程各自栈重叠），50s/110s 日志均冻结 4295 行＝**真死锁非慢**。真实推进比续-7 记的更远：12 server+INIT 全 exec 成功、INIT **已达 `init-state Runcom`**（正跑 /etc/rc）；新断点＝**Runcom 后 rc 子进程 proc12（`/bin/sh`·`setaddr nr=0xc`）在 setaddr 之后的 exec/缺页/入进调度腿全员阻塞**。**前沿重定＝aarch64 fork 出的 rc 子进程（proc12）exec/首次调度腿（属 fork COW / 子进程 text demand-paging 家族·非 §1.116 INIT-text 覆盖）**。本轮纯取证、零码改、无新探针（读 committed 二进制内置 `nk4a:*` 路标），WORKLOG-only。**§1.120续-1 静态锐化**：全日志无 `exec endpt=0xc`（12 boot 进程全有、proc12 独缺）⇒ proc12 卡 VM 建址后、最终 SYS_EXEC 前；`setaddr flags=0x8008`＝RECEIVING｜NO_QUANTUM ⇒ **proc12 阻塞在 receive、等一个永不到达的子 exec 期 IPC 回复**（＝子未起来、非 INIT 误等；与 §1.119 同族但对象换为 fork 子）。详文见文末 §1.120 / §1.120续-1。
 >
 > **（历史·§1.119续-7·修复里程碑）（真实修复落地：PM sched_start 补校 SCHED 回复码→破 EDEADEPT/SingleUser 活锁·非布局扰动）**：承 §1.119续-6「EDEADEPT 系布局敏感非稳定根」推断→本轮回根因。**静态钉死 C 保真缺口**：PM `init_scheduling`→`sched_start`（init.rs 私有方法）用裸 `transport.sendrec` 发 SCHEDULING_START 后、旧码 `Ok(())=>Ok(Endpoint::SCHED)` **完全不校回复 `m_type`**（与 §1.119续-4/5 五轮追的「假登记 scheduler=SCHED」根吻合）；而 C `libsys/sched_start.c:87` 明写 `if ((rv = _taskcall(...))) return rv;`。**修复**：`Ok(())` 腿拆为 `msg.m_type != OK => Err(msg.m_type)`（透传拒绝码）/ `=> Ok(SCHED)`；返回类型 `Result<Endpoint,()>`→`<,i32>`；调用方 `Err(())`→`Err(rv)`（schedule.c:60-67 仅告警不 panic）；新增单测 `test_sched_start_propagates_denied_reply_code`。**CodeReview PASSED**（0 BLOCKER/0 SHOULD）采纳 CONSIDER——同形 `sched.rs::taskcall` 补 ELOCKED(208) 有界重试（boot 时序敏感语境下防御必要）。**三件套全绿**：mock pm **--lib 419/0**（+1 新测·另有 2 个 `run_once_integration` 预存失败经 stash 对比证实与本改无关、属主回复腿号符约定预存债）·init.rs rustfmt **0=0** 零新漂·**aarch64 `--release` `-smp 4` 双跑完全一致＝EDEADEPT(00d7)×0、SingleUser×0（活锁彻底破除）、`rv 004e`×1（SCHED 对 INIT START 回 ENOSYS·PM 现正确不假登记）、日志从 12.7万行降至 4295 行、panic=0**、新尾部 `vm-pf`×3419（fa≈0x221xxx 用户 text 页·转 §1.116 前沿）·x86 单核双跑 marker=2·panic=0·oom=0 无回归。**⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.119续-7＝五轮活的 EDEADEPT/SingleUser 活锁首次由真实 C 保真修复破除（非探针扰动）·新前沿＝INIT 用户 text 缺页洪流 vm-pf（§1.116）；riscv64 未验。** 详节见文末 §1.119续-7。
 >
@@ -5459,3 +5459,19 @@ match self.transport.sendrec(Endpoint::SCHED, &mut msg) {
 **本轮零代码改动**（对 committed HEAD 二进制跑真机、读其内置 `nk4a:*` 路标，未新增/回滚任何探针）；WORKLOG-only。三件套基线（HEAD `07c9e6649`）沿用。
 
 **⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.120 取证＝纠正续-7 停点低估、死锁重定至 rc 子进程 proc12 exec 腿（未达 marker）；riscv64 未验。** **历史链**：…→§1.119续-6 症状翻转·EDEADEPT 降级布局敏感(`1492d2791`)→§1.119续-7 PM sched_start 补校回复码、真实破除活锁(`07c9e6649`)→**§1.120 取证＝纠正续-7 低估·死锁重定 rc 子 proc12（本轮纯取证·WORKLOG-only）**。
+
+---
+
+## §1.120续-1（静态锐化：proc12 卡在 RECEIVING・子 exec 回复投递腿未达・非「INIT 误等」）
+
+承 §1.120。不重建镜像（同 `tmp/nk4a/a64-frontier.log` 现场）对已内置路标做**日志×码交叉静态锐化**：
+
+1. **铁证＝proc12 从未走完 exec**：`dispatch_exec`（syscall_process.rs:295-307）入口无条件打 `nk4a: exec endpt=…`。全日志 `exec endpt=` 仅出 0–11 共 11 个 boot 进程（nr 8 缺＝非 server 槽），**无 `exec endpt=0xc`**。而 minix exec 序＝①VFS 取镜像元信息 → ②VM `SETADDRSPACE`+段装载（`vmctl_set_addr_space`→打 `setaddr nr=…`）→ ③内核 `SYS_EXEC` 种 ip/stack+置 runnable（打 `exec endpt=…`）。proc12 **有 ②无 ③** ⇒ 卡在 VM 建址之后、最终 SYS_EXEC 之前。
+2. **flags 解码钉死阻塞态**（`RtsFlagsBits` 值见 proc.rs:129-144）：boot 进程 `setaddr flags=0x18080`＝BOOTINHIBIT(0x10000)｜NO_QUANTUM(0x8000)｜NO_PRIV(0x80)（boot 期正常瞬态）；**proc12 `flags=0x8008`＝RECEIVING(0x08)｜NO_QUANTUM(0x8000)** ⇒ proc12 **阻塞在 receive**：它已发出一个 exec 期 IPC 请求（典型＝向 VFS 的 FS_EXEC/取镜像请求），正在等回复，而回复永不到达。
+3. **定性翻案**：排除「INIT 误等一个已正常起来的子」——子（proc12）**自己**卡在 RECEIVING、exec 未完成、从未 runnable。与 §1.119 同族（IPC 回复投递腿）但**对象从 INIT 换为 fork 出的 proc12**；且尾部 `do-memory`/`memreq target=11` 均为 INIT 自身活动，**无 target=12** ⇒ proc12 的 exec 段拷贝/回复根本未被推进。
+
+**下轮取证（待装探针·task-close 全回滚）**：钉 proc12 “在等谁的回复”——在 fork+exec 客户端腿（`os/commands/*/exec` 或 libc `execve`→VFS 请求发出点）与 VFS FS_EXEC 处理腿装低扰探针（非缺页 handler），打 proc12 发出请求的 dst+m_type 与 VFS 是否收到/是否回复。候选根因层：aarch64 下回复投递到刚 fork+exec 子（proc12 endpoint）的 sendrec/DeliverMsg 腿失效（同 §1.113 switch-after-pop / §1.119续-7 回复腿家族）。先钉死“proc12 请求是否达 VFS + VFS 是否回”再定修。
+
+**本轮零代码改动**（纯日志×码交叉静态锐化·未新增/回滚探针·未重跑 QEMU）；WORKLOG-only。三件套基线（HEAD `07c9e6649`）沿用。
+
+**⇒ 终目标① x86_64 marker ✅；aarch64 §1.120续-1＝锐化至 proc12 卡 RECEIVING、子 exec 回复投递腿未达（非 INIT 误等）；riscv64 未验。** **历史链**：…→§1.119续-7 真实破除活锁(`07c9e6649`)→§1.120 纠正低估·死锁重定 rc 子 proc12(`07c87b3cc`)→**§1.120续-1 静态锐化＝proc12 RECEIVING、子 exec 回复腿（WORKLOG-only）**。
