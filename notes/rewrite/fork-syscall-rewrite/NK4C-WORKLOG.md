@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-14/续-15 取证轮（nk15 四点针彻底证伪续-14「子 scheduler=KERNEL 走跳过腿/INIT 停留 KERNEL」·实锤 PM fork 全链端到端健康：INIT.sched=SCHED→子继承 SCHED(0x04)→Fork 臂 sched_start_user 真 inherit 返 Ok→reply(OK) 发出·真挂权威重定位至内核侧子唤醒腿）**：承续-13/续-14（疑子走 sched_start_user 跳过腿），续-14 装 `nk14:` 针得 `ff 00` 误判「子=KERNEL」，续-15 装 `nk15:` 针直读 `init_scheduling`/`sched_start`/`copy_mproc`/Fork 臂四点，**推翻续-14 整条根因链**。**决定性数据（2 跑同基线 4041 行、marker=0）**：`nk15:x 04 00`＝sched_start 对 INIT 返 Ok、`nk15:x 0b 04`＝`procs[11].scheduler=Endpoint::SCHED` 写入成功（**INIT 确迁 SCHED**）；`nk15:p 04 00`＋`nk15:c 0c 04`/`0d 04`＝父(INIT)sched=SCHED(User 特权)→子 slot12/13 **继承 SCHED(0x04) 非 KERNEL**；`nk15:r 0c 00`/`0d 00`＝Fork 臂 `sched_start_user(child)` **走真 inherit 腿返 Ok**（非跳过腿）⇒ 子已注册进 SCHED、PM `reply(slot,OK)` 发出。⇒ **PM 用户态 fork 面无一切点**（续-11/13/15 三度证健康）。**编码陷阱教训**：`nk15_mark` 把 usize 槽号（十进制 11）当 hex nibble 打印成 `0b`，与 scheduler 值 `04` 混淆，续-14 因误读 `ff`/`0b` 自造 KERNEL 假象——探针标签须区分「索引(十进制)/值(十六进制)」。**真挂权威重定位＝内核侧子唤醒腿**：PM 已把 fork 返回 0 的 OK 回复投向子，但子从未跑到用户态 fork 返回→`/bin/sh` crt0→exec（exec endpt 恒 0x0–0xb、无 0xc）。丢失腿＝内核把 PM OK 回复投递给子并清 NO_QUANTUM/置子 runnable→子首次执行——属 §1.96/§1.113/§1.120续-2 同族（刚 fork 子 endpoint/槽的内核 IPC 投递/唤醒）；C 参照：子 NO_QUANTUM 由 `fork_from` 置、真正清除＝VM fork completion 回内核 `rts_unset(NO_QUANTUM)`（proc_table.rs:1751）。本轮纯取证、零码改、`nk14:`/`nk15:` 探针全 `git checkout` 回滚 tracked 净（grep 零残留）、三件套沿袭（PM mock 419/0、净态双跑 4041 同、rustfmt 持平）、WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-14/续-15。**⇒ 下一手（续-16）**＝内核侧子唤醒腿探针：①子 slot12 在 PM reply(OK) 之后的内核 rts_flags（RECEIVING/NO_QUANTUM/占位）、PM 的 OK 回复内核是否 Path A 投进子缓冲、子是否被置 runnable/上 CPU；②对照 C `do_fork`（内核）子 NO_QUANTUM 清除链 + `pick`/`balance` 何时使刚 fork 的子可跑（aarch64 SMP/配额）；③不得盲改已三度证健康的 PM fork 完成腿。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
+> **✅ 最新前沿＝§1.120续-16 取证轮（三重决定性突破：①发现并修「镜像陈旧」取证方法学 bug；②新鲜 nk16 针证伪续-16-audit「内核 dispatch_schedule/endpoint_to_nr 返 EINVAL 拒子」；③真挂根因精修至子继承 `RTS_RECEIVING` 阻塞腿·`is_runnable()=flags==0`）**：**①方法学 bug**——`os/target/image/aarch64/staging/EFI/minix/kernel.elf` 曾与 minix.img 同旧（05:56 前），`cargo run -p xtask --release -- image` 增量重编**未必刷新 elf**：`strings kernel.elf` 里已知必打的 `nk4a: kc` 字面量竟=0、`nk4a: schedctl` 亦=0（`grep -a` 原始字节均找不到，因串池压缩/折叠），一度误判「探针被编译掉/内核从不进 dispatch_schedule」。**纠偏铁律**：探针可靠性**只以 runtime 串口日志为权威**、辅以 `nm` 查静态符（`dispatch_schedule` 的 `ENT_N/SCHED_N/SRV_N` 三个 static 在 elf 里存在＝码已编进，串池 grep 找不到是假象）；判「未发生」前必确认 elf mtime 晚于最后一次源改且 `nk16` 等标记实际打印。**②证伪续-16-audit EINVAL 假设**——装内核三点针（`nk16: ent`@函数顶 EPERM 前、`nk16: sched-arr`@dispatcher 任何 call_nr==Schedule、`nk16: disp e=..->nr=`@endpoint_to_nr 两腿、`nk16: schedproc nr=.. run=`@sched_proc 后 is_runnable）重编净跑：**`nk16: ent`=6、`sched-arr`=6**（内核**确实收到** 6 条 SYS_SCHEDULE·caller=4=SCHED）、**`disp e=0x800c->nr=0xc`/`e=0x800d->nr=0xd`**（子 endpoint 经 `endpoint_to_nr` **正确解析**、非 EINVAL 早退）、**`schedproc nr=0xc ok run=0`/`nr=0xd ok run=0`**（`sched_proc` 返 `ok`＝已 `rts_unset(NO_QUANTUM)`，但 `is_runnable()` 仍 **false**）。**③真挂根因精修＝子阻塞在继承的 `RTS_RECEIVING`**：`is_runnable()＝p_rts_flags.load()==0`（proc.rs:1244·任一 rts 旗即不可跑）；子 fork 现场 `flags=0x8008`＝`NO_QUANTUM(0x8000)｜RECEIVING(0x08)`；`fork_from`（proc.rs:1594-1603）忠实复刻 C `do_fork.c:63 *rpc=*rpp` 把父(INIT 正同步 receive)的 **RECEIVING 一并拷给子**，仅 RTS_UNSET `SIGNALED｜SIG_PENDING｜P_STOP｜VMREQUEST`、不清 RECEIVING/SENDING（与 C 逐字一致·**非 fork_from 的 bug**）。⇒ **清 NO_QUANTUM 后子仍被继承 RECEIVING 阻塞、等一个永不到达的同步 receive 完成＝fork-return 投递腿未把子的继承接收结掉**。**PM/SCHED 侧本轮独立重现健康**：`nk16p: S0f02→O0000`（PM 对 INIT 发 SCHEDULING_START 得 OK·**注：续-3~15 部分「INIT 未登记/假登记」结论受①镜像陈旧污染，净态实测 INIT 登记成功**）、SCHED 入站 `nk16s: m0200`(START)/`m0300`(STOP)/`m0500`×2(两子 INHERIT)、`nk4a: tc`=2（子 inherit 经 taskcall）。⚠️ **时序非确定性实证**：run3/run4（未加 PM 针）`sched-arr`=0/`tc`=0/SCHED 仅收 `m0000`＝INIT sched_start 撞 race 早停；run5（加 `nk16p` diag 字节约定后）越过 INIT 停到子 RECEIVING 墙——与 §1.119续-6「加字节位移翻转症状」同族，boot 前沿受时序竞争支配。**⇒ 下一手（续-17）＝fork-return 投递腿**：子继承 RECEIVING 后，须由「PM `reply(child,0)`→内核 ipc 把该回复投进子的 receive 半并清 RECEIVING（结掉子 p_delivermsg 的同步接收）」唤醒；探针钉：①子 slot 0xc 的 `p_delivermsg`/`p_sender`/`getfrom`/RECEIVING 现场、②PM 向子 reply 的内核投递腿（Path A/ parked 判别·§1.96/§1.113/§1.119续-4 同族）、③对照 C 子 fork-return 如何被唤醒接收（`do_fork` 后 PM `_schedule`/reply 时序）。**不得盲改 `fork_from`（RECEIVING 继承是 C 保真正确）**、**不得盲改已证健康的 dispatch_schedule/sched_proc 腿**。本轮纯取证·`nk16:`(kernel)/`nk16s:`(sched)/`nk16p:`(pm) 探针全 `git checkout` 回滚 tracked 净（grep 零残留）·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-16。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
+>
+> **（历史·§1.120续-14/续-15 取证轮·其「PM fork 全链端到端健康」结论被续-16 独立重现坐实；其「真挂＝内核侧子唤醒腿＝清 NO_QUANTUM/置 runnable」刻画被续-16 精修为「NO_QUANTUM 已清、残余阻塞＝继承的 RECEIVING」）**（nk15 四点针彻底证伪续-14「子 scheduler=KERNEL 走跳过腿/INIT 停留 KERNEL」·实锤 PM fork 全链端到端健康：INIT.sched=SCHED→子继承 SCHED(0x04)→Fork 臂 sched_start_user 真 inherit 返 Ok→reply(OK) 发出·真挂权威重定位至内核侧子唤醒腿）**：承续-13/续-14（疑子走 sched_start_user 跳过腿），续-14 装 `nk14:` 针得 `ff 00` 误判「子=KERNEL」，续-15 装 `nk15:` 针直读 `init_scheduling`/`sched_start`/`copy_mproc`/Fork 臂四点，**推翻续-14 整条根因链**。**决定性数据（2 跑同基线 4041 行、marker=0）**：`nk15:x 04 00`＝sched_start 对 INIT 返 Ok、`nk15:x 0b 04`＝`procs[11].scheduler=Endpoint::SCHED` 写入成功（**INIT 确迁 SCHED**）；`nk15:p 04 00`＋`nk15:c 0c 04`/`0d 04`＝父(INIT)sched=SCHED(User 特权)→子 slot12/13 **继承 SCHED(0x04) 非 KERNEL**；`nk15:r 0c 00`/`0d 00`＝Fork 臂 `sched_start_user(child)` **走真 inherit 腿返 Ok**（非跳过腿）⇒ 子已注册进 SCHED、PM `reply(slot,OK)` 发出。⇒ **PM 用户态 fork 面无一切点**（续-11/13/15 三度证健康）。**编码陷阱教训**：`nk15_mark` 把 usize 槽号（十进制 11）当 hex nibble 打印成 `0b`，与 scheduler 值 `04` 混淆，续-14 因误读 `ff`/`0b` 自造 KERNEL 假象——探针标签须区分「索引(十进制)/值(十六进制)」。**真挂权威重定位＝内核侧子唤醒腿**：PM 已把 fork 返回 0 的 OK 回复投向子，但子从未跑到用户态 fork 返回→`/bin/sh` crt0→exec（exec endpt 恒 0x0–0xb、无 0xc）。丢失腿＝内核把 PM OK 回复投递给子并清 NO_QUANTUM/置子 runnable→子首次执行——属 §1.96/§1.113/§1.120续-2 同族（刚 fork 子 endpoint/槽的内核 IPC 投递/唤醒）；C 参照：子 NO_QUANTUM 由 `fork_from` 置、真正清除＝VM fork completion 回内核 `rts_unset(NO_QUANTUM)`（proc_table.rs:1751）。本轮纯取证、零码改、`nk14:`/`nk15:` 探针全 `git checkout` 回滚 tracked 净（grep 零残留）、三件套沿袭（PM mock 419/0、净态双跑 4041 同、rustfmt 持平）、WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-14/续-15。**⇒ 下一手（续-16）**＝内核侧子唤醒腿探针：①子 slot12 在 PM reply(OK) 之后的内核 rts_flags（RECEIVING/NO_QUANTUM/占位）、PM 的 OK 回复内核是否 Path A 投进子缓冲、子是否被置 runnable/上 CPU；②对照 C `do_fork`（内核）子 NO_QUANTUM 清除链 + `pick`/`balance` 何时使刚 fork 的子可跑（aarch64 SMP/配额）；③不得盲改已三度证健康的 PM fork 完成腿。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
 >
 > **（历史·§1.120续-13 摘要，详文见文末；✅ 其「VFS→PM 0x987 fork-reply 完成腿端到端健康闭合、证伪续-12」结论仍成立；⚠️ 其登记的「具体嫌疑＝子 sched_start_user 走跳过腿(scheduler==KERNEL/NONE)→从不 exec」已被续-15 证伪——实测子 scheduler=SCHED(0x04)、走真 inherit 腿返 Ok）**：承续-12 裁决，本轮装按 m_type 过滤的三点 `nk13:` 探针（VFS receive 0x907→`nk13:v`；VFS send_reply PM 腿→`nk13:s`；PM handle_vfs_reply 入口→`nk13:r`；PM Fork 臂 sched 结果→`nk13:F`）重编跑 run1–2，四点针全命中各一次（`v 00 00→s 87 00→r 87 00→F 0c 0b`）⇒ VFS→PM fork-reply 完成腿端到端闭合，续-12「从不闭合」被证伪（exec 臂≠fork 臂），续-11「fork 完成腿健康」独立重现（非 Heisenbug）。真挂重定位＝子 fork 完成后从不 exec（此结论续-15 仍持，但成因非跳过腿）。纯取证、探针全回滚、WORKLOG-only。
 >
@@ -5878,3 +5880,53 @@ aarch64 冻结面从「VFS↔INIT comm 层」重定向到「内核调度/IPC 唤
 - `nk14:`/`nk15:` 探针（init.rs、fork.rs、ipc/vfs.rs 多点＋helper）全部 `git checkout` 回滚，`grep -rn "nk14\|nk15" os/servers/pm/src/`＝零残留、tracked 净。
 - 三件套：本轮 tracked 净＝HEAD（零生产码改）⇒ kernel/arch/vm/vfs docker 基线 823/243/531/vfs 538 沿袭有效；`cargo test -p minix-pm --lib` **419/0** 不减；rustfmt 持平（无码改）；aarch64 `--release` 净态双跑 **4041 行逐字同**、marker=0、nk15 零残留（探针扰动＝0）。纯取证＝WORKLOG-only（免 CodeReview）。
 - **方法论教训**：探针输出须自带「索引(十进制)/值(十六进制)」语义标签——本轮因把 usize 槽号当 hex 打印，一度自造「INIT/子=KERNEL」假象、险些误修已健康的腿。自我证伪须直读**每一环的实际值**（copy_mproc 父/子 sched、Fork 臂 inherit 返回），不可由单点 `ff` 跨环节外推根因。靶心第七次修正（续-14 子=KERNEL 跳过腿→续-15 子=SCHED 真 inherit Ok、真挂＝内核侧子唤醒腿）。
+
+---
+
+## §1.120续-16：内核侧子唤醒腿探针轮——重大三重突破（镜像陈旧方法学 bug / 证伪 dispatch_schedule-EINVAL / 真挂精修至继承 RECEIVING）
+
+### 缘起
+
+承续-15 登记的「下一手＝内核侧子唤醒腿探针」。续-16-audit（上轮静态）收敛假设＝SCHED do_start(INHERIT) fan-out→`kernel.schedule`→内核 `dispatch_schedule`→**疑 `endpoint_to_nr(子 endpoint)` 返 EINVAL 早退**→子 NO_QUANTUM 从不 rts_unset→子从不 runnable。本轮以新鲜内核三点针 + SCHED 入站针 + PM INIT 针一次性裁决。
+
+### 突破①——「镜像陈旧」取证方法学 bug（关键·影响既往多轮可信度）
+
+净读 `tmp/nk4c15clean_run1.log` 见 `nk4a: schedctl`=0，转 `strings staging/EFI/minix/kernel.elf` 发现连**已知必打的 `nk4a: kc`（48 命中）字面量也=0**、`nk4a: exec` 亦=0，唯 `nk4a: pctl` 串在。一度误判「`#[cfg(not(feature="mock"))]` 探针被 release 编译掉」。**取证纠偏**：
+- `nm kernel.elf` 见 `dispatch_schedule` 的 `ENT_N`/`SCHED_N`/`SRV_N` 三个 `static` **存在**＝探针码块**已编进**，`strings`/`grep -a` 找不到字面量是 **rodata 串池压缩/折叠假象**（如 `nk4a: pctl req=…tf=0xdispatch_schedule: caller slot must exist` 粘连可见合并）。
+- `stat kernel.elf` mtime **曾停在 05:56**（早于源改），`xtask image` 增量重编**未必刷新 elf**；直到强制全量重编（06:10/06:13/06:1x）elf mtime 才推进、`nk16` 标记才实际打进出串口。
+- **铁律**：探针「命中/零命中」**只认 runtime 串口日志**；判「未发生」前先验 elf mtime 晚于末次源改＋`nm` 查 static 符在＋该标记在他处确能打。⚠️ **续-3~15 若干「零命中即证伪/定位」结论可能受未重编镜像污染，本轮净态数据为准。**
+
+### 突破②——新鲜 nk16 针证伪续-16-audit「dispatch_schedule/endpoint_to_nr 返 EINVAL」
+
+内核 `syscall.rs::dispatch_schedule` 装四点针（`nk16: ent`@函数顶·EPERM 前；`nk16: sched-arr`@`kernel_call_dispatch_inner` 任何 `call_nr==Schedule`；`nk16: disp e=..->nr=/->NO(EINVAL)`@`endpoint_to_nr` 两腿；`nk16: schedproc nr=.. ok/err run=..`@`sched_proc` 后 `is_runnable`），`sched/server.rs::run_once` 装 `nk16s: <m|n><mt2><src2>`（全入站流），`pm/init.rs::sched_start` 装 `nk16p: <S|L|E|O><mt4>`（INIT 注册腿）。**净跑 run5 决定性数据**：
+- `nk16: sched-arr`=6、`nk16: ent`=6（caller=4=SCHED）⇒ **内核确实收到 6 条 SYS_SCHEDULE**，续-16-audit「从不进 dispatch_schedule」/「EPERM 前早退」**证伪**。
+- `nk16: disp e=0x800c->nr=0xc`、`e=0x800d->nr=0xd` ⇒ 子 endpoint（代戳 0x8000｜槽）**经 `endpoint_to_nr` 正确解析为槽 0xc/0xd**，**EINVAL 假设证伪**。
+- `nk16: schedproc nr=0xc ok run=0`、`nr=0xd ok run=0`（INIT `nr=0xb` 偶 `err`×3 后 `ok`）⇒ `sched_proc` 对子返 **Ok**（Step9 `rts_unset(NO_QUANTUM)` 已执行），**但 `is_runnable()` 仍 false（run=0）**。
+
+### 突破③——真挂根因精修＝子阻塞在继承的 `RTS_RECEIVING`（`is_runnable()=flags==0`）
+
+- `RtsFlags::is_runnable`（proc.rs:1244）＝ `self.load()==0`——**任一 rts 旗置位即不可跑**。
+- 子 fork 现场（既有 `setaddr nr=0xc` 针）`flags=0x8008`＝`NO_QUANTUM(0x8000)｜RECEIVING(0x08)`。`sched_proc` 清 NO_QUANTUM 后余 `0x08 RECEIVING`≠0 ⇒ `is_runnable` 仍 false。
+- `fork_from`（proc.rs:1594-1603）**忠实复刻** C `do_fork.c:63 *rpc=*rpp`：拷贝父(INIT 当时正同步 receive)的 **RECEIVING** 一并入子，再 `RTS_SET(NO_QUANTUM)`、`RTS_UNSET(SIGNALED｜SIG_PENDING｜P_STOP｜VMREQUEST)`——**不清 RECEIVING/SENDING，与 C 逐字一致 ⇒ 非 `fork_from` 的 bug**。
+- ⇒ **真挂＝子继承的同步 receive 从未被结掉**：清 NO_QUANTUM 使子「有配额」但 `RECEIVING` 仍把它钉在阻塞接收态。唤醒须由「PM `reply(child,0)`→内核 ipc 把该回复投进子的 receive 半、填 `p_delivermsg` 并 `rts_unset(RECEIVING)`」完成——**该 fork-return 投递腿是断点**（§1.96/§1.113/§1.119续-4 同族）。
+
+### PM/SCHED 侧独立重现健康（净态·推翻镜像陈旧期的悲观结论）
+
+- `nk16p: S0f02`→`O0000`＝PM 对 INIT 发 SCHEDULING_START（0xF02）且收 OK 回复 ⇒ **INIT 登记成功**（续-4/5「INIT 未登记/假登记」在净态不复现＝曾受陈旧镜像污染）。
+- SCHED 入站 `nk16s: m0200`(START)／`m0300`(STOP)／`m0500`×2（两子 INHERIT）／`n00fd`×3（CLOCK 通知）；`nk4a: tc`=2（两子 inherit 经 `MinixSchedCtl::taskcall`）⇒ **SCHED 收全协议消息、对子 fan-out SYS_SCHEDULE**。
+
+### ⚠️ 时序非确定性实证（前沿受竞争支配）
+
+run3/run4（未加 PM `nk16p` 针）：`sched-arr`=0、`tc`=0、SCHED 仅收 `m0000`（m_type=0）＝INIT 的 sched_start 撞 boot race 早停。run5（在 PM `sched_start` 的 `msg.m_type=SCHEDULING_START` 与 `sendrec` 之间插入一枚 `nk16p_mark` diag 调用后）：越过 INIT、停到子 RECEIVING 墙。同一 HEAD 源码、仅差一枚 diag 写就翻转停点＝与 §1.119续-6「加字节位移翻转症状」同族，boot 前沿由时序竞争支配（非纯逻辑确定性）。探针扰动本身即变量，判读须多跑取众数。
+
+### 裁决（本轮零码改、下一手＝续-17）
+
+1. **fork-return 投递腿探针**（内核 ipc）：子 slot 0xc 现场 `p_rts_flags`(RECEIVING?)、`p_delivermsg`/`p_sender`/`getfrom`、PM `reply(child,0)` 的内核投递腿（Path A 直投 vs 落 caller_q park vs 蒸发 ENOTREADY）——判「回复根本没投进子」vs「投进但未清 RECEIVING」vs「清了但子再 park」。
+2. **对照 C**：`do_fork` 后子如何经 `_taskcall`/reply 结掉继承的同步接收（PM 侧 fork 完成时序）；`sys_send`/`mini_receive` 对 `RTS_RECEIVING` 目标的唤醒链。
+3. **不得盲改** `fork_from`（RECEIVING 继承＝C 保真正确）、**不得盲改** 已新鲜证健康的 `dispatch_schedule`/`endpoint_to_nr`/`sched_proc` 腿。**修复候选须落在「向子投递 reply 并清子 RECEIVING」的内核 IPC 唤醒腿**（布局敏感区：先排除式证伪、后建设式修复）。
+
+### 纪律
+
+- `nk16:`(kernel syscall.rs 三点)／`nk16s:`(sched server.rs)／`nk16p:`(pm init.rs) 探针 + `nk16p_mark` helper 全部 `git checkout` 回滚，`grep -rn "nk16" <三文件>`＝**0 残留**、tracked 净（`git status --short` 去 `??` 空）。
+- 本轮纯取证、零生产码改＝无码改 commit ⇒ 免 CodeReview；三件套沿袭（未跑生产码改门，因 tree=HEAD）。
+- **方法学沉淀**（供后续所有轮）：①镜像陈旧会伪造「探针零命中」——务必验 elf mtime＋`nm` static 符＋他处能打；②`strings`/`grep -a` 找不到字面量≠码未编进（rodata 串池折叠）；③PM `sched_start` 的 diag 写本身改 boot 时序、run3/4 vs run5 停点翻转＝探针扰动实证，判读须多跑取众数。靶心第八次修正（续-15 内核侧子唤醒腿/清 NO_QUANTUM→续-16 NO_QUANTUM 已清、真挂精修＝子继承 RECEIVING 未被 fork-return 结掉）。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
