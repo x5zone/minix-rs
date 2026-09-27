@@ -3019,8 +3019,8 @@ fn build_notify_message(
 /// Never blocks, never fails (the only error path is invalid dst
 /// endpoint, which maps to `Error(DeadSrcDst)`).
 ///
-/// - If dst is in RECEIVE matching caller → deliver directly to
-///   `p_delivermsg` + wake dst.
+/// - If dst is in RECEIVE matching caller AND is not mid-SENDREC (no
+///   `MF_REPLY_PEND`) → deliver directly to `p_delivermsg` + wake dst.
 /// - Else set bit in `priv(dst).s_notify_pending` for later delivery.
 
 /// NK4-A C-3 迭代10 取证（task1-close 裁决删除）：限次一次性串口标记。
@@ -3056,9 +3056,27 @@ pub fn mini_notify_core(
         None => return IpcOutcome::Error(IpcError::DeadSrcDst),
     };
 
-    // Direct delivery if dst is willing to receive from caller.
-    if IpcEngine::is_willing_to_receive(&procs[dst_idx], caller_endpoint) {
+    // Direct delivery if dst is willing to receive from caller AND is not
+    // mid-SENDREC. C: `mini_notify()` — proc.c:1142-1143:
+    //   if (WILLRECEIVE(caller, dst, 0, ..) && !(dst->p_misc_flags & MF_REPLY_PEND))
+    // The second clause is essential: a process inside SENDREC is *both*
+    // sending and parked in its own receive half (RECEIVING + getfrom), so
+    // `is_willing_to_receive` alone would let a stray notify be delivered
+    // straight into that parked receive and consumed as if it were the
+    // SENDREC *reply* — the caller then reads the notify's m_type instead
+    // of the awaited answer. NK4C-WORKLOG §1.119's sendrec fix sets
+    // MF_REPLY_PEND unconditionally before the send half, so this guard is
+    // the half that stops a notify from stealing that parked reply half
+    // (C proc.c:570 comment: "A flag is set so that notifications cannot
+    // interrupt SENDREC"). Without it, the notify falls through to the
+    // deferred s_notify_pending bitmap below.
+    if IpcEngine::is_willing_to_receive(&procs[dst_idx], caller_endpoint)
+        && !procs[dst_idx].p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND)
+    {
         let src = NotifySource::from_caller_nr(caller_nr);
+        // C proc.c:1148 — a process parked in RECEIVE must not already
+        // carry a pending delivery when we write the notify into it.
+        debug_assert!(!procs[dst_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
         build_notify_message(procs, priv_table, dst_idx, src);
         // C mini_notify（proc.c:1147 对位）：m_source = 调用者端点。
         // build_notify_message 置 Message::default() 后未补 m_source，
@@ -3888,6 +3906,56 @@ mod tests {
         let b_idx = nr_to_idx(ProcNr(-3)).unwrap();
         assert!(engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG));
         assert!(!engine.procs[b_idx].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
+    }
+
+    /// C fidelity (mini_notify, proc.c:1142-1143): when the destination is
+    /// mid-SENDREC (`MF_REPLY_PEND` set — it is parked in its own receive
+    /// half awaiting a *reply*, not a notify), a notification must NOT be
+    /// delivered straight into that parked receive (which the caller would
+    /// mis-read as the SENDREC answer). It must fall through to the deferred
+    /// `s_notify_pending` bitmap. Pre-fix, `is_willing_to_receive` alone let
+    /// the notify steal the sendrec reply half — a §1.119 EPERM candidate.
+    #[test]
+    fn test_notify_defers_when_target_reply_pend() {
+        let mut pt = crate::test_helpers::test_proc_table();
+        let mut priv_table = crate::test_helpers::test_priv_table();
+        // Bind priv slots through `assign_static` so the fixture is
+        // self-describing: `a_priv` = caller's slot, `b_priv` = dst's slot.
+        let a_priv = priv_table.assign_static(ProcNr(-4)).unwrap();
+        let b_priv = priv_table.assign_static(ProcNr(-3)).unwrap();
+        let b_endpoint = pt.get(ProcNr(-3)).unwrap().p_endpoint;
+        {
+            let procs = pt.procs_slice_mut();
+            let a = procs.get_mut(nr_to_idx(ProcNr(-4)).unwrap()).unwrap();
+            a.p_rts_flags = RtsFlags::new();
+            a.priv_id = Some(a_priv);
+            let b = procs.get_mut(nr_to_idx(ProcNr(-3)).unwrap()).unwrap();
+            // Parked in receive (would match WILLRECEIVE) BUT mid-SENDREC.
+            b.p_rts_flags = RtsFlags::with(RtsFlagsBits::RECEIVING);
+            b.p_getfrom_e = Endpoint::ANY;
+            b.p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
+            b.priv_id = Some(b_priv);
+        }
+        let procs = pt.procs_slice_mut();
+        let mut engine = IpcEngine::new(procs, &mut priv_table, &KernelUserCopy);
+        let result = engine.notify(ProcNr(-4), b_endpoint);
+        assert!(result.is_delivered(), "notify never blocks");
+        let b_idx = nr_to_idx(ProcNr(-3)).unwrap();
+        assert!(
+            !engine.procs[b_idx].p_misc_flags.is_set(MiscFlagsBits::DELIVERMSG),
+            "REPLY_PEND target must NOT get a direct notify delivery"
+        );
+        assert!(
+            engine.procs[b_idx].p_rts_flags.is_set(RtsFlagsBits::RECEIVING),
+            "sendrec reply half must stay parked (RECEIVING not stolen)"
+        );
+        // Deferred leg: bit lands in the DESTINATION's priv slot at the
+        // CALLER's priv_id position (C proc.c:1164-1165).
+        let dst_priv = engine.priv_table.get(b_priv).unwrap();
+        assert_ne!(
+            dst_priv.signals.s_notify_pending & (1u64 << a_priv), 0,
+            "notify deferred into dst priv slot at caller's bit position"
+        );
     }
 
     /// E1 slice 2: when a send completes a blocked receiver, the woken
