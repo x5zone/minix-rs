@@ -1601,6 +1601,16 @@ impl<'a> IpcEngine<'a> {
             self.procs[caller_idx]
                 .p_misc_flags
                 .clear(MiscFlagsBits::DELIVERMSG);
+            // C: receive_done（proc.c:1113-1115）对**所有**完成腿统一撤销
+            // MF_REPLY_PEND。§1.119 修复使 sendrec 在 REPLY_PEND 置位状态下
+            // 从 Phase 0 沉降腿完成 receive 半成为可达路径（回复在调用者真正
+            // park 前已经 Path-A 沉降进 p_delivermsg），此处不清会让
+            // REPLY_PEND 残留到该进程下次 plain receive（误跳 notify 扫描）。
+            if reply_pend {
+                self.procs[caller_idx]
+                    .p_misc_flags
+                    .clear(MiscFlagsBits::REPLY_PEND);
+            }
             return IpcOutcome::Delivered;
         }
 
@@ -1634,6 +1644,14 @@ impl<'a> IpcEngine<'a> {
             self.deliver_pending_to_user(caller_idx);
             crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
             crate::ipc::probe_mark("nk4a: rcv-p2\n");
+            // C: receive_done（proc.c:1113-1115）统一撤销 MF_REPLY_PEND；
+            // §1.119 修复后异步臂完成 sendrec 的 receive 半也可携带置位态，
+            // 与 Phase 3（L1761）同形清除，以免 REPLY_PEND 残留。
+            if reply_pend {
+                self.procs[caller_idx]
+                    .p_misc_flags
+                    .clear(MiscFlagsBits::REPLY_PEND);
+            }
             return IpcOutcome::Delivered;
         }
 
@@ -2249,6 +2267,25 @@ impl<'a> IpcEngine<'a> {
             None => return IpcOutcome::Error(IpcError::DeadSrcDst),
         };
 
+        // NK4-C §1.119 根因修复：C do_ipc 的 SENDREC 臂在 `mini_send` 之前
+        // 无条件 `caller_ptr->p_misc_flags |= MF_REPLY_PEND`（proc.c:569-571，
+        // 注释原文 “A flag is set so that notifications cannot interrupt
+        // SENDREC”）。此标志使 receive 半跳过 Phase-1 notify 扫描（proc.c:1003
+        // / 本文件 `receive` 的 `if !reply_pend`），只接 sendrec 目的地的真
+        // 回复。此前本函数只在 send 半 `Blocked` 臂、且晚于 send 置 REPLY_PEND，
+        // `Delivered` 臂（目的地恰已 parked receive、send 秒达）从不置位 →
+        // receive 半可被一个挂起 notify 窃取冒充回复 → taskcall 读到 notify
+        // 的 m_type≠0 → `sched_start_user` 误判 Err → INIT 收 EPERM。走
+        // Delivered 还是 Blocked 取决于目的地此刻是否 parked＝调度时序＝
+        // §1.119 观测的 build-layout 敏感翻转源（内置 p4a 探针直证 sched
+        // 回复到达时 PM 的 REPLY_PEND=n）。置位提前到 send 之前、两腿共用，
+        // 与 C 一致；顺带修正 send 半的 delivered_call 分类（L1389 据此应
+        // 判 SENDREC 而非误判 SEND）。回复经 Path-A 送达时由 L1413 清除，
+        // 与既有 Blocked 腿收敛到完全相同的 park+冲刷流程。
+        self.procs[caller_idx]
+            .p_misc_flags
+            .set(MiscFlagsBits::REPLY_PEND);
+
         let send_outcome = self.send(caller_nr, dst_endpoint, msg, SendFlags::NONE);
 
         match send_outcome {
@@ -2261,6 +2298,8 @@ impl<'a> IpcEngine<'a> {
                 // 实锤：PM sendrec(sched) 秒达后 receive(ANY) 抢走 init
                 // 的排队请求，sched 真 reply 落进 PM 主循环成野请求，
                 // ENOSYS ping-pong livelock）。
+                // REPLY_PEND 已在 send 前置位（见上），receive 半据此跳过
+                // notify 扫描、只等 sendrec 目的地的真回复。
                 self.receive(caller_nr, dst_endpoint)
             }
             IpcOutcome::Blocked => {
@@ -2274,10 +2313,19 @@ impl<'a> IpcEngine<'a> {
                 // Blocked，把 receive 半推迟到 drain 腿代停——而代停腿
                 // 无法存 p_delivermsg_vir（消息指针在发送者陷入帧里），
                 // 回包投递因此砸在从未存值的 0x0 上（真机 c35/c37）。
-                self.procs[caller_idx].p_misc_flags.set(MiscFlagsBits::REPLY_PEND);
+                // REPLY_PEND 已在 send 前置位（见上），此处不再重复置位。
                 self.receive(caller_nr, dst_endpoint)
             }
-            IpcOutcome::Error(e) => IpcOutcome::Error(e),
+            IpcOutcome::Error(e) => {
+                // send 半出错：调用方不再 receive，就地撤销 REPLY_PEND，以免
+                // 残留（否则该进程下次 receive 会误跳 notify 扫描）。C 的
+                // SEND 错误臂虽不清标志，但每次都重新置位（L571）；此处清除
+                // 以保持本修复前 sendrec 错误腿既有的无-REPLY_PEND 语义。
+                self.procs[caller_idx]
+                    .p_misc_flags
+                    .clear(MiscFlagsBits::REPLY_PEND);
+                IpcOutcome::Error(e)
+            }
         }
     }
 
@@ -4835,6 +4883,28 @@ mod tests {
         assert!(engine.procs[0].p_rts_flags.is_set(RtsFlagsBits::RECEIVING));
         assert_eq!(engine.procs[0].p_getfrom_e, Endpoint(11));
         assert_ne!(engine.procs[0].p_delivermsg.m_source, Endpoint(12));
+        // CONSIDER（CR）：钉死 send 半确实走了快路径（已秒达、不再
+        // SENDING），否则若 step 1 的 receive 失效使 send 退化为 Path B 阻
+        // 塞，新断言在 Blocked 腿上照样通过→§1.119 覆盖静默失效。
+        assert!(
+            !engine.procs[0]
+                .p_rts_flags
+                .is_set(RtsFlagsBits::SENDING),
+            "send 半必须已秒达（走 Path A Delivered 腿）"
+        );
+        // §1.119 回归：send 半秒达（Path A Delivered）也必须像 C
+        // proc.c:569-571 那样在 send 之前已无条件置 REPLY_PEND，使 receive
+        // 半跳过 Phase-1 notify 扫描、只等 sendrec 目的地（sched）的真回复。
+        // 修复前此腿从不置位 → 挂起 notify/杂散消息可冒充 sendrec 回复被
+        // 抢先消费 → sched 真回复落 PM 主循环成野请求 → taskcall 读到
+        // 错 m_type → sched_start_user 误判 Err → INIT EPERM 活锁。此断言
+        // 修复前必失败（Delivered 臂漏置），修复后通过。
+        assert!(
+            engine.procs[0]
+                .p_misc_flags
+                .is_set(MiscFlagsBits::REPLY_PEND),
+            "sendrec 的 send 半即使秒达也必须置 REPLY_PEND（C proc.c:571）"
+        );
         // 4. sched 回复 → Path A 命中 getfrom 完成 sendrec。
         let mut reply = Message::default();
         reply.m_type = 0x7c;
