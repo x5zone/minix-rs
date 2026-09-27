@@ -2027,15 +2027,24 @@ pub unsafe extern "C" fn aarch64_user_body(
     const ESR_EC_SHIFT: u64 = 26;
     const ESR_EC_MASK: u64 = 0x3F;
     const EC_SVC_AARCH64: u64 = 0x15;
+    // EC 0x20 = instruction abort from a lower EL; EC 0x24 = data abort
+    // from a lower EL — aarch64's #PF (§1.116): route them through the
+    // page-fault leg instead of dying on the diagnostic panic. The same-EL
+    // legs (0x21 / 0x25) are dispatched by the entry stub to
+    // `aarch64_kernel_body` on the SPSR mode, so they never reach here.
+    // (Still on the panic leg, C SIGSEGV/SIGILL parity — §1.116 gap: EC
+    // 0x22 PC-align at EL0, EC 0x00 UNDEF.)
+    const EC_INST_ABORT_LOWER_EL: u64 = 0x20;
+    const EC_DATA_ABORT_LOWER_EL: u64 = 0x24;
     let esr = aarch64_read_esr();
     let ec = (esr >> ESR_EC_SHIFT) & ESR_EC_MASK;
     if ec == EC_SVC_AARCH64 {
         let leg = frame.gpr[8] as u64; // x8 = call number register
         if leg == KERNEL_CALL_TRAP {
-            // The message leg always answers with a reply code (never
-            // parks), so return normally.
-            aarch64_kernel_call_leg(frame);
-            return minix_arch::arm64::trap_stub::PARK_NONE;
+            // The message leg answers with a reply code, or suspends the
+            // caller on RTS_VMREQUEST (VmSuspend → park, §1.116 — the
+            // aarch64 mirror of the x86 SYSCALL leg's suspend arm).
+            return aarch64_kernel_call_leg(frame);
         }
         // Raw IPC legs + MINIX_KERNINFO (x8 = 1..16): the EL1 mirror
         // of the x86 int-33 bridge (NK4-C §1.112). An unknown call
@@ -2043,7 +2052,288 @@ pub unsafe extern "C" fn aarch64_user_body(
         // park decision (§1.113) rides x0 back to `EL0BODY`.
         return aarch64_ipc_dispatch_body(frame);
     }
+    if matches!(ec, EC_INST_ABORT_LOWER_EL | EC_DATA_ABORT_LOWER_EL) {
+        return aarch64_pagefault_body(frame, esr, ec);
+    }
     aarch64_diag_panic(frame, "user sync exception");
+}
+
+/// How a lower-EL synchronous abort resolved through
+/// [`classify_abort_disposition`] should be acted on. Mirrors the
+/// x86 `ExceptionOutcome` arms that the vector-14/#PF dispatcher
+/// produces (exception.c:49-130 parity).
+#[cfg(any(target_arch = "aarch64", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AbortDisposition {
+    /// A resolvable fault (translation / access flag / permission) —
+    /// forward to VM as a PAGEFAULT, C: pagefault() exception.c:112-129.
+    Pagefault,
+    /// An unresolvable fault (address size, speculative unhandled,
+    /// implementation-defined) — deliver SIGSEGV, C: cause_sig
+    /// exception.c:276.
+    Segv,
+    /// Synchronous External Abort (DFSC 0b01xxxx, incl. SEA-on-translation
+    /// 0b010000): hardware error, no software recovery — kernel panic,
+    /// the x86 machine-check analogue.
+    Sea,
+    /// Reserved DFSC encoding or an access-flag fault on stage-2 — not a
+    /// fault this port produces; panic rather than mis-route.
+    Unknown,
+}
+
+/// DFSC (ISS[5:0]) → disposition. Architecture-neutral pure helper so it
+/// is host-testable from the mock lane (§1.116: aarch64 had no #PF leg at
+/// all — every EL0 abort fell into the diagnostic panic; the x86 #PF arm
+/// is the ground truth this maps onto).
+///
+/// Armv8 DDI0487 ESR_EL1 fault-status grouping, stage-1 (type in
+/// ISS[5:2], translation level in ISS[1:0]):
+/// - 0b0000xx address size (levels 0-3) → Segv — the VA does not fit the
+///   translation geometry; no mapping VM installs can fix it. A user
+///   access must not panic the kernel, hence SIGSEGV (never Unknown).
+/// - 0b0001xx translation, 0b0010xx access flag, 0b0011xx permission
+///   (levels 0-3) → Pagefault — all resolvable by VM's own page-table ops
+///   (this port installs AF=1 so access-flag is not expected, but it is
+///   still VM-resolvable; C maps pages read-only and promotes on the write
+///   permission fault).
+/// - 0b0100xx synchronous external abort (incl. SEA-on-translation) →
+///   Sea — hardware error, no software recovery.
+/// - alignment / TLB-conflict / IMPLEMENTATION-DEFINED / reserved
+///   encodings → Unknown.
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn classify_abort_disposition(esr: u64) -> AbortDisposition {
+    match esr & 0x3F {
+        0x00..=0x03 => AbortDisposition::Segv, // address size
+        0x04..=0x0F => AbortDisposition::Pagefault, // translation / access flag / permission
+        0x10..=0x13 => AbortDisposition::Sea, // synchronous external abort
+        _ => AbortDisposition::Unknown,
+    }
+}
+
+/// EC + WnR → the x86-style #PF error code that rides VPF_FLAGS (C:
+/// exception.c:122 stores the raw frame error code; VM's fault handlers
+/// test bit1 for write — pgtable.c's CoW / `PF_DISABLEP`-style decoding —
+/// so that lane must be truthful or a COW write is mis-served as a read).
+///
+/// Bit layout (x86 #PF): P=bit0 (constant 1 — every leg routed here is
+/// lower-EL/user), W=bit1, user-instruction-fetch=bit2, I/D=bit4.
+/// `is_instr` comes from the EC (0x20 instruction abort); the read/write
+/// direction is ESR ISS[6] = WnR, NOT the DFSC — DFSC bits[1:0] encode the
+/// translation level, so permission faults 0x0C..0x0F are level tags,
+/// orthogonal to write direction (instruction aborts are always a fetch).
+/// The §1.116 INIT fetch fault (EC=0x20) converts to `0x15`
+/// (P | I/D | user-IF, not write). The W lane is masked for instruction
+/// faults so a caller mis-setting WnR on a fetch cannot corrupt VM's CoW
+/// decoding (an instruction abort is architecturally always a read).
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) fn aarch64_pf_error_code(is_instr: bool, is_write: bool) -> u32 {
+    let mut err = 1u32; // P: user mode
+    if is_write && !is_instr {
+        err |= 2; // W lane: ISS[6] WnR — the only lane VM consumes for CoW
+    }
+    if is_instr {
+        err |= 4; // user-mode instruction fetch (bit2)
+        err |= 16; // I/D lane: instruction-side fault (bit4)
+    }
+    err
+}
+
+#[cfg(test)]
+mod abort_classification_tests {
+    use super::*;
+
+    #[test]
+    fn dfsc_groups_route_to_the_right_disposition() {
+        // translation levels 0-3 → Pagefault (INIT's §1.116 fault: 0x05 =
+        // 0b000101, type=translation, level=1)
+        for dfsc in [0x04u64, 0x05, 0x06, 0x07] {
+            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Pagefault, "{dfsc:#x}");
+        }
+        // access flag (VM-resolvable: set AF) → Pagefault
+        for dfsc in [0x08u64, 0x09, 0x0A, 0x0B] {
+            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Pagefault, "{dfsc:#x}");
+        }
+        // permission levels 0-3 → Pagefault (VM read-only → write promote)
+        for dfsc in [0x0Cu64, 0x0D, 0x0E, 0x0F] {
+            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Pagefault, "{dfsc:#x}");
+        }
+        // address size levels 0-3 → Segv (geometry, not resolvable; a user
+        // access must never panic the kernel)
+        for dfsc in [0x00u64, 0x01, 0x02, 0x03] {
+            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Segv, "{dfsc:#x}");
+        }
+        // synchronous external abort → Sea
+        for dfsc in [0x10u64, 0x11, 0x12, 0x13] {
+            assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Sea, "{dfsc:#x}");
+        }
+    }
+
+    #[test]
+    fn init_text_fetch_fault_converts_to_pf_read_code() {
+        // §1.116 real-machine signature: EC=0x20 (instruction abort),
+        // DFSC=0x05 (level-1 translation) → P | user-IF | I/D = 0x15,
+        // NOT a write (instruction fetch is always a read).
+        assert_eq!(aarch64_pf_error_code(true, false), 0x15);
+        // data-side read fault: P only
+        assert_eq!(aarch64_pf_error_code(false, false), 0x01);
+        // data-side WnR=1 write (the CoW-first-write lane): P | W
+        assert_eq!(aarch64_pf_error_code(false, true), 0x03);
+        // a write on the instruction side never happens (EC=0x20 is fetch)
+        assert_eq!(aarch64_pf_error_code(true, true), 0x15);
+    }
+
+    #[test]
+    fn classification_matches_the_expected_dfsc_table() {
+        // Explicit 64-encoding expectation table: a group written in the
+        // wrong order turns this test red on the host lane.
+        use AbortDisposition::*;
+        const EXPECT: [AbortDisposition; 0x40] = {
+            let mut t = [Unknown; 0x40];
+            let mut i = 0usize;
+            while i < 0x40 {
+                t[i] = match i as u64 {
+                    0x00..=0x03 => Segv,
+                    0x04..=0x0F => Pagefault,
+                    0x10..=0x13 => Sea,
+                    _ => Unknown,
+                };
+                i += 1;
+            }
+            t
+        };
+        for dfsc in 0u64..0x40 {
+            assert_eq!(
+                classify_abort_disposition(dfsc),
+                EXPECT[dfsc as usize],
+                "dfsc {dfsc:#04x}"
+            );
+        }
+    }
+}
+
+/// The aarch64 page-fault leg (§1.116): the EL0 instruction/data abort
+/// analogue of the x86 vector-14 `ForwardToVm` acting arm.
+///
+/// Saves the user register file (`FullContext`), records
+/// RTS_PAGEFAULT + p_fault_addr, and `mini_send`s the VM_PAGEFAULT
+/// message FROM_KERNEL — all through the shared
+/// [`forward_pagefault_to_vm`] (single source of truth for the C
+/// exception.c:112-129 tail). Ends in the §1.113 switch-after-pop:
+/// the faulting process is parked, so `PARK_RESCHEDULE` unwinds the
+/// EL0 frame and hands off to the resched thunk (the EL1h analogue of
+/// x86's `scheduler_loop` divergence from this body).
+///
+/// # Safety
+///
+/// `frame` is the live lower-EL sync frame on the EL1 entry stack and
+/// the scheduler has a current process (same contract as
+/// [`aarch64_ipc_dispatch_body`]).
+#[cfg(target_arch = "aarch64")]
+unsafe fn aarch64_pagefault_body(
+    frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
+    esr: u64,
+    ec: u64,
+) -> u64 {
+    use minix_arch::arm64::trap_stub::PARK_RESCHEDULE;
+    // EC 0x20 = instruction abort from a lower EL — the I/D lane rides on
+    // the EC (DFSC parity is a 4K/16K granule hint, not I/D). The same-EL
+    // leg (0x21) never reaches this body (dispatched to the kernel body).
+    let is_instr = ec == 0x20;
+    let dfsc = esr & 0x3F;
+    let disposition = classify_abort_disposition(esr);
+    let far = aarch64_read_far();
+    // ISS[6] = WnR carries the read/write direction (instruction aborts
+    // are always a fetch, so their ISS[6] is not a write indicator).
+    let is_write = !is_instr && ((esr >> 6) & 1) != 0;
+    let errcode = aarch64_pf_error_code(is_instr, is_write);
+
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "aarch64 abort trap before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+
+    match disposition {
+        AbortDisposition::Sea | AbortDisposition::Unknown => panic!(
+            "aarch64 {:?} at far {:#x} (DFSC {:#x}, elr {:#x}) — not a \
+             recoverable fault",
+            disposition, far, dfsc, frame.elr
+        ),
+        AbortDisposition::Segv => {
+            let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+            let table = unsafe { crate::proc_table_boot_unchecked() };
+            // Persist the fault-time register file + entry style BEFORE
+            // signalling (x86 Signal arm parity, trap_dispatch.rs:1049-
+            // 1058): the signal manager's later SYS_SIGSEND builds the
+            // handler frame on top of this context and rejects a `NoEntry`
+            // target, so the EL0 frame must be saved and FullContext
+            // recorded here (finish_and_restore consumes the style back to
+            // NoEntry on every return to user).
+            {
+                let proc = table
+                    .get_mut(cur_nr)
+                    .unwrap_or_else(|| panic!("aarch64 segv from invalid proc nr {cur_nr:?}"));
+                minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                proc.trap_style = TrapStyle::FullContext;
+            }
+            crate::syscall_signal::cause_signal(
+                cur_nr,
+                crate::syscall_signal::SIGSEGV,
+                table,
+                unsafe { crate::priv_table_boot_unchecked() },
+            );
+            if ipc_bkl {
+                crate::smp::bkl_unlock();
+            }
+            // `cause_signal` sets RTS_SIGNALED (rts_set dequeues the
+            // process), so it is no longer runnable — `eret`-ing back would
+            // resume a descheduled context and livelock the same fault on
+            // the single core. Park instead: the scheduler runs the signal
+            // manager, which resolves delivery (x86 twin ends in
+            // `scheduler_loop`).
+            PARK_RESCHEDULE
+        }
+        AbortDisposition::Pagefault => {
+            // VM's own fault cannot be forwarded to VM — C: "pagefault
+            // in VM" panic (exception.c:101-118).
+            if cur_nr == crate::proc::proc_nr::VM_PROC_NR {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                Console::write_str("pagefault for VM elr ");
+                Console::write_hex(frame.elr);
+                Console::write_str(" far ");
+                Console::write_hex(far);
+                Console::write_str("\n");
+                panic!("pagefault in VM");
+            }
+            // User code runs without the BKL (§1.113 resched-thunk
+            // convention: unlock before PARK_RESCHEDULE, the thunk
+            // re-acquires).
+            let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+            let table = unsafe { crate::proc_table_boot_unchecked() };
+            {
+                let proc = table
+                    .get_mut(cur_nr)
+                    .unwrap_or_else(|| panic!("aarch64 pagefault from invalid proc nr {cur_nr:?}"));
+                minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                proc.trap_style = TrapStyle::FullContext;
+            }
+            let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+            if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, far, errcode) {
+                // C: panic("WARNING: pagefault: mini_send returned %d")
+                panic!("pagefault: mini_send returned {e:?}");
+            }
+            if ipc_bkl {
+                crate::smp::bkl_unlock();
+            }
+            PARK_RESCHEDULE
+        }
+    }
 }
 
 /// The diverging park-and-reschedule thunk (NK4-C §1.113), registered with
@@ -2082,7 +2372,10 @@ fn aarch64_read_esr() -> u64 {
 ///
 /// Same invariants as `riscv64_kernel_call_leg`.
 #[cfg(target_arch = "aarch64")]
-unsafe fn aarch64_kernel_call_leg(frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame) {
+unsafe fn aarch64_kernel_call_leg(
+    frame: &mut minix_arch::arm64::trap_stub::AArch64TrapFrame,
+) -> u64 {
+    use minix_arch::arm64::trap_stub::{PARK_NONE, PARK_RESCHEDULE};
     let smp = unsafe { crate::smp_state_boot_unchecked() };
     let cpu = crate::current_cpu_id();
     let cur_nr = smp
@@ -2104,10 +2397,37 @@ unsafe fn aarch64_kernel_call_leg(frame: &mut minix_arch::arm64::trap_stub::AArc
         unsafe { crate::clock_state_boot_unchecked() },
         &crate::ipc::KernelUserCopy,
     );
-    frame.gpr[0] = match result.reply_code() {
-        Some(code) => code as i64 as u64,
-        None => panic!("aarch64 kernel call returned {result:?} with no reply code"),
-    };
+    match result.reply_wire() {
+        Some(wire) => {
+            frame.gpr[0] = wire as i64 as u64;
+            PARK_NONE
+        }
+        None => {
+            // VmSuspend (§1.116): the call parked the caller on
+            // RTS_VMREQUEST — enqueue/dequeue/notify VM were already done
+            // by kernel_call_finish (the single owner of that bookkeeping
+            // on this leg, x86 SYSCALL parity; re-chaining here would
+            // head-insert twice and self-link the memreq list). This arm
+            // only adds the leg-specific context save so the KCALL_RESUME
+            // redispatch can deliver the reply into the saved registers.
+            if !matches!(result, crate::syscall::KcallResult::VmSuspend) {
+                panic!("aarch64 kernel call returned {result:?} with no reply code");
+            }
+            {
+                let proc = table
+                    .get_mut(cur_nr)
+                    .expect("aarch64 kernel call suspend: caller slot must exist");
+                minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                proc.trap_style = TrapStyle::FullContext;
+                if let Some(ctx) = proc.p_vm_suspend.as_mut() {
+                    ctx.saved_m_user = Some(m_user.0);
+                }
+            }
+            // The caller is non-runnable; hand off through the §1.113
+            // switch-after-pop (the resched thunk re-acquires the BKL).
+            PARK_RESCHEDULE
+        }
+    }
 }
 
 /// The raw-IPC leg (SVC with x8 = 1..16): the EL1 mirror of
