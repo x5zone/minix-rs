@@ -1,4 +1,4 @@
-# NK4-C 续跑交接 prompt（2026-09-24 交接；接手者上下文 200k，务必按本文件的读法与节奏）
+# NK4-C 续跑交接 prompt（2026-09-27 交接；接手者上下文 200k，务必按本文件的读法与节奏）
 
 > 本文件是**接手者的唯一入口**。上一手 agent 已把状态固化在 git 与 `NK4C-WORKLOG.md`。
 > 你的上下文只有 200k —— **不要通读 1400 行的 WORKLOG**，按 §2 的读法读。
@@ -14,7 +14,7 @@
 2. 18-stage 命令面在 OS 上跑通（echo/ls/cat 为核心）；
 3. minix3 的 `tests/` 在机器上跑起来。
 
-**当前所处位置**：阶段 1.3 的 rc marker 闸门（x86_64 翻绿），即 **单元 B**。之后再按 §6 推进单元 C-K（aarch64/riscv 迁移 → 命令面 → W^X → ABI 清单 → 三架构 marker → 测试上机 → 收尾清账）。
+**当前所处位置**（2026-09-27）：**终目标① 进度 = x86_64 rc marker ✅（§1.119续-7 双跑验证）/ aarch64 在途（当前战场，详见 §3）/ riscv64 未启动真机**（接入验收清单已就绪：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A，riscv 轮开工前必读）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
 
 **这是长程任务**：你会连续修很多 bug、做很多轮真机复跑，**不要做一步就停下来汇报**。用户会在需要时手动让你收尾，届时才由上一手 agent 接手。你的职责是：**让工作始终可接手**（每次 commit + 写报告）。
 
@@ -62,49 +62,34 @@ sed -n '/^## 6/,/^## 7/p' notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT
 
 ---
 
-## 3. 当前精确 frontier（2026-09-24 交接点，commit `d6f176451`）
+## 3. 当前精确 frontier（2026-09-27 交接点，commit `b82afee4b`）
 
-### 3.1 已完成并真机验证的修复（单元 A 及 1.10–1.12 系列）
-
-boot 已从「449 轮缺页后硬 livelock」推进到「**12 服务全部出生 + PM↔VFS barrier 通过 + init 用户态跑通前两个 PM 调用**」。关键修复（都已在 git 里，勿重做）：
+### 3.1 已完成并真机验证的里程碑（近期，勿重做）
 
 | commit | 内容 |
 |--------|------|
-| `a470a8d9c`/`6be40748f` | Task C 根因：int33 陷阱腿恢复 C 门纪律 |
-| F11 `d9fc1f649` | VM 请求链双入链自环死锁 |
-| F12/F13 | minix-rt slab OOM；PM↔VFS 握手改阻塞 send |
-| F14/F15 | Phase 3 drain 同步拷贝；队列唤醒完成码按 FROM_KERNEL 门控 |
-| `b0f4ff54c` | **1.10z 三根因**：①drain 停车 `getfrom=目的地`（原 ANY 致伪 reply）；②RS `WirePrivUpdate.s_id` i32→u16（repr(C) 头部错位 4B 使 s_flags 恒 0 → 全服务 SYS_PROC 被剥 → sched setalarm EPERM panic）；③sendrec 快路径 receive 半 `ANY→目的地`（原致 ENOSYS ping-pong） |
-| `251c8144b` | 1.11d：drain 同步拷贝漏盖 `m_source`（C proc.c:1071-1075） |
-| `839ecbd4b` | 1.12a：engine 唤醒记录单槽 `Option` 被同 syscall 第二次唤醒覆盖 → 改 4 槽全量入队（F10d 家族新形态） |
-| `d6f176451` | 1.12d：SENDA 真读实现 + 探针链诊断闭合（**当前 frontier**） |
+| §1.85–§1.98 系列 | fork COW 写保护、exec text 缺页、premature-OOM 闭环、VM 栈 runway、DeliverMsg endpoint —— **x86_64 单核 rc marker ✅**（§1.119续-7 双跑 marker=2、panic=0） |
+| `07c9e6649` | **§1.119续-7 真修复**：PM `sched_start` 补校 SCHED 回复 `m_type`（对位 C `sched_start.c:87`）→ 破五轮 EDEADEPT/SingleUser 活锁；aarch64 boot 推进到 **12 server+INIT 全 exec 成功、INIT 达 Runcom 正跑 /etc/rc**；日志 12.7万行→4295 行 |
+| `07c87b3cc`→`b82afee4b` | §1.120 → 续-4 取证链（均为探针已全回滚的取证/静态轮）：aarch64 死锁逐轮锐化至下述停点 |
 
-### 3.2 当前停点（1.12d）：SENDA 表读回全零
+### 3.2 当前停点（§1.120续-4）：VFS 对 INIT 的 Stat 回裸 EIO、往返 7 轮后第 8 次停摆
 
-**现象**：`init` 的第一个 VFS 请求卡住；VFS 在 boot 期 `receive(RS)` 等 `RS_INIT`，而 RS 的 `RS_INIT` 经 `asynsend→senda` 全部丢失。
+真机现象：INIT（runcom 跑 /etc/rc）向 VFS(ep1) 发 `mt=0x115(277)` = **`VfsCallNum::Stat`**（call_table.rs:50）；VFS 回 **EIO(5)**；INIT 重发→再回 EIO，**7 轮全同后停摆**（第 8 次发出后 VFS 永不再回），日志冻结 ≈4295 行，rc marker 不出。
 
-**已闭合的诊断链**（探针全部在仓，`git grep 'nk4a: sa'` 可查）：
+已排除/已收敛（详文见 WORKLOG 文末 §1.120续-1…续-4）：
+- 续-3 内核探针已**排除 IPC 回复投递腿 bug**：VFS 确实回了、回对槽（di=0x10=INIT）、回的是 EIO；
+- 续-4 静态全枚举 Stat 腿 EIO 产出点四条腿：①入口臂 `syscalls.rs:1075/1098`（经 `send_lookup_for_slot` `main_loop.rs:1928/1934/1962`）；②lookup 回复透传——**不产 EIO**（ENOENT 会以 2 现形，真机是 5，FS 语义车道排除）；③相位 2 `main_loop.rs:6879/6888`；④**传输层折叠腿 `flush_pending_fs`（`main_loop.rs:4701-4729`）：`fs_sendrec` 的 `Err(e)` 被 `let _ = e` 吞掉原始码、统一折成裸 EIO 回用户**。
+- **腿④是唯一同时解释「7 次全同 EIO」+「第 8 次 rendezvous 挂起不返回」两特征的单一机制**；头号嫌疑 = vmnt 表登记的 `fs_e` endpoint 陈旧/错指；次选 = 腿①/③的 grant/vmnt 子点失败。
 
-| 探针 | 结论 |
-|------|------|
-| `sa-in` | senda **被调用**（`c=0x2 n=0x1`，RS，count=1） |
-| `sa-out` | 四条早退门（e1-idx/e2-priv/e3-nosys/e4-clr）**都没走** |
-| `sa-readfail` | 表读**没有失败**（`Err` 臂零输出） |
-| `saent` | 循环体**从未执行到** dst 解析点 |
-| `apend` | VFS 的 `s_asyn_pending` 位**从未被设置** |
+### 3.3 你的第一动作：腿④真机探针判别（再修）
 
-**推论（已闭合）**：`senda` 入口门全过、表读成功返回，但 `flags` 解出 **0 = `AMF_EMPTY`** → `continue` → 循环结束 → `done` 仍 true → 返回 `Delivered`，**一条消息都没投**。
-⇒ **`copy_via_root_pages` 读回了全零内容**（不是读失败，是读到了零）。
+在 `os/servers/vfs/src/main_loop.rs` 的 `flush_pending_fs` 装一次性 TEMP 探针（非缺页 handler、AtomicUsize 门控、输出≤16B、task-close 全回滚），打 `fs_e / vmnt / Err 原始码 e` 三点，按 §8.6 重建 aarch64 镜像跑真机：
+1. 若 7 轮全同码且第 8 轮无输出 → 再在 `fs_sendrec` 前后各一条钉死「已进入未返回」，并 dump vmnt 全表对照 boot→endpoint 实况映射（mfs 应＝ep10；映射表见 WORKLOG §1.120续-2 「boot→endpoint 映射」段）→ 定修 vmnt 注册腿；
+2. 若 e 原始码指 EDEADEPT/EBUSY 类 → 回 kernel ipc 侧查；
+3. 若腿④不命中 → 探针移到腿①/③三点。
+修后判据：aarch64 串口出 rc marker；修复轮必跑三件套（§4.1）+ CodeReview。
 
-**上一手已实现的部分（方向正确，真机已证实安全）**：
-- `KernelUserCopy::read_senda_entry`/`write_senda_result` 从**永久 stub**（恒 `PageFault`）改为真实现；
-- 关键设计：**必须走「发送者 root 翻译 → 物理地址 → Direct Map 窗口」**，绝不直接解引用用户 VA —— 因为 `deliver_async` 跑在**接收者的 receive 陷入**里，current CR3 是接收者的，同一 VA 会落到错误地址空间（这就是上一手首次实现时 GP fault vector 13 的根因，s17t 实锤；改走 DM 窗口后 s18d **零 GP fault**）；
-- 新辅助函数 `copy_via_root_pages<D>`（`os/kernel/src/ipc.rs`）：逐页 `CurrentPteWalk::walk(root, va)` → `pa` → `D::kernel_phys_to_virt(pa)` → `copy_nonoverlapping`；
-- ⚠️ **已知陷阱**：x86_64 的 `walk_translate` 返回的 `pa` **已经包含页内偏移**（`pte & ADDR_MASK | vaddr & 0xFFF`，见 `arch/src/x86_64/paging.rs:319-334`）——再叠一次 `page_off` 会错位（首版踩过，已修）；
-- `UserCopy` trait 的这两个方法已加 `root: minix_types::PhysBytes` 参数，全部实现点已同步；
-- `minix-sys` 的 `AsyncSlot` 已补 `#[repr(C)]`，配 `WireAsyncSlot` 镜像 + `offset_of!` 守卫。
-
-**你的第一个动作**（§5 的 B1）：定位「读回全零」。
+**侧线状态**：riscv 前置对账已就绪（`riscv-reviewlog.md`：§A 验收清单、§D 十三笔结构债已收敛、§E 用户预裁章——riscv 轮开工前必读且 E 章纪律不可违）。
 
 ---
 
@@ -180,31 +165,14 @@ boot 已从「449 轮缺页后硬 livelock」推进到「**12 服务全部出生
 > 每一步都设计成「200k 上下文能装下」的规模：一轮探针 + 一次修复 + 两次复跑。
 > **做完一步就 commit，然后立刻开始下一步**，不要停下来汇报。
 
-### 单元 B：rc marker 闸门（x86_64 翻绿）
+### 单元 B：rc marker 闸门 —— x86_64 半 ✅ 已完成（2026-09-27）
 
-- **B1｜定位「SENDA 表读回全零」**（诊断轮）
-  - 在 `copy_via_root_pages` 内加三联探针（≤16B）：`walk` 出的 `pa`、DM 窗口 VA、读回首 4 字节；
-  - 优先核对：①`self.procs[caller_idx].p_seg.phys_root` 是否等于活 root（对当前进程应与 `crate::current_root_phys()` 一致）；②DM 窗口是否真映射了该物理页（读回零是"映射到零页"还是"窗口偏移错"）；
-  - 产出：根因 + C 锚点。**commit（diag 前缀）**。
+- x86_64 单核两次独立真机复跑均出 `minix-rs rc: minimal boot script marker`（§1.119续-7 基线，HEAD `07c9e6649` 起未回归；每轮修公共内核/服务器代码后仍须双跑 x86 守 marker）。
+- 旧 B1（SENDA 全零）及 1.10–1.12 系列候选停点均已入土，勿重翻。
 
-- **B2｜修复并验证 RS_INIT 送达 VFS**
-  - 修 B1 的根因；
-  - 真机验证：VFS 侧应出现 `RS_INIT` 的接收（用现有 `vfm` 探针，`m_type=0x714`）；
-  - 验证三件套 + 两次复跑。**commit**。
+### 单元 B'（当前）：aarch64 rc marker
 
-- **B3…Bn｜逐停点推进（循环）**
-  - 每次卡住 → 按「定性 → 定位（C 锚点）→ 修 → 三件套验证 → 报告 → commit」走一遍；
-  - 已知的下一批候选停点（上一手登记，未必按序）：
-    - `1.11e`：`MinixSchedCtl::taskcall` 的 ELOCKED 重试读的是 **reply 语义**（`rv == 208`），而内核 deadlock 检查以 **syscall 错误**返回（走 `Err(_) => -EIO` 臂）——重试从未生效；
-    - `1.11a`：sched 的 `do_start` 里 `SYS_SCHEDCTL` 对 fork 子进程报 EPERM（`p_scheduler` 字段时序缺位，对照 C `sched_init_proc`）；
-    - `P1-ipc`：`clear_ipc_refs`（`syscall.rs`）裸 `p_rts_flags.clear(SENDING|RECEIVING)` 绕过 C `RTS_UNSET` 的入队半（runnable 却不入队）；
-    - `P1-trace`：`do_trace` 裸 set/clear 绕过 rts_set/rts_unset；
-    - `P2-diag`：`dispatch_diagctl` 内核栈→PA 走 `kern_phys_base + (va - kern_virt_base)` 的隐式假定。
-  - **每个停点一个 commit**。
-
-- **B-final｜rc marker 达成**
-  - 判据：**两次独立真机复跑**串口都出现 `minix-rs rc: minimal boot script marker`；
-  - 达成后更新 WORKLOG 顶部状态为「单元 B 完成」，**commit**，然后进入单元 C。
+- 入口 = §3.3（flush_pending_fs 探针判别 Stat-EIO 腿 → 修复 → 逐停点推进至 marker），节奏沿用旧 B3：每个停点一个 commit，卡住就「定性→定位（C 锚点）→修→三件套→报告→commit」。
 
 ### 单元 C：1.4 F10 errno 全仓对账（P0-wire 余项）
 
@@ -328,6 +296,17 @@ cd /home/xzhao/github/minix-rs/os && git grep -n 'nk4a:' -- '*.rs' | head -40   
 python3 -c "print(len(b'nk4a: xx '))"                                          # 核对字面量长度
 ```
 
+### 8.6 aarch64 镜像构建 + 真机复跑（当前战场主命令）
+
+```bash
+# 构建（必须 --release：debug 触发 dm_coverage.rs debug_assert）
+cd /home/xzhao/github/minix-rs/os && cargo run -q -p xtask -- image --arch aarch64 --release
+# 跑（xtask 内部按架构选 qemu 与 -smp；日志落 target/image/aarch64/serial.log）
+cargo run -q -p xtask -- qemu --arch aarch64
+# 判据：grep -n 'rc: minimal\|panic\|DLGRAPH\|vfs2init' os/target/image/aarch64/serial.log
+# 基线现场：日志冻结 ≈4295 行 = 死锁（非慢）；每轮跑两次、签名一致才算数
+```
+
 ---
 
 ## 9. 已知陷阱清单（上一手踩过的，别重复）
@@ -358,4 +337,4 @@ python3 -c "print(len(b'nk4a: xx '))"                                          #
 
 ---
 
-**开始吧。第一步 = §2 的开工仪式，然后 §5 的 B1。**
+**开始吧。第一步 = §2 的开工仪式，然后 §3.3 的腿④探针轮。**
