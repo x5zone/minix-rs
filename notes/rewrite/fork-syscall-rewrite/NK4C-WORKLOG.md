@@ -5092,6 +5092,8 @@ aarch64 尾态稳定为 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12 sys=y`（sysca
 - **债①【双 boot 形态并存的维护面风险】**：同一份 `minix_kernel` crate 现存**三种进入形态**——(a) x86_64 内联（kernel 以 rlib 链进 boot-shim PE、进程内 `arch_boot`/`kmain`）；(b) aarch64 跨镜像（standalone `kernel.elf` + `BootHandoff`，入口 `os/kernel/src/lib.rs::bootstrap_to_kernel_image`，`#[cfg(all(not(feature="mock"),target_arch="aarch64"))]`＝lib.rs:258-259）；(c) riscv64 内联 + 镜像仅契约位产出（装机属 M4.3）。`os/boot-shim/src/main.rs:82` 注释原话「x86_64 / riscv64 keep the inlined arch_boot path」。**后果**：每条 boot 腿改动（handoff 契约、bump 游标接续、高半映射）需在两种形态各自过真机签名，维护面 ×2；公共 boot 逻辑（`build_bootstrap_root_and_enable`，lib.rs:265 调用）虽已抽共享 helper，但两形态各自 `.bss` 副本陷阱（§1.115 增量 2 `set_current_root_phys` 教训）在 x86 腿不存在、属**隐性分叉**。登记为结构债，不判修。
 - **债②【x86_64 是否迁移方案 A 的待裁决议项（挂 OQ）】**：aarch64 走独立 ELF 是因 §1.114 真硬件差异（TTBR0/TTBR1 双根、内联形态从未进 TTBR1）；x86_64 今天免疫靠 CR3 单根 + `inherit_supervisor_half` 拷 PML4 高半 + global 页强制继承。目前**无 pain point 驱动 x86 迁移**，但长期双形态是显式代价。建议口径（侧线程观点，供用户或后续裁决）：**riscv64 同构接入先行**（前沿计划已含「随后同构推 riscv64」，届时 `BootHandoff` 获得第二消费者、验证契约架构中立性），**x86_64 迁移挂 OQ**、等消费方出现（度量启动 / reboot 复用 / 内联形态再暴露 bug）再议；**不建议为统一而预防性重构**。
 
+> **riscv 前置对账就绪 = `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账）。**系必要非充分条件，不替代真机判据；D1–D7 决策点待用户拍板后方可实施**。未来任何 riscv 轮的「前沿起点」段先查此清单对应阶段再开工——判「已就绪」的阶段可跳过探索直接真机对账，判「有缺口/需真机」的按清单索引进场。
+
 ---
 
 ## §1.117 aarch64 INIT↔PM IPC 活锁：新鲜取证把根因收敛到可交接边界（纯取证·探针已全回滚·工作树净·未修）
