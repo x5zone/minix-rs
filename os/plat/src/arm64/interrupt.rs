@@ -173,16 +173,37 @@ impl InterruptRouter for AArch64InterruptController {
         let gicv3 = desc.as_any()
             .downcast_ref::<Gicv3Desc>()
             .expect("AArch64InterruptController::new: expected Gicv3Desc");
+        // §1.114 review(SF1)：先判零再翻译——descriptor 缺 GICD/GICR base
+        // （物理 `0`，ACPI/UEFI 表解析失败后结构体零初始化的最常见故障形态）
+        // 时给精准诊断，避免被 `mmio_translate` 的越界 const-assert 抢先 panic
+        // 成泛化的「address outside the mapped MMIO window」。
+        assert!(
+            gicv3.gicd_base != 0,
+            "AArch64InterruptController::new: descriptor did not provide GICD base"
+        );
+        assert!(
+            gicv3.gicr_base != 0,
+            "AArch64InterruptController::new: descriptor did not provide GICR base"
+        );
+        // 路由到内核高半（TTBR1）MMIO 别名。descriptor 里的
+        // `gicd_base`/`gicr_base` 是物理地址；本控制器在 `enable()` 之后才
+        // 构造（bsp_finish_booting），高半窗口已装入 bootstrap 根的 TTBR1，
+        // 因而 mask/unmask/init 的 MMIO 访问跨切根持久。若仍存物理地址，
+        // 首次 `switch_address_space` + `tlbi alle1is` 后就会因 TTBR0 身份
+        // 映射被切走而同步异常。
         Self {
-            gicd_base: gicv3.gicd_base,
-            gicr_base: gicv3.gicr_base,
+            gicd_base: minix_platform::arch::aarch64::mmio_translate(gicv3.gicd_base as u64)
+                as usize,
+            gicr_base: minix_platform::arch::aarch64::mmio_translate(gicv3.gicr_base as u64)
+                as usize,
             nr_irqs: (gicv3.nr_irqs as usize).min(NR_IRQ_VECTORS),
         }
     }
 
     fn init(&mut self) {
-        assert!(self.gicd_base != 0, "AArch64InterruptController: gicd_base is zero (descriptor did not provide GICD base)");
-        assert!(self.gicr_base != 0, "AArch64InterruptController: gicr_base is zero (descriptor did not provide GICR base)");
+        // 零值/窗内合法性已在 `new()` 前置判定；此处仅 debug 层兜底。
+        debug_assert!(self.gicd_base != 0, "AArch64InterruptController: gicd_base is zero");
+        debug_assert!(self.gicr_base != 0, "AArch64InterruptController: gicr_base is zero");
         self.init_distributor();
         self.init_redistributor();
         self.init_cpu_interface();
@@ -262,8 +283,11 @@ mod tests {
             nr_irqs: 64,
         };
         let ic = AArch64InterruptController::new(&desc);
-        assert_eq!(ic.gicd_base, 0x0800_0000);
-        assert_eq!(ic.gicr_base, 0x080A_0000);
+        // §1.114：new() 将物理基址路由到高半（TTBR1）MMIO 别名，跨切根持久。
+        // 钉字面量常量（非 `mmio_translate` 自身表达式）：若 `MMIO_VA_BASE`
+        // 被误改到与内核镜像/DM 冲突的 L0 slot，本测试应能捕获。
+        assert_eq!(ic.gicd_base, 0xFFFF_C000_0000_0000_usize);
+        assert_eq!(ic.gicr_base, (0xFFFF_C000_0000_0000 + 0x000A_0000) as usize);
     }
 
     // 注：本文件原 3 个测试中 2 个是常量自指/平凡表达式，删除 (Pattern #38)：

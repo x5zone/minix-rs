@@ -61,8 +61,13 @@ impl TlbArch for AArch64TlbArch {
     unsafe fn set_active_root(phys_root: PhysBytes) {
         // C: arch_do_vmctl.c:31 — setcr3() ARM equivalent:
         //   msr TTBR0_EL1, phys_root
-        //   tlbi alle1is       // flush stale TLB entries
-        //   isb                // synchronize context
+        //   isb                // TTBR0 write must be context-synchronized
+        //                      // before any dependent op (ARM ARM D5.4.5
+        //                      // break-before-make: a bare TLBI right after
+        //                      // the register write races the update).
+        //   tlbi alle1is       // flush stale TLB entries for the old root
+        //   dsb ish            // ensure the broadcast invalidation completes
+        //   isb                // synchronize context for subsequent fetch
         //
         // ARM64 writes to TTBR0_EL1 do NOT implicitly flush the TLB
         // (ARM ARM D5.4.5). We must explicitly invalidate all EL1 TLB
@@ -72,11 +77,13 @@ impl TlbArch for AArch64TlbArch {
         //
         // SAFETY: Caller guarantees phys_root is a valid 4KB-aligned
         // L0 translation table physical address and paging is enabled.
-        // The `isb` after `tlbi` ensures the invalidation completes
-        // before any subsequent memory access uses the new root.
+        // The `isb`/`dsb`/`isb` sequence guarantees the invalidation
+        // completes before any subsequent memory access uses the new root.
         unsafe {
             asm!("msr TTBR0_EL1, {}", in(reg) phys_root.0, options(preserves_flags));
+            asm!("isb", options(preserves_flags));
             asm!("tlbi alle1is", options(preserves_flags));
+            asm!("dsb ish", options(preserves_flags));
             asm!("isb", options(preserves_flags));
         }
     }

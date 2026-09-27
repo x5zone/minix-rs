@@ -10,6 +10,49 @@ use minix_boot::{
     PlatformDesc, PlatformSource, TimerDesc,
 };
 
+// ── High-half device MMIO window (§1.114: cross-root-persistent MMIO) ──────
+//
+// aarch64 has no port I/O: the PL011 serial console and the GICv3
+// distributor/redistributor are MMIO-only. During boot those devices are
+// reached through the identity mapping (`VA == PA`, low half). That identity
+// mapping lives in the TTBR0 half of the bootstrap page table, which
+// `switch_address_space` replaces with a per-process root — and the switch
+// issues `tlbi alle1is`, flushing the cached identity entry. Any kernel MMIO
+// access through the low-half identity VA after the first switch therefore
+// faults (NK4-C §1.114: the boot dies on the very first `set_active_root`).
+//
+// Fix: map the device MMIO range once into the kernel high half (TTBR1)
+// of the bootstrap root. TTBR1 is pinned to the bootstrap root and never
+// switched per-process, so a high-half alias of the window stays reachable
+// for the entire kernel lifetime. The constants below define that window;
+// every runtime device base must be routed through [`mmio_translate`].
+
+/// Start of the physical MMIO range the aarch64 kernel touches at runtime:
+/// GICD (`0x0800_0000`) through the PL011 UART (`0x0900_0000`) on QEMU virt.
+pub const MMIO_PA_BASE: u64 = 0x0800_0000;
+/// Length of the MMIO window (32 MiB — covers GICD, every GICR redistributor
+/// frame for the supported CPUs, and the PL011 UART with headroom).
+pub const MMIO_WINDOW_LEN: u64 = 0x0200_0000;
+/// Virtual base the window is mapped to in the kernel (TTBR1) half. Placed
+/// far above the kernel image (`0xFFFF_8000_0000_0000` = L0 slot 256) and the
+/// kernel direct map (`0xFFFF_8080_0000_0000` = L0 slot 257) so it never
+/// shares an L0 slot with either; still inside the TTBR1 range (≥ `0xFFFF_0000_0000_0000`).
+pub const MMIO_VA_BASE: u64 = 0xFFFF_C000_0000_0000;
+
+/// Translate a physical MMIO address inside the window to its kernel
+/// high-half (TTBR1) virtual alias.
+///
+/// Panics (const-eval / runtime) if `pa` falls outside the mapped window —
+/// that would be a device the kernel touches at runtime without a
+/// cross-root mapping, i.e. the §1.114 bug class reintroduced.
+pub const fn mmio_translate(pa: u64) -> u64 {
+    assert!(
+        pa >= MMIO_PA_BASE && pa - MMIO_PA_BASE < MMIO_WINDOW_LEN,
+        "mmio_translate: address outside the mapped MMIO window"
+    );
+    MMIO_VA_BASE + (pa - MMIO_PA_BASE)
+}
+
 // ── Sub-descriptor structs (brand names visible only in this module) ──
 
 /// ARM64 GICv3 descriptor (distributor + redistributor).

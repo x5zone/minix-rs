@@ -67,17 +67,21 @@ const PSCI_CPU_ON_64: u64 = 0xC400_0003;
 
 /// GIC distributor base address, populated during `arch_init`.
 ///
-/// This is the only mutable global in the ARM64 SMP backend: the physical
-/// base of the GIC distributor MMIO region. Unlike the C port's function
-/// pointers, this holds a *value* (a base address); all behavior is encoded
-/// inline in the trait methods, so the IPI hot path remains a direct MMIO
-/// write with no indirect call. See `16-smp.md` §3 D7.
+/// This is the only mutable global in the ARM64 SMP backend: the GIC
+/// distributor MMIO base **as reached at runtime**. §1.114: that is not the
+/// raw physical address but the kernel high-half (TTBR1) MMIO alias produced
+/// by [`mmio_translate`] in `set_gicd_base`, so `send_sched_ipi`'s write to
+/// GICD_SGIR survives `switch_address_space` (the low-half identity mapping
+/// in TTBR0 is flushed by `tlbi alle1is` on the first switch). Unlike the C
+/// port's function pointers, this holds a *value* (a base address); all
+/// behavior is encoded inline in the trait methods, so the IPI hot path
+/// remains a direct MMIO write with no indirect call. See `16-smp.md` §3 D7.
 ///
 /// # Safety invariant
 ///
-/// Must be set to the distributor base (a valid MMIO physical address) via
-/// `set_gicd_base` before any `send_sched_ipi` call. Until then it is 0 and
-/// IPI sends must not be attempted.
+/// Must be set to the distributor **physical** base via `set_gicd_base`
+/// (which routes it to the high-half alias) before any `send_sched_ipi`
+/// call. Until then it is 0 and IPI sends must not be attempted.
 static mut GICD_BASE: usize = 0;
 
 /// Record the GIC distributor base address.
@@ -96,7 +100,16 @@ static mut GICD_BASE: usize = 0;
 #[inline]
 #[allow(dead_code)]
 pub(crate) unsafe fn set_gicd_base(base: usize) {
-    GICD_BASE = base;
+    // §1.114：`base` 是物理 GICD 基址；存高半（TTBR1）MMIO 别名，使
+    // `send_sched_ipi` 写 GICD_SGIR 跨切根持久（否则首真切根后该
+    // 物理地址在 TTBR0 身份映射被切走 -> 同步异常）。`0` 是未设置
+    // 哨兵（见本函数说明），保持原值不走 translate（物理 `0`
+    // 落在窗口外会触发 const-assert）。
+    GICD_BASE = if base == 0 {
+        0
+    } else {
+        minix_platform::arch::aarch64::mmio_translate(base as u64) as usize
+    };
 }
 
 /// Read the GIC distributor base address.

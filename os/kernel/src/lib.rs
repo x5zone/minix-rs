@@ -446,6 +446,50 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
         }
     }
 
+    // Step 2b (§1.114, aarch64 only): map the device MMIO window into the
+    // kernel high half (TTBR1) of the bootstrap root.
+    //
+    // aarch64 has no PIO — the PL011 console and GICv3 are MMIO-only. During
+    // boot they are reached through the low-half identity mapping (VA==PA),
+    // which lives in the TTBR0 half. `switch_address_space` swaps TTBR0 to a
+    // per-process root and issues `tlbi alle1is`, so the identity entry is
+    // gone after the first switch and any kernel MMIO access faults. TTBR1 is
+    // pinned to the bootstrap root and never switched, so a high-half alias of
+    // the window survives every context switch. Flags: supervisor RW; the
+    // window carries EXECUTABLE=off so EL0 can neither reach nor fetch it
+    // (it is already supervisor-only). NOTE: `kernel_read_write` maps to
+    // XN(bit54), which only gates EL0 fetch; forbidding EL1 fetch would need
+    // PXN(bit53), which `flags_to_pte` does not currently emit. The identity
+    // map uses the same MAIR Attr0=Normal treatment, so this alias matches the
+    // boot-time access exactly (no Device-type regression introduced here).
+    #[cfg(target_arch = "aarch64")]
+    {
+        use minix_platform::arch::aarch64::{MMIO_PA_BASE, MMIO_VA_BASE, MMIO_WINDOW_LEN};
+        const MMIO_BLOCK: u64 = 1 << 21; // 2 MiB — map_huge() block for size < 1 GiB
+        // The while loop below steps `off` by MMIO_BLOCK over MMIO_WINDOW_LEN
+        // and calls map_huge with 2 MiB-aligned VA/PA. Pin the preconditions so
+        // a future window-size / base change that would silently leave a tail
+        // unmapped or break block alignment fails at compile time.
+        const _: () = assert!(
+            MMIO_WINDOW_LEN % MMIO_BLOCK == 0
+                && MMIO_PA_BASE % MMIO_BLOCK == 0
+                && MMIO_VA_BASE % MMIO_BLOCK == 0
+        );
+        let mmio_flags = PageFlags::kernel_read_write();
+        let mut off = 0u64;
+        while off < MMIO_WINDOW_LEN {
+            paging
+                .map_huge(
+                    VirBytes(MMIO_VA_BASE + off),
+                    PhysBytes(MMIO_PA_BASE + off),
+                    MMIO_BLOCK as usize,
+                    mmio_flags,
+                )
+                .expect("kernel map: MMIO high-half window map_huge failed");
+            off += MMIO_BLOCK;
+        }
+    }
+
     boot_stage!("kernel: step1+2 mappings ok\n");
     // Step 3: Enable paging.
     // SAFETY: Steps 1+2 set up identity mapping covering current RIP.
@@ -462,6 +506,13 @@ pub fn arch_boot_impl<P: HugePages>(kernel_info: &KernelInfo, root_page: PhysByt
     // (e.g., the satp-encoded value on riscv64, not the raw physical
     // address). The parameter is always the raw physical address.
     set_current_root_phys(root_page);
+
+    // §1.114: the high-half MMIO window (mapped in Step 2b) is now live in
+    // TTBR1 (both TTBR0 and TTBR1 point at the bootstrap root until the first
+    // switch, and TTBR1 keeps it forever). Route the early console to the
+    // TTBR1-resident alias so serial output survives `switch_address_space`.
+    #[cfg(target_arch = "aarch64")]
+    minix_plat::arm64::early_console::use_high_mmio_window();
 
     // Step 4: Establish Direct Map coverage on the bootstrap root.
     // 07-paging_init_design §6.1 (D8-②): kernel DM first (supervisor RW,
