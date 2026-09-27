@@ -5206,6 +5206,12 @@ xtask qemu 对 aarch64 硬编码 `-smp 4`（`os/xtask/src/qemu.rs:80`）。fanou
 ### 新前沿 §1.119（多核 aarch64 现暴露的下游阻断·更新）
 fork EINVAL 消除后 INIT 达 SingleUser，但真机仍现 `nk4a: p4-init src=0x0/0x1 pdmv=... rpv=n` 活锁洪流（~6.3 万行/40s·双跑量级一致）——**这是 SingleUser 阶段围绕 INIT(ep0)/PM(ep1) 的新 receive 活锁，非 §1.118 的 fork 腿**（与上小节 `-smp 1` 下游观察到的 `RS boot.rs panic + pid9 sa-call` 是相邻但不同的签名，需下轮在 `-smp 4` 现场钉死谁在空转、`rpv=n` 语义、是否 §1.117 reap 环在新路径复发或 rc-shell/exec 下游新问题）。**注意 aarch64 rc marker 仍未达，本修复推进一格、暴露下一格。**
 
+#### §1.119 静态刻画（本轮补·纯读码·未取证未修）
+- **`p4-init` 探针语义钉死**（`os/kernel/src/ipc.rs:1838`）：仅在 `p_endpoint.0 == 0xb`（=INIT，endpoint 11）进入 receive 的 **Phase-4 正常停车腿**（置 `RECEIVING`、记 `p_getfrom_e`）时打印；`src`=本次 receive 来源端点、`rpv`=是否 `REPLY_PEND`。故洪流＝**INIT 反复进出 receive 停车**（每次真 park，~1600 次/秒），非用户态纯自旋——是被高频唤醒后再停。
+- **`init-state` 计数钉出重启环**：run2 `SingleUser` 态出现 **7985 次**、`Runcom` 仅 1 次，比值≈每入 SingleUser 一次产 ~8 行 p4-init 后**返回 `SingleUserOutcome::Restart` 再重入**＝INIT 在 SingleUser 态**无限重启循环**（`os/commands/sbin/init/src/single_user.rs`：`fork`→子进程 `child_shell`→父 `waitpid(-1, WUNTRACED)` 见子终止→`finish_shell` L181-188 `signaled()→Restart` 或 L156-159 `waitpid Err(_)→Restart`）。
+- **最可能根因（待下轮证）**：fork 出的 single-user shell 子进程 **exec `/bin/sh` 后立即死亡**（exec 失败/text 缺页/镜像无 /bin/sh，承 r5 旧线索「forked /bin/sh 子进程非零退出」）→父侧见其终止→Restart→再 fork→同死→无限重启洪流。此为 **fork 成功后暴露的子进程 exec/存活下游腿**，与 §1.117 reap 忙等、§1.118 fork EINVAL 皆不同。
+- **取证纪律提醒**：aarch64 userland `console_write`（warning/emergency）不落 serial、且 diagctl 打印在此重启洪流下被非确定性丢弃——下轮须用**非串口可靠通道**（如经 IPC reply m_type 回传子进程 exit status、或在内核侧 child exec/exit 记账而非 userland 打印）钉死子进程死亡因；并先查镜像是否真含 `/bin/sh`（imgrd 播种清单 vs init 期望路径）。
+
 **本轮修复·单文件逻辑码 `os/servers/sched/src/cpu.rs`（pick 扫描界 + doc + 回归测试）·无 TEMP 探针（committed 探针非本轮加）·三件套全绿·CodeReview PASSED 采纳 CONSIDER。**
 
 **⇒ 终目标① x86_64 单核 marker ✅；aarch64 §1.118 EPERM 真根因钉死并修复＝SCHED `pick` 扫描界未钉 `processors_count`、选中幽灵 CPU 致内核 EINVAL（非次核 bringup 本身·单/多核皆受益），fork 后 INIT 达 SingleUser、新前沿 §1.119 p4-init 下游活锁；riscv64 IPC 腿未验。** **历史链**：…→§1.118 取证暴露 fork EPERM(`4b475bb3d`)→§1.118 续哨兵钉死 fanout EINVAL(`956e4a57f`)→**§1.118 修复＝`pick` 扫描界钉 `processors_count` 消除幽灵 CPU·fork 越 EINVAL·INIT 达 SingleUser**。
