@@ -69,4 +69,16 @@ impl TlbArch for X86_64TlbArch {
             asm!("mov cr3, {}", in(reg) phys_root.0, options(preserves_flags));
         }
     }
+
+    unsafe fn get_active_root() -> PhysBytes {
+        // C: klib.S:618 — `mov %cr3, %ecx` reads the live CR3.
+        // We don't use PCID, so the entire register is the PML4 physical
+        // address (with PCD/PWT in bits [4:3] which are always 0 for our
+        // page-aligned roots). Mask to page boundary for safety.
+        let cr3: u64;
+        unsafe {
+            asm!("mov {}, cr3", out(reg) cr3, options(preserves_flags, nomem));
+        }
+        PhysBytes(cr3 & !0xFFF)
+    }
 }

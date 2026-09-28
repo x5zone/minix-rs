@@ -135,16 +135,47 @@ pub trait TlbArch {
     /// - On SMP, cross-CPU shootdown is the caller's responsibility if other
     ///   CPUs were executing under the old root.
     unsafe fn set_active_root(phys_root: PhysBytes);
+
+    /// Read the currently-active page-table root from the hardware
+    /// register (CR3 / TTBR0_EL1 / satp).
+    ///
+    /// C: `mov %cr3, %ecx` (klib.S:618) — `__switch_address_space` reads
+    /// the **live register** to decide whether the picked process already
+    /// owns the active root. This avoids a class of bugs where a software
+    /// mirror diverges from hardware (e.g., VM's `SETADDRSPACE` updating
+    /// the mirror before the scheduler first dispatches the target).
+    ///
+    /// Returns the raw physical address (page-aligned, suitable for
+    /// comparison against `p_seg.phys_root`).
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure paging is enabled on the current CPU (the
+    /// register read is architecturally defined once the MMU is on; the
+    /// kernel never calls this before `arch_boot` enables paging).
+    unsafe fn get_active_root() -> PhysBytes;
 }
 
 // ── Mock implementation for host tests ──
 
-/// Mock `TlbArch` that does nothing (for `#[cfg(test)]` / `mock` feature).
+/// Mock `TlbArch` that tracks a virtual register (for `#[cfg(test)]` /
+/// `mock` feature).
 ///
-/// All operations are no-ops. Safe because there's no real hardware to
-/// touch; the mock exists purely to let kernel code compile and run
-/// unit tests on a host architecture.
+/// `set_active_root` writes to an internal static; `get_active_root` reads
+/// it back — giving `switch_address_space` the same skip-if-same-root
+/// semantics as real hardware without touching an MMU.
 pub struct MockTlbArch;
+
+/// The mock's virtual "hardware register". Only meaningful in single-
+/// threaded host tests; atomic so the type stays Sync.
+static MOCK_ACTIVE_ROOT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Reset the mock's virtual register to 0. Call from test setup to
+/// ensure test isolation when `switch_address_space` reads it back.
+pub fn mock_reset_active_root() {
+    MOCK_ACTIVE_ROOT.store(0, core::sync::atomic::Ordering::Relaxed);
+}
 
 impl TlbArch for MockTlbArch {
     unsafe fn flush_all() {
@@ -155,8 +186,12 @@ impl TlbArch for MockTlbArch {
         // no-op: mock has no real TLB
     }
 
-    unsafe fn set_active_root(_phys_root: PhysBytes) {
-        // no-op: mock has no real MMU root register
+    unsafe fn set_active_root(phys_root: PhysBytes) {
+        MOCK_ACTIVE_ROOT.store(phys_root.0, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    unsafe fn get_active_root() -> PhysBytes {
+        PhysBytes(MOCK_ACTIVE_ROOT.load(core::sync::atomic::Ordering::Relaxed))
     }
 }
 

@@ -89,4 +89,18 @@ impl TlbArch for Riscv64TlbArch {
             asm!("sfence.vma zero, zero", options(preserves_flags));
         }
     }
+
+    unsafe fn get_active_root() -> PhysBytes {
+        // C: klib.S:618 — `mov %cr3, %ecx` RISC-V equivalent: csrr satp.
+        // Extract PPN (bits [43:0]) and reconstruct the physical address
+        // by shifting back by 12 (page size).
+        let satp: u64;
+        unsafe {
+            asm!("csrr {}, satp", out(reg) satp, options(nomem, preserves_flags));
+        }
+        // Sv39: PPN is bits [33:0] (Sv39 uses 34-bit PA space, PPN = 22 bits
+        // within 44-bit field but effectively [33:12] >> 12 = [21:0]).
+        // Mask to 44-bit PPN field and shift to byte address.
+        PhysBytes((satp & 0x0000_0FFF_FFFF_FFFF) << 12)
+    }
 }

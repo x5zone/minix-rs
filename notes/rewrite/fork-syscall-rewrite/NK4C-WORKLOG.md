@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-17 取证轮（aarch64 INIT sched_start SCHEDULING_START 内容毁损根因决定性精修：非 SCHED 收毁、非 drain、非 SMP、非 root 镜像错、非入口前 stale-TLB/序障——实锤＝PM 陷入入口第一次 `copy_msg_from_user` 即读得 m_type=0，且内核硬件读==DM 直读==软件 walk 三者一致指向 `current_root_phys` 镜像所指的「新页」，而该页 offset0(m_source)=0x60000000 系回收残留⇒ PM(EL0) 的 store 从未落进内核所读物理页＝写侧翻译与读侧翻译指向不同 PA＝PM 写时持陈旧 TLB 的窗口性竞态）**：**探针链七代（nk17，全回滚）**——①`pa/enq/p3` 钉死 PM→SCHED 走 Path A（SCHED 已在 receive），Path B/p3 零命中＝drain 丢内容证伪；②`ent` 于 `aarch64_ipc_dispatch_body` 入口 copy 后、`msg.m_type=call_nr` 覆写**前**读原始内容：`caller=0 mt=0 va=0x7ffffffc0268 root=0x5c2c7000`＝毁损在 PM 自己首条 sendrec 的陷入入口，与 SCHED/drain 无关；③`-smp 1` 重现 mt=0＝**SMP 竞态证伪**；④`own=p_seg.phys_root`==镜像 root＝**current_root_phys 镜像正确**；⑤DM 直读（先误读 offset0 后修正 m_type@4）＋硬件 read_volatile 对 `m_source` 双读全一致（`dm_src=0x60000000 hw_src=0x60000000`）＝**内核页表新鲜翻译与硬件翻译此刻一致**、读到的确是「非 PM 写入页」；⑥入口读前插 `dsb ish; tlbi vmalle1is; dsb ish; isb` **无效**（仍 mt=0）＝**非 trap 时刻已固化的陈旧 TLB 项/内存序障**；⑦PM 侧 Heisenbug 杠杆坐实：sched_start 的 sendrec 前加一枚 `sys_diagctl_write` 后内核读得 `mt=0xf02/0xf05/0xf03` 全对、SCHED 回 `rv 0000`、`dsin` 0→6、boot 越过 INIT 调度死锁推进至 vm-pf/elf copy/sa-call。**⇒ 判据链收敛**：同一 (root,VA) 写读见不同 PA 只能发生于「store 早于页表变更、load 晚于变更且 TLB 已含/未含旧项」的窗口——头号嫌疑＝**VM 在 INIT→PM 引导窗口对 PM 地址空间（尤其栈页）做映射变更后，PM 仍持旧翻译继续跑（skip-if-same-root／FLUSH_TLB 消费腿未对该变更点火）**，diag 前置 syscall 恰制造「变更先于写」的排序使竞态消失。**下一手（续-18·真修轮）**：(a) 入口直读 `TTBR0_EL1` 现场 vs `p_seg.phys_root` vs 镜像三者对账；(b) 直读页表项（walk 各级 raw 值）看栈页 PTE 现值 vs PM 写时应值；(c) 在 VM `do_vmctl`（SETADDRSPACE/SETPT/PAGEIN 完成）腿 instrument PM 的栈页是否被映射/替换＋是否置 `MF_FLUSH_TLB`；(d) 对照 C `switch_to_user`/`refresh_tlb` 与 x86 基线（同码 x86 无此征状）找 aarch64 独有分叉。**修复候选**＝补齐「root 未变但页表被第三方改过」的失效语义（per-CPU ptproc 记账 / VM 映射变更强制对活着的 owner 广播 TLBI / 至少 IPC 读用户缓冲前于正确上下文刷新）——布局敏感区，须 (a)-(d) 强证据后再动。**推翻登记**：续-16「SCHED 收毁内容/子继承 RECEIVING 为最近墙」在本基线上其实**从未越过 INIT sched_start**（rv 004e=ENOSYS×4＝SCHED 收到 mt=0 非法调用），两族读数差＝同一竞态的探针扰动两态（承续-16「run3/4 vs run5 停点翻转」）。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。本轮纯取证·`nk17:`(kernel trap_dispatch/ipc + pm init) 七代探针全 `git checkout` 回滚 tracked 净·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-17。
+> **✅ 最新前沿＝§1.120续-18 真修轮（aarch64 IPC 投递内容毁损根因钉死+建设式修复）**：**根因**——`switch_address_space`(lib.rs:3320) 的 skip-if-same-root 比较软件镜像 `CURRENT_ROOT_PHYS` 而非硬件活寄存器；当镜像被 boot-path `set_current_root_phys()` 更新但未同步写 TTBR0 时，调度器误判「root 已 active」而跳过硬件装载，导致 TTBR0 始终指向错误页表树。**nk18 探针实锤**（`mrs ttbr0_el1` vs `p_seg.phys_root` vs mirror）：`live_ttbr0=0x5c320000 != own=0x5c32c000 == mir=0x5c32c000`，模式在每个进程上一致。**修复**——`TlbArch` trait 新增 `get_active_root()`（x86_64 `mov rax,cr3` / aarch64 `mrs x0,ttbr0_el1` / riscv64 `csrr satp`），`switch_address_space` 改为比较 live 寄存器（与 C klib.S:618 `mov %cr3, %ecx` 同形）；skip 路径同步镜像+ptproc 防回退。**验证**：三架构编译通过；823 kernel + 243 arch host tests 全绿；QEMU aarch64 -smp 4 跑 30s：`mt=0` 归零、`rv 004e` 仅 1 次（合法 boot 竞态 ENOSYS）、init 推进至 imain-6 RUNCOM（旧态从不越过 SCHED ENOSYS）。⚠️ 目标不变。
 >
 > **（历史·§1.120续-16 取证轮（三重决定性突破：①发现并修「镜像陈旧」取证方法学 bug；②新鲜 nk16 针证伪续-16-audit「内核 dispatch_schedule/endpoint_to_nr 返 EINVAL 拒子」；③真挂根因精修至子继承 `RTS_RECEIVING` 阻塞腿·`is_runnable()=flags==0`）**：**①方法学 bug**——`os/target/image/aarch64/staging/EFI/minix/kernel.elf` 曾与 minix.img 同旧（05:56 前），`cargo run -p xtask --release -- image` 增量重编**未必刷新 elf**：`strings kernel.elf` 里已知必打的 `nk4a: kc` 字面量竟=0、`nk4a: schedctl` 亦=0（`grep -a` 原始字节均找不到，因串池压缩/折叠），一度误判「探针被编译掉/内核从不进 dispatch_schedule」。**纠偏铁律**：探针可靠性**只以 runtime 串口日志为权威**、辅以 `nm` 查静态符（`dispatch_schedule` 的 `ENT_N/SCHED_N/SRV_N` 三个 static 在 elf 里存在＝码已编进，串池 grep 找不到是假象）；判「未发生」前必确认 elf mtime 晚于最后一次源改且 `nk16` 等标记实际打印。**②证伪续-16-audit EINVAL 假设**——装内核三点针（`nk16: ent`@函数顶 EPERM 前、`nk16: sched-arr`@dispatcher 任何 call_nr==Schedule、`nk16: disp e=..->nr=`@endpoint_to_nr 两腿、`nk16: schedproc nr=.. run=`@sched_proc 后 is_runnable）重编净跑：**`nk16: ent`=6、`sched-arr`=6**（内核**确实收到** 6 条 SYS_SCHEDULE·caller=4=SCHED）、**`disp e=0x800c->nr=0xc`/`e=0x800d->nr=0xd`**（子 endpoint 经 `endpoint_to_nr` **正确解析**、非 EINVAL 早退）、**`schedproc nr=0xc ok run=0`/`nr=0xd ok run=0`**（`sched_proc` 返 `ok`＝已 `rts_unset(NO_QUANTUM)`，但 `is_runnable()` 仍 **false**）。**③真挂根因精修＝子阻塞在继承的 `RTS_RECEIVING`**：`is_runnable()＝p_rts_flags.load()==0`（proc.rs:1244·任一 rts 旗即不可跑）；子 fork 现场 `flags=0x8008`＝`NO_QUANTUM(0x8000)｜RECEIVING(0x08)`；`fork_from`（proc.rs:1594-1603）忠实复刻 C `do_fork.c:63 *rpc=*rpp` 把父(INIT 正同步 receive)的 **RECEIVING 一并拷给子**，仅 RTS_UNSET `SIGNALED｜SIG_PENDING｜P_STOP｜VMREQUEST`、不清 RECEIVING/SENDING（与 C 逐字一致·**非 fork_from 的 bug**）。⇒ **清 NO_QUANTUM 后子仍被继承 RECEIVING 阻塞、等一个永不到达的同步 receive 完成＝fork-return 投递腿未把子的继承接收结掉**。**PM/SCHED 侧本轮独立重现健康**：`nk16p: S0f02→O0000`（PM 对 INIT 发 SCHEDULING_START 得 OK·**注：续-3~15 部分「INIT 未登记/假登记」结论受①镜像陈旧污染，净态实测 INIT 登记成功**）、SCHED 入站 `nk16s: m0200`(START)/`m0300`(STOP)/`m0500`×2(两子 INHERIT)、`nk4a: tc`=2（子 inherit 经 taskcall）。⚠️ **时序非确定性实证**：run3/run4（未加 PM 针）`sched-arr`=0/`tc`=0/SCHED 仅收 `m0000`＝INIT sched_start 撞 race 早停；run5（加 `nk16p` diag 字节约定后）越过 INIT 停到子 RECEIVING 墙——与 §1.119续-6「加字节位移翻转症状」同族，boot 前沿受时序竞争支配。**⇒ 下一手（续-17）＝fork-return 投递腿**：子继承 RECEIVING 后，须由「PM `reply(child,0)`→内核 ipc 把该回复投进子的 receive 半并清 RECEIVING（结掉子 p_delivermsg 的同步接收）」唤醒；探针钉：①子 slot 0xc 的 `p_delivermsg`/`p_sender`/`getfrom`/RECEIVING 现场、②PM 向子 reply 的内核投递腿（Path A/ parked 判别·§1.96/§1.113/§1.119续-4 同族）、③对照 C 子 fork-return 如何被唤醒接收（`do_fork` 后 PM `_schedule`/reply 时序）。**不得盲改 `fork_from`（RECEIVING 继承是 C 保真正确）**、**不得盲改已证健康的 dispatch_schedule/sched_proc 腿**。本轮纯取证·`nk16:`(kernel)/`nk16s:`(sched)/`nk16p:`(pm) 探针全 `git checkout` 回滚 tracked 净（grep 零残留）·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-16。⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
 >
@@ -5963,4 +5963,77 @@ run3/run4（未加 PM `nk16p` 针）：`sched-arr`=0、`tc`=0、SCHED 仅收 `m0
 
 - 本轮纯取证、零生产码改；`nk17:` 七代探针（kernel trap_dispatch.rs/ipc.rs + pm init.rs）及 TLBI/barrier 实验块全部 `git checkout` 回滚，tracked 净（HEAD=db17aa9cc）。
 - 新取证铁律：**Message 布局 m_type@offset 4**（DM/硬件直读探针均按此校准）；探针 cap 按 dst/caller 端点门控避 VM 洪水（0x8=VM、mt=0xcff=VM_PAGEFAULT）。
+- ⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
+
+---
+
+### §1.120续-18 真修轮：aarch64 IPC 消息投递内容毁损根因钉死 + `switch_address_space` live 寄存器比较修复
+
+#### 判据链收敛
+
+续-17 七代探针收敛到「PM 写时翻译 vs 内核读时翻译指向不同 PA」的窗口性竞态。续-18 装 `nk18` 探针在 `ipc_send_verify_copyin` 入口直读硬件 `TTBR0_EL1`、对比 `p_seg.phys_root` 和 `CURRENT_ROOT_PHYS` 镜像，取得决定性证据：
+
+```
+nk18: reg t0=0x000000005c2c0000 own=0x000000005c2c7000 mir=0x000000005c2c7000 cpu=0 ep=0
+```
+
+模式：**`live_ttbr0 != own == mir`** 在每个进程上一致重现（-smp 1 与 -smp 4 同）。镜像声称 PM root 已 active，但硬件 TTBR0 从未装载它——内核做 `copy_from_user` 走的是错误页表树。
+
+#### 根因精確定位
+
+`switch_address_space`(lib.rs:3320) 的 skip-if-same-root 检查：
+
+```rust
+if crate::current_root_phys() == Some(root) { return; }  // OLD: 比较软件镜像
+```
+
+镜像 `CURRENT_ROOT_PHYS` 在 boot 期被 `arch_boot_resume_high_half` → `set_current_root_phys(boot_root)` 写入，而 boot 硬件 TTBR0 确实等于 boot_root。但当 VM 通过 `VMCTL_SETADDRSPACE` 给 PM 设置新 root 时：
+1. 写 `p.p_seg.phys_root = new_root`
+2. 若 `ptproc != PM`（VM 正跑），**不写硬件、不更新镜像**
+3. 调度器 pick PM：`current_root_phys()` 返回镜像（仍为 boot_root 或前一进程 root）
+4. 若镜像恰好等于 PM root（由其他路径设置的假阳性）→ skip → TTBR0 从未装进 PM root
+
+实际场景更微妙：x86_64 基线从未重现此症状，因为 x86 `mov %cr3, %ecx` 总返回硬件实际值；aarch64 镜像与硬件可能因 boot resume 路径的 `set_current_root_phys` 单独写镜像而不写硬件（boot-shim 已在硬件设了 root，但新内核 image 的 `.bss` 里镜像需重新记录）。
+
+#### 修复实施
+
+**新增 `TlbArch::get_active_root()` trait 方法**：
+
+| 架构 | 实现 | 语义 |
+|--------|------|------|
+| x86_64 | `mov rax, cr3; mask & !0xFFF` | 读回硬件 CR3，去 PCID/flags 低位 |
+| aarch64 | `mrs x0, ttbr0_el1; mask & 0xFFFF_FFFF_FFFF` | 读 TTBR0 BADDR，去 RES0/ASID 位 |
+| riscv64 | `csrr a0, satp; (satp & PPN_MASK) << 12` | 解 satp PPN 还原 PA |
+| Mock | AtomicU64 虚拟寄存器 | `set_active_root` 写、`get_active_root` 读回 |
+
+**核心改动** (`switch_address_space`):
+
+```rust
+let live_root = unsafe { CurrentTlbArch::get_active_root() };
+if live_root == root {
+    set_current_root_phys(root);  // 同步镜像（防御性）
+    set_current_ptproc_nr(nr);
+    return;
+}
+set_active_root_tracked(root);
+set_current_ptproc_nr(nr);
+```
+
+与 C `klib.S:618` 同形：读硬件寄存器而非软件缓存。
+
+#### 验证结果
+
+| 检查项 | 结果 |
+|--------|------|
+| aarch64/x86_64/riscv64 --no-default-features 编译 | ✅ 无错 |
+| host tests (kernel 823 + arch 243) | ✅ 全绿 |
+| clippy | ✅ 无新增警告 |
+| QEMU -smp 4 30s | `mt=0`: 0 次、`rv 004e`: 1 次、init 达 imain-6 RUNCOM |
+| PM→SCHED IPC | `s4r c=0 mt=3` (正确 SYS_GETUID)、“`p4a src=1 gf=1 rpv=y`”成功应答 |
+| VM 内存服务 | `memreq target=11 ok=1`、SETADDRSPACE 多次成功 |
+
+#### 纪律
+
+- 本轮为修复轮，有生产码改，经 CodeReview。
+- `nk18` 探针已 `git checkout` 回滚，tracked 净。
 - ⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。

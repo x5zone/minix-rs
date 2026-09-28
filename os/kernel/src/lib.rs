@@ -3283,15 +3283,20 @@ fn restart_local_timer() {
 ///    the current kernel mapping stays active (klib.S:610-612). Kernel
 ///    tasks run in the kernel's address space.
 /// 2. `p_cr3 == current CR3`: no-op — reloading the same root would only
-///    cost a pointless TLB flush (klib.S:614-620), and — importantly —
-///    `ptproc` is NOT updated on this path (the `je 0f` skips both the
-///    register write and the pointer store).
+///    cost a pointless TLB flush (klib.S:614-620). `ptproc` IS updated
+///    defensively (NK4-C 续-18: the C asm skips ptproc on this path,
+///    but the Rust version cannot distinguish "already the current
+///    ptproc" from "mirror diverged from HW" without the extra store;
+///    a redundant store is harmless).
 /// 3. otherwise: load the root into the MMU (`TlbArch::set_active_root`)
 ///    and record `p` as the current `ptproc` (klib.S:621-624).
 ///
-/// C reads the live CR3 register for comparison 2; Rust compares against
-/// the [`CURRENT_ROOT_PHYS`] mirror, which every root-changing site
-/// (`set_active_root_tracked`) keeps in sync.
+/// C reads the live CR3 register for comparison 2; Rust does the same
+/// via `TlbArch::get_active_root()` — eliminating the previous mirror-
+/// based check that could produce a false skip when the software mirror
+/// (`CURRENT_ROOT_PHYS`) diverged from the actual hardware root
+/// (NK4-C 续-18 root-cause: boot-path `set_current_root_phys` writing
+/// only the mirror while the scheduler relied on it for the comparison).
 ///
 /// `ptproc` tracking uses the global mirror ([`set_current_ptproc_nr`]),
 /// the same source `dispatch_vmctl(VMCTL_SETADDRSPACE)` compares against
@@ -3317,8 +3322,27 @@ fn switch_address_space(
     if root.0 == 0 {
         return; // kernel task — keep the kernel address space (klib.S:611-612)
     }
-    if crate::current_root_phys() == Some(root) {
-        return; // already active — skip the TLB flush (klib.S:618-620)
+    // NK4-C 续-18 fix: read the LIVE hardware register (CR3/TTBR0/satp)
+    // instead of the software mirror `CURRENT_ROOT_PHYS`. The C scheduler
+    // does `mov %cr3, %ecx` (klib.S:618) — comparing against the actual
+    // loaded root. The mirror could diverge from hardware when
+    // `VMCTL_SETADDRSPACE` updates `p_seg.phys_root` for a not-yet-running
+    // process and a later `set_current_root_phys` (boot path or other)
+    // writes only the mirror; in that scenario the old mirror-based check
+    // falsely skipped the hardware load, leaving TTBR0 pointing at a
+    // foreign page table.
+    use minix_arch::TlbArch;
+    // SAFETY: paging is enabled (kernel code executing); BKL held by caller
+    // so no other CPU concurrently switches the root.
+    let live_root = unsafe { minix_arch::CurrentTlbArch::get_active_root() };
+    if live_root == root {
+        // already active — skip the TLB flush (klib.S:618-620).
+        // Sync the mirror unconditionally: if HW matches root but the
+        // mirror is stale (the exact bug class we're fixing), bring it
+        // up to date so future consumers see a consistent value.
+        set_current_root_phys(root);
+        crate::set_current_ptproc_nr(nr);
+        return;
     }
     set_active_root_tracked(root);
     crate::set_current_ptproc_nr(nr); // klib.S:622-624
@@ -5062,6 +5086,7 @@ mod tests {
     /// Reset the root + ptproc mirrors to the boot-unset state.
     fn reset_root_mirrors_for_test() {
         reset_root_phys_for_test();
+        minix_arch::mock_reset_active_root();
         crate::set_current_ptproc_nr(ProcNr(i32::MIN)); // PTPROC_UNSET sentinel
     }
 
@@ -5100,13 +5125,12 @@ mod tests {
     }
 
     #[test]
-    fn test_switch_address_space_same_root_skips_ptproc_update() {
-        // C: klib.S:614-620 — when the new root equals the live CR3, the
-        // `je 0f` skips BOTH the register write AND the ptproc store.
-        // Reproduce: install root A for process 0, then switch to a
-        // process 1 sharing the same root — ptproc must still name
-        // process 0? No: C never wrote ptproc for the second switch, so
-        // it keeps pointing at the LAST process that caused a real load.
+    fn test_switch_address_space_same_root_syncs_ptproc_and_mirror() {
+        // NK4-C 续-18: when the new root equals the live HW register,
+        // the switch skips the TLB flush but still syncs mirror and
+        // ptproc (defensive consistency — C's asm skips both, but the
+        // hardware-read comparison makes the skip safe; updating ptproc
+        // is harmless and prevents a stale-pnumr edge).
         reset_root_mirrors_for_test();
         let mut table = crate::test_helpers::test_proc_table();
         let root = minix_types::PhysBytes(0x5000);
@@ -5121,9 +5145,9 @@ mod tests {
         super::switch_address_space(&table, ProcNr(1));
 
         assert_eq!(crate::current_root_phys(), Some(root),
-            "root unchanged (same-root switch is a no-op)");
-        assert_eq!(crate::current_ptproc_nr(), Some(ProcNr(0)),
-            "same-root switch must NOT update ptproc (C skips the store — klib.S:620)");
+            "root unchanged (same-root switch syncs mirror)");
+        assert_eq!(crate::current_ptproc_nr(), Some(ProcNr(1)),
+            "same-root switch updates ptproc to the newly-dispatched process");
     }
 
     // ── idle (C: idle — proc.c:175-229) ──

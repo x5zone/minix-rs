@@ -109,4 +109,18 @@ impl TlbArch for AArch64TlbArch {
             asm!("isb", options(preserves_flags));
         }
     }
+
+    unsafe fn get_active_root() -> PhysBytes {
+        // C: klib.S:618 — `mov %cr3, %ecx` ARM equivalent: mrs x0, ttbr0_el1
+        // reads the live translation table base. Since we write the raw
+        // physical address (no ASID, A1=0 in TCR → TTBR0 bits[63:48] are
+        // RES0), the value read back equals what was written.
+        let val: u64;
+        unsafe {
+            asm!("mrs {}, ttbr0_el1", out(reg) val, options(preserves_flags, nomem));
+        }
+        // Mask to the 48-bit physical address field (clear potential
+        // implementation-defined upper bits in the BADDR encoding).
+        PhysBytes(val & 0x0000_FFFF_FFFF_FFFF)
+    }
 }

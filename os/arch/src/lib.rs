@@ -642,7 +642,7 @@ pub type CurrentSmpArch = crate::riscv64::smp::Riscv64SmpArch;
 // as static methods, used by `dispatch_vmctl` for SVMCTL_FLUSHTLB and
 // SVMCTL_INVLPG. Unlike `Paging::flush_tlb` (instance method), `TlbArch`
 // operates on the *current* CPU's TLB without a Paging instance.
-pub use tlb_arch::{TlbArch, MockTlbArch};
+pub use tlb_arch::{mock_reset_active_root, MockTlbArch, TlbArch};
 
 #[cfg(feature = "runtime-window")]
 pub type CurrentTlbArch = MockTlbArch;
