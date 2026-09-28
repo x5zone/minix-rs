@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-22 定谳+真修轮（**三方 root 对照针推翻「翻译/root 分歧」假设（live TTBR0==`p_seg.phys_root`==镜像、`pa==pam`、W==K 逐字同）；栈中性 `#[inline(never)]` 判别针坐实＝唯一因果变量是 sendrec 前一次对消息缓冲的读（store 物化）→净态 `msg.m_type=0xF02` 的写在 `svc` 前未落到内核 trap 所读内存（**非地址翻译**）。**生产修复**＝`minix-sys/src/ipc.rs` 新增 `commit_message_to_memory`（整对象 `read_volatile` 屏障）插入 send/sendrec/sendnb trap 腿前。aarch64 **死锁解除**：boot 达 `SingleUser`→INHERIT(`0xf05`)达 SCHED(`rv 0000`)→VM exec `/bin/sh`（缺页风暴 3594 条·链路首次贯通至 shell 装载）；**尚余下游阻塞**＝`rc` marker 未在 70s 内出（exec→rc→echo→console 下一环）。x86 无回归（`trap_dispatch.rs:981` VM pagefault panic 加/去修复逐字一致＝预存·非本次）；315 host test 通过·双 target clippy 无新告警·CodeReview 已过（采纳去过度断言/降 Safety/记 kernel_call·senda 开放项）。探针全回滚·tracked 净·**含代码改真修 commit**）。**
+> **✅ 最新前沿＝§1.120续-23 取证轮（**续-22 修复 fresh 净态复验**稳定**（90s/240s 两跑 serial 逐字一致＝已静止非慢；双 `tc f05` INHERIT 达 SCHED、全程 0 条 `mt=0` 投递＝修复对两次 fork 均有效）：boot 越死锁达 `Runcom→SingleUser→exec /bin/sh`→shell 按需分页装载（1361 唯一 fa·无同页重发＝合法分页）。**rc marker 下游阻塞定性**＝静止前最后有效事件 `nk4a: rs-bigalloc size=0xfffe25c0`→`nk4c: OOM-RT`（minix-rt 收到 ~4 GiB 大分配失败→其后仅 SCHED `setalarm` 空转＝全系统 idle·marker 永不出）。**成因画像＝len==ptr 同族**（`0xfffe25c0`＝栈 VA `0x7ffffffe25c0`(=`memreq start=0x7ffffffe2578`+`0x48`) 的低 32 位——长度操作数被填入**栈指针值**，同 alloc.rs:609 历史 `memset(...,len==dst ptr)` OOM；**非续-22 IPC 物化**，该腿已修且本轮复证 0 mt=0）。⚠️ 具体哪个 alloc 调用点/其 len 从何字段来**未坐实不成修**——下一手定向探针捕获大分配调用点+上游消息字段。纯取证·无代码改·tracked 净·**WORKLOG-only（免 CodeReview）**）。**
+>
+> **📌 §1.120续-22 定谳+真修轮（marker 下游阻塞已由续-23 定性至 minix-rt OOM）（**三方 root 对照针推翻「翻译/root 分歧」假设（live TTBR0==`p_seg.phys_root`==镜像、`pa==pam`、W==K 逐字同）；栈中性 `#[inline(never)]` 判别针坐实＝唯一因果变量是 sendrec 前一次对消息缓冲的读（store 物化）→净态 `msg.m_type=0xF02` 的写在 `svc` 前未落到内核 trap 所读内存（**非地址翻译**）。**生产修复**＝`minix-sys/src/ipc.rs` 新增 `commit_message_to_memory`（整对象 `read_volatile` 屏障）插入 send/sendrec/sendnb trap 腿前。aarch64 **死锁解除**：boot 达 `SingleUser`→INHERIT(`0xf05`)达 SCHED(`rv 0000`)→VM exec `/bin/sh`（缺页风暴 3594 条·链路首次贯通至 shell 装载）；**尚余下游阻塞**＝`rc` marker 未在 70s 内出（exec→rc→echo→console 下一环）。x86 无回归（`trap_dispatch.rs:981` VM pagefault panic 加/去修复逐字一致＝预存·非本次）；315 host test 通过·双 target clippy 无新告警·CodeReview 已过（采纳去过度断言/降 Safety/记 kernel_call·senda 开放项）。探针全回滚·tracked 净·**含代码改真修 commit**）。**
 >
 > **（历史·§1.120续-21 非扰动定谳轮（⚠️ 其「内核 re-read 命中错页/翻译分歧」猜测经续-22 判别针**推翻**＝实为用户态 store 未物化·非翻译；净态根因链的下游环（mt=0→ENOSYS→INIT scheduler 永留 KERNEL→子 NO_QUANTUM 不清→停 0x8000）经续-22 修复实证）**净态根因链锁定＝PM boot SCHEDULING_START 请求经内核 Path A re-read `p_delivermsg_vir` 得 `m_type=0`（应 0xF02）→SCHED `from_raw(0)`=None 回 ENOSYS(`rv 004e`)→PM `init.rs::sched_start` 判 Err→INIT PM 侧 `resources.scheduler` 永留 `Endpoint::KERNEL`→INIT fork 子继承 KERNEL（`copy_mproc`）→`sched_start_user` 走 KERNEL skip 分支不发 INHERIT→kernel `fork_from` 设的 `NO_QUANTUM` 无 SCHED 来清→子永停 `flags=0x8000`→init waitpid 永挂**）。证据＝①idle 第 500 次全表快照：child slot12 `fl=0x8000`（仅 NO_QUANTUM，**RECEIVING 已由 PM reply(child,OK) 清**·续-18/19b 该腿健康复证；净态是 0x8000 非续-20 报的 0x8008——后者来自扰动 run）；②内存投递环（Path A+B 全记，补 B 后 total=20）：整场唯一一条 PM(0)→SCHED(4)＝`mt=0`+回 `0x4e`，**任何路径无 0xF02/0xF05 达 SCHED**；③既有裸针 `s4r c=0 mt=3`（mt=3＝IPC 调用号 SENDREC 非请求类型——trap 腿 `msg.m_type=call_nr` 覆写认知，本轮 sendrec 意图环查 0xF01..0xF05 永不命中＝假 total=0 已弃用）；④aarch64 寄存器 ABI 两侧核实一致（x0=ep/x1=msg_ptr/x8=call_nr），**排除寄存器错位**，缺陷＝消息**内容**路径（trap 入口拷贝 vs `send()` re-read 用户缓冲分歧，续-17/18 同族）。**反转续-20**：其「INHERIT 端到端达 SCHED、净态＝Heisenbug、t14 作废」系加针扰动越墙 run 观测非净态证据；续-19「KERNEL-skip 家族」根因复活但精确定位于 boot `sched_start` 内容毁损；续-18 switch 修复必要未竟功。**下一手＝判别针定 `mt=0` 确切成因**（①用户缓冲真含 0/TOCTOU vs ②re-read 命中错页）：trap 入口 copy 所得 m_type vs send() re-read 所得 m_type + `p_delivermsg_vir` 值，fire-once 内存记录＋shutdown dump；候选最小修复＝内核 send 腿改用 trap 入口单次拷贝缓存（对位 C `mini_send` 语义）消除 re-read 分歧。**`nk19f` 探针（ipc.rs/lib.rs）全 `git checkout` 回滚 `grep nk19 os/`=0 tracked 净·WORKLOG-only（免 CodeReview）**。
 >
@@ -6125,3 +6127,28 @@ PM boot init_scheduling → sched_start → sendrec(SCHED, SCHEDULING_START 0xF0
 - 本轮含生产代码改（非纯取证）：已过三件套（build aarch64+x86_64 / clippy / 315 host test）＋双跑（aarch64 推进至 SingleUser+exec、x86 panic 与净 HEAD 逐字一致＝无回归）＋CodeReview。
 - 全部取证探针（nk19g ipc.rs/trap_dispatch.rs/lib.rs、nk19h PM init.rs）已 `git checkout` 回滚，tracked 净（`grep nk19g\|nk19h os/kernel os/servers`=0）；仅 `minix-sys/src/ipc.rs` 生产修复入本 commit。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。aarch64 已从「boot 死锁」推进至「exec 进行中·marker 前一步」，下一步攻 exec→rc→echo→console 下游腿。
+
+---
+
+## §1.120续-23 取证轮（续-22 修复 fresh 净态复验通过 · rc marker 下游阻塞定性至 minix-rt OOM（len==ptr）· 纯取证 · 无代码改）
+
+**fresh 权威复验（HEAD=2113be7fc 净树·撤全部探针）**：`xtask image`+QEMU aarch64 90s（`a64-t29-1`）与 240s（`a64-t29-2`）两跑 serial **逐字一致**（4410 行 / vm-pf 3594 / tail 同）＝ boot 已达**静止态而非单纯慢**（若仍在推进，240s 应显著多于 90s）。续-22 修复**稳定有效且对两次 fork 均成立**：全程恰两条 `nk4a: tc f05`（`SCHEDULING_INHERIT` 达 SCHED），**0 条 `mt=0x0` 投递**（对照续-21 净态「整场唯一 PM→SCHED＝mt=0」）＝续-22 的 store 物化屏障彻底消灭了该缺陷类，boot 越死锁达 `init-state Runcom → SingleUser` → exec `/bin/sh`。
+
+**推进位点**：INIT 完成 runcom 状态机、fork+exec `/bin/sh`；shell 进入**按需分页装载**（`vm-pf` 覆盖 1361 个**唯一** `fa=` 地址、单址最高重复 <15＝合法分页，非「同页重发」死循环）。缺页经 VM `do-memory`/`memreq target=11`/`kdst copy`（copy len 0x0d/0x2f/0x3a/0x47＝命令字符串）正常服务。
+
+**新下游阻塞定性（本坐实核心）**：静止前**最后有效事件**为
+```
+nk4a: rs-bigalloc size=0xfffe25c0  ptr=0x0000000000000000
+nk4c: OOM-RT size=fe25c0 slabs=005/400 big=00/00 px=005/400 fp=000/400
+```
+即 `minix-rt` 的 `GlobalAlloc`（`os/libs/minix-rt/src/alloc.rs::alloc`，size≥0x10000 走 `alloc_big`）收到一个 **~4 GiB（`0xfffe25c0`）** 的大分配请求 → 供给失败返回 null → `OOM-RT`。此后串口只剩 SCHED 的 `setalarm` 空转（`sa-call caller=0x4` ×N，`fl=0x12` 系 s_flags＝privilege 位非 rts）＝全系统进入 idle，分配失败的进程未能继续，`rc` marker 永不出。**这是与续-22 不同的、更下游的新阻塞**（续-22 修的是 IPC 消息 `m_type` 物化；本轮 0 mt=0 复证该腿已愈）。
+
+**成因画像＝len==ptr 同族（强指向·未坐实）**：`0xfffe25c0` 并非随机——它等于栈区 VA `0x7ffffffe25c0` 的**低 32 位**（而 `0x7ffffffe25c0 = memreq start=0x7ffffffe2578 + 0x48`）。即某**长度操作数被填入了一个栈指针值**。此签名精确命中 `alloc.rs:609` 记载的历史 NK4-C 13 轮 OOM：`memset(0x22e000, 0, 0x22e000)`（`len == dst 指针值`）。⇒ 高度怀疑 exec/fork 路径上某 copy/alloc 的 `len` 取自**错误的 message union 臂**（应为长度字段却读到指针槽）或某结构体 `len` 字段被上游毁值，喂 `minix-rt` 一个指针-sized 请求。⚠️ **具体哪个调用点、其 len 从哪个字段来，尚未坐实——纪律：未坐实不成修**，本轮不改码。
+
+**下一手（未来轮）**：装定向、非扰动探针——在 `alloc()` 命中 `size >= 0x8000_0000` 异常域时，fire-once 记录（a）caller endpoint/priv_id、（b）该 size 的上游来源（沿栈回溯或在下层 memcpy/brk/Vec 构造处对位），锁定被当长度使用的指针字段的确切产地；据结果再定最小修复（候选＝修正 union 臂读取/字段偏移，或对 alloc 入口加溢出/合理性守卫但须先证其为症状而非根因）。
+
+### 纪律（续-23）
+
+- 本轮**纯取证·零生产代码改**：仅 `git` 净态 fresh build+QEMU 复跑与日志分析；未装探针（既有 109 处 `nk4a:` 系前轮已提交的 boot 追踪脚手架，非本轮引入）。tracked 净。
+- 未坐实具体调用点前**不实施生产修复**（守 NK4-C ⚠️ 纪律）。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。aarch64 战线已从「boot 死锁（INIT 首子 NO_QUANTUM 不清）」推进至「shell 装载后 minix-rt ~4 GiB 大分配 OOM-RT 静止」，下一手攻该大分配的 `len` 来源（len==ptr 同族）。
