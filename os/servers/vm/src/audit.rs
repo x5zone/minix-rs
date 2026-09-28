@@ -83,7 +83,15 @@ pub(crate) fn emit_to_gateway(gw: &GatewayHandle, args: core::fmt::Arguments<'_>
             end -= 1;
         }
         let chunk = &text[start..end];
-        let _ = gw.borrow_mut().diag_write(chunk);
+        // try_borrow, not borrow_mut: an audit site can fire while a caller
+        // up the stack holds the gateway borrowed (CLEAR's dispatch keeps
+        // the RefMut across handle_procctl_clear, whose fdclose leg audits).
+        // Losing an audit record is the module's documented lesser evil
+        // (header contract: audit loss is never fatal); a panic here would
+        // take down the VM event loop instead.
+        if let Ok(mut gateway) = gw.try_borrow_mut() {
+            let _ = gateway.diag_write(chunk);
+        }
         start = end;
     }
 }

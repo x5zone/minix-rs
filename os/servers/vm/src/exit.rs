@@ -203,8 +203,9 @@ fn free_process_phys(
 ///
 /// C sequence: `free_proc(vmp)` → `pt_new(&vmp->vm_pt)` → `pt_bind(&vmp->vm_pt, vmp)`.
 /// Rust equivalent: free physical pages → clear regions → free old page table →
-/// init new page table. C's `pt_bind` step has no counterpart call here —
-/// see the Step 4 note below.
+/// init new page table → `sys_vmctl_set_addrspace` (C's `pt_bind`, whose
+/// substance is the kernel-side root re-registration — see the Step 4 note
+/// below).
 ///
 /// # Caller permission
 /// Only RS_PROC_NR and VFS_PROC_NR may call this (C: exit.c:131-132).
@@ -214,6 +215,7 @@ pub(crate) fn handle_procctl_clear(
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
     vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
+    gateway: &mut dyn crate::kernel_gateway::KernelGateway,
     endpoint: Endpoint,
 ) -> Result<(), VmProcctlError> {
     let slot = table.vm_isokendpt(endpoint).map_err(|_| VmProcctlError::InvalidEndpoint)?;
@@ -239,12 +241,31 @@ pub(crate) fn handle_procctl_clear(
     unsafe { proc.free_page_table(); }
     proc.init_page_table().map_err(|_| VmProcctlError::PageTableError)?;
 
-    // C's sequence ends with `pt_bind(&vmp->vm_pt, vmp)` (exit.c:137), whose
-    // substance is the `sys_vmctl_set_addrspace` root notification
-    // (pagetable.c:1421) plus i386 pagedir_mappings bookkeeping that Direct
-    // Map eliminates. The Rust arch-layer bind helper was a validated no-op
-    // and has been removed (07-paging_init_design D8-④); kernel-side root
-    // (re-)registration is carried by the VMCTL SetAddrSpace channel.
+    // Step 4: rebind the freshly created page-table root into the kernel.
+    // C: `pt_bind(&vmp->vm_pt, vmp)` (exit.c:137), whose substance is the
+    // `sys_vmctl_set_addrspace` VMCTL (pagetable.c:1421): the kernel handler
+    // stores `p_seg.phys_root` (C setcr3, arch_do_vmctl.c:19-33). This leg is
+    // mandatory for the same reason it is on the fork (`fork.rs:395-401`) and
+    // boot (`vm_server.rs:774-794`) paths: the kernel learns a process's root
+    // ONLY through VMCTL SetAddrSpace (`vmctl_set_addr_space` is the sole
+    // non-bootstrap writer of `p_seg.phys_root`; `dispatch_exec` never touches
+    // it). Skipping it here leaves the kernel pointing at the *pre-clear*
+    // root — which `free_page_table` just tore down — while VM maps the new
+    // image into the fresh root, so the exec'd child re-faults its first text
+    // page forever (NK4-C 续-35 root-cause: aarch64 VA 0x200000 memreq
+    // livelock). `pdes` (kernel-visible PDE alias) has no meaning under the
+    // Direct Map, so 0 travels as `virt_root = None` (same documented
+    // deviation as the fork/boot legs). C drops `pt_bind`'s return value and
+    // answers OK even when the kernel call failed — the silent staleness
+    // that let this bug hide; minix-rs propagates fail-closed through
+    // `InternalError` (same posture as the fork leg, fork.rs below).
+    let new_root_phys = <crate::pagetable::PageTable as crate::pagetable::Paging>::root_paddr(
+        proc.page_table_mut(),
+    )
+    .0;
+    gateway
+        .sys_vmctl_set_addrspace(endpoint, new_root_phys, 0)
+        .map_err(|_| VmProcctlError::InternalError)?;
 
     Ok(())
 }
@@ -473,9 +494,11 @@ mod tests {
         let mut frames = make_frames();
 
         // Invalid endpoint → EINVAL (C exit.c:122-125). Does not reach the
-        // page-table path (which needs real paging, B4 backlog).
+        // page-table path (which needs real paging, B4 backlog), so the
+        // gateway is never called here.
+        let mut gateway = crate::kernel_gateway::MockGateway::new();
         let result = handle_procctl_clear(
-            table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(), Endpoint::NONE,
+            table, &mut page_alloc, &mut frames, &mut crate::vfs_queue::VfsRequestQueue::new(), &mut gateway, Endpoint::NONE,
         );
         assert!(matches!(result, Err(VmProcctlError::InvalidEndpoint)));
     }

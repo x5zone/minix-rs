@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-35 交接轮（2026-09-28·工具切换至 GLM5.3·本 session 终止）**：**续-35 已交接至 GLM5.3**——根因定谳＝模式②（exec 0x200000 文本页无限 refault）＝`os/servers/vm/src/exit.rs::handle_procctl_clear` 换根（`free_page_table`+`init_page_table`）后**缺 C `exit.c:137 pt_bind` 对位腿＝未重发 `sys_vmctl_set_addrspace`**，内核 `p_seg.phys_root` 停留已 torn-down 旧根 A，VM 映进新根 B、CPU 走 A 永不命中。旁证：fork（`fork.rs:395-401`）/boot（`vm_server.rs:774-794`）两条腿都发 setaddr、惟 exec clear 腿跳过；内核 `vmctl_set_addr_space`（`syscall.rs:2911`）是 bootstrap 外唯一写 phys_root 者。x86 未暴露=x86 `destroy()` 归还页表页致 `pt_new` 复用同页（A==B 巧合正确）；aarch64 `destroy()`（`arm64/paging.rs:609-619`）只清零不还页→B≠A→暴露。**子代理 WIP（3 文件 +53/−12·untracked 存 `tmp/nk4a/nk4c35-pt-bind-wip.patch`·不进 commit）方向已真机坐实**：531 host tests pass·aarch64 QEMU 95s **0x200000 风暴归零（0 vs 基线 74015）·sas-send 触发 11 次·子真正运行新镜像·历史首达 init-state SingleUser**。**⚠ x86 回归未解**：装 patch 后 x86 QEMU `trap_dispatch.rs:955` kernel page fault（vector 14）·推测新根 `init_page_table` 后仅用户态映射无内核态映射·提前 bind→内核自身缺页——**GLM5.3 待解「何时/如何 bind 才双架构安全」**（三候选：补内核映射再 bind / x86 分支保留旧行为 / `dispatch_exec` 末尾补发 setaddr；C 安全因 i386 kernel PDE 全进程共享·minix-rs aarch64 无此共享）。**失败模式①（间歇 4GiB OOM）本轮不修**。**接手入口=`NK4C-GLM53-PROMPT.md`·详文见文末 §1.120续-35 交接节。基线 9ea95f8d8 代码不动·工作树净。**
+> **🛑 最新前沿＝§1.120续-36 修复轮（2026-09-28·GLM5.3·模式② pt_bind 已修复合提交·x86 回归证伪为幽灵）**：**②终修**＝`os/servers/vm/src/exit.rs::handle_procctl_clear` 换根（`free_page_table`+`init_page_table`）后补 C `exit.c:137 pt_bind` 对位腿＝`gateway.sys_vmctl_set_addrspace(endpoint, root_paddr, 0)`（对位 fork.rs:390-401 写法·`virt_root=None` 为 Direct Map documented deviation）·dispatcher.rs 穿 gateway 参·vm_server.rs 测试装 MockGateway 断言 setaddr 恰发一次+root 非 0。**续-35 交接所记「x86 trap_dispatch.rs:955 vector-14 回归」经本轮单核复跑证伪＝幽灵**：x86 4/4 轮（`-smp 1`）marker×2·零 panic·零 vector-14——子代理大概率撞 xtask 默认 `-smp 4` 的已知早期 SMP 崩；静态三重安全面核实：①`init_page_table` 非 test 分支本就 `map_kernel`（vmproc_handle.rs·kernel text/data/DM/ident 窗·注释明言 x86-64 invariant）②`vmctl_set_addr_space`（syscall.rs:2911）仅 target==当前 ptproc 才立即换 CR3·clear 场景 target=被 exec 子≠当前（VM）③Step5 `rts_unset(VMINHIBIT)` 因目标持 RECEIVING 不入队。**验证全绿**：docker minix-ci:1.94 `cargo test -p minix-vm --lib` 531/0（含新断言）·`-p minix-kernel --lib` 823/0·`-p minix-arch --lib` 243/0；rustfmt hunk 六文件全持平 HEAD（24/85/119/2/30/21）；clippy 零新告警；aarch64 QEMU **7/7 轮 0x200000 风暴归零**（基线 74015）·exec 子真跑新镜像（vm-pf 文本/数据页真实字节）·达 Runcom；x86_64 单核 4/4 轮 rc marker×2 不回归。CodeReview（子代理）＝0 BLOCKER/1 SHOULD-FIX/4 NIT 全采纳（audit.rs `try_borrow_mut` 防 `vm_acl_audit` 下 CLEAR 路径 RefCell 双借 panic·三处陈旧锚点修正·Step-4 补 fail-closed 姿态注·测试补 root 非 0 断言）。**⚠ aarch64 marker 仍被失败模式①（4GiB OOM）阻断且②修后未随之消失（7/7 轮 OOM-RT→子死→SingleUser·无 marker）＝①现为 aarch64 marker 唯一 blocker**——按主线预判进入「GLM 候选一寄存器通路判别」：配方已备=`NK4C-BUG-AARCH64-VEC-CAP-GLM.md §3(d)`（save/restore 点打 (nr,elr,sp_el0,x19,x24,x28) 验恢复点是否陷入边界）。详文见文末 §1.120续-36。**失败模式①本轮明示不修。**
+>
+> **（历史·§1.120续-35 交接轮（2026-09-28·工具切换至 GLM5.3）：根因定谳模式②＝`handle_procctl_clear` 换根后缺 C `exit.c:137 pt_bind` 对位腿＝未重发 `sys_vmctl_set_addrspace`·内核 `p_seg.phys_root` 停留已拆旧根 A·VM 映新根 B·CPU 走 A 永不命中。x86 未暴露=其 `destroy()` 全级回收还页致 `pt_new` 复用同页（A==B 巧合）；aarch64 `destroy()`（arm64/paging.rs:609-619）只清零不还页→B≠A 暴露。子代理 WIP patch（tmp/nk4a/nk4c35-pt-bind-wip.patch）方向真机坐实：531 tests·aarch64 风暴归零·历史首达 SingleUser。x86 回归报告（trap_dispatch.rs:955）→ 续-36 证伪为幽灵。详文见文末 §1.120续-35 交接节。）**
 >
 > **（历史·§1.120续-34b 对账轮（**外部 GLM 独立静态分析三候选 vs 续-34 真机状态逐项对账·纯对账零生产代码改零探针**：候选一（用户起源中断不存帧→恢复旧寄存器组）＝**值得独立探针判别**（系与页物化正交的寄存器通路·续-34 步进针读内存侧 `frame_size` 未区分「读陈旧页」与「恢复旧寄存器」两因；低成本配方＝GLM §3(d) 在 save/restore 点打 (pid,elr,sp_el0,x19,x24,x28) 验恢复点是否为陷入边界，惟次序上先待②修复后复跑看①是否随之消失）；候选二（16 字节对齐差）＝**保持怀疑·暂不投入**（已坐实①毒＝完整未拆分父栈指针、非半格错位读、QEMU 关严格对齐检查；其 `exec_msg.stack%16` 近零成本判别针随②复跑顺带采）；候选三（崩溃归属或在 exec 后 /bin/sh）＝**已被续-34 覆盖并证伪对本毒适用**（nk4r 崩溃前打印、毒落点在 init 侧 execve.rs）；§2 checked_add 论据修正与续-34 一致；**boot.rs ps_strings 布局分叉本轮独立核实属实**（boot.rs argc 槽宽 `size_of::<i32>()`=4 vs execve.rs `SLOT`=8、当前因 boot `n_argv/n_env` 恒 0 无害）＝**登记结构债备查**。**不改续-35 主攻方向（模式② 0x200000 活锁仍头号目标）**。详文见文末 §1.120续-34b。）**
 >
@@ -6717,3 +6719,74 @@ release init ELF 仅 321 符号（`nm` 已验·finish_grow@0x220d58→minix_rt::
 - 续-35 交接节为 **WORKLOG-only**；WIP patch 为 **untracked（不进 commit）**·基线 9ea95f8d8 代码不动。
 - 工具切换记录在此：本 session 终止·后续由 GLM5.3 执行续-35 修复。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
+
+---
+
+## §1.120续-36（2026-09-28）·模式② pt_bind 终修 + x86 回归证伪 + ①判别条件达成
+
+### A. 本轮任务与结论一览
+
+接手续-35 交接（入口 `NK4C-GLM53-PROMPT.md`）。三项结论：
+
+1. **②终修并提交**：`handle_procctl_clear` 补 `pt_bind` 对位腿，aarch64 0x200000 无限缺页活锁终结（7/7 轮风暴=0，基线 74015）。
+2. **x86 回归证伪为幽灵**：交接所记「装 patch 后 x86 `trap_dispatch.rs:955` vector-14 kernel page fault」在单核（`-smp 1`）下 4/4 轮复现不出（marker×2·零 panic·零 vector-14），交接 prompt 预设的「第一动作=复现它，别追幽灵」命中"复现不出"分支。
+3. **失败模式①（4GiB OOM Heisenbug）未随②消失**（7/7 轮触发）→ 主线预判的「②修好后复跑看①是否随之消失，若仍在再走 GLM 候选一寄存器通路判别」条件达成，判别配方已备（见 F 节）。
+
+### B. x86 幽灵回归的裁决过程（本轮第一动作）
+
+按交接纪律先复现：工作树净核验（HEAD=1e2418332·tracked 无 os/ 改动）→ `git apply tmp/nk4a/nk4c35-pt-bind-wip.patch` → 构建 x86 release 镜像 → QEMU 单核跑两轮（`tmp/nk4a/x86-t36-patch-{1,2}.serial`）：
+
+- 轮 1/轮 2：marker×2·`grep -ac 'vector|panic|pagefault'`=0·行数 10625/10628（签名一致）。
+- pt_bind 腿在 x86 确实执行：`sas-send`×19（含 boot 装机 11 次 + fork/clear 新增腿）·`exec endpt`×15·init-state Runcom→MultiUser。
+
+**静态三重安全面**（与复现结果互洽，也解释子代理报告的来历）：
+
+1. `vmproc_handle.rs::init_page_table` 的 `#[cfg(not(test))]` 分支**本就调 `map_kernel`**（kernel text/data + DM 窗 + UEFI 运行时恒等窗，注释明言"Every user process page table gets the same kernel mapping — this is a fundamental x86-64 invariant"）——交接推测「新根仅有用户态映射」不成立。
+2. `syscall.rs::vmctl_set_addr_space` Step 3 仅在 `target == 当前 ptproc` 时立即重载 CR3；clear 场景 target=被 exec 的子、当前 ptproc=VM（发出内核调用者），永不触发立即换根。
+3. Step 5 `rts_unset(VMINHIBIT)` 不入队：目标此刻持 RECEIVING（等 exec 回复），flags 不归零。
+
+**幽灵来源推断**：xtask `qemu` 的 x86 默认 `-smp 4`（qemu.rs:67），而 x86 早期 SMP 地形崩是已知非本悬案问题（本 WORKLOG 续-7 轮即有记录）；子代理未亲跑单核即报告。教训已入判例：**x86 验证必须单核，子代理的崩溃报告必须亲跑复现**。
+
+### C. 修复内容（3 文件核心 + CodeReview 追加 3 文件）
+
+核心（WIP patch 方向原样成立，格式修正后落地）：
+
+- `exit.rs::handle_procctl_clear`：加 `gateway: &mut dyn KernelGateway` 参；`free_page_table`+`init_page_table` 之后取 `Paging::root_paddr(proc.page_table_mut())` 发 `gateway.sys_vmctl_set_addrspace(endpoint, new_root_phys, 0)`；失败映射 `VmProcctlError::InternalError`（fail-closed，对位 fork 腿姿态）；函数 doc 与 Step-4 注释更新（含与 C 的姿态差异说明：C 丢弃 `pt_bind` 返回值正是本 bug 得以隐藏的原因）。
+- `ipc/dispatcher.rs::dispatch_procctl`：解构 `VmContext` 取 `gateway`，CLEAR 分支传 `&mut **gateway.borrow_mut()`（与 `dispatch_fork` 既有模式一致）。
+- `vm_server.rs`：`test_vfs_transid_routes_to_procctl_clear` 装 `SharedMockGateway`，断言 setaddr 恰发一次·目标 endpoint 正确·virt_root=0·root 非 0。
+
+CodeReview 追加修复（0 BLOCKER / 1 SHOULD-FIX / 4 NIT，全采纳）：
+
+- `audit.rs`（SHOULD-FIX）：`gw.borrow_mut()` → `gw.try_borrow_mut()`——CLEAR 派发在整条 match 期间持 gateway RefMut，`free_process_phys` 的 fdclose 审计点在 `vm_acl_audit` feature 下会对同一 RefCell 二次借用而 panic；审计丢失非致命是该模块文档化契约，try 失败即丢弃。
+- `fork.rs` / `vm_server.rs` / `kernel_gateway.rs`（NIT-3）：三处指向被本轮重写注释的陈旧锚点 `exit.rs:242-247` 修正为 `exit.rs handle_procctl_clear Step-4 note`（符号锚点取代行号锚点）。
+- `vm_server.rs` 测试（NIT-2）：补 `assert_ne!(sets[0].1, 0)`（fork 测试对位；防"发送 0 根"回归静默通过）。
+- NIT-5 仅记录不动作：C 的 `pt_free`/`pt_new` 复用同一 pt_dir（"Don't ever re-allocate"），Rust 换新根——外部等价因 rebind 通知内核任意根。
+
+### D. 验证记录（三件套全绿）
+
+- **host mock**（docker `minix-ci:1.94`）：`cargo test -p minix-vm --lib` 531/0（含新断言）·`-p minix-kernel --lib` 823/0·`-p minix-arch --lib` 243/0——与交接期望计数逐一相符。
+- **fmt**：`rustup run nightly rustfmt --edition 2024 --check` 六文件 hunk 数全部持平 HEAD（exit 24 / dispatcher 85 / vm_server 119 / audit 2 / fork 30 / kernel_gateway 21）；WIP patch 自带一处新增格式差异（`let new_root_phys` 重排）已修。
+- **clippy**：`-p minix-vm --lib` 告警全部落在未改动行（vm_server.rs L1361-2265 旧码），patch 区域零新告警。
+- **aarch64 QEMU**（`-machine virt,gic-version=3 -cpu cortex-a72 -smp 1`·95s·`tmp/nk4a/a64-t36-ptbind-{1..6}.serial`）：6 轮签名逐字稳定（4407/4407/4408/4407/4407 行）——`start=0x200000` memreq **0 次**（基线 74015）·`sas-send`=11·Runcom@~L4199·OOM-RT@~L4269·SingleUser@~L4355；exec 子真跑新镜像（vm-pf 落文本/数据页带真实字节）。
+- **x86_64 QEMU**（`-smp 1`·95s·`x86-t36-patch-{1,2}` + `x86-t36-final-{1,2}`）：4/4 轮 marker×2·零 panic·零 vector-14·行数 10625-10628——**无回归**。
+- **诚实协议**：fmt 修正与 CodeReview 追加修复后均重建镜像复跑（aarch64 r4/r5/r6·x86 final1/final2），commit 的 bits 即验证的 bits。
+
+### E. 失败模式①现状（本轮明示不修·判别条件达成）
+
+7/7 aarch64 轮全部触发：`rs-bigalloc size=0x7ffffffe25c0`→`OOM-RT`→子深栈下行缺页（fa 自 0x7ffffffe1… 逐页降至 0x7ffffffc6…）→子死→`init-state SingleUser`（无 marker）。**②修复后①未随之消失 ⇒ ①现为 aarch64 marker 的唯一 blocker**。因果链与续-34 定谳一致：`stack_params` 返回的 frame_size=栈地址·某 `&str .len()` 间歇为陈旧栈值。
+
+### F. 续-37 入口（下一手：①寄存器通路判别）
+
+判别探针配方已备于 `NK4C-BUG-AARCH64-VEC-CAP-GLM.md §3(d)`：在 `os/arch/src/arm64/trap_stub.rs::save_frame_to_context` 的每个调用站点与 `finish_and_restore` 恢复寄存器组之前各打一行 `(进程号, elr, sp_el0, x19, x24, x28)`（走既有 SYS_DIAGCTL 直达串口管道·限流去重·两次独立复跑签名一致才算数）。
+
+- 判**排除**：每次恢复行五元组都精确等于该进程最近一次保存行（elr 落在 svc 后继）。
+- 判**坐实**：任一恢复行 elr 非任何保存行出现过的地址，或寄存器组相对上次保存出现"旧值复活"（如 x19 重新变成 0x7ffffffe2 区指针而该值只在更早保存行出现过）。
+
+候选机制（GLM 静态分析候选一）：aarch64 用户起源 IRQ 腿（`trap_dispatch.rs::aarch64_user_body` L2017-2022 转发 `aarch64_kernel_body`）不存帧——x86 同位腿 `save_irq_frame_to_context` 是 NK4-A Task C 的承重不变量（真机 c19a-c21a 前科：RS 的 RBX 回卷致 `&self.table`=0 崩溃），aarch64 侧只靠注释"does not yet switch"承诺；任何该腿下的切换都会让进程从上一次 SVC 保存的旧寄存器组恢复，旧值中被调用者保存寄存器（x19-x28）装着栈上对象地址=毒值形状。
+
+### G. 纪律
+
+- fix-guard：改动前读目标 ±5 行（exit.rs/dispatcher.rs/vm_server.rs/audit.rs/fork.rs/kernel_gateway.rs 全读）；一次一腿验证后动手。
+- 探针零残留：本轮无临时探针入树（复现用现成镜像+serial 比对）；`tmp/nk4a/nk4c35-pt-bind-wip.patch` 保持 untracked。
+- commit 显式路径（7 文件：3 核心 + 3 锚点/审计 + WORKLOG）；CodeReview 子代理先行（0 BLOCKER）。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。aarch64 marker 现仅隔①一步。

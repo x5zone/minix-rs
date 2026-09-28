@@ -210,7 +210,7 @@ impl MessageDispatcher {
     ///
     /// Unknown param values return EINVAL (C: exit.c:149 default case).
     pub(crate) fn dispatch_procctl(ctx: &mut VmContext, caller: Endpoint, request: VmProcctlIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, gateway, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         // 1. `who` must be a valid endpoint.
@@ -236,7 +236,7 @@ impl MessageDispatcher {
                 if caller != Endpoint::RS && caller != Endpoint::VFS {
                     return VmReply::Error(VmError::PermissionDenied);
                 }
-                match exit::handle_procctl_clear(table, page_alloc, frames, vfs_queue, request.who) {
+                match exit::handle_procctl_clear(table, page_alloc, frames, vfs_queue, &mut **gateway.borrow_mut(), request.who) {
                     Ok(()) => VmReply::Ok,
                     Err(e) => VmReply::Error(VmError::from(e)),
                 }

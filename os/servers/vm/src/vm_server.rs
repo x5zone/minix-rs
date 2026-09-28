@@ -770,7 +770,7 @@ impl VmServer {
         // parked even after BOOTINHIBIT lifts (NK4-A fix25 forensics).
         // `pdes` (the kernel-visible PDE alias) has no meaning under the
         // Direct Map — 0 travels as `virt_root = None` (documented
-        // deviation, exit.rs:242-247).
+        // deviation, exit.rs `handle_procctl_clear` Step-4 note).
         let ptroot_phys =
             <crate::pagetable::PageTable as crate::pagetable::Paging>::root_paddr(
                 proc.page_table_mut(),
@@ -3372,6 +3372,18 @@ mod tests {
                 proc.regions_mut().insert(region).unwrap();
             }
 
+            // Swap in a Mock gateway: CLEAR now ends with C's `pt_bind`
+            // leg (`sys_vmctl_set_addrspace`, NK4-C 续-35), which the host
+            // build's default `DirectKernelCallTransport` cannot service.
+            // The shared handle lets the test assert the rebind fired.
+            let mock = alloc::rc::Rc::new(core::cell::RefCell::new(
+                crate::kernel_gateway::MockGateway::new(),
+            ));
+            server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
+                alloc::boxed::Box::new(SharedMockGateway(alloc::rc::Rc::clone(&mock)))
+                    as alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>,
+            ));
+
             let mut msg = Message::default();
             msg.m_source = VFS_PROC_NR; // P1 gate: VFS only (crate-local const)
             msg.m_type = 0xB01; // VFS_TRANSACTION_BASE + seq — the transid IS the type
@@ -3394,6 +3406,15 @@ mod tests {
             }
             let proc = table.get_active(slot).unwrap();
             assert_eq!(proc.regions().len(), 0, "CLEAR empties the address space");
+            // pt_bind leg: the fresh page-table root is rebound into the
+            // kernel for the target endpoint (virt alias 0 under Direct Map).
+            {
+                let sets = mock.borrow().addrspace_sets.borrow().clone();
+                assert_eq!(sets.len(), 1, "CLEAR must rebind the address space");
+                assert_eq!(sets[0].0, ep, "rebind targets the cleared process");
+                assert_ne!(sets[0].1, 0, "CLEAR must send a real root paddr");
+                assert_eq!(sets[0].2, 0, "Direct Map sends virt_root = None (0)");
+            }
         });
     }
 

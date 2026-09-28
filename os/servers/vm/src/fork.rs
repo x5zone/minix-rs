@@ -389,7 +389,8 @@ pub(crate) fn do_fork(
     // p_seg and clears RTS_VMINHIBIT (the pairing described above). `pdes`
     // (kernel-visible PDE alias) has no meaning under the Direct Map, so 0
     // travels as `virt_root = None` (same documented deviation as the boot
-    // path, exit.rs:242-247 / vm_server.rs:750-770). C panics on failure;
+    // path, exit.rs `handle_procctl_clear` Step-4 note / vm_server.rs:774-794).
+    // C panics on failure;
     // minix-rs propagates fail-closed (post-commit, same posture as the
     // sys_fork error above).
     let child_root_phys = <crate::pagetable::PageTable as crate::pagetable::Paging>::root_paddr(

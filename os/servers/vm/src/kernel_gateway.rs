@@ -207,7 +207,7 @@ pub(crate) trait KernelGateway {
     /// carries C's `pdes` kernel-visible alias; under the Direct Map the
     /// kernel walks from the physical root, so callers pass 0 and the
     /// kernel records `virt_root = None` (same deviation already
-    /// documented at exit.rs:242-247).
+    /// documented at exit.rs `handle_procctl_clear` Step-4 note).
     fn sys_vmctl_set_addrspace(
         &mut self,
         endpoint: Endpoint,
