@@ -11,6 +11,7 @@ use crate::pagetable::{PageFlags, PageTable, PageTableError, Paging};
 use crate::vfs_queue::{VfsQueueError, VfsReply, VfsRequest, VfsRequestQueue, VfsRequestState, VfsRequestType};
 use crate::fdref::FdRefTable;
 use crate::region::VrParam;
+use crate::phys_mem::PageAllocFlags;
 #[cfg(not(test))]
 use crate::direct_map::vm_phys_to_virt;
 #[cfg(not(test))]
@@ -290,6 +291,18 @@ pub(crate) fn alloc_and_map(
     let pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
         .map_err(|_| CowError::NoMemory)?;
 
+    // C `vrallocflags` (region.c:646-658) → `PAF_CLEAR` (alloc.c:452): every
+    // region not flagged `VR_UNINITIALIZED` allocates its demand pages with
+    // the CLEAR bit, and `alloc_mem` `sys_memset`s the frame to zero. So a
+    // fresh anon page must read back as zero — never the residue of a
+    // previously-freed physical frame (which can carry a stale stack address,
+    // the aarch64 mode① signature). `to_alloc_flags()` is the VrFlags→
+    // PageAllocFlags mapping mirroring C `vrallocflags`; we key the clear on
+    // its CLEAR bit rather than a hardcoded value.
+    if region.flags.to_alloc_flags().contains(PageAllocFlags::CLEAR) {
+        clear_phys_page(frames, pfn);
+    }
+
     // NOTE: If map_page could fail in the future, we would need to roll back:
     //   alloc.free_pfn(pfn);
     // Currently map_page is infallible (just sets slot + increments refcount).
@@ -298,6 +311,33 @@ pub(crate) fn alloc_and_map(
 
     Ok(pfn)
 }
+
+/// Zero a freshly allocated physical frame before it is mapped into a region
+/// that requires cleared pages (C `alloc_mem` + `PAF_CLEAR`, alloc.c:452).
+///
+/// # SAFETY (target builds)
+/// `pfn` refers to a frame that has just been handed out by the allocator and
+/// is not yet mapped anywhere. `pfn_to_phys` returns a page-aligned physical
+/// address, `vm_phys_to_virt` maps the whole direct region, so `[ptr,
+/// ptr + PAGE_SIZE)` is valid for a write of `PAGE_SIZE` bytes and exclusive
+/// to this frame.
+#[cfg(not(test))]
+fn clear_phys_page(frames: &PageFrames, pfn: u32) {
+    let phys = AlignedPhysBytes::new_unchecked(frames.pfn_to_phys(pfn).0);
+    let ptr = vm_phys_to_virt(phys).0 as *mut u8;
+    // SAFETY: see the function-level note — a valid, exclusive direct-map
+    // window of PAGE_SIZE bytes over a freshly allocated frame.
+    unsafe {
+        core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+    }
+}
+
+/// Host-test stub: memory content is not observable without a real direct
+/// map, so the zeroing is a no-op here (same split as `copy_page_content`).
+/// The CLEAR gate in `alloc_and_map` is still exercised; byte-level clearing
+/// verifies on target builds only.
+#[cfg(test)]
+fn clear_phys_page(_frames: &PageFrames, _pfn: u32) {}
 
 pub(crate) fn cow_resolve(
     region: &mut VirRegion,

@@ -54,10 +54,12 @@ bitflags::bitflags! {
 }
 
 impl VrFlags {
-    // V10-P2-1: no caller yet — the anon/contig-anon allocation paths
-    // currently build `PageAllocFlags` directly. Keep as the VrFlags→
-    // PageAllocFlags mapping (C: `VR_*` → `PAA_*` in alloc.c).
-    #[allow(dead_code)]
+    // VrFlags → PageAllocFlags mapping (C: `VR_*` → `PAF_*` in
+    // region.c:646-658 `vrallocflags`). Wired into `alloc_and_map`'s demand-
+    // page path: the CLEAR bit drives the fresh-frame zeroing that C's
+    // `alloc_mem` performs (alloc.c:452). The alignment bits (ALIGN64K/
+    // LOWER*) are not yet consumed by `alloc_pfn` (a separate deferred
+    // gap), but CLEAR is the semantically load-bearing one for anon pages.
     pub(crate) fn to_alloc_flags(self) -> PageAllocFlags {
         let mut af = PageAllocFlags::empty();
         if self.contains(Self::PHYS64K) { af |= PageAllocFlags::ALIGN64K; }
