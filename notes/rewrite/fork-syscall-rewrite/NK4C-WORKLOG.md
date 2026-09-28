@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-24 取证轮（**定向探针坐实大分配调用点＝init `read_file` 的 `Vec<u8>` grow**（v7 于 `minix_rt::alloc` 入口捕获 x30→`RawVecInner::finish_grow`·栈扫命中 `__rust_realloc`+`MinixSysHost::read_file`·`pid=14 prog=init`）。**len 来源双重反证＝非 VFS read 回复计数（v8：`read_via` 打印 `transferred>0x400` 跨跑零命中＝恒 ≤0x400；且 `m_type` 系 i32·结构上不可扩为 47 位正数 `0x7ffffffe25c0`）、非 read_file 自身 `cap/len/n`（v9：即便同跑 OOM 复现·循环内探针仍零命中）**⇒ 巨大 `new_cap` 由**外部写毁 init 栈/堆上 `body` Vec 头**（值＝delivermsg 栈页 VA `0x7ffffffe25xx`·同 `pdmv`/`memreq start`）·read_file 是受害者非加害者·**禁改其逻辑**。**推翻续-23「len==m_type 低 32 位」根因**与本轮前节「栈已破坏」误判（实为探针守卫常量 `2^42` < 栈 VA `2^47`·扫描腿从未跑·v6 修正常量后命中 25 代码样词＝栈完好）。**heisenbug 定性**：同镜像两跑一跑 OOM、一跑无 OOM 但 RS 自取致死 SIGSEGV→内核 `syscall_signal.rs:298` panic＝**跨进程内存安全竞态**（随堆/timing 漂移·两跑均稳定越旧死锁达 `init-state Runcom`＝前沿已推进）。⚠️ 外部写确切产地未坐实不成修（候选：VFS read data_copy 溢出 chunk／内核 eager 回执写 `p_delivermsg_vir` 落点别名 init 活帧／fork 父子共享陈旧页）。纯取证·alloc.rs/lib.rs/vfs.rs/host.rs 四探针 `git checkout` 全回滚·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-24。）**
+> **✅ 最新前沿＝§1.120续-25 取证轮（**PA 对比针推翻续-24 尾节候选 3「fork 父子共享/陈旧 delivermsg 页」**：`proc_table.rs` DELIVERMSG 腿对 `nr=0xc`+dst 嫌疑栈页 `0x7ffffffe2*` 同时用子 root 与 INIT root walk dst，**16/16 命中 `child_pa=0x45d09000 ≠ init_pa=0x42b78000·same=0`**＝CoW 语义正确（静态审计对位：`fork_region`→`setup_cow_for_all_regions` insert WRITABLE→`write_page_table_mappings`→`protect_cow_pages`→`sys_fork`→`set_addrspace`→`handle_memory_once(child)` needs_cow→`cow_resolve_core` 分配新帧·子页指向独立物理帧）。**同轮 OOM 仍复现**（纠正前会话「无 OOM」误记）：L4280 最后一次 `pa cmp dst=0x7ffffffe2578`→L4281 `rs-bigalloc size=fffe25c0`→L4283 `OOM-RT`＝污染产地在 CoW **之外**·未坐实。剩余候选：do-memory 服务腿（`memreq target=11 start=0x7ffffffe2578 len=0x50 ok=1`·`kdst copy` 未打印 dst VA）／VFS read `data_copy` 实际写入范围／pid=14↔slot 映射。**三架构盘点**：x86_64 镜像可构建（本轮未跑 QEMU·前节「trap_dispatch:981 预存 panic」vs「syscall.rs:935 caller_idx 新 panic」两说互斥待 fresh 定标）；aarch64 稳定达 Runcom→SingleUser→exec /bin/sh 卡 OOM；**riscv64 无全 OS 镜像路径**（xtask honest bail「启动路径不是 UEFI 盘形」·仅 U-Boot fatload 载体测 hello-boot）。⚠️ 目标不缩小。纯取证·`proc_table.rs` 探针 `git checkout` 回滚·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-25。）**
+>
+> **（历史·§1.120续-24 取证轮（**其尾节候选 3「fork 父子共享/陈旧 delivermsg 页」已被续-25 PA 对比针推翻（same=0 全 16 命中·CoW 正确）**；其「大分配调用点＝init `read_file` 的 `Vec<u8>` grow·`pid=14 prog=init`」与「len 来源＝外部写毁 body Vec 头（非 read 计数／非 read_file 输入）」结论仍成立）：定向探针 v7 于 `minix_rt::alloc` 入口捕获 x30→`RawVecInner::finish_grow`·栈扫命中 `__rust_realloc`+`MinixSysHost::read_file`。v8 反证 read 回复计数恒 ≤0x400（推翻续-23「len==m_type 低 32 位」）·v9 反证 read_file 自身 cap/len/n 均小值⇒ 巨大 `new_cap` 由外部写毁（值＝delivermsg 栈页 VA `0x7ffffffe25xx`同族）。heisenbug：同镜像两跑一跑 OOM、一跑无 OOM 但 RS 致死 SIGSEGV→内核 panic。纯取证·tracked 净·WORKLOG-only。）**
 >
 > **（历史·§1.120续-23 取证轮（**其「成因画像＝len==ptr·被填 m_type 低 32 位」根因已被续-24 v8 直接反证推翻**＝read 回复计数恒 ≤0x400·i32 不可扩为 47 位正数；其「rc marker 下游阻塞＝minix-rt ~4 GiB OOM」现象仍成立，调用点续-24 坐实至 init `read_file`）：续-22 修复 fresh 净态复验稳定（90s/240s 两跑 serial 逐字一致＝已静止非慢；双 `tc f05` INHERIT 达 SCHED、全程 0 条 `mt=0` 投递＝修复对两次 fork 均有效）：boot 越死锁达 `Runcom→SingleUser→exec /bin/sh`→shell 按需分页装载。静止前最后有效事件 `nk4a: rs-bigalloc size=0xfffe25c0`→`nk4c: OOM-RT`。纯取证·无代码改·tracked 净·WORKLOG-only。）**
 >
@@ -6206,3 +6208,64 @@ read_file 是**受害者不是加害者**，禁改其逻辑。候选产地（均
 - 未坐实外部写确切产地前**不实施生产修复**（守「未坐实不成修」）。
 - 修正前节两处误判并留痕：①「栈已破坏」＝探针守卫常量错误·扫描腿未跑（已作废）；②「len==m_type 低 32 位」＝v8 直接反证（read 计数恒 ≤0x400）＋类型论证（i32 不可扩为 47 位正数）。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。aarch64 战线：死锁已愈（续-22）→ 稳定达 `Runcom` → 现卡于「init `read_file` body Vec 头被外部写毁→~4 GiB OOM」与「RS 致死 SIGSEGV→内核 panic」的非确定性内存安全竞态。
+
+---
+
+## §1.120续-25 取证轮（2026-09-28）：PA 对比针**推翻续-24 尾节候选 3「fork 父子共享/陈旧 delivermsg 页」假设**（`same=0` 全 16 次命中一致·子 PA≠父 PA·CoW 语义正确）；同轮 OOM 复现（`rs-bigalloc size=fffe25c0`@L4281 紧接最后一次 `pa cmp dst=0x7ffffffe2578`@L4280）＝污染仍在但产地**已排除 CoW 腿**；同步三架构状态盘点（x86_64 镜像可构建·riscv64 xtask 明示「镜像暂不可装配：启动路径不是 UEFI 盘形」无全 OS 镜像路径）
+
+> 纯取证轮·探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据文件 `tmp/nk4a/a64-t32-pacmp.serial`（4426 行）。
+
+### A. PA 对比探针设计（对位续-24 候选 3「fork 父子共享 delivermsg 页 → 内核向子页写＝落进 INIT 活栈」）
+
+在 `os/kernel/src/proc_table.rs:1252` `process_misc_flags` 的 `DELIVERMSG` 分支入口，当 `nr.0==0xc`（INIT 首子·slot 12）且 dst 落在嫌疑栈页 `0x7ffffffe2*`（`dst>>12==0x07ff_ffff_e2`）时：从子 `p.p_seg.phys_root` 与 INIT(`ProcNr(0xb)`) `p_seg.phys_root` **分别** `walk(root, VirBytes(dst))`，打印 `dst / child_root / init_root / child_pa / init_pa / same=(child_pa==init_pa)`。探针门控 `#[cfg(all(not(feature = "mock"), not(test), target_arch = "aarch64"))]`，host mock tests 与 x86 编译不受影响。
+
+### B. 决定性证据：CoW 语义正确·父子同 VA 落**不同 PA**（推翻候选 3）
+
+t32-pacmp 跑共捕获 **16 次 `nk4g: pa cmp` 命中**，全部字面同：
+```
+nk4g: pa cmp dst=0x00007ffffffe2578 child_root=0x000000004016e000 init_root=0x0000000042ff4000
+      child_pa=0x0000000045d09000 init_pa=0x0000000042b78000 same=0x0000000000000000
+```
+（dst 在 `0x7ffffffe2098/2498/24f8/2538/2558/2578` 六个偏移上采样·`child_root`/`init_root`/`child_pa`/`init_pa`/`same` 五元组恒定不变。）
+
+⇒ **子页 PA=`0x45d09000`、父页 PA=`0x42b78000`·`same=0` 全 16 次命中一致**：
+- Fork eager CoW 已把子的 delivermsg 页指向**独立物理帧**，内核向子 slot 12 的 80 字节写落 `0x45d09000+off` **不会**踩进 INIT 的 `0x42b78000+off`。
+- 结合静态审计（`fork_region` 复制 slot+refcount++/写 RO PTE → `setup_cow_for_all_regions` `insert(VrFlags::WRITABLE)` 恢复 region 头 → `write_page_table_mappings` 子页表 RO → `parent.protect_cow_pages` 父 PTE 降级 RO → `sys_fork(PFF_VMINHIBIT)` + `sys_vmctl_set_addrspace` → `handle_memory_once(child, msgaddr, 80B, true)` 触发 `needs_cow=true` 走 `cow_resolve_core` 分配新帧 + `copy_page_content` + `sync_slot_pte` 更新子 PTE 指向新 PA），CoW **设计与实现均正确**。
+- **续-24 尾节候选 3（fork 父子共享/陈旧 delivermsg 页）作废**。
+
+### C. 同轮 OOM 仍复现＝污染产地在 CoW 之外·未坐实
+
+前节会话摘要误记「t32-pacmp 无 OOM」·本轮**核对纠正**：L4280 `pa cmp dst=0x7ffffffe2578`（最后一次 DELIVERMSG 到子 slot 12）之后**紧邻**：
+```
+L4281: nk4a: rs-bigalloc size=00000000fffe25c0  ptr=00000000000000000
+L4283: nk4c: OOM-RT size=fe25c0 slabs=005/400 big=00/00 px=005/400 fp=000/400
+```
+`size=0xfffe25c0` = 子/父 `p_delivermsg_vir` 所落栈页 VA `0x7ffffffe25c0`（= `dst=0x7ffffffe2578 + 0x48`·Message 头后第 9 个 word 槽）的**低 32 位**，与续-23/续-24 同签名。
+
+**但 CoW 已排除父子共享页**（`child_pa=0x45d09000 ≠ init_pa=0x42b78000`）⇒ 若 pid=14 prog=init 是 INIT(slot 0xb=11) 的重编号或 exec 后进程，其栈页 PA 应为 `0x42b78000` 或独立帧·**子 slot 12 的 80B 写 (`child_pa=0x45d09000`) 结构上不可能触达 `init_pa=0x42b78000` 或 pid=14 的私有帧**。
+
+**剩余候选产地**（均续-24 §E 中未穷尽者）：
+1. **do-memory 服务腿**：`memreq target=11 start=0x7ffffffe2578 len=0x50 ok=1`（PM 让内核代读写 INIT 内存 80B）·若 `kdst copy` 或 `copy_via_root_pages` 用错 root 则写会落到非 INIT 帧；同轮 tail 见大量 `kdst copy pa=0x42b7d918 len=0x2f`（INIT-侧物理地址·与 CoW 探针报出的 init_pa 同页），未打印写入 dst VA。
+2. **VFS read `data_copy` 溢出**（候选 1·未反证）：`transferred` 已由续-24 v8 反证恒 ≤0x400（read 计数不是来源），但 read 服务腿对 init 栈上 `chunk` 缓冲的**字节写入实际范围**仍未观察。
+3. **pid=14 与 slot 12/INIT 的映射关系**：pid 与 ProcNr/slot index 的对应需先钉死（`get(nr)` 索引链），方能对号入座「外部写」究竟指向谁的帧。
+
+⚠️ **未坐实产地不成修**：本轮不改生产代码·探针全回滚。
+
+### D. 三架构状态盘点（对位终目标① 三架构 rc marker）
+
+- **x86_64**：`cargo run -q -p xtask -- image --arch x86_64 --release` **构建成功**（`os/target/image/x86_64/minix.img` 就绪·ESP 布局 12 modules + kernel.elf + imgrd）；**本轮未跑 QEMU 取 fresh 权威终态**（前节摘要既提「trap_dispatch:981 VM pagefault panic 预存」又提「syscall.rs:935 caller_idx=96936968 新 panic」——两者互斥·需下一轮 fresh 单跑定标）。
+- **aarch64**：净态 boot **稳定越旧 NO_QUANTUM 死锁**达 `init-state Runcom`(L4202)→`SingleUser`(L4374)→exec `/bin/sh`→shell 按需分页装载；**卡在 init(pid=14) `read_file` body Vec 头被外部写毁→~4 GiB OOM 静止**（CoW 假设本轮已排除·产地未坐实）。
+- **riscv64**：**无全 OS 镜像构建路径**——`cargo run -q -p xtask -- image --arch riscv64` **honest bail**：`Error: riscv64 镜像暂不可装配：启动路径不是 UEFI 盘形（riscv64 走 U-Boot fatload + BootFileTable，载体机制见 os/qemu-tests/test-riscv64-uboot.sh）`。现存 `os/qemu-tests/test-riscv64-uboot.sh` 仅测 `hello-boot-riscv64` **载体机制**（U-Boot fatload + BootFileTable），**非全 OS 镜像**。**终目标①要求三架构 rc marker·riscv64 前置基础设施（xtask image --arch riscv64 走 U-Boot 或等价路径装配全 OS）尚未实现**。
+
+### E. 下一手（未来轮·按战线切分）
+
+- **aarch64**：装 do-memory 写观察针（`memreq target=11` 腿在 `copy_via_root_pages` 前打印 `(dst_va, root_phys, pa_after_walk, buf_len, buf[0..16])`）·锁定该 80B do-memory 是否把消息内容写入 INIT 帧（`init_pa=0x42b78000+0x578`）之外的错帧；若命中→修 do-memory 目标解析；若否→转向 VFS read 服务腿 `data_copy` 的**实际写入范围**（不同于 `transferred` 计数）。
+- **x86_64**：跑 fresh QEMU 取权威终态（净 HEAD·零探针），据实判定「trap_dispatch:981 预存 VM pagefault panic」是否仍是唯一阻塞·若是则攻此腿·若已冒出 syscall.rs:935 caller_idx 越界新 panic 则先定 caller_idx 产地（`nr_to_idx(caller_nr).expect()` 前 caller_nr 是否已 corrupt·trap 帧入口值 vs panic 值对账）。
+- **riscv64**：**先补基础设施**——xtask `image --arch riscv64` 需装配一个可被 `test-riscv64-uboot.sh` 中 U-Boot `fatload`+`bootelf` 消费的**完整 OS 镜像**（kernel.elf + modules/×12 + imgrd 入 FAT 分区）；然后接 IPC 桥（对位 §1.112 aarch64 路径 · riscv64 用户门控 + 内核 `riscv64_user_body` 原始 IPC 派发体）。**这是终目标① 的必做前置**·不可缩小。
+
+### 纪律（续-25）
+
+- 本轮**纯取证·零生产代码改**：`os/kernel/src/proc_table.rs` 探针 `git checkout` 回滚·tracked 净（`git status --short` 无 M）；`grep nk4g os/kernel os/servers`=0。
+- 未坐实外部写确切产地前不实施生产修复。
+- **修正续-24 尾节候选 3**：fork eager CoW **已排除**（PA 对比 16/16 same=0）。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。aarch64 战线：CoW 假设已排除·仍攻 do-memory/VFS read 服务腿外部写。riscv64 战线：需先补 xtask 全 OS 镜像装配基础设施。x86_64 战线：需 fresh 权威终态定标（前节两说互斥）。
