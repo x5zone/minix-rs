@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-29 取证轮（**用户侧地址探针推翻 read_file 归因**：nk4j 于 `MinixSysHost::read_file` 逐轮打印·二进制已验编入（strings 命中 3）·但本轮 OOM 仍现（L4268 `size=fffe25c0`→`OOM-RT`）而 **nk4j=0**⇒read_file（仅 driver.rs:78 TTYS + main.rs:158 /etc/passwd 两处调）从未进入⇒**推翻续-24 v7/续-27/28 将产地归为 read_file body**。静态重定位：poison bigalloc 前为 `0x7ffffffc6…cf` 深栈 vm-pf 级联（与 INIT pdmv 栈区 `0x7ffffffe2` **不同进程/不同栈**）⇒真 ~4GiB Vec 属一个子进程/leg exec 栈组装腿（候选 execve.rs:297 try_reserve_exact）。另静态纠正续-28：“deferred 回退腿”实为 **Path A 设计延迟**（`ipc.rs:1358-1374` mini_send 匹配 parked 接收者本就直写内核 p_delivermsg+置 MF_DELIVERMSG、不同步拷用户缓冲·对位 C proc.c:901-913），“同步拷贝失败”不成立作废。保留硬事实：INIT 仍有 `mt` 非法投递（续-28 nk4i）。下轮＝`minix-rt/alloc.rs` bigalloc 臂打印 pid/progname+FP 链定真产地进程。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-29。）**
+> **✅ 最新前沿＝§1.120续-30 取证轮（**产地进程探针定谳真受害者＝fork+exec 子（slot 12/nr 0xc）·非 INIT/read_file**：nk4k（alloc.rs bigalloc 臂打 pid+FP 链）自身因 getpid/x29 走链在已毁上下文页故障未输出（nk4k=0）·但邻域内核行决定性：`rs-bigalloc size=fffe25c0`（L4347）紧接 `w-finw va=0x7ffffffc63a8 root=0x4016e000`（**子栈区 0x7ffffffc6 ≠ INIT 0x7ffffffe2**）→`pf-exit noaddr cr2=0x38`→`csig tgt=0xc sig=0xb` SIGSEGV→slot 12。根因链统一：INIT 在 pdmv=0x2578（≥实时sp）收到 mt 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`）+word[9]@0x25c0 携陈旧栈指针消息（Path A 设计延迟腿）→污染 INIT 自栈→**fork CoW 遗传至子**→子将含 0x7ffffffe25c0 内存当 Vec cap→~4GiB alloc_big 失败→null→SIGSEGV。真修点在**投递侧**（INIT 不应收到非法 mt/陈旧内容）·非子侧·非 read_file。下轮＝`ipc.rs:1372` Path A 沉降点与 `delivermsg` 两端夹逼打印 `(dst_nr,src_ep,m_type,word[0..2],word[9])` 定非法 mt 那笔的来源发送者/构造腿。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-30。）**
+>
+> **（历史·§1.120续-29 取证轮（**用户侧地址探针推翻 read_file 归因**：nk4j 于 `MinixSysHost::read_file` 逐轮打印·二进制已验编入（strings 命中 3）·但本轮 OOM 仍现（L4268 `size=fffe25c0`→`OOM-RT`）而 **nk4j=0**⇒read_file（仅 driver.rs:78 TTYS + main.rs:158 /etc/passwd 两处调）从未进入⇒**推翻续-24 v7/续-27/28 将产地归为 read_file body**。静态重定位：poison bigalloc 前为 `0x7ffffffc6…cf` 深栈 vm-pf 级联（与 INIT pdmv 栈区 `0x7ffffffe2` **不同进程/不同栈**）⇒真 ~4GiB Vec 属一个子进程/leg exec 栈组装腿（候选 execve.rs:297 try_reserve_exact）。另静态纠正续-28：“deferred 回退腿”实为 **Path A 设计延迟**（`ipc.rs:1358-1374` mini_send 匹配 parked 接收者本就直写内核 p_delivermsg+置 MF_DELIVERMSG、不同步拷用户缓冲·对位 C proc.c:901-913），“同步拷贝失败”不成立作废。保留硬事实：INIT 仍有 `mt` 非法投递（续-28 nk4i）。下轮＝`minix-rt/alloc.rs` bigalloc 臂打印 pid/progname+FP 链定真产地进程。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-29。）**
 >
 > **（历史·§1.120续-28 取证轮（**SP 对账针定谳 aarch64 OOM 投递走 deferred 回退腿**：`proc_table.rs` DELIVERMSG 臂对 INIT（nr=0xb）嫌疑栈页投递打印 pdmv/实时用户 SP（cpu_context.sp 偏移16）/rts/gf/mt/word[9]——**pdmv(0x2578)≥实时 sp(0x2548/0x2578)**（目标在活帧内/上·距帧底≤0x30·**推翻续-27 候选甲朴素形态「陈旧深帧 pdmv」**）；投递 `mt` 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`·非正常 read 回复·续-22 mt=0 同族仍现形）且 `word[9]`@0x25c0 携 INIT 自栈指针 `0x2888`/`0x298d`（与 OOM size 0xfffe25c0 逐字同址）；nk4i 仅在 process_misc_flags DELIVERMSG 臂触发⇒INIT 这批投递**全走 deferred 回退腿**（`ipc.rs:1705` 同步 `copy_msg_to_user` 失败→`1710` 沉降 `p_delivermsg`+`MF_DELIVERMSG`→下次 pick 回写）。新尖：**同步拷贝为何独对 INIT 失败**（疑 reply 到达时当前 root 非 INIT 页表）。产地类收敛＝deferred 腿在 INIT 帧推进后回写非法 mt+陈旧尾指针 80B 消息·足迹上沿落 read_file 活帧。下轮＝`ipc.rs:1705` 失败分支加非扰动针（caller_nr+pdmv+current_root_phys+错码）坐实寻址/mt 两成因再最修。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-28。）**
 >
@@ -6426,3 +6428,43 @@ poison bigalloc（L4268）前上下文（L4253–4267）：一串 `vm-pf` 缺页
 - 诚实推翻旧归因：read_file 非产地（续-24 v7/续-27/28 归因均修正）；Path A 本就设计延迟（非同步拷贝失败）。
 - 未坐实真产地进程/腿前不猜改生产码。
 - 资源裁决：aarch64 本 OOM 为跨进程内存安全 heisenbug、8+ 取证轮多次伪证先前亚假设；为朝**完整终目标**稳健推进·本 turn 后并行开扳 riscv64 镜像装配基础设施（终目标① 必需项·确定性工程）。⚠️ 三目标不缩小：x86_64 单核①已克·aarch64①待 OOM 坐实·riscv64①待镜像装配·18-stage/minix3 tests 待前三链贯通。
+
+---
+
+## §1.120续-30 取证轮（2026-09-28）：产地进程探针定谳真受害者＝**fork+exec 子（slot 12/nr 0xc）**非 INIT/read_file（poison bigalloc 紧接 `w-finw va=0x7ffffffc63a8`·**子栈区**≠INIT `0x7ffffffe2`）→`pf-exit noaddr cr2=0x38`→`csig tgt=0xc sig=0xb` SIGSEGV）；根因链统一：INIT 收到 mt 非法+陈旧尾指针消息→毁 INIT 自栈局部→fork CoW 遗传至子→子 Vec 头读出 cap=0x7ffffffe25c0→~4GiB OOM
+
+> 纯取证轮·探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据文件 `tmp/nk4a/a64-t42-proc.serial`（OOM 复现 L4347 `rs-bigalloc size=fffe25c0`）。
+
+### A. nk4k 探针本身故障（但邻域内核行仍决定性）
+
+nk4k 在 `alloc.rs` bigalloc 臂 `size>=0x10000000` 时调 `minix_sys::getpid()` + 走 x29 帧链打 pid/ret。实跑 **nk4k=0**——getpid 需 sendrec(PM)·而崩溃现场栈/堆已毁（且 release 默认帧指针省略使 x29 走链读非法地址先于写发生 fault）⇒探针自身在受害者上下文页故障·未输出。此本身即旁证：分配发生在**已损坏的进程上下文**。
+
+### B. 邻域内核行定谳受害者＝子 slot 12
+
+rs-bigalloc（L4347）前后：
+```
+L4344: vm-pf bytes 696e697400000000  fa=0x254019   (bytes "init\0")
+L4346: vm-pf bytes 0400000000000000  fa=0x255080   (bytes " rlang")
+L4347: rs-bigalloc size=fffe25c0  ptr=0
+L4348: w-finw n=0x2d va=0x00007ffffffc63a8 root=0x4016e000 pa=0x45ced3a8
+L4350: pf-exit noaddr cr2=0x38
+L4351: csig tgt=0x0c sig=0x0b        (SIGSEGV→slot 12)
+```
+- **`w-finw va=0x7ffffffc63a8`**：崩溃现场活访在**子进程栈区 `0x7ffffffc6`**·与 INIT pdmv 栈区 `0x7ffffffe2` **不同**。`root=0x4016e000` 非 INIT 页表。
+- **`csig tgt=0xc`**：SIGSEGV 目标 = slot 12 = INIT 首个 fork 子（nr 0xc）。⇒ **~4GiB OOM+崩溃发生在子进程**（非 INIT·非 read_file）。
+- **poison size 值 `0x7ffffffe25c0`** = INIT 消息投递足迹上沿地址（续-28 word[9] 写入处）——子读为一个 Vec cap ⇒子继承了一份含 INIT 栈地址值的头。
+
+### C. 根因链统一
+
+INIT 侧（续-28 nk4i）：在 `pdmv=0x7ffffffe2578`（≥实时 sp）收到多笔 **mt 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`）+ word[9]@0x25c0 携陈旧栈指针** 的消息（Path A 设计延迟腿交付）→**污染 INIT 自己栈上局部/指针**。init 后续 fork → CoW 遗传该物理页给子 slot 12 → 子在 exec/运行期将含 `0x7ffffffe25c0` 的内存当 Vec cap → `reserve`→~4GiB `alloc_big`失败→null→解引用 SIGSEGV。**产地类从续-29「子进程不明腿」收紧为：INIT 非法消息投递污染自身栈→fork 遗传至子→子 OOM**。
+
+### D. 成修目标（下轮坐实）
+
+真修点在**投递侧**（INIT 不应收到 mt 非法/陈旧内容）·非子侧·非 read_file（已排除）。续-22 曾在 minix-sys 边界 `commit_message_to_memory` 强制物化修 mt=0——本轮 `mt=0xe/0xf/0xffffffb2`+陈旧 word[9] 仍现⇒需坐实：① 这些非法 mt 消息到底是谁（VFS 真实回复？还是 stray notify/错误 drain 把 INIT 自发出请求 echo 回？）；② 为何 p_delivermsg 高位 word 携 INIT 自栈指针。取证针候选：在 Path A 沉降点（`ipc.rs:1372`）与 `delivermsg` 两端夹逼打印 `(dst_nr, src_ep, m_type, word[0..2], word[9])`·对“mt=非法”那笔定其来源发送者与消息构造腿。
+
+### 纪律（续-30）
+
+- 本轮**纯取证·零生产代码改**：`os/libs/minix-rt/src/alloc.rs` nk4k 探针 `git checkout` 回滚·tracked 净（`grep nk4k os/libs`=0）。
+- 重推旧归因：受害者＝子 slot 12（非 INIT read_file）；根因链收敛至 INIT 非法消息投递→污染自栈→fork 遗传。
+- 未坐实非法 mt 消息来源发送者/构造腿前不猜改生产码（投递腿风险波及全系统 IPC）。
+- ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①卡本子继承 OOM（产地已收紧至投递侧）；riscv64①待镜像装配。
