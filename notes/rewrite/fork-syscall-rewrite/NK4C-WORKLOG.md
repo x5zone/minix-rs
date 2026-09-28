@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-28 取证轮（**SP 对账针定谳 aarch64 OOM 投递走 deferred 回退腿**：`proc_table.rs` DELIVERMSG 臂对 INIT（nr=0xb）嫌疑栈页投递打印 pdmv/实时用户 SP（cpu_context.sp 偏移16）/rts/gf/mt/word[9]——**pdmv(0x2578)≥实时 sp(0x2548/0x2578)**（目标在活帧内/上·距帧底≤0x30·**推翻续-27 候选甲朴素形态「陈旧深帧 pdmv」**）；投递 `mt` 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`·非正常 read 回复·续-22 mt=0 同族仍现形）且 `word[9]`@0x25c0 携 INIT 自栈指针 `0x2888`/`0x298d`（与 OOM size 0xfffe25c0 逐字同址）；nk4i 仅在 process_misc_flags DELIVERMSG 臂触发⇒INIT 这批投递**全走 deferred 回退腿**（`ipc.rs:1705` 同步 `copy_msg_to_user` 失败→`1710` 沉降 `p_delivermsg`+`MF_DELIVERMSG`→下次 pick 回写）。新尖：**同步拷贝为何独对 INIT 失败**（疑 reply 到达时当前 root 非 INIT 页表）。产地类收敛＝deferred 腿在 INIT 帧推进后回写非法 mt+陈旧尾指针 80B 消息·足迹上沿落 read_file 活帧。下轮＝`ipc.rs:1705` 失败分支加非扰动针（caller_nr+pdmv+current_root_phys+错码）坐实寻址/mt 两成因再最修。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-28。）**
+> **✅ 最新前沿＝§1.120续-29 取证轮（**用户侧地址探针推翻 read_file 归因**：nk4j 于 `MinixSysHost::read_file` 逐轮打印·二进制已验编入（strings 命中 3）·但本轮 OOM 仍现（L4268 `size=fffe25c0`→`OOM-RT`）而 **nk4j=0**⇒read_file（仅 driver.rs:78 TTYS + main.rs:158 /etc/passwd 两处调）从未进入⇒**推翻续-24 v7/续-27/28 将产地归为 read_file body**。静态重定位：poison bigalloc 前为 `0x7ffffffc6…cf` 深栈 vm-pf 级联（与 INIT pdmv 栈区 `0x7ffffffe2` **不同进程/不同栈**）⇒真 ~4GiB Vec 属一个子进程/leg exec 栈组装腿（候选 execve.rs:297 try_reserve_exact）。另静态纠正续-28：“deferred 回退腿”实为 **Path A 设计延迟**（`ipc.rs:1358-1374` mini_send 匹配 parked 接收者本就直写内核 p_delivermsg+置 MF_DELIVERMSG、不同步拷用户缓冲·对位 C proc.c:901-913），“同步拷贝失败”不成立作废。保留硬事实：INIT 仍有 `mt` 非法投递（续-28 nk4i）。下轮＝`minix-rt/alloc.rs` bigalloc 臂打印 pid/progname+FP 链定真产地进程。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-29。）**
+>
+> **（历史·§1.120续-28 取证轮（**SP 对账针定谳 aarch64 OOM 投递走 deferred 回退腿**：`proc_table.rs` DELIVERMSG 臂对 INIT（nr=0xb）嫌疑栈页投递打印 pdmv/实时用户 SP（cpu_context.sp 偏移16）/rts/gf/mt/word[9]——**pdmv(0x2578)≥实时 sp(0x2548/0x2578)**（目标在活帧内/上·距帧底≤0x30·**推翻续-27 候选甲朴素形态「陈旧深帧 pdmv」**）；投递 `mt` 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`·非正常 read 回复·续-22 mt=0 同族仍现形）且 `word[9]`@0x25c0 携 INIT 自栈指针 `0x2888`/`0x298d`（与 OOM size 0xfffe25c0 逐字同址）；nk4i 仅在 process_misc_flags DELIVERMSG 臂触发⇒INIT 这批投递**全走 deferred 回退腿**（`ipc.rs:1705` 同步 `copy_msg_to_user` 失败→`1710` 沉降 `p_delivermsg`+`MF_DELIVERMSG`→下次 pick 回写）。新尖：**同步拷贝为何独对 INIT 失败**（疑 reply 到达时当前 root 非 INIT 页表）。产地类收敛＝deferred 腿在 INIT 帧推进后回写非法 mt+陈旧尾指针 80B 消息·足迹上沿落 read_file 活帧。下轮＝`ipc.rs:1705` 失败分支加非扰动针（caller_nr+pdmv+current_root_phys+错码）坐实寻址/mt 两成因再最修。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-28。）**
 >
 > **（历史·§1.120续-27 取证轮（**投递内容级探针定谳 aarch64 OOM 产地类＝INIT 自身 `p_delivermsg_vir`=0x7ffffffe2578 的 80B 消息投递足迹上沿覆盖其 `read_file` 活帧局部**：`proc_table.rs` DELIVERMSG 腿对嫌疑栈页投递 dump 全 10 word，INIT（nr=0xb）多次投递至 pdmv=0x2578，**word[9]（消息 offset 0x48→VA 0x25c0）携带栈指针值 0x7ffffffe2888/0x7ffffffe298d**——0x25c0 与 OOM size 0xfffe25c0（=0x7ffffffe25c0 低 32 位）逐字同址；全嫌疑页投递 `rts=0x0`（RECEIVING 0x08 未置）·非跨进程/非 CoW（续-25 已排除）。产地类从续-25「CoW 之外的未定外部写」收紧为「INIT 自身 80B 消息投递足迹上沿（offset0x48→VA0x25c0）覆盖 read_file body Vec 头」·余一步 SP 对账即可分岐**候选甲（内核陈旧 pdmv·MF_DELIVERMSG/RECEIVING 生命周期缺陷）** vs **候选乙（用户侧 minix-sys read sendrec 80B Message alloca 与 body 栈布局碰撞）**。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-27。）**
 >
@@ -6393,3 +6395,34 @@ nk4i: dl pdmv=0x...e2578 sp=0x...e2578 rts=0x0 gf=0x0 mt=0xf        w9=0x...e298
 - 未坐实①/②确切成修点前不猜改生产 IPC 码（风险波及 x86 已克链与其它 server IPC）。
 - 前沿推进：OOM 机制从续-27「INIT 自身 80B 投递足迹覆盖 body」精化为「**deferred 回退腿**（同步 copy_msg_to_user 失败）在 INIT 帧推进后回写非法 mt+陈旧尾指针消息·足迹上沿落 read_file 活帧」·并抛出新尖「同步拷贝为何独对 INIT 失败」。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。x86_64 单核① 已克（续-26）；aarch64 卡本 deferred-投递 OOM（距 marker 最近）；riscv64 无全 OS 镜像路径（需补 xtask 基础设施·属确定性工程·可与本 heisenbug 并行推进）。
+
+---
+
+## §1.120续-29 取证轮（2026-09-28）：**用户侧地址探针推翻 read_file 归因**（nk4j 在 `MinixSysHost::read_file` 装逐轮打印·**本轮 OOM 仍现但 nk4j 零触发**⇒read_file 根本未被调）；静态定位 poison bigalloc 前为 `0x7ffffffc6…0x7ffffffcf` **深栈 vm-pf 级联**（与 INIT 的 `0x7ffffffe2` 不同进程/不同栈）；纠正续-28「同步拷贝失败走 deferred」为 **Path A 直投本就设计延迟**
+
+> 纯取证轮·探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据文件 `tmp/nk4a/a64-t40b-useraddr.serial`（4410 行·OOM 复现 L4268 `rs-bigalloc size=fffe25c0`→L4269 `OOM-RT`·nk4j=0）。二进制已验 `strings target/aarch64-unknown-none/release/minix-init | grep -c nk4j`=3（探针确编入）。
+
+### A. 决定性否定：read_file 非产地
+
+nk4j 探针（`host.rs` `MinixSysHost::read_file` 循环内逐轮 `sys_diagctl_write` 打印 `&body`头/ptr/cap/len/`&chunk`）与 rs-bigalloc 同用 minix-rt 诊断腿（后者本轮正常输出）⇒探针已编入且诊断输出链可用。**但 nk4j 命中 0 次而 OOM 现形**⇒`read_file`（仅 `driver.rs:78` TTYS 与 `main.rs:158` /etc/passwd 两处调用）**本轮从未进入** ⇒ **推翻续-24 v7 栈回溯将产地归为 `read_file::extend_from_slice`、推翻续-27/28「覆盖 read_file body 局部」**。v7 归因属启发式误判。
+
+### B. 产地重新定位：非 INIT 自栈
+
+poison bigalloc（L4268）前上下文（L4253–4267）：一串 `vm-pf` 缺页**沿栈向下逐页**（`fa=0x7ffffffcf4f8→ce4f8→…→c64f8`·等差 0x1000共 10+ 页）后接 `fa=0x252e70/0x242e96/0x254019`(bytes "init\0")/`0x256000`/`0x255080`(bytes " rlang")⇒一个**栈基在 `0x7ffffffc6…0x7ffffffcf` 区**的进程正在首次触碰深栈页（典型 exec 新进程/大帧）并读含 "init"/"lang" 的文件数据。与 INIT 自身 pdmv 栈区 `0x7ffffffe2` **不同**⇒受污染的 ~4GiB `Vec` **属于一个不同进程/不同栈**（很可能是 init fork+exec 出的子进程·其 exec 栈组装腿 `execve.rs`）。
+
+### C. 纠正续-28「deferred」措辞
+
+静态复核 `ipc.rs:1358-1374`（mini_send Path A：发送匹配已 parked 接收者）：**本就直接写内核 `p_delivermsg`+置 `MF_DELIVERMSG`、不同步拷用户缓冲**（对位 C proc.c:901-913）——非「`copy_msg_to_user` 同步拷贝失败后回退」。INIT 的 sendrec 回复到达时走的正是这条**设计延迟腿**（下次 pick 由 `process_misc_flags` DELIVERMSG 臂 `delivermsg` 写回 pdmv）。续-28 的「新尖＝同步拷贝为何独对 INIT 失败」**不成立**·作废。
+
+### D. 定论与下一步
+
+- **保留的硬事实**：INIT 在 `pdmv=0x7ffffffe2578`（≥实时 sp）收到多笔 `mt` 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`）且 `word[9]`@0x25c0 携栈指针的消息（续-28 nk4i）——INIT 自身投递腿仍有可疑非法消息。
+- **新硬事实**：真 ~4GiB OOM 不在 read_file·而在一个栈基 `0x7ffffffc6-cf` 的不同进程（子/leg exec 栈组装）。两者可能同根（跨进程投递/栈页重叠），但需先坐实**哪个进程/哪条腿**分配。
+- **下轮取证（直接坐实产地进程）**：在 `minix-rt/src/alloc.rs` bigalloc 臂拓打印当前 `pid`/`progname` + 一路 FP 链（对位续-24 v6 修正上界版）·以真符号定进程与调用腿（候选：`execve.rs:297 try_reserve_exact(frame_size)` 新栈组装／某子进程文件读）。
+
+### 纪律（续-29）
+
+- 本轮**纯取证·零生产代码改**：`os/commands/sbin/init/src/host.rs` nk4j 探针 `git checkout` 回滚·tracked 净（`grep nk4j os/commands`=0）。
+- 诚实推翻旧归因：read_file 非产地（续-24 v7/续-27/28 归因均修正）；Path A 本就设计延迟（非同步拷贝失败）。
+- 未坐实真产地进程/腿前不猜改生产码。
+- 资源裁决：aarch64 本 OOM 为跨进程内存安全 heisenbug、8+ 取证轮多次伪证先前亚假设；为朝**完整终目标**稳健推进·本 turn 后并行开扳 riscv64 镜像装配基础设施（终目标① 必需项·确定性工程）。⚠️ 三目标不缩小：x86_64 单核①已克·aarch64①待 OOM 坐实·riscv64①待镜像装配·18-stage/minix3 tests 待前三链贯通。
