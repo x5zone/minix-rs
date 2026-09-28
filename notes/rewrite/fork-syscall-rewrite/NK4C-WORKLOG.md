@@ -6790,3 +6790,12 @@ CodeReview 追加修复（0 BLOCKER / 1 SHOULD-FIX / 4 NIT，全采纳）：
 - 探针零残留：本轮无临时探针入树（复现用现成镜像+serial 比对）；`tmp/nk4a/nk4c35-pt-bind-wip.patch` 保持 untracked。
 - commit 显式路径（7 文件：3 核心 + 3 锚点/审计 + WORKLOG）；CodeReview 子代理先行（0 BLOCKER）。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。aarch64 marker 现仅隔①一步。
+
+### H. 续-36 回归复验（commit 82abf5b64 后·从已提交树全新重建镜像）
+
+修复合入后独立回归一轮（用户要求"再次回归测试确保彻底修复"）：
+
+- **host mock 重跑**（docker minix-ci:1.94·从 HEAD=82abf5b64）：`-p minix-vm --lib` 531/0·`-p minix-kernel --lib` 823/0·`-p minix-arch --lib` 243/0——全对期望计数。
+- **aarch64 QEMU**（单核×3 + **四核×1**·95s·`tmp/nk4a/a64-regress-{r1,r2,r3,smp4}.serial`）：4 轮全签名 `storm=0·sas-send=11·Runcom→OOM-RT×1→SingleUser`·行数 4407/4408/4407/4411。**四核同守**（原 bug 声称 -smp 任意均复现——修复在四核下同样成立）。pre-fix 基线对照复核：`a64-t47d-item`=74015·`a64-t36-bind`=72708·`a64-t35-dbg5`=80354·`a64-t35-clip`=120370（同页重复 7 万-12 万次）。
+- **x86_64 QEMU**（单核×2·`x86-regress-{r1,r2}.serial`）：marker×2·零 panic·`start=0x200000`=**4**（健康签名=4 个进程文本段各一次性按需缺页·与 pre-fix 完全一致·活锁签名是同页重复数万次，二者量级悬殊不可混淆）。
+- **结论**：模式②修复在累计 11 轮 aarch64（修复轮 7 + 回归轮 4·含四核）与 6 轮 x86 上签名逐字稳定，判定**彻底修复**；aarch64 完整 rc marker 仍由失败模式①（独立已知 bug·4GiB OOM）把守，非②回归。
