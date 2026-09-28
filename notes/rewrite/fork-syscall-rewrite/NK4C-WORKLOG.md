@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-27 取证轮（**投递内容级探针定谳 aarch64 OOM 产地类＝INIT 自身 `p_delivermsg_vir`=0x7ffffffe2578 的 80B 消息投递足迹上沿覆盖其 `read_file` 活帧局部**：`proc_table.rs` DELIVERMSG 腿对嫌疑栈页投递 dump 全 10 word，INIT（nr=0xb）多次投递至 pdmv=0x2578，**word[9]（消息 offset 0x48→VA 0x25c0）携带栈指针值 0x7ffffffe2888/0x7ffffffe298d**——0x25c0 与 OOM size 0xfffe25c0（=0x7ffffffe25c0 低 32 位）逐字同址；全嫌疑页投递 `rts=0x0`（RECEIVING 0x08 未置）·非跨进程/非 CoW（续-25 已排除）。产地类从续-25「CoW 之外的未定外部写」收紧为「INIT 自身 80B 消息投递足迹上沿（offset0x48→VA0x25c0）覆盖 read_file body Vec 头」·余一步 SP 对账即可分岐**候选甲（内核陈旧 pdmv·MF_DELIVERMSG/RECEIVING 生命周期缺陷）** vs **候选乙（用户侧 minix-sys read sendrec 80B Message alloca 与 body 栈布局碰撞）**。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-27。）**
+> **✅ 最新前沿＝§1.120续-28 取证轮（**SP 对账针定谳 aarch64 OOM 投递走 deferred 回退腿**：`proc_table.rs` DELIVERMSG 臂对 INIT（nr=0xb）嫌疑栈页投递打印 pdmv/实时用户 SP（cpu_context.sp 偏移16）/rts/gf/mt/word[9]——**pdmv(0x2578)≥实时 sp(0x2548/0x2578)**（目标在活帧内/上·距帧底≤0x30·**推翻续-27 候选甲朴素形态「陈旧深帧 pdmv」**）；投递 `mt` 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`·非正常 read 回复·续-22 mt=0 同族仍现形）且 `word[9]`@0x25c0 携 INIT 自栈指针 `0x2888`/`0x298d`（与 OOM size 0xfffe25c0 逐字同址）；nk4i 仅在 process_misc_flags DELIVERMSG 臂触发⇒INIT 这批投递**全走 deferred 回退腿**（`ipc.rs:1705` 同步 `copy_msg_to_user` 失败→`1710` 沉降 `p_delivermsg`+`MF_DELIVERMSG`→下次 pick 回写）。新尖：**同步拷贝为何独对 INIT 失败**（疑 reply 到达时当前 root 非 INIT 页表）。产地类收敛＝deferred 腿在 INIT 帧推进后回写非法 mt+陈旧尾指针 80B 消息·足迹上沿落 read_file 活帧。下轮＝`ipc.rs:1705` 失败分支加非扰动针（caller_nr+pdmv+current_root_phys+错码）坐实寻址/mt 两成因再最修。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-28。）**
+>
+> **（历史·§1.120续-27 取证轮（**投递内容级探针定谳 aarch64 OOM 产地类＝INIT 自身 `p_delivermsg_vir`=0x7ffffffe2578 的 80B 消息投递足迹上沿覆盖其 `read_file` 活帧局部**：`proc_table.rs` DELIVERMSG 腿对嫌疑栈页投递 dump 全 10 word，INIT（nr=0xb）多次投递至 pdmv=0x2578，**word[9]（消息 offset 0x48→VA 0x25c0）携带栈指针值 0x7ffffffe2888/0x7ffffffe298d**——0x25c0 与 OOM size 0xfffe25c0（=0x7ffffffe25c0 低 32 位）逐字同址；全嫌疑页投递 `rts=0x0`（RECEIVING 0x08 未置）·非跨进程/非 CoW（续-25 已排除）。产地类从续-25「CoW 之外的未定外部写」收紧为「INIT 自身 80B 消息投递足迹上沿（offset0x48→VA0x25c0）覆盖 read_file body Vec 头」·余一步 SP 对账即可分岐**候选甲（内核陈旧 pdmv·MF_DELIVERMSG/RECEIVING 生命周期缺陷）** vs **候选乙（用户侧 minix-sys read sendrec 80B Message alloca 与 body 栈布局碰撞）**。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-27。）**
 >
 > **（历史·§1.120续-26 取证轮（**x86_64 单核 rc marker fresh 定标成功**：同镜像手改 `-smp 1` 跑 90s 产 10623 行·**panic/exception=0**·boot 正常推进至 `minix-rs rc: minimal boot script marker`（L7522·即 rc 脚本 `echo` 真实输出）⇒ **终目标① 的 x86_64 部分（单核 rc marker）在净 HEAD 6549ad5d7 已实证达成**。纠正续-25 D 行「两说互斥」：xtask 默认 `-smp 4` 为**递归 page-fault panic**（`lib.rs:3635 no entry trap style known`→`trap_dispatch.rs:805 InvalidIrq`→`:955 vector 13/14 at rip 0x5c520ca`）·非旧述「syscall.rs:935 caller_idx」（本轮不可复现·归历史伪影）；SMP 启动崩溃为独立预存前沿（§1.113 已记）。**三架构最新**：x86_64 单核①✅（SMP❌）·aarch64 卡 OOM（CoW 续-25 已排除·产地待定）·riscv64 无全 OS 镜像路径。下一手＝**aarch64（距 marker 最近）**：在 `cross_space.rs::cross_space_copy/cross_space_write`（data_copy_vmcheck 底层拷贝原语）装非扰动写观察针锁定外部写产地。纯取证·零代码改·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-26。）**
 >
@@ -6350,3 +6352,44 @@ L4383: dlB pdmv=0x2578 w0=0x0...0                     w8=0x00007ffffffe2888 w9=0
 - 未分岐甲/乙（缺实时 SP）前不实施生产修复。
 - 前沿推进：OOM 产地从续-25「CoW 之外的未定外部写」收紧为「INIT 自身 80B 消息投递足迹上沿（offset0x48→VA0x25c0）覆盖 read_file body 局部」·余一步 SP 对账即可分岐内核陈旧 pdmv vs 用户侧栈碰撞。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。x86_64 单核① 已克（续-26）；aarch64 卡本 OOM。
+
+---
+
+## §1.120续-28 取证轮（2026-09-28）：SP 对账针定谳 aarch64 OOM 投递走 **deferred 回退腿**（`copy_msg_to_user` 同步拷贝失败→`ipc.rs:1710` 置 `p_delivermsg`+`MF_DELIVERMSG`→INIT 下次 pick 时 `process_misc_flags` DELIVERMSG 臂交付）；`pdmv >= 实时 sp`（目标在活帧内/上·**推翻续-27 候选甲朴素形态「投递砸已返回深帧」**）；投递 `m_type` 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`·非正常 read 回复）携陈旧尾指针 `word[9]` 正落毒址 `0x25c0`
+
+> 纯取证轮·探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据文件 `tmp/nk4a/a64-t40-sp.serial`（nk4i 23 条·本轮 OOM 复现 `rs-bigalloc size=fffe25c0`→`OOM-RT size=fe25c0`）。
+
+### A. 探针设计（nk4i·SP 对账）
+
+`proc_table.rs` DELIVERMSG 分支入口（`delivermsg` 调用前）：当 INIT（`nr.0==0xb`）的 `p_delivermsg_vir` 落嫌疑栈页（`>>12==0x07ff_ffff_e2`）时，打印 `pdmv` / **保存的用户 SP**（`cpu_context.sp`·AArch64CpuContext 偏移 16·unsafe 逐字读）/ `rts_flags`（`.load()`）/ `p_getfrom_e` / `delivermsg.m_type` / `word[9]`（消息 offset 0x48）。静态预研（ipc.rs `read_via`=`cleared_message()` 80B 零化局部位於 `read_via` 帧 + `perform_syscall→sendrec→&mut message`）确立：正常 sendrec 的 `pdmv` 应等于**当前存活** `read_via` 帧的 message 局部。
+
+### B. 决定性读数
+
+```
+nk4i: dl pdmv=0x...e2578 sp=0x...e2548 rts=0x0 gf=0x0 mt=0x0       w9=0x...e2888
+nk4i: dl pdmv=0x...e2578 sp=0x...e2548 rts=0x0 gf=0x0 mt=0xffffffb2 w9=0x...e2888
+nk4i: dl pdmv=0x...e2578 sp=0x...e2578 rts=0x0 gf=0x0 mt=0xe        w9=0x...e298d
+nk4i: dl pdmv=0x...e2578 sp=0x...e2578 rts=0x0 gf=0x0 mt=0xf        w9=0x...e298d
+```
+1. **`pdmv(0x2578) >= sp(0x2548/0x2578)`**：投递目标距实时帧底 ≤0x30·即 message 缓冲 `[0x2578,0x25c8)` 全落**当前/紧邻存活帧**·非远在下方的已返回死帧 ⇒ **推翻续-27 候选甲朴素形态「陈旧深帧 pdmv」**。
+2. **`m_type` 非法**：正常 read 回复应为 VFS 读计数/`SYS_VREAD_REPLY`·实测 `mt=0x0`（续-22 mt=0 同族）**仍在现形**、`mt=0xffffffb2`(−78)、`mt=0xe/0xf`——即投递给 INIT 的消息**内容非干净 read 回复**·且 `word[9]` 携 INIT 自栈区指针（`0x2888`/`0x298d`）。
+3. **nk4i 仅在 `process_misc_flags` DELIVERMSG 臂触发**（探针唯一埋点）⇒ INIT 的这批投递**全走 deferred 回退腿**：`ipc.rs:1705` `copy_msg_to_user` **同步拷贝失败**→`1710` 落内核 `p_delivermsg`+置 `MF_DELIVERMSG`→INIT 下次被 pick 时才 `delivermsg` 写回 `pdmv`。同步拷贝**为何对 INIT 失败**（其它 server 同步臂成功）是本轮新尖：疑 reply 到达时「当前 root」非 INIT 页表→`copy_msg_to_user` 走 `current_root_phys` miss→退回 deferred。
+
+### C. 定论与收敛
+
+- **续-27 二候选均被修正**：非「陈旧深帧 pdmv（甲朴素形态）」（pdmv≥sp 证伪）·非单纯「用户侧 read_via message 与 body 编译期重叠（乙）」（read_via message 为 `cleared_message` 80B·body 在 read_file 帧·正确布局不重叠）。
+- **收敛产地类**＝**deferred 投递腿在 INIT 已推进（read_via 返回、read_file 活帧复用 0x25c0 区）时·把一笔 m_type 非法/尾带陈旧指针的 80B 消息写回 `[pdmv,pdmv+0x50)`**·足迹上沿 word[9]@0x25c0 落进 read_file 活帧局部（与 OOM 值 `0x7ffffffe25c0` 逐字同址）。
+- **两条待分岐次级成因**（下轮）：① **deferred 腿的 m_type=0/非法内容**——即 `p_delivermsg` 在 `ipc.rs:1710` 沉降时本就不完整（续-22 materialize 缺环在 deferred 臂复现）·修点在沉降前保证完整物化或阻止非法 mt 投递；② **deferred 腿写回目标 `pdmv` 于 pick 时已非原接收帧**（生命周期：INIT 未以 RECEIVING 钉住·`rts=0`）·修点在 reply 到达时以正确 root 同步交付成功、避免危险 deferred。
+
+### D. 下一手（未来轮·坐实成修）
+
+1. **查同步拷贝失败根因**：在 `ipc.rs:1705` 同步臂失败分支加非扰动针（打印 `caller_nr`+`pdmv`+当前 `current_root_phys`+`copy_msg_to_user` 错误码）·定「INIT reply 到达时当前 root 是否＝INIT 页表」→若是页表/root 问题则修同步交付腿寻址（对位 §1.119 沉降 + `deliver_pending_to_user`）。
+2. **查 m_type 非法根因**：对 `p_delivermsg.m_type` 在 `ipc.rs:1710` 沉降点与 `delivermsg`（`ipc.rs:719` 读）两端夹逼·定非法 mt 是沉降时即非法（VFS 回复构造/或误把请求当回复）还是 pick 间被再覆。
+3. 坐实①或②后再实施最小修·三件套（host mock tests + aarch64 build + QEMU 跑）+ CodeReview + 双跑守 marker + WORKLOG 续-29 + fix commit。
+
+### 纪律（续-28）
+
+- 本轮**纯取证·零生产代码改**：`os/kernel/src/proc_table.rs` nk4i 探针 `git checkout` 回滚·tracked 净（`grep nk4i os/kernel os/servers`=0）。
+- 未坐实①/②确切成修点前不猜改生产 IPC 码（风险波及 x86 已克链与其它 server IPC）。
+- 前沿推进：OOM 机制从续-27「INIT 自身 80B 投递足迹覆盖 body」精化为「**deferred 回退腿**（同步 copy_msg_to_user 失败）在 INIT 帧推进后回写非法 mt+陈旧尾指针消息·足迹上沿落 read_file 活帧」·并抛出新尖「同步拷贝为何独对 INIT 失败」。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。x86_64 单核① 已克（续-26）；aarch64 卡本 deferred-投递 OOM（距 marker 最近）；riscv64 无全 OS 镜像路径（需补 xtask 基础设施·属确定性工程·可与本 heisenbug 并行推进）。
