@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-20 取证轮（**推翻续-19b「SCHED 收 0 条 INHERIT＝PM→SCHED taskcall 回复错配」定谳＝探针伪影**：`xtask image` 构建 sched 用户态**带 `feature="mock"`**，凡 `#[cfg(not(feature="mock"))]` 门控的 sched 探针在镜像里**被编译剪除**→续-19b 的 `nk19c: dostart12`/`nk19d: inh`（带此门控）「0 命中」系假象（既有 `nk4a: mt`/`nk4a: rv` 裸跑无门控正是此因）。**本轮裸针（无 cfg）实链**：PM `nk19e:p5`（`msg.m_type==SCHEDULING_INHERIT` 确发 0xF05）→内核 Path A `nk19e:pa mt=0x00000f05`（投给 SCHED 的消息体＝**干净全 i32 0xF05·无高位污染·无内容毁损**·证伪 m_type 毁损回归）→SCHED dispatch `nk19e:m32 00000f05`（实收即 0xF05）→`nk19e:arm I`（`SchedMsg::from_raw(0xF05)==Some(Inherit)` **命中 Inherit 臂**）。⇒ **INHERIT 端到端达 SCHED 且正确分类，t14「补校 pm `sched.rs::taskcall` 回复」修复方向作废**）。惟 `do_start` 入口裸针 `nk19e:ds` 仍 0 命中而 `rv 0000` 随后出现——此观测在**加针 run（皆已越净态墙达 SingleUser 的 Heisenbug run）**下作出，不作净态定论。**净态权威（本轮双跑 4295 行逐字一致·无探针）**：`init-state Runcom`(4271)→`setaddr nr=0xc flags=0x8008 runnable=no queued=no`(末次 slot12 事件)→尾部 `nk4a: sa-call caller=4 pid=9 fl=0x12`×8（＝SCHED `dispatch_setalarm` CLOCK re-arm·`SAC_N` cap=8·**非 livelock 非洪流**·续-7 后校已订正）。⇒ **净态＝真挂（init waitpid 永等 slot12 子）、slot12 停 `0x8008`＝`NO_QUANTUM|RECEIVING`，且为 Heisenbug 时序竞态（加任一串口写即翻转过墙）**。**前沿（不采 t14）＝净时序无探针下 slot12 子 fork-return 两清腿（PM reply 清 RECEIVING + SCHED do_start 清 NO_QUANTUM）为何至少一腿未落实**（续-16 曾精修至「NO_QUANTUM 经 sched_proc rts_unset 清、子仍被继承 RECEIVING 阻塞」）；下一步须用**非扰动/非布局敏感**手段（内存标志累积 + 关机/信号 dump，避开 diagctl 串口写位移）复核 slot12 双旗各自由谁/何时清。**取证探针（本轮 `nk19e:` 多点·ipc.rs/sched server.rs/pm sched.rs）全 `git checkout` 回滚 tracked 净（`grep nk19 os/`=0）·WORKLOG-only（免 CodeReview）**。
+> **✅ 最新前沿＝§1.120续-21 非扰动定谳轮（**净态根因链锁定＝PM boot SCHEDULING_START 请求经内核 Path A re-read `p_delivermsg_vir` 得 `m_type=0`（应 0xF02）→SCHED `from_raw(0)`=None 回 ENOSYS(`rv 004e`)→PM `init.rs::sched_start` 判 Err→INIT PM 侧 `resources.scheduler` 永留 `Endpoint::KERNEL`→INIT fork 子继承 KERNEL（`copy_mproc`）→`sched_start_user` 走 KERNEL skip 分支不发 INHERIT→kernel `fork_from` 设的 `NO_QUANTUM` 无 SCHED 来清→子永停 `flags=0x8000`→init waitpid 永挂**）。证据＝①idle 第 500 次全表快照：child slot12 `fl=0x8000`（仅 NO_QUANTUM，**RECEIVING 已由 PM reply(child,OK) 清**·续-18/19b 该腿健康复证；净态是 0x8000 非续-20 报的 0x8008——后者来自扰动 run）；②内存投递环（Path A+B 全记，补 B 后 total=20）：整场唯一一条 PM(0)→SCHED(4)＝`mt=0`+回 `0x4e`，**任何路径无 0xF02/0xF05 达 SCHED**；③既有裸针 `s4r c=0 mt=3`（mt=3＝IPC 调用号 SENDREC 非请求类型——trap 腿 `msg.m_type=call_nr` 覆写认知，本轮 sendrec 意图环查 0xF01..0xF05 永不命中＝假 total=0 已弃用）；④aarch64 寄存器 ABI 两侧核实一致（x0=ep/x1=msg_ptr/x8=call_nr），**排除寄存器错位**，缺陷＝消息**内容**路径（trap 入口拷贝 vs `send()` re-read 用户缓冲分歧，续-17/18 同族）。**反转续-20**：其「INHERIT 端到端达 SCHED、净态＝Heisenbug、t14 作废」系加针扰动越墙 run 观测非净态证据；续-19「KERNEL-skip 家族」根因复活但精确定位于 boot `sched_start` 内容毁损；续-18 switch 修复必要未竟功。**下一手＝判别针定 `mt=0` 确切成因**（①用户缓冲真含 0/TOCTOU vs ②re-read 命中错页）：trap 入口 copy 所得 m_type vs send() re-read 所得 m_type + `p_delivermsg_vir` 值，fire-once 内存记录＋shutdown dump；候选最小修复＝内核 send 腿改用 trap 入口单次拷贝缓存（对位 C `mini_send` 语义）消除 re-read 分歧。**`nk19f` 探针（ipc.rs/lib.rs）全 `git checkout` 回滚 `grep nk19 os/`=0 tracked 净·WORKLOG-only（免 CodeReview）**。
+>
+> **（历史·§1.120续-20 取证轮（⚠️ 其净态定论经续-21 定论为扰动 run 观测非净态证据）**：`xtask image` 构建 sched 用户态**带 `feature="mock"`**，凡 `#[cfg(not(feature="mock"))]` 门控的 sched 探针在镜像里**被编译剪除**→续-19b 的 `nk19c: dostart12`/`nk19d: inh`（带此门控）「0 命中」系假象（既有 `nk4a: mt`/`nk4a: rv` 裸跑无门控正是此因）。**本轮裸针（无 cfg）实链**：PM `nk19e:p5`（`msg.m_type==SCHEDULING_INHERIT` 确发 0xF05）→内核 Path A `nk19e:pa mt=0x00000f05`（投给 SCHED 的消息体＝**干净全 i32 0xF05·无高位污染·无内容毁损**·证伪 m_type 毁损回归）→SCHED dispatch `nk19e:m32 00000f05`（实收即 0xF05）→`nk19e:arm I`（`SchedMsg::from_raw(0xF05)==Some(Inherit)` **命中 Inherit 臂**）。⇒ **INHERIT 端到端达 SCHED 且正确分类，t14「补校 pm `sched.rs::taskcall` 回复」修复方向作废**）。惟 `do_start` 入口裸针 `nk19e:ds` 仍 0 命中而 `rv 0000` 随后出现——此观测在**加针 run（皆已越净态墙达 SingleUser 的 Heisenbug run）**下作出，不作净态定论。**净态权威（本轮双跑 4295 行逐字一致·无探针）**：`init-state Runcom`(4271)→`setaddr nr=0xc flags=0x8008 runnable=no queued=no`(末次 slot12 事件)→尾部 `nk4a: sa-call caller=4 pid=9 fl=0x12`×8（＝SCHED `dispatch_setalarm` CLOCK re-arm·`SAC_N` cap=8·**非 livelock 非洪流**·续-7 后校已订正）。⇒ **净态＝真挂（init waitpid 永等 slot12 子）、slot12 停 `0x8008`＝`NO_QUANTUM|RECEIVING`，且为 Heisenbug 时序竞态（加任一串口写即翻转过墙）**。**前沿（不采 t14）＝净时序无探针下 slot12 子 fork-return 两清腿（PM reply 清 RECEIVING + SCHED do_start 清 NO_QUANTUM）为何至少一腿未落实**（续-16 曾精修至「NO_QUANTUM 经 sched_proc rts_unset 清、子仍被继承 RECEIVING 阻塞」）；下一步须用**非扰动/非布局敏感**手段（内存标志累积 + 关机/信号 dump，避开 diagctl 串口写位移）复核 slot12 双旗各自由谁/何时清。**取证探针（本轮 `nk19e:` 多点·ipc.rs/sched server.rs/pm sched.rs）全 `git checkout` 回滚 tracked 净（`grep nk19 os/`=0）·WORKLOG-only（免 CodeReview）**。
 >
 > **（历史·§1.120续-19 取证轮（⚠️ 其「SCHED 收 0 条 INHERIT＝PM→SCHED taskcall 回复错配」定谳经续-20 定论为**探针伪影**——sched 镜像构建带 `feature=mock`、`#[cfg(not(feature="mock"))]` 门控的 `nk19c`/`nk19d` 被编译剪除故「0 命中」，裸针实测 INHERIT 达 SCHED 且 `from_raw→Some(Inherit)`；其「证伪上会话 KERNEL-skip 假根因」结论仍成立）**：aarch64 净态权威重现＝init fork /bin/sh 子确定性挂死（续-19 原始描述——HEAD `4cb8db458`（续-18）`--release` 镜像 + QEMU aarch64 `-smp 4`，**两次 60s + 一次 120s 复跑串口逐字节一致停在 4295 行**，`init-state Runcom`（行 4271）后 `setaddr nr=0xc flags=0x8008 runnable=no queued=no`（行 4278，末次 slot12 调度事件）→ 之后仅剩 `sa-call caller=4 pid=9`（探针 cap8 耗尽）与 target=11 的 INIT 内存请求，**再无前进、marker 永不出**。⇒ init 的 Runcom 已 fork 出 /bin/sh 子（slot12·endpoint 0x800c·`NO_QUANTUM(0x8000)|RECEIVING(0x08)`），该子**两个阻塞腿在净时序下均未被结掉、永不 runnable**→init 的 waitpid 永挂→boot 死锁。**证伪上一会话（task-80b 摘要）交接结论**：该摘要钉死「子的 PM 侧 `resources.scheduler=Endpoint::KERNEL(0xffffffff)`→`sched_start_user` skip→SCHED 无 INGET→dispatch_schedule 全程 0 调用」，并在 init.rs 加了 `nk19: initsched` 探针待跑。**本轮实跑该探针链（fresh build），三重推翻**：①`nk19: initsched OK sched=0x4`——INIT boot SCHEDULING_START **成功**，INIT 归 SCHED(0x4)，非滞留 KERNEL；②`nk19: pmss slot=12 sched=0x4 skip=false ep=0x800c`（还有 slot13）——子的 PM 侧 scheduler=**SCHED**、`sched_start_user` **不 skip**；③`nk19: ds-top caller=4 mt=0x603`×6 + `nk19: schedproc12 now=0x8008` + `nk19: cunset fl=0x8000 now=0x8` + `nk19: csend src=0 will=y`——`dispatch_schedule`/`sched_proc` **确有跑**、`NO_QUANTUM` 被 `rts_unset` 清、PM `reply(child,OK)` 走 Path A 且 `is_willing_to_receive`=true（子继承的 `p_getfrom_e`=PM，与 `reply` 源匹配）。⇒ **旧「KERNEL-skip 死链」与「子继承 RECEIVING 永不清」两条结论均被现网推翻**（前者彻底假、后者被续-18 修复+正确时序结掉）。**探针时序悖论**：加 `nk19:` 探针后串口写量把净态死点「挤」过 slot12（fix19f 达 SingleUser + fork slot13 echo），**但 marker 仍不出**（echo 子被 fork/调度 `rv 0000` 但其 console 写未到串口）；净态（无探针）则确定性退回 4295 挂 slot12。⇒ **前沿真问题＝无探针净时序下，slot12 的 fork-return 两清腿（PM reply 清 RECEIVING + SCHED INHERIT 清 NO_QUANTUM）为何不落实**，且下游 `/bin/sh`→`echo` 到 console 的 marker 输出链亦未贯通（P2 命令面首环）。**续-19b 低扰动单探针链已把此问题精修至一腿（本轮实锤）**：关键方法学＝**fire-once 单点写**（`static AtomicBool::swap`，仅首命中打一行）比 46 行 `nk19:` 群写扰动小得多——单探针 run 仍确定性冻结（4299≈4295）、不被「挤」过墙，故可信。三点针结果：①`nk19b: forkreply slot12`（PM `ipc/vfs.rs` `VfsReply::Fork` 顶·slot==12 门控）**命中 1×** ⇒ VFS_PM_FORK_REPLY **确实到 PM**、handler 跑；②内核 `send()` Path A 投递点 `nk19b: snd12`（dst slot==12）显示 `rcv=y snd=n nq=y gf=0 will=y`（子愿收·getfrom=PM 匹配），且 `snd12-DELIVERED mt=0x0` **命中** ⇒ **PM `reply(child,OK)` 走 Path A 真投递、RECEIVING 被清、m_type=OK（续-18 已修投递毁损·此腿健康）**；③但内核 `sched_proc` 顶 `nk19b: schedproc12-enter` 与 SCHED `server.rs do_start` 内 `nk19c: dostart12` / 到 `kernel.schedule` 前 `nk19c: dostart12-sched` **全部 0 命中** ⇒ **SCHED 的 `do_start(child=0x800c)` 从未为子运行、`NO_QUANTUM` 从未被 `rts_unset` 清、子 fork 后 `flags` 残留 `0x8000`→非 runnable→不 exec→init waitpid 永挂**。**矛盾即真身**：PM `ipc/vfs.rs::sched_start_user(slot12)` 里 `crate::sched::sched_start_user`→`MinixSchedCtl::inherit`→`taskcall(SCHED, SCHEDULING_INHERIT)`（`servers/pm/src/sched.rs::taskcall`·sendrec + ELOCKED(208) 无界重试·否则返回 `msg.m_type` 作 rv）**返回 rv==0**（PM 据此成功续跑 reply），**可 SCHED 侧 do_start 从未执行**——即 PM 拿到的「OK 应答」是**错配/陈旧的回复**（SCHED 未把该 INHERIT 派发到 Inherit 臂就回了 0，或 PM sendrec 收到了上一请求的回复）。**⇒ 下一手（未修·高优先）**：取证 SCHED 主循环 `server.rs` receive/dispatch 对 `SCHEDULING_INHERIT`（`SchedMsg::Inherit`→`do_start`）的入站处理——为何 PM 的 INHERIT 未达 Inherit 臂却得到 rv=0；重点查 ①`taskcall` 的 sendrec 回复匹配是否会把**非本次请求**的回复误当 rv（对位 §1.119续-7 给 boot `sched_start` 补校回复 `m_type` 的同族 bug·但 `inherit` 走的是 `taskcall` 未获该补校）、②SCHED 主循环是否在该刻正处理别的消息/未进 receive 致 INHERIT 落队但 PM sendrec 提前返回。**【续-19b 收尾定谳】在 SCHED dispatch 臂专设 `nk19d: inh`（`SchedMsg::from_raw==Inherit` 独立于 cap-8 boot mt 探针）实测：净态 SCHED **收到 0 条 INHERIT**（nk19d 零命中）且仍 4295 行确定性冻结——⇒ 排除「SCHED 收到 INHERIT 但 child.slot≠12」，坑死在「PM `sendrec(SCHED, INHERIT)` 返回 rv=0 但消息根本未进 SCHED dispatch」＝**PM→SCHED taskcall 的 send/rec 回复错配（PM 误收陈旧/不相干回复当本次 rv）**。修复方向锁定＝对位 §1.119续-7 给 `pm/sched.rs::taskcall`（现仅校 `rv==208` ELOCKED 重试、其余直返 `msg.m_type`）**补校回复确为本次 INHERIT 的应答**（或改用与 INIT boot `init.rs::sched_start`（已含 §1.119续-7 补校）同形的发送腿），避免错配假 OK；修后必跑三件套 + **双跑 x86_64 守 marker 不回归**。**取证探针（本轮 `nk19b:`/`nk19c:`·ipc.rs/sched.rs/sched server.rs/pm vfs.rs 多点 fire-once 单写）全 `git checkout` 回滚至净 `40a2ed493`（`grep nk19 os/`=0）**。
 >
@@ -6040,4 +6042,66 @@ set_current_ptproc_nr(nr);
 
 - 本轮为修复轮，有生产码改，经 CodeReview。
 - `nk18` 探针已 `git checkout` 回滚，tracked 净。
+- ⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
+
+---
+
+## §1.120续-21：非扰动定谳轮——净态根因链锁定＝PM boot SCHEDULING_START 请求经内核 re-read 得 `m_type=0`（纯取证·全回滚）
+
+### 方法学修正（为何本轮证据可信）
+
+续-20 的「INHERIT 端到端达 SCHED、净态＝Heisenbug 时序竞态」定论，其裸针观测是在**加针后已被串口写扰动挤过 slot12 墙的 run** 上作出的，不是净态证据。本轮改用三类**低扰动/非串口**手段：
+
+1. **idle 第 500 次触发全表快照**——一次性、非逐事件写；
+2. **内核内存投递环**（`nk19f` 数组，关机时才 dump）——Path A（`send()` 直投）与 **Path B（`caller_q` 排队→receive Phase3 drain，本轮补上）** 两条投递腿都记录 `(sender, receiver, m_type)`；
+3. 既有 `nk4a:` 裸针（`s4r`/`rv`）作为交叉印证。
+
+### 证据①——死锁快照：child slot12 仅残留 `NO_QUANTUM`
+
+`deliv-21c.serial`：child `idx=0x11`（nr=0xc）`fl=0x8000`——**RECEIVING 已被 PM `reply(child,OK)` 清除**（续-19b/续-18 修复该腿健康，本轮复证）；所有 server `fl=0x08`（RECEIVING＝idle 等活）；无 run queue ⇒ 真死锁。**唯一缺失腿＝SCHED 从未清子的 `NO_QUANTUM`**（净态 flags 是 `0x8000` 而非续-20 报的 `0x8008`——后者来自扰动 run）。
+
+### 证据②——全投递环：整场唯一一条 PM↔SCHED 交换，请求 `mt=0`
+
+补 Path B 后重跑（`deliv-22.serial`，total=20）：
+
+- 整场 PM(0)→SCHED(4) 仅**一条**：`c=0 s=4 mt=0`，SCHED 回 `c=4 s=0 mt=0x4e`（ENOSYS）；
+- child(12) 仅得一条 `c=0 s=c mt=0`（＝fork reply，m_type=OK 合法）；
+- **任何路径（A/B）均无 0xF02 START / 0xF05 INHERIT 达 SCHED**。
+
+交叉印证既有裸针：`nk4a: s4r c=0 mt=3`＝整场仅 1 条 PM→SCHED sendrec（`mt=3` 是 **IPC 调用号 SENDREC**，见下文 ABI 认知）；`nk4a: rv 004e`＝SCHED `SchedMsg::from_raw(0)==None`→`no_sys_verdict()`→ENOSYS。
+
+### 证据③——ABI 核实（排除寄存器错位假说）+ 调用号覆写认知
+
+- `dispatch_ipc_entry`（syscall.rs:832）`call_nr = msg.m_type`；x86（trap_dispatch.rs:1504）与 aarch64（:2541）两 trap 腿都在 copy 用户消息后 **`msg.m_type = call_nr`（覆写为 IPC 调用号）**⇒ do_ipc/sendrec 层看到的 `msg.m_type`＝调用号(3)，**逻辑请求类型只存在于用户缓冲**，由 `send()` Path A 再 `copy_msg_from_user(p_delivermsg_vir)` 读回。
+- 本轮曾据此在 sendrec() 入口加「意图环」查 `m_type in 0xF01..=0xF05`——**永不命中，total=0 系假信号**（取的是调用号字段），已识别并弃用；真正定论靠 Path A/B 投递环 + `s4r`/`rv` 针。
+- aarch64 寄存器 ABI 两侧一致：minix-sys `ipc_trap(SENDREC_NR, dest, msg_ptr)` → x0=endpoint、x1=msg_ptr、x8=call_nr；内核读 gpr[8]/gpr[0]/gpr[1]，存 `p_delivermsg_vir=VirBytes(gpr[1])` 并 `copy_msg_from_user(gpr[1])`。**非寄存器错位**，缺陷＝消息**内容**路径（trap 入口拷贝 vs `send()` re-read 用户缓冲的分歧），与续-17/续-18「内容毁损」同族。
+
+### 净态根因链（定谳）
+
+```
+PM boot init_scheduling → sched_start → sendrec(SCHED, SCHEDULING_START 0xF02)
+  → 内核 Path A 从 p_delivermsg_vir re-read 用户缓冲得 m_type=0（应 0xF02）
+  → SCHED from_raw(0)=None → 回 ENOSYS(0x4e)
+  → PM init.rs::sched_start 判 msg.m_type!=OK → Err
+  → INIT PM 侧 resources.scheduler 永留 Endpoint::KERNEL（init.rs:717 设，:869 仅 Ok 分支回写 SCHED）
+  → INIT fork 子继承 KERNEL（copy_mproc fork.rs:298）
+  → PM sched_start_user(vfs.rs:457) 见 KERNEL → skip 分支不发 INHERIT
+  → kernel fork_from 设的 NO_QUANTUM 无 SCHED sched_proc 来清
+  → 子永停 flags=0x8000 → init waitpid 永挂 → boot 死锁
+```
+
+### 对续-19/续-20 的裁决
+
+- **反转续-20**：其「INHERIT 达 SCHED、t14 作废、净态＝Heisenbug」基于扰动 run；净态下 PM 根本从未向 SCHED 投出第二条正确消息（唯一 sendrec 请求即 boot SCHEDULING_START，且内容 re-read 毁损为 0）。
+- **续-19 的「KERNEL-skip 死链」家族根因复活**，但精确定位于 **PM boot `sched_start` 内容毁损（mt=0 非 0xF02）**——续-19 探针当时见 `initsched OK sched=0x4` 同样是加针 run 观测。
+- **续-18 `switch_address_space` live 修复必要但未竟功**：fresh 净态证据显示投递内容仍毁损。
+
+### 下一手（判别针，未采）
+
+`m_type` 读 0 的确切成因二选一：①用户缓冲真含 0（PM 写侧/TOCTOU）；②`send()` re-read 命中错页（翻译腿仍有洞）。判别＝trap 入口 `copy_msg_from_user` 所得 `msg.m_type` 与 `send()` Path A re-read 所得 `m_type` + 两者时的 `p_delivermsg_vir` 值，对 PM(0)→SCHED(4) sendrec 单点 fire-once 内存记录（不写串口）、shutdown dump。据结果定最小修复点（候选：内核 send 腿改用 trap 入口单次拷贝缓存、对位 C `mini_send` 语义，消除 re-read 分歧）。
+
+### 纪律
+
+- 本轮纯取证，零生产码改；`nk19f` 全部探针（ipc.rs/lib.rs）已 `git checkout` 回滚，`grep nk19 os/`=0，tracked 净。
+- WORKLOG-only commit，免 CodeReview；真修轮须三件套 + 双跑 x86 守 marker + CodeReview。
 - ⚠️ 目标不变：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
