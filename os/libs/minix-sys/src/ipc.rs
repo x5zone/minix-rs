@@ -533,6 +533,46 @@ pub trait IpcTransport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DirectTrapTransport;
 
+/// Commit the caller's message buffer to memory before an opaque trap.
+///
+/// The kernel reads the message through the trap boundary — `arch_trap::ipc_trap`
+/// receives the buffer's address as a plain `usize`. NK4-C 续-22 observed
+/// that on aarch64 the boot `sched_start`'s final scalar store
+/// (`msg.m_type = SCHEDULING_START`, 0xF02) could still be pending when the
+/// kernel's trap-time `read_volatile` ran, so SCHED received `m_type` = 0,
+/// returned ENOSYS, INIT never registered its scheduler, and the forked
+/// child's `NO_QUANTUM` was never cleared (boot deadlock at `flags` 0x8000).
+/// Inserting this volatile read through the buffer's own address before the
+/// `svc` — and, provably, any equivalent intervening load of `msg.m_type` —
+/// makes the kernel see the full message and the boot proceeds to
+/// `SingleUser` + `/bin/sh` exec.
+///
+/// Attribution is an A/B on the *same* tree: the 续-18 `switch_address_space`
+/// live-TTBR0 fix (commit 4cb8db458) is present in both the failing
+/// (no-barrier) and passing (barrier) runs, and the three-way root comparison
+/// showed live-TTBR0 == `p_seg.phys_root` == software mirror with matching
+/// leaf PAs — so address translation is *not* the cause; store materialization
+/// at the IPC boundary is.
+///
+/// # Safety
+///
+/// `message` must point at a live, allocated [`Message`] the caller owns
+/// (true at every trap site here; the read length equals the kernel's own
+/// whole-message copy, so it touches no byte the kernel will not read).
+#[cfg(all(
+    kernel_trap,
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
+#[inline]
+unsafe fn commit_message_to_memory(message: *const Message) {
+    // SAFETY: caller guarantees `message` points at a live, allocated
+    // Message; the volatile read is discarded and has no effect beyond
+    // forcing prior stores of the buffer into memory before the trap.
+    // A `compiler_fence(SeqCst)` alone orders accesses but does not force
+    // the register-resident store to the alloca; the volatile load does.
+    let _ = unsafe { core::ptr::read_volatile(message) };
+}
+
 // The real-trap branch consumes the parameters; the EIO fallback (default
 // hosted/test build) does not — per-method `let _ =` below would be noise,
 // so the impl carries the allow.
@@ -551,6 +591,8 @@ impl IpcTransport for DirectTrapTransport {
             kernel_trap
         ))]
         {
+            // SAFETY: `message` is the caller's live message buffer.
+            unsafe { commit_message_to_memory(message as *const Message) };
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
                     crate::arch_trap::SEND_NR,
@@ -598,6 +640,8 @@ impl IpcTransport for DirectTrapTransport {
             kernel_trap
         ))]
         {
+            // SAFETY: `message` is the caller's live message buffer.
+            unsafe { commit_message_to_memory(message as *const Message) };
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
                     crate::arch_trap::SENDREC_NR,
@@ -634,6 +678,8 @@ impl IpcTransport for DirectTrapTransport {
             kernel_trap
         ))]
         {
+            // SAFETY: `message` is the caller's live message buffer.
+            unsafe { commit_message_to_memory(message as *const Message) };
             let (ret, _status) = unsafe {
                 crate::arch_trap::ipc_trap(
                     crate::arch_trap::SENDNB_NR,
