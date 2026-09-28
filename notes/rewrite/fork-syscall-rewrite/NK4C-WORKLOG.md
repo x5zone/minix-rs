@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-34b 对账轮（**外部 GLM 独立静态分析三候选 vs 续-34 真机状态逐项对账·纯对账零生产代码改零探针**：候选一（用户起源中断不存帧→恢复旧寄存器组）＝**值得独立探针判别**（系与页物化正交的寄存器通路·续-34 步进针读内存侧 `frame_size` 未区分「读陈旧页」与「恢复旧寄存器」两因；低成本配方＝GLM §3(d) 在 save/restore 点打 (pid,elr,sp_el0,x19,x24,x28) 验恢复点是否为陷入边界，惟次序上先待②修复后复跑看①是否随之消失）；候选二（16 字节对齐差）＝**保持怀疑·暂不投入**（已坐实①毒＝完整未拆分父栈指针、非半格错位读、QEMU 关严格对齐检查；其 `exec_msg.stack%16` 近零成本判别针随②复跑顺带采）；候选三（崩溃归属或在 exec 后 /bin/sh）＝**已被续-34 覆盖并证伪对本毒适用**（nk4r 崩溃前打印、毒落点在 init 侧 execve.rs）；§2 checked_add 论据修正与续-34 一致；**boot.rs ps_strings 布局分叉本轮独立核实属实**（boot.rs argc 槽宽 `size_of::<i32>()`=4 vs execve.rs `SLOT`=8、当前因 boot `n_argv/n_env` 恒 0 无害）＝**登记结构债备查**。**不改续-35 主攻方向（模式② 0x200000 活锁仍头号目标）**。详文见文末 §1.120续-34b。）**
+> **🛑 最新前沿＝§1.120续-35 交接轮（2026-09-28·工具切换至 GLM5.3·本 session 终止）**：**续-35 已交接至 GLM5.3**——根因定谳＝模式②（exec 0x200000 文本页无限 refault）＝`os/servers/vm/src/exit.rs::handle_procctl_clear` 换根（`free_page_table`+`init_page_table`）后**缺 C `exit.c:137 pt_bind` 对位腿＝未重发 `sys_vmctl_set_addrspace`**，内核 `p_seg.phys_root` 停留已 torn-down 旧根 A，VM 映进新根 B、CPU 走 A 永不命中。旁证：fork（`fork.rs:395-401`）/boot（`vm_server.rs:774-794`）两条腿都发 setaddr、惟 exec clear 腿跳过；内核 `vmctl_set_addr_space`（`syscall.rs:2911`）是 bootstrap 外唯一写 phys_root 者。x86 未暴露=x86 `destroy()` 归还页表页致 `pt_new` 复用同页（A==B 巧合正确）；aarch64 `destroy()`（`arm64/paging.rs:609-619`）只清零不还页→B≠A→暴露。**子代理 WIP（3 文件 +53/−12·untracked 存 `tmp/nk4a/nk4c35-pt-bind-wip.patch`·不进 commit）方向已真机坐实**：531 host tests pass·aarch64 QEMU 95s **0x200000 风暴归零（0 vs 基线 74015）·sas-send 触发 11 次·子真正运行新镜像·历史首达 init-state SingleUser**。**⚠ x86 回归未解**：装 patch 后 x86 QEMU `trap_dispatch.rs:955` kernel page fault（vector 14）·推测新根 `init_page_table` 后仅用户态映射无内核态映射·提前 bind→内核自身缺页——**GLM5.3 待解「何时/如何 bind 才双架构安全」**（三候选：补内核映射再 bind / x86 分支保留旧行为 / `dispatch_exec` 末尾补发 setaddr；C 安全因 i386 kernel PDE 全进程共享·minix-rs aarch64 无此共享）。**失败模式①（间歇 4GiB OOM）本轮不修**。**接手入口=`NK4C-GLM53-PROMPT.md`·详文见文末 §1.120续-35 交接节。基线 9ea95f8d8 代码不动·工作树净。**
+>
+> **（历史·§1.120续-34b 对账轮（**外部 GLM 独立静态分析三候选 vs 续-34 真机状态逐项对账·纯对账零生产代码改零探针**：候选一（用户起源中断不存帧→恢复旧寄存器组）＝**值得独立探针判别**（系与页物化正交的寄存器通路·续-34 步进针读内存侧 `frame_size` 未区分「读陈旧页」与「恢复旧寄存器」两因；低成本配方＝GLM §3(d) 在 save/restore 点打 (pid,elr,sp_el0,x19,x24,x28) 验恢复点是否为陷入边界，惟次序上先待②修复后复跑看①是否随之消失）；候选二（16 字节对齐差）＝**保持怀疑·暂不投入**（已坐实①毒＝完整未拆分父栈指针、非半格错位读、QEMU 关严格对齐检查；其 `exec_msg.stack%16` 近零成本判别针随②复跑顺带采）；候选三（崩溃归属或在 exec 后 /bin/sh）＝**已被续-34 覆盖并证伪对本毒适用**（nk4r 崩溃前打印、毒落点在 init 侧 execve.rs）；§2 checked_add 论据修正与续-34 一致；**boot.rs ps_strings 布局分叉本轮独立核实属实**（boot.rs argc 槽宽 `size_of::<i32>()`=4 vs execve.rs `SLOT`=8、当前因 boot `n_argv/n_env` 恒 0 无害）＝**登记结构债备查**。**不改续-35 主攻方向（模式② 0x200000 活锁仍头号目标）**。详文见文末 §1.120续-34b。）**
 >
 > **（历史·§1.120续-34 取证轮（**低扰动 `exec_command` 步进针定谳毒分配确切语句＝`stack_params` 返回的 `frame_size` 本身＝栈地址·且间歇性·并暴露下游第二失败模式＝exec 成功后 aarch64 文本页 0x200000 请求活锁**：`execve.rs` 插 `nk4r: step1..9` 步进针（入口打 argv/env 计数）+ `stack_params` 内 `nk4s: idx/len/ptr`。三跑：①`argv_count≈1/env_count=0` 正常（推翻续-33 env 计数污染猜）·毒 `size=fffe25c0` 落 `exec_command` 体内；②step1..6 全打·**step7-frame-done 未打**·毒恰在其间→锁 `frame.try_reserve_exact(frame_size)`·改 step6 打 `frame_size` 值＝`0xfffe25c0`→**`frame_size`（`stack_params` 返回）本身即栈地址**（某 `&str` item `.len()` 间歇为陈旧栈值·`checked_add` 64 位不溢出故不 E2BIG·**推翻续-33「exec frame Vec 有界已排除」**）；③装 `nk4s` 那轮 `frame_size=0x68` 正常·step7/9 全打·exec 成功·串口推至 29.9 万行·**但仍无 marker**→暴露第二失败模式：`memreq target=0x800C(slot12) start=0x200000 len=0x1000 ok=1` 重复 74015 次·**exec 出的子对新镜像首文本页 VA 0x200000 无限重复缺页**（授权后立即再缺＝映射未落地·疑 PTE 权限[execute-never/PXN/UXN] 或 TLBI 缺失）。**共性根**＝两模式均落 aarch64 专属 fork/exec 期页物化/缺页落地正确性（非共享 init 源码·非消息足迹[续-32 排除]·非 env 计数[本轮排除]）·x86 同源已达 marker＝硬对照。下轮（续-35）＝**主攻模式②活锁**：读 `os/arch/src/arm64` map_page 权限位映射（`prot`→AP/PXN/UXN/AttrIndx）+ fault-return/setaddr 的 TLBI+isync 腿·坐实 0x200000 授权后为何同页再缺。⚠ **方法学教训（入 MEMORY 候选）：含 NUL 的二进制串口日志 `grep` 必带 `-a`**·否则命中行被当 binary 静默漏报（本会话「nk4r 从未打印」假象几误方向）·断言「命中 0 次」前必 `grep -ac` 复核。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-34。）**
 >
@@ -6670,3 +6672,48 @@ release init ELF 仅 321 符号（`nm` 已验·finish_grow@0x220d58→minix_rt::
 - **不改续-35 主攻方向**：模式②（文本页 0x200000 活锁）仍是下一手头号目标·本件不挪位。GLM 三候选的处置均为「记账/排序」·其坐实前不构成任何修复依据（守「未坐实不成修」）。
 - **冲突以真机证据为准**：候选三与「归属未定」之疑·由续-34 步进针真机结果直接判其对本毒不适用；§2 论据修正与续-34 一致·互相印证非冲突。
 - 背景更正（供续-35 参考·非本轮动作）：本轮另有 Debug 子代理就模式②给出运行期证据·**初步**指向 exec 拆除腿 `os/servers/vm/src/exit.rs::handle_procctl_clear` 换页表根后缺 C `exit.c:137 pt_bind` 对位腿（未重发 VMCTL SetAddrSpace）·而非续-34 措辞的「疑 PTE 权限/TLBI」；该结论**待实施轮独立复核后方落定**·暂不作权威定谳·此处仅备记以免续-35 沿用过窄的「TLBI/PTE」表述。
+
+---
+
+## §1.120续-35 交接（2026-09-28）·工具切换至 GLM5.3
+
+### 状态快照
+- 稳定 commit 基线：**9ea95f8d8**（续-34b·纯 WORKLOG·零代码改）——本轮所有工作叠在其上。
+- 工作树：净（子代理 WIP 已保存至 `tmp/nk4a/nk4c35-pt-bind-wip.patch`·134 行 / +53 −12 / 3 文件）。
+- x86_64 单核：基线 9ea95f8d8 无代码改动·marker 正常（续-26/37 实证）。
+- aarch64 当前卡点：模式② 0x200000 文本页无限重复缺页（VM `ok=1` 但子再缺）——本轮已由 WIP 方向定位并**真机验证方向正确**（见下）。
+
+### 子代理产出（WIP·方向正确·x86 回归未解）
+
+**根因定位（本轮坐实）**：`os/servers/vm/src/exit.rs::handle_procctl_clear` 末尾缺 C `exit.c:137` 的 `pt_bind` 对位腿。具体：clear 释放旧页表（`free_page_table`）+ 建新页表（`init_page_table`）后，**未重发 `sys_vmctl_set_addrspace`**，内核 `p_seg.phys_root` 仍指向已释放的旧根 A。VM 把新镜像映射进新根 B，内核查旧根 A（已 torn down）→ 子永远找不到映射 → 对首文本页 VA 0x200000 无限 `memreq ok=1` 再缺。
+
+**已证同路径旁证**：fork（`fork.rs:395-401`）和 boot（`vm_server.rs:774-794`）两条腿都做了 `sys_vmctl_set_addrspace`；惟 exec 的 clear 腿跳过了（旧代码注释 L242-247 声称「arch-layer bind helper was a validated no-op / 由 VMCTL SetAddrSpace 通道承载」却无人发送）。**内核侧权威核实**：`vmctl_set_addr_space`（`syscall.rs:2911`）是 bootstrap 之外**唯一**写 `p_seg.phys_root` 的入口，`dispatch_exec` 全程不碰 phys_root ⇒ clear 腿不发 setaddr 时内核根必停留在 fork 期旧根。x86 之所以未暴露：x86 `destroy()` 已接 `free_pt_page` 归还页表页，`pt_new` 大概率复用同一物理页（A==B）→ 巧合正确；aarch64 `destroy()`（`arm64/paging.rs:609-619`）只 `write_bytes(root,0,512)` 清零、**从不归还页表页** → B≠A → 分歧暴露为活锁。
+
+**WIP 实现（3 文件 +53/−12）**：
+- `exit.rs`：`handle_procctl_clear` 加 `gateway` 参·`init_page_table` 后取 `root_paddr(proc.page_table_mut())` 并 `gateway.sys_vmctl_set_addrspace(endpoint, new_root_phys, 0)`（对位 fork/boot 写法）；更正函数 doc；
+- `dispatcher.rs`：`dispatch_procctl` 解构出 `gateway` 并在线程参传入；
+- `vm_server.rs`：`test_vfs_transid_routes_to_procctl_clear` 装 MockGateway + 断言 setaddr 恰发一次（target ep·virt=0）。
+
+**本轮验证到哪一步（权威真机·勿推翻方向）**：
+- ✅ `cargo test -p minix-vm --lib`：**531 passed / 0 failed**（含新断言）。
+- ✅ aarch64 `image --release` 编译通过（VM 真机目标）。
+- ✅ aarch64 QEMU 95s（`tmp/nk4a/a64-t55-ptbind.serial`·4410 行）：**`start=0x200000` memreq 风暴归零**（0 次 vs 基线 74015 次）·`sas-send` pt_bind 腿触发 11 次·exec 出的子**真正取指运行新镜像**（vm-pf 落在文本/数据页带真实字节 `fa8=…`）·历史首次推进到 `init-state SingleUser`（行 4358）。⇒ **模式② 方向已真机坐实**。
+- ⚠ 失败模式①（间歇 4GiB OOM）本轮仍偶发（serial 行 4268 `rs-bigalloc size=fffe25c0`→OOM-RT）——② 修复后①未随之消失＝续-34b 候选一「正交寄存器通路」判别的触发条件·**本轮不修**（见 GLM5.3 prompt）。
+- ⚠ **x86 QEMU 回归未解**（子代理终止前所述阻塞·本人未亲跑完整 x86 QEMU 即被令停）：装此 patch 后 x86 QEMU 在 `trap_dispatch.rs:955` 处 kernel page fault（vector 14）。推测：x86 上 `init_page_table` 后新根**仅有用户态映射、无内核态映射**（kernel text/data），提前把此空根 bind 给内核使用 → 内核自身缺页。
+
+**GLM5.3 需解决「何时/如何 bind 才安全于双架构」**——候选方案：
+1. **补内核映射再 bind**（调整顺序：`init_page_table` 应确保 `map_kernel` 已把内核窗口映进新根后再发 setaddr——核对 `init_page_table` 的 `#[cfg(not(test))]` 分支确有 `map_kernel`，`vmproc_handle.rs:386`；若 x86 新根确缺内核映射则须补齐）；
+2. **走 x86 分支保留旧行为**（`#[cfg]`/按 arch 分道·但破坏统一性·次选）；
+3. **在 `dispatch_exec` 末尾（而非 clear 末尾）补发 setaddr**（此时镜像已装载·新根完整·bind 安全·对位 C「内核侧 setcr3 不要求新根完整是因为 C 有共享 kernel PDE」·minix-rs 无共享 PDE → 需在新根含内核映射后才 bind）。
+
+对照 C：Minix3 `exit.c:137 pt_bind` 的时序在 `do_rm`/`do_new` 内部·i386 kernel PDE 全进程共享（`pagetable.c`）使 Direct Map 下内核永远可见；minix-rs aarch64 无此共享 → 需等效方案。
+
+### GLM5.3 接手任务
+**目标**：修模式②让 aarch64 打出 `minix-rs rc: minimal boot script marker` + x86 不回归。
+**起点**：读 `tmp/nk4a/nk4c35-pt-bind-wip.patch` + 本节分析 + `notes/rewrite/fork-syscall-rewrite/NK4C-GLM53-PROMPT.md`。
+**主要问题句**：`handle_procctl_clear` 末尾调 `sys_vmctl_set_addrspace` 后，新页表根是否已包含内核态映射？若否，应在何处确保补映射？
+
+### 纪律
+- 续-35 交接节为 **WORKLOG-only**；WIP patch 为 **untracked（不进 commit）**·基线 9ea95f8d8 代码不动。
+- 工具切换记录在此：本 session 终止·后续由 GLM5.3 执行续-35 修复。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests 上机。
