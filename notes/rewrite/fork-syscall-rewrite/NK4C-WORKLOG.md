@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-47 取证轮（2026-09-29·x86 `-smp4` 早崩定位成功（解续-46 addr2line 卡点）：内核加载基址无需——同一行 panic 同打 `rip`+`dispatch_body`，`ELF_VA = x86_trap_dispatch_body_ELF(0xffff80000022c9c0) + (rip − dispatch_body)`→nm 定函数 + objdump 反汇编。两处出错函数：`minix_kernel::vm::cross_space_copy`+0x27c（`mov (%rax),%rsi`，`rax=r15+0x580*idx+0x330`——按进程表项步长 0x580≈1408B 索引读一字段经 direct map·地址未映即 #PF）与 `minix_kernel::ipc::IpcEngine::send`+0x1da（该处反汇编实为 COM1 `in 0x3FD`/`out 0x3F8` 忙等诊断打印内联·port I/O 不致 #PF→归属精度存疑待复）。均为 IPC 消息投递/跨地址空间拷贝路径·SMP 早期 direct-map/进程表就绪相关。间歇竞态未本轮坐实+修复+验证（不臆造半成品生产改）。续-48＝per-run 同配对 rip↦db 精确取错点 + Debug 子代理在 cross_space_copy 入口打 rax/direct-map 窗+进程表基址分“DM 未建/表项未就绪/未初始化 idx”三岔。aarch64 模式① 另开。⚠ 三目标不缩小·目标① x86 标准启动器下未达。WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-47。
+> **🛑 最新前沿＝§1.120续-48 取证轮（2026-09-29·GLM commit 六度核查无新物·x86 早崩三岔裁决＝DM 别名未映＋推翻「DM 窗全未建」粗岔·同步纠正续-47 符号归属无效）**：①交叉验证：现代构建 3 个（head-base-r2·pafclear-r1/r2）rip−db 差值**恒定**（−0xfc84/−0x1a496）⇒确定性出错指令非随机漂移·6 配对全落同两偏移。②**归属纠正（重要）**：x86 走 boot-shim **内联 arch_boot**（main.rs:86·注释明言 aarch64 才走独立 kernel.elf 交接）⇒运行代码属 shim PE 布局·kernel.elf nm 反查（续-47 的 cross_space_copy+0x27c / send+0x1da）**无效**·同差值在新 kernel.elf 反查得另一函数即自证不可靠；差值法仍可用于钉同二进制内稳定偏移·归属待 /MAP 或 PDB 工具。③**CR2 取证针**（NK48-TEMP·KernelPanic 臂加读 cr2·采证后已回滚 tracked 净）新镜像 4 轮：r2/r3 复现·CR2=`0xffff808005d96360`/`0xffff808005d92360`＝DM 基（direct_map.rs:82 0xffff808000000000）+PA `0x5d9xxxx`·**正落在崩溃帧栈顶 rsp 同一物理页**且两次偏移同为 rsp+0x2c0（确定性构造）·errcode=0 not-present。④**裁决**：身份映射腿能执行同段 PA（rip/rsp/db 均 ~0x5c5-0x5d9 低址）⇒非整体 DM 未建·非表项/idx 损坏·而是**同一物理帧身份映射在、DM 别名缺**＝DM 窗对高物理覆盖不全/时机竞态；同 ap_early_entry.rs:286-294 已登记的 S-5 前科失败模式（bootstrap root 映低 RAM 身份不映 DM·当时崩 AP·今崩 BSP 中断腿）。⑤**续-49 入口**：查 x86 DM 建表覆盖范围（早期表→正式表切换时机）+中断使能窗口（−smp4 才现的确切机制待钉）；坐实后最修（含代码改必走 CodeReview）。aarch64 模式① 另开（g14）。⚠ 三目标不缩小·x86 标准启动器下 marker 未稳。纯取证·**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-48。
+>
+> **（历史·§1.120续-47 取证轮（2026-09-29·x86 `-smp4` 早崩定位成功（解续-46 addr2line 卡点）：内核加载基址无需——同一行 panic 同打 `rip`+`dispatch_body`，`ELF_VA = x86_trap_dispatch_body_ELF(0xffff80000022c9c0) + (rip − dispatch_body)`→nm 定函数 + objdump 反汇编。两处出错函数：`minix_kernel::vm::cross_space_copy`+0x27c（`mov (%rax),%rsi`，`rax=r15+0x580*idx+0x330`——按进程表项步长 0x580≈1408B 索引读一字段经 direct map·地址未映即 #PF）与 `minix_kernel::ipc::IpcEngine::send`+0x1da（该处反汇编实为 COM1 `in 0x3FD`/`out 0x3F8` 忙等诊断打印内联·port I/O 不致 #PF→归属精度存疑待复）。均为 IPC 消息投递/跨地址空间拷贝路径·SMP 早期 direct-map/进程表就绪相关。间歇竞态未本轮坐实+修复+验证（不臆造半成品生产改）。续-48＝per-run 同配对 rip↦db 精确取错点 + Debug 子代理在 cross_space_copy 入口打 rax/direct-map 窗+进程表基址分“DM 未建/表项未就绪/未初始化 idx”三岔。aarch64 模式① 另开。⚠ 三目标不缩小·目标① x86 标准启动器下未达。WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-47。
 >
 > **（历史·§1.120续-46 取证轮（2026-09-29·目标① x86 审计前提纠正：xtask 硬编码 `-smp 4` 下 x86 早期启动内核缺页间歇崩·崩时根本到不了 marker·系独立于 aarch64 模式① 的新目标① 阻塞项）**：①**启动器事实**：`xtask/src/qemu.rs:67` 对 x86_64 **硬编码 `-smp 4`**（无单核 CLI 选项）⇒项目标准 x86 运行配置就是四核。②**行号序定性**（权威）：含续-45 vm 改动的 `pafclear-x86-r1` serial 总 10695 行·`minimal boot script marker` 在第 **7574** 行·首个 panic 在第 **10670** 行（marker **之后**）⇒该轮 boot 成功抵 marker 后于后期压测才崩；HEAD 无改动 `head-base-r1`（总 122 行）在第 121 行 `pagefault in VM`@`trap_dispatch.rs:981` 极早期崩·`head-base-r2`（总 134 行）第 125 行 vector-14 KernelPanic@`:955`——均仅百余行、**从未到 marker**。③**定性**：x86 在 `-smp4` 下有**间歇性早期启动内核态 vector-14 缺页**（两形态：`pagefault in VM`（is_vm 腿不可转发）/ kernel-origin #PF→设计即 KernelPanic（validate-first 不变量破））·CPU 0·rip 逐轮变（0x5c4c8dc/0x5c420ca…）·**与续-45 vm 改动无关**（含改动也 r2 早崩·r1 侥幸跑完）⇒崩时到不了 marker。**纠正「x86 marker 已达成 1/3」旧前提**：旧验为单核手改 qemu 命令·xtask 默认 SMP 并不稳。④**未能 addr2line 定位**：kernel.elf 链于 higher-half `0xffff80000022c9c0`（`x86_trap_dispatch_body`）但崩溃 rip 为低位恒等映射早期地址·基址映射非平凡未在此预算内解决（不臆造符号）。⑤**续-47 入口**（x86 SMP 早崩·高杠杆——修好可能同时利好三架构 SMP）：先定内核加载基址把 panic rip→ELF VA→addr2line 定位出错指令；或直接 Debug 子代理在 `pfm1-gate`/kernel-origin #PF 入口打 CR2+rip+errcode+当前 boot 阶段（区分是 VM 自身数据段未映 / percpu 区未就绪 / 早期 direct-map 未建）。aarch64 模式① 仍开（续-46 前记 H7 数据流岔路）。⚠ 三目标不缩小·且目标① x86 子项实为**未达**（需修 SMP 早崩或提供单核启动路径）。**纯取证·WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-46。
 >
@@ -7102,4 +7104,28 @@ kernel.elf 链于 higher-half 但崩溃 rip 是低位恒等映射地址——看
 
 ### D. 续-48 入口
 (a) 取更多 `-smp4` 复现轮的同配对 (rip,db)，用同式算多个 ELF VA，交叉验证锁定真正稳定出错指令（排除 send 那个 port-I/O 误判）；(b) Debug 子代理在 `cross_space_copy` 入口打 rax/DM 窗上界/进程表基址+idx，分三岔；(c) 候选真修：SMP bringup 中确保 direct-map 覆全物理内存早于任何跨空间拷贝（或 secondary CPU 就绪前 VM 不开 IPC 投递）。⚠ 三目标不缩小。纯取证·**WORKLOG-only（免 CodeReview）**。
+
+---
+
+## §1.120续-48 取证轮（2026-09-29·GLM 六度核查·x86 早崩三岔裁决（DM 别名未映）·纠正续-47 归属无效）
+
+### A. GLM commit 六度核查
+用户指令再次 replay。`git fetch --all`（仅 minix3-upstream TLS 失败·无关）+ 全 ref 按 committerdate + `git log --all --not HEAD` + stash + 工作树：HEAD 仍我续-47 `39a4ed49d`·`origin/rewrite` 停 `e046e598c`（2026-09-06·IPC 过滤与模式①无关）·无新 pending GLM commit·唯二 GLM 产物仍为静态分析交接件（自陈禁下结论禁改代码·非补丁）。诚实上报·不编造 review·据 goal 继续推进真前沿。
+
+### B. 交叉验证：差值恒定⇒确定性出错指令
+收集历史串口全部含 dispatch_body 的 x86 崩溃轮·共 9 配对：现代构建 3 个（head-base-r2·pafclear-x86-r1/r2·同链接布局）中差值**逐字相同**：rip−db ∈ {−0xfc84, −0x1a496}·两偏移各出现 3 次⇒非随机漂移·是确定性同指令。每轮首崩均为 −0xfc84（次发 −0x1a496 是 panic 打印腿 recursive 二崩）。`x64-t36-bind` 差值不同（+0x39bc/+0x860a）属旧链接布局·不可跨布局套用。
+
+### C. 归属纠正（重要·方法论级）
+读 `boot-shim/src/main.rs`：x86_64/riscv64 走 **内联 arch_boot**（L86 `minix_kernel::arch_boot(...)`·kernel crate 链进 shim 二进制）；§1.115 独立 kernel.elf 交接仅 aarch64。⇒崩溃低址 rip 属 **shim PE 布局**·用 kernel.elf 符号表反查（续-47 的 cross_space_copy+0x27c / send+0x1da）**无效**；实证：同一差值 −0x1a496 在新旧 kernel.elf 反查分别得 send+0x1da / kernel_call_dispatch_inner+0x46a·自证不可靠。差值法的合法用途＝**同一二进制内跨轮钉稳定偏移**（B 节结论仍成立）·函数级归属需 shim 带 /MAP 重建或 PDB 解析工具（本机无 llvm-pdbutil·PE stripped no symbols）——**续-47 顶前沿中该归属已作废**（本轮前沿已纠正）。
+
+### D. CR2 取证针（NK48-TEMP·采证后已回滚 tracked 净）
+KernelPanic 臂原只打 rip/errcode 不打 CR2（VmPageFault 臂 L972-977 已有先例注释「判哪个 VA 未映必须看 cr2」）·加 10 行临时针·重建 x86 镜像跑 4 轮：r1 0 崩·**r2/r3 复现**·r4 0 崩（间歇 2/4 与前记录一致）：
+- 崩溃帧：rip `0x5c520ca`·db `0x5c6c560`·rsp `0x5d960a0`/`0x5d920a0`（全低恒等腿·rflags 0x202 IF 已开）
+- **CR2 = `0xffff808005d96360` / `0xffff808005d92360`**：＝ DM 基 `0xffff808000000000`（direct_map.rs:82）+ PA `0x5d9xxxx`·**正落在崩溃帧自身栈所居物理页**·且两次均为同一构造偏移 rsp+0x2c0·errcode=0（not-present·读）。
+
+### E. 三岔裁决（粗岔排除·机制细化）
+身份映射腿能执行/读写同段 PA（rip/rsp/db 均 ~0x5c5-0x5d9）⇒非「内核段整体未映」；非表项/idx 损坏。真形＝**同一物理帧（内核栈页）身份映射在、其 DM 别名缺**⇒ DM 窗对该高物理范围覆盖不全或建表时机竞态。与 `ap_early_entry.rs:286-294` 已登记 **S-5 前科同失败模式**（当时：AP 跑在 adopted bootstrap root·映低 RAM 身份但不映 DM·CR2=0xffff8080_00006f00 即崩；S-7 才切全内核环境）·今崩在 BSP 中断腿。-smp4 才现的确切机制未本轮钉死（不臆造）。
+
+### F. 处置 + 续-49 入口
+纯取证·探针已回滚（grep NK48-TEMP os/=0·tracked 净）·**WORKLOG-only（免 CodeReview）**。续-49：(a) 查 x86 早期页表→正式页表的 DM 覆盖切换时机与中断使能窗口（解释 -smp4 依赖）；(b) 如需函数级归属：shim 链接加 `/MAP`（rust-lld COFF）或 PDB 工具链；(c) 坐实后最修·含代码改必走 CodeReview。aarch64 模式①（g14 H7 数据流）另开。⚠ 三目标不缩小。
 
