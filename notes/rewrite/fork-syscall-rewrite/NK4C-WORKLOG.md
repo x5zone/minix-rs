@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-34 取证轮（**低扰动 `exec_command` 步进针定谳毒分配确切语句＝`stack_params` 返回的 `frame_size` 本身＝栈地址·且间歇性·并暴露下游第二失败模式＝exec 成功后 aarch64 文本页 0x200000 请求活锁**：`execve.rs` 插 `nk4r: step1..9` 步进针（入口打 argv/env 计数）+ `stack_params` 内 `nk4s: idx/len/ptr`。三跑：①`argv_count≈1/env_count=0` 正常（推翻续-33 env 计数污染猜）·毒 `size=fffe25c0` 落 `exec_command` 体内；②step1..6 全打·**step7-frame-done 未打**·毒恰在其间→锁 `frame.try_reserve_exact(frame_size)`·改 step6 打 `frame_size` 值＝`0xfffe25c0`→**`frame_size`（`stack_params` 返回）本身即栈地址**（某 `&str` item `.len()` 间歇为陈旧栈值·`checked_add` 64 位不溢出故不 E2BIG·**推翻续-33「exec frame Vec 有界已排除」**）；③装 `nk4s` 那轮 `frame_size=0x68` 正常·step7/9 全打·exec 成功·串口推至 29.9 万行·**但仍无 marker**→暴露第二失败模式：`memreq target=0x800C(slot12) start=0x200000 len=0x1000 ok=1` 重复 74015 次·**exec 出的子对新镜像首文本页 VA 0x200000 无限重复缺页**（授权后立即再缺＝映射未落地·疑 PTE 权限[execute-never/PXN/UXN] 或 TLBI 缺失）。**共性根**＝两模式均落 aarch64 专属 fork/exec 期页物化/缺页落地正确性（非共享 init 源码·非消息足迹[续-32 排除]·非 env 计数[本轮排除]）·x86 同源已达 marker＝硬对照。下轮（续-35）＝**主攻模式②活锁**：读 `os/arch/src/arm64` map_page 权限位映射（`prot`→AP/PXN/UXN/AttrIndx）+ fault-return/setaddr 的 TLBI+isync 腿·坐实 0x200000 授权后为何同页再缺。⚠ **方法学教训（入 MEMORY 候选）：含 NUL 的二进制串口日志 `grep` 必带 `-a`**·否则命中行被当 binary 静默漏报（本会话「nk4r 从未打印」假象几误方向）·断言「命中 0 次」前必 `grep -ac` 复核。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-34。）**
+> **✅ 最新前沿＝§1.120续-34b 对账轮（**外部 GLM 独立静态分析三候选 vs 续-34 真机状态逐项对账·纯对账零生产代码改零探针**：候选一（用户起源中断不存帧→恢复旧寄存器组）＝**值得独立探针判别**（系与页物化正交的寄存器通路·续-34 步进针读内存侧 `frame_size` 未区分「读陈旧页」与「恢复旧寄存器」两因；低成本配方＝GLM §3(d) 在 save/restore 点打 (pid,elr,sp_el0,x19,x24,x28) 验恢复点是否为陷入边界，惟次序上先待②修复后复跑看①是否随之消失）；候选二（16 字节对齐差）＝**保持怀疑·暂不投入**（已坐实①毒＝完整未拆分父栈指针、非半格错位读、QEMU 关严格对齐检查；其 `exec_msg.stack%16` 近零成本判别针随②复跑顺带采）；候选三（崩溃归属或在 exec 后 /bin/sh）＝**已被续-34 覆盖并证伪对本毒适用**（nk4r 崩溃前打印、毒落点在 init 侧 execve.rs）；§2 checked_add 论据修正与续-34 一致；**boot.rs ps_strings 布局分叉本轮独立核实属实**（boot.rs argc 槽宽 `size_of::<i32>()`=4 vs execve.rs `SLOT`=8、当前因 boot `n_argv/n_env` 恒 0 无害）＝**登记结构债备查**。**不改续-35 主攻方向（模式② 0x200000 活锁仍头号目标）**。详文见文末 §1.120续-34b。）**
+>
+> **（历史·§1.120续-34 取证轮（**低扰动 `exec_command` 步进针定谳毒分配确切语句＝`stack_params` 返回的 `frame_size` 本身＝栈地址·且间歇性·并暴露下游第二失败模式＝exec 成功后 aarch64 文本页 0x200000 请求活锁**：`execve.rs` 插 `nk4r: step1..9` 步进针（入口打 argv/env 计数）+ `stack_params` 内 `nk4s: idx/len/ptr`。三跑：①`argv_count≈1/env_count=0` 正常（推翻续-33 env 计数污染猜）·毒 `size=fffe25c0` 落 `exec_command` 体内；②step1..6 全打·**step7-frame-done 未打**·毒恰在其间→锁 `frame.try_reserve_exact(frame_size)`·改 step6 打 `frame_size` 值＝`0xfffe25c0`→**`frame_size`（`stack_params` 返回）本身即栈地址**（某 `&str` item `.len()` 间歇为陈旧栈值·`checked_add` 64 位不溢出故不 E2BIG·**推翻续-33「exec frame Vec 有界已排除」**）；③装 `nk4s` 那轮 `frame_size=0x68` 正常·step7/9 全打·exec 成功·串口推至 29.9 万行·**但仍无 marker**→暴露第二失败模式：`memreq target=0x800C(slot12) start=0x200000 len=0x1000 ok=1` 重复 74015 次·**exec 出的子对新镜像首文本页 VA 0x200000 无限重复缺页**（授权后立即再缺＝映射未落地·疑 PTE 权限[execute-never/PXN/UXN] 或 TLBI 缺失）。**共性根**＝两模式均落 aarch64 专属 fork/exec 期页物化/缺页落地正确性（非共享 init 源码·非消息足迹[续-32 排除]·非 env 计数[本轮排除]）·x86 同源已达 marker＝硬对照。下轮（续-35）＝**主攻模式②活锁**：读 `os/arch/src/arm64` map_page 权限位映射（`prot`→AP/PXN/UXN/AttrIndx）+ fault-return/setaddr 的 TLBI+isync 腿·坐实 0x200000 授权后为何同页再缺。⚠ **方法学教训（入 MEMORY 候选）：含 NUL 的二进制串口日志 `grep` 必带 `-a`**·否则命中行被当 binary 静默漏报（本会话「nk4r 从未打印」假象几误方向）·断言「命中 0 次」前必 `grep -ac` 复核。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-34。）**
 >
 > **（历史·§1.120续-33 取证轮（**有界扫栈定谳毒分配发起者＝minix-init 内 `RawVec::finish_grow`·某 Vec grow 到 cap≈0x7ffffffe25c0＝INIT 原始栈地址被当长度**·**重构：x86 同源二进制已达 marker ⇒ 缺陷在 aarch64 架构层子诞生/exec 栈布局非共享 init 逻辑**：临时 nk4m 于 `Allocator::alloc` 入口捕 x30/sp+扫 300 字。text 域返址命中：entry lr=0x220dd8（finish_grow@0x220d58 内）·+0x420=0x22bb68（minix_rt::alloc GlobalAlloc 壳）·sp=0x7ffffffc63a8（子栈区对合续-30）。全链符号均 in minix-init ELF⇒非server/内核。毒值 0x7ffffffe25c0 属父 INIT 栈区 0x7ffffff**e2**（子栈在 0x7ffffff**c6**）＝父栈内容经 fork 遗传被当长度。**排除**：exec frame Vec（`execve.rs:296` frame_size 出自 `stack_params` 全程 checked_add+ok_or(E2BIG)·超大 item.len 先早返不可能递 4GiB）、crt0 env/arg 切片（`string_at` NUL 扫描长度受串界定）。本机 objdump 不认 aarch64 ⚠无 llvm-objdump ⇒ 无法离线追 finish_grow 调用者·release 无帧指针使 300 字窗够不到 app 帧。**关键洞察**：同一 init 二进制 x86_64 单核已跑到 rc marker（续-26 零 panic）→ aarch64 子却把 INIT 栈地址当 Vec cap ⇒ **缺陷在 aarch64 专属架构层**（子诞生/exec 时 ps_strings/argv/envp/auxv 落盘的宽度/对齐/偏移差·或 fork 子初始 SP 使继承栈错一格）。下轮＝对读 aarch64 vs x86_64 `crt0.rs` entry stub + exec 栈/ps_strings 装载定位 aarch64 独有偏移·或一次性 `-C force-frame-pointers=yes` 重建 init 走 x29 链拿完整回溯。探针 `git checkout` 回滚·tracked 净（grep nk4m os/libs/minix-rt=0）·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-33。）**
 >
@@ -6617,3 +6619,54 @@ release init ELF 仅 321 符号（`nm` 已验·finish_grow@0x220d58→minix_rt::
 - **方法学教训（本会话新增·入 MEMORY 候选）**：含 NUL 的二进制串口日志 `grep` **必须带 `-a`**，否则匹配行被当 binary 静默漏报——续-33→续-34 之间「nk4r 从未打印」的错误印象正源于此，一度几乎误导方向到「子未达 exec_command」。凡断言「某探针命中 0 次」前须 `grep -ac` 复核。
 - 承续-32/33「未坐实不成修」：本轮以步进针把毒分配从「init 内某 Vec」精确到「`exec_command` 的 `frame_size`（`stack_params` 返回值）间歇为栈地址」，并据「同跑可正常」把其定性为间歇 Heisenbug、据「exec 成功后仍卡」暴露第二确定性失败模式（0x200000 文本页活锁）——是收敛非漂移。
 - ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①双失败模式（间歇 OOM + 文本页活锁）定谳至 aarch64 fork/exec 页物化/缺页落地·下一手主攻活锁的 PTE 权限/TLBI；riscv64①需先接 IPC 桥（复用同投递代码）；18-stage/minix3 tests 待前三链贯通。
+
+---
+
+## §1.120续-34b 对账轮（外部 GLM 独立静态分析三候选 vs 续-34 真机状态·纯对账·零生产代码改·不占改续-35 主攻方向）
+
+> 应「独立静态分析对账请求」新增。分析件＝`NK4C-BUG-AARCH64-VEC-CAP-GLM.md`（307 行·纯静态·未跑真机·不知续-34 两结论）。
+> 本轮**唯一动作**：把 GLM 三候选与续-34 权威真机状态逐项对账·各给处置结论＋一句理由。
+> **续-35 主攻方向（模式②文本页 0x200000 活锁）不受此件影响·仍头号目标**。凡与负证据账本冲突处·以真机证据为准并引用对应续-NN。
+
+### A. 处置一览
+
+| GLM 候选 | 处置 | 一句理由 |
+|---|---|---|
+| 候选一（用户起源中断不存帧→恢复陈旧寄存器组） | **值得独立探针判别**（次序：先待②修复后复跑看①是否随之消失·再决定单立寄存器针） | 系与「页物化」**正交的寄存器通路**·续-34 步进针读的是内存侧算得的 `frame_size`·**未区分**「读陈旧页」与「恢复旧寄存器」两因·故不被续-34 覆盖也不被排除 |
+| 候选二（exec 初始栈 16 字节对齐差） | **保持怀疑·暂不投入**（其判别针近零成本·随②修复复跑顺带采集） | 已坐实的①毒值是**完整未拆分的父栈指针** `0x7ffffffe25c0`·非「相邻槽半格错位读」·8 字节对齐差产不出此形态（GLM 自评低置信·更像放大器）·且 QEMU `SCTLR_EL1.A=0` 关严格对齐检查 |
+| 候选三（崩溃映像归属未定·毒 Vec 或在 exec 后的 /bin/sh） | **已被续-34 覆盖并证伪其对本毒的适用** | 续-34 步进针 `nk4r` **在崩溃前打印**（运行于 `exec_command` 体内＝exec 未完成）·毒落点精确到 init 侧 `execve.rs` 的 `frame.try_reserve_exact(frame_size)·非 sh 启动链 |
+| §2 论据修正（`checked_add` 不设绝对上界·E2BIG 早返论据不成立） | **已被续-34 覆盖**（与本轮一致·无冲突） | GLM 独立得出与续-34 相同修正：64 位 usize 内 `0x7ffffffe25c0` 不回绕·不触发 E2BIG·直接把巨值递进 `total` |
+| §6 boot.rs ps_strings 布局分叉（argc 槽宽 4 vs 8） | **登记结构债备查**（本轮已独立核实属实） | `boot.rs` 装机腿 argc 槽宽用 `size_of::<i32>()`=4·exec 路径用 `SLOT`=8·当前因 boot `n_argv/n_env` 恒 0 而无害 |
+
+### B. 候选一裁定详情（用户重点问：是否有低成本探针排除/坐实）
+
+**(1) 与续-34 证据的关系——正交、未被覆盖、未被排除。** 续-34 步进针在 `stack_params` 累加循环内观测到某 `&str` item 的 `.len()` 间歇＝父 INIT 栈地址·从而 `frame_size`≈4GiB。但该针读的是**内存侧的 fat-pointer 长度字段值**·它只能证明「`len` 槽里是个陈旧栈指针」·**不能证明该陈旧值如何进入 `len` 槽**。两条通路都能产出同一观测：
+- 通路 A（续-34 归因·页物化 Heisenbug）：item 所在的栈/堆字**未被物化/读到陈旧页**·`len` 字段从内存读回旧值。
+- 通路 B（GLM 候选一·寄存器组）：release 把 `len` 常驻被调用者保存寄存器 x19–x28·用户起源 IRQ 腿**不存帧**（`aarch64_user_body` IRQ 分支直转 `aarch64_kernel_body`·全程无 `save_frame_to_context`·对照 x86 `save_irq_frame_to_context` L624/L709 承重不变量·aarch64 无 `mirror_irq_frame_into_proc`）·恢复时把**上一次陷入的旧寄存器组**装回·旧值里这些寄存器曾装着父栈指针。
+
+毒值形状（`0x7ffffffe2xxx`＝父 INIT 栈区·与子栈 `0x7ffffffc6xxx` 不同区）对两条通路**都自洽**·步进针无法二选一。故 GLM「若用页物化统一解释①」的前提**不成立**——我不将①强行并入页物化共性根·候选一登记为**独立待判别**。
+
+**(2) 低成本判别探针——GLM §3(d) 配方可行·但次序上先走更廉价的路线。** 两条手段·按成本升序：
+- **首选（零额外探针·随既定②修复复跑顺带）**：续-34 已把①定性为**间歇 Heisenbug**（三跑两崩一过）·且②（0x200000 memreq 风暴）会剧烈改变 IRQ/调度压力。先按续-35 修好②后**原样复跑 aarch64**：若①随之消失＝①大概率是②活锁时序放大出的窗口·候选一不必单独立项；若①**仍在**＝进入下一条。
+- **次选（GLM §3(d) 寄存器对账针·低成本）**：在 `save_frame_to_context` 各调用站点与 `finish_and_restore` 恢复前·各打一行 `(pid, elr, sp_el0, x19, x24, x28)`（走既有 `SYS_DIAGCTL` 直达串口·fire-once/限流去重·守续-34「含 NUL 日志 grep 必带 `-a`」）。判据以 GLM 给的**结构性事实**为主（不依赖单次寄存器值巧合）：任一恢复行的 `elr` **不是任何保存行的 svc 后继**（恢复点不在陷入边界）＝候选一坐实；每次恢复五元组都精确等于该进程最近一次保存行＝候选一排除。
+
+**(3) 与模式②是否同源？** 不同源——②是 exec 拆除/映射落地域·候选一是中断存帧域。惟①的**间歇性**可能与②的压力时序耦合·故上面「先修②复跑」既是②战线的自然延伸·也能免费回收①的一部分信息·不额外占用②主攻资源。
+
+### C. 候选二裁定详情（保持怀疑/排除）
+
+**结论：保持怀疑·暂不投入·不单独立项。** 续-34 未涉及此面。三条理由：①已坐实的①毒＝**完整未拆分的 64 位父栈指针落进 `len` 槽**·而对齐差的机制预言是「半格（8 字节）错位的相邻槽读」·产物形态不同·对齐差至多是**放大器**（GLM 亦如此自评·置信「低」）；②QEMU 默认 `SCTLR_EL1.A=0` 关严格对齐检查·通用寄存器普通访存不因差 8 字节出错·无 fault 通路把错位暴露成观测到的 SIGSEGV；③其判别针**近零成本**——`syscall_process.rs::dispatch_exec` 现有 `nk4a: exec` 行（GLM 记 L298-306）补打 `exec_msg.stack % 16` 即可·故**随②修复后的复跑顺带采集**：若崩溃次初栈指针恒 16 对齐（余 0）＝排除；若恒差 8＝升级为待查·再按 GLM §4(d) 用奇数字节环境变量翻转 `frame_size` 奇偶做对照。本轮不投入。
+
+### D. boot.rs 布局分叉——独立核实（属实·登记结构债备查）
+
+本轮亲自读码核实（GLM 仅转述）·**分叉属实**：
+- 装机腿 `os/arch/src/arch/boot.rs` L657：`let argvstr = sp.0 + core::mem::size_of::<i32>() as u64;`——argc 槽宽按 **4 字节（i32）** 计·`argvstr = sp+4`（`stack_high-48`）。
+- exec 路径 `os/commands/sbin/init/src/execve.rs` L122：`write_u64(frame, 0, argc as u64)`（argc 占**一整指针槽**）·L163：`argv_str: vsp + SLOT`（SLOT=8）——argc 槽宽按 **8 字节（LP64）** 计·`argv_str = sp+8`。
+- 当前无害（与 GLM 一致）：`boot.rs` L660/L662 将 `ps_nargvstr`/`ps_nenvstr` 均写 **0**·消费端不迭代 argv/env·`argvstr` 指针不被解引用。
+- **结构债**：两条腿对 argc 槽宽（4 vs 8）与由此推导的 argv[0] 落位（sp+4 vs sp+8）持不同约定·且 boot 侧 `argvstr=sp+4` 亦使该 u64 指针落位非 8 字节对齐。**任何未来给 boot 镜像传参 / 消费 boot 侧 argvstr 的改动都会踩**。登记入结构债账本备查（与 execve.rs 模块文档所记 C `sizeof(argc)` LP64 修正同源·惟 boot.rs 那腿未跟进该修正）。
+
+### E. 纪律（续-34b）
+
+- **纯对账·零生产代码改·零探针**·tracked 净·WORKLOG-only（免 CodeReview）。
+- **不改续-35 主攻方向**：模式②（文本页 0x200000 活锁）仍是下一手头号目标·本件不挪位。GLM 三候选的处置均为「记账/排序」·其坐实前不构成任何修复依据（守「未坐实不成修」）。
+- **冲突以真机证据为准**：候选三与「归属未定」之疑·由续-34 步进针真机结果直接判其对本毒不适用；§2 论据修正与续-34 一致·互相印证非冲突。
+- 背景更正（供续-35 参考·非本轮动作）：本轮另有 Debug 子代理就模式②给出运行期证据·**初步**指向 exec 拆除腿 `os/servers/vm/src/exit.rs::handle_procctl_clear` 换页表根后缺 C `exit.c:137 pt_bind` 对位腿（未重发 VMCTL SetAddrSpace）·而非续-34 措辞的「疑 PTE 权限/TLBI」；该结论**待实施轮独立复核后方落定**·暂不作权威定谳·此处仅备记以免续-35 沿用过窄的「TLBI/PTE」表述。
