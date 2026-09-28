@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-37 取证轮（2026-09-28·GLM 续-36 验收通过 + 失败模式① 候选一（寄存器通路）排除·转通路 A）**：①**GLM 续-36 修复 commit `82abf5b64` 独立验收通过**：本地三件套复跑 531/823/243 全绿·CodeReview 专项评审无 BLOCKER（1 SHOULD-FIX＝exit.rs setaddr 腿 `.map_err` 丢 `GatewayError` payload·非阻塞一致性改善·不 churn 已合入 commit）。②**候选一（寄存器组陈旧通路）真机+静态双重排除**：aarch64 EL0-origin IRQ 腿是 frame→frame 闭环（`EL0BODY` 宏入压 live frame含 x19–x28·PARK_NONE 返回时从同帧原样弹回 eret·全程不读 `cpu_context`）；进程真正离 CPU 只经 voluntary IPC、每条换出腿 PARK 前必先 `save_frame_to_context` ⇒ ctx 恒为最新快照·无旧值复活通路；§3(d) 对账针两跑逐字节一致·崩溃子每条 `rst` callee 寄存器等于其自身某条 `save`·STALE_CALLEE 零命中。⇒ **不能给 aarch64 补 x86 式 save_irq_frame（错误修复·aarch64 不做 IRQ 抢占）**。③**模式① 定谳＝通路 A（页/store 物化·经正确指针读到陈旧内存字）**：寄存器忠实而 `frame_size` 仍~4GiB⇒毒在被索引的内存字本身；双架构不对称真因＝x86 TSO 强序免疫·aarch64 weak-memory 间歇（同博客 `f2c477fc3`）。**头号嫌疑锚点**＝`os/arch/src/arm64/paging.rs::write_pte_dm`（L246）`VmDm`（EL0）写 PTE **完全不 flush**（L260-261）vs `KernelDm` 全套 dsb+tlbi（L254-257）·＋跨进程内容写→子读缺数据屏障（文档自陈 VmDm flush gap与 x86 同款⇒TLB 单独不够解释不对称·更疑数据序）。**下轮（续-38）＝通路 A 分 A1（缺屏障）/A2（fill↔resume 竞态）**：在崩溃子 `pid=0xc` 读毒字那页的 VM fill 完成点 vs resume 后用户读点对比 fill 写入值 vs 实际读到值（未坐实不成修）。详文见文末 §1.120续-37。⚠ 目标不缩小：三架构 rc marker + 18-stage + minix3 tests。纯取证·WORKLOG-only（免 CodeReview）。
+> **🛑 最新前沿＝§1.120续-38 证伪取证轮（2026-09-28·aarch64 失败模式① 的「SP 16 对齐」修复形态被真机证伪·回退投机代码）**：本轮复活续-34b 候选二（16 字节 SP 对齐）并实施最修（`execve.rs::stack_params` 取整抬到 16 + 常量 + 3 测试·host `minix-init` 150/0 + 三件套 531/823/243 全绿·fmt 判定为 rustfmt 版本漂移不动未改行）。**真机证伪**：全新重建 aarch64 release 镜像（`-smp 4`）跑·OOM 签名逐字与修复前一致（L4268 `rs-bigalloc size=fffe25c0`→L4272 `OOM-RT`·marker=0）⇒ 最修**未消除失败模式①**。**根因裁决＝修复点定位错误**：毒 `frame_size≈4GiB` 出自 `exec_command` 内 `stack_params(&argv,&envp)`·而 `argv`/`envp` 的 `&str` 在调用 `stack_params` **之前**、于 **INIT 当前已在跑的栈**上构造·`stack_params` 取整只决定**交接给子的 `vsp`**·无法重对齐 INIT 自身此刻 SP·故子出站栈对齐即便 ABI 正确亦非本 OOM 之因（SIMD 低半不落地若成立其受害帧是 INIT 自己·对齐源在 boot 期 `kinfo.user_sp`→INIT 入站 SP）。⇒ **回退 `execve.rs`（`git checkout` 回 HEAD·tracked 净·不保留基于被证伪假设的投机代码）**·回续-37 定谳的**通路 A（内存字陈旧·A1 缺屏障/A2 fill-resume 竞态）**为正解方向。**下轮（续-39）**＝崩溃现场打印 INIT 此刻 SP/帧对齐 + `stack_params` 入参每条 `&str` 的 `ptr`/`len` 实测值·定位是哪条 `&str.len()` 读到 `0x7ffffffe25xx`·分「INIT 帧被外部写毁（通路 A）」vs「INIT 入站 SP 未对齐致构造即塌（修复点=boot 期）」两岔。⚠ 目标不缩小：三架构 rc marker + 18-stage + minix3 tests。纯证伪取证·无生产改动幸存·**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-38。
+>
+> **（历史·§1.120续-37 取证轮（2026-09-28·GLM 续-36 验收通过 + 失败模式① 候选一（寄存器通路）排除·转通路 A）**：①GLM 续-36 commit `82abf5b64` 独立验收通过（本地三件套 531/823/243 全绿 + CodeReview 无 BLOCKER）。②候选一（寄存器组陈旧通路）真机+静态双重排除（aarch64 EL0-origin IRQ 腿 frame→frame 闭环·`save_frame_to_context` 恒先于 PARK·§3(d) 对账针 STALE_CALLEE 零命中）⇒不能给 aarch64 补 x86 式 save_irq_frame。③模式① 定谳＝通路 A（内存字陈旧·经正确指针读到陈旧值）。详文见文末 §1.120续-37。）**
 >
 > **（历史·§1.120续-36 修复轮（2026-09-28·GLM5.3·模式② pt_bind 已修复合提交·x86 回归证伪为幽灵）**：②终修＝`handle_procctl_clear` 换根后补 C `exit.c:137 pt_bind` 对位腿＝`gateway.sys_vmctl_set_addrspace(endpoint, root_paddr, 0)`（对位 fork.rs:390-401·dispatcher.rs 穿 gateway 参·vm_server.rs 测试装 MockGateway 断言）。x86 回归（`trap_dispatch.rs:955` vector-14）经单核 4/4 复跑证伪＝子代理撞 xtask 默认 -smp 4 的已知早期 SMP 崩。静态三重安全面：`init_page_table` 非 test 分支本就 `map_kernel` / `vmctl_set_addr_space`（syscall.rs:2911）仅 target==当前 ptproc 才立即换 CR3 / `rts_unset(VMINHIBIT)` 因目标持 RECEIVING 不入队。docker 三件套 531/823/243 全绿·aarch64 7/7 风暴归零·x86_64 单核 marker×2 不回归。CodeReview 0 BLOCKER（audit.rs try_borrow_mut 防 CLEAR 路径 RefCell 双借 panic 等）。续-36 H 节回归复验：累计 11 轮 aarch64（含四核）+6 轮 x86 签名逐字稳定＝②彻底修复。详文见文末 §1.120续-36。）**
 >
@@ -6823,3 +6825,30 @@ CodeReview 追加修复（0 BLOCKER / 1 SHOULD-FIX / 4 NIT，全采纳）：
 
 ### D. 续-38 入口（下一手·通路 A 分 A1/A2）
 **A1 屏障缺失 / A2 fill↔resume 竞态** 最小判别针配方：在崩溃子 `pid=0xc` 读毒字的那个用户栈页的 **VM fill 完成点** 与 **resume 后用户读点** 之间，打 fill 写入的 `.len()` 值 vs 子随后实际读到值对照——若 fill 写入正确、resume 后读到陈旧 ⇒ 坐实 A1/A2（缺 `dsb`/`tlbi`/cache-maintenance 或 PTE 属性不一致）·再据缺口在 VmDm map 腿或内容写腿补屏障最修；若 fill 写入即错 ⇒ 回退查 VM 填页数据源（execve 栈页 demand-fill 的 copy 腿）。文件落点候选：`os/kernel/src/trap_dispatch.rs` aarch64 pagefault 腿 L2302-2335 + `os/arch/src/arm64/paging.rs` write_pte_dm VmDm 臂 + VM 侧 `handle_memory_once`/`map_page` 内容写序。⚠ **未坐实不成修**：续-37 已排除候选一（避免错误补存帧腿），续-38 须先真机分 A1/A2 再实施。三目标不缩小。
+
+---
+
+## §1.120续-38（2026-09-28）·SP 对齐假设（候选二以修复形态复活）真机**证伪**·修复点定位错误·回退续-37 通路 A
+
+> 本轮＝实施一轮最修并真机验证·结果为**证伪**（fix 不消除 OOM）·据此**回退全部生产代码改**（`os/commands/sbin/init/src/execve.rs` `git checkout` 回 HEAD·tracked 净）·纯证伪取证·**WORKLOG-only（免 CodeReview·无生产改动幸存）**。取证产物 `tmp/nk4a/a64-t38-fix-1.serial`（untracked）。
+
+### A. 本轮入口：复活续-34b「候选二·16 字节对齐差」
+续-37 §D 记通路 A（A1 缺屏障/A2 fill-resume 竞态）为下一手；本轮另择低成本的**候选二**（16 字节 SP 对齐）先做：假设＝aarch64 AAPCS64 要求进程入口 SP 恒 16 对齐·而 `execve.rs::stack_params` 原只按 `SLOT=8` 取整·当帧总长非 16 倍数时子初始 `vsp % 16 == 8`·子运行 minix-init 构造 `vec!["sh","/etc/rc","autoboot"]` 时 `str q0,[sp]` 一条 128 位 SIMD 溢出存储低 8 字节静默不落地·`String::len()` 槽留成陈旧 SP 残值→`frame_size≈4GiB`→`OOM-RT`。
+
+### B. 最修实施 + host 侧验证（全绿·但 host 绿≠真机坐实）
+- `execve.rs`：引入 `const STACK_ALIGN: usize = 16;`（带 ABI doc）；出口取整 `total.div_ceil(SLOT)*SLOT` → `total.div_ceil(STACK_ALIGN)*STACK_ALIGN`；订正 `stack_params` doc；测试 worked_example 104→112、minimum_frame 56→64（断言 `% STACK_ALIGN==0`）、新增 `test_stack_params_aligned_for_sp`（对 `rc_argv` 等组合断言 `size%16==0`）。
+- `cargo test -p minix-init` **150/0**（含三条 stack_params 测试）·三件套 `minix-vm/minix-kernel/minix-arch --lib` **531/823/243** 全绿（改动不回归 host）。
+- **fmt 判定**：`cargo fmt -p minix-init -- --check`（rustfmt 1.8.0-stable/edition 2024）报大量 diff·经核 HEAD 基线本身在同工具下即报同类 diff（`execve.rs:43` import 排序 + `:397/421/440` 单行 `assert_eq!` 折行）⇒ **rustfmt 版本/配置漂移的全仓 pre-existing 差异·非本次引入**·守「不动未改行·hunk 持平 HEAD」·**不跑 `cargo fmt` 搅全包**。
+
+### C. 真机验证＝**证伪**（决定性）
+- 全新重建 aarch64 release 镜像（xtask 默认 `-smp 4`）·`timeout 100 xtask qemu --arch aarch64`（`a64-t38-fix-1.serial`·exit 124=timeout kill 正常）。
+- **OOM 签名逐字与修复前一致**：L4268 `nk4a: rs-bigalloc size=fffe25c0 ptr=0`（=0x7ffffffe25c0 低 32 位·陈旧栈地址）→ L4272 `nk4c: OOM-RT size=fe25c0`·`grep -ac "rs-bigalloc size=fffe"`=**1**·`grep -ac OOM-RT`=**1**·`grep -ac "minix-rs rc: minimal boot"`=**0**（marker 未出）。**最修未消除失败模式①**。
+
+### D. 根因裁决：修复点定位错误（INIT 自身帧 vs 子的交接栈）
+毒 `frame_size≈4GiB` 出自 `exec_command` 内 `stack_params(&argv,&envp)`·而 `argv`/`envp` 的 `&str` 在**调用 stack_params 之前**、于 **INIT 当前已在跑的栈**上构造（`cmd.argv` 解析、`compose_envp` 的 `Vec<String>`）。`stack_params` 的取整只决定**交接给子的 `vsp`**·**无法重对齐 INIT 自身此刻的 SP**。故即便「子 SP 应 16 对齐」是成立的 ABI 事实·它也**不是本 OOM 的因**·SIMD-低半不落地若成立·其受害帧是 **INIT 自己**的帧（其对齐由 boot 期内核发布 `kinfo.user_sp`→INIT 首次 exec 的初始 SP 决定·非此路）·修复点应在 INIT 的**入站** SP 对齐来源·非子的**出站**帧。⇒ **候选二（本轮以最修形态复活的 SP 对齐说）证伪**·回退续-37 定谳的通路 A（内存字陈旧·A1 屏障/A2 竞态）为正解方向。旁证：续-37 §B 对账针显示 callee 寄存器忠实而 `frame_size` 仍毒·本就把矛头指向**被索引的内存字本身**（通路 A）·SP 对齐系一次越推。
+
+### E. 遗留观察（备查·非本轮动作）
+子 exec 帧未 16 对齐本身仍是潜在 AAPCS64 违约（未来 `/bin/sh` 及其 exec 的后代可能踩）·登记备查·**待通路 A 真根因定位后如与出站栈对齐属同一修复再一并落地**·本轮不保留投机代码。
+
+### F. 续-39 入口（下一手）
+回续-37 §D 通路 A 判别针配方（fill 写入 `.len()` 值 vs 子随后实际读到值对照·分 A1 缺屏障/A2 fill-resume 竞态）；并**补一条本轮新线索**：既然本轮证伪「出站对齐」而根因指向「INIT 自身帧」·续-39 应先在崩溃现场打印 **INIT 此刻的 SP/帧对齐** + `execve.rs` 里 `stack_params` 入参 `argv`/`envp` 每条 `&str` 的 `ptr`/`len` 实测值·直接看是哪一条 `&str` 的 `len` 读到 `0x7ffffffe25xx`·据此定位是 INIT 帧局部被外部写毁（通路 A 数据可见性）还是 INIT 入站 SP 本身未对齐致其构造即塌（新候选二·修复点=boot 期 INIT 入站 SP 对齐）。⚠ **未坐实不成修**·三目标不缩小。
