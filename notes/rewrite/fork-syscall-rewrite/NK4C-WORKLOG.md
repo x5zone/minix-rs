@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-31 取证轮（**Path A 来源探针 nk4l 定谳非法消息来源＝PM（endpoint 0）对 INIT sendrec 的非阻塞回复腿**：`ipc.rs:1372` Path A 沉降点挨印 dst=INIT 且 pdmv 落嫌疑栈页的 `(src,pdmv,mt,w0,w1,w9,fl)` 共 21 条·**全部 `src=0x0`（＝PM·`ipc.rs:1331` 注释）·`fl=0x80`（＝NON_BLOCKING）**·`mt` 非法（`0x0`/`0xffffffb2`=-78/`0xe`/`0xf`）·`w0` 低 32 位恒 `0x7bff`（原始 m_source 未盖章·正常）·**`w9`（回复 offset 0x48）携 INIT 自身栈指针 `0x7ffffffe2888`/`0x7ffffffe298d`**⇒PM 回复腿把 INIT 请求（含 INIT 栈内指针字段）回音/残留在回复高位字（未清零）。根因链收敛（接续-30）：PM→INIT 非阻塞回复携未零高位字（含 INIT 栈指针）→Path A 设计延迟腿将全 80B 写 INIT 活帧 pdmv（足迹上沿 word[9]@0x25c0）→污染 INIT 栈局部→fork CoW 遗传至子 slot 12→子将含 0x7ffffffe25c0 内存当 Vec cap→~4GiB OOM→SIGSEGV。**真修点候选**：（甲）PM 回复构造应将 Message 未用字段清零（不依赖用户侧 cleared_message）；（乙）内核 Path A 沉降前对 `m` 高位残留零化/校验。下轮＝定 PM 对 INIT sendrec 回复的具体腿（`os/servers/pm/*`·哪个 request 回复携 INIT 栈指针·mt=0xe/0xf/0xb2 各对应何 PM 调用）+ 对位 C reply Message 是全量还是部分初始化·坐实后最修。探针 `git checkout` 回滚·tracked 净（`grep nk4l os/kernel`=0）·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-31。）**
+> **⚠️ 最新前沿＝§1.120续-32 纠正轮（**推翻续-27/28/31「消息足迹污染 INIT→子继承 OOM」核心论据**：静态核实两项决定性事实——① 内核 `p_delivermsg: Message`（`proc.rs:954`）仅 **64B·8 个 u64 字**（`MESSAGE_SIZE=64`）·紧接 `p_delivermsg_vir`（`proc.rs:958`）；续-31 nk4l 探针读的 `w9`＝offset 0x48=72 **越过 64B 消息本体**·读到相邻内核字段（含用户栈指针 0x7ffffffe28xx）⇒「PM 回复回音 INIT 栈指针」=越界读伪影·作废。② PM `reply()`（`init.rs:651`）用 `Message::default()`⇒`MessageUnion::default()`=`raw:[0u8;56]` 全零（`message.rs:306`）+仅设 `m_type`⇒**投递给 INIT 的消息正文除 m_type 外必为零**·无高位毒字可污染。连带推翻贯穿续-27→31 的因果链（另订正续-31「全 src=0x0」不确·实含 src=0x1/0x7）。**保留硬事实**（in-bounds仍立）：真受害者＝子 slot 12（INIT 首个 fork+exec 子）·其 `alloc_big` 收 `size=0x7ffffffe25c0`（≈4GiB·值形 INIT 栈地址被当 Vec cap）失败→SIGSEGV（`alloc.rs:613` 已提交 `nk4a: rs-bigalloc` 诊断腿）·read_file/CoW/消息污染三论均已排除。产地**重定回子自身代码路径**。下轮＝增强 `alloc.rs:613` 腿对 `size>=0x10000000` 打印**有界不 fault** 的调用者返址（`#[inline(never)]` 读 x30 / 有界扫栈）→ llvm-objdump symbolize 真调用点→再论最修。**未坐实不成修**·不再基于越界读/启发式归因。本轮纯分析零探针零代码改·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-32。）**
 >
 > **（历史·§1.120续-29 取证轮（**用户侧地址探针推翻 read_file 归因**：nk4j 于 `MinixSysHost::read_file` 逐轮打印·二进制已验编入（strings 命中 3）·但本轮 OOM 仍现（L4268 `size=fffe25c0`→`OOM-RT`）而 **nk4j=0**⇒read_file（仅 driver.rs:78 TTYS + main.rs:158 /etc/passwd 两处调）从未进入⇒**推翻续-24 v7/续-27/28 将产地归为 read_file body**。静态重定位：poison bigalloc 前为 `0x7ffffffc6…cf` 深栈 vm-pf 级联（与 INIT pdmv 栈区 `0x7ffffffe2` **不同进程/不同栈**）⇒真 ~4GiB Vec 属一个子进程/leg exec 栈组装腿（候选 execve.rs:297 try_reserve_exact）。另静态纠正续-28：“deferred 回退腿”实为 **Path A 设计延迟**（`ipc.rs:1358-1374` mini_send 匹配 parked 接收者本就直写内核 p_delivermsg+置 MF_DELIVERMSG、不同步拷用户缓冲·对位 C proc.c:901-913），“同步拷贝失败”不成立作废。保留硬事实：INIT 仍有 `mt` 非法投递（续-28 nk4i）。下轮＝`minix-rt/alloc.rs` bigalloc 臂打印 pid/progname+FP 链定真产地进程。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-29。）**
 >
@@ -6508,3 +6508,36 @@ PM 对 INIT sendrec 的非阻塞回复携带未零高位字（含 INIT 自栈指
 - 定谳非法消息来源＝PM(ep0)→INIT 非阻塞回复腿携未零高位字（回音 INIT 栈指针）·根因链已收敛至 PM 回复构造/Message 零化。
 - 未核 PM 回复构造腿与 C 对位语义前不猜改（PM/投递腿波及全系统）。
 - ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①卡本 PM→INIT 回复污染→子继承 OOM（产地已定至 PM 回复腿）；riscv64①待镜像装配；18-stage/minix3 tests 待前三链贯通。
+
+---
+
+## §1.120续-32 纠正轮（2026-09-28）：⚠️ 推翻续-27/28/31「消息足迹污染 INIT→子继承 OOM」核心论据——探针 `w9` 系**越过 64B Message 的越界读**（读到相邻内核 Proc 字段），PM 回复正文实为全零干净
+
+> 纯分析·零探针·零生产代码改·WORKLOG-only（免 CodeReview）。触发＝按续-31 D 手核 PM 回复构造腿时的静态核实。
+
+### A. 两项决定性静态核实
+
+1. **`w9` 越界读伪影**：内核 `p_delivermsg: Message`（`proc.rs:954`）后**紧接** `p_delivermsg_vir: VirBytes`（`proc.rs:958`）。`minix_types::Message` 为 **64 字节**（`message.rs:31 MESSAGE_SIZE=64`＝m_source:4+m_type:4+m_u:56），仅 8 个 u64 字（索引 0–7）。续-31 nk4l 探针在 Path A 沉降点读 `w9`＝偏移 0x48=72 字节＝**越过 64B Message 本体**，落在 `p_delivermsg_vir` 之后的相邻内核字段（其值＝该 proc 存的用户栈指针 0x7ffffffe28xx）。故「w9 携 INIT 栈指针⇒PM 回复回音 INIT 栈指针」是**误读相邻内核字段为消息内容**，不成立。续-27/28 的「投递足迹上沿 word[9]@0x25c0 覆盖 read_file body」同源同伪（交付只写 64B，0x25c0 甚至越出 pdmv+0x2578..0x25b8 的 64B 交付窗）。
+
+2. **PM 回复正文全零干净**：`os/servers/pm/src/init.rs:651 reply()`——`let mut msg = ...ipc.reply.take().unwrap_or_default(); msg.m_type = result;`。`Message::default()`⇒`MessageUnion::default()`＝`raw:[0u8;56]`（`message.rs:306-312` 证零化），故无预填时回复＝全零 + 仅 `m_type=result`；有预填时由 typed wire struct 构造（`..Default::default()` 兜底）亦零化。**投递给 INIT 的消息正文除 m_type 外必为零**——不存在「未零高位字」。
+
+### B. 连带推翻
+
+- 续-31 顶论「非法消息来源＝PM 回复腿携未零高位字」**作废**（高位字是越界读·正文实为零）。
+- 续-31「全部 `src=0x0`」亦不确——serial 原始 21 条含 `src=0x1`（VFS）、`src=0x7`（VM）多条，非全 PM。
+- 「INIT 消息投递污染自栈→fork CoW 遗传→子读毒 Vec cap」这条**贯穿续-27→续-31 的因果链失去支柱**：交付正文零化干净，无高位毒字可污染。
+- 惟 **`m_type`（offset 4·确在消息内）值谱**（`0x0`/`0xffffffb2`=-78/`0xe`=14/`0xf`=15/`0x5`/`0x1`/`0xfffffff7`=-9/`0xfffffffe`=-2）为真·系各 server（PM/VFS/VM）对 INIT sendrec 的 reply `result` 码——需按「哪些是 INIT 请求的合法回复码」重新解读（正数 0xe/0xf 若作 reply m_type 值得单独审视），但**非内存污染**。
+
+### C. 保留的确证事实（in-bounds·仍立）
+
+- 真受害者＝子 slot 12（INIT 首个 fork+exec 子），续-30 邻域行定谳（`w-finw va=0x7ffffffc63a8` 子栈区·`csig tgt=0xc`）。
+- 其 `minix-rt` `alloc_big` 收 `size=0x7ffffffe25c0`（≈4GiB·值形如 INIT 栈区地址被当 Vec cap/len）失败→null→SIGSEGV（`alloc.rs:613` 已提交的 `nk4a: rs-bigalloc` 诊断腿打印·非临时探针）。
+- INIT 自身 `host::read_file`（`nk4j`）在 OOM 前从未进入（续-29）→poison Vec 不属 INIT read_file。
+
+### D. 重定的下一手（产地回到子自身代码路径）
+
+产地既非消息污染（已证伪）·非 CoW（续-25 已排除）·非 INIT read_file（续-29 已排除）＝则 4GiB 分配发起自**子进程自身的某条 leg**（exec 栈组装 / 读程序镜像 / 读某 IPC 回复 length 字段被误当计数）。下轮＝增强 `alloc.rs:613` 现有 `nk4a: rs-bigalloc` 诊断腿，对 `size>=0x10000000` 追加**有界、不 fault** 的调用者定位：从当前 SP 起有界扫栈（前 ~64 字）打印落在合理代码段的返址候选，或直接读 `__builtin_return_address` 等价的 x30（经 `#[inline(never)]` 包装），llvm-objdump 反汇编子 ELF symbolize 出真调用点→再论最修。**未坐实不成修**——不再基于越界读或启发式归因。
+
+### E. 纪律反思（code-excellence）
+
+本轮价值＝**在实施任何投递/PM 侧修复前**识破续-27→31 的越界读伪影，避免了一次波及全系统 IPC 的错误「修复」。教训：探针读 Message 字务必以 `size_of::<Message>()`（64B·8 字）为**硬上界**，越界即读到相邻内核字段（本例恰是含用户栈指针的 `p_delivermsg_vir`·极具迷惑性）。前数轮「翻转式」结论（read_file→CoW→足迹）正是未守此界所致。
