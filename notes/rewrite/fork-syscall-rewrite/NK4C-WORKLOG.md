@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-30 取证轮（**产地进程探针定谳真受害者＝fork+exec 子（slot 12/nr 0xc）·非 INIT/read_file**：nk4k（alloc.rs bigalloc 臂打 pid+FP 链）自身因 getpid/x29 走链在已毁上下文页故障未输出（nk4k=0）·但邻域内核行决定性：`rs-bigalloc size=fffe25c0`（L4347）紧接 `w-finw va=0x7ffffffc63a8 root=0x4016e000`（**子栈区 0x7ffffffc6 ≠ INIT 0x7ffffffe2**）→`pf-exit noaddr cr2=0x38`→`csig tgt=0xc sig=0xb` SIGSEGV→slot 12。根因链统一：INIT 在 pdmv=0x2578（≥实时sp）收到 mt 非法（`0x0`/`0xffffffb2`/`0xe`/`0xf`）+word[9]@0x25c0 携陈旧栈指针消息（Path A 设计延迟腿）→污染 INIT 自栈→**fork CoW 遗传至子**→子将含 0x7ffffffe25c0 内存当 Vec cap→~4GiB alloc_big 失败→null→SIGSEGV。真修点在**投递侧**（INIT 不应收到非法 mt/陈旧内容）·非子侧·非 read_file。下轮＝`ipc.rs:1372` Path A 沉降点与 `delivermsg` 两端夹逼打印 `(dst_nr,src_ep,m_type,word[0..2],word[9])` 定非法 mt 那笔的来源发送者/构造腿。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-30。）**
+> **✅ 最新前沿＝§1.120续-31 取证轮（**Path A 来源探针 nk4l 定谳非法消息来源＝PM（endpoint 0）对 INIT sendrec 的非阻塞回复腿**：`ipc.rs:1372` Path A 沉降点挨印 dst=INIT 且 pdmv 落嫌疑栈页的 `(src,pdmv,mt,w0,w1,w9,fl)` 共 21 条·**全部 `src=0x0`（＝PM·`ipc.rs:1331` 注释）·`fl=0x80`（＝NON_BLOCKING）**·`mt` 非法（`0x0`/`0xffffffb2`=-78/`0xe`/`0xf`）·`w0` 低 32 位恒 `0x7bff`（原始 m_source 未盖章·正常）·**`w9`（回复 offset 0x48）携 INIT 自身栈指针 `0x7ffffffe2888`/`0x7ffffffe298d`**⇒PM 回复腿把 INIT 请求（含 INIT 栈内指针字段）回音/残留在回复高位字（未清零）。根因链收敛（接续-30）：PM→INIT 非阻塞回复携未零高位字（含 INIT 栈指针）→Path A 设计延迟腿将全 80B 写 INIT 活帧 pdmv（足迹上沿 word[9]@0x25c0）→污染 INIT 栈局部→fork CoW 遗传至子 slot 12→子将含 0x7ffffffe25c0 内存当 Vec cap→~4GiB OOM→SIGSEGV。**真修点候选**：（甲）PM 回复构造应将 Message 未用字段清零（不依赖用户侧 cleared_message）；（乙）内核 Path A 沉降前对 `m` 高位残留零化/校验。下轮＝定 PM 对 INIT sendrec 回复的具体腿（`os/servers/pm/*`·哪个 request 回复携 INIT 栈指针·mt=0xe/0xf/0xb2 各对应何 PM 调用）+ 对位 C reply Message 是全量还是部分初始化·坐实后最修。探针 `git checkout` 回滚·tracked 净（`grep nk4l os/kernel`=0）·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-31。）**
 >
 > **（历史·§1.120续-29 取证轮（**用户侧地址探针推翻 read_file 归因**：nk4j 于 `MinixSysHost::read_file` 逐轮打印·二进制已验编入（strings 命中 3）·但本轮 OOM 仍现（L4268 `size=fffe25c0`→`OOM-RT`）而 **nk4j=0**⇒read_file（仅 driver.rs:78 TTYS + main.rs:158 /etc/passwd 两处调）从未进入⇒**推翻续-24 v7/续-27/28 将产地归为 read_file body**。静态重定位：poison bigalloc 前为 `0x7ffffffc6…cf` 深栈 vm-pf 级联（与 INIT pdmv 栈区 `0x7ffffffe2` **不同进程/不同栈**）⇒真 ~4GiB Vec 属一个子进程/leg exec 栈组装腿（候选 execve.rs:297 try_reserve_exact）。另静态纠正续-28：“deferred 回退腿”实为 **Path A 设计延迟**（`ipc.rs:1358-1374` mini_send 匹配 parked 接收者本就直写内核 p_delivermsg+置 MF_DELIVERMSG、不同步拷用户缓冲·对位 C proc.c:901-913），“同步拷贝失败”不成立作废。保留硬事实：INIT 仍有 `mt` 非法投递（续-28 nk4i）。下轮＝`minix-rt/alloc.rs` bigalloc 臂打印 pid/progname+FP 链定真产地进程。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-29。）**
 >
@@ -6468,3 +6468,43 @@ INIT 侧（续-28 nk4i）：在 `pdmv=0x7ffffffe2578`（≥实时 sp）收到多
 - 重推旧归因：受害者＝子 slot 12（非 INIT read_file）；根因链收敛至 INIT 非法消息投递→污染自栈→fork 遗传。
 - 未坐实非法 mt 消息来源发送者/构造腿前不猜改生产码（投递腿风险波及全系统 IPC）。
 - ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①卡本子继承 OOM（产地已收紧至投递侧）；riscv64①待镜像装配。
+
+---
+
+## §1.120续-31 取证轮（2026-09-28）：Path A 来源探针（nk4l）定谳非法消息来源＝**PM（endpoint 0）对 INIT sendrec 的非阻塞回复腿**（全部 `src=0x0`、`fl=0x80`=`NON_BLOCKING`）且回复高位 word 回音 INIT 自身栈指针（`w9=0x2888`/`0x298d`）·`mt` 非法（`0x0`/`0xffffffb2`=-78/`0xe`/`0xf`）
+
+> 纯取证轮·探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据文件 `tmp/nk4a/a64-t42b-patha.serial`（nk4l 21 条）。
+
+### A. 探针与读数
+
+`ipc.rs:1372` Path A 沉降点（dst 置 p_delivermsg+MF_DELIVERMSG 后）：dst=INIT（nr 0xb）且 pdmv 落嫌疑栈页时挨印 `(src=caller_endpoint, pdmv, mt, w0, w1, w9, fl)`。典型投毒腿（pdmv=0x2578）：
+```
+nk4l: pa src=0x0 pdmv=0x2578 mt=0x0        w0=0x00000000_00007bff w9=0x7ffffffe2888 fl=0x80
+nk4l: pa src=0x0 pdmv=0x2578 mt=0xffffffb2 w0=0xffffffb2_00007bff w9=0x7ffffffe2888 fl=0x80
+nk4l: pa src=0x0 pdmv=0x2578 mt=0xe        w0=0x0000000e_00007bff w9=0x7ffffffe298d fl=0x80
+nk4l: pa src=0x0 pdmv=0x2578 mt=0xf        w0=0x0000000f_00007bff w9=0x7ffffffe298d fl=0x80
+```
+
+### B. 定谳
+
+1. **来源＝PM**：全部 `src=0x0`；`ipc.rs:1331` 注释明证“PM(ep 0)”。即污染 INIT 栈的消息均自 **PM** 而来（INIT→PM 的 sendrec 回复）。
+2. **`fl=0x80`＝`NON_BLOCKING`**（`ipc.rs:218` NON_BLOCKING=0x0080）：均为非阻塞投递。
+3. **`w0` 低 32 位恒 `0x00007bff`**：`0x7bff`＝发送者用户缓冲里原始 `m_source`（未盖章·内核 1373 行事后覆为 caller ep）——属正常（m_source 由内核投）。高位 32 位＝`m_type`。
+4. **`w9`（回复消息 offset 0x48）携 INIT 自身栈指针** `0x7ffffffe2888`/`0x7ffffffe298d`：PM 的回复缓冲本不应知 INIT 栈地址⇒**PM 回复腿把 INIT 发来的请求（含 INIT 栈内指针字段）回音/残留在回复高位字**（未清零）。与续-22 mt=0 物化缺环同族——但本例在 **PM→INIT 非阻塞回复**臂。
+
+### C. 根因链收敛（接续-30）
+
+PM 对 INIT sendrec 的非阻塞回复携带未零高位字（含 INIT 自栈指针）→Path A 设计延迟腿将全 80B 写入 INIT 活帧 pdmv（足迹上沿 word[9]@0x25c0）→污染 INIT 栈局部→fork CoW 遗传至子 slot 12→子将含 `0x7ffffffe25c0` 的内存当 Vec cap→~4GiB OOM→SIGSEGV。**真修点候选**：（甲）PM 回复构造应将 Message 未用字段清零（不依赖用户侧 cleared_message，服务端回复同理）；（乙）内核 Path A 沉降前对 `m` 高位残留零化/校验。**均需先定 PM 回复构造腿代码**（os/servers/pm/*）与对位 C 语义后实施。
+
+### D. 下一手
+
+1. 定 PM 对 INIT sendrec 回复的具体腿（哪个 request 的回复携 INIT 栈指针·mt=0xe/0xf/0xb2 各对应何 PM 调用），核 PM 是否用未清零 Message 作 reply。
+2. 对位 C：确认 C 的 reply Message 是部分初始化还是全量；若 Rust 侧漏清则补零即最小修。
+3. 坐实后实施最修·三件套（host mock tests + aarch64 build + QEMU 双跑守 marker）+ CodeReview + WORKLOG 续-32 + fix commit。
+
+### 纪律（续-31）
+
+- 本轮**纯取证·零生产代码改**：`os/kernel/src/ipc.rs` nk4l 探针 `git checkout` 回滚·tracked 净（`grep nk4l os/kernel`=0）。
+- 定谳非法消息来源＝PM(ep0)→INIT 非阻塞回复腿携未零高位字（回音 INIT 栈指针）·根因链已收敛至 PM 回复构造/Message 零化。
+- 未核 PM 回复构造腿与 C 对位语义前不猜改（PM/投递腿波及全系统）。
+- ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①卡本 PM→INIT 回复污染→子继承 OOM（产地已定至 PM 回复腿）；riscv64①待镜像装配；18-stage/minix3 tests 待前三链贯通。
