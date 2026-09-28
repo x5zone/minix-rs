@@ -5,6 +5,17 @@
 
 ---
 
+> ## 🛑 交接状态（2026-09-28）·本 session 终止
+>
+> **续-35 已交接至 GLM5.3，本 session（原主线 agent）结束。下次回来从 `NK4C-WORKLOG.md` 文末 §1.120续-35 交接节 / GLM5.3 产出（续-36）接手。**
+> - **稳定基线 commit**：`9ea95f8d8`（续-34b·纯 WORKLOG·零代码改）；交接节 commit：`d8addfff4`（续-35 交接·WORKLOG-only）。
+> - **工作树**：净（tracked 无改动）；子代理 WIP 实现保存为 **untracked** `tmp/nk4a/nk4c35-pt-bind-wip.patch`（134 行/+53−12/3 文件·**不进 commit**）。
+> - **GLM5.3 接手任务入口**：`notes/rewrite/fork-syscall-rewrite/NK4C-GLM53-PROMPT.md`（修模式② pt_bind·目标 aarch64 出 rc marker + x86 不回归·失败模式①本轮不修）。
+>
+> 以下为原主线交接说明（保留供接手者读上下文）。
+
+---
+
 ## 0. 你的身份、任务与终目标
 
 你是 **NK4-C「清零者」长程自主任务的接手 agent**。任务是把 minix-rs（Minix3 内核 Rust 重写，x86_64/aarch64/riscv64 no_std）从「boot 硬 livelock」推进到**三架构跑通 OS 并跑通命令面与 minix3 测试套件**。
@@ -14,7 +25,7 @@
 2. 18-stage 命令面在 OS 上跑通（echo/ls/cat 为核心）；
 3. minix3 的 `tests/` 在机器上跑起来。
 
-**当前所处位置**（2026-09-27）：**终目标① 进度 = x86_64 rc marker ✅（§1.119续-7 双跑验证）/ aarch64 在途（当前战场，详见 §3）/ riscv64 未启动真机**（接入验收清单已就绪：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A，riscv 轮开工前必读）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
+**当前所处位置**（2026-09-28 更新）：**续-35 已交接至 GLM5.3**（本 session 终止·详见顶部🛑交接 banner 与 WORKLOG 文末 §1.120续-35）。**终目标① 进度 = x86_64 单核 rc marker ✅（§1.119续-7/§1.120续-26·37 实证）/ aarch64 在途（模式②根因已定谳=exec clear 腿缺 pt_bind·WIP 方向已真机坐实但 x86 回归未解·交 GLM5.3 续-36 收口）/ riscv64 未启动真机**（接入验收清单：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
 
 **这是长程任务**：你会连续修很多 bug、做很多轮真机复跑，**不要做一步就停下来汇报**。用户会在需要时手动让你收尾，届时才由上一手 agent 接手。你的职责是：**让工作始终可接手**（每次 commit + 写报告）。
 
