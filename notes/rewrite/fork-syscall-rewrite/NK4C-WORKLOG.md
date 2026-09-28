@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-25 取证轮（**PA 对比针推翻续-24 尾节候选 3「fork 父子共享/陈旧 delivermsg 页」**：`proc_table.rs` DELIVERMSG 腿对 `nr=0xc`+dst 嫌疑栈页 `0x7ffffffe2*` 同时用子 root 与 INIT root walk dst，**16/16 命中 `child_pa=0x45d09000 ≠ init_pa=0x42b78000·same=0`**＝CoW 语义正确（静态审计对位：`fork_region`→`setup_cow_for_all_regions` insert WRITABLE→`write_page_table_mappings`→`protect_cow_pages`→`sys_fork`→`set_addrspace`→`handle_memory_once(child)` needs_cow→`cow_resolve_core` 分配新帧·子页指向独立物理帧）。**同轮 OOM 仍复现**（纠正前会话「无 OOM」误记）：L4280 最后一次 `pa cmp dst=0x7ffffffe2578`→L4281 `rs-bigalloc size=fffe25c0`→L4283 `OOM-RT`＝污染产地在 CoW **之外**·未坐实。剩余候选：do-memory 服务腿（`memreq target=11 start=0x7ffffffe2578 len=0x50 ok=1`·`kdst copy` 未打印 dst VA）／VFS read `data_copy` 实际写入范围／pid=14↔slot 映射。**三架构盘点**：x86_64 镜像可构建（本轮未跑 QEMU·前节「trap_dispatch:981 预存 panic」vs「syscall.rs:935 caller_idx 新 panic」两说互斥待 fresh 定标）；aarch64 稳定达 Runcom→SingleUser→exec /bin/sh 卡 OOM；**riscv64 无全 OS 镜像路径**（xtask honest bail「启动路径不是 UEFI 盘形」·仅 U-Boot fatload 载体测 hello-boot）。⚠️ 目标不缩小。纯取证·`proc_table.rs` 探针 `git checkout` 回滚·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-25。）**
+> **✅ 最新前沿＝§1.120续-26 取证轮（**x86_64 单核 rc marker fresh 定标成功**：同镜像手改 `-smp 1` 跑 90s 产 10623 行·**panic/exception=0**·boot 正常推进至 `minix-rs rc: minimal boot script marker`（L7522·即 rc 脚本 `echo` 真实输出）⇒ **终目标① 的 x86_64 部分（单核 rc marker）在净 HEAD 6549ad5d7 已实证达成**。纠正续-25 D 行「两说互斥」：xtask 默认 `-smp 4` 为**递归 page-fault panic**（`lib.rs:3635 no entry trap style known`→`trap_dispatch.rs:805 InvalidIrq`→`:955 vector 13/14 at rip 0x5c520ca`）·非旧述「syscall.rs:935 caller_idx」（本轮不可复现·归历史伪影）；SMP 启动崩溃为独立预存前沿（§1.113 已记）。**三架构最新**：x86_64 单核①✅（SMP❌）·aarch64 卡 OOM（CoW 续-25 已排除·产地待定）·riscv64 无全 OS 镜像路径。下一手＝**aarch64（距 marker 最近）**：在 `cross_space.rs::cross_space_copy/cross_space_write`（data_copy_vmcheck 底层拷贝原语）装非扰动写观察针锁定外部写产地。纯取证·零代码改·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-26。）**
+>
+> **（历史·§1.120续-25 取证轮（**PA 对比针推翻续-24 尾节候选 3「fork 父子共享/陈旧 delivermsg 页」**：`proc_table.rs` DELIVERMSG 腿对 `nr=0xc`+dst 嫌疑栈页 `0x7ffffffe2*` 同时用子 root 与 INIT root walk dst，**16/16 命中 `child_pa=0x45d09000 ≠ init_pa=0x42b78000·same=0`**＝CoW 语义正确（静态审计对位：`fork_region`→`setup_cow_for_all_regions` insert WRITABLE→`write_page_table_mappings`→`protect_cow_pages`→`sys_fork`→`set_addrspace`→`handle_memory_once(child)` needs_cow→`cow_resolve_core` 分配新帧·子页指向独立物理帧）。**同轮 OOM 仍复现**（纠正前会话「无 OOM」误记）：L4280 最后一次 `pa cmp dst=0x7ffffffe2578`→L4281 `rs-bigalloc size=fffe25c0`→L4283 `OOM-RT`＝污染产地在 CoW **之外**·未坐实。剩余候选：do-memory 服务腿（`memreq target=11 start=0x7ffffffe2578 len=0x50 ok=1`）／VFS read `data_copy` 实际写入范围／pid=14↔slot 映射。其 x86_64 盘点「未跑 QEMU·两说互斥」已由续-26 fresh 定标。纯取证·tracked 净·WORKLOG-only。）**
 >
 > **（历史·§1.120续-24 取证轮（**其尾节候选 3「fork 父子共享/陈旧 delivermsg 页」已被续-25 PA 对比针推翻（same=0 全 16 命中·CoW 正确）**；其「大分配调用点＝init `read_file` 的 `Vec<u8>` grow·`pid=14 prog=init`」与「len 来源＝外部写毁 body Vec 头（非 read 计数／非 read_file 输入）」结论仍成立）：定向探针 v7 于 `minix_rt::alloc` 入口捕获 x30→`RawVecInner::finish_grow`·栈扫命中 `__rust_realloc`+`MinixSysHost::read_file`。v8 反证 read 回复计数恒 ≤0x400（推翻续-23「len==m_type 低 32 位」）·v9 反证 read_file 自身 cap/len/n 均小值⇒ 巨大 `new_cap` 由外部写毁（值＝delivermsg 栈页 VA `0x7ffffffe25xx`同族）。heisenbug：同镜像两跑一跑 OOM、一跑无 OOM 但 RS 致死 SIGSEGV→内核 panic。纯取证·tracked 净·WORKLOG-only。）**
 >
@@ -6269,3 +6271,37 @@ L4283: nk4c: OOM-RT size=fe25c0 slabs=005/400 big=00/00 px=005/400 fp=000/400
 - 未坐实外部写确切产地前不实施生产修复。
 - **修正续-24 尾节候选 3**：fork eager CoW **已排除**（PA 对比 16/16 same=0）。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。aarch64 战线：CoW 假设已排除·仍攻 do-memory/VFS read 服务腿外部写。riscv64 战线：需先补 xtask 全 OS 镜像装配基础设施。x86_64 战线：需 fresh 权威终态定标（前节两说互斥）。
+
+---
+
+## §1.120续-26 取证轮（2026-09-28）：x86_64 **单核 rc marker fresh 定标成功**（终目标① x86_64 已达·零 panic）；SMP=4 崩溃为独立预存前沿（定标至递归 page-fault panic 家族·非前节所称 syscall.rs:935）
+
+> 纯取证轮·零代码改·tracked 净·WORKLOG-only。证据文件 `tmp/nk4a/x86-fresh-1.serial`（xtask 默认 SMP=4。144 行·乱序交错）、`tmp/nk4a/x86-smp1.serial`（手改 `-smp 1`。10623 行）。
+
+### A. 权威定标：xtask 默认 SMP=4 vs 单核
+
+- **`xtask qemu --arch x86_64`（默认 `-smp 4`、`os/xtask/src/qemu.rs:67`）**：90s 仅 144 行串口·**多核输出交错乱码**（属 SMP 下早期崩溃）：递归 panic 链 `lib.rs:3635 no entry trap style known`→`trap_dispatch.rs:805 IRQ dispatch error InvalidIrq (vector 0x00)`→`trap_dispatch.rs:955 kernel exception vector 13/14 at rip 0x5c520ca`（vector 14=page fault）。**与旧述「syscall.rs:935 caller_idx=96936968 新 panic」不兼容**——本轮未观测到后者·以前节为可复现基线应归入 SMP 启动路径已知崩溃类（§1.113 时代已记「xtask 默认 SMP=4 有一处 no entry trap style known 崩溃」）。
+- **手改 `-smp 1`（同镜像）**：90s 产 10623 行·**panic/exception 计数=0**·boot 正常推进至行 **7522：`minix-rs rc: minimal boot script marker`**（即 rc 脚本内 `echo` 命令的真实输出）。⇒ **终目标① 的 x86_64 部分（单核 rc marker）在净 HEAD 6549ad5d7 上已实证达成**；marker 后为 `pm 0010d`/`vm-pf`/`ptfree-PT` 正常回收腿·尾部仅剩 `gtick` 定时空转（已进 idle）。
+
+### B. 定论与修正
+
+- **推翻续-25 D 行「x86_64 两说互斥」**：fresh 实跑＝单核 rc marker ✅、SMP=4 递归 page-fault panic（非 syscall.rs:935）。前节会话摘要的「syscall.rs:935 caller_idx=96936968」无法在本轮同镜像复现·归为历史一次性或旧镜像伪影·**不再作为 x86_64 当前前沿**。
+- **x86_64 真实前沿**＝SMP 多核启动路径的 page-fault/IRQ 递归崩溃（`no entry trap style known` 为根·§1.113 已记）。但**终目标① 未强制要求 SMP**·单核 rc marker 已满足“在 QEMU 正常运行并出现 rc marker”。
+
+### C. 三架构最新状态（对位终目标①）
+
+- **x86_64**：✅ **单核 rc marker 已达**（本轮 fresh 实证）；❌ SMP=4 启动崩溃（预存独立前沿·非目标强制项）。
+- **aarch64**：❌ 达 SingleUser→exec /bin/sh 但卡 init `read_file` body Vec 头被外部写毁→~4 GiB OOM（CoW 假设续-25 已排除·产地待定）。
+- **riscv64**：❌ 无全 OS 镜像装配路径（需先补 xtask 基础设施 + IPC 桥）。
+
+### D. 下一手（未来轮）
+
+- **aarch64**（距 marker 最近·仅差 OOM 一环）：在 `os/kernel/src/cross_space.rs::cross_space_copy`/`cross_space_write`（data_copy_vmcheck 的底层拷贝原语）装非扰动写观察针：当 dst 为 Process 地址且落在 `0x7ffffffe2*` 嫌疑栈页时打印 `(caller_nr, dst_va, root_phys, pa_after_walk, bytes, buf[0..min(bytes,16)])`，锁定是否有一次内核侧 copy 把消息/指针内容写超目标帧·或用了错 root 翻译 dst。若命中→修拷贝根/长度；若否→转向 VFS read `data_copy` 腿。
+- **x86_64 SMP**（次优先·因单核已达 marker）：攻 SMP=4 启动递归 page-fault panic（`trap_dispatch.rs:955` 腿·vector 14 at rip 0x5c520ca）。
+- **riscv64**：补 `xtask image --arch riscv64` 全 OS 镜像装配（kernel.elf + modules + imgrd 入 FAT·供 U-Boot fatload+bootelf）。
+
+### 纪律（续-26）
+
+- 本轮**纯取证·零生产代码改**·tracked 净（仅本 WORKLOG 改）。
+- 纠正续-25 D 行与旧会话摘要对 x86_64 的互斥两说：单核 rc marker 已实证达成·SMP=4 崩溃为独立预存前沿。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。**x86_64 单核① 已克**；下轮主攻 aarch64 OOM 产地（距 marker 最近）。
