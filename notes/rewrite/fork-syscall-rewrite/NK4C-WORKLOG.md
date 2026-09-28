@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-42 取证轮（2026-09-28·Debug 子代理真机物理帧判别·H1/H2/H3/H5 全证伪·搜索空间重排·顺带坐实 aarch64 FPSIMD 跨陷入不保存独立缺陷·根因未坐实）**：①**两硬事实**：（a）故障**不专属 fork 子**——父 INIT 对自己 CoW 页首次写也复现逐字相同同值（`0x7ffffffe25b8`）同一 16B granule 的 corruption，两不同页表+两不同帧+同 VA 偏移+同值⇒**整体打掉一切跨进程态/TLB 陈旧/CoW 换帧/陈旧解释**；（b）挂用户态探针的轮次生产 OOM（`size=fffe*`）不再发生⇒推翻「r41 探针=生产复现」前提，后续判据必先立零用户态探针纯净基线。②**四假设真机否证**：H1 stale-TLB（`arm64/tlb.rs:84-105 set_active_root` 切地址空间已 `tlbi vmalle1is` 全量刷 + 父也同值）、H2 丢 store（cafe 标记写后回读即见 + 三轮字节数完全相同）、H3 池共帧（新帧 0x45ce5000 只出 2 次同一 VA、fork.rs physblocks 按值不共）、H5 Q0-Q7（保存/恢复后毒字不变）。③**形态收窄**：坏区恒为一个 16B 对齐 granule（2 相邻字）⇒一条成对/向量 store（`stp q`/`str q`/`stp x`）两源寄存器错或 store 重放携错⇒**H6：CoW 缺页重执行的宽 store 用了被缺页处理程序覆写的寄存器**（handler 确定性寄存器垃圾⇒解释跨扰动同值）。④**顺带坐实独立真缺陷**（非模式①根因·待单开修+CodeReview）：aarch64 FPSIMD 陷入/调度往返全程不保存（`finish_and_restore` 只调 `enable/disable` 而 arm64 皆 no-op、`FpuArch::restore` 调用点=0、`CPACR_EL1.FPEN` 常开；对照 x86 `CR0.TS` 懒加载兜底）。**续-43**＝零用户态探针仅内核侧打·抓生产 ELR/FAR + `rust-objdump` 定那条指令（`stp q`/`str q`→与 FPSIMD 保存联动；`stp x`→重放携错）+ 同 (ELR,FAR) 重放计数。⚠ 三目标不缩小。**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-42。
+> **🛑 最新前沿＝§1.120续-43 取证轮（2026-09-28·内核侧零扰动抓出错 store 的 ELR+反汇编定性·H6（重执行宽 store 用被 handler 覆写寄存器）证伪·嫌疑整体从「arch store/翻译」移向「数据流：某长度/计数字段陈旧/未初始化读」·根因仍未坐实）**：①**纯净基线**（零用户探针 HEAD=648ad36a9）3 轮 b-1/b-3 复现 size=fffe25c0 ptr=0+OOM-RT·b-2 漏＝间歇 2/3 且不依赖探针。②**拓到出错 store**：ELR=0x234c94（`<memcpy>` 0x234bd0·`str x14,[x9],#8`·x14 从 [x13] 源载）/0x234e78（`<memset>` 0x234ddc·`str x11=fill×0x01010101`）·far 恒页对齐·esr=0x92000047（lower-EL 数据 abort·WnR=写·DFSC=0x07 Permission fault L3＝教科书 CoW 写缺页）·**REPLAY=0**（n=1 只缺一次重执行成功）。③**决定性定性**：出错 store 是**标量 GPR `str x?`**（整段 memcpy/memset 无 q/stp/ldp 指令），非 SIMD非 pair非重放⇒**H6 证伪**（GPR 被 save_frame_to_context/restore_to_user 忠实保存恢复·无覆写寄存器可注入）。④**逻辑封喉→新方向 H7**：memset 写 fill 模式不可能栈地址·memcpy 写 [x13] 来自源缓冲⇒池页里栈地址毒值唯一途径=**[x13] 源本身已被污染·经数据流从上游带入**⇒某 length/计数字段为**陈旧/未初始化读**（RS 把从未写有效值的字段当长度读·别名到复用物理帧残留栈地址·aarch64 复用帧留栈地址x86 得零⇒间歇且架构相关）。⑤缺陷 E（aarch64 FPSIMD 从不陷入自保存）仍为独立真缺陷待单开修+CodeReview·但非本 OOM 因。**续-44**＝RS 静态定位池页 memcpy/memset 的 caller 回溯追 [x13] 源缓冲未初始化读路径（非缺页路径）。⚠ 三目标不缩小。**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-43。
+>
+> **（历史·§1.120续-42 取证轮（2026-09-28·Debug 子代理真机物理帧判别·H1/H2/H3/H5 全证伪·搜索空间重排·顺带坐实 aarch64 FPSIMD 跨陷入不保存独立缺陷·根因未坐实）**：①**两硬事实**：（a）故障**不专属 fork 子**——父 INIT 对自己 CoW 页首次写也复现逐字相同同值（`0x7ffffffe25b8`）同一 16B granule 的 corruption，两不同页表+两不同帧+同 VA 偏移+同值⇒**整体打掉一切跨进程态/TLB 陈旧/CoW 换帧/陈旧解释**；（b）挂用户态探针的轮次生产 OOM（`size=fffe*`）不再发生⇒推翻「r41 探针=生产复现」前提，后续判据必先立零用户态探针纯净基线。②**四假设真机否证**：H1 stale-TLB（`arm64/tlb.rs:84-105 set_active_root` 切地址空间已 `tlbi vmalle1is` 全量刷 + 父也同值）、H2 丢 store（cafe 标记写后回读即见 + 三轮字节数完全相同）、H3 池共帧（新帧 0x45ce5000 只出 2 次同一 VA、fork.rs physblocks 按值不共）、H5 Q0-Q7（保存/恢复后毒字不变）。③**形态收窄**：坏区恒为一个 16B 对齐 granule（2 相邻字）⇒一条成对/向量 store（`stp q`/`str q`/`stp x`）两源寄存器错或 store 重放携错⇒**H6：CoW 缺页重执行的宽 store 用了被缺页处理程序覆写的寄存器**（handler 确定性寄存器垃圾⇒解释跨扰动同值）。④**顺带坐实独立真缺陷**（非模式①根因·待单开修+CodeReview）：aarch64 FPSIMD 陷入/调度往返全程不保存（`finish_and_restore` 只调 `enable/disable` 而 arm64 皆 no-op、`FpuArch::restore` 调用点=0、`CPACR_EL1.FPEN` 常开；对照 x86 `CR0.TS` 懒加载兜底）。**续-43**＝零用户态探针仅内核侧打·抓生产 ELR/FAR + `rust-objdump` 定那条指令（`stp q`/`str q`→与 FPSIMD 保存联动；`stp x`→重放携错）+ 同 (ELR,FAR) 重放计数。⚠ 三目标不缩小。**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-42。
 >
 > **（历史·§1.120续-41 取证轮（2026-09-28·fill-vs-read 针首次真正打出·aarch64 模式① 毒落点精确钉到单个内存字=子进程 `cmd.argv[0]`（"sh"）`String.len` 槽 `0x257090`·同结构体 ptr/cap 与 argv[1]/[2] 全对·静态排除「恢复跳 store」与「写缺页跨架构位误判」两条·探针全回滚 WORKLOG-only）**：①**GLM commit 三度核查**：HEAD 仍 `506af7065`、`git fetch --all` 仅旧 tag、`HEAD..origin/rewrite` 空、stash 空——无任何针对 aarch64 模式① 的新 pending GLM commit；工作树唯二 modified（`execve.rs`/`runcom.rs`）逐行核实全是我上轮自留的 `nk41!`/`nk41diag` TEMP 探针非修复。唯一 GLM 修复 `82abf5b64`（模式② pt_bind）已于续-37 独立验收。②**针实测（t41-probe-r3/r4.serial）决定性**：毒 `frame_size=0x7ffffffe25c0` 的唯一来源=子进程新建 `String{ptr=0x256018✓,cap=2✓,len=0x7ffffffe2558✗}` 的 **len 单字被确定性覆成子栈地址**（`register_handlers` 前后不变⇒非 IPC 回复；env_count=0 印证环境空）。③**静态双排除**：`ForwardToVm` 恢复 `eret` 不调整 ELR⇒缺页写指令重执行（非跳过）；`aarch64_pf_error_code`（trap_dispatch.rs:2129）已把 ESR WnR bit6 归一化成 PFEC bit1 交 VM⇒写位非跨架构误判。⇒ 缺陷域收紧到 **CoW 池页单字 store 物化**（`f2c477fc3` 博客 store 物化 Heisenbug 家族单字实例）。**续-42**＝读 `cow_exec_pf.rs::cow_resolve` 换帧腿核实「换物理帧后缺 aarch64 TLBI→用户态重执行 STR 命中旧帧译文」（与续-40 权限翻转腿的 `flush_addr` 是两个独立失效点）+ 判别针区分「写进错帧」vs「写丢失」。⚠ 三目标不缩小：三架构 rc marker + 18-stage + minix3 tests。**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-41。
 >
@@ -6978,3 +6980,30 @@ nk41: step A crt0 env_count=0  step B inherited=0  step C envp=0  ← 环境侧�
 
 ### F. 处置 + 续-43 入口
 纯真机取证·无生产改动幸存·子代理未 commit/未 git add·已全回滚（`grep -rn 'NK42 TEMP' os/`=0、tracked 净）⇒ **WORKLOG-only（免 CodeReview）**。**续-43（零扰动基线 + 指令定性）**：(1) 完全不加用户态探针、仅内核侧打印，3 轮确认生产镜像里 `size=fffe*` 仍复现，抓毒 VA 与 ELR；(2) 内核缺页前递点对 `(ELR,FAR)` 过滤 `far & 0xfff ∈ {0x10,0x18}` 且落池页，只打 elr/esr/far（额度≤6），用 `rust-objdump -d --start-address=ELR` 读出那条指令到底是 `stp q`/`str q`（→与 E 联动、修 FPSIMD 保存可解）还是 `stp x`（→寄存器重放携错）；(3) 同 `(ELR,FAR)` 二元组重放计数（≥2 次→支持“store 被重放”H6）。坐实后再论最修（含代码改必走 CodeReview）。三目标不缩小：x86_64 单核① 已克·aarch64① 收紧至「CoW 缺页重执行宽 store 用被覆寄存器」·riscv64① 需先接 IPC 桥·18-stage/minix3 tests 待前三链贯通。
+
+---
+
+## §1.120续-43（2026-09-28）·内核侧零扰动抓「出错 store」ELR 并反汇编定性·**H6（重执行宽 store 用被 handler 覆写寄存器）证伪**·嫌疑整体从「arch store/翻译」移向「**数据流：某长度/计数字段为陈旧或未初始化读**」·根因仍未坐实
+
+### A. 纯净基线（零用户探针·HEAD=648ad36a9）
+子代理不加任何用户态探针、`-smp 4` 连跑 3 轮：b-1/b-3 `rs-bigalloc size=fffe25c0 ptr=0`+OOM-RT 复现（bigOOM_fffe=1）、b-2 漏⇒**间歇性 2/3 复现且**不依赖探针。坐实「探针非必要条件、上轮扰动只是把首次写位置挪走」。
+
+### B. 内核侧探针拓到出错 store 的 ELR/FAR/ESR（`aarch64_pagefault_body`·过滤 `far>>12∈[0x250,0x260)` 且 write=1）
+三轮 24 条逐字同构·去重仅两个 ELR（cap 8 条/轮）·**REPLAY=0 条**（每个 `(elr,far)` 整轮只命中 n=1）：
+```
+nk43: PF elr=0x234c94 far=0x250000 esr=0x92000047 write=1   ← memcpy
+nk43: PF elr=0x234e78 far=0x257000 esr=0x92000047 write=1   ← memset（同 ELR 扫 0x254/257/258/259000）
+```
+ESR `0x92000047` 逐位：EC=0x24 lower-EL 数据 abort｜IL=32-bit｜WnR=1 写｜**DFSC=0x07 Permission fault level 3**＝教科书 CoW 只读页被写缺页。FAR 恒页对齐（memcpy/memset 以 8 字节步进循环、页首首次触碰新页⇒fault 落 offset 0）。
+
+### C. 决定性：ELR 反汇编定性（rust-objdump·minix-init/RS ELF）
+两 ELR 均落 RS（minix-rs endpoint 2）`.text`：**0x234c94∈`<memcpy>`(0x234bd0)** `f800852e str x14,[x9],#0x8`（`x14=ldr [x13],#8` 从源载）；**0x234e78∈`<memset>`(0x234ddc)** `f800852b str x11,[x9],#0x8`（`x11`=fill 字节 ×0x01010101 扩展）。**整段 memcpy/memset 内 grep `q[0-9]`/`stp`/`ldp` 全空**——此构建的 memcpy/memset **无任何 FPSIMD 指令**。
+⇒ 出错 store 是**标量 GPR `str x?`**（非 SIMD、非 STP pair、无重放）。
+
+### D. H6 证伪 + 缺陷 E 复判 + 新方向 H7
+- **H6（重执行宽 store 用了被 handler 覆写而未恢复的寄存器）证伪**：（1）重执行的 store 是 GPR `str x14/x11`·不涉 Q 寄存器（缺陷 E 虽真但影响面 Q与此写指令无交集）；（2）本路径 GPR 被忠实保存恢复（缺页入口 `save_frame_to_context` 存整帧 X0–X30·`restore_to_user` trap_return.rs:100–145 逐条载回 x1..x30+x0+ELR/SPSR/SP_EL0）⇒无被覆写寄存器可注入毒值；（3）**逻辑封喉**：memset 写 fill 字节模式（`0xNNNN_NNNN…`）不可能是栈地址；memcpy 写 `x14=[x13]` 来自**源缓冲**⇒池页里的栈地址毒值唯一途径是 **`[x13]` 源本身已被污染·毒值经数据流从上游带入**。
+- **缺陷 E（aarch64 FPSIMD 从不陷入自保存）复判：仍为独立真缺陷（静态再证 `restore_to_user` 零条 Q 操作）、值得单开修+CodeReview、但修它不消解本 OOM**。
+- **H7（新方向）**：某 length/计数字段为**陈旧/未初始化读**——RS 在一处把一个从未写入有效值的字段（恰好别名到复用物理帧残留的子/父栈地址）当长度读⇒~4GiB cap；aarch64 复用帧保留栈地址、x86 得零/良性值⇒间歇且架构相关。重解释「16B granule 两相邻字坏」＝memcpy/memset 循环两次迭代拷入的本就是那两值（非「翻译错一页只错一字」矛盾）。与续-27/28 DELIVERMSG 内核代拷贝同向但**不直接复用旧论**（续-32 已判其为越界读伪影）。
+
+### E. 处置 + 续-44 入口
+子代理未 commit/未 git add·探针全回滚（`grep 'NK43 TEMP|nk43: PF' os/`=0·tracked 净·host 四套 823/531/243/149 全绿）⇒**WORKLOG-only（免 CodeReview）**。**续-44（钉数据流源头·非缺页路径）**：在 RS（minix-rs）静态定位启动期对池页 0x250000–0x259000 调 memcpy(0x234bd0)/memset(0x234ddc) 的**调用者**（caller 回溯·rust-objdump 反查 `bl` 到这两个符号的调用点），追 `[x13]` 源缓冲是否含一个「字段未初始化即被当长度读」的路径；若静态不够，在内核拷贝/交付路径（`ipc.rs` DELIVERMSG 代拷贝 ~L1710 / `process_misc_flags` 交付臂）按目标 VA==池 granule 过滤打调用者 PC 与内容，区分「毒值已在交付内容里」vs「本地逻辑未初始化读」。坐实后论最修（含代码改必走 CodeReview）。另：缺陷 E（FPSIMD 不保存）已坐实独立立项，待单独实现+CodeReview（架构安全：仅 `#[cfg(target_arch="aarch64")]` 路径·x86_64 走 `CR0.TS` 另一腿不受影响）。三目标不缩小：x86_64 单核① 已克·aarch64① 收紧至「数据流陈旧/未初始化读」·riscv64① 需先接 IPC 桥·18-stage/minix3 tests 待前三链贯通。
