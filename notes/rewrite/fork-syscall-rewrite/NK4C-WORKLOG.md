@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-26 取证轮（**x86_64 单核 rc marker fresh 定标成功**：同镜像手改 `-smp 1` 跑 90s 产 10623 行·**panic/exception=0**·boot 正常推进至 `minix-rs rc: minimal boot script marker`（L7522·即 rc 脚本 `echo` 真实输出）⇒ **终目标① 的 x86_64 部分（单核 rc marker）在净 HEAD 6549ad5d7 已实证达成**。纠正续-25 D 行「两说互斥」：xtask 默认 `-smp 4` 为**递归 page-fault panic**（`lib.rs:3635 no entry trap style known`→`trap_dispatch.rs:805 InvalidIrq`→`:955 vector 13/14 at rip 0x5c520ca`）·非旧述「syscall.rs:935 caller_idx」（本轮不可复现·归历史伪影）；SMP 启动崩溃为独立预存前沿（§1.113 已记）。**三架构最新**：x86_64 单核①✅（SMP❌）·aarch64 卡 OOM（CoW 续-25 已排除·产地待定）·riscv64 无全 OS 镜像路径。下一手＝**aarch64（距 marker 最近）**：在 `cross_space.rs::cross_space_copy/cross_space_write`（data_copy_vmcheck 底层拷贝原语）装非扰动写观察针锁定外部写产地。纯取证·零代码改·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-26。）**
+> **✅ 最新前沿＝§1.120续-27 取证轮（**投递内容级探针定谳 aarch64 OOM 产地类＝INIT 自身 `p_delivermsg_vir`=0x7ffffffe2578 的 80B 消息投递足迹上沿覆盖其 `read_file` 活帧局部**：`proc_table.rs` DELIVERMSG 腿对嫌疑栈页投递 dump 全 10 word，INIT（nr=0xb）多次投递至 pdmv=0x2578，**word[9]（消息 offset 0x48→VA 0x25c0）携带栈指针值 0x7ffffffe2888/0x7ffffffe298d**——0x25c0 与 OOM size 0xfffe25c0（=0x7ffffffe25c0 低 32 位）逐字同址；全嫌疑页投递 `rts=0x0`（RECEIVING 0x08 未置）·非跨进程/非 CoW（续-25 已排除）。产地类从续-25「CoW 之外的未定外部写」收紧为「INIT 自身 80B 消息投递足迹上沿（offset0x48→VA0x25c0）覆盖 read_file body Vec 头」·余一步 SP 对账即可分岐**候选甲（内核陈旧 pdmv·MF_DELIVERMSG/RECEIVING 生命周期缺陷）** vs **候选乙（用户侧 minix-sys read sendrec 80B Message alloca 与 body 栈布局碰撞）**。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-27。）**
+>
+> **（历史·§1.120续-26 取证轮（**x86_64 单核 rc marker fresh 定标成功**：同镜像手改 `-smp 1` 跑 90s 产 10623 行·**panic/exception=0**·boot 正常推进至 `minix-rs rc: minimal boot script marker`（L7522·即 rc 脚本 `echo` 真实输出）⇒ **终目标① 的 x86_64 部分（单核 rc marker）在净 HEAD 6549ad5d7 已实证达成**。纠正续-25 D 行「两说互斥」：xtask 默认 `-smp 4` 为**递归 page-fault panic**（`lib.rs:3635 no entry trap style known`→`trap_dispatch.rs:805 InvalidIrq`→`:955 vector 13/14 at rip 0x5c520ca`）·非旧述「syscall.rs:935 caller_idx」（本轮不可复现·归历史伪影）；SMP 启动崩溃为独立预存前沿（§1.113 已记）。**三架构最新**：x86_64 单核①✅（SMP❌）·aarch64 卡 OOM（CoW 续-25 已排除·产地待定）·riscv64 无全 OS 镜像路径。下一手＝**aarch64（距 marker 最近）**：在 `cross_space.rs::cross_space_copy/cross_space_write`（data_copy_vmcheck 底层拷贝原语）装非扰动写观察针锁定外部写产地。纯取证·零代码改·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-26。）**
 >
 > **（历史·§1.120续-25 取证轮（**PA 对比针推翻续-24 尾节候选 3「fork 父子共享/陈旧 delivermsg 页」**：`proc_table.rs` DELIVERMSG 腿对 `nr=0xc`+dst 嫌疑栈页 `0x7ffffffe2*` 同时用子 root 与 INIT root walk dst，**16/16 命中 `child_pa=0x45d09000 ≠ init_pa=0x42b78000·same=0`**＝CoW 语义正确（静态审计对位：`fork_region`→`setup_cow_for_all_regions` insert WRITABLE→`write_page_table_mappings`→`protect_cow_pages`→`sys_fork`→`set_addrspace`→`handle_memory_once(child)` needs_cow→`cow_resolve_core` 分配新帧·子页指向独立物理帧）。**同轮 OOM 仍复现**（纠正前会话「无 OOM」误记）：L4280 最后一次 `pa cmp dst=0x7ffffffe2578`→L4281 `rs-bigalloc size=fffe25c0`→L4283 `OOM-RT`＝污染产地在 CoW **之外**·未坐实。剩余候选：do-memory 服务腿（`memreq target=11 start=0x7ffffffe2578 len=0x50 ok=1`）／VFS read `data_copy` 实际写入范围／pid=14↔slot 映射。其 x86_64 盘点「未跑 QEMU·两说互斥」已由续-26 fresh 定标。纯取证·tracked 净·WORKLOG-only。）**
 >
@@ -6305,3 +6307,46 @@ L4283: nk4c: OOM-RT size=fe25c0 slabs=005/400 big=00/00 px=005/400 fp=000/400
 - 本轮**纯取证·零生产代码改**·tracked 净（仅本 WORKLOG 改）。
 - 纠正续-25 D 行与旧会话摘要对 x86_64 的互斥两说：单核 rc marker 已实证达成·SMP=4 崩溃为独立预存前沿。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。**x86_64 单核① 已克**；下轮主攻 aarch64 OOM 产地（距 marker 最近）。
+
+---
+
+## §1.120续-27 取证轮（2026-09-28）：投递内容级探针定谳 aarch64 OOM 产地类＝**INIT 自身 `p_delivermsg_vir`=0x7ffffffe2578 的 80B 消息投递足迹覆盖其活帧局部**（word[9]@offset0x48=VA 0x25c0·恰为 poison 地址），且所有嫌疑页投递 `rts=0x0`（RECEIVING 0x08 未置）——非跨进程/非 CoW（续-25 已排除）
+
+> 纯取证轮·探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据文件 `tmp/nk4a/a64-t38-dlprobe.serial`（67 条 `nk4h: dl` 全架构投递）、`tmp/nk4a/a64-t38b-dlwords.serial`（INIT nr=0xb 投递全 10 word）。
+
+### A. 探针 v1（全收件者投递·page 过滤）→ v2（INIT 全 10 word）
+
+`proc_table.rs` DELIVERMSG 分支入口（`delivermsg` 调用前）：当 `p.p_delivermsg_vir` 落在嫌疑栈页（`>>12==0x07ff_ffff_e2`）时打印接收者 `p_nr / rts_flags / m_type / 消息内容`。v1 对所有收件者；v2 收敛到 `nr.0==0xb`（INIT）并 dump 全 10 个 8B word（覆盖 0x50=80B 足迹）。
+
+### B. 决定性证据：投递足迹上沿 word[9]（offset 0x48 → VA 0x25c0）携带栈指针值
+
+`a64-t38b` 中 INIT（nr=0xb）多次投递至 `pdmv=0x00007ffffffe2578`（紧接 L4285 `rs-bigalloc size=fffe25c0` 之前）：
+```
+L4220: dlB pdmv=0x2578 w0=0x0...0 w8=0x00000000002019a8 w9=0x00007ffffffe2888
+L4236: dlB pdmv=0x2578 w0=0x0000000e00000000          w8=0x0                w9=0x00007ffffffe298d
+L4383: dlB pdmv=0x2578 w0=0x0...0                     w8=0x00007ffffffe2888 w9=0x00007ffffffe2888
+```
+- **word[9]（消息 offset 0x48）写入的 VA = pdmv+0x48 = 0x2578+0x48 = 0x25c0**——与 OOM size `0xfffe25c0`（= 0x7ffffffe25c0 低 32 位）逐字同址。
+- w9 值均为**栈区指针**（`0x7ffffffe2888`/`0x7ffffffe298d`·均在 `0x25xx`~`0x29xx` 栈页区），即 `Message` union 某臂持一个指向接收者自身栈的指针，随 80B 整体投递写入 `[0x2578,0x25c8)`。
+- **v1（全架构）另证**：`nr=0x7 pdmv=0x2648 mt=0x1800 w1=0x00007ffffffe28d0`——非 INIT 进程的投递内容也携带栈指针（`0x28d0`），但真正引发本局 OOM 的是 INIT 自身 `0x2578` 投递。
+
+### C. 定论与产地类定位
+
+1. **非跨进程页别名/非 CoW**（续-25 PA 对比 same=0 已排除）：本探针看的是 INIT **自己**的 `p_delivermsg_vir` 与**自己**的 `p_delivermsg` 内容，与子 slot 12 无关。
+2. **产地类＝接收者自身栈重叠**：80B 消息足迹上沿（offset 0x48..0x50 → VA 0x25c0..0x25c8）**与 init `read_file` 栈上局部（`body: Vec<u8>` 头 24B·恰在 0x25c0 区）重叠** → 投递把消息 union 臂里的栈指针写进 `body` 的 cap 字段 → `extend_from_slice`→`reserve`→`__rust_realloc` 收到 `~4GiB new_cap`→`minix_rt::alloc` OOM（与续-24 v7 调用链完全自洽）。
+3. **`rts=0x0`（RECEIVING 0x08 位未置）贯穿全部嫌疑页投递**：本项单独**不足以**证伪（本内核在 send-reply 阶段已清 RECEIVING·投递至 `process_misc_flags` 时清旗可为常态）；但叠上“投递落自身活帧”构成**两条待分岐候选**：
+   - **候选甲（内核侧）**：`p_delivermsg_vir` 陈旧——INIT 早先一次 receive 在更深帧登记了 msg 缓冲（~0x2578），该帧已返回，而 MF_DELIVERMSG 未随之清→晚到的回复投递砸进已复用的 `read_file` 帧（旗标生命周期缺陷）。
+   - **候选乙（用户侧）**：`minix_sys::read`（`os/commands/sbin/init/src/host.rs:534`）→ sendrec 的 80B `Message` alloca 与 `read_file` 的 `body`/`chunk` 同帧相邻且间距<80B→内核忠实投递至调用方给定地址（正确行为）·缺陷在用户侧栈布局碰撞。
+
+### D. 下一手（未来轮·分岐甲/乙）
+
+需**接收者实时 SP** 才分岐：在 DELIVERMSG 腿拓打印 INIT 保存上下文的用户 SP（`CurrentCpuContextArch::TrapFrame` 的 sp 字段）+ 校验“本次投递前 INIT 是否有一笔**真正挂起**的 receive（p_getfrom_e/RECEIVING 历史）”：
+- 若实时 SP ≡ `read_file` 帧（含 0x25c0）且 pdmv 远低于 SP（旧帧）→ **候选甲（内核陈旧 pdmv）**·修 MF_DELIVERMSG/RECEIVING 生命周期。
+- 若 pdmv 落在当前帧内且与 body 重叠 → **候选乙（用户侧 read 包装器 Message alloca 与 body 碰撞）**·修 minix-sys receive 包装器或 read_file 局部布局（需先确认非内核错给地址）。
+
+### 纪律（续-27）
+
+- 本轮**纯取证·零生产代码改**：`os/kernel/src/proc_table.rs` 探针 `git checkout` 回滚·tracked 净（`git status --short` 无 M）；`grep nk4h os/kernel os/servers`=0。
+- 未分岐甲/乙（缺实时 SP）前不实施生产修复。
+- 前沿推进：OOM 产地从续-25「CoW 之外的未定外部写」收紧为「INIT 自身 80B 消息投递足迹上沿（offset0x48→VA0x25c0）覆盖 read_file body 局部」·余一步 SP 对账即可分岐内核陈旧 pdmv vs 用户侧栈碰撞。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。x86_64 单核① 已克（续-26）；aarch64 卡本 OOM。
