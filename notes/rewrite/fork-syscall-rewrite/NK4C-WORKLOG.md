@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-39 证伪取证轮（2026-09-28·依续-38 裁决修 INIT 入站 SP 对齐（crt0 aarch64 `_start`）·真机仍不足·SP 对齐说第三次证伪·回退）**：Debug 子代理静态定谳 aarch64 INIT 入站 `vsp%16==8`（`stack.rs:117` 只 8 取整·x86_64 `_start` 有 `and rsp,-16` 而 aarch64 `_start` 无），实施 crt0 对齐修复（经 scratch `x16`：`add x16,sp,#0`/`and x16,x16,#-16`/`add sp,x16,#0`·CodeReview 0 BLOCKER 0 SHOULD-FIX 仅 3 NIT 已采纳）。**host 全绿（531/823/243/149）+ aarch64 镜像成功**·但**真机三跑不足**：mov 形式 2/2 无 OOM·add 形式（同语义）1/1 复现 OOM 且毒值 `fffe25b8` 与修复前 `fffe25c0` **差恰好 8 字节**（= 对齐 slack）⇒**入站 SP 已对齐但陈旧内存字机制仍现**⇒**SP 对齐非模式① 根因**（间歇性·2/2 不净不区分运气与治愈）。另过 OOM 后卡新下游障碍（`memreq start=0x2`→SIGSEGV·非对齐）。⇒ **回退 `crt0.rs`**（tracked 净）。crt0 对齐作为真 AAPCS64 违约登记结构债备查（待真根因定位后可重新引入）。**下轮（续-40）**＝回通路 A fill-vs-read 针：INIT 读点打 `stack_params` 入参每条 `&str` ptr/len 实测 + 该页 VM fill 写入值，定哪条 `&str.len()` 真携陈旧栈地址/哪次外部写毁。⚠ 目标不缩小：三架构 rc marker + 18-stage + minix3 tests。纯证伪取证·无生产改动幸存·**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-39。
+> **🛑 最新前沿＝§1.120续-40 证伪取证轮（2026-09-28·GLM commit 核查无新 pending + 依 Debug 子代理 fill-vs-read 针定谳的「aarch64 `finish_and_restore` 缺故障页 TLBI」假设经真机直修证伪·第四次证伪·回退）**：①**GLM commit 核查**：全分支/stash/dangling/工作树逐一核，**无任何针对 aarch64 模式① 的新 pending GLM commit**；唯一 GLM 修复 `82abf5b64`（模式② pt_bind）已于续-37（`0eac758ea`）独立验收通过（三件套 531/823/243 + CodeReview 无 BLOCKER）。两份新增笔记 `NK4C-BUG-AARCH64-VEC-CAP{,-GLM}.md` 是「静态分析交接件」（明令禁改代码），非修复。②**续-40 Debug 子代理**（fill-vs-read 针）定谳假设＝`os/kernel/src/lib.rs::finish_and_restore` 的故障页 TLBI 消费腿只挂 `#[cfg(x86_64)]`（invlpg·L3642-3649），aarch64/riscv64 分支空 ⇒ VM 经 VmDm 把 PTE 改 RO→RW 后无 TLBI 击中该 VA ⇒ 疑用户态重试写指令命中旧 RO 项写到错 PA。③**我实施主修**：不堆 `#[cfg]` asm 块，改用架构无关的 `CurrentTlbArch::flush_addr(VirBytes(va))`（x86 invlpg / arm64 tlbi vaae1is / riscv sfence.vma）替换只挂 x86 的内联汇编，一处闭合三架构（符合「硬件藏在 trait 后」约束）。确认填充腿 `forward_pagefault_to_vm`（trap_dispatch.rs:1152）架构无关、消费设计已预留（syscall.rs:2641 注释「保留 p_fault_addr 供恢复点使用」）⇒改动确会触发。**host 三件套 823/531/243 全绿·零新告警**。④**真机证伪**：全新 aarch64 `-smp4` 镜像跑，多数 `rs-bigalloc` 变合法尺寸（0x3ea00/0x111000…ptr 非空），但末条毒值仍**逐字 `size=fffe25c0 ptr=0` + `OOM-RT`·marker=0** ⇒ 直修**未消除模式①**＝**第四次证伪**。**决定性裁决**：毒值跨四轮（续-38 出站对齐 / 续-39 入站对齐 / 续-40 TLBI）**恒为同一 `0x7ffffffe25c0`**；若真是 stale-TLB→写错物理帧，读到的残留应随执行漂移、不会如此稳定复现同值——稳定同值恰是「经正确指针读到被**确定性地**写坏的内存字（通路 A·续-37 定谳）」的特征，**反证续-40 TLBI 假设**；子代理 canary（t40e pre-touch 通过）可由「pre-touch 使该页更早被 fill / Heisenbug 时序扰动」旁路解释，其对 TLBI 的判别力被稀释。⇒ **回退 `lib.rs`（tracked 净）**。「aarch64/riscv64 `p_fault_addr` 填充腿架构无关但消费腿仅 x86」这一**真实设计缺口**登记为**候选独立加固**（无观测到的独立缺陷前不落地，同 crt0 对齐处理）。**下轮（续-41）**＝调和 canary-通过 vs TLBI-失败 的分歧：不再猜修复点，直接在 INIT 读点（`execve.rs` `stack_params` 入参）用手写 hex（禁 `format!`）打每条 `&str` 的 `ptr`/`len` 实测 + 现场 dump 该 `&str` 所在内存字前后 ±32B，坐实「哪个物理地址的字被写成栈指针 + 由哪条 store 写入」，把通路 A2（fill-vs-read 竞态）钉到具体指令再论修。⚠ 目标不缩小：三架构 rc marker + 18-stage + minix3 tests。纯证伪取证·无生产改动幸存·**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-40。
+>
+> **（历史·§1.120续-39 证伪取证轮（2026-09-28·依续-38 裁决修 INIT 入站 SP 对齐（crt0 aarch64 `_start`）·真机仍不足·SP 对齐说第三次证伪·回退）**：Debug 子代理静态定谳 aarch64 INIT 入站 `vsp%16==8`（`stack.rs:117` 只 8 取整·x86_64 `_start` 有 `and rsp,-16` 而 aarch64 `_start` 无），实施 crt0 对齐修复（经 scratch `x16`：`add x16,sp,#0`/`and x16,x16,#-16`/`add sp,x16,#0`·CodeReview 0 BLOCKER 0 SHOULD-FIX 仅 3 NIT 已采纳）。**host 全绿（531/823/243/149）+ aarch64 镜像成功**·但**真机三跑不足**：mov 形式 2/2 无 OOM·add 形式（同语义）1/1 复现 OOM 且毒值 `fffe25b8` 与修复前 `fffe25c0` **差恰好 8 字节**（= 对齐 slack）⇒**入站 SP 已对齐但陈旧内存字机制仍现**⇒**SP 对齐非模式① 根因**（间歇性·2/2 不净不区分运气与治愈）。另过 OOM 后卡新下游障碍（`memreq start=0x2`→SIGSEGV·非对齐）。⇒ **回退 `crt0.rs`**（tracked 净）。crt0 对齐作为真 AAPCS64 违约登记结构债备查（待真根因定位后可重新引入）。**下轮（续-40）**＝回通路 A fill-vs-read 针：INIT 读点打 `stack_params` 入参每条 `&str` ptr/len 实测 + 该页 VM fill 写入值，定哪条 `&str.len()` 真携陈旧栈地址/哪次外部写毁。⚠ 目标不缩小：三架构 rc marker + 18-stage + minix3 tests。纯证伪取证·无生产改动幸存·**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-39。
 >
 > **（历史·§1.120续-38 证伪取证轮（2026-09-28·aarch64 失败模式① 的「子出站栈 SP 16 对齐」修复形态被真机证伪·回退投机代码）**：本轮复活续-34b 候选二（16 字节 SP 对齐）并实施最修（`execve.rs::stack_params` 取整抬到 16 + 常量 + 3 测试·host `minix-init` 150/0 + 三件套 531/823/243 全绿·fmt 判定为 rustfmt 版本漂移不动未改行）。**真机证伪**：全新重建 aarch64 release 镜像（`-smp 4`）跑·OOM 签名逐字与修复前一致（L4268 `rs-bigalloc size=fffe25c0`→L4272 `OOM-RT`·marker=0）⇒ 最修**未消除失败模式①**。**根因裁决＝修复点定位错误**：毒 `frame_size≈4GiB` 出自 `exec_command` 内 `stack_params(&argv,&envp)`·而 `argv`/`envp` 的 `&str` 在调用 `stack_params` **之前**、于 **INIT 当前已在跑的栈**上构造·`stack_params` 取整只决定**交接给子的 `vsp`**·无法重对齐 INIT 自身此刻 SP·故子出站栈对齐即便 ABI 正确亦非本 OOM 之因（SIMD 低半不落地若成立其受害帧是 INIT 自己·对齐源在 boot 期 `kinfo.user_sp`→INIT 入站 SP）。⇒ **回退 `execve.rs`（`git checkout` 回 HEAD·tracked 净·不保留基于被证伪假设的投机代码）**·回续-37 定谳的**通路 A（内存字陈旧·A1 缺屏障/A2 fill-resume 竞态）**为正解方向。**下轮（续-39）**＝崩溃现场打印 INIT 此刻 SP/帧对齐 + `stack_params` 入参每条 `&str` 的 `ptr`/`len` 实测值·定位是哪条 `&str.len()` 读到 `0x7ffffffe25xx`·分「INIT 帧被外部写毁（通路 A）」vs「INIT 入站 SP 未对齐致构造即塌（修复点=boot 期）」两岔。⚠ 目标不缩小：三架构 rc marker + 18-stage + minix3 tests。纯证伪取证·无生产改动幸存·**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-38。
 >
@@ -6881,3 +6883,34 @@ minix-vm 531 / minix-kernel 823 / minix-arch 243 / minix-init 149 全绿·`and x
 
 ### E. 处置 + 续-40 入口
 **回退 `crt0.rs`**（`git checkout` 回 HEAD·tracked 净）。子/boot 入站 SP 未 16 对齐仍是**真 AAPCS64 违约**（x86 有再对齐腿而 aarch64/riscv64 无）·登记为独立结构债备查（待真根因定位后如属同一修复可重新引入 crt0 对齐·它本身不应被丢弃但也不应作为本 OOM 的修）·本轮不保留。回**续-37 §C/D 通路 A**：真根因是某条 `&str` 的 `len` 内存字**确实携了一个陈旧栈地址**（非对齐造成），须按续-39 原计划的 fill-vs-read 针（在 INIT 读点打 `stack_params` 入参每条 `&str` 的 ptr/len 实测 + 该页 VM fill 写入值）定哪条字/哪次外部写。三目标不缩小。
+
+---
+
+## §1.120续-40（2026-09-28）·aarch64 `finish_and_restore` 缺故障页 TLBI 假设·真机直修**证伪**（第四次）·回退
+
+### A. 承接：GLM commit 核查（用户指令「GLM 已修复·review 其 commit·通过则继续」）
+证据优先核查全仓库当前态：`git status --porcelain` 无 modified/staged 跟踪文件（tracked 净·HEAD=`0b3bae1b2` 续-39）；`git branch -a`、`git worktree list`、`git stash list`、`git log --all --since` 及 `git fsck --dangling` 逐一排查——**无任何针对 aarch64 模式① 的新 pending GLM commit**（dangling 全为 9-17~9-26 的 xzhao 旧 WIP）。唯一 GLM 修复 `82abf5b64`（模式② pt_bind·exec 换根活锁）已于**续-37（`0eac758ea`）独立验收通过**（本地三件套 531/823/243 全绿 + CodeReview 无 BLOCKER），本轮无需重复审查。新增两份 untracked 笔记 `NK4C-BUG-AARCH64-VEC-CAP.md`（交接件·明令「禁下结论、禁改代码」）与 `NK4C-BUG-AARCH64-VEC-CAP-GLM.md`（静态分析三候选）均为**只读分析产物、非修复**。
+⇒ 用户指令前件「审查 GLM commit → 通过后继续前进」中的审查已完成于续-37，据 goal 继续推进当前真正前沿＝续-40 已定谳假设的实施与验证。
+
+### B. 续-40 Debug 子代理假设（fill-vs-read 针产物）
+子代理定谳＝`os/kernel/src/lib.rs::finish_and_restore` 的「故障填充恢复时对故障页做 TLBI」腿**只挂 `#[cfg(target_arch="x86_64")]`**（`invlpg [fault_flush_va]`·L3642-3649），aarch64/riscv64 分支为空。VM 经 `VmDm` 通道 `update_flags` 把 PTE 从 RO 改到 RW（write-permission fault 处理）后，从写 PTE 到 `restore_to_user` 整链对 aarch64 **无任何一次 TLBI 击中该 VA** ⇒ CPU 残留旧 RO TLB 项 ⇒ `eret` 回 EL0 重试的 STP 命中旧项写到错物理帧 ⇒ 用户态紧随用新 PTE 读到该帧残留（此 VA 上次作 INIT 栈保存的 SP 值 `0x7ffffffe23xx`）⇒ `String.len` 槽被当 ~4GiB。ARMv8 明确要求（ARM ARM D5.4.5：present→present 权限变更必须显式失效）在本仓库缺失。canary 反证：t40d（无 canary）中毒 vs t40e（先 pre-touch 同页触发一次 fault）正常。
+
+### C. 实施（架构无关 trait 调用·非 `#[cfg]` asm 堆叠）
+不复制第二段 arch-gated asm，改把 L3642-3649 的 `#[cfg(x86_64)] invlpg` 块替换为**架构无关**的 `CurrentTlbArch::flush_addr(VirBytes(va))`：
+- `p.p_fault_addr: Option<u64>`（proc.rs:883）·`fault_flush_va` 转 `VirBytes(va)`；`VirBytes(pub u64)` 已在 lib.rs:32 导入。
+- `flush_addr` trait 方法三架构均真实现：x86_64 `invlpg`（tlb.rs:42·与原内联汇编逐字等价）/ arm64 `tlbi vaae1is`+`isb`（tlb.rs:70）/ riscv64 `sfence.vma va,zero`（tlb.rs:62）。
+- 填充腿 `forward_pagefault_to_vm`（trap_dispatch.rs:1152）**架构无关**·消费设计已预留（syscall.rs:2641 注释「`vmctl_clear_page_fault` 保留 `p_fault_addr` 供恢复点使用」）⇒改动确在 aarch64 触发。
+- 两处注释从 x86 专属措辞（CR3/iretq/invlpg）中性化为三架构通用，保留 2026-09-22 x86 真机历史证据。
+符合项目「硬件藏在 trait 后」约束·一处闭合三架构。
+
+### D. 验证
+- host 三件套：**kernel 823 / vm 531 / arch 243 全绿·零新告警**（唯一 E0133 unused-unsafe 系 pre-existing·在 minix-types/vfs.rs:782 与 minix-platform，与本改无关）。
+- aarch64 release 镜像构建成功（`-smp 4`）。
+- **真机 t40fix-r1（100s timeout·exit 124 正常）**：多数 `rs-bigalloc` 为**合法尺寸**（`size=3ea00 ptr=259000`、`111000`、`18000`… ptr 非空），**但末条仍 `rs-bigalloc size=fffe25c0 ptr=0` + L4273 `nk4c: OOM-RT size=fe25c0`·marker=0** ⇒ 直修**未消除模式①**。
+
+### E. 裁决（第四次证伪·毒值恒定为反证 TLBI 的关键判据）
+毒值跨**四轮独立假设**恒为同一 `0x7ffffffe25c0`：续-38 子出站 SP 对齐（逐字不变）·续-39 INIT 入站 SP 对齐（`fffe25b8`·差 8=对齐 slack）·续-40 aarch64 恢复点 TLBI（逐字 `fffe25c0`）。**判据**：若真为 stale-TLB→STP 写错物理帧→用户态读该帧残留，则「错物理帧的残留内容」应随执行时序/分配漂移，不会四轮跨不同扰动**稳定复现同一 64 位栈地址**；稳定同值恰是「某正确指针指向的内存字被**确定性地**写成该栈指针」的特征——即续-37 定谳的**通路 A（内存字陈旧）**，非地址翻译层。⇒ **续-40 TLBI 假设证伪**。子代理 canary 的 t40e「通过」可由「pre-touch 令该页更早被 fill、真 STP 不再走缺页恢复路径」或纯 Heisenbug 时序扰动旁路解释，其对 TLBI 的特异判别力被稀释（不满足「未坐实不成修」）。
+
+### F. 处置 + 续-41 入口
+**回退 `os/kernel/src/lib.rs`**（`git checkout`·tracked 净）。aarch64/riscv64 `p_fault_addr` 填充腿架构无关但消费腿仅 x86 这一**真实设计缺口**登记为**候选独立加固**（缺可观测的独立缺陷证据·不并入模式① 因果链·同 crt0 AAPCS64 对齐结构债处理·待真根因定位后评估是否随修）。
+**续-41（回到续-39 原计划但从未真正打出的 fill-vs-read 针·不再猜修复点）**：在 INIT 读点 `os/commands/sbin/init/src/execve.rs::stack_params`（或其调用方 `exec_command` 构造 `argv`/`envp` 处）用手写 hex 固定栈 buffer（**禁 `alloc::format!`**·参照 `os/libs/minix-rt/src/alloc.rs:332-345` 的 `nk4a_supply_log`·避免再分配扰动时序）打：(1) 每条入参 `&str` 的 `ptr` 与 `len` 实测；(2) 命中毒值那条 `&str` 的 `&str` 结构体地址 + 其前后 ±32B 内存字 raw dump；(3) 该 VA 所属页此刻 PTE 权限位。坐实「哪个 VA 的字携了栈指针 + 是 INIT 自己写坏还是 fork/exec 继承」，把通路 A2（fill-vs-read 竞态）钉到具体 store 指令再论修。三目标不缩小：x86_64 单核① 已克·aarch64① 四度假设证伪后收紧至「确定性陈旧内存字」·riscv64① 需先接 IPC 桥·18-stage/minix3 tests 待前三链贯通。纯证伪取证·无生产改动幸存·**WORKLOG-only（免 CodeReview）**。
