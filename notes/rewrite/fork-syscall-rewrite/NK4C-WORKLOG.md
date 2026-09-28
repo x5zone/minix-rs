@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-33 取证轮（**有界扫栈定谳毒分配发起者＝minix-init 内 `RawVec::finish_grow`·某 Vec grow 到 cap≈0x7ffffffe25c0＝INIT 原始栈地址被当长度**·**重构：x86 同源二进制已达 marker ⇒ 缺陷在 aarch64 架构层子诞生/exec 栈布局非共享 init 逻辑**：临时 nk4m 于 `Allocator::alloc` 入口捕 x30/sp+扫 300 字。text 域返址命中：entry lr=0x220dd8（finish_grow@0x220d58 内）·+0x420=0x22bb68（minix_rt::alloc GlobalAlloc 壳）·sp=0x7ffffffc63a8（子栈区对合续-30）。全链符号均 in minix-init ELF⇒非server/内核。毒值 0x7ffffffe25c0 属父 INIT 栈区 0x7ffffff**e2**（子栈在 0x7ffffff**c6**）＝父栈内容经 fork 遗传被当长度。**排除**：exec frame Vec（`execve.rs:296` frame_size 出自 `stack_params` 全程 checked_add+ok_or(E2BIG)·超大 item.len 先早返不可能递 4GiB）、crt0 env/arg 切片（`string_at` NUL 扫描长度受串界定）。本机 objdump 不认 aarch64 ⚠无 llvm-objdump ⇒ 无法离线追 finish_grow 调用者·release 无帧指针使 300 字窗够不到 app 帧。**关键洞察**：同一 init 二进制 x86_64 单核已跑到 rc marker（续-26 零 panic）→ aarch64 子却把 INIT 栈地址当 Vec cap ⇒ **缺陷在 aarch64 专属架构层**（子诞生/exec 时 ps_strings/argv/envp/auxv 落盘的宽度/对齐/偏移差·或 fork 子初始 SP 使继承栈错一格）。下轮＝对读 aarch64 vs x86_64 `crt0.rs` entry stub + exec 栈/ps_strings 装载定位 aarch64 独有偏移·或一次性 `-C force-frame-pointers=yes` 重建 init 走 x29 链拿完整回溯。探针 `git checkout` 回滚·tracked 净（grep nk4m os/libs/minix-rt=0）·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-33。）**
+> **✅ 最新前沿＝§1.120续-34 取证轮（**低扰动 `exec_command` 步进针定谳毒分配确切语句＝`stack_params` 返回的 `frame_size` 本身＝栈地址·且间歇性·并暴露下游第二失败模式＝exec 成功后 aarch64 文本页 0x200000 请求活锁**：`execve.rs` 插 `nk4r: step1..9` 步进针（入口打 argv/env 计数）+ `stack_params` 内 `nk4s: idx/len/ptr`。三跑：①`argv_count≈1/env_count=0` 正常（推翻续-33 env 计数污染猜）·毒 `size=fffe25c0` 落 `exec_command` 体内；②step1..6 全打·**step7-frame-done 未打**·毒恰在其间→锁 `frame.try_reserve_exact(frame_size)`·改 step6 打 `frame_size` 值＝`0xfffe25c0`→**`frame_size`（`stack_params` 返回）本身即栈地址**（某 `&str` item `.len()` 间歇为陈旧栈值·`checked_add` 64 位不溢出故不 E2BIG·**推翻续-33「exec frame Vec 有界已排除」**）；③装 `nk4s` 那轮 `frame_size=0x68` 正常·step7/9 全打·exec 成功·串口推至 29.9 万行·**但仍无 marker**→暴露第二失败模式：`memreq target=0x800C(slot12) start=0x200000 len=0x1000 ok=1` 重复 74015 次·**exec 出的子对新镜像首文本页 VA 0x200000 无限重复缺页**（授权后立即再缺＝映射未落地·疑 PTE 权限[execute-never/PXN/UXN] 或 TLBI 缺失）。**共性根**＝两模式均落 aarch64 专属 fork/exec 期页物化/缺页落地正确性（非共享 init 源码·非消息足迹[续-32 排除]·非 env 计数[本轮排除]）·x86 同源已达 marker＝硬对照。下轮（续-35）＝**主攻模式②活锁**：读 `os/arch/src/arm64` map_page 权限位映射（`prot`→AP/PXN/UXN/AttrIndx）+ fault-return/setaddr 的 TLBI+isync 腿·坐实 0x200000 授权后为何同页再缺。⚠ **方法学教训（入 MEMORY 候选）：含 NUL 的二进制串口日志 `grep` 必带 `-a`**·否则命中行被当 binary 静默漏报（本会话「nk4r 从未打印」假象几误方向）·断言「命中 0 次」前必 `grep -ac` 复核。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-34。）**
+>
+> **（历史·§1.120续-33 取证轮（**有界扫栈定谳毒分配发起者＝minix-init 内 `RawVec::finish_grow`·某 Vec grow 到 cap≈0x7ffffffe25c0＝INIT 原始栈地址被当长度**·**重构：x86 同源二进制已达 marker ⇒ 缺陷在 aarch64 架构层子诞生/exec 栈布局非共享 init 逻辑**：临时 nk4m 于 `Allocator::alloc` 入口捕 x30/sp+扫 300 字。text 域返址命中：entry lr=0x220dd8（finish_grow@0x220d58 内）·+0x420=0x22bb68（minix_rt::alloc GlobalAlloc 壳）·sp=0x7ffffffc63a8（子栈区对合续-30）。全链符号均 in minix-init ELF⇒非server/内核。毒值 0x7ffffffe25c0 属父 INIT 栈区 0x7ffffff**e2**（子栈在 0x7ffffff**c6**）＝父栈内容经 fork 遗传被当长度。**排除**：exec frame Vec（`execve.rs:296` frame_size 出自 `stack_params` 全程 checked_add+ok_or(E2BIG)·超大 item.len 先早返不可能递 4GiB）、crt0 env/arg 切片（`string_at` NUL 扫描长度受串界定）。本机 objdump 不认 aarch64 ⚠无 llvm-objdump ⇒ 无法离线追 finish_grow 调用者·release 无帧指针使 300 字窗够不到 app 帧。**关键洞察**：同一 init 二进制 x86_64 单核已跑到 rc marker（续-26 零 panic）→ aarch64 子却把 INIT 栈地址当 Vec cap ⇒ **缺陷在 aarch64 专属架构层**（子诞生/exec 时 ps_strings/argv/envp/auxv 落盘的宽度/对齐/偏移差·或 fork 子初始 SP 使继承栈错一格）。下轮＝对读 aarch64 vs x86_64 `crt0.rs` entry stub + exec 栈/ps_strings 装载定位 aarch64 独有偏移·或一次性 `-C force-frame-pointers=yes` 重建 init 走 x29 链拿完整回溯。探针 `git checkout` 回滚·tracked 净（grep nk4m os/libs/minix-rt=0）·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-33。）**
 >
 > **（历史·§1.120续-29 取证轮（**用户侧地址探针推翻 read_file 归因**：nk4j 于 `MinixSysHost::read_file` 逐轮打印·二进制已验编入（strings 命中 3）·但本轮 OOM 仍现（L4268 `size=fffe25c0`→`OOM-RT`）而 **nk4j=0**⇒read_file（仅 driver.rs:78 TTYS + main.rs:158 /etc/passwd 两处调）从未进入⇒**推翻续-24 v7/续-27/28 将产地归为 read_file body**。静态重定位：poison bigalloc 前为 `0x7ffffffc6…cf` 深栈 vm-pf 级联（与 INIT pdmv 栈区 `0x7ffffffe2` **不同进程/不同栈**）⇒真 ~4GiB Vec 属一个子进程/leg exec 栈组装腿（候选 execve.rs:297 try_reserve_exact）。另静态纠正续-28：“deferred 回退腿”实为 **Path A 设计延迟**（`ipc.rs:1358-1374` mini_send 匹配 parked 接收者本就直写内核 p_delivermsg+置 MF_DELIVERMSG、不同步拷用户缓冲·对位 C proc.c:901-913），“同步拷贝失败”不成立作废。保留硬事实：INIT 仍有 `mt` 非法投递（续-28 nk4i）。下轮＝`minix-rt/alloc.rs` bigalloc 臂打印 pid/progname+FP 链定真产地进程。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-29。）**
 >
@@ -6582,3 +6584,36 @@ nk4m: +00000440=0x257000   (同上)
 - 探针 `git checkout` 回滚·tracked 净（`grep nk4m os/libs/minix-rt`=0·`grep nk4l os/kernel`=0）·纯取证零生产代码改·WORKLOG-only。
 - 承续-32「未坐实不成修」——本轮不基于扫栈误命中（0x253000 数据符号）或启发式归因下任何生产改；据「x86 同源正常」这一硬对照把方向从共享逻辑**校正到 aarch64 架构层**，是收敛而非漂移。
 - ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①毒分配已定谳至 init 内 Vec·缺陷域收窄到 aarch64 架构层子诞生/exec 栈；riscv64①需先接 IPC 桥（复用同投递代码）；18-stage/minix3 tests 待前三链贯通。
+
+---
+
+## §1.120续-34 取证轮（低扰动 exec_command 步进针定谳毒分配确切语句＝`stack_params` 返回的 `frame_size` 本身＝栈地址·且**间歇性**（同跑可正常 0x68）·推翻续-33「exec frame Vec 已排除」·并暴露下游第二失败模式＝exec 成功后 aarch64 文本页 0x200000 请求活锁）
+
+### A. 方法（承续-33 D.1/D.2·选择步进针而非 force-frame-pointer 回溯）
+
+release init ELF 仅 321 符号（`nm` 已验·finish_grow@0x220d58→minix_rt::alloc@0x22b04c 链可读），扫栈只够到分配器内帧·够不到 app 调用者（续-33 困境）。改换**更廉价、确定性、可 arch 对读**的手段：在 `execve.rs::exec_command` 各语句间插 `sys_diagctl_write` 步进针（`nk4r: step1..9`·入口针同时打 argv_count/env_count），并在 `stack_params` 的 `count` 闭包内对 `item.len()>=0x1000` 者打 `nk4s: idx/len/ptr`。一次 aarch64 build+QEMU 即定位。
+
+### B. 决定性结果（三跑）
+
+1. **`a64-t47-envcount`（首针·argv/env 计数）**：串口 grep 须带 `-a`（文件含 NUL·否则被当 binary 漏报——本会话初次 `grep -n nk4r` 假阴性即栽在此）。实为 **nk4r 命中**：`argv_count≈1`、`env_count=0`（正常）→**推翻续-33 隐含的「envs()/args() 计数被污染」猜测**。且 `nk4r` 之后紧接 `size=fffe25c0`→`OOM-RT`——**毒分配发生在 `exec_command` 体内**（此前 续-30/33「产地在子自身腿」首次被精确到函数与语句）。
+2. **`a64-t47b-steps` / `a64-t47c-fs`（步进针）**：step1..step6 全打、**step7-frame-done 未打**，毒 `rs-bigalloc size=fffe25c0` 恰落其间 → 语句锁定 **`frame.try_reserve_exact(frame_size)`**。将 step6 改为打印 `frame_size` 值：`e=0xfffe25c0`——**即 `frame_size`（`stack_params` 返回值）本身就是栈地址量级 0x7ffffffe25c0**，非分配 ABI 篡改。⇒ **续-33 对「exec frame Vec 因 checked_add+ok_or(E2BIG) 有界而排除」的结论被推翻**：某 `&str` item 的 `.len()` 间歇性＝一个栈地址（fat-pointer 长度字段为陈旧值），`checked_add` 在 64 位 usize 内**不溢出**故不触发 E2BIG·直接把 0x7ffffffe25c0 递进 `total`。
+3. **`a64-t47d-item`（`nk4s` item.len 针）**：**本轮 `frame_size=0x68`（正常·104B）·step7/8/9 全打·nk4s=0·毒=0**——即 exec **成功**！串口推进至 **299363 行**（远超历次 ~4.4k），但**仍无 rc marker**。暴露**第二失败模式**：末段 `nk4a: memreq target=32780(0x800C=slot12 子) start=0x200000 len=0x1000 ok=1` **重复 74015 次**、`do-memory enter/done` 73438 次——exec 出的子对其**首个文本页 VA 0x200000 无限重复缺页**：memory/VM 每次 `ok=1` 授权映射，子随即**再缺同一页**→活锁。（`vm-pf` 深栈 0x7ffffffff9f8..各级 11 次为正常栈增长·非循环。）
+
+### C. 结论（本会话权威）
+
+- **失败模式 ①（间歇 OOM）**：fork+exec 子内 `exec_command` 的 `stack_params` 间歇收到一个 `.len()`＝父 INIT 栈地址（0x7ffffffe2 区）的 `&str` → `frame_size`≈4GiB → `alloc` 返 null → 落笔 SIGSEGV / OOM-RT。**间歇性实证**（三跑两崩一过）＝典型 **store 物化 Heisenbug**（与本仓库已 commit 博客 `f2c477fc3`「陷入边界上的 store 物化 Heisenbug」同族·亦续-26 已修的 `commit_message_to_memory` 物化缺环同族）。子经 fork 读到**未物化/陈旧的栈/堆字**（String 头 ptr+len）→长度成陈旧栈值。
+- **失败模式 ②（exec 过后的文本页活锁）**：即使 ① 不触发、exec 成功，aarch64 子对**新镜像文本页 0x200000 无限缺页**——demand-map 授予后立即再缺→映射未真正「落地」（疑 PTE 权限/有效位或 **TLBI 缺失**致旧无效项驻留·与续-18 已修的 `switch_address_space` live-寄存器比较/TLB 前沿同域）。
+- **共性根**：两模式都落在 **aarch64 专属 fork/exec 期的页物化与缺页落地正确性**（非共享 init Rust 源码·非消息足迹[续-32 已排除]·非 env/argv 计数[本轮排除]）。x86_64 单核同源二进制已达 marker（续-26）＝硬对照。
+
+### D. 下一手（续-35·未坐实不成修）
+
+1. **主攻模式②（活锁·更确定复现）**：读 aarch64 缺页/映射链——`do-memory` 服务腿→`setaddr`/`map`→回 EL0 后同页再缺的成因。核心问句：VM 授权 0x200000 映射后，子页表里该 VA 的 PTE 是否 (a) 权限置成对用户态不可读/执行（execute-never 对指令页！aarch64 PXN/UXN 位）或 (b) 写入后未做 `tlbi`+`isync` 令旧无效翻译失效。定位 `os/arch/src/arm64` 的 map_page / 权限位映射（`prot`→`AP/ PXN/ UXN/ AttrIndx`）与 `switch_address_space`/fault-return 的 TLBI 腿。
+2. 模式①（Heisenbug）大概率与②同源（子页表/物化）：②修好后复跑看①是否随之消失；若残留再查 fork 期 CoW 页的读陈旧（缺 `dsb`/`tlbi` 屏障）。
+3. 坐实确切成因后方实施最修·三件套（host mock + aarch64 build + 双跑守 x86 marker 不回归）+ CodeReview + WORKLOG 续-36 + fix commit。
+
+### E. 纪律（续-34）
+
+- 探针（`nk4r:`/`nk4s:`·execve.rs）全 `git checkout` 回滚·tracked 净（`grep nk4r os/commands/sbin/init`=0·`grep nk4s`=0）·纯取证零生产代码改·WORKLOG-only（免 CodeReview）。
+- **方法学教训（本会话新增·入 MEMORY 候选）**：含 NUL 的二进制串口日志 `grep` **必须带 `-a`**，否则匹配行被当 binary 静默漏报——续-33→续-34 之间「nk4r 从未打印」的错误印象正源于此，一度几乎误导方向到「子未达 exec_command」。凡断言「某探针命中 0 次」前须 `grep -ac` 复核。
+- 承续-32/33「未坐实不成修」：本轮以步进针把毒分配从「init 内某 Vec」精确到「`exec_command` 的 `frame_size`（`stack_params` 返回值）间歇为栈地址」，并据「同跑可正常」把其定性为间歇 Heisenbug、据「exec 成功后仍卡」暴露第二确定性失败模式（0x200000 文本页活锁）——是收敛非漂移。
+- ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①双失败模式（间歇 OOM + 文本页活锁）定谳至 aarch64 fork/exec 页物化/缺页落地·下一手主攻活锁的 PTE 权限/TLBI；riscv64①需先接 IPC 桥（复用同投递代码）；18-stage/minix3 tests 待前三链贯通。
