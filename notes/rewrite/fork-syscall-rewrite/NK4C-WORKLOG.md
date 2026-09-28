@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§1.120续-23 取证轮（**续-22 修复 fresh 净态复验**稳定**（90s/240s 两跑 serial 逐字一致＝已静止非慢；双 `tc f05` INHERIT 达 SCHED、全程 0 条 `mt=0` 投递＝修复对两次 fork 均有效）：boot 越死锁达 `Runcom→SingleUser→exec /bin/sh`→shell 按需分页装载（1361 唯一 fa·无同页重发＝合法分页）。**rc marker 下游阻塞定性**＝静止前最后有效事件 `nk4a: rs-bigalloc size=0xfffe25c0`→`nk4c: OOM-RT`（minix-rt 收到 ~4 GiB 大分配失败→其后仅 SCHED `setalarm` 空转＝全系统 idle·marker 永不出）。**成因画像＝len==ptr 同族**（`0xfffe25c0`＝栈 VA `0x7ffffffe25c0`(=`memreq start=0x7ffffffe2578`+`0x48`) 的低 32 位——长度操作数被填入**栈指针值**，同 alloc.rs:609 历史 `memset(...,len==dst ptr)` OOM；**非续-22 IPC 物化**，该腿已修且本轮复证 0 mt=0）。⚠️ 具体哪个 alloc 调用点/其 len 从何字段来**未坐实不成修**——下一手定向探针捕获大分配调用点+上游消息字段。纯取证·无代码改·tracked 净·**WORKLOG-only（免 CodeReview）**）。**
+> **✅ 最新前沿＝§1.120续-24 取证轮（**定向探针坐实大分配调用点＝init `read_file` 的 `Vec<u8>` grow**（v7 于 `minix_rt::alloc` 入口捕获 x30→`RawVecInner::finish_grow`·栈扫命中 `__rust_realloc`+`MinixSysHost::read_file`·`pid=14 prog=init`）。**len 来源双重反证＝非 VFS read 回复计数（v8：`read_via` 打印 `transferred>0x400` 跨跑零命中＝恒 ≤0x400；且 `m_type` 系 i32·结构上不可扩为 47 位正数 `0x7ffffffe25c0`）、非 read_file 自身 `cap/len/n`（v9：即便同跑 OOM 复现·循环内探针仍零命中）**⇒ 巨大 `new_cap` 由**外部写毁 init 栈/堆上 `body` Vec 头**（值＝delivermsg 栈页 VA `0x7ffffffe25xx`·同 `pdmv`/`memreq start`）·read_file 是受害者非加害者·**禁改其逻辑**。**推翻续-23「len==m_type 低 32 位」根因**与本轮前节「栈已破坏」误判（实为探针守卫常量 `2^42` < 栈 VA `2^47`·扫描腿从未跑·v6 修正常量后命中 25 代码样词＝栈完好）。**heisenbug 定性**：同镜像两跑一跑 OOM、一跑无 OOM 但 RS 自取致死 SIGSEGV→内核 `syscall_signal.rs:298` panic＝**跨进程内存安全竞态**（随堆/timing 漂移·两跑均稳定越旧死锁达 `init-state Runcom`＝前沿已推进）。⚠️ 外部写确切产地未坐实不成修（候选：VFS read data_copy 溢出 chunk／内核 eager 回执写 `p_delivermsg_vir` 落点别名 init 活帧／fork 父子共享陈旧页）。纯取证·alloc.rs/lib.rs/vfs.rs/host.rs 四探针 `git checkout` 全回滚·tracked 净·**WORKLOG-only（免 CodeReview）**·详文见文末 §1.120续-24。）**
+>
+> **（历史·§1.120续-23 取证轮（**其「成因画像＝len==ptr·被填 m_type 低 32 位」根因已被续-24 v8 直接反证推翻**＝read 回复计数恒 ≤0x400·i32 不可扩为 47 位正数；其「rc marker 下游阻塞＝minix-rt ~4 GiB OOM」现象仍成立，调用点续-24 坐实至 init `read_file`）：续-22 修复 fresh 净态复验稳定（90s/240s 两跑 serial 逐字一致＝已静止非慢；双 `tc f05` INHERIT 达 SCHED、全程 0 条 `mt=0` 投递＝修复对两次 fork 均有效）：boot 越死锁达 `Runcom→SingleUser→exec /bin/sh`→shell 按需分页装载。静止前最后有效事件 `nk4a: rs-bigalloc size=0xfffe25c0`→`nk4c: OOM-RT`。纯取证·无代码改·tracked 净·WORKLOG-only。）**
 >
 > **📌 §1.120续-22 定谳+真修轮（marker 下游阻塞已由续-23 定性至 minix-rt OOM）（**三方 root 对照针推翻「翻译/root 分歧」假设（live TTBR0==`p_seg.phys_root`==镜像、`pa==pam`、W==K 逐字同）；栈中性 `#[inline(never)]` 判别针坐实＝唯一因果变量是 sendrec 前一次对消息缓冲的读（store 物化）→净态 `msg.m_type=0xF02` 的写在 `svc` 前未落到内核 trap 所读内存（**非地址翻译**）。**生产修复**＝`minix-sys/src/ipc.rs` 新增 `commit_message_to_memory`（整对象 `read_volatile` 屏障）插入 send/sendrec/sendnb trap 腿前。aarch64 **死锁解除**：boot 达 `SingleUser`→INHERIT(`0xf05`)达 SCHED(`rv 0000`)→VM exec `/bin/sh`（缺页风暴 3594 条·链路首次贯通至 shell 装载）；**尚余下游阻塞**＝`rc` marker 未在 70s 内出（exec→rc→echo→console 下一环）。x86 无回归（`trap_dispatch.rs:981` VM pagefault panic 加/去修复逐字一致＝预存·非本次）；315 host test 通过·双 target clippy 无新告警·CodeReview 已过（采纳去过度断言/降 Safety/记 kernel_call·senda 开放项）。探针全回滚·tracked 净·**含代码改真修 commit**）。**
 >
@@ -6152,3 +6154,55 @@ nk4c: OOM-RT size=fe25c0 slabs=005/400 big=00/00 px=005/400 fp=000/400
 - 本轮**纯取证·零生产代码改**：仅 `git` 净态 fresh build+QEMU 复跑与日志分析；未装探针（既有 109 处 `nk4a:` 系前轮已提交的 boot 追踪脚手架，非本轮引入）。tracked 净。
 - 未坐实具体调用点前**不实施生产修复**（守 NK4-C ⚠️ 纪律）。
 - ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。aarch64 战线已从「boot 死锁（INIT 首子 NO_QUANTUM 不清）」推进至「shell 装载后 minix-rt ~4 GiB 大分配 OOM-RT 静止」，下一手攻该大分配的 `len` 来源（len==ptr 同族）。
+
+---
+
+## §1.120续-24 取证轮（2026-09-28）：定向探针坐实大分配调用点＝init `read_file` 的 `Vec<u8>` grow；len 来源经 v8/v9 双重反证＝**非** VFS read 回复计数、**非** read_file 自身输入→**外部写毁 init 栈/堆上 body Vec 头**（delivermsg 栈 VA 同族·memory-safety 竞态）；并推翻续-24 前节「栈已破坏」误判（探针守卫常量错误致扫描腿从未跑）；boot 前沿已推进至稳定达 `init-state Runcom`
+
+> 纯取证轮·全部探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据文件 `tmp/nk4a/a64-t30-{7..16}.serial`。
+
+### A. 推翻续-24 前节「栈已破坏/零命中」结论（探针自身缺陷）
+
+前节据 v2/v3/v4「bt 行消失 / w=00」判「alloc 调用者帧返回地址被毁＝栈破坏」。**本轮回看：该结论无证据支撑**——扫描腿的守卫上界写成 `sp <= 0x0700_0000_0000`（2^42），而用户栈 VA 实为 `0x0000_7fff_fffc_6328`（2^47），`sp <= 上界` **恒假→扫描腿被整块跳过**（是本人的常量范围错误，非 LLVM 折叠，亦非栈破坏）。v6 把守卫上界抬到 `2^51` 后：扫描腿**首次真正执行**，输出 `c=080`（128 字全扫）`h=19`（窗内 25 个代码样词命中）＝**栈完好、返回地址齐全**。⇒ 「栈破坏」假设作废。
+
+### B. 大分配调用点坐实（v7：`minix_rt::alloc` 入口捕获 x30+SP）
+
+历 v2–v6 在 `alloc.rs` 失败腿（`alloc_big`→`supply_pages` 之后）取证，`x30` 已被内层 `bl` 破坏，`[sp+0x50]` 只上溯一层（落回 `minix_rt::alloc` 自身）。v7 改在 **`os/libs/minix-rt/src/lib.rs::alloc` 入口、任何 `bl` 之前**读 `x30`（＝直接调用者返回地址）与 `sp`，`size>256MB` 触发·封顶 3。**权威输出**（同基线多跑复现）：
+```
+nk4f: big s=7ffffffe25c0 ra=000000220e7c pid=00000e prog=init bt=22aa54,22b04c,22b15c,22aa54,21def4,...
+```
+- `ra=0x220e7c` → `addr2line`＝ **`alloc::raw_vec::RawVecInner<A>::finish_grow`**（可靠·入口 LR）。
+- `bt` 栈扫描（收紧到 `.text` 窗 `[0x2185dc,0x233530)`）命中 → **`__rustc::__rust_realloc`** + **`<minix_init::host::MinixSysHost as InitHost>::read_file`**（`0x21def4`＝read_file 序言首指令）。
+- `pid=14 prog=init` 复证（前轮 `nk4f: OOMBIG` 同值）。
+
+⇒ **调用链坐实**＝`init::host::MinixSysHost::read_file`（`os/commands/sbin/init/src/host.rs:525`）中 `let mut body: Vec<u8>` 的 grow（`body.extend_from_slice(&chunk[..n])`→`reserve`→`RawVecInner::grow`→`__rust_realloc`→`finish_grow`）向 `minix_rt::alloc` 请求 `size=0x7ffffffe25c0`（~4 GiB）。read_file 反汇编（0x21def4）逐条印证：512B `chunk` 在栈上（`sp+0x18`）、`minix_sys::read(fd, sp+0x18, w2=0x200)` 长度硬编码 512、`reserve`/`memcpy` 腿俱在。
+
+### C. len 来源双重反证（v8 read_via / v9 read_file）——**推翻续-23「len==m_type 低 32 位」**
+
+- **v8（`os/libs/minix-sys/src/vfs.rs::read_via`）**：sendrec 后当 `transferred>0x400 || <0` 打印 fd/请求 length/返回 transferred/回复 m_type。**跨多跑零命中**＝每次 read 的 `transferred`（VFS 报回的字节数·即 read_file 的 `n`）**恒 ≤0x400 且非负**。⇒ ~4 GiB **不是** read 回复计数。且 `perform_syscall` 的 `Ok` 臂返回 `i32 m_type`（`≥0`→`≤0x7fffffff`），**结构上不可能** `as usize` 得 47 位正数 `0x7ffffffe25c0`。续-23「长度操作数被填 m_type 低 32 位」根因**被本反证推翻**。
+- **v9（read_file 循环内、`extend_from_slice` 前）**：当 `body.capacity()>0x10000 || body.len()>0x10000 || n>0x400` 打印 n/len/cap。**即便在同跑 v7 打出 `big s=7ffffffe25c0`（OOM 确实发生）时，v9 仍零命中**。⇒ 巨大 `new_cap` **不来自** read_file 自身任何一次迭代的 `cap/len/n`（这些都被证明是小值）。
+
+**合取定论**：read_file 逻辑是**正确的 Rust**（有界输入、`extend` 只会按 `len+n` 小步 grow），而那 ~4 GiB 长度操作数 = `0x7ffffffe25c0`（＝`p_delivermsg_vir`/`memreq start` 所在栈页 `0x7ffffffe25xx`，同页 +0x48/+0x28）**由外部写入毁掉了 init 栈/堆上 `body` 的 Vec 头（ptr/cap/len 之一）或 realloc 入参**，令 `finish_grow` 收到一个「指针/栈 VA -sized」的容量。这与续-21/续-22「内核/IPC 投递腿把值写进错误/陈旧页」同族，只是本局毁的是 init 用户态 `body` 头。⚠️ **确切成因（哪一次外部写、写到 body 头的哪个字段）仍未坐实——纪律：未坐实不成修，本轮不改码。**
+
+### D. heisenbug/非确定性（同一镜像两跑异果）＝底层 memory-safety 竞态
+
+`-smp 4` 同一镜像连跑两次：
+- run（`a64-t30-15`）：**无 OOM**，boot 达 `init-state Runcom`，其后 `csig tgt=0x1 sig=0xb` → RS（endpoint 2·sig manager）自取致死 SIGSEGV → 内核 `syscall_signal.rs:298` **PANIC**（`cause_sig: sig manager 2 gets lethal signal 11 for itself`）。
+- run（`a64-t30-16`）：**复现 OOM**（`big s=7ffffffe25c0`→`rs-bigalloc size=fffe25c0`→`OOM-RT`），同样先达 `Runcom`。
+
+两跑均**稳定越过**旧 NO_QUANTUM 死锁达 `Runcom`（前沿已推进），但下游终态**随物理堆/timing 漂移**而在「init body 头被毁→OOM」与「RS SIGSEGV→内核 panic」间摆动＝典型**跨进程内存安全竞态**（与 §3.3「物理布局每轮漂移」教训一致；用户栈 VA `0x7ffffffe25xx` 跨轮稳定，故毁值恒呈该 VA 形）。两条表征都**不含 `mt=0` 投递**（续-22 修复仍有效）。
+
+### E. 下一手（未来轮·攻外部写来源，非 read_file 本身）
+
+read_file 是**受害者不是加害者**，禁改其逻辑。候选产地（均需取证据再修）：
+1. VFS read 的 `data_copy` 对 `buffer_address`（init 栈上 chunk）写入**超过请求 512 的字节**→溢出及相邻 body Vec 头/Result 槽；
+2. 内核 eager 回执 / 投递腿把 `size_of::<Message>()` 或某指针写进 `p_delivermsg_vir`（`0x7ffffffe25xx`·同页）落点与 init 活帧**别名/重叠**（续-22 finish 门纪律同族，但在 read/deliver 腿）；
+3. fork 父子共享/陈旧 delivermsg 页，VM/内核向该页写＝落进 init 活栈。
+取证针候选：read 往返处对 `buffer_address` 前后 **canary 哨兵**（读回 chunk 尾后字节看是否被写超）、或 `body` Vec 头地址区间装**内核写观察**（`kdst`/`data_copy_vmcheck` 腿按 dst VA 过滤到 `0x7ffffffe2xxx`）。
+
+### 纪律（续-24）
+
+- 本轮**纯取证·零生产代码改**：`alloc.rs`(v6)/`lib.rs`(v7)/`vfs.rs`(v8)/`host.rs`(v9) 四探针文件全部 `git checkout` 回滚，tracked 净（`git status` 无 M）。
+- 未坐实外部写确切产地前**不实施生产修复**（守「未坐实不成修」）。
+- 修正前节两处误判并留痕：①「栈已破坏」＝探针守卫常量错误·扫描腿未跑（已作废）；②「len==m_type 低 32 位」＝v8 直接反证（read 计数恒 ≤0x400）＋类型论证（i32 不可扩为 47 位正数）。
+- ⚠️ 目标不缩小：三架构 rc marker + 18-stage 命令面 + minix3 tests。aarch64 战线：死锁已愈（续-22）→ 稳定达 `Runcom` → 现卡于「init `read_file` body Vec 头被外部写毁→~4 GiB OOM」与「RS 致死 SIGSEGV→内核 panic」的非确定性内存安全竞态。
