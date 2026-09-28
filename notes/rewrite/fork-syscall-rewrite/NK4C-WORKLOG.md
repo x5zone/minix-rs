@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **⚠️ 最新前沿＝§1.120续-32 纠正轮（**推翻续-27/28/31「消息足迹污染 INIT→子继承 OOM」核心论据**：静态核实两项决定性事实——① 内核 `p_delivermsg: Message`（`proc.rs:954`）仅 **64B·8 个 u64 字**（`MESSAGE_SIZE=64`）·紧接 `p_delivermsg_vir`（`proc.rs:958`）；续-31 nk4l 探针读的 `w9`＝offset 0x48=72 **越过 64B 消息本体**·读到相邻内核字段（含用户栈指针 0x7ffffffe28xx）⇒「PM 回复回音 INIT 栈指针」=越界读伪影·作废。② PM `reply()`（`init.rs:651`）用 `Message::default()`⇒`MessageUnion::default()`=`raw:[0u8;56]` 全零（`message.rs:306`）+仅设 `m_type`⇒**投递给 INIT 的消息正文除 m_type 外必为零**·无高位毒字可污染。连带推翻贯穿续-27→31 的因果链（另订正续-31「全 src=0x0」不确·实含 src=0x1/0x7）。**保留硬事实**（in-bounds仍立）：真受害者＝子 slot 12（INIT 首个 fork+exec 子）·其 `alloc_big` 收 `size=0x7ffffffe25c0`（≈4GiB·值形 INIT 栈地址被当 Vec cap）失败→SIGSEGV（`alloc.rs:613` 已提交 `nk4a: rs-bigalloc` 诊断腿）·read_file/CoW/消息污染三论均已排除。产地**重定回子自身代码路径**。下轮＝增强 `alloc.rs:613` 腿对 `size>=0x10000000` 打印**有界不 fault** 的调用者返址（`#[inline(never)]` 读 x30 / 有界扫栈）→ llvm-objdump symbolize 真调用点→再论最修。**未坐实不成修**·不再基于越界读/启发式归因。本轮纯分析零探针零代码改·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-32。）**
+> **✅ 最新前沿＝§1.120续-33 取证轮（**有界扫栈定谳毒分配发起者＝minix-init 内 `RawVec::finish_grow`·某 Vec grow 到 cap≈0x7ffffffe25c0＝INIT 原始栈地址被当长度**·**重构：x86 同源二进制已达 marker ⇒ 缺陷在 aarch64 架构层子诞生/exec 栈布局非共享 init 逻辑**：临时 nk4m 于 `Allocator::alloc` 入口捕 x30/sp+扫 300 字。text 域返址命中：entry lr=0x220dd8（finish_grow@0x220d58 内）·+0x420=0x22bb68（minix_rt::alloc GlobalAlloc 壳）·sp=0x7ffffffc63a8（子栈区对合续-30）。全链符号均 in minix-init ELF⇒非server/内核。毒值 0x7ffffffe25c0 属父 INIT 栈区 0x7ffffff**e2**（子栈在 0x7ffffff**c6**）＝父栈内容经 fork 遗传被当长度。**排除**：exec frame Vec（`execve.rs:296` frame_size 出自 `stack_params` 全程 checked_add+ok_or(E2BIG)·超大 item.len 先早返不可能递 4GiB）、crt0 env/arg 切片（`string_at` NUL 扫描长度受串界定）。本机 objdump 不认 aarch64 ⚠无 llvm-objdump ⇒ 无法离线追 finish_grow 调用者·release 无帧指针使 300 字窗够不到 app 帧。**关键洞察**：同一 init 二进制 x86_64 单核已跑到 rc marker（续-26 零 panic）→ aarch64 子却把 INIT 栈地址当 Vec cap ⇒ **缺陷在 aarch64 专属架构层**（子诞生/exec 时 ps_strings/argv/envp/auxv 落盘的宽度/对齐/偏移差·或 fork 子初始 SP 使继承栈错一格）。下轮＝对读 aarch64 vs x86_64 `crt0.rs` entry stub + exec 栈/ps_strings 装载定位 aarch64 独有偏移·或一次性 `-C force-frame-pointers=yes` 重建 init 走 x29 链拿完整回溯。探针 `git checkout` 回滚·tracked 净（grep nk4m os/libs/minix-rt=0）·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-33。）**
 >
 > **（历史·§1.120续-29 取证轮（**用户侧地址探针推翻 read_file 归因**：nk4j 于 `MinixSysHost::read_file` 逐轮打印·二进制已验编入（strings 命中 3）·但本轮 OOM 仍现（L4268 `size=fffe25c0`→`OOM-RT`）而 **nk4j=0**⇒read_file（仅 driver.rs:78 TTYS + main.rs:158 /etc/passwd 两处调）从未进入⇒**推翻续-24 v7/续-27/28 将产地归为 read_file body**。静态重定位：poison bigalloc 前为 `0x7ffffffc6…cf` 深栈 vm-pf 级联（与 INIT pdmv 栈区 `0x7ffffffe2` **不同进程/不同栈**）⇒真 ~4GiB Vec 属一个子进程/leg exec 栈组装腿（候选 execve.rs:297 try_reserve_exact）。另静态纠正续-28：“deferred 回退腿”实为 **Path A 设计延迟**（`ipc.rs:1358-1374` mini_send 匹配 parked 接收者本就直写内核 p_delivermsg+置 MF_DELIVERMSG、不同步拷用户缓冲·对位 C proc.c:901-913），“同步拷贝失败”不成立作废。保留硬事实：INIT 仍有 `mt` 非法投递（续-28 nk4i）。下轮＝`minix-rt/alloc.rs` bigalloc 臂打印 pid/progname+FP 链定真产地进程。探针 `git checkout` 回滚·tracked 净·纯取证·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-29。）**
 >
@@ -6541,3 +6541,44 @@ PM 对 INIT sendrec 的非阻塞回复携带未零高位字（含 INIT 自栈指
 ### E. 纪律反思（code-excellence）
 
 本轮价值＝**在实施任何投递/PM 侧修复前**识破续-27→31 的越界读伪影，避免了一次波及全系统 IPC 的错误「修复」。教训：探针读 Message 字务必以 `size_of::<Message>()`（64B·8 字）为**硬上界**，越界即读到相邻内核字段（本例恰是含用户栈指针的 `p_delivermsg_vir`·极具迷惑性）。前数轮「翻转式」结论（read_file→CoW→足迹）正是未守此界所致。
+
+---
+
+## §1.120续-33 取证轮（2026-09-28）：有界扫栈定谳毒分配发起者＝**minix-init 内 `alloc::raw_vec::RawVecInner::finish_grow`**（某 Vec grow 到 cap≈0x7ffffffe25c0＝INIT 原始栈地址被当长度）·**排除 exec frame Vec**·**重构：x86 同源二进制已达 marker ⇒ 缺陷在 aarch64 架构层子诞生/exec 栈布局非共享 init 逻辑**
+
+> 纯取证轮·探针 `git checkout` 回滚·tracked 净·WORKLOG-only（免 CodeReview）。证据 `tmp/nk4a/a64-t46d-scan.serial`（nk4m 扫栈 6 条）。
+
+### A. 探针与读数
+
+增强 `alloc.rs:613` 现有 `nk4a: rs-bigalloc` 诊断腿（临时 nk4m）：对 `size>=0x10000000` 于 `Allocator::alloc` 入口捕获 aarch64 `x30`(lr)/`sp`，自 sp 平坦扫 300 字、内联仅打落在 text 区间 `[0x100000,0x600000)` 的返址候选（不追逐指针故不 fault）：
+```
+nk4m: +00000000=0x220dd8   (entry lr → finish_grow@0x220d58 内 +0x80)
+nk4m: +00000008=0x7ffffffc63a8 (entry sp = 子栈区, 对合续-30 w-finw va=0x7ffffffc63a8)
+nk4m: +00000420=0x22bb68   (→ minix_rt::alloc@0x22b04c 内 = #[global_allocator] 壳)
+nk4m: +00000430=0x253000   ($d 数据符号·非返址·误命中)
+nk4m: +00000440=0x257000   (同上)
+```
+本机 `objdump` 不认 aarch64（-d 仅 3 行）·无 llvm-objdump ⇒ 无法离线反汇编追 finish_grow 调用者；release 无帧指针 + 泛型 grow 高度内联 ⇒ 300 字窗够不到 app 帧返址。
+
+### B. 定谳与排除
+
+1. **毒分配发起者＝minix-init 自身的某个 Vec grow**：`size=0x7ffffffe25c0`（低 32 位 `fffe25c0`·`alloc.rs` nk4a 腿打印）经 `RawVec::grow*→finish_grow→__rust_alloc→minix_rt::alloc(GlobalAlloc)→Allocator::alloc→alloc_big`。全链符号均在 minix-init ELF 内 ⇒ 非 server/内核·是 init 二进制。
+2. **容量值＝一个 INIT 原始栈地址**（0x7ffffffe25xx·续-28 nk4i 曾见 INIT pdmv 落 0x7ffffffe2578）被子当作 Vec 目标容量。子自身栈在 0x7ffffff**c6**3a8（更低区），毒值来自 0x7ffffff**e2** 区＝**父 INIT 栈**内容经 fork 遗传进子，被某处按长度读取。
+3. **排除 exec frame Vec**（续-29 D 候选）：`execve.rs:296 try_reserve_exact(frame_size)` 的 `frame_size` 出自 `stack_params`——全程 `SLOT.checked_add(item.len()).checked_add(1)` + `total.checked_add` + `ok_or(E2BIG)`（`execve.rs:87-104`），任何超大 `item.len()` 先触发 E2BIG 早返，**不可能把 0x7ffffffe25c0 递进 try_reserve_exact**。且即便 E2BIG 亦优雅返错非 SIGSEGV。⇒ 毒 Vec 非此处。
+4. **排除 crt0 env/arg 切片**：`crt0::string_at`/`argv_storage_of`（`crt0.rs:260-269/375-382`）长度按 **NUL 扫描**计（受串内容界定·遇 0 即停），非指针相减，不产栈地址量级长度。
+
+### C. 重构性洞察（本会话最重要产出）
+
+**同一 minix-init 二进制在 x86_64 单核已跑到 rc marker（续-26 实证·零 panic）**，却在 aarch64 的 fork+exec 子进程里把一个 INIT 栈地址当 Vec 容量 → ~4GiB → SIGSEGV。共享的 init Rust 逻辑在 x86 上产出正确计数 ⇒ **缺陷在 aarch64 专属的架构层**，非投递（续-32 已排除消息污染）·非共享 init 源码。最可疑＝**子诞生/exec 时初始栈与 `ps_strings`/argv/envp/auxv 落盘的架构差异**：aarch64 上某字段（应为计数/小值）位置实际落了个栈指针，或 fork 子初始 SP/寄存器态使继承栈偏移错一格。
+
+### D. 下一手（转架构层确定性对比·非 heisenbug 针）
+
+1. 对读 aarch64 vs x86_64 的 **crt0 入口腿**（`crt0.rs` 各 `#[cfg(target_arch)]` entry stub）与 **exec 栈/ps_strings 装载**（`os/arch/src/{arm64,x86_64}` + 内核 exec/`load_image`/`stack_fill` 消费侧），定位 aarch64 独有偏移/宽度/对齐差。
+2. 或一次性以 `-C force-frame-pointers=yes`（临时加 `[target.aarch64-unknown-none]` rustflags）重建 init + 探针走 x29 链拿完整回溯坐实 app 调用函数（若 grow 未整体内联）。
+3. 坐实后最修·三件套（host mock + aarch64 build + 双跑守 marker）+ CodeReview + WORKLOG 续-34 + fix commit。
+
+### E. 纪律（续-33）
+
+- 探针 `git checkout` 回滚·tracked 净（`grep nk4m os/libs/minix-rt`=0·`grep nk4l os/kernel`=0）·纯取证零生产代码改·WORKLOG-only。
+- 承续-32「未坐实不成修」——本轮不基于扫栈误命中（0x253000 数据符号）或启发式归因下任何生产改；据「x86 同源正常」这一硬对照把方向从共享逻辑**校正到 aarch64 架构层**，是收敛而非漂移。
+- ⚠️ 目标不缩小。x86_64 单核①已克；aarch64①毒分配已定谳至 init 内 Vec·缺陷域收窄到 aarch64 架构层子诞生/exec 栈；riscv64①需先接 IPC 桥（复用同投递代码）；18-stage/minix3 tests 待前三链贯通。
