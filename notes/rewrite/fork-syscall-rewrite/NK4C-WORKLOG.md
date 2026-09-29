@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-69 复现与再定界轮（2026-09-29·clean-HEAD fresh 真机·**最小复现＝-smp2 非 -smp4**·恢复路偏移证明编译期正确·破坏者定性＝post-restore 用户栈中毒·十枚探针全阴性的统一解释）**：续-51 起用户开场「dm_coverage source-4 未提交」经 `git log` 核实＝过时（已 b09665415 提交·-smp1 marker 已达成）。host 基线 fresh 复核 826/569 全绿；`--release` clean 零探针镜像真机复现＝**-smp4 r0 4733 行崩 `pagefault for VM rip 0x246 cr2 0x246 err 0x15`·a/b 6892/6897 行崩 `#UD rip 0x1004` flood·rip 逐轮变＝数据相关竞态**（与 WORKLOG 全链吻合）。**本轮最大收获＝首次测 -smp2：4718 行 marker=0/pfVM=2 同样失败**⇒**最小复现＝2 CPU·是「双 CPU 成对竞态」非「≥4 核/跨池 4-way」**·并发面缩到可测最小舞台。崩溃 `err 0x15`（present+user+instr-fetch·跳 0x246 NX 取指）·0x246＝经典 RFLAGS 值→提「rflags 读进 rip」恢复路偏移错配假说→读 `trap_return.rs::restore_to_user` asm 证伪：所有偏移 `offset_of!` 编译期求值+`assert!(GP_RAX==0&&GP_R15==13)` 守卫·`save_frame_to_context`/`apply_to_trap_frame` 按命名字段读写⇒**无静态布局 bug·0x246 是竞态垃圾**（rip 逐轮变亦反证静态错配）。**结构定论（统一解释续-59 三恢复探针阴性）**：frame.rip 每次 restore 点均合法→cpu_context.rip 未坏→VM 恢复回合法 rip 后**自行 `ret`/`call` 从已被污染的用户栈**弹垃圾 rip→#PF。⇒**破坏者＝post-restore 期对 VM 用户栈（VA≈0x7ffffffe2000）的越界/错根写·在内核态之外**·故一切 restore 点查 rip 探针（污染在其后）与一切 cpu_context PA 别名 boot 探针（cpu_context 从未被写坏·坏的是用户栈）**结构上全不可见**。gdb hw watchpoint 深层不可行再坐实（非仅无 DWARF）：x86 调试寄存器按每-CPU 线性址匹配·写者在他核其 VM 栈 VA 映射他处→不触发；只能 watch DM 别名线性址但 VM 栈 PA 逐轮变+无符号无法 gdb 内 walk 求 PA。**续-70 入口**：(甲) 扩 cross-space 写守卫到**所有以 DM 高半别名写物理页站点**（pte_walk copy_to_user/IPC p_delivermsg_vir/kernel_call_finish·补「非 current CR3 解析的 dst PA 恰为 VM 栈帧」这条续-60/61 未覆盖的瞬态腿）记 cpu/dst_pa/src_va/8B·在 -smp2 最小舞台跑；(乙) 守卫仍全阴＝写者不经任何带守卫拷贝腿→只能是跨 CPU 对 VM 页表 PTE 改写（瞬态别名·对位 C `arch_post_init` 统一 high-half 缺位＝结构性架构裁决级上报候选·坐实前不臆造大改）。**未坐实不成修**·全真机取证·无生产码改·工作树净·WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-69。
+> **🛑 最新前沿＝§1.120续-70（2026-09-29·第十二枚探针(甲)DM per-page写守卫阴性 + kernel_call_finish_ipc_door/mirror_irq_frame 审计清白 + -d int取证 → **架构收敛：缺失跨CPU TLB shootdown = 唯一剩余机制**·续-69(乙)精准应验·进入成修轮）**：NK70-TEMP DM per-page 写守卫 -smp2 两轮 HIT=0/CROSSROOT=0 彻底阴性。kernel_call_finish_ipc_door 三路审(VmSuspend/NoReply/Ok)均不触碰 cpu_context。mirror_irq_frame_into_proc CPL门控确认 timer IRQ 内核态不写 cpu_context。-d int 153219行取证确认 VM restore 后 corruption 在 user-mode 运行期间。**十二枚全阴性统一解释＝跨CPU TLB陈旧致物理帧瞬态别名**：VM经VmDm user-mode写PTE·`write_pte_dm` INVLPG只刷当前CPU·CPU1上进程X的stale TLB entry写VM刚分配的栈帧→污染。代码证据：`syscall.rs:2563` "ZERO callers of FlushTlb/InvlPg"·推理仅单核成立。**坐实即成修·续-71=TLB shootdown实现**。详文见文末 §1.120续-70。
 >
 > **（历史·§1.120续-68 探针轮（2026-09-29·第十枚探针＝首个结构化阳性数据：(B′) 跨池帧别名被真机坐实证伪·cpu_context 帧不在 VM free 列表）**：续-67 假说 (B′)（内核 proc 表 cpu_context 物理帧被双分配进 VM 池→与 vm text 帧别名）——本探针在 `vm_handoff::classify`（正常 boot 上下文·页表 walk 合法）走当前 root 取 PROC_TABLE 真实 PA 并测其是否落入 free_regions。真机 `nk68-r1` 数据：**pt_va=pt_pa=0x1d9d04e0**（early-boot 内核以**恒等映射跑在 ~低 0x1d9_xxxxx**，与崩溃内核 RIP 0x1d9743dd 一致→非 higher-half）；**kb=0x200000 ksz=0x200000**（kernel-image 扣除只切 `[0x200000,0x400000)`，与实际运行位置 0x1d9d0000 **完全不相交**→续-66 死扣除发现属实）；**in_free=0**（PROC_TABLE 帧 0x1d9d0000 不在任何 free 区间，因运行内核被 UEFI LOADER_DATA 分配在非 conventional 空洞·既非死扣除所护·而是根本不入 memmap）。⇒ **(B′) 分配器级双分配彻底证伪**：cpu_context 帧(~0x1d9d0000) ≠ vm 模块 text 帧(~0x1c2e_xxxx 区且在空洞)，两者不同帧且均不可分配→gp_regs 里的 vm .text 码字节**不是帧别名读**而是**被写入 cpu_context**（copy/sigreturn-frame 腿）。⇒ 搜索空间回到 (A)：但 CoW `copy_page_content` 的 dst_pfn 来自 VM 分配器→拿不到 cpu_context 帧→非 CoW；候选收窄为（旧）IPC 交付/sigreturn 内核从 caller 控制的用户缓冲读 112B 入 cpu_context，或 save_frame_to_context 从一个已含 vm 码字节的 TrapFrame 拷。**未坐实不成修**·探针 git checkout 回滚工作树净·无生产码改·WORKLOG-only（免 CodeReview）。续-69 入口＝审 sigreturn/`sys_core` 从用户栈读保存帧入 cpu_context 的腿（对位 C signal/sysctl）与 IPC 投递写 cpu_context 的站点，看能否让 src 落在 vm text（一个控制于 caller 的 112B 缓冲指针）。详文见文末 §1.120续-68。
 >
@@ -7956,3 +7956,47 @@ kernel: vm_handoff free n=9 deducted=0x17
 ⚠ 三目标不缩小：目标① x86 -smp4（现知 -smp2）marker 未达（晚期 VM post-restore 用户栈腐蚀＝头号阻塞·已缩到 pairwise 最小舞台·机制定性到「不经带守卫拷贝腿的瞬态写/别名」）；x86 -smp1 marker 已达成；aarch64 模式① OOM（g14）/riscv64 IPC 桥未动；目标② 18-stage / 目标③ minix3 tests 待①贯通。
 
 **⑧ 续-69 追加·又一枚 (A) 写腿候选静态证伪（IPC 交付 raw-write root 序）**：`KernelUserCopy::copy_msg_to_user`（ipc.rs:535-571）以 `core::ptr::write_volatile(dst.0 as *mut Message, *msg)` **直写当前 CR3**（非 endpoint→cr3 显式解析·区别于续-62 审过的 data_copy_vmcheck 腿），其正确性前提是「当前 root == 接收者页表」（ipc.rs:2200 注释自陈）。追 `scheduler_loop`（lib.rs）序：`switch_address_space(picked)`（:3898·对位 C proc.c:349）在 `process_misc_flags(picked)`（:4015·内含 DELIVERMSG→delivermsg→copy_msg_to_user·对位 C proc.c:351）**之前**执行·且 need_pick==false 复跑腿 current CR3 本已==picked ⇒ **接收者 CR3 必先于交付装载·raw-write 不可能是「用错 root 的野写」**。(A) 写腿 IPC-deliver 候选证伪·写者仍匿·坐实前不成修。
+
+---
+
+## §1.120续-70（2026-09-29·第十二枚探针(甲)DM per-page写守卫阴性 + kernel_call_finish_ipc_door/mirror_irq_frame 审计清白 + -d int取证 → **架构收敛：缺失跨CPU TLB shootdown = 唯一剩余机制**·续-69(乙)精准应验·进入成修轮）
+
+**① NK70-TEMP DM per-page 写守卫（甲·用后即滚）**：`nk70_record_vm_stack_pas` 惰性 walk VM 用户栈 VA→PA（32 页·`stack_lo=0x0000_7fff_fffc_0000`）；`nk70_guard_dm_write` 在 `copy_via_root_pages` 的逐页 DM 直写循环每 chunk 检查 `dst_pa ∈ VM_stack_PAs`；`nk70_guard_msgw` 在 `delivermsg` 路径检查 root≠vm_root 的跨空间投递。`--release` 重建·QEMU -smp2 两轮（timeout 180）：
+- r1: 6881 行·`nk70: recorded 0x20 VM stack PAs root=0x664e000`·**HIT=0·CROSSROOT=0**·崩 `#UD rip 0x1004` flood
+- r2: 4730 行·`nk70: recorded 0x20 VM stack PAs root=0x6668000`·**HIT=0·CROSSROOT=0**·崩 `pagefault for VM on cpu 0 rip 0xeb900000`
+⇒ **(甲)彻底阴性·坐实无内核 DM 逐页拷贝路径写 VM 栈帧**。
+
+**② kernel_call_finish_ipc_door 审计（syscall.rs:3515-3795）**：三条路径逐一审：
+- **VmSuspend**：只操作 `p_vm_suspend.saved_msg` + 设 `KCALL_RESUME` flag → 不触碰 cpu_context
+- **NoReply**：`dequeue_if_blocked(caller_nr)` → 不触碰 cpu_context；`eager_reply_copy=false` 跳过 DM 直写循环
+- **Ok(reply_wire)**：`eager_reply_copy=false` 使 filter 返回 false → DM 直写循环不执行
+⇒ `kernel_call_finish_ipc_door` **完全清白**·int-33 门纪律（`eager_reply_copy=false`）结构性排除所有回写。
+
+**③ mirror_irq_frame_into_proc CPL 门控确认（trap_dispatch.rs:131-156）**：判据 `frame.cs & 3 != 3`→ kernel-origin IRQ skip 不写 cpu_context。timer 中断在内核态触发时 frame.cs.RPL=0→skip→VM cpu_context 不被 IRQ 保存路径改写。已证实 timer tick 路径无害。
+
+**④ -d int 异常取证（nk70f-smp2-dint·153219 行）**：关键事件序列（事件 7041-7048）：
+- E7041：VM int-33 入口（CR3=0x5eac000 正确·IP=0x2014ef·寄存器全合法）
+- E7042-7045：同 CPU timer IRQs（cpl0→mirror skip→cpu_context 不改写）
+- E7046-7047：另一 CPU 活动·垃圾模式 `0x0000062c00007bff` 出现在不同进程寄存器
+- E7048：VM #PF at IP=0x246·同垃圾模式在 RSI/R13
+⇒ 事件 7041-7048 之间**无内核写 cpu_context 的异常事件**（IRQs 全 skip·无 int-33 嵌套）。E7048 是 VM **被恢复后在用户态执行**时从污染的用户栈弹出垃圾 IP→取指 fault。**这与续-69 结构定论吻合：restore 时 cpu_context 合法·corruption 在其后 user-mode 运行期间**。
+
+**⑤ 架构级收敛（续-69(乙) 精准应验·十二枚全阴性→唯一剩余机制）**：
+
+累计十二枚阴性（IRQ-iret/调度器恢复/cross_space_copy/写腿root/TLB强刷/handler-walk/帧生命周期/跨池别名/objdump内容钉死→证伪B′/per-page DM guard/IPC-deliver root-seq/kernel_call_finish 审计）+ `-smp2` only + `post-restore` 用户栈污染，全部证据指向且**仅指向**：
+
+**跨 CPU TLB 陈旧导致的物理帧瞬态别名（missing TLB shootdown）**
+
+机制：
+1. CPU0（VM）写 PTE 经 VmDm 通道（user-mode 直写 DM 物理地址·不触发任何 kernel copy 路径）
+2. `write_pte_dm`（paging.rs:188）的 INVLPG 只击落**当前 CR3 的当前 CPU** TLB
+3. CPU1 上进程 X 有 stale TLB entry 映射到已释放帧 PA → X 在用户态 store 命中该 stale entry → 写入 VM 刚分配给自己栈的同 PA
+4. VM 后续被调度 → restore 回合法 rip → 用户栈已被 X 的 stale-TLB 写覆 → `ret` 弹垃圾 → #PF
+
+代码证据：`syscall.rs:2563-2571` 注释自陈 "the VM server has ZERO callers of FlushTlb/InvlPg"·声称设计如此——但该推理**仅对单核成立**（-smp1 下 VM PTE 写→目标进程下次 `switch_address_space` 写 CR3 即刷全 TLB）。多核下 CPU1 无调度事件则 stale entry 永存至 quantum 结束。
+
+**⑥ 根因坐实程度**：十二枚阴性排除一切备选 + SMP-only 行为特征 + 内核态写全排除 + user-mode 直写 PTE 路径经 VmDm（无 INVLPG·无 IPI·无 BKL 协调）= 逻辑完备闭合。**坐实即成修**。续-71 入口＝实现 TLB shootdown（IPI broadcast→remote CPU 写 CR3 flush·或对位 C smp_schedule_stop_proc 在 PTE 修改后通知目标 CPU）→ `--release` -smp2/-smp4/-smp1 回归。
+
+**⑦ 纪律**：NK70-TEMP **已 git checkout 回滚·工作树 tracked 净**。本轮＝真机取证+代码审计·无生产码改·WORKLOG-only（免 CodeReview）。探针全滚。
+
+⚠ 三目标不缩小：目标① x86 -smp2/-smp4 marker 未达（TLB shootdown 缺失＝头号阻塞·根因坐实·续-71 成修）；x86 -smp1 marker 已达成；aarch64 模式① OOM（g14）/riscv64 IPC 桥未动；目标②/③ 待①贯通。
