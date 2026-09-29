@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-52 x86 现状重定位轮（2026-09-29·重建当前 HEAD（source-4 已提交 `b09665415`）真机复跑·两大结论）**：① **-smp1 单核在当前 HEAD 复现 `marker=2 / panic=0`**（gtick 连跑到 0x4a38≈19000 tick 无崩·`birth=26` 全阶段推进）＝目标① x86 单核里程碑（§1.119续-7）在 source-4 提交后仍绿、可复现；② **-smp4 标准启动器下 r3 型 vector14 用户栈缺页已消失**（vec14=0），boot 现推进到 `birth s5 -> main`，新阻塞＝**SMP 调度/trap_style 竞态**：三轮时变签名 r1=`pagefault in VM`(trap_dispatch.rs:981)、r2/r3=`no entry trap style known`(lib.rs:3635 C 对位 arch_system.c:597)。⇒ **续-51「用户栈映射腿跨架构同源」假设被 x86 侧证伪**：映射在 -smp1 工作正常、marker 打得出来，x86 残腿不是 user stack 页表映射而是 **SMP 并发**（restore_user_context 在 :3613 每次读后即清 NoEntry，后续调度/唤醒/迁移若在未经新 trap 入口重设 trap_style 时恢复进程即读到 NoEntry；首进程 bootstrap 由 `set_boot_cpu_context`(proc.rs:1455) 种 FullContext 无漏）。**关键取证障碍**：-smp4 多核并发串口本身污染 rip/证据（续-51 已证 rip 出现 ASCII 碎片），噪声探针使 clean SMP 证据不可得。续-53 入口＝(甲) 降探针噪声或加 per-cpu 串口缓冲以取 clean -smp4 主故障帧；(乙) 追 IPC reply 唤醒/进程迁移路径是否绕过 trap 入口直恢复（对照 C schedutil.c `pick_runnable` + arch_system.c 恢复门）；(丙) **独立复核 riscv `scause=0xd stval=0x3ffffe2fbc`**——riscv 走单 hart 且 source-4 零信号，若其在用户栈 VA 真崩则与 x86 SMP 不同源，属映射腿本身，须单独坐实不并入。⚠ 三目标不缩小（目标① x86 单核 marker✅复现·-smp4 未达；aarch64/riscv 未复跑本轮）。**工作树 tracked 改动＝本 WORKLOG（无生产码改）**。
+> **🛑 最新前沿＝§1.120续-53 根因坐实轮（2026-09-29·-smp4 双派根因锁定＝共享 ready Q + pick 不出队 + restore 前放 BKL）**：续-52 把 x86 残腿重定位为「SMP trap_style 竞态」后，本轮确定性地码分析（不需 clean 串口）**完整坐实根因**：`ProcessTable.sched: Scheduler` 是**全局单套 ready Q**（proc_table.rs:59），`pick_proc`（sched.rs:65）扫全局队首且**不出队**，`finish_and_restore` 在 :3570 `bkl_unlock()` **后才** :3610-3613 读+清 trap_style——于是 CPU A 挑中队首 P（P 仍留队首）→ 放锁运行 P 于用户态 → CPU B 取锁进 `scheduler_loop`、`pick_proc` **返回同一队首 P** → **双派同一进程** → trap_style 被 A 的首次 restore 榨干（清 NoEntry）→ B 的 restore 读 NoEntry → `no entry trap style known`（lib.rs:3635）。-smp1 只一 CPU 无此冲突→marker✅；-smp4 必撞——与全部真机证据吻合。**错误论断锁定**：smp.rs:122-132 与 proc_table.rs:710-717 反复声明「BKL 串行化故 per-CPU 队列 behaves as one global queue anyway」——此等价性为**假**：BKL 只串行化改队列的**写**，而 pick 是不移除的**读**、且 BKL 在进程无锁跑用户态前已释放；C 的 per-CPU 队列是**承重正确性**（pick_proc 注「always uses the run queues of the local cpu」proc.c:1791/1801 `get_cpulocal_var(run_q_head)`），非 Linux 式负载均衡优化。**per-CPU 迁移在代码里被明确标注为计划内**（sched_enqueue_head/dequeue 均 `let _ = cpu_id; // Will be used when Scheduler moves to CpuLocal`），只是被这条错论证 defer。⇒ 修复＝执行该计划内迁移（真 per-CPU Q）或共享 Q+跨 CPU 运行中排除过滤，两方案各有取舍且触 SMP 调度核→属**架构裁决级决策**（因 §3.5.3 是被人为 frozen 的决定），已向用户上报选型。⚠ 三目标不缩小（本轮只坐实 x86 -smp4 根因、未动码；aarch64/riscv 未复跑）。**工作树 tracked 改动＝本 WORKLOG（无生产码改）**。
+>
+> **（历史·§1.120续-52 x86 现状重定位轮（2026-09-29·重建当前 HEAD（source-4 已提交 `b09665415`）真机复跑·两大结论）**：① **-smp1 单核在当前 HEAD 复现 `marker=2 / panic=0`**（gtick 连跑到 0x4a38≈19000 tick 无崩·`birth=26` 全阶段推进）＝目标① x86 单核里程碑（§1.119续-7）在 source-4 提交后仍绿、可复现；② **-smp4 标准启动器下 r3 型 vector14 用户栈缺页已消失**（vec14=0），boot 现推进到 `birth s5 -> main`，新阻塞＝**SMP 调度/trap_style 竞态**：三轮时变签名 r1=`pagefault in VM`(trap_dispatch.rs:981)、r2/r3=`no entry trap style known`(lib.rs:3635 C 对位 arch_system.c:597)。⇒ **续-51「用户栈映射腿跨架构同源」假设被 x86 侧证伪**：映射在 -smp1 工作正常、marker 打得出来，x86 残腿不是 user stack 页表映射而是 **SMP 并发**（restore_user_context 在 :3613 每次读后即清 NoEntry，后续调度/唤醒/迁移若在未经新 trap 入口重设 trap_style 时恢复进程即读到 NoEntry；首进程 bootstrap 由 `set_boot_cpu_context`(proc.rs:1455) 种 FullContext 无漏）。**关键取证障碍**：-smp4 多核并发串口本身污染 rip/证据（续-51 已证 rip 出现 ASCII 碎片），噪声探针使 clean SMP 证据不可得。续-53 入口＝(甲) 降探针噪声或加 per-cpu 串口缓冲以取 clean -smp4 主故障帧；(乙) 追 IPC reply 唤醒/进程迁移路径是否绕过 trap 入口直恢复（对照 C schedutil.c `pick_runnable` + arch_system.c 恢复门）；(丙) **独立复核 riscv `scause=0xd stval=0x3ffffe2fbc`**——riscv 走单 hart 且 source-4 零信号，若其在用户栈 VA 真崩则与 x86 SMP 不同源，属映射腿本身，须单独坐实不并入。⚠ 三目标不缩小（目标① x86 单核 marker✅复现·-smp4 未达；aarch64/riscv 未复跑本轮）。**工作树 tracked 改动＝本 WORKLOG（无生产码改）**。
 >
 > **（历史·§1.120续-51 验证收敛轮（2026-09-29·source-4 验证链补完⇒已提交：host 826/569 全绿·clippy dm_coverage 0 告警·rustfmt NEW=22=HEAD·x86 `-smp4` 累计 8 轮原缺陷签名（vector14·err0·rip−db＝−0xfc84）零出现·aarch64 3 轮签名逐字一致 4461 行·riscv64 2 轮与 HEAD-only 对照同签名·x86 单核旧启动器双跑 marker=2 panic=0；两轮 CodeReview（首轮 PASSED-WITH-SHOULD-FIX·追加改动复审 PASSED）后按 review 采纳 W4 补端到端测试并做两次变异实验坐实判别力；同步修正被证伪的「UEFI 布局 disjoint」注释事实断言）**：目标① 仍未达（x86 8 轮 marker=0），阻塞项已从「boot DM 覆盖缺口」推进到下一层——r3 型用户栈缺页（rip `0x7ffffffe2f88` errcode `0x11`）与 r6 型 vector 13（经 `head-base-r3.serial` 逐字比对判定属 HEAD 预存）；**riscv 侧同族腿已现形：`scause=0xd stval=0x3ffffe2fbc`＝riscv 用户栈指针 VA，与 x86 同一构造⇒该腿跨架构同源**。续-52 入口＝坐实该腿（birth s3→首次切入用户态前谁映 user stack·对照 C `copyall`/`fkinit` 与 VM 侧 map 时序）。开放项（本轮按 review 记录未实施·见文末续-51 D 节）：W1 区间减法收口 drop-whole 残余尾块、W2 shim `ram_top` 过滤使「内核镜像/栈必在 source-4 内」不成立＋常驻 `dm-self` 正证自检、W3 与 `build_identity_windows` 的排序/合并/页数 cap 对齐（防 bump 池耗尽型拒启）。⚠ 三目标不缩小。**工作树 tracked 改动＝本 WORKLOG（提交时含 dm_coverage.rs）**。
 >
@@ -7234,4 +7236,32 @@ dm_coverage 9/9（含新 2）；`cargo test -p minix-kernel` 833 项（825+8 ign
 ### F. 提交与续-53 入口
 - 本轮 WORKLOG 无生产码改 ⇒ 免 CodeReview（与续-50/51 惯例一致）；`git add notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径）。
 - 续-53 入口：(甲) 降探针噪声或加 per-cpu 串口缓冲取 clean -smp4 主故障帧；(乙) 追 IPC reply 唤醒/进程迁移是否绕过 trap 入口直恢复（对照 C schedutil.c `pick_runnable` + arch_system.c 恢复门）；(丙) 独立复核 riscv 单 hart 用户栈 VA 是否真崩。⚠ 三目标不缩小。
+
+---
+
+## §1.120续-53 根因坐实轮（2026-09-29·-smp4 双派根因锁定＝共享 ready Q + pick 不出队 + restore 前放 BKL·推翻 frozen §3.5.3 错等价论断）
+
+### A. 方法：确定性码分析（不需 clean 串口）
+续-52 留下的障碍是 -smp4 并发串口污染 rip。本轮不依赖串口，而是直接读调度器代码路径坐实「-smp1 能 / -smp4 崩」的结构性根因。
+
+### B. 根因链（逐环锚点）
+1. `ProcessTable { sched: Scheduler }`——全局**单套** ready Q（proc_table.rs:59，`Scheduler::new()` 单实例）。`Scheduler.run_q_head[NR_SCHED_QUEUES]`（sched.rs:42-43）**无 CPU 维度**。
+2. `pick_and_bill`（lib.rs:3078）`table.scheduler().pick_proc(...)` 扫全局队首，`pick_proc`（sched.rs:65-80）**返回队首但不出队**（与 C 一致——C 靠 per-CPU 队列隔离，本 port 没有）。
+3. `finish_and_restore`：:3570 `crate::smp::bkl_unlock()` 释放 BKL → 之后 :3610 读 `p.trap_style`、:3613 清 `NoEntry` → :3658 `restore_to_user`。**读+清在锁外**。
+4. ⇒ CPU A pick 得 P（P 仍为全局队首）→ A 放锁并在用户态跑 P；期间 CPU B 取 BKL 进 `scheduler_loop`、`pick_proc` 返回**同一 P**（它仍是队首，A 未出队、也未标记“已调度”）→ B 也恢复 P。P 的 trap_style 已被 A 的首次 restore 清为 NoEntry → B 的 restore 读 None → **`no entry trap style known`（lib.rs:3635）**。
+5. 区分证据：-smp1 只一个 CPU，无第二个 CPU 重拾同一队首→ 恢复与 trap 入口天然对齐 → marker✅；-smp4 多 CPU 共一套队必重拾→崩。与续-52 真机完全吻合。
+
+### C. 错误论断锁定（本 port vs C 真值）
+- smp.rs:122-132 与 proc_table.rs:710-717 均声明：「ready Q 是 shared+BKL 串行，one CPU at a time 改队列，故 per-CPU `run_q_head[]` behaves as one global queue anyway」。**此等价性为假**：BKL 串行化的是改队列的**写操作**，而 (i) `pick_proc` 是不移除的**读**、(ii) BKL 在进程无锁跑用户态前已释放。共享单队 + 不出队 + 锁外 restore = 多 CPU 可看到同一队首 = 双派。
+- C 真值（ground truth）：proc.c:1791 “This function always uses the run queues of the local cpu!” + :1801 `rdy_head = get_cpulocal_var(run_q_head)`。C 的 ready Q 在 `__cpu_local_vars`（cpulocals.h:58-59）**每 CPU 一套**，是**承重正确性**而非 Linux 式负载均衡优化（后者的类比是范畴错误）。
+- `sched_enqueue_head`（proc_table.rs:935-936）、`sched_dequeue`（:973-974）均 `let _ = cpu_id; // Will be used when Scheduler moves to CpuLocal`＝per-CPU 迁移是**计划内**、仅被上述错论证 defer。
+
+### D. 修复面（两方案·架构裁决级）
+本 port 把 frozen §3.5.3 当作“等效简化”，实际是错。修复有两条合法路径，均触 SMP 调度核：
+- **方案甲（C-同构）**：真 per-CPU run Q——将 `Scheduler` 下沉到 `CpuLocal`，enqueue/dequeue/pick 均按 p_cpu/current cpu 路由，`ProcessTable::sched` 删除。最贴 C，但改动面大（借用分割 &mut Scheduler + &mut procs、迁移入队、多文件）。
+- **方案乙（最小改动保住共享 Q）**：`pick_proc`/`pick_and_bill` 跳过已为**其他 CPU `proc_ptr`** 的进程（锁内遇历 cpu_locals 构排除集）。改动小、不破共享 Q 设计，但需证明与 C 语义等效（“一个进程不会同时在队又正跑”）。
+⇒ 因 §3.5.3 是被人为 frozen 的设计决定，选哪条属**架构裁决级决策**，已向用户上报（本 commit 仅 WORKLOG·无生产码改）。
+
+### E. 本 commit
+`git add notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径·无生产码改⇒免 CodeReview）。续-54 待用户选型后实施 per-CPU Q（或排除过滤）+ 验证链（host 826+569 只增不减 / clippy / nightly rustfmt / -smp4 真机 ≥3 轮不出双派签名且出 marker）。
 
