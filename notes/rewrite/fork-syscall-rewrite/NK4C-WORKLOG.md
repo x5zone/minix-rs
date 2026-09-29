@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-50 实施轮（2026-09-28·DM source-4 最修已实施并通过 host 验证——改动在工作树，因验证链未走完暂 NOT-WIRED 不提交）**：按续-49 D 规格在 `os/kernel/src/dm_coverage.rs` 实施 source-4（reserved_regions→kernel DM·overlaps 整段 drop·VM DM 不加·`kernel_dm_pa_end` 同步·新增 2 个 mock 测试）。host：dm_coverage 9/9（含新 2）·minix-kernel 825 全绿·arch/boot/types 309 全绿·clippy 对 dm_coverage.rs 零告警。**x86 真机 4 轮（nk50-x86-r1..r4）：原 DM 栈洞崩态（rip−db＝−0xfc84·CR2=rsp+0x2c0）零出现＝续-49 坐实的缺陷被击穿**；r4 跑到 `birth s3 runtime ok`（历史同点位 r1 型轮次之后才崩）且全程无 panic。但暴露**新一层阻塞**：r1/r2 仍现 `pagefault in VM`（trap_dispatch.rs:981）；r3 新形态 kernel #PF **rip 0x7ffffffe2f88 errcode 0x11**（＝用户栈指针 VA·present+RS+US·r4 同一常量）＝birth 路径经用户栈返回/取指而该页在进程页表未映——**与 boot DM 无关的下一个目标① 阻塞项**（marker 仍未达 4/4）。下一轮：(a) 补跑 x86 ≥6 轮确认 r2/r3 型崩率相对修前（2/4 早崩）的净变化＋aarch64/riscv 各 ≥2 轮回归；(b) 坐实用户栈缺页腿（birth s3→首次调度前映 user stack 的时序·对照 C copyall/fkinit）；(c) 全链绿后连同本改动一起走 CodeReview 提交（勿提交未走完验证链的生产改）。⚠ 三目标不缩小。**工作树 tracked 改动仅 dm_coverage.rs（+文件头注释）＋本 WORKLOG。**
+> **🛑 最新前沿＝§1.120续-51 验证收敛轮（2026-09-29·source-4 验证链补完⇒已提交：host 826/569 全绿·clippy dm_coverage 0 告警·rustfmt NEW=22=HEAD·x86 `-smp4` 累计 8 轮原缺陷签名（vector14·err0·rip−db＝−0xfc84）零出现·aarch64 3 轮签名逐字一致 4461 行·riscv64 2 轮与 HEAD-only 对照同签名·x86 单核旧启动器双跑 marker=2 panic=0；两轮 CodeReview（首轮 PASSED-WITH-SHOULD-FIX·追加改动复审 PASSED）后按 review 采纳 W4 补端到端测试并做两次变异实验坐实判别力；同步修正被证伪的「UEFI 布局 disjoint」注释事实断言）**：目标① 仍未达（x86 8 轮 marker=0），阻塞项已从「boot DM 覆盖缺口」推进到下一层——r3 型用户栈缺页（rip `0x7ffffffe2f88` errcode `0x11`）与 r6 型 vector 13（经 `head-base-r3.serial` 逐字比对判定属 HEAD 预存）；**riscv 侧同族腿已现形：`scause=0xd stval=0x3ffffe2fbc`＝riscv 用户栈指针 VA，与 x86 同一构造⇒该腿跨架构同源**。续-52 入口＝坐实该腿（birth s3→首次切入用户态前谁映 user stack·对照 C `copyall`/`fkinit` 与 VM 侧 map 时序）。开放项（本轮按 review 记录未实施·见文末续-51 D 节）：W1 区间减法收口 drop-whole 残余尾块、W2 shim `ram_top` 过滤使「内核镜像/栈必在 source-4 内」不成立＋常驻 `dm-self` 正证自检、W3 与 `build_identity_windows` 的排序/合并/页数 cap 对齐（防 bump 池耗尽型拒启）。⚠ 三目标不缩小。**工作树 tracked 改动＝本 WORKLOG（提交时含 dm_coverage.rs）**。
+>
+> **（历史·§1.120续-50 实施轮（2026-09-28·DM source-4 最修已实施并通过 host 验证——改动在工作树，因验证链未走完暂 NOT-WIRED 不提交）**：按续-49 D 规格在 `os/kernel/src/dm_coverage.rs` 实施 source-4（reserved_regions→kernel DM·overlaps 整段 drop·VM DM 不加·`kernel_dm_pa_end` 同步·新增 2 个 mock 测试）。host：dm_coverage 9/9（含新 2）·minix-kernel 825 全绿·arch/boot/types 309 全绿·clippy 对 dm_coverage.rs 零告警。**x86 真机 4 轮（nk50-x86-r1..r4）：原 DM 栈洞崩态（rip−db＝−0xfc84·CR2=rsp+0x2c0）零出现＝续-49 坐实的缺陷被击穿**；r4 跑到 `birth s3 runtime ok`（历史同点位 r1 型轮次之后才崩）且全程无 panic。但暴露**新一层阻塞**：r1/r2 仍现 `pagefault in VM`（trap_dispatch.rs:981）；r3 新形态 kernel #PF **rip 0x7ffffffe2f88 errcode 0x11**（＝用户栈指针 VA·present+RS+US·r4 同一常量）＝birth 路径经用户栈返回/取指而该页在进程页表未映——**与 boot DM 无关的下一个目标① 阻塞项**（marker 仍未达 4/4）。下一轮：(a) 补跑 x86 ≥6 轮确认 r2/r3 型崩率相对修前（2/4 早崩）的净变化＋aarch64/riscv 各 ≥2 轮回归；(b) 坐实用户栈缺页腿（birth s3→首次调度前映 user stack 的时序·对照 C copyall/fkinit）；(c) 全链绿后连同本改动一起走 CodeReview 提交（勿提交未走完验证链的生产改）。⚠ 三目标不缩小。**工作树 tracked 改动仅 dm_coverage.rs（+文件头注释）＋本 WORKLOG。**
 >
 > **（历史·§1.120续-49 取证轮（2026-09-29·x86 早崩根因坐实＝boot DM 覆盖缺口（非竞态）：崩溃 CR2 的物理帧程序化判定落在两轮复现串口已装 DM 全清单（mem∪bump∪mod）并集之外·KernelInfo.reserved_regions（shim 已传 116 段）在 dm_coverage.rs 零消费＝缺口）**：①读 `os/kernel/src/dm_coverage.rs` `establish_boot_dm`：候选＝三源并集（conventional memmap ∪ bootstrap root+bump ∪ boot modules）·**内核自身运行区（镜像/栈）不属任一源**（身份映射 0-4GB 全映可执行·但 DM 别名只在并集内存在）。②用 r2/r3 两轮串口自带 dm-cov 清单（探针第 27 轮已存）对 CR2 源 PA `0x5d96360`/`0x5d92360` 做区间判定：**covered_by=NONE·逐轮确定性复现**；栈 PA 落在 dm-mem 段间 gap（`0x570f000` bump 顶 ～ `0x5dae000` 下块 conventional）＝UEFI 分配器落位随启动漂移⇒栈有时落 gap（崩）有时落在已映段（到 marker）＝**间歇性的真机制＝栈 PA 是否踩 DM 洞·非 SMP 竞态**（-smp4 只是改变分配时序/布局的扰动因子）。③C ground truth：C 内核物理访问走全量映射无此洞；本 port DM 设 计 的三源并集漏了第 ⓸ 源「内核运行时预留区」——而 shim 本就把这些段存进 `KernelInfo.reserved_regions`（uefi_helpers.rs:193/216·真机 reserved=116）传给了内核·内核 DM 建立侧**零消费**（grep：除 getter/测试外无读者）。④**续-50 最修规格（decision-complete）**：`establish_boot_dm` 加 source-4 循环：`kernel_info.reserved_regions()` 全段→kernel DM（`u64::MAX` 裁界·supervisor RW·与现 source-1/2/3 同构）；union 去重需与现三源**部分重叠**也跳过（现 `overlaps` 判据已是区间相交语义·仿 `boot_module_candidates` 过滤器；注意 `establish_dm_range` 对同槽重装返 AlreadyMapped 拒启）；VM DM 不加（资格过滤语义不变）；host 补 mock 测试（栈洞段入 leaf 集合）。验证：host 四套·clippy·x86 镜像 ≥6 轮（旧间2/4可现⇒修后期望 0 崩且 marker 稳）+ aarch64/riscv 不回归（同函数三架构共用）。含代码改必走 CodeReview。未本轮实施＝预算裁排（剩 1 轮不足以完成重建+≥6轮真机+CodeReview 全链·不臆造未验证生产改）。aarch64 模式①（g14）另开。⚠ 三目标不缩小。纯取证·**WORKLOG-only（免 CodeReview）**。详文见文末 §1.120续-49。
 >
@@ -7166,4 +7168,38 @@ dm_coverage 9/9（含新 2）；`cargo test -p minix-kernel` 833 项（825+8 ign
 
 ### D. 处置与续-51 入口
 改动**暂留工作树不提交**（NOT-WIRED）：验证链未走完（x86 仅 4/≥6 轮·aarch64/riscv 回归未跑·CodeReview 未走）＝不提交未走完验证链的生产改（含代码改必走 CodeReview）。本轮 WORKLOG 提交免 CodeReview。续-51：(a) 补 x86 ≥2 轮＋aarch64/riscv 各 ≥2 轮镜像回归（同函数三架构共用）；(b) 坐实 r3 用户栈缺页腿（birth s3→首次切入用户态前谁负责映 user stack·对照 C copyall/fkinit 与 VM 侧 map 时序）；(c) 全链绿后 source-4 改动+新阻塞的最修（各自）走 CodeReview 提交。⚠ 三目标不缩小。
+
+---
+
+## §1.120续-51 验证收敛轮（2026-09-29·source-4 验证链补完并首次 CodeReview→按 review 补测试与事实修正→二次 CodeReview→提交；riscv 侧用户栈同族腿现形）
+
+### A. 接手第一动作＝补验证链（不重写、不硬提）
+`git diff` 核对续-50 在途改动仍在（`os/kernel/src/dm_coverage.rs`·source-4 四件套），全程未重写。补链过程发现并修掉 3 类问题：①**新代码自带 rustfmt 漂移 3 处**（source-4 循环折行 + 两测试内联结构体）→ 格式化后 NEW=22 与 HEAD=22 持平；②**CodeReview 首轮判 4 条 SHOULD-FIX**；③按 review 追加的改动又引入 1 处 rustfmt 漂移（`let cands` 折行）→ 再修平。
+
+### B. 验证链结果（最终源码重建镜像后复跑，非沿用旧镜像）
+- host：`minix-kernel --lib` **826 passed / 0 failed**（基线 825＋本轮 1 新测试·只增）；`minix-arch + minix-boot + minix-types` **569 passed / 0 failed**（243+17+309·与本轮起点逐 crate 相同·不减）；dm_coverage 模块 10/10。
+- clippy：dm_coverage.rs 归属告警 **0**；`minix-kernel (lib)` 总告警 **57** 与改动前持平（零新增）。
+- rustfmt（nightly·§8.4 口径）：该文件漂移 hunk **NEW=22 ＝ HEAD=22**，零新增。
+- **x86_64 `-smp4` 累计 8 轮**（续-50 r1–r4 ＋ 续-51 r5–r8，其中 r7/r8 用最终源码重建的镜像）：原缺陷签名（vector 14·errcode 0·rip−dispatch_body＝−0xfc84·CR2＝DM(rsp+0x2c0)）**0/8 出现**；对照修前 8 个可比历史轮（`head-base-r1/r2/r3`·`pafclear-x86-r1/r2`·`nk48-x86-r1..r4`）中该签名 **5 轮出现**＝续-49 坐实的 boot DM 覆盖缺口击穿。
+- **aarch64 3 轮**（nk51-a64-r1/r2/r3）：行数 4461/4461/4461 逐字同长、oom=1·panic=0·storm=0，落在 HEAD-only 轮次带宽 4222–4512（`a64-t39b/t40*` 系列）内＝无回归；aarch64 串口 `memmaps conv=13 reserved=21` 非空 ⇒ **该腿真跑了 source-4 新代码**。
+- **riscv64 2 轮 + 1 轮 HEAD-only 对照**（载体 `os/qemu-tests/test-rt-birth-riscv64.sh`，走生产 `arch_boot_impl` Sv39→`establish_boot_dm`）：三轮签名逐字相同 `scause=0xd stval=0x3ffffe2fbc sepc=0x8020abb2` ⇒ 无回归。**诚实标注：riscv 这两轮对 source-4 是零信号**——OpenSBI 路径 `opensbi_helpers.rs:451 reserved_regions: &[]`，新循环空转；它只能证「不回归」，不能充作「新代码三架构都跑过」。
+- 附加守门（护 §1.119续-7 已绿的 x86 单核里程碑）：单核旧启动器 2 轮 `marker=2 / panic=0`，10655 与 10659 行。
+
+### C. r5/r6/r7/r8 新形态的归因（未坐实不成修·本轮不改码）
+- r5＝`pagefault in VM`（`trap_dispatch.rs:981`）＝续-50 r1/r2 同形，且 `head-base-r1` 在无本改动时亦现＝预存。
+- r6＝**vector 13（#GP）**——历史 14 个可比 x86 轮从未见过，一度疑为本改动引入。用 HEAD-only 基线串口 `tmp/nk4a/head-base-r3.serial` 逐字比对钉死：**同出现位置（`pfm4-hand` 之后）、同 rsp `0xffff8000003ffce0`、同二次故障 rip `0x500b`、同 131 行总量**，且 rip 值为串缓冲 ASCII 碎片（`0x783020726f746365`＝"ector 0x"、`0x64656b63696e6170`＝"panic"）＝故障打印腿被并发串口写覆写/返回地址落入输出缓冲。⇒ **属 HEAD 预存缺陷，非本改动回归**；但归因仅用 1 轮对照（CodeReview 指出对间歇形态不足），列为开放项。
+- **riscv `scause=0xd stval=0x3ffffe2fbc` 与 x86 r3 用户栈缺页 `rip 0x7ffffffe2f88` 是同一构造**（各自架构的用户栈指针 VA·同为用户态取指/读）＝**目标① 的下一层阻塞腿跨架构同源**，不是 x86 专属。这条对照是本轮除验证链外最有价值的推进（为续-52 定方向）。
+
+### D. 两轮 CodeReview 与采纳（含代码改必走 CodeReview）
+- **首轮**（审续-50 source-4）结论 PASSED-WITH-SHOULD-FIX·0 Critical。其 3 条 Warning 经我按真值链核实**全部成立**：W1 shim 自身 root/bump/模块就是 `LOADER_DATA`（`boot-shim/src/uefi_helpers.rs:39/57/158`）而 `build_memmaps` 只排除 MMIO ⇒ reserved 与 source-2/3 **必然自重叠**，故「整段 drop」会留下未重叠尾块无叶＝原注释「Real UEFI layouts are disjoint」是**被证伪的事实断言**；W2 `ram_top` 过滤（`uefi_helpers.rs:294-312`）使「内核镜像/栈必落在 source-4 内」不成立；W3 兄弟消费者 `build_identity_windows`（`vm_handoff.rs:436-533`）有排序+合并+`MAX_TOTAL_PAGES=128*1024` cap，本路径三者皆无 ⇒ 新增 bump 池耗尽型拒启面。
+- **本轮采纳（低风险·纯质量）**：①W4 补端到端测试 `test_establish_boot_dm_reserved_is_kernel_window_only`（直调生产 `establish_boot_dm`，锁「reserved 只进 kernel DM 不进 VM DM」＋「`kernel_dm_pa_end` 跟随 source-4」＋「reserved∩活跃 bump 整段 drop」）；②把被证伪的 disjoint 断言改为**承认残余缺口为开放项**（诚实披露非掩盖）；③标题 `Two-source candidate union`→`Candidate union (four sources)`；④修 `kernel_dm_pa_end` 摘要行括号不配对；⑤次轮 CONSIDER 措辞精确化（`non-conventional, non-MMIO descriptor below ram_top`）。
+- **两次变异实验坐实新测试判别力**（CodeReview 首轮点名「这两条语义零测试保护」）：M1 摘掉 `kernel_dm_pa_end` 的 source-4 循环 ⇒ **仅该测试失败**并报对应断言；M2 把 source-4 循环搬到 VM 窗口 ⇒ **仅该测试失败**于 VM 窗口断言（`dm_coverage.rs:769`）。两次变异后均从校验备份还原（md5 比对一致·`MUTATION-TEMP` 残留 grep＝0）。
+- **未采纳并登记为开放项**（需生产逻辑改动＋真机正证，不在本 commit 混入未验证改动）：**W1** 区间减法收口尾块（候选数有界可定长栈数组·heap-free 不破）；**W2** 常驻 `dm-self` 自检把「签名未复现」的反证升级为「该 PA 现有叶」的正证，或 shim 侧豁免含内核镜像/栈的段；**W3** 与 `build_identity_windows` 对齐排序/合并/页数 cap 并在 dm-cov 探针加「establishment 后 bump 剩余页数」；**另** 同文件 `boot_module_candidates` docstring（`dm_coverage.rs:245-247`）仍留旧「Real UEFI layouts are disjoint」措辞（source-3 语境内「distinct AllocatePages 结果互不相交」并非全错），宜后续统一。
+- **次轮**（审追加改动）结论 **PASSED**·0 Critical/0 Warning·1 CONSIDER（已采纳）。
+
+### E. 提交与判据
+含代码改的 commit 走 CodeReview 后方提交：`git add os/kernel/src/dm_coverage.rs notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径·不用 `-A`·不动 `AI-chats/daily.todo.md`）。提交后 HEAD 前进，续-50 的 NOT-WIRED 状态结束。
+
+### F. 新停点（续-52 入口）
+目标① 三架构仍全部未达 marker。头号腿＝**用户栈/首进程页表映射**（x86 `rip 0x7ffffffe2f88` err `0x11` ↔ riscv `scause=0xd stval=0x3ffffe2fbc` 同源）：birth s3 → 首次切入用户态前谁负责映 user stack，对照 C `minix3/minix/kernel/` 的 `copyall`/`fkinit` 与 VM 侧 map 时序（锤点自行 grep）。并行：x86 vector 13 需 ≥3 轮 HEAD-only 对照才能落「预存」定论；aarch64 模式①（g14 H7 数据流）与 riscv IPC 桥另开。⚠ 三目标不缩小。
 

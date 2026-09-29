@@ -15,9 +15,10 @@
 //! identity range flows through the kernel channel from that point on
 //! (§6.1 constraint ①).
 //!
-//! # Two-source candidate union
+//! # Candidate union (four sources)
 //!
-//! Mapping candidates are the union of (§6.1 "映射候选的两源并集"):
+//! Mapping candidates are the union of (§6.1 "映射候选的两源并集", extended
+//! by source 3 in fix16 and by source 4 in NK4-C 续-50):
 //!
 //! 1. **Resource-classified memmap ranges** — `KernelInfo.memmap`; the boot
 //!    shim already restricts it to conventional RAM (the source of VM PMM
@@ -28,9 +29,28 @@
 //!    explicit registration the self root could never become DM-covered
 //!    (the §6.1 derivation gap).
 //!
+//! 3. **Boot module blobs** — `KernelInfo::boot_modules`; LOADER_DATA pages
+//!    absent from the conventional memmap, read by VM `exec_bootproc`
+//!    through the VM DM window.
+//! 4. **Reserved (occupied) regions** — `KernelInfo::reserved_regions`; the
+//!    UEFI allocations that are neither conventional RAM nor registered
+//!    modules — including the pages the kernel image and stack land in.
+//!    The identity mapping covers `[0, IDENTITY_MAP_END)` so instruction
+//!    and data fetches flow there, but a `kernel_phys_to_virt` (DM alias)
+//!    access into a region outside sources 1–3 faults not-present
+//!    (NK4-C 续-49 forensics: the `-smp4` early-boot #PFs had CR2 = DM of
+//!    stack PAs in the gap between installed candidates — `covered_by=NONE`
+//!    on every reproducing round). Source 4 overlaps a live source-2/3
+//!    candidate whenever one UEFI descriptor spans both (they are all
+//!    `LOADER_DATA`), so its non-overlapping tail stays uncovered; that
+//!    residual gap is tracked as an open item, not claimed to be closed.
+//!
 //! A source-2 candidate overlapping a memmap range (fallback/test paths
 //! where the bump region lives inside conventional RAM) is dropped —
-//! union semantics, no double mapping.
+//! union semantics, no double mapping. Source 4 is kernel-DM only (the VM
+//! PMM eligibility filter keeps its memmap-based semantics) and drops any
+//! range partially overlapping an earlier candidate for the same
+//! `AlreadyMapped` reason.
 //!
 //! All PTE writes go through the bootstrap root's identity write channel
 //! (`VA = PA`, §6.1 "DM 建立的自举写通道闭环"); on x86-64 the VM DM window
@@ -104,6 +124,16 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
         .expect("boot DM: kernel window module coverage failed");
     }
 
+    // Source 4 (续-50): reserved/occupied regions enter the KERNEL DM only.
+    // The VM DM deliberately stays on sources 1–3 — VM PMM resource
+    // qualification must keep treating non-conventional memory as
+    // unrepresentable (§6.1 资格过滤); the kernel is the only accessor of
+    // its own image/stack pages through the DM alias.
+    for r in reserved_regions_candidates(kernel_info, root) {
+        establish_dm_range::<CurrentDmCoverage>(root, r, u64::MAX, kernel_va, kernel_flags)
+            .expect("boot DM: kernel window reserved coverage failed");
+    }
+
     // NK4-C 第 27 轮取证探针（task1-close 裁决删除）：打印 VM DM 窗口的
     // 实际覆盖清单（三源候选、窗口裁剪后的有效范围）。第 18 轮层级 dump
     // 实锤故障 PT 页落在低内存 PA（lvl2=0x7d027 / lvl1=0），本探针裁决
@@ -156,11 +186,13 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
 
     validate_bootstrap_tree(root);
 }
-/// PA the per-process window mapping must reach; fix26, handoff v5).
+/// Highest PA the per-process window mapping must reach (handoff v5,
+/// fix26).
 ///
 /// Reuses exactly the candidate set [`establish_boot_dm`] installs into
 /// the kernel window (unlimited PA bound): memmap ∪ bootstrap tree ∪
-/// boot modules. `build_vm_handoff` derives `kern_dm_pages` from this so
+/// boot modules ∪ reserved regions (source-4 candidates after the same
+/// union filter). `build_vm_handoff` derives `kern_dm_pages` from this so
 /// VM's `map_kernel` covers what the kernel actually accesses through
 /// its Direct Map — the previous hardcoded 4-page sentinel left every
 /// address above 16 KiB not-present after the first CR3 switch.
@@ -183,6 +215,9 @@ pub fn kernel_dm_pa_end(kernel_info: &KernelInfo, root: PhysBytes) -> u64 {
         note(r);
     }
     for r in boot_module_candidates(kernel_info, root) {
+        note(r);
+    }
+    for r in reserved_regions_candidates(kernel_info, root) {
         note(r);
     }
     max_end.div_ceil(PAGE_SIZE) * PAGE_SIZE
@@ -227,6 +262,64 @@ fn boot_module_candidates<'a>(
             let overlaps = |o: DmRange| r.base < o.base + o.len && o.base < r.base + r.len;
             !memmap_candidates(kernel_info).any(overlaps)
                 && !source2.into_iter().flatten().any(overlaps)
+        })
+}
+
+/// Source 4: reserved (occupied) physical regions — the kernel's own
+/// runtime footprint plus firmware/bootloader allocations.
+///
+/// The shim's `build_memmaps` partitions the UEFI memory map into
+/// conventional RAM (source 1) and everything else (`KernelInfo::
+/// reserved_regions`, `boot-shim/src/uefi_helpers.rs`). The kernel image
+/// and stack are `EVR/loader`-allocated memory: absent from the
+/// conventional memmap, not registered as boot modules (source 3), not the
+/// bootstrap tree (source 2) — under sources 1–3 alone their DM aliases
+/// were never installed, while the identity mapping `[0,
+/// IDENTITY_MAP_END)` kept instruction/data fetches alive. Any access
+/// through `kernel_phys_to_virt` (e.g. interrupt-path copies reading a
+/// stack slot) then faulted not-present whenever the UEFI allocator had
+/// landed the stack in a gap between installed candidates — the exact
+/// `covered_by=NONE` CR2s of NK4-C 续-49 (`0x5d96360`/`0x5d92360`).
+///
+/// Union semantics: a range partially overlapping an earlier candidate
+/// (memmap ∪ root/bump ∪ surviving modules) is dropped whole — leaf
+/// slots are disjoint, so any overlap would make a later
+/// `establish_dm_range` hit `AlreadyMapped` and refuse boot.
+///
+/// Known residual gap (NK4-C 续-51 review, open item not closed by this
+/// change): the shim's own root page, bump region and module loads are
+/// `LOADER_DATA` allocations (`boot-shim/src/uefi_helpers.rs` pool +
+/// `allocate_pages`), and `build_memmaps` puts every non-conventional,
+/// non-MMIO descriptor below `ram_top` into `reserved_regions` — so a
+/// reserved descriptor frequently spans both a source-2/3 candidate and
+/// unrelated pages. Dropping it whole
+/// keeps the union legal but leaves that tail without a kernel-DM leaf;
+/// closing it needs range subtraction against the installed candidates
+/// (bounded candidate count, still heap-free) plus real-machine proof.
+/// A reserved∩reserved overlap double-installs the same slot too; the
+/// shim emits one entry per descriptor from a single `GetMemoryMap`
+/// snapshot, whose descriptors are disjoint by construction, so that
+/// shape cannot arise from the partition itself.
+///
+/// Kernel DM only: the VM DM intentionally stays on sources 1–3 so PMM
+/// resource qualification semantics are unchanged (§6.1 资格过滤).
+///
+/// Heap-free by necessity — same `arch_boot`-before-heap constraint as
+/// [`boot_module_candidates`].
+fn reserved_regions_candidates<'a>(
+    kernel_info: &'a KernelInfo,
+    root: PhysBytes,
+) -> impl Iterator<Item = DmRange> + 'a {
+    let source2 = bootstrap_tree_candidates(kernel_info, root);
+    kernel_info
+        .reserved_regions
+        .iter()
+        .map(|r| DmRange::new(r.base.0, r.len as u64))
+        .filter(move |c| {
+            let overlaps = |o: DmRange| c.base < o.base + o.len && o.base < c.base + c.len;
+            !memmap_candidates(kernel_info).any(overlaps)
+                && !source2.into_iter().flatten().any(overlaps)
+                && !boot_module_candidates(kernel_info, root).any(overlaps)
         })
 }
 
@@ -484,6 +577,215 @@ mod tests {
         boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → dropped
         assert_eq!(kernel_dm_pa_end(&info, PhysBytes(0x1000)), 0x1de5_0000,
             "module end 0x1de0e000+0x42000=0x1de50000 is the highest candidate");
+    }
+
+    /// 续-50: reserved regions (source 4) fill the kernel-DM gap that the
+    /// three-source union left open — the shape of the 续-49 crash rounds
+    /// (stack PAs in `[bump end, next conventional block)`). A reserved
+    /// range outside every earlier candidate is kept; ranges overlapping
+    /// the memmap or a surviving module are dropped whole (union
+    /// semantics, `AlreadyMapped` refusal guard).
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_reserved_regions_candidates_union() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        use minix_boot::{BootModule, MemoryRegion};
+
+        static MODS: &[BootModule] = &[BootModule {
+            name: "rs",
+            start: PhysBytes(0x1de0_e000),
+            len: 0x42_000,
+        }];
+        static RESERVED: &[MemoryRegion] = &[
+            // 续-49 crash-gap shape: above the memmap, outside every
+            // other source — must be kept.
+            MemoryRegion {
+                base: PhysBytes(0x1f00_0000),
+                len: 0x4000,
+            },
+            // inside the conventional memmap — dropped.
+            MemoryRegion {
+                base: PhysBytes(0x80_0000),
+                len: 0x1000,
+            },
+            // partially overlapping the module blob — dropped whole.
+            MemoryRegion {
+                base: PhysBytes(0x1de4_d000),
+                len: 0x4000,
+            },
+        ];
+        let info = KernelInfo {
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0),
+                len: 0x100_0000,
+            }],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200_000),
+            kern_size: 0x200_000,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: MODS,
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: RESERVED,
+        };
+        boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000); // inside memmap → source 2 drops
+        let cands: alloc::vec::Vec<DmRange> =
+            reserved_regions_candidates(&info, PhysBytes(0x1000)).collect();
+        assert_eq!(
+            cands,
+            alloc::vec![DmRange::new(0x1f00_0000, 0x4000)],
+            "gap reserved range kept, memmap/module-overlapping ranges dropped"
+        );
+    }
+
+    /// 续-50 leaf-set proof: establishing the kernel window over the
+    /// source-4 candidates installs the gap range's DM alias as a leaf and
+    /// double-installs nothing (no `AlreadyMapped`); the dropped overlap
+    /// range gains no separate leaf (its surviving coverage comes from the
+    /// module candidate itself).
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_reserved_kernel_dm_installs_gap_leaf() {
+        // `lock_boot_globals` clears the MockDmCoverage registry on
+        // acquisition (process-global leaf set shared by boot-flow tests).
+        let _boot = crate::test_sync::lock_boot_globals();
+        use minix_arch::CurrentDirectMap;
+        use minix_boot::MemoryRegion;
+
+        static RESERVED: &[MemoryRegion] = &[
+            MemoryRegion {
+                base: PhysBytes(0x1f00_0000),
+                len: 0x4000,
+            },
+            MemoryRegion {
+                base: PhysBytes(0x80_0000),
+                len: 0x1000,
+            },
+        ];
+        let info = KernelInfo {
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0),
+                len: 0x100_0000,
+            }],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200_000),
+            kern_size: 0x200_000,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: RESERVED,
+        };
+        boot_alloc::init_boot_pt_alloc(0x2000, 0x100_0000);
+        let root = PhysBytes(0x1000);
+        for r in reserved_regions_candidates(&info, root) {
+            establish_dm_range::<minix_arch::arch::dm_coverage::mock::MockDmCoverage>(
+                root,
+                r,
+                u64::MAX,
+                CurrentDirectMap::KERNEL_DIRECT_MAP_BASE,
+                PageFlags::kernel_read_write(),
+            )
+            .expect("mock kernel window reserved coverage");
+        }
+        let leaves = minix_arch::arch::dm_coverage::mock::mock_dm_leaves();
+        let base = CurrentDirectMap::KERNEL_DIRECT_MAP_BASE;
+        assert!(
+            leaves.contains_key(&(base + 0x1f00_0000)),
+            "gap reserved range must install its kernel-DM alias leaf"
+        );
+        assert!(
+            !leaves.contains_key(&(base + 0x80_0000)),
+            "memmap-overlapping reserved range must be dropped (no double install)"
+        );
+    }
+
+    /// 续-51 (review W4): end-to-end guard on `establish_boot_dm` itself for
+    /// the two load-bearing source-4 semantics the candidate-level tests
+    /// cannot see — reserved ranges stay out of the **VM** DM (PMM resource
+    /// qualification keeps its memmap-based meaning), and `kernel_dm_pa_end`
+    /// follows source 4 (it derives `kern_dm_pages`, so VM `map_kernel` must
+    /// cover exactly the leaf set the kernel window installed). Moving the
+    /// source-4 loop into the VM window, or dropping it from
+    /// `kernel_dm_pa_end`, fails this test; neither was caught before.
+    /// Also pins the source-2 overlap drop (reserved covering a live bump
+    /// candidate), the branch real machines hit most often.
+    #[test]
+    #[cfg(feature = "mock")]
+    fn test_establish_boot_dm_reserved_is_kernel_window_only() {
+        let _boot = crate::test_sync::lock_boot_globals();
+        use minix_arch::CurrentDirectMap;
+        use minix_boot::MemoryRegion;
+
+        static RESERVED: &[MemoryRegion] = &[
+            // 续-49 crash-gap shape: no other source covers it.
+            MemoryRegion {
+                base: PhysBytes(0x1f00_0000),
+                len: 0x4000,
+            },
+            // spans the bump region below, which source 2 installs → drop.
+            MemoryRegion {
+                base: PhysBytes(0x200_0000),
+                len: 0x10_0000,
+            },
+        ];
+        let info = KernelInfo {
+            memmap: &[MemoryRegion {
+                base: PhysBytes(0),
+                len: 0x100_0000,
+            }],
+            kern_virt_base: VirBytes(0xFFFF_8000_0000_0000),
+            kern_phys_base: PhysBytes(0x200_000),
+            kern_size: 0x200_000,
+            free_upper_idx: None,
+            user_sp: VirBytes(0x7fff_ffff_f000),
+            kern_stack_top: VirBytes(0xFFFF_8000_0040_0000),
+            syscall_entry: VirBytes(0xFFFF_8000_0010_0000),
+            boot_modules: &[],
+            bootstrap_start: PhysBytes(0),
+            bootstrap_len: 0,
+            platform_sources: &[],
+            param_buf: &[],
+            reserved_regions: RESERVED,
+        };
+        // Bump entirely above the memmap → a live source-2 candidate, so the
+        // second reserved range overlaps it and must be dropped.
+        boot_alloc::init_boot_pt_alloc(0x200_0000, 0x210_0000);
+        let root = PhysBytes(0x1_0000); // inside the memmap → source-2 root drops
+
+        establish_boot_dm(&info, root);
+
+        let leaves = minix_arch::arch::dm_coverage::mock::mock_dm_leaves();
+        assert!(
+            leaves.contains_key(&(CurrentDirectMap::KERNEL_DIRECT_MAP_BASE + 0x1f00_0000)),
+            "reserved gap range must be installed in the kernel window"
+        );
+        assert!(
+            !leaves.contains_key(&(CurrentDirectMap::VM_DIRECT_MAP_BASE + 0x1f00_0000)),
+            "source 4 must stay out of the VM window — non-conventional memory \
+             has to remain unrepresentable to VM PMM qualification"
+        );
+        assert!(
+            kernel_dm_pa_end(&info, root) >= 0x1f00_0000 + 0x4000,
+            "kernel_dm_pa_end must follow source 4 so the handoff's kern_dm_pages \
+             covers the installed kernel-window leaf set"
+        );
+        let cands: alloc::vec::Vec<DmRange> = reserved_regions_candidates(&info, root).collect();
+        assert_eq!(
+            cands,
+            alloc::vec![DmRange::new(0x1f00_0000, 0x4000)],
+            "reserved range overlapping the live bump candidate must drop"
+        );
     }
 
     /// Boot-shim contract simulation: the bump region must sit inside the
