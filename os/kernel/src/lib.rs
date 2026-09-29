@@ -3214,9 +3214,11 @@ fn requeue_if_preempted(
 ///    wake interrupt finds kernel + VM pages mapped (C comment: this "is only
 ///    a problem if more than 1 cpus are available"). On the single-CPU build
 ///    it is skipped, exactly like a C build without SMP.
-/// 3. `cpu_is_idle = 1` (C:192); the AP branch (stop the local timer,
-///    C:194-196) is SMP-only and omitted. The BSP branch calls
-///    `restart_local_timer()` (C:198-204) — see that helper: on the
+/// 3. `cpu_is_idle = 1` (C:192); on the multi-CPU build the AP branch masks
+///    the local timer (`stop_local_timer()`, C:194-196) so a halted AP stays
+///    quiet until an interrupt wakes it — NK4-C 续-72 restored this (it had
+///    been omitted alongside the adjacent proc.c:190 step). The BSP branch
+///    calls `restart_local_timer()` (C:198-204) — see that helper: on the
 ///    periodic PIT clock source it is a no-op in C too.
 /// 4. `context_stop(KERNEL)` (C:207) starts idle-time accounting: the
 ///    kernel-execution delta since the last switch is charged to the
@@ -3279,13 +3281,44 @@ fn idle(
         switch_address_space(table, proc_nr::VM_PROC_NR);
     }
 
-    // 3. cpu_is_idle = 1 (C:192-193). The AP stop-local-timer branch
-    //    (C:194-196) is SMP-only and omitted here (the periodic clock source
-    //    needs no per-CPU stop; see `restart_local_timer`).
+    // 3. cpu_is_idle = 1 (C:192-193) + the AP stop-local-timer branch
+    //    (C: proc.c:194-196 — `if (cpuid != bsp_cpu_id) stop_local_timer();
+    //    else restart_local_timer();`). C masks a halted AP's LAPIC timer so
+    //    the AP stays quiet until an interrupt wakes it (C's `context_stop_idle`
+    //    at interrupt entry then restarts it). The one-shot local timer is
+    //    re-armed unconditionally by `local_tick` on every CPU, so without this
+    //    mask a halted AP keeps taking timer ticks forever and never truly
+    //    idles. NK4-C 续-72: the mask was omitted when 续-56 restored the
+    //    adjacent `switch_address_space_idle` (proc.c:190) — completing
+    //    proc.c:176-206 parity. The BSP branch keeps `restart_local_timer`
+    //    (a no-op on the auto-reloading clock sources — see the helper).
     if let Some(local) = smp.cpu_local_mut(cpu) {
         local.cpu_is_idle = true;
     }
-    restart_local_timer();
+    if smp.ncpus() > 1 && cpu != smp.bsp_cpu_id() {
+        // CONTRACT (NK4-C 续-72, CodeReview): masking the AP timer here is only
+        // one half of C's design. C pairs it with three arms that this port has
+        // NOT yet wired, and every one must land before APs may run user work:
+        //   1. `context_stop_idle` at interrupt entry (arch_clock.c:351-369) —
+        //      clears `cpu_is_idle` and restarts the local timer, so a woken AP
+        //      resumes ticking (this mask is otherwise permanent);
+        //   2. the enqueue wake arm (proc.c:1641-1650) — when a runnable process
+        //      is placed on an idle CPU's queue, `if (cpu_is_idle) smp_schedule()`
+        //      sends the SCHED IPI to rouse it. `sched_enqueue_with` (proc_table)
+        //      only preempts same-CPU targets today, so a process routed to an AP
+        //      would never wake (its timer is masked and no IPI is sent);
+        //   3. a `SYS_SCHEDCTL` cpu-affinity guard — `validate_cpu_param` accepts
+        //      any ready cpu under `ncpus > 1`, so a privileged server could pin a
+        //      process onto a masked AP and starve it silently.
+        // Today none is reachable: every process keeps `p_sched.cpu == 0` (boot
+        // never migrates, `SchedFields::new` defaults cpu 0, children inherit),
+        // so APs only ever reach `idle` and the mask is safe. Their local tick is
+        // observability-only (`local_tick` clock.rs) and preemption is BSP-driven
+        // via the SCHED IPI. Enabling AP scheduling REQUIRES arms 1-3 first.
+        crate::clock::stop_local_timer();
+    } else {
+        restart_local_timer();
+    }
 
     // 4. context_stop(KERNEL) — charge the kernel-execution delta and
     // advance the TSC baseline (C:207; the quantum decrement itself is

@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-70（2026-09-29·第十二枚探针(甲)DM per-page写守卫阴性 + kernel_call_finish_ipc_door/mirror_irq_frame 审计清白 + -d int取证 → **架构收敛：缺失跨CPU TLB shootdown = 唯一剩余机制**·续-69(乙)精准应验·进入成修轮）**：NK70-TEMP DM per-page 写守卫 -smp2 两轮 HIT=0/CROSSROOT=0 彻底阴性。kernel_call_finish_ipc_door 三路审(VmSuspend/NoReply/Ok)均不触碰 cpu_context。mirror_irq_frame_into_proc CPL门控确认 timer IRQ 内核态不写 cpu_context。-d int 153219行取证确认 VM restore 后 corruption 在 user-mode 运行期间。**十二枚全阴性统一解释＝跨CPU TLB陈旧致物理帧瞬态别名**：VM经VmDm user-mode写PTE·`write_pte_dm` INVLPG只刷当前CPU·CPU1上进程X的stale TLB entry写VM刚分配的栈帧→污染。代码证据：`syscall.rs:2563` "ZERO callers of FlushTlb/InvlPg"·推理仅单核成立。**坐实即成修·续-71=TLB shootdown实现**。详文见文末 §1.120续-70。
+> **🛑 最新前沿＝§1.120续-72（2026-09-30·**根因坐实+成修：延续-57~71 十四轮的 `-smp2/-smp4` VM 用户栈腐蚀崩溃＝`idle()` 省略 C `proc.c:194-196` 的 AP `stop_local_timer` 分支**·已提交生产码修·真机三态验证全绿·新前沿＝INIT 后 `sa-call` 活锁致 marker 未达）**：所有进程 `p_sched.cpu==0`（boot 恒绑 CPU0），CPU1 只跑 idle，`-smp1` vs `-smp2` 唯一差异＝CPU1 存在。`clock.rs::local_tick` 对**所有 CPU 无条件** `rearm_local_tick()`（一次性 LAPIC timer 每 tick 自我重装），而 `idle()` 曾对所有 CPU 无条件 `restart_local_timer()`、漏掉 C 的「halt 的 AP 掩掉本地 timer」半（续-56 补同函数紧邻的 `switch_address_space_idle` proc.c:190 时漏了 proc.c:195 的后半）⇒ halt 的 AP 永不安静、持续收 vector 0xf1 tick（正对 `-d int` 证据）、在续-56 载入的 VM CR3 下高频重入内核与 CPU0 竞争 → VM 用户栈腐蚀。**推翻续-70「缺跨 CPU TLB shootdown」结论**（minix3 C `arch_do_vmctl.c` 只做本地 invlpg/write_cr3、无跨 CPU shootdown，依赖缺页进程挂起，故 shootdown 不符 Ground Truth）。修复＝`idle()` step 3 加门控 `if ncpus>1 && cpu!=bsp → stop_local_timer(); else restart_local_timer()`（对等 proc.c:194-196），CONTRACT 注释登记 C 三件套延后臂（中断入口 `context_stop_idle` 清 idle+重启 timer / enqueue 唤醒臂 proc.c:1647 / schedctl cpu 亲和守卫）——当前 AP 不跑用户进程故永久掩码安全。**验证链全绿**：host 826/569·clippy Δ0（kernel crate 124=124·两 pre-existing 告警仅随行号平移）·rustfmt Δ0（lib.rs 162=162）·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器崩溃归零（pfVM=0/ud=0/panic=0·5113 行·续-70 及以前必崩）+ `-smp1` marker=2/panic=0 不回归**·CodeReview PASSED 无 BLOCKER（2 Warning 已作 CONTRACT 全清单登记）。⚠ 三目标不缩小：崩溃虽消，但 `-smp2/-smp4` 下 boot 卡在 INIT 后重复 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12`（SETADDRSPACE 活锁/进度，sa-call=8）→ **marker=0 未达＝目标① x86 新头号阻塞**（详文见文末 §1.120续-72）。续-73 入口＝定位该 sa-call 往返停滞（对位 C VM 启动/proc 表 seed·为何 caller=4 对 pid=9 反复 SETADDRSPACE 不收敛）。
+>
+> **（历史·§1.120续-70·第十二枚探针(甲)DM per-page写守卫阴性 + kernel_call_finish_ipc_door/mirror_irq_frame 审计清白 + -d int取证 → 曾收敛到「缺失跨CPU TLB shootdown」·**该结论已被续-72 推翻**：真根因＝AP idle 漏 stop_local_timer·minix3 C 无跨 CPU shootdown 机制）**：NK70-TEMP DM per-page 写守卫 -smp2 两轮 HIT=0/CROSSROOT=0 彻底阴性。kernel_call_finish_ipc_door 三路审(VmSuspend/NoReply/Ok)均不触碰 cpu_context。mirror_irq_frame_into_proc CPL门控确认 timer IRQ 内核态不写 cpu_context。详文见文末 §1.120续-70。
 >
 > **（历史·§1.120续-68 探针轮（2026-09-29·第十枚探针＝首个结构化阳性数据：(B′) 跨池帧别名被真机坐实证伪·cpu_context 帧不在 VM free 列表）**：续-67 假说 (B′)（内核 proc 表 cpu_context 物理帧被双分配进 VM 池→与 vm text 帧别名）——本探针在 `vm_handoff::classify`（正常 boot 上下文·页表 walk 合法）走当前 root 取 PROC_TABLE 真实 PA 并测其是否落入 free_regions。真机 `nk68-r1` 数据：**pt_va=pt_pa=0x1d9d04e0**（early-boot 内核以**恒等映射跑在 ~低 0x1d9_xxxxx**，与崩溃内核 RIP 0x1d9743dd 一致→非 higher-half）；**kb=0x200000 ksz=0x200000**（kernel-image 扣除只切 `[0x200000,0x400000)`，与实际运行位置 0x1d9d0000 **完全不相交**→续-66 死扣除发现属实）；**in_free=0**（PROC_TABLE 帧 0x1d9d0000 不在任何 free 区间，因运行内核被 UEFI LOADER_DATA 分配在非 conventional 空洞·既非死扣除所护·而是根本不入 memmap）。⇒ **(B′) 分配器级双分配彻底证伪**：cpu_context 帧(~0x1d9d0000) ≠ vm 模块 text 帧(~0x1c2e_xxxx 区且在空洞)，两者不同帧且均不可分配→gp_regs 里的 vm .text 码字节**不是帧别名读**而是**被写入 cpu_context**（copy/sigreturn-frame 腿）。⇒ 搜索空间回到 (A)：但 CoW `copy_page_content` 的 dst_pfn 来自 VM 分配器→拿不到 cpu_context 帧→非 CoW；候选收窄为（旧）IPC 交付/sigreturn 内核从 caller 控制的用户缓冲读 112B 入 cpu_context，或 save_frame_to_context 从一个已含 vm 码字节的 TrapFrame 拷。**未坐实不成修**·探针 git checkout 回滚工作树净·无生产码改·WORKLOG-only（免 CodeReview）。续-69 入口＝审 sigreturn/`sys_core` 从用户栈读保存帧入 cpu_context 的腿（对位 C signal/sysctl）与 IPC 投递写 cpu_context 的站点，看能否让 src 落在 vm text（一个控制于 caller 的 112B 缓冲指针）。详文见文末 §1.120续-68。
 >
@@ -8000,3 +8002,54 @@ kernel: vm_handoff free n=9 deducted=0x17
 **⑦ 纪律**：NK70-TEMP **已 git checkout 回滚·工作树 tracked 净**。本轮＝真机取证+代码审计·无生产码改·WORKLOG-only（免 CodeReview）。探针全滚。
 
 ⚠ 三目标不缩小：目标① x86 -smp2/-smp4 marker 未达（TLB shootdown 缺失＝头号阻塞·根因坐实·续-71 成修）；x86 -smp1 marker 已达成；aarch64 模式① OOM（g14）/riscv64 IPC 桥未动；目标②/③ 待①贯通。
+
+
+---
+
+## §1.120续-72（2026-09-30·**根因坐实 + 生产码成修 + 真机三态验证全绿**：延续-57~71 十四轮的 `-smp2/-smp4` VM 用户栈腐蚀崩溃＝`idle()` 省略 C `proc.c:194-196` 的 AP `stop_local_timer` 分支·推翻续-70「缺 TLB shootdown」结论·新前沿＝INIT 后 `sa-call` 活锁致 marker 未达）
+
+### ① 现象与定界（承续-69/70 最小复现＝-smp2）
+- 崩溃签名（续-57 经典）：VM 服务约 32 次缺页（text 缺页 fa=0x20xxxx + 自身栈 demand-zero 逐页下探 fa=0x7ffffffbxxxx）后，某次 `recvfrom` 处理完，VM 恢复回**合法** rip 后自行 `ret`/`call` 从**已污染的用户栈**弹出垃圾 rip（`pagefault for VM on cpu 0 rip 0xeb9000000 cr2 0xeb9000000 err 0x14`）→ `panic!("pagefault in VM")` → 递归 `#UD rip 0x1004` flood 2155×。
+- 十二枚探针（续-59~70）全阴性：内核每一次 restore 点 frame.rip 均合法（污染发生在 restore **之后**）；cpu_context 从未被写坏（坏的是 VM 用户栈）；一切 restore 点探针与一切 cpu_context-PA 别名探针结构上不可见该破坏者。
+- **最小复现＝-smp2**（非 -smp4）：pairwise 竞态，成对 CPU 即可触发。
+
+### ② Ground Truth 查证（优先链 Minix3 C 源）——推翻续-70 shootdown 假说
+- 续-70 曾收敛到「缺跨 CPU TLB shootdown」。本轮查 C `arch_do_vmctl.c`：minix3 VMCTL 路径只做**本地** `i386_invlpg`/`write_cr3`，**无跨 CPU shootdown**——C 依赖「缺页进程被挂起」而非远程刷 TLB。⇒ 「实现 shootdown」会偏离 Ground Truth，是错误方向。续-70 结论作废。
+
+### ③ 根因坐实——AP idle 漏 `stop_local_timer`
+- **关键差异**：boot 阶段所有进程 `p_sched.cpu==0`（`SchedFields::new` 默认 cpu 0、子进程继承、boot 从不迁移），CPU1 只跑 `idle`。`-smp1` vs `-smp2` 唯一差异＝CPU1 是否存在。
+- **机制**：`os/kernel/src/clock.rs::local_tick(cpu)`（100-113）对**所有 CPU 无条件** `rearm_local_tick()`——一次性 LAPIC timer（vector 0xf1）每 tick 自我重装。而 `os/kernel/src/lib.rs::idle()` 曾对所有 CPU 无条件 `restart_local_timer()`，**漏掉 C 的「halt 的 AP 掩掉本地 timer」半**：
+  - C `minix3/minix/kernel/proc.c::idle()` 176-206：`cpu_is_idle=1` 后 `if (cpuid != bsp_cpu_id) stop_local_timer(); else restart_local_timer();`
+  - 续-56 补 `switch_address_space_idle`（proc.c:190）时，漏了同一 if 块紧邻的 proc.c:194-196 后半。
+- 后果：halt 的 CPU1 **永不安静**、持续收 0xf1 tick（正对 `-d int` 证据里的嵌套 timer 中断）、在续-56 加入的 `switch_address_space_idle` 载入的 **VM CR3** 下高频重入内核，与 CPU0 的 VM 服务竞争 → 破坏 VM 用户栈。这统一解释了「十二枚内核侧探针全阴性」——破坏者是 AP 上的周期性 timer 重入，不在任何内核拷贝/恢复腿上。
+
+### ④ 修复（生产码·`idle()` step 3）
+```rust
+if let Some(local) = smp.cpu_local_mut(cpu) { local.cpu_is_idle = true; }
+if smp.ncpus() > 1 && cpu != smp.bsp_cpu_id() {
+    crate::clock::stop_local_timer();   // C: proc.c:195 AP 掩码
+} else {
+    restart_local_timer();              // C: proc.c:198 BSP（auto-reload 源上近 no-op）
+}
+```
+门控 `ncpus()>1` 保 `-smp1` 行为不变（单核走 else 分支）。doc 注释同步更正 step 3。
+
+### ⑤ CONTRACT（CodeReview 2 Warning 已登记·三件套延后臂）
+本轮只实现 C 的**掩码半**，未接 C 的**唤醒重装半**。CONTRACT 注释（lib.rs:3299）登记启用 AP 调度前必须先落地的三件套：
+1. 中断入口 `context_stop_idle`（arch_clock.c:351-369）清 `cpu_is_idle` + `restart_local_timer`（否则 AP 唤醒后永久无 tick）；
+2. enqueue 唤醒臂（proc.c:1641-1650）：进程入 idle CPU 队时 `if (cpu_is_idle) smp_schedule()` 发 SCHED IPI（本 port `sched_enqueue_with` 只处理同 CPU 抢占，路由到 AP 的进程将唤不醒）；
+3. `SYS_SCHEDCTL` cpu 亲和守卫：`validate_cpu_param` 在 `ncpus>1` 接受任意 ready cpu，特权服务可把进程钉到已掩码的 AP 静默饿死。
+**当前安全前提**：boot 阶段 AP 从不跑用户进程（`p_sched.cpu==0` 恒成立），local tick observability-only，抢占由 BSP 经 SCHED IPI 驱动——故永久掩码安全。这是里程碑「启用 AP 调度」前必须先补的项。
+
+### ⑥ 验证链（全绿·fresh on this HEAD）
+- host：minix-kernel **826/0**·arch 243 + boot 17 + types 309 = **569/0**。
+- clippy Δ0：kernel crate **124=124**（两条 pre-existing 告警仅随我 +行号平移，零新告警）。
+- nightly rustfmt Δ0：全仓 6333=6333·lib.rs **162=162**（既有 workspace 级漂移，我改动零新增）。
+- 镜像 `--release`：EXIT=0。
+- **真机三态**：`-smp4`（xtask 硬编码标准启动器）**崩溃归零** pfVM=0/ud=0/panic=0·5113 行（续-70 及以前必崩）；`-smp1` **marker=2/panic=0 不回归**（10633 行）。CONTRACT 后续为纯注释改，编译期剥离，二进制签名与已验证态一致。
+- CodeReview：**PASSED 无 BLOCKER**，2 Warning（CONTRACT 清单不全 + schedctl 亲和无守卫）已作全清单登记（注释级），未扩范围实现（boot 不可达·不成未验证生产改）。
+
+### ⑦ 新前沿（续-73 入口）
+崩溃消除后，`-smp2/-smp4` 下 boot 推进至 INIT 启动后**卡住**：串口末尾重复 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12 sys=y`（约 8 次），SETADDRSPACE 往返不收敛，marker 未达。这与旧 §续-4「VFS 对 INIT Stat 回裸 EIO、往返 7 轮停摆」同族但不同层（本次是 VM SETADDRSPACE 活锁）。**目标① x86 新头号阻塞**。续-73 入口＝定位 caller=4（VM_PROC_NR？）对 pid=9（INIT？）反复发 SETADDRSPACE 的停滞原因（对位 C VM 启动序列 / proc 表 seed / 地址空间交接为何不前进），先取证再定修，未坐实不成修。
+
+⚠ 三目标不缩小：目标① x86 `-smp4` **崩溃根因已克**（idle AP timer·成修提交）但 marker 未达（新阻塞＝INIT sa-call 活锁）；x86 -smp1 marker 已达成；aarch64 模式① OOM（g14）/riscv64 IPC 桥未动；目标② 18-stage / 目标③ minix3 tests 待①贯通。**本轮含生产码改·走 CodeReview·详文见此节。**
