@@ -1,18 +1,18 @@
-# NK4-C 续跑交接 prompt（2026-09-27 交接；接手者上下文 200k，务必按本文件的读法与节奏）
+# NK4-C 续跑交接 prompt（初版 2026-09-27；**2026-09-29 续-50 后全面刷新**；接手者上下文 200k，务必按本文件的读法与节奏）
 
 > 本文件是**接手者的唯一入口**。上一手 agent 已把状态固化在 git 与 `NK4C-WORKLOG.md`。
-> 你的上下文只有 200k —— **不要通读 1400 行的 WORKLOG**，按 §2 的读法读。
+> 你的上下文只有 200k —— **不要通读 7100+ 行的 WORKLOG**，按 §2 的读法读。
 
 ---
 
-> ## 🛑 交接状态（2026-09-28）·本 session 终止
+> ## 🛑 交接状态（2026-09-29）·预算耗尽终止于续-50 实施轮（HEAD `8f6cb996e`）
 >
-> **续-35 已交接至 GLM5.3，本 session（原主线 agent）结束。下次回来从 `NK4C-WORKLOG.md` 文末 §1.120续-35 交接节 / GLM5.3 产出（续-36）接手。**
-> - **稳定基线 commit**：`9ea95f8d8`（续-34b·纯 WORKLOG·零代码改）；交接节 commit：`d8addfff4`（续-35 交接·WORKLOG-only）。
-> - **工作树**：净（tracked 无改动）；子代理 WIP 实现保存为 **untracked** `tmp/nk4a/nk4c35-pt-bind-wip.patch`（134 行/+53−12/3 文件·**不进 commit**）。
-> - **GLM5.3 接手任务入口**：`notes/rewrite/fork-syscall-rewrite/NK4C-GLM53-PROMPT.md`（修模式② pt_bind·目标 aarch64 出 rc marker + x86 不回归·失败模式①本轮不修）。
+> **x86 -smp4 早崩已根因坐实（boot DM 覆盖缺口·续-49）并完成 source-4 最修实施（续-50·host 全绿+真机 4 轮原崩态零出现）；改动故意 NOT-WIRED 留工作树待补验证链+CodeReview。新阻塞腿＝用户栈缺页（见 §3.2）。接手入口＝§2 开工仪式 → §3.1 第一动作。**
+> - 取证→实施链 commit：续-47 `39a4ed49d` → 续-48 `228a4addd` → 续-49 `0b8fc3b2e` → 续-50 WORKLOG `8f6cb996e`。
+> - 工作树 tracked 改动：**仅 `os/kernel/src/dm_coverage.rs`（source-4 最修·未提交·勿丢勿硬提）**＋本交接件。探针全部已回滚（grep NK48-TEMP=0）。
+> - **GLM 七度核查结论**：全 ref（fetch+for-each-ref+log --all --not HEAD+stash）无任何 GLM 修复 commit；唯二 GLM 产物 `NK4C-BUG-AARCH64-VEC-CAP{,-GLM}.md` 系静态分析交接件（自陈禁下结论禁改代码·非补丁）。若用户再提「GLM 已修复可 review」：先按续-48 A 节配方核查，无则诚实上报、不编造 review，继续 §3 真前沿。
 >
-> 以下为原主线交接说明（保留供接手者读上下文）。
+> 以下正文（§0/§3/§8/§11 已按 2026-09-29 前沿重写；§3.4 以下旧 frontier 留档）。
 
 ---
 
@@ -25,7 +25,7 @@
 2. 18-stage 命令面在 OS 上跑通（echo/ls/cat 为核心）；
 3. minix3 的 `tests/` 在机器上跑起来。
 
-**当前所处位置**（2026-09-28 更新）：**续-35 已交接至 GLM5.3**（本 session 终止·详见顶部🛑交接 banner 与 WORKLOG 文末 §1.120续-35）。**终目标① 进度 = x86_64 单核 rc marker ✅（§1.119续-7/§1.120续-26·37 实证）/ aarch64 在途（模式②根因已定谳=exec clear 腿缺 pt_bind·WIP 方向已真机坐实但 x86 回归未解·交 GLM5.3 续-36 收口）/ riscv64 未启动真机**（接入验收清单：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
+**当前所处位置**（2026-09-29 更新）：**续-50 实施轮因 turn 预算耗尽交接**（HEAD `8f6cb996e`·详见顶部🛑 banner 与 §3）。**终目标① 进度 = x86_64 单核手改命令下 marker 曾✅（§1.119续-7）/ 标准 xtask 启动器（-smp4）下未稳：boot DM 栈洞已击穿、新阻塞腿＝用户栈缺页（§3.2）/ aarch64 模式① 未克（§3.0）/ riscv64 未启动真机**（接入验收清单：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
 
 **这是长程任务**：你会连续修很多 bug、做很多轮真机复跑，**不要做一步就停下来汇报**。用户会在需要时手动让你收尾，届时才由上一手 agent 接手。你的职责是：**让工作始终可接手**（每次 commit + 写报告）。
 
@@ -56,8 +56,8 @@
 # ① 看仓库状态与最近提交（了解上一手做了什么）
 cd /home/xzhao/github/minix-rs && git log --oneline -12 && git status --short | grep -v '^??'
 
-# ② 读 WORKLOG 的「当前状态」段（约 50 行，一屏读完）——这是权威状态
-sed -n '1,60p' notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
+# ② 读 WORKLOG 的「当前状态」段（约 60 行，一屏读完）——这是权威状态
+sed -n '1,70p' notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
 
 # ③ 读 WORKLOG 最后 2 节（上一手的最后结论与下一步配方）
 tail -120 notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
@@ -73,7 +73,39 @@ sed -n '/^## 6/,/^## 7/p' notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT
 
 ---
 
-## 3. 当前精确 frontier（2026-09-27 交接点，commit `b82afee4b`）
+## 3. 当前精确 frontier（2026-09-29 交接点，HEAD `8f6cb996e`·续-50 实施轮）
+
+### 3.0 三架构实时进度（目标① 拆解）
+
+| 架构 | 状态 | 当前阻塞项 |
+|------|------|-----------|
+| x86_64 | 标准启动器（xtask 硬编码 -smp4）下 marker **未稳** | 原 boot DM 栈洞崩已被 source-4 击穿（真机 4 轮零出现）；新腿＝r3 型用户栈缺页；候选改动未提交（见 3.1） |
+| aarch64 | 模式① 间歇 ~4GiB OOM（毒 String.len＝栈地址）未克 | g14：H7 纯数据流，追毒 len 标量 store 的源 GPR 生产者（对照 codec）；另缺陷 E（FPSIMD 跨陷入不保存恢复·g6）独立立项 |
+| riscv64 | 未接 IPC 桥，真机未启动 | 接入验收清单 `riscv-reviewlog.md` §A；x86/riscv 同走内联 arch_boot（boot-shim/src/main.rs:86） |
+
+### 3.1 你在接手时刻的唯一在途状态（重要）
+
+`os/kernel/src/dm_coverage.rs` 有一笔 **uncommitted 生产改动**（续-50 实施的 DM source-4 最修：`reserved_regions_candidates` + `establish_boot_dm` source-4 循环 + `kernel_dm_pa_end` 同步 + 文件头四源注释 + 2 个新 mock 测试）。它故意不提交（验证链未走完：x86 仅 4/≥6 轮、aarch64/riscv 回归未跑、CodeReview 未走）。**接手后第一动作**：
+
+1. 开工仪式（§2）后立即 `git diff os/kernel/src/dm_coverage.rs` 核对改动仍在；
+2. 补验证链（续-51 配方，WORKLOG 顶部前沿与文末 §1.120续-50 D 节逐字可执行）：
+   - host：`cargo test -p minix-kernel -p minix-arch -p minix-boot -p minix-types`（基线 825+309·只增不减）+ clippy 零新告警 + nightly rustfmt 零新增漂移（§8.4）；
+   - x86 总 ≥6 轮（已跑 4：nk50-x86-r1..r4·原崩态 −0xfc84/CR2=rsp+0x2c0 零出现）再 ≥2 轮；判据：`tr -d '\0' < serial | grep -c 'minimal boot script'`；r4 已达 `birth s3 runtime ok` 全程无 panic；
+   - aarch64/riscv 镜像各 ≥2 轮不回归（establish_boot_dm 三架构共用）；
+3. 全链绿 → 派 CodeReview 子代理 → 通过才 `git add os/kernel/src/dm_coverage.rs notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 提交（WORKLOG 顶部前沿同步滚动）；不绿则按取证轮处置（不臆造、不硬提）。
+
+### 3.2 下一层阻塞项（r3 型新腿·坐实后再修）
+
+真机现象（nk50-x86-r3）：kernel #PF rip `0x7ffffffe2f88` errcode `0x11`（P|RS|US＝用户态取指/读）——正是用户栈指针 VA（与 r4 `w-fin va=0x7ffffffe2f88` 同一常量）；birth 路径切入用户态后栈/代码页在进程页表未映。r1/r2 仍现 `pagefault in VM`（trap_dispatch.rs:981）。与 boot DM 无关，需坐实：birth s3 → 首次切入用户态前谁负责映 user stack（对照 C copyall/fkinit 与 VM 侧 map 时序·minix3 锤点自行 grep）。另 aarch64 模式①（g14）与 riscv IPC 桥并行另开。
+
+### 3.3 近期已入土结论（勿重翻）
+
+- x86 -smp4 早崩＝boot DM 覆盖缺口（非 SMP 竞态·UEFI 栈落位漂移踩洞）：续-47/48/49 取证链 + 续-50 真机击穿。差值法（rip−db）仅可用于同二进制内钉稳定偏移；kernel.elf nm 反查 shim 内联代码归属无效（续-48 C 方法论纠正）。
+- CR2 探针（KernelPanic 臂补读 cr2）用后即滚；函数级归属如需：shim /MAP（rust-lld COFF）或 PDB 工具。
+
+### 3.4 （历史·2026-09-27 旧 frontier 原文留档）
+
+### 3x. 旧 frontier（2026-09-27 交接点，commit `b82afee4b`）——已被续-5…50 取代，仅供史实查阅（其下 3.1/3.2/3.3 编号属旧体系）
 
 ### 3.1 已完成并真机验证的里程碑（近期，勿重做）
 
@@ -270,7 +302,17 @@ cd /home/xzhao/github/minix-rs/os && ulimit -v 3145728 && cargo run -q -p xtask 
 # 产物：target/image/x86_64/minix.img
 ```
 
-### 8.2 真机复跑（x86_64）
+### 8.2 真机复跑（x86_64·xtask 标启动器＝硬编码 -smp4，qemu.rs:67；当前主战字段）
+
+```bash
+cd /home/xzhao/github/minix-rs/os && cargo run -q -p xtask -- image --arch x86_64 --release
+for i in 1 2 3 4 5 6; do timeout 60 cargo run -q -p xtask -- qemu --arch x86_64 --serial ../tmp/nk4a/<标签>-r$i.serial >/dev/null 2>&1; done
+# 判据（串口含 NUL 必须 tr -d）：
+for i in 1 2 3 4 5 6; do f=../tmp/nk4a/<标签>-r$i.serial; echo "r$i marker=$(tr -d '\0' < $f | grep -c 'minimal boot script') panic=$(tr -d '\0' < $f | grep -cE 'panic|pagefault')"; done
+# 历史对照：修前 2/4 早崩（rip−db＝−0xfc84·CR2=rsp+0x2c0）；续-50 修后 4 轮该崩态零出现，r4 达 birth s3 runtime ok
+```
+
+旧单口径（isa-debug-exit -smp 1 手改命令，§1.119续-7 marker 基线守用，非当前主战场）：
 
 ```bash
 mkdir -p /tmp/nk4a && cp /home/xzhao/github/minix-rs/tmp/nk4a/vars.fd /tmp/nk4a/vars_run.fd
@@ -354,17 +396,17 @@ cargo run -q -p xtask -- qemu --arch aarch64
 
 ```text
 你是 NK4-C「清零者」永续自主任务 agent。Turn budget=40（全新会话）。
-三条终目标（全部满足才算完）：
-1. 三架构（x86_64/aarch64/riscv64）OS 各自启动并打印 rc marker（串口出现 minix-rs rc: minimal boot script marker）。x86_64 已✅（§1.119续-7），当前主战场＝aarch64，其后 riscv64。
+三条终目标（全部满足才算完，不是某个小节点）：
+1. 三架构（x86_64/aarch64/riscv64）OS 各自启动并打印 rc marker（串口出现 minix-rs rc: minimal boot script marker）。当前实况（2026-09-29）：x86 标准 xtask 启动器（-smp4）下 marker 未稳（boot DM 栈洞已击穿、新腿＝用户栈缺页）；aarch64 模式① 间歇 OOM 未克；riscv64 未接 IPC 桥。
 2. 18-stage 命令面跑通（echo/ls/cat 为核心）。
 3. minix3 的 tests/ 上机跑起来。
 难/多轮失败/工作量超预期/连续崩都不是收尾理由。只在三种情况停下问用户：架构裁决级决策 / 破坏性操作 / 终目标三条全满足。
-硬约束：中文回复；绝不动 AI-chats/daily.todo.md；禁 git add -A / git add .（只 add 明确文件路径）；Ground Truth 优先链：Minix3 C 源 > design doc > Rust 码；每单元三件套：mock 基线只增不减 / nightly rustfmt 零新增漂移 / 镜像重建+两次真机签名一致；改逻辑码时派 CodeReview 子代理；WORKLOG 更新 + commit；探针纪律：缺页 handler 内严禁页表 walk、task-close 全回滚探针、工作树保持干净；code-excellence 全程；镜像构建必须 --release（debug 触发 dm_coverage.rs debug_assert）。
-接手入口（先读后干）：notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md ——先执行其 §2 开工仪式，再从 §3.3 开始。**§3.3 只是第一个动作，不是任务边界；任务边界是上面三条终目标**。每轮（探针轮/取证轮/修复轮）交付后立即自行开下一轮：定性→定位（C 锚点）→修→三件套→报告→commit→下一个停点，直到 marker 链推进；禁止以「完成一个探测轮/取证轮」为交付停止，也禁止把目标改写成更小 subset。
+硬约束：中文回复；绝不动 AI-chats/daily.todo.md；禁 git add -A / git add .（只 add 明确文件路径）；Ground Truth 优先链：Minix3 C 源 > design doc > Rust 码；每轮验证链：host 测试基线只增不减（minix-kernel 825 / arch+boot+types 309）/ clippy 零新告警 / nightly rustfmt 零新增漂移 / 镜像重建+真机签名一致；含代码更改的 commit 必走 CodeReview；WORKLOG 更新（顶部前沿+文末新节）+ commit；探针纪律：用后即滚、缺页 handler 内严禁页表 walk；code-excellence 全程；镜像构建必须 --release；未坐实不成修、不臆造未验证生产改。
+接手入口（先读后干）：notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md ——先执行其 §2 开工仪式，再从 §3.1 开始（工作树有一笔未提交的 DM source-4 改动·第一动作是补完它的验证链而非重写它）。**§3.1 只是第一个动作，不是任务边界；任务边界是上面三条终目标**。每轮交付后立即自行开下一轮：定性→定位（C 锚点）→修→验证链→报告→commit→下一个停点；禁止以「完成一个探测轮/取证轮」为交付停止，禁止把目标改写成更小 subset。若用户提「GLM 已修复可 review」：先按交接件 §3/续-48 A 配方核查全 ref，无新 commit 则诚实上报继续真前沿，不编造 review。
 立即开始，不要写计划不要询问。
 /goal 按需调用 /debug skill，每个含代码更改的 commit 都需调用 /code-review，全程注意 /code-excellence，注意代码质量和品质。
 ```
 
 ---
 
-**开始吧。第一步 = §2 的开工仪式；第一个动作 = §3.3 的腿④探针轮；但任务边界 = §0.1 三条终目标，每轮交付后自动续下一轮，不得停在单轮。**
+**开始吧。第一步 = §2 的开工仪式；第一个动作 = §3.1 的 source-4 验证链补全（非重写）；但任务边界 = §0.1 三条终目标，每轮交付后自动续下一轮，不得停在单轮。**
