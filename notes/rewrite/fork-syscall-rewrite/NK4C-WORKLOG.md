@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-51 验证收敛轮（2026-09-29·source-4 验证链补完⇒已提交：host 826/569 全绿·clippy dm_coverage 0 告警·rustfmt NEW=22=HEAD·x86 `-smp4` 累计 8 轮原缺陷签名（vector14·err0·rip−db＝−0xfc84）零出现·aarch64 3 轮签名逐字一致 4461 行·riscv64 2 轮与 HEAD-only 对照同签名·x86 单核旧启动器双跑 marker=2 panic=0；两轮 CodeReview（首轮 PASSED-WITH-SHOULD-FIX·追加改动复审 PASSED）后按 review 采纳 W4 补端到端测试并做两次变异实验坐实判别力；同步修正被证伪的「UEFI 布局 disjoint」注释事实断言）**：目标① 仍未达（x86 8 轮 marker=0），阻塞项已从「boot DM 覆盖缺口」推进到下一层——r3 型用户栈缺页（rip `0x7ffffffe2f88` errcode `0x11`）与 r6 型 vector 13（经 `head-base-r3.serial` 逐字比对判定属 HEAD 预存）；**riscv 侧同族腿已现形：`scause=0xd stval=0x3ffffe2fbc`＝riscv 用户栈指针 VA，与 x86 同一构造⇒该腿跨架构同源**。续-52 入口＝坐实该腿（birth s3→首次切入用户态前谁映 user stack·对照 C `copyall`/`fkinit` 与 VM 侧 map 时序）。开放项（本轮按 review 记录未实施·见文末续-51 D 节）：W1 区间减法收口 drop-whole 残余尾块、W2 shim `ram_top` 过滤使「内核镜像/栈必在 source-4 内」不成立＋常驻 `dm-self` 正证自检、W3 与 `build_identity_windows` 的排序/合并/页数 cap 对齐（防 bump 池耗尽型拒启）。⚠ 三目标不缩小。**工作树 tracked 改动＝本 WORKLOG（提交时含 dm_coverage.rs）**。
+> **🛑 最新前沿＝§1.120续-52 x86 现状重定位轮（2026-09-29·重建当前 HEAD（source-4 已提交 `b09665415`）真机复跑·两大结论）**：① **-smp1 单核在当前 HEAD 复现 `marker=2 / panic=0`**（gtick 连跑到 0x4a38≈19000 tick 无崩·`birth=26` 全阶段推进）＝目标① x86 单核里程碑（§1.119续-7）在 source-4 提交后仍绿、可复现；② **-smp4 标准启动器下 r3 型 vector14 用户栈缺页已消失**（vec14=0），boot 现推进到 `birth s5 -> main`，新阻塞＝**SMP 调度/trap_style 竞态**：三轮时变签名 r1=`pagefault in VM`(trap_dispatch.rs:981)、r2/r3=`no entry trap style known`(lib.rs:3635 C 对位 arch_system.c:597)。⇒ **续-51「用户栈映射腿跨架构同源」假设被 x86 侧证伪**：映射在 -smp1 工作正常、marker 打得出来，x86 残腿不是 user stack 页表映射而是 **SMP 并发**（restore_user_context 在 :3613 每次读后即清 NoEntry，后续调度/唤醒/迁移若在未经新 trap 入口重设 trap_style 时恢复进程即读到 NoEntry；首进程 bootstrap 由 `set_boot_cpu_context`(proc.rs:1455) 种 FullContext 无漏）。**关键取证障碍**：-smp4 多核并发串口本身污染 rip/证据（续-51 已证 rip 出现 ASCII 碎片），噪声探针使 clean SMP 证据不可得。续-53 入口＝(甲) 降探针噪声或加 per-cpu 串口缓冲以取 clean -smp4 主故障帧；(乙) 追 IPC reply 唤醒/进程迁移路径是否绕过 trap 入口直恢复（对照 C schedutil.c `pick_runnable` + arch_system.c 恢复门）；(丙) **独立复核 riscv `scause=0xd stval=0x3ffffe2fbc`**——riscv 走单 hart 且 source-4 零信号，若其在用户栈 VA 真崩则与 x86 SMP 不同源，属映射腿本身，须单独坐实不并入。⚠ 三目标不缩小（目标① x86 单核 marker✅复现·-smp4 未达；aarch64/riscv 未复跑本轮）。**工作树 tracked 改动＝本 WORKLOG（无生产码改）**。
+>
+> **（历史·§1.120续-51 验证收敛轮（2026-09-29·source-4 验证链补完⇒已提交：host 826/569 全绿·clippy dm_coverage 0 告警·rustfmt NEW=22=HEAD·x86 `-smp4` 累计 8 轮原缺陷签名（vector14·err0·rip−db＝−0xfc84）零出现·aarch64 3 轮签名逐字一致 4461 行·riscv64 2 轮与 HEAD-only 对照同签名·x86 单核旧启动器双跑 marker=2 panic=0；两轮 CodeReview（首轮 PASSED-WITH-SHOULD-FIX·追加改动复审 PASSED）后按 review 采纳 W4 补端到端测试并做两次变异实验坐实判别力；同步修正被证伪的「UEFI 布局 disjoint」注释事实断言）**：目标① 仍未达（x86 8 轮 marker=0），阻塞项已从「boot DM 覆盖缺口」推进到下一层——r3 型用户栈缺页（rip `0x7ffffffe2f88` errcode `0x11`）与 r6 型 vector 13（经 `head-base-r3.serial` 逐字比对判定属 HEAD 预存）；**riscv 侧同族腿已现形：`scause=0xd stval=0x3ffffe2fbc`＝riscv 用户栈指针 VA，与 x86 同一构造⇒该腿跨架构同源**。续-52 入口＝坐实该腿（birth s3→首次切入用户态前谁映 user stack·对照 C `copyall`/`fkinit` 与 VM 侧 map 时序）。开放项（本轮按 review 记录未实施·见文末续-51 D 节）：W1 区间减法收口 drop-whole 残余尾块、W2 shim `ram_top` 过滤使「内核镜像/栈必在 source-4 内」不成立＋常驻 `dm-self` 正证自检、W3 与 `build_identity_windows` 的排序/合并/页数 cap 对齐（防 bump 池耗尽型拒启）。⚠ 三目标不缩小。**工作树 tracked 改动＝本 WORKLOG（提交时含 dm_coverage.rs）**。
 >
 > **（历史·§1.120续-50 实施轮（2026-09-28·DM source-4 最修已实施并通过 host 验证——改动在工作树，因验证链未走完暂 NOT-WIRED 不提交）**：按续-49 D 规格在 `os/kernel/src/dm_coverage.rs` 实施 source-4（reserved_regions→kernel DM·overlaps 整段 drop·VM DM 不加·`kernel_dm_pa_end` 同步·新增 2 个 mock 测试）。host：dm_coverage 9/9（含新 2）·minix-kernel 825 全绿·arch/boot/types 309 全绿·clippy 对 dm_coverage.rs 零告警。**x86 真机 4 轮（nk50-x86-r1..r4）：原 DM 栈洞崩态（rip−db＝−0xfc84·CR2=rsp+0x2c0）零出现＝续-49 坐实的缺陷被击穿**；r4 跑到 `birth s3 runtime ok`（历史同点位 r1 型轮次之后才崩）且全程无 panic。但暴露**新一层阻塞**：r1/r2 仍现 `pagefault in VM`（trap_dispatch.rs:981）；r3 新形态 kernel #PF **rip 0x7ffffffe2f88 errcode 0x11**（＝用户栈指针 VA·present+RS+US·r4 同一常量）＝birth 路径经用户栈返回/取指而该页在进程页表未映——**与 boot DM 无关的下一个目标① 阻塞项**（marker 仍未达 4/4）。下一轮：(a) 补跑 x86 ≥6 轮确认 r2/r3 型崩率相对修前（2/4 早崩）的净变化＋aarch64/riscv 各 ≥2 轮回归；(b) 坐实用户栈缺页腿（birth s3→首次调度前映 user stack 的时序·对照 C copyall/fkinit）；(c) 全链绿后连同本改动一起走 CodeReview 提交（勿提交未走完验证链的生产改）。⚠ 三目标不缩小。**工作树 tracked 改动仅 dm_coverage.rs（+文件头注释）＋本 WORKLOG。**
 >
@@ -7202,4 +7204,34 @@ dm_coverage 9/9（含新 2）；`cargo test -p minix-kernel` 833 项（825+8 ign
 
 ### F. 新停点（续-52 入口）
 目标① 三架构仍全部未达 marker。头号腿＝**用户栈/首进程页表映射**（x86 `rip 0x7ffffffe2f88` err `0x11` ↔ riscv `scause=0xd stval=0x3ffffe2fbc` 同源）：birth s3 → 首次切入用户态前谁负责映 user stack，对照 C `minix3/minix/kernel/` 的 `copyall`/`fkinit` 与 VM 侧 map 时序（锤点自行 grep）。并行：x86 vector 13 需 ≥3 轮 HEAD-only 对照才能落「预存」定论；aarch64 模式①（g14 H7 数据流）与 riscv IPC 桥另开。⚠ 三目标不缩小。
+
+---
+
+## §1.120续-52 x86 现状重定位轮（2026-09-29·重建当前 HEAD 真机复跑·用户栈腿被 -smp1 证伪·新前沿＝SMP trap_style 竞态）
+
+### A. 接手第一动作收口
+续-51 规定链条的最后一环——提交已完成：HEAD 前进至 `b09665415`（2 files changed +344/-6），`git add` 仅两个明确路径（`os/kernel/src/dm_coverage.rs` + 本 WORKLOG），未用 `-A`。提交前复核：`MUTATION-TEMP` 残留=0、`dm_coverage.rs` md5=`d9301f81…` 与审查通过最终备份一致、两处 source-4 循环在位（:132/:220）、dm_coverage 10/10、rustfmt NEW=22=HEAD。**续-50 NOT-WIRED 状态结束。**
+
+### B. 续-52 定位：C 锚点与真值链
+- WORKLOG 入口助记 C 锚点 `copyall`/`fkinit` 在 `minix3/` 全树 grep **0 命中**（仅 openssl/dhcp）＝非字面符号，重新按真值定位。
+- 真值锚点＝`os/commands/sbin/init/src/execve.rs` 头的 libc 对：`minix3/minix/lib/libc/sys/stack_utils.c:133` `vsp = minix_get_user_sp() - stack_size`；VM 侧 `install_boot_stack`（`vm_server.rs:966`）对位 C `main.c:346-411`。
+- `install_boot_stack` 设计：栈区＝user_sp 下方 `DEFAULT_STACK_LIMIT=4MiB` 窗口（ANON+WRITABLE），**仅帧页 eager 物化**，其余页按需缺页转发 VM。崩 VA `0x7ffffffe2f88` = `user_sp(0x7ffffffff000) − 0x1c078`（顶下约 112KB）＝进程运行后 SP 下降到按需页。
+
+### C. 真机复跑（当前 HEAD·镜像重建 --release·标签 nk52）
+- **-smp1 手改启动器两轮**（`nk52-smp1-r1/r2`）：**`marker=2 / panic=0 / vec14=0 / vec13=0 / birth=26`**，行数 10671/10659，gtick 连跑到 0x4a38≈19000 tick 无崩（timeout 124＝系统稳定长跑非挂死）。⇒ **目标① x86 单核里程碑（§1.119续-7）在 source-4 提交后仍绿且可复现**。
+- **-smp4 xtask 标准启动器三轮**（`nk52-smp4-r1/r2/r3`）：marker=0、行数仅 136-147（早崩停机）。**r3 型 vector14 用户栈缺页已消失（vec14=0）**，boot 推进到 `birth s3 runtime ok` → `birth s5 -> main`。新签名时变：r1=`pagefault in VM`(trap_dispatch.rs:981)×2、r2/r3=`no entry trap style known`(lib.rs:3635)×2。
+
+### D. 定性：从「用户栈映射腿」重定位为「SMP trap_style/调度竞态」
+- `no entry trap style known`（lib.rs:3635）＝`restore_user_context`/`finish_and_restore` 读 `p.trap_style` 为 None 时 panic（C arch_system.c:597-598）。:3610-3613 每次读完即清 `NoEntry`。
+- 首进程 bootstrap 由 `set_boot_cpu_context`（proc.rs:1453-1456）种 `FullContext`（注释明写专为避免首次调度撞此 panic）＝**bootstrap 无漏**。
+- ⇒ 崩在**后续调度**：进程被 IPC reply 唤醒/跨 CPU 迁移后，若恢复路径未经一次新 trap 入口重设 trap_style，即读到上次清理后的 NoEntry。
+- **关键区分证据**：-smp1 能连恢复无数次且打 marker ⇒ 恢复腿本身正确；差异仅在 SMP 并发。⇒ **续-51「用户栈映射腿跨架构同源」假设被 x86 侧证伪**：映射在 -smp1 工作正常，x86 残腿＝SMP 并发，非页表映射。
+- **未坐实不成修**：本轮不能写 SMP 生产修。障碍＝-smp4 多核并发串口本身污染 rip/证据（续-51 已证 rip 出 ASCII 碎片），pfm/birth/kdst/tick 探针从多核并发写同一串口 ⇒ clean 主故障帧不可得。
+
+### E. 诚实保留项（不并入 x86 结论）
+- **riscv `scause=0xd stval=0x3ffffe2fbc`**：riscv 走单 hart 且 source-4 零信号（opensbi reserved_regions=&[]）。若其在用户栈 VA 真崩，则与 x86 SMP **不同源**，属映射腿本身，必须单独坐实，不得因 x86 侧证伪而一并撤销。本轮未复跑 riscv/aarch64（只动 x86）。
+
+### F. 提交与续-53 入口
+- 本轮 WORKLOG 无生产码改 ⇒ 免 CodeReview（与续-50/51 惯例一致）；`git add notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径）。
+- 续-53 入口：(甲) 降探针噪声或加 per-cpu 串口缓冲取 clean -smp4 主故障帧；(乙) 追 IPC reply 唤醒/进程迁移是否绕过 trap 入口直恢复（对照 C schedutil.c `pick_runnable` + arch_system.c 恢复门）；(丙) 独立复核 riscv 单 hart 用户栈 VA 是否真崩。⚠ 三目标不缩小。
 
