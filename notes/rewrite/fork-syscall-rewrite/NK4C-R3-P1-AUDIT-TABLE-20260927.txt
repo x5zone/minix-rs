@@ -1,0 +1,215 @@
+# P1 v2：214 笔（AGT 集合 123）
+92ecfbbb2 SELF +135/-6/4 ok :: diag(edge1,nk4c): 449-livelock 取证实锤——9 台出生服务器 VM_PAGEFAULT
+68d97a732 SELF +182/-5/2 ok :: fix(edge1,nk4c): F14 Phase 3 drain 同步拷贝用户缓冲修 449-livelock—
+720083059 SELF +108/-0/4 ok :: diag(edge1,nk4c): 1.9 取证——9×SIGSEGV(0xb) 定向命中 pm+8 服务器（VM 
+0d84604a7 SELF +22/-0/1 ok :: diag(edge1,nk4c): 1.9 补 pfc 探针——pm+出生服务器每次 fault 打 (ep,rip
+fe383c627 SELF +1/-0/1 ok :: diag(edge1,nk4c): pfc 探针改过滤 cr2==0（致命空指针 fault 稀少，cap 48 不
+1ae82daee SELF +35/-0/1 ok :: docs(edge1,nk4c): 1.9b 崩溃点锁定——9 进程同于 minix_rt::crt0::rt_bi
+0cc4cb610 SELF +14/-0/1 ok :: docs(edge1,nk4c): 1.9b 补充——崩溃指令 objdump 实锤：rt_birth+0x101 
+9c9504686 SELF +22/-0/1 ok :: docs(edge1,nk4c): 总计划制定（A-K 单元梯覆盖至终目标三判据；A=rt_birth 修复当前、B
+477609dac SELF +24/-0/1 ok :: docs(edge1,nk4c): 1.9c 根因收敛——VM 双帧分配器记账分裂实锤（boot page_allo
+fa892c627 SELF +6/-0/1 ok :: docs(edge1,nk4c): A1 读码审计——PageFrames 为状态表非分配器，双账本候选收窄至 gl
+5c654c959 SELF +12/-4/1 ok :: fix(edge1,nk4c): F15 删除 Phase 3 队列唤醒的 set_ipc_return_code(
+42676e165 SELF +16/-12/1 ok :: fix(edge1,nk4c): F15 修订——队列唤醒完成码按 SENDING_FROM_KERNEL 门控：真
+7eaea682b SELF +24/-0/1 ok :: docs(edge1,nk4c): 1.9d F15 修复闭环——rt_birth 九进程崩溃根因链定案（FROM_
+f2c1b4183 SELF +43/-1/2 ok :: diag(edge1,nk4c): 顶部状态收口（单元 A 完成、1.10=新 frontier）+ s14g te
+d8d326781 SELF +23/-0/1 ok :: docs(edge1,nk4c): 1.10 定性——非缺页循环（fa 全唯一）；420s 长跑证真卡死；PM se
+9642964fa SELF +4/-0/1 ok :: docs(edge1,nk4c): 1.10 补充——fmt 死循环定位 init.rs:711 屏障 sendre
+ba7862350 SELF +13/-3/2 ok :: fix(edge1,nk4c): 1.10 补充二——init.rs 屏障 expect 改 errno 数值暴露（
+5756de6ca SELF +42/-0/2 ok :: diag(edge1,nk4c): 1.10c 覆盖性根因——timer IRQ boot 早期死亡实锤（pmsta
+dcbfda047 SELF +19/-0/2 ok :: diag(edge1,nk4c): 1.10c 定案——s14n 零 tick 打点：clock 臂 150s 调用
+69f9dbc68 SELF +7/-0/1 ok :: docs(edge1,nk4c): A1 静态审计完成——IRQ0 落通用 IRQ 臂（仅软件时钟）而 quantu
+128df8a5b SELF +24/-0/1 ok :: fix(edge1,nk4c): 通用 IRQ 臂 TIMER_IRQ 分支补 local_tick+check_q
+e0fc5f268 SELF +104/-0/4 ok :: fix(edge1,nk4c): 8259 PIC bring-up 缺失补齐——pic_init（ICW 重映射 
+62c2c03ba SELF +23/-0/4 ok :: diag(edge1,nk4c): PIC bring-up 首轮修复落地（pic_init/pic_eoi/lap
+4cdd34096 SELF +86/-0/4 ok :: diag(edge1,nk4c): s14t 里程碑——timer 交付链修通实锤（gtick 20 打点=≥200
+ac86f7f03 SELF +20/-0/1 ok :: docs(edge1,nk4c): 1.10d 收口——timer 交付链修通里程碑（133Hz 实锤、boot_i
+9e44ac99a SELF +37/-0/2 ok :: diag(edge1,nk4c): 1.10e 终定位——PM panic 后 exit_via 自旋（发 PM_E
+5ebb8b867 SELF +6/-0/1 ok :: docs(edge1,nk4c): 1.10f——panic 原因落点=PM receive 连续失败 fail-f
+b0c19e0e4 SELF +29/-1/2 ok :: diag(edge1,nk4c): 1.10g 收口——receive-failure 假设证伪（pm-recv-e
+0914f659b SELF +68/-0/2 ok :: diag(edge1,nk4c): 1.10h——panic 入口零依赖直打落地（每轮恰 2 次 panic 确认）
+cb4fa9330 SELF +27/-4/2 ok :: diag(edge1,nk4c): 1.10i 两个 panic 站点锁定——sched/src/main.rs:7
+d62ebe33a SELF +27/-0/2 ok :: diag(edge1,nk4c): 1.10i 收口——String downcast 未命中（panic=abor
+5f6b26e6e SELF +4/-0/1 ok :: docs(edge1,nk4c): 1.10i 补充——dispatch_setalarm 仅 OK/EPERM 两
+ad1d3b9a6 SELF +45/-4/2 ok :: fix(edge1,nk4c): VFS 屏障改阻塞 send（C main.c:436 ipc_send 对位，原
+1d75149d6 SELF +12/-0/1 ok :: docs(edge1,nk4c): 1.10j 状态板——SCHED+PM 同族 receive 连续失败为主根因形
+cac7698e4 SELF +37/-0/2 ok :: diag(edge1,nk4c): 1.10k 定案——PM receive 被 IPC 权限层 ECALLDENI
+8d90e6fcc SELF +10/-0/1 ok :: docs(edge1,nk4c): 1.10k 补充——ipcerr 仅 4 条（ds EDEADSRCDST×3 
+215a7769f SELF +18/-0/1 ok :: docs(edge1,nk4c): 1.10l 根因定案——SENDREC 原子性缺口（drain 即完成 sysc
+6db182c98 SELF +9/-0/1 ok :: diag(edge1,nk4c): 1.10m 新前沿——detect_deadlock SEND 分支误报 ELO
+ea1cbbf9c SELF +23/-2/1 ok :: fix(edge1,nk4c): 1.10l 修复落地——Phase 3 drain 对 REPLY_PEND（SE
+b3e337479 SELF +4/-0/1 ok :: docs(edge1,nk4c): 1.10m 补充——2-cycle XOR 静态复核与 C 等价；下一轮 det
+a0c2ef0a8 SELF +31/-0/2 ok :: diag(edge1,nk4c): 1.10n 定案——PM↔sched SEND-SEND 真死锁（dd2 实锤 
+8646dc69a SELF +6/-0/1 ok :: diag(edge1,nk4c): 1.10n 补充——dd2 实锤 PM 普通 SEND↔sched SEND 互
+6f6f5bb25 SELF +6/-0/1 ok :: diag(edge1,nk4c): 1.10n 补充二——dd2 定案 PM 普通 SEND↔sched SEND 
+4381db3c2 SELF +29/-0/2 ok :: diag(edge1,nk4c): 1.10o 收口——dd2m 实锤 PM 发 0x900(VFS_PM_INIT
+6cf91d810 SELF +18/-0/2 ok :: diag(edge1,nk4c): 1.10p 根因闭合——dd2m 实锤 PM 的 vfs_endpoint=4(
+f368ebe46 SELF +4/-0/1 ok :: docs(edge1,nk4c): 1.10p 补充——vfs_endpoint 常量正确(1)与 dst=4 实测
+9afa7a392 SELF +26/-0/2 ok :: diag(edge1,nk4c): 1.10p 定案——ELOCKED=PM m_type=3 阻塞 send↔sc
+b1dd6c28f SELF +4/-0/1 ok :: docs(edge1,nk4c): 1.10p 补充——ELOCKED 定性精确化为 PM reply(code=3
+687a5bf51 SELF +16/-4/3 ok :: fix(edge1,nk4c): sched KernelIpcTransport 补 sendnb 委托（trai
+7fedceb08 SELF +8/-0/1 ok :: docs(edge1,nk4c): 1.10q 收口——sched sendnb 已生效；PM 陈旧 p_sendm
+0c88d7cda SELF +43/-5/2 ok :: diag(edge1,nk4c): 1.10r 里程碑——系统完整 boot 进入正常 idle（全服务器 RECE
+14523a9d7 SELF +12/-0/1 ok :: docs(edge1,nk4c): 1.10s——/bin/sh 已播种入 imgrd；下一环=init 侧 rc 
+3fd11bfe9 SELF +48/-14/1 ok :: feat(edge1,nk4c): imgrd proto 播种 /bin/sh（generate_etc_prot
+9c045f743 SELF +9/-0/1 ok :: docs(edge1,nk4c): 1.10t 收口——init 停在 receive(ANY) 且状态机迁移未打点
+defec38dd SELF +27/-0/2 ok :: diag(edge1,nk4c): 1.10t-b——init-state 零输出定案 init 未进入状态机（卡在
+6264590cb SELF +15/-0/2 ok :: diag(edge1,nk4c): 1.10q 收口——elock 补 src 定案：sched setalarm 
+f70aba1f4 SELF +4/-0/1 ok :: docs(edge1,nk4c): 1.10q 精化——elock mt=3 勘定为 SENDREC 调用号盖章（P
+ebd896443 SELF +17/-0/1 ok :: diag(edge1,nk4c): init main 前段 imark 逐步打点入仓（imain-0..6：rt-
+0111b476e SELF +21/-0/2 ok :: diag(edge1,nk4c): 1.10t-b2——elock 全量状态捕获（PM↔sched 双向 SENDI
+ba0071680 SELF +21/-0/2 ok :: diag(edge1,nk4c): 1.10u 定案——ELOCKED=PM 的 taskcall（SCHEDULI
+80d47805d SELF +12/-0/1 ok :: diag(edge1,nk4c): 1.10w 收口——互卡消息定案（PM 的 WAIT4 语义 m_type=3 
+108ad5c54 SELF +9/-0/1 ok :: diag(edge1,nk4c): 1.10w 收口——elock 补 src 字段入仓；1.10 定性保持（PM 
+c77c086d2 SELF +12/-0/1 ok :: diag(edge1,nk4c): 1.10w2 状态固化——elock 补 PM 栈回溯实锤 ELOCKED 调用
+f18812168 SELF +8/-0/1 ok :: diag(edge1,nk4c): 1.10y 状态固化——elock 全量状态探针落地（PM↔sched 互卡全现
+d776f498e SELF +15/-1/2 ok :: diag(edge1,nk4c): 1.10x 定位完成——ipcerr 扩量+过滤一轮即中：ELOCKED 唯一发
+7966b80d6 SELF +54/-6/2 ok :: diag(edge1,nk4c): 1.10z 定案——sched 死因=balance_queues re-arm
+166108b4f SELF +5/-0/1 ok :: docs(edge1,nk4c): 1.10w3——sched 用户态 diagctl 静默失败实锤（诊断通道不可用
+87d2138be SELF +6/-0/1 ok :: diag(edge1,nk4c): 1.10w4——panic location 行号打点入仓（LN hex）；sc
+a6f2ba0c3 SELF +21/-2/1 ok :: diag(edge1,nk4c): balance_queues re-arm errno 打点（rearmlen）
+ae7efe9ca SELF +29/-10/2 ok :: fix(edge1,nk4c): PM taskcall ELOCKED(208) 重试臂落地（sched.rs t
+be922849d SELF +15/-2/2 ok :: fix(edge1,nk4c): taskcall ELOCKED 无界重试版（对照 C 阻塞语义）；s16d 实测
+a6972c654 SELF +9/-0/1 ok :: diag(edge1,nk4c): 1.11 根因收敛——init 的 getuid sendrec 被 PM ca
+55993215e SELF +12/-0/1 ok :: diag(edge1,nk4c): 1.11a 根因定案——RS priv 设置（SetSys→SYS_PROC）与
+4ba620526 SELF +7/-0/1 ok :: docs(edge1,nk4c): 1.11b 收口——sched→PM 的 SYS_DIAGCTL 静默失败为独立
+b803a3c5a SELF +8/-0/1 ok :: docs(edge1,nk4c): 1.10x2 状态——taskcall 重试臂生效（elock 仅 1 发瞬时互
+870c3c385 SELF +9/-0/1 ok :: docs(edge1,nk4c): 1.11c 收口——sched setalarm EPERM 根因收敛至 boo
+1520836c7 SELF +7/-0/1 ok :: docs(edge1,nk4c): 1.10y2 收口——sched 侧 diagctl 静默失败总根因候选=RS 
+8a7150ff6 SELF +13/-1/1 ok :: diag(edge1,nk4c): diag-efault 探针入仓（diagctl 拷贝失败 caller 打点）
+cdd65b5ec SELF +12/-0/1 ok :: docs(edge1,nk4c): 1.10y2-b 本轮收口——hex 编码循环偏移 bug 登记（to_be_b
+acfe2383a SELF +7/-0/1 ok :: docs(edge1,nk4c): 1.11b 状态固化——sched:77 panic=init_scheduli
+30925ab64 SELF +1/-1/1 ok :: fix(edge1,nk4c): sched settle 应答改 sendnb（KernelIpcTranspor
+4a781030c SELF +13/-0/1 ok :: docs(edge1,nk4c): 1.10x3 状态固化——ipcerr 扩量+过滤落地、CallDenied×2
+4f3c7fad4 SELF +12/-0/1 ok :: diag(edge1,nk4c): 1.11a sched EPERM 根因定位——do_start 的 SYS_S
+a10a841f1 SELF +4/-0/1 ok :: docs(edge1,nk4c): 1.11a 补充——elock 探针配方精确化（c_rts/c_rpv/x_rp
+b0f4ff54c SELF +416/-51/7 ok :: fix(edge1,nk4c): 1.10z 三根因连修——drain 停车 getfrom=目的地 / RS pr
+251c8144b SELF +55/-3/3 ok :: fix(edge1,nk4c): 1.11d——Phase 3 drain 同步拷贝漏盖 m_source，init
+839ecbd4b SELF +48/-11/4 ok :: fix(edge1,nk4c): 1.12a——engine wake 记录单槽互覆 → 4 槽全量入队（F10d 
+e803c6fea SELF +10/-0/1 ok :: docs(edge1,nk4c): 1.12c——SENDA 永久 stub 定性（RS_INIT 从未可投递）+ 
+b4ef684a8 SELF +1/-1/1 ok :: docs(edge1,nk4c): 顶部状态刷新至 1.12c frontier（SENDA stub 定性 + W
+d6f176451 SELF +18083/-27/164 vendored(158);BIG+18083 :: wip(edge1,nk4c): 1.12d SENDA 真读实现（跨 root 翻译+DM 窗口，真机零 GP f
+b7a7d05b8 SELF +362/-1/2 ok :: docs(edge1,nk4c): 新增 200k 上下文专用续跑交接 prompt（NK4C-RESUME-PRO
+50cf5db3f AGT +43/-5/2 ok :: fix(edge1,nk4c): 1.12e——copy_via_root_pages 的 to_kernel 两臂
+db0a43f59 AGT +407/-33/6 ok :: fix(edge1,nk4c): 1.13——verify_grant 把内核栈 grant_entry 经 DM 
+001727f92 AGT +9/-1/1 ok :: docs(edge1,nk4c): 1.13 固化 B5 根因与修复配方（DebugAgent + 亲自核 C）
+281321fd7 AGT +180/-26/3 ok :: fix(edge1,nk4c): 1.14——VM RS_INIT 出生报告改用异步腿 asynsend(AMF_N
+11530b2ac AGT +111/-8/7 ok :: fix(edge1,nk4c): 1.15——notify 裸清 RECEIVING 不补入队半家族修复（B6）
+a6effd3b3 AGT +146/-32/4 ok :: fix(edge1,nk4c): 1.16——多条目异步 SENDA 端到端修复（B7：内核槽距 80→96 + R
+330085bfc AGT +342/-67/21 ok :: fix(edge1,nk4c): 1.17——出生回报握手全链路修复（B8 deliver_async + B9 d
+9aa295fb5 AGT +6/-2/1 ok :: docs(nk4c): 1.17 订正 B10 新停点误标(VFS/sys_getinfo->SCHED心跳+ini
+d2ef09ce0 AGT +47/-10/2 ok :: fix(edge1,nk4c): 1.18——init 身份门 getpid 线格式读法错位修复（B10）
+36031e4eb AGT +24/-2/1 ok :: docs(nk4c): 1.19 B11 诊断定案交接（imgrd 未喂 MFS→console_ok=false→
+9b094b607 AGT +258/-86/5 ok :: fix(nk4c): B11 imgrd→MFS 零拷贝嵌入，消除 BOOT_IMGRD 空→SingleUser 
+7b7cb8653 AGT +10/-0/1 ok :: fix(nk4c): B12 sendrec Path A 投递完成后清 REPLY_PEND，消除 INIT 被 
+b195f2671 AGT +22/-1/1 ok :: docs(nk4c): §1.21 B12 修复记录 + 顶部状态更新至 frontier=1.21/B13
+b9e3b0ec9 AGT +18/-1/1 ok :: docs(nk4c): §1.21 B13 诊断初步发现补充（已排除清单+候选方向优先级），交接用
+0c6b58bd8 AGT +166/-3/2 ok :: test(nk4c): 1.22——B13 深入诊断：宿主集成测试证实 MFS lookup 正确 + WORKLO
+8a55326b8 AGT +22/-2/1 ok :: docs(nk4c): 1.23——B13 Bug2(EIO) 根因锁定：nk4a vg 探针实锤内核读到 VFS 
+5de52ddb5 AGT +752/-388/10 ok :: fix(nk4c): 1.24——B13 Bug2(EIO) 修复：每进程单一 grant 表
+4da703ad4 AGT +31/-1/1 ok :: docs(nk4c): 1.25——B14 根因修正：rc marker 不可达真因=stat(/dev/conso
+5bbc5360d AGT +81/-8/3 ok :: fix(nk4c): 1.26——B14 修复：VFS 同步 readsuper 补 transid 线格式 + 去
+ad2965e0d AGT +177/-27/2 ok :: fix(nk4c): 1.27——B15 修复：imgrd Static 加有界 CoW 覆盖层，clean-rw 
+9ff827295 AGT +40/-1/1 ok :: docs(nk4c): 1.28——B16 侦察补：addr2line 归属 init 反复 rip + 可观察性射
+bc245584d AGT +58/-1/1 ok :: docs(nk4c): 1.29——B16 侦察 A 完成：init runcom.rs + PM fork.rs 
+71ae0dc8b AGT +86/-15/6 ok :: fix(nk4c): 1.30——B16 部分修：PM 错误回执与 C _syscall 契约同构取负（Fork/S
+42a4b6b76 AGT +39/-0/1 ok :: docs(nk4c): 1.31——B17 侦察（探针 B）：init runcom.rs 5 点 diagctl 
+251b44460 AGT +34/-0/1 ok :: docs(nk4c): 1.32——B17 侦察 C（PM fork.rs 3 点 Err 臂探针）：c12 命中矩
+74b5c3a00 AGT +38/-1/1 ok :: docs(nk4c): 1.33——B17 侦察 D（PM 侧 dump vm_fork 回复 m_type 探针）
+c46ba35a7 AGT +1/-0/1 ok :: docs(nk4c): 1.33 补——B17 (C) 读码精确候选：内核 dispatch_fork 两处校验失败
+83ca265e5 AGT +152/-27/2 ok :: fix(nk4c): 1.34 B17——内核 dispatch_fork 误用 caller_nr(=VM) 而非
+1b81386ce AGT +33/-1/1 ok :: docs(nk4c): 1.35——B18 侦察钉死终态机制：c16 日志 24154 init-state Run
+5c4038d29 AGT +94/-3/3 ok :: fix(nk4c): 1.36 B18——VFS service_pm 回执 m7i1 未 echo 目标端点→PM
+967b613c9 AGT +13/-4/3 ok :: fix(nk4c): 1.37 B19——PM sched_start_user 误传 scheduler endp
+263c6f733 AGT +107/-9/3 ok :: fix(nk4c): 1.38 B20——内核 fork_from 塞 default cpu_context+No
+5004f4e80 AGT +1/-1/1 ok :: docs(nk4c): 1.39 B21 侦察精确化——坐实 pm 000ff 的 m_source=Endpoin
+987b82c63 AGT +1/-1/1 ok :: docs(nk4c): 1.39 B21 取证 c29/c30 修正初判——坐实 pm 000ff 是硬件中断 no
+13bdba063 AGT +96/-3/2 ok :: fix(nk4c): 1.40 B21——sync_status_register_to_frame RBX→R10
+055fd91b9 AGT +22/-0/1 ok :: docs(nk4c): 1.41 B22 侦察——c32 日志裁决推翻「notify 风暴」初判,坐实终态 SCHE
+c3e6a7271 AGT +26/-1/1 ok :: docs(nk4c): 1.42 B22 侦察纠正——c32 tail-dump 实锤推翻 §1.41「SCHED 
+960a217ad AGT +38/-1/1 ok :: docs(nk4c): 1.43 B22侦察纠正——作废§1.42'child queued=no入队违例'方向(C
+031133084 AGT +35/-1/1 ok :: docs(nk4c): 1.44 B22崩溃rip实锤(c33真机取证)——pfc探针过滤器加12捕得child(1
+2fa9b927f AGT +31/-1/1 ok :: docs(nk4c): 1.45 B22根因彻底闭环(c34真机帧dump+读码交叉验证C)——铁证一pick->0
+441b5ecbc AGT +145/-18/4 ok :: fix(nk4c): 1.46 B22修复(含代码·VM侧)——忠实移植C fork.c:89-95两条配套腿,消除
+3dfa7bac5 AGT +2/-0/1 ok :: docs(nk4c): 1.47 B23全量tail-dump静态依赖图实锤(c35两dump逐字节同=硬死锁)——
+ef07f760f AGT +374/-67/7 ok :: fix(nk4c): 1.48 B23+B24+B25三根因联治(含代码·VM/内核/PM)——消除INIT崩链+全
+18d4c4512 AGT +29/-1/1 ok :: docs(nk4c): 1.49 B26误判作废+B27新阻塞(纯侦察·无生产码)——回滚干净HEAD ef07f7
+a534d3808 AGT +214/-24/4 ok :: fix(nk4c): 1.50 B27部分修(含代码·内核侧·BKL owner跟踪)——消除PROC_TABLE并
+dade6883f AGT +415/-260/8 ok :: fix(nk4c): 1.51 B27 copy层根因修复(含代码·内核侧·18站点virt_to_phys→Add
+1faf94197 AGT +117/-49/2 ok :: fix(nk4c): 1.52 BKL两步写单原子硬门(含代码·内核侧·smp.rs)+§1.49早期boot pa
+52934500b AGT +203/-1/4 ok :: fix(nk4c): 1.53 VM free-list空真根因=firmware-heap腐化(含代码·内核侧·f
+431106b3d AGT +198/-36/12 ok :: fix(kernel,arch,pm): close B26 kerninfo dual defect + B28 
+511d314b6 AGT +143/-14/4 ok :: [rewrite] fix(rt,boot-shim): B29 VFS heap pool + B30 boot 
+581cb1f03 AGT +125/-0/1 ok :: docs(nk4c): 01-stage-kernel 新增固件堆腐化根因报告(firmware-heap-corr
+1ef227dd5 AGT +89/-28/2 ok :: [rewrite] fix(xtask): B31 seed /bin/echo into imgrd, expos
+0d283da47 AGT +110/-7/2 ok :: [rewrite] fix(vfs): B32 restore TRNS transaction packing o
+96ff85267 AGT +136/-15/3 ok :: [rewrite] fix(vfs): B33 exec-permission check passes low-3
+bad22e56c AGT +40/-1/1 ok :: [nk4c] docs: 1.59 B34 root-caused (minix-rt big_blocks rec
+0022ef03f AGT +80/-8/2 ok :: [rewrite] fix(rt): B34 raise MAX_BIG_BLOCKS 32->64 capacit
+1d78948a4 AGT +77/-4/2 ok :: [rewrite] fix(rt): B35 one-page big block reuses free-stac
+774dd75de AGT +35/-1/1 ok :: [nk4c] docs: 1.62 B36 forensic closure — rc marker blocked
+9714fe40d AGT +92/-4/2 ok :: [rewrite] fix(vfs): B33a pm_exec 边界单点折负去 exec_via EIO 符号掩盖
+4eec6bb70 AGT +20/-1/1 ok :: [nk4c] docs: 1.64 B37 取证翻案 — exec 首块 FS 读(req_read who_fro
+f361a56b6 AGT +153/-12/2 ok :: [rewrite] fix(vfs): B37 exec 首块读两堆叠缺陷 (grant who_from=SELF
+c46398642 AGT +34/-1/1 ok :: [nk4c] docs: 1.66 B38 取证钉死 — exec sh 成功后 PM(0)<->VFS(1) 乒乓
+45bc489c5 AGT +84/-3/2 ok :: [rewrite] fix(vfs): B38 exec vm_mmap 补两个必带位 (MAP_PRIVATE 过
+f80c9ccab AGT +14/-7/1 ok :: [nk4c] docs: 1.68 B39 取证精化 — 终局非'PM 执行崩溃'而是 IPC 消息投递路径: De
+016097243 AGT +23/-13/1 ok :: [nk4c] docs: 1.68/1.69 B39 翻案定性 — 真根因=exec RS(~4MB .bss)时 
+67df95834 AGT +3/-1/1 ok :: [nk4c] docs: 1.69 侦察初步 — kdst memset pa=0x19725698 是已popul
+eae932f59 AGT +19/-1/1 ok :: [nk4c] docs: 1.70 B39 决定性翻案(改判) — 真根因非VM帧双分配, 而是内核 cross_s
+6b667e430 AGT +257/-95/2 ok :: [rewrite] fix(kernel): B39 cross_space memset/copy/write 逐
+2e3e57339 AGT +5/-0/1 ok :: [nk4c] docs: 1.71 B40 侦察初步 — 只读实锤 exec.rs:268=panic!(sys_e
+95a40ce02 AGT +37/-13/2 ok :: [rewrite] fix(pm): B40 ExecServices::exec 桩接线 minix_sys::s
+2158208d2 AGT +15/-0/1 ok :: [nk4c] docs: 1.73 B41 侦察(只读+bn55定量) — 尾部 vm-pf 循环收敛单点 VA=0
+0ca982812 AGT +27/-1/1 ok :: [nk4c] docs: 1.74 B41 取证坐实(只读探针后回滚) — 真根因=x86-64 NX([ARCH]
+150502c5f AGT +109/-8/6 ok :: [rewrite] fix(vm): B41 region 承接 PROT_EXEC 消 present-but-N
+20e41c063 AGT +22/-0/1 ok :: [nk4c] docs: 1.76 B42 侦察(只读) — 外部side-thread三条只读诊断经核全部当前码闭
+1163469c2 AGT +15/-1/1 ok :: [nk4c] docs: 1.77 B42 真机探针取证(探针已回滚·工作树净) — 实锤=present-but-
+796ea8e7e AGT +37/-1/2 ok :: [rewrite] fix(vm): B42 boot-server 文本段按 ELF PF_X 承接 EXECUT
+b26b04a71 AGT +38/-1/1 ok :: [nk4c] docs: 1.79 B43 侦察(真机bn61定量+静态读码·无改码) 实锤=动态VFS do_ex
+a0e8c0f4f AGT +89/-21/5 ok :: [nk4c] fix(ipc): B43 动态exec腿ps_str i32→u64 hi/lo拆分消截断+符号扩展
+ffd2f6f13 AGT +43/-1/1 ok :: [nk4c] docs: 1.81 B44侦察(真机bn62定量+读码·无改码) initRuncom<->Sing
+688a46730 AGT +30/-0/1 ok :: nk4c(B45 取证): B44→B27 重定向——ps_str 线已全 u64 证伪截断; corrupt PA
+722ab8f44 AGT +32/-18/2 ok :: B45: 修 dispatch_diagctl 内核栈 VA 的 bit47 伪物理地址野写
+543a89c60 AGT +36/-18/2 ok :: B46: 修 kernel_direct_read_word 内核栈 VA 走 DM 减法致诊断二次故障
+e495327f8 AGT +20/-0/1 ok :: nk4c(B27 定性): 单核隔离取证 bn76_s1 实锤崩溃=SMP-only 早期启动竞态
+b92548356 AGT +27/-1/1 ok :: NK4-C §1.86: rc marker 根因翻案＝fork 子用户页拷贝单字节确定性腐蚀
+5bedbad2f AGT +25/-1/1 ok :: NK4-C §1.87: B48 决定性翻案——子页非单字节拷成0x00,而是fork子堆页绑到内容陈旧的异物理帧
+eaae35a12 AGT +22/-1/1 ok :: NK4-C §1.88: B48 根因确诊——fork 缺父侧 COW 写保护(父共享帧 PTE 未降级为只读)
+1f911f775 AGT +191/-1/3 ok :: NK4-C §1.89: B48 修复落地——do_fork 补父侧 COW 写保护(protect_cow_pag
+4abde5f7b AGT +2/-0/1 ok :: NK4-C §1.89 r6-scoping: bn86 日志预定位 echo 子 slot d 取指缺页(pf e
+d65397d64 AGT +11/-0/1 ok :: NK4-C §1.90 r6取证: 双探针实锤 exec /bin/echo 成功但 echo 入口 text 页末
+deec7f5db AGT +23/-1/1 ok :: NK4-C §1.91 r6-fix 探针翻案: echo text 按需缺页服务正常/内容正确(§1.90 lvl
+80355bc00 AGT +5/-0/1 ok :: NK4-C §1.91 r7-scoping: exec_bootproc 已按 memsz eager 物化 bo
+7fa910a1b AGT +42/-1/2 ok :: NK4-C §1.92 r7 动手否证 §1.91 假设: MAX_BIG_BLOCKS→1024 消 premat
+7ba6ae31c AGT +22/-1/1 ok :: NK4-C §1.93 r7b 取证: 三路对质钉死 premature-OOM 真前置=本仓 VM 缺 C MAP
+da19bcf37 AGT +18/-1/1 ok :: NK4-C §1.94 r7b 动手前置纠错: install_boot_stack 对 VM 从不调用(init_
+605f85463 AGT +108/-30/3 ok :: NK4-C §1.95 r7b 闭环: load_elf_into VM_STACK_SIZE 64KiB→256K
+865b02a10 AGT +71/-2/2 ok :: NK4-C §1.96 r8 闭环: DeliverMsg suspend_for_vm target 修复——r.
+d41ff6f5c AGT +57/-1/1 ok :: NK4-C §1.97 r9 scoping 纯取证: rc命令链下游阻断根因确诊——INIT set_contro
+5870e138b AGT +30/-0/1 ok :: NK4-C §1.97r r9-fix attempt1: RS publish 闭包加 VFS_MAPDRIVER
+064ce1f8e AGT +1/-1/1 ok :: NK4-C §1.97r 补充定位: mapdriver加错路径(TTY=boot image走adopt不走sta
+b42736333 AGT +82/-1/3 ok :: NK4-C §1.98: side-thread报告对账(BKL/B27已闭环) + C boot dmap翻案(V
+2a7f59fe2 AGT +69/-2/2 ok :: NK4-C §1.99: 真根因修复 console open ENXIO = mfs lookup_child d
+ad3595a92 AGT +67/-636/4 ok :: NK4-C §1.100: 去噪清障——清除 committed nk4a fork 调试探针(lib.rs 每切换
+0018efa10 AGT +92/-2/2 ok :: NK4-C §1.101: 纠正§1.100双重误判(fl=0x8=RECEIVING非缺页/'无OOM'系memm
+78b36d2a7 AGT +34/-1/1 ok :: NK4-C §1.102: 下游死锁精确定位(纯文档,无功能码变更)——带§1.101修复镜像单核fresh-var
+49897aaeb AGT +38/-1/1 ok :: NK4-C §1.103: 推翻§1.102'reply未投递'假设+精确锁定child卡VFS stat()(纯取
+1841af3d5 AGT +41/-1/1 ok :: NK4-C §1.104: VFS全链路洗清+阻塞点转移到TTY驱动不应答CDEV_OPEN(纯取证,无功能码变更)
+b09f7601b AGT +90/-3/3 ok :: NK4-C §1.105: 真根因修复 CDEV_OPEN 线路类型号(Open as i32=索引0 非 mess
+6c0a0f0da AGT +200/-36/8 ok :: NK4-C §1.106: 修 stat 回复腿从不 copy_out 致 ls 判目录失败——18-stage e
+0398ccb74 AGT +48/-29/2 ok :: NK4-C §1.107: aarch64 恢复可编译(门控内核未隔离的 x86 专属 pic_init/删两诊断探
+391a57155 AGT +128/-41/2 ok :: NK4-C §1.108: 补 MADT GICR(type-14 重分布器子表)解析——aarch64 首次越过 
+efdee9bb2 AGT +89/-61/3 ok :: NK4-C §1.109: 修 aarch64 init_protection 崩溃(msr SP_EL1 在 SP
+a537f8ba5 AGT +367/-3/3 ok :: NK4-C §1.110: 修 aarch64 load_vm_elf MappingFailed(arm64 sp
+7cdfe1c21 AGT +157/-24/4 ok :: NK4-C §1.111: 修 aarch64 VM 启动两道独立崩溃(total_pages 位图容量语义 + E
+4531b0c8f AGT +330/-34/6 ok :: NK4-C §1.112: 接通 aarch64 原始 IPC 桥(用户态六原语门控放宽 + 内核 aarch64_
+6182f7b73 AGT +447/-137/17 ok :: NK4-C §1.113: aarch64 阻塞 IPC switch-after-pop (park ABI + 
+d8e032b09 AGT +266/-24/7 ok :: NK4-C §1.114: aarch64 首切根崩溃根因钉死(内核跑在可切换低半身份映射,未进 TTBR1)+ 设
+3ba789d66 AGT +471/-48/11 ok :: NK4-C §1.115: 方案 A 落地——aarch64 独立 ELF 高半启动(boot-shim 跳板 + 
+2b34922b9 AGT +370/-10/2 ok :: NK4-C §1.116: 补 aarch64 缺页路由腿(#PF→VM)+VmSuspend 臂——翻案 §1.1
+d111e4111 AGT +25/-1/1 ok :: NK4-C §1.117 纯取证: aarch64 INIT↔PM Path-A 直投活锁钉死——INIT(ep 0
+c7e5e201b AGT +11/-6/1 ok :: NK4-C §1.117 取证钉死活锁全圈: 第二探针轮(wkS117/rcvi117/sndi117)定性——IN
+3ddca06a6 AGT +93/-6/4 ok :: NK4-C §1.117 修复: aarch64 INIT↔PM WAIT4 活锁根因=init reap 环 .i
+4b475bb3d AGT +11/-4/1 ok :: NK4-C §1.118 取证: 活锁破除后暴露 INIT PM_CALL_FORK 父侧收 EPERM——分支探针
+956e4a57f AGT +31/-1/1 ok :: NK4-C §1.118续 取证: 决定性钉死 aarch64 INIT fork EPERM 全链根因=SMP 把
