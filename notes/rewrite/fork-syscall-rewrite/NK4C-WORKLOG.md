@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-73（2026-09-30·**突破：x86_64 标准 `-smp4` 启动器首次稳定达 rc marker**·续-72 崩溃消除后新阻塞「INIT 被 schedctl 分到 AP 饿死死锁」已成修**）：续-72 消除 AP tick 腐蚀后 `-smp4` boot 死锁——wait-graph 真机探针坐实 `nr=0xb`(INIT) `rts=0x0 run=1 cpu=0x1`＝INIT runnable 却被分到 AP(CPU1)，而 AP 的 LAPIC timer 被 idle() 掩蔽且本 port 缺 C `proc.c:1647`「enqueue 到 idle CPU→smp_schedule 唤醒 IPI」臂＋`context_stop_idle`(arch_clock.c:351-369) 唤醒后清 idle+重装 timer 半→INIT 永无人调度→死锁(sa-call=8/marker=0)。坐实 `cpu=1` 唯一来源＝用户态 SCHED 服务经 SYS_SCHEDULE/SYS_SCHEDCTL 调 `sched_proc`（port 内 sched_enqueue 全程用进程 `p_sched.cpu`、fork 继承、`SchedFields::new` 默认 0，无其它写非 0 路径）。曾试 arm#2（`sched_enqueue_with` 加唤醒 IPI）→boot 由 5113 推至 6862（INIT 跑起来）但 **AP 主动跑用户进程复现 VM 跨 CPU 服务腐蚀崩溃**（pagefault-for-VM + #UD rip0x1004 flood）→判定净负已回滚。**修复＝过渡守卫（CONTRACT arm#3）**：`sched_proc` 内 `clamp_cpu_to_bsp` 在 AP 唤醒三件套接线前把 SYS_SCHEDCTL/SYS_SCHEDULE 请求的 cpu 一律钳到 BSP（对位 C non-SMP 忽略 cpu 参数·进程留 BSP·`None` 保留 keep-current），使续-72 静默 AP 调度成立。**验证链全绿**：host minix-kernel 827/0（+1 `test_clamp_cpu_to_bsp` 单测）·569✓·clippy Δ0(136=136)·rustfmt Δ0(sched.rs/lib.rs stash 同上下文)·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器 marker=2×3轮 panic=0/pfVM=0/vec6=0（目标① x86 里程碑·标准启动器首次稳定达 marker）**+`-smp1` marker=2 不回归·CodeReview 无 BLOCKER（4 项建议已采纳：抽纯函数+单测/CONTRACT arm#3 标注落地/rustdoc 过渡偏离段/注释对账两腿与 C non-SMP）。⚠ **真 SMP（让 AP 安全跑用户进程）仍是未还前沿＝需补 context_stop_idle + 唤醒臂 + 根治跨 CPU VM 腐蚀（续-57~72 十六轮硬骨头）**，届时移除本钳制；三目标不缩小：目标① x86 达成→剩 aarch64 模式① OOM/riscv IPC 桥；目标② 18-stage/③ minix3 tests 待推进。续-74 入口＝趁 x86 boot 稳定推进目标② 命令面（18-stage echo/ls/cat）或转 aarch64/riscv。详文见文末 §1.120续-73。
+> **🛑 最新前沿＝§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09665415` 提交，接手者勿重补其验证链；host 基线复核全绿（minix-kernel 827/0·arch+boot+types 569）。**目标② x86 核心达成坐实**：`tmp/nk4a/nk73b-r1.serial` 行 7526 marker 之后 `ls /bin`→`cat/echo/ls/sh`、`cat /etc/rc`→全文⇒**echo/ls/cat 三核心命令端到端全通（走真实 VFS IPC 腿）**。两大剩余前沿已深度分析：**aarch64 模式① OOM**（七假设全证伪→收敛 H7 纯数据流·rust-objdump 反查标量 store 源 GPR 生产者）；**riscv64 IPC 桥**（真正工作量＝架构级：riscv user leg asm epilogue 无条件 sret、`DispatchFn` 返回 unit、无 aarch64 PARK_RESCHEDULE 挂起-重调度机制⇒阻塞 IPC 不可实现；六步 decision-complete 配方见迁移件 §4.B，**riscv 纯实现无 Heisenbug、建议优先**）。三目标不缩小（① x86✅/aarch64❌/riscv❌·② x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。详文见文末 §1.120续-74。
+>
+> **（历史·§1.120续-73（2026-09-30·**突破：x86_64 标准 `-smp4` 启动器首次稳定达 rc marker**·续-72 崩溃消除后新阻塞「INIT 被 schedctl 分到 AP 饿死死锁」已成修**）：续-72 消除 AP tick 腐蚀后 `-smp4` boot 死锁——wait-graph 真机探针坐实 `nr=0xb`(INIT) `rts=0x0 run=1 cpu=0x1`＝INIT runnable 却被分到 AP(CPU1)，而 AP 的 LAPIC timer 被 idle() 掩蔽且本 port 缺 C `proc.c:1647`「enqueue 到 idle CPU→smp_schedule 唤醒 IPI」臂＋`context_stop_idle`(arch_clock.c:351-369) 唤醒后清 idle+重装 timer 半→INIT 永无人调度→死锁(sa-call=8/marker=0)。坐实 `cpu=1` 唯一来源＝用户态 SCHED 服务经 SYS_SCHEDULE/SYS_SCHEDCTL 调 `sched_proc`（port 内 sched_enqueue 全程用进程 `p_sched.cpu`、fork 继承、`SchedFields::new` 默认 0，无其它写非 0 路径）。曾试 arm#2（`sched_enqueue_with` 加唤醒 IPI）→boot 由 5113 推至 6862（INIT 跑起来）但 **AP 主动跑用户进程复现 VM 跨 CPU 服务腐蚀崩溃**（pagefault-for-VM + #UD rip0x1004 flood）→判定净负已回滚。**修复＝过渡守卫（CONTRACT arm#3）**：`sched_proc` 内 `clamp_cpu_to_bsp` 在 AP 唤醒三件套接线前把 SYS_SCHEDCTL/SYS_SCHEDULE 请求的 cpu 一律钳到 BSP（对位 C non-SMP 忽略 cpu 参数·进程留 BSP·`None` 保留 keep-current），使续-72 静默 AP 调度成立。**验证链全绿**：host minix-kernel 827/0（+1 `test_clamp_cpu_to_bsp` 单测）·569✓·clippy Δ0(136=136)·rustfmt Δ0(sched.rs/lib.rs stash 同上下文)·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器 marker=2×3轮 panic=0/pfVM=0/vec6=0（目标① x86 里程碑·标准启动器首次稳定达 marker）**+`-smp1` marker=2 不回归·CodeReview 无 BLOCKER（4 项建议已采纳：抽纯函数+单测/CONTRACT arm#3 标注落地/rustdoc 过渡偏离段/注释对账两腿与 C non-SMP）。⚠ **真 SMP（让 AP 安全跑用户进程）仍是未还前沿＝需补 context_stop_idle + 唤醒臂 + 根治跨 CPU VM 腐蚀（续-57~72 十六轮硬骨头）**，届时移除本钳制；三目标不缩小：目标① x86 达成→剩 aarch64 模式① OOM/riscv IPC 桥；目标② 18-stage/③ minix3 tests 待推进。续-74 入口＝趁 x86 boot 稳定推进目标② 命令面（18-stage echo/ls/cat）或转 aarch64/riscv。详文见文末 §1.120续-73。
 >
 > **（历史·§1.120续-72（2026-09-30·**根因坐实+成修：延续-57~71 十四轮的 `-smp2/-smp4` VM 用户栈腐蚀崩溃＝`idle()` 省略 C `proc.c:194-196` 的 AP `stop_local_timer` 分支**·已提交生产码修·真机三态验证全绿·新前沿＝INIT 后 `sa-call` 活锁致 marker 未达）**：所有进程 `p_sched.cpu==0`（boot 恒绑 CPU0），CPU1 只跑 idle，`-smp1` vs `-smp2` 唯一差异＝CPU1 存在。`clock.rs::local_tick` 对**所有 CPU 无条件** `rearm_local_tick()`（一次性 LAPIC timer 每 tick 自我重装），而 `idle()` 曾对所有 CPU 无条件 `restart_local_timer()`、漏掉 C 的「halt 的 AP 掩掉本地 timer」半（续-56 补同函数紧邻的 `switch_address_space_idle` proc.c:190 时漏了 proc.c:195 的后半）⇒ halt 的 AP 永不安静、持续收 vector 0xf1 tick（正对 `-d int` 证据）、在续-56 载入的 VM CR3 下高频重入内核与 CPU0 竞争 → VM 用户栈腐蚀。**推翻续-70「缺跨 CPU TLB shootdown」结论**（minix3 C `arch_do_vmctl.c` 只做本地 invlpg/write_cr3、无跨 CPU shootdown，依赖缺页进程挂起，故 shootdown 不符 Ground Truth）。修复＝`idle()` step 3 加门控 `if ncpus>1 && cpu!=bsp → stop_local_timer(); else restart_local_timer()`（对等 proc.c:194-196），CONTRACT 注释登记 C 三件套延后臂（中断入口 `context_stop_idle` 清 idle+重启 timer / enqueue 唤醒臂 proc.c:1647 / schedctl cpu 亲和守卫）——当前 AP 不跑用户进程故永久掩码安全。**验证链全绿**：host 826/569·clippy Δ0（kernel crate 124=124·两 pre-existing 告警仅随行号平移）·rustfmt Δ0（lib.rs 162=162）·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器崩溃归零（pfVM=0/ud=0/panic=0·5113 行·续-70 及以前必崩）+ `-smp1` marker=2/panic=0 不回归**·CodeReview PASSED 无 BLOCKER（2 Warning 已作 CONTRACT 全清单登记）。⚠ 三目标不缩小：崩溃虽消，但 `-smp2/-smp4` 下 boot 卡在 INIT 后重复 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12`（SETADDRSPACE 活锁/进度，sa-call=8）→ **marker=0 未达＝目标① x86 新头号阻塞**（详文见文末 §1.120续-72）。续-73 入口＝定位该 sa-call 往返停滞（对位 C VM 启动/proc 表 seed·为何 caller=4 对 pid=9 反复 SETADDRSPACE 不收敛）。
 >
@@ -8104,3 +8106,43 @@ CPU1 的 LAPIC timer 被续-72 `idle()` 掩蔽，而本 port **缺** C 的 AP �
 - **真 SMP 未还债**：让 AP 安全跑用户进程需补 `context_stop_idle`（中断入口清 idle+重装 timer）+ enqueue 唤醒臂 + 根治跨 CPU VM 腐蚀（续-57~72 十六轮硬骨头·arm#2 实测崩）；届时移除本钳制。属架构级工程，暂缓。
 - **目标① x86 达成**→转其它腿：aarch64 模式① 间歇 OOM、riscv64 IPC 桥。
 - **目标② 18-stage 命令面**：趁 x86 boot 稳定（marker 已达、系统存活）推进 echo/ls/cat 命令面——最短可见前进路。
+
+---
+
+## §1.120续-74（2026-09-30·电脑迁移前小节点·纯取证/核实轮·无生产码改）
+
+**触发**：用户更换电脑，新机器无会话历史；要求「完成一个小节点后即终止」，并把全部状态沉淀到
+一份 git-tracked 迁移交接件 + 一段新机开场 prompt，实现无缝恢复。
+
+**本轮核实与坐实（全部读码/读串口产物，零改动生产码）**：
+1. **HEAD 与工作树**：HEAD=`beda55e02`（续-73），tracked 全净（仅 `tmp/nk4a/*.serial` 与两个
+   `NK4C-BUG-AARCH64-VEC-CAP*.md` 等 untracked 取证产物）。
+2. **破除过时叙述**：`NK4C-RESUME-PROMPT.md` §3.1 称 dm_coverage.rs source-4 有「未提交在途改动、
+   接手第一动作补验证链」——**该改动早在续-51 commit `b09665415`（「fix(edge1,nk4c): 续-51——boot
+   DM source-4 验证链补完并提交」）已提交入库**，工作树现无该文件 tracked 改动。接手者勿被 §3.1
+   误导去重补验证链。
+3. **host 基线复核全绿**：`cd os && cargo test`：minix-kernel **827 passed/0 failed**（含续-73
+   `test_clamp_cpu_to_bsp` +1）、minix-arch **243**/minix-boot **17**/minix-types **309**（arch+boot+types=569）。
+4. **目标② x86 核心达成坐实**：`tmp/nk4a/nk73b-r1.serial`（xtask 标准 -smp4）行 7526
+   `minix-rs rc: minimal boot script marker`（echo 腿）之后，串口出现 `cat\necho\nls\nsh`（`ls /bin`→
+   getdents/readdir 腿）与 `#!/bin/sh`/`# minix-rs /etc/rc`… 全文（`cat /etc/rc`→open+read 腿）。
+   ⇒ **echo/ls/cat 三核心命令端到端全通（走真实 VFS IPC 腿）**，目标② x86 核心判据达成。
+   官方冒烟 gate=`os/qemu-tests/test-cmd-smoke.sh`（-smp1，stage4 grep marker）。
+
+**两大剩余前沿深度分析（写入迁移件）**：
+- **aarch64 模式① 间歇 ~4GiB OOM**（迁移件 §4.A）：续-42~45 七假设（stale-TLB/丢 store/池共帧/
+  Q0-Q7/宽 store 重放/Q 全 store 面/缺陷 E 作因）**全证伪**，收敛 H7 纯数据流——某标量 `str x?`
+  把「值即栈地址」的 GPR 写进池页 `String.len`，源自上游错偏移/未初始化读。续-45 入口=`rust-objdump`
+  反查该 store 源 GPR 生产者 + 对照 C `stack_utils.c`/codec 验偏移 + 查 `MaybeUninit`/`set_len`。
+  失败模式②（首文本页 0x200000 memreq 洪流）是另一正交 bug，接手先分清当前卡①还是②。
+- **riscv64 IPC 桥**（迁移件 §4.B）：`riscv64_user_body`（`trap_dispatch.rs:1784`）对 raw IPC 腿
+  答 `-ENOSYS`、`riscv64_kernel_call_leg` 未迁 `reply_wire()`。**真正工作量=架构级**：riscv user leg
+  asm epilogue（`trap_stub.rs:286-330`）在 dispatch 返回后**无条件 sret**、`DispatchFn` 返回 unit，
+  **无 aarch64 的 PARK_RESCHEDULE 挂起-重调度机制**⇒阻塞 IPC 不可实现。给出 decision-complete
+  六步配方（改 asm 决策分支 + 镜像 `aarch64_ipc_dispatch_body` + 修 reply_wire + 放宽 ipc.rs 门控
+  + U-Boot/OpenSBI 启动面）。**riscv 纯实现无 Heisenbug，建议优先**（最快把目标① 推到 2/3）。
+
+**交付**：新建 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（迁移交接件·含新机
+开场 prompt·权威状态快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。WORKLOG 顶部🛑前沿滚至
+续-74。本轮**无生产码改·WORKLOG+doc only（免 CodeReview）·commit 用明确路径**·目标不缩小（①
+x86✅/aarch64❌/riscv❌·②x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。
