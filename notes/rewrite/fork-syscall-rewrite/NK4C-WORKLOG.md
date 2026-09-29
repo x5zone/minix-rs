@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-62 探针轮（2026-09-29·第五枚探针阴性——静态审计写腿 root 解析＋强制写 CR3 实验，**证伪候选 (C) 的 TLB 陈旧分支**；并修正续-61 对候选 (A) 的证伪过宽（扫描窗口偏窄）；x86 目标① 头号阻塞）**：接续-61 入口乙（静态审计）：核 [current_root_phys](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) per-CPU 读活 CR3 语义对位 C——IPC 交付跑在接收者陷入里 current==dst 拥有者；各拷贝腿（[cross_space_write/read](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs)）dst PA 用**显式 endpoint→proc_cr3** 解析（非 current），current_root_phys 仅用于 DM 窗校验（超集，不致错写）⇒写腿 root 解析架构自洽。候选 (C) 剩「同根跳过留陈旧非全局 TLB 项」子分支：[switch_address_space](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 在 `live_root==root` 时跳过 CR3 写（klib.S:618-620，x86 写 CR3 刷非全局项、跳过＝不刷）。**NK62-TEMP 实验**（用后即滚）：去同根跳过、每次调度强写 CR3。`--release` 重建 -smp4：**VM 崩溃签名原样复现**（行 4728 `pagefault for VM on cpu 0 rip 0xeb9000000 cr2 0xeb9000000 err 0x14`；其后 `rip 0x1004` #UD 风暴仅 panic-dump 后续噪声）。⇒ **强刷全 TLB 不能阻止 VM 跳 0xeb9000000 ＝候选 C-TLB 证伪**（第五枚阴性）。**另修正**：本轮 vm-pf 显示 VM 在按需填**自身 text 页**（fa=0x202409/0x221cd0 落 text 区），且续-61 别名扫描窗口**偏窄**（text 只扫到 0x230000 < 实际 0x244be8、栈只 ±16 页）⇒**(A) 帧双重分配/复用未被完全证伪**（污染栈位可能在扫描窗外）。**实验已回滚（工作树净），未坐实不成修。** 续-63 入口：(甲) 审 VM 帧分配器（[os/servers/vm/src/alloc_page.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/alloc_page.rs) + `phys_mem/allocator.rs` BitmapAllocator alloc/free）+ 内核 vmctl map/unmap 是否可 SMP 下双重分配同一帧（文本填页写脏并发分配的栈帧）；(乙) 若走别名路线则全量重扫（text 至 0x244be8、栈窗口放大）而非 ±16 页；(丙) 候选 B 残留非守卫直写腿（对位 C `sys_physvm` set/clear 路径）。**详文见文末 §1.120续-62。**
+> **🛑 最新前沿＝§1.120续-63 探针轮（2026-09-29·第六枚探针阴性——实证「缺页 handler 内严禁页表 walk」铁律：VmPageFault panic 臂加 `nk63_full_alias_probe` 全量 text×stack 别名扫描，`NK63ENTER` 80/80 存活但 text 首屏 walk 即 `#PF err 0x10 rip 0xffffffffffffffff`＝内核栈溢出，crash-time-handler-walk 仪器彻底不可用（候选 A 非证伪、是不可测）；串口 `com1_write_byte` 无跨 CPU 锁·逐字节交织·改冗余 token 突发定位；纯静态架构坐实＝VM 用户态经 DM 直写进程 PTE、内核仅 setcr3/invlpg/owner-flush，bitmap 分配器单线程+双免检+40 单测不可能双重分配 ⇒ 候选 A 精化收敛到「VM 侧过早释放仍被映射帧」（page_cache/munmap/exit refcount），解释码字节入栈/-smp4-only/续-56 后可达/确定性；探针已回滚工作树净，未坐实不成修；x86 目标① 头号阻塞）**：详文见文末 §1.120续-63。续-64 入口（正常上下文·免 handler walk）：(甲) 审 [os/servers/vm/src/page_cache.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/page_cache.rs) 逐出 / [munmap.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/munmap.rs) / [exit.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/exit.rs) 是否在帧仍被映射时归还分配器（对位 C vm/page_cache.c rmcache、region.c discard_region、exit.c：unmap-then-free-then-flush·可 host 单测复现零 QEMU）；(乙) 坐实即按 C 修释放/映射次序+补 shootdown；(丙) VM 侧清白则回内核 owner-flush 遗漏窗口。
+>
+> **（历史·§1.120续-62 探针轮（2026-09-29·第五枚探针阴性——静态审计写腿 root 解析＋强制写 CR3 实验，**证伪候选 (C) 的 TLB 陈旧分支**；并修正续-61 对候选 (A) 的证伪过宽（扫描窗口偏窄）；x86 目标① 头号阻塞）**：接续-61 入口乙（静态审计）：核 [current_root_phys](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) per-CPU 读活 CR3 语义对位 C——IPC 交付跑在接收者陷入里 current==dst 拥有者；各拷贝腿（[cross_space_write/read](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs)）dst PA 用**显式 endpoint→proc_cr3** 解析（非 current），current_root_phys 仅用于 DM 窗校验（超集，不致错写）⇒写腿 root 解析架构自洽。候选 (C) 剩「同根跳过留陈旧非全局 TLB 项」子分支：[switch_address_space](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 在 `live_root==root` 时跳过 CR3 写（klib.S:618-620，x86 写 CR3 刷非全局项、跳过＝不刷）。**NK62-TEMP 实验**（用后即滚）：去同根跳过、每次调度强写 CR3。`--release` 重建 -smp4：**VM 崩溃签名原样复现**（行 4728 `pagefault for VM on cpu 0 rip 0xeb9000000 cr2 0xeb9000000 err 0x14`；其后 `rip 0x1004` #UD 风暴仅 panic-dump 后续噪声）。⇒ **强刷全 TLB 不能阻止 VM 跳 0xeb9000000 ＝候选 C-TLB 证伪**（第五枚阴性）。**另修正**：本轮 vm-pf 显示 VM 在按需填**自身 text 页**（fa=0x202409/0x221cd0 落 text 区），且续-61 别名扫描窗口**偏窄**（text 只扫到 0x230000 < 实际 0x244be8、栈只 ±16 页）⇒**(A) 帧双重分配/复用未被完全证伪**（污染栈位可能在扫描窗外）。**实验已回滚（工作树净），未坐实不成修。** 续-63 入口：(甲) 审 VM 帧分配器（[os/servers/vm/src/alloc_page.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/alloc_page.rs) + `phys_mem/allocator.rs` BitmapAllocator alloc/free）+ 内核 vmctl map/unmap 是否可 SMP 下双重分配同一帧（文本填页写脏并发分配的栈帧）；(乙) 若走别名路线则全量重扫（text 至 0x244be8、栈窗口放大）而非 ±16 页；(丙) 候选 B 残留非守卫直写腿（对位 C `sys_physvm` set/clear 路径）。**详文见文末 §1.120续-62。**
 >
 > **（历史·§1.120续-61 探针轮（2026-09-29·第四枚探针阴性——真机受控 PTE walk **证伪候选 (A) 物理帧别名**（VM rip 帧≠rsp 帧、text×{rip,rsp} 无交集、CR3==VM root 无 per-CPU 漂移）；同时 `vmrootsites` 独立表明现有写守卫（finw/msgw）对 VM 栈的写全是 VM 自身合法收信投递（root==vm_root）→候选 (B) 亦被削弱；破坏者逼向「**瞬态**别名/错 root 解析」＝续-60 候选 (C) per-CPU root_phys 与页回收/DM 校验交互；x86 目标① 头号阻塞）**：接续-60 入口甲，在 [trap_dispatch.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/trap_dispatch.rs) VmPageFault panic 臂（崩溃必经）加一次性 `nk61_vm_alias_probe`：读活 CR3 vs VM `p_seg.phys_root`，受控 walk 翻译 saved rip 帧与 rsp 帧，扫 text 页帧集合×{rip,rsp±16} 求交；另把 finw/viow/msgw 三写守卫并入统一去重表 `nk61_wmap`（CAP 96→2048、键加 root），panic 臂全表对账（`nk61_scan_user_writes`）。`--release` 重建 -smp4 跑 2 轮干净复现：`cr3==root`（0x5e9c000/0x6658000，无漂移）、`ripf=0x7e45000`≠`rspf=0x51f9000/0x51fc000`、`aliases=0`、崩 rip 0xeb9000000 err 0x14（续-57 经典签名）。⇒ **候选 (A) crash-time 别名证伪**。⚠ 诚实标注：`hits` 比较把 rsp **VA** 页窗口与表内 **PA** 记录比对（永不等＝缺陷，不可据 hits=0 下清白论）；但 `vmrootsites=5`（finw 0x66+msgw 0x6d 写 VM 栈页 0x7ffffffe2000..df000→pa 0x51f7-fa000，全 root==vm_root）独立证明**现有守卫对 VM 栈的写皆合法投递**。**累计四枚阴性**（IRQ-iret/调度器恢复/cross_space_copy/crash-time 帧别名）把破坏者逼向：非 crash-time 可观测的**瞬态别名**（某拷贝/填页在复制瞬间用错 root，把 VM text 帧当 dst，事后映射已变）＝候选 (C)。**探针已回滚（工作树净），未坐实不成修。** 续-62 入口：(甲·最高杠杆) QEMU `-s -S`+gdb 硬件写 watchpoint 钉 VM 栈某槽首写字令 RIP（-smp4 多核需 `-cpu` 逐个 attach，配合 continue-with-commands 过滤合法 push）；(乙) 审计每条写腿 dst PA 解析所用 root——`current_root_phys()` 在 IPC 跨进程投递时能否瞬时≠dst 拥有者页表（对位 C `umap` 显式按 sender/receiver 取 root，本 port 依赖 current，SMP 下高危）；(丙) 对位 C pmap（`protect.c` 帧 free/复用 + `arch_buildPageTables`）查 CR3 切换与共享帧同步。**详文见文末 §1.120续-61。**
 >
@@ -7693,3 +7695,38 @@ IRQ-iret / 调度器恢复 / cross_space_copy / crash-time 帧别名(窄窗) / C
 
 ### 产物（untracked，不入库）
 `tmp/nk4a/nk62-exp1.serial`/`.txt`（NK62-TEMP 强写 CR3 实验 -smp4，行 4728 VM 崩溃复现）。
+
+---
+
+## §1.120续-63 探针轮（2026-09-29·第六枚探针阴性——续-61/63「缺页 handler 内受控页表 walk」仪器被实证不可用：panic 臂 walk 触发内核栈溢出；架构坐实＝VM 用户态直写进程 PTE、内核仅管 setcr3/invlpg/owner-flush ⇒ 候选 A 收敛到 VM 侧「过早释放仍被映射帧」，非单线程 bitmap 分配器；x86 目标① 头号阻塞）
+
+### 续-63 入口与执行
+
+接续-62 前沿入口甲（审 VM 帧分配器 double-allocation）+ 修正续-61 别名扫描窗偏窄，本轮在 [trap_dispatch.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/trap_dispatch.rs) VmPageFault panic 臂加一次性 `nk63_full_alias_probe(frame.rsp)`：登记 VM text 全区间 `[0x200000,0x245000)` 每页 PA、扫栈区间（rsp 向下 4MB）每页 PA 求交（text 帧==栈帧＝候选 A 帧别名实锤）。
+
+**串口逐字节交织障碍（决定性发现之一）**：其它 CPU 并发的 #UD 风暴与本探针同写 COM1，[early_console.rs](file:///home/xzhao/github/minix-rs/os/plat/src/x86_64/early_console.rs) `com1_write_byte` **无跨 CPU 锁**（逐字节裸 outb），任何多次 `write_str` 序列都被打碎。改用**冗余 token 突发**（同一串连打 80/300 遍，风暴里必有整份存活，事后 `grep -o` 计数）定位。
+
+### 决定性结果：panic 臂页表 walk = 内核栈溢出（仪器证伪）
+
+nk63v2-r1（末尾 burst 版）：崩签名 `pagefault for VM ... rip 0xeb9000000` 完整存活（串口此刻仍可读），但**探针末尾 verdict burst 零命中**。加 walk 前置/中置哨兵重跑 nk63v2-r2：`NK63ENTER` **80/80 完整存活**（探针已进入、root≠0、串口此刻干净），紧接其后的 **`NK63TXT`（text 登记完成哨兵）零命中**，且 ENTER 之后原始字节即 `trap: vector 0xe err 0x10 rip 0xffffffffffffffff rsp 0xffff8000003ffa60`＝**text 首屏 walk 即触发 #PF（err 0x10=指令-fetch）→ rip=−1（弹到非法返回址）＝内核栈被撑爆**。
+
+⇒ **实证「缺页 handler 内严禁页表 walk」铁律**（第二次独立坐实）：VmPageFault panic 臂处于深度嵌套 trap 栈，任何 `CurrentPteWalk::walk`（即便 fail-soft）都在此栈上递归/大局部，撑爆内核栈。续-61（打印 ripf/rspf）能侥幸出结果只因 walk 次数少（2 次）+ 未做全量扫描；全量 4096+ 页扫描必死。**续-61/63 crash-time-handler-walk 路线彻底不可用，候选 A 无法用此仪器判定（非证伪、是不可测）。**
+
+### 架构坐实（真值优先链 + 码面，纯静态·零构建）
+
+追「内核 vmctl map/unmap 是否可 SMP 下双重分配同一帧」（续-62 入口甲）时坐实本 port 页表所有权模型：
+- **VM 服务器在用户态经自身 Direct Map 窗口直接读写进程页表 PTE**（[os/servers/vm/src/pagetable](file:///home/xzhao/github/minix-rs/os/servers/vm/src/pagetable)、[direct_map.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/direct_map.rs)），**内核不做逐页映射**；
+- 内核在 vmctl 里只三类动作：`VMCTL_SETADDRSPACE`→setcr3（[syscall.rs:2855](file:///home/xzhao/github/minix-rs/os/kernel/src/syscall.rs)）、`invlpg`（:2596）、owner 侧 `mark/consume_flush_tlb_flag`（[lib.rs:3581/3665](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs)，仅在本 CPU `current_ptproc==picked` 时 `flush_all`）。
+- VM 物理帧分配器 [bitmap_alloc.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/phys_mem/bitmap_alloc.rs) 单线程 + `free_pages_internal` 有 `debug_assert!(!page_is_free)` 双免检 + 40+ host 单测覆盖 → **分配器自身不可能双重分配**。
+
+⇒ **候选 A 收敛精化**：帧双重映射的唯一来源＝**「过早释放仍被某进程页表映射的帧」**——VM 侧 page_cache 逐出 / munmap / exit 路径的引用计数若提前把帧归还 bitmap，而该帧仍在某进程（含 VM 自身）页表中活跃，则帧被他用（如他进程 text 填页）写入码字节，原主再经陈旧映射读到＝栈现码字节→ret 弹垃圾 rip。完美解释：内容恰为合法码字节 / -smp4-only（帧复用与 CR3 切换时序仅多核下暴露）/ 续-56 per-CPU root 切换后才可达 / 确定性（同调度序列→同复用竞态窗口）。
+
+### 未坐实不成修
+
+过早释放属推断（无 crash-time 可测仪器、未在 VM 用户态正常上下文实测帧生命周期）。生产码改不动。**探针已回滚（工作树净）。**
+
+### 续-64 入口（正常上下文·免 handler walk）
+
+(甲) **审 VM 侧帧生命周期 refcount**（真值对位 C `vm/page_cache.c` rmcache/PCCHECK、`vm/region.c` discard_region、`vm/exit.c`：释放前须 unmap-then-free 且 flush）——查 [os/servers/vm/src/page_cache.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/page_cache.rs) 逐出、[munmap.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/munmap.rs)、[exit.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/exit.rs) 是否在帧仍被映射时归还分配器（可 host 单测复现，零 QEMU）；(乙) 若坐实＝按 C 修释放/映射次序 + 补 shootdown；(丙) 若 VM 侧清白，则回到内核 owner-flush 遗漏（`consume_flush_tlb_flag` 仅刷 current==picked，若映射改动的进程此刻不在任何 CPU current 但下轮在某 CPU 跑＝续-62 强刷实验未覆盖的窗口）。
+
+⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（VM 晚期崩溃＝头号阻塞，六枚阴性收敛到 VM 侧帧生命周期过早释放）；aarch64 模式①/riscv64 IPC 桥未动；目标②/③ 待①贯通。**本轮纯取证·无生产码改·WORKLOG-only（免 CodeReview）·详文见本节。**
