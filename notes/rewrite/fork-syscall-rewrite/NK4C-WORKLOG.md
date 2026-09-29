@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-66 收敛轮（2026-09-29·(B) 跨池帧双分配彻底关闭（静态构造+真机扩展审计双重证伪）+ x86 `-smp1` 单核 rc marker 首次达成（goal① x86 里程碑）+ `kern_phys_base` 死扣除发现）**：(B) 静态——`classify()` 在 line 202-205 整段扣除 bump region + 所有 bootstrap-used 帧显式 deducted，free_regions 由构造 disjoint（assert_disjoint 单测覆盖）。真机 NK66B-TEMP——dump 全 9 条 free + 20 条 deducted + landmark（bumpend/gsbase/root/codepa）与 free 区间相交检测：**零 LEAK**，VM 分配器结构上不可能拿到运行内核内存。发现 `D0=[0x200000,0x400000)` 是独立 ELF 副本/链接地址（非运行 PE 物理基 ~0x1fe08000），实际切不到 memmap 任何条目（死扣除），运行内核被 UEFI reserved/non-conventional 天然隔离 + vm_alloc bootstrap 帧(D3-D13) 显式扣除双重保护。**x86 -smp1 marker**：clean 镜像 `-smp1` QEMU 跑至 line 8432 出现 `minix-rs rc: minimal boot script marker`，EXIT=124(timeout)＝健康——goal① x86 单核里程碑达成（DM 栈洞+r3 用户栈腿已被续-54/56 修复打通）。gdb 全力攻评估：kernel.elf 无 DWARF（host gdb 拒载 x86_64-unknown-none）+ cpu_context 写频极高→条件写断点不可行。**破坏者最终收敛唯一方向＝(A)**：内核某 copy 腿（或 VM 运行期 map_kernel PTE 构造 bug）把 VM .text 灌入内核上下文/TrapFrame。续-67 入口＝(乙·免 gdb 内核 copy 腿守卫探针) 把所有内核 bulk-copy 站点（vm.rs cross_space_read/write/copy、IPC p_delivermsg/kernel_call_finish、save_frame_to_context/restore_to_user、**页填充 copy_page_content**）加一次性 src∈VM-text-PA ∧ dst∈kernel-stack/cpu_context-PA 双条件检测，打 cpu/dst_pa/src_pa/len；VM text PA 从 boot module start_addr+len 或 identity-window 一次性取（正常上下文非 handler 内）。详文见文末 §1.120续-66。
+> **🛑 最新前沿＝§1.120续-67 突破轮（2026-09-29·崩溃上下文坏字节被逐指令钉死到 vm `.text` 具体函数＝(B) 帧别名复活·纠正续-66  prematurely 关闭 (B) 只测跨池的盲区）**：续-67 先按续-66 入口打三枚内核恢复路探针（`finish_and_restore` SCHED-CORRUPT／`x86_ipc_dispatch_body` 出口 IPC-CORRUPT／trap stub `x86_trap_dispatch` iretq 前 STUB-PRE-IRET，判据＝VM caller ∧ frame.rip∈死区 ∨ rsp 非规范）——**三枚全阴性已 git checkout 回滚**。复盘：判据只校 `frame.rip/rsp`，但崩溃现场 frame.rip 与 gp_regs **同时**坏＝整个 cpu_context 结构区被一次性灌入同一段 vm .text（非 field-copy、非仅 gp_regs）。转离线 objdump 取证（`tmp/nk4a/vm_dis.txt`）：nk67c-r1 崩溃现场 16 GPR 的字节 `rdx=f3 48 a5 48 8b 94 24 a8`／`rsi=00 00 00 4c 8b 94 24 b0`／`rdi=00 00 00 4c 8b 8c 24 b8`／`rbx=74 24 38 48 8d bc 24 c0` **逐字节精确命中** vm 模块 `.text` VA `0x21bf91`–`0x21bfd0`＝`alloc::collections::btree::remove::remove_kv_tracking`（第二实例，符号 `0x21be60`）的一条 `rep movsq`（`movl $0xe,%ecx`→14×8=**112 字节**拷贝）+ 前后 spill reload 的连续码流。**关键巧合坐实机制方向**：`X86_64CpuContext.gp_regs=[u64;14]`＝**恰好 112 字节**＝被灌入的码流长度⇒整个保存上下文区（gp_regs+frame.rip/rsp）＝单个 vm .text 物理页的别名视图。⇒ **根因假说收敛到 (B′) 跨池帧别名**：内核 proc 表里该 VM 进程的 cpu_context 物理帧 == vm 模块 `.text`（含 remove_kv_tracking）的物理帧被**双分配/双映射**——内核 save 把寄存器写进 vm 码页、restore 把码字节读回寄存器。**续-66 的 (B) 关闭不成立**：其 NK66B-TEMP landmark 只测 bumpend/gsbase/root/**codepa**∩vm-free，**未把 proc-table/cpu_context 物理帧列入 landmark**，故跨「内核 proc 表帧 ↔ vm text 帧」这一具体别名对被漏检。续-68 入口＝正常内核上下文（非 handler·不违禁页表 walk）算该 VM 进程 `cpu_context` 的 **PA**，与 vm 模块加载 base+`0x21bf000` 页的 **PA** 比对；相等＝(B′) 坐实成修（proc 表分配纳入 vm free 扣除集/或反向）。若不等→回退 (A) 内核 copy 腿方向（但三恢复探针阴性已削弱 A）。无生产码改·探针全回滚·WORKLOG-only（免 CodeReview）。详文见文末 §1.120续-67。
+>
+> **（历史·§1.120续-66 收敛轮（2026-09-29·(B) 跨池帧双分配彻底关闭（静态构造+真机扩展审计双重证伪）+ x86 `-smp1` 单核 rc marker 首次达成（goal① x86 里程碑）+ `kern_phys_base` 死扣除发现）**：(B) 静态——`classify()` 在 line 202-205 整段扣除 bump region + 所有 bootstrap-used 帧显式 deducted，free_regions 由构造 disjoint（assert_disjoint 单测覆盖）。真机 NK66B-TEMP——dump 全 9 条 free + 20 条 deducted + landmark（bumpend/gsbase/root/codepa）与 free 区间相交检测：**零 LEAK**，VM 分配器结构上不可能拿到运行内核内存。发现 `D0=[0x200000,0x400000)` 是独立 ELF 副本/链接地址（非运行 PE 物理基 ~0x1fe08000），实际切不到 memmap 任何条目（死扣除），运行内核被 UEFI reserved/non-conventional 天然隔离 + vm_alloc bootstrap 帧(D3-D13) 显式扣除双重保护。**x86 -smp1 marker**：clean 镜像 `-smp1` QEMU 跑至 line 8432 出现 `minix-rs rc: minimal boot script marker`，EXIT=124(timeout)＝健康——goal① x86 单核里程碑达成（DM 栈洞+r3 用户栈腿已被续-54/56 修复打通）。gdb 全力攻评估：kernel.elf 无 DWARF（host gdb 拒载 x86_64-unknown-none）+ cpu_context 写频极高→条件写断点不可行。**破坏者最终收敛唯一方向＝(A)**：内核某 copy 腿（或 VM 运行期 map_kernel PTE 构造 bug）把 VM .text 灌入内核上下文/TrapFrame。续-67 入口＝(乙·免 gdb 内核 copy 腿守卫探针) 把所有内核 bulk-copy 站点（vm.rs cross_space_read/write/copy、IPC p_delivermsg/kernel_call_finish、save_frame_to_context/restore_to_user、**页填充 copy_page_content**）加一次性 src∈VM-text-PA ∧ dst∈kernel-stack/cpu_context-PA 双条件检测，打 cpu/dst_pa/src_pa/len；VM text PA 从 boot module start_addr+len 或 identity-window 一次性取（正常上下文非 handler 内）。详文见文末 §1.120续-66。
 >
 > **（历史·§1.120续-64 探针轮（2026-09-29·第七枚探针阴性——debug-assertions 诊断仪坐实「非 VM 帧生命周期缺陷」）**：用 `[profile.release.package.minix-vm] debug-assertions=true`（仅 VM 服务器·用后即滚）让现有内存安全断言（`double free at page`／CoW `verify_cow_consistency`／refcount underflow）在违反操作精确行 panic。首跑崩 `stats.rs:49 record_free underflow`（line 115）＝已知良性记账不对称（`record_alloc` 按 alloc_mem 事件计 1、`free_pfn` 逐页计 N，bitmap 真双免检在前未命中）；NK64-TEMP 饱和化后跑满 90s。**决定性观测**：(1) **零内存安全断言触发**（无 double-free/CoW/refcount 违例＝VM 帧生命周期不变量全程成立）；(2) **崩 rip 随 VM 减速而漂移**——从经典 `0xeb9000000` 变 r2 `0xba02484 err 0x15`(NX 取指于数据页)/r1 递归 `rip 0x7ffffffe03b0 err 0x10`(用户栈取指)，三 rip 均＝控制流落非代码页；(3) 崩前＝用户栈 demand-zero 逐页正常下探。⇒ **候选 A「VM 过早/双重释放仍映射帧」的具体机制被削弱**：静态帧复用错映射不受 VM 速度影响（确定性），崩点随减速漂移＝**时序窗竞态**特征。累计七枚阴性（IRQ-iret/调度器恢复/cross_space_copy/写腿 root/TLB 强刷/handler-walk 仪器/帧生命周期不变量）收敛到「跨 CPU 时序窗内对 VM 用户内存/控制流的瞬态改写」。探针已回滚工作树净·未坐实不成修·x86 目标① 头号阻塞。**续-65 入口**：(甲·最高杠杆) QEMU `-s -S`+gdb 硬件写 watchpoint 钉 VM 栈槽抓瞬态写者 RIP；(乙) 审内核跨 CPU 对 VM 用户内存写腿是否 BKL 外并发（续-58 注 AP 低身份映射 vs BSP high-half 两套 VA＝瞬态别名温床·对位 C `protect.c:372 arch_post_init`·结构性上报项）；(丙) 两路无果＝升级用户裁决（-smp1 单核先达 marker 作阶段达成？）。详文见文末 §1.120续-64。
 >
@@ -7864,3 +7866,36 @@ D0=[0x200000,0x400000) 是 `kernel_info.kern_phys_base()/kern_size()`——此�
 前置：VM text PA 范围从 boot module `start_addr + len`（或 identity-window 读 VM root PTE 对应 text VA）一次性取（正常上下文非 handler 内）。内核栈 PA 范围从 AP_KERNEL_STACKS 符号 + identity 翻译取得。cpu_context PA 从 PROC_TABLE + per-process offset 计算。把续-60（键 dst∈VM-stack）翻成键 src∈VM-text ∧ dst∈kernel-context。
 
 ⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（(B)关闭后唯一方向 (A)）；x86 -smp1 marker 已达成；aarch64 模式①/riscv64 IPC 桥未动；目标②/③ 待①贯通。**本轮纯静态+真机审计（探针已回滚）·无生产码改·WORKLOG-only（免 CodeReview）。**
+
+---
+
+## §1.120续-67（2026-09-29·突破轮——三枚内核恢复路探针全阴性→复盘判据缺陷→离线 objdump 把崩溃坏字节逐指令钉死到 vm `.text` 具体函数＝(B′) 跨池帧别名复活·纠正续-66 关闭 (B) 的 proc-表-帧未列入 landmark 盲区）
+
+**① 三枚恢复路探针（续-66 入口·用后即滚·全 git checkout 回滚）**：
+- `finish_and_restore`（调度器恢复交付）SCHED-CORRUPT：判据 VM caller ∧ `frame.rip∈[0x3000000,0x7ff000000000)` 死区。
+- `x86_ipc_dispatch_body` 出口 IPC-CORRUPT：VM caller ∧ frame.rip 死区 ∨ rsp 非规范 ∨ rdx/rcx 码字节 `f3 48 a5`/`48 8b`。
+- trap stub `x86_trap_dispatch` dispatch 返回后（iretq 前）STUB-PRE-IRET。
+镜像 `xtask image -r` 重建·QEMU `-smp4 -d int` r1/r2 跑（timeout 120·EXIT=124）——**三枚探针全阴性**。但崩溃签名随 binary layout 漂移（经典 `rip=0xeb9000000 err0x14` ↔ `rip=0x22bdc9 cr2=0xfffffffffffd80f8 err0x4`）。
+
+**② 复盘判据缺陷**：`restore_to_user`（trap_return.rs:53）RIP/RSP/RFLAGS/CS/SS 从 `frame`（rdi·内核栈 iretq payload）载入，GPR(rax-r15) 从 `ctx.gp_regs`（rsi）载入。三探针只校 `frame.rip` 合理性；但崩溃现场 frame.rip **与** 全部 gp_regs **同时**坏＝整个 cpu_context 结构区被一次性灌入同一段 vm .text（非 field-copy、非仅 gp_regs 坏）→ 恢复路探针按 frame.rip 判据漏检（若灌入发生在探针点之后的另一次 save/restore 或未覆盖的恢复路径）。
+
+**③ 离线 objdump 逐指令钉死（`os/target/image/x86_64/staging/EFI/minix/modules/vm`→`tmp/nk4a/vm_dis.txt`）**：nk67c-r1 崩溃现场（trap_dispatch.rs VmPageFault 臂全 GPR print·已回滚）16 GPR 字节：`rdx=f3 48 a5 48 8b 94 24 a8`·`rsi=00 00 00 4c 8b 94 24 b0`·`rdi=00 00 00 4c 8b 8c 24 b8`·`rbx=74 24 38 48 8d bc 24 c0`·`rax=0xd1`·`rcx=rip=0xeb9000000`。**逐字节精确命中** vm `.text` VA `0x21bf91`–`0x21bfd0`（反汇编 line 22655-22665）＝`alloc::collections::btree::remove::remove_kv_tracking`（第二实例·符号 `0x21be60`）：
+```
+21bf9b: 48 8d bc 24 c0 00 00 00  leaq 0xc0(%rsp),%rdi   ← rbx 尾
+21bfa3: b9 0e 00 00 00           movl $0xe,%ecx
+21bfa8: f3 48 a5                 rep movsq (%rsi),(%rdi) ← rdx 首
+21bfab: 48 8b 94 24 a8 00 00 00  movq 0xa8(%rsp),%rdx     ← rdx 尾/rsi 头
+21bfb3: 4c 8b 94 24 b0 00 00 00  movq 0xb0(%rsp),%r10     ← rsi 尾/rdi 头
+21bfbb: 4c 8b 8c 24 b8 00 00 00  movq 0xb8(%rsp),%r9
+```
+该 `rep movsq` 拷贝 `0xe×8＝112 字节`，而 `X86_64CpuContext.gp_regs=[u64;14]＝112 字节`——**被灌入的码流长度恰等于 gp_regs 数组尺寸**（非巧合级强信号：整个保存上下文＝一段 vm .text 的线性别名视图）。
+
+**④ 根因假说收敛 (B′) 跨池帧别名**：内核 proc 表里该 VM 进程的 `cpu_context` 所在**物理帧** == vm 模块 `.text`（含 remove_kv_tracking·VA 0x21bf000 页）的**物理帧**被双分配/双映射。内核 `save_frame_to_context` 把寄存器写进 vm 码页（破坏 vm 运行码）→ vm 执行到被覆码→飞；`restore` 把码字节读回 16 寄存器→rip=码流某处、gp=码流→立即 #PF 于 `0xeb9000000`。layout 敏感＝不同 binary 下 cpu_context 帧 vs vm text 帧的相对布局变→别名页内容变→崩溃 rip 变（解释 r1/r2 签名漂移）。
+
+**⑤ 纠正续-66 的 (B) 关闭**：续-66 NK66B-TEMP landmark 只测 `bumpend/gsbase/root/codepa` ∩ vm-free＝零 LEAK，**未把内核 proc-table/cpu_context 所在物理帧列入 landmark**。proc 表由内核早期分配（bump/boot），vm text 帧由 vm_alloc——若二者的 PA 区间在特定 smp 布局下重叠而 proc 表帧未被列入检测，则「内核 proc 表帧 ↔ vm text 帧」这一具体跨池别名对被**漏检**。(B) 未被真正关闭。
+
+**⑥ 续-68 入口（成修候选·正常内核上下文不违禁页表 walk）**：算该崩溃 VM 进程 `cpu_context` 的物理地址（PROC_TABLE 基 + per-process offset·内核 high-half/DM 可读）＋ vm 模块加载 `start_addr + 0x21bf000` 页的物理地址，二者**比对**：相等＝(B′) 坐实→最修（把 proc 表/内核静态数据结构物理区间纳入 vm free_regions 扣除集·对位续-51 boot DM 扣除·或反向排除）；不等→回退 (A) 内核 copy 腿（三恢复探针阴性已削弱 A·但 copy_page_content 的 dst 仍可能经 DM 别名进 vm 帧·需键 src/dst 双 PA 探针）。
+
+**⑦ 纪律**：三枚恢复探针 + VmPageFault GPR dump 探针**全部 git checkout 回滚·工作树净**。本轮＝取证+静态 objdump·**无生产码改·WORKLOG-only（免 CodeReview）**。
+
+⚠ 三目标不缩小：x86 -smp4 marker 未达（(B′) 复活为新前沿）；x86 -smp1 marker 已达成；aarch64 模式①/riscv64 IPC 桥未动；目标②/③ 待①贯通。
