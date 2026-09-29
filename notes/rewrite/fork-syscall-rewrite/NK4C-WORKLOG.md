@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-59 探针轮（2026-09-29·两发定案探针均阴性→排除「内核寄存器上下文恢复」整族，重定向为「VM 自身用户内存（栈）被写坏→VM 自己 `ret`/`call` 跳非法地址」；x86 目标① 头号阻塞性质已变）**：本轮先实施两枚 fire-once `frame.rip` 合理性闸探针（[trap_dispatch.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/trap_dispatch.rs) IRQ 出口 `return` 前 + [lib.rs::finish_and_restore](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) `apply_to_trap_frame` 后 restore 前，判据 `0x4000_0000≤rip<0xffff_8000_0000_0000`＝垃圾），`--release` 重建镜像，-smp4 跑 3 轮（nk65：r1=6888/r2=6892/-dint=6895）均**崩溃复现但两探针零命中**。-d int 事件链钉死：`13747 v=21 IRQ→VM cpl3 rip 0x20bc18 rsp 0x7ffffffe28e8（均合法）` → `13748 v=f1 timer tick 嵌套于内核 cpl0 SP 0x5d95228` → `13749 #PF e=0x14 cpl3 rip 0xeb9000000 rsp d1894c0000054005（双垃圾）`。**双阴性含义（重要）**：内核在**每一次**恢复（IRQ-iret 与调度器 finish_and_restore 两条腿）时 `frame.rip` 均合法→**内核保存的用户上下文未被写坏**；CPU 之所以跑到 0xeb9000000 是因**恢复回合法用户 rip 后，VM 自身用户栈内存已被污染→VM 自己的 `ret`/`call` 从脏栈弹出垃圾 rsp/rip**（-d int 只记异常/中断不记普通用户执行，故 VM 在被恢复到合法 rip 后若自行跳非法不会产生中间事件）。这**推翻续-58「内核栈 TrapFrame 被批量覆写」与一切「寄存器上下文恢复写坏」假设**，重定向为**写入 VM 用户内存（栈 VA≈`0x7ffffffe2000` 区）的批量拷贝者**（候选：`cross_space_copy` 目标解析到 VM 栈且内容错、IPC 交付缓冲、页填充 copy 写错 dst）。探针已按纪律 git checkout 回滚（工作树净）。未坐实拷贝者不成修。续-60 入口：(甲) **QEMU gdb 硬件写 watchpoint** 钉在 VM 用户栈 VA（确定性，无需符号）抓「谁写 VM 栈」的确切指令 RIP（最高杠杆）；(乙) 扩 nk4a 拷贝守卫探针至 VM 用户栈 PA 区（先定 VM 栈 VA→PA）；(丙) 若坐实为某跨空间拷贝＝对位 C 查该拷贝的 dst 解析/长度。⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（此 VM 晚期崩溃＝头号阻塞，性质已重定向为用户内存被写坏）；aarch64 模式①（g14）/riscv64 IPC 桥未动；目标②/③ 待①贯通。**本轮探针均阴性（已回滚）·无生产码改·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-59。**
+> **🛑 最新前沿＝§1.120续-60 探针轮（2026-09-29·第三枚探针阴性——`cross_space_copy` 批量拷贝守卫扩 src_pa/cpu/head8 后零相关命中，排除跨空间拷贝＝污染写入者；VM 用户内存污染机制收敛到两候选：**物理帧别名**（VM 栈页与 VM .text 页解析到同一帧）或**非拷贝类内核 DM 直写**（finw/viow IPC 交付腿）；x86 目标① 头号阻塞）**：接续-59 重定向（破坏者写 VM 用户栈），本轮在 [vm.rs::cross_space_copy](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs) 每 chunk 拷贝点加 `nk60: kcp src=.. dst=.. n=.. cpu=.. head8=..`（chunk≥0x20、按 dst 去重、cap 128，比现有 kdst 多 src/cpu/载荷首 8B）。`--release` 重建 -smp4 跑：**崩溃仍复现（rip 0xeb9000000）**，但 5 条 kcp 全为**合法消息拷贝**：`dst=0x3ffc60`/`0x3ff878`（近 4MB 消息缓冲，head8=“nk4a: sa”/“nk4a: vm” ASCII 日得串）、`src=0x4c0a000→dst=0x5e03a60/0x4725400 n=0x2a8`（消息体 680B，head8=0x00000011_00000001 类结构数据）——**无一将码字节批量写入 VM 栈**。⇒ 排除 `cross_space_copy` 为污染写入者（第三枚阴性；前两枚续-59 已排除 IRQ-iret 与调度器恢复两条寄存器上下文恢复腿）。**累计收敛**：崩溃＝`-smp4`-only、仅续-56 per-CPU root_phys 后新可达、内核恢复回合法 rip 后 VM **自行**从污染的用户栈 `ret`/`call` 跳非法址，且污染**不经** cross_space_copy。**两大候选**：(A) **物理帧别名**——VM 栈页与 VM `.text` 页经 page-reuse/CoW/pmap 错映射到同一物理帧（解释污染内容恰为 VM 自身码字节、rsp 也坏）；(B) **非拷贝类内核 DM 直写**——IPC 交付（`kernel_call_finish` p_delivermsg_vir）/ pte_walk copy_to_user（现有 finw/viow 守卫未覆盖到本场景）。探针已回滚（工作树净），未坐实不成修。续-61 入口：(甲) 在 VmPageFault panic 臂（崩溃必经过）读 VM 运行期 CR3 + 翻译 `frame.rsp`（栈）与已知 VM text 区 VA 的 PA 比较是否同帧＝坐实别名；(乙) 扩 finw/viow 守卫至 VM 用户栈 PA 区（先定 VM 栈 VA→PA）拓 src 指纹；(丙) 若坐实为 per-CPU root_phys 与 DM 校验/页回收交互＝对位 C pmap（protect.c）查帧释放/复用与 CR3 切换的同步。⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（此 VM 晚期崩溃＝头号阻塞，机制已收敛到用户内存污染两候选）；aarch64 模式①（g14）/riscv64 IPC 桥未动；目标②/③ 待①贯通。**本轮探针阴性（已回滚）·无生产码改·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-60。**
+>
+> **（历史·§1.120续-59 探针轮（2026-09-29·两发定案探针均阴性→排除「内核寄存器上下文恢复」整族，重定向为「VM 自身用户内存（栈）被写坏→VM 自己 `ret`/`call` 跳非法地址」；x86 目标① 头号阻塞性质已变）**：本轮先实施两枚 fire-once `frame.rip` 合理性闸探针（[trap_dispatch.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/trap_dispatch.rs) IRQ 出口 `return` 前 + [lib.rs::finish_and_restore](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) `apply_to_trap_frame` 后 restore 前，判据 `0x4000_0000≤rip<0xffff_8000_0000_0000`＝垃圾），`--release` 重建镜像，-smp4 跑 3 轮（nk65：r1=6888/r2=6892/-dint=6895）均**崩溃复现但两探针零命中**。-d int 事件链钉死：`13747 v=21 IRQ→VM cpl3 rip 0x20bc18 rsp 0x7ffffffe28e8（均合法）` → `13748 v=f1 timer tick 嵌套于内核 cpl0 SP 0x5d95228` → `13749 #PF e=0x14 cpl3 rip 0xeb9000000 rsp d1894c0000054005（双垃圾）`。**双阴性含义（重要）**：内核在**每一次**恢复（IRQ-iret 与调度器 finish_and_restore 两条腿）时 `frame.rip` 均合法→**内核保存的用户上下文未被写坏**；CPU 之所以跑到 0xeb9000000 是因**恢复回合法用户 rip 后，VM 自身用户栈内存已被污染→VM 自己的 `ret`/`call` 从脏栈弹出垃圾 rsp/rip**（-d int 只记异常/中断不记普通用户执行，故 VM 在被恢复到合法 rip 后若自行跳非法不会产生中间事件）。这**推翻续-58「内核栈 TrapFrame 被批量覆写」与一切「寄存器上下文恢复写坏」假设**，重定向为**写入 VM 用户内存（栈 VA≈`0x7ffffffe2000` 区）的批量拷贝者**（候选：`cross_space_copy` 目标解析到 VM 栈且内容错、IPC 交付缓冲、页填充 copy 写错 dst）。探针已按纪律 git checkout 回滚（工作树净）。未坐实拷贝者不成修。续-60 入口：(甲) **QEMU gdb 硬件写 watchpoint** 钉在 VM 用户栈 VA（确定性，无需符号）抓「谁写 VM 栈」的确切指令 RIP（最高杠杆）；(乙) 扩 nk4a 拷贝守卫探针至 VM 用户栈 PA 区（先定 VM 栈 VA→PA）；(丙) 若坐实为某跨空间拷贝＝对位 C 查该拷贝的 dst 解析/长度。⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（此 VM 晚期崩溃＝头号阻塞，性质已重定向为用户内存被写坏）；aarch64 模式①（g14）/riscv64 IPC 桥未动；目标②/③ 待①贯通。**本轮探针均阴性（已回滚）·无生产码改·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-59。**
 >
 > **（历史·§1.120续-58 取证轮（2026-09-29·QEMU `-d int` 干净复现钉死崩溃形状＝用户态中断 IRET 边界处整个寄存器文件被 VM `.text` 码字节批量覆写，推翻续-57/Debug「save_frame_to_context 单字段拷贝」理论；x86 目标① 头号阻塞）**：本轮零生产码改（纯取证·WORKLOG-only）。用 HEAD=`37ce4bef1` 无探针 clean 镜像直跑 `qemu-system-x86_64 -smp 4 -d int`，两轮（nk64-clean-r1/r2）逐字复现——**决定性**：崩溃前最后一帧 `12847: v=21 i=1 cpl=3 IP=002b:0x20bc18 SP=0x7ffffffe28e8`（合法用户上下文，GPR 全正常：RBX/RSP=0x7ffffffe29xx 栈、R12/R13/R14=0x20xxxx/0x21xxxx VM 镜像内合法址、RFL=0x246）；紧接一帧 `12848: v=0e e=0x14 IP=0xeb9000000 SP=0xd1894c0000054005`（#PF instr-fetch user，rip==cr2）——**此刻全部 16 个 GPR + RIP + RSP + RFLAGS 同时变为 x86-64 指令字节**（RIP=`0xeb9000000` 首字节 `0xeb`＝`jmp rel8` 操作码；RAX=`8d4830245c8b4cd0`、RDX=`a824948b48a548f3`、RSI=`b024948b4c000000` 等逐字都是 `48 8b`/`4c 8d`/`rep movsq` 反汇编模式＝VM `.text`）；余波＝`#UD rip 0x1004 cs 0x8` 内核栈（rsp≈`0x5d16a28` 低身份映射区）逐帧 −0x3f0 下行 2155× flood。**语义钉死**：x86-64 `IRET` 只恢复 RIP/CS/RFLAGS/RSP/SS，**GPR 由 handler 出口从寄存器保存区 `pop`**；本轮 16 GPR 齐变码字节 ⇒ **保存现场的内核栈 TrapFrame 区被一次 VM `.text` 批量拷贝覆写**（≥0x100 字节宽），非 `save_frame_to_context(frame,ctx)` 逐字段搬 rip/rsp 所能致（那只会污 2 字段，不会全 GPR 齐变）——**推翻续-57 与 Debug 子代理的 field-copy 假设**。落点栈地址 `0x5d1xxxx` 低身份映射区，与 Debug 独立发现的「AP 跑 identity-mapped 低半区、BSP 跑 high-half `0xffff8000…` 两套 VA 视图」直接吻合＝**跨 CPU 指针别名把 VM 文本写进别 CPU 的中断栈帧**是头号候选机制（C `protect.c:372 arch_post_init` 让所有 CPU 共用 high-half 内核映射，本 port 缺此＝别名温床）。**未坐实不成修**：谁是批量拷贝者（cross_space_copy / IPC 交付 / VM 补页 copy_page 用了别名基址或错长度）须探针拿「写入瞬间」证据，不臆造 per-CPU 映射大改。续-59 入口：(甲) trap 出口 `restore_user_context` 前对 frame.rip 做合理性闸（`rip<0x1000 || (rip≥0x4000_0000 && rip<0xffff_8000…)`＝垃圾）命中则打 cpu_id+proc_nr+frame 指针+其周围 64B hexdump，钉「被写坏的帧的确切内核栈地址 + 邻近是否 VM 文本」；(乙) 顺 cross_space_copy / copy_page_content / IPC 交付缓冲三腿查拷贝基址是走 high-half 还是 low identity 别名、长度来源；(丙) 若坐实＝按 C `protect.c` 让 AP 也映射进 high-half 统一内核视图（结构性、上报）。⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（此 VM 晚期崩溃＝头号阻塞）；aarch64 模式①（g14）/riscv64 IPC 桥未动；目标②/③ 待①贯通。**本轮纯取证·无生产码改·WORKLOG-only（免 CodeReview）·详文见文末 §1.120续-58。**
 >
@@ -7556,3 +7558,45 @@ x86-64 `IRET` 硬件只恢复 RIP/CS/RFLAGS/RSP/SS，**不恢复 GPR**；GPR 是
 
 ### 产物（untracked，不入库）
 `tmp/nk4a/nk65-probe-r1.serial`、`tmp/nk4a/nk65b-r{1,2}.serial`、`tmp/nk4a/nk65b-dint.{int,serial}`（探针构建 -d int 事件链）。
+
+---
+
+## §1.120续-60（2026-09-29）— 第三枚探针阴性：排除 `cross_space_copy`，用户内存污染收敛到「物理帧别名」/「非拷贝类 DM 直写」两候选
+
+### 探针（vm.rs::cross_space_copy 每 chunk 拷贝点）
+续-59 把破坏者重定向为「写 VM 用户栈的批量拷贝」。`--release` 重建跑发现现有 kdst 守卫只记 `dst_pa+len`（去重），无 src/cpu/载荷——不足以判定「谁把码字节拷进栈」。在 [vm.rs](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs) 实际 `copy_nonoverlapping` 前插 `nk60: kcp src=<sp> dst=<dp> n=<chunk> cpu=<id> head8=<src前8B>`（chunk≥0x20、按 dst 去重、cap 128）。
+
+### 结果：崩溃复现（rip 0xeb9000000），但 kcp 无一命中污染路径
+5 条批量拷贝全为合法消息拷贝（全 cpu 0）：
+```
+kcp src=0x5e654c0 dst=0x3ffc60 n=0x23  head8=0x6173203a61346b6e  ("nk4a: sa" ASCII)
+kcp src=0x4c8dc38 dst=0x3ff878 n=0x3b8 head8=0x0000000000120005
+kcp src=0x4c0a000 dst=0x5e03a60 n=0x2a8 head8=0x0000001100000001
+kcp src=0x5e045e0 dst=0x3ffc60 n=0x45  head8=0x6d76203a61346b6e  ("nk4a: vm" ASCII)
+kcp src=0x4c0a000 dst=0x4725400 n=0x2a8 head8=0x0000001100000001
+```
+dst 全在近 4MB 消息缓冲（0x3ffxxx）与两条 680B 消息体（dst 0x5e03a60/0x4725400，head 为结构数据）。**无一将 VM `.text` 码字节批量写入 VM 用户栈（0x7ffffffe2xxx→其 PA）**。⇒ 排除 `cross_space_copy` 为污染写入者。
+
+### 三枚探针累计阴性（决定性排除一整族）
+1. 续-59 IRQ 出口 `frame.rip` — 阴性（内核 IRQ-iret 上下文未坏）。
+2. 续-59 调度器恢复 `frame.rip` — 阴性（`finish_and_restore` 恢复的 cpu_context 未坏）。
+3. 续-60 cross_space_copy 批量拷贝 — 阴性（不是跨空间拷贝写坏栈）。
+
+**共同结论**：崩溃不是「内核把坏上下文恢复给 VM」，而是「VM 被恢复到合法 rip 后，其用户内存（栈/寄存器读取源）已含码字节垃圾，VM 自身控制流 `ret`/`call` 跳非法址」。且 `-d int` 证 VM 栈 rsp 在崩溃时（13749）已变 `d1894c0000054005` 垃圾（13747 还是 `0x7ffffffe28e8` 合法）。
+
+### 收敛到两候选机制
+- **(A) 物理帧别名**（当前头号）：VM 的栈页与 VM 的 `.text` 页被错映射到同一物理帧（page-reuse / CoW / pmap bug）。这**天然解释**：污染内容恰是 VM 自身码字节、rsp 与 rip 同时坏、内容全是合法 x86 指令（因为是 VM 真代码）。-smp4 下并发缺页/页回收竞态触发。
+- **(B) 非拷贝类内核 DM 直写**：IPC 交付（`kernel_call_finish` 经 p_delivermsg_vir 的 DM 直写）/ pte_walk copy_to_user——不经 cross_space_copy 的写路径。
+
+### 探针回滚
+`git checkout os/kernel/src/vm.rs`，工作树净（tracked 0 改动）。未坐实不成修。
+
+### 续-61 入口
+- (甲) 在 VmPageFault panic 臂（崩溃必经，[trap_dispatch.rs:963](file:///home/xzhao/github/minix-rs/os/kernel/src/trap_dispatch.rs)）读 VM 运行期 CR3，用受控 PTE walk（**非缺页 handler**，此处 panic 前一次性）翻译 `frame.rsp`（栈）→PA 与一已知 VM text VA→PA，比较是否**同帧**＝坐实/证伪别名假设 (A)。
+- (乙) 扩 finw/viow 守卫至 VM 用户栈 PA 区（先由 (甲) 得 VM 栈 PA）拓 src 指纹＝覆盖候选 (B)。
+- (丙) 若坐实为 per-CPU root_phys（续-56）与 DM 校验/页回收的交互＝对位 C pmap（`protect.c` 帧释放/复用 + `arch_buildPageTables`）查 CR3 切换与共享帧的同步。
+
+⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（VM 晚期崩溃＝头号阻塞，机制收敛到用户内存污染两候选）；aarch64 模式①（g14 纯数据流）/riscv64 IPC 桥未动；目标② 18-stage / 目标③ minix3 tests 待①贯通。
+
+### 产物（untracked，不入库）
+`tmp/nk4a/nk60-r1.serial`（探针构建 -smp4，含 5 条 nk60: kcp）。
