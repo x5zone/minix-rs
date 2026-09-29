@@ -28,7 +28,9 @@ The kernel uses a spinlock (BKL) rather than a blocking lock because:
 use core::sync::atomic::Ordering;
 use minix_types::Endpoint;
 
-use crate::proc::{KProcess, ProcNr, ProcName, RtsFlagsBits, MiscFlagsBits, proc_nr, CpuId, NONE_PROC_NR};
+use crate::proc::{
+    KProcess, ProcNr, ProcName, RtsFlagsBits, MiscFlagsBits, proc_nr, CpuId, NONE_PROC_NR, MAX_CPUS,
+};
 use crate::sched::Scheduler;
 use crate::clock;
 
@@ -56,7 +58,14 @@ const PROC_STOP_BITS: u32 = 0x02;
 /// The global instance lives in `static PROC_TABLE` (a `SyncUnsafeCell`, see `lib.rs`).
 pub struct ProcessTable {
     procs: [KProcess; PROC_TABLE_SIZE],
-    sched: Scheduler,
+    /// Per-CPU ready queues. C stores `run_q_head[]` / `run_q_tail[]` in
+    /// `__cpu_local_vars` (cpulocals.h:58-59), so each CPU owns its own
+    /// scheduling queues; `enqueue`/`dequeue`/`enqueue_head` operate on the
+    /// queue of the process's assigned CPU (`get_cpu_var(rp->p_cpu, ...)`,
+    /// proc.c:1614/1688/1739) and `pick_proc` on the *local* CPU's queue
+    /// (`get_cpulocal_var(run_q_head)`, proc.c:1801). This array mirrors that
+    /// design: index `i` is the scheduler state of CPU `i`.
+    sched: [Scheduler; MAX_CPUS],
     /// Global VM request queue. C: `EXTERN struct proc *vmrequest` — glo.h:41.
     /// Replaces Minix3's global linked list head with a structured queue.
     /// All access requires BKL (00-kernel-overview §1.5).
@@ -99,7 +108,7 @@ impl ProcessTable {
 
         Self {
             procs,
-            sched: Scheduler::new(),
+            sched: [const { Scheduler::new() }; MAX_CPUS],
             vm_request_queue: crate::vm::VmRequestQueue::new(),
         }
     }
@@ -523,9 +532,12 @@ impl ProcessTable {
     /// head is by construction in the queue matching its priority.
     #[cfg(test)]
     pub(crate) fn drain_run_queues_for_test(&mut self) {
-        for q in 0..crate::proc::priority::NR_SCHED_QUEUES {
-            while let Some(nr) = self.sched.queue_head(q) {
-                self.sched_dequeue(nr, CpuId::BSP);
+        for cpu in 0..MAX_CPUS {
+            let cpu_id = CpuId::new_unchecked(cpu as u32);
+            for q in 0..crate::proc::priority::NR_SCHED_QUEUES {
+                while let Some(nr) = self.sched[cpu].queue_head(q) {
+                    self.sched_dequeue(nr, cpu_id);
+                }
             }
         }
     }
@@ -673,14 +685,25 @@ impl ProcessTable {
     // These methods coordinate borrows between `self.sched` and `self.procs`
     // to avoid self-referential mutable borrows.
 
-    /// Get a read-only reference to the embedded scheduler.
+    /// Map a CPU id to its scheduler-array slot, falling back to BSP (0) for
+    /// out-of-range ids. C indexes cpulocal run queues by the process's
+    /// assigned cpu id, which is always `< ncpus <= MAX_CPUS`; the fallback
+    /// only guards against a corrupt `p_sched.cpu` value.
+    #[inline]
+    fn sched_idx(cpu_id: CpuId) -> usize {
+        let i = cpu_id.index();
+        debug_assert!(i < MAX_CPUS, "sched_idx: cpu id {i} out of range, falling back to BSP");
+        if i < MAX_CPUS { i } else { 0 }
+    }
+
+    /// Get a read-only reference to the BSP scheduler.
     ///
-    /// **Note**: In the current single-CPU build, this returns the BSP
-    /// scheduler (`self.sched`). When SMP lands, callers should use
-    /// [`sched_for_cpu`](Self::sched_for_cpu) instead, which dispatches
-    /// to the per-CPU scheduler in `SmpState.cpu_locals[cpu].scheduler`.
+    /// Ready queues are per-CPU (see [`ProcessTable::sched`]). This accessor
+    /// returns CPU 0 (BSP) and exists for single-CPU test inspection; runtime
+    /// code must route through [`sched_for_cpu`](Self::sched_for_cpu) with the
+    /// process's assigned CPU (enqueue/dequeue) or the local CPU (pick).
     pub fn scheduler(&self) -> &Scheduler {
-        &self.sched
+        &self.sched[Self::sched_idx(CpuId::BSP)]
     }
 
     /// Get the per-CPU scheduler for the given CPU.
@@ -688,42 +711,26 @@ impl ProcessTable {
     /// # Design (per-CPU run queues)
     ///
     /// C stores `run_q_head[]` / `run_q_tail[]` in `__cpu_local_vars`
-    /// (cpulocals.h:58-59), so each CPU has its own ready queues.
-    /// This method mirrors that design: it returns the `Scheduler`
-    /// belonging to the specified CPU.
-    ///
-    /// **Current implementation**: single-CPU builds return `&self.sched`
-    /// (the BSP scheduler). The `CpuLocal::scheduler` field exists but is
-    /// not yet the authoritative source — it will become so when
-    /// `ProcessTable::sched` is removed in the SMP migration.
-    ///
-    /// **SMP migration path**: replace `&self.sched` with
-    /// `&smp_state.cpu_locals[cpu_id.index()].scheduler`, and remove
-    /// `self.sched` from `ProcessTable`. This requires passing `&SmpState`
-    /// into this method (or making `ProcessTable` own `SmpState`).
+    /// (cpulocals.h:58-59), so each CPU has its own ready queues. This method
+    /// mirrors that design: it returns the `Scheduler` belonging to the
+    /// specified CPU. `cpu_id` is the process's assigned CPU for
+    /// enqueue/dequeue (`rp->p_cpu`, proc.c:1614/1688/1739) and the local CPU
+    /// for `pick_proc` (proc.c:1801).
     ///
     /// # Arguments
     ///
     /// * `cpu_id` — CPU index (0 = BSP). Out-of-range values default to
     ///   CPU 0 (BSP fallback).
     pub fn sched_for_cpu(&self, cpu_id: CpuId) -> &Scheduler {
-        // S-6.3 sched-1 (frozen §3.5.3 decision, aligned with C's effective
-        // semantics): the ready queues are SHARED and BKL-serialized — under
-        // the BKL one CPU at a time mutates them, so per-CPU queues would
-        // behave as one queue anyway. `cpu_id` is retained for signature
-        // stability; per-CPU scheduling state is exactly `CpuLocal.proc_ptr`
-        // (set_running), never the queues.
-        let _ = cpu_id;
-        &self.sched
+        &self.sched[Self::sched_idx(cpu_id)]
     }
 
     /// Get a mutable reference to the per-CPU scheduler for the given CPU.
     ///
     /// See [`sched_for_cpu`](Self::sched_for_cpu) for design rationale.
     pub fn sched_for_cpu_mut(&mut self, cpu_id: CpuId) -> &mut Scheduler {
-        // See `sched_for_cpu` — shared queues + BKL (S-6.3, frozen §3.5.3).
-        let _ = cpu_id;
-        &mut self.sched
+        let idx = Self::sched_idx(cpu_id);
+        &mut self.sched[idx]
     }
 
     /// Get a read-only slice of the process array (for `pick_proc`).
@@ -799,8 +806,15 @@ impl ProcessTable {
     /// `p_nextready == None` will only be detected by scanning all queue heads.
     // NK4-A 取证路标临时 pub(crate)（syscall.rs `nk4a_flags_mark`），task1-close 回收
     pub(crate) fn is_in_scheduler(&self, nr: ProcNr) -> bool {
+        // C queues a process on its assigned CPU (`rp->p_cpu`, proc.c:1614),
+        // so membership is checked against that CPU's ready queue only.
+        let cpu_id = self
+            .get(nr)
+            .map(|p| CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire)))
+            .unwrap_or(CpuId::BSP);
+        let idx = Self::sched_idx(cpu_id);
         for q in 0..16 {
-            let mut current = self.sched.queue_head(q);
+            let mut current = self.sched[idx].queue_head(q);
             while let Some(cur_nr) = current {
                 if cur_nr == nr {
                     return true;
@@ -869,9 +883,9 @@ impl ProcessTable {
         let q = self.get(nr).map_or(0, |p| p.get_priority().get() as usize);
         debug_assert!(q < 16, "sched_enqueue: priority out of range");
 
-        // Phase 1: update queue arrays
-        // Note: uses self.sched directly; see sched_dequeue for SMP migration note.
-        let info = self.sched.enqueue_queue_tail(nr, q);
+        // Phase 1: update queue arrays on the process's assigned CPU
+        // (C: `get_cpu_var(rp->p_cpu, ...)`, proc.c:1614).
+        let info = self.sched[Self::sched_idx(cpu_id)].enqueue_queue_tail(nr, q);
 
         // Phase 2: update process fields
         {
@@ -931,15 +945,15 @@ impl ProcessTable {
     /// Enqueue a preempted process at the head of its priority queue.
     ///
     /// C: `enqueue_head()` in proc.c:1670-1711.
-    /// C uses `get_cpulocal_var(run_q_head)` — the current CPU's queue.
+    /// C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the process's CPU queue.
     pub fn sched_enqueue_head(&mut self, nr: ProcNr, cpu_id: CpuId) {
-        let _ = cpu_id; // Will be used when Scheduler moves to CpuLocal
+        let idx = Self::sched_idx(cpu_id);
         let q = self.get(nr).map_or(0, |p| p.get_priority().get() as usize);
 
-        // Phase 1: update queue arrays
-        // Note: uses self.sched directly; see sched_dequeue for SMP migration note.
-        let old_head = self.sched.queue_head(q);
-        self.sched.enqueue_queue_head(nr, q);
+        // Phase 1: update queue arrays (C: `get_cpu_var(rp->p_cpu, ...)`,
+        // proc.c:1688 — the process's assigned CPU).
+        let old_head = self.sched[idx].queue_head(q);
+        self.sched[idx].enqueue_queue_head(nr, q);
 
         // Phase 2: update process fields
         {
@@ -965,17 +979,16 @@ impl ProcessTable {
     /// C: `dequeue()` in proc.c:1716-1780.
     /// C uses `get_cpu_var(rp->p_cpu, run_q_head)` — the process's CPU queue.
     ///
-    /// **Note**: Currently uses `self.sched` directly because `dequeue_from_queue`
-    /// needs simultaneous `&mut Scheduler` + `&mut [KProcess]`, which conflicts
-    /// with `sched_for_cpu_mut()` borrowing `&mut self`. When SMP lands and
-    /// `Scheduler` moves to `CpuLocal`, the borrow will be split naturally:
-    /// `&mut smp_state.cpu_locals[cpu].scheduler` + `&mut process_table.procs`.
+    /// `Scheduler` is per-CPU (`self.sched[idx]`), so `&mut self.sched[idx]`
+    /// and `&mut self.procs` are disjoint field borrows and the dequeue
+    /// primitive takes both at once, exactly like C's `dequeue()` walking
+    /// `run_q_head[q]` while mutating `p_nextready`.
     pub fn sched_dequeue(&mut self, nr: ProcNr, cpu_id: CpuId) {
-        let _ = cpu_id; // Will be used when Scheduler moves to CpuLocal
+        let idx = Self::sched_idx(cpu_id);
         let q = self.get(nr).map_or(0, |p| p.get_priority().get() as usize);
 
         // Phase 1: remove from queue + update linked list
-        self.sched.dequeue_from_queue(nr, q, &mut self.procs);
+        self.sched[idx].dequeue_from_queue(nr, q, &mut self.procs);
 
         // Phase 2: accounting
         let tsc = read_tsc();

@@ -119,17 +119,20 @@ pub use minix_arch::SmpArch;
 ///
 /// Design decision D2: fixed-size array element, no_std compatible.
 ///
-/// # Scheduler queues (S-6.3 sched-1 decision: shared + BKL)
+/// # Scheduler queues
 ///
-/// The ready queues are **shared** (`ProcessTable::sched`), serialized by
-/// the BKL — the frozen §3.5.3 decision, aligned with C's *effective*
-/// semantics: under the BKL one CPU at a time touches the queues, so the
-/// per-CPU `run_q_head[]`/`run_q_tail[]` arrays in C's `__cpu_local_vars`
-/// (cpulocals.h:58-59) behave as one global queue in practice. (Linux's
-/// per-CPU runqueues are a load-balancing optimization orthogonal to the
-/// Minix3 BKL model.) The per-CPU part of scheduling is exactly
-/// `proc_ptr` — [`CpuLocal::set_running`], already in place;
-/// `ProcessTable::sched_for_cpu()` documents the seam.
+/// Ready queues are **per-CPU** (`ProcessTable::sched[cpu]`), mirroring C's
+/// `run_q_head[]`/`run_q_tail[]` in `__cpu_local_vars` (cpulocals.h:58-59).
+/// Each CPU owns its queue; `enqueue`/`dequeue`/`enqueue_head` operate on the
+/// process's assigned CPU (`get_cpu_var(rp->p_cpu)`, proc.c:1614/1688/1739)
+/// and `pick_proc` on the local CPU (`get_cpulocal_var`, proc.c:1801) — see
+/// [`crate::proc_table::ProcessTable::sched_for_cpu`]. This replaces an
+/// earlier "shared + BKL behaves as one global queue" shortcut that let two
+/// CPUs pick the same queue-head process (double dispatch). The per-CPU
+/// *state* here (`proc_ptr` — [`CpuLocal::set_running`], `bill_ptr`,
+/// `idle_proc`) is the running/dispatch identity; the queue arrays themselves
+/// live in `ProcessTable::sched` (indexed by CPU) because enqueue needs
+/// simultaneous access to the queue and the process table.
 ///
 /// C: cpulocals.h — `struct __cpu_local_vars`
 #[derive(Debug)]

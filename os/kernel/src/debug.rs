@@ -47,13 +47,13 @@ const MAX_LOOP: usize = PROC_TABLE_SIZE + 16;
 pub fn runqueues_ok_cpu(
     _smp_state: &SmpState,
     proc_table: &ProcessTable,
-    _cpu: CpuId,
+    cpu: CpuId,
 ) -> bool {
-    // S-6.3 sched-1: the ready queues are SHARED (ProcessTable::sched) and
-    // BKL-serialized — the frozen §3.5.3 decision. The per-CPU parameter is
-    // retained for signature stability; every CPU checks the same queue, so
-    // the check runs once against the shared scheduler.
-    let scheduler = proc_table.scheduler();
+    // S-6.3 sched-1: ready queues are per-CPU (ProcessTable::sched[cpu]),
+    // mirroring C's cpulocal run_q_head/run_q_tail (cpulocals.h:58-59). Each
+    // CPU validates its own queue; the cross-CPU readiness check below is
+    // scoped to processes assigned to this CPU (`rp->p_cpu`).
+    let scheduler = proc_table.sched_for_cpu(cpu);
 
     // C: debug.c:25-28 — clear p_found for all processes.
     // We use a local bitset instead of a per-process field to avoid
@@ -160,14 +160,19 @@ pub fn runqueues_ok_cpu(
         }
     }
 
-    // C: debug.c:92-103 — every runnable process must be on a queue.
+    // C: debug.c:92-103 — every runnable process assigned to THIS cpu must
+    // be on this cpu's queue. Scoping by `p_sched.cpu` is the per-CPU
+    // generalization of C's single shared-queue check: `runqueues_ok_all()`
+    // runs this once per CPU, so every runnable process is verified against
+    // exactly its own home queue.
     for (i, found_val) in found.iter().take(PROC_TABLE_SIZE).enumerate() {
         let nr = ProcNr(i as i32);
         if let Some(proc) = proc_table.get(nr) {
             if proc.p_rts_flags.is_set(RtsFlagsBits::SLOT_FREE) {
                 continue;
             }
-            if proc.is_runnable() && !*found_val {
+            let home = proc.p_sched.cpu.load(core::sync::atomic::Ordering::Acquire);
+            if proc.is_runnable() && home == cpu.raw() && !*found_val {
                 Console::write_str("runqueues_ok: ready proc not on queue: nr=");
                 Console::write_hex(i as u64);
                 Console::write_str("\n");

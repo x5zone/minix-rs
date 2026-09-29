@@ -3063,9 +3063,9 @@ pub(crate) fn set_active_root_tracked(root: PhysBytes) {
 /// C: `pick_proc()` — proc.c:1785-1813, including the `bill_ptr` side
 /// effect: when the picked process's privilege is BILLABLE, it becomes the
 /// recipient of system-time accounting (`get_cpulocal_var(bill_ptr) = rp`
-/// — proc.c:1809). The C function reads the *local CPU's* run queues; in
-/// the single-CPU Rust build the queues live in `ProcessTable::sched`
-/// (see `smp.rs` CpuLocal::scheduler for the SMP migration plan).
+/// — proc.c:1809). The C function reads the *local CPU's* run queues
+/// (`get_cpulocal_var(run_q_head)`, proc.c:1801); Rust mirrors this with
+/// the per-CPU `ProcessTable::sched[cpu]` array indexed by `cpu`.
 ///
 /// Returns `None` when every queue is empty — the caller falls into
 /// `idle()` (C: `while (!(p = pick_proc())) idle();` — proc.c:338).
@@ -3075,7 +3075,7 @@ fn pick_and_bill(
     priv_table: &crate::kpriv::PrivTable,
     cpu: crate::proc::CpuId,
 ) -> Option<crate::proc::ProcNr> {
-    let picked = table.scheduler().pick_proc(table.procs_slice())?;
+    let picked = table.sched_for_cpu(cpu).pick_proc(table.procs_slice())?;
 
     // C: proc.c:1808-1809 — `if (priv(rp)->s_flags & BILLABLE)
     // get_cpulocal_var(bill_ptr) = rp;`
@@ -3110,7 +3110,9 @@ fn is_billable(
 /// with the raw flag primitive — deliberately NOT `rts_unset`, whose
 /// auto-enqueue is tail-only; C re-decides head-vs-tail from
 /// `p_cpu_time_left` (a process preempted mid-quantum re-enters at the
-/// HEAD of its priority queue to finish its slice).
+/// HEAD of its priority queue to finish its slice). Both the head and tail
+/// re-enqueue target the process's assigned CPU (`rp->p_cpu`, C
+/// proc.c:1688/1614), not a hardcoded one.
 ///
 /// A process that is not runnable after the clear (blocked again by the
 /// preempting work) is left alone — C: proc.c:324 guards the enqueue the
@@ -3135,16 +3137,17 @@ fn requeue_if_preempted(
         let has_quantum = table
             .get(nr)
             .is_some_and(|p| p.p_sched.quantum.cpu_time_left.load(Ordering::Acquire) > 0);
+        // C routes both the head and tail re-enqueue to the process's own
+        // CPU (`rp->p_cpu`), never a hardcoded BSP.
+        let cpu_id = table.get(nr).map_or(crate::proc::CpuId::BSP, |p| {
+            crate::proc::CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
+        });
         if has_quantum {
-            table.sched_enqueue_head(nr, crate::proc::CpuId::BSP);
+            table.sched_enqueue_head(nr, cpu_id);
         } else {
             // C proc.c:326-330 — the slice is spent, so the process
             // re-enters at the TAIL via enqueue(p), which also evaluates
-            // preemption against the CPU-local current and targets the
-            // process's own CPU (C: rp->p_cpu), not a hardcoded one.
-            let cpu_id = table.get(nr).map_or(crate::proc::CpuId::BSP, |p| {
-                crate::proc::CpuId::new_unchecked(p.p_sched.cpu.load(Ordering::Acquire))
-            });
+            // preemption against the CPU-local current.
             table.sched_enqueue(nr, cpu_id);
         }
     }
