@@ -156,6 +156,20 @@ impl CpuContextArch for Riscv64CpuContextArch {
         ctx.gp_regs[crate::riscv64::signal::GP_A1] = 0;
     }
 
+    fn set_secondary_ipc_return(ctx: &mut Self::CpuContext, value: u64) {
+        // C: `arch_set_secondary_ipc_return` (arch_system.c:184-186, i386
+        // body `p->p_reg.bx = val`) — the MINIX_KERNINFO arm hands the
+        // caller the user-mapped info-page address through the secondary
+        // lane (whole-value assignment, not an OR-merge). riscv's
+        // secondary lane = A1 (`gp_regs[GP_A1]`), the same register
+        // `ipc_trap` reads back as its second return value and
+        // `sync_status_register_to_frame` pulls into the outgoing frame
+        // (续-75, mirroring the aarch64 §1.112 CodeReview W2 fix: the
+        // trait default no-op would drop the page address and make
+        // `query_kerninfo_page` falsely return Ok(0)).
+        ctx.gp_regs[crate::riscv64::signal::GP_A1] = value;
+    }
+
     fn set_ipc_return_reg(ctx: &mut Self::CpuContext, value: u64) {
         // C: `p->p_reg.retreg = val` (proc.c:969/:1097 wake sites). On
         // riscv64 the return lane is A0, stored separately as `ctx.a0`

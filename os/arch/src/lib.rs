@@ -347,7 +347,18 @@ pub fn save_frame_to_context(
 ) {
     crate::arm64::trap_stub::save_frame_to_context(frame, ctx);
 }
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "riscv64")]
+pub fn save_frame_to_context(
+    frame: &riscv64::trap_stub::Riscv64TrapFrame,
+    ctx: &mut CurrentCpuContext,
+) {
+    crate::riscv64::trap_stub::save_frame_to_context(frame, ctx);
+}
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 pub fn save_frame_to_context(_frame: &(), _ctx: &mut CurrentCpuContext) {}
 
 /// Pull the IPC status register from a process's saved context into the
@@ -368,7 +379,18 @@ pub fn sync_status_register_to_frame(
 ) {
     crate::arm64::trap_stub::sync_status_register_to_frame(ctx, frame);
 }
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+#[cfg(target_arch = "riscv64")]
+pub fn sync_status_register_to_frame(
+    ctx: &CurrentCpuContext,
+    frame: &mut riscv64::trap_stub::Riscv64TrapFrame,
+) {
+    crate::riscv64::trap_stub::sync_status_register_to_frame(ctx, frame);
+}
+#[cfg(not(any(
+    target_arch = "x86_64",
+    target_arch = "aarch64",
+    target_arch = "riscv64"
+)))]
 pub fn sync_status_register_to_frame(_ctx: &CurrentCpuContext, _frame: &mut ()) {}
 
 /// Read back the saved IPC return register of a process's saved user
@@ -429,23 +451,36 @@ pub fn register_trap_dispatchers(
     crate::arm64::trap_stub::register_dispatchers(trap, syscall);
 }
 
-/// Register the diverging park-and-reschedule thunk (NK4-C §1.113) with the
-/// aarch64 `EL0BODY` entry stub. No-op elsewhere: the switch-after-pop
-/// park path is an aarch64 EL1h single-stack concern (x86 diverges safely
-/// via TSS.sp0 reload, riscv64 lands with its own IPC bridge).
-#[cfg(not(all(not(feature = "runtime-window"), target_arch = "aarch64")))]
+/// Register the diverging park-and-reschedule entry for the lower-EL
+/// (user) dispatch legs (NK4-C §1.113 aarch64, 续-75 riscv64) with the
+/// arch's `EL0BODY`/user-leg entry stub; the park branch jumps here after
+/// unwinding a blocked-receiver frame. No-op elsewhere: the switch-after-
+/// pop path is an EL1h/single-kernel-stack concern (x86 diverges safely
+/// via TSS.sp0 reload).
+#[cfg(not(all(
+    not(feature = "runtime-window"),
+    any(target_arch = "aarch64", target_arch = "riscv64")
+)))]
 pub fn register_resched_entry(_f: unsafe extern "C" fn() -> !) {}
-#[cfg(all(not(feature = "runtime-window"), target_arch = "aarch64"))]
+#[cfg(all(
+    not(feature = "runtime-window"),
+    any(target_arch = "aarch64", target_arch = "riscv64")
+))]
 pub fn register_resched_entry(f: unsafe extern "C" fn() -> !) {
+    #[cfg(target_arch = "aarch64")]
     crate::arm64::trap_stub::register_resched_entry(f);
+    #[cfg(target_arch = "riscv64")]
+    crate::riscv64::trap_stub::register_resched_entry(f);
 }
 #[cfg(all(not(feature = "runtime-window"), target_arch = "riscv64"))]
 pub fn register_trap_dispatchers(
     trap: unsafe extern "C" fn(&mut riscv64::trap_stub::Riscv64TrapFrame),
-    syscall: unsafe extern "C" fn(&mut riscv64::trap_stub::Riscv64TrapFrame),
+    syscall: unsafe extern "C" fn(&mut riscv64::trap_stub::Riscv64TrapFrame) -> u64,
 ) {
     // Slot semantics: `trap` = kernel leg (S-origin), `syscall` = user
-    // leg (U-origin) — the stvec legs split by interrupted privilege.
+    // leg (U-origin) — the stvec legs split by interrupted privilege. The
+    // user leg's u64 return is the 续-75 park decision (§1.113 twin); the
+    // kernel leg never parks and keeps the unit shape.
     crate::riscv64::trap_stub::register_dispatchers(trap, syscall);
 }
 

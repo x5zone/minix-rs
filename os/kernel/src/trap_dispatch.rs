@@ -1700,10 +1700,10 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
 //   enforcement (C proc.c:418-424, the x86 0xF1 shape).
 // - **syscall arm**: the KERNEL_CALL message leg (a7/x8 == 0, message at
 //   a0/x0 per `minix_sys::arch_trap`) → `kernel_call`, reply code in
-//   a0/x0. The raw IPC legs (a7/x8 1..16): aarch64 dispatches through
-//   `aarch64_ipc_dispatch_body` (NK4-C §1.112, EL1 mirror of the x86 int-33
-//   bridge); riscv64 is still a registered gap and answers -ENOSYS (the
-//   same contract the K12b carriers observed).
+//   a0/x0. The raw IPC legs (a7/x8 1..16): both aarch64 and riscv64 now
+//   dispatch through their `*_ipc_dispatch_body` mirrors of the x86 int-33
+//   bridge (aarch64 NK4-C §1.112, riscv64 续-75); the -ENOSYS placeholder
+//   and its `ENOSYS_CODE` constant are retired with the riscv wiring.
 // - **faults**: panic with the architectural diagnostics. The acting
 //   arms (ForwardToVm / cause_signal — NK2, x86-only) are the downstream
 //   "页故障回路三架构化" wave; reaching them here is a registered gap,
@@ -1712,11 +1712,6 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
 // Registered by `init_protection` before `TrapEntryArch::load()`; slot
 // semantics per arch are documented on `register_trap_dispatchers`.
 
-/// -ENOSYS on the trap ABI return register (minix_types::errno parity;
-/// the carriers pin the same value). riscv64-only now: aarch64 dispatches
-/// its raw IPC legs instead of answering -ENOSYS (NK4-C §1.112).
-#[cfg(target_arch = "riscv64")]
-const ENOSYS_CODE: u64 = 38;
 /// KERNEL_CALL message-leg trap number (minix_sys::arch_trap).
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 const KERNEL_CALL_TRAP: u64 = 0;
@@ -1771,36 +1766,60 @@ pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::tr
     riscv64_diag_panic(frame, scause, "kernel-leg trap");
 }
 
-/// User-leg body (U-origin): ecall kernel calls + user-fault diagnostics.
-/// Fault classification (page-fault forwarding / signals) is the
-/// downstream three-arch wave — a faulting user process panics here with
-/// diagnostics instead of being parked for VM.
+/// User-leg body (U-origin): ecall kernel calls + raw IPC bridge +
+/// user-fault diagnostics. Fault classification (page-fault forwarding /
+/// signals) is the downstream three-arch wave — a faulting user process
+/// panics here with diagnostics instead of being parked for VM.
+///
+/// The `u64` return is the park decision (续-75, the riscv mirror of
+/// aarch64 §1.113): `PARK_NONE` → the epilogue restores and `sret`s;
+/// `PARK_RESCHEDULE` → the epilogue unwinds the frame and enters the
+/// resched thunk (the caller was parked by the IPC engine).
 ///
 /// # Safety
 ///
 /// `frame` points at the live user-leg frame at the kernel-stack top
 /// (asm contract); the interrupted user sp travels in `frame.gpr[2]`.
 #[cfg(target_arch = "riscv64")]
-pub unsafe extern "C" fn riscv64_user_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+pub unsafe extern "C" fn riscv64_user_body(
+    frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
+) -> u64 {
+    use minix_arch::riscv64::trap_stub::PARK_NONE;
     let scause = riscv64_read_scause();
     if scause == RISCV64_CAUSE_ECALL_UMODE {
         // `ecall` does not advance sepc — step past the 4-byte
         // instruction or the sret re-executes it and the trap loops
         // forever (minix-sys arch_trap contract).
         frame.sepc = frame.sepc.wrapping_add(4);
-        let leg = frame.gpr[17] as u64; // a7 = call number register
+        let leg = frame.gpr[17]; // a7 = call number register
         if leg == KERNEL_CALL_TRAP {
-            riscv64_kernel_call_leg(frame);
-        } else {
-            // Raw IPC legs (SEND..SENDA) and MINIX_KERNINFO: the
-            // int-33-style IPC bridge is x86-only so far — registered
-            // gap, answered -ENOSYS on the a0/a1 return pair.
-            frame.gpr[10] = (-(ENOSYS_CODE as i64)) as u64; // a0
-            frame.gpr[11] = 0; // a1
+            return riscv64_kernel_call_leg(frame);
         }
-        return;
+        // Raw IPC legs (SEND..SENDA) + MINIX_KERNINFO: the riscv
+        // mirror of the x86 int-33 / aarch64 EL1 bridge (续-75).
+        // An unknown call number is rejected inside the body
+        // (EBADCALL); the park decision rides a0 back to asm.
+        return riscv64_ipc_dispatch_body(frame);
     }
-    riscv64_diag_panic(frame, scause, "user-leg trap");
+    if scause & RISCV64_SCAUSE_INTERRUPT != 0 {
+        // A U-origin interrupt (delivered while the user leg was
+        // installed — stvec is the user leg for all U-mode execution).
+        // Only the supervisor timer has an arm here — same scause-code
+        // gate as the kernel leg; SSI (IPI) / SEI (PLIC) remain
+        // registered gaps and must NOT be mis-counted as a tick
+        // (CodeReview 续-75 S2: treating every interrupt as a timer
+        // would pollute uptime and never EOI a PLIC line).
+        if scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER {
+            riscv64_timer_arm();
+            return PARK_NONE;
+        }
+        return riscv64_diag_panic(frame, scause, "user-leg trap");
+    }
+    // Synchronous user faults (instruction/data load-store page faults,
+    // scause 12/13/15) land on the diagnostics panic — the acting arms
+    // (ForwardToVm / cause_signal) arrive with the three-arch
+    // page-fault wave, same registered gap as before the bridge.
+    riscv64_diag_panic(frame, scause, "user-leg trap")
 }
 
 /// The riscv64 timer arm — one S-mode timer tick, three jobs in the x86
@@ -1852,13 +1871,23 @@ fn riscv64_timer_arm() {
 /// The KERNEL_CALL leg: message pointer at a0, call number in
 /// `m_type` — `kernel_call` parity with the x86 SYSCALL body.
 ///
+/// Returns the park decision (续-75, aarch64 §1.116 mirror): a reply
+/// code rides a0 out and returns `PARK_NONE`; a `VmSuspend` outcome
+/// saves the caller's context (the KCALL_RESUME redispatch delivers the
+/// reply into it later) and parks through the switch-after-pop path.
+/// Other no-reply outcomes are a wiring bug here — panic rather than
+/// reply garbage (x86 B-body parity).
+///
 /// # Safety
 ///
 /// Caller guarantees the registered-dispatcher invariants (scheduler
 /// brought up, tables initialized); a blocked-call outcome is a wiring
 /// bug here (blocking IPC arrives through the IPC bridge, x86 parity).
 #[cfg(target_arch = "riscv64")]
-unsafe fn riscv64_kernel_call_leg(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+unsafe fn riscv64_kernel_call_leg(
+    frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
+) -> u64 {
+    use minix_arch::riscv64::trap_stub::{PARK_NONE, PARK_RESCHEDULE};
     let smp = unsafe { crate::smp_state_boot_unchecked() };
     let cpu = crate::current_cpu_id();
     let cur_nr = smp
@@ -1881,13 +1910,212 @@ unsafe fn riscv64_kernel_call_leg(frame: &mut minix_arch::riscv64::trap_stub::Ri
         unsafe { crate::clock_state_boot_unchecked() },
         &crate::ipc::KernelUserCopy,
     );
-    // Reply code → a0. NoReply/VmSuspend must not occur on this leg
-    // (blocking IPC arrives via the IPC bridge) — x86 B-body parity:
-    // panic rather than reply garbage.
-    frame.gpr[10] = match result.reply_code() {
-        Some(code) => code as i64 as u64,
-        None => panic!("riscv64 kernel call returned {result:?} with no reply code"),
-    };
+    // Reply → a0 on the wire form (NK4-C F10b: negative errno lanes go
+    // out through `reply_wire`, not the raw positive code — the same P1
+    // gap this leg carried until 续-75, closed with the aarch64 mirror).
+    match result.reply_wire() {
+        Some(wire) => {
+            frame.gpr[10] = wire as i64 as u64;
+            PARK_NONE
+        }
+        None => {
+            // VmSuspend (aarch64 §1.116 mirror): the call parked the
+            // caller on RTS_VMREQUEST — enqueue/dequeue/notify VM were
+            // already done by kernel_call_finish (the single owner of
+            // that bookkeeping on this leg, x86 SYSCALL parity). This
+            // arm only adds the leg-specific context save so the
+            // KCALL_RESUME redispatch can deliver the reply into the
+            // saved registers.
+            if !matches!(result, crate::syscall::KcallResult::VmSuspend) {
+                panic!("riscv64 kernel call returned {result:?} with no reply code");
+            }
+            {
+                let proc = table
+                    .get_mut(cur_nr)
+                    .expect("riscv64 kernel call suspend: caller slot must exist");
+                minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+                proc.trap_style = TrapStyle::FullContext;
+                if let Some(ctx) = proc.p_vm_suspend.as_mut() {
+                    ctx.saved_m_user = Some(m_user.0);
+                }
+            }
+            // The caller is non-runnable; hand off through the switch-
+            // after-pop (the resched thunk re-acquires the BKL).
+            PARK_RESCHEDULE
+        }
+    }
+}
+
+/// The diverging park-and-reschedule thunk (the riscv mirror of
+/// aarch64 §1.113 / x86 `reenter_scheduler`), reached via
+/// `riscv64_resched_entry` after the user-leg asm unwound a blocked-
+/// receiver frame back to the clean kernel-stack base. Re-acquires the
+/// BKL that `kernel_call_finish_ipc_door` released (`scheduler_loop`
+/// consumes the held-BKL convention) and enters the scheduling loop.
+///
+/// # Safety
+///
+/// Called only from the user leg's park branch (single, well-defined
+/// kernel-stack base; BKL not held; current proc already parked and
+/// dequeued by the IPC engine).
+#[cfg(target_arch = "riscv64")]
+pub unsafe extern "C" fn riscv64_resched_thunk() -> ! {
+    let guard = crate::smp::bkl_lock();
+    core::mem::forget(guard);
+    let cpu = crate::current_cpu_id();
+    crate::scheduler_loop(cpu)
+}
+
+/// The raw-IPC leg (ecall with a7 = 1..16): the riscv mirror of
+/// [`aarch64_ipc_dispatch_body`] (NK4-C §1.112) and the x86 int-33
+/// bridge. Register ABI per `minix-sys::arch_trap::ipc_trap` (riscv64):
+/// a7 = call number, a0 = src/dst endpoint (SENDA: count), a1 = message
+/// pointer (SENDA: table pointer); errno returns in a0 and the IPC
+/// status rides a1 (the A1 status lane, `or_ipc_status_reg`). The
+/// `ecall` sepc step already happened in [`riscv64_user_body`].
+///
+/// # Safety
+///
+/// Same invariants as `riscv64_kernel_call_leg`: `frame` is the live
+/// user-leg frame and the current proc is scheduled.
+#[cfg(target_arch = "riscv64")]
+unsafe fn riscv64_ipc_dispatch_body(
+    frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
+) -> u64 {
+    use minix_arch::riscv64::trap_stub::{PARK_NONE, PARK_RESCHEDULE};
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "riscv64 IPC trap before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+
+    // The ecall arrives from U-mode where this CPU does NOT own the BKL.
+    // The entry below mutates the shared PROC_TABLE before
+    // dispatch_ipc_entry acquires it fresh — acquire now (x86 B27 shape),
+    // release just before the dispatch hand-off (the BKL is
+    // non-reentrant).
+    let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+    debug_assert!(
+        ipc_bkl,
+        "riscv64 ecall IPC reached from kernel context (BKL inherited) — \
+         dispatch_ipc_entry's fresh acquire would self-deadlock"
+    );
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+
+    // Persist the user register file before any dispatch side effect —
+    // delivery paths OR IPC status into this saved context (the resume
+    // asm reads it back before `sret`). Record the ENTRY style so a
+    // door-parked caller resumes through the entry-style gate.
+    {
+        let caller = table
+            .get_mut(cur_nr)
+            .unwrap_or_else(|| panic!("riscv64 IPC from invalid proc nr {cur_nr:?}"));
+        minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
+        caller.trap_style = TrapStyle::FullContext;
+    }
+
+    // Pre-decode: unknown call numbers exit before any dispatch (C
+    // proc.c:602-606 do_ipc default — EBADCALL without entering the
+    // engine).
+    let call_nr = frame.gpr[17] as i32; // a7
+    if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
+        if ipc_bkl {
+            crate::smp::bkl_unlock();
+        }
+        frame.gpr[10] = crate::errno::EBADCALL as i64 as u64;
+        return PARK_NONE;
+    }
+
+    let r1 = frame.gpr[10]; // a0: src/dst endpoint, or SENDA count
+    let r2 = frame.gpr[11]; // a1: message pointer, or SENDA table pointer
+    let is_senda = call_nr == (crate::ipc::IpcCall::SendA as i32);
+    // Body-less calls (kerninfo / notify / senda) trap with the message
+    // register unused — no user buffer is copied (C ipc_minix_kerninfo.S
+    // zeroes the operand regs; notify passes no body).
+    let is_bodyless = is_senda
+        || call_nr == (crate::ipc::IpcCall::KernInfo as i32)
+        || call_nr == (crate::ipc::IpcCall::Notify as i32);
+    {
+        let caller = table
+            .get_mut(cur_nr)
+            .expect("riscv64 IPC: caller slot must exist");
+        caller.p_defer.r2 = r1 as usize;
+        caller.p_defer.r3 = if is_senda { r2 as usize } else { 0 };
+        if !is_senda {
+            caller.p_delivermsg_vir = VirBytes(r2);
+        }
+    }
+
+    // Copy the user message (kernel-side copy, TOCTOU defense — the same
+    // shape as the x86/aarch64 legs). SENDA carries no message buffer.
+    let mut msg = minix_types::Message::default();
+    if !is_bodyless {
+        use crate::ipc::UserCopy as _;
+        match crate::ipc::KernelUserCopy.copy_msg_from_user(VirBytes(r2)) {
+            Ok(m) => msg = m,
+            Err(_) => {
+                // C system.c:152-155 parity: SIGSEGV + EFAULT, without
+                // entering IPC dispatch.
+                crate::syscall_signal::cause_signal(
+                    cur_nr,
+                    crate::syscall_signal::SIGSEGV,
+                    table,
+                    unsafe { crate::priv_table_boot_unchecked() },
+                );
+                if ipc_bkl {
+                    crate::smp::bkl_unlock();
+                }
+                frame.gpr[10] = crate::errno::EFAULT as i64 as u64;
+                return PARK_NONE;
+            }
+        }
+    }
+    msg.m_type = call_nr;
+    msg.m_source = table
+        .get(cur_nr)
+        .map(|c| c.p_endpoint)
+        .expect("riscv64 IPC: caller slot must exist");
+
+    // Release the entry acquisition so dispatch_ipc_entry takes a fresh
+    // lock (non-reentrant BKL); mutual exclusion is unbroken for the
+    // instant we hold nothing (we do not touch the table in between).
+    if ipc_bkl {
+        crate::smp::bkl_unlock();
+    }
+    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+    let result = crate::syscall::dispatch_ipc_entry(cur_nr, table, &mut msg, priv_table);
+    crate::syscall::kernel_call_finish_ipc_door(cur_nr, table, &msg, result, priv_table);
+
+    // Delivered: errno rides a0 out via `sret`; the IPC status bits were
+    // ORed into the saved context's A1 by the delivery path — pull that
+    // lane back into the frame (sync_status_register_to_frame), then let
+    // the epilogue restore normally (PARK_NONE).
+    //
+    // Blocked (NoReply): the caller was parked by
+    // `kernel_call_finish_ipc_door` (dequeued, context already saved
+    // above). Request the switch-after-pop: the user leg unwinds this
+    // frame back to the clean kernel-stack base and branches to the
+    // registered resched thunk, which re-acquires the BKL and runs
+    // `scheduler_loop` — picking another runnable process. The parked
+    // process resumes later through `finish_and_restore` when a
+    // delivery makes it runnable again.
+    if let Some(code) = result.reply_code() {
+        frame.gpr[10] = code as i64 as u64;
+        let ctx = &table
+            .get(cur_nr)
+            .expect("riscv64 IPC: caller slot must exist")
+            .cpu_context;
+        minix_arch::sync_status_register_to_frame(ctx, frame);
+        PARK_NONE
+    } else {
+        PARK_RESCHEDULE
+    }
 }
 
 /// Console diagnostics + panic for unreached causes — the production
@@ -1899,7 +2127,7 @@ fn riscv64_diag_panic(
     frame: &minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
     scause: u64,
     origin: &str,
-) {
+) -> ! {
     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
     let stval = riscv64_read_stval();
     Console::write_str(origin);

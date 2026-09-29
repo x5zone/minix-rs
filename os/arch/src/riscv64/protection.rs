@@ -54,6 +54,63 @@ use crate::protection::{ProtectionArch, Privilege};
 use minix_types::VirBytes;
 use core::arch::asm;
 
+/// Per-CPU kernel-stack base for the trap entry legs (NK4-C 续-75, the
+/// riscv counterpart of aarch64's `TPIDR_EL1` entry-base scheme).
+///
+/// riscv has no scratch system register we may claim (aarch64 owns
+/// TPIDR_EL1; `sscratch` itself is the *user-trap swap register* — it
+/// carries the parked user sp the moment a park switch happens, so it
+/// cannot double as the base store). The cell is written by
+/// [`ProtectionArch::init`]/[`ProtectionArch::init_ap`] at boot (before
+/// any `restore_to_user` can run) and read by `restore_to_user`'s asm to
+/// re-anchor `sscratch` to this CPU's kernel-stack top before `sret` —
+/// closing the A.7 ratchet: the park branch of the user leg leaves
+/// `sscratch` holding the *parked* process's user sp, and without a
+/// re-anchor the next U-mode trap would build its frame on that user
+/// stack instead of the kernel stack.
+///
+/// Single cell, sound today because this port runs riscv64 single-hart:
+/// `smp_init` is not wired for non-x86 architectures (kernel/smp.rs
+/// prints the "not wired" warning; `init_ap` has no riscv caller yet).
+/// When the S-10 AP wave lands, each hart's `init_ap` must record a
+/// PER-HART base — either turn this into a per-CPU array indexed by
+/// `current_cpu_id()` or give each AP its own cell — otherwise
+/// `restore_to_user` re-anchors every hart's sscratch to whichever
+/// stack was written last.
+///
+/// `no_mangle` because the `restore_to_user` asm dereferences it by
+/// absolute address (`ld a4, KERNEL_TRAP_STACK_BASE`); the Rust side
+/// reaches it only through [`set_entry_stack_base`] / [`entry_stack_base`]
+/// volatile accesses (64-bit aligned — no torn read by construction on
+/// this port's single-write boot phase).
+#[unsafe(no_mangle)]
+pub static mut KERNEL_TRAP_STACK_BASE: u64 = 0;
+
+/// Record this CPU's kernel-stack top: write the CSR *and* the re-anchor
+/// cell. `base == 0` is the throwaway-instance sentinel, not a stack —
+/// see [`ProtectionArch::init`] (the non-x86 `with_protection` helper
+/// fabricates `init(0, VirBytes::new(0))` just to reach `load()`; the
+/// sentinel keeps that call side-effect-free instead of clobbering the
+/// live sscratch back to 0 — the aarch64 §1.113 lesson, riscv form).
+fn set_entry_stack_base(base: VirBytes) {
+    debug_assert_eq!(base.get() % 8, 0, "kernel stack top must be 8-byte aligned");
+    // SAFETY: CSR write to sscratch in S-mode with a valid kernel VA; the
+    // global below is written only at boot (single-threaded phase, before
+    // any `restore_to_user` reads it).
+    unsafe {
+        asm!("csrw sscratch, {}", in(reg) base.get(), options(nomem, preserves_flags));
+        core::ptr::addr_of_mut!(KERNEL_TRAP_STACK_BASE).write_volatile(base.get());
+    }
+}
+
+/// The recorded kernel-stack top (0 before init) — read-only accessor
+/// for diagnostics/tests; the sentinel write path itself lives in
+/// [`set_entry_stack_base`].
+pub fn entry_stack_base() -> u64 {
+    // SAFETY: volatile read of the boot-written cell; see the static doc.
+    unsafe { core::ptr::addr_of!(KERNEL_TRAP_STACK_BASE).read_volatile() }
+}
+
 /// RISC-V privilege level representation.
 ///
 /// RISC-V uses two privilege modes for OS operation:
@@ -108,22 +165,31 @@ impl ProtectionArch for Riscv64Protection {
     }
 
     fn init(cpu_id: u32, kernel_stack_top: VirBytes) -> Self {
-        // SAFETY: CSR write to sscratch is safe because:
-        // - We are in S-mode (supervisor), required for CSR access.
-        // - sscratch holds the kernel stack pointer for U→S transitions.
-        // - kernel_stack_top is a valid kernel virtual address.
-        unsafe {
-            asm!("csrw sscratch, {}", in(reg) kernel_stack_top.get());
+        // SAFETY: see `set_entry_stack_base` — CSR write in S-mode.
+        //
+        // `base == 0` is the throwaway sentinel, not a stack (续-75, the
+        // riscv form of the aarch64 §1.113 guard): the non-x86
+        // `with_protection` helper fabricates `init(0, VirBytes::new(0))`
+        // purely to reach `load()`, and an unguarded write there clobbers
+        // the live sscratch back to 0 — the first user trap would then
+        // swap sp := 0, decrement to 0xFFFF_FFFF_FFFF_FEEF (the frame
+        // size), and take a load/store fault on a non-canonical VA
+        // inside the trap entry itself (riscv-reviewlog §A.7 item 1, the
+        // boot-必踩 point).
+        if kernel_stack_top.0 != 0 {
+            set_entry_stack_base(kernel_stack_top);
         }
 
         Self { cpu_count: cpu_id + 1 }
     }
 
     fn set_kernel_stack(&mut self, _cpu_id: u32, stack_top: VirBytes) {
+        // A 0 argument is never a stack — this entry has no throwaway
+        // caller today, so a 0 here is a wiring bug (loud stop instead of
+        // silently poisoning sscratch).
+        debug_assert_ne!(stack_top.0, 0, "set_kernel_stack(0) would poison sscratch");
         // SAFETY: Same as init() — sscratch write in S-mode with valid address.
-        unsafe {
-            asm!("csrw sscratch, {}", in(reg) stack_top.get());
-        }
+        set_entry_stack_base(stack_top);
     }
 
     fn load(&self) {
@@ -134,9 +200,11 @@ impl ProtectionArch for Riscv64Protection {
     }
 
     fn init_ap(&self, cpu_id: u32, kernel_stack_top: VirBytes) {
-        // SAFETY: Same as init() — sscratch write in S-mode with valid address.
-        unsafe {
-            asm!("csrw sscratch, {}", in(reg) kernel_stack_top.get());
+        // Park this AP's own kernel-stack top in its `sscratch` (per-hart
+        // CSR — `init_ap` runs on the AP) and record the re-anchor cell.
+        // Same `base == 0` throwaway-instance guard as `init` (续-75).
+        if kernel_stack_top.0 != 0 {
+            set_entry_stack_base(kernel_stack_top);
         }
         let _ = cpu_id;
     }

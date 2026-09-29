@@ -64,6 +64,19 @@ impl TrapReturnArch for Riscv64TrapReturn {
             // Park the register-file pointer in t6 (its user slot is
             // gp_regs[GP_T6], loaded last as a self-referential load).
             "mv t6, a1",
+            // sscratch re-anchor (续-75, the riscv form of the aarch64
+            // §1.113 SP rebase before `eret`): after a park-and-resched
+            // switch the register holds the PARKED process's user sp, not
+            // a kernel-stack top — and this leg's own `sp` is about to
+            // become a user sp, so nothing here else heals it. Load the
+            // boot-recorded per-CPU base and restore the `load()`
+            // invariant (`sscratch` = this CPU's kernel-stack top) BEFORE
+            // anything reads a user value into a4. The symbol is the
+            // `no_mangle` cell in `protection` (written by `init`/
+            // `init_ap`, never reachable before the first user return).
+            "la a4, KERNEL_TRAP_STACK_BASE",
+            "ld a4, 0(a4)",
+            "csrw sscratch, a4",
             // Point stvec at the USER leg: the CPU is about to run U-mode
             // code, so its next trap must enter through the swap leg
             // (`riscv64_user_trap_vector` — the kernel/user legs are

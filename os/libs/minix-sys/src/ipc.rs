@@ -561,7 +561,7 @@ pub struct DirectTrapTransport;
 /// whole-message copy, so it touches no byte the kernel will not read).
 #[cfg(all(
     kernel_trap,
-    any(target_arch = "x86_64", target_arch = "aarch64")
+    any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
 ))]
 #[inline]
 unsafe fn commit_message_to_memory(message: *const Message) {
@@ -579,15 +579,16 @@ unsafe fn commit_message_to_memory(message: *const Message) {
 #[allow(unused_variables)]
 impl IpcTransport for DirectTrapTransport {
     fn send(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
-        // E1 slice 3 / NK4-C §1.112: the real trap branch is arch-generic
-        // over the wired legs — `arch_trap::ipc_trap` carries the identical
-        // `(nr, op1, op2)` ABI on x86-64 (`int 0x21`/SYSEXIT) and aarch64
-        // (`svc #0`); riscv64 has the `ecall` body but its *kernel* IPC leg
-        // is still a registered gap (`riscv64_user_body` answers -ENOSYS),
-        // so riscv64 is deliberately excluded until that lands (§1.113).
-        // Hosted builds (no `kernel_trap`) keep the -EIO fallback.
+        // E1 slice 3 / NK4-C §1.112 / 续-75: the real-trap branch is
+        // arch-generic over the wired legs — `arch_trap::ipc_trap` carries
+        // the identical `(nr, op1, op2)` ABI on all three (x86-64
+        // `int 0x21`/SYSEXIT, aarch64 `svc #0`, riscv64 `ecall`). The
+        // gate range tracks the *kernel* legs that answer these numbers:
+        // x86 int-33 bridge + aarch64 EL1 mirror (§1.112) + riscv64 user
+        // leg (续-75) — hosted builds (no `kernel_trap`) keep the -EIO
+        // fallback.
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"),
             kernel_trap
         ))]
         {
@@ -611,7 +612,11 @@ impl IpcTransport for DirectTrapTransport {
         message: &mut Message,
     ) -> Result<IpcStatus, TrapStatus> {
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         {
@@ -636,7 +641,11 @@ impl IpcTransport for DirectTrapTransport {
         message: &mut Message,
     ) -> Result<(), TrapStatus> {
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         {
@@ -656,7 +665,11 @@ impl IpcTransport for DirectTrapTransport {
     }
     fn notify(&self, destination: Endpoint) -> Result<(), TrapStatus> {
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         {
@@ -674,7 +687,11 @@ impl IpcTransport for DirectTrapTransport {
     }
     fn sendnb(&self, destination: Endpoint, message: &Message) -> Result<(), TrapStatus> {
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         {
@@ -696,7 +713,11 @@ impl IpcTransport for DirectTrapTransport {
         // C: `eax = count, ebx = table` (SENDA_ARGS) — count rides the
         // endpoint register, the table pointer the message-pointer one.
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         {
@@ -717,12 +738,15 @@ impl IpcTransport for DirectTrapTransport {
         // secondary return register — x86-64 上是 R10（状态车道的按调用
         // 兼任，NK4-C 1.54/B26；内核 set_secondary_ipc_return 写同一条）,
         // riscv64/aarch64 是 a1/x1——即 `ipc_trap` 的第二返回值。NK4-C
-        // §1.112: single arch-generic leg over the wired targets (x86-64 +
-        // aarch64), replacing the old duplicated x86-only + riscv/aarch
-        // legs. riscv64 is now excluded to match its unwired kernel IPC leg
-        // (§1.113) — it falls back to the documented -EIO.
+        // §1.112: single arch-generic leg over the wired targets; riscv64
+        // joined with 续-75 (kernel leg wired + `set_secondary_ipc_return`
+        // A1-lane override in the arch crate).
         #[cfg(all(
-            any(target_arch = "x86_64", target_arch = "aarch64"),
+            any(
+                target_arch = "x86_64",
+                target_arch = "aarch64",
+                target_arch = "riscv64"
+            ),
             kernel_trap
         ))]
         {

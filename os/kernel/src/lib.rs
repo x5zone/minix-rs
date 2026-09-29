@@ -1351,12 +1351,16 @@ pub fn init_protection(kernel_info: &KernelInfo) {
         trap_dispatch::x86_syscall_dispatch_body,
     );
     // riscv64: kernel leg (S-origin: timer ticks, kernel faults) + user
-    // leg (U-origin: ecall kernel calls, user faults).
+    // leg (U-origin: ecall kernel calls + raw IPC bridge, 续-75). The
+    // user leg's u64 return is the park decision; the diverging thunk
+    // below is its switch-after-pop destination (§1.113 twin).
     #[cfg(target_arch = "riscv64")]
     register_trap_dispatchers(
         trap_dispatch::riscv64_kernel_body,
         trap_dispatch::riscv64_user_body,
     );
+    #[cfg(target_arch = "riscv64")]
+    minix_arch::register_resched_entry(trap_dispatch::riscv64_resched_thunk);
     // aarch64: current-EL leg (kernel IRQs/faults) + lower-EL leg (SVC
     // kernel calls, EL0 faults/interrupts); the u64 operand is the
     // exception class the asm slot ran.
