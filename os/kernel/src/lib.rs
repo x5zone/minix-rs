@@ -3307,9 +3307,12 @@ fn idle(
         //      sends the SCHED IPI to rouse it. `sched_enqueue_with` (proc_table)
         //      only preempts same-CPU targets today, so a process routed to an AP
         //      would never wake (its timer is masked and no IPI is sent);
-        //   3. a `SYS_SCHEDCTL` cpu-affinity guard — `validate_cpu_param` accepts
-        //      any ready cpu under `ncpus > 1`, so a privileged server could pin a
-        //      process onto a masked AP and starve it silently.
+        //   3. [LANDED — NK4-C 续-73] a `SYS_SCHEDCTL`/`SYS_SCHEDULE` cpu-affinity
+        //      guard — `sched_proc` now clamps any non-BSP request to the BSP
+        //      (see `clamp_cpu_to_bsp` in sched.rs), so no user-reachable path
+        //      pins a process onto a masked AP. Arms 1-2 (context_stop_idle +
+        //      enqueue wake IPI) remain outstanding and are REQUIRED before this
+        //      clamp is removed and APs may run user work.
         // Today none is reachable: every process keeps `p_sched.cpu == 0` (boot
         // never migrates, `SchedFields::new` defaults cpu 0, children inherit),
         // so APs only ever reach `idle` and the mask is safe. Their local tick is

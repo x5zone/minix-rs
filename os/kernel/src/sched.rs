@@ -298,6 +298,16 @@ fn validate_cpu_param(
     Ok(())
 }
 
+/// NK4-C 续-73 过渡守卫核心：在 C 的 AP 唤醒三件套接线之前，把
+/// SYS_SCHEDCTL / SYS_SCHEDULE 请求的 CPU 一律钳到 BSP。`None` 保留 C
+/// 的 `-1 = keep-current` 语义不动。抽成注入 `bsp` 的纯函数，以便
+/// hosted test 直接覆盖（真机上 `try_smp_state()` 为 `Some` 时钳制
+/// 才可达，故不能靠已有 host 用例触及内联版）。
+#[inline]
+fn clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> {
+    cpu.map(|_| bsp)
+}
+
 /// Update a process's scheduling parameters.
 ///
 /// C: `sched_proc()` — system.c:642-723.
@@ -344,10 +354,21 @@ fn validate_cpu_param(
 /// CPU range/readiness gate (EBADCPU) and the migration call — both
 /// runtime-reachable only on a multi-CPU machine, mirroring C's
 /// CONFIG_SMP gating by data rather than by cfg.
+///
+/// # Transitional deviation (NK4-C 续-73)
+///
+/// Until the AP wake-up trio (`context_stop_idle` + enqueue wake IPI +
+/// AP timer restart) is wired, `params.cpu` is clamped to the BSP by
+/// [`clamp_cpu_to_bsp`]: a request to home a process on an AP is accepted
+/// (returns `Ok`) but the process stays on the BSP. This keeps Step 3.5
+/// migration and the Step 7 affinity write from ever targeting an AP, so
+/// `-smp4` boot no longer starves INIT on a masked, un-wakeable AP. Remove
+/// this clamp once real SMP (the trio + the cross-CPU VM-corruption fix)
+/// lands. See the in-body comment for the full rationale.
 pub fn sched_proc(
     table: &mut crate::proc_table::ProcessTable,
     nr: ProcNr,
-    params: SchedParams,
+    mut params: SchedParams,
 ) -> Result<(), SchedProcError> {
     use crate::proc::{MiscFlagsBits, RtsFlagsBits};
 
@@ -389,6 +410,22 @@ pub fn sched_proc(
         })?,
         None => validate_cpu_param(params.cpu, 1, |v: u32| v == 0)?,
     }
+
+    // NK4-C 续-73 过渡守卫（对位 lib.rs idle() CONTRACT arm#3）：本 port 尚未
+    // 接入 C 的 AP 唤醒三件套——context_stop_idle(arch_clock.c:351-369，中断
+    // 入口清 cpu_is_idle + restart_local_timer)、enqueue 唤醒 IPI(proc.c:1647)、
+    // AP timer 重装。idle AP 的 LAPIC timer 被 idle()(续-72) 掩蔽且无唤醒臂，
+    // 把进程路由到 AP 会永久饿死(-smp4 boot 死锁在 INIT)；arm#2 单发唤醒 IPI
+    // 实测令 AP 跑用户进程后触发 VM 跨 CPU 服务腐蚀崩溃(pagefault-for-VM +
+    // #UD flood)。故在 AP 可安全承载用户进程之前，把 SYS_SCHEDCTL 与
+    // SYS_SCHEDULE 两条腿请求的 cpu 一律钳到 BSP——其可观测效果(接受请求、
+    // 进程留 BSP)对位 C non-SMP(system.c:686-689 整段在 #ifdef CONFIG_SMP 内，
+    // 忽略 cpu 参数并返回 OK)；错误码路径仍按 C CONFIG_SMP 校验(越界 EINVAL /
+    // 未就绪 EBADCPU，见上 Step 3)。真 SMP(补齐三件套 + 根治跨 CPU 腐蚀)落地
+    // 后移除本钳制。过渡期已知副作用：SCHED 服务端账本仍记进程在被请求的 AP，
+    // 而内核/MIB 读 p_sched.cpu 恒为 BSP——取证以内核为权威。
+    let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0);
+    params.cpu = clamp_cpu_to_bsp(params.cpu, bsp);
 
     // Step 3.5: SMP migration (C system.c:672-677, CONFIG_SMP):
     //   if (p->p_cpu != cpuid && cpu != -1 && cpu != p->p_cpu)
@@ -932,6 +969,17 @@ mod tests {
         sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(0), niced: false }).unwrap();
         let result = sched_proc(&mut table, ProcNr(0), SchedParams { priority: None, quantum: None, cpu: Some(1), niced: false });
         assert_eq!(result.unwrap_err(), SchedProcError::InvalidArgument);
+    }
+
+    #[test]
+    fn test_clamp_cpu_to_bsp_transitional_guard() {
+        // NK4-C 续-73 过渡守卫纯函数覆盖：任何请求的 cpu 被钳到 BSP，
+        // 已在 BSP 保持幂等，`None`（keep-current）不受影响。
+        assert_eq!(clamp_cpu_to_bsp(Some(1), 0), Some(0));
+        assert_eq!(clamp_cpu_to_bsp(Some(3), 0), Some(0));
+        assert_eq!(clamp_cpu_to_bsp(Some(0), 0), Some(0));
+        assert_eq!(clamp_cpu_to_bsp(Some(2), 2), Some(2));
+        assert_eq!(clamp_cpu_to_bsp(None, 0), None);
     }
 
     #[test]

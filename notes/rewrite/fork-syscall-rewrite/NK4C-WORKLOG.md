@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-72（2026-09-30·**根因坐实+成修：延续-57~71 十四轮的 `-smp2/-smp4` VM 用户栈腐蚀崩溃＝`idle()` 省略 C `proc.c:194-196` 的 AP `stop_local_timer` 分支**·已提交生产码修·真机三态验证全绿·新前沿＝INIT 后 `sa-call` 活锁致 marker 未达）**：所有进程 `p_sched.cpu==0`（boot 恒绑 CPU0），CPU1 只跑 idle，`-smp1` vs `-smp2` 唯一差异＝CPU1 存在。`clock.rs::local_tick` 对**所有 CPU 无条件** `rearm_local_tick()`（一次性 LAPIC timer 每 tick 自我重装），而 `idle()` 曾对所有 CPU 无条件 `restart_local_timer()`、漏掉 C 的「halt 的 AP 掩掉本地 timer」半（续-56 补同函数紧邻的 `switch_address_space_idle` proc.c:190 时漏了 proc.c:195 的后半）⇒ halt 的 AP 永不安静、持续收 vector 0xf1 tick（正对 `-d int` 证据）、在续-56 载入的 VM CR3 下高频重入内核与 CPU0 竞争 → VM 用户栈腐蚀。**推翻续-70「缺跨 CPU TLB shootdown」结论**（minix3 C `arch_do_vmctl.c` 只做本地 invlpg/write_cr3、无跨 CPU shootdown，依赖缺页进程挂起，故 shootdown 不符 Ground Truth）。修复＝`idle()` step 3 加门控 `if ncpus>1 && cpu!=bsp → stop_local_timer(); else restart_local_timer()`（对等 proc.c:194-196），CONTRACT 注释登记 C 三件套延后臂（中断入口 `context_stop_idle` 清 idle+重启 timer / enqueue 唤醒臂 proc.c:1647 / schedctl cpu 亲和守卫）——当前 AP 不跑用户进程故永久掩码安全。**验证链全绿**：host 826/569·clippy Δ0（kernel crate 124=124·两 pre-existing 告警仅随行号平移）·rustfmt Δ0（lib.rs 162=162）·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器崩溃归零（pfVM=0/ud=0/panic=0·5113 行·续-70 及以前必崩）+ `-smp1` marker=2/panic=0 不回归**·CodeReview PASSED 无 BLOCKER（2 Warning 已作 CONTRACT 全清单登记）。⚠ 三目标不缩小：崩溃虽消，但 `-smp2/-smp4` 下 boot 卡在 INIT 后重复 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12`（SETADDRSPACE 活锁/进度，sa-call=8）→ **marker=0 未达＝目标① x86 新头号阻塞**（详文见文末 §1.120续-72）。续-73 入口＝定位该 sa-call 往返停滞（对位 C VM 启动/proc 表 seed·为何 caller=4 对 pid=9 反复 SETADDRSPACE 不收敛）。
+> **🛑 最新前沿＝§1.120续-73（2026-09-30·**突破：x86_64 标准 `-smp4` 启动器首次稳定达 rc marker**·续-72 崩溃消除后新阻塞「INIT 被 schedctl 分到 AP 饿死死锁」已成修**）：续-72 消除 AP tick 腐蚀后 `-smp4` boot 死锁——wait-graph 真机探针坐实 `nr=0xb`(INIT) `rts=0x0 run=1 cpu=0x1`＝INIT runnable 却被分到 AP(CPU1)，而 AP 的 LAPIC timer 被 idle() 掩蔽且本 port 缺 C `proc.c:1647`「enqueue 到 idle CPU→smp_schedule 唤醒 IPI」臂＋`context_stop_idle`(arch_clock.c:351-369) 唤醒后清 idle+重装 timer 半→INIT 永无人调度→死锁(sa-call=8/marker=0)。坐实 `cpu=1` 唯一来源＝用户态 SCHED 服务经 SYS_SCHEDULE/SYS_SCHEDCTL 调 `sched_proc`（port 内 sched_enqueue 全程用进程 `p_sched.cpu`、fork 继承、`SchedFields::new` 默认 0，无其它写非 0 路径）。曾试 arm#2（`sched_enqueue_with` 加唤醒 IPI）→boot 由 5113 推至 6862（INIT 跑起来）但 **AP 主动跑用户进程复现 VM 跨 CPU 服务腐蚀崩溃**（pagefault-for-VM + #UD rip0x1004 flood）→判定净负已回滚。**修复＝过渡守卫（CONTRACT arm#3）**：`sched_proc` 内 `clamp_cpu_to_bsp` 在 AP 唤醒三件套接线前把 SYS_SCHEDCTL/SYS_SCHEDULE 请求的 cpu 一律钳到 BSP（对位 C non-SMP 忽略 cpu 参数·进程留 BSP·`None` 保留 keep-current），使续-72 静默 AP 调度成立。**验证链全绿**：host minix-kernel 827/0（+1 `test_clamp_cpu_to_bsp` 单测）·569✓·clippy Δ0(136=136)·rustfmt Δ0(sched.rs/lib.rs stash 同上下文)·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器 marker=2×3轮 panic=0/pfVM=0/vec6=0（目标① x86 里程碑·标准启动器首次稳定达 marker）**+`-smp1` marker=2 不回归·CodeReview 无 BLOCKER（4 项建议已采纳：抽纯函数+单测/CONTRACT arm#3 标注落地/rustdoc 过渡偏离段/注释对账两腿与 C non-SMP）。⚠ **真 SMP（让 AP 安全跑用户进程）仍是未还前沿＝需补 context_stop_idle + 唤醒臂 + 根治跨 CPU VM 腐蚀（续-57~72 十六轮硬骨头）**，届时移除本钳制；三目标不缩小：目标① x86 达成→剩 aarch64 模式① OOM/riscv IPC 桥；目标② 18-stage/③ minix3 tests 待推进。续-74 入口＝趁 x86 boot 稳定推进目标② 命令面（18-stage echo/ls/cat）或转 aarch64/riscv。详文见文末 §1.120续-73。
+>
+> **（历史·§1.120续-72（2026-09-30·**根因坐实+成修：延续-57~71 十四轮的 `-smp2/-smp4` VM 用户栈腐蚀崩溃＝`idle()` 省略 C `proc.c:194-196` 的 AP `stop_local_timer` 分支**·已提交生产码修·真机三态验证全绿·新前沿＝INIT 后 `sa-call` 活锁致 marker 未达）**：所有进程 `p_sched.cpu==0`（boot 恒绑 CPU0），CPU1 只跑 idle，`-smp1` vs `-smp2` 唯一差异＝CPU1 存在。`clock.rs::local_tick` 对**所有 CPU 无条件** `rearm_local_tick()`（一次性 LAPIC timer 每 tick 自我重装），而 `idle()` 曾对所有 CPU 无条件 `restart_local_timer()`、漏掉 C 的「halt 的 AP 掩掉本地 timer」半（续-56 补同函数紧邻的 `switch_address_space_idle` proc.c:190 时漏了 proc.c:195 的后半）⇒ halt 的 AP 永不安静、持续收 vector 0xf1 tick（正对 `-d int` 证据）、在续-56 载入的 VM CR3 下高频重入内核与 CPU0 竞争 → VM 用户栈腐蚀。**推翻续-70「缺跨 CPU TLB shootdown」结论**（minix3 C `arch_do_vmctl.c` 只做本地 invlpg/write_cr3、无跨 CPU shootdown，依赖缺页进程挂起，故 shootdown 不符 Ground Truth）。修复＝`idle()` step 3 加门控 `if ncpus>1 && cpu!=bsp → stop_local_timer(); else restart_local_timer()`（对等 proc.c:194-196），CONTRACT 注释登记 C 三件套延后臂（中断入口 `context_stop_idle` 清 idle+重启 timer / enqueue 唤醒臂 proc.c:1647 / schedctl cpu 亲和守卫）——当前 AP 不跑用户进程故永久掩码安全。**验证链全绿**：host 826/569·clippy Δ0（kernel crate 124=124·两 pre-existing 告警仅随行号平移）·rustfmt Δ0（lib.rs 162=162）·镜像 `--release` EXIT=0·**真机 `-smp4` 标准启动器崩溃归零（pfVM=0/ud=0/panic=0·5113 行·续-70 及以前必崩）+ `-smp1` marker=2/panic=0 不回归**·CodeReview PASSED 无 BLOCKER（2 Warning 已作 CONTRACT 全清单登记）。⚠ 三目标不缩小：崩溃虽消，但 `-smp2/-smp4` 下 boot 卡在 INIT 后重复 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12`（SETADDRSPACE 活锁/进度，sa-call=8）→ **marker=0 未达＝目标① x86 新头号阻塞**（详文见文末 §1.120续-72）。续-73 入口＝定位该 sa-call 往返停滞（对位 C VM 启动/proc 表 seed·为何 caller=4 对 pid=9 反复 SETADDRSPACE 不收敛）。
 >
 > **（历史·§1.120续-70·第十二枚探针(甲)DM per-page写守卫阴性 + kernel_call_finish_ipc_door/mirror_irq_frame 审计清白 + -d int取证 → 曾收敛到「缺失跨CPU TLB shootdown」·**该结论已被续-72 推翻**：真根因＝AP idle 漏 stop_local_timer·minix3 C 无跨 CPU shootdown 机制）**：NK70-TEMP DM per-page 写守卫 -smp2 两轮 HIT=0/CROSSROOT=0 彻底阴性。kernel_call_finish_ipc_door 三路审(VmSuspend/NoReply/Ok)均不触碰 cpu_context。mirror_irq_frame_into_proc CPL门控确认 timer IRQ 内核态不写 cpu_context。详文见文末 §1.120续-70。
 >
@@ -8052,4 +8054,53 @@ if smp.ncpus() > 1 && cpu != smp.bsp_cpu_id() {
 ### ⑦ 新前沿（续-73 入口）
 崩溃消除后，`-smp2/-smp4` 下 boot 推进至 INIT 启动后**卡住**：串口末尾重复 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12 sys=y`（约 8 次），SETADDRSPACE 往返不收敛，marker 未达。这与旧 §续-4「VFS 对 INIT Stat 回裸 EIO、往返 7 轮停摆」同族但不同层（本次是 VM SETADDRSPACE 活锁）。**目标① x86 新头号阻塞**。续-73 入口＝定位 caller=4（VM_PROC_NR？）对 pid=9（INIT？）反复发 SETADDRSPACE 的停滞原因（对位 C VM 启动序列 / proc 表 seed / 地址空间交接为何不前进），先取证再定修，未坐实不成修。
 
-⚠ 三目标不缩小：目标① x86 `-smp4` **崩溃根因已克**（idle AP timer·成修提交）但 marker 未达（新阻塞＝INIT sa-call 活锁）；x86 -smp1 marker 已达成；aarch64 模式① OOM（g14）/riscv64 IPC 桥未动；目标② 18-stage / 目标③ minix3 tests 待①贯通。**本轮含生产码改·走 CodeReview·详文见此节。**
+⚠ 三目标不缩小：目标① x86 `-smp4` **崩溃根因已克**（idle AP timer·成修）但 marker 未达（新阻塞＝INIT sa-call 活锁）；x86 -smp1 marker 已达成；aarch64 模式① OOM（g14）/riscv64 IPC 桥未动；目标② 18-stage / 目标③ minix3 tests 待①贯通。**本轮含生产码改·走 CodeReview·详文见此节。**
+
+---
+
+## §1.120续-73（2026-09-30）·突破：x86_64 标准 `-smp4` 启动器首次稳定达 rc marker——INIT 被 schedctl 分到 AP 饿死死锁·过渡守卫钳 BSP 成修
+
+### 现象（续-72 崩溃消除后的新阻塞）
+续-72 掩掉 idle AP 的 LAPIC timer 后，`-smp4` VM 用户栈腐蚀崩溃归零（pfVM=0/ud=0/panic=0），但 boot 死锁在 INIT 启动之后：串口重复 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12 sys=y`（sa-call=8），marker=0 未达。
+
+### 根因坐实（NK72-TEMP wait-graph 真机探针·用后即滚）
+在 `trap_dispatch.rs` gtick 计时臂加一次性 dump（`NKG_DUMP==12000` 触发·遍历 `table.iter()` 打印每 proc 的 nr/ep/rts/cpu/prio/sto/frm/run）。真机 `nk72-wg-r1`（-smp4）决定性数据：
+- kernel tasks（nr −5..−1）`rts=0x2 PROC_STOP`（正常）；
+- boot 服务器 0..10 全 `rts=0x8 RECEIVING frm=0x7c00`（正常空等）；
+- **`nr=0xb`(11=INIT) `rts=0x0 run=1 cpu=0x1 prio=7`**＝INIT runnable 却被分到 **AP(CPU1)**。
+
+CPU1 的 LAPIC timer 被续-72 `idle()` 掩蔽，而本 port **缺** C 的 AP 唤醒两半：
+1. enqueue 唤醒臂（`proc.c:1644-1650`：`else if (get_cpu_var(rp->p_cpu, cpu_is_idle)) smp_schedule(rp->p_cpu);`）——`sched_enqueue_with` 只做同 CPU 抢占，路由到 AP 的进程不发唤醒 IPI；
+2. `context_stop_idle`（`arch_clock.c:351-376`：中断入口清 `cpu_is_idle=0` + `if (is_idle) restart_local_timer();`）——port `cpu_is_idle` 只在 `idle()` 置 true、**从无任何清除/重装点**。
+⇒ INIT 被分到 CPU1 后永无人调度 ⇒ 死锁。
+
+### `cpu=1` 来源坐实（唯一路径＝schedctl）
+穷举 port 内所有写 `p_sched.cpu` 的点：`SchedFields::new`/`with_priority`（proc.rs:547/557）默认 0；`fork_from`（proc.rs:1628）继承 **parent** cpu（非 current）；`misc.rs:2109/2119` do_update 两两保留既有值（不产生新 AP 归属）；`sched.rs:470` schedctl apply + `smp.rs:770` schedule_migrate（migrate 的 dest 亦来自 schedctl 的 `params.cpu`）。`sched_enqueue` 调用点（proc_table.rs:518/581、lib.rs:3195/3200）**全程用进程自己的 `p_sched.cpu`**（对位 C `get_cpu_var(rp->p_cpu,...)`），不引入错值。⇒ 唯一能把进程送上 AP 的是**用户态 SCHED 服务经 SYS_SCHEDULE/SYS_SCHEDCTL 调 `sched_proc` 传 cpu≠0**（INIT 走 SCHED 服务 `do_start` 的 fanout·`transport.rs wire_cpu()`）。C ground truth 同（`*rpc = *rpp` 整体 copy 含 p_cpu·fork 继承·C 亦无 boot 误分）——属合法 SMP 负载均衡，非 port bug。
+
+### arm#2 实验（净负·已回滚）
+`proc_table.rs::sched_enqueue_with` 加 Phase 3b：跨 CPU enqueue 且 target `cpu_is_idle` → `CurrentSmpArch::send_sched_ipi(cpu_id)`（补唤醒臂·需 `use minix_arch::SmpArch as _;`）。真机 `nk73-smp4-r1`：boot 由死锁态 5113 推至 6862（INIT 跑起来了！）**但 VM 跨 CPU 服务腐蚀崩溃复现**（`pagefault for VM on cpu 0 rip 0xeb9000000 err 0x14` + 末尾 `trap: vector 6 rip 0x1004` flood）＝AP 主动跑用户进程与 CPU0 的 VM 服务竞争，正是续-57~72 十六轮未根治的腐蚀族。判定：arm#2 单补唤醒臂（无 `context_stop_idle` 重装 timer/清 idle 半）净负于续-72 的零腐蚀干净态 → `git checkout` 回滚 proc_table.rs。
+
+### 修复＝过渡守卫（CONTRACT arm#3·对位 C non-SMP）
+在 AP 可安全承载用户进程（补齐三件套 + 根治腐蚀）之前，`sched_proc` 内把 schedctl/schedule 请求的 cpu 一律钳到 BSP：
+- 新增纯函数 `clamp_cpu_to_bsp(cpu: Option<u32>, bsp: u32) -> Option<u32> { cpu.map(|_| bsp) }`（`None` 保留 C `-1 = keep-current` 语义）；
+- `sched_proc` Step 3 校验之后、Step 3.5 迁移之前：`let bsp = smp.as_ref().map(|s| s.bsp_cpu_id().raw()).unwrap_or(0); params.cpu = clamp_cpu_to_bsp(params.cpu, bsp);`（复用 Step 3 的 `smp` 绑定·不重复 unsafe）；
+- 钳制使 Step 3.5 `schedule_migrate_proc`（会发 STOP_PROC+SAVE_CTX IPI·未接线的危险臂）与 Step 7 亲和写入都不可能落 AP；饿死链切断。
+- 语义对账：可观测效果（接受请求·返回 OK·进程留 BSP）＝C non-SMP（`system.c:686-689` 整段在 `#ifdef CONFIG_SMP` 内忽略 cpu 参数）；错误码路径（越界 EINVAL/未就绪 EBADCPU）仍按 C CONFIG_SMP 校验。
+- lib.rs `idle()` CONTRACT arm#3 标注为 `[LANDED — 续-73]`；sched.rs rustdoc 加 `# Transitional deviation` 段。
+- 过渡期已知副作用（登记）：SCHED 服务端账本仍记进程在被请求的 AP，内核/MIB 读 `p_sched.cpu` 恒 BSP——取证以内核为权威。
+
+### 验证链全绿（含代码更改·走 CodeReview）
+- host：minix-kernel **827/0**（+1 `test_clamp_cpu_to_bsp_transitional_guard`）；arch 243 + boot 17 + types 309 = **569/0**。
+- clippy `-p minix-kernel --all-targets`：**Δ0**（stash 同上下文 NOW=136 BASE=136）。
+- rustfmt nightly：**Δ0**（sched.rs 38=38·lib.rs stash 法 1114=1114·均为既有 workspace 漂移非新增）。
+- 镜像 `image --arch x86_64 --release`：**EXIT=0**。
+- 真机 `-smp4`（标准 xtask launcher·qemu.rs 硬编码）：**marker=2 ×3 轮（nk73b + 重构后 nk73c）·panic=0·pfVM=0·vec6=0**——**目标① x86 里程碑·标准启动器下 rc marker 首次稳定达成**；boot 完成后持续 tick 至超时（系统存活）。
+- 真机 `-smp1`（手改 isa-debug-exit 命令）：**marker=2·panic=0·vec6=0** 不回归。
+
+### CodeReview（current_session）·无 BLOCKER·4 项建议全采纳
+① `clamp_cpu_to_bsp` 抽纯函数 + host 单测（原内联版 host 不可达·违「可测」纪律）；② lib.rs CONTRACT arm#3 更新为已落地（消除与 sched.rs 的跨文件矛盾 + 统一三件套编号）；③ rustdoc 加过渡偏离段；④ 注释对账 SYS_SCHEDCTL+SYS_SCHEDULE 两腿 + 修正「C 单核仅 cpu0 合法」为「C non-SMP 忽略 cpu 返回 OK」。均已实施并复验链重跑。
+
+### 新前沿（续-74）
+- **真 SMP 未还债**：让 AP 安全跑用户进程需补 `context_stop_idle`（中断入口清 idle+重装 timer）+ enqueue 唤醒臂 + 根治跨 CPU VM 腐蚀（续-57~72 十六轮硬骨头·arm#2 实测崩）；届时移除本钳制。属架构级工程，暂缓。
+- **目标① x86 达成**→转其它腿：aarch64 模式① 间歇 OOM、riscv64 IPC 桥。
+- **目标② 18-stage 命令面**：趁 x86 boot 稳定（marker 已达、系统存活）推进 echo/ls/cat 命令面——最短可见前进路。
