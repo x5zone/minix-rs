@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-63 探针轮（2026-09-29·第六枚探针阴性——实证「缺页 handler 内严禁页表 walk」铁律：VmPageFault panic 臂加 `nk63_full_alias_probe` 全量 text×stack 别名扫描，`NK63ENTER` 80/80 存活但 text 首屏 walk 即 `#PF err 0x10 rip 0xffffffffffffffff`＝内核栈溢出，crash-time-handler-walk 仪器彻底不可用（候选 A 非证伪、是不可测）；串口 `com1_write_byte` 无跨 CPU 锁·逐字节交织·改冗余 token 突发定位；纯静态架构坐实＝VM 用户态经 DM 直写进程 PTE、内核仅 setcr3/invlpg/owner-flush，bitmap 分配器单线程+双免检+40 单测不可能双重分配 ⇒ 候选 A 精化收敛到「VM 侧过早释放仍被映射帧」（page_cache/munmap/exit refcount），解释码字节入栈/-smp4-only/续-56 后可达/确定性；探针已回滚工作树净，未坐实不成修；x86 目标① 头号阻塞）**：详文见文末 §1.120续-63。续-64 入口（正常上下文·免 handler walk）：(甲) 审 [os/servers/vm/src/page_cache.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/page_cache.rs) 逐出 / [munmap.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/munmap.rs) / [exit.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/exit.rs) 是否在帧仍被映射时归还分配器（对位 C vm/page_cache.c rmcache、region.c discard_region、exit.c：unmap-then-free-then-flush·可 host 单测复现零 QEMU）；(乙) 坐实即按 C 修释放/映射次序+补 shootdown；(丙) VM 侧清白则回内核 owner-flush 遗漏窗口。
+> **🛑 最新前沿＝§1.120续-64 探针轮（2026-09-29·第七枚探针阴性——debug-assertions 诊断仪坐实「非 VM 帧生命周期缺陷」）**：用 `[profile.release.package.minix-vm] debug-assertions=true`（仅 VM 服务器·用后即滚）让现有内存安全断言（`double free at page`／CoW `verify_cow_consistency`／refcount underflow）在违反操作精确行 panic。首跑崩 `stats.rs:49 record_free underflow`（line 115）＝已知良性记账不对称（`record_alloc` 按 alloc_mem 事件计 1、`free_pfn` 逐页计 N，bitmap 真双免检在前未命中）；NK64-TEMP 饱和化后跑满 90s。**决定性观测**：(1) **零内存安全断言触发**（无 double-free/CoW/refcount 违例＝VM 帧生命周期不变量全程成立）；(2) **崩 rip 随 VM 减速而漂移**——从经典 `0xeb9000000` 变 r2 `0xba02484 err 0x15`(NX 取指于数据页)/r1 递归 `rip 0x7ffffffe03b0 err 0x10`(用户栈取指)，三 rip 均＝控制流落非代码页；(3) 崩前＝用户栈 demand-zero 逐页正常下探。⇒ **候选 A「VM 过早/双重释放仍映射帧」的具体机制被削弱**：静态帧复用错映射不受 VM 速度影响（确定性），崩点随减速漂移＝**时序窗竞态**特征。累计七枚阴性（IRQ-iret/调度器恢复/cross_space_copy/写腿 root/TLB 强刷/handler-walk 仪器/帧生命周期不变量）收敛到「跨 CPU 时序窗内对 VM 用户内存/控制流的瞬态改写」。探针已回滚工作树净·未坐实不成修·x86 目标① 头号阻塞。**续-65 入口**：(甲·最高杠杆) QEMU `-s -S`+gdb 硬件写 watchpoint 钉 VM 栈槽抓瞬态写者 RIP；(乙) 审内核跨 CPU 对 VM 用户内存写腿是否 BKL 外并发（续-58 注 AP 低身份映射 vs BSP high-half 两套 VA＝瞬态别名温床·对位 C `protect.c:372 arch_post_init`·结构性上报项）；(丙) 两路无果＝升级用户裁决（-smp1 单核先达 marker 作阶段达成？）。详文见文末 §1.120续-64。
+>
+> **（历史·§1.120续-63 探针轮（2026-09-29·第六枚探针阴性——实证「缺页 handler 内严禁页表 walk」铁律：VmPageFault panic 臂加 `nk63_full_alias_probe` 全量 text×stack 别名扫描，`NK63ENTER` 80/80 存活但 text 首屏 walk 即 `#PF err 0x10 rip 0xffffffffffffffff`＝内核栈溢出，crash-time-handler-walk 仪器彻底不可用（候选 A 非证伪、是不可测）；串口 `com1_write_byte` 无跨 CPU 锁·逐字节交织·改冗余 token 突发定位；纯静态架构坐实＝VM 用户态经 DM 直写进程 PTE、内核仅 setcr3/invlpg/owner-flush，bitmap 分配器单线程+双免检+40 单测不可能双重分配 ⇒ 候选 A 精化收敛到「VM 侧过早释放仍被映射帧」（page_cache/munmap/exit refcount），解释码字节入栈/-smp4-only/续-56 后可达/确定性；探针已回滚工作树净，未坐实不成修；x86 目标① 头号阻塞）**：详文见文末 §1.120续-63。续-64 入口（正常上下文·免 handler walk）：(甲) 审 [os/servers/vm/src/page_cache.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/page_cache.rs) 逐出 / [munmap.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/munmap.rs) / [exit.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/exit.rs) 是否在帧仍被映射时归还分配器（对位 C vm/page_cache.c rmcache、region.c discard_region、exit.c：unmap-then-free-then-flush·可 host 单测复现零 QEMU）；(乙) 坐实即按 C 修释放/映射次序+补 shootdown；(丙) VM 侧清白则回内核 owner-flush 遗漏窗口。
 >
 > **（历史·§1.120续-62 探针轮（2026-09-29·第五枚探针阴性——静态审计写腿 root 解析＋强制写 CR3 实验，**证伪候选 (C) 的 TLB 陈旧分支**；并修正续-61 对候选 (A) 的证伪过宽（扫描窗口偏窄）；x86 目标① 头号阻塞）**：接续-61 入口乙（静态审计）：核 [current_root_phys](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) per-CPU 读活 CR3 语义对位 C——IPC 交付跑在接收者陷入里 current==dst 拥有者；各拷贝腿（[cross_space_write/read](file:///home/xzhao/github/minix-rs/os/kernel/src/vm.rs)）dst PA 用**显式 endpoint→proc_cr3** 解析（非 current），current_root_phys 仅用于 DM 窗校验（超集，不致错写）⇒写腿 root 解析架构自洽。候选 (C) 剩「同根跳过留陈旧非全局 TLB 项」子分支：[switch_address_space](file:///home/xzhao/github/minix-rs/os/kernel/src/lib.rs) 在 `live_root==root` 时跳过 CR3 写（klib.S:618-620，x86 写 CR3 刷非全局项、跳过＝不刷）。**NK62-TEMP 实验**（用后即滚）：去同根跳过、每次调度强写 CR3。`--release` 重建 -smp4：**VM 崩溃签名原样复现**（行 4728 `pagefault for VM on cpu 0 rip 0xeb9000000 cr2 0xeb9000000 err 0x14`；其后 `rip 0x1004` #UD 风暴仅 panic-dump 后续噪声）。⇒ **强刷全 TLB 不能阻止 VM 跳 0xeb9000000 ＝候选 C-TLB 证伪**（第五枚阴性）。**另修正**：本轮 vm-pf 显示 VM 在按需填**自身 text 页**（fa=0x202409/0x221cd0 落 text 区），且续-61 别名扫描窗口**偏窄**（text 只扫到 0x230000 < 实际 0x244be8、栈只 ±16 页）⇒**(A) 帧双重分配/复用未被完全证伪**（污染栈位可能在扫描窗外）。**实验已回滚（工作树净），未坐实不成修。** 续-63 入口：(甲) 审 VM 帧分配器（[os/servers/vm/src/alloc_page.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/alloc_page.rs) + `phys_mem/allocator.rs` BitmapAllocator alloc/free）+ 内核 vmctl map/unmap 是否可 SMP 下双重分配同一帧（文本填页写脏并发分配的栈帧）；(乙) 若走别名路线则全量重扫（text 至 0x244be8、栈窗口放大）而非 ±16 页；(丙) 候选 B 残留非守卫直写腿（对位 C `sys_physvm` set/clear 路径）。**详文见文末 §1.120续-62。**
 >
@@ -7730,3 +7732,29 @@ nk63v2-r1（末尾 burst 版）：崩签名 `pagefault for VM ... rip 0xeb900000
 (甲) **审 VM 侧帧生命周期 refcount**（真值对位 C `vm/page_cache.c` rmcache/PCCHECK、`vm/region.c` discard_region、`vm/exit.c`：释放前须 unmap-then-free 且 flush）——查 [os/servers/vm/src/page_cache.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/page_cache.rs) 逐出、[munmap.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/munmap.rs)、[exit.rs](file:///home/xzhao/github/minix-rs/os/servers/vm/src/exit.rs) 是否在帧仍被映射时归还分配器（可 host 单测复现，零 QEMU）；(乙) 若坐实＝按 C 修释放/映射次序 + 补 shootdown；(丙) 若 VM 侧清白，则回到内核 owner-flush 遗漏（`consume_flush_tlb_flag` 仅刷 current==picked，若映射改动的进程此刻不在任何 CPU current 但下轮在某 CPU 跑＝续-62 强刷实验未覆盖的窗口）。
 
 ⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（VM 晚期崩溃＝头号阻塞，六枚阴性收敛到 VM 侧帧生命周期过早释放）；aarch64 模式①/riscv64 IPC 桥未动；目标②/③ 待①贯通。**本轮纯取证·无生产码改·WORKLOG-only（免 CodeReview）·详文见本节。**
+
+---
+
+## §1.120续-64（2026-09-29·第七枚探针阴性——debug-assertions 诊断仪坐实「非 VM 帧生命周期缺陷」＝崩 rip 随减速漂移的控制流竞态）
+
+### 背景
+续-63 收敛到候选 A「VM 侧过早释放仍被映射帧」（page_cache/munmap/exit refcount）。本轮用 **debug-assertions 诊断仪**（`[profile.release.package.minix-vm] debug-assertions=true`·仅对 VM 服务器开·用后即滚）让现有内存安全不变量断言（`double free at page`／CoW `verify_cow_consistency`／refcount underflow）在违反操作精确行 panic 定位，免 handler-walk（续-63 已证 walk 撑爆内核栈）。
+
+### 过程
+1. 首跑（nk64dbg-r1/r2）极早崩于 `phys_mem/stats.rs:49 record_free underflow`（line 115）。判读：这是**已知良性记账不对称**——`record_alloc` 每 `alloc_mem` 调用计 1 事件，`free_pfn` 逐页 free 计 N 事件，事件数不等致 active_allocations 计数 underflow；bitmap `free_pages_internal` 的真·双免检 debug_assert 在其**之前**跑且未命中 ⇒ 非内存安全 bug。
+2. NK64-TEMP 把 `stats.rs::record_free` 两条 underflow 断言改 `saturating_sub`（仅诊断·让 VM 存活过 line-115 到真崩点），重建 `--release` 跑 nk64b-r1/r2（exit=124 timeout＝饱和化生效·VM 跑满 90s 未早崩）。
+
+### 决定性观测（nk64b-r1/r2.serial·4774/4762 行）
+- **零内存安全断言触发**：无 `double free at page`、无 CoW `consistency` 失败、无 `refcount`/`page_is_free` 违例。VM 帧生命周期不变量全程成立。
+- **崩 rip 随「减速」漂移**（关键）：debug-asserts 使 VM 变慢后，崩溃签名从经典的 `rip 0xeb9000000`（续-57~62）**变为** r2 `rip 0xba02484 cr2 同 err 0x15`（present+user+instr-fetch＝在非可执行数据页取指＝NX）与 r1 递归 panic `vector 14 rip 0x7ffffffe03b0 err 0x10`（用户栈区取指）。三 rip 互不相同且均＝控制流落到非代码页。
+- **崩前最后活动**＝用户栈 demand-zero 逐页缺页正常下探（`fa=0x7ffffffb9268→b8→b7→b6→b5268` 每 4KB·bytes 全 0＝合法栈增长）。
+
+### 结论（第七枚阴性）
+- **候选 A「VM 过早/双重释放仍映射帧」的具体机制被削弱**：若真发生双免，bitmap debug_assert 必命中（未命中）；premature-single-free 理论可不触发断言，但崩 rip 随 VM 减速而漂移这一现象**不是**静态帧复用错映射所能致（帧复用错映射是确定性的·不受 VM 速度影响），而**是时序窗竞态**特征——某并发写者相对 VM 读某值的先后决定崩点。
+- 累计七枚阴性排除族：IRQ-iret 寄存器恢复／调度器 finish_and_restore／cross_space_copy 批量拷贝／写腿 dst root 解析／TLB 强刷／crash-time handler-walk 仪器（不可测）／**VM 帧生命周期不变量（本轮）**。破坏者收敛到**跨 CPU 时序窗内对 VM 用户内存/控制流的瞬态改写**，非任何单点静态缺陷。
+- 探针全部回滚（`git checkout os/Cargo.toml os/servers/vm/src/phys_mem/stats.rs`·工作树 tracked 净）。未坐实不成修·无生产码改。
+
+### 续-65 入口
+(甲·最高杠杆) **QEMU `-s -S` + gdb 硬件写 watchpoint** 钉 VM 用户栈某 VA 槽，抓「减速下崩点漂移」那个瞬态写者的确切 RIP——纯静态/debug-assert 已榨干，唯动态写断点能钉时序竞态写者；(乙) 审内核**跨 CPU 对 VM 用户内存的写腿是否持 BKL 外并发**（timer tick IRQ→VM 陷入路径·续-58 曾注 AP 低身份映射 vs BSP high-half 两套 VA 视图＝瞬态别名温床·对位 C `protect.c:372 arch_post_init` 统一 high-half 内核映射·属结构性上报项）；(丙) 若两路皆无果＝x86 -smp4 晚期 VM 崩溃升级为用户裁决（是否接受 -smp1 单核先达 marker 作为目标① x86 阶段性达成、SMP 崩溃另立专项）。
+
+⚠ 三目标不缩小：目标① x86 -smp4 marker 未达（VM 晚期崩溃＝头号阻塞·七枚阴性收敛到跨 CPU 时序窗瞬态改写）；aarch64 模式①/riscv64 IPC 桥本会话未动；目标②/③ 待①贯通。**本轮探针·无生产码改·WORKLOG-only（免 CodeReview）。**
