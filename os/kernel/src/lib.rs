@@ -2970,36 +2970,40 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
 //
 // We record it in this global right after `enable()` succeeds.
 //
-// The mirror's role has since grown: it is now the **software image of the
-// active page-table root** (Rust's `read_cr3`). C reads the live CR3
-// register in `__switch_address_space` (klib.S:618) to skip redundant
-// reloads; Rust compares against this mirror instead, and every root-
-// changing site must go through `set_active_root_tracked` to keep it
-// exact (currently `dispatch_vmctl(VMCTL_SETADDRSPACE)` and the
-// scheduler's `switch_address_space`).
+// The global's role (post NK4-C 续-56): it is the **bootstrap page-table
+// root seed** — written once by `arch_boot_impl`. The *active* root is per
+// CPU (`CpuLocal::root_phys`), matching C, which reads the live CR3 register
+// in `__switch_address_space` (klib.S:618) — a hardware register that is
+// inherently per-CPU. Runtime switches (`set_active_root_tracked`, the
+// `switch_address_space` same-root sync, `dispatch_vmctl(VMCTL_SETADDRSPACE)`)
+// update the owning CPU's slot and compare against the live register; they
+// never touch this global, so a switch on one CPU can no longer clobber what
+// another CPU's IPC/VM cross-address-space copy reads.
 //
 // # Concurrency
 //
-// Same model as `CURRENT_PTPROC_NR`: single writer during boot, readers
-// hold the BKL. Without the BKL a stale read is safe — the only
-// consequence is one extra root reload (a TLB flush), which the next
-// context switch corrects.
+// Single writer during boot (the seed), readers hold the BKL. Without the
+// BKL a stale seed read is safe — the only consequence is one extra root
+// reload (a TLB flush), which the next context switch corrects.
 //
 // # SMP
 //
-// Per-CPU root tracking is not needed for the bootstrap table — there is
-// only one bootstrap table, shared by all CPUs until userspace bring-up
-// installs per-process roots. SMP migration would replace this with a
-// per-CPU `CpuLocal::root_phys`, mirroring the ptproc migration plan.
+// Per-CPU root tracking IS installed for runtime switches (NK4-C 续-56,
+// mirroring the D-40 ptproc migration): `current_root_phys()` reads this
+// CPU's `CpuLocal::root_phys`, and `set_active_root_tracked` / the
+// `switch_address_space` same-root sync update only that slot. The global
+// `CURRENT_ROOT_PHYS` remains the shared **bootstrap seed** — written once
+// by `arch_boot_impl` — that a CPU observes until it performs its own first
+// address-space switch (APs run no cross-space IPC/VM work before that).
 
 /// Sentinel value indicating `CURRENT_ROOT_PHYS` has not been initialized.
 /// Distinct from any valid physical address (4KB-aligned, non-zero).
-/// Read the physical address of the bootstrap page-table root.
+/// Read THIS CPU's active page-table root (C's live CR3/TTBR0/satp).
 ///
-/// Returns `None` if `arch_boot_impl` has not yet run (before paging is
-/// enabled). After `arch_boot_impl` completes, returns the root physical
-/// address that was passed to `new_from_page` and subsequently loaded into
-/// CR3/TTBR0_EL1/satp by `enable()`.
+/// Returns the root installed on this CPU's `CpuLocal::root_phys` once it
+/// has performed an address-space switch; before that (and for hosted/unit
+/// tests) it falls back to the shared bootstrap seed, returning `None` only
+/// if `arch_boot_impl` has not yet run (paging not enabled).
 ///
 /// # Concurrency
 ///
@@ -3007,6 +3011,25 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {
 /// BKL, the value may be stale — but stale reads are safe because the
 /// bootstrap root is never freed during normal operation.
 pub fn current_root_phys() -> Option<minix_types::PhysBytes> {
+    // NK4-C 续-56: the active root is per-CPU (C reads the live CR3/TTBR0/
+    // satp register). Prefer THIS CPU's installed root; fall back to the
+    // shared bootstrap seed (`CURRENT_ROOT_PHYS`, written only by
+    // `arch_boot_impl`) for a CPU that has not switched yet and for the
+    // hosted/unit-test path.
+    let per_cpu = {
+        // `try_smp_state` (not `smp_state_boot_unchecked`): `current_root_phys`
+        // is read during `arch_boot_impl`'s bootstrap seed, before
+        // `init_proc_and_boot` installs `SMP_STATE` — the checked accessor
+        // would panic there. No per-CPU slot yet → fall through to the seed.
+        let smp = unsafe { crate::try_smp_state() };
+        match smp {
+            Some(smp) => smp.cpu_local(current_cpu_id()).and_then(|l| l.root_phys),
+            None => None,
+        }
+    };
+    if let Some(r) = per_cpu {
+        return Some(r);
+    }
     let v = CURRENT_ROOT_PHYS.load(Ordering::Acquire);
     if v == ROOT_PHYS_UNSET {
         None
@@ -3026,7 +3049,30 @@ pub fn current_root_phys() -> Option<minix_types::PhysBytes> {
 ///
 /// Single-threaded boot context; `Release` ordering is sufficient.
 pub fn set_current_root_phys(phys: minix_types::PhysBytes) {
+    // Bootstrap seed: record on THIS CPU's slot and in the shared seed so a
+    // CPU that has not switched yet still observes the bootstrap root.
     CURRENT_ROOT_PHYS.store(phys.0, Ordering::Release);
+    set_this_cpu_root_phys(phys);
+}
+
+/// Record `root` as the active page-table root on the **current** CPU only.
+///
+/// NK4-C 续-56: runtime address-space switches (`set_active_root_tracked`,
+/// the `switch_address_space` same-root sync) update the owning CPU's slot
+/// without touching the shared bootstrap seed — so a switch on one CPU can
+/// no longer clobber what another CPU's IPC/VM cross-address-space copy
+/// reads via `current_root_phys()`. Safe to call before `SmpState` is live
+/// (no-op on the slot; the bootstrap seed covers that phase).
+pub(crate) fn set_this_cpu_root_phys(root: minix_types::PhysBytes) {
+    // Tolerate the pre-`SMP_STATE` bootstrap phase (see `current_root_phys`)
+    // — during `arch_boot_impl` only the shared seed exists; per-CPU slots
+    // become live once `init_proc_and_boot` installs `SMP_STATE`.
+    if let Some(smp) = unsafe { crate::try_smp_state() } {
+        let cpu = current_cpu_id();
+        if let Some(local) = smp.cpu_local_mut(cpu) {
+            local.root_phys = Some(root);
+        }
+    }
 }
 
 /// Install a page-table root on the current CPU and keep the software
@@ -3055,7 +3101,10 @@ pub(crate) fn set_active_root_tracked(root: PhysBytes) {
     unsafe {
         minix_arch::CurrentTlbArch::set_active_root(root);
     }
-    set_current_root_phys(root);
+    // NK4-C 续-56: update only THIS CPU's slot — the shared
+    // `CURRENT_ROOT_PHYS` stays the pure bootstrap seed (never clobbered by
+    // a runtime switch), matching C's per-CPU CR3 semantics.
+    set_this_cpu_root_phys(root);
 }
 
 /// Pick the next runnable process and update the bill pointer.
@@ -3159,9 +3208,12 @@ fn requeue_if_preempted(
 ///
 /// 1. `proc_ptr = idle_proc` (C:185) and `bill_ptr = idle_proc` when IDLE
 ///    is billable (C:186-187) — idle time is billed to IDLE.
-/// 2. `switch_address_space_idle()` is `CONFIG_SMP`-only in C (proc.c:
-///    160-170) — omitted on the single-CPU build, exactly like a C build
-///    without SMP.
+/// 2. `switch_address_space_idle()` (C: proc.c:190 → 161-171) is
+///    `CONFIG_SMP`-only in C. On the multi-CPU build (`ncpus > 1`) the Rust
+///    port mirrors it — switch to VM's address space before halting so the
+///    wake interrupt finds kernel + VM pages mapped (C comment: this "is only
+///    a problem if more than 1 cpus are available"). On the single-CPU build
+///    it is skipped, exactly like a C build without SMP.
 /// 3. `cpu_is_idle = 1` (C:192); the AP branch (stop the local timer,
 ///    C:194-196) is SMP-only and omitted. The BSP branch calls
 ///    `restart_local_timer()` (C:198-204) — see that helper: on the
@@ -3212,7 +3264,24 @@ fn idle(
         local.bill_ptr = Some(idle_nr);
     }
 
-    // 2./3. SMP-only steps omitted (see doc comment); cpu_is_idle = 1.
+    // 2. switch_address_space_idle() (C: proc.c:190 → 161-171) — `CONFIG_SMP`
+    //    in C. Before halting, point this CPU at VM's address space so the
+    //    kernel + VM pages are guaranteed mapped when the wake interrupt runs;
+    //    C's own comment is explicit that this matters "only if more than 1
+    //    cpus are available" — exactly the `-smp4` path the standard launcher
+    //    exercises. Gated on `ncpus > 1` to mirror C's `#ifdef CONFIG_SMP` and
+    //    preserve the single-CPU (`-smp1`) boot milestone. Runs under the BKL
+    //    (released only at step 4 below), so the root switch is serialized.
+    //    Premise: `switch_address_space` records the root on the hardware
+    //    `current_cpu_id()` slot — in production a CPU only ever runs its own
+    //    `idle`, so `cpu` (the loop parameter) == the executing hardware CPU.
+    if smp.ncpus() > 1 {
+        switch_address_space(table, proc_nr::VM_PROC_NR);
+    }
+
+    // 3. cpu_is_idle = 1 (C:192-193). The AP stop-local-timer branch
+    //    (C:194-196) is SMP-only and omitted here (the periodic clock source
+    //    needs no per-CPU stop; see `restart_local_timer`).
     if let Some(local) = smp.cpu_local_mut(cpu) {
         local.cpu_is_idle = true;
     }
@@ -3301,10 +3370,11 @@ fn restart_local_timer() {
 /// (NK4-C 续-18 root-cause: boot-path `set_current_root_phys` writing
 /// only the mirror while the scheduler relied on it for the comparison).
 ///
-/// `ptproc` tracking uses the global mirror ([`set_current_ptproc_nr`]),
-/// the same source `dispatch_vmctl(VMCTL_SETADDRSPACE)` compares against
-/// (C's per-CPU `ptproc` variable collapses to one CPU in the single-CPU
-/// build; see the CURRENT_PTPROC_NR doc comment for the SMP plan).
+/// `ptproc` and the active root are tracked **per CPU** (D-40 migrated
+/// ptproc to `CpuLocal::ptproc`; NK4-C 续-56 migrated the root to
+/// `CpuLocal::root_phys`), matching C's `get_cpulocal_var(ptproc)` and its
+/// read of the live per-CPU CR3. `dispatch_vmctl(VMCTL_SETADDRSPACE)`
+/// compares against the same per-CPU slots.
 ///
 /// # BKL
 ///
@@ -3343,7 +3413,7 @@ fn switch_address_space(
         // Sync the mirror unconditionally: if HW matches root but the
         // mirror is stale (the exact bug class we're fixing), bring it
         // up to date so future consumers see a consistent value.
-        set_current_root_phys(root);
+        set_this_cpu_root_phys(root);
         crate::set_current_ptproc_nr(nr);
         return;
     }
@@ -4842,6 +4912,15 @@ mod tests {
     /// Helper for root-phys tests so they don't leak state across each other.
     fn reset_root_phys_for_test() {
         CURRENT_ROOT_PHYS.store(ROOT_PHYS_UNSET, Ordering::Release);
+        // NK4-C 续-56: `current_root_phys()` now prefers the per-CPU slot,
+        // so the reset must clear this CPU's slot too — otherwise a stale
+        // value from a prior test would shadow the unset seed.
+        let smp = unsafe { crate::try_smp_state() };
+        if let Some(smp) = smp
+            && let Some(local) = smp.cpu_local_mut(current_cpu_id())
+        {
+            local.root_phys = None;
+        }
     }
 
     /// Fresh kernel: `current_root_phys()` returns `None` because

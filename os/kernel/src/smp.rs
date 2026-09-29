@@ -147,6 +147,17 @@ pub struct CpuLocal {
     /// Process that currently owns this CPU's page tables.
     /// C: `ptproc` — used for CR3-load tracking on x86-64.
     pub ptproc: Option<ProcNr>,
+    /// Physical root of the page tables currently loaded on THIS CPU.
+    /// NK4-C 续-56: completes the ptproc-style per-CPU migration for the
+    /// active-root mirror — C reads the live per-CPU CR3/TTBR0/satp
+    /// (`mov %cr3, %ecx`, klib.S:618), so "the active root" is inherently
+    /// per-CPU. The former global `CURRENT_ROOT_PHYS` mirror was a
+    /// single-CPU-era simplification (see the `lib.rs` bootstrap-root
+    /// migration note); under `-smp4` a global mirror let one CPU's switch
+    /// clobber what another CPU's IPC/VM cross-address-space copy reads.
+    /// `None` means "this CPU has not switched yet" → falls back to the
+    /// shared bootstrap root. BKL-held write on the owning CPU only.
+    pub root_phys: Option<minix_types::PhysBytes>,
     /// Whether this CPU is idle. C: `cpu_is_idle`
     pub cpu_is_idle: bool,
     /// Whether the idle loop was interrupted and needs wakeup. C: `idle_interrupted`
@@ -186,6 +197,7 @@ impl CpuLocal {
             bill_ptr: None,
             idle_proc: proc_nr::IDLE,
             ptproc: None,
+            root_phys: None,
             cpu_is_idle: false,
             idle_interrupted: false,
             tsc_ctr_switch: 0,
@@ -1687,6 +1699,7 @@ mod tests {
         // New fields per Doc 15 §2.2:
         assert_eq!(local.idle_proc, proc_nr::IDLE);
         assert!(local.ptproc.is_none());
+        assert!(local.root_phys.is_none());
         assert!(!local.idle_interrupted);
         assert_eq!(local.tsc_ctr_switch, 0);
         assert_eq!(local.cpu_last_tsc, 0);
