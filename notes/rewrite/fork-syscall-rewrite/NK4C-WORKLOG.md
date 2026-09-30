@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-94（2026-10-01·**riscv 出生链：park/timer/ecall 腿全工作 + a7=0 具体新线索（纯取证轮·探针用后即滚·tracked 净）**）：续-93『pick 只一次即静默』是探针帽数造成的低估——放宽 dump 见 VM 一路 `params read ok`→`server new ok`→`vm slot ok`→`init done`→`run enter`→`rcv-eng`，其间 20+ 次 user_body 陷入含 `sc=0x8`(U-ecall) 与 `sc=0x8000000000000005`(supervisor timer, cause5＝中断在跑)，`resched#0` 也触发（VM park→resched→scheduler 交接腿正常）。⇒ 续-75 建的 park/resched/switch-after-pop asm 腿**首次被真实多陷入 boot 驱动即工作**。**新具体线索（续-95 靶）**：所有 ecall 陷入 `a7=frame.gpr[17]=0x0`——若 riscv ecall 的调用号寄存器 ABI 或陷入帧 gpr[17] 槽位与 minix-sys arch_trap 不符，IPC 调用号将恒读 0 → `IpcCall::from_raw(0)`/KERNEL_CALL 分派错位 → 握手链永不正确推进（与『VM 能到 rcv 但 RS_INIT 链死』吻合）。续-95＝对账 minix-sys riscv `ipc_trap`/`kernel_call_trap` 用哪个寄存器传 call-nr vs trap_stub gpr 索引，验 a7=0 是真恒零还是探针槽错。无生产码改、WORKLOG-only、免 CodeReview。
+> **🛑 最新前沿＝§1.120续-95（2026-10-01·**riscv boot 收窄到『首笔 raw IPC 后即死』（纯取证轮·探针用后即滚·tracked 净）**）：raw-IPC 腿（`riscv64_ipc_dispatch_body`）探针高帽 40，实得**仅 1 次**：`ipcl#0 a7=0x2`，紧接 VM `run enter`——即 VM boot 后发出的**第一笔 raw IPC（call-nr 2）**进入派发腿，此后**再无任何 raw IPC、无 RS 应答、无 aarch64 式后续 rcv 循环**，系统冻结（末行 `rcv-p4`）。对照 x86：同一 VM→RS 首笔 IPC 落地后持续 `ipc-entry` 多轮推进到 marker。⇒ 问题不在 park/resched/timer/enqueue/pick（续-93/94 已逐一证工作），而在 **VM 首笔 raw IPC 的派发→交付给 RS→RS 唤醒运行→回发** 这一往返在 riscv 上断在第一环。续-96 靶＝跟这笔 a7=2 IPC 进 `riscv64_ipc_dispatch_body` 后的**返回值（PARK_NONE/PARK_RESCHEDULE）+ 是否唤醒目标 RS（deliver/wake sender 腿）+ 返回后调度是否切给 RS**——即 reply/deliver-to-parked-目标 这条 aarch64 §1.113~118 同族的riscv 臂细节。无生产码改、WORKLOG-only、免 CodeReview。
+>
+
+> **（历史·§1.120续-94（2026-10-01·**riscv 出生链：park/timer/ecall 腿全工作 + a7=0 具体新线索（纯取证轮·探针用后即滚·tracked 净）**）：续-93『pick 只一次即静默』是探针帽数造成的低估——放宽 dump 见 VM 一路 `params read ok`→`server new ok`→`vm slot ok`→`init done`→`run enter`→`rcv-eng`，其间 20+ 次 user_body 陷入含 `sc=0x8`(U-ecall) 与 `sc=0x8000000000000005`(supervisor timer, cause5＝中断在跑)，`resched#0` 也触发（VM park→resched→scheduler 交接腿正常）。⇒ 续-75 建的 park/resched/switch-after-pop asm 腿**首次被真实多陷入 boot 驱动即工作**。**新具体线索（续-95 靶）**：所有 ecall 陷入 `a7=frame.gpr[17]=0x0`——若 riscv ecall 的调用号寄存器 ABI 或陷入帧 gpr[17] 槽位与 minix-sys arch_trap 不符，IPC 调用号将恒读 0 → `IpcCall::from_raw(0)`/KERNEL_CALL 分派错位 → 握手链永不正确推进（与『VM 能到 rcv 但 RS_INIT 链死』吻合）。续-95＝对账 minix-sys riscv `ipc_trap`/`kernel_call_trap` 用哪个寄存器传 call-nr vs trap_stub gpr 索引，验 a7=0 是真恒零还是探针槽错。无生产码改、WORKLOG-only、免 CodeReview。
 >
 
 > **（历史·§1.120续-93（2026-10-01·**riscv boot 停点再下移一层（纯取证轮·探针用后即滚·tracked 净）**）：**修正续-92 的『boot 模块未入队』猜测**——现成 `nk4a: rtsrs unset` 探针显示 riscv RS 与 x86 前 4 步逐字相同、第 4 步 `unset BOOTINHIBIT→now=0x0 enq=y`（RS 变 runnable 且 sched_enqueue cpu=0）；新 pick 探针坐实 `pick cpu=BSP rs_cpu=0 rs_run=1 rs_rts=0x0`＝**RS 确为 runnable、在 BSP 队列、被 pick**。⇒ enqueue/runnable/pick 全正常。x86 在此后 RS 起来连发 8+ 条 rtsrs unset（启各服务），riscv pick 只 1 次后即静默。⇒ 真卡点＝**RS 被调度后、其向 VM/PM/VFS 发 RS_INIT 及各服务首个 syscall 的 IPC 交互链在 riscv 上未继续推进**（每个 server 首次陷入/park 的 riscv 臂细节，正对位 aarch64 出生链 §1.113~118 逐相啃的多轮面）。下一入口（续-94）＝探针跟 RS 起来后第一个 kernel_call/IPC 陷入（riscv64_user_body 分派/回复/park），确认它是否真在跑还是 pick 后切入即 park 死循环。无生产码改、WORKLOG-only、免 CodeReview。
@@ -9005,3 +9008,24 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 **续-94b 即时核验（同轮，纠正 a7=0 线索）**：读 `libs/minix-sys/src/arch_trap.rs` riscv 腿——`kernel_call_trap` 用 `in("a7") KERNEL_CALL_TRAP_NR=0`，`ipc_trap` 用 `in("a7") call_nr`（1..16）。本 port 的 `receive`/`send`/`putnext` 等**经 kernel_call 消息腿（a7=0）**，raw IPC（sendnb/notify）才 a7=1..16。故 VM boot 满屏 a7=0 = **预期的 syscall 腿**，a7 槽无错位——**假线索，已排除**（未据此误改，符合「未坐实不成修」）。问题因此更精确：20 次陷入**全是 a7=0（kernel_call）**、**零 a7=1..16（raw IPC）**；对照 x86 在 VM `run enter` 后即 `ipc-entry nr=2 caller=8`（VM→RS 的 IPC 送达）。⇒ 续-95 靶改定＝**riscv 下 VM 用于启动/握手 RS 的那笔 IPC（无论 raw IPC 还是 kernel_call 语义）为何未落地/未产生 a7=1..16 陷入或送达**；查 minix-sys receive/send 在 riscv 实际走哪条腿 + 该腿 `riscv64_kernel_call_leg`/`riscv64_ipc_dispatch_body` 的 reply/交付是否与 x86 等价。
 
 ⚠ 三目标不缩小：①x86✅·riscv VM 完整 boot+park/timer/ecall 证工作、卡于握手调用号(a7=0 嫌疑)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-95（2026-10-01·**riscv boot 收窄到「首笔 raw IPC 后即死」（纯取证轮）**）
+
+**承续-94**（park/timer/ecall/enqueue/pick 均证工作；a7=0 是正常 kernel_call 腿）。本轮直击 raw-IPC 腿：在 `riscv64_ipc_dispatch_body` 入口放高帽（40）探针，dump 调用号 a7。
+
+**决定性观测（jfull18）**：raw-IPC 腿**整个 boot 只进 1 次**——`nk95: ipcl#0 a7=0x2`，位置紧接 VM `run enter`（VM 完整 boot 后的第一个动作）。此后：
+- 无第二次 `ipcl#`（任何 proc 的后续 raw IPC 皆未发生）；
+- 无 RS 侧任何活动、无 x86 那种 `ipc-entry` 多轮握手、无 marker；
+- 串口终态仍 `rcv-p4`（VM 停在接收）。
+
+**对照 x86（jia88b 真机，到 marker）**：VM `run enter` 后紧跟 `ipc-entry nr=2 caller=8`（RS 在 VM  callership 下进 IPC 引擎）＋**反复** rtsrs/ipc-entry，握手链自持推进。
+
+**定谳（最锐一次收窄）**：riscv 卡点 = **VM 首笔 raw IPC（call-nr 2）进入 `riscv64_ipc_dispatch_body` 之后那一趟往返断在第一环**——不是 park/调度/入队（前几轮逐一排除），而是这笔 IPC 的**派发→交付到目标 RS→唤醒 RS→RS 回发**里，riscv 臂在『交付/唤醒 parked 目标』或『回发送达』处未产生任何后续陷入。正落在 aarch64 出生链 §1.113~118 死磕过的 **switch-after-pop + reply/deliver-to-parked-receiver** 同族。
+
+**证据纪律**：纯取证，一枚高帽探针用后即滚（trap_dispatch.rs 复原，tracked 净），无生产码改→WORKLOG-only、免 CodeReview。
+
+**下一入口（续-96，直指可修）**：跟这笔 `a7=2` IPC：① `riscv64_ipc_dispatch_body` 读调用号→`IpcCall::from_raw(2)`（是哪个 IPC？SEND/RECEIVE/…）→`dispatch_ipc_entry`→`kernel_call_finish_ipc_door` 的返回是 PARK_NONE 还是 PARK_RESCHEDULE；② 若 VM 是 RECEIVE 且 park：返回 PARK_RESCHEDULE 后 resched→scheduler 应切给 RS（rs_run=1 已证 runnable）——**RS 真被切进去跑了吗？为何 RS 起来后不发它的 raw IPC（第二次 ipcl# 缺席）**；③ 若 a7=2 是 SEND 到 RS：查 deliver 到 RS 的接收槽 + RS 从 RECEIVING→runnable 的唤醒在 riscv reply/deliver 腿是否等价。目标：定位并修 riscv 的 IPC 交付/唤醒腿，打通首笔握手→RS 活动→链自持。
+⚠ 三目标不缩小：①x86✅·riscv 收窄到首笔 raw IPC 往返断链（park/timer/sched 已证通）·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
