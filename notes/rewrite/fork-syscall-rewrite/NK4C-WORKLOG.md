@@ -8550,6 +8550,17 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   7 位的序列化腿，即命中根因——rs taskcall/线编解码族）。minix-pm 集成测试
   `run_once_integration` 两失败（unwired_call_replies_enosys/wait4_without_children_replies_echild）
   经 HEAD 对照为**预存**（他线在途/真缺陷，交对应线，非本轮引入）。
+- **续-79e 口径修正+预算实验（探针已滚，本轮定谳两件事）**：
+  ①**0x2db000 归属改判**：msgw 预算 64→6000 全量放开后 **1788 条写无一为 0x2db00x**（全部
+  用户栈 VA），且 drain sink 臂探针（rcv/snd/mt/va 全量）**零命中**而拒收照常——结合 PM/VFS
+  为同构 rt 镜像（POOL_STORAGE 起 0x257000，4 MiB，池内同一页号 **0x2db000 同 VA 出现在两个
+  进程各自页表**），**此前被 door 读捕获的 (1,8,0x7bff,6,3) 属 VFS 自己的堆池页，非 PM 堆**
+  （nk79b 探针门控 r2∈[0x2db000,0x2db040) 命中的是 VFS 的 receive trap，r2=消息缓冲；
+  `cr=pmr` 中「pm_root」取 ProcNr(0) 槽实为 PM 但 caller 即 VFS 自身 root＝同树读 VFS 页）；
+  ②「mt=8=0x900>>7 位移」候选**降级**（该值本就是 VFS 堆上某陈腐内容，非 PM 发送被位移）。
+  **拒收消息 (0,8,…) 的来源域重定**：VFS 堆池页被某写者写入 (1,8,0x7bff,6,3)（src=1=VFS 自身
+  端点/mt=8 形态与 sys_getksig(ANY=0x7bff) kcall 消息全等）＝**VFS 自己的静态 kcall 消息缓冲
+  与 receive 缓冲同页/串位**候选复活，或 VFS 早期 receive 的合法投递落错代际页。
 - **续-79d 配方（更新版 decision-complete）**：a) 反相 aarch64 pm 产物 door 传参链：
   `ipc_trap` 的 msg 指针装载指令序列（rust-objdump 锚 `perform_syscall`/`DirectKernelCallTransport`
   的 kernel_call）核对是否把 `&Message` 错传成位移后的指针（0x900>>7=8 形态的直接候选）；
