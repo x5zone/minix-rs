@@ -1704,10 +1704,12 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
 //   dispatch through their `*_ipc_dispatch_body` mirrors of the x86 int-33
 //   bridge (aarch64 NK4-C §1.112, riscv64 续-75); the -ENOSYS placeholder
 //   and its `ENOSYS_CODE` constant are retired with the riscv wiring.
-// - **faults**: panic with the architectural diagnostics. The acting
-//   arms (ForwardToVm / cause_signal — NK2, x86-only) are the downstream
-//   "页故障回路三架构化" wave; reaching them here is a registered gap,
-//   not recoverable state.
+// - **faults**: U-mode page faults (riscv64 scause 12/13/15, 续-76b) and
+//   lower-EL aborts (aarch64 EC 0x20/0x24, §1.116) forward to VM through
+//   the shared `forward_pagefault_to_vm` leg; the signal arms
+//   (cause_signal/SIGSEGV/SIGILL) remain riscv-side panic-leg registered
+//   gaps — riscv causes 1/4/5/6/7 (misalign/access/illegal…) and the
+//   non-riscv PF siblings still land on the diagnostic panic.
 //
 // Registered by `init_protection` before `TrapEntryArch::load()`; slot
 // semantics per arch are documented on `register_trap_dispatchers`.
@@ -1722,6 +1724,16 @@ const RISCV64_CAUSE_SUPERVISOR_TIMER: u64 = 5;
 /// riscv64 scause: Environment Call from U-mode (exception code 8).
 #[cfg(target_arch = "riscv64")]
 const RISCV64_CAUSE_ECALL_UMODE: u64 = 8;
+/// riscv64 scause codes for the three U-mode page faults (privileged
+/// spec Table 3.1/3.3, Sv39): 12 = instruction page fault, 13 = load
+/// page fault, 15 = store/AMO page fault. `stval` carries the faulting
+/// virtual address (the riscv analogue of the x86 CR2 / arm64 FAR).
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_INST_PF: u64 = 12;
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_LOAD_PF: u64 = 13;
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_STORE_PF: u64 = 15;
 /// riscv64 scause interrupt bit (bit 63).
 #[cfg(target_arch = "riscv64")]
 const RISCV64_SCAUSE_INTERRUPT: u64 = 1 << 63;
@@ -1767,9 +1779,12 @@ pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::tr
 }
 
 /// User-leg body (U-origin): ecall kernel calls + raw IPC bridge +
-/// user-fault diagnostics. Fault classification (page-fault forwarding /
-/// signals) is the downstream three-arch wave — a faulting user process
-/// panics here with diagnostics instead of being parked for VM.
+/// U-mode page-fault forwarding + user-fault diagnostics. Page faults
+/// (scause 12/13/15) park the caller and forward to VM
+/// ([`riscv64_pagefault_body`], 续-76b); the remaining synchronous
+/// faults (misalign/illegal/breakpoint/access…) still land on the
+/// diagnostics panic — the acting signal arms arrive with the next
+/// three-arch wave.
 ///
 /// The `u64` return is the park decision (续-75, the riscv mirror of
 /// aarch64 §1.113): `PARK_NONE` → the epilogue restores and `sret`s;
@@ -1815,11 +1830,130 @@ pub unsafe extern "C" fn riscv64_user_body(
         }
         return riscv64_diag_panic(frame, scause, "user-leg trap");
     }
-    // Synchronous user faults (instruction/data load-store page faults,
-    // scause 12/13/15) land on the diagnostics panic — the acting arms
-    // (ForwardToVm / cause_signal) arrive with the three-arch
-    // page-fault wave, same registered gap as before the bridge.
+    // U-mode page faults (续-76b, the riscv twin of aarch64 §1.116):
+    // the three Sv39 fault causes route through the forward-to-VM leg
+    // instead of dying on the diagnostic panic. RISC-V separates the
+    // access type by cause code — no syndrome register needed.
+    if matches!(
+        scause,
+        RISCV64_CAUSE_INST_PF | RISCV64_CAUSE_LOAD_PF | RISCV64_CAUSE_STORE_PF
+    ) {
+        return riscv64_pagefault_body(frame, scause);
+    }
+    // Remaining synchronous user faults (misalign, illegal, breakpoint…)
+    // land on the diagnostics panic — the acting SIGSEGV/SIGILL arms
+    // arrive with the next three-arch wave, same registered gap.
     riscv64_diag_panic(frame, scause, "user-leg trap")
+}
+
+/// PFEC (page-fault error code) lanes the VM's decode expects — the
+/// lane convention this project fixed with aarch64 §1.116 (present or
+/// not, the VM side only consumes the W lane; see `ipc/vm.rs` decode),
+/// NOT the x86 CR2 bit0=present semantics. Gated to the riscv leg +
+/// host tests; the aarch64/x86 legs keep their established spellings
+/// (single migration point registered in NK4C-WORKLOG 续-76b 新前沿;
+/// the cross-leg equality is pinned by
+/// `riscv_pf_error_code_matches_the_aarch64_lane_table`).
+#[cfg(any(target_arch = "riscv64", test))]
+const PFEC_PRESENT: u32 = 1;
+#[cfg(any(target_arch = "riscv64", test))]
+const PFEC_WRITE: u32 = 2;
+#[cfg(any(target_arch = "riscv64", test))]
+const PFEC_INSTR: u32 = 4;
+#[cfg(any(target_arch = "riscv64", test))]
+const PFEC_ID: u32 = 16;
+
+/// riscv64 scause → PFEC (the riscv twin of `aarch64_pf_error_code`,
+/// host-testable under the `cfg(any(riscv64, test))` precedent of
+/// §1.116). RISC-V Sv39 encodes the access type in the cause itself:
+/// 12 = fetch, 13 = read, 15 = write. A fault reaches here because a
+/// leaf PTE failed the R/W/X/U permission check (PTE-absent and
+/// permission-denied share the same cause on RISC-V — the VM's own
+/// region ledger is what separates them downstream), so the lane set
+/// rides the cause. The write lane only ever comes from cause 15: a
+/// fetch is architecturally never a write (same masking as the aarch64
+/// leg).
+#[cfg(any(target_arch = "riscv64", test))]
+pub(crate) fn riscv64_pf_error_code(scause: u64) -> u32 {
+    let mut err = PFEC_PRESENT; // user-mode context lane
+    match scause {
+        RISCV64_CAUSE_INST_PF => {
+            err |= PFEC_INSTR;
+            err |= PFEC_ID;
+        }
+        RISCV64_CAUSE_STORE_PF => err |= PFEC_WRITE,
+        _ => {} // load page fault: read-side data fault, P only
+    }
+    err
+}
+
+/// The riscv64 page-fault leg (续-76b): the U-mode instruction/load/store
+/// page-fault twin of [`aarch64_pagefault_body`] and the x86 vector-14
+/// `ForwardToVm` arm. Saves the user register file (`FullContext`),
+/// records RTS_PAGEFAULT + p_fault_addr, and `mini_send`s VM_PAGEFAULT
+/// FROM_KERNEL — all through the shared [`forward_pagefault_to_vm`]
+/// (single source of truth for the C exception.c:112-129 tail). Ends in
+/// the switch-after-pop: the faulting process is parked, so
+/// `PARK_RESCHEDULE` unwinds the frame and hands off to the resched
+/// thunk (the riscv analogue of diverging into `scheduler_loop`).
+///
+/// # Safety
+///
+/// `frame` is the live user-leg frame and the scheduler has a current
+/// process (same contract as [`riscv64_ipc_dispatch_body`]).
+#[cfg(target_arch = "riscv64")]
+unsafe fn riscv64_pagefault_body(
+    frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
+    scause: u64,
+) -> u64 {
+    use minix_arch::riscv64::trap_stub::PARK_RESCHEDULE;
+    let fault_addr = riscv64_read_stval();
+    let errcode = riscv64_pf_error_code(scause);
+
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "riscv64 page fault before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+
+    // VM's own fault cannot be forwarded to VM — C: "pagefault in VM"
+    // panic (exception.c:101-118), the same stop the x86/aarch64 legs
+    // enforce.
+    if cur_nr == crate::proc::proc_nr::VM_PROC_NR {
+        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+        Console::write_str("pagefault for VM sepc ");
+        Console::write_hex(frame.sepc);
+        Console::write_str(" stval ");
+        Console::write_hex(fault_addr);
+        Console::write_str("\n");
+        panic!("pagefault in VM");
+    }
+    // User code runs without the BKL (resched-thunk convention: unlock
+    // before PARK_RESCHEDULE, the thunk re-acquires).
+    let ipc_bkl = crate::smp::bkl_lock_or_inherit();
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+    {
+        let proc = table
+            .get_mut(cur_nr)
+            .unwrap_or_else(|| panic!("riscv64 pagefault from invalid proc nr {cur_nr:?}"));
+        minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
+        proc.trap_style = TrapStyle::FullContext;
+    }
+    let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+    if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, fault_addr, errcode) {
+        // C: panic("WARNING: pagefault: mini_send returned %d")
+        panic!("pagefault: mini_send returned {e:?}");
+    }
+    if ipc_bkl {
+        crate::smp::bkl_unlock();
+    }
+    PARK_RESCHEDULE
 }
 
 /// The riscv64 timer arm — one S-mode timer tick, three jobs in the x86
@@ -2408,6 +2542,37 @@ mod abort_classification_tests {
         assert_eq!(aarch64_pf_error_code(false, true), 0x03);
         // a write on the instruction side never happens (EC=0x20 is fetch)
         assert_eq!(aarch64_pf_error_code(true, true), 0x15);
+    }
+
+    #[test]
+    fn riscv_pf_error_code_matches_the_aarch64_lane_table() {
+        // 续-76b cross-arch consistency, pinned two ways (CodeReview
+        // 续-76b S2): (1) the bare privileged-spec cause codes are the
+        // architecture contract — a constant typo must turn this red
+        // even though the dispatch arm consumes the same constant;
+        // (2) the lane table is compared against the aarch64 converter
+        // itself (cfg(test)-visible), not a hand-copied literal, so any
+        // single-leg drift fails.
+        assert_eq!(RISCV64_CAUSE_INST_PF, 12);
+        assert_eq!(RISCV64_CAUSE_LOAD_PF, 13);
+        assert_eq!(RISCV64_CAUSE_STORE_PF, 15);
+        assert_eq!(
+            riscv64_pf_error_code(RISCV64_CAUSE_INST_PF),
+            aarch64_pf_error_code(true, false)
+        );
+        assert_eq!(
+            riscv64_pf_error_code(RISCV64_CAUSE_LOAD_PF),
+            aarch64_pf_error_code(false, false)
+        );
+        assert_eq!(
+            riscv64_pf_error_code(RISCV64_CAUSE_STORE_PF),
+            aarch64_pf_error_code(false, true)
+        );
+        // Spell out the expected encodings once more for the reader:
+        // fetch = 0x15, read = 0x01, write = 0x03.
+        assert_eq!(riscv64_pf_error_code(RISCV64_CAUSE_INST_PF), 0x15);
+        assert_eq!(riscv64_pf_error_code(RISCV64_CAUSE_LOAD_PF), 0x01);
+        assert_eq!(riscv64_pf_error_code(RISCV64_CAUSE_STORE_PF), 0x03);
     }
 
     #[test]
