@@ -9028,4 +9028,9 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 **证据纪律**：纯取证，一枚高帽探针用后即滚（trap_dispatch.rs 复原，tracked 净），无生产码改→WORKLOG-only、免 CodeReview。
 
 **下一入口（续-96，直指可修）**：跟这笔 `a7=2` IPC：① `riscv64_ipc_dispatch_body` 读调用号→`IpcCall::from_raw(2)`（是哪个 IPC？SEND/RECEIVE/…）→`dispatch_ipc_entry`→`kernel_call_finish_ipc_door` 的返回是 PARK_NONE 还是 PARK_RESCHEDULE；② 若 VM 是 RECEIVE 且 park：返回 PARK_RESCHEDULE 后 resched→scheduler 应切给 RS（rs_run=1 已证 runnable）——**RS 真被切进去跑了吗？为何 RS 起来后不发它的 raw IPC（第二次 ipcl# 缺席）**；③ 若 a7=2 是 SEND 到 RS：查 deliver 到 RS 的接收槽 + RS 从 RECEIVING→runnable 的唤醒在 riscv reply/deliver 腿是否等价。目标：定位并修 riscv 的 IPC 交付/唤醒腿，打通首笔握手→RS 活动→链自持。
+
+**续-95b 源码判读再收窄（同轮，零探针）**：`IpcCall::from_raw(2)=Receive`（`kernel/src/ipc.rs:117-126` 编号表）。⇒ VM 那笔 `a7=2` 是 **`receive`**（VM 主循环第一步即阻塞式 receive，等 RS 的启动请求）。综合前探针（pick_and_bill 只 1 次、resched_thunk 只 1 次、此后 scheduler 再不进）：VM receive→`PARK_RESCHEDULE`→resched→scheduler_loop→pick 到 RS→`finish_and_restore(RS)`→`restore_user_context`。**链断在『park 之后把 CPU 交给下一个进程（RS）』这条续段**——RS 被 pick 却从不产生任何后续陷入（无第二次 ipcl#、无 RS 的 kernel_call），即 **riscv 首次 `switch_after_pop`（弹帧→scheduler→restore-to-a-different-proc）未真正完成**。VM 能到 rcv-p4 是靠 boot 的**初始** `switch_to_user`（一次成功）；而 park 后的**再切换**（scheduler 路径的 restore）此前从未被真机多进程 IPC 驱动过。
+
+⇒ **续-96 精确可修靶**（不再需探索性探针，直接查代码）：riscv `finish_and_restore`→`restore_user_context`/`restore_to_user` 对「刚被 park 的接收者之外、由 scheduler 新选中的进程 RS」是否走通——重点比 boot 初始 `switch_to_user` 与 scheduler `finish_and_restore` 两条进入用户态路径在 riscv 的差异（sscratch/栈基/stvec/trap_style FullContext 恢复、sepc 前进、`sync_status_register` 回灌），并核 `kernel_call_finish_ipc_door` 对 Receive 的 park 簿记是否与 aarch64 §1.113 修复后的形态等价。目标：让 RS 真被切入运行→发它的 IPC→握手链自持→marker。
+
 ⚠ 三目标不缩小：①x86✅·riscv 收窄到首笔 raw IPC 往返断链（park/timer/sched 已证通）·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
