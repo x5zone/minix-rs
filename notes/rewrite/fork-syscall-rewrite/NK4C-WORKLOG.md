@@ -8528,7 +8528,20 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   msgs 数据⇒**push 写在服务之后**⇒「陈旧帧残留」不直接解释 push 位置被覆写——但毒 (1,8,0x7bff,6,…)
   与「内核向 PM 堆的一次合法消息写」形态吻合（若写者缓冲/布局带 **4 字节位移**：m_source=VFS
   盖章(1) 落 +4、m_type 落 +8……与 0xcff/0x7bff 系消息族互推仍不齐，需写者全量 dump 定性）。
-- **续-79 配方（更新版 decision-complete）**：一次性内核 msgw 探针改造——目标 VA ∈ [0x2db000,
+- **续-79 真机定谳（nk79 写腿门控全量探针，已滚 tracked 净）**：干净镜像+`nk79` 无预算探针
+  （copy_msg_to_user 目标 ∈ 0x2db000..060 即打全量）真机运行：**nk79=0 命中、rejected=1 照常**
+  ⇒ **内核写腿从未向 PM 堆基写过任何消息**——「合法写+4B 位移」假说**排除**。结合续-78b
+  （push 写在两次 demand-zero 服务之后）与毒为 PM 侧/door 读一致所见，矛盾仅剩一解：
+  **PM store 与内核 DM-walk 读看到的是同 VA 的不同物理帧＝heap 基页（两次服务的那页）存在
+  瞬态帧别名/陈旧 TLB**——aarch64 版的续-67 家族（x86 曾以十二枚探针定谳同族）。
+- **续-79b 配方（更新版 decision-complete）**：一次性只读帧对照探针（拒收前一刻）：分别
+  `walk(PM root, 0x2db000)` 与 `current_root_phys` 同 VA 取 PA，再经两 PA 的 DM 别名各读首
+  8B 打印（PM root 从 proc 表 VM slot 取；全程内核上下文合法页表 walk，非缺页 handler）；
+  PA 不等⇒别名坐实（查 heap 基页 map 双服务/TLBI 缺失腿）；PA 相等⇒回读侧时序（PM store
+  尚未落入共享帧的 memory ordering 面，接 dsb 实验）。注意：**同一 heap 基页两次被 demand-zero
+  服务本身已是异常信号**（第二次服务是否 remap 了在用帧？查 VM 侧对同 VA 重复 PAGEFAULT 的
+  coalescing 腿 cow_exec_pf alloc_and_map 与 in-use 判定）。
+**续-79 配方（更新版 decision-complete）**：一次性内核 msgw 探针改造——目标 VA ∈ [0x2db000,
   0x2db060) 时**无视去重/预算**打印全 80B（16 行 hex 即可）+ caller 端点 + 写前该 80B 旧内容；
   真机一轮即可裁决：(i) 存在这样的写⇒写者布局/位移 bug，顺藤定位（rs taskcall/reply 族）；
   (ii) 不存在⇒读侧（door 读）在 PM 写与 drain 读之间看到不同物理帧＝TLB/帧别名（续-67 家族复活）。
