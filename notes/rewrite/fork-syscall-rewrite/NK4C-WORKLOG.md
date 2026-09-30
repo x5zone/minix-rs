@@ -8619,7 +8619,21 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   在 push 后、发送前被一次『VFS 回复形态』的合法内核交付写覆盖**（(1,8,ANY,6,3) 与
   `asynsend reply/回复写回 caller 缓冲` 结构候选吻合；PM 发 VFS 的接收槽 p_delivermsg_vir
   可能正指 PM 堆＝其早前 receive/barrier 缓冲与 Vec 堆块复用同址）。
-- **续-86 配方（定稿 decision-complete）**：①PM 探针升级：push 循环内每 iter 后立即回读
+- **续-86 定谳（nk86 双侧探针轮，已滚 tracked 净）＝因果链翻案**：PM 循环内回读探针的时序
+  扰动（每 iter 一次 diagctl kcall）**让 VFS handshake 12 条 send+barrier 全部过关**——
+  rejected 签名消失！失败点后移至 `PM init.rs:791 VFS did not confirm PM init (m_type=8)`
+  （VFS 应回 OK=0，PM 收到 mt=8=EBADF 形态值）。两结论：
+  ①**前轮「(0,8,…) 毒缓冲」主要是观测效应+握手竞态窗口**（nk86 循环探针改时序即通关），
+    真根因不在缓冲内容，在**握手完成路径的 barrier 回复**；
+  ②aarch64 当前真阻塞＝VFS→PM barrier OK 回复变 8——候选：VFS 回复被内核 drain/queue 路
+    换成他人消息、VFS 侧 send OK 的 dst/内容错、或 EBADF(8) 从 fdref 臂漏进回复车道
+    （VFS send OK 前经 sys_vmctl/fdref 腿 errno 残留）。
+- **续-87 配方（定稿 decision-complete）**：对照 C `main.c:435` 与 VFS 侧 OK 回复腿（send/
+  sendrec 到 PM 的缓冲构造）+ 内核 reply 交付（REPLY_PEND 消息归属、drain 匹配 getfrom）
+  静态审 mt=8 注入点；探针面最小化（VFS 回复构造完成时刻打一条 mt 值即可，避循环风暴）。
+  注意观测效应纪律升级：**任何 per-iter kcall 型探针都会改握手时序**——改用单次条件打印
+  （值匹配触发）或静态推断。
+**续-86 配方（定稿 decision-complete）**：①PM 探针升级：push 循环内每 iter 后立即回读
   msgs[0].mt（8 发内），把覆盖时刻钉进/出循环二区间；②内核 msgw 门控已具备（预算 6000 版被
   滚，重放时对 dst∈[0x2db000,0x2db040) 无预算打印 (cn,mt,src,q0..q1)+时刻）；③两串数据对齐：
   覆盖若在 PM 首 send 之前＝交付写错槽（修 drain dst 解析/属主校验，对位 C proc.c delivermsg
