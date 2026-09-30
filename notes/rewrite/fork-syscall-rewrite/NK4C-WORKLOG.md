@@ -8534,7 +8534,20 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   （push 写在两次 demand-zero 服务之后）与毒为 PM 侧/door 读一致所见，矛盾仅剩一解：
   **PM store 与内核 DM-walk 读看到的是同 VA 的不同物理帧＝heap 基页（两次服务的那页）存在
   瞬态帧别名/陈旧 TLB**——aarch64 版的续-67 家族（x86 曾以十二枚探针定谳同族）。
-- **续-79b 配方（更新版 decision-complete）**：一次性只读帧对照探针（拒收前一刻）：分别
+- **续-79b 真机定谳（nk79b 双 root walk 对照探针，已滚 tracked 净）**：door 命中 0x2db000 时
+  `cr=pmr=0x43a96000`（caller 即 PM，单 root 无跨树问题）、`paA=paB=0x4283b000`（同帧）、
+  **`vA=0x0000000800000001`＝物理帧现值 (src=1, mt=8)**。关键矛盾：同 run door 读腿（时间更早）
+  捕获 msgs[0]=(0,8) 而**物理帧现在是 (1,8)**——door 读与帧现值不同且 drain 落 VFS 的是 (0,8)
+  ⇒ 现场至少存在过**两代帧内容**（demand-zero 第二次服务的 remap 痕迹与续-78b「同页两次服务」
+  呼应）；push 的 mt=0x900 写从未到达当前物理帧。**别名/换代坐实方向＝VM 对在用页的二次
+  PAGEFAULT 处理腿（alloc_and_map 不辨「已映射在用」）+ 缺页进程挂起语义在 aarch64 未闭环**。
+- **续-79c 配方（decision-complete）**：对照 C `vm/forkexit+pagefaults` 的「已在用帧重复缺页」
+  路径与 aarch64 `cow_exec_pf::alloc_and_map`（NeedNewPage 臂）——查 VM 收到同 VA 第二次
+  PAGEFAULT 时是否无条件 alloc 新帧并 remap（C: 先查 PTE 已存在→走 pfn 复用/直接回 OK，
+  `pagefault.c prepare_low/advance_pemf` 语义）；若坐实＝aarch64 VmDm 无 flush+双服务换帧
+  联合根因（demand-zero 第二次覆盖在用帧＋TLB 旧项），修复落点＝VM 服务前查在用 + aarch64
+  remap 腿 TLBI（与 A.5 登记的 present→X flush 缺口合并处理，CodeReview 时一并审）。
+**续-79b 配方（更新版 decision-complete）**：一次性只读帧对照探针（拒收前一刻）：分别
   `walk(PM root, 0x2db000)` 与 `current_root_phys` 同 VA 取 PA，再经两 PA 的 DM 别名各读首
   8B 打印（PM root 从 proc 表 VM slot 取；全程内核上下文合法页表 walk，非缺页 handler）；
   PA 不等⇒别名坐实（查 heap 基页 map 双服务/TLBI 缺失腿）；PA 相等⇒回读侧时序（PM store
