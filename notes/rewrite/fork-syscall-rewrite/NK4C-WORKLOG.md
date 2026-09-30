@@ -9424,3 +9424,17 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-114 修靶（收窄到建表期）**：坏中间层 PPN 0xbd2cbb000 由谁写入。① 探针改在 `protect_cow_pages` 的 `pt.query`/`update_flags` 前 dump 崩溃 vaddr + i2/i1 + l2e（现在知道该探这条路径）→ 拿到确切坏 vaddr/槽；② 顺藤查建该 vaddr 区域中间层的调用（`map`/`walk_alloc` in exec_worker/rs adopt）是否写坏 l1 项（PPN 来源）；③ 对照 C `pagetable.c`/`memory.c` 的 dup/fork 建表（Ground Truth）看 riscv 建表腿偏差。未坐实不成修。
 
 ⚠ 三目标不缩小（同续-110）。本轮纯读码（grep 定位调用者 + objdump 定函数），零探针零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-114（2026-10-01·**riscv (A) 支：两个 update_flags 调用者路径 L2 全干净却仍崩——崩溃点模型有系统性偏差，触发换策略（纯取证轮、探针用后即滚）**）
+
+**探针**：`protect_cow_pages`（fork COW）downgrade 循环内，每 vaddr 查 root[i2] 的 l1_phys 是否越 RAM（`debug_probe_l2`，不跟随、安全）。
+
+**结果（xu114，12893 行，VMfault=1）**：**`nk114` BADL2 = 0** —— fork-COW 路径处理的每个 vaddr 的 L2 也全干净。叠加续-112（demand-paging 路径 L2/L1 也干净）：⇒ **VM 里两条已知 update_flags 调用路径，其覆盖的 vaddr 的中间层都合法，但 VM 仍在 paging walk 里崩（stval 恒 ≈0x10bd2cbbXX）**。
+
+**结论（换策略信号）**：多次定向探针（cow_exec_pf L1、protect_cow_pages L2、per-fault L2）均**未命中**崩溃现场 → **我对"崩溃在哪、walk 哪个 vaddr"的模型有系统性偏差**。候选真因：① objdump 因 walk_read 内联进多函数、把 sepc 归到 update_flags 可能不准（真实崩溃 walk 的 root/proc 非这两条路径覆盖的）；② 崩溃 vaddr 的 L2 在"我探针读"与"崩溃读"之间被**他处写入变脏**（某 map/walk_alloc/free 腿写坏中间层）——即瞬态腐蚀，正是 WORKLOG 续-59/61 对 x86 同族 VM 晚期腐蚀记的「QEMU `-s -S`+gdb 硬件写 watchpoint 钉瞬态写者」的**最高杠杆手段**（x86 当年耗 16 轮）。riscv 无 DWARF，gdb 路同样硬。
+
+**战术调整（保持全目标、非缩小）**：riscv (A) 支已是 x86 级多轮内存完整性深坑，纯 AI 探针逐轮命中率低、上下文成本极高。为最大化对**三目标整体**的推进，本会话后续把杠杆分给**尚未启动的目标③**（minix3 tests 上机，x86 是唯一稳到 marker 的架构，先做可行性勘察 + 打通最小"一个测试上机跑"的 harness 即是从 0→1 的整支柱进展），riscv (A) 留待 gdb-watchpoint 类工具专项多轮攻。两线不冲突、目标不减。
+
+⚠ 三目标不缩小：①x86✅·riscv marker 未达（(A) VM 分页瞬态腐蚀深坑/(B) sa-call pid=9）·aarch64❌；②x86 核心✅；③未动（**本会话下一步转攻③**）。探针全回滚 tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
