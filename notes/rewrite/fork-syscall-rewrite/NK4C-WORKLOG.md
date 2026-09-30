@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-76b（2026-09-30·**riscv64 缺页腿 A.8 落地＝scause 12/13/15 从 diag panic 改 ForwardToVm park 腿（镜像 aarch64 §1.116）·CodeReview 无 BLOCKER·2 SF+2 NIT 全采纳**）**：新 `riscv64_pagefault_body`（VM 自缺页守卫 C exception.c:101-118→bkl_lock_or_inherit→存帧 FullContext→共享 `forward_pagefault_to_vm`（rts PAGEFAULT+p_fault_addr+VM_PAGEFAULT FROM_KERNEL，C exception.c:112-129）→释 BKL→PARK_RESCHEDULE）；纯函数 `riscv64_pf_error_code`（cfg(any(riscv64,test)) 先例）产与 aarch64/x86 一致车道（fetch 0x15/read 0x01/write 0x03）；user_body 分派 matches!(12|13|15)；sepc 不步进（非 ecall，服务后原地重执行）；host 新判别测试钉裸 scause 值+跨腿等值对 aarch64 转换器本身比较（S2）。评审 S1=两处过期 doc 已同步；N3=PFEC 三腿统一列为待迁点；N5=登记 dormant 冲突（arch riscv64/exception.rs `is_write_fault` 用 errcode&1 判写，与本腿 bit1 车道矛盾，现仅 x86 路径消费未触达，待 riscv exception 接线一并修）。**验证链全绿**：host **828/0**（+1）·569；clippy Δ0(126=126)；rustfmt trap_dispatch 35=35；riscv 配方 build/link 零新告警(68=68)；x86 真机 -smp4 最终码两轮 marker=2/panic=0/rc 全文；riscv kernel-image 冒烟 PASS。⚠ 三目标不缩小：①x86✅；**riscv marker 硬前置现状＝内核侧 IPC桥+park+缺页腿+消息拷贝已全接，缺 VM 侧 riscv 页表写路径（split_huge/grant_user_walk/write_pte_dm，riscv-reviewlog A.2/A.5）+ 3.1 甲案装机面（DTB/模块装载/多服务盘形，需 u-boot 补装或 OpenSBI 接线）**；aarch64❌（新停点 WrongMessageType(8) 待采样 + g14 OOM）；②x86 核心✅；③未动。续-77 入口＝VM 侧 riscv 页表写路径盘点（A.2/A.5 实态复查，前轮可能已部分落地）或 3.1 甲案装机面。详文见文末 §1.120续-76b。
+> **🛑 最新前沿＝§1.120续-77a（2026-09-30·**riscv write_pte_dm 通道门控成修＝A.5 单点缺口闭合（镜像 aarch64 §1.111 逐字同构）+ aarch64 新停点定性升级：确定性非回归**）**：①arch riscv64/paging.rs `write_pte_dm` 的 `sfence.vma` 从无条件改 `if channel==KernelDm` 门控——VM 服务器（用户态）经 VmDm handle 调 map/remap/unmap/update_flags 时监督指令＝非法指令例外（A.5 登记单点，形状与 arm64.rs:246/x86.rs:190 先例逐字同构）；安全论证经代码复核（riscv map 拒 AlreadyMapped ✓ walk_alloc 只建缺失中间表 ✓ V=0 不缓存 ✓）；present→X VmDm 无 flush 残余缺口与三架构同款登记不加宽。CodeReview **PASSED（零 issue）**。②**aarch64 WrongMessageType(8) 新停点采样定性**：现码 6 轮+**真 HEAD-only（b68e0fd44 旧直解 VA 形态）对照逐字同签名 2477 行**⇒确定性、非丙案引入、g14 旧随机 OOM 被布局变化取代成确定态（「布局敏感」实锤）；取证线索登记＝VFS 握手 phase 收到 m_type=8（非 VFS_PM_INIT 车道），dd2m cmt=0xcff/mt=3/dst=0，候选＝回复/通知消息串入 boot 握手或 aarch64 状态车道同族（B21 形状）——续-77b 入口＝沿 C sef_receive_status(Endpoint::PM) 过滤语义对照 + 抓 receive 返回的 msg.m_source 实底。③A.2 实态更新：riscv split_huge/grant_user_walk 仍为 trait 默认 NotSupported（消费点＝内核 load_elf_into evict，riscv 多服务 boot 到达时按 aarch64 §1.110 先例镜像补）。**验证链全绿**：riscv 配方告警集 24=24（stash 对照）；host 828/0·569；arch clippy 34=34；rustfmt 15=15；x86 真机 marker=2/panic=0（改动 cfg 在 riscv 模块，x86/aarch64 二进制不变）。⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿已全接，剩 VM 侧页表写面盘点+甲案装机面）·aarch64❌；②x86 核心✅；③未动。详文见文末 §1.120续-77a。
+>
+> **（历史·§1.120续-76b（2026-09-30·**riscv64 缺页腿 A.8 落地＝scause 12/13/15 从 diag panic 改 ForwardToVm park 腿（镜像 aarch64 §1.116）·CodeReview 无 BLOCKER·2 SF+2 NIT 全采纳**）**：新 `riscv64_pagefault_body`（VM 自缺页守卫 C exception.c:101-118→bkl_lock_or_inherit→存帧 FullContext→共享 `forward_pagefault_to_vm`（rts PAGEFAULT+p_fault_addr+VM_PAGEFAULT FROM_KERNEL，C exception.c:112-129）→释 BKL→PARK_RESCHEDULE）；纯函数 `riscv64_pf_error_code`（cfg(any(riscv64,test)) 先例）产与 aarch64/x86 一致车道（fetch 0x15/read 0x01/write 0x03）；user_body 分派 matches!(12|13|15)；sepc 不步进（非 ecall，服务后原地重执行）；host 新判别测试钉裸 scause 值+跨腿等值对 aarch64 转换器本身比较（S2）。评审 S1=两处过期 doc 已同步；N3=PFEC 三腿统一列为待迁点；N5=登记 dormant 冲突（arch riscv64/exception.rs `is_write_fault` 用 errcode&1 判写，与本腿 bit1 车道矛盾，现仅 x86 路径消费未触达，待 riscv exception 接线一并修）。**验证链全绿**：host **828/0**（+1）·569；clippy Δ0(126=126)；rustfmt trap_dispatch 35=35；riscv 配方 build/link 零新告警(68=68)；x86 真机 -smp4 最终码两轮 marker=2/panic=0/rc 全文；riscv kernel-image 冒烟 PASS。⚠ 三目标不缩小：①x86✅；**riscv marker 硬前置现状＝内核侧 IPC桥+park+缺页腿+消息拷贝已全接，缺 VM 侧 riscv 页表写路径（split_huge/grant_user_walk/write_pte_dm，riscv-reviewlog A.2/A.5）+ 3.1 甲案装机面（DTB/模块装载/多服务盘形，需 u-boot 补装或 OpenSBI 接线）**；aarch64❌（新停点 WrongMessageType(8) 待采样 + g14 OOM）；②x86 核心✅；③未动。续-77 入口＝VM 侧 riscv 页表写路径盘点（A.2/A.5 实态复查，前轮可能已部分落地）或 3.1 甲案装机面。详文见文末 §1.120续-76b。
 >
 > **（历史·§1.120续-76a（2026-09-30·**KernelUserCopy 丙案落地＝roadmap 2.2/3.2 销账，[ARCH: user-copy-via-dm]·公共腿·CodeReview 无 BLOCKER/无 SHOULD-FIX**）**：`copy_msg_from_user`/`copy_msg_to_user`（kernel/src/ipc.rs 生产形态）从「validate-first+直解用户 VA」改为「每页 walk(root)→PA→DM 窗口」（复用同文件 `copy_via_root_pages`，senda 腿真机先例）；消灭 riscv 无 SUM 必炸（NK4B 载体 scause=0xd 实锤）+ x86 SMAP/aarch64 PAN 同型隐患；读腿 root=None 由「放行后直读必炸」改 Err(PageFault)→调用方 EFAULT/SIGSEGV（更对位 C system.c:152-155）；写腿保留 need_write U/W 预校验；nk4a msgw 探针保留。CodeReview（current_session）逐项判定方向语义/校验覆盖面等价/探针取证等价，2 NIT 全采纳（N1 读腿目标取 `Message` 类型保对齐非 `[u8;N]` 假设；N2 文档同步：RESUME-PROMPT 2.2/3.2 标已实施、misc_concepts 补通道覆盖面）。**验证链全绿**：host 827/0·569；clippy kernel crate Δ0(126=126、vfs/sys/arch 持平)；rustfmt ipc.rs 99→98 零新增；riscv 配方 build/link 零错；**x86 真机 -smp4 标准启动器 4 轮 marker=2/panic=0/pfVM=0/vec6=0且 rc 全文可见（端到端投递走新腿实锤）**；riscv kernel-image OpenSBI 冒烟 A1/A2/A3 PASS。**aarch64 真机新形态登记**：本镜像及 **HEAD-only stash 对照镜像逐字同签名**（2477 行·VFS handshake `WrongMessageType(8)`·marker=0·oom=0·memreq=0）→ A/B 定谳**非本改动引入**，属 g14 前沿的布局敏感新停点（旧 OOM/memreq 形态未现，待后续轮多轮采样定性）。⚠ 三目标不缩小：①x86✅·riscv 桥接+丙案已落但 marker 未达（后继＝A.8 缺页腿镜像 aarch64_pagefault_body + 3.1 甲案 DTB/装机面）；aarch64❌（新停点 WrongMessageType(8) 待取证）；②x86 核心✅；③未动。续-76b 入口＝riscv 缺页腿（scause 12/13/15→ForwardToVm，对位 aarch64 §1.116）或 aarch64 新停点采样定性。详文见文末 §1.120续-76。
 >
@@ -8342,3 +8344,51 @@ riscv marker 硬前置盘点更新：内核侧 **IPC桥+park+缺页腿+消息拷
 
 ⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿已全接）·aarch64❌；②x86 核心✅；③未动。
 **本轮含生产码改·已走 CodeReview·commit 用明确路径。**
+
+---
+
+## §1.120续-77a（2026-09-30·**riscv write_pte_dm 通道门控（A.5 单点闭合，镜像 aarch64 §1.111）+ aarch64 新停点确定性定性**）
+
+### ① write_pte_dm 门控（仅 os/arch/src/riscv64/paging.rs）
+- **缺陷形状（注册单点，riscv-reviewlog §A.5 判定 09-27）**：`write_pte_dm` 每次 PTE 写后无条件
+  `sfence.vma`（监督指令）；VM 服务器用户态经 VmDm handle（`adopt_active_root`/`new()` 钉 VmDm）
+  调 map/remap/unmap/update_flags 即非法指令例外——aarch64 §1.111 第二根因在 riscv 原样存在。
+- **修复＝逐字镜像先例**：`if channel == PteChannel::KernelDm { sfence }`（arm64.rs:246 /
+  x86.rs:190 同形），doc 注释携带安全论证（VmDm 启动期只写 not-present→present：`map` 拒
+  AlreadyMapped、walk_alloc 只建缺失中间表、V=0 不被缓存）+ 残余 present→X VmDm 无 flush
+  缺口与三架构同款显式登记不加宽（CoW 腿 cow_exec_pf.rs:139-140 命中点已知，aarch64 带同款
+  缺口跑到过 marker 可类比）。
+- **CodeReview（current_session）＝PASSED 零 issue**：(a) 形态同构逐项核 ✓；(b) 风险不扩大 ✓；
+  (c) 规范表述准确 ✓；(d) KernelDm 路径无漏刷（含入口表复制调用点 paging.rs:525）✓。
+- A.2 实态：riscv `split_huge`/`grant_user_walk` 仍为 trait 默认 NotSupported，消费点在内核
+  `load_elf_into` evict（非 VM 主循环）——riscv 多服务 boot 真到达时按 aarch64 §1.110 先例镜像补，
+  本轮不预修（不可达路径不成修）。
+
+### ② aarch64 新停点定性升级（续-76a ④ 的后续采样）
+- 采样：现码 6 轮 + **真 HEAD-only 对照**（checkout b68e0fd44 的 ipc.rs 旧直解 VA 形态重建镜像）
+  ——**全部逐字同签名：2477 行·VFS handshake `WrongMessageType(8)`·marker=0/oom=0/memreq=0**。
+  （注：续-76a 那次 stash 对照因路径/暂存异常实际未回退，本次改用 checkout 基线 commit 重做，
+  取证方法纠偏登记。）
+- **结论升级**：新停点是**确定性**的（非间歇），且非丙案引入；旧 g14 随机 OOM/memreq 形态被
+  布局变化取代为确定态＝§1.118续/§1.119「构建布局敏感」家族实锤样本。
+- **取证线索（未坐实不成修，本轮只登记）**：握手 phase 收到 m_type=8（VFS_PM_INIT=117+0 车道外）；
+  尾随探针 dd2 caller=1 fn=1 mt=3、dd2m cmt=0xcff xmt=8、elock d_gf=0x7bff——候选＝回复/通知
+  消息串入 boot 握手，或 aarch64 状态车道同族（x86 B21 形状：is_ipc_notify 误判→非预期消息
+  落入 step 解析）。续-77b 入口＝对照 C `sef_receive_status` 的 source 过滤语义 + 拓 receive
+  返回的 msg.m_source/m_type 实底（一次性探针，用后即滚）。
+
+### ③ 验证链（全绿）
+- riscv 生产配方：minix-arch build 告警集 stash 对照 **24=24 零新告警**；host minix-arch
+  clippy 34=34；minix-kernel **828/0**·569；rustfmt riscv64/paging.rs 15=15。
+- x86 真机 -smp4（nk77-r1）marker=2·panic=0（改动 cfg 在 riscv 模块，x86/aarch64 二进制不变；
+  aarch64 镜像已用回现码重建）。
+
+### ④ 新前沿（续-77b 入口）
+1. aarch64 WrongMessageType(8) 确定性新停点取证（上述线索，属 g14 第三形态，目标① aarch64
+   当前头号阻塞）。
+2. riscv 甲案装机面（DTB 解析+模块装载源+.bss 清零→arch_boot 真门槛）——内核腿已全接，
+   装机面是多服务 boot 能跑起来的唯一剩余硬前置；若选最小验证腿（候选 3）需用户裁模块源。
+3. riscv split_huge/grant_user_walk：待多服务 boot 撞到时按 §1.110 镜像（不可达不预修）。
+
+⚠ 三目标不缩小：①x86✅·riscv 未达 marker·aarch64❌（新头号阻塞＝确定性 WrongMessageType(8)）；
+②x86 核心✅；③未动。**本轮含生产码改·已走 CodeReview（PASSED 零 issue）·commit 用明确路径。**

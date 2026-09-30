@@ -231,21 +231,44 @@ unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
 }
 
 /// Write a PTE at the given physical address via the Direct Map, with
-/// a TLB invalidation for the affected virtual address.
+/// a TLB invalidation for the affected virtual address — **gated on the
+/// channel** (续-77, the riscv twin of the aarch64 §1.111 fix and the
+/// x86 `invlpg` gate, mirroring `arm64::paging::write_pte_dm`).
 ///
-/// SAFETY: the channel's Direct Map window must be active; `paddr` must be
-/// a valid 8-byte aligned PTE address. `vaddr_for_flush` is the virtual
-/// address the PTE covers (used for TLB invalidation; pass 0 for
+/// `sfence.vma` is a supervisor instruction: executed from U-mode it
+/// raises an illegal-instruction exception. The VM server is a user
+/// process whose `map`/`remap`/`unmap`/`update_flags` funnels through
+/// this funnel on a `VmDm` handle — the ungated flush was the second
+/// aarch64-§1.111 root cause replicated verbatim on riscv
+/// (riscv-reviewlog §A.5, the registered single-point gap).
+///
+/// Why skipping the flush on `VmDm` is sound (same argument as arm64):
+/// the only writes a `VmDm` handle performs during boot are
+/// not-present → present (`map` refuses `AlreadyMapped`, and `walk_alloc`
+/// only creates absent intermediates), and RISC-V never caches a
+/// translation derived from an invalid PTE, so no stale TLB entry can
+/// exist for the newly-installed mapping. present→X transitions on a
+/// `VmDm` handle would need a kernel-assisted flush — the same VmDm
+/// flush gap as x86-64/aarch64 (documented, not silently widened).
+///
+/// SAFETY: the channel's Direct Map window must be active; `paddr` must
+/// be a valid 8-byte aligned PTE address. `vaddr_for_flush` is the
+/// virtual address the PTE covers (used for TLB invalidation; pass 0 for
 /// intermediate tables where no leaf TLB entry exists yet).
 #[inline]
 unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: PteChannel) {
     core::ptr::write_volatile(channel_to_ptr(paddr, channel), value);
-    // Flush any stale TLB entry for this virtual address. For intermediate
-    // table entries (L2/L1 non-leaf), no leaf TLB entry exists yet, so the
-    // flush is a conservative no-op. For leaf PTE entries, this ensures
-    // stale mappings are evicted.
-    // sfence.vma rs1=vaddr, rs2=x0 (all ASIDs).
-    unsafe { asm!("sfence.vma {}, x0", in(reg) vaddr_for_flush) };
+    if channel == PteChannel::KernelDm {
+        // Flush any stale TLB entry for this virtual address. For
+        // intermediate table entries (L2/L1 non-leaf), no leaf TLB entry
+        // exists yet, so the flush is a conservative no-op. For leaf PTE
+        // entries, this ensures stale mappings are evicted.
+        // sfence.vma rs1=vaddr, rs2=x0 (all ASIDs).
+        unsafe { asm!("sfence.vma {}, x0", in(reg) vaddr_for_flush) };
+    }
+    // VmDm: see doc comment — `sfence.vma` at U-mode faults, and the
+    // writes this channel performs during boot (not-present → present)
+    // need no flush.
 }
 
 /// Result of a read-only walk down the 3-level Sv39 page table.
