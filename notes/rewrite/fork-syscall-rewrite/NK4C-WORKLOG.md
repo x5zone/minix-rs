@@ -9487,3 +9487,17 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **方法学结论**：(A) 是**非确定性、时序门控**的内存完整性问题（与 x86 续-57~73 同族），纯 AI 逐点探针命中率低（本轮守卫 0 触发即为证）；WORKLOG 自记的**最高杠杆＝QEMU `-s -S` + gdb 硬件写 watchpoint 钉瞬态写者**（x86 当年据此+16 轮）。riscv 无 DWARF，gdb 路更硬，需专项多轮 + 可能 fresh 上下文。**未坐实不成修**——(A) 暂不改码（守卫探针只是诊断、已滚）。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)非确定内存坑未破·aarch64❌；②x86核心✅；③已勘察（需 C 工具链，非最小可运行）。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-117（2026-10-01·**riscv (A) 重大重定向：全 walk 路径（read+alloc、各级+root）守卫 0 触发→页表彻底洗清；崩溃来自 VM 直接 `vm_phys_to_virt(超-RAM paddr)` 访问，指向帧分配器 pfn 上界 vs 真实 RAM（纯取证、探针用后即滚）**）
+
+**仪器（覆盖所有页表读路径）**：`walk_read` **与** `walk_alloc` 各在 root 首读 + 跟随 l1 + 跟随 l0 前加 PPN∈[0x80000000,0xA0000000) 守卫，命中记 (vaddr, bad_phys, level) 到 static、回 NotPresent/Err（不 crash），VM 侧读回 bootmark。
+
+**结果（xu117，96194 行，VMfault=0）**：**`nk117: WF` 触发 0 次** —— 无论 walk_read 还是 walk_alloc，任何一级跟随的 phys 都在 RAM 内。**页表（含 root/中间层/所有路径）彻底排除**。
+
+**重定向（关键）**：崩溃 stval 0x10bd2cbbXX = `VM_DM_BASE + paddr`，paddr≈0xbd2cbb000≈3.15GB **超 RAM 顶 0xA0000000(2.5GB) 约 650MB**。既然不经任何页表 walk，则是 **VM 直接对一个损坏的 paddr 做 DM 访问**——最可能来源：**`frames.pfn_to_phys(slot.pfn())`**（region 页槽里一个 pfn≈0x2DB0B→phys 超 RAM），VM 在 cow copy/填页时 `vm_phys_to_virt` 直接读写它 → 未映 DM → "pagefault in VM"。
+
+**续-118 修靶（从"页表损坏"整转"帧簿记/分配器上界"）**：① 查 VM free_regions / pfn 分配器的**上界**是否被 memmap/DTB `/memory` reg 报得大于真实 `-m 512M`（若分配器以为 RAM 到 ~3.2GB 就会发出超 RAM 的 pfn）——对位续-91 `clip_firmware`（那是下界固件区，**上界可能未裁**）；② 探针打 VM `pfn_to_phys` 前 pfn 值 + 分配器 `free_regions` top vs RAM top 比对。若 pfn 超 RAM → 根因＝memmap 尺寸未 clamp 到真实 DRAM 顶，**这是可坐实、可能一击的实修点**（比页表瞬态腐蚀假设更可及）。未坐实不成修。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)重定向到帧分配器上界（新可及线索）·aarch64❌；②x86核心✅；③已勘察。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
