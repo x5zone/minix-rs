@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-77b（2026-09-30·**aarch64 WrongMessageType(8) 首轮取证（NK77B-TEMP 一次性探针已滚·取证快照入库·未坐实不成修**）**：VFS 侧探针（纯整数 panic 格式才可渲染——带 {:?}/多参首版撞 panic-msg-nonstr，渲染器限制登记）实测拒收缓冲实底：`st=1 w0(src)=0 w1(m_type)=8 w2=6 w3=6 w4=3 其余全 0`（i32 车道）。**三硬事实**：①m_source=0（与 PM proc nr 同号，endpoint/nr 空间重叠不可单值断源，续-77c ②b 精化）②m_type=8（非 VFS_PM_INIT=0x900；8 命中 PM_PTRACE 车道值但语义待定）③status=1（非 CALL_NOTIFY=4，is_ipc_notify 假→走 Call 分派）；而内核既有 dd2m 探针显示 caller=PM cmt=0xcff dst=0 xmt=8——发送侧记账与交付侧缓冲互斥⇒候选机制收敛为「接收唤醒交付腿写缓冲/写 m_source 错位或取了错的 msg 槽」（deliver_async/p_delivermsg 族，§1.118续/§1.119 park-后-回复投递同族坐实点）。**续-77c 入口（decision-complete）**：在 aarch64 接收交付腿（kernel/src/ipc.rs deliver 侧，写 p_delivermsg/拷贝处）加一次性内核探针（dst_endpoint 解析为 VFS slot 时打 sender_nr/写前 src/m_type/写后缓冲首 8B），同轮对比定偷写者；探针用后即滚。【同轮续-77c 已实探，见文末 ②b：**三内核写腿（delivermsg/PathA p_nr==1 门控/msgw 指纹）对 VFS 栈缓冲全无痕**⇒偷写者不在已仪器化腿，候选重排＝(a) sys_receive 完成臂其它写点或 (b) 页别名腐蚀；续-77d 入口已配】。**本轮无生产码改动**（探针已滚 tracked 净，WORKLOG-only 免 CodeReview）。⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿全接，剩 VM 页表写面+甲案装机面）·aarch64❌（本取证进行中）；②x86 核心✅；③未动。详文见文末 §1.120续-77b。
+> **🛑 最新前沿＝§1.120续-77f（2026-09-30·**aarch64 WrongMessageType(8) 根因域定枱：PM 用户态 `vfs_init_messages` 的 Vec 堆内容在 encode 出口后、同一函数内被变异（encode 本身正确）·七轮 NK77B–F 探针链全部已滚**）**：决定性事实链（均真机 aarch64 -smp4 同签名）：①内核三写腿对 VFS 栈无非法写（续-77c）；②拒收消息＝内核忠实投递的门送 msg；③door 体读腿不读 PM 缓冲，PM 发送的 r2 缓冲**自身**就携 (NONE,8,VFS_EP,slot6)（nk77e2/nk77e3：src=1 是盖章前用户态真值＝VFS_EP，即 m7i1 串位）；④PM 用户态探针：**`VfsPmInit::encode()` 栈上出口正确（nkf6: mt=0900, m7i1=6, m7i2=6）**，但 `push` 入 Vec 后同函数内读到 msgs[0]=(src=1?!, mt=8, m7i1=0x7bff, m7i2=6)；⑤常数 VFS_PM_INIT 在 PM 二进制内求值正确（nk77f2 首段 0900）；⑥同一 mt=8 在 VFS/其它服务器接收缓冲也观测到（跨进程一致形态）⇒ 非 PM 局部逻辑错，指向 **minix-rt 启动期堆/消息缓冲复用**（diagctl 共用消息缓冲？Vec 堆块与某静态/共享传输缓冲重叠？）或 encode 返回值拷贝被优化掉。**续-78 入口（decision-complete）**：a) 用 cargo asm/反相 aarch64 产物 `vfs_init_messages` 看 push 是否真的拷贝了 mk（encode 返回值是否被堆地址替位）；b) 若代码gen 无罪，在 PM 堆首块写字标记+后检（查谁覆写）；c) 对照 x86 同路径真机正常＝布局/分页差异点（PM 堆起点？）。目标① aarch64 当前头号阻塞，非内核侧。**另本轮环境项（用户已装 u-boot）：** test-riscv64-uboot.sh 对新 blob 三连适配（mdir 替 mmd、mkimage -d 替 -f、smode blob 需垫 OpenSBI -bios default + -kernel）；实测 Ubuntu 24.04 U-Boot 2025.10 distro boot **只认分区盘**（整盘 FAT 无分区表拒挂载→boot.scr 不执行；手建 MBR 分区后 `## Executing script` 实证可达），脚本分区化改造待续-78（宿主差异 SKIP 不 FAIL 原则已注释）。探针工程经验再+2：用户态 diagctl 探针缓冲必预留 内容+分隔+\n 全宽（f4 首次 48B 写 59B 栈溢出崩 PM 一轮，假信号需排除）；probe 链式多块时后块异常会吞前块（串行写串口无事务）。⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿全接，剩装机面）·aarch64❌（已定位到 PM 用户态堆变异）；②x86 核心✅；③未动。详文见文末 §1.120续-77f。
+>
+> **（历史·§1.120续-77b（2026-09-30·**aarch64 WrongMessageType(8) 首轮取证（NK77B-TEMP 探针已滚·取证快照入库·未坐实不成修**）**VFS 侧探针（纯整数 panic 格式才可渲染——带 {:?}/多参首版撞 panic-msg-nonstr，渲染器限制登记）实测拒收缓冲实底：`st=1 w0(src)=0 w1(m_type)=8 w2=6 w3=6 w4=3 其余全 0`（i32 车道）。**三硬事实**：①m_source=0（与 PM proc nr 同号，endpoint/nr 空间重叠不可单值断源，续-77c ②b 精化）②m_type=8（非 VFS_PM_INIT=0x900；8 命中 PM_PTRACE 车道值但语义待定）③status=1（非 CALL_NOTIFY=4，is_ipc_notify 假→走 Call 分派）；而内核既有 dd2m 探针显示 caller=PM cmt=0xcff dst=0 xmt=8——发送侧记账与交付侧缓冲互斥⇒候选机制收敛为「接收唤醒交付腿写缓冲/写 m_source 错位或取了错的 msg 槽」（deliver_async/p_delivermsg 族，§1.118续/§1.119 park-后-回复投递同族坐实点）。**续-77c 入口（decision-complete）**：在 aarch64 接收交付腿（kernel/src/ipc.rs deliver 侧，写 p_delivermsg/拷贝处）加一次性内核探针（dst_endpoint 解析为 VFS slot 时打 sender_nr/写前 src/m_type/写后缓冲首 8B），同轮对比定偷写者；探针用后即滚。【同轮续-77c 已实探，见文末 ②b：**三内核写腿（delivermsg/PathA p_nr==1 门控/msgw 指纹）对 VFS 栈缓冲全无痕**⇒偷写者不在已仪器化腿，候选重排＝(a) sys_receive 完成臂其它写点或 (b) 页别名腐蚀；续-77d 入口已配】。**本轮无生产码改动**（探针已滚 tracked 净，WORKLOG-only 免 CodeReview）。⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿全接，剩 VM 页表写面+甲案装机面）·aarch64❌（本取证进行中）；②x86 核心✅；③未动。详文见文末 §1.120续-77b。
 >
 > **（历史·§1.120续-77a（2026-09-30·**riscv write_pte_dm 通道门控成修＝A.5 单点缺口闭合（镜像 aarch64 §1.111 逐字同构）+ aarch64 新停点定性升级：确定性非回归**）**：①arch riscv64/paging.rs `write_pte_dm` 的 `sfence.vma` 从无条件改 `if channel==KernelDm` 门控——VM 服务器（用户态）经 VmDm handle 调 map/remap/unmap/update_flags 时监督指令＝非法指令例外（A.5 登记单点，形状与 arm64.rs:246/x86.rs:190 先例逐字同构）；安全论证经代码复核（riscv map 拒 AlreadyMapped ✓ walk_alloc 只建缺失中间表 ✓ V=0 不缓存 ✓）；present→X VmDm 无 flush 残余缺口与三架构同款登记不加宽。CodeReview **PASSED（零 issue）**。②**aarch64 WrongMessageType(8) 新停点采样定性**：现码 6 轮+**真 HEAD-only（b68e0fd44 旧直解 VA 形态）对照逐字同签名 2477 行**⇒确定性、非丙案引入、g14 旧随机 OOM 被布局变化取代成确定态（「布局敏感」实锤）；取证线索登记＝VFS 握手 phase 收到 m_type=8（非 VFS_PM_INIT 车道），dd2m cmt=0xcff/mt=3/dst=0，候选＝回复/通知消息串入 boot 握手或 aarch64 状态车道同族（B21 形状）——续-77b 入口＝沿 C sef_receive_status(Endpoint::PM) 过滤语义对照 + 抓 receive 返回的 msg.m_source 实底。③A.2 实态更新：riscv split_huge/grant_user_walk 仍为 trait 默认 NotSupported（消费点＝内核 load_elf_into evict，riscv 多服务 boot 到达时按 aarch64 §1.110 先例镜像补）。**验证链全绿**：riscv 配方告警集 24=24（stash 对照）；host 828/0·569；arch clippy 34=34；rustfmt 15=15；x86 真机 marker=2/panic=0（改动 cfg 在 riscv 模块，x86/aarch64 二进制不变）。⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿已全接，剩 VM 侧页表写面盘点+甲案装机面）·aarch64❌；②x86 核心✅；③未动。详文见文末 §1.120续-77a。
 >
@@ -8457,3 +8459,53 @@ sender msg 到接收者缓冲处，含 deliver_async 的 copy_msg_to_user/直写
 ⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿全接，剩 VM 页表写面盘点+甲案装机面）·
 aarch64❌（WrongMessageType(8) 取证进行中）；②x86 核心✅；③未动。**纯取证轮·无生产码改·
 WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
+
+---
+
+## §1.120续-77f（2026-09-30·**aarch64 WrongMessageType(8) 根因域定枱＝PM 用户态 Vec 堆变异（NK77B–F 七轮探针链，全部已滚，WORKLOG-only）**）
+
+### ① 探针链与决定性事实（每步均为真机 aarch64 xtask -smp4 同签名 2451~4234 行）
+1. **续-77b（VFS 侧）**：拒收缓冲实底 `st=1 src=0 mt=8 q0=0x6_00000006 q1=3`；panic 渲染器对
+   `{:?}` 复合格走 msg-nonstr（探针消息须纯整数列，A/B 实锤）。
+2. **续-77c/77d（内核三写腿）**：delivermsg 消费点全采样/PathA `p_nr==1` 门控/msgw 指纹——对 VFS
+   栈缓冲全无痕；纠「三腿无痕」假象＝msgw NW<64 预算被 RS-notify 风暴（mt=0xcff src=2 打 PM 接收
+   槽 0xdffbc ×64）耗尽（cap→4000+去重后仍无 VFS 栈写者）。
+3. **续-77e（door 体+读腿 caller 化，tsc 定序）**：VFS receive 刷新 e0648 → 23µs 后 drain 写
+   (0,8,6,6,3) 进 e0648 → VFS 拒收；**door 体读腿对 PM 发送 trap 不读 PM 缓冲**——PM 经
+   door-SEND 传的 r2 缓冲**自身**携 (src=1=VFS_EP, mt=8)（=m7i1 串入前两个字道）。
+4. **续-77f（PM 用户态，nkf3/f4/f5/f6）**：
+   - `VFS_PM_INIT` 常数在 PM 二进制内求值 **0x900 正确**；
+   - 现场直调 `VfsPmInit{slot:1,pid:1,endpoint:VFS}.encode()` → Message 字节全对
+     (mt=0900, m7i2=0001)；
+   - **循环内 `mk`（encode 出口、push 前）= (0900, m7i1=6, m7i2=6) 正确**；
+   - **同一循环 push 进 Vec 后，构造器出口读 msgs[0] = (src=1!!, mt=8, m7i1=0x7bff, m7i2=6) 已毒**；
+     msgs[1] 同毒（mt=8）；
+   - 每次循环只出一行 nkf6（应 13 行）＝diagctl 打印后 Vec/堆已坏到破坏循环？待查（不排除探针
+     自身与堆互踩的观测效应，f4 首次 48B 缓冲写 59B 溢出教训在前）。
+### ② 裁决与候选（未坐实不成修，本轮零生产改动）
+- 内核侧清白（忠实投递用户缓冲内容）；毒在 PM 用户态堆：encode 栈值对→Vec 堆值错，同函数内。
+- 候选（优先级序）：(a) `push` 的复制在 aarch64 release 代码gen 异常（encode 返回槽与 Vec 堆
+  块别名/被 diagctl 传输共用 msg 缓冲截胡）；(b) minix-rt 启动早期堆分配器把 Vec 块与某静态
+  传输缓冲双重持有（x86 同代码正常＝布局差异敏感，§1.119 家族同型）；(c) 探针观测效应（先排除）。
+- **续-78 配方（decision-complete）**：a) 去掉全部 PM 探针后 host `cargo-objdump`/`rust-objdump
+  -d` 反相 aarch64 产物 `vfs_init_messages`，核对 push 序列是否真 80B 拷贝（含 m_type 写序）；
+  b) 若代码gen 无罪：PM 在 `msgs` push 循环前对堆首块写 magic，出口先查 magic 再查 mt（区分
+  「push 未写入」vs「写入后被覆写」，覆写者用堆相邻 guard 定位）；c) 对照 PM 堆起点在 aarch64
+  的布局（brk/heap 与静态区邻接）与 x86 差异。
+### ③ 环境线（用户已装 u-boot-qemu/u-boot-tools）
+- `test-riscv64-uboot.sh` 三连适配已提交：mdir 替 mmd（mtools 4.3 行为变化）、mkimage `-d` 替
+  `-f`（mkimage 2025.10 `-f` 转 FIT 语义）、smode blob 垫 OpenSBI（`-bios default -kernel`，
+  直挂 -bios 零输出）。
+- 新实测事实：Ubuntu 24.04 U-Boot 2025.10 distro boot **只认分区盘**（整盘 FAT 无分区表→
+  `** No partition table - virtio 0 **`，boot.scr 不执行；手建 MBR 分区+分区内 FAT 后
+  `## Executing script at ...` 实证可达）。脚本分区化（fdisk 建 DOS 表+分区内 mkfs.vfat+mcopy
+  带分区偏移）续-78 实施；宿主差异按 SKIP 不 FAIL 原则已注释。
+### ④ 验证与纪律
+- 全部探针 `git checkout` 回滚，tracked 净＝uboot 脚本+WORKLOG；x86 真机（nk77z）marker=2/panic=0
+  复验；host 828/0·569 基线不动；双架构镜像已用干净码重建。
+- 探针工程经验（再累计）：diagctl 探针缓冲宽度=前缀+字段+分隔+\n 全算（溢出=假崩）；链式探针
+  后块崩会吞前块输出；风暴预算型探针（cap）必须先去重再限量。
+
+⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿全接，剩装机面分区化+DTB/模块装载）·
+aarch64❌（头号阻塞已定枱到 PM 用户态堆变异，非内核侧）；②x86 核心✅；③未动。
+**纯取证+测试脚本环境适配轮·无生产码改·WORKLOG-only（免 CodeReview）·commit 用明确路径。**

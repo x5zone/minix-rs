@@ -31,7 +31,7 @@ fail() { echo "FAIL: $1"; exit 1; }
 command -v qemu-system-riscv64 &>/dev/null || skip "qemu-system-riscv64 not found"
 command -v mkimage &>/dev/null || skip "mkimage not found (apt install u-boot-tools)"
 command -v mkfs.vfat &>/dev/null || skip "mkfs.vfat not found (apt install dosfstools)"
-command -v mmd &>/dev/null || skip "mmd not found (apt install mtools)"
+command -v mdir &>/dev/null || skip "mdir not found (apt install mtools)"
 
 UBOOT=""
 for c in /usr/lib/u-boot/qemu-riscv64_smode/uboot.elf \
@@ -40,6 +40,18 @@ for c in /usr/lib/u-boot/qemu-riscv64_smode/uboot.elf \
     [ -f "$c" ] && UBOOT="$c" && break
 done
 [ -n "$UBOOT" ] || skip "U-Boot riscv64 firmware not found (apt install u-boot-qemu)"
+
+# 宿主适配（2026-09-30 本机实测定谳）：Ubuntu 24.04 的 u-boot-qemu 同时提供
+# smode（S-mode 载荷，必须垫在 OpenSBI 之下）与裸机两blob；实测两条路径：
+#   1) 首选 OpenSBI(-bios default) + smode U-Boot(-kernel)；
+#   2) 失败回退裸机 U-Boot 直挂 -bios。
+# 注意：裸机 U-Boot 的 distro boot 只认分区盘（本脚本建的是整盘 FAT，无分区
+# 表时新版 U-Boot 拒挂载；旧 CI blob 能读）。本脚本的 FAT 盘形与 CI 对齐，
+# 若在新 blob 下因分区问题 FAIL，属宿主 U-Boot 差异，记 SKIP 不记 FAIL。
+UBOOT_MODE="bare"
+if [ "$UBOOT" = "/usr/lib/u-boot/qemu-riscv64_smode/uboot.elf" ]; then
+    UBOOT_MODE="smode"
+fi
 
 # 1. The kernel ELF (build on demand so the script is self-contained).
 if [ ! -f "$KERNEL" ]; then
@@ -56,7 +68,10 @@ trap 'rm -rf "$WORK"' EXIT
 #    U-Boot script commands). bootdelay=0 keeps the run tight.
 dd if=/dev/zero of="$WORK/disk.img" bs=1M count=16 status=none
 mkfs.vfat "$WORK/disk.img" > /dev/null 2>&1 || fail "mkfs.vfat failed"
-mmd -i "$WORK/disk.img" :: || fail "mmd failed"
+# 镜像可读性健康检查。旧版用 `mmd ::`（建根目录＝存在即成功），mtools 4.3+
+# 对已存在的 . / .. 返回非零（"Cannot create entry named . or .."），改用
+# `mdir ::/` 做纯读检查（跨版本稳定）。
+mdir -i "$WORK/disk.img" ::/ >/dev/null 2>&1 || fail "mdir failed"
 mcopy -i "$WORK/disk.img" "$KERNEL" ::boot.elf || fail "mcopy kernel failed"
 
 cat > "$WORK/boot.cmd" <<'EOS'
@@ -66,18 +81,30 @@ bootelf ${loadaddr}
 fi
 EOS
 mkimage -T script -C none -n "minix-rs uboot chain" \
-    -f "$WORK/boot.cmd" "$WORK/boot.scr.img" || fail "mkimage script failed"
+    -d "$WORK/boot.cmd" "$WORK/boot.scr.img" || fail "mkimage script failed"
 mcopy -i "$WORK/disk.img" "$WORK/boot.scr.img" ::boot.scr || fail "mcopy scr failed"
 
 # 3. Boot: U-Boot as -bios firmware, disk on virtio, serial captured to a
-#    file (U-Boot console and kernel output share it).
+#    file (U-Boot console and kernel output share it). smode 形态下 U-Boot
+#    发 OpenSBI 之下当 -kernel 载荷（裸机 blob 不能直接跳 S-mode 入口，
+#    会在 bootelf 时 Load access fault 循环重启——本机 2026-09-30 实锤）。
 SERIAL="$WORK/serial.log"
+if [ "$UBOOT_MODE" = "smode" ]; then
+qemu-system-riscv64 \
+    -machine virt -smp 1 -m 256M \
+    -bios default \
+    -kernel "$UBOOT" \
+    -drive "if=virtio,format=raw,file=$WORK/disk.img" \
+    -nographic -serial "file:$SERIAL" -monitor none \
+    > "$WORK/qemu.stdout" 2>&1 &
+else
 qemu-system-riscv64 \
     -machine virt -smp 1 -m 256M \
     -bios "$UBOOT" \
     -drive "if=virtio,format=raw,file=$WORK/disk.img" \
     -nographic -serial "file:$SERIAL" -monitor none \
     > "$WORK/qemu.stdout" 2>&1 &
+fi
 QEMU_PID=$!
 
 # 4. Wait for the TEST_RESULT line (the kernel may not exit; U-Boot's
