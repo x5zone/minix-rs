@@ -742,6 +742,163 @@ impl Paging for Riscv64Paging {
             asm!("sfence.vma {}", in(reg) vaddr.0);
         }
     }
+
+    /// Split the huge leaf (1 GiB at L2 / 2 MiB at L1) covering `vaddr`
+    /// into the next level's 512 entries, preserving every translation
+    /// (same frames, same leaf flags) so individual 4 KiB pages become
+    /// page-granular unmappable. NK4-C 续-90: the riscv mirror of
+    /// aarch64/x86 `split_huge` — boot-identity leaves stand at 2 MiB
+    /// granularity (Sv39 huge = 2 MiB when DRAM base is not 1-GiB aligned),
+    /// and the boot ELF loader (`arch::boot::load_elf_into`) must evict
+    /// them under user segment VAs or the fresh user `map` fails with
+    /// `AlreadyMapped` (walk_alloc refuses to clobber a leaf). Returns
+    /// `Ok(true)` when a leaf was split, `Ok(false)` when `vaddr` is
+    /// already a 4 KiB leaf / hole (no change).
+    ///
+    /// Unlike x86/arm64, an Sv39 NON-LEAF (table) PTE carries NO permission
+    /// bits — R/W/X must be 0 there (else reserved), and the `U` bit is
+    /// meaningless on a table entry. So a split child table pointer is just
+    /// `paddr_to_pte(child_pa) | V` (R=W=X=U=0); the leaf permission lives
+    /// entirely in the replicated leaf PTEs one level down.
+    fn split_huge(&mut self, vaddr: VirBytes) -> Result<bool, PageTableError> {
+        let ch = self.channel;
+        // `sfence.vma` (both the per-slot flush inside `write_pte_dm` and
+        // the global flush below) is a supervisor instruction: a `VmDm`
+        // (U-mode) handle would fault exactly like `write_pte_dm`'s flush
+        // (§1.111). Every caller is kernel-context boot eviction; assert
+        // the invariant so a future VmDm caller is caught in debug builds.
+        debug_assert!(
+            matches!(ch, PteChannel::KernelDm),
+            "split_huge requires a KernelDm handle; VmDm would fault at sfence.vma"
+        );
+        let v = Sv39PteFlags::V.bits();
+        let nonleaf_mask = Sv39PteFlags::R.bits() | Sv39PteFlags::W.bits() | Sv39PteFlags::X.bits();
+        let mut split = false;
+
+        // ── L2 (root, 1 GiB) ──
+        let i2 = l2_index(vaddr.0);
+        // SAFETY: channel's Direct Map active (read_pte_dm precondition);
+        // the L2 slot lives inside the root page.
+        let l2e = unsafe { read_pte_dm(self.root_paddr + (i2 as u64) * 8, ch) };
+        if l2e & v == 0 {
+            return Ok(false);
+        }
+        if l2e & nonleaf_mask != 0 {
+            // A 1 GiB leaf at L2 → build an L1 table of 512 2 MiB leaves.
+            let base = pte_to_paddr(l2e);
+            let leaf_bits = l2e & !PTE_PPN_MASK;
+            let (l1_phys, _va) = crate::pt_alloc::alloc_pt_page()?;
+            for i in 0..512usize {
+                // Child PA = base + i · 2 MiB. Parenthesised: `+` binds
+                // tighter than `<<` in Rust (same hazard as the arm64/x86
+                // split — a bare `base + i << 21` writes a bogus PA).
+                let child_pa = base + ((i as u64) << L1_SHIFT);
+                // SAFETY: fresh table frame reachable through the active
+                // Direct Map; slot 8-byte aligned.
+                unsafe {
+                    write_pte_dm(
+                        l1_phys.0 + (i as u64) * 8,
+                        paddr_to_pte(child_pa) | leaf_bits,
+                        0,
+                        ch,
+                    )
+                };
+            }
+            let new_l2 = paddr_to_pte(l1_phys.0) | v; // non-leaf: R=W=X=0
+            // SAFETY: L2 slot inside the live root page.
+            unsafe { write_pte_dm(self.root_paddr + (i2 as u64) * 8, new_l2, vaddr.0, ch) };
+            split = true;
+        }
+
+        // ── L1 (2 MiB) ──
+        // Re-read L2 (may have just been rewritten as a table pointer).
+        let l2e = unsafe { read_pte_dm(self.root_paddr + (i2 as u64) * 8, ch) };
+        if l2e & v == 0 || l2e & nonleaf_mask != 0 {
+            // Absent, or still a 1 GiB leaf (just split above — nothing
+            // further to descend to at this VA in this call).
+            return Ok(split);
+        }
+        let l1_pa = pte_to_paddr(l2e);
+        let i1 = l1_index(vaddr.0);
+        // SAFETY: L1 slot inside the live L1 page.
+        let l1e = unsafe { read_pte_dm(l1_pa + (i1 as u64) * 8, ch) };
+        if l1e & v != 0 && l1e & nonleaf_mask != 0 {
+            // A 2 MiB leaf → build an L0 table of 512 4 KiB leaves, then
+            // rewrite the L1 slot as a table pointer.
+            let base = pte_to_paddr(l1e);
+            let leaf_bits = l1e & !PTE_PPN_MASK;
+            let (l0_phys, _va) = crate::pt_alloc::alloc_pt_page()?;
+            for i in 0..512usize {
+                let child_pa = base + ((i as u64) << L0_SHIFT);
+                // SAFETY: fresh table frame reachable via active Direct
+                // Map; slot 8-byte aligned; explicit parens for `+`/`<<`.
+                unsafe {
+                    write_pte_dm(
+                        l0_phys.0 + (i as u64) * 8,
+                        paddr_to_pte(child_pa) | leaf_bits,
+                        0,
+                        ch,
+                    )
+                };
+            }
+            let new_l1 = paddr_to_pte(l0_phys.0) | v; // non-leaf
+            // SAFETY: L1 slot inside the live L1 page.
+            unsafe { write_pte_dm(l1_pa + (i1 as u64) * 8, new_l1, vaddr.0, ch) };
+            split = true;
+        }
+
+        if split {
+            // A huge leaf may have populated TLB entries for any VA in its
+            // 2 MiB / 1 GiB range; the per-slot `sfence.vma vaddr` inside
+            // `write_pte_dm` only clears one address. Global flush (no
+            // operands) is the Sv39 analogue of x86 CR3-reload / arm64
+            // `tlbi vmalle1is`. SAFETY: boot context, KernelDm (supervisor).
+            unsafe { asm!("sfence.vma") };
+        }
+        Ok(split)
+    }
+
+    /// Ensure the intermediate tables on the walk to `vaddr` do not veto
+    /// user access. On Sv39 this is a walk-and-verify no-op: a NON-LEAF PTE
+    /// cannot carry the `U` bit (RISC-V requires R=W=X=U=0 on table entries;
+    /// the leaf alone decides user access), so there is no intermediate-level
+    /// restriction to clear — unlike x86's per-level `U` or arm64's negative
+    /// `APTable`. Present intermediates ⇒ `Ok(())`; the caller's fresh user
+    /// leaf is then genuinely CPL3-reachable.
+    ///
+    /// Contract (mirrors the trait doc): `NotMapped` if any intermediate is
+    /// absent (caller must go through `map`/`walk_alloc`, which creates
+    /// fresh tables); `NotSupported` if a still-huge leaf is met mid-walk
+    /// (caller must `split_huge` first — granting over a whole 2 MiB range
+    /// would be a security regression).
+    fn grant_user_walk(&mut self, vaddr: VirBytes) -> Result<(), PageTableError> {
+        let ch = self.channel;
+        let v = Sv39PteFlags::V.bits();
+        let nonleaf_mask = Sv39PteFlags::R.bits() | Sv39PteFlags::W.bits() | Sv39PteFlags::X.bits();
+
+        // SAFETY: channel DM active; L2 slot inside root page.
+        let l2e = unsafe { read_pte_dm(self.root_paddr + (l2_index(vaddr.0) as u64) * 8, ch) };
+        if l2e & v == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if l2e & nonleaf_mask != 0 {
+            // 1 GiB leaf still present.
+            return Err(PageTableError::NotSupported);
+        }
+        let l1_pa = pte_to_paddr(l2e);
+        // SAFETY: L1 slot inside the live L1 page.
+        let l1e = unsafe { read_pte_dm(l1_pa + (l1_index(vaddr.0) as u64) * 8, ch) };
+        if l1e & v == 0 {
+            return Err(PageTableError::NotMapped);
+        }
+        if l1e & nonleaf_mask != 0 {
+            // 2 MiB leaf still present (split_huge not run).
+            return Err(PageTableError::NotSupported);
+        }
+        // L2 and L1 are both valid table pointers; the L0 leaf is the
+        // caller's to install with its own U bit. Nothing to amend.
+        Ok(())
+    }
 }
 
 impl HugePages for Riscv64Paging {

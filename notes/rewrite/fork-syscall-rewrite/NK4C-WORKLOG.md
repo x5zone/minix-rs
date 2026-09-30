@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-89（2026-09-30·**riscv 全系统 boot 首次跑通生产 kmain Phase A/B**）：新增 `os/qemu-tests/test-riscv64-boot-full.sh` 装配 12 个 riscv 模块 + imgrd（mfs build.rs arch 门 += riscv64）→ 真 BootFileTable + DTB /chosen → OpenSBI 直载 `-kernel` 镜像 + `-device loader`（force-raw）注入表与模块 → bootface 全腿通（12 模块放置）→ arch_boot validate/建表/DM → **kmain Phase A/B（validate/console/memmap copy/module cuts/platform/clock+intr/kerninfo）全活**——riscv 史上首次跑到真实 kmain（rt-birth 仅手搬相位）。停点＝`load_vm_elf: VM ELF MappingFailed`（kernel/src/lib.rs:1852）＝WORKLOG 续-77a A.2 登记的延后缺口（riscv `split_huge`/`grant_user_walk` 仍 trait 默认 NotSupported，aarch64 §1.110 有先例可镜像）。本轮附带 bootface 去 scratch 中转（mfs 嵌 8MiB imgrd 后单模块 8.9MiB 超 1MiB 预算，改源直拷，in_memmap_range checked_add 全宽闸）。CodeReview 无 BLOCKER/SF（2 NIT 已清）。验证链全绿：host 828/569·boot-shim 27/0·check-layout 三架构 PASS·riscv 冒烟+夹具双脚本 PASS·x86 真机 marker=2/panic=0 不回归。**下一入口（续-90）＝镜像 aarch64 §1.110 补 riscv split_huge/grant_user_walk 打通 load_vm_elf→VM handoff→server birth→marker**）。
+> **🛑 最新前沿＝§1.120续-90（2026-10-01·**riscv 首次跑通 sched + server birth + 首个用户进程**）：实现 `arch/riscv64/paging.rs` 的 `split_huge`+`grant_user_walk`（此前 trait 默认 NotSupported→load_elf_into 驱逐 boot-identity 2MiB 叶时返 MappingFailed）——镜像 aarch64 §1.110/x86 两级分裂到 4KiB、Sv39 非叶不带 U 位故 grant 为验证性 no-op、split 后全局 sfence.vma。真机双跑（jfull7/8，过滤签名 md5 一致）：bootface→arch_boot→kmain Phase A/B→**load_vm_elf 过→VM handoff free n=5→proc_init→memory_init→scheduling live→server birth（s3/s5→main、vm enter、params read ok）→首个用户进程执行**。新停点＝user-leg `scause 0x7`（Store/AMO access fault）stval=0x1080000000 sepc=0x3c600（VM 首存至乱址，trap_dispatch.rs:2277 diag panic）——续-91 取证靶（对位 aarch64 出生链的 user-trap 家族）。CodeReview PASSED 无 BLOCKER/SF。验证链全绿：host 828/569·arch 243·rustfmt/clippy Δ0·三架构 check-layout PASS·riscv split_huge 生产改仅 riscv 臂（x86/aarch64 二进制不变）。**下一入口（续-91）＝取 first user-leg scause=0x7 源头**（VM 0x1080000000 乱址从哪来·user-leg 该 forward-to-VM 还是真 access fault）。另：结构债台账 SD-1…SD-33（Rev 2）已入账，来源扫描线，择机按 §5.1 批次认领）。
+>
+
+> **（历史·§1.120续-89（2026-09-30·**riscv 全系统 boot 首次跑通生产 kmain Phase A/B**）：新增 `os/qemu-tests/test-riscv64-boot-full.sh` 装配 12 个 riscv 模块 + imgrd（mfs build.rs arch 门 += riscv64）→ 真 BootFileTable + DTB /chosen → OpenSBI 直载 `-kernel` 镜像 + `-device loader`（force-raw）注入表与模块 → bootface 全腿通（12 模块放置）→ arch_boot validate/建表/DM → **kmain Phase A/B（validate/console/memmap copy/module cuts/platform/clock+intr/kerninfo）全活**——riscv 史上首次跑到真实 kmain（rt-birth 仅手搬相位）。停点＝`load_vm_elf: VM ELF MappingFailed`（kernel/src/lib.rs:1852）＝WORKLOG 续-77a A.2 登记的延后缺口（riscv `split_huge`/`grant_user_walk` 仍 trait 默认 NotSupported，aarch64 §1.110 有先例可镜像）。本轮附带 bootface 去 scratch 中转（mfs 嵌 8MiB imgrd 后单模块 8.9MiB 超 1MiB 预算，改源直拷，in_memmap_range checked_add 全宽闸）。CodeReview 无 BLOCKER/SF（2 NIT 已清）。验证链全绿：host 828/569·boot-shim 27/0·check-layout 三架构 PASS·riscv 冒烟+夹具双脚本 PASS·x86 真机 marker=2/panic=0 不回归。**下一入口（续-90）＝镜像 aarch64 §1.110 补 riscv split_huge/grant_user_walk 打通 load_vm_elf→VM handoff→server birth→marker**）。
 >
 
 > **（历史·§1.120续-88（2026-09-30·riscv 甲案装机面入口腿落地＝kernel-image riscv64 自引导 bootface（DTB memmap＋BootFileTable 双通道＋物理名字池＋arch_boot 真门槛）·真机取证链 jiaf1–jiaf9 定谳「satp=0 物理视图下经数据格的 &str（静态胖指针/切换表）解引用＝Load access fault→OpenSBI 热重入；唯一安全形状＝调用点字面量 auipc＋纯字节池」·OpenSBI 冒烟 A1–A4 与 bootface 夹具 B1–B3 各双轮 md5 一致·host 828/0·569·boot-shim 27/0·clippy/rustfmt Δ0·三架构 check-layout PASS·x86 真机两轮 marker=2/panic=0 不回归·**两轮 CodeReview：首轮 1 BLOCKER+5 SF+5 NIT 全采纳，复审代码层 PASSED（仅 3 注释 NIT 已清）**）**：目标① riscv 剩余＝xtask 装机腿（产物形/boot.scr/表装配/12 模块 riscv 产物）＋arch_boot 之后 kmain 全链实况；下一入口见文末 §1.120续-88。aarch64 续-87（barrier mt=8 注入点）配方保持排队。**另：R3.1 增量评审线交接待办已入账（F1–F10 + 6 NIT，来源＝评审线报告 §6.2/§7.3，全 P2/非阻塞，登记于文末「§R3.1 评审线交接待办」小节，择机顺路认领，本轮不动）**。
@@ -8847,6 +8850,31 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 **给评审线的反馈（顺带）**：R3 §7.3 的④⑤（本报告建议编号 F9/F10）虽在 §3/114 行确认仍开，但未并入 §6.2 主表；建议下轮把④⑤收进 §6.2，使「含 R3 遗留」名副其实。
 
+---
+
+## §结构债台账（SD-1…SD-33，Revision 2）·滚动认领·非本轮强做
+
+> **权威全量以文件为准**：`notes/rewrite/fork-syscall-rewrite/STRUCTURAL-DEBT-REGISTER-20260930.md`
+> （1405 行，Rev 2，2026-10-01）。来源＝结构债扫描线（结构/设计债 + 每条 ≥2 方案择优，**区别于**
+> 评审线 R3.1 的正确性/P2 待办 F1–F10，那批另行入账）。**全 33 项 + 排期以该文件 §5.1 批次表为索引，
+> 本节只登记总指针与几项时效高的省力条目示例，不复制正文、不靠二手摘要。** 台账与扫描线并发维护
+> （滚动增条目/改择优），**只读、不编辑该文件**。台账内日期是「信息本体」（快照/修订/事故日），
+> lint 口径与 WORKLOG/riscv-reviewlog 同族。
+
+**§5.1 批次认领索引**（详见文件）：批 0＝即时候补/随域（docs/tests/一行）；批 1＝riscv64 Plan-A 落地批（in flight）；批 2＝aarch64 收尾批；批 3＝错误路径 & 符号域批。
+
+**省力/时效高、可顺路认领的示例（其余从文件 §5.1 取全）**：
+- **SD-23 aarch64 FPSIMD**（批 2·性价比最高）：Rev 2 复审发现 `os/arch/src/arm64/fpu.rs` 的 Q0–Q31 save/restore 汇编 + `KProcess.fpu_state` 槽（proc.rs:1010）**已写好、零调用者（孤儿原语）**，择优 lazy→eager，接线只剩两处调用点 + 属主字段——WORKLOG 早已挂账的独立真缺陷（§1.113 家族的续-42/43/44 defect E）。**排在碰 arm64 陷入/切换路径时顺带做。**
+- **SD-4 链接脚本常量四份平行**（批 0/1）：新增方案 E——`.ld` 里 `extern "C" static` 让 Rust 侧取址消费、脚本成单源、漂移变链接错误。**riscv 装机面正在改 .ld/kernel-image，合并到那次改动顺带收口最省。**
+- **SD-16 errno 符号域**（批 3）：`WireErrno` newtype 令「回复位出现正 errno」成类型错误，成本近零、与「minix-types 单一权威 + 编译期断言」教义同构。碰到 IPC 回复编码腿时顺带。
+- **SD-19 吞错机械化**（批 0/3）：全仓 `must_use` 仅 1 处（minix-sys/time.rs:109）、lint 面未开；用 clippy `let_underscore_must_use` 做机械门（maintain 站点配 `#[allow(…)]` + 说明行）。卫生类，择机。
+- 其余（SD-10 批量刷腿 mmu_gather 形 / SD-11 PageSupplier 接缝 / SD-13 交付腿 volatile-read / SD-22 AddressRef::Process DM 拷贝载体 / SD-15 arm64 gp_regs 撕裂寄存器家族 等）：**随相关域复现时认领**，条目与择优以文件为准。
+
+**可迁移自检经验（登记备后续复用的判别法，取自台账 §4 家族 2「组合缝」）**：
+> 扫「公开 API 零生产调用者」即可让**孤儿原语**现形（fpu save/restore 与当年未接线的 `send_work()` 会同批浮出）。
+> 用于自查「建好了却没人接」的组合缝缺口——比逐函数读码省力。**拟并入 misc_concepts 候选经验集。**
+
+
 
 ---
 
@@ -8867,3 +8895,23 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 **下一入口（续-90）**：镜像 aarch64 §1.110 补 riscv64 `split_huge`/`grant_user_walk`（arch/riscv64/paging.rs）→ 打通 `load_vm_elf` → VM handoff → 12 server birth → init → **rc marker（目标① riscv 终灯）**。riscv kmain 后段（VM handoff/IPC/scheduler）是新地面，预期还会撞数个架构侧缺口，逐相取证推进（对位 aarch64 续-110~118 的路线）。
 ⚠ 三目标不缩小：①x86✅·**riscv 生产 kmain 已跑到 Phase B（历史最远），停于 split_huge/grant_user_walk 延后缺口**·aarch64❌（barrier mt=8+handshake 竞态，续-87 配方在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-90（2026-10-01·**riscv 首次跑通调度器 + server birth + 首个用户进程（split_huge/grant_user_walk 落地）·新停点钉到 user-leg scause=0x7**）
+
+**任务**：续-89 停在 `load_vm_elf: VM ELF MappingFailed`——根因是 riscv `Paging::split_huge`/`grant_user_walk` 用 trait 默认 `Err(NotSupported)`，boot ELF loader（`arch::boot::load_elf_into`）驱逐 arch_boot_impl Step1 铺的 2MiB supervisor identity 叶时拿不到页粒度驱逐。本轮镜像 aarch64 §1.110 + x86 实现补齐。
+
+**改动面（生产码，仅 `os/arch/src/riscv64/paging.rs` 的 `impl Paging for Riscv64Paging`，riscv-only）**：
+1. `split_huge`：L2(1GiB)/L1(2MiB) 大叶逐级下建下一级 512 项表，子叶 PTE = `paddr_to_pte(base + i·step) | (原叶低 10 位 flag 保留)`，中间槽改写 `paddr_to_pte|V`（R=W=X=0 保证非叶不被误判）；`+`/`<<` 显式括号（x86/arm64 同款优先级陷阱）；split 后无条件全局 `sfence.vma`（大叶污染多 VA TLB，等价 x86 CR3-reload/arm64 vmalle1is）；`debug_assert!(KernelDm)`（VmDm 的 sfence 会 fault，§1.111 同 arm64）。
+2. `grant_user_walk`：Sv39 非叶 PTE 不能带 U 位（RISC-V 规定表项 R=W=X=U=0，权限只由叶定）——故 riscv 无中间级用户位可清，本方法是**只读验证 no-op**：absent→NotMapped、仍存大叶（未 split）→NotSupported、双表→Ok。与 boot.rs:505→512（先 split_huge 后 grant）契合，不过度授权。
+
+**真机证据（jfull7/jfull8 双跑，过滤签名 md5 逐字一致＝确定性）**：riscv 首次穿过 load_vm_elf → **VM handoff（free n=5）→ proc_init → memory_init → `MINIX-RS 0.1.0 — scheduling live` → entering scheduler → server birth 链（birth s3 runtime ok、s5→main、vm enter、params read ok）→ 首个用户进程执行**。停点＝`user-leg trap scause=0x7（Store/AMO access fault）stval=0x1080000000 sepc=0x3c600`（trap_dispatch.rs:2277 diag panic）。这是 riscv 出生链首次触到 CPL3 用户腿执行——对位 aarch64 当年 §1.113 后卡在 user-trap/投递家族的位置。
+
+**CodeReview**：PASSED 无 BLOCKER/SHOULD-FIX（逐项核对 PPN 编码/非叶 R=W=X=0 保证/两级 shift 算术/re-read-fall-through 必要性/sfence 恰当/grant 只读不写；提示一处 pre-existing：本仓 `Sv39PteFlags` 的 A=bit6/D=bit7/G=bit5 与特权规范 A=bit5/D=bit6 有出入，不影响 split_huge 的按位复制，留档待 exception/时钟腿核对）。
+
+**验证链全绿**：host minix-kernel 828/0·arch 243·rustfmt 0 漂移·clippy 无新 paging.rs 告警·三架构 check-layout PASS·riscv 双脚本（冒烟+夹具）不回归·（x86 真机不回归由「改动全在 riscv 臂、x86/aarch64 二进制逐字节不变」结构性保证）。
+
+**下一入口（续-91）**：钉 `user-leg scause=0x7 stval=0x1080000000` 的源头——① 该 0x1080000000（≈64GiB）是 VM 用户腿第一次 store 的目标，判「是 access fault（PMA 无该 RAM）还是本应 translation page-fault（13/15）→ forward-to-VM」；② 若 VM 从 config/kerninfo 读了乱指针，查 birth 参数/kerninfo 页交付；③ user-leg `riscv64_user_body` 的 scause 分派是否把 0x7 正确落到 diag 而非漏接缺页臂。逐相取证（对位 aarch64 出生链方法论）。
+⚠ 三目标不缩小：①x86✅·**riscv 已跑到首个用户进程（历史最远），停于 user-leg scause=0x7**·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
