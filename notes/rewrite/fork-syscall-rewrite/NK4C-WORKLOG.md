@@ -9001,4 +9001,7 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 **证据纪律**：纯取证，user_body + resched_thunk 两枚限次探针用后即滚（trap_dispatch.rs 复原，tracked 净），无生产码改→WORKLOG-only、免 CodeReview。
 
 **下一入口（续-95）**：对账三方——① `libs/minix-sys/src/arch_trap.rs` riscv 腿 `ipc_trap`/`kernel_call_trap` 用哪个寄存器传 call-nr（a0? a7? 编码进 a7 的哪段）；② `arch/riscv64/trap_stub.rs` 陷入帧 gpr[17] 是否 = 硬件 a7（x10=0..x31，a7=x17 → gpr 索引应 17，但 a7 语义/偏移需核）；③ `riscv64_user_body` 读 `frame.gpr[17]` 作 leg 是否正确。若 a7 槽错→这是出生链总闸，改正即可能一次性打通 RS_INIT→marker。逐相逼近。
+
+**续-94b 即时核验（同轮，纠正 a7=0 线索）**：读 `libs/minix-sys/src/arch_trap.rs` riscv 腿——`kernel_call_trap` 用 `in("a7") KERNEL_CALL_TRAP_NR=0`，`ipc_trap` 用 `in("a7") call_nr`（1..16）。本 port 的 `receive`/`send`/`putnext` 等**经 kernel_call 消息腿（a7=0）**，raw IPC（sendnb/notify）才 a7=1..16。故 VM boot 满屏 a7=0 = **预期的 syscall 腿**，a7 槽无错位——**假线索，已排除**（未据此误改，符合「未坐实不成修」）。问题因此更精确：20 次陷入**全是 a7=0（kernel_call）**、**零 a7=1..16（raw IPC）**；对照 x86 在 VM `run enter` 后即 `ipc-entry nr=2 caller=8`（VM→RS 的 IPC 送达）。⇒ 续-95 靶改定＝**riscv 下 VM 用于启动/握手 RS 的那笔 IPC（无论 raw IPC 还是 kernel_call 语义）为何未落地/未产生 a7=1..16 陷入或送达**；查 minix-sys receive/send 在 riscv 实际走哪条腿 + 该腿 `riscv64_kernel_call_leg`/`riscv64_ipc_dispatch_body` 的 reply/交付是否与 x86 等价。
+
 ⚠ 三目标不缩小：①x86✅·riscv VM 完整 boot+park/timer/ecall 证工作、卡于握手调用号(a7=0 嫌疑)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
