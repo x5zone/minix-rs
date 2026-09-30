@@ -34,6 +34,16 @@ minix-plat = { path = "../plat" }
 minix-types = { path = "../libs/minix-types" }
 minix-boot = { path = "../libs/minix-boot" }
 
+# NK4-C 续-88 甲案：riscv64 自引导面复用 boot-shim 库的 U-Boot 取件车道
+# （BootFileTable/bump 池/build_kernel_info——取页纪律单源，不在镜像侧
+# 复制第二份）与 fdt crate（a1 DTB 解 /memory、/chosen）。uefi feature
+# 不开：lib 侧 `uefi_helpers` 随之出局，bin 侧 UEFI 入口由
+# `required-features = ["fw-uefi-image"]` 门控，不消耗本依赖。只在
+# riscv64 target 注入（宿主/x86/aarch64 构建面零变化）。
+[target.'cfg(target_arch = "riscv64")'.dependencies]
+boot-shim = { path = "../boot-shim", default-features = false, features = ["opensbi"] }
+fdt = { workspace = true }
+
 # 产出物就是取件契约位的文件名：cargo 对 none 目标产无扩展名工件
 # `target/<triple>/<profile>/kernel`，xtask image() 的取件
 # 缺省路径与之对齐（os/xtask/src/image.rs kernel_elf_path）。

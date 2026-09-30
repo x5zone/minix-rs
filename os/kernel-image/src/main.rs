@@ -39,6 +39,8 @@
 extern crate alloc;
 
 use core::arch::asm;
+// riscv64 腿的锚点触达住在 `bootface`（续-88 甲案），本入口不用 black_box。
+#[cfg(not(target_arch = "riscv64"))]
 use core::hint::black_box;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicUsize, Ordering};
@@ -122,21 +124,43 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
+        # NK4-C 续-88 甲案：OpenSBI 递入的是裸 RAM（NOBITS 不写），而镜像
+        # 的 bump 分配器游标/平台冻结全局就住在 .bss（NK4B M4.4 事实五），
+        # 非零垃圾让首次分配返回乱址——先清 .bss 再立栈（K10 载体先例的
+        # 形式，bgeu 无符号界判定 + 8 字节步进）。清零循环全走 `la` 松弛后
+        # 的 PC 相对引用：执行视图 = 物理基址（medany，M4.3 实测事实），
+        # 栈顶符号同样按运行位址解析，清零只会扫自己下方的镜像内区域。
+        la t0, __bss_start
+        la t1, __bss_end
+    1:  bgeu t0, t1, 2f
+        sd zero, 0(t0)
+        addi t0, t0, 8
+        j 1b
+    2:
         la sp, kernel_boot_stack_top
         li ra, 0
         li fp, 0
+        # 甲案交接：OpenSBI 递 a0 = boot hartid、a1 = DTB 物理指针；U-Boot
+        # 腿另约定 a2 = BootFileTable 物理指针（本 boot 面同时读 DTB
+        # /chosen/opensbi,boot-file-table，a2 不合法时靠 DTB 通道；两者均
+        # 过 magic 把关才解引用）。`call` 是 PC 相对，不改动 a0–a2，三个
+        # 入参自然落位 Rust 面（rt-birth 载体 :426 同形先例）。
         call {rust_image_main}
-    2:  wfi
-        j 2b
+    3:  wfi
+        j 3b
     "#,
     rust_image_main = sym rust_image_main,
 );
 
-/// Rust 面入口：横幅 + 触达锚点 + 驻留。
+#[cfg(target_arch = "riscv64")]
+mod bootface;
+
+/// Rust 面入口（x86_64 形态；aarch64/riscv64 各有接线版见下）：横幅 +
+/// 触达锚点 + 驻留。
 ///
 /// 交接协议未接线（见模块文档"交付边界"），到达这里说明镜像已被
 /// 执行——这是 NK1 跳转链路联调时的第一观测点，横幅就是串口证据。
-#[cfg(not(target_arch = "aarch64"))]
+#[cfg(all(not(target_arch = "aarch64"), not(target_arch = "riscv64")))]
 fn rust_image_main() -> ! {
     // 触达锚点：运行路径上引用一次，保证锚点静态与其指向的内核
     // 启动图在归档成员粒度上也被拉入链接（KEEP 是链接期第二道保险）。
@@ -192,6 +216,16 @@ fn rust_image_main(handoff: *const minix_boot::BootHandoff) -> ! {
     // crate, which now runs the remaining phases entirely at high virtual
     // addresses — without rebuilding (which would clobber) the active root.
     minix_kernel::arch_boot_resume_high_half(&h.kernel_info, PhysBytes(h.root_page))
+}
+
+/// NK4-C 续-88 甲案 riscv64 镜像入口：kernel-image 自当引导体（无跨镜像
+/// 交接、无 BootHandoff）。入口 asm 已清 `.bss`（甲案共同前置，NK4B M4.4
+/// 事实五），a0/a1/a2 依次落为三个入参；真活在 `bootface`：a1 DTB 解
+/// memmap → BootFileTable（a2/chosen 双通道，magic 闸）→ 12 模块装载 →
+/// `minix_kernel::arch_boot` 过 validate 真门槛。
+#[cfg(target_arch = "riscv64")]
+fn rust_image_main(boot_hart: u64, dtb_phys: u64, boot_file_table_pa: u64) -> ! {
+    bootface::bootface(boot_hart, dtb_phys, boot_file_table_pa)
 }
 
 fn halt() -> ! {
@@ -265,11 +299,23 @@ fn panic(info: &PanicInfo) -> ! {
 // 内核运行面的真实堆初始化（C 对位：kmalloc/mempool 初始化半）属
 // NK1 入口接线波次的设计范围，不在此代决。
 
-/// 128 KiB：只兜链接面与最小启动期的量级，非运行面配额承诺。
-const IMAGE_HEAP_LEN: usize = 128 * 1024;
+/// 1 MiB：兜链接面与最小启动期的量级，非运行面配额承诺。NK4-C 续-88
+/// 甲案把 128 KiB 提到 1 MiB：`.bss` 已由入口 asm 清零（游标可信），而
+/// 任何走堆的 boot 腿（含 panic 诊断旁路）都需要模块量级的宽裕；模块
+/// 拷贝本身走物理 bump 暂存页、不消耗堆（见 `bootface`）。注意堆宽会
+/// 移动镜像跨距：`check-layout.sh` L9 用 readelf 实测 ELF 跨距（末段
+/// VMA+memsz − 首段 VMA）与 `bootface.rs` 的 `KERN_SIZE` 字面量对账
+/// （堆宽变→跨距变→L9 当场红）；不在 `.ld` 开符号节（多一个 PT_LOAD
+/// 会把跨距推成非 2MiB 整数倍，反破 L5/L7，续-88 实试过已回退）。
+const IMAGE_HEAP_LEN: usize = 1024 * 1024;
 
-/// 零初始化静态数组 → 落 `.bss`（加载/拷贝阶段按 PT_LOAD memsz 清零）。
-static IMAGE_HEAP: [u8; IMAGE_HEAP_LEN] = [0; IMAGE_HEAP_LEN];
+/// 镜像堆本体。CodeReview NIT-8 实锤：`static IMAGE_HEAP = [0; N]` 只经
+/// `as_ptr()` 取址，rustc 把它当只读常量落进 `.rodata`——而 bump 分配器
+/// 往里写！改为 `static mut`（无安全引用、只经 `&raw` 地址算术使用），
+/// 零初始化对象落 `.bss`，与「可写堆」语义一致，也消除页保护生效后
+/// 写只读段的潜伏坏形（三架构同益：x86/aarch64 今天走 boot-shim 产线
+/// 未暴露，属潜伏债）。
+static mut IMAGE_HEAP: [u8; IMAGE_HEAP_LEN] = [0; IMAGE_HEAP_LEN];
 
 struct ImageBump {
     cursor: AtomicUsize,
@@ -295,7 +341,12 @@ unsafe impl GlobalAlloc for ImageBump {
                 (end <= IMAGE_HEAP_LEN).then_some(end)
             });
         match old {
-            Ok(new_end) => unsafe { IMAGE_HEAP.as_ptr().add(new_end - layout.size()) as *mut u8 },
+            // SAFETY: `IMAGE_HEAP` 是独占的镜像期堆区，仅本分配器经地址
+            // 算术写入（无并发引用）；偏移已由上面的 `end <= IMAGE_HEAP_LEN`
+            // 显式限界。
+            Ok(new_end) => unsafe {
+                (&raw const IMAGE_HEAP).cast::<u8>().add(new_end - layout.size()) as *mut u8
+            },
             Err(_) => {
                 // NK4-C 1.5c 取证（task1-close 裁决删除）：内核 bump arena
                 // 耗尽——锁定 OOM 是否落在内核 ImageBump（非增长 128KiB）。

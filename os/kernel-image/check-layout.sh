@@ -236,6 +236,21 @@ $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")"
     n_anchor="$(nm "$elf" | grep -c "minix_kernel9arch_boot" || true)"
     check L8 "minix_kernel::arch_boot 在镜像里（命中 $n_anchor 个符号）" \
         "$([ "$n_anchor" -ge 1 ] && echo 1 || echo 0)"
+
+    # L9（NK4-C 续-88，CodeReview BLOCKER-1）：riscv64 镜像跨距对账——
+    # 本脚本 ELF 实测跨距（末段 VMA+memsz − 首段 VMA）↔ bootface.rs 的
+    # `KERN_SIZE` 字面量。`IMAGE_HEAP` 等段体增删会移动跨距，bootface 硬写
+    # 的常量需同步，没这条闸就会静默漂移（高半少映半张镜像级别的坏）。
+    if [ "$arch" = "riscv64" ]; then
+        local span_rs span_dec ok9
+        span_rs="$(grep -oE 'const KERN_SIZE: u64 = 0x[0-9a-fA-F_]+;' \
+            "$SCRIPT_DIR/src/bootface.rs" 2>/dev/null | head -1 | \
+            sed 's/.*= 0x\(.*\);/\1/' | tr -d '_')"
+        span_dec="$(printf '%x' "$span")"
+        ok9=0
+        if [ -n "$span_rs" ] && [ "$((16#$span_rs))" = "$((span))" ]; then ok9=1; fi
+        check L9 "跨距对账：ELF 实测 0x$span_dec = bootface.rs KERN_SIZE 0x${span_rs:-无}" "$ok9"
+    fi
 }
 
 case "$WHICH" in

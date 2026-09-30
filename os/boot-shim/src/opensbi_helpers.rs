@@ -391,6 +391,30 @@ fn bump_alloc(num_pages: usize) -> Option<u64> {
     }
 }
 
+/// NK4-C 续-88 甲案：导出给 kernel-image 自引导面（同一 bump 池的第二个
+/// 合法消耗者）。`prepare_boot` 那条腿是「独立 shim 装 kernel.elf」，自引导
+/// 镜像不能走它（会重拷自己）；但取页纪律必须同源——池基/池尾/单调游标
+/// 只有这份实现，复制一份就是双漂移源。
+pub fn bump_alloc_pages(num_pages: usize) -> Option<u64> {
+    bump_alloc(num_pages)
+}
+
+/// 池尾公开值（装配边界检查用：`MODULE_REGION_BASE + MODULE_REGION_SIZE`）。
+pub const fn bump_end_bound() -> u64 {
+    BUMP_END
+}
+
+/// 池基公开值（CodeReview NIT-7：接上「模块源区间不得与 bump 池相交」
+/// 的防重叠闸——`copy_nonoverlapping` 的重叠是 UB，静默出乱码）。
+pub const fn bump_pool_base() -> u64 {
+    MODULE_REGION_BASE
+}
+
+/// 表魔数公开访问器（kernel-image 侧做 magic 闸，不在第二处写死字面量）。
+pub const fn boot_file_table_magic() -> u64 {
+    BOOT_FILE_TABLE_MAGIC
+}
+
 /// Build a hardcoded memory map for QEMU virt.
 ///
 /// Returns a static slice with one CONVENTIONAL region covering DRAM.

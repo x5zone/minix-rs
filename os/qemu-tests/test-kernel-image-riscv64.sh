@@ -49,7 +49,12 @@ LD="$ROOT/kernel-image/riscv64.ld"
 KERNEL="${1:-$ROOT/target/$TRIPLE/release/kernel}"
 RUN="${RUN:-m43a}"
 TIMEOUT_BOOT="${TIMEOUT_BOOT:-60}"
-MARK="### minix-rs kernel image: entry reached"
+MARK="### minix-rs kernel image: riscv64 self-boot (NK4-C jia-an)"
+# NK4-C 续-88 甲案 A4：无 BootFileTable（QEMU 默认 DTB 不带 chosen 属性，
+# a0=hartid 过不了 magic 闸）时 bootface 必须走到诚实停机臂——这条在
+# 接线前不存在（旧入口只有横幅），接线后若 bootface 在 memmap/闸门之前
+# 崩溃也会红，所以对「甲案入口腿完整跑通」有判别力。
+MARK_HALT="module channel not wired, halting"
 NEXT_ADDR_KEY="Domain0 Next Address"
 
 skip() { echo "SKIP: $1"; exit 2; }
@@ -102,13 +107,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# 横幅出现即收；镜像停在 `_start` 的 `wfi` 循环里不会自己退出，所以必须
+# 停机臂末条出现即收（轮询最后一条 marker `MARK_HALT`而非首条横幅，
+# 避免 kill 抢在后续行落盘前造成截断竞态）；镜像停在 `_start` 的 `wfi` 循环里不会自己退出，所以必须
 # 主动 kill（与 test-timer-irq-riscv64.sh 同一处理方式）。
 # `qemu_died_early` 只用于失败时多给一句区分（「QEMU 提前退出」与
 # 「跑到了超时但横幅没出现」是两种不同的坏），不参与任何断言判定。
 qemu_died_early=0
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
-    if [ -f "$SERIAL_LOG" ] && grep -qaF "$MARK" "$SERIAL_LOG"; then
+    if [ -f "$SERIAL_LOG" ] && grep -qaF "$MARK_HALT" "$SERIAL_LOG"; then
         break
     fi
     kill -0 "$QEMU_PID" 2>/dev/null || { qemu_died_early=1; break; }
@@ -118,10 +124,10 @@ kill "$QEMU_PID" 2>/dev/null || true
 wait "$QEMU_PID" 2>/dev/null || true
 trap - EXIT
 
-# ── Stage 4: 三条断言 ─────────────────────────────────────────────────
+# ── Stage 4: 四条断言 ─────────────────────────────────────────────────
 [ -f "$SERIAL_LOG" ] || fail "串口日志缺失：$SERIAL_LOG（QEMU 没起来？）"
 
-A1=0; A2=0; A3=0
+A1=0; A2=0; A3=0; A4=0
 # OpenSBI 的串口输出是 CRLF（写本脚本前的探索性跑用 cat -A 实测行尾 ^M），
 # 取地址必须删 \r，否则字符串比较因尾随 \r 永远不等。
 NEXT_ADDR_GOT="$(grep -a "$NEXT_ADDR_KEY" "$SERIAL_LOG" | head -1 | sed 's/.*: *//' | tr -d '\r')"
@@ -140,8 +146,11 @@ echo "--- A2 镜像入口横幅出现："
 [ "$A2" = 1 ] && echo "    PASS" || echo "    FAIL（未出现 '$MARK'）"
 echo "--- A3 横幅排在 Next Address 之后（行号 ${ln_mark:-无} > ${ln_addr:-无}）："
 [ "$A3" = 1 ] && echo "    PASS" || echo "    FAIL"
+echo "--- A4 无表时 bootface 诚实停机臂出现（module channel not wired）："
+grep -qaF "$MARK_HALT" "$SERIAL_LOG" && A4=1
+[ "$A4" = 1 ] && echo "    PASS" || echo "    FAIL（未出现 '$MARK_HALT'）"
 
-if [ "$A1$A2$A3" = "111" ]; then
+if [ "$A1$A2$A3$A4" = "1111" ]; then
     echo "### TEST_RESULT: PASS test-kernel-image-riscv64 ###"
     grep -a "$NEXT_ADDR_KEY" "$SERIAL_LOG" | head -1
     grep -aF "$MARK" "$SERIAL_LOG" | head -1

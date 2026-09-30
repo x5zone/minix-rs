@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-88（2026-09-30·riscv 甲案装机面入口腿落地＝kernel-image riscv64 自引导 bootface（DTB memmap＋BootFileTable 双通道＋物理名字池＋arch_boot 真门槛）·真机取证链 jiaf1–jiaf9 定谳「satp=0 物理视图下经数据格的 &str（静态胖指针/切换表）解引用＝Load access fault→OpenSBI 热重入；唯一安全形状＝调用点字面量 auipc＋纯字节池」·OpenSBI 冒烟 A1–A4 与 bootface 夹具 B1–B3 各双轮 md5 一致·host 828/0·569·boot-shim 27/0·clippy/rustfmt Δ0·三架构 check-layout PASS·x86 真机两轮 marker=2/panic=0 不回归·生产码改动待 CodeReview）**：目标① riscv 剩余＝xtask 装机腿（产物形/boot.scr/表装配/12 模块 riscv 产物）＋arch_boot 之后 kmain 全链实况；下一入口见文末 §1.120续-88。aarch64 续-87（barrier mt=8 注入点）配方保持排队。**另：R3.1 增量评审线交接待办已入账（F1–F10 + 6 NIT，来源＝评审线报告 §6.2/§7.3，全 P2/非阻塞，登记于文末「§R3.1 评审线交接待办」小节，择机顺路认领，本轮不动）**。
+> **🛑 最新前沿＝§1.120续-88（2026-09-30·riscv 甲案装机面入口腿落地＝kernel-image riscv64 自引导 bootface（DTB memmap＋BootFileTable 双通道＋物理名字池＋arch_boot 真门槛）·真机取证链 jiaf1–jiaf9 定谳「satp=0 物理视图下经数据格的 &str（静态胖指针/切换表）解引用＝Load access fault→OpenSBI 热重入；唯一安全形状＝调用点字面量 auipc＋纯字节池」·OpenSBI 冒烟 A1–A4 与 bootface 夹具 B1–B3 各双轮 md5 一致·host 828/0·569·boot-shim 27/0·clippy/rustfmt Δ0·三架构 check-layout PASS·x86 真机两轮 marker=2/panic=0 不回归·**两轮 CodeReview：首轮 1 BLOCKER+5 SF+5 NIT 全采纳，复审代码层 PASSED（仅 3 注释 NIT 已清）**）**：目标① riscv 剩余＝xtask 装机腿（产物形/boot.scr/表装配/12 模块 riscv 产物）＋arch_boot 之后 kmain 全链实况；下一入口见文末 §1.120续-88。aarch64 续-87（barrier mt=8 注入点）配方保持排队。**另：R3.1 增量评审线交接待办已入账（F1–F10 + 6 NIT，来源＝评审线报告 §6.2/§7.3，全 P2/非阻塞，登记于文末「§R3.1 评审线交接待办」小节，择机顺路认领，本轮不动）**。
 >
 
 > **（历史·§1.120续-77f（2026-09-30·**aarch64 WrongMessageType(8) 根因域定枱：PM 用户态 `vfs_init_messages` 的 Vec 堆内容在 encode 出口后、同一函数内被变异（encode 本身正确）·七轮 NK77B–F 探针链全部已滚**）**：决定性事实链（均真机 aarch64 -smp4 同签名）：①内核三写腿对 VFS 栈无非法写（续-77c）；②拒收消息＝内核忠实投递的门送 msg；③door 体读腿不读 PM 缓冲，PM 发送的 r2 缓冲**自身**就携 (NONE,8,VFS_EP,slot6)（nk77e2/nk77e3：src=1 是盖章前用户态真值＝VFS_EP，即 m7i1 串位）；④PM 用户态探针：**`VfsPmInit::encode()` 栈上出口正确（nkf6: mt=0900, m7i1=6, m7i2=6）**，但 `push` 入 Vec 后同函数内读到 msgs[0]=(src=1?!, mt=8, m7i1=0x7bff, m7i2=6)；⑤常数 VFS_PM_INIT 在 PM 二进制内求值正确（nk77f2 首段 0900）；⑥同一 mt=8 在 VFS/其它服务器接收缓冲也观测到（跨进程一致形态）⇒ 非 PM 局部逻辑错，指向 **minix-rt 启动期堆/消息缓冲复用**（diagctl 共用消息缓冲？Vec 堆块与某静态/共享传输缓冲重叠？）或 encode 返回值拷贝被优化掉。**续-78 入口（decision-complete）**：a) 用 cargo asm/反相 aarch64 产物 `vfs_init_messages` 看 push 是否真的拷贝了 mk（encode 返回值是否被堆地址替位）；b) 若代码gen 无罪，在 PM 堆首块写字标记+后检（查谁覆写）；c) 对照 x86 同路径真机正常＝布局/分页差异点（PM 堆起点？）。目标① aarch64 当前头号阻塞，非内核侧。**另本轮环境项（用户已装 u-boot）：** test-riscv64-uboot.sh 对新 blob 三连适配（mdir 替 mmd、mkimage -d 替 -f、smode blob 需垫 OpenSBI -bios default + -kernel）；实测 Ubuntu 24.04 U-Boot 2025.10 distro boot **只认分区盘**（整盘 FAT 无分区表拒挂载→boot.scr 不执行；手建 MBR 分区后 `## Executing script` 实证可达），脚本分区化改造待续-78（宿主差异 SKIP 不 FAIL 原则已注释）。探针工程经验再+2：用户态 diagctl 探针缓冲必预留 内容+分隔+\n 全宽（f4 首次 48B 写 59B 栈溢出崩 PM 一轮，假信号需排除）；probe 链式多块时后块异常会吞前块（串行写串口无事务）。⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿全接，剩装机面）·aarch64❌（已定位到 PM 用户态堆变异）；②x86 核心✅；③未动。详文见文末 §1.120续-77f。
@@ -8782,6 +8782,20 @@ boot.scr+表装配工具（按 `MODULE_NAMES` 序 fatload 并生成位置对齐�
 BootFileTable）、12 个 riscv 模块产物构建腿（mfs 的 imgrd 内嵌腿 riscv 化）。
 marker 路径剩余未知集中在 arch_boot 之后的 kmain 全链（riscv 从未跑过生产
 kmain，rt-birth 是手搬相位），到达后按串口逐相定位。
+
+**CodeReview 两轮闭环（均走子代理）**：首轮 1 BLOCKER（KERN_SIZE 写死 2MiB
+与实跨 4MiB 不符——`IMAGE_HEAP` 扩容推高跳阶；修＝`KERN_SIZE=0x40_0000` 单
+源 + `check-layout.sh` L9 拿 readelf 实测跨距对字面量；曾试在 `.ld` 开
+`.image_span` PT_LOAD 反破 L5/L7——已回退）+ 5 SHOULD-FIX（SF2 DTB 窗越 DRAM
+尾→先读 40B 头取 totalsize 再过 `dtb_bounded`；SF3 模块源无全宽/不相交闸→
+`in_memmap_range`+池不相交；SF4 纯位置消费→基名字节校验；SF5 分配腿
+`.expect` 踩 panic 渲染 baked-VMA→全改 `bump_alloc_pages`+Option+halt；SF6
+虚构宿主测试→改编译期 `const` 逐字节对账）+ 5 NIT（导出 `bump_pool_base`、
+`IMAGE_HEAP` `static→static mut` 落 .bss、属性名 openbi→opensbi、脚本轮询
+改末条 marker）全采纳。复审：代码层 PASSED，仅余 3 注释与实际不符（均涉已
+回退的 `.image_span`/幻影运行期对账/openbi 残留）——已全部改实。修订后重跑：
+三架构 check-layout PASS·riscv 两脚本 PASS·host 828/569·boot-shim 27/0·
+clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 ⚠ 三目标不缩小：①x86✅·riscv 内核腿全接+装机面入口腿已落（剩 xtask 装机腿
 +kmain 全链）·aarch64❌（barrier mt=8+handshake 竞态两案并存，续-87 配方
 在案）；②x86 核心✅；③未动。

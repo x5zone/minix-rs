@@ -72,6 +72,11 @@ SECTIONS
 
     .bss ALIGN(4K) : AT(ADDR(.bss) - KERNEL_VIRT_BASE + KERNEL_PHYS_BASE)
     {
+        /* NK4-C 续-88 甲案：OpenSBI/U-Boot 只按 filesz 写段体、不清 NOBITS
+           （NK4B M4.4 事实五/K10 实测），入口 asm 的 .bss 清零循环需要
+           段边界符号——与仓内 riscv 载体先例（test-rt-birth-riscv64
+           link.ld 的 __bss_start/__bss_end）同名同形。 */
+        __bss_start = .;
         /* .lbss = rustc 大 BSS 拆分节（PANIC_DIAGNOSTIC_HOOK 等），
            .sbss = riscv 小可写零初始化拆分节；两者都必须归本节才能落在
            2MiB 收口之内。 */
@@ -82,6 +87,8 @@ SECTIONS
         kernel_boot_stack_bottom = .;
         . += 0x10000;    /* 64 KiB 引导栈（_start 立栈用） */
         kernel_boot_stack_top = .;
+
+        __bss_end = .;
 
         /* 镜像跨距 2MiB 收口（Sv39 的大页阶梯就是 2MiB 叶子）：
            boot_validate_and_prepare 按 huge-page 阶梯选映射粒度，
