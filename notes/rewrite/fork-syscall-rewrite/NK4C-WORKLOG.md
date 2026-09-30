@@ -8522,7 +8522,17 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   ③**同轮 `nk4a: vm-pf fa=0x2db000`**＝PM  heap 基页在 boot 期被 VM 需求缺页服务过——
   毒值 (1,8,0x7bff,6,…) 与 PM/RS 任一已知消息字段集合（VFS_EP/ANY/SYS_ENDKSIG=8/slot6）碎片
   吻合但整体不匹配任何单条消息＝**陈旧帧内容**特征。
-- **候选再收紧**：(新甲) PM .data/bss 与堆共享页 0x2db000 的 demand-zero 服务与 PM 早期写入
+- **续-78b 序时定谳（byte-offset 对账 r3 串口，无探针轮）**：`vm-pf fa=0x2db000` 出现于偏移
+  10310/135xx（**两次**，早于 nk78 探针 176441 与 pmvi k=0 发送 176589）＝PM 堆基页在
+  `vfs_init_messages()` 运行前已两次被 VM 需求缺页（fresh anon 清零）服务；服务前该堆不存在
+  msgs 数据⇒**push 写在服务之后**⇒「陈旧帧残留」不直接解释 push 位置被覆写——但毒 (1,8,0x7bff,6,…)
+  与「内核向 PM 堆的一次合法消息写」形态吻合（若写者缓冲/布局带 **4 字节位移**：m_source=VFS
+  盖章(1) 落 +4、m_type 落 +8……与 0xcff/0x7bff 系消息族互推仍不齐，需写者全量 dump 定性）。
+- **续-79 配方（更新版 decision-complete）**：一次性内核 msgw 探针改造——目标 VA ∈ [0x2db000,
+  0x2db060) 时**无视去重/预算**打印全 80B（16 行 hex 即可）+ caller 端点 + 写前该 80B 旧内容；
+  真机一轮即可裁决：(i) 存在这样的写⇒写者布局/位移 bug，顺藤定位（rs taskcall/reply 族）；
+  (ii) 不存在⇒读侧（door 读）在 PM 写与 drain 读之间看到不同物理帧＝TLB/帧别名（续-67 家族复活）。
+**候选再收紧**：(新甲) PM .data/bss 与堆共享页 0x2db000 的 demand-zero 服务与 PM 早期写入
   竞争（fill 写零迟于 PM store→覆盖）＝续-67/§1.119 写回/填充家族；(新乙) PM 早期某次内核
   交付（p_delivermsg_vir 曾指 heap 基）合法写过 (1,8,…) 后 push 写未达物理帧（同页 store
   丢失）。
