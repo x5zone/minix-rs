@@ -9536,3 +9536,16 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-120 仪器（下一步）**：在 `pfn_to_phys`（page_state.rs:261）与/或 `vm_phys_to_virt` 入口加 phys≥RAM 顶(0xA0000000) 守卫 + `#[cfg(riscv64)]` bootmark 报 (pfn, phys, `return_address::<u64>(0)` caller-pc)，抓造伪 phys 的确切 VM 代码行（objdump 该 pc 回符号）；再顺该调用查它从哪个槽/字段读到 0xbd2cbb。坐实后成修（该处校验/clamp 或修写坏点）。未坐实不成修。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)已排除到"VM 逐页簿记伪 phys"待续-120 抓 caller·aarch64❌；②x86核心✅；③已勘察。探针 boot.rs 已 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-120/121（2026-10-01·**riscv (A) 再收窄：非 pfn_to_phys、非中间层→锁定"损坏叶 PTE 的 paddr"（纯取证、探针用后即滚）**）
+
+**探针（续-120）**：`pfn_to_phys`(page_state.rs:261) 加 phys≥RAM 顶守卫 + bootmark BADCORE。
+**结果（xu120，10214 行，VMfault=1）**：**BADCORE=0** —— `pfn_to_phys` 从未被喂越-RAM 的 pfn。叠加续-116/117 walk_read/walk_alloc 中间层跟随守卫 0 命中。
+
+**关键算术修正（本轮）**：崩溃 stval 低字节 `…9c/6c/bc` **非 4K 对齐** ⇒ 它是 `页对齐 frame 基址(0xbd2cbb000) + 页内偏移`，即伪址确是一个**帧物理基址**，但既不经 pfn_to_phys（BADCORE=0）、又不经中间层跟随（walk 守卫 0 命中）⇒ **唯一来源＝某叶 PTE 存的 paddr=0xbd2cbb000（越 RAM）**：`pt.query`/`pte_to_paddr` 读出该 paddr 本身不 fault（读的是 PTE 槽，在合法 L0 表内），是 VM 随后 `vm_phys_to_virt(叶paddr)+off` 去 DM 访问那个**数据帧**时踩空 → `pagefault in VM`。（叶 PTE 的 paddr 不是"跟随"，故续-117 守卫覆盖不到。）
+
+**续-121 修靶（收口）**：(A)＝某进程页表里一个**损坏的叶 PTE**（paddr 越 RAM）。查它由谁写：候选 `pt.map/remap(vaddr, paddr=?)` 被喂坏 paddr（源自 slot pfn？但 pfn_to_phys 未 fire，说明 paddr 不经该路）、或 fork/COW 拷贝叶时把父 paddr 复制/改写错、或 exec 装载 `write_pte` 的 paddr 算错。仪器：在 `Riscv64Paging::map`/`remap`/`write_pte` 落叶前守 `paddr<0xA0000000` 否则 bootmark 报 (vaddr, paddr)（这些在 arch、VM 同二进制可 bootmark 经回调，或改在 VM 调用点 cow_exec_pf/vmproc rs adopt 的 `pt.map(...)` 前校验 paddr）。坐实写坏点后成修。未坐实不成修。
+
+**进展**：(A) 来源从"页表中间层"→"memmap 上界"→"pfn_to_phys" 逐层洗清，现精确锁到**损坏叶 PTE 的 paddr**（下一步查写它的确切指令，逼近可成修）。⚠ 三目标不缩小同前。探针全 `git checkout` 回滚 tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
