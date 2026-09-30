@@ -9410,3 +9410,17 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **优先级再判**：riscv (A) 支已深钻 4 轮（续-109→113）逐层收窄仍未坐实，属 x86 级多轮坑。目标广度上，(B)/aarch64(续-87)/③ 亦未通。若续-113 objdump 一步不能锁定坏 caller，应权衡转 (B) 或拓 breadth。未坐实不成修。
 
 ⚠ 三目标不缩小（同续-110）。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-113（2026-10-01·**riscv (A) 支矛盾破解：faulting update_flags 的调用者是 fork `protect_cow_pages`，非 demand-paging sync_slot_pte（纯读码、免 boot）**）
+
+**破解续-112 矛盾**：grep 全 VM crate 发现 `update_flags` 有**两处**调用者：`cow_exec_pf.rs:139`（demand-paging sync_slot_pte，续-112 探针所盖）**与 `vmproc_handle.rs:655`（fork 的 `protect_cow_pages`）**。续-112 探针只盖前者，故"转发缺页路径 L2/L1 全合法却崩"＝**崩溃根本不在那条路径**，而是 fork COW。
+
+**`protect_cow_pages`（vmproc_handle.rs:619-660）语义**：fork 后遍历子进程**所有 region 的每一页**，对 fork 置非可写（refcount>1）的页 `pt.query(vaddr)`→Some 且 cur_paddr==expected→`pt.update_flags(vaddr, read_only)` 清 W 位。它扫**全表**，会走到 demand-paging 从不触及的地址范围。
+
+**收敛**：崩溃 vaddr 走 fork 全表扫描 → 碰到一个**预存在的坏中间层项**（l2e→l1_phys=0xbd2cbb000 越 RAM）→ `query`/`update_flags` 内 walk_read 跟随它读 L1e 越界 → VM 自缺页致命。坏项**不是 protect_cow_pages 写的**（它只 `update_flags` 写叶 PTE 槽、不动中间层），而是**更早建表期（exec/mmap/rs adopt）埋下的坏中间项**，fork 首次全扫才暴露——与"stval 跨运行确定、与分页进度无关"完全吻合。
+
+**续-114 修靶（收窄到建表期）**：坏中间层 PPN 0xbd2cbb000 由谁写入。① 探针改在 `protect_cow_pages` 的 `pt.query`/`update_flags` 前 dump 崩溃 vaddr + i2/i1 + l2e（现在知道该探这条路径）→ 拿到确切坏 vaddr/槽；② 顺藤查建该 vaddr 区域中间层的调用（`map`/`walk_alloc` in exec_worker/rs adopt）是否写坏 l1 项（PPN 来源）；③ 对照 C `pagetable.c`/`memory.c` 的 dup/fork 建表（Ground Truth）看 riscv 建表腿偏差。未坐实不成修。
+
+⚠ 三目标不缩小（同续-110）。本轮纯读码（grep 定位调用者 + objdump 定函数），零探针零生产码改→WORKLOG-only、免 CodeReview。
