@@ -9327,3 +9327,20 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **探针卫生**：trap_dispatch.rs 探针 `git checkout` 回滚，tracked 净，grep 无 nk110 残留；零生产码改→WORKLOG-only、免 CodeReview。
 
 ⚠ 三目标不缩小：①x86✅·**riscv idle-SIE 已修、marker 未达（新终端＝VM update_flags walk 越界读垃圾中间 PTE）**·aarch64❌（续-87）；②x86 核心✅、riscv 命令面已入 rc 深区但被 VM 分页终端阻断、aarch64 未达；③minix3 tests 未动。
+
+---
+
+## §1.120续-111a（2026-10-01·**riscv VM update_flags 越界根因静态连排 5 假说 + 反汇编精确解码（纯读码轮、零生产码改、免 CodeReview）**）
+
+**连排 5 假说（均静态证伪，缩小搜索面）**：
+- **wrong-root**：内核 forward 探针 `proot==live==0x82132000` 恒定 → 证伪。
+- **PTE 位缺**（U/A/D）：`flags_to_pte`（paging.rs:129）产 `V|A|D|R` + 按 flags 补 W/X/U，全对 → 证伪。
+- **写丢失**：VM 侧 `pte-writeback-FAIL=0`（readback 命中）→ 证伪。
+- **中间表未清零**：`vm_pt_alloc`（alloc_page.rs）对每帧 `write_bytes(virt,0,CLICK_SIZE)` 清零 → 证伪。
+- **PT 帧双重分配**：`ptalloc-DUP`=0（vm_pt_alloc 的 PT_SEEN 位图去重）→ 至少 VM 分配器内部无重复（跨分配器复用未排除）。
+
+**反汇编精确解码（minix-vm 未剥离 ELF，rust-objdump 0x36792=update_flags）**：faulting `ld a3,0x0(a3)`@0x367f0 读 **L1e**，其地址 `a3 = (L2e.PPN→vm_phys_to_virt) + i1*8`。L2e（root[i2]）在 0x367ca 读出、0x367d2 校验 `(L2e&0xf)==1`（V=1,R=W,X=0＝合法"表指针"），但 **PPN 解出 0xbd2cbbbc（<DRAM_BASE 0x80000000、超 RAM）＝垃圾 PPN**，故跟随它读 L1e 越界 fault。
+
+**矛盾要点（续-111b 待解）**：`query` 与 `update_flags` 用**完全相同**的 `walk_read(self.root_paddr, vaddr, self.channel)`（paging.rs query 体已核）——同 root 同 vaddr 同 channel 则 walk_read 逐指令同路径，query 能返回 Some(同 PA) 才进 update_flags，则 query 早该在同一 L2e 越界。⇒ 必为：① 二者 vaddr 实异（sync_slot_pte 的 query(vaddr) 与随后 update_flags(vaddr) 传入不同值？读码确认同 vaddr，故排除）② L2e 在 query 与 update_flags 之间被**改写**（单线程 VM 内，仅 alloc 腿动表）③ walk_read 对 Huge（L2e 是 1GB 叶）与 table-pointer 分支处理有非确定/边界缺陷。**续-111b 修靶**：VM 侧一次性探针（bootmark，`sync_slot_pte` 调 update_flags 前打 `nk111 va=<vaddr.0> root=<加 root 访问器> curpaddr=<paddr.0>`；并 dump walk 各级 L2e 值），锁定"哪一级 PTE 何时变垃圾"；正常内核/VM 上下文允许 walk（非缺页 handler 内）。**未坐实不成修**。
+
+⚠ 三目标不缩小（同续-110）：riscv 卡 VM 分页终端（已连排 5 假说、解码到 root L2e 垃圾 PPN）。零生产码改、读码轮、WORKLOG-only。
