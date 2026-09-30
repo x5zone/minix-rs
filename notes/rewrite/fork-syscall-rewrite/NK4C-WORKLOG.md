@@ -9473,3 +9473,17 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **修正后的晚期图景（收窄回单支）**：riscv 过 idle-SIE 修复后的**唯一确定终端是 (A)**——VM 分页 `pagefault for VM`（stval≈0x10bd2cbbXX 的坏中间层 PTE，瞬态腐蚀、多探针未命中现场，需 gdb 写 watchpoint 级工具）。所谓 (B) 不存在（是我对封顶 setalarm 探针的误读）。**下一步专注 (A)**：真做 QEMU `-s -S`+gdb 硬件写 watchpoint 钉瞬态写者，或在 walk_read 内部就地加"越界即 bootmark 报 va+l2e"守卫探针（非调用点前置探针——历次调用点探针均未命中，说明崩在 walk_read 自身那一刻、被内联到 update_flags 符号）。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)单支未达/aarch64❌；②x86核心✅；③已勘察（ATF 全栈依赖、需 C 工具链，非最小可运行）。纯读码纠正、零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-116（2026-10-01·**riscv (A) 就地守卫探针：walk_read 跟随中间指针**从未**遇到出-RAM 的 PPN——排除"坏中间层被 walk_read 跟随"这一整个机制；崩溃非确定性（纯取证、探针用后即滚）**）
+
+**仪器（正确的一次）**：不再在调用点前置探测，而在 `walk_read` **内部**、跟随每个中间指针前加 PPN∈[0x80000000,0xA0000000) 守卫（arch 与 VM 同二进制、static 可被 VM bootmark 读回），命中即记 (vaddr,bad_phys,level) 并回 NotPresent 不 crash。
+
+**结果（xu116，124303 行）**：**`nk116: WF` 触发 0 次** —— walk_read 跟随 l1/l0 时**其 phys 全部在 RAM 内**；且本轮 **VMfault=0**（多次运行中 VMfault 时有时无＝**(A) 是时序/进度相关的非确定性触发**，非每轮必崩）。
+
+**排除收窄（(A) 支累计证伪清单再+2）**：① **排除** "VM 缺页 walk 经 walk_read 跟随某越界中间层 PPN"——若如此，守卫必触发（它精确覆盖 l1/l0 两处跟随），却 0 触发。② 结合前轮排除（sync_slot_pte 与 protect_cow_pages 两调用者覆盖 vaddr 的 L1/L2 全合法）⇒ 崩溃 stval 0x10bd2cbbXX 的来源**不是这两条 VM paging walk 路径的中间层跟随**。候选转向：walk_alloc（map 路径，未守卫）、或 VM 自身代码某 raw 解引用（非 paging walk）、或 root_paddr 本身异常（首读即坏，未守卫 root）。
+
+**方法学结论**：(A) 是**非确定性、时序门控**的内存完整性问题（与 x86 续-57~73 同族），纯 AI 逐点探针命中率低（本轮守卫 0 触发即为证）；WORKLOG 自记的**最高杠杆＝QEMU `-s -S` + gdb 硬件写 watchpoint 钉瞬态写者**（x86 当年据此+16 轮）。riscv 无 DWARF，gdb 路更硬，需专项多轮 + 可能 fresh 上下文。**未坐实不成修**——(A) 暂不改码（守卫探针只是诊断、已滚）。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)非确定内存坑未破·aarch64❌；②x86核心✅；③已勘察（需 C 工具链，非最小可运行）。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
