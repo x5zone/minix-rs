@@ -9461,3 +9461,15 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **当前判语**：③ 尚未有可跑工件；本勘察把它从"未动"变为"规模已知 + 分阶段可执行"。下一步 T3.1 先盘一个最小测试的 syscall 依赖 vs minix-rs 已实现面（纯 grep，可坐实可行性再动手）。未坐实不成修。
 
 ⚠ 三目标不缩小：①x86✅/riscv·aarch64❌；②x86 核心✅/其余❌；③**本 turn 完成可行性勘察 + 分阶段方案（首次）**、无可跑工件。纯勘察、WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-115（2026-10-01·**P0-fact 自纠：所谓 (B)「SETADDRSPACE 活锁」是我误标——sa-call 探针实为 SETALARM 且封顶 8 次（纯读码纠正，防误导后续轮）**）
+
+**错误**：续-111c/114 我把 riscv 晚期第二支症状记为「`sa-call caller=0x4 pid=0x9 fl=0x12` SETADDRSPACE 活锁」，并称"与 x86 续-72 同签名"。**两处均错**：
+1. **探针来源认错**：`nk4a: sa-call caller=.. pid=.. fl=.. sys=..` 打印在 `os/kernel/src/syscall_clock.rs:214`（`dispatch_setalarm`），**是 SETALARM 调用**（caller=发起 setalarm 的 proc_nr、pid=其 priv_id、fl=s_flags、sys=SYS_PROC 权限判定），**不是 VMCTL_SETADDRSPACE**。SETADDRSPACE 的探针是另一条 `nk4a: setaddr nr=..`（xu108/111 里可见，仅 12 次＝每 proc 装配一次，正常）。
+2. **把封顶当活锁**：sa-call 探针有 `SAC_N < 8` 封顶，xu111c 尾部"反复刷 sa-call"只是**窗口(180s)关闭前最后 8 笔 setalarm**（系统仍在正常活动：某 server/进程在 sleep/poll，正常调 setalarm），**非无限循环**。且该轮 `VMfault=0`——根本没撞 (A) 崩溃，只是没在窗口内跑到 marker。
+
+**修正后的晚期图景（收窄回单支）**：riscv 过 idle-SIE 修复后的**唯一确定终端是 (A)**——VM 分页 `pagefault for VM`（stval≈0x10bd2cbbXX 的坏中间层 PTE，瞬态腐蚀、多探针未命中现场，需 gdb 写 watchpoint 级工具）。所谓 (B) 不存在（是我对封顶 setalarm 探针的误读）。**下一步专注 (A)**：真做 QEMU `-s -S`+gdb 硬件写 watchpoint 钉瞬态写者，或在 walk_read 内部就地加"越界即 bootmark 报 va+l2e"守卫探针（非调用点前置探针——历次调用点探针均未命中，说明崩在 walk_read 自身那一刻、被内联到 update_flags 符号）。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)单支未达/aarch64❌；②x86核心✅；③已勘察（ATF 全栈依赖、需 C 工具链，非最小可运行）。纯读码纠正、零生产码改→WORKLOG-only、免 CodeReview。
