@@ -9073,4 +9073,9 @@ nk96: picked=0x2          ← 选中 RS
 **关键结构事实**：`init_proc_and_boot`（lib.rs:1985-1988）仅对 `is_vm` 执行 `load_vm_elf`，其余 boot 模块（含 RS）entry = `EntrySpec::DEFERRED`（ELF 未加载、pc 未定）。RS 在 inhibit 被清后变 runnable 即被选中 → restore 到一个无镜像的上下文。**但 `init_proc_and_boot` 是 arch-neutral、x86/aarch64 靠同段能到 marker** ⇒ 差异在「RS 镜像何时就绪 vs 何时可被调度」：working arch 必先由 VM（或其 boot 交接口）把 RS 镜像 load/exec 后才放它跑。
 
 **续-97 靶（直指可修）**：①对读 x86/aarch64 真机串，确认 RS 镜像由谁、在 VM park 前/后加载（本 port 的 `exec_bootproc`/VM `do_rsinit`/VIRTMCTL 序），riscv 是否走到那步；②probe RS 被 picked 时 `p_seg.phys_root` 与 `cpu_context` 的 pc，判是否 DEFERRED；③若 RS 确在无镜像时被调度——修其 runnable 时机（镜像就绪前保持 VMINHIBIT/不 enqueue），或补 riscv 缺失的 boot exec 步。目标不变：RS 真运行→握手自持→init exec→marker。
+
+**续-96b 探针再精确（同轮，一枚 `fin nr=` 探针，用后即滚）**：在 `finish_and_restore` Stage-7（`apply_to_trap_frame` 后、`restore_to_user` 前）打 `picked`+目标 sepc+phys_root。实测**只有 VM 一行**：`fin nr=8 sepc=0x37bdc root=0x82000000`（VM 正常进用户态→跑→park）。**RS(nr=2) 的 `fin` 根本没出现**——即 RS 被 `picked=2` 之后、到 Stage-7 之前，卡死在 **Stage 2–6**（`switch_address_space(RS)` / `process_misc_flags(RS)` / `check_quantum`）之一，且**非 re-pick livelock**（无第二次 `picked=`，故是一次性挂死在某 stage，最可能 `switch_address_space` 对 DEFERRED/未就绪 RS 的 root，或 `process_misc_flags` 对 RS 做跨空间操作时陷入死路）。修正续-96 的『restore_to_user 不返回』→ **实为『RS 在镜像/页表就绪前被调度，scheduler 在切址/misc 阶段为它挂死』**。
+
+**续-97 定靶（更准）**：在 `finish_and_restore` 各 stage（2 switch_address_space 前后 / 4 process_misc_flags 前后）插一次性 marker，二分出 RS 卡在哪一 stage；对照 RS 的 `p_seg.phys_root`（DEFERRED 是否=0/无效）。根因方向：**boot 模块（RS）在 `load_vm_elf` 之外的镜像加载时机**——若 working arch 靠 VM 运行时 `exec_bootproc`/VIRTMCTL 先加载 RS 镜像再放它 runnable，则 riscv 该步未发生（RS 过早 runnable→被选中→stage 挂死）；修＝要么 RS 镜像就绪前保持 inhibit/不 enqueue，要么补 riscv boot 缺的那步加载。
+
 ⚠ 三目标不缩小：①x86✅·riscv 冻结点=RS 被 restore 后不返回(疑无 ELF/DEFERRED 或 restore asm)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
