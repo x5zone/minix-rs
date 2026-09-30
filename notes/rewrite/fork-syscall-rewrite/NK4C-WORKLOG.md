@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-92（2026-10-01·**riscv boot 链停点精确化（纯取证轮·三探针均用后即滚·tracked 净）**）：承续-91 全 12 模块 exec 但只有 VM 跑到用户码、握手链不自启。三枚一次性探针定谳：**VM park 在 receive 后调度器重入，但 `pick` 只见 IDLE(-4)、之后再无迭代**（`sched it=1 cur=0xfffffffc`），且 `idle` 首版探针未触发（说明 pick 返回了某 proc 而非直接空闲，但那 proc 立即又 park/无进展）。⇒ 根因域＝**RS 等 `schedulable` boot 模块（lib.rs:1672-1674 只 VM+RS）未真正进入就绪队列/未清 PROC_STOP 可被选中**——x86/aarch64 同 init_proc 代码能到 marker（RS 会跑并发 RS_INIT），riscv 差在 boot 模块的 enqueue/runnable 落地或 park→resched→scheduler 后 proc_ptr 提前落 IDLE。**下一入口（续-93）＝查 init_proc_and_boot 里 RS 的 enqueue（sched_enqueue/PROC_STOP 清位）是否对 riscv 单 hart 生效 + park 后 current 为何变 IDLE**（对照 aarch64 出生同相位）。无生产码改（探针全滚），故 WORKLOG-only、免 CodeReview。
+> **🛑 最新前沿＝§1.120续-93（2026-10-01·**riscv boot 停点再下移一层（纯取证轮·探针用后即滚·tracked 净）**）：**修正续-92 的『boot 模块未入队』猜测**——现成 `nk4a: rtsrs unset` 探针显示 riscv RS 与 x86 前 4 步逐字相同、第 4 步 `unset BOOTINHIBIT→now=0x0 enq=y`（RS 变 runnable 且 sched_enqueue cpu=0）；新 pick 探针坐实 `pick cpu=BSP rs_cpu=0 rs_run=1 rs_rts=0x0`＝**RS 确为 runnable、在 BSP 队列、被 pick**。⇒ enqueue/runnable/pick 全正常。x86 在此后 RS 起来连发 8+ 条 rtsrs unset（启各服务），riscv pick 只 1 次后即静默。⇒ 真卡点＝**RS 被调度后、其向 VM/PM/VFS 发 RS_INIT 及各服务首个 syscall 的 IPC 交互链在 riscv 上未继续推进**（每个 server 首次陷入/park 的 riscv 臂细节，正对位 aarch64 出生链 §1.113~118 逐相啃的多轮面）。下一入口（续-94）＝探针跟 RS 起来后第一个 kernel_call/IPC 陷入（riscv64_user_body 分派/回复/park），确认它是否真在跑还是 pick 后切入即 park 死循环。无生产码改、WORKLOG-only、免 CodeReview。
+>
+
+> **（历史·§1.120续-92（2026-10-01·**riscv boot 链停点精确化（纯取证轮·三探针均用后即滚·tracked 净）**）：承续-91 全 12 模块 exec 但只有 VM 跑到用户码、握手链不自启。三枚一次性探针定谳：**VM park 在 receive 后调度器重入，但 `pick` 只见 IDLE(-4)、之后再无迭代**（`sched it=1 cur=0xfffffffc`），且 `idle` 首版探针未触发（说明 pick 返回了某 proc 而非直接空闲，但那 proc 立即又 park/无进展）。⇒ 根因域＝**RS 等 `schedulable` boot 模块（lib.rs:1672-1674 只 VM+RS）未真正进入就绪队列/未清 PROC_STOP 可被选中**——x86/aarch64 同 init_proc 代码能到 marker（RS 会跑并发 RS_INIT），riscv 差在 boot 模块的 enqueue/runnable 落地或 park→resched→scheduler 后 proc_ptr 提前落 IDLE。**下一入口（续-93）＝查 init_proc_and_boot 里 RS 的 enqueue（sched_enqueue/PROC_STOP 清位）是否对 riscv 单 hart 生效 + park 后 current 为何变 IDLE**（对照 aarch64 出生同相位）。无生产码改（探针全滚），故 WORKLOG-only、免 CodeReview。
 >
 
 > **（历史·§1.120续-91（2026-10-01·**riscv 全系统 boot 修到全 12 模块 exec + 各服务待握手（无 panic）**）：探针定根因＝bootface `fill_memmap` 未保留 OpenSBI 常驻区 `[DRAM_BASE=0x80000000, KERN_PHYS_BASE=0x80200000)`（DTB /memory 整段报可用），VM `BitmapAllocator::init` 把物理位图元数据落该区并 memset → OpenSBI PMP 拦 S/U 写 → Store/AMO access fault(scause 7, stval=0x1080000000=VM_DM_BASE+0x80000000→PA DRAM_BASE)。修＝bootface 抽 `clip_firmware` 纯函数削镜像下固件段（+3 条编译期 const 断言护栏）；甲案是 OpenSBI 腿首个保留者（UEFI 腿早有 reserved_regions，OpenSBI 腿此前无）。修后（jfull10/11 双跑）：VM 过位图 init→全 12 boot 模块 exec+setaddr→init run enter→VM rcv-eng/rcv-p4，panic=0/无活锁。CodeReview 无 BLOCKER（1 SHOULD-FIX 注释事实+2 NIT 全采纳）。验证链全绿 host 828/569·arch243·三架构 check-layout·x86 真机 marker=2/panic=0 不回归。**下一入口（续-92）＝钉「全服务 park 在接收引擎、握手链未自启」——riscv 首次进入多服务 IPC 交互态，对位 aarch64 §1.112→续-87 的 RS_INIT/barrier 家族**（可能撞同类或新缺口，逐相取证）。
@@ -8960,3 +8963,21 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 **下一入口（续-93）**：①读 `init_proc_and_boot` 尾部 RS 的 `sched_enqueue`/`PROC_STOP` 落地路径，对照 x86 真机 RS 首次被 pick 的时序，查 riscv 是否漏 enqueue（或 NO_QUANTUM 未清）；②park→resched→scheduler 里 `current`/`proc_ptr` 为何变 IDLE 而非保留被阻塞的 VM 后重选——查 `switch_address_space_idle`/idle 在 riscv 单核的介入时机；③必要时对 RS slot 加一次性 rts+runqueue 归属探针（用后即滚）。逐相逼近，目标＝riscv 进 RS_INIT 握手→init exec→marker。
 ⚠ 三目标不缩小：①x86✅·riscv 全模块 exec+VM 服务、停于 boot 模块未进就绪队列（历史最远）·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-93（2026-10-01·**riscv boot 停点再下移一层（纯取证轮）：证伪『boot 模块未入队』，RS 实为 runnable+picked，卡点在 RS 起来之后的 IPC 推进**）
+
+**承续-92**（其猜测『RS 等未进就绪队列』）。本轮用现成 `nk4a: rtsrs unset` 探针 + 一枚新 pick 探针**证伪并下移**了它：
+
+- **现成探针对比（x86 vs riscv，RS nr=2 的 rts_unset 全轨迹）**：前 4 步逐字相同——`unset 0x2(PROC_STOP)→now=0x10200 enq=n`、`unset 0x200(VMINHIBIT)→now=0x10000 enq=n`、`unset 0x8→now=0x10000 enq=n`、`unset 0x10000(BOOTINHIBIT)→now=0x0 **enq=y**`。即 riscv RS 在 boot 处理中确实变 runnable 且 `sched_enqueue(cpu=0)`。x86 此后还有 8+ 条 `enq=y`（RS 运行、继续启各服务），riscv 到第一条 enq=y 即止。
+- **新 pick 探针（pick_and_bill 入口，dump cpu vs RS 态）**：`nk93: pick cpu=BSP rs_cpu=0 rs_run=1 rs_rts=0x0` ⇒ RS `p_sched.cpu=0`＝pick 的 cpu＝BSP、`is_runnable=1`、rts 全清。enqueue/runnable/pick 三环全正常，续-92『未入队』猜测**不成立**。
+- **x86 对照第二点**：`nk4a: ipc-entry nr=2 caller=8` 是 **x86 专属 bootmark**（trap_dispatch.rs:1342，读 `frame.rcx/rax`），riscv IPC 腿无此打点——其『缺席』只证明没打点、非没执行（先查再论，避开了这个假线索）。
+
+**定谳（下移一层）**：riscv boot 的真卡点不在 boot 模块 enqueue/调度选中，而在 **RS 被 pick、切入用户态之后**——RS 向 VM/PM/VFS 发 RS_INIT、各服务首个 syscall 陷入→park→再调度的这条 IPC 交互链没有在 riscv 上继续推进（pick 探针只命中一次，之后系统静默）。这正是 aarch64 出生链 §1.113~118 当年逐相取证啃的多轮面，riscv 现到同一类前沿。
+
+**证据纪律**：纯取证、一枚新探针用后即滚（lib.rs 复原，tracked 净），无生产码改→WORKLOG-only、免 CodeReview。pick 探针只读 proc 表字段（无页表 walk）。
+
+**下一入口（续-94）**：跟 RS 起来后的第一个陷入——`riscv64_user_body` 对 RS 首个 syscall/IPC 的分派（走 kernel_call 腿还是 IPC 腿、reply 交付、NoReply→PARK_RESCHEDULE→再调度是否成环）。目标：定位 RS『切入即再无进展』是 park/重入死循环、还是首个 IPC 回复没送达。逐相逼近至 riscv 进 RS_INIT→init exec→marker。
+⚠ 三目标不缩小：①x86✅·riscv 到 RS 被调度（enqueue/pick 已证通）、卡在其后 IPC 推进·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
