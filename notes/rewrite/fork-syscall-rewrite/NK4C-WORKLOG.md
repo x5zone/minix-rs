@@ -8576,7 +8576,20 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   两进程**（续-64/65 x86 家族「帧生命周期」在 aarch64 的对应物；候选腿：demand-zero 服务的
   alloc_pfn 与 in-use 判定、`PageFrames::alloc_phys` 位图双免检、或 VM 在 aarch64 上 handle
   root 混淆把新帧写进了他人 PTE 槽——与 A.5 VmDm 门控/§1.111 pt_bind 家族交叉）。
-- **续-81 配方（定稿 decision-complete）**：VM 侧帧号对照探针（alloc_and_map NeedNewPage 臂）：
+- **续-81 真机定谳（nk81 全表 root dump，已滚 tracked 净）**：door 命中池页时 dump 12 进程
+  `p_seg.phys_root`——**全部互异**（43a96/43add/43afb/43968/43a04/43ac3/424c0/43a4f/44343/
+  439b9/43993/42ff1）⇒「PT 根页双分配」排除；结合续-80（PM 叶与 VFS 叶同指 0x4283b000）：
+  **别名形态＝PM 表内残留一枚『VM 位图认为自由』的叶**——VM 后来把该帧合法分给 VFS，两表共帧，
+  VFS 池页写（VFS 合法）被 PM 叶镜像可见（反之亦然）⇒典型 **free/回收路径未同步 unmap 旧表叶**
+  （候选腿：exec 换页表未逐出旧 root 数据帧〔C vm_free_ldread 的 zap 面〕、fork CoW 记账、
+  page_cache 回收免检）。
+- **续-82 配方（定稿 decision-complete）**：VM 帧生命周期对账——在 `PageFrames` 分配器
+  alloc/free 两点对目标 pfn（0x4283b000>>12）打点 (ep, vaddr, alloc|free, seq)，真机一轮：
+  a) 若见「该帧 free→再 alloc 给 VFS」且此前 PM 曾 alloc＝回收腿未 zap PM 叶（查 exec 换页表
+     `vm_free_ldread` 对偶与 munmap/exit 的 unmap-all-leaf 完备性，对照 C region.c discard_region
+     + memdesc_free 全量）；b) 若从未见 free 而 VFS 又拿到＝分配器位图免检（查 boot  adopt/
+     handoff 时帧初始状态）。修复成修后走 CodeReview+全链回归（aarch64 marker 冲刺）。
+**续-81 配方（定稿 decision-complete）**：VM 侧帧号对照探针（alloc_and_map NeedNewPage 臂）：
   记录 (fault endpoint, vaddr, 新分配 pfn) 全序列 ≤200 发，离线对账同一 pfn 是否出现于两个
   不同 endpoint 的映射（pfn 双分配＝分配器腿；单次分配但两处 PTE＝map 写错树腿）；修复落点
   随后按对账结果定（分配器免检 vs map 目标树解析）。
