@@ -9501,3 +9501,17 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-118 修靶（从"页表损坏"整转"帧簿记/分配器上界"）**：① 查 VM free_regions / pfn 分配器的**上界**是否被 memmap/DTB `/memory` reg 报得大于真实 `-m 512M`（若分配器以为 RAM 到 ~3.2GB 就会发出超 RAM 的 pfn）——对位续-91 `clip_firmware`（那是下界固件区，**上界可能未裁**）；② 探针打 VM `pfn_to_phys` 前 pfn 值 + 分配器 `free_regions` top vs RAM top 比对。若 pfn 超 RAM → 根因＝memmap 尺寸未 clamp 到真实 DRAM 顶，**这是可坐实、可能一击的实修点**（比页表瞬态腐蚀假设更可及）。未坐实不成修。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)重定向到帧分配器上界（新可及线索）·aarch64❌；②x86核心✅；③已勘察。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-118（2026-10-01·**riscv (A) 确证：VM 算出越-RAM 伪物理地址(0xbd2cbb9c≈3.17GB)做 DM 访问，非页表 walk；续-119 仪器定死（纯读码）**）
+
+**真实常量定死算术**（riscv `Riscv64DirectMap`，arch/direct_map.rs）：`VM_DIRECT_MAP_BASE=0x10_0000_0000`(2^36)、`VM_DIRECT_MAP_SIZE=16GiB`、`VM_HEAP_BASE=0x14_0000_0000`。⇒ 崩溃 `stval=0x10bd2cbbXX` = `VM_DM_BASE + 0xbd2cbbXX`，即 **VM 正访问物理地址 phys=0xbd2cbbXX≈3.17GB**，**> RAM 顶 0xA0000000(2.5GB)**（QEMU `-m 512M`，RAM=[0x80000000,0xA0000000]）。DM 窗 VA 跨度 16GiB 够大（故 VA 本身在窗内），但**该 phys 无 RAM  backing、map_kernel 未映此 DM 叶** → 访问缺页 → `pagefault in VM`（C exception.c 对 VM 自缺页致命，与 x86/aarch64 一致）。
+
+**结合续-116/117**（walk_read+walk_alloc 各级+root 守卫 0 触发）⇒ **伪 phys 0xbd2cbbXX 不经页表 walk 得来**，是 VM **自有簿记里一个损坏/未初始化值被当物理地址**：region 页槽 `pfn()`、`pfn_to_phys` 入参、或 Message 字段/偏移混入。低字节在 6c/9c/bc 微变＝不同叶/偏移，高位 0xbd2cbb00 稳定＝同一条损坏基准值。
+
+**续-119 仪器（下一步，一击定位来源）**：在 VM `pfn_to_phys`（或 `vm_phys_to_virt` 的 `AlignedPhysBytes` 入口）加一次性守卫：phys≥RAM 顶 → bootmark 报 (phys, pc-of-caller via return_address / 或调用点标记)，抓**哪段代码**造出 0xbd2cbbXX。候选来源：exec/mmap 装载填槽、cow copy、refcount 表读、page_cache 元数据。坐实来源后成修（clamp/校验 pfn 上界，或修装配写坏点）。未坐实不成修。
+
+**会话 riscv 攻坚小结（续-105→118）**：已打通 3 层生产修（PLIC/idle-SIE，含续-103）+ 把 (A) 从"PLIC 脏址→idle 停摆→页表损坏→**VM 直接访问越-RAM 伪物理地址（非 walk）**"层层用守卫探针洗清假说、精确定位到 VM 帧/槽簿记的伪物理地址。剩余 (A) 是一处可定位的确定 bug（续-119 一击方向明确），非不可破的随机腐蚀。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)已定位到 VM 伪物理地址待续-119 来源坐实·aarch64❌；②x86核心✅；③已勘察。纯读码、零生产码改→WORKLOG-only、免 CodeReview。
