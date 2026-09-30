@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-95（2026-10-01·**riscv boot 收窄到『首笔 raw IPC 后即死』（纯取证轮·探针用后即滚·tracked 净）**）：raw-IPC 腿（`riscv64_ipc_dispatch_body`）探针高帽 40，实得**仅 1 次**：`ipcl#0 a7=0x2`，紧接 VM `run enter`——即 VM boot 后发出的**第一笔 raw IPC（call-nr 2）**进入派发腿，此后**再无任何 raw IPC、无 RS 应答、无 aarch64 式后续 rcv 循环**，系统冻结（末行 `rcv-p4`）。对照 x86：同一 VM→RS 首笔 IPC 落地后持续 `ipc-entry` 多轮推进到 marker。⇒ 问题不在 park/resched/timer/enqueue/pick（续-93/94 已逐一证工作），而在 **VM 首笔 raw IPC 的派发→交付给 RS→RS 唤醒运行→回发** 这一往返在 riscv 上断在第一环。续-96 靶＝跟这笔 a7=2 IPC 进 `riscv64_ipc_dispatch_body` 后的**返回值（PARK_NONE/PARK_RESCHEDULE）+ 是否唤醒目标 RS（deliver/wake sender 腿）+ 返回后调度是否切给 RS**——即 reply/deliver-to-parked-目标 这条 aarch64 §1.113~118 同族的riscv 臂细节。无生产码改、WORKLOG-only、免 CodeReview。
+> **🛑 最新前沿＝§1.120续-96（2026-10-01·**riscv boot 冻结点首次精确到『proc+转移』（纯取证轮·探针用后即滚·tracked 净）**）：双探针（scheduler_loop 入口计数 + 每轮 picked nr）确证：`schedloop#0 → picked=8(VM)` → VM 跑完自身 boot → `rcv-p4`（park 在 receive）→ `schedloop#1 → picked=2(RS)` →**之后彻底静默**（无 schedloop#2、无 RS 任何陷入、无 marker、无 panic/无缺页）。⇒ 排除 thunk 死锁（scheduler 确实二次进入并选中了 RS），冻结点＝**RS(proc 2) 被 finish_and_restore→restore_to_user 切入用户态后再不返回**。关键结构性事实：`init_proc_and_boot` 只对 `is_vm` 跑 `load_vm_elf`，**其余 boot 模块（含 RS）entry＝`EntrySpec::DEFERRED`（ELF 未加载、pc 未定）**（lib.rs:1985-1988）。RS 却在 inhibit 被清后变 runnable→被选中→restore 到无 ELF 的上下文→静默（连一次指令取指陷阱都没回，疑 restore asm 未 sret 或跳到未映射址静默）。**但同一段 init_proc_and_boot 是 arch-neutral、x86/aarch64 能到 marker** ⇒ 差异在『RS 的 ELF/页表何时就绪 vs 何时被调度』：**working arch 里必先有人（VM）把 RS 的镜像 load/exec 再放它跑，riscv 上这一步没发生或 RS 过早 runnable**。**续-97 靶**：①查 x86 boot 链里 RS 镜像由谁、在 VM park 前还是后加载（`exec_bootproc`/VM 的 do_rsinit/VIRTMCTL 序），riscv 走没走到；②RS 被 picked 时 `p_seg.phys_root`/`cpu_context` pc 是否 =DEFERRED 态；③若是，修 RS 的 runnable 时机（ELF 就绪前不该被 pick）或补齐 riscv 缺的那步 boot exec。目标：RS 真加载并运行→握手自持→marker。无生产码改、WORKLOG-only、免 CodeReview。
+>
+
+> **（历史·§1.120续-95（2026-10-01·**riscv boot 收窄到『首笔 raw IPC 后即死』（纯取证轮·探针用后即滚·tracked 净）**）：raw-IPC 腿（`riscv64_ipc_dispatch_body`）探针高帽 40，实得**仅 1 次**：`ipcl#0 a7=0x2`，紧接 VM `run enter`——即 VM boot 后发出的**第一笔 raw IPC（call-nr 2）**进入派发腿，此后**再无任何 raw IPC、无 RS 应答、无 aarch64 式后续 rcv 循环**，系统冻结（末行 `rcv-p4`）。对照 x86：同一 VM→RS 首笔 IPC 落地后持续 `ipc-entry` 多轮推进到 marker。⇒ 问题不在 park/resched/timer/enqueue/pick（续-93/94 已逐一证工作），而在 **VM 首笔 raw IPC 的派发→交付给 RS→RS 唤醒运行→回发** 这一往返在 riscv 上断在第一环。续-96 靶＝跟这笔 a7=2 IPC 进 `riscv64_ipc_dispatch_body` 后的**返回值（PARK_NONE/PARK_RESCHEDULE）+ 是否唤醒目标 RS（deliver/wake sender 腿）+ 返回后调度是否切给 RS**——即 reply/deliver-to-parked-目标 这条 aarch64 §1.113~118 同族的riscv 臂细节。无生产码改、WORKLOG-only、免 CodeReview。
 >
 
 > **（历史·§1.120续-94（2026-10-01·**riscv 出生链：park/timer/ecall 腿全工作 + a7=0 具体新线索（纯取证轮·探针用后即滚·tracked 净）**）：续-93『pick 只一次即静默』是探针帽数造成的低估——放宽 dump 见 VM 一路 `params read ok`→`server new ok`→`vm slot ok`→`init done`→`run enter`→`rcv-eng`，其间 20+ 次 user_body 陷入含 `sc=0x8`(U-ecall) 与 `sc=0x8000000000000005`(supervisor timer, cause5＝中断在跑)，`resched#0` 也触发（VM park→resched→scheduler 交接腿正常）。⇒ 续-75 建的 park/resched/switch-after-pop asm 腿**首次被真实多陷入 boot 驱动即工作**。**新具体线索（续-95 靶）**：所有 ecall 陷入 `a7=frame.gpr[17]=0x0`——若 riscv ecall 的调用号寄存器 ABI 或陷入帧 gpr[17] 槽位与 minix-sys arch_trap 不符，IPC 调用号将恒读 0 → `IpcCall::from_raw(0)`/KERNEL_CALL 分派错位 → 握手链永不正确推进（与『VM 能到 rcv 但 RS_INIT 链死』吻合）。续-95＝对账 minix-sys riscv `ipc_trap`/`kernel_call_trap` 用哪个寄存器传 call-nr vs trap_stub gpr 索引，验 a7=0 是真恒零还是探针槽错。无生产码改、WORKLOG-only、免 CodeReview。
@@ -9046,3 +9049,28 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 
 ⚠ 三目标不缩小：①x86✅·riscv 收窄到首笔 raw IPC 往返断链（park/timer/sched 已证通）·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-96（2026-10-01·**riscv boot 冻结点首次精确到「proc=RS + 那一次 restore 不返回」（纯取证轮）**）
+
+**承续-95**（VM 首笔 raw IPC a7=2=Receive→park）。本轮两枚探针（scheduler_loop 入口计数 + 每轮 picked nr，均 cfg(riscv64) 门控、用后即滚）：
+
+```
+nk96: schedloop#0        ← boot 初次进 scheduler_loop
+nk96: picked=0x8          ← 选中 VM
+nk4a: rcv-p4              ← VM 跑完 boot、park 在 receive
+nk96: schedloop#1         ← VM park→resched_thunk→scheduler_loop 二次进入（未死锁！）
+nk96: picked=0x2          ← 选中 RS
+（此后彻底静默：无 schedloop#2、无 RS 陷入、无 marker、无 panic/缺页）
+```
+
+**排除项**：resched_thunk→scheduler_loop 重入正常（#1 到达），非 BKL 死锁、非 pick 选不到（明确 picked=RS）。
+
+**冻结点定性**：RS 被 `finish_and_restore(RS)`→`Riscv64TrapReturnArch::restore_to_user` 切入用户态后**再不返回任何陷入**——连一次指令取指陷阱都没回（若跳到坏 PC 通常会有 scause→diag 或 pagefault→VM，这里全无，疑 restore asm 未正常 sret，或 RS 上下文本身是未加载 ELF 的 DEFERRED 态）。
+
+**关键结构事实**：`init_proc_and_boot`（lib.rs:1985-1988）仅对 `is_vm` 执行 `load_vm_elf`，其余 boot 模块（含 RS）entry = `EntrySpec::DEFERRED`（ELF 未加载、pc 未定）。RS 在 inhibit 被清后变 runnable 即被选中 → restore 到一个无镜像的上下文。**但 `init_proc_and_boot` 是 arch-neutral、x86/aarch64 靠同段能到 marker** ⇒ 差异在「RS 镜像何时就绪 vs 何时可被调度」：working arch 必先由 VM（或其 boot 交接口）把 RS 镜像 load/exec 后才放它跑。
+
+**续-97 靶（直指可修）**：①对读 x86/aarch64 真机串，确认 RS 镜像由谁、在 VM park 前/后加载（本 port 的 `exec_bootproc`/VM `do_rsinit`/VIRTMCTL 序），riscv 是否走到那步；②probe RS 被 picked 时 `p_seg.phys_root` 与 `cpu_context` 的 pc，判是否 DEFERRED；③若 RS 确在无镜像时被调度——修其 runnable 时机（镜像就绪前保持 VMINHIBIT/不 enqueue），或补 riscv 缺失的 boot exec 步。目标不变：RS 真运行→握手自持→init exec→marker。
+⚠ 三目标不缩小：①x86✅·riscv 冻结点=RS 被 restore 后不返回(疑无 ELF/DEFERRED 或 restore asm)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
