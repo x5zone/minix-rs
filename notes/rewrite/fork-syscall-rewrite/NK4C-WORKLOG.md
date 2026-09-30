@@ -8,7 +8,14 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-108（2026-10-01·**riscv nanosleep 腿探针坐实到「闹钟布了却永不到期」——fired=0——纯取证轮、探针用后即滚、tracked 净**）：承续-107（rc 子永久卡在 nanosleep），本轮用四处内核/VFS 探针（nk108：VFS `select_arm_and_suspend` 请求布闹钟 ticks / 内核 `set_alarm_timer` 布防 exp&uptime / 内核到期 batch notify 循环 fired / VFS `select_timeout_check` 入口）真机采集 xu108（无 tick 探针、可靠）定谳：
+> **🛑 最新前沿＝§1.120续-109（2026-10-01·**riscv idle 期定时器停摆根因坐实+单行成修入库（sstatus.SIE 位错）·真机验证 boot 串面 4102→25382 行·全验证链绿·CodeReview PASSED**）：承续-108（rc 子永卡 nanosleep、闹钟永不到期），本轮探针链坐实到根因：
+> **铁证链**：idle#0..#b 反复进 idle 但 uptime 冻在 0x122（290）；`sie=0x20`（STIE 开）、`sip=0x20`（STIP **挂起**）却 riscv64_kernel_body 从不进入→timer 中断 pending+enabled 但不被投递。根因＝`idle_halt`(os/arch/src/riscv64/smp.rs) 原写 `csrs sstatus, 1u64<<5`（注释还误称 bit5=SIE）——但 **RISC-V 特权规范 `sstatus.SIE` 是 bit1（0x2），bit5 是 `SPIE`（sret 消费的已保存使能）**。设错位→内核/idle 上下文 SIE 永远 0→pending STIP 永不 taken→wfi 睡死、uptime 冻结、select/alarm deadline 永追不到→nanosleep 永挂。为何忙期 tick 正常：用户态 `INIT_USER_SSTATUS=0x20`（SPIE=1）sret 时硬件把 SPIE→SIE（用户态 SIE=1）；内核任务 `INIT_TASK_SSTATUS=0x100`（仅 SPP、SPIE=0）sret 后 SIE=0，故 idle 内核循环必须显式置 SIE(bit1)。
+> **修复（单行、镜像 x86 `sti;hlt`/aarch64 `daifclr;wfi`）**：idle_halt 的 `1u64<<5`→`1u64<<1`（正确置 sstatus.SIE bit1），重写注释说明 SIE/SPIE 位域与为何内核态需显式开 SIE。CodeReview **PASSED**（无 BLOCKER/SF，1 NIT 中英混排缺空格已采）。
+> **真机验证**：riscv boot-full 串口 **4102→25382 行**（idle-timer 修复生效、不再冻在 nanosleep、一路冲过 rc/Runcom 深入）；新暴露更深腿：`pagefault for VM sepc=0x367f0 stval=0x10bd2cbbbc`→`panic!("pagefault in VM")`（trap_dispatch.rs:1935，C exception.c:101-118 VM 自缺页致命对等）。**全验证链**：host 1400/0、rustfmt smp.rs Δ0、host clippy 不受影响（cfg riscv-only）、riscv kernel-image build EXIT=0、三架构 check-layout PASS(41/0)、**x86 真机 -smp1 marker=2/panic=0 不回归**。
+> **续-110 修靶**：riscv 新停点＝VM 自缺页（sepc=0x367f0 在 VM 代码区、stval=0x10bd2cbbbc）。需定性：VM 为何自缺页（高半内核映射/消息窗/用户页供给）——对位 x86 续-57~72 的 VM 晚期缺页家族与 aarch64。未坐实不成修；N1/N2/N3 仍顺路。
+>
+
+> **（历史·§1.120续-108（2026-10-01·**riscv nanosleep 腿探针坐实到「闹钟布了却永不到期」——fired=0——纯取证轮、探针用后即滚、tracked 净**）：承续-107（rc 子永久卡在 nanosleep），本轮用四处内核/VFS 探针（nk108：VFS `select_arm_and_suspend` 请求布闹钟 ticks / 内核 `set_alarm_timer` 布防 exp&uptime / 内核到期 batch notify 循环 fired / VFS `select_timeout_check` 入口）真机采集 xu108（无 tick 探针、可靠）定谳：
 > **xu108 铁证**：`nk108: vfs-arm next=0x0f`（**VFS 确实收到 select 并请求布闹钟 15 ticks**）+ 早期 `nk108: arm exp=0x133 up=0x124`（**uptime 在推进、is_bsp 为真**）——但 **`fired=0`**（到期 batch 循环从未执行）、`vfs-stc-enter=0`（VFS 超时检查从未跑）⇒ **闹钟布了却永不到期**。因 x86/aarch64 用同一 `tick_with`（uptime+=1 与 expire_alarm_timers 均门控 `self.is_bsp`，clock.rs:1337/1386）能到 marker（其闹钟确会到期），非扫描/is_bsp 逻辑错 ⇒ 收敛为 **riscv 上所有进程 park 进 idle 后 uptime 停止前推（待触闹钟 exp=up+15 永追不上）**。
 > **旁证（受扰动、不作主证）**：xu108b 加了 clock_irq_handler 顶部「每 100 tick 打 uptime」探针，tick 计数冻在 ~100——但该轮连 arm/vfs 探针都未触发（冻得比 xu108 早很多），属 tick 热路 Console 写引发的扰动（Heisenbug，WORKLOG 已知陷阱），只能佐证「tick 会停」不能定量。
 > **续-109 修靶（decision-complete）**：干净区分与定位 riscv idle 期定时器停摆的确切环节（不能用会扰动的 tick-Console 探针）。候选（均 cfg(riscv64)）：① idle 前最后一 tick 是否经 `local_tick`→SBI `local_timer_eoi` 正确重装了 mtimecmp 到 now+interval（而非装到过去/远处）；② idle→wfi 后 S-mode timer 中断是否真能捕获（`sie.STIE` 与 `sstatus.SIE` 两门是否都开——idle_halt 已 `csrs sstatus,SIE`，需确认 STIE 未被某处关）；③ wfi 唤醒后是否真进 riscv64_kernel_body→riscv64_timer_arm（而非静默不回）。可先静态读 riscv ClockArch::local_timer_eoi / rearm_local_tick / sie 使能链；坐实前不成修。
@@ -9274,3 +9281,23 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **探针卫生**：clock.rs（3 处）+ main_loop.rs（2 处）全 `git checkout` 回滚，tracked 净，grep 无 nk108 残留；零生产码改→WORKLOG-only、免 CodeReview。
 
 ⚠ 三目标不缩小：①x86✅·**riscv PLIC 已通、marker 未达（新停点坐实＝idle 期定时器/uptime 停摆致 select 闹钟永不到期）**·aarch64❌（续-87）；②x86 核心✅、riscv 命令面卡在出生首步 nanosleep（idle tick 停摆）、aarch64 未达；③minix3 tests 未动。
+
+---
+
+## §1.120续-109（2026-10-01·**riscv idle 期定时器停摆根因坐实+单行成修入库（sstatus.SIE 位错 bit5→bit1）·boot 串口 4102→25382 行·全验证链绿·CodeReview PASSED**）
+
+**探针链（续-108→109，均用后即滚）**：续-108 坐实「rc 子永卡 nanosleep、select 闹钟 fired=0」；续-109 在 idle() 入口采样（低频、非 tick 热路）→ 得 `idle#0..#b` 反复进入但 **uptime 冻在 0x122（290）**；扩 dump CSR → `sie=0x20`（STIE 开）、`sip=0x20`（STIP **挂起**）；再加 riscv64_kernel_body 入口探针 → **kbody 从不进入**。三探针合证：S-mode timer 中断 pending+enabled 却不被硬件投递。
+
+**根因（RISC-V 特权规范）**：`idle_halt`(os/arch/src/riscv64/smp.rs) 原 `csrs sstatus, in(reg) 1u64<<5`（注释误称 bit5=sstatus.SIE）。实为：**`sstatus.SIE`＝bit1（0x2）**；bit5 是 **`SPIE`**（saved prior-interrupt-enable，仅由 `sret` 消费拷回 SIE）。设 bit5 不置当前 SIE → 内核/idle 上下文 `sstatus.SIE` 保持 0 → `wfi` 睡死、pending STIP 永不 taken、uptime 冻结、`select` 闹钟 deadline（exp=up+15）永追不上 → nanosleep 永挂 → INIT waitpid 永挂 → 整机静默冻结。
+
+**为何忙期 tick 正常（关键差分）**：用户态进程 `INIT_USER_SSTATUS=0x20`（boot.rs:24，设 SPIE=1）→ 进用户态的 `sret` 硬件把 SPIE 拷进 SIE → 用户态 SIE=1，timer 正常投递、uptime 推进；而内核任务 `INIT_TASK_SSTATUS=0x100`（boot.rs:18，仅 SPP=1、SPIE=0）→ `sret` 后 SIE=0，idle 内核循环必须**显式**置 sstatus.SIE(bit1)。
+
+**修复（单行、镜像三架构 idle_halt 形态）**：`idle_halt` 的 `1u64<<5`→`1u64<<1`（正确置 sstatus.SIE bit1），注释重写详列 sstatus 位域（UIE0/SIE1/UPIE4/SPIE5/SPP8）+ 内核态需显式开 SIE 的推导。与 x86 `sti;hlt`、aarch64 `daifclr #2;wfi` 的「原子开中断+挂起」两步对称。CodeReview **PASSED**（无 BLOCKER/SF；1 NIT 中英混排缺空格已采）。
+
+**真机验证（巨大推进）**：riscv boot-full 串口 **4102→25382 行**（idle-timer 修复生效、boot 不再冻在 nanosleep、一路冲过 rc/Runcom 深入数百倍），新暴露更深腿：`pagefault for VM sepc=0x367f0 stval=0x10bd2cbbbc` → `panic!("pagefault in VM")`（trap_dispatch.rs:1935，C exception.c:101-118 VM 自缺页致命对等）——属新阻塞、非本修回归。
+
+**全验证链（只增不减，全绿）**：host **1400/0**；rustfmt smp.rs Δ0；host clippy 不受影响（cfg riscv-only，minix-arch 25 基线）；riscv kernel-image build EXIT=0；三架构 check-layout **PASS(41/0)**；**x86 真机 -smp1 marker=2/panic=0（10661 行）不回归**。含生产码改动，走 CodeReview + 全验证链后入库。
+
+**续-110 修靶**：riscv 新停点＝VM 自缺页（sepc=0x367f0 落 VM 代码区、stval=0x10bd2cbbbc）。需定性 VM 为何自缺页（高半内核映射/消息窗/用户页供给/VIRTMCTL 腿），对位 x86 续-57~72 的 VM 晚期缺页家族与 aarch64；未坐实不成修；N1/N2/N3（higher_half.rs/map_kernel NIT）仍顺路。
+
+⚠ 三目标不缩小：①x86✅·**riscv idle-timer 已修、marker 未达（新停点＝VM 自缺页）**·aarch64❌（续-87）；②x86 核心✅、riscv 命令面已越过 nanosleep 冲入 rc 深区（25382 行）但停于 VM 缺页、aarch64 未达；③minix3 tests 未动。

@@ -147,19 +147,30 @@ impl SmpArch for Riscv64SmpArch {
     fn idle_halt() {
         // C: halt_cpu() — klib.S:407-414 (idle-loop variant: `sti; hlt`).
         //
-        // riscv64 equivalent: set `sstatus.SIE` (bit 5 — supervisor
-        // interrupts globally enabled in S-mode) then `wfi`. Same
-        // requirement as x86_64/aarch64: the wait must not sleep with
-        // interrupts masked, or the hart never wakes.
+        // riscv64 equivalent: set `sstatus.SIE` (supervisor-mode interrupt
+        // global enable) then `wfi`. Same requirement as x86_64/aarch64: the
+        // wait must not sleep with interrupts masked, or the hart never wakes.
         //
-        // SAFETY: `csrs sstatus` and `wfi` are privileged but confined:
-        // the first only enables interrupts, the second only sleeps the
+        // `sstatus.SIE` is bit 1 (mask 0x2) per the RISC-V privileged spec
+        // (sstatus fields: UIE=0, SIE=1, UPIE=4, SPIE=5, SPP=8). NOTE: bit 5
+        // is `SPIE` (the *saved* prior-enable, consumed by `sret`), NOT the
+        // live enable — setting bit 5 here leaves `SIE` clear, so a pending
+        // `sip.STIP` is never taken and `wfi` sleeps with the timer masked.
+        // That was the 续-108/109 root cause: kernel/idle context runs with
+        // SIE=0 (`INIT_TASK_SSTATUS` sets only SPP, so `sret` restores SIE=0;
+        // unlike user context where `INIT_USER_SSTATUS` sets SPIE so `sret`
+        // enables SIE) — the idle loop must therefore enable SIE *directly*
+        // (bit 1) before halting, or the scheduler spins with a frozen clock
+        // (uptime never advances, so a select/alarm deadline never expires).
+        //
+        // SAFETY: `csrs sstatus` and `wfi` are privileged but confined: the
+        // first only enables supervisor interrupts, the second only sleeps the
         // hart. Safe in S-mode kernel context.
         unsafe {
             core::arch::asm!(
                 "csrs sstatus, {sie}",
                 "wfi",
-                sie = in(reg) 1u64 << 5, // sstatus.SIE
+                sie = in(reg) 1u64 << 1, // sstatus.SIE = bit 1 (not bit 5 = SPIE)
                 options(nomem, nostack)
             );
         }
