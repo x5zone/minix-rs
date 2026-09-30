@@ -9515,3 +9515,17 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **会话 riscv 攻坚小结（续-105→118）**：已打通 3 层生产修（PLIC/idle-SIE，含续-103）+ 把 (A) 从"PLIC 脏址→idle 停摆→页表损坏→**VM 直接访问越-RAM 伪物理地址（非 walk）**"层层用守卫探针洗清假说、精确定位到 VM 帧/槽簿记的伪物理地址。剩余 (A) 是一处可定位的确定 bug（续-119 一击方向明确），非不可破的随机腐蚀。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)已定位到 VM 伪物理地址待续-119 来源坐实·aarch64❌；②x86核心✅；③已勘察。纯读码、零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-119（2026-10-01·**riscv (A) 再排除：VM free_regions 全合法（top≤2.53GB、与 total_pages 吻合）→ 伪 phys 0xbd2cbb 不在分配器区域，而在逐页簿记（纯取证、探针用后即滚）**）
+
+**探针**：VM `BootParams::validate`（boot.rs）一次性 dump free_regions。
+
+**结果（xu119，8979 行，VMfault=0）**：`nfree=4 total_pages=0x9fb33`；fr[3] base=0x82cda000 size=0x1ce59000 **top=0x9fb33000≈2.53GB**（RAM 内），余三区更小。全部 free_regions 合法且 top 与 total_pages 一致 ⇒ **排除 memmap/分配器上界报大**——崩溃的伪 phys≈0xbd2cbb000(3.17GB) **不来自任何 free_region**（分配器不可能发出它）。
+
+**收窄**：伪 phys 源自 **VM 逐页簿记的损坏值被当物理地址**（region 页槽 `pfn()`、refcount 表项、page_cache 元数据、或 Message/偏移混入 phys）——`pfn_to_phys(pfn:u32)` 入参被喂了 ~0xbd2cbb（合法区最大 pfn 0x9fb33 也 < 它）。VMfault 非确定性（此轮仅 8979 行未撞）。
+
+**续-120 仪器（下一步）**：在 `pfn_to_phys`（page_state.rs:261）与/或 `vm_phys_to_virt` 入口加 phys≥RAM 顶(0xA0000000) 守卫 + `#[cfg(riscv64)]` bootmark 报 (pfn, phys, `return_address::<u64>(0)` caller-pc)，抓造伪 phys 的确切 VM 代码行（objdump 该 pc 回符号）；再顺该调用查它从哪个槽/字段读到 0xbd2cbb。坐实后成修（该处校验/clamp 或修写坏点）。未坐实不成修。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)已排除到"VM 逐页簿记伪 phys"待续-120 抓 caller·aarch64❌；②x86核心✅；③已勘察。探针 boot.rs 已 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
