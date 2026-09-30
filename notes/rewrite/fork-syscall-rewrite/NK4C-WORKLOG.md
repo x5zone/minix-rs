@@ -9039,5 +9039,10 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 这层「重进 scheduler_loop 顶 vs 内层 loop 续跑」的语义差，是「resched# 只触发一次、之后整机静默」的**首选代码嫌疑**（非 panic、非缺页——像是一次异常后 scheduler 再未回到能 pick/restore 的正轨，或重入的栈/锁状态与内层续跑不等价）。**续-96 一次定性**：在 `riscv64_resched_thunk`→`scheduler_loop` 重入处，instrument 「进入 loop 后第一次 pick 的返回值 + finish_and_restore 的 picked」——若 pick 返回 RS 且 finish_and_restore 走到 `restore_to_user(RS)` 则问题在更下的 restore asm；若 pick/seed 处行为异常即此重入不对称。对照 aarch64 §1.113 的 resched_thunk 是否**也**从头进 scheduler_loop（若是则 riscv 应等价、嫌疑转向 restore 臂）。目标不变：修通 park 后的再切换→RS 运行→握手自持→marker。
 
+**续-95d 自我证伪（同轮，直接对读修正续-95c）**：`aarch64_resched_thunk`（trap_dispatch.rs）与 `riscv64_resched_thunk` **逐字相同**（`bkl_lock(); forget; scheduler_loop(current_cpu_id())`）；x86 陷入腿（1021/1071/1688）亦然。⇒ 三架构 park 后**都**从头重入 `scheduler_loop`（proc_ptr=IDLE seed 每次都跑，由内层 `while !(p=pick) idle()` 正确消化）。**续-95c 的『riscv 重进顶 vs aarch64 内层续跑』不对称假设不成立**——aarch64 结构完全相同却能越过首次 park 推进（§1.113~118 曾到 RS 握手）。诚实撤除此线索，免误导续-96。
+
+**修正后的续-96 靶**（结构相同 ⇒ 差异必在 riscv 独有的 restore/receive-park 实现细节）：既然 resched→scheduler_loop→pick 链三架构一致、且 pick 已证能选中 runnable RS（续-93），差异收敛到两处之一——(a) `Riscv64TrapReturnArch::restore_to_user` 对「被 scheduler 新选中的进程（RS 首次入用户态）」与 boot 初始 VM 入态是否有不对称（sscratch/栈基/stvec/FullContext 恢复/sepc），(b) Receive-park 的 `kernel_call_finish_ipc_door` 簿记（p_delivermsg/接收槽/reply 车道）在 riscv 是否与 aarch64 §1.113 修复后等价。二者都用「同一场景 aarch64 能过、riscv 不能」做差分定位（一次 instrumented run：在 scheduler 选中 RS 后、restore_to_user(RS) 前后各打一枪，看是走不到 restore 还是 restore 后 RS 首个陷入不回）。目标不变：修通 park→再切换→RS 运行→握手自持→marker。
+
+
 
 ⚠ 三目标不缩小：①x86✅·riscv 收窄到首笔 raw IPC 往返断链（park/timer/sched 已证通）·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
