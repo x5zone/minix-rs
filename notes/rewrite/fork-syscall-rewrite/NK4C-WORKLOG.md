@@ -8568,7 +8568,19 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   (0,8,…) 与之同代际——**主候选定档＝跨进程物理帧别名**（PM 接收槽与 VFS 池页在 drain 的
   dst PA 解析时同帧/换代际，续-67 x86 家族在 aarch64 的对应物；与「两次 demand-zero 服务」
   现成吻合：第二次服务换帧未刷 TLB，用户态旧帧继续收写、内核 walk 见新帧）。
-- **续-80 配方（定稿 decision-complete）**：拒收前一刻双树 PA 对照探针：在 door 体读 VFS 缓冲
+- **续-80 定谳（nk80 双树对照探针，已滚）＝跨进程帧别名坐实**：door 读 VFS r2=0x2db000 时
+  PM 的 p_delivermsg_vir **也=0x2db000**（同构镜像同 VA），`walk(VFS root)→PA=0x4283b000`、
+  `walk(PM root)→PA=0x4283b000`——**两棵用户页表把同一物理帧同时映射给各自的池页**（vA==vB
+  共内容互见实锤）。跨进程消息“偷写”真相＝PM 接收槽写入与 VFS 池页共帧互扰，VFS 拒收的
+  (0,8) 与 PM 侧 reply (1,8) 是同帧两代内容。**根因域定档＝VM 帧分配/映射腿把同一帧分给
+  两进程**（续-64/65 x86 家族「帧生命周期」在 aarch64 的对应物；候选腿：demand-zero 服务的
+  alloc_pfn 与 in-use 判定、`PageFrames::alloc_phys` 位图双免检、或 VM 在 aarch64 上 handle
+  root 混淆把新帧写进了他人 PTE 槽——与 A.5 VmDm 门控/§1.111 pt_bind 家族交叉）。
+- **续-81 配方（定稿 decision-complete）**：VM 侧帧号对照探针（alloc_and_map NeedNewPage 臂）：
+  记录 (fault endpoint, vaddr, 新分配 pfn) 全序列 ≤200 发，离线对账同一 pfn 是否出现于两个
+  不同 endpoint 的映射（pfn 双分配＝分配器腿；单次分配但两处 PTE＝map 写错树腿）；修复落点
+  随后按对账结果定（分配器免检 vs map 目标树解析）。
+**续-80 配方（定稿 decision-complete）**：拒收前一刻双树 PA 对照探针：在 door 体读 VFS 缓冲
   时刻，同时 `walk(VFS root, r2)` 与 `walk(PM root, PM.p_delivermsg_vir 接收槽 VA)` 打双 PA；
   PA 相同＝别名坐实→根因腿=VM SETADDRSPACE/demand-fill 换帧后的 aarch64 TLBI 缺失
   （A.5 present→X flush 缺口合并修复，CodeReview 一并）；PA 不同＝回到内容级时序。
