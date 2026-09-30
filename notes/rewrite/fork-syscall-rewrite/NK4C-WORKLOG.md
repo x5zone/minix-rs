@@ -9549,3 +9549,22 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-121 修靶（收口）**：(A)＝某进程页表里一个**损坏的叶 PTE**（paddr 越 RAM）。查它由谁写：候选 `pt.map/remap(vaddr, paddr=?)` 被喂坏 paddr（源自 slot pfn？但 pfn_to_phys 未 fire，说明 paddr 不经该路）、或 fork/COW 拷贝叶时把父 paddr 复制/改写错、或 exec 装载 `write_pte` 的 paddr 算错。仪器：在 `Riscv64Paging::map`/`remap`/`write_pte` 落叶前守 `paddr<0xA0000000` 否则 bootmark 报 (vaddr, paddr)（这些在 arch、VM 同二进制可 bootmark 经回调，或改在 VM 调用点 cow_exec_pf/vmproc rs adopt 的 `pt.map(...)` 前校验 paddr）。坐实写坏点后成修。未坐实不成修。
 
 **进展**：(A) 来源从"页表中间层"→"memmap 上界"→"pfn_to_phys" 逐层洗清，现精确锁到**损坏叶 PTE 的 paddr**（下一步查写它的确切指令，逼近可成修）。⚠ 三目标不缩小同前。探针全 `git checkout` 回滚 tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-121（2026-10-01·**riscv (A) 根因假设收敛：L0 页表帧被释放后未摘链、复用为数据页→walk 把数据字节误读成 PTE（frame-alias/双释放类，纯分析）**）
+
+**综合续-116~120 的排除**：崩溃"坏叶 PTE"paddr=0xbd2cbb000 **①** 不经任何中间层跟随（walk_read/walk_alloc 守卫 0 命中）、**②** 不经 `pfn_to_phys`（BADCORE=0）、**③** 合法区最大 pfn≈0x9fb33≪0xbd2cbb、**④** 跨运行稳定同族（0xbd2cbb00/60/a0 微差＝不同偏移）→ 一个从未被 map 以合法 paddr 写入过的"叶 PTE"却出现在 walk 路径上被读到。
+
+**最合理解释（frame-alias / 页表帧 use-after-free）**：某 **L0 页表帧**被 free/exit/munmap 释放后**未从父 L1 项摘链**（stale parent pointer 仍 V=1 指向它），随后该帧被**复用为数据页**；再次 walk 该 vaddr 时，`read_pte_dm(l0 + i0*8)` 读到的其实是**数据字节**，被当 PTE 解释——低 4 位偶然＝1（看似 V-only 表指针或 V|R|W|U|A|D 的叶），PPN 段＝数据里的高低字节 ≈0xbd2cbb（越 RAM）。VM 随后对"叶 paddr"做 DM 访问即踩空 → `pagefault in VM`。低字节在 00/60/9c/bc 微变＝同一条被复用帧在不同时刻的数据内容。
+
+**与既有记录呼应**：这正是 x86 续-57~73 的 **VM 晚期 frame-alias/双分配**族（当年靠 QEMU `-s -S`+gdb 硬件写 watchpoint 钉瞬态写者、耗 16 轮才坐实 `D` 扣除/复用漏点）。riscv 上"纯调用点探针到不了谁 free/复用页表帧"这一步（本轮多次守卫 0 命中已实证该边界）。
+
+**续-122 正确工具（记死，勿再盲探）**：
+1. 先坐实"是否确有页表帧被当数据复用"：给 `pt_alloc::free_pt_page`（riscv）+ `alloc_pt_page` 加一次性 PT 帧 free-set 位图（复用检测，扩既有 PT_SEEN 覆盖 **free**），若某帧先 free 后被 alloc 作数据/另一表 → 报 dup。
+2. 或对可疑 DM 帧 `0xbd2cbb000`（换算其真实基址）用 **QEMU `-s -S` + gdb `watch *(long*)<dm_va>` / rwatch** 钉写者 PC（riscv 无 DWARF，用 `info symbol $pc`+rust-objdump 回符号）。
+3. 顺 riscv 特有的 free/munmap/exit 页表摘链腿（对照 x86/aarch64 同腿，找 riscv 漏摘父 L1 项或漏清零）。
+
+未坐实不成修——(A) 非随机腐蚀、是**可定位的页表帧生命周期缺陷**，但需页表帧 free/reuse 专项仪器或 gdb（非再叠调用点守卫）。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)根因假设收敛到页表帧 alias·aarch64❌；②x86核心✅；③已勘察。纯分析、零探针零生产码改→WORKLOG-only、免 CodeReview。
