@@ -8,7 +8,14 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-111（2026-10-01·**riscv idle-SIE 修复后晚期＝多支非确定性深坑（纯取证三轮 续-111a/b/c、探针用后即滚、tracked 净）**）：承续-109 idle-SIE 修复（boot 4102→25382 行），续-110→111a/b/c 四轮探针连排 6 假说后把 riscv 晚期收敛为两支（时序决定先撞哪支）：
+> **🛑 最新前沿＝§1.120续-112（2026-10-01·**riscv (A) 支 L1 探针：sync_slot_pte 路径 L2/L1 全合法，但终端仍在 update_flags——矛盾未解，需 update_flags 内部就地探针（纯取证轮、tracked 净）**）：承续-111 两支晚期阻塞。
+> **续-112 新事实**：arch `debug_probe_l1e` 探针（先于 query 读 root[i2]→合法则读 L1[i1]）——xu112（160830 行）**BADL1/BADL2=0**（转发缺页路径每 vaddr L2/L1 均合法），但仍 `pagefault for VM sepc=0x36a66 stval=0x10bd2cbb6c`。**objdump 定 sepc=0x36a66 仍在 `Riscv64Paging::update_flags`**（函数头 0x36a08）——即仍由 sync_slot_pte 的 `query→Some(同PA)→update_flags` 分支进入。
+> **矛盾（静态推不动）**：update_flags 崩溃时读的 l1_phys≈0xbd2cbb000（越 RAM），但探针对**同一 vaddr** 读 l2e 得到的 l1_phys 合法、l1e 合法——同 root 同 channel 两次读结果不同⇒ 我对 walk_read 的理解缺环（或根/表项在 query与探针间变、或读基不同）。**排除法≠定谳**（方法论）。
+> **续-113 修靶（不隔岸猜）**：在 update_flags/walk_read **内部就地**：读 l2e 后、跟随前加 PPN∈[0x80000000,0xA0000000) 守卫，越界则 bootmark 报（经 VM 侧回调/或先 return 特 Err 让 VM 报 va+l2e+l1_phys），拿崩溃现场的实际 l2e/l1_phys。坐实后成修。
+> **优先级**：riscv (A) 已 4 轮逐层收窄未坐实（类 x86 十六轮 VM saga）；若续-113 仍不能一击定位，应权衡转 (B) sa-call pid=9 或拓 breadth（aarch64 续-87 / ③）。
+>
+
+> **（历史·§1.120续-111（2026-10-01·**riscv idle-SIE 修复后晚期＝多支非确定性深坑（纯取证三轮 续-111a/b/c、探针用后即滚、tracked 净）**）：承续-109 idle-SIE 修复（boot 4102→25382 行），续-110→111a/b/c 四轮探针连排 6 假说后把 riscv 晚期收敛为两支（时序决定先撞哪支）：
 > **(A) VM 分页坏 PPN→VM 自缺页致命**：`pagefault for VM sepc≈0x36xxx(VM Riscv64Paging::update_flags/walk) stval≈0x10bd2cbb9c`（跨运行一致、确定性坏 PTE，PPN≈0xbd2cbb000>RAM）。续-111b/c 探针证 **root L2 层全清白**（BADL2=0、l2e PPN 均在 RAM）→ 坏 PPN 在更深层 **L1/L0**（需 `debug_probe_l1e` 锁 i1）。已静态证伪：wrong-root/PTE位缺/写丢失(vm_pt_alloc/boot_pt_alloc 均零清、pte-writeback-FAIL=0)/中间表未清零/PT帧双分配(ptalloc-DUP=0)。
 > **(B) SETADDRSPACE 活锁**：xu111c 本轮未撞(A)，尾部 `sa-call caller=0x4 pid=0x9 fl=0x12 sys=y` **反复刷**（pid=9）——与 x86 续-72 早期同签名（x86 用 `clamp_cpu_to_bsp` sched.rs 续-73 治过同类）；riscv 单 hart 下疑 fork/exec 子进程地址空间装配的回复/唤醒腿未闭合（同 aarch64 §1.113~118/续-87 VFS barrier 回复腿家族）。
 > **续-112 修靶**：先攻 (B)（sa-call pid=9 活锁，有 x86 先例可对位、且是“命令面能否推进”的直接门）——追 pid=9 反复 SETADDRSPACE 不收敛的回复/唤醒腿；或 (A) `debug_probe_l1e` 锁 L1 坏槽。**未坐实不成修**。N1/N2/N3（higher_half.rs/map_kernel NIT）仍顺路。
