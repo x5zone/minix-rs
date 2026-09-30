@@ -8609,7 +8609,23 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   dup/SETADDRSPACE alias、split_huge 叶复制臂）或… 打点需下沉：在 write_pte_dm 内
   （值 paddr==F1 时）+ 去 boot 高频路径（仅 channel==VmDm）+ 先 warm 后再 enable（延迟 arm
   避观测效应）。
-- **续-85 配方（定稿）**：write_pte_dm 值匹配型探针（VmDm channel only，arm 后触发），真机
+- **续-85 定谳＝重大纠偏（nk85 door-root 配对探针，已滚 tracked 净）**：door 陷入者
+  `p_seg.phys_root` vs `current_root_phys()` 全轮**零 MISMATCH**（cap10）⇒ door 读树正确；
+  回读 nk80 旧数据发现**标签错误**：那次 `cr=pmr=43a96000` 是「door 陷入者＝PM、其树内
+  0x2db000 叶＝PM 自己的帧」——**不存在跨进程两树共帧**（nk81 全表 root 互异＋nk82c ep 服务
+  各树正确本就一致）。**别名/换帧/读错树三大假说全部出局**。
+- **问题域终态收口（最小真问题）**：PM 用户态栈上 encode 出口正确（nk83/f6: mt=0x900），
+  但同函数内堆上 msgs[0] 读回＝(1,8,0x7bff,6,3) 且内核忠实投递该内容——**毒＝ PM 自己堆缓冲
+  在 push 后、发送前被一次『VFS 回复形态』的合法内核交付写覆盖**（(1,8,ANY,6,3) 与
+  `asynsend reply/回复写回 caller 缓冲` 结构候选吻合；PM 发 VFS 的接收槽 p_delivermsg_vir
+  可能正指 PM 堆＝其早前 receive/barrier 缓冲与 Vec 堆块复用同址）。
+- **续-86 配方（定稿 decision-complete）**：①PM 探针升级：push 循环内每 iter 后立即回读
+  msgs[0].mt（8 发内），把覆盖时刻钉进/出循环二区间；②内核 msgw 门控已具备（预算 6000 版被
+  滚，重放时对 dst∈[0x2db000,0x2db040) 无预算打印 (cn,mt,src,q0..q1)+时刻）；③两串数据对齐：
+  覆盖若在 PM 首 send 之前＝交付写错槽（修 drain dst 解析/属主校验，对位 C proc.c delivermsg
+  的 m_buff_usr 属主语义）；若在循环中途＝PM 侧并发/栈复用问题（rt 事件循环重入面）。成修后
+  CodeReview+全链回归冲 aarch64 marker。
+**续-85 配方（定稿）**：write_pte_dm 值匹配型探针（VmDm channel only，arm 后触发），真机
   一轮看 F1 的 PTE 写入次数/目标 root；若仍单次＝推翻「VFS 树有叶」前提——nk80 的 walk(VFS)
   实为 walk(PM) 的读侧假象（current_root_phys 在 door 体里≠VFS root 的可能），需复核 nk80
   数据（cr 当时打印 43a96=PM！『同树读两遍』被误读成两树!!）。
