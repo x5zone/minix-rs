@@ -302,13 +302,19 @@ fn fill_memmap(fdt: &fdt::Fdt<'_>) -> usize {
                     Some(s) if s != 0 => s,
                     _ => continue,
                 };
+                // 保留固件区（详见 `clip_firmware` 文档）：把 OpenSBI 常驻
+                // 的 `[DRAM_BASE, KERN_PHYS_BASE)` 从上报的 free memmap 里
+                // 削掉。`clip_firmware` 是纯函数，带编译期断言护栏。
+                let Some((base, len)) = clip_firmware(region.starting_address as u64, size as u64)
+                else {
+                    continue;
+                };
                 if n >= MEMMAP_MAX {
-                    return n;
+                    continue;
                 }
                 // SAFETY: n < MEMMAP_MAX = 存储格长度；boot 单 hart。
                 unsafe {
-                    MEMMAP_STORAGE[n] =
-                        MemoryRegion { base: PhysBytes(region.starting_address as u64), len: size };
+                    MEMMAP_STORAGE[n] = MemoryRegion { base: PhysBytes(base), len: len as usize };
                 }
                 n += 1;
             }
@@ -316,6 +322,47 @@ fn fill_memmap(fdt: &fdt::Fdt<'_>) -> usize {
     }
     n
 }
+
+/// 从上报的 free memmap 里削掉固件区——纯函数，供编译期断言对账。
+///
+/// OpenSBI 常驻 `[DRAM_BASE, KERN_PHYS_BASE)`（载荷入口以下那段，QEMU virt
+/// 上 = 首 2 MiB）并配 PMP 拦 S/U 写。DTB `/memory` 把整段 DRAM 报为可用，
+/// 若原样递给内核→VM，VM 物理位图 `BitmapAllocator::init` 会把元数据落在
+/// 这整并 memset → Store/AMO access fault(scause 7)（续-91 真机实
+/// 钉）。保留分两个局：**UEFI 腿（x86/aarch64）本就有保留面**（boot-shim
+/// `uefi_helpers::build_memmaps` 从 UEFI 内存图取 `reserved_regions`）；
+/// **OpenSBI 腿此前无保留面**（`opensbi_helpers::build_memmap` 整段 DRAM
+/// 报 conventional、`build_kernel_info` 里 `reserved_regions: &[]`）——
+/// boot-shim 自述“报全部 DRAM 为 free”。甲案自引导面是这条腿上的第一个
+/// 保留者（故非“继承已有保留”，而是补齐该腿缺失的一环）。
+///
+/// 返回 `None` = 整段都在镜像之下（纯固件，丢）；否则返回削后 `(base, len)`
+/// （`base ≥ KERN_PHYS_BASE`，尾地址不变）。前提：固件段严格落在
+/// `[DRAM_BASE, 载荷入口)`；若未来换板/换 OpenSBI 使载荷入口下沉到
+/// DRAM_BASE，应转向解析 DTB `/reserved-memory` 而非调本界。
+const fn clip_firmware(base: u64, len: u64) -> Option<(u64, u64)> {
+    if base >= KERN_PHYS_BASE {
+        return Some((base, len));
+    }
+    let drop = KERN_PHYS_BASE - base;
+    if drop >= len {
+        return None; // 整段在镜像下（含恰等 len==drop），纯固件
+    }
+    Some((KERN_PHYS_BASE, len - drop))
+}
+
+// 削界算术的编译期护栏（CodeReview 续-91 NIT-2：本模块不在宿主面
+// 编译，真机前唯一可跑的判别＝这组 const 断言，钉住单字符变异）：
+//   • 纯固件段 `[DRAM, KERN)` → None
+const _FW_PURE: () = assert!(clip_firmware(0x8000_0000, 0x20_0000).is_none());
+//   • 跨镜像头的段 → 削到 KERN_PHYS_BASE，尾地址不变
+const _: () = assert!(
+    matches!(clip_firmware(0x8000_0000, 0x20_1000), Some((0x8020_0000, 0x1000)))
+);
+//   • 完全在镜像之上的段 → 原样保留
+const _: () = assert!(
+    matches!(clip_firmware(0x8020_0000, 0x1000), Some((0x8020_0000, 0x1000)))
+);
 
 /// 读 `/chosen` 的 `opensbi,boot-file-table`（大端 cell；4/8 字节都认）。
 fn fdt_table_pa(fdt: &fdt::Fdt<'_>) -> Option<u64> {

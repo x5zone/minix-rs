@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-90（2026-10-01·**riscv 首次跑通 sched + server birth + 首个用户进程**）：实现 `arch/riscv64/paging.rs` 的 `split_huge`+`grant_user_walk`（此前 trait 默认 NotSupported→load_elf_into 驱逐 boot-identity 2MiB 叶时返 MappingFailed）——镜像 aarch64 §1.110/x86 两级分裂到 4KiB、Sv39 非叶不带 U 位故 grant 为验证性 no-op、split 后全局 sfence.vma。真机双跑（jfull7/8，过滤签名 md5 一致）：bootface→arch_boot→kmain Phase A/B→**load_vm_elf 过→VM handoff free n=5→proc_init→memory_init→scheduling live→server birth（s3/s5→main、vm enter、params read ok）→首个用户进程执行**。新停点＝user-leg `scause 0x7`（Store/AMO access fault）stval=0x1080000000 sepc=0x3c600（VM 首存至乱址，trap_dispatch.rs:2277 diag panic）——续-91 取证靶（对位 aarch64 出生链的 user-trap 家族）。CodeReview PASSED 无 BLOCKER/SF。验证链全绿：host 828/569·arch 243·rustfmt/clippy Δ0·三架构 check-layout PASS·riscv split_huge 生产改仅 riscv 臂（x86/aarch64 二进制不变）。**下一入口（续-91）＝取 first user-leg scause=0x7 源头**（VM 0x1080000000 乱址从哪来·user-leg 该 forward-to-VM 还是真 access fault）。另：结构债台账 SD-1…SD-33（Rev 2）已入账，来源扫描线，择机按 §5.1 批次认领）。
+> **🛑 最新前沿＝§1.120续-91（2026-10-01·**riscv 全系统 boot 修到全 12 模块 exec + 各服务待握手（无 panic）**）：探针定根因＝bootface `fill_memmap` 未保留 OpenSBI 常驻区 `[DRAM_BASE=0x80000000, KERN_PHYS_BASE=0x80200000)`（DTB /memory 整段报可用），VM `BitmapAllocator::init` 把物理位图元数据落该区并 memset → OpenSBI PMP 拦 S/U 写 → Store/AMO access fault(scause 7, stval=0x1080000000=VM_DM_BASE+0x80000000→PA DRAM_BASE)。修＝bootface 抽 `clip_firmware` 纯函数削镜像下固件段（+3 条编译期 const 断言护栏）；甲案是 OpenSBI 腿首个保留者（UEFI 腿早有 reserved_regions，OpenSBI 腿此前无）。修后（jfull10/11 双跑）：VM 过位图 init→全 12 boot 模块 exec+setaddr→init run enter→VM rcv-eng/rcv-p4，panic=0/无活锁。CodeReview 无 BLOCKER（1 SHOULD-FIX 注释事实+2 NIT 全采纳）。验证链全绿 host 828/569·arch243·三架构 check-layout·x86 真机 marker=2/panic=0 不回归。**下一入口（续-92）＝钉「全服务 park 在接收引擎、握手链未自启」——riscv 首次进入多服务 IPC 交互态，对位 aarch64 §1.112→续-87 的 RS_INIT/barrier 家族**（可能撞同类或新缺口，逐相取证）。
+>
+
+> **（历史·§1.120续-90（2026-10-01·**riscv 首次跑通 sched + server birth + 首个用户进程**）：实现 `arch/riscv64/paging.rs` 的 `split_huge`+`grant_user_walk`（此前 trait 默认 NotSupported→load_elf_into 驱逐 boot-identity 2MiB 叶时返 MappingFailed）——镜像 aarch64 §1.110/x86 两级分裂到 4KiB、Sv39 非叶不带 U 位故 grant 为验证性 no-op、split 后全局 sfence.vma。真机双跑（jfull7/8，过滤签名 md5 一致）：bootface→arch_boot→kmain Phase A/B→**load_vm_elf 过→VM handoff free n=5→proc_init→memory_init→scheduling live→server birth（s3/s5→main、vm enter、params read ok）→首个用户进程执行**。新停点＝user-leg `scause 0x7`（Store/AMO access fault）stval=0x1080000000 sepc=0x3c600（VM 首存至乱址，trap_dispatch.rs:2277 diag panic）——续-91 取证靶（对位 aarch64 出生链的 user-trap 家族）。CodeReview PASSED 无 BLOCKER/SF。验证链全绿：host 828/569·arch 243·rustfmt/clippy Δ0·三架构 check-layout PASS·riscv split_huge 生产改仅 riscv 臂（x86/aarch64 二进制不变）。**下一入口（续-91）＝取 first user-leg scause=0x7 源头**（VM 0x1080000000 乱址从哪来·user-leg 该 forward-to-VM 还是真 access fault）。另：结构债台账 SD-1…SD-33（Rev 2）已入账，来源扫描线，择机按 §5.1 批次认领）。
 >
 
 > **（历史·§1.120续-89（2026-09-30·**riscv 全系统 boot 首次跑通生产 kmain Phase A/B**）：新增 `os/qemu-tests/test-riscv64-boot-full.sh` 装配 12 个 riscv 模块 + imgrd（mfs build.rs arch 门 += riscv64）→ 真 BootFileTable + DTB /chosen → OpenSBI 直载 `-kernel` 镜像 + `-device loader`（force-raw）注入表与模块 → bootface 全腿通（12 模块放置）→ arch_boot validate/建表/DM → **kmain Phase A/B（validate/console/memmap copy/module cuts/platform/clock+intr/kerninfo）全活**——riscv 史上首次跑到真实 kmain（rt-birth 仅手搬相位）。停点＝`load_vm_elf: VM ELF MappingFailed`（kernel/src/lib.rs:1852）＝WORKLOG 续-77a A.2 登记的延后缺口（riscv `split_huge`/`grant_user_walk` 仍 trait 默认 NotSupported，aarch64 §1.110 有先例可镜像）。本轮附带 bootface 去 scratch 中转（mfs 嵌 8MiB imgrd 后单模块 8.9MiB 超 1MiB 预算，改源直拷，in_memmap_range checked_add 全宽闸）。CodeReview 无 BLOCKER/SF（2 NIT 已清）。验证链全绿：host 828/569·boot-shim 27/0·check-layout 三架构 PASS·riscv 冒烟+夹具双脚本 PASS·x86 真机 marker=2/panic=0 不回归。**下一入口（续-90）＝镜像 aarch64 §1.110 补 riscv split_huge/grant_user_walk 打通 load_vm_elf→VM handoff→server birth→marker**）。
@@ -8915,3 +8918,23 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 **下一入口（续-91）**：钉 `user-leg scause=0x7 stval=0x1080000000` 的源头——① 该 0x1080000000（≈64GiB）是 VM 用户腿第一次 store 的目标，判「是 access fault（PMA 无该 RAM）还是本应 translation page-fault（13/15）→ forward-to-VM」；② 若 VM 从 config/kerninfo 读了乱指针，查 birth 参数/kerninfo 页交付；③ user-leg `riscv64_user_body` 的 scause 分派是否把 0x7 正确落到 diag 而非漏接缺页臂。逐相取证（对位 aarch64 出生链方法论）。
 ⚠ 三目标不缩小：①x86✅·**riscv 已跑到首个用户进程（历史最远），停于 user-leg scause=0x7**·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-91（2026-10-01·**riscv 全系统 boot 修到全 12 模块 exec + 服务待握手（OpenSBI 固件区保留）·探针一次性定根因**）
+
+**停点→根因（探针+符号+串口三方对账）**：续-90 后 riscv 首个用户进程（VM）`user-leg trap scause=0x7 stval=0x1080000000 sepc=0x3c600`。一次性探针 dump 陷入帧 a0/a1/a2 → `memset(0x1080000000, 0, 0x13f68)`，ra=0x2a4a4=`BitmapAllocator::init`。a0=VM_DM_BASE(0x1000000000)+0x80000000 → PA 0x80000000=DRAM_BASE。串口 free 表首项 `[0x80000000,+0x200000)`＝**OpenSBI 常驻区未被保留就递给 VM**，VM 位图元数据落此并 memset → OpenSBI PMP 拦 S/U 写 → Store access fault(7)（非缺页 15，因映射在、PMA 拒）。探针用后即滚（trap_dispatch 复原、tracked 净）。
+
+**修法（`os/kernel-image/src/bootface.rs`，riscv-only）**：抽纯函数 `clip_firmware(base,len)->Option<(base,len)>`——`base≥KERN_PHYS_BASE` 原样、否则削到装载址（整段在下返 None）；`fill_memmap` 消费它，把固件段剔出递进 KernelInfo 的 free memmap。**责任定位**：UEFI 腿（x86/aarch64）本就取 `reserved_regions`（uefi_helpers）；OpenSBI 腿此前无保留面（opensbi_helpers build_memmap 整段报 free、reserved=&[]）——甲案自引导面是该腿首个保留者。`MEMMAP_MAX` 早退 `return`→`continue`（等价）、删死条件 `len==0`。
+
+**编译期护栏（NIT-2）**：`clip_firmware` 带 3 条 `const _: () = assert!` 断言（纯固件段→None／跨界→削到头不变／镜像上→原样），本模块宿主面不编译、真机前唯一可跑判别＝这组 const（钉单字符变异）。
+
+**真机证据（jfull10/11 双跑）**：修后 VM 过 `BitmapAllocator::init` → 全 12 boot 模块 `exec`+`setaddr`+`bootinh-clear` → `init done` → `run enter` → VM `rcv-eng`/`rcv-p4`（接收引擎），**panic=0、无活锁、无 WrongMessageType**。riscv 从「首进程崩」跨到「全服务起 boot、干净停在多服务 IPC 交互前夜」。
+
+**CodeReview**：无 BLOCKER；SHOULD-FIX（注释把 OpenSBI 腿也说成已保留→改为分层事实：UEFI 腿有、OpenSBI 腿此前无、甲案首个保留者）+ NIT-1（删死条件 len==0）+ NIT-2（clip 抽 const fn + 断言）全采纳。架构判定确认：memmap 削界是该腿唯一有效闸（reserved_regions 只进内核 DM、VM 账本只吃 memmap conventional，报 reserved 拿不掉 VM 那段）；前提声明（固件段严格落在 [DRAM_BASE,载荷入口)，换板若载荷入口下沉应转 `/reserved-memory` 解析）。
+
+**验证链全绿**：host 828/569·arch 243·rustfmt 0·clippy 无新告警·三架构 check-layout PASS·x86 真机 marker=2/panic=0/pfVM=0 不回归（bootface 改动全 riscv 臂）。
+
+**下一入口（续-92）**：riscv 现停在「全服务 park 在 receive、握手链未自启」。取第一手证据：① init(runcom) 是否发起 RS_INIT/对 PM/VFS 的首个请求（`rs_handshake` 计数=0＝握手根本没起）；② 谁该唤醒谁——是 VM 该服务某请求还是 init 该被调度进 exec；③ 对位 aarch64 §1.112 的 `rcv-err EIO`→IPC 桥、续-87 的 barrier mt=8——riscv IPC/回复腿是否已有同型缺陷或新缺口。逐相取证（探针用后即滚、缺页 handler 内禁 walk）。
+⚠ 三目标不缩小：①x86✅·**riscv 全 12 模块 exec+服务待握手（历史最远，无 panic）**·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
