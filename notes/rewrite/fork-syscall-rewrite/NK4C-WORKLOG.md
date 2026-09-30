@@ -9360,3 +9360,21 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-111c 修靶（收窄一层）**：坏 PTE 在 **L1 层**（root[i2] 干净但跟随其 L1 表读 L0 时越界）。下一步探针读到 L1 级：`debug_probe_l1e(vaddr)` 读 `vm_phys_to_virt(l2e.PPN)+i1*8` 的值 + 其 PPN，锁定哪个 i1 槽是 0xbd2cbb 垃圾 → 再查该 L1 表页由谁写（walk_alloc 建新 L0 表时？map_kernel 铺 RS 根时 L1 中间项？fork/rs adopt 拷表？）。正常 VM 上下文读 L1 表需 l2e.PPN 在 VmDm 窗内（已证 L2 帧在 RAM 内、可安全读其 L1 数组）。未坐实不成修。
 
 ⚠ 三目标不缩小（同续-110）。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净，无 NK111-TEMP 残留；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-111c（2026-10-01·**riscv 分页探针：root L2 全清白（BADL2=0）；本轮终端切换为 SETADDRSPACE 活锁（pid=9）——暴露 riscv 多支非确定性晚期阻塞（纯取证轮、探针用后即滚）**）
+
+**探针**：每次 VM 缺页处理时查当前 vaddr 的 root[i2]，若 V=1 表指针但 PPN 解出的 tbl 超 [0x80000000,0xA0000000) RAM 则打 `nk111c: BADL2`（cap 24，只打坏的）。
+
+**结果（xu111c，16760 行）**：**`BADL2`=0** —— 所有被 VM 处理的缺页 vaddr 的 root L2 槽 PPN 均在 RAM 内 → **root L2 层彻底清白**，续-110/111b 观察到的坏 PPN 0xbd2cbb 不在 L2 而在更深层（L1 表项→L0 指针，或该故障 vaddr 本轮根本没被走到）。
+
+**终端切换（关键新事实）**：本轮**未撞 VM 分页 panic**（VM_fault=0 panic=0），尾部是 `nk4a: sa-call caller=0x4 pid=0x9 fl=0x12 sys=y` **反复刷**——**SETADDRSPACE 活锁（pid=9）**，与 x86 续-72 早期"INIT 被 schedctl 分到 AP 饿死/ sa-call 不收敛"**同签名**。⇒ **riscv 过 idle-SIE 修复后到达 rc 命令派生期，存在多支非确定性晚期阻塞**：时序决定先撞哪支——(A) VM 分页 L1/L0 坏 PPN→VM 自缺页致命；(B) pid=9 的 SETADDRSPACE 活锁。两支都深。
+
+**分层定性**：
+- (B) sa-call 活锁＝调度/地址空间装配收敛问题，x86 已用 `clamp_cpu_to_bsp`（sched.rs）治过同类（续-73）；riscv 单 hart 下 caller=4（VM 经 PM?）对 pid=9 反复 SETADDRSPACE 不收敛——疑 fork/exec 子进程地址空间装配的回复/唤醒腿未闭合（与 aarch64 §1.113~118、续-87 VFS barrier 回复形态同族）。
+- (A) 坏 PPN＝确定性、在 L1/L0 层，续-111d 探针 `debug_probe_l1e`（读 l2e.PPN 指向的 L1 数组）锁 i1 槽。
+
+**优先级判断**：riscv 至此已推进极深（PLIC→idle-SIE→rc/Runcom→命令派生期），但晚期是**多支交织的深坑**（类 x86 续-57~73 十六轮 VM saga 的重演），单轮难竟全功。下一步先攻确定性更强的 (B) sa-call pid=9 活锁（对 x86 有先例 clamp_cpu_to_bsp，或对齐 C VM 装配回复序），或 (A) L1 探针。未坐实不成修。
+
+⚠ 三目标不缩小（同续-110）。探针全 `git checkout` 回滚，tracked 净，无 NK111c-TEMP 残留；零生产码改→WORKLOG-only、免 CodeReview。
