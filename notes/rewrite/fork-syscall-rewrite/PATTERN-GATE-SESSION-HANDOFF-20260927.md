@@ -89,6 +89,14 @@ C-NN zcode-glm → cd .wt/ 专属树 → 登记 §2 一行并 commit → 树内�
 9. 增量轮方法论（三轮验证有效）：先实测基线对比圈定增量（日志行数/git log 区间）→ 精读增量 →
    复跑 gate 找漂移 → 对照模式目录判新 → 机械化判定（强形态进 gate，语义级进报告）→ worktree
    交付三绿。
+10. **shell cwd 三条追加教训（C-64 当轮三次现世）**：①前台 shell 的持久 cwd 与后台命令**不共享**——
+   后台命令里 cd 主树，下一条前台命令仍在旧 cwd（gate 全量曾误跑主树旧脚本）；②`claim.sh release`
+   必须显式 cd 主树后再执行——在 worktree cwd 内跑 release，worktree 删除会把 shell 自己活埋
+   （本轮 release 中断在 branch -D 之前，销账提交滞留 claim 分支，靠 cherry-pick 补账）；
+   ③spawn ENOENT 自救法：用 Write 工具重建同路径目录让持久 cwd 重新可解析，再全部显式 cd。
+11. `pattern-gate.sh --diff` 大区间（117 笔含 3000+ 行 worklog delta）会挂起（token 提取后的逐符号
+   grep 无进展、零 CPU 50 分钟）——大区间对账改用有界命令（P7/P8/P12/P14 全量本就对账整树；
+   P10/P13 按 -- '*.rs' 等路径过滤后手工提取 token 复查）。
 
 ## 7. 后续工作路线
 
