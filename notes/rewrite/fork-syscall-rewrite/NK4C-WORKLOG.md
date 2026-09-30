@@ -15,6 +15,8 @@
 >
 > **续-104 取证细化（符号定位+地址判定，非猜测）**：① `nm` 对未剥离的 riscv kernel ELF 定 `sepc=0xffffffc000016e08` 落在 **`minix_kernel::irq_manager::dispatch_hardware_irq`**（符号 0x16d94→0x16e72 区间）**内部**——非初猜的消息拷贝路径，而是**硬件 IRQ 派发/定时器 tick 链**。② `stval=0xc201004` **低于 DRAM_BASE(0x80000000)、又非 UART MMIO(0x10000000 区)**⇒ 既不映射到内存也不映射到外设——一个 **陈旧/未初始化指针被解引用**，同步 load page fault(scause=13)。③ `riscv64_kernel_body`（trap_dispatch.rs:1770-1778）只识别 supervisor timer，其余一律 `riscv64_diag_panic`——即本阶段未实现 kernel-leg 故障恢复（x86 靠 RIP-fixup，trap_dispatch.rs:917 注）。
 > **续-105 修靶（优先级）**：先读 `dispatch_hardware_irq` 及其 timer-tick hook 链（local_tick/check_quantum/per-CPU 槽），定位那个取值为 0xc201004 的指针从何而来（疑未初始化槽/错型 cast/proc 表字段在 RS 上下文下为脏）——属真实未接线/脏读 bug、非映射缺失。坐实前不成修；与“proc 根缺区/KernelUserCopy 丙案”是不同问题（已排除为后者）。前 8 轮 park/resched/sched/enqueue/pick/IPC 仍全工作。
+>
+> **续-105b 再缩一层（本轮读码）**：`dispatch_hardware_irq`(irq_manager.rs:226) 本体只做 bkl_lock_or_inherit + `irq_manager_with(&section)` + `mgr.dispatch(irq, &mut KernelNotifier)`——sepc 落其体内的 load 实为 **`IrqManager::dispatch` 的 hook 链 / `KernelNotifier` 向 hook 属主 endpoint 发 notify**（timer IRQ 在 RS 执行期触发）。探针面锁定：`IrqManager::dispatch` 遍历 hooks 解 `slot.proc_endpoint` 解析属主 proc 时的解引用（未注册/脏 endpoint 或 proc 表在 RS 上下文为脏→读 0xc201004）。坐实前不成修。
 > **本轮未采的 CodeReview NIT（续-104 顺路）**：N1 asm 补 `out("t0")_,out("t1")_,out("s0")_` clobber（现靠 noreturn 安全、属隐性 UB 面）；N2 kernel text 用 R-X(`kernel_executable()`) 而非 RWX 恢复 W^X（需先验高半 VMA 无运期写 text 路径）；N3 delta 用 checked_sub 明示 virt≥phys 不变量。未采因均为行为中性/需额外真机回验，本会话预算到顶优先入库已验证里程碑。前 8 轮 park/resched/sched/enqueue/pick/IPC 仍全工作；本轮首次 RS 真运行。
 >
 
