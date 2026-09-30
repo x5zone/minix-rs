@@ -9385,3 +9385,21 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **优先级判断**：riscv 至此已推进极深（PLIC→idle-SIE→rc/Runcom→命令派生期），但晚期是**多支交织的深坑**（类 x86 续-57~73 十六轮 VM saga 的重演），单轮难竟全功。下一步先攻确定性更强的 (B) sa-call pid=9 活锁（对 x86 有先例 clamp_cpu_to_bsp，或对齐 C VM 装配回复序），或 (A) L1 探针。未坐实不成修。
 
 ⚠ 三目标不缩小（同续-110）。探针全 `git checkout` 回滚，tracked 净，无 NK111c-TEMP 残留；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-112（2026-10-01·**riscv VM 分页 L1 探针：sync_slot_pte 缺页路径 L2/L1 全合法（BADL1/BADL2=0），坏读在另一条 VM walk 路径（纯取证轮、探针用后即滚）**）
+
+**探针**：arch `Riscv64Paging::debug_probe_l1e(vaddr)->(l2e,l1e,l1_phys)`（读 root[i2]→若合法表指针且 l1_phys∈RAM 则读 L1[i1]，否则 sentinel，避免自身越界）；VM 侧 sync_slot_pte 每缺页查，L1[i1] 为 V=1 表指针但 PPN 超 RAM → 打 BADL1。
+
+**结果（xu112，160830 行）**：**`nk112` BADL1/BADL2 = 0** —— 转发缺页主路径（`sync_slot_pte`）处理的每个 vaddr，其 L2 **和** L1 层 PPN 均落在 RAM 内合法。但本轮**仍** `pagefault for VM sepc=0x36a66 stval=0x10bd2cbb6c`（终端确定性复现，行数规模无关）。
+
+**关键收敛**：坏中间表页 phys **锁定 ≈0xbd2cbb000**（历次 stval 低 2c/6c/9c/bc 仅同一表页内不同叶偏移）——一个固定的、指向超 RAM 的坏 PTE。**它不在 `sync_slot_pte` 转发缺页路径的 walk 里被读到**（那路径 L1 干净）⇒ VM 是在**别处** walk 同一棵树时踩到 0xbd2cbb000：候选 fork/cow_exec 拷表、remap、或 VM query 于其它 handler，或叶级(L0)本身。
+
+**连排汇总（(A) 支，共 8 项证伪）**：wrong-root、PTE 位缺、写丢失、中间表未清零（vm_pt_alloc/boot_pt_alloc 均 zero）、PT 帧双分配（ptalloc-DUP=0）、root-L2 坏、L1 坏（sync_slot_pte 路径）、随机腐蚀（stval 跨运行确定）——全排除。坏项是"某条非缺页转发路径踩到的固定 0xbd2cbb000 表页指针"。
+
+**续-113 修靶（收窄）**：不再猜路径——**在 arch 侧对每次 `walk_read`/`walk_alloc` 读 l1e/l0 前加"PPN 是否落 [DRAM_BASE,DRAM_END) 的守卫"探针**（VM 上下文读自身 DM 窗可，但打印须回 VM 侧——改法：让 walk 越界前返回特定 Err，VM 侧调用点 bootmark 报 va+是哪个 caller）。或直接 `rust-objdump` 反汇编 xu112 期 minix-vm ELF 的 sepc=0x36a66 精确定位是哪个 paging 函数（update_flags/map/remap/cow 的 inlined walk）。未坐实不成修。
+
+**优先级再判**：riscv (A) 支已深钻 4 轮（续-109→113）逐层收窄仍未坐实，属 x86 级多轮坑。目标广度上，(B)/aarch64(续-87)/③ 亦未通。若续-113 objdump 一步不能锁定坏 caller，应权衡转 (B) 或拓 breadth。未坐实不成修。
+
+⚠ 三目标不缩小（同续-110）。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
