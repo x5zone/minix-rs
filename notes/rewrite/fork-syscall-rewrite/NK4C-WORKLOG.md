@@ -8600,7 +8600,20 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   注意 grant.rs 的 supSk/vg 探针为 x86-only cfg（aarch64 串口那两行 supSk idx=0x38 n00001
   base=0x257000＝池页 56 号已被 n=1 属主供给过——grant remap 腿嫌疑直接命中，但归属打印在
   aarch64 不可用）。
-- **续-84 配方（定稿 decision-complete）**：四个 PTE 直写腿各加一次性打点（去 grant.rs 的
+- **续-84 部分定谳（nk84 map/remap 漏斗打点轮，探针已滚 tracked 净）**：arm64 paging 的
+  map+remap 全漏斗对 paddr=F1 打 (tag,root,va)——**boot 于 101 行早崩 `pagefault for VM
+  far=0x9000018`**：打点把 `map` 热路径（boot 期 VM 自身填页高频调用）拖慢/改时序触发
+  §1.111 自缺页守卫（探针观测效应，同 f4 溢出教训级别）——但**崩溃早于 VFS handshake 即
+  从未见一条 nk84 输出**：结合三写腿证空（续-79f）与单 map_page（续-83），**「两树都有 F1 叶」
+  的写叶者不在 Paging::map/remap 漏斗**＝剩 PTE 裸写路径（write_pte_dm 直调：boot 表复制
+  dup/SETADDRSPACE alias、split_huge 叶复制臂）或… 打点需下沉：在 write_pte_dm 内
+  （值 paddr==F1 时）+ 去 boot 高频路径（仅 channel==VmDm）+ 先 warm 后再 enable（延迟 arm
+  避观测效应）。
+- **续-85 配方（定稿）**：write_pte_dm 值匹配型探针（VmDm channel only，arm 后触发），真机
+  一轮看 F1 的 PTE 写入次数/目标 root；若仍单次＝推翻「VFS 树有叶」前提——nk80 的 walk(VFS)
+  实为 walk(PM) 的读侧假象（current_root_phys 在 door 体里≠VFS root 的可能），需复核 nk80
+  数据（cr 当时打印 43a96=PM！『同树读两遍』被误读成两树!!）。
+**续-84 配方（定稿 decision-complete）**：四个 PTE 直写腿各加一次性打点（去 grant.rs 的
   x86 门控改三架构或在 arm64 paging 的 map/remap/grant_user 入口打 (root, va, pfn)）——F1 的
   两次 map 调用即现形（root=PM 树 vs VFS 树+调用腿），按腿定位记账缺陷后成修+CodeReview+回归。
 **续-83 配方（定稿 decision-complete）**：在 `map_page`（region/mod.rs slot 写入唯一漏斗）与
