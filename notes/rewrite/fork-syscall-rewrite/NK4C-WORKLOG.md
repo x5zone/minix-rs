@@ -8541,7 +8541,20 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   ⇒ 现场至少存在过**两代帧内容**（demand-zero 第二次服务的 remap 痕迹与续-78b「同页两次服务」
   呼应）；push 的 mt=0x900 写从未到达当前物理帧。**别名/换代坐实方向＝VM 对在用页的二次
   PAGEFAULT 处理腿（alloc_and_map 不辨「已映射在用」）+ 缺页进程挂起语义在 aarch64 未闭环**。
-- **续-79c 配方（decision-complete）**：对照 C `vm/forkexit+pagefaults` 的「已在用帧重复缺页」
+- **续-79c 前置鉴别（本轮 host 交叉实验，回归断言已入库）**：给
+  `test_vfs_init_messages_order_and_final` 加 per-msg 断言（全部 msgs 的 m_type==VFS_PM_INIT、
+  m_source==NONE）后 **host 419/419 全过**⇒ 纯 Rust 逻辑在 x86 host 正确，毒是 **aarch64
+  设备运行期专属**（代码gen/布局/池交互）。新事实：PM 堆基 0x2db000 **落在 minix-rt
+  `POOL_STORAGE`（.bss 0x257000 起 4 MiB）之内**＝slab 池静态数组本体（设计如此，非碰撞）；
+  door 读的 (1,8) 中 mt=8=0x900>>7 的位移巧合待验（若 push→door 读之间存在把 m_type 右移
+  7 位的序列化腿，即命中根因——rs taskcall/线编解码族）。minix-pm 集成测试
+  `run_once_integration` 两失败（unwired_call_replies_enosys/wait4_without_children_replies_echild）
+  经 HEAD 对照为**预存**（他线在途/真缺陷，交对应线，非本轮引入）。
+- **续-79d 配方（更新版 decision-complete）**：a) 反相 aarch64 pm 产物 door 传参链：
+  `ipc_trap` 的 msg 指针装载指令序列（rust-objdump 锚 `perform_syscall`/`DirectKernelCallTransport`
+  的 kernel_call）核对是否把 `&Message` 错传成位移后的指针（0x900>>7=8 形态的直接候选）；
+  b) 若指针正确，回到设备侧帧代际实验（vm-pf 双服务的 remap 观察）。
+**续-79c 配方（decision-complete）**：对照 C `vm/forkexit+pagefaults` 的「已在用帧重复缺页」
   路径与 aarch64 `cow_exec_pf::alloc_and_map`（NeedNewPage 臂）——查 VM 收到同 VA 第二次
   PAGEFAULT 时是否无条件 alloc 新帧并 remap（C: 先查 PTE 已存在→走 pfn 复用/直接回 OK，
   `pagefault.c prepare_low/advance_pemf` 语义）；若坐实＝aarch64 VmDm 无 flush+双服务换帧

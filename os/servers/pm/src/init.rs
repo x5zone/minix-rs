@@ -1183,6 +1183,10 @@ mod tests {
 
         // 4 条逐条（PM/VFS/RS/INIT）+ 1 条末条屏障。
         assert_eq!(msgs.len(), 5);
+        for (i, m) in msgs.iter().enumerate() {
+            assert_eq!(m.m_type, VFS_PM_INIT, "msgs[{}].m_type", i);
+            assert_eq!(m.m_source, Endpoint::NONE, "msgs[{}].m_source", i);
+        }
         let last = msgs.last().unwrap();
         assert_eq!(last.m_type, VFS_PM_INIT);
         // SAFETY: 末条由 encode() 写入 m_m7。
