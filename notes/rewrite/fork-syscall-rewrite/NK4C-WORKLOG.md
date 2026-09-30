@@ -8515,6 +8515,17 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   (b) aarch64 release 下 `Vec::push` 代码gen 异常（未反相成功：模块符号表无独立
   `vfs_init_messages`（已内联进调用者），需按 rodata 引用锚 `21c2b0 邻域`/字符串 "can't sync up"
   反汇编定位，待续）。
+- **续-78 真机无循环探针定谳（nk78 单次打印，探针已滚）**：`nk78 00000008_0000000d_00000000002db000`
+  ＝构造器出口 `msgs[0].mt=8`、len=13、**Vec 堆基=0x2db000**。三关键：
+  ①**无循环内 diagctl 仍毒**⇒排除 f6 观测效应主因（假说 (a) 降级）；
+  ②毒缓冲与 door 读完全同址（r2=0x2db000＝messages[0] 直传，minix-sys 不 bounce）⇒投递链忠实；
+  ③**同轮 `nk4a: vm-pf fa=0x2db000`**＝PM  heap 基页在 boot 期被 VM 需求缺页服务过——
+  毒值 (1,8,0x7bff,6,…) 与 PM/RS 任一已知消息字段集合（VFS_EP/ANY/SYS_ENDKSIG=8/slot6）碎片
+  吻合但整体不匹配任何单条消息＝**陈旧帧内容**特征。
+- **候选再收紧**：(新甲) PM .data/bss 与堆共享页 0x2db000 的 demand-zero 服务与 PM 早期写入
+  竞争（fill 写零迟于 PM store→覆盖）＝续-67/§1.119 写回/填充家族；(新乙) PM 早期某次内核
+  交付（p_delivermsg_vir 曾指 heap 基）合法写过 (1,8,…) 后 push 写未达物理帧（同页 store
+  丢失）。
 - **续-78b 配方（更新版 decision-complete）**：①零探针版：直接在 aarch64 host 交叉单元测试
   `cargo test -p minix-pm --target aarch64-unknown-none`（如可跑）或把 vfs_init_messages 提为
   `#[cfg(test)]`+host 断言 msgs[0].m_type==VFS_PM_INIT（host 若也复现＝纯 Rust 逻辑 bug，能当场修；
