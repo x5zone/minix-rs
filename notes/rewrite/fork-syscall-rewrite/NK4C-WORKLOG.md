@@ -8,7 +8,14 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-112（2026-10-01·**riscv (A) 支 L1 探针：sync_slot_pte 路径 L2/L1 全合法，但终端仍在 update_flags——矛盾未解，需 update_flags 内部就地探针（纯取证轮、tracked 净）**）：承续-111 两支晚期阻塞。
+> **🛑 最新前沿＝§1.120续-119（2026-10-01·**riscv (A) 逐层洗清至"VM 逐页簿记伪 pfn"——非页表(全洗清)、非 memmap(free_regions 合法)——续-120 用 pfn_to_phys caller 守卫坐实来源（纯取证轮、tracked 净）**）：承续-109 idle-SIE（boot→160830 行深 rc）后的晚期终端 (A) 已用守卫探针逐层定性：
+> - **页表全洗清**（续-116/117：walk_read+walk_alloc 各级+root 越界守卫 0 触发）；**memmap 全合法**（续-119：free_regions top≤0x9fb33000≈2.53GB 与 total_pages 吻合）。
+> - **确证机理**（续-118/119）：VM 算出**越-RAM 伪物理地址 phys≈0xbd2cbb000(3.17GB)** → `vm_phys_to_virt` 得 DM VA 0x10bd2cbbXX（VM_DM_BASE=2^36）→ map_kernel 未映此叶 → `pagefault for VM` 致命（C exception.c 对 VM 自缺页致命）。**非页表 walk 得来**，是 **VM 逐页簿记里一个损坏/未初值被当 pfn/物理地址**（region 页槽 `pfn()`/refcount/page_cache 元数据；合法 pfn≤0x9fb33 < 0xbd2cbb）。
+> - 非确定性（VMfault 时有时无、行数 4102/8979/96194/124303/160830 跨运行剧变）＝触发需进度到达某 corrupt 读取点。
+> **续-120 修靶（一击定源）**：`pfn_to_phys`(page_state.rs:261)/`vm_phys_to_virt` 入口加 phys≥0xA0000000 守卫 + bootmark 报 (pfn, phys, caller-pc via return_address 或区域槽 region.vaddr/offset)，objdump caller-pc 回符号→定位造伪 pfn 的确切 VM 代码行→顺藤查它从哪个槽/字段读到0xbd2cbb→成修（校验/clamp 或修写坏点）。**未坐实不成修**。riscv 生产修已入库两个（续-105 PLIC / 续-109 idle-SIE）；(A) 是可定位确定 bug、非不可破随机腐蚀。
+>
+
+> **（历史·§1.120续-112（2026-10-01·**riscv (A) 支 L1 探针：sync_slot_pte 路径 L2/L1 全合法，但终端仍在 update_flags——矛盾未解，需 update_flags 内部就地探针（纯取证轮、tracked 净）**）：承续-111 两支晚期阻塞。
 > **续-112 新事实**：arch `debug_probe_l1e` 探针（先于 query 读 root[i2]→合法则读 L1[i1]）——xu112（160830 行）**BADL1/BADL2=0**（转发缺页路径每 vaddr L2/L1 均合法），但仍 `pagefault for VM sepc=0x36a66 stval=0x10bd2cbb6c`。**objdump 定 sepc=0x36a66 仍在 `Riscv64Paging::update_flags`**（函数头 0x36a08）——即仍由 sync_slot_pte 的 `query→Some(同PA)→update_flags` 分支进入。
 > **矛盾（静态推不动）**：update_flags 崩溃时读的 l1_phys≈0xbd2cbb000（越 RAM），但探针对**同一 vaddr** 读 l2e 得到的 l1_phys 合法、l1e 合法——同 root 同 channel 两次读结果不同⇒ 我对 walk_read 的理解缺环（或根/表项在 query与探针间变、或读基不同）。**排除法≠定谳**（方法论）。
 > **续-113 修靶（不隔岸猜）**：在 update_flags/walk_read **内部就地**：读 l2e 后、跟随前加 PPN∈[0x80000000,0xA0000000) 守卫，越界则 bootmark 报（经 VM 侧回调/或先 return 特 Err 让 VM 报 va+l2e+l1_phys），拿崩溃现场的实际 l2e/l1_phys。坐实后成修。
