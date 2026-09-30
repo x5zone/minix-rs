@@ -8,7 +8,13 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-106（2026-10-01·**riscv 新停点定性完成——纯取证轮·零生产码改·免 CodeReview**）：承续-105 入库后的新停点（marker 未达），本轮做了「末相位活锁 vs 慢」的决定性差分实验，定谳为**静默冻结（silent hang）**并定位到**目标②核心命令面路径**：
+> **🛑 最新前沿＝§1.120续-107（2026-10-01·**riscv 静默冻结根因探针坐实到具体一步——INIT 的 rc 子进程永久阻塞在 `nanosleep`（非 VFS/TTY）——纯取证轮、探针用后即滚、tracked 净、零生产码改、免 CodeReview**）：承续-106 定性的「INIT Runcom→fork/exec sh on /etc/rc 静默冻结」，本轮用步进面包屑探针（cfg(riscv64) sys_diagctl_write，三枪：runcom.rs runetcrc 子 enter/子 pre-exec/父 pre-wait + host.rs set_controlling_tty 内 enter/post-setsid/post-nanosleep/pre-open）真机采集定谳卡点：
+> **xu107b 实测序列**：`nk107: rc-child enter`(4096) → `nk107s: sct enter`(4098) → `nk107: rc-parent pre-wait`(4105) → `nk107s: sct post-setsid`(4110) → **此后无 `sct post-nanosleep`** ⇒ 子进程已过 setsid、**永久卡在 `nanosleep_via`（set_controlling_tty 的 250ms DTR 间隔）不返回**，从未走到 open(/dev/console)/ioctl。父进 waitpid 因子永挂而永久阻塞＝静默冻结。**根因域＝riscv 闹钟睡眠（alarm-sleep）唤醒腿**，非 VFS/TTY（open 未达）。
+> **唤醒腿机制（已读码定位）**：用户态 nanosleep → 内核 park 调用者 + `set_alarm_timer`（clock.rs:859，软件定时器到期链表）；周期 tick → `clock_irq_handler`→`tick_with` 扫链到期→`mini_notify_core` 唤醒（irq_manager/clock.rs:1538 后续带 `enqueue_if_woken`）。续-105 已使 tick 真跑，但睡眠调用者被唤醒后的**重派发腿**（woken alarm-sleep proc → runnable → enqueue → pick → restore 回用户）在 riscv 疑有缺口（NK4-C B6 lost-wakeup/enqueue-half 同族，或 alarm-park 的 park/reply 形态与续-75 建的 resched/park 腿不一致）。
+> **续-108 修靶（decision-complete）**：追一笔 nanosleep 的完整往返——① 内核如何处理 nanosleep ecall（park 态、是否真调 set_alarm_timer、exp_time 如何算）；② tick 到期是否真 `collect_expired` 到该 endpoint（加一次性探针打 alarm 链与到期）；③ `mini_notify_core`+`enqueue_if_woken` 后该 proc 是否变 runnable 并被 pick。坐实哪环断后再成修。**坐实前不成修**；本探针腿已彻滚（runcom.rs+host.rs git checkout、tracked 净、无 nk107 残留）。
+>
+
+> **（历史·§1.120续-106（2026-10-01·**riscv 新停点定性完成——纯取证轮·零生产码改·免 CodeReview**）：承续-105 入库后的新停点（marker 未达），本轮做了「末相位活锁 vs 慢」的决定性差分实验，定谳为**静默冻结（silent hang）**并定位到**目标②核心命令面路径**：
 > **差分实验**：用已提交修复的内核重建后跑 `TIMEOUT_BOOT=470`（xu106）对比首轮 `160`（xu105），两次串口**逐字一致、均 4102 行**、计数全同（vm-pf recv=1621/msgw=64/setaddr=12/sa-call=2/Runcom=1）——多花 310s 零新增输出且无 panic＝**系统在 4102 行后彻底静默冻结**（既非高速活锁打印、也非单纯仿真慢）。
 > **冻结精确定位**：INIT 状态机 `imain-0 rt-init→1 getuid→2 setsid→3 console→4 console-done→5 passwd→6 transition→init-state Runcom`（全 12 服务此前均已 `exec X ok`+sas-send）。Runcom 态＝`os/commands/sbin/init/src/runcom.rs::runetcrc`：`host.fork()`→子 `set_controlling_tty(/dev/console)`+`exec("/bin/sh", ["sh","/etc/rc",…])`→父 `waitpid(-1,WUNTRACED)`。而 marker 由 `os/etc/rc:13` 的 `echo "minix-rs rc: minimal boot script marker"` 打印——**故到达 marker 必需：fork 子(pid=11 见末段 `memreq target=11`)→exec /bin/sh→sh 经 VFS open/read /etc/rc→fork/exec echo→echo 写 tty**。串口末行 `sa-call caller=1(VM) pid=6 fl=0x12 sys=y` 后即静默＝冻结在这条 **fork/exec→VFS-读-rc→spawn 出生 IPC 链**上（x86/aarch64 同段可达 marker，riscv 此腿有未接的出生 IPC 交付/回复形态，对位 aarch64 出生 §1.113~118 家族，也与排队续-87 aarch64 barrier mt=8 同族）。
 > **续-107 修靶（decision-complete、探针轮）**：静默冻结无输出→必须插探针定位卡在哪一步。配方（均 cfg(riscv64)、用后即滚）：① 在 runcom `runetcrc` fork 后父/子两侧各一枪（打 `host.fork()` 返回值、子侧 exec 请求前/后）——定 INIT 是否成功 fork 出 pid、子是否进得 exec；② 在内核 exec/fork 交付腿（`sys_core`/VM 的 SETADDRSPACE 回复 + 新子首条陷入）插针；③ 若卡 VFS open(/etc/rc)：在 VFS 服务器的 open/read 处理臂 + 调用方 send 腿各插一枪看是否无回复阻塞。**坐实前不成修**；与续-105 的 PLIC claim 腿是不同问题（PLIC 已彻解）。
@@ -9224,3 +9230,23 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **环境项发现×2**：（a）上一会话遗留 stray qemu（pid 287926 -smp4）持有 `target/image/x86_64/minix.img` 写锁→QEMU “Failed to get write lock”退出、串口 0 行；`pkill -9 -f qemu-system-x86_64` 清后改 `snapshot=on` 重跑正常。（b）**已自省陷阱**：告警 Δ0 对比的 `git stash` 回退源码到 HEAD 那次 build 会用**无修复源码覆盖 `$REL/kernel`**；SKIP_BUILD=1 复用它会重现旧 PLIC 故障（假回归）——本次 xu105long 一度因此重现 scause=0xd，反汇编 `riscv64_timer_arm` 证实其 jalr `dispatch_hardware_irq`（非修复版）⇒ 凡 SKIP_BUILD=1 取证前必确认 $REL/kernel 是含目标改动的最新 build。
 
 ⚠ 三目标不缩小：①x86✅·**riscv PLIC 腿已通、marker 未达（新停点定谳＝INIT Runcom→fork/exec sh on /etc/rc 静默冻结）**·aarch64❌（续-87 barrier mt=8 在案）；②x86 核心✅、riscv/aarch64 命令面未达；③minix3 tests 未动。本轮纯取证（零生产码改、无探针残留），WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-107（2026-10-01·**riscv 静默冻结探针坐实到具体一步：INIT rc 子进程永久卡在 set_controlling_tty 的 nanosleep（非 VFS/TTY）（纯取证轮、探针用后即滚）**）
+
+**方法**：静默冻结无输出→无法靠日志尾行定步，用面包屑探针（`minix_sys::syscall::sys_diagctl_write` + `DirectKernelCallTransport`，同 init main.rs 的 imark! 机制，已证实 riscv 可到达串口）。两级探针：
+- **粗二分**（runcom.rs `runetcrc`）：子 `Ok(0)` 分支进侧「rc-child enter」、`host.exec(&cmd)` 前「rc-child pre-exec」；父进 waitpid 循环前「rc-parent pre-wait」。
+- **细步进**（host.rs `MinixSysHost::set_controlling_tty` 实体 impl）：enter / post-setsid / post-nanosleep-pre-open / post-open-pre-ioctl。
+
+**xu107 粗二分结果**（4110 行）：`rc-child enter`=1、`rc-child pre-exec`=**0**、`rc-parent pre-wait`=1 ⇒ **fork 成功、子进入 Ok(0) 但未到 exec**；卡点在 enter↔pre-exec 之间（即 set_controlling_tty / register_handlers，trychroot=false 跳过）。x86/aarch64 同段无此卡（它们能到 marker）。
+
+**xu107b 细步进结果（定谳）**：实测序 `rc-child enter`(4096)→`sct enter`(4098)→`rc-parent pre-wait`(4105)→`sct post-setsid`(4110)→**无 `sct post-nanosleep`**。⇒ 子已过 `setsid_via`、**永久卡在 `nanosleep_via`（set_controlling_tty 中那个 250ms DTR 低的间隔 sleep，对位 init.c:98/680 + login_tty）不返回**，从未走到 `minix_sys::open(/dev/console)`/`ioctl(TIOCSCTTY)`。**修正续-106 的“可能卡 VFS open”候选——实为卡在 nanosleep，与 VFS/TTY 无关**。
+
+**根因域（闹钟睡眠唤醒腿）**：用户态 nanosleep → 内核 park 调用者 + `set_alarm_timer`（clock.rs:859，到期时间排序的软件定时器链表）；周期 tick（续-105 已修好其运行）→ `clock_irq_handler`→`clock.tick_with` 扫链、到期 `collect_expired` 入 batch→循环 `mini_notify_core` 唤醒（紧接 `enqueue_if_woken`）。既然 tick 在跑而子仍永挂，⇒ 断点在链的某一环：**要么 nanosleep 未真调 set_alarm_timer/未真 park 可唤醒态、要么 tick 到期未 collect 到该 endpoint、要么唤醒+enqueue 后该 proc 未被 pick/restore 重跑**（NK4-C B6 lost-wakeup/enqueue-half 同族；park/reply 形态与续-75 建的 resched 腿不一致）。
+
+**续-108 修靶（decision-complete）**：追一笔 nanosleep 完整往返，三处一次性探针（内核 cfg(riscv64)）：① nanosleep ecall 处理腿（park 态写入 + 是否真 `set_alarm_timer` + exp_time 计算）；② `tick_with` 到期扫描（该 alarm 节点是否入 batch）；③ `mini_notify_core`+`enqueue_if_woken` 后目标 proc 的 runnable/queued 态 + 下一轮 pick 是否选中它。坐实哪环断后再成修。**坐实前不成修**。
+
+**探针卫生**：runcom.rs + host.rs 两处探针均 `git checkout` 回滚，tracked 净（仅 WORKLOG 本提交），grep 无 nk107 残留；零生产码改→WORKLOG-only、免 CodeReview。
+
+⚠ 三目标不缩小：①x86✅·**riscv PLIC 腿已通、marker 未达（新停点坐实＝INIT rc 子永久卡 nanosleep、riscv 闹钟唤醒腿）**·aarch64❌（续-87）；②x86 核心✅（echo/ls/cat 走真 VFS IPC）、riscv/aarch64 命令面未达（riscv 正卡在此命令面出生首步 nanosleep）；③minix3 tests 未动。
