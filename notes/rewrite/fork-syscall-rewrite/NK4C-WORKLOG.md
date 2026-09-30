@@ -12,7 +12,7 @@
 > **铁证链**：idle#0..#b 反复进 idle 但 uptime 冻在 0x122（290）；`sie=0x20`（STIE 开）、`sip=0x20`（STIP **挂起**）却 riscv64_kernel_body 从不进入→timer 中断 pending+enabled 但不被投递。根因＝`idle_halt`(os/arch/src/riscv64/smp.rs) 原写 `csrs sstatus, 1u64<<5`（注释还误称 bit5=SIE）——但 **RISC-V 特权规范 `sstatus.SIE` 是 bit1（0x2），bit5 是 `SPIE`（sret 消费的已保存使能）**。设错位→内核/idle 上下文 SIE 永远 0→pending STIP 永不 taken→wfi 睡死、uptime 冻结、select/alarm deadline 永追不到→nanosleep 永挂。为何忙期 tick 正常：用户态 `INIT_USER_SSTATUS=0x20`（SPIE=1）sret 时硬件把 SPIE→SIE（用户态 SIE=1）；内核任务 `INIT_TASK_SSTATUS=0x100`（仅 SPP、SPIE=0）sret 后 SIE=0，故 idle 内核循环必须显式置 SIE(bit1)。
 > **修复（单行、镜像 x86 `sti;hlt`/aarch64 `daifclr;wfi`）**：idle_halt 的 `1u64<<5`→`1u64<<1`（正确置 sstatus.SIE bit1），重写注释说明 SIE/SPIE 位域与为何内核态需显式开 SIE。CodeReview **PASSED**（无 BLOCKER/SF，1 NIT 中英混排缺空格已采）。
 > **真机验证**：riscv boot-full 串口 **4102→25382 行**（idle-timer 修复生效、不再冻在 nanosleep、一路冲过 rc/Runcom 深入）；新暴露更深腿：`pagefault for VM sepc=0x367f0 stval=0x10bd2cbbbc`→`panic!("pagefault in VM")`（trap_dispatch.rs:1935，C exception.c:101-118 VM 自缺页致命对等）。**全验证链**：host 1400/0、rustfmt smp.rs Δ0、host clippy 不受影响（cfg riscv-only）、riscv kernel-image build EXIT=0、三架构 check-layout PASS(41/0)、**x86 真机 -smp1 marker=2/panic=0 不回归**。
-> **续-110 修靶**：riscv 新停点＝VM 自缺页（sepc=0x367f0 在 VM 代码区、stval=0x10bd2cbbbc）。需定性：VM 为何自缺页（高半内核映射/消息窗/用户页供给）——对位 x86 续-57~72 的 VM 晚期缺页家族与 aarch64。未坐实不成修；N1/N2/N3 仍顺路。
+> **续-110 修靶**：riscv 新停点＝**缺页活锁（demand-paging livelock）**——末段同址 `vm-pf fa=0x…efa0` 洪泛 24323 次（bytes 全零、反复不落地）后 VM 自身缺页致命（sepc=0x367f0 stval=0x10bd2cbbbc）。查 riscv VM 缺页处理腿「为何映了却不落地」（sfence.vma/TLB 未刷 / PTE 落错根错级 / 供页对 riscv 未接），先探针定哪进程缺何页。未坐实不成修；N1/N2/N3 仍顺路。
 >
 
 > **（历史·§1.120续-108（2026-10-01·**riscv nanosleep 腿探针坐实到「闹钟布了却永不到期」——fired=0——纯取证轮、探针用后即滚、tracked 净**）：承续-107（rc 子永久卡在 nanosleep），本轮用四处内核/VFS 探针（nk108：VFS `select_arm_and_suspend` 请求布闹钟 ticks / 内核 `set_alarm_timer` 布防 exp&uptime / 内核到期 batch notify 循环 fired / VFS `select_timeout_check` 入口）真机采集 xu108（无 tick 探针、可靠）定谳：
@@ -9299,5 +9299,7 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **全验证链（只增不减，全绿）**：host **1400/0**；rustfmt smp.rs Δ0；host clippy 不受影响（cfg riscv-only，minix-arch 25 基线）；riscv kernel-image build EXIT=0；三架构 check-layout **PASS(41/0)**；**x86 真机 -smp1 marker=2/panic=0（10661 行）不回归**。含生产码改动，走 CodeReview + 全验证链后入库。
 
 **续-110 修靶**：riscv 新停点＝VM 自缺页（sepc=0x367f0 落 VM 代码区、stval=0x10bd2cbbbc）。需定性 VM 为何自缺页（高半内核映射/消息窗/用户页供给/VIRTMCTL 腿），对位 x86 续-57~72 的 VM 晚期缺页家族与 aarch64；未坐实不成修；N1/N2/N3（higher_half.rs/map_kernel NIT）仍顺路。
+
+**续-110 静态细化（本轮析 xu109fix 25382 行串口）**：非偶发 VM 自缺页，而是**缺页活锁（demand-paging livelock）**——末尾 `vm-pf recv`/`vm-pf bytes fa=0x…efa0`（bytes 全零）**同址洪泛 24323 次**（vm-pf 总 24323、imain=7/Runcom=1/do-memory=74/memreq=85/sa-call=4/exec ok=11）。⇒ 某进程（rc 链中 spawn 的 shell/echo 或 INIT）反复缺**同一页** `0x…efa0`、VM 反复被请求“供给”却总不生效（faulting 指令重执行又缺）→ 耗满窗后 VM 自身也缺页（sepc=0x367f0 stval=0x10bd2cbbbc）致命。**修靶修正**：查 riscv VM 缺页处理腿“为何映了却不落地”——候选：① VM 经 VMCTL/DOMAP 给用户进程映页后内核 sfence.vma/TLB 未刷（同续-62 强刷 CR3 实验类）；② VM 供给的 PTE 落错根/错级；③ fault 地址属合法需求页但映射腿对 riscv 未接。**先定哪进程缺何页（一次性探针打 sender/endpoint + fa 属主 + VM 返回状态），再核页表是否真现**。未坐实不成修；x86 无此活锁（同代码到 marker），属 riscv 腿差异。
 
 ⚠ 三目标不缩小：①x86✅·**riscv idle-timer 已修、marker 未达（新停点＝VM 自缺页）**·aarch64❌（续-87）；②x86 核心✅、riscv 命令面已越过 nanosleep 冲入 rc 深区（25382 行）但停于 VM 缺页、aarch64 未达；③minix3 tests 未动。
