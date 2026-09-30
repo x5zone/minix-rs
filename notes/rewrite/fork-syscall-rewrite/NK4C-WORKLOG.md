@@ -9438,3 +9438,26 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **战术调整（保持全目标、非缩小）**：riscv (A) 支已是 x86 级多轮内存完整性深坑，纯 AI 探针逐轮命中率低、上下文成本极高。为最大化对**三目标整体**的推进，本会话后续把杠杆分给**尚未启动的目标③**（minix3 tests 上机，x86 是唯一稳到 marker 的架构，先做可行性勘察 + 打通最小"一个测试上机跑"的 harness 即是从 0→1 的整支柱进展），riscv (A) 留待 gdb-watchpoint 类工具专项多轮攻。两线不冲突、目标不减。
 
 ⚠ 三目标不缩小：①x86✅·riscv marker 未达（(A) VM 分页瞬态腐蚀深坑/(B) sa-call pid=9）·aarch64❌；②x86 核心✅；③未动（**本会话下一步转攻③**）。探针全回滚 tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §目标③ 可行性勘察（2026-10-01·**minix3 tests 上机：规模盘点 + 分阶段方案（纯勘察、零生产码改）**）
+
+**证据盘点**：
+- `minix3/tests/` 有 **586 个 `.c`**，NetBSD-ATF 风格（`tests/bin/df/getmntinfo.c` 等 include `<sys/mount.h>`/`<sys/ucred.h>`，走 **minix3 libc 系统调用面**，非 raw_syscall 直调），目录镜像真实源树（`tests/lib/libc/sys`…）。README 述约定。
+- 现无 minix-rs 侧的 C 交叉工具链 / libc 构建产物；`find minix3/tests` 无一被仓内 qemu-tests 引用（grep 仅命中无关行）。
+- **可复用底座**：`xtask/src/image.rs` 已把 `/bin/sh`、`/bin/echo` 作为**非 boot 模块**播种进 imgrd（mfs 根盘），`/etc/rc` 由 init runcom `exec sh /etc/rc` 消费（续-74 已坐实 x86 echo/ls/cat 走真 VFS IPC 端到端）。⇒ "放二进制到镜像 + rc 里 exec + 串口报结果" 的**运行回路已具备**。
+
+**关键拦路（③ 为何是独立多轮工程）**：
+1. **ABI/工具链**：minix3 测试要能在 minix-rs 上跑，须用交叉 C 工具链产出 minix-rs syscall-ABI 兼容的静态 ELF，且 minix-rs 各 server（PM/VFS/RS…）需实现测试用到的全部 libc 后端调用（getmntinfo/fork/exec/stat/…）。这是"行为兼容重写"的验收面，非单一改动。
+2. **runner/报告**：需把 ATF 结果经串口/tty 打出并可被脚本判定（可仿 test-cmd-smoke 的 marker 法）。
+3. **依赖顺序**：③ 与 riscv/aarch64 的 ①/② 不同支柱，但**在 x86（已稳到 marker）上先做最小 vertical slice 最省力**。
+
+**分阶段方案（每阶段独立可验、只增不减）**：
+- **T3.1**：选**一个**依赖面最小的 minix3 测试（如 `tests/kernel/` 或纯 libc `getpid`/`getuid` 类），确认其 syscall 需求是否已被 minix-rs x86 实现覆盖 → 产出"能编译+能装载+能跑出可判定结果"的**单测上机**（哪怕 SKIP/PASS 其一）即 ③ 从 0→1。
+- **T3.2**：建交叉构建入口（xtask 子命令 `tests`，把选定测试编成静态 ELF 播种进 imgrd `/tests`）+ 一个 `test-minix3-*.sh` 运行器（复用 test-cmd-smoke 的 boot+串口判定骨架）。
+- **T3.3**：扩到一族（如 libc/sys 全量），加汇总 PASS/FAIL 计数 marker。
+
+**当前判语**：③ 尚未有可跑工件；本勘察把它从"未动"变为"规模已知 + 分阶段可执行"。下一步 T3.1 先盘一个最小测试的 syscall 依赖 vs minix-rs 已实现面（纯 grep，可坐实可行性再动手）。未坐实不成修。
+
+⚠ 三目标不缩小：①x86✅/riscv·aarch64❌；②x86 核心✅/其余❌；③**本 turn 完成可行性勘察 + 分阶段方案（首次）**、无可跑工件。纯勘察、WORKLOG-only、免 CodeReview。
