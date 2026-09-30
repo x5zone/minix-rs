@@ -31,6 +31,7 @@
 #   P13 diff   新增行反引号全大写常量符号存在性抽查（虚构符号事故）
 #   P14 gate+  RTS 裸 set/clear 绕过 rts_set/rts_unset（F10d 家族；基线对账）
 #   P15 gate   vendored 依赖源码防线（.dockercargo 跟踪 0 + gitignore 条目；d6f176451 事故）
+#   P16 gate   trap 腿消息物化调用在位（minix-sys commit_message_to_memory；§1.120续-22 事故）
 # 带 "+" 的检查基线豁免（tools/pattern-gate-baseline.txt，key=检查名|路径|cksum）。
 
 set -u
@@ -135,6 +136,21 @@ P2_TESTS=(
   test_entity_fork_failure_reap_loop_exits_on_zero      # NK4-C §1.117 `.is_ok()` 误译 waitpid>0
   test_runetcrc_fork_failure_reap_loop_exits_on_zero    # NK4-C §1.117 同族（runcom 腿）
   classification_matches_the_expected_dfsc_table        # NK4-C §1.116 64 项 DFSC 期望表（空断言对分组写反照样过）
+  test_frame_slot_map_matches_gp_constants              # NK4-C 续-75 信号帧槽位映射（live 槽数=语义常量非容量）
+  test_save_frame_to_context_persists_all_fields        # NK4-C 续-75 cpu_context 全量存帧持久性
+  test_sync_status_register_pulls_a1_lane               # NK4-C 续-75 IPC 状态寄存器 A1 车道（寄存器车道迁移漏改点族）
+  test_park_decision_values                             # NK4-C 续-75 riscv park 机制判别值
+  test_notify_defers_when_target_reply_pend             # NK4-C §1.119续-3 mini_notify dst-REPLY_PEND 门（C proc.c:1143 保真）
+  test_switch_address_space_same_root_syncs_ptproc_and_mirror  # NK4-C 续-18 同根切换单向同步镜像（E2 软件镜像分叉）
+  test_sched_start_propagates_denied_reply_code         # NK4-C §1.119续-7 PM sched_start 拒绝码传播（吞错家族债⑫判例）
+  test_zero_byte_copy_returns_edom                      # NK4-C §1.120续-5 零长前置检查（C memory.c:608 对位）
+  test_dispatch_copy_zero_bytes_returns_edom            # NK4-C §1.120续-5 同族 dispatch 腿
+  zero_length_copy_rejects_with_domain_before_any_resolution  # NK4-C §1.120续-5 校验次序：EDOM 先于任何地址解析
+  test_reserved_regions_candidates_union                # NK4-C 续-51 boot DM 保留区三源并集（source-4 验证链）
+  test_reserved_kernel_dm_installs_gap_leaf             # NK4-C 续-51 内核 DM 保留区间隙叶
+  test_establish_boot_dm_reserved_is_kernel_window_only # NK4-C 续-51 boot DM 保留仅内核窗口
+  test_clamp_cpu_to_bsp_transitional_guard              # NK4-C 续-73 过渡守卫钳 schedctl cpu→BSP（CONTRACT 债在案）
+  riscv_pf_error_code_matches_the_aarch64_lane_table    # NK4-C 续-76b riscv PFEC 跨腿等值表（S2；裸值断言改语义表）
 )
 check_p2() {
   local root="$1" missing=0 t hits
@@ -447,6 +463,26 @@ check_p15() {
   return 0
 }
 
+# --------------------------------------------------------------- P16 trap 腿消息物化防线
+# 事故：§1.120续-22——用户态对消息头的最后一次标量 store 在 svc 前未落内存（编译器 alloca
+# 优化物化缺口），内核 trap 腿读到旧 m_type=0，引发 10+ 轮误诊；修复=trap 腿进内核前
+# commit_message_to_memory（整对象 read_volatile 强制物化，minix-sys/src/ipc.rs）。
+# 该防线无宿主可测的运行时行为（ABI/优化器层），符号存在性+调用点在位即唯一机械守卫。
+check_p16() {
+  local root="$1" n_def=0 n_call=0
+  local f="$root/os/libs/minix-sys/src/ipc.rs"
+  if [ ! -f "$f" ]; then
+    skip P16 "minix-sys/src/ipc.rs 缺席（self-test 沙箱或树不完整）"
+    return 0
+  fi
+  n_def=$(grep -c 'fn commit_message_to_memory' "$f")
+  n_call=$(grep 'commit_message_to_memory(' "$f" | grep -vc 'fn commit_message_to_memory')
+  [ "$n_def" -ge 1 ] || { fail P16 "minix-sys commit_message_to_memory 定义缺失（trap 边界消息物化防线被删？§1.120续-22 事故）"; return 0; }
+  [ "$n_call" -ge 1 ] || { fail P16 "trap 腿消息物化调用丢失：ipc.rs 内 0 个调用点（svc 前标量 store 不物化=内核读旧值，§1.120续-22 事故）"; return 0; }
+  ok P16 "trap 腿消息物化在位（定义 1 + 调用点 ${n_call}）"
+  return 0
+}
+
 # --------------------------------------------------------------- 自测（正反例判别矩阵）
 ST_FAIL=0
 st_expect() { # 用例名 期望子串（固定串匹配） 实际输出
@@ -556,6 +592,15 @@ YAML
   printf '.wt/\n/tmp/*\n' > "$F/.gitignore"
   out=$(check_p15 "$F"); st_expect "P15-missing" "[P15] FAIL" "$out"
 
+  # --- P16 ---
+  mkdir -p "$F/os/libs/minix-sys/src"
+  printf 'unsafe fn commit_message_to_memory(message: *const Message) {\n  read_volatile(message)\n}\nfn send_leg(m: *const Message) {\n  unsafe { commit_message_to_memory(m) };\n}\n' > "$F/os/libs/minix-sys/src/ipc.rs"
+  out=$(check_p16 "$F"); st_expect "P16-ok" "[P16] PASS" "$out"
+  printf 'fn send_leg(m: *const Message) {\n  copy_nonoverlapping(m)\n}\n' > "$F/os/libs/minix-sys/src/ipc.rs"
+  out=$(check_p16 "$F"); st_expect "P16-missing-def" "[P16] FAIL" "$out"
+  printf 'unsafe fn commit_message_to_memory(message: *const Message) {\n  read_volatile(message)\n}\nfn send_leg(m: *const Message) {\n  copy_nonoverlapping(m)\n}\n' > "$F/os/libs/minix-sys/src/ipc.rs"
+  out=$(check_p16 "$F"); st_expect "P16-missing-call" "物化调用丢失" "$out"
+
   rm -f "$F/.p11_tokens" "$F/.p13_tokens"
   echo "----"
   if [ "$ST_FAIL" -gt 0 ]; then
@@ -585,6 +630,7 @@ report_p10 "$ROOT"
 check_p12 "$ROOT"
 check_p14 "$ROOT"
 check_p15 "$ROOT"
+check_p16 "$ROOT"
 
 if [ "$DO_DIFF" -eq 1 ]; then
   added=$(diff_added_lines "$ROOT" "$RANGE")
