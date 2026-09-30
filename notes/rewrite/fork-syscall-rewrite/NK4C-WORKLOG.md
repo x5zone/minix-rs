@@ -8583,7 +8583,21 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   VFS 池页写（VFS 合法）被 PM 叶镜像可见（反之亦然）⇒典型 **free/回收路径未同步 unmap 旧表叶**
   （候选腿：exec 换页表未逐出旧 root 数据帧〔C vm_free_ldread 的 zap 面〕、fork CoW 记账、
   page_cache 回收免检）。
-- **续-82 配方（定稿 decision-complete）**：VM 帧生命周期对账——在 `PageFrames` 分配器
+- **续-82 真机定谳（nk82/A-F 账本 + nk82c/d endpoint 指纹，探针全滚 tracked 净）**：目标帧
+  0x4283b 账本序列＝`F(init 大块登记 base=0x427ac×2118 clicks) → ep=1(VFS) fault@0x2db000
+  root=VFS树 → ep=0(PM) fault@0x2db000 root=PM树 → A(alloc F1) ep=0`——四事件定序裁决：
+  ①PM 的 map 合法（alloc 归 PM、树对）；②**VFS 的 0x2db000 服务全程无 alloc**＝它走了
+  region slot 既有 pfn 的复用臂（sync_slot_pte 的 `Some(cur==paddr)`/cache/CoW 路），而 slot 里
+  那个 pfn 与 PM 帧同体＝**VFS region 的 physblocks slot 携带了非本进程生命周期分配的 pfn**；
+  ③VM handle/树选择全对（前轮嫌疑排除）。根因域再收口＝**region 记账层 slot-pfn 污染**
+  （候选腿：VM 对同 VA 的 region 查找拿错 proc 的 regions/`find_mut` 别名、page_cache 对
+  IN_CACHE 帧的重映射未先摘旧属主 slot、exec adopt 把 boot 页登记进新进程 slot 未 alloc）。
+- **续-83 配方（定稿 decision-complete）**：在 `map_page`（region/mod.rs slot 写入唯一漏斗）与
+  `get_slot(pfn)` 读侧打点 (ep, offset, pfn, write|read)，真机一轮看 VFS ep=1 服务读的 slot pfn
+  是哪次 write 登记进去的（若登记腿是 PM 的 map_page＝region 查找串进程，修 find/proc 路由；
+  若登记在 boot adopt＝查 exec adopt 的 physblocks 初始化对照 C memalloc_child/steal 语义）。
+  成修后 CodeReview+全链回归，aarch64 marker 冲刺。
+**续-82 配方（定稿 decision-complete）**：VM 帧生命周期对账——在 `PageFrames` 分配器
   alloc/free 两点对目标 pfn（0x4283b000>>12）打点 (ep, vaddr, alloc|free, seq)，真机一轮：
   a) 若见「该帧 free→再 alloc 给 VFS」且此前 PM 曾 alloc＝回收腿未 zap PM 叶（查 exec 换页表
      `vm_free_ldread` 对偶与 munmap/exit 的 unmap-all-leaf 完备性，对照 C region.c discard_region
