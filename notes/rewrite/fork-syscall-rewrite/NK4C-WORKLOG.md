@@ -9033,4 +9033,11 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 ⇒ **续-96 精确可修靶**（不再需探索性探针，直接查代码）：riscv `finish_and_restore`→`restore_user_context`/`restore_to_user` 对「刚被 park 的接收者之外、由 scheduler 新选中的进程 RS」是否走通——重点比 boot 初始 `switch_to_user` 与 scheduler `finish_and_restore` 两条进入用户态路径在 riscv 的差异（sscratch/栈基/stvec/trap_style FullContext 恢复、sepc 前进、`sync_status_register` 回灌），并核 `kernel_call_finish_ipc_door` 对 Receive 的 park 簿记是否与 aarch64 §1.113 修复后的形态等价。目标：让 RS 真被切入运行→发它的 IPC→握手链自持→marker。
 
+**续-95c 代码级最强假设（同轮，纯读码）**：`scheduler_loop`（lib.rs:3890-3891）在**入口无条件把 `proc_ptr` 重播成 `IDLE`**——注释自述这是「boot: bsp_finish_booting step 2 per-CPU half」的一次性 seed。结构性不对称浮现：
+- **x86/aarch64**：进程 park 后是在 `scheduler_loop` 的**内层 `loop{}` 里续跑**（restore→返回→再陷入→继续 loop），seed 全程只跑一次（boot 初次）。
+- **riscv（续-75 设计）**：park→`PARK_RESCHEDULE`→asm 尾声 `jr riscv64_resched_entry`→`riscv64_resched_thunk`（bkl_lock）→**从头再调 `scheduler_loop(cpu)`** → 每次 park-交接都重跑 boot-only 的 `proc_ptr=IDLE` seed + `sched_loop_entered=true` 等。
+
+这层「重进 scheduler_loop 顶 vs 内层 loop 续跑」的语义差，是「resched# 只触发一次、之后整机静默」的**首选代码嫌疑**（非 panic、非缺页——像是一次异常后 scheduler 再未回到能 pick/restore 的正轨，或重入的栈/锁状态与内层续跑不等价）。**续-96 一次定性**：在 `riscv64_resched_thunk`→`scheduler_loop` 重入处，instrument 「进入 loop 后第一次 pick 的返回值 + finish_and_restore 的 picked」——若 pick 返回 RS 且 finish_and_restore 走到 `restore_to_user(RS)` 则问题在更下的 restore asm；若 pick/seed 处行为异常即此重入不对称。对照 aarch64 §1.113 的 resched_thunk 是否**也**从头进 scheduler_loop（若是则 riscv 应等价、嫌疑转向 restore 臂）。目标不变：修通 park 后的再切换→RS 运行→握手自持→marker。
+
+
 ⚠ 三目标不缩小：①x86✅·riscv 收窄到首笔 raw IPC 往返断链（park/timer/sched 已证通）·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
