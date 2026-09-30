@@ -8,7 +8,13 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-107（2026-10-01·**riscv 静默冻结根因探针坐实到具体一步——INIT 的 rc 子进程永久阻塞在 `nanosleep`（非 VFS/TTY）——纯取证轮、探针用后即滚、tracked 净、零生产码改、免 CodeReview**）：承续-106 定性的「INIT Runcom→fork/exec sh on /etc/rc 静默冻结」，本轮用步进面包屑探针（cfg(riscv64) sys_diagctl_write，三枪：runcom.rs runetcrc 子 enter/子 pre-exec/父 pre-wait + host.rs set_controlling_tty 内 enter/post-setsid/post-nanosleep/pre-open）真机采集定谳卡点：
+> **🛑 最新前沿＝§1.120续-108（2026-10-01·**riscv nanosleep 腿探针坐实到「闹钟布了却永不到期」——fired=0——纯取证轮、探针用后即滚、tracked 净**）：承续-107（rc 子永久卡在 nanosleep），本轮用四处内核/VFS 探针（nk108：VFS `select_arm_and_suspend` 请求布闹钟 ticks / 内核 `set_alarm_timer` 布防 exp&uptime / 内核到期 batch notify 循环 fired / VFS `select_timeout_check` 入口）真机采集 xu108（无 tick 探针、可靠）定谳：
+> **xu108 铁证**：`nk108: vfs-arm next=0x0f`（**VFS 确实收到 select 并请求布闹钟 15 ticks**）+ 早期 `nk108: arm exp=0x133 up=0x124`（**uptime 在推进、is_bsp 为真**）——但 **`fired=0`**（到期 batch 循环从未执行）、`vfs-stc-enter=0`（VFS 超时检查从未跑）⇒ **闹钟布了却永不到期**。因 x86/aarch64 用同一 `tick_with`（uptime+=1 与 expire_alarm_timers 均门控 `self.is_bsp`，clock.rs:1337/1386）能到 marker（其闹钟确会到期），非扫描/is_bsp 逻辑错 ⇒ 收敛为 **riscv 上所有进程 park 进 idle 后 uptime 停止前推（待触闹钟 exp=up+15 永追不上）**。
+> **旁证（受扰动、不作主证）**：xu108b 加了 clock_irq_handler 顶部「每 100 tick 打 uptime」探针，tick 计数冻在 ~100——但该轮连 arm/vfs 探针都未触发（冻得比 xu108 早很多），属 tick 热路 Console 写引发的扰动（Heisenbug，WORKLOG 已知陷阱），只能佐证「tick 会停」不能定量。
+> **续-109 修靶（decision-complete）**：干净区分与定位 riscv idle 期定时器停摆的确切环节（不能用会扰动的 tick-Console 探针）。候选（均 cfg(riscv64)）：① idle 前最后一 tick 是否经 `local_tick`→SBI `local_timer_eoi` 正确重装了 mtimecmp 到 now+interval（而非装到过去/远处）；② idle→wfi 后 S-mode timer 中断是否真能捕获（`sie.STIE` 与 `sstatus.SIE` 两门是否都开——idle_halt 已 `csrs sstatus,SIE`，需确认 STIE 未被某处关）；③ wfi 唤醒后是否真进 riscv64_kernel_body→riscv64_timer_arm（而非静默不回）。可先静态读 riscv ClockArch::local_timer_eoi / rearm_local_tick / sie 使能链；坐实前不成修。
+>
+
+> **（历史·§1.120续-107（2026-10-01·**riscv 静默冻结根因探针坐实到具体一步——INIT 的 rc 子进程永久阻塞在 `nanosleep`（非 VFS/TTY）——纯取证轮、探针用后即滚、tracked 净、零生产码改、免 CodeReview**）：承续-106 定性的「INIT Runcom→fork/exec sh on /etc/rc 静默冻结」，本轮用步进面包屑探针（cfg(riscv64) sys_diagctl_write，三枪：runcom.rs runetcrc 子 enter/子 pre-exec/父 pre-wait + host.rs set_controlling_tty 内 enter/post-setsid/post-nanosleep/pre-open）真机采集定谳卡点：
 > **xu107b 实测序列**：`nk107: rc-child enter`(4096) → `nk107s: sct enter`(4098) → `nk107: rc-parent pre-wait`(4105) → `nk107s: sct post-setsid`(4110) → **此后无 `sct post-nanosleep`** ⇒ 子进程已过 setsid、**永久卡在 `nanosleep_via`（set_controlling_tty 的 250ms DTR 间隔）不返回**，从未走到 open(/dev/console)/ioctl。父进 waitpid 因子永挂而永久阻塞＝静默冻结。**根因域＝riscv 闹钟睡眠（alarm-sleep）唤醒腿**，非 VFS/TTY（open 未达）。
 > **唤醒腿机制（已读码定位）**：**（本轮收尾静态修正）`nanosleep_via` 实为 `select_empty_via(transport,…)`＝`select(0,NULL,NULL,NULL,&timeout)` 走 VFS IPC（Minix 传统），非直调内核 clock**。⇒ rc 子是**整机首个调 `set_controlling_tty`（唯一含 nanosleep 的路径；父 init imain-3 console 走 `ensure_console`→`console_present` 不 nanosleep）**的进程＝riscv 上 select-with-timeout 腿的**首次真实运行**。子卡在「向 VFS 发 select SENDREC → 等 VFS 超时回复」的睡眠等待。
 > **续-108 修靶（decision-complete）**：定 **VFS select(空 fdset+timeout) → VFS 经 CLOCK 设闹钟 → 到期 notify VFS → VFS 向 parked 子 sys_reply 唤醒** 这条腿哪环断（与续-87 aarch64 VFS barrier 回复形态、§1.113~118 park-后-回复投递同族；**非内核闹钟链本身——内核 tick 腿续-105 已修好、clock_irq_handler 的 mini_notify_core+enqueue_if_woken 已在**）。三处一次性探针（cfg(riscv64)、用后即滚）：① VFS select 处理臂——是否将该请求入定时器队；② 定时器到期 VFS 是否被内核 notify（跟 clock alarm batch→VFS endpoint）；③ VFS 是否发出 sys_reply 到 parked 子 + 子是否收到唤醒。**坐实哪环断前不成修**；本续-107 探针腿已彻滚（runcom.rs+host.rs git checkout、tracked 净、无 nk107 残留）。
@@ -9250,3 +9256,21 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **探针卫生**：runcom.rs + host.rs 两处探针均 `git checkout` 回滚，tracked 净（仅 WORKLOG 本提交），grep 无 nk107 残留；零生产码改→WORKLOG-only、免 CodeReview。
 
 ⚠ 三目标不缩小：①x86✅·**riscv PLIC 腿已通、marker 未达（新停点坐实＝INIT rc 子永久卡 nanosleep、riscv 闹钟唤醒腿）**·aarch64❌（续-87）；②x86 核心✅（echo/ls/cat 走真 VFS IPC）、riscv/aarch64 命令面未达（riscv 正卡在此命令面出生首步 nanosleep）；③minix3 tests 未动。
+
+---
+
+## §1.120续-108（2026-10-01·**riscv nanosleep 腿探针坐实到「闹钟布了却永不到期」——riscv idle 期 uptime/定时器停摆（纯取证轮、探针用后即滚）**）
+
+**探针面（四处，均 cfg(riscv64)、用后即滚）**：内核 `set_alarm_timer`（clock.rs，打 exp&uptime）、内核 clock_irq_handler 到期 batch notify 循环（打 fired ep/nr/up）、VFS `select_arm_and_suspend`（打请求布闹钟的 ticks）、VFS `select_timeout_check` 入口（打是否被 CLOCK 唤醒）。
+
+**xu108 铁证（无 tick 探针、可靠）**：串口 4107 行、`nk108: vfs-arm next=0x0f`（VFS 收到 rc 子的 select、请求布 15-tick 闹钟）+ 早期 `nk108: arm exp=0x133 up=0x124`（uptime 已推到 0x124、is_bsp 真）；但 **`fired=0`**（`for ep in batch` 到期通知循环从未进入）、`vfs-stc-enter=0`（VFS 超时检查从未跑）⇒ **闹钟布防成功却永不到期**。
+
+**逻辑闭合**：`tick_with`（clock.rs:1337/1386）的 `self.uptime += 1` 与 `expire_alarm_timers` 都门控 `self.is_bsp`；x86/aarch64 走同一份代码能到 marker（其 select 闹钟确会到期唤醒），故非 is_bsp/扫描逻辑 bug。⇒ 收敛到**运行时**：riscv 上所有进程 park 进 idle 后 uptime 停止前推，待触闹钟（exp = 布防时 up + 15）永追不上 → `select_timeout_check` 不跑 → VFS 不回复 parked 子 → 子永挂 nanosleep → INIT waitpid 永挂 → 整机静默冻结。
+
+**旁证（受扰动、不作主证）**：xu108b 在 clock_irq_handler 顶加「每 100 tick 打 uptime」探针后，tick 冻在 ~100，但该轮连 arm/vfs 都未触发（冻得远早于 xu108 的 4107 行/rc），是 tick 热路 Console 写引发的 Heisenbug（WORKLOG 已知陷阱：探针自身扰动时序）；仅定性佐证「tick 会停」，不能定量。
+
+**续-109 修靶（decision-complete）**：干净（非扰动态）定位 riscv idle 期定时器停摆环节——① idle 前最后 tick 的 `local_tick`→SBI `local_timer_eoi` 是否把 mtimecmp 正确重装到 now+interval；② `sie.STIE` 与 `sstatus.SIE` 两门是否都开（idle_halt 已 csrs sstatus.SIE，查 STIE 是否被某处关）；③ wfi 唤醒后是否真进 riscv64_kernel_body→riscv64_timer_arm。**先静态读 riscv ClockArch::local_timer_eoi / rearm_local_tick / sie 使能链**，坐实前不成修。与续-105 的 PLIC claim 腿、续-87 aarch64 barrier 回复腿是不同层次（本腿＝idle 期 tick 源停摆）。
+
+**探针卫生**：clock.rs（3 处）+ main_loop.rs（2 处）全 `git checkout` 回滚，tracked 净，grep 无 nk108 残留；零生产码改→WORKLOG-only、免 CodeReview。
+
+⚠ 三目标不缩小：①x86✅·**riscv PLIC 已通、marker 未达（新停点坐实＝idle 期定时器/uptime 停摆致 select 闹钟永不到期）**·aarch64❌（续-87）；②x86 核心✅、riscv 命令面卡在出生首步 nanosleep（idle tick 停摆）、aarch64 未达；③minix3 tests 未动。
