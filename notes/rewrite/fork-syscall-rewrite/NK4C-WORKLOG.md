@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-97（2026-10-01·**riscv RS 挂死点定位到 `switch_address_space`（纯取证轮·探针用后即滚·tracked 净）**）：两枚 RS stage 二分 marker（pre-misc/post-misc）均**未触发**，而续-96 已证 `picked=RS(2)` 打印过 ⇒ RS 卡死在`current=Some(picked)`(3940)→Stage3(pre-misc,4050) **之间**，该区间唯一致命的跨空间操作是 `switch_address_space(table, RS)`（lib.rs ~4048，proc.c:349 对位）。RS 是 DEFERRED boot 模块（`init_proc_and_boot` 只对 is_vm load_vm_elf），其 `p_seg.phys_root` 此刻疑为 0/未就绪 ⇒ riscv `switch`(写 satp 到空/无效根) 后紧接着的内核侧取指即坏、无干净 scause 回迹（thunk 里挂死）。**未解悖论（须先破才能正确修）**：同一 `switch_address_space`/`init_proc_and_boot` 是 arch-neutral，x86/aarch64 靠同段能到 marker ⇒ 要么 working arch 里 RS 被调度前其页表/镜像已由某步建立（VM 运行时 exec？），riscv 该步未发生；要么 working arch 的 switch 对未就绪 root 不硬挂而 riscv 挂。**续-98 必先做**：读 C `main.c`/`protect.c` boot 序 + 本 port RS 镜像/页表实际由谁在何时建立（`exec_bootproc`/VMCTL_SETADDRSPACE 链），确证「RS 何时应 runnable」的正确前置，再定修点（gate RS enqueue 于镜像就绪 vs 补 riscv boot 加载步）。无生产码改、WORKLOG-only、免 CodeReview。
+> **🛑 最新前沿＝§1.120续-98（2026-10-01·**riscv 出生链根因锁定（探针坐实，纯取证轮·探针用后即滚·tracked 净）**）：RS@pick 探针实测：`RS root=0x82132000 misc=0 rts=0`——**RS 有自己一个非零页表根（非 DEFERRED=0！）、misc/rts 干净 runnable**。⇒ `switch_address_space` 走第 3 支 `set_active_root_tracked(0x82132000)` 把 satp 切到 RS 的根。VM 的根是 0x82000000（bootstrap），RS 是**另一个** 0x82132000。**根因假说（已能解释全部现象）**：riscv 给 RS 建的这个 proc 根**未映射 higher-half 内核（0xFFFFFFC000000000 区）**→ 切 satp 后紧接着执行的内核代码（scheduler_loop 返回路径/pre-misc marker）取指即坏、thunk 内静默（x86/aarch64 每个 proc 根都含内核高半映射，故同段不挂、能到 marker）。这统一了前几轮全部观测：park/resched/sched/enqueue/pick 全对，VM 用自己的 bootstrap 根跑得好，RS 被切到自己的（缺内核映射的）根即死。**续-99 修靶（具体）**：定位 RS.p_seg.phys_root=0x82132000 由谁建（init_proc_and_boot 里 proc 根赋值，疑在 lib.rs:1976 `p_seg.phys_root=root_phys` 或 VM/adopt 链），核对它是否缺内核高半映射——修＝riscv 建 proc 根时镜像 x86/aarch64 铺内核 high-half（或让 boot 期 proc 暂用含内核映射的 bootstrap 根），确保 satp 切换后内核仍可执行。目标：RS 真运行→握手自持→init exec→marker。
+>
+
+> **（历史·§1.120续-97（2026-10-01·**riscv RS 挂死点定位到 `switch_address_space`（纯取证轮·探针用后即滚·tracked 净）**）：两枚 RS stage 二分 marker（pre-misc/post-misc）均**未触发**，而续-96 已证 `picked=RS(2)` 打印过 ⇒ RS 卡死在`current=Some(picked)`(3940)→Stage3(pre-misc,4050) **之间**，该区间唯一致命的跨空间操作是 `switch_address_space(table, RS)`（lib.rs ~4048，proc.c:349 对位）。RS 是 DEFERRED boot 模块（`init_proc_and_boot` 只对 is_vm load_vm_elf），其 `p_seg.phys_root` 此刻疑为 0/未就绪 ⇒ riscv `switch`(写 satp 到空/无效根) 后紧接着的内核侧取指即坏、无干净 scause 回迹（thunk 里挂死）。**未解悖论（须先破才能正确修）**：同一 `switch_address_space`/`init_proc_and_boot` 是 arch-neutral，x86/aarch64 靠同段能到 marker ⇒ 要么 working arch 里 RS 被调度前其页表/镜像已由某步建立（VM 运行时 exec？），riscv 该步未发生；要么 working arch 的 switch 对未就绪 root 不硬挂而 riscv 挂。**续-98 必先做**：读 C `main.c`/`protect.c` boot 序 + 本 port RS 镜像/页表实际由谁在何时建立（`exec_bootproc`/VMCTL_SETADDRSPACE 链），确证「RS 何时应 runnable」的正确前置，再定修点（gate RS enqueue 于镜像就绪 vs 补 riscv boot 加载步）。无生产码改、WORKLOG-only、免 CodeReview。
 >
 
 > **（历史·§1.120续-96（2026-10-01·**riscv boot 冻结点首次精确到『proc+转移』（纯取证轮·探针用后即滚·tracked 净）**）：双探针（scheduler_loop 入口计数 + 每轮 picked nr）确证：`schedloop#0 → picked=8(VM)` → VM 跑完自身 boot → `rcv-p4`（park 在 receive）→ `schedloop#1 → picked=2(RS)` →**之后彻底静默**（无 schedloop#2、无 RS 任何陷入、无 marker、无 panic/无缺页）。⇒ 排除 thunk 死锁（scheduler 确实二次进入并选中了 RS），冻结点＝**RS(proc 2) 被 finish_and_restore→restore_to_user 切入用户态后再不返回**。关键结构性事实：`init_proc_and_boot` 只对 `is_vm` 跑 `load_vm_elf`，**其余 boot 模块（含 RS）entry＝`EntrySpec::DEFERRED`（ELF 未加载、pc 未定）**（lib.rs:1985-1988）。RS 却在 inhibit 被清后变 runnable→被选中→restore 到无 ELF 的上下文→静默（连一次指令取指陷阱都没回，疑 restore asm 未 sret 或跳到未映射址静默）。**但同一段 init_proc_and_boot 是 arch-neutral、x86/aarch64 能到 marker** ⇒ 差异在『RS 的 ELF/页表何时就绪 vs 何时被调度』：**working arch 里必先有人（VM）把 RS 的镜像 load/exec 再放它跑，riscv 上这一步没发生或 RS 过早 runnable**。**续-97 靶**：①查 x86 boot 链里 RS 镜像由谁、在 VM park 前还是后加载（`exec_bootproc`/VM 的 do_rsinit/VIRTMCTL 序），riscv 走没走到；②RS 被 picked 时 `p_seg.phys_root`/`cpu_context` pc 是否 =DEFERRED 态；③若是，修 RS 的 runnable 时机（ELF 就绪前不该被 pick）或补齐 riscv 缺的那步 boot exec。目标：RS 真加载并运行→握手自持→marker。无生产码改、WORKLOG-only、免 CodeReview。
@@ -9101,3 +9104,25 @@ nk96: picked=0x2          ← 选中 RS
 2. 读本 port RS 的实际镜像建立链：`exec_bootproc`/`dispatch_vmctl(VMCTL_SETADDRSPACE)`/`vm_handoff` —— 确证「RS 何时才应 runnable」。
 3. 据 1&2 定修点：要么把 RS 的 enqueue/runnable 严格 gate 在镜像+页表就绪（清 VMINHIBIT 前不 enqueue），要么补 riscv boot 缺失的那步加载/切址守卫。目标：RS 真运行→握手自持→init exec→marker。
 ⚠ 三目标不缩小：①x86✅·riscv 挂死点=switch_address_space(RS 未就绪)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-98（2026-10-01·**riscv 出生链根因锁定：RS 切到自己缺内核高半映射的 proc 根（探针坐实，纯取证轮）**）
+
+**承续-97**（RS 卡在 switch_address_space）。一枚 `RS@pick` 探针（读 proc 表字段，用后即滚）实测决定性数据：
+
+```
+nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
+```
+
+**推翻续-96/97 的『RS DEFERRED=无 root』假设**：RS 有一个**非零、独立的页表根 `0x82132000`**（≠ VM 的 bootstrap `0x82000000`），misc/rts 全干净（确为可运行）。⇒ `switch_address_space(RS)` 命中第 3 支 `set_active_root_tracked(0x82132000)`——**把 satp 切到 RS 自己的根**。
+
+**根因（统一解释全部前序观测）**：riscv 为 RS 建的这个 proc 根**疑缺 higher-half 内核映射（`0xFFFFFFC000000000` 区）** → satp 一切换，紧接着执行的内核代码（scheduler_loop 返回路径、下一个 fetch）就落在未映射高半 → supervisor 取指坏、thunk 内静默（连 pre-misc marker 都没打出，正因为在 switch 之后的内核指令就死了）。对照：x86/aarch64 每个 proc 根都含内核高半映射，所以同段 `switch_address_space` 不挂、能推进到 marker。VM 无恙是因它跑时用的是**含内核映射的 bootstrap 根**（0x82000000），没被切到独立 proc 根。
+
+**续-99 修靶（具体、可验）**：
+1. 定位 RS.p_seg.phys_root=0x82132000 由谁建立（`init_proc_and_boot` proc 根赋值处——疑 lib.rs:1976 区，或 VM `vm_setupmemory`/`exec_bootproc`/adopt 链给每个 boot 模块建新根）。
+2. 核该根是否缺内核高半映射（riscv `Riscv64Paging` 建新根时有没有铺 `map_kernel`/higher-half，对位 x86 每根含 direct-map+kernel、aarch64 含 TTBR1）。
+3. 修＝riscv 建 proc 根时镜像 x86/aarch64 铺内核 high-half（boot 期 proc 根都含内核映射），或让首跑前的 proc 暂用含内核映射的 bootstrap 根直到 VM 建好完整用户根。改动务必跑全验证链（host + 三架构 check-layout + x86/aarch64 真机不回归 + riscv 全系统 boot 前进）+ CodeReview。
+
+⚠ 三目标不缩小：①x86✅·riscv 根因锁定(RS proc 根缺内核高半映射)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
