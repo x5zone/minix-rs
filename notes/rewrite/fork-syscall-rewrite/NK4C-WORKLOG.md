@@ -8505,6 +8505,23 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   跳、需 entry 侧适配」真缺口坐实（hello-boot 载体级也撞，非生产镜像特有）。U-Boot 腿终态装机
   属裁决级工程（entry 适配/OpenSBI 域配置），非 marker 最短径——riscv marker 建议走 OpenSBI
   直载甲案腿（3.1），U-Boot 腿留后续。脚本改动对 CI 旧 blob 向下兼容（旧版两种盘形均可读）。
+### ③b 续-78a 静态推进（本轮收尾批次，零改动纯读码）
+- msgw 全样本目标 VA 核对：**无一为 0x2db 系**（PM .data 从未被内核写）⇒「内核 reply 投进 PM 堆」
+  外源假说排除；毒 (1,8,0x7bff,6) 与 PM 自身消息族无对应（mt=8 在 minix-types 各家族无请求值；
+  SYS_ENDKSIG=8 是唯一命中的 m_type=8 生产者，但 PM 在 step6 前无 endksig 调用点——init.rs/main.rs
+  grep 零命中）。
+- 剩余候选收紧：(a) `nkf5` 读取点与 `nkf6` 打印点之间，编译器把 msgs 分配到了与 **diagctl 传输
+  栈消息** 或 rt 信号帧重叠的栈/堆槽（探针观测效应未排除——f6 后无后续迭代打印，循环疑似已崩）；
+  (b) aarch64 release 下 `Vec::push` 代码gen 异常（未反相成功：模块符号表无独立
+  `vfs_init_messages`（已内联进调用者），需按 rodata 引用锚 `21c2b0 邻域`/字符串 "can't sync up"
+  反汇编定位，待续）。
+- **续-78b 配方（更新版 decision-complete）**：①零探针版：直接在 aarch64 host 交叉单元测试
+  `cargo test -p minix-pm --target aarch64-unknown-none`（如可跑）或把 vfs_init_messages 提为
+  `#[cfg(test)]`+host 断言 msgs[0].m_type==VFS_PM_INIT（host 若也复现＝纯 Rust 逻辑 bug，能当场修；
+  若 host 正常＝aarch64 代码gen/布局专属，回到 objdump 锚定路线）；②objdump 路线：以 rodata
+  串 "can't sync up"（0xc91/0x1808 file offset）反查 adrp/add 引用点→整段反汇编核对 push 拷贝与
+  0x900 立即数写序。禁止再上真机探针链（观测效应污染判定，f4 溢出教训在案）。
+
 ### ④ 验证与纪律
 - 全部探针 `git checkout` 回滚，tracked 净＝uboot 脚本+WORKLOG；x86 真机（nk77z）marker=2/panic=0
   复验；host 828/0·569 基线不动；双架构镜像已用干净码重建。
