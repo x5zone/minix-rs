@@ -8592,7 +8592,18 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   ③VM handle/树选择全对（前轮嫌疑排除）。根因域再收口＝**region 记账层 slot-pfn 污染**
   （候选腿：VM 对同 VA 的 region 查找拿错 proc 的 regions/`find_mut` 别名、page_cache 对
   IN_CACHE 帧的重映射未先摘旧属主 slot、exec adopt 把 boot 页登记进新进程 slot 未 alloc）。
-- **续-83 配方（定稿 decision-complete）**：在 `map_page`（region/mod.rs slot 写入唯一漏斗）与
+- **续-83 真机定谳（nk83 slot 漏斗单打点，已滚 tracked 净）**：F1 的 `map_page` 登记**全程仅一次**
+  （rv=0x245000 off=0x96000＝池页 VA 0x2db000，PM/VFS 同构镜像该值相同不可分辨属主）——与续-82
+  （alloc 唯一 ep=0）联立：**F1 全生命周期只被一个 region 登记/分配一次，但两棵树 PTE 都有它**；
+  第二棵树的叶既非 alloc 亦非 map_page 登记 ⇒ 写叶者必为**不经 region 记账的 PTE 直写腿**：
+  fork dup / exec adopt 段映射 / boot handoff PTE 复制 / grant remap（共享映射）四者之一。
+  注意 grant.rs 的 supSk/vg 探针为 x86-only cfg（aarch64 串口那两行 supSk idx=0x38 n00001
+  base=0x257000＝池页 56 号已被 n=1 属主供给过——grant remap 腿嫌疑直接命中，但归属打印在
+  aarch64 不可用）。
+- **续-84 配方（定稿 decision-complete）**：四个 PTE 直写腿各加一次性打点（去 grant.rs 的
+  x86 门控改三架构或在 arm64 paging 的 map/remap/grant_user 入口打 (root, va, pfn)）——F1 的
+  两次 map 调用即现形（root=PM 树 vs VFS 树+调用腿），按腿定位记账缺陷后成修+CodeReview+回归。
+**续-83 配方（定稿 decision-complete）**：在 `map_page`（region/mod.rs slot 写入唯一漏斗）与
   `get_slot(pfn)` 读侧打点 (ep, offset, pfn, write|read)，真机一轮看 VFS ep=1 服务读的 slot pfn
   是哪次 write 登记进去的（若登记腿是 PM 的 map_page＝region 查找串进程，修 find/proc 路由；
   若登记在 boot adopt＝查 exec adopt 的 physblocks 初始化对照 C memalloc_child/steal 语义）。
