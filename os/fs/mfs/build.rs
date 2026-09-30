@@ -27,14 +27,20 @@ fn main() {
     // Determine the target architecture from the build environment so we
     // never cross-contaminate (e.g. aarch64 build embedding x86_64 imgrd).
     // Host builds (cargo test) get arch_slug="" → no match → empty fallback.
+    // 三架构裸机都需嵌 imgrd：riscv64 腿在 NK4-C 续-89 加入——甲案
+    // bootface 真门槛之后的 rc marker 链要 MFS 供 /etc/rc 与
+    // /bin/{sh,echo,ls,cat}，空 imgrd（旧 `""` 分支）会让 `ls`/`cat`
+    // 全 ENOENT、marker 必失。imgrd 内容由宿主 `mkfs_mfs` 生成（arch-
+    // neutral 文件系统镜像），但其中嵌入的 /bin 命令 ELF 按本架构选。
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let arch_slug: &str =
-        if target_os == "none" && (target_arch == "x86_64" || target_arch == "aarch64") {
-            &target_arch
-        } else {
-            "" // host/test or unsupported arch: fall back to &[]
-        };
+    let arch_slug: &str = if target_os == "none"
+        && matches!(target_arch.as_str(), "x86_64" | "aarch64" | "riscv64")
+    {
+        &target_arch
+    } else {
+        "" // host/test or unsupported arch: fall back to &[]
+    };
 
     let imgrd_path = if arch_slug.is_empty() {
         None

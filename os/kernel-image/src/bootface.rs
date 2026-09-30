@@ -125,10 +125,8 @@ const KERN_VIRT_BASE: u64 = 0xFFFF_FFC0_0000_0000;
 /// 把跨距推成非 2MiB 整数倍，反破 L5/L7）。
 const KERN_SIZE: u64 = 0x40_0000;
 
-/// boot 暂存页预算：1 MiB（256 页）。上界依据：x86 release 模块产物最大
-/// `minix-vm` ≈ 510KiB，riscv 同数量级；超预算的表项在 `place_modules`
-/// 被点名拒收（不是静默截断）。
-const SCRATCH_PAGES: usize = 256;
+/// boot 暂存页预算已取消（续-89）：早期两段式拷贝的 1 MiB scratch 与模块
+/// 尺寸上限均由「源直拷 + `in_memmap_range` 全宽闸」取代，见 `place_modules`。
 
 /// 页表 bump 区页数：1 MiB（256 页，= boot-shim 库 fallback 同宽）。Sv39
 /// 建根+身份低半+高半+DM 两窗的中间表用量在 QEMU virt 单段 memmap 下
@@ -225,7 +223,7 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
 
     // 3. bump 物理池（boot-shim 库 `MODULE_REGION_BASE` 车道：DRAM+32M
     //    起 32MiB，`BUMP_END <= boot_dm_admissible_end()` 编译期已证）：
-    //    root 页 → 页表 bump 区 → 暂存页，顺序无重叠；模块取页在其后。
+    //    root 页 → 页表 bump 区 → 名字池，顺序无重叠；模块取页在其后。
     //    CodeReview SF5：全部走 Option+诚实停机，不留 `.expect`/panic 腿
     //    （panic 渲染携 baked-VMA fmt pieces，物址视图里正好踩定枢）。
     let pool_exhaust = "### minix-rs kernel image: bump pool exhausted — halting\n";
@@ -233,8 +231,6 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     let root_page = PhysBytes(cur_root);
     let Some(pt_base) = bump_alloc_pages(PT_BUMP_PAGES) else { say(pool_exhaust); crate::halt() };
     let pt_end = pt_base + (PT_BUMP_PAGES as u64) * 4096;
-    let Some(scratch_base) = bump_alloc_pages(SCRATCH_PAGES) else { say(pool_exhaust); crate::halt() };
-    let scratch_end = scratch_base + (SCRATCH_PAGES as u64) * 4096;
     // 名字池：单页物址 bump 区，12×16B 槽（详 `place_modules` 视图论）。
     let Some(names_pool) = bump_alloc_pages(1) else { say(pool_exhaust); crate::halt() };
     minix_kernel::boot_alloc::init_boot_pt_alloc(pt_base, pt_end);
@@ -247,8 +243,9 @@ pub extern "C" fn bootface(boot_hart: u64, dtb_pa: u64, table_pa_a2: u64) -> ! {
     say_hex(pt_end);
     say("\n");
 
-    // 4. 12 模块：表定位（名对位校验）→ 经暂存页直拷进 bump 页。
-    if place_modules(table, memmap, scratch_base, scratch_end, names_pool).is_none() {
+    // 4. 12 模块：表定位（名对位校验）→ 源直拷进 bump 页（源已过与池
+    //    不相交闸，`copy_nonoverlapping` 无重叠）。
+    if place_modules(table, memmap, names_pool).is_none() {
         say("### minix-rs kernel image: module placement failed — halting\n");
         crate::halt();
     }
@@ -351,11 +348,16 @@ fn in_memmap(memmap: &[MemoryRegion], pa: u64) -> bool {
 }
 
 /// 地址区间是否整体落在 memmap 任一区间内（防炸闸：hartid/垃圾值不当
-/// 指针用；区间形而非单点——CodeReview SF3 要求消费前验全宽）。
+/// 指针用；区间形而非单点——CodeReview SF3 要求消费前验全宽）。用
+/// `checked_add`：`pa + len` 对任意（含现实不可达的超大）`len` 都不回绕，
+/// 溢出即视为越界拒收（CodeReview 续-89 N1：让全宽闸与输入无关地成立）。
 fn in_memmap_range(memmap: &[MemoryRegion], pa: u64, len: u64) -> bool {
+    let Some(end) = pa.checked_add(len) else {
+        return false;
+    };
     memmap
         .iter()
-        .any(|r| pa >= r.base.0 && pa + len <= r.base.0 + r.len as u64)
+        .any(|r| pa >= r.base.0 && end <= r.base.0 + r.len as u64)
 }
 
 /// magic 闸：在 `in_memmap` 界内解引用一个 u64 核对表签名。
@@ -365,17 +367,23 @@ fn table_magic_ok(pa: u64) -> bool {
     unsafe { (pa as *const u64).read_volatile() == boot_file_table_magic() }
 }
 
-// ── BootFileTable 消费（kernel-image 形状：物理暂存、零堆）──────
+// ── BootFileTable 消费（kernel-image 形状：源直拷入物理 bump 页、零堆）──
 
-/// 12 模块的落地暂存表（`.bss`，装配后只读）。
+/// 12 模块的落地描述表（`.bss`，装配后只读）。
 static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
     BootModule { name: "", start: PhysBytes(0), len: 0 }
 }; NR_BOOT_MODULES];
 
-/// 按契约位置消费表前 `NR_BOOT_MODULES` 项、经暂存页拷进 bump 页；条目
-/// 不足/名不对位/源越界/超暂存预算/池枯竭都点名并返回 `None`（对位
-/// loader.rs `load_boot_modules_with_loader` 的 fail-fast 语义——装机错误
-/// 在这条腿上暴露，不给内核递半套模块）。
+/// 按契约位置消费表前 `NR_BOOT_MODULES` 项、源直拷进 bump 页；条目不足/
+/// 名不对位/源越界/源与池相交/池枯竭都点名并返回 `None`（对位 loader.rs
+/// `load_boot_modules_with_loader` 的 fail-fast 语义——装机错误在这条腿
+/// 上暴露，不给内核递半套模块）。
+///
+/// 为什么源直拷而不经暂存中转（续-89 真机定案）：早期设计留了一格 1 MiB
+/// 物理 scratch 做两段式拷贝，但 mfs 嵌 8 MiB imgrd 后单模块达 ~8.9 MiB，
+/// 超死 scratch 预算——而中转本仅为「拷前核长度」，`in_memmap_range` 已把
+/// 源全宽验在 memmap 内、不相交闸已排除与 bump 池重叠，`copy_nonoverlapping`
+/// 直拷已充分（无重叠 UB）；去掉中转既省内存又消除尺寸上限。
 ///
 /// 位置为主、名为辅（CodeReview SF4）：表格式本身不承诺顺序（槽宽 16
 /// 可含 kernel 槽），纯位置消费会把错位的字节流安静地当成某个模块。
@@ -383,9 +391,8 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
 /// 逐字节对期望名字面量」——表 RAM 字节与调用点字面量都是视图安全形，
 /// 不引入任何 baked 指针解引用。
 ///
-/// 源区间三道闸（CodeReview SF3）：`phys_addr..+len` 必须整体落在
-/// memmap 内（越界读 = fault→热重入，是最贵的坏形）；必须不与 bump 池
-/// 相交（`copy_nonoverlapping` 的重叠即 UB）；len 非零且不超暂存预算。
+/// 源区间三道闸（CodeReview SF3）：len 非零；`phys_addr..+len` 整体落在
+/// memmap 内（越界读 = fault→热重入）；不与 bump 池相交（直拷重叠即 UB）。
 ///
 /// `names_pool` 是物理 bump 页基址：`BootModule.name` 的指针字段必须也
 /// 是物理址——内核 `store_kernel_info` 在 `arch_boot` 入口（satp 写入后、
@@ -395,11 +402,8 @@ static mut MODULE_TABLE: [BootModule; NR_BOOT_MODULES] = [const {
 fn place_modules(
     table: &BootFileTable,
     memmap: &[MemoryRegion],
-    scratch_base: u64,
-    scratch_end: u64,
     names_pool: u64,
 ) -> Option<()> {
-    let scratch_len = (scratch_end - scratch_base) as usize;
     let entries = table.valid_entries();
     if entries.len() < NR_BOOT_MODULES {
         say("  table holds 0x");
@@ -428,12 +432,10 @@ fn place_modules(
             return None;
         }
         let len = entry.len as usize;
-        if len == 0 || len > scratch_len {
+        if len == 0 {
             say("  module slot 0x");
             say_hex(i as u64);
-            say(" length 0x");
-            say_hex(entry.len);
-            say(" over scratch budget\n");
+            say(" length 0\n");
             return None;
         }
         if !in_memmap_range(memmap, entry.phys_addr, entry.len) {
@@ -454,16 +456,10 @@ fn place_modules(
         }
         let pages = len.div_ceil(4096);
         let dest = bump_alloc_pages(pages)?;
-        // SAFETY: 源区间刚过 memmap 全宽闸且与 bump 池不相交；中转格/
-        // 目的 = 各自独占的 bump 页（游标单调互不重叠），拷贝长度恒
-        // ≤ 区间长。
+        // SAFETY: 源区间刚过 memmap 全宽闸且与 bump 池（dest 所在）不相交；
+        // dest = 独占 bump 页（游标单调互不重叠），拷贝长度恒 ≤ 两端区间长。
         unsafe {
-            core::ptr::copy_nonoverlapping(
-                entry.phys_addr as *const u8,
-                scratch_base as *mut u8,
-                len,
-            );
-            core::ptr::copy_nonoverlapping(scratch_base as *const u8, dest as *mut u8, len);
+            core::ptr::copy_nonoverlapping(entry.phys_addr as *const u8, dest as *mut u8, len);
             core::ptr::write_bytes((dest as *mut u8).add(len), 0, pages * 4096 - len);
         }
         // 名字入池：字节池第 i 槽（16B，含零填充）拷进物理名字池，胖

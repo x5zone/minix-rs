@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-88（2026-09-30·riscv 甲案装机面入口腿落地＝kernel-image riscv64 自引导 bootface（DTB memmap＋BootFileTable 双通道＋物理名字池＋arch_boot 真门槛）·真机取证链 jiaf1–jiaf9 定谳「satp=0 物理视图下经数据格的 &str（静态胖指针/切换表）解引用＝Load access fault→OpenSBI 热重入；唯一安全形状＝调用点字面量 auipc＋纯字节池」·OpenSBI 冒烟 A1–A4 与 bootface 夹具 B1–B3 各双轮 md5 一致·host 828/0·569·boot-shim 27/0·clippy/rustfmt Δ0·三架构 check-layout PASS·x86 真机两轮 marker=2/panic=0 不回归·**两轮 CodeReview：首轮 1 BLOCKER+5 SF+5 NIT 全采纳，复审代码层 PASSED（仅 3 注释 NIT 已清）**）**：目标① riscv 剩余＝xtask 装机腿（产物形/boot.scr/表装配/12 模块 riscv 产物）＋arch_boot 之后 kmain 全链实况；下一入口见文末 §1.120续-88。aarch64 续-87（barrier mt=8 注入点）配方保持排队。**另：R3.1 增量评审线交接待办已入账（F1–F10 + 6 NIT，来源＝评审线报告 §6.2/§7.3，全 P2/非阻塞，登记于文末「§R3.1 评审线交接待办」小节，择机顺路认领，本轮不动）**。
+> **🛑 最新前沿＝§1.120续-89（2026-09-30·**riscv 全系统 boot 首次跑通生产 kmain Phase A/B**）：新增 `os/qemu-tests/test-riscv64-boot-full.sh` 装配 12 个 riscv 模块 + imgrd（mfs build.rs arch 门 += riscv64）→ 真 BootFileTable + DTB /chosen → OpenSBI 直载 `-kernel` 镜像 + `-device loader`（force-raw）注入表与模块 → bootface 全腿通（12 模块放置）→ arch_boot validate/建表/DM → **kmain Phase A/B（validate/console/memmap copy/module cuts/platform/clock+intr/kerninfo）全活**——riscv 史上首次跑到真实 kmain（rt-birth 仅手搬相位）。停点＝`load_vm_elf: VM ELF MappingFailed`（kernel/src/lib.rs:1852）＝WORKLOG 续-77a A.2 登记的延后缺口（riscv `split_huge`/`grant_user_walk` 仍 trait 默认 NotSupported，aarch64 §1.110 有先例可镜像）。本轮附带 bootface 去 scratch 中转（mfs 嵌 8MiB imgrd 后单模块 8.9MiB 超 1MiB 预算，改源直拷，in_memmap_range checked_add 全宽闸）。CodeReview 无 BLOCKER/SF（2 NIT 已清）。验证链全绿：host 828/569·boot-shim 27/0·check-layout 三架构 PASS·riscv 冒烟+夹具双脚本 PASS·x86 真机 marker=2/panic=0 不回归。**下一入口（续-90）＝镜像 aarch64 §1.110 补 riscv split_huge/grant_user_walk 打通 load_vm_elf→VM handoff→server birth→marker**）。
+>
+
+> **（历史·§1.120续-88（2026-09-30·riscv 甲案装机面入口腿落地＝kernel-image riscv64 自引导 bootface（DTB memmap＋BootFileTable 双通道＋物理名字池＋arch_boot 真门槛）·真机取证链 jiaf1–jiaf9 定谳「satp=0 物理视图下经数据格的 &str（静态胖指针/切换表）解引用＝Load access fault→OpenSBI 热重入；唯一安全形状＝调用点字面量 auipc＋纯字节池」·OpenSBI 冒烟 A1–A4 与 bootface 夹具 B1–B3 各双轮 md5 一致·host 828/0·569·boot-shim 27/0·clippy/rustfmt Δ0·三架构 check-layout PASS·x86 真机两轮 marker=2/panic=0 不回归·**两轮 CodeReview：首轮 1 BLOCKER+5 SF+5 NIT 全采纳，复审代码层 PASSED（仅 3 注释 NIT 已清）**）**：目标① riscv 剩余＝xtask 装机腿（产物形/boot.scr/表装配/12 模块 riscv 产物）＋arch_boot 之后 kmain 全链实况；下一入口见文末 §1.120续-88。aarch64 续-87（barrier mt=8 注入点）配方保持排队。**另：R3.1 增量评审线交接待办已入账（F1–F10 + 6 NIT，来源＝评审线报告 §6.2/§7.3，全 P2/非阻塞，登记于文末「§R3.1 评审线交接待办」小节，择机顺路认领，本轮不动）**。
 >
 
 > **（历史·§1.120续-77f（2026-09-30·**aarch64 WrongMessageType(8) 根因域定枱：PM 用户态 `vfs_init_messages` 的 Vec 堆内容在 encode 出口后、同一函数内被变异（encode 本身正确）·七轮 NK77B–F 探针链全部已滚**）**：决定性事实链（均真机 aarch64 -smp4 同签名）：①内核三写腿对 VFS 栈无非法写（续-77c）；②拒收消息＝内核忠实投递的门送 msg；③door 体读腿不读 PM 缓冲，PM 发送的 r2 缓冲**自身**就携 (NONE,8,VFS_EP,slot6)（nk77e2/nk77e3：src=1 是盖章前用户态真值＝VFS_EP，即 m7i1 串位）；④PM 用户态探针：**`VfsPmInit::encode()` 栈上出口正确（nkf6: mt=0900, m7i1=6, m7i2=6）**，但 `push` 入 Vec 后同函数内读到 msgs[0]=(src=1?!, mt=8, m7i1=0x7bff, m7i2=6)；⑤常数 VFS_PM_INIT 在 PM 二进制内求值正确（nk77f2 首段 0900）；⑥同一 mt=8 在 VFS/其它服务器接收缓冲也观测到（跨进程一致形态）⇒ 非 PM 局部逻辑错，指向 **minix-rt 启动期堆/消息缓冲复用**（diagctl 共用消息缓冲？Vec 堆块与某静态/共享传输缓冲重叠？）或 encode 返回值拷贝被优化掉。**续-78 入口（decision-complete）**：a) 用 cargo asm/反相 aarch64 产物 `vfs_init_messages` 看 push 是否真的拷贝了 mk（encode 返回值是否被堆地址替位）；b) 若代码gen 无罪，在 PM 堆首块写字标记+后检（查谁覆写）；c) 对照 x86 同路径真机正常＝布局/分页差异点（PM 堆起点？）。目标① aarch64 当前头号阻塞，非内核侧。**另本轮环境项（用户已装 u-boot）：** test-riscv64-uboot.sh 对新 blob 三连适配（mdir 替 mmd、mkimage -d 替 -f、smode blob 需垫 OpenSBI -bios default + -kernel）；实测 Ubuntu 24.04 U-Boot 2025.10 distro boot **只认分区盘**（整盘 FAT 无分区表拒挂载→boot.scr 不执行；手建 MBR 分区后 `## Executing script` 实证可达），脚本分区化改造待续-78（宿主差异 SKIP 不 FAIL 原则已注释）。探针工程经验再+2：用户态 diagctl 探针缓冲必预留 内容+分隔+\n 全宽（f4 首次 48B 写 59B 栈溢出崩 PM 一轮，假信号需排除）；probe 链式多块时后块异常会吞前块（串行写串口无事务）。⚠ 三目标不缩小：①x86✅·riscv 未达 marker（内核腿全接，剩装机面）·aarch64❌（已定位到 PM 用户态堆变异）；②x86 核心✅；③未动。详文见文末 §1.120续-77f。
@@ -8843,3 +8846,24 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 - cd613370d：单线程 `.expect` 全服务停摆面（注释已自证，非新债）。
 
 **给评审线的反馈（顺带）**：R3 §7.3 的④⑤（本报告建议编号 F9/F10）虽在 §3/114 行确认仍开，但未并入 §6.2 主表；建议下轮把④⑤收进 §6.2，使「含 R3 遗留」名副其实。
+
+
+---
+
+## §1.120续-89（2026-09-30·**riscv 全系统 boot 首次跑通生产 kmain（装配腿落地）·停点定位到已登记的 split_huge/grant_user_walk 延后缺口**）
+
+**任务**：续-88 的 bootface 入口腿只证「arch_boot 前的模块装载闸通」。本轮把它推成真系统：装配真实 12 模块 + imgrd，经 OpenSBI 直载 + `-device loader` 注入，跑 arch_boot→kmain 全链，采集 riscv 生产 kmain 的首份真机证据。
+
+**改动面**：
+1. `os/fs/mfs/build.rs`：imgrd 嵌入的 `arch_slug` 门从 `{x86_64,aarch64}` 用 `matches!` 扩到含 `riscv64`——riscv MFS 不嵌 imgrd 则 /bin/{sh,echo,ls,cat} 与 /etc/rc 全缺、marker 必失。向后兼容（宿主 target_os≠none 仍退 `&[]`；无 imgrd.img 也退空）。
+2. `os/kernel-image/src/bootface.rs`：`place_modules` 去两段式 1MiB 物理 scratch 中转，改**源直拷**进 bump 页（`in_memmap_range` 全宽闸 + 与 bump 池不相交闸 + `bump_alloc_pages` 池枯竭三重把关）；删 `SCRATCH_PAGES`/`scratch_*`/`len>scratch_len`。动机＝mfs 嵌 8MiB imgrd 后单模块 ~8.9MiB 超 1MiB scratch。`in_memmap_range` 改 `checked_add`（CodeReview N1：超大-len 越界判定与输入无关）。
+3. `os/qemu-tests/test-riscv64-boot-full.sh`（新，不注册 run_all）：逐包构建 12 模块+命令（一次建多包触 duplicate panic_impl lang item，对位 xtask 逐包构）→ mkfs_mfs 播种 riscv imgrd → 重建 mfs（嵌 imgrd）→ 拼 entry_count=12 真表（basenames 按 NAME_POOL 序，模块源置池外 0x86000000+）→ dumpdtb+fdtput 注 /chosen → OpenSBI 直载 `-kernel 镜像 -dtb -device loader(force-raw)` 注入表+12 模块 → 采证据。关键宿主事实：`-device loader` 对 ELF 文件按其程序头 vaddr 装载（各模块低 vaddr 互叠被拒），须 `force-raw=on` 才按 addr= 放原始字节（对位 fatload 语义）。
+
+**真机首跑证据（jfull2→jfull6，决定性推进）**：bootface 全腿通（memmap 512M、表 0x85000000、12 模块放置、调 arch_boot）→ **arch_boot validate/step1+2/DM coverage 全 ok** → **kmain Phase A（validate/console+kinfo/memmap copy/module cuts/platform）+ Phase B（clock+intr/kerninfo）全活**——riscv 首次跑通真实生产 kmain（此前 rt-birth 仅手搬 init_* 相位、从未过 jump_to_kmain）。停点＝`load_vm_elf: VM ELF is required at boot: MappingFailed`（kernel/src/lib.rs:1852），命中 WORKLOG 续-77a A.2 登记的延后缺口：**riscv64 `split_huge`/`grant_user_walk` 仍为 trait 默认 `NotSupported`**（消费点＝内核 load_elf_into 的 evict/map 腿），aarch64 §1.110 有镜像先例。
+
+**CodeReview**：无 BLOCKER/SHOULD-FIX；2 NIT 全采纳（in_memmap_range checked_add 硬闸、脚本陈旧 scratch 注释订正）。确认：直拷 src（池外、memmap 全宽内）与 dst（池内）恒不相交 ⇒ copy_nonoverlapping 无 UB；尾零化在分配页内；池分配序 root→pt→名字池→模块单调无重叠。
+
+**验证链全绿**：host minix-kernel **828/0**（不减）·arch+boot+types **569**·boot-shim test-all 27/0；clippy kernel-image riscv 0 新告警；rustfmt bootface 0 漂移；三架构 check-layout PASS（L9 跨距对账在位）；riscv 冒烟 A1–A4 + bootface 夹具 B1–B3 双脚本 PASS（scratch 移除不影响 0-entry 停机臂）；**x86 镜像重建 + 真机 -smp4 marker=2/panic=0/pfVM=0 不回归**（mfs 门/ bootface 改动全 riscv 腿，x86/aarch64 二进制与 HEAD 等价）。
+
+**下一入口（续-90）**：镜像 aarch64 §1.110 补 riscv64 `split_huge`/`grant_user_walk`（arch/riscv64/paging.rs）→ 打通 `load_vm_elf` → VM handoff → 12 server birth → init → **rc marker（目标① riscv 终灯）**。riscv kmain 后段（VM handoff/IPC/scheduler）是新地面，预期还会撞数个架构侧缺口，逐相取证推进（对位 aarch64 续-110~118 的路线）。
+⚠ 三目标不缩小：①x86✅·**riscv 生产 kmain 已跑到 Phase B（历史最远），停于 split_huge/grant_user_walk 延后缺口**·aarch64❌（barrier mt=8+handshake 竞态，续-87 配方在案）；②x86 核心✅；③未动。
