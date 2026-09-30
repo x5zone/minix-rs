@@ -8561,7 +8561,18 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   **拒收消息 (0,8,…) 的来源域重定**：VFS 堆池页被某写者写入 (1,8,0x7bff,6,3)（src=1=VFS 自身
   端点/mt=8 形态与 sys_getksig(ANY=0x7bff) kcall 消息全等）＝**VFS 自己的静态 kcall 消息缓冲
   与 receive 缓冲同页/串位**候选复活，或 VFS 早期 receive 的合法投递落错代际页。
-- **续-79d 配方（更新版 decision-complete）**：a) 反相 aarch64 pm 产物 door 传参链：
+- **续-79f 写者集合证空+主候选定档（本轮终态分析）**：对 nk79e 全量串口三写腿逐 VA 枚举
+  （msgw 1788 条全栈地址、finw 全栈地址、sink 零命中、msgw/sink 对 0x2db00x 均 0）⇒
+  **内核三写腿整轮从未写任何进程的 0x2db00x 池页**。VFS receive 缓冲在 receive 交付前已携
+  (1,8,0x7bff,6,3)（形态＝某 reply 消息：src=VFS、ANY 车道、slot/pid 齐）且 drain 落 VFS 的
+  (0,8,…) 与之同代际——**主候选定档＝跨进程物理帧别名**（PM 接收槽与 VFS 池页在 drain 的
+  dst PA 解析时同帧/换代际，续-67 x86 家族在 aarch64 的对应物；与「两次 demand-zero 服务」
+  现成吻合：第二次服务换帧未刷 TLB，用户态旧帧继续收写、内核 walk 见新帧）。
+- **续-80 配方（定稿 decision-complete）**：拒收前一刻双树 PA 对照探针：在 door 体读 VFS 缓冲
+  时刻，同时 `walk(VFS root, r2)` 与 `walk(PM root, PM.p_delivermsg_vir 接收槽 VA)` 打双 PA；
+  PA 相同＝别名坐实→根因腿=VM SETADDRSPACE/demand-fill 换帧后的 aarch64 TLBI 缺失
+  （A.5 present→X flush 缺口合并修复，CodeReview 一并）；PA 不同＝回到内容级时序。
+**续-79d 配方（更新版 decision-complete）**：a) 反相 aarch64 pm 产物 door 传参链：
   `ipc_trap` 的 msg 指针装载指令序列（rust-objdump 锚 `perform_syscall`/`DirectKernelCallTransport`
   的 kernel_call）核对是否把 `&Message` 错传成位移后的指针（0x900>>7=8 形态的直接候选）；
   b) 若指针正确，回到设备侧帧代际实验（vm-pf 双服务的 remap 观察）。
