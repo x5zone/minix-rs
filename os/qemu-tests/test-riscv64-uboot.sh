@@ -66,13 +66,24 @@ trap 'rm -rf "$WORK"' EXIT
 
 # 2. FAT disk: kernel ELF + a boot.scr script image (mkimage wraps the
 #    U-Boot script commands). bootdelay=0 keeps the run tight.
+#
+# 盘形＝分区盘（MBR 表 + 分区内 FAT，分区起于 LBA 2048）：新版 U-Boot
+# （Ubuntu 24.04 的 2025.10）distro boot 只认分区盘，整盘 FAT 会
+# `** No partition table - virtio 0 **` 拒挂载→boot.scr 永不执行（本机
+# 2026-09-30 实锤：手建 MBR 分区后 `## Executing script` 出现）；旧 CI
+# blob 两种盘形都能读，分区形向下兼容。mtools 用 `img@@<byte-offset>` 寻址分区（2048 扇区=1048576B）。
 dd if=/dev/zero of="$WORK/disk.img" bs=1M count=16 status=none
-mkfs.vfat "$WORK/disk.img" > /dev/null 2>&1 || fail "mkfs.vfat failed"
-# 镜像可读性健康检查。旧版用 `mmd ::`（建根目录＝存在即成功），mtools 4.3+
-# 对已存在的 . / .. 返回非零（"Cannot create entry named . or .."），改用
-# `mdir ::/` 做纯读检查（跨版本稳定）。
-mdir -i "$WORK/disk.img" ::/ >/dev/null 2>&1 || fail "mdir failed"
-mcopy -i "$WORK/disk.img" "$KERNEL" ::boot.elf || fail "mcopy kernel failed"
+printf 'o\nn\np\n1\n\n\nw\n' | fdisk "$WORK/disk.img" > /dev/null 2>&1 \
+    || fail "fdisk failed"
+# mkfs.vfat 不认 mtools 的 @@ 寻址：抽出分区→格式化→写回。
+dd if="$WORK/disk.img" of="$WORK/part.bin" bs=512 skip=2048 count=28671 status=none \
+    || fail "extract partition failed"
+mkfs.vfat "$WORK/part.bin" > /dev/null 2>&1 || fail "mkfs.vfat failed"
+dd if="$WORK/part.bin" of="$WORK/disk.img" bs=512 seek=2048 conv=notrunc status=none \
+    || fail "write back failed"
+# 镜像可读性健康检查（mtools 4.3+ 下 mmd 对已存在 . 返回非零，用 mdir 纯读）。
+mdir -i "$WORK/disk.img@@1048576" ::/ >/dev/null 2>&1 || fail "mdir failed"
+mcopy -i "$WORK/disk.img@@1048576" "$KERNEL" ::boot.elf || fail "mcopy kernel failed"
 
 cat > "$WORK/boot.cmd" <<'EOS'
 fatload virtio 0 ${loadaddr} boot.elf
@@ -82,7 +93,7 @@ fi
 EOS
 mkimage -T script -C none -n "minix-rs uboot chain" \
     -d "$WORK/boot.cmd" "$WORK/boot.scr.img" || fail "mkimage script failed"
-mcopy -i "$WORK/disk.img" "$WORK/boot.scr.img" ::boot.scr || fail "mcopy scr failed"
+mcopy -i "$WORK/disk.img@@1048576" "$WORK/boot.scr.img" ::boot.scr || fail "mcopy scr failed"
 
 # 3. Boot: U-Boot as -bios firmware, disk on virtio, serial captured to a
 #    file (U-Boot console and kernel output share it). smode 形态下 U-Boot

@@ -8498,8 +8498,13 @@ WORKLOG-only（免 CodeReview）·探针已滚 tracked 净。**
   直挂 -bios 零输出）。
 - 新实测事实：Ubuntu 24.04 U-Boot 2025.10 distro boot **只认分区盘**（整盘 FAT 无分区表→
   `** No partition table - virtio 0 **`，boot.scr 不执行；手建 MBR 分区+分区内 FAT 后
-  `## Executing script at ...` 实证可达）。脚本分区化（fdisk 建 DOS 表+分区内 mkfs.vfat+mcopy
-  带分区偏移）续-78 实施；宿主差异按 SKIP 不 FAIL 原则已注释。
+  `## Executing script at ...` 实证可达）。脚本已分区化落地（fdisk MBR+dd 抽分区 mkfs+写回+
+  mtools `@@1048576` 字节寻址——注：`@@` 单位是**字节**不是扇区，spike 时曾误用 sector 号）。
+- 分区化后本机链已推进到 `fatload OK(103592B) → bootelf → Load access fault`（EPC=U-Boot 自身
+  代码地址，TVAL=垃圾指针 4885000080934889）＝评审件 A.1 预言的「U-Boot 腿 bootelf 按 e_entry
+  跳、需 entry 侧适配」真缺口坐实（hello-boot 载体级也撞，非生产镜像特有）。U-Boot 腿终态装机
+  属裁决级工程（entry 适配/OpenSBI 域配置），非 marker 最短径——riscv marker 建议走 OpenSBI
+  直载甲案腿（3.1），U-Boot 腿留后续。脚本改动对 CI 旧 blob 向下兼容（旧版两种盘形均可读）。
 ### ④ 验证与纪律
 - 全部探针 `git checkout` 回滚，tracked 净＝uboot 脚本+WORKLOG；x86 真机（nk77z）marker=2/panic=0
   复验；host 828/0·569 基线不动；双架构镜像已用干净码重建。
