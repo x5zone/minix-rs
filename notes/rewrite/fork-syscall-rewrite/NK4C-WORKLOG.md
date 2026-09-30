@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-93（2026-10-01·**riscv boot 停点再下移一层（纯取证轮·探针用后即滚·tracked 净）**）：**修正续-92 的『boot 模块未入队』猜测**——现成 `nk4a: rtsrs unset` 探针显示 riscv RS 与 x86 前 4 步逐字相同、第 4 步 `unset BOOTINHIBIT→now=0x0 enq=y`（RS 变 runnable 且 sched_enqueue cpu=0）；新 pick 探针坐实 `pick cpu=BSP rs_cpu=0 rs_run=1 rs_rts=0x0`＝**RS 确为 runnable、在 BSP 队列、被 pick**。⇒ enqueue/runnable/pick 全正常。x86 在此后 RS 起来连发 8+ 条 rtsrs unset（启各服务），riscv pick 只 1 次后即静默。⇒ 真卡点＝**RS 被调度后、其向 VM/PM/VFS 发 RS_INIT 及各服务首个 syscall 的 IPC 交互链在 riscv 上未继续推进**（每个 server 首次陷入/park 的 riscv 臂细节，正对位 aarch64 出生链 §1.113~118 逐相啃的多轮面）。下一入口（续-94）＝探针跟 RS 起来后第一个 kernel_call/IPC 陷入（riscv64_user_body 分派/回复/park），确认它是否真在跑还是 pick 后切入即 park 死循环。无生产码改、WORKLOG-only、免 CodeReview。
+> **🛑 最新前沿＝§1.120续-94（2026-10-01·**riscv 出生链：park/timer/ecall 腿全工作 + a7=0 具体新线索（纯取证轮·探针用后即滚·tracked 净）**）：续-93『pick 只一次即静默』是探针帽数造成的低估——放宽 dump 见 VM 一路 `params read ok`→`server new ok`→`vm slot ok`→`init done`→`run enter`→`rcv-eng`，其间 20+ 次 user_body 陷入含 `sc=0x8`(U-ecall) 与 `sc=0x8000000000000005`(supervisor timer, cause5＝中断在跑)，`resched#0` 也触发（VM park→resched→scheduler 交接腿正常）。⇒ 续-75 建的 park/resched/switch-after-pop asm 腿**首次被真实多陷入 boot 驱动即工作**。**新具体线索（续-95 靶）**：所有 ecall 陷入 `a7=frame.gpr[17]=0x0`——若 riscv ecall 的调用号寄存器 ABI 或陷入帧 gpr[17] 槽位与 minix-sys arch_trap 不符，IPC 调用号将恒读 0 → `IpcCall::from_raw(0)`/KERNEL_CALL 分派错位 → 握手链永不正确推进（与『VM 能到 rcv 但 RS_INIT 链死』吻合）。续-95＝对账 minix-sys riscv `ipc_trap`/`kernel_call_trap` 用哪个寄存器传 call-nr vs trap_stub gpr 索引，验 a7=0 是真恒零还是探针槽错。无生产码改、WORKLOG-only、免 CodeReview。
+>
+
+> **（历史·§1.120续-93（2026-10-01·**riscv boot 停点再下移一层（纯取证轮·探针用后即滚·tracked 净）**）：**修正续-92 的『boot 模块未入队』猜测**——现成 `nk4a: rtsrs unset` 探针显示 riscv RS 与 x86 前 4 步逐字相同、第 4 步 `unset BOOTINHIBIT→now=0x0 enq=y`（RS 变 runnable 且 sched_enqueue cpu=0）；新 pick 探针坐实 `pick cpu=BSP rs_cpu=0 rs_run=1 rs_rts=0x0`＝**RS 确为 runnable、在 BSP 队列、被 pick**。⇒ enqueue/runnable/pick 全正常。x86 在此后 RS 起来连发 8+ 条 rtsrs unset（启各服务），riscv pick 只 1 次后即静默。⇒ 真卡点＝**RS 被调度后、其向 VM/PM/VFS 发 RS_INIT 及各服务首个 syscall 的 IPC 交互链在 riscv 上未继续推进**（每个 server 首次陷入/park 的 riscv 臂细节，正对位 aarch64 出生链 §1.113~118 逐相啃的多轮面）。下一入口（续-94）＝探针跟 RS 起来后第一个 kernel_call/IPC 陷入（riscv64_user_body 分派/回复/park），确认它是否真在跑还是 pick 后切入即 park 死循环。无生产码改、WORKLOG-only、免 CodeReview。
 >
 
 > **（历史·§1.120续-92（2026-10-01·**riscv boot 链停点精确化（纯取证轮·三探针均用后即滚·tracked 净）**）：承续-91 全 12 模块 exec 但只有 VM 跑到用户码、握手链不自启。三枚一次性探针定谳：**VM park 在 receive 后调度器重入，但 `pick` 只见 IDLE(-4)、之后再无迭代**（`sched it=1 cur=0xfffffffc`），且 `idle` 首版探针未触发（说明 pick 返回了某 proc 而非直接空闲，但那 proc 立即又 park/无进展）。⇒ 根因域＝**RS 等 `schedulable` boot 模块（lib.rs:1672-1674 只 VM+RS）未真正进入就绪队列/未清 PROC_STOP 可被选中**——x86/aarch64 同 init_proc 代码能到 marker（RS 会跑并发 RS_INIT），riscv 差在 boot 模块的 enqueue/runnable 落地或 park→resched→scheduler 后 proc_ptr 提前落 IDLE。**下一入口（续-93）＝查 init_proc_and_boot 里 RS 的 enqueue（sched_enqueue/PROC_STOP 清位）是否对 riscv 单 hart 生效 + park 后 current 为何变 IDLE**（对照 aarch64 出生同相位）。无生产码改（探针全滚），故 WORKLOG-only、免 CodeReview。
@@ -8981,3 +8984,21 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 **下一入口（续-94）**：跟 RS 起来后的第一个陷入——`riscv64_user_body` 对 RS 首个 syscall/IPC 的分派（走 kernel_call 腿还是 IPC 腿、reply 交付、NoReply→PARK_RESCHEDULE→再调度是否成环）。目标：定位 RS『切入即再无进展』是 park/重入死循环、还是首个 IPC 回复没送达。逐相逼近至 riscv 进 RS_INIT→init exec→marker。
 ⚠ 三目标不缩小：①x86✅·riscv 到 RS 被调度（enqueue/pick 已证通）、卡在其后 IPC 推进·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-94（2026-10-01·**riscv 出生链：park/timer/ecall 腿证工作 + a7=0 具体新线索（纯取证轮）**）
+
+**承续-93**（其『RS pick 后即静默』受探针帽数误导）。本轮放宽 dump 见 riscv boot 远比想象靠前：
+
+- **VM 完整 boot**：`params read ok`→`server new ok`→`vm slot ok`→`init done`→`run enter`→`rcv-eng`→`rcv-p4`（VM 进接收引擎）。
+- **20+ 次 `riscv64_user_body` 陷入**：`sc=0x8`（U-mode ecall＝正常 syscall/IPC）与 `sc=0x8000000000000005`（bit63 中断位 + cause 5＝supervisor timer，**定时器中断在 riscv 正常触发**）交替。
+- **`riscv64_resched_thunk` 触发一次**（VM park→resched→scheduler 交接腿工作）。⇒ 续-75 新建、此前仅 host-ABI 测过的 park/switch-after-pop asm 腿，**首次被真实多陷入 boot 驱动即正确工作**。
+
+**新具体线索（续-95 精确靶）**：所有 dump 的 ecall 陷入 `a7 = frame.gpr[17] = 0x0`。riscv `minix-sys::arch_trap` 若用 a7 传 call-number，而陷入帧 gpr 索引/ABI 与之不符，则 `riscv64_user_body` 读 `frame.gpr[17]` 恒 0 → `IpcCall::from_raw(0)` / `leg==KERNEL_CALL_TRAP` 判定错位 → 每次 IPC/syscall 都按调用号 0 分派 → **VM/RS 看似在跑（timer 中断驱动、走到 rcv）但握手链的调用号全错、永不正确推进**——与『全模块 exec、RS 被调度、但 RS_INIT 链死』高度吻合。
+
+**证据纪律**：纯取证，user_body + resched_thunk 两枚限次探针用后即滚（trap_dispatch.rs 复原，tracked 净），无生产码改→WORKLOG-only、免 CodeReview。
+
+**下一入口（续-95）**：对账三方——① `libs/minix-sys/src/arch_trap.rs` riscv 腿 `ipc_trap`/`kernel_call_trap` 用哪个寄存器传 call-nr（a0? a7? 编码进 a7 的哪段）；② `arch/riscv64/trap_stub.rs` 陷入帧 gpr[17] 是否 = 硬件 a7（x10=0..x31，a7=x17 → gpr 索引应 17，但 a7 语义/偏移需核）；③ `riscv64_user_body` 读 `frame.gpr[17]` 作 leg 是否正确。若 a7 槽错→这是出生链总闸，改正即可能一次性打通 RS_INIT→marker。逐相逼近。
+⚠ 三目标不缩小：①x86✅·riscv VM 完整 boot+park/timer/ecall 证工作、卡于握手调用号(a7=0 嫌疑)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
