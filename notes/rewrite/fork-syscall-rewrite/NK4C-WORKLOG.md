@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-91（2026-10-01·**riscv 全系统 boot 修到全 12 模块 exec + 各服务待握手（无 panic）**）：探针定根因＝bootface `fill_memmap` 未保留 OpenSBI 常驻区 `[DRAM_BASE=0x80000000, KERN_PHYS_BASE=0x80200000)`（DTB /memory 整段报可用），VM `BitmapAllocator::init` 把物理位图元数据落该区并 memset → OpenSBI PMP 拦 S/U 写 → Store/AMO access fault(scause 7, stval=0x1080000000=VM_DM_BASE+0x80000000→PA DRAM_BASE)。修＝bootface 抽 `clip_firmware` 纯函数削镜像下固件段（+3 条编译期 const 断言护栏）；甲案是 OpenSBI 腿首个保留者（UEFI 腿早有 reserved_regions，OpenSBI 腿此前无）。修后（jfull10/11 双跑）：VM 过位图 init→全 12 boot 模块 exec+setaddr→init run enter→VM rcv-eng/rcv-p4，panic=0/无活锁。CodeReview 无 BLOCKER（1 SHOULD-FIX 注释事实+2 NIT 全采纳）。验证链全绿 host 828/569·arch243·三架构 check-layout·x86 真机 marker=2/panic=0 不回归。**下一入口（续-92）＝钉「全服务 park 在接收引擎、握手链未自启」——riscv 首次进入多服务 IPC 交互态，对位 aarch64 §1.112→续-87 的 RS_INIT/barrier 家族**（可能撞同类或新缺口，逐相取证）。
+> **🛑 最新前沿＝§1.120续-92（2026-10-01·**riscv boot 链停点精确化（纯取证轮·三探针均用后即滚·tracked 净）**）：承续-91 全 12 模块 exec 但只有 VM 跑到用户码、握手链不自启。三枚一次性探针定谳：**VM park 在 receive 后调度器重入，但 `pick` 只见 IDLE(-4)、之后再无迭代**（`sched it=1 cur=0xfffffffc`），且 `idle` 首版探针未触发（说明 pick 返回了某 proc 而非直接空闲，但那 proc 立即又 park/无进展）。⇒ 根因域＝**RS 等 `schedulable` boot 模块（lib.rs:1672-1674 只 VM+RS）未真正进入就绪队列/未清 PROC_STOP 可被选中**——x86/aarch64 同 init_proc 代码能到 marker（RS 会跑并发 RS_INIT），riscv 差在 boot 模块的 enqueue/runnable 落地或 park→resched→scheduler 后 proc_ptr 提前落 IDLE。**下一入口（续-93）＝查 init_proc_and_boot 里 RS 的 enqueue（sched_enqueue/PROC_STOP 清位）是否对 riscv 单 hart 生效 + park 后 current 为何变 IDLE**（对照 aarch64 出生同相位）。无生产码改（探针全滚），故 WORKLOG-only、免 CodeReview。
+>
+
+> **（历史·§1.120续-91（2026-10-01·**riscv 全系统 boot 修到全 12 模块 exec + 各服务待握手（无 panic）**）：探针定根因＝bootface `fill_memmap` 未保留 OpenSBI 常驻区 `[DRAM_BASE=0x80000000, KERN_PHYS_BASE=0x80200000)`（DTB /memory 整段报可用），VM `BitmapAllocator::init` 把物理位图元数据落该区并 memset → OpenSBI PMP 拦 S/U 写 → Store/AMO access fault(scause 7, stval=0x1080000000=VM_DM_BASE+0x80000000→PA DRAM_BASE)。修＝bootface 抽 `clip_firmware` 纯函数削镜像下固件段（+3 条编译期 const 断言护栏）；甲案是 OpenSBI 腿首个保留者（UEFI 腿早有 reserved_regions，OpenSBI 腿此前无）。修后（jfull10/11 双跑）：VM 过位图 init→全 12 boot 模块 exec+setaddr→init run enter→VM rcv-eng/rcv-p4，panic=0/无活锁。CodeReview 无 BLOCKER（1 SHOULD-FIX 注释事实+2 NIT 全采纳）。验证链全绿 host 828/569·arch243·三架构 check-layout·x86 真机 marker=2/panic=0 不回归。**下一入口（续-92）＝钉「全服务 park 在接收引擎、握手链未自启」——riscv 首次进入多服务 IPC 交互态，对位 aarch64 §1.112→续-87 的 RS_INIT/barrier 家族**（可能撞同类或新缺口，逐相取证）。
 >
 
 > **（历史·§1.120续-90（2026-10-01·**riscv 首次跑通 sched + server birth + 首个用户进程**）：实现 `arch/riscv64/paging.rs` 的 `split_huge`+`grant_user_walk`（此前 trait 默认 NotSupported→load_elf_into 驱逐 boot-identity 2MiB 叶时返 MappingFailed）——镜像 aarch64 §1.110/x86 两级分裂到 4KiB、Sv39 非叶不带 U 位故 grant 为验证性 no-op、split 后全局 sfence.vma。真机双跑（jfull7/8，过滤签名 md5 一致）：bootface→arch_boot→kmain Phase A/B→**load_vm_elf 过→VM handoff free n=5→proc_init→memory_init→scheduling live→server birth（s3/s5→main、vm enter、params read ok）→首个用户进程执行**。新停点＝user-leg `scause 0x7`（Store/AMO access fault）stval=0x1080000000 sepc=0x3c600（VM 首存至乱址，trap_dispatch.rs:2277 diag panic）——续-91 取证靶（对位 aarch64 出生链的 user-trap 家族）。CodeReview PASSED 无 BLOCKER/SF。验证链全绿：host 828/569·arch 243·rustfmt/clippy Δ0·三架构 check-layout PASS·riscv split_huge 生产改仅 riscv 臂（x86/aarch64 二进制不变）。**下一入口（续-91）＝取 first user-leg scause=0x7 源头**（VM 0x1080000000 乱址从哪来·user-leg 该 forward-to-VM 还是真 access fault）。另：结构债台账 SD-1…SD-33（Rev 2）已入账，来源扫描线，择机按 §5.1 批次认领）。
@@ -8938,3 +8941,22 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 
 **下一入口（续-92）**：riscv 现停在「全服务 park 在 receive、握手链未自启」。取第一手证据：① init(runcom) 是否发起 RS_INIT/对 PM/VFS 的首个请求（`rs_handshake` 计数=0＝握手根本没起）；② 谁该唤醒谁——是 VM 该服务某请求还是 init 该被调度进 exec；③ 对位 aarch64 §1.112 的 `rcv-err EIO`→IPC 桥、续-87 的 barrier mt=8——riscv IPC/回复腿是否已有同型缺陷或新缺口。逐相取证（探针用后即滚、缺页 handler 内禁 walk）。
 ⚠ 三目标不缩小：①x86✅·**riscv 全 12 模块 exec+服务待握手（历史最远，无 panic）**·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
+
+
+---
+
+## §1.120续-92（2026-10-01·**riscv boot 链停点精确化（纯取证轮）：VM park 后调度器只见 IDLE，boot 模块未进就绪队列**）
+
+**承续-91**：riscv 全 12 模块 exec+setaddr+bootinh-clear，但只有 VM 跑到用户码（run enter/rcv-eng/rcv-p4），RS 等从未运行，rs_handshake=0、marker=0。
+
+**三枚一次性探针（全部用后即滚，tracked 净）**：
+1. `idle()` 首帧 dump proc 态 → **未触发**（VM park 后调度器没走到 idle 的直接空闲臂，说明 pick 一度返回了 proc）。
+2. `riscv64_ipc_dispatch_body` NoReply→PARK_RESCHEDULE 判定静态复核＝**正确**（阻塞接收返 PARK_RESCHEDULE，与 aarch64 §1.113 镜像一致）。用户腿弹帧尾声（`beqz a0; addi sp,34*8; la t0,riscv64_resched_entry; jr`）+ `riscv64_resched_thunk`（bkl_lock→scheduler_loop）接线静态复核＝正确。
+3. scheduler_loop 入口限次 dump `current` → **`sched it=1 cur=0xfffffffc(=IDLE -4)`，此后再无迭代**。
+
+**定谳**：VM 阻塞在 receive 后，park→resched→scheduler_loop 确实重入了一次，但调度器看到的 current 已是 IDLE、且 pick 之后系统再无任何前进（无 it=2、无 RS 活动、无 idle 洪泛）。⇒ 停点根因域收敛到 **boot 模块（尤其 RS，proc_nr 2）在 riscv 单 hart 下未被真正排入就绪队列 / PROC_STOP 未清可被选中**，或 **park→resched 后 proc_ptr 过早落 IDLE 掩盖了本应 runnable 的 RS**。对照：x86/aarch64 走同一 `init_proc_and_boot`（lib.rs:1668-1697：schedulable=is_root_sys(RS)||is_vm）能推进到 marker，故差异在 riscv 侧的 enqueue/上下文恢复。
+
+**证据纪律**：纯取证、零生产码改、探针三枚全滚（`git diff` 净），故 WORKLOG-only、免 CodeReview。缺页 handler 内未页表 walk（探针只读 proc_ptr/rts 寄存器与调度器局部）。
+
+**下一入口（续-93）**：①读 `init_proc_and_boot` 尾部 RS 的 `sched_enqueue`/`PROC_STOP` 落地路径，对照 x86 真机 RS 首次被 pick 的时序，查 riscv 是否漏 enqueue（或 NO_QUANTUM 未清）；②park→resched→scheduler 里 `current`/`proc_ptr` 为何变 IDLE 而非保留被阻塞的 VM 后重选——查 `switch_address_space_idle`/idle 在 riscv 单核的介入时机；③必要时对 RS slot 加一次性 rts+runqueue 归属探针（用后即滚）。逐相逼近，目标＝riscv 进 RS_INIT 握手→init exec→marker。
+⚠ 三目标不缩小：①x86✅·riscv 全模块 exec+VM 服务、停于 boot 模块未进就绪队列（历史最远）·aarch64❌（barrier mt=8+handshake，续-87 在案）；②x86 核心✅；③未动。
