@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-75（2026-09-30·新机首跑·**riscv64 IPC 桥 + park 机制全量落地（迁移件 §4.B 六步 + A.7 三件套）·生产码成修·验证链全绿·CodeReview 无 BLOCKER**）**：按 NK4C-MIGRATION-20260930.md §4.B decision-complete 配方实施：①arch riscv user leg park 决策 ABI（`DispatchFn→u64`、PARK_NONE/PARK_RESCHEDULE、`riscv64_resched_entry`+注册式 thunk，asm 尾声 `beqz a0`→弹 34 槽帧→`la t0`+`jr t0`（S3：非 `j`，避 R_RISCV_JAL ±1MiB 跨节悬崖））；②A.7 三件套全闭：`init`/`init_ap` `base==0` throwaway 哨兵 + no_mangle `KERNEL_TRAP_STACK_BASE` 格 + `restore_to_user` sret 前重固定 sscratch（借 a4，后续从 gp_regs 取回用户值）+ **kernel 腿尾声按 SPP 重锚 stvec**（新发现缺口：S 返回后 stvec 留 user leg → 下一个 S timer 走 sscratch 交换毁内存）；③`riscv64_ipc_dispatch_body`（镜像 aarch64：BKL 继承断言→存帧 FullContext→from_raw 预解码 EBADCALL 早退→p_defer/p_delivermsg_vir→copy_msg_from_user EFAULT+SIGSEGV→dispatch_ipc_entry→finish_ipc_door→reply_code 写 a0+`sync_status_register_to_frame` 回灌 A1→PARK_NONE，NoReply→PARK_RESCHEDULE）；④kernel_call 腿迁 `reply_wire()`（F10b/C2 尾账）+ VmSuspend 停车臂；⑤minix-sys 六原语+query_kerninfo+commit_message 门控放宽含 riscv64；新 riscv `save_frame_to_context`/`sync_status_register_to_frame`（槽位映射表+4 判别测试）+`set_secondary_ipc_return` A1 车道覆写（W2 同形）。**CodeReview 无 BLOCKER**，3 SHOULD-FIX+4 NIT 全采纳（测试断言 mapped==30 错不变量→实为 29 live+1 Reserved padding；user 腿中断臂补 scause-code 门防 SSI/SEI 误账；j→la+jr；单格依据改单 hart/注释事实修正×2；去 as u64 冗余 cast）。**验证链全绿**：host 827/0·569·workspace clippy Δ0(441=441、kernel 126=126)·rustfmt 新增漂移 0（反降 trap_dispatch 36→35、ipc 12→9）·riscv 生产配方 build+link 零新告警·**x86 真机 -smp4 标准启动器 3 轮 marker=2/panic=0/pfVM=0/vec6=0 不回归**·**riscv kernel-image OpenSBI 冒烟 A1/A2/A3 PASS（新机型示）**。新机环境自检：rust stable+nightly、三 QEMU、minix3 724MB 在位、OVMF/AAVMF 全；**缺 u-boot-qemu/u-boot-tools（sudo 需密码待用户补装）**。⚠ 三目标不缩小：①x86✅、**riscv 桥已接但 marker 未达**（后继阻塞登记：A.8 缺页腿 riscv 未接（ForwardToVm/cause_signal 为 x86 专属）+ KernelUserCopy 丙案（SUM 丙，roadmap 3.2）+ 装机面 boot-shim/OpenSBI 交接 + DTB 实解析）；aarch64❌（模式① OOM）；②x86 核心✅；③未动。续-76 入口＝riscv 真机可达性推（优先丙案+缺页腿评估）或转 aarch64 H7。详文见文末 §1.120续-75。
+> **🛑 最新前沿＝§1.120续-76a（2026-09-30·**KernelUserCopy 丙案落地＝roadmap 2.2/3.2 销账，[ARCH: user-copy-via-dm]·公共腿·CodeReview 无 BLOCKER/无 SHOULD-FIX**）**：`copy_msg_from_user`/`copy_msg_to_user`（kernel/src/ipc.rs 生产形态）从「validate-first+直解用户 VA」改为「每页 walk(root)→PA→DM 窗口」（复用同文件 `copy_via_root_pages`，senda 腿真机先例）；消灭 riscv 无 SUM 必炸（NK4B 载体 scause=0xd 实锤）+ x86 SMAP/aarch64 PAN 同型隐患；读腿 root=None 由「放行后直读必炸」改 Err(PageFault)→调用方 EFAULT/SIGSEGV（更对位 C system.c:152-155）；写腿保留 need_write U/W 预校验；nk4a msgw 探针保留。CodeReview（current_session）逐项判定方向语义/校验覆盖面等价/探针取证等价，2 NIT 全采纳（N1 读腿目标取 `Message` 类型保对齐非 `[u8;N]` 假设；N2 文档同步：RESUME-PROMPT 2.2/3.2 标已实施、misc_concepts 补通道覆盖面）。**验证链全绿**：host 827/0·569；clippy kernel crate Δ0(126=126、vfs/sys/arch 持平)；rustfmt ipc.rs 99→98 零新增；riscv 配方 build/link 零错；**x86 真机 -smp4 标准启动器 4 轮 marker=2/panic=0/pfVM=0/vec6=0且 rc 全文可见（端到端投递走新腿实锤）**；riscv kernel-image OpenSBI 冒烟 A1/A2/A3 PASS。**aarch64 真机新形态登记**：本镜像及 **HEAD-only stash 对照镜像逐字同签名**（2477 行·VFS handshake `WrongMessageType(8)`·marker=0·oom=0·memreq=0）→ A/B 定谳**非本改动引入**，属 g14 前沿的布局敏感新停点（旧 OOM/memreq 形态未现，待后续轮多轮采样定性）。⚠ 三目标不缩小：①x86✅·riscv 桥接+丙案已落但 marker 未达（后继＝A.8 缺页腿镜像 aarch64_pagefault_body + 3.1 甲案 DTB/装机面）；aarch64❌（新停点 WrongMessageType(8) 待取证）；②x86 核心✅；③未动。续-76b 入口＝riscv 缺页腿（scause 12/13/15→ForwardToVm，对位 aarch64 §1.116）或 aarch64 新停点采样定性。详文见文末 §1.120续-76。
+>
+> **（历史·§1.120续-75（2026-09-30·新机首跑·**riscv64 IPC 桥 + park 机制全量落地（迁移件 §4.B 六步 + A.7 三件套）·生产码成修·验证链全绿·CodeReview 无 BLOCKER**）**：按 NK4C-MIGRATION-20260930.md §4.B decision-complete 配方实施：①arch riscv user leg park 决策 ABI（`DispatchFn→u64`、PARK_NONE/PARK_RESCHEDULE、`riscv64_resched_entry`+注册式 thunk，asm 尾声 `beqz a0`→弹 34 槽帧→`la t0`+`jr t0`（S3：非 `j`，避 R_RISCV_JAL ±1MiB 跨节悬崖））；②A.7 三件套全闭：`init`/`init_ap` `base==0` throwaway 哨兵 + no_mangle `KERNEL_TRAP_STACK_BASE` 格 + `restore_to_user` sret 前重固定 sscratch（借 a4，后续从 gp_regs 取回用户值）+ **kernel 腿尾声按 SPP 重锚 stvec**（新发现缺口：S 返回后 stvec 留 user leg → 下一个 S timer 走 sscratch 交换毁内存）；③`riscv64_ipc_dispatch_body`（镜像 aarch64：BKL 继承断言→存帧 FullContext→from_raw 预解码 EBADCALL 早退→p_defer/p_delivermsg_vir→copy_msg_from_user EFAULT+SIGSEGV→dispatch_ipc_entry→finish_ipc_door→reply_code 写 a0+`sync_status_register_to_frame` 回灌 A1→PARK_NONE，NoReply→PARK_RESCHEDULE）；④kernel_call 腿迁 `reply_wire()`（F10b/C2 尾账）+ VmSuspend 停车臂；⑤minix-sys 六原语+query_kerninfo+commit_message 门控放宽含 riscv64；新 riscv `save_frame_to_context`/`sync_status_register_to_frame`（槽位映射表+4 判别测试）+`set_secondary_ipc_return` A1 车道覆写（W2 同形）。**CodeReview 无 BLOCKER**，3 SHOULD-FIX+4 NIT 全采纳（测试断言 mapped==30 错不变量→实为 29 live+1 Reserved padding；user 腿中断臂补 scause-code 门防 SSI/SEI 误账；j→la+jr；单格依据改单 hart/注释事实修正×2；去 as u64 冗余 cast）。**验证链全绿**：host 827/0·569·workspace clippy Δ0(441=441、kernel 126=126)·rustfmt 新增漂移 0（反降 trap_dispatch 36→35、ipc 12→9）·riscv 生产配方 build+link 零新告警·**x86 真机 -smp4 标准启动器 3 轮 marker=2/panic=0/pfVM=0/vec6=0 不回归**·**riscv kernel-image OpenSBI 冒烟 A1/A2/A3 PASS（新机型示）**。新机环境自检：rust stable+nightly、三 QEMU、minix3 724MB 在位、OVMF/AAVMF 全；**缺 u-boot-qemu/u-boot-tools（sudo 需密码待用户补装）**。⚠ 三目标不缩小：①x86✅、**riscv 桥已接但 marker 未达**（后继阻塞登记：A.8 缺页腿 riscv 未接（ForwardToVm/cause_signal 为 x86 专属）+ KernelUserCopy 丙案（SUM 丙，roadmap 3.2）+ 装机面 boot-shim/OpenSBI 交接 + DTB 实解析）；aarch64❌（模式① OOM）；②x86 核心✅；③未动。续-76 入口＝riscv 真机可达性推（优先丙案+缺页腿评估）或转 aarch64 H7。详文见文末 §1.120续-75。
 >
 > **（历史·§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09665415` 提交，接手者勿重补其验证链；host 基线复核全绿（minix-kernel 827/0·arch+boot+types 569）。**目标② x86 核心达成坐实**：`tmp/nk4a/nk73b-r1.serial` 行 7526 marker 之后 `ls /bin`→`cat/echo/ls/sh`、`cat /etc/rc`→全文⇒**echo/ls/cat 三核心命令端到端全通（走真实 VFS IPC 腿）**。两大剩余前沿已深度分析：**aarch64 模式① OOM**（七假设全证伪→收敛 H7 纯数据流·rust-objdump 反查标量 store 源 GPR 生产者）；**riscv64 IPC 桥**（真正工作量＝架构级：riscv user leg asm epilogue 无条件 sret、`DispatchFn` 返回 unit、无 aarch64 PARK_RESCHEDULE 挂起-重调度机制⇒阻塞 IPC 不可实现；六步 decision-complete 配方见迁移件 §4.B，**riscv 纯实现无 Heisenbug、建议优先**）。三目标不缩小（① x86✅/aarch64❌/riscv❌·② x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。详文见文末 §1.120续-74。
 >
@@ -8240,3 +8242,53 @@ riscv 桥已接但 **marker 未达**，后继阻塞已登记（静态判定，�
 
 ⚠ 三目标不缩小：① x86✅·riscv 桥已接未达 marker·aarch64❌；② x86 核心✅；③未动。**本轮含生产码
 改·已走 CodeReview·commit 用明确路径。**
+
+---
+
+## §1.120续-76（2026-09-30·**KernelUserCopy 丙案落地＝roadmap 2.2/3.2 销账（[ARCH: user-copy-via-dm]）+ aarch64 新停点 A/B 定谳非回归**）
+
+### ① 丙案（本体改动·仅 os/kernel/src/ipc.rs 生产形态）
+- **动因（非臆测，全部有锁）**：riscv 监督态读写 U=1 页必须 sstatus.SUM=1；`copy_msg_from_user`/
+  `copy_msg_to_user` 旧形态 validate-first 后**直接解引用用户 VA**（全内核仅这两处），NK4B 载体实测
+  首用户 ecall 消息拷贝即 scause=0xd 死（riscv-reviewlog §A.6 缺口二/D7）；roadmap 2.2（aarch64 半）
+  与 3.2（SUM 丙）早已裁丙案＝「VA→PA 走 DM 窗口，同时消灭 aarch64 PAN 与 x86 SMAP 同型问题」。
+- **读腿**：`current_root_phys`→`copy_via_root_pages(root, src, msg字节切片, to_kernel=false)`；自带
+  用户半 checked_add 定界 + 逐页 walk + USER_ACCESSIBLE 校验（与旧 need_write=false 覆盖面逐条
+  相等，CodeReview 判定）；root=None 由旧「放行校验后直读必炸」改 `Err(PageFault)`→调用方
+  EFAULT/SIGSEGV（C system.c:152-155 对位更纯）；N1：目标取 `Message::default()` 栈上对象按字节
+  回填，对齐由类型系统保证（不依赖 `[u8;N]` 栈布局假设）。
+- **写腿**：保留 `user_copy_range_mapped(need_write=true)` 逐页 present/U/W 前置把关（补
+  `copy_via_root_pages` 不含的 W 位），msg 按值栈副本→DM 窗口落笔；nk4a msgw 守卫探针原样保留
+  （评审判定位：取证三元组计算不变，仅时序移到校验前，覆盖略广）。
+- **文档同步（N2）**：`user_copy_range_mapped` doc 补丙案段落；RESUME-PROMPT 单元 2.2/3.2 标
+  〔已实施 续-76a〕；misc_concepts 通道条目补覆盖面账。
+
+### ② CodeReview（current_session）·无 BLOCKER·无 SHOULD-FIX·2 NIT 全采纳
+逐项判定（a 方向语义/b 校验覆盖面无回退/c DM 覆盖恒等旧腿同帧/d 对齐/e 探针等价/f 文档）均
+成立；采纳 N1（读腿对齐类型化）、N2（三处文档同步）。
+
+### ③ 验证链（全绿）
+- host：minix-kernel **827/0**·arch+boot+types **569**；clippy kernel crate **Δ0（126=126）**，
+  依赖方 minix-vfs 78/minix-sys 36/minix-arch 34 均持平；rustfmt ipc.rs 漂移 99→**98**（零新增）。
+- riscv 生产配方 build+link 零错；**x86 真机 -smp4 标准启动器 4 轮（nk76-x86-r1..r4，含最终码
+  r4）：marker=2·panic=0·pfVM=0·vec6=0**，串口可见 msgw 探针 DM-walk 生效 + rc 全文（cat /
+  etc/rc 走新读/写腿端到端实锤）；riscv `test-kernel-image-riscv64.sh` A1/A2/A3 **PASS**。
+
+### ④ aarch64 真机新形态登记（A/B 定谳·非本改动引入）
+xtask aarch64 运行：2477 行停于 VFS handshake `WrongMessageType(8)`（marker=0/oom=0/memreq=0，
+旧模式①/②均未现）；**stash 到 HEAD-only 重建对照镜像逐字同签名（2477 行 wrongtype=1）**⇒
+非丙案引入，属 g14 前沿（§1.118续/§1.119 「park-后-回复投递寄存器写回、构建布局敏感」同族）
+的新停点形态；既往 a64 日志 wrongtype=0（a64-t30-15/16、regress-r3 等）说明形态随布局漂移。
+待后续轮多轮采样定性（不坐实不成修，本轮不追）。
+
+### ⑤ 新前沿（续-76b/续-77 入口）
+1. **riscv A.8 缺页腿**（marker 硬前置）：scause 12/13/15（U 态 inst/load/store page fault）→
+   ForwardToVm，镜像 aarch64_pagefault_body（§1.116：PFEC 归一化 + fault_flush + park 恢复腿）；
+   riscv 无 ESR，故障地址=stval、写位由 scause 区分（13=load/15=store，天然归一）。
+2. **riscv 3.1 甲案装机面**：kernel-image 接 a1 DTB + 模块装载（BootFileTable/OpenSBI）或 U-Boot
+   fatload（需用户补装 u-boot-qemu）；没有多服务盘形就证不了 marker。
+3. aarch64 新停点 WrongMessageType(8) 采样定性（与 g14 OOM/memreq 并列的第三形态）。
+优先级：1 与 2 构成 riscv marker 主链；本轮丙案已把 2 的前置（消息拷贝 SUM 墙）拆掉。
+
+⚠ 三目标不缩小：①x86✅·riscv 未达 marker（桥+丙案已落）·aarch64❌；②x86 核心✅；③未动。
+**本轮含生产码改（公共腿）·已走 CodeReview·commit 用明确路径。**

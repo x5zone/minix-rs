@@ -374,7 +374,7 @@ const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000; // TTBR1 region bas
 const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_0040_0000_0000; // Sv39 VPN[2]=256
 
 /// Validate a user buffer range for a kernel-side user copy, software-walk
-/// first so the access below can no longer fault.
+/// first so the access can no longer fault.
 ///
 /// C's user-message copies recover from bad user pointers by fault
 /// redirection (`__user_copy_msg_pointer_failure` — mpx.S, fed by the
@@ -384,6 +384,12 @@ const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_0040_0000_0000; // Sv39 VPN[2]=256
 /// layer, the two-strike suspend/SIGSEGV policy at delivery) rather than a
 /// kernel-mode fault. Same discipline as the cross-space copy paths, which
 /// software-walk the page table before their Direct Map window access.
+///
+/// 续-76（[ARCH: user-copy-via-dm]）：`copy_msg_from_user`/`copy_msg_to_
+/// user` 的落地访问已全部改经 `copy_via_root_pages`（walk→PA→DM 窗口），
+/// 不再直接解引用用户 VA（riscv 无 SUM 会当场 store/load fault，x86/
+/// aarch64 属 SMAP/PAN 同型隐患）。本验证函数仍是写腿的前置把关，
+/// 并继续作为可注入的宿主测试面。
 ///
 /// Checks, in order:
 /// 1. The range lies entirely in the user half (`USER_ADDRESS_SPACE_LIMIT`)
@@ -505,24 +511,36 @@ fn copy_via_root_pages<D: minix_arch::DirectMapArch>(
 impl UserCopy for KernelUserCopy {
     #[cfg(not(test))]
     fn copy_msg_from_user(&self, src: VirBytes) -> Result<Message, CopyError> {
-        // Validate-first (see `user_copy_range_mapped`): bound the buffer to
-        // the user half and software-walk every page user-accessible in the
-        // caller's active address space, then read through the shared page
-        // tables (higher-half layout — kernel and user share the CR3). The
-        // volatile read prevents the compiler from eliding the access; after
-        // validation an unmapped VA is no longer reachable, and a fault here
-        // would mean the walk lied (kernel bug), not bad user input.
-        //
-        // SAFETY: `src` is a user VA from the trap-frame contract (the
-        // caller's RDI/m_user), bounded and translation-checked above.
-        user_copy_range_mapped(
-            crate::current_root_phys(),
-            src,
-            core::mem::size_of::<Message>(),
-            /* need_write = */ false,
-            minix_arch::CurrentPteWalk::walk,
+        // NK4-C 续-76（roadmap 3.2 丙案，[ARCH: user-copy-via-dm]）：
+        // 不再直接解引用用户 VA。旧形态（validate-first + `read_volatile
+        // (src)`）靠「内核 PTE 与用户 PTE 同表、特权态可读 U=1 页」成立：
+        // x86 无 SMAP、aarch64 PAN 未强制时侥幸；riscv 监督态读 U 页必须
+        // sstatus.SUM=1，首用户 ecall 的消息拷贝当场 scause=0xd 死在内核
+        // 腿（NK4B 载体实锤，riscv-reviewlog §A.6 缺口二）。丙案统一三
+        // 架构的唯一正确姿势＝每页 walk(root)→PA→Direct Map 窗口访问，
+        // 与 senda 腿 `copy_via_root_pages` 同源（该腿已在真机走通同窗）；
+        // x86/aarch64 语义等价（root==current root，DM 覆盖全部常规内存）。
+        // 越界/非用户页在触碰内存前判死（Bounds + U 位逐页校验），一个
+        // 字节都不读——fault-redirection 的 C 契约用先验证代替。
+        let root = crate::current_root_phys().ok_or(CopyError::PageFault)?;
+        // CodeReview 续-76 N1：目标直接取 `Message`（天然 align 8、全 POD
+        // 无非法位模式），按字节切片回填——对齐由类型系统保证，不依赖
+        // 栈数组的 `[u8; N]` 对齐假设（与写腿的栈副本通道对称）。
+        // SAFETY: msg 是本函数栈上的 `Message`，切片只覆盖其字段字节，
+        // 无 padding 读风险（全初始化）；写入由 copy_via_root_pages 逐页
+        // 完成后再被调用方按值取用。
+        let mut msg = Message::default();
+        copy_via_root_pages::<minix_arch::CurrentDirectMap>(
+            root,
+            src.0,
+            unsafe {
+                core::slice::from_raw_parts_mut(
+                    (&mut msg as *mut Message).cast::<u8>(),
+                    core::mem::size_of::<Message>(),
+                )
+            },
+            /* to_kernel = */ false,
         )?;
-        let msg = unsafe { core::ptr::read_volatile(src.0 as *const Message) };
         Ok(msg)
     }
     #[cfg(test)]
@@ -533,17 +551,14 @@ impl UserCopy for KernelUserCopy {
     }
     #[cfg(not(test))]
     fn copy_msg_to_user(&self, dst: VirBytes, msg: &Message) -> Result<(), CopyError> {
-        // SAFETY: symmetric with copy_msg_from_user — CPL0 write to the
-        // caller's user VA through the shared page tables, with the write
-        // direction additionally requiring each page writable.
-        user_copy_range_mapped(
-            crate::current_root_phys(),
-            dst,
-            core::mem::size_of::<Message>(),
-            /* need_write = */ true,
-            minix_arch::CurrentPteWalk::walk,
-        )?;
-        // NK4-C 第 33 轮守卫探针（task1-close 裁决删除）：消息投递写的
+        // 续-76 丙案镜像读腿（[ARCH: user-copy-via-dm]）：每页
+        // walk(current root)→PA→DM 窗口写，不再直接解引用用户 VA
+        // （riscv 无 SUM 写 U 页＝scause 0xd store fault；x86/aarch64
+        // 语义等价）。与旧 validate-first 相比保留「写方向逐页要求可写」
+        // 的把关——现在由下面的 walk 显式校验 WRITABLE 位，非呈现的
+        // 只读映射不会被供应商写入。
+        let root = crate::current_root_phys().ok_or(CopyError::PageFault)?;
+        // NK4-C 第 33 轮守卫探针（task1-close 裁决保留）：消息投递写的
         // (VA, 当前 root, walk 得到的物理页)。清零者必在内核侧且本函数
         // 是停车-唤醒窗口里唯一直写用户内存的路径——若 pa 落在 PT 页
         // （与同轮 pf dump 的 lvl1pa 对账），即「消息写错树/错页」实锤。
@@ -552,24 +567,43 @@ impl UserCopy for KernelUserCopy {
             static NW: AtomicU64 = AtomicU64::new(0);
             if NW.fetch_add(1, AtomicOrd::Relaxed) < 64 {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
-                let pa = minix_arch::CurrentPteWalk::walk(
-                    minix_types::PhysBytes(root),
-                    dst,
-                )
-                .map(|(pa, _)| pa.0 & !0xFFF)
-                .unwrap_or(0);
+                let pa = minix_arch::CurrentPteWalk::walk(minix_types::PhysBytes(root.0), dst)
+                    .map(|(pa, _)| pa.0 & !0xFFF)
+                    .unwrap_or(0);
                 C0::write_str("nk4a: msgw va=");
                 C0::write_hex(dst.0);
                 C0::write_str(" root=");
-                C0::write_hex(root);
+                C0::write_hex(root.0);
                 C0::write_str(" pa=");
                 C0::write_hex(pa);
                 C0::write_str("\n");
             }
         }
-        unsafe { core::ptr::write_volatile(dst.0 as *mut Message, *msg) };
-        Ok(())
+        // Validate-first（同旧契约）：用户半定界 + 逐页 present/U/W 校验，
+        // 然后才经 DM 窗口落笔。need_write=true 保留旧形态独有的写方向
+        // 可写位把关（copy_via_root_pages 只校 U 位，不含 W）。
+        user_copy_range_mapped(
+            Some(root),
+            dst,
+            core::mem::size_of::<Message>(),
+            /* need_write = */ true,
+            minix_arch::CurrentPteWalk::walk,
+        )?;
+        // SAFETY: 校验已过，下面只是字节粒度搬运；buf 是 msg 的按值栈
+        // 副本（Message: Copy + repr(C)，align≤8），与 read_senda_entry 的
+        // WireAsyncSlot 判例同构——先物化再按字节传输。
+        let mut buf = *msg;
+        copy_via_root_pages::<minix_arch::CurrentDirectMap>(
+            root,
+            dst.0,
+            unsafe {
+                core::slice::from_raw_parts_mut(
+                    (&mut buf as *mut Message).cast::<u8>(),
+                    core::mem::size_of::<Message>(),
+                )
+            },
+            /* to_kernel = */ true,
+        )
     }
     #[cfg(test)]
     fn copy_msg_to_user(&self, _dst: VirBytes, _msg: &Message) -> Result<(), CopyError> {

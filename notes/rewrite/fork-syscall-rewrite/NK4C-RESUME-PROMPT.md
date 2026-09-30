@@ -244,14 +244,14 @@ sed -n '/^## 6/,/^## 7/p' notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT
 ### 单元 G：阶段 2 aarch64（2.1–2.4）
 
 - 2.1 M3.4 B 案：显式描述符通道（**设计先行，可能触发停止条件 1**）；
-- 2.2 内核读用户内存丙案（riscv64/aarch64 共用）：`KernelUserCopy` 改 VA→PA 走 DM 窗口（`ipc.rs` + 跨页分段）——**注意：单元 B 的 senda 修复可能已经部分完成这件事，先查再改**；
+- 2.2 内核读用户内存丙案（riscv64/aarch64 共用）：`KernelUserCopy` 改 VA→PA 走 DM 窗口（`ipc.rs` + 跨页分段）——**注意：单元 B 的 senda 修复可能已经部分完成这件事，先查再改**；〔状态更新 续-76a：**已实施**——`copy_msg_from_user`/`copy_msg_to_user` 两腿均改 `copy_via_root_pages`（walk→PA→DM），x86 真机 ×3 marker=2 端到端走新腿，`[ARCH: user-copy-via-dm]` 已标〕
 - 2.3 aarch64 生产 U-mode trap 腿（VBAR EL0 接入 `init_protection`）；
 - 2.4 VM handoff → **M3.6 aarch64 rc marker**。
 
 ### 单元 H：阶段 3 riscv64（3.1–3.4）
 
 - 3.1 甲案：kernel-image riscv64 接 `a1` DTB → 解 memmap + 模块装载源 + `.bss` 清零 → 调 `arch_boot`；
-- 3.2 SUM 丙案（= 2.2 的 riscv64 半）；
+- 3.2 SUM 丙案（= 2.2 的 riscv64 半）；〔状态更新 续-76a：**已实施**（丙案即消灭 SUM 依赖的通道改造，见上）〕
 - 3.3 riscv64 生产 U-mode trap 腿（sscratch 交换腿）；
 - 3.4 VM handoff → **M4.5 riscv64 rc marker**。
 
