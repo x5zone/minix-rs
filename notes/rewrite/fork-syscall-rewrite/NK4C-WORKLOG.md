@@ -8,7 +8,13 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-109（2026-10-01·**riscv idle 期定时器停摆根因坐实+单行成修入库（sstatus.SIE 位错）·真机验证 boot 串面 4102→25382 行·全验证链绿·CodeReview PASSED**）：承续-108（rc 子永卡 nanosleep、闹钟永不到期），本轮探针链坐实到根因：
+> **🛑 最新前沿＝§1.120续-110（2026-10-01·**riscv 新停点定性修正——野“缺页活锁”被重缺检测器证伪、终端精确坐实到 VM `Riscv64Paging::update_flags` walk 越界读——纯取证轮、探针用后即滚、tracked 净**）：承续-109 idle-SIE 修复（boot 4102→25382 行），本轮探针链坐实新终端：
+> **① 活锁定性被证伪**：内核 forward_pagefault 加「重缺检测器」（记最近 16 个 fa，同 fa 再现即打）——xu110b **零 refault 打印**，且前 24 笔均不同地址（0x3fffff000→f1000→…→e6000 向下栈增长）⇒ **无重复地址、非卡页活锁**，而是**广泛、渐进、非确定的 demand-paging**（三运行行数 4102/16905/25382 剧变＝时间窗不够跑完分页，非硬死锁）。
+> **② 终端精确定位**：`proot==live==0x82132000` 恒定⇒**排除 wrong-root**；PTE 位 V/R/W/U/A/D 全对（flags_to_pte:129 含 A|D）、readback 落地（pte-writeback-FAIL=0）⇒ 非 PTE 格式/写丢失。真终端：`pagefault for VM sepc=0x367f0 stval=0x10bd2cbbbc`——**rust-objdump 定 sepc=0x367f0 在 VM 自身 `Riscv64Paging::update_flags`**（paging.rs，paging 腿），faulting 指令 `ld a3,0(a3)`、a3=stval=0x10bd2cbbbc = `vm_phys_to_virt(PPN)`、PPN≈0xbd2cbbbc≈**3.15GB 超 512M RAM＝垃圾/未初始化的中间层 PTE**，`walk_read` 跟随坏表项越界读 → VM 自身页故障→`panic!("pagefault in VM")`（trap_dispatch.rs:1935，C exception.c:101-118 VM 自缺页致命对等）。调用者=`sync_slot_pte`（cow_exec_pf.rs:138-141）的 `pt.query`→Some(同 PA)→`update_flags` 分支。
+> **续-111 修靶（decision-complete）**：查“为何目标进程页表中间层有坏/未初始化项”——候选：① fork/COW 拷贝子进程页表时中间层表项未正确分配（walk_alloc 只建缺失中间表、若某级未分配却 V=1 垃圾）；② `query`（命中）与 `update_flags`（二次 walk 越界）不一致——查两者是否用同一 walk 基集/channel；③ 某级 PTE 写入时 PPN 错（高地址）→读回越界。先一次性探针打 update_flags 入参 vaddr + 各中间层 PTE 值/root_paddr（正常内核上下文、非 handler内、允许 walk），定位坏项在哪一级再成修。未坐实不成修；与续-105 PLIC/续-109 idle-SIE 不同层次。
+>
+
+> **（历史·§1.120续-109（2026-10-01·**riscv idle 期定时器停摆根因坐实+单行成修入库（sstatus.SIE 位错）·真机验证 boot 串面 4102→25382 行·全验证链绿·CodeReview PASSED**）：承续-108（rc 子永卡 nanosleep、闹钟永不到期），本轮探针链坐实到根因：
 > **铁证链**：idle#0..#b 反复进 idle 但 uptime 冻在 0x122（290）；`sie=0x20`（STIE 开）、`sip=0x20`（STIP **挂起**）却 riscv64_kernel_body 从不进入→timer 中断 pending+enabled 但不被投递。根因＝`idle_halt`(os/arch/src/riscv64/smp.rs) 原写 `csrs sstatus, 1u64<<5`（注释还误称 bit5=SIE）——但 **RISC-V 特权规范 `sstatus.SIE` 是 bit1（0x2），bit5 是 `SPIE`（sret 消费的已保存使能）**。设错位→内核/idle 上下文 SIE 永远 0→pending STIP 永不 taken→wfi 睡死、uptime 冻结、select/alarm deadline 永追不到→nanosleep 永挂。为何忙期 tick 正常：用户态 `INIT_USER_SSTATUS=0x20`（SPIE=1）sret 时硬件把 SPIE→SIE（用户态 SIE=1）；内核任务 `INIT_TASK_SSTATUS=0x100`（仅 SPP、SPIE=0）sret 后 SIE=0，故 idle 内核循环必须显式置 SIE(bit1)。
 > **修复（单行、镜像 x86 `sti;hlt`/aarch64 `daifclr;wfi`）**：idle_halt 的 `1u64<<5`→`1u64<<1`（正确置 sstatus.SIE bit1），重写注释说明 SIE/SPIE 位域与为何内核态需显式开 SIE。CodeReview **PASSED**（无 BLOCKER/SF，1 NIT 中英混排缺空格已采）。
 > **真机验证**：riscv boot-full 串口 **4102→25382 行**（idle-timer 修复生效、不再冻在 nanosleep、一路冲过 rc/Runcom 深入）；新暴露更深腿：`pagefault for VM sepc=0x367f0 stval=0x10bd2cbbbc`→`panic!("pagefault in VM")`（trap_dispatch.rs:1935，C exception.c:101-118 VM 自缺页致命对等）。**全验证链**：host 1400/0、rustfmt smp.rs Δ0、host clippy 不受影响（cfg riscv-only）、riscv kernel-image build EXIT=0、三架构 check-layout PASS(41/0)、**x86 真机 -smp1 marker=2/panic=0 不回归**。
@@ -9303,3 +9309,21 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-110 静态细化（本轮析 xu109fix 25382 行串口）**：非偶发 VM 自缺页，而是**缺页活锁（demand-paging livelock）**——末尾 `vm-pf recv`/`vm-pf bytes fa=0x…efa0`（bytes 全零）**同址洪泛 24323 次**（vm-pf 总 24323、imain=7/Runcom=1/do-memory=74/memreq=85/sa-call=4/exec ok=11）。⇒ 某进程（rc 链中 spawn 的 shell/echo 或 INIT）反复缺**同一页** `0x…efa0`、VM 反复被请求“供给”却总不生效（faulting 指令重执行又缺）→ 耗满窗后 VM 自身也缺页（sepc=0x367f0 stval=0x10bd2cbbbc）致命。**修靶修正**：查 riscv VM 缺页处理腿“为何映了却不落地”——候选：① VM 经 VMCTL/DOMAP 给用户进程映页后内核 sfence.vma/TLB 未刷（同续-62 强刷 CR3 实验类）；② VM 供给的 PTE 落错根/错级；③ fault 地址属合法需求页但映射腿对 riscv 未接。**先定哪进程缺何页（一次性探针打 sender/endpoint + fa 属主 + VM 返回状态），再核页表是否真现**。未坐实不成修；x86 无此活锁（同代码到 marker），属 riscv 腿差异。
 
 ⚠ 三目标不缩小：①x86✅·**riscv idle-timer 已修、marker 未达（新停点＝VM 自缺页）**·aarch64❌（续-87）；②x86 核心✅、riscv 命令面已越过 nanosleep 冲入 rc 深区（25382 行）但停于 VM 缺页、aarch64 未达；③minix3 tests 未动。
+
+---
+
+## §1.120续-110（2026-10-01·**riscv 新停点定性修正：「缺页活锁」被重缺检测器证伪；终端精确坐实到 VM `Riscv64Paging::update_flags` walk 越界读垃圾中间 PTE（纯取证轮、探针用后即滚）**）
+
+**方法**：内核 forward_pagefault_to_vm 加两类探针（cfg(riscv64)、用后即滚）：① 打 `nr/ep/fa/proot/live`（proot=proc.p_seg.phys_root、live=get_active_root）；②「重缺检测器」（static RECENT[16]，同 fa 再现即打 refault）。VM 侧沿用既有 pte-writeback-FAIL 回读探针。
+
+**① 活锁被证伪**：xu110b **零 `nk110: refault` 打印**；②首 24 笔 proot 全 = live = 0x82132000（RS 根，恒定，排除 wrong-root）；fa 各异且向下（0x3fffff000→…→e6000，栈/堆增长）。⇒ 不是卡在同一页反复缺（活锁），而是**大量不同页的渐进 demand-paging**；三次运行行数 4102/16905/25382 剧变＝时间窗不够跑完分页（非硬死锁）。pte-writeback-FAIL=0（写落地 OK）、flags_to_pte 含 V|R|W|U|A|D（PTE 格式正确）——排除写丢失/PTE 位缺失。
+
+**② 终端精确坐实**：`pagefault for VM sepc=0x367f0 stval=0x10bd2cbbbc` → `panic!("pagefault in VM")`（trap_dispatch.rs:1935，C exception.c:101-118 VM 自缺页致命）。rust-objdump 对未剥离 minix-vm ELF 定 **sepc=0x367f0 在 `Riscv64Paging::update_flags`**（os/arch/src/riscv64/paging.rs）内，faulting 指令 `ld a3,0(a3)`，a3=stval=0x10bd2cbbbc=`vm_phys_to_virt(PPN)`（VM_DM_BASE 0x100000000+PPN），PPN≈0xbd2cbbbc≈3.15GB **超 512M RAM＝坏/未初始化的中间层 PTE**；`walk_read` 跟随该坏表项越界读 → VM 自身缺页。调用者=`sync_slot_pte`（cow_exec_pf.rs:138-141）的 `pt.query`→Some(同 PA)→`update_flags` 分支（即"页已映到对帧、仅需改 flags"的重入路径）。
+
+**关键疑点（续-111）**：`pt.query(vaddr)` 先返回 Some（命中同 PA）才走 update_flags；但 update_flags 内 `walk_read` 二次走同一树却撞到越界——query 与 update_flags 是否用同一 walk 基集/channel、还是 query 走了缓存/部分树。候选根因：① 子进程页表某中间层项未正确分配（walk_alloc 建表时机/PPN）却 V=1 垃圾；② fork/COW 拷贝腿（exec_worker/cow）对 riscv 未把中间表拷全；③ 某级 PTE 写入 PPN 高到越界。**先一次性探针打 update_flags 入参 vaddr + root_paddr + 逐级中间 PTE 值**（正常内核/VM 上下文、非缺页 handler 内→允许 walk），定坏项在哪一级再成修。未坐实不成修。
+
+**层次区分**：本终端是 VM 分页腿（update_flags walk 越界），与续-105 PLIC claim 腿、续-109 idle-SIE 腿完全不同；那些已修、本腿是新暴露的更深缺陷。
+
+**探针卫生**：trap_dispatch.rs 探针 `git checkout` 回滚，tracked 净，grep 无 nk110 残留；零生产码改→WORKLOG-only、免 CodeReview。
+
+⚠ 三目标不缩小：①x86✅·**riscv idle-SIE 已修、marker 未达（新终端＝VM update_flags walk 越界读垃圾中间 PTE）**·aarch64❌（续-87）；②x86 核心✅、riscv 命令面已入 rc 深区但被 VM 分页终端阻断、aarch64 未达；③minix3 tests 未动。
