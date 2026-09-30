@@ -9344,3 +9344,19 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **矛盾要点（续-111b 待解）**：`query` 与 `update_flags` 用**完全相同**的 `walk_read(self.root_paddr, vaddr, self.channel)`（paging.rs query 体已核）——同 root 同 vaddr 同 channel 则 walk_read 逐指令同路径，query 能返回 Some(同 PA) 才进 update_flags，则 query 早该在同一 L2e 越界。⇒ 必为：① 二者 vaddr 实异（sync_slot_pte 的 query(vaddr) 与随后 update_flags(vaddr) 传入不同值？读码确认同 vaddr，故排除）② L2e 在 query 与 update_flags 之间被**改写**（单线程 VM 内，仅 alloc 腿动表）③ walk_read 对 Huge（L2e 是 1GB 叶）与 table-pointer 分支处理有非确定/边界缺陷。**续-111b 修靶**：VM 侧一次性探针（bootmark，`sync_slot_pte` 调 update_flags 前打 `nk111 va=<vaddr.0> root=<加 root 访问器> curpaddr=<paddr.0>`；并 dump walk 各级 L2e 值），锁定"哪一级 PTE 何时变垃圾"；正常内核/VM 上下文允许 walk（非缺页 handler 内）。**未坐实不成修**。
 
 ⚠ 三目标不缩小（同续-110）：riscv 卡 VM 分页终端（已连排 5 假说、解码到 root L2e 垃圾 PPN）。零生产码改、读码轮、WORKLOG-only。
+
+---
+
+## §1.120续-111b（2026-10-01·**riscv VM 分页终端探针：root L2 层证清白、垃圾 PPN 在更深 L1 层；交错误判已纠正（纯取证轮、探针用后即滚）**）
+
+**探针**：arch `Riscv64Paging::debug_probe_l2e`（安全只读 root[i2]、不跟随中间指针避免越界）+ `debug_root_paddr`；VM 侧 `sync_slot_pte` bootmark 打 `va/root/l2e`（cap 48）。
+
+**结果（xu111，18720 行）**：所有 `nk111` 行的 `root=0x82132000`、`l2e` 全 = `0x20b36001` 或 `0x20b35801`（低 nibble=1＝合法 V-only 表指针），PPN≈0x82cd8000 / 0x82ca8000（**紧邻 RS 根、在 [0x80000000,0xA0000000] RAM 内**）。⇒ **root L2 层完全健康，"root 页被数据覆写/帧别名"证伪**。
+
+**终端复现且跨运行一致**：本轮尾部 `pagefault for VM sepc=0x36c90 stval=0x10bd2cbb9c`（上轮 0x367f0/0x10bd2cbbbc——同 `vm_phys_to_virt` 区域、PPN≈0xbd2cbb000≈3.15GB **> 2.5GB(0xA0000000) RAM 顶、非 VM 发过的任何帧**）。0xbd2cbb 值跨运行仅低位微差（b9c vs bbc）＝**确定性的坏 PTE、非随机内存腐蚀**，随分页进度到某 L1 槽稳定命中。
+
+**纠正续-110b 的"非活锁"误判**：本轮尾部 `vm-pf recv`/`vm-pf bytes fa=0…efa0` 同址**连续反复数十次**（bytes 全零）→ **确有同址活锁**；续-110b 的 recent-16 环形窗口因两进程缺页交错而被挤出，漏判了。修正：存在「某进程反复缺同一页 `fa≈0x…efa0`」+「VM 走 L1→L0 时撞垃圾 PPN→VM 自缺页致命」两条交织症状，同根（L1 层某 PTE 是坏 PPN）。
+
+**续-111c 修靶（收窄一层）**：坏 PTE 在 **L1 层**（root[i2] 干净但跟随其 L1 表读 L0 时越界）。下一步探针读到 L1 级：`debug_probe_l1e(vaddr)` 读 `vm_phys_to_virt(l2e.PPN)+i1*8` 的值 + 其 PPN，锁定哪个 i1 槽是 0xbd2cbb 垃圾 → 再查该 L1 表页由谁写（walk_alloc 建新 L0 表时？map_kernel 铺 RS 根时 L1 中间项？fork/rs adopt 拷表？）。正常 VM 上下文读 L1 表需 l2e.PPN 在 VmDm 窗内（已证 L2 帧在 RAM 内、可安全读其 L1 数组）。未坐实不成修。
+
+⚠ 三目标不缩小（同续-110）。探针 paging.rs+cow_exec_pf.rs 全 `git checkout` 回滚，tracked 净，无 NK111-TEMP 残留；零生产码改→WORKLOG-only、免 CodeReview。
