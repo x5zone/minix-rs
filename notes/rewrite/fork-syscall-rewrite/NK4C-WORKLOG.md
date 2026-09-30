@@ -8,7 +8,14 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-103（2026-10-01·**riscv RS 出生链两大障碍已修+入库（真机验证、全验证链绿、CodeReview PASSED）**）：本轮将【A】高半重定位 + 【C】map_kernel text 加 X 两处生产修落地并回验：
+> **🛑 最新前沿＝§1.120续-105（2026-10-01·**riscv kernel-leg `scause=0xd`（PLIC claim MMIO 脏读）根因静态坐实+成修+真机验证+全验证链绿+CodeReview APPROVED（零 issue）**）：承续-104/105b 把修靶缩到 `IrqManager::dispatch`/`KernelNotifier` hook 链——本轮**未用探针轮、改用反汇编静态定谳**（sepc 是精确地址、kernel ELF 未剥离，比探针更确定且不扰动现场）：`rust-objdump` 对 `sepc=0xffffffc000016e08` 落在 `dispatch_hardware_irq` 体内的 `dispatch()`→`controller.claim()` 内联段，逐条解码 `auipc/addi`(定址全局 `IRQ_MANAGER@0x35190`) + `ld a1,0x118(a0)`(取 `context`) + `ld a0,0x108(a0)`(取 `plic_base`) + `lui a2,0x200; slli a1,a1,0xc; add; add; lw a3,4(a0)` ⇒ **faulting 指令＝`Riscv64InterruptController::claim()`（os/plat/src/riscv64/interrupt.rs:207-215）读 PLIC claim MMIO 寄存器 `read_volatile(plic_base + PLIC_CLAIM(0x200004) + context×0x1000)`**。算术坐实 `PLIC base 0xC000000 + 0x200004 + context(1)×0x1000 = 0xC201004` **逐字等于 stval**。
+> **根因（三架构 Ground-Truth 对照）**：riscv S-mode timer 是 CPU-local（`sip.STIP`）、**从不跨 PLIC**（同文件注释 30-40/187-195 + `mask/unmask` 对 `irq==0` 已早退），但 `IrqManager::dispatch` 对**所有** irq（含 timer 伪向量 0）无条件先 `controller.claim()`——riscv 的 claim 是 MMIO 读、PLIC 区在 RS proc 根未映射 → 首次打断 RS 的 tick 即 load page fault。对照：x86 `claim()` 返 `None`（APIC 无 claim 步，interrupt.rs:473-482）、aarch64 `mrs icc_iar1_el1`（**系统寄存器**，不需页表映射，arm64/interrupt.rs:324-330）——二者 timer tick 皆不触 MMIO，故同段不挂到 marker。
+> **成修（纯 cfg(riscv64) 臂、镜像 x86 shape）**：`trap_dispatch.rs::riscv64_timer_arm` 把 `dispatch_hardware_irq(TIMER_IRQ)`（自 claim）改为 `dispatch_claimed_hardware_irq(TIMER_IRQ, None)`——跳过控制器 claim；`complete(None)` 早退不写 PLIC、`mask/unmask(0)` 早退、clock hook 链（`handlers[TIMER_IRQ]`→`clock_irq_handler`）在 `dispatch_claimed` 内照常遍历执行、timer 重装由首行 `local_tick`→SBI `local_timer_eoi` 承担。全验证链等价（CodeReview 逐项确认 BKL/account/unlock 结构两包裹函数完全一致）。未来 PLIC 外部（SEI，现 registered gap、kernel_body 仅识别 supervisor timer）仍走 split `claim→route→dispatch_claimed`，未被此改动触碰。
+> **全验证链（只增不减，全绿）**：host **1400 passed/0 failed**；rustfmt trap_dispatch Δ0（35=35）；host clippy 不受影响（cfg riscv-only）；riscv build EXIT=0 且告警 **Δ0（71=71，stash 对账）**；三架构 check-layout **PASS（41/0）**；**x86 真机 -smp1 marker=2/panic=0（10671 行）不回归**；**riscv 真机 test-riscv64-boot-full：panic=0/scause=0、旧故障签名（scause 0xd/0xc201004/kernel-leg trap/diag_panic）彻底消失、串口 331→4102 行**——RS 出生链深入多服务 IPC 交互（`vm-pf recv`/`setaddr nr=0xc`/`kdst copy`/`schedctl caller=4 tgt=0xc`/`do-memory`/`memreq target=11`/`snd-init`/`sa-call caller=1 pid=6 fl=12`）。CodeReview **APPROVED 零 issue**。
+> **新停点（续-106 修靶）**：marker 仍未达（非回归，是 PLIC 崩溃解除后更深的多服务 IPC 腿）——4102 行末停在 `sa-call caller=1 pid=6 fl=12 sys=y`（VM 对 pid=6 反复 SETADDRSPACE？或握手/命令面尚未推进到 init exec→rc），须续-106 采「末相位是否活锁/是否收敛」差分定性（对位 aarch64 出生 §1.113~118 与 x86 续-72 的 sa-call 家族）。**N1/N2/N3（续-103 higher_half.rs/map_kernel 的 CodeReview NIT）本会话按纪律留队列作 续-106 顺路**（N1 asm 补 t0/t1/s0 clobber；N2 kernel text 改 R-X 恢复 W^X——需先验高半 VMA 无运期写 text 路径；N3 delta 用 checked_sub 明示 virt≥phys）。
+>
+
+> **（历史·§1.120续-103（2026-10-01·**riscv RS 出生链两大障碍已修+入库（真机验证、全验证链绿、CodeReview PASSED）**）：本轮将【A】高半重定位 + 【C】map_kernel text 加 X 两处生产修落地并回验：
 > 【A】`higher_half.rs::jump_to_kmain`：`la t0,{kmain}`(medany 下 PC 相对→低址) 改 `la t1,{kmain}; add t1,t1,t2; jalr x0,t1,0`，t2=delta=kern_virt_base−kern_phys_base(in("t2") 无名式)→跳高半 kmain。【C】`map_kernel` text 段 `kernel_read_write()`(无 X)→`kernel_executable_writable()`(加 X，riscv 取指恒需叶 X；x86清NX/aarch64清XN 均为纯增量解禁不限制)。同改 host 单测 `test_mock_map_kernel` text flags 断言。
 > **全验证链**：host 1400 passed/0 failed、clippy Δ0、**x86 真机 marker=2/panic=0 不回归**、riscv test-riscv64-boot-full 串口 176→**331 行**（RS birth-chain 从首死点 rcv-p4 一路推进到多轮 IPC：rtsrs set/unset、rbxw、msgw、rcv12/rcv13 src=2、vm-pf recv——**satp 切换死亡彻底解除**，真机 sepc=0xffffffc000016e08 证高半执行）。CodeReview 无 BLOCKER（N1/N2/N3 均 NIT）。
 > **新停点（续-104 修靶，不同阶段、非回归）**：`kernel-leg trap scause=0xd`(load page fault) stval=0xc201004 sepc=0xffffffc000016e08 → panic at trap_dispatch.rs:2277。即 proc 根缺某区（疑 UART/MMIO 或消息窗某页未映）或 kernel-leg 应转发 VM 而非 panic——riscv 首次进多服务 IPC 交互后的新腿。
@@ -9162,3 +9169,31 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 3. 修＝riscv 建 proc 根时镜像 x86/aarch64 铺内核 high-half（boot 期 proc 根都含内核映射），或让首跑前的 proc 暂用含内核映射的 bootstrap 根直到 VM 建好完整用户根。改动务必跑全验证链（host + 三架构 check-layout + x86/aarch64 真机不回归 + riscv 全系统 boot 前进）+ CodeReview。
 
 ⚠ 三目标不缩小：①x86✅·riscv 根因锁定(RS proc 根缺内核高半映射)·aarch64❌（续-87 在案）；②x86 核心✅；③未动。
+
+---
+
+## §1.120续-105（2026-10-01·**riscv kernel-leg `scause=0xd`（PLIC claim MMIO 脏读）根因静态坐实+成修+真机验证+全验证链绿+CodeReview APPROVED**）
+
+**方法选择——反汇编代替探针轮**：续-104/105b 把修靶缩到 `IrqManager::dispatch`/`KernelNotifier` hook 链。本轮起手发现 `sepc=0xffffffc000016e08` 是**精确地址**、且 kernel ELF 未剥离——`rust-objdump -d --start-address=0x16dc0 --stop-address=0x16e40` 直接反汇编定到场指令，比 160s 探针轮更快且不扰动现场（探针自身可能引入新 fault）。守「未坐实根因不成修」：先用静态定谳，再成修。
+
+**反汇编逐条解码（sepc 现场）**：
+```
+16de2 auipc a0,0x1e / 16de6 addi a0,a0,0x3ae   → a0 = 0x...35190 = globals::IRQ_MANAGER
+16dea ld a1,0x0(a0) / 16dec li a2,2 / 16dee beq  → RefCell/borrow 快路判定
+16df2 lui a1,0x1 / 16df4 add a0,a0,a1            → a0 = IRQ_MANAGER+0x1000
+16df6 ld a1,0x118(a0)   → a1 = controller.context
+16dfa ld a0,0x108(a0)   → a0 = controller.plic_base
+16dfe lui a2,0x200 / 16e02 slli a1,a1,0xc / 16e04 add a0,a0,a2 / 16e06 add a0,a0,a1
+16e08 lw a3,0x4(a0)  ← FAULTING：a3 = read_volatile(plic_base + 0x200004 + context×0x1000)
+```
+该地址算式逐字等于 `Riscv64InterruptController::claim()`（os/plat/src/riscv64/interrupt.rs:207-215）→ `plic_read32(claim_offset(context))`。代入 PLIC base `0xC000000` + `PLIC_CLAIM 0x200004` + `context(1)×0x1000` = **`0xC201004`，与 stval 逐字一致**（`nm` 定 `0x35190`/`0x37190` 落 IRQ_MANAGER 体，`0x108`/`0x118` 为 controller 字段 `plic_base`/`context`）。
+
+**根因（三架构 Ground-Truth 对照）**：`dispatch_hardware_irq`→`IrqManager::dispatch`（irq_manager.rs:521-528）先无条件 `controller.claim()`。riscv S-mode timer 是 CPU-local（`sip.STIP`）、从不跨 PLIC（interrupt.rs:30-40/187-195 自证 + `mask/unmask` 对 `irq==0` 已早退），唯 `claim()` 不特判（无向量参）→ 首次打断 RS 的 tick 读未映射的 PLIC MMIO → supervisor load page fault（scause 13）。对照 x86 `claim()` 返 `None`（APIC 无 claim 步，x86_64/interrupt.rs:473-482）、aarch64 `mrs icc_iar1_el1`（系统寄存器，不需页表映射，arm64/interrupt.rs:324-330）——timer tick 皆不触 MMIO，故同段不挂。
+
+**成修（纯 cfg(riscv64) 臂、镜像 x86 shape）**：`riscv64_timer_arm` 把 `dispatch_hardware_irq(TIMER_IRQ)` 改为 `dispatch_claimed_hardware_irq(TIMER_IRQ, None)`。claimed=None 后：`complete(None)` 早退不写 PLIC、`mask/unmask(0)` 早退、clock hook 链（`handlers[TIMER_IRQ]`→`clock_irq_handler`）在 `dispatch_claimed` 内照常遍历、timer 重装由首行 `local_tick`→SBI `local_timer_eoi` 承担。两包裹函数（irq_manager.rs:226-251 vs 279-292）BKL/account_interrupt_stop/unlock 结构完全一致。未来 SEI（PLIC 外部，现 registered gap）仍走 split `claim→route→dispatch_claimed`，未触。详见 `trap_dispatch.rs::riscv64_timer_arm` 内 CONTRACT 注释。
+
+**全验证链（只增不减）**：host 1400/0；rustfmt trap_dispatch Δ0（35=35）；riscv build EXIT=0、告警 Δ0（71=71，stash 对账）；三架构 check-layout PASS（41/0）；x86 真机 -smp1 marker=2/panic=0（10671 行）不回归；riscv 真机 boot-full：panic=0/scause=0、旧故障签名彻底消失、串口 331→4102 行（RS 出生链深入多服务 IPC：vm-pf recv/setaddr nr=0xc/kdst copy/schedctl/do-memory/memreq target=11/snd-init/sa-call caller=1 pid=6）。CodeReview APPROVED 零 issue。本轮有生产码改动，走全验证链+CodeReview 后入库。
+
+**真机取证环发现（环境项）**：本会话首跑 x86 真机时遇一个上一会话遗留的 stray qemu（pid 287926、-smp4、xu103 标签）持有 `target/image/x86_64/minix.img` 写锁 → QEMU “Failed to get write lock” 退出 1、串口 0 行。排查：`pkill -9 -f qemu-system-x86_64` 清 stray 后重跑正常（改用 `snapshot=on` 防再锁）。教训：每次真机 boot 后必确认 qemu 已退（timeout 杀包装器但 qemu 可自笼）。
+
+**续-106 修靶**：marker 仍未达（非回归，是 PLIC 崩溃解除后更深的多服务 IPC 腿）。4102 行末停在 `sa-call caller=1 pid=6 fl=12 sys=y`——需采「末相位是否活锁/是否收敛」差分（对位 aarch64 出生 §1.113~118 与 x86 续-72 的 sa-call 家族）；N1/N2/N3（higher_half.rs/map_kernel NIT）顺路。⚠ 三目标不缩小：①x86✅·**riscv PLIC claim 腿已通、marker 未达（新停点＝多服务 IPC 末相位）**·aarch64❌（续-87 barrier mt=8 在案）；②x86 核心✅；③未动。

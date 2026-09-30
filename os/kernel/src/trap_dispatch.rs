@@ -1962,13 +1962,32 @@ unsafe fn riscv64_pagefault_body(
 ///    `ClockArch::local_timer_eoi` — the one-shot stops dead unless the
 ///    body re-arms, apic.c:578 parity),
 /// 2. the clock hook chain under `minix_plat::TIMER_IRQ` (advances
-///    uptime, expires alarms — D-46; the PLIC claim is a documented
-///    no-op for the CPU-local timer, pseudo-vector 0),
+///    uptime, expires alarms — D-46; the CPU-local timer bypasses the
+///    controller claim — see the `dispatch_claimed_hardware_irq` note below),
 /// 3. quantum enforcement for this CPU's running process
 ///    (C proc.c:418-424).
 fn riscv64_timer_arm() {
     crate::clock::local_tick(crate::clock::current_cpuid());
-    match crate::irq_manager::dispatch_hardware_irq(minix_plat::TIMER_IRQ) {
+    // The riscv S-mode timer is a CPU-local interrupt (`sip.STIP`) that never
+    // crosses the PLIC — its dispatch identity is the reserved pseudo-vector
+    // 0, which the controller's `mask`/`unmask` already special-case as "no
+    // controller line" (`os/plat/src/riscv64/interrupt.rs` timer/vector-0).
+    // A bare `dispatch_hardware_irq` self-claims first (`IrqManager::dispatch`
+    // → `controller.claim()`), and the riscv `claim()` reads the PLIC claim
+    // MMIO register `read_volatile(plic_base + 0x200004 + context*0x1000)` —
+    // an address the port does not map, so the very first tick that interrupts
+    // a process whose page table omits the PLIC window load-faults (scause 13).
+    // 续-105 坐实：`sepc` 落在 `dispatch_hardware_irq`（`dispatch()` 的 `claim`
+    // 臂内联），`stval=0xc201004` = PLIC base `0xc000000` + `PLIC_CLAIM 0x200004`
+    // + `context(1)×0x1000`（三架构对照：x86 `claim()` 返 `None`、aarch64 读
+    // 系统寄存器 `icc_iar1_el1`，二者皆不需页表映射，故同段不挂）。
+    // Mirror the x86 shape (`X86_64InterruptController::claim` → `None`): route
+    // through the already-claimed entry with `claimed = None`, which skips the
+    // controller claim and leaves `complete(None)` a no-op (early return) — the
+    // SBI re-arm in `local_tick` already retires the timer. The future PLIC
+    // external (SEI) lane will use the split `claim → route → dispatch_claimed`
+    // shape once wired (this leg currently handles only the supervisor timer).
+    match crate::irq_manager::dispatch_claimed_hardware_irq(minix_plat::TIMER_IRQ, None) {
         Ok(()) => {}
         Err(crate::irq_manager::IrqError::Spurious(irq)) => {
             use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
