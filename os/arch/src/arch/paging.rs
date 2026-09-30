@@ -601,7 +601,18 @@ pub fn map_kernel<P: Paging>(
     for i in 0..kernel_text_pages {
         let vaddr = VirBytes(kernel_text_vbase + i as u64 * page_size);
         let paddr = PhysBytes(kernel_text_pbase + i as u64 * page_size);
-        pt.map(vaddr, paddr, PageFlags::kernel_read_write())?;
+        // NK4-C 续-103: kernel TEXT must carry the execute bit. RISC-V (Sv39)
+        // unconditionally requires X on a leaf to fetch from it — unlike x86
+        // (EFER.NXE may be off, and the immediate post-`switch` fetch lands in
+        // the RWX fix27e identity windows below, so the no-X text alias was
+        // never the fetched path there). Mapping text `kernel_read_write()`
+        // (present|write|global, no X) faulted the very first instruction
+        // fetch after `switch_address_space` loaded a process's map_kernel root
+        // — the riscv RS birth-chain death. Adding X to already-present text is
+        // purely additive (it can only enable a fetch, never restrict one), so
+        // x86_64/aarch64 behavior is unchanged. RWX matches the RWX boot/identity
+        // mapping already used for the running kernel image (see fix27e below).
+        pt.map(vaddr, paddr, PageFlags::kernel_executable_writable())?;
     }
 
     let data_vbase = kernel_text_vbase + kernel_text_pages as u64 * page_size;
@@ -1142,6 +1153,9 @@ pub mod mock {
             }
 
             // Segment 1: Kernel code segment (8 pages at MOCK_KERNEL_TEXT_VBASE)
+            // NK4-C 续-103: kernel text carries the execute bit (RISC-V Sv39
+            // requires X on a leaf to fetch; adding X is purely additive for
+            // x86/aarch64). Data segment below stays read_write (no X).
             const PAGE_SIZE: u64 = MockPaging::PAGE_SIZE as u64;
 
             for i in 0..8 {
@@ -1150,7 +1164,7 @@ pub mod mock {
                 assert!(result.is_some(), "kernel code page {i} not mapped");
                 let (paddr, flags) = result.unwrap();
                 assert_eq!(paddr, PhysBytes(MOCK_KERNEL_TEXT_PBASE + i * PAGE_SIZE));
-                assert_eq!(flags, PageFlags::kernel_read_write());
+                assert_eq!(flags, PageFlags::kernel_executable_writable());
             }
 
             // Segment 1: Kernel data segment (8 pages after code segment)
