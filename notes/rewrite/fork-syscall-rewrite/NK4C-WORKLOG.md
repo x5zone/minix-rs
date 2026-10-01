@@ -10294,3 +10294,8 @@ gh45 存量：pte-wb-FAIL=0（sync_slot_pte 回读全过=填页真落地）；vm
 
 ## §1.120续-162（2026-10-02·**child 两次 setaddr 的铸造点定位=exit.rs:262-268（clearproc 腿）+fork.rs:395-401（fork 腿），两处 root 均无打印（sas-send 只盖 boot 路径 vm_server.rs:784）；flags 0x8008→0x8=VMINHIBIT 清除前后**；续-163=两处各加一行 root 打印对账 0x9dc39000，坐实「后到的 rebind 覆盖装好镜像的根」即成修）
 gh45 复核：VM 侧 set_addrspace 铸造点=boot(vm_server.rs:793)/fork(fork.rs)/clearproc(exit.rs:267) 三处；child 的两次分别来自 fork（INIT fork 出 rc）与 exec clearproc。若 exec clearproc 的 root#2 ≠ mmaps 实填的 root#1（0x9dc39000）→child 在空根上无限缺页，与 pte-wb-FAIL=0、rm 兜底全自洽。一行探针（exit.rs 与 fork.rs 的 set_addrspace 前打 root+endpoint）即裁决。
+
+## §1.120续-163（2026-10-02·**破案：kernel 装根 0x9dc38000 ≠ VM 实填链 0x9dc39000（恰差一页）——sas-fork 与 sas-clear 都 rebind 了旧根 0x9dc38000，clearproc 的 init_page_table 分配/填页用新根 0x9dc39000 但句柄 root_paddr 字段未跟上→kernel 持旧根、child 在空表无限缺页；续-164=审 init_page_table 的 root_paddr 字段更新与实际分配根页的脱节点**）
+
+### gh46 决据（sas-fork/sas-clear 双探针）
+`sas-fork ep=32780 root=0x9dc38000` + `sas-clear ep=32780 root=0x9dc38000`（exec endpt=0x800c 紧随）。gh35 dump 实填链 root=0x9dc39000（→L1 0x9d2af000→L0 0x9d2ae000→栈页 0x9d2b0000）。两次 rebind 同根 0x9dc38000：fork 腿当时正确（CoW 镜像根）；clearproc 腿 init_page_table 新分配根应为 0x9dc39000（mmaps 全填此链），但 sas-clear 读 root_paddr 仍得 0x9dc38000 ⟹ **handle.root_paddr 字段与新根页脱节**（init 写的字段 vs 实际用的根不一致，或 clearproc 拿到旧句柄副本）。child 硬件走 0x9dc38000 空根→同址无限缺页；VM 在 0x9dc39000 上填页且回读全过；rm 兜底救 find——全症状一字不差闭环。
