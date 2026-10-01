@@ -2015,9 +2015,13 @@ impl VmServer {
         // trap stub answers -EIO for both calls; the failure is audited and
         // the error reply still counts the episode (G-V12-6).
         // Read-only borrow — ends before the mem_parts_mut split below.
-        if request.write
-            && !proc.regions().find(fault_addr).is_some_and(|r| r.is_writable())
-        {
+        // 续-157①（最小验证）：find 结果单次求值——若 stale 双读（别名
+        // UB）为本墙真身，合并求值后症状应消失。
+        let seg_writable = proc
+            .regions()
+            .find(fault_addr)
+            .is_some_and(|r| r.is_writable());
+        if request.write && !seg_writable {
             // 续-156 探针（用后即滚）：wro 出口枚举该进程全部 region
             // {va, len, flags}——一步分辨 缺失 / 边界错 / 不可写。
             #[cfg(not(feature = "mock"))]
@@ -2027,12 +2031,13 @@ impl VmServer {
                 if WRO_N.fetch_add(1, AtomicOrd::Relaxed) < 2 {
                     let f = proc.regions().find(fault_addr);
                     crate::bootmark::mark(&alloc::format!(
-                        "nk4a: wro-dump ep={:#x} cr2={:#x} find_some={} find_w={} n={}\n",
+                        "nk4a: wro-dump ep={:#x} cr2={:#x} find_some={} find_w={} n={} seg_w={}\n",
                         proc_endpoint.0 as u64,
                         fault_addr.0,
                         f.is_some(),
                         f.is_some_and(|r| r.is_writable()),
-                        proc.regions().len()
+                        proc.regions().len(),
+                        seg_writable
                     ));
                     proc.regions().iter().for_each(|r| {
                         crate::bootmark::mark(&alloc::format!(

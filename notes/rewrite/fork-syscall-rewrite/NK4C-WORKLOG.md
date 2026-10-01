@@ -10250,3 +10250,11 @@ gh37（inactive 细化探针）：**`pf-exit wro cr2=0x7fffffffef90`**＝dispatc
 ### 续-157 成修方向（大手术，先小步验证）
 ①最小验证：dispatch_pagefault 内把 check 与 probe 合并成单表达式打印（若同一次求值则非 stale，推翻本诊断）；②真修=别名纪律重构：ctx.proc_table 改非-'static（&self 生命周期）或全槽访问走 UnsafeCell+显式 unsafe 块（自担 aliasing，杜绝裸 & 长持）；③修后 gh40 验证 wro 消失→子进程活→marker 冲刺；④fb201/RS 两墙按同根重验。
 门：未过①验证不成修；q-badroot/pf-inact/wro-dump 探针 task1-close 滚除。
+
+## §1.120续-157①（2026-10-02·**单次求值验证完成：seg_w（单次求值）=false 而同分支内立即重读 find_some=true find_w=true——同数据连续两次读不一致坐实（非单纯缓存，系 stale load/内联错副本形态），别名 UB 根因维持；gh40 未过 marker**）
+
+### gh40 证据
+`wro-dump ... find_some=true find_w=true n=4 seg_w=false`——seg_w=合并后的单次求值（分支判据）读得 false，数行后同表达式重读得 true 且四 region（栈区 w=true）全在。单求值合并未消除症状→非「编译器缓存单点」，而是**两次加载本身结果不同**：stale 副本（ctx.proc_table:'static 通道 vs get_active 裸指针通道命中不同 VA 别名/不同 noalias 假设的代码副本）。root 仍=vm_server.rs:64 'static + table.rs 裸指针派生引用的别名纪律破坏。
+
+### 续-158（下一轮）
+②真修：vm_server.rs:64 `proc_table: &'static VmProcTable` 去静态化（VmContext 持 &self 生命周期引用或全走 UnsafeCell 显式 unsafe），或 dispatch 系全部改用单一通道取表；gh41 验证 seg_w=true→子进程活→marker 冲刺。修属生产码：CodeReview+全验证链。探针（wro-dump/pf-inact/q-badroot/pfvm）task1-close 滚除。
