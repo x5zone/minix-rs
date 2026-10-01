@@ -10130,3 +10130,15 @@ walk_alloc 两个中间项写入点（L1 alloc、L0 alloc）各加 `phys.0 >= 0x
 
 ### 续-148 修靶
 ①kernel kdst copy 前后加 PA 范围守卫（写入 PA 落在子进程页表页范围时告警+拒绝——需要知道子进程 PT 页的 PA 集合，可从 vm_pt_alloc 的 PT_SEEN 位图扩展反查）；②dump 子进程 L1 表页 PA（从 SETADDRSPACE 的 ptroot 反推 L1 页位置）确定 L1 槽 PA 区间后用 QEMU watchpoint 抓写者；③成修+CodeReview+真机 marker 冲刺。
+
+## §1.120续-148（2026-10-02·**多墙优先级终裁定：fb201 乒乓＝确定性首墙五轮连停，(A) 非必现；续-149 主攻＝fb201 乒乓修复（VFS/PM 两侧未知 m_type 臂改 C 对位）；pmemsave 判别管道已验证待 (A) 复现后使用**）
+
+### 优先级裁定（gh12/13/17/19/23 五轮 fb201 确定性首墙）
+fb201 乒乓五轮连续先挡，(A) 零触发（时序门控）。**续-149 主攻＝fb201 乒乓修复**：
+①VFS Route:: 解码对 PM 来源未知 m_type 的臂——当前回原值 ENOSYS，改 C 对位（VFS 对 PM 来源消息只认 VFS_PM_* 族，其余静默丢弃不回——C service_pm 无 default ENOSYS）；
+②PM dispatch_message 对 VFS 来源非 RS 族消息 ENOSYS 回程改静默（C 对位 PM 不回 VFS 来源 PM-call 分派失败——模式：ENOSYS 回程=乒乓放大器）；
+③FS status=-1 回复源头（FS 驱动某失败路径把 -1 当 status stamp）。
+修后 fb201 消失→Runcom 深入→(A) 或新墙再战→marker 冲刺。
+
+### pmemsave 判别管道（已验证，待 (A) 复现后使用）
+QMP unix socket + human-monitor-command + pmemsave 绝对路径有权限问题 → **相对路径**（QEMU CWD）✓。gh19 的 text diff=IDENTICAL（洪流期 text 干净——(A) 时 text 可能损坏，需 (A) 现形时抓）。(A) 帧 GPR dump 探针已在内核诊断面（续-138附）。gh 轮 stval 三形状（0x10bd2cabXX/0x409d2c9bb0）稳定——(A) 复现后立即抓。
