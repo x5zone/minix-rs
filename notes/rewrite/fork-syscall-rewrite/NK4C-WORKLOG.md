@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-146（2026-10-02·**执行态 checkpoint：(A) 收窄至 walk_alloc L1 中间项/alloc_pt_page——**根因假说精化**：gh15 sync26 零命中（位 26 过滤）+ gh16 alloc-big 全合法（<0xA0000）⇒ alloc 与 sync_slot_pte 均未产出越栈 pfn ⇒ **L1e 的坏 PPN 来自 walk_alloc 写入后的二次覆写**或 **alloc_pfn_reclaiming 的 reclaim 路径**（reclaim 可能回收 page_cache/文件缓存帧——候选污染路径）；续-147 修靶＝walk_alloc L1 写点 dump + alloc_pfn_reclaiming reclaim 路径审计**）：gh16 补充：2351 alloc-big 全为合法绝对 pfn（0x80000..0xA0000 RAM 内）零越栈；(A) 崩于 gh16 17804 行（stval=0x10bd2cab9c，l0_idx*8=0xb9c 非八字对齐 ⇒ **执行代码≠walk_read 的 L0 读**＝编译器优化后的另一条读取路径或寄存器复用变体——不影响根因定位：坏 L1e PPN 是确定的）。
+> **🛑 最新前沿＝§1.120续-147（2026-10-02·**walk_alloc pt 分配越栈守卫零命中——alloc_pt_page 分配干净，(A) 的坏 L1e **不是 walk_alloc 写入的**而是后续被某者覆写；排除法收敛至内核 kdst 跨空间拷贝 walk 算错 PA 写进 L1e 槽（0x9d2ecf98 与 L1 表页同 512M RAM 区间）；续-148 修靶＝内核 kdst copy 的 PA 范围检查+L1 表页 PA dump**）：gh21 守卫轮：pt-BIG-L0/L1 零命中（alloc_pt_page 从未返回 ≥0xA0000000 的 PA）——**L1e 被覆写的时机不在 walk_alloc 内**而在写入后、query 读前的窗口（可能横跨整个 VM 事件循环）。嫌疑收敛：①kernel kdst copy（跨空间拷贝 walk 算错 PA → 写进任意帧包括 L1 表页——0x9d2ecf98 与 L1 表同区间）②VM 堆溢出（堆帧与页表帧相邻时溢入）。**续-148 修靶**：①kernel kdst copy 前后加 PA 范围守卫（写入 PA 落在子进程页表页范围时告警+拒绝）；②dump 子进程 L1 表页 PA（从 SETADDRSPACE 的 ptroot 反推）确定 L1 槽 PA 区间后 watch；③成修+CodeReview+真机 marker 冲刺。**探针已滚 tracked 净。**
+>
+
+> **（历史·§1.120续-146（2026-10-02·**执行态 checkpoint：(A) 收窄至 walk_alloc L1 中间项/alloc_pt_page——**根因假说精化**：gh15 sync26 零命中（位 26 过滤）+ gh16 alloc-big 全合法（<0xA0000）⇒ alloc 与 sync_slot_pte 均未产出越栈 pfn ⇒ **L1e 的坏 PPN 来自 walk_alloc 写入后的二次覆写**或 **alloc_pfn_reclaiming 的 reclaim 路径**（reclaim 可能回收 page_cache/文件缓存帧——候选污染路径）；续-147 修靶＝walk_alloc L1 写点 dump + alloc_pfn_reclaiming reclaim 路径审计**）：gh16 补充：2351 alloc-big 全为合法绝对 pfn（0x80000..0xA0000 RAM 内）零越栈；(A) 崩于 gh16 17804 行（stval=0x10bd2cab9c，l0_idx*8=0xb9c 非八字对齐 ⇒ **执行代码≠walk_read 的 L0 读**＝编译器优化后的另一条读取路径或寄存器复用变体——不影响根因定位：坏 L1e PPN 是确定的）。
 > - **续-147 修靶（探针轮——alloc-big/sync-big 探针已在树可复用）**：①walk_alloc 写 L1 中间项前 dump (l0_table_pa, vaddr, channel)——`crate::pt_alloc::alloc_pt_page()` 返回值 ≥0xA0000000 时现形；②alloc_pfn_reclaiming 的 reclaim 路径审计（page_cache 帧回收→certain pfn 可能带高位）；③PT_SEEN 位图扩全域（现覆盖 0..32768 不够 0xA0000 绝对 pfn 域）；④成修+CodeReview+真机 marker 冲刺。**cow_exec_pf.rs 的 alloc-big/sync-big 探针保留（阈值已修正为 ≥0xA0000 绝对域）**。
 >
 
@@ -10108,3 +10111,22 @@ VM 的 exec 装载把段+栈映为 PROT_RWX（exec_worker.rs「C 忠实」注释
 
 ### 续-146 修靶
 ①walk_alloc 写 L1 中间项前 dump (返回的 l0_table_pa, vaddr, channel)——alloc_pt_page 返回 PA≥RAM 时现形；②alloc_pt_page 内 alloc_pfn_reclaiming 返回值审计（bitmap 位图 word/bit 解码）；③PT_SEEN 查重位图扩到全域（0x409d2c9 ≥ 512*64=32768 ⇒ 现有 PT_SEEN 只覆盖 0..32768，越栈 pfn 不会被 dup 检测到）；④成修+CodeReview+真机 marker 冲刺。
+
+## §1.120续-147（2026-10-02·**walk_alloc pt 分配越栈守卫零命中——alloc_pt_page 干净，(A) 坏 L1e 不是 walk_alloc 写入的；排除法收敛至内核 kdst 跨空间拷贝（探针已滚 tracked 净）**）
+
+### 探针轮结果（gh21）
+walk_alloc 两个中间项写入点（L1 alloc、L0 alloc）各加 `phys.0 >= 0xA000_0000` 守卫——**pt-BIG-L0/L1 零命中**。alloc_pt_page 从未返回越栈 PA。
+
+### 排除法收敛态
+| # | 假说 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | text 页破坏 | ✗ | pmemsave 32KB diff=0（续-145） |
+| 2 | 叶子 slot PFN 位 26 | ✗ | sync26 零命中（gh15/16） |
+| 3 | alloc_pt_page 越栈 PA | ✗ | pt-BIG 零命中（gh21） |
+| 4 | L1e 被 walk_alloc 外的写者覆写 | **✓ 当前唯一假说** | pt 分配干净+L1e 坏值 |
+
+### 根因域（候选写者）
+**内核 kdst 跨空间拷贝**（syscall_copy.rs dispatch_copy→cross_space_copy→write_pte_dm 后的 data 写）——kdst copy 的 PA（0x9d2ecf98 等）与 L1 表页同在 512M RAM 内。如果 cross_space_copy 的 PTE walk 算错了目标 PA（写进 L1 表页的某个槽位），覆写就发生了。次候选：VM 堆溢出（VM 堆帧与子进程页表帧相邻时溢入——但 VM 堆在 0x1400000000 虚拟区，物理上与子进程页表帧可能相邻）。
+
+### 续-148 修靶
+①kernel kdst copy 前后加 PA 范围守卫（写入 PA 落在子进程页表页范围时告警+拒绝——需要知道子进程 PT 页的 PA 集合，可从 vm_pt_alloc 的 PT_SEEN 位图扩展反查）；②dump 子进程 L1 表页 PA（从 SETADDRSPACE 的 ptroot 反推 L1 页位置）确定 L1 槽 PA 区间后用 QEMU watchpoint 抓写者；③成修+CodeReview+真机 marker 冲刺。
