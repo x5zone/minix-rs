@@ -9641,3 +9641,15 @@ gdb-multiarch target/riscv64gc-unknown-none-elf/release/kernel   # 或对 minix-
 **候选嫌疑（省下一轮枚举）**：VM `Message` 收发缓冲复用、`page_cache`/`vfs_queue` 元数据指针、fork/COW 拷贝时的 Vec 元素、direct_map 转换把数据字节当指针。**注意**：本会话已实证以 `pkill -9 -f qemu` 起头的复合命令会自杀 shell（boot 空跑）——gdb 联调时勿在该命令前加 pkill，单独起 qemu。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)已给 turnkey gdb 处方待续·aarch64❌；②x86核心✅；③已勘察。纯文档处方、零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-127（2026-10-01·**诚实纠偏：(A) sepc 经精确定位实落 `Riscv64Paging::query`→walk_read 的 PTE 槽读（非续-123/126 所称"VM 堆裸野指针"）；与守卫 0 命中相矛盾→定谳唯 gdb（纠正前轮过度断言）**）
+
+**新证据（xv2 minix-vm ELF，mtime 08:13，sepc=0x36b18）**：`nm`+`rust-objdump` 定 sepc 在 `Riscv64Paging::query`（体内内联 `walk_read`）。上下文：`add a3, a3, (1<<36)`（channel_to_ptr VmDm 加 DM 基址）后 `ld a1, 0x0(a1)` 读一个 PTE 槽，槽地址 = DM_base + 某 PPN(0xbd2cbbXX)。⇒ **崩溃确实是页表 walk 读一个 base-phys 越 RAM 的 PTE 槽**，即某个已读 PTE 的 PPN 字段=0xbd2cbb（越 RAM）——**不是**续-123/126 我断言的"VM 堆裸野指针不经页表"。**前轮定论过度，特此更正**（诚实原则：证据推翻断言即改）。
+
+**与守卫 0 命中的真矛盾（=真漏洞/真难点）**：续-116/117 守了 walk_read/walk_alloc 的 root/l1/l0 跟随 phys<0xA0000000，续-122 守了最终叶 data paddr。若崩溃 PPN=0xbd2cbb 是经这些跟随来的，守卫必命中——却 0 命中。可能：① query 的 `walk_read` **内联副本**未被我的守卫改动覆盖（rustc 对同一 `walk_read` 在 query 与 update_flags 各内联一份，我只改了一处调用点？不——守卫在 walk_read 体内，所有调用共享；但 release 内联+重排可能使某读点绕过分支）；② 被当作 PTE 读的那一帧是 **use-after-free 复用帧**（内容=数据，其"PPN 字段"是数据字节，恰越 RAM；即某 L1/L0 表帧被 free 后父项未摘链又被数据复用）→ 这正是 x86续-57~73 定性的 **frame-alias**，与我守卫"跟随的 phys 值 <RAM"不矛盾（l1/l0 基址都合法，只是那帧内容已变数据）。**倾向 ②**（唯一能同时解释"守卫命中不到合法基址"与"读出的 PPN 越界"的模型）。
+
+**结论（诚实）**：(A) 大概率＝**页表帧 use-after-free/别名**（帧被 free 后未从父 PTE 摘链、被数据复用，walk 再入读其数据当 PTE）。**纯文本静态已到自相矛盾边界，唯 QEMU `-s -S`+gdb 对可疑复用帧设硬件写 watchpoint 能定谳**（续-126 处方的目标即此）。本会话上下文耗尽，**不再叠投可能误导的静态断言**；把上述两模型（①内联漏守 / ②frame-alias，倾向②）如实交下一轮 gdb 判定。**未坐实不成修。**
+
+⚠ 三目标不缩小：①x86✅/riscv(A)纠偏后交gdb定谳·aarch64❌；②x86核心✅；③已勘察。零生产码改、纯分析纠偏→WORKLOG-only、免 CodeReview。
