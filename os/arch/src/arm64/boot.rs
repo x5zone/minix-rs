@@ -90,18 +90,16 @@ impl CpuContextArch for AArch64CpuContextArch {
         frame.sp_el0 = ctx.sp;
         frame.regs[0] = ctx.r0;
 
-        // CPACR_EL1.FPEN: arch-internal write of the per-process FP
-        // policy. Default impl in `boot.rs` is a no-op; aarch64
-        // actually needs this to flip between kernel-task (EL1 trap)
-        // and user-process (EL0 enable) modes.
-        // SAFETY: writing CPACR_EL1 is a per-CPU system register.
-        // The caller (`apply_to_trap_frame`) is invoked under BKL
-        // during first dispatch, so no race on the system register.
-        if ctx.fpu_enable_el0 {
-            unsafe { enable_cpacr_el1_fpen_user() };
-        } else {
-            unsafe { enable_cpacr_el1_fpen_kernel() };
-        }
+        // NK4-C 续-130：CPACR_EL1.FPEN 的 per-dispatch 写已移除。旧实现
+        // 每次 dispatch 无条件重写 0b01（注释还误标 0b01/实写 0b11），
+        // 与 kernel `finish_and_restore` 的 C:443-446 归属策略
+        // （owner==picked → enable=0b11；否则 disable=0b01）打架——后者
+        // 被本函数覆盖后，持有 FPU 的进程每次重调度都会在自己的下一条
+        // FP 指令上触发 EC=0x07，而其缓冲从未保存过（owner 一直是自己）
+        // → 零恢复摧毁活寄存器。策略唯一所有者 = `finish_and_restore`
+        // （enable/disable）+ EC=0x07 懒陷阱腿（轮转）；本函数不再触碰
+        // CPACR。`fpu_enable_el0` 标志保留（fork 继承语义），不再驱动
+        // 硬件寄存器。
     }
 
     // enable_user_io: default no-op (aarch64 has no IOPL concept).
@@ -200,39 +198,6 @@ impl CpuContextArch for AArch64CpuContextArch {
         ctx.r0
     }
 }
-
-#[cfg(target_arch = "aarch64")]
-mod cpacr {
-    /// Enable FP at EL0, trap at EL1.
-    pub(super) unsafe fn enable_cpacr_el1_fpen_user() {
-        core::arch::asm!(
-            "mrs {tmp}, CPACR_EL1",
-            "orr {tmp}, {tmp}, #(0x3 << 20)", // FPEN = 0b01
-            "msr CPACR_EL1, {tmp}",
-            "isb",
-            tmp = out(reg) _,
-        );
-    }
-    /// Disable FP at EL0 (kernel-task mode).
-    pub(super) unsafe fn enable_cpacr_el1_fpen_kernel() {
-        core::arch::asm!(
-            "mrs {tmp}, CPACR_EL1",
-            "bic {tmp}, {tmp}, #(0x3 << 20)", // FPEN = 0b00
-            "msr CPACR_EL1, {tmp}",
-            "isb",
-            tmp = out(reg) _,
-        );
-    }
-}
-
-#[cfg(not(target_arch = "aarch64"))]
-mod cpacr {
-    /// Stub for non-aarch64 builds (tests, mock).
-    pub(super) unsafe fn enable_cpacr_el1_fpen_user() {}
-    pub(super) unsafe fn enable_cpacr_el1_fpen_kernel() {}
-}
-
-use cpacr::*;
 
 #[cfg(test)]
 mod tests {

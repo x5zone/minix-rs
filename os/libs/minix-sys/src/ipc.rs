@@ -564,7 +564,7 @@ pub struct DirectTrapTransport;
     any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64")
 ))]
 #[inline]
-unsafe fn commit_message_to_memory(message: *const Message) {
+pub(crate) unsafe fn commit_message_to_memory(message: *const Message) {
     // SAFETY: caller guarantees `message` points at a live, allocated
     // Message; the volatile read is discarded and has no effect beyond
     // forcing prior stores of the buffer into memory before the trap.

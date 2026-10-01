@@ -2855,6 +2855,14 @@ fn bsp_finish_booting(
     // strategy field (`fpu_policy` on x86_64, `fpu_enable_el0` on aarch64,
     // `sstatus.FS` on riscv64 — see 06-proc-init-boot-proc.md §4.1)
     // (already built for every boot process — see init_proc_and_boot).
+    //
+    // NK4-C 续-130（CodeReview S1 裁决：不接线 arch FpuArch::init）：
+    // aarch64 的 CPACR_EL1.FPEN 懒陷阱门控由**首次 finish_and_restore 的
+    // disable()** 建立（任何用户首条 FP 指令之前），`FpuArch::init()`
+    // （0b01）保持未接线——firmware 复位值 0b00 期间的窗口内内核 -neon
+    // 无 EL1 FP 使用，安全；真机接线实验（a64-fix-7）伴随早期 PM↔VFS
+    // 握手墙复发（pm fb201 洪流），不冒险。x86_64/riscv64 的 init 语义
+    // 同样由各自启动路径的既有策略位承担。
     if let Some(bsp_local) = smp_state.cpu_local_mut(bsp_id) {
         bsp_local.fpu_presence = true;
     }

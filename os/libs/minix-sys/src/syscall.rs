@@ -158,6 +158,23 @@ pub struct DirectKernelCallTransport;
 #[allow(unused_variables)]
 impl KernelCallTransport for DirectKernelCallTransport {
     fn kernel_call(&self, message: &mut Message) -> i32 {
+        // NK4-C 续-130（续-22 同族，SYSCALL 腿补屏障）：内核从调用方内存
+        // 拷整条消息（system.c copy_msg_from_user 对位），而 LLVM 只看见
+        // 一个整数指针操作数——`message.m_type = call_number` 的 store 不
+        // 被视为 asm 可见的内存写（eager 回执会覆盖整缓冲 → 该 store 是
+        // 死存储），可在 svc/ecall/syscall 前被消除/寄存器化。真机
+        // aarch64 实测存在 m_type 槽被毁的两类症状（内核收到陈旧值 0x62C
+        // 或 0）：本屏障是**契约级防御**（续-22 同族——腿语义要求 store
+        // 先物化），与其中 d9-FP-常量被踩的根因（续-129/130 懒 FPU 轮转
+        // 修复）互补；续-22 已给 IPC 三腿（send/sendrec/sendnb）插同一
+        // 屏障，本腿此前漏掉，三架构统一补齐。
+        #[cfg(all(
+            any(target_arch = "x86_64", target_arch = "aarch64", target_arch = "riscv64"),
+            kernel_trap
+        ))]
+        unsafe {
+            crate::ipc::commit_message_to_memory(message as *const Message);
+        }
         // E1 slice 3: the real SYSCALL-leg trap (hosted builds keep -EIO).
         #[cfg(all(target_arch = "x86_64", kernel_trap))]
         {

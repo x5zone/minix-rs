@@ -181,13 +181,24 @@ impl FpuArch for AArch64FpuArch {
     type State = AArch64FpuState;
 
     fn init(&self) {
-        // Enable FPSIMD access by setting CPACR_EL1.FPEN = 0b11.
-        // C: earm arch_system.c:fpu_init 为空实现；Rust 侧直接操作 CPACR_EL1（FPEN=0b11）
+        // Enable FPSIMD access — FPEN = 0b01: trap EL0 FPSIMD, EL1 unaffected.
+        //
+        // NK4-C 续-130：懒模型要求**归属先于任何活值建立**（C i386 init 把
+        // CR0.TS 置 1 同理）：FPEN=0b11 下进程的首批 FP 指令（aarch64 编译
+        // 器的字面量池装载）会在无归属状态写入活值，首次 disable+陷阱即
+        // 零恢复清掉活常量（真机：VFS 消息头 m_type=0x60d 变 0）。本函数
+        // 当前**未被内核接线**（CodeReview S1 裁决）：aarch64 的 0b01 门控
+        // 由首次 finish_and_restore 的 disable() 在任何用户 FP 之前建立，
+        // 效果等价；本 init 保持 0b01 语义作为 future-proofing（若未来接
+        // 线，行为不变）。
+        //
+        // SAFETY: CPACR_EL1 is a side-effect-free EL1 system-register write.
         unsafe {
             let mut cpacr: u64;
             core::arch::asm!("mrs {}, cpacr_el1", out(reg) cpacr);
-            // Set FPEN (bits 20-21) to 0b11
-            cpacr |= 0x0030_0000;
+            // Clear FPEN (bits 20-21), then set 0b01 (bit 20 only).
+            cpacr &= !0x0030_0000;
+            cpacr |= 0x0010_0000; // FPEN = 0b01 (trap EL0)
             core::arch::asm!("msr cpacr_el1, {}", in(reg) cpacr);
         }
     }
