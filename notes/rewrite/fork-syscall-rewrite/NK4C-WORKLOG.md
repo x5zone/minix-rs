@@ -8,7 +8,11 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-137（2026-10-02·**riscv 定性升级＝多墙 Heisenbug 族（构建布局/时序决定先撞哪堵，与 aarch64 续-46/54 家族同构）：gh7/gh10/gh11 轮转实测——(A) query-walk 崩（stval=0x10bd2cabac 确定性同址）、fb201 乒乓洪流、RS 早崩 SIGSEGV 三墙并存；**(A) 的指令语义学证明＝GPR 恢复破坏**：query L0 读 `a1=a6+idx+a5` 三项均可证 ≤掩码/合法基址，而实测和=0x10BD2CABAC 超出——**CPU 寄存器在 VM 执行途中被恢复路径写坏**（timer 抢占/IPC park 的 GPR 保存-恢复残缺），非内存毒 PTE（nk135 表页守卫全程 0 命中＝被跟随表页全在 RAM）**）：候选恢复残缺点＝①riscv timer 抢占帧保存/恢复链（trap stub 全量但某路径未走 stub）②IPC park/resume 的 save_frame_to_context/finish_and_restore GPR 面③信号 trampoline。gh11 又示 RS 早崩 SIGSEGV（710 行，第三墙独立）。续-138 修靶＝帧 GPR dump 探针（已写好即滚，trap_dispatch pagefault-for-VM 臂）多轮采样→残缺寄存器集定位恢复链破点→成修。探针均已滚、tracked 净。
+> **🛑 最新前沿＝§1.120续-138（2026-10-02·**riscv (A) 精化解码：gh14 帧 GPR dump 拿到决定性现场——stval=0x409d2c9bb0＝**1<<34（错误 DM 基址常量）+0x9d2c9bb0（合法 RAM 内表页地址）**——表地址是真的、基址常量被换成 1<<34（VmDm=1<<36 的 1/4）⇒ 与 gh10 掩码矛盾合并＝**VM 的 park（VMREQUEST 挂起）→resume 路径 GPR 残缺恢复**（aarch64 续-113 寄存器槽位错位同族：set_ipc_return_code 硬编码 offset 错寄存器的前科）；续-139 修靶＝VM park/resume 的 cpu_context 双 dump diff 找 scramble 槽**）：gh14 现场（1518 行，探针 first-200 门控下 (A) 复现于 exec sh 链）：EXEC_REPLY(0x986)→exec endpt=0x800c ip=0x167f0→VM query 崩；帧 dump：x1=0x2f764(VM 代码)、x2/x5=0x3ffffdfbbc(VM 栈✓)、x8=0xfffffffffffff000(页掩码✓)——多数寄存器健全、基址项独坏＝**选择槽位性残缺非全量破坏**。
+> - **续-139 修靶（probe 轮）**：①VM park 腿（kernel_call VmSuspend→save_frame_to_context）与 resume 腿（KCALL_RESUME 消费→GPR 回装）各 dump cpu_context.gp_regs 全量（cap 8），diff 找槽位错位/漏存；②对位 riscv trap_stub 的 save_frame_to_context/restore_to_user 寄存器序表（boot.rs T_SETUSER 偏移约定 0:sstatus/8:sepc/16:sp/24:a0/32..272:gp_regs——核对每槽映射）；③成修+CodeReview+真机 marker 冲刺（fb201 乒乓/RS SIGSEGV 两墙疑为同根下游，修后一并重验）。
+>
+
+> **（历史·§1.120续-137（2026-10-02·**riscv 定性升级＝多墙 Heisenbug 族（构建布局/时序决定先撞哪堵，与 aarch64 续-46/54 家族同构）：gh7/gh10/gh11 轮转实测——(A) query-walk 崩（stval=0x10bd2cabac 确定性同址）、fb201 乒乓洪流、RS 早崩 SIGSEGV 三墙并存；**(A) 的指令语义学证明＝GPR 恢复破坏**：query L0 读 `a1=a6+idx+a5` 三项均可证 ≤掩码/合法基址，而实测和=0x10BD2CABAC 超出——**CPU 寄存器在 VM 执行途中被恢复路径写坏**（timer 抢占/IPC park 的 GPR 保存-恢复残缺），非内存毒 PTE（nk135 表页守卫全程 0 命中＝被跟随表页全在 RAM）**）：候选恢复残缺点＝①riscv timer 抢占帧保存/恢复链（trap stub 全量但某路径未走 stub）②IPC park/resume 的 save_frame_to_context/finish_and_restore GPR 面③信号 trampoline。gh11 又示 RS 早崩 SIGSEGV（710 行，第三墙独立）。续-138 修靶＝帧 GPR dump 探针（已写好即滚，trap_dispatch pagefault-for-VM 臂）多轮采样→残缺寄存器集定位恢复链破点→成修。探针均已滚、tracked 净。
 >
 
 > **（历史·§1.120续-136（2026-10-02·**乒乓环真身解码：m_type=0xFFFF0FB2＝VFS↔FS 的 transid-stamped 消息（trns_add_id 编码：status=-1 as i16 / tid=4018）**泄漏进 PM/VFS 主循环投递车道**——VFS 把 status=-1 的 FS 失败回复原样转发给 PM（C 应回 VFS_PM_STATUS+errno）、PM 又原样回给 VFS，乒乓不收敛；续-137 修靶＝找 status=-1 的 FS 回复源头与 VFS 转发腿的 reply-lane 分叉**）：解码链：trns_add_id=(type<<16)|tid（fs_driver.rs:147）、fs_trans_status=(m_type>>16) as i16=status 车道——0xFFFF0FB2 的 tid=0xFB2=4018（VFS_TRANSID 计数已达 4018＝boot 期 FS 请求量）与 status=-1 组合只在 VFS↔FS 语义中存在；`vf:90600`（VFS 收 PM 的 0x906=VFS_PM_STATUS 形态）旁证 reply-lane 混用。C 对位：VFS 回 PM 必为 VFS_PM_STATUS+payload（C main.c 的 do_reply 家族），FS stamped 消息绝不出 VFS。
@@ -9948,3 +9952,17 @@ query L0 读 `a1 = a6 + ((vaddr>>9)&0xFF8) + a5`：idx 项 ≤0xFF8、a6=(l1e<<2
 
 ### 续-138 修靶
 帧 GPR dump 探针（trap_dispatch pagefault-for-VM 臂，已写好即滚——`frame.gpr` 32×hex，12 行）多轮采样 (A) 现场→比对静态语义应有值→残缺寄存器集定位恢复链破点→成修。注：gh11 显示多墙下 (A) 非必现——需多轮采样或以 (A) 为准的布局重试。
+
+## §1.120续-138（2026-10-02·**(A) 精化解码：错误 DM 基址常量 1<<34 + 合法 RAM 表地址——VM park→resume GPR 残缺恢复（gh14 帧 dump 决定性现场）**）
+
+### gh14 现场（GPR dump 探针轮）
+- 序列：EXEC_REPLY(0x986, VFS→PM) → exec endpt=0x800c ip=0x167f0（kernel SETADDRSPACE 面）→ VM query 崩（sepc=0x37d64，L0 读）。
+- stval=0x409d2c9bb0 分解：**1<<34（0x400000000）+ 0x9d2c9bb0**。0x9d2c9bb0 < RAM 顶 0xA0000000＝**合法 RAM 内表页地址**（VM 刚服务的目标页表在真实内存里）；1<<34 ≠ 任何合法基址（VmDm=1<<36、KernelDm=0xFFFFFFC040000000）。
+- 静态语义矛盾再确认：a6 被掩码 ≤0xFFF000、idx ≤0xFF8、a5∈两合法值——和不可能为实测值 ⇒ 基址寄存器在运行途中被覆盖为 1<<34。
+- 帧 dump 旁证：多数寄存器健全（x1=VM 代码、x2/x5=VM 栈、x8=页掩码），gpr[0] pad 槽残留内核地址 0xffffffc0000c8888（trap stub scratch，pad 无害）——**槽位性选择残缺，非全量腐烂**。
+
+### 根因域（精化）
+**VM 的 park（VmSuspend→save_frame_to_context）→resume（KCALL_RESUME 消费→GPR 回装+set_ipc_return_code）路径存在槽位级 GPR 残缺**：某几个寄存器（基址常量所在槽）在恢复时被错位/漏写——VM 每次经 VMREQUEST 挂起-恢复后带伤执行，受伤槽命中 query 基址寄存器即 (A)。aarch64 续-113 BLOCKER-1（set_ipc_return_code 硬编码 x86 offset 命中 aarch64 X7）为同族前科。fb201 乒乓/RS SIGSEGV 两墙疑为同一残缺的下游形态（不同受伤槽命中不同进程的关键值）——修后一并重验。
+
+### 续-139 修靶（probe 轮）
+①VM park 腿与 resume 腿各 dump cpu_context.gp_regs 全量（cap 8）+ diff 找 scramble 槽；②对位 riscv trap_stub.rs 的 save_frame_to_context / restore_to_user 寄存器序表与 boot.rs T_SETUSER 偏移约定（0:sstatus/8:sepc/16:sp/24:a0/32..272:gp_regs）逐槽核对；③set_ipc_return_code riscv 臂的寄存器 offset 核对（aarch64 前科同位）。成修+CodeReview+真机 marker 冲刺（fb201/RS 两墙一并重验）。
