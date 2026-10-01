@@ -10268,3 +10268,22 @@ gh37（inactive 细化探针）：**`pf-exit wro cr2=0x7fffffffef90`**＝dispatc
 ### 续-159 处方（窄化到一页）
 ①wro 分支内对 `proc.regions()` 的 RegionMap 取 VA→PA（VM 自查 or 内核 pfvm 扩展），把该页 PA 印出来；②同页设**QEMU watchpoint**（gdb 硬件 watch 走不通→用 pmemsave 前后差分：seg_w 读前/读后两次 pmemsave diff 该页，抓改写时刻与新旧字节）；③写者=改写时刻的 kdst/printk/中断路径——候选锁定内核 cross_space 的目标 PA 翻译（kernel 侧对 VM 堆页的野写，即续-127「帧别名」假设的内核版）；④坐实即成修+CodeReview+marker 冲刺。
 门：本轮 table.rs 铸造点修改+black_box 均已入库（保留）；探针（find-in/wro-dump/pf-inact/q-badroot/pfvm）task1-close 滚除。
+
+## §1.120续-159（2026-10-02·**双指针判别：RegionMap=VM BSS 0x40b50（VmProcTable 静态表内联），headA volatile 读在 seg_w 前即正常（0x6a1c0=BTreeMap 根）——内存没变、find()/range 单次求值错＝BTreeMap 节点不变量破坏（与 gh31 btree panic 同族）；成修方向=腐败检测+iter 重建**）
+
+### gh44 判据
+`wro-dump ... seg_w=false ptrA=0x40b50 ptrB=0x40b50 headA=0x6a1c0`——两时刻同地址；headA（read_volatile，seg_w 前一瞬间）读到合法 BTreeMap 头→页内容正常；seg_w 的 find 判假而紧随 probe 的 find 判真。同 VA 同 PTE 同 PA 同字节下「同函数两次求值不同」唯一自洽解=**BTreeMap 内部键序不变量被破坏**（某处 in-place 改了键/节点，range() 的二分检索依赖键序→落错分支；iter() 沿链全访→4 region 全见；且破坏态下 range 结果可随节点驻留布局/比较路径微差而漂——gh31 的 navigate unwrap None 即同病另一式）。
+RegionMap=静态表内联（BSS），非堆——续-158「堆别名」修正为「**BTreeMap 键序不变量破坏**」：找 in-place 键写者（grep `vaddr =` 已排除 region 侧；嫌疑=RegionMap 内部 BTreeMap 的 key 由 VirRegion.vaddr 派生后 VirRegion 又被可变借用改写的路径，或内存位翻转级腐败=与 (A) 原始 walk fault 同一上游腐坏源在 BSS 的表现）。
+
+### 续-160 处方
+①wro 探针升级：find()×3 连打 + 手工 range 仿真（iter 找最大 ≤addr 键 + contains 判定）+ get(&stack_va) 直查——分辨「range 坏/iter 好」与「一致性坏」；②若 range 坏坐实→**防御性重建**：find 前校验 next_back 链与 iter 一致性（或 RegionMap::insert 后 assert 键序），破坏即 iter 重建 BTreeMap（记录重建事件=腐败源仍然在逃但系统续命→marker 冲刺）；③腐败源追捕（write_page_table_mappings/vmproc_handle.rs:543/641 的 region vaddr 增量路径）随后续轮。
+门：②属防御性成修（不掩盖判据：重建打点入库），CodeReview+真机 gh45。
+
+## §1.120续-160（2026-10-02·**防御性兜底+重建落地：rm-fallback/rm-repair 均真机触发，「range 坏/iter 好」钉死；SIGSEGV 墙击穿（csig=0）子进程存活；新墙=同地址 0x7fffffffef90 反复缺页（填页未生效），marker 未达**）
+
+### 成修（生产码，RegionMap 两层）
+region_map.rs：①find(&self)：range 派 None 而 iter 可见→返回 iter 结果+`rm-fallback` 打点（门 3）；②find_mut(&mut self)：同判→pop_first 全量重灌（按当前键值重排=结构合法化）+`rm-repair` 打点（门 3）。531 minix-vm 测试全绿。
+gh45 真机：`rm-fallback addr=0x7fffffffef90 n=4 va=0x7fffffbff000`×3 + `rm-repair`×1——「range 坏/iter 好」实锤；子进程首 fault 被 fallback 救下（**csig=0，续-115/155/156 三轮的 SIGSEGV 墙正式击穿**）。repair 后 range 仍坏（fallback 续触发）→腐坏源仍活跃（in-place 改键者在逃）。
+
+### 新墙（续-161）
+子进程在 0x7fffffffef90 反复缺页不前进——fault 被兜底服务但**填页未生效**（handle_pagefault→alloc_and_map/sync_slot_pte 的 PTE 写落点存疑，或每次 fault 后 TLB/表状态未让指令前进）。且 repair 后树再坏=腐坏源持续在写。处方：①fault 处理尾打印 sync_slot_pte 的 PTE 写地址与值（对照 child root 0x9dc39000 链）；②「树再坏」打点升级（rm-repair 后 n 秒内再 fallback=腐坏活跃窗口）；③同根追捕继续（region 键 in-place 写者）。

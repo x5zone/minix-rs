@@ -48,6 +48,15 @@ impl RegionMap {
         self.regions.is_empty()
     }
 
+    /// 线性兜底扫描：BTreeMap `range` 结果与 `iter` 全访不一致（键序不变量
+    /// 破坏，续-159 判别）时，沿 iter 找包含 `addr` 的 region。
+    fn scan_contains(&self, addr: VirBytes) -> Option<&VirRegion> {
+        self.regions
+            .iter()
+            .find(|(_, r)| r.contains_addr(addr))
+            .map(|(_, r)| r)
+    }
+
     pub(crate) fn find(&self, addr: VirBytes) -> Option<&VirRegion> {
         let hit = self
             .regions
@@ -55,25 +64,29 @@ impl RegionMap {
             .next_back()
             .filter(|(_, r)| r.contains_addr(addr))
             .map(|(_, r)| r);
-        // 续-158 探针（用后即滚）：find 内部决断——next_back 键、contains
-        // 判定、map 全键。地址门控（exec 栈族 0x7fff...）前 3 次。
-        #[cfg(not(feature = "mock"))]
-        if addr.0 > 0x7fff_0000_0000 {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static F_N: AtomicUsize = AtomicUsize::new(0);
-            if F_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
-                let nb = self.regions.range(..=addr).next_back();
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: find-in addr={:#x} hit={} nb_key={:?} nb_contains={:?} keys={:?}\n",
-                    addr.0,
-                    hit.is_some(),
-                    nb.map(|(k, _)| k.0),
-                    nb.map(|(_, r)| r.contains_addr(addr)),
-                    self.regions.keys().map(|k| k.0).collect::<alloc::vec::Vec<u64>>(),
-                ));
+        // 续-160（防御性兜底，续-159 判别后落地）：range 派 None 而 iter
+        // 可见 → 键序不变量已破坏。返回 iter 结果保住本次查询，打点入库
+        // 不掩盖（腐败源仍在逃，后续轮追捕）。地址门控前 3 次。
+        if hit.is_none() {
+            if let Some(fallback) = self.scan_contains(addr) {
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static FB_N: AtomicUsize = AtomicUsize::new(0);
+                    if FB_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
+                        crate::bootmark::mark(&alloc::format!(
+                            "nk4a: rm-fallback addr={:#x} n={} va={:#x}\n",
+                            addr.0,
+                            self.regions.len(),
+                            fallback.vaddr.0
+                        ));
+                    }
+                }
+                return Some(fallback);
             }
+            return None;
         }
-        hit
+        Some(hit.unwrap())
     }
 
     pub(crate) fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion> {
@@ -82,9 +95,33 @@ impl RegionMap {
             .range(..=addr)
             .next_back()
             .filter(|(_, r)| r.contains_addr(addr))
-            .map(|(k, _)| *k)?;
-
-        self.regions.get_mut(&key)
+            .map(|(k, _)| *k);
+        if let Some(key) = key {
+            return self.regions.get_mut(&key);
+        }
+        // 续-160（防御性重建）：range 派 None 而 iter 可见 → pop_first 全量
+        // 重灌（按当前键值重排 = 结构合法化）；重建打点入库不掩盖。重建后
+        // 用 iter 同款线性查找定位（find_slot 语义等价）。
+        let fallback_key =
+            self.regions.iter().find(|(_, r)| r.contains_addr(addr)).map(|(k, _)| *k)?;
+        #[cfg(not(feature = "mock"))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static RP_N: AtomicUsize = AtomicUsize::new(0);
+            if RP_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: rm-repair addr={:#x} n={}\n",
+                    addr.0,
+                    self.regions.len()
+                ));
+            }
+        }
+        let mut fresh = alloc::collections::BTreeMap::new();
+        while let Some((k, v)) = self.regions.pop_first() {
+            fresh.insert(k, v);
+        }
+        self.regions = fresh;
+        self.regions.get_mut(&fallback_key)
     }
 
     pub(crate) fn search(&self, key: VirBytes, st: SearchType) -> Option<&VirRegion> {
