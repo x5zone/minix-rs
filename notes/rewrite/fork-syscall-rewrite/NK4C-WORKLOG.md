@@ -9825,3 +9825,29 @@ aarch64 三轮（净态 4523/4525/7492 行——S1 后匿名探针恢复）：**
 1. **零消费者的 wire 包装=潜伏双错**：客户端编码与服务器解码必须有一对**同源测试**（同一 union 臂常量）；「脚本化测试验证了错误 wire」比没有测试更危险。
 2. **MMIO 与 RAM 的诊断探针必须分层**：内容校验型探针对设备透传页既有致命风险（DM 窗未覆盖）又有语义错误（读取副作用）——按区域类型门控是通用模式。
 3. **默认 param 值的判别陷阱**：`VrParam::Direct{phys:0}` 是匿名区域的默认值——类型上与真 DIRECT 设备映射同型，判别必须走语义标志（VrFlags::DIRECT）而非 param 形状。
+
+## §1.120续-133（2026-10-01·**riscv (A) gdb 定谳＝SD-23 riscv 同族（内核 345 条 FP 指令踩用户寄存器）+懒 FPU 单元实施（sstatus.FS 门控/global_asm 原语/scause=2 腿/NS16550A tty 臂）·CodeReview 一轮 BLOCKED（B-1 FS-in-sstatus 帧载体/B-2 scause=2 万能门）已修待复审**）
+
+### 现象与定谳过程（gdb 三轮，续-126/127/128 处方首次执行）
+1. 基线（gh2）：(A) 依旧＝pagefault for VM sepc 0x3794a stval 0x10bd2cbbac。
+2. gdb 轮1（hbreak rust_begin_unwind=0xffffffc000000038）：sepc=0x37978 stval=0x409d2c9ba0 satp=0x82000(内核根)——stval 解码＝a5(DM base 常量贡献)=0x400000000(1<<34)，而 query 拆解（0x378b6 起）两臂合法值只有 VmDm=1<<36 / KernelDm=0xFFFFFFC040000000 ⇒ a5 寄存器被踩；且帧内 ra=0x68738 超出 minix-vm 全部 LOAD 段（text 止于 ~0x3d5c2）＝控制流/寄存器破坏实锤。
+3. 元凶：正则首查漏 riscv fa/fs/ft 命名——复数＝riscv 内核 ELF 345 条 FP 指令（LLVM 自向量化）、minix-vm 460 条——SD-23 的 riscv 同族（内核 FP 踩用户 f 寄存器活值；riscv64gc 内联 asm 默认无 D，编译器同样用 FP 寄存器做常量拷贝——aarch64 d8 的兄弟）。
+4. 旁证：.option arch +d 最小复现（rustc riscv64gc-unknown-none-elf 内联 asm 默认不含 D，fsd 被汇编器拒收——用户模块构建亦然，global_asm 必须 .option arch +d 提升）。
+
+### 修复（镜像 aarch64 续-129/130 模板 + riscv 特有三点）
+- 注入：xtask kernel-image 对 riscv64 加 -C target-feature=-f,-d；kernel-image main.rs compile_error 门；check-layout.sh riscv64 段同款。注入后内核 ELF FP=0（riscv 预编译 core 无 FP 残差）。
+- fpu.rs：init FS=Initial→Off（懒门控默认）；save/restore 抽 global_asm（target_feature(enable="f") stable 不可用 E0658）——序言 csrs sstatus FS=Initial 自启用（FS=Off 下 fsd/fld 自陷阱）+.option arch +d；restore 覆写全部 32 f 寄存器＝违反 extern "C" fs0-fs11 保留约定，安全前提＝内核 -f,-d 无存活 FP（论证在 global_asm 头注释）。
+- trap_dispatch：scause=2 腿＝riscv64_fpu_trap_body（save 旧 owner→restore 当前者→owner=cur→enable→PARK_NONE 原地重执行；BKL 纪律同 aarch64）。
+- 顺路件：tty serial 加 riscv64 NS16550A MMIO 臂（QEMU virt UART@0x1000_0000，字节宽 reg-io-width=1；SerialBackend 16550 模型复用 base=0 port=偏移；WireMmioUart 经 VM_MAP_PHYS）——N3 cfg 收紧暴露的缺臂。
+
+### CodeReview 一轮 BLOCKED（全采纳）+ riscv 特有架构问题
+- B-1：riscv 的 FS 位住在 sstatus/帧内（aarch64 的 CPACR 不在帧内——活写 enable 足够；riscv trap stub 出口 csrw sstatus 整体回装入口帧值，活写被冲销）⇒ 修复＝body 收 frame、末尾 patch frame.sstatus FS=Dirty（非 Initial——避免同 dispatch 内后续 FP 再陷阱）。
+- B-2：scause=2 是万能非法指令（特权 CSR/坏编码/FS=Initial 坏 FP 全报 2）——入腿加 riscv64_illegal_insn_is_fpu_trap(frame.sstatus)（FS==Off 门，老 Linux entry.S 同款；host 可测谓词）；FS≠Off 落回 diag panic（SIGILL 面）。
+- riscv 特有：FS 载体＝ctx（帧/ctx.sstatus），非 CPACR 活写——落实三点：①boot.rs apply_to_trap_frame 的无条件 FS=Initial 写移除（续-130 CPACR 覆盖 bug 同款）；②lib.rs finish_and_restore riscv 臂按归属 patch ctx.sstatus（owner==picked→Dirty 不陷阱活寄存器延续/非 owner→Initial 首条 FP 陷阱轮转；set_fs_field 访问器）；③trap 腿帧 patch Dirty。不变式：owner 重调度不陷阱✓、非 owner 必轮转✓、trap 后同 dispatch 不再陷阱✓。
+- P1 全采：文档错挂/restore 文档一致化/常量 cfg 门/谓词先例化/过时 FS 注释。
+
+### 验证
+host 六包 1771/0（插入伤 cfg 致 host 编译错误一轮已修）；clippy 55=55；rustfmt 七文件 Δ0；check-layout all PASS；x86 marker=2/panic=0 不回归；riscv 真机 gh3（修复中：旧 (A) 签名消失，新停点 VM null-deref sepc 0x2b412 stval 0x10——下一层）；gh4（B-1/B-2 修后）：rvfpu-trap 探针 0 命中＝VM 崩溃路径无用户 FP 陷阱，(A) 家族签名 stval=0x10bd2cabac 依旧＝确定性毒 PTE 写入者仍在（非 FP 踩踏），续-134 用帧内 watchpoint 专项猎杀。
+
+### 续-134 修靶（gdb 二阶段处方）
+panic 命中后：satp→root→按被 walk 的 vaddr 逐级读表（monitor xp 物理读）→定位 PPN=0xbd2ca 的毒 PTE 槽物理地址→重跑对内核 DM VA（0xFFFFFFC040000000+PA）设硬件 watchpoint（内核根全映射、跨进程命中写者 pc）——x86 续-57~73 十六轮同款猎杀。
