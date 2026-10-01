@@ -116,6 +116,15 @@ pub(crate) fn sync_slot_pte(
         (region.vaddr.0 + offset.0) & !(crate::region::PAGE_SIZE as u64 - 1),
     );
     let paddr = frames.pfn_to_phys(pfn);
+    // 续-141 探针（用后即滚）：sync 时 slot pfn 带位 26 的现形。
+    #[cfg(not(feature = "mock"))]
+    if pfn >= 0xA0000 {
+        crate::bootmark::mark(&alloc::format!(
+            "nk4a: sync-big pfn={:#x} va={:#x}\n",
+            pfn,
+            vaddr.0
+        ));
+    }
     // C i386 的 P|U 天然可执行（无 NX）；x86-64 NXE 下 EXECUTABLE 必须显式
     // 给出，否则用户 text 首次取指即 #PF(err=0x15)（NK4-A C-3 真机
     // 2026-09-22：RS 入口页 PTE=NX，walk=0x5，fetch 拒绝）。B41（§1.74/
@@ -290,6 +299,15 @@ pub(crate) fn alloc_and_map(
     // V11/T30: C alloc_mem semantics — reclaim-retry at the funnel.
     let pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
         .map_err(|_| CowError::NoMemory)?;
+    // 续-141 探针（用后即滚）：分配值带位 26 的现形（栈页 slot pfn 污染源
+    // 候选一＝分配器本身）。
+    #[cfg(not(feature = "mock"))]
+    if pfn >= 0xA0000 {
+        crate::bootmark::mark(&alloc::format!(
+            "nk4a: alloc-big pfn={:#x}\n",
+            pfn
+        ));
+    }
 
     // C `vrallocflags` (region.c:646-658) → `PAF_CLEAR` (alloc.c:452): every
     // region not flagged `VR_UNINITIALIZED` allocates its demand pages with

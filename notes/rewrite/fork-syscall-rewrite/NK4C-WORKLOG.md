@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-140（2026-10-02·**(A) 根因再收窄至 VM slot 簿记：sync_slot_pte 的 paddr=frames.pfn_to_phys(pfn)——坏 L1e 的 PPN 精确多出 0x4000000=pfn bit 26（slot pfn=0x409d2c9 vs 合法 0x9d2c9），remap 忠实映射坏帧 ⇒ 污染源＝栈页 slot 的 PFN 被置位 26（alloc/fork-copy/COW 降级三候选写点）；flags 无辜（read_write+EXECUTABLE 无高位）**）：续-139 的「OR 进 VmDm 基址」机制精化＝写点在 sync_slot_pte 三路分派的 remap 臂（slot pfn 带错位→pfn_to_phys 带 1<<36→L1e PPN 精确多 0x4000000→walk 跟随后 DM 读越栈）。**续-141 修靶**：①exec 子栈页 slot pfn dump（alloc 时/remap 时双点）+位 26 置位者定位（PageFrames 位图 alloc 的 word/bit 算术 or fork 拷贝 pfn 直传）；②位 26 语义核查（pfn 0x4000000 = PA 0x4000000<<12 = 1<<38——某 64 位值的高半截？）；③成修+CodeReview+marker 冲刺。
+> **🛑 最新前沿＝§1.120续-141（2026-10-02·**多墙轮转矩阵补全（gh7~gh17 十一轮）：当前构建下 **fb201 乒乓＝确定性首墙**（gh9/12/13/17 四轮均停于此，(A) 未触达）；(A) 仅在早前布局现形（gh7/10/14/15，stval 三形状均＝VmDm 指针指越 RAM 帧：0x10bd2cabXX/0x409d2c9bb0/0x10bd2cab9c——基址贡献在 1<<34 与 1<<36 间漂＝**双重坏值：表页 PA 超 RAM + DM 指针基址漂移**）；探针阈值修正（VM pfn 为绝对值，合法域 [0x80000,0xA00000)，越顶判据 pfn≥0xA0000）并随诊断面保留服务 (A) 复现**）：优先级裁定＝**续-142 先修 fb201 乒乓**（确定性首墙，(A) 猎杀须先过 Runcom）——续-136 已解码乒乓消息＝VFS↔FS stamped（status=-1, tid=4018）泄漏进 PM/VFS 车道；续-136 机制精化已定位 PM 回程腿（is_vfs_pm_rs 门→ENOSYS）。**续-142 修靶**：①VFS 侧找 0xFFFF0FB2 首发源头（Route:: 解码对 PM 来源消息的未知 m_type 臂——它回了原值）；②PM 侧 dispatch_message 对 VFS 来源非 RS 族消息的 ENOSYS 回程改为静默（C 对位：VFS 来源非应答消息 PM 不回）；③修后 fb201 墙应消失→Runcom 深入→(A) 或新墙现形再战。
+>
+
+> **（历史·§1.120续-140（2026-10-02·**(A) 根因再收窄至 VM slot 簿记：sync_slot_pte 的 paddr=frames.pfn_to_phys(pfn)——坏 L1e 的 PPN 精确多出 0x4000000=pfn bit 26（slot pfn=0x409d2c9 vs 合法 0x9d2c9），remap 忠实映射坏帧 ⇒ 污染源＝栈页 slot 的 PFN 被置位 26（alloc/fork-copy/COW 降级三候选写点）；flags 无辜（read_write+EXECUTABLE 无高位）**）：续-139 的「OR 进 VmDm 基址」机制精化＝写点在 sync_slot_pte 三路分派的 remap 臂（slot pfn 带错位→pfn_to_phys 带 1<<36→L1e PPN 精确多 0x4000000→walk 跟随后 DM 读越栈）。**续-141 修靶**：①exec 子栈页 slot pfn dump（alloc 时/remap 时双点）+位 26 置位者定位（PageFrames 位图 alloc 的 word/bit 算术 or fork 拷贝 pfn 直传）；②位 26 语义核查（pfn 0x4000000 = PA 0x4000000<<12 = 1<<38——某 64 位值的高半截？）；③成修+CodeReview+marker 冲刺。
 >
 
 > **（历史·§1.120续-139（2026-10-02·**(A) 烟枪解码＝rc 子栈区 L1 表项被 OR 进 VmDm 基址常量（1<<36）：gh14 帧 GPR 全 dump 的寄存器代数自洽解出——坏 L1e PPN 精确多出 0x4000000＝1<<36>>10；「某写路径把 DM 槽指针（基址+槽位）当 PTE 值写回」为唯一自洽机制；续-140 修靶＝cow_exec_pf sync_slot_pte/vmproc map 路径审计+PGR dump 轮**）：gh14 帧 GPR 全 dump（32 寄存器完整）代数自洽验证：x11=stval=0x409d2c9bb0=a6(0x9d2ea000 表 PA…注意本帧属另一 vaddr 的 walk)|…重解：坏 L1e PPN＝0x409d2c9（l0=0x409d2c9000 非页对齐来源=0x9d2c9000+1<<34）→l1e 多出＝0x1000000<<10=1<<36。含义：**L1 表项＝合法 V|W|U|PPN(0x9d2c9) 再 OR/VmDm 基址 1<<36**——即某写路径把「DM 槽指针（基址 1<<36+槽位）」的值当 PTE 写回（aarch64 续-113 寄存器/值混用同族），或 update_flags 类把含基址的值 OR 入。被污染表项＝rc 子（0x800c）exec 后栈区 L1（write-promote/COW 窗口）→子首条栈写走坏表→SIGSEGV→下游乒乓。
@@ -10007,3 +10010,20 @@ sync_slot_pte（cow_exec_pf.rs:101-141）读码：paddr = frames.pfn_to_phys(pfn
 
 ### 经验/教训
 「OR 进基址」两层解码（先 VmDm 基址→再 pfn 位 26）的教训：坏值的 bit 形状要对照**多层语义坐标**（PTE bit→PPN bit→PA bit→pfn bit）逐层换算——每层差 2 的幂，逐层对齐后剩余差异即真凶指纹。
+
+## §1.120续-141（2026-10-02·**多墙轮转矩阵补全（gh7~gh17）：fb201 乒乓＝当前构建确定性首墙；(A) 三形状＝双重坏值（表页 PA 超 RAM+DM 指针基址漂移）；探针阈值修正保留**）
+
+### 轮转矩阵（gh7~gh17）
+| 轮 | 行数 | 墙 |
+|---|---|---|
+| gh7/gh10 | 17.8k/1.5k | (A) query-walk 崩（stval 0x10bd2cabac/0x409d2c9bb0） |
+| gh8 | 689k | 零 panic（探针瓶颈认知轮） |
+| gh9/gh12/gh13/gh17 | 1.6k~1.6k | **fb201 乒乓**（确定性首墙） |
+| gh11 | 710 | RS 早崩 SIGSEGV |
+| gh14/gh15 | 1.5k | (A)（帧 dump+双点探针轮） |
+
+### (A) 三形状合并解读
+0x10bd2cabXX / 0x409d2c9bb0 / 0x10bd2cab9c——全部＝**VM 自己的 DM 指针形状（基址+超 RAM 帧偏移）**：基址分量在 1<<34 与 1<<36 间漂移、帧 PA 均 > RAM 顶（0xbd2ca000/0x9d2c9bb0+...）——**双重坏值：页表项指向超 RAM 帧 + DM 指针基址漂移**。综合判定：VM 页表簿记里的坏表项（超 RAM 帧 PA）是源头，DM 指针基址漂移为其衍生（或独立第二病灶）。nk135 守卫（表跟随点）曾 0 命中＝污染的表项写入时机在守卫 armed 窗之外，或写点不在 walk_read 跟随路径。
+
+### 优先级裁定（续-142）
+fb201 乒乓四轮连续确定性首挡 ⇒ 先修乒乓（Runcom 深入的前提），(A) 猎杀待乒乓修后按复现情况再战。fb201 修法方向已具备（续-136 解码+机制精化）：①VFS Route:: 对 PM 来源未知 m_type 的臂（回原值者）改为 C 对位行为；②PM dispatch 对 VFS 来源非 RS 族消息的 ENOSYS 回程改静默；③FS status=-1 回复源头。
