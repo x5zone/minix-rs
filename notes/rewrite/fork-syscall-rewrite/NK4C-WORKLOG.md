@@ -8,7 +8,11 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-142（2026-10-02·**(A) 帧 dump 破解关键模式：掩码寄存器 x17 = 0x00fffffffffff000 **gh14/gh18 两轮逐位相同**（应为 `lui 0xfff00; srli 8` ⇒ 0x000FFF000）＝**确定性寄存器破坏非随机踩踏**；gh18 另证 diagctl >16B 通道纪律（vr/pr/fss 三探针全被静默丢弃零输出，pm:/vf: 15B 格式正常）**）：gh18 帧（(A) 再现于 1531 行，fb201 未现形——多墙轮转持续）：x11(a1)=0x409d2c9b90（计算槽指针，=0x400000000+0x9d2c9b90，0x9d2c9b90-0x88=x12-0x... 的非页对齐形状）、x12(a2)=0x7fffffffe000（栈顶页）、x14=0x9d2ea004（V=0 的 L1e）、x15=0x1000000000（VmDm 基址✓）、x16=0x9d2ea000（a4&x17 的「表 PA」）、x17=0x00fffffffffff000（**坏掩码，两轮逐位同**）、x8=0xf（gh14=0xfffffffffffff000——t0/x8 族亦不稳）。**代数结论：a7 掩码坏 ⇒ a6=(pte<<2)&a7 保留高位垃圾 ⇒ a1=a6|a5+idx 落越栈窗 ⇒ VM 自缺页**。掩码值 0x00fffffffffff000 = 0xFFFFFFFFFFFFF000>>8 = `srli aX, aY, 8` 于 aY=全 F 页掩码——**寄存器间数据流自洽，但入口值错**＝上游某写者将「全 F 页掩码」放进 prologue 链的输入寄存器。
+> **🛑 最新前沿＝§1.120续-143（2026-10-02·**(A) 根本定性翻转＝VM text 页内存破坏（RAM 内容≠ELF）：gh14 帧全 dump 与 sepc 处 ELF 指令 `c.ld a3,136(a2)` 联立应得缺页址 0x7fffffffe088（帧 x12=栈顶页✓可读写），实测 stval=0x409d2c9bb0——**CPU 执行的指令流≠ELF**＝text 页在内存中被写坏，CPU 跑的是坏代码（其 a2=0x409d2c9b28 与 stval+136 自洽）；gh10(0x379da)/gh14(0x37d64) 两处不同 sepc 均此形态**）：机制＝某写者把垃圾字节写进 VM 的 text 页（exec 装载 PROT_RWX——riscv exec_worker 段+栈均 RWX「C 忠实」，text 可写=可破坏；aarch64/x86 同 RWX 但 aarch64 无此病=写入者 riscv 时序特有）。帧内寄存器自洽（x2/x5=用户栈、x11=stval、x14=V=0 的 L1e 形 0x9d2ea004、x15=VmDm 基址✓、x16=x14 页对齐、x17=全F页掩码移位形两轮逐位同）＝坏代码执行的伪自洽。
+> - **续-143 修靶（text 破坏猎杀）**：①panic 时经内核 DM 读 VM text 页（按 BootFileTable 里 vm 的 PA+0x37d64 页对齐）与 ELF 逐字节 diff→破页清单+破坏形状；②对破页 PA 设内核 DM 写 watch（或值匹配打印）抓写者 pc；③嫌疑写者＝VM heap 溢出（x9=0x140065efe0=VM_HEAP_BASE+6.7MB 帧 live 值）/exec 装载 memset 越界/kernel kdst 误写（kdst copy 的 PA 家族 0x9d2ecf98 与 text 同 512M RAM 内——kernel 侧跨空间拷贝的 walk 算错 PA 会写进任意帧）。④成修+CodeReview+marker 冲刺。
+>
+
+> **（历史·§1.120续-142（2026-10-02·**(A) 帧 dump 破解关键模式：掩码寄存器 x17 = 0x00fffffffffff000 **gh14/gh18 两轮逐位相同**（应为 `lui 0xfff00; srli 8` ⇒ 0x000FFF000）＝**确定性寄存器破坏非随机踩踏**；gh18 另证 diagctl >16B 通道纪律（vr/pr/fss 三探针全被静默丢弃零输出，pm:/vf: 15B 格式正常）**）：gh18 帧（(A) 再现于 1531 行，fb201 未现形——多墙轮转持续）：x11(a1)=0x409d2c9b90（计算槽指针，=0x400000000+0x9d2c9b90，0x9d2c9b90-0x88=x12-0x... 的非页对齐形状）、x12(a2)=0x7fffffffe000（栈顶页）、x14=0x9d2ea004（V=0 的 L1e）、x15=0x1000000000（VmDm 基址✓）、x16=0x9d2ea000（a4&x17 的「表 PA」）、x17=0x00fffffffffff000（**坏掩码，两轮逐位同**）、x8=0xf（gh14=0xfffffffffffff000——t0/x8 族亦不稳）。**代数结论：a7 掩码坏 ⇒ a6=(pte<<2)&a7 保留高位垃圾 ⇒ a1=a6|a5+idx 落越栈窗 ⇒ VM 自缺页**。掩码值 0x00fffffffffff000 = 0xFFFFFFFFFFFFF000>>8 = `srli aX, aY, 8` 于 aY=全 F 页掩码——**寄存器间数据流自洽，但入口值错**＝上游某写者将「全 F 页掩码」放进 prologue 链的输入寄存器。
 > - **续-143 修靶**：①以 gh14/gh18 两帧的寄存器代数做全数据流回推（x17 稳定坏值→prologue 输入→上上游），定位「全 F 页掩码」写者；②对标 aarch64 续-130 同位修复（riscv apply_to_trap_frame gp_regs 全量回装缺失——**riscv apply_to_trap_frame 只回装 sstatus/sepc/sp/a0 四槽，gp_regs 数组不回装 frame！** restore_to_user asm 直读 ctx 绕过 frame 故 GP 由 ctx descent 承载——但 frame.regs[2]/[10] 的写与 ctx 双轨并存本身是分叉源）；③gh18 的 x8=0xf vs gh14 的 x8=0xfffffffffffff000 差异＝两不同执行点共用 dump（轮转多墙的另一证据）。
 >
 
@@ -10042,3 +10046,22 @@ vr（take_reply 回复）/pr（PM reply）/fss（FS send）三探针均 >16B ⇒
 
 ### 续-143 修靶
 ①gh14/gh18 双帧寄存器代数全数据流回推（x17 稳定坏值→prologue 输入→上游写者——「全 F 页掩码」的来源）；②riscv apply_to_trap_frame 只回装四槽（sstatus/sepc/sp/a0）、gp_regs 不回装 frame（restore asm 直读 ctx 绕过）的双轨结构审计——frame.regs 与 ctx 双载体分叉是「稳定坏掩码」的高危源；③gh18 x8=0xf vs gh14 x8=页掩码 的差异＝两不同执行点共用 dump 的多墙证据。fb201 乒乓与 (A) 的先后/同根关系在此轮后重判。
+
+## §1.120续-143（2026-10-02·**(A) 根本定性翻转＝VM text 页内存破坏：帧/指令联立矛盾坐实「RAM 内容≠ELF」（gh14 帧 dump 数据，探针已滚 tracked 净）**）
+
+### 决定性矛盾（gh14 帧全 dump × ELF 反汇编联立）
+- 帧全 dump：x12(a2)=0x7fffffffe000（exec 栈顶页，合法 VM 值）、x2/x5=0x3ffffdfbbc（用户栈✓）、x15(a5)=0x1000000000（VmDm 基址✓）、x17=0x00fffffffffff000（掩码槽，两轮逐位同的坏值）。
+- sepc=0x37d64 处 ELF 指令＝`c.ld a3, 136(a2)`：缺页址应为 x12+136=0x7fffffffe088（栈区内，可读写不缺页）。实测 stval=0x409d2c9bb0。
+- **联立矛盾**：按 ELF 代码+帧寄存器，该指令不可能缺页于 stval。⇒ CPU 执行的指令流≠ELF ⇒ **VM 的 text 页在内存中被写坏**（RAM 内容≠ELF），CPU 跑坏代码：坏代码的 a2=0x409d2c9b28 与 stval=a2+136 自洽（伪自洽）。
+- gh10(0x379da)/gh14(0x37d64) 两个不同 sepc 同形态＝多处 text 破坏或破坏面较大。
+
+### 机制
+VM 的 exec 装载把段+栈映为 PROT_RWX（exec_worker.rs「C 忠实」注释——riscv-reviewlog 同登记），**text 可写=可被任何越界写破坏**。帧内 x9=0x140065efe0=VM_HEAP_BASE+6.7MB（VM 堆指针 live 值）——堆越界溢入 text 是候选一；kernel 侧 kdst copy 的 PA 家族（0x9d2ecf98 等）与 text 同在 512M RAM 内——kernel 跨空间拷贝 walk 算错 PA 写进任意帧是候选二。
+（此定性取代续-138 的「GPR 恢复破坏」——寄存器代数自洽+帧/指令矛盾指向代码流破坏，GPR「坏值」是坏代码算出来的。）
+
+### 续-143 修靶（text 破坏猎杀）
+①panic 时经内核 DM 读 VM text 页与 ELF 逐字节 diff（VM 模块 PA 在 BootFileTable：vm pa=0x8624b000 len=609480，sepc 对应文件偏移可算）→破页清单+破坏形状；②对破页 PA 设内核 DM 写 watch/值匹配打印抓写者 pc；③嫌疑写者=VM 堆溢出（x9=heap 指针 live）/exec 装载 memset 越界/kernel kdst 误写；④成修+CodeReview+marker 冲刺。
+
+### 经验/教训
+1. **帧/指令联立矛盾＝text 破坏的判据**：单看 stval 或单看寄存器都会引向假根因（本例先后产生「毒 PTE」「PFN 位 26」「GPR 恢复破坏」三个假根因）；联立 ELF 反汇编+帧寄存器+缺页址三方核对一次定性。
+2. **RWX text 是内存破坏的放大器**：exec 装载 PROT_RWX（C 忠实）让 text 页可写——任何越界写都能改代码流。aarch64/x86 同 RWX 未发病=写入者架构/时序特有，但 RWX 本身是共性风险（W^X 专开单元的论据+1）。
