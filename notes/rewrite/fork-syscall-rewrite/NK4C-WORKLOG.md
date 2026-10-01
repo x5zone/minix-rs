@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-148（2026-10-02·**多墙优先级终裁定：fb201 乒乓＝确定性首墙（gh12/13/17/19/23 五轮连停），(A) 非必现（时序门控）；续-149 主攻＝fb201 乒乓修复：①VFS Route:: 对 PM 来源未知 m_type 的臂改 C 对位（静默不回）②PM dispatch ENOSYS 回程改静默③FS status=-1 源头。pmemsave 判别管道已验证（text diff=IDENTICAL d1 证伪）待 (A) 复现后使用**）：gh23 验证 fb201 250s 确定性复现。gh19 text diff=IDENTICAL。探针已滚 tracked 净。**
+> **🛑 最新前沿＝§1.120续-151（2026-10-02·**续-149 止血无过度——pd:02b01 探针确认：PM 丢弃的是 mt=0x02B(43) from VFS（非 0x986 EXEC_REPLY），0x986 从未到达 PM ⇒ **exec reply 从未从 VFS 发出**或发出后丢失；SETADDRSPACE 不触发＝PM 没收到 exec reply 所以不调度子进程（正确行为）；**续-152 修靶＝VFS 侧 exec reply 发送链审计**：VfsReply::Exec encode→queue_reply_msg→take_reply→send_reply(Endpoint::PM)——哪一步断了？exec_worker 的 pm_exec 返回值是否 Ok？queue_reply_msg 的 target 是否正确？send_reply 的 transport.send 是否成功？**续-149 止血条件无需修正（.exec reply 本就不在其丢弃范围内）**。探针已滚 tracked 净。**
+>
+
+> **（历史·§1.120续-148（2026-10-02·**多墙优先级终裁定：fb201 乒乓＝确定性首墙（gh12/13/17/19/23 五轮连停），(A) 非必现（时序门控）；续-149 主攻＝fb201 乒乓修复：①VFS Route:: 对 PM 来源未知 m_type 的臂改 C 对位（静默不回）②PM dispatch ENOSYS 回程改静默③FS status=-1 源头。pmemsave 判别管道已验证（text diff=IDENTICAL d1 证伪）待 (A) 复现后使用**）：gh23 验证 fb201 250s 确定性复现。gh19 text diff=IDENTICAL。探针已滚 tracked 净。**
 >
 
 >
@@ -10157,3 +10160,14 @@ PM 收到 mt=0x02b=43 from VFS——这**不是** VFS_PM_EXEC_REPLY(0x986)。两
 
 ### 续-151 修靶
 ①在续-149 的静默丢弃分支前加 (src, m_type) 打印（≤15B diagctl）——确认被吞的是什么消息；②若确认 exec reply 被吞，修正止血条件（改为只丢 m_type=FS-stamped 形态的消息，即高 16 位=0xFFFF 的）；③audit VfsReply::Exec 的 encode 链确认 m_type=0x986。
+
+## §1.120续-151（2026-10-02·**续-149 止血无过度确认：pd:02b01=PM 丢弃 mt=0x02B(43) from VFS（非 0x986 EXEC_REPLY）——exec reply 从未到达 PM；续-152 修靶＝VFS 侧 exec reply 发送链审计**）
+
+### 探针轮（gh25）
+pd: 探针（PM 静默丢弃分支前）输出：`pd:02b01` —— mt=0x02B=43, src=VFS。**NOT** 0x986 EXEC_REPLY。0x986 EXEC_REPLY 在 gh25 全程零出现于 PM 主循环。
+
+### 根因域修正
+续-149 的止血修复（PM 静默丢弃非 RS 族 VFS 消息）**没有过度**——exec reply (0x986) 本就不在丢弃范围内（0x986 通过 is_vfs_pm_rs ✓ 会被 handle_vfs_reply 正确处理）。问题是 **exec reply 从未到达 PM**：VFS 侧要么没发，要么发了但内核投递丢失。
+
+### 续-152 修靶（VFS 侧审计）
+①VfsReply::Exec 的 encode m_type 确认=VFS_PM_EXEC_REPLY(0x986)；②queue_reply_msg 的 target 确认=Endpoint::PM(0)；③take_reply→send_reply 的 transport.send 返回值；④exec_worker pm_exec 的返回值（Ok 或 Err）；⑤VM↔FS 交互中 exec reply 是否被 FS stamped 消息覆盖。
