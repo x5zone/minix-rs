@@ -10187,3 +10187,24 @@ gh24 最后可见活动 = bss memset 完成（memreq 1507 ok=1）。之后无 me
 
 ### 续-153 修靶（VM 侧 stack mmap 审计）
 ①VM 的 handle_mmap 对 riscv64 exec 栈 mmap（ANON|PRIVATE|FIXED|THIRDPARTY + RWX，4MB）的处理路径审计；②VM 回复 VmReply::Mmap 的 sendrec 是否发出；③对照 aarch64 同函数（成功）；④定位后成修+CodeReview+真机 marker 冲刺。
+
+## §1.120续-153（2026-10-02·**PM_EXEC_NEW 放行修复落地（gh29 实证 exec 链全线打通：0x986 到达 PM）+ riscv(A) 三轮检测器排除法收敛到「VM walk 读到数据当 PTE」，gdb 决断处方入库**）
+
+### 成修（生产码，CodeReview REQUEST_CHANGES→已落实三件）
+`os/servers/pm/src/init.rs` 续-149 静默丢弃收窄：`if msg.m_source == Endpoint::VFS` → `if msg.m_source == Endpoint::VFS && PmCall::from_call_nr(msg.m_type).is_none()`。理由：PM_EXEC_NEW=43（callnr.h:56，C table.c:57 `CALL(PM_EXEC_NEW)=do_newexec`）是 VFS exec 链的合法普通调用号，被续-149 一律丢弃吞掉（gh25 pd:02b01 实证）。stamped 泄漏（负值/非 1..=47）from_call_nr→None 仍丢，乒乓止血不变。
+CodeReview（subagent 独立评审）三件落实：①P1 两枚边界钉子测试入库（`vfs_exec_new_passes_drop_gate_reaches_dispatch`：VFS 源 mt=43 穿透分派必有回复；`vfs_unregistered_mtypes_silently_dropped`：VFS 源 mt=-1/48 零发送）——cargo test 2 passed；②P1 续-149 注释 C 语义纠偏（C main.c:102-106 未识别调用号是**回 ENOSYS** 非 panic；静默drop 的真理由=「C 假定 VFS 受信故反射无害，riscv 车道垃圾实存反射即放大」）；③P2 注释 handler 名 do_exec_new→do_newexec。评审 P2 情报项：`unwired_call_replies_enosys`/`wait4_without_children_replies_echild` 两测 HEAD 即败（断言 +ENOSYS/+ECHILD，分派器实回 -ENOSYS 符号约定漂移；stash 实证与本修复无关）→ 留独立 todo 防 Gate E 烂尾。lib 419 全绿。
+
+### 真机验证（gh29）
+EXEC_NEW 到达→192B exec_info 拷入（kdst 0x82593fc0 len=0xc0）→帧拷贝落位（memreq 0x7fffffffef98 ok=1）→`vr:00 00000986` EXEC_REPLY 发出→`pm:98601` PM 收到→`exec endpt=0x800c ip=0x167f0 stack=0x7fffffffef98` sys_exec 进内核→**VM pagefault**。exec 链自 fb201 修复后首次全线打通，撞墙点即 (A)。
+
+### (A) 排除法三轮（gh30/31/32，探针 WORKLOG-only）
+反汇编定谳（sepc 精确）：fault=VM `Riscv64Paging::query` 的**槽读 ld**（gh29=sepc 0x37df0 L1 槽读；gh32=sepc 0x38b5a L0 槽读）。stval 分解：walk 从上游槽读到**伪表指针**（gh29: 根槽值≈0x2F4B2Axx→跟到 0xBD2CA000；gh32: L1 槽值≈0xC374A0xx→跟到 0x309d28000）——均越 RAM 顶（0x9fb33000）→DM 窗未映射→fault。即：**合法 RAM 表页的槽内容=数据字节当 PTE**（gh29 dump 的 a4=0x9d2ae004=l1e<<2 → l1e=0x274AB801=合法指针，恰证提取路径本身无 bug，是槽**内容**坏）。
+检测器（alloc_page.rs PT_SEEN/DATA_SEEN/FREED 位图扩到全 RAM 655,360 pfn + 清位式活别名 + 双重释放 + 越界）：gh32 终版 **dblfree=0、alloc-reuse-PT=0、ptalloc-DUP=0、越界=0** → VM 分配器层洗清。gh31 前 48 个 PT 帧内容 dump 全零→回收帧无残留。已知探针 bug：ptalloc-reuse-DATA 在 alloc_pfn_reclaiming 之后查 DATA 位，而该位被漏斗内 alloc_phys 刚置 → 每次 PT 分配必报（18,080=全量 PT 分配数，纯噪声，判读时已剔除）。gh31 变奏：探针改时序后 exec 跑了 11 次、无 fault，改撞 VM BTreeMap（btree/navigate.rs）`unwrap None` panic——同一坏帧家族的另一窗（数据页被覆写时受害者随机：页表→walk fault，堆节点→btree panic）。
+旧 dump 教训（记死）：内核 panic GPR dump 的 frame.gpr[0]≠0（x0 恒零）→**布局错位，寄存器级取证全部作废**；唯一可信=sepc/stval+反汇编推演。
+
+### 续-154 处方（gdb 决断，唯一剩余分歧：谁把数据写进合法表页）
+1. `gdb-multiarch`+qemu `-s -S`：hbreak `*0x38b5a`（VM ELF query L0 槽读；换构建重取 sepc），命令过滤 `*(unsigned short*)$pc==0x6194` 防他进程同 VA 误中。
+2. 命中后以内核 DM 基 0xFFFFFFC040000000+pa 读子进程表链（w-finw 探针证 root=0x82000000=bump 池基）：`x/gx 0xFFFFFFC0C2001FF8`（root[511]）逐级跟到坏槽，`x/64gx` 坏表页邻域——判「整页数据(frame-alias)」vs「仅一槽坏(野写)」。
+3. 坏槽 VA 确定后第二次 gdb：`watch *(unsigned long*)坏槽VA` 自 t=0 重启（`monitor system_reset`）抓写者 $pc→成修。
+4. 备选静态线：root=0x82000000 与 bootface bump 池基重合——查 VM PhysAlloc memmap 是否漏扣 boot 期已占帧（模块落地/名字池），若漏扣则首因=boot/VM 帧重叠，与 gh29/32 的「表页含模块 ELF 字节」自洽。
+门：未坐实不成修；探针（alloc_page.rs 检测器、trap_dispatch pfvm、pm/vf/vr/vmm/pd 系）过 C-61 pattern-gate 前不得滚除承诺外的场景。

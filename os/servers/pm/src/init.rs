@@ -15,7 +15,7 @@
 
 use crate::event::EventRegistry;
 use crate::ipc::{
-    IpcTransport, KernelIpcTransport, PmServices, ReplyIntent, dispatch_message,
+    IpcTransport, KernelIpcTransport, PmCall, PmServices, ReplyIntent, dispatch_message,
     handle_vfs_reply, is_vfs_pm_rs,
 };
 use crate::mproc::{Guardianship, INIT_PID, Lifecycle, Privilege, ProcTable, SigSet};
@@ -610,11 +610,22 @@ impl<T: IpcTransport> PmServer<T> {
         // 静默丢弃不回。riscv 真机 fb201 洪流（mt=0xFFFF0FB2=FS stamped
         // status=-1 泄漏进 PM/VFS 车道）的乒乓放大器＝PM 对这类消息
         // dispatch→ENOSYS 回 VFS→VFS 收到再处理再发→循环。C 对位：
-        // main.c 的第一路检查后，VFS 来源非 PM-call 消息不会有 ENOSYS
-        // 回程（C 的 callnr 分派不识别即 panic 而非回——riscv 上 panicking
-        // 会整个宕机故取静默丢弃）。丢掉后乒乓的「PM 回 VFS」半截断裂，
-        // VFS 不再收到自己发出的 stamped 消息的 ENOSYS 反射。
-        if msg.m_source == Endpoint::VFS {
+        // main.c 的第一路检查后，未识别调用号回 ENOSYS（main.c:102-103
+        // `result = ENOSYS` → main.c:106 reply）——C 假定 VFS 是受信源、
+        // 该车道上不会有垃圾，ENOSYS 反射无害；riscv 真机上垃圾实存，
+        // 反射即放大器，故取静默丢弃（有意偏离，非 C 的 panic 路径——
+        // C 仅在端点无效时 panic，main.c:77）。丢掉后乒乓的「PM 回
+        // VFS」半截断裂，VFS 不再收到自己发出的 stamped 消息的 ENOSYS
+        // 反射。
+        //
+        // 续-151（收窄）：丢弃条件从「VFS 来源一律」收窄为「非已注册
+        // PM 调用号」。VFS 的 exec 链会以普通调用号形态发 PM_EXEC_NEW
+        // (43, callnr.h:56) 给 PM（C table.c:57 的 do_newexec 槽位）——
+        // 无条件 VFS 丢弃把它一并吞掉，exec worker 停在等 EXEC_NEW
+        // 回复（pd:02b01 探针实证 PM 收到 VFS 来源 mt=0x02B 无回复）。
+        // stamped 泄漏消息（负值/非 1..=47）from_call_nr 返回 None，
+        // 仍落本分支静默丢弃——乒乓止血语义不变。
+        if msg.m_source == Endpoint::VFS && PmCall::from_call_nr(msg.m_type).is_none() {
             return RunStep::Handled;
         }
 

@@ -424,3 +424,75 @@ fn kernel_sigksig_notify_drains_pending_kernel_signals() {
         table.procs[5].state.lifecycle
     );
 }
+
+// ── 续-152/153（VFS 车道静默丢弃的边界钉子）──
+//
+// 续-149 为断 fb201 乒乓（FS stamped status=-1 消息泄漏进 PM/VFS 车道，
+// PM 的 ENOSYS 反射即放大器）设了「VFS 来源非 RS 族一律静默丢弃」；
+// 续-153 收窄为「非已注册 PM 调用号才丢」——否则 VFS 合法发来的
+// PM_EXEC_NEW(43, callnr.h:56) 也被吞，exec worker 永远等不到回复
+// （gh25 pd:02b01 真机实证）。本组两钉各守半边：
+// ① 43 必须穿透到分派（警卫再度收紧=exec 再断，真机上要花数天定位）；
+// ② 非注册号必须零回复（乒乓放大器不得复活）。
+
+/// 把 VFS 播种成 Running（source==VFS 过 pm_isokendpt 校验所需）。
+fn seed_vfs(srv: &mut minix_pm::init::PmServer<TestIpcTransport>) -> Endpoint {
+    let table = srv.table_mut();
+    table.procs[1].identity.endpoint = Endpoint::VFS;
+    table.procs[1].identity.id.pid = 1;
+    table.procs[1].state.lifecycle = Lifecycle::Running;
+    Endpoint::VFS
+}
+
+#[test]
+fn vfs_exec_new_passes_drop_gate_reaches_dispatch() {
+    let mut srv = server();
+    let vfs_ep = seed_vfs(&mut srv);
+
+    // PM_EXEC_NEW=43（callnr.h:56）：endpt@0 故意放无效端点值——
+    // 分派臂 do_newexec 的 pm_isokendpt 必失败并回错误；钉子的判据是
+    // 「VFS 收到回复」（穿透分派）而非具体 errno（符号约定另有台账）。
+    let mut msg = request(43, vfs_ep);
+    msg.m_u.m_m1.m1i1 = 0x2ff; // endpt@0（decode::exec_new raw[0..4]），
+    // 故意放无效端点值——分派臂 do_newexec 的 pm_isokendpt 必失败并回
+    // 错误；钉子判据是「VFS 收到回复」（穿透分派）而非具体 errno。
+    srv.transport_mut()
+        .queue_receive(msg, IpcStatus::default());
+
+    assert_eq!(srv.run_once(), RunStep::Handled);
+
+    let sent = srv.transport().sent();
+    assert!(
+        sent.iter().any(|(ep, _)| *ep == vfs_ep),
+        "PM_EXEC_NEW from VFS must reach dispatch and be replied, sent={:?}",
+        sent.iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn vfs_unregistered_mtypes_silently_dropped() {
+    let mut srv = server();
+    let vfs_ep = seed_vfs(&mut srv);
+
+    // fb201 形态①：FS stamped status=-1（负 m_type，续-149 洪流本体）。
+    srv.transport_mut()
+        .queue_receive(request(-1, vfs_ep), IpcStatus::default());
+    assert_eq!(srv.run_once(), RunStep::Handled);
+    assert!(
+        srv.transport().sent().is_empty(),
+        "stamped m_type=-1 must be silently dropped, sent={:?}",
+        srv.transport().sent().iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
+    );
+
+    // 形态②：越界未注册号 48（> NR_PM_CALLS，同 clo 非 VFS 源的
+    // unwired_call_replies_enosys——VFS 源在这里必须静默，不得回
+    // ENOSYS 反射给 VFS 复活乒乓）。
+    srv.transport_mut()
+        .queue_receive(request(48, vfs_ep), IpcStatus::default());
+    assert_eq!(srv.run_once(), RunStep::Handled);
+    assert!(
+        srv.transport().sent().is_empty(),
+        "unregistered m_type=48 from VFS must be silently dropped, sent={:?}",
+        srv.transport().sent().iter().map(|(ep, m)| (ep.get(), m.m_type)).collect::<Vec<_>>()
+    );
+}
