@@ -8,7 +8,15 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-129（2026-10-01·**aarch64 A1「VFS barrier mt=8」根因定谳＝SD-23/A3（aarch64 FPSIMD 跨陷入从不保存恢复）的现行犯实锤；修复（内核禁 NEON/FP + 懒 FPU 闭环）已入库级完成——真机握手全通、INIT 首达 Runcom；CodeReview 两轮终局 APPROVED**）：承续-86（真阻塞＝VFS 应回 OK(0) 的 barrier 回复被 PM 收成 mt=8）后的决定性链条：
+> **🛑 最新前沿＝§1.120续-130（2026-10-01·**aarch64 exec EINVAL 双根因定谳+成修入库（9fc7c88f7）——SYSCALL 消息腿屏障 + 懒 FPU 轮转真洞（apply_to_trap_frame 覆盖归属策略）；/bin/sh exec 全链首通、INIT 首达 init-state MultiUser（aarch64 历史最深）；marker 剩最后一层＝sh 之后的用户态 rc/echo/tty 管道（续-131）**）：承续-129 入库后真机复跑，exec tail-memset 仍 -22 EINVAL，两轮取证定谳：
+> - **根因1（SYSCALL 消息腿缺屏障，续-22 同族）**：内核 dispatch 收到 m_type=0（Fork 臂）而 VFS 发的是 SYS_MEMSET(0x60d)——载荷全对、唯独头 8 字节槽是 0/陈旧值。修复＝`minix-sys/syscall.rs` kernel_call 腿 trap 前插 `commit_message_to_memory`（ipc.rs pub(crate)），与续-22 IPC 三腿同构，三架构统一。
+> - **根因2（懒 FPU 轮转从未生效）**：`boot.rs apply_to_trap_frame` 每次 dispatch 重写 CPACR——注释写 0b01、代码 `orr #(0x3<<20)` 实写 **0b11** 且 orr 清不掉已置位 ⇒ EC=0x07 腿从未触发（fpu-trap 探针 0 命中），VFS park 窗口内 d9 常量 (0x60d,1) 被其它用户进程（VM 的 FP 字面量池）踩掉＝SD-23 用户↔用户互踩本体；第二层洞＝若只改 0b01，owner 重调度后自陷阱零恢复摧毁活值（RS boot panic 实锤）。修复＝**移除 apply_to_trap_frame 的 CPACR 写**（策略唯一所有者＝lib.rs finish_and_restore 的 enable/disable（C:443-446 对位）+ EC=0x07 轮转），删死 cpacr 模块，fpu.rs init 0b11→0b01（S1 裁决不接线+注释叙事修正），fpu_enable_el0 文档同步（S2）。
+> - **验证**：exec tail-memset EINVAL 绝迹（ms-in 实证 raw=0x60d 正确分派）、/bin/sh 3 段+4MiB 栈 mmap+PM_EXEC_NEW+SCHED 全通、INIT 首达 MultiUser、panic=0；x86 marker=2/panic=0 不回归；host 1400/0、clippy 55=55、rustfmt Δ0、check-layout PASS；CodeReview APPROVED（2SF+2NIT 全采，S1 真机接线实验 a64-fix-7 撞 pm fb201 墙后按 B 选项不接线）。
+> - **续-131 修靶（新前沿）**：sh 运行后 rc/echo/tty 用户态管道（marker 最后一段）；SF-2（exec/clear/sigsend 补 release_fpu）、双 FP 用户回归用例、build-std 残差为跟踪项。
+> - **riscv (B) 侧**：不变（(A)=VM query 越 RAM PPN 槽读，(a)/(c) 待 gdb，续-126/127/128 处方）。
+>
+
+> **（历史·§1.120续-129（2026-10-01·**aarch64 A1「VFS barrier mt=8」根因定谳＝SD-23/A3（aarch64 FPSIMD 跨陷入从不保存恢复）的现行犯实锤；修复（内核禁 NEON/FP + 懒 FPU 闭环）已入库级完成——真机握手全通、INIT 首达 Runcom；CodeReview 两轮终局 APPROVED**）：承续-86（真阻塞＝VFS 应回 OK(0) 的 barrier 回复被 PM 收成 mt=8）后的决定性链条：
 > - **取证链（xu129-1..8 + gdb 五轮）**：① PM 首条 send 陷阱 r2=0x2db000 内核即读出 mt=8，而 m7 载荷（ds ep=6/slot=6/pid=3 等）**完全正确**＝仅头 8 字节 (m_source,m_type)=(1,8) 被外科手术式覆写；② msgw/delivermsg 对 PM 堆零写、kdst 跨空间写对 PM 堆零命中、内核 DM 观察点零命中⇒**内核交付腿全部清白**；③ gdb watch 抓到写者＝PM 自己的 memcpy 增长链（0x2d9000→0x2da000→0x2db000，x14=0x800000001）——毒在 cap4 块已存在，随 Vec grow 传播；④ 反汇编＋ELF 常量（0x2001d8=0x000009007bff=(NONE,0x900) 干净模板）坐实：PM `PmServer::init` 的 encode 循环用 **`ldr d8,[字面量池]`＋`str d8,[x8]`** 拷 Message 头 8 字节（aarch64 无 64 位立即数装载、LLVM 用 FP 寄存器做常量拷贝——x86 用 movabs GPR 故无毒，ISA 差异解释单架构性）；⑤ gdb 读 hit 时刻 **d8=0x0000000800000001≠编译期常量**＝Vec push 触发堆页 demand fault→陷入→调度切换→回来 d8=他上下文残留 (1,8)——**SD-23/A3（trap stub 只存 GPR、Q0-Q31 无人保存恢复、FPEN 常开）的直接现行犯**。m7 载荷由 GPR 指令写故正确→「毒头+正确载荷」形态、间歇性、续-86 扰动改时序即通关，全部同解。
 > - **修复（四处生产改动+一处脚本，CodeReview 终局 APPROVED）**：① `xtask/src/image.rs` 对 `-p kernel-image`+aarch64 注入 **`RUSTFLAGS="-C target-feature=-neon,-fp-armv8"`**（内核禁 NEON/FP＝C 懒模型「内核不用 FPU」前提的编译期化；改前 kernel.elf 实测 ~840 条自动向量化 FP 指令踩用户 Q 寄存器；`kernel-image/src/main.rs` compile_error! 门防旁路、check-layout.sh aarch64 段同款注入）；② `arm64/fpu.rs` disable()=FPEN 0b01（只陷阱 EL0）/enable()=0b11 真实现，save/restore asm 抽 per-function target_feature 函数，**restore clobber 有意豁免 v8-v15**（CodeReview B-1：clobber callee-saved 会使 LLVM 在 epilogue reload d8-d15 覆盖刚恢复的用户车道——反汇编实锤后已删）；③ `trap_dispatch.rs` aarch64 加 **EC=0x07 腿**＝`aarch64_fpu_trap_body`（镜像 C `copr_not_available_handler` proc.c:1923-1962：save 旧 owner→restore 当前者→owner=cur→enable→PARK_NONE 重执行）；④ `lib.rs` finish_and_restore 的 fpu_owner 从 bsp 硬编码改读 current_cpu_id（C per-CPU 对位）。
 > - **验证**：host **1400/0**、clippy **55=55 Δ0**、rustfmt 五文件 **Δ0**、check-layout **PASS(all)**；aarch64 真机改后两轮 4518 行**逻辑序列全一致**（vfm90000×13、pmvi-barrier-done、WrongMessageType=0、panic=0、**init-state Runcom**＝aarch64 历史最深）；x86 真机两轮 **marker=2/panic=0** 不回归。
@@ -9719,3 +9727,36 @@ Runcom 段 rc 子进程（slot 0xc）`pf-exit noaddr cr2=0x220b98`→SIGSEGV（V
 3. **内核「不用 FPU」是懒 FPU 模型的编译期可验证前提**：RUSTFLAGS -fp-armv8 + compile_error! 门把它变成不变量，比运行时守卫便宜且完备（预编译 core 残差除外）。
 4. gdb-multiarch 对 qemu aarch64 的 VA watchpoint 跨进程共享 VA 空间会假命中（各模块同 VA 布局）——判别写者归属靠寄存器内容（x14=搬运值）与栈/堆 VA 段而非 pc；ttbr0_el1 在该 gdbstub 不可读（$1=void）。
 5. 探针字节级取证纪律再次生效：串口混入非 UTF-8 字节后 ugrep 静默吞全部输出（a64-fix-2.serial 首轮 grep 全空），一律 python3 字节级。
+
+## §1.120续-130（2026-10-01·**aarch64 exec EINVAL 双根因定谳+成修（SYSCALL 腿屏障 + 懒 FPU 轮转真洞）/bin/sh exec 首通、INIT 首达 MultiUser（commit 9fc7c88f7，CodeReview APPROVED）**）
+
+### 现象
+续-129 入库后真机复跑：INIT Runcom 段 rc 子（slot 0xc）exec /bin/sh 失败——`memreq target=0x800c start=0x7ffffffe2398 len=0x50 ok=0`（栈帧拷贝被 VM 拒）→`WARNING wrong user pointer`→SIGSEGV；VFS 侧 exec 最终 errno=-22（EINVAL，exerr 探针）；失败点=load_elf_segments 段 1 的 tail memset（e4 探针）。
+
+### 定位过程
+1. VM 侧三探针（vmm/memq-noaddr/pf-noaddr）：exec 只发出**段 1 的一次 mmap**（0x200000 len 0x4000），栈 mmap 与段 2/3 从未到达 VM；memq 拒绝=0x800c 的 0x7ffffffe2000（栈）。
+2. VFS 侧 vmm2/lds/e1-e4/exerr 探针：段 1 mmap 成功（rv=0）、grant 写 4 页成功、**tail memset 返 -22**、exec 总 errno=-22、失败清扫（sa-clear ×2）确凿。
+3. 内核侧 ms-in（dispatch_memset 入口）零命中 → -22 不出自 Memset 臂；kc2（全 caller call 号）抓到：**内核收到的 m_type=0（归一化后=Fork 臂）**，raw=0、w8=0x203614（memset base 载荷正确！）——消息头 m_type+m_source 8 字节=0、其余完好。
+4. 反汇编 VFS ELF：m_type+m_source 由 `str d9,[sp,#0xb0]`（FP 常量拷贝，d9 于函数头 `ldr d9,[x12,#0x2d0]` 字面量池一次装载跨循环持有）写入——**d9 在 FPEN=0b11 全放行下被踩**（=0）＝A1 同族（SD-23）。
+5. d9 被谁踩：fpu-trap 探针（EC=0x07 腿）全程 0 命中 ⇒ 懒陷阱从未生效 ⇒ 反查 CPACR 写点：`boot.rs apply_to_trap_frame` 每次 dispatch 重写——`enable_cpacr_el1_fpen_user` 注释写 0b01、代码 `orr #(0x3<<20)` 实写 **0b11** 且 orr 无法清除已置位 ⇒ 懒模型整体休眠，用户↔用户 FP 互踩（VFS park 于 sendrec 时 VM 的 FP 字面量池使用覆盖同 CPU Q 寄存器）。
+6. 修复实验的第二层洞：先仅把 user 臂改真 0b01（bic+orr）——owner 跨 dispatch 持久 + FPEN 每 dispatch 重置 0b01 ⇒ 持有者重调度后自陷阱零恢复摧毁活值（RS boot panic 实锤，a64-xu130-16）；正解＝CPACR 写整体从 apply_to_trap_frame 移除（C:443-446 的归属策略在 lib.rs finish_and_restore 已有、续-129 已 per-CPU 化，但被本函数覆盖）。
+7. 附带修复：SYSCALL 腿缺 commit_message_to_memory 屏障（续-22 只补了 IPC 三腿）——契约级防御，与根因 2 互补。
+8. S1 接线实验（FpuArch::init 进 lib.rs Step 7）伴随早期 PM↔VFS 墙复发（pm fb201 洪流）——按 review B 选项不接线（首次 finish_and_restore 的 disable 在任何用户 FP 前建立 0b01，效果等价），注释登记。
+
+### 根因（机制层）
+aarch64 懒 FPU 的硬件门控被 arch 层每-dispatch 的 CPACR 重写短路（且该重写本身位错：注释 0b01 实写 0b11），归属轮转（EC=0x07 腿）从不运行，用户进程的 FP 常量寄存器（d8-d15，编译器字面量池装载）在 park 窗口被其它用户进程踩掉；VFS exec 的消息头恰由 d9 携带 ⇒ SYS_MEMSET 变 SYS_FORK 臂解读 ⇒ EINVAL。C↔Rust 对照：C 的策略单点=switch_to_user（proc.c:443-446，owner==picked→clts 否则 disable）+ 陷阱腿 copr_not_available_handler（proc.c:1923-1962）；Rust 修复后同一双点（finish_and_restore enable/disable + EC=0x07 腿），apply_to_trap_frame 退出硬件策略。
+
+### 修复
+见 commit 9fc7c88f7 message（5 文件：boot.rs/fpu.rs/minix-sys syscall.rs+ipc.rs/lib.rs 注释裁决）。
+
+### 验证
+aarch64 真机：exec tail-memset EINVAL 绝迹（ms-in 实证 raw=0x60d 正确分派）、sh 3 段+4MiB 栈 mmap（vmm ep=0x800f addr=0x7fffffbff000）+PM_EXEC_NEW+SCHED 全通、**init-state MultiUser 首达**（此前历史最深=Runcom）、panic=0（a64-fix-6/8 两轮）；x86 marker=2/panic=0 不回归；host 1400/0、clippy 55=55、rustfmt Δ0、check-layout PASS(all)。
+
+### 新前沿（续-131 修靶）
+sh 运行后的用户态管道：/etc/rc 读取→echo exec→/dev/tty 写（marker 最后一段）；MultiUser 后尾部仅 sa-call 封顶（已知非活锁）。跟踪项：SF-2 release_fpu 四点位、双 FP 用户回归用例、build-std 消除 core 残差 11 条 V 指令。
+
+### 经验/教训
+1. **注释与代码的位值漂移是真实故障源**：`orr 0b11` 配注释 0b01 骗过了此前的所有静态审查——位运算断言（compile-time assert/单测钉 CPACR 值）应进 review 清单。
+2. **硬件策略寄存器必须单点所有**：同一 CPACR 被 arch（apply_to_trap_frame）与 kernel（finish_and_restore）两处写=策略被覆盖；跨层策略归属要在设计文档钉死。
+3. **懒 FPU 的自陷阱零恢复洞**：门控从 0b11 改 0b01 时，必须确认「owner==自己」路径不会走 restore（活值只在 ownership 持有期间产生、缓冲可能 stale）——C 的 clts 分支正是为此存在。
+4. diagctl 探针在 PM 忙环下静默丢弃（fb201 轮 lds/lds2 零可见）+ ugrep 非 UTF-8 静默吞——字节级 python3 取证纪律全程有效。
