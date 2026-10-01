@@ -10171,3 +10171,19 @@ pd: 探针（PM 静默丢弃分支前）输出：`pd:02b01` —— mt=0x02B=43, 
 
 ### 续-152 修靶（VFS 侧审计）
 ①VfsReply::Exec 的 encode m_type 确认=VFS_PM_EXEC_REPLY(0x986)；②queue_reply_msg 的 target 确认=Endpoint::PM(0)；③take_reply→send_reply 的 transport.send 返回值；④exec_worker pm_exec 的返回值（Ok 或 Err）；⑤VM↔FS 交互中 exec reply 是否被 FS stamped 消息覆盖。
+
+## §1.120续-152（2026-10-02·**gh24 vr 探针精确定位：exec worker 卡在 bss 清除后→stack mmap 前；exec reply (0x986) 从未出现在 VFS 回复队列**）
+
+### vr 探针数据（gh26/gh24，17 条 VFS 回复全捕获）
+- `vr:00 00000987` = FORK_REPLY → PM ✓
+- `vr:00 00000983` = 某回复 → PM ✓
+- 多条 `vr:0c 00000000/02/01/fffffffff7` = syscall 回复给 0x0c（INIT 或 INIT 的子）✓
+- **无 `vr:00 00000986`** = EXEC_REPLY 从未从 VFS 发出！
+
+### exec worker 卡点
+exec_worker.rs 流程：clearproc → load_elf_segments（memreq 0x2c000..0x2e280 ✓ bss memset 0x402d80 ✓）→ **stack mmap（vm_mmap ANON|RWX 4MB）** → pm_newexec → frame copy → clo_exec → return。
+
+gh24 最后可见活动 = bss memset 完成（memreq 1507 ok=1）。之后无 memreq、无 frame copy、无 exec reply。⇒ **pm_exec 卡在 stack mmap 的 vm_mmap 调用**（sendrec 给 VM 后阻塞等回复）或 stack mmap 返回错误导致 pm_exec 提前退出（但 vr 探针无 error reply = pm_exec 未退出仍在阻塞）。
+
+### 续-153 修靶（VM 侧 stack mmap 审计）
+①VM 的 handle_mmap 对 riscv64 exec 栈 mmap（ANON|PRIVATE|FIXED|THIRDPARTY + RWX，4MB）的处理路径审计；②VM 回复 VmReply::Mmap 的 sendrec 是否发出；③对照 aarch64 同函数（成功）；④定位后成修+CodeReview+真机 marker 冲刺。
