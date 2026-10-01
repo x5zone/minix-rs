@@ -9669,3 +9669,5 @@ fresh 会话（用户 resume，fresh blocked 审计）。查 alloc_page.rs 已�
 **处方不变（续-126/127）**：`qemu-system-riscv64 … -s -S` + `gdb-multiarch target remote :1234`；在 `pagefault for VM` panic 处 `hbreak`，读 `$pc`(→rust-objdump 定 query 内具体读点)、`$a*` 寄存器（被污染 PTE 指针/其 DM base phys），反查 root_paddr + 逐级 walk 的 PTE 原值 → 定 (a)/(b)/(c)。候选优先 (b)：查 riscv `walk_alloc`/`map` 是否有一条路径分配表帧未过 `vm_pt_alloc` 的清零（如 root 页在别处分配）。**未坐实不成修**。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)收窄至三模型待gdb·aarch64❌；②x86核心✅；③已勘察。零生产码改→WORKLOG-only、免 CodeReview。
+
+**续-128 追加（候选(b)静态排除）**：核 (b)"表帧未清零"——riscv `walk_alloc`/`split_huge`/`new` 所有表页分配点（paging.rs:408/425/582/790/830/946/1011/1038）**均经 `alloc_pt_page`→`vm_pt_alloc`（`write_bytes` 清零）**；`new_from_page`(:478) 仅 adopt 既有 root 不新分配。**⇒ (b) 排除**。⇒ (A) 收窄到 **(a) 某级 PTE 写入错 PPN** 或 **(c) 越界写踩坏活表帧**，二者唯 gdb 现场读崩溃那次 `query` 逐级 PTE 原值可判（续-126/127 处方）。**未坐实不成修**。
