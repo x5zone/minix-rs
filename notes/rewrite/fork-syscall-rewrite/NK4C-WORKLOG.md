@@ -10309,3 +10309,8 @@ gh45 复核：VM 侧 set_addrspace 铸造点=boot(vm_server.rs:793)/fork(fork.rs
 
 gh47 序列：rm-fallback×3（find 兜底服务三次 fault）→rm-repair（find_mut 重建）→**pagefault for VM sepc=0x391c0 stval=0x4ffffffb70**（repair 后 get_mut/树下降踩腐坏节点，垃圾子指针经 VmDm 翻译=窗外）→VM 死。fill-root 探针未及执行（sync_slot_pte 未达）。三症状统一完成：(A) walk fault=腐坏命中 PT-walk 对象；gh31 unwrap=腐坏命中 btree 计数；本墙=腐坏命中 region map 内部节点。**上游=VM 堆（heap_arena+alloc）某处 use-after-free/越界写，写者未定位**。
 续-166 处方：①rust-objdump 反汇编 gh47 构建 VM ELF sepc=0x391c0（get_mut/range 下降段）；②qmon pmemsave（已通）取 BTreeMap 节点内存，对照 iter 可见键还原树形，标出腐坏字节与偏移；③heap_arena 影子位图（free 后 touch 检测，同 alloc_page.rs gh32 手法）抓堆写坏者；④坐实成修→CodeReview→gh48 marker。
+
+## §1.120续-166a（2026-10-02·**sepc=0x391c0 反汇编=update_flags 的 L0 槽读：sync_slot_pte 已达（query 过后 update_flags 下降踩垃圾 L0 指针 0x3ffffff000→DM 窗外 fault）——同函数两次 walk 结果不同、无写者，与 region find 病同构；嫌疑收敛=VM DM 窗映射不稳定（VA 别名/惰性重映射）或堆腐坏；续-167=heap_arena 影子位图+DM 窗映射审计（vm_self_mappages/unmap 对 DM_BASE 区间的管理）**）
+
+gh47 补充判读：crash 在 sync_slot_pte 的 update_flags 内（query 先行成功=当时链完好），L1 槽解出伪 L0 指针 0x3ffffff000（<<2 提取自 L1 槽值 ≈ 0x0FFFFFFC00 族）——与 gh29/32 的伪指针家族同形态。update_flags 与 query 间隔内无任何写者（单线程直行代码），「同内存两次读不同值」再次出现=读路径经过的物理页内容在两个时刻不同，或 DM VA→PA 翻译本身不稳定（DM 窗惰性映射被换）。此形态与堆腐坏（节点内存被复用改写）一致：改写者=heap_arena 的 VA 复用（free 后同 VA 另配对象，旧指针仍被读=读到的"垃圾"实为新对象字节）。
+续-167 处方：①heap_arena 影子位图（free 后 touch 检测，gh32 手法）抓堆写坏者；②DM 窗审计：vm_self_map/vm_self_unmap 是否会触碰 [VM_DM_BASE, VM_DM_BASE+16GB) 的映射（va 复用冲突）；③pmemsave 前后差分已可复用（qmon 通）。
