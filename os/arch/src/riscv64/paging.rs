@@ -703,6 +703,31 @@ impl Paging for Riscv64Paging {
     }
 
     fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
+        // 续-155 探针（用后即滚）：坏根识别——root 非 RAM 页对齐即打印
+        // self 地址与 vaddr（gh35 物理取证：垃圾 root 把 walk 引进 QEMU
+        // 设备洞，设备字节被当 PTE）。前 4 次门控。
+        #[cfg(not(feature = "mock"))]
+        {
+            const PROBE_RAM_LO: u64 = 0x8000_0000;
+            const PROBE_RAM_TOP: u64 = 0x9fb3_4000;
+            if self.root_paddr < PROBE_RAM_LO
+                || self.root_paddr >= PROBE_RAM_TOP
+                || self.root_paddr & 0xFFF != 0
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static BAD_N: AtomicUsize = AtomicUsize::new(0);
+                if BAD_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    Console::write_str("nk4a: q-badroot self=");
+                    Console::write_hex(self as *const _ as u64);
+                    Console::write_str(" root=");
+                    Console::write_hex(self.root_paddr);
+                    Console::write_str(" vaddr=");
+                    Console::write_hex(vaddr.0);
+                    Console::write_str("\n");
+                }
+            }
+        }
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(_leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
                 // For 4KB leaf pages, the offset within the page comes from

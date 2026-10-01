@@ -10224,3 +10224,17 @@ qemu 加 `-monitor unix:套接字`（tmp/nk4a/wrap-boot-mon.sh 行手术）；pa
 ### 续-155 成修靶（唯一）
 VM 堆（alloc::，heap_arena 后端）别名：定位谁在 Paging 句柄存活期释放/复用其块。两条候选：①exec 链对同一 child 建了两个句柄、旧句柄 clearproc 释放后仍被 EXEC_NEWMEM/finish 路径 query（use-after-free）；②region 元数据写入越界踩进句柄块（堆溢出）。取证抓手：heap VA 0x140065efe0、覆写字样 {1,0x9d2b0,0x3ff000}、真根 0x9dc39000；句柄类型=crate::pagetable::PageTable=minix_arch::CurrentPaging（pagetable/mod.rs:32），持有方=VmProcTable 字段（grep vm_server.rs/exit.rs root_paddr 调用点）。修法方向（坐实后）：句柄生命周期归属 + 释放后置 None/断言，配 alloc 层「free 后 touch」检测器（heap_arena 影子位图，同 gh32 手法）。
 门：未坐实写者不成修；gh34/35 物理取证法已可一轮一轮钉。
+
+## §1.120续-155（2026-10-02·**exec 链越墙：VM walk fault 消失（时序漂移），子进程真跑起来撞 SIGSEGV 墙=栈区在 RegionMap 缺失或不可写（pf-exit wro）——第二面墙现形，成修靶=exec 栈 mmap 的 prot/region 记账**）
+
+### gh36/gh37 证据（q-badroot 探针入库未触发=时序漂移后坏根 query 未再发生）
+gh36：986 双向 ✓、exec endpt ×12、**无 pfvm/q-badroot**——(A) walk fault 本轮未复现（探针改编译布局即漂移，Heisenbug 实锤）。子进程首写 0x7fffffffef90（vsp-8 的 push）→pf-ewrt→csig tgt=0xc sig=0xb（SIGSEGV）→pf-exit inactive（第二次 fault 时 slot 已 exiting）→尾部 stamped 0xffd 被收窄丢弃正确静默。
+gh37（inactive 细化探针）：**`pf-exit wro cr2=0x7fffffffef90`**＝dispatch_pagefault 的写只读区出口——`regions.find(0x7fffffffef90).is_some_and(writable)`=false →pf_fail_segv→SIGSEGV。两种成因不可分：①栈 region 缺失（find=None）②region 在但 is_writable()=false。后续 `pf-inact req=0x800c slot=0xc state=exiting` 证明端点编码无碍（内核转发全端点 0x800c），exiting=SIGSEGV 拆除态。
+
+### 面墙语义
+这正是 todo 里挂账的「fb201/RS SIGSEGV 两墙」第二面（续-115 同族：regions.find_mut 找不到 region→SIGSEGV，方向=exec adopt/munmap 摘链面）。exec 栈 mmap（exec_worker.rs vm_mmap(stacklow, 4MB, 0, PROT_RWX)）成功建 PT 链（gh35 dump 0x9dc39000→…→叶 0x9d2b0000 ✓），但 RegionMap 侧要么没插栈区要么 prot 记成只读。嫌疑排序：①VM mmap.rs 的 prot 解码（MmapFlags/ProtFlags from_bits_truncate 对 VFS 车道 wire 格式，NS5-A 修了 addr/len 64 位车道，prot/flags 字段映射未对账）②region 插入的 flags 换算（PROT_WRITE→PageFlags::WRITE）③RegionMap 插入本身失败被静默吞。
+续-115 已见同墙（cr2=0x220b98 找不到 region），今次 cr2=0x7fffffffef90 栈顶 push——同一簿记病在 exec 栈上的再现。
+
+### 续-156 处方
+①vm_mmap wire 双向对账：exec_worker 发送侧 encode（minix-sys vm.rs）vs mmap.rs handle_mmap 解码，逐字段（addr/len/flags/prot/fd/off）对 NS5-A 车道；②VM mmap.rs prot→region flags 换算点打印（gh38：vmm-h 后紧跟 region.insert 的 {va,len,flags}）；③坐实后成修+CodeReview+真机 marker 冲刺（marker 只差 child 不再被 SIGSEGV）。
+门：探针（q-badroot/pf-inact/pf-exit 系）task1-close 裁决滚除；未坐实不成修。

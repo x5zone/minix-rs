@@ -1970,6 +1970,28 @@ impl VmServer {
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
             None => {
+                // 续-155 探针（用后即滚）：inactive 出口细化——打印请求
+                // 端点与槽内实际端点（嫌疑=内核转发 0xc vs exec mmap 键
+                // 0x800c 的代际编码不匹配）。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static INACT_N: AtomicUsize = AtomicUsize::new(0);
+                    if INACT_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                        let state = if table.get_empty(slot).is_some() {
+                            "vacant"
+                        } else if table.get_exiting(slot).is_some() {
+                            "exiting"
+                        } else {
+                            "other"
+                        };
+                        crate::bootmark::mark(&alloc::format!(
+                            "nk4a: pf-inact req={:#x} slot={:#x} state={state}\n",
+                            request.endpoint.0 as u64,
+                            slot.0 as u64
+                        ));
+                    }
+                }
                 pf_exit!("inactive");
                 return VmReply::Error(VmError::InvalidProcess);
             }
