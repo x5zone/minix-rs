@@ -9584,3 +9584,15 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-124 唯一有效路径（记死）**：搭 `qemu-system-riscv64 -s -S -gdb tcp::…` + gdb（`target remote`），对可疑 DM 帧/VM 堆区设硬件写 watchpoint，或用 `config heap`+`catch` 抓 VM 自缺页瞬间回溯写者 PC。**这已超出纯文本探针能力**，需一个专门的 gdb 联调会话（可能 fresh 上下文）。未坐实不成修——本会话已把 (A) 从"未知崩溃"严谨收窄到"VM 堆野指针破坏"这一确定类。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)定论=VM堆破坏需gdb专项·aarch64❌；②x86核心✅；③已勘察。探针全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-124（2026-10-01·**续-103 遗留 CodeReview NIT N1/N3 处理：N1 经 rustc 实证不可表达、N3 备好但因活体启动 harness 抖动未跑完整链→不投未验证生产改动（诚实挂账）**）
+
+尝试闭合续-103 挂账的 NIT：
+- **N1（asm clobber 显式化）——实证不可做**：给 jump_to_kmain 的 `asm!` 加 `out("t0")_/out("t1")_/out("s0")_`，rustc 直接报错 **"asm outputs are not allowed with the `noreturn` option"**。因该 asm `options(noreturn)`（跳 kmain 后不返回），编译器禁止任何 output 操作数。⇒ N1 **在当前 noreturn 形态下无法表达**；noreturn 本身即"这些写不可被后续观测"的正确性论据（正是当初 reviewer 判其"行为中性、可接受"的原因）。已在代码/此处记录该结论，**N1 关闭（不可做，非缺陷）**。
+- **N3（delta 用 `checked_sub` 明示 `kern_virt_base>=kern_phys_base` 不变量）——改好但验证未竟**：改动编译通过（riscv kernel-image EXIT=0）、host 1400/0、clippy Δ0、rustfmt 无新增漂移、check-layout PASS 41/0；但本会话后段 **x86/riscv 真机启动 harness 连续空日志/截断**（环境问题），未能在本轮拿到续-103..109 以来每次生产修都要求的 **x86 marker=2/panic=0 + riscv boot 到 (A) 终端**的活体证据。按"含生产码改动 commit 必走全验证链"硬约束，**不以静态绿冒充真机、不投未验生产改动**，已 `git checkout` 回滚 higher_half.rs 保 tracked 净。
+
+**续-103 NIT 收口**：N1 关闭（noreturn 下不可表达）；N2（kernel text R-X 恢复 W^X）仍待"高半 VMA 无运期写 text"验证（原记）；N3（checked_sub 硬化）**代码就绪、待一次 harness 正常时补真机链即可入库**（行为中性，virt=0xFFFFFFC000000000≫phys=0x80200000 恒成立）。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)VM堆破坏待gdb专项·aarch64❌；②x86核心✅；③已勘察。本 turn 零入库生产改动（诚实回滚未验证项），tracked 净，WORKLOG-only。
