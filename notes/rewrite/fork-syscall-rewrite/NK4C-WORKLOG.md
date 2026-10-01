@@ -10238,3 +10238,15 @@ gh37（inactive 细化探针）：**`pf-exit wro cr2=0x7fffffffef90`**＝dispatc
 ### 续-156 处方
 ①vm_mmap wire 双向对账：exec_worker 发送侧 encode（minix-sys vm.rs）vs mmap.rs handle_mmap 解码，逐字段（addr/len/flags/prot/fd/off）对 NS5-A 车道；②VM mmap.rs prot→region flags 换算点打印（gh38：vmm-h 后紧跟 region.insert 的 {va,len,flags}）；③坐实后成修+CodeReview+真机 marker 冲刺（marker 只差 child 不再被 SIGSEGV）。
 门：探针（q-badroot/pf-inact/pf-exit 系）task1-close 裁决滚除；未坐实不成修。
+
+## §1.120续-156（2026-10-02·**SIGSEGV 墙真身=编译器 stale-load（别名 UB）：同一 wro 分支内检查时 find()=失败、探针同表达式 find_some=true find_w=true——VM 表别名纪律破坏（ctx.proc_table: &'static 与槽内 AssumeSyncCell 裸指针派生 &mut 并存）**(A) 全家族统一**
+
+### gh39 决断证据
+`wro-dump ep=0x800c cr2=0x7fffffffef90 find_some=true find_w=true n=4` + 四 region 全量（栈区 va=0x7fffffbff000 len=0x400000 flags=0x901 w=true）——**同一函数、同一 proc、同一 fault_addr，分支条件 `!find().is_some_and(writable)` 判真（进了 wro），数行之后同表达式判假**。非数据竞争（单线程）、非键改写（iter 与 find 应一致）、唯一定义级解释=**UB 驱动的编译器 stale load**：check 的 load 被缓存/重排自旧快照。
+
+### UB 源头（源级定位）
+`vm_server.rs:64 pub(crate) proc_table: &'static VmProcTable`（=get_global() 的静态 VM_PROC_TABLE，table.rs:65-67）+ 槽访问 `slots:[AssumeSyncCell<VmProc>]`→`&*cell.get()` 裸指针派生 &VmProc/&mut VmProc（table.rs:110/133，注释自认「aliasing a mutable reference is UB」靠 typestate 手工纪律）。任何一条路径在持 ActiveProc(&mut) 期间让编译器看到另一条 &'static 别名（dispatch_pagefault 即 get_global() 与后续 &mut self.ctx 同作用域），LLVM noalias 假设破→stale load→「读旧页表根（gh29-35 走设备洞）」「读旧 region map（gh36-39 假 wro）」「btree range 撞旧快照（gh31 unwrap）」全家族一网打尽。探针改布局即行为漂移=重编译改变缓存决策，同根旁证。
+
+### 续-157 成修方向（大手术，先小步验证）
+①最小验证：dispatch_pagefault 内把 check 与 probe 合并成单表达式打印（若同一次求值则非 stale，推翻本诊断）；②真修=别名纪律重构：ctx.proc_table 改非-'static（&self 生命周期）或全槽访问走 UnsafeCell+显式 unsafe 块（自担 aliasing，杜绝裸 & 长持）；③修后 gh40 验证 wro 消失→子进程活→marker 冲刺；④fb201/RS 两墙按同根重验。
+门：未过①验证不成修；q-badroot/pf-inact/wro-dump 探针 task1-close 滚除。

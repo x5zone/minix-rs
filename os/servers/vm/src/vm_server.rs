@@ -2018,6 +2018,33 @@ impl VmServer {
         if request.write
             && !proc.regions().find(fault_addr).is_some_and(|r| r.is_writable())
         {
+            // 续-156 探针（用后即滚）：wro 出口枚举该进程全部 region
+            // {va, len, flags}——一步分辨 缺失 / 边界错 / 不可写。
+            #[cfg(not(feature = "mock"))]
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static WRO_N: AtomicUsize = AtomicUsize::new(0);
+                if WRO_N.fetch_add(1, AtomicOrd::Relaxed) < 2 {
+                    let f = proc.regions().find(fault_addr);
+                    crate::bootmark::mark(&alloc::format!(
+                        "nk4a: wro-dump ep={:#x} cr2={:#x} find_some={} find_w={} n={}\n",
+                        proc_endpoint.0 as u64,
+                        fault_addr.0,
+                        f.is_some(),
+                        f.is_some_and(|r| r.is_writable()),
+                        proc.regions().len()
+                    ));
+                    proc.regions().iter().for_each(|r| {
+                        crate::bootmark::mark(&alloc::format!(
+                            "nk4a: wro-reg va={:#x} len={:#x} flags={:#x} w={}\n",
+                            r.vaddr.0,
+                            r.length.0,
+                            r.flags.bits(),
+                            r.is_writable()
+                        ));
+                    });
+                }
+            }
             pf_exit!("wro");
             // C: pagefaults.c:112-116 — SIGSEGV + CLEAR_PAGEFAULT 收口
             // （原内联两段与 pf_fail_segv 同体，提取共用不改语义）。
