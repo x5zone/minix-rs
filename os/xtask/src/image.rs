@@ -528,15 +528,26 @@ pub fn execute(actions: &[Action], dry_run: bool) -> Result<()> {
                 // 编译 core 里的少量 V 寄存器指令（字符计数/格式化诊断路
                 // 径）不受 RUSTFLAGS 重建，登记为 build-std 待办。fpu.rs
                 // 的显式 FPSIMD 原语经 per-function target_feature 保留。
-                if args.windows(2).any(|w| w == ["-p", "kernel-image"])
-                    && args.iter().any(|a| a.contains("aarch64"))
+                // NK4-C 续-133：riscv64 同族注入（`-f,-d`＝禁 FP——内核
+                // 改前 345 条 LLVM 自向量化 FP 指令踩用户 f 寄存器活值；
+                // FS=Off 门控无 per-mode 分裂，内核必须真无 FP，含预编译
+                // core 残差见 fpu 注释登记）。
+                let is_kernel_image = args.windows(2).any(|w| w == ["-p", "kernel-image"]);
+                let is_aarch64 = args.iter().any(|a| a.contains("aarch64"));
+                let is_riscv64 = args.iter().any(|a| a.contains("riscv64"));
+                if is_kernel_image && (is_aarch64 || is_riscv64)
                 {
+                    let flag = if is_aarch64 {
+                        "-C target-feature=-neon,-fp-armv8"
+                    } else {
+                        "-C target-feature=-f,-d"
+                    };
                     let rustflags = "RUSTFLAGS";
                     let prior = std::env::var(rustflags).unwrap_or_default();
                     let injected = if prior.is_empty() {
-                        "-C target-feature=-neon,-fp-armv8".to_string()
+                        flag.to_string()
                     } else {
-                        format!("{prior} -C target-feature=-neon,-fp-armv8")
+                        format!("{prior} {flag}")
                     };
                     cmd.env(rustflags, &injected);
                     println!("    [env] RUSTFLAGS={injected}（aarch64 内核禁 NEON/FP，SD-23）");

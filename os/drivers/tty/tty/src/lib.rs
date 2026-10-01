@@ -63,6 +63,17 @@ pub fn init() -> TtyService<serial::Pl011Backend<serial::WirePl011>> {
     new_service(backend)
 }
 
+/// Service initialization entry (riscv64): the wired line table over the
+/// QEMU-`virt` NS16550A console UART (NK4-C 续-132 — register model is
+/// the 16550 family the x86 arm already serves; the access lane is the
+/// mapped MMIO page from `VM_MAP_PHYS`, base 0 so `port` operands carry
+/// the register offset). A failed device map fail-fasts the driver.
+#[cfg(target_arch = "riscv64")]
+pub fn init() -> TtyService<serial::SerialBackend<serial::WireMmioUart>> {
+    let uart = serial::WireMmioUart::map().expect("tty: cannot map NS16550A console UART");
+    new_service(serial::SerialBackend::new(uart, 0))
+}
+
 /// Service initialization over the null backend (an unplugged terminal),
 /// kept for tests and for a boot that carries no UART.
 pub fn init_null() -> TtyService<NullBackend> {

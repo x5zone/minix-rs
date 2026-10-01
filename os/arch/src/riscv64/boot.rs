@@ -42,6 +42,16 @@ pub struct Riscv64CpuContext {
 }
 
 impl Riscv64CpuContext {
+    /// NK4-C 续-133：patch sstatus.FS 字段（懒 FPU 归属策略的 riscv 载
+    /// 体——FS 在 sstatus/帧内，kernel finish_and_restore 按归属写
+    /// Dirty(owner，不陷阱活寄存器延续)/Initial(非 owner，首条 FP 陷
+    /// 阱轮转)；`fs` 传已移位值（0b01/0b10 << 13）。
+    pub fn set_fs_field(&mut self, fs: u64) {
+        self.sstatus = (self.sstatus & !(0b11 << 13)) | fs;
+    }
+}
+
+impl Riscv64CpuContext {
     /// Number of GP registers in `gp_regs` (30: X1, X3-X9, X11-X31).
     pub const GP_REGS_LEN: usize = 30;
 
@@ -82,14 +92,14 @@ impl CpuContextArch for Riscv64CpuContextArch {
         frame.regs[2] = ctx.sp;
         frame.regs[10] = ctx.a0;
 
-        // sstatus.FS = Initial so the first FP instruction traps and
-        // the kernel can do lazy FPU allocation. This is the
-        // modern RISC-V equivalent of Minix3's memset-FPU-state, but
-        // it does not require a per-process FPU save area in
-        // `KProcess`.
-        // SAFETY: writing sstatus is a per-CPU system register; the
-        // caller holds BKL during first dispatch.
-        unsafe { set_sstatus_fs_initial() };
+        // NK4-C 续-133（CodeReview B-1 同源裁决）：本函数的无条件
+        // FS=Initial 写已移除——riscv 的 FS 位住在 sstatus/帧内（ctx 是
+        // 唯一载体），per-dispatch 覆写会摧毁 finish_and_restore 的归属
+        // 策略（owner==picked → ctx FS=Dirty 不陷阱、活寄存器延续；
+        // 非 owner → FS=Initial 首条 FP 陷阱轮转）。策略唯一所有者＝
+        // kernel finish_and_restore 的 ctx-patch riscv 臂 + scause=2
+        // 懒陷阱腿。首次 dispatch 的 ctx 由 build_cpu_context 构造（初
+        // 始 FS=Off，首条 FP 同样陷阱取得归属）。
     }
 
     // enable_user_io: default no-op (riscv64 has no IOPL concept).
@@ -181,25 +191,6 @@ impl CpuContextArch for Riscv64CpuContextArch {
         ctx.a0
     }
 }
-
-#[cfg(target_arch = "riscv64")]
-mod sstatus {
-    /// Set sstatus.FS = Initial (0b01 << 13).
-    pub(super) unsafe fn set_sstatus_fs_initial() {
-        core::arch::asm!(
-            "li {tmp}, 0x4000", // FS=Initial = 0b01 << 13
-            "csrs sstatus, {tmp}",
-            tmp = out(reg) _,
-        );
-    }
-}
-
-#[cfg(not(target_arch = "riscv64"))]
-mod sstatus {
-    pub(super) unsafe fn set_sstatus_fs_initial() {}
-}
-
-use sstatus::*;
 
 /// Frame-pointer chain walk for riscv64 (s0/fp-linked frames).
 ///

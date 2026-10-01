@@ -3704,6 +3704,20 @@ fn finish_and_restore(
     } else {
         fpu.enable(); // owner keeps the FPU — C: disable_fpu_exception (clts)
     }
+    // NK4-C 续-133（riscv 臂）：riscv 的 FS 位住在 sstatus/帧内——活写
+    // 被 trap stub 出口的帧回装冲销，user 模式的 FP 门控载体是 ctx。
+    // 此处按归属 patch ctx.sstatus：owner==picked → Dirty（不陷阱，活
+    // 寄存器延续——自它上次 trap-restore 后无其他 FP 用户，物理寄存器
+    // 仍是它的）；非 owner → Initial（首条 FP 陷阱轮转，trap 腿保存旧
+    // owner 后 restore 自己）。aarch64 的活写足够（CPACR 不在帧内），
+    // riscv 必须走 ctx——两架构策略点在各自载体上对位 C proc.c:443-446。
+    #[cfg(target_arch = "riscv64")]
+    if let Some(p) = table.get_mut(picked) {
+        const FS_DIRTY: u64 = 0b10 << 13;
+        const FS_INITIAL: u64 = 0b01 << 13;
+        let fs = if fpu_owner == Some(picked) { FS_DIRTY } else { FS_INITIAL };
+        p.cpu_context.set_fs_field(fs);
+    }
 
     // 4. Clear MF_CONTEXT_SET — C:451.
     if let Some(p) = table.get_mut(picked) {

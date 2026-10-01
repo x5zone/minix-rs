@@ -292,6 +292,53 @@ impl<P: Pl011Regs> LineBackend for Pl011Backend<P> {
     }
 }
 
+// ── riscv64 mapped NS16550A arm (NK4-C 续-132) ────────────────────────────
+//
+// QEMU `virt` (riscv) 的控制台 UART 是 NS16550A 兼容芯片，MMIO @
+// 0x1000_0000（设备树 `reg-io-width=1, reg-shift=0`——寄存器字节宽、
+// 1 字节步距）。寄存器模型与 16550 臂完全同族（THR@0 / LSR@5），差
+// 别只在访问车道：无端口 I/O，走 VM_MAP_PHYS 映页 + volatile 字节访
+// 问（与 PL011 臂同一通道）。映射一次持有终生；`SerialBackend` 的
+// `base` 传 0——`port` 操作数即寄存器偏移。
+
+/// QEMU `virt` (riscv) NS16550A base（板卡常量）。
+pub const NS16550A_VIRT_BASE: u64 = 0x1000_0000;
+
+/// The wire register bank: the NS16550A page mapped at init, driven
+/// byte-wide (reg-io-width=1).
+pub struct WireMmioUart {
+    /// Virtual address of the mapped UART page.
+    base: u64,
+}
+
+impl WireMmioUart {
+    /// Map the QEMU-`virt` NS16550A page for the caller itself. Same
+    /// keep-for-lifetime / fail-fast contract as [`WirePl011::map`].
+    pub fn map() -> Result<WireMmioUart, i32> {
+        let va = minix_sys::vm::map_physical_via(
+            &TrapTransport,
+            Endpoint::SELF,
+            PhysBytes(NS16550A_VIRT_BASE),
+            VirBytes(4096),
+        )
+        .map_err(|e| e.to_i32())?;
+        Ok(WireMmioUart { base: va.0 })
+    }
+}
+
+impl UartPort for WireMmioUart {
+    fn read(&mut self, port: u16) -> Result<u8, i32> {
+        // SAFETY: `base` names the 4 KiB UART page mapped at construction;
+        // byte-wide registers at base+offset stay inside the page.
+        Ok(unsafe { core::ptr::read_volatile((self.base + port as u64) as *const u8) })
+    }
+    fn write(&mut self, port: u16, value: u8) -> Result<(), i32> {
+        // SAFETY: same page, byte-wide register store.
+        unsafe { core::ptr::write_volatile((self.base + port as u64) as *mut u8, value) }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

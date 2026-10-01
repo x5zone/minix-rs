@@ -50,6 +50,15 @@ compile_error!(
      see SD-23 and xtask/src/image.rs)"
 );
 
+// riscv64 同族门（续-133）：sstatus.FS=Off 门控无 per-mode 分裂——内核
+// 任何 FP 执行（含预编译 core 残差）都会自陷阱，必须真无 FP。
+#[cfg(all(target_arch = "riscv64", target_feature = "f"))]
+compile_error!(
+    "riscv64 kernel image must be built with -C target-feature=-f,-d \
+     (the lazy-FPU model requires a kernel that never touches f0-f31; \
+     see SD-23 and xtask/src/image.rs)"
+);
+
 extern crate alloc;
 
 use core::arch::asm;

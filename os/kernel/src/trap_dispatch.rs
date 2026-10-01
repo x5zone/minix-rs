@@ -1730,6 +1730,19 @@ const RISCV64_CAUSE_ECALL_UMODE: u64 = 8;
 /// virtual address (the riscv analogue of the x86 CR2 / arm64 FAR).
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_INST_PF: u64 = 12;
+/// Illegal instruction (scause=2): with `sstatus.FS = Off` (the lazy-FPU
+/// gate, 续-133) every FP instruction raises this — the lazy-restore
+/// trigger. C i386: #NM → copr_not_available_handler.
+#[cfg(any(target_arch = "riscv64", test))]
+const RISCV64_CAUSE_ILLEGAL_INSN: u64 = 2;
+/// 续-133（CodeReview P1-4）：scause=2 的 FP 懒门控判别——入口
+/// `sstatus.FS`（bits 13:14）==Off(0b00) 才是门控陷阱；FS≠Off 的非法
+/// 指令是真 SIGILL（特权 CSR/坏编码），交给诊断腿。host 可测（先例
+/// `riscv64_pf_error_code`）。
+#[cfg(any(target_arch = "riscv64", test))]
+fn riscv64_illegal_insn_is_fpu_trap(entry_sstatus: u64) -> bool {
+    entry_sstatus & (0b11 << 13) == 0
+}
 #[cfg(any(target_arch = "riscv64", test))]
 const RISCV64_CAUSE_LOAD_PF: u64 = 13;
 #[cfg(any(target_arch = "riscv64", test))]
@@ -1839,6 +1852,17 @@ pub unsafe extern "C" fn riscv64_user_body(
         RISCV64_CAUSE_INST_PF | RISCV64_CAUSE_LOAD_PF | RISCV64_CAUSE_STORE_PF
     ) {
         return riscv64_pagefault_body(frame, scause);
+    }
+    // 续-133：FS=Off 懒门控的 FP 陷阱（scause=2）——save 旧 owner /
+    // restore 当前者 / 归属移交 / 帧内 FS 重启用，随后 epc 原地重执行
+    // （riscv 非法指令陷阱不推进 sepc）。CodeReview B-2：scause=2 是
+    // 万能非法指令（特权 CSR/未定义编码/FS=Initial 下的坏 FP 编码全部
+    // 报 2）——只有入口 FS=Off 才是懒门控陷阱（老 Linux riscv entry.S
+    // 同款 FS==OFF 门），FS≠Off 的真非法指令落回诊断 panic（SIGILL 面）。
+    if scause == RISCV64_CAUSE_ILLEGAL_INSN
+        && riscv64_illegal_insn_is_fpu_trap(frame.sstatus)
+    {
+        return riscv64_fpu_trap_body(frame);
     }
     // Remaining synchronous user faults (misalign, illegal, breakpoint…)
     // land on the diagnostics panic — the acting SIGSEGV/SIGILL arms
@@ -2276,6 +2300,110 @@ unsafe fn riscv64_ipc_dispatch_body(
 /// through the kernel diagnostic path instead of halting in the entry
 /// leg, so a scheduler can at least be observed around the corpse.
 #[cfg(target_arch = "riscv64")]
+/// The lazy-FPU restore stage (scause=2: user FP instruction trapped
+/// because a context switch left `sstatus.FS = Off` via
+/// [`FpuArch::disable`]).
+///
+/// C: `copr_not_available_handler()` — proc.c:1923-1962 — the i386 #NM
+/// handler's acting half: save the outgoing owner's FP state
+/// (retain=FALSE), restore the trapping process's state, hand ownership
+/// to the trapping process, re-enable FP, and return to re-execute the
+/// faulting instruction. RISC-V illegal-instruction traps do not
+/// advance sepc, so returning with `PARK_NONE` re-executes it — but the
+/// riscv FS bit lives in sstatus, which the trap stub's epilogue restores
+/// wholesale from the entry-captured frame: the CARRIED change is the
+/// frame patch (`frame.sstatus` FS=Dirty) at the body tail, and the
+/// live `enable()` only serves the dispatch path. The BKL guards the two
+/// cross-process `fpu_state` accesses — same discipline as the other
+/// trap bodies.
+#[cfg(target_arch = "riscv64")]
+unsafe fn riscv64_fpu_trap_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) -> u64 {
+    use minix_arch::riscv64::trap_stub::PARK_NONE;
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "riscv64 FPU trap before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+    let fpu_bkl = crate::smp::bkl_lock_or_inherit();
+    debug_assert!(
+        fpu_bkl,
+        "riscv64 FPU trap reached from kernel context (BKL inherited) — \
+         FS=Off must not trap S-mode with an FP-free kernel, so this is a \
+         wiring bug"
+    );
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+    // 续-133 取证探针（用后即滚）：懒归属取得的一次性现场。
+    #[cfg(not(feature = "mock"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static FTRAP_N: AtomicUsize = AtomicUsize::new(0);
+        if FTRAP_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+            C0::write_str("nk4a: rvfpu-trap ep=");
+            C0::write_hex(cur_nr.0 as u64);
+            C0::write_str("\n");
+        }
+    }
+    use minix_arch::{CurrentFpuArch, FpuArch};
+    let fpu = CurrentFpuArch::default();
+    // C proc.c:1936-1942 — save the outgoing owner (EXT_REG_INITIALIZED
+    // gates processes that never touched FP: their fpu_state is the
+    // zeroed default and saving would fabricate a state).
+    let old_owner = smp.cpu_local(cpu).and_then(|l| l.fpu_owner);
+    // C proc.c:1938 — assert(*local_fpu_owner != p).
+    debug_assert!(
+        old_owner != Some(cur_nr),
+        "riscv64 FPU trap: current process is already the FPU owner"
+    );
+    if let Some(owner_nr) = old_owner.filter(|&o| o != cur_nr) {
+        let used_fpu = table.get(owner_nr).is_some_and(|p| {
+            p.p_misc_flags
+                .is_set(crate::proc::MiscFlagsBits::EXT_REG_INITIALIZED)
+        });
+        if used_fpu {
+            if let Some(p) = table.get_mut(owner_nr) {
+                fpu.save(&mut p.fpu_state);
+            }
+        }
+    }
+    // C proc.c:1946 — restore the trapping process's state (the zeroed
+    // default for a first-touch process is a valid FP state).
+    let cur_slot = table.get_mut(cur_nr);
+    debug_assert!(
+        cur_slot.is_some(),
+        "riscv64 FPU trap: current proc slot missing — wiring bug"
+    );
+    if let Some(p) = cur_slot {
+        fpu.restore(&p.fpu_state);
+        p.p_misc_flags
+            .set(crate::proc::MiscFlagsBits::EXT_REG_INITIALIZED);
+    }
+    // C proc.c:1954 — ownership passes to the trapping process.
+    if let Some(local) = smp.cpu_local_mut(cpu) {
+        local.fpu_owner = Some(cur_nr);
+    }
+    fpu.enable(); // live write: inert past this trap's sret (frame patch carries), kept for symmetry.
+    // CodeReview B-1：riscv 的 FS 位住在 sstatus 里，而 trap stub 出口
+    // `csrw sstatus` 整体写回入口捕获的帧值——活写 enable() 活不到
+    // sret。承载者＝patch 帧 FS=Dirty（保守选值：硬件在 Initial 下本
+    // 就允许执行并自动 Initial→Dirty，不会重复陷阱；Dirty 使状态语义
+    // 与「刚执行过 FP」一致，下一次 switch-out 捕获即如实上报）。
+    frame.sstatus = (frame.sstatus & !(0b11 << 13)) | (0b10 << 13); // FS=Dirty
+    if fpu_bkl {
+        crate::smp::bkl_unlock();
+    }
+    PARK_NONE
+}
+
+/// Console diagnostics + panic for unreached causes (aarch64 sibling
+/// carries the rationale).
+#[cfg(target_arch = "riscv64")]
 fn riscv64_diag_panic(
     frame: &minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
     scause: u64,
@@ -2555,6 +2683,25 @@ mod abort_classification_tests {
         for dfsc in [0x10u64, 0x11, 0x12, 0x13] {
             assert_eq!(classify_abort_disposition(dfsc), AbortDisposition::Sea, "{dfsc:#x}");
         }
+    }
+
+    #[test]
+    fn illegal_insn_fpu_trap_predicate_gates_on_fs_off() {
+        // 续-133（CodeReview P1-4）：FS=00（Off）→ 懒门控陷阱；其余
+        // 三臂（Initial/Clean/Dirty）→ 真 SIGILL 落诊断腿——与 aarch64
+        // EC=0x07 只在 FPEN 门控时报的语义对位（riscv scause 不分道，
+        // 门即判别）。
+        assert!(riscv64_illegal_insn_is_fpu_trap(0b00 << 13));
+        assert!(!riscv64_illegal_insn_is_fpu_trap(0b01 << 13));
+        assert!(!riscv64_illegal_insn_is_fpu_trap(0b10 << 13));
+        assert!(!riscv64_illegal_insn_is_fpu_trap(0b11 << 13));
+        // 其余 sstatus 位不影响判别。
+        assert!(riscv64_illegal_insn_is_fpu_trap(
+            (0b00 << 13) | 0x8000000000000000 | 0x100
+        ));
+        assert!(!riscv64_illegal_insn_is_fpu_trap(
+            (0b11 << 13) | 0x8000000000000000
+        ));
     }
 
     #[test]

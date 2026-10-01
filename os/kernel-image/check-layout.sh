@@ -145,6 +145,8 @@ $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")"
         local flags_env=()
         if [ "$arch" = "aarch64" ]; then
             flags_env=(env RUSTFLAGS="-C target-feature=-neon,-fp-armv8")
+        elif [ "$arch" = "riscv64" ]; then
+            flags_env=(env RUSTFLAGS="-C target-feature=-f,-d")
         fi
         local blog
         blog="$(mktemp /tmp/check-layout-build.XXXXXX.log)"
