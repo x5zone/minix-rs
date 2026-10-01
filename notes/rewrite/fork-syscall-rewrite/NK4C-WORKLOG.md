@@ -8,7 +8,11 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-135（2026-10-02·**riscv 乒乓环解码＋吞吐瓶颈突破：gh8 实测 689k 行＝VM 服务 343k 次缺页（探针串口写自身即分钟级瓶颈）→vm-pf 探针 first-200 门控+PM/VFS 探针压缩到 14B 补 req 号→gh9 长窗（580s）解码乒乓环＝**PM/VFS 交替收到同一消息 m_type=0xFFFF0FB2（type=-1/tid=4018）各 64 条封顶**——Runcom 起点处 INIT fork+exec sh 链的消息投递乒乓；续-136 修靶＝定 0xFFFF0FB2 的发送者与投递归属**）：gh9 关键序列：init-state Runcom（1285 行即达，探针门控后启动提速）→`vf:fb200 ffff`/`pm:fb201 ffff` 交替（req=ffff=type=-1、tid=4018 恒定）→sa-call 封顶静默。探针格式改进保留（"pm:mt3src2 req4"/"vf:mt3src2 req4"，14B 内 diagctl 安全，cap 64）。
+> **🛑 最新前沿＝§1.120续-136（2026-10-02·**乒乓环真身解码：m_type=0xFFFF0FB2＝VFS↔FS 的 transid-stamped 消息（trns_add_id 编码：status=-1 as i16 / tid=4018）**泄漏进 PM/VFS 主循环投递车道**——VFS 把 status=-1 的 FS 失败回复原样转发给 PM（C 应回 VFS_PM_STATUS+errno）、PM 又原样回给 VFS，乒乓不收敛；续-137 修靶＝找 status=-1 的 FS 回复源头与 VFS 转发腿的 reply-lane 分叉**）：解码链：trns_add_id=(type<<16)|tid（fs_driver.rs:147）、fs_trans_status=(m_type>>16) as i16=status 车道——0xFFFF0FB2 的 tid=0xFB2=4018（VFS_TRANSID 计数已达 4018＝boot 期 FS 请求量）与 status=-1 组合只在 VFS↔FS 语义中存在；`vf:90600`（VFS 收 PM 的 0x906=VFS_PM_STATUS 形态）旁证 reply-lane 混用。C 对位：VFS 回 PM 必为 VFS_PM_STATUS+payload（C main.c 的 do_reply 家族），FS stamped 消息绝不出 VFS。
+> - **续-137 修靶**：①VFS 侧找把 FS 回复 stamp 原样发 PM 的腿（send_reply/service_pm 家族的 m_type 来源）；②FS 侧找 status=-1 的回复源头（REQ 值=-1 的构造＝某失败路径把 errno/失败值当 status stamp）；③PM handle_vfs_reply 对未知 m_type 的静默臂（C panic 对位缺失＝乒乓不被打断的第二要素）。
+>
+
+> **（历史·§1.120续-135（2026-10-02·**riscv 乒乓环解码＋吞吐瓶颈突破：gh8 实测 689k 行＝VM 服务 343k 次缺页（探针串口写自身即分钟级瓶颈）→vm-pf 探针 first-200 门控+PM/VFS 探针压缩到 14B 补 req 号→gh9 长窗（580s）解码乒乓环＝**PM/VFS 交替收到同一消息 m_type=0xFFFF0FB2（type=-1/tid=4018）各 64 条封顶**——Runcom 起点处 INIT fork+exec sh 链的消息投递乒乓；续-136 修靶＝定 0xFFFF0FB2 的发送者与投递归属**）：gh9 关键序列：init-state Runcom（1285 行即达，探针门控后启动提速）→`vf:fb200 ffff`/`pm:fb201 ffff` 交替（req=ffff=type=-1、tid=4018 恒定）→sa-call 封顶静默。探针格式改进保留（"pm:mt3src2 req4"/"vf:mt3src2 req4"，14B 内 diagctl 安全，cap 64）。
 > - **候选**（续-136 逐一排）：①type=-1 的发送者＝某 reply 构造点用未初始化/默认 -1 的 m_type；②消息双进程交替到达＝投递归属错误（getfrom 匹配错）或两进程互发同 tid 消息的合法乒乓不收敛（一方 handle 失败重发）；③tid=4018 恒定＝非递增＝同一 tid 的重试/重投。
 > - **对位**：aarch64 同相位（Runcom→exec sh→lds→marker）无此乒乓——aarch64 走通的 exec 链在 riscv 的某条 lane 行为分叉（内核 IPC 引擎三架构共享；分叉点大概率在 transid/回复腿的 riscv 时序敏感处——续-87 家族）。
 >
@@ -9909,3 +9913,19 @@ PM↔VFS 乒乓环的具体 VFS_PM 请求族未知（req 号被探针截断）�
 ### 经验/教训
 1. **诊断探针必须自带预算**：热路径逐事件串口打印在长跑中成为数量级瓶颈（343k×10ms≈小时级），first-N 门控是探针的标准件。
 2. 16B diagctl 限制下的探针格式：压缩前缀换关键载荷（req 号）——格式一次到位避免二次取证。
+
+## §1.120续-136（2026-10-02·**乒乓环真身解码：VFS↔FS transid-stamped 消息（status=-1, tid=4018）泄漏进 PM/VFS 投递车道（纯静态解码+gh7 探针数据，WORKLOG-only）**）
+
+### 解码链
+1. trns_add_id（fs_driver.rs:147）＝(type<<16)|(id&0xFFFF)；fs_trans_status＝trns_del_id＝(m_type>>16) as i16＝status 车道——VFS↔FS 的 m_type 双 lane：请求携 REQ 号、回复携 status。
+2. gh9 乒乓消息 m_type=0xFFFF0FB2：tid=0x0FB2=4018（VFS 的 VFS_TRANSID 计数——boot 期 FS 请求量级吻合）、status=0xFFFF as i16=**-1**。该组合只在 VFS↔FS 语义中存在＝**FS 的失败回复（status=-1）**。
+3. 投递现场：`pm:fb201`＝PM 主循环收到（src=VFS）、`vf:fb200`＝VFS 收到（src=PM）——**FS 回复原样出现在 PM↔VFS 互发车道**：VFS 把 FS 失败回复转发给 PM（C 应回 VFS_PM_STATUS+errno payload），PM 又把它发回 VFS，乒乓不收敛。
+4. 旁证：gh7 尾 `vf:90600`（VFS 收 PM 的 0x906=VFS_PM_STATUS 形态消息——reply-lane 混用的另一现场）。
+5. 第二要素：PM handle_vfs_reply 收到未知 m_type（0xFFFF0FB2 非 VFS_PM_* 族）**不 panic 静默处理**（C main.c default panic 对位缺失）——乒乓循环不被打断的必要条件。
+
+### 续-137 修靶
+①VFS 侧：找把 FS 回复 stamp 原样发 PM 的腿（send_reply/service_pm 家族 m_type 来源——C 对位 do_reply 家族必回 VFS_PM_STATUS）；②FS 侧：status=-1 回复的源头（某失败路径把 -1 当 status stamp——REQ 值不可能为 -1）；③PM handle_vfs_reply 未知 m_type 静默臂补 C 对位 panic。坐实后成修+CodeReview+真机 marker 冲刺。
+
+### 经验/教训
+1. 双 lane m_type（type<<16|tid）的探针解码必须同时还原 (status,tid) 与 (REQ,tid) 两种语义——单栏 u16 截断是三轮取证才破案的直接原因。
+2. C 的 panic 对位（handle_vfs_reply default panic）是乒乓环的「熔断器」：Rust 侧静默吞掉未知类型让故障降级为不收敛循环——「fail-fast 缺失=循环放大器」是本仓第 N 次验证的模式（模式库候选）。
