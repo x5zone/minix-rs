@@ -9568,3 +9568,19 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 未坐实不成修——(A) 非随机腐蚀、是**可定位的页表帧生命周期缺陷**，但需页表帧 free/reuse 专项仪器或 gdb（非再叠调用点守卫）。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)根因假设收敛到页表帧 alias·aarch64❌；②x86核心✅；③已勘察。纯分析、零探针零生产码改→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-123（2026-10-01·**riscv (A) 定论：穷尽洗清全部映射路径（中间层/叶/pfn_to_phys/vm_phys_to_virt 咽喉全 0 命中）→ 是 VM 自身堆野指针/wild-pointer 破坏，非任何页表或 phys→DM 逻辑 bug（纯取证，探针用后即滚）**）
+
+**探针（逐路守卫，全 0 命中）**：续-116/117 walk_read+walk_alloc 各级+root；续-120 pfn_to_phys；续-122a 最终叶 PTE 的 data paddr；续-123 `vm_phys_to_virt`（**唯一通用咽喉**，任何 phys≥0xA0000000 的 DM 翻译都经它）。
+
+**结果**：以上**全部 0 命中**，然 VMfault 仍现（各轮 47918/6726/… 行）。⇒ 崩溃 DM VA `0x10bd2cbbXX` **不经任何"合法物理地址→DM 虚地址"翻译、也不经任何页表 walk 读出的 PTE**。
+
+**定论（排除法收口）**：`0x10bd2cbbXX` 不是 `vm_phys_to_virt(phys)` 的产物（咽喉未命中）——它是 **VM 自身数据结构（Vec/Box/裸指针/Message 缓冲）里一个被破坏的指针值，恰落在 DM VA 窗口（2^36..2^36+16GiB）内被解引用** → 未映 DM 叶 → `pagefault in VM`。即 **VM 堆内存破坏 / wild-pointer**，**非页表损坏、非 phys→DM 逻辑错、非 memmap 上界**。低字节跨运行 00/6c/9c/bc 微变＝被破坏指针的低字节浮动，高位 0xbd2cbb00 稳定＝同一被污染基准。
+
+**与 x86 完全同族**：x86 续-57~73 的 VM 晚期崩溃最终定性为"瞬态改写 VM 内存"，**纯调用点/语义探针无法定位**（本会话以 8 类守卫逐一证伪，实证此边界）；破法＝**QEMU `-s -S` + gdb 硬件写 watchpoint** 钉"谁把 VM 堆写成这个野指针"（x86 当年 16 轮）。riscv 无 DWARF，需 `info symbol $pc`+rust-objdump 回符号辅助。
+
+**续-124 唯一有效路径（记死）**：搭 `qemu-system-riscv64 -s -S -gdb tcp::…` + gdb（`target remote`），对可疑 DM 帧/VM 堆区设硬件写 watchpoint，或用 `config heap`+`catch` 抓 VM 自缺页瞬间回溯写者 PC。**这已超出纯文本探针能力**，需一个专门的 gdb 联调会话（可能 fresh 上下文）。未坐实不成修——本会话已把 (A) 从"未知崩溃"严谨收窄到"VM 堆野指针破坏"这一确定类。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)定论=VM堆破坏需gdb专项·aarch64❌；②x86核心✅；③已勘察。探针全 `git checkout` 回滚，tracked 净；零生产码改→WORKLOG-only、免 CodeReview。
