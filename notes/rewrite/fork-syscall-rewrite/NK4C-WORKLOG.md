@@ -10291,3 +10291,6 @@ gh45 真机：`rm-fallback addr=0x7fffffffef90 n=4 va=0x7fffffbff000`×3 + `rm-r
 ## §1.120续-161（2026-10-02·**gh45 存量数据审计：pte-wb-FAIL=0（VM 填页全部落地）+ child(nr=0xc) setaddr ×2 且 sas-send root 打印缺位——反复缺页=child 实际 satp 根与 VM 填页根（0x9dc39000）疑似不一致；续-162=setaddr exec 路径补 root 打印对账**）
 
 gh45 存量：pte-wb-FAIL=0（sync_slot_pte 回读全过=填页真落地）；vm-pf recv 200 门满；sas-send/setaddr 对 boot 进程 p=0..11 全配对，**唯独 child nr=0xc 的两次 setaddr（flags 0x8008→0x8）无 sas-send root 行**（exec 路径与 boot 路径 setaddr 分道，后者 root 探针缺失）；第二次 setaddr 紧邻 ptalloc pfn=0x9dc35/0x9dc36（child 真根 0x9dc39000 邻域=根分配即此）。判读：VM 对 0x9dc39000 链填页且回读过；child 反复 fault=child 硬件 satp 可能不在 0x9dc39000（SETADDRSPACE 装根值/时机存疑，或两次 setaddr 相互覆盖）。续-162 处方：①setaddr 探针补打 root 值（exec 路径）对账 0x9dc39000；②若不一致→追 SETADDRSPACE 装根链（kernel dispatch_exec→setaddrspace）；③一致→查 child 恢复现场的 satp 写入点。
+
+## §1.120续-162（2026-10-02·**child 两次 setaddr 的铸造点定位=exit.rs:262-268（clearproc 腿）+fork.rs:395-401（fork 腿），两处 root 均无打印（sas-send 只盖 boot 路径 vm_server.rs:784）；flags 0x8008→0x8=VMINHIBIT 清除前后**；续-163=两处各加一行 root 打印对账 0x9dc39000，坐实「后到的 rebind 覆盖装好镜像的根」即成修）
+gh45 复核：VM 侧 set_addrspace 铸造点=boot(vm_server.rs:793)/fork(fork.rs)/clearproc(exit.rs:267) 三处；child 的两次分别来自 fork（INIT fork 出 rc）与 exec clearproc。若 exec clearproc 的 root#2 ≠ mmaps 实填的 root#1（0x9dc39000）→child 在空根上无限缺页，与 pte-wb-FAIL=0、rm 兜底全自洽。一行探针（exit.rs 与 fork.rs 的 set_addrspace 前打 root+endpoint）即裁决。
