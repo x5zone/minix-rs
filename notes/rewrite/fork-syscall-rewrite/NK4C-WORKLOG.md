@@ -8,7 +8,11 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-138（2026-10-02·**riscv (A) 精化解码：gh14 帧 GPR dump 拿到决定性现场——stval=0x409d2c9bb0＝**1<<34（错误 DM 基址常量）+0x9d2c9bb0（合法 RAM 内表页地址）**——表地址是真的、基址常量被换成 1<<34（VmDm=1<<36 的 1/4）⇒ 与 gh10 掩码矛盾合并＝**VM 的 park（VMREQUEST 挂起）→resume 路径 GPR 残缺恢复**（aarch64 续-113 寄存器槽位错位同族：set_ipc_return_code 硬编码 offset 错寄存器的前科）；续-139 修靶＝VM park/resume 的 cpu_context 双 dump diff 找 scramble 槽**）：gh14 现场（1518 行，探针 first-200 门控下 (A) 复现于 exec sh 链）：EXEC_REPLY(0x986)→exec endpt=0x800c ip=0x167f0→VM query 崩；帧 dump：x1=0x2f764(VM 代码)、x2/x5=0x3ffffdfbbc(VM 栈✓)、x8=0xfffffffffffff000(页掩码✓)——多数寄存器健全、基址项独坏＝**选择槽位性残缺非全量破坏**。
+> **🛑 最新前沿＝§1.120续-139（2026-10-02·**(A) 烟枪解码＝rc 子栈区 L1 表项被 OR 进 VmDm 基址常量（1<<36）：gh14 帧 GPR 全 dump 的寄存器代数自洽解出——坏 L1e PPN 精确多出 0x4000000＝1<<36>>10；「某写路径把 DM 槽指针（基址+槽位）当 PTE 值写回」为唯一自洽机制；续-140 修靶＝cow_exec_pf sync_slot_pte/vmproc map 路径审计+PGR dump 轮**）：gh14 帧 GPR 全 dump（32 寄存器完整）代数自洽验证：x11=stval=0x409d2c9bb0=a6(0x9d2ea000 表 PA…注意本帧属另一 vaddr 的 walk)|…重解：坏 L1e PPN＝0x409d2c9（l0=0x409d2c9000 非页对齐来源=0x9d2c9000+1<<34）→l1e 多出＝0x1000000<<10=1<<36。含义：**L1 表项＝合法 V|W|U|PPN(0x9d2c9) 再 OR/VmDm 基址 1<<36**——即某写路径把「DM 槽指针（基址 1<<36+槽位）」的值当 PTE 写回（aarch64 续-113 寄存器/值混用同族），或 update_flags 类把含基址的值 OR 入。被污染表项＝rc 子（0x800c）exec 后栈区 L1（write-promote/COW 窗口）→子首条栈写走坏表→SIGSEGV→下游乒乓。
+> - **续-140 修靶**：①`cow_exec_pf.rs` sync_slot_pte/remap/write 全 PTE 写点的 value 来源审计（谁可能携带 1<<36）；②VM map/protect 路径 `paddr_to_pte` 的入参审计（VA/DM 指针误当 PA）；③PGR dump 轮（对被污染 L1 槽 PA 设 watch 或值匹配打印）抓写者；④成修+CodeReview+真机 marker 冲刺（fb201 乒乓/RS SIGSEGV 疑同根重验）。
+>
+
+> **（历史·§1.120续-138（2026-10-02·**riscv (A) 精化解码：gh14 帧 GPR dump 拿到决定性现场——stval=0x409d2c9bb0＝**1<<34（错误 DM 基址常量）+0x9d2c9bb0（合法 RAM 内表页地址）**——表地址是真的、基址常量被换成 1<<34（VmDm=1<<36 的 1/4）⇒ 与 gh10 掩码矛盾合并＝**VM 的 park（VMREQUEST 挂起）→resume 路径 GPR 残缺恢复**（aarch64 续-113 寄存器槽位错位同族：set_ipc_return_code 硬编码 offset 错寄存器的前科）；续-139 修靶＝VM park/resume 的 cpu_context 双 dump diff 找 scramble 槽**）：gh14 现场（1518 行，探针 first-200 门控下 (A) 复现于 exec sh 链）：EXEC_REPLY(0x986)→exec endpt=0x800c ip=0x167f0→VM query 崩；帧 dump：x1=0x2f764(VM 代码)、x2/x5=0x3ffffdfbbc(VM 栈✓)、x8=0xfffffffffffff000(页掩码✓)——多数寄存器健全、基址项独坏＝**选择槽位性残缺非全量破坏**。
 > - **续-139 修靶（probe 轮）**：①VM park 腿（kernel_call VmSuspend→save_frame_to_context）与 resume 腿（KCALL_RESUME 消费→GPR 回装）各 dump cpu_context.gp_regs 全量（cap 8），diff 找槽位错位/漏存；②对位 riscv trap_stub 的 save_frame_to_context/restore_to_user 寄存器序表（boot.rs T_SETUSER 偏移约定 0:sstatus/8:sepc/16:sp/24:a0/32..272:gp_regs——核对每槽映射）；③成修+CodeReview+真机 marker 冲刺（fb201 乒乓/RS SIGSEGV 两墙疑为同根下游，修后一并重验）。
 >
 
@@ -9966,3 +9970,22 @@ query L0 读 `a1 = a6 + ((vaddr>>9)&0xFF8) + a5`：idx 项 ≤0xFF8、a6=(l1e<<2
 
 ### 续-139 修靶（probe 轮）
 ①VM park 腿与 resume 腿各 dump cpu_context.gp_regs 全量（cap 8）+ diff 找 scramble 槽；②对位 riscv trap_stub.rs 的 save_frame_to_context / restore_to_user 寄存器序表与 boot.rs T_SETUSER 偏移约定（0:sstatus/8:sepc/16:sp/24:a0/32..272:gp_regs）逐槽核对；③set_ipc_return_code riscv 臂的寄存器 offset 核对（aarch64 前科同位）。成修+CodeReview+真机 marker 冲刺（fb201/RS 两墙一并重验）。
+
+## §1.120续-139（2026-10-02·**(A) 烟枪解码：rc 子栈区 L1 表项被 OR 进 VmDm 基址 1<<36——「DM 槽指针当 PTE 值写回」唯一自洽机制（gh14 帧 GPR 全 dump 代数自洽）**）
+
+### 决定性代数（gh14 帧 GPR 全 dump，32 寄存器完整）
+帧关键寄存器：x11(a1)=stval=0x409d2c9bb0（计算出的 DM 槽指针）、x12(a2)=0x7fffffffe000（栈顶页——注意非页表！本帧是另一 vaddr 的 walk 现场或 a2 已被复用）、x14(a4)=0x9d2ea004（**V=0 的 L1e 形态：PPN 0x9d2ea|W 位、无 V 位**）、x15(a5)=**0x1000000000=VmDm 基址（正确值留存）**、x16(a6)=0x9d2ea000（a4 的 pte_to_paddr，RAM 内✓页对齐✓）、x17(a7)=x8>>8（0xFFF000 掩码的移位伪迹）。
+
+### 决定性代数（gh14 之前轮的坏 L1 槽）
+坏 L1e 的 l0=0x409d2c9000 → PPN=0x409d2c9 → 减合法 PPN 0x9d2c9 = **0x4000000 = 1<<36>>10** ⇒ 坏 l1e = 合法 l1e **| 1<<36**（无进位、位域不重叠——纯 OR 添加）。
+
+### 唯一自洽机制
+某写路径把「DM 槽指针（VmDm 基址 1<<36 + 槽偏移）」的值当作 PTE 写回了栈区 L1 槽——即 PTE 值里混入了基址分量（aarch64 续-113 寄存器/值混用同族）。写窗＝exec 帧拷贝/write-promote（栈区首写）。
+（注：gh14 本帧的崩溃是另一 vaddr 的 walk 踩到该坏表后的连锁——walk 链上的次生现场；首发污染点为栈区 L1 槽。）
+
+### 续-140 修靶
+①cow_exec_pf.rs sync_slot_pte/remap/write 全 PTE 写点 value 来源审计（谁可能携带 1<<36：DM 指针/含基址的寄存器值）；②VM map/protect 路径 paddr_to_pte 入参审计（VA 或 DM 指针误当 PA）；③PGR dump 轮（对被污染 L1 槽 PA 设值匹配打印）抓写者；④成修+CodeReview+真机 marker 冲刺（fb201 乒乓/RS SIGSEGV 疑同根重验）。
+
+### 经验/教训
+1. **寄存器代数自洽法**：完整帧 dump 的多寄存器联立（x14=x16|4、x17=x8>>8、stval=基址|idx+表址）能唯一锁定不一致项——比单寄存器比对强一个量级。
+2. 帧全 dump 探针（32×hex）已是该类 bug 的标配仪器（本仓第三个验证：aarch64 续-113、x86 GPR 恢复族、riscv 本例）。
