@@ -49,11 +49,31 @@ impl RegionMap {
     }
 
     pub(crate) fn find(&self, addr: VirBytes) -> Option<&VirRegion> {
-        self.regions
+        let hit = self
+            .regions
             .range(..=addr)
             .next_back()
             .filter(|(_, r)| r.contains_addr(addr))
-            .map(|(_, r)| r)
+            .map(|(_, r)| r);
+        // 续-158 探针（用后即滚）：find 内部决断——next_back 键、contains
+        // 判定、map 全键。地址门控（exec 栈族 0x7fff...）前 3 次。
+        #[cfg(not(feature = "mock"))]
+        if addr.0 > 0x7fff_0000_0000 {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static F_N: AtomicUsize = AtomicUsize::new(0);
+            if F_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
+                let nb = self.regions.range(..=addr).next_back();
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: find-in addr={:#x} hit={} nb_key={:?} nb_contains={:?} keys={:?}\n",
+                    addr.0,
+                    hit.is_some(),
+                    nb.map(|(k, _)| k.0),
+                    nb.map(|(_, r)| r.contains_addr(addr)),
+                    self.regions.keys().map(|k| k.0).collect::<alloc::vec::Vec<u64>>(),
+                ));
+            }
+        }
+        hit
     }
 
     pub(crate) fn find_mut(&mut self, addr: VirBytes) -> Option<&mut VirRegion> {

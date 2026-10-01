@@ -10258,3 +10258,13 @@ gh37（inactive 细化探针）：**`pf-exit wro cr2=0x7fffffffef90`**＝dispatc
 
 ### 续-158（下一轮）
 ②真修：vm_server.rs:64 `proc_table: &'static VmProcTable` 去静态化（VmContext 持 &self 生命周期引用或全走 UnsafeCell 显式 unsafe），或 dispatch 系全部改用单一通道取表；gh41 验证 seg_w=true→子进程活→marker 冲刺。修属生产码：CodeReview+全验证链。探针（wro-dump/pf-inact/q-badroot/pfvm）task1-close 滚除。
+
+## §1.120续-158（2026-10-02·**black_box 真实加载仍 seg_w=false→编译器 UB 理论被杀；改判=两次加载间 RegionMap 页内存真被改写（隐藏写者：内核 kdst 野写/抢占窗异步写）——续-159 靶=watchpoint 抓 RegionMap 页写者**）
+
+### gh41/gh42/gh43 三轮否定链
+①gh41（铸造点修：get_active/get_exiting/get_empty 改 Cell 裸指针 fresh 生命周期铸 &mut，table.rs 三签名解绑 &self）：seg_w=false 依旧。②gh42（find() 函数内埋点）：**find-in 从未打印**——seg_w 的 check 编译后没走 RegionMap::find（或被 CSE 掉）→指向前运 hoist/CSE。③gh43（black_box 强制真实加载）：**seg_w 仍=false**——black_box 加载不可 hoist/CSE，排除编译器层→**内存内容在两次加载间真实变化**：某写者在 seg_w 与探针重读之间（同一分支内、跨可能的中断/抢占窗）改写了 RegionMap 所在页。修复尝试（table.rs 铸造点三处+签名解绑）本身正确无害，保留（src 级别名卫生）。
+三次运行 wro 现场全同：4 region（栈区 va=0x7fffffbff000 len=0x400000 flags=0x901 w=true）、cr2=0x7fffffffef90、find_some=true find_w=true 恒真、seg_w 恒假——首载读到的旧值恒定=写者把页从「有栈区」改成「无/只读」再改回？更可能=首载命中**别名 VA/别名 PA**（同一 RegionMap 两份映像：一份旧一份新，首载走旧映像通道）。内核 kdst copy（printk pa=0x805ffb38 常见）与抢占窗为候选窗。
+
+### 续-159 处方（窄化到一页）
+①wro 分支内对 `proc.regions()` 的 RegionMap 取 VA→PA（VM 自查 or 内核 pfvm 扩展），把该页 PA 印出来；②同页设**QEMU watchpoint**（gdb 硬件 watch 走不通→用 pmemsave 前后差分：seg_w 读前/读后两次 pmemsave diff 该页，抓改写时刻与新旧字节）；③写者=改写时刻的 kdst/printk/中断路径——候选锁定内核 cross_space 的目标 PA 翻译（kernel 侧对 VM 堆页的野写，即续-127「帧别名」假设的内核版）；④坐实即成修+CodeReview+marker 冲刺。
+门：本轮 table.rs 铸造点修改+black_box 均已入库（保留）；探针（find-in/wro-dump/pf-inact/q-badroot/pfvm）task1-close 滚除。

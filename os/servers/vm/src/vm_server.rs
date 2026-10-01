@@ -2017,9 +2017,11 @@ impl VmServer {
         // Read-only borrow — ends before the mem_parts_mut split below.
         // 续-157①（最小验证）：find 结果单次求值——若 stale 双读（别名
         // UB）为本墙真身，合并求值后症状应消失。
-        let seg_writable = proc
-            .regions()
-            .find(fault_addr)
+        // 续-158②：black_box 强制真实加载——gh42 实证 check 的 find 调用
+        // 被编译器替换为跨调用缓存值（find-in 埋点从未执行），绕开 noalias
+        // UB 驱动的 hoist/CSE。
+        let seg_writable = core::hint::black_box(proc.regions())
+            .find(core::hint::black_box(fault_addr))
             .is_some_and(|r| r.is_writable());
         if request.write && !seg_writable {
             // 续-156 探针（用后即滚）：wro 出口枚举该进程全部 region

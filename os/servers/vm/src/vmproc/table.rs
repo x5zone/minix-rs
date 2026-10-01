@@ -185,11 +185,15 @@ impl VmProcTable {
     ///
     /// Use this to initialize a new process in the slot.
     /// Sets the vm_slot field to the given value (Minix3's `vm_slot = i`).
-    pub(crate) fn get_empty(&self, slot: UserSlot) -> Option<EmptySlot<'_>> {
-        // SAFETY: get_slot_mut requires no other references to this slot.
-        // The returned EmptySlot holds an exclusive &mut VmProc, preventing
-        // concurrent access. Single-threaded VM ensures no cross-CPU access.
-        let proc = unsafe { self.get_slot_mut(slot)? };
+    pub(crate) fn get_empty<'a>(&self, slot: UserSlot) -> Option<EmptySlot<'a>> {
+        // SAFETY: 续-158——视图的 &mut VmProc 从 Cell 裸指针直接铸造（fresh
+        // 生命周期，不再继承 &self 借用），杜绝「&VmProcTable 活着时存在
+        // 派生 &mut」的 noalias 冲突（gh39/40 stale-load 实锤的别名 UB 铸
+        // 造点）。typestate 纪律不变：单线程 VM，同槽同时至多一个视图。
+        let index = Self::check_slot(slot)?;
+        // SAFETY: index bounds checked; slot contents accessed only through
+        // this UnsafeCell (interior mutability) on this single thread.
+        let proc = unsafe { &mut *(self.slots[index].get() as *mut VmProc) };
         if !proc.vm_flags.contains(VmFlags::IN_USE) {
             proc.vm_slot = slot;
             Some(EmptySlot::new(proc))
@@ -221,11 +225,15 @@ impl VmProcTable {
     /// Returns an `ActiveProc` view for the given slot.
     ///
     /// Returns `Some` only if the process is active (IN_USE and not EXITING).
-    pub(crate) fn get_active(&self, slot: UserSlot) -> Option<ActiveProc<'_>> {
-        // SAFETY: get_slot_mut requires no other references to this slot.
-        // The returned ActiveProc holds an exclusive &mut VmProc, preventing
-        // concurrent access. Single-threaded VM ensures no cross-CPU access.
-        let proc = unsafe { self.get_slot_mut(slot)? };
+    pub(crate) fn get_active<'a>(&self, slot: UserSlot) -> Option<ActiveProc<'a>> {
+        // SAFETY: 续-158——同 get_empty：&mut 从 Cell 裸指针直接铸造（fresh
+        // 生命周期），不继承 &self 借用，消除 noalias 冲突的铸造点。返回的
+        // ActiveProc<'_> 生命周期由调用方新鲜指派，与 &self 无派生关系；
+        // typestate 纪律（同槽同时至多一个视图）由单线程 VM + 调用方保证。
+        let index = Self::check_slot(slot)?;
+        // SAFETY: index bounds checked; slot contents accessed only through
+        // this UnsafeCell (interior mutability) on this single thread.
+        let proc = unsafe { &mut *(self.slots[index].get() as *mut VmProc) };
         let vm_flags = proc.vm_flags;
         if vm_flags.contains(VmFlags::IN_USE) && !vm_flags.contains(VmFlags::EXITING) {
             Some(ActiveProc::new(proc))
@@ -237,11 +245,12 @@ impl VmProcTable {
     /// Returns an `ExitingProc` view for the given slot.
     ///
     /// Returns `Some` only if the process is exiting (IN_USE and EXITING).
-    pub(crate) fn get_exiting(&self, slot: UserSlot) -> Option<ExitingProc<'_>> {
-        // SAFETY: get_slot_mut requires no other references to this slot.
-        // The returned ExitingProc holds an exclusive &mut VmProc, preventing
-        // concurrent access. Single-threaded VM ensures no cross-CPU access.
-        let proc = unsafe { self.get_slot_mut(slot)? };
+    pub(crate) fn get_exiting<'a>(&self, slot: UserSlot) -> Option<ExitingProc<'a>> {
+        // SAFETY: 续-158——同 get_active（Cell 裸指针直接铸造）。
+        let index = Self::check_slot(slot)?;
+        // SAFETY: index bounds checked; slot contents accessed only through
+        // this UnsafeCell (interior mutability) on this single thread.
+        let proc = unsafe { &mut *(self.slots[index].get() as *mut VmProc) };
         let vm_flags = proc.vm_flags;
         if vm_flags.contains(VmFlags::IN_USE) && vm_flags.contains(VmFlags::EXITING) {
             Some(ExitingProc::new(proc))
