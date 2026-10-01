@@ -8,7 +8,15 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-131（2026-10-01·**marker 最后一段定谳＝tty 串口后端为 x86 16550 端口 I/O 专用，aarch64 PL011 MMIO 无后端臂——用户态控制台输出在 aarch64 从未存在；修法＝serial.rs 加 PL011 MMIO 臂（新功能件，本轮纯取证 WORKLOG-only）**）：承续-130（MultiUser 达成），sh 用户态管道逐层取证：
+> **🎉 最新前沿＝§1.120续-132（2026-10-01·**aarch64 用户态 console PL011 MMIO 臂落地——真机 rc marker 首次打出（commit 2a6c55912，CodeReview APPROVED）＝终目标① aarch64 段打通；剩余＝riscv (A) gdb 定谳 + riscv 装机后段 + 目标③**）：续-131 定谳 tty x86-only 后的实施轮：
+> - **PL011 臂**（serial.rs +230 行）：`Pl011Regs` trait（flags/push 测试缝）+ `WirePl011`（构造时 `VM_MAP_PHYS` 映 QEMU-virt PA=0x0900_0000 页入自身，volatile FR.TXFF@0x18/DR@0x00）+ `Pl011Backend` 实现 LineBackend（ready=TXFF 清，有界轮询，诚实部分写）+4 测试；lib.rs init cfg 分派（x86_64=16550/aarch64=PL011）。
+> - **双 wire bug 修复**（map_physical_via 首个真机消费者暴露的潜伏错）：请求走 `m_lsys_vm_map_phys` 臂（phaddr/len 是 u32——旧 raw 手写致 VM 解出 phaddr=0→DIRECT zerobase 拒绝）、回复走 m1.p1（旧读 raw[0..8]=m_source|m_type<<32 垃圾指针→TTY 崩 cr2=0x7c16）；补请求 wire 断言+高位 PA 拒绝（S2）。
+> - **VM 内容探针 DIRECT 护栏**（S1=按 VrFlags::DIRECT 判）：MMIO 页不在 VM DM 窗（读即 VM 自缺页 far=0x100009000000 实锤）且 DR 读弹 FIFO；匿名区 param 默认 Direct{0} 不能用 matches! 误杀。
+> - **真机（三轮稳定）**：aarch64 **marker=2**（3708 行 echo 真输出+4452 cat 回显 rc 全文）/MultiUser/panic=0；x86 marker=2/panic=0 不回归；host 1771/0、clippy 55=55、rustfmt Δ0、check-layout PASS。
+> - **三目标进度**：① x86✅ **aarch64✅** / riscv 未达（(A) gdb 处方就绪）；② x86 核心✅、aarch64 marker 链已同构（同 echo/cat 路径，命令面扩展随 x86 节奏）；③ 未动。
+>
+
+> **（历史·§1.120续-131（2026-10-01·**marker 最后一段定谳＝tty 串口后端为 x86 16550 端口 I/O 专用，aarch64 PL011 MMIO 无后端臂——用户态控制台输出在 aarch64 从未存在；修法＝serial.rs 加 PL011 MMIO 臂（新功能件，本轮纯取证 WORKLOG-only）**）：承续-130（MultiUser 达成），sh 用户态管道逐层取证：
 > - **sh 侧全通**：`sh argc=3 s=1` → **`sh-rcok len=0x34d`（/etc/rc 845B 读取成功）** → `shf`×2（两条 rc 外部命令行各 fork 一次）→ PM_FORK/VFS_PM_FORK_REPLY/setaddr(0xd)/SCHED INHERIT 全链健康 → 三个 fork 子（0x800d/e/f）各 ~123 页 demand-paging＝**echo 等子真跑了**。
 > - **伪线索排除**：串口里成对下探的 0x7ffffffdxx 缺页＝RS(ep=2)/INIT(ep=b) 自身深栈（vm-pf ep= 探针定身份），与 sh 子无关。
 > - **真墙**：`os/drivers/tty/tty/src/serial.rs` 头注即「PC16550 UART、COM1_BASE=0x3F8、sys_inb/sys_outb 端口车道（OQ-N3 裁决）」——aarch64 QEMU virt 的控制台是 **PL011 MMIO@0x0900_0000**，无 16550/无端口 I/O ⇒ echo 写 fd1→VFS→tty→sys_outb(0x3F8) 在 aarch64 全失败 ⇒ 串口上从未有过任何用户态输出（全程只有内核 EarlyConsole/VM diagctl）。**目标① aarch64 marker 的最后一段＝给 serial.rs 加 PL011 MMIO 臂**（对位 C minix3 ARM 板的串口后端；实现面：PL011 寄存器组 FR/DR、经内核 MMIO 通道或专用 grant——需一轮独立实现+CodeReview）。
@@ -9791,3 +9799,29 @@ serial.rs 加 PL011 MMIO 臂（cfg(target_arch) 或运行期探测）：DR@+0x00
 ### 经验/教训
 1. **用户态 diagctl 探针的可靠性边界再收紧**：fork/exec 风暴窗口的打印必丢——关键结论需「多轮命中」或改走内核侧（bootmark/EarlyConsole 稳定）。
 2. **跨架构驱动的「后端臂清单」是 review 检查项**：serial.rs 头注只描述 16550——文档自洽但架构面单边；同类 x86-only 后端（devio 端口车道消费方）应全量盘点。
+
+## §1.120续-132（2026-10-01·**PL011 MMIO 臂落地＝aarch64 rc marker 首次达成（🎉 终目标① 双架构）·commit 2a6c55912·CodeReview APPROVED（2SF+5NIT 全采）**）
+
+### 现象（修复前）
+aarch64 boot 全链健康（MultiUser）但串口从未出现任何用户态输出——echo 写 /dev/console→VFS→tty→16550 COM1 sys_outb 在 aarch64 无端口车道全失败（续-131 定谳）。
+
+### 定位与实施
+1. 通道裁决：`VM_MAP_PHYS`（C `vm_map_phys` 惯用法；VM map_perm_check 对 TTY 端点显式放行=既有代码）；DIRECT region（VrFlags::DIRECT+VrParam::Direct{phys}）缺页臂 `DirectPhysical::ev_pagefault` 对 MMIO 自洽（base+offset→PFN→map_page，无 RAM 依赖）。
+2. 实施 serial.rs PL011 臂（trait 测试缝+wire 实现+Backend+4 测试）+lib.rs cfg 分派。
+3. 真机三轮迭代暴露并修复 `map_physical_via` 的**双 wire bug**（该包装此前零真机消费者）：
+   - 轮1：TTY 崩 cr2=0x7c16 → 回复解码读 raw[0..8]（=m_source|m_type<<32）而非 **m1.p1**（`VmMapPhysOut::EncodeToM1` 车道）→ 修+测试同步（旧测试脚本化了错误 wire）。
+   - 轮2：`vm-pf err MemType(InvalidParam)` → dp-zerobase 探针 → 请求编码 raw 手写（phys u64@8）而 VM 按 `m_lsys_vm_map_phys` 臂解 phaddr=**u32@4**→恒 0 → 修+请求 wire 断言（ep/phaddr/len 三车道）。
+   - 轮3：`pagefault for VM far=0x100009000000`＝VM 的 vm-pf bytes 内容探针把 MMIO 页当 RAM 经 DM 窗读（DM 窗未映 MMIO 洞→VM 自缺页致命；即便映了 DR 读也弹 FIFO）→ DIRECT 区域跳过探针。
+   - 轮4：**marker=2**（3708 行 echo 真输出+4452 行 cat 回显 /etc/rc 全文）。
+4. CodeReview 采纳：S1（探针门控按 `VrFlags::DIRECT` 判——匿名/文件区域 param 默认 Direct{phys:0}，matches! 会误杀全部匿名探针；净态三轮行数回升实证）、S2（PA≥4GiB 静默截断→高位拒绝 EINVAL）、N3（cfg 收紧 x86_64）。
+
+### 根因（机制层）
+tty 串口后端只有 x86 16550 端口模型；aarch64 的 PL011 是 MMIO 设备——C 生态的对应物是 `vm_map_phys` 设备映射+寄存器直接驱动。minix-rs 的 `map_physical_via` 客户端包装此前从未被真机消费，请求/回复两侧的 wire 编码都与 VM 服务器实现错位（32 位 C wire 的 u32 车道 + m1.p1 回复车道），首用即暴露。
+
+### 验证
+aarch64 三轮（净态 4523/4525/7492 行——S1 后匿名探针恢复）：**marker=2**/MultiUser/panic=0/WrongMessageType=0；x86 marker=2/panic=0（10641 行，探针全恢复）；host 1771/0（+tty 4 条 PL011 测试+minix-sys wire 断言）；clippy 55=55；rustfmt Δ0；check-layout PASS(all)。
+
+### 经验/教训
+1. **零消费者的 wire 包装=潜伏双错**：客户端编码与服务器解码必须有一对**同源测试**（同一 union 臂常量）；「脚本化测试验证了错误 wire」比没有测试更危险。
+2. **MMIO 与 RAM 的诊断探针必须分层**：内容校验型探针对设备透传页既有致命风险（DM 窗未覆盖）又有语义错误（读取副作用）——按区域类型门控是通用模式。
+3. **默认 param 值的判别陷阱**：`VrParam::Direct{phys:0}` 是匿名区域的默认值——类型上与真 DIRECT 设备映射同型，判别必须走语义标志（VrFlags::DIRECT）而非 param 形状。
