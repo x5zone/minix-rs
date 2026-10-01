@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🎉 最新前沿＝§1.120续-132（2026-10-01·**aarch64 用户态 console PL011 MMIO 臂落地——真机 rc marker 首次打出（commit 2a6c55912，CodeReview APPROVED）＝终目标① aarch64 段打通；剩余＝riscv (A) gdb 定谳 + riscv 装机后段 + 目标③**）：续-131 定谳 tty x86-only 后的实施轮：
+> **🛑 最新前沿＝§1.120续-133（2026-10-01·**riscv (A) gdb 定谳＝SD-23 riscv 同族（内核 345 条 FP 指令踩用户寄存器——gdb rust_begin_unwind 断点：stval 解码 a5=1<<34≠两臂合法值、帧 ra 超镜像 LOAD 段）+懒 FPU 单元+NS16550A tty 臂入库（f89b7c731，CodeReview 两轮终局 APPROVED）；gh5/gh6 连续两轮 panic=0/pagefault-for-VM=0＝(A) 签名消失**）：三目标进度 ①x86✅ aarch64✅ / riscv 深入中（(A) 解除，新停点=MultiUser 前 IPC 链 sa-call 封顶后静默——续-134 定性；marker 未达）②x86 核心✅ aarch64 marker 链✅ ③勘察。本单元：riscv kernel-image `-f,-d` 注入（内核 ELF FP=0）+FS=Off 懒门控+global_asm save/restore（.option arch +d）+scause=2 腿（FS==Off 谓词门+帧 patch Dirty）+ctx-patch 归属策略（riscv FS 在 sstatus/帧内——双载体：dispatch 门=live 写、trap 门=帧 patch、ctx=簿记）+tty NS16550A MMIO 臂。遗留：SF-2 release_fpu、双 FP 用户回归、vm.rs raw 车道审计（N2 同族）。
+>
+
+> **（历史·🎉 §1.120续-132（2026-10-01·**aarch64 用户态 console PL011 MMIO 臂落地——真机 rc marker 首次打出（commit 2a6c55912，CodeReview APPROVED）＝终目标① aarch64 段打通；剩余＝riscv (A) gdb 定谳 + riscv 装机后段 + 目标③**）：续-131 定谳 tty x86-only 后的实施轮：
 > - **PL011 臂**（serial.rs +230 行）：`Pl011Regs` trait（flags/push 测试缝）+ `WirePl011`（构造时 `VM_MAP_PHYS` 映 QEMU-virt PA=0x0900_0000 页入自身，volatile FR.TXFF@0x18/DR@0x00）+ `Pl011Backend` 实现 LineBackend（ready=TXFF 清，有界轮询，诚实部分写）+4 测试；lib.rs init cfg 分派（x86_64=16550/aarch64=PL011）。
 > - **双 wire bug 修复**（map_physical_via 首个真机消费者暴露的潜伏错）：请求走 `m_lsys_vm_map_phys` 臂（phaddr/len 是 u32——旧 raw 手写致 VM 解出 phaddr=0→DIRECT zerobase 拒绝）、回复走 m1.p1（旧读 raw[0..8]=m_source|m_type<<32 垃圾指针→TTY 崩 cr2=0x7c16）；补请求 wire 断言+高位 PA 拒绝（S2）。
 > - **VM 内容探针 DIRECT 护栏**（S1=按 VrFlags::DIRECT 判）：MMIO 页不在 VM DM 窗（读即 VM 自缺页 far=0x100009000000 实锤）且 DR 读弹 FIFO；匿名区 param 默认 Direct{0} 不能用 matches! 误杀。
@@ -9848,6 +9851,12 @@ aarch64 三轮（净态 4523/4525/7492 行——S1 后匿名探针恢复）：**
 
 ### 验证
 host 六包 1771/0（插入伤 cfg 致 host 编译错误一轮已修）；clippy 55=55；rustfmt 七文件 Δ0；check-layout all PASS；x86 marker=2/panic=0 不回归；riscv 真机 gh3（修复中：旧 (A) 签名消失，新停点 VM null-deref sepc 0x2b412 stval 0x10——下一层）；gh4（B-1/B-2 修后）：rvfpu-trap 探针 0 命中＝VM 崩溃路径无用户 FP 陷阱，(A) 家族签名 stval=0x10bd2cabac 依旧＝确定性毒 PTE 写入者仍在（非 FP 踩踏），续-134 用帧内 watchpoint 专项猎杀。
+
+### CodeReview 二轮 APPROVED + 载体归因修正（重要）
+复审确认 B-1/B-2/ctx-patch 不变式闭合（含 SMP 推演：fpu_owner==P ⇒ 活寄存器==P 状态），**但修正载体归因**：riscv 双载体——dispatch 门=live disable/enable 写（restore_to_user 从不装帧/ctx 的 sstatus，活写不被冲销）、trap 门=帧 patch FS=Dirty、ctx patch=一致性簿记（sigcontext/fork 面，非门控载体）。lib.rs 注释已按「双载体」改写防未来误删 live 写。P1 五项全清（文档错挂复位/restore 文档一致化/INST_PF cfg+文档复位/谓词四臂测试 829 通过/set_sstatus_fs_initial 孤儿删除+NIT）。正向证据待续-134：跑含 FP 的用户进程，预期每首触进程恰一条 rvfpu-trap 且正常前进。
+
+### 真机终态（gh5/gh6 连续两轮）
+panic=0、pagefault-for-VM=0——riscv (A) 签名消失（SYSCALL 腿屏障+FPU 门控组合的时序/完整性效应）；停点=sa-call 封顶（已知非活锁家族），行数 8570/4028。riscv (A) 作为独立疑难已解除，前沿转为新停点定性（续-134）。
 
 ### 续-134 修靶（gdb 二阶段处方）
 panic 命中后：satp→root→按被 walk 的 vaddr 逐级读表（monitor xp 物理读）→定位 PPN=0xbd2ca 的毒 PTE 槽物理地址→重跑对内核 DM VA（0xFFFFFFC040000000+PA）设硬件 watchpoint（内核根全映射、跨进程命中写者 pc）——x86 续-57~73 十六轮同款猎杀。
