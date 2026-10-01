@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-136（2026-10-02·**乒乓环真身解码：m_type=0xFFFF0FB2＝VFS↔FS 的 transid-stamped 消息（trns_add_id 编码：status=-1 as i16 / tid=4018）**泄漏进 PM/VFS 主循环投递车道**——VFS 把 status=-1 的 FS 失败回复原样转发给 PM（C 应回 VFS_PM_STATUS+errno）、PM 又原样回给 VFS，乒乓不收敛；续-137 修靶＝找 status=-1 的 FS 回复源头与 VFS 转发腿的 reply-lane 分叉**）：解码链：trns_add_id=(type<<16)|tid（fs_driver.rs:147）、fs_trans_status=(m_type>>16) as i16=status 车道——0xFFFF0FB2 的 tid=0xFB2=4018（VFS_TRANSID 计数已达 4018＝boot 期 FS 请求量）与 status=-1 组合只在 VFS↔FS 语义中存在；`vf:90600`（VFS 收 PM 的 0x906=VFS_PM_STATUS 形态）旁证 reply-lane 混用。C 对位：VFS 回 PM 必为 VFS_PM_STATUS+payload（C main.c 的 do_reply 家族），FS stamped 消息绝不出 VFS。
+> **🛑 最新前沿＝§1.120续-137（2026-10-02·**riscv 定性升级＝多墙 Heisenbug 族（构建布局/时序决定先撞哪堵，与 aarch64 续-46/54 家族同构）：gh7/gh10/gh11 轮转实测——(A) query-walk 崩（stval=0x10bd2cabac 确定性同址）、fb201 乒乓洪流、RS 早崩 SIGSEGV 三墙并存；**(A) 的指令语义学证明＝GPR 恢复破坏**：query L0 读 `a1=a6+idx+a5` 三项均可证 ≤掩码/合法基址，而实测和=0x10BD2CABAC 超出——**CPU 寄存器在 VM 执行途中被恢复路径写坏**（timer 抢占/IPC park 的 GPR 保存-恢复残缺），非内存毒 PTE（nk135 表页守卫全程 0 命中＝被跟随表页全在 RAM）**）：候选恢复残缺点＝①riscv timer 抢占帧保存/恢复链（trap stub 全量但某路径未走 stub）②IPC park/resume 的 save_frame_to_context/finish_and_restore GPR 面③信号 trampoline。gh11 又示 RS 早崩 SIGSEGV（710 行，第三墙独立）。续-138 修靶＝帧 GPR dump 探针（已写好即滚，trap_dispatch pagefault-for-VM 臂）多轮采样→残缺寄存器集定位恢复链破点→成修。探针均已滚、tracked 净。
+>
+
+> **（历史·§1.120续-136（2026-10-02·**乒乓环真身解码：m_type=0xFFFF0FB2＝VFS↔FS 的 transid-stamped 消息（trns_add_id 编码：status=-1 as i16 / tid=4018）**泄漏进 PM/VFS 主循环投递车道**——VFS 把 status=-1 的 FS 失败回复原样转发给 PM（C 应回 VFS_PM_STATUS+errno）、PM 又原样回给 VFS，乒乓不收敛；续-137 修靶＝找 status=-1 的 FS 回复源头与 VFS 转发腿的 reply-lane 分叉**）：解码链：trns_add_id=(type<<16)|tid（fs_driver.rs:147）、fs_trans_status=(m_type>>16) as i16=status 车道——0xFFFF0FB2 的 tid=0xFB2=4018（VFS_TRANSID 计数已达 4018＝boot 期 FS 请求量）与 status=-1 组合只在 VFS↔FS 语义中存在；`vf:90600`（VFS 收 PM 的 0x906=VFS_PM_STATUS 形态）旁证 reply-lane 混用。C 对位：VFS 回 PM 必为 VFS_PM_STATUS+payload（C main.c 的 do_reply 家族），FS stamped 消息绝不出 VFS。
 > - **续-137 修靶（+机制精化）**：PM 侧 `is_vfs_pm_rs(0xFFFF0FB2)`=false（族基 0x980）⇒ 该消息**不走 handle_vfs_reply** 而落入 `dispatch_message`→当 PM 调用解码→ENOSYS 回 VFS——乒乓的回程腿已定位（init.rs:584 门）；VFS 侧同构审计 Route:: 解码（0xFFFF0FB2 落哪个臂并回发原值）。①VFS 侧找 0xFFFF0FB2 的首发源头（FS status=-1 回复如何进入 VFS→PM 车道——send_reply 构造的是 VfsReply 编码不应带 stamp，首发另有其人）；②FS 侧 status=-1 回复源头；③PM 对 PM-call 解码失败的 ENOSYS 回复腿审计（回 VFS 的语义对不对——C 对 VFS 来源消息不走 PM 调用分派）。
 >
 
@@ -9929,3 +9932,19 @@ PM↔VFS 乒乓环的具体 VFS_PM 请求族未知（req 号被探针截断）�
 ### 经验/教训
 1. 双 lane m_type（type<<16|tid）的探针解码必须同时还原 (status,tid) 与 (REQ,tid) 两种语义——单栏 u16 截断是三轮取证才破案的直接原因。
 2. C 的 panic 对位（handle_vfs_reply default panic）是乒乓环的「熔断器」：Rust 侧静默吞掉未知类型让故障降级为不收敛循环——「fail-fast 缺失=循环放大器」是本仓第 N 次验证的模式（模式库候选）。
+
+## §1.120续-137（2026-10-02·**riscv 定性升级＝多墙 Heisenbug 族；(A) 指令语义学证明＝GPR 恢复破坏（非内存毒 PTE）；探针已滚 tracked 净**）
+
+### 证据矩阵（gh7/gh8/gh10/gh11 四轮，构建同 HEAD）
+- gh7（17.8k 行）：(A) query-walk 崩，stval=0x10bd2cabac（与 gh4 同址）。
+- gh8（689k 行）：零 panic、零 (A)、零 nk135——VM 全程服务 343k 缺页，表页 PA 全程合法。
+- gh10（1.5k 行）：(A) 同址再现，触发序列＝EXEC_REPLY(0x986)→exec endpt=0x800c→query 崩。
+- gh11（710 行）：RS 早崩 SIGSEGV（cause_sig: sig manager 2 gets lethal 11）——第三墙独立。
+- 结论：三墙并存，触发顺序随构建布局/时序漂移＝aarch64 续-46/54 Heisenbug 家族同构。
+
+### (A) 指令语义学证明（决定性）
+query L0 读 `a1 = a6 + ((vaddr>>9)&0xFF8) + a5`：idx 项 ≤0xFF8、a6=(l1e<<2)&0xFFF000 被掩码 ≤0xFFF000、a5=合法基址（1<<36 或 0xFFFFFFC040000000）——三项之和数学上 ≤0x1000000FFF 或 ≥0xFFFFFFC0...，**不可能等于实测 0x10BD2CABAC**。⇒ 执行途中寄存器被写坏＝**恢复路径 GPR 破坏**（非内存毒 PTE——nk135 守卫全程 0 命中佐证）。候选残缺点：①timer 抢占帧链 ②IPC park/resume 的 GPR 保存-恢复 ③信号 trampoline。
+（修正链：续-133 曾断言「(A) 签名消失」——gh5/gh6 行数未到 16k 未触达所致，gh7 三现即作废，续-133 详文已同步更正。）
+
+### 续-138 修靶
+帧 GPR dump 探针（trap_dispatch pagefault-for-VM 臂，已写好即滚——`frame.gpr` 32×hex，12 行）多轮采样 (A) 现场→比对静态语义应有值→残缺寄存器集定位恢复链破点→成修。注：gh11 显示多墙下 (A) 非必现——需多轮采样或以 (A) 为准的布局重试。
