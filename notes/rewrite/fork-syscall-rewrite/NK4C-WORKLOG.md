@@ -9610,3 +9610,34 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 环境注记：本会话后段复合命令以 `pkill -9 -f qemu...` 起头会连带杀掉执行 shell 自身（同 `pkill -f qemu` 匹配到含该串的命令行的 bash），致 boot 命令空跑无日志——去前缀/单独跑即正常。记此避坑。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)仍待gdb专项(本次 N3 为启动硬化非(A)本身)·aarch64❌；②x86核心✅；③已勘察。N3 生产修过 CodeReview+全验证链后入库，tracked 净。
+
+---
+
+## §1.120续-126（2026-10-01·**riscv (A) gdb 联调现成处方（turnkey，下一轮直接执行；本会话上下文耗尽不亲跑，避免半程脏态）**）
+
+(A) 定论：VM 解引用一个落在其 DM 窗（VM_DM_BASE=2^36）内、phys≈0xbd2cbb000(3.17GB>RAM顶2.68GB) 的**野指针** → `pagefault for VM` 致命。纯语义守卫已穷尽（映射路径全清白）→ 需 gdb 钉"谁把该指针写坏"。
+
+**执行步骤（boot-full 的 qemu 行加 `-s -S`，勿加 `-no-reboot` 改动其余不动）**：
+```
+cd os
+# 1) 造 DTB/表/12模块 + kernel 后，手动起带 gdbstub 的 qemu（照抄 test-riscv64-boot-full.sh:143-149 的参数，末尾加 -s -S，去掉 timeout 用后台）:
+qemu-system-riscv64 -machine virt -smp 1 -m 512M -bios default \
+  -kernel target/riscv64gc-unknown-none-elf/release/kernel \
+  -dtb "$QEMU_DTB" \
+  -device "loader,addr=0x85000000,file=$TABLE_BIN,force-raw=on" \
+  $LOADER_ARGS \
+  -serial file:/tmp/gdb_serial.log -display none -no-reboot -s -S &
+# 2) 另一终端 gdb（无 DWARF：靠 $pc + rust-objdump 回符号）：
+gdb-multiarch target/riscv64gc-unknown-none-elf/release/kernel   # 或对 minix-vm ELF
+(gdb) target remote :1234
+(gdb) hbreak *<panic地址>   # 或 break on `pagefault in VM`：nm 定位 trap_dispatch 里该 panic 的 pc
+(gdb) c
+#   命中 VM 自缺页瞬间：读 $pc→rust-objdump -d --start-address=$pc-40 --stop-address=$pc+8 判是哪个 VM 函数野解引用;
+#   从 $regs 找被污染的指针寄存器, 反推它所属的对象, 对其字段设 hw watch:
+(gdb) watch -a (long*)<该对象字段地址>   # 或 hbreak on write
+```
+判据：抓到把"本该是对象指针/句柄"的字段写成 0x10bd2cbbXX 的**写者 PC/函数** → 坐实写坏点（疑 VM 某 Vec/Box/Message 缓冲越界或 use-after-free）→ 成修 → riscv xv 跑到 marker。
+
+**候选嫌疑（省下一轮枚举）**：VM `Message` 收发缓冲复用、`page_cache`/`vfs_queue` 元数据指针、fork/COW 拷贝时的 Vec 元素、direct_map 转换把数据字节当指针。**注意**：本会话已实证以 `pkill -9 -f qemu` 起头的复合命令会自杀 shell（boot 空跑）——gdb 联调时勿在该命令前加 pkill，单独起 qemu。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)已给 turnkey gdb 处方待续·aarch64❌；②x86核心✅；③已勘察。纯文档处方、零生产码改→WORKLOG-only、免 CodeReview。
