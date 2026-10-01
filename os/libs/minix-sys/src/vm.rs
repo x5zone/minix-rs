@@ -367,19 +367,37 @@ pub fn map_physical_via(
     physical: PhysBytes,
     length: VirBytes,
 ) -> Result<VirBytes, Errno> {
+    // CodeReview S2：C i386 wire 的 phaddr 是 u32——PA ≥ 4 GiB 会静默
+    // 截断映射到错误物理页（比报错更危险），高位直接拒绝。
+    if physical.0 > u32::MAX as u64 {
+        return Err(Errno::from_i32(minix_types::EINVAL));
+    }
     let mut message = crate::syscall::cleared_message();
-    // SAFETY: three plain lanes at bytes 0..24; exact bytes below.
+    // NK4-C 续-132 修：请求走 `m_lsys_vm_map_phys` 臂（`VmMapPhysIn::
+    // decode_message` 的对偶，C `mess_lsys_vm_map_phys` ipc.h:1504-1510：
+    // ep@0/phaddr@4/len@8，phaddr 与 len 都是 **u32**——C i386 wire 的
+    // 32 位宽；64 位 phys/len 按同语义截断）。旧实现手写 raw 覆盖
+    // （target@0/phys u64@8/len u64@16），VM 按 u32@4 解出 phaddr=0——
+    // 真机首个消费者（tty PL011）映射到 phys 0，DIRECT 缺页臂
+    // zerobase 拒绝。
+    // SAFETY: the documented payload arm for VM_MAP_PHYS requests.
     unsafe {
-        message.m_u.raw[..4].copy_from_slice(&target.0.to_ne_bytes());
-        message.m_u.raw[8..16].copy_from_slice(&physical.0.to_ne_bytes());
-        message.m_u.raw[16..24].copy_from_slice(&length.0.to_ne_bytes());
+        let mp = &mut message.m_u.m_lsys_vm_map_phys;
+        mp.ep = target.0;
+        mp.phaddr = physical.0 as u32;
+        mp.len = length.0 as u32;
     }
     let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_MAP_PHYS, &mut message)?;
     if reply < 0 {
         return Err(Errno::from_i32(-reply));
     }
-    // SAFETY: the reply carries the virtual address at byte zero.
-    let placed = unsafe { message.m_u.raw[..8].as_ptr().cast::<u64>().read() };
+    // NK4-C 续-132 修：VM 侧回包经 `EncodeToM1` 把地址放 **m1.p1**
+    // （VmMapPhysOut::encode → m1p1），不在 raw[0..8]（那里是
+    // m_source/m_type）——旧解码读出的「地址」= m_type<<32|m_source，
+    // 真机首个消费者（tty PL011 臂）即拿垃圾指针崩死（cr2=0x7c16）。
+    // SAFETY: VM's MapPhys reply rides the m1 arm; the union read is the
+    // documented payload lane.
+    let placed = unsafe { message.m_u.m_m1.m1p1 };
     Ok(VirBytes(placed))
 }
 
@@ -1018,15 +1036,28 @@ mod tests {
     fn test_map_physical_returns_virtual_address() {
         let mut transport = CannedTransport::new();
         let mut reply = reply_with_type(0);
-        // SAFETY: test-only payload setup through the documented overlay.
+        // 续-132：与 VM 的 EncodeToM1 对齐——地址走 m1.p1 车道（旧脚本
+        // 写 raw[0..8] 验证的是错误 wire）。
+        // SAFETY: test-only payload setup through the documented m1 arm.
         unsafe {
-            reply.m_u.raw[..8].copy_from_slice(&0xA000u64.to_ne_bytes());
+            reply.m_u.m_m1.m1p1 = 0xA000;
         }
         transport.reply_sendrec(Ok(reply));
         assert_eq!(
             map_physical_via(&transport, Endpoint(6), PhysBytes(0xF0000), VirBytes(4096)),
             Ok(VirBytes(0xA000))
         );
+        // 续-132：请求 wire——m_lsys_vm_map_phys 臂（ep/phaddr/len 全
+        // 32 位，VM 按 u32 解码）。
+        let sent = transport.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].0, vm_endpoint());
+        assert_eq!(sent[0].1.m_type, VM_CALL_MAP_PHYS);
+        // SAFETY: test-only read of the documented request arm.
+        let mp = unsafe { sent[0].1.m_u.m_lsys_vm_map_phys };
+        assert_eq!(mp.ep, 6);
+        assert_eq!(mp.phaddr, 0xF0000);
+        assert_eq!(mp.len, 4096);
     }
 
     #[test]

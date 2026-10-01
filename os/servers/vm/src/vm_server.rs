@@ -2014,6 +2014,14 @@ impl VmServer {
                 return VmReply::Error(VmError::InvalidAddress);
             }
         };
+        // NK4-C 续-132：DIRECT（设备透传）区域不走内容探针——MMIO 页
+        // 一不在 VM 的 DM 窗覆盖内（读即 VM 自缺页致命），二有读取副
+        // 作用（PL011 的 DR 读会弹走接收 FIFO、吞用户输入）。探针只为
+        // 校验 demand-paged 内容（file/anon），对透传页无语义。
+        // CodeReview S1：按 VrFlags::DIRECT 判（生产唯一设置点＝
+        // map_phys.rs），不能 matches!(param, Direct)——匿名/文件区域的
+        // param 默认值就是 Direct{phys:0}，那样会把全部匿名探针误杀。
+        let is_direct_region = region.is_direct();
         let service_outcome = crate::cow_exec_pf::handle_pagefault(
             proc_endpoint, region, frames, page_alloc,
             fault_addr, request.write, table, page_cache, vfs_queue, pt,
@@ -2022,7 +2030,7 @@ impl VmServer {
         // 首 8 字节——对照 ELF 字节（RS: 48 83 e4 f0），分辨"内容没拷上/
         // 拷错页"与"内容对但 CPU 视图不同"。须在 proc 记账前用 pt（借用
         // 顺序），随后才轮到 proc 计数。
-        let probe_ok = matches!(
+        let probe_ok = !is_direct_region && matches!(
             service_outcome,
             Ok(
                 crate::cow_exec_pf::PagefaultAction::Handled
@@ -2156,7 +2164,7 @@ impl VmServer {
             Err(e) => {
                 // C-3 F0 续修取证（task1-close 裁决删除）。
                 crate::bootmark::mark(&alloc::format!(
-                    "nk4a: vm-pf err {:?}\n", e
+                    "nk4a: vm-pf err {:?} ep={:#x} fa={:#x}\n", e, proc_endpoint.0, fault_addr.0
                 ));
                 // C pagefaults.c:144-151 — 服务失败同属"不可服务"终局：
                 // SIGSEGV + 清挂起（旧实现只回 Error，挂起位不清）。

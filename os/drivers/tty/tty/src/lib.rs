@@ -41,12 +41,26 @@ pub fn new_service<B: LineBackend>(backend: B) -> TtyService<B> {
     TtyService::new(TtyDriver::new(LINE_SLOTS, CONSOLE_LINE, backend))
 }
 
-/// Service initialization entry: the wired line table over the COM1
-/// serial output face (OQ-N3 裁决方案 B — /dev/console drains to the
+/// Service initialization entry (x86_64): the wired line table over the
+/// COM1 serial output face (OQ-N3 裁决方案 B — /dev/console drains to the
 /// UART through kernel-mediated SYS_DEVIO; the video-text backend stays
 /// registered until a display-visible acceptance harness exists).
+#[cfg(target_arch = "x86_64")]
 pub fn init() -> TtyService<serial::SerialBackend<serial::WireUart>> {
     new_service(serial::SerialBackend::com1())
+}
+
+/// Service initialization entry (aarch64): the wired line table over the
+/// QEMU-`virt` PL011 console UART (NK4-C 续-132 — the 16550/COM1 lane has
+/// no aarch64 equivalent; the PL011 page is mapped into this driver via
+/// `VM_MAP_PHYS` at startup and driven with volatile register accesses,
+/// the C ARM-board serial model). A failed device map fail-fasts the
+/// driver: without the UART there is no console to serve.
+#[cfg(target_arch = "aarch64")]
+pub fn init() -> TtyService<serial::Pl011Backend<serial::WirePl011>> {
+    let backend = serial::Pl011Backend::virt_console()
+        .expect("tty: cannot map PL011 console UART");
+    new_service(backend)
 }
 
 /// Service initialization over the null backend (an unplugged terminal),
