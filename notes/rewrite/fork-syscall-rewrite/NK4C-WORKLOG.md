@@ -8,7 +8,14 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-130（2026-10-01·**aarch64 exec EINVAL 双根因定谳+成修入库（9fc7c88f7）——SYSCALL 消息腿屏障 + 懒 FPU 轮转真洞（apply_to_trap_frame 覆盖归属策略）；/bin/sh exec 全链首通、INIT 首达 init-state MultiUser（aarch64 历史最深）；marker 剩最后一层＝sh 之后的用户态 rc/echo/tty 管道（续-131）**）：承续-129 入库后真机复跑，exec tail-memset 仍 -22 EINVAL，两轮取证定谳：
+> **🛑 最新前沿＝§1.120续-131（2026-10-01·**marker 最后一段定谳＝tty 串口后端为 x86 16550 端口 I/O 专用，aarch64 PL011 MMIO 无后端臂——用户态控制台输出在 aarch64 从未存在；修法＝serial.rs 加 PL011 MMIO 臂（新功能件，本轮纯取证 WORKLOG-only）**）：承续-130（MultiUser 达成），sh 用户态管道逐层取证：
+> - **sh 侧全通**：`sh argc=3 s=1` → **`sh-rcok len=0x34d`（/etc/rc 845B 读取成功）** → `shf`×2（两条 rc 外部命令行各 fork 一次）→ PM_FORK/VFS_PM_FORK_REPLY/setaddr(0xd)/SCHED INHERIT 全链健康 → 三个 fork 子（0x800d/e/f）各 ~123 页 demand-paging＝**echo 等子真跑了**。
+> - **伪线索排除**：串口里成对下探的 0x7ffffffdxx 缺页＝RS(ep=2)/INIT(ep=b) 自身深栈（vm-pf ep= 探针定身份），与 sh 子无关。
+> - **真墙**：`os/drivers/tty/tty/src/serial.rs` 头注即「PC16550 UART、COM1_BASE=0x3F8、sys_inb/sys_outb 端口车道（OQ-N3 裁决）」——aarch64 QEMU virt 的控制台是 **PL011 MMIO@0x0900_0000**，无 16550/无端口 I/O ⇒ echo 写 fd1→VFS→tty→sys_outb(0x3F8) 在 aarch64 全失败 ⇒ 串口上从未有过任何用户态输出（全程只有内核 EarlyConsole/VM diagctl）。**目标① aarch64 marker 的最后一段＝给 serial.rs 加 PL011 MMIO 臂**（对位 C minix3 ARM 板的串口后端；实现面：PL011 寄存器组 FR/DR、经内核 MMIO 通道或专用 grant——需一轮独立实现+CodeReview）。
+> - **取证纪律**：用户态 diagctl 在 fork 风暴窗口非确定丢弃（shfk/shx 多轮零命中 vs shf 命中）——结论只以多次命中+内核侧（vm-pf/bootmark 稳定）为准。探针全滚、tracked 净。
+>
+
+> **（历史·§1.120续-130（2026-10-01·**aarch64 exec EINVAL 双根因定谳+成修入库（9fc7c88f7）——SYSCALL 消息腿屏障 + 懒 FPU 轮转真洞（apply_to_trap_frame 覆盖归属策略）；/bin/sh exec 全链首通、INIT 首达 init-state MultiUser（aarch64 历史最深）；marker 剩最后一层＝sh 之后的用户态 rc/echo/tty 管道（续-131）**）：承续-129 入库后真机复跑，exec tail-memset 仍 -22 EINVAL，两轮取证定谳：
 > - **根因1（SYSCALL 消息腿缺屏障，续-22 同族）**：内核 dispatch 收到 m_type=0（Fork 臂）而 VFS 发的是 SYS_MEMSET(0x60d)——载荷全对、唯独头 8 字节槽是 0/陈旧值。修复＝`minix-sys/syscall.rs` kernel_call 腿 trap 前插 `commit_message_to_memory`（ipc.rs pub(crate)），与续-22 IPC 三腿同构，三架构统一。
 > - **根因2（懒 FPU 轮转从未生效）**：`boot.rs apply_to_trap_frame` 每次 dispatch 重写 CPACR——注释写 0b01、代码 `orr #(0x3<<20)` 实写 **0b11** 且 orr 清不掉已置位 ⇒ EC=0x07 腿从未触发（fpu-trap 探针 0 命中），VFS park 窗口内 d9 常量 (0x60d,1) 被其它用户进程（VM 的 FP 字面量池）踩掉＝SD-23 用户↔用户互踩本体；第二层洞＝若只改 0b01，owner 重调度后自陷阱零恢复摧毁活值（RS boot panic 实锤）。修复＝**移除 apply_to_trap_frame 的 CPACR 写**（策略唯一所有者＝lib.rs finish_and_restore 的 enable/disable（C:443-446 对位）+ EC=0x07 轮转），删死 cpacr 模块，fpu.rs init 0b11→0b01（S1 裁决不接线+注释叙事修正），fpu_enable_el0 文档同步（S2）。
 > - **验证**：exec tail-memset EINVAL 绝迹（ms-in 实证 raw=0x60d 正确分派）、/bin/sh 3 段+4MiB 栈 mmap+PM_EXEC_NEW+SCHED 全通、INIT 首达 MultiUser、panic=0；x86 marker=2/panic=0 不回归；host 1400/0、clippy 55=55、rustfmt Δ0、check-layout PASS；CodeReview APPROVED（2SF+2NIT 全采，S1 真机接线实验 a64-fix-7 撞 pm fb201 墙后按 B 选项不接线）。
@@ -9760,3 +9767,27 @@ sh 运行后的用户态管道：/etc/rc 读取→echo exec→/dev/tty 写（mar
 2. **硬件策略寄存器必须单点所有**：同一 CPACR 被 arch（apply_to_trap_frame）与 kernel（finish_and_restore）两处写=策略被覆盖；跨层策略归属要在设计文档钉死。
 3. **懒 FPU 的自陷阱零恢复洞**：门控从 0b11 改 0b01 时，必须确认「owner==自己」路径不会走 restore（活值只在 ownership 持有期间产生、缓冲可能 stale）——C 的 clts 分支正是为此存在。
 4. diagctl 探针在 PM 忙环下静默丢弃（fb201 轮 lds/lds2 零可见）+ ugrep 非 UTF-8 静默吞——字节级 python3 取证纪律全程有效。
+
+## §1.120续-131（2026-10-01·**marker 最后一段取证定谳：tty 串口后端 x86-only，aarch64 无用户态控制台输出（纯取证、探针全滚、tracked 净、WORKLOG-only）**）
+
+### 现象
+续-130 后 aarch64 真机达 init-state MultiUser、panic=0，但 rc marker 仍未出；MultiUser 后尾部仅 sa-call 封顶。
+
+### 定位过程
+1. sh 面包屑（run_status/child_exec/fork 探针）：`sh argc=3 cmd=0 s=1`、**`sh-rcok len=0x34d`**（/etc/rc 经 VFS/imgrd 读取成功 845B）、`shf c=…`×2（两条外部命令行进 run_pipeline fork）；`shfk/shx`（fork 返回臂/子 exec 臂）多轮零命中——diagctl 在 fork 风暴窗口非确定丢弃（run2 shf 命中 run3 全丢的对照坐实），非路径未达。
+2. 内核/VM 侧对账：PM_FORK（`pm 0020c`）、VFS_PM_FORK_REPLY（`pm 98701`）、setaddr nr=0xd、SCHED INHERIT（`tc f05`→`rv 0000`）全链健康；三个 fork 子（ep=0x800d/e/f）各 ~123 页 vm-pf＝exec+运行实锤。
+3. vm-pf ep= 探针定身份：成对下探的 0x7ffffffdxx 缺页属 **RS(ep=2)/INIT(ep=b)** 自身深栈（伪线索排除）；sh 子无异常栈行为。
+4. 剩余唯一链路＝echo 的 write(1)→VFS→tty 驱动→UART。读 `os/drivers/tty/tty/src/serial.rs`：后端＝PC16550 + COM1_BASE=0x3F8 + sys_inb/sys_outb **端口 I/O 车道**（x86 专用，OQ-N3 裁决形态）；aarch64 QEMU virt 控制台＝**PL011 MMIO@0x0900_0000**（内核 EarlyConsole 即写它）——用户态 tty 无该后端 ⇒ 所有用户态 console 写失败 ⇒ 串口从未出现用户态输出（与全程观测一致：仅内核/VM 打印）。
+
+### 根因
+tty 驱动的 serial 后端只实现了 x86 16550 端口模型；aarch64 的 PL011 MMIO 后端缺失（未实现面，非回归）。
+
+### 修复方向（续-132 修靶，需独立实现+CodeReview）
+serial.rs 加 PL011 MMIO 臂（cfg(target_arch) 或运行期探测）：DR@+0x00 写、FR@+0x18 轮询 TXFF；访问通道＝内核 MMIO 面（sys_devio 的 memory 车道或 MMIO grant/映射——需对照内核现有 devio 门与 C minix3 ARM 板串口驱动的访问模型裁决）；x86 16550 臂不动。对位：x86 marker 链（echo→tty→COM1 sys_outb）在 aarch64 的完整对偶。
+
+### 验证
+纯取证轮：探针全滚（sh.rs/vm_server.rs git checkout）、tracked 净、零生产码改、免 CodeReview。
+
+### 经验/教训
+1. **用户态 diagctl 探针的可靠性边界再收紧**：fork/exec 风暴窗口的打印必丢——关键结论需「多轮命中」或改走内核侧（bootmark/EarlyConsole 稳定）。
+2. **跨架构驱动的「后端臂清单」是 review 检查项**：serial.rs 头注只描述 16550——文档自洽但架构面单边；同类 x86-only 后端（devio 端口车道消费方）应全量盘点。
