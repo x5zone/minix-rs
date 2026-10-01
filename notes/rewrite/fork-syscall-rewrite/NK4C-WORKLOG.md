@@ -8,7 +8,12 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-144（2026-10-02·**续-143 判别实验执行态：pmemsave 管道打通（HMP unix monitor alive during fb201 flood、echo 正常、执行待 newline 重发——QEMU 240s 窗口在轮询中耗尽）；**复现配方固化**：gh 轮 stval 家族 0x10bd2cabXX/0x409d2c9bb0 稳定再现于 Runcom exec sh 链（fb201 洪流后或并行），VM text 页 PA=0x8624b000+file_off(0x26c20 对 sepc 0x37c20)——pmemsave 0x86270000 0x8000 抓 4 页 diff ELF 0x26c00 起即可判 RAM≠ELF（d1）**）：gh19/gh20 双轮试跑：洪流约 1500-1600 行即现（QEMU 存活不停机＝pmemsave 窗口充足）；HMP unix socket echo 确认协议通，执行未触发疑 readline 状态（补发 \n 未及验证——QEMU 超时退出）。**续-143 剩余执行单**：①重跑 + fb201 现形后 pmemsave（python sendall 命令已含 \n、加 2s 延时+补发 \n 保险）→diff→d1 坐实则「全 F 页掩码写者」 hunting 升级为 text 破坏写者 hunting（kdst/堆溢出双候选）；②若 RAM==ELF ⇒ 转查 riscv trap stub 入口保存序列逐槽复核（d2）。
+> **🛑 最新前沿＝§1.120续-145（2026-10-02·**d1 证伪：VM text 页 RAM≡ELF 逐位一致（pmemsave 0x86270000 0x8000 抓全 32KB diff=0）——「text 破坏」假说被判别实验推翻；slot PFN 无 bit 26（gh16 sync26 零命中）；**(A) 收窄至 L1 中间表项**：query L0 读 c.ld a3,136(a2) 走的是 l0(=L1e PPN 解码表页 PA)+136——bad L1e PPN=0x409d2c9/0xbd2ca（越 RAM）非叶子 slot 写（sync_slot_pte flags 无高位且 slot pfn 干净）⇒ 污染点＝**walk_alloc 写 L1 中间项或 alloc_pt_page 返回越栈 PA**；续-146 修靶＝walk_alloc/alloc_pt_page 双点 dump+L1 中间项专项审计**）：gh19 判别实验全流程：fb201 洪流→QMP human-monitor-command→pmemsave 0x86270000 0x8000→全 32KB diff=0（IDENTICAL）。vm-pf first-200 门控后 1598 行即达洪流（探针瓶颈已消除）。
+> - **关键推理**：text 未破坏 ⇒ CPU 确实执行 ELF 指令 ⇒ sepc=0x37c20 的 c.ld a3,136(a2) 的 a2=0x409d2c9b28 是 **L1e PPN 解码出的 l0 表 PA**（非 GPR 残缺）——VM 的 walk_read 正确跟随了 L1e，但 **L1e 本身的 PPN 已被污染**（指向越 RAM 278GB）。L1e 不是叶子 slot（sync_slot_pte flags 干净、slot pfn 干净）⇒ **写者是 walk_alloc 的中间表项写入**或 alloc_pt_page 的 PA 返回值。
+> - **续-146 修靶**：①walk_alloc 写 L1 中间项前 dump (l0_table_pa, vaddr, alloc 返回值)——alloc_pt_page 返回越栈 PA 时现形；②alloc_pt_page 内部 alloc_pfn_reclaiming 的返回值审计（是否有越 0xA0000 的 pfn 被 bitmap 算术错误产出）；③成修+CodeReview+真机 marker 冲刺。
+>
+
+> **（历史·§1.120续-144（2026-10-02·**续-143 判别实验执行态：pmemsave 管道打通（HMP unix monitor alive during fb201 flood、echo 正常、执行待 newline 重发——QEMU 240s 窗口在轮询中耗尽）；**复现配方固化**：gh 轮 stval 家族 0x10bd2cabXX/0x409d2c9bb0 稳定再现于 Runcom exec sh 链（fb201 洪流后或并行），VM text 页 PA=0x8624b000+file_off(0x26c20 对 sepc 0x37c20)——pmemsave 0x86270000 0x8000 抓 4 页 diff ELF 0x26c00 起即可判 RAM≠ELF（d1）**）：gh19/gh20 双轮试跑：洪流约 1500-1600 行即现（QEMU 存活不停机＝pmemsave 窗口充足）；HMP unix socket echo 确认协议通，执行未触发疑 readline 状态（补发 \n 未及验证——QEMU 超时退出）。**续-143 剩余执行单**：①重跑 + fb201 现形后 pmemsave（python sendall 命令已含 \n、加 2s 延时+补发 \n 保险）→diff→d1 坐实则「全 F 页掩码写者」 hunting 升级为 text 破坏写者 hunting（kdst/堆溢出双候选）；②若 RAM==ELF ⇒ 转查 riscv trap stub 入口保存序列逐槽复核（d2）。
 >
 
 > **（历史·§1.120续-142（2026-10-02·**(A) 根本定性翻转＝VM text 页内存破坏（RAM 内容≠ELF）：gh14 帧全 dump 与 sepc 处 ELF 指令 `c.ld a3,136(a2)` 联立应得缺页址 0x7fffffffe088（帧 x12=栈顶页✓可读写），实测 stval=0x409d2c9bb0——**CPU 执行的指令流≠ELF**＝text 页在内存中被写坏，CPU 跑的是坏代码（其 a2=0x409d2c9b28 与 stval+136 自洽）；gh10(0x379da)/gh14(0x37d64) 两处不同 sepc 均此形态**）：机制＝某写者把垃圾字节写进 VM 的 text 页（exec 装载 PROT_RWX——riscv exec_worker 段+栈均 RWX「C 忠实」，text 可写=可破坏；aarch64/x86 同 RWX 但 aarch64 无此病=写入者 riscv 时序特有）。帧内寄存器自洽（x2/x5=用户栈、x11=stval、x14=V=0 的 L1e 形 0x9d2ea004、x15=VmDm 基址✓、x16=x14 页对齐、x17=全F页掩码移位形两轮逐位同）＝坏代码执行的伪自洽。
@@ -10082,3 +10087,20 @@ VM 的 exec 装载把段+栈映为 PROT_RWX（exec_worker.rs「C 忠实」注释
 
 ### 纪律态
 工作树净（HEAD=2272f5848+本 commit）；本轮零生产码改（纯取证+monitor 管道搭建）；gh15 的 alloc-big/sync-big 探针与续-138附 GPR dump 已随诊断面入库（cap/阈值齐），续-143 完成后统一滚除。
+
+## §1.120续-145（2026-10-02·**d1 证伪：VM text 页 RAM≡ELF（pmemsave 全 32KB diff=0）——续-143「text 破坏」假说被推翻；(A) 收窄至 L1 中间表项写点（walk_alloc/alloc_pt_page）**）
+
+### 判别实验（gh19+QMP pmemsave）
+1. gh19 重跑（重导出 loader_args 修「ROM regions overlapping」），fb201 洪流 ~1598 行现形。
+2. QMP unix socket + human-monitor-command + pmemsave 0x86270000 0x8000 → vmtext_gh.bin（32KB）。
+3. diff VM text 页 vs ELF：**IDENTICAL——0 diff bytes in 0x8000 window**。
+
+### 推理
+- text 未破坏 ⇒ CPU 执行 ELF 指令 ⇒ sepc=0x37c20 的 c.ld a3,136(a2) 是 walk_read L0 读（l0 保留在 a2 由编译器复用，136=l0_idx*8）。
+- a2=0x409d2c9b28 = l0 表 PA＝L1e PPN 解码 ⇒ **L1e PPN=0x409d2c9 = 合法 PPN 0x9d2c9 + 2^26**。
+- 2^26<<10 = 1<<36 = VmDm 基址——即 L1e 的 PPN **精确多出 VmDm 基址>>12**。
+- 排除：①text 破坏（本轮）；②叶子 slot PFN 位 26（sync26 零命中）；③flags（无高位）。
+- **指向：walk_alloc 写 L1 中间项时 alloc_pt_page 返回了越栈 PA**（或 alloc_pt_page→alloc_pfn_reclaiming→bitmap 算术产出越栈 pfn），后续 sync_slot_pte remap 用同 slot pfn 映叶时在**另一条 L1 链**上碰巧叠出了同一形状的坏 L1e。
+
+### 续-146 修靶
+①walk_alloc 写 L1 中间项前 dump (返回的 l0_table_pa, vaddr, channel)——alloc_pt_page 返回 PA≥RAM 时现形；②alloc_pt_page 内 alloc_pfn_reclaiming 返回值审计（bitmap 位图 word/bit 解码）；③PT_SEEN 查重位图扩到全域（0x409d2c9 ≥ 512*64=32768 ⇒ 现有 PT_SEEN 只覆盖 0..32768，越栈 pfn 不会被 dup 检测到）；④成修+CodeReview+真机 marker 冲刺。
