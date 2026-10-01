@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-143（2026-10-02·**(A) 根本定性翻转＝VM text 页内存破坏（RAM 内容≠ELF）：gh14 帧全 dump 与 sepc 处 ELF 指令 `c.ld a3,136(a2)` 联立应得缺页址 0x7fffffffe088（帧 x12=栈顶页✓可读写），实测 stval=0x409d2c9bb0——**CPU 执行的指令流≠ELF**＝text 页在内存中被写坏，CPU 跑的是坏代码（其 a2=0x409d2c9b28 与 stval+136 自洽）；gh10(0x379da)/gh14(0x37d64) 两处不同 sepc 均此形态**）：机制＝某写者把垃圾字节写进 VM 的 text 页（exec 装载 PROT_RWX——riscv exec_worker 段+栈均 RWX「C 忠实」，text 可写=可破坏；aarch64/x86 同 RWX 但 aarch64 无此病=写入者 riscv 时序特有）。帧内寄存器自洽（x2/x5=用户栈、x11=stval、x14=V=0 的 L1e 形 0x9d2ea004、x15=VmDm 基址✓、x16=x14 页对齐、x17=全F页掩码移位形两轮逐位同）＝坏代码执行的伪自洽。
+> **🛑 最新前沿＝§1.120续-144（2026-10-02·**续-143 判别实验执行态：pmemsave 管道打通（HMP unix monitor alive during fb201 flood、echo 正常、执行待 newline 重发——QEMU 240s 窗口在轮询中耗尽）；**复现配方固化**：gh 轮 stval 家族 0x10bd2cabXX/0x409d2c9bb0 稳定再现于 Runcom exec sh 链（fb201 洪流后或并行），VM text 页 PA=0x8624b000+file_off(0x26c20 对 sepc 0x37c20)——pmemsave 0x86270000 0x8000 抓 4 页 diff ELF 0x26c00 起即可判 RAM≠ELF（d1）**）：gh19/gh20 双轮试跑：洪流约 1500-1600 行即现（QEMU 存活不停机＝pmemsave 窗口充足）；HMP unix socket echo 确认协议通，执行未触发疑 readline 状态（补发 \n 未及验证——QEMU 超时退出）。**续-143 剩余执行单**：①重跑 + fb201 现形后 pmemsave（python sendall 命令已含 \n、加 2s 延时+补发 \n 保险）→diff→d1 坐实则「全 F 页掩码写者」 hunting 升级为 text 破坏写者 hunting（kdst/堆溢出双候选）；②若 RAM==ELF ⇒ 转查 riscv trap stub 入口保存序列逐槽复核（d2）。
+>
+
+> **（历史·§1.120续-142（2026-10-02·**(A) 根本定性翻转＝VM text 页内存破坏（RAM 内容≠ELF）：gh14 帧全 dump 与 sepc 处 ELF 指令 `c.ld a3,136(a2)` 联立应得缺页址 0x7fffffffe088（帧 x12=栈顶页✓可读写），实测 stval=0x409d2c9bb0——**CPU 执行的指令流≠ELF**＝text 页在内存中被写坏，CPU 跑的是坏代码（其 a2=0x409d2c9b28 与 stval+136 自洽）；gh10(0x379da)/gh14(0x37d64) 两处不同 sepc 均此形态**）：机制＝某写者把垃圾字节写进 VM 的 text 页（exec 装载 PROT_RWX——riscv exec_worker 段+栈均 RWX「C 忠实」，text 可写=可破坏；aarch64/x86 同 RWX 但 aarch64 无此病=写入者 riscv 时序特有）。帧内寄存器自洽（x2/x5=用户栈、x11=stval、x14=V=0 的 L1e 形 0x9d2ea004、x15=VmDm 基址✓、x16=x14 页对齐、x17=全F页掩码移位形两轮逐位同）＝坏代码执行的伪自洽。
 > - **续-143 修靶（text 破坏猎杀+判别实验）**：判据细节（gh18 补充）——sepc=0x37c20 处指令＝`c.ld a3, 136(a2)`（6194，当前二进制✓gh18 布局），帧 x12(a2)=0x7fffffffe000 ⇒ 该指令应读 0x7fffffffe088（栈区内可写不缺页），实测 stval=0x409d2c9b90≠——**三种解释（d1 text 破坏/d2 帧保存槽位 bug/d3 frame 被后处理改写）由判别实验一次裁决**：①panic 时经内核 DM 读 VM text 页（vm pa=0x8624b000，sepc 对应偏移）与 ELF 逐字节 diff——RAM≠ELF ⇒ d1 坐实；②dump 帧两次（pagefault-body 入口/出口各一次）——不一致 ⇒ d3；③读 riscv trap stub 入口 asm 逐槽核对（32 sd 序列已目检完整，但 sp/sscratch swap 时序需复核）。④嫌疑写者＝VM 堆溢出（x9=0x140065efe0=VM_HEAP_BASE+6.7MB live 值）/kernel kdst 误写。⑤成修+CodeReview+marker 冲刺。
 >
 
@@ -10065,3 +10068,17 @@ VM 的 exec 装载把段+栈映为 PROT_RWX（exec_worker.rs「C 忠实」注释
 ### 经验/教训
 1. **帧/指令联立矛盾＝text 破坏的判据**：单看 stval 或单看寄存器都会引向假根因（本例先后产生「毒 PTE」「PFN 位 26」「GPR 恢复破坏」三个假根因）；联立 ELF 反汇编+帧寄存器+缺页址三方核对一次定性。
 2. **RWX text 是内存破坏的放大器**：exec 装载 PROT_RWX（C 忠实）让 text 页可写——任何越界写都能改代码流。aarch64/x86 同 RWX 未发病=写入者架构/时序特有，但 RWX 本身是共性风险（W^X 专开单元的论据+1）。
+
+## §1.120续-144（2026-10-02·**续-143 判别实验执行态：pmemsave 管道打通（HMP echo ✓/执行待 newline 重发），复现配方固化，QEMU 窗口耗尽收尾**）
+
+### 执行态
+- gh19：fb201 洪流（1598 行），QEMU 存活，monitor attach ✓，pmemsave 发出但 /tmp/vmtext.bin 未落盘（recv 阻塞问题）。
+- gh20：修 socket timeout 后重跑——HMP echo 确认（readline 回显字符+退格序列），pmemsave 命令已送达，执行未验证即 QEMU 240s 窗口耗尽退出。
+- **配方固化**：VM text 页 PA = 0x8624b000 + file_off(sepc)；pmemsave 0x86270000 0x8000 抓 sepc±4 页；diff ELF file_off 同窗。fb201 洪流 ~1500 行即现、QEMU 存活不停机=窗口充足。
+- **工具链坑**：/tmp/loader_args.txt 会过期（gh 轮重建 table.bin 后 mod 大小变）——「ROM regions overlapping」即过期症状，重导出即可；HMP unix socket 的 readline 需 \n 触发执行，recv 需 settimeout 防阻塞。
+
+### 续-143 剩余执行单（下一会话直接执行）
+①重跑 + fb201 现形后 pmemsave（python 脚本本会话已验证到 echo 步，补 2s 延时+补发 \n）→diff 4 页 vs ELF→d1（RAM≠ELF）坐实则「全 F 页掩码写者」升级为 text 破坏写者 hunting（kdst 误写/VM 堆溢出双候选，帧 x9=VM_HEAP 指针为 live 证据）；②若 RAM==ELF ⇒ 转查 riscv trap stub 入口保存序列逐槽复核（d2 帧保存 bug）。③成修+CodeReview+真机 marker 冲刺。
+
+### 纪律态
+工作树净（HEAD=2272f5848+本 commit）；本轮零生产码改（纯取证+monitor 管道搭建）；gh15 的 alloc-big/sync-big 探针与续-138附 GPR dump 已随诊断面入库（cap/阈值齐），续-143 完成后统一滚除。
