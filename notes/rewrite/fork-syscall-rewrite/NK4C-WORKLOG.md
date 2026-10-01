@@ -10299,3 +10299,8 @@ gh45 复核：VM 侧 set_addrspace 铸造点=boot(vm_server.rs:793)/fork(fork.rs
 
 ### gh46 决据（sas-fork/sas-clear 双探针）
 `sas-fork ep=32780 root=0x9dc38000` + `sas-clear ep=32780 root=0x9dc38000`（exec endpt=0x800c 紧随）。gh35 dump 实填链 root=0x9dc39000（→L1 0x9d2af000→L0 0x9d2ae000→栈页 0x9d2b0000）。两次 rebind 同根 0x9dc38000：fork 腿当时正确（CoW 镜像根）；clearproc 腿 init_page_table 新分配根应为 0x9dc39000（mmaps 全填此链），但 sas-clear 读 root_paddr 仍得 0x9dc38000 ⟹ **handle.root_paddr 字段与新根页脱节**（init 写的字段 vs 实际用的根不一致，或 clearproc 拿到旧句柄副本）。child 硬件走 0x9dc38000 空根→同址无限缺页；VM 在 0x9dc39000 上填页且回读全过；rm 兜底救 find——全症状一字不差闭环。
+
+## §1.120续-164（2026-10-02·**终审收敛：init_page_table 无脱节（句柄/内核今日同根 0x9dc38000，gh35 的 0x9dc39000 系上轮运行旧值）；真墙=riscv TLB——VM VmDm 通道 PTE 写按续-77 跳过 sfence，child 栈 VA 的 fork 时代 CoW 只读 TLB 项在 resume 唯一一次 sfence 后仍活，VM 填页不刷→child 重试永撞旧 RO 项；续-165=kernel pagefault-resume 路径补 fault_addr 的 sfence.vma（或 VM 填页后经内核 FlushTlb/InvlPg）**）
+
+### 审计链（gh46 + 源码）
+①init_page_table vm_pt.write(pt) 字段更新无脱节；②sas-clear 印 0x9dc38000=句柄真值（0x9dc39000 为 gh35 旧运行值，两轮不同 boot 重分配，非同轮矛盾）；③vmctl_set_addr_space 仅 ptproc==target 时 set_active_root_tracked（child 非当前进程不触发）；④switch_address_space live≠root 时 set_active_root+sfence ✓（riscv64/tlb.rs:82-90 csrw satp+sfence.vma zero,zero 在场）；⑤**write_pte_dm VmDm 通道跳过 sfence（续-77 有意设计，注释自证「not-present→present 无需刷」）——但本墙的 VA 在 fork 时代有合法 RO 映射，TLB 项为 VALID，假设不成立**。child 写栈页→TLB RO 命中→fault→VM 填新 PTE（无刷）→重试→TLB RO 再中→无限。pte-wb 回读过（内存层面已写）；sfence 缺失=TLB 层面未生效。
