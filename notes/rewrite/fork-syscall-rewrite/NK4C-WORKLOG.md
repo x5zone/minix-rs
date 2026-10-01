@@ -9653,3 +9653,19 @@ gdb-multiarch target/riscv64gc-unknown-none-elf/release/kernel   # 或对 minix-
 **结论（诚实）**：(A) 大概率＝**页表帧 use-after-free/别名**（帧被 free 后未从父 PTE 摘链、被数据复用，walk 再入读其数据当 PTE）。**纯文本静态已到自相矛盾边界，唯 QEMU `-s -S`+gdb 对可疑复用帧设硬件写 watchpoint 能定谳**（续-126 处方的目标即此）。本会话上下文耗尽，**不再叠投可能误导的静态断言**；把上述两模型（①内联漏守 / ②frame-alias，倾向②）如实交下一轮 gdb 判定。**未坐实不成修。**
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)纠偏后交gdb定谳·aarch64❌；②x86核心✅；③已勘察。零生产码改、纯分析纠偏→WORKLOG-only、免 CodeReview。
+
+---
+
+## §1.120续-128（2026-10-01·**riscv (A) fresh 会话再收紧：用现成 alloc-reuse-PT 检测器排除范围内 PT↔data 复用；崩溃 PPN 远超所有位图/合法帧号→纯 data-read-as-PTE，定谳唯 gdb（零生产改动）**）
+
+fresh 会话（用户 resume，fresh blocked 审计）。查 alloc_page.rs 已存在但前会话漏 grep 的 **`alloc-reuse-PT` 检测器**（数据分配返回曾作 PT 页的 pfn＝PT 帧被当数据复用的实锤）。
+
+**fr1（HEAD，15969 行，VMfault=1，stval=0x10bd2cbbbc、sepc=0x367f0 落 query→walk_read）**：`ptalloc-DUP=0` 且 **`alloc-reuse-PT=0`**。
+
+**关键边界收紧**：两检测器的位图只覆盖 `pfn < 512*64 = 32768`（即 128MB 内帧）；崩溃 PPN≈`0xbd2cbb`≈**12.3M pfn（≈49GB 空间）远超合法内存(RAM≤0xA0000000=2.5GB=655K 帧)与位图范围** ⇒ ① 检测器看不到该 pfn（范围内 0 命中不代表无 alias）；② 该"PPN"**不可能是任何真实分配帧**，只能是**被当 PTE 读的那一帧内容是数据/非表字节**（data-read-as-PTE）。
+
+**三模型收敛（唯 gdb 判）**：(a) 建表期某级 PTE 写入错 PPN；(b) 某中间/叶表帧未正确 zero（walk_alloc 依赖 vm_pt_alloc 的 write_bytes 清零，若某路径绕过则残数据）；(c) 越界写踩坏活表帧。**纯文本守卫+现成检测器已把 (a)(b)(c) 逼到需 gdb 现场读那一次 query 的 vaddr/root/各级 PTE 原值**——超出 text-session 能力。
+
+**处方不变（续-126/127）**：`qemu-system-riscv64 … -s -S` + `gdb-multiarch target remote :1234`；在 `pagefault for VM` panic 处 `hbreak`，读 `$pc`(→rust-objdump 定 query 内具体读点)、`$a*` 寄存器（被污染 PTE 指针/其 DM base phys），反查 root_paddr + 逐级 walk 的 PTE 原值 → 定 (a)/(b)/(c)。候选优先 (b)：查 riscv `walk_alloc`/`map` 是否有一条路径分配表帧未过 `vm_pt_alloc` 的清零（如 root 页在别处分配）。**未坐实不成修**。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)收窄至三模型待gdb·aarch64❌；②x86核心✅；③已勘察。零生产码改→WORKLOG-only、免 CodeReview。
