@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-139（2026-10-02·**(A) 烟枪解码＝rc 子栈区 L1 表项被 OR 进 VmDm 基址常量（1<<36）：gh14 帧 GPR 全 dump 的寄存器代数自洽解出——坏 L1e PPN 精确多出 0x4000000＝1<<36>>10；「某写路径把 DM 槽指针（基址+槽位）当 PTE 值写回」为唯一自洽机制；续-140 修靶＝cow_exec_pf sync_slot_pte/vmproc map 路径审计+PGR dump 轮**）：gh14 帧 GPR 全 dump（32 寄存器完整）代数自洽验证：x11=stval=0x409d2c9bb0=a6(0x9d2ea000 表 PA…注意本帧属另一 vaddr 的 walk)|…重解：坏 L1e PPN＝0x409d2c9（l0=0x409d2c9000 非页对齐来源=0x9d2c9000+1<<34）→l1e 多出＝0x1000000<<10=1<<36。含义：**L1 表项＝合法 V|W|U|PPN(0x9d2c9) 再 OR/VmDm 基址 1<<36**——即某写路径把「DM 槽指针（基址 1<<36+槽位）」的值当 PTE 写回（aarch64 续-113 寄存器/值混用同族），或 update_flags 类把含基址的值 OR 入。被污染表项＝rc 子（0x800c）exec 后栈区 L1（write-promote/COW 窗口）→子首条栈写走坏表→SIGSEGV→下游乒乓。
+> **🛑 最新前沿＝§1.120续-140（2026-10-02·**(A) 根因再收窄至 VM slot 簿记：sync_slot_pte 的 paddr=frames.pfn_to_phys(pfn)——坏 L1e 的 PPN 精确多出 0x4000000=pfn bit 26（slot pfn=0x409d2c9 vs 合法 0x9d2c9），remap 忠实映射坏帧 ⇒ 污染源＝栈页 slot 的 PFN 被置位 26（alloc/fork-copy/COW 降级三候选写点）；flags 无辜（read_write+EXECUTABLE 无高位）**）：续-139 的「OR 进 VmDm 基址」机制精化＝写点在 sync_slot_pte 三路分派的 remap 臂（slot pfn 带错位→pfn_to_phys 带 1<<36→L1e PPN 精确多 0x4000000→walk 跟随后 DM 读越栈）。**续-141 修靶**：①exec 子栈页 slot pfn dump（alloc 时/remap 时双点）+位 26 置位者定位（PageFrames 位图 alloc 的 word/bit 算术 or fork 拷贝 pfn 直传）；②位 26 语义核查（pfn 0x4000000 = PA 0x4000000<<12 = 1<<38——某 64 位值的高半截？）；③成修+CodeReview+marker 冲刺。
+>
+
+> **（历史·§1.120续-139（2026-10-02·**(A) 烟枪解码＝rc 子栈区 L1 表项被 OR 进 VmDm 基址常量（1<<36）：gh14 帧 GPR 全 dump 的寄存器代数自洽解出——坏 L1e PPN 精确多出 0x4000000＝1<<36>>10；「某写路径把 DM 槽指针（基址+槽位）当 PTE 值写回」为唯一自洽机制；续-140 修靶＝cow_exec_pf sync_slot_pte/vmproc map 路径审计+PGR dump 轮**）：gh14 帧 GPR 全 dump（32 寄存器完整）代数自洽验证：x11=stval=0x409d2c9bb0=a6(0x9d2ea000 表 PA…注意本帧属另一 vaddr 的 walk)|…重解：坏 L1e PPN＝0x409d2c9（l0=0x409d2c9000 非页对齐来源=0x9d2c9000+1<<34）→l1e 多出＝0x1000000<<10=1<<36。含义：**L1 表项＝合法 V|W|U|PPN(0x9d2c9) 再 OR/VmDm 基址 1<<36**——即某写路径把「DM 槽指针（基址 1<<36+槽位）」的值当 PTE 写回（aarch64 续-113 寄存器/值混用同族），或 update_flags 类把含基址的值 OR 入。被污染表项＝rc 子（0x800c）exec 后栈区 L1（write-promote/COW 窗口）→子首条栈写走坏表→SIGSEGV→下游乒乓。
 > - **续-140 修靶**：①`cow_exec_pf.rs` sync_slot_pte/remap/write 全 PTE 写点的 value 来源审计（谁可能携带 1<<36）；②VM map/protect 路径 `paddr_to_pte` 的入参审计（VA/DM 指针误当 PA）；③PGR dump 轮（对被污染 L1 槽 PA 设 watch 或值匹配打印）抓写者；④成修+CodeReview+真机 marker 冲刺（fb201 乒乓/RS SIGSEGV 疑同根重验）。
 >
 
@@ -9989,3 +9992,18 @@ query L0 读 `a1 = a6 + ((vaddr>>9)&0xFF8) + a5`：idx 项 ≤0xFF8、a6=(l1e<<2
 ### 经验/教训
 1. **寄存器代数自洽法**：完整帧 dump 的多寄存器联立（x14=x16|4、x17=x8>>8、stval=基址|idx+表址）能唯一锁定不一致项——比单寄存器比对强一个量级。
 2. 帧全 dump 探针（32×hex）已是该类 bug 的标配仪器（本仓第三个验证：aarch64 续-113、x86 GPR 恢复族、riscv 本例）。
+
+## §1.120续-140（2026-10-02·**(A) 根因再收窄：栈页 slot PFN 位 26 被置——sync_slot_pte remap 忠实映射坏帧（静态审计+gh14 数据，探针待续-141）**）
+
+### 收窄链
+sync_slot_pte（cow_exec_pf.rs:101-141）读码：paddr = frames.pfn_to_phys(pfn)（slot 的 PFN）→ 三路分派 query 同 PA→update_flags / 异 PA→remap(vaddr,paddr,flags) / 无→map。flags = read_write/read_only + EXECUTABLE（**无任何高位**——flags 无辜）。gh14 坏 L1e 的 PPN 精确多出 0x4000000 ⇒ **paddr 精确多出 1<<36 ⇒ slot pfn 精确多出 2^26（位 26）**：slot pfn = 0x409d2c9 vs 合法 0x9d2c9（paddr 0x9d2c9000，RAM 内 0x80000000..0xA0000000 ✓）。
+
+### 候选写点（位 26 置位者）
+①PageFrames 位图 alloc 的 word/bit 算术（pfn 0x409d2c9 = 67.8M——位图池仅 131072 pfn，位图分配不可能产出 ⇒ 非分配器）；②fork/COW 的 slot pfn 直传拷贝（父栈页 pfn 带出）；③pfn_to_phys/phys_to_pfn 的 DRAM 基址偏移算术（0x9d2c9 = 绝对 pfn ✓；0x409d2c9 = 0x9d2c9+2^26——2^26 = 0x4000000……pfn<<12 = PA 1<<38 = 某 64 位值高半截的形状）。
+（对照：aarch64 同栈页 exec 链无此病——架构差异点在 PageFrames 位图实现或 pfn 算术的 riscv 分支。）
+
+### 续-141 修靶
+①exec 子栈页 slot pfn 双点 dump（alloc_and_map 时 / remap 时）；②PageFrames 位图 alloc/phy_to_pfn 的 riscv 分支逐行审计（word/bit 算术、DRAM 偏移）；③定位位 26 置位者→成修+CodeReview+marker 冲刺。
+
+### 经验/教训
+「OR 进基址」两层解码（先 VmDm 基址→再 pfn 位 26）的教训：坏值的 bit 形状要对照**多层语义坐标**（PTE bit→PPN bit→PA bit→pfn bit）逐层换算——每层差 2 的幂，逐层对齐后剩余差异即真凶指纹。
