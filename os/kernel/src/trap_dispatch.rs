@@ -1956,6 +1956,26 @@ unsafe fn riscv64_pagefault_body(
         Console::write_str(" stval ");
         Console::write_hex(fault_addr);
         Console::write_str("\n");
+        // 续-153b 探针（用后即滚）：stval 机器推导——VM_DM_BASE=1<<36，
+        // pa = stval-基，页基/槽偏移拆分。槽偏移非 8 倍数 ⇒ 非槽读而是
+        // 数据访问（区分 walk_read 槽读 vs 叶数据访问两类崩坏形态）。
+        {
+            let pa = fault_addr.wrapping_sub(1u64 << 36);
+            Console::write_str("pfvm: pa=");
+            Console::write_hex(pa);
+            Console::write_str(" off=");
+            Console::write_hex(pa & 0xfff);
+            Console::write_str("\n");
+            // 续-154：walk 真根——fault 时 satp 仍是被困进程（VM）的，
+            // 内核不在 trap 入口换根。satp.PPN<<12 = VM 地址空间根表。
+            let satp: u64;
+            unsafe { core::arch::asm!("csrr {}, satp", out(reg) satp) };
+            Console::write_str("pfvm: satp=");
+            Console::write_hex(satp);
+            Console::write_str(" root=");
+            Console::write_hex(satp & 0x00000FFFFFFFFFFF << 12);
+            Console::write_str("\n");
+        }
         // 续-138 探针（用后即滚）：全 GPR 帧 dump——寄存器残缺恢复定位。
         for (idx, val) in frame.gpr.iter().enumerate() {
             Console::write_str("x");

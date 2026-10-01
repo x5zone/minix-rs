@@ -10208,3 +10208,19 @@ EXEC_NEW 到达→192B exec_info 拷入（kdst 0x82593fc0 len=0xc0）→帧拷�
 3. 坏槽 VA 确定后第二次 gdb：`watch *(unsigned long*)坏槽VA` 自 t=0 重启（`monitor system_reset`）抓写者 $pc→成修。
 4. 备选静态线：root=0x82000000 与 bootface bump 池基重合——查 VM PhysAlloc memmap 是否漏扣 boot 期已占帧（模块落地/名字池），若漏扣则首因=boot/VM 帧重叠，与 gh29/32 的「表页含模块 ELF 字节」自洽。
 门：未坐实不成修；探针（alloc_page.rs 检测器、trap_dispatch pfvm、pm/vf/vr/vmm/pd 系）过 C-61 pattern-gate 前不得滚除承诺外的场景。
+
+## §1.120续-154（2026-10-02·**(A) 根因定谳：VM 堆里 Paging 句柄被栈区元数据覆写（root 字段={1,pfn 0x9d2b0,0x3ff000}），query 走 pa≈0 设备洞把 QEMU PCI 字节当 PTE——pmemsave 物理取证全链坐实；成修靶=VM 堆 UAF/别名**）
+
+### 取证方法（记死，可复用）
+qemu 加 `-monitor unix:套接字`（tmp/nk4a/wrap-boot-mon.sh 行手术）；panic 后内核 halt、qemu 存活，monitor `pmemsave 0x80000000 0x20000000 "文件"` 抓全 RAM（**文件路径必须带引号**，否则 HMP 把 `/tmp` 当表达式）；python3 离线按 PA 分析。gdb-multiarch hbreak 对 VM 用户 VA **零命中**（batch 断点怪癖，弃用此路）。
+
+### 全链证据（gh34/gh35，确定性复现 sepc=0x38b5a stval=0x409d28db90）
+1. **fault 语义**：DM 窗 i2=(VA>>30)&0x1FF=64+pa>>30。fault VA 0x409d28db90 = DM+0x309d28000+0xb90 → VM 自己 satp 根（**pfvm 新探针实证 satp=0x8000000000082000，root=0x82000000**）的 root[75] 缺失→pagefault。
+2. **walk 数据全部健康**：child 根链 root=0x9dc39000（0x9dc39ff8=0x274abc01）→L1=0x9d2af000（[511]=0x274ab801）→L0=0x9d2ae000（[510]=0x274ac0df 叶→栈页 0x9d2b0000，帧拷贝目的页）——整链在 RAM 且槽值全部合法。
+3. **坏"指针"不在 RAM**：0xC274A001 族（l1e）与一切越-RAM 提取目标在全 RAM dump 零命中→该值非 RAM 内容。
+4. **真根**：pfvm satp→root=0x82000000 的 DM 窗映射里有 root[4]=pa[0,1GB)——**QEMU virt 的 PCI MMIO 洞**（非 RAM、有映射、读不 fault 返设备字节）。query 沿**垃圾 root_paddr≈0x1** 走进设备洞，读 PCI 字节当 PTE，链条最终踩 root[75] 缺失→fault。这解释续-116~128 所有矛盾（守卫 0 命中=中间值根本不经 RAM；跨运行 0xbd2c/0x309d2 家族漂移=设备寄存器内容随时间微变）。
+5. **垃圾 root 的来源**：faulting query 的 self 经 VM 根走表=VA 0x140065efe0→PA 0x9d2b9fe0，该处应为 Riscv64Paging{root_paddr:u64,channel:u8}，实测字节=**{u32:1, u32:0x9d2b0, u32:0x3ff000, u32:0}**＝栈区元数据（末栈页 pfn 0x9d2b0 + 4MB size-0x3ff000）。**Paging 句柄的堆块被 region/栈元数据覆写**；而真子根 0x9dc39000 的句柄在 RAM 中不存在（全 RAM 搜 root 值仅两处非-Paging 布局）→句柄块在 clearproc（旧 AS 拆除）后被释放，栈元数据分配复用同块，陈旧句柄再被 query=**VM Rust 堆（heap_arena）UAF/别名**。VM 帧分配器（gh32 检测器）与 BTreeMap panic（gh31）皆此同一堆别名病的症状窗。
+
+### 续-155 成修靶（唯一）
+VM 堆（alloc::，heap_arena 后端）别名：定位谁在 Paging 句柄存活期释放/复用其块。两条候选：①exec 链对同一 child 建了两个句柄、旧句柄 clearproc 释放后仍被 EXEC_NEWMEM/finish 路径 query（use-after-free）；②region 元数据写入越界踩进句柄块（堆溢出）。取证抓手：heap VA 0x140065efe0、覆写字样 {1,0x9d2b0,0x3ff000}、真根 0x9dc39000；句柄类型=crate::pagetable::PageTable=minix_arch::CurrentPaging（pagetable/mod.rs:32），持有方=VmProcTable 字段（grep vm_server.rs/exit.rs root_paddr 调用点）。修法方向（坐实后）：句柄生命周期归属 + 释放后置 None/断言，配 alloc 层「free 后 touch」检测器（heap_arena 影子位图，同 gh32 手法）。
+门：未坐实写者不成修；gh34/35 物理取证法已可一轮一轮钉。
