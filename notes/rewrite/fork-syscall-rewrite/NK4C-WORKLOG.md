@@ -10144,3 +10144,16 @@ fb201 乒乓五轮连续先挡，(A) 零触发（时序门控）。**续-149 主
 
 ### pmemsave 判别管道（已验证，待 (A) 复现后使用）
 QMP unix socket + human-monitor-command + pmemsave 绝对路径有权限问题 → **相对路径**（QEMU CWD）✓。gh19 的 text diff=IDENTICAL（洪流期 text 干净——(A) 时 text 可能损坏，需 (A) 现形时抓）。(A) 帧 GPR dump 探针已在内核诊断面（续-138附）。gh 轮 stval 三形状（0x10bd2cabXX/0x409d2c9bb0）稳定——(A) 复现后立即抓。
+
+## §1.120续-150（2026-10-02·**fb201 止血后新发现：exec 完成但 SETADDRSPACE 未触发——续-149 止血可能吞掉了 exec reply（0x02b=43 非 0x986）**）
+
+### gh24 证据
+exec worker 完成（memreq bss 0x402d80 ok=1 + frame 0x68 ok=1）→ `pm:02b01`（PM 收 mt=0x02b from VFS）→ 仅 sa-call。**`exec endpt=0x800c` 零命中**＝SETADDRSPACE handler 未运行 ⇒ child 未切换地址空间 ⇒ child 未执行。
+
+### 根因分析
+PM 收到 mt=0x02b=43 from VFS——这**不是** VFS_PM_EXEC_REPLY(0x986)。两种可能：
+1. **续-149 止血吞掉了 exec reply**：EXEC_REPLY(0x986) 通过 `is_vfs_pm_rs` 检查 ✓ 应被 handle_vfs_reply 处理。但如果 exec reply 的 m_type 不是 0x986（编码错误或被覆写），is_vfs_pm_rs 检查失败→落入续-149 新加的静默丢弃分支→exec reply 被吞→SETADDRSPACE 不发→child 不跑。
+2. mt=0x02b 是**另一条消息**（FS reply 泄漏如续-136 分析），exec reply 在此之前已被正确处理——但 SETADDRSPACE 因为其他原因未发。
+
+### 续-151 修靶
+①在续-149 的静默丢弃分支前加 (src, m_type) 打印（≤15B diagctl）——确认被吞的是什么消息；②若确认 exec reply 被吞，修正止血条件（改为只丢 m_type=FS-stamped 形态的消息，即高 16 位=0xFFFF 的）；③audit VfsReply::Exec 的 encode 链确认 m_type=0x986。
