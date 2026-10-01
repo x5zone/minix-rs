@@ -9596,3 +9596,17 @@ nk97b: RS@pick root=0x82132000 misc=0x0 rts=0x0
 **续-103 NIT 收口**：N1 关闭（noreturn 下不可表达）；N2（kernel text R-X 恢复 W^X）仍待"高半 VMA 无运期写 text"验证（原记）；N3（checked_sub 硬化）**代码就绪、待一次 harness 正常时补真机链即可入库**（行为中性，virt=0xFFFFFFC000000000≫phys=0x80200000 恒成立）。
 
 ⚠ 三目标不缩小：①x86✅/riscv(A)VM堆破坏待gdb专项·aarch64❌；②x86核心✅；③已勘察。本 turn 零入库生产改动（诚实回滚未验证项），tracked 净，WORKLOG-only。
+
+---
+
+## §1.120续-125（2026-10-01·**riscv 启动 asm 硬化 N3 入库：delta 用 checked_sub 明示高半不变量；N1 记录不可表达；闭合续-103 CodeReview NIT**）
+
+续-124 备好的 N3 本轮补完真机链入库（本会话 boot harness 一度因命令前缀 `pkill -9` 误杀 shell 而空跑，去除后正常）：
+- **改动**（`os/kernel/src/arch/riscv64/higher_half.rs::jump_to_kmain`，#[cfg(riscv64)]）：`delta = kern_virt_base - kern_phys_base` 改 `.checked_sub(...).expect("higher_half: kern_virt_base must be >= kern_phys_base")`。把高半不变量显式化为 boot 期硬失败（release overflow-checks=off 下裸减法会静默 wrap 成飞跳转 delta，checked_sub 与构建 profile 解耦）。生产/测试载体常量 virt=0xFFFFFFC000000000 ≫ phys=0x80200000 恒成立 ⇒ 行为逐位中性。
+- **N1 关闭**：asm scratch clobber `out("t0"/"t1"/"s0")_` 经 rustc 实证与 `options(noreturn)` 不兼容（"asm outputs are not allowed with noreturn"），noreturn 本身即"写下游不可观测"的论据；已在代码注释记死（含 sp/s0 角色更正）。N2（text R-X 恢复 W^X）仍待"高半 VMA 无运期写 text"专项（原记）。
+- **CodeReview**：ALLOW，无 BLOCKER/SF；2 条注释 NIT（s0 非 scratch、补 overflow-checks 动机）已采纳。
+- **全验证链（只增不减，全绿）**：host 1400/0；clippy Δ0（riscv-only）；rustfmt 本文件 Δ0；三架构 check-layout PASS 41/0；**x86 真机 -smp1 marker=2/panic=0（10665 行）不回归**；**riscv 真机 xv2：17555 行、达 imain-6/Runcom、checked_sub 无 panic、(A) 终端 stval=0x10bd2cbbbc 与续-109 同族（无新回归）**。
+
+环境注记：本会话后段复合命令以 `pkill -9 -f qemu...` 起头会连带杀掉执行 shell 自身（同 `pkill -f qemu` 匹配到含该串的命令行的 bash），致 boot 命令空跑无日志——去前缀/单独跑即正常。记此避坑。
+
+⚠ 三目标不缩小：①x86✅/riscv(A)仍待gdb专项(本次 N3 为启动硬化非(A)本身)·aarch64❌；②x86核心✅；③已勘察。N3 生产修过 CodeReview+全验证链后入库，tracked 净。

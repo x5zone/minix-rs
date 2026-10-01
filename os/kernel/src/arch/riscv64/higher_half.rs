@@ -60,7 +60,25 @@ impl HigherHalf for Riscv64HigherHalf {
         // IMPORTANT: Do NOT use a0/a7/a6 inside this asm block!
         // a0 holds kinfo (passed via in("a0") constraint), and must
         // be preserved until kmain is reached. SBI ecall clobbers a0.
-        let delta = kinfo.kern_virt_base().0 - kinfo.kern_phys_base().0;
+        // N3 (续-103 CodeReview NIT): `checked_sub` makes the
+        // `kern_virt_base >= kern_phys_base` invariant explicit — a violated
+        // higher-half layout panics here at boot instead of wrapping to a bogus
+        // delta that would mis-target the jump (under the release build
+        // `overflow-checks` is off, so a bare subtraction would silently wrap
+        // rather than fault — `checked_sub` decouples the guard from the build
+        // profile). The invariant always holds for the higher-half image
+        // (virt ≫ phys), so this is behavior-preserving.
+        // (N1 — declaring the asm's register writes (`sp`, `t0`, `t1`, and the
+        // intentionally-zeroed frame pointer `s0`) as outputs — is not
+        // expressible: rustc rejects "asm outputs are not allowed with the
+        // `noreturn` option". `options(noreturn)` (jump to kmain, never return
+        // to the caller) is itself the correctness argument that those writes
+        // are unobservable downstream, so they need no explicit clobber list.)
+        let delta = kinfo
+            .kern_virt_base()
+            .0
+            .checked_sub(kinfo.kern_phys_base().0)
+            .expect("higher_half: kern_virt_base must be >= kern_phys_base");
         unsafe {
             core::arch::asm!(
                 "mv sp, {stktop}",
