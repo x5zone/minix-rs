@@ -8,7 +8,13 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-133（2026-10-01·**riscv (A) gdb 定谳＝SD-23 riscv 同族（内核 345 条 FP 指令踩用户寄存器——gdb rust_begin_unwind 断点：stval 解码 a5=1<<34≠两臂合法值、帧 ra 超镜像 LOAD 段）+懒 FPU 单元+NS16550A tty 臂入库（f89b7c731，CodeReview 两轮终局 APPROVED）；gh5/gh6 连续两轮 panic=0/pagefault-for-VM=0＝(A) 签名消失**）：三目标进度 ①x86✅ aarch64✅ / riscv 深入中（(A) 解除，新停点=MultiUser 前 IPC 链 sa-call 封顶后静默——续-134 定性；marker 未达）②x86 核心✅ aarch64 marker 链✅ ③勘察。本单元：riscv kernel-image `-f,-d` 注入（内核 ELF FP=0）+FS=Off 懒门控+global_asm save/restore（.option arch +d）+scause=2 腿（FS==Off 谓词门+帧 patch Dirty）+ctx-patch 归属策略（riscv FS 在 sstatus/帧内——双载体：dispatch 门=live 写、trap 门=帧 patch、ctx=簿记）+tty NS16550A MMIO 臂。遗留：SF-2 release_fpu、双 FP 用户回归、vm.rs raw 车道审计（N2 同族）。
+> **🛑 最新前沿＝§1.120续-134（2026-10-02·**riscv 新停点取证定性：gh5 达 init-state Runcom（imain 全七相+PM↔VFS 握手全通，aarch64 同深度），新墙＝PM 收到 transid-stamped VFS 回复洪流（mt u16=0xfb2 src=VFS 反复刷）＝续-4 家族 PM↔VFS 乒乓 riscv 形态；续-135 修靶＝PM 探针补 mt>>16（req 号）+runcom 面包屑定乒乓环**）：gh5/gh6 双轮证据（panic=0 时代）：
+> - **已过相位**：12 服务 exec+sas-send 全链、PM↔VFS 握手 12+barrier 全通（pmvi-barrier-done）、INIT imain-0..6 全过（rt-init/getuid/setsid/console/console-done/passwd/transition）、**init-state Runcom**（gh5=8570 行；gh6=4028 行停在 imain-3 console 段的 Stat(0x115)——时序门控两形态）。
+> - **新墙指纹（gh5 尾）**：`nk4a: pm fb201` ×N 反复刷（PM 主循环 receive 探针：mt u16=0xfb2=**transid**（TRNS_ADD_ID 的低 16 位；req 号在高 16 位被探针 u16 截断丢失）、src=VFS）＝PM↔VFS 应答乒乓——续-4「INIT↔VFS Stat/应答腿」家族的 riscv 形态（aarch64 同族墙已由 续-5/6/7 修复，riscv 时序下另形触发）。
+> - **续-135 修靶（探针轮，非侵入优先）**：①PM 主循环探针补打 mt>>16（req 号解码乒乓环的具体 VFS_PM 请求族）；②runcom.rs 面包屑（runetcrc fork/exec/ waitpid 三枪）；③VFS 侧 REQ_STAT/EXEC 回复腿各一枪。坐实乒乓环后成修（对位 aarch64 续-5/6/7 的 send_work 排水/send_reply 分叉——检查那批修复对 riscv 时序的覆盖面）。
+>
+
+> **（历史·§1.120续-133（2026-10-01·**riscv (A) gdb 定谳＝SD-23 riscv 同族（内核 345 条 FP 指令踩用户寄存器——gdb rust_begin_unwind 断点：stval 解码 a5=1<<34≠两臂合法值、帧 ra 超镜像 LOAD 段）+懒 FPU 单元+NS16550A tty 臂入库（f89b7c731，CodeReview 两轮终局 APPROVED）；gh5/gh6 连续两轮 panic=0/pagefault-for-VM=0＝(A) 签名消失**）：三目标进度 ①x86✅ aarch64✅ / riscv 深入中（(A) 解除，新停点=MultiUser 前 IPC 链 sa-call 封顶后静默——续-134 定性；marker 未达）②x86 核心✅ aarch64 marker 链✅ ③勘察。本单元：riscv kernel-image `-f,-d` 注入（内核 ELF FP=0）+FS=Off 懒门控+global_asm save/restore（.option arch +d）+scause=2 腿（FS==Off 谓词门+帧 patch Dirty）+ctx-patch 归属策略（riscv FS 在 sstatus/帧内——双载体：dispatch 门=live 写、trap 门=帧 patch、ctx=簿记）+tty NS16550A MMIO 臂。遗留：SF-2 release_fpu、双 FP 用户回归、vm.rs raw 车道审计（N2 同族）。
 >
 
 > **（历史·🎉 §1.120续-132（2026-10-01·**aarch64 用户态 console PL011 MMIO 臂落地——真机 rc marker 首次打出（commit 2a6c55912，CodeReview APPROVED）＝终目标① aarch64 段打通；剩余＝riscv (A) gdb 定谳 + riscv 装机后段 + 目标③**）：续-131 定谳 tty x86-only 后的实施轮：
@@ -9860,3 +9866,24 @@ panic=0、pagefault-for-VM=0——riscv (A) 签名消失（SYSCALL 腿屏障+FPU
 
 ### 续-134 修靶（gdb 二阶段处方）
 panic 命中后：satp→root→按被 walk 的 vaddr 逐级读表（monitor xp 物理读）→定位 PPN=0xbd2ca 的毒 PTE 槽物理地址→重跑对内核 DM VA（0xFFFFFFC040000000+PA）设硬件 watchpoint（内核根全映射、跨进程命中写者 pc）——x86 续-57~73 十六轮同款猎杀。
+
+## §1.120续-134（2026-10-02·**riscv 新停点取证定性：Runcom 达成+PM↔VFS transid 回复乒乓洪流（纯串口取证、零探针、WORKLOG-only）**）
+
+### 现象
+续-133 后 riscv boot-full 连续两轮 panic=0 但 marker 未达，停点静默（尾部仅 sa-call caller=4 pid=9 封顶＝SCHED CLOCK re-arm 已知非活锁家族）。
+
+### 取证（gh5/gh6 双轮串口对账）
+- **gh5（8570 行）**：12 服务 exec+sas-send 全链 → PM↔VFS 握手 12+barrier 全通（vfm90000×13、pmvi-barrier-done）→ INIT imain-0..6 全七相 → **init-state Runcom**（riscv 首次，aarch64 同深度）→ 尾部 `nk4a: pm fb201` 洪流。
+- **gh6（4028 行）**：同链但停在 imain-3 console 段（INIT Stat 0x115 已达 VFS）——时序门控两形态（gh5 更深）。
+- **新墙指纹**：PM 主循环 receive 探针（`nk4a: pm `+mt u16+src）反复打 `fb201`＝mt 低 16 位=0xfb2（**transid**——TRNS_ADD_ID 置 REQ<<16|tid，探针 u16 截断丢了 req 号）、src=VFS＝**PM↔VFS 应答乒乓洪流**（同一回复形态反复到达/不被终结）。
+- 对照：aarch64 同相位的墙已由 续-4→续-7 链修复（send_work 排水/send_reply C 分叉/INIT Stat EIO 腿）；riscv 时序下乒乓另形触发。
+
+### 根因域（待续-135 坐实）
+PM↔VFS 乒乓环的具体 VFS_PM 请求族未知（req 号被探针截断）。候选：①fork/exec 回复腿（Runcom fork+exec sh 的 VFS_PM_EXEC/FORK_REPLY 乒乓——aarch64 续-87 形态）；②INIT waitpid 轮询腿（续-20 净态 slot12 家族）。
+
+### 续-135 修靶（探针轮）
+①PM 主循环探针补 `mt>>16`（req 号）——一眼解码乒乓环的请求族；②runcom.rs runetcrc 三枪面包屑（fork/exec/waitpid）；③VFS 的 REQ_STAT/PM_EXEC 回复腿各一枪。坐实环后成修：对照 aarch64 续-5/6/7 修复对 riscv 时序的覆盖面。
+
+### 经验/教训
+1. FPU 单元落地后 riscv 从「固定 panic 墙」进入「IPC 链时序墙」——与 aarch64 的墙演进完全同构，aarch64 的修复序列（续-4→7→87→130）就是 riscv 的路线图。
+2. transid-stamped m_type 的 u16 探针截断=取证盲点：PM/VFS 探针从一开始就该打完整 32 位 m_type 或拆 (req,tid) 两栏。
