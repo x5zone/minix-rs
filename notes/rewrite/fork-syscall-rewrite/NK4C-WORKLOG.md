@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-147（2026-10-02·**walk_alloc pt 分配越栈守卫零命中——alloc_pt_page 分配干净，(A) 的坏 L1e **不是 walk_alloc 写入的**而是后续被某者覆写；排除法收敛至内核 kdst 跨空间拷贝 walk 算错 PA 写进 L1e 槽（0x9d2ecf98 与 L1 表页同 512M RAM 区间）；续-148 修靶＝内核 kdst copy 的 PA 范围检查+L1 表页 PA dump**）：gh21 守卫轮：pt-BIG-L0/L1 零命中（alloc_pt_page 从未返回 ≥0xA0000000 的 PA）——**L1e 被覆写的时机不在 walk_alloc 内**而在写入后、query 读前的窗口（可能横跨整个 VM 事件循环）。嫌疑收敛：①kernel kdst copy（跨空间拷贝 walk 算错 PA → 写进任意帧包括 L1 表页——0x9d2ecf98 与 L1 表同区间）②VM 堆溢出（堆帧与页表帧相邻时溢入）。**续-148 修靶**：①kernel kdst copy 前后加 PA 范围守卫（写入 PA 落在子进程页表页范围时告警+拒绝）；②dump 子进程 L1 表页 PA（从 SETADDRSPACE 的 ptroot 反推）确定 L1 槽 PA 区间后 watch；③成修+CodeReview+真机 marker 冲刺。**探针已滚 tracked 净。**
+> **🛑 最新前沿＝§1.120续-148（2026-10-02·**多墙优先级终裁定：fb201 乒乓＝确定性首墙（gh12/13/17/19/23 五轮连停），(A) 非必现（时序门控）；续-149 主攻＝fb201 乒乓修复：①VFS Route:: 对 PM 来源未知 m_type 的臂改 C 对位（静默不回）②PM dispatch ENOSYS 回程改静默③FS status=-1 源头。pmemsave 判别管道已验证（text diff=IDENTICAL d1 证伪）待 (A) 复现后使用**）：gh23 验证 fb201 250s 确定性复现。gh19 text diff=IDENTICAL。探针已滚 tracked 净。**
+>
+
 >
 
 > **（历史·§1.120续-146（2026-10-02·**执行态 checkpoint：(A) 收窄至 walk_alloc L1 中间项/alloc_pt_page——**根因假说精化**：gh15 sync26 零命中（位 26 过滤）+ gh16 alloc-big 全合法（<0xA0000）⇒ alloc 与 sync_slot_pte 均未产出越栈 pfn ⇒ **L1e 的坏 PPN 来自 walk_alloc 写入后的二次覆写**或 **alloc_pfn_reclaiming 的 reclaim 路径**（reclaim 可能回收 page_cache/文件缓存帧——候选污染路径）；续-147 修靶＝walk_alloc L1 写点 dump + alloc_pfn_reclaiming reclaim 路径审计**）：gh16 补充：2351 alloc-big 全为合法绝对 pfn（0x80000..0xA0000 RAM 内）零越栈；(A) 崩于 gh16 17804 行（stval=0x10bd2cab9c，l0_idx*8=0xb9c 非八字对齐 ⇒ **执行代码≠walk_read 的 L0 读**＝编译器优化后的另一条读取路径或寄存器复用变体——不影响根因定位：坏 L1e PPN 是确定的）。
