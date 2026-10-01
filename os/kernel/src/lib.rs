@@ -3683,8 +3683,12 @@ fn finish_and_restore(
     crate::smp::bkl_unlock();
 
     // 3. FPU ownership — C:443-446.
+    // Per-CPU bookkeeping (C reads `get_cpulocal_var(fpu_owner)`): the
+    // owner is tracked on the CPU that will run the picked process, not
+    // the BSP — on SMP the stale read made non-BSP CPUs see the BSP's
+    // owner and skip the disable, leaving both CPUs' user FP unlocked.
     let fpu_owner = smp
-        .cpu_local(smp.bsp_cpu_id())
+        .cpu_local(crate::current_cpu_id())
         .and_then(|l| l.fpu_owner);
     let fpu = CurrentFpuArch::default();
     if fpu_owner != Some(picked) {

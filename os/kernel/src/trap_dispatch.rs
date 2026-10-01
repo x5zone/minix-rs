@@ -2408,6 +2408,11 @@ pub unsafe extern "C" fn aarch64_user_body(
     const ESR_EC_SHIFT: u64 = 26;
     const ESR_EC_MASK: u64 = 0x3F;
     const EC_SVC_AARCH64: u64 = 0x15;
+    // EC 0x07 = Trapped SIMD/FP access from lower EL — the lazy-FPU gate
+    // (CPACR_EL1.FPEN=0b01 set by `FpuArch::disable` on a context switch
+    // to a non-owner) firing on the process's first FP instruction. C:
+    // i386 #NM → `copr_not_available_handler` (proc.c:1923).
+    const EC_SIMD_FP_LOWER_EL: u64 = 0x07;
     // EC 0x20 = instruction abort from a lower EL; EC 0x24 = data abort
     // from a lower EL — aarch64's #PF (§1.116): route them through the
     // page-fault leg instead of dying on the diagnostic panic. The same-EL
@@ -2435,6 +2440,9 @@ pub unsafe extern "C" fn aarch64_user_body(
     }
     if matches!(ec, EC_INST_ABORT_LOWER_EL | EC_DATA_ABORT_LOWER_EL) {
         return aarch64_pagefault_body(frame, esr, ec);
+    }
+    if ec == EC_SIMD_FP_LOWER_EL {
+        return aarch64_fpu_trap_body();
     }
     aarch64_diag_panic(frame, "user sync exception");
 }
@@ -2994,6 +3002,93 @@ unsafe fn aarch64_ipc_dispatch_body(
     } else {
         PARK_RESCHEDULE
     }
+}
+
+/// The lazy-FPU restore stage (EC=0x07: user FPSIMD access trapped because
+/// a context switch left `CPACR_EL1.FPEN=0b01` via [`FpuArch::disable`]).
+///
+/// C: `copr_not_available_handler()` — proc.c:1923-1962 — the i386 #NM
+/// handler's acting half: save the outgoing owner's FPSIMD state
+/// (retain=FALSE — its registers become undefined; it re-traps on its
+/// next FP use), restore the trapping process's state, hand ownership to
+/// the trapping process, re-enable FP (`clts` / FPEN=0b11), and return to
+/// re-execute the faulting instruction. ELR reports the FP instruction
+/// itself (FP traps do not advance), so returning with `PARK_NONE` (frame
+/// untouched) re-executes it.
+///
+/// The BKL guards the two cross-process accesses (`owner`'s and the
+/// trapper's `fpu_state` fields) — same discipline as
+/// [`aarch64_ipc_dispatch_body`].
+#[cfg(target_arch = "aarch64")]
+unsafe fn aarch64_fpu_trap_body() -> u64 {
+    use minix_arch::arm64::trap_stub::PARK_NONE;
+    let smp = unsafe { crate::smp_state_boot_unchecked() };
+    let cpu = crate::current_cpu_id();
+    let cur_nr = smp
+        .cpu_local(cpu)
+        .and_then(|l| l.proc_ptr)
+        .unwrap_or_else(|| {
+            panic!(
+                "aarch64 FPU trap before scheduler bring-up (proc_ptr = \
+                 None on cpu {cpu:?}) — wiring bug"
+            )
+        });
+    let fpu_bkl = crate::smp::bkl_lock_or_inherit();
+    debug_assert!(
+        fpu_bkl,
+        "aarch64 FPU trap reached from kernel context (BKL inherited) — \
+         FPEN=0b01 must not trap EL1, so this is a wiring bug"
+    );
+    let table = unsafe { crate::proc_table_boot_unchecked() };
+    use minix_arch::{CurrentFpuArch, FpuArch};
+    let fpu = CurrentFpuArch::default();
+    // C proc.c:1936-1942 — save the outgoing owner (EXT_REG_INITIALIZED
+    // gates processes that never touched FP: their fpu_state is the
+    // zeroed default and saving would fabricate a state).
+    let old_owner = smp.cpu_local(cpu).and_then(|l| l.fpu_owner);
+    // C proc.c:1938 — assert(*local_fpu_owner != p): the trapper must not
+    // be the owner (FPEN=0b01 after `disable` implies the switch handed
+    // ownership away). A hit here means FPEN and the owner bookkeeping
+    // desynchronized.
+    debug_assert!(
+        old_owner != Some(cur_nr),
+        "aarch64 FPU trap: current process is already the FPU owner"
+    );
+    if let Some(owner_nr) = old_owner.filter(|&o| o != cur_nr) {
+        let used_fpu = table.get(owner_nr).is_some_and(|p| {
+            p.p_misc_flags
+                .is_set(crate::proc::MiscFlagsBits::EXT_REG_INITIALIZED)
+        });
+        if used_fpu {
+            if let Some(p) = table.get_mut(owner_nr) {
+                fpu.save(&mut p.fpu_state);
+            }
+        }
+    }
+    // C proc.c:1946 — restore the trapping process's state. A process
+    // that never used FP restores the zeroed default, which is always a
+    // valid FPSIMD state (C validates the state header and SIGFPEs on
+    // garbage; the rewrite's zero-default cannot be invalid — deviation
+    // registered on the fpu wiring unit).
+    let cur_slot = table.get_mut(cur_nr);
+    debug_assert!(
+        cur_slot.is_some(),
+        "aarch64 FPU trap: current proc slot missing — wiring bug"
+    );
+    if let Some(p) = cur_slot {
+        fpu.restore(&p.fpu_state);
+        p.p_misc_flags
+            .set(crate::proc::MiscFlagsBits::EXT_REG_INITIALIZED);
+    }
+    // C proc.c:1954 — ownership passes to the trapping process.
+    if let Some(local) = smp.cpu_local_mut(cpu) {
+        local.fpu_owner = Some(cur_nr);
+    }
+    fpu.enable(); // C: clts — FPEN=0b11
+    if fpu_bkl {
+        crate::smp::bkl_unlock();
+    }
+    PARK_NONE
 }
 
 /// Console diagnostics + panic for unreached causes (riscv64 sibling

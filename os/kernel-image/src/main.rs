@@ -36,6 +36,20 @@
 #![no_std]
 #![no_main]
 
+// aarch64 内核禁 NEON/FP 门（SD-23）：lazy-FPU 模型的「内核不用 FPU」前提
+// 由构建旗标保证（xtask/src/image.rs 对本包的 aarch64 构建注入
+// `-C target-feature=-neon,-fp-armv8`）。绕过 xtask 的直接 cargo 构建会
+// 静默产出会踩用户 Q 寄存器的内核——在此编译期拒收。minix-arch 的显式
+// FPSIMD 原语（fpu.rs）经 per-function target_feature 保留，不触发本门；
+// boot-shim 的 UEFI 载体构建不编译本包（且载体上下文无用户进程，无踩踏
+// 面），宿主测试与其它架构不受影响。
+#[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
+compile_error!(
+    "aarch64 kernel image must be built with -C target-feature=-neon,-fp-armv8 \
+     (the lazy-FPU model requires a kernel that never touches Q0-Q31; \
+     see SD-23 and xtask/src/image.rs)"
+);
+
 extern crate alloc;
 
 use core::arch::asm;

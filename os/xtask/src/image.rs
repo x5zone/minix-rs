@@ -512,7 +512,37 @@ pub fn execute(actions: &[Action], dry_run: bool) -> Result<()> {
                     println!("    > cargo {}", args.join(" "));
                     continue;
                 }
-                run_inherit(Command::new("cargo").args(args))
+                let mut cmd = Command::new("cargo");
+                // aarch64 生产内核禁 NEON 与标量 FP（`-C target-feature=
+                // -neon,-fp-armv8`，仅内核链这一次 cargo 调用；用户模块构
+                // 建不带此旗）。C 内核的 lazy-FPU 模型（i386 CR0.TS / ARM64
+                // FPEN 懒陷阱）依赖「内核自身不用 FPU/NEON」前提——本内核
+                // 源码无浮点，但 LLVM 会把块拷贝自动向量化成 NEON（改前
+                // kernel.elf 实测 ~840 条 FP 指令），内核执行期间踩进用户
+                // 进程的 Q0-Q31 且无人保存恢复（trap stub 只存 GPR，
+                // SD-23）——aarch64 上直接表现为 PM 编译器放进 d8 的常量
+                // 被踩、VFS_PM_INIT 消息头被写脏（WrongMessageType(8)）。
+                // 禁 NEON+FP 后内核源码再无隐式 V 寄存器使用：同 CPU 物理
+                // 寄存器跨陷入自动保持；跨 CPU 迁移由 smp.rs SAVE_CTX IPI
+                // save + EC=0x07 懒 restore 闭环兜底。已知残差：rustup 预
+                // 编译 core 里的少量 V 寄存器指令（字符计数/格式化诊断路
+                // 径）不受 RUSTFLAGS 重建，登记为 build-std 待办。fpu.rs
+                // 的显式 FPSIMD 原语经 per-function target_feature 保留。
+                if args.windows(2).any(|w| w == ["-p", "kernel-image"])
+                    && args.iter().any(|a| a.contains("aarch64"))
+                {
+                    let rustflags = "RUSTFLAGS";
+                    let prior = std::env::var(rustflags).unwrap_or_default();
+                    let injected = if prior.is_empty() {
+                        "-C target-feature=-neon,-fp-armv8".to_string()
+                    } else {
+                        format!("{prior} -C target-feature=-neon,-fp-armv8")
+                    };
+                    cmd.env(rustflags, &injected);
+                    println!("    [env] RUSTFLAGS={injected}（aarch64 内核禁 NEON/FP，SD-23）");
+                }
+                cmd.args(args);
+                run_inherit(&mut cmd)
                     .with_context(|| format!("cargo {} 失败", args.join(" ")))?;
             }
             Action::Mkdir { path } => {

@@ -8,7 +8,15 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-119（2026-10-01·**riscv (A) 逐层洗清至"VM 逐页簿记伪 pfn"——非页表(全洗清)、非 memmap(free_regions 合法)——续-120 用 pfn_to_phys caller 守卫坐实来源（纯取证轮、tracked 净）**）：承续-109 idle-SIE（boot→160830 行深 rc）后的晚期终端 (A) 已用守卫探针逐层定性：
+> **🛑 最新前沿＝§1.120续-129（2026-10-01·**aarch64 A1「VFS barrier mt=8」根因定谳＝SD-23/A3（aarch64 FPSIMD 跨陷入从不保存恢复）的现行犯实锤；修复（内核禁 NEON/FP + 懒 FPU 闭环）已入库级完成——真机握手全通、INIT 首达 Runcom；CodeReview 两轮终局 APPROVED**）：承续-86（真阻塞＝VFS 应回 OK(0) 的 barrier 回复被 PM 收成 mt=8）后的决定性链条：
+> - **取证链（xu129-1..8 + gdb 五轮）**：① PM 首条 send 陷阱 r2=0x2db000 内核即读出 mt=8，而 m7 载荷（ds ep=6/slot=6/pid=3 等）**完全正确**＝仅头 8 字节 (m_source,m_type)=(1,8) 被外科手术式覆写；② msgw/delivermsg 对 PM 堆零写、kdst 跨空间写对 PM 堆零命中、内核 DM 观察点零命中⇒**内核交付腿全部清白**；③ gdb watch 抓到写者＝PM 自己的 memcpy 增长链（0x2d9000→0x2da000→0x2db000，x14=0x800000001）——毒在 cap4 块已存在，随 Vec grow 传播；④ 反汇编＋ELF 常量（0x2001d8=0x000009007bff=(NONE,0x900) 干净模板）坐实：PM `PmServer::init` 的 encode 循环用 **`ldr d8,[字面量池]`＋`str d8,[x8]`** 拷 Message 头 8 字节（aarch64 无 64 位立即数装载、LLVM 用 FP 寄存器做常量拷贝——x86 用 movabs GPR 故无毒，ISA 差异解释单架构性）；⑤ gdb 读 hit 时刻 **d8=0x0000000800000001≠编译期常量**＝Vec push 触发堆页 demand fault→陷入→调度切换→回来 d8=他上下文残留 (1,8)——**SD-23/A3（trap stub 只存 GPR、Q0-Q31 无人保存恢复、FPEN 常开）的直接现行犯**。m7 载荷由 GPR 指令写故正确→「毒头+正确载荷」形态、间歇性、续-86 扰动改时序即通关，全部同解。
+> - **修复（四处生产改动+一处脚本，CodeReview 终局 APPROVED）**：① `xtask/src/image.rs` 对 `-p kernel-image`+aarch64 注入 **`RUSTFLAGS="-C target-feature=-neon,-fp-armv8"`**（内核禁 NEON/FP＝C 懒模型「内核不用 FPU」前提的编译期化；改前 kernel.elf 实测 ~840 条自动向量化 FP 指令踩用户 Q 寄存器；`kernel-image/src/main.rs` compile_error! 门防旁路、check-layout.sh aarch64 段同款注入）；② `arm64/fpu.rs` disable()=FPEN 0b01（只陷阱 EL0）/enable()=0b11 真实现，save/restore asm 抽 per-function target_feature 函数，**restore clobber 有意豁免 v8-v15**（CodeReview B-1：clobber callee-saved 会使 LLVM 在 epilogue reload d8-d15 覆盖刚恢复的用户车道——反汇编实锤后已删）；③ `trap_dispatch.rs` aarch64 加 **EC=0x07 腿**＝`aarch64_fpu_trap_body`（镜像 C `copr_not_available_handler` proc.c:1923-1962：save 旧 owner→restore 当前者→owner=cur→enable→PARK_NONE 重执行）；④ `lib.rs` finish_and_restore 的 fpu_owner 从 bsp 硬编码改读 current_cpu_id（C per-CPU 对位）。
+> - **验证**：host **1400/0**、clippy **55=55 Δ0**、rustfmt 五文件 **Δ0**、check-layout **PASS(all)**；aarch64 真机改后两轮 4518 行**逻辑序列全一致**（vfm90000×13、pmvi-barrier-done、WrongMessageType=0、panic=0、**init-state Runcom**＝aarch64 历史最深）；x86 真机两轮 **marker=2/panic=0** 不回归。
+> - **续-130 修靶（新停点）**：Runcom 段 rc 子进程（slot 0xc）`pf-exit noaddr cr2=0x220b98`→SIGSEGV（VM regions.find_mut 无 region）→INIT waitpid 链停——INIT/RC fork-exec 链的 VM region 簿记与真实映射不符（exec adopt/munmap 摘链面）。**遗留跟踪**：SF-2（exec/clear/sigsend 补 release_fpu 对位，C do_exec.c:57 等四点）、双 FP 用户回归用例（B-1 注释承诺）、build-std 消除 core 残差 11 条 V 指令、x86 #NM 腿/riscv FPU 同族核查。
+> - **riscv (B) 侧（续-120~128 交接）**：(A)=VM `Riscv64Paging::query`→walk_read 读 PTE 槽时某已读 PTE 的 PPN=0xbd2cbb（越 RAM）→DM 访问缺页致命；候选已收窄 (a) 某级 PTE 写错 PPN / (c) 越界写踩活表帧（(b) 已静态排除）；纯文本探针到边界，唯 QEMU `-s -S`+gdb 硬件写 watchpoint 定谳（续-126/127/128 处方）。
+>
+
+> **（历史·§1.120续-119（2026-10-01·**riscv (A) 逐层洗清至"VM 逐页簿记伪 pfn"——非页表(全洗清)、非 memmap(free_regions 合法)——续-120 用 pfn_to_phys caller 守卫坐实来源（纯取证轮、tracked 净）**）：承续-109 idle-SIE（boot→160830 行深 rc）后的晚期终端 (A) 已用守卫探针逐层定性：
 > - **页表全洗清**（续-116/117：walk_read+walk_alloc 各级+root 越界守卫 0 触发）；**memmap 全合法**（续-119：free_regions top≤0x9fb33000≈2.53GB 与 total_pages 吻合）。
 > - **确证机理**（续-118/119）：VM 算出**越-RAM 伪物理地址 phys≈0xbd2cbb000(3.17GB)** → `vm_phys_to_virt` 得 DM VA 0x10bd2cbbXX（VM_DM_BASE=2^36）→ map_kernel 未映此叶 → `pagefault for VM` 致命（C exception.c 对 VM 自缺页致命）。**非页表 walk 得来**，是 **VM 逐页簿记里一个损坏/未初值被当 pfn/物理地址**（region 页槽 `pfn()`/refcount/page_cache 元数据；合法 pfn≤0x9fb33 < 0xbd2cbb）。
 > - 非确定性（VMfault 时有时无、行数 4102/8979/96194/124303/160830 跨运行剧变）＝触发需进度到达某 corrupt 读取点。
@@ -9671,3 +9679,43 @@ fresh 会话（用户 resume，fresh blocked 审计）。查 alloc_page.rs 已�
 ⚠ 三目标不缩小：①x86✅/riscv(A)收窄至三模型待gdb·aarch64❌；②x86核心✅；③已勘察。零生产码改→WORKLOG-only、免 CodeReview。
 
 **续-128 追加（候选(b)静态排除）**：核 (b)"表帧未清零"——riscv `walk_alloc`/`split_huge`/`new` 所有表页分配点（paging.rs:408/425/582/790/830/946/1011/1038）**均经 `alloc_pt_page`→`vm_pt_alloc`（`write_bytes` 清零）**；`new_from_page`(:478) 仅 adopt 既有 root 不新分配。**⇒ (b) 排除**。⇒ (A) 收窄到 **(a) 某级 PTE 写入错 PPN** 或 **(c) 越界写踩坏活表帧**，二者唯 gdb 现场读崩溃那次 `query` 逐级 PTE 原值可判（续-126/127 处方）。**未坐实不成修**。
+
+## §1.120续-129（2026-10-01·**aarch64 A1「VFS barrier mt=8」根因定谳＝SD-23/A3 FPSIMD 跨陷入不保存的现行犯实锤；修复（内核禁 NEON + 懒 FPU 闭环）真机两轮稳定、握手全通、INIT 首达 Runcom；CodeReview BLOCKED→修复→复审中**）
+
+### 现象
+- `servers/vfs/src/main_loop.rs:7659 panic "vfs: handshake rejected message: WrongMessageType(8)"`——VFS 握手首条 VFS_PM_INIT 消息 m_type=8（应为 0x900），aarch64 -smp4 确定性、2477 行封顶，marker=0（续-77b/86 起的头号阻塞）。
+- 载荷-头分裂形态：内核 pms 探针实测 PM 首条 send 陷阱 r2=0x2db000 读出 `mt=8` 但 m7 载荷**完全正确**（msgs[0]=(ep=6,slot=6,pid=3)=ds；msgs[1]=(ep=2,slot=2,pid=4)=rs）——仅 (m_source,m_type) 8 字节=(1,8) 被覆写。
+- 间歇/时序敏感：续-86 实测循环内 diagctl 扰动改时序即通关（当前 HEAD 该探针 sys_diagctl 静默失败、扰动消失、拒收复现）。
+
+### 定位过程（假说→实验→证据）
+1. **VFS 回复构造/内核交付腿**（续-87 配方）：静态审 `run()` 屏障回复（main_loop.rs:7664-7678 阻塞 send OK=0，对位 C main.c:435 ✓）、内核 Path A（ipc.rs:1363-1448）、Phase 0-3、delivermsg、take_pending_async/can_receive 过滤链、sendrec 停车 getfrom=dst（ipc.rs:2337/2351 对位 C proc.c:569-583）——形状全对，且**内核 DM 观察点全程零命中**（a64-gdbwatch.log）→ 内核交付腿清白。
+2. **毒在 PM 用户态堆内**：pms 探针（trap_dispatch aarch64 IPC 门）钉 PM 首 send 陷阱读出 mt=8；msgw（delivermsg copy_msg_to_user）对 PM 堆（root=0x43a96000）**零写**、kdst 跨空间写 dep=0 仅 3 笔且全在栈区——非内核写。
+3. **gdb 硬件观察点逐级回溯**（qemu -s -S + gdb-multiarch watch）：0x2db004/0x2da004/0x2d9004 三块 Vec 页的写入者=PM 自己的 **memcpy 增长链**（pc=0x234a24，dst 0x2d9000→0x2da000→0x2db000，x14=0x800000001=(VFS,8)）——毒在 cap4 块已存在、随 Vec grow 逐级传播；非 memcpy 原始写手=**PM `PmServer::init` 的 encode 循环**（pc=0x21cdf4 `str d8,[x8]`，gdb 实测命中时刻 **d8=0x0000000800000001**）。
+4. **d8 本应是什么**：pm ELF `0x2001d8` 字面量=`ff7b0000 00090000`=(m_source=0x7bff(NONE), m_type=0x900(VFS_PM_INIT)) 的编译期常量；LLVM 用 `ldr d8,[字面量池]`+`str d8,[x8]` 做 Message 头 8 字节常量拷贝（aarch64 无 64 位立即数装载；**x86 用 movabs GPR 故无毒**——单架构性由 ISA 差异解释）。
+5. **d8 为何变脏**：encode 循环中途 Vec push 触发堆页 demand fault→陷入→调度切换→eret 回来 d8=他进程/内核残留。全链根=**SD-23/A3：aarch64 trap stub（trap_stub.rs EL0BODY/EL1BODY）只存 GPR x0-x30，Q0-Q31 无人保存恢复；CPACR_EL1.FPEN 常开 0b11；FpuArch::restore 调用点=0**（KProcess.fpu_state 字段与 smp.rs:612 IPI save 原语已在，恢复半缺失）。m7 载荷由后续 GPR 指令写故正确。
+6. **旁证**：0x2d8000~0x2db000 四块堆页各缺页两次且 PA 不同（第一次 demand-zero 帧 0x428d5000 等、第二次 0x4283e000 等）——push 期地址空间重映射事件（暂不展开，毒定谳后非必要）。
+
+### 根因（机制层一句话）
+aarch64 内核从不保存/恢复用户 FPSIMD 寄存器（SD-23），而 aarch64 编译器把跨循环活值的 8 字节常量放在 FP 寄存器（d8 callee-saved 低 64 位）——任何一次「陷入+调度切换+恢复」往返后该常量被其它上下文的残留值覆盖，PM 的 VFS_PM_INIT 消息头被写成 (1,8)。C↔Rust 语义对照：C i386 内核以 CR0.TS 懒陷阱+copr_not_available_handler（proc.c:1923-1962）保证「用户 FP 跨切换正确」，且 C i386 内核自身不用 FPU（前提自洽）；Rust aarch64 两侧同时缺（无保存恢复 + 内核 LLVM 向量化 ~840 条 NEON 指令踩 Q 寄存器）。
+
+### 修复（为什么这样修）
+1. **内核禁 NEON/FP**（`xtask/src/image.rs` execute 对 `-p kernel-image`+aarch64 注入 `RUSTFLAGS="-C target-feature=-neon,-fp-armv8"`；check-layout.sh aarch64 段同款；`kernel-image/src/main.rs` compile_error! 门防旁路）：内核源码零浮点、847 条 FP 全是 LLVM 自动向量化；禁后内核（除 fpu.rs 显式原语 43 条 V 指令）不触碰 Q0-Q31——同 CPU 物理寄存器跨陷入自动保持（C「内核不用 FPU」前提的对位）。已知残差：rustup 预编译 core 的 11 条 V 指令（字符计数/格式化诊断路径）不受 RUSTFLAGS 重建，登记 build-std 待办。
+2. **懒 FPU 闭环**（arm64/fpu.rs disable()=FPEN 0b01（只陷阱 EL0）/enable()=0b11 真实现 + trap_dispatch.rs EC=0x07 腿 `aarch64_fpu_trap_body`：save 旧 owner（EXT_REG_INITIALIZED 门控）→restore 当前者→owner=cur→enable→PARK_NONE 重执行，BKL bkl_lock_or_inherit 纪律；对位 C copr_not_available_handler）：跨 CPU 迁移腿（同 CPU 寄存器自保持，迁移后目标 CPU 首 FP 陷阱恢复）。
+3. **save/restore asm 抽 `#[target_feature(enable="neon")]` 自由函数**（内核 -neon 下显式 FP asm 必须 per-function 开）；**restore 的 clobber 保留 v0-v7/v16-v31、有意豁免 v8-v15**——CodeReview B-1：v8-v15 clobber 会让 LLVM 按 AAPCS 在 prologue spill/epilogue reload d8-d15，**epilogue 在 ldp q 序列之后把刚恢复的用户车道覆盖回进入值**，复活原 bug（真机两轮稳定=单 FP 用户场景的偶然保护）；豁免安全前提=内核全 -neon 编译、调用点无存活 V 值。
+4. **finish_and_restore 的 fpu_owner 改读 current_cpu_id()**（lib.rs，原硬编码 bsp——C get_cpulocal_var per-CPU 对位；SMP 非 BSP 核读 BSP owner 会漏 disable）。
+5. **三架构一致性**：x86 CR0.TS 懒陷阱的 #NM acting 腿同为登记缺口（trap_dispatch.rs:1074 panic 待接线）但 x86 用户态 LLVM 用 movabs GPR 无此暴露面；riscv FPU 同族核查登记。SF-2（exec/clear/sigsend 缺 release_fpu 对位，C do_exec.c:57/do_clear.c:60/do_sigreturn.c:91）登记下轮待办。
+
+### 验证
+- 静态链：host **1400/0**、clippy **55=55 Δ0**、rustfmt（fpu/trap_dispatch/lib/image/main-image 五文件）**Δ0**、check-layout **PASS(all)**（脚本 aarch64 段加注入后）。
+- 真机 A/B：改前 aarch64=2477 行 WrongMessageType(8) panic；改后两轮 4518 行**逻辑序列/标记计数/故障计数完全一致**（`vfm90000`×13＝VFS 收到正确 0x900、`pmvi k=0..` 恢复打印、`pmvi-barrier-done`＝PM↔VFS 握手 12+barrier 全通、**init-state Runcom**＝aarch64 历史最深相位、WrongMessageType=0、panic=0。物理地址随 UEFI 启动期分配量值漂移——CodeReview N-6 措辞订正：fix-2/fix-3 的字节级相同属当轮固件分配巧合，对账按逻辑序列勿按字节）。
+- 不回归：x86 真机两轮 **marker=2/panic=0**（10639/10646 行）。
+
+### 新停点（续-130 修靶）
+Runcom 段 rc 子进程（slot 0xc）`pf-exit noaddr cr2=0x220b98`→SIGSEGV（VM regions.find_mut 找不到 region）→INIT waitpid 链停；尾部 `sa-call caller=4 pid=9` 封顶刷屏（riscv 续-115 同族 SETALARM 打印、非活锁）。方向：INIT/RC fork-exec 链的 VM region 簿记与真实映射不符（exec adopt/munmap 摘链面）。
+
+### 经验/教训（Rule Discovery）
+1. **「跨循环活值的 FP 寄存器」是 SD-23 类缺陷的最小暴露面**：aarch64 编译器把 8/16 字节常量放 d/q 寄存器（无 movabs），任何用户态 FP 常量拷贝都可能成为毒源——x86 无此暴露面的原因是 ISA（GPR 立即数），不是代码质量。排查同类「消息头被写脏但载荷正确」时应先反汇编用户态常量装载方式。
+2. **asm! 显式寄存器名必须配 clobber**，且 **callee-saved 寄存器的 clobber 会在函数序/尾自动生成 spill/reload**——在「恢复函数」里 clobber callee-saved 寄存器会让 epilogue 覆盖恢复结果（本例 CodeReview 反汇编实锤）；正确做法是有意豁免+把「无其它 V 值存活」的编译期前提钉死（全 -neon 门）。
+3. **内核「不用 FPU」是懒 FPU 模型的编译期可验证前提**：RUSTFLAGS -fp-armv8 + compile_error! 门把它变成不变量，比运行时守卫便宜且完备（预编译 core 残差除外）。
+4. gdb-multiarch 对 qemu aarch64 的 VA watchpoint 跨进程共享 VA 空间会假命中（各模块同 VA 布局）——判别写者归属靠寄存器内容（x14=搬运值）与栈/堆 VA 段而非 pc；ttbr0_el1 在该 gdbstub 不可读（$1=void）。
+5. 探针字节级取证纪律再次生效：串口混入非 UTF-8 字节后 ugrep 静默吞全部输出（a64-fix-2.serial 首轮 grep 全空），一律 python3 字节级。

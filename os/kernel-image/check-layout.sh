@@ -140,10 +140,16 @@ $(printf 0x%x "$(hex2dec "$virt_base")")/$(printf 0x%x "$(hex2dec "$phys_base")"
         # 与 xtask 装机同一条构建命令（换 target/feature）；ulimit 兜住
         # 宿主内存上限（大链接在 CI 容器里会 OOM，见 NK4A-TODO §7）。
         # 构建日志只在失败时回显，否则几百行既有警告会淹掉断言结果。
+        # aarch64 内核禁 NEON/FP（SD-23 懒 FPU 前提，xtask/src/image.rs
+        # 同款注入；main.rs 的 compile_error! 门要求旗标在场）。
+        local flags_env=()
+        if [ "$arch" = "aarch64" ]; then
+            flags_env=(env RUSTFLAGS="-C target-feature=-neon,-fp-armv8")
+        fi
         local blog
         blog="$(mktemp /tmp/check-layout-build.XXXXXX.log)"
         ( cd "$OS_ROOT" && (ulimit -v 3145728; \
-            cargo build -q -p kernel-image --target "$triple" \
+            "${flags_env[@]}" cargo build -q -p kernel-image --target "$triple" \
                 --features "$feature" --release) ) > "$blog" 2>&1 || {
             echo "  构建失败（$arch）：$blog" >&2; tail -40 "$blog" >&2; FAIL=1; return; }
         rm -f "$blog"
