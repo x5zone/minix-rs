@@ -606,6 +606,18 @@ impl<T: IpcTransport> PmServer<T> {
             return RunStep::Handled;
         }
 
+        // 续-149（fb201 乒乓止血）：VFS 来源但非 RS 族 m_type 的消息——
+        // 静默丢弃不回。riscv 真机 fb201 洪流（mt=0xFFFF0FB2=FS stamped
+        // status=-1 泄漏进 PM/VFS 车道）的乒乓放大器＝PM 对这类消息
+        // dispatch→ENOSYS 回 VFS→VFS 收到再处理再发→循环。C 对位：
+        // main.c 的第一路检查后，VFS 来源非 PM-call 消息不会有 ENOSYS
+        // 回程（C 的 callnr 分派不识别即 panic 而非回——riscv 上 panicking
+        // 会整个宕机故取静默丢弃）。丢掉后乒乓的「PM 回 VFS」半截断裂，
+        // VFS 不再收到自己发出的 stamped 消息的 ENOSYS 反射。
+        if msg.m_source == Endpoint::VFS {
+            return RunStep::Handled;
+        }
+
         // C: main.c:88-103 — 第二/三路：事件回复 + PM 调用族统一经
         // D-32(C ENABLE_SYSCALL_STATS,misc.c:64)——按调用号计数
         //(callnr.h:62 NR_PM_CALLS=48;PM_BASE=0,调用号即索引)。
