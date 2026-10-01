@@ -10304,3 +10304,8 @@ gh45 复核：VM 侧 set_addrspace 铸造点=boot(vm_server.rs:793)/fork(fork.rs
 
 ### 审计链（gh46 + 源码）
 ①init_page_table vm_pt.write(pt) 字段更新无脱节；②sas-clear 印 0x9dc38000=句柄真值（0x9dc39000 为 gh35 旧运行值，两轮不同 boot 重分配，非同轮矛盾）；③vmctl_set_addr_space 仅 ptproc==target 时 set_active_root_tracked（child 非当前进程不触发）；④switch_address_space live≠root 时 set_active_root+sfence ✓（riscv64/tlb.rs:82-90 csrw satp+sfence.vma zero,zero 在场）；⑤**write_pte_dm VmDm 通道跳过 sfence（续-77 有意设计，注释自证「not-present→present 无需刷」）——但本墙的 VA 在 fork 时代有合法 RO 映射，TLB 项为 VALID，假设不成立**。child 写栈页→TLB RO 命中→fault→VM 填新 PTE（无刷）→重试→TLB RO 再中→无限。pte-wb 回读过（内存层面已写）；sfence 缺失=TLB 层面未生效。
+
+## §1.120续-165（2026-10-02·**gh47 决定性：rm-repair 触发后 VM 即 pagefault（sepc=0x391c0 stval=0x4ffffffb70=DM窗外垃圾），fill-root 未打印=填页未到 sync——BTreeMap 内部节点指针物理腐坏（iter 叶链完好/range与get_mut内部树含垃圾子指针），(A) 家族真根=VM 堆对象腐坏；续-166=反汇编 sepc+pmemsave 取腐坏节点+堆腐坏源追捕（heap_arena 影子位图）**）
+
+gh47 序列：rm-fallback×3（find 兜底服务三次 fault）→rm-repair（find_mut 重建）→**pagefault for VM sepc=0x391c0 stval=0x4ffffffb70**（repair 后 get_mut/树下降踩腐坏节点，垃圾子指针经 VmDm 翻译=窗外）→VM 死。fill-root 探针未及执行（sync_slot_pte 未达）。三症状统一完成：(A) walk fault=腐坏命中 PT-walk 对象；gh31 unwrap=腐坏命中 btree 计数；本墙=腐坏命中 region map 内部节点。**上游=VM 堆（heap_arena+alloc）某处 use-after-free/越界写，写者未定位**。
+续-166 处方：①rust-objdump 反汇编 gh47 构建 VM ELF sepc=0x391c0（get_mut/range 下降段）；②qmon pmemsave（已通）取 BTreeMap 节点内存，对照 iter 可见键还原树形，标出腐坏字节与偏移；③heap_arena 影子位图（free 后 touch 检测，同 alloc_page.rs gh32 手法）抓堆写坏者；④坐实成修→CodeReview→gh48 marker。

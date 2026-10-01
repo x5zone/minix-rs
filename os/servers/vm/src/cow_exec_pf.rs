@@ -168,6 +168,21 @@ pub(crate) fn sync_slot_pte(
                 ));
             }
         }
+        // 续-165 判别探针（用后即滚）：填页句柄的 root——对账 sas-clear
+        // 的 rebind 值（0x9dc38000）；若此处印 0x9dc39000 族=双句柄实锤。
+        if vaddr.0 > 0x7fff_0000_0000 {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static FR_N: AtomicUsize = AtomicUsize::new(0);
+            if FR_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
+                use minix_arch::paging::Paging as _;
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: fill-root va={:#x} ptroot={:#x} pte_pa={:#x}\n",
+                    vaddr.0,
+                    pt.root_paddr().0,
+                    paddr.0
+                ));
+            }
+        }
     }
     result.map_err(CowCoreError::PageTable)
 }
