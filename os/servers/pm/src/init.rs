@@ -448,16 +448,26 @@ impl<T: IpcTransport> PmServer<T> {
                     static PMR_N: core::sync::atomic::AtomicUsize =
                         core::sync::atomic::AtomicUsize::new(0);
                     use core::sync::atomic::Ordering as AtomicOrd;
-                    if PMR_N.fetch_add(1, AtomicOrd::Relaxed) < 40 {
+                    if PMR_N.fetch_add(1, AtomicOrd::Relaxed) < 64 {
+                        // 续-135：m_type 是 transid-stamped（REQ<<16|tid）——
+                        // 补 req 号（高 16 位）解码乒乓环；diagctl >16B 丢弃
+                        // ⇒ 压缩格式 "pm:mt3src2 req4"（14B+\n=15）。
                         let mt = v.0.m_type as u16 as u32;
                         let se = (v.0.m_source.0 & 0xff) as u32;
+                        let rq = ((v.0.m_type as u32) >> 16) & 0xffff;
                         let mut line = [0u8; 15];
-                        line[..9].copy_from_slice(b"nk4a: pm ");
-                        line[9] = HEXS[((mt >> 8) & 0xf) as usize];
-                        line[10] = HEXS[((mt >> 4) & 0xf) as usize];
-                        line[11] = HEXS[(mt & 0xf) as usize];
-                        line[12] = HEXS[(se >> 4) as usize];
-                        line[13] = HEXS[(se & 0xf) as usize];
+                        line[..3].copy_from_slice(b"pm:");
+                        line[3] = HEXS[((mt >> 8) & 0xf) as usize];
+                        line[4] = HEXS[((mt >> 4) & 0xf) as usize];
+                        line[5] = HEXS[(mt & 0xf) as usize];
+                        line[6] = HEXS[(se >> 4) as usize];
+                        line[7] = HEXS[(se & 0xf) as usize];
+                        line[8] = b' ';
+                        line[9] = HEXS[((rq >> 12) & 0xf) as usize];
+                        line[10] = HEXS[((rq >> 8) & 0xf) as usize];
+                        line[11] = HEXS[((rq >> 4) & 0xf) as usize];
+                        line[12] = HEXS[(rq & 0xf) as usize];
+                        line[13] = b' ';
                         line[14] = b'\n';
                         if let Ok(cs) = core::str::from_utf8(&line) {
                             let _ = minix_sys::syscall::sys_diagctl_write(

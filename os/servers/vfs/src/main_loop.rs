@@ -7564,16 +7564,24 @@ impl minix_sef::SefIpc for VfsIpc {
             static VFM_N: core::sync::atomic::AtomicUsize =
                 core::sync::atomic::AtomicUsize::new(0);
             use core::sync::atomic::Ordering as AtomicOrd;
-            if VFM_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+            if VFM_N.fetch_add(1, AtomicOrd::Relaxed) < 64 {
+                // 续-135：transid-stamped mt 补 req 号（高 16 位）。
                 let mt = msg.m_type as u16 as u32;
                 let se = (msg.m_source.0 & 0xff) as u32;
+                let rq = ((msg.m_type as u32) >> 16) & 0xffff;
                 let mut line = [0u8; 15];
-                line[..9].copy_from_slice(b"nk4a: vfm");
-                line[9] = HEXS[((mt >> 8) & 0xf) as usize];
-                line[10] = HEXS[((mt >> 4) & 0xf) as usize];
-                line[11] = HEXS[(mt & 0xf) as usize];
-                line[12] = HEXS[(se >> 4) as usize];
-                line[13] = HEXS[(se & 0xf) as usize];
+                line[..3].copy_from_slice(b"vf:");
+                line[3] = HEXS[((mt >> 8) & 0xf) as usize];
+                line[4] = HEXS[((mt >> 4) & 0xf) as usize];
+                line[5] = HEXS[(mt & 0xf) as usize];
+                line[6] = HEXS[(se >> 4) as usize];
+                line[7] = HEXS[(se & 0xf) as usize];
+                line[8] = b' ';
+                line[9] = HEXS[((rq >> 12) & 0xf) as usize];
+                line[10] = HEXS[((rq >> 8) & 0xf) as usize];
+                line[11] = HEXS[((rq >> 4) & 0xf) as usize];
+                line[12] = HEXS[(rq & 0xf) as usize];
+                line[13] = b' ';
                 line[14] = b'\n';
                 if let Ok(cs) = core::str::from_utf8(&line) {
                     let _ = minix_sys::syscall::sys_diagctl_write(

@@ -8,13 +8,18 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-134（2026-10-02·**riscv 新停点取证定性：gh5 达 init-state Runcom（imain 全七相+PM↔VFS 握手全通，aarch64 同深度），新墙＝PM 收到 transid-stamped VFS 回复洪流（mt u16=0xfb2 src=VFS 反复刷）＝续-4 家族 PM↔VFS 乒乓 riscv 形态；续-135 修靶＝PM 探针补 mt>>16（req 号）+runcom 面包屑定乒乓环**）：gh5/gh6 双轮证据（panic=0 时代）：
+> **🛑 最新前沿＝§1.120续-135（2026-10-02·**riscv 乒乓环解码＋吞吐瓶颈突破：gh8 实测 689k 行＝VM 服务 343k 次缺页（探针串口写自身即分钟级瓶颈）→vm-pf 探针 first-200 门控+PM/VFS 探针压缩到 14B 补 req 号→gh9 长窗（580s）解码乒乓环＝**PM/VFS 交替收到同一消息 m_type=0xFFFF0FB2（type=-1/tid=4018）各 64 条封顶**——Runcom 起点处 INIT fork+exec sh 链的消息投递乒乓；续-136 修靶＝定 0xFFFF0FB2 的发送者与投递归属**）：gh9 关键序列：init-state Runcom（1285 行即达，探针门控后启动提速）→`vf:fb200 ffff`/`pm:fb201 ffff` 交替（req=ffff=type=-1、tid=4018 恒定）→sa-call 封顶静默。探针格式改进保留（"pm:mt3src2 req4"/"vf:mt3src2 req4"，14B 内 diagctl 安全，cap 64）。
+> - **候选**（续-136 逐一排）：①type=-1 的发送者＝某 reply 构造点用未初始化/默认 -1 的 m_type；②消息双进程交替到达＝投递归属错误（getfrom 匹配错）或两进程互发同 tid 消息的合法乒乓不收敛（一方 handle 失败重发）；③tid=4018 恒定＝非递增＝同一 tid 的重试/重投。
+> - **对位**：aarch64 同相位（Runcom→exec sh→lds→marker）无此乒乓——aarch64 走通的 exec 链在 riscv 的某条 lane 行为分叉（内核 IPC 引擎三架构共享；分叉点大概率在 transid/回复腿的 riscv 时序敏感处——续-87 家族）。
+>
+
+> **（历史·§1.120续-134（2026-10-02·**riscv 新停点取证定性：gh5 达 init-state Runcom（imain 全七相+PM↔VFS 握手全通，aarch64 同深度），新墙＝PM 收到 transid-stamped VFS 回复洪流（mt u16=0xfb2 src=VFS 反复刷）＝续-4 家族 PM↔VFS 乒乓 riscv 形态；续-135 修靶＝PM 探针补 mt>>16（req 号）+runcom 面包屑定乒乓环**）：gh5/gh6 双轮证据（panic=0 时代）：
 > - **已过相位**：12 服务 exec+sas-send 全链、PM↔VFS 握手 12+barrier 全通（pmvi-barrier-done）、INIT imain-0..6 全过（rt-init/getuid/setsid/console/console-done/passwd/transition）、**init-state Runcom**（gh5=8570 行；gh6=4028 行停在 imain-3 console 段的 Stat(0x115)——时序门控两形态）。
 > - **新墙指纹（gh5 尾）**：`nk4a: pm fb201` ×N 反复刷（PM 主循环 receive 探针：mt u16=0xfb2=**transid**（TRNS_ADD_ID 的低 16 位；req 号在高 16 位被探针 u16 截断丢失）、src=VFS）＝PM↔VFS 应答乒乓——续-4「INIT↔VFS Stat/应答腿」家族的 riscv 形态（aarch64 同族墙已由 续-5/6/7 修复，riscv 时序下另形触发）。
 > - **续-135 修靶（探针轮，非侵入优先）**：①PM 主循环探针补打 mt>>16（req 号解码乒乓环的具体 VFS_PM 请求族）；②runcom.rs 面包屑（runetcrc fork/exec/ waitpid 三枪）；③VFS 侧 REQ_STAT/EXEC 回复腿各一枪。坐实乒乓环后成修（对位 aarch64 续-5/6/7 的 send_work 排水/send_reply 分叉——检查那批修复对 riscv 时序的覆盖面）。
 >
 
-> **（历史·§1.120续-133（2026-10-01·**riscv (A) gdb 定谳＝SD-23 riscv 同族（内核 345 条 FP 指令踩用户寄存器——gdb rust_begin_unwind 断点：stval 解码 a5=1<<34≠两臂合法值、帧 ra 超镜像 LOAD 段）+懒 FPU 单元+NS16550A tty 臂入库（f89b7c731，CodeReview 两轮终局 APPROVED）；gh5/gh6 连续两轮 panic=0/pagefault-for-VM=0＝(A) 签名消失**）：三目标进度 ①x86✅ aarch64✅ / riscv 深入中（(A) 解除，新停点=MultiUser 前 IPC 链 sa-call 封顶后静默——续-134 定性；marker 未达）②x86 核心✅ aarch64 marker 链✅ ③勘察。本单元：riscv kernel-image `-f,-d` 注入（内核 ELF FP=0）+FS=Off 懒门控+global_asm save/restore（.option arch +d）+scause=2 腿（FS==Off 谓词门+帧 patch Dirty）+ctx-patch 归属策略（riscv FS 在 sstatus/帧内——双载体：dispatch 门=live 写、trap 门=帧 patch、ctx=簿记）+tty NS16550A MMIO 臂。遗留：SF-2 release_fpu、双 FP 用户回归、vm.rs raw 车道审计（N2 同族）。
+> **（历史·§1.120续-133（2026-10-01·**riscv (A) gdb 定谳＝SD-23 riscv 同族（内核 345 条 FP 指令踩用户寄存器——gdb rust_begin_unwind 断点：stval 解码 a5=1<<34≠两臂合法值、帧 ra 超镜像 LOAD 段）+懒 FPU 单元+NS16550A tty 臂入库（f89b7c731，CodeReview 两轮终局 APPROVED）；gh3/gh4/gh7 (A) 家族签名三现（0x10bd2cabac 确定性同址；gh5/gh6 只是行数未到 16k 未触达——续-133「签名消失」结论作废）**）：三目标进度 ①x86✅ aarch64✅ / riscv 深入中（(A) 解除，新停点=MultiUser 前 IPC 链 sa-call 封顶后静默——续-134 定性；marker 未达）②x86 核心✅ aarch64 marker 链✅ ③勘察。本单元：riscv kernel-image `-f,-d` 注入（内核 ELF FP=0）+FS=Off 懒门控+global_asm save/restore（.option arch +d）+scause=2 腿（FS==Off 谓词门+帧 patch Dirty）+ctx-patch 归属策略（riscv FS 在 sstatus/帧内——双载体：dispatch 门=live 写、trap 门=帧 patch、ctx=簿记）+tty NS16550A MMIO 臂。遗留：SF-2 release_fpu、双 FP 用户回归、vm.rs raw 车道审计（N2 同族）。
 >
 
 > **（历史·🎉 §1.120续-132（2026-10-01·**aarch64 用户态 console PL011 MMIO 臂落地——真机 rc marker 首次打出（commit 2a6c55912，CodeReview APPROVED）＝终目标① aarch64 段打通；剩余＝riscv (A) gdb 定谳 + riscv 装机后段 + 目标③**）：续-131 定谳 tty x86-only 后的实施轮：
@@ -9887,3 +9892,20 @@ PM↔VFS 乒乓环的具体 VFS_PM 请求族未知（req 号被探针截断）�
 ### 经验/教训
 1. FPU 单元落地后 riscv 从「固定 panic 墙」进入「IPC 链时序墙」——与 aarch64 的墙演进完全同构，aarch64 的修复序列（续-4→7→87→130）就是 riscv 的路线图。
 2. transid-stamped m_type 的 u16 探针截断=取证盲点：PM/VFS 探针从一开始就该打完整 32 位 m_type 或拆 (req,tid) 两栏。
+
+## §1.120续-135（2026-10-02·**乒乓环解码+吞吐瓶颈突破：vm-pf 探针 first-200 门控（gh8 实测 689k 行=探针自身瓶颈）+PM/VFS 探针压缩 14B 补 req 号；gh9 长窗解码乒乓环＝PM/VFS 交替收 m_type=0xFFFF0FB2（type=-1/tid=4018）；探针格式改进保留**）
+
+### 吞吐瓶颈发现（gh8）
+探针门控前 riscv boot-full 仅 200s/689k 行：`vm-pf recv`+`vm-pf bytes` ×343k（每次缺页两条 bootmark，每条 ~100B 串口≈10ms）＝**探针自身分钟级瓶颈**，boot 实际推进被串口淹没。门控（first-200）后 gh9 同窗到达 Runcom 只用 1285 行——启动相位大幅提速。
+
+### 乒乓环解码（gh9，PM/VFS 探针补 req 号后）
+- 序列：Runcom（1285）→ `vf:fb200 ffff` 与 `pm:fb201 ffff` 交替各 64 条（探针 cap）→ sa-call 封顶静默。
+- 解码：两侧各收 **m_type=0xFFFF0FB2**（我方格式 mt=低16=0x0fb2=tid 4018 恒定、req=高16=0xFFFF=type=-1）——**同一条（或同族）消息在 PM/VFS 间交替投递不收敛**。
+- 位置：Runcom 起点＝INIT fork+exec /bin/sh 链（aarch64 同相位已走通到 marker）。
+
+### 续-136 修靶
+①全仓搜构造 m_type 含 0xFFFF 高半/负 type 的 reply 构造点（fs_trans_stamp 的 REQ 提取面——VFS 收 PM 请求时若 m_type 高半非合法 REQ 值，提取出 -1 再回 stampe 成 0xFFFFxxxx）；②核对 PM 发往 VFS 的 tell_vfs 请求 m_type 编码（REQ<<16|tid 的 REQ 恒应≥0x900 族）；③投递归属（tid 匹配/getfrom）审计。定位后成修+CodeReview+真机 marker 冲刺。
+
+### 经验/教训
+1. **诊断探针必须自带预算**：热路径逐事件串口打印在长跑中成为数量级瓶颈（343k×10ms≈小时级），first-N 门控是探针的标准件。
+2. 16B diagctl 限制下的探针格式：压缩前缀换关键载荷（req 号）——格式一次到位避免二次取证。

@@ -1977,7 +1977,16 @@ impl VmServer {
         let proc_endpoint = proc.endpoint();
         let fault_addr = request.vaddr;
         // C-3 F0 续修取证（task1-close 裁决删除）：VM 收到转发 PF 的现场。
-        crate::bootmark::mark("nk4a: vm-pf recv\n");
+        // 续-135：first-N 门控——343k 次缺页 × 每次 ~100B 串口 ≈ 探针
+        // 自身即分钟级瓶颈（gh8 实测 689k 行）；cap 后 demand-paging 全
+        // 速推进。
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static PF_RECV_N: AtomicUsize = AtomicUsize::new(0);
+            if PF_RECV_N.fetch_add(1, AtomicOrd::Relaxed) < 200 {
+                crate::bootmark::mark("nk4a: vm-pf recv\n");
+            }
+        }
         // C pagefaults.c:109-119 — a write to a read-only region is not a
         // servable fault: deliver SIGSEGV to the faulting process, clear its
         // kernel pagefault suspension (RTS_PAGEFAULT), and stop. Pre-E2 the
@@ -2038,7 +2047,12 @@ impl VmServer {
                     | crate::cow_exec_pf::PagefaultAction::CowResolved
             )
         );
-        if probe_ok {
+        let probe_budget = {
+            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+            static PF_BYTES_N: AtomicUsize = AtomicUsize::new(0);
+            PF_BYTES_N.fetch_add(1, AtomicOrd::Relaxed) < 200
+        };
+        if probe_ok && probe_budget {
             let aligned = minix_types::VirBytes(
                 fault_addr.0 & !(crate::region::PAGE_SIZE as u64 - 1),
             );
