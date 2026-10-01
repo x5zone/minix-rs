@@ -2015,11 +2015,13 @@ impl VmServer {
         // trap stub answers -EIO for both calls; the failure is audited and
         // the error reply still counts the episode (G-V12-6).
         // Read-only borrow — ends before the mem_parts_mut split below.
-        // 续-157①（最小验证）：find 结果单次求值——若 stale 双读（别名
-        // UB）为本墙真身，合并求值后症状应消失。
-        // 续-158②：black_box 强制真实加载——gh42 实证 check 的 find 调用
-        // 被编译器替换为跨调用缓存值（find-in 埋点从未执行），绕开 noalias
-        // UB 驱动的 hoist/CSE。
+        // 续-159 判别实验：seg_w 时刻与探针时刻各取 &RegionMap 指针——
+        // 两指针不同=同对象双 VA 映射（remap 残留）；相同=页内容真被改写
+        // （并发写者）。顺带打印 seg_w 时刻 map 前 2 个 u64（键+节点头）。
+        let map_ptr_a = (proc.regions() as *const _ as *const u64) as u64;
+        let head_a = unsafe {
+            core::ptr::read_volatile(map_ptr_a as *const u64)
+        };
         let seg_writable = core::hint::black_box(proc.regions())
             .find(core::hint::black_box(fault_addr))
             .is_some_and(|r| r.is_writable());
@@ -2032,14 +2034,18 @@ impl VmServer {
                 static WRO_N: AtomicUsize = AtomicUsize::new(0);
                 if WRO_N.fetch_add(1, AtomicOrd::Relaxed) < 2 {
                     let f = proc.regions().find(fault_addr);
+                    let map_ptr_b = (proc.regions() as *const _ as *const u64) as u64;
                     crate::bootmark::mark(&alloc::format!(
-                        "nk4a: wro-dump ep={:#x} cr2={:#x} find_some={} find_w={} n={} seg_w={}\n",
+                        "nk4a: wro-dump ep={:#x} cr2={:#x} find_some={} find_w={} n={} seg_w={} ptrA={:#x} ptrB={:#x} headA={:#x}\n",
                         proc_endpoint.0 as u64,
                         fault_addr.0,
                         f.is_some(),
                         f.is_some_and(|r| r.is_writable()),
                         proc.regions().len(),
-                        seg_writable
+                        seg_writable,
+                        map_ptr_a,
+                        map_ptr_b,
+                        head_a
                     ));
                     proc.regions().iter().for_each(|r| {
                         crate::bootmark::mark(&alloc::format!(
