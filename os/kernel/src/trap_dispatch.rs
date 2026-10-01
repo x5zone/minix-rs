@@ -1956,6 +1956,18 @@ unsafe fn riscv64_pagefault_body(
         Console::write_str(" stval ");
         Console::write_hex(fault_addr);
         Console::write_str("\n");
+        // 续-138 探针（用后即滚）：全 GPR 帧 dump——寄存器残缺恢复定位。
+        for (idx, val) in frame.gpr.iter().enumerate() {
+            Console::write_str("x");
+            Console::write_hex(idx as u64);
+            Console::write_str("=");
+            Console::write_hex(*val);
+            Console::write_str(" ");
+            if idx % 4 == 3 {
+                Console::write_str("\n");
+            }
+        }
+        Console::write_str("\n");
         panic!("pagefault in VM");
     }
     // User code runs without the BKL (resched-thunk convention: unlock
