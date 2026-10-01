@@ -8,7 +8,11 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-141（2026-10-02·**多墙轮转矩阵补全（gh7~gh17 十一轮）：当前构建下 **fb201 乒乓＝确定性首墙**（gh9/12/13/17 四轮均停于此，(A) 未触达）；(A) 仅在早前布局现形（gh7/10/14/15，stval 三形状均＝VmDm 指针指越 RAM 帧：0x10bd2cabXX/0x409d2c9bb0/0x10bd2cab9c——基址贡献在 1<<34 与 1<<36 间漂＝**双重坏值：表页 PA 超 RAM + DM 指针基址漂移**）；探针阈值修正（VM pfn 为绝对值，合法域 [0x80000,0xA00000)，越顶判据 pfn≥0xA0000）并随诊断面保留服务 (A) 复现**）：优先级裁定＝**续-142 先修 fb201 乒乓**（确定性首墙，(A) 猎杀须先过 Runcom）——续-136 已解码乒乓消息＝VFS↔FS stamped（status=-1, tid=4018）泄漏进 PM/VFS 车道；续-136 机制精化已定位 PM 回程腿（is_vfs_pm_rs 门→ENOSYS）。**续-142 修靶**：①VFS 侧找 0xFFFF0FB2 首发源头（Route:: 解码对 PM 来源消息的未知 m_type 臂——它回了原值）；②PM 侧 dispatch_message 对 VFS 来源非 RS 族消息的 ENOSYS 回程改为静默（C 对位：VFS 来源非应答消息 PM 不回）；③修后 fb201 墙应消失→Runcom 深入→(A) 或新墙现形再战。
+> **🛑 最新前沿＝§1.120续-142（2026-10-02·**(A) 帧 dump 破解关键模式：掩码寄存器 x17 = 0x00fffffffffff000 **gh14/gh18 两轮逐位相同**（应为 `lui 0xfff00; srli 8` ⇒ 0x000FFF000）＝**确定性寄存器破坏非随机踩踏**；gh18 另证 diagctl >16B 通道纪律（vr/pr/fss 三探针全被静默丢弃零输出，pm:/vf: 15B 格式正常）**）：gh18 帧（(A) 再现于 1531 行，fb201 未现形——多墙轮转持续）：x11(a1)=0x409d2c9b90（计算槽指针，=0x400000000+0x9d2c9b90，0x9d2c9b90-0x88=x12-0x... 的非页对齐形状）、x12(a2)=0x7fffffffe000（栈顶页）、x14=0x9d2ea004（V=0 的 L1e）、x15=0x1000000000（VmDm 基址✓）、x16=0x9d2ea000（a4&x17 的「表 PA」）、x17=0x00fffffffffff000（**坏掩码，两轮逐位同**）、x8=0xf（gh14=0xfffffffffffff000——t0/x8 族亦不稳）。**代数结论：a7 掩码坏 ⇒ a6=(pte<<2)&a7 保留高位垃圾 ⇒ a1=a6|a5+idx 落越栈窗 ⇒ VM 自缺页**。掩码值 0x00fffffffffff000 = 0xFFFFFFFFFFFFF000>>8 = `srli aX, aY, 8` 于 aY=全 F 页掩码——**寄存器间数据流自洽，但入口值错**＝上游某写者将「全 F 页掩码」放进 prologue 链的输入寄存器。
+> - **续-143 修靶**：①以 gh14/gh18 两帧的寄存器代数做全数据流回推（x17 稳定坏值→prologue 输入→上上游），定位「全 F 页掩码」写者；②对标 aarch64 续-130 同位修复（riscv apply_to_trap_frame gp_regs 全量回装缺失——**riscv apply_to_trap_frame 只回装 sstatus/sepc/sp/a0 四槽，gp_regs 数组不回装 frame！** restore_to_user asm 直读 ctx 绕过 frame 故 GP 由 ctx descent 承载——但 frame.regs[2]/[10] 的写与 ctx 双轨并存本身是分叉源）；③gh18 的 x8=0xf vs gh14 的 x8=0xfffffffffffff000 差异＝两不同执行点共用 dump（轮转多墙的另一证据）。
+>
+
+> **（历史·§1.120续-141（2026-10-02·**多墙轮转矩阵补全（gh7~gh17 十一轮）：当前构建下 **fb201 乒乓＝确定性首墙**（gh9/12/13/17 四轮均停于此，(A) 未触达）；(A) 仅在早前布局现形（gh7/10/14/15，stval 三形状均＝VmDm 指针指越 RAM 帧：0x10bd2cabXX/0x409d2c9bb0/0x10bd2cab9c——基址贡献在 1<<34 与 1<<36 间漂＝**双重坏值：表页 PA 超 RAM + DM 指针基址漂移**）；探针阈值修正（VM pfn 为绝对值，合法域 [0x80000,0xA00000)，越顶判据 pfn≥0xA0000）并随诊断面保留服务 (A) 复现**）：优先级裁定＝**续-142 先修 fb201 乒乓**（确定性首墙，(A) 猎杀须先过 Runcom）——续-136 已解码乒乓消息＝VFS↔FS stamped（status=-1, tid=4018）泄漏进 PM/VFS 车道；续-136 机制精化已定位 PM 回程腿（is_vfs_pm_rs 门→ENOSYS）。**续-142 修靶**：①VFS 侧找 0xFFFF0FB2 首发源头（Route:: 解码对 PM 来源消息的未知 m_type 臂——它回了原值）；②PM 侧 dispatch_message 对 VFS 来源非 RS 族消息的 ENOSYS 回程改为静默（C 对位：VFS 来源非应答消息 PM 不回）；③修后 fb201 墙应消失→Runcom 深入→(A) 或新墙现形再战。
 >
 
 > **（历史·§1.120续-140（2026-10-02·**(A) 根因再收窄至 VM slot 簿记：sync_slot_pte 的 paddr=frames.pfn_to_phys(pfn)——坏 L1e 的 PPN 精确多出 0x4000000=pfn bit 26（slot pfn=0x409d2c9 vs 合法 0x9d2c9），remap 忠实映射坏帧 ⇒ 污染源＝栈页 slot 的 PFN 被置位 26（alloc/fork-copy/COW 降级三候选写点）；flags 无辜（read_write+EXECUTABLE 无高位）**）：续-139 的「OR 进 VmDm 基址」机制精化＝写点在 sync_slot_pte 三路分派的 remap 臂（slot pfn 带错位→pfn_to_phys 带 1<<36→L1e PPN 精确多 0x4000000→walk 跟随后 DM 读越栈）。**续-141 修靶**：①exec 子栈页 slot pfn dump（alloc 时/remap 时双点）+位 26 置位者定位（PageFrames 位图 alloc 的 word/bit 算术 or fork 拷贝 pfn 直传）；②位 26 语义核查（pfn 0x4000000 = PA 0x4000000<<12 = 1<<38——某 64 位值的高半截？）；③成修+CodeReview+marker 冲刺。
@@ -10027,3 +10031,14 @@ sync_slot_pte（cow_exec_pf.rs:101-141）读码：paddr = frames.pfn_to_phys(pfn
 
 ### 优先级裁定（续-142）
 fb201 乒乓四轮连续确定性首挡 ⇒ 先修乒乓（Runcom 深入的前提），(A) 猎杀待乒乓修后按复现情况再战。fb201 修法方向已具备（续-136 解码+机制精化）：①VFS Route:: 对 PM 来源未知 m_type 的臂（回原值者）改为 C 对位行为；②PM dispatch 对 VFS 来源非 RS 族消息的 ENOSYS 回程改静默；③FS status=-1 回复源头。
+
+## §1.120续-142（2026-10-02·**(A) 帧 dump 破解关键模式：掩码寄存器 x17 两轮逐位相同的确定性坏值 0x00fffffffffff000；diagctl >16B 通道纪律实锤（vr/pr/fss 三探针全零输出）**）
+
+### gh18 帧（(A) 再现，fb201 未现形——多墙轮转持续）
+完整 GPR dump 已留串口（gh18.log 1519-1529）。关键：x17 = 0x00fffffffffff000 **与 gh14 逐位相同**——该槽应为 `lui a6, 0xfff00; srli a7, a6, 8` ⇒ 0x000FFF000（PTE→表 PA 的掩码）。实际值＝0xFFFFFFFFFFFFF000>>8＝「全 F 页掩码」的移位形——**prologue 链输入寄存器被上游写者放入了「全 F 页掩码」**。x8 族亦不稳（gh14=页掩码/gh18=0xf）。代数结论：a7 掩码坏 ⇒ a6=(pte<<2)&a7 保留高位垃圾 ⇒ a1 落越栈窗 ⇒ VM 自缺页致命。**确定性（两轮逐位同）非随机踩踏**——上游写者固定。
+
+### diagctl 通道纪律（重要仪器教训）
+vr（take_reply 回复）/pr（PM reply）/fss（FS send）三探针均 >16B ⇒ sys_diagctl_write 静默丢弃 ⇒ gh18 三者零输出（gh10 同）。**16B 上限下的可用格式**：pm:/vf: 的 15B 压缩格式 ✓、内核 EarlyConsole/bootmark 无限长 ✓。后续探针一律 EarlyConsole（内核态）或 ≤15B diagctl（用户态）。
+
+### 续-143 修靶
+①gh14/gh18 双帧寄存器代数全数据流回推（x17 稳定坏值→prologue 输入→上游写者——「全 F 页掩码」的来源）；②riscv apply_to_trap_frame 只回装四槽（sstatus/sepc/sp/a0）、gp_regs 不回装 frame（restore asm 直读 ctx 绕过）的双轨结构审计——frame.regs 与 ctx 双载体分叉是「稳定坏掩码」的高危源；③gh18 x8=0xf vs gh14 x8=页掩码 的差异＝两不同执行点共用 dump 的多墙证据。fb201 乒乓与 (A) 的先后/同根关系在此轮后重判。
