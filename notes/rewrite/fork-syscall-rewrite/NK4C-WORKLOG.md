@@ -11244,6 +11244,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 本层新增测试脚本（os/qemu-tests，非生产 OS 码）+文档；commit 后过 CodeReview；未改 OS/ 生产 Rust/C 码；host 1400/0。三目标未全成，goal active。
 
+---
+
+## §续-253（2026-10-03·(A) 插件方案预备：写好 QEMU mem-write 瞬态写者插件 + 构建/挂载脚本，待 qemu-plugin.h 就绪即可编译跑）
+
+> 用户选定：(A) 由用户安装 qemu-plugin.h 解锁。本层把解锁后唯一能定谳瞬态写者的工具预先备好。
+
+- 新增 `tmp/nk4a/watch_store_plugin.c`（QEMU 8.2 plugin API）：`qemu_plugin_register_vcpu_mem_cb(..., QEMU_PLUGIN_MEM_W, ...)` 只订阅写；命中目标物理地址（缺省 `0x9dc377f8`，--arg 可改）的 store 就打印发起 vCPU 的 guest PC/vaddr/paddr/len，**零暂停、不改 guest 码**。
+- 新增 `tmp/nk4a/watch_store_plugin.build.sh`：先探 qemu-plugin.h（缺则明确 SKIP exit 2，已实测无头时优雅退出），有则 `cc -fPIC -shared` 编译并输出 `-plugin file=..,arg=0x9dc377f8` 的挂载行与反汇指引。
+- **诚实标注**：插件按 QEMU 8.2 公开 API 写、**未在本机编译验证**（缺头）。装好头后若个别符号名（`qemu_plugin_get_vcpu_pc`/`get_hwaddr`/`hwaddr_phys_addr`/`mem_rw_get_length`/输出用 `g_printf`）与本机头有出入，按原型微调重编。插件回调本身不改 guest 执行→不会像代码探针那样漂移崩点（§续-247 教训），是本工具链唯一可抓瞬态写者的手段。
+
+### 下轮（(A) 解锁后）
+1. `bash tmp/nk4a/watch_store_plugin.build.sh` 编出 `watch_store_plugin.so`（必要时按头文件修符号）。
+2. 把 `-plugin file=watch_store_plugin.so,arg=<当轮实测子根槽>` 加进 riscv boot（沿用 wrap-boot-mon / riscv_watch 系 harness 的模块装载 + 端口/日志隔离）。
+3. boot 到崩溃，插件打印瞬态写者 PC→`objdump minix-vm` 反汇→定 culprit 写路径→对照 C 真源→**坐实才成修**→riscv marker + 两 marker 回归门。
+
+### 纪律
+- 本层仅新增 tmp/nk4a 取证插件+构建脚本（非生产 OS 码、未编译依赖外部头）；未改 os/ 生产码；host 1400/0。三目标未全成，goal active。
+
 
 
 
