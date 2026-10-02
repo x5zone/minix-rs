@@ -10327,3 +10327,8 @@ boot.rs read_boot_params：free_regions 构建时按 handoff.root_paddr 起扣 6
 gh48 判据：root-deduct 打印 ✓；rm-fallback=0（前轮 3+）、rm-repair=0、pagefault for VM=0（前轮恒 1）——续-167a 根因候选**实锤并修复**：VM 根页 0x82000000 被帧分配器覆写即全部腐坏之源，扣减后家族清零。child 0x800c 的 exec（sas-clear root=0x9dc38000）后 csig 不再针对 0x800c。
 ### 续-169（下游新故障）
 ep 0xa 的 exec：vmmL mmap addr=0x10000 len=0x3000 fl=0x8c1012 fw=0x800c?? →memreq target=32780 start=0x10000 len=0x1000 ok=0→SIGSEGV tgt=0xa→RS panic（panic-enter + PF servers/rs/src/b...）。处方：①ok=0 出口定性（find_mut None=region 缺失 or handle_pagefault Err）；②确认 ep 0xa 是谁的 exec（RS 重 exec？）与 fw=0x800c 的 mmap 归属（0x800c 的 exec 链尾声误注入 0xa 的 fault？）；③成修→CodeReview→gh49。
+
+## §1.120续-169（2026-10-02·**gh49 双事实：①fill-root va=0x7fffffffe000 ptroot=0x9dc38000=kernel 装根一致（双句柄排除）；②腐坏复发（rm-fallback×3+VM fault 0x10bd28db7c）——gh48 的"家族清零"系运气未进窗口，root-deduct 只修根页实例非全愈；hm-fail 未触发（ok=0 未再现）；真根=VM 堆对象腐坏仍在逃，续-170=heap_arena 影子位图（free 后 touch）+fill-root 扩印 PTE 值与槽 PA**）
+
+gh49 判读：sync_slot_pte fill-root 探针首次命中（前几轮未达 sync），ptroot 与 sas-clear 一致→句柄单一无誤；pte-wb 亦无 FAIL=写落地；但 rm-fallback 仍三连=region BTreeMap range 仍坏；最终 VM pagefault stval=0x10bd28db7c（0xbd28db7c 族与 gh29/30 同源）。hm-fail 探针零触发=gh48 的 ep0a ok=0 未再现（时序漂移）。结论：腐坏=堆级、探针改布局即隐现（Heisenbug 实证第三例），上游写者仍未定位；root-deduct 保留（根页自护正确）。
+续-170 处方：①heap_arena 影子位图（free 后 touch 检测，gh32 手法移植）抓堆级写坏者；②fill-root 探针扩印 PTE 值+叶槽 PA+child root 链核对；③pmemsave 差分通道复用。门：探针滚除台账同步。

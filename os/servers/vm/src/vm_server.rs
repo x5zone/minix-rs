@@ -1364,7 +1364,12 @@ impl VmServer {
         while va < end {
             let region = match regions.find_mut(minix_types::VirBytes(va)) {
                 Some(r) => r,
-                None => return false,
+                // 续-169 探针（用后即滚）：ok=0 出口定性。
+                None => {
+                    #[cfg(not(feature = "mock"))]
+                    Self::hm_fail("no-region", req, va, table);
+                    return false;
+                }
             };
             match crate::cow_exec_pf::handle_pagefault(
                 req.target,
@@ -1383,15 +1388,63 @@ impl VmServer {
                 | Ok(crate::cow_exec_pf::PagefaultAction::CowResolved) => {}
                 // VFS 后备页需异步 I/O：C 在此处挂请求等 VFS 完成后再答；
                 // 本轮 fail closed（ok=0 → 内核按 Fault 处理），登记不假完成。
-                Ok(crate::cow_exec_pf::PagefaultAction::Suspended)
-                | Ok(crate::cow_exec_pf::PagefaultAction::AccessViolation) => return false,
-                Err(_) => return false,
+                Ok(crate::cow_exec_pf::PagefaultAction::Suspended) => {
+                    #[cfg(not(feature = "mock"))]
+                    Self::hm_fail("suspended", req, va, table);
+                    return false;
+                }
+                Ok(crate::cow_exec_pf::PagefaultAction::AccessViolation) => {
+                    #[cfg(not(feature = "mock"))]
+                    Self::hm_fail("access-violation", req, va, table);
+                    return false;
+                }
+                Err(e) => {
+                    #[cfg(not(feature = "mock"))]
+                    {
+                        let tag = alloc::format!("err-{:?}", e);
+                        Self::hm_fail(&tag, req, va, table);
+                    }
+                    return false;
+                }
             }
             // 单页步进；region 边界由下一轮 find_mut 重查（C
             // map_handle_memory 逐页遍历同形）。
             va += crate::region::PAGE_SIZE as u64;
         }
         true
+    }
+
+    /// 续-169 探针（用后即滚）：handle_memory 的 ok=0 出口定性。
+    #[cfg(not(feature = "mock"))]
+    fn hm_fail(
+        tag: &str,
+        req: &crate::kernel_gateway::KernelMemReq,
+        va: u64,
+        table: &VmProcTable,
+    ) {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static HM_N: AtomicUsize = AtomicUsize::new(0);
+        if HM_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+            let slot = table.vm_isokendpt(req.target).ok().map(|s| s.0 as u64);
+            let state = slot
+                .and_then(|s| {
+                    let s = minix_types::UserSlot::new(s as usize);
+                    if table.get_active(s).is_some() {
+                        Some("active")
+                    } else if table.get_exiting(s).is_some() {
+                        Some("exiting")
+                    } else if table.get_empty(s).is_some() {
+                        Some("vacant")
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or("badslot");
+            crate::bootmark::mark(&alloc::format!(
+                "nk4a: hm-fail {tag} tgt={:#x} va={va:#x} slot={slot:?} state={state}\n",
+                req.target.0 as u64
+            ));
+        }
     }
     /// Main event loop. Never returns (C: main.c:113-193).
     ///
