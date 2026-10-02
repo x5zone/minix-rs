@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-260（2026-10-03·插件 PC 定名到 update_flags⇒结构收敛：query 走表成功→sync_slot_pte 进 update_flags 分支→重走同一(root,vaddr)却崩 ⇒ 单线程两次相邻 walk 结果不同=表在两 walk 间被改/读到未建立中间项；“帧被写坏”排除；下轮 write_pte_dm 腿台账拿写入值坐实）**；取证链 §续-216~260**：
+> **🛑 最新前沿＝§续-262（2026-10-03·末级 L0 0x9d2ac000 halt dump：栈缺页 vaddr 0x7fffffffe000 → i2=i1=i0=511，各级 511 槽 halt 全合法/空（叶槽 L0[511]=0 从未写）⇒“瞬态/读未写”到末级坐实；回填候选槽=511非255；收敛到 VA/PA 混用（DM-VA 嗂给 paddr_to_pte）固定成因，下步 grep paddr_to_pte/write_pte_dm 调用点）**；取证链 §续-216~262**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11389,6 +11389,19 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 本层只改 tmp/nk4a 插件（内核窗+FAULT 尝试）+静态核实；未改 os/ 生产码；gh110/111 端口已清；host 1400/0。三目标未全成，goal active。
+
+---
+
+## §续-262（2026-10-03·末级 L0 halt dump：栈链 i2=i1=i0=511、各级 511 槽 halt 均合法/空 ⇒“瞬态”到末级也成立；回填§3.8 候选槽=511非255；改追 VA/PA 混用固定性成因）
+
+> 承侧点3 自查，补 gh112 末级 L0 0x9d2ac000 halt dump（riscv_live_read，给足时间不提前 pkill）。
+
+- **gh112 实测（L0 0x9d2ac000 halt）**：slot511（0x9d2acff8，栈缺页 vaddr 0x7fffffffe000 的叶槽）= **0x0（从未写）**；slot510=0x274ab8df（合法 in-RAM）。上溯链：root[511]=0x274ab401→L1 0x9d2ad000；L1[511]=0x274ab001→L0 0x9d2ac000；L0[511]=0。⇒ **栈缺页叶槽 halt 时根本未映射**（query → None → 本该走 map/walk_alloc 建叶），与 root/L1/L0 各级 511 全合法/空一致⇒**侧点3 补齐：“读到的值从未被写”对末级 L0 也成立（不只是根帧）**。
+- **回填侧会话 §3.8 候选槽表**：真链是 vaddr 0x7fffffffe000 → **i2=511, i1=511, i0=511**（非 §续-238 的 i2=255）；叶帧=0x9d2ac000 slot511（物理 0x9d2acff8）、中间 L1=0x9d2ad000 slot511、根=0x9dc37000 slot511。插件 gh110 尾也看到读 0x9d2acff8。旧“0x9DC377F8(i2=255)”完全错。
+- **方向收敛到可固定成因（§续-139）**：崩值低位带 VmDm 基址 1<<36（或 0xbd28c=0x9d28c|bit29）⇒经典 **VA/PA 混用**：某路径把 **DM 虚地址（vm_phys_to_virt 结果）当作物理 paddr 喂给 paddr_to_pte / write_pte_dm**，PPN 高位带上 DM 基址⇒叶/中间项变成 bogus。下步 grep `paddr_to_pte`/`write_pte_dm`/`pfn_to_phys` 调用点找传入 DM-VA 而非 phys 的那一处。**未坐实不成修**。
+
+### 纪律
+- gh112 端口已清（riscv_live_read 自带收尾）；未改 os/ 生产码；host 1400/0。(A) 仍 open；“瞬态/读未写”到末级坐实；转 VA/PA 混用静态定位（不靠会改局的动态）。三目标未全成，goal active。
 
 
 
