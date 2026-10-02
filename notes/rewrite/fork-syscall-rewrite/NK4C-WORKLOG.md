@@ -11187,6 +11187,19 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - gh102 纯 KDM 活体读（无代码改动），端口锚定已清；新增 live_read.sh 的 CHILD_ROOT env 开关。未改生产码；host 1400/0。三目标未全成，goal active。
 
+---
+
+## §续-249（2026-10-03·静态挖 sas-send/sas-fork 日志：已知 ep 的 root 发放均正确⇒A2“发/存错根”无据；崩溃 root 属尚来未 dump 的 ep）
+
+> 纯日志挖掘（gh92f2 干净 build 串口，现有 sas-send/sas-fork/filot 探针），不新跑、不改码。
+
+- 实测 gh92f2：`sas-send ep=2 root=0x82132000`（RS）、`sas-fork ep=32780(=0x800c) root=0x9dc37000`（子）、另有 ep0–11 各一个合法 root（全 in-RAM）；`filot ova=0x7fffffffe000 ptroot=0x9dc37000 pte_pa=0x9d2ae000`。⇒ **VM 给每个已知 endpoint 发的 root 都与记账一致**（§续-233 担心的“VM 发错 root→内核存错 root”在已知 ep 未重现）。⇒ **A2（stale/错配 root）对已知 ep 不成立**；子 0x800c root=0x9dc37000、RS=0x82132000，两者 gh96/gh102 已证 halt 全净。
+- 矛盾回归：崩 walk 若用子根或 RS 根，其 :311 L2 槽 halt 全净⇒读到 V=0/合法⇒不该到 :326 崩。⇒要么崩溃 walk 用的是**尚来未 dump 的另一个 ep 根**（~12 个 root），要么确为 **A1 真瞬态**（读瞬间 corrupt、halt 已清，但 :311→halt 无写者——机制未明）。
+- **下轮候选（零扰动）**：(1) 用 live_read.sh 批量 dump 其余 ep 根（sas-send 列出的 0x8219x/0x822x/0x82cx 等）找哪个含 corrupt l2e（halt 仍 corrupt ⇒ 持久⇒定位）；(2) 若全净⇒确为瞬态，需装 qemu-plugin.h 走插件 mem-write 拦截（唯一能看瞬态写者的零halt方法）。**未坐实不成修**。
+
+### 纪律
+- 本层纯日志挖掘（不改码不新跑 qemu）；未改生产码；host 1400/0。三目标未全成，goal active。
+
 
 
 
