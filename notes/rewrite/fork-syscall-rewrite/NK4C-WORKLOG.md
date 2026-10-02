@@ -10332,3 +10332,7 @@ ep 0xa 的 exec：vmmL mmap addr=0x10000 len=0x3000 fl=0x8c1012 fw=0x800c?? →m
 
 gh49 判读：sync_slot_pte fill-root 探针首次命中（前几轮未达 sync），ptroot 与 sas-clear 一致→句柄单一无誤；pte-wb 亦无 FAIL=写落地；但 rm-fallback 仍三连=region BTreeMap range 仍坏；最终 VM pagefault stval=0x10bd28db7c（0xbd28db7c 族与 gh29/30 同源）。hm-fail 探针零触发=gh48 的 ep0a ok=0 未再现（时序漂移）。结论：腐坏=堆级、探针改布局即隐现（Heisenbug 实证第三例），上游写者仍未定位；root-deduct 保留（根页自护正确）。
 续-170 处方：①heap_arena 影子位图（free 后 touch 检测，gh32 手法移植）抓堆级写坏者；②fill-root 探针扩印 PTE 值+叶槽 PA+child root 链核对；③pmemsave 差分通道复用。门：探针滚除台账同步。
+
+## §1.120续-170（2026-10-02·**机制收口：gh49 帧拷贝目的地 kdst copy pa=0x9d2aff98=页 0x9d2af000 槽 511（=walk 要跟的 L1[511] L0 指针槽），帧拷贝 0x68 字节正好砸毁该槽→后续 walk 全走垃圾；且 alloc-reuse-PT 零触发⟹0x9d2af 从未经 vm_pt_alloc⟹region 页槽 pfn 本身=被腐坏/陈旧的值（fill 的 alloc_and_map 从 region.get_slot 拿到它）——腐坏对象=RegionMap 页槽的 pfn 字段；续-171=fill-root 扩印叶槽 PA+PTE 值+get_slot pfn 溯源（region 槽写点审计）**）
+
+gh49 铁证并列：kdst copy pa=0x9d2aff98（帧拷贝）↔ update_flags 崩溃前 walk 的 L1 槽族（0x9d2ae/af）↔ fill-root pte_pa=0x9d2af000（填页 data frame）——三方同页。region 槽 pfn 腐坏→填页把 L1 页当栈帧映射→帧拷贝砸 L1[511]→walk 崩。续-170 的 heap 影子位图升级为 region 槽 pfn 溯源（RegionMap 槽写点审计+fill-root 扩印叶槽 PA/PTE 值/get_slot 返回值），heap 影子位图并行保留。
