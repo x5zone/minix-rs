@@ -10319,3 +10319,11 @@ gh47 补充判读：crash 在 sync_slot_pte 的 update_flags 内（query 先行�
 
 证据链：①gh35 pfvm satp=0x8000000000082000→root=0x82000000=池基（boot-full.sh 注释「bump pool 0x82000000+32MiB: root/pt/名字池/模块落地」）；②gh32 content-dump 首批 PT 帧 pfn=0x83981/0x839ac 族（池内！pa 0x83981000=gh35 root[80] 的 L1 表）+gh45 ptalloc 0x9d747 族 descending=分配器在高地址池/高 RAM 双区descending发放；③「同 VA 两读不同值/无写者」=根页被 alien 占有者持续改写，翻译腐坏是间歇的；④续-77 VmDm 无 sfence、heap free-after-free 等前几轮嫌疑全部降级为次生。
 续-168 成修靶：VM PhysAlloc 构建处（memmap→free list）扣减 params.root_paddr 所在 4KB 页（最小）或整个 boot handoff 区（对齐 C：内核把 bump 池扣还给 VM 前先扣除自用）；双侧防护=vm_pt_alloc/alloc_phys 的 OOR 探针已有（gh32 零触发因界=0x9fb33 只查上界——补下界/池界检查）。生产码：CodeReview+全验证链+gh48。
+
+## §1.120续-168（2026-10-02·**成修落地生效：boot.rs read_boot_params 扣减 root 页起 64KB（root-deduct [0x82000000,0x82010000) regions=4 真机打印），gh48 零 rm-fallback/零 rm-repair/零 VM pagefault——VM 根页覆写腐坏家族（region 键序坏/btree panic/walk 走设备洞）全灭**；推进到下游新故障=ep 0xa 的 exec memreq start=0x10000 len=0x1000 ok=0→SIGSEGV tgt=0xa→RS panic（servers/rs panic-enter）**）
+
+### 成修内容（生产码）
+boot.rs read_boot_params：free_regions 构建时按 handoff.root_paddr 起扣 64KB（flat_map 拆分重叠区），`root-deduct` 打点。531 minix-vm 测试全绿。
+gh48 判据：root-deduct 打印 ✓；rm-fallback=0（前轮 3+）、rm-repair=0、pagefault for VM=0（前轮恒 1）——续-167a 根因候选**实锤并修复**：VM 根页 0x82000000 被帧分配器覆写即全部腐坏之源，扣减后家族清零。child 0x800c 的 exec（sas-clear root=0x9dc38000）后 csig 不再针对 0x800c。
+### 续-169（下游新故障）
+ep 0xa 的 exec：vmmL mmap addr=0x10000 len=0x3000 fl=0x8c1012 fw=0x800c?? →memreq target=32780 start=0x10000 len=0x1000 ok=0→SIGSEGV tgt=0xa→RS panic（panic-enter + PF servers/rs/src/b...）。处方：①ok=0 出口定性（find_mut None=region 缺失 or handle_pagefault Err）；②确认 ep 0xa 是谁的 exec（RS 重 exec？）与 fw=0x800c 的 mmap 归属（0x800c 的 exec 链尾声误注入 0xa 的 fault？）；③成修→CodeReview→gh49。

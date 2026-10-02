@@ -283,15 +283,55 @@ pub fn read_boot_params() -> BootParams<'static> {
     // A2 free list: kernel-cut survivors, already clipped to VM's DM
     // window (VM PMM eligible = conventional ∩ DM-representable −
     // LiveBootstrap).
+    //
+    // 续-168 成修：A2 切割漏了 VM 正在运行的**地址空间根页**（以及
+    // bootstrap 直接挂在其下的 L1 表簇）——gh46 sas-clear 实证 kernel
+    // 持根=0x82000000（handoff root_paddr=boot bump 池基），而该页在
+    // free list 内（gh32/45 分配轨迹穿越池区间）；池耗尽降序发放到池
+    // 底时根页被当普通帧分配→VM 自身翻译（BSS/堆/DM 窗）间歇腐坏→
+    // walk 走设备洞/btree panic/region range 坏全家族。此处按 root 页
+    // 起扣 64KB（覆盖 gh35 实测 bootstrap L1 簇 0x82001000..0x8200f000），
+    // 泄漏表同步收缩。
+    let root_deduct_base = handoff.root_paddr & !(0x1_0000u64 - 1);
+    let root_deduct_end = root_deduct_base + 0x1_0000;
     let free_regions: &'static [BootMemRegion] = {
-        let v: alloc::vec::Vec<BootMemRegion> =
-            handoff.free_regions[..handoff.free_region_count as usize]
-                .iter()
-                .map(|r| BootMemRegion {
-                    base: r.base as usize,
-                    size: r.size as usize,
-                })
-                .collect();
+        let v: alloc::vec::Vec<BootMemRegion> = handoff.free_regions
+            [..handoff.free_region_count as usize]
+            .iter()
+            .map(|r| BootMemRegion {
+                base: r.base as usize,
+                size: r.size as usize,
+            })
+            .flat_map(|r| {
+                let r_base = r.base as u64;
+                let r_end = r_base + r.size as u64;
+                if r_end <= root_deduct_base || r_base >= root_deduct_end {
+                    // no overlap — keep whole
+                    alloc::vec![r]
+                } else {
+                    let mut parts = alloc::vec::Vec::with_capacity(2);
+                    if r_base < root_deduct_base {
+                        parts.push(BootMemRegion {
+                            base: r.base,
+                            size: (root_deduct_base - r_base) as usize,
+                        });
+                    }
+                    if r_end > root_deduct_end {
+                        parts.push(BootMemRegion {
+                            base: root_deduct_end as usize,
+                            size: (r_end - root_deduct_end) as usize,
+                        });
+                    }
+                    parts
+                }
+            })
+            .collect();
+        crate::bootmark::mark(&alloc::format!(
+            "nk4a: root-deduct [{:#x},{:#x}) regions={}\n",
+            root_deduct_base,
+            root_deduct_end,
+            v.len()
+        ));
         alloc::boxed::Box::leak(v.into_boxed_slice())
     };
     let modules: &'static [BootModule] = {
