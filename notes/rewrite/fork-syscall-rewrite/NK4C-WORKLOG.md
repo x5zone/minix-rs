@@ -11692,6 +11692,22 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 目标③状态刷新：**构建面双 arch 各 18/18**（riscv 旧达 + aarch64 本达）；上机面 riscv 受 (A)、aarch64 待本会话后续推进。
 - 纪律：本步含构建脚本/桥文件代码改动，已单独 commit + CodeReview（explicit_target）+ 本 WORKLOG；无 os/ tracked 变更。
 
+---
+
+## §续-276b（CodeReview 修复轮：commit 1ab6d0584 无 P0，2 P1 + 6 P2，修 P1×2/P2×4，登记 P2×2）
+
+> CodeReview（explicit_target=1ab6d0584）对其余要点的独立裁定：sys-bridge.c ABI 与内核真源 trap_dispatch.rs（gpr[8] 判调用号/gpr[0] 消息指针/回码 gpr[0]）对齐；clobber 严格不弱于 Rust 真源；struct kmsg 经 _Static_assert 双 CC 实编译 sizeof==64 与 minix-types Message 同形；riscv 腿文本零差异；产物零意外 tracked。以下逐条 fix-status。
+
+- **P1-1 已修**（vendor-atf-toolchain.sh）：半成品 vendor 树被当有效缓存静默复用→改 stage 临时目录解包、整包布局校验后**原子 mv 发布**（rm -rf 旧残骸）+ trap EXIT 清临时 + 完整性判据从“目录存在”升级为“picolibc.specs && lib/libc.a 双文件存在”。验证：重跑脚本 specs 产物与改前逐字节同（diff 空）。
+- **P1-2 已修**（两 build 脚本）：libatf-c.a 换 libc 腿后旧产物不失效→build-libatf-c.sh 写 `$OUT/libatf-c.flavor`（`$CC|$LIBC_KIND`），build-atf-test.sh 消费前比对不匹配即 exit 2 并提示重跑。验证：篡改 flavor 为 `cc|glibc` → 报“flavor 不匹配…先重跑”rc2；重建后双 arch 18/18 链成。
+- **P2-1 已修**：`{ read;read; } < <(...)` 失败传播靠 set -u 兑底→两脚本均加 `|| true` + `[ -n "${SPECS:-}" ]` 显式判错给出可读根因。
+- **P2-2 已修**：apt-get download 输出不再丢弃（进 $tmp/apt.log，失败分支缩进透出）。
+- **P2-3 已修**：specs 本地化从 sed 改 bash 原生子串替换（替换串含 `|`/`&` 时 sed 会静默错乱）；验证替换产物逐字节同旧。
+- **P2-4 已修**（sys-bridge.c）：_exit 兑底从无限忙等改 `__builtin_trap()`（两架构均编成可定位非法指令→进 trap 诊断腿，上机卡点可解释）；兼答评审对旧 `wfi` 的争议：新形态对两腿统一且更可诊断。
+- **P2-5 已修**（NK4C-接续PROMPT-20261002.md）：旧文件名 posix-stubs-riscv.c → posix-stubs.c（带旧名注），build-atf-test 参数序订正为 `<test.c> [arch]`。WORKLOG 历史条目里的旧名不改（取证史实）。
+- **P2-6 登记不修**（doc-style-lint 增量门 SL-3/SL-4 命中 WORKLOG 新行 4 条）：实照历史提交同门命中（285e83244 报 error=1），WORKLOG 为取证载体、§续-NNN 带日期是全文既有约定（存量豁免口径）；不为过门砍日期信息，留待工具维护方裁决增量门对 WORKLOG 的豁免位。
+- 回归：本步零 os/ 变更（tools/+.gitignore+doc），os/ 自 1402/0 基线后未动；双 arch 18/18 链成即本步自身的功能回归。
+
 
 
 

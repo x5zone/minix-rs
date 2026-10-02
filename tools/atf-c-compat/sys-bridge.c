@@ -69,7 +69,10 @@ void _exit(int code) {
     m.m_type = SYS_EXIT;
     m.slots[0] = code;
     kcall(&m);
-    for (;;) { /* SYS_EXIT 正常不返回；防内核拒收时落到非法指令 */ }
+    /* SYS_EXIT 正常不返回；若内核拒收，用可定位的非法指令陷阱卡住现场
+     * （aarch64 编成 brk、riscv 编成未定义指令→进各自 trap 诊断腿），
+     * 而非静默无限忙等（整板不可解释地卡住）。 */
+    __builtin_trap();
 }
 
 /* 静态 bump 堆（供 malloc；上机时由我方 VM 供页）。 */

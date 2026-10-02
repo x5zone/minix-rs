@@ -38,12 +38,18 @@ case "$ARCH" in
              SYS=(--specs=picolibc.specs); SEMIHOST=("$PICO/lib/libsemihost.a") ;;
     aarch64) CC="aarch64-linux-gnu-gcc"; MC=()
              # picolibc 来自 apt 包或 vendor（免 root）；vendor 脚本输出基目录+本地化 specs
-             { read -r PICOA && read -r SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64)
+             { read -r PICOA && read -r SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64) || true
+             [ -n "${SPECS:-}" ] || { echo "aarch64 picolibc 未取得（见上方 vendor-atf-toolchain.sh 报错）" >&2; exit 2; }
              SYS=(--specs="$SPECS"); SEMIHOST=("$PICOA/lib/libsemihost.a") ;;
     *) echo "本脚本支持 riscv64 | aarch64（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
 esac
 command -v "$CC" >/dev/null || { echo "缺编译器：$CC（目标③ 前置，请先装交叉工具链）" >&2; exit 2; }
 [ -f "${SEMIHOST[0]}" ] || { echo "缺 ${SEMIHOST[0]}（picolibc 安装前缀随发行版不同）" >&2; exit 2; }
+# P1-2 防混用：库必须是同 CC 同 libc 腿的产物（build-libatf-c.sh 写的 flavor 戳），
+# 否则旧 libc 腿的 libatf-c.a 会被静默复用（FILE 布局/stdio 符号语义错）。
+EXPECT_FLAVOR="$CC|picolibc"
+FLAVOR="$(cat "$OUT/libatf-c.flavor" 2>/dev/null || echo MISSING)"
+[ "$FLAVOR" = "$EXPECT_FLAVOR" ] || { echo "libatf-c.a flavor 不匹配：got '$FLAVOR' want '$EXPECT_FLAVOR' —— 先重跑 tools/build-libatf-c.sh $ARCH" >&2; exit 2; }
 
 # atf-c/config-time 宏（与 build-libatf-c.sh 一致）。
 CFGS=(-D__minix -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV

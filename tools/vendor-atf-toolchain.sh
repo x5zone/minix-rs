@@ -35,22 +35,35 @@ if [ -d "$SYS_DIR/lib" ]; then
 elif [ -d "$VENDOR/lib" ]; then
     LIB_DIR="$VENDOR"
 else
-    mkdir -p "$ROOT/tools/vendor"
     tmp="$(mktemp -d)"
-    ( cd "$tmp" && apt-get download "$PKG" >/dev/null 2>&1 \
-        && dpkg -x "$PKG"*.deb "$ROOT/tools/vendor/" ) || {
-        rm -rf "$tmp"
-        echo "取 $PKG 失败：装 apt 包（sudo apt-get install -y $PKG）或确保网络可用后重试" >&2
+    trap 'rm -rf "$tmp"' EXIT   # P1-1：任何失败路径都清临时目录；vendor 只在整包解包成功后原子发布
+    mkdir -p "$tmp/stage" "$ROOT/tools/vendor"
+    if ! ( cd "$tmp" && apt-get download "$PKG" >"$tmp/apt.log" 2>&1 \
+            && dpkg -x ./*.deb "$tmp/stage" ) ; then
+        # P2-2：apt-get 失败原因（索引未更新/包不可得/网络）缩进透出，不留泛化提示
+        sed 's/^/  /' "$tmp/apt.log" >&2 || true
+        echo "取 $PKG 失败：装 apt 包（sudo apt-get install -y $PKG）或确保网络/apt 索引可用后重试" >&2
         exit 2
-    }
-    rm -rf "$tmp"
+    fi
+    if [ ! -d "$tmp/stage/usr/lib/picolibc/$TRIPLE/lib" ]; then
+        echo "解包产物布局异常：缺 $tmp/stage/usr/lib/picolibc/$TRIPLE/lib（deb 截断？）" >&2
+        exit 2
+    fi
+    mkdir -p "$(dirname "$VENDOR")"
+    rm -rf "$VENDOR"   # 覆盖旧残骸（重跑即重建，不增量混摆）
+    mv "$tmp/stage/usr/lib/picolibc/$TRIPLE" "$VENDOR"
     LIB_DIR="$VENDOR"
 fi
-[ -d "$LIB_DIR/lib" ] || { echo "picolibc 布局不完整：缺 $LIB_DIR/lib" >&2; exit 2; }
+# P1-1：完整性判据不止目录存在——specs 与 libc.a 缺一不可，否则把错推到链接期
+[ -f "$LIB_DIR/picolibc.specs" ] && [ -f "$LIB_DIR/lib/libc.a" ] \
+    || { echo "picolibc 布局不完整：缺 $LIB_DIR/picolibc.specs 或 $LIB_DIR/lib/libc.a" >&2; exit 2; }
 
 # 本地化：specs 里所有 /usr/lib/picolibc/<triple> 引用改写成实际来源路径，
 # 产出物不再依赖 gcc 驱动的搜索逻辑，可直接 --specs=<abs>。
+# P2-3：用 bash 原生子串替换（非 sed）——替换串 $LIB_DIR 含 | & 等字符时
+# sed 会语法错/把 & 展开成整个匹配（静默内容错乱），bash 替换无此问题。
 mkdir -p "$OUT_DIR"
-sed "s|/usr/lib/picolibc/$TRIPLE|$LIB_DIR|g" "$LIB_DIR/picolibc.specs" > "$SPECS"
+raw="$(cat "$LIB_DIR/picolibc.specs")"
+printf '%s\n' "${raw//\/usr\/lib\/picolibc\/$TRIPLE/$LIB_DIR}" > "$SPECS"
 echo "$LIB_DIR"
 echo "$SPECS"

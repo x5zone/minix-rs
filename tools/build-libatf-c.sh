@@ -37,14 +37,15 @@ BUILD="$OUT/build"
 
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; AR="riscv64-unknown-elf-ar"; \
-             SYSROOT_FLAGS=(--specs=picolibc.specs); COMPAT_INC=(-I"$COMPAT"); \
+             SYSROOT_FLAGS=(--specs=picolibc.specs); COMPAT_INC=(-I"$COMPAT"); LIBC_KIND=picolibc; \
              MCFLAGS=(-mcmodel=medany) ;;   # riscv medlow 默认 ±2GiB 假设→高地址链接重定位截断，需 medany
     aarch64) CC="aarch64-linux-gnu-gcc"; AR="aarch64-linux-gnu-ar"; \
-             { read -r _PICOA && read -r _SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64); \
-             SYSROOT_FLAGS=(--specs="$_SPECS"); COMPAT_INC=(-I"$COMPAT"); MCFLAGS=() ;;
+             { read -r _PICOA && read -r _SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64) || true; \
+             [ -n "${_SPECS:-}" ] || { echo "aarch64 picolibc 未取得（见上方 vendor-atf-toolchain.sh 报错）" >&2; exit 2; }; \
+             SYSROOT_FLAGS=(--specs="$_SPECS"); COMPAT_INC=(-I"$COMPAT"); LIBC_KIND=picolibc; MCFLAGS=() ;;
              # picolibc 同 riscv：缺 <sys/uio.h> 等用 compat 注入；与测试腿同 libc 同源
     x86_64)  CC="cc"; AR="ar"; SYSROOT_FLAGS=(); \
-             COMPAT_INC=(); MCFLAGS=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
+             COMPAT_INC=(); LIBC_KIND=glibc; MCFLAGS=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
     *) echo "未知 arch：$ARCH（支持 riscv64 | aarch64 | x86_64）" >&2; exit 2 ;;
 esac
 
@@ -102,4 +103,7 @@ for f in "${LIB_SRCS[@]}"; do
 done
 
 "$AR" rcs "$OUT/libatf-c.a" "${OBJS[@]}"
-echo "✅ 产出 $OUT/libatf-c.a：$($AR t "$OUT/libatf-c.a" | wc -l) 个成员，$(stat -c%s "$OUT/libatf-c.a") 字节"
+# P1-2 防混用：产 libc 来源戳（CC+libc 种类）；build-atf-test.sh 消费前比对，
+# 避免切换 libc 腿前的旧 libatf-c.a 被静默复用（FILE 布局/stdio 符号语义错）。
+echo "$CC|$LIBC_KIND" > "$OUT/libatf-c.flavor"
+echo "✅ 产出 $OUT/libatf-c.a：$($AR t "$OUT/libatf-c.a" | wc -l) 个成员，$(stat -c%s "$OUT/libatf-c.a") 字节（flavor: $CC|$LIBC_KIND）"
