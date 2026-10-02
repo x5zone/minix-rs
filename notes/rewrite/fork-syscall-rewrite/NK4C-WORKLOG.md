@@ -10913,6 +10913,11 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - CodeReview：无 P0；已修 P1（vsnprintf 截断写 NUL、getcwd 无终止符、_write 返回类型跨 TU ODR）+ P2（补 verr/verrx/vwarn/vwarnx）。文件头声明 WIP 边界。
 - **诚实边界**：“链成可加载 ELF”≠“上机跑通”。真跑还需：① fork/waitpid/exec 接我方 SYS_FORK/SYS_WAITPID/exec（现为 ENOSYS 占位）；② open/read/write 接 VFS（现 _write 走 diagctl console、其余文件类 ENOSYS）；③ stdio 流由 libsemihost 提供→应换成接我方 _write 的流（fd 不分道，stdout/stderr 均走 diagctl）；④ 把测试 ELF 入 imgrd、rc 里 exec、验证 ATF PASS。③ “586 上机”仍为大件（riscv 上机又受 (A) 门控）。
 
+## §续-231（2026-10-02·**目标③：把“任意 Tier-A 测试→可加载 ELF”固定为可复现一键管线 tools/build-atf-test.sh**）
+- 新增 `tools/build-atf-test.sh <test.c> [arch] [编译flags]`：交叉编译+静态链一个 minix3 atf-c 测试（复用 libatf-c.a + sys-riscv 桥 + posix-stubs + libsemihost stdio 流 + --start-group + -mcmodel=medany），末尾用 readelf 断言我方 `minix-elf::parse_ehdr` 的硬项（ELF64/LSB/ET_EXEC）。实测两种调用形式均产 324128B ET_EXEC ELF。
+- CodeReview 拓 P1（原 `shift 2||true` 位置参消费与“arch 可选”承诺矛盾、$#=1 时源文件被列两次 fatal）→已改显式探测 arch+其余作 flags；P2 已补 CC/SEMIHOST 存在性早失败。仅构建期工具，不进生产镜像/marker。
+- 意义：③ 从“手工一次性链”变成“一条命令批量产可加载测试二进制”，为后续接真 VFS/进程桥 + 上机集铺好可重复基础。未改生产码；host 1400/0。三目标均未全成，goal active。
+
 
 
 
