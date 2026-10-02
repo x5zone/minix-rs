@@ -2733,6 +2733,29 @@ fn vmctl_memreq_reply(
         _ => crate::vm::VmCheckResult::Fault, // VM reported fault
     };
 
+    // 续-191 取证探针 P2（riscv64·判决边界·Fault 诞生点）：VM 对哪条
+    // memreq 回了非零（=Fault），打在哪个 requestor 槽位上。与 P1
+    // （handle_kernel_memreq 失败出口）+ P3（SIGSEGV 消费腿）对账，
+    // 定谳 resume-Fault 产地。C-61 pattern-gate 前不滚，task-close 删。
+    #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        static MRR: AtomicUsize = AtomicUsize::new(0);
+        if MRR.fetch_add(1, AtomicOrd::Relaxed) < 64 {
+            C0::write_str("nk4a: mrr nr=0x");
+            C0::write_hex(target_nr.0 as u64);
+            C0::write_str(" vraw=0x");
+            C0::write_hex(value_raw as u32 as u64);
+            C0::write_str(" verdict=");
+            C0::write_str(if matches!(vm_result, crate::vm::VmCheckResult::Fault) {
+                "Fault\n"
+            } else {
+                "Ok\n"
+            });
+        }
+    }
+
     match proc_table.vm_memreq_reply(target_nr, vm_result) {
         Ok(()) => KcallResult::Ok(0), // C: return OK
         Err(crate::vm::VmCtlError::InvalidState) => KcallResult::Ok(EINVAL),

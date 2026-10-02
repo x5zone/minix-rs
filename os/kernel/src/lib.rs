@@ -4063,6 +4063,33 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                     }
                 }
                 crate::vm::VmCheckResult::Fault => {
+                    // 续-191 取证探针 P3a（riscv64·SIGSEGV 消费腿 stage 3a）：
+                    // 确认 resume-Fault 是从 stage 3a 消费（而非
+                    // proc_table.rs process_misc_flags 兜底腿），并现场打
+                    // caller ep + p_delivermsg_vir + 当前页表根，与 P2
+                    // (mrr) + P1 (sf-*) 对账：Fault 的 requestor 是否停在
+                    // console ecall、其 delivermsg 页是否已被自填。C-61 前不滚。
+                    #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+                    {
+                        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                        static RFS: AtomicUsize = AtomicUsize::new(0);
+                        if RFS.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                            let (ep, pdmv) = table
+                                .get(picked)
+                                .map_or((0i32, 0u64), |q| (q.p_endpoint.0, q.p_delivermsg_vir.0));
+                            let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
+                            C0::write_str("nk4a: rvflt via=stage3a nr=0x");
+                            C0::write_hex(picked.0 as u64);
+                            C0::write_str(" ep=0x");
+                            C0::write_hex(ep as u64);
+                            C0::write_str(" pdmv=0x");
+                            C0::write_hex(pdmv);
+                            C0::write_str(" root=0x");
+                            C0::write_hex(root);
+                            C0::write_str("\n");
+                        }
+                    }
                     crate::syscall_signal::cause_signal(
                         picked,
                         crate::syscall_signal::SIGSEGV,

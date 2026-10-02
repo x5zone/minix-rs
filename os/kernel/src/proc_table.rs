@@ -1255,6 +1255,30 @@ impl ProcessTable {
                 // path sets vmresult; the kernel_call_resume in C sends
                 // SIGSEGV when VM cannot resolve the fault.
                 if result == crate::vm::VmCheckResult::Fault {
+                    // 续-191 取证探针 P3b（riscv64·SIGSEGV 消费腿 pmf 兜底）：
+                    // 若 VM 死在此而非 stage 3a，即两消费腿竞争——现场打
+                    // nr/ep/pdmv/root 供对账。C-61 前不滚，task-close 删。
+                    #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+                    {
+                        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                        static RFP: AtomicUsize = AtomicUsize::new(0);
+                        if RFP.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                            let (ep, pdmv) = self
+                                .get(nr)
+                                .map_or((0i32, 0u64), |q| (q.p_endpoint.0, q.p_delivermsg_vir.0));
+                            let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
+                            C0::write_str("nk4a: rvflt via=pmf nr=0x");
+                            C0::write_hex(nr.0 as u64);
+                            C0::write_str(" ep=0x");
+                            C0::write_hex(ep as u64);
+                            C0::write_str(" pdmv=0x");
+                            C0::write_hex(pdmv);
+                            C0::write_str(" root=0x");
+                            C0::write_hex(root);
+                            C0::write_str("\n");
+                        }
+                    }
                     crate::syscall_signal::cause_signal(
                         nr,
                         crate::syscall_signal::SIGSEGV,

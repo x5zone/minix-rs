@@ -1344,13 +1344,32 @@ impl VmServer {
             let page_mask = crate::region::PAGE_SIZE as u64 - 1;
             let mut va = req.start & !page_mask;
             let end = req.start.saturating_add(req.length);
+            // 续-191 取证探针 P1（riscv64·判决边界·target==VM 自填臂）：
+            // 逐页现场——命中/新填/失败出口，定谳 resume-Fault 是不是自填
+            // 腿对 console-ecall 目标页返回 false（H1）。计数封顶 64，
+            // 失败出口（return false）不打点上限（罕见、必现形）。C-61
+            // pattern-gate 前不滚，task-close 整块删。
+            #[cfg(all(not(test), target_arch = "riscv64"))]
+            let sf_trace = {
+                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                static SF: AtomicUsize = AtomicUsize::new(0);
+                SF.fetch_add(1, AtomicOrd::Relaxed) < 64
+            };
             while va < end {
                 let v = minix_types::VirBytes(va);
                 let present =
                     crate::pagetable::vm_self_map::vm_self_query(v);
                 match present {
                     // 已映射：自身页无 CoW 场景，RW 已足（BSS/堆页恒 RW）。
-                    Some(_) => {}
+                    Some(_) => {
+                        #[cfg(all(not(test), target_arch = "riscv64"))]
+                        if sf_trace {
+                            crate::bootmark::mark(&alloc::format!(
+                                "nk4a: sf-hit va={:#x}\n",
+                                va
+                            ));
+                        }
+                    }
                     None => {
                         match self.ctx.page_alloc.alloc_phys(
                             1,
@@ -1366,10 +1385,30 @@ impl VmServer {
                                 )
                                 .is_err()
                                 {
+                                    #[cfg(all(not(test), target_arch = "riscv64"))]
+                                    crate::bootmark::mark(&alloc::format!(
+                                        "nk4a: sf-mappagesFAIL va={:#x}\n",
+                                        va
+                                    ));
                                     return false;
                                 }
+                                #[cfg(all(not(test), target_arch = "riscv64"))]
+                                if sf_trace {
+                                    crate::bootmark::mark(&alloc::format!(
+                                        "nk4a: sf-map va={:#x} phys={:#x}\n",
+                                        va,
+                                        phys.as_u64()
+                                    ));
+                                }
                             }
-                            Err(_) => return false,
+                            Err(_) => {
+                                #[cfg(all(not(test), target_arch = "riscv64"))]
+                                crate::bootmark::mark(&alloc::format!(
+                                    "nk4a: sf-allocFAIL va={:#x}\n",
+                                    va
+                                ));
+                                return false;
+                            }
                         }
                     }
                 }
@@ -1382,6 +1421,12 @@ impl VmServer {
             Ok(s) => s,
             Err(_) => {
                 audit_log!("[VM SIGKMEM] bad target endpoint {}", req.target.0);
+                #[cfg(all(not(test), target_arch = "riscv64"))]
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: sf-badept target={} start={:#x}\n",
+                    req.target.0,
+                    req.start
+                ));
                 return false;
             }
         };
@@ -1390,7 +1435,16 @@ impl VmServer {
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
-            None => return false,
+            None => {
+                #[cfg(all(not(test), target_arch = "riscv64"))]
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: sf-noactive target={} slot={} start={:#x}\n",
+                    req.target.0,
+                    slot.0,
+                    req.start
+                ));
+                return false;
+            }
         };
         // C: VMPTYPE_CHECK 的 handle_memory_start（pagefaults.c:311-330）
         // 逐页调 map_handle_memory——读故障（wrflag=false）同样保证页面
