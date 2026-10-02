@@ -10684,3 +10684,12 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 - ⇒ 故障地址是**合法表页的正确单 DM 平移**，非伪 PA。缺页真因 = **VM 自身 satp 的 DM 窗对这张"运行期新分配的页表页"没有 leaf**（§207 实测：VM 根 l2e i2=0x42 在，但对应 L1e V=0）。**确证 = DM 窗覆盖洞**（`dm_coverage.rs` 续-51 自述残留 gap），**推翻 §208 的"寄存器算术/伪 PA"说**（那是常规 boot 无 -S 时崩在另一处 out-of-window 读、Heisenbug 变体；`-S` 下确定性崩在这个 in-window 干净形态）。
 - **修复点锁定**：VM（及经 map_kernel 继承 DM 窗的各进程）的 DM 窗必须连续覆盖到 bump 池/运行期可分配区顶（现 `establish_boot_dm` 仅按启动期候选 memmap∪bootstrap-tree∪module∪reserved 装 leaf 且丢弃重叠 reserved→留 tail 洞；`kernel_dm_pa_end` 是标量上界但**未把整段填成连续 leaf**）。正解=对 `[RAM_LO, ram_top)` 装**连续** DM leaf（内核 VM 窗与 map_kernel 重放都用连续覆盖，弃 disjoint 候选），或至少覆盖整个 bump 池 `[0x82000000, ram_top)`。
 - **风险**：改 paging DM 建立触及三架构，必须 x86(marker=2/panic=0)+aarch64(marker) non-regression + riscv 真机验 marker 三证。属需专注回合的实现+验证工作，不冒进单发合入。证据 tmp/ram70.bin 保留。goal active。
+
+## §续-211（2026-10-02·**(A) 可执行修复配方（含 AlreadyMapped 约束）—— 交专注会话落地+三架构验证**）
+`establish_boot_dm`（kernel/src/dm_coverage.rs）VM 窗现为三处 disjoint 安装：VM-memmap(110-113) ∪ VM-bootstrap-tree(114-117) ∪ boot_module 的 VM 支(119)，皆 `clip(vm_pa_limit)`。运行期 VM 自有帧分配器发的表页（实测 0x82ce4000）若落在这些启动期候选之外 → 无 DM leaf → 走子表 #PF。
+**配方（顺序敏感，防 AlreadyMapped panic）**：
+1. 删除 VM 侧三处 disjoint 安装（110-117 两段；并把 boot_module 循环 118-125 里的 **VM 安装去掉、仅留 kernel 安装**）。
+2. 代之以**单条连续** VM 窗：`establish_dm_range::<CurrentDmCoverage>(root, DmRange::new(0, kernel_dm_pa_end(kernel_info, root)), vm_pa_limit, vm_va, vm_flags).expect("boot DM: VM contiguous window")`。连续段是候选并集的超集，一次装、无自重叠 ⇒ 不触发 AlreadyMapped。
+3. 确保 `kernel_dm_pa_end` ≥ 运行期 bump/可分配顶（0x84000000+）；若其只到启动期候选 max，改用 `kernel_info.memmap()` 的 ram_top（conventional 上界）取 `max(kernel_dm_pa_end, ram_top)`。
+**验证门（必全过才合入，逐架构真机）**：`cargo test -p minix-kernel …`（dm_coverage 若有 host 单测须更新候选→连续假设）+ `check-layout.sh all` → x86 `marker=2/panic=0` → aarch64 `marker` 不回归 → riscv gh 过 (A) 达 `minix-rs rc: minimal boot script marker`。riscv 若达 marker = 目标① 三架构全绿 → 解锁 ②(riscv/aarch64 命令面)/③(先 Tier A)。
+**为何本会话不直接落**：boot-paging 三架构改动，riscv 验证依赖此改动本身（循环），且 `kernel_dm_pa_end` 是否含 ram_top 未逐行确认——盲改可能在未验证下回归 x86/aarch64 两个已绿 marker（净负）。已交可执行配方 + `tmp/ram70.bin` 证据 + 可复用 gdb harness（`hbreak *0x3abec`）。
