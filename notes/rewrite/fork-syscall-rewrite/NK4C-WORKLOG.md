@@ -10336,3 +10336,7 @@ gh49 判读：sync_slot_pte fill-root 探针首次命中（前几轮未达 sync�
 ## §1.120续-170（2026-10-02·**机制收口：gh49 帧拷贝目的地 kdst copy pa=0x9d2aff98=页 0x9d2af000 槽 511（=walk 要跟的 L1[511] L0 指针槽），帧拷贝 0x68 字节正好砸毁该槽→后续 walk 全走垃圾；且 alloc-reuse-PT 零触发⟹0x9d2af 从未经 vm_pt_alloc⟹region 页槽 pfn 本身=被腐坏/陈旧的值（fill 的 alloc_and_map 从 region.get_slot 拿到它）——腐坏对象=RegionMap 页槽的 pfn 字段；续-171=fill-root 扩印叶槽 PA+PTE 值+get_slot pfn 溯源（region 槽写点审计）**）
 
 gh49 铁证并列：kdst copy pa=0x9d2aff98（帧拷贝）↔ update_flags 崩溃前 walk 的 L1 槽族（0x9d2ae/af）↔ fill-root pte_pa=0x9d2af000（填页 data frame）——三方同页。region 槽 pfn 腐坏→填页把 L1 页当栈帧映射→帧拷贝砸 L1[511]→walk 崩。续-170 的 heap 影子位图升级为 region 槽 pfn 溯源（RegionMap 槽写点审计+fill-root 扩印叶槽 PA/PTE 值/get_slot 返回值），heap 影子位图并行保留。
+
+## §1.120续-171（2026-10-02·**修正：gh49 帧拷贝无辜——0x9d2af000 是新分配数据帧（alloc-reuse-PT 零触发反证其非 L1 表），帧拷贝写的是合法栈页；未解异常=「query 成功后 update_flags 的同 L1 内容变垃圾」（gh47 形态）跨运行复现性存疑（gh47/49 不同布局）；填页三探（fill-root/pte-wb/hm-fail）已在库；续-172=fill-root 扩印叶槽 PA+PTE 值+L1 页 PA 与内容快照（同函数两 walk 对账），heap 影子位图并行**）
+
+修正续-170 的"帧拷贝砸 L1[511]"判断：alloc-reuse-PT 零触发证明 0x9d2af000 在 gh49 是正常数据帧（若它曾是 vm_pt_alloc 的 L1，fill 的 alloc_phys 必触发 reuse-PT）。真正的持续异常=query↔update_flags 两 walk 之间 L1 内容不一致（gh47 形态），该形态跨运行是否复现待 gh50 验证（gh49 的 VM fault stval=0x10bd28db7c 形态相同但 sepc 未对账）。续-172 处方不变：①sync_slot_pte 扩印 leaf PA+写入 PTE 值+L1 页首 16 字节快照（query 时与 update_flags 时各一次对账）；②heap_arena 影子位图并行；③pmemsave 差分。
