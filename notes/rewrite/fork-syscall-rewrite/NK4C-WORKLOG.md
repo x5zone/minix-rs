@@ -10783,3 +10783,22 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **探针已 `git checkout` 回滚**（恢复 tree 到 HEAD 的确定性可复现基线 gh72/73）；零残留。
 - **下一步真正能钉写者的手段**（需专注交互会话）：不扰动时序、直到命中才停的 **gdb 硬件写 watchpoint**——但需先知道写坏的具体帧槽；gh74 显示它不在“非叶 child PA 越 RAM”这个可静态预置的点上（badpte=0）。备选：先修本轮暴露的**确定性墙**——`0x800c exec 后栈页 noaddr`（region 与映射不符，aarch64 续-130/131 同族，对位 `pf-exit noaddr` 修向＝exec adopt/munmap 后栈 region 登记）或 fb201 乒乓（续-148 定为确定性首墙）；修后各时序路径都能往 marker 推进。
 - **本会话总结**：忠实执行了 prescribed “(A) 下一步”（审两函数）→ 用真机可信检测器 + C 真源 + 反汇 + 新快照 + a2d 探针，**证伪 prescribed 修向、纠正两处旧误读、拿到帧级正面线索、实测确证多墙时序门控**；全程未造幻影、未落未坐实的生产改动。三目标均未全成，goal active。
+
+## §续-219（2026-10-02·**用户选“修确定性墙：栈 noaddr”→ 零新探针从 gh74 已有数据钉住机制：`find` 与 `find_mut` 对同一 addr 结果分歧 = 0x800c 双 RegionMap 视图分歧（续-159 remap 残留）；可能是 (A)+noaddr 两面墙的公分母**）
+
+### 一、墙定位（代码路径）
+- `pf-exit noaddr`（`vm_server.rs:2233`）= `regions.find_mut(fault_addr)` 返回 None → 给故障进程 SIGSEGV + CLEAR_PAGEFAULT。栈 fault VA=0x7fffffffef90（与 `exec ... stack=0x7fffffffef98` 同页）。
+- `find`（`region_map.rs:60`）与 `find_mut`（`:92`）都用 `range(..=addr).next_back()`（取“key ≤ addr 最大者”）再 `contains_addr` 过滤；非重叠有序 map 下包含者必为最大前驱（`insert` 有重叠拒入 `:257`，但 `extend` `:163` 不查重叠）。
+
+### 二、零新探针钉住机制（gh74 已有数据）
+- `rm-repair=0`：`find_mut` 的 iter 兜底（`:105`）**从未触发**——它对 addr 0x7fffffffef90 的 `regions.iter().find(contains_addr)` **一无所获**。
+- `rm-fallback addr=0x7fffffffef90 n=4 va=0x7fffffbff000` ×3：`find` 用**完全相同的 iter 谓词**（`scan_contains` `:53`）却**找到了** 4MB 栈区（0x7fffffbff000 含 0x7fffffffef90）。
+- VM 单线程、2175(`proc.regions()` 不可变 find)→2225(`mem_parts_mut()` find_mut) 之间无人改 regions ⇒ **同谓词同数据却一找一不找 ⇒ 两个视图不是同一个 RegionMap/内容 = 续-159「map_ptr_a≠map_ptr_b，同对象双 VA 映射(remap 残留)」假设的正面实锤**（wro-dump 未触发因本 fault 非 write 腿，无 ptrA/ptrB 直打，但 find成功/find_mut-iter失败已同构地坐实分歧）。
+- `vmmL?=D ... addr=0x7fffffbff000 len=0x400000 fl=0x801012 fw=0x800c` 证 0x800c 确有 4MB 栈 mmap 区（在其中一个视图里）。
+
+### 三、根因候选 + 下一步（均需专注会话、不盲改共享 VM 码）
+- **根因候选**：0x800c 经 exec/vmproc remap 链后，`proc.regions()` 与 `mem_parts_mut()` 返两个分歧 RegionMap（一个含栈区、一个不含）→ 缺页服务腿拿“空的那个”→ noaddr。续-160 防御码在 `find` 侧用 iter 兜底掩盖（find 能用）、`find_mut` 侧本也有 iter 重建兜底但未触发（分歧数据中 find_mut 侧 map 本就无该 region）。vmproc 侧线索：`vmproc/table.rs` 的 `increment_region_remaps`/`decrement_region_remaps`/`release_shared_remap`（RemapHandle 双轨）是 suspect。
+- **可能的统一假设**（待验）：双 RegionMap 视图分歧是 (A) 与 noaddr 两面墙的**公分母**——区域 map 与页表不一致，时序决定露哪面（(A)=页表跟随与区域不符的坏项；noaddr=find_mut 拿旧视图）。若坐实则修好它两墙同解→ marker。
+- **下一步（未定谳不成修）**：① 先拿 ptrA/ptrB 硬证据——给 noaddr 腿补一个与 wro-dump 同构的双视图指针打印（门控、封顶）或确保 wro-dump 也走本腿；② 追 exec/vmproc 里 `proc.regions()` vs `mem_parts_mut()` 的来源（RemapHandle 是否一个 handle 更新、另一个陈旧）；③ 对位 C `do_newmap`/`mmap` 的 region 单一真相；④ 共享 VM 码改动必过 host 4 包 + x86/aarch64 non-regression（两 marker 依赖同一 region_map）+ riscv 真机。
+- **本轮无生产码变更**；tracked 净；证据 gh74 串口复用。host 1400/0。goal active。
+
