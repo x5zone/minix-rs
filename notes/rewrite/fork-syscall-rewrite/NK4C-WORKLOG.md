@@ -10897,6 +10897,12 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **正确的快路子（下次用，单次命中）**：不在热的 query 读点加条件，而是 hbreak **一次**在内核 pagefault-in-VM 处（trap_dispatch.rs:1991 panic 前，全 boot 只命中一次，零慢），在那读 fault frame 的 a2(vaddr)/a1(坏址)/sepc + 从内核侧读**被服务子进程的 phys_root**（pfvm 只印了 satp=VM 自己根，非被 walk 的子根）⇒ 算出父槽 root+i2*8 的**物理地址**，再重启对那个物理地址设**硬件写 watchpoint**（只写一次→不慢）抓写者 PC+值。需带 kernel 符号的 gdb（非 minix-vm）。
 - 本轮未改生产码；harness 在 tmp（gitignore）；qemu 已清、tracked 净。host 1400/0。三目标均未全成，goal active（(A) 不因“需人工”停摆，只是需正确的单次命中 gdb 姿势，非热路径条件）。
 
+## §续-228（2026-10-02·**(A) gdb 时序保存关键发现：`-S` 从t=0挂起会把 fault 从 0x3abec 漂到 0x3ac1a；必须不带 -S、guest 正常启动后晚 attach 才保住无-gdb 的确定时序**）
+- 实证对比：同二进制无 gdb（gh72/73/76gdb）稳崩 0x3abec/0xbd28cb2c；**`-S` halt 从头挂 gdb（gh77）→ 漂到 0x3ac1a/0xa2cc0b08**。⇒ 即使同二进制，从 t=0 的 `-S` 挂起也改了执行/调度时序，把 fault 推离原位。
+- **正确姿势（下一个人工/交互 gdb 会话用）**：启动 qemu **不加 `-S`**（只 `-gdb tcp::PORT`），guest 正常 boot；在 ~18s 崩溃前几秒 `target remote` 晚 attach（attach 瞬停→设 `hbreak *0x3abec` + `condition $a6>=0xa0000000`→`continue`），此时 boot 前段未受 gdb 干预→(A) 仍在 0x3abec 原位→条件命中即抓 pristine 现场（vaddr a2、被 walk 子根、corrupt l2e 物理槽）。晚 attach 窗口窄且条件求值慢，**适合人工逐步、不适合单发自动化**（本轮多次 -batch 尝试：早 attach 会 halts 在 boot 前沿无串口输出、晚/超时会错过；属工具循环摩擦非“环境不可”）。
+- 本轮未改生产码；harness 在 tmp；qemu 已清净、tracked 净。host 1400/0。三目标均未全成，goal active。(A) 仍开放，但钉法已收窄为“无-S晚attach+单次条件命中”一条明确路径（人工会话最适），不虚构、不固定单槽。
+
+
 
 
 
