@@ -49,3 +49,9 @@
 
 ### 三大目标进度
 - ①三架构 marker：x86✅、aarch64✅、**riscv64 ❌（只差 (A)）**。② 18-stage 命令面：仅 x86 核心✅（riscv/aarch64 待①）。③ 586 C 测试上机：未启动（AF-5 已清编译盲区为前置）。三条全未成，**不标 complete**。
+
+## ★(A) 根因定论 + 精确修复点（2026-10-02 续-205~209，gdb 活体 step-back 确证，覆盖前文所有假说）
+**根因（确证）**：VM 启动用 `establish_boot_dm` 建的 bootstrap 根表，其 **VM Direct Map 窗是"按启动期候选（memmap ∪ 初始 bootstrap-tree ∪ module）disjoint 装 leaf"**（重叠 reserved 整段丢弃）。VM 运行期从 bump 池**新分配**的页表页（实测 PA=0x82ce4000，在 RAM 内但超出启动期候选快照）因此**在 VM satp 的 DM 窗没有 leaf** → VM 走子进程页表 read_pte_dm(DM VA 0x1082ce4000) 缺页 → `pagefault in VM` 致命。`-S` 活体 trace：a6=0x82ce4000、a5=1<<36、a1=a6|a5=in-window 正确单平移 ⇒ 是覆盖洞非算术/非伪PA/非内存PTE腐坏/非resume-Fault（此前所有假说作废）。
+**精确修复（下一专注会话执行 + 三架构验证）**：让 VM 的 DM 窗**连续覆盖 [0, ram_top)**（至少 [0x82000000 bump池顶)），与 per-process `map_kernel` 已有的连续 `[0, dm_pages)` 一致。改动在 `kernel/src/dm_coverage.rs::establish_boot_dm` 的 VM 窗循环（第 110-125 行区）：以单个连续区间 `DmRange::new(0, kernel_dm_pa_end)`（或 RAM 顶）替代 disjoint 候选枚举（避开 AlreadyMapped：一次性铺连续段即可，候选并集是其子集）。`kernel_dm_pa_end` 需确保 ≥ 运行期 bump 池可达顶（否则仍留洞）。
+**验证清单**（不冒进单发合入）：① host 4 包集 + check-layout all；② x86 真机 marker=2/panic=0 不回归；③ aarch64 真机 marker 不回归；④ riscv 真机 gh → 期望过 (A) 达 `minix-rs rc: minimal boot script marker`（目标① 三架构全绿）。随后 目标②(riscv/aarch64 命令面)/目标③(Tier A libatf-c 移植+syscall shim) 解锁。
+**证据留存**：`tmp/ram70.bin`（当前构建 panic 瞬间全 RAM）；WORKLOG §续-191~209 全链；AF-11 探针（sf-*/mrr/rvflt/ipcefault/kill）待 (A) 结案过 C-61 一并滚。
