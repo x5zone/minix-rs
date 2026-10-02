@@ -55,7 +55,7 @@ sed -e 's/@ATTRIBUTE_FORMAT_PRINTF@/__attribute__((format(printf, a, b)))/' \
     "$SRC/atf-c/defs.h.in" > "$BUILD/atf-c/defs.h"
 name="$(basename "$TEST" .c)"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" \
-    -I"$SRC" -I"$BUILD" -I"$COMPAT" "${EXTRA_INC[@]}" "${CFGS[@]}" \
+    -I"$SRC" -I"$BUILD" -I"$COMPAT" -include "$COMPAT/errno-compat.h" "${EXTRA_INC[@]}" "${CFGS[@]}" \
     "$TEST" -o "$BUILD/$name.o"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-riscv.c" -o "$BUILD/sys-riscv.o"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs-riscv.c" -o "$BUILD/posix-stubs.o"
@@ -63,9 +63,11 @@ name="$(basename "$TEST" .c)"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/md5.c" -o "$BUILD/md5.o"
 # BSD Boyer-Moore <bm.h>（bm_comp/exec/free，picolibc 不提供），供 t_bm 链入。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/bm.c" -o "$BUILD/bm.o"
+# BSD sys_nerr（picolibc 不提供），供 t_strerror 编译/链接（真语义上机前校准，见 errno-compat.c 头注释）。
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/errno-compat.c" -o "$BUILD/errno-compat.o"
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "$BUILD/sys-riscv.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "$BUILD/sys-riscv.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。
