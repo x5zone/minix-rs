@@ -28,7 +28,10 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
 #define MAX_TARGETS 24
 #define DM_LO 0x0000001000000000ULL
-#define DM_HI 0x0000001400000000ULL   /* DM_LO + 16GiB */
+#define DM_HI 0x0000001400000000ULL   /* VM 直map窗：DM_LO + 16GiB */
+#define KDM_LO 0xFFFFFFC040000000ULL
+#define KDM_HI 0xFFFFFFC040000000ULL  /* 内核直map窗基址（direct_map.rs）; 下方按 +16GiB 算界 */
+#define KDM_TOP 0x400000000ULL
 #define RING 4096
 
 static uint64_t g_base[MAX_TARGETS];
@@ -38,7 +41,7 @@ static unsigned long g_ev;             /* 累计事件数 */
 
 /* 环形缓冲：只留最近 RING 条命中（避免逐条 fprintf 的 I/O 洪水与扰动）；
    崩溃后 harness 杀 qemu → atexit 一次性 flush，拿到崩溃前最后这段写者时间线。*/
-struct ev { uint64_t vaddr, paddr, pc; uint32_t cpu : 8, store : 1, sz : 8, kind : 1; };
+struct ev { uint64_t vaddr, paddr, pc; uint32_t cpu : 8, store : 1, sz : 8, kind : 2; };
 static struct ev g_ring[RING];
 static unsigned  g_head, g_cnt;
 
@@ -60,12 +63,13 @@ static void flush_cb(qemu_plugin_id_t id, void *ud)
         "\nwatch_store_plugin: FLUSH total_dmwin_stores_seen=%lu, last %u:\n",
         g_ev, g_cnt);
     unsigned start = (g_cnt < RING) ? 0 : g_head;   /* 最旧一条 */
+    static const char *kname[3] = { "FRAME", "DMWIN", "FAULT" };
     for (unsigned i = 0; i < g_cnt; i++) {
         struct ev *e = &g_ring[(start + i) % RING];
         fprintf(stderr, "PLG %s vcpu=%u %s sz=%u vaddr=0x%016"
             PRIx64 " paddr=0x%016" PRIx64 " slot=%ld pc=0x%08"
             PRIx64 "\n",
-            e->kind ? "DMWIN" : "FRAME", e->cpu, e->store ? "W" : "R", e->sz,
+            kname[e->kind & 3], e->cpu, e->store ? "W" : "R", e->sz,
             e->vaddr, e->paddr, (long)((e->paddr >> 3) & 511), e->pc);
     }
     fflush(stderr);
@@ -78,6 +82,12 @@ static int in_target_frame(uint64_t pa)
     return -1;
 }
 
+static bool in_a_win(uint64_t v)
+{
+    return (v >= DM_LO && v < DM_HI)
+        || (v >= KDM_LO && v < KDM_LO + KDM_TOP);
+}
+
 static void vcpu_mem(unsigned int cpu, qemu_plugin_meminfo_t info,
                      uint64_t vaddr, void *ud)
 {
@@ -86,15 +96,24 @@ static void vcpu_mem(unsigned int cpu, qemu_plugin_meminfo_t info,
     uint64_t pc = (uint64_t)(uintptr_t)ud;
 
     struct qemu_plugin_hwaddr *hw = qemu_plugin_get_hwaddr(info, vaddr);
-    if (!hw || qemu_plugin_hwaddr_is_io(hw)) return;
+    if (!hw) {
+        /* 未翻译成物理地址 = 该访存本身故障（缺页）。若虚拟地址落在任一直接映射窗
+           （VM 或内核），这条就是崩点访问：记下 FAULT（含精确 pc+vaddr），
+           用于判 0xB2C 偏移是走表索引还是调用者游标（侧对话点1）。*/
+        if (in_a_win(vaddr))
+            rec(2, cpu, store, sz, vaddr, 0, pc);
+        return;
+    }
+    if (qemu_plugin_hwaddr_is_io(hw)) return;
     uint64_t pa = qemu_plugin_hwaddr_phys_addr(hw);
 
     if (in_target_frame(pa) >= 0) {                 /* 次过滤：显式帧（R+W）*/
         rec(0, cpu, store, sz, vaddr, pa, pc);
         return;
     }
-    if (g_dmwin && store && sz == 8 && vaddr >= DM_LO && vaddr < DM_HI)
-        rec(1, cpu, store, sz, vaddr, pa, pc);       /* 主漏斗：DM 窗 8B store */
+    /* 主漏斗：任一直map窗（VM 或内核）内的 8 字节 store = 一枚 PTE 写。*/
+    if (g_dmwin && store && sz == 8 && in_a_win(vaddr))
+        rec(1, cpu, store, sz, vaddr, pa, pc);
 }
 
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
