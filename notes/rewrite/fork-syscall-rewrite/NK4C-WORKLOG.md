@@ -10598,6 +10598,19 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - **gdb trace 具体化（关键推进）**：下一步无需“全 RAM 盲猜”，直接对子表链 3 页 **0x9dc37000 / 0x9d2ad000 / 0x9d2ac000** 各 4KB 设硬件写 watchpoint（gdb-multiarch `awatch` 或 QEMU 插件），回溯向这些页写入含 bit36/37 伪 PPN 的**那一条 store** 及其 PC——即真写者。候选写者：VM 为子进程 map/cow/exec 装表时把 DM VA 当 paddr 写入。未坐实不成修。
 - 环境限制登记（供下会话）：本机 `-Cdebuginfo=2` 不产 `.debug_*` section（readelf 零）→ gdb 无法按类型读结构体；需改 `-Cforce-frame-pointers` + 手工按 trap-frame 结构偏移读，或 QEMU TCG plugin 抓 store。
 
+## §续-201（2026-10-02·**目标③ T3.0 可跑集 triage：把「586 全跑」重定为分层子集（防注定落空的工时）**）
+背景：目标③原文＝「minix3 的 586 个 C 测试上机」。实测（grep minix3/tests）：391 依赖 `<atf-c.h>`（NetBSD ATF 框架）、**103 依赖 `<rump/rump_syscalls.h>`（NetBSD rump 内核，与 Minix3 微内核语义无映射，不可移植）**。另需 `sys/sysctl.h`(36)/`pthread.h`(57)/socket/RPC(nfsd/rpcbind 守护进程) 等 BSD-only 面。
+
+分目录 .c 计数：lib 330、fs 65、usr.bin 51、kernel 28、rump 25、net 24、libexec 15、include 15、crypto 14、dev 8、modules 6、sys 4、bin 1。
+
+**分层可行性 triage（目标③ 真验收定义）**：
+- **Tier A（最先可跑，工量小）**：`lib/` 纯 libc 单元测试（≈260 候选，非 rump）——主要需 libatf-c + 一个 C libc，对 minix 专有 syscall 依赖轻。→ T3.2 pilot 首选一个 `lib/` atf-c 用例。
+- **Tier B**：`fs/`(65)/`kernel/`(28)/`sys/`(4)——需我方 VFS/内核真语义（依赖目标②命令面真 VFS IPC 稳态）。
+- **Tier C（对 Minix3-microkernel 重写宜排除）**：`rump/`(25)/`net/`(24)/`crypto/`(14)/`dev/`(8)/`modules/`(6) ≈ 100+——NetBSD rump/守护进程/RPC 专有，与本重写目标无对应物。
+
+**结论**：目标③ 的合理终态 ≠ 字面 586 全跑，而是 Tier A（+部分 Tier B）在真机跑出 ATF PASS；Tier C 显式标为不在范围。此 triage 防下会话在不可移植用例上白投。仍待：①交叉 C 工具链（用户已启动 apt 安装 riscv64/aarch64 gcc）；②libatf-c 移植 / shim；③最小 libc+syscall。**不标目标③ 完成**（仅完成需求定级）。
+- 本会话提交：纯分析/文档；无生产码变更。tracked 净。
+
 
 
 
