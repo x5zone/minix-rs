@@ -10918,6 +10918,12 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - CodeReview 拓 P1（原 `shift 2||true` 位置参消费与“arch 可选”承诺矛盾、$#=1 时源文件被列两次 fatal）→已改显式探测 arch+其余作 flags；P2 已补 CC/SEMIHOST 存在性早失败。仅构建期工具，不进生产镜像/marker。
 - 意义：③ 从“手工一次性链”变成“一条命令批量产可加载测试二进制”，为后续接真 VFS/进程桥 + 上机集铺好可重复基础。未改生产码；host 1400/0。三目标均未全成，goal active。
 
+## §续-232（2026-10-02·**(A) gdb 活体抓法定位三项精确负结果**）
+1. **内核现成写探针不是 (A) 写者追踪**：`nk4a_user_write_probe`（syscall.rs:3765 site="finw"）在 gh73 有 50 条，但 pa **全在 RAM 内**且 va~0x3ffffeXXXX（VM 栈）——它跟的是 **IPC 回执往调用者栈的数据 DM 写**，不是 **PTE 安装**（PTE 装在 U 态 minix-arch walk_alloc/write_pte_dm，不经此内核点）。→ 不能用它抓 corrupt PTE 写者。
+2. **(A) 终止点是 `panic!("pagefault in VM")`@trap_dispatch.rs:1991，不是 `riscv64_diag_panic`**（后者 1791/1844/1870 管 kernel-leg/其它 user-leg trap）。→ hbreak `riscv64_diag_panic`(0x...18e66) 是**错靶**，永远不命中；正确单命中的是包 line1991 的那个函数（待定其地址）。
+3. **gdb-halt 扰动铁证**：gh81 在 **2s 处 attach再 continue**（无 -S）仍把 (A) 拖到 sepc **0x3ac1a**、stval **0x409d28bb20**（=4×VM_DM_BASE 泄入的又一 corrupt 变体），非无-gdb 的 0x3abec/0x10bd28cb2c。⇒ (A) 对 **gdb 暂停/恢复本身**极敏感（疑 timer/interrupt 与页表填的交织竞态），非仅热路径慢。→ 任何基于 halt 的活体抓法都在扰动它；可靠钉法需**非 halt 的硬件写 watchpoint**（qemu 对 guest-phys 强制、无 halt 往返）且需先知道写坏的物理槽。
+- 下步（若继续 (A)）：定 trap_dispatch.rs:1991 所在函数的入口地址（从内核 symtab + 反汇定位 panic 调用前的函数），对子根帧具体 L2 槽（需先定 corrupt i2）设 **qemu 硬件写 watchpoint**；或人工在 panic 断点逐步读活体帧。本轮无生产码变更；harness 在 tmp；qemu/tmux 已清净。host 1400/0。goal active。
+
 
 
 
