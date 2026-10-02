@@ -10937,6 +10937,13 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - ⇒ (A) 再收窄：**PT 帧 use-after-free / stale-handle**——一个已回收（vm_pt_free→free_page→phys_alloc free list）但仍被某 PTE 或某进程 `root_paddr`/旧 handle 引用的表帧，被 reclaim→vm_pt_alloc 重发给新表/数据→旧引用方写翻高位（§续-233 位级证据）。与 §续-152/190 exec adopt/munmap 兼 §续-131 region 栏同域。可信检测器不报是因它不跨“PT帧回收→复用→旧 handle 残留”这条时序。
 - 下步（若继续）：静态追 `vm_pt_free`/exit/exec teardown 里“回收表帧时是否还有引用者”（root_paddr/句柄置空时机），而非再改 refcount/覆盖窗。本轮未改生产码；host 1400/0。三目标均未全成，goal active。
 
+## §续-235（2026-10-02·**(A) 静态主路径猎穷尽：exit/teardown 主逻辑读下来均正确（表帧独占、对称回收），无可静态定位的行级错⇒不硬造修复；(A) 定性定为需动态非扰动捕获（QEMU record/replay 或先知道slot再硬件写watchpoint）**）
+- exit 路径：`handle_vm_exit → free_process_phys`（逐 region `ev_delete`/释放数据页、shared remap 前置释放）+ 表帧经 `free_page_table/destroy` 释放；结合 fork_region/map_page 均对称 refcount——**主路径静态读下来无“回收仍被引用帧”的明面错**（区别于需看真实交错时序才能现形的 race）。
+- **本轮小结（A 静态/动态全链路已系统排除）**：双发检测器=0、map/fork refcount 对称正确、表帧独占且 destroy 对称释放、verify_refcounts 测不到 PT 帧、算术/掩码/覆盖/resume-Fault/双RegionMap实例均否。唯余未做且理论上可行的动态钉法：**qemu `-icount` record→确定性 replay**（回放可多次、逐次试写 watchpoint 不依赖实时时序），或**先人工交互 gdb 在 panic 断点读到一个 (root,i2) 后对那个物理槽设非扰动硬件写 watchpoint**。二者都需专注交互/新构建周期。
+- 纪律：主路径无静态错且无可验证复现⇒**不落地任何投机性共享分配器/reclaim 改动**（会伤 x86/aarch64 两 marker 且无法验证）。(A) 保持 open、精确到“需动态非扰动技术”这一步。
+- 本轮无生产码变更；host 1400/0。三目标均未全成，goal active。
+
+
 
 
 
