@@ -149,6 +149,25 @@ pub(crate) fn sync_slot_pte(
         Some(_) => pt.remap(vaddr, paddr, flags).map(|_| ()),
         None => pt.map(vaddr, paddr, flags),
     };
+    // 续-172 对账探针（用后即滚）：同函数紧邻两次 walk 对账——q1≠q2 即
+    // 「同 L1 内容不一致」实锤（gh47 形态）。高地址门控前 4 次。
+    #[cfg(not(test))]
+    if vaddr.0 > 0x7fff_0000_0000 {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static DW_N: AtomicUsize = AtomicUsize::new(0);
+        if DW_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+            let q2 = pt.query(vaddr);
+            let q1 = pt.query(vaddr);
+            if q1 != q2 {
+                crate::bootmark::mark(&alloc::format!(
+                    "nk4a: walk-flip va={:#x} q1={:?} q2={:?}\n",
+                    vaddr.0,
+                    q1.map(|(pa, f)| (pa.0, f.bits())),
+                    q2.map(|(pa, f)| (pa.0, f.bits()))
+                ));
+            }
+        }
+    }
     // NK4-C 第 20 轮取证探针（task1-close 裁决删除）：写入回读验证。
     // map/remap 报 Ok 但目标 PT 页不在 VM DM 窗口覆盖内时，写会静默
     // 丢失（下次 walk 又见 PTE=0 → 同 VA refault 循环）。回读裁决

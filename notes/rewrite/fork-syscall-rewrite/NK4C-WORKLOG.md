@@ -10340,3 +10340,7 @@ gh49 铁证并列：kdst copy pa=0x9d2aff98（帧拷贝）↔ update_flags 崩�
 ## §1.120续-171（2026-10-02·**修正：gh49 帧拷贝无辜——0x9d2af000 是新分配数据帧（alloc-reuse-PT 零触发反证其非 L1 表），帧拷贝写的是合法栈页；未解异常=「query 成功后 update_flags 的同 L1 内容变垃圾」（gh47 形态）跨运行复现性存疑（gh47/49 不同布局）；填页三探（fill-root/pte-wb/hm-fail）已在库；续-172=fill-root 扩印叶槽 PA+PTE 值+L1 页 PA 与内容快照（同函数两 walk 对账），heap 影子位图并行**）
 
 修正续-170 的"帧拷贝砸 L1[511]"判断：alloc-reuse-PT 零触发证明 0x9d2af000 在 gh49 是正常数据帧（若它曾是 vm_pt_alloc 的 L1，fill 的 alloc_phys 必触发 reuse-PT）。真正的持续异常=query↔update_flags 两 walk 之间 L1 内容不一致（gh47 形态），该形态跨运行是否复现待 gh50 验证（gh49 的 VM fault stval=0x10bd28db7c 形态相同但 sepc 未对账）。续-172 处方不变：①sync_slot_pte 扩印 leaf PA+写入 PTE 值+L1 页首 16 字节快照（query 时与 update_flags 时各一次对账）；②heap_arena 影子位图并行；③pmemsave 差分。
+
+## §1.120续-172（2026-10-02·**gh50：walk-flip=0（sync 内部双 query 恒一致，非崩路径样本）+ kerninfo 碰撞排除（KERNINFO_USER_VA=0x200000000，i2=8/i1=0，与栈区 i2=511/i1=511 不同 L2 子树，内核 kerninfo map 不触碰栈的 L1）——VM fault 仍现（sepc=0x39e84 stval=0x10bd28cb2c 同族）；剩余唯一形态=walk A（match 的 query）与 walk B（update_flags 内联）间 L1[511] 内容不一致且无已知写者；续-173=arch 层探针（update_flags 内联 walk 前后 dump L1 槽 PA+值，riscv64/paging.rs 直改）**）
+
+gh50 判读：sync 双 query 一致→崩点不在 sync 的 walk 对；kerninfo map 的 L2 索引 8≠511 排除内核写者。update_flags 的内联 walk（391c0 段）在 root→L1 提取后即崩——续-173 直接在 riscv64/paging.rs update_flags/query 的 walk_read 前后加 L1 槽 PA+raw 值打印（门 3），一锤定音「L1 槽值在两 walk 间变/不变」。若不变而 sepc 崩点仍踩→唯一剩余=DM 窗翻译不稳定（VM 根树被外部写——回到「谁写 0x9dc38000 页」=内核 kdst/SETADDR 的 kerninfo map 之外的写点枚举）。
