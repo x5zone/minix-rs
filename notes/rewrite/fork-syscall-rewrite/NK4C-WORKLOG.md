@@ -10809,4 +10809,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **诊断已 `git checkout` 回滚**（region_map.rs 恢复 HEAD）；tracked 净。
 - **因此下一步只能二选一**（均需用户定向，因两条路代价/风险差异大）：（甲）**交互式 gdb 硬件写 watchpoint**（不扰时序直到命中）——但需先定位写坏的具体帧槽，而探针扰动会使 (A) 不现（鸡生蛋）；需人工在正常 boot 下 hbreak+读活帧逐步推进（非单发可竟）。（乙）接受 riscv (A) 暂为不可自动化钉住，转 x86 腿推目标②（命令面）/③（C 测试）真进（x86 不受 (A) 阻塞），保持 goal active。三目标均未全成。
 
+## §续-221（2026-10-02·**用户选（甲）交互式 gdb 钉 (A)：搭好确定性 harness（gh76gdb 证 (A) 在 HEAD 崩于 sepc 0x3abec），但 batch gdb 的 `continue`+异步停在非交互工具环境不配合（印证 WORKLOG“需人机交互、非单发可竟”）→ 留下可直接执行的交互配方供人工/真终端跑**）
+
+### 一、环境实测结论
+- `wrap-boot-gdb.sh`（同 mon + `-gdb tcp::1234`、无 -S）构建 HEAD + 启 → **(A) 确定性复现于 sepc 0x3abec**（gh76gdb，stval 0x10bd28cb2c、root 0x82000000）。harness 就绪。
+- 但我用 `gdb-multiarch -batch` 驱动时：首次因前一超时进程占住 qemu 单 gdb 客户端→“Connection timed out”；重启后 `-batch` 的 `continue` 等断点异步停在本工具环境不可靠（无输出/超时）。**交互式 gdb 断点会话需真人/真终端**，自动化单发钉不住——与记忆续-124/202 一致。
+
+### 二、交互式钉 (A) 可直接执行配方（供真终端/人工）
+1. **启 qemu（halt 到入口，全控时序）**：用已建产物 `os/target/image/riscv64/{qemu.dtb,table.bin,mod_*.bin}` 与 `os/target/riscv64gc-unknown-none-elf/release/kernel`，按 `tmp/nk4a/wrap-boot-gdb.sh` Stage5 同参但**加 `-S`**（-gdb tcp::1234）。-S 仅 halt 在 boot 前，一旦 `continue` 就是全速正常时序（不再 stepi 就不扰动）。
+2. **连 gdb**（真实终端，非 -batch）：`gdb-multiarch` → `set architecture riscv:rv64` → `target remote :1234` → `hbreak *0x3abec` → `continue`。命停于故障 `ld a1,0(a1)` **之前**（RAM 未被 trap handler 改写）。
+3. **读活体现场**：`info registers a1 a2`——a1=query 的 self 指针、a2=vaddr；`x/1xg $a1` 读 `self.root_paddr`（被 walk 的子进程根）；`p/x $a2` 拿 vaddr；算 `i2 = ($a2 >> 30) & 0x1FF`；被跟随的父槽 = **物理** `root + i2*8`。读它的**活体 raw**（= 带 PPN>RAM 的 corrupt l2e）：`x/1xg (0x1000000000 + root + i2*8)`（VmDm 平移，若 VM satp 已映此 DM VA），或用 qmon `xp`/`pmemsave <root+i2*8> 8` 读物理。
+4. **拿写坏具体地址→回溯写者**：记下父槽物理 `root+i2*8`。重启同 -S harness，在 `continue` 前先对该物理槽设硬件写点（qemu system 下 `watch *(unsigned long*)<GVA>` 需知道写者用哪个映射地址；若写者走内核/VM DM，先 `hbreak` 在所有 PT 写点 `write_pte_dm`/`walk_alloc` 对应 PC，或分阶段 `awatch`）。目标：抓那条把 `0x2F4A300X`（PPN 0xbd28c>RAM）写进该槽的 store 及其 PC（候选=装填该槽的 exec/mmap 代码或 PT 帧被复写）。
+5. **每次改动守回归门**：x86 marker=2/panic=0、aarch64 marker 不回归、`check-layout.sh all`、host 4 包集。
+
+### 三、本轮净交付
+- harness + 确定性 (A) 复现 + 交互式可执行配方已备齐；**未改生产码**（gdb 会话本身只读/写断点，不落盘）；qemu 已清、tracked 净。host 1400/0。goal active。
+
 
