@@ -41,7 +41,7 @@ static unsigned long g_ev;             /* 累计事件数 */
 
 /* 环形缓冲：只留最近 RING 条命中（避免逐条 fprintf 的 I/O 洪水与扰动）；
    崩溃后 harness 杀 qemu → atexit 一次性 flush，拿到崩溃前最后这段写者时间线。*/
-struct ev { uint64_t vaddr, paddr, pc; uint32_t cpu : 8, store : 1, sz : 8, kind : 2; };
+struct ev { uint64_t vaddr, paddr, pc; uint32_t cpu : 8, store : 1, sz : 8, kind : 3; };
 static struct ev g_ring[RING];
 static unsigned  g_head, g_cnt;
 
@@ -63,7 +63,7 @@ static void flush_cb(qemu_plugin_id_t id, void *ud)
         "\nwatch_store_plugin: FLUSH total_dmwin_stores_seen=%lu, last %u:\n",
         g_ev, g_cnt);
     unsigned start = (g_cnt < RING) ? 0 : g_head;   /* 最旧一条 */
-    static const char *kname[3] = { "FRAME", "DMWIN", "FAULT" };
+    static const char *kname[4] = { "FRAME", "DMWIN", "FAULT", "QPC" };
     for (unsigned i = 0; i < g_cnt; i++) {
         struct ev *e = &g_ring[(start + i) % RING];
         fprintf(stderr, "PLG %s vcpu=%u %s sz=%u vaddr=0x%016"
@@ -88,6 +88,15 @@ static bool in_a_win(uint64_t v)
         || (v >= KDM_LO && v < KDM_LO + KDM_TOP);
 }
 
+/* 崩点函数 Riscv64Paging::query 的 guest PC 区间（当前 build 0x3ab58..0x3ac30）。
+   记录该区间内每一次访存的精确 vaddr+pc，用于判：一条反汇证明只能产
+   生 8 对齐地址的 query 槽读，其真实执行的 vaddr 到底对不对齐（定候选
+   (i) TCG stval 语义 vs (ii) 真有非对齐访问）。 */
+static bool in_query_pc(uint64_t pc)
+{
+    return pc >= 0x3ab58ULL && pc <= 0x3ac30ULL;
+}
+
 static void vcpu_mem(unsigned int cpu, qemu_plugin_meminfo_t info,
                      uint64_t vaddr, void *ud)
 {
@@ -100,12 +109,18 @@ static void vcpu_mem(unsigned int cpu, qemu_plugin_meminfo_t info,
         /* 未翻译成物理地址 = 该访存本身故障（缺页）。若虚拟地址落在任一直接映射窗
            （VM 或内核），这条就是崩点访问：记下 FAULT（含精确 pc+vaddr），
            用于判 0xB2C 偏移是走表索引还是调用者游标（侧对话点1）。*/
-        if (in_a_win(vaddr))
-            rec(2, cpu, store, sz, vaddr, 0, pc);
+        if (in_a_win(vaddr) || in_query_pc(pc))
+            rec(in_query_pc(pc) ? 3 : 2, cpu, store, sz, vaddr, 0, pc);
         return;
     }
     if (qemu_plugin_hwaddr_is_io(hw)) return;
     uint64_t pa = qemu_plugin_hwaddr_phys_addr(hw);
+
+    /* query PC 区间内的每一次读/写（成功）：拿其精确 vaddr 定对齐性。 */
+    if (in_query_pc(pc)) {
+        rec(3, cpu, store, sz, vaddr, pa, pc);
+        return;
+    }
 
     if (in_target_frame(pa) >= 0) {                 /* 次过滤：显式帧（R+W）*/
         rec(0, cpu, store, sz, vaddr, pa, pc);
