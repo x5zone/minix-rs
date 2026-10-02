@@ -50,8 +50,10 @@
 ### 三大目标进度
 - ①三架构 marker：x86✅、aarch64✅、**riscv64 ❌（只差 (A)）**。② 18-stage 命令面：仅 x86 核心✅（riscv/aarch64 待①）。③ 586 C 测试上机：未启动（AF-5 已清编译盲区为前置）。三条全未成，**不标 complete**。
 
-## ★(A) 根因定论 + 精确修复点（2026-10-02 续-205~209，gdb 活体 step-back 确证，覆盖前文所有假说）
-**根因（确证）**：VM 启动用 `establish_boot_dm` 建的 bootstrap 根表，其 **VM Direct Map 窗是"按启动期候选（memmap ∪ 初始 bootstrap-tree ∪ module）disjoint 装 leaf"**（重叠 reserved 整段丢弃）。VM 运行期从 bump 池**新分配**的页表页（实测 PA=0x82ce4000，在 RAM 内但超出启动期候选快照）因此**在 VM satp 的 DM 窗没有 leaf** → VM 走子进程页表 read_pte_dm(DM VA 0x1082ce4000) 缺页 → `pagefault in VM` 致命。`-S` 活体 trace：a6=0x82ce4000、a5=1<<36、a1=a6|a5=in-window 正确单平移 ⇒ 是覆盖洞非算术/非伪PA/非内存PTE腐坏/非resume-Fault（此前所有假说作废）。
-**精确修复（下一专注会话执行 + 三架构验证）**：让 VM 的 DM 窗**连续覆盖 [0, ram_top)**（至少 [0x82000000 bump池顶)），与 per-process `map_kernel` 已有的连续 `[0, dm_pages)` 一致。改动在 `kernel/src/dm_coverage.rs::establish_boot_dm` 的 VM 窗循环（第 110-125 行区）：以单个连续区间 `DmRange::new(0, kernel_dm_pa_end)`（或 RAM 顶）替代 disjoint 候选枚举（避开 AlreadyMapped：一次性铺连续段即可，候选并集是其子集）。`kernel_dm_pa_end` 需确保 ≥ 运行期 bump 池可达顶（否则仍留洞）。
-**验证清单**（不冒进单发合入）：① host 4 包集 + check-layout all；② x86 真机 marker=2/panic=0 不回归；③ aarch64 真机 marker 不回归；④ riscv 真机 gh → 期望过 (A) 达 `minix-rs rc: minimal boot script marker`（目标① 三架构全绿）。随后 目标②(riscv/aarch64 命令面)/目标③(Tier A libatf-c 移植+syscall shim) 解锁。
-**证据留存**：`tmp/ram70.bin`（当前构建 panic 瞬间全 RAM）；WORKLOG §续-191~209 全链；AF-11 探针（sf-*/mrr/rvflt/ipcefault/kill）待 (A) 结案过 C-61 一并滚。
+# ★(A) 现状（2026-10-02 续-212 更新）——「DM 覆盖洞」定论**已被实验证伪并 revert**，(A) 仍 open
+> ⚠️ 下方旧「根因定论=VM DM 窗覆盖洞」已被续-212 的正常-boot 真机实验推翻，勿再据此修复（曾据此实现连续 DM 窗→gh71 验证失败→已 revert）。
+
+**证伪经过**：按覆盖洞假说实现 `establish_boot_dm` VM 窗改连续 `[0, kernel_dm_pa_end)≈[0,0xA0000000)`（覆盖全 RAM），重建 riscv 真机 gh71：`cause_sig=0`（paging.rs 探针 P0 修复仍有效）但 `pagefault in VM` **依旧**，且正常-boot fault `stval 0x10bd28bb2c` → PA `0xbd28bb2c` **> RAM 顶 0xA0000000**——再全的连续 DM 窗也映不到 RAM 外的伪 PA。⇒ 覆盖洞假说不成立；`-S` 下看到的 in-window 0x82ce4000 是 gdb 停机时序造成的**幻影变体**。
+**当前最佳判断（未坐实）**：VM 走子进程页表时 `read_pte_dm` 跟随一个 **>RAM 的伪 table_pa**（gh71=0xbd28c000），该值在全 RAM 快照无任何匹配持久 PTE ⇒ 要么 (i) VM walk 的表基址**算术**把非法值/高位当 PA（`walk_read`/`query`），要么 (ii) 某父 PTE 指向的子表页**被 VM 自身 reclaim/复用清零**后仍被引用（PT 帧生命周期，与 `ptalloc-reuse` 同域）。二者都需活体 step-back 区分。
+**唯一有效下一步（专注交互式 gdb 会话，非单发可竟功）**：**正常 boot（不加 `-S`，避免时序幻影）**下 `gdb-multiarch hbreak *0x3abec` 命中后 `stepi` 回溯：找出把 `0xbd28c000`（或当轮伪 PA）装入寄存器那条 `ld` 的**源地址**，读该源真值 → 源合法却算出 >RAM ⇒ 算术 bug；源本身是垃圾/0 ⇒ 父表页被回收。harness 模板见 WORKLOG §续-205（qemu -S -gdb tcp::3333 + `hbreak *0x<fault-va>`，VM text VA→guest-phys 用 minix-vm 字节匹配快照定位）。**未坐实不成修。**
+**不变的事实**（已确证，勿重走）：① paging.rs U 态 SBI ecall = 真 P0，已修 `f90416cc9`，`cause_sig` 绝迹；② resume-Fault 全族 = 幻影；③ VM 自身根表树 22 表全净、伪 PA 不在任何持久 PTE（排除「内存 PTE 被写坏」）。证据 `tmp/ram70.bin`。
