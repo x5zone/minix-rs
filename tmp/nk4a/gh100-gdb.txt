@@ -1,0 +1,36 @@
+0x0000000000001000 in ?? ()
+Breakpoint 1 at 0x3abd4
+Breakpoint 2 at 0x3abec
+Num     Type           Disp Enb Address            What
+1       breakpoint     keep y   0x000000000003abd4 <<minix_arch::riscv64::paging::Riscv64Paging as minix_arch::arch::paging::Paging>::query+124>
+	stop only if ( $a1 & 1 ) && ( (($a1 >> 10) << 12) >= 0xa0000000 )
+2       breakpoint     keep y   0x000000000003abec <<minix_arch::riscv64::paging::Riscv64Paging as minix_arch::arch::paging::Paging>::query+148>
+
+Breakpoint 2, 0x000000000003abec in <minix_arch::riscv64::paging::Riscv64Paging as minix_arch::arch::paging::Paging>::query ()
+
+===HIT-A (L2 corrupt read): a3=slotVA(root+i2*8) a1=l2e===
+=> 0x3abec <_ZN95_$LT$minix_arch..riscv64..paging..Riscv64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$5query17h0dfcc868d363d335E+148>:	ld	a1,0(a1)
+a3(slotDMVA)=0x0000000082ce4004  a1(l2e)=0x0000001082ce4000
+slot_phys = a3 - VmDmBase(0x1000000000) ; root+i2*8 =
+$1 = 0xfffffff082ce4004
+l2e decoded paddr=(a1>>10)<<12=
+$2 = 0x420b390000
+l2e decoded paddr(low, strip hi bits)=((a1&0x3fffffffffc00)>>10<<12)=
+$3 = 0x420b390000
+#0  0x000000000003abec in <minix_arch::riscv64::paging::Riscv64Paging as minix_arch::arch::paging::Paging>::query ()
+#1  0x0000000000023146 in minix_vm::cow_exec_pf::sync_slot_pte ()
+#2  0x0000000000023872 in minix_vm::cow_exec_pf::handle_pagefault ()
+#3  0x000000000001adfe in minix_vm::vm_server::VmServer::run ()
+#4  0x0000003ffffe00c4 in ?? ()
+
+===resume to crash (if HIT-A was benign, see if 0x3abec also stops)===
+
+Breakpoint 2, 0x000000000003abec in <minix_arch::riscv64::paging::Riscv64Paging as minix_arch::arch::paging::Paging>::query ()
+
+===HIT-B===
+=> 0x3abec <_ZN95_$LT$minix_arch..riscv64..paging..Riscv64Paging$u20$as$u20$minix_arch..arch..paging..Paging$GT$5query17h0dfcc868d363d335E+148>:	ld	a1,0(a1)
+a1=0x0000001082ce4000 a3=0x0000000082ce4004 a5=0x0000001000000000 a6=0x0000000082ce4000
+#0  0x000000000003abec in <minix_arch::riscv64::paging::Riscv64Paging as minix_arch::arch::paging::Paging>::query ()
+#1  0x000000000001ae5a in minix_vm::vm_server::VmServer::run ()
+#2  0x0000003ffffe00c4 in ?? ()
+[Inferior 1 (process 1) detached]

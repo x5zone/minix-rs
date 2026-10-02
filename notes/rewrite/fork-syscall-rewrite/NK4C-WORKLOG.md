@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-246（2026-10-03·临时诊断探针实验已 revert：重大纠偏——(A) 崩溃 walk 的 root 不是子根 0x9dc37000（i2=255 缺页走 RS 根 0x82132000）⇒ 唯一靶 0x9DC377F8 推导存疑；且“在生产路径加一条读”会把崩点 PC 0x3abec→​0x3ae3c ⇒ (A) 对布局极敏感(§续-137 Heisenbug)。下轮：不改码，用一次性 gdb 回栈 + KDM dump 两张候选根定 root）**；取证链 §续-216~246**：
+> **🛑 最新前沿＝§续-247（2026-10-03·方法论墙定谳：硬件写 watchpoint 死 + 任何 gdb/仪表都扰动 (A)（-S 漂 0x3ac1a、加读漂 0x3ae3c）⇒ 本工具链无法动态观察瞬态 corrupt l2e；但逻辑硬结论：崩 walk root ≠ 子根 0x9dc37000（单靶 0x9DC377F8 基于错根）。(A) 改走静态审计 root 错配）**；取证链 §续-216~247**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11145,6 +11145,34 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - **本会话对 cow_exec_pf.rs 的临时诊断探针已全部 `git checkout` revert**（`git status` 确认 os/ tracked 无变更），并重建了干净 minix-vm。除诊断探针外未改任何生产逻辑。三目标未全成，goal active。
+
+---
+
+## §续-247（2026-10-03·【方法论墙定谳】所有 gdb/仪表手段都扰动 (A) ⇒ 本工具链无法观察干净崩溃的瞬态 corrupt l2e；逻辑推出崩 walk root ≠ 子根 0x9dc37000；(A) 需改走静态审计）
+
+> 新 harness `tmp/nk4a/riscv_root_probe.sh`：不改码，据 HEAD 反汇在 walk_read 的 L2 读（query+0x7c=0x3abd4）设条件断点，只在 l2e 解码 paddr≥RAM顶时停，拓 a3(=root+i2*8)。实测 gh100/gh101。
+
+### gh100/gh101 实测：gdb 本身就改局
+- gh100：条件断点未在预期处命中；两停均为**良性** 0x3abec L1 读（a1=0x1082ce4000 合法 in-RAM），批处理只跑 2 次 continue 就退出（未到崩）。反汇定谳寄存器语义：query+148(0x3abec) 处 a5=0x1000000000(VmDm基)、a6=0x82ce4000(l1=pte_to_paddr(l2e)，合法)，a1=a5|a6|idx。a3 在 0x3abec 已被中途 `andi a3,…` 覆写（拿不到 root+i2）。
+- gh101：改只留条件断点（0x3abd4）+去无条件 BP。**崩溃漂到了 `sepc 0x3ac1a stval 0x10a26a2b00`**——不是干净无-gdb 的 0x3abec！⇒ **-S+gdb 把 (A) 拖到另一个读指令/漂移变体（§续-228 坐实）**，我的 0x3abec 路径断点根本不匹配该漂移→永不命中。
+
+### 方法论总定谳（本会话跨 gh92–gh101 汇总）
+干净 (A)@0x3abec **只在完全无 gdb/无仪表时重现**。以下观察手段**均不可用**于定谳其瞬态 corrupt l2e：
+1. 硬件写 watchpoint（裸物理/DM 虚两形）：QEMU 8.2.2 riscv TCG 不触发（gh92–94）。
+2. panic-halt KDM 活体读（gh96）：可定“坏值不驻留”，但看不到读瞬间瞬态值。
+3. 生产路径加一读（sync_slot_pte peek）：改崩点 PC 0x3abec→0x3ae3c（gh99，Heisenbug）。
+4. gdb -S 条件/普通断点：拖到漂移变体 0x3ac1a（gh101），不再是干净崩溃。
+⇒ **接续PROMPT “硬件写观察点是剩下唯一能定谳的手段” 这一前提在本工具链上不成立**（watchpoint 死 + 其余仪表皆改局）。**(A) 根因无法用动态观察定谳（非不为，工具链不可）。**
+
+### 但逻辑推出一个硬结论（无需观察）：崩 walk root ≠ 子根 0x9dc37000
+- 干净崩 sepc=0x3abec = walk_read:326（L1 读），能到这一步必过 :311 L2 读且 l2e&V≠0（else :312 直接 NotPresent 不崩）。§续-239 假定该 L2 槽=子根 0x9dc37000 i2=255=物理 0x9DC377F8。但 gh96 干净 KDM 读该槽 halt=0（V=0），且 :311→halt 之间无任何代码会把子根该槽写 0（单线程、紧接着就 fault halt）。⇒ **要么 l2e 真瞬态（但无写者），要么崩 walk 用的 root 根本不是 0x9dc37000**。后者更简⇒ **(A2)：崩 walk root 与子根不一致（stale/错配的 PageTable.root_paddr）**；§续-238/239/240 的单靶 0x9DC377F8 推导基于错根。gh97（探针 build）旁证：i2=255 缺页走 RS 根 0x82132000（非子根）。
+
+### (A) 改道：静态审计“sync_slot_pte 的 pt 从哪里来、对 exec 子是否 stale”
+- 不再依赖会改局的动态观察。静态追：handle_pagefault 的 `pt: &mut PageTable` 如何按 proc_endpoint 取得（VmProcTable/adopt/setaddr_space）、exec 后子进程 root 是否与 VM 缓存的 PageTable.root_paddr 一致（§续-131/146 “exec adopt/munmap 摘链后 root 漂移”同域）。对照 minix3 C pagetable.c/proc.c 的 root 获取与失效时机。
+- 一旦静态坐实“哪个路径使 root_paddr 与真子根不一致”，即可提最小成修 + marker 验证。**未坐实不成修**。
+
+### 纪律
+- 本会话未改生产码（cow_exec_pf.rs 探针已 revert）；gh100/101 均端口锚定已清、qemu 无残留；新增 harness `riscv_root_probe.sh` 为纯 gdb 取证工具（含 -S 漂移负结果证据）。host 1400/0。三目标未全成，goal active。
 
 
 
