@@ -10346,3 +10346,7 @@ gh49 铁证并列：kdst copy pa=0x9d2aff98（帧拷贝）↔ update_flags 崩�
 gh50 判读：sync 双 query 一致→崩点不在 sync 的 walk 对；kerninfo map 的 L2 索引 8≠511 排除内核写者。update_flags 的内联 walk（391c0 段）在 root→L1 提取后即崩——续-173 直接在 riscv64/paging.rs update_flags/query 的 walk_read 前后加 L1 槽 PA+raw 值打印（门 3），一锤定音「L1 槽值在两 walk 间变/不变」。若不变而 sepc 崩点仍踩→唯一剩余=DM 窗翻译不稳定（VM 根树被外部写——回到「谁写 0x9dc38000 页」=内核 kdst/SETADDR 的 kerninfo map 之外的写点枚举）。
 
 ## §1.120续-173（2026-10-02·**l1raw 探针门控两次被烧（gh51=VM自根早walk×3、gh52=boot重exec KernelDm walk×3），终门=channel==VmDm（child walk 必经）**；gh53 日志将落 os/target/riscv64gc-unknown-none-elf/boot-full-serial.gh53.log，读其中 l1raw 行：child 栈 VA 的 (root,l1,i1,l1e) 序列——同一 VA 两 walk 的 l1e 不同=未知写者实锤；相同而 sepc 崩=DM 窗翻译不稳定。续-174 按此分叉成修。）
+
+## §1.120续-174（2026-10-02·**gh53 新形态：链死更早——pm:02b01（EXEC_NEW 已达）后 VM 自己吃 SIGSEGV（vm 0x8 pc=0x39f4a → syscall_signal.rs:298 cause_sig: sig manager 8 lethal 11 for itself → kernel panic halt），l1raw(VmDm 门)零采样=child 栈 walk 未及发生；VM 自身 fault 走了 SIGSEGV 路而非 pagefault-in-VM panic 路（scause/路径分叉待查）；续-175=①反汇编 VM 0x39f4a ②查「VM 自身 fault 为何未走 pagefault-in-VM 臂」（cur_nr 判定/scause 分叉）③l1raw 门控保留待链推进后采样**）
+
+gh53 序列：vmmL stack mmap fw=0x800c → pm:02b01 → ptalloc-reuse-DATA pfn=0x9d2ad/0x9d2ac（腐坏邻域再现）→ vm 0x8 0x39f4a → cause_sig panic。腐坏源（region/BSS 级）仍未定位；本轮无生产码改（l1raw 门控改 VmDm 已提交 30dc78882）。
