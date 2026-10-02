@@ -18,8 +18,10 @@
 #   - config.c 需要 11 个 config-time 宏（ATF_BUILD_* 与 ATF_*DIR/SHELL/WORKDIR），
 #     正常由 atf 的 configure 注入；这里以 -D 提供占位值（构建期不影响测试语义）。
 #
-# 用法：tools/build-libatf-c.sh [arch]   # arch=riscv64（默认）| x86_64
-# 依赖：riscv64-unknown-elf-gcc + picolibc（riscv64）；x86_64 用 host gcc（libc 自带 uio/err）。
+# 用法：tools/build-libatf-c.sh [arch]   # arch=riscv64（默认）| aarch64 | x86_64
+# 依赖：riscv64-unknown-elf-gcc + picolibc（riscv64）；aarch64 用 aarch64-linux-gnu-gcc
+#       （glibc 自带 uio/err）；x86_64 用 host gcc（libc 自带 uio/err）。
+# 注：目标③ 上机首选 aarch64（目标① aarch64 已 ✅、可 boot+exec；riscv 上机受 (A) 门控）。
 set -euo pipefail
 
 ARCH="${1:-riscv64}"
@@ -32,9 +34,11 @@ BUILD="$OUT/build"
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; AR="riscv64-unknown-elf-ar"; \
              SYSROOT_FLAGS=(--specs=picolibc.specs); COMPAT_INC=(-I"$COMPAT") ;;
+    aarch64) CC="aarch64-linux-gnu-gcc"; AR="aarch64-linux-gnu-ar"; \
+             SYSROOT_FLAGS=(); COMPAT_INC=() ;;   # glibc 自带 <err.h>/<sys/uio.h>，不注入 compat
     x86_64)  CC="cc"; AR="ar"; SYSROOT_FLAGS=(); \
              COMPAT_INC=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
-    *) echo "未知 arch：$ARCH（支持 riscv64 | x86_64）" >&2; exit 2 ;;
+    *) echo "未知 arch：$ARCH（支持 riscv64 | aarch64 | x86_64）" >&2; exit 2 ;;
 esac
 
 command -v "$CC" >/dev/null || { echo "缺少编译器：$CC（目标③ 前置，请先装交叉工具链）" >&2; exit 2; }
