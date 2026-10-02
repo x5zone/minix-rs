@@ -11300,6 +11300,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 本层纯反汇 + 现有串口分析，零新跑 qemu、零改码；未改 os/ 生产码；host 1400/0。(A) 仍 open 但**方向重大修正**：旧“corrupt 页表槽 0x9DC377F8”靶被 T1 推翻。三目标未全成，goal active。
 
+---
+
+## §续-257（2026-10-03·【T2 读崩帧真实寄存器】崩 walk 的 vaddr=子栈 0x7fffffffe000→i2=511，不是 i2=255⇒0x9DC377F8 靶【连槽号都错】;且子根[511]=合法0x274ab401、a0=0x9d2ad000 对得上⇒子根/L1链无 corruption，真崩点是“向 bogus 叶子 paddr 0xbd28cb2c 的非对齐数据访问”）
+
+> 承 T1，本层从现有 gh92f2 崩帧直接读回真实寄存器（free，零新跑），把“到底在走谁的哪个 vaddr”定死。
+
+- **崩帧真实值（gh92f2）**：`x12(a2=vaddr)=0x00007fffffffe000`、`x11(a1=故障地址)=0x10bd28cb2c`、`x10(a0)=0x9d2ad000`、`x15(a5)=0x1000000000`(VM_DM 基)、`x16(a6)=0xfffffffffff000`(掩码、非页表项)。python 解：vaddr=0x7fffffffe000 → i2=511、i1=511、i0=510、页内偏移=0。
+- ⇒ **崩 walk 是子进程 0x800c 的【栈缺页】vaddr=0x7fffffffe000（与 in-tree `filot ova=0x7fffffffe000 ptroot=0x9dc37000` 完全吻同），对应子根槽 i2=511 = 物理 0x9DC37FF8——不是 §续-238/239 算的 i2=255/0x9DC377F8。之前那个靶连【槽号】都错（i2=255 源于 §续-238 把 x2/x5=VM sp 误读为 walk vaddr）。**
+- **子根/L1 链无 corruption**：gh96 已读子根 slot511=0x274ab401（合法，→L1 表 0x9d2ad000），与崩帧 a0(x10)=0x9d2ad000 一致⇒walk 正确下降到 L1。故障地址 a1=0x10bd28cb2c 低 12=0xb2c 非 8 对齐（且与正确的 L1[511] 槽地址 0x109d2adff8 也不符）⇒**0x3abec 那条不是干净页表槽读**；真崩点是向一个 bogus 物理地址 0xbd28cb2c（=0x9d28c000|bit29|0xb2c）的【数据/内容类】访问。旧“中间页表帧被写坏”模型不成立。
+- **尚待一定（T2c，一次软件断点即定，非 plugin）**：0x3abec 处 stval(0xb2c 非对齐) 与 query 槽读算术(必 8 对齐)矛盾⇒需一次 `break *0x3abec`（软断点已证可用）拓 **live a1/a2 + 该条到底取的哪个基址**，定“0xbd28cb2c 从哪个 PTE/哪一层来”（疑 bogus 叶子 PTE 的 paddr 而非中间表项）。**未坐实不成修**。
+
+### 纪律
+- 本层纯读现有崩帧+python 对齐核算，零新跑、零改码；未改 os/ 生产码；host 1400/0。旧靶 0x9DC377F8 连槽号都错（应 i2=511）且属错类别（数据非槽读）。三目标未全成，goal active。
+
 
 
 
