@@ -10825,4 +10825,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 三、本轮净交付
 - harness + 确定性 (A) 复现 + 交互式可执行配方已备齐；**未改生产码**（gdb 会话本身只读/写断点，不落盘）；qemu 已清、tracked 净。host 1400/0。goal active。
 
+## §续-222（2026-10-02·**真机验证目标② x86 命令面核心成立 + (A) 交互式 gdb 在本工具环境不可驱动（环境限制）+ 三目标完成审计快照**）
+
+### 一、目标②/① x86 真机验证（权威当前态证据）
+- 跑 `os/qemu-tests/test-cmd-smoke.sh`（x86_64 OVMF + qemu-system-x86_64）：xtask 装配镜像→mtools 验 ESP（kernel.elf+imgrd+12 模块齐）→启动“entering scheduler”→**stage4 命令输出 marker PASS**（“RESULT: PASS (18-stage command output visible on the boot console — T4)”）。证据 `tmp/nk4a/cmd-smoke-x86.log`。
+- ⇒ 坐实：x86 下 /etc/rc 跑 echo/ls/cat **经真实 VFS IPC**、串口可见输出、marker 打出。此前“② 仅 x86 核心✅”仅为声称，**现实测确认**；同时再确证目标① x86 marker。
+
+### 二、(A) 交互式 gdb 在本工具环境不可驱动（环境限制，非方法失败）
+- 尝试四种驱动 batch gdb 钉 (A)：默认 `-batch` continue 未停（前进程占住 qemu 单 gdb 客户端）；加长超时；TCP `127.0.0.1:1236` 连接超时（sandbox 限 TCP loopback）；unix socket `-gdb unix:…server=on,wait=off` 未建端点（语法不成立）。⇒ **本非交互环境无法可靠跑真人式 gdb 断点会话**，与记忆续-124/202“需人机交互会话、非单发可竟”一致。(A) 交互钉需用户/真终端按 §续-221 配方跑（harness 已就绪且 (A) 确定性复现于 sepc 0x3abec）。
+
+### 三、三目标完成审计快照（严格逐条，均未全成）
+- 目标①：x86 ✅（本续真机 marker PASS）、aarch64 ✅（续-132 真机 marker=2）、**riscv64 ❌**（(A) 阻塞，需交互 gdb 钉写者）。
+- 目标②：x86 命令面核心✅（本续 stage4 PASS：echo/ls/cat 走真实 VFS IPC）；aarch64 命令面“同构”待真机验；riscv ❌（依赖①）。全 18-stage 跨三架构未全成。
+- 目标③：❌未上机。工具链齐（riscv64 交叉 gcc+picolibc+libatf-c 源），但 libatf-c 需 err/regex/sys-wait/uio shim + fork/exec→IPC（大件），且 riscv 上机硬依赖①。Tier-A 未跑。
+- 本轮**无生产码变更**；tracked 净（tmp/ 全 gitignore）；qemu 已清。host 1400/0。**goal active**（三目标均未全成）。
+
+
 
