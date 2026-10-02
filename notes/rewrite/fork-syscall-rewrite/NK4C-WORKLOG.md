@@ -10314,3 +10314,8 @@ gh47 序列：rm-fallback×3（find 兜底服务三次 fault）→rm-repair（fi
 
 gh47 补充判读：crash 在 sync_slot_pte 的 update_flags 内（query 先行成功=当时链完好），L1 槽解出伪 L0 指针 0x3ffffff000（<<2 提取自 L1 槽值 ≈ 0x0FFFFFFC00 族）——与 gh29/32 的伪指针家族同形态。update_flags 与 query 间隔内无任何写者（单线程直行代码），「同内存两次读不同值」再次出现=读路径经过的物理页内容在两个时刻不同，或 DM VA→PA 翻译本身不稳定（DM 窗惰性映射被换）。此形态与堆腐坏（节点内存被复用改写）一致：改写者=heap_arena 的 VA 复用（free 后同 VA 另配对象，旧指针仍被读=读到的"垃圾"实为新对象字节）。
 续-167 处方：①heap_arena 影子位图（free 后 touch 检测，gh32 手法）抓堆写坏者；②DM 窗审计：vm_self_map/vm_self_unmap 是否会触碰 [VM_DM_BASE, VM_DM_BASE+16GB) 的映射（va 复用冲突）；③pmemsave 前后差分已可复用（qmon 通）。
+
+## §1.120续-167a（2026-10-02·**根因候选锁定：VM 自身 satp 根=0x82000000=boot bump 池基址（gh35 pfvm），而 bump 池区间在 VM 帧分配器 free list 内（gh32/45 分配轨迹 pfn 0x83981/0x9d747 族 descending 穿越池区间）——池底 0x82000000 被当普通帧分配即覆写 VM 自身根页→VM 全部翻译（BSS/堆/DM 窗）间歇腐坏→三症状全解释；续-168=PhysAlloc memmap 扣减 root 页（params.root_paddr 所在页，或整个 handoff 区）成修**）
+
+证据链：①gh35 pfvm satp=0x8000000000082000→root=0x82000000=池基（boot-full.sh 注释「bump pool 0x82000000+32MiB: root/pt/名字池/模块落地」）；②gh32 content-dump 首批 PT 帧 pfn=0x83981/0x839ac 族（池内！pa 0x83981000=gh35 root[80] 的 L1 表）+gh45 ptalloc 0x9d747 族 descending=分配器在高地址池/高 RAM 双区descending发放；③「同 VA 两读不同值/无写者」=根页被 alien 占有者持续改写，翻译腐坏是间歇的；④续-77 VmDm 无 sfence、heap free-after-free 等前几轮嫌疑全部降级为次生。
+续-168 成修靶：VM PhysAlloc 构建处（memmap→free list）扣减 params.root_paddr 所在 4KB 页（最小）或整个 boot handoff 区（对齐 C：内核把 bump 池扣还给 VM 前先扣除自用）；双侧防护=vm_pt_alloc/alloc_phys 的 OOR 探针已有（gh32 零触发因界=0x9fb33 只查上界——补下界/池界检查）。生产码：CodeReview+全验证链+gh48。
