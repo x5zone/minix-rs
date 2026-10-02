@@ -1740,7 +1740,7 @@ const RISCV64_CAUSE_ILLEGAL_INSN: u64 = 2;
 /// 指令是真 SIGILL（特权 CSR/坏编码），交给诊断腿。host 可测（先例
 /// `riscv64_pf_error_code`）。
 #[cfg(any(target_arch = "riscv64", test))]
-fn riscv64_illegal_insn_is_fpu_trap(entry_sstatus: u64) -> bool {
+pub(crate) fn riscv64_illegal_insn_is_fpu_trap(entry_sstatus: u64) -> bool {
     entry_sstatus & (0b11 << 13) == 0
 }
 #[cfg(any(target_arch = "riscv64", test))]
@@ -2468,7 +2468,7 @@ unsafe fn riscv64_fpu_trap_body(frame: &mut minix_arch::riscv64::trap_stub::Risc
     // sret。承载者＝patch 帧 FS=Dirty（保守选值：硬件在 Initial 下本
     // 就允许执行并自动 Initial→Dirty，不会重复陷阱；Dirty 使状态语义
     // 与「刚执行过 FP」一致，下一次 switch-out 捕获即如实上报）。
-    frame.sstatus = (frame.sstatus & !(0b11 << 13)) | (0b10 << 13); // FS=Dirty
+    frame.sstatus = (frame.sstatus & !(0b11 << 13)) | (0b11 << 13); // FS=Dirty (AF-9: 0b10 was Clean, mislabeled)
     if fpu_bkl {
         crate::smp::bkl_unlock();
     }

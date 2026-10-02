@@ -3639,6 +3639,27 @@ fn consume_flush_tlb_flag(
     }
 }
 
+/// riscv64 懒 FPU 归属门控：`finish_and_restore` 在返回 user 前按归属
+/// patch `ctx.sstatus.FS`（sstatus bits 13:14）。RISC-V Priv ISA FS 语义
+/// （见 `arch/src/riscv64/fpu.rs` 头 doc）：
+/// - `Off(0b00)`：FPU 指令陷阱（门控用）。
+/// - `Initial(0b01)` / `Clean(0b10)` / `Dirty(0b11)`：FPU 可用、不陷阱；
+///   Dirty 标「已修改需保存」。
+///
+/// 与门控谓词 `riscv64_illegal_insn_is_fpu_trap`（trap_dispatch.rs）严格
+/// 对齐：只有 `FS==Off` 才把 scause=2 判成 FP 轮转陷阱。故非 owner 必须
+/// 写 `Off`（首条 FP 陷阱→轮转腿），写 Initial/Clean/Dirty 都会让轮转腿
+/// 不可达（AF-8：旧实现误写 Initial 的根因）。owner 写 Dirty（活寄存器
+/// 延续 + 需保存）。
+///
+/// 纯函数，host 可测（AF-10 回归钉）。
+#[cfg(any(target_arch = "riscv64", test))]
+fn riscv_lazy_fs_field(is_owner: bool) -> u64 {
+    const FS_OFF: u64 = 0b00 << 13;
+    const FS_DIRTY: u64 = 0b11 << 13;
+    if is_owner { FS_DIRTY } else { FS_OFF }
+}
+
 fn finish_and_restore(
     table: &mut crate::proc_table::ProcessTable,
     smp: &mut crate::smp::SmpState,
@@ -3704,18 +3725,24 @@ fn finish_and_restore(
     } else {
         fpu.enable(); // owner keeps the FPU — C: disable_fpu_exception (clts)
     }
-    // NK4-C 续-133（riscv 臂）：riscv 的 FS 位住在 sstatus/帧内——活写
-    // 被 trap stub 出口的帧回装冲销，user 模式的 FP 门控载体是 ctx。
-    // 此处按归属 patch ctx.sstatus：owner==picked → Dirty（不陷阱，活
-    // 寄存器延续——自它上次 trap-restore 后无其他 FP 用户，物理寄存器
-    // 仍是它的）；非 owner → Initial（首条 FP 陷阱轮转，trap 腿保存旧
-    // owner 后 restore 自己）。aarch64 的活写足够（CPACR 不在帧内），
-    // riscv 必须走 ctx——两架构策略点在各自载体上对位 C proc.c:443-446。
+    // NK4-C 续-133（riscv 臂）/续-197 AF-8 修正：riscv 的 FS 位住在
+    // sstatus/帧内——活写被 trap stub 出口的帧回装冲销，user 模式的 FP
+    // 门控载体是 ctx。归属策略：owner==picked → FS=Dirty(0b11)，不陷阱且
+    // 标「需保存」（活寄存器延续——自它上次 trap-restore 后无其他 FP 用户，
+    // 物理寄存器仍是它的）；非 owner → **FS=Off(0b00)**，令其首条 FP 指令
+    // 陷阱进轮转腿（`riscv64_fpu_trap_body`：保存旧 owner、restore 自己、
+    // 移交归属）。
+    // AF-8（P0·回溯审计 2026-10-01 定谳）：旧实现非 owner 误写 FS=Initial
+    // (0b01)。但本 crate 门控谓词 `riscv64_illegal_insn_is_fpu_trap`
+    // （trap_dispatch.rs）要求 `sstatus.FS==Off(0b00)` 才判 FP 门控陷阱；
+    // FS=Initial 时「FPU available 不陷阱」（fpu.rs 头 doc + RISC-V Priv
+    // ISA FS 字段语义）⇒ 非 owner 返回 user 后首条 FP **不陷阱**⇒ 轮转腿
+    // 不可达死代码、riscv user↔user FP 未受保护（禁 FP 只护 kernel↔user）。
+    // 修正＝非 owner 用 FS_OFF。aarch64 的活写足够（CPACR 不在帧内），riscv
+    // 必须走 ctx——两架构策略点在各自载体上对位 C proc.c:443-446。
     #[cfg(target_arch = "riscv64")]
     if let Some(p) = table.get_mut(picked) {
-        const FS_DIRTY: u64 = 0b10 << 13;
-        const FS_INITIAL: u64 = 0b01 << 13;
-        let fs = if fpu_owner == Some(picked) { FS_DIRTY } else { FS_INITIAL };
+        let fs = riscv_lazy_fs_field(fpu_owner == Some(picked));
         p.cpu_context.set_fs_field(fs);
     }
 
@@ -4130,6 +4157,27 @@ mod tests {
     use super::*;
     use minix_arch::paging::mock::MockPaging;
     use minix_arch::paging::Paging;
+
+    /// AF-10（回溯审计 2026-10-01）：钉住 riscv 懒 FPU 归属门控的位语义，
+    /// 封 AF-8 复发——非 owner 必为 FS=Off(0b00<<13)（否则首条 FP 不陷阱、
+    /// 轮转腿不可达），owner 必为 FS=Dirty(0b11<<13)。并与门控谓词
+    /// `riscv64_illegal_insn_is_fpu_trap`（trap_dispatch.rs）交叉对账：
+    /// 只有非 owner 的 Off 会被判成门控陷阱。
+    #[test]
+    fn test_riscv_lazy_fs_field_gating() {
+        // 非 owner → Off（sstatus bits13:14 == 0b00）。
+        assert_eq!(riscv_lazy_fs_field(false) & (0b11 << 13), 0b00 << 13);
+        // owner → Dirty（0b11）。
+        assert_eq!(riscv_lazy_fs_field(true) & (0b11 << 13), 0b11 << 13);
+        // 交叉谓词对账：非 owner 的 FS 会被判为 FP 门控陷阱（轮转腿可达），
+        // owner 的 FS 不陷阱（活寄存器延续、不重入轮转）。
+        assert!(crate::trap_dispatch::riscv64_illegal_insn_is_fpu_trap(
+            riscv_lazy_fs_field(false)
+        ));
+        assert!(!crate::trap_dispatch::riscv64_illegal_insn_is_fpu_trap(
+            riscv_lazy_fs_field(true)
+        ));
+    }
 
     /// Full boot-flow integration test with MockPaging.
     /// Verifies: identity mapping + kernel mapping + enable → no panic.

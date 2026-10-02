@@ -3,10 +3,15 @@
 //! # FPU
 //!
 //! riscv64 has no per-process FPU save area either; the `sstatus.FS`
-//! field is a state machine (Off/Initial/Clean/Dirty). Setting it to
-//! `Initial` causes the first FP instruction to trap, at which point
-//! the kernel can allocate the FPU context lazily. The kernel layer
-//! never reads `sstatus` — it lives in the `CpuContext` only.
+//! field is a state machine (Off/Initial/Clean/Dirty). Per the RISC-V
+//! Privileged ISA (and this crate's `fpu.rs` header), **only `Off(0b00)`
+//! traps** an FP instruction; `Initial(0b01)`/`Clean(0b10)`/`Dirty(0b11)`
+//! all mean the FPU is available and does NOT trap. The kernel therefore
+//! gates the non-owner to `FS=Off` so its first FP instruction traps into
+//! the lazy-rotation leg (AF-8 correction — an earlier revision wrongly
+//! set `Initial` here on the mistaken belief that it traps, which made the
+//! rotation leg unreachable dead code). The kernel layer never reads
+//! `sstatus` — it lives in the `CpuContext` only.
 
 use crate::arch::boot::{
     CpuContextArch, EntrySpec, ProcKind, ProcNr, WriteUserRegError,
@@ -42,10 +47,12 @@ pub struct Riscv64CpuContext {
 }
 
 impl Riscv64CpuContext {
-    /// NK4-C 续-133：patch sstatus.FS 字段（懒 FPU 归属策略的 riscv 载
-    /// 体——FS 在 sstatus/帧内，kernel finish_and_restore 按归属写
-    /// Dirty(owner，不陷阱活寄存器延续)/Initial(非 owner，首条 FP 陷
-    /// 阱轮转)；`fs` 传已移位值（0b01/0b10 << 13）。
+    /// NK4-C 续-133 / 续-197 AF-8：patch sstatus.FS 字段（懒 FPU 归属策
+    /// 略的 riscv 载体——FS 在 sstatus/帧内）。kernel finish_and_restore 按
+    /// 归属写 **Dirty(0b11, owner：不陷阱、活寄存器延续+需保存) / Off(0b00,
+    /// 非 owner：令首条 FP 陷阱进轮转腿)**；`fs` 传已移位值（`0b00/0b11 <<
+    /// 13`）。非 owner 必须是 Off——Initial/Clean/Dirty 均不陷阱，写它们会
+    /// 让轮转腿死代码（AF-8 根因）。先清后置掩码，传 `0` 确实清零 bits13:14。
     pub fn set_fs_field(&mut self, fs: u64) {
         self.sstatus = (self.sstatus & !(0b11 << 13)) | fs;
     }
