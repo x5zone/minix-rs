@@ -57,3 +57,9 @@
 **当前最佳判断（未坐实）**：VM 走子进程页表时 `read_pte_dm` 跟随一个 **>RAM 的伪 table_pa**（gh71=0xbd28c000），该值在全 RAM 快照无任何匹配持久 PTE ⇒ 要么 (i) VM walk 的表基址**算术**把非法值/高位当 PA（`walk_read`/`query`），要么 (ii) 某父 PTE 指向的子表页**被 VM 自身 reclaim/复用清零**后仍被引用（PT 帧生命周期，与 `ptalloc-reuse` 同域）。二者都需活体 step-back 区分。
 **唯一有效下一步（专注交互式 gdb 会话，非单发可竟功）**：**正常 boot（不加 `-S`，避免时序幻影）**下 `gdb-multiarch hbreak *0x3abec` 命中后 `stepi` 回溯：找出把 `0xbd28c000`（或当轮伪 PA）装入寄存器那条 `ld` 的**源地址**，读该源真值 → 源合法却算出 >RAM ⇒ 算术 bug；源本身是垃圾/0 ⇒ 父表页被回收。harness 模板见 WORKLOG §续-205（qemu -S -gdb tcp::3333 + `hbreak *0x<fault-va>`，VM text VA→guest-phys 用 minix-vm 字节匹配快照定位）。**未坐实不成修。**
 **不变的事实**（已确证，勿重走）：① paging.rs U 态 SBI ecall = 真 P0，已修 `f90416cc9`，`cause_sig` 绝迹；② resume-Fault 全族 = 幻影；③ VM 自身根表树 22 表全净、伪 PA 不在任何持久 PTE（排除「内存 PTE 被写坏」）。证据 `tmp/ram70.bin`。
+
+## ★(A) 续-216 更新（2026-10-02·**「算术 bug」与「分配器双发/refcount」两条分支均已关闭**，详见 WORKLOG §续-216）
+> 上方 line 57-58 列的两个候选（(i) walk 表基址**算术**把非法值当 PA、(ii) **父 PTE 指向的子表页被 reclaim/复用后仍引用**）在续-216 均被证据关闭，**勿再据此修复**：
+> - **(i) 算术 bug — 作废**：反汇编 `Riscv64Paging::query`@0x3ab58 证 walk 算术 `ld a1,0(a1)`=`pte_to_paddr(l2e)+DM_BASE+i1*8` 完全正确；旧「坏掩码 0x00fffffffffff000 = 寄存器破坏」是误读（那正是 `PTE_PPN_MASK<<2` 正常掩码）。
+> - **(ii) 分配器双发/refcount — 真机可信检测器证伪**：gh72/gh73（当前构建、确定性复现，逐字节同）里 `ptalloc-DUP=0`/`alloc-reuse-PT=0`/`dblfree=0`/`ptalloc-OOR=0`/`BADPFN=0` ⇒ vm_pt_alloc 恒返 RAM 内合法 PA、从不双发/重 free；仅歧义 `reuse-DATA` 命中（因 VM 堆/heap_arena 旁路 `DATA_SEEN` 而不可信）。⇒ **加「拒发 live 帧」= 空修。** 静态审计（对照 C pagetable.c/alloc.c/cache.c）亦证 reclaim 谓词、VM 进程独占中间表 free、PT+data 共享池均 C-faithful。
+> - **新的唯一有效下一步（a2d）**：(A) 真身＝某子进程根表的一个父级表槽在被 walk 读那一刻持有 PPN>RAM 的**瞬态值**（全 512MB 新快照 `tmp/nk4a/ram73.bin` 0 个持久槽含它 ⇒ 快照抓不到、需读取瞬间抓）。riscv 无 `gdb record` ⇒ 先加 riscv-gated U-safe 探针（`bootmark::mark`/sys_diagctl，绝不用 `CurrentEarlyConsole`＝记忆 a298c18a）在 query 读 l2e 且 `!leaf && paddr>=0xA0000000` 时打 `(walked_root, level, idx, raw)` 定帧，再设写 watchpoint 抓写者。未坐实不成修。

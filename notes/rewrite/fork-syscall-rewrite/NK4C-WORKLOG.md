@@ -8,7 +8,13 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-191~193（2026-10-02·会话续-191 起，总账＝下文 §续-191~193 节）**：
+> **🛑 最新前沿＝§续-216（2026-10-02·会话续-216 起）**：
+> - **续-215「帧双发/refcount」(A) 主嫌被真机可信检测器证伪**：gh72（当前构建、确定性复现，逐字节同 gh73）里 `ptalloc-DUP=0`、`alloc-reuse-PT=0`、`dblfree=0`、`ptalloc-OOR/BADPFN=0`——即 vm_pt_alloc **恒返回 RAM 内合法 PA、从不双发/重 free**；仅歧义 `reuse-DATA`（前 48 条 payload 全零）命中，而它因 VM 堆/heap_arena 旁路 `DATA_SEEN` 而**不可信**。**故在 `alloc_pfn_reclaiming`/`vm_pt_alloc` 加「拒发 live 帧」＝空修/幻影，勿再走。** 静态审计（对照 C 真源：reclaim 谓词、VM 进程独占中间表 free、PT+data 共享池均 C-faithful）独立汇合同一结论。
+> - **两处旧判读纠正**（反汇编 `Riscv64Paging::query`@0x3ab58）：① 崩溃寄存器里 `0x00fffffffffff000` 不是「寄存器破坏」，是 `query` 正常算的 `PTE_PPN_MASK<<2` 掩码（`lui a6,0xfff00;srli a7,a6,8`）；② walk 算术 `ld a1,0(a1)`=`pte_to_paddr(l2e)+DM_BASE+i1*8` **完全正确**，伪 table_pa 0xbd28c000 是如实解码 corrupt `l2e` 得来。**「纯算术 bug」也作废。**
+> - **512MB 新快照（gh73 `tmp/nk4a/ram73.bin`）坐实**：全 RAM 0 个持久槽含 paddr==0xbd28c000、VM 自身根表 11 项全在 RAM 内 ⇒ corrupt l2e **只在读取瞬间存在、非持久**（再确证 续-196/200）。
+> - **(A) 重定向（唯一阻塞、非盲区）**：真身＝某子进程根表的一个父级表槽在被 walk 读那一刻持有 PPN>RAM 的**瞬态值**（表帧生命周期/写入序，非分配器双发非耐久 PTE 写坏）；riscv 无 `gdb record`、快照已证非持久 ⇒ 静态/快照到边界。**下一步 a2d**：riscv-gated U-safe 探针（`bootmark::mark`/sys_diagctl，绝不用 `CurrentEarlyConsole`＝记忆 a298c18a）在 query 读 l2e 且 `!leaf && paddr>=0xA0000000` 时抓 (walked_root, level, idx, raw)，读取瞬间定帧，再设写 watchpoint 抓写者。**未坐实不成修；每改码守 x86 marker=2/panic=0 + aarch64 marker 不回归 + check-layout all + host 4 包集（本轮基线 1400 passed/0 failed 已验）。**
+>
+> **（上一前沿·§续-191~193）**：
 > - **续-190 处方已被 gh61 真机证伪（重大纠偏）**：探针证明 resume-Fault 家族**根本不是真身**——gh61 里 45 条 `mrr`（vmctl_memreq_reply 判决）全 verdict=Ok（无 memreq 返 Fault）、`sf-*`（VM 自填臂）零命中、`rvflt via=stage3a/pmf`（两条 kernel_call_resume→SIGSEGV 消费腿）零命中、`kc-efault`/`WARNING wrong user pointer` 零命中。**续-139~190 追的 `VmCheckResult::Fault`/delivermsg/自填/走错根整条链＝幻影**（症状从不在此）。
 > - **续-192 真身定谳并成修（P0-code-bug）**：真崩因＝`arch/src/riscv64/paging.rs` 两处陈旧调试探针（`l1raw` 续-173 / `q-badroot` 续-155，本应"用后即滚"却留树＝AF-11 债务）在 **VM(U 态)** 调 `CurrentEarlyConsole::write_str` → riscv 后端发 **SBI putchar `ecall a7=1`**（S→M 特权服务，仅内核 S 态合法）→ U 态 ecall 陷阱进内核 `riscv64_ipc_dispatch_body`，被误当 `IpcCall::Send`（dst=a0=字符、消息指针=a1=0）→ `copy_msg_from_user(0)` EFAULT → `cause_signal(VM,SIGSEGV)` 致命。反汇编实证：崩溃 pc=0x3a9a2 处 `li a7,1; li a0,<ASCII>; ecall`，解码串 ` l1= i1= l1e= ch=` 与 l1raw 字面量逐字节吻合。修复＝删两探针块（成修 commit f90416cc9，CodeReview PASS）。
 > - **成修后新状态（续-193·当前唯一阻塞）**：`cause_sig: sig manager 8` 绝迹、ipcefault 零命中；boot 深入至**真正的原始 (A) 缺陷**——`pagefault in VM`（trap_dispatch.rs:1991，gh64：`sepc 0x3ac1a stval 0x409d28bb20`、x11=0x00fffffffffff000 坏掩码＝续-142 指纹）。探针诱导的 SIGSEGV 一直在**更早处杀死 VM 从而掩盖 (A)**；现 (A) 裸露为干净单点阻塞。(A) 需 `qemu -s -S`+gdb 硬件写 watchpoint 定谳（记忆续-124：纯文本探针已到能力边界）。
@@ -10706,3 +10712,44 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 代码核查：`DATA_SEEN` 仅 `alloc_page.rs:188`（VmPageAllocator::alloc_phys）置、仅 `:239`（VmPageAllocator::free_pages）清；且**所有物理帧释放路径都经 free_pages**（vm_server.rs:682、page_cache reclaim 传入 alloc、vm_pt_free:146）。⇒ 位图不应长期滞留 ⇒ **崩溃帧 0x9d2ac/0x9d2ad 上的 `ptalloc-reuse-DATA` 大概率是"真实 PT↔data 双发"而非 §208/194 判定的 stale-bit 噪声**（那些 all-zero payload 可由"数据帧被 reclaim 时写零但仍被某父 PTE 引用"解释）。
 **修正的 (A) 主嫌**：VM 页表帧分配器把**同一物理帧既当页表页又被仍存活的数据持有**（reclaim/free 与 PT 分配竞态，或 refcount 记账漏）→ 数据写覆盖 PTE → walk 得非确定性垃圾 table_pa（解释跨运行不一致）。
 **下一步（专注会话，已非盲区）**：审 `alloc_page.rs` 的 `alloc_pfn_reclaiming`/reclaim 与 `vm_pt_alloc`：确认 reclaim 释放的帧是否可能在仍被引用（refcount>0）时被 vm_pt_alloc 再发；对照 C pagetable.c 的引用计数。**修向**：补 PT 帧 refcount 校验（reclaim/alloc 都拒绝 live 帧），非盲目扩大 DM 窗（已证伪）。本会话预算尽，未坐实不成修；此前所有 (A) 假说（resume-Fault/覆盖洞/纯算术/持久PTE写坏）均已排除或证伪，只留此「帧双发/refcount」这一有代码依据的主嫌。
+
+## §续-216（2026-10-02·**(A) 续-215「帧双发/refcount」主嫌被真机可信检测器证伪 + 反汇编纠正「坏掩码=寄存器破坏」误读 + walk 算术正确 + 512MB 新快照坐实 corrupt L2e 瞬态非持久；(A) 仍 open，重定向到「子树某父表槽在读取瞬间持有 PPN>RAM 的瞬态值，需写 watchpoint 抓写者」**）
+
+> 本节是一次完整的「执行 (A) 下一步 → 用证据判定」轮。结论是把上一轮（续-215）刚立的主嫌**证伪**并**纠正两处旧判读**，把排查方向重新钉准；**未改任何生产码**（不坐实不成修）。所有断言带锚点，可复现。
+
+### 一、确定性复现（HEAD 构建，两轮逐字节相同——纠正「跨运行不确定」的旧印象）
+- gh72（首次带建，12 模块 + kernel-image，`tmp/nk4a/wrap-boot-mon.sh` RUN=gh72）与 gh73（`SKIP_BUILD=1` 复用同二进制）：崩溃尾**逐字节相同**：`pagefault for VM sepc 0x000000000003abec stval 0x00000010bd28cb2c` → `pfvm: pa=0x00000000bd28cb2c off=0x0000000000000b2c`、`pfvm: satp=0x8000000000082000 root=0x0000000000082000` → `trap_dispatch.rs:1991 pagefault in VM — halting`。证据 `os/target/riscv64gc-unknown-none-elf/boot-full-serial.gh7{2,3}.log`。
+- 即：**同一构建内 (A) 是确定性的**（值恒 0xbd28c000、根恒 0x82000000）；「跨构建不一致」只发生在改动代码（如 AF-8 `ef3c40c6b` 改了布局）之后，不是同构建抖动。
+
+### 二、可信检测器全部静默 → 续-215「帧双发/refcount」主嫌证伪（gh72，当前构建）
+gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED 三张位图 + 越界探针）：
+| 检测器 | 命中 | 它检测什么 | 结论 |
+|---|---|---|---|
+| `ptalloc-DUP`（`alloc_page.rs:74`）| **0** | vm_pt_alloc 拿到一个 PT_SEEN 已置、未经 free_pages 清的 pfn = 活 PT 帧二次发 PT | 无 PT→PT 双发 |
+| `alloc-reuse-PT`（`:183`）| **0** | alloc_phys 拿到一个 PT_SEEN 已置的 pfn = 活 PT 帧被当数据再发 | 无 PT→data 双发 |
+| `dblfree`（`:243`）| **0** | 同一 pfn 二次进 free_pages = 双重释放（buddy/位图退化总根）| 无双重释放 |
+| `ptalloc-OOR`（`:118`）/`alloc-BADPFN`（`:190`）/`ptalloc-BADPFN`（`:114`）| **0** | 分配器产出 `pfn>=RAM_TOP_PFN`(0x9fb33) = 上界崩坏 | **vm_pt_alloc 恒返回 RAM 内合法 PA** |
+| `reuse-DATA`（`:80/104`）| 18080（前 48 条 payload 全零）| vm_pt_alloc 拿到的 pfn 曾被 alloc_phys 当数据基址给出 | **不可信**（见下） |
+**为何 reuse-DATA 不可信、不能反证前五项**：`DATA_SEEN` 只在 `VmPageAllocator::alloc_phys`（`:188`，且**只置 base_pfn 单位**、多页运行不置内部页）登记；而 VM **自身堆**走独立的 `VmAllocator::dealloc`（`global.rs` free_list，**不触碰 DATA_SEEN**）、`heap_arena` 等分配也绕过 `alloc_phys`——位图对这部分物理帧是盲区，「基址撞过数据」无法区分「正常 free→realloc 复用」与「活别名」。续-215「位图对称 ⇒ 命中即真双发」的推论**漏了这些旁路 free/alloc 路径**，故不成立。**真正判活别名的是 `alloc-reuse-PT`/`ptalloc-DUP`/`dblfree`（三向都查现存的 PT_SEEN 与位图状态），它们全 0。**
+⇒ **在 `alloc_pfn_reclaiming`/`vm_pt_alloc` 里加「拒发 live 帧」校验会是空修/幻影**（没有 live 帧被发）。这与本轮的静态审计独立汇合（见四）。
+
+### 三、反汇编纠正两处旧判读（`riscv64-unknown-elf-objdump -d` 当前 minix-vm，`Riscv64Paging::query`@0x3ab58）
+故障 `ld a1,0(a1)`@0x3abec，其地址由前三条算出：
+```
+3ab80 lui a6,0xfff00 ; srli a7,a6,0x8 → a7=0x00FFFFFFFFFFF000   ← 就是被当作「坏掩码」的那个数
+3ab8c slli a3,a1,0x2 ; and a6,a3,a7  → a6=(l2e<<2)&mask = pte_to_paddr(l2e)   ✓
+3abe0 srli a1,a2,0x12; and a1,a1,t0(=0xFF8) → i1*8 ; or a1,a1,a5(=1<<36) ; add a1,a1,a6
+3abec ld a1,0(a1)   → 读 DM_BASE + pte_to_paddr(l2e) + i1*8   ✓ 纯单次正确平移
+```
+- **纠正 1（掩码误读）**：续-142/145/215 把崩溃寄存器里那个 `0x00fffffffffff000` 当成「确定性寄存器被写坏」的指纹。实为 `query` 正常计算的 **`PTE_PPN_MASK<<2` 页掩码**（`lui a6,0xfff00; srli a7,a6,8` = 0x00FFFFFFFFFFF000），本就该待在该寄存器里——**不是破坏**。旧「全 F 页掩码被 srli,8 塞进 prologue 输入寄存器」的脑洞整条作废。
+- **纠正 2（算术无罪）**：walk 算术 = `pte_to_paddr(l2e) + VM_DM_BASE + i1*8`，**完全正确**（活体 续-205/209 早已见单次平移正确，本轮静态反汇再证）。伪 `table_pa 0xbd28c000` 是 `pte_to_paddr(l2e)` **如实解码出来的**，即**父表槽 `l2e` 在读取瞬间确含 `raw & PTE_PPN_MASK = 0x2F4A3000`（V=1、R=W=X=0 的非叶指针）**。
+
+### 四、512MB 新快照静态坐实 corrupt L2e 非持久 + 静态审计两函数 C-faithful
+- **快照扫描**（gh73 panic 后内核 halt、RAM 冻结，`pmemsave 0x80000000 0x20000000 /tmp/nk4a/ram73.bin`，`tmp/nk4a/root73.bin`=VM 自己根表页）：全 512MB **0 个 8 字节槽** 满足 `raw & PTE_PPN_MASK == 0x2F4A3000`（paddr==0xbd28c000）。且 VM 自身根表页 0x82000000 的 11 个 present L2 项 paddr **全部在 RAM 内**（无 0xbd28c000）。⇒ 再次独立坐实 续-196/200：那个 corrupt l2e **不在任何持久内存位置**——它只存在于「walk 读它的那一刻」的帧内容/寄存器；且 `pfvm root=0x82000000` 打印的是 **satp（VM 自己活动根）**，被 query 句柄 walk 的是**另一棵（子进程）根**，其 corrupt 槽在 trap handler 跑完 dump GPR 后已被后续动作改写而不耐久。
+- **静态审计（(A) 下一步的正题，独立于探针）**：对照 C 真源确认三处均 C-faithful、无「发 live 帧」缺口——① `PageCache::free_pages` 只驱逐 `refcount==1`、`rmcache` 只在 `refcount==0` 才 `free_pfn`（`page_cache.rs:395/305`，C `cache.c:288-305` 对位）；② VM 进程页表由 `init_page_table` 走 `Paging::new()`（独占根）+ `map_kernel`（每页 `pt.map`→`walk_alloc` 现分配**独占**中间表，`paging.rs:589`/`vmproc_handle.rs:364`），故 `free_child_tables` 全树释放的是**本进程独占帧**、正确（`Riscv64Paging::new` 非 `inherit_supervisor_half`——后者只在 boot `arch/boot.rs:754` 用，不经此 destroy 路径）；③ C 里 PT 页与数据页**本就共用**同一 `alloc_mem`/`free_mem` reclaim 池（C `pagetable.c:515 vm_allocpage→alloc_mem@242`、`free_mem@289`），重写的 `alloc_pfn_reclaiming` 与之同构。**结论：两个被点名函数不含静态可证的 live-帧发放缺陷，与二的探针证据汇合。**
+
+### 五、(A) 重定向（未解，但已非盲区，且排除面更宽）
+- **当前定性**：(A) = 某棵子进程根表的**一个父级表槽在 walk 读取的那一刻持有 `PPN>RAM` 的瞬态值**（非分配器产出、非持久 PTE、非掩码/算术 bug、非 resume-Fault、非 DM 覆盖洞）。既不是「分配器双发」（二证伪），也不是「内存 PTE 耐久被写坏」（四快照证伪），指向**「一个被合法分配的表帧，其某个槽在仍被上层 PTE 引用时，其内容由别处（数据/清零/半写）瞬时污染，随后又变化，故快照抓不到」**——即**指针链指向的表帧生命周期/写入序**问题，需**写 watchpoint 抓那次把 `0x2F4A300X`/PPN>RAM 写进该父槽的 store**（或反过来：抓该表帧被 free/reclaim 后仍被父 PTE 引用的一刻）。
+- **工具限制（记忆续-124/202 再确证）**：riscv 目标 `gdb record` 不支持（无法指令级因果 reverse），`-d in_asm` 无寄存器值；纯 pmemsave 已两轮证「非持久」→ **静态/快照已到能力边界**。
+- **下一步（非幻影、有界）a2d**：在 `riscv64/paging.rs` `query`/`walk_read` 读到 `l2e`（或 `l1e`）后、**若 `!pte_is_leaf && pte_to_paddr(pte) >= 0xA0000000`**，经 **U-safe 通道 `bootmark::mark`（sys_diagctl，绝不能用 `CurrentEarlyConsole`——记忆 a298c18a 教训）打 `(walked_root_paddr, level, idx, raw_pte, paddr)`、AtomicUsize 封顶、`#[cfg(all(riscv64,not(test)))]`**。此举把「哪个根表的哪一槽、原始值多少」在**读取瞬间**抓出（快照抓不到），再对该帧槽设写 watchpoint / 顺其分配史找写者。**不成修不落地；每改码守 x86 marker=2/panic=0、aarch64 marker 不回归、`check-layout.sh all`、host 4 包集（本轮基线已验 1400 passed/0 failed）。**
+- **证据留存**：`tmp/nk4a/ram73.bin`（512MB 全量，本轮新建）、`/tmp/nk4a/root73.bin`、`os/target/.../boot-full-serial.gh7{2,3}.log`。tracked 净（tmp/ 全 gitignore）。goal active（三目标均未全成）。
