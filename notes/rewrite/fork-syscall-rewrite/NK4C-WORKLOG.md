@@ -10,7 +10,11 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-271（2026-10-03·目标③构建面 17/18→**18/18**）**：补 BSD `sys_nerr`（picolibc 不提供；之前 `_sys_nerr` 只是 gcc 模糊建议、libc.a 无此符号）→ errno-compat.{c,h} + build-atf-test.sh 加 -include/链 errno-compat.o；t_strerror 链成 ET_EXEC riscv64 ELF 过 ehdr；回归 t_bm/t_memcpy 仍 rc0。CodeReview（commit 785327fb7）PASSED 无P0/P1；P2-1（.c include 自身头防声明/定义漂移）已修；P2-2/P2-3 登记为上机前待办（picolibc strerror 分界校准 sys_nerr；受 (A) 门控）。仅 tools/ 下零 os/ 生产码变更。
+> **🛑 最新前沿＝§续-276（2026-10-03·解锁条件 3 范围裁决执行：目标③ aarch64 构建面 0→18/18）**：(A) 保持 open（工具链/预算），按接续 PROMPT §四路线 3 转推不依赖 riscv 的目标③ aarch64 上机段。本会话已具备 aarch64-linux-gnu-gcc；Ubuntu 仓有 `picolibc-aarch64-linux-gnu`（与 riscv 腿同构 libc），sudo 不可用→新脚本 `tools/vendor-atf-toolchain.sh` 免 root（apt-get download+dpkg -x 到 tools/vendor/已 gitignore+sed 本地化 specs；系统包已装则优先直用）。桥层归一（code-excellence：避免两腿拷贝漂移）：sys-riscv.c→**sys-bridge.c**（kcall 用 #if __riscv/__aarch64__ 分旋，aarch64 腿=`svc #0` x8=0/x0=&msg，对位 arch_trap.rs 单一真源）；posix-stubs-riscv.c→**posix-stubs.c**（纯 C 共享）。build-libatf-c/build-atf-test 开 aarch64 分支（与测试腿同 libc，不混 glibc）。实测：**aarch64 18/18 链成 ET_EXEC**（首案 t_memchr 424KB entry 0x40000000）；**riscv 18/18 重链回归全绿**；回归底线 1402/0 + check-layout PASS。零 os/ 生产码变更。下一步（续-277+）：上机腿——ELF 入 imgrd /tests + rc exec + 串口判 ATF PASS（注意：链接期 stdout 取自 libsemihost 的 iob.c.o，上机前须把 __stdio hooks 改接我方 _write/SYS_DIAGCTL，semihost brk 指令在我方内核必 trap）。
+>
+> **（上一前沿＝§续-271，见下；(A) 取证前沿＝§续-274，定性＝fork 路径竞态，三解锁条件见接续 PROMPT）**
+
+> **（前沿＝§续-271（2026-10-03·目标③构建面 17/18→**18/18**）**：补 BSD `sys_nerr`（picolibc 不提供；之前 `_sys_nerr` 只是 gcc 模糊建议、libc.a 无此符号）→ errno-compat.{c,h} + build-atf-test.sh 加 -include/链 errno-compat.o；t_strerror 链成 ET_EXEC riscv64 ELF 过 ehdr；回归 t_bm/t_memcpy 仍 rc0。CodeReview（commit 785327fb7）PASSED 无P0/P1；P2-1（.c include 自身头防声明/定义漂移）已修；P2-2/P2-3 登记为上机前待办（picolibc strerror 分界校准 sys_nerr；受 (A) 门控）。仅 tools/ 下零 os/ 生产码变更。
 >
 > **（(A) 取证最新前沿＝§续-270，见下；§续-266~270 已把 (A) 定性为 fork 路径竞态而非耐久脏槽，按步骤 4b#5 保持 open）**
 
@@ -11654,6 +11658,39 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 诚实收官判定（对照 spec 三终目标，未完成）
 - ① marker：x86_64/aarch64 ✅，**riscv64 ❌（受 (A)）**。② 命令面：x86/aarch64 ✅，**riscv ❌（受 (A)）**。③：构建面 18/18 ✅，**上机 ❌**（riscv 受 (A)；aarch64 需 freestanding C 工具链）。**(A) 根因未坐实到可验证修复**（需寄存器读工具/非插桩确定复现/或范围裁决）⇒目标置 **blocked**。
+
+---
+
+## §续-276（2026-10-03·新会话接手指解锁条件 3（范围裁决）：目标③ aarch64 构建面 0→**18/18**——picolibc 免 root vendor + 桥层归一 sys-bridge.c + 两脚本 aarch64 分片；riscv 18/18 重链回归全绿）
+
+> 背景：上一会话把 (A) 定性为 fork 路径竞态并置 blocked，接续 PROMPT §四给出三条解锁条件，其中条件 3（范围裁决：接受 (A) 为已登记 open 缺陷，转推不依赖 riscv 的目标③ aarch64 上机段）无需任何新工具，可立即执行；用户指令明确要求遇阻时选可推进路线持续推进 ⇒ 本会话走路线 3。(A) 保持 open，不投机改生产码。
+
+### 分析过程（选型对比，code-excellence）
+1. **工具链现状盘点**：本机已有 `aarch64-linux-gnu-gcc-13`（发行版交叉 glibc 腿），缺 freestanding libc；`apt-cache search picolibc` 发现 **`picolibc-aarch64-linux-gnu`（Ubuntu noble universe，1.8.6-2，与已用的 riscv picolibc 同版本同布局）** ⇒ 与 riscv 腿严格同构，优于自写 mini-libc（工作量/风险均高）或混用 glibc 静态启动（glibc crt 需 Linux 式 syscall，我方内核不提供，必死）。
+2. **sudo 不可用**（无人值守无密码）⇒ 免 root 安装路径：`apt-get download`（不改变系统状态）+ `dpkg -x` 解到 `tools/vendor/`（gitignore，可再生）。
+3. **specs 对接坑（实测发现）**：deb 内 picolibc.specs 硬编码 `/usr/lib/picolibc/aarch64-linux-gnu`；picolibc 定制驱动选项 `-picolibc-prefix=` 在 vanilla `aarch64-linux-gnu-gcc` 上**报 unrecognized**（那是 picolibc 自家 gcc 驱动的补丁选项，非 specs 通用语法）⇒ 改为 sed 本地化 specs（把绝对路径改写为实际来源目录），两条来源（系统包已装/ vendor）统一产出可直接 `--specs=<abs>` 的文件。
+4. **stdio 符号坑（实测发现）**：裸链 picolibc `printf` 报 `undefined reference to 'stdout'`——aarch64 腿默认 crt0 不带 iob；`libsemihost.a` 的 `iob.c.o` 定义 stdout/stderr/stdin（与 riscv 腿同一机制）⇒ 纳入 `--start-group`。
+5. **libc 一致性裁决（重要防坑）**：`build-libatf-c.sh` 旧 aarch64 分支用 glibc 原生头编译库对象；若测试腿换 picolibc 而库腿仍 glibc，**FILE 结构布局/stdio 符号语义（__stderrp vs stderr）不匹配会链接期炸或运行期静默错**⇒ aarch64 分支改同用 picolibc + compat 注入（picolibc 缺 <sys/uio.h> 等，与 riscv 同处置）。
+6. **桥层归一（防漂移）**：aarch64 桥与 riscv 桥真差异只有 `kcall()` 的内联汇编（`ecall` a7=0/a0=msg ↔ `svc #0` x8=0/x0=msg，权威对位 `os/libs/minix-sys/src/arch_trap.rs` 两 cfg 腿），其余 _write/_exit/_sbrk/占位全同。拷贝第二份（sys-aarch64.c）= 未来修一处忘一处的温床 ⇒ `git mv sys-riscv.c sys-bridge.c` 用 `#if defined(__riscv)/#elif defined(__aarch64__)/#else #error` 分旋；`posix-stubs-riscv.c` 本就纯 C 零汇编 ⇒ `git mv` 为 `posix-stubs.c` 直接共享。_exit 死循环里的 `wfi` 移除（U 态 wfi 在 riscv 可 trap，忙等更中性；此行为差异对两腿均未被测试依赖，诚实记录）。
+
+### 实施（全部在 tools/ + .gitignore，零 os/ 生产码）
+- 新 `tools/vendor-atf-toolchain.sh`：幂等免 root；输出两行（picolibc 基目录 + 本地化 specs 路径）供上游脚本消费。
+- `tools/atf-c-compat/sys-bridge.c`（git mv + 泛化）、`posix-stubs.c`（git mv + 注释改跨架构中性表述）
+- `tools/build-libatf-c.sh`：aarch64 分支改 picolibc（vendor specs + COMPAT 注入）。
+- `tools/build-atf-test.sh`：首片仅 riscv → 双 arch（CC/MC/SYS/SEMIHOST 分支；readelf 随 `${CC%-gcc}-readelf` 泛化；sys-riscv.o→sys-bridge.o）。
+- `.gitignore`：+`tools/vendor/`。
+
+### 验证（命令即证据）
+- `bash tools/build-libatf-c.sh aarch64` → 17 成员 libatf-c.a（picolibc 腿，191578B）rc0。
+- **aarch64 18/18**：逐案 `tools/build-atf-test.sh <t.c> aarch64` 全部 ✅ ET_EXEC（首案 t_memchr 424088B，entry 0x40000000，过 minix-elf parse_ehdr 硬校验同款 grep）。
+- **riscv 18/18 重链回归**：桥文件改名/泛化后全量重链 **18 ok / 0 fail**（证明归一未碎已验证腿）。
+- 回归底线：host 4 包集 **1402 passed / 0 failed** rc0；`check-layout.sh all` **PASS**（本步零 os/ 变更，预期性绿）。
+
+### 遗留与下一步（上机段，续-277+）
+- **stdout 上机陷阱（已在 banner 登记）**：链接期 stdio 流取自 libsemihost 的 iob.c.o（semihost hooks 用 `brk #0x18`，在我方内核 EL0 必 trap）；上机前须自定义 iob/覆盖 `__stdio_*` hooks 接我方 `_write`（SYS_DIAGCTL），或验证 tinystdio 是否回退到 `_write` sysstub。
+- ELF 入 imgrd `/tests` + rc exec + 串口判 ATF PASS（复用 test-cmd-smoke-aarch64.sh 骨架）；atf 输出口径：`atf_check` 框架在单测模式下经 stdout。
+- 目标③状态刷新：**构建面双 arch 各 18/18**（riscv 旧达 + aarch64 本达）；上机面 riscv 受 (A)、aarch64 待本会话后续推进。
+- 纪律：本步含构建脚本/桥文件代码改动，已单独 commit + CodeReview（explicit_target）+ 本 WORKLOG；无 os/ tracked 变更。
 
 
 

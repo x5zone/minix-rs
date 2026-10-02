@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # build-atf-test.sh — NK4-C 目标③：把一个 minix3 atf-c 测试交叉编译+链接成
-# **静态可加载 ELF**（riscv64）。③"上机跑通"的构建/链接前置；产出的 ELF 满足
-# 我方 minix-elf 加载器的 ehdr 硬校验（ELF64 + LSB + ET_EXEC，machine 不校，
-# 见 06/os/libs/minix-elf parse_ehdr）。
+# **静态可加载 ELF**（riscv64 / aarch64）。③"上机跑通"的构建/链接前置；产出的
+# ELF 满足我方 minix-elf 加载器的 ehdr 硬校验（ELF64 + LSB + ET_EXEC，machine
+# 不校，见 06/os/libs/minix-elf parse_ehdr）。
+#
+# 两腿同构（均 picolibc + sys-bridge.c + posix-stubs.c 同源共享）：
+#   riscv64 ：riscv64-unknown-elf-gcc + 系统 picolibc（--specs=picolibc.specs）
+#   aarch64 ：aarch64-linux-gnu-gcc + picolibc-aarch64-linux-gnu（免 root，由
+#             tools/vendor-atf-toolchain.sh 自动取包/本地化 specs）
 #
 # 依赖：tools/build-libatf-c.sh 已产出 os/target/atf/<arch>/libatf-c.a；
-#       tools/atf-c-compat/{sys-riscv.c, posix-stubs-riscv.c, err.h, sys/*.h}。
+#       tools/atf-c-compat/{sys-bridge.c, posix-stubs.c, err.h, sys/*.h}。
 # 诚实边界（WIP，见 WORKLOG §续-230）：链成 ELF ≠ 上机跑通。真跑还需把
 #   fork/waitpid/exec/open/read/write 接我方 SYS_*/VFS 桥 + 测试入 imgrd、rc exec。
 #
@@ -31,7 +36,11 @@ PICO=/usr/lib/picolibc/riscv64-unknown-elf
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; MC=(-mcmodel=medany)
              SYS=(--specs=picolibc.specs); SEMIHOST=("$PICO/lib/libsemihost.a") ;;
-    *) echo "本脚本首片仅支持 riscv64（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
+    aarch64) CC="aarch64-linux-gnu-gcc"; MC=()
+             # picolibc 来自 apt 包或 vendor（免 root）；vendor 脚本输出基目录+本地化 specs
+             { read -r PICOA && read -r SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64)
+             SYS=(--specs="$SPECS"); SEMIHOST=("$PICOA/lib/libsemihost.a") ;;
+    *) echo "本脚本支持 riscv64 | aarch64（真跑另需 fork/exec/VFS 桥）" >&2; exit 2 ;;
 esac
 command -v "$CC" >/dev/null || { echo "缺编译器：$CC（目标③ 前置，请先装交叉工具链）" >&2; exit 2; }
 [ -f "${SEMIHOST[0]}" ] || { echo "缺 ${SEMIHOST[0]}（picolibc 安装前缀随发行版不同）" >&2; exit 2; }
@@ -57,8 +66,8 @@ name="$(basename "$TEST" .c)"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" \
     -I"$SRC" -I"$BUILD" -I"$COMPAT" -include "$COMPAT/errno-compat.h" "${EXTRA_INC[@]}" "${CFGS[@]}" \
     "$TEST" -o "$BUILD/$name.o"
-"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-riscv.c" -o "$BUILD/sys-riscv.o"
-"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs-riscv.c" -o "$BUILD/posix-stubs.o"
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-bridge.c" -o "$BUILD/sys-bridge.o"
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs.c" -o "$BUILD/posix-stubs.o"
 # BSD <md5.h> 摘要实现（picolibc 不提供），供 t_memcpy 等测试链入（仅构建/测试用）。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/md5.c" -o "$BUILD/md5.o"
 # BSD Boyer-Moore <bm.h>（bm_comp/exec/free，picolibc 不提供），供 t_bm 链入。
@@ -67,12 +76,12 @@ name="$(basename "$TEST" .c)"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/errno-compat.c" -o "$BUILD/errno-compat.o"
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "$BUILD/sys-riscv.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "$BUILD/sys-bridge.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。
-RE="$(riscv64-unknown-elf-readelf -h "$BUILD/$name")"
+RE="$("${CC%-gcc}-readelf" -h "$BUILD/$name")"
 echo "$RE" | grep -q 'Class:.*ELF64'   || { echo "非 ELF64" >&2; exit 1; }
 echo "$RE" | grep -qi 'little endian'   || { echo "非 LSB" >&2; exit 1; }
 echo "$RE" | grep -q 'Type:.*EXEC'     || { echo "非 ET_EXEC" >&2; exit 1; }
-echo "✅ $BUILD/$name：静态 ET_EXEC riscv64 ELF，过 minix-elf ehdr 硬校验（$(stat -c%s "$BUILD/$name")B）"
+echo "✅ $BUILD/$name：静态 ET_EXEC $ARCH ELF，过 minix-elf ehdr 硬校验（$(stat -c%s "$BUILD/$name")B）"

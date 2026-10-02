@@ -20,8 +20,11 @@
 #     正常由 atf 的 configure 注入；这里以 -D 提供占位值（构建期不影响测试语义）。
 #
 # 用法：tools/build-libatf-c.sh [arch]   # arch=riscv64（默认）| aarch64 | x86_64
-# 依赖：riscv64-unknown-elf-gcc + picolibc（riscv64）；aarch64 用 aarch64-linux-gnu-gcc
-#       （glibc 自带 uio/err）；x86_64 用 host gcc（libc 自带 uio/err）。
+# 依赖：riscv64 用 riscv64-unknown-elf-gcc + 系统 picolibc；aarch64 用
+#       aarch64-linux-gnu-gcc + picolibc-aarch64-linux-gnu（由
+#       tools/vendor-atf-toolchain.sh 免 root 取包/本地化 specs，与 build-atf-test.sh
+#       同 libc——混用 glibc 会致 FILE 布局/stdio 符号语义不匹配）；
+#       x86_64 用 host gcc（glibc 原生）。
 # 注：目标③ 上机首选 aarch64（目标① aarch64 已 ✅、可 boot+exec；riscv 上机受 (A) 门控）。
 set -euo pipefail
 
@@ -37,7 +40,9 @@ case "$ARCH" in
              SYSROOT_FLAGS=(--specs=picolibc.specs); COMPAT_INC=(-I"$COMPAT"); \
              MCFLAGS=(-mcmodel=medany) ;;   # riscv medlow 默认 ±2GiB 假设→高地址链接重定位截断，需 medany
     aarch64) CC="aarch64-linux-gnu-gcc"; AR="aarch64-linux-gnu-ar"; \
-             SYSROOT_FLAGS=(); COMPAT_INC=(); MCFLAGS=() ;;   # glibc 自带 <err.h>/<sys/uio.h>，不注入 compat
+             { read -r _PICOA && read -r _SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64); \
+             SYSROOT_FLAGS=(--specs="$_SPECS"); COMPAT_INC=(-I"$COMPAT"); MCFLAGS=() ;;
+             # picolibc 同 riscv：缺 <sys/uio.h> 等用 compat 注入；与测试腿同 libc 同源
     x86_64)  CC="cc"; AR="ar"; SYSROOT_FLAGS=(); \
              COMPAT_INC=(); MCFLAGS=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
     *) echo "未知 arch：$ARCH（支持 riscv64 | aarch64 | x86_64）" >&2; exit 2 ;;

@@ -1,13 +1,14 @@
-/* NK4-C 目标③：picolibc 未提供的 BSD/POSIX 函数补全，使真实 minix3 atf 测试
- * (libatf-c + 用例) 能**完整链接**成静态 riscv64 ELF（③ 的"可加载二进制"里程碑）。
+/* NK4-C 目标③：picolibc 未提供的 BSD/POSIX 函数补全（跨架构共享，纯 C 无 trap
+ * 指令），使真实 minix3 atf 测试 (libatf-c + 用例) 能**完整链接**成静态 ELF
+ * （③ 的"可加载二进制"里程碑；riscv64/aarch64 两腿同源）。
  *
  * 诚实边界（WIP）：
  *   - writev / err / warnx：真实现（writev→_write 循环；err/warnx→vsnprintf+console）。
  *   - fork / waitpid / exec / access / lstat / dup2 / fchmod / umask / rmdir /
  *     mkdtemp / getcwd：先给最小占位够链。**真正上机跑**需把这些接到我方
  *     VFS(open/read/write/getdents) + 进程(SYS_FORK/SYS_WAITPID/exec) 桥——那是 ③
- *     后续大块（且 riscv 上机受 (A) 门控）。此处只解"链接"，不谎称"可跑"。
- * 仅 ③ 构建期用；不参与 minix-rs 生产镜像 / 三架构 marker。 */
+ *     后续大块（riscv 上机受 (A) 门控；aarch64 上机腿见 build-atf-test.sh）。
+ * 此处只解"链接"，不谎称"可跑"。仅 ③ 构建期用；不参与生产镜像/三架构 marker。 */
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <errno.h>
@@ -18,7 +19,7 @@
 #ifndef _UIO_VEC_
 struct iovec { void *iov_base; size_t iov_len; };
 #endif
-extern int _write(int fd, const void *buf, size_t len);   /* 与 sys-riscv.c 定义同签名，避免跨 TU ODR 不一致 */
+extern int _write(int fd, const void *buf, size_t len);   /* 与 sys-bridge.c 定义同签名，避免跨 TU ODR 不一致 */
 
 ssize_t writev(int fd, const struct iovec *iov, int cnt) {
     ssize_t tot = 0;

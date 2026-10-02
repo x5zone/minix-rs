@@ -92,3 +92,6 @@ check_references.sh
 /examples/
 # docker CARGO_HOME 挂载目录（vendored crates.io 依赖源码，d6f176451 误提交，R3 评审待办 1）
 os/.dockercargo/
+
+# 目标③ aarch64 picolibc 免 root vendor 解包位（tools/vendor-atf-toolchain.sh 产物，可再生）
+tools/vendor/

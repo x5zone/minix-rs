@@ -1,7 +1,8 @@
-/* NK4-C 目标③：riscv64 C 测试的 syscall 桥——把 picolibc 的 sysstub
+/* NK4-C 目标③：C 测试的 syscall 桥（跨架构单一实现）——把 picolibc 的 sysstub
  * (_write/_exit/_sbrk/_read/_close/_lseek/_fstat/_isatty/_getpid) 映射到我方
- * kernel_call ABI（`ecall` a7=KERNEL_CALL_TRAP_NR=0, a0=&Message, 回码在 a0），
- * 对位 os/libs/minix-sys/src/arch_trap.rs 的 riscv64 kernel_call_trap。
+ * kernel_call ABI，对位 os/libs/minix-sys/src/arch_trap.rs（单一真源）：
+ *   riscv64 ：`ecall` a7=KERNEL_CALL_TRAP_NR(0), a0=&Message, 回码在 a0
+ *   aarch64 ：`svc #0` x8=KERNEL_CALL_TRAP_NR(0), x0=&Message, 回码在 x0
  * 仅 ③ 构建/链接用；不参与 minix-rs 生产镜像。
  * Message 布局（minix-types ipc/message.rs）：m_source i32@0, m_type i32@4, m_u@8。
  * 常量（ipc/kernel_call.rs）：SYS_DIAGCTL=0x62c, SYS_EXIT=0x635, DIAGCTL_CODE_DIAG=1。 */
@@ -25,14 +26,25 @@ struct kmsg {
     long long slots[7]; /* m_u：[0]=code(i32@8),[1]=buf@16,[2]=len@24 */
 };
 
-/* 一次 kernel_call：a0=&msg, a7=KERNEL_CALL_TRAP_NR(0), ecall；结果读回 a0（errno）。
- * 对位 os/libs/minix-sys/src/arch_trap.rs riscv64 kernel_call_trap。 */
+/* 一次 kernel_call：寄存器对位 arch_trap.rs 的 kernel_call_trap（两架构同形：
+ * 消息指针=第一入参寄存器，调用号=syscall-number 寄存器，回码=第一返回寄存器）。 */
+#if defined(__riscv)
 static long kcall(struct kmsg *m) {
     register long a0 __asm__("a0") = (long)m;
     register long a7 __asm__("a7") = KERNEL_CALL_TRAP_NR;
     __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a7) : "memory", "a1","a2","a3","a4","a5");
     return a0;
 }
+#elif defined(__aarch64__)
+static long kcall(struct kmsg *m) {
+    register long x0 __asm__("x0") = (long)m;
+    register long x8 __asm__("x8") = KERNEL_CALL_TRAP_NR;
+    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8) : "memory", "x1","x2","x3","x4","x5");
+    return x0;
+}
+#else
+#error "sys-bridge.c: 未支持的架构（需与 os/libs/minix-sys/src/arch_trap.rs 的 kernel_call_trap 同形）"
+#endif
 
 /* DIAGBUFSIZE=128：内核 dispatch_diagctl(code=1) 硬拒 len>128，故分块循环。 */
 int _write(int fd, const void *buf, size_t_local len) {
@@ -57,7 +69,7 @@ void _exit(int code) {
     m.m_type = SYS_EXIT;
     m.slots[0] = code;
     kcall(&m);
-    for (;;) { __asm__ __volatile__("wfi"); }
+    for (;;) { /* SYS_EXIT 正常不返回；防内核拒收时落到非法指令 */ }
 }
 
 /* 静态 bump 堆（供 malloc；上机时由我方 VM 供页）。 */
