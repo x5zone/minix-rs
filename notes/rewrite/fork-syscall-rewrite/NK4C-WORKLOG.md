@@ -11593,6 +11593,29 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 目标③**构建/链接面已 18/18 可链成 ELF**（含 md5/bm/errno 三个 BSD 兼容件）；但③的“上机跑通”仍受 (A) 门控（riscv）/缺 aarch64 freestanding C 工具链。本改动仅 tools/ 下，零 os/ 生产码变更（host 4 包集不受影响）。三目标未全成（①riscv marker/②riscv 命令面/③上机均受 (A)），goal active。
 
+---
+
+## §续-272（2026-10-03·(A) fork 路径代码级 happens-before 审计：minix-rs fork.rs 与 C fork.c 逐步同序⇒VM 事件循环排序不是 race 源（排除“重排 msg 预页”伪修））
+
+> 承 §续-270 “定 race 需不改启动速度的手段”——本轮做代码级对账（零 boot、零工具依赖）。Ground Truth：`minix3/minix/servers/vm/fork.c`。
+
+### 逐步对账（C fork.c ↔ minix-rs fork.rs）
+| 阶段 | C fork.c | minix-rs fork.rs | 同序? |
+| --- | --- | --- | --- |
+| 建子页表内容 | `map_proc_copy(vmc,vmp)` @76（**sys_fork 前**） | `write_page_table_mappings(child)` @319（**sys_fork 前**） | ✓ |
+| 父页降写(CoW) | 含在 map_proc_copy | `protect_cow_pages(parent)` @340 | ✓ |
+| 提交子 + 停子 | `sys_fork(...,PFF_VMINHIBIT)` @89 | `sys_fork(...,PFF_VMINHIBIT)` @381 | ✓ |
+| 绑根 + 清 inhibit | `pt_bind(&vmc->vm_pt)` @94 | `sys_vmctl_set_addrspace(root)` @408 | ✓ |
+| 预页 msg 缓 | `handle_memory_once` child→parent @100-108（**pt_bind 后**） | 同序 @428+（**setaddrspace 后**） | ✓ |
+
+### 定案（负结果，计级递阶梯一级）
+- **“msg 预页在清 inhibit 之后”不是偏离**——C 也是 pt_bind(清 inhibit) 后才 handle_memory_once，且 C 能跑⇒该窗口在协作调度/持 CPU 下良性。⇒**排除“把 msg 预页提到 setaddrspace 前”这类伪修**。
+- **⇒ 若 (A) 确为 fork 路径 race，其偏离不在 VM fork 处理器的步骤顺序**（与 C 逐字同序），而在【内核侧 sys_fork/complete_fork_setup/VMINHIBIT 清除→重调度语义】或【共享页表帧分配器 × 并发】——即 minix-rs(SMP+BKL, riscv) 相对 C 结构不同的层。§串口崩前 `setaddr nr=0xc` 与 `ptalloc-reuse-DATA` 洪水与此指向一致。
+- 进一步定该层 race + 验证修（§7 要求≥3 轮独立复现“指纹不再现”）在本预算与“插件拖慢→race 消失”的不确定复现下不可达⇒**(A) 根因仍 open（工具链/预算），不投机改生产码**（与计划 rejected-alternatives “提前改 reclaim/共享分配器=空修”一致）。
+
+### 纪律
+- 零改码（本轮纯阅读审计 + 记负结果）；os/ 无 tracked 变更。又排一条伪修路（VM fork 排序）。三目标未全成，goal active。
+
 
 
 
