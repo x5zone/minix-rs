@@ -10677,3 +10677,10 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 2. **页表页生命周期**：某父 PTE 指向的子表页被 VM `pt_free`/reclaim 提前回收清零仍被引用（读得 0 或垃圾）——与 `ptalloc-reuse` 检测器同域（但先前判其噪声；此判别下需重验特定帧是否真被双发）。
 - 下一步（专门会话）：gdb `hbreak *0x3abec` 命中后 **stepi 回溯前若干条**，看装填坏 table 基址那条 `ld` 的源地址 → 读该源在快照的真实值，即可区分「寄存器算错」vs「读自清零帧」。tmp/ram70.bin 保留供下用。
 - 本轮无生产码变更（判别读码+快照分析）；tracked 净；goal active。
+
+## §续-209（2026-10-02·**(A) 定论：-S 活体 step-back 确证为 VM DM 窗覆盖洞（推翻 §208 算术说），锁定修复点**）
+`gdb hbreak *0x3abec` + 活寄存器 + 反汇编（`x/16i 0x3abbc`）定论：
+- 现场 `a6=0x82ce4000`（**合法** bump 池页表页 PA，在 RAM 内）、`a5=1<<36=VM_DM_BASE`（`li a5,1; slli a5,0x24`）、`a1=a6|a5=0x1082ce4000`（**in-window** DM VA）。`ld` 该 DM VA → 缺页。
+- ⇒ 故障地址是**合法表页的正确单 DM 平移**，非伪 PA。缺页真因 = **VM 自身 satp 的 DM 窗对这张"运行期新分配的页表页"没有 leaf**（§207 实测：VM 根 l2e i2=0x42 在，但对应 L1e V=0）。**确证 = DM 窗覆盖洞**（`dm_coverage.rs` 续-51 自述残留 gap），**推翻 §208 的"寄存器算术/伪 PA"说**（那是常规 boot 无 -S 时崩在另一处 out-of-window 读、Heisenbug 变体；`-S` 下确定性崩在这个 in-window 干净形态）。
+- **修复点锁定**：VM（及经 map_kernel 继承 DM 窗的各进程）的 DM 窗必须连续覆盖到 bump 池/运行期可分配区顶（现 `establish_boot_dm` 仅按启动期候选 memmap∪bootstrap-tree∪module∪reserved 装 leaf 且丢弃重叠 reserved→留 tail 洞；`kernel_dm_pa_end` 是标量上界但**未把整段填成连续 leaf**）。正解=对 `[RAM_LO, ram_top)` 装**连续** DM leaf（内核 VM 窗与 map_kernel 重放都用连续覆盖，弃 disjoint 候选），或至少覆盖整个 bump 池 `[0x82000000, ram_top)`。
+- **风险**：改 paging DM 建立触及三架构，必须 x86(marker=2/panic=0)+aarch64(marker) non-regression + riscv 真机验 marker 三证。属需专注回合的实现+验证工作，不冒进单发合入。证据 tmp/ram70.bin 保留。goal active。
