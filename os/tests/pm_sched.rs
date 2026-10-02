@@ -106,6 +106,15 @@ impl SchedIpc for SchedSide {
         self.bus.0.to_pm.borrow_mut().push_back(*message);
         Ok(())
     }
+
+    // AF-5（回溯审计 2026-10-01）：SchedIpc 新增 sendnb 非阻塞发送后，
+    // mock 未同步致 `cargo build --workspace --all-targets` 编不过（E0046）。
+    // 本链 SCHED 不主动 sendnb；镜像 send 的投递记账（非阻塞仅语义差异）。
+    fn sendnb(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
+        self.bus.0.sched_sent.borrow_mut().push((to, *message));
+        self.bus.0.to_pm.borrow_mut().push_back(*message);
+        Ok(())
+    }
 }
 
 /// SCHED 侧内核缝：按生产 `SysKernelApi` 的同一渲染函数族记账
@@ -184,6 +193,13 @@ impl PmIpc for PmSide<'_> {
 
     fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), IpcTransportError> {
         panic!("E5(e) 链上 PM 只对 SCHED 做 sendrec，无异步发送")
+    }
+
+    // AF-5（回溯审计 2026-10-01）：PmIpc 新增 send_blocking 后 mock 未同步
+    // 致 --workspace 编不过（E0046）。本链 PM 只对 SCHED sendrec，不主动
+    // 阻塞 send（与 send() 同语义）：如被调用即链上不该发生，失败现形。
+    fn send_blocking(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), IpcTransportError> {
+        panic!("E5(e) 链上 PM 只对 SCHED 做 sendrec，无 send_blocking")
     }
 
     fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), IpcTransportError> {
