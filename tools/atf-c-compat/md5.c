@@ -131,10 +131,12 @@ void MD5Init(MD5_CTX *ctx)
 void MD5Update(MD5_CTX *ctx, const unsigned char *input, unsigned int input_len)
 {
 	unsigned int have, need;
+	uint32_t prev;
 
 	have = (unsigned int)((ctx->count[0] >> 3) & 0x3F);
+	prev = ctx->count[0];
 	ctx->count[0] += ((uint32_t)input_len) << 3;
-	if (((uint32_t)(input_len << 3)) < ((uint32_t)input_len)) /* carry into high */
+	if (ctx->count[0] < prev) /* 低 32 位 bit 计数溢出→进位到高 32 位 */
 		ctx->count[1]++;
 	ctx->count[1] += ((uint32_t)input_len >> 29);
 
