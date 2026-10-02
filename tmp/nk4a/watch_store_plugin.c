@@ -29,24 +29,45 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 #define MAX_TARGETS 24
 #define DM_LO 0x0000001000000000ULL
 #define DM_HI 0x0000001400000000ULL   /* DM_LO + 16GiB */
+#define RING 4096
 
 static uint64_t g_base[MAX_TARGETS];
 static int      g_n;
 static bool     g_dmwin = true;
-static unsigned long g_ev;
-static const unsigned long EVENT_CAP = 200000;
+static unsigned long g_ev;             /* 累计事件数 */
 
-static void emit(const char *kind, unsigned int cpu, bool store, unsigned sz,
-                 uint64_t vaddr, uint64_t paddr, uint64_t pc)
+/* 环形缓冲：只留最近 RING 条命中（避免逐条 fprintf 的 I/O 洪水与扰动）；
+   崩溃后 harness 杀 qemu → atexit 一次性 flush，拿到崩溃前最后这段写者时间线。*/
+struct ev { uint64_t vaddr, paddr, pc; uint32_t cpu : 8, store : 1, sz : 8, kind : 1; };
+static struct ev g_ring[RING];
+static unsigned  g_head, g_cnt;
+
+static void rec(int kind, unsigned cpu, bool store, unsigned sz,
+                uint64_t vaddr, uint64_t paddr, uint64_t pc)
 {
-    if (g_ev++ >= EVENT_CAP) return;
-    char buf[256];
-    snprintf(buf, sizeof buf,
-        "PLG %s ev=%lu vcpu=%u %s sz=%u vaddr=0x%016" PRIx64
-        " paddr=0x%016" PRIx64 " slot=%ld pc=0x%08" PRIx64 "\n",
-        kind, g_ev, cpu, store ? "W" : "R", sz, vaddr, paddr,
-        (long)((paddr >> 3) & 511), pc);
-    fprintf(stderr, "%s", buf);
+    struct ev *e = &g_ring[g_head];
+    e->vaddr = vaddr; e->paddr = paddr; e->pc = pc;
+    e->cpu = cpu; e->store = store ? 1 : 0; e->sz = sz; e->kind = kind;
+    g_head = (g_head + 1) % RING;
+    if (g_cnt < RING) g_cnt++;
+    g_ev++;
+}
+
+static void flush_cb(qemu_plugin_id_t id, void *ud)
+{
+    (void)id; (void)ud;
+    fprintf(stderr,
+        "\nwatch_store_plugin: FLUSH total_dmwin_stores_seen=%lu, last %u:\n",
+        g_ev, g_cnt);
+    unsigned start = (g_cnt < RING) ? 0 : g_head;   /* 最旧一条 */
+    for (unsigned i = 0; i < g_cnt; i++) {
+        struct ev *e = &g_ring[(start + i) % RING];
+        fprintf(stderr, "PLG %s vcpu=%u %s sz=%u vaddr=0x%016"
+            PRIx64 " paddr=0x%016" PRIx64 " slot=%ld pc=0x%08"
+            PRIx64 "\n",
+            e->kind ? "DMWIN" : "FRAME", e->cpu, e->store ? "W" : "R", e->sz,
+            e->vaddr, e->paddr, (long)((e->paddr >> 3) & 511), e->pc);
+    }
     fflush(stderr);
 }
 
@@ -68,15 +89,12 @@ static void vcpu_mem(unsigned int cpu, qemu_plugin_meminfo_t info,
     if (!hw || qemu_plugin_hwaddr_is_io(hw)) return;
     uint64_t pa = qemu_plugin_hwaddr_phys_addr(hw);
 
-    /* 次过滤：显式帧（按物理地址）——精确，读+写都记。 */
-    int fi = in_target_frame(pa);
-    if (fi >= 0) {
-        emit("FRAME", cpu, store, sz, vaddr, pa, pc);
+    if (in_target_frame(pa) >= 0) {                 /* 次过滤：显式帧（R+W）*/
+        rec(0, cpu, store, sz, vaddr, pa, pc);
         return;
     }
-    /* 主漏斗：DM 窗内的 8 字节 store = 一枚 PTE 写（不依赖枚举帧）。 */
     if (g_dmwin && store && sz == 8 && vaddr >= DM_LO && vaddr < DM_HI)
-        emit("DMWIN", cpu, store, sz, vaddr, pa, pc);
+        rec(1, cpu, store, sz, vaddr, pa, pc);       /* 主漏斗：DM 窗 8B store */
 }
 
 static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
@@ -119,6 +137,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
         g_base[2]=0x9d2ac000ULL; g_base[3]=0x9d28c000ULL; g_n=4;
     }
     qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
+    qemu_plugin_register_atexit_cb(id, flush_cb, NULL);
 
     fprintf(stderr, "watch_store_plugin: armed dmwin=%s frames=%d [",
             g_dmwin ? "on" : "off", g_n);

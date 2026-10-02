@@ -11336,6 +11336,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 新增 tmp/nk4a/watch_store_plugin.c/.so + riscv_plugin_run.sh（零暂停取证仪，不改 guest 码）；未改 os/ 生产码；host 1400/0。(A) 仍 open；插件已可用、需收窄漏斗去 bitmap_alloc 噪声再定位 PTE 瞬态写者。三目标未全成，goal active。
 
+---
+
+## §续-259（2026-10-03·插件 ring+atexit 改造完成→首份崩溃时刻时间线：栈缺页反复读 root[511]/L0[511]（从未被写）+ 反复写 0x9d2ab000[510]@pc0x3a924⇒“读未写”再坐实非帧被写坏）
+
+> 承 §续-258。逐条 fprintf 会灌满 cap+扰时序；改**内存环形缓冲(最近4096)+qemu_plugin_register_atexit_cb 崩溃后 flush 一次**。修 sz 显示 bug（存字节数却再 1<<→显示256）。重编译 rc=0、冒烟 armed+FLUSH 正常。
+
+### gh109 崩溃尾时间线（(A) 复现且插件不阻止，total_dmwin_stores 21.9M、ring 留末 4096）
+- 栈缺页 walk（vaddr 0x7fffffffe000，i2=i1=i0=511）反复 **READ**：子根 `[511]`=物理 0x9dc37ff8（pc 0x3abd2/0x3a89e）→ L1 → L0 `[511]`=物理 0x9d2acff8（pc 0x3abec/0x3a8c4）。
+- **WRITE** 在尾里只有一个：反复写 0x9d2ab000 表的 slot510（物理 0x9d2abff0）@pc 0x3a924（paging.rs map/walk_alloc 区）。
+- **关键：被 READ 的两个槽 0x9dc37ff8/0x9d2acff8 在崩溃尾窗口内从未被写**（grep 无 W 命中）。⇒ 读到 V=1 垃圾但无人写这一格⇒与 T1/T2（子根/L1/L0 halt 全净）**一致**：不是页表帧被写坏，而是 **walk 在“读一个从未写入/不该存在的中间项”**，即 root/vaddr/表链配对问题（sync_slot_pte 递的 vaddr+root 与实际建立的表不一致）。
+
+### 下一步
+- 把 pc 0x3a924（写 0x9d2ab000[510]）/0x3abd2/0x3abec（读 [511]）对回 paging.rs 具体行（walk_alloc :427 / map leaf / walk_read :326），确认这张 L0=0x9d2ac000、表 0x9d2ab000 是不是同一 walk 链、slot510 写了什么值（需 guest 台账补值，插件拿不到写值）。
+- T2 主线：sync_slot_pte 递给 query 的 (vaddr, root) 与该 root 实际已建的中间表是否自洽——“读未写”强烈指向这一对不匹配，非内存被踩。
+
+### 纪律
+- 插件仍 tmp/nk4a 取证仪（不改 guest/os 生产码）；gh109 端口无冲突已清；host 1400/0。(A) 仍 open，“帧被写坏”基本排除，转“walk 读未写项/root-vaddr 配对”。三目标未全成，goal active。
+
 
 
 
