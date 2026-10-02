@@ -65,3 +65,22 @@ char *getcwd(char *buf, size_t sz) {
     return buf;
 }
 char *mkdtemp(char *tmpl) { errno = ENOSYS; (void)tmpl; return NULL; }
+
+/* --- 目标③：minix3 string 测试用到的 picolibc/编译器未提供的函数（够链，
+ *    部分为上机后续真实现：dl* 真需 dlopen→我方不支持返回 NULL）。 --- */
+#include <dlfcn.h>
+void *dlopen(const char *f, int t){ (void)f;(void)t; return (void*)0; }
+void *dlsym(void *h, const char *n){ (void)h;(void)n; return (void*)0; }
+int dlclose(void *h){ (void)h; return -1; }
+char *dlerror(void){ return (char *)"dlopen unsupported"; }
+
+int popcountll(long long x){ return __builtin_popcountll((unsigned long long)x); }
+int popcount(unsigned x){ return __builtin_popcount(x); }
+
+/* BSD stresep（picolibc 无）。真原型 char *stresep(char**, const char*, int esc)。
+ * 够链占位（返回 NULL）；真语义上机再补。签名必须对齐否则调用侧按 implicit-int
+ * 截返回指针→高位丢失现野地址。__arraycount 不在此（它是 NetBSD 编译期宏，
+ * 由 build-atf-test.sh 的 -D 提供，若做函数存根会致测试循环零覆盖假绿）。 */
+char *stresep(char **stringp, const char *delim, int esc){
+    (void)stringp; (void)delim; (void)esc; return (char *)0;
+}

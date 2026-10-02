@@ -43,7 +43,8 @@ CFGS=(-D__minix -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
       '-DATF_BUILD_CC="cc"' '-DATF_BUILD_CFLAGS=""' '-DATF_BUILD_CPP="cpp"'
       '-DATF_BUILD_CPPFLAGS=""' '-DATF_BUILD_CXX="c++"' '-DATF_BUILD_CXXFLAGS=""'
       '-DATF_INCLUDEDIR="/usr/include/atf"' '-DATF_LIBEXECDIR="/usr/libexec/atf"'
-      '-DATF_PKGDATADIR="/usr/share/atf"' '-DATF_SHELL="/bin/sh"' '-DATF_WORKDIR="/tmp"')
+      '-DATF_PKGDATADIR="/usr/share/atf"' '-DATF_SHELL="/bin/sh"' '-DATF_WORKDIR="/tmp"'
+      '-D__arraycount(__x)=(sizeof(__x)/sizeof((__x)[0]))')
 
 mkdir -p "$BUILD"
 # 渲染 atf-c/defs.h（测试经 <atf-c/defs.h> 包含，与 build-libatf-c.sh 同源）。
