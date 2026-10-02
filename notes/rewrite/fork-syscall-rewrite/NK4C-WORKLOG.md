@@ -10365,3 +10365,7 @@ RS process_table.rs:138 越界（len 64 index 64）：endpoint→slot 转换 off
 ## §1.120续-177（2026-10-02·**RS 越界 panic 矛盾深化：len-探针不可装（RS crate 无 bootmark/console 依赖，已回退）；重读现场=「index 64」更可能是 endpoint.slot()=64 的越界索引（如 pub_wire[ep.slot()] 族）被行归属到 138（release 内联 attribution），而非 enumerate 越界（slots 恒 64 无增长）；续-178=①grep RS 全仓 `pub_wire[` 与 `[ep.slot()]`/`[slot()]` 索引点 ②对 endpoint slot()=64 的来源（0x8040 族端点/系统端点未掩 NR_SYS_PROCS）成修（bound-check+Errno 或掩位）**）
 
 事实链：sync_pub_wire 的 enumerate i<64 恒真（slots 恒 64 无增长），不可能产生 index 64；panic 行 138=当前源的 pub_wire[i] 写——矛盾指向 release 内联的行归属偏移：真正的越界索引在别处（被内联进 sync_pub_wire 或同 PANIC 报告流），index=64=某 endpoint 的 slot 位=64（0x8040 族/系统端点）未掩 NR_SYS_PROCS(64)。续-178：全仓 `[.slot()]` 索引审计+bound 修复。
+
+## §1.120续-178（2026-10-02·**RS 越界根因候选二：boot.rs step1_set_attrs 以 priv_table 行号直接 `SlotId::new(slot_nr)` activate（boot.rs:1045 附近）——若 boot image priv 表行数 ≥65，SlotId 64 流入 slots[64]；但 activate 路径 expect 会先炸「activate」非 index-oob——与 138 panic 仍有一环未扣；续-179=①print priv_table 行数+slots.len 探针（RS 无 console→走 panic-msg 通道或 sys_diagctl）②by_endpoint[endpoint.slot()]=412 只守 ≥0 不守 <NR_PROCS(256) 的上界一并修**）
+
+剩余未扣环：sync_pub_wire panic（138, index 64）要求 slots≥65，但 activate 链应先炸——除非 activate_boot_slot 用 get_mut().ok_or 静默跳过 slot 64 而后续 sync 仍 iter 全部（slots 仍 64 恒定……静态不可能）。下一轮实证：RS 侧 diagctl 打 slots.len。
