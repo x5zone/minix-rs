@@ -10650,3 +10650,7 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 - 注：本轮值（0x1082ce…，in-window）≠ gh64/66 值（0x409d…，out-window）——AF-8 改码致布局漂移改变崩溃点（Heisenbug）；两者皆"读 DM 缺页"，但 in-window 那次直接说明**窗内某 PA 未被映进 DM**（覆盖 bug），比 out-window 更有指向性。
 - (A) 仍**未坐实到最终成因**（需再看 VM DM 窗如何建、为何漏该页）；未成修不落地。gdb 活体 trace 手法已验证可用（`tmp/atr.sh`），下轮续：在 0x3ac1a 命中后读 `$pc` 附近 CSR satp + 检查 `0x1082ce3148` 是否在 VM 页表 DM 窗内已映射（gdb `x` 走查 VM root 对 0x10_82ce3xxx 的映射），定位漏映点。
 - goal 保持 active；无生产码变更（仅 gitignored scratch harness + 本 doc）。
+
+### 续-205b (A) 高置信根因假设（由活体 trace 定位到 dm_coverage/vm_handoff）
+`kernel/src/dm_coverage.rs` + `vm_handoff.rs`（map_kernel 从 `kern_dm_pages` 把 DM 窗**重放进每个进程页表**）。活体 trace 见 VM 读的表页 PA=0x82ce3000（bump 池、VM 运行期自分配），其 DM VA in-window 却缺页 ⇒ **假设：VM 继承的 DM 窗只覆盖内核 `kern_dm_pages` 的静态集，不含 VM 启动后动态分配的页表页**，故 VM 走子进程表时该页 DM 未映射→自缺页致命。
+- **验证/成修方向（下一手，未坐实不改）**：让 VM（及所有进程）的 DM 窗覆盖**全 RAM**（或至少整个 bump 池 + 运行期可分配区），而非仅内核静态 `kern_dm_pages`。核对 `vm_handoff.rs` map_kernel 重放逻辑的覆盖上界 vs `free_regions`/RAM_TOP。gdb harness（tmp/atr.sh）已可复用于确认：命中后查 satp 下 `0x10_82ce3000` 的映射存在性。
