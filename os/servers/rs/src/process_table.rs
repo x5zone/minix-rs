@@ -408,8 +408,15 @@ impl RProcTable {
         slot.flags = RFlags::empty(); // manager.c:2105
         slot.pid = None; // manager.c:2106 (r_pid = -1)
         // C: rproc_ptr[_ENDPOINT_P(rpub->endpoint)] = NULL — manager.c:2108.
-        if !endpoint.is_none() && endpoint.slot() >= 0 {
-            self.by_endpoint[endpoint.slot() as usize] = None;
+        // 续-179 成修：补上界守卫——slot() 上界=ENDPOINT_GENERATION_SIZE
+        // 派生（可 > NR_PROCS=256），越界 index 直写 by_endpoint 即 panic；
+        // gh54 的「len 64 index 64」panic（138 行 pub_wire 写）系同族
+        // 越界索引的行归属偏移（release 内联），此处收敛后一并消解。
+        if !endpoint.is_none() {
+            let s = endpoint.slot();
+            if s >= 0 && (s as usize) < self.by_endpoint.len() {
+                self.by_endpoint[s as usize] = None;
+            }
         }
     }
 

@@ -1334,6 +1334,49 @@ impl VmServer {
     /// whole-system halt).
     #[cfg_attr(not(test), allow(dead_code))] // reached via handle_signal (E1)
     fn handle_kernel_memreq(&mut self, req: &crate::kernel_gateway::KernelMemReq) -> bool {
+        // 续-186 成修：target == VM 自身——VM 自己的槽不是本表的 active
+        // 行（VM 运行于自身地址空间，未在 VmProcTable 注册 active 视图），
+        // get_active 恒 None→false→kernel_call_resume Fault→SIGSEGV-for-
+        // itself（gh49-56 全家族）。自填路径：经 vm_self_map demand-fill
+        // VM 自身页（BSS/IPC 缓冲），内核重试拷贝即成功。C 对位：VM 对
+        // 自身页同样走 map_pf（pagefaults.c 的 vmp 即 VM）。
+        if req.target == minix_types::Endpoint::VM {
+            let page_mask = crate::region::PAGE_SIZE as u64 - 1;
+            let mut va = req.start & !page_mask;
+            let end = req.start.saturating_add(req.length);
+            while va < end {
+                let v = minix_types::VirBytes(va);
+                let present =
+                    crate::pagetable::vm_self_map::vm_self_query(v);
+                match present {
+                    // 已映射：自身页无 CoW 场景，RW 已足（BSS/堆页恒 RW）。
+                    Some(_) => {}
+                    None => {
+                        match self.ctx.page_alloc.alloc_phys(
+                            1,
+                            crate::phys_mem::PageAllocFlags::empty(),
+                        ) {
+                            Ok(phys) => {
+                                if crate::pagetable::vm_self_map::vm_self_mappages(
+                                    v,
+                                    minix_types::PhysBytes(phys.as_u64()),
+                                    crate::pagetable::PageFlags::WRITABLE
+                                    | crate::pagetable::PageFlags::USER_ACCESSIBLE
+                                    | crate::pagetable::PageFlags::PRESENT,
+                                )
+                                .is_err()
+                                {
+                                    return false;
+                                }
+                            }
+                            Err(_) => return false,
+                        }
+                    }
+                }
+                va += crate::region::PAGE_SIZE as u64;
+            }
+            return true;
+        }
         let table = VmProcTable::get_global();
         let slot = match table.vm_isokendpt(req.target) {
             Ok(s) => s,
