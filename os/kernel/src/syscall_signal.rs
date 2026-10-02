@@ -178,6 +178,22 @@ pub fn dispatch_kill(
     }
 
     // C: do_kill.c:35 — cause_sig(proc_nr, sig_nr)
+    // 续-191b 取证探针 kill-tag（riscv64）：排除“VM 被外部 SIGSEGV
+    // 杀死”与“IPC-door EFAULT”两种可能——若此处命中且 sig=11
+    // 且 target=VM，则真因为某 server 主动 kill VM；C-61 前不滚。
+    #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+        static KT: AtomicUsize = AtomicUsize::new(0);
+        if KT.fetch_add(1, AtomicOrd::Relaxed) < 32 {
+            C0::write_str("nk4a: kill tgt=0x");
+            C0::write_hex(target_nr.0 as u64);
+            C0::write_str(" sig=0x");
+            C0::write_hex(sig_nr as u64);
+            C0::write_str("\n");
+        }
+    }
     cause_signal(target_nr, sig_nr as u32, proc_table, priv_table);
 
     KcallResult::Ok(OK)

@@ -2269,6 +2269,34 @@ unsafe fn riscv64_ipc_dispatch_body(
         match crate::ipc::KernelUserCopy.copy_msg_from_user(VirBytes(r2)) {
             Ok(m) => msg = m,
             Err(_) => {
+                // 续-191b 取证探针 IPC-door-eault（riscv64·VM 自身
+                // SIGSEGV 产地候选）：kernel_call 腿已有 kc-efault 探针
+                // （syscall.rs:596，gh61 零命中＝排除），但 IPC 陷阱门
+                // （mini_send/receive 经本 riscv64_ipc_dispatch_body）的
+                // copy_msg_from_user 失败腿无探针——续-188 定论“投递
+                // 拷贝 EFAULT→cause_sig(8,11)”但“kc-efault 未盖”本腿，
+                // gh61 又证 resume-Fault 家族全清（零 rvflt/mrr-Fault/sf-*）。
+                // 现场打 caller ep + msg 用户 VA r2 + current_root，一次
+                // 定谳 VM IPC 拷贝为何 EFAULT。C-61 前不滚。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+                    static IPE: AtomicUsize = AtomicUsize::new(0);
+                    if IPE.fetch_add(1, AtomicOrd::Relaxed) < 16 {
+                        let ep = table.get(cur_nr).map_or(0i32, |p| p.p_endpoint.0);
+                        let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
+                        C0::write_str("nk4a: ipcefault nr=0x");
+                        C0::write_hex(cur_nr.0 as u64);
+                        C0::write_str(" ep=0x");
+                        C0::write_hex(ep as u64);
+                        C0::write_str(" r2=0x");
+                        C0::write_hex(r2 as u64);
+                        C0::write_str(" root=0x");
+                        C0::write_hex(root);
+                        C0::write_str("\n");
+                    }
+                }
                 // C system.c:152-155 parity: SIGSEGV + EFAULT, without
                 // entering IPC dispatch.
                 crate::syscall_signal::cause_signal(
