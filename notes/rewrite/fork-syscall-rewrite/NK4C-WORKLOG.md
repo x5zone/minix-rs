@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-242（2026-10-03·硬件写 watchpoint 两形皆不可行（TCG 定谳），软件断点已定位 culprit＝`sync_slot_pte`；下轮转软件断点剖该函数）**，取证链 §续-216~242**：
+> **🛑 最新前沿＝§续-243（2026-10-03·静态排除「缺 zero-on-alloc」（vm_pt_alloc CLICK_SIZE=4096 整帧清零）+ 正证据：崩帧 pfn 0x9dc37 属 reuse-DATA 集 ⇒ (A) 收窄为「回收帧被旧数据持有者 alloc-清零后写回」PT帧UAF/别名；下轮抓 alloc 后那次数据写）**；取证链 §续-216~243**：
 >
 > **（上一前沿＝§续-240，2026-10-02·(A) 靶收敛到唯一 `0x9DC377F8` + 抓写者 harness 就绪）→ 前沿取证链见 §续-216~242**：
 > - **§续-239/240 定级定根+工具就绪**：源码级对账 `paging.rs:307-343` 确定被写坏的是子根 0x800c 的 **L2 中间项**（非叶、非 VM 根——§续-195 已证 VM 根 22 表全净排除备选）⇒ **唯一硬件写 watchpoint 靶 = 物理 `0x9DC377F8`（= 0x9dc37000 + 255×8）**。可直接点火 harness `tmp/nk4a/riscv_watch_9dc377f8.sh [tag]`（已修 `awatch -lm0` 语法→裸 `awatch`）。两个具体封锁点（非“需人工”，是需长会话迭代）：① QEMU riscv system-mode gdbstub 硬件 watchpoint 地址语义（物理 `0x9DC377F8` vs VmDm 虚 `0x19DC377F8`，需形1↔形2 交替试）；② boot 至崩点 ~150-250s + 迭代轮次超单轮预算。下一会话工单见 §续-240。
@@ -11067,6 +11067,28 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **方法论定谳（推翻§续-240/§续-241 「DM 虚形可抓写」预期）**：硬件写 watchpoint 对子根表帧目标槽，无论裸物理 `0x9DC377F8` 还是 VM-DM 虚 `0x19DC377F8`，在本 QEMU 8.2.2 riscv system-mode TCG 上都**不触发且不可读**（gdb 在崩点 U 态现场无法访问该 DM 虚地址，⇒ VM satp 未把子根帧映在该 VA、或 gdb 远程读无法穿过当时 satp）。⇒ **plan 步骤1 的「硬件写 watchpoint 定谳」前提在本工具链上不成立**（命中 plan 风险表行“TCG 不支持”）。**硬件写 watchpoint 路线死路**。而**软件断点路线可靠**（break *0x3abec 稳定命中 3 次 + 符号回栈）。
 - **路线切换（下轮）**：不再追写 watchpoint，改以**软件断点逐层剖 `sync_slot_pte`**：`break` 到 `cow_exec_pf.rs:147 pt.query` 与 `:148-150 remap/map/update_flags` 各腿，拓 (vaddr, 当前 query 结果, 将要写入的 paddr/flags)；重点验——子根 i2=255 区域（vaddr 高位对应）到底从未被合法映射（⇒ 坏值＝陈旧未零帧，根因在 `alloc_pt_page`/`pt_alloc` 缺 zero-on-alloc）还是 remap 腿写了非 PTE 值。同步静态读 `os/servers/vm/src/pt_alloc.rs` 的帧分配是否清零（§续-233/234 方向）。**未坐实不成修**。
 - **纪律**：本会话仍未改生产码；qemu gh92/93/94 均端口锚定已清、tracked 净（仅新增 harness+日志+WORKLOG）；host 1400/0、两 marker 无回归（无代码可 review）。(A) 仍 open；硬件 watchpoint 定谳为工具链不可行、软件断点已定位 culprit 函数。三目标未全成，goal active。
+
+---
+
+## §续-243（2026-10-03·(A) 静态+日志交叉：**排除「缺 zero-on-alloc」** + 正证据锁定「回收帧被旧数据持有者写后污染」（UAF/帧别名））
+
+> §续-242 下轮工单要求静态读 `pt_alloc.rs` 是否 zero-on-alloc；本层用只读源码+gh92f2 串口交叉得定谳性结论。**仍未改生产码**。
+
+### 1. 静态：PT 帧分配腿【确实清零】且清零量正确 → 「缺 zeroing」假说否定
+- VM 向 `minix_arch::pt_alloc::register` 注册的分配器 = `os/servers/vm/src/alloc_page.rs:59 vm_pt_alloc`（`vm_server.rs:276`）。
+- `alloc_pt_page`（`os/arch/src/arch/pt_alloc.rs:119`）仅调注册的 `alloc_fn`；真正分配在 `vm_pt_alloc`：`alloc_pfn_reclaiming` 取 pfn 后，`:130-132` `write_bytes(virt.0, 0, CLICK_SIZE)` 清零。
+- **`CLICK_SIZE = 4096 = PAGE_SIZE`**（`phys_mem/mod.rs:294`、`region/page_state.rs:15`）⇒ 清零覆盖整帧 512 槽，**不存在「部分清零、高槽位留残值」**。⇒ **根因不是「新 PT 帧未清零」**（否则子根 0x9dc37000 整帧刚被写 0，不会读到非零数据字）。
+
+### 2. 正证据：崩帧 pfn `0x9dc37` 属 reuse-DATA 集（数据帧→PT 帧回收）
+- gh92f2 串口 `ptalloc-reuse-DATA pfn=0x9dc37`（共 18080 条 reuse-DATA，该帧在列，另 0x9dc30–0x9dc3e 连续一片均命中）——即子根帧 `0x9dc37000` 在被当作页表分配时，DATA_SEEN 已置位（先前被用作数据）。
+- 与 §续-215 旧结论不冲突：旧结论说 reuse-DATA 因 VM 堆旁路 DATA_SEEN 而**单独不可定谳**；但此处是**交叉证据**：崩溃就在该帧的 0x7f8 偏移（§续-238 off=0xb2c 解码的 slot），而 §1 已证 alloc 时整帧被写 0 ⇒ **能读到非零脏值只能是 alloc-清零之后的另一次写**。
+- 合 §1+§2 ⇒ **根因收窄＝一个仍引用该物理帧的旧数据映射（refcount 漏减/回收后句柄未摘）在 alloc 清零之后写回了 0x9dc377f8**（=§续-234/235 “PT-frame use-after-free/stale-handle”方向，非分配器双发非缺零）。
+
+### 3. 下轮决定性一步（抓 alloc 后的那次数据写）
+- 硬件写 watchpoint 已死（§续-242）；改从**写侧软件断点/断言**：
+  - 方案甲（首选，零 guest 文本扰动需评估）：在 `sync_slot_pte`（`cow_exec_pf.rs:101`）各 PTE 写腿与页缓存/区域数据写腿设**软件条件断点**（命中拓栈）；U 态非热路径可接受。
+  - 方案乙：用现成 PT_SEEN/DATA_SEEN 位图加一条**只在诊断构建开启**的不变量：写一个 DATA 槽前先查该 pfn 是否已被 PT_SEEN占用（=回收后旧引用还在写），命中即坐实写者上下文（与 §5 防御测试沉淀同构）。**未坐实不成修**。
+- **纪律**：本层纯静态读码+已有日志交叉，未改生产码、未新跑 qemu；host 1400/0、两 marker 不变。三目标未全成，goal active。
 
 
 
