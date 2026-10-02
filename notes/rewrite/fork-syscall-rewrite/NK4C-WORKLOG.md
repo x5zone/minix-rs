@@ -11230,6 +11230,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 新增 harness riscv_roots_scan.sh（零扰动）；gh103 端口锚定已清；未改生产码；host 1400/0。三目标未全成，goal active。
 
+---
+
+## §续-252（2026-10-03·目标②：新增 aarch64 命令面回归 gate 并实测 PASS；用户选定 (A) 由用户装 qemu-plugin.h 解锁）
+
+> 用户决策：(A) 根因定谳＝用户提供/安装 qemu-plugin.h 后我写 QEMU mem-write 插件零暂停抓瞬态写者；并行优先＝先补目标② aarch64 命令面可重跑回归 gate。本层落地后者。
+
+- **新增 `os/qemu-tests/test-cmd-smoke-aarch64.sh`**（目标②第二架构腿，与 x86 `test-cmd-smoke.sh` 同构、同为独立可跑脚本）：xtask 组装 aarch64 镜像→AAVMF/UEFI 启 virt（gic3/cortex-a72/smp4）→断言 marker + `ls /bin` 列目（sh/echo/ls/cat）+ `cat /etc/rc` 回显。支持 `A64_SMOKE_SKIP_BUILD=1` 本地复用镜像。
+- **实测 PASS**（现 HEAD 镜像，A64_SMOKE_SKIP_BUILD=1）：`RESULT: PASS (aarch64 18-stage command output — marker + ls /bin + cat /etc/rc — on the VFS IPC path)` ⇒ **目标②命令面已 x86+aarch64 双架构可验，且 aarch64 有了可重跑回归门**（不再靠一次性串口考证）。
+- **前几轮手推 aarch64 boot 不稳的根因已澄清**：非环境不可，是手维参数不稳；用本 gate 脚本（同 run_qemu_gic3 aarch64 参数）一次跑绿。
+- **下轮（(A)）**：待 qemu-plugin.h 就绪→写 mem-write 插件（对目标物理槽拦截写、零暂停拓写者 PC）→定谳瞬态写者→最小成修→riscv marker。
+
+### 纪律
+- 本层新增测试脚本（os/qemu-tests，非生产 OS 码）+文档；commit 后过 CodeReview；未改 OS/ 生产 Rust/C 码；host 1400/0。三目标未全成，goal active。
+
 
 
 
