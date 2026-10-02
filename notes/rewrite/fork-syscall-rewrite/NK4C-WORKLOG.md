@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-266（2026-10-03·侧会话 3 死角逐条对账）**：① **T10 反汇定案**（当前 build query@0x3ab58）——query 每条 `ld` 地址=`基址(DM_BASE+pte_to_paddr, 4KiB对齐)+索引×8`、立即数恒 0⇒**崩地址低 12 位必 8 对齐，不可能 …B2C**；“读法乙子型（query 后调用者加游标）”无对应指令⇒驳；裸启动 `sepc=0x3ac10` 在本 build 是非-load `and`⇒(sepc,stval) 跨 build 归属不可靠。⇒**§续-265 “root 身份错配”（基于把 stval 当 walk 输出算出“故障物理 0x9d28b”）下调为未证，“比对三 root”暂停**；存活读法：(a) 跨 build 算不对、(b) self.root_paddr 字段非对齐（句柄字段 bug 类，非 PTE 槽）。② 内核窗已入插件（c:32-34,88）但早于 §续-261 的负结果勿读成“内核没写”。③ 快照谓词=解码式（不漏末级）但覆盖仅 12 根+已 dump L0、**非全内存**⇒“无耐久脏槽”结论需限宽。
+> **🛑 最新前沿＝§续-267（2026-10-03·同-build 裸启动现场捕获 riscv_fingerprint.sh，连跑两独立 boot）**：**(A) 跨 boot 非确定**——gh114 崩 `sepc==stval==0x3ffffe26e4`（sas-fork 后**取指页故障**，用户地址空间顶附近重缺页循环）；gh115 崩 `sepc=0x3ac1a stval=0x409d28bb20`（query L0 槽读、§3.6 bit38 第二族）。⇒之前盯单枚固定地址（0x9DC377F8/0xB2C/root 错配）从结构上就钉不住会变形的靶⇒**(A) 重定向为“fork 后非确定瞬态/跨 race”**（H7），非固定脏 PTE 槽。**且秒级可复现**（~4–6s，非旧怕 150–250s）。下一步：非确定⇒要么多跑统计崩形态、要么零扰动写者时间线（插件已就绪）。
+>
+> **（上一前沿＝§续-266，2026-10-03·侧会话 3 死角逐条对账）**：① **T10 反汇定案**（当前 build query@0x3ab58）——query 每条 `ld` 地址=`基址(DM_BASE+pte_to_paddr, 4KiB对齐)+索引×8`、立即数恒 0⇒**崩地址低 12 位必 8 对齐，不可能 …B2C**；“读法乙子型（query 后调用者加游标）”无对应指令⇒驳；裸启动 `sepc=0x3ac10` 在本 build 是非-load `and`⇒(sepc,stval) 跨 build 归属不可靠。⇒**§续-265 “root 身份错配”（基于把 stval 当 walk 输出算出“故障物理 0x9d28b”）下调为未证**。② 内核窗已入插件（c:32-34,88）。③ 快照谓词=解码式（不漏末级）但覆盖仅 12 根+已 dump L0、**非全内存**。
 >
 > **（上一前沿＝§续-265，2026-10-03·瞬态台账 sl-ledge 地面事实：子栈 vaddr 0x7fffffffe000 映射成功（root 对、query 确定性返回叶 0x9d2ae000 RWX）却反复 refault ≥10 次 ⇒ 现场是“已映射叶不粘/重复缺页”，非“PTE 被踩”；pte-wb-FAIL=0 驳写丢失⇒叶落地。**注：本节“root 身份错配”已被 §续-266 下调为未证**）**；取证链 §续-216~264**：
 >
@@ -11482,6 +11484,30 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 零新跑、零改生产码（os/ 仍无 tracked 变更）；纯静态反汇 + 既有日志对账 + 既有插件源码核对。`NK4C-WORKLOG.md` 为活体权威，`NK4C-BUG-RISCV64-TRANSIENT-PTE.md` 的“工具使用/§6.3”章落后于实现，已就地标注不改它主体。三目标未全成，(A) 根因仍未坐实（本轮把 §续-265 靶下调为未证，回到“算式级：非对齐 stval↔query 槽读矛盾 + 跨 build 归属”这一最硬地面），goal active。
+
+---
+
+## §续-267（2026-10-03·同-build 裸启动现场捕获（riscv_fingerprint.sh）实锤：(A) 跨 boot 非确定 + 秒级可复现 ⇒ 盯单一地址的取证从根上注定失败）
+
+> 承 §续-266。新写零探针、无 `-S` 的裸启动捕获脚本 `tmp/nk4a/riscv_fingerprint.sh`（从当前 `$REL/minix-vm` 重生 mod_vm.bin，与反汇目标同 build），连跑两次独立 boot 拿内核 trap 帧同一行的 (sepc,stval)。
+
+### 地面事实：两个独立 boot 崩在不同地方
+| 轮 | 崩前上下文 | sepc | stval | 定性 |
+| --- | --- | --- | --- | --- |
+| **gh114** | `sas-fork ep=32780 root=0x9dc37000` → `setaddr nr=0xc` | `0x3ffffe26e4` | **==sepc** | **取指页故障**（sepc==stval 是 RISC-V execute-fault 签名），落在用户地址空间顶附近（0x3ffffd..–0x3ffffe.. 区，伴 `va=0x3ffffdfcf4`×64 / `0x3ffffe2a20`×44 的 fill-root 重缺页循环） |
+| **gh115** | `exec endpt=0x800c ip=0x167f0 stack=0x7fffffffef98` → `fill-root va=0x7fffffffe000 ptroot=0x9dc37000 pte_pa=0x9d2ae000` | `0x3ac1a`（query 的 L0 读 `ld a3,0(a1)`） | `0x409d28bb20`（低 12=`0xB20` **8对齐**；=0x9d28b000+0xB20 再 |bit38） | **槽读**（§3.6 “第二族 bit38 形状”在此 build 重现） |
+
+### 定案（新地面，推翻若干旧前提）
+- **(A) 跨 boot 非确定**：两次零干预裸启崩在不同 sepc/stval（取指故障 vs 槽读）。⇒之前一切“盯单枚固定地址（0x9DC377F8 / 0xB2C / root 错配）”的静态/快照/watchpoint 都从结构上无法钉住一个会变形的靶——坐实了 H7（真瞬态/跨 race）而非任何固定脏槽。
+- **复现极快**（~4–6s 到 panic，非旧怕的 150–250s）：`bash tmp/nk4a/riscv_fingerprint.sh <tag> <port>` 即可零扰动重现。之前的“预算不够跑”判断对裸启动不成立。
+- **§续-264/265 台账行是真的**（gh115 重现 `fill-root va=0x7fffffffe000 ptroot=0x9dc37000 pte_pa=0x9d2ae000`）——但它是**其中一种形态**，不是唯一崩法；§续-265 拿它的 stval 推“故障物理”仍无效（gh114 形态根本不产生那个 stval）。
+- **§3.6 第二族指纹已得一处同-build 实例**：0x409d28bb20 = 合法基 0x9d28b000+idx×8(0xB20=356×8) 再 |bit38⇒非规范地址。与 gh114 的高地址属不同族。
+
+### 下一步（未坐实不成修；需用户定是否继续动态）
+- 非确定性⇒单跑取证无意义；要么多次跑统计崩形态分布，要么上**零扰动写者时间线**（插件环形缓冲已就绪）抓“两次 walk 间谁改了页表”——即 §6.4 升级条件 4（台账跑一轮仍无法定位）已接近满足。本轮先以两跑定性，不再盲扩面。
+
+### 纪律
+- 新增诊断脚本 `tmp/nk4a/riscv_fingerprint.sh`（零改生产码；os/ 仍无 tracked 变更）；两跑均零干预裸启动。三目标未全成，(A) 根因仍未坐实但已重定向为“fork 后非确定瞬态/跨 race”（而非固定脏 PTE 槽），goal active。
 
 
 
