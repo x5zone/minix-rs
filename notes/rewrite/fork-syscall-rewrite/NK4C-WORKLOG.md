@@ -10639,3 +10639,14 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - 剩余真实缺口 = (a) 配置期字符串宏 `ATF_BUILD_CC/CXX/LD/CFLAGS/...`（正常由 atf configure 注入，可在 shim 头里 #define）；(b) **BSD 头 `sys/uio.h` picolibc 缺**（`tc.c` fatal）→ 需一个最小 `sys/uio.h` shim（`struct iovec` + readv/writev 声明）。
 - ⇒ 目标③ 判定：libatf-c 可移植，工量 = defs.h 渲染 + ATF_BUILD_* 定义 + 少量 BSD 头 shim（sys/uio.h 等）+ 之后把 picolibc `_write` 等重定向到我方 ipc_trap/kernel_call ABI；上机跑 Tier A 仍硬依赖 (A) 修复。工具链无缺件，纯工程。
 - 本轮无生产码变更（spike 全在 /tmp）；tracked 净。
+
+## §续-205（2026-10-02·**gdb 活体 trace 成功——推翻"寄存器累积 DM"假说，(A) 真身为 DM 窗覆盖**）
+用户选 1（活体 gdb）。写 `tmp/atr.sh`（gitignored）：`qemu -S -gdb tcp::3333` + `gdb-multiarch` `hbreak *0x3ac1a`（VM text VA→guest-phys 0x80225520 由 minix-vm VA0x3ab58 字节匹配快照定位），命中抓活寄存器：
+```
+a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
+0x3ac12 and a1,a1,t0 ; 0x3ac16 or a1,a1,a5 ; 0x3ac18 add a1,a1,a6 ; 0x3ac1a ld a3,0(a1)  a1=0x1082ce3148 FAULT
+```
+**关键纠偏**：a1 = a6(表PA) + 单个 DM 基址(1<<36) + 索引 = `0x1082ce3148`，**落在 DM 窗 `[1<<36, 1<<36+16GiB)` 内**，算术**完全正确、单次加**。⇒ 续-196/199/200/202 的"寄存器累积多叠 DM 基址/算术腐坏"**假说被活体证据推翻**（那是离线快照+stval 反推的误导）。真身：**VM 当前 satp 的 Direct Map 窗没有覆盖它所读的这张页表页的 DM VA** → 读该 DM VA 缺页 → VM 自缺页致命。方向从"寄存器/内存腐坏"转到"**VM DM 窗映射覆盖不全**"（更可控：查 VM 建 DM 窗的逻辑是否漏映高位/该表页所在区）。
+- 注：本轮值（0x1082ce…，in-window）≠ gh64/66 值（0x409d…，out-window）——AF-8 改码致布局漂移改变崩溃点（Heisenbug）；两者皆"读 DM 缺页"，但 in-window 那次直接说明**窗内某 PA 未被映进 DM**（覆盖 bug），比 out-window 更有指向性。
+- (A) 仍**未坐实到最终成因**（需再看 VM DM 窗如何建、为何漏该页）；未成修不落地。gdb 活体 trace 手法已验证可用（`tmp/atr.sh`），下轮续：在 0x3ac1a 命中后读 `$pc` 附近 CSR satp + 检查 `0x1082ce3148` 是否在 VM 页表 DM 窗内已映射（gdb `x` 走查 VM root 对 0x10_82ce3xxx 的映射），定位漏映点。
+- goal 保持 active；无生产码变更（仅 gitignored scratch harness + 本 doc）。
