@@ -10853,5 +10853,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - riscv 上机硬依赖目标① (A) 解除（待真终端交互 gdb 钉写者，§续-221）。
 - 本提交：**新增构建工具（不影响任何生产镜像/三架构 marker）**；已 CodeReview。host 1400/0 不变。goal active。
 
+## §续-224（2026-10-02·**目标③ 诚实边界测绘：实测发现 libatf-c 远大于顶层 7 文件（有 detail/ 子树），纠正 §续-223 的“libatf-c.a 建好”高估；精列 ③ 真实剩余清单**）
+
+### 一、实测发现（把真 atf 测试交叉编/链到 riscv64 撞出的边界）
+- **libatf-c 不是 7 文件**：实际有 `atf-c/detail/` 子树（dynstr/env/fs/list/map/process/sanity/text/tp_main/user）。静态链一个真 atf 测试报 undefined `atf_list_begin_c`/`atf_list_citer_next`/`atf_equal_list_citer_*` → 证实 **§续-223 “libatf-c.a 已建好”是高估**（只顶层、不完整）。已在 `tools/build-libatf-c.sh` 头部加 “⚠ 仅顶层 7 文件、非完整库”限制声明（脚本回滚到可工作的 7 文件版，不产破构建）。
+- 试编 6 个 string Tier-A 测试→ riscv64：popcount/memchr/stresep/strcmp **能出 .o**；t_swab 需 `err.h`（compat 已有，测试编译需多带 -I compat）、t_memcpy 需 `md5.h`、t_bm 需 `bm.h`、t_strlen 需 `dlfcn.h`（都是测试树 helper / BSD 头，picolibc 缺）。
+- 纳 detail/ 后首个新错：`detail/env.c:79/104 #error "Don't know how to set/unset an environment variable"` → 需 `HAVE_SETENV`/`HAVE_SETRGENV` 一类 configure 探测宏（未移植）。逐个 detail 文件预计有更多 HAVE_* 探测。
+
+### 二、③ 真实剩余清单（跨会话大件，未高估）
+1. 补全 atf-c/detail/ 子树 + 移植其 HAVE_* configure 探测宏（env/process/fs 等），才能得**完整** libatf-c.a。
+2. **C→我方 kernel_call syscall 桥**（已坐实 ABI：`ecall/svc a7|x8=0`、a0=Message 指针、`m_type=SYS_*`（SYS_DIAGCTL=0x62c, DIAG code=1）、`m_source@0/m_type@4/m_u@8`）：实现 picolibc sysstub `_exit`/`_write`/`_read`/`_sbrk`/`_lseek`/`_close`/`_isatty` + 提供 `stdout`/`stderr`，映射到我方 kernel_call + VFS syscalls（open/read/write）。
+3. 测试 helper 头/库：`md5.h`/`bm.h`/`dlfcn.h` 等逐个 shim（或标为不在范围，像 Tier C 那样）。
+4. atf 入口：`tp_main.c`/`atf_run` main 链 + 我方 `_start`（crt0 对应，参 minix-rt crt0）。
+5. 上机：aarch64 可跑（目标① ✅）；riscv 受 (A) 门控。需把测试 ELF 装入 imgrd、rc 里 exec。
+- 目标③ “586 全跑” 实为跨会话基础工程；本测绘把它从“模糊大目标”细化为上述可逐个推进的组件。**未落生产码**；脚本仅改注释。host 1400/0。goal active。
+
 
 

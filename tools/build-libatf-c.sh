@@ -9,6 +9,12 @@
 # 第一块可验证交付；把测试真正跑起来还需「C 测试二进制 → 我方 exec/VFS/
 # syscall-IPC 桥 + 上机」这一段（见 WORKLOG 目标③ 审计）。
 #
+# ⚠ 限制（本脚本尚未完成）：只编 atf-c 顶层 7 个库源，**不是完整 libatf-c**。
+# 链真实 atf 测试会缺 `atf-c/detail/` 子树的符号（atf_list_*/atf_equal_list_* 等），
+# 且 detail/env.c 等需 HAVE_SETENV/HAVE_SETRGENV 一类 configure 探测宏才能编。
+# ③ 的完整前置（补全 detail/ + HAVE_* 移植 + syscall 桥 _exit/stdout/_write/_sbrk
+# → 我方 kernel_call + 测试 helper md5.h/bm.h/dlfcn.h + atf _start/main）见 WORKLOG §续-224。
+#
 # 关键移植点（对照 picolibc 缺件，均在 tools/atf-c-compat/ 补齐）：
 #   - defs.h 由 defs.h.in 渲染（三个 @ATTRIBUTE_*@ 宏 → GCC __attribute__）。
 #   - atf-c/tc.c 需 <sys/uio.h>（struct iovec）—— picolibc 缺，用 compat 头（仅 riscv64 注入；
