@@ -10357,3 +10357,7 @@ gh53 序列：vmmL stack mmap fw=0x800c → pm:02b01 → ptalloc-reuse-DATA pfn=
 boot.rs read_boot_params：free list 扣减扩展为 root 64KB + **全部 boot 模块区**（flat_map 多区间拆分，4KB 对齐）。gh54：全家族零触发，child 0x800c exec 后链继续推进（RS exec 发生）——VM 根页/text 帧被回收的"腐坏"叙事完整证实并闭环：VM 与各服务器的镜像帧、根页、bootstrap 表全在 free list 被当普通帧发放，exec 压力下被后续装载覆写（VM text 被 ELF 覆写=gh53 SIGSEGV-for-itself；根页覆写=region/btree/walk 全家族；gh32 内容 dump 的"垃圾"=alien 数据）。
 ### 续-176
 RS process_table.rs:138 越界（len 64 index 64）：endpoint→slot 转换 off-by-one（0x800c 族端点解槽未掩代际？），一处有界修复+对账测试→CodeReview→gh49 冲刺 marker。
+
+## §1.120续-176（2026-10-02·**RS process_table.rs:138 panic 现场分析：sync_pub_wire 的 `pub_wire[i]=..` i=64 而 pub_wire.len()=64 ⟹ slots.len()≥65——但 slots:Vec 仅 new() 构造 (0..NR_SYS_PROCS=64) 且全仓无 push/insert/resize（grep 零命中），静态矛盾=还有隐藏增长点或 len 语义另有蹊跷；续-177=sync_pub_wire 入口打 slots.len()/pub_wire.len() 探针（门 2）抓实际长度，回溯增长点即成修**）
+
+关键事实：NR_SYS_PROCS=64（com.rs:51）；slots/pub_wire 同源构造各 64；gh54 panic=process_table.rs:138「len 64 index 64」exec 链推进后 RS 首个 panic（腐坏家族已清零后的第一个干净 bug）。矛盾未解不入修；探针门 2 抓 len 后按值回溯（若 slots=65：找 push 暗道；若 pub_wire=63：找缩容）。
