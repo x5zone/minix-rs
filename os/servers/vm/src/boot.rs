@@ -292,8 +292,11 @@ pub fn read_boot_params() -> BootParams<'static> {
     // walk 走设备洞/btree panic/region range 坏全家族。此处按 root 页
     // 起扣 64KB（覆盖 gh35 实测 bootstrap L1 簇 0x82001000..0x8200f000），
     // 泄漏表同步收缩。
-    let root_deduct_base = handoff.root_paddr & !(0x1_0000u64 - 1);
-    let root_deduct_end = root_deduct_base + 0x1_0000;
+    // 续-180 扩界：kernel bump 池整体（gh49 vm pc=0x3a006 取指 fault=
+    // VM 自身 text 帧在池内被发放覆写；池=bootface root/pt/名字池/模块
+    // 落地/全部 boot 服务器镜像帧的所在，32MiB 全扣）。
+    let root_deduct_base = 0x8200_0000;
+    let root_deduct_end = 0x8400_0000;
     // 续-175 成修：模块镜像帧同样在 free list 内被回收——VM 自身 text
     // 被其他服务器 ELF 覆写→取指 fault（gh53 vm 0x8 pc=0x39f4a SIGSEGV-
     // for-itself）与全部"腐坏"家族同根。扣减所有 boot 模块区 + root 块。

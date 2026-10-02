@@ -10369,3 +10369,7 @@ RS process_table.rs:138 越界（len 64 index 64）：endpoint→slot 转换 off
 ## §1.120续-178（2026-10-02·**RS 越界根因候选二：boot.rs step1_set_attrs 以 priv_table 行号直接 `SlotId::new(slot_nr)` activate（boot.rs:1045 附近）——若 boot image priv 表行数 ≥65，SlotId 64 流入 slots[64]；但 activate 路径 expect 会先炸「activate」非 index-oob——与 138 panic 仍有一环未扣；续-179=①print priv_table 行数+slots.len 探针（RS 无 console→走 panic-msg 通道或 sys_diagctl）②by_endpoint[endpoint.slot()]=412 只守 ≥0 不守 <NR_PROCS(256) 的上界一并修**）
 
 剩余未扣环：sync_pub_wire panic（138, index 64）要求 slots≥65，但 activate 链应先炸——除非 activate_boot_slot 用 get_mut().ok_or 静默跳过 slot 64 而后续 sync 仍 iter 全部（slots 仍 64 恒定……静态不可能）。下一轮实证：RS 侧 diagctl 打 slots.len。
+
+## §1.120续-180（2026-10-02·**gh55 全池扣减生效（root-deduct [0x82000000,0x84000000) regions=2）但 VM 仍 SIGSEGV-for-itself（pc=0x3a0dc console 打印循环）——VM 分配器腐坏源排除，写者在 KERNEL 侧（kerninfo map/kdst 缓冲/boot exec 遗留对 VM 页的写）；续-181=①cause_sig 路径补打 fault VA ②枚举 kernel 对 VM 根树（0x82000000）与 VM 页的写点（kerninfo map/diagctl/printk 缓冲）③定谳成修**）
+
+gh55 判读：扣减扩至全池后 VM 分配器无法再发放池帧，但 VM 的 console 打印循环（0x3a0dc=lbu 字符串字节）仍 fault→SIGSEGV-for-itself。VM 自身页（text/rodata/缓冲）的映射或内容仍被 kernel 侧写者破坏。候选：①VMCTL setaddrspace 的 kerninfo map（syscall.rs:2928-2952，写 child 根——误写 VM 根？from_active_root(ptroot_phys) 的 ptroot 是谁的？）②diagctl_write 的内核缓冲 ③printk kdst copy（pa=0x805ffb38 固定缓冲 ✓ 合法）④boot exec 遗留映射。
