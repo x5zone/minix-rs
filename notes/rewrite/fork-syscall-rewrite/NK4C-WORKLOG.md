@@ -10611,6 +10611,18 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 **结论**：目标③ 的合理终态 ≠ 字面 586 全跑，而是 Tier A（+部分 Tier B）在真机跑出 ATF PASS；Tier C 显式标为不在范围。此 triage 防下会话在不可移植用例上白投。仍待：①交叉 C 工具链（用户已启动 apt 安装 riscv64/aarch64 gcc）；②libatf-c 移植 / shim；③最小 libc+syscall。**不标目标③ 完成**（仅完成需求定级）。
 - 本会话提交：纯分析/文档；无生产码变更。tracked 净。
 
+## §续-202（2026-10-02·**工具链就绪：目标③ T3.2 格式门槛实证 + (A) 需交互式活体 debug 的定性**）
+用户已装 `riscv64-linux-gnu-gcc/objdump/nm`、`aarch64-linux-gnu-gcc/objdump`、`gdb-multiarch`。QEMU 8.2.2 自带 `-d exec,in_asm,int,guest_errors`（无需 qemu-plugin.h）。
+
+- **目标③ T3.2 格式门槛硬证（/tmp 脚手架 spike，不入仓）**：`riscv64-linux-gnu-gcc -static -no-pie -nostdlib -ffreestanding` 编一个 `_start`+ecall 的裸 riscv64 C → `readelf -h`：`Class=ELF64, Data=LSB, Type=EXEC(非ET_DYN), Machine=RISC-V, Entry=0x10144` + 一个 PT_LOAD。**逐项命中 `minix-elf::parse_ehdr` 校验（magic/class64/LSB/e_type==ET_EXEC）**，machine 不校验 ⇒ 加载器可收。⇒ 目标③ “C 程序→riscv 静态 ELF→我方 loader” 格式链已验。真余工：syscall ABI 对齐（我方 ipc_trap/kernel_call 约定 vs Linux `__NR`）+ 目标端 libc（picolibc-riscv64-unknown-elf 待装）+ libatf-c 交叉构建 + 上机跑（T3.2/T3.3）。
+- **(A) 定性（工具就绪、方法受限）**：钉死那条“对含 DM 基址的值再累加”的指令需**逐指令寄存器值**——QEMU `-d exec/in_asm` 只给 TB 执行序/静态反汇，**不给寄存器值**；gdb-multiarch 单步 VM U-mode 需先可靠拿到 VM text 的 guest-phys（我离线 walk 因 2MB 叶判定不可靠）。⇒ (A) 真解法 = **人机交互式 gdb 会话**（人现场校正 walk/偏移、读 `$sepc/stval` CSR、步进看寄存器），非单次自动化工具调用可可靠完成。不伪修。
+- 不标任何目标完成；goal 保持 active。
+
+### 工具链二装完成确认（目标③ 前置已齐）
+- 新增 `riscv64-unknown-elf-gcc`（裸机交叉链）+ `picolibc-riscv64-unknown-elf` 1.8.6（目标端 C 运行时）+ autoconf/automake。
+- **libatf-c 无需 apt**：源在仓内 `minix3/external/bsd/atf/dist/`（含 `atf-c.h`），可交叉构建。
+- ⇒ 目标③ 工具链前置已全部到位（交叉 gcc + picolibc + ATF 源 + 构建工具）；真正剩下的为工程实现（atf-c 交叉构建 → 目标端、syscall ABI shim 对齐我方 ipc_trap/kernel_call、上机跑 Tier A）。不再卡在工具缺失。
+
 
 
 
