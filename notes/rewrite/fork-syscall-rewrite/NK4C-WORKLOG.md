@@ -10814,6 +10814,7 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 一、环境实测结论
 - `wrap-boot-gdb.sh`（同 mon + `-gdb tcp::1234`、无 -S）构建 HEAD + 启 → **(A) 确定性复现于 sepc 0x3abec**（gh76gdb，stval 0x10bd28cb2c、root 0x82000000）。harness 就绪。
 - 但我用 `gdb-multiarch -batch` 驱动时：首次因前一超时进程占住 qemu 单 gdb 客户端→“Connection timed out”；重启后 `-batch` 的 `continue` 等断点异步停在本工具环境不可靠（无输出/超时）。**交互式 gdb 断点会话需真人/真终端**，自动化单发钉不住——与记忆续-124/202 一致。
+  - 【❌ 此结论已被 §续-226 推翻（2026-10-02 同一会话）】真因是我早前误用**不带 -S** 的 wrap-boot-gdb（guest 崩完才 attach）+ 未清残留 qemu 占 gdb 口。改用脚本化 `-S` halt→hbreak→continue 已实测成功读到活体寄存器（见 §续-226）。环境**可以**驱动脚本化 gdb，非“需真人”。
 
 ### 二、交互式钉 (A) 可直接执行配方（供真终端/人工）
 1. **启 qemu（halt 到入口，全控时序）**：用已建产物 `os/target/image/riscv64/{qemu.dtb,table.bin,mod_*.bin}` 与 `os/target/riscv64gc-unknown-none-elf/release/kernel`，按 `tmp/nk4a/wrap-boot-gdb.sh` Stage5 同参但**加 `-S`**（-gdb tcp::1234）。-S 仅 halt 在 boot 前，一旦 `continue` 就是全速正常时序（不再 stepi 就不扰动）。
@@ -10831,7 +10832,7 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 跑 `os/qemu-tests/test-cmd-smoke.sh`（x86_64 OVMF + qemu-system-x86_64）：xtask 装配镜像→mtools 验 ESP（kernel.elf+imgrd+12 模块齐）→启动“entering scheduler”→**stage4 命令输出 marker PASS**（“RESULT: PASS (18-stage command output visible on the boot console — T4)”）。证据 `tmp/nk4a/cmd-smoke-x86.log`。
 - ⇒ 坐实：x86 下 /etc/rc 跑 echo/ls/cat **经真实 VFS IPC**、串口可见输出、marker 打出。此前“② 仅 x86 核心✅”仅为声称，**现实测确认**；同时再确证目标① x86 marker。
 
-### 二、(A) 交互式 gdb 在本工具环境不可驱动（环境限制，非方法失败）
+### 二、(A) 交互式 gdb 在本工具环境不可驱动（环境限制，非方法失败）——【❌ 已被 §续-226 推翻：脚本化 gdb 可用】
 - 尝试四种驱动 batch gdb 钉 (A)：默认 `-batch` continue 未停（前进程占住 qemu 单 gdb 客户端）；加长超时；TCP `127.0.0.1:1236` 连接超时（sandbox 限 TCP loopback）；unix socket `-gdb unix:…server=on,wait=off` 未建端点（语法不成立）。⇒ **本非交互环境无法可靠跑真人式 gdb 断点会话**，与记忆续-124/202“需人机交互会话、非单发可竟”一致。(A) 交互钉需用户/真终端按 §续-221 配方跑（harness 已就绪且 (A) 确定性复现于 sepc 0x3abec）。
 
 ### 三、三目标完成审计快照（严格逐条，均未全成）
@@ -10867,6 +10868,28 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 4. atf 入口：`tp_main.c`/`atf_run` main 链 + 我方 `_start`（crt0 对应，参 minix-rt crt0）。
 5. 上机：aarch64 可跑（目标① ✅）；riscv 受 (A) 门控。需把测试 ELF 装入 imgrd、rc 里 exec。
 - 目标③ “586 全跑” 实为跨会话基础工程；本测绘把它从“模糊大目标”细化为上述可逐个推进的组件。**未落生产码**；脚本仅改注释。host 1400/0。goal active。
+
+## §续-225（2026-10-02·**目标③ libatf-c 补全为完整库**，commit 8127f01f5）
+- 继 §续-224 测绘：将 `tools/build-libatf-c.sh` 库源从顶层 7 个扩到 **17 个**（+atf-c/detail/ 子树 10 源，正确排除带 main 的 version_helper.c 与 *_helpers/test_helpers）+ HAVE_SETENV/UNSETENV/PUTENV + PACKAGE_* 宏 + 新增 compat/{sys/dirent.h,sys/mount.h}（picolibc 缺头）。实测 riscv64 + aarch64 均产 **17 成员 libatf-c.a**；链真 atf 测试 t_memchr 已无 atf_* undefined，仅剩 `_exit/open/close/geteuid/getgroups/stdout/stderr` = ③ 剩下的 syscall/IPC 桥。CodeReview 无 P0/P1/P2。不影响生产镜像/marker。
+
+## §续-226（2026-10-02·**用户纠正→实测推翻 §续-221/222 的“环境不可驱动 gdb”结论；脚本化 `-S`+hbreak+condition gdb 已跑通读到活体寄存器；跨 run 实证 (A) 是 build/timing 敏感 Heisenbug，否定“固定 watch 单槽”前提**）
+
+### 一、脚本化 gdb 可用（我之前错了）
+- 用 `tmp/nk4a/riscv_gdb_gh.sh`（fresh 端口 1240 + gh77-* 日志 + 只杀本 harness qemu）：qemu `-S` halt 从头→gdb-multiarch -batch `file minix-vm`→`hbreak *0x3abec`→`continue`。**实测命中并 dump 活体寄存器**：首个 query 下降命中时 a1=0x1082ce4000（合法 8 对齐）、a2(vaddr)=0x29000、a6=0x82ce4000（合法 in-RAM 表页）、a5=0x1000000000、a7=0x00fffffffffff000（即正常 PTE_PPN_MASK<<2 掩码，再证 §续-216 的“掩码非破坏”）。⇒ “需真人/环境不可”为误；真因是我先前误用不带 -S 的 boot（崩完才 attach）+ 未清残留 qemu 占 gdb 单客户端口。
+
+### 二、跨 run 非确定性实证（(A) 崩溃签名）
+| run | 构建/扰动 | sepc | stval | off 低3位 |
+|---|---|---|---|---|
+| gh72/73/76gdb | 同 clean 二进制 | 0x3abec | 0x10bd28cb2c | 4 |
+| gh75 | +region_map 诊断（codegen 变）| 0x3ac10 | 0x10bd28bb2c | 4 |
+| gh77 | 同76gdb 但 -S+gdb 拖慢时序 | 0x3ac1a | 0x10a2cc0b08 | 0 |
+⇒ 同二进制稳定、**任何扰动（改码 或 gdb-attach）都会变 fault PC、level、值**（gh77 从 0x3abec 移到 0x3ac1a、从 0xbd28c 到 0xa2cc）——典型 Heisenbug。且 bogus 值低位不一（有时非 8 对齐=伪 PPN 低位带垃圾=数据被当 PTE）。
+
+### 三、对 (A) 前提的纠正 + 下一步（非固定单槽 watch）
+- **否定**：“被写坏槽 = root + i2*8、固定 watch 该槽”（§续-217/221 假设）**不可靠**——fault 不在固定 PC/固定槽，随扰动漂。条件断点 `$a6>=RAM顶`/`$a1>=0x10a0000000` 因 PC 漂移会漏。
+- **可行下一步（脚本化、无需真人）**：因同 clean 二进制非-gdb 启动时 (A) 稳定崩在 0x3abec/0xbd28cb2c，正确钉法不是盯一个读点，而是盯**写**：对“被跟随的父表帧”或“所有 `paddr_to_pte(phys.0)|V` 写点（walk_alloc/map/update_flags）”设硬件写 watchpoint（带条件“写入值解码 PPN>RAM 才停”），在 -S halt 后、continue 前设点，零 guest 探针扰动。候选写者：exec 装 0x800c 段/栈时把非-PTE 值当 PA 写进中间表页（§续-217 数据↔表帧混淆的写入侧）。
+- 目标③/② x86 腿可并行推进，但 (A) 不再以“需人工”为由停摆（工具已验证可用，下一步是盯写点的专门 gdb 逐段推进）。
+- 本轮无生产码变更；gdb harness 在 tmp（gitignore）；qemu 已清、tracked 净。host 1400/0。goal active。
 
 
 
