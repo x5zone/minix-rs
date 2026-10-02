@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-263（2026-10-03·侧点1 静态定案：崩点 a1(=stval)=0x10BD28CB2C 非 8 对齐，而 query 任何页表槽读地址必 8 对齐⇒崩的那条 ld 不是 pte_to_paddr 派生的页表槽读⇒野指针/数据当地址解引用（§续-142 族）；“PTE 被写坏/0x9DC377F8 靶”前提彻底退休；本机 qemu-plugin.h 无内存/寄存器读 API⇒插件拿不到写值；新靶=谁造出非对齐 DM 地址）**；取证链 §续-216~263**：
+> **🛑 最新前沿＝§续-264（2026-10-03·瞬态台账 sl-ledge 地面事实：子栈 vaddr 0x7fffffffe000 映射成功（root 对、query 确定性返回叶 0x9d2ae000 RWX）却反复 refault ≥10 次 ⇒ 现场是“已映射叶不粘/重复缺页”（§续-171“写静默丢失”族），非“PTE 被踩”；台账已 revert 重建干净；下步查 §续-171 回读探针是否报“写未落地”+叶 PTE 落在哪张 L0 表是否在 VM DM 窗外）**；取证链 §续-216~264**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11422,6 +11422,22 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 本层纯算术/静态定案（侧点1）+插件 API 核查；未改 os/ 生产码；host 1400/0。(A) 靶大转向：“页表帧被写坏”→“非对齐指针/数据当地址解引用”（§续-142 族）。三目标未全成，goal active。
+
+---
+
+## §续-264（2026-10-03·瞬态台账 sl-ledge 取到地面事实：子栈 vaddr 映射成功且 query 确定性返回叶→仍 refault 循环 ⇒ “已映射叶重复缺页”才是现场，非“PTE 被踩”）
+
+> 承侧会话“静态→极小台账→plugin”定序。本机 qemu-plugin.h 无内存/寄存器读 API⇒插件拿不到值；改用**极小 guest 台账**（sync_slot_pte 在 query/match 前、仅对崩溃子栈 vaddr 0x7fffffffe000，≤10，只记已有量不新增表读）。已 **git checkout 全量 revert** + 重建干净 minix-vm。
+
+- **gh113 台账实据**（`tmp/nk4a/gh113.serial`，行 head）：
+  - 第1条：`va=0x7fffffffe000 paddr=0x9d2ae000 root=0x9dc37000 q=None` → 走 `pt.map` 臂（首次未映射，正常）。
+  - 后 9 条：`va=0x7fffffffe000 paddr=0x9d2ae000 root=0x9dc37000 q=Some((0x9d2ae000, 0xf))` → cur_paddr==paddr 且 flags=0xf(V|R|W|X) ⇒ 走 `update_flags` 臂，**同一 vaddr 反复 sync ≥10 次**。
+  - 旁：`memreq target=32780 start=0x7fffffffef98 len=0x68` + `kdst copy pa=0x9d2aef98`（子栈消息拷贝）——§续-142/171 “kdst copy / 写静默丢失 refault”同族。
+- **定性推翻**：“叶已正确映射（query 确定性返回 Some 且 paddr 对）、root 对（子根）”却**反复 refault** ⇒ 问题不是“PTE 被第三方写坏”（query 稳定），而是 **映射不生效/不粘（同 VA 不断重缺页）**，正合 §续-171 “map 报 Ok 但目标 PT 页不在 VM DM 覆盖→写静默丢失→同 VA refault 循环”。与侧点1“崩址非对齐”合流：崩的是某次 refault 中 update_flags/map 对一帧的 DM 访问。
+- **新行动项（不是写 PTE 台账，而是“为何已映射叶仍 refault”）**：查 ①map 写的叶 PTE 落在哪张 L0 表、该表是否在 VM DM 覆盖窗内（§续-171 回读探针是否报“写未落地”）；②update_flags 对已存在叶只改 flags，不应致 refault——若子仍缺同一 VA，说明写回的 PTE 不被硬件/下一次 walk 认可（权限位/NX/AV）。对照 minix3 map_pf/pt_writemap。
+
+### 纪律
+- 台账为临时诊断（sync_slot_pte 入口、无新增表读），已 `git checkout` revert + 重建干净 minix-vm；os/ 无 tracked 变更；host 1400/0。(A) 现场重定义：不是“页表帧被写坏”，而是“**已映射子栈叶反复 refault**”（§续-171/142 族）。三目标未全成，goal active。
 
 
 
