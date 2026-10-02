@@ -8,7 +8,11 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-151（2026-10-02·**续-149 止血无过度——pd:02b01 探针确认：PM 丢弃的是 mt=0x02B(43) from VFS（非 0x986 EXEC_REPLY），0x986 从未到达 PM ⇒ **exec reply 从未从 VFS 发出**或发出后丢失；SETADDRSPACE 不触发＝PM 没收到 exec reply 所以不调度子进程（正确行为）；**续-152 修靶＝VFS 侧 exec reply 发送链审计**：VfsReply::Exec encode→queue_reply_msg→take_reply→send_reply(Endpoint::PM)——哪一步断了？exec_worker 的 pm_exec 返回值是否 Ok？queue_reply_msg 的 target 是否正确？send_reply 的 transport.send 是否成功？**续-149 止血条件无需修正（.exec reply 本就不在其丢弃范围内）**。探针已滚 tracked 净。**
+> **🛑 最新前沿＝§1.120续-190-交接（2026-10-02·本会话 37 笔提交 8a9a44933→54ad18056，总账＝下文 §续-190-交接节）**：
+> - **当前唯一阻塞＝riscv64 marker 未达**：死点＝VM kernel_call_resume 重试 delivermsg 拷贝得 `VmCheckResult::Fault` → SIGSEGV-to-VM（proc_table.rs:1258）→ stacktrace（pc=0x3a1a8＝VM 停在 console ecall）→ panic（gh56/58/60 实证；全链还原＝§续-189）。
+> - **处方（续-190）**：os/kernel/src/vm.rs kernel_call_resume 的 copy 失败处加探针（caller/delivermsg VA/current_root_phys/该 VA walk 结果）→ RUN=gh61 一次真机定谳成修。
+> - 生产码改动清单/探针台账/验证配方/目标进度＝§续-190-交接；已排除根因清单（防重走）＝同节五/六。
+> **（历史·§1.120续-151（2026-10-02·**续-149 止血无过度——pd:02b01 探针确认：PM 丢弃的是 mt=0x02B(43) from VFS（非 0x986 EXEC_REPLY），0x986 从未到达 PM ⇒ **exec reply 从未从 VFS 发出**或发出后丢失；SETADDRSPACE 不触发＝PM 没收到 exec reply 所以不调度子进程（正确行为）；**续-152 修靶＝VFS 侧 exec reply 发送链审计**：VfsReply::Exec encode→queue_reply_msg→take_reply→send_reply(Endpoint::PM)——哪一步断了？exec_worker 的 pm_exec 返回值是否 Ok？queue_reply_msg 的 target 是否正确？send_reply 的 transport.send 是否成功？**续-149 止血条件无需修正（.exec reply 本就不在其丢弃范围内）**。探针已滚 tracked 净。**
 >
 
 > **（历史·§1.120续-148（2026-10-02·**多墙优先级终裁定：fb201 乒乓＝确定性首墙（gh12/13/17/19/23 五轮连停），(A) 非必现（时序门控）；续-149 主攻＝fb201 乒乓修复：①VFS Route:: 对 PM 来源未知 m_type 的臂改 C 对位（静默不回）②PM dispatch ENOSYS 回程改静默③FS status=-1 源头。pmemsave 判别管道已验证（text diff=IDENTICAL d1 证伪）待 (A) 复现后使用**）：gh23 验证 fb201 250s 确定性复现。gh19 text diff=IDENTICAL。探针已滚 tracked 净。**
@@ -10429,6 +10433,30 @@ gh57 已证：自填路径（target=VM）正确触发并成功（无 hm-fail/ok=
 2. **物理取证**：`python3` 经 qmon 发 `pmemsave 0x80000000 0x20000000 "/tmp/nk4a/ramNN.bin"`（**路径必须带引号**）；离线走 VM 根 0x82000000（gh60 手法：VA→PA→diff mod_vm.bin）。
 3. **判据**：marker=串口 `minix-rs rc: minimal boot script marker`；当前失败点=串口尾部 `cause_sig: sig manager 8`。
 4. **探针纪律**：新探针全部打点入库（bootmark/Console），C-61 pattern-gate 前不得滚除；改代码布局=时序漂移（Heisenbug 三例实证），判读须同轮对账。
+5. **回归基线（准绳；包集勿混比）**：host 测试须按包集跑——`cargo test -p minix-kernel -p minix-arch -p minix-boot -p minix-types`（出处：§1.69 期 host 基线复核行），**勿用 --workspace**（牵入 HEAD 即编不过的 minix-tests `pm_sched` E0046，§1.54 存量登记）。已知数字（带出处）：minix-vm **531** / minix-rs **351**（续-179/186 提交信息 33ed4eb45）；kernel 侧历史 **1400→1771**（aarch64 修复期，§续-131/133 前沿行）。x86 真机 **marker=2 / panic=0** 不回归；check-layout **all PASS**（§续-133/134 前沿行）；判据＝串口出现 `minix-rs rc: minimal boot script marker`；当前失败尾＝`cause_sig: sig manager 8`。
 
 ### 四、目标进度
 ① aarch64 marker ✅（续-132）；riscv64 **差最后一环**（resume Fault 定谳成修即达）；②③ 未开始（riscv64 ① 达成后自然解锁）。
+
+### 五、会话主线 arc（时间线，逐条有正文续号）
+- (A) 晚期 VM 崩溃＝slot-pfn 多出 DM 基址高位（续-139 OR 进 1<<36 / 续-140 精化 pfn bit 26）→ 自填路径修复（续-179/186，target=VM 的 memreq 走 vm_self_map demand-fill）。
+- ∥ 顺出 exec-reply 未从 VFS 达 PM（续-151 pd:02b01）→ 真因=PM_EXEC_NEW=43 被续-149 丢弃吞掉，放行修复（续-153，gh29 实证 0x986 双向到达）。
+- ∥ 「VM text 被改写成非法指令」理论（续-186 立，segv-delve p_fault_addr=None 非 PF）→ pmemsave 实证 text 页 ram==mod_vm 逐位相等，被推翻（续-188）。
+- ∥ 模块回收/VM 分配器腐坏逐一排除（续-180 全池扣减后仍死＝VM 分配器洗清；续-186 排除帧拷贝/双句柄/TLB/kerninfo/diagctl；续-187 classify 修后仍死＝模块回收路径排除）。
+- ∥ 现死点＝console ecall 的 resume-Fault（续-189 全链还原：自填 ✓ 后 resume 重试 delivermsg 拷贝 Fault→SIGSEGV-to-VM），续-190 处方一次定谳。
+
+### 六、已排除根因清单（防后人重走）
+- wrong-root（续-116/117 walk 守卫 0 命中；续-181 kerninfo from_active_root 传参对账 ✓）。
+- PTE 位缺/丢 store（续-141 flags 无辜；pte-wb-FAIL=0 写落地验证，gh45 起）。
+- 中间/叶表帧未清零：所有表帧经 alloc_pt_page→vm_pt_alloc write_bytes 清零（续-128 逐点核对）。
+- PT 双分配/范围内 PT↔data 复用：续-128 旧检测器仅覆盖 pfn<32768（128MB，有盲区）；位图扩到全 RAM 655,360 pfn 后（§续-154 排除法段）gh32 实测 ptalloc-DUP=0 / alloc-reuse-PT=0 / dblfree=0 / 越界=0（盲区已闭合）。
+- VM 分配器腐坏（续-180 全池扣减后仍死＝排除；续-186 帧拷贝亦无辜）。
+- 模块回收（续-187 classify 不 reclaim 后仍死＝排除）。
+- VM text 改写（续-188 pmemsave 实证 text 页与 mod_vm.bin 逐位相等＝推翻）。
+- kernel_call 拷贝链 EFAULT（syscall.rs:584 kc-efault 探针 gh56 零触发＝排除）。
+
+### 小词表
+- ghNN＝真机 run-id（串口日志 `boot-full-serial.ghNN.log`）。
+- wrap-boot-mon.sh＝带 qemu monitor 的启动封装（monitor 套接字 `/tmp/nk4a/qmon`；panic 后内核 halt、qemu 存活，可 pmemsave）。
+- mod_vm.bin＝VM 镜像期望字节（target/image/riscv64/，离线 pmemsave 差分的对照）。
+- pmemsave 路径必须带引号（HMP 把裸 `/tmp` 当表达式）。
