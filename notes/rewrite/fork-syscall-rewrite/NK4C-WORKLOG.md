@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-256（2026-10-03·T1 反汇崩点重大纠偏：干净崩帧 stval 低12=0xB2C 非 8 对齐，而 query 任何页表槽读地址必 8 对齐⇒“corrupt 页表槽 0x9DC377F8”前提被推翻，之前 watchpoint/KDM 扫描/“需 plugin”均追错目标；采纳 GPT 定序 静态→host台账(runtime-window)→plugin(最后牌)；plugin 暂缓）**；取证链 §续-216~256**：
+> **🛑 最新前沿＝§续-257（2026-10-03·T2 读崩帧真实寄存器：崩 walk 的 vaddr=子栈 0x7fffffffe000→i2=511（旧靶 0x9DC377F8 连槽号都错）；子根[511]/L1 链合法无 corruption；真崩点=向 bogus 叶子 paddr 0xbd28cb2c 的非对齐数据访问；下步 KDM dump L1 表 0x9d2ad000 找 bogus PTE）**；取证链 §续-216~257**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
