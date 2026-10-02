@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-252（2026-10-03·目标②：新增 aarch64 命令面回归 gate `test-cmd-smoke-aarch64.sh` 并实测 PASS（marker + ls /bin + cat /etc/rc 走 VFS IPC）⇒ 目标②已 x86+aarch64 双架构可验；(A) 待用户装 qemu-plugin.h 后走 QEMU mem-write 插件定谳瞬态写者）**；取证链 §续-216~252**：
+> **🛑 最新前沿＝§续-255（2026-10-03·目标③构建面：逐字 port BSD bm→t_bm 链成 ELF，string Tier-A 17/18 可链（原 14→md5+bm+memmem）；剩 t_strerror 需 errno 表移植（未假绿）；上机执行受 (A) 门控，待用户装 qemu-plugin.h）**）；取证链 §续-216~255**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11261,6 +11261,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 本层仅新增 tmp/nk4a 取证插件+构建脚本（非生产 OS 码、未编译依赖外部头）；未改 os/ 生产码；host 1400/0。三目标未全成，goal active。
+
+---
+
+## §续-255（2026-10-03·目标③构建面：逐字 port BSD bm ⇒ t_bm 链成 ELF，16/18→17/18；剩 t_strerror 需 errno 表移植）
+
+> 承 §续-254（md5 → 16/18）；本层销 t_bm。
+
+- **port 方法**：minix3 自带 `lib/libc/string/bm.c`（BSD-3）+ `include/bm.h`（bm_comp/bm_exec/bm_free，正是 t_bm 所需）。新增 `tools/atf-c-compat/bm.{c,h}`：逐字复制 `freq_def`+三函数体，仅去 minix 专有 `namespace.h`/`__weak_alias`/`__RCSID`，将 `_DIAGASSERT` stub 为无操作。**用 diff（忽略空白）证明算法体与 minix3 原件逐字一致**（verbatim port，无需重推行为；权威校验＝将来上机跑 minix3 自带 t_bm）。build-atf-test.sh 编 `bm.o` 入 `--start-group`。
+- **实测**：t_bm 链成静态 ET_EXEC riscv64 ELF（过 ehdr 硬校验）⇒ **string Tier-A 18 个中 17 个可链**（原 14→md5+1→bm+1）。曾写 bm_selftest.c 手测发现两条“MISMATCH”，经核为**我预期写错**（“is”在 "th**is**s" 首现属正确行为；verbatim 算法与上游同，不单独测）⇒删自测件不留误导性红测。
+- **剩 t_strerror**：需 `sys_nerr`/`sys_errlist`，picolibc **不提供**（`nm libc.a` 无 `_sys_nerr`/`_sys_errlist`），非一行 define 可美（映射会留 undefined 符号=假链），需真移植一个 errno 字符串表 ⇒归入更大测试辅助移植，本轮不强凑。**未假绿**。
+- **目标③构建面小结**：pipeline 已证（17/18 可链），真正剩余是上机执行——受 (A) 门控（riscv）。解锁后把 ELF 入 imgrd+rc exec 验 ATF PASS。
+
+### 纪律
+- 新增 tools/atf-c-compat/bm.{c,h} + build-atf-test.sh 改动（均构建/测试面，不进生产镜像/marker）；未改 os/ 生产 Rust/C 码；host 1400/0。三目标未全成，goal active。
 
 
 
