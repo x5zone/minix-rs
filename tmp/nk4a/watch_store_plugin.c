@@ -1,74 +1,130 @@
 /*
- * NK4-C (A) 瞬态页表写者抓取插件（QEMU 8.2 plugin API，mem-write 观察）
+ * NK4-C (A) 页表写瞬态观察插件 —— 按【本机真实 qemu-plugin.h(QEMU 8.2.2)】API 写。
  *
- * 背景（见 notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md §续-241~252）：
- * 缺陷 (A) 的坏页表项【只在被读的那一瞬间存在、停机即净】，本机 QEMU riscv TCG 的
- * 硬件写观察点不触发、-S/加读探针都会把崩溃点漂移。唯一还能【零暂停、不改 guest 码】
- * 抓到「谁在往这个物理地址写」的办法，是 QEMU 插件系统：在每条访存指令上挂回调，
- * 命中目标物理地址的【写】就打印发起方 vCPU 的 guest PC —— 不暂停被观测系统。
+ * 模型：translation cb → 枚举 TB insn → 对每条 insn 注册 per-insn memory cb，把该
+ * insn 的 guest PC(qemu_plugin_insn_vaddr) 经 userdata 传入 mem cb。零暂停、不改 guest 码。
  *
- * 目标物理地址（--arg 传入，缺省 (A) 子根槽）：0x9dc377f8
+ * 主过滤（宽口径漏斗，采纳侧对话③）：任何【store 且访问虚拟地址落在 VM 直接映射窗
+ * [0x1000000000, 0x1000000000+0x4000000000)】的事件——用户态进程写【任何】页表项都
+ * 必经这扇窗（channel_to_ptr→vm_phys_to_virt）。这样即便还没枚举到真正的 L0/L1 帧也漏不掉。
+ *   窗基址/容量：os/arch/src/arch/direct_map.rs Riscv64DirectMap（VM_DIRECT_MAP_BASE=0x10_0000_0000，
+ *   VM_DIRECT_MAP_SIZE=0x4_0000_0000=16GiB）。8 字节 store = 一枚 PTE 宽。
+ * 次过滤（精确）：显式帧列表（argv 逗号；或默认若干帧）按【物理 paddr】命中也记。
  *
- * 用法（待 qemu-plugin.h 就绪后编译，见同目录 watch_store_plugin.build.sh）：
- *   qemu-system-riscv64 -object memory-backend-* ... \
- *     -plugin file=watch_store_plugin.so,arg=0x9dc377f8 ...
- *   命中时串口/日志打印 "WATCH ep=<pc> vaddr=<v> paddr=<p> len=<n>"，
- *   再 objdump minix-vm 反汇 <pc> 定写者函数（预期落 exec 装填 / sync_slot_pte 腿）。
- *
- * ⚠ 本文件【未在本机编译验证】（缺 qemu-plugin.h）。装好头文件后先 `--cflags`
- *    编一遍；若 QEMU 8.2 的 API 名/签名与此处有出入（尤其 qemu_plugin_get_hwaddr /
- *    qemu_plugin_hwaddr_phys_addr / qemu_plugin_get_vcpu_pc），按头文件实际原型微调。
+ * 输出走 fprintf(stderr)（侧对话①：qemu_plugin_outs 需 -d plugin 才可见，stderr 不受此限）。
+ * 用法：qemu-system-riscv64 ... -plugin file=watch_store_plugin.so[,arg=0x9DC37000,...] ...
+ *   不带 arg 即只用 DM 窗漏斗 + 内置默认帧。
  */
 #include <qemu-plugin.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <inttypes.h>
+#include <string.h>
 
 QEMU_PLUGIN_EXPORT int qemu_plugin_version = QEMU_PLUGIN_VERSION;
 
-static guint64 g_target;       /* 目标 guest 物理地址（页表帧内某 8 字节槽） */
-static unsigned g_hits;
-static const unsigned g_hit_cap = 16;
+#define MAX_TARGETS 24
+#define DM_LO 0x0000001000000000ULL
+#define DM_HI 0x0000001400000000ULL   /* DM_LO + 16GiB */
 
-/* 访存回调：只关心【写】命中目标物理地址。info 带 rw 元数据，vaddr 是客户机虚拟地址。*/
+static uint64_t g_base[MAX_TARGETS];
+static int      g_n;
+static bool     g_dmwin = true;
+static unsigned long g_ev;
+static const unsigned long EVENT_CAP = 200000;
+
+static void emit(const char *kind, unsigned int cpu, bool store, unsigned sz,
+                 uint64_t vaddr, uint64_t paddr, uint64_t pc)
+{
+    if (g_ev++ >= EVENT_CAP) return;
+    char buf[256];
+    snprintf(buf, sizeof buf,
+        "PLG %s ev=%lu vcpu=%u %s sz=%u vaddr=0x%016" PRIx64
+        " paddr=0x%016" PRIx64 " slot=%ld pc=0x%08" PRIx64 "\n",
+        kind, g_ev, cpu, store ? "W" : "R", sz, vaddr, paddr,
+        (long)((paddr >> 3) & 511), pc);
+    fprintf(stderr, "%s", buf);
+    fflush(stderr);
+}
+
+static int in_target_frame(uint64_t pa)
+{
+    for (int i = 0; i < g_n; i++)
+        if (pa >= g_base[i] && pa < g_base[i] + 4096) return i;
+    return -1;
+}
+
 static void vcpu_mem(unsigned int cpu, qemu_plugin_meminfo_t info,
                      uint64_t vaddr, void *ud)
 {
-    (void)ud;
-    if (!qemu_plugin_mem_is_store(info)) {
+    bool store = qemu_plugin_mem_is_store(info);
+    unsigned sz = 1u << qemu_plugin_mem_size_shift(info);
+    uint64_t pc = (uint64_t)(uintptr_t)ud;
+
+    struct qemu_plugin_hwaddr *hw = qemu_plugin_get_hwaddr(info, vaddr);
+    if (!hw || qemu_plugin_hwaddr_is_io(hw)) return;
+    uint64_t pa = qemu_plugin_hwaddr_phys_addr(hw);
+
+    /* 次过滤：显式帧（按物理地址）——精确，读+写都记。 */
+    int fi = in_target_frame(pa);
+    if (fi >= 0) {
+        emit("FRAME", cpu, store, sz, vaddr, pa, pc);
         return;
     }
-    qemu_plugin_hwaddr *hw = qemu_plugin_get_hwaddr(info, vaddr);
-    if (!hw || qemu_plugin_hwaddr_is_io(hw)) {
-        return;
-    }
-    uint64_t paddr = qemu_plugin_hwaddr_phys_addr(hw);
-    /* 允许命中整个 4K 帧或精确到 8 字节槽：这里按精确目标地址 + 相邻 8 字节。*/
-    if (paddr >= g_target && paddr < g_target + 8) {
-        if (g_hits < g_hit_cap) {
-            /* guest PC 定位写者指令；若该 API 在本版本取不到，退化为只报 vaddr/paddr。*/
-            uint64_t pc = qemu_plugin_get_vcpu_pc(cpu);
-            g_printf("WATCHSTORE cpu=%u pc=0x%" PRIx64 " vaddr=0x%" PRIx64
-                     " paddr=0x%" PRIx64 " len=%u\n",
-                     cpu, pc, vaddr, paddr,
-                     (unsigned)qemu_plugin_mem_rw_get_length(info));
-            g_hits++;
-        }
+    /* 主漏斗：DM 窗内的 8 字节 store = 一枚 PTE 写（不依赖枚举帧）。 */
+    if (g_dmwin && store && sz == 8 && vaddr >= DM_LO && vaddr < DM_HI)
+        emit("DMWIN", cpu, store, sz, vaddr, pa, pc);
+}
+
+static void vcpu_tb_trans(qemu_plugin_id_t id, struct qemu_plugin_tb *tb)
+{
+    (void)id;
+    size_t n = qemu_plugin_tb_n_insns(tb);
+    for (size_t j = 0; j < n; j++) {
+        struct qemu_plugin_insn *insn = qemu_plugin_tb_get_insn(tb, j);
+        uint64_t pc = qemu_plugin_insn_vaddr(insn);
+        qemu_plugin_register_vcpu_mem_cb(insn, vcpu_mem, QEMU_PLUGIN_CB_NO_REGS,
+                                         QEMU_PLUGIN_MEM_RW, (void *)(uintptr_t)pc);
     }
 }
 
-static void qemu_plugin_outs_noop(void) { /* g_printf 由 plugin 输出通道承接 */ }
-
-QEMU_PLUGIN_EXPORT
-void qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info,
-                         int argc, char **argv)
+/* 解析逗号分隔 hex 帧列表；容忍 QEMU loader 改写的 "0x...=on" 形状（侧对话②）。 */
+static void parse_targets(const char *line)
 {
-    (void)id; (void)info; (void)qemu_plugin_outs_noop;
-    g_target = 0x9dc377f8;               /* 缺省：(A) 子根 i2=255 槽 */
-    if (argc >= 1) {
-        g_target = g_ascii_strtoull(argv[0], NULL, 0);
+    for (const char *p = line; *p && g_n < MAX_TARGETS; ) {
+        while (*p == ',' || *p == ' ') p++;
+        if (*p != '0' || (p[1] != 'x' && p[1] != 'X')) break;
+        char *end = NULL;
+        uint64_t v = strtoull(p, &end, 16);
+        if (end == p) break;
+        g_base[g_n++] = v & ~0xFFFULL;
+        p = end;
     }
-    /* QEMU_PLUGIN_MEM_W = 只订阅写；对全 vCPU、全代码块注册。*/
-    qemu_plugin_register_vcpu_mem_cb(id, vcpu_mem, QEMU_PLUGIN_MEM_W, NULL);
-    g_printf("watch_store_plugin: armed on paddr 0x%" PRIx64 "\n", g_target);
+}
+
+QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
+                                           const qemu_info_t *info,
+                                           int argc, char **argv)
+{
+    (void)info;
+    for (int a = 0; a < argc; a++)
+        if (argv[a] && argv[a][0]) parse_targets(argv[a]);
+
+    if (g_n == 0) {
+        /* 默认帧：栈缺页 walk 链（T2）——子根 / L1 / L0 + bogus 叶子基址帧。*/
+        g_base[0]=0x9DC37000ULL; g_base[1]=0x9d2ad000ULL;
+        g_base[2]=0x9d2ac000ULL; g_base[3]=0x9d28c000ULL; g_n=4;
+    }
+    qemu_plugin_register_vcpu_tb_trans_cb(id, vcpu_tb_trans);
+
+    fprintf(stderr, "watch_store_plugin: armed dmwin=%s frames=%d [",
+            g_dmwin ? "on" : "off", g_n);
+    for (int i = 0; i < g_n; i++)
+        fprintf(stderr, "%s0x%" PRIx64, i ? "," : "", g_base[i]);
+    fprintf(stderr, "]\n");
+    fflush(stderr);
+    return 0;
 }

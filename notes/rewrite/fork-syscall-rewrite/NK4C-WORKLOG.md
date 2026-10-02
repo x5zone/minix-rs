@@ -11314,6 +11314,28 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 本层纯读现有崩帧+python 对齐核算，零新跑、零改码；未改 os/ 生产码；host 1400/0。旧靶 0x9DC377F8 连槽号都错（应 i2=511）且属错类别（数据非槽读）。三目标未全成，goal active。
 
+---
+
+## §续-258（2026-10-03·用户装好 qemu-plugin.h⇒QEMU mem-write 插件按真实 API 修好+编译+空载冒烟PASS+首跑；发现漏斗过宽（bitmap_alloc 噪声）+插件会漂崩点⇒帧地址随 build 变，靠 DM 窗漏斗不靠枚举帧）
+
+> 环境就绪（qemu-plugin.h 已落地 tmp/nk4a/、GLib 2.80）。与侧会话协调：同一文件不并发写，插件本体归本会话（主线程），侧会话只出建议。采纳其 【】 【】 【】 三点（见下）。**未改 os/ 生产码**（插件在 tmp/nk4a）。
+
+### 插件修正（按本机真实 qemu-plugin.h，不再猜）
+- API 修正：`qemu_plugin_register_vcpu_mem_cb(insn, cb, flags, rw, userdata)`——需经 translation cb → `qemu_plugin_tb_n_insns`/`tb_get_insn` → `qemu_plugin_insn_vaddr(insn)` 取 PC 经 userdata 传入；`struct qemu_plugin_hwaddr *`；`qemu_plugin_install` 返 int(0)；大小用 `qemu_plugin_mem_size_shift`；`uint64_t`+`fprintf(stderr)`（非 qemu_plugin_outs，侧【】：outs 需 `-d plugin` 才可见）。
+- **采纳侧【】宽漏斗**：主过滤=【store ∧ sz==8 ∧ vaddr∈VM 直map窗 [0x1000000000,0x1400000000)】（用户态写任一页表项必经此窗）；次过滤=显式帧（argv 逗号，armed 行逐个打出帧地址）。
+- **编译**：`gcc -O2 -fPIC -shared -I. $(pkg-config --cflags glib-2.0) watch_store_plugin.c -o watch_store_plugin.so` → rc=0。空载冒烟（8s qemu 不启镜像）→ `armed dmwin=on frames=1 [0x9dc37000]` 正常打印、符号全解析（侧【】建议固定此冒烟前置）。
+
+### 首跑发现（gh105–108，真实 boot+插件）
+- 插件不阻止 (A) 重现（但会改时序：崩点漂到 `0x3ac1a/0x409d28bb20` 变体，与 -S 同因）⇒**硬码默认帧（旧 build 地址）在新 build 不命中（FRAME=0）⇒必须靠 DM 窗漏斗、不靠枚举帧**。
+- **漏斗过宽**：writer PC 直方图：`0x37910`×120k=`BitmapAllocator::init`、`0x36e5e`=`alloc_mem`——都是物理帧分配器自己的 8B DM 写（非页表项！）⇒“DM窗 8B store=写 PTE”假设错。真正 PTE 写候选=`0x3a9d2/0x3aa6a/0x3aae8`（paging.rs map/insert 腿，`sd a2,248(a5)` 区）。
+- **EVENT_CAP 200k 在崩溃前就撞顶**（bitmap 噪声主导）⇒未捕到崩溃时刻写。
+
+### 下一步收窄（T4）
+- 插件侧：过滤掉 `BitmapAllocator` 区 writer（只留 paging.rs 地址段 pc）、或提高 cap 且取崩溃前 tail；插件拿不到写入值⇒配 guest 侧台账（方案乙：PT_SEEN 位图写前检查，侧会话已写 `NK4C-BUG-RISCV64-TRANSIENT-PTE.md` 待办）。plugin+台账 才是完整证据链。
+
+### 纪律
+- 新增 tmp/nk4a/watch_store_plugin.c/.so + riscv_plugin_run.sh（零暂停取证仪，不改 guest 码）；未改 os/ 生产码；host 1400/0。(A) 仍 open；插件已可用、需收窄漏斗去 bitmap_alloc 噪声再定位 PTE 瞬态写者。三目标未全成，goal active。
+
 
 
 
