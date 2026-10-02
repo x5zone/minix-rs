@@ -10981,6 +10981,22 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **本轮未改生产 Rust/C 码**（纯 `objdump` 反汇 + 串口解析 + 文档），host 4 包集 1400/0 不变、x86/aarch64 两 marker 无回归（无代码可 review，CodeReview 门对纯文档增量不触发）。
 - 纠正两条 WORKLOG 判读：§续-221「a1=query self 指针」→ 实为算出的槽调试底图 VA；§续-228 watch 靶「root+511*8」→ 本 fault i2=255（且需先定子根 `0x9dc37000` vs VM 根 `0x82000000`）。三目标均未全成，goal active。
 
+## §续-239（2026-10-02·**(A) 源码级定级定根：把 §续-238 的候选物理槽收敛到唯一靶 `0x9DC377F8`（L2 中间项槽，非叶），免下一轮再活体分辨子根/VM 根**）
+
+### 反汇三读点 ⇄ `walk_read` 源码逐位对账（`os/arch/src/riscv64/paging.rs:307-343`）
+- `paging.rs:311` `l2e = read_pte_dm(root + i2*8)` ⇒ 反汇 **0x3abd2** `ld a1,0(a3)`（a3=root+(1<<36)）：读 **L2 中间项**。
+- `paging.rs:322/326` `l1 = pte_to_paddr(l2e); l1e = read_pte_dm(l1 + i1*8)` ⇒ 反汇 **0x3abec** `ld a1,0(a1)`（gh72 fault 点）：它的表基址来自 **上一步的 l2e**。⇒ **真正被写坏的槽 = l2e 本身 = `root + i2*8`（L2 层），不是 L1/叶**。
+- `paging.rs:342` leaf 读 ⇒ 反汇 **0x3ac1a**（§续-232 里 gdb-halt 扰动后漂移到的另一点）。
+- ⇒ **§续-238 遗留的「slot 读还是 leaf 数据读」张力在源码层解决**：0x3abec 确定是 L1-槽读，其地址 = `pte_to_paddr(l2e) + i1*8`。`pte_to_paddr = ((pte&PPN_MASK)>>10)<<12` **恒把低 12 位清零**（4K 对齐），`i1*8` 恒 8 对齐⇒合法 PTE 下 off 必为 8 倍数。实测 off=`0xb2c`（非 8 倍）⇒ **喂进来的 l2e 不是合法 PTE而是一个数据字**（数据字被 `pte_to_paddr` 解码会泄非对齐低位），直接坐实 §续-233「帧级 PT/data 双别名」。
+
+### 定根（源码 + 已有正证据⇒无需再活体分辨）
+- `query` 将服务地址空间的 root_paddr 传给 `walk_read`；§续-195 已用 512MB 快照从 VM 自身根 `0x82000000` BFS 访问 22 张级联表 **全净（0 corrupt 中间项）**⇒ 被写坏的 l2e **不在 VM 自己的根**。⇒ 它必在被服务的子进程 0x800c 根 = **`0x9dc37000`**（§续-229 `sas-fork` 探针实测本 build）。⇒ **§续-238 列的「若 walk 经 VM 根映子表则 0x820007F8」备选已被 §续-195 正证据排除。**
+
+### ⇒ 唯一收敛的硬件写 watchpoint 靶
+- **物理地址 = 子根 `0x9dc37000` + i2(255)*8 = `0x9DC377F8`**（L2 中间项槽）。下一轮直接对此 8 字节设 qemu 硬件写 watchpoint（条件「写入值经 `pte_to_paddr` 解码后 ≥RAM 顶 `0xA0000000`，或非 4K/8 对齐才停」），拓出把它当数据字写进该 L2 槽的那条 store PC+回栈。
+- 仍缺的只是**瞬态写入值本身**（快照抓不到，§续-196/200/216）——这正是硬件写 watchpoint 能抓而静态/快照不能的。配方不变（§续-238 四：正常 boot 无 `-S`、hbreak `trap_dispatch.rs:1991` panic 前一次读现场→重启对 `0x9DC377F8` 设写点）。
+- **本轮未改生产码**（纯源码+反汇对账），host 1400/0 不变、两 marker 无回归。(A) 靶从「两个候选物理槽」收敛到**唯一 `0x9DC377F8`（L2 层）**，级别与根均已定死。goal active。
+
 
 
 

@@ -77,6 +77,6 @@
   1. **a1(x11) 不是 `query` 的 `&self`**，是算出的被读槽调试底图 VA（故 x11==stval 是应然）；§续-221 step3 判读作废。
   2. off=`0xb2c` **非 8 对齐**⇒按 §续-153b 自己的判据是**叶/数据访问**，非干净槽读（父基址被写入带了 vaddr 低位）。
   3. 被 walk vaddr 属 `0x3ffffdfbXX` 族（x2/x5，off 逐位吻合）⇒ **i2=255（0xFF）非 511**；§续-228「root+511*8」=0x82000FF8 是错靶。
-  4. 被 walk 子根=`0x9dc37000`（§续-229 sas-fork）非 VM 根 `0x82000000`（pfvm 探针印的是 VM 自己 satp）。⇒ 父槽物理=`0x9dc37000 + 255*8`=**`0x9DC377F8`**。**设 watchpoint 前必须先活体读确认 walk 用子根还是 VM 根。**
+  4. 被 walk 子根=`0x9dc37000`（§续-229 sas-fork）非 VM 根 `0x82000000`（pfvm 探针印的是 VM 自己 satp）。⇒ 父槽物理=`0x9dc37000 + 255*8`=**`0x9DC377F8`**。**§续-239 源码级定级定根（收敛到唯一靶）**：反汇 0x3abec=`read_pte_dm(pte_to_paddr(l2e)+i1*8)`（L1-槽读），其表基址来自上一步 **l2e=`root+i2*8`（L2 层）**⇒被写坏的是 **L2 中间项非叶**；`pte_to_paddr` 恒 4K 对齐、实测 off=0xb2c 非 8 倍⇒喂进的 l2e 是个**数据字**（坐实 §续-233 双别名）；又 §续-195 已证 VM 自身根 22 表全净⇒VM 根备选 **0x820007F8 已排除**。**唯一硬件写 watchpoint 靶 = `0x9DC377F8`**，级别/根均已定死。
 - **抓写者正确配方**：正常 boot（**不加 `-S`**，保 §续-228 的无-gdb 确定时序）下 `hbreak` 到 `trap_dispatch.rs:1991` panic 前（全 boot 仅命中一次→不慢），一次读 fault frame a2 + 子进程 0x800c phys_root → 据上判据算父槽物理→重启对该**物理**地址设 qemu 硬件写 watchpoint（条件「写入值解码 PPN≥RAM 顶 0xA0000000，或 off 非 8 对齐才停」），零 guest 文本探针扰动。harness：`tmp/nk4a/` fresh 端口 1240 + `ghNN-*` 独立前缀 + 点火前 `pkill -f '[q]emu-system-riscv'` 只杀本 harness qemu。
 - **未坐实不成修**；每改码守 x86 marker=2/panic=0 + aarch64 marker 不回归 + check-layout all + host 4 包集（基线 1400/0）。(A) 是① riscv marker 与③ riscv 上机的共同关键路径。三目标均未全成，goal active。
