@@ -324,6 +324,27 @@ fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
     let i1 = l1_index(vaddr);
     // SAFETY: see above; L1 entry address is within the L1 page.
     let l1e = unsafe { read_pte_dm(l1 + (i1 as u64) * 8, channel) };
+    // 续-173 探针（用后即滚）：L1 槽 PA+raw 值——query 与 update_flags
+    // 共用本函数，序列对比两 walk 的 (root,l1,l1e)。栈族 VA 门控 3 次。
+    #[cfg(not(feature = "mock"))]
+    if vaddr > 0x7fff_0000_0000 && matches!(channel, PteChannel::VmDm) {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        static L1_N: AtomicUsize = AtomicUsize::new(0);
+        if L1_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            Console::write_str("nk4a: l1raw root=");
+            Console::write_hex(root_paddr);
+            Console::write_str(" l1=");
+            Console::write_hex(l1);
+            Console::write_str(" i1=");
+            Console::write_hex(i1 as u64);
+            Console::write_str(" l1e=");
+            Console::write_hex(l1e);
+            Console::write_str(" ch=");
+            Console::write_hex(channel as u64);
+            Console::write_str("\n");
+        }
+    }
     if l1e & Sv39PteFlags::V.bits() == 0 {
         return WalkResult::NotPresent;
     }

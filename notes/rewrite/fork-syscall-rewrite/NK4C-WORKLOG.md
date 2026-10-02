@@ -10344,3 +10344,5 @@ gh49 铁证并列：kdst copy pa=0x9d2aff98（帧拷贝）↔ update_flags 崩�
 ## §1.120续-172（2026-10-02·**gh50：walk-flip=0（sync 内部双 query 恒一致，非崩路径样本）+ kerninfo 碰撞排除（KERNINFO_USER_VA=0x200000000，i2=8/i1=0，与栈区 i2=511/i1=511 不同 L2 子树，内核 kerninfo map 不触碰栈的 L1）——VM fault 仍现（sepc=0x39e84 stval=0x10bd28cb2c 同族）；剩余唯一形态=walk A（match 的 query）与 walk B（update_flags 内联）间 L1[511] 内容不一致且无已知写者；续-173=arch 层探针（update_flags 内联 walk 前后 dump L1 槽 PA+值，riscv64/paging.rs 直改）**）
 
 gh50 判读：sync 双 query 一致→崩点不在 sync 的 walk 对；kerninfo map 的 L2 索引 8≠511 排除内核写者。update_flags 的内联 walk（391c0 段）在 root→L1 提取后即崩——续-173 直接在 riscv64/paging.rs update_flags/query 的 walk_read 前后加 L1 槽 PA+raw 值打印（门 3），一锤定音「L1 槽值在两 walk 间变/不变」。若不变而 sepc 崩点仍踩→唯一剩余=DM 窗翻译不稳定（VM 根树被外部写——回到「谁写 0x9dc38000 页」=内核 kdst/SETADDR 的 kerninfo map 之外的写点枚举）。
+
+## §1.120续-173（2026-10-02·**l1raw 探针门控两次被烧（gh51=VM自根早walk×3、gh52=boot重exec KernelDm walk×3），终门=channel==VmDm（child walk 必经）**；gh53 日志将落 os/target/riscv64gc-unknown-none-elf/boot-full-serial.gh53.log，读其中 l1raw 行：child 栈 VA 的 (root,l1,i1,l1e) 序列——同一 VA 两 walk 的 l1e 不同=未知写者实锤；相同而 sepc 崩=DM 窗翻译不稳定。续-174 按此分叉成修。）
