@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-247（2026-10-03·方法论墙定谳：硬件写 watchpoint 死 + 任何 gdb/仪表都扰动 (A)（-S 漂 0x3ac1a、加读漂 0x3ae3c）⇒ 本工具链无法动态观察瞬态 corrupt l2e；但逻辑硬结论：崩 walk root ≠ 子根 0x9dc37000（单靶 0x9DC377F8 基于错根）。(A) 改走静态审计 root 错配）**；取证链 §续-216~247**：
+> **🛑 最新前沿＝§续-248（2026-10-03·gh102 KDM 活体读 RS 根 0x82132000（slot255=0x20b38801→合法 in-RAM L1 表）：两张候选根 halt 全净 ⇒ 坐实崩溃瞬态 corrupt l2e 不驻留任何已知根帧；动态定谳 (A) 正式判为工具链不可行（watchpoint死+gdb改局+halt看不到）。(A) 下步走纯静态：查 VmProc 根 adopt/set vs live satp 不一致）**；取证链 §续-216~248**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11173,6 +11173,19 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 本会话未改生产码（cow_exec_pf.rs 探针已 revert）；gh100/101 均端口锚定已清、qemu 无残留；新增 harness `riscv_root_probe.sh` 为纯 gdb 取证工具（含 -S 漂移负结果证据）。host 1400/0。三目标未全成，goal active。
+
+---
+
+## §续-248（2026-10-03·gh102 KDM 活体读 RS 根 0x82132000：两张候选根 halt 时全净 ⇒ 瞬态不可观察坐实；动态定谳 (A) 正式判为工具链不可行）
+
+> 承 §续-247：若崩 walk root=RS 根 0x82132000，则应在那里读到 corrupt l2e。给 `riscv_live_read.sh` 加 `CHILD_ROOT` env 覆盖（不改码），跑 gh102 dump RS 根整帧。
+
+- **gh102 实测（干净无-S boot，内核 halt KDM 读）**：RS 根 0x82132000 的 **i2=255 槽（0x821327F8）= `0x20b38801` ⇒ paddr=0x82ce2000、flags=0x1（V）——合法 in-RAM L1 表指针**；i2=511=0；全 512 槽仅 7 非零且均合法（如 0x20b39001/0x20804c01）。⇒ **RS 根 halt 时也全净**，与子根 0x9dc37000（gh96 全净）同。
+- **两张候选根 halt 全净 ⇒ 坐实：崩溃读瞬间的 corrupt l2e 不驻留在任何已知根帧**。结合 §续-247：“读不到（watchpoint 死）+ 不能拦（gdb 改局）+ halt 看不到（不驻留）”。**(A) 瞬态根因的动态定谳在本工具链正式判为不可行**（非不为）。
+- **下步改纯静态**（§续-247 已开）：不靠动态观察，而是读 VmProc 根如何 adopt/set vs live satp，找“哪个路径使缓存 root_paddr 与真根不一致”（exec_worker / setaddr_space / adopt_active_root）。若静态也找不到不一致点⇒回到 A1（真瞬态），需更巧的零扰动方法（如 QEMU 插件，本机缺 qemu-plugin.h 需先装）。
+
+### 纪律
+- gh102 纯 KDM 活体读（无代码改动），端口锚定已清；新增 live_read.sh 的 CHILD_ROOT env 开关。未改生产码；host 1400/0。三目标未全成，goal active。
 
 
 

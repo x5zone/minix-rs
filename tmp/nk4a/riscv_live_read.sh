@@ -19,7 +19,7 @@ REL="$ROOT/target/riscv64gc-unknown-none-elf/release"
 IMG="$ROOT/target/image/riscv64"
 LOG=/home/xzhao/github/minix-rs/tmp/nk4a
 KDM=0xFFFFFFC040000000           # riscv64 KERNEL_DIRECT_MAP_BASE = 0xFFFF_FFC0_4000_0000
-CHILD_ROOT=0x9dc37000             # 子进程 0x800c 页表根物理(§续-229/238, gh92 filot 实测)
+CHILD_ROOT="${CHILD_ROOT:-0x9dc37000}"  # 子进程页表根物理(可 env 覆盖：RS根=0x82132000)
 
 cleanup() { pkill -f "[q]emu-system-riscv64.*$PORT" 2>/dev/null || true; sleep 1; }
 if ss -ltn 2>/dev/null | grep -q ":$PORT "; then echo "WARN port busy"; cleanup; fi
