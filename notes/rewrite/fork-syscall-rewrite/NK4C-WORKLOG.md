@@ -10891,5 +10891,12 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 目标③/② x86 腿可并行推进，但 (A) 不再以“需人工”为由停摆（工具已验证可用，下一步是盯写点的专门 gdb 逐段推进）。
 - 本轮无生产码变更；gdb harness 在 tmp（gitignore）；qemu 已清、tracked 净。host 1400/0。goal active。
 
+## §续-227（2026-10-02·**(A) 自动化抓法新约束：多读点条件 hw 断点因 gdbstub 往返太慢（500s 仅到 11760/19694 行）抓不到那一次稀有实例；下一步应用“单次命中快路径”而非热路径条件撒网**）
+
+- 实测：`tmp/nk4a/riscv_gdb_multisite.sh`（hbreak *0x3abd2/*0x3abec/*0x3ac1a 三读点，条件“地址操作数≥‗DM+RAM顶 0x10a0000000”）——三个 hw 断点能设，但 `continue` 下每次 query 下降都 stop→remote 求条件，boot 500s 只跑到 11760 行（(A) 在 ~19694）→赶不上。**“条件断点自动撒网”在 gdbstub 上太慢**（区别于§续-226已推翻的“环境不可”——环境可用、只是热路径条件慢）。
+- **正确的快路子（下次用，单次命中）**：不在热的 query 读点加条件，而是 hbreak **一次**在内核 pagefault-in-VM 处（trap_dispatch.rs:1991 panic 前，全 boot 只命中一次，零慢），在那读 fault frame 的 a2(vaddr)/a1(坏址)/sepc + 从内核侧读**被服务子进程的 phys_root**（pfvm 只印了 satp=VM 自己根，非被 walk 的子根）⇒ 算出父槽 root+i2*8 的**物理地址**，再重启对那个物理地址设**硬件写 watchpoint**（只写一次→不慢）抓写者 PC+值。需带 kernel 符号的 gdb（非 minix-vm）。
+- 本轮未改生产码；harness 在 tmp（gitignore）；qemu 已清、tracked 净。host 1400/0。三目标均未全成，goal active（(A) 不因“需人工”停摆，只是需正确的单次命中 gdb 姿势，非热路径条件）。
+
+
 
 
