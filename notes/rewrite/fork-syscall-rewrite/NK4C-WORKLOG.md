@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-269（2026-10-03·插件加 query-PC 记录器 gh119零扰动定候选）**：1078 条可观测 query 读全 8 对齐（pc=0x3abec 观测 215 次永远读对齐 0x109d2adff8=子根 0x9dc37000 i2=511→L1 0x9d2ad000 槽 511）；崩点 stval 0x10bd28cb2c 在所有 mem-cb 记录出现 0 次⇒**8.2 mem-cb 不为故障那一次访问触发**（重坐 p1）+ 8.2 无寄存器读 API。⇒形态 C 的 (sepc=0x3abec,stval=…B2C) 不是可观测的真实已执行槽读⇒倒向候选 (i) TCG stval 报告语义 / (iii) sepc↔stval 归属不同访问，排除 (ii) 可观测非对齐访问。链身份坐实 i2=511（彻底打死旧靶 0x9DC377F8/i2=255）。**手段已尽⇒按计划步骤 4b#5 (A) 标“工具链/预算限制”保持 open、不投机改生产码**；要下步需换有寄存器读 API 的版本插件或 tb-exec dump a1（会扰动）。
+> **🛑 最新前沿＝§续-270（2026-10-03·插件重焦写者时间线 gh120得一个硬旁证）**：全窗 store 插件（零改 guest 码、只拖慢）使 fork 崩**消失**（guest 困 sa-call 循环 ≥180s 不崩，而裸启动 ~4–6s 必崩）。耐久脏槽型缺陷被均匀拖慢仍会崩；只有 **timing-sensitive 跨 race** 才因拖慢改变窗口交错而不再触发⇒与§续-267/268“非确定≥三形态”互证，**(A) 坐实为 fork 路径竞态（非静态内存破坏）**。插件拖慢→race 消失=Heisenbug（速度扰动型）⇒插件对该 race 非中立观测者。按步骤 4b#5：(A) 根因保持 open（工具链/预算限制）、不投机改生产码；定 race 需不改启动速度的手段（多次 boot 统计崩形态分面 / 代码级审计 fork+setaddrspace+sync_slot_pte 与页表帧复用的 happens-before）。（上一前沿 §续-269：插件加 query-PC 记录器⇒可观测 query 读全 8 对齐、崩点非对齐 stval 从不现于 mem-cb⇒8.2 mem-cb 捕不到故障那次访问；链坐实 i2=511 打死旧靶 0x9DC377F8。）
 >
 > **（上一前沿＝§续-266，2026-10-03·侧会话 3 死角逐条对账）**：① **T10 反汇定案**（当前 build query@0x3ab58）——query 每条 `ld` 地址=`基址(DM_BASE+pte_to_paddr, 4KiB对齐)+索引×8`、立即数恒 0⇒**崩地址低 12 位必 8 对齐，不可能 …B2C**；“读法乙子型（query 后调用者加游标）”无对应指令⇒驳；裸启动 `sepc=0x3ac10` 在本 build 是非-load `and`⇒(sepc,stval) 跨 build 归属不可靠。⇒**§续-265 “root 身份错配”（基于把 stval 当 walk 输出算出“故障物理 0x9d28b”）下调为未证**。② 内核窗已入插件（c:32-34,88）。③ 快照谓词=解码式（不漏末级）但覆盖仅 12 根+已 dump L0、**非全内存**。
 >
@@ -11552,6 +11552,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 插件为诊断工具（tmp/nk4a 下，零生产码）；gh119 日志不入库（untracked）。(A) 候选再收窄（倒向 TCG 故障报告/归属，排除可观测非对齐访问）；三目标未全成，goal active。
+
+---
+
+## §续-270（2026-10-03·插件重焦为“写者时间线”（gh120）意外得一个硬旁证：全窗 store 记录拖慢启动后，fork 崩不再发生（困在 sa-call 循环）⇒ (A) 是 timing-sensitive 跨 race而非耐久脏槽）
+
+> 承 §续-269。把 `vcpu_mem` 重焦：目标帧（子根链 + bogus 叶基）**只记写**（culprit 写者时间线）、query PC 仅记非对齐（哨兵），避免读洪水挤掉写事行；`dmwin=on frames=[0x9dc37000,0x9d2ad000,0x9d2ac000,0x9d28c000]`。重编 rc=0，跑 gh120。
+
+### 实测：零崩、但拿到一个关键旁证
+- **gh120 整个启动 `pagefault for VM` 行数 = 0**；插件 armed 后 guest 一直刷 `nk4a: sa-call caller=4 pid=9 fl=0x12 sys=y` 循环（未到达 §续-268 那个 fork→崩），跑 ≥180s 仍不崩（被手动杀）。
+- **⇒ 旁证**：同 build 裸启动 ~4–6s 必崩（形态 A/B/C）；加全窗 store 插件（零改 guest 码、只拖慢）后崩**消失**。一个“耐久脏槽/固定 corrupt 数据”型缺陷在被均匀拖慢时仍会崩；只有 **timing-sensitive 跨 race** 才会因拖慢改变窗口交错而不再触发。⇒ 与 §续-267/268 “非确定 ≥三形态”互证，(A) 坐实为 **fork 路径竞态**，非静态内存破坏。
+- 副作用：全窗 `dmwin` 8 字节 store 本身也洪水，FLUSH 环 4096 全满且未含 slot511 帧写（因本轮根本没走到 fork 崩）⇒本轮不具 culprit 写时间线可分析。
+
+### 后果与手段判定
+- 插件拖慢→race 消失 = **Heisenbug（速度扰动型）**，与 §5.2 一类；用插件抓“写瞬间”会系统性改变竞态⇒插件对该 race **不是中立观测者**。按本计划步骤 4b#5：**(A) 根因保持 open（工具链/预算限制），不投机改生产码**；三目标 riscv 段受 (A) 门控。
+- 定该 race 真正需：不改启动速度的手段（如原子快照多次 boot 统计崩形态分布、或代码级审计 fork/setaddrspace/sync_slot_pte 与页表帧复用共享状态的 happens-before）。
+
+### 纪律
+- 插件为诊断工具（tmp/nk4a）；零改生产码（os/ 仍无 tracked 变更）；gh120 日志 untracked；qemu 已清。新增旁证：(A)=fork 路径竞态（非耐久脏槽）；三目标未全成，goal active。
 
 
 

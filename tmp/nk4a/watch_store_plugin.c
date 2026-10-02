@@ -116,14 +116,17 @@ static void vcpu_mem(unsigned int cpu, qemu_plugin_meminfo_t info,
     if (qemu_plugin_hwaddr_is_io(hw)) return;
     uint64_t pa = qemu_plugin_hwaddr_phys_addr(hw);
 
-    /* query PC 区间内的每一次读/写（成功）：拿其精确 vaddr 定对齐性。 */
-    if (in_query_pc(pc)) {
-        rec(3, cpu, store, sz, vaddr, pa, pc);
+    /* 目标帧（子根链 + bogus 叶基）：**只记写**（= 瞬态写者 culprit），读仅当非对齐
+       （可疑哨兵）。这样环形缓冲留的是 slot 511 的写入时间线而非被读洪水挤掉。*/
+    if (in_target_frame(pa) >= 0) {
+        if (store) rec(0, cpu, store, sz, vaddr, pa, pc);
+        else if (vaddr & 0x7ULL) rec(0, cpu, store, sz, vaddr, pa, pc);
         return;
     }
-
-    if (in_target_frame(pa) >= 0) {                 /* 次过滤：显式帧（R+W）*/
-        rec(0, cpu, store, sz, vaddr, pa, pc);
+    /* query PC 区间：仅当出现非对齐访存才记 kind=3（候选 (i) 哨兵，正常应零条），
+       不再无差别记录每一次对齐读（避免挤掉写者时间线）。*/
+    if (in_query_pc(pc)) {
+        if (vaddr & 0x7ULL) rec(3, cpu, store, sz, vaddr, pa, pc);
         return;
     }
     /* 主漏斗：任一直map窗（VM 或内核）内的 8 字节 store = 一枚 PTE 写。*/
