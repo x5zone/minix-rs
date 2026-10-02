@@ -10391,3 +10391,7 @@ kerninfo map 审计结论（本轮已完成）：from_active_root(ptroot_phys) �
 ## §1.120续-184b（2026-10-02·**双投递点定位：①proc_table.rs:1258 kernel_call_resume 的 VmCheckResult::Fault→SIGSEGV（memreq fail-closed 时内核直接 SIGSEGV 目标=VM 即 for-itself，且 handle_kernel_memreq 的 get_active(None) 早出口无探针）②trap_dispatch.rs:1064 异常臂 cause_sig(cur_nr, sig)——gh53 sepc=0x39f4a=`addi`（不可能自陷）⟹ VM text 页内容被改写成非法指令（异常臂Illegal→SIGSEGV）；VM text 帧=内核 bump 分配、不在 VM free list⟹写者=内核侧（kinfo/diagctl/IPC staging 对池帧的写）；续-186=1064 异常臂补打 scause+stval（门 3）定异常类型→枚举内核对池帧写点→成修**）
 
 gh56 复核：kc-efault（syscall.rs:584）零触发=kernel_call 拷贝链排除；hm-fail 零触发=get_active(None) 早出口无探针（补打点列入续-186）。VM fault 的完整判据链：异常臂（1064）→cause_sig(8, SIGSEGV)→stacktrace→panic。
+
+## §1.120续-186（2026-10-02·**gh58 决定性：segv-delve ep=8 p_fault_addr=None——SIGSEGV-to-VM 无页故障记录=非 PF=VM text 内容被改写成非法指令（Illegal→异常臂→cause_sig），且全池扣减后仍发生=写者在 KERNEL 侧对 VM text 帧（boot-exec 池帧）的直接写；VM 分配器已排除（续-180）、模块区已扣（续-175）；续-187=①kernel boot-exec 的帧分配台账审计（server N+1 的 exec 是否复用 server N 已占帧——kernel 侧无 VM 占用记录！）②VM text 页内容运行时快照对账（pmemsave 已通）③成修=kernel handoff 记录 boot-exec 已占帧（LiveBootstrap 扩展到全部 exec 镜像帧）→VM 侧扣减**）
+
+根因最终形态：kernel 的 boot-exec 逐台装载服务器镜像进池帧，但 **kernel 不知道哪些池帧已被前面的 exec 占用**（或 kernel 自己的 bump 与 exec 分配双轨漂移）——后面 exec 的段装载覆写前面服务器（VM）的 text 帧。VM 侧扣减（模块区+池）修的是 VM 分配器侧；kernel 侧 boot-exec 的帧记账缺口仍在。续-187 首步：kernel boot-exec 装载循环（kernel/src 的 exec_bootproc 族）的帧分配源审计。

@@ -293,6 +293,20 @@ pub(crate) fn cause_signal(
             if let Some(rp) = proc_table.get(target_nr) {
                 crate::stacktrace::proc_stacktrace(rp);
             }
+            // 续-186 探针（用后即滚）：SIGSEGV 投递时的 fault 现场——
+            // VM 死因的缺失拼图（异常臂不打印 stval）。
+            #[cfg(not(test))]
+            if sig_nr == crate::syscall_signal::SIGSEGV {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                Console::write_str("nk4a: segv-delve ep=");
+                Console::write_hex(ep.0 as u64);
+                Console::write_str(" p_fault_addr=");
+                match proc_table.get(target_nr) {
+                    Some(p) => match p.p_fault_addr { Some(a) => Console::write_hex(a), None => Console::write_str("none2") },
+                    None => Console::write_str("none"),
+                }
+                Console::write_str("\n");
+            }
 
             // C: system.c:430-431 — panic(...)
             panic!(
