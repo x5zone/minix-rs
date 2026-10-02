@@ -2,18 +2,13 @@
 # build-libatf-c.sh — NK4-C 目标③：交叉构建 NetBSD ATF 的 C 库（libatf-c.a）。
 #
 # 目标③（minix3 的 586 个 C 测试上机）的公共依赖：所有 atf-c 测试程序链接
-# libatf-c。本脚本把 `minix3/external/bsd/atf/dist/atf-c` 的 7 个库源用
-# riscv64 交叉工具链 + picolibc 编成静态库，产出到 os/target/atf/<arch>/。
+# libatf-c。本脚本把 `minix3/external/bsd/atf/dist/atf-c` 的全部库源（顶层 7 个
+# + detail/ 子树 10 个）用交叉工具链 + picolibc 编成静态库，产出到 os/target/atf/<arch>/。
 #
-# 这是 boot-independent 的构建期产物（不参与 minix-rs 生产镜像），是 ③ 的
-# 第一块可验证交付；把测试真正跑起来还需「C 测试二进制 → 我方 exec/VFS/
-# syscall-IPC 桥 + 上机」这一段（见 WORKLOG 目标③ 审计）。
-#
-# ⚠ 限制（本脚本尚未完成）：只编 atf-c 顶层 7 个库源，**不是完整 libatf-c**。
-# 链真实 atf 测试会缺 `atf-c/detail/` 子树的符号（atf_list_*/atf_equal_list_* 等），
-# 且 detail/env.c 等需 HAVE_SETENV/HAVE_SETRGENV 一类 configure 探测宏才能编。
-# ③ 的完整前置（补全 detail/ + HAVE_* 移植 + syscall 桥 _exit/stdout/_write/_sbrk
-# → 我方 kernel_call + 测试 helper md5.h/bm.h/dlfcn.h + atf _start/main）见 WORKLOG §续-224。
+# 这是 boot-independent 的构建期产物（不参与 minix-rs 生产镜像）。库已**完整**：
+# 链一个真实 atf 测试已无 atf_* 未定符号，仅剩 POSIX syscall/stdio（_exit/open/
+# close/geteuid/getgroups/stdout/stderr）——即③的「C→我方 kernel_call/VFS syscall 桥」
+# 与上机那一段（见 WORKLOG §续-224 组件清单）。
 #
 # 关键移植点（对照 picolibc 缺件，均在 tools/atf-c-compat/ 补齐）：
 #   - defs.h 由 defs.h.in 渲染（三个 @ATTRIBUTE_*@ 宏 → GCC __attribute__）。
@@ -58,9 +53,16 @@ sed -e 's/@ATTRIBUTE_FORMAT_PRINTF@/__attribute__((format(printf, a, b)))/' \
     -e 's/@ATTRIBUTE_UNUSED@/__attribute__((__unused__))/' \
     "$SRC/atf-c/defs.h.in" > "$BUILD/atf-c/defs.h"
 
-# config-time 宏（占位值；构建期不影响测试语义）。
+# config-time 宏（占位值；构建期不影响测试语义）+ picolibc 能力探测宏。
+# HAVE_SETENV/UNSETENV/PUTENV：newlib/picolibc 提供 setenv → 让 detail/env.c 闭合。
+# PACKAGE_*：autoconf 包宏（detail/sanity.c 的断言消息用）。
 CFGS=(
-    -D__minix
+    -D__minix -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
+    '-DPACKAGE_NAME="libatf-c"'
+    '-DPACKAGE_TARNAME="atf"'
+    '-DPACKAGE_VERSION="0.6"'
+    '-DPACKAGE_STRING="libatf-c 0.6"'
+    '-DPACKAGE_BUGREPORT=""'
     '-DATF_BUILD_CC="cc"'
     '-DATF_BUILD_CFLAGS=""'
     '-DATF_BUILD_CPP="cpp"'
@@ -74,17 +76,23 @@ CFGS=(
     '-DATF_WORKDIR="/tmp"'
 )
 
-# 7 个库源（不含 *_test.c）。
-LIB_SRCS=(error build check config tc tp utils)
+# 库源：atf-c 顶层 7 个 + atf-c/detail/ 子树 10 个（排除 *_helpers.c/test_helpers.c，
+# 那是库自测用）。漏 detail/ 会使 libatf-c.a 不完整（atf_list_* 等缺失）。
+LIB_SRCS=(
+    error build check config tc tp utils
+    detail/dynstr detail/env detail/fs detail/list detail/map
+    detail/process detail/sanity detail/text detail/tp_main detail/user
+)
 
 OBJS=()
 for f in "${LIB_SRCS[@]}"; do
     echo "  CC  atf-c/$f.c"
+    ob="$(echo "$f" | tr '/' '_')"
     "$CC" -c -Os "${SYSROOT_FLAGS[@]}" \
-        -I"$SRC" -I"$BUILD" "${COMPAT_INC[@]}" \
+        -I"$SRC" -I"$BUILD" -I"$SRC/atf-c" "${COMPAT_INC[@]}" \
         "${CFGS[@]}" \
-        "$SRC/atf-c/$f.c" -o "$BUILD/$f.o"
-    OBJS+=("$BUILD/$f.o")
+        "$SRC/atf-c/$f.c" -o "$BUILD/$ob.o"
+    OBJS+=("$BUILD/$ob.o")
 done
 
 "$AR" rcs "$OUT/libatf-c.a" "${OBJS[@]}"
