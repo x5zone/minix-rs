@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-258（2026-10-03·用户装好 qemu-plugin.h⇒插件按真实 API 修好+编译 rc0+空载冒烟 PASS+首跑；DM 窗 8B-store 漏斗能观测 PTE 写者 PC，但发现过宽（大头是 BitmapAllocator 非 PTE）+插件漂崩点致硬码帧不命中⇒靠漏斗非枚举帧；真 PTE 写候选 pc=0x3a9d2/0x3aa6a；下一步收窄漏斗+配 guest 台账）**；取证链 §续-216~258**：
+> **🛑 最新前沿＝§续-260（2026-10-03·插件 PC 定名到 update_flags⇒结构收敛：query 走表成功→sync_slot_pte 进 update_flags 分支→重走同一(root,vaddr)却崩 ⇒ 单线程两次相邻 walk 结果不同=表在两 walk 间被改/读到未建立中间项；“帧被写坏”排除；下轮 write_pte_dm 腿台账拿写入值坐实）**；取证链 §续-216~260**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11353,6 +11353,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 插件仍 tmp/nk4a 取证仪（不改 guest/os 生产码）；gh109 端口无冲突已清；host 1400/0。(A) 仍 open，“帧被写坏”基本排除，转“walk 读未写项/root-vaddr 配对”。三目标未全成，goal active。
+
+---
+
+## §续-260（2026-10-03·插件 PC 定名到 update_flags ⇒结构收敛：query 走表成功→sync_slot_pte 进 update_flags 分支→update_flags 重走同一 (root,vaddr) 却崩⇒单线程下两次相邻 walk_read 结果不同=表在两次 walk 之间被改/或读到从未建立的中间项）
+
+> 承 §续-259。用 objdump 把崩溃尾 PC 定名：`0x3a89e`/`0x3a8c4`（读）与 `0x3a924`（写）均在 `Riscv64Paging::update_flags`（paging.rs:687）。静态读 update_flags/query/sync_slot_pte 三处得结构结论。**未改生产码**。
+
+### 结构链（源码＋插件交叉）
+- `sync_slot_pte`（cow_exec_pf.rs:147-148）：`match pt.query(vaddr){ Some((cur,_) if cur==paddr)=>pt.update_flags(vaddr,flags), ... }`。**进 update_flags 的前提是 query 刚 walk 成功**（返回 Some 且叶子 paddr 匹配）。
+- `query`(paging.rs:713) 与 `update_flags`(paging.rs:692) **各自 `walk_read(self.root_paddr, vaddr, self.channel)` 一遍**（同一 root、同一 vaddr）。update_flags 找到叶子后 `write_pte_dm(leaf_paddr, (pte&PPN)|新flags, …)`（对应 pc 0x3a924 写）。
+- 插件尾：query 那次 walk 过了（否则不会进 update_flags 分支），紧接 update_flags 重走同一表却崩在 `walk_read` 某层读（pc 0x3a89e/0x3a8c4，读 [511]）。⇒ **单线程 VM、同一 (root,vaddr)，相邻两次 walk 一个成一个崩⇒ 两 walk 之间页表被改，或 update_flags 读到未建立的中间项**。
+- 结合插件“被读槽从未在窗口内被写”+ T1/T2 halt 全净：非“既有 PTE 被踩”，而是 **exec/缺页链上某中间表项在 query 与 update_flags 之间不一致**（或 query 本身返回了巧合的 Some，而表链实际不完整）。
+
+### 下一步（完成 plugin×台账）
+- 插件拿不到写入值⇒补**guest 侧台账**：在 `write_pte_dm`（paging.rs:259）加一 gated 诊断（仅记录，不改行为）：每次写 PTE 记 (channel, slot_pa, value, 调用腿)。因为它是唯一 PTE 写漏斗，能把“query 读到而 update_flags 重走时消失/变化的那格”的写入者与值钉死。诊断探针属临时、结案滚除（§续-247 教训：放 write 腿非热 read，降低扰动）。**未坐实不成修**。
+
+### 纪律
+- 本层 objdump+静态读 update_flags/query/sync_slot_pte，零新跑、零改码；未改 os/ 生产码；host 1400/0。(A) 仍 open；“帧被写坏”排除，收敛到“query/update_flags 两次 walk 不一致”——下轮用 write 腿台账坐实。三目标未全成，goal active。
 
 
 
