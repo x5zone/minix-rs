@@ -18,3 +18,18 @@
 补做评审时建议的回归口径：host 测试按包集跑（`cargo test -p minix-kernel -p minix-arch -p minix-boot -p minix-types`，勿用 --workspace），已知基线 minix-vm 531 / minix-rs 351（出处：33ed4eb45 提交信息）；真机判据与当前失败尾（`cause_sig: sig manager 8`）见 WORKLOG「续-190-交接」节第三部分。
 
 另有两项与上述欠账同源的登记（正文有据，均未执行）：RegionMap 兜底/重建与 VM 自填路径属防御性代码，若追溯评审后判定腐坏根因已消除，可评估是否保留（续-160 打点语义为「不掩盖」）；探针滚除须过 C-61 pattern-gate（台账见 WORKLOG 续-190 交接第二节）。
+
+## 追溯评审结论（已于 2026-10-02 续-191~193 会话补做，CodeReview 子代理执行）
+
+**前置事实**：本会话真机定谳——VM SIGSEGV 真身＝`paging.rs` 陈旧探针 U 态发 SBI ecall（成修 f90416cc9），resume-Fault/分配器腐坏/text 腐坏**家族全是幻影**。故上述 6 笔防御码的**动机大多误诊**。逐笔判定：
+
+| 笔 | 判定 | 结论 |
+|---|---|---|
+| 续-160 region_map | REQUEST_CHANGES | 掩盖型兜底（健康 BTreeMap range/iter 不可能不一致），gh61 sf-*/rm-* 零命中＝惰性死码；find 合法 miss 多付 O(n) 全表扫描。建议降为 `debug_assert!` 或移除，rm-* 打点随 bootmark 滚除 |
+| 续-168/175 boot.rs | REQUEST_CHANGES | 168 root_paddr 派生被 180 整体替换＝死贡献；175 模块循环被 180 整池吞（`de<=cur` 全跳过）＝死冗余 |
+| 续-180 boot.rs | REQUEST_CHANGES（**P1·延后单独批次**） | 硬编码 riscv `0x82000000..0x84000000` 无 `#[cfg]` 门入**三架构共享** `read_boot_params`；x86/aarch64 当前 free_regions 不交集该窗＝no-op（未致 marker 回归），但属跨架构过扣隐患 + `flat_map` 单遍减法隐式依赖 deduct 升序（模块 base<池底会被静默漏扣，P2）。正解＝信任内核 classify 单点扣减、删 VM 侧整池二次扣减。**移除须过 x86+aarch64 non-regression 门，(A) 结案后单独处理** |
+| 续-187 classify | REQUEST_CHANGES（延后） | 主动背离 C protect.c:450-451（C 语义恰是 reclaim VM 模块）；gh59 自证「改了仍死」＝路径排除。建议回退 C-对位 reclaim（省 ≈625KB），延后+双架构护航 |
+| 续-179/186 RS 上界守卫 | **PASS（保留）** | `by_endpoint` `0..NR_PROCS` 守卫与既有访问器边界一致，消解 NONE/ANY/SELF 哨兵越界写（gh54 len64 index64 实证），C manager.c:2108 无检查会 UB——**唯一独立成立的真实修复** |
+| 续-179/186 VM 自填路径 | PASS（保留·观察） | PageFlags WRITABLE|USER|PRESENT 无 EXEC 合 W^X、get_active None 早出口修复自洽；但 gh61 示 sf-* 零命中（memreq target=0x800c 非 VM），此支可能「正确但从未真正救火」，随 (A) 结案复核可达性 |
+
+**总口径**：仅 ⑥Part-A 真修保留；①③④⑤为误诊衍生防御码/跨架构回归/死冗余，**移除/回退须集中在 (A) 结案后的独立批次、每笔过 x86+aarch64 non-regression 门**（当前 marker 均在，非活动回归，不动）。nk4a: 打点到期随探针滚除。
