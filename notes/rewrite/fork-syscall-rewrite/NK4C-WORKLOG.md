@@ -10666,3 +10666,14 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 - 查 VM 根 `0x82000000` 对故障 DM VA 的顶层 l2e：**i2=0x42 存在（V=1，非叶 → L1 0x82007000）**。⇒ (A) 覆盖洞**不在顶层块**，而在**更深层级**（该运行期表页 0x82ce3148 所在 L1/L0 的某 leaf 缺失或 flags 不对），精确吻合 `dm_coverage.rs` 自述的"续-51 残留 gap：与早先候选重叠的 reserved 整段丢弃留下 tail 无 leaf"。
 - 下一步坐实（未做，须当前构建的快照而非 gh66 旧快照）：对当前 riscv 镜像 panic 时 pmemsave 全 RAM，从 `0x82000000` 走 `0x1082ce3148` 三层，找**第一个 V=0 的层级**即缺失点；若各层 V=1 但叶缺 U 位则是 flags 问题。修向二选一：(a) 补 `kernel_dm_pa_end`/`establish_boot_dm` 对 bump 池/运行期可分配区的连续覆盖；(b) VM 侧 map_kernel 重放的 DM 窗 leaf flags 补 USER_ACCESSIBLE。**均需 x86/aarch64 non-regression + riscv 真机验证**—— paging 改动风险高，须逐架构证，不冒进合入。
 - 本轮无生产码变更；tracked 净；gdb harness 手法已验证可复用（tmp/atr.sh 已清）。goal active。
+
+## §续-208（2026-10-02·**(A) 判别实验：非 DM 覆盖洞，而是 walk 跟随一个从无持久 PTE 的伪 table_pa（L1e=V=0，PA>RAM 顶）**）
+当前构建（含 ef3c40c6b）真机 panic：`pagefault for VM sepc 0x3abec stval 0x10bd28cb2c`（= PA 0xbd28cb2c 的 DM VA，**0xbd28cb2c > RAM 顶 0xA0000000**）。pmemsave 全 512MB（tmp/ram70.bin，保留）离线走表：
+- VM root 0x82000000 → l2e i2=0x42 present（→ L1 0x82007000）→ **L1e i1=0x1e9 @0x82007f48 = 0x0（V=0）**。
+- 全 RAM 扫 paddr==0xbd28c000 的 present PTE = **0**。
+⇒ 排除"§续-205/206 猜的 DM 窗覆盖空洞"：DM 顶层块 i2=0x42 明明在，是 VM 在**更外层**就已算出伪 table_pa（0xbd28c…，超出 RAM），再按它走 DM 自然 V=0。**该伪 PA 从不存在于任何持久 PTE** ⇒ 它是 walk **寄存器现场算出** 或 **读自一个已被 free/复用清零的帧**（父项指向的表页被回收）。
+⇒ (A) 收敛到两条真候选（均需活体 step-back 定夺，非纯静态）：
+1. VM `walk_read`/`query` 的**表基址算术**把非 PA 值（含高位）当下一层表基（step-back 看是哪次 `ld` 把 0xbd28c…喂进寄存器）；
+2. **页表页生命周期**：某父 PTE 指向的子表页被 VM `pt_free`/reclaim 提前回收清零仍被引用（读得 0 或垃圾）——与 `ptalloc-reuse` 检测器同域（但先前判其噪声；此判别下需重验特定帧是否真被双发）。
+- 下一步（专门会话）：gdb `hbreak *0x3abec` 命中后 **stepi 回溯前若干条**，看装填坏 table 基址那条 `ld` 的源地址 → 读该源在快照的真实值，即可区分「寄存器算错」vs「读自清零帧」。tmp/ram70.bin 保留供下用。
+- 本轮无生产码变更（判别读码+快照分析）；tracked 净；goal active。
