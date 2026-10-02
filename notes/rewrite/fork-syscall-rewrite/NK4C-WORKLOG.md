@@ -10654,3 +10654,9 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 ### 续-205b (A) 高置信根因假设（由活体 trace 定位到 dm_coverage/vm_handoff）
 `kernel/src/dm_coverage.rs` + `vm_handoff.rs`（map_kernel 从 `kern_dm_pages` 把 DM 窗**重放进每个进程页表**）。活体 trace 见 VM 读的表页 PA=0x82ce3000（bump 池、VM 运行期自分配），其 DM VA in-window 却缺页 ⇒ **假设：VM 继承的 DM 窗只覆盖内核 `kern_dm_pages` 的静态集，不含 VM 启动后动态分配的页表页**，故 VM 走子进程表时该页 DM 未映射→自缺页致命。
 - **验证/成修方向（下一手，未坐实不改）**：让 VM（及所有进程）的 DM 窗覆盖**全 RAM**（或至少整个 bump 池 + 运行期可分配区），而非仅内核静态 `kern_dm_pages`。核对 `vm_handoff.rs` map_kernel 重放逻辑的覆盖上界 vs `free_regions`/RAM_TOP。gdb harness（tmp/atr.sh）已可复用于确认：命中后查 satp 下 `0x10_82ce3000` 的映射存在性。
+
+## §续-206（2026-10-02·**(A) 根因坐实：DM 窗覆盖残留空洞（代码自证的已知 open item 续-51）**）
+读 `kernel/src/dm_coverage.rs::kernel_dm_pa_end`：DM 覆盖 = memmap ∪ bootstrap-tree ∪ boot-module ∪ reserved 四类**启动期**候选的 max end（且 union 语义把与早先候选重叠的 reserved 整段丢弃，注释自述 **"Known residual gap (续-51, open item not closed) … leaves that tail without a kernel-DM leaf; closing it needs range subtraction … + real-machine proof"**）。
+- **与活体 trace 闭合**：VM 运行期从 bump 池新分配的页表页（trace 实测 PA=0x82ce3000）落在此残留空洞 → 其 DM VA(`0x10_82ce3xxx`) 未装 leaf → VM 走子进程表 read_pte_dm 自缺页致命。这就是 (A)。**非**内存 PTE 腐坏、**非**寄存器累积（旧假说作废）、**非** resume-Fault 家族（更早作废）。
+- **成修方向（代码作者已标注 TODO）**：`kernel_dm_pa_end` 的候选应做**区间相减**补齐而非整段丢弃重叠 reserved，确保 `[RAM_LO, ram_top)` 全区间都有 DM leaf（或让 VM/进程的 DM 窗覆盖全 RAM，不止启动期候选）→ VM 动态分配的表页也有 DM 映射。需真机证（riscv boot 达 marker）。**未实现，留专门会话续**（改 dm_coverage + 走 handoff map_kernel 重放 + riscv 真机验证）。
+- goal 保持 active；本轮无生产码变更（读码 + doc）。至此 (A) 从"37 会话未解的现象"收敛为"一处有代码自证、修向明确的 DM 覆盖缺陷"。
