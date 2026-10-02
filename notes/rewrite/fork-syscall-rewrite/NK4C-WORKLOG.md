@@ -10660,3 +10660,9 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 - **与活体 trace 闭合**：VM 运行期从 bump 池新分配的页表页（trace 实测 PA=0x82ce3000）落在此残留空洞 → 其 DM VA(`0x10_82ce3xxx`) 未装 leaf → VM 走子进程表 read_pte_dm 自缺页致命。这就是 (A)。**非**内存 PTE 腐坏、**非**寄存器累积（旧假说作废）、**非** resume-Fault 家族（更早作废）。
 - **成修方向（代码作者已标注 TODO）**：`kernel_dm_pa_end` 的候选应做**区间相减**补齐而非整段丢弃重叠 reserved，确保 `[RAM_LO, ram_top)` 全区间都有 DM leaf（或让 VM/进程的 DM 窗覆盖全 RAM，不止启动期候选）→ VM 动态分配的表页也有 DM 映射。需真机证（riscv boot 达 marker）。**未实现，留专门会话续**（改 dm_coverage + 走 handoff map_kernel 重放 + riscv 真机验证）。
 - goal 保持 active；本轮无生产码变更（读码 + doc）。至此 (A) 从"37 会话未解的现象"收敛为"一处有代码自证、修向明确的 DM 覆盖缺陷"。
+
+## §续-207（2026-10-02·**(A) gdb 复现确证 + 覆盖空洞定位到深层级（非顶层块）**）
+- 再跑 gdb harness（`hbreak *0x3ac1a`）：断点**可复现命中**，a1=0x1082ce3148 / a5=1<<36 / a6=0x82ce3000（跨次一致，确定性，非随机踩踏）。
+- 查 VM 根 `0x82000000` 对故障 DM VA 的顶层 l2e：**i2=0x42 存在（V=1，非叶 → L1 0x82007000）**。⇒ (A) 覆盖洞**不在顶层块**，而在**更深层级**（该运行期表页 0x82ce3148 所在 L1/L0 的某 leaf 缺失或 flags 不对），精确吻合 `dm_coverage.rs` 自述的"续-51 残留 gap：与早先候选重叠的 reserved 整段丢弃留下 tail 无 leaf"。
+- 下一步坐实（未做，须当前构建的快照而非 gh66 旧快照）：对当前 riscv 镜像 panic 时 pmemsave 全 RAM，从 `0x82000000` 走 `0x1082ce3148` 三层，找**第一个 V=0 的层级**即缺失点；若各层 V=1 但叶缺 U 位则是 flags 问题。修向二选一：(a) 补 `kernel_dm_pa_end`/`establish_boot_dm` 对 bump 池/运行期可分配区的连续覆盖；(b) VM 侧 map_kernel 重放的 DM 窗 leaf flags 补 USER_ACCESSIBLE。**均需 x86/aarch64 non-regression + riscv 真机验证**—— paging 改动风险高，须逐架构证，不冒进合入。
+- 本轮无生产码变更；tracked 净；gdb harness 手法已验证可复用（tmp/atr.sh 已清）。goal active。
