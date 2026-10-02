@@ -10573,6 +10573,19 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - **(A) 静态源码回推（免 boot）**：再核 `apply_to_trap_frame`（boot.rs:87）写 frame 四槽 vs `restore_to_user`（trap_return.rs:55）——后者 sepc/sstatus 读 frame(a0)，sp/a0/gp_regs 全读 **ctx**(t6)。故非 park 普通 trap 返回走 trap_stub epilogue 从原帧装回全 30 GPR（`ld a1,11*8(sp)` 等，已核）；resched/park 路径走 restore_to_user 从 ctx 装回——**两腿都全量装 gp_regs，apply 只改 4 槽不回写 frame.gp_regs 不构成丢槽**（frame.gp_regs 无人读，restore 用 ctx）。怀疑面从「恢复腿丢槽」收窄到：**要么 VM 自身 walk 算术（读父项 PTE 后算子表地址时 DM 位泄入），要么 ctx.gp_regs 在某写路径（signal/syscall/suspend）被写坏**。仍需活体 trace 定谳（gdb 或续-198 探针），未坐实不成修。
 - 待办：AF-11（探针滚除）C-61 gate + (A) 未结案→延后；AF-1~4/7（release_fpu aarch64 接线/双 FP 用例/build-std 残差）需 aarch64 真机验证（改 aarch64  syscall 路径，本会话不占 (A) 调试线）→ 归后续与 x86/aarch64 non-regression 一批。
 
+## §续-198（2026-10-02·**(A) 静态到边界的确证 + 目标③ T3.1 工具链勘察**）
+
+### 一、(A) 静态分枛走到尽头的确证（为何必须活体 trace）
+- 崩溃 walk：`l2e = read_pte_dm(child_root + i2*8, VmDm)` 给出 `l1 = pte_to_paddr(l2e) = 0x309d28b000`（带 bit36/37），下一拍 `l1e = read_pte_dm(l1 + i1*8)` 即 fault。因此应存在一个 l2e（在 child 0x800c 根页 `child_root + i2*8` 处）raw 值使 `paddr==0x309d28b000`。
+- **悖论**：panic 即刻 halt（无后续代码跑），故快照应仍存该 l2e；但全 512MB 反查 `paddr(v)==0x309d28b000` **命中 0**（且掩码公式与 `pte_to_paddr` 一致，非解码错）。⇒ 该值不在快照任何物理位置。两种可能：① child_root 页在 VM 读 l2e 与 fault 之间被 VM 自身 reclaim/覆写（同线程事件循环内的写，非 SMP 竞态）——即“读了个正在被复用的旧 PTE”；② VM 算子表地址的寄存器链本身就错（未从内存读）。两者都无法用“冻结态快照”区分，**必须活体写 watchpoint**。
+- **结论**：纯静态/pmemsave 已到能力边界（印证记忆续-124）。(A) 定谳需 `qemu -s -S -gdb tcp::3333` + `gdb-multiarch`（本机可用）；但 release 内核无 DWARF（非 stripped 仅有 symtab），且 (A) fault 在 VM U 态分页地址——需一个取证专用 DWARF 构建（`-C debuginfo=2`，不动发布镜像）+ 对候选中间帧物理槽设 `awatch` 回溯写者。未坐实不成修。
+
+### 二、目标③ T3.1 工具链勘察（零回归风险、免 boot）
+- 本机 C 交叉工具链现状：**仅 host x86_64 gcc 13.3**；**无 riscv64/aarch64 交叉 gcc、无 clang、无 musl-gcc**（`riscv64-*-gcc`/`aarch64-*-gcc`/`clang`/`musl-gcc` 均缺席）。minix3/tests = 586 个 .c（NetBSD-ATF）。
+- 我方产物：模块为静态 no_std Rust（SYSV ELF，双浮点 ABI）；`os/libs` 有 minix-sef/minix-elf 但**无 C libc / ATF 框架 shim**。
+- **结论（与记忆续-123 一致并量化）**：目标③拦路 = 交叉 C 工具链 + ABI 兼容静态 ELF + libc/syscall shim + ATF runner。**x86_64 腿**可用 host gcc 先原型（目标②x86 命令面已跑通，有承载基础）；**riscv/aarch64 腿需先装交叉工具链**（环境缺件，非代码问题）。→ 目标③ 在 (A) 结案前可并行推 T3.1/T3.2 的 x86 host 段勘察；T3.3 上机仍靠命令面真 VFS IPC 稳态。
+- 本会话不擅自 apt 装件（需用户授权且属环境变更）；登记为目标③ 开工前置。
+
 
 
 
