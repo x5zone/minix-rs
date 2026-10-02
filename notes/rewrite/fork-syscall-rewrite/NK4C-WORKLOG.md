@@ -10907,6 +10907,12 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **可用新事实**：gh73 `nk4a: sas-fork ep=32780(=0x800c) root=0x9dc37000` → 本 build 0x800c 的页表根物理地址确定=**0x9dc37000**。下一步可对其 512 个 L2 项所在 4KB 帧设**硬件写 watchpoint**（写稀疏→非热→快），条件“写入值解码 PPN≥RAM顶才停”，抓那条把伪 child_pa 写进子根帧的 store + PC/回栈。这避开热读路径，是自动化可行的下一步。
 - 本轮无生产码变更；harness 在 tmp；qemu/tmux 已清净、tracked 净。host 1400/0。(A) 仍 active；同时并行推③ syscall 桥（可 commit 具体件）。
 
+## §续-230（2026-10-02·**目标③里程碑：真实 minix3 atf C 测试 t_memchr 端到端链成静态 riscv64 ELF**（syscall 桥 + posix-stubs + libatf-c 17 成员 + libsemihost stdio 流，undefined=0））
+- 交付件（均仅 ③ 构建期，**不进生产镜像/marker**，commit 5acefe6ac/本轮）：`tools/atf-c-compat/sys-riscv.c`（picolibc sysstub→我方 kernel_call ecall ABI）+ `tools/atf-c-compat/posix-stubs-riscv.c`（picolibc 缺的 BSD/POSIX：writev/err/warn(+v*)/fork/waitpid/access/lstat/dup2/fchmod/umask/rmdir/mkdtemp/getcwd）+ `build-libatf-c.sh` 加 `-mcmodel=medany`（修 riscv 高地址链接 R_RISCV_HI20 截断，否则链不上）。
+- 实测（riscv64，medany）：`t_memchr.c + 完整 libatf-c.a + sys-riscv.o + posix-stubs.o + libsemihost(stdio 流) + -lc` → **undefined=0、multi-def=0、产出静态 ET_EXEC ELF**（entry 0x80000000、3 LOAD 段、324128B、ABI RVC/double-float 与我方模块一致）。readelf 的 ELF64+ET_EXEC+LSB 正是 `minix-elf::parse_ehdr` 的硬校验项（machine 不校，§续-199）。
+- CodeReview：无 P0；已修 P1（vsnprintf 截断写 NUL、getcwd 无终止符、_write 返回类型跨 TU ODR）+ P2（补 verr/verrx/vwarn/vwarnx）。文件头声明 WIP 边界。
+- **诚实边界**：“链成可加载 ELF”≠“上机跑通”。真跑还需：① fork/waitpid/exec 接我方 SYS_FORK/SYS_WAITPID/exec（现为 ENOSYS 占位）；② open/read/write 接 VFS（现 _write 走 diagctl console、其余文件类 ENOSYS）；③ stdio 流由 libsemihost 提供→应换成接我方 _write 的流（fd 不分道，stdout/stderr 均走 diagctl）；④ 把测试 ELF 入 imgrd、rc 里 exec、验证 ATF PASS。③ “586 上机”仍为大件（riscv 上机又受 (A) 门控）。
+
 
 
 

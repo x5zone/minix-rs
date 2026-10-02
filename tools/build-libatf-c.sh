@@ -34,11 +34,12 @@ BUILD="$OUT/build"
 
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; AR="riscv64-unknown-elf-ar"; \
-             SYSROOT_FLAGS=(--specs=picolibc.specs); COMPAT_INC=(-I"$COMPAT") ;;
+             SYSROOT_FLAGS=(--specs=picolibc.specs); COMPAT_INC=(-I"$COMPAT"); \
+             MCFLAGS=(-mcmodel=medany) ;;   # riscv medlow 默认 ±2GiB 假设→高地址链接重定位截断，需 medany
     aarch64) CC="aarch64-linux-gnu-gcc"; AR="aarch64-linux-gnu-ar"; \
-             SYSROOT_FLAGS=(); COMPAT_INC=() ;;   # glibc 自带 <err.h>/<sys/uio.h>，不注入 compat
+             SYSROOT_FLAGS=(); COMPAT_INC=(); MCFLAGS=() ;;   # glibc 自带 <err.h>/<sys/uio.h>，不注入 compat
     x86_64)  CC="cc"; AR="ar"; SYSROOT_FLAGS=(); \
-             COMPAT_INC=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
+             COMPAT_INC=(); MCFLAGS=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
     *) echo "未知 arch：$ARCH（支持 riscv64 | aarch64 | x86_64）" >&2; exit 2 ;;
 esac
 
@@ -88,7 +89,7 @@ OBJS=()
 for f in "${LIB_SRCS[@]}"; do
     echo "  CC  atf-c/$f.c"
     ob="$(echo "$f" | tr '/' '_')"
-    "$CC" -c -Os "${SYSROOT_FLAGS[@]}" \
+    "$CC" -c -Os "${MCFLAGS[@]}" "${SYSROOT_FLAGS[@]}" \
         -I"$SRC" -I"$BUILD" -I"$SRC/atf-c" "${COMPAT_INC[@]}" \
         "${CFGS[@]}" \
         "$SRC/atf-c/$f.c" -o "$BUILD/$ob.o"
