@@ -8,10 +8,12 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§1.120续-190-交接（2026-10-02·本会话 37 笔提交 8a9a44933→54ad18056，总账＝下文 §续-190-交接节）**：
-> - **当前唯一阻塞＝riscv64 marker 未达**：死点＝VM kernel_call_resume 重试 delivermsg 拷贝得 `VmCheckResult::Fault` → SIGSEGV-to-VM（proc_table.rs:1258）→ stacktrace（pc=0x3a1a8＝VM 停在 console ecall）→ panic（gh56/58/60 实证；全链还原＝§续-189）。
-> - **处方（续-190）**：os/kernel/src/vm.rs kernel_call_resume 的 copy 失败处加探针（caller/delivermsg VA/current_root_phys/该 VA walk 结果）→ RUN=gh61 一次真机定谳成修。
-> - 生产码改动清单/探针台账/验证配方/目标进度＝§续-190-交接；已排除根因清单（防重走）＝同节五/六。
+> **🛑 最新前沿＝§续-191~193（2026-10-02·会话续-191 起，总账＝下文 §续-191~193 节）**：
+> - **续-190 处方已被 gh61 真机证伪（重大纠偏）**：探针证明 resume-Fault 家族**根本不是真身**——gh61 里 45 条 `mrr`（vmctl_memreq_reply 判决）全 verdict=Ok（无 memreq 返 Fault）、`sf-*`（VM 自填臂）零命中、`rvflt via=stage3a/pmf`（两条 kernel_call_resume→SIGSEGV 消费腿）零命中、`kc-efault`/`WARNING wrong user pointer` 零命中。**续-139~190 追的 `VmCheckResult::Fault`/delivermsg/自填/走错根整条链＝幻影**（症状从不在此）。
+> - **续-192 真身定谳并成修（P0-code-bug）**：真崩因＝`arch/src/riscv64/paging.rs` 两处陈旧调试探针（`l1raw` 续-173 / `q-badroot` 续-155，本应"用后即滚"却留树＝AF-11 债务）在 **VM(U 态)** 调 `CurrentEarlyConsole::write_str` → riscv 后端发 **SBI putchar `ecall a7=1`**（S→M 特权服务，仅内核 S 态合法）→ U 态 ecall 陷阱进内核 `riscv64_ipc_dispatch_body`，被误当 `IpcCall::Send`（dst=a0=字符、消息指针=a1=0）→ `copy_msg_from_user(0)` EFAULT → `cause_signal(VM,SIGSEGV)` 致命。反汇编实证：崩溃 pc=0x3a9a2 处 `li a7,1; li a0,<ASCII>; ecall`，解码串 ` l1= i1= l1e= ch=` 与 l1raw 字面量逐字节吻合。修复＝删两探针块（成修 commit f90416cc9，CodeReview PASS）。
+> - **成修后新状态（续-193·当前唯一阻塞）**：`cause_sig: sig manager 8` 绝迹、ipcefault 零命中；boot 深入至**真正的原始 (A) 缺陷**——`pagefault in VM`（trap_dispatch.rs:1991，gh64：`sepc 0x3ac1a stval 0x409d28bb20`、x11=0x00fffffffffff000 坏掩码＝续-142 指纹）。探针诱导的 SIGSEGV 一直在**更早处杀死 VM 从而掩盖 (A)**；现 (A) 裸露为干净单点阻塞。(A) 需 `qemu -s -S`+gdb 硬件写 watchpoint 定谳（记忆续-124：纯文本探针已到能力边界）。
+> - 生产码改动/探针台账/验证配方/已排除根因＝§续-191~193 节 + §续-190-交接。
+> **（历史·§1.120续-190-交接）riscv64 交接总账（2026-10-02·会话 37 笔 8a9a44933→54ad18056）：当时判定的唯一阻塞＝VM kernel_call_resume 重试 delivermsg 拷贝得 VmCheckResult::Fault→SIGSEGV→panic——该判定已被续-191 gh61 证伪（见上），保留供参考。**
 > **（历史·§1.120续-151（2026-10-02·**续-149 止血无过度——pd:02b01 探针确认：PM 丢弃的是 mt=0x02B(43) from VFS（非 0x986 EXEC_REPLY），0x986 从未到达 PM ⇒ **exec reply 从未从 VFS 发出**或发出后丢失；SETADDRSPACE 不触发＝PM 没收到 exec reply 所以不调度子进程（正确行为）；**续-152 修靶＝VFS 侧 exec reply 发送链审计**：VfsReply::Exec encode→queue_reply_msg→take_reply→send_reply(Endpoint::PM)——哪一步断了？exec_worker 的 pm_exec 返回值是否 Ok？queue_reply_msg 的 target 是否正确？send_reply 的 transport.send 是否成功？**续-149 止血条件无需修正（.exec reply 本就不在其丢弃范围内）**。探针已滚 tracked 净。**
 >
 
@@ -10460,3 +10462,41 @@ gh57 已证：自填路径（target=VM）正确触发并成功（无 hm-fail/ok=
 - wrap-boot-mon.sh＝带 qemu monitor 的启动封装（monitor 套接字 `/tmp/nk4a/qmon`；panic 后内核 halt、qemu 存活，可 pmemsave）。
 - mod_vm.bin＝VM 镜像期望字节（target/image/riscv64/，离线 pmemsave 差分的对照）。
 - pmemsave 路径必须带引号（HMP 把裸 `/tmp` 当表达式）。
+
+## §续-191~193（2026-10-02·**证伪续-139~190 resume-Fault 家族 + 定谳并成修 paging.rs 陈旧探针 U 态 SBI ecall 致命 + (A) 裸露为单点阻塞**）
+
+### 一、续-191/191b/191c 多点取证探针（判决边界钉桩，零控制流改动）
+三笔提交：`3c3cd5541`（续-191 主探针）、`577107cc9`（续-191b ipcefault+kill）、`<ipcefault扩展>`（续-191c dump a0..a7+call_nr）。探针落点**纠偏**：续-190 处方叫在 `os/kernel/src/vm.rs kernel_call_resume` copy 失败处打探针——但 `kernel_call_resume`（vm.rs:1393）**无拷贝语句**（只读 `Completed(result)`），Fault 真诞生于 `syscall.rs:2731 vmctl_memreq_reply`（value_raw!=0），重试拷贝真身在 `lib.rs:4015` stage 3a 重派。故探针改钉**判决边界**：
+- P1 `vm_server.rs handle_kernel_memreq` target==VM 自填臂逐页 + 4 return-false 出口（sf-hit/sf-map/sf-*FAIL/sf-badept/sf-noactive）。
+- P2 `syscall.rs vmctl_memreq_reply`（mrr nr/vraw/verdict）。
+- P3 `lib.rs` stage 3a + `proc_table.rs` pmf 两条 SIGSEGV 消费腿（rvflt via/nr/ep/pdmv/root）。
+- 续-191b `trap_dispatch.rs riscv64_ipc_dispatch_body` copy_msg_from_user 失败腿（ipcefault nr/ep/cn/r2/root + a0..a5 dump）+ `syscall_signal.rs` do_kill（kill tgt/sig）。
+全部 `#[cfg(riscv64 + not(test)/not(mock))]` 门控避污 x86/aarch64 基线，AtomicUsize 封顶。三笔探针均 CodeReview PASS（零控制流改动、借用 NLL 结束、字段类型对、方言一致）。
+
+### 二、gh61 负结果——resume-Fault 家族整链证伪（防后人重走）
+riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`。读 gh61 串口：
+- **45 条 `mrr` 全 verdict=Ok**（value_raw=0）⇒ 从无 memreq 返 Fault ⇒ `kernel_call_resume` 不可能读到 `Completed(Fault)`。
+- `sf-*` 零命中：memreq target=0x800c（exec 出的子进程槽）非 Endpoint::VM，走非自填腿且 ok=1。
+- `rvflt via=stage3a` 与 `via=pmf` **均零命中** ⇒ SIGSEGV 不经 `kernel_call_resume`→VmCheckResult::Fault 路径。
+- `kc-efault` 零命中（syscall.rs:616 非源）；`WARNING wrong user pointer` 零（DELIVERMSG Segfault 腿非源）；无 scause/fpu/illegal 打印（非硬件异常）。
+**定论**：续-139~190 追的「resume 重试 delivermsg 拷贝得 Fault / 自填 / 走错根 / wrong-root」整条链＝**幻影**，症状从不在此。这是 37 会话来首次用正证据把该家族判死。
+
+### 三、续-192 真身定谳（gh62/gh63 + llvm-objdump 反汇编）
+- gh62：`ipcefault nr=8 ep=8 r2(a1)=0 root=0x82000000` 唯一命中（kill=0）⇒ SIGSEGV 源＝`riscv64_ipc_dispatch_body` IPC 陷阱门 copy_msg_from_user(a1=0) EFAULT。
+- gh63（扩展 dump）：`cn=0x1(SEND) a0=0x6e(字符'd'/'n'?) a1=0 a2=0x7fffffffe000(栈形) a5=0x1000000000`。VM 在 pc=0x3a9a2（proc_stacktrace 报 `vm 0x8 0x3a9a2`）执行。**paradox**：send() 反汇编（`KernelIpcTransport::send`@185ec）做 `li a7,1; mv a0,a1; mv a1,a2`（a1←msg ptr 正确），且 trap_stub user-leg `sd a1,11*8(sp)` 保存正确，则 a1 应=0x7fffffffe000，但帧里 a1=0。
+- **破解**：llvm-objdump 全 ecall 扫描发现 0x3a978–0x3aa80 一簇 `li a7,1; li a0,<ASCII>; li a6,0; ecall`——**逐字符** ecall。解码 a0 序列＝`\r\n l1= i1= l1e= ch=`＝`paging.rs walk_read` 的 **l1raw 调试探针**（`Console::write_str` 字面量，逐字节吻合）。riscv `CurrentEarlyConsole` 后端（plat/src/early_console.rs）= **SBI putchar `ecall a7=1`**（S→M 特权服务）。该探针块 `#[cfg(not(feature="mock"))]` 因 minix-vm `default-features=false`（servers/vm/Cargo.toml）被编进 **U 态 VM 二进制**；VM(U 态)跑 `pt.query()`→`walk_read`→探针→`ecall a7=1` 陷阱进内核（非 SBI），`riscv64_ipc_dispatch_body` 误把 a7=1 当 `IpcCall::Send`（dst=a0=字符、msg=a1=0）→ copy_msg_from_user(0) EFAULT → `cause_signal(VM,SIGSEGV)` → VM 自管理致命 → panic。
+
+### 四、续-192 成修（commit f90416cc9，CodeReview PASS）
+删 `arch/src/riscv64/paging.rs` `walk_read`（l1raw 块）与 `query`（q-badroot 块）两处陈旧探针，留解释注释。二者纯打点、无生产行为；wrong-root 家族续-116/117 零命中早定谳。属 AF-11「用后即滚」合法债务清偿，非功能回退。验证：check-layout riscv64 PASS、host 4 包无 FAILED。CodeReview 穷举全仓 CurrentEarlyConsole 使用者（paging.rs 已删 / arch/lib.rs 仅 pub use 再导出 / arm64 trap_stub 内核态）确认 paging 是**唯一 U 态可达 ecall 源**，删即闭合。
+
+### 五、gh64 成修后新状态——(A) 裸露为单点阻塞
+删探针后 boot 前进：`cause_sig` 绝迹、ipcefault 零、l1raw/q-badroot 零。但撞**原始 (A) 缺陷**：`pagefault for VM sepc 0x3ac1a stval 0x409d28bb20` → `pfvm pa=0x309d28bb20 off=0xb20`、`satp root=0x82000000`；全 GPR dump：x11=0x00fffffffffff000（**坏掩码＝续-142 指纹**）、x15=0x1000000000（1<<36 VmDm）、x12/x18=0x7fffffffe000、x10/x16=0x9d2ac000 → `trap_dispatch.rs:1991 pagefault in VM` panic（VM 自身缺页致命，C exception.c 对位）。**结论**：探针诱导的 SIGSEGV 一直在更早处杀 VM 从而**掩盖** (A)；(A)＝VM walk_read 中确定性寄存器/掩码破坏（DM 指针带 1<<36/1<<38 高位），即续-139~143 的原始 (A)。真实进展：拨掉一个掩蔽 P0，(A) 裸露为干净单点。boot 行数 19692≈gh61（未见 marker）。
+
+### 六、(A) 下一步处方（续-194+）
+- **需 `qemu-system-riscv64 -s -S -gdb tcp::3333` + gdb 硬件写 watchpoint**（记忆续-124：纯文本探针已到能力边界；riscv 无 DARF，`info symbol $pc`+rust-objdump 回符号）对 VM walk_read 的掩码寄存器（gh64 x11=0x00fffffffffff000）设写点，回溯写者 PC。
+- 候选破坏链（续-142/143 代数）：`lui 0xfff00; srli 8` 应得 0xFFF000 却得 0x00fffffffffff000＝上游某写者把「全 F 页掩码 0xFFFFFFFFFFFFF000」经 `srli ,8` 放进 prologue 输入寄存器；或 owner↔非 owner 切换的 GPR 恢复残缺一槽（懒 FPU P0 AF-8 同域，但 x11 非 FP）。
+- 未坐实不成修。x86 marker=2/panic=0、aarch64 marker 不回归须每次守。
+
+### 七、续-191~193 探针台账（待 (A) 定谳后过 C-61 pattern-gate 滚除）
+新增诊断探针存活 HEAD：P1 sf-*（vm_server.rs）、P2 mrr（syscall.rs）、P3 rvflt（lib.rs/proc_table.rs）、ipcefault（trap_dispatch.rs）、kill（syscall_signal.rs）。它们已定谳真身、服务完成，**(A) 结案时随全部 nk4a: 探针一并滚除**（AF-11 + 模式-86：滚除须 `git show --stat` 证代码真动）。l1raw/q-badroot（paging.rs）已删（即成修本身）。
+
