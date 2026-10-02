@@ -11618,6 +11618,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 零改码（本轮纯阅读审计 + 记负结果）；os/ 无 tracked 变更。又排一条伪修路（VM fork 排序）。三目标未全成，goal active。
 
+---
+
+## §续-274（2026-10-03·(A) 内核侧 setaddrspace/页表帧审计：boot_pt_alloc 塑出区在低 RAM（与崩帧不相交）⇒排除“低 carve-out 别名”候选；崩帧属 VM 高 RAM 区⇒race 收窄到 VM 帧生命周期 × 内核调度）
+
+> 承 §续-272 “下一步需内核侧审计”。本轮读 `os/kernel/src/syscall.rs` 的 vmctl_set_addrspace 处理器与 `boot_alloc.rs`/`lib.rs` 的 boot_pt_alloc 塑出区（零 boot、零工具依赖）。
+
+### 发现
+1. **setaddrspace 处理器对 C 忠**：`syscall.rs:2940-3048` 五步（存 phys_root/virt_root→[偏离]核 kerninfo 页→若当前 ptproc 则 set_active_root_tracked→VM 则 set_vm_running→`rts_unset(VMINHIBIT)`），与 C `arch_do_vmctl.c:19-33` setcr3 同构。
+2. **一处已知偏离**：`syscall.rs:2981-3001` 内核在本提交点代将 kerninfo 页 map 进新根（C 是 VM 经 VMCTL_KERN_PHYSMAP 做），中间表页走 `boot_pt_alloc`。
+3. **但 boot_pt_alloc 塑出区在低 RAM**：`lib.rs:472-486` FALLBACK_BUMP_LEN=0x100000，region=首个 memmap 的前 1MB ⇒ [**0x80000000, 0x80100000**)（riscv-virt RAM 基 0x80000000）。而 **崩帧 0x9dc37000 / 0x9d2ad000 / 0x9d28c000 均在 ~0x9d000000（高 RAM）= VM 自有区**。⇒**“低 carve-out 与崩帧别名”候选对本题帧不成立**（两区域不相交）。
+
+### 定案（再收窄 + 又排一条）
+- 崩帧属 VM 高 RAM 区⇒若真为帧别名（PT/data 双用），候选面收窄到 **VM 自己的帧生命周期（reuse-DATA）与内核调度/CPU 切换的交互**，**不是**内核 boot_pt_alloc 低塑出区。与 §续-270 “插件拖慢→race 消失”一致：真并发面在内核调度侧（VM 单线程⇒其内部“race”只能是逻辑时序 bug，而拖慢能消失说明涉及内核何时切 CPU）。
+- 但具体 happens-before 仍需：(a) 非插桩确定复现（现无）；或 (b) 有寄存器/内存读 API 的插件看写瞬间（现无）。⇒**(A) 根因仍 open（工具链/预算）**，不投机改（boot_pt_alloc 低塑出区候选已排除，不能再拿它当靶“修”）。
+
+### 纪律
+- 纯阅读审计（零 boot/零工具有依赖）；零改生产码（os/ 无 tracked 变更）。又排一条候选（低 carve-out 别名）。下一步（若解锁）：在 VM 帧回收与内核调度交互上定位，需非插桩确定复现或寄存器读插件。三目标未全成，goal active。
+
 
 
 
