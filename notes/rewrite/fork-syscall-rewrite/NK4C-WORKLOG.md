@@ -10802,3 +10802,11 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **修向待定**：坐实后才是真修（很可能在 endpoint↔slot 解析或 mmap 归属）；共享 VM 码改动必过 host 4 包 + x86/aarch64 non-regression（两 marker 依赖同一 region_map）+ riscv 真机。**未定谳不成修。**
 - **本轮无生产码变更**；tracked 净；证据 gh74 串口复用。host 1400/0。goal active。
 
+## §续-220（2026-10-02·**诚实更正墙序：gh75（仅富化 rm-fb 诊断、无 a2d 探针）仍在 ~20s 崩 (A)、rm-fb=0/noaddr=0 ⇒ noaddr 不是 clean 首墙，而是 (A) 下游事件（gh74 的 noaddr 是 a2d 探针绕过 (A) 的伪像）；(A) 才是确定性首墙且 Heisenbug 再实锤；诊断已回滚**）
+
+- **汇总（同一代码基、不同探针扰动）**：gh72 pagefault-VM=1/rm-fb=1/noaddr=0；gh73 同；gh74（a2d 探针改 walk）pagefault-VM=**0**/rm-fb=3/noaddr=1；gh75（仅改 region_map find 诊断）pagefault-VM=1/rm-fb=**0**/noaddr=0。⇒ **(A) 在 clean 时序一贯先崩**；rm-fallback/noaddr 只在探针把 (A) 时序门推开后才露。上一轮“noaddr 是确定性首墙”系基于 gh74 伪像，**推翻**。
+- **(A) 崩溃值随每次改动漂移**（gh72 stval 0x...cb2c / gh75 0x...bb2c）：典型 layout/时序敏感 Heisenbug。a2d 探针（改 walk hot path）能推开 (A)；rm-fb 诊断（只改 find 分支、不碰 walk）推不开→(A) 仍先崩。**文本探针无法钉 (A)**——记忆续-124/37 会话能力墙再实锤。
+- **诊断已 `git checkout` 回滚**（region_map.rs 恢复 HEAD）；tracked 净。
+- **因此下一步只能二选一**（均需用户定向，因两条路代价/风险差异大）：（甲）**交互式 gdb 硬件写 watchpoint**（不扰时序直到命中）——但需先定位写坏的具体帧槽，而探针扰动会使 (A) 不现（鸡生蛋）；需人工在正常 boot 下 hbreak+读活帧逐步推进（非单发可竟）。（乙）接受 riscv (A) 暂为不可自动化钉住，转 x86 腿推目标②（命令面）/③（C 测试）真进（x86 不受 (A) 阻塞），保持 goal active。三目标均未全成。
+
+
