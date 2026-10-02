@@ -8,6 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
+> **🛑 最新前沿＝§续-271（2026-10-03·目标③构建面 17/18→**18/18**）**：补 BSD `sys_nerr`（picolibc 不提供；之前 `_sys_nerr` 只是 gcc 模糊建议、libc.a 无此符号）→ errno-compat.{c,h} + build-atf-test.sh 加 -include/链 errno-compat.o；t_strerror 链成 ET_EXEC riscv64 ELF 过 ehdr；回归 t_bm/t_memcpy 仍 rc0。CodeReview（commit 785327fb7）PASSED 无P0/P1；P2-1（.c include 自身头防声明/定义漂移）已修；P2-2/P2-3 登记为上机前待办（picolibc strerror 分界校准 sys_nerr；受 (A) 门控）。仅 tools/ 下零 os/ 生产码变更。
+>
+> **（(A) 取证最新前沿＝§续-270，见下；§续-266~270 已把 (A) 定性为 fork 路径竞态而非耐久脏槽，按步骤 4b#5 保持 open）**
+
 > **🛑 最新前沿＝§续-270（2026-10-03·插件重焦写者时间线 gh120得一个硬旁证）**：全窗 store 插件（零改 guest 码、只拖慢）使 fork 崩**消失**（guest 困 sa-call 循环 ≥180s 不崩，而裸启动 ~4–6s 必崩）。耐久脏槽型缺陷被均匀拖慢仍会崩；只有 **timing-sensitive 跨 race** 才因拖慢改变窗口交错而不再触发⇒与§续-267/268“非确定≥三形态”互证，**(A) 坐实为 fork 路径竞态（非静态内存破坏）**。插件拖慢→race 消失=Heisenbug（速度扰动型）⇒插件对该 race 非中立观测者。按步骤 4b#5：(A) 根因保持 open（工具链/预算限制）、不投机改生产码；定 race 需不改启动速度的手段（多次 boot 统计崩形态分面 / 代码级审计 fork+setaddrspace+sync_slot_pte 与页表帧复用的 happens-before）。（上一前沿 §续-269：插件加 query-PC 记录器⇒可观测 query 读全 8 对齐、崩点非对齐 stval 从不现于 mem-cb⇒8.2 mem-cb 捕不到故障那次访问；链坐实 i2=511 打死旧靶 0x9DC377F8。）
 >
 > **（上一前沿＝§续-266，2026-10-03·侧会话 3 死角逐条对账）**：① **T10 反汇定案**（当前 build query@0x3ab58）——query 每条 `ld` 地址=`基址(DM_BASE+pte_to_paddr, 4KiB对齐)+索引×8`、立即数恒 0⇒**崩地址低 12 位必 8 对齐，不可能 …B2C**；“读法乙子型（query 后调用者加游标）”无对应指令⇒驳；裸启动 `sepc=0x3ac10` 在本 build 是非-load `and`⇒(sepc,stval) 跨 build 归属不可靠。⇒**§续-265 “root 身份错配”（基于把 stval 当 walk 输出算出“故障物理 0x9d28b”）下调为未证**。② 内核窗已入插件（c:32-34,88）。③ 快照谓词=解码式（不漏末级）但覆盖仅 12 根+已 dump L0、**非全内存**。
@@ -11570,6 +11574,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 插件为诊断工具（tmp/nk4a）；零改生产码（os/ 仍无 tracked 变更）；gh120 日志 untracked；qemu 已清。新增旁证：(A)=fork 路径竞态（非耐久脏槽）；三目标未全成，goal active。
+
+---
+
+## §续-271（2026-10-03·目标③构建面 17/18→**18/18**：补 BSD `sys_nerr` 解 t_strerror 编译卡点）
+
+> 转回 (A)-无关、可确定性验证的并行项（计划步骤 2）。t_strerror 是“可链 17/18”里缺的最后一个；卡点在**编译期**：picolibc 不提供 BSD/NetBSD 的 `sys_nerr`（<errno.h> 里根本没这个名字；之前 gcc 提示的 `_sys_nerr` 只是模糊拼写建议、非真符号，已 nm 核实 libc.a 无此符号）。
+
+### 做法（只动构建工具链，零改 os/ 生产码）
+- 新增 `tools/atf-c-compat/errno-compat.{h,c}`：头 `extern const int sys_nerr;`（带 include guard）+ errno-compat.c `#include` 自身头后定义 `const int sys_nerr = 134;`（P2-1：纳入同一 TU 使声明/定义编译期对账）。
+- `tools/build-atf-test.sh`：测试编译加 `-include errno-compat.h`（声明前置注入），新增编译 `errno-compat.o` 并链入 `--start-group`。
+- 验证：`build-atf-test.sh t_strerror.c` → rc=0，链成 328016B ET_EXEC riscv64 ELF、过 minix-elf ehdr 硬校验。回归 `t_bm`/`t_memcpy` 重跑均 rc=0（全局 `-include` + 新 .o 不碎其余 17 个）。
+
+### CodeReview（commit 785327fb7）：PASSED，无 P0/P1，3 条 P2
+- **P2-1 已修**：errno-compat.c 未 include 自身头⇒声明/定义漂移无编译期对账（已加 #include，重跑 rc=0）。
+- **P2-2/P2-3 登记为上机前待办**（本轮不处理，上机受 (A) 门控）：① picolibc `sys/errno.h` 在 `#ifdef __CYGWIN__` 里声明了**非 const** `int sys_nerr`，riscv64 不激活故当前无冲突；若上游去掉该门控会“conflicting types”（可加 `_Static_assert` 哨兵）。② `sys_nerr=134` 与 picolibc `strerror()` 实际覆盖分界未校，上机跑 `strerror_basic/strerror_r_basic` 断言前须把 134→picolibc strerror 内部表大小（或改逐条对齐 sys_errlist），否则某段断言会 FAIL。
+
+### 纪律
+- 目标③**构建/链接面已 18/18 可链成 ELF**（含 md5/bm/errno 三个 BSD 兼容件）；但③的“上机跑通”仍受 (A) 门控（riscv）/缺 aarch64 freestanding C 工具链。本改动仅 tools/ 下，零 os/ 生产码变更（host 4 包集不受影响）。三目标未全成（①riscv marker/②riscv 命令面/③上机均受 (A)），goal active。
 
 
 

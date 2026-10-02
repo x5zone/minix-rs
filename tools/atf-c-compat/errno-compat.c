@@ -16,4 +16,6 @@
  *     picolibc strerror 覆盖度校准 sys_nerr（或改判据为逐条对齐 sys_errlist）。
  */
 
+#include "errno-compat.h"   /* 自身声明纳入本 TU，让 const 类型/声明与定义在编译期对账（防 CodeReview P2-1 声明/定义漂移）*/
+
 const int sys_nerr = 134;
