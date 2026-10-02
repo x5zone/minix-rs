@@ -10586,6 +10586,11 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - **结论（与记忆续-123 一致并量化）**：目标③拦路 = 交叉 C 工具链 + ABI 兼容静态 ELF + libc/syscall shim + ATF runner。**x86_64 腿**可用 host gcc 先原型（目标②x86 命令面已跑通，有承载基础）；**riscv/aarch64 腿需先装交叉工具链**（环境缺件，非代码问题）。→ 目标③ 在 (A) 结案前可并行推 T3.1/T3.2 的 x86 host 段勘察；T3.3 上机仍靠命令面真 VFS IPC 稳态。
 - 本会话不擅自 apt 装件（需用户授权且属环境变更）；登记为目标③ 开工前置。
 
+## §续-199（2026-10-02·**(A) “寄存器算术”定性坐实 + 目标③ T3.1 ELF 格式硬证**）
+- **(A) 静态定性再收（快照反查）**：扫全 512MB 找所有 `paddr` 低 32 位 == `0x9d28b000` 的 present PTE——共 13 条，**全部 highbits=0（干净、无 DM 位泄露）**。⇒ 崩溃跟随的 `0x309d28b000` 从来不是任何已存 PTE，而是 VM 将干净表 PA `0x9d28b000` 在寄存器里加了约 3×`VM_DM_BASE`。定性锁定为**寄存器算术越界（多叠 DM 基址）**而非内存腐坏。另：pfvm 探针本身 `stval-(1<<36)` 的基址假设与真 VM_DM_BASE 是否一致存疑（静态定量在此失准），进一步＝只能活体 trace。**下一步成修前必须 gdb/QEMU-plugin 现场抓到那一步多加 DM 基址的指令**（候选：子表构建/映射路径对已是 DM VA 的值又 vm_phys_to_virt）。
+- **目标③ T3.1 ELF 格式硬证**：`minix-elf::parse_ehdr` 要求 `ET_EXEC`（拒 `ET_DYN`/PIE）+ ELFCLASS64 + LSB。实证：host `gcc -static -no-pie` 产出 `Type=EXEC, Machine=X86-64, entry 0x401000` 的静态 ELF，满足加载器入口形式。⇒ **x86_64 腿 ELF 格式可行已验**（真拦路在 libc/syscall shim + ATF 框架 + 上机跑，属 T3.2/T3.3）；riscv/aarch64 腿仍需先装交叉 gcc（环境缺件）。不标目标③ 完成（仅 T3.1 可行性探底）。
+- 本轮提交（含本 WORKLOG 补录）：纯取证/文档；无生产码变更（上一轮 AF 批已入库）。tracked 净。
+
 
 
 
