@@ -1,0 +1,11 @@
+0xffffffc0000001d6 in __rustc::rust_begin_unwind ()
+===KDM slot255(i2=255 corrupt)===
+Numeric constant too large.
+===KDM slot511(i2=511 control)===
+Numeric constant too large.
+===decoded slot255: ppa=(v>>10)<<12 ; flags=v&0x3ff ; 8-align? off=v&0xfff===
+Numeric constant too large.
+Numeric constant too large.
+===whole child root 512 slots (count nonzero via info)===
+Numeric constant too large.
+[Inferior 1 (process 1) detached]

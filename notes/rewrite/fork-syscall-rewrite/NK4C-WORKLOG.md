@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-243（2026-10-03·静态排除「缺 zero-on-alloc」（vm_pt_alloc CLICK_SIZE=4096 整帧清零）+ 正证据：崩帧 pfn 0x9dc37 属 reuse-DATA 集 ⇒ (A) 收窄为「回收帧被旧数据持有者 alloc-清零后写回」PT帧UAF/别名；下轮抓 alloc 后那次数据写）**；取证链 §续-216~243**：
+> **🛑 最新前沿＝§续-244（2026-10-03·内核 DM 活体读子根直推：gh96 实测子根 i2=255 槽 panic-halt 时=0且全帧仅 8 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243「陈旧数据字驻留」UAF 方向、重证 §续-216 瞬态；新线索＝崩 walk vaddr 落 i2=255属VM调试底图族，疑 sync_slot_pte 传错 vaddr/root 配对）**；取证链 §续-216~244**：
 >
 > **（上一前沿＝§续-240，2026-10-02·(A) 靶收敛到唯一 `0x9DC377F8` + 抓写者 harness 就绪）→ 前沿取证链见 §续-216~242**：
 > - **§续-239/240 定级定根+工具就绪**：源码级对账 `paging.rs:307-343` 确定被写坏的是子根 0x800c 的 **L2 中间项**（非叶、非 VM 根——§续-195 已证 VM 根 22 表全净排除备选）⇒ **唯一硬件写 watchpoint 靶 = 物理 `0x9DC377F8`（= 0x9dc37000 + 255×8）**。可直接点火 harness `tmp/nk4a/riscv_watch_9dc377f8.sh [tag]`（已修 `awatch -lm0` 语法→裸 `awatch`）。两个具体封锁点（非“需人工”，是需长会话迭代）：① QEMU riscv system-mode gdbstub 硬件 watchpoint 地址语义（物理 `0x9DC377F8` vs VmDm 虚 `0x19DC377F8`，需形1↔形2 交替试）；② boot 至崩点 ~150-250s + 迭代轮次超单轮预算。下一会话工单见 §续-240。
@@ -11089,6 +11089,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
   - 方案甲（首选，零 guest 文本扰动需评估）：在 `sync_slot_pte`（`cow_exec_pf.rs:101`）各 PTE 写腿与页缓存/区域数据写腿设**软件条件断点**（命中拓栈）；U 态非热路径可接受。
   - 方案乙：用现成 PT_SEEN/DATA_SEEN 位图加一条**只在诊断构建开启**的不变量：写一个 DATA 槽前先查该 pfn 是否已被 PT_SEEN占用（=回收后旧引用还在写），命中即坐实写者上下文（与 §5 防御测试沉淀同构）。**未坐实不成修**。
 - **纪律**：本层纯静态读码+已有日志交叉，未改生产码、未新跑 qemu；host 1400/0、两 marker 不变。三目标未全成，goal active。
+
+---
+
+## §续-244（2026-10-03·【内核 DM 活体读子根】直推：**证伪 §续-243「陈旧数据字驻留」假说**，重证 §续-216「瞬态非驻留」；新线索：崩 walk vaddr 落 i2=255 属 VM 调试底图族）
+
+> 硬件写 watchpoint 死路（§续-242）后新 harness `tmp/nk4a/riscv_live_read.sh`：正常 boot（**无 -S**）→轮询串口见 panic→晚 attach 停在 `rust_begin_unwind`（内核 S 态、satp=内核、内核 DM 生效）→经 `KERNEL_DIRECT_MAP_BASE(0xFFFFFFC040000000)+phys` 活体读子根 0x9dc37000 整帧。**未改生产码**。
+
+### 实测（gh96，(A) 正常 boot 仅 ~8s 即到 panic（无 -S 原生 TCG 快得多），串口 19695 行同指纹）
+- **子根 i2=255 槽（物理 0x9DC377F8，内核 DM 读）= `0x0000000000000000`（零！）**——但崩点 `query+148` 读它时它是 V=1+垃圾 PPN（§续-238/239）。⇒ **坏值不驻留**：panic halt 时该槽已为 0。与 §续-195/200/236 内存快照「0 个持久槽含伪 paddr」完全一致。
+- **全 512 槽仅 8 个非零，且均合法 PTE**：如 slot i2=511=`0x274ab401`（ppn=0x9d2ad、flags=0x401，栈区 i2=511 的下一级表指针，正确）、另 0x276cd401/0x2764d001/… 均 pfn 0x9d2xx–0x9d4xx 族。**无一非 RAM/无一非 8 对齐**。
+- **⇒ 直接推翻 §续-243「旧数据持有者写回后驻留」的 UAF-数据字模（若数据字写回应驻留非零，实测为 0）**。正确回到 §续-216：(A) = **仅在读取瞬间存在的瞬态值**（非分配器双发、非耐久 PTE 写坏、非陈旧未零帧）。好在不落地先验证，未基于 §续-243 错向成修。
+
+### 新线索（下轮可验）：崩 walk 的 vaddr 本身可疑
+- 由 gh96：i2=255 对应 walk vaddr 高 9 位=0x0FF（=255），即 vaddr∈[0x3FC0_0000_00, 0x40_0000_00) 族——与 §续-238 实测崩现场 x2/x5=`0x3ffffdfbXX`（VM **调试底图用户低半区**）逐位吻合。⇒ 疑问：**sync_slot_pte 传给 `pt.query(vaddr)`（cow_exec_pf.rs:147）的 vaddr 是否错把一个 VM DM 调试指针（非子进程真 vaddr）当子 vaddr 去 walk 子根？**——若然，则“越界读”不是内存被写坏，而是用错了根/vaddr 配对（query 拿 VM 自己的调试地址去走子表，i2=255 落在子根未映射区→读到帧前一生命周期残留的瞬态值）。
+- **下轮决定性一步（方案甲软件断点，零写 watchpoint）**：`break` 到 `sync_slot_pte` 调 `pt.query` 前（cow_exec_pf.rs:147），拓 **(region.vaddr, offset, 算出的 vaddr, root_paddr)** 四元组，比对：(a) vaddr 是否属子 region（非 0x3ffffdfb 调试族）；(b) root_paddr 是否确为子根 0x9dc37000。两者任一错配即坐实“根/vaddr 错配”新根因。**未坐实不成修**。
+
+### 纪律
+- 本会话新增 harness `riscv_live_read.sh`（修了一个 KDM 常量位数错：18位→16位）；gh95/96 均端口锚定 1241 已清。未改生产码；host 1400/0、两 marker 无回归（无代码可 review，纯 harness+日志+WORKLOG）。(A) 仍 open；§续-243 UAF-驻留方向被 gh96 直接证伪，新线索＝根/vaddr 错配。三目标未全成，goal active。
 
 
 
