@@ -10552,5 +10552,21 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - 一旦定位丢槽腿（如普通 trap 返回靠 frame 但某路径只存了 ctx），修 `apply_to_trap_frame` 补齐 gp_regs 回写戒 sync——需先对照 C `arch/earm`/`riscv` exception.S 的回装语义，**不破坏 x86/aarch64**（两架构各自 apply 腿已绿）。不成修不落地。
 - 本节为定性突破（内存腐坏→寄存器腐坏），修正后续排查方向；未坐实不成修。
 
+## §续-197（2026-10-02·**AF-8(P0)+AF-9+AF-10 riscv 懒 FPU 归属门控闭环（回溯审计 NK4C-RETRO-AUDIT 待办）；commit `ef3c40c6b`**）
+
+目标推进到里程碑 C（回溯审计待办）。(A) 需专注 gdb 子会话（fresh 上下文），本转先清 AF 线中不依赖 riscv 启动的确定项：
+
+- **AF-8（P0）**：`kernel/src/lib.rs:3743 finish_and_restore` riscv 臂给非 owner 返回 user 前 patch `ctx.sstatus.FS` 旧写 `Initial(0b01)` → 改 `Off(0b00)`。根因：门控谓词 `riscv64_illegal_insn_is_fpu_trap`（trap_dispatch.rs:1743，`entry_sstatus & (0b11<<13)==0`）要求 **FS==Off** 才把 scause=2 判成 FP 轮转陷阱；而 FS=Initial 时 FPU available 不陷阱（RISC-V Priv ISA + 本 crate `fpu.rs` 头 doc）⇒ 非 owner 回 user 后首条 FP 不陷阱 ⇒ 轮转腿 `riscv64_fpu_trap_body` 不可达死代码 ⇒ riscv user↔user FP 无保护。修正＝非 owner 写 Off，令首条 FP 陷阱进轮转腿。
+- **AF-9（P1）**：`trap_dispatch.rs:2471` 轮转腿帧回写 `| (0b10<<13)` 注释写 Dirty 但 0b10=Clean ⇒ 改 `0b11`（真 Dirty），与 finish_and_restore owner 臂一致。Dirty/Clean/Initial 均不陷阱⇒无行为回归，仅纠名值。
+- **AF-10（P1）**：抽纯函数 `riscv_lazy_fs_field(is_owner)->FS_DIRTY/FS_OFF`（`#[cfg(any(riscv64,test))]`）集中归属→FS 映射；新增 host 单测 `test_riscv_lazy_fs_field_gating`（钉非 owner=Off / owner=Dirty，交叉谓词对账轮转腿可达性；改回 Initial 两 assert 均红）；谓词可见性 `fn`→`pub(crate)` 供跨模块测试。
+- **附**：订正 `arch/src/riscv64/boot.rs` 头 doc + `set_fs_field` doc 遗留的错误认知（「Initial 致首条 FP 陷阱」与陈旧值 0b01/0b10）——该错误认知正是当初诱导 AF-8 写 Initial 的根因，防复发。
+- **零跨架构风险**：全改动 `#[cfg(target_arch="riscv64")]` / `#[cfg(any(riscv64,test))]` 门控，x86/aarch64 编译面不触碰。
+- **验证**：host 4 包集绿（含新测 1 passed）、`check-layout.sh all` PASS、CodeReview **PASS**（位语义与谓词严格自洽、`set_fs_field` 全仓唯一调用点、先清后置掩码传 0 生效）。riscv 真机 FP 轮转正证据（探针命中计数>0）延后至无关的 (A) pagefault-in-VM 结案后补验（模式-85：运行期可达性需真机正证据），属已知延后、非本改动缺陷。
+
+### 待办状态刷新
+- 回溯审计：AF-8/9/10 本续完成；AF-11（探针滚除）需过 C-61 pattern-gate且 (A) 未结案→仍延后（本轮新增的 P1/P2/P3/ipcefault/kill 探针入台账）；AF-12（xtask image.rs:553 riscv 分支误标 aarch64 文案 + proc.c:1923→1922 锚点）为 NIT，待下轮顺带。
+- 主阻塞仍 = (A) pagefault-in-VM（已定性为寄存器/GPR 恢复族，需续-197+ 的 S 态 ctx.gp_regs 前后 diff 探针或 gdb 坐实）。
+
+
 
 
