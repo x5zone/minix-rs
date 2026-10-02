@@ -10591,6 +10591,13 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - **目标③ T3.1 ELF 格式硬证**：`minix-elf::parse_ehdr` 要求 `ET_EXEC`（拒 `ET_DYN`/PIE）+ ELFCLASS64 + LSB。实证：host `gcc -static -no-pie` 产出 `Type=EXEC, Machine=X86-64, entry 0x401000` 的静态 ELF，满足加载器入口形式。⇒ **x86_64 腿 ELF 格式可行已验**（真拦路在 libc/syscall shim + ATF 框架 + 上机跑，属 T3.2/T3.3）；riscv/aarch64 腿仍需先装交叉 gcc（环境缺件）。不标目标③ 完成（仅 T3.1 可行性探底）。
 - 本轮提交（含本 WORKLOG 补录）：纯取证/文档；无生产码变更（上一轮 AF 批已入库）。tracked 净。
 
+## §续-200（2026-10-02·**(A) 子进程页表链定位完成 → gdb 硬件写点具体化到 3 个物理页**）
+- 由 gh66 现有 `sas-fork`/`sas-clear` 探针读出：子进程 0x800c（nr=0xc）set_addrspace root = **0x9dc37000**（干净 PA）。
+- 在快照沿该根走链：child_root `0x9dc37000` → i2=0x1ff → L1 页 **0x9d2ad000**（仅 1 非零项 idx=0x1ff）→ L0 页 **0x9d2ac000**。即崩溃 walk 的三层物理页已定位。三页均高 RAM（0x9d2a~0x9dc3）、与 `ptalloc-reuse-DATA` 命中的 0x9d2ac/0x9d2ad 同区。
+- **持久态反查结论**：这三页上的 entry 均干净（无 paddr≥RAM_HI / 无 bit36/37 高位），且全 RAM 无 paddr==0x309d28b000 的已存 PTE。⇒ 崩溃跟随的 corrupt l1 不在任何持久页表项，**只存于 VM walk 当时的活动寄存器**（已第 4 次独立坐实“非内存腐坏”）。
+- **gdb trace 具体化（关键推进）**：下一步无需“全 RAM 盲猜”，直接对子表链 3 页 **0x9dc37000 / 0x9d2ad000 / 0x9d2ac000** 各 4KB 设硬件写 watchpoint（gdb-multiarch `awatch` 或 QEMU 插件），回溯向这些页写入含 bit36/37 伪 PPN 的**那一条 store** 及其 PC——即真写者。候选写者：VM 为子进程 map/cow/exec 装表时把 DM VA 当 paddr 写入。未坐实不成修。
+- 环境限制登记（供下会话）：本机 `-Cdebuginfo=2` 不产 `.debug_*` section（readelf 零）→ gdb 无法按类型读结构体；需改 `-Cforce-frame-pointers` + 手工按 trap-frame 结构偏移读，或 QEMU TCG plugin 抓 store。
+
 
 
 
