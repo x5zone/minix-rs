@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-244（2026-10-03·内核 DM 活体读子根直推：gh96 实测子根 i2=255 槽 panic-halt 时=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243「陈旧数据字驻留」UAF 方向、重证 §续-216 瞬态；新线索＝崩 walk vaddr 落 i2=255属VM调试底图族，疑 sync_slot_pte 传错 vaddr/root 配对）**；取证链 §续-216~244**：
+> **🛑 最新前沿＝§续-245（2026-10-03·静态读 `handle_pagefault`/`sync_slot_pte`：崩溃 walk 的 vaddr＝子自身 fault_addr、root＝子 PageTable.root_paddr；§续-244「VM窗口 vaddr」降级为存疑推论（崩 GPR x2=VM sp）；下一步＝采子崩溃那次实 (root_paddr, fault_addr) 定 A1瞬态race vs A2错靶）**；取证链 §续-216~245**：
+>
+> **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
 > **（上一前沿＝§续-240，2026-10-02·(A) 靶收敛到唯一 `0x9DC377F8` + 抓写者 harness 就绪）→ 前沿取证链见 §续-216~242**：
 > - **§续-239/240 定级定根+工具就绪**：源码级对账 `paging.rs:307-343` 确定被写坏的是子根 0x800c 的 **L2 中间项**（非叶、非 VM 根——§续-195 已证 VM 根 22 表全净排除备选）⇒ **唯一硬件写 watchpoint 靶 = 物理 `0x9DC377F8`（= 0x9dc37000 + 255×8）**。可直接点火 harness `tmp/nk4a/riscv_watch_9dc377f8.sh [tag]`（已修 `awatch -lm0` 语法→裸 `awatch`）。两个具体封锁点（非“需人工”，是需长会话迭代）：① QEMU riscv system-mode gdbstub 硬件 watchpoint 地址语义（物理 `0x9DC377F8` vs VmDm 虚 `0x19DC377F8`，需形1↔形2 交替试）；② boot 至崩点 ~150-250s + 迭代轮次超单轮预算。下一会话工单见 §续-240。
@@ -11107,6 +11109,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 本会话新增 harness `riscv_live_read.sh`（修了一个 KDM 常量位数错：18位→16位）；gh95/96 均端口锚定 1241 已清。未改生产码；host 1400/0、两 marker 无回归（无代码可 review，纯 harness+日志+WORKLOG）。(A) 仍 open；§续-243 UAF-驻留方向被 gh96 直接证伪，新线索＝根/vaddr 错配。三目标未全成，goal active。
+
+---
+
+## §续-245（2026-10-03·静态读 `handle_pagefault`/`sync_slot_pte` 语义纠偏：崩溃 walk 的 vaddr=子进程自身 fault_addr、root=子 PageTable.root_paddr——§续-244「VM 窗口 vaddr」系由崩 GPR 反推的存疑推论）
+
+> §续-244 下轮工单前置：先读码把「要采什么四元组」说清。**纯静态读，未改生产码**。
+
+- `handle_pagefault`（`cow_exec_pf.rs:26`）拿到的 `pt: &mut PageTable` 是**被缺页进程（子 0x800c）的**页表；`:38` `offset = fault_addr − region.vaddr`，`sync_slot_pte:115-117` `vaddr = (region.vaddr + offset) & !(PAGE_SIZE-1) = fault_addr 页对齐`。⇒ **query walk 的 vaddr 就是子进程自己那次缺页的 fault_addr**（非 VM 自身窗地址）；§续-244 从 §续-238 崩 GPR x2/x5=0x3ffffdfbXX 反推「被 walk vaddr 属 VM 调试族」——但 0x3ffffdfb2c 更可能是 VM 自己的 sp（崩帧里 x2=sp），**非** walk 入参 vaddr。⇒ 不把「根/vaddr 错配」当定论，也不拿它成修（避免 §续-243 同型幻影）。
+- 又 `filot`/`vmpt2bf` 探针（`:48-57` `pt.root_paddr()`）只印了 RS(ep2)/栈 ova 的根；**子 0x800c 崩溃那次的 (root_paddr, fault_addr) 尚无可信实测数据**——而 gh96 已证子根 0x9dc37000 的 i2=255 槽 halt 时=0。
+- 两解读分叉（都待实测）：（A1）若崩溃 walk 真用子根 0x9dc37000 且子 fault_addr∈i2=255 区，则 slot 瞬态为 V=1 垃圾但 halt=0 ⇒ 真存在「读后/读时被清零或被同一帧另一生命周期覆盖」的时间窗 race（§续-216）；（A2）若崩溃 walk 用的 root_paddr≠0x9dc37000（子真根已换/句柄 stale），则 **0x9DC377F8 从一开始就是错靶**，gh96 读到 0 合理。（A2 目测更简，与 §续-131/146 「exec adopt/munmap 摘链后 root 漂移」同域）。
+- **下轮唯一决定性采集**（不管甲/乙都需先拿到）：崩溃子 0x800c 那一次 `sync_slot_pte`/`query` 的实 **(root_paddr, fault_addr)** 二元组。手段：扩一个 `filot` 同构探针（在 `:56` 处现成 `pt.root_paddr()`）为子 ep=0x800c 且 fault_addr 非空时打印（诊断构建、结案滚除）；或 `break` 到 `Riscv64Paging::query` 入口（a0=self），`p ((minix_vm::pagetable::PageTable*)$a0)->root_paddr` 拓根 + 拓 a1=vaddr。**未坐实不成修**。
+
+### 纪律
+- 本层纯静态读 `handle_pagefault`/`sync_slot_pte` 语义，未改生产码、未新跑 qemu；host 1400/0、两 marker 不变。(A) 仍 open；§续-244「VM 窗口 vaddr」降级为存疑推论（崩 GPR x2=VM sp 而非 walk 入参）；下一步先采子崩溃那次 (root_paddr, fault_addr) 才能定 A1 vs A2。三目标未全成，goal active。
 
 
 
