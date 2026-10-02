@@ -10399,3 +10399,7 @@ gh56 复核：kc-efault（syscall.rs:584）零触发=kernel_call 拷贝链排除
 ## §1.120续-187（2026-10-02·**gh59：classify 修（VM 模块不 reclaim）已入库但未治愈（仍 SIGSEGV-for-itself p_fault_addr=None）——模块回收路径亦排除；VM text 页内容腐坏的写者仍未定位；续-188=pmemsave 实证法：gh60 fault 后 pmemsave→离线走 VM 根（0x82000000）找 text VA 0x3a000 的 PA→与 mod_vm.bin 期望字节 diff→差集字节即写者指纹（他服务器 ELF 字节可按模块指纹指认）→按指纹成修**）
 
 排除清单（至本轮）：VM 分配器（全池扣减）、模块 reclaim（classify 修）、双句柄、TLB、kerninfo、diagctl、帧拷贝、kcall EFAULT。VM text 帧=kernel boot-exec 池帧（非 VM free list）。写者在 kernel 侧对池帧的某条写路径。gh60 步骤：SKIP_BUILD=0 跑 wrap-boot-mon→poll 到 cause_sig→qmon pmemsave 全 RAM→python3 走 VM 根找 0x3a000 PA→diff mod_vm.bin 对应 offset→按差集字节指认写者模块→成修。
+
+## §1.120续-188（2026-10-02·**gh60 pmemsave 双事实：①VM text 页完好（VA 0x3a1a8 处 ram==mod_vm 期望字节 equal=True）——「text 被改写」理论推翻（gh53/58 的 non-PF SIGSEGV 非 text 腐坏）②真身=投递拷贝 EFAULT：kernel 向 VM delivermsg 投递的拷贝 EFAULT→cause_sig(8,11)（kc-efault 探针未盖住=投递拷贝在 ipc.rs 非 syscall.rs:584）；续-189=ipc.rs 投递拷贝 EFAULT 点探针（打 VA+VM 根 PTE 状态）→成修（delivermsg 页 NP 的根因——疑=该页从未被 fill（target=VM 的 memreq 自填路径 gh57 才加，需验证其触发与映射 flag））→marker 冲刺**）
+
+gh60 补充：text 页 0x3a000→PA 0x9FFEF000（高 RAM，memmap 顶 0x9fb33000 之上=内核保留区？——VA 0x3a000 的帧在高区非池非模块，安好）。"腐坏"叙事全面降级：VM 的死=一次 EFAULT 投递被判 SIGSEGV（自身 manager 致死）——非内存腐坏。此前 gh29-47 的 walk fault 族（0xbd28/0x3fffff stval）是否同一 EFAULT 机制的不同投影待后续对账。
