@@ -65,7 +65,7 @@ timeout "$BOOT_TIMEOUT" gdb-multiarch -batch -nx \
   -ex "continue" \
   -ex "printf \"\\n===STOP1===\\n\"" \
   -ex "x/1i \$pc" -ex "info registers a0 a1 a2 a3 a5 a6 a7 sp ra pc" \
-  -ex "printf \"CTRL(0x9DC37FF8)=0x%016lx  TGT(0x9DC377F8)=0x%016lx\\n\", *(unsigned long*)$CTRL, *(unsigned long*)$TGT" \
+  -ex "printf \"CTRL(0x19DC37FF8 DM-VA)=0x%016lx  TGT(0x19DC377F8 DM-VA)=0x%016lx\\n\", *(unsigned long*)$CTRL, *(unsigned long*)$TGT" \
   -ex "bt" \
   -ex "continue" \
   -ex "printf \"\\n===STOP2===\\n\"" \

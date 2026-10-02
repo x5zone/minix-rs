@@ -11030,10 +11030,10 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 自动交替 harness `tmp/nk4a/riscv_watch_auto.sh`（gh92）**形2**（VmDm 虚 `0x19DC377F8` 写 watchpoint，无 maintenance packet）：**串口 19694 行干净复现 (A)@`sepc 0x3abec stval 0x10bd28cb2c` `off 0xb2c`**，与 §续-238 无-gdb 指纹逐位相同 ⇒ **本 build 下 `-S`+watch 不复现漂移**（§续-228 的 0x3ac1a 漂移系更早布局/其它扰动，非普适）。硬件写 watchpoint **设点成功但未触发**（guest 直接跑到 :1991 panic）。
 - 形1（裸物理 `0x9DC377F8` + `maintenance packet Qqemu.PhyMemMode:1`）：**gdb 15.1 拒绝该 packet（报 `Invalid argument syntax`）** → 地址多半仍按虚译，且 PhyMemMode 交互把 (A) 漂到 `sepc 0x3ac1a stval 0x409d28bb20`（= §续-233 家族另一 corrupt 变体）。⇒ **形1 非干净负例**（语义被 packet 失败污染），不能作为「物理 watch 不命中」的定论。
 
-### 事实 2 — 硬件写 watchpoint 按【虚拟地址】匹配，非物理（控制位判别实验定谳）
+### 事实 2 — 硬件写 watchpoint 不按【物理】地址匹配（控制位判别；「按虚匹配」系由负证据反推之假说，待正证）
 - harness `tmp/nk4a/riscv_watch_ctrl.sh`（gh93）：一次 boot 同时设 `awatch 0x9DC37FF8`（控制位＝子根 i2=511 槽，exec 建表理论上必写）+ `awatch 0x9DC377F8`（目标坏槽 i2=255）+ `break *0x3abec`，全**非** PhyMemMode。
 - 结果：**Breakpoint 3（软件断点）命中 3 次**（gdb 停止控制正常）；**两个硬件写 watchpoint 均从不命中**；STOP1 处 `printf CTRL=... *(unsigned long*)0x9dc37ff8` → **`Cannot access memory at address 0x9dc37ff8`**。
-- 定谳：VM(U 态) 经自身 DM 窗访问物理帧 `0x9dc37000` 的虚拟地址＝`VmDm基址(1<<36=0x1000000000) + phys`，物理地址在 U 态根本不可直接访问；**QEMU riscv system-mode TCG 的 hw write-watchpoint 按 CPU 生成的【虚拟地址】匹配**（非物理）⇒ 裸物理 `0x9DC377F8` 永不命中；要抓写者必须 watch **VM-DM 虚拟形 `0x19DC377F8`**（§续-238 早推导的 DM 形）。
+- 推断（由负证据反推、非正证；且此推出的「须 watch DM 虚形」预测已被 gh94 §续-242 否证）：VM(U 态) 经自身 DM 窗访问物理帧 `0x9dc37000` 的虚拟地址＝`VmDm基址(1<<36=0x1000000000) + phys`，物理地址在 U 态根本不可直接访问；裸物理 `0x9DC377F8` 不命中且不可读。
 
 ### 事实 3 — 崩溃现场回栈正证据：写者上下文＝`cow_exec_pf::sync_slot_pte`
 - gh93 STOP1 回栈（`file minix-vm` 符号化）：

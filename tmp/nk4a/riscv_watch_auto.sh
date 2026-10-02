@@ -89,11 +89,14 @@ run_form() {
   local RC=${PIPESTATUS[0]}
   kill "$QPID" 2>/dev/null; pkill -P "$QPID" 2>/dev/null || true
   cleanup
-  # 命中判定：gdb 日志出现 watchpoint 触发（Stopped: Hardware watchpoint）且 info registers 段
-  if grep -qE "Hardware watchpoint [0-9]+:.*(Old value|New value)" "$LOG/$FT-gdb.txt" 2>/dev/null \
-     && grep -qE "^===HIT PC/INSN===" "$LOG/$FT-gdb.txt" 2>/dev/null; then
+  # 命中判据（P1 修：CodeReview 1ae3f8edb——本工具链 gdb 15.1 awatch 实打 "Hardware
+  # access (read/write) watchpoint N:"，旧正则 "Hardware watchpoint N:" 漏配会把
+  # 「设点成功」误报为「设点失败」）。设点=该行现；触发=日志含 "Old value ="/"New value ="
+  #（仅 watchpoint 真命中才打，逐行匹配）。
+  if grep -qE "Hardware access \(read/write\) watchpoint [0-9]+" "$LOG/$FT-gdb.txt" 2>/dev/null \
+     && grep -qE "(Old value|New value) *=" "$LOG/$FT-gdb.txt" 2>/dev/null; then
     echo "===AUTO-RESULT tag=$FT desc=$DESC HIT=yes rc=$RC==="
-  elif grep -qE "Hardware watchpoint [0-9]+:" "$LOG/$FT-gdb.txt" 2>/dev/null; then
+  elif grep -qE "Hardware access \(read/write\) watchpoint [0-9]+" "$LOG/$FT-gdb.txt" 2>/dev/null; then
     echo "===AUTO-RESULT tag=$FT desc=$DESC HIT=no (watch SET but not triggered; boot-timeout/crash) rc=$RC==="
   else
     echo "===AUTO-RESULT tag=$FT desc=$DESC HIT=no (watch NOT set — syntax/PhyMemMode/gdbstub) rc=$RC==="
@@ -102,8 +105,9 @@ run_form() {
 
 # ---- 顺序跑两形（形2 DM 虚先，形1 裸物理+PhyMemMode 兜底）----
 run_form "${TAG}f2" "$DMV" 0 "form2-DM-virtual"
-# 若形2 命中则短路，不再跑形1（省一次 150~250s boot）
-if grep -qE "Hardware watchpoint [0-9]+:.*(Old value|New value)" "$LOG/${TAG}f2-gdb.txt" 2>/dev/null; then
+# 若形2 命中则短路，不再跑形1（省一次 150~250s boot）。P1 修：设点正则同 gdb 实打措辞。
+if grep -qE "Hardware access \(read/write\) watchpoint [0-9]+" "$LOG/${TAG}f2-gdb.txt" 2>/dev/null \
+   && grep -qE "(Old value|New value) *=" "$LOG/${TAG}f2-gdb.txt" 2>/dev/null; then
   echo "===AUTO-SHORTCIRCUIT form2 HIT — skip form1==="
 else
   run_form "${TAG}f1" "$PHY" 1 "form1-bare-phys-PhyMemMode"
