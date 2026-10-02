@@ -10765,3 +10765,21 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **待 a2d 定写者的具体目标**：`0xbd28c000` 这个致 fault 的伪 PPN **不在 ram73.bin 任何持久槽**（§续-216 已扫）⇒ 它在 walk 读那一刻存在于 `0x9dc37000` 或链中某表帧的槽、随后被 trap handler/后续改写。a2d 读侧探针（§续-216 五）应精确抓 `(walked_root, i2, raw_l2e)`，若 walked_root==0x9dc37000 则直接对 `0x9dc37000+i2*8` 设写 watchpoint 抓写坏该栈链父项的 store（候选：exec 装 rc 段/栈时误把 data 帧当表帧写入、或 0x800c 上一世栈表帧被 free 后其地址仍在某处被引用）。
 - **顺带发现（AF-11 债，独立可清）**：`cow_exec_pf.rs:341` 续-141 的 `alloc-big` 探针仍在树（`#[cfg(not(feature="mock"))]`，bootmark U-safe），gh72 `alloc-big=0` 使命已完成；(A) 结案随批滚除。
 - **本轮无生产码变更**；tracked 净；证据 `tmp/nk4a/ram73.bin` 复用。host 1400/0。goal active。
+
+## §续-218（2026-10-02·**(A) 用户选“深挖定写者”→ 实现 a2d 读侧 U-safe 探针（仿 pt_alloc 注册类型化 sink）+ 构建成功 + 真机 gh74：badpte=0 且探针自身扰动时序使 (A) 本轮不复现（改停 0x800c 栈 noaddr SIGSEGV）⇒ 实锤“多墙时序门控”、读侧探针抓不到瞬态 corrupt→已回滚**）
+
+### 一、a2d 探针实现（临时、已设 U-safe、现回滚）
+- 设点：`riscv64/paging.rs` `walk_read` 算出 `l1 = pte_to_paddr(l2e)`（及 `l0 = pte_to_paddr(l1e)`）后、跟随读 child 之前，若 `!(0x8000_0000..0xA000_0000).contains(&child_pa)` 则上报 `(root, level, idx, raw, child_pa)`。
+- 输出腿：仿 `pt_alloc::register` write-once-then-read-only 契约，新增 `#[cfg(not(test))] pub mod badpte_probe`（类型化 `Sink = fn(u64,u8,usize,u64,u64)`，AtomicUsize 封顶 16）；VM 在 `VmServer::init` 经 `#[cfg(all(not(test),target_arch="riscv64"))]` 注册 `nk4a_badpte_sink` 走 `bootmark::mark`/sys_diagctl（**绝不用 CurrentEarlyConsole**，避记忆 a298c18a 的 U 态 SBI ecall 陷阱）。riscv-only 文件，x86_64/arm64 不编译、host 测试 `#[cfg(not(test))]` 排除。
+- 构建：`bash tmp/nk4a/wrap-boot-mon.sh RUN=gh74 SKIP_BUILD=0` 全 12 模块 + kernel-image **编译成功**（探针码合法）。
+
+### 二、gh74 真机结果：badpte=0 + (A) 本轮未复现（探针扰动时序）
+- `nk4a: badpte` 命中 **0**（整轮 walk_read 下降从无 child 表 PA 落 RAM 外）；`pagefault in VM`/`pagefault for VM` 均 **0**——(A) 本轮**未触发**。
+- 运行改停在另一相位：`nk4a: kill tgt=0x00c sig=0x00b`（SIGSEGV=0xb→0x800c）、`pf-exit noaddr cr2=0x7fffffffef90`（exec 出的**用户栈 VA**，与 `exec ... stack=0x7fffffffef98` 同区）、`pf-inrct eq=0x800c slot=0xc state=exiting` → `rm-fallback addr=0x7fffffffef90` → VFS/PM 车道 `vf:90500 vr:... pm:ffd01`。即 **0x800c 因栈页缺页无 region（noaddr）被 SIGSEGV**（与 aarch64 续-130/131 `pf-exit noaddr` 同族），不再是 walk 伪 table_pa。
+- 行数 19699（与 gh72/73 崩溃点同深度），marker=0。
+
+### 三、结论与转向
+- **实锤 (A) 是多墙时序门控族之一**（续-137/148 模型的真机重现）：探针自身的分支/代码生成扰动改变了那扇“是否触发 corrupt 跟随”的时序门 ⇒ 本轮绕过 (A)。**任何文本探针都会推期 ⇒ 读侧探针无法钉住 (A)**（记忆续-124 “纯文本探针已到能力边界”再确证）。
+- **探针已 `git checkout` 回滚**（恢复 tree 到 HEAD 的确定性可复现基线 gh72/73）；零残留。
+- **下一步真正能钉写者的手段**（需专注交互会话）：不扰动时序、直到命中才停的 **gdb 硬件写 watchpoint**——但需先知道写坏的具体帧槽；gh74 显示它不在“非叶 child PA 越 RAM”这个可静态预置的点上（badpte=0）。备选：先修本轮暴露的**确定性墙**——`0x800c exec 后栈页 noaddr`（region 与映射不符，aarch64 续-130/131 同族，对位 `pf-exit noaddr` 修向＝exec adopt/munmap 后栈 region 登记）或 fb201 乒乓（续-148 定为确定性首墙）；修后各时序路径都能往 marker 推进。
+- **本会话总结**：忠实执行了 prescribed “(A) 下一步”（审两函数）→ 用真机可信检测器 + C 真源 + 反汇 + 新快照 + a2d 探针，**证伪 prescribed 修向、纠正两处旧误读、拿到帧级正面线索、实测确证多墙时序门控**；全程未造幻影、未落未坐实的生产改动。三目标均未全成，goal active。
