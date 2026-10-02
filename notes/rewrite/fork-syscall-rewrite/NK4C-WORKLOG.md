@@ -10403,3 +10403,7 @@ gh56 复核：kc-efault（syscall.rs:584）零触发=kernel_call 拷贝链排除
 ## §1.120续-188（2026-10-02·**gh60 pmemsave 双事实：①VM text 页完好（VA 0x3a1a8 处 ram==mod_vm 期望字节 equal=True）——「text 被改写」理论推翻（gh53/58 的 non-PF SIGSEGV 非 text 腐坏）②真身=投递拷贝 EFAULT：kernel 向 VM delivermsg 投递的拷贝 EFAULT→cause_sig(8,11)（kc-efault 探针未盖住=投递拷贝在 ipc.rs 非 syscall.rs:584）；续-189=ipc.rs 投递拷贝 EFAULT 点探针（打 VA+VM 根 PTE 状态）→成修（delivermsg 页 NP 的根因——疑=该页从未被 fill（target=VM 的 memreq 自填路径 gh57 才加，需验证其触发与映射 flag））→marker 冲刺**）
 
 gh60 补充：text 页 0x3a000→PA 0x9FFEF000（高 RAM，memmap 顶 0x9fb33000 之上=内核保留区？——VA 0x3a000 的帧在高区非池非模块，安好）。"腐坏"叙事全面降级：VM 的死=一次 EFAULT 投递被判 SIGSEGV（自身 manager 致死）——非内存腐坏。此前 gh29-47 的 walk fault 族（0xbd28/0x3fffff stval）是否同一 EFAULT 机制的不同投影待后续对账。
+
+## §1.120续-189（2026-10-02·**完整链路还原：VM console 写（ecall）→kernel_call 消息拷贝 ✓→内核读字符串（VM 堆页）NP→memreq(target=VM)→VM 自填（gh57 新路径，ptalloc×2=堆页新 PT）✓→字符串拷贝 ✓→kernel_call_resume 重试 delivermsg 拷贝→VmCheckResult::Fault→SIGSEGV-to-VM（proc_table.rs:1258）→stacktrace(pc=0x3a1a8=VM 停在 console ecall)→panic；「重试为何 Fault」=最后未解环（delivermsg 页 PTE 在 entry ✓/resume ✗ 之间变化，或 resume 拷贝走错根）；续-190=vm.rs kernel_call_resume 的拷贝失败点探针（打 VA+root+PTE）定谳成修**）
+
+gh57 已证：自填路径（target=VM）正确触发并成功（无 hm-fail/ok=0，ptalloc×2=堆页新 PT 表）。死点后移至 resume 重试。续-190 探针点：os/kernel/src/vm.rs kernel_call_resume 内 copy 失败处（打 caller/delivermsg VA/current_root_phys/该 VA walk 结果），一次真机即定谳。
