@@ -10902,6 +10902,11 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **正确姿势（下一个人工/交互 gdb 会话用）**：启动 qemu **不加 `-S`**（只 `-gdb tcp::PORT`），guest 正常 boot；在 ~18s 崩溃前几秒 `target remote` 晚 attach（attach 瞬停→设 `hbreak *0x3abec` + `condition $a6>=0xa0000000`→`continue`），此时 boot 前段未受 gdb 干预→(A) 仍在 0x3abec 原位→条件命中即抓 pristine 现场（vaddr a2、被 walk 子根、corrupt l2e 物理槽）。晚 attach 窗口窄且条件求值慢，**适合人工逐步、不适合单发自动化**（本轮多次 -batch 尝试：早 attach 会 halts 在 boot 前沿无串口输出、晚/超时会错过；属工具循环摩擦非“环境不可”）。
 - 本轮未改生产码；harness 在 tmp；qemu 已清净、tracked 净。host 1400/0。三目标均未全成，goal active。(A) 仍开放，但钉法已收窄为“无-S晚attach+单次条件命中”一条明确路径（人工会话最适），不虚构、不固定单槽。
 
+## §续-229（2026-10-02·**(A) tmux 交互 gdb 实测：连上且保时序，但热路径条件断点在 gdbstub 上求值太慢（240s 未到崩溃点）——确定性能抓法只剩“对子根帧设单次硬件写 watchpoint”（写稀疏非热读）；可用事实：本 build 0x800c 根=0x9dc37000（sas-fork 探针）**）
+- `tmp/nk4a/riscv_tmux_gdb.sh`（port 1243、gh80-*、无 -S 正常 boot）：tmux 里 gdb `target remote` **连上成功**（PC=0x80000428，boot 正常推进，保时序）→ `hbreak *0x3abec`+`condition $a6>=0xa0000000`+`continue`。但 240s 内未命中（后续命令堆在 Continuing 未执行）。⇒ 确认瓶颈=**热路径每 query 下降都走 gdbstub 远程求条件**（-batch/tmux 同），非姿势问题。
+- **可用新事实**：gh73 `nk4a: sas-fork ep=32780(=0x800c) root=0x9dc37000` → 本 build 0x800c 的页表根物理地址确定=**0x9dc37000**。下一步可对其 512 个 L2 项所在 4KB 帧设**硬件写 watchpoint**（写稀疏→非热→快），条件“写入值解码 PPN≥RAM顶才停”，抓那条把伪 child_pa 写进子根帧的 store + PC/回栈。这避开热读路径，是自动化可行的下一步。
+- 本轮无生产码变更；harness 在 tmp；qemu/tmux 已清净、tracked 净。host 1400/0。(A) 仍 active；同时并行推③ syscall 桥（可 commit 具体件）。
+
 
 
 
