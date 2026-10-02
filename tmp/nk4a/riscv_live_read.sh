@@ -73,11 +73,14 @@ timeout 120 gdb-multiarch -batch -nx \
 RC=$?
 kill "$QPID" 2>/dev/null; pkill -P "$QPID" 2>/dev/null || true
 cleanup
-# 非零槽统计（x/xg 行格式 `0xADDR:\t0xVALUE`，只取制表符后的 VALUE 列）
-echo "===LIVE nonzero-slot tally in child root (VALUE 列非全零计数)==="
-grep -aoE $'\t0x[0-9a-f]{16}' "$LOG/$TAG-gdb.txt" 2>/dev/null | tr -d '\t' \
+# 非零槽统计（P1 修：CodeReview 97a55b8——旧口径跨全文匹配把独立 x/1xg 探针(slot511)
+# 与 512-dump 各计一次致虚高 1。现限定到 512-dump 区间，与整帧语义对齐。）
+echo "===LIVE nonzero-slot tally in child root (仅 512-dump 区间 VALUE 列非全零)==="
+awk '/whole child root 512 slots/{f=1;next} f' "$LOG/$TAG-gdb.txt" 2>/dev/null \
+  | grep -aoE $'\t0x[0-9a-f]{16}' | tr -d '\t' \
   | awk '$1!="0x0000000000000000"{c++} END{print c+0" nonzero slots"}'
-echo "===distinct nonzero values (up to 24)==="
-grep -aoE $'\t0x[0-9a-f]{16}' "$LOG/$TAG-gdb.txt" 2>/dev/null | tr -d '\t' \
+echo "===distinct nonzero values in 512-dump (up to 24)==="
+awk '/whole child root 512 slots/{f=1;next} f' "$LOG/$TAG-gdb.txt" 2>/dev/null \
+  | grep -aoE $'\t0x[0-9a-f]{16}' | tr -d '\t' \
   | grep -v "^0x0000000000000000$" | sort | uniq -c | sort -rn | head -24
 echo "===LIVE-DONE tag=$TAG rc=$RC log=$LOG/$TAG-gdb.txt==="
