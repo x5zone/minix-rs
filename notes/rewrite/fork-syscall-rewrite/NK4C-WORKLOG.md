@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-255（2026-10-03·目标③构建面：逐字 port BSD bm→t_bm 链成 ELF，string Tier-A 17/18 可链（原 14→md5+bm+memmem）；剩 t_strerror 需 errno 表移植（未假绿）；上机执行受 (A) 门控，待用户装 qemu-plugin.h）**）；取证链 §续-216~255**：
+> **🛑 最新前沿＝§续-256（2026-10-03·T1 反汇崩点重大纠偏：干净崩帧 stval 低12=0xB2C 非 8 对齐，而 query 任何页表槽读地址必 8 对齐⇒“corrupt 页表槽 0x9DC377F8”前提被推翻，之前 watchpoint/KDM 扫描/“需 plugin”均追错目标；采纳 GPT 定序 静态→host台账(runtime-window)→plugin(最后牌)；plugin 暂缓）**；取证链 §续-216~256**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11275,6 +11275,30 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 新增 tools/atf-c-compat/bm.{c,h} + build-atf-test.sh 改动（均构建/测试面，不进生产镜像/marker）；未改 os/ 生产 Rust/C 码；host 1400/0。三目标未全成，goal active。
+
+---
+
+## §续-256（2026-10-03·【T1 反汇崩点⇒重大纠偏】崩溃地址非 8 对齐，与 query 任何页表槽读算术矛盾⇒“corrupt PTE 槽 0x9DC377F8”前提不成立；之前 watchpoint/KDM 扫描都在追错目标）
+
+> 用户/GPT 指出：之前往“装 QEMU plugin 拓写者”走是工具过度升级；真正未定的不是“谁写坏”，而是“我们是否误认了崩溃点”（T1 最高优先）。本层只做 T1（反汇 + 现有串口，零新跑、零改码），得硬结论。
+
+### T1 实据（均为 free：HEAD 反汇 + gh92f2 现有 crash 帧）
+- 干净崩帧（gh92f2）：`sepc 0x3abec`、`stval 0x10BD28CB2C`、**x15(a5)=0x1000000000**（VmDm 基）、x13=0x9d2ad004、x16=0xfffffffffff000（掩码）。stval 低 12 位 = **0xB2C**，`(stval - VmDm基) & 0xfff = 0xB2C`，**0xB2C 不是 8 的倍数**（/8=357.5）。
+- 反汇 `query`（riscv64-unknown-elf-objdump，`Riscv64Paging::query`@0x3ab58）：三层槽读地址均由 `a1 = VmDm_base(4K对齐) | pte_to_paddr(上级PTE)(=`(pte&PPN_MASK)>>10<<12`→恒 4K 对齐，低 12 位=0`) + (vaddr>>shift &0x1ff)<<3`（idx*8，8 对齐）`构成 ⇒ **query 任何页表读地址低 12 位必为 8 的倍数**。
+- ⇒ **矛盾（不可同真）**：崩溃那一条 load 的 stval 低 12=0xB2C 非 8 对齐 ⇒ **崩点 0x3abec 不可能是一条 query 页表槽读**。即：§续-238/239/240 把“有人写坏子根 i2=255 槽=物理 0x9DC377F8”当唯一靶，与崩溃地址算术**自相矛盾**——那个“瞬态 corrupt l2e”模型很可能是误认。
+
+### 直接推翻的旧结论（诚实）
+- 我之前“硬件写 watchpoint 两形皆不可行（TCG 定谳）”——但 watch 的是 `0x9DC377F8`/DM虚 `0x19DC377F8`；**若这根本是错目标，不命中是必然，不能得“watchpoint 机制坏”结论**（GPT T3 指出旧地址可能写错，需先定对崩溃地址再重验）。同理 gh96/gh103“全根 halt 全净”是**预期内**（那槽本就非崩源），却被我误读成“瞬态写坏、需 plugin”。
+- 0xB2C = 一个【页内偏移】形状（0x0..0xfff）⇒ 崩溃更像在访问“base + 某 bogus 帧 paddr + vaddr 页内偏移”的**数据/内容探针读**（sync_slot_pte/handle_pagefault 里经 DM 读叶子物理页内容的腿，§续-230/2445 DIRECT 护栏同域），**不是 walk_read 读表项**。叶子 PTE 本身 paddr 可疑才合理。
+
+### 重新定序（采纳 GPT：静态→极小台账→plugin）
+- **T1（本层）✓ 崩点被误认**；plugin 降为最后牌。**不再拿 `0x9DC377F8` 当靶**、不再“装 plugin 拓瞬态写者”。
+- **T2（下轮，host runtime-window 单测，非真机）**：构造/观察 sync_slot_pte 递给 query 的 (vaddr, root_paddr, channel) 与崩溃时那一条 load 的真实地址构成——先定“崩的到底是哪一层读、地址怎么来的”。可用现有 `runtime-window` 在 host 复现，零真机。
+- **T4（host 台账）**：写侧只记 PA/值/序号，不在 read path 加东西；先排除“其实压根不是页表帧被写”。
+- 升级 plugin 的严格条件（未满足）：T1 确认确是目标槽 ∧ T2 root/vaddr 配对正确 ∧ T3 对正确地址 watchpoint 机制可用 ∧ T4 guest 台账仍拓不到 writer ∧ bug 仍稳定。当前 T1 已否定前提→**先重建对崩溃的正确理解，不碰 plugin**。
+
+### 纪律
+- 本层纯反汇 + 现有串口分析，零新跑 qemu、零改码；未改 os/ 生产码；host 1400/0。(A) 仍 open 但**方向重大修正**：旧“corrupt 页表槽 0x9DC377F8”靶被 T1 推翻。三目标未全成，goal active。
 
 
 
