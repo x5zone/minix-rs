@@ -10840,5 +10840,18 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 目标③：❌未上机。工具链齐（riscv64 交叉 gcc+picolibc+libatf-c 源），但 libatf-c 需 err/regex/sys-wait/uio shim + fork/exec→IPC（大件），且 riscv 上机硬依赖①。Tier-A 未跑。
 - 本轮**无生产码变更**；tracked 净（tmp/ 全 gitignore）；qemu 已清。host 1400/0。**goal active**（三目标均未全成）。
 
+## §续-223（2026-10-02·**目标③ 第一块实交付：libatf-c 交叉构建工具入仓，riscv64 实测产出 7 成员 libatf-c.a**）
+
+### 交付
+- 新增 `tools/build-libatf-c.sh`（arch=riscv64 默认/x86_64）+ `tools/atf-c-compat/{err.h,sys/uio.h}`（picolibc 缺件的构建期 shim）。实测 `bash tools/build-libatf-c.sh riscv64` → **✅ 7 个成员、131922 字节的 `os/target/atf/riscv64/libatf-c.a`**（os/target 全 gitignore，仅工具体入仓）。
+- 库源：`minix3/external/bsd/atf/dist/atf-c` 的 7 个非测试文件（error/build/check/config/tc/tp/utils.c）全部交叉编过。关键移植点（已在脚本注释）：① defs.h 从 defs.h.in 渲染三个 @ATTRIBUTE_*@ 宏；② atf 源是 Minix 补丁化的→**必须 `-D__minix`**（否则 check.c 的 `atf_error_t err` 声明被 `#if defined(__minix)` 跳过、后续引用报 undeclared）；③ config.c 需 11 个 config-time 宏（ATF_BUILD_* + ATF_*DIR/SHELL/WORKDIR，正常由 atf configure 注入，此处 -D 占位）；④ picolibc 无 <sys/uio.h>→ compat 头补 struct iovec+writev（readv 由 picolibc 提供，不重声明以免冲突）；无 <err.h>→ compat 头补 BSD err(3) 原型（实现延到链接期 shim）。
+- x86_64 分支不注入 compat（走 glibc 原生），CodeReview 指出的“覆盖原生头冲突”P1 已修；AR 依赖校验、echo 成员数文案 P2 已修。
+
+### 目标③ 剩余链（未完成，goal active）
+- 测试脚手架：具体测试需 atf-c 外的 helper（如 `t_memcpy.c` 需 `md5.h`）——需逐个盘点/补 shim。
+- **核心大件**：C 测试 → static riscv64 ELF → 我方 `minix-elf` 加载（格式已验 续-202）→ **syscall/IPC 桥**（picolibc `_write/_sbrk/open/read/write/exec/fork/wait` 重定向到我方 `ipc_trap`/`kernel_call` + VFS syscalls）→ 上机跑。链接 libatf-c.a 需先备此桥 + err/writev 实现。
+- riscv 上机硬依赖目标① (A) 解除（待真终端交互 gdb 钉写者，§续-221）。
+- 本提交：**新增构建工具（不影响任何生产镜像/三架构 marker）**；已 CodeReview。host 1400/0 不变。goal active。
+
 
 
