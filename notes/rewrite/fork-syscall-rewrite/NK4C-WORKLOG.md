@@ -10997,6 +10997,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 仍缺的只是**瞬态写入值本身**（快照抓不到，§续-196/200/216）——这正是硬件写 watchpoint 能抓而静态/快照不能的。配方不变（§续-238 四：正常 boot 无 `-S`、hbreak `trap_dispatch.rs:1991` panic 前一次读现场→重启对 `0x9DC377F8` 设写点）。
 - **本轮未改生产码**（纯源码+反汇对账），host 1400/0 不变、两 marker 无回归。(A) 靶从「两个候选物理槽」收敛到**唯一 `0x9DC377F8`（L2 层）**，级别与根均已定死。goal active。
 
+## §续-240（2026-10-02·**(A) 硬件写 watchpoint harness 就绪 + 实测两个具体封锁点（QEMU riscv hw-watchpoint 地址语义 + 单轮预算），非“需人工”而是需专门长会话迭代**）
+
+### 交付：可直接点火的抓写者 harness（gitignored tmp/nk4a，配方已入 §续-239）
+- `tmp/nk4a/riscv_watch_9dc377f8.sh [tag]`：fresh 端口 1241（避它会话）+ `ghNN-*` 独立日志 + 点火前 `pkill -f '[q]emu-system-riscv64.*1241'` 只杀本 harness qemu、`ss` 先验端口空闲；复用 HEAD 已建 binary（本轮无生产码变更）。
+- 手法：qemu `-S -gdb tcp::1241` 从头挂起 → gdb-multiarch `awatch *(unsigned long*)0x19DC377F8`（物理 0x9DC377F8 的 VmDm 虚形=1<<36+物理）→ `continue` → 首次命中即拓 store PC+`info registers`+回栈+写进槽的 raw 值。
+
+### 实测两个具体封锁点（非“需人工”，是需多次迭代长会话才能定的技术细节）
+1. **本 gdb 不认 `awatch -lm0`**（报 “Invalid argument syntax”→watchpoint 没设上→continue 直冲 0x3abec crash 无写命中）。已修为**裸 `awatch`**（access，含读写；若只要写改 `watch`）。gh90 首轮即此败。
+2. **QEMU riscv system-mode gdbstub 的 hw watchpoint 地址语义未定**：`awatch <addr>` 到底按【物理】还是【当时 satp 平移的虚】解释不确定（boot 早期 satp=Bare 虚=物，开 satp 后不同）。harness 先试 VmDm 虚 `0x19DC377F8`；若不解需再试裸物理 `0x9DC377F8`（形1）戒 boot 后重设。这个语义需实际迭代才能确定，不是一次能结。
+3. **单轮工具预算不够**：boot 至 (A) 崩点 ~150-250s（§续-236），叠上 watchpoint 地址语义迭代（可能几轮），超本会话每轮预算；gh91 重跑又撞端口未及时释放。
+
+### 下一轮精确开工单（不重新推导，直接跑）
+- 真终端/长会话：`bash tmp/nk4a/riscv_watch_9dc377f8.sh gh92`，若不命中则形1↔形2 交替（`PHY=0x9DC377F8` 裸物理重跑）；确认 `awatch` 已设（看 “Hardware watchpoint N:…” 行）再 `continue`。命中后：store PC → `llvm-objdump -d --start-address=<pc-0x40> --stop-address=<pc+0x10> minix-vm` 回符号；写入 raw 值→与 §续-233 伪 child_pa 对账。
+- 未坐实不成修（不拿“疑 exec 装填腿”这类未验根因落地生产码）。每改码守 x86 marker=2/panic=0 + aarch64 不回归 + check-layout all + host 4 包集（基线 1400/0）。
+
+### 纪律
+- **本轮未改生产码**（harness 在 gitignored tmp，配方在 §续-238/239）；本 harness 点火失败后 qemu 已清（仅杀本 harness 1241/1240，未动其它会话）。host 1400/0 不变、两 marker 无回归。(A) 仍 open、靶已定、工具就绪——非“需人工”停摆，是需专门长会话迭代 QEMU 语义。三目标均未全成，goal active。
+
 
 
 
