@@ -33,3 +33,19 @@
 | 续-179/186 VM 自填路径 | PASS（保留·观察） | PageFlags WRITABLE|USER|PRESENT 无 EXEC 合 W^X、get_active None 早出口修复自洽；但 gh61 示 sf-* 零命中（memreq target=0x800c 非 VM），此支可能「正确但从未真正救火」，随 (A) 结案复核可达性 |
 
 **总口径**：仅 ⑥Part-A 真修保留；①③④⑤为误诊衍生防御码/跨架构回归/死冗余，**移除/回退须集中在 (A) 结案后的独立批次、每笔过 x86+aarch64 non-regression 门**（当前 marker 均在，非活动回归，不动）。nk4a: 打点到期随探针滚除。
+
+## 续-191~197 会话交接（2026-10-02 后续轮·新 agent 从此接手）
+
+### 已完成（均验证+CodeReview+commit，详情见 WORKLOG §续-191~197）
+- **P0 真修**：riscv VM 自管理 SIGSEGV（`cause_sig: sig manager 8`）真身＝`paging.rs` 陈旧 l1raw/q-badroot 探针在 VM(U 态)发 SBI putchar `ecall a7=1`、被内核 IPC 门误当 Send(msg ptr=a1=0)→EFAULT→SIGSEGV。删两探针即成修 `f90416cc9`。`cause_sig` 已绝迹（gh64 验）。
+- **重大纠偏**：前 37 会话（续-139~190）追的 `kernel_call_resume`/`VmCheckResult::Fault`/delivermsg/自填/wrong-root/VM 分配器/text 改写**整族＝幻影**（gh61 多点探针正证据判死：mrr 全 Ok、sf-*/rvflt/kc-efault/WARNING 全零）。勿重走。
+- **回溯审计（NK4C-RETRO-AUDIT）**：AF-8(P0，riscv 懒 FPU 非 owner FS Initial→Off，轮转腿可达)、AF-9、AF-10（钉测）`ef3c40c6b`；AF-12（NIT）`719716dab`；AF-5（P1，修 pm_sched mock → `cargo build --workspace --all-targets` 从 E0046 复活、pm_sched 4 passed，**关目标③集成测试静默腐坏盲区**）`6d485d4ca`。
+- **AF-11**（探针滚除）：本轮新增 P1/P2/P3/ipcefault/kill 探针入台账，C-61 pattern-gate 前不滚（(A) 未结案）。
+
+### 当前唯一阻塞＝(A) pagefault-in-VM（riscv64 marker 差这一环）
+- 现象（gh64/gh66 逐位相同、确定性）：VM 自身 walk 时 `read_pte_dm` 访问 `sepc 0x3ac1a stval 0x409d28bb20` → `trap_dispatch.rs:1991` `pagefault in VM` panic（VM 自身缺页致命，C exception.c 对位）。
+- **已定性质（硬证据）**：全 512MB 快照（gh66 pmemsave）反查——无任何 8 字节槽 `paddr==` 假表基址 `0x309d28b000`；VM 自身根表树 BFS 22 表全净。⇒ 假地址**只在寄存器/瞬态**，非持久内存 PTE。`0x309d28b000 = 0x9d28b000 | 3<<36`（DM 基址 bit36/37 泄入 PPN）。静态源码回推：save/restore 两腿均从 ctx 全量装 gp_regs→**非恢复腿丢槽**。怀疑面收窄到二选一：① VM 自身 walk 算术（算子表地址时 DM 位泄入）或② 子进程 0x800c 树某中间 PTE 读自一个已被 VM 自己 reclaim/重用的帧（PT↔data 活别名，非噪声）。两者均需活体 trace。
+- **下一步（唯一有效路径，记忆续-124：纯文本探针已到边界）**：`qemu-system-riscv64 -s -S -gdb tcp::3333` + `gdb-multiarch`（本机可用），在 (A) 崩溃现场读 VM 活体寄存器 + 其父表槽实际内容，或对 walk 跟随的中间帧设硬件写点回溯写者（区分“算术造出” vs “读了个正在被复用的旧 PTE”）。坐实前不成修。
+
+### 三大目标进度
+- ①三架构 marker：x86✅、aarch64✅、**riscv64 ❌（只差 (A)）**。② 18-stage 命令面：仅 x86 核心✅（riscv/aarch64 待①）。③ 586 C 测试上机：未启动（AF-5 已清编译盲区为前置）。三条全未成，**不标 complete**。
