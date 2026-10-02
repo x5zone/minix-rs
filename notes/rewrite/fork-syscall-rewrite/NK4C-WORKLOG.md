@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-251（2026-10-03·多根 KDM 扫描定谳：sas-send 全 12 个 ep 根 halt 时 0 耐久 corrupt 槽 ⇒ (A) 实锤 A1 真瞬态；本工具链无任何非扰动手段能定谳瞬态写者，唯一未试＝QEMU mem-write 插件需 qemu-plugin.h=外部硬阻塞。并行：目标② aarch64 命令面既有 tracked 证据已通））**；取证链 §续-216~251**：
+> **🛑 最新前沿＝§续-252（2026-10-03·目标②：新增 aarch64 命令面回归 gate `test-cmd-smoke-aarch64.sh` 并实测 PASS（marker + ls /bin + cat /etc/rc 走 VFS IPC）⇒ 目标②已 x86+aarch64 双架构可验；(A) 待用户装 qemu-plugin.h 后走 QEMU mem-write 插件定谳瞬态写者）**；取证链 §续-216~252**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
