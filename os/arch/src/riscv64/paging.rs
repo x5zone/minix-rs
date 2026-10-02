@@ -324,27 +324,6 @@ fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
     let i1 = l1_index(vaddr);
     // SAFETY: see above; L1 entry address is within the L1 page.
     let l1e = unsafe { read_pte_dm(l1 + (i1 as u64) * 8, channel) };
-    // 续-173 探针（用后即滚）：L1 槽 PA+raw 值——query 与 update_flags
-    // 共用本函数，序列对比两 walk 的 (root,l1,l1e)。栈族 VA 门控 3 次。
-    #[cfg(not(feature = "mock"))]
-    if vaddr > 0x7fff_0000_0000 && matches!(channel, PteChannel::VmDm) {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static L1_N: AtomicUsize = AtomicUsize::new(0);
-        if L1_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-            Console::write_str("nk4a: l1raw root=");
-            Console::write_hex(root_paddr);
-            Console::write_str(" l1=");
-            Console::write_hex(l1);
-            Console::write_str(" i1=");
-            Console::write_hex(i1 as u64);
-            Console::write_str(" l1e=");
-            Console::write_hex(l1e);
-            Console::write_str(" ch=");
-            Console::write_hex(channel as u64);
-            Console::write_str("\n");
-        }
-    }
     if l1e & Sv39PteFlags::V.bits() == 0 {
         return WalkResult::NotPresent;
     }
@@ -724,31 +703,13 @@ impl Paging for Riscv64Paging {
     }
 
     fn query(&self, vaddr: VirBytes) -> Option<(PhysBytes, PageFlags)> {
-        // 续-155 探针（用后即滚）：坏根识别——root 非 RAM 页对齐即打印
-        // self 地址与 vaddr（gh35 物理取证：垃圾 root 把 walk 引进 QEMU
-        // 设备洞，设备字节被当 PTE）。前 4 次门控。
-        #[cfg(not(feature = "mock"))]
-        {
-            const PROBE_RAM_LO: u64 = 0x8000_0000;
-            const PROBE_RAM_TOP: u64 = 0x9fb3_4000;
-            if self.root_paddr < PROBE_RAM_LO
-                || self.root_paddr >= PROBE_RAM_TOP
-                || self.root_paddr & 0xFFF != 0
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static BAD_N: AtomicUsize = AtomicUsize::new(0);
-                if BAD_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                    Console::write_str("nk4a: q-badroot self=");
-                    Console::write_hex(self as *const _ as u64);
-                    Console::write_str(" root=");
-                    Console::write_hex(self.root_paddr);
-                    Console::write_str(" vaddr=");
-                    Console::write_hex(vaddr.0);
-                    Console::write_str("\n");
-                }
-            }
-        }
+        // 续-155/续-173 q-badroot/l1raw 类调试探针已除（用后即滚）：本
+        // query/walk_read 被 VM(U 态)与内核(S 态)共用，而 `CurrentEarlyConsole`
+        // 的 riscv 后端是 SBI putchar `ecall a7=1`——在 U 态 ecall 会陷入
+        // 内核 IPC 陷阱门被误当 `IpcCall::Send`（dst=a0=字符、消息指针
+        // =a1=0）→ copy_msg_from_user(0) EFAULT → cause_signal(VM,SIGSEGV)
+        // 致命（gh63 定谳的真身）。wrong-root 家族早已定谳（续-116/117
+        // 零命中），无生产行为影响。
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
             WalkResult::Leaf(_leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
                 // For 4KB leaf pages, the offset within the page comes from
