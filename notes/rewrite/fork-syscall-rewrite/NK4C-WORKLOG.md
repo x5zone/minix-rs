@@ -10943,6 +10943,12 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 纪律：主路径无静态错且无可验证复现⇒**不落地任何投机性共享分配器/reclaim 改动**（会伤 x86/aarch64 两 marker 且无法验证）。(A) 保持 open、精确到“需动态非扰动技术”这一步。
 - 本轮无生产码变更；host 1400/0。三目标均未全成，goal active。
 
+## §续-236（2026-10-02·**目标③ 可构建面盘点（8/15 Tier-A string 测试链成可加载 riscv64 ELF）+ (A) QEMU record/replay 尝试的启动限制**）
+- **③ 实测（`tools/build-atf-test.sh` 批量）**：15 个 lib/libc/string Tier-A 测试中 **8 个已链成可加载 riscv64 ET_EXEC ELF**（memchr/memset/strcpy/strcspn/strrchr/strspn/swab/strpbrk）——真 atf 用例经 libatf-c + syscall 桥 + posix-stubs 链到 `minix-elf::parse_ehdr` 硬项均过。剩余 7 个卡点精确归类：`dlfcn.h` 缺（strchr/strlen）、少量 undefined 符号需再补 sysstub（popcount/strcat/strcmp/stresep）、memcpy 编译错。⇒ ③ 从“0”到“一批测试可产出加载器可解析二进制”，且缺口可逐项销。未跑通（上机执行仍需 VFS/进程桥，riscv 亦受 (A)）。
+- **(A) QEMU record/replay 尝试（新非扰动动态技术）的启动障碍**：`-icount shift=auto,rr=record` 无效（需固定 shift）；改 `shift=10,rr=record` 后 qemu **启动即退、无 rec.serial 产出**（本 riscv virt + `-bios default` + `-device loader` 配置下 rr=record 需额外设备确定性配置，非即插即用）。→ 此路需深调（剩余额度内难收敛），暂搁；(A) 仍回到人工交互 gdb（§续-228）或先定 slot 再硬件写 watchpoint。
+- 本轮无生产码变更（仅批量跑构建脚本）；qemu 已清。host 1400/0。三目标均未全成，goal active。
+
+
 
 
 
