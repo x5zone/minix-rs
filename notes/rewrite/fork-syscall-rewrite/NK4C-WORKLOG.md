@@ -10377,3 +10377,7 @@ gh55 判读：扣减扩至全池后 VM 分配器无法再发放池帧，但 VM �
 ## §1.120续-181（2026-10-02·**gh55 新线索：VM 的 fault（pc=0x3a0dc console lbu）走了 cause_sig(SIGSEGV-for-itself) 而非 pagefault-in-VM 臂 ⟹ fault 时刻内核 cur_nr 判定≠VM_PROC_NR（proc_ptr/调度归属错位）或 fault 经 memreq-EFAULT→SIGSEGV 路径（gh55 序列 do-memory→ptalloc-reuse-DATA→vm 0x8 0x3a0dc→cause_sig，memreq 无 ok=0=成功）；续-182=①grep「vm 0x8 0x」打印源定位路由点 ②查 cur_nr 判定（riscv64_pagefault_body 的 proc_ptr 取用 vs 调度器 proc_ptr 时序）③memreq EFAULT→cause_sig 链确认**）
 
 kerninfo map 审计结论（本轮已完成）：from_active_root(ptroot_phys) 传参=value_raw=发送方声明根（child=0x9dc38000 ✓ VM=0x82000000 ✓）、KERNINFO VA i2=8 与栈区 i2=511 不同子树、needs_map 幂等守卫在场——kerninfo map 洗清。diagctl kdst 写=内核自有缓冲（0x805ffb38/0x805ffc40）洗清。剩余唯一嫌疑=fault 路由归属（cur_nr）与 memreq-EFAULT 链。
+
+## §1.120续-182（2026-10-02·**「vm 0x8 0x3a0dc」=proc_stacktrace 诊断输出（stacktrace.rs:95-98，cause_sig panic 前自打印）非独立路由点；SIGSEGV-to-VM 投递链=memreq/copy 对 VM 内存 EFAULT→wrong-user-pointer→cause_sig(8,11)→stacktrace→panic；且 stacktrace 自身的 cross_space_copy（读 VM 用户栈）EFAULT 亦会二次入链（诊断不健壮实证）；续-183=①定位首次 cause_sig(8,11) 的触发 memreq（do-memory enter 后首个 target=8 的 copy）②其 EFAULT 出口定性（VM 的 IPC 缓冲 PTE 为何 NP）③成修（修 PTE 或 EFAULT→不致死处理）→marker 冲刺**）
+
+链路还原（gh55）：do-memory enter（某 memreq target=VM）→ptalloc-reuse-DATA×2（child 表页分配噪音）→cause_sig(8,11)→proc_stacktrace 打「vm 8 0x3a0dc」（VM 的 pc，console lbu 循环=VM 正在打印自己的 diagctl）→panic。VM 的 pc 说明 fault 时 VM 正在用户态跑 console 输出——**首个 SIGSEGV 的来源=VM 自己的 U-mode fault 被判 EFAULT 致死**（而非 pagefault-in-VM 臂：该臂只在 cur_nr==VM 的 U-mode PF 触发——本轮 cur_nr 判定或 scause 路由仍待对账，双假设保留）。
