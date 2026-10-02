@@ -48,6 +48,11 @@ done
 if [ -z "$FW" ] || [ -z "$FW_SRC_VARS" ]; then
     echo "SKIP: AAVMF firmware not found (install qemu-efi-aarch64)"; exit 2
 fi
+# strings 属 binutils；缺失时 strings 静默空输出→grep 永不命中会误报 FAIL(1)
+# 而非 SKIP(2)（与退出码语义矛盾）。前置检查对齐兄弟脚本对工具件的检查。
+if ! command -v strings &>/dev/null; then
+    echo "SKIP: 'strings' (binutils) not found"; exit 2
+fi
 
 # ── Stage 1: assemble the bootable aarch64 image (or reuse for local iteration). ──
 IMG="$ROOT/target/image/aarch64/minix.img"
@@ -77,6 +82,7 @@ qemu-system-aarch64 \
     -drive "if=pflash,format=raw,unit=1,file=$FW_VARS" \
     -drive "file=$IMG,format=raw,media=disk" \
     -serial "file:$SERIAL_LOG" \
+    -net none \
     -display none \
     -no-reboot &
 QEMU_PID=$!
@@ -95,7 +101,7 @@ done
 if [ "$reached" -ne 1 ]; then
     echo "FAIL: marker '$T4_MARKER' never appeared within ${TIMEOUT_BOOT}s (aarch64 boot chain regression?)"
     tail -12 "$SERIAL_LOG" 2>/dev/null | cat -v || true
-    kill_qemu; exit 1
+    exit 1   # EXIT trap 已 kill_qemu，不重复调
 fi
 echo "aarch64: command marker reached — checking ls /bin + cat /etc/rc ran"
 
@@ -106,16 +112,18 @@ echo "aarch64: command marker reached — checking ls /bin + cat /etc/rc ran"
 cmds_ok=0
 for _ in $(seq 1 "$TIMEOUT_T4"); do
     if [ -f "$SERIAL_LOG" ]; then
-        # `ls /bin` → its entries printed; `cat /etc/rc` → the shebang echoed back.
-        if strings "$SERIAL_LOG" 2>/dev/null | grep -q "/bin/sh" \
-           && strings "$SERIAL_LOG" 2>/dev/null | grep -qE '\bcat\b' \
-           && strings "$SERIAL_LOG" 2>/dev/null | grep -qE '\bls\b'; then
+        # 只判 marker 之后的内容（避开 boot-shim/init 里可能含 /bin/sh、ls、cat 的行造成假绿）：
+        # `cat /etc/rc` 回显的 shebang `/bin/sh` + `ls /bin` 目录项名，均须在 marker 之后出现。
+        after=$(strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p")
+        if printf '%s\n' "$after" | grep -q "/bin/sh" \
+           && printf '%s\n' "$after" | grep -qE '\bcat\b' \
+           && printf '%s\n' "$after" | grep -qE '\bls\b'; then
             cmds_ok=1; break
         fi
     fi
     sleep 1
 done
-kill_qemu
+kill "$QEMU_PID" 2>/dev/null || true   # 停住串口增长；wait 由 EXIT trap 兑底
 
 if [ "$cmds_ok" -ne 1 ]; then
     echo "FAIL: /etc/rc command face (ls /bin, cat /etc/rc) output not fully observed"
