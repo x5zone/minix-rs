@@ -63,3 +63,20 @@
 > - **(i) 算术 bug — 作废**：反汇编 `Riscv64Paging::query`@0x3ab58 证 walk 算术 `ld a1,0(a1)`=`pte_to_paddr(l2e)+DM_BASE+i1*8` 完全正确；旧「坏掩码 0x00fffffffffff000 = 寄存器破坏」是误读（那正是 `PTE_PPN_MASK<<2` 正常掩码）。
 > - **(ii) 分配器双发/refcount — 真机可信检测器证伪**：gh72/gh73（当前构建、确定性复现，逐字节同）里 `ptalloc-DUP=0`/`alloc-reuse-PT=0`/`dblfree=0`/`ptalloc-OOR=0`/`BADPFN=0` ⇒ vm_pt_alloc 恒返 RAM 内合法 PA、从不双发/重 free；仅歧义 `reuse-DATA` 命中（因 VM 堆/heap_arena 旁路 `DATA_SEEN` 而不可信）。⇒ **加「拒发 live 帧」= 空修。** 静态审计（对照 C pagetable.c/alloc.c/cache.c）亦证 reclaim 谓词、VM 进程独占中间表 free、PT+data 共享池均 C-faithful。
 > - **新的唯一有效下一步（a2d）**：(A) 真身＝某子进程根表的一个父级表槽在被 walk 读那一刻持有 PPN>RAM 的**瞬态值**（全 512MB 新快照 `tmp/nk4a/ram73.bin` 0 个持久槽含它 ⇒ 快照抓不到、需读取瞬间抓）。riscv 无 `gdb record` ⇒ 先加 riscv-gated U-safe 探针（`bootmark::mark`/sys_diagctl，绝不用 `CurrentEarlyConsole`＝记忆 a298c18a）在 query 读 l2e 且 `!leaf && paddr>=0xA0000000` 时打 `(walked_root, level, idx, raw)` 定帧，再设写 watchpoint 抓写者。未坐实不成修。
+
+## ★(A) 续-226~238 前沿覆写（2026-10-02·下一会话先读本块；上方 a2d 探针路径已被实测推翻）
+> 【重要纠正】上方 line 65「先加 U-safe 探针定帧」与旧「交互式 gdb 需真人真终端」两前提**均已失效**：
+> - **a2d 读侧 U-safe 探针（gh74）实测 badpte=0 且探针扰动时序反使 (A) 本轮不复现**（§续-218/219）⇒ 文本探针在 (A) 上是 Heisenbug 扰动源，不能用来定帧。
+> - **「需真人/环境不可驱动 gdb」已被 §续-226 实测推翻**（脚本化 qemu `-S -gdb tcp::PORT` + gdb-multiarch `hbreak`+`continue` 可驱动读到活体寄存器；真错因先前是不带 `-S` 崩完才 attach + 未清残留 qemu 占 gdb 单客户端口）。⇒ 降级为「可脚本自动化，但 (A) 对 halt 敏感」。
+> - **§续-232 铁证**：(A) 对 gdb 暂停/恢复**本身**极敏感（gh81 2s-attach 仍把 0x3abec→0x3ac1a、stval 变体），任何基于 halt 的活体抓法都在扰动它。§续-236 QEMU record 本配置启动即退。
+
+### (A) 位级定性（§续-233）+ 静态对账后的正确 watch 靶（§续-238、本块核心）
+- **位级**：伪 child_pa = 合法在-RAM 帧 | 多余高位（0xbd28c000=0x9d28c000|bit29；0x409d28bb20=0x9d28bb20|1<<38）。基址 `0x9d28xxxx` 落在 §续-217 那簇 0x800c PT 帧 + 相邻 /etc/rc 页缓存数据帧。⇒ (A)=**帧级 PT/data 双别名**（一帧既当页表又被旧数据引用方写踩 PTE），非随机瞬态。
+- **已静态排除（勿重走）**：双发检测器=0（§续-216）/ fork+map_page refcount 均对称正确、无漏计（§续-234）/ exit-teardown 主路径表帧独占且对称释放无行级错（§续-235）/ verify_refcounts 测不到 PT 帧（refcount 恒 0）。
+- **§续-238 零扰动钉死的 watch 靶（纠 §续-221/228）**：反汇 `minix-vm`@0x3abec=`ld a1,0(a1)` + 解 gh72 clean-repro GPR——
+  1. **a1(x11) 不是 `query` 的 `&self`**，是算出的被读槽调试底图 VA（故 x11==stval 是应然）；§续-221 step3 判读作废。
+  2. off=`0xb2c` **非 8 对齐**⇒按 §续-153b 自己的判据是**叶/数据访问**，非干净槽读（父基址被写入带了 vaddr 低位）。
+  3. 被 walk vaddr 属 `0x3ffffdfbXX` 族（x2/x5，off 逐位吻合）⇒ **i2=255（0xFF）非 511**；§续-228「root+511*8」=0x82000FF8 是错靶。
+  4. 被 walk 子根=`0x9dc37000`（§续-229 sas-fork）非 VM 根 `0x82000000`（pfvm 探针印的是 VM 自己 satp）。⇒ 父槽物理=`0x9dc37000 + 255*8`=**`0x9DC377F8`**。**设 watchpoint 前必须先活体读确认 walk 用子根还是 VM 根。**
+- **抓写者正确配方**：正常 boot（**不加 `-S`**，保 §续-228 的无-gdb 确定时序）下 `hbreak` 到 `trap_dispatch.rs:1991` panic 前（全 boot 仅命中一次→不慢），一次读 fault frame a2 + 子进程 0x800c phys_root → 据上判据算父槽物理→重启对该**物理**地址设 qemu 硬件写 watchpoint（条件「写入值解码 PPN≥RAM 顶 0xA0000000，或 off 非 8 对齐才停」），零 guest 文本探针扰动。harness：`tmp/nk4a/` fresh 端口 1240 + `ghNN-*` 独立前缀 + 点火前 `pkill -f '[q]emu-system-riscv'` 只杀本 harness qemu。
+- **未坐实不成修**；每改码守 x86 marker=2/panic=0 + aarch64 marker 不回归 + check-layout all + host 4 包集（基线 1400/0）。(A) 是① riscv marker 与③ riscv 上机的共同关键路径。三目标均未全成，goal active。

@@ -8,7 +8,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-216（2026-10-02·会话续-216 起）**：
+> **🛑 最新前沿＝§续-238（2026-10-02·零扰动静态对账）→ 前沿取证链见 §续-216~238**：
+> - **§续-238（免 gdb 静态钉死 (A) 的 watch 靶，纠 §续-221/228 两判读）**：反汇 `minix-vm`@0x3abec + 解析 gh72 clean-repro GPR——① fault `ld a1,0(a1)` 的 **a1(x11) 是算出的槽调试底图 VA（==stval 应然），不是 `query` 的 `&self`**；② off=`0xb2c` **非 8 对齐**⇒按 §续-153b 判据是**叶/数据访问非干净槽读**（父表基址被写入带了 vaddr 低位，§续-233 污染形态）；③ 被 walk vaddr 属 `0x3ffffdfbXX` 族（x2/x5，off 逐位吻合）⇒ **i2=255 非 511**，§续-228「root+511*8」错靶；④ 被 walk 子根=`0x9dc37000`（§续-229）非 VM 根 `0x82000000`⇒父槽物理=`0x9DC377F8`（设 watchpoint 前须先活体读确认用哪个根，否则白跑）。抓写者正确配方＝正常 boot 无 `-S`、hbreak 到 `trap_dispatch.rs:1991` panic 前一次读现场→算物理槽→重启设 qemu 硬件写 watchpoint。
+>
+> **（上一前沿＝§续-216～237，会话续-216 起）**：
 > - **续-215「帧双发/refcount」(A) 主嫌被真机可信检测器证伪**：gh72（当前构建、确定性复现，逐字节同 gh73）里 `ptalloc-DUP=0`、`alloc-reuse-PT=0`、`dblfree=0`、`ptalloc-OOR/BADPFN=0`——即 vm_pt_alloc **恒返回 RAM 内合法 PA、从不双发/重 free**；仅歧义 `reuse-DATA`（前 48 条 payload 全零）命中，而它因 VM 堆/heap_arena 旁路 `DATA_SEEN` 而**不可信**。**故在 `alloc_pfn_reclaiming`/`vm_pt_alloc` 加「拒发 live 帧」＝空修/幻影，勿再走。** 静态审计（对照 C 真源：reclaim 谓词、VM 进程独占中间表 free、PT+data 共享池均 C-faithful）独立汇合同一结论。
 > - **两处旧判读纠正**（反汇编 `Riscv64Paging::query`@0x3ab58）：① 崩溃寄存器里 `0x00fffffffffff000` 不是「寄存器破坏」，是 `query` 正常算的 `PTE_PPN_MASK<<2` 掩码（`lui a6,0xfff00;srli a7,a6,8`）；② walk 算术 `ld a1,0(a1)`=`pte_to_paddr(l2e)+DM_BASE+i1*8` **完全正确**，伪 table_pa 0xbd28c000 是如实解码 corrupt `l2e` 得来。**「纯算术 bug」也作废。**
 > - **512MB 新快照（gh73 `tmp/nk4a/ram73.bin`）坐实**：全 RAM 0 个持久槽含 paddr==0xbd28c000、VM 自身根表 11 项全在 RAM 内 ⇒ corrupt l2e **只在读取瞬间存在、非持久**（再确证 续-196/200）。
@@ -10947,6 +10950,36 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **③ 实测（`tools/build-atf-test.sh` 批量）**：15 个 lib/libc/string Tier-A 测试中 **8 个已链成可加载 riscv64 ET_EXEC ELF**（memchr/memset/strcpy/strcspn/strrchr/strspn/swab/strpbrk）——真 atf 用例经 libatf-c + syscall 桥 + posix-stubs 链到 `minix-elf::parse_ehdr` 硬项均过。剩余 7 个卡点精确归类：`dlfcn.h` 缺（strchr/strlen）、少量 undefined 符号需再补 sysstub（popcount/strcat/strcmp/stresep）、memcpy 编译错。⇒ ③ 从“0”到“一批测试可产出加载器可解析二进制”，且缺口可逐项销。未跑通（上机执行仍需 VFS/进程桥，riscv 亦受 (A)）。
 - **(A) QEMU record/replay 尝试（新非扰动动态技术）的启动障碍**：`-icount shift=auto,rr=record` 无效（需固定 shift）；改 `shift=10,rr=record` 后 qemu **启动即退、无 rec.serial 产出**（本 riscv virt + `-bios default` + `-device loader` 配置下 rr=record 需额外设备确定性配置，非即插即用）。→ 此路需深调（剩余额度内难收敛），暂搁；(A) 仍回到人工交互 gdb（§续-228）或先定 slot 再硬件写 watchpoint。
 - 本轮无生产码变更（仅批量跑构建脚本）；qemu 已清。host 1400/0。三目标均未全成，goal active。
+
+## §续-238（2026-10-02·**(A) 零扰动静态对账（用户指出 §续-221/228 两处自相矛盾，逐条钉死）：反汇 `minix-vm` + 解析 gh72 无-gdb clean-repro 串口 GPR，证 a1≠self、off 非 8 对齐⇒叶/数据访问非槽读、watch 槽 i2=255 非 511**）
+
+### 手法（零扰动：不启 gdb、不加任何 guest 探针，只用离线工具）
+- 反汇 `riscv64-unknown-elf-objdump -d --start-address=0x3ab90 --stop-address=0x3ac40 os/target/riscv64gc-unknown-none-elf/release/minix-vm`。
+- 读 gh72 无 `-S`、无 gdb 的**确定性 (A) 现场**串口 GPR dump（`tmp/nk4a/gh72-driver.log`，`sepc 0x3abec stval 0x10bd28cb2c`）。
+
+### 一、钉死 fault 指令与 a1 身份（用户第 5 点前半，成立）
+- 0x3abec = `ld a1,0(a1)`（`Riscv64Paging::query`+0x88，VmDm 中间表下降的一级读）。其前置算式：`srli a1,a2,0x12` → `and a1,a1,t0` → `or a1,a1,a5`（a5=x15=`0x1000000000`=`1<<36`=VM 调试底图基址）→ `add a1,a1,a6`。故 **a1（x11）是算出来的、被读那一页表槽的调试底图虚拟地址**，`ld a1,0(a1)` 用它当源地址解引用。
+- ⇒ **`x11 == stval` 是应然结果**（fault 地址就是这条 `ld` 正在读的 a1），**a1 不是 `query` 的 `&self` 指针**。**§续-221 配方 step3「a1=query 的 self 指针」判读作废**（用户指出的自相矛盾实证成立）。
+
+### 二、钉死 off 对齐：是叶/数据访问，非干净槽读（用户第 5 点中段，成立）
+- gh72 现场：stval=`0x10bd28cb2c` → pa=`stval-(1<<36)`=`0xbd28cb2c`、off=`pa&0xfff`=`0xb2c`。**`0xb2c % 8 = 4 ≠ 0` ⇒ 非 8 字节对齐**。
+- §续-153b 探针**自己的判据**（`os/kernel/src/trap_dispatch.rs:1960` 注释原文：「槽偏移非 8 倍数 ⇒ 非槽读而是数据访问」）⇒ 本 fault 属**叶/数据访问**形态，不是 `base + index*8` 的干净页表槽读。
+- ⇒ **§续-216/221 banner「walk 算术 = `pte_to_paddr(l2e)+DM_BASE+i1*8` 完全正确」需加限定**：若真是 `i1*8` 的槽读，off 必为 8 的倍数；实测 off=0xb2c 非 8 对齐，说明被解出的父表基址**本身带了非 8 对齐的低位**（=vaddr 的页内偏移 `0xb2c`），正合 §续-233「伪 child_pa = 合法在-RAM 帧 | 多余高位」的污染形态。算术按定义忠实解码了一个**已被写坏的父 PTE**，但「干净槽读」这一层措辞会误导下一步设点。
+
+### 三、钉死 watch 槽：i2=255 非 511（用户第 5 点末段，成立）
+- 现场寄存器有**两组栈 VA**，其 Sv39 一级索引 i2 不同：
+  - x12/x18 = `0x7fffffffe000`（规范用户栈顶）→ **i2=511** → `root + 511*8` = `0x82000FF8`。
+  - x2/x5=`0x3ffffdfb2c`、x10=`0x3ffffdfba4`、x20=`0x3ffffe26e4`（同一 0x3fc000000 块）→ **i2=255（0xFF）** → `root + 255*8` = `0x820007F8`。
+- **哪组是被 walk 的 vaddr？** 判据：stval 的 off=`0xb2c` **逐位等于** x2/x5=`0x3ffffdfb2c` 的页内偏移（`0x3ffffdfb2c & 0xfff = 0xb2c`）。⇒ 被解析的目标 VA 属 **`0x3ffffdfbXX` 族**，**不是** `0x7fffffffe000`。⇒ 若走「root+i2*8」设点，**正确 i2=255（0xFF）不是 511**；**§续-228 隐含的 `root+511*8`=`0x82000FF8` 是错靶**（511 是把 x12 规范栈顶的 i2、或把本 VA 的 i1=511 误当 i2）。
+- **还须先定「用哪个根」**：§续-229 实测本 build 被 walk 的**子进程 0x800c 页表根 = `0x9dc37000`**；而 pfvm 探针（`trap_dispatch.rs:1973`）印的 `satp`/root=`0x82000000` 是 **VM 自己的根**，不是被 walk 的子根。⇒ 真正的父槽物理地址 = **子根 `0x9dc37000` + `255*8` = `0x9DC377F8`**（若 walk 经 VM 自身根映子表则 `0x820007F8`）。**下一轮设 watchpoint 前必须先读活体确认 walk 用的是子根还是 VM 根**，否则又 watch 错地址、白跑一轮（正是用户警告的陷阱）。
+
+### 四、结论与下一步（不需真人、零扰动优先）
+- 「交互式 gdb 需真人真终端」前提已在 §续-226 实测推翻（脚本化 `-S`+hbreak 可驱动）；§续-232 铁证 (A) 对 gdb halt/恢复本身敏感（Heisenbug）；§续-236 QEMU record 本配置启动即退。⇒ 免扰动的静态对账把「该 watch 哪个物理槽」从 `0x82000FF8` **纠正到 i2=255 族**并坐实**叶/数据访问非槽读**，这本身即 (A) 实质进展（排除白跑一轮）。
+- 抓写者的正确配方（下一步）：**正常 boot（不加 `-S`，保 §续-228 的无-gdb 确定时序）** 下 `hbreak` 到 `trap_dispatch.rs:1991`（`panic!("pagefault in VM")` 前，全 boot 仅命中一次→不慢），在那**一次**读 fault frame 的 a2（被 walk vaddr）+ 从内核侧读被服务子进程 0x800c 的 phys_root（=`0x9dc37000`）→ 据上面判据算父槽物理地址（i2=255）→ 重启对该**物理**地址设 qemu 硬件写 watchpoint（条件「写入值解码 PPN≥RAM 顶 `0xA0000000`，或写入致该槽 off 非 8 对齐才停」），零 guest 文本探针扰动。harness 在 `tmp/nk4a/`（gitignored，fresh 端口 1240 + `ghNN-*` 独立日志前缀 + 点火前 `pkill -f '[q]emu-system-riscv'` 且只杀本 harness qemu、端口先验空闲）。
+
+### 纪律
+- **本轮未改生产 Rust/C 码**（纯 `objdump` 反汇 + 串口解析 + 文档），host 4 包集 1400/0 不变、x86/aarch64 两 marker 无回归（无代码可 review，CodeReview 门对纯文档增量不触发）。
+- 纠正两条 WORKLOG 判读：§续-221「a1=query self 指针」→ 实为算出的槽调试底图 VA；§续-228 watch 靶「root+511*8」→ 本 fault i2=255（且需先定子根 `0x9dc37000` vs VM 根 `0x82000000`）。三目标均未全成，goal active。
 
 
 
