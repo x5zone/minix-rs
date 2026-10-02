@@ -10395,3 +10395,7 @@ gh56 复核：kc-efault（syscall.rs:584）零触发=kernel_call 拷贝链排除
 ## §1.120续-186（2026-10-02·**gh58 决定性：segv-delve ep=8 p_fault_addr=None——SIGSEGV-to-VM 无页故障记录=非 PF=VM text 内容被改写成非法指令（Illegal→异常臂→cause_sig），且全池扣减后仍发生=写者在 KERNEL 侧对 VM text 帧（boot-exec 池帧）的直接写；VM 分配器已排除（续-180）、模块区已扣（续-175）；续-187=①kernel boot-exec 的帧分配台账审计（server N+1 的 exec 是否复用 server N 已占帧——kernel 侧无 VM 占用记录！）②VM text 页内容运行时快照对账（pmemsave 已通）③成修=kernel handoff 记录 boot-exec 已占帧（LiveBootstrap 扩展到全部 exec 镜像帧）→VM 侧扣减**）
 
 根因最终形态：kernel 的 boot-exec 逐台装载服务器镜像进池帧，但 **kernel 不知道哪些池帧已被前面的 exec 占用**（或 kernel 自己的 bump 与 exec 分配双轨漂移）——后面 exec 的段装载覆写前面服务器（VM）的 text 帧。VM 侧扣减（模块区+池）修的是 VM 分配器侧；kernel 侧 boot-exec 的帧记账缺口仍在。续-187 首步：kernel boot-exec 装载循环（kernel/src 的 exec_bootproc 族）的帧分配源审计。
+
+## §1.120续-187（2026-10-02·**gh59：classify 修（VM 模块不 reclaim）已入库但未治愈（仍 SIGSEGV-for-itself p_fault_addr=None）——模块回收路径亦排除；VM text 页内容腐坏的写者仍未定位；续-188=pmemsave 实证法：gh60 fault 后 pmemsave→离线走 VM 根（0x82000000）找 text VA 0x3a000 的 PA→与 mod_vm.bin 期望字节 diff→差集字节即写者指纹（他服务器 ELF 字节可按模块指纹指认）→按指纹成修**）
+
+排除清单（至本轮）：VM 分配器（全池扣减）、模块 reclaim（classify 修）、双句柄、TLB、kerninfo、diagctl、帧拷贝、kcall EFAULT。VM text 帧=kernel boot-exec 池帧（非 VM free list）。写者在 kernel 侧对池帧的某条写路径。gh60 步骤：SKIP_BUILD=0 跑 wrap-boot-mon→poll 到 cause_sig→qmon pmemsave 全 RAM→python3 走 VM 根找 0x3a000 PA→diff mod_vm.bin 对应 offset→按差集字节指认写者模块→成修。

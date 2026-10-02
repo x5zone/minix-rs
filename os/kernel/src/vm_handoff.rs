@@ -224,16 +224,19 @@ pub fn classify(
         }
     }
 
-    // Kernel-reserved: every boot module blob except VM's own (reclaimed).
+    // Kernel-reserved: every boot module blob INCLUDING VM's own.
+    // 续-187 成修：旧逻辑对 VM 模块做 reclaim（为 exec copy-out 腾帧），
+    // 但 kernel 的 boot-exec 在 VM 启动前逐台装载服务器 0..7——它们的段
+    // 帧从本 free list 取，VM blob 被取走即 VM 镜像启动前被覆写（gh53/
+    // 58：VM text 页非法指令→SIGSEGV-for-itself，p_fault_addr=None 非
+    // PF）。625KB 的让利不值得换启动前腐坏：全量保留。
     assert!(
         vm_module_idx < kernel_info.boot_modules().len(),
         "vm_handoff: VM module index {} out of bounds",
         vm_module_idx
     );
-    for (i, module) in kernel_info.boot_modules().iter().enumerate() {
-        if i != vm_module_idx {
-            record.push(module.start.0, module.len as u64);
-        }
+    for module in kernel_info.boot_modules().iter() {
+        record.push(module.start.0, module.len as u64);
     }
 
     // ── Cut the record out of the memmap (same-family exclusion as
