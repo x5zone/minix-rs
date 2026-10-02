@@ -10693,3 +10693,7 @@ a5=0x1000000000(=1<<36 VM_DM_BASE)  a6=0x82ce3000(合法 bump 池表页 PA)
 3. 确保 `kernel_dm_pa_end` ≥ 运行期 bump/可分配顶（0x84000000+）；若其只到启动期候选 max，改用 `kernel_info.memmap()` 的 ram_top（conventional 上界）取 `max(kernel_dm_pa_end, ram_top)`。
 **验证门（必全过才合入，逐架构真机）**：`cargo test -p minix-kernel …`（dm_coverage 若有 host 单测须更新候选→连续假设）+ `check-layout.sh all` → x86 `marker=2/panic=0` → aarch64 `marker` 不回归 → riscv gh 过 (A) 达 `minix-rs rc: minimal boot script marker`。riscv 若达 marker = 目标① 三架构全绿 → 解锁 ②(riscv/aarch64 命令面)/③(先 Tier A)。
 **为何本会话不直接落**：boot-paging 三架构改动，riscv 验证依赖此改动本身（循环），且 `kernel_dm_pa_end` 是否含 ram_top 未逐行确认——盲改可能在未验证下回归 x86/aarch64 两个已绿 marker（净负）。已交可执行配方 + `tmp/ram70.bin` 证据 + 可复用 gdb harness（`hbreak *0x3abec`）。
+
+## §续-212（2026-10-02·**(A) 修复尝试负面结果：连续 DM 窗未解，正常 boot 是 out-of-RAM 伪 PA（推翻 §209 覆盖洞定论，回到算术/野指针）**）
+实现 §205/211 配方（establish_boot_dm VM 窗改连续 [0, kernel_dm_pa_end)≈[0,0xA0000000)）+ 重建 riscv 真机 gh71：`cause_sig=0`（paging 探针修复仍有效）但 `pagefault in VM` **仍在**。新 fault `stval 0x10bd28bb2c` → PA `0xbd28bb2c` **> RAM 顶 0xA0000000**。dm-cov 探针显示 memmap `[0x80200000,0xa0000000)`，连续窗已到 0xA0000000——**但故障 PA 在 RAM 外**，连续覆盖再全也映不到。⇒ §209"VM satp DM 覆盖洞"定论**被正常-boot 数据推翻**：那个 in-window(0x82ce4000) 是 `-S` 时序扰动的**幻影变体**；正常 boot 真身 = **VM walk 算出一个 >RAM 的伪 table_pa 0xbd28b000**（读自被复用/清零的子表帧，或算术溢出），确证 §208 路线。**已 revert 连续窗改动**（未验证有效，不留在树里）。
+**真正的 (A) 下一步（未解）**：正常 boot（非 -S）下 `hbreak *0x3abec`，`stepi` 回溯装填 0xbd28b000 那条 `ld` 的源地址 → 读该源真值：若源是合法 PTE 而算出 >RAM ⇒ 算术 bug（walk_read/query）；若源本身已是垃圾 ⇒ 其父表页被回收/复用（PT 帧生命周期）。需专注活体会话；本会话穷尽自动化手段未定谳到指令，**不伪修**。
