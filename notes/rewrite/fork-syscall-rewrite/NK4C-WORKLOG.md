@@ -10500,3 +10500,23 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 ### 七、续-191~193 探针台账（待 (A) 定谳后过 C-61 pattern-gate 滚除）
 新增诊断探针存活 HEAD：P1 sf-*（vm_server.rs）、P2 mrr（syscall.rs）、P3 rvflt（lib.rs/proc_table.rs）、ipcefault（trap_dispatch.rs）、kill（syscall_signal.rs）。它们已定谳真身、服务完成，**(A) 结案时随全部 nk4a: 探针一并滚除**（AF-11 + 模式-86：滚除须 `git show --stat` 证代码真动）。l1raw/q-badroot（paging.rs）已删（即成修本身）。
 
+## §续-194（2026-10-02·**(A) 静态解码收窄：corrupt PPN＝合法 phys | 3<<36（DM 位泄入）；判定 reuse-DATA 检测器不可信（防幻影）；细化 gdb 写点处方**）
+
+### 一、(A) 故障静态解码（免 boot，读 gh64 现场 + 源码对账）
+- 崩溃＝VM 在 S 态缺页 arm（trap_dispatch.rs:1991）之前，`riscv64_user_body` 捕获 `pagefault for VM sepc 0x3ac1a stval 0x409d28bb20`。`0x3ac1a` 在 `paging.rs walk_read`。`pfvm: pa=0x309d28bb20 off=0xb20`＝`stval - 1<<36`（VM_DM_BASE）。
+- **解码**：`read_pte_dm(l1 + i1*8, VmDm)` 的 `l1 = pte_to_paddr(l2e)`＝`0x309d28b000`＝合法 RAM 内 `0x9d28b000`（在 0x80000000..0xA0000000）**按位或 `0x30_00000000`＝3<<36**。即 L2/根表某个中间项 PPN 带进了 **DM 基址位（bit36/37）**。与续-139「某写路径把 DM 槽指针（基址 1<<36+槽位）当 PTE 写回」同族——一个 DM 窗地址被当成物理地址喂进了 `paddr_to_pte`。
+- `pte_to_paddr`（`((pte&PTE_PPN_MASK)>>10)<<12`，PTE_PPN_MASK=0x3FFFFFFFFFFC00 覆盖 bit[10..53]）对 bit36/37 **不屏蔽**（它们落在 PPN 域内），故 DM 高位会随 PTE 往返存活——排除「掩码漏位」为因，指向**写入侧** `paddr_to_pte(dm_va)` 误用。
+- 候选写入侧：`walk_alloc`（paging.rs:402）用 `paddr_to_pte(alloc_pt_page().phys)` 写中间项；`vm_pt_alloc`（alloc_page.rs:124）返 `phys=pfn*PAGE_SIZE`（干净 PA）——**vm_pt_alloc 本身不泄 DM 位**。故 corrupt 源于（i）该根/中间表项被**另一条写路径**（非 walk_alloc 的新建）覆写，或（ii）PT 页与数据页**活别名**、数据写踩了 PTE。
+
+### 二、reuse-DATA 检测器判定＝不可信（防幻影，纠过时乐观亦纠过度解读）
+- gh64 `ptalloc-reuse-DATA` 命中 **18080** 次（histogram 首位），含崩溃帧 `pfn=0x9d2ac/0x9d2ad`（phys 0x9d2ac000＝故障 GPR x16）。表面像 (A)＝PT 页别名数据页。
+- **但判为不可信证据**：18080 次活别名对一次仅到 ~19k 行的启动不可能；`ptalloc-DUP=0`、`alloc-reuse-PT=0`（真双分配检测器静默）。`DATA_SEEN` 置位于 `VmPageAllocator::alloc_phys`（物理页域）、清除在 `free_pages`（239）；而 VM 堆走**独立** `VmAllocator::dealloc`（global.rs:1175，free_list，不动 DATA_SEEN）。若 boot 期物理数据页多数**不释放**（进程常驻），DATA_SEEN 累积，reclaim 再发放即命中——检测器系统性假阳。它本就是 `task1-close 裁决删除` 的临时脚手架。
+- **纪律**：不以 reuse-DATA 冒认 (A)＝PT↔data 别名（症状计数≠定谳，模式：幻影）。§续-190-交接六「PT↔data 复用已闭合」基于 DUP/reuse-PT=0，那两器仍可信；reuse-DATA 单列不可信，不作 (A) 依据也不作反证。
+
+### 三、(A) 精确 gdb 写点处方（续-195，坐实不成修）
+- 目标：抓「把带 DM 位（bit36）的值写进 VM 根表某 L2e 槽」的瞬态写者。工具链已确认：`qemu-system-riscv64 -s -S -gdb tcp::3333` + `gdb-multiarch`（本机可用）+ `target/.../minix-vm` 带符号。
+- 手法：①先定位崩溃那次 walk 的 `vaddr` 与 `i2`（=l2_index(vaddr）），算出被读坏 L2e 的** guest 物理地址** `root(0x82000000)+i2*8`；②对**该 8 字节槽**设 gdb `awatch`（硬件写点，QEMU system-mode 经 `z2` 包）；③`continue` 跑到首个命中，回溯 `$pc`＝写者；④`info symbol $pc`＋llvm-objdump 回符号。⑤若命中栈在 paging.rs `map`/`update_flags`/`remap` 或 `write_pte_dm`，即锁定 DM-vs-PA 混用点。
+- 因全 RAM 大页表、写点多，需先缩到**崩溃前最后写坏该槽**的一次（可结合 QEMU plugin 或 pmemsave 快照二分）。此为记忆续-124 判定的唯一有效路径，需专注 gdb 子会话（fresh 上下文）。
+- 每次改码守：x86 marker=2/panic=0、aarch64 marker 不回归、check-layout all、host 4 包集。
+
+
