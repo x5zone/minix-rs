@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-250（2026-10-03·静态审计 refute 驱逐越界/发错根两候选（page_cache.rs:379 free_pages 只驱逐 refcount==1，与 C cache.c:288-305 一致；sas-send 各已知 ep root 均与记账一致）⇒(A) 强指 A1 真瞬态；坐实 qemu-plugin.h 本机缺失=动态定谳外部阻塞；落地《riscv 瞬态页表崩溃取证方法论》技术文档（计划 Step8）**）；取证链 §续-216~250**：
+> **🛑 最新前沿＝§续-251（2026-10-03·多根 KDM 扫描定谳：sas-send 全 12 个 ep 根 halt 时 0 耐久 corrupt 槽 ⇒ (A) 实锤 A1 真瞬态；本工具链无任何非扰动手段能定谳瞬态写者，唯一未试＝QEMU mem-write 插件需 qemu-plugin.h=外部硬阻塞。并行：目标② aarch64 命令面既有 tracked 证据已通））**；取证链 §续-216~251**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11213,6 +11213,22 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 本层静态审计 + 文档产出，未改生产码；无新跑 qemu；host 1400/0。三目标未全成，goal active。
+
+---
+
+## §续-251（2026-10-03·【多根 KDM 扫描定谳】sas-send 全 12 个 ep 根 halt 时均无耐久 corrupt 槽 ⇒ (A) 实锤 A1 真瞬态；动态/静态定谳心完全靠 QEMU 插件）
+
+> 新 harness `tmp/nk4a/riscv_roots_scan.sh`（零扰动、单次 boot、不改码）：正常 boot 无 -S 到 panic-halt，用内核 DM 对 sas-send/sas-fork 列出的**全部 12 个**进程根帧各 dump 512 槽，扫非零且解出 paddr≥RAM 顶(0xA0000000) 的耐久 corrupt 中间项。
+
+- **gh103 实测（根 list：0x84332000/0x82132000/0x82198000/0x8220d000/0x82239000/0x822ac000/0x822dd000/0x8230f000/0x8234c000/0x8241d000/0x82c7f000/0x9dc37000）**：**12 根×512 槽 = 0 个 corrupt-looking 槽**（一切非零槽解出 paddr 均在 RAM）。⇒ **坐实：崩溃 corrupt l2e 不驻留在任何已知进程根帧**，彻底排除“某根帧有耐久坏槽”（无需插件可定位）这条路。
+- **(A) 定谳定调（汇总 §续-241~251）**：根因 = **A1 真瞬态**（读瞬间 corrupt、halt 已净）；①硬件写 watchpoint 死（gh92-94）②生产路径加读改崩点（gh99）③-S+gdb 拖到漂移变体（gh101）④halt KDM 扫全根无耐久 corrupt（gh96/102/103）⑤静态审计分配器/驱逐/root 发放均正确（§续-234/235/250）。⇒ **本工具链上无任何非扰动手段能定谳瞬态写者**；唯一未试且理论上可行＝QEMU mem-write 插件（需 qemu-plugin.h，本机缺、不联网不可装）。
+- **(A) 状态：遇外部依赖硬阻塞**（需用户提供/授权安装 qemu-plugin.h 才能推进根因定谳→成修→riscv marker）。在此之前按“不成修不落地”不得猜改分配器/reclaim/refcount（历史多轮已证为幻影且伤两 marker）。
+
+### 并行面（不靠 (A)）
+- 目标② aarch64 命令面：已查 `tmp/nk4a/a64-pl011-9.serial`/`-6`（tracked）含 `minix-rs rc: minimal boot script marker`（echo）+ ls /bin 列目（cat echo ls sh）+ cat /etc/rc 回显 ⇒ aarch64 命令面已通（仅本会话手推 aarch64 重-boot 受环境/参数不稳，未能当场复跑新 serial；既有 tracked 证据为准）。目标② x86+aarch64 实质已就，待补一个可重跑的 aarch64 命令面回归 gate（下轮）。
+
+### 纪律
+- 新增 harness riscv_roots_scan.sh（零扰动）；gh103 端口锚定已清；未改生产码；host 1400/0。三目标未全成，goal active。
 
 
 
