@@ -2378,7 +2378,7 @@ unsafe fn riscv64_ipc_dispatch_body(
 /// because a context switch left `sstatus.FS = Off` via
 /// [`FpuArch::disable`]).
 ///
-/// C: `copr_not_available_handler()` — proc.c:1923-1962 — the i386 #NM
+/// C: `copr_not_available_handler()` — proc.c:1922-1962 — the i386 #NM
 /// handler's acting half: save the outgoing owner's FP state
 /// (retain=FALSE), restore the trapping process's state, hand ownership
 /// to the trapping process, re-enable FP, and return to re-execute the
@@ -2613,7 +2613,7 @@ pub unsafe extern "C" fn aarch64_user_body(
     // EC 0x07 = Trapped SIMD/FP access from lower EL — the lazy-FPU gate
     // (CPACR_EL1.FPEN=0b01 set by `FpuArch::disable` on a context switch
     // to a non-owner) firing on the process's first FP instruction. C:
-    // i386 #NM → `copr_not_available_handler` (proc.c:1923).
+    // i386 #NM → `copr_not_available_handler` (proc.c:1922).
     const EC_SIMD_FP_LOWER_EL: u64 = 0x07;
     // EC 0x20 = instruction abort from a lower EL; EC 0x24 = data abort
     // from a lower EL — aarch64's #PF (§1.116): route them through the
@@ -3228,7 +3228,7 @@ unsafe fn aarch64_ipc_dispatch_body(
 /// The lazy-FPU restore stage (EC=0x07: user FPSIMD access trapped because
 /// a context switch left `CPACR_EL1.FPEN=0b01` via [`FpuArch::disable`]).
 ///
-/// C: `copr_not_available_handler()` — proc.c:1923-1962 — the i386 #NM
+/// C: `copr_not_available_handler()` — proc.c:1922-1962 — the i386 #NM
 /// handler's acting half: save the outgoing owner's FPSIMD state
 /// (retain=FALSE — its registers become undefined; it re-traps on its
 /// next FP use), restore the trapping process's state, hand ownership to

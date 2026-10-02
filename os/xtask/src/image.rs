@@ -550,7 +550,12 @@ pub fn execute(actions: &[Action], dry_run: bool) -> Result<()> {
                         format!("{prior} {flag}")
                     };
                     cmd.env(rustflags, &injected);
-                    println!("    [env] RUSTFLAGS={injected}（aarch64 内核禁 NEON/FP，SD-23）");
+                    let arch_note = if is_aarch64 {
+                        "aarch64 内核禁 NEON/FP"
+                    } else {
+                        "riscv64 内核禁 F/D"
+                    };
+                    println!("    [env] RUSTFLAGS={injected}（{arch_note}，SD-23）");
                 }
                 cmd.args(args);
                 run_inherit(&mut cmd)
