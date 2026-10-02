@@ -59,9 +59,11 @@ name="$(basename "$TEST" .c)"
     "$TEST" -o "$BUILD/$name.o"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-riscv.c" -o "$BUILD/sys-riscv.o"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs-riscv.c" -o "$BUILD/posix-stubs.o"
+# BSD <md5.h> 摘要实现（picolibc 不提供），供 t_memcpy 等测试链入（仅构建/测试用）。
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/md5.c" -o "$BUILD/md5.o"
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "$BUILD/sys-riscv.o" "$BUILD/posix-stubs.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "$BUILD/sys-riscv.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。
