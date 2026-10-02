@@ -578,6 +578,38 @@ pub fn kernel_call(
     let msg = match user_copy.copy_msg_from_user(m_user) {
         Ok(m) => m,
         Err(_) => {
+            // 续-184 探针（用后即滚）：EFAULT 现场——caller 根、delivermsg
+            // VA、该 VA 在 caller 根的 walk 结果（NP/映射值）。定谳「双
+            // SETADDRSPACE 换根后 delivermsg 页 PTE 缺失」。
+            #[cfg(target_arch = "riscv64")]
+            {
+                let root = proc_table
+                    .get(caller_nr)
+                    .map(|p| p.p_seg.phys_root.0)
+                    .unwrap_or(0);
+                use minix_arch::paging::Paging as _;
+                let mut walk = minix_arch::CurrentPaging::from_active_root(
+                    minix_types::PhysBytes(root),
+                );
+                let q = walk.query(minix_types::VirBytes(m_user.0));
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                Console::write_str("nk4a: kc-efault caller=");
+                Console::write_hex(caller_nr.0 as u64);
+                Console::write_str(" root=");
+                Console::write_hex(root);
+                Console::write_str(" dva=");
+                Console::write_hex(m_user.0);
+                Console::write_str(" q=");
+                match q {
+                    Some((pa, f)) => {
+                        Console::write_hex(pa.0);
+                        Console::write_str("/");
+                        Console::write_hex(f.bits() as u64);
+                    }
+                    None => Console::write_str("NP"),
+                }
+                Console::write_str("\n");
+            }
             // C system.c:152-155 — printf WARNING + cause_sig(SIGSEGV).
             // Rust: route to cause_signal(SIGSEGV) — same signal closed
             // loop as D-45/D-43 in process_misc_flags.

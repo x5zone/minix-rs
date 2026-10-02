@@ -10385,3 +10385,9 @@ kerninfo map 审计结论（本轮已完成）：from_active_root(ptroot_phys) �
 ## §1.120续-183（2026-10-02·**投递点命中：syscall.rs:584 kernel_call 的 copy_msg_from_user(p_delivermsg_vir) EFAULT→cause_signal(caller=VM nr8, SIGSEGV)→VM 自身 manager→panic halt；即内核向 VM 投递消息/回复时读 VM 的 delivermsg 缓冲 VA 走 VM 根（0x82000000）得 NP→EFAULT→SIGSEGV-for-itself；gh55 的 do-memory(ptalloc×2)=同窗口内 VM 为自己填页的痕迹；续-184=①在 584 EFAULT 分支打 caller/va/delivermsg PTE 现场定 NP 时刻 ②回溯 delivermsg 页 PTE 为何 NP（BSS demand 页未填/被 vm_self_unmap/SETADDRSPACE 重根后旧 PTE 失效）③成修（填页或 EFAULT 不致死）→marker 冲刺**）
 
 机制：VM 的 kernel_call（每次内核调用都走 584 的消息拷贝）——delivermsg 缓冲=VM BSS VA，内核经 p_seg.phys_root=0x82000000 走表读之；该页 PTE NP 的一刻即 EFAULT→SIGSEGV。为何 NP 的候选：①BSS demand 页从未填充（VM 自身 pagefault 自填循环对 delivermsg VA 失效？）②SETADDRSPACE 换根后旧映射失效（VM 的 setaddr 两次——gh46 双 setaddr！第二次换根后 delivermsg 的 PTE 在新根缺失）③vm_self_unmap 回滚误伤。②最可疑（双 setaddr 实证在案）。
+
+## §1.120续-184（2026-10-02·**gh56：kc-EFAULT 探针未触发=SIGSEGV-to-VM 非 kernel_call 拷贝链；do-memory(target=VM 自己填页,ptalloc×2)成功后 VM 恢复即死（pc=0x3a0dc console 循环），cause_sig 走了别的 cause_signal 调用点（syscall_signal.rs:298 panic 前无 pagefault-in-VM 臂）；续-185=grep 其余 cause_signal 调用点（syscall_process/ipc）定位本例投递者+其 SIGSEGV 判据（疑=VM 的 U-mode fault 被 cur_nr≠VM 判定或 memreq 重派 EFAULT 路径投递）**）
+
+## §1.120续-184b（2026-10-02·**双投递点定位：①proc_table.rs:1258 kernel_call_resume 的 VmCheckResult::Fault→SIGSEGV（memreq fail-closed 时内核直接 SIGSEGV 目标=VM 即 for-itself，且 handle_kernel_memreq 的 get_active(None) 早出口无探针）②trap_dispatch.rs:1064 异常臂 cause_sig(cur_nr, sig)——gh53 sepc=0x39f4a=`addi`（不可能自陷）⟹ VM text 页内容被改写成非法指令（异常臂Illegal→SIGSEGV）；VM text 帧=内核 bump 分配、不在 VM free list⟹写者=内核侧（kinfo/diagctl/IPC staging 对池帧的写）；续-186=1064 异常臂补打 scause+stval（门 3）定异常类型→枚举内核对池帧写点→成修**）
+
+gh56 复核：kc-efault（syscall.rs:584）零触发=kernel_call 拷贝链排除；hm-fail 零触发=get_active(None) 早出口无探针（补打点列入续-186）。VM fault 的完整判据链：异常臂（1064）→cause_sig(8, SIGSEGV)→stacktrace→panic。
