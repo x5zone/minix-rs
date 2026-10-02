@@ -10536,5 +10536,21 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - **路 B（gdb 写点）**：拿到 0x800c 根 PA 后算出 corrupt slot 的 guest 物理地址，`qemu -s -S -gdb tcp` + `gdb-multiarch awatch` 该 8 字节槽回溯写者 PC。
 - 纪律：corrupt 项「写于建表期」而非「运行期被踩」已由快照（VM 根干净 + 目标树静态可离线走）强证——续-195 之后不必再假定瞬态内存踩踏。不成修不落地；x86/aarch64 non-regression 每次守。
 
+## §续-196（2026-10-02·**(A) 定性铁证：假地址只存于寄存器、不在 RAM 任何 PTE——回归 GPR 帧恢复族；`apply_to_trap_frame` 只回写 4 槽为候选破点**）
+
+### 一、全 RAM 快照反查（gh66，定谳级负结果）
+- gh66 崩溃 `stval=0x409d28bb20`与 gh64 **逐位相同**（确定性同形，非随机踩踏）。walk 跟随的假 `table_pa=0x309d28b000`（带 bit36/37）。
+- **全 512MB 快照反查：无任何 8 字节槽的 `paddr(v)==0x309d28b000`**（命中 0）。叠加续-195 “VM 根树 22 表全净”⇒ **那个假地址从来就不是内存里的页表项，而是 walk 时由寄存器现场算出**。(A) 定性从「内存 PTE 腐坏」翻回「**CPU 寄存器态腐坏**」（即续-137/138/142 最初的 GPR 恢复残缺假设，被续-144~190 的内存/分配器线压了一头）。
+- gh66 故障 GPR：x11=0x409d28bb20(=stval 假 DM VA)、x15=0x1000000000(=1<<36 VM_DM_BASE)、x14=0x9d2ac004(一个 PTE 形值)、x17=0x800c(目标端点)。0x309d28b000 = 0x9d28b000 | 3<<36：低 32 位合法、高位恰为 DM 基址的奇数倍——典型「寄存器把 DM VA 当 PA 参入算术」或「某槽未恢复带残值」。
+
+### 二、候选破点（待续-197 验证）
+- `arch/src/riscv64/boot.rs:87 apply_to_trap_frame` **只回写 `frame.sstatus/sepc/regs[2](sp)/regs[10](a0)` 四槽**，**不回写 `frame.regs[其余28]←ctx.gp_regs`**（续-133 因 FS 覆写问题删了逐槽回写）。而 `trap_return.rs:55 restore_to_user`（park-and-resched 腿）从 **ctx** 全量 `ld` 回 30 个 gp_regs——两腿数据源不同：普通 trap 返回腿靠 **frame**（apply 只改 4 槽→其余 28 槽靠 save 时原帧），suspend→resume 腿靠 **ctx**。
+- 若 VM 在 console ecall/IPC park 后走 resume 腿、而某步将 ctx 与 frame 双轨分叉（续-142 已点出「frame.regs[2]/[10] 写与 ctx 双轨并存本身是分叉源」），一个未被同步的 gp_reg 槽（如 x14/x15 携带表基址）可保留陈值→下一轮 walk 用错基址。**但尚未坐实到具体哪一腿/哪一槽。**
+
+### 三、续-197 处方（定到指令级不成修）
+- 坐实需知道崩溃那次 VM 是否走过一次 suspend→resume（GPR 恢复腿）且在哪一腿丢槽。手段：在 `riscv64_ipc_dispatch_body`/`save_frame_to_context`（S 态安全）记录 VM 本次进入前 vs 恢复后 `ctx.gp_regs` 快照 diff（门控 first-N，走 sys_diagctl/内核 EarlyConsole 而非 paging U 态 ecall）；或在 `restore_to_user` 前 dump 即将回装的 gp_regs 与崩溃帧 x14/x15 对账。
+- 一旦定位丢槽腿（如普通 trap 返回靠 frame 但某路径只存了 ctx），修 `apply_to_trap_frame` 补齐 gp_regs 回写戒 sync——需先对照 C `arch/earm`/`riscv` exception.S 的回装语义，**不破坏 x86/aarch64**（两架构各自 apply 腿已绿）。不成修不落地。
+- 本节为定性突破（内存腐坏→寄存器腐坏），修正后续排查方向；未坐实不成修。
+
 
 
