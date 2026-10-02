@@ -10407,3 +10407,28 @@ gh60 补充：text 页 0x3a000→PA 0x9FFEF000（高 RAM，memmap 顶 0x9fb33000
 ## §1.120续-189（2026-10-02·**完整链路还原：VM console 写（ecall）→kernel_call 消息拷贝 ✓→内核读字符串（VM 堆页）NP→memreq(target=VM)→VM 自填（gh57 新路径，ptalloc×2=堆页新 PT）✓→字符串拷贝 ✓→kernel_call_resume 重试 delivermsg 拷贝→VmCheckResult::Fault→SIGSEGV-to-VM（proc_table.rs:1258）→stacktrace(pc=0x3a1a8=VM 停在 console ecall)→panic；「重试为何 Fault」=最后未解环（delivermsg 页 PTE 在 entry ✓/resume ✗ 之间变化，或 resume 拷贝走错根）；续-190=vm.rs kernel_call_resume 的拷贝失败点探针（打 VA+root+PTE）定谳成修**）
 
 gh57 已证：自填路径（target=VM）正确触发并成功（无 hm-fail/ok=0，ptalloc×2=堆页新 PT 表）。死点后移至 resume 重试。续-190 探针点：os/kernel/src/vm.rs kernel_call_resume 内 copy 失败处（打 caller/delivermsg VA/current_root_phys/该 VA walk 结果），一次真机即定谳。
+
+## §1.120续-190-交接（2026-10-02·**会话交接总账：本会话 37 笔提交（8a9a44933→33ed4eb45），riscv64 阻塞链从「exec 全断」推进到「最后一环 resume Fault 未解」；交接给下一 agent 的全部抓手如下**）
+
+### 一、当前阻塞点（唯一）
+**riscv64 marker 未达**，死点=VM 自身被 SIGSEGV（`cause_sig: sig manager 8 lethal 11 for itself`）。完整链路（续-189 已还原）：VM console 写 ecall → kernel_call 消息拷贝 ✓ → 内核读字符串页 NP → memreq(target=VM) → VM 自填 ✓（续-186 自填路径已入库 33ed4eb45，gh57 实证 ptalloc×2=成功）→ kernel_call_resume 重试 delivermsg 拷贝 → **VmCheckResult::Fault** → SIGSEGV-to-VM（proc_table.rs:1258）→ stacktrace（pc=0x3a1a8=VM 停在 console ecall）→ panic。**最后未解环：resume 重试为何 Fault**（delivermsg 页 PTE entry 时 ✓ / resume 时 ✗，或 resume 拷贝走错根）。
+**续-190 处方**：os/kernel/src/vm.rs `kernel_call_resume` 内 copy 失败处加探针（打 caller/delivermsg VA/current_root_phys/该 VA walk 结果）——一次真机（RUN=gh61）即定谳。
+
+### 二、本会话生产码改动清单（全部已提交+测试绿）
+| 轮次 | 文件 | 内容 |
+|---|---|---|
+| 续-153 | pm/src/init.rs | VFS 静默丢弃收窄（PM_EXEC_NEW=43 放行）+两枚边界钉子测试 |
+| 续-160 | vm/src/region/region_map.rs | find iter 兜底（rm-fallback）+find_mut pop_first 重建（rm-repair）——防御性，gh54+ 后零触发 |
+| 续-168/175/180 | vm/src/boot.rs | free list 扣减：root 页 64KB→全部模块区→**全池 [0x82000000,0x84000000)**（root-deduct 打点） |
+| 续-175/187 | kernel/src/vm_handoff.rs | classify：VM 模块不再 reclaim（全量保留） |
+| 续-179/186 | rs/src/process_table.rs + vm/src/vm_server.rs | by_endpoint 上界守卫；handle_kernel_memreq target==VM 自填路径 |
+| 探针（用后即滚，台账在案） | vm/src/{alloc_page,vm_server,cow_exec_pf,region/region_map}.rs + kernel/src/{trap_dispatch,syscall,syscall_signal}.rs + arch/src/riscv64/paging.rs | PT_SEEN/DATA_SEEN/FREED 位图、vmm-h/vr/pm:/vf:/pd: 系、pfvm(satp)、q-badroot、find-in、wro-dump、pf-inact、fill-root、segv-delve、kc-efault、l1raw(VmDm)、root-deduct、walk-flip、hm-fail |
+
+### 三、验证配方（下轮直接用）
+1. **真机**：`cd os && RUN=ghNN SKIP_BUILD=0 bash ../tmp/nk4a/wrap-boot-mon.sh`（带 qemu monitor `/tmp/nk4a/qmon`；panic 后内核 halt、qemu 存活）。
+2. **物理取证**：`python3` 经 qmon 发 `pmemsave 0x80000000 0x20000000 "/tmp/nk4a/ramNN.bin"`（**路径必须带引号**）；离线走 VM 根 0x82000000（gh60 手法：VA→PA→diff mod_vm.bin）。
+3. **判据**：marker=串口 `minix-rs rc: minimal boot script marker`；当前失败点=串口尾部 `cause_sig: sig manager 8`。
+4. **探针纪律**：新探针全部打点入库（bootmark/Console），C-61 pattern-gate 前不得滚除；改代码布局=时序漂移（Heisenbug 三例实证），判读须同轮对账。
+
+### 四、目标进度
+① aarch64 marker ✅（续-132）；riscv64 **差最后一环**（resume Fault 定谳成修即达）；②③ 未开始（riscv64 ① 达成后自然解锁）。
