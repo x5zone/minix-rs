@@ -10373,3 +10373,7 @@ RS process_table.rs:138 越界（len 64 index 64）：endpoint→slot 转换 off
 ## §1.120续-180（2026-10-02·**gh55 全池扣减生效（root-deduct [0x82000000,0x84000000) regions=2）但 VM 仍 SIGSEGV-for-itself（pc=0x3a0dc console 打印循环）——VM 分配器腐坏源排除，写者在 KERNEL 侧（kerninfo map/kdst 缓冲/boot exec 遗留对 VM 页的写）；续-181=①cause_sig 路径补打 fault VA ②枚举 kernel 对 VM 根树（0x82000000）与 VM 页的写点（kerninfo map/diagctl/printk 缓冲）③定谳成修**）
 
 gh55 判读：扣减扩至全池后 VM 分配器无法再发放池帧，但 VM 的 console 打印循环（0x3a0dc=lbu 字符串字节）仍 fault→SIGSEGV-for-itself。VM 自身页（text/rodata/缓冲）的映射或内容仍被 kernel 侧写者破坏。候选：①VMCTL setaddrspace 的 kerninfo map（syscall.rs:2928-2952，写 child 根——误写 VM 根？from_active_root(ptroot_phys) 的 ptroot 是谁的？）②diagctl_write 的内核缓冲 ③printk kdst copy（pa=0x805ffb38 固定缓冲 ✓ 合法）④boot exec 遗留映射。
+
+## §1.120续-181（2026-10-02·**gh55 新线索：VM 的 fault（pc=0x3a0dc console lbu）走了 cause_sig(SIGSEGV-for-itself) 而非 pagefault-in-VM 臂 ⟹ fault 时刻内核 cur_nr 判定≠VM_PROC_NR（proc_ptr/调度归属错位）或 fault 经 memreq-EFAULT→SIGSEGV 路径（gh55 序列 do-memory→ptalloc-reuse-DATA→vm 0x8 0x3a0dc→cause_sig，memreq 无 ok=0=成功）；续-182=①grep「vm 0x8 0x」打印源定位路由点 ②查 cur_nr 判定（riscv64_pagefault_body 的 proc_ptr 取用 vs 调度器 proc_ptr 时序）③memreq EFAULT→cause_sig 链确认**）
+
+kerninfo map 审计结论（本轮已完成）：from_active_root(ptroot_phys) 传参=value_raw=发送方声明根（child=0x9dc38000 ✓ VM=0x82000000 ✓）、KERNINFO VA i2=8 与栈区 i2=511 不同子树、needs_map 幂等守卫在场——kerninfo map 洗清。diagctl kdst 写=内核自有缓冲（0x805ffb38/0x805ffc40）洗清。剩余唯一嫌疑=fault 路由归属（cur_nr）与 memreq-EFAULT 链。
