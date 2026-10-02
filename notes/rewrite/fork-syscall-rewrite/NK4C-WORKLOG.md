@@ -10350,3 +10350,10 @@ gh50 判读：sync 双 query 一致→崩点不在 sync 的 walk 对；kerninfo 
 ## §1.120续-174（2026-10-02·**gh53 新形态：链死更早——pm:02b01（EXEC_NEW 已达）后 VM 自己吃 SIGSEGV（vm 0x8 pc=0x39f4a → syscall_signal.rs:298 cause_sig: sig manager 8 lethal 11 for itself → kernel panic halt），l1raw(VmDm 门)零采样=child 栈 walk 未及发生；VM 自身 fault 走了 SIGSEGV 路而非 pagefault-in-VM panic 路（scause/路径分叉待查）；续-175=①反汇编 VM 0x39f4a ②查「VM 自身 fault 为何未走 pagefault-in-VM 臂」（cur_nr 判定/scause 分叉）③l1raw 门控保留待链推进后采样**）
 
 gh53 序列：vmmL stack mmap fw=0x800c → pm:02b01 → ptalloc-reuse-DATA pfn=0x9d2ad/0x9d2ac（腐坏邻域再现）→ vm 0x8 0x39f4a → cause_sig panic。腐坏源（region/BSS 级）仍未定位；本轮无生产码改（l1raw 门控改 VmDm 已提交 30dc78882）。
+
+## §1.120续-175（2026-10-02·**成修生效里程碑：模块区+root 页全量扣减后 gh54 腐坏家族全灭（csig=0/pagefault-for-VM=0/PANIC=0/rm-fallback=0），故障推进到干净可修的 RS 越界 panic（process_table.rs:138: len 64 index 64）；续-176=RS 越界修（endpoint/slot 转换 off-by-one）→gh49 marker 冲刺**）
+
+### 成修（生产码，gh54 实证）
+boot.rs read_boot_params：free list 扣减扩展为 root 64KB + **全部 boot 模块区**（flat_map 多区间拆分，4KB 对齐）。gh54：全家族零触发，child 0x800c exec 后链继续推进（RS exec 发生）——VM 根页/text 帧被回收的"腐坏"叙事完整证实并闭环：VM 与各服务器的镜像帧、根页、bootstrap 表全在 free list 被当普通帧发放，exec 压力下被后续装载覆写（VM text 被 ELF 覆写=gh53 SIGSEGV-for-itself；根页覆写=region/btree/walk 全家族；gh32 内容 dump 的"垃圾"=alien 数据）。
+### 续-176
+RS process_table.rs:138 越界（len 64 index 64）：endpoint→slot 转换 off-by-one（0x800c 族端点解槽未掩代际？），一处有界修复+对账测试→CodeReview→gh49 冲刺 marker。

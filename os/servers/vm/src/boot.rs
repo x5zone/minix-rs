@@ -294,6 +294,15 @@ pub fn read_boot_params() -> BootParams<'static> {
     // 泄漏表同步收缩。
     let root_deduct_base = handoff.root_paddr & !(0x1_0000u64 - 1);
     let root_deduct_end = root_deduct_base + 0x1_0000;
+    // 续-175 成修：模块镜像帧同样在 free list 内被回收——VM 自身 text
+    // 被其他服务器 ELF 覆写→取指 fault（gh53 vm 0x8 pc=0x39f4a SIGSEGV-
+    // for-itself）与全部"腐坏"家族同根。扣减所有 boot 模块区 + root 块。
+    let mut deduct: alloc::vec::Vec<(u64, u64)> = alloc::vec![(root_deduct_base, root_deduct_end)];
+    for m in handoff.modules[..handoff.module_count as usize].iter() {
+        let m_base = m.start_addr & !(0x1000u64 - 1);
+        let m_end = (m.start_addr + m.len + 0xfff) & !(0x1000u64 - 1);
+        deduct.push((m_base, m_end));
+    }
     let free_regions: &'static [BootMemRegion] = {
         let v: alloc::vec::Vec<BootMemRegion> = handoff.free_regions
             [..handoff.free_region_count as usize]
@@ -302,28 +311,25 @@ pub fn read_boot_params() -> BootParams<'static> {
                 base: r.base as usize,
                 size: r.size as usize,
             })
-            .flat_map(|r| {
+            .flat_map(move |r| {
                 let r_base = r.base as u64;
                 let r_end = r_base + r.size as u64;
-                if r_end <= root_deduct_base || r_base >= root_deduct_end {
-                    // no overlap — keep whole
-                    alloc::vec![r]
-                } else {
-                    let mut parts = alloc::vec::Vec::with_capacity(2);
-                    if r_base < root_deduct_base {
-                        parts.push(BootMemRegion {
-                            base: r.base,
-                            size: (root_deduct_base - r_base) as usize,
-                        });
+                let mut parts: alloc::vec::Vec<BootMemRegion> = alloc::vec::Vec::with_capacity(2);
+                let mut cur = r_base;
+                for (db, de) in deduct.iter() {
+                    let (db, de) = (*db, *de);
+                    if de <= cur || db >= r_end {
+                        continue;
                     }
-                    if r_end > root_deduct_end {
-                        parts.push(BootMemRegion {
-                            base: root_deduct_end as usize,
-                            size: (r_end - root_deduct_end) as usize,
-                        });
+                    if db > cur {
+                        parts.push(BootMemRegion { base: cur as usize, size: (db - cur) as usize });
                     }
-                    parts
+                    cur = cur.max(de);
                 }
+                if cur < r_end {
+                    parts.push(BootMemRegion { base: cur as usize, size: (r_end - cur) as usize });
+                }
+                parts
             })
             .collect();
         crate::bootmark::mark(&alloc::format!(
