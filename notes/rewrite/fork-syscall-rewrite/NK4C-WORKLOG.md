@@ -10519,4 +10519,22 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - 因全 RAM 大页表、写点多，需先缩到**崩溃前最后写坏该槽**的一次（可结合 QEMU plugin 或 pmemsave 快照二分）。此为记忆续-124 判定的唯一有效路径，需专注 gdb 子会话（fresh 上下文）。
 - 每次改码守：x86 marker=2/panic=0、aarch64 marker 不回归、check-layout all、host 4 包集。
 
+## §续-195（2026-10-02·**(A) 全 RAM pmemsave 快照 BFS 静态定谳：VM 自身根表干净，corrupt 中间项在目标进程 0x800c 树（exec 子），DM 窗越界坐实——A5 假设重大转向**）
+
+### 一、手法（免 gdb、纯静态）
+- gh66（TIMEOUT_BOOT=600）boot 至 `pagefault in VM` panic（trap_dispatch.rs:1991），内核 halt 冻结现场；经 `/tmp/nk4a/qmon` `pmemsave 0x80000000 0x20000000 ram66.bin`（512MB 全量），离线 BFS 走页表。
+- 常量对账（`arch/src/arch/direct_map.rs:148`）：riscv64 `VM_DIRECT_MAP_BASE=1<<36`、`VM_DIRECT_MAP_SIZE=16GiB` ⇒ DM 窗 `[0x10_0000_0000, 0x14_0000_0000)`。
+
+### 二、定谳结果（正证据）
+- **(A) DM 窗越界坐实**：崩溃读 `read_pte_dm(table_pa, VmDm)` 的 stval=`0x409d28bb20` = `table_pa(0x309d28b000) + 1<<36`。`table_pa=0x309d28b000` 带 **bit36/37（=3<<36 溢出）**，+基址后落 `0x40..` > DM 窗顶 `0x14..` ⇒ **未映射→缺页致命**。即某中间项 PTE 的 PPN 被写进了一个「已含 DM 高位」的伪物理地址。
+- **VM 自身根表树干净**：从 root `0x82000000`（satp=VM 自身根）BFS，访问 **22 张级联表、0 个 corrupt 非叶中间项**（所有中间项 paddr 均在 RAM 内）。⇒ **(A) 不是 VM 自己页表被写坏**。
+- **whole-RAM PTE 特征扫描＝噪声**：直接扫全 RAM 找「present 且 paddr 带 bit36/37」命中 2506 条，但均为内核镜像/数据字的 8 对齐字节（如 `0x80000008 raw=0x574000ef00060933`），非页表项——**印证 §续-194 判定 reuse-DATA/宽扫描不可信**，不作 (A) 依据。
+- **⇒ 关键转向**：崩溃那次 walk 是 **VM 经自身 DM 窗遍历「目标进程 0x800c」（exec 出的 rc/sh 子）的页表**为其填页；corrupt 中间项在 **0x800c 自己的根树**（不是 VM 根，故 VM 根 BFS 干净不矛盾）。(A) 根因域 = **VM 为子进程建表/映射时写入了带 DM 高位的 PTE**（exec/cow/map 路径），非运行时内存踩踏。
+
+### 三、续-196 精确处方（二选一，均需目标根地址）
+- **路 A（静态优先，免 gdb）**：在 S 态 panic 处（trap_dispatch.rs:1991 前，EarlyConsole 安全）**加打目标 proc 0x800c 的 `p_seg.phys_root`**（内核侧读 proc_table），据其 BFS `ram66.bin` 子树定位 corrupt 非叶项的**确切 slot + 上层 raw**，再比对 VM map/cow 写点源码锁定 `paddr_to_pte(dm_va)` 误用点。一次改码 + gh67 即可拿到目标根。
+- **路 B（gdb 写点）**：拿到 0x800c 根 PA 后算出 corrupt slot 的 guest 物理地址，`qemu -s -S -gdb tcp` + `gdb-multiarch awatch` 该 8 字节槽回溯写者 PC。
+- 纪律：corrupt 项「写于建表期」而非「运行期被踩」已由快照（VM 根干净 + 目标树静态可离线走）强证——续-195 之后不必再假定瞬态内存踩踏。不成修不落地；x86/aarch64 non-regression 每次守。
+
+
 
