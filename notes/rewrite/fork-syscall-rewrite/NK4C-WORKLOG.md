@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-264（2026-10-03·瞬态台账 sl-ledge 地面事实：子栈 vaddr 0x7fffffffe000 映射成功（root 对、query 确定性返回叶 0x9d2ae000 RWX）却反复 refault ≥10 次 ⇒ 现场是“已映射叶不粘/重复缺页”（§续-171“写静默丢失”族），非“PTE 被踩”；台账已 revert 重建干净；下步查 §续-171 回读探针是否报“写未落地”+叶 PTE 落在哪张 L0 表是否在 VM DM 窗外）**；取证链 §续-216~264**：
+> **🛑 最新前沿＝§续-265（2026-10-03·瞬态台账 sl-ledge 地面事实：子栈 vaddr 0x7fffffffe000 映射成功（root 对、query 确定性返回叶 0x9d2ae000 RWX）却反复 refault ≥10 次 ⇒ 现场是“已映射叶不粘/重复缺页”（§续-171“写静默丢失”族），非“PTE 被踩”；台账已 revert 重建干净；pte-wb-FAIL=0驳写丢失⇒叶落地;故障物理0x9d28b≠已映射叶0x9d2ae⇒收敛到root身份错配(VM PageTable根≠子live satp根),下步比对三root）**；取证链 §续-216~264**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11438,6 +11438,19 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 台账为临时诊断（sync_slot_pte 入口、无新增表读），已 `git checkout` revert + 重建干净 minix-vm；os/ 无 tracked 变更；host 1400/0。(A) 现场重定义：不是“页表帧被写坏”，而是“**已映射子栈叶反复 refault**”（§续-171/142 族）。三目标未全成，goal active。
+
+---
+
+## §续-265（2026-10-03·gh113 回读探针 pte-wb-FAIL=0 驳“写静默丢失”⇒叶确实落地；但故障物理 0x9d28b ≠ 已映射叶 0x9d2ae ⇒收敛到“VM 走的 PageTable 根 ≠ 子真实 live satp 根”身份错配）
+
+> 承 §续-264。用 gh113 现有回读探针（§续-171 pte-wb-FAIL）与台账数值交叉，把“写丢失”与“页表被踩”都排掉，定到 root 身份层。
+
+- **pte-wb-FAIL=0**（gh113 grep）⇒ map 写的叶 PTE **回读一致（落地）** ⇒ §续-171“写静默丢失”假说 **驳**。叠加 walk-flip 从不触发（query 确定）⇒既非“写坏”也非“写不落地”，也非“query 非确定”。
+- **矛盾新面**：叶已映射为 0x9d2ae000（root 0x9dc37000 slot511→L1→L0，query 确定性返回），但崩溃物理地址在 **0x9d28b** 区（clean 0x9dc37…/drifted 0x9d28baf0）——**≠ 已映射的 0x9d2ae**。⇒ 子进程实际执行时用的根/地址翻译，与 VM 在 0x9dc37000 上走/写的那张表**不是同一棵**（或子 live satp 指向另一个 root）。与 §续-139/262 “DM 基址混入/ root 漂移”同域。
+- **新行动项（纯静态可核）**：比对三个 root 身份——① VmProc 缓存的 PageTable.root_paddr（VM 走/写的），② 内核为该 proc 存并加载的 satp（`sas-send`/`setaddrspace` 后内核侧真值），③ 崩溃时子 live satp（pfvm 行只印了 VM 自己 satp，需 proc 的）。若 ①≠② ⇒ VM 在一张过时的根上建映射、子跑在另一棵⇒同 VA 永不命中⇒refault 循环+野地址崩。对照 minix3 pagetable.c 的 vm_pt/vmp->pdir 与 setcr3 同步时机。**未坐实不成修**。
+
+### 纪律
+- gh113 回读/台账均为既有或已 revert 诊断；os/ 无 tracked 变更；host 1400/0。(A) 进一步收敛：排除“写坏/写丢失/query非确定”三类，指向 **root 身份错配（VM PageTable 根 vs 子 live satp 根）**。三目标未全成，goal active。
 
 
 
