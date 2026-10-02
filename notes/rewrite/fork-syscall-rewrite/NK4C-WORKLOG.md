@@ -11168,8 +11168,8 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 干净崩 sepc=0x3abec = walk_read:326（L1 读），能到这一步必过 :311 L2 读且 l2e&V≠0（else :312 直接 NotPresent 不崩）。§续-239 假定该 L2 槽=子根 0x9dc37000 i2=255=物理 0x9DC377F8。但 gh96 干净 KDM 读该槽 halt=0（V=0），且 :311→halt 之间无任何代码会把子根该槽写 0（单线程、紧接着就 fault halt）。⇒ **要么 l2e 真瞬态（但无写者），要么崩 walk 用的 root 根本不是 0x9dc37000**。后者更简⇒ **(A2)：崩 walk root 与子根不一致（stale/错配的 PageTable.root_paddr）**；§续-238/239/240 的单靶 0x9DC377F8 推导基于错根。gh97（探针 build）旁证：i2=255 缺页走 RS 根 0x82132000（非子根）。
 
 ### (A) 改道：静态审计“sync_slot_pte 的 pt 从哪里来、对 exec 子是否 stale”
-- 不再依赖会改局的动态观察。静态追：handle_pagefault 的 `pt: &mut PageTable` 如何按 proc_endpoint 取得（VmProcTable/adopt/setaddr_space）、exec 后子进程 root 是否与 VM 缓存的 PageTable.root_paddr 一致（§续-131/146 “exec adopt/munmap 摘链后 root 漂移”同域）。对照 minix3 C pagetable.c/proc.c 的 root 获取与失效时机。
-- 一旦静态坐实“哪个路径使 root_paddr 与真子根不一致”，即可提最小成修 + marker 验证。**未坐实不成修**。
+- **已定（本层静态）**：`vm_server.rs:2224` `let (regions, pt) = proc.mem_parts_mut();` → `:2246` 传给 `handle_pagefault`。⇒ **`pt` 就是缺页进程自己的 PageTable**（由 VmProc 持有），`pt.root_paddr()` = 该 VmProc 缓存的根物理地址。故 (A2) “root≠子根”具体化为：**VmProc 0x800c 缓存的 PageTable.root_paddr 与子进程真实 live satp 不一致**（exec/adopt/SETADDRSPACE 后 VM 侧根未同步刷新）。
+- 不再依赖会改局的动态观察。静态追：VmProc 的 PageTable 根在何处 adopt/set（exec_worker / setaddr_space / adopt_active_root），与内核侧真 live satp 的比较点；对照 minix3 C pagetable.c/proc.c 的 root 获取与失效时机。定位“哪个路径使 root_paddr 与真子根不一致”。**一旦静态坐实即可提最小成修 + marker 验证，未坐实不成修。**
 
 ### 纪律
 - 本会话未改生产码（cow_exec_pf.rs 探针已 revert）；gh100/101 均端口锚定已清、qemu 无残留；新增 harness `riscv_root_probe.sh` 为纯 gdb 取证工具（含 -S 漂移负结果证据）。host 1400/0。三目标未全成，goal active。
