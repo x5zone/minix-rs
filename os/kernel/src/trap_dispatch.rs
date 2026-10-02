@@ -2290,10 +2290,24 @@ unsafe fn riscv64_ipc_dispatch_body(
                         C0::write_hex(cur_nr.0 as u64);
                         C0::write_str(" ep=0x");
                         C0::write_hex(ep as u64);
+                        C0::write_str(" cn=0x");
+                        C0::write_hex(call_nr as u64);
                         C0::write_str(" r2=0x");
                         C0::write_hex(r2 as u64);
                         C0::write_str(" root=0x");
                         C0::write_hex(root);
+                        // 全 a0..a7 参数窗口 dump：区分“VM 真传 null 指针”
+                        // vs“trap frame GPR 槽位错位”（a1 应=gpr[11]=msg ptr）。
+                        C0::write_str(" a0=0x");
+                        C0::write_hex(frame.gpr[10]);
+                        C0::write_str(" a2=0x");
+                        C0::write_hex(frame.gpr[12]);
+                        C0::write_str(" a3=0x");
+                        C0::write_hex(frame.gpr[13]);
+                        C0::write_str(" a4=0x");
+                        C0::write_hex(frame.gpr[14]);
+                        C0::write_str(" a5=0x");
+                        C0::write_hex(frame.gpr[15]);
                         C0::write_str("\n");
                     }
                 }
