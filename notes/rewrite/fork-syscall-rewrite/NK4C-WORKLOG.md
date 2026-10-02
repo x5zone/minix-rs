@@ -11200,6 +11200,20 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 纪律
 - 本层纯日志挖掘（不改码不新跑 qemu）；未改生产码；host 1400/0。三目标未全成，goal active。
 
+---
+
+## §续-250（2026-10-03·静态审计 refute 两个 (A) 候选机制 + 经验沉淀技术文档落地）
+
+> 承 (A) 动态定谳工具链墙（§续-248/249），本层：(1) 静态审计 page_cache 驱逐与 sas-send root 发放；(2) 确认 qemu-plugin.h 本机缺失；(3) 把本会话取证方法沉淀成技术文档。
+
+- **静态 refute “驱逐越界/发错根”两候选**：`os/servers/vm/src/page_cache.rs:379 free_pages` 只驱逐 `refcount==1`（仅缓存引用）页，与 C `cache.c:288-305` 一致，且有 `test_free_pages_skips_mapped_frames` 守→**无“驱逐仍被引用帧”静态错**；`sas-send`（vm_server.rs:785）日志证明每个已知 ep 发的 root 均与记账一致（§续-249）→**A2“发/存错根”对已知 ep 不成立**。两者叠加 ⇒ (A) 强指 **A1 真瞬态**（需插件才能坐实写者）。
+- **动态定谳外部依赖坐实**：`find /usr -name qemu-plugin.h` 无命中、`/usr/lib/qemu/plugins` 不存在 ⇒ QEMU mem-write 插件需装外部包（本会话无法装，不联网）。**(A) 的根因确认在此工具链被外部依赖卡住**（非难度，是硬缺件）。
+- **经验沉淀落地**：新增 `notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md`（commit 9efc752bf，164 行，计划 Step8）：四条可迁移知识（Direct Map 不可跨态直接访问 / 停机借内核 DM 活体读 / QEMU riscv 硬件写观察点不可用 / 海森堡布局敏感）+ PTE 对齐不变量防御断言思路。doc-style-lint 0 error。
+- **并行不受 (A) 阻的推进面**（下轮）：目标② aarch64 命令面（已 marker，可跑 aarch64 验证）、目标③ 构建面（不启 qemu）。(A) 一旦用户装 qemu-plugin.h 即可走插件定坐实写者→成修→marker。
+
+### 纪律
+- 本层静态审计 + 文档产出，未改生产码；无新跑 qemu；host 1400/0。三目标未全成，goal active。
+
 
 
 
