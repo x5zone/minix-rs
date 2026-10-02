@@ -10924,6 +10924,13 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 3. **gdb-halt 扰动铁证**：gh81 在 **2s 处 attach再 continue**（无 -S）仍把 (A) 拖到 sepc **0x3ac1a**、stval **0x409d28bb20**（=4×VM_DM_BASE 泄入的又一 corrupt 变体），非无-gdb 的 0x3abec/0x10bd28cb2c。⇒ (A) 对 **gdb 暂停/恢复本身**极敏感（疑 timer/interrupt 与页表填的交织竞态），非仅热路径慢。→ 任何基于 halt 的活体抓法都在扰动它；可靠钉法需**非 halt 的硬件写 watchpoint**（qemu 对 guest-phys 强制、无 halt 往返）且需先知道写坏的物理槽。
 - 下步（若继续 (A)）：定 trap_dispatch.rs:1991 所在函数的入口地址（从内核 symtab + 反汇定位 panic 调用前的函数），对子根帧具体 L2 槽（需先定 corrupt i2）设 **qemu 硬件写 watchpoint**；或人工在 panic 断点逐步读活体帧。本轮无生产码变更；harness 在 tmp；qemu/tmux 已清净。host 1400/0。goal active。
 
+## §续-233（2026-10-02·**(A) 零扰动数值突破：伪 child_pa = 合法在-RAM 帧 | 多余高位 ⇒ 活 PTE 帧被相邻数据帧写污染（帧级 PT/data 双别名）；平反 reuse-DATA**）
+- 实测算术（python 定谳）：gh72/73 伪 child_pa `0xbd28c000 = 合法帧 0x9d28c000 | 0x20000000(bit29)`；gh81 `0x409d28bb20 = 合法帧 0x9d28bb20 | (1<<38)`。基址 0x9d28xxxx 正落在 §续-217 那簇 **0x800c 的 PT 帧 + 相邻 /etc/rc 页缓存数据帧（0x9d2a–0x9d2e）**。
+- ⇒ (A) 真身不是“随机瞬态垃圾”，而是 **一个合法 PTE 的高位 PPN 被数据写“多写了几个位”**（同一物理帧既当 PT 又被数据侧写）= 帧级 **PT/data 双别名**。基帧合法+高位脏=典型“帧被两主、一方写入翻到另一方字节”的特征，不是未初始化也不是算术。
+- **平反 reuse-DATA**：§续-216 把 reuse-DATA 归“纯噪声”、§续-215 猜“真实双发”——本位级证据支持：对这批 0x9d28–0x9d2e 帧 reuse-DATA **是真实双发信号**（帧曾被 /etc/rc 数据用→回收释放→vm_pt_alloc 复用为表帧→旧数据写踩新 PTE）。可信检测器 DUP/alloc-reuse-PT/dblfree=0 是因为它们的顺序不覆盖“先回收释放仍被引用帧、后 PT 复用”这一序（数据侧写不查 PT_SEEN）。
+- **收敛后的 (A) 精确假说（可静态验，非 gdb）**：`PageCache::free_pages`(refcount==1 驱逐) 或 rmcache 释放了一个 **仍被某进程/旧引用持有**的数据帧（refcount 漏计映射腿 或 exec/adopt 未摘旧引用），回收后 vm_pt_alloc 取到同帧→旧数据写踩 PTE。→ 下轮静态追：/etc/rc 页缓存帧与 0x800c PT 帧在 reclaim/exec 路径的 refcount/归属；对照 C cache.c 驱逐谓词与 pb_link 的 refcount 语义。
+- 本轮无生产码变更。host 1400/0。三目标均未全成，goal active。
+
 
 
 
