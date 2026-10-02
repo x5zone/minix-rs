@@ -4,7 +4,7 @@
 > **顶部状态必须始终是最新的**——用户会在任意时刻让 agent 收尾，接手者只读它 + `git log --oneline -20` 就要能接续。
 > 详细取证历史见 `.review/zcode/edge1/FIXLOG.md` 迭代 27-33（**本地文件、被 gitignore、换工作树会丢**——关键结论在本文件 §交接来源有副本）。
 >
-> **新会话接手入口（本会话已置 blocked）：读 `NK4C-接续PROMPT-20261003.md`**（三终目标精确态 + (A)=fork 竞态定性 + 死路清单 + 3 条解锁条件 + 可复用资产）。
+> **新会话接手入口（本会话已置 blocked）：读 `NK4C-接续PROMPT-20261003.md`**（三终目标精确态 + (A)=fork 竞态定性 + 死路清单 + 3 条解锁条件 + 可复用资产）。收官回归底线验证（host 1402/0 + check-layout PASS）与全程小结见 **§续-275**；最新取证前沿 = §续-274（内核侧 setaddrspace/boot_pt_alloc 审计，已排低 carve-out 别名候选）。
 
 ---
 
@@ -11635,6 +11635,25 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 纯阅读审计（零 boot/零工具有依赖）；零改生产码（os/ 无 tracked 变更）。又排一条候选（低 carve-out 别名）。下一步（若解锁）：在 VM 帧回收与内核调度交互上定位，需非插桩确定复现或寄存器读插件。三目标未全成，goal active。
+
+---
+
+## §续-275（2026-10-03·本会话收官回归底线权威验证：host 4 包集 **1402 passed / 0 failed** rc=0；`check-layout all` **PASS** rc=0）
+
+> 计划“每轮收尾必跑回归底线”。本会话全程只动 tools/ 构建件与 tmp/nk4a 诊断件与文档，**未改 os/ 生产 Rust/C 码**；以下证明未回归。
+
+- `cd os && cargo test -q -p minix-kernel -p minix-arch -p minix-boot -p minix-types`（禁 --workspace）⇒ 汇总 **1402 passed; 0 failed**（≥基线 1400/0），rc=0。
+- `bash os/kernel-image/check-layout.sh all` ⇒ **PASS（L0–L9 全绿，riscv64 布局/入口/跨距对账）**，rc=0。
+- tracked 净（`git status --short | grep -v '^??'` 空）；qemu 进程清空。
+
+### 本会话交付小结（均已 commit，供接手）
+- (A) 重定性：fork 路径 timing-sensitive 竞态（非固定脏 PTE 槽）；旧靶 0x9DC377F8/i2=255 作废；§续-265 root 错配下调未证；§3.8 读法乙子型驳；§续-272 VM fork 排序对 C 忠；§续-274 低 carve-out 别名排除⇒候选收窄到 VM 高 RAM 帧生命周期 × 内核调度。
+- 目标③ 构建面：补 sys_nerr⇒ **18/18 可链 ET_EXEC ELF**（+CodeReview PASSED）。
+- 新现场捕获工具 `tmp/nk4a/riscv_fingerprint.sh`（零扰动同-build 秒级复现，~4-6s）。
+- 交接入口 `NK4C-接续PROMPT-20261003.md`（死路清单 + 3 条解锁条件 + 可复用资产）。
+
+### 诚实收官判定（对照 spec 三终目标，未完成）
+- ① marker：x86_64/aarch64 ✅，**riscv64 ❌（受 (A)）**。② 命令面：x86/aarch64 ✅，**riscv ❌（受 (A)）**。③：构建面 18/18 ✅，**上机 ❌**（riscv 受 (A)；aarch64 需 freestanding C 工具链）。**(A) 根因未坐实到可验证修复**（需寄存器读工具/非插桩确定复现/或范围裁决）⇒目标置 **blocked**。
 
 
 
