@@ -8,7 +8,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-240（2026-10-02·(A) 靶收敛到唯一 `0x9DC377F8` + 抓写者 harness 就绪）→ 前沿取证链见 §续-216~240**：
+> **🛑 最新前沿＝§续-242（2026-10-03·硬件写 watchpoint 两形皆不可行（TCG 定谳），软件断点已定位 culprit＝`sync_slot_pte`；下轮转软件断点剖该函数）**，取证链 §续-216~242**：
+>
+> **（上一前沿＝§续-240，2026-10-02·(A) 靶收敛到唯一 `0x9DC377F8` + 抓写者 harness 就绪）→ 前沿取证链见 §续-216~242**：
 > - **§续-239/240 定级定根+工具就绪**：源码级对账 `paging.rs:307-343` 确定被写坏的是子根 0x800c 的 **L2 中间项**（非叶、非 VM 根——§续-195 已证 VM 根 22 表全净排除备选）⇒ **唯一硬件写 watchpoint 靶 = 物理 `0x9DC377F8`（= 0x9dc37000 + 255×8）**。可直接点火 harness `tmp/nk4a/riscv_watch_9dc377f8.sh [tag]`（已修 `awatch -lm0` 语法→裸 `awatch`）。两个具体封锁点（非“需人工”，是需长会话迭代）：① QEMU riscv system-mode gdbstub 硬件 watchpoint 地址语义（物理 `0x9DC377F8` vs VmDm 虚 `0x19DC377F8`，需形1↔形2 交替试）；② boot 至崩点 ~150-250s + 迭代轮次超单轮预算。下一会话工单见 §续-240。
 >
 > **（§续-238 零扰动静态对账）**：
@@ -11017,6 +11019,54 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - **本轮未改生产码**（harness 在 gitignored tmp，配方在 §续-238/239）；本 harness 点火失败后 qemu 已清（仅杀本 harness 1241/1240，未动其它会话）。host 1400/0 不变、两 marker 无回归。(A) 仍 open、靶已定、工具就绪——非“需人工”停摆，是需专门长会话迭代 QEMU 语义。三目标均未全成，goal active。
+
+---
+
+## §续-241（2026-10-03·(A) 抓写者自动化实验：硬件写 watchpoint 语义定谳 + 崩溃现场回栈正证据 = sync_slot_pte）
+
+> 承接续 PROMPT「下一会话工单」，本会话把 §续-240 待点火的 `riscv_watch_9dc377f8.sh` 升级为**形1↔形2 自动交替** + **控制位判别**两个新 harness，并把 (A) 的抓写法从「假设」推进到「三条正面事实」。**未改任何生产 Rust/C 码**（纯取证 + harness 工具）。
+
+### 事实 1 — 复现确定性钉死（纠 §续-228「-S 必漂」）
+- 自动交替 harness `tmp/nk4a/riscv_watch_auto.sh`（gh92）**形2**（VmDm 虚 `0x19DC377F8` 写 watchpoint，无 maintenance packet）：**串口 19694 行干净复现 (A)@`sepc 0x3abec stval 0x10bd28cb2c` `off 0xb2c`**，与 §续-238 无-gdb 指纹逐位相同 ⇒ **本 build 下 `-S`+watch 不复现漂移**（§续-228 的 0x3ac1a 漂移系更早布局/其它扰动，非普适）。硬件写 watchpoint **设点成功但未触发**（guest 直接跑到 :1991 panic）。
+- 形1（裸物理 `0x9DC377F8` + `maintenance packet Qqemu.PhyMemMode:1`）：**gdb 15.1 拒绝该 packet（报 `Invalid argument syntax`）** → 地址多半仍按虚译，且 PhyMemMode 交互把 (A) 漂到 `sepc 0x3ac1a stval 0x409d28bb20`（= §续-233 家族另一 corrupt 变体）。⇒ **形1 非干净负例**（语义被 packet 失败污染），不能作为「物理 watch 不命中」的定论。
+
+### 事实 2 — 硬件写 watchpoint 按【虚拟地址】匹配，非物理（控制位判别实验定谳）
+- harness `tmp/nk4a/riscv_watch_ctrl.sh`（gh93）：一次 boot 同时设 `awatch 0x9DC37FF8`（控制位＝子根 i2=511 槽，exec 建表理论上必写）+ `awatch 0x9DC377F8`（目标坏槽 i2=255）+ `break *0x3abec`，全**非** PhyMemMode。
+- 结果：**Breakpoint 3（软件断点）命中 3 次**（gdb 停止控制正常）；**两个硬件写 watchpoint 均从不命中**；STOP1 处 `printf CTRL=... *(unsigned long*)0x9dc37ff8` → **`Cannot access memory at address 0x9dc37ff8`**。
+- 定谳：VM(U 态) 经自身 DM 窗访问物理帧 `0x9dc37000` 的虚拟地址＝`VmDm基址(1<<36=0x1000000000) + phys`，物理地址在 U 态根本不可直接访问；**QEMU riscv system-mode TCG 的 hw write-watchpoint 按 CPU 生成的【虚拟地址】匹配**（非物理）⇒ 裸物理 `0x9DC377F8` 永不命中；要抓写者必须 watch **VM-DM 虚拟形 `0x19DC377F8`**（§续-238 早推导的 DM 形）。
+
+### 事实 3 — 崩溃现场回栈正证据：写者上下文＝`cow_exec_pf::sync_slot_pte`
+- gh93 STOP1 回栈（`file minix-vm` 符号化）：
+  ```
+  #0 Riscv64Paging::query+148   (ld a1,0(a1))   ← 解出伪 child_pa 的那条越 DM 读
+  #1 minix_vm::cow_exec_pf::sync_slot_pte+1128
+  #2 minix_vm::cow_exec_pf::handle_pagefault
+  #3 minix_vm::vm_server::VmServer::run
+  ```
+- `ra=0x23146 sync_slot_pte+1128`。⇒ **崩溃读源自 VM 自己的 `sync_slot_pte` 调 `pt.query(vaddr)`（`os/servers/vm/src/cow_exec_pf.rs:147`）walk 子根 `0x9dc37000`**（in-tree `filot` 探针本 run 实测子根确＝0x9dc37000，靶身份正确）。这把 §续-239/plan 的「疑 exec 装填腿」候选 `sync_slot_pte` 从假说升为**运行时正证据**（该函数既是被崩的读调用者，也是 §续-233「换帧 remap 腿写 PTE」的写者候选）。
+
+### 下一钉（gh94，运行中）— VM-DM 虚拟形控制位判别
+- harness `tmp/nk4a/riscv_watch_dm.sh`（gh94）：`awatch 0x19DC37FF8`（控制位 DM 虚）+ `awatch 0x19DC377F8`（目标 DM 虚）+ `break *0x3abec`。判读树：
+  - 控制位命中、目标不命中 ⇒ 坏槽经 VM DM **从不被写** ⇒ **根因＝页表帧复用未清零/陈旧数据字**（对齐 §续-233/234 PT-frame reuse/stale-handle 方向，可静态成修：PT 帧分配腿缺 zero-on-alloc 或 reclaim 释放仍被引用帧）——**不落地投机修，须再坐实**。
+  - 两者均不命中 ⇒ watchpoint 能力/语义仍未解，转 §续-240 两阶段活体读 phys_root 法或对 `sync_slot_pte` remap/map 写点设软件条件断点（U 态稀疏非热路径）。
+  - 目标命中 ⇒ 抓 store PC 回符号（`query` 写侧＝`write_pte_dm`@`paging.rs:259`）坐实写者。
+
+### 工具/文档纠偏
+- **`tmp/nk4a/` 并非 gitignored**：`.gitignore:86 !/tmp/nk4a/` 显式反排除（注释「内核代码注释引用的取证日志锚点保留跟踪」）。故 §续-240 及本文件旧句「harness 在 gitignored tmp」措辞不准——harness 与部分日志是 **tracked 取证载体**，commit 时按生产码同级过 CodeReview（但均非 `os/`/`minix3/` 生产 Rust/C 码）。本会话新增 `riscv_watch_auto.sh`/`riscv_watch_ctrl.sh`/`riscv_watch_dm.sh` 三 harness + gh92/93/94 日志。
+
+### 纪律
+- **本会话未改生产 Rust/C 码**（纯 harness + WORKLOG 取证）；host 1400/0 不变、两 marker 无回归（无代码可 review）。每形 harness 收尾端口锚定 `pkill -f "[q]emu-system-riscv64.*1241"` 精确杀（绝不裸杀，`wrap-boot-mon.sh:140` 的裸 pkill 是并行扰动雷，本会话未并发它）。(A) 仍 open，三条正面事实使下一钉收窄到 DM 形控制位。三目标均未全成，goal active。
+
+---
+
+## §续-242（2026-10-03·(A) 抓写法方法论定谳：硬件写 watchpoint 在本工具链两形皆不可行，转软件断点路线）
+
+> 补录 gh94 实测定谳（§续-241 末尾「运行中」现已经出结果）。
+
+- **gh94（VM-DM 虚形控制位）结果**：`awatch 0x19DC37FF8`（控制位 DM 虚）+ `awatch 0x19DC377F8`（目标 DM 虚）+ `break *0x3abec`。⇒ **Breakpoint 3（软件）又命中 3 次**（(A) 再现于 query+148，与 gh93 同），但**两个 DM 虚写 watchpoint 仍均从不命中**；且 STOP1/2/3 处 `printf *(unsigned long*)0x19dc37ff8` 均报 **`Cannot access memory at address 0x19dc37ff8`**。
+- **方法论定谳（推翻§续-240/§续-241 「DM 虚形可抓写」预期）**：硬件写 watchpoint 对子根表帧目标槽，无论裸物理 `0x9DC377F8` 还是 VM-DM 虚 `0x19DC377F8`，在本 QEMU 8.2.2 riscv system-mode TCG 上都**不触发且不可读**（gdb 在崩点 U 态现场无法访问该 DM 虚地址，⇒ VM satp 未把子根帧映在该 VA、或 gdb 远程读无法穿过当时 satp）。⇒ **plan 步骤1 的「硬件写 watchpoint 定谳」前提在本工具链上不成立**（命中 plan 风险表行“TCG 不支持”）。**硬件写 watchpoint 路线死路**。而**软件断点路线可靠**（break *0x3abec 稳定命中 3 次 + 符号回栈）。
+- **路线切换（下轮）**：不再追写 watchpoint，改以**软件断点逐层剖 `sync_slot_pte`**：`break` 到 `cow_exec_pf.rs:147 pt.query` 与 `:148-150 remap/map/update_flags` 各腿，拓 (vaddr, 当前 query 结果, 将要写入的 paddr/flags)；重点验——子根 i2=255 区域（vaddr 高位对应）到底从未被合法映射（⇒ 坏值＝陈旧未零帧，根因在 `alloc_pt_page`/`pt_alloc` 缺 zero-on-alloc）还是 remap 腿写了非 PTE 值。同步静态读 `os/servers/vm/src/pt_alloc.rs` 的帧分配是否清零（§续-233/234 方向）。**未坐实不成修**。
+- **纪律**：本会话仍未改生产码；qemu gh92/93/94 均端口锚定已清、tracked 净（仅新增 harness+日志+WORKLOG）；host 1400/0、两 marker 无回归（无代码可 review）。(A) 仍 open；硬件 watchpoint 定谳为工具链不可行、软件断点已定位 culprit 函数。三目标未全成，goal active。
 
 
 
