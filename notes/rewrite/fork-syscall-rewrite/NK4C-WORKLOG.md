@@ -10931,6 +10931,13 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **收敛后的 (A) 精确假说（可静态验，非 gdb）**：`PageCache::free_pages`(refcount==1 驱逐) 或 rmcache 释放了一个 **仍被某进程/旧引用持有**的数据帧（refcount 漏计映射腿 或 exec/adopt 未摘旧引用），回收后 vm_pt_alloc 取到同帧→旧数据写踩 PTE。→ 下轮静态追：/etc/rc 页缓存帧与 0x800c PT 帧在 reclaim/exec 路径的 refcount/归属；对照 C cache.c 驱逐谓词与 pb_link 的 refcount 语义。
 - 本轮无生产码变更。host 1400/0。三目标均未全成，goal active。
 
+## §续-234（2026-10-02·**(A) 静态验证 refcount 假说→否定（防幻影）+ 收窄到 PT 帧 use-after-free**）
+- 直接读码定谳：“某映射腿漏 `refcount++`” 假说**不成立**——`fork_region`（fork.rs:123-126，逐 src slot `state.refcount += 1`）与 `map_page`（vir_region.rs:228-231）**均正确 +1**；`free_forked_regions`/`unmap_page` 对称-1。→ 不存在“映射了却没 +1”，不可凭此假说去改 reclaim/refcount（否则=幻影）。
+- 且 `verify_refcounts`（sanity.rs）**看不见 (A)**：它只数区域槽 `slot.pfn()` 引用 + IN_CACHE 补 1，而 **PT 帧恒 refcount 0、不在任何区域槽**→不进其核对集→无法用 sanity_checks 跑法定位 PT 帧别名。又一条自动化手段被证实不可用。
+- ⇒ (A) 再收窄：**PT 帧 use-after-free / stale-handle**——一个已回收（vm_pt_free→free_page→phys_alloc free list）但仍被某 PTE 或某进程 `root_paddr`/旧 handle 引用的表帧，被 reclaim→vm_pt_alloc 重发给新表/数据→旧引用方写翻高位（§续-233 位级证据）。与 §续-152/190 exec adopt/munmap 兼 §续-131 region 栏同域。可信检测器不报是因它不跨“PT帧回收→复用→旧 handle 残留”这条时序。
+- 下步（若继续）：静态追 `vm_pt_free`/exit/exec teardown 里“回收表帧时是否还有引用者”（root_paddr/句柄置空时机），而非再改 refcount/覆盖窗。本轮未改生产码；host 1400/0。三目标均未全成，goal active。
+
+
 
 
 
