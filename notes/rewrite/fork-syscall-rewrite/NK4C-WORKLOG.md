@@ -8,7 +8,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-245（2026-10-03·静态读 `handle_pagefault`/`sync_slot_pte`：崩溃 walk 的 vaddr＝子自身 fault_addr、root＝子 PageTable.root_paddr；§续-244「VM窗口 vaddr」降级为存疑推论（崩 GPR x2=VM sp）；下一步＝采子崩溃那次实 (root_paddr, fault_addr) 定 A1瞬态race vs A2错靶）**；取证链 §续-216~245**：
+> **🛑 最新前沿＝§续-246（2026-10-03·临时诊断探针实验已 revert：重大纠偏——(A) 崩溃 walk 的 root 不是子根 0x9dc37000（i2=255 缺页走 RS 根 0x82132000）⇒ 唯一靶 0x9DC377F8 推导存疑；且“在生产路径加一条读”会把崩点 PC 0x3abec→​0x3ae3c ⇒ (A) 对布局极敏感(§续-137 Heisenbug)。下轮：不改码，用一次性 gdb 回栈 + KDM dump 两张候选根定 root）**；取证链 §续-216~246**：
 >
 > **（上一前沿＝§续-244，2026-10-03·内核 DM 活体读子根：gh96 实测子根 i2=255 槽 panic-halt=0且全帧仅 7 个合法 PTE ⇒ 坏值不驻留，证伪 §续-243 UAF 驻留、重证 §续-216 瞬态）**；
 >
@@ -11123,6 +11123,28 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 纪律
 - 本层纯静态读 `handle_pagefault`/`sync_slot_pte` 语义，未改生产码、未新跑 qemu；host 1400/0、两 marker 不变。(A) 仍 open；§续-244「VM 窗口 vaddr」降级为存疑推论（崩 GPR x2=VM sp 而非 walk 入参）；下一步先采子崩溃那次 (root_paddr, fault_addr) 才能定 A1 vs A2。三目标未全成，goal active。
+
+---
+
+## §续-246（2026-10-03·【临时诊断探针实验（已 revert）+ 重大纠偏】(A) 崩溃 walk 的 root 不是子根 0x9dc37000；且“加读”探针会改崩点 PC——(A) 对代码布局敏感）
+
+> 为采 §续-245 说的 (root_paddr, fault_addr)，临时在 `sync_slot_pte` 加了一个经 VM DM 窥 `root+i2*8` 的诊断探针（build+boot 实测）。**探针属生产路径且扰动 (A)，实验后已 `git checkout` revert 到 HEAD 干净码**，本 commit 无生产码变更。
+
+### 实验结果（均带该临时探针的 build）
+- **gh97（i255pf，cap8）重大发现**：i2=255 缺页的 ep=**0x2（RS）**、**root=0x82132000**、region rvaddr=0x3fffbff000（fault 递增 0x3ffffe2a2c…0x3fffff5000 均 RS 自身高端区 demand-paging，合法不崩）。⇒ **§续-238/239/240 把崩溃归到“子 0x800c 根 0x9dc37000 i2=255 槽=0x9DC377F8”系张冠李戴**：那是两个不同的 walk。结合 gh96（干净码）实测子根 0x9dc37000 i2=255 槽 halt=0 ⇒ **`0x9DC377F8` 作为唯一硬件写靶的推导前提不成立**（根错配）。
+- **gh99（l2peek）**：标定行 n=0/1 证明探针位置活（root=0x82132000、i2=0/255、l2e=0x0=待 map 空槽，正常），但**从未抓到越 RAM 顶的 corrupt l2e**；且——关键——**加了这条 DM 读后，崩溃 sepc 从 HEAD 的 0x3abec 漂到 0x3ae42/0x3ae3c**，stval 也变家族（本局 0x409d28bac0）。⇒ **(A) 对 minix-vm 代码布局极敏感（§续-137 多墙 Heisenbug 家族）**，任何在生产路径“加一条读”的仪表都改时序→换墙/换靶。因此不能拿带探针 build 的数值当 ground truth。
+
+### 当前定谳的 (A) 真实状态（以 HEAD 干净 build 为错）
+- (A) 确为 **layout/timing 敏感的瞬态崩溃**，不驻留（gh96 KDM 活体读子根全净）、非分配器双发（§续-215）、非缺零（§续-243）。
+- **唯一硬件写 watchpoint 靶 `0x9DC377F8` 推导存疑**（§续-246 发现 i2=255 缺页走的是 RS 根 0x82132000 非子根）——不拿着个错靶继续抓。
+- 崩溃时 query 到底用的哪个 root，**尚无干净证据**（探针本身改布局）。
+
+### 下轮方向（避免“加读改局”）
+- **不往生产路径加读**。用 HEAD 干净 build + 一次性 gdb（不改码）：(1) `hbreak` 到 HEAD build 的崩溃 PC（先 `objdump` 查 Riscv64Paging::query 读 l2e/l1 的确切地址）拓回栈确认真正 caller与 root；(2) 扩 KDM 活体读（riscv_live_read.sh，不改码）同时 dump RS 根 0x82132000 与子根 0x9dc37000，用干净 stval 反推伪 paddr 属于哪张根、哪个槽。
+- 目标：先定位“崩溃 walk 用哪个 root + 哪个槽”（不靠会改局的代码探针），再谈根因与成修。**未坐实不成修**。
+
+### 纪律
+- **本会话对 cow_exec_pf.rs 的临时诊断探针已全部 `git checkout` revert**（`git status` 确认 os/ tracked 无变更），并重建了干净 minix-vm。除诊断探针外未改任何生产逻辑。三目标未全成，goal active。
 
 
 
