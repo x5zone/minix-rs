@@ -8,18 +8,19 @@
 #include <stddef.h>
 #include <sys/types.h>
 
-#ifndef _U_CHAR_DEFINED
-#define _U_CHAR_DEFINED
+/* picolibc 的 sys/types.h 用 __u_char_defined 卫 u_char；同名守卫避免重定义。*/
+#ifndef __u_char_defined
+#define __u_char_defined
 typedef unsigned char u_char;
 #endif
 
 typedef struct {
-	u_char	*pat;		/* pattern bytes (copied) */
-	u_char	 rarec;		/* rarest character in the pattern */
-	size_t	*delta;		/* delta table */
-	size_t	 rareoff;	/* offset of the rarest character */
-	size_t	 patlen;	/* pattern length */
-	size_t	 md2;		/* middle shift */
+	u_char	*pat;			/* pattern */
+	size_t	 patlen;		/* pattern length */
+	size_t	*delta;			/* skip delta */
+	int	 rarec;			/* rare character */
+	size_t	 rareoff;		/* rare offset */
+	size_t	 md2;			/* mini delta */
 } bm_pat;
 
 bm_pat *bm_comp(const u_char *, size_t, const u_char *);
