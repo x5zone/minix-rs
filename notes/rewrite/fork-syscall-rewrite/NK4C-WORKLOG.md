@@ -10618,6 +10618,13 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - **(A) 定性（工具就绪、方法受限）**：钉死那条“对含 DM 基址的值再累加”的指令需**逐指令寄存器值**——QEMU `-d exec/in_asm` 只给 TB 执行序/静态反汇，**不给寄存器值**；gdb-multiarch 单步 VM U-mode 需先可靠拿到 VM text 的 guest-phys（我离线 walk 因 2MB 叶判定不可靠）。⇒ (A) 真解法 = **人机交互式 gdb 会话**（人现场校正 walk/偏移、读 `$sepc/stval` CSR、步进看寄存器），非单次自动化工具调用可可靠完成。不伪修。
 - 不标任何目标完成；goal 保持 active。
 
+## §续-203（2026-10-02·**目标③ picolibc 链通实证 + libatf-c 交叉构建 = 下一步真实工序**）
+- **picolibc C 运行时链通**（/tmp spike）：`riscv64-unknown-elf-gcc -static --specs=picolibc.specs` 编含 `<stdio.h>`+printf+自写 syscall stub 的 C → RC=0，产 `ELF64/LSB/EXEC/RISC-V` 静态二进制。⇒ 目标③ “C+libc → riscv 静态可加载 ELF” 整链实测可用（picolibc 已装）。上轮 10617 所述“picolibc 待装”已解除。
+- **libatf-c 构建缺口坐实**：编 Tier-A `lib/libc/string/t_memcpy.c` 报 `fatal error: atf-c/defs.h: No such file`——`defs.h` 是 atf 配置时生成的头。⇒ 目标③ T3.2 第一件工程：先对 `minix3/external/bsd/atf/dist` 跑 riscv 交叉 configure+make 产 libatf-c.a + defs.h（autoconf/automake 已就绪）。
+- **syscall 重定向 = 核心工程**：picolibc 默认 `_write/_sbrk/...` 是半主机/Linux 形；目标③ 真跑需把它们重定向到我方 `ipc_trap`/`kernel_call` ABI（riscv `ecall a7=SEND/REC`、`kernel_call_trap a7=0 msg@a0`，见 arch_trap.rs）+ 我方 VFS/open/read/write syscalls 映射。上机跑还需 riscv boot 先过 (A)。
+- 目标③ 结论：**工具链已全部到位，不再缺件**；剩工程（libatf-c 交叉构建 → syscall shim → 上机）。(A) 仍为 riscv 上机的硬前置（需交互式 gdb）。
+- 本轮无生产码变更；tracked 净。
+
 ### 工具链二装完成确认（目标③ 前置已齐）
 - 新增 `riscv64-unknown-elf-gcc`（裸机交叉链）+ `picolibc-riscv64-unknown-elf` 1.8.6（目标端 C 运行时）+ autoconf/automake。
 - **libatf-c 无需 apt**：源在仓内 `minix3/external/bsd/atf/dist/`（含 `atf-c.h`），可交叉构建。
