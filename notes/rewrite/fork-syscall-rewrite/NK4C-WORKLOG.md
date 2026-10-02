@@ -10633,3 +10633,9 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 
 
 
+
+## §续-204（2026-10-02·**目标③ libatf-c riscv 移植可行性实测**）
+- 渲染 `atf-c/defs.h.in`→`defs.h`（3 个 `@ATTRIBUTE_*@` 宏占位）后，`riscv64-unknown-elf-gcc -c --specs=picolibc.specs` 编 `atf-c/error.c` **通过**（干净出 .o）。
+- 剩余真实缺口 = (a) 配置期字符串宏 `ATF_BUILD_CC/CXX/LD/CFLAGS/...`（正常由 atf configure 注入，可在 shim 头里 #define）；(b) **BSD 头 `sys/uio.h` picolibc 缺**（`tc.c` fatal）→ 需一个最小 `sys/uio.h` shim（`struct iovec` + readv/writev 声明）。
+- ⇒ 目标③ 判定：libatf-c 可移植，工量 = defs.h 渲染 + ATF_BUILD_* 定义 + 少量 BSD 头 shim（sys/uio.h 等）+ 之后把 picolibc `_write` 等重定向到我方 ipc_trap/kernel_call ABI；上机跑 Tier A 仍硬依赖 (A) 修复。工具链无缺件，纯工程。
+- 本轮无生产码变更（spike 全在 /tmp）；tracked 净。
