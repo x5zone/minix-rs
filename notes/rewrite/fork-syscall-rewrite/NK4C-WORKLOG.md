@@ -10567,6 +10567,12 @@ riscv boot 仍止于 `cause_sig: sig manager 8 gets lethal signal 11 for itself`
 - 回溯审计：AF-8/9/10 本续完成；AF-11（探针滚除）需过 C-61 pattern-gate且 (A) 未结案→仍延后（本轮新增的 P1/P2/P3/ipcefault/kill 探针入台账）；AF-12（xtask image.rs:553 riscv 分支误标 aarch64 文案 + proc.c:1923→1922 锚点）为 NIT，待下轮顺带。
 - 主阻塞仍 = (A) pagefault-in-VM（已定性为寄存器/GPR 恢复族，需续-197+ 的 S 态 ctx.gp_regs 前后 diff 探针或 gdb 坐实）。
 
+## §续-197d（2026-10-02·**回溯审计 AF-12 + AF-5 完成；(A) 静态源码回推：save/restore 腿经核均从 ctx 装回 gp_regs，怀疑面收窄**）
+- **AF-12（NIT，commit `719716dab`）**：xtask image.rs:553 riscv64 分支误标「aarch64 内核禁 NEON/FP」→按 arch 分派文案；`proc.c:1923`→`1922` 锚点 off-by-one 三处（copr_not_available_handler 实起 1922，全树 grep 复核）。纯 println+注释，零行为；cargo check xtask 通过。
+- **AF-5（P1，commit `6d485d4ca`）**：`cargo build --workspace --all-targets` 长期 E0046 编不过（minix-tests/pm_sched 的 `SchedIpc` 缺 `sendnb`、`PmIpc` 缺 `send_blocking`——PM/SCHED trait 早先 F13 加法而 mock 未同步）；因权威 host 测试用显式 `-p` 子集排除 `tests/` 而对该断裂不可见（CI 盲区、目标③前置）。补两 mock（sendnb 镜像 send 投递、send_blocking 与 send() 同 panic 语义）。验证：--workspace EXIT=0、pm_sched 4 passed。**闭目标③集成测试静默腐坏盲区**。
+- **(A) 静态源码回推（免 boot）**：再核 `apply_to_trap_frame`（boot.rs:87）写 frame 四槽 vs `restore_to_user`（trap_return.rs:55）——后者 sepc/sstatus 读 frame(a0)，sp/a0/gp_regs 全读 **ctx**(t6)。故非 park 普通 trap 返回走 trap_stub epilogue 从原帧装回全 30 GPR（`ld a1,11*8(sp)` 等，已核）；resched/park 路径走 restore_to_user 从 ctx 装回——**两腿都全量装 gp_regs，apply 只改 4 槽不回写 frame.gp_regs 不构成丢槽**（frame.gp_regs 无人读，restore 用 ctx）。怀疑面从「恢复腿丢槽」收窄到：**要么 VM 自身 walk 算术（读父项 PTE 后算子表地址时 DM 位泄入），要么 ctx.gp_regs 在某写路径（signal/syscall/suspend）被写坏**。仍需活体 trace 定谳（gdb 或续-198 探针），未坐实不成修。
+- 待办：AF-11（探针滚除）C-61 gate + (A) 未结案→延后；AF-1~4/7（release_fpu aarch64 接线/双 FP 用例/build-std 残差）需 aarch64 真机验证（改 aarch64  syscall 路径，本会话不占 (A) 调试线）→ 归后续与 x86/aarch64 non-regression 一批。
+
 
 
 
