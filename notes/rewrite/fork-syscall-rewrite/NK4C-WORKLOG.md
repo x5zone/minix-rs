@@ -10361,3 +10361,7 @@ RS process_table.rs:138 越界（len 64 index 64）：endpoint→slot 转换 off
 ## §1.120续-176（2026-10-02·**RS process_table.rs:138 panic 现场分析：sync_pub_wire 的 `pub_wire[i]=..` i=64 而 pub_wire.len()=64 ⟹ slots.len()≥65——但 slots:Vec 仅 new() 构造 (0..NR_SYS_PROCS=64) 且全仓无 push/insert/resize（grep 零命中），静态矛盾=还有隐藏增长点或 len 语义另有蹊跷；续-177=sync_pub_wire 入口打 slots.len()/pub_wire.len() 探针（门 2）抓实际长度，回溯增长点即成修**）
 
 关键事实：NR_SYS_PROCS=64（com.rs:51）；slots/pub_wire 同源构造各 64；gh54 panic=process_table.rs:138「len 64 index 64」exec 链推进后 RS 首个 panic（腐坏家族已清零后的第一个干净 bug）。矛盾未解不入修；探针门 2 抓 len 后按值回溯（若 slots=65：找 push 暗道；若 pub_wire=63：找缩容）。
+
+## §1.120续-177（2026-10-02·**RS 越界 panic 矛盾深化：len-探针不可装（RS crate 无 bootmark/console 依赖，已回退）；重读现场=「index 64」更可能是 endpoint.slot()=64 的越界索引（如 pub_wire[ep.slot()] 族）被行归属到 138（release 内联 attribution），而非 enumerate 越界（slots 恒 64 无增长）；续-178=①grep RS 全仓 `pub_wire[` 与 `[ep.slot()]`/`[slot()]` 索引点 ②对 endpoint slot()=64 的来源（0x8040 族端点/系统端点未掩 NR_SYS_PROCS）成修（bound-check+Errno 或掩位）**）
+
+事实链：sync_pub_wire 的 enumerate i<64 恒真（slots 恒 64 无增长），不可能产生 index 64；panic 行 138=当前源的 pub_wire[i] 写——矛盾指向 release 内联的行归属偏移：真正的越界索引在别处（被内联进 sync_pub_wire 或同 PANIC 报告流），index=64=某 endpoint 的 slot 位=64（0x8040 族/系统端点）未掩 NR_SYS_PROCS(64)。续-178：全仓 `[.slot()]` 索引审计+bound 修复。
