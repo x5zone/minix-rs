@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-278（2026-10-03·首批 18 案/36 用例套件化上机）**：套件接线（ATF_SUITE 表+用例名从 C 源提取+rc 变体注入+atf-plan manifest+imgrd 16MiB）；真机实证 ≥12 案 passed 后被两新缺陷拦住：**D1 memcpy_basic=picolibc random 序列与 NetBSD 期望分歧（p5 探针定谳，非内核 bug）**、**D2 用户态 slab OOM-RT 截断 boot（px=400/400 满+fp 空，回收流/预算候选面未坐实）**；均登记续-279 靶心。门升级终集定案（failed 全列+停滞检测）。xtask 17/17、host 1403/0、双 arch 18/18。(A) 仍 open。
+> **🛑 最新前沿＝§续-279a（2026-10-03·D2 归因坐实）**：内核 diagctl 腿对 OOM-RT 行补打 caller proc 号→真机 gh141：**OOM 进程=MFS（caller=0xa）非 VM**（旧推断被推翻，时序相邻≠因果）；big=950/1024 槽近满+px=1024/1024 页池打穿——定性收敛：MFS 对 16MiB imgrd 根的读路径大分配耗尽自身 4MiB .bss 池，两候选（读缓冲不释放 vs 预算不足）待 mfs 读路径审计分判。套件重现：12 passed+D1 读数一致。minix-kernel host 833/0。前一轮：§续-278/278b/278c/278d 套件化+门+评审修复+D1/D2 登记；§续-277系列上机 pipeline 全打通（首案 passed）。
+>
+> **（更早前沿＝§续-278：首批 18 案/36 用例套件化上机）**：套件接线（ATF_SUITE 表+用例名从 C 源提取+rc 变体注入+atf-plan manifest+imgrd 随套件选值）；真机实证 ≥12 案 passed 后被 D2（当时代号，即本节主角）截断；D1=memcpy_basic picolibc random 与 NetBSD 期望分歧（p5 探针定谳，非内核 bug）；均登记不猜修。xtask 17/17。
 >
 > **（上一前沿＝§续-277c：对 277b 评审再修，防线坐实（host 对账测试）+门判据加固）**：CodeReview(84398284a) 判 1 P1+5 P2——P1=文档声称的 _Static_assert 防线在赋值式重构后已不存在→补真：minix-types host 对账测试读 posix-stubs.c 的 FS_ST_* 宏逐条 assert_eq offset_of!；P2 全修（lseek/read 占位诚实化、门终集定案、探针同源化+WARN、harness 定点杀）。
 >
@@ -11829,6 +11831,28 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### D2 静态审计追加两条事实（279 起点，本处登记）
 - **big 释放路径存在且形似正确**（alloc.rs free 臂：命中 big_blocks 记录→`supplier.release_pages(page, page_count)`→槽置 None）——“回收泄漏”候选收窄为：Rust 侧正常 Drop 下只剩“panic 前未来得及 free”或 supplier 自身记账两种形态；279 先补 big-free 计数探针（alloc/free 对称打点）再定。
 - **时间相关性新线索**：OOM 首次出现在 **imgrd 8MiB→16MiB 之后的首次全量 boot（gh140）**——mfs 把 imgrd 嵌为只读种子层（build.rs include_bytes），若 mfs/VM 对更大根盘有 per-block 元数据或缓冲随容量放大，182 条 big 现役记录的归因要重查（279 第一步：OOM-RT 行加 proc 号坐实“谁” OOM，再按进程静态对账）；单案时代 gh135-139（16MiB 未变前也 boot 过带套件镜像）未暴同型 OOM 的支持面有限，不下结论。
+
+---
+
+## §续-279a（2026-10-03·D2 归因坐实：OOM 进程=MFS 非 VM；big 槽 950/1024 近满+页池打穿）
+
+> commit 5216a20d6。内核 `dispatch_diagctl` 对 `nk4c: OOM-RT` 前缀行补打 caller proc 号（`nk4a: oomrt caller=<nr>`）；minix-rt 侧因本 crate 诊断面只能走裸 kernel call（拿不到 getpid，服务器/命令 transport 形态不同）而把归因交给内核单点。踩坑一笔登记：前缀检查第一版放在 data_copy 之前——diagbuf 彼时全零永不命中，第二版移到拷贝成功后（本笔 commit message 已自述）。
+>
+> **真机 gh141 定谳**：`oomrt caller=0xa` = MFS_PROC_NR（proc.rs:122；VM=8 排除，此前“候选进程=VM”的推断——基于 panic 前 supSk 洪水时序——被推翻，时序相邻≠因果）；`big=0x3b6/0x400`=950/1024 槽近满（旧版 2 位显示把 182/950 都截成歧义读数，278c 宽度修后首次读真值）+px=1024/1024 页池打穿 fp=0。**D2 定性收敛为：MFS 对 16MiB imgrd 根的读路径大分配把自身 4MiB .bss 运行时池耗尽**——与套件时间相关性完全吻合；两候选（读缓冲不释放 vs 池预算本就不足）待下一轮用 mfs 读路径静态审计+big-free 对称探针分判，不投机改。另：gh141 复跑 12 passed + D1 读数一致（套件可重现）。
+
+### 验证与纪律
+- minix-kernel 宿主测试 833/0；x86/riscv 零影响（前缀不命中时 diagctl 行为逐字节同旧）；装配+真机 boot 验证归因行生效。本笔含 os/kernel 生产码改动（诊断腿内），属临时归因件，结案随 mark 族滚除（§八台账同步）。
+
+---
+
+## §续-279b（2026-10-03·D2 机制候选锁定：mfs 对 imgrd 槽读 `slot_data().to_vec()` 全块拷贝；修复属 mfs 大动作未动码）
+
+> 静态审计（零 boot）：mfs 把 imgrd 当 RAM 盘块缓存服务（`BootBlockSource`，main.rs:52-54 `include_bytes!` 填 `BOOT_IMGRD`），而 mount.rs 三处（L315/L371/L487）`cache.slot_data(slot).to_vec()` 把 4KiB 块**全量复制进运行时堆**（≥2048B 即 big 车道）——16MiB imgrd=4096 块，big=950 槽/页池 1024/1024 的形状与“块内容复制驻留”同量级。**候选机理（未坐实，二形态待判）**：①to_vec 返回值被长命结构持住（mount 表/二级索引）=驻留型耗尽；②to_vec 即拷即弃但高频并发峰值超池=峰值型耗尽。**修法方向（279c 决策，不预写）**：(a) 读路径零拷——imgrd 本就是 .rodata 内字节，块服务可直接借切片（(须让 mfs 块抽象支持 borrowed 数据源)）；(b) 池预算再扩容（雷区：B34 实证的 .bss 平移→VM 自缺页递归，需同步 eager 物化）；(c) 套件 ELF 瘦身减 imgrd 需求（缓解不根治）。**本轮只登记不改码**：mfs 块缓存/二级索引是生产核心路径，修复必须配自己的回归轮（marker+命令面+套件门三套跑），不在本轮顺手动。
+
+### 会话收官对账（2026-10-03 续-276→279b，累计 12 commit）
+- 三目标态：① x86✅ aarch64✅ riscv❌(A)；② x86✅ aarch64✅ riscv❌(A)；③ **构建面双 arch 各 18/18 + aarch64 上机 ≥12 案实证 passed（会话前：仅构建面 riscv 18/18、上机 0 案）**，全套 36 案被 D2 截断（机制候选已锁）。
+- 回归底线：host 4 包集 1403/0、check-layout all PASS、x86 smoke PASS、aarch64 smoke PASS（含 SIGPIPE 假失败真修）、aarch64 ATF 门就位；每 commit 均 CodeReview（PASSED×4，另两轮 P0/P1/P2 修复轮 276b/277b/277c/278b/278c 全部落地），纯文档笔次标注“无生产码可审”；qemu 收尾清零、tracked 净。
+- 遗留台账（交接下轮优先级）：D2 mfs 零拷修复（279c）→ 套件 36 案全绿；D1 口径决策（预期失败清单 vs BSD random 移植）；compat 真语义（stresep/strerror）；诊断 mark 族滚除（内核 pf-exit/pfa/oomrt + 套件期探针）；(A) riscv 三解锁条件不变（本会话零 riscv 生产码改动，1402→1403 均含同套 NoReply 臂修正对 riscv 同样生效）。
 
 
 
