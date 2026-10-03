@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-285-b（§续-284 评审回执 PASSED 0P0/0P1/1P2，P2=叙述精度已澄清）**：评审全项 PASS=保真性（vendor cmp 字节同 md5 b2ce30c7）/抢占语义（两套 picolibc 归档全成员扫描：random/srandom 及别名成员有且仅有 libc_stdlib_{random,srandom}.c.o，srandom 成员 U _rand_next 互锁=双定义缺一不可）/壳头卫生/双腿端到端复现（尺寸逐字节一致+nm 铁证复现）。P2-1=`#undef __weak_alias` 现行两套 picolibc cdefs 均不定义该宏=**前向防御非现役机制**（shim 注释本身是准确条件式，§续-284 措辞未带条件，特此澄清算闭合）。详见文末 §续-285-b。
+> **🛑 最新前沿＝§续-286（目标③ aarch64 达成态：门 rc=0 PASS——36/36 终态=34 passed+2 skipped+0 failed/broken）**：§续-285 勘误（重大反转）——「t_popcount 启动即亡+父收尸丢失」全错，d1v1 串口重读定谳 t_popcount 两世 exec 正常完成输出 `skipped: config variable "run_popcount" not set to YES/TRUE`，**skipped 是 atf 合法终态被门与取证正则双漏计**，36=34P+2S 全对账，D3b 本轮读数不存在（对账关系解除，回「gh142/143 登记、近期未再现」观察态）。机制=popcount_init 源码默认 get_config_var_wd("NO")→skip 即上游默认。修复两试：-v 注入（已撤）撞天文循环（popcountll 2.2e12 迭代 TCG ~51h 物理不可行）；正解=门判据 `^skipped` 入终态行（failed/broken 一票否决不变+PASS 行诚实分账），rc exec 行回归逐字节同旧。门读数 rc=0 PASS。方法论=归账正则必须全色计数先归账后定性/改判据先读源码默认值/门判据须与 atf 终态语义全集对齐。回归面=os/ 生产码零 diff。
+>
+> **（上一前沿＝§续-285-b（§续-284 评审回执 PASSED 0P0/0P1/1P2，P2=叙述精度已澄清）**：评审全项 PASS=保真性（vendor cmp 字节同 md5 b2ce30c7）/抢占语义（两套 picolibc 归档全成员扫描：random/srandom 及别名成员有且仅有 libc_stdlib_{random,srandom}.c.o，srandom 成员 U _rand_next 互锁=双定义缺一不可）/壳头卫生/双腿端到端复现（尺寸逐字节一致+nm 铁证复现）。P2-1=`#undef __weak_alias` 现行两套 picolibc cdefs 均不定义该宏=**前向防御非现役机制**（shim 注释本身是准确条件式，§续-284 措辞未带条件，特此澄清算闭合）。详见文末 §续-285-b。
 >
 > **（上一前沿＝§续-285（D3b 定位轮：2 无结果案=t_popcount 整案启动即亡）**：atf-d1v1 串口按 `t_xxx: WARNING` 前缀归账 34 结果行，18 程序中 **t_popcount 独零**（popcount_basic/ll 双案）——死在 exec→crt→atf main 之间（连 tp_main 的 WARNING banner 都没有）；串口见 `sas-fork ep=32802`→`sas-clear ep=32802`（root 不同=槽位复用 trace 混叠）后无任何 pf/SIGSEGV 行=死亡静默；**后续 34 案照常跑完=父挂死非全局卡死**（sh 对该次 waitpid 的回复丢失后继续，门按 plan 总数对账发现缺 2=stall 34/36）。C 真源链已侦察（pm_exit→zombify:594→tell_parent:670/wait_proc:540），我方 wait.rs 机器在——偏离候选=SIGSEGV 异退死亡路径（signal.rs/signal_flow.rs kill 腿是否走全 zombify→check_parent→tell_parent）或内核 SIGSEGV→PM 转发腿；t_popcount 为何启动即亡是第一性问题（对比同形过案 t_bm）。§续-286 靶=单案上机抓死亡现场+对照 t_bm ELF+PM signal-death 全链审计，修后 36/36=目标③ aarch64 达成态。
 >
@@ -12107,3 +12109,17 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 ## §续-285-b（§续-284 CodeReview 回执：PASSED 0P0/0P1/1P2，P2 已澄清）
 
 评审（commit 608e6d782）全项 PASS=保真性（vendor cmp 字节相同 md5 b2ce30c7、shim 三兼容点编译序+产物实证）/抢占语义（两套 picolibc 归档全成员 ar x+nm 扫描：定义 random/srandom 及别名的成员**有且仅有** libc_stdlib_{random,srandom}.c.o，无第三处强定义无 W 弱符号；srandom 成员 U _rand_next 与 random 成员互锁=双定义缺一不可的结构性确认）/壳头卫生（-I random-shim 全脚本唯一）/双腿端到端复现（链尺寸逐字节一致+nm 铁证复现）/WORKLOG 对账。**P2-1（叙述精度，非代码错）**：`#undef __weak_alias` 现行两套 picolibc（rv64 系统包+a64 vendor 包）cdefs 均**不定义**该宏（grep 0 命中）——此 undef 是**前向防御**（换 libc/升级即可能激活），非现役机制；shim 注释本身是准确的条件式，§续-284 详节与 commit message 的措辞未带条件，特此澄清算 P2 闭合。UNVERIFIED（硬件）项如实标注=34/36 上机读数本环境不可重跑，但算术自洽且前置链（链成+nm+MD5）全部独立复现。纯文档零行为变更。
+
+## §续-286（2026-10-04·目标③ aarch64 达成态：门 rc=0 PASS——36/36 终态=34 passed+2 skipped+0 failed/broken；§续-285 读数勘误+门判据 skipped 入账）
+
+**§续-285 勘误（重大反转，照 279k/l 先例留档）**：上轮「t_popcount 启动即亡+父收尸丢失」定性**全错**——d1v1 串口全段重读（memset 末 passed→strcat 首 WARNING 之间非噪声 56 行）定谳：①t_popcount 两世 exec（ep=0x8022/0x8023；rc 按**每用例一行**注入，各跑单案）**正常完成**，输出 `_popcount: WARNING` banner + **`skipped: config variable "run_popcount" not set to YES/TRUE`**——skipped 是 atf 的合法终态结果行，被门与上轮取证归账的正则（只认裸 passed/failed/broken，`skipped: 原因` 带尾不匹配）**双漏计**；②36=34 passed+2 skipped **全对账**，无 hang、无死亡、无父挂（`sas-fork ep=32802`→`sas-clear ep=32802` root 不同=槽位旧占主 t_memset 的正常清理，非异常退）；③D3b（§续-279k「子 SIGSEGV 异退→父 waitpid 挂」）在本轮读数中**不存在**——memset 7/7 全过、popcount 后续案照常；「2 无结果行=D3b 台账」的对账关系解除，D3b 回到「gh142/143 时代登记、近期未再现」的观察态。
+
+**机制**：t_popcount.c 的 `popcount_init(cfg_var)` 在变量非 YES/TRUE/1/T/Y 时 `atf_tc_skip`；用例侧 `atf_tc_get_config_var_wd(tc,"run_popcount","NO")`——**源码默认 NO，skip 即上游默认行为**（arch 门控测试，等 atf-run 供配置）。直跑（无 atf-run）时 config 变量只能经 `-v` 命令行进 atf-c。
+
+**修复轮两试**：①试 1（已全撤）：`ATF_TC_ARGS` 表注入 `-v run_popcount=YES` → 门**回归 16/36**——真测试体运行即撞天文循环：popcount_basic=`for i<0xffffffff` 4.29e9 迭代（TCG 下 ~5-15 min），popcountll_basic=256×2×4.29e9≈**2.2e12 迭代（TCG 下 ~51 小时物理不可行）**；`timeout: 0`（无超时）是上游明示接受的长跑设计。教训=治疗性配置注入必须先估算真测试运行成本。②正解（本笔）：门判据把 `^skipped` 计入终态结果行——终态={passed,failed,broken,skipped}，failed/broken 一票否决不变，PASS 行诚实分账（`34 passed + 2 skipped, 0 failed/broken`）；rc exec 行回归逐字节同旧（image.rs 零 diff）。
+
+**门读数**：`test-atf-aarch64.sh` rc=0，`RESULT: PASS (36/36 ATF cases reached a terminal result: 34 passed + 2 skipped, 0 failed/broken)`——**目标③ aarch64 达成态**（18 程序/36 用例全部终态、零 failed/broken；stall 判定不再被 skipped 瞎触）。suite 内 config 门控面扫描=仅 t_popcount 一处，无同类暗雷。
+
+**方法论入库（易错模式）**：①「无结果行」≠「非 passed 结果行」——取证归账正则必须全色计数（skipped:reason 也是结果行），先归账后定性，勿把统计漏计判成进程死亡（§续-285 误判即此因）；②改判据/加配置前先读源码默认值（`get_config_var_wd` 的 "NO" 决定 skip 是上游设计非缺陷）；③门判据演进必须跟 atf 语义全集对齐（terminal={P,F,B,S}），否则合法终态会被 stall 判定误吞。
+
+**回归面**：os/ 生产码零 diff（门脚本+WORKLOG only）；bash -n 过；门自身即受影响门且 PASS。xtask 17/17（撤回后 image.rs 与 HEAD 同字节）。

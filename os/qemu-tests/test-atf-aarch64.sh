@@ -17,8 +17,10 @@
 #      case manifest from the minix3 C sources, writes atf-plan.txt and the rc
 #      variant; the xtask arch gate whitelists aarch64, other arches untouched).
 #   3. Boot under AAVMF + QEMU virt, serial to a log.
-#   4. Count ATF result lines against atf-plan.txt: every expected `passed`
-#      (PASS), any failed/broken or panic (FAIL), stalled progress (FAIL).
+#   4. Count ATF result lines against atf-plan.txt: every expected case
+#      reaches a terminal result (passed/skipped; skipped = atf 合法终态，
+#      续-286：t_popcount 两案按源码默认 run_popcount=NO 自行 skip) → PASS;
+#      any failed/broken or panic (FAIL), stalled progress (FAIL).
 #
 # Honest posture: this is the first ATF batch (string/memory libtests, one
 # process per case) of the 586-test goal. The suite grows through §③'s
@@ -135,8 +137,15 @@ for _ in $(seq 1 "$TIMEOUT_BOOT"); do
         fi
         n_fail=$(grep -acE '^failed|^broken' "$SERIAL_LOG" 2>/dev/null || true)
         n_pass=$(grep -ac '^passed' "$SERIAL_LOG" 2>/dev/null || true)
-        n_pass=${n_pass:-0}; n_fail=${n_fail:-0}
-        total=$((n_pass + n_fail))
+        # 续-286：`skipped: 原因` 是 atf 的合法终态结果行（t_popcount 的
+        # arch 门控两案在 run_popcount 未配时按源码默认 NO 自行 skip——
+        # 上游 default 即 NO，见 popcount_init/get_config_var_wd）。门此前
+        # 只认裸 passed/failed/broken，skipped 行不入账 ⇒ 终集永远差 2 误判
+        # STALLED。atf 语义下终态={passed,failed,broken,skipped}，
+        # failed/broken 一票否决不变。
+        n_skip=$(grep -acE '^skipped' "$SERIAL_LOG" 2>/dev/null || true)
+        n_pass=${n_pass:-0}; n_fail=${n_fail:-0}; n_skip=${n_skip:-0}
+        total=$((n_pass + n_fail + n_skip))
         if [ "$total" -ge "$EXPECTED" ]; then
             if [ "$n_fail" -gt 0 ]; then verdict="FAILED"; else verdict="PASSED"; fi
             break
@@ -158,7 +167,7 @@ done
 kill_qemu
 
 if [ "$verdict" = "PASSED" ]; then
-    echo "RESULT: PASS ($EXPECTED/$EXPECTED ATF cases passed on the aarch64 boot console — SYS_DIAGCTL stdio bridge, per atf-plan.txt)"
+    echo "RESULT: PASS ($EXPECTED/$EXPECTED ATF cases reached a terminal result: $n_pass passed + $n_skip skipped, 0 failed/broken — SYS_DIAGCTL stdio bridge, per atf-plan.txt)"
     exit 0
 elif [ "$verdict" = "PANIC" ]; then
     echo "FAIL: kernel panic during ATF boot leg"
