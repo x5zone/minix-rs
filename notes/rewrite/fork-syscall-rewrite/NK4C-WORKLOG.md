@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-311（旁路实验终判：VmDm 槽访问全链内核化（读+写+零填四腿）后**崩照旧 3/3 同指纹**——槽访问层豁免，(A) 回溯到 fill/alloc 帧值组合层）**：§续-311 读腿（c114abf9c）+PteWrite(21)/PteZero(22) 补全后 z60-z62=3/3 崩指纹照旧（0x10bc900b3c/0x409c8ffb30）⇒ poison 不在 VmDm 槽访问层产生，在 **fill/alloc 的帧值组合层**（walk 读真链时真链当时含 poison、panic 时被 fill 重写健全——fill 与 walk 交错窗口内的内容变化回路闭合到 in-code）。旁路已回滚（checkout 156ca988c，krewalk 保留；重建 md5=eed1867≠a8b7654c=rust 构建非确定性，跨构建比对以源码 commit 为准）。§续-313 靶=①fill 叶组合式输入审计②b 批指纹反解（bit29=alloc 侧移位错位候选）③修复候选=fill 叶组合加 RAM 界断言（越 RAM fail-fast，非 walk_read 改写）。方法论=旁路实验可豁免层（内核代读写无法修复但排除 VmDm 槽访问层）。
+> **🛑 最新前沿＝§续-313①（fill 内部判别探针全静默+krd 批读旁路在场仍崩——poison 经 kernel-mediated 读进入；收口步=PteRead 臂区间值日志）**：b 批五崩 run 的 walk-flip=0/pte-wb-FAIL=0（fill 自身无内伤）；krd1-krd3 读旁路在场 3/3 崩同指纹 ⇒ poison 经 kernel-mediated 读进入 VM。**时间窗悖论**：krewalk（panic 时）读同槽=sane、VM walk（微秒前）内核 KDM 读=poison、-smp1 两读间无他者 ⇒ RAM 不可能变——剩余解释①两读的「同一槽」假定有误（VM walk 的 root/va 参数与 krewalk 假定不同）②S 态 KDM 读自身被平移层误导（z1 同层）。**§续-313 收口步=PteRead 臂区间日志**（`pa∈[0x9d6e9000,0x9d700000)` 逐笔记 `nk4c: pterd pa raw` CAP=64）——崩点前内核代读的实际返回值序列直接钉死①vs②。方法论=探针移到读的返回边界（PteRead 臂）而非 walk 内部（旁路已证 walk_read 改写必灭）。
+>
+> **（上一前沿＝§续-311（旁路实验终判：VmDm 槽访问全链内核化后崩照旧——槽访问层豁免，(A) 回溯到 fill/alloc 帧值组合层）**：§续-311 读腿（c114abf9c）+PteWrite(21)/PteZero(22) 补全后 z60-z62=3/3 崩指纹照旧（0x10bc900b3c/0x409c8ffb30）⇒ poison 不在 VmDm 槽访问层产生，在 **fill/alloc 的帧值组合层**（walk 读真链时真链当时含 poison、panic 时被 fill 重写健全——fill 与 walk 交错窗口内的内容变化回路闭合到 in-code）。旁路已回滚（checkout 156ca988c，krewalk 保留；重建 md5=eed1867≠a8b7654c=rust 构建非确定性，跨构建比对以源码 commit 为准）。§续-313 靶=①fill 叶组合式输入审计②b 批指纹反解（bit29=alloc 侧移位错位候选）③修复候选=fill 叶组合加 RAM 界断言（越 RAM fail-fast，非 walk_read 改写）。方法论=旁路实验可豁免层（内核代读写无法修复但排除 VmDm 槽访问层）。
 >
 > **（上一前沿＝§续-310（双句柄证伪+穷举收口：memreq 腿与 PF 腿同源——全部 in-code 门关闭，视图分歧经穷举确证=QEMU 平移层工件；§续-310=内核代读旁路设计）**：memreq 腿（handle_kernel_memreq→get_active→mem_parts_mut，vm_server.rs:1436）与 PF 腿（:1470）**同源**；三族根值=三生命周期点全部合法（setaddr-root 探针证 kernel 绑定=exec 根）。**in-code 门全关**：root 一致（fix25 掩码）/链 RAM 健全/fill 写落地/无 free-evict-ptfree-拆除/无双句柄双键 ⇒ **视图分歧（VM 的 VmDm 读特定时序返回非 RAM 内容）经穷举确证=QEMU 软 TLB/平移层工件**，in-guest 取证到边界。**§续-310=旁路成修设计**：VmDm 槽读改内核代读——①wire 新增 VmCtlParam::PteRead(pa)→u64②arch 钩子（VM 注册 read-fn，层界保持对位 pt_alloc::register）③VM read-fn=gateway kernel-call④写腿同理评估——**[ARCH: riscv-vmddm]** riscv64 VmDm 槽读改内核代读（绕开 QEMU 平移层误导；成本=每 walk 级一次 kernel-call 但 poison 读路径物理消失）。§7=≥3 轮独立复现无崩+riscv marker+双 marker+host 全绿。实现次序=wire→kernel handler→arch hook→VM 注册→采样。
 >
@@ -12349,3 +12351,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **§续-313 靶（收口后的正确战场）**：①fill 路径叶组合式的输入审计——query/fill 读到的父项值在旁路下=**真 RAM 值**（内核代读无误导）⇒ 崩时真链确含 poison RAM 值（krewalk 晚于崩=被 fill 重写），写者=fill 自身的中间写入（fill-root 写叶前先写 L1/L0？）或 exec 重建时序；②从 b 批指纹反解：poison=DM|0x9c900000|bit29|0xb3c——0x9c900000 是自由零帧（§续-296），bit29 来源=帧值合成式（alloc 侧 pfn→pa 的 PPN 移位错位候选）；③修复候选=fill 路径的叶组合加 RAM 界断言（越 RAM 即 fail-fast 带五元组）——非 walk_read 改写（旁路证明 instrumentation 不必在 walk_read 内也能定位）。
 
 **方法论**：旁路实验证明「内核代读/写」路线**无法修复但可豁免层**——四腿全内核化仍崩=排除 VmDm 槽访问层，穷举法再次收口。
+
+## §续-313①（2026-10-04·fill 内部判别探针全静默+krd 批读旁路在场仍崩——poison 经 kernel-mediated 读进入；§续-313 收口步=PteRead 臂 child-root 区间值日志）
+
+**读数**：b2-b5/b7 五崩 run 的 walk-flip=0、pte-wb-FAIL=0（fill 路径内部：同函数紧邻两次 walk 一致+写回验证通过=fill 自身无内伤）。krd1-krd3（读旁路在场）：3/3 崩同指纹（β 0x409c8ffb30×2+α 0x10bc900b3c）——**读已内核化（KDM 直读）仍崩** ⇒ poison 经 kernel-mediated 读进入 VM（内核 PteRead 臂在 walk 时刻读到的 RAM 内容=poison）。
+
+**时间窗悖论（未解，本轮核心遗留）**：krewalk（panic 时）读同槽=sane；VM walk（微秒前）经内核 KDM 读=poison；-smp 1 下两读之间无他者运行——RAM 内容不可能变。剩余解释：①两读的「同一槽」假定有误（VM walk 的 l2e 读地址≠krewalk 的 l2e 读地址——VM 的 root 参数或 walk_va 与 krewalk 假定不同）；②内核 PteRead 臂的 KDM 读本身被平移层误导（S 态 KDM VA 的软 TLB 陈旧——z1 boot 解析同层）。**§续-313 收口步=PteRead 臂区间日志**：`pa∈[0x9d6e9000,0x9d700000)`（child 根/表区）的代读逐笔记 `nk4c: pterd pa raw`（CAP=64）——崩点前的实际返回值序列直接钉死①vs②。
+
+**方法论**：walk-flip/pte-wb-FAIL 静默=fill 自身清白，嫌疑收窄到「到达 fill/walk 的视图」与「内核视图」的分歧层——探针该移到**读的返回边界**（PteRead 臂）而非 walk 内部（旁路已证 walk_read 改写必灭）。
