@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-307（第一查结果：符号扩展已被 fix25 正确处理——内核绑定 root 与 ptroot 一致，根错配分支关闭；视图分歧为主假设）**：vmctl_set_addr_space 的 `value_raw as u32 as u64`（syscall.rs:2960）=模块化转换，注释明载该 bug 族（NK4-A fix25 修过 plain as u64 符扩）⇒ 内核绑定 root=0x9d6e9000 与 ptroot 一致。证据面收束=child 链 RAM 健全（krewalk x2）+绑定正确+fill 写落地（真链叶 PTE 有效）+child 仍 refault+VM 自 walk 读同链得 poison ⇒ **视图分歧（VM 的 VmDm 读特定时序返回非 RAM 内容）为主假设**，QEMU 层机制待版本变体/层内取证；pte_pa 语义核实续留。§续-308 靶=①判据采样扩样（崩率方差记录）②QEMU 矩阵 blocker 追踪③视图分歧的层内取证候选（QEMU -d 页表 dump 对照）。
+> **🛑 最新前沿＝§续-308（两读数修正：pte_pa=被填数据帧 PA 非叶槽；fill-root 探针 FR_N<3 封顶=「fill×3」是封顶假象；续-165 双句柄判据开火——双句柄在 VM 进程内部）**：②cow_exec_pf.rs:198 探针印 `pte_pa={paddr.0}`=被填数据帧 PA 非叶槽（§续-298-b leaf_now 语义双重作废：数据页首 u64=0 合法）；真实叶槽=0x9c93cff0（x2 krewalk）。①fill-root 探针 `FR_N<3` 封顶=「fill×3」是封顶非实数（实际 fill 次数 ≥3 未知）。③**续-165 双句柄判据开火**：fill-root ptroot=0x9d6e9000 vs 续-165 登记 sas-clear rebind=0x9dc38000 vs a280r1 sas-fork=0x9dc37000——三族根值并存；但 setaddr-root 探针显示 kernel 绑定=0x9d6e9000 掩码后=ptroot ✓ ⇒ **双句柄在 VM 进程内部**（fill 路径句柄 vs sas/exec 腿句柄——同一 child 两份根视图，B 绑 kernel、A 填旧表=§续-305 stale handle 的精确定位）。§续-309 靶=①VM 内部双句柄出生点（fill 的 pt 参数链 vs sas/setaddr 腿句柄源）②句柄单源化修复③§7（b 批指纹靶+marker+双 marker+host）。④矩阵 blocker 网络未复测。⑤QEMU -d/monitor 层内取证保留。
+>
+> **（上一前沿＝§续-307（第一查结果：符号扩展已被 fix25 正确处理——内核绑定 root 与 ptroot 一致，根错配分支关闭；视图分歧为主假设）**：vmctl_set_addr_space 的 `value_raw as u32 as u64`（syscall.rs:2960）=模块化转换，注释明载该 bug 族（NK4-A fix25 修过 plain as u64 符扩）⇒ 内核绑定 root=0x9d6e9000 与 ptroot 一致。证据面收束=child 链 RAM 健全（krewalk x2）+绑定正确+fill 写落地（真链叶 PTE 有效）+child 仍 refault+VM 自 walk 读同链得 poison ⇒ **视图分歧（VM 的 VmDm 读特定时序返回非 RAM 内容）为主假设**，QEMU 层机制待版本变体/层内取证；pte_pa 语义核实续留。§续-308 靶=①判据采样扩样（崩率方差记录）②QEMU 矩阵 blocker 追踪③视图分歧的层内取证候选（QEMU -d 页表 dump 对照）。
 >
 > **（上一前沿＝§续-306（setaddr-root 探针落地：12 值全 0xffffffff8/9xxxxxxx 形=root 经 i32 符号扩展；与 ptroot 同帧一致性待 vmctl_set_addr_space 用法核对）**：z20-z22 3/3 不崩（方差）；12 条 setaddr-root 全 0xffffffff8xxxxxxx 形——root=0x9d6e9000(bit31=1)经 i32 符号扩展进内核（消息字段 i32）；0x800c exec 的 setaddr-root=0xffffffff9d6e9000=fill-root ptroot 0x9d6e9000 同帧（掩码后无害与否待查）。另：fill-root 的 pte_pa 逐跑可变（0x9c93d000/0x9c93e000）⇒ **pte_pa 语义=被填数据帧 PA 非叶槽**（§续-298-b 的 leaf_now 读数语义作废——读的是数据页首 u64，0 合法）。**§续-307 第一查=vmctl_set_addr_space 对 value_raw:i32 的用法**——`as u64` 直用不带 PPN 掩码 ⇒ satp 绑垃圾根=child 在垃圾根上运行=(A) 本体 in-code 实锤（修=i32→u64 的 PA 重组）；掩码后同帧 ⇒ 回视图分歧分支。次查=pte_pa 语义核实（读 fill-root 探针源定义）+i32 root 消息字段全扫。
 >
@@ -12311,3 +12313,15 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 ## §续-307（2026-10-04·第一查结果：符号扩展已被 fix25 正确处理（`as u32 as u64`+注释在案）——内核绑定 root=0x9d6e9000 与 ptroot 一致，根错配分支关闭；视图分歧为主假设）
 
 `vmctl_set_addr_space` 的 `value_raw as u32 as u64`（syscall.rs:2960）=模块化转换保位形，注释明载该 bug 族（NK4-A fix25：plain as u64 曾符扩 ≥0x8000_0000 的根）。⇒ **内核绑定 root=0x9d6e9000 与 fill-root ptroot 一致——根错配分支关闭**。当前证据面收束：child 链 RAM 健全（krewalk x2）+内核绑定正确+fill 写多次落地（真链叶 PTE=0x2724f8df 有效）+child 仍 refault+VM 自 walk 读同链得 poison ⇒ **视图分歧（VM 的 VmDm 读在特定时序返回非 RAM 内容）为主假设**，QEMU 层机制待版本变体/层内取证。pte_pa 语义核实续留（fill-root 探针源）。判据采样继续（z20-z22 3/3 不崩=崩率方差记录在案）。
+
+## §续-308（2026-10-04·两读数修正：pte_pa=被填数据帧 PA（非叶槽，leaf_now 语义再作废）；fill-root 探针 FR_N<3 封顶=「fill×3」是封顶假象（实际次数未知）；续-165 双句柄判据开火但 setaddr-root 显示 kernel 绑定一致——双句柄在 VM 内部）
+
+**②pte_pa 语义定谳**：cow_exec_pf.rs:198 探针印 `pte_pa={paddr.0}`=**被填数据帧的 PA**（填充内容的宿主帧），非叶槽地址——§续-298-b 的 leaf_now（读 pte_pa 首 u64=0）语义双重作废（数据页首 u64=0 合法）。x2 krewalk 的真实叶槽=0x9c93cff0（=L0 0x9c93c000+510*8）与 pte_pa 无关。
+
+**①封顶假象**：fill-root 探针 `FR_N.fetch_add()<3` 封顶——「fill×3」=封顶非实数（实际 fill 次数 ≥3 未知，后续 fill 不可见）——refault 循环的规模被低估。探针源注释还记载 §续-165 判据：「填页句柄的 root——对账 sas-clear 的 rebind 值（0x9dc38000）；若此处印 0x9dc39000 族=双句柄实锤」。
+
+**③双句柄判据开火 vs 绑定一致并存**：本批 fill-root ptroot=0x9d6e9000；续-165 登记 sas-clear rebind=0x9dc38000 族、a280r1 sas-fork=0x9dc37000——**三族根值并存**（续-165 判据开火）；但 setaddr-root 探针（§续-306）显示 kernel 绑定=0x9d6e9000 掩码后=ptroot ✓。⇒ **双句柄在 VM 进程内部**（fill 路径的 Paging 句柄 vs sas 腿的句柄/值——同一个 child 在 VM 内有两份根视图），非 kernel 边界错配。这正是 §续-305「stale handle」模型的精确定位：fill 用 A 句柄、sas/exec 用 B 句柄，B 绑 kernel、A 填旧表。
+
+**§续-309 靶**：①定位 VM 内部双句柄的出生点——fill 路径的 pt 从哪来（cow_exec_pf fill 的调用方参数链）vs sas/setaddr 腿的句柄来源；②同 pfn 双键/双句柄的统一性修复（句柄单源化）；③成修后 §7（b 批指纹靶+marker+双 marker+host）。
+
+**④矩阵 blocker**：网络仍不通（本轮未复测）。⑤QEMU -d/monitor 层内取证候选保留。
