@@ -73,8 +73,13 @@ Kernel=SMP+BKL，用户服务器单线程事件循环）。三条终目标：
 - 真机 aarch64：**33 passed + 1 failed（唯一=t_memcpy.c:99 D1 台账）+ 2 无结果行（D3b 相关台账）**
   （36 用例中 34 出结果行）。
 - 已知台账（都不算新缺陷）：
-  - **D1**：`memcpy_basic` 对 NetBSD random 期望串在 picolibc 永不通过（p5 探针定谳）→ 需**口径决策**
-    （预期失败清单 vs BSD random 移植）。
+  - **D1**：`memcpy_basic` 对 NetBSD random 期望串失败（p5 探针定谳 picolibc random=LCG `_rand_next`
+    与 BSD 序列必异）→ **已非口径决策，真源已定位**（§续-279n 末尾取证）：BSD random 真源 =
+    `minix3/common/lib/libc/stdlib/random.c`（530 行，randtbl/TYPE_3/DEG_3 全在；lib/libc/stdlib/
+    Makefile.inc 引用的 random.c 缺件即由此补）。修法=random/srandom 接管进 atf-c-compat
+    （picolibc 两符号各居单符号专属成员 libc_stdlib_{random,srandom}.c.o，命令行对象抢占即达，
+    sbrk/sysconf/strerror 先例同形；t_memcpy 依赖 random+MD5 两口，MD5 已在链）。host 侧可先用
+    t_memcpy 的 runTest+MD5 逻辑对 goodResult `7b405d24bc03195474c70ddae9e1f8fb` 做离线对账再上机。
   - ~~**strerror 族 ×4**~~：**已清零**（§续-279n：compat 全接管 strerror/strerror_r/strerror_l 三口 +
     sys_nerr 边界差一修正，sys_nerr=135 与 C compat_errlist.c:153 公式同形；易错模式=边界必须按真源
     公式取、探针必须覆盖边界双侧、裸名引用必须由裸名定义满足——详 WORKLOG §续-279n）。
@@ -160,7 +165,8 @@ bash os/kernel-image/check-layout.sh all                                        
 3. **若探针/复现到手**：钉写者 → 对位 C（`minix3/sys/kern/` + `pagetable.c` + vm `fork.c`
    map_proc_copy）找 happens-before 偏离 → 坐实 → 成修 → §7 验收（≥3 轮证无+两 marker+host 全绿）。
 4. **若拿不到**（工具缺口仍在）：riscv 侧保持 (A) open，同轮做不依赖 riscv 的确定收益：
-   D1 口径决策 → D3b（PM exit/event 唤醒链）→ aarch64 门全绿 → 然后继续
+   D1 真源直译（random 接管，真源 `minix3/common/lib/libc/stdlib/random.c` 已定位，见 §四）→
+   D3b（PM exit/event 唤醒链）→ aarch64 门全绿 → 然后继续
    回到 2 的变体尝试（不同 QEMU 版本/不同 smp 度/关定时器扰动的对照矩阵）。
 5. **结案滚除义务在你手里**：(A) 成修或结案时，全树 `nk4a:`/`nk4c:` 探针一次性滚除
    （内核 pf-exit/pfa/oomrt + VM vmm-h/brk/pf-region + 其余套件期探针），WORKLOG 已有登记。
@@ -172,7 +178,7 @@ bash os/kernel-image/check-layout.sh all                                        
 - **(A) 根因未坐实**：无指令级定性，无成修；上面所有「嫌疑面」都是候选不是结论。
 - **riscv 从未在 2048 池态 boot 过**（§续-279e-note 明文）；riscv 测试 ELFs 已换真 sbrk 腿但
   **从未在 riscv 上机跑过**——首轮 riscv boot 读数若与旧取证不同，先排除这两个变量。
-- **D3b/尾部 2 案**：都在 §四台账，未动码；D1 待口径决策（strerror ×4 已在 §续-279n 清零）。
+- **D3b/尾部 2 案**：都在 §四台账，未动码；D1 真源已定位未动码（接管方案与离线对账法见 §四）。
 - **诊断 mark 残留**：见 §八.5，结案前统一滚除。
 - 收官判定：三终目标逐项拿**当前态**证据（不许引用历史读数），才 `/goal` complete。
 
