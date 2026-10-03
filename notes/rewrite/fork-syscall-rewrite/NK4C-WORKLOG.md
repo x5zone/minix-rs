@@ -12325,3 +12325,7 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **§续-309 靶**：①定位 VM 内部双句柄的出生点——fill 路径的 pt 从哪来（cow_exec_pf fill 的调用方参数链）vs sas/setaddr 腿的句柄来源；②同 pfn 双键/双句柄的统一性修复（句柄单源化）；③成修后 §7（b 批指纹靶+marker+双 marker+host）。
 
 **④矩阵 blocker**：网络仍不通（本轮未复测）。⑤QEMU -d/monitor 层内取证候选保留。
+
+## §续-309（2026-10-04·fill 腿分治发现：PF 腿=proc.mem_parts pt 单源 ✓；崩窗 fill 实走 memreq/do-memory 腿=双句柄嫌疑点，其 root 来源待审）
+
+fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs:1484），pt 来自 `proc.mem_parts_mut()`（per-process 单源 ✓，:1470）；②**memreq/do-memory 腿**=exec 装载段数据的 VM 服务腿（崩窗串口的 `do-memory enter`+`memreq target=32804 start=0x40000000` 即此）——**崩窗的 fill-root ×3（FR_N<3 封顶内）正是这条腿打的**（时序：do-memory → fill-root → …）。②腿的 root/handle 来源与①是否同源=双句柄出生点（§续-309 余项）：审 do-memory 处理器（vm_server.rs:1269 do-memory 探针邻域）的 pt/root 参数链，对照 exec 拆旧建新时序（旧根释放→新根绑 kernel→memreq 若持旧根句柄即写旧表=reuse-DATA+leaf 差异全解释）。纯取证+文档零生产码改动。
