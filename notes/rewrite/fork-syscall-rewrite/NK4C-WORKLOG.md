@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-277b（2026-10-03·目标③首案达成）**：CodeReview P0（struct stat 152B/120B 越界+全错位）一击命中 §续-277 的 NULL-jump 靶心；lstat 加布局翻译层（双侧偏移 _Static_assert 编译期钉死）后 **t_memchr 真机 `passed`**；正式门 `os/qemu-tests/test-atf-aarch64.sh` 端到端 PASS；P1×2/P2×5 全修（pfa 封顶、播种架构门、kmsg.h 单点、access 真判 x 位、semihost POSIX 名抢定义、定点杀）。目标③现状：aarch64 首案 pipeline 上机 PASS（非 586 套件全部）；下一步续-278=首批 18 案全跑（rc 多行 exec+逐案判据）与 fork/exec/VFS 桥选型。host 1402/0、xtask 13/13。(A) riscv 仍 open。
+> **🛑 最新前沿＝§续-277c（2026-10-03·对 277b 评审再修：防线坐实+门判据加固）**：CodeReview(84398284a) 判 1 P1+5 P2——P1=文档声称的 _Static_assert 防线在赋值式重构后已不存在（防线虚设+承诺落空）→ 补真：minix-types 新增 host 对账测试 `test_c_bridge_fs_stat_offsets_match_rust_layout`（读 posix-stubs.c 的 FS_ST_* 宏逐条 assert_eq offset_of!，任一侧漂移即红；riscv 腿 104B 窄字段使目标侧 assert 不可双架构共存，故对账放 Rust↔C 宏之间）；P2 全修（lseek 假成功 0→-1+ENOSYS、read errno 兑底、门改 15s 收尾窗口按全部结果行终集定案防多案掩盖、探针源 git mv 入 tools/atf-c-compat/probes/ 与门同源+失败 WARN、harness 按 WORK 唯一串杀不依赖 $! 语义）。验证：门新判据端到端 PASS；双 arch 18/18；host **1403/0**（+1 对账测试）；xtask 13/13。目标准态不变：③首案 pipeline PASS；下一步续-278=首批 18 案全跑+fork/exec 桥选型。
+>
+> **（上一前沿＝§续-277b：P0 stat 翻译层修复→t_memchr 真机 `passed`+正式门 PASS）**：CodeReview P0（struct stat 152B/120B 越界+全错位）一击命中 §续-277 的 NULL-jump 靶心；lstat 加布局翻译层（FS 写落本帧 raw[152] 再逐字段赋值；FS 侧偏移由 §续-277c host 对账测试钉，目标侧宽度编译器推导）后 **t_memchr 真机 `passed`**；正式门 `os/qemu-tests/test-atf-aarch64.sh` 端到端 PASS；P1×2/P2×4 修（pfa 封顶、播种架构门、kmsg.h 单点、access 真判 x 位、semihost POSIX 名抢定义、定点杀）。
 >
 > **（上一前沿＝§续-277：上机腿首次打通+五环毒链逐剥，详下文）**：C 测试真机 exec→atf 入 main→lstat 过 VFS 门；五环毒链逐剥（内核 NoReply panic→补三腿 EDONTREPLY 合法臂对位 C system.c:76；裸_exit 吞输出→exit(main())；Debian 加固双毒 paciasp/__stack_chk_init→关 -mbranch-protection/-fno-stack-protector；TLS 初始化 :got: 对 A 型符号不可靠致 tpidr 垃圾→改 adrp+字面量池；lstat 占位→接 VFS_LSTAT 真腿）；p1/p2/p3 桥面哨兵全过。新易错模式：pipefail×grep -q×大输出=SIGPIPE-141 假失败（smoke 修复）。本 commit 含 os/ 生产码改动；host 1402/0、layout PASS、双 arch 18/18。
 >
@@ -11753,7 +11755,7 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 > 对 commit d33c24fd7 的 CodeReview 产出 1 P0 + 2 P1 + 5 P2；P0（struct stat 越界/错位）直接命中 §续-277 登记的“未坐实 NULL-jump 靶心”——评审把真机现场（lstat 回执后公共链跳 0，-l 同炸非 body）与源码事实（我方 FS 固定写 152B minix-types Stat；picolibc aarch64 struct stat 120B 且偏移全不同）串联后坐实：越界 32B 砸掉 saved x29/x30 = ret 到垃圾 = elr/far/lr 全零。**修复后真机立即出 `passed`——靶心定谳，非猜修命中而是评审推导+验证闭环。**
 
 ### 逐条 fix-status
-- **P0 已修**（posix-stubs.c lstat）：FS 写落本帧 `raw[152]`，再逐字段翻译进 picolibc 120B 形；**两侧偏移全 `_Static_assert` 编译期钉死**（首次编译即抓到我对 st_blksize/st_blocks 的猜测错位——探针实测（nm -S 对编译期数组尺寸）定谳 picolibc aarch64 走 __linux__ 分支：blksize@56/blocks@64，修正 assert 后链成）。此即防线自验证：任何一侧头文件漂移 = 编译失败非静默。
+- **P0 已修**（posix-stubs.c lstat）：FS 写落本帧 `raw[152]`，再逐字段翻译进 picolibc 形；开刀时用的是双侧 `_Static_assert` 钉偏移（首编译即抓到 st_blksize/st_blocks 猜测错位，探针 nm -S 实测定谳 picolibc aarch64 走 __linux__ 分支 blksize@56/blocks@64）；**§续-277c 演进**：riscv 腿探针实测另一形（104B 窄字段）使目标侧 assert 不可双架构共存→改逐字段 C 赋值（目标侧编译器自动推导）+ FS 侧改由 host 对账测试钉（见 §续-277c P1-1）。
 - **P1-1 已修**（trap_dispatch.rs）：pfa mark 加 `PFA_N < 40` 计数封顶（同文件探针纪律对齐）。
 - **P1-2 已修**（xtask image.rs）：播种收紧为 `ATF_BOOT_LEG_READY=["aarch64"]` 白名单双条件（riscv 出生腿未解锁不播，消除“riscv boot 跑已知坏二进制”退化）。
 - **P2-2 已修**：新 `tools/atf-c-compat/kmsg.h` 单点 struct kmsg（sys-bridge.c/posix-stubs.c 共用，杜绝跨 TU 手抄漂移）。
@@ -11769,6 +11771,24 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ### 回归
 - host 4 包集 1402/0；xtask 13/13；test-atf-aarch64.sh 全 build 端到端 PASS；双 arch 18/18 链面（下笔命令重验）。本轮含 os/ 生产码改动（pfa 封顶、xtask 门、新测试脚本、smoke 脚本修复前批）。
+
+---
+
+## §续-277c（2026-10-03·对 277b 的 CodeReview 再修：防线坐实（host 对账测试）+门判据加固（终集定案）+占位诚实化）
+
+> CodeReview（explicit_target=84398284a）判 1 P1 + 5 P2；逐条 fix-status 如下。评审同时独立确认了 P0 修复本体的全部 14 项 FS 侧常量与 stat.rs 逐项一致、消息三 lane 与 StatPathPayload/VFS 解析点同形、pfa 封顶全局单例语义、播种门类型成立——修复主体无回归。
+
+- **P1-1 已修（防线从虚设到存在）**：277b 交付里 `_Static_assert` 声称与实际不符（赋值式重构删了 assert，banner 仍承诺“编译失败非静默”）。真防线落地为 minix-types 宿主测试 `test_c_bridge_fs_stat_offsets_match_rust_layout`（types/stat.rs）：读 `tools/atf-c-compat/posix-stubs.c` 的 14 条 `FS_ST_*`/`FS_STAT_SIZE` 宏值逐条 `assert_eq!` 到 `offset_of!(Stat, …)`/`size_of`——**Rust↔C 宏两侧漂移都会红**（目标侧宽度的对账由 C 编译器本身保证：赋值式两腿 18/18 实链）。路径经 CARGO_MANIFEST_DIR 上溯三级（首跑因两级错挂，已修）。
+- **P2-2 已修**（posix-stubs.c）：lseek 占位返 0=假成功→改 `errno=ENOSYS; return -1`（诚实占位纪律：0 是合法偏移会骗过 SEEK_END 取长类用例）；read 失败且 errno==0 时兑底 ENOSYS（_read 占位不置 errno，POSIX 读败契约要求 errno 有效）。
+- **P2-3 已修**（test-atf-aarch64.sh）：旧判据“首个 passed 即 break”在扩套件后会掩盖后续 failed/broken——改为首次结果行命中后继续等 15s 收尾窗口，按全量结果行终集定案（failed/broken 优先暴露；新增 SKIPPED-ONLY 分维）；判据正则锤定行首 `^(passed|failed|broken|skipped)`（与 ^failed 对称，防注释文本假绿）。
+- **P2-4 已修**：探针源 git mv `tmp/nk4a/atfprobe/`→`tools/atf-c-compat/probes/`（正式门不再依赖 scratch 目录）；探针构建失败从 `|| true` 静默改为显式 WARN（哨兵缺件必须看得见）。
+- **P2-5 已修**（atf_a64_run.sh）：`setsid … &` 下 `$!` 在带 job control 的调用方会打到已退的 setsid——补 `pkill -f "$WORK/serial.log"`（WORK 含唯一 tag，既不误伤并行任务也不依赖 $! 语义）。
+- **P2-1（评审建议的 header 降调）不采**：评审称“门不重建内核故 NoReply 回归捕获 claim 存疑”——实测 `xtask image` 内含逐包 `cargo build --release -p …`（Action::Cargo 序列），内核源码变会触发重编入镜像，claim 成立（评审据 Action 拷贝行误判；此处登记以正视听）。
+- WORKLOG 同步：banner 与 277b P0 条的 `_Static_assert` 措辞已改准（历史小节保留叙事并在 277c 标注演进链）。
+
+### 验证
+- 新判据门全 build 端到端 **PASS rc=0**；双 arch 18/18 重链全绿；host 4 包集 **1403/0**（+1 对账测试）；xtask 13/13；bash -n 两脚本过。
+- 纪律：本步含 os/ 宿主测试与脚本改动（minix-types 测试仅宿主面，生产码零改动）；(A) 仍 open。
 
 
 

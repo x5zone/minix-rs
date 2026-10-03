@@ -97,4 +97,46 @@ mod tests {
         assert_eq!(offset_of!(Stat, st_gen), 136);
         assert_eq!(offset_of!(Stat, st_spare), 140);
     }
+
+    /// NK4-C 续-277c（CodeReview P1-1）：目标③ C 桥（tools/atf-c-compat/
+    /// posix-stubs.c 的 lstat 翻译层）把本布局的字节偏移手抄成了
+    /// `FS_ST_*` 宏——本测试读那份 C 源逐条对账：任何一侧改动（字段序/
+    /// 宽度/宏值）都会让这里变红，而不是让 C 侧静默读垃圾。
+    /// 路径从 crate 位置推导（os/libs/minix-types 上溯三级 = 仓根），仅宿主
+    /// 测试跑（#[cfg(test)] 天然不进生产构建）。
+    #[test]
+    fn test_c_bridge_fs_stat_offsets_match_rust_layout() {
+        use std::format;   // no_std 预lude 不带 format!，宿主测试显式导入
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../../tools/atf-c-compat/posix-stubs.c");
+        let src = std::fs::read_to_string(path).expect("posix-stubs.c readable from crate dir");
+        let want: &[(&str, usize)] = &[
+            ("FS_ST_DEV", offset_of!(Stat, st_dev)),
+            ("FS_ST_MODE", offset_of!(Stat, st_mode)),
+            ("FS_ST_INO", offset_of!(Stat, st_ino)),
+            ("FS_ST_NLINK", offset_of!(Stat, st_nlink)),
+            ("FS_ST_UID", offset_of!(Stat, st_uid)),
+            ("FS_ST_GID", offset_of!(Stat, st_gid)),
+            ("FS_ST_RDEV", offset_of!(Stat, st_rdev)),
+            ("FS_ST_ATIM", offset_of!(Stat, st_atim)),
+            ("FS_ST_MTIM", offset_of!(Stat, st_mtim)),
+            ("FS_ST_CTIM", offset_of!(Stat, st_ctim)),
+            ("FS_ST_SIZE", offset_of!(Stat, st_size)),
+            ("FS_ST_BLOCKS", offset_of!(Stat, st_blocks)),
+            ("FS_ST_BLKSIZE", offset_of!(Stat, st_blksize)),
+            ("FS_STAT_SIZE", size_of::<Stat>()),
+        ];
+        for (name, offset) in want {
+            let needle = format!("#define {name}");
+            let line = src
+                .lines()
+                .find(|l| l.trim_start().starts_with(needle.as_str()))
+                .unwrap_or_else(|| panic!("{name} define missing in posix-stubs.c"));
+            let value: usize = line
+                .split_whitespace()
+                .nth(2)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{name} value unparsable: {line}"));
+            assert_eq!(value, *offset, "{name} drifts from Rust Stat layout");
+        }
+    }
 }

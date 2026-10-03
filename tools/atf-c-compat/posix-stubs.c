@@ -187,8 +187,16 @@ char *mkdtemp(char *tmpl) { errno = ENOSYS; (void)tmpl; return NULL; }
 extern int _write(int fd, const void *buf, size_t len);
 extern int _read(int fd, void *buf, int len);
 ssize_t write(int fd, const void *buf, size_t len) { return _write(fd, buf, len); }
-ssize_t read(int fd, void *buf, size_t len) { return _read(fd, buf, len > 0x7fffffff ? 0x7fffffff : (int)len); }
-off_t lseek(int fd, off_t off, int whence) { (void)fd; (void)off; (void)whence; return 0; }
+ssize_t read(int fd, void *buf, size_t len) {
+    /* CodeReview 续-277b P2-2：_read 占位不置 errno，POSIX 读失败契约要求
+     * errno 有效——陈旧值会指向日志里无关的早期失败，故为 0 时兑底 ENOSYS。 */
+    int r = _read(fd, buf, len > 0x7fffffff ? 0x7fffffff : (int)len);
+    if (r < 0 && errno == 0) errno = ENOSYS;
+    return r;
+}
+/* lseek 占位不能返 0（0 是合法偏移=假成功，SEEK_END 取长类用例会被静默骗过）：
+ * 诚实报 ENOSYS（CodeReview 续-277b P2-2）；真 VFS lseek 桥属③后续大件。 */
+off_t lseek(int fd, off_t off, int whence) { (void)fd; (void)off; (void)whence; errno = ENOSYS; return (off_t)-1; }
 int unlink(const char *path) { (void)path; errno = ENOSYS; return -1; }
 int remove(const char *path) { (void)path; errno = ENOSYS; return -1; }
 

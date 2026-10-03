@@ -59,9 +59,13 @@ if [ "${ATF_A64_SKIP_BUILD:-0}" != "1" ]; then
         echo "FAIL: build-atf-test.sh (t_memchr) failed — see below"; tail -6 "$WORK/build.log"; exit 1
     }
     for p in p1 p2 p3; do
-        cp "$ROOT/../tmp/nk4a/atfprobe/$p.c" "$WORK/$p.c" 2>/dev/null || true
-        ( cd "$ROOT/.." && bash tools/build-atf-test.sh "$WORK/$p.c" aarch64 ) \
-            >>"$WORK/build.log" 2>&1 || true
+        # 探针源与门同源（CodeReview 续-277b P2-4：不依赖 tmp/ scratch）；
+        # 失败不再静默——哨兵缺件必须看得见（rc 无条件 exec /tests/p*）。
+        src="$ROOT/../tools/atf-c-compat/probes/$p.c"
+        if [ ! -f "$src" ] || ! ( cd "$ROOT/.." && bash tools/build-atf-test.sh "$src" aarch64 ) \
+                >>"$WORK/build.log" 2>&1; then
+            echo "WARN: 桥面哨兵 $p 未能构建/播种——rc 将报 not found（不阻断本门主判据）"
+        fi
     done
     echo "assembling image (xtask image --arch aarch64 --release)…"
     ( cd "$ROOT" && cargo run -q -p xtask -- image --arch aarch64 --release ) \
@@ -103,6 +107,11 @@ trap 'kill_qemu; cleanup' EXIT
 
 # ── Stage 3: wait for the ATF result line; panic is a hard fail ──────────
 verdict=""
+# 判据纪律（CodeReview 续-277b P2-3）：多 test case 下“首个 passed 即定案”
+# 会掩盖后续 failed/broken——首次结果行命中后再等 15s 收尾窗口，按全部
+# 结果行的最终集合定案（ATF 每案各写一行 passed/failed；扩套件后天然覆盖）。
+RESULT_LINE_RE='^(passed|failed|broken|skipped)'
+first_hit_waited=0
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
     if [ -f "$SERIAL_LOG" ]; then
         # 直读文件（grep -qa，binary-as-text）：`strings | grep -q` 在
@@ -110,11 +119,18 @@ for _ in $(seq 1 "$TIMEOUT_BOOT"); do
         if grep -qa 'kernel panic\|PANIC' "$SERIAL_LOG" 2>/dev/null; then
             verdict="PANIC"; break
         fi
-        if grep -qa "^failed" "$SERIAL_LOG" 2>/dev/null; then
-            verdict="FAILED"; break
-        fi
-        if grep -qa "$RESULT_MARKER" "$SERIAL_LOG" 2>/dev/null; then
-            verdict="PASSED"; break
+        if grep -qaE "$RESULT_LINE_RE" "$SERIAL_LOG" 2>/dev/null; then
+            if [ "$first_hit_waited" -ge 15 ]; then
+                if grep -qaE '^failed|^broken' "$SERIAL_LOG" 2>/dev/null; then
+                    verdict="FAILED"
+                elif grep -qa '^passed' "$SERIAL_LOG" 2>/dev/null; then
+                    verdict="PASSED"
+                else
+                    verdict="SKIPPED-ONLY"
+                fi
+                break
+            fi
+            first_hit_waited=$((first_hit_waited + 1))
         fi
     fi
     sleep 1
@@ -129,8 +145,12 @@ elif [ "$verdict" = "PANIC" ]; then
     grep -a -m4 -A3 "PANIC" "$SERIAL_LOG" | cat -v || true
     exit 1
 elif [ "$verdict" = "FAILED" ]; then
-    echo "FAIL: ATF reported 'failed' for memchr_basic"
-    grep -a -m8 -B2 "^failed" "$SERIAL_LOG" | cat -v || true
+    echo "FAIL: ATF reported 'failed'/'broken' for memchr_basic"
+    grep -a -m8 -B2 -E '^failed|^broken' "$SERIAL_LOG" | cat -v || true
+    exit 1
+elif [ "$verdict" = "SKIPPED-ONLY" ]; then
+    echo "FAIL: only 'skipped' result lines on console (no passed/failed) — harness mismatch?"
+    grep -a -m8 -E '^skipped' "$SERIAL_LOG" | cat -v || true
     exit 1
 else
     echo "FAIL: no ATF verdict within ${TIMEOUT_BOOT}s (marker '$RESULT_MARKER' unseen)"

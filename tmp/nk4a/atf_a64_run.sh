@@ -18,8 +18,11 @@ setsid qemu-system-aarch64 \
   >"$WORK/qemu.log" 2>&1 &
 QPID=$!
 sleep "$WAIT"
-# 定点杀（CodeReview 续-277b P2-5：禁裸 pkill，避免误伤并行任务的 qemu）
+# 定点杀（CodeReview 续-277b P2-5）：$! 对 setsid 在带 job control 的调用方会
+# 打到已退的 setsid 而非 qemu——改按 WORK 路径（含唯一 tag）匹配 cmdline 杀，
+# 既不会误伤并行任务的 qemu，也不依赖 $! 语义；保留 $QPID 作为补刀。
 kill "$QPID" 2>/dev/null || true
+pkill -f "$WORK/serial.log" 2>/dev/null || true
 wait "$QPID" 2>/dev/null || true
 echo "=== ATF evidence ==="
 strings "$WORK/serial.log" | grep -nE "atf|Pass|Fail|ERROR|memchr|warning|unsupported|PANIC" | grep -v "cat /etc/rc" | head -20
