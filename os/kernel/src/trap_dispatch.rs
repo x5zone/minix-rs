@@ -2026,11 +2026,13 @@ unsafe fn riscv64_pagefault_body(
                     Console::write_str("\n");
                 }
                 if ptroot >= 0x8000_0000 && ptroot < 0xA000_0000 {
+                    // 续-305：child 链走 ptroot（v3 的 pa=ptroot 被
+                    // `let mut pa = root` 重绑定覆盖=同义反复误读根因，本笔
+                    // 改为绑定点择根——ptroot 有效即走 child 链）。
                     pa = ptroot;
                 } else {
                     Console::write_str("krewalk: ptroot out-of-range\n");
                 }
-                let mut pa = root;
                 let shifts = [30u64, 21, 12];
                 for (lvl, sh) in shifts.iter().enumerate() {
                     let idx = (walk_va >> sh) & 511;
