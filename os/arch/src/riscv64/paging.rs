@@ -227,6 +227,15 @@ fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
 /// a valid 8-byte aligned PTE address.
 #[inline]
 unsafe fn read_pte_dm(paddr: u64, channel: PteChannel) -> u64 {
+    // 续-311 [ARCH: riscv-vmddm]：VmDm 槽读走内核代读钩子（VM 注册后），
+    // 绕开 QEMU 平移层对 DM 窗 VA 的时序性误导；KernelDm（S 态 KDM 直读，
+    // krewalk 实证无此症状）与未注册态维持直读。
+    #[cfg(all(target_arch = "riscv64", not(test)))]
+    if matches!(channel, PteChannel::VmDm) {
+        if let Some(v) = vmdm::read(paddr) {
+            return v;
+        }
+    }
     core::ptr::read_volatile(channel_to_ptr(paddr, channel))
 }
 
@@ -282,6 +291,37 @@ enum WalkResult {
     Huge2M(PhysBytes, PageFlags),
     /// Entry not present at some intermediate level.
     NotPresent,
+}
+
+// ── NK4-C 续-311 内核代读旁路（[ARCH: riscv-vmddm]；(A) 结案时裁决去留）──
+// VM 的 VmDm 槽读在特定时序被 QEMU 平移层误导（§续-291..310 穷举收口：
+// RAM 恒净/链健全/绑定正确，而 VM 读到 poison）。本钩子让 VM 注册代读
+// fn（实现=gateway kernel-call，内核 S 态 KDM 直读，绕开平移层），
+// read_pte_dm 的 VmDm 腿改经此。None=直读（未注册/测试态）。KernelDm
+// （内核自读）不经此——S 态 KDM 直读无此症状（krewalk 实证）。
+#[cfg(all(target_arch = "riscv64", not(test)))]
+pub mod vmdm {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    type VmDmRead = fn(paddr: u64) -> u64;
+    static VMDM_READ: AtomicUsize = AtomicUsize::new(0);
+
+    /// VM init 注册（write-once，先于任何子进程 walk；契约同
+    /// pt_alloc::register）。
+    pub fn register_read(f: VmDmRead) {
+        VMDM_READ.store(f as usize, Ordering::Relaxed);
+    }
+
+    /// 钩子未注册返回 None（调用方回落直读）。
+    pub(crate) fn read(paddr: u64) -> Option<u64> {
+        let f = VMDM_READ.load(Ordering::Relaxed);
+        if f == 0 {
+            return None;
+        }
+        // SAFETY: 同型 fn 由 register_read 存入；注册先于任何 walk，
+        // VM 单线程无写竞争。
+        Some(unsafe { (core::mem::transmute::<usize, VmDmRead>(f))(paddr) })
+    }
 }
 
 /// Walk the 3-level Sv39 table read-only, returning the leaf PTE address

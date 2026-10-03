@@ -282,6 +282,11 @@ impl VmServer {
         if !minix_arch::pt_alloc::is_free_registered() {
             minix_arch::pt_alloc::register_free(crate::alloc_page::vm_pt_free);
         }
+        // 续-311 内核代读旁路：walk_read 的 VmDm 槽读改经 kernel-call 由
+        // 内核 KDM 直读（riscv-only，随 (A) 结案裁决去留）。时机对齐
+        // pt_alloc::register——先于任何 Paging walk。
+        #[cfg(all(target_arch = "riscv64", not(test)))]
+        crate::bootmark::register_vmdm_read();
 
         // Skip init_vm_self_pt() in test builds — tests use MockPaging
         // (in-memory mapping table, no page table to initialize), while the

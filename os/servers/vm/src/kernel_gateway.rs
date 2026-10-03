@@ -455,7 +455,7 @@ impl<T: KernelCallTransport> KernelGateway for TrapKernelGateway<T> {
 #[cfg(test)]
 pub(crate) const SYS_VMCTL_CALL: i32 = 43;
 #[cfg(not(test))]
-const SYS_VMCTL_CALL: i32 = 43;
+pub(crate) const SYS_VMCTL_CALL: i32 = 43;
 /// SVMCTL_PARAM sub-commands (kernel/src/vm.rs VmCtlParam TryFrom: 14/15;
 /// C com.h VMCTL_MEMREQ_GET / VMCTL_MEMREQ_REPLY).
 const VMCTL_MEMREQ_GET: i32 = 14;

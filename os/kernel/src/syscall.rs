@@ -2578,6 +2578,23 @@ fn dispatch_vmctl(
         // C: arch_do_vmctl.c:48-50 → setcr3(p, SVMCTL_PTROOT, SVMCTL_PTROOT_V)
         // (see vmctl_set_addr_space for the full 5-step C mapping and
         // the vm_running C-bug correction note)
+        // 续-311 内核代读旁路（[ARCH: riscv-vmddm]）：KDM 直读 m1p1 处
+        // u64 回填 m1p1。仅 riscv64 生产形态使用（VM 的 VmDm 读钩子）。
+        VmCtlParam::PteRead => {
+            #[cfg(all(target_arch = "riscv64", not(test)))]
+            {
+                const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
+                let v = unsafe { ((KDM + pa) as *const u64).read_volatile() };
+                unsafe { msg.m_u.m_m1.m1p1 = v; };
+                KcallResult::Ok(0)
+            }
+            #[cfg(not(all(target_arch = "riscv64", not(test))))]
+            {
+                let _ = msg;
+                KcallResult::Ok(ENOSYS)
+            }
+        }
         VmCtlParam::SetAddrSpace => {
             let r = vmctl_set_addr_space(proc_table, target_nr, value_raw, msg);
             nk4a_flags_mark("setaddr", proc_table, target_nr);
