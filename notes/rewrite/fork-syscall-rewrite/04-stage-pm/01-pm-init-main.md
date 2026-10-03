@@ -26,7 +26,7 @@
 
 ### 1.1 PM 在启动链中的位置：进程语义权威
 
-boot image 里的 PM 与 VFS 走完三步才轮到本档的主题：**内核**在 boot 循环里给它们登记槽位与 endpoint（`01-stage-kernel/06-proc-init-boot-proc.md`），**VM** 解析并装载它们的 ELF、建好地址空间（`minix3/minix/servers/vm/main.c:497-512` + `:331-417`），**RS** 给它们授权并准许调度（`minix3/minix/servers/rs/main.c:287/376/379`；四层归因见 `../00-master-plan/README.md`），之后 `main()` 才拿到第一条指令。PM 是**第一个获得"进程语义"的用户态服务**——它是进程表（`mproc`）的唯一初始来源、信号管理器（`process_ksig`）、进程生命周期的裁判。其他服务（VFS/VM）的进程表都从 PM 这里同步。
+boot image 里的 PM 与 VFS 要经过三个不同的执行者才能拿到第一条指令：**内核**在 boot 循环里给它们登记槽位与 endpoint（`01-stage-kernel/06-proc-init-boot-proc.md`），**VM** 解析并装载它们的 ELF、建好地址空间（`minix3/minix/servers/vm/main.c:init_vm` 按数组序遍历 + `exec_bootproc` 装载），**RS** 给它们授权并准许调度（`minix3/minix/servers/rs/main.c:sef_cb_init_fresh` 里的 `sys_privctl(SYS_PRIV_SET_SYS)` → `sched_init_proc` → `SYS_PRIV_ALLOW`；四层归因与六张次序见 `../00-master-plan/README.md`），之后 `main()` 才拿到第一条指令。PM 是**第一个获得"进程语义"的用户态服务**——它是进程表（`mproc`）的唯一初始来源、信号管理器（`process_ksig`）、进程生命周期的裁判。其他服务（VFS/VM）的进程表都从 PM 这里同步。
 
 这带来一个核心问题：**PM 的初始状态从哪来？** 内核知道全部 boot 进程的清单（名字、槽位、endpoint、内存布局），PM 不知道——它必须向内核"要"这份清单（`sys_getimage`），而不是自己造。这是本档全部内容的主线：
 

@@ -32,9 +32,9 @@ RS（Reincarnation Server，复活服务器）是 Minix3 的 **root system proce
 
 - `RS_PROC_NR = 2`（`minix3/minix/include/minix/com.h:RS_PROC_NR`，用户进程编号区间 0~11：PM=0、VFS=1、RS=2、MEM=3、SCHED=4、TTY=5、DS=6、MIB=7、VM=8、PFS=9、MFS=10、INIT=11）
 - `ROOT_SYS_PROC_NR = RS_PROC_NR`（`com.h:77`）——"root system process"即 RS：系统服务这一族进程的"根"，其余服务都由它派生/管理
-- boot 映像登记顺序（`kernel/table.c:44-64`）：kernel 任务 5 个（asyncm/idle/clock/system/kernel）→ **DS 第一（`table.c:52`）→ RS 紧随其后（`table.c:53`）** → PM/SCHED/VFS/memory/tty/mib/vm/pfs/mfs/init
+- boot 映像登记顺序（`minix3/minix/kernel/table.c:image` 数组）：kernel 任务 5 个（asyncm/idle/clock/system/kernel）→ **DS 第一 → RS 紧随其后** → PM/SCHED/VFS/memory/tty/mib/vm/pfs/mfs/init
 
-为什么 DS 必须在 RS 之前？`kernel/table.c:36-40` 的注释说明了顺序的语义：**表内顺序 = NOTIFY 消息投递优先级**。DS 是数据存储服务（系统事件异步发布依赖它，先启动保证"发布事件的服务"先于"订阅事件的服务"）；RS 紧随其后，因为它周期性地向系统服务投递 ping（心跳）消息（见 `07-rs-period-heartbeat.md`），需要高通知优先级。
+DS 为什么排在 RS 前面？`minix3/minix/kernel/table.c` 的表头注释给的理由是"数组顺序就是 NOTIFY 消息的投递优先级，DS 必须排第一才能可靠异步发布系统事件，RS 紧随其后以便心跳 ping 优先投递"。**这句话在 Minix3 内核里找不到执行它的代码**：接收方同时挂着多个来源的通知时，`minix3/minix/kernel/proc.c:mini_receive` 叫 `has_pending` 从低位往高位扫 `s_notify_pending` 位图，而 priv id 由 `minix3/minix/include/minix/priv.h:static_priv_id`（`NR_TASKS + proc_nr`）给出，所以真正的挑选序是 **proc 号升序**：PM(0) VFS(1) RS(2) memory(3) SCHED(4) TTY(5) **DS(6)** MIB(7) VM(8) PFS(9) MFS(10) INIT(11)——DS 在这里排第七，与它"数组第一"无关。minix-rs 忠实复刻了位图升序（`os/kernel/src/ipc.rs:pick_allowed_notify`）。因此引用这句注释时只能把它当**作者的意图声明**，不能当机制陈述：把它当机制写进文档，读者会以为改数组顺序能改变通知优先级，而实际会改变的是模块字节在内存里的摆放对应关系（那个倒是真被 `minix3/minix/kernel/main.c:kmain` 按 `i - NR_TASKS` 强校验）。
 
 ### 1.2 boot 链中的位置：两层顺序语义
 
@@ -42,10 +42,12 @@ RS（Reincarnation Server，复活服务器）是 Minix3 的 **root system proce
 
 | 层 | 顺序 | 依据 |
 |----|------|------|
-| 登记顺序 | ds → rs → pm → sched → vfs → memory → tty → mib → vm → pfs → mfs → init | `kernel/table.c:44-64` boot_image 数组 |
-| 执行顺序 | kernel 任务 → **VM** → **RS** → 其余 | `kernel/main.c` boot 循环 + `RTS_VMINHIBIT` 抑制机制 |
+| 登记顺序 | ds → rs → pm → sched → vfs → memory → tty → mib → vm → pfs → mfs → init | `minix3/minix/kernel/table.c:image` 数组 |
+| 执行顺序 | kernel 任务 → **VM** → **RS** → 其余 | `minix3/minix/kernel/main.c:kmain` 的 `schedulable_proc` 判定 + `RTS_VMINHIBIT` 抑制机制 |
 
-执行顺序为什么是 VM 先于 RS？因为 RS 要让其余服务跑起来，需要 VM 已经建好页表与地址空间（非 boot 服务还要靠 VM 替它建映射，它才能把磁盘读来的 ELF 装进去）。Minix3 的实现是：boot 循环中仅 VM（`VM_PROC_NR`）由内核亲自解析装载 ELF（`arch_boot_proc`，`01-stage-kernel/06-proc-init-boot-proc.md`），其余进程挂 `RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 等 VM 解除抑制（`01-stage-kernel/09-vm-boot-protocol.md`）——**而它们的 ELF 也是 VM 接手解析装载的，不是 RS**（`minix3/minix/servers/vm/main.c:497-512` + `:331-417`）。因此因果链是：
+还有四张常见的"boot 序"（装载序、授权放行序、NOTIFY 挑选序、模块摆放序）容易被混成上面这两张：完整对照见 `../00-master-plan/README.md` 的"boot 顺序的六张不同次序"。与 RS 直接相关的是**授权放行序**：它按 `minix3/minix/servers/rs/table.c:boot_image_priv_table` 的表内顺序逐个放行（跳过已在跑的 RS 与 VM），所以 PM 第一、DS 只排第四（表内顺序是 rs vm pm sched vfs ds ...，RS 与 VM 因已在跑而被 `sef_cb_init_fresh` 跳过）——RS 在放行表里排第一、在登记数组里排第二，这两个"第几"不是同一件事。
+
+执行顺序为什么是 VM 先于 RS？因为 RS 要让其余服务跑起来，需要 VM 已经建好页表与地址空间（非 boot 服务还要靠 VM 替它建映射，它才能把磁盘读来的 ELF 装进去）。Minix3 的实现是：boot 循环中仅 VM（`VM_PROC_NR`）由内核亲自解析装载 ELF（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`，详 `01-stage-kernel/06-proc-init-boot-proc.md`），其余进程挂 `RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 等 VM 解除抑制（`01-stage-kernel/09-vm-boot-protocol.md`）——**而它们的 ELF 也是 VM 接手解析装载的，不是 RS**（`minix3/minix/servers/vm/main.c:init_vm` 遍历 + `exec_bootproc` 装载）。因此因果链是：
 
 ```
 Kernel (boot)
@@ -60,11 +62,11 @@ RS (root sysproc)      ← 本文档所在位置
   ├─► PM / SCHED / VFS / DS / TTY / memory / MIB / PFS / MFS
   │     （boot_image 成员：GRUB 送字节 → 内核给槽位 → VM 解析装载 → RS 放行）
   ├─► IS / DEVMAN / INPUT / IPC / lwip / uds / log ...
-  │     （非 boot 成员：rc 脚本发 `up` → RS 读盘装载全套，endpoint 动态分配）
+  │     （非 boot 成员：rc 脚本发 up → RS 读盘装载全套，endpoint 动态分配）
   └─► INIT（boot_image 最后一项）
 ```
 
-中文"加载"在上面这张图里至少混着四件事（字节进内存 / 槽位出生 / 解析装载 / 授权放行），四件事的执行者并不相同。**完整口径以 `../00-master-plan/README.md` 的"boot 链四层归因表"为唯一口径源**，本文只取其中与 RS 有关的那一层：RS 在 boot 成员身上只做了第 ④ 层。
+中文"加载"在上面这张图里至少混着四件事（字节进内存 / 槽位出生 / 解析装载 / 授权放行），四件事的执行者并不相同。四层划分与六张次序的完整对照放在 `../00-master-plan/README.md`，本节只取与 RS 有关的那一层：RS 在 boot 成员身上只做了第 ④ 层。
 
 这一因果位置决定了 RS 的独特地位：**它是唯一一个"由内核登记、由 VM 装载、但职责是把别人放进跑道"的用户服务**。这带来一个自举问题——RS 启动时什么设施都没有，却要在别人依赖它之前先把自己启动好（`01-rs-boot-init.md` §1.1 的"先有鸡还是先有蛋"）。
 

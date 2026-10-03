@@ -23,7 +23,7 @@ RS 是 SEF **provider**（01）：别的服务怎么初始化、怎么被更新�
 
 ### 1.1 为什么 RS 需要特殊生命周期（WHY）
 
-RS 是 boot 映像中第 2 个运行的用户服务（com.h:61，`RS_PROC_NR=2`），是"给 boot 成员授权放行、按需读盘加载非 boot 服务"的角色。它一旦崩溃或需要升级，**没有别的服务能替它完成重启/更新编排**——因此 RS 把自己也当作一个受管服务，用同一套 `update_service`/`rollback_service` 机制处理自己，但在三处特殊化：
+RS 是 boot 映像中第 2 个运行的用户服务（`minix3/minix/include/minix/com.h:RS_PROC_NR` 定为 2），是"给 boot 成员授权放行、按需读盘加载非 boot 服务"的角色。它一旦崩溃或需要升级，**没有别的服务能替它完成重启/更新编排**——因此 RS 把自己也当作一个受管服务，用同一套 `update_service`/`rollback_service` 机制处理自己，但在三处特殊化：
 
 1. **boot 自升级**（USE_LIVEUPDATE，main.c:436-491）：RS 启动完成 4 步 init 后，立即 fork 自己的新版并 LU 过去——保证运行中的 RS 总是"新版本"；
 2. **restart/LU init 回调**（main.c:499-545、549-585）：SEF init 协议轮到自己时，用 stateful 转移 + `update_service(RS_DONTSWAP)` 接管旧实例的 slot；

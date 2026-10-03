@@ -19,7 +19,7 @@ Minix3 原版的 VFS 是全系统唯一使用线程池（mthread，9 条）的�
 VFS 的一生按这条线走（每一站对应一篇机制文档）：
 
 ```
-VM 装载 VFS 镜像 + RS 授权放行（VFS 是 boot_image 成员，`kernel/table.c:57`；四层归因见 `../00-master-plan/README.md`）
+VM 装载 VFS 镜像 + RS 授权放行（VFS 是 boot_image 成员，minix3/minix/kernel/table.c:image 的 VFS 条目；四层归因与六张次序见 00-master-plan/README.md）
   └─ main() (main.c:54)
        └─ sef_local_startup() (main.c:374)      注册 5 个生命周期回调
        └─ sef_cb_init_fresh() (main.c:393)      ← 01-vfs-init-main

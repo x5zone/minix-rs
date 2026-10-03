@@ -22,8 +22,8 @@ minix-rs 保留这个双层结构，把 SCHED 改写成单线程事件循环（�
 SCHED 的一生按这条线走（每一站对应一篇机制文档）：
 
 ```
-VM 装载 SCHED 镜像（SCHED 是 boot_image 成员，`kernel/table.c:56`）
-  │  RS 决定何时放行它：`servers/rs/main.c:376` `sched_init_proc` + `:379` `SYS_PRIV_ALLOW`（参见 ../03-stage-rs/；四层归因见 ../00-master-plan/README.md）
+VM 装载 SCHED 镜像（SCHED 是 boot_image 成员，minix3/minix/kernel/table.c:image 的 SCHED 条目）
+  │  RS 决定何时放行它：minix3/minix/servers/rs/main.c:sef_cb_init_fresh 里的 sched_init_proc + sys_privctl(SYS_PRIV_ALLOW)（参见 03-stage-rs/；四层归因与六张次序见 00-master-plan/README.md）
   └─ main() (main.c:22)
        └─ sef_local_startup() (main.c:111)      注册生命周期回调
        └─ sef_cb_init_fresh()                   ← 01-sched-init-main

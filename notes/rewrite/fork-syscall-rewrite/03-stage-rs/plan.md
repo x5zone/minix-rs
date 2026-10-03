@@ -13,7 +13,7 @@
 
 `03-stage-rs/` 目录自 2026-08-13 创建以来仅有**占位 README**（已移入 `draft/`），没有任何正式文档。与它的 boot 地位严重不匹配：
 
-1. **boot 位置关键**——RS 是 boot 执行顺序中第 2 个运行的用户服务（root system process：`include/minix/com.h:61` 定义 `RS_PROC_NR=2`、`:77` 定义 `ROOT_SYS_PROC_NR=RS_PROC_NR`；boot 映像顺序见 `kernel/table.c:44-64`：用户模块中 DS 第一（:52）、RS 紧随其后（:53）），是"给 boot 成员授权放行、按需读盘加载非 boot 服务"的角色（`00-master-plan/README.md` 因果链：Kernel → VM → **RS** → 其余；RS 对 PM/SCHED/VFS 等 boot 成员**不读镜像**，四层划分见同文件"boot 链四层归因表"）。它的语义理解是 PM/VFS/SCHED/DS 等后续 stage 的前置。
+1. **boot 位置关键**——RS 是 boot 执行顺序中第 2 个运行的用户服务（root system process：`minix3/minix/include/minix/com.h:RS_PROC_NR` 定为 2，同文件的 `ROOT_SYS_PROC_NR` 就把它当作根；boot 映像顺序见 `minix3/minix/kernel/table.c:image`：用户模块中 DS 第一、RS 紧随其后），是"给 boot 成员授权放行、按需读盘加载非 boot 服务"的角色（`00-master-plan/README.md` 因果链：Kernel → VM → **RS** → 其余；RS 对 PM/SCHED/VFS 等 boot 成员**不读镜像**，四层归因与六张次序见同文件）。它的语义理解是 PM/VFS/SCHED/DS 等后续 stage 的前置。
 2. **语义复杂度高**——`servers/rs/` 共 6307 行 C，是**用户态服务中状态机最密集的服务器**：boot 初始化 4 步状态机、服务生命周期状态机（create→publish→run→monitor→terminate→restart→cleanup）、心跳监控状态机（alive/check/backoff）、Live Update 状态机（prepare→update→init→end/rollback）。此外还依赖 7 个外部服务（PM/SCHED/VM/DS/VFS/PCI/devman）+ 内核 syslib 面。
 3. **与 02-stage-vm 的差异**——02-stage-vm 有旧 fork 主线文档可迁移；03-stage-rs **无旧文档可迁移**（只有占位 README）。因此本计划从零定义文档集，`draft/` 仅保留占位素材；这也意味着本计划的覆盖契约（§5）是后续写作的**唯一权威基线**，必须一次到位。
 
