@@ -282,6 +282,11 @@ impl VmServer {
         if !minix_arch::pt_alloc::is_free_registered() {
             minix_arch::pt_alloc::register_free(crate::alloc_page::vm_pt_free);
         }
+        // 续-294 a2d-leaf：walk_read 叶/大页分支探针的 U-safe sink 注册
+        // （riscv-only，结案随探针族滚除）。时机对齐 pt_alloc::register
+        // ——先于任何 Paging walk。
+        #[cfg(all(target_arch = "riscv64", not(test)))]
+        crate::bootmark::register_a2d_sink();
 
         // Skip init_vm_self_pt() in test builds — tests use MockPaging
         // (in-memory mapping table, no page table to initialize), while the
