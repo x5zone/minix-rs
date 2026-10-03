@@ -10,7 +10,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-279f（2026-10-03·compat 真语义 sysconf/stresep + 评审 P0 修复 + D3 重定性）**：sysconf 抢定义（strlen_huge 断言修复）、stresep 按本仓真源逐行移植；评审(2e989e6af) 抓 P0=**调用侧缺声明→sxtw 截返回指针**（声明已补 errno-compat.h -include 通道，objdump 复验无 sxtw）+P1×2（sysconf 抢占机制描述改事实形：libsemihost 强符号靠命令行目标文件顺序隔掉非 weak；D3 三条断言证伪）。**D3 重定性**：gh143/144 同位确定性挂=sysconf 修复后首次真跑的 memset body（malloc+大块写 .bss 堆页逐页 demand-fill）暴露的 VM 页供给腿缺陷（候选与 (A) 同层观察面），不回退工具，279g 单案二分。套件硬判据基线=gh142 的 20 passed/6 failed（memset 家族当时在注册期即终止无结果行，归属已正）。前轮：279c-e D2 修复+分档；278 套件化；277 上机 pipeline。
+> **🛑 最新前沿＝§续-279k（2026-10-03·D3 根因链完整调查，代码回滚到 279i 基线）**：三次修复尝试（handle_brk 惰性 derive／defsym __stack_size=0／sbrk→VM_BRK 抢定义）各自坐实一面墙后**全部回滚未提交**：墙一=普通 exec 链无人 set vm_region_top（C 靠 RS VM_MMAP_DATA；derive 修污染 boot 已验死），墙二=picolibc.ld .stack NOLOAD 塑进末段使 break 起点越 region 尾，墙三=sbrk 失败被 nano-malloc 16B 重试环夹收（brk×1074，比原崩更糟）。正修设计（exec 腿 set_region_top + 同批 sbrk 腿 + defsym 验证）与 D3b（子异退未唤醒父 waitpid，ESRCH 车道挂父）全部写入 §续-279k——**下次直接按其开工**。当前代码态：真机 gh151 复验 9 passed+1 failed（memcpy D1）+boot 健康+双 arch 18/18+host 1403/0。前轮：279f-h compat 真语义+P0 声明配套+D3 定性；279c-e D2 修复；278 套件化；277 上机 pipeline。
 >
 > **（上一前沿＝§续-279d/279e）**：2048 池 x86 回归修复（target_arch 分档，真机二分坐实）+评审 P1 诚实性降级（riscv 未验证、机制未坐实标注）+x86 限点查证（bootface 假说被反证，候选收 kdst/demand-fill 预算族）+提取器 sample 修复；xtask 17/17。
 >
@@ -11831,6 +11831,17 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 3. 附带事实：OOM-RT 由 panic 进程自身经 SYS_DIAGCTL 打印（非内核代打），panic 前最后活动全是 VM 的（supSk/supMk/sas-fork）→ 候选进程=VM；但“哪个进程”要 279 用 PID 标记坐实（OOM-RT 行不含 proc 号，登记为诊断面可选改进）。
 
 验证：minix-rt `cargo test -q -p minix-rt` 全绿；check-layout all PASS（本笔诊断宽度改动不影响镜像面）。(A) 仍 open；下一步续-279=D2 二选一判别 → 套件全绿路 + D1 口径决策 + compat 真语义层（stresep/strerror）。
+
+---
+
+## §续-279k（2026-10-03·D3 根因链完整调查：堆增长腿三面墙与本轮全部回滚的缘由；下次攻坚的设计输入）
+
+> 本轮试图把 D3（memset 大 malloc 越 bump 尾 SIGSEGV→崩后父 sh 永久阻塞丢 26 案）一次修好，三次尝试均坐实新信息但全部回滚（未提交），当前代码=§续-279i 基线（真机 gh151 复验 9 passed+1 failed、boot 健康）。三面墙与约束全部登记如下，下次从设计层直接开工不再试探：
+>
+> **墙一（region_top 空洞）**：`vm_region_top` 在 C 由 RS 的 VM_MMAP_DATA 腿初始化（break.c real_brk+acl 注释），本重写非 RS 普通 exec 链无人 set → 首 brk 读到 0 → grow_heap 算 new_brk-0 被 overlap 闸拒。试修=handle_brk 惰性 derive（取低于请求的最大可写 region 尾）——**破坏 boot（gh149 卡在 boot server exec 段，rs memctl/其他 brk 调用路径被 derive 出的错误 top 污染 set_region_top 缓存）**，已回滚。**正修=在普通 exec 腿建立数据 region 处 set_region_top(data end)（对位 C 时序），不碰 handle_brk**；需先摸清普通 exec 的 region 建立腿（VFS exec_worker 不直送 VM_MMAP，链路=PM/RS/VM 哪段待查）。
+> **墙二（picolibc 内存模型错位）**：deb 版 picolibc.ld 把 `.stack NOLOAD(4KiB)` 塑进末段 memsz → region 尾越过 __heap_start；__heap_end=__stack-0x1000 又压在栈区内——break 起点与 VM region 拓扑天然错位。试修=-Wl,--defsym=__stack_size=0——伴随 derive 同轮回滚（单独效果未隔离验证，下次验证它+墙一正修组合）。
+> **墙三（sbrk 抢定义的反噬）**：接 C brk.c 形抢定义 sbrk→VM_BRK 后，brk-in 到达 VM 但全被拒（墙一）→ **nano-malloc/ldgloss 对 sbrk 失败非放弃而是 16B 步重试**（gh150 实测 brk-in×1074 轮且进程挂进重试环=比原崩溃形态更糟的静默挂）——教训：**给用户态半机型的 IPC 占位失效前不能先拆旧路径**；下次与墙一正修同批落地，并验证 grow_heap 真扩后 region 页 demand-fill 链路（新页写入会首次走 fill-root 腿，与 (A) 同层风险预期内）。
+> **旁证登记**：gh142 的 20 passed 属历史态（sysconf 修前 memset 在注册期即终止不碰堆）；sysconf 修（279f）后 memset 家族首次真跑 body → D3 现形——**暴露型，不回退 sysconf/stresep**。D3b（崩后父 sh 阻塞：SIGSEGV 子终止后 waitpid SendRec 未获回复，vr:00 fffffffd=ESRCH 车道未唤醒父）与 D3 同批但独立：正修在 PM exit/event 链（子异退必须唤醒挂其 waitpid 的父）。优先级：D3a+D3b 一次攻坚（套件 26 案全丢的瓶颈），后接 strerror 校准与 D1 口径。
 
 ### D2 静态审计追加两条事实（279 起点，本处登记）
 - **big 释放路径存在且形似正确**（alloc.rs free 臂：命中 big_blocks 记录→`supplier.release_pages(page, page_count)`→槽置 None）——“回收泄漏”候选收窄为：Rust 侧正常 Drop 下只剩“panic 前未来得及 free”或 supplier 自身记账两种形态；279 先补 big-free 计数探针（alloc/free 对称打点）再定。
