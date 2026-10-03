@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-277c（2026-10-03·对 277b 评审再修：防线坐实+门判据加固）**：CodeReview(84398284a) 判 1 P1+5 P2——P1=文档声称的 _Static_assert 防线在赋值式重构后已不存在（防线虚设+承诺落空）→ 补真：minix-types 新增 host 对账测试 `test_c_bridge_fs_stat_offsets_match_rust_layout`（读 posix-stubs.c 的 FS_ST_* 宏逐条 assert_eq offset_of!，任一侧漂移即红；riscv 腿 104B 窄字段使目标侧 assert 不可双架构共存，故对账放 Rust↔C 宏之间）；P2 全修（lseek 假成功 0→-1+ENOSYS、read errno 兑底、门改 15s 收尾窗口按全部结果行终集定案防多案掩盖、探针源 git mv 入 tools/atf-c-compat/probes/ 与门同源+失败 WARN、harness 按 WORK 唯一串杀不依赖 $! 语义）。验证：门新判据端到端 PASS；双 arch 18/18；host **1403/0**（+1 对账测试）；xtask 13/13。目标准态不变：③首案 pipeline PASS；下一步续-278=首批 18 案全跑+fork/exec 桥选型。
+> **🛑 最新前沿＝§续-278（2026-10-03·首批 18 案/36 用例套件化上机）**：套件接线（ATF_SUITE 表+用例名从 C 源提取+rc 变体注入+atf-plan manifest+imgrd 16MiB）；真机实证 ≥12 案 passed 后被两新缺陷拦住：**D1 memcpy_basic=picolibc random 序列与 NetBSD 期望分歧（p5 探针定谳，非内核 bug）**、**D2 用户态 slab OOM-RT 截断 boot（px=400/400 满+fp 空，回收流/预算候选面未坐实）**；均登记续-279 靶心。门升级终集定案（failed 全列+停滞检测）。xtask 17/17、host 1403/0、双 arch 18/18。(A) 仍 open。
+>
+> **（上一前沿＝§续-277c：对 277b 评审再修，防线坐实（host 对账测试）+门判据加固）**：CodeReview(84398284a) 判 1 P1+5 P2——P1=文档声称的 _Static_assert 防线在赋值式重构后已不存在→补真：minix-types host 对账测试读 posix-stubs.c 的 FS_ST_* 宏逐条 assert_eq offset_of!；P2 全修（lseek/read 占位诚实化、门终集定案、探针同源化+WARN、harness 定点杀）。
 >
 > **（上一前沿＝§续-277b：P0 stat 翻译层修复→t_memchr 真机 `passed`+正式门 PASS）**：CodeReview P0（struct stat 152B/120B 越界+全错位）一击命中 §续-277 的 NULL-jump 靶心；lstat 加布局翻译层（FS 写落本帧 raw[152] 再逐字段赋值；FS 侧偏移由 §续-277c host 对账测试钉，目标侧宽度编译器推导）后 **t_memchr 真机 `passed`**；正式门 `os/qemu-tests/test-atf-aarch64.sh` 端到端 PASS；P1×2/P2×4 修（pfa 封顶、播种架构门、kmsg.h 单点、access 真判 x 位、semihost POSIX 名抢定义、定点杀）。
 >
@@ -11789,6 +11791,28 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ### 验证
 - 新判据门全 build 端到端 **PASS rc=0**；双 arch 18/18 重链全绿；host 4 包集 **1403/0**（+1 对账测试）；xtask 13/13；bash -n 两脚本过。
 - 纪律：本步含 os/ 宿主测试与脚本改动（minix-types 测试仅宿主面，生产码零改动）；(A) 仍 open。
+
+---
+
+## §续-278（2026-10-03·目标③首批 18 案/36 用例套件化上机：真机实证 ≥12 案 passed；门暴露两大新缺陷——memcpy 随机序列 libc 分歧 + VM 用户态 slab OOM-RT，均登记为续-279 靶心）
+
+> 把单案门升级为套件门并首次全量 boot：套件接线（ATF_SUITE 表+用例名单源=C 源提取+rc 变体注入+atf-plan.txt manifest+imgrd 8MiB→16MiB）后真机跑至第 13 个用例被 OOM panic 截断。**套件的价值正是把单案永远暴露不了的缺陷按出来**（本会话已按出两个）。
+
+### 交付（xtask 装机面 + 门，均含单测）
+1. **`ATF_SUITE` 18 项表**（image.rs）：盘上名→minix3 C 源；装配时 ELF+源双存在才播，用例名从源文件 `ATF_TC(name);` 声明行提取（`extract_atf_tc_names` 纯函数+单测；提不到名即 assert 拒绝静默少播；`atf_suite_entries_have_sources_with_cases` 钉表↔仓内容对账）。
+2. **rc 变体注入**：套件 exec 行由 `inject_rc_execs` 插到 `exit 0` 前生成 `target/image/<arch>/rc.imgrd`，proto rc 条目经新 `rc_host` 参数改指变体（None 逐字节同旧；os/etc/rc 只留静态哨兵面）。
+3. **atf-plan.txt manifest**（xtask 写盘，36 行 "prog tc"）：判数唯一真源，门据此算期望 N。
+4. **imgrd 容量 8MiB→16MiB**（`IMGRD_BLOCKS=4096` 单点常量）：18 静态 ELF ~7.4MB+bin/etc 超旧预算；首装配即被 mkfs "File system not big enough" 拦下（防线有效非事后爆炸），ESP 128MiB 仍宽裕。
+5. **门套件化**（test-atf-aarch64.sh）：Stage1 逐案交编 18 ELF；stale 防线改“最新 ELF 不得比镜像新”；Stage3 按 plan 的 N 收齐后终集定案（failed/broken 全列不止第一例；停滞 120 轮判 STALLED）。
+
+### 真机新缺陷×2（均登记续-279 靶心，不猜修）
+- **D1 `memcpy_basic` 失败 = libc 随机序列分歧（非内核 bug）**：该用例用 `srandom(0)+random()` 造数据再 MD5 对固定 NetBSD 期望串；真机 picolibc `random()` 首值 0x0af142d5(=183573845)≠BSD/glibc TYPE_0 参考 7723（p5 探针上机实测定谳，探针 tools/atf-c-compat/probes/p5.c 保留）。属跨 libc 行为差异：该用例在 picolibc 环境**永远不可能对 NetBSD 常量通过**——续-279 需套件级口径决策（预期失败清单 vs 自移植 BSD random 进 compat）。
+- **D2 用户态运行时 slab OOM（panic 截断 boot）**：跑到第 13 用例时 `nk4c: OOM-RT size=001000 slabs=01d/400 big=b6/00 px=400/400 fp=000/400`（minix-rt alloc.rs 运行时池：4KiB 分配失败）；伴 PT 面 `ptalloc-reuse-DATA` 洪水 59K 条。候选面：VM/RS 的 slab 池预算被 36 案连续 fork+exec+exit 压穿，或帧/内存回收流未回 PX/fp 池（fp=0/400 空而 px 满）。**未坐实**：续-279 先定位是哪个 server 的哪种池+回收流审计（对照 exit reclaim/VM forget 链），再分“预算调参”还是“回收泄漏”。
+- 已知会暴的面（修 D2 后预期还会撞）：`t_stresep`（stresep 占位返 NULL 必 fail）、`t_strerror`（sys_nerr=134 占位未校准，§续-271 P2-2 预告）——属 ③ 既定后续大件（compat 真语义层），不是套件接线缺陷。
+
+### 验证
+- xtask 17/17（+4 新单测）；mkfs 16MiB 装配成功；真机 gh140：**12 passed + 1 failed(memcpy) 后被 OOM 截断**（门如实 FAILED 并停收）；前单案门（gh135/138/139）t_memchr 全过仍成立。
+- 目标③形态更新：套件接线完成、判据就位；“上机跑通”从 1 案→**≥12 案实证 passed**，剩 D1/D2+compat 真语义三块。host 4 包集 1403/0；双 arch 18/18 链面不变。(A) 仍 open。
 
 
 

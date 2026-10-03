@@ -297,7 +297,7 @@ pub fn plan(
     let bin_rel = |name: &str| format!("target/{}/{}/{name}", arch.module_target(), profile);
     // NK4-C 续-277：目标③ ATF C 测试播种——交叉 ELF 不在 cargo 装配链内（由
     // tools/build-atf-test.sh 产出），文件存在才播；首案 t_memchr（纯内存面，
-    // 不依赖 fork/exec/VFS 桥）+ p1/p2/p3 上机二分探针（tmp/nk4a/atfprobe/，
+    // 不依赖 fork/exec/VFS 桥）+ p1/p2/p3 上机二分探针（tools/atf-c-compat/probes/，
     // 分别验裸桥/stdio/malloc 腿）。盘上落 /tests/<name>，rc 尾段 exec。
     // 架构门（CodeReview 续-277b P1-2）：只给“自定义出生腿已就绪”的架构播——
     // 当前仅 aarch64（build-atf-test.sh 的 -nostartfiles+startup-minix.c 只在该
@@ -306,12 +306,61 @@ pub fn plan(
     const ATF_BOOT_LEG_READY: &[&str] = &["aarch64"];
     let atf_test_rel = |name: &str| format!("target/atf/{}/tests/{name}", arch.slug());
     let mut atf_tests: Vec<(&str, String)> = Vec::new();
+    // 续-278：套件面 exec 行（注进 rc 变体）与门 manifest（"prog tc" 逐行）。
+    let mut rc_execs: Vec<String> = Vec::new();
+    let mut atf_plan: Vec<String> = Vec::new();
     if ATF_BOOT_LEG_READY.contains(&arch.slug()) {
-        for name in ["t_memchr", "p1", "p2", "p3"] {
+        for (prog, src_rel) in ATF_SUITE {
+            let elf = layout.os_root.join(atf_test_rel(prog));
+            if !elf.is_file() {
+                continue;
+            }
+            let src = layout.os_root.join("..").join(src_rel);
+            let src_text = std::fs::read_to_string(&src)
+                .unwrap_or_else(|e| panic!("ATF 套件 {prog}：读源 {} 失败：{e}", src.display()));
+            let tcs = extract_atf_tc_names(&src_text);
+            assert!(
+                !tcs.is_empty(),
+                "ATF 套件 {prog}：{} 未提取到任何 `ATF_TC(name);`——声明面与提取器漂移，拒绝静默装配",
+                src.display()
+            );
+            atf_tests.push((prog, atf_test_rel(prog)));
+            for tc in &tcs {
+                rc_execs.push(format!("/tests/{prog} {tc}"));
+                atf_plan.push(format!("{prog} {tc}"));
+            }
+        }
+        for name in ["p1", "p2", "p3"] {
             if layout.os_root.join(atf_test_rel(name)).is_file() {
                 atf_tests.push((name, atf_test_rel(name)));
             }
         }
+    }
+    // rc 变体：套件 exec 行注进 `exit 0` 之前（os/etc/rc 保持静态哨兵面，
+    // 套件面单源在 ATF_SUITE+minix3 C 源）。
+    let rc_variant_rel = format!("target/image/{}/rc.imgrd", arch.slug());
+    let rc_host: Option<&str> = if rc_execs.is_empty() {
+        None
+    } else {
+        let base = std::fs::read_to_string(layout.os_root.join("etc/rc"))?;
+        actions.push(Action::Write {
+            path: image_dir.join("rc.imgrd"),
+            bytes: inject_rc_execs(&base, &rc_execs).into_bytes(),
+            note: "rc 变体（ATF 套件 exec 行注入 exit 0 前）",
+        });
+        Some(rc_variant_rel.as_str())
+    };
+    if !atf_plan.is_empty() {
+        actions.push(Action::Write {
+            path: image_dir.join("atf-plan.txt"),
+            bytes: {
+                let mut s = atf_plan.join("\n");
+                s.push('\n');
+                s
+            }
+            .into_bytes(),
+            note: "ATF 门 manifest（prog tc 逐行，判数唯一真源）",
+        });
     }
     let atf_refs: Vec<(&str, &str)> =
         atf_tests.iter().map(|(n, p)| (*n, p.as_str())).collect();
@@ -326,6 +375,7 @@ pub fn plan(
                 ("cat", &bin_rel("cat")),
             ],
             &atf_refs,
+            rc_host,
         )?,
         note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat} + /tests + /dev/console）",
     });
@@ -338,7 +388,7 @@ pub fn plan(
             .into_owned(),
         args: vec![
             imgrd.to_string_lossy().into_owned(),
-            "2048".into(), // 块数：2048 × 4KiB = 8MiB，装机最小集宽裕
+            IMGRD_BLOCKS.to_string(), // 块数：×4KiB = imgrd 根盘容量（见常量注）
             "0".into(),    // inode 数 0 = mkfs 缺省阶梯（mkfs.rs proto_header 文档）
             "4096".into(), // 块大小
             "-p".into(),
@@ -480,6 +530,83 @@ pub fn plan(
     Ok((actions, esp_image))
 }
 
+/// 目标③首批 ATF 套件（NK4-C 续-278）：盘上程序名 → minix3 C 源（仓根相对）。
+/// ELF 由 tools/build-atf-test.sh 交编（同名落 target/atf/<arch>/tests/）；
+/// 用例名装配时从源文件 `ATF_TC(name);` 声明行提取（不另立清单，单一真源=C 源）。
+/// p1/p2/p3 桥面哨兵不在此表（无 atf 用例，固定 exec 行在 os/etc/rc 里）。
+const ATF_SUITE: &[(&str, &str)] = &[
+    ("t_bm", "minix3/tests/lib/libc/string/t_bm.c"),
+    ("t_memchr", "minix3/tests/lib/libc/string/t_memchr.c"),
+    ("t_memcpy", "minix3/tests/lib/libc/string/t_memcpy.c"),
+    ("t_memmem", "minix3/tests/lib/libc/string/t_memmem.c"),
+    ("t_memset", "minix3/tests/lib/libc/string/t_memset.c"),
+    ("t_popcount", "minix3/tests/lib/libc/string/t_popcount.c"),
+    ("t_strcat", "minix3/tests/lib/libc/string/t_strcat.c"),
+    ("t_strchr", "minix3/tests/lib/libc/string/t_strchr.c"),
+    ("t_strcmp", "minix3/tests/lib/libc/string/t_strcmp.c"),
+    ("t_strcpy", "minix3/tests/lib/libc/string/t_strcpy.c"),
+    ("t_strcspn", "minix3/tests/lib/libc/string/t_strcspn.c"),
+    ("t_strerror", "minix3/tests/lib/libc/string/t_strerror.c"),
+    ("t_stresep", "minix3/tests/lib/libc/string/t_stresep.c"),
+    ("t_strlen", "minix3/tests/lib/libc/string/t_strlen.c"),
+    ("t_strpbrk", "minix3/tests/lib/libc/string/t_strpbrk.c"),
+    ("t_strrchr", "minix3/tests/lib/libc/string/t_strrchr.c"),
+    ("t_strspn", "minix3/tests/lib/libc/string/t_strspn.c"),
+    ("t_swab", "minix3/tests/lib/libc/string/t_swab.c"),
+];
+
+/// 从 atf C 源提取注册用例名（`ATF_TC(name);` 声明行；HEAD/BODY 定义行不重复
+/// 计名）。纯函数，宿主单测钉住；提不到任何名字时调用方须视装配失败。
+pub fn extract_atf_tc_names(src: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for line in src.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("ATF_TC(") {
+            if let Some(end) = rest.find(')') {
+                let name = rest[..end].trim();
+                if !name.is_empty() && !names.iter().any(|n| n == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+    }
+    names
+}
+
+/// 在 rc 文本的 `exit 0` 行（尾行，若存在）之前注入测试 exec 行；无 `exit 0`
+/// 则追加到末尾。纯函数便于单测钉住插入位置语义。
+pub fn inject_rc_execs(rc_text: &str, exec_lines: &[String]) -> String {
+    if exec_lines.is_empty() {
+        return rc_text.to_string();
+    }
+    let mut out = String::new();
+    let mut injected = false;
+    for line in rc_text.lines() {
+        if !injected && line.trim() == "exit 0" {
+            for l in exec_lines {
+                out.push_str(l);
+                out.push('\n');
+            }
+            injected = true;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !injected {
+        for l in exec_lines {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// imgrd 根盘块数（× 4KiB）：续-278 首批 ATF 套件 18 个静态 ELF（每个 ~410KB
+/// 含 libc+libatf-c）+ /bin + /etc 超 8MiB，扩至 16MiB；ESP 128MiB 容得下
+/// （mfs 嵌 imgrd 后单模块 ~16.9MiB，bootface 源直拷 bump 分配无固定上限）。
+/// proto 头部与 mkfs 参数共用本常量（单点，不再两处手写 2048）。
+pub const IMGRD_BLOCKS: u32 = 4096;
+
 /// 生成 /etc 最小集的 mkfs 原型文本。
 ///
 /// 文法（`os/fs/mfs/src/mkfs.rs` 的 proto_header/build_image_seeded）：
@@ -494,11 +621,13 @@ pub fn plan(
 /// `atf_tests`（NK4-C 续-277，目标③）非空时额外播 `/tests` 目录（同 0755
 /// 可执行面；交叉 ELF 由 `tools/build-atf-test.sh` 产出，不在 cargo 装配链
 /// 内，故只在宿主文件存在时传入）。空表时产物逐字节同旧，不影响既有
-/// 三架构装机面。
+/// 三架构装机面。`rc_host`（续-278）Some 时 rc 条目改指该宿主路径（装配方
+/// 已把套件 exec 行注入的变体文件）；None 仍指 `etc/rc`。
 pub fn generate_etc_proto(
     etc_dir: &Path,
     bin_entries: &[(&str, &str)],
     atf_tests: &[(&str, &str)],
+    rc_host: Option<&str>,
 ) -> Result<Vec<u8>> {
     // 存在性在此验证；内容由 mkfs_mfs 的 StdHost 播种时从宿主读取。
     for required in ["rc", "ttys"] {
@@ -512,12 +641,18 @@ pub fn generate_etc_proto(
     }
 
     let mut proto = String::from(
-        "minix-rs imgrd\n\
-         2048 0\n\
+        "minix-rs imgrd\n",
+    );
+    proto.push_str(&format!(
+        "{} 0\n\
          d--755 0 0\n\
          etc d--755 0 0\n\
-         rc ---755 0 0 etc/rc\n\
-         ttys ---644 0 0 etc/ttys\n\
+         ",
+        IMGRD_BLOCKS
+    ));
+    proto.push_str(&format!("rc ---755 0 0 {}\n", rc_host.unwrap_or("etc/rc")));
+    proto.push_str(
+        "ttys ---644 0 0 etc/ttys\n\
          $\n\
          dev d--755 0 0\n\
          console c--600 0 0 4 0\n\
@@ -902,6 +1037,7 @@ mod tests {
                 &layout.os_root.join("etc"),
                 &[("sh", "target/sh"), ("echo", "target/echo")],
                 &[],
+                None,
             )
             .unwrap(),
         )
@@ -914,7 +1050,7 @@ mod tests {
         );
         assert_eq!(
             lines.next().unwrap(),
-            "2048 0",
+            &format!("{} 0", super::IMGRD_BLOCKS),
             "第二行 = 块数 inode数（0 = 缺省阶梯）"
         );
         assert_eq!(
@@ -959,6 +1095,7 @@ mod tests {
                 &layout.os_root.join("etc"),
                 &[("sh", "target/sh")],
                 &[("t_memchr", "target/atf/aarch64/tests/t_memchr")],
+                None,
             )
             .unwrap(),
         )
@@ -981,6 +1118,78 @@ mod tests {
     fn etc_proto_requires_rc_and_ttys() {
         let (layout, guard) = tempdir::create();
         std::fs::remove_file(guard.0.join("etc/rc")).unwrap();
-        assert!(generate_etc_proto(&layout.os_root.join("etc"), &[("sh", "target/sh")], &[]).is_err());
+        assert!(
+            generate_etc_proto(&layout.os_root.join("etc"), &[("sh", "target/sh")], &[], None).is_err()
+        );
+    }
+
+    /// NK4-C 续-278：用例名提取器对 `ATF_TC(name);` 声明行去重收集，
+    /// HEAD/BODY 定义行不计名；真实套件源至少提 1 名（防声明面漂移）。
+    #[test]
+    fn extract_atf_tc_names_collects_declarations_only() {
+        let sample = "ATF_TC(memchr_basic);\nATF_TC_HEAD(memchr_basic, tc)\n{\n}\nATF_TC_BODY(memchr_basic, tc)\n{\n}\nATF_TC(memchr_simple);\n";
+        assert_eq!(
+            extract_atf_tc_names(sample),
+            vec!["memchr_basic".to_string(), "memchr_simple".to_string()]
+        );
+        assert!(extract_atf_tc_names("/* 声明面漂移的样本 */\nint main(){}\n").is_empty());
+    }
+
+    /// 续-278：exec 行必须落在 `exit 0` 之前（尾行固定返回码语义不被破坏）；
+    /// 空 exec 列表逐字节同旧；无 exit 0 行时追加到尾部。
+    #[test]
+    fn inject_rc_execs_lands_before_exit_zero() {
+        let rc = "echo m\n/tests/p1\nexit 0\n";
+        let out = inject_rc_execs(rc, &["/tests/t_x tc1".to_string(), "/tests/t_x tc2".to_string()]);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["echo m", "/tests/p1", "/tests/t_x tc1", "/tests/t_x tc2", "exit 0"]
+        );
+        assert_eq!(inject_rc_execs(rc, &[]), rc, "空表逐字节同旧");
+        let no_exit = "echo m\n";
+        assert_eq!(
+            inject_rc_execs(no_exit, &["/tests/t_x tc1".to_string()]).lines().count(),
+            2,
+            "无 exit 0 时尾部追加"
+        );
+    }
+
+    /// 续-278：rc_host Some 时 proto 的 rc 条目改指变体宿主路径。
+    #[test]
+    fn etc_proto_rc_host_override() {
+        let (layout, _guard) = tempdir::create();
+        let proto = String::from_utf8(
+            generate_etc_proto(
+                &layout.os_root.join("etc"),
+                &[("sh", "target/sh")],
+                &[],
+                Some("target/image/aarch64/rc.imgrd"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            proto.contains("rc ---755 0 0 target/image/aarch64/rc.imgrd"),
+            "rc 条目指向套件注入后的变体"
+        );
+        assert!(!proto.contains("rc ---755 0 0 etc/rc"));
+    }
+
+    /// 续-278：ATF_SUITE 每一项的 minix3 源真实存在且能提到用例名（装配面
+    /// 静态契约：表与仓内容对账，防改名/移动后静默少播）。
+    #[test]
+    fn atf_suite_entries_have_sources_with_cases() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        assert_eq!(ATF_SUITE.len(), 18, "首批 18 案清单对账");
+        for (prog, src_rel) in ATF_SUITE {
+            let src = repo.join(src_rel);
+            let text = std::fs::read_to_string(&src)
+                .unwrap_or_else(|e| panic!("{prog}: 读 {} 失败：{e}", src.display()));
+            assert!(!extract_atf_tc_names(&text).is_empty(), "{prog}: 无 ATF_TC 声明");
+        }
     }
 }

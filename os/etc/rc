@@ -13,11 +13,13 @@
 echo "minix-rs rc: minimal boot script marker"
 ls /bin
 cat /etc/rc
-# NK4-C 续-277 目标③首案：ATF C 测试上机腿（imgrd 播种 /tests 时真执行；
-# 未播种的架构报 not found 不致命——尾行 exit 0 固定 rc 返回码，init runcom
-# 不因测试腿缺失而回落 SingleUser）。p1/p2/p3 是桥面二分探针（裸写/stdio/
-# malloc），定位 §续-277 真机毒链后保留作命令面启动链回归哨兵。
-/tests/t_memchr memchr_basic
+# NK4-C 续-277/278 目标③：ATF C 测试上机腿。本文件只留桥面哨兵（p1/p2/p3，
+# 验裸写/stdio/malloc 地基）；套件 exec 行（/tests/<prog> <tc>）由 xtask 装配
+# 时从 ATF_SUITE+minix3 C 源提取并注入 rc 变体（target/image/<arch>/rc.imgrd，
+# exit 0 前），判数 manifest 落 target/image/<arch>/atf-plan.txt——单源不在这里
+# 手拄两份。未播种的架构报 not found 不致命——尾行 exit 0 固定 rc 返回码，
+# init runcom 不因测试腿缺失而回落 SingleUser。串口判据见
+# os/qemu-tests/test-atf-aarch64.sh。
 /tests/p1
 /tests/p2
 /tests/p3

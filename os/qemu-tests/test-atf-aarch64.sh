@@ -11,27 +11,28 @@
 # fails loudly instead of silently killing the test at boot.
 #
 # It drives, end to end:
-#   1. Cross-build the ATF test + link it into a static ET_EXEC ELF
-#      (tools/build-atf-test.sh; requires the aarch64 picolibc vendor leg).
-#   2. Assemble the bootable image (xtask image — seeds /tests when present;
-#      the xtask arch gate whitelists aarch64, so other arches are untouched).
+#   1. Cross-build the ATF suite ELFs (tools/build-atf-test.sh per case;
+#      requires the aarch64 picolibc vendor leg) + the p1/p2/p3 sentinels.
+#   2. Assemble the bootable image (xtask image — seeds /tests, extracts the
+#      case manifest from the minix3 C sources, writes atf-plan.txt and the rc
+#      variant; the xtask arch gate whitelists aarch64, other arches untouched).
 #   3. Boot under AAVMF + QEMU virt, serial to a log.
-#   4. Assert the ATF result line for t_memchr (`passed`) appears, and that
-#      no kernel panic happened on the way (PANIC line = hard fail).
+#   4. Count ATF result lines against atf-plan.txt: every expected `passed`
+#      (PASS), any failed/broken or panic (FAIL), stalled progress (FAIL).
 #
-# Honest posture: this is one test case (memchr_basic) of the 586-test goal.
-# The suite grows through §③'s remaining legs (fork/exec/VFS bridges); a
-# `passed` here proves the *pipeline*, not the suite.
+# Honest posture: this is the first ATF batch (string/memory libtests, one
+# process per case) of the 586-test goal. The suite grows through §③'s
+# remaining legs (fork/exec/VFS bridges for the syscall-flavoured tests); a
+# green batch here proves the *pipeline per case*, not the whole goal.
 #
 # Exit codes: 0 = PASS, 1 = FAIL, 2 = SKIP (prerequisites missing).
 #
-# Env knobs: ATF_A64_SKIP_BUILD=1 reuse image + prebuilt ELF; TIMEOUT_BOOT.
+# Env knobs: ATF_A64_SKIP_BUILD=1 reuse image + prebuilt ELFs; TIMEOUT_BOOT.
 
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # …/minix-rs/os
 TIMEOUT_BOOT="${TIMEOUT_BOOT:-260}"
-RESULT_MARKER="passed"
 WORK="$(mktemp -d /tmp/atf_a64.XXXXXX)"
 
 cleanup() { rm -rf "$WORK"; }
@@ -51,13 +52,17 @@ if [ -z "$FW" ] || [ -z "$FW_SRC_VARS" ]; then
     echo "SKIP: AAVMF firmware not found (install qemu-efi-aarch64)"; exit 2
 fi
 
-# ── Stage 1: build the ATF C test ELF (picolibc vendor leg) ──────────────
+# ── Stage 1: cross-build the ATF suite ELFs (picolibc vendor leg) ───────
 if [ "${ATF_A64_SKIP_BUILD:-0}" != "1" ]; then
-    echo "cross-building t_memchr (aarch64 picolibc leg)…"
-    ( cd "$ROOT/.." && bash tools/build-atf-test.sh \
-        minix3/tests/lib/libc/string/t_memchr.c aarch64 ) >"$WORK/build.log" 2>&1 || {
-        echo "FAIL: build-atf-test.sh (t_memchr) failed — see below"; tail -6 "$WORK/build.log"; exit 1
-    }
+    fail_cases=0
+    for t in t_bm t_memchr t_memcpy t_memmem t_memset t_popcount t_strcat \
+             t_strchr t_strcmp t_strcpy t_strcspn t_strerror t_stresep \
+             t_strlen t_strpbrk t_strrchr t_strspn t_swab; do
+        ( cd "$ROOT/.." && bash tools/build-atf-test.sh \
+            "minix3/tests/lib/libc/string/$t.c" aarch64 ) >>"$WORK/build.log" 2>&1 || {
+            echo "FAIL: build-atf-test.sh ($t) failed"; fail_cases=$((fail_cases+1)); }
+    done
+    [ "$fail_cases" -gt 0 ] && { echo "FAIL: $fail_cases suite case(s) failed to build"; tail -8 "$WORK/build.log"; exit 1; }
     for p in p1 p2 p3; do
         # 探针源与门同源（CodeReview 续-277b P2-4：不依赖 tmp/ scratch）；
         # 失败不再静默——哨兵缺件必须看得见（rc 无条件 exec /tests/p*）。
@@ -74,14 +79,15 @@ if [ "${ATF_A64_SKIP_BUILD:-0}" != "1" ]; then
     }
 fi
 IMG="$ROOT/target/image/aarch64/minix.img"
-ELF="$ROOT/target/atf/aarch64/tests/t_memchr"
-[ -f "$ELF" ] || { echo "SKIP: $ELF missing (run tools/build-atf-test.sh first)"; exit 2; }
+PLAN_CHK="$ROOT/target/image/aarch64/atf-plan.txt"
+[ -s "$PLAN_CHK" ] || { echo "SKIP: $PLAN_CHK missing (run tools/build-atf-test.sh + xtask image first)"; exit 2; }
 [ -f "$IMG" ] || { echo "FAIL: $IMG missing"; exit 1; }
-# Guard: the image must have been assembled with the ELF present (xtask seeds
-# /tests only when the host file exists at assembly time). A stale image would
-# boot without /tests and the rc line would no-op to "not found" — never PASS.
-if [ "$IMG" -nt "$ELF" ]; then :; else
-    echo "FAIL: $ELF is newer than $IMG — image assembled before the test was built"; exit 1
+# Guard: the image must not be older than the newest suite ELF (xtask seeds
+# /tests only when the host files exist at assembly time; a stale image would
+# boot without /tests and every rc line would no-op to "not found" — never PASS).
+newest_elf=$(ls -t "$ROOT"/target/atf/aarch64/tests/t_* 2>/dev/null | head -1)
+if [ -n "$newest_elf" ] && [ "$newest_elf" -nt "$IMG" ]; then
+    echo "FAIL: $newest_elf is newer than $IMG — image assembled before the suite was built"; exit 1
 fi
 
 # ── Stage 2: boot under AAVMF; serial to a log ───────────────────────────
@@ -105,32 +111,44 @@ QEMU_PID=$!
 kill_qemu() { kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null || true; }
 trap 'kill_qemu; cleanup' EXIT
 
-# ── Stage 3: wait for the ATF result line; panic is a hard fail ──────────
+# ── Stage 3: count ATF result lines against the manifest ────────────────
+# 判据纪律（NK4C 续-278）：套件多案下不"首个 passed 即定案"——以
+# target/image/aarch64/atf-plan.txt（xtask 装配产物，prog tc 逐行）为期望数 N：
+#   收齐 N 条结果行（passed+failed+broken）或停滞/超时后按终集定案：
+#   failed/broken 存在 → FAILED（全部列出，首案作例程，诊断不止于第一例）；
+#   passed 计数 >= N → PASSED；
+#   首条结果行后连续 120 轮无新结果行 → STALLED（某案挂死/丢进程）。
+# 直读文件 grep -qa/-ac（binary-as-text）：`strings | grep -q` 在 pipefail 下
+# 命中也判 141（§续-277b 定谳的 SIGPIPE 假失败模式）。
+PLAN="$ROOT/target/image/aarch64/atf-plan.txt"
+if [ ! -s "$PLAN" ]; then
+    echo "FAIL: $PLAN missing/empty — image assembled without ATF suite (stale build?)"; exit 1
+fi
+EXPECTED=$(grep -c ' ' "$PLAN")
 verdict=""
-# 判据纪律（CodeReview 续-277b P2-3）：多 test case 下“首个 passed 即定案”
-# 会掩盖后续 failed/broken——首次结果行命中后再等 15s 收尾窗口，按全部
-# 结果行的最终集合定案（ATF 每案各写一行 passed/failed；扩套件后天然覆盖）。
-RESULT_LINE_RE='^(passed|failed|broken|skipped)'
-first_hit_waited=0
+stall_count=0
+n_pass_last=-1
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
     if [ -f "$SERIAL_LOG" ]; then
-        # 直读文件（grep -qa，binary-as-text）：`strings | grep -q` 在
-        # pipefail 下命中也判 141（§续-277b 定谳的 SIGPIPE 假失败模式）。
         if grep -qa 'kernel panic\|PANIC' "$SERIAL_LOG" 2>/dev/null; then
             verdict="PANIC"; break
         fi
-        if grep -qaE "$RESULT_LINE_RE" "$SERIAL_LOG" 2>/dev/null; then
-            if [ "$first_hit_waited" -ge 15 ]; then
-                if grep -qaE '^failed|^broken' "$SERIAL_LOG" 2>/dev/null; then
-                    verdict="FAILED"
-                elif grep -qa '^passed' "$SERIAL_LOG" 2>/dev/null; then
-                    verdict="PASSED"
-                else
-                    verdict="SKIPPED-ONLY"
-                fi
-                break
+        n_fail=$(grep -acE '^failed|^broken' "$SERIAL_LOG" 2>/dev/null || true)
+        n_pass=$(grep -ac '^passed' "$SERIAL_LOG" 2>/dev/null || true)
+        n_pass=${n_pass:-0}; n_fail=${n_fail:-0}
+        total=$((n_pass + n_fail))
+        if [ "$total" -ge "$EXPECTED" ]; then
+            if [ "$n_fail" -gt 0 ]; then verdict="FAILED"; else verdict="PASSED"; fi
+            break
+        fi
+        if [ "$n_pass" -gt 0 ] || [ "$n_fail" -gt 0 ]; then
+            if [ "$n_pass_last" -eq "$n_pass" ]; then
+                stall_count=$((stall_count + 1))
+                if [ "$stall_count" -ge 120 ]; then verdict="STALLED"; break; fi
+            else
+                stall_count=0
             fi
-            first_hit_waited=$((first_hit_waited + 1))
+            n_pass_last=$n_pass
         fi
     fi
     sleep 1
@@ -138,22 +156,24 @@ done
 kill_qemu
 
 if [ "$verdict" = "PASSED" ]; then
-    echo "RESULT: PASS (t_memchr memchr_basic ran to completion on the aarch64 boot console — ATF 'passed' via the SYS_DIAGCTL stdio bridge)"
+    echo "RESULT: PASS ($EXPECTED/$EXPECTED ATF cases passed on the aarch64 boot console — SYS_DIAGCTL stdio bridge, per atf-plan.txt)"
     exit 0
 elif [ "$verdict" = "PANIC" ]; then
     echo "FAIL: kernel panic during ATF boot leg"
     grep -a -m4 -A3 "PANIC" "$SERIAL_LOG" | cat -v || true
     exit 1
 elif [ "$verdict" = "FAILED" ]; then
-    echo "FAIL: ATF reported 'failed'/'broken' for memchr_basic"
+    echo "FAIL: ATF reported 'failed'/'broken' on at least one case"
     grep -a -m8 -B2 -E '^failed|^broken' "$SERIAL_LOG" | cat -v || true
+    echo "      (context: last case names before the failure)"
+    strings "$SERIAL_LOG" 2>/dev/null | grep -aE "^(_?[a-z]+: WARNING|passed|failed)" | tail -12 || true
     exit 1
-elif [ "$verdict" = "SKIPPED-ONLY" ]; then
-    echo "FAIL: only 'skipped' result lines on console (no passed/failed) — harness mismatch?"
-    grep -a -m8 -E '^skipped' "$SERIAL_LOG" | cat -v || true
+elif [ "$verdict" = "STALLED" ]; then
+    echo "FAIL: progress stalled at $n_pass/$EXPECTED passed (a case hung or died silently)"
+    strings "$SERIAL_LOG" 2>/dev/null | grep -aE "WARNING|^passed|^failed" | tail -6 || true
     exit 1
 else
-    echo "FAIL: no ATF verdict within ${TIMEOUT_BOOT}s (marker '$RESULT_MARKER' unseen)"
+    echo "FAIL: no ATF result lines within ${TIMEOUT_BOOT}s (boot chain regression? expected $EXPECTED cases)"
     strings "$SERIAL_LOG" 2>/dev/null | grep -av "^nk4a\|^vr:\|^pm:" | tail -10 || true
     exit 1
 fi
