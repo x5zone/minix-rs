@@ -169,8 +169,12 @@ fn extend_upto_v(
     let supports_resize = avl_less(active.regions(), offset.0)
         .expect("brk: region present (checked above)")
         .def_memtype
+        // CodeReview 续-279m P2-3：`def_memtype==None` 是 C 不存在的形（每个
+        // region 都经 map_page_region 带 memtype 诞生）——若残留到此，resize 腿
+        // 原地 extend 产出的新页仍会同型 NoMemType 死；路由到 create 腿就地
+        // 新建带 MEM_TYPE_ANON 的可 fault 段才是防御性正解。
         .map(|m| m.supports_resize())
-        .unwrap_or(true);
+        .unwrap_or(false);
 
     if supports_resize {
         avl_less_mut(active.regions_mut(), offset.0)
@@ -366,10 +370,11 @@ mod tests {
         {
             let table = VmProcTable::get_global();
             let mut active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
-            let neighbor = VirRegion::new(
+            let neighbor = VirRegion::with_memtype(
                 VirBytes(0x4000_2000),
                 VirBytes(0x800),
                 VrFlags::WRITABLE | VrFlags::ANON,
+                &MEM_TYPE_ANON,
             );
             active.regions_mut().insert(neighbor).unwrap();
         }

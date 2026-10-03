@@ -291,12 +291,19 @@ void *sbrk(intptr_t incr) {
     if (incr > 0) {
         struct kmsg m;
         long r;
+        /* CodeReview 续-279m P2-2：对位 C sbrk.c:20 的回绕保护——正向增长
+         * 却得到更小地址即溢出（本空问不可能触达，封非法态防后继复用）。 */
+        if (next < old) { errno = ENOMEM; return (void *)-1; }
         memset(&m, 0, sizeof m);
         m.m_type = POSIX_STUBS_VM_CALL_BREAK;
         m.slots[0] = (long long)next;   /* m_lc_vm_brk.addr @payload+0 */
         r = ipc_sendrec(POSIX_STUBS_VM_ENDPOINT, &m);
         if (r != 0) { errno = (int)r; return (void *)-1; }
-        if (m.m_type != 0) { errno = (int)(-m.m_type); return (void *)-1; }
+        /* CodeReview 续-279m P2-1：VM 错误回执经 reply_to_errno（encode.rs:94）
+         * 是**正 errno**（m_type=code，ipc_sendrec 已把往返错与回执码分离），
+         * 与 C _syscall/lstat 路的**负 errno** 约定相反——这里直取正值，
+         * 取负会得到非法负 errno。两种回执形各自钉死在此注释。 */
+        if (m.m_type != 0) { errno = (int)m.m_type; return (void *)-1; }
     }
     posix_stub_break = next;
     return (void *)old;

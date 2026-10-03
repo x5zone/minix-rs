@@ -982,18 +982,20 @@ mod tests {
         // src data region [0x3000_0000, 0x5000_0000), dst [0x3000_0000, 0x4000_0000).
         {
             let mut proc = table.get_active(src_slot).unwrap();
-            proc.regions_mut().insert(crate::region::VirRegion::new(
+            proc.regions_mut().insert(crate::region::VirRegion::with_memtype(
                 VirBytes(0x3000_0000),
                 VirBytes(0x2000_0000),
                 VrFlags::WRITABLE | VrFlags::ANON,
+                &crate::memtype::MEM_TYPE_ANON,
             )).unwrap();
         }
         {
             let mut proc = table.get_active(dst_slot).unwrap();
-            proc.regions_mut().insert(crate::region::VirRegion::new(
+            proc.regions_mut().insert(crate::region::VirRegion::with_memtype(
                 VirBytes(0x3000_0000),
                 VirBytes(0x1000_0000),
                 VrFlags::WRITABLE | VrFlags::ANON,
+                &crate::memtype::MEM_TYPE_ANON,
             )).unwrap();
         }
 
