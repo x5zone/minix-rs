@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-313②（α 形不可能态全 32 寄存器定谳：k2 的 CPU 状态与 ELF 在 sepc 的指令语义不可调和——状态=「别的代码」的相干快照）**：k2 全寄存器表（修正提取后）=x11=stval ✓/x12=vaddr ✓/x15=DM ✓/x16=0x9c93c000/x17=掩码 ✓/x14=x16+4/x19=0x9c93d000/x23=0x800c——但 ELF 0x3ae10=`ld a1,0(a1)` 语义 a1=(slotoff|DM)+L1frame 应=0x109D330FF8≠实测 0x10bc8ffb3c；反解 a1−DM−0xFF8=0xBC8FF044≠x16；a1−x16=0x1FFC3B3C 形=VM 栈段偏移。⇒ **执行流/取指字节在该 PC 处与 ELF 脱钩（QEMU TB 层）**——α 不可能态由孤证升级为全寄存器完整定谳。§续-314 靶=①崩时 text 页字节校验（eed1867 新基线）②QEMU 变体矩阵③one-insn-per-tb 等零网络参数试验；若①双向确认 ⇒ (A)=QEMU 8.2.2 TCG 工件，解锁=版本变体或 QEMU 层绕过。
+> **🛑 最新前沿＝§续-312（§续-311 终判撤回：实验无效根因=halt-dump 工具不重写 mod_*.bin——z60-z62 跑的 VM=a8b7654c 旧字节，旁路从未上场；工具已修）**：riscv_halt_dump.sh 只重生 table/DTB 不重写 mod bins——REL 重建（eed1867 含旁路）后 QEMU 仍装旧 a8b 字节 ⇒「四腿全内核化仍崩 3/3」无效撤回，旁路从未被实验。连带勘误：zscan 全 DIFF/签名零命中=拿 eed1867 ELF 比 a8b RAM 的比较对象错；§续-313②「k2 不可能态」**有效**（k2 时代 mod bins=a8b 同构建 ✓）；hd4 text EXACT ✓ 有效。工具已修=每跑从 REL 重写 12 mod bins（fallback 名链）——验证 mod_vm.bin md5 已=eed1867。**方法论（重大）=「复用 Stage 4 产物」的取证工具必须自带产物新鲜度保障，批次除钉串口 md5 外必须钉「串口 md5==REL md5」**。§续-313 余项重排=①重落 Pte 三腿+setaddr-root 探针（git 历史 c114abf9c+2c8c428ce 可恢复）②工具修正后重跑旁路实验（真上场）——不崩=旁路有效→§7③krewalk 新二进制重采。
+>
+> **（上一前沿＝§续-313②（α 形不可能态全 32 寄存器定谳：k2 的 CPU 状态与 ELF 在 sepc 的指令语义不可调和——该笔对其构建（a8b）有效；构建归属勘误见本笔）**：k2 全寄存器表（修正提取后）=x11=stval ✓/x12=vaddr ✓/x15=DM ✓/x16=0x9c93c000/x17=掩码 ✓/x14=x16+4/x19=0x9c93d000/x23=0x800c——但 ELF 0x3ae10=`ld a1,0(a1)` 语义 a1=(slotoff|DM)+L1frame 应=0x109D330FF8≠实测 0x10bc8ffb3c；反解 a1−DM−0xFF8=0xBC8FF044≠x16；a1−x16=0x1FFC3B3C 形=VM 栈段偏移。⇒ **执行流/取指字节在该 PC 处与 ELF 脱钩（QEMU TB 层）**——α 不可能态由孤证升级为全寄存器完整定谳。§续-314 靶=①崩时 text 页字节校验（eed1867 新基线）②QEMU 变体矩阵③one-insn-per-tb 等零网络参数试验；若①双向确认 ⇒ (A)=QEMU 8.2.2 TCG 工件，解锁=版本变体或 QEMU 层绕过。
 >
 > **（上一前沿＝§续-313-b（状态勘误：Pte 臂已随 §续-311-b 回滚移除，pter 日志补丁未应用——r1s-r3s=直接读时代崩照旧再实证；收口步修正版=先零改动做 GPR x12/fill-root va/ptroot 全量对账穷尽①门，再决定是否重落 Pte 臂+区间日志）**：r1s-r3s（直接读时代采样）3/3 崩同指纹=槽访问层豁免再实证；krewalk（kernel 侧）保留在场。§续-305 的「根错配」待 §续-306 setaddr-root 与 ptroot 的同窗对账（跨 run 恒定值已录：ptroot=0x9d6e9000 恒定、setaddr-root=0xffffffff9d6e9000=掩码后同帧）。
 >
@@ -12377,3 +12379,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **不可调和证明（终版）**：ELF 在 0x3ae10=`ld a1,0(a1)`，语义 a1=(slotoff|DM)+L1frame。代入实测：slotoff(va=0x7fffffffe000)=0xFF8、a5=x15=DM ✓、a6=x16=0x9c93c000 ⇒ a1 应=0x109D330FF8；实测 a1=0x10bc8ffb3c。反解 a1−DM−0xFF8=0xBC8FF044≠x16。且 a1−x16=0x1FFC3B3C 形=x2 类（VM 栈段）偏移——**寄存器状态是某段相干代码的快照，但不是 ELF 在 0x3ae10 对本输入的执行结果**。⇒ 执行流/取指字节在该 PC 处与 ELF 脱钩（QEMU TB 层）——α 形不可能态由「孤证/寄存器不全」升级为**全寄存器完整定谳**。
 
 **§续-314 靶**：①崩时（panic-halt 冻结态）对 VM text 页 0x3a000 做 krewalk 式字节校验（eed1867 建新基线后）——若 text=ELF 而 CPU 态≠ELF 语义 ⇒ QEMU TB 层实锤（对照 hd4 旧证）；②QEMU 变体矩阵（网络）；③若 ① 双向确认（text 净+态不可调和）⇒ (A)=QEMU 8.2.2 TCG 工件，解锁路径=版本变体或 QEMU 层绕过（-accel tb-size/one-insn-per-tb=one-insn 参数试验零网络成本）。
+
+## §续-312（2026-10-04·§续-311 终判撤回：实验无效根因=halt-dump 工具不重写 mod_*.bin——z60-z62 跑的 VM=a8b7654c 旧字节（旁路从未上场）；工具已修=每跑从 REL 重写 mod bins）
+
+**实验无效根因（全案错位）**：`riscv_halt_dump.sh` 只重生 table.bin+DTB，**不重写 mod_*.bin**——REL/minix-vm 重建（eed1867，含旁路）后，mod_vm.bin 仍是 a8b7654c（旧基线，mtime 03:30）。z60-z62 的 QEMU 装载=旧 a8b 字节（旁路从未上场）⇒ **「四腿全内核化仍崩 3/3」终判无效撤回**——旁路从未被实验。连带勘误：①zscan「全 40 页 DIFF」=拿 eed1867 ELF 比对 RAM 里的 a8b 字节=比较对象错（非腐写）；②text 签名零命中=同因；③§续-313② 的「k2 不可能态」=用 a8b 反汇编解释 a8b 批寄存器 ✓ **该笔有效**（k2 时代 mod bins=a8b ✓ 同构建）；④§续-281 hd4 的 text 全 EXACT ✓ 有效（hd4 时代 mod bins=a8b 且比对=a8b ✓ 同构建自洽）。
+
+**工具已修**（tmp/nk4a/riscv_halt_dump.sh）：每跑从 REL 重写 12 个 mod_*.bin（fallback 名链 memory→minix-driver-memory 等），后接同源 loader 参数重算。验证=mod_vm.bin md5 已刷新=eed1867=REL ✓。**方法论（重大易错模式入库）**：**「复用 Stage 4 产物」的取证工具必须自带产物新鲜度保障（从当前 REL 重写），否则 REL 重建后实验静默跑旧字节**——本笔 z60-z62 的「旁路无效」假结论、§续-313② 的 leaf_now 语义混乱、此前 z/r/k 批的「构建归属」全部因此错位；批次钉 md5（§续-290）钉的是串口对应关系，**还必须钉「串口 md5==REL md5」**。
+
+**§续-313 余项重排**：①重落 Pte 臂（读/写/零填三腿+wire，从 c114abf9c+本轮未提交补全恢复——代码在 git 历史）+setaddr-root 探针（§续-306 同恢复）；②工具修正后重跑旁路实验（这次真上场）——不崩=旁路有效→§7；③krewalk 各崩读数在新二进制下重采。
