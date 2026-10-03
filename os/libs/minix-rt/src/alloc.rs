@@ -113,7 +113,7 @@ pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 /// 未物化页——VM 的 `.bss` 由 `load_vm_elf` 段循环按 memsz 整段 eager 物化。
 /// 绑 `GLOBAL_POOL_PAGES`（每池页一条记录）才是原则天花板，一页护栏遂删除。
 
-/// Initial heap pool for the global allocator, in bytes (1024 pages).
+/// Initial heap pool for the global allocator, in bytes (2048 pages).
 ///
 /// The pool is `.bss` storage, so its size charges each binary's image
 /// segment. The bootproc leg materializes every segment page eagerly
@@ -161,7 +161,20 @@ pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 /// unaffected: it does not take `alloc-global`, `os/servers/vm/Cargo.toml:
 /// 47`, so the B34 .bss-self-paging landmine does not apply here). The
 /// faithful fix stays the VM-backed supplier (module docs).
+#[cfg(not(target_arch = "x86_64"))]
 pub const GLOBAL_POOL_BYTES: usize = 2048 * PAGE_BYTES; // NK4-C §续-279c MFS cache 预算轮
+
+/// x86_64 分档——§续-279c 容量轮的 x86 回归修复（真机 gh142 后补验）：
+/// 同轮全量 boot 在 x86 上 init runcom 回落 SingleUser（aarch64/riscv 同池健
+/// 康），x86 侧模块 exec/加载腿对大 .bss 段的预算约束与另两架构不同
+/// （aarch64/riscv 的 boot exec 已 §1.101 demand-fill，.bss 不占 eager 窗口；
+/// x86 同配置实测破窗口）。x86 暂无 ATF 套件需求（xtask 播种门控
+/// ATF_BOOT_LEG_READY=[aarch64]），1024 页即 §续-279c 前的基线值——x86 产物
+/// 逐字节回到旧态，回归零风险；aarch64/riscv 保留 2048（套件预算）。
+/// 原则解（demand-zero 运行时段或 VM-backed heap，三架构统一 2048+）在
+/// module docs 挂账，落地后删除本分档。
+#[cfg(target_arch = "x86_64")]
+pub const GLOBAL_POOL_BYTES: usize = 1024 * PAGE_BYTES;
 
 /// Number of whole pages the global pool holds (`GLOBAL_POOL_BYTES` /
 /// [`PAGE_BYTES`]). Used to size the free-page stack and slab record table

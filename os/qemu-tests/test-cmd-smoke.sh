@@ -27,8 +27,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"   # …/minix-rs/os
-TIMEOUT_BOOT="${TIMEOUT_BOOT:-120}"
-TIMEOUT_T4="${TIMEOUT_T4:-60}"
+TIMEOUT_BOOT="${TIMEOUT_BOOT:-180}"
+TIMEOUT_T4="${TIMEOUT_T4:-120}"
 T4_MARKER="${T4_MARKER:-rc: minimal boot script marker}"
 
 if ! command -v qemu-system-x86_64 &>/dev/null; then

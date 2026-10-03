@@ -11861,6 +11861,18 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 验证：host 4 包集 1403/0、minix-rt+minix-fs 193/0、check-layout all PASS、真机 gh142 套件读数如上。(A) 仍 open。
 
+---
+
+## §续-279d（2026-10-03·279c 容量轮的 x86 回归修复：池分档 target_arch 化；本会话两处误判自纠）
+
+> 收尾回归补跑 x86 smoke（评审要点 5 的建议项）当场 FAIL：init runcom 回落 SingleUser、marker 永不出——**2048 池把 init/sh 等 .bss 撞破 x86 侧模块加载对大 .bss 段的预算约束**（aarch64/riscv 同池健康，§1.101 demand-fill 不碰 eager 窗口；x86 腿具体限点待 279e 挖 bootface/identity 窗，机制候选含 copy_in_bytes 同源窗口）。修复 = `GLOBAL_POOL_BYTES` 按 target_arch 分档（x86_64=1024 即 279c 前基线、产物逐字节回旧；非 x86=2048 保留套件预算）；真机二分坐实因果：同镜像流程、仅分档差异——x86 smoke **PASS**（rc=0）。未坐实 x86 限点前不拿“对称修窗”充当修复，分档注释已标原则解（demand-zero 段/VM-backed heap 统一 2048+）挂账。
+>
+> **自纠×2（诚实链）**：① §续-279c 的“B34 地雷不适用→x86 无需重跑 boot”论断只对了一半——B34 自分页面确实不适用（VM 无 alloc-global），但漏了**池尺寸同时是每模块 .bss 膨胀因子**，x86 加载腿对此有独立预算约束——**收官对账里“x86 smoke PASS”当时并未在 2048 状态下跑过**，属结论跑在证据前；② 门 STALLED 窗口 120s 对 strlen_huge 类多用例偏紧（gh142 harness 420s 内走到 swab=20 passed；279d 验后重跑在 strspn 处判 stall——同镜像同二进制，前后差异提示套件尾部有慢案/非确定性，登记 279e 调查项（慢 vs 挂：看尾部是否续吐行）。
+>
+> 另新事实：279d 重跑（x86=1024 分档后、aarch64 不变）套件停在 19/36——**suite 尾部进度非确定（同镜像 gh142=20+ 继 swab）**，需 STALLED 诊断升级（尾部续吐行=慢不判死）后才能把“全绿”当硬判据；279e 优先序：① x86 加载限点坐实（bootface identity/DM 窗）→ ② 套件尾部非确定性根因（慢案识别/停滞窗调参）→ ③ sysconf 真实现 → ④ stresep → ⑤ strerror 族调研 → ⑥ D1 口径。
+
+提交注：本笔含 minix-rt alloc.rs 分档（生产码）+ 上笔（279c 的 2048 单值）已被本笔覆盖修正；x86 smoke PASS + minix-rt 59/0 + aarch64 套件门继跑健康。
+
 ### 会话收官对账（2026-10-03 续-276→279b，累计 12 commit）
 - 三目标态：① x86✅ aarch64✅ riscv❌(A)；② x86✅ aarch64✅ riscv❌(A)；③ **构建面双 arch 各 18/18 + aarch64 上机 ≥12 案实证 passed（会话前：仅构建面 riscv 18/18、上机 0 案）**，全套 36 案被 D2 截断（机制候选已锁）。
 - 回归底线：host 4 包集 1403/0、check-layout all PASS、x86 smoke PASS、aarch64 smoke PASS（含 SIGPIPE 假失败真修）、aarch64 ATF 门就位；每 commit 均 CodeReview（PASSED×4，另两轮 P0/P1/P2 修复轮 276b/277b/277c/278b/278c 全部落地），纯文档笔次标注“无生产码可审”；qemu 收尾清零、tracked 净。
