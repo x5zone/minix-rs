@@ -400,6 +400,25 @@ impl PageCache {
             }
         }
         for (dev, dev_off) in evict {
+            // 续-302 逐出探针（用后即滚）：记录每个 victim 的 pfn+key——
+            // 对照 krewalk v3 的 leaf_now=0（fill-root 叶槽被逐出零填假设）。
+            // 回收压力路径非 walk 热路；CAP=400 防洪。先测观测者效应。
+            #[cfg(all(target_arch = "riscv64", not(test)))]
+            {
+                use core::sync::atomic::{AtomicUsize, Ordering as EOrd};
+                static EVICT_LOGGED: AtomicUsize = AtomicUsize::new(0);
+                if EVICT_LOGGED.load(EOrd::Relaxed) < 400 {
+                    let n = EVICT_LOGGED.fetch_add(1, EOrd::Relaxed);
+                    let vpfn = self
+                        .by_dev
+                        .get(&(dev, dev_off))
+                        .map(|e| e.pfn)
+                        .unwrap_or(u32::MAX);
+                    crate::bootmark::mark(&alloc::format!(
+                        "nk4c: evict n={n} pfn={vpfn:#x} dev={dev:#x} off={dev_off:#x}\n"
+                    ));
+                }
+            }
             self.rmcache(dev, dev_off, frames, alloc);
         }
         freed
