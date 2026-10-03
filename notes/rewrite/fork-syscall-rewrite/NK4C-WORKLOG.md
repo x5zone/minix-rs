@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-282（a2d 探针落地：walk_read 父级边界五元组+U-safe sink，全回归绿）**：三文件 riscv64-only 门控——paging.rs 新 `pub mod a2d`（RAM_TOP=0xA000_0000 谓词不扩围/CAP=16/fn 指针 sink write-once）+walk_read 两 fire 位点（`l1=pte_to_paddr(l2e)`/`l0=pte_to_paddr(l1e)` 之后、跟随读之前，崩前抓 (root,lvl,idx,raw,child)）；bootmark.rs `register_a2d_sink`+格式化 sink（`nk4c: a2d root=…`<128 走 sys_diagctl）；vm_server.rs 注册块对齐 pt_alloc::register 时机。诚实边界=只抓越 0xA0000000 必崩类，「RAM 内错误帧」腐值未扩围；观测者效应预案（gh74）=不复现即多跑对账、是效应即回滚。验证=riscv release 构建过（rodata 串实测在产物）+宿主全绿（1403/0+535/0+layout PASS+x86 smoke+aarch64 bootmarks rc=0+qemu=0）。下一步=§续-283 探针 boot×halt-dump 成对取证拿 β 写者指纹。
+> **🛑 最新前沿＝§续-283（a2d 探针按预案回滚：观测者效应统计定谳）**：探针在码 11 跑崩率 2/11≈18% vs 基线 7/10=70%（二项 P<0.001）+β 形零现+a2d 真命中零 ⇒ 热路足迹（每级 walk 两次比较+分支）足以挪走 β 竞态窗，gh74 教训同型复现，「是效应即回滚」预案触发；**回滚不是探针错**（CodeReview PASSED 0P0/0P1 留档）而是它改变了被观测系统。`git checkout 3fafdbe04^ -- <三文件>` 回字节态（diff=0 实证），快回归 0 failed+535/0。资产留存=halt-dump 工具（零扰动主力）+11 份 dump（9 stall 形首批记忆快照+hd6/hd11 崩现场）；**hd6 定谳 form A=控制流脱轨跳进无 X 位的栈页被拦**（取指页 PTE=VRWUAD 无 X，栈内容含堆指针 0x1400028000）；**hd11=BTreeMap panic @exec2 极早期**——腐坏窗比 exec 风暴更宽。方法论=「探针不復现」须跑满统计样本再裁决修复vs扰动；崩形分布本身是扰动读数。下一步=(A) 回零扰动 halt-dump 序列；转 D1 确定收益（host MATCH+双腿链成+nm 铁证，待上机 33→34）。
+>
+> **（上一前沿＝§续-282（a2d 探针落地：walk_read 父级边界五元组+U-safe sink，全回归绿）**：三文件 riscv64-only 门控——paging.rs 新 `pub mod a2d`（RAM_TOP=0xA000_0000 谓词不扩围/CAP=16/fn 指针 sink write-once）+walk_read 两 fire 位点（`l1=pte_to_paddr(l2e)`/`l0=pte_to_paddr(l1e)` 之后、跟随读之前，崩前抓 (root,lvl,idx,raw,child)）；bootmark.rs `register_a2d_sink`+格式化 sink（`nk4c: a2d root=…`<128 走 sys_diagctl）；vm_server.rs 注册块对齐 pt_alloc::register 时机。诚实边界=只抓越 0xA0000000 必崩类，「RAM 内错误帧」腐值未扩围；观测者效应预案（gh74）=不复现即多跑对账、是效应即回滚。验证=riscv release 构建过（rodata 串实测在产物）+宿主全绿（1403/0+535/0+layout PASS+x86 smoke+aarch64 bootmarks rc=0+qemu=0）。下一步=§续-283 探针 boot×halt-dump 成对取证拿 β 写者指纹。
 >
 > **（上一前沿＝§续-281（零扰动 halt-dump 取证线打通：α 形铁证升级「执行瞬间字节≠RAM 现存字节」）**：新工具 `tmp/nk4a/riscv_halt_dump.sh`（崩后 monitor pmemsave 全 512MB RAM，零观测者效应；HMP 两坑=文件名必须加引号防 `/` 当除法 + 内核 pfvm `root=` 打印缺 `<<12` 印的是 PPN）。hd4（α 形崩）dump 定谳：**VM text 40/40 页 EXACT + 三副本（loader 落地/bump/活体）全 EXACT**；trap 帧审计=slot0 垫槽不存（gpr[0] 印的是栈陈旧值，x1..x31 逐位可信）；α 铁证=hd4 与 r1 的寄存器三元组均与「执行现 RAM 字节」矛盾 ⇒ **执行瞬间该 PC 处字节≠halt 时 RAM 字节**。主假设=帧别名三张脸（β 父 PTE 瞬态值/数据脸 BTreeMap+PM panic/**代码脸 text 瞬态腐写被执行→refault 触发 demand-fill 重灌→halt 已修复**——§续-265 refault 目击即 refill 证据）；竞争解释=QEMU 软 TLB 平移陈旧。判据=未来 dump 抓到 text 非 EXACT 崩→耐久形；全 EXACT 序列→瞬态+refill。零生产码改动。
 >
@@ -12065,3 +12067,15 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **验证**：riscv64 release 构建过（`cargo build --release --target riscv64gc-unknown-none-elf -p minix-vm`，探针 rodata 串 `nk4c: a2d root=` 实测在产物 0x3849）；宿主回归全绿=4 包集 1403/0 + minix-vm 535/0 + check-layout all PASS + x86 smoke PASS + aarch64 bootmarks rc=0 + 收官 qemu=0。
 
 **下一步**：探针 boot 与 halt-dump 成对取证（§续-283）——rebuild 后跑 boot-full 确认崩形分布是否保持（β/α 比例），halt-dump 抓「a2d 行+崩点+全 RAM」三元组；a2d 行的伪帧值即写者指纹第一手证据。
+
+## §续-283（2026-10-03·a2d 探针按预案回滚：观测者效应统计定谳 11 跑崩率 18% vs 基线 70%，β 形零现；.CodeReview PASSED 0P0/0P1 留档）
+
+**读数**：探针在码 11 跑（a283p1+hd5-hd14，全带 halt-dump 成对）：崩 2（hd6=form A 取指故障 @exec11；hd11=**BTreeMap navigate panic @exec2 极早期**——腐坏窗口比 exec 风暴窗更宽的新事实）+stall 形 9；**β 形零现、`nk4c: a2d` 真命中零**（a283p1 轮 grep 命中全是 pfn 尾数假阳性）。对照基线 §续-280 崩 7/10（β×2）。二项检验 P(≤2崩 in 11 | p=0.7)<0.001 ⇒ **探针的热路足迹（每级 walk 两次比较+分支）足以挪走 β 的竞态窗**——gh74 教训（§续-218）同型复现，登记预案「是效应即回滚」触发。评审记录：commit 3fafdbe04 的 CodeReview **PASSED 0P0/0P1（0P2）**（读序/通道门/transmute/DIAGBUFSIZE 98<128/注册时序全过）——回滚不是因为探针错，是因为**它改变了被观测系统**。
+
+**回滚执行**：`git checkout 3fafdbe04^ -- os/arch/src/riscv64/paging.rs os/servers/vm/src/bootmark.rs os/servers/vm/src/vm_server.rs`（本树无未提交 os/ 改动，checkout 安全=基线对账纪律例外条款适用）；`git diff 3fafdbe04^ -- os/`=0 行实证回到 §续-282^ 字节态。快回归=4 包集 0 failed + VM 535/0（该字节态的 check-layout/x86 smoke/aarch64 bootmarks 已在 §续-282 轮全绿，不重跑）。
+
+**资产留存**：halt-dump 工具（零扰动，本线主力观测通道）+探针轮 11 份 dump（9 stall 形=「不崩形状」的首批记忆快照+hd6/hd11 两崩形现场）。**hd6 dump 定谳 form A**：崩点取指页 0x3ffffc6000 PTE=VRWUAD **无 X 位**（栈页正确无 X）——form A=**控制流经野返回地址/函数指针脱轨跳进栈执行，被 X 位保护拦成取指页故障**；栈内容可见堆指针 0x1400028000（VM_HEAP_BASE+0x28000）。hd4/hd6 根表 L2 布局逐项一致（11 项非零、DM 窗 L2[4] 已映射 0x82011000——首 4MB 内核区帧不在 VM 自由表故选择性覆盖=正常非异常；child-stack 属子根不属 VM 根）。
+
+**方法论入账（易错模式）**：时序敏感竞态的「探针不復现」两解（修复 vs 扰动）必须跑满统计样本再裁决（本例 5 跑时 1/5 尚可辩，11 跑时 2/11 定谳）；崩形分布本身是探针扰动的读数（β 消失而 BTreeMap/form A 仍在=扰动选择性压制最紧的窗，非整轮护身）。
+
+**下一步**：(A) 线回到零扰动 halt-dump 序列（多跑采崩形+现场对）；本轮转确定收益队列 D1（random 接管已 host 对账 MATCH+双腿链成+nm 铁证，待 aarch64 上机验证 33→34）。
