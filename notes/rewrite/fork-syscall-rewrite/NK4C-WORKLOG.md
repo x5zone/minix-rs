@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-303（ptfree=0：表帧从未被归还——零填者收窄到「写分歧（视图层）」vs「exec unmap_range 时序」）**：w1-w3=ptfree 零命中（vm_pt_free 从未调用，表帧从未 free，重分配零填也排除）+崩率 3/3 照旧。零填者只剩①**写分歧**：fill-root 的 VmDm 写被平移层误导（写去别处=§续-217 数据腐蚀面来源，真槽保持 0，refault=「写不粘」§续-265）②**exec unmap_range 时序**（重叠拆除清掉刚 fill 的槽=纯代码 bug）。判别=崩窗串口 fill-root ×3 之间有无拆除腿。§续-304 靶=①逐行比对崩窗事件序列②写分歧实锤 ⇒ (A)=**VmDm 窗读写特定时序被平移层误导**（当前证据链终点；解锁=QEMU 变体矩阵或 VmDm 改内核代读/代写腿=§续-288 已审方向）③探针族保留至结案滚除。
+> **🛑 最新前沿＝§续-304（崩窗序列定谳：fill×3 背靠背同 pte_pa、无任何拆除/free 腿——「VmDm 写分歧」实锤=当前证据链终点）**：w1 崩窗序列=fill#1（exec 前流内）→ mrr Ok+**exec endpt=0x800c 完成（child 地址空间重建窗）**→ fill#2/#3 背靠背（同 va/同 ptroot/同 pte_pa，中间零事件零拆除腿）→ β 崩。fill×3=child 同页反复重试仍缺=**fill-root 的 VmDm 写从未落到 RAM**（krewalk v3 实证槽=0；free/evict/ptfree/拆除四腿全排除=§续-300/302/303+本笔）。定性终点=fill-root 经 write_pte_dm(VmDm)=write_volatile(DM_BASE+leaf_pa) 的写未生效于 RAM——候选机制=QEMU 软 TLB 对 DM 窗 VA 的陈旧/错向表项（写落错帧=§续-217 数据腐蚀来源；读回 poison=β/α 形状）⇒ **(A)=VmDm 窗写在特定时序被平移层误导**，读同理。未决=QEMU 层精确机制。§续-305 靶=①QEMU 变体矩阵（网络恢复即跑）②**VmDm 读写改内核代写/代读腿**（对位 C kernel-mediated：PTE 写经 kernel-call 由 S 态 KDM 直写+sfence，绕开平移层；本仓可控正解候选，需评审）③8.2.2 机制定位（重）。
+>
+> **（上一前沿＝§续-303（ptfree=0：表帧从未被归还——零填者收窄到「写分歧（视图层）」vs「exec unmap_range 时序」）**：w1-w3=ptfree 零命中（vm_pt_free 从未调用，表帧从未 free，重分配零填也排除）+崩率 3/3 照旧。零填者只剩①**写分歧**：fill-root 的 VmDm 写被平移层误导（写去别处=§续-217 数据腐蚀面来源，真槽保持 0，refault=「写不粘」§续-265）②**exec unmap_range 时序**（重叠拆除清掉刚 fill 的槽=纯代码 bug）。判别=崩窗串口 fill-root ×3 之间有无拆除腿。§续-304 靶=①逐行比对崩窗事件序列②写分歧实锤 ⇒ (A)=**VmDm 窗读写特定时序被平移层误导**（当前证据链终点；解锁=QEMU 变体矩阵或 VmDm 改内核代读/代写腿=§续-288 已审方向）③探针族保留至结案滚除。
 >
 > **（上一前沿＝§续-302（逐出假设证伪：探针在场崩率保持 4/4 且 evict=0——free_pages 从未执行）**：v1-v4 读数=4/4 (A)-crash（α×3+β×1 指纹照旧）+逐出探针零命中+fill-root=3/run（refault 照旧）；探针零扰动（在从未执行的路径上）保留在场。§续-303 靶=vm_pt_free 归还探针（`nk4c: ptfree pfn` CAP=400）：0x9c93e 崩窗内被 ptfree→teardown 拆活表（追调用者）；全程无 ptfree→零填来自重分配零填（free 后 realloc 为数据帧，reuse-DATA 洪水即此）⇒ 追上一跳 free。帧生命周期审计收口。
 >
@@ -12273,3 +12275,11 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **读数**（w1-w3）：ptfree=0（三跑全程 vm_pt_free 零调用=表帧从未被 free）+ 崩率 3/3 照旧（β×2 同指纹 + update_flags 形变体）。**帧归还腿排除**——0x9c93e000 从未进过 free 列表，重分配零填假设也排除。leaf_now=0 的零填者只剩：①**写分歧**：fill-root 的 VmDm 写被平移层误导（写去别处=污染他处，§续-217 /etc/rc 串入他帧的来源！），真槽从未被写（保持 boot 期 0）——refault 循环=「写不粘」的直接表现（§续-265）；②**exec unmap_range 时序**：fill 后的重叠拆除腿清掉刚写的槽（纯代码 bug）。判别实验=串口里 fill-root ×3 之间有无 unmap/拆除探针。
 
 **§续-304 靶**：①逐行比对崩窗串口（fill-root ×3 之间的事件序列，找 unmap 拆除腿）；②若序列里无拆除 → 写分歧实锤 ⇒ (A)=**VM 的 VmDm 窗写/读在特定时序被平移层误导**——这是当前证据链能支撑的终点；解锁路径=QEMU 变体矩阵（网络恢复）或 VmDm 读写改内核代读/代写腿（§续-288 已审方向，架构对位 C 的 kernel-mediated）。③krewalk/evict/ptfree 探针族保留至 (A) 结案一并滚除。
+
+## §续-304（2026-10-04·崩窗序列定谳：fill×3 背靠背同 pte_pa、无任何拆除/free 腿——「VmDm 写分歧」实锤为当前证据链终点）
+
+**崩窗序列**（w1，fill-root 在 idx 19810/19817/19818）：fill#1（exec 完成前的流内 fill）→ `mrr verdict=Ok`+`exec endpt=0x800c`（**exec 完成=child 地址空间重建窗**）→ fill#2、fill#3 **背靠背**（同 va、同 ptroot、同 pte_pa=0x9c93e000，中间零事件零拆除腿）→ β 崩（0x3ae3e/0x409c8ffb30）。fill×3=child 对同页反复重试仍缺=**fill-root 的 VmDm 写从未落到 RAM**（krewalk v3 实证该槽 RAM=0；free/evict/ptfree/拆除四腿全排除——§续-300/302/303+本笔序列）。
+
+**定性终点（当前证据链能支撑的最深处）**：fill-root 经 write_pte_dm(VmDm)=write_volatile(DM_BASE+leaf_pa) 的写**未生效于 RAM**——候选机制=QEMU 软 TLB 对 DM 窗 VA 的陈旧/错向表项（写落错物理帧=§续-217 数据腐蚀来源+读回 poison=β/α poison 形状）——即 **(A)=VmDm 窗写在特定时序被平移层误导**，读同理（walk 经 VmDm 读出的 poison=错向读到的别处字节）。剩余未决=QEMU 层的精确机制（软 TLB 表项为何错向——需 QEMU 层取证或版本变体）。
+
+**解锁路径重画（§续-305 靶）**：①QEMU 变体矩阵（网络恢复即跑——9.x 若无此症，riscv 全链在 9.x 直通，证据随版本标注）；②**VmDm 读写改内核代写/代读腿**（架构对位 C 的 kernel-mediated：VM 的 PTE 写改经 kernel-call 由内核 S 态执行——KDM 直写+sfence 齐备，绕开 VmDm 平移层；改动面=write_pte_dm/read_pte_dm 的 VmDm 腿或 fill/sync 调用点，需评审）；③8.2.2 特定机制定位（QEMU 层取证，重）。②为本仓可控的正解候选。
