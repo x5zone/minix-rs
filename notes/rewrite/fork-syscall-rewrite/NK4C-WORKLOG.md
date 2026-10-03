@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-300（free 路径审计：free_pfn 全点有 IN_CACHE 守卫，但逐出守卫有结构性漏洞——残留缓存条目+refcount==1 误判=leaf_now=0 机制候选）**：①VM PhysAlloc=segment tree 非侵入式（freelist 节点模型证伪）；②free_pfn 全调用点（exit.rs:163/region/mod.rs:55/cow_exec_pf.rs:461/dma.rs:135/page_state.rs:41,49/page_cache.rs:306）逐点核对均有 IN_CACHE 守卫；③**洞在逐出侧**：page_cache.rs free_pages 选 victim=`frames.get(e.pfn).refcount()==1`——无法区分「缓存独持 ref」vs「pfn 已重分配为新主表帧的新单 ref」⇒ 一旦存在残留缓存条目（同 pfn 双键插入/某腿漏清 IN_CACHE），逐出即连零填带释放在用表帧=krewalk v3 的 leaf_now=0x0。§续-301 靶=①插入侧同 pfn 双键审（mem_file/共享/mmap 腿一帧插两键）②ev_unreference 腿 IN_CACHE 清理核对③坐实后修=逐出守卫改 IN_CACHE 所有权判别或按 pfn 杀全部同 pfn 条目——成修即 (A) §7 验收（b 批指纹 6/6 高复现=完美 ≥3 轮靶）解锁 riscv 三目标。方法论=「全调用点清单+逐点守卫核对」。
+> **🛑 最新前沿＝§续-301（插入侧审计：addcache fail-closed——静态审计未找到 stale entry 之门；§续-302=逐出探针取动态证据）**：addcache（page_cache.rs:237-276）fail-closed=pfn 已 IN_CACHE 或键已存在即 AlreadyCached 拒绝（一帧一键不变量插入侧成立）；rmcache 同步删条目+清旗标。静态审计 stale-entry 之门未找到 ⇒ 需动态证据：**§续-302=逐出探针**（free_pages 选 victim 时 bootmark 记 `nk4c: evict pfn key`——回收压力路径非 walk 热路扰动预期低；b 批 α 指纹 100% 可重复可对照：victim=0x9c93e/f 实锤逐出杀表帧，无相关性则 (A) 另寻门）。纪律同前（先测效应，抑制即回滚登记）。§续-300 的守卫漏洞修法（IN_CACHE 所有权判别）仍为候选——若探针证实逐出杀表帧，修法与证据齐备即成修。
+>
+> **（上一前沿＝§续-300（free 路径审计：free_pfn 全点有 IN_CACHE 守卫，但逐出守卫有结构性漏洞——残留缓存条目+refcount==1 误判=leaf_now=0 机制候选）**：①VM PhysAlloc=segment tree 非侵入式（freelist 节点模型证伪）；②free_pfn 全调用点（exit.rs:163/region/mod.rs:55/cow_exec_pf.rs:461/dma.rs:135/page_state.rs:41,49/page_cache.rs:306）逐点核对均有 IN_CACHE 守卫；③**洞在逐出侧**：page_cache.rs free_pages 选 victim=`frames.get(e.pfn).refcount()==1`——无法区分「缓存独持 ref」vs「pfn 已重分配为新主表帧的新单 ref」⇒ 一旦存在残留缓存条目（同 pfn 双键插入/某腿漏清 IN_CACHE），逐出即连零填带释放在用表帧=krewalk v3 的 leaf_now=0x0。§续-301 靶=①插入侧同 pfn 双键审（mem_file/共享/mmap 腿一帧插两键）②ev_unreference 腿 IN_CACHE 清理核对③坐实后修=逐出守卫改 IN_CACHE 所有权判别或按 pfn 杀全部同 pfn 条目——成修即 (A) §7 验收（b 批指纹 6/6 高复现=完美 ≥3 轮靶）解锁 riscv 三目标。方法论=「全调用点清单+逐点守卫核对」。
 >
 > **（上一前沿＝§续-298-b（krewalk v3 命中要害：fill-root 刚写的叶槽故障时刻读出 0——(A)=帧生命周期 bug）**：v1/v2 krewalk 均同义反复（走 DM 窗 VA/VM 自根），**v3=正确锚点**（diagctl 处理器捕获 fill-root 行的 ptroot/pte_pa 存全局，pfvm 冷路径直读叶槽现值）：p1-p4 4/4 崩全读数=`ptroot=0x9d6e9000`+`leaf_pa=0x9c93e000`（跨 run 恒定）+**`leaf_now=0x0`**——fill-root 刚写的 child 栈映射叶 PTE 在故障时刻 RAM 读出零；且 0x9c93d/e 恰在 ptalloc-reuse-DATA 洪水集合。**(A) 新定性（第三版，证据最全）=fill 目标帧在仍被引用时被回收复用+零填（帧生命周期 bug）→ 映射消失 → refault 循环（§续-265 机制本体）→ walk 穿过复用帧读到垃圾=瞬态 poison（复用后新主残留，解释指纹确定）；「QEMU 视图错位」假设撤回（v1/v2 同义反复误读）。全观测自洽。§续-300 靶=①谁回收了 0x9c93e000（free_child_tables/exit 拆子/reclaim_pages 中「fill 后仍被引用帧」被 free 的条件）②fill 帧来源与时序③对照 C 表帧 pin 语义（pagetable.c 表帧永不回池?）——若 C 有 pin 而我方漏 refcount，修法=补 pin/refcount，成修走 §7 验收解锁 riscv 三目标。
 >
@@ -12251,3 +12253,7 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **候选门（§续-301 逐条审）**：①插入侧同 pfn 双键（同帧两个 (dev,off) 键——mem_file/共享/mmap 腿把一帧插两键）；②某 ev_unreference 腿清 ref 却不清 IN_CACHE（或反之）；③fill/insert 的 IN_CACHE 置位与 refcount 增量不原子于同一分支。**修法方向（坐实后）**：逐出守卫改 `is_cached()`/IN_CACHE 所有权判别（不认裸 refcount==1），或 unmap/释放按 pfn 杀全部同 pfn 条目——成修即 (A) 的 §7 验收（b 批 α/β 指纹 6/6+0x10bc900b3c 高复现=完美的 ≥3 轮复现靶；marker+双 marker+host 全绿随后）。
 
 **方法论**：本笔把 krewalk v3 的「leaf_now=0」从现象推进到机制候选（逐出守卫误判），全靠沿 free_pfn 全点清单逐点核 IN_CACHE 守卫——**审计武器=「全调用点清单+逐点守卫核对」**（续-288 flush 账同法）。
+
+## §续-301（2026-10-04·插入侧审计：addcache fail-closed（AlreadyCached 拒绝 pfn/键双冲突）——静态审计未找到 stale entry 之门；§续-302=逐出探针取动态证据）
+
+`addcache`（page_cache.rs:237-276）fail-closed：pfn 已 IN_CACHE 或键已存在 → `AlreadyCached` 拒绝（一帧一键不变量在插入侧成立）；`addcache` 的 `!IN_CACHE` 守卫使重复 pfn 的第二键**不可能经此创建**。逐出侧 rmcache 同步删条目+清旗标。⇒ **静态审计内 stale-entry 之门未找到**——残留条目如何形成（若真形成）需动态证据。**§续-302=逐出探针**：page_cache free_pages 选 victim 时经 bootmark 记 `nk4c: evict pfn=%x key=(%x,%x)`（回收压力路径、非 walk 热路，扰动预期低）——b 批 α 指纹 100% 可重复（0x10bc900b3c），若探针保持崩率即可拿到 victim 清单与崩点的相关性（victim=0x9c93e/0x9c93f 实锤逐出杀表帧；无此相关性则 (A) 另寻门）。纪律同前：先测观测者效应，抑制即回滚登记。
