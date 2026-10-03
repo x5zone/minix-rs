@@ -11814,6 +11814,18 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - xtask 17/17（+4 新单测）；mkfs 16MiB 装配成功；真机 gh140：**12 passed + 1 failed(memcpy) 后被 OOM 截断**（门如实 FAILED 并停收）；前单案门（gh135/138/139）t_memchr 全过仍成立。
 - 目标③形态更新：套件接线完成、判据就位；“上机跑通”从 1 案→**≥12 案实证 passed**，剩 D1/D2+compat 真语义三块。host 4 包集 1403/0；双 arch 18/18 链面不变。(A) 仍 open。
 
+---
+
+## §续-278c（2026-10-03·D2 读数纠偏+诊断面缺陷坐实修；D2 定性=服务端 .bss 运行时池 big 族打穿非 VM 帧池，预算/回收泄漏二选一待 279 判别）
+
+> 承对 51ac9e5c5 的第二轮评审（W1 stall 信号/s2 imgrd 随套件选值→已在续-278b 7e8875975 落地）。本轮补 D2 取证的两处关键纠偏：
+
+1. **“big=b6/00 预算候选”读数纠偏**：`nk4c_oom_tag`（minix-rt lib.rs，历史 1.5c 产物）big 分母按 2 位 hex 打，而 `MAX_BIG_BLOCKS` 已绑 `GLOBAL_POOL_PAGES`=1024=0x400——两位只能打出截断的 "00"。真值：**big_in_use=182/1024 槽未满；px=1024/1024 页打穿 + fp 自由页=0** → D2 定性从“px 回收流/预算二选”修正为：**某服务端 .bss 全局池的 big 家族分配把 1024 页耗至 182 条记录**（均块≥1页）——候选收敛为 ①该池预算本就装不下 36 案元数据峰（原则解=历史上 eager 物化/VM-backed heap 结构债，alloc.rs 注释已登记）或 ②big 的 dealloc 记录未回笼（回收泄漏）。两者修法不同，279 用 big-free 计数探针/静态审计分判，**不投机改**。
+2. **诊断面缺陷本笔修**（minix-rt lib.rs `nk4c_oom_tag`）：big 分子/分母宽度 2→3 位，消除未来读数歧义（纯打印形参，零行为影响；buf 96B 仍宽裕）。历史文档里的 `big=20/20`（B34 时代分母真值 32=0x20）不受影响。
+3. 附带事实：OOM-RT 由 panic 进程自身经 SYS_DIAGCTL 打印（非内核代打），panic 前最后活动全是 VM 的（supSk/supMk/sas-fork）→ 候选进程=VM；但“哪个进程”要 279 用 PID 标记坐实（OOM-RT 行不含 proc 号，登记为诊断面可选改进）。
+
+验证：minix-rt `cargo test -q -p minix-rt` 全绿；check-layout all PASS（本笔诊断宽度改动不影响镜像面）。(A) 仍 open；下一步续-279=D2 二选一判别 → 套件全绿路 + D1 口径决策 + compat 真语义层（stresep/strerror）。
+
 
 
 

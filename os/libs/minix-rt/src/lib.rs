@@ -158,9 +158,12 @@ fn nk4c_oom_tag(size: usize) {
     lit!(b"/");
     hex!(alloc::MAX_SLABS, 3);
     lit!(b" big=");
-    hex!(d.big_in_use, 2);
+    hex!(d.big_in_use, 3);
     lit!(b"/");
-    hex!(alloc::MAX_BIG_BLOCKS, 2);
+    // 分母宽度 2→3：MAX_BIG_BLOCKS 已绑 GLOBAL_POOL_PAGES=1024（0x400），
+    // 两位只打得出截断的 "00"——真机 NK4C 续-278 gh140 的 `big=b6/00` 实为
+    // 182/1024（分母溢出使读数歧义，诊断面缺陷本笔坐实并修）。
+    hex!(alloc::MAX_BIG_BLOCKS, 3);
     lit!(b" px=");
     hex!(d.pages_consumed, 3);
     lit!(b"/");
