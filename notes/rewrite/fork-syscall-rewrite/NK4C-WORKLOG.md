@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-279c（2026-10-03·D2 修复落地）**：minix-rt 全局池 1024→2048 页（预算恒等式：MFS 块缓存是 C DEFAULT_NR_BUFS=1024 忠实镜像不该缩，临时余量必须独立；VM 不取 alloc-global 故 B34 地雷不适用），真机 gh142：**OOM 清零、套件 20 passed/6 failed** 零 PANIC。剩 6 fail 全部定性：D1 memcpy（libc 分歧）×1、strerror×4（compat 真语义预告现形）、strlen_huge（sysconf 占位可修，修后预堵 1MB 堆）、stresep（占位）。修复队列：279d sysconf+堆 → 279e stresep → 279f strerror 族调研 → D1 口径。前轮：§续-279a/b 归因+机制锁定；§续-278 系列套件化；§续-277 系列上机 pipeline（首案 passed）。
+> **🛑 最新前沿＝§续-279f（2026-10-03·compat 真语义 sysconf/stresep + D3 登记）**：sysconf 抢定义（strlen_huge page<0 断言现形修复）、stresep 按本仓真源逐行移植（旧占位假红闭合）、heap 8MiB 被 picolibc ld region 拒（全尺寸需 VM brk，登记）。**D3 新缺陷**：套件非确定性 hang（停滞位置随机漂移，gh142 同镜像族同 case 全过为反证；候选 VM exec/CoW 时序族，与 (A) 同层），279g+ 单案重跑二分判慢/挂。套件硬判据基线=gh142 的 20 passed/6 failed；D3 优先级已提到 D1 之前。前轮：279c-e D2 修复+分档；278 系列套件化；277 系列上机 pipeline。
+>
+> **（上一前沿＝§续-279d/279e）**：2048 池 x86 回归修复（target_arch 分档，真机二分坐实）+评审 P1 诚实性降级（riscv 未验证、机制未坐实标注）+x86 限点查证（bootface 假说被反证，候选收 kdst/demand-fill 预算族）+提取器 sample 修复；xtask 17/17。
 >
 > **（前前沿＝§续-279a/b）**：内核 diagctl 腿对 OOM-RT 行补打 caller proc 号→真机 gh141 定谳 OOM 进程=MFS（caller=0xa，VM=8 排除；旧"候选 VM"推断被推翻——时序相邻≠因果）；279b 静态审计锁机制候选（mfs 把 imgrd 当 RAM 盘块缓存+mount.rs 三处 to_vec；16MiB imgrd=4096 块 vs 池 1024 页预算无余量——279c 容量轮据此落地）。
 >
@@ -11872,6 +11874,16 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 > 另新事实：279d 重跑（x86=1024 分档后、aarch64 不变）套件停在 19/36——**suite 尾部进度非确定（同镜像 gh142=20+ 继 swab）**，需 STALLED 诊断升级（尾部续吐行=慢不判死）后才能把“全绿”当硬判据；279e 优先序：① x86 加载限点坐实（bootface identity/DM 窗）→ ② 套件尾部非确定性根因（慢案识别/停滞窗调参）→ ③ sysconf 真实现 → ④ stresep → ⑤ strerror 族调研 → ⑥ D1 口径。
 
 提交注：本笔含 minix-rt alloc.rs 分档（生产码）+ 上笔（279c 的 2048 单值）已被本笔覆盖修正；x86 smoke PASS + minix-rt 59/0 + aarch64 套件门继跑健康。
+
+---
+
+## §续-279f（2026-10-03·compat 真语义两件（sysconf/stresep）+ 新缺陷 D3=套件非确定性 hang 登记）
+
+> commit 2e989e6af。①sysconf 抢定义（strlen_huge 的 page<0 断言现形自 gh142，_SC_PAGESIZE=4096、其余 EINVAL）；②stresep 本仓真源 minix3/lib/libc/string/stresep.c 逐行移植（自查：先写了 NetBSD memmove 变体，发现仓内有真源后换对位版——ground truth 链执行样本）；③heap 8MiB 尝试被 picolibc ld ram region 拒（新事实：测试 ELF 链接总尺寸受 deb 脚本 8MiB region 约束，全尺寸 malloc 需 VM brk 协议，登记③后续）。
+>
+> **D3（新缺陷，未坐实）**：gh143 套件停在 memset 中段（无结果行、零 OOM/PANIC）——同镜像族在 gh142 同 case 全过，停滞位置随机漂移（gh142 过 swab、279d 停 strspn、gh143 停 memset_basic），定性=**与套件规模正相关的非确定性 hang，候选归 VM exec/CoW 时序族（与 (A) 同层观察面）**；未坐实不修，279g+ 用单案重跑二分（固定只喂同一 case N 轮计挂率）分离“慢”与“挂”。
+>
+> 套件基线读数修正：目标③硬判据达成面 = gh142 的 **20 passed/6 failed（含 stresep/sysconf 修复前态）**；修复后理论上限再 +2（strlen_huge、stresep_basic）；D3 不除则门不稳定，D3 优先级提到 D1 口径之前。
 
 ### 会话收官对账（2026-10-03 续-276→279b，累计 12 commit）
 - 三目标态：① x86✅ aarch64✅ riscv❌(A)；② x86✅ aarch64✅ riscv❌(A)；③ **构建面双 arch 各 18/18 + aarch64 上机 ≥12 案实证 passed（会话前：仅构建面 riscv 18/18、上机 0 案）**，全套 36 案被 D2 截断（机制候选已锁）。
