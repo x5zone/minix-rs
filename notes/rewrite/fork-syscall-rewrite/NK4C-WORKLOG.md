@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-298（(A) 重新定性：krewalk 决定性证据——VM 视图≠RAM，poison 从未存在于内存；(A)=模拟器保真度问题非内核 bug）**：内核 pfvm 冷路径故障时刻 KDM 重走（krewalk，trap_dispatch.rs 续-298 探针）：k2（α 形）重走=**l1 槽 raw=0x0 NOT PRESENT**（VM 刚读出 poison 并合成 DM|伪帧 的同一槽位 RAM 实际为零）；k3（β 形）=**l2 槽 raw=0x0** 同构。-smp 1 下读槽与重走之间无他者运行 ⇒ 「写后即擦」不可能 ⇒ **poison 从未存在于 RAM：VM 的 CPU 读被平移层误导**。(A) 重定性=**QEMU 8.2.2 软 TLB/TCG 视图保真度问题**（VM U 态经 VmDm 窗读 PTE 槽+boot 期 ELF 解析读在特定时序被误导），非内核内存 bug。全历史观测自洽（RAM 恒净/仪器必灭/smp 无关/指纹确定/S 态 KDM 直读正常）。三终目标含义=riscv 门是模拟器工件，解锁路径重画：(a) QEMU 变体矩阵升正解候选（9.x 若无误导→riscv 全链直通，证据随版本标注）(b) 定位 8.2.2 误导机制绕过（VmDm 读改内核代读腿=§续-288 已审方向）(c) 网络恢复矩阵先行。§续-299 靶=①krewalk 扩样≥5 崩（已 2/2 全净）②VmDm 内核代读改造面评估③矩阵 blocker 追踪。
+> **🛑 最新前沿＝§续-298-b（krewalk v3 命中要害：fill-root 刚写的叶槽故障时刻读出 0——(A)=帧生命周期 bug）**：v1/v2 krewalk 均同义反复（走 DM 窗 VA/VM 自根），**v3=正确锚点**（diagctl 处理器捕获 fill-root 行的 ptroot/pte_pa 存全局，pfvm 冷路径直读叶槽现值）：p1-p4 4/4 崩全读数=`ptroot=0x9d6e9000`+`leaf_pa=0x9c93e000`（跨 run 恒定）+**`leaf_now=0x0`**——fill-root 刚写的 child 栈映射叶 PTE 在故障时刻 RAM 读出零；且 0x9c93d/e 恰在 ptalloc-reuse-DATA 洪水集合。**(A) 新定性（第三版，证据最全）=fill 目标帧在仍被引用时被回收复用+零填（帧生命周期 bug）→ 映射消失 → refault 循环（§续-265 机制本体）→ walk 穿过复用帧读到垃圾=瞬态 poison（复用后新主残留，解释指纹确定）；「QEMU 视图错位」假设撤回（v1/v2 同义反复误读）。全观测自洽。§续-300 靶=①谁回收了 0x9c93e000（free_child_tables/exit 拆子/reclaim_pages 中「fill 后仍被引用帧」被 free 的条件）②fill 帧来源与时序③对照 C 表帧 pin 语义（pagetable.c 表帧永不回池?）——若 C 有 pin 而我方漏 refcount，修法=补 pin/refcount，成修走 §7 验收解锁 riscv 三目标。
+>
+> **（上一前沿＝§续-298（(A) 重新定性：krewalk 决定性证据——VM 视图≠RAM——已被 §续-298-b 纠正：krewalk v1 走 fault_addr 是同义反复，「视图错位」结论撤回）**：内核 pfvm 冷路径故障时刻 KDM 重走（krewalk，trap_dispatch.rs 续-298 探针）：k2（α 形）重走=**l1 槽 raw=0x0 NOT PRESENT**（VM 刚读出 poison 并合成 DM|伪帧 的同一槽位 RAM 实际为零）；k3（β 形）=**l2 槽 raw=0x0** 同构。-smp 1 下读槽与重走之间无他者运行 ⇒ 「写后即擦」不可能 ⇒ **poison 从未存在于 RAM：VM 的 CPU 读被平移层误导**。(A) 重定性=**QEMU 8.2.2 软 TLB/TCG 视图保真度问题**（VM U 态经 VmDm 窗读 PTE 槽+boot 期 ELF 解析读在特定时序被误导），非内核内存 bug。全历史观测自洽（RAM 恒净/仪器必灭/smp 无关/指纹确定/S 态 KDM 直读正常）。三终目标含义=riscv 门是模拟器工件，解锁路径重画：(a) QEMU 变体矩阵升正解候选（9.x 若无误导→riscv 全链直通，证据随版本标注）(b) 定位 8.2.2 误导机制绕过（VmDm 读改内核代读腿=§续-288 已审方向）(c) 网络恢复矩阵先行。§续-299 靶=①krewalk 扩样≥5 崩（已 2/2 全净）②VmDm 内核代读改造面评估③矩阵 blocker 追踪。
 >
 > **（上一前沿＝§续-294/295/296（instrumentation 路线终结；smp 矩阵=竞态 smp 无关且确定性強；poison 基底=自由帧 ⇒ 分配器内部指针新方向——已被 §续-298 取代：自由帧+bit29 是误导读到的错位字节而非写者产物）**：§续-294 叶探针（bdb4fe525，评审 PASSED 0P0/0P1）采样 **0/7 崩 0 fire——叶面同样完全抑制**，结论闭合=**任何 walk_read 改写都抑制 (A)**（非叶 0/19+叶 0/7 双实证），instrumentation 路线终结，已回滚（md5 复原 a8b7654c）。§续-295 smp 矩阵=**竞态 smp 度无关**（smp1 3/3 全同 α 指纹 0x10bc900b3c、smp2 2/3、smp4 3/3+新伪帧 0x10a2d65a28=池区帧|bit29）——「单核调度时机」削弱、**确定性成分强**（同指纹 3/3 非随机）。§续-296 **poison 基底身份逆转**：0x9c900000=全零零引用自由帧 ⇒ poison=**DM 视图指向自由帧+0xb3c（侵入式 freelist 节点偏移形状）**——栈切片属主可能是分配器调用链（fill-root→alloc 嵌套）而非 walk；新模型=freelist 内部 DM 指针泄漏进控制流。kdst/内核尾/bump 三区 poison PTE 原值零驻留。§续-297 靶=①PhysAlloc freelist 结构审（节点内嵌?0xb3c 偏移?bit29 来源）②栈切片全量符号化归账③若坐实→(A) 重新定性+修法重画。
 >
@@ -12229,3 +12231,13 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **对三终目标的含义**：①②③ riscv 的门不是内核 bug 而是**模拟器工件**——解锁路径重画：(a) QEMU 版本变体矩阵升为正解候选（9.x/10.x softmmu 若无误导 → riscv 全链在 9.x 下直通：boot marker+命令面+ATF 套件，证据随 QEMU 版本如实标注）；(b) 定位 8.2.2 的具体误导机制并绕过（如 VmDm 读改走内核代读腿=架构对位 C 的 kernel-mediated，本就是 §续-288 审过的方向）；(c) 网络恢复后矩阵先行（§续-290 blocker）。
 
 **§续-299 靶**：①krewalk 扩样（≥5 崩全带 krewalk，确认「重走全净」的普遍性——样本已 2/2）；②(b) 路线预研：VmDm PTE 槽读改内核代读的改造面评估（walk_read 的 VmDm 腿改 ecall 代读=大改，先评估 C 对位与成本）；③矩阵 blocker 追踪。
+
+## §续-298-b（2026-10-04·krewalk v3 命中要害：fill-root 刚写的叶槽在故障时刻读出 0——(A)=帧生命周期 bug（fill 目标帧被回收复用））
+
+**自我纠错链**：§续-298 首版 krewalk 走 fault_addr（DM 窗 VA）=同义反复（DM 窗不含伪帧映射正是故障成因）；二版走 child vaddr 经 VM 自根=再次同义反复（child vaddr 在 VM 自根本未映射，child 表经 DM 窗以数据访问）。**v3=正确锚点**：diagctl 处理器捕获 fill-root 探针行的 ptroot/pte_pa 存全局（syscall.rs find_hex_field+LAST_FILL_PTROOT/LEAF_PA），pfvm 冷路径直读「fill-root 刚写的叶槽」现值。
+
+**v3 读数（p1-p4，4/4 崩全带全量数据）**：`ptroot=0x9d6e9000`、`leaf_pa=0x9c93e000`（**跨 run 恒定**）、**`leaf_now=0x0`**——fill-root 刚写入的叶 PTE（child 栈映射）在故障时刻经内核 KDM 读出**零**。且 r1 时代串口实锤 0x9c93d/0x9c93e 恰在 ptalloc-reuse-DATA 洪水集合（帧被回收复用为先数据/后表）。
+
+**(A) 新定性（第三版，证据最全）**：fill-root 向叶槽写入映射 → 该帧被回收/复用+零填（帧生命周期 bug：仍在被引用时被 free）→ child 映射消失 → refault 循环（§续-265「已映射叶不粘/重复缺页」的机制本体）→ walk 穿过复用帧读到垃圾=瞬态 poison（=复用后新主的残留内容，解释「指纹确定」=复用内容确定）。全观测自洽：RAM-halt 恒净（复用后新主内容即 halt 现状）、§续-233 reuse-DATA 平反、§续-217 /etc/rc 串入表链、refault 循环、instrumentation 必灭（改 walk_read=改 free/fill 时序）。此前的「视图错位（QEMU 层）」假设**撤回**——krewalk v1/v2 是同义反复误读，本笔纠正。
+
+**§续-300 靶（真写者审计）**：①谁回收了 0x9c93e000——沿 free 路径（free_child_tables/exit 拆子/reclaim_pages）审计「fill 后仍在引用的帧」被 free 的条件；②fill-root 的帧从哪来（alloc 时序：fill 用的帧是否本就该 pin）；③对照 C：minix3 fill 后的页表帧 pin 语义（pagetable.c 表帧永不回池？）——**若 C 侧表帧有 pin 而我方 free 路径漏了引用计数，修法=补 refcount/pin，成修后走 §7 验收解锁 riscv 三目标**。

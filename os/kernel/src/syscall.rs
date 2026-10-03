@@ -3063,6 +3063,28 @@ fn vmctl_set_addr_space(
 /// - `m_lsys_krn_sys_diagctl.buf`: buffer address (DIAG only)
 /// - `m_lsys_krn_sys_diagctl.len`: buffer length (DIAG only)
 /// - `m_lsys_krn_sys_diagctl.endpt`: target endpoint (STACKTRACE only)
+
+/// 在 diagbuf 里找 `field=0x…` 并解析 hex（至非 hex 字符止）。
+fn find_hex_field(buf: &[u8], field: &[u8]) -> Option<u64> {
+    let pos = buf.windows(field.len()).position(|w| w == field)?;
+    let mut i = pos + field.len();
+    if i + 1 < buf.len() && buf[i] == b'0' && (buf[i + 1] | 0x20) == b'x' {
+        i += 2;
+    }
+    let mut v: u64 = 0;
+    while i < buf.len() {
+        let d = match buf[i] {
+            b'0'..=b'9' => (buf[i] - b'0') as u64,
+            b'a'..=b'f' => (buf[i] - b'a' + 10) as u64,
+            b'A'..=b'F' => (buf[i] - b'A' + 10) as u64,
+            _ => break,
+        };
+        v = (v << 4) | d;
+        i += 1;
+    }
+    Some(v)
+}
+
 fn dispatch_diagctl(
     caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -3150,6 +3172,17 @@ fn dispatch_diagctl(
                         DiagConsole::write_str("nk4a: oomrt caller=");
                         DiagConsole::write_hex(caller_nr.0 as u64);
                         DiagConsole::write_str("\n");
+                    }
+                    // 续-298 krewalk 配套捕获（用后即滚）：fill-root 探针行的
+                    // ptroot/pte_pa 存全局，供内核 pfvm 冷路径读「fill-root
+                    // 刚写的叶槽」在故障时刻的现值（判 RAM 脏 vs 视图错位）。
+                    if diagbuf[..len].starts_with(b"nk4a: fill-root") {
+                        if let Some(r) = find_hex_field(&diagbuf[..len], b"ptroot=") {
+                            crate::trap_dispatch::LAST_FILL_PTROOT.store(r, core::sync::atomic::Ordering::Relaxed);
+                        }
+                        if let Some(p) = find_hex_field(&diagbuf[..len], b"pte_pa=") {
+                            crate::trap_dispatch::LAST_FILL_LEAF_PA.store(p, core::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                     // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
                     // the kmess ring is the C kputc accumulation half —

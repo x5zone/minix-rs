@@ -1933,6 +1933,12 @@ pub(crate) fn riscv64_pf_error_code(scause: u64) -> u32 {
 ///
 /// `frame` is the live user-leg frame and the scheduler has a current
 /// process (same contract as [`riscv64_ipc_dispatch_body`]).
+/// 续-298 krewalk 配套（用后即滚）：最后一次 fill-root 的 ptroot/pte_pa。
+pub static LAST_FILL_PTROOT: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
 #[cfg(target_arch = "riscv64")]
 unsafe fn riscv64_pagefault_body(
     frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame,
@@ -1968,7 +1974,7 @@ unsafe fn riscv64_pagefault_body(
         // pa = stval-基，页基/槽偏移拆分。槽偏移非 8 倍数 ⇒ 非槽读而是
         // 数据访问（区分 walk_read 槽读 vs 叶数据访问两类崩坏形态）。
         {
-            let pa = fault_addr.wrapping_sub(1u64 << 36);
+            let mut pa = fault_addr.wrapping_sub(1u64 << 36);
             Console::write_str("pfvm: pa=");
             Console::write_hex(pa);
             Console::write_str(" off=");
@@ -1983,18 +1989,51 @@ unsafe fn riscv64_pagefault_body(
             Console::write_str(" root=");
             Console::write_hex(satp & 0x00000FFFFFFFFFFF << 12);
             Console::write_str("\n");
-            // 续-298 故障时刻再走（用后即滚）：经内核 KDM 重读 fault_addr 的
-            // 页表链槽值（l2e/l1e/l0e 三级原始值）。判据：若重读值与崩溃时
-            // VM 视图一致（链上有越 RAM 项）⇒ RAM 脏-at-fault（存在内存写
-            // 者）；若重读全净 ⇒ 视图错位（QEMU 软 TLB/TB 层）。冷路径
-            // （panic 前、非 VM 热路），KDM 平移=减基址直读。
+            // 续-298 故障时刻再走（用后即滚）：经内核 KDM 重读 **walk 目标
+            // vaddr**（GPR x12=query 的 vaddr 参数，r1 dump 实证）的页表链
+            // 槽值（l2e/l1e/l0e 三级原始值）。判据：child 链槽此刻在 RAM 中
+            // 的内容=0/正常 ⇒ poison 从未在 RAM（视图错位）；=poison 值 ⇒
+            // RAM 脏-at-fault（存在内存写者）。注意：不可走 fault_addr（DM
+            // 窗 VA）——DM 窗不含伪帧映射是故障的成因本身，走了是同义反
+            // 复（§续-298 首版误走，已纠正）。冷路径，KDM=减基址直读。
             {
                 const KDM: u64 = 0xFFFF_FFC0_4000_0000;
                 let root = (satp & 0x00000FFFFFFFFFFF) << 12;
+                let walk_va = frame.gpr[12]; // x12 = a2 = vaddr（query 签名第 3 参）
+                Console::write_str("krewalk: va=");
+                Console::write_hex(walk_va);
+                Console::write_str("\n");
+                // v3：根改用 fill-root 刚用的 ptroot（child 根，自 diagctl
+                // 捕获）——VM 自根不含 child vaddr（同义反复已纠）。另直读
+                // fill-root 刚写的叶槽 pte_pa 现值。
+                let ptroot = LAST_FILL_PTROOT.load(
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                let leaf_pa = LAST_FILL_LEAF_PA.load(
+                    core::sync::atomic::Ordering::Relaxed,
+                );
+                Console::write_str("krewalk: ptroot=");
+                Console::write_hex(ptroot);
+                Console::write_str(" leaf_pa=");
+                Console::write_hex(leaf_pa);
+                Console::write_str("\n");
+                if leaf_pa >= 0x8000_0000 && leaf_pa < 0xA000_0000 {
+                    let cur = unsafe {
+                        ((0xFFFF_FFC0_4000_0000 + leaf_pa) as *const u64).read_volatile()
+                    };
+                    Console::write_str("krewalk: leaf_now=");
+                    Console::write_hex(cur);
+                    Console::write_str("\n");
+                }
+                if ptroot >= 0x8000_0000 && ptroot < 0xA000_0000 {
+                    pa = ptroot;
+                } else {
+                    Console::write_str("krewalk: ptroot out-of-range\n");
+                }
                 let mut pa = root;
                 let shifts = [30u64, 21, 12];
                 for (lvl, sh) in shifts.iter().enumerate() {
-                    let idx = (fault_addr >> sh) & 511;
+                    let idx = (walk_va >> sh) & 511;
                     let slot_pa = pa + idx * 8;
                     if slot_pa < 0x8000_0000 || slot_pa >= 0xA000_0000 {
                         Console::write_str("krewalk: lvl out-of-range\n");
