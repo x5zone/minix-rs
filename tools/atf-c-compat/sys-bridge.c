@@ -23,13 +23,9 @@
 /* picolibc _write 第三参为 size_t；手工 typedef 避免与已有 sys stub 头冲突。 */
 typedef unsigned long size_t_local;
 
-/* 复用 C 侧 Message：前 8 字节 m_source/m_type，其后按 diagctl 载荷 code@8,buf@16,len@24。
- * Message 载荷共 56B（7 个 8 字节槽）。 */
-struct kmsg {
-    int m_source;
-    int m_type;
-    long long slots[7]; /* m_u：[0]=code(i32@8),[1]=buf@16,[2]=len@24 */
-};
+/* Message 手写镜像（单点定义在 kmsg.h，与 posix-stubs.c 共用）：前 8 字节
+ * m_source/m_type，其后 diagctl 载荷 code@8,buf@16,len@24（载荷共 56B）。 */
+#include "kmsg.h"
 
 /* 一次 kernel_call：寄存器对位 arch_trap.rs 的 kernel_call_trap（两架构同形：
  * 消息指针=第一入参寄存器，调用号=syscall-number 寄存器，回码=第一返回寄存器）。 */

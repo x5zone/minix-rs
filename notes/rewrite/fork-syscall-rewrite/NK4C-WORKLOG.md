@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-277（2026-10-03·目标③ aarch64 上机腿首次打通）**：C 测试真机 exec→atf 入 main→lstat 过 VFS 门；五环毒链逐剥（内核 NoReply panic→补三腿 EDONTREPLY 合法臂对位 C system.c:76；裸_exit 吞输出→exit(main())；Debian 加固双毒 paciasp/__stack_chk_init→关 -mbranch-protection/-fno-stack-protector；TLS 初始化 :got: 对 A 型符号不可靠致 tpidr 垃圾→改 adrp+字面量池；lstat 占位→接 VFS_LSTAT 真腿）；p1/p2/p3 桥面哨兵全过（裸写/printf/malloc 地基真机成立）。**未坐实项＝续-278 靶心**：lstat 回执后 atf 公共链出现 elr/far/lr 全零的跳转 0（-l 同炸→非 body 臂），候选面四条已登记，判别实验排序已定，守不猜修。本 commit 含 os/ 生产码改动（kernel NoReply 臂+临时 pfa 诊断 mark、xtask /tests 播种、rc exec 尾段）；host 1402/0、layout PASS、双 arch 18/18。(A) riscv 仍 open。
+> **🛑 最新前沿＝§续-277b（2026-10-03·目标③首案达成）**：CodeReview P0（struct stat 152B/120B 越界+全错位）一击命中 §续-277 的 NULL-jump 靶心；lstat 加布局翻译层（双侧偏移 _Static_assert 编译期钉死）后 **t_memchr 真机 `passed`**；正式门 `os/qemu-tests/test-atf-aarch64.sh` 端到端 PASS；P1×2/P2×5 全修（pfa 封顶、播种架构门、kmsg.h 单点、access 真判 x 位、semihost POSIX 名抢定义、定点杀）。目标③现状：aarch64 首案 pipeline 上机 PASS（非 586 套件全部）；下一步续-278=首批 18 案全跑（rc 多行 exec+逐案判据）与 fork/exec/VFS 桥选型。host 1402/0、xtask 13/13。(A) riscv 仍 open。
+>
+> **（上一前沿＝§续-277：上机腿首次打通+五环毒链逐剥，详下文）**：C 测试真机 exec→atf 入 main→lstat 过 VFS 门；五环毒链逐剥（内核 NoReply panic→补三腿 EDONTREPLY 合法臂对位 C system.c:76；裸_exit 吞输出→exit(main())；Debian 加固双毒 paciasp/__stack_chk_init→关 -mbranch-protection/-fno-stack-protector；TLS 初始化 :got: 对 A 型符号不可靠致 tpidr 垃圾→改 adrp+字面量池；lstat 占位→接 VFS_LSTAT 真腿）；p1/p2/p3 桥面哨兵全过。新易错模式：pipefail×grep -q×大输出=SIGPIPE-141 假失败（smoke 修复）。本 commit 含 os/ 生产码改动；host 1402/0、layout PASS、双 arch 18/18。
 >
 > **（上一前沿＝§续-276（2026-10-03·解锁条件 3 范围裁决执行：目标③ aarch64 构建面 0→18/18）**：picolibc-aarch64 免 root vendor + 桥层归一 sys-bridge.c；CodeReview 修复轮 276b 已完成）
 >
@@ -11743,6 +11745,30 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - 两架构 marker 回归：x86 smoke **PASS**（rc=0）；aarch64 smoke 首三轮 FAIL——**真凶非启动链而是脚本自身 bug（已修）**：`set -o pipefail` 下 `strings bigfile | grep -q` 命中即退→strings 收 SIGPIPE→管道 rc=141→轮询永判不中（事后对同一文件验证 rc=141 定谳；最小复现 `bash -c 'set -uo pipefail; { yes filler|head -200000; echo marker; } | grep -q marker; echo rc=$?'`→141）。修复=test-cmd-smoke-aarch64.sh Stage 3/4 改 `grep -qa` 直读文件/落盘文件（与 x86 兄弟脚本直读形态对齐），修后 **aarch64 smoke PASS**。新易错模式登记：pipefail×grep -q×上游大输出=假失败三要件，所有轮询类断言脚本适用。
 - 本 commit 含 **os/ 生产码改动**（kernel trap_dispatch NoReply 臂+临时 pfa 诊断 mark、xtask 装机面、os/etc/rc、smoke 脚本修复）；NoReply 臂=行为契约修复（对位 C EDONTREPLY），pfa/探针 mark 已标“结案滚除”并登记 §八待办面。
 - (A) riscv 仍 open（本轮零 riscv 改动）；目标③ aarch64 上机段从 0→“C 测试入 main+lstat 过 VFS 门”，最后一环 atf 公共链 NULL-jump 待坐实。三目标未全成，goal 继续推进。
+
+---
+
+## §续-277b（2026-10-03·CodeReview P0 一击中的：stat 152B/120B 布局翻译层修复→**t_memchr 上机 `passed` 首案达成**+正式门 test-atf-aarch64.sh PASS）
+
+> 对 commit d33c24fd7 的 CodeReview 产出 1 P0 + 2 P1 + 5 P2；P0（struct stat 越界/错位）直接命中 §续-277 登记的“未坐实 NULL-jump 靶心”——评审把真机现场（lstat 回执后公共链跳 0，-l 同炸非 body）与源码事实（我方 FS 固定写 152B minix-types Stat；picolibc aarch64 struct stat 120B 且偏移全不同）串联后坐实：越界 32B 砸掉 saved x29/x30 = ret 到垃圾 = elr/far/lr 全零。**修复后真机立即出 `passed`——靶心定谳，非猜修命中而是评审推导+验证闭环。**
+
+### 逐条 fix-status
+- **P0 已修**（posix-stubs.c lstat）：FS 写落本帧 `raw[152]`，再逐字段翻译进 picolibc 120B 形；**两侧偏移全 `_Static_assert` 编译期钉死**（首次编译即抓到我对 st_blksize/st_blocks 的猜测错位——探针实测（nm -S 对编译期数组尺寸）定谳 picolibc aarch64 走 __linux__ 分支：blksize@56/blocks@64，修正 assert 后链成）。此即防线自验证：任何一侧头文件漂移 = 编译失败非静默。
+- **P1-1 已修**（trap_dispatch.rs）：pfa mark 加 `PFA_N < 40` 计数封顶（同文件探针纪律对齐）。
+- **P1-2 已修**（xtask image.rs）：播种收紧为 `ATF_BOOT_LEG_READY=["aarch64"]` 白名单双条件（riscv 出生腿未解锁不播，消除“riscv boot 跑已知坏二进制”退化）。
+- **P2-2 已修**：新 `tools/atf-c-compat/kmsg.h` 单点 struct kmsg（sys-bridge.c/posix-stubs.c 共用，杜绝跨 TU 手抄漂移）。
+- **P2-3 已修**：access 不再对 X_OK 无条件 0——翻译后的 st_mode 真判 x 位（R/W 单用户 root 面宽松，对位 C root 旁路）。
+- **P2-4 已修**：posix-stubs.c 抢定义 write/read/lseek/unlink/remove（转发 _write/_read/诚实占位），semihost 的 brk 序列成员不再被拉入；首碰 multiple-definition（open 已在 sys-bridge）后收敛单点。
+- **P2-5 已修**：atf_a64_run.sh 改记录 QPID 定点杀（禁裸 pkill）。
+- **P2-1 缓解不改形**：t_memchr 崩时阻塞尾的风险随 P0 修复消失（现真机正常 exit）；保留 rc exec 面。
+
+### 新交付：正式回归门 `os/qemu-tests/test-atf-aarch64.sh`
+- 全链：build-atf-test 交编 t_memchr(+p1-p3) → xtask 装配 → AAVMF boot → 串口判 `passed`（PANIC/failed/超时分维 FAIL），含“镜像必须不比 ELF 旧”防 stale 假绿；轮询用 `grep -qa` 直读（§续-277 SIGPIPE-141 防线固化进注释）。实测端到端 **PASS rc=0**。
+- 真机判据形态：atf 两行 WARNING（stderr 桥）+ `passed`（create_resfile /dev/stdout→writev→_write 桥）+ PM_EXIT 正常回收（pm:00110=mt 1 src 0x10）。
+- 诚实边界：首案证明的是 **pipeline**（出生链/stdio/exit/lstat/播种/rc 接线全链路），不是 586 套件；后续扩案（首批 18 案全跑）与 fork/exec/VFS 大件属续-278+。
+
+### 回归
+- host 4 包集 1402/0；xtask 13/13；test-atf-aarch64.sh 全 build 端到端 PASS；双 arch 18/18 链面（下笔命令重验）。本轮含 os/ 生产码改动（pfa 封顶、xtask 门、新测试脚本、smoke 脚本修复前批）。
 
 
 

@@ -2980,19 +2980,25 @@ unsafe fn aarch64_pagefault_body(
             }
             let priv_table = unsafe { crate::priv_table_boot_unchecked() };
             // 临时诊断（§续-277 目标③ t_memchr 野地址案，结案滚除）：非 VM 的
-            // U 态 abort 转发前打 (proc, elr, far)——pf-exit wro 只有 cr2，无 PC。
+            // U 态 abort 转发前打 (proc, elr, far, lr)——pf-exit wro 只有 cr2，无 PC。
+            // 计数封顶 40（CodeReview 续-277b P1-1：同文件其它探针均有上界，
+            // 无界洪流在 BKL 持有时逐字符忙等串口，放大 boot 时长）。
             #[cfg(not(feature = "mock"))]
             {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                Console::write_str("nk4a: pfa ");
-                Console::write_hex(cur_nr.0 as u64);
-                Console::write_str(" e ");
-                Console::write_hex(frame.elr);
-                Console::write_str(" f ");
-                Console::write_hex(far);
-                Console::write_str(" l ");
-                Console::write_hex(frame.gpr[30]);
-                Console::write_str("\n");
+                static PFA_N: core::sync::atomic::AtomicUsize =
+                    core::sync::atomic::AtomicUsize::new(0);
+                if PFA_N.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 40 {
+                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                    Console::write_str("nk4a: pfa ");
+                    Console::write_hex(cur_nr.0 as u64);
+                    Console::write_str(" e ");
+                    Console::write_hex(frame.elr);
+                    Console::write_str(" f ");
+                    Console::write_hex(far);
+                    Console::write_str(" l ");
+                    Console::write_hex(frame.gpr[30]);
+                    Console::write_str("\n");
+                }
             }
             if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, far, errcode) {
                 // C: panic("WARNING: pagefault: mini_send returned %d")

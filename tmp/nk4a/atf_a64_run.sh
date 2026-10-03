@@ -16,8 +16,11 @@ setsid qemu-system-aarch64 \
   -drive "file=$ROOT/os/target/image/aarch64/minix.img,format=raw,media=disk" \
   -serial "file:$WORK/serial.log" -net none -display none -no-reboot \
   >"$WORK/qemu.log" 2>&1 &
+QPID=$!
 sleep "$WAIT"
-pkill -f "[q]emu-system-aarch64" 2>/dev/null
+# 定点杀（CodeReview 续-277b P2-5：禁裸 pkill，避免误伤并行任务的 qemu）
+kill "$QPID" 2>/dev/null || true
+wait "$QPID" 2>/dev/null || true
 echo "=== ATF evidence ==="
 strings "$WORK/serial.log" | grep -nE "atf|Pass|Fail|ERROR|memchr|warning|unsupported|PANIC" | grep -v "cat /etc/rc" | head -20
 echo "=== tail (non-probe) ==="

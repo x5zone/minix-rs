@@ -298,13 +298,19 @@ pub fn plan(
     // NK4-C 续-277：目标③ ATF C 测试播种——交叉 ELF 不在 cargo 装配链内（由
     // tools/build-atf-test.sh 产出），文件存在才播；首案 t_memchr（纯内存面，
     // 不依赖 fork/exec/VFS 桥）+ p1/p2/p3 上机二分探针（tmp/nk4a/atfprobe/，
-    // 分别验裸桥/stdio/malloc 腿；探针产物不在此列则不播，零影响）。
-    // 盘上落 /tests/<name>，rc 尾段 exec。
+    // 分别验裸桥/stdio/malloc 腿）。盘上落 /tests/<name>，rc 尾段 exec。
+    // 架构门（CodeReview 续-277b P1-2）：只给“自定义出生腿已就绪”的架构播——
+    // 当前仅 aarch64（build-atf-test.sh 的 -nostartfiles+startup-minix.c 只在该
+    // 腿启用；riscv 腿仍链 picolibc 默认 crt0，其 sp 切 ELF 内 .stack+main(0,NULL)
+    // 已被 §续-277 定谳为坏），riscv 解锁出生腿后把 slug 加进白名单即放行。
+    const ATF_BOOT_LEG_READY: &[&str] = &["aarch64"];
     let atf_test_rel = |name: &str| format!("target/atf/{}/tests/{name}", arch.slug());
     let mut atf_tests: Vec<(&str, String)> = Vec::new();
-    for name in ["t_memchr", "p1", "p2", "p3"] {
-        if layout.os_root.join(atf_test_rel(name)).is_file() {
-            atf_tests.push((name, atf_test_rel(name)));
+    if ATF_BOOT_LEG_READY.contains(&arch.slug()) {
+        for name in ["t_memchr", "p1", "p2", "p3"] {
+            if layout.os_root.join(atf_test_rel(name)).is_file() {
+                atf_tests.push((name, atf_test_rel(name)));
+            }
         }
     }
     let atf_refs: Vec<(&str, &str)> =
