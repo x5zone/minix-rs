@@ -91,9 +91,14 @@ kill_qemu() { kill "$QEMU_PID" 2>/dev/null || true; wait "$QEMU_PID" 2>/dev/null
 trap 'kill_qemu; cleanup' EXIT
 
 # ── Stage 3: wait for the command-output marker (the /etc/rc `echo`). ──
+# 轮询用 `grep -qa` 直读串口文件（binary-as-text），不走 `strings | grep -q`：
+# 本脚本 `set -o pipefail` 下，grep -q 命中即退→上游 strings 收到 SIGPIPE→
+# 管道退出码 141→命中被误判为未命中（串口变大后必现，NK4C 续-277 真机复现
+# 定谳：事后对同一文件 `strings|grep -q` 同样 rc=141；`grep -q 文件` 无管道
+# 不受影响，与 x86 兄弟脚本 test-cmd-smoke.sh:120 的直读形态对齐）。
 reached=0
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
-    if [ -f "$SERIAL_LOG" ] && strings "$SERIAL_LOG" 2>/dev/null | grep -q "$T4_MARKER"; then
+    if [ -f "$SERIAL_LOG" ] && grep -qa "$T4_MARKER" "$SERIAL_LOG" 2>/dev/null; then
         reached=1; break
     fi
     sleep 1
@@ -110,14 +115,17 @@ echo "aarch64: command marker reached — checking ls /bin + cat /etc/rc ran"
 # and the rc's own shebang line came back via open+read. Allow up to TIMEOUT_T4 for
 # the post-marker commands to flush. ──
 cmds_ok=0
+AFTER_TXT="$WORK/after_marker.txt"
 for _ in $(seq 1 "$TIMEOUT_T4"); do
     if [ -f "$SERIAL_LOG" ]; then
         # 只判 marker 之后的内容（避开 boot-shim/init 里可能含 /bin/sh、ls、cat 的行造成假绿）：
         # `cat /etc/rc` 回显的 shebang `/bin/sh` + `ls /bin` 目录项名，均须在 marker 之后出现。
-        after=$(strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p")
-        if printf '%s\n' "$after" | grep -q "/bin/sh" \
-           && printf '%s\n' "$after" | grep -qE '\bcat\b' \
-           && printf '%s\n' "$after" | grep -qE '\bls\b'; then
+        # 断言同样走落盘文件+grep -qa，不用 `printf "$after" | grep -q`——after 可达数十 MB，
+        # pipefail 下与 Stage 3 同款 SIGPIPE-141 误判（§续-277 同族防线）。
+        strings "$SERIAL_LOG" 2>/dev/null | sed -n "/$T4_MARKER/,\$p" > "$AFTER_TXT"
+        if grep -qa "/bin/sh" "$AFTER_TXT" \
+           && grep -qaE '\bcat\b' "$AFTER_TXT" \
+           && grep -qaE '\bls\b' "$AFTER_TXT"; then
             cmds_ok=1; break
         fi
     fi

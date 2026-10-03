@@ -36,7 +36,15 @@ PICO=/usr/lib/picolibc/riscv64-unknown-elf
 case "$ARCH" in
     riscv64) CC="riscv64-unknown-elf-gcc"; MC=(-mcmodel=medany)
              SYS=(--specs=picolibc.specs); SEMIHOST=("$PICO/lib/libsemihost.a") ;;
-    aarch64) CC="aarch64-linux-gnu-gcc"; MC=()
+    aarch64) CC="aarch64-linux-gnu-gcc"
+             # 真机取证（§续-277 gh123/124）：Debian/Ubuntu aarch64 gcc 默认
+             # 加固在本靶形双毒——① -mbranch-protection=standard 让 libgcc 的
+             # init_have_lse_atomics 以 paciasp 开头：cortex-a72（ARMv8.0）无
+             # PAC = 未定义指令；② 默认 stack protector 把 __stack_chk_init
+             # 拖进 .init_array，其模板写走非常规路径（真机 cr2 野写 SIGSEGV）。
+             # 目标机是嵌入式无加固信任面，关掉两项（非绕过检查：这些特性
+             # 在 cortex-a72/picolibc 环境本就不成立）。
+             MC=(-mbranch-protection=none -fno-stack-protector)
              # picolibc 来自 apt 包或 vendor（免 root）；vendor 脚本输出基目录+本地化 specs
              { read -r PICOA && read -r SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64) || true
              [ -n "${SPECS:-}" ] || { echo "aarch64 picolibc 未取得（见上方 vendor-atf-toolchain.sh 报错）" >&2; exit 2; }
@@ -51,8 +59,11 @@ EXPECT_FLAVOR="$CC|picolibc"
 FLAVOR="$(cat "$OUT/libatf-c.flavor" 2>/dev/null || echo MISSING)"
 [ "$FLAVOR" = "$EXPECT_FLAVOR" ] || { echo "libatf-c.a flavor 不匹配：got '$FLAVOR' want '$EXPECT_FLAVOR' —— 先重跑 tools/build-libatf-c.sh $ARCH" >&2; exit 2; }
 
-# atf-c/config-time 宏（与 build-libatf-c.sh 一致）。
-CFGS=(-D__minix -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
+# atf-c/config-time 宏（与 build-libatf-c.sh 一致）+ _GNU_SOURCE：picolibc
+# 的 BSD 扩展声明（memrchr 等）在 __GNU_VISIBLE 门内；不显宏则 t_memchr 的
+# memrchr 退化成 implicit-int 声明，64 位指针返回值被截成脏高位（真机
+# SIGSEGV 野写取证见 WORKLOG §续-277）。不定义则同族声明面一律保守报错。
+CFGS=(-D__minix -D_GNU_SOURCE -DHAVE_SETENV -DHAVE_UNSETENV -DHAVE_PUTENV
       '-DPACKAGE_NAME="libatf-c"' '-DPACKAGE_TARNAME="atf"' '-DPACKAGE_VERSION="0.6"'
       '-DPACKAGE_STRING="libatf-c 0.6"' '-DPACKAGE_BUGREPORT=""'
       '-DATF_BUILD_CC="cc"' '-DATF_BUILD_CFLAGS=""' '-DATF_BUILD_CPP="cpp"'
@@ -74,6 +85,9 @@ name="$(basename "$TEST" .c)"
     "$TEST" -o "$BUILD/$name.o"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/sys-bridge.c" -o "$BUILD/sys-bridge.o"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "${CFGS[@]}" "$COMPAT/posix-stubs.c" -o "$BUILD/posix-stubs.o"
+# 把 picolibc semihost stdio 钩子改接我方 _write/SYS_DIAGCTL（两腿共享；抢定义
+# sys_semihost_putc/getc，须排在 libsemihost.a 之前才能挡住 semihost 实现成员）。
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/stdio-minix.c" -o "$BUILD/stdio-minix.o"
 # BSD <md5.h> 摘要实现（picolibc 不提供），供 t_memcpy 等测试链入（仅构建/测试用）。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/md5.c" -o "$BUILD/md5.o"
 # BSD Boyer-Moore <bm.h>（bm_comp/exec/free，picolibc 不提供），供 t_bm 链入。
@@ -81,8 +95,22 @@ name="$(basename "$TEST" .c)"
 # BSD sys_nerr（picolibc 不提供），供 t_strerror 编译/链接（真语义上机前校准，见 errno-compat.c 头注释）。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/errno-compat.c" -o "$BUILD/errno-compat.o"
 
-"$CC" -static "${MC[@]}" "${SYS[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "$BUILD/sys-bridge.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+# 上机出生链（启动腿）：picolibc 默认 crt0 把 sp 切进 ELF 内 .stack 且
+# main(0,NULL)（atf tp_main 解引用 argv[0] 必死），需 -nostartfiles 换
+# startup-minix.c 的自定义 _start（从内核 ps_strings 取 argc/argv，对位
+# minix-rt 出生 ABI）。当前仅 aarch64 腿启用（上机目标）；riscv 腿沿用
+# 默认 crt0（其出生链上机受 (A) 门控，解锁后一并切换）。
+STARTUP_O=()
+LINK_EXTRA=()
+case "$ARCH" in
+    aarch64)
+        "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/startup-minix.c" -o "$BUILD/startup-minix.o"
+        STARTUP_O=("$BUILD/startup-minix.o")
+        LINK_EXTRA=(-nostartfiles) ;;
+esac
+
+"$CC" -static "${MC[@]}" "${SYS[@]}" "${LINK_EXTRA[@]}" "${STARTUP_O[@]}" "$BUILD/$name.o" \
+    -Wl,--start-group "$LIB" "$BUILD/sys-bridge.o" "$BUILD/stdio-minix.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。

@@ -53,8 +53,56 @@ void verrx(int code, const char *fmt, va_list a) { diag_v(fmt,a,1,code); }
 /* --- 进程/文件系统占位（够链；真跑接我方 IPC/VFS 桥，见文件头 WIP 说明）--- */
 pid_t fork(void) { errno = ENOSYS; return -1; }
 pid_t waitpid(pid_t p, int *st, int fl) { (void)p;(void)st;(void)fl; errno = ENOSYS; return -1; }
-int access(const char *p, int m) { (void)p;(void)m; errno = ENOSYS; return -1; }
-int lstat(const char *p, struct stat *s) { (void)p;(void)s; errno = ENOSYS; return -1; }
+
+/* VFS IPC 腿（sys-bridge.c ipc_sendrec，对位 minix-sys perform_syscall）：
+ * 返回 0=往返成功（回执写入 *m），非 0=errno。端点号对位 minix-sys
+ * VFS_ENDPOINT_NUMBER=1；调用号见各使用处注。struct 与 sys-bridge.c 的
+ * kmsg 同形（m_source/m_type/slots[7]，字节布局即 Message 64B）。 */
+struct vfs_kmsg {
+    int m_source;
+    int m_type;
+    long long slots[7]; /* m_u 载荷，消息字节 8 起 */
+};
+extern long ipc_sendrec(int endpoint, struct vfs_kmsg *m);
+#define VFS_ENDPOINT    1
+
+/* lstat：真实现（C minix3/minix/lib/libc/sys/lstat.c 同形腿：VFS_LSTAT，
+ * 消息布局对位 minix-sys stat_via_path/StatPathPayload：length@+0、
+ * name@+8、buffer@+16；FS 服务经 magic grant 直接填 caller 的 struct stat）。
+ * 真机取证 §续-277 gh131：atf_fs_eaccess 实走 lstat 非 access，占位 ENOSYS
+ * 即 handle_srcdir 报障点。struct stat 字段宽：我方 VFS/FS 族与 picolibc
+ * 同为 LP64 BSD 布局（st_mode u32@24?——若上机后发现字段错位，按
+ * minix-types Stat 真源调偏移，已登记待验）。 */
+#define VFS_CALL_LSTAT 0x117    /* vfs.rs VFS_CALL_LSTAT = VFS_BASE+23 */
+int lstat(const char *path, struct stat *st) {
+    struct vfs_kmsg m;
+    size_t len;
+    long r;
+    if (path == NULL || st == NULL) { errno = EFAULT; return -1; }
+    len = strlen(path) + 1;
+    memset(&m, 0, sizeof m);
+    m.m_type = VFS_CALL_LSTAT;
+    m.slots[0] = (long long)len;                          /* length（含 NUL） */
+    m.slots[1] = (long long)(unsigned long)(const void *)path; /* name */
+    m.slots[2] = (long long)(unsigned long)(void *)st;    /* buffer（FS 直写） */
+    r = ipc_sendrec(VFS_ENDPOINT, &m);
+    if (r != 0) { errno = (int)r; return -1; }
+    if (m.m_type < 0) { errno = -m.m_type; return -1; }
+    return 0;
+}
+
+/* access：委托 lstat + 按 mode 位判权限（minix3 VFS_ACCESS 服务器对普通文件
+ * 亦基于 stat 位判权；root 进程下 r/w/x 宽松对位）。atf_fs_exists 只需 F_OK。 */
+int access(const char *path, int mode) {
+    struct stat st;
+    if (lstat(path, &st) == -1)
+        return -1;   /* errno 已由 lstat 置好（ENOENT → exists=false 的 C 语义） */
+    if (mode == 0)   /* F_OK：存在即可 */
+        return 0;
+    /* R_OK/W_OK/X_OK：本 OS 单用户 root 面，位宽松（与 VFS root 旁路同义）；
+     * 真正的 uid 权限裁决属 FS 服务器，不在首批 18 案需求面。 */
+    return 0;
+}
 int dup2(int a, int b) { (void)a;(void)b; errno = ENOSYS; return -1; }
 int fchmod(int f, mode_t m) { (void)f;(void)m; return 0; }
 mode_t umask(mode_t m) { (void)m; return 0; }

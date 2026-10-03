@@ -295,6 +295,20 @@ pub fn plan(
     let proto_path = image_dir.join("imgrd.proto");
     let imgrd = image_dir.join("imgrd.img");
     let bin_rel = |name: &str| format!("target/{}/{}/{name}", arch.module_target(), profile);
+    // NK4-C 续-277：目标③ ATF C 测试播种——交叉 ELF 不在 cargo 装配链内（由
+    // tools/build-atf-test.sh 产出），文件存在才播；首案 t_memchr（纯内存面，
+    // 不依赖 fork/exec/VFS 桥）+ p1/p2/p3 上机二分探针（tmp/nk4a/atfprobe/，
+    // 分别验裸桥/stdio/malloc 腿；探针产物不在此列则不播，零影响）。
+    // 盘上落 /tests/<name>，rc 尾段 exec。
+    let atf_test_rel = |name: &str| format!("target/atf/{}/tests/{name}", arch.slug());
+    let mut atf_tests: Vec<(&str, String)> = Vec::new();
+    for name in ["t_memchr", "p1", "p2", "p3"] {
+        if layout.os_root.join(atf_test_rel(name)).is_file() {
+            atf_tests.push((name, atf_test_rel(name)));
+        }
+    }
+    let atf_refs: Vec<(&str, &str)> =
+        atf_tests.iter().map(|(n, p)| (*n, p.as_str())).collect();
     actions.push(Action::Write {
         path: proto_path.clone(),
         bytes: generate_etc_proto(
@@ -305,8 +319,9 @@ pub fn plan(
                 ("ls", &bin_rel("ls")),
                 ("cat", &bin_rel("cat")),
             ],
+            &atf_refs,
         )?,
-        note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat} + /dev/console）",
+        note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat} + /tests + /dev/console）",
     });
     actions.push(Action::Tool {
         program: layout
@@ -470,7 +485,15 @@ pub fn plan(
 /// （盘上名, 宿主相对路径），一律 0755——本表只播可执行文件；
 /// NK4-C 1.56 B31 起含 `sh` 与 `echo`（rc 外部命令腿），列表化以便
 /// 后续命令面（18-stage）按需上收；非 exec 文件需先带 mode 入表。
-pub fn generate_etc_proto(etc_dir: &Path, bin_entries: &[(&str, &str)]) -> Result<Vec<u8>> {
+/// `atf_tests`（NK4-C 续-277，目标③）非空时额外播 `/tests` 目录（同 0755
+/// 可执行面；交叉 ELF 由 `tools/build-atf-test.sh` 产出，不在 cargo 装配链
+/// 内，故只在宿主文件存在时传入）。空表时产物逐字节同旧，不影响既有
+/// 三架构装机面。
+pub fn generate_etc_proto(
+    etc_dir: &Path,
+    bin_entries: &[(&str, &str)],
+    atf_tests: &[(&str, &str)],
+) -> Result<Vec<u8>> {
     // 存在性在此验证；内容由 mkfs_mfs 的 StdHost 播种时从宿主读取。
     for required in ["rc", "ttys"] {
         let path = etc_dir.join(required);
@@ -498,7 +521,15 @@ pub fn generate_etc_proto(etc_dir: &Path, bin_entries: &[(&str, &str)]) -> Resul
     for (name, host_rel) in bin_entries {
         proto.push_str(&format!("{name} ---755 0 0 {host_rel}\n"));
     }
-    proto.push_str("$\n$\n");
+    proto.push_str("$\n");
+    if !atf_tests.is_empty() {
+        proto.push_str("tests d--755 0 0\n");
+        for (name, host_rel) in atf_tests {
+            proto.push_str(&format!("{name} ---755 0 0 {host_rel}\n"));
+        }
+        proto.push_str("$\n");
+    }
+    proto.push_str("$\n");
     Ok(proto.into_bytes())
 }
 
@@ -864,6 +895,7 @@ mod tests {
             generate_etc_proto(
                 &layout.os_root.join("etc"),
                 &[("sh", "target/sh"), ("echo", "target/echo")],
+                &[],
             )
             .unwrap(),
         )
@@ -906,6 +938,36 @@ mod tests {
             body.contains(&"echo ---755 0 0 target/echo"),
             "/bin/echo 播种（NK4-C 1.56 B31：rc 唯一外部命令，缺它 sh 退 127）"
         );
+        assert!(
+            !body.iter().any(|l| l.starts_with("tests ")),
+            "空 atf_tests 时不产 /tests 段（逐字节同旧，三架构装机面零影响）"
+        );
+    }
+
+    /// NK4-C 续-277：atf_tests 非空 → 根下多一个 tests 目录段（同 0755 可执行面）。
+    #[test]
+    fn etc_proto_seeds_atf_tests_dir() {
+        let (layout, _guard) = tempdir::create();
+        let proto = String::from_utf8(
+            generate_etc_proto(
+                &layout.os_root.join("etc"),
+                &[("sh", "target/sh")],
+                &[("t_memchr", "target/atf/aarch64/tests/t_memchr")],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let lines: Vec<&str> = proto.lines().collect();
+        assert!(
+            lines.contains(&"tests d--755 0 0"),
+            "/tests 目录段头存在"
+        );
+        assert!(
+            lines.contains(&"t_memchr ---755 0 0 target/atf/aarch64/tests/t_memchr"),
+            "测试 ELF 经宿主相对路径播种（同 bin_entries 文法）"
+        );
+        // tests 段带自己的 $ 收口 → 总收口数从 4 变 5。
+        assert_eq!(lines.iter().filter(|l| **l == "$").count(), 5);
     }
 
     /// /etc 最小集缺件时原型生成必须报错（装机面不造缺 rc 的镜像）。
@@ -913,6 +975,6 @@ mod tests {
     fn etc_proto_requires_rc_and_ttys() {
         let (layout, guard) = tempdir::create();
         std::fs::remove_file(guard.0.join("etc/rc")).unwrap();
-        assert!(generate_etc_proto(&layout.os_root.join("etc"), &[("sh", "target/sh")]).is_err());
+        assert!(generate_etc_proto(&layout.os_root.join("etc"), &[("sh", "target/sh")], &[]).is_err());
     }
 }

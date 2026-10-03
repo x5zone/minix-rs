@@ -42,8 +42,11 @@ case "$ARCH" in
     aarch64) CC="aarch64-linux-gnu-gcc"; AR="aarch64-linux-gnu-ar"; \
              { read -r _PICOA && read -r _SPECS; } < <("$ROOT/tools/vendor-atf-toolchain.sh" aarch64) || true; \
              [ -n "${_SPECS:-}" ] || { echo "aarch64 picolibc 未取得（见上方 vendor-atf-toolchain.sh 报错）" >&2; exit 2; }; \
-             SYSROOT_FLAGS=(--specs="$_SPECS"); COMPAT_INC=(-I"$COMPAT"); LIBC_KIND=picolibc; MCFLAGS=() ;;
-             # picolibc 同 riscv：缺 <sys/uio.h> 等用 compat 注入；与测试腿同 libc 同源
+             SYSROOT_FLAGS=(--specs="$_SPECS"); COMPAT_INC=(-I"$COMPAT"); LIBC_KIND=picolibc; \
+             MCFLAGS=(-mbranch-protection=none -fno-stack-protector) ;;
+             # picolibc 同 riscv：缺 <sys/uio.h> 等用 compat 注入；与测试腿同 libc 同源；
+             # 关 Debian 默认加固（PAC/stack protector）——cortex-a72 无 PAC，且库成员
+             # 的 __stack_chk 系列会拖进最终 ELF（真机取证见 build-atf-test.sh 同处注）
     x86_64)  CC="cc"; AR="ar"; SYSROOT_FLAGS=(); \
              COMPAT_INC=(); LIBC_KIND=glibc; MCFLAGS=() ;;   # x86_64 用 glibc 原生 <err.h>/<sys/uio.h>，不注入 compat（否则覆盖原生头致冲突）
     *) echo "未知 arch：$ARCH（支持 riscv64 | aarch64 | x86_64）" >&2; exit 2 ;;

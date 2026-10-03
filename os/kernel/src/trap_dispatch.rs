@@ -1621,6 +1621,14 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
     match result.reply_wire() {
         Some(wire) => frame.rax = wire as i64 as u64,
         None => {
+            // C: system.c:76 `if (result != EDONTREPLY)` — EDONTREPLY 是不交付
+            // 回执、不写回返回寄存器的契约形态（do_exit/SYS_EXIT 即此路；
+            // 调用者状态机已由 dispatch 内 cause_sig 推进）。旧注释假设
+            // “NoReply 不在此腿出现”被真机 C 测试的 _exit 兑底腿证伪
+            // （NK4C 续-277：aarch64 腿同形态直接 panic 卡死退出）。
+            if matches!(result, KcallResult::NoReply) {
+                return;
+            }
             if !matches!(result, KcallResult::VmSuspend) {
                 panic!("trap_dispatch: syscall returned {result:?} with no reply code");
             }
@@ -2128,6 +2136,12 @@ unsafe fn riscv64_kernel_call_leg(
             PARK_NONE
         }
         None => {
+            // C: system.c:76 `if (result != EDONTREPLY)` — NoReply 不交付回执、
+            // 不写 a0（NK4C 续-277 三腿同步；旧 panic 假设被真机 C 测试的
+            // _exit 兑底腿证伪）。
+            if matches!(result, crate::syscall::KcallResult::NoReply) {
+                return PARK_NONE;
+            }
             // VmSuspend (aarch64 §1.116 mirror): the call parked the
             // caller on RTS_VMREQUEST — enqueue/dequeue/notify VM were
             // already done by kernel_call_finish (the single owner of
@@ -2965,6 +2979,21 @@ unsafe fn aarch64_pagefault_body(
                 proc.trap_style = TrapStyle::FullContext;
             }
             let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+            // 临时诊断（§续-277 目标③ t_memchr 野地址案，结案滚除）：非 VM 的
+            // U 态 abort 转发前打 (proc, elr, far)——pf-exit wro 只有 cr2，无 PC。
+            #[cfg(not(feature = "mock"))]
+            {
+                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+                Console::write_str("nk4a: pfa ");
+                Console::write_hex(cur_nr.0 as u64);
+                Console::write_str(" e ");
+                Console::write_hex(frame.elr);
+                Console::write_str(" f ");
+                Console::write_hex(far);
+                Console::write_str(" l ");
+                Console::write_hex(frame.gpr[30]);
+                Console::write_str("\n");
+            }
             if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, far, errcode) {
                 // C: panic("WARNING: pagefault: mini_send returned %d")
                 panic!("pagefault: mini_send returned {e:?}");
@@ -3044,6 +3073,12 @@ unsafe fn aarch64_kernel_call_leg(
             PARK_NONE
         }
         None => {
+            // C: system.c:76 `if (result != EDONTREPLY)` — NoReply 不交付回执、
+            // 不写 x0（NK4C 续-277 三腿同步；本臂旧 panic 假设被真机 C 测试
+            // 的 _exit 证伪：trap_dispatch.rs:3055 现场）。
+            if matches!(result, crate::syscall::KcallResult::NoReply) {
+                return PARK_NONE;
+            }
             // VmSuspend (§1.116): the call parked the caller on
             // RTS_VMREQUEST — enqueue/dequeue/notify VM were already done
             // by kernel_call_finish (the single owner of that bookkeeping

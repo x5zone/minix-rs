@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-276（2026-10-03·解锁条件 3 范围裁决执行：目标③ aarch64 构建面 0→18/18）**：(A) 保持 open（工具链/预算），按接续 PROMPT §四路线 3 转推不依赖 riscv 的目标③ aarch64 上机段。本会话已具备 aarch64-linux-gnu-gcc；Ubuntu 仓有 `picolibc-aarch64-linux-gnu`（与 riscv 腿同构 libc），sudo 不可用→新脚本 `tools/vendor-atf-toolchain.sh` 免 root（apt-get download+dpkg -x 到 tools/vendor/已 gitignore+sed 本地化 specs；系统包已装则优先直用）。桥层归一（code-excellence：避免两腿拷贝漂移）：sys-riscv.c→**sys-bridge.c**（kcall 用 #if __riscv/__aarch64__ 分旋，aarch64 腿=`svc #0` x8=0/x0=&msg，对位 arch_trap.rs 单一真源）；posix-stubs-riscv.c→**posix-stubs.c**（纯 C 共享）。build-libatf-c/build-atf-test 开 aarch64 分支（与测试腿同 libc，不混 glibc）。实测：**aarch64 18/18 链成 ET_EXEC**（首案 t_memchr 424KB entry 0x40000000）；**riscv 18/18 重链回归全绿**；回归底线 1402/0 + check-layout PASS。零 os/ 生产码变更。下一步（续-277+）：上机腿——ELF 入 imgrd /tests + rc exec + 串口判 ATF PASS（注意：链接期 stdout 取自 libsemihost 的 iob.c.o，上机前须把 __stdio hooks 改接我方 _write/SYS_DIAGCTL，semihost brk 指令在我方内核必 trap）。
+> **🛑 最新前沿＝§续-277（2026-10-03·目标③ aarch64 上机腿首次打通）**：C 测试真机 exec→atf 入 main→lstat 过 VFS 门；五环毒链逐剥（内核 NoReply panic→补三腿 EDONTREPLY 合法臂对位 C system.c:76；裸_exit 吞输出→exit(main())；Debian 加固双毒 paciasp/__stack_chk_init→关 -mbranch-protection/-fno-stack-protector；TLS 初始化 :got: 对 A 型符号不可靠致 tpidr 垃圾→改 adrp+字面量池；lstat 占位→接 VFS_LSTAT 真腿）；p1/p2/p3 桥面哨兵全过（裸写/printf/malloc 地基真机成立）。**未坐实项＝续-278 靶心**：lstat 回执后 atf 公共链出现 elr/far/lr 全零的跳转 0（-l 同炸→非 body 臂），候选面四条已登记，判别实验排序已定，守不猜修。本 commit 含 os/ 生产码改动（kernel NoReply 臂+临时 pfa 诊断 mark、xtask /tests 播种、rc exec 尾段）；host 1402/0、layout PASS、双 arch 18/18。(A) riscv 仍 open。
+>
+> **（上一前沿＝§续-276（2026-10-03·解锁条件 3 范围裁决执行：目标③ aarch64 构建面 0→18/18）**：picolibc-aarch64 免 root vendor + 桥层归一 sys-bridge.c；CodeReview 修复轮 276b 已完成）
 >
 > **（上一前沿＝§续-271，见下；(A) 取证前沿＝§续-274，定性＝fork 路径竞态，三解锁条件见接续 PROMPT）**
 
@@ -11707,6 +11709,40 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 - **P2-5 已修**（NK4C-接续PROMPT-20261002.md）：旧文件名 posix-stubs-riscv.c → posix-stubs.c（带旧名注），build-atf-test 参数序订正为 `<test.c> [arch]`。WORKLOG 历史条目里的旧名不改（取证史实）。
 - **P2-6 登记不修**（doc-style-lint 增量门 SL-3/SL-4 命中 WORKLOG 新行 4 条）：实照历史提交同门命中（285e83244 报 error=1），WORKLOG 为取证载体、§续-NNN 带日期是全文既有约定（存量豁免口径）；不为过门砍日期信息，留待工具维护方裁决增量门对 WORKLOG 的豁免位。
 - 回归：本步零 os/ 变更（tools/+.gitignore+doc），os/ 自 1402/0 基线后未动；双 arch 18/18 链成即本步自身的功能回归。
+
+---
+
+## §续-277（2026-10-03·目标③ aarch64 上机腿首次打通：C 测试真机 exec→atf 框架跑进 main→lstat 过 VFS 门；真机毒链五环逐剥（NoReply panic/裸_exit 吞输出/Debian 加固双毒/TLS GOT 垃圾/lstat 占位）；P1/P2/P3 探针全过）
+
+> 承 §续-276 构建面 18/18，本会话把第一个 C 测试送上 aarch64 真机。取证链长但每环都有硬证据+可回归产物；未坐实的最后一环（atf main 内 NULL-jump）登记为下轮靶心，不猜修。
+
+### 交付清单（均在本 commit）
+1. **上机出生链 startup-minix.c**（新）：picolibc 默认 crt0 双缺陷（实测反汇定谳：① sp 切进 ELF 内 .stack 段丢内核栈；② main(0,NULL) 而 atf_tp_main 第一句 strrchr(argv[0]) 解引用 NULL）→ -nostartfiles + 自定义 _start：从内核出生 ABI（x0=ps_strings，对位 minix-rt crt0.rs/PsStringsRaw 四字段布局）取 argc/argv、挂 environ（带空表兑底防扫野指针）、TLS 初始化、exit(main()) 收尾。riscv 分支同形备好（上机受 (A) 门控，当前仅 aarch64 腿链接）。
+2. **stdio 接桥 stdio-minix.c**（新，两腿共享）：抢定义 libsemihost 的 `sys_semihost_putc/getc`（archive 成员拉入规则：本 .o 排在 libsemihost.a 前即挡下 semihost 实现成员，零 FILE 布局依赖）→ tinystdio 每字符经我方 _write→SYS_DIAGCTL→串口。真机定谳：atf 自己的 ERROR 文本经此通道完整输出。
+3. **内核 NoReply 合法臂（真机撞出的 P0 级偏离，已修）**：三腿（x86 SYSCALL/riscv/aarch64）kernel_call 完成臂旧注释断言“NoReply 不在此腿出现”——真机 C 测试 _exit 兑底腿直接返回 NoReply → 旧码 panic halting。对位 C 真源 `minix3/minix/kernel/system.c:76 if (result != EDONTREPLY)`：补 NoReply→不交付回执不写返回寄存器直接返回（三腿同步）。
+4. **C 桥 _exit 改对位 C `_exit.c` 主腿**：旧版直发 kernel_call SYS_EXIT 跨过 PM 簿记（父 waitpid 永刷不到）。现：主腿=IPC SendRec(PM, PM_EXIT, status@m_u+0)（对位 minix-sys exit_via/PM_CALL_EXIT=1），兑底腿=kernel_call SYS_EXIT（C suicide 同义形，经第 3 条修复后安全），再兑底 __builtin_trap。
+5. **imgrd 播种 /tests + rc exec（xtask 装机面改动）**：`generate_etc_proto` 新增 atf_tests 参数（非空才产 tests 目录段，空表逐字节同旧，单测断言两条目）；装配处按文件存在自动播种（t_memchr + p1/p2/p3 探针）；os/etc/rc 尾段 exec + `exit 0` 固定返回码（防 runcom 因测试腿回落 SingleUser；x86/riscv 无文件只报 not found 不致命）。
+6. **lstat 真实现 + access 委托（第二道 VFS 门）**：真机定谳 atf_fs_eaccess 实走 **lstat 非 access**（gh131 ACC 诊断零命中+错误文本在＝lstat ENOSYS 臂）；lstat 接 VFS_LSTAT(0x117，消息布局对位 stat_via_path/StatPathPayload length/name/buffer@+0/+8/+16，FS 经 magic grant 直写 stat 缓冲），access 委托 lstat+mode 判。gh132 定谳 lstat 往返 OK（vr:13 00000000 回执）。
+7. **aarch64 编译面关 Debian 默认加固（真机双毒，非绕过——靶形本不支持）**：`-mbranch-protection=none`（libgcc init 成员 paciasp 开头，cortex-a72=ARMv8.0 无 PAC=未定义指令）+ `-fno-stack-protector`（__stack_chk_init 被塞进 .init_array，模板写走异常路径野写）；两脚本（lib+test 腿）同步，否则 .o 间引用不一致。
+8. **诊断资产**：内核 aarch64 abort 转发臂新增 `nk4a: pfa <nr> e<elr> f<far> l<lr>` 临时 mark（结案滚除；旧 pf-exit 只有 cr2 无 PC 无法定位）；`tmp/nk4a/atf_a64_run.sh` 上机 harness（装配+boot+取证一体）；p1/p2/p3 探针（裸桥/printf/malloc 二分，源文件 tmp/nk4a/atfprobe/，保留作启动链回归哨兵）。
+
+### 真机取证链（证据均在 tmp/nk4a/atf-ghNN/serial.log）
+- gh121（首跑）：kernel `PANIC aarch64 kernel call returned NoReply`（=交付 3 的现形）；且 atf ERROR 文本已输出（stdio 桥✓、argv 桥✓：progname=t_memchr 正确）。
+- gh122-123：NoReply 修后无 panic，但零输出——真凶=裸 `_exit(main())` 不过 fflush；改 `exit(main())` 后…（注：tinystdio 实际仍非全 unbuffered，exit 路线是 C 标准形）。
+- gh123-124：加 SUT/PREMAIN 二分 marks：死在 `__libc_init_array`。跳过后 PREMAIN 现形→毒在 init_array 内容。反汇定谳两毒=交付 7 的 Debian 加固族；关旗后 .init_array 被 gc 裁空（objdump 实测无 section），恢复调用仍安全。
+- gh125：main 内再崩 cr2=0xffffffffffffffdf（NULL-33）；gh127 加内核 pfa PC 诊断→死指=libc 预编译 `str w,[tp,#0x10]`（errno TLS）→ **tpidr 垃圾**：我的 _start `:got:` 两跳对 A 型绝对符号（__arm64_tls_tcb_offset）不可靠（实测 GOT 槽落零洞/无关内容，tp=两枚 nop 拼的 0xd503…，后续 gh129 .align 标签序错位同环——label 必须在 align 之后，lo12 才不会落在 nop 填充上）。改 adrp+lo12（D 型 __tls_base 地址）+字面量池 .quad（A 型值）→ gh130 SIGSEGV 清零，atf 跑回 handle_srcdir。
+- gh131：ERROR "Cannot get information" 再现但 ACC 诊断零命中 → 定谳 atf 走 lstat（交付 6）。
+- gh132-134：**lstat 往返成功（vr:13 00000000）后新崩型 = elr/far/lr 全零的取指异常**（call/JUMP 到 0）。-l 列表模式同炸→毒在 ATF_TP_ADD_TCS/tp_init 公共链非 body 臂。**未坐实，登记为续-278 靶心**（候选面见下）。
+- p1/p2/p3（桥面哨兵）：gh126 起全过：`P1-OK`（裸 _write/_exit→PM）、`P2-OK 42`（printf/exit flush）、`P3-OK x`（malloc/memset/free）——**目标③ 的 C 运行时地基已真机成立**。
+
+### 续-278 靶心（登记，不猜修）
+现场：atf 公共链（atf_tp_init/ATF_TP_ADD_TCS/atf_tc_new 系）内某控制转移到 0。候选面（均未证）：(a) libatf-c 某成员内函数指针加载自 .data/bss 错位（播种后加载面≠预期？可比对 ELF .data 入 RAM 逐字节）；(b) atf-c 用 `__attribute__((constructor))` 族残留；(c) abort/atf_panic 路线的弱符号解析为 0（specs 下弱符号未定义时的 ld 行为）；(d) 内核 exec 对 4-PT_LOAD+TLS 段形 ELF 的装载缺口（wro-reg 第 2/3 段 vaddr 交错形态）——判别实验优先级：先静态比对 RAM 镜像（p1-p3 已过可缩小到 atf 专属面），再上 gdb 单步 call 点。守「未坐实不成修」。
+
+### 验证与纪律
+- host 4 包集 **1402/0**（含 NoReply 三腿改动的宿主测试）；check-layout all **PASS**；双 arch 18/18 重链全绿。
+- 两架构 marker 回归：x86 smoke **PASS**（rc=0）；aarch64 smoke 首三轮 FAIL——**真凶非启动链而是脚本自身 bug（已修）**：`set -o pipefail` 下 `strings bigfile | grep -q` 命中即退→strings 收 SIGPIPE→管道 rc=141→轮询永判不中（事后对同一文件验证 rc=141 定谳；最小复现 `bash -c 'set -uo pipefail; { yes filler|head -200000; echo marker; } | grep -q marker; echo rc=$?'`→141）。修复=test-cmd-smoke-aarch64.sh Stage 3/4 改 `grep -qa` 直读文件/落盘文件（与 x86 兄弟脚本直读形态对齐），修后 **aarch64 smoke PASS**。新易错模式登记：pipefail×grep -q×上游大输出=假失败三要件，所有轮询类断言脚本适用。
+- 本 commit 含 **os/ 生产码改动**（kernel trap_dispatch NoReply 臂+临时 pfa 诊断 mark、xtask 装机面、os/etc/rc、smoke 脚本修复）；NoReply 臂=行为契约修复（对位 C EDONTREPLY），pfa/探针 mark 已标“结案滚除”并登记 §八待办面。
+- (A) riscv 仍 open（本轮零 riscv 改动）；目标③ aarch64 上机段从 0→“C 测试入 main+lstat 过 VFS 门”，最后一环 atf 公共链 NULL-jump 待坐实。三目标未全成，goal 继续推进。
 
 
 

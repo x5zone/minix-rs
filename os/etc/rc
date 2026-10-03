@@ -13,3 +13,12 @@
 echo "minix-rs rc: minimal boot script marker"
 ls /bin
 cat /etc/rc
+# NK4-C 续-277 目标③首案：ATF C 测试上机腿（imgrd 播种 /tests 时真执行；
+# 未播种的架构报 not found 不致命——尾行 exit 0 固定 rc 返回码，init runcom
+# 不因测试腿缺失而回落 SingleUser）。p1/p2/p3 是桥面二分探针（裸写/stdio/
+# malloc），定位 §续-277 真机毒链后保留作命令面启动链回归哨兵。
+/tests/t_memchr memchr_basic
+/tests/p1
+/tests/p2
+/tests/p3
+exit 0
