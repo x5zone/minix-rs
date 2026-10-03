@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>   /* sysconf/_SC_PAGESIZE（sysconf 定义在本文件尾部） */
 
 #ifndef _UIO_VEC_
 struct iovec { void *iov_base; size_t iov_len; };
@@ -208,13 +209,50 @@ void *dlsym(void *h, const char *n){ (void)h;(void)n; return (void*)0; }
 int dlclose(void *h){ (void)h; return -1; }
 char *dlerror(void){ return (char *)"dlopen unsupported"; }
 
+/* BSD stresep（picolibc 无）——对位本仓 C 真源逐行移植：
+ * minix3/lib/libc/string/stresep.c（BSD strsep 基 + esc 处理：命中 esc 则
+ * strcpy 就地删 esc 并字面化下一字符；未转义分隔符写 NUL 断句；串尽返
+ * NULL 并置 *stringp=NULL）。签名必须对齐否则调用侧按 implicit-int 截返回
+ * 指针→高位丢失现野地址；__arraycount 不在此（编译期宏，存根会致零覆盖假绿）。
+ * 旧占位返 NULL 的 t_stresep 假红预告（§续-271 P2-3）就此闭合。 */
+char *stresep(char **stringp, const char *delim, int esc) {
+    char *s;
+    const char *spanp;
+    int c, sc;
+    char *tok;
+
+    if ((s = *stringp) == NULL)
+        return NULL;
+    for (tok = s;;) {
+        c = *s++;
+        while (esc != '\0' && c == esc) {
+            (void)strcpy(s - 1, s);
+            c = *s++;
+        }
+        spanp = delim;
+        do {
+            if ((sc = *spanp++) == c) {
+                if (c == 0)
+                    s = NULL;
+                else
+                    s[-1] = 0;
+                *stringp = s;
+                return tok;
+            }
+        } while (sc != 0);
+    }
+}
+
+/* sysconf：picolibc 提供 weak/default 实现（真机 gh142 定谳：strlen_huge 拿
+ * 负值在 `page >= 0` 断言即 fail）。本 TU 定义抢占（group 内先于 libc.a 成员，
+ * 同 stdio/write 抢定义机制）。_SC_PAGESIZE=4096（我方页尺寸单一真源
+ * PAGE_BYTES 的 C 侧同值）；其余 name 报 EINVAL 败形（POSIX 语义）。 */
+long sysconf(int name) {
+    if (name == _SC_PAGESIZE)
+        return 4096;
+    errno = EINVAL;
+    return -1;
+}
+
 int popcountll(long long x){ return __builtin_popcountll((unsigned long long)x); }
 int popcount(unsigned x){ return __builtin_popcount(x); }
-
-/* BSD stresep（picolibc 无）。真原型 char *stresep(char**, const char*, int esc)。
- * 够链占位（返回 NULL）；真语义上机再补。签名必须对齐否则调用侧按 implicit-int
- * 截返回指针→高位丢失现野地址。__arraycount 不在此（它是 NetBSD 编译期宏，
- * 由 build-atf-test.sh 的 -D 提供，若做函数存根会致测试循环零覆盖假绿）。 */
-char *stresep(char **stringp, const char *delim, int esc){
-    (void)stringp; (void)delim; (void)esc; return (char *)0;
-}
