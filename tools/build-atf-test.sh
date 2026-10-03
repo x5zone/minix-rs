@@ -94,6 +94,13 @@ name="$(basename "$TEST" .c)"
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/bm.c" -o "$BUILD/bm.o"
 # BSD sys_nerr（picolibc 不提供），供 t_strerror 编译/链接（真语义上机前校准，见 errno-compat.c 头注释）。
 "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/errno-compat.c" -o "$BUILD/errno-compat.o"
+# BSD random/srandom 真源接管（NK4-C §续-283 D1）：minix3/common/lib/libc/stdlib/
+# random.c 逐字 vendor（fidelity=零改动，全部兼容在 random-shim/）。命令行对象
+# 强定义 random+srandom（+initstate/setstate）→ picolibc 单符号成员
+# libc_stdlib_{random,srandom}.c.o 不再被拉入（LCG _rand_next 形永不上台），
+# t_memcpy 的 BSD 期望序由此满足——host 离线对账 MD5=7b405d24… 已 MATCH（§续-283）。
+# sbrk/sysconf/strerror 同形先例。
+"$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" -I"$COMPAT/random-shim" "$COMPAT/random.c" -o "$BUILD/random.o"
 
 # 上机出生链（启动腿）：picolibc 默认 crt0 把 sp 切进 ELF 内 .stack 且
 # main(0,NULL)（atf tp_main 解引用 argv[0] 必死），需 -nostartfiles 换
@@ -110,7 +117,7 @@ case "$ARCH" in
 esac
 
 "$CC" -static "${MC[@]}" "${SYS[@]}" "${LINK_EXTRA[@]}" "${STARTUP_O[@]}" "$BUILD/$name.o" \
-    -Wl,--start-group "$LIB" "$BUILD/sys-bridge.o" "$BUILD/stdio-minix.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
+    -Wl,--start-group "$LIB" "$BUILD/sys-bridge.o" "$BUILD/stdio-minix.o" "$BUILD/posix-stubs.o" "$BUILD/md5.o" "$BUILD/bm.o" "$BUILD/errno-compat.o" "$BUILD/random.o" "${SEMIHOST[@]}" -lc -Wl,--end-group \
     -o "$BUILD/$name"
 
 # 校验我方加载器 parse_ehdr 的硬项（ELF64 + LSB + ET_EXEC）。

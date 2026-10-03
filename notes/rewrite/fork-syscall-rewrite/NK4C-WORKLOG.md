@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-283（a2d 探针按预案回滚：观测者效应统计定谳）**：探针在码 11 跑崩率 2/11≈18% vs 基线 7/10=70%（二项 P<0.001）+β 形零现+a2d 真命中零 ⇒ 热路足迹（每级 walk 两次比较+分支）足以挪走 β 竞态窗，gh74 教训同型复现，「是效应即回滚」预案触发；**回滚不是探针错**（CodeReview PASSED 0P0/0P1 留档）而是它改变了被观测系统。`git checkout 3fafdbe04^ -- <三文件>` 回字节态（diff=0 实证），快回归 0 failed+535/0。资产留存=halt-dump 工具（零扰动主力）+11 份 dump（9 stall 形首批记忆快照+hd6/hd11 崩现场）；**hd6 定谳 form A=控制流脱轨跳进无 X 位的栈页被拦**（取指页 PTE=VRWUAD 无 X，栈内容含堆指针 0x1400028000）；**hd11=BTreeMap panic @exec2 极早期**——腐坏窗比 exec 风暴更宽。方法论=「探针不復现」须跑满统计样本再裁决修复vs扰动；崩形分布本身是扰动读数。下一步=(A) 回零扰动 halt-dump 序列；转 D1 确定收益（host MATCH+双腿链成+nm 铁证，待上机 33→34）。
+> **🛑 最新前沿＝§续-284（D1 清账：BSD random 真源接管，aarch64 上机 33→34 passed/0 failed）**：host 离线对账先行（tmp/nk4a/host_random_check/：真源 #include+t_memcpy runTest 复刻+md5）=MD5 7b405d24…==goodResult MATCH；落地=tools/atf-c-compat/random.c 逐字 vendor（cmp 字节相同，兼容全在 random-shim/：吞参 mutex 宏+`#undef __weak_alias` 防 picolibc 弱别名破坏抢占+_DIAGASSERT 补零）+build-atf-test.sh 链组 random.o（命令行对象抢占 picolibc 单符号成员，sbrk/sysconf/strerror 同形先例）。验证=双腿 t_memcpy 重链过 ehdr+**nm 铁证 `t random_unlocked` 在产物、`_rand_next` 消失**+aarch64 正式门 18 ELF 全量重装上机 **34/36 passed 0 failed**（此前唯一 failed=t_memcpy.c:99 即 D1；rc=1=stall 判定正确行为，D3b 2 无结果行原位）+riscv64 18 案全链 OK。下一步=§续-285 D3b（C 真源链已侦察：forkexit.c pm_exit→zombify→tell_parent:670/wait_proc:540；我方 wait.rs 机器在，挂点=SIGSEGV 死亡路径是否走到 zombify→check_parent→tell_parent）。
+>
+> **（上一前沿＝§续-283（a2d 探针按预案回滚：观测者效应统计定谳）**：探针在码 11 跑崩率 2/11≈18% vs 基线 7/10=70%（二项 P<0.001）+β 形零现+a2d 真命中零 ⇒ 热路足迹（每级 walk 两次比较+分支）足以挪走 β 竞态窗，gh74 教训同型复现，「是效应即回滚」预案触发；**回滚不是探针错**（CodeReview PASSED 0P0/0P1 留档）而是它改变了被观测系统。`git checkout 3fafdbe04^ -- <三文件>` 回字节态（diff=0 实证），快回归 0 failed+535/0。资产留存=halt-dump 工具（零扰动主力）+11 份 dump（9 stall 形首批记忆快照+hd6/hd11 崩现场）；**hd6 定谳 form A=控制流脱轨跳进无 X 位的栈页被拦**（取指页 PTE=VRWUAD 无 X，栈内容含堆指针 0x1400028000）；**hd11=BTreeMap panic @exec2 极早期**——腐坏窗比 exec 风暴更宽。方法论=「探针不復现」须跑满统计样本再裁决修复vs扰动；崩形分布本身是扰动读数。下一步=(A) 回零扰动 halt-dump 序列；转 D1 确定收益（host MATCH+双腿链成+nm 铁证，待上机 33→34）。
 >
 > **（上一前沿＝§续-282（a2d 探针落地：walk_read 父级边界五元组+U-safe sink，全回归绿）**：三文件 riscv64-only 门控——paging.rs 新 `pub mod a2d`（RAM_TOP=0xA000_0000 谓词不扩围/CAP=16/fn 指针 sink write-once）+walk_read 两 fire 位点（`l1=pte_to_paddr(l2e)`/`l0=pte_to_paddr(l1e)` 之后、跟随读之前，崩前抓 (root,lvl,idx,raw,child)）；bootmark.rs `register_a2d_sink`+格式化 sink（`nk4c: a2d root=…`<128 走 sys_diagctl）；vm_server.rs 注册块对齐 pt_alloc::register 时机。诚实边界=只抓越 0xA0000000 必崩类，「RAM 内错误帧」腐值未扩围；观测者效应预案（gh74）=不复现即多跑对账、是效应即回滚。验证=riscv release 构建过（rodata 串实测在产物）+宿主全绿（1403/0+535/0+layout PASS+x86 smoke+aarch64 bootmarks rc=0+qemu=0）。下一步=§续-283 探针 boot×halt-dump 成对取证拿 β 写者指纹。
 >
@@ -12079,3 +12081,13 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **方法论入账（易错模式）**：时序敏感竞态的「探针不復现」两解（修复 vs 扰动）必须跑满统计样本再裁决（本例 5 跑时 1/5 尚可辩，11 跑时 2/11 定谳）；崩形分布本身是探针扰动的读数（β 消失而 BTreeMap/form A 仍在=扰动选择性压制最紧的窗，非整轮护身）。
 
 **下一步**：(A) 线回到零扰动 halt-dump 序列（多跑采崩形+现场对）；本轮转确定收益队列 D1（random 接管已 host 对账 MATCH+双腿链成+nm 铁证，待 aarch64 上机验证 33→34）。
+
+## §续-284（2026-10-03·D1 清账：BSD random 真源接管 atf-c-compat，aarch64 上机 33→34 passed / 0 failed）
+
+**真源对账先行（host 离线）**：`tmp/nk4a/host_random_check/`（check.c=真源 #include + t_memcpy runTest 逐行复刻 + 仓内 md5.c；shim/=namespace.h 空壳 + reentrant.h 吞参 mutex 宏对位真源 _KERNEL 分支）。读数 **MD5=7b405d24bc03195474c70ddae9e1f8fb == goodResult MATCH**——minix3/common/lib/libc/stdlib/random.c（NetBSD random.c 1.4，TYPE_3/DEG_3=31/SEP_3=3，USE_BETTER_RANDOM 支路含 Park-Miller 播种）正是测试期望的序列；接管后 memcpy_basic 必过，先离线后上机的对账纪律执行。
+
+**接管落地**：`tools/atf-c-compat/random.c`=真源**逐字 vendor（cmp 字节级相同，fidelity=零改动）**；兼容全在 `random-shim/{namespace,reentrant}.h`（reentrant.h 三件事=吞参 mutex 宏消元 random_mutex 使用点/`#undef __weak_alias` 防 picolibc cdefs 的弱别名把归档 _random 拉进决议破坏抢占/`_DIAGASSERT` 缺省补零）。`tools/build-atf-test.sh` 两处=random.o 编译行（-I random-shim，真源 quote-include 解析）+链组行 random.o 插 errno-compat.o 后（命令行对象强定义 random/srandom/initstate/setstate→picolibc 单符号成员 libc_stdlib_{random,srandom}.c.o 不再被拉入，sbrk/sysconf/strerror 同形先例）。
+
+**验证链**：①双腿重链=t_memcpy aarch64（404480B）+riscv64（313360B）过 ehdr 硬校验；**nm 铁证=`T random`/`T srandom`+`t random_unlocked`/`t srandom_unlocked`（BSD 真源专属静态函数）在产物、`_rand_next`（picolibc LCG 态）消失**=抢占成功非侥幸；②aarch64 正式门 `test-atf-aarch64.sh` 全量重装 18 ELF+镜像+上机=**34/36 passed / 0 failed**（此前唯一 failed=t_memcpy.c:99 即 D1），门 rc=1 系 stall 判定正确行为（D3b 的 2 无结果行仍在，与 §续-279n 对账一致）；③手动 harness 复跑（atf-d1v1）=t_memcpy 三用例行在串口、failed 计数 0、末位 passed 后下一案无结果行=D3b 挂点原位；④riscv64 腿 18 案全量重链 OK。回归面=os/ 零改动（tools/ only），宿主套件不受影响。
+
+**剩余=aarch64 目标③达成态的两案**：D3b（子 SIGSEGV 异退后父 sh waitpid SendRec 无回复，ESRCH 车道挂父——正修=PM exit/event 唤醒语义，§续-279k 登记）。C 真源链已侦察=forkexit.c pm_exit→zombify→tell_parent（:670，满足父的进行中 wait4=reply(pid)+W_EXITCODE 载荷+WAITING 清+ZOMBIE→TOLD_PARENT+时间累计）/wait_proc（:540，后到 wait 对已僵尸补 tell_parent）；我方 wait.rs 的 tell_parent 机器在（注释钉 C 对位）——挂点在 SIGSEGV 死亡路径是否走到 zombify→check_parent→tell_parent，待下轮以门串口挂点证据定位。
