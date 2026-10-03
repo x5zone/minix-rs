@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-292-b（poison PA 算术指纹：DM 窗 VA & 0x7fffffff 精确产出 poison——逆映射掩码混淆升头号假设）**：α poison PA 0xbc900b3c = 故障 VA 0x10bc900b3c & 0x7FFFFFFF **精确吻合**（2GB 掩码保留 bit29=RAM_SIZE 位）；hd4 β 形 0x409c8ffb30 & 0x7fffffff=0x9c8ffb30=真帧+0xb30 同构 ✓。凡以「RAM 尺寸掩码」替代「减 DM 基址」的 va→pa 逆映射（`pa=va&(SIZE-1)` 恒等窗惯用形）都产出此形，且 bit29 跨批稳定与掩码确定性吻合（随机腐坏无法解释同位复现）。§续-293=全树 grep riscv 路径 `&0x7fff`/RAM_SIZE 掩码/硬编码的 va→pa 逆映射（direct_map virt_to_phys/dm_coverage/kdst/grant 翻译），坐实哪条腿何条件下用掩码代减法——即 (A) 写者本体，成修=改真减法+§7 验收解锁 riscv 三目标。
+> **🛑 最新前沿＝§续-293（trail 收敛：poison=错粒度叶 PTE 形；α 面未被 a2d 覆盖 ⇒ §续-294=a2d-leaf 探针）**：真 virt_to_phys=减法+阈值无掩码形、`&0x7fffffff` 生产零命中（掩码混淆降级）；poison PTE 形状学=paddr 含 bit29=PPN[17] 伪位+叶旗标=**错粒度叶 PTE**（2MB/1GB 叶 PPN 低位非零=保留形，本仓无大页=无人合法写出）——瞬态腐值是一枚带旗标的错位 PTE。已回滚 a2d 只测非叶边界（:384/:402），**α 面叶/大页分支（:316-320/:330-335）从未被捕获**。§续-294=a2d-leaf 探针（huge/leaf 分支 fire 条件 pte_is_leaf && pte_to_paddr≥RAM_TOP，五元组+分支名，riscv-only/U-safe/CAP=16/halt-dump 成对）——先测观测者效应（b 批 α 率 ~80% 是否保持：保持且抓 raw=写者指纹到手；抑制=α 面同样 timing-sensitive 回零扰动+扩样）。§续-290 矩阵 blocker 与此互不阻塞。
+>
+> **（上一前沿＝§续-292-b（poison PA 算术指纹：DM 窗 VA & 0x7fffffff 精确产出 poison——逆映射掩码混淆升头号假设，现已降级）**：α poison PA 0xbc900b3c = 故障 VA 0x10bc900b3c & 0x7FFFFFFF **精确吻合**（2GB 掩码保留 bit29=RAM_SIZE 位）；hd4 β 形 0x409c8ffb30 & 0x7fffffff=0x9c8ffb30=真帧+0xb30 同构 ✓。凡以「RAM 尺寸掩码」替代「减 DM 基址」的 va→pa 逆映射（`pa=va&(SIZE-1)` 恒等窗惯用形）都产出此形，且 bit29 跨批稳定与掩码确定性吻合（随机腐坏无法解释同位复现）。§续-293=全树 grep riscv 路径 `&0x7fff`/RAM_SIZE 掩码/硬编码的 va→pa 逆映射（direct_map virt_to_phys/dm_coverage/kdst/grant 翻译），坐实哪条腿何条件下用掩码代减法——即 (A) 写者本体，成修=改真减法+§7 验收解锁 riscv 三目标。
 >
 > **（上一前沿＝§续-292（栈残留布局恒定性定谳+poison 值形状=叶组合式）**：四现场（b2-b5/hd4）0x805fff48 起 128B 布局逐字段恒定=[fault_dm_addr][child vaddr 0x7fffffffe000][frame+4][0][0|0x10][frame][pte→paddr 掩码 0x00fffffffffff000][vaddr]，切片含 VM 栈指针 0x3ffffc3bcc 与堆指针 0x1400660fe0（r1 的 x9）=**VM 栈多帧切片，由崩前最后一条 VM diagctl（fill-root，cow_exec_pf.rs:198）拷入 kdst 缓冲**。**poison 形状定谳**：fault_dm_addr=DM|伪帧|0xb3c（≡4）与叶/大页分支组合式 `pte_to_paddr(pte)|vaddr_offset`（paging.rs:317/:332）输出同构（槽读组合不可能产出此形）⇒ poison 由叶分支以瞬态腐 PTE 合成（§续-233 旧 form C 读法在值来源层复活）。α 全链=叶分支算 poison→存栈→控制流脱轨→mid-query 0x3ae10 `ld a1,0(a1)` 拾取 poison→故障。缺口=脱轨本体（ra 从何腐坏）+poison 合成点坐实。§续-293 靶=①记录布局对到 fill/query 具体栈帧（frame+4=u32 视图?）②栈 VA 定位属主函数③沿叶分支 PTE 输入回溯写者。
 >
@@ -12199,3 +12201,7 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 ## §续-292-b（poison PA 的算术指纹：DM 窗 VA & 0x7fffffff 精确产出 poison——逆映射掩码混淆假设升头号）
 
 新算术事实：α 的 poison PA `0xbc900b3c` = 故障 VA `0x10bc900b3c & 0x7FFFFFFF` **精确吻合**（0x7fffffff=2GB 掩码，保留 bit29=RAM_SIZE 位、抹 bit31+/DM 基位）。凡以「RAM 尺寸掩码」替代「减 DM 基址」的逆映射（va→pa 恒等窗惯用形 `pa = va & (SIZE-1)`）都会产出此形——且 poison 的 bit29 每次稳定出现（跨批指纹恒定）与掩码机制的确定性吻合（随机腐坏无法解释跨 boot 同一位）。hd4 的 0x409c8ffb30 同检：&0x7fffffff=0x9c8ffb30=1MB 对齐真帧+0xb30 ✓ β 形同构（β 的 (1<<38) 高位=另一变换，待析）。**§续-293 升级**：全树 grep riscv 路径上 `& 0x7fff`/RAM_SIZE 掩码/硬编码 0x7fff_ffff 的 va→pa 逆映射（direct_map virt_to_phys、dm_coverage、kdst、grant 翻译），找出哪条腿在哪个条件下用掩码代减法——坐实即 (A) 写者本体（成修=改真减法+§7 验收）。
+
+## §续-293（2026-10-04·trail 收敛：poison=错粒度叶 PTE 形；α 面未被 a2d 覆盖=新探针位）
+
+两条收束：①真 `virt_to_phys`（direct_map.rs:59-66 trait 默认）=减法+阈值判别，无掩码形；`&0x7fffffff` 生产路径零命中——掩码混淆假设**降级**（无代码形）。②poison PTE 的形状学：paddr 含 bit29=PPN[17] 伪位+叶旗标 ⇒ **错粒度叶 PTE 形**（2MB/1GB 叶的 PPN 低位非零=保留形，本仓无大页使用=无人合法写出）——即瞬态腐值是一枚「带旗标的错位 PTE」。而已回滚的 a2d 只 instrument 非叶边界（:384/:402），**α 面的叶/大页分支（paging.rs:316-320/:330-335）从未被捕获**。**§续-294=a2d-leaf 探针**：huge/leaf 分支 fire 条件 `pte_is_leaf && pte_to_paddr(pte) >= RAM_TOP`（out-of-RAM"叶"必为腐值），五元组同 a2d+分支名；riscv-only/U-safe/CAP=16/halt-dump 成对；落地后先测观测者效应（b 批 α 率 ~80% 是否保持——若保持且抓到 raw=写者指纹到手；若抑制=α 面同样 timing-sensitive，回到零扰动+扩样）。 §续-290 的矩阵 blocker 与本探针互不阻塞。
