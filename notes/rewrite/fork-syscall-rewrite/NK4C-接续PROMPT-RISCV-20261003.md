@@ -1,7 +1,7 @@
 # NK4-C 接续 PROMPT（2026-10-03 · riscv 优先版）
 
 > 把本文件整段作为新会话的开场任务说明。它是**入口**，不是全部——真正的取证细节在
-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279m/279m-b）。
+> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279n/-b）。
 > 本 Prompt 与前作 `NK4C-接续PROMPT-20261003.md` 的关系：**前作的解锁条件 3（范围裁决：转推 aarch64）
 > 已被执行完毕并大获全收**；本版本把主攻方向切回 **(A) riscv**，并携带 aarch64 战役期间新增的
 > 资产、教训与台账。三终目标不变、`/goal` 永续持续推进，**riscv 最先**。
@@ -15,8 +15,8 @@ Kernel=SMP+BKL，用户服务器单线程事件循环）。三条终目标：
 
 1. **三架构启动 marker**：x86_64 ✅、aarch64 ✅、**riscv64 ❌（被 (A) 门住——本会话主攻）**。
 2. **18-stage 命令面**：x86 ✅、aarch64 ✅、riscv ❌（同被 (A) 门住）。
-3. **586 个 minix3 C 测试（atf-c）上机跑通**：aarch64 已实证 **29 passed/36 用例**（§续-279m，
-   一夜从 9→29），riscv 链面 18/18 但上机被 (A) 门住。
+3. **586 个 minix3 C 测试（atf-c）上机跑通**：aarch64 已实证 **33 passed/36 用例**（§续-279n，
+   三日 9→29→33；仅剩 memcpy D1×1 台账 fail + D3b 相关 2 无结果行案），riscv 链面 18/18 但上机被 (A) 门住。
 
 目标不是「修一个 bug」，是**全部达成后才 mark complete**。遇卡点自选可推进路线，不许中途停。
 
@@ -25,8 +25,9 @@ Kernel=SMP+BKL，用户服务器单线程事件循环）。三条终目标：
 ## 二、先按顺序读这些权威状态源
 
 1. 本文件。
-2. `NK4C-WORKLOG.md` **顶部 banner（§续-279m/279m-b 前沿）** → 需要细节再翻文末对应 §。
-3. `git log --oneline -25`（近三笔：`c8eacdb91` 评审修复轮 / `4994feddd` D3a 正修 / 其前为 279 系列）。
+2. `NK4C-WORKLOG.md` **顶部 banner（§续-279n/-b 前沿）** → 需要细节再翻文末对应 §。
+3. `git log --oneline -25`（近三笔：`f5d6f11a6` 279n-b 评审修复轮 / `f1dbc079f` 279n strerror 接管 /
+   `cf0d7d7cf` 279m-close）。
 4. `NK4C-BUG-RISCV64-TRANSIENT-PTE.md` + `riscv瞬态页表崩溃取证方法论.md`（(A) 本体取证全史，必读）。
 5. 前作 `NK4C-接续PROMPT-20261003.md` 的 §三~§五（(A) 认知状态/死路清单/迭代协议）——**仍然有效**，
    本文件只更新差量。
@@ -67,21 +68,23 @@ Kernel=SMP+BKL，用户服务器单线程事件循环）。三条终目标：
 
 ---
 
-## 四、当前精确读数（2026-10-03 §续-279m 后）
+## 四、当前精确读数（2026-10-03 §续-279n 后）
 
-- 真机 aarch64：**29 passed + 5 failed + 0 panic**（36 用例中 34 出结果行）。
+- 真机 aarch64：**33 passed + 1 failed（唯一=t_memcpy.c:99 D1 台账）+ 2 无结果行（D3b 相关台账）**
+  （36 用例中 34 出结果行）。
 - 已知台账（都不算新缺陷）：
   - **D1**：`memcpy_basic` 对 NetBSD random 期望串在 picolibc 永不通过（p5 探针定谳）→ 需**口径决策**
     （预期失败清单 vs BSD random 移植）。
-  - **strerror 族 ×4**：`sys_nerr=134` 校准未做（tools/atf-c-compat 的 sys_nerr 是链接面占位；
-    按 picolibc strerror 覆盖度校准即可解锁 4 案——**小而确定，建议 riscv 战役间隙顺手做**）。
+  - ~~**strerror 族 ×4**~~：**已清零**（§续-279n：compat 全接管 strerror/strerror_r/strerror_l 三口 +
+    sys_nerr 边界差一修正，sys_nerr=135 与 C compat_errlist.c:153 公式同形；易错模式=边界必须按真源
+    公式取、探针必须覆盖边界双侧、裸名引用必须由裸名定义满足——详 WORKLOG §续-279n）。
   - **D3b**：子进程 SIGSEGV 异退后，父 `sh` 的 `waitpid` SendRec 未获回复（ESRCH 车道挂父）→
     正修=PM exit/event 唤醒语义（§续-279k 登记，未动；尾部 2 个无结果行案与此相关待辨）。
   - gh152 瞬态 boot 死（同镜像重跑即好）——登记未追，若 riscv/aarch64 再现再立案。
-- 正式门 `os/qemu-tests/test-atf-aarch64.sh` 现判 FAIL rc=1 ——**这是门的正确行为**（5 个真
-  fail 不被掩盖），全绿条件=D1 口径+strerror 校准。
+- 正式门 `os/qemu-tests/test-atf-aarch64.sh` 现判 FAIL rc=1 ——**这是门的正确行为**（D1 真 fail
+  不被掩盖；stall 判定与 2 无结果行案对账一致），全绿条件=D1 口径+D3b。
 - 回归基线：host 4 包集 0 failed、VM host 535/0、check-layout all PASS、x86 smoke PASS、
-  aarch64 bootmarks rc=0、双 arch 18/18 链面零警告。
+  aarch64 bootmarks rc=0、双 arch 18/18 链面零警告（§续-279n-b 复验）。
 - **工作区注记**：`notes/rewrite/fork-syscall-rewrite/03-stage-rs/{00-rs-overview,doc_rerank_qwen}.md`
   有两处**非本会话所改**的脏文件（21→22 篇文档计数），留给用户/RS 文档线处置，**勿顺手 commit**。
 
@@ -157,7 +160,7 @@ bash os/kernel-image/check-layout.sh all                                        
 3. **若探针/复现到手**：钉写者 → 对位 C（`minix3/sys/kern/` + `pagetable.c` + vm `fork.c`
    map_proc_copy）找 happens-before 偏离 → 坐实 → 成修 → §7 验收（≥3 轮证无+两 marker+host 全绿）。
 4. **若拿不到**（工具缺口仍在）：riscv 侧保持 (A) open，同轮做不依赖 riscv 的确定收益：
-   strerror sys_nerr 校准（+4 案）→ D3b（PM exit/event 唤醒链）→ aarch64 门全绿 → 然后继续
+   D1 口径决策 → D3b（PM exit/event 唤醒链）→ aarch64 门全绿 → 然后继续
    回到 2 的变体尝试（不同 QEMU 版本/不同 smp 度/关定时器扰动的对照矩阵）。
 5. **结案滚除义务在你手里**：(A) 成修或结案时，全树 `nk4a:`/`nk4c:` 探针一次性滚除
    （内核 pf-exit/pfa/oomrt + VM vmm-h/brk/pf-region + 其余套件期探针），WORKLOG 已有登记。
@@ -169,7 +172,7 @@ bash os/kernel-image/check-layout.sh all                                        
 - **(A) 根因未坐实**：无指令级定性，无成修；上面所有「嫌疑面」都是候选不是结论。
 - **riscv 从未在 2048 池态 boot 过**（§续-279e-note 明文）；riscv 测试 ELFs 已换真 sbrk 腿但
   **从未在 riscv 上机跑过**——首轮 riscv boot 读数若与旧取证不同，先排除这两个变量。
-- **D3b/D1/strerror/尾部 2 案**：都在 §四台账，未动码。
+- **D3b/尾部 2 案**：都在 §四台账，未动码；D1 待口径决策（strerror ×4 已在 §续-279n 清零）。
 - **诊断 mark 残留**：见 §八.5，结案前统一滚除。
 - 收官判定：三终目标逐项拿**当前态**证据（不许引用历史读数），才 `/goal` complete。
 

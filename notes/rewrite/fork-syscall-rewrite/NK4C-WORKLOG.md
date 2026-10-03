@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-279m（含 -b 评审轮与 -close 收尾：riscv 新基线崩点未迁+交接 prompt 就位，新 agent 按 `NK4C-接续PROMPT-RISCV-20261003.md` 攻关 (A)）**：三处真源定谳推翻 §续-279k/l 的候选面——①C 的 `vm_region_top` 只是槽位 hint（region.c:391，只在 find_slot_range 新槽路写），**不是 break 值**；真 break 在 libc（brksize.S `_brksize=_end`）；VM 侧 brk 只有 extend 没有 shrink（break.c 全文无缩减腿，region.c:1016 低地址 no-op OK）。②普通 exec 链在 C 里**没有** HEAP_PREALLOC 腿（那是 service 启动专属，rs/request.c:779 经表驱动 minix-service 配置）——旧“墙一 C 靠 RS VM_MMAP_DATA”登记失实（全树 grep VM_MMAP_DATA 零命中）。③真机定谳我方挂点=**libsemihost 假 sbrk**（纯用户态推进自己 .data 里 brk 变量永不下陷，堆“成功”长进未映射页）+ **VirRegion::split 丢 def_memtype**（C split_region 两半 region_new 都带 vr->def_memtype，region.c:1174-1182；丢了它 PF 永死 NoMemType→SIGSEGV）。落地：brk.rs 重写为 map_region_extend_upto_v 直译（绝对断点+ AVL_LESS `<=` 前驱+resize/create 双臂）；mmap/map_phys/remap/boot 四腿补 hint 同步（C :391 parity）；posix-stubs.c 抢定义真 sbrk（VM_BRK SendRec，同 sysconf 抢占机制）；split 继承 memtype+防御门+2 host 回归测试。真机 gh159：**29 passed+5 failed（memcpy D1×1+strerror 族×4 均已知台账）+0 panic**，memset 族 7 案全过；x86 smoke PASS（boot 腿 hint 改动对 x86 零回归）、aarch64 bootmarks rc=0、VM host 535/0、双 arch 18/18 零警告。临时探针：brk 扩腿+pf-region 形状两处暂留（D3b 结案滚除）；内核 route 探针已定谳已删。下一步按优先级：strerror sys_nerr 校准→D3b（子异退唤醒父 waitpid）→D1 口径；本节点后用户已安排新 agent 攻关 (A) riscv，交接 prompt 另文件。
+> **🛑 最新前沿＝§续-279n（含 -b 评审轮：strerror 族真语义接管+sys_nerr 边界差一修正，套件 31→33 passed，strerror ×4 台账清零）**：gh160 真机定谳 picolibc 越界码永不产 BSD 形 "Unknown error: N" → posix-stubs.c 自给表 compat_errstr 全接管 strerror/__xpg_strerror_r/strerror_l 三口（表布局与 C sys_errlist 同构 index==errno，0 项真源原串，sys_nerr=135=表项数与 compat_errlist.c:153 公式同形）；三轮链接试错定稿=errno-compat.h 在 string.h 前 `#define strerror_r __xpg_strerror_r` 宏转发（C 名必须 __xpg_strerror_r：asm 别名/独名均不满足裸名引用→multiple definition；_strerror_r 真签名 (int,int,int*) 按假原型是 UB→自给表零外呼）。**边界差一定谳**：C 契约 valid=[0,sys_nerr)，旧判 `e<=sys_nerr`+sys_nerr=134 令 e=134 被当已知→t_strerror :54/:94 在 i=134 首断言即败；p3 探针只测越界侧恰好漏测边界，矛盾归一。CodeReview PASSED 0P0/0P1，2 P2 全修（-b：表 123 项保真+__xpg_strerror_r 定义 char* 同形+GNU 调用负向契约）。真机终态 **33 passed+1 failed（唯一=t_memcpy.c:99 D1 台账）+2 无结果行（D3b 台账）**；gh152 族瞬态再现一次（门跑 32/36，同镜像复跑即复 33，登记不立案）。回归全绿：VM host 535/0、host 4 包集 0 failed、check-layout all PASS、x86 smoke PASS、aarch64 bootmarks rc=0。剩余台账=D1 口径+D3b+尾部 2 无结果行案；主攻=(A) riscv（交接 prompt `NK4C-接续PROMPT-RISCV-20261003.md`）。
+>
+> **（上一前沿＝§续-279m（含 -b 评审轮与 -close 收尾：riscv 新基线崩点未迁+交接 prompt 就位，新 agent 按 `NK4C-接续PROMPT-RISCV-20261003.md` 攻关 (A)）**：三处真源定谳推翻 §续-279k/l 的候选面——①C 的 `vm_region_top` 只是槽位 hint（region.c:391，只在 find_slot_range 新槽路写），**不是 break 值**；真 break 在 libc（brksize.S `_brksize=_end`）；VM 侧 brk 只有 extend 没有 shrink（break.c 全文无缩减腿，region.c:1016 低地址 no-op OK）。②普通 exec 链在 C 里**没有** HEAP_PREALLOC 腿（那是 service 启动专属，rs/request.c:779 经表驱动 minix-service 配置）——旧“墙一 C 靠 RS VM_MMAP_DATA”登记失实（全树 grep VM_MMAP_DATA 零命中）。③真机定谳我方挂点=**libsemihost 假 sbrk**（纯用户态推进自己 .data 里 brk 变量永不下陷，堆“成功”长进未映射页）+ **VirRegion::split 丢 def_memtype**（C split_region 两半 region_new 都带 vr->def_memtype，region.c:1174-1182；丢了它 PF 永死 NoMemType→SIGSEGV）。落地：brk.rs 重写为 map_region_extend_upto_v 直译（绝对断点+ AVL_LESS `<=` 前驱+resize/create 双臂）；mmap/map_phys/remap/boot 四腿补 hint 同步（C :391 parity）；posix-stubs.c 抢定义真 sbrk（VM_BRK SendRec，同 sysconf 抢占机制）；split 继承 memtype+防御门+2 host 回归测试。真机 gh159：**29 passed+5 failed（memcpy D1×1+strerror 族×4 均已知台账）+0 panic**，memset 族 7 案全过；x86 smoke PASS（boot 腿 hint 改动对 x86 零回归）、aarch64 bootmarks rc=0、VM host 535/0、双 arch 18/18 零警告。临时探针：brk 扩腿+pf-region 形状两处暂留（D3b 结案滚除）；内核 route 探针已定谳已删。下一步按优先级：strerror sys_nerr 校准→D3b（子异退唤醒父 waitpid）→D1 口径；本节点后用户已安排新 agent 攻关 (A) riscv，交接 prompt 另文件。
 >
 > **（上一前沿＝§续-279k/l·已被 279m 推翻修正，保留供溯源）**：279k 三面墙登记中：墙一“C 靠 RS VM_MMAP_DATA”失实（全树零命中，真机定谳真凶=semihost 假 sbrk+split 丢 memtype）；墙三“IPC 腿先于旧路径拆除”教训维持有效（本轮 VM 侧先行修复后才拆 bump 换 sbrk 腿）；279l 的 HEAP_PREALLOC 补腿方案未采纳（C 普通 exec 链本无此腿，补了反而背离 ground truth）。
 >
@@ -11965,6 +11967,32 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 >    模块尺寸漂移（sched 等自表生成日已增长）后表/实错位，报 `pfs not valid ELF`——**这是工具陈旧不是 (A) 新线索**；
 >    boot-full 门自带 table 再生，首选它。登记模式：**取证脚本若自带布局假设，必须与被测布局同源再生，否则隔日即坏**
 >    （已写进交接 prompt §七）。
+
+---
+
+## §续-279n（2026-10-03·strerror 族真语义接管 + sys_nerr 边界差一定谳：t_strerror ×4 台账清零，套件 31→33 passed）
+
+**背景**：§续-279m 后套件台账剩 memcpy D1×1 + strerror 族×4。gh160 用 p3 探针（临时征用）真机取证：picolibc 的 strerror 对越界码（135/200/INT_MAX/INT_MIN）**永不产 BSD 形 "Unknown error: N"**（全空串；表洞 133 也空串），strerror_r XSI 形未走通（rv=-4744 指针值=GNU 形经 XSI 声明解读的值域混流）。结论：单调数值校准（改 sys_nerr 值）不够，必须 compat 全接管 strerror/strerror_r/strerror_l 三口。
+
+**三轮链接试错（易错模式库）**：
+1. errno-compat.h 直接给 int 形 strerror_r 声明 → 与 picolibc string.h:128 的 GNU 形声明 conflicting types 硬错（两轮）。
+2. 宏转发后若实现用 asm 名/独名（compat_xsi_strerror_r），**裸名引用不满足**——链接器把裸名 strerror_r 解析回 picolibc 成员，其 U _strerror_r 拽入 libc_string_strerror.c.o，与自家 strerror 强-强 multiple definition 硬错（又一轮）。
+3. 定稿：C 名=__xpg_strerror_r + errno-compat.h 在 string.h **之前**注入 `#define strerror_r __xpg_strerror_r`（-include 先于一切 #include，GNU 形声明被一并改名与定义同形）；实现自给表零外呼——picolibc `_strerror_r` 真实签名 (int,int,int*)，按 GNU 假原型 (int,char*,size_t) 调是 UB。
+
+**矛盾定谳（本轮核心）**：接管落地后 gh161/gh163 仍剩 t_strerror.c:54（`strstr(strerror(i),"Unknown error:")!=NULL` not met）与 :94（`strerror_r(i,...)==EINVAL` not met）两 fail，而 p3 二次取证（gh162）显示实现行为全对（s135="Unknown error: 135"、r140 rv=22）——矛盾。objdump 显示测试调用点 `bl __xpg_strerror_r`、比较 `cmp w0,#0x22/#0x16`（int 立即数，声明链路已对）；镜像时序嫌疑（gh163 镜像 20:36 装配 vs t_strerror 20:44 重建）被正式门全量重建复跑证伪（仍败）。最终定位：**sys_nerr 边界差一**——C 契约（compat_errlist.c:153 `sys_nerr=表项数`）是 valid=[0,sys_nerr)，测试以 sys_nerr 为**首个未知码**；旧实现判 `e<=sys_nerr` 且 sys_nerr=134 → e=134 被当已知（返回表尾消息/返 0），i=134 处首断言即败。p3 探针只测越界侧 135/140，恰好漏测边界——探针盲区即矛盾来源。
+
+**落地**（f1dbc079f + f5d6f11a6）：
+- `compat_errstr[135]`：index==errno 与 C sys_errlist 同构，0 项="Undefined error: 0"（真源原串 compat_errlist.c:52），1..79=minix3 逐行移植，80..134=picolibc sys/errno.h 消息（123=EPROTONOSUPPORT "Unknown protocol"，-b 评审修正）；sys_nerr=135=表项数与 C 公式同形；判据 `e>=0 && e<sys_nerr`。
+- strerror：越界 snprintf "Unknown error: %d"+errno=EINVAL（C strerror.c:111 同置）；__xpg_strerror_r XSI 语义（ERANGE/EINVAL/0；-b 后定义取 char* 形与改名声明同形，XSI 码 `(char *)(intptr_t)` 回传，GNU 调用负向契约登记于 errno-compat.h）；strerror_l 同表接管断拉入链。
+
+**读数与回归**：真机终态 **33 passed + 1 failed（唯一=t_memcpy.c:99 D1 已知台账）+ 2 无结果行（D3b 台账）**——strerror ×4 全解锁（31→33）；正式门 stall 判定与 2 无结果行案对账一致（rc=1 是门的正确行为）；-b 修复轮前一次门跑 32/36 系 gh152 族瞬态（同镜像复跑即复 33，登记不立案）。回归：VM host 535/0、host 4 包集 0 failed、check-layout all PASS、x86 smoke PASS、aarch64 bootmarks rc=0、双 arch t_strerror 重链过 ehdr 硬校验零硬错。CodeReview（f1dbc079f）PASSED 0 P0/0 P1，2 P2 全修（f5d6f11a6）。
+
+**新易错模式**：
+1. **兼容层边界必须按真源公式取**：sys_nerr 不是"随便一个上界"，是 `表项数`（C 公式），判据方向（`<` vs `<=`）与测试循环的"首个未知码"约定强耦合——差一即断言面在边界处集体翻车。
+2. **探针取证要覆盖边界双侧**：gh162 只测越界侧（135/140）导致"实现全对"的误判；边界值（sys_nerr 本身、sys_nerr-1）必须进探针清单。
+3. **裸名引用必须由裸名定义满足**：asm 别名/独名+宏转发组合会把引用解析回库成员并拽入其同侪（multiple definition）——接管库函数时 C 名+前置宏转发是唯一稳妥形。
+
+**下一步优先级**：主攻=(A) riscv（交接 prompt 已就位）；aarch64 侧剩余=D1 口径决策（预期失败清单 vs BSD random 移植）→D3b（子异退唤醒父 waitpid，尾部 2 无结果行案与它对账）。
 
 ---
 
