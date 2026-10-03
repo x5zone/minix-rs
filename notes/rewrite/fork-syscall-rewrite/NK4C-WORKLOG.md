@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-313-b（状态勘误：Pte 臂已随 §续-311-b 回滚移除，pter 日志补丁未应用——r1s-r3s=直接读时代崩照旧再实证；收口步修正版=先零改动做 GPR x12/fill-root va/ptroot 全量对账穷尽①门（两读「同一槽」假定核查），再决定是否重落 Pte 臂+区间日志）**：r1s-r3s（直接读时代采样）3/3 崩同指纹=槽访问层豁免再实证；krewalk（kernel 侧）保留在场。§续-305 的「根错配」待 §续-306 setaddr-root 与 ptroot 的同窗对账（跨 run 恒定值已录：ptroot=0x9d6e9000 恒定、setaddr-root=0xffffffff9d6e9000=掩码后同帧）。
+> **🛑 最新前沿＝§续-313②（α 形不可能态全 32 寄存器定谳：k2 的 CPU 状态与 ELF 在 sepc 的指令语义不可调和——状态=「别的代码」的相干快照）**：k2 全寄存器表（修正提取后）=x11=stval ✓/x12=vaddr ✓/x15=DM ✓/x16=0x9c93c000/x17=掩码 ✓/x14=x16+4/x19=0x9c93d000/x23=0x800c——但 ELF 0x3ae10=`ld a1,0(a1)` 语义 a1=(slotoff|DM)+L1frame 应=0x109D330FF8≠实测 0x10bc8ffb3c；反解 a1−DM−0xFF8=0xBC8FF044≠x16；a1−x16=0x1FFC3B3C 形=VM 栈段偏移。⇒ **执行流/取指字节在该 PC 处与 ELF 脱钩（QEMU TB 层）**——α 不可能态由孤证升级为全寄存器完整定谳。§续-314 靶=①崩时 text 页字节校验（eed1867 新基线）②QEMU 变体矩阵③one-insn-per-tb 等零网络参数试验；若①双向确认 ⇒ (A)=QEMU 8.2.2 TCG 工件，解锁=版本变体或 QEMU 层绕过。
+>
+> **（上一前沿＝§续-313-b（状态勘误：Pte 臂已随 §续-311-b 回滚移除，pter 日志补丁未应用——r1s-r3s=直接读时代崩照旧再实证；收口步修正版=先零改动做 GPR x12/fill-root va/ptroot 全量对账穷尽①门，再决定是否重落 Pte 臂+区间日志）**：r1s-r3s（直接读时代采样）3/3 崩同指纹=槽访问层豁免再实证；krewalk（kernel 侧）保留在场。§续-305 的「根错配」待 §续-306 setaddr-root 与 ptroot 的同窗对账（跨 run 恒定值已录：ptroot=0x9d6e9000 恒定、setaddr-root=0xffffffff9d6e9000=掩码后同帧）。
 >
 > **（上一前沿＝§续-313①（fill 内部判别探针全静默+krd 批读旁路在场仍崩——poison 经 kernel-mediated 读进入；收口步=PteRead 臂区间值日志）**：b 批五崩 run 的 walk-flip=0/pte-wb-FAIL=0（fill 自身无内伤）；krd1-krd3 读旁路在场 3/3 崩同指纹 ⇒ poison 经 kernel-mediated 读进入 VM。**时间窗悖论**：krewalk（panic 时）读同槽=sane、VM walk（微秒前）内核 KDM 读=poison、-smp1 两读间无他者 ⇒ RAM 不可能变——剩余解释①两读的「同一槽」假定有误（VM walk 的 root/va 参数与 krewalk 假定不同）②S 态 KDM 读自身被平移层误导（z1 同层）。**§续-313 收口步=PteRead 臂区间日志**（`pa∈[0x9d6e9000,0x9d700000)` 逐笔记 `nk4c: pterd pa raw` CAP=64）——崩点前内核代读的实际返回值序列直接钉死①vs②。方法论=探针移到读的返回边界（PteRead 臂）而非 walk 内部（旁路已证 walk_read 改写必灭）。
 >
@@ -12367,3 +12369,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **状态勘误**：§续-313① 收口步（PteRead 臂区间日志）的补丁 assert 失败未应用——§续-311-b 的回滚已把整个 Pte 臂（读/写/零填）从 syscall.rs 移除，r1s-r3s 三跑实为**直接读时代**（无 Pte 臂、VmDm 直读）的采样：3/3 崩同指纹（0x10bc900b3c ×2+β ×1）=**直接读时代崩照旧的再实证**（与 §续-311 终判一致：槽访问层豁免）。krewalk 探针（kernel 侧）保留在场 ✓（r1s-r3s 崩时 krewalk 读数可查）。
 
 **§续-313 收口步（修正版路径）**：需先重落 Pte 臂（读腿即可）再加区间日志——两 commit 成本；或改走**零 guest 改动**路线：krewalk v3 的 child 链读数已在崩溃现场直接可查（r1s-r3s 每崩都带 krewalk），配合「VM walk 的 root/va 参数核定」（崩时 GPR x12=walk va ✓、root=句柄值待核）先穷尽①门（两读「同一槽」假定核查）再动 ②门。下一轮首查：k1/k2/krd1-3/r1s-r3s 各崩的 GPR x12 与 fill-root 的 va/ptroot 全量对账（零改动，纯既有数据分析）。
+
+## §续-313②（2026-10-04·α 形不可能态全 32 寄存器定谳：k2 的 CPU 状态与 ELF 在 sepc 的指令语义不可调和——状态=「别的代码」的相干快照）
+
+**k2 全寄存器表**（修正提取格式后 x0-x31 全量）：x2=x5=0x3ffffc3b3c（VM 栈）、x9=0x1400660fe0（堆指针）、x10=0x3ffffc3bb4、**x11=0x10bc8ffb3c（=stval ✓）**、x12=0x7fffffffe000（vaddr ✓）、x13=0x9c93c004、x15=0x1000000000（DM 基 ✓）、x16=0x9c93c000、x17=0xfffffffffff000（**掩码常量**）、x18=0x7fffffffe000、x19=0x9c93d000、x20=0x3ffffc66e4、x22=0x3ffffc670c、x23=0x800c（endpoint）、x30=0x7ffffffffffffff。
+
+**不可调和证明（终版）**：ELF 在 0x3ae10=`ld a1,0(a1)`，语义 a1=(slotoff|DM)+L1frame。代入实测：slotoff(va=0x7fffffffe000)=0xFF8、a5=x15=DM ✓、a6=x16=0x9c93c000 ⇒ a1 应=0x109D330FF8；实测 a1=0x10bc8ffb3c。反解 a1−DM−0xFF8=0xBC8FF044≠x16。且 a1−x16=0x1FFC3B3C 形=x2 类（VM 栈段）偏移——**寄存器状态是某段相干代码的快照，但不是 ELF 在 0x3ae10 对本输入的执行结果**。⇒ 执行流/取指字节在该 PC 处与 ELF 脱钩（QEMU TB 层）——α 形不可能态由「孤证/寄存器不全」升级为**全寄存器完整定谳**。
+
+**§续-314 靶**：①崩时（panic-halt 冻结态）对 VM text 页 0x3a000 做 krewalk 式字节校验（eed1867 建新基线后）——若 text=ELF 而 CPU 态≠ELF 语义 ⇒ QEMU TB 层实锤（对照 hd4 旧证）；②QEMU 变体矩阵（网络）；③若 ① 双向确认（text 净+态不可调和）⇒ (A)=QEMU 8.2.2 TCG 工件，解锁路径=版本变体或 QEMU 层绕过（-accel tb-size/one-insn-per-tb=one-insn 参数试验零网络成本）。
