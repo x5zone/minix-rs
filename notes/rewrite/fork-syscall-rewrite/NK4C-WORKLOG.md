@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-294/295/296（instrumentation 路线终结；smp 矩阵=竞态 smp 无关且确定性強；poison 基底=自由帧 ⇒ 分配器内部指针新方向）**：§续-294 叶探针（bdb4fe525，评审 PASSED 0P0/0P1）采样 **0/7 崩 0 fire——叶面同样完全抑制**，结论闭合=**任何 walk_read 改写都抑制 (A)**（非叶 0/19+叶 0/7 双实证），instrumentation 路线终结，已回滚（md5 复原 a8b7654c）。§续-295 smp 矩阵=**竞态 smp 度无关**（smp1 3/3 全同 α 指纹 0x10bc900b3c、smp2 2/3、smp4 3/3+新伪帧 0x10a2d65a28=池区帧|bit29）——「单核调度时机」削弱、**确定性成分强**（同指纹 3/3 非随机）。§续-296 **poison 基底身份逆转**：0x9c900000=全零零引用自由帧 ⇒ poison=**DM 视图指向自由帧+0xb3c（侵入式 freelist 节点偏移形状）**——栈切片属主可能是分配器调用链（fill-root→alloc 嵌套）而非 walk；新模型=freelist 内部 DM 指针泄漏进控制流。kdst/内核尾/bump 三区 poison PTE 原值零驻留。§续-297 靶=①PhysAlloc freelist 结构审（节点内嵌?0xb3c 偏移?bit29 来源）②栈切片全量符号化归账③若坐实→(A) 重新定性+修法重画。
+> **🛑 最新前沿＝§续-298（(A) 重新定性：krewalk 决定性证据——VM 视图≠RAM，poison 从未存在于内存；(A)=模拟器保真度问题非内核 bug）**：内核 pfvm 冷路径故障时刻 KDM 重走（krewalk，trap_dispatch.rs 续-298 探针）：k2（α 形）重走=**l1 槽 raw=0x0 NOT PRESENT**（VM 刚读出 poison 并合成 DM|伪帧 的同一槽位 RAM 实际为零）；k3（β 形）=**l2 槽 raw=0x0** 同构。-smp 1 下读槽与重走之间无他者运行 ⇒ 「写后即擦」不可能 ⇒ **poison 从未存在于 RAM：VM 的 CPU 读被平移层误导**。(A) 重定性=**QEMU 8.2.2 软 TLB/TCG 视图保真度问题**（VM U 态经 VmDm 窗读 PTE 槽+boot 期 ELF 解析读在特定时序被误导），非内核内存 bug。全历史观测自洽（RAM 恒净/仪器必灭/smp 无关/指纹确定/S 态 KDM 直读正常）。三终目标含义=riscv 门是模拟器工件，解锁路径重画：(a) QEMU 变体矩阵升正解候选（9.x 若无误导→riscv 全链直通，证据随版本标注）(b) 定位 8.2.2 误导机制绕过（VmDm 读改内核代读腿=§续-288 已审方向）(c) 网络恢复矩阵先行。§续-299 靶=①krewalk 扩样≥5 崩（已 2/2 全净）②VmDm 内核代读改造面评估③矩阵 blocker 追踪。
+>
+> **（上一前沿＝§续-294/295/296（instrumentation 路线终结；smp 矩阵=竞态 smp 无关且确定性強；poison 基底=自由帧 ⇒ 分配器内部指针新方向——已被 §续-298 取代：自由帧+bit29 是误导读到的错位字节而非写者产物）**：§续-294 叶探针（bdb4fe525，评审 PASSED 0P0/0P1）采样 **0/7 崩 0 fire——叶面同样完全抑制**，结论闭合=**任何 walk_read 改写都抑制 (A)**（非叶 0/19+叶 0/7 双实证），instrumentation 路线终结，已回滚（md5 复原 a8b7654c）。§续-295 smp 矩阵=**竞态 smp 度无关**（smp1 3/3 全同 α 指纹 0x10bc900b3c、smp2 2/3、smp4 3/3+新伪帧 0x10a2d65a28=池区帧|bit29）——「单核调度时机」削弱、**确定性成分强**（同指纹 3/3 非随机）。§续-296 **poison 基底身份逆转**：0x9c900000=全零零引用自由帧 ⇒ poison=**DM 视图指向自由帧+0xb3c（侵入式 freelist 节点偏移形状）**——栈切片属主可能是分配器调用链（fill-root→alloc 嵌套）而非 walk；新模型=freelist 内部 DM 指针泄漏进控制流。kdst/内核尾/bump 三区 poison PTE 原值零驻留。§续-297 靶=①PhysAlloc freelist 结构审（节点内嵌?0xb3c 偏移?bit29 来源）②栈切片全量符号化归账③若坐实→(A) 重新定性+修法重画。
 >
 > **（上一前沿＝§续-293（trail 收敛：poison=错粒度叶 PTE 形；α 面未被 a2d 覆盖 ⇒ §续-294=a2d-leaf 探针，已落地并证伪）**：真 virt_to_phys=减法+阈值无掩码形、`&0x7fffffff` 生产零命中（掩码混淆降级）；poison PTE 形状学=paddr 含 bit29=PPN[17] 伪位+叶旗标=**错粒度叶 PTE**（2MB/1GB 叶 PPN 低位非零=保留形，本仓无大页=无人合法写出）——瞬态腐值是一枚带旗标的错位 PTE。已回滚 a2d 只测非叶边界（:384/:402），**α 面叶/大页分支（:316-320/:330-335）从未被捕获**。§续-294=a2d-leaf 探针（huge/leaf 分支 fire 条件 pte_is_leaf && pte_to_paddr≥RAM_TOP，五元组+分支名，riscv-only/U-safe/CAP=16/halt-dump 成对）——先测观测者效应（b 批 α 率 ~80% 是否保持：保持且抓 raw=写者指纹到手；抑制=α 面同样 timing-sensitive 回零扰动+扩样）。§续-290 矩阵 blocker 与此互不阻塞。
 >
@@ -12217,3 +12219,13 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **§续-296 poison 基底身份逆转（本段最强新线索）**：b2 深挖——伪帧基底 PA 0x9c900000=**全零、零 PTE 引用的自由帧**（512 槽全零+无 V=1 引用）⇒ poison 指针=**DM 视图指向自由帧+0xb3c 偏移**；0xb3c 像**侵入式自由链表节点字段偏移**（分配器内部指针形状，非 walk 合成产物）。重读 §续-292 栈记录：切片混有堆指针 0x1400660fe0——栈切片的属主可能根本不是 walk 而是分配器调用链（vm_pt_alloc/reclaim 在 walk 栈帧内的合法嵌套！fill-root→alloc→freelist）。**新模型**：poison 指针=分配器 freelist 内部 DM 指针（指向自由帧+节点偏移），bit29 来源=freelist 高位标记或节点字段；脱轨控制流拾取的 a1=栈上分配器残留。kdst/内核尾/bump 三区扫描=poison PTE 原值零驻留（纯瞬态再实锤）。
 
 **§续-297 靶**：①审 vm PhysAlloc/alloc_pfn_reclaiming 的 freelist 结构（节点是否内嵌自由帧、字段偏移是否含 0xb3c 形、bit29 来源）；②b2 栈切片全量符号化（0x805ff000-0x80600000 十个 128B 切片逐个归账 VM 栈 VA→函数）；③若 freelist 模型坐实——(A) 重新定性从「walk 竞态」转向「分配器内部指针泄漏进控制流」，修法与验收随之重画。
+
+## §续-298（2026-10-04·(A) 重新定性：krewalk 决定性证据——VM 视图≠RAM，poison 从未存在于内存；(A)=模拟器保真度问题非内核 bug）
+
+**决定性实验**（§续-298 krewalk=内核 pfvm 冷路径故障时刻经 KDM 重读 fault_addr 页表链槽值，trap_dispatch.rs 续-298 探针）：k2（α 形 0x3ae10/0x10bc8ffb3c）重走=**l1 槽 raw=0x0（NOT PRESENT）**——VM 刚读过 poison 值并合成 DM|伪帧 指针的同一槽位，RAM 实际为**零**；k3（β 形 0x3ae3e/0x409c8ffb30）=**l2 槽 raw=0x0** 同构。k1 不崩（pf=0，崩率符合基线）。
+
+**Q.E.D. 链**：-smp 1 下 VM 读槽与内核重走之间仅隔 trap 入口+内核打印代码（无他者运行、无页表写者）——「poison 写入后被擦」不可能 ⇒ **poison 从未存在于 RAM：VM 的 CPU 读被平移层误导（读到错误物理字节）**。z1 的 boot 解析 panic（视图读错字节）同层统一。(A) 正式重定性：**非内核内存 bug，而是 QEMU 8.2.2 软 TLB/TCG 层的视图保真度问题**——VM U 态经 VmDm 窗读 PTE 槽（及 boot 期 ELF 解析读）在特定时序下被平移层误导。全部历史观测在此模型下自洽：RAM 恒净（hd4/b2/z1 普查）、instrumentation 必灭（改 walk_read=改 TB 布局/时序）、smp 无关（软 TLB 按 hart，误导条件与 hart 数解耦）、指纹确定（误导读到的「错误物理位置」的内容确定）、探针/krewalk 自身读数正常（S 态 KDM 直读≠VM U 态 VmDm 视图）。
+
+**对三终目标的含义**：①②③ riscv 的门不是内核 bug 而是**模拟器工件**——解锁路径重画：(a) QEMU 版本变体矩阵升为正解候选（9.x/10.x softmmu 若无误导 → riscv 全链在 9.x 下直通：boot marker+命令面+ATF 套件，证据随 QEMU 版本如实标注）；(b) 定位 8.2.2 的具体误导机制并绕过（如 VmDm 读改走内核代读腿=架构对位 C 的 kernel-mediated，本就是 §续-288 审过的方向）；(c) 网络恢复后矩阵先行（§续-290 blocker）。
+
+**§续-299 靶**：①krewalk 扩样（≥5 崩全带 krewalk，确认「重走全净」的普遍性——样本已 2/2）；②(b) 路线预研：VmDm PTE 槽读改内核代读的改造面评估（walk_read 的 VmDm 腿改 ecall 代读=大改，先评估 C 对位与成本）；③矩阵 blocker 追踪。

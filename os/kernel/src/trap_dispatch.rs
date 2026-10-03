@@ -1983,6 +1983,40 @@ unsafe fn riscv64_pagefault_body(
             Console::write_str(" root=");
             Console::write_hex(satp & 0x00000FFFFFFFFFFF << 12);
             Console::write_str("\n");
+            // 续-298 故障时刻再走（用后即滚）：经内核 KDM 重读 fault_addr 的
+            // 页表链槽值（l2e/l1e/l0e 三级原始值）。判据：若重读值与崩溃时
+            // VM 视图一致（链上有越 RAM 项）⇒ RAM 脏-at-fault（存在内存写
+            // 者）；若重读全净 ⇒ 视图错位（QEMU 软 TLB/TB 层）。冷路径
+            // （panic 前、非 VM 热路），KDM 平移=减基址直读。
+            {
+                const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                let root = (satp & 0x00000FFFFFFFFFFF) << 12;
+                let mut pa = root;
+                let shifts = [30u64, 21, 12];
+                for (lvl, sh) in shifts.iter().enumerate() {
+                    let idx = (fault_addr >> sh) & 511;
+                    let slot_pa = pa + idx * 8;
+                    if slot_pa < 0x8000_0000 || slot_pa >= 0xA000_0000 {
+                        Console::write_str("krewalk: lvl out-of-range\n");
+                        break;
+                    }
+                    let v = unsafe {
+                        ((KDM + slot_pa) as *const u64).read_volatile()
+                    };
+                    Console::write_str("krewalk: l");
+                    Console::write_str(["2", "1", "0"][lvl]);
+                    Console::write_str(" slot_pa=");
+                    Console::write_hex(slot_pa);
+                    Console::write_str(" raw=");
+                    Console::write_hex(v);
+                    Console::write_str("\n");
+                    if (v & 1) == 0 {
+                        Console::write_str("krewalk: not-present\n");
+                        break;
+                    }
+                    pa = ((v >> 10) & 0xFFFFFFF_F) << 12;
+                }
+            }
         }
         // 续-138 探针（用后即滚）：全 GPR 帧 dump——寄存器残缺恢复定位。
         for (idx, val) in frame.gpr.iter().enumerate() {
