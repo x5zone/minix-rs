@@ -12293,3 +12293,7 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **(A) 终定性（第四版，全证据自洽）**：exec/setaddr 为 child 分配新根并 kernel 绑定（sas-fork/setaddr 探针为证），但 **VM 的 fill/校验路径持过期 handle（旧根 0x9d6e9000=上一代已释放帧）**——VM 在旧根的已释放/复用帧上读写：读=垃圾 poison（旧表残留+复用内容，解释指纹确定性与 bit29/高位形状）、写=落进已释放帧（不生效于新根链，解释 fill×3 refault 与 leaf_now 差异）；instrumentation/时序敏感=free/复用时序随代码布局变化。此前全部模型（walk 竞态/视图错位/分配器 freelist）为该 stale handle 的不同侧影。krewalk v1/v2「同义反复」实为走过场，v3 修绑定后才照出真链。
 
 **§续-306 靶（成修）**：①定位 VM 侧 handle 更新点：exec/relocate 后 child 新根如何回到 VM 的 Paging 句柄（setaddr 探针/kernel 侧 setaddrspace 的 VM 通知腿），找到「句柄未刷新」的具体断点（fill 用的 pt 从哪个缓存/字段来——cow_exec_pf fill 路径的 pt 参数链）；②修=句柄刷新（对照 C：C 的 pt_bind 每次 exec 后重绑，真源 pagetable.c/proc.h 核对）；③验收=refault 循环消失+fill×3→1+riscv boot marker+≥3 轮复现证无+双 marker+host 全绿（§7）；④探针族（krewalk/evict/ptfree/fill-root/sas-fork）结案滚除。
+
+## §续-305-b（§续-305 保留点：根错配对比跨生命周期点，定案需 exec 时 setaddr 的 root 值——探针补一行即可）
+
+诚实保留：§续-305 的「根错配」对比 = sas-fork 的 fork 时 root(0x9dc37000) vs fill-root 的 post-exec ptroot(0x9d6e9000)——**两者合法可不同**（exec 重建地址空间=新根是新根）。C 对位：exec 时 VM 建新根并 setaddr 绑定 kernel，此后 ptroot 应=kernel 绑定值。**决定性判据 = exec 时 setaddr 传的 root 值 vs ptroot**：相等 ⇒ child 链健全但 VM 的 VmDm 读仍见 poison=视图分歧实锤（QEMU 层）；不等 ⇒ VM setaddr 传错根/handle 双轨=纯 in-code bug。而现有 setaddr 探针（syscall.rs setaddr 腿）只打 nr/flags 不打 root——**补一行 root 打印即定案**（§续-306 首步，先于一切修复动作）。另：fill 的 pte_pa(0x9c93e000) 与 krewalk 实测真实叶槽(0x9c93cff0)差 0x2000 的疑点也在此轮一并核（pte_pa 语义=叶槽还是别者，读 fill-root 探针源定义）。
