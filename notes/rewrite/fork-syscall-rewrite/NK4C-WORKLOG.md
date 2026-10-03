@@ -11843,6 +11843,12 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 > **墙三（sbrk 抢定义的反噬）**：接 C brk.c 形抢定义 sbrk→VM_BRK 后，brk-in 到达 VM 但全被拒（墙一）→ **nano-malloc/ldgloss 对 sbrk 失败非放弃而是 16B 步重试**（gh150 实测 brk-in×1074 轮且进程挂进重试环=比原崩溃形态更糟的静默挂）——教训：**给用户态半机型的 IPC 占位失效前不能先拆旧路径**；下次与墙一正修同批落地，并验证 grow_heap 真扩后 region 页 demand-fill 链路（新页写入会首次走 fill-root 腿，与 (A) 同层风险预期内）。
 > **旁证登记**：gh142 的 20 passed 属历史态（sysconf 修前 memset 在注册期即终止不碰堆）；sysconf 修（279f）后 memset 家族首次真跑 body → D3 现形——**暴露型，不回退 sysconf/stresep**。D3b（崩后父 sh 阻塞：SIGSEGV 子终止后 waitpid SendRec 未获回复，vr:00 fffffffd=ESRCH 车道未唤醒父）与 D3 同批但独立：正修在 PM exit/event 链（子异退必须唤醒挂其 waitpid 的父）。优先级：D3a+D3b 一次攻坚（套件 26 案全丢的瓶颈），后接 strerror 校准与 D1 口径。
 
+### 同轮末纯阅读侦察：D3a 正修地图定坑（比"exec 腿 set_region_top"更精确）
+- C 真源完整链坐实：**子进程创建时 RS 的 service_ipc/fork 腿发 `vm_memctl(child_ep, VM_RS_MEM_HEAP_PREALLOC)`（minix3/minix/servers/rs/request.c:779）→ VM MEMCTL→real_brk 建立初始 heap 并设 `vm_region_top`（region.c:391 在 map_region 公共腿 `top=startv+length`）**。
+- 本重写缺口精确定位：① VFS 动态 exec 只发 VM_MMAP 两腿（exec_worker.rs:464 栈 + :927 镜像），**无 HEAP_PREALLOC 腿**；② VM 侧 MEMCTL 处理器存在（rs.rs:474 委托 brk.rs）但只接 RS 真请求；③ 本仓的 RS 等价物（os/servers/rs 还是 PM 代发）子创建序列未发该 memctl = 断点。
+- 因此下次攻坚首选形（不碰 handle_brk 零 boot 风险）：**在子进程建立链（对应 C request.c:779 的本仓等价位置）补发 VM_RS_MEM_HEAP_PREALLOC**（消息形=minix-types/src/ipc/rs.rs VM_RS_MEM_HEAP_PREALLOC=2，rs.rs MEMCTL 处理器已就绪），目标位置随 exec 链阅读（PM do_fork 子交付腿→RS service 腿）一并确认；同批验 grow_heap 真扩后新页 demand-fill（fill-root 腿首次被 C 大块踩到，与 (A) 同层风险预期内，失败则按 (A) 方法论处置）。
+- 墙二（defsym __stack_size=0）与墙三（sbrk 抢定义，需 brk 能成功后才有意义）均待此正修同批验证；顺序：HEAP_PREALLOC 补腿 → 验 region_top 建立 → sbrk/brk 腿重新落地 → defsym 验证 → 套件重跑。
+
 ### D2 静态审计追加两条事实（279 起点，本处登记）
 - **big 释放路径存在且形似正确**（alloc.rs free 臂：命中 big_blocks 记录→`supplier.release_pages(page, page_count)`→槽置 None）——“回收泄漏”候选收窄为：Rust 侧正常 Drop 下只剩“panic 前未来得及 free”或 supplier 自身记账两种形态；279 先补 big-free 计数探针（alloc/free 对称打点）再定。
 - **时间相关性新线索**：OOM 首次出现在 **imgrd 8MiB→16MiB 之后的首次全量 boot（gh140）**——mfs 把 imgrd 嵌为只读种子层（build.rs include_bytes），若 mfs/VM 对更大根盘有 per-block 元数据或缓冲随容量放大，182 条 big 现役记录的归因要重查（279 第一步：OOM-RT 行加 proc 号坐实“谁” OOM，再按进程静态对账）；单案时代 gh135-139（16MiB 未变前也 boot 过带套件镜像）未暴同型 OOM 的支持面有限，不下结论。
