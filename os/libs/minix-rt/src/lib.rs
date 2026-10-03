@@ -149,7 +149,12 @@ fn nk4c_oom_tag(size: usize) {
             }
         }};
     }
-    lit!(b"nk4c: OOM-RT size=");
+    lit!(b"nk4c: OOM-RT ");
+    // proc 归因（NK4C 续-279a）：本函数只能走裸 kernel call 诊断腿（minix-rt
+    // 不依赖 IPC 发送通道，服务器/命令 transport 形态不同，拿不到 getpid）——
+    // 归因改由内核侧完成：dispatch_diagctl 对 "nk4c: OOM-RT" 前缀行补打 caller
+    // proc 号（内核腿自带 cur_nr，单点零新通道），见 §续-279a 内核侧改动。
+    lit!(b" size=");
     hex!(size, 6);
     // 分母取派生常量真值（NK4-C 1.55：池 512→1024 后写死的 `/200`
     // 会打出 px=400/200 的非法形态，签名对账判据即被污染）。

@@ -3140,6 +3140,17 @@ fn dispatch_diagctl(
 
             match data_copy_vmcheck(caller_nr, proc_table, src, dst, len, proc_cr3) {
                 CrossSpaceResult::Completed(Ok(())) => {
+                    // NK4C 续-279a：minix-rt 的 OOM 诊断行只走裸 kernel call 腿（拿不到
+                    // 自身 pid），在内核侧补打 caller proc 号完成归因——**必须在
+                    // data_copy 成功后**检查内容（拷贝前 diagbuf 全零，前置检查永不
+                    // 命中），仅命中前缀时多打一行，普通 bootmark 零影响；结案随
+                    // 诊断 mark 族一并滚除。
+                    if diagbuf[..len].starts_with(b"nk4c: OOM-RT") {
+                        use minix_plat::{CurrentEarlyConsole as DiagConsole, EarlyConsole as _};
+                        DiagConsole::write_str("nk4a: oomrt caller=");
+                        DiagConsole::write_hex(caller_nr.0 as u64);
+                        DiagConsole::write_str("\n");
+                    }
                     // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
                     // the kmess ring is the C kputc accumulation half —
                     // record here so the IS `kmessages_dmp` replay
