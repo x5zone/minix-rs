@@ -14,12 +14,12 @@ VFS（虚拟文件系统服务器）是 Minix3 微内核里的用户态进程：
 
 Minix3 原版的 VFS 是全系统唯一使用线程池（mthread，9 条）的服务器：一个阻塞的文件系统调用不能拖死整个服务器，所以每个可能阻塞的调用被丢进一个工人线程里等。minix-rs 把这九条线程改写成一个单线程事件循环加九个请求槽（ARCH A-1）——线程的"隔离阻塞副作用"能力由槽的状态机（Idle → Busy → WaitingForFs / Suspended）承接，而线程的调度成本、栈管理、锁竞争全部消失。这不是省事：Redox 的文件系统同样是"单 daemon 承载全部文件系统状态"（其官方路线图亦承认单 daemon 是吞吐瓶颈），单事件循环 + 挂起复活达成的正是同一外部性质。
 
-### 1.2 启动主线：从被加载到接第一个请求
+### 1.2 启动主线：从被 VM 装载、被 RS 放行，到接第一个请求
 
 VFS 的一生按这条线走（每一站对应一篇机制文档）：
 
 ```
-RS 加载 VFS 镜像
+VM 装载 VFS 镜像 + RS 授权放行（VFS 是 boot_image 成员，`kernel/table.c:57`；四层归因见 `../00-master-plan/README.md`）
   └─ main() (main.c:54)
        └─ sef_local_startup() (main.c:374)      注册 5 个生命周期回调
        └─ sef_cb_init_fresh() (main.c:393)      ← 01-vfs-init-main

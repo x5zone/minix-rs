@@ -11,7 +11,7 @@
 
 ### 1.1 现状
 
-09-stage-init 目录此前仅有占位 README（已移入 `draft/`），无正式文档。init 是 boot 链路的**终点**：`boot_image` 最后一项（`kernel/table.c:64`），在 RS 加载完所有系统服务后由 kernel 调度运行，启动登录进程与用户环境。
+09-stage-init 目录此前仅有占位 README（已移入 `draft/`），无正式文档。init 是 boot 链路的**终点**：`boot_image` 最后一项（`kernel/table.c:64`），镜像同样由 **VM** 装载（`minix3/minix/servers/vm/main.c:497-512`），并在 RS 把 boot 成员逐个授权放行之后才拿到通行证（它在 RS 的放行表 `minix3/minix/servers/rs/table.c:28` 里排最后一项）；它一旦跑起来就启动登录进程与用户环境。
 
 ### 1.2 init 与 VM/PM/VFS 的执行模型差异（必须先说清）
 

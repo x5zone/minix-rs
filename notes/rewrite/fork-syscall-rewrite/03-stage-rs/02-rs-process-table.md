@@ -29,7 +29,7 @@
 
 ### 1.1 核心问题：为什么需要一张登记表
 
-RS 是"加载并启动其余用户服务"的角色（`00-rs-overview.md`）。它要回答三类问题：
+RS 是"给 boot 成员授权放行、按需读盘加载非 boot 服务"的角色（`00-rs-overview.md`）。它要回答三类问题：
 
 ```
 这个服务在不在？        → 按 label/pid/dev_nr/domain 查找（lookup_slot_by_*）

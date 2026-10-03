@@ -13,7 +13,7 @@
 
 `07-stage-ds/` 目录自 2026-08-13 创建以来仅有**占位 README**（2026-08-16 移入 `draft/`），没有任何正式文档。历史逐行讲解素材（`tmp/ds/tmp_main.c.md`、`tmp/ds/tmp_store.c.md`，2026-08-14 产出）已一并移入 `draft/` 作素材。现状与 DS 的 boot 地位不匹配：
 
-1. **boot 位置关键**——DS 是 boot_image 中**第一个用户服务**（`kernel/table.c:52`，`{DS_PROC_NR, "ds"}` 紧跟 5 个 kernel task 之后、RS 之前），是系统服务的"动态注册中心"：服务 label→endpoint 映射、驱动状态（`DS_DRIVER_UP`）、PM/VFS/RS 等核心服务的状态发布/订阅全部依赖 DS。`00-master-plan/README.md` 因果链：Kernel → VM → RS → 其余，DS 是 RS 加载后最先可用的注册面。
+1. **boot 位置关键**——DS 是 boot_image 中**第一个用户服务**（`kernel/table.c:52`，`{DS_PROC_NR, "ds"}` 紧跟 5 个 kernel task 之后、RS 之前），是系统服务的"动态注册中心"：服务 label→endpoint 映射、驱动状态（`DS_DRIVER_UP`）、PM/VFS/RS 等核心服务的状态发布/订阅全部依赖 DS。`00-master-plan/README.md` 因果链：Kernel → VM → RS → 其余；DS 的镜像由 **VM** 装载、由 **RS** 授权放行（不是"RS 加载"），而 RS 的放行顺序是 `minix3/minix/servers/rs/table.c:19-27`：PM → SCHED → VFS → **DS**（第四位）→ tty → memory → MIB → PFS → MFS。
 2. **语义小而精**——`servers/ds/` 仅 811 行 C（2 个 .c），是**用户态服务中最小的一个**，但协议面横跨 4 个头文件 + 客户端库 + 2 个外部布局消费者（IS `dmp_ds.c`、libmagicrt `magic_ds.c`）。文档必须一次到位地把"服务器内部语义"与"跨服务协议契约"讲清。
 3. **与 03-stage-rs 相同**——无旧主线文档可迁移（只有占位 README），本计划从零定义文档集，`draft/` 仅保留占位与素材；§5 覆盖契约是后续写作的**唯一权威基线**，必须一次到位。
 

@@ -26,7 +26,7 @@
 
 ### 1.1 PM 在启动链中的位置：进程语义权威
 
-内核完成自举后，按 boot image 启动 PM 与 VFS（`01-stage-kernel/06-proc-init-boot-proc.md`）。PM 是**第一个获得"进程语义"的用户态服务**——它是进程表（`mproc`）的唯一初始来源、信号管理器（`process_ksig`）、进程生命周期的裁判。其他服务（VFS/VM）的进程表都从 PM 这里同步。
+boot image 里的 PM 与 VFS 走完三步才轮到本档的主题：**内核**在 boot 循环里给它们登记槽位与 endpoint（`01-stage-kernel/06-proc-init-boot-proc.md`），**VM** 解析并装载它们的 ELF、建好地址空间（`minix3/minix/servers/vm/main.c:497-512` + `:331-417`），**RS** 给它们授权并准许调度（`minix3/minix/servers/rs/main.c:287/376/379`；四层归因见 `../00-master-plan/README.md`），之后 `main()` 才拿到第一条指令。PM 是**第一个获得"进程语义"的用户态服务**——它是进程表（`mproc`）的唯一初始来源、信号管理器（`process_ksig`）、进程生命周期的裁判。其他服务（VFS/VM）的进程表都从 PM 这里同步。
 
 这带来一个核心问题：**PM 的初始状态从哪来？** 内核知道全部 boot 进程的清单（名字、槽位、endpoint、内存布局），PM 不知道——它必须向内核"要"这份清单（`sys_getimage`），而不是自己造。这是本档全部内容的主线：
 
@@ -55,7 +55,7 @@ PM 的启动被 Minix3 的 SEF（System Event Framework，`minix3/minix/lib/libs
 | `sef_cb_init_restart` | `sef_setcb_init_restart(SEF_CB_INIT_RESTART_STATEFUL)`（main.c:119） | 状态恢复（Live Update/重启；本档只记注册点） |
 | `sef_cb_signal_manager` | `sef_setcb_signal_manager(process_ksig)`（main.c:121） | 内核信号转发回调（`11-signal-core.md`） |
 
-`sef_startup()`（minix3/minix/lib/libsys/sef.c:sef_startup）随后执行 `sys_whoami` 获取自身信息，并等待 RS 的 `SEF_INIT` 消息——RS 是系统的"重启服务"，负责按 boot image 逐个启动系统服务并协调 Live Update。收到 `SEF_INIT_FRESH` 后，SEF 调用 `process_init`（minix3/minix/lib/libsys/sef_init.c:process_init）→ `sef_cb_init_fresh`。
+`sef_startup()`（minix3/minix/lib/libsys/sef.c:sef_startup）随后执行 `sys_whoami` 获取自身信息，并等待 RS 的 `SEF_INIT` 消息——RS 是系统的"重启服务"，负责按 boot image 逐个给系统服务授权放行（镜像已由 VM 装载完毕，RS 不再读它们）并协调 Live Update。收到 `SEF_INIT_FRESH` 后，SEF 调用 `process_init`（minix3/minix/lib/libsys/sef_init.c:process_init）→ `sef_cb_init_fresh`。
 
 关键认知：**SEF 是"注册—分发"框架，不是初始化逻辑本身**。PM 的真实初始化全部在 `sef_cb_init_fresh` 里；Rust 侧可以保留协议语义、去掉框架（见 §3.2 D2）。
 

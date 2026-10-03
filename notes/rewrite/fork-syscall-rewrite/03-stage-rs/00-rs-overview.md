@@ -45,23 +45,28 @@ RS（Reincarnation Server，复活服务器）是 Minix3 的 **root system proce
 | 登记顺序 | ds → rs → pm → sched → vfs → memory → tty → mib → vm → pfs → mfs → init | `kernel/table.c:44-64` boot_image 数组 |
 | 执行顺序 | kernel 任务 → **VM** → **RS** → 其余 | `kernel/main.c` boot 循环 + `RTS_VMINHIBIT` 抑制机制 |
 
-执行顺序为什么是 VM 先于 RS？因为 RS 要加载其余服务，需要 VM 已经建好页表与地址空间。Minix3 的实现是：boot 循环中仅 VM（`VM_PROC_NR`）执行 `arch_boot_proc` 加载 ELF（`01-stage-kernel/06-proc-init-boot-proc.md`），其余进程挂 `RTS_VMINHIBIT` 等 VM 解除抑制（`01-stage-kernel/09-vm-boot-protocol.md`）。因此因果链是：
+执行顺序为什么是 VM 先于 RS？因为 RS 要让其余服务跑起来，需要 VM 已经建好页表与地址空间（非 boot 服务还要靠 VM 替它建映射，它才能把磁盘读来的 ELF 装进去）。Minix3 的实现是：boot 循环中仅 VM（`VM_PROC_NR`）由内核亲自解析装载 ELF（`arch_boot_proc`，`01-stage-kernel/06-proc-init-boot-proc.md`），其余进程挂 `RTS_VMINHIBIT`/`RTS_BOOTINHIBIT` 等 VM 解除抑制（`01-stage-kernel/09-vm-boot-protocol.md`）——**而它们的 ELF 也是 VM 接手解析装载的，不是 RS**（`minix3/minix/servers/vm/main.c:497-512` + `:331-417`）。因此因果链是：
 
 ```
 Kernel (boot)
-  │  boot 期加载 VM ELF；VM 立即可调度，其余挂 RTS_VMINHIBIT
+  │  字节已由引导加载器搬进内存；内核登记 boot 循环里的槽位，只亲自装载 VM
   ▼
 VM (ptproc)
-  │  为 PM/VFS/RS 等创建页表，解除抑制
+  │  反过来为其余 boot 成员建页表 + 解析装载 ELF + 解除抑制（含 RS 自己）
   ▼
 RS (root sysproc)      ← 本文档所在位置
-  │  运行时加载并启动其余用户服务
-  ├─► PM / SCHED / VFS / DS / MIB   （boot_image 直接登记，VM 解除后即可运行）
-  ├─► IS / DEVMAN / INPUT / IPC     （RS 运行时加载）
-  └─► INIT                          （boot_image 最后一项）
+  │  对 boot 成员：只授权 + 放行，不读镜像
+  │  对非 boot 服务：才读盘装载（stat/open/read → 造槽 → srv_execve）
+  ├─► PM / SCHED / VFS / DS / TTY / memory / MIB / PFS / MFS
+  │     （boot_image 成员：GRUB 送字节 → 内核给槽位 → VM 解析装载 → RS 放行）
+  ├─► IS / DEVMAN / INPUT / IPC / lwip / uds / log ...
+  │     （非 boot 成员：rc 脚本发 `up` → RS 读盘装载全套，endpoint 动态分配）
+  └─► INIT（boot_image 最后一项）
 ```
 
-这一因果位置决定了 RS 的独特地位：**它是唯一一个"被内核直接启动、但职责是启动别人"的用户服务**。这带来一个自举问题——RS 启动时什么设施都没有，却要在别人依赖它之前先把自己启动好（`01-rs-boot-init.md` §1.1 的"先有鸡还是先有蛋"）。
+中文"加载"在上面这张图里至少混着四件事（字节进内存 / 槽位出生 / 解析装载 / 授权放行），四件事的执行者并不相同。**完整口径以 `../00-master-plan/README.md` 的"boot 链四层归因表"为唯一口径源**，本文只取其中与 RS 有关的那一层：RS 在 boot 成员身上只做了第 ④ 层。
+
+这一因果位置决定了 RS 的独特地位：**它是唯一一个"由内核登记、由 VM 装载、但职责是把别人放进跑道"的用户服务**。这带来一个自举问题——RS 启动时什么设施都没有，却要在别人依赖它之前先把自己启动好（`01-rs-boot-init.md` §1.1 的"先有鸡还是先有蛋"）。
 
 ### 1.3 它一辈子在做什么：两个状态机
 
@@ -261,10 +266,10 @@ Minix3 的可靠性模型：**系统服务崩溃不应导致整个系统崩溃**
 | 向上 | `../01-stage-kernel/22-privilege.md` | kernel 侧 priv 结构与 `sys_privctl` 实现（03 的底层） |
 | 向上 | `../01-stage-kernel/23-ipc-filter.md` | IPC filter（`IPCF_*`）语义（05 的底层） |
 | 向上 | `../01-stage-kernel/09-vm-boot-protocol.md` | boot 链（VM 解除抑制） |
-| 向上 | `../01-stage-kernel/06-proc-init-boot-proc.md` | boot 循环中仅 VM 加载 ELF |
+| 向上 | `../01-stage-kernel/06-proc-init-boot-proc.md` | boot 循环中仅 VM 由内核装载 ELF（其余 boot 成员由 VM 装载） |
 | 向下 | `../02-stage-vm/25-rs-services.md` | VM 侧 RS 服务（SET_PRIV/PREPARE/UPDATE/MEMCTL），双向核对 |
 | 向下 | `../02-stage-vm/01-vm-init-main.md` 等 | VM 启动主线（主线对齐） |
-| 向下 | `../04-stage-pm/`、`../05-stage-vfs/` 等 | RS 加载的服务（消费方） |
+| 向下 | `../04-stage-pm/`、`../05-stage-vfs/` 等 | RS 授权放行（boot 成员）/ 读盘加载（非 boot 服务）的消费方 |
 
 ---
 

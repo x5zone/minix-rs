@@ -24,7 +24,7 @@ VM 是页表的所有者，但它刚启动时只有 kernel 给的 bootstrap 页�
 3. VM → SYS_VMCTL(VMCTL_SETADDRSPACE): 切换 CR3 到 VM 的真实页表
 4. VM → SYS_VMCTL(VMCTL_KERN_PHYSMAP): 内核声明需映射的物理区
 5. VM → SYS_VMCTL(VMCTL_KERN_MAP_REPLY): VM 返回虚拟地址
-6. VM 为 PM/VFS/RS 等创建页表
+6. VM 为 PM/VFS/RS 等创建页表，并解析装载它们的 ELF 段（C: `minix3/minix/servers/vm/main.c:497-512` 遍历 + `:331-417` `exec_bootproc`）
 7. VM → SYS_VMCTL(VMCTL_VMINHIBIT_CLEAR): 解除所有进程的 VMINHIBIT
 8. vm_running = 1（由 step3 的 SetAddrSpace 触发；详见 §3 决策"vm_running 置位时机"）
 ```
@@ -420,6 +420,8 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:1963
 ### 4.9 VM ELF 加载 at boot（P9-5 / FIX-24）
 
 C 的 `arch_boot_proc()` 在 boot 期间把 VM ELF 段映射进 bootstrap 页表（protect.c:388 x86 / protect.c:115 ARM）。Rust 移植早期将非 mock 路径标为 `EntrySpec::DEFERRED`（PC=0），靠 RS 在运行时加载 VM ELF——这是不正确的，因为 VM 是 ptproc，必须在 boot 后立即可运行以服务其他 boot 进程的 VMCTL/PRIVCTL 系统调用。P9-5 落地真实 boot 期 VM ELF 加载。
+
+> **事实校正（2026-10-03）**：上面那句"靠 RS 在运行时加载 VM ELF"是已推翻旧设想的叙述，保留作为历史。但该设想背后还藏着一个更普遍的误记：**C 里 RS 从不在运行时加载任何 boot 成员**——它自己也是由 VM 装载的（`minix3/minix/servers/vm/main.c:497-512`），且 boot 成员在 RS 侧槽位的镜像副本恒为空（`minix3/minix/servers/rs/main.c:339` `rp->r_exec = NULL`）。四层划分（字节/槽位/装载/放行各归谁）以 `../00-master-plan/README.md` 的"boot 链四层归因表"为唯一口径源。
 
 #### 4.9.1 CURRENT_ROOT_PHYS 内核全局
 
