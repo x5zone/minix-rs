@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-293（trail 收敛：poison=错粒度叶 PTE 形；α 面未被 a2d 覆盖 ⇒ §续-294=a2d-leaf 探针）**：真 virt_to_phys=减法+阈值无掩码形、`&0x7fffffff` 生产零命中（掩码混淆降级）；poison PTE 形状学=paddr 含 bit29=PPN[17] 伪位+叶旗标=**错粒度叶 PTE**（2MB/1GB 叶 PPN 低位非零=保留形，本仓无大页=无人合法写出）——瞬态腐值是一枚带旗标的错位 PTE。已回滚 a2d 只测非叶边界（:384/:402），**α 面叶/大页分支（:316-320/:330-335）从未被捕获**。§续-294=a2d-leaf 探针（huge/leaf 分支 fire 条件 pte_is_leaf && pte_to_paddr≥RAM_TOP，五元组+分支名，riscv-only/U-safe/CAP=16/halt-dump 成对）——先测观测者效应（b 批 α 率 ~80% 是否保持：保持且抓 raw=写者指纹到手；抑制=α 面同样 timing-sensitive 回零扰动+扩样）。§续-290 矩阵 blocker 与此互不阻塞。
+> **🛑 最新前沿＝§续-294/295/296（instrumentation 路线终结；smp 矩阵=竞态 smp 无关且确定性強；poison 基底=自由帧 ⇒ 分配器内部指针新方向）**：§续-294 叶探针（bdb4fe525，评审 PASSED 0P0/0P1）采样 **0/7 崩 0 fire——叶面同样完全抑制**，结论闭合=**任何 walk_read 改写都抑制 (A)**（非叶 0/19+叶 0/7 双实证），instrumentation 路线终结，已回滚（md5 复原 a8b7654c）。§续-295 smp 矩阵=**竞态 smp 度无关**（smp1 3/3 全同 α 指纹 0x10bc900b3c、smp2 2/3、smp4 3/3+新伪帧 0x10a2d65a28=池区帧|bit29）——「单核调度时机」削弱、**确定性成分强**（同指纹 3/3 非随机）。§续-296 **poison 基底身份逆转**：0x9c900000=全零零引用自由帧 ⇒ poison=**DM 视图指向自由帧+0xb3c（侵入式 freelist 节点偏移形状）**——栈切片属主可能是分配器调用链（fill-root→alloc 嵌套）而非 walk；新模型=freelist 内部 DM 指针泄漏进控制流。kdst/内核尾/bump 三区 poison PTE 原值零驻留。§续-297 靶=①PhysAlloc freelist 结构审（节点内嵌?0xb3c 偏移?bit29 来源）②栈切片全量符号化归账③若坐实→(A) 重新定性+修法重画。
+>
+> **（上一前沿＝§续-293（trail 收敛：poison=错粒度叶 PTE 形；α 面未被 a2d 覆盖 ⇒ §续-294=a2d-leaf 探针，已落地并证伪）**：真 virt_to_phys=减法+阈值无掩码形、`&0x7fffffff` 生产零命中（掩码混淆降级）；poison PTE 形状学=paddr 含 bit29=PPN[17] 伪位+叶旗标=**错粒度叶 PTE**（2MB/1GB 叶 PPN 低位非零=保留形，本仓无大页=无人合法写出）——瞬态腐值是一枚带旗标的错位 PTE。已回滚 a2d 只测非叶边界（:384/:402），**α 面叶/大页分支（:316-320/:330-335）从未被捕获**。§续-294=a2d-leaf 探针（huge/leaf 分支 fire 条件 pte_is_leaf && pte_to_paddr≥RAM_TOP，五元组+分支名，riscv-only/U-safe/CAP=16/halt-dump 成对）——先测观测者效应（b 批 α 率 ~80% 是否保持：保持且抓 raw=写者指纹到手；抑制=α 面同样 timing-sensitive 回零扰动+扩样）。§续-290 矩阵 blocker 与此互不阻塞。
 >
 > **（上一前沿＝§续-292-b（poison PA 算术指纹：DM 窗 VA & 0x7fffffff 精确产出 poison——逆映射掩码混淆升头号假设，现已降级）**：α poison PA 0xbc900b3c = 故障 VA 0x10bc900b3c & 0x7FFFFFFF **精确吻合**（2GB 掩码保留 bit29=RAM_SIZE 位）；hd4 β 形 0x409c8ffb30 & 0x7fffffff=0x9c8ffb30=真帧+0xb30 同构 ✓。凡以「RAM 尺寸掩码」替代「减 DM 基址」的 va→pa 逆映射（`pa=va&(SIZE-1)` 恒等窗惯用形）都产出此形，且 bit29 跨批稳定与掩码确定性吻合（随机腐坏无法解释同位复现）。§续-293=全树 grep riscv 路径 `&0x7fff`/RAM_SIZE 掩码/硬编码的 va→pa 逆映射（direct_map virt_to_phys/dm_coverage/kdst/grant 翻译），坐实哪条腿何条件下用掩码代减法——即 (A) 写者本体，成修=改真减法+§7 验收解锁 riscv 三目标。
 >
@@ -12205,3 +12207,13 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 ## §续-293（2026-10-04·trail 收敛：poison=错粒度叶 PTE 形；α 面未被 a2d 覆盖=新探针位）
 
 两条收束：①真 `virt_to_phys`（direct_map.rs:59-66 trait 默认）=减法+阈值判别，无掩码形；`&0x7fffffff` 生产路径零命中——掩码混淆假设**降级**（无代码形）。②poison PTE 的形状学：paddr 含 bit29=PPN[17] 伪位+叶旗标 ⇒ **错粒度叶 PTE 形**（2MB/1GB 叶的 PPN 低位非零=保留形，本仓无大页使用=无人合法写出）——即瞬态腐值是一枚「带旗标的错位 PTE」。而已回滚的 a2d 只 instrument 非叶边界（:384/:402），**α 面的叶/大页分支（paging.rs:316-320/:330-335）从未被捕获**。**§续-294=a2d-leaf 探针**：huge/leaf 分支 fire 条件 `pte_is_leaf && pte_to_paddr(pte) >= RAM_TOP`（out-of-RAM"叶"必为腐值），五元组同 a2d+分支名；riscv-only/U-safe/CAP=16/halt-dump 成对；落地后先测观测者效应（b 批 α 率 ~80% 是否保持——若保持且抓到 raw=写者指纹到手；若抑制=α 面同样 timing-sensitive，回到零扰动+扩样）。 §续-290 的矩阵 blocker 与本探针互不阻塞。
+
+## §续-294/295/296（2026-10-04·叶探针同被抑制（0/7）→ instrumentation 路线终结；smp 矩阵=竞态 smp 度无关且指纹确定性强；poison 基底=自由帧 ⇒ 分配器内部指针新方向）
+
+**§续-294 叶探针**：落地（bdb4fe525，评审 PASSED 0P0/0P1——评审独立复跑 riscv64 check 0 errors+VM 535/0+arch 243/0）→ 采样 **0/7 崩、0 fire**——**叶探针同样完全抑制 (A)**。结论闭合：**任何对 walk_read 的改写（叶或非叶、无论足迹多小）都抑制该竞态**——软件 instrumentation of walk_read 路线终结（§续-283 非叶 0/19 + 本笔叶面 0/7 双实证）。已回滚（md5 复原 a8b7654c 实证）。
+
+**§续-295 smp 矩阵**（无扰动二进制，§八.4 登记项）：smp1=3/3 崩**全部同一 α 指纹**（0x3ae10/0x10bc900b3c）；smp2=2/3（β+α 变体+1 exec6 panic 新形）；smp4=3/3（β+α 变体+**新伪帧 0x10a2d65a28=bump 池区帧|bit29**）。⇒ **竞态与 smp 度无关**（8/9 崩率恒定、同指纹跨 smp 度复现）——「单核调度时机」假设削弱；**同指纹 3/3 复现=确定性成分强**（非随机腐坏，特定帧布局下的确定性值）。
+
+**§续-296 poison 基底身份逆转（本段最强新线索）**：b2 深挖——伪帧基底 PA 0x9c900000=**全零、零 PTE 引用的自由帧**（512 槽全零+无 V=1 引用）⇒ poison 指针=**DM 视图指向自由帧+0xb3c 偏移**；0xb3c 像**侵入式自由链表节点字段偏移**（分配器内部指针形状，非 walk 合成产物）。重读 §续-292 栈记录：切片混有堆指针 0x1400660fe0——栈切片的属主可能根本不是 walk 而是分配器调用链（vm_pt_alloc/reclaim 在 walk 栈帧内的合法嵌套！fill-root→alloc→freelist）。**新模型**：poison 指针=分配器 freelist 内部 DM 指针（指向自由帧+节点偏移），bit29 来源=freelist 高位标记或节点字段；脱轨控制流拾取的 a1=栈上分配器残留。kdst/内核尾/bump 三区扫描=poison PTE 原值零驻留（纯瞬态再实锤）。
+
+**§续-297 靶**：①审 vm PhysAlloc/alloc_pfn_reclaiming 的 freelist 结构（节点是否内嵌自由帧、字段偏移是否含 0xb3c 形、bit29 来源）；②b2 栈切片全量符号化（0x805ff000-0x80600000 十个 128B 切片逐个归账 VM 栈 VA→函数）；③若 freelist 模型坐实——(A) 重新定性从「walk 竞态」转向「分配器内部指针泄漏进控制流」，修法与验收随之重画。

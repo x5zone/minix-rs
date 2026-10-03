@@ -284,62 +284,6 @@ enum WalkResult {
     NotPresent,
 }
 
-// ── NK4-C 续-294 取证探针 a2d-leaf（(A) 攻坚；结案随探针族一次性滚除）──────
-// §续-292/293 定谳 α 面 poison=叶/大页分支组合式产物（DM|伪帧|vaddr 低位，
-// ≡4 mod 8），而续-282 的 a2d 只测非叶边界——叶分支从未被捕获。本探针在
-// walk_read 的 1GB/2MB leaf 分支内 fire：`pte_to_paddr(pte) >= RAM_TOP`
-// （out-of-RAM "叶"必为腐值——错粒度叶 PTE 的 PPN 伪位形状，§续-293），
-// 抓 (walked_root, level, idx, raw_pte, pa_raw)——pa_raw 取组合前值，保
-// PPN 伪位可见。**只 instrument 叶分支**：非叶路径零新增足迹（β 面的
-// 观测者效应不复发，b 批 α 率 ~80% 为对照组）。通道/封顶/回滚纪律同
-// 续-282（U-safe bootmark、CAP=16、探针轮不复现即对账修复 vs 扰动）。
-#[cfg(all(target_arch = "riscv64", not(test)))]
-pub mod a2d {
-    use super::PteChannel;
-    use core::sync::atomic::{AtomicUsize, Ordering};
-
-    /// boot 门配置 512MB RAM 顶（同续-282 口径；alloc 可用顶更低，
-    /// vm alloc_page.rs RAM_TOP_PFN=0x9fb33）。
-    pub(crate) const RAM_TOP: u64 = 0xA000_0000;
-    const CAP: usize = 16;
-
-    type Sink = fn(walked_root: u64, level: u8, idx: usize, raw: u64, leaf_pa: u64);
-    static SINK: AtomicUsize = AtomicUsize::new(0);
-    static FIRED: AtomicUsize = AtomicUsize::new(0);
-
-    /// VM 侧注册（先于任何子进程 walk；write-once 契约同 pt_alloc::register）。
-    pub fn register_sink(f: Sink) {
-        SINK.store(f as usize, Ordering::Relaxed);
-    }
-
-    /// 叶分支谓词命中即 fire；未注册/封顶后静默。热路足迹=通道比较+范围
-    /// 比较+分支，仅存在于叶分支内（非叶路径零改动）。
-    pub(super) fn fire(
-        channel: PteChannel,
-        walked_root: u64,
-        level: u8,
-        idx: usize,
-        raw: u64,
-        leaf_pa: u64,
-    ) {
-        if !matches!(channel, PteChannel::VmDm) || leaf_pa < RAM_TOP {
-            return;
-        }
-        if FIRED.load(Ordering::Relaxed) >= CAP {
-            return;
-        }
-        FIRED.fetch_add(1, Ordering::Relaxed);
-        let f = SINK.load(Ordering::Relaxed);
-        if f != 0 {
-            // SAFETY: 指针由 register_sink 以同型 fn 存入；注册先于任何
-            // walk（VmServer init），VM 单线程无写竞争。
-            unsafe {
-                (core::mem::transmute::<usize, Sink>(f))(walked_root, level, idx, raw, leaf_pa)
-            };
-        }
-    }
-}
-
 /// Walk the 3-level Sv39 table read-only, returning the leaf PTE address
 /// and raw value, or the huge-page mapping if encountered.
 ///
@@ -370,10 +314,6 @@ fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
     }
     // 1GB leaf: V=1 and any of R/W/X set.
     if pte_is_leaf(l2e) {
-        // 续-294 a2d-leaf：out-of-RAM "叶"=错粒度腐 PTE（§续-293），崩前抓
-        // 组合前 pa_raw（PPN 伪位可见）。level=2。
-        #[cfg(all(target_arch = "riscv64", not(test)))]
-        a2d::fire(channel, root_paddr, 2, i2, l2e, pte_to_paddr(l2e));
         let paddr = pte_to_paddr(l2e) | (vaddr & 0x3FFF_FFFF);
         let mut flags = pte_to_flags(l2e);
         flags |= PageFlags::HUGE_PAGE;
@@ -389,9 +329,6 @@ fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
     }
     // 2MB leaf: V=1 and any of R/W/X set.
     if pte_is_leaf(l1e) {
-        // 续-294 a2d-leaf：同上，level=1（2MB 叶分支——α poison 的合成位）。
-        #[cfg(all(target_arch = "riscv64", not(test)))]
-        a2d::fire(channel, root_paddr, 1, i1, l1e, pte_to_paddr(l1e));
         let paddr = pte_to_paddr(l1e) | (vaddr & 0x1F_FFFF);
         let mut flags = pte_to_flags(l1e);
         flags |= PageFlags::HUGE_PAGE;
