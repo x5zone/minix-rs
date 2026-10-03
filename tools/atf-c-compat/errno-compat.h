@@ -32,8 +32,11 @@ long sysconf(int name);
  * libc_string_strerror.c.o——其定义的 strerror 与自家强定义 multiple
  * definition 硬错，三轮试错坐实）。本宏在 string.h 声明之前注入：其 GNU 形
  * 声明 `char *strerror_r(...)` 被一并改名成 __xpg_strerror_r（与 posix-stubs.c
- * 定义同形，无类型冲突）；调用点保留 §续-278d 既有比较告警基线，XSI 返回码
- * 0/EINVAL/ERANGE 的零/非零性在指针/整数值域同形，真机读数定案。 */
+ * 定义同形——定义亦取 char * 形，XSI 码经 (char *)(intptr_t) 回传，续-279n-b；
+ * 无类型冲突）；调用点保留 §续-278d 既有比较告警基线，XSI 返回码
+ * 0/EINVAL/ERANGE 的零/非零性在指针/整数值域同形，真机读数定案。
+ * **负向契约**（续-279n-b P2-2）：GNU 风格调用法（解引用返回值）在本通道
+ * 是 UB——返回值是 XSI 码的整数衣装而非指针。 */
 char *strerror(int);
 #ifndef strerror_r
 #define strerror_r __xpg_strerror_r

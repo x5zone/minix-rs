@@ -471,7 +471,7 @@ static const char *const compat_errstr[] = {
 	"Socket already connected", /* 120 */
 	"Destination address required", /* 121 */
 	"Message too long", /* 122 */
-	"error", /* 123 */
+	"Unknown protocol", /* 123 = EPROTONOSUPPORT（两腿 picolibc 头皆 #define 123，非表洞；CodeReview 续-279n-b P2-1 保真） */
 	"Socket type not supported", /* 124 */
 	"Address not available", /* 125 */
 	"Connection aborted by network", /* 126 */
@@ -507,8 +507,13 @@ char *strerror(int e) {
 }
 /* XSI 实现：C 名 __xpg_strerror_r；errno-compat.h（本 TU 亦 -include 之外
  * 手动保持同形）以 `#define strerror_r __xpg_strerror_r` 把所有裸名转发到此。
- * 本 TU 的 string.h 在宏注入后才被包含的问题不存在：-include 先于一切 #include。 */
-int __xpg_strerror_r(int e, char *buf, size_t buflen) {
+ * 本 TU 的 string.h 在宏注入后才被包含的问题不存在：-include 先于一切 #include。
+ * 定义取 char * 形=与测试 TU 被改名的 GNU 形声明同形（CodeReview 续-279n-b
+ * P2-2，防 §续-279f stresep 类声明/定义跨 TU 漂移）：内部按 XSI 计码后以
+ * (char *)(intptr_t) 回传。**负向契约**：GNU 风格调用法（`char *s =
+ * strerror_r(...)` 后解引用）在本通道是 UB——返回值是 XSI 码的整数衣装而非
+ * 指针；现役测试集（t_strerror.c）全为 XSI 断言式，无 GNU 受害者。 */
+char *__xpg_strerror_r(int e, char *buf, size_t buflen) {
     const char *s = compat_strerror_msg(e);
     char unk[COMPAT_STRERROR_UNK_MAX];
     if (s == NULL) {
@@ -516,13 +521,13 @@ int __xpg_strerror_r(int e, char *buf, size_t buflen) {
         s = unk;
     }
     if (buflen < strlen(s) + 1)
-        return ERANGE;                /* XSI strerror_r(3) 失败码 */
+        return (char *)(intptr_t)ERANGE;  /* XSI strerror_r(3) 失败码 */
     strcpy(buf, s);
     if (compat_strerror_msg(e) == NULL) {
         errno = EINVAL;               /* 越界：与 strerror 同置（调用方可察） */
-        return EINVAL;
+        return (char *)(intptr_t)EINVAL;
     }
-    return 0;
+    return (char *)(intptr_t)0;
 }
 
 
