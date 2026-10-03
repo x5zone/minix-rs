@@ -12399,3 +12399,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **观测者效应修正**：b40-b42 pf=0 = 全旁路再次抑制了 (A) walk 崩（与所有 walk_read 改写同效）——「旁路真上场」的 (A) 判读被新墙遮蔽。
 
 **§续-316 靶**：①kernel 侧 krewalk 扩展：panic 时按 boot handoff 的 boot_procs[] 逐个 dump 镜像首 16 字节（kernel 知 boot 参数）——证明「RAM=有效 ELF vs VM 读=垃圾」的分歧实锤；②**战略评估**：(A)+新墙同指向 QEMU 8.2.2 的 DM 窗视图完整性——**QEMU 变体矩阵升为第一解锁路径**（网络恢复）；③本仓可控候选=VmDm 全内核化延伸到 boot 镜像读取（exec_bootproc 的 image 改经 PteRead 批量腿）——但每字节一 call 的成本不可行，需 batch 腿（PteReadBuf(pa,len,buf) kernel 拷贝返回）——评优先级于 §续-317。
+
+## §续-316（2026-10-04·elfchk 首战：boot 表 KDM 直读=前 9 模块 ELF ✓ 但 pfs/mfs/init 三镜像非 ELF；自反疑点=halt-dump 工具也不写 table.bin（第二产物新鲜度缺口）——elfchk 读旧坐标可能自错位）
+
+**elfchk 落地+读数**（e3/e4，boot 表直析版——首版 handoff VA 0x1000000000 在内核态未映射 scause 0xd 踩坑改 TABLE_PA 直析）：magic ✓、**ds..vm 九模块 b8=7f454c46=ELF ✓、pfs/mfs/init 三镜像首字节非 ELF**（00 5f 5a / 00 a0 03 00 / 72 6c 65 00="rle\0"——像表 path 字段残留）。表 len 字段=旧值（pfs 0x45170=§续-300 对账值）。
+
+**自反疑点（诚实登记）**：halt-dump 工具**也不写 table.bin**（复用门 Stage 4 旧产物）——表内 pa/len=旧布局算的；工具的 LOADER_ARGS=新布局（从刷新后 mod bins 算）——**QEMU loader 按新序装载 ✓ 但 elfchk 读旧表坐标=可能读错位置**（旧 pa 在新布局下落到别的镜像中段——"rle\0"=文件名残留的形状）。两个产物新鲜度缺口（mod bins+table）同根源=工具复用 Stage 4 产物。
+
+**§续-317 靶**：①工具补 table.bin 同源重生成（照门 Stage 4 的 packing python——base 序列/mod bins/表三者的单一真源化）→ 重跑 elfchk：若三镜像转 ELF ✓ 则 pfs failed 消失、旁路判读恢复纯净；②(战略)(A)+新墙统一指向装载链产物新鲜度+DM 窗视图完整性双因子——§续-312 的教训升格：**所有旁路/取证实验前必须跑「产物新鲜度断言」（串口 md5==REL md5+mod bins==REL+table==mod bins 重算）**；③若 ① 后仍崩 → 回视图分歧分支。

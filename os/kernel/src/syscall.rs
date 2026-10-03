@@ -3235,6 +3235,55 @@ fn dispatch_diagctl(
                         DiagConsole::write_hex(caller_nr.0 as u64);
                         DiagConsole::write_str("\n");
                     }
+                    // §续-316 krewalk 扩展（用后即滚）：VM 报「not a valid
+                    // ELF」时，内核侧重读 handoff 的 boot_procs 镜像首 16B
+                    // ——证「RAM=有效 ELF vs VM 裸 DM 直读视图=垃圾」分歧。
+                    if diagbuf[..len].windows(15).any(|w| w == b"not a valid ELF") {
+                        use minix_plat::{CurrentEarlyConsole as ElfConsole, EarlyConsole as _};
+                        const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                        // 直接解析 boot 文件表（TABLE_PA=0x85000000，MNXBOOT1
+                        // 格式=MAGIC u64+count u32+pad u32+16×(path[64]+pa
+                        // u64+len u64)）——内核 bootface 同源数据。
+                        let tbl = 0x8500_0000u64;
+                        let magic = unsafe {
+                            ((KDM + tbl) as *const u64).read_volatile()
+                        };
+                        ElfConsole::write_str("nk4c: elfchk magic=");
+                        ElfConsole::write_hex(magic);
+                        Console::write_str("\n");
+                        if magic == 0x3154_4f4f_4258_4e4d {
+                            let count = unsafe {
+                                ((KDM + tbl + 8) as *const u32).read_volatile()
+                            };
+                            for n in 0..count.min(16) as u64 {
+                                let base = tbl + 16 + n * (64 + 16);
+                                let pa = unsafe {
+                                    ((KDM + base + 64) as *const u64).read_volatile()
+                                };
+                                let ln = unsafe {
+                                    ((KDM + base + 72) as *const u64).read_volatile()
+                                };
+                                if pa == 0 {
+                                    continue;
+                                }
+                                let mut b8 = [0u8; 8];
+                                for (i, b) in b8.iter_mut().enumerate() {
+                                    *b = unsafe {
+                                        ((KDM + pa + i as u64) as *const u8).read_volatile()
+                                    };
+                                }
+                                ElfConsole::write_str("nk4c: elfchk pa=");
+                                ElfConsole::write_hex(pa);
+                                ElfConsole::write_str(" len=");
+                                ElfConsole::write_hex(ln);
+                                ElfConsole::write_str(" b8=");
+                                for b in b8 {
+                                    ElfConsole::write_hex(b as u64);
+                                }
+                                ElfConsole::write_str("\n");
+                            }
+                        }
+                    }
                     // 续-298 krewalk 配套捕获（用后即滚）：fill-root 探针行的
                     // ptroot/pte_pa 存全局，供内核 pfvm 冷路径读「fill-root
                     // 刚写的叶槽」在故障时刻的现值（判 RAM 脏 vs 视图错位）。
