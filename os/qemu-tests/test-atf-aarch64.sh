@@ -180,8 +180,10 @@ elif [ "$verdict" = "FAILED" ]; then
     strings "$SERIAL_LOG" 2>/dev/null | grep -aE "^(_?[a-z]+: WARNING|passed|failed)" | tail -12 || true
     exit 1
 elif [ "$verdict" = "STALLED" ]; then
-    echo "FAIL: progress stalled at $n_pass/$EXPECTED passed (a case hung or died silently)"
-    strings "$SERIAL_LOG" 2>/dev/null | grep -aE "WARNING|^passed|^failed" | tail -6 || true
+    # 续-286b（评审 P2-1）：诊断路径与判定路径同色计数——stall 消息也分账
+    # passed/skipped，防「34/36 passed」式误导（§续-285 误判的同型归因）。
+    echo "FAIL: progress stalled at $total/$EXPECTED terminal ($n_pass passed + $n_skip skipped; a case hung or died silently)"
+    strings "$SERIAL_LOG" 2>/dev/null | grep -aE "WARNING|^passed|^failed|^skipped" | tail -6 || true
     exit 1
 else
     echo "FAIL: no ATF result lines within ${TIMEOUT_BOOT}s (boot chain regression? expected $EXPECTED cases)"
