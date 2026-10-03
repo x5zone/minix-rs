@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-288（flush 账审计：缝真实存在但 -smp 1 下跨进程不可达；理论 v2 精化）**：write_pte_dm 全调用点=walk_alloc N→P/boot/map/remap/**unmap P→N(:680)**/**update_flags P→P(:698，CoW 降写经 cow_exec_pf.rs:148 走 VmDm)**——flush 仅 KernelDm，VmDm 注释论证只覆盖 N→P，**P→N 与 P→P 是真实缝**；但 -smp 1 下跨进程变更与受害者下次运行必隔 satp 写（QEMU 全 flush）→ 跨进程受害者理论不可达、自进程 P→P 不存在 ⇒ **陈旧平移单独不能解释 β**（walk 读经静态 DM 窗平移、槽值=RAM 直读必新鲜）。理论 v2 精化：β=槽内容瞬态真变（未捕获写者）或 **DM 窗自身表帧被别名**（读经破窗落错物理地址）；z1 的解析读同构=视图平移层帧完整性。§续-289 靶=①DM 窗表帧分配/释放账（init_vm_self_pt 的 L1/L0 是否入可回收池、free_child_tables 是否可能误伤）②QEMU 版本变体（决定性）③z1 扩样④若坐实→表帧 pin 修法（C 对位核查）。§续-286-b 评审回执已落（2 P2 修毕）。
+> **🛑 最新前沿＝§续-290（QEMU 矩阵 blocker 登记+批次误标勘误+观测者效应定量版）**：①矩阵 blocker=宿主 curl 超时+容器 apt 被 fake-IP 代理拦截（198.18.x）+alpine CDN 超时+minix-ci 无 qemu——QEMU_BIN 覆盖已备网络恢复即跑；②**批次误标勘误**：z 批/hd5+ 的产物=a283p1 含探针构建（§续-283 回滚只还原源码未重建），z 批非「回滚后零扰动基线」——重归账=探针二进制 (A) 崂率 ≈0-10%；③真基线重采样=SKIP_BUILD=0 重建后 **md5=a8b7654c 与 a280r 批字节同**（rust 可复现构建实证），5/6 (A)-crash（4 α 同指纹 0x10bc900b3c+1 β）+base289 BTreeMap，同二进制崩率 ~75% 与 a280r 一致；④**观测者效应定量版（同二进制对照）=探针在场 0/19 vs 缺席 12/16≈75%**——gh74 效应干净定量，探针热路足迹几乎完全抑制 walk 竞态窗；BTreeMap 面探针无关（双二进制均现）；⑤α 指纹跨批字节级复现=**结构化成因**（伪帧 0xbc900000+0xb3c 原样反复）非随机腐坏；z1 boot-panic 真基线 0/7 或为探针二进制特有。§续-291 靶=①b2-b5 四同指纹 α 现场 deep-dive（伪帧源头搜索）②矩阵解除后执行③z1 形归因。方法论=**取证批次必须钉二进制 md5/构建 commit**。
+>
+> **（上一前沿＝§续-288（flush 账审计：缝真实存在但 -smp 1 下跨进程不可达；理论 v2 精化）**：write_pte_dm 全调用点=walk_alloc N→P/boot/map/remap/**unmap P→N(:680)**/**update_flags P→P(:698，CoW 降写经 cow_exec_pf.rs:148 走 VmDm)**——flush 仅 KernelDm，VmDm 注释论证只覆盖 N→P，**P→N 与 P→P 是真实缝**；但 -smp 1 下跨进程变更与受害者下次运行必隔 satp 写（QEMU 全 flush）→ 跨进程受害者理论不可达、自进程 P→P 不存在 ⇒ **陈旧平移单独不能解释 β**（walk 读经静态 DM 窗平移、槽值=RAM 直读必新鲜）。理论 v2 精化：β=槽内容瞬态真变（未捕获写者）或 **DM 窗自身表帧被别名**（读经破窗落错物理地址）；z1 的解析读同构=视图平移层帧完整性。§续-289 靶=①DM 窗表帧分配/释放账（init_vm_self_pt 的 L1/L0 是否入可回收池、free_child_tables 是否可能误伤）②QEMU 版本变体（决定性）③z1 扩样④若坐实→表帧 pin 修法（C 对位核查）。§续-286-b 评审回执已落（2 P2 修毕）。
 >
 > **（上一前沿＝§续-287+286-b（门判据评审回执 PASSED 0P0/0P1/2P2 两 P2 已修；(A) 统一理论 v2=腐坏在翻译/视图层不在 RAM 内容）**：§续-286-b=STALLED 诊断路径同色计数（$total terminal+$n_skip 分账+grep 加 ^skipped）+WORKLOG 终态全集澄清（atf-c 直跑={passed,failed,skipped}+expect 族，broken 系 atf-run 层；本套件可达集={P,F,S} 门全覆盖）。Rule Discovery=Counting-Rule Application Completeness（计数规则采纳时 grep 同文件全部计数/回显点一次扫清）。§续-287=(A) 主假设升格：z 批 4 跑零扰动采现场——z2-z4 不崩形 text 40/40 EXACT 零指纹；**z1=exec=0 boot 期 panic**（minix-elf lib.rs:264 index OOB）现场 12 模块全副本（落地区/bump 池/0x9ffff000 第三副本）**字节全净**+双守卫数学挡死该路径 ⇒ CPU 视图瞬态与 RAM 不一致（α/z1/β 三象同源），候选=QEMU 软 TLB 陈旧平移（VmDm 无 flush gap 自证在缝内）。§续-288 靶=①riscv present→X/P→P flush 账全审（CoW 降写走 VmDm=? 头号嫌疑）②QEMU 版本变体③z1 扩样。目标③ aarch64 已达成（§续-286 rc=0 34P+2S）。
 >
@@ -12155,3 +12157,17 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 ## §续-289（2026-10-04·DM 窗表帧分配/释放账快速审=负证据：两窗分立且均不在已审误伤路径内）
 
 解缠两窗：①**VmDm 窗**（0x1000000000，β walk 所经）=VM 采用的 bootstrap root 子树——内核 boot 预建（hd4/hd6 根表 L2[4]→0x82011000 系 0x820xxxxx bump 池帧，**不在 VM 可回收池**），VM 后续 map 不为其补中间表；②**VM 堆窗**（0x1400000000，vm_self_mappages）=VM 自 VA，中间帧出自 vm_pt_alloc 可回收池但挂在 **VM 自根**子树下——子 exit 的 free_child_tables 只遍历子根树（fork.rs/C pagetable.c pt_free 对位），无触及 VM 自根的路径。⇒ §续-288 的 (b) 候选（窗表帧被别名）经已审释放路径不可达，唯一余径=分配器双发（§续-215 可信检测器证伪过、§续-233 平反保留观察）。§续-289 余项=QEMU 版本变体矩阵（决定性）+z1 扩样。纯审计+文档。
+
+## §续-290（2026-10-04·QEMU 版本矩阵被网络卡死登记 + 批次误标勘误（z 批实为探针二进制）+ 真基线重采样与观测者效应定量版）
+
+**①矩阵 blocker 登记**：§续-289 的决定性实验（QEMU 9.x 变体矩阵）当前环境不可行——宿主 curl 到 github.com/deb.debian.org 全超时；docker 容器（debian:trixie）apt 被 fake-IP 代理网段拦截（198.18.x.x Connection failed，--network host 同）；alpine apk CDN 超时；minix-ci:1.94 无 qemu-system-riscv64。工具脚本已备好 `QEMU_BIN` 覆盖（tmp/nk4a/riscv_halt_dump.sh），网络恢复即执行。
+
+**②批次误标勘误（流程事故）**：z 批（z1-z12）与 hd5+ 的 riscv 产物=**a283p1 的含探针构建**——§续-283 的回滚只还原了源码、**未重建产物**，而 §续-287/289 把 z 批标为「回滚后零扰动基线」是错标。z 批读数重归账：12 跑全为探针二进制（0 (A)-crash + z1 boot-panic + z11 BTreeMap + 10 不崩形）——与 hd 批（1/10）一致，**探针二进制的 (A) 崩率 ≈0-10%**。方法论入库：**取证批次的二进制来源必须钉 md5/构建 commit**（本笔起每跑后钉）。
+
+**③真基线重采样**：SKIP_BUILD=0 重建当前 HEAD（无探针）→ **产物 md5=a8b7654c0cb3 与 a280r 批字节级相同**（rust 可复现构建实证）。读数：b2-b7+base289=**5/6 (A)-crash**（b2-b5 α 形 stval=0x10bc900b3c 四连同指纹；b7 β 形 stval=0x409c8ffb30 与 r7/r9 同）+ base289 BTreeMap panic（exec=11）。与 a280r 批 7/10 一致——同二进制崩率稳定 ~75%。
+
+**④观测者效应定量版（同二进制对照）**：探针在场 (A) 崩 **0/19**（hd5-hd14 + z 批）vs 探针缺席 **12/16 ≈75%**（a280r 7/10 + b 批 5/6）——gh74 效应的干净定量，探针热路足迹（每级 walk 两次比较+分支）足以几乎完全抑制 walk 竞态窗。BTreeMap panic 面探针无关（a280r-r4/base289/z11 双二进制均现）。
+
+**⑤α 指纹跨批稳定性**：stval=0x10bc900b3c 在 r1/r6（23:1x）与 b2-b5（01:5x，同二进制）字节级相同——伪帧 0xbc900000+0xb3c 反复原样复现=**结构化成因**（特定点的特定值），非随机腐坏；z1 boot-panic 形在真基线 0/7（base289+b2-b7），可能探针二进制特有，待扩样。
+
+**§续-291 靶**：①b2-b5 四份同指纹 α 现场深挖（halt-dump 已存：ram_b2-b5.bin——text 普查+根表+全 RAM 模式扫描，指纹的伪帧 0xbc900000 在 RAM 中的源头搜索）；②矩阵 blocker 解除后执行；③z1 形归因（探针二进制特有 vs 稀有共形）。
