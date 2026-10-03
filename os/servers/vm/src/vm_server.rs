@@ -865,6 +865,13 @@ impl VmServer {
             proc.regions_mut()
                 .insert(region)
                 .map_err(|_| "boot segment region overlap")?;
+            // C: boot_alloc → map_page_region (main.c:308-317) always runs
+            // region_find_slot_range, whose common leg records
+            // `vm_region_top = startv + length` (region.c:391). Mirror it per
+            // segment; segments are walked in ascending phdr order, so after
+            // the loop the hint sits at the data end (C:402-415 slot-packing
+            // semantics — a hint, not a break value, §续-279m).
+            proc.set_region_top(VirBytes(vaddr.0 + (pages * PS) as u64));
 
             // Materialize pages eagerly and copy segment bytes through the
             // Direct Map (C: libexec_copy_physcopy per page).
@@ -1028,6 +1035,12 @@ impl VmServer {
         proc.regions_mut()
             .insert(region)
             .map_err(|_| "boot stack region overlap")?;
+        // C: libexec's stack leg is `allocmem_ondemand(stacklow, size)`
+        // (exec_elf.c:306-309 → boot_alloc → map_page_region), so the hint
+        // leg (region.c:391) fires here too — hint = stacklow + length =
+        // user_sp (stack_high is page-aligned on both sides), exactly as C's
+        // insert order lands.
+        proc.set_region_top(self.ctx.user_sp);
 
         // Materialize the stack page (C: the VR_UNINITIALIZED half of
         // boot_alloc/handle_memory_start) — the pfn stays in hand for the
@@ -2392,6 +2405,33 @@ impl VmServer {
                 crate::bootmark::mark(&alloc::format!(
                     "nk4a: vm-pf err {:?} ep={:#x} fa={:#x}\n", e, proc_endpoint.0, fault_addr.0
                 ));
+                // 续-279m 临时取证（结案滚除）：PF 服务失败时的故障区形状——
+                // NoMemType 主角到底长什么样（memtype 在哪条腿丢的）。
+                #[cfg(not(feature = "mock"))]
+                {
+                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+                    static PFR_N: AtomicUsize = AtomicUsize::new(0);
+                    if PFR_N.fetch_add(1, AtomicOrd::Relaxed) < 6 {
+                        let table = crate::vmproc::VmProcTable::get_global();
+                        if let Ok(slot) = table.vm_isokendpt(proc_endpoint) {
+                            if let Some(proc) = table.get_active(slot) {
+                                for r in proc.regions().iter() {
+                                    if r.vaddr.0 <= fault_addr.0
+                                        && fault_addr.0 < r.end_addr().0
+                                    {
+                                        crate::bootmark::mark(&alloc::format!(
+                                            "nk4c: pf-region va={:#x} len={:#x} mt={} nslot={}\n",
+                                            r.vaddr.0,
+                                            r.length.0,
+                                            r.def_memtype.map(|m| m.name()).unwrap_or("<none>"),
+                                            r.physblocks.len(),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 // C pagefaults.c:144-151 — 服务失败同属"不可服务"终局：
                 // SIGSEGV + 清挂起（旧实现只回 Error，挂起位不清）。
                 self.pf_fail_segv(proc_endpoint);

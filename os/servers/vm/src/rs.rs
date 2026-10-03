@@ -150,6 +150,23 @@ pub(crate) fn handle_rs_set_priv(
 
 // ── Handler: PREPARE ─────────────────────────────────────────────────
 
+/// Current data-segment break: the end of the region with the greatest
+/// vaddr that starts at or below `MMAP_BASE` — a literal reading of C's
+/// `region_search(&vmp->vm_regions_avl, VM_MMAPBASE, AVL_LESS)`
+/// (rs.c:119-125, rs.c:283-284; AVL_LESS resolves the greatest key **<=**
+/// the search key, so the `<=` on vaddr is part of the ground truth).
+/// Both HEAP_PREALLOC and the live-update dst-heap extension measure the
+/// break this way; `vm_region_top` is *not* used — in C it is only a
+/// slot-placement hint (region.c:391), never a break value (§续-279m).
+fn data_region_end(proc: &crate::vmproc::ActiveProc<'_>) -> Result<u64, RsError> {
+    proc.regions()
+        .iter()
+        .filter(|vr| vr.vaddr.0 <= crate::mmap::MMAP_BASE)
+        .map(|vr| vr.vaddr.0 + vr.length.0)
+        .max()
+        .ok_or(RsError::HeapExtendFailed)
+}
+
 /// Handle VM_RS_PREPARE — prepare live update memory state.
 ///
 /// Corresponds to Minix3's `do_rs_prepare()` (rs.c:71).
@@ -164,19 +181,17 @@ pub(crate) fn handle_rs_set_priv(
 /// The C implementation does 5 things in order:
 /// 1. Validate src/dst endpoints via `vm_isokendpt`
 /// 2. `map_pin_memory(src_vmp)` — pin source process
-/// 3. Extend dst heap to match src (`real_brk`) — **not yet implemented**
+/// 3. Extend dst heap to match src (`real_brk`)
 /// 4. `map_pin_memory(dst_vmp)` — pin destination process
-/// 5. `map_proc_dyn_data(src_vmp, dst_vmp)` — map dynamic data — **not yet implemented**
+/// 5. `map_proc_dyn_data(src_vmp, dst_vmp)` — map dynamic data
 ///
-/// Steps 1-4 are implemented below. Step 5 (`map_proc_dyn_data`, the CoW
-/// transfer of mmap regions) is deferred: it requires a range-constrained
-/// region copy with page-table sync on a live process (see A-8 gap contract
-/// in the design doc / `25-rs-services.md`).
+/// All five steps are implemented below; step 5 (V11/T12) shares src's
+/// mmap-range regions into dst as CoW (`map_proc_dyn_data`, C:
+/// utility.c:283-300 — see A-8 contract notes in `25-rs-services.md`).
 pub(crate) fn handle_rs_prepare(
     table: &VmProcTable,
     page_alloc: &mut VmPageAllocator,
     frames: &mut PageFrames,
-    vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     src: Endpoint,
     dst: Endpoint,
     _flags: u32,
@@ -206,36 +221,29 @@ pub(crate) fn handle_rs_prepare(
     //
     // C computes the current data-region end for both processes
     // (`region_search(&vmp->vm_regions_avl, VM_MMAPBASE, AVL_LESS)` →
-    // `vaddr + length`) and grows dst only when src's end is higher —
-    // "better safe than sorry": the destination must not run out of heap
-    // during the live update window. minix-rs tracks the heap top as
-    // `vm_region_top` (kept in sync with the data region by brk.rs); the
-    // C-faithful `find_less(MMAP_BASE)` measure is used here so the
-    // comparison matches the C ground truth exactly. The `src > dst`
-    // guard is load-bearing: calling brk unconditionally would shrink a
-    // larger dst heap to the source's smaller size.
+    // `vaddr + length`, see `data_region_end`) and grows dst only when
+    // src's end is higher — "better safe than sorry": the destination must
+    // not run out of heap during the live update window. The `src > dst`
+    // guard is load-bearing: calling brk unconditionally would aim the
+    // extension at a lower address than the dst heap already covers
+    // (harmless no-op since §续-279m, but C skips it for a reason — keep
+    // the skip).
     let src_data_end = {
         let src_proc = table.get_active(src_slot)
             .ok_or(RsError::ProcessNotFound)?;
-        let data_vr = src_proc.regions()
-            .find_less(VirBytes(crate::mmap::MMAP_BASE))
-            .ok_or(RsError::HeapExtendFailed)?;
-        data_vr.vaddr.0 + data_vr.length.0
+        data_region_end(&src_proc)?
     };
     let dst_data_end = {
         let dst_proc = table.get_active(dst_slot)
             .ok_or(RsError::ProcessNotFound)?;
-        let data_vr = dst_proc.regions()
-            .find_less(VirBytes(crate::mmap::MMAP_BASE))
-            .ok_or(RsError::HeapExtendFailed)?;
-        data_vr.vaddr.0 + data_vr.length.0
+        data_region_end(&dst_proc)?
     };
     if src_data_end > dst_data_end {
         let req = crate::brk::BrkRequest {
             endpoint: dst,
             new_brk_addr: VirBytes(src_data_end),
         };
-        crate::brk::handle_brk(table, page_alloc, frames, vfs_queue, &req)
+        crate::brk::handle_brk(table, &req)
             .map_err(|_| RsError::HeapExtendFailed)?;
     }
 
@@ -512,14 +520,14 @@ pub(crate) fn handle_rs_memctl(
             if len == 0 {
                 return Err(RsError::InvalidLength);
             }
-            // C: rs_memctl_heap_prealloc (rs.c:281) — computes
-            // *addr = data_vr->vaddr + data_vr->length (current brk),
-            // bytes = *addr + *len, then calls real_brk(vmp, bytes).
-            // Rust: compute new absolute brk = current_top + len.
-            let current_brk = active.region_top();
+            // C: rs_memctl_heap_prealloc (rs.c:281-295) —
+            // data_vr = region_search(MMAPBASE, AVL_LESS);
+            // *addr = data_vr->vaddr + data_vr->length (the current break),
+            // bytes = *addr + *len, then real_brk(vmp, bytes).
+            let current_brk = data_region_end(&active)?;
             // Tightening: C wraps silently (`bytes = *addr + *len` would
             // shrink the heap on overflow); minix-rs fails closed.
-            let new_brk = current_brk.0
+            let new_brk = current_brk
                 .checked_add(len as u64)
                 .map(VirBytes)
                 .ok_or(RsError::InvalidLength)?;
@@ -527,9 +535,9 @@ pub(crate) fn handle_rs_memctl(
                 endpoint: target,
                 new_brk_addr: new_brk,
             };
-            crate::brk::handle_brk(table, page_alloc, frames, vfs_queue, &req)
+            crate::brk::handle_brk(table, &req)
                 .map(|_| RsMemctlResult::AddrLen {
-                    addr: current_brk,
+                    addr: VirBytes(current_brk),
                     len,
                 })
                 .map_err(|_| RsError::HeapPreallocFailed)
@@ -901,8 +909,8 @@ mod tests {
 
     #[test]
     fn test_memctl_heap_prealloc_grows_heap() {
-        // C: rs_memctl_heap_prealloc (rs.c:281-295) — *addr = current brk,
-        // bytes = *addr + *len, real_brk(vmp, bytes).
+        // C: rs_memctl_heap_prealloc (rs.c:281-295) — *addr = data_vr end
+        // (current break), bytes = *addr + *len, real_brk(vmp, bytes).
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
@@ -910,8 +918,15 @@ mod tests {
         let slot = UserSlot::new(67);
         let ep = init_test_process(slot);
         {
+            // §续-279m: the break is measured off the data region (C
+            // region_search(MMAPBASE, AVL_LESS)), not off vm_region_top.
             let mut active = table.get_active(slot).unwrap();
-            active.set_region_top(VirBytes(0x4000_0000));
+            active.regions_mut().insert(crate::region::VirRegion::with_memtype(
+                VirBytes(0x4000_0000),
+                VirBytes(0x1000),
+                VrFlags::WRITABLE | VrFlags::ANON,
+                &crate::memtype::MEM_TYPE_ANON,
+            )).unwrap();
         }
 
         let result = handle_rs_memctl(
@@ -925,12 +940,14 @@ mod tests {
         let RsMemctlResult::AddrLen { addr, len } = result.unwrap() else {
             panic!("expected AddrLen");
         };
-        assert_eq!(addr, VirBytes(0x4000_0000));
+        assert_eq!(addr, VirBytes(0x4000_1000));
         assert_eq!(len, 0x2000);
-        assert_eq!(
-            table.get_active(slot).unwrap().region_top(),
-            VirBytes(0x4000_2000)
-        );
+        // The anon resize leg extends the data region in place and never
+        // writes the placement hint (§续-279m C-parity: region.c:391 belongs
+        // to fresh slots only); assert the post-extension end directly.
+        let active = table.get_active(slot).unwrap();
+        let vr = active.regions().find(VirBytes(0x4000_0000)).unwrap();
+        assert_eq!(vr.end_addr(), VirBytes(0x4000_3000));
     }
 
     #[test]
@@ -944,7 +961,6 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
-            &mut crate::vfs_queue::VfsRequestQueue::new(),
             Endpoint(1),
             Endpoint(2),
             0,
@@ -971,7 +987,6 @@ mod tests {
                 VirBytes(0x2000_0000),
                 VrFlags::WRITABLE | VrFlags::ANON,
             )).unwrap();
-            proc.set_region_top(VirBytes(0x5000_0000));
         }
         {
             let mut proc = table.get_active(dst_slot).unwrap();
@@ -980,29 +995,29 @@ mod tests {
                 VirBytes(0x1000_0000),
                 VrFlags::WRITABLE | VrFlags::ANON,
             )).unwrap();
-            proc.set_region_top(VirBytes(0x4000_0000));
         }
 
         let result = handle_rs_prepare(
             table,
             &mut page_alloc,
             &mut frames,
-            &mut crate::vfs_queue::VfsRequestQueue::new(),
             src,
             dst,
             0,
         );
         assert_eq!(result, Ok(()));
-        assert_eq!(
-            table.get_active(dst_slot).unwrap().region_top(),
-            VirBytes(0x5000_0000)
-        );
+        // §续-279m: the break is the data region's end (C region_search),
+        // so assert on the region — the dst data region now matches src.
+        let proc = table.get_active(dst_slot).unwrap();
+        let vr = proc.regions().find(VirBytes(0x3000_0000)).unwrap();
+        assert_eq!(vr.end_addr(), VirBytes(0x5000_0000));
     }
 
     #[test]
     fn test_prepare_does_not_shrink_dst_heap() {
         // C: `if (src_addr > dst_addr)` — a larger dst heap must be left
-        // untouched (calling brk unconditionally would shrink it).
+        // untouched (calling brk unconditionally would aim at a lower
+        // address than the dst data region already covers).
         let table = VmProcTable::get_global();
         let mut page_alloc = make_page_alloc();
         let mut frames = make_frames();
@@ -1034,7 +1049,6 @@ mod tests {
             table,
             &mut page_alloc,
             &mut frames,
-            &mut crate::vfs_queue::VfsRequestQueue::new(),
             src,
             dst,
             0,

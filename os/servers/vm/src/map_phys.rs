@@ -97,6 +97,11 @@ pub(crate) fn handle_map_phys(
 
     active.regions_mut().insert(region)
         .expect("map_phys: overlap already checked above");
+    // C: do_map_phys → map_page_region(VM_MMAPBASE, VM_MMAPTOP, ...) (mmap.c:
+    // 351-353 semantics; remap leg mmap.c:418-421), whose slot finder always
+    // records `vm_region_top = startv + length` (region.c:391). Same hint-only
+    // semantics as the mmap legs (§续-279m).
+    active.set_region_top(VirBytes(vaddr.0 + aligned_len.0));
 
     Ok(VirBytes(vaddr.0 + offset))
 }

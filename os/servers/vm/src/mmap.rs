@@ -366,6 +366,15 @@ pub(crate) fn handle_mmap(
             .insert(region)
             .expect("mmap: overlap already checked in mmap_region");
         active.add_total(aligned_len);
+        // C: every map_page_region insert lands on the common slot-recording
+        // leg `vmp->vm_region_top = startv + length` (region.c:391 — reached
+        // even for MAP_FIXED, whose maxv==0 means "right here",
+        // region_find_slot_range:323-331). minix-rs resolves the slot in the
+        // immutable `mmap_region` above, so the hint is applied here at the
+        // insert site instead. The hint steers later no-fixed `find_slot`
+        // placements (bottom-up packing, C:402-415); it is explicitly **not**
+        // a break value — brk measures off the region table (§续-279m).
+        active.set_region_top(VirBytes(vaddr.0 + aligned_len.0));
 
         Ok(MmapResult::Complete(MmapResponse { mapped_addr: vaddr }))
     } else {
@@ -501,6 +510,11 @@ fn mmap_file(
         .insert(region)
         .expect("mmap_file: overlap already checked in mmap_region");
     active.add_total(len);
+    // C: same common slot-recording leg as the anon path (region.c:391);
+    // the VFS exec text/data mapping (do_vfs_mmap → mmap_file, mmap.c:154-158)
+    // passes through here, so the hint must be updated at this insert too.
+    // (Hint-only semantics — see the anon-path note above for §续-279m.)
+    active.set_region_top(VirBytes(vaddr.0 + len.0));
 
     Ok(MmapResponse {
         mapped_addr: VirBytes(vaddr.0 + page_offset),

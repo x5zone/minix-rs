@@ -86,6 +86,19 @@ pub(crate) trait MemType {
         Ok(())
     }
 
+    /// Whether C's `def_memtype->ev_resize` field would be non-NULL for this
+    /// memtype — the branch `map_region_extend_upto_v` takes at region.c:1037
+    /// (`if(!vr->def_memtype->ev_resize)` → fresh ANON region leg instead of
+    /// in-place resize). Ground truth (mem_type tables): anon (mem_anon.c:38),
+    /// anon_contig (mem_anon_contig.c:30) and cache (mem_cache.c:43) define
+    /// resize callbacks; directphys / shared / mappedfile leave the field
+    /// NULL. The minix-rs trait folds the resize callback itself into the
+    /// framework ([ARCH: A-12]); this predicate keeps the C *branch*
+    /// observable without reviving the dead callback.
+    fn supports_resize(&self) -> bool {
+        true
+    }
+
     // C NULL → EINVAL (region.c:1164). Default Err(NotSupported).
     // C signature: void (*ev_split)(struct vmproc *vmp, ...).
     // Matches ev_resize: &mut ActiveProc corresponds to struct vmproc*.
@@ -403,6 +416,12 @@ impl MemType for DirectPhysical {
         "physical memory mapping"
     }
 
+    /// C mem_directphys.c leaves `ev_resize` NULL — a brk reaching a
+    /// direct-phys region takes the fresh-ANON region leg (region.c:1037).
+    fn supports_resize(&self) -> bool {
+        false
+    }
+
     /// Always writable when mapped — device memory has no CoW semantics.
     fn writable(&self, _frames: &PageFrames, slot: PageSlot, _region: &crate::region::VirRegion) -> bool {
         slot.is_mapped()
@@ -500,6 +519,12 @@ impl Default for SharedMemory {
 impl MemType for SharedMemory {
     fn name(&self) -> &'static str {
         "shared memory"
+    }
+
+    /// C mem_shared.c leaves `ev_resize` NULL — brk takes the fresh-ANON
+    /// region leg around shared regions (region.c:1037).
+    fn supports_resize(&self) -> bool {
+        false
     }
 
     /// Always writable when mapped — shared pages have no CoW semantics.
@@ -957,6 +982,12 @@ impl Default for MappedFile {
 impl MemType for MappedFile {
     fn name(&self) -> &'static str {
         "mapped file"
+    }
+
+    /// C mem_file.c leaves `ev_resize` NULL — brk takes the fresh-ANON
+    /// region leg around file-backed regions (region.c:1037).
+    fn supports_resize(&self) -> bool {
+        false
     }
 
     /// Always `false` — file-backed pages are never directly writable.

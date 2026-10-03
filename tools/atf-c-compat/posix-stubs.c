@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>   /* uintptr_t/intptr_t（sbrk 定义用，见文件尾） */
 #include <unistd.h>   /* sysconf/_SC_PAGESIZE（sysconf 定义在本文件尾部） */
 #include "errno-compat.h"   /* 定义端也看 stresep/sysconf 原型：防跨 TU 签名
                               * 漂移无编译器检查（CodeReview 续-279h P2；现在
@@ -265,6 +266,40 @@ long sysconf(int name) {
         return 4096;
     errno = EINVAL;
     return -1;
+}
+
+/* 堆增长腿——抢 libsemihost.a 的 **sbrk**（真机 gh153/155 定谳：malloc→
+ * __malloc_sbrk_aligned→sbrk 命中的是 semihost 假实现：纯用户态推进自己
+ * .data 里的 brk 变量、永不下陷，堆“成功”长进未映射页 → wro SIGSEGV，
+ * memset_nonzero 即在此丢命；我方 sys-bridge.c 的 _sbrk 不在 malloc 链路上）。
+ * 语义逐行对位 minix3 libc sys/sbrk.c：incr>0 先发 VM_BRK(new_addr)（C 为
+ * _syscall(VM_PROC_NR, VM_BRK, &m)，m_lc_vm_brk.addr 在载荷 0 号槽），成功后
+ * 才采纳新断点；incr<0 只回退 break——C VM 本无缩减腿（break.c 只有
+ * extend；region.c:1016 低地址 no-op OK），页保留。断点起点取链接符号
+ * _end（picolibc.ld `end = __bss_end`，与 C arch brksize.S 的
+ * `_brksize: .long _end` 同源同义）。抢占机制同 sysconf（命令行目标文件
+ * 先于归档解析）；风险同款登记：semihost sbrk.c.o 因他符号被拉入则强-强
+ * 相冲（当前其成员只定义 sbrk/brk 族，不炸）。 */
+extern long ipc_sendrec(int endpoint, struct kmsg *m);
+#define POSIX_STUBS_VM_ENDPOINT 8      /* minix-sys vm.rs VM_ENDPOINT_NUMBER（C com.h:67） */
+#define POSIX_STUBS_VM_CALL_BREAK 0xC02 /* minix-sys vm.rs VM_CALL_BREAK（C com.h:636 VM_BRK） */
+extern char _end;                       /* 链接器提供的镜像末（picolibc.ld） */
+static uintptr_t posix_stub_break = (uintptr_t)&_end;
+void *sbrk(intptr_t incr) {
+    uintptr_t old = posix_stub_break;
+    uintptr_t next = (uintptr_t)((intptr_t)old + incr);
+    if (incr > 0) {
+        struct kmsg m;
+        long r;
+        memset(&m, 0, sizeof m);
+        m.m_type = POSIX_STUBS_VM_CALL_BREAK;
+        m.slots[0] = (long long)next;   /* m_lc_vm_brk.addr @payload+0 */
+        r = ipc_sendrec(POSIX_STUBS_VM_ENDPOINT, &m);
+        if (r != 0) { errno = (int)r; return (void *)-1; }
+        if (m.m_type != 0) { errno = (int)(-m.m_type); return (void *)-1; }
+    }
+    posix_stub_break = next;
+    return (void *)old;
 }
 
 int popcountll(long long x){ return __builtin_popcountll((unsigned long long)x); }

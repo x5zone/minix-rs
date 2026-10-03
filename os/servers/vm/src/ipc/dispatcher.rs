@@ -122,14 +122,16 @@ impl MessageDispatcher {
 
     /// Dispatch VM_BRK request. C: `do_brk()` in break.c.
     pub(crate) fn dispatch_brk(ctx: &mut VmContext, request: VmBrkIn) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext { proc_table, .. } = ctx;
         let table: &VmProcTable = proc_table;
-        let frames = page_frames.as_mut().expect("page_frames not initialized");
         let req = brk::BrkRequest {
             endpoint: request.endpoint,
             new_brk_addr: request.new_addr,
         };
-        match brk::handle_brk(table, page_alloc, frames, vfs_queue, &req) {
+        // §续-279m: the brk port is a pure region-table extension (C
+        // map_region_extend_upto_v anon legs are demand-filled), so page
+        // alloc / frames / vfs_queue no longer reach it.
+        match brk::handle_brk(table, &req) {
             Ok(response) => VmReply::Brk(VmBrkOut { new_addr: response.new_brk_addr }),
             Err(e) => VmReply::Error(e.into()),
         }
@@ -475,10 +477,13 @@ impl MessageDispatcher {
 
     // -- rs_prepare --
     pub(crate) fn dispatch_rs_prepare(ctx: &mut VmContext, src: minix_types::Endpoint, dst: minix_types::Endpoint, flags: u32) -> VmReply {
-        let VmContext { proc_table, page_alloc, page_frames, vfs_queue, .. } = ctx;
+        let VmContext { proc_table, page_alloc, page_frames, .. } = ctx;
         let table: &VmProcTable = proc_table;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
-        match rs::handle_rs_prepare(table, page_alloc, frames, vfs_queue, src, dst, flags) {
+        // §续-279m: rs_prepare's brk leg (heap extension) no longer needs
+        // page_alloc/frames/vfs_queue queues — anon resize is demand-filled;
+        // frames stays only for the map_pin_memory legs.
+        match rs::handle_rs_prepare(table, page_alloc, frames, src, dst, flags) {
             Ok(()) => VmReply::Ok,
             Err(e) => VmReply::Error(e.into()),
         }
@@ -1203,6 +1208,10 @@ fn dispatch_remap_impl(
         if dst_proc.regions_mut().insert(new_region).is_err() {
             return VmReply::Error(VmError::OutOfMemory);
         }
+        // C: do_remap lands on map_page_region (mmap.c:418-421), whose slot
+        // finder always records `vm_region_top = startv + length`
+        // (region.c:391). Hint-only semantics (§续-279m).
+        dst_proc.set_region_top(VirBytes(dst_vaddr.0 + aligned_len.0));
     }
 
     // Step 11: Increment source region's remaps counter

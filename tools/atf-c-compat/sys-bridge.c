@@ -112,23 +112,11 @@ void _exit(int code) {
     __builtin_trap();
 }
 
-/* 静态 bump 堆（供 malloc；上机时由我方 VM 供页）。尺寸受 picolibc 链接脚本
- * 的 ram region 上限约束（deb 默认 8MiB 含全镜像，非运行时 RAM）：试过 8MiB
- * 直接 `region ram overflowed` 链接拒。1MiB 下 strlen_huge 的超大 malloc 由
- * 测试自身的 `str==NULL → continue` 降级跳过（NetBSD 上游语义：部分尺寸覆盖，
- * 非假绿）；要全尺寸需 VM brk 协议（③后续大件，与 C 对位：真源 _sbrk 走 RS）。 */
-static char heap[1 << 20];
-static size_t heap_off;
-void *_sbrk(intptr_t inc) {
-    if (inc < 0) {
-        if ((intptr_t)heap_off < -inc) { errno = ENOMEM; return (void *)-1; }
-        heap_off += (size_t)inc;
-        return heap + heap_off;
-    }
-    size_t aligned = (heap_off + 15u) & ~(size_t)15u;  /* max_align_t=16 */
-    if (aligned + (size_t)inc > sizeof(heap)) { errno = ENOMEM; return (void *)-1; }
-    void *p = heap + aligned; heap_off = aligned + (size_t)inc; return p;
-}
+/* 堆增长腿的位置说明（§续-279m 定谳）：picolibc 配置下 malloc→sbrk（标准
+ * POSIX 名，非 newlib 内部 _sbrk 路），故真腿定义在 posix-stubs.c（抢
+ * libsemihost 假 sbrk）；本 TU 不再提供 _sbrk（旧 bump 堆与其后继定义均
+ * 不在链路上，nm 实测零引用后删除—20 基线的 bump 堆能跑是因它把 .bss
+ * 堆预映射在内，假 sbrk 同机制的 semihost 版）。旧注释存档： */
 
 /* ③ 首片：文件类 syscall 先给最小实现，够链；上机跑 open/read 由后续 VFS 桥补。 */
 int _close(int fd) { (void)fd; return -1; }

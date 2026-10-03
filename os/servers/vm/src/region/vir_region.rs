@@ -345,6 +345,13 @@ impl VirRegion {
         if split_len.0 == 0 || !split_len.0.is_multiple_of(PAGE_SIZE) || split_len.0 >= self.length.0 {
             return Err(VirRegionError::InvalidParam);
         }
+        // C: split_region dereferences `vr->def_memtype->ev_split` (region.c:
+        // 1164) — a memtype-less region is not a shape C can split (every
+        // region is minted through map_page_region with a memtype). Fail
+        // closed rather than producing two unfaultable halves.
+        if self.def_memtype.is_none() {
+            return Err(VirRegionError::InvalidParam);
+        }
 
         let rem_len = VirBytes(self.length.0 - split_len.0);
 
@@ -358,6 +365,14 @@ impl VirRegion {
         left.remaps = self.remaps;
         left.id = self.id;
         right.remaps = self.remaps;
+        // C: both halves are minted through `region_new(..., vr->def_memtype)`
+        // (split_region, region.c:1174-1182) — the memtype is INHERITED by a
+        // split. Losing it here made every fault into the split remainder die
+        // on CowError::NoMemType → SIGSEGV (真机 gh158 定谳：exec 二次
+        // MAP_FIXED 叠到 heap 段中部 → unmap_range 头切 → [0x40401000,+0x1000)
+        // 尾巴无 memtype → memset_nonzero 堆尾写 0x40402000 丢命，§续-279m）。
+        left.def_memtype = self.def_memtype;
+        right.def_memtype = self.def_memtype;
         // The right half is a brand-new region identity: C's split_region
         // mints a fresh id from the same counter as region creation, not a
         // derivation from the parent (a `parent + 1` guess can collide with
@@ -470,6 +485,36 @@ mod tests {
         assert_ne!(a.id, c.id);
     }
 
+    /// §续-279m regression: C's split_region passes `vr->def_memtype` into
+    /// BOTH `region_new` calls (region.c:1174-1182) — losing it made faults
+    /// into a split remainder die on CowError::NoMemType (真机 gh158: heap
+    /// 段被二次 MAP_FIXED 头切后堆尾页永不可服务，memset_nonzero SIGSEGV)。
+    #[test]
+    fn test_split_inherits_def_memtype() {
+        let vr = VirRegion::with_memtype(
+            VirBytes(0x4000_0000),
+            VirBytes(0x2000),
+            VrFlags::WRITABLE | VrFlags::ANON,
+            &crate::memtype::MEM_TYPE_ANON,
+        );
+        let (left, right) = vr.split(VirBytes(0x1000)).expect("anon region splits");
+        assert!(left.def_memtype.is_some(), "left keeps the memtype (C region_new parity)");
+        assert!(right.def_memtype.is_some(), "right keeps the memtype (C region_new parity)");
+        assert_eq!(right.def_memtype.unwrap().name(), "anonymous memory");
+    }
+
+    /// Defensive leg: a memtype-less region (a shape C never has — every
+    /// region comes from map_page_region with a memtype) must not split.
+    #[test]
+    fn test_split_rejects_memtype_less_region() {
+        let vr = VirRegion::new(
+            VirBytes(0x4000_0000),
+            VirBytes(0x2000),
+            VrFlags::WRITABLE | VrFlags::ANON,
+        );
+        assert!(vr.split(VirBytes(0x1000)).is_err(), "no memtype → no split (fail closed)");
+    }
+
     fn make_frames(pages: u32) -> PageFrames {
         PageFrames::new(PhysBytes(pages as u64 * PAGE_SIZE))
     }
@@ -541,7 +586,15 @@ mod tests {
 
     #[test]
     fn test_vir_region_split() {
-        let region = VirRegion::new(VirBytes(0x1000), VirBytes(0x4000), VrFlags::empty());
+        // §续-279m: split 现在要求母区有 memtype（C split_region 把
+        // vr->def_memtype 传进两半 region_new，region.c:1174-1182；无 memtype
+        // 的 region 是 C 不存在的形）——夹具同步取真形。
+        let region = VirRegion::with_memtype(
+            VirBytes(0x1000),
+            VirBytes(0x4000),
+            VrFlags::empty(),
+            &crate::memtype::MEM_TYPE_ANON,
+        );
 
         let (left, right) = region.split(VirBytes(0x2000)).unwrap();
 

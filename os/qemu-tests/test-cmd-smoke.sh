@@ -17,12 +17,13 @@
 #
 # Exit codes: 0 = PASS, 1 = FAIL, 2 = SKIP (prerequisites missing).
 #
-# Honest state today: stages 1-2 are fully exercised by this script; stage
-# 3 is the T1-established marker; stage 4 waits on the NK1 boot-chain
-# completion (the hand-off is still mid-flight there) and the OQ-3 /etc
-# finalization — until both land, the script FAILS at 3/4 with the serial
-# tail printed, which is exactly its debugging job. SMOKE_SKIP_BOOT=1
-# stops after stage 2 (the mode the script was first validated in).
+# Current state (NK4-C §续-275 ② 命令面 ✅; real-machine re-verified in the
+# §续-276..279 series): stages 1-4 all pass — the image assembles, the ESP
+# checks hold, the scheduler marker appears, and the /etc rc command marker
+# reaches the console (x86 smoke PASS on gh-series boots). The former
+# "honest state: FAILS at 3/4 until the NK1 boot chain lands" note went stale
+# with the boot-chain completion; SMOKE_SKIP_BOOT=1 still stops after stage 2
+# for build-face-only debugging.
 
 set -uo pipefail
 
