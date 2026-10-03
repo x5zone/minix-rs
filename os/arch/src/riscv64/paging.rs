@@ -284,6 +284,64 @@ enum WalkResult {
     NotPresent,
 }
 
+// ── NK4-C 续-282 取证探针（(A) 攻坚登记 a2d；结案随探针族一次性滚除）──────
+// §续-217/281 登记：walk_read 在算出父级表基址（l1=pte_to_paddr(l2e) /
+// l0=pte_to_paddr(l1e)）之后、跟随读之前，若基址越出 RAM 顶（=DM 窗未映射、
+// 跟随读必崩的「瞬态父项腐值」类，§续-280 β 形实测伪帧 0x3F9C8FF000 /
+// 0xbc900000 族）则在读取瞬间抓五元组 (walked_root, level, idx, raw, child)。
+// 通道只认 VmDm（VM U 态自走子进程表；KernelDm 上下文不能发起 kernel-call，
+// 且 (A) 崩面在 VM 侧）。输出走 U-safe bootmark/sys_diagctl——绝不用
+// CurrentEarlyConsole（U 态 SBI ecall 会被误当 IPC 打死被测进程，
+// 记忆 a298c18a / §续-218）。first-N 封顶防日志洪流。观测者效应预案
+// （gh74 教训，§续-218）：探针若令竞态当轮不复现，按协议回滚并登记负结果。
+#[cfg(all(target_arch = "riscv64", not(test)))]
+pub mod a2d {
+    use super::PteChannel;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    /// boot 门配置 512MB RAM 顶（分配器可用顶更低：vm alloc_page.rs
+    /// RAM_TOP_PFN=0x9fb33；本谓词按 §续-217 登记只抓「≥0xA0000000
+    /// 跟随读必崩」类，不扩围）。
+    pub(crate) const RAM_TOP: u64 = 0xA000_0000;
+    const CAP: usize = 16;
+
+    type Sink = fn(walked_root: u64, level: u8, idx: usize, raw: u64, child: u64);
+    static SINK: AtomicUsize = AtomicUsize::new(0);
+    static FIRED: AtomicUsize = AtomicUsize::new(0);
+
+    /// VM 侧注册（先于任何子进程 walk；write-once 语义由调用方保证，
+    /// 同 pt_alloc::register 契约）。
+    pub fn register_sink(f: Sink) {
+        SINK.store(f as usize, Ordering::Relaxed);
+    }
+
+    /// 谓词命中即 fire；未注册/封顶后静默。热路足迹=通道比较+范围比较+分支。
+    pub(super) fn fire(
+        channel: PteChannel,
+        walked_root: u64,
+        level: u8,
+        idx: usize,
+        raw: u64,
+        child: u64,
+    ) {
+        if !matches!(channel, PteChannel::VmDm) || child < RAM_TOP {
+            return;
+        }
+        if FIRED.load(Ordering::Relaxed) >= CAP {
+            return;
+        }
+        FIRED.fetch_add(1, Ordering::Relaxed);
+        let f = SINK.load(Ordering::Relaxed);
+        if f != 0 {
+            // SAFETY: 指针由 register_sink 以同型 fn 存入；注册先于任何
+            // walk（VmServer init），VM 单线程无写竞争。
+            unsafe {
+                (core::mem::transmute::<usize, Sink>(f))(walked_root, level, idx, raw, child)
+            };
+        }
+    }
+}
+
 /// Walk the 3-level Sv39 table read-only, returning the leaf PTE address
 /// and raw value, or the huge-page mapping if encountered.
 ///
@@ -320,6 +378,10 @@ fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
         return WalkResult::Huge1G(PhysBytes(paddr), flags);
     }
     let l1 = pte_to_paddr(l2e);
+    // 续-282 a2d：瞬态父项捕获（结案滚除）——l1 越 RAM 顶即 β 类腐值，
+    // 跟随读必崩，崩前抓 (walked_root, level=2, i2, l2e 原值, 伪 l1)。
+    #[cfg(all(target_arch = "riscv64", not(test)))]
+    a2d::fire(channel, root_paddr, 2, i2, l2e, l1);
 
     let i1 = l1_index(vaddr);
     // SAFETY: see above; L1 entry address is within the L1 page.
@@ -335,6 +397,9 @@ fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
         return WalkResult::Huge2M(PhysBytes(paddr), flags);
     }
     let l0 = pte_to_paddr(l1e);
+    // 续-282 a2d：同上，level=1（hd4-β 形=叶读前 l1e 腐值 0x3F9C8FF000 族）。
+    #[cfg(all(target_arch = "riscv64", not(test)))]
+    a2d::fire(channel, root_paddr, 1, i1, l1e, l0);
 
     let l0_idx = l0_index(vaddr);
     let leaf_paddr = l0 + (l0_idx as u64) * 8;

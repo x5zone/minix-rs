@@ -23,3 +23,21 @@ pub fn mark(msg: &str) {
         let _ = msg;
     }
 }
+
+// ── NK4-C 续-282 a2d 探针 sink（riscv-only；结案随本模块一起滚除）────
+// arch walk_read 抓到的五元组在这里格式化并经 SYS_DIAGCTL 上台
+// （DIAGBUFSIZE=128，消息控制在限内；fail-silent 同上）。
+
+/// 注册进 arch 探针（须先于任何子进程 walk；对齐 pt_alloc::register
+/// 的调用时机，见 vm_server.rs 注册块）。
+#[cfg(all(target_arch = "riscv64", not(test)))]
+pub(crate) fn register_a2d_sink() {
+    minix_arch::riscv64::paging::a2d::register_sink(a2d_badpte_sink);
+}
+
+#[cfg(all(target_arch = "riscv64", not(test)))]
+fn a2d_badpte_sink(walked_root: u64, level: u8, idx: usize, raw: u64, child: u64) {
+    mark(&alloc::format!(
+        "nk4c: a2d root={walked_root:#x} lvl={level} idx={idx:#x} raw={raw:#x} child={child:#x}\n"
+    ));
+}

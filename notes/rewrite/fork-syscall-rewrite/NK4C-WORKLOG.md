@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-281（零扰动 halt-dump 取证线打通：α 形铁证升级「执行瞬间字节≠RAM 现存字节」）**：新工具 `tmp/nk4a/riscv_halt_dump.sh`（崩后 monitor pmemsave 全 512MB RAM，零观测者效应；HMP 两坑=文件名必须加引号防 `/` 当除法 + 内核 pfvm `root=` 打印缺 `<<12` 印的是 PPN）。hd4（α 形崩）dump 定谳：**VM text 40/40 页 EXACT + 三副本（loader 落地/bump/活体）全 EXACT**；trap 帧审计=slot0 垫槽不存（gpr[0] 印的是栈陈旧值，x1..x31 逐位可信）；α 铁证=hd4 与 r1 的寄存器三元组均与「执行现 RAM 字节」矛盾 ⇒ **执行瞬间该 PC 处字节≠halt 时 RAM 字节**。主假设=帧别名三张脸（β 父 PTE 瞬态值/数据脸 BTreeMap+PM panic/**代码脸 text 瞬态腐写被执行→refault 触发 demand-fill 重灌→halt 已修复**——§续-265 refault 目击即 refill 证据）；竞争解释=QEMU 软 TLB 平移陈旧。判据=未来 dump 抓到 text 非 EXACT 崩→耐久形；全 EXACT 序列→瞬态+refill。下一步 §续-282=a2d 探针（walk_read 五元组+U-safe bootmark+first-N）抓 β 原始值，落码后每跑必带 halt-dump 成对取证。零生产码改动。
+> **🛑 最新前沿＝§续-282（a2d 探针落地：walk_read 父级边界五元组+U-safe sink，全回归绿）**：三文件 riscv64-only 门控——paging.rs 新 `pub mod a2d`（RAM_TOP=0xA000_0000 谓词不扩围/CAP=16/fn 指针 sink write-once）+walk_read 两 fire 位点（`l1=pte_to_paddr(l2e)`/`l0=pte_to_paddr(l1e)` 之后、跟随读之前，崩前抓 (root,lvl,idx,raw,child)）；bootmark.rs `register_a2d_sink`+格式化 sink（`nk4c: a2d root=…`<128 走 sys_diagctl）；vm_server.rs 注册块对齐 pt_alloc::register 时机。诚实边界=只抓越 0xA0000000 必崩类，「RAM 内错误帧」腐值未扩围；观测者效应预案（gh74）=不复现即多跑对账、是效应即回滚。验证=riscv release 构建过（rodata 串实测在产物）+宿主全绿（1403/0+535/0+layout PASS+x86 smoke+aarch64 bootmarks rc=0+qemu=0）。下一步=§续-283 探针 boot×halt-dump 成对取证拿 β 写者指纹。
+>
+> **（上一前沿＝§续-281（零扰动 halt-dump 取证线打通：α 形铁证升级「执行瞬间字节≠RAM 现存字节」）**：新工具 `tmp/nk4a/riscv_halt_dump.sh`（崩后 monitor pmemsave 全 512MB RAM，零观测者效应；HMP 两坑=文件名必须加引号防 `/` 当除法 + 内核 pfvm `root=` 打印缺 `<<12` 印的是 PPN）。hd4（α 形崩）dump 定谳：**VM text 40/40 页 EXACT + 三副本（loader 落地/bump/活体）全 EXACT**；trap 帧审计=slot0 垫槽不存（gpr[0] 印的是栈陈旧值，x1..x31 逐位可信）；α 铁证=hd4 与 r1 的寄存器三元组均与「执行现 RAM 字节」矛盾 ⇒ **执行瞬间该 PC 处字节≠halt 时 RAM 字节**。主假设=帧别名三张脸（β 父 PTE 瞬态值/数据脸 BTreeMap+PM panic/**代码脸 text 瞬态腐写被执行→refault 触发 demand-fill 重灌→halt 已修复**——§续-265 refault 目击即 refill 证据）；竞争解释=QEMU 软 TLB 平移陈旧。判据=未来 dump 抓到 text 非 EXACT 崩→耐久形；全 EXACT 序列→瞬态+refill。零生产码改动。
 >
 > **（上一前沿＝§续-280（riscv 新基线复现+10 跑形态分类：(A) 是双机制并存——β 形真槽读（sepc=0x3ae3e，a1==stval 自洽，瞬态父 PTE 原论成立）+ α 形语义不可能形（sepc=0x3ae10/0x3aae8，off≡4 mod 8，槽读指令算术恒 8 对齐，r1 的 a1=掩码常量≠stval）；旧 §续-268「同 build 矛盾」form C 由此破案=从来不是槽读，§续-233 对 α 族错归因）**：boot-full 门 10 跑（1 全量构建+9 SKIP_BUILD 同镜像，运行 ELF==反汇编 ELF md5 双验 a8b7654c）marker 0/10：β×2+α×4+α'×1+r4 VM BTreeMap navigate.rs unwrap panic（整数键无自定义 Ord=树节点被外部腐写）+r8 **PM** init.rs panic+r3 截断活。「裸启动必崩」不成立（崩 7/10）；条件 2 未达成（≥3 形+崩/不崩分异）。四象共一源假设：帧别名。勘误=交接 prompt「sepc=0x14060」系 x19 转抄错误，日志原文 sepc=0x3ae3e。证据盘 `tmp/nk4a/a280/`。
 >
@@ -12050,3 +12052,16 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **下一步（§续-282）**：按登记落地 a2d 探针（walk_read l1/l0 边界五元组 + U-safe bootmark 通道 + first-N 封顶）抓 β 现场原始值——它同时服务主理论（伪帧值=写者指纹的第一手证据）。探针落码后每跑必带 halt-dump（两工具叠加=崩形+现场快照成对取证）。
 
 **回归底线**：零生产码改动（工具在 tmp/，WORKLOG 文档）；基线继承 §续-280。
+
+## §续-282（2026-10-03·a2d 探针落地：walk_read 父级边界五元组捕获 + U-safe sink 注册，全回归绿）
+
+**落地内容**（三文件，全部 `#[cfg(all(target_arch="riscv64", not(test)))]` 门控，宿主/x86/aarch64 零足迹）：
+1. `os/arch/src/riscv64/paging.rs`：新 `pub mod a2d`（SINK/FIRED 原子静态+`register_sink`+`fire`；RAM_TOP=0xA000_0000 按 §续-217 登记不扩围；CAP=16 first-N 封顶；sink 经 AtomicUsize 存 fn 指针，注册先于任何 walk 的 write-once 契约同 pt_alloc::register）；walk_read 两个 fire 位点=`l1=pte_to_paddr(l2e)` 之后（level=2,i2,l2e,l1）与 `l0=pte_to_paddr(l1e)` 之后（level=1,i1,l1e,l0）——**跟随读之前**，崩前抓值。
+2. `os/servers/vm/src/bootmark.rs`：`register_a2d_sink`+sink fn（`nk4c: a2d root=%x lvl=%u idx=%x raw=%x child=%x`，~80 字符<DIAGBUFSIZE 128；走既有 `mark`→sys_diagctl U-safe 通道）。
+3. `os/servers/vm/src/vm_server.rs`：注册块追加在 pt_alloc::register_free 之后（时机对齐——先于任何 Paging walk）。
+
+**谓词边界（诚实登记）**：只抓 child≥0xA0000000 的「跟随读必崩」类（§续-280 β 实测 0x3F9C8FF000/0xbc900000 族全覆盖）；「指向 RAM 内错误帧」的瞬态腐值不在本谓词内（未扩围，留待 β 读数到手后按需二轮）。通道门=VmDm（KernelDm 上下文不能发起 kernel-call）。**观测者效应预案**（gh74 教训）：若探针轮竞态不复现，同镜像多跑对账「修复 vs 扰动」，是效应即回滚登记负结果。
+
+**验证**：riscv64 release 构建过（`cargo build --release --target riscv64gc-unknown-none-elf -p minix-vm`，探针 rodata 串 `nk4c: a2d root=` 实测在产物 0x3849）；宿主回归全绿=4 包集 1403/0 + minix-vm 535/0 + check-layout all PASS + x86 smoke PASS + aarch64 bootmarks rc=0 + 收官 qemu=0。
+
+**下一步**：探针 boot 与 halt-dump 成对取证（§续-283）——rebuild 后跑 boot-full 确认崩形分布是否保持（β/α 比例），halt-dump 抓「a2d 行+崩点+全 RAM」三元组；a2d 行的伪帧值即写者指纹第一手证据。
