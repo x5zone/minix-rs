@@ -12387,3 +12387,13 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **工具已修**（tmp/nk4a/riscv_halt_dump.sh）：每跑从 REL 重写 12 个 mod_*.bin（fallback 名链 memory→minix-driver-memory 等），后接同源 loader 参数重算。验证=mod_vm.bin md5 已刷新=eed1867=REL ✓。**方法论（重大易错模式入库）**：**「复用 Stage 4 产物」的取证工具必须自带产物新鲜度保障（从当前 REL 重写），否则 REL 重建后实验静默跑旧字节**——本笔 z60-z62 的「旁路无效」假结论、§续-313② 的 leaf_now 语义混乱、此前 z/r/k 批的「构建归属」全部因此错位；批次钉 md5（§续-290）钉的是串口对应关系，**还必须钉「串口 md5==REL md5」**。
 
 **§续-313 余项重排**：①重落 Pte 臂（读/写/零填三腿+wire，从 c114abf9c+本轮未提交补全恢复——代码在 git 历史）+setaddr-root 探针（§续-306 同恢复）；②工具修正后重跑旁路实验（这次真上场）——不崩=旁路有效→§7；③krewalk 各崩读数在新二进制下重采。
+
+## §续-314/315（2026-10-04·Pte 三腿重落+全旁路新墙：pfs boot 镜像经裸 DM 直读判「not a valid ELF」(3/3 确定)——视图分歧泛化到裸 DM 直读；旁路路线存疑，QEMU 变体升主路径）
+
+**重落+采样**：Pte 三腿+setaddr-root 探针全量重落（c114abf9c+2c8c428ce 恢复+差量，5bbece7d2）——工具修正后**旁路真上场**：b40-b42=**pf=0×3（(A) walk 崩消失）但 exec=8 新墙 3/3 确定**：`exec_bootproc: pfs failed: boot image is not a valid ELF`（vm_server.rs:676，panic 碎片+全文双证）。
+
+**机制定位**：exec_bootproc（:738-751）经 `vm_phys_to_virt(ip.start_addr)` 的**裸 DM 直读**（from_raw_parts，非 read_pte_dm——旁路没盖住）解析 pfs boot 镜像 → 判非 ELF。全 12 mod bins 对账 OK（装载字节正确 ✓ §续-312 修复生效）——**RAM 里的镜像=有效 ELF（kernel 视角），VM 的 DM 窗直读视图=垃圾** ⇒ 视图分歧从「槽读」泛化到「裸 DM 直读」，且全旁路（每 PTE 写/零填一次全 TLB flush 的 sfence 风暴）下从间歇转**确定**。
+
+**观测者效应修正**：b40-b42 pf=0 = 全旁路再次抑制了 (A) walk 崩（与所有 walk_read 改写同效）——「旁路真上场」的 (A) 判读被新墙遮蔽。
+
+**§续-316 靶**：①kernel 侧 krewalk 扩展：panic 时按 boot handoff 的 boot_procs[] 逐个 dump 镜像首 16 字节（kernel 知 boot 参数）——证明「RAM=有效 ELF vs VM 读=垃圾」的分歧实锤；②**战略评估**：(A)+新墙同指向 QEMU 8.2.2 的 DM 窗视图完整性——**QEMU 变体矩阵升为第一解锁路径**（网络恢复）；③本仓可控候选=VmDm 全内核化延伸到 boot 镜像读取（exec_bootproc 的 image 改经 PteRead 批量腿）——但每字节一 call 的成本不可行，需 batch 腿（PteReadBuf(pa,len,buf) kernel 拷贝返回）——评优先级于 §续-317。
