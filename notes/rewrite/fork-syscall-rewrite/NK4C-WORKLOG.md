@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-279a（2026-10-03·D2 归因坐实）**：内核 diagctl 腿对 OOM-RT 行补打 caller proc 号→真机 gh141：**OOM 进程=MFS（caller=0xa）非 VM**（旧推断被推翻，时序相邻≠因果）；big=950/1024 槽近满+px=1024/1024 页池打穿——定性收敛：MFS 对 16MiB imgrd 根的读路径大分配耗尽自身 4MiB .bss 池，两候选（读缓冲不释放 vs 预算不足）待 mfs 读路径审计分判。套件重现：12 passed+D1 读数一致。minix-kernel host 833/0。前一轮：§续-278/278b/278c/278d 套件化+门+评审修复+D1/D2 登记；§续-277系列上机 pipeline 全打通（首案 passed）。
+> **🛑 最新前沿＝§续-279c（2026-10-03·D2 修复落地）**：minix-rt 全局池 1024→2048 页（预算恒等式：MFS 块缓存是 C DEFAULT_NR_BUFS=1024 忠实镜像不该缩，临时余量必须独立；VM 不取 alloc-global 故 B34 地雷不适用），真机 gh142：**OOM 清零、套件 20 passed/6 failed** 零 PANIC。剩 6 fail 全部定性：D1 memcpy（libc 分歧）×1、strerror×4（compat 真语义预告现形）、strlen_huge（sysconf 占位可修，修后预堵 1MB 堆）、stresep（占位）。修复队列：279d sysconf+堆 → 279e stresep → 279f strerror 族调研 → D1 口径。前轮：§续-279a/b 归因+机制锁定；§续-278 系列套件化；§续-277 系列上机 pipeline（首案 passed）。
+>
+> **（前前沿＝§续-279a/b）**：内核 diagctl 腿对 OOM-RT 行补打 caller proc 号→真机 gh141 定谳 OOM 进程=MFS（caller=0xa，VM=8 排除；旧"候选 VM"推断被推翻——时序相邻≠因果）；279b 静态审计锁机制候选（mfs 把 imgrd 当 RAM 盘块缓存+mount.rs 三处 to_vec；16MiB imgrd=4096 块 vs 池 1024 页预算无余量——279c 容量轮据此落地）。
 >
 > **（更早前沿＝§续-278：首批 18 案/36 用例套件化上机）**：套件接线（ATF_SUITE 表+用例名从 C 源提取+rc 变体注入+atf-plan manifest+imgrd 随套件选值）；真机实证 ≥12 案 passed 后被 D2（当时代号，即本节主角）截断；D1=memcpy_basic picolibc random 与 NetBSD 期望分歧（p5 探针定谳，非内核 bug）；均登记不猜修。xtask 17/17。
 >
@@ -11848,6 +11850,16 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 ## §续-279b（2026-10-03·D2 机制候选锁定：mfs 对 imgrd 槽读 `slot_data().to_vec()` 全块拷贝；修复属 mfs 大动作未动码）
 
 > 静态审计（零 boot）：mfs 把 imgrd 当 RAM 盘块缓存服务（`BootBlockSource`，main.rs:52-54 `include_bytes!` 填 `BOOT_IMGRD`），而 mount.rs 三处（L315/L371/L487）`cache.slot_data(slot).to_vec()` 把 4KiB 块**全量复制进运行时堆**（≥2048B 即 big 车道）——16MiB imgrd=4096 块，big=950 槽/页池 1024/1024 的形状与“块内容复制驻留”同量级。**候选机理（未坐实，二形态待判）**：①to_vec 返回值被长命结构持住（mount 表/二级索引）=驻留型耗尽；②to_vec 即拷即弃但高频并发峰值超池=峰值型耗尽。**修法方向（279c 决策，不预写）**：(a) 读路径零拷——imgrd 本就是 .rodata 内字节，块服务可直接借切片（(须让 mfs 块抽象支持 borrowed 数据源)）；(b) 池预算再扩容（雷区：B34 实证的 .bss 平移→VM 自缺页递归，需同步 eager 物化）；(c) 套件 ELF 瘦身减 imgrd 需求（缓解不根治）。**本轮只登记不改码**：mfs 块缓存/二级索引是生产核心路径，修复必须配自己的回归轮（marker+命令面+套件门三套跑），不在本轮顺手动。
+
+---
+
+## §续-279c（2026-10-03·D2 修复落地：minix-rt 全局池 1024→2048 页，真机 OOM 清零、套件 passed 12→20）
+
+> 机制复核后选择容量轮而非 cache 缩水：预算恒等式 `cache 页(1024) + 临时余量 ≤ 池页` 在 1024 页池下无解（MFS 块缓存是 C `DEFAULT_NR_BUFS=1024` 的忠实镜像，不该为预算问题削 C 形配置）；抬到 2048 与历史 B29（16→512→1024）同法同姿势。**B34 地雷适用面复核**：VM 不取 `alloc-global`（vm/Cargo.toml:47 自带页池），其余 alloc-global 服务的 .bss 新页由 VM demand-fill，无自分页循环——真机 gh142 证实：全量重编 12 模块+镜像后 marker/命令面/套件均健康，`oomrt|memory allocation` 零命中。
+>
+> **gh142 套件终读数（本轮基线）**：20 passed / 6 failed，零 OOM、零 STALLED、零 PANIC。失败清单定性：D1 memcpy×1（libc random 分歧，已定谳）；t_strerror×4（picolibc strerror 字符串/strerror_r 返回型与 BSD 语义分歧——compat 真语义层，§续-271 P2-2 预告现形）；strlen_huge×1（`sysconf(_SC_PAGESIZE)` 占位负返 → 真实现可修；修后还会撞 1MB bump 堆上限，预登记）；stresep×1（占位 NULL 预告现形，真实现约 20 行）。修复顺序（一次一桩）：279d=sysconf+堆加固 → 279e=stresep 真语义 → 279f=strerror 族调研（分歧 or 移植）→ D1 口径决策。
+
+验证：host 4 包集 1403/0、minix-rt+minix-fs 193/0、check-layout all PASS、真机 gh142 套件读数如上。(A) 仍 open。
 
 ### 会话收官对账（2026-10-03 续-276→279b，累计 12 commit）
 - 三目标态：① x86✅ aarch64✅ riscv❌(A)；② x86✅ aarch64✅ riscv❌(A)；③ **构建面双 arch 各 18/18 + aarch64 上机 ≥12 案实证 passed（会话前：仅构建面 riscv 18/18、上机 0 案）**，全套 36 案被 D2 截断（机制候选已锁）。

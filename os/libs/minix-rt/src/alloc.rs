@@ -148,7 +148,20 @@ pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 /// single pages (see `supply_pages`). A legal working set, not a leak:
 /// C keeps those tables in BSS and never caps its heap. 1024 pages
 /// doubles the runway; the faithful fix is the VM-backed supplier.
-pub const GLOBAL_POOL_BYTES: usize = 1024 * PAGE_BYTES; // NK4-C 1.55 B29 扩容扰动实验
+///
+/// NK4-C §续-279c (real machine gh140/141, ATF suite): the 1024-page pool
+/// hit the same wall again from a new consumer — MFS's block cache pool
+/// (`DEFAULT_POOL_BUFFERS` 1024 × 4 KiB lazily-filled `Buffer` pages, the C
+/// `DEFAULT_NR_BUFS` faithful value) legally fills the whole pool while the
+/// 16 MiB imgrd (ATF suite seeding, §续-278) grows the working set, leaving
+/// zero runway for transient allocations: `oomrt caller=0xa` (MFS_PROC_NR),
+/// `big=3b6/400 px=400/400 fp=0`. Budget identity for alloc-global servers
+/// with a C-sized cache: cache pages + transient headroom ≤ pool pages —
+/// 2048 doubles the runway again (same 扰动实验 posture as B29 above; VM is
+/// unaffected: it does not take `alloc-global`, `os/servers/vm/Cargo.toml:
+/// 47`, so the B34 .bss-self-paging landmine does not apply here). The
+/// faithful fix stays the VM-backed supplier (module docs).
+pub const GLOBAL_POOL_BYTES: usize = 2048 * PAGE_BYTES; // NK4-C §续-279c MFS cache 预算轮
 
 /// Number of whole pages the global pool holds (`GLOBAL_POOL_BYTES` /
 /// [`PAGE_BYTES`]). Used to size the free-page stack and slab record table
