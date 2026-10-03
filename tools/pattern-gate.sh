@@ -151,6 +151,27 @@ P2_TESTS=(
   test_establish_boot_dm_reserved_is_kernel_window_only # NK4-C 续-51 boot DM 保留仅内核窗口
   test_clamp_cpu_to_bsp_transitional_guard              # NK4-C 续-73 过渡守卫钳 schedctl cpu→BSP（CONTRACT 债在案）
   riscv_pf_error_code_matches_the_aarch64_lane_table    # NK4-C 续-76b riscv PFEC 跨腿等值表（S2；裸值断言改语义表）
+  test_brk_extends_containing_region_c_like             # NK4-C 续-279m brk 真源直译（C 契约含相邻 region 内增长）
+  test_brk_far_neighbor_still_grows                     # NK4-C 续-279m brk 跨空洞邻居仍可增长
+  test_brk_interleaved_region_covered_noop              # NK4-C 续-279m brk 区间被覆盖时 no-op
+  test_brk_no_resize_memtype_lands_new_region           # NK4-C 续-279m brk 新段落 memtype
+  test_brk_nothing_to_extend                            # NK4-C 续-279m brk 无可扩展边界
+  test_brk_process_not_found                            # NK4-C 续-279m brk 未知进程拒绝
+  test_brk_rounds_partial_page                          # NK4-C 续-279m brk 部分页取整
+  test_brk_shrink_is_noop_ok                            # NK4-C 续-279m brk 收缩 no-op（C 怪癖保真）
+  test_grow_heap_rejects_overlap_c18                    # NK4-C 续-279m 堆增长拒与既有映射重叠（C-18）
+  test_split_inherits_def_memtype                       # NK4-C 续-279m split 丢 memtype 生产级 P0：继承侧
+  test_split_rejects_memtype_less_region                # NK4-C 续-279m split 丢 memtype：拒绝降级侧
+  test_pl011_drains_all_bytes_when_not_full             # NK4-C 续-132 PL011 MMIO 臂：不满时全排空
+  test_pl011_failed_flag_probe_stops_the_drain          # NK4-C 续-132 PL011 失败标志探针停排
+  test_pl011_failed_push_reports_bytes_moved_so_far     # NK4-C 续-132 PL011 失败 push 报告已搬字节数
+  test_pl011_full_fifo_reports_zero_moved               # NK4-C 续-132 PL011 满 FIFO 零搬移
+  test_c_bridge_fs_stat_offsets_match_rust_layout       # NK4-C 续-277c 跨 libc stat 布局对账（越界砸保存寄存器族）
+  test_riscv_lazy_fs_field_gating                       # NK4-C riscv 懒 FPU FS 位门控（SD-23 家族）
+  illegal_insn_fpu_trap_predicate_gates_on_fs_off       # NK4-C 续-133 FPU 陷阱谓词钉 FS==Off（FS=Initial 死门控 P0）
+  atf_suite_entries_have_sources_with_cases             # NK4-C 续-277 ATF 套件条目-用例对账（防夹具假绿）
+  etc_proto_rc_host_override                            # NK4-C 续-277 etc/proto 宿主覆盖（测试面与生产分流）
+  etc_proto_seeds_atf_tests_dir                         # NK4-C 续-277 ATF 测试目录种子
 )
 check_p2() {
   local root="$1" missing=0 t hits
@@ -383,6 +404,11 @@ collect_p12() {
       printf '%s' "$content" | grep -qE '^[[:space:]]*(//|/\*|\*)' && continue
       back=$(awk -v n="$ln" 'NR>=n-12 && NR<n' "$f" | grep -c 'target_arch' || true)
       [ "${back:-0}" -gt 0 ] && continue
+      # C-65 误报修正第三发：包含函数名带架构前缀视为隐式门（仓约定：架构专属函数以
+      # riscv64/aarch64/x86_64 命名 + cfg 门在外层，如 trap_dispatch.rs riscv64_pagefault_body
+      # 的 csrr satp 探针——cfg 门在 44 行外，窗口查不到但语义已门控）
+      fnline=$(awk -v n="$ln" 'NR<=n && /fn [A-Za-z0-9_]+/{s=$0} END{if(s)print s}' "$f")
+      printf '%s' "$fnline" | grep -qE 'fn [A-Za-z0-9_]*(riscv64|aarch64|x86_64|x86)' && continue
       printf '%s:%s|%s\n' "$rel" "$ln" "$(printf '%s' "$content" | tr -s ' \t' ' ' | cksum | cut -d' ' -f1)"
     done < <(grep -nE 'asm!|rdmsr|wrmsr' "$f")
   done
@@ -600,6 +626,16 @@ YAML
   out=$(check_p16 "$F"); st_expect "P16-missing-def" "[P16] FAIL" "$out"
   printf 'unsafe fn commit_message_to_memory(message: *const Message) {\n  read_volatile(message)\n}\nfn send_leg(m: *const Message) {\n  copy_nonoverlapping(m)\n}\n' > "$F/os/libs/minix-sys/src/ipc.rs"
   out=$(check_p16 "$F"); st_expect "P16-missing-call" "物化调用丢失" "$out"
+
+  # --- P12（collect 层启发式：函数名架构前缀=隐式门，C-65 第三发误报修正）---
+  mkdir -p "$F/os/kernel/src"
+  printf 'unsafe fn riscv64_pagefault_body() {\n  // pad\n  // pad\n  // pad\n  unsafe { core::arch::asm!("csrr {}, satp", out(reg) x) };\n}\n\nfn shared_helper() {\n  unsafe { core::arch::asm!("nop") };\n}\n' > "$F/os/kernel/src/trap_dispatch.rs"
+  out=$(collect_p12 "$F" | grep -c 'trap_dispatch.rs')
+  if [ "$out" -eq 1 ]; then
+    printf '  [case] %-22s PASS（架构前缀函数豁免、共享函数裸 asm 仍抓）\n' "P12-archfn"
+  else
+    printf '  [case] %-22s FAIL 期望恰 1 命中实得 %s\n' "P12-archfn" "$out"; ST_FAIL=$((ST_FAIL+1))
+  fi
 
   rm -f "$F/.p11_tokens" "$F/.p13_tokens"
   echo "----"

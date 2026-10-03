@@ -1,0 +1,8 @@
+== 真树负例变异（C-65；备份/还原法）==
+[M1] P2 改名本轮新入列测试（test_pl011_full_fifo_reports_zero_moved -> test_pl011_gone）
+  [P2] FAIL  防回归测试被删/改名: fn test_pl011_full_fifo_reports_zero_moved（历史事故失去回归网；目录文档 §4 P2 表）
+  还原后：[P2] PASS  64/64 防回归测试全部在位
+[M2] P12 向共享文件注入无架构名函数的裸 asm（os/kernel/src/lib.rs 尾部追加 c65_mutation_helper + asm!("nop")）
+  [P12] FAIL  共享路径 asm/rdmsr 无架构门（基线外）: os/kernel/src/lib.rs:5586
+  还原后：[P12] PASS  共享路径 asm/rdmsr 架构门对账通过（存量 2 处在基线）
+  [M2 语义] 证明函数名架构前缀启发式不过度豁免：无架构名函数的裸 asm 仍被抓。
