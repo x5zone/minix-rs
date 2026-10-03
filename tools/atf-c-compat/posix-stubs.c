@@ -17,7 +17,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>   /* uintptr_t/intptr_t（sbrk 定义用，见文件尾） */
+#include <locale.h> /* locale_t（strerror_l 接管签名，见文件尾） */
 #include <unistd.h>   /* sysconf/_SC_PAGESIZE（sysconf 定义在本文件尾部） */
+/* TU 内裸名 strerror_r 调用（如 compat 自表路他员）统一转发到本仓 XSI 实现，
+ * 与 errno-compat.h 对测试 TU 的注入同源；置于 string.h 之后避免改写其声明。 */
+#ifndef strerror_r
+#define strerror_r __xpg_strerror_r
+#endif
 #include "errno-compat.h"   /* 定义端也看 stresep/sysconf 原型：防跨 TU 签名
                               * 漂移无编译器检查（CodeReview 续-279h P2；现在
                               * flags 未开 -Wmissing-prototypes，原型可见性是
@@ -195,7 +201,7 @@ extern int _read(int fd, void *buf, int len);
 ssize_t write(int fd, const void *buf, size_t len) { return _write(fd, buf, len); }
 ssize_t read(int fd, void *buf, size_t len) {
     /* CodeReview 续-277b P2-2：_read 占位不置 errno，POSIX 读失败契约要求
-     * errno 有效——陈旧值会指向日志里无关的早期失败，故为 0 时兑底 ENOSYS。 */
+     * errno 有效——陈旧值会指向日志里无关的早期失败，故为 0 时兜底 ENOSYS。 */
     int r = _read(fd, buf, len > 0x7fffffff ? 0x7fffffff : (int)len);
     if (r < 0 && errno == 0) errno = ENOSYS;
     return r;
@@ -311,3 +317,216 @@ void *sbrk(intptr_t incr) {
 
 int popcountll(long long x){ return __builtin_popcountll((unsigned long long)x); }
 int popcount(unsigned x){ return __builtin_popcount(x); }
+
+/* --- strerror 族真语义（§续-279m 探针 gh160 定谳后落地，自给表实现）——
+ * picolibc(newlib 血缘)对越界码**永不产 BSD 形 "Unknown error: N"**：
+ * gh160 实测 strerror(135/200/INT_MAX/INT_MIN)=空串、strerror(133)=空串
+ * （表洞）、strerror_r(GNU 声明+XSI 语义混流)把码写进 buf[0]——t_strerror
+ * 四案的断言全押在 NetBSD 语义上，故 compat 全接管两函数（抢占机制同
+ * sbrk/sysconf：命令行目标文件先于归档解析）。消息源为**自给表**：
+ *   1..79   = minix3/lib/libc/compat/gen/compat_errlist.c 逐行移植（本仓 C 真源）；
+ *   80..134 = picolibc sys/errno.h 各码英文注释（picolibc 自己的措辞，表洞码
+ *             诚实落 "error"）；越界 = NetBSD strerror.c 同形 "Unknown error: N"
+ *             + errno=EINVAL（C lib/libc/string/strerror.c:111）。
+ * 不向内问路 picolibc：_strerror_r 的真实签名是 (int,int,int*)
+ * （string.h:145），按假原型调用是 UB；自给表零外呼。
+ * 链接形定稿（三轮试错坐实，证据链在 WORKLOG §续-279n）：测试调用是
+ * **裸名 strerror_r**（objdump 实锤 R_AARCH64_CALL26 strerror_r），只挂 asm
+ * 别名不满足裸引用——链接器经 picolibc strerror_r 成员的 U _strerror_r 拽入
+ * libc_string_strerror.c.o（定义 strerror），与自家强定义 multiple definition
+ * 硬错。定稿=errno-compat.h 在 string.h 声明**之前**注入 `#define strerror_r
+ * __xpg_strerror_r`（其 GNU 形声明被一并改名，与定义同形无冲突），所有 TU
+ * 裸引用统一到本 XSI 实现；本 TU 在 string.h 后补同名宏保持域内一致。
+ * 诚实登记：测试比较式处 `int` 值对 char* 声明的告警保留（§续-278d 基线），
+ * 0/EINVAL/ERANGE 的零/非零性在两值域同形，断言面（== 0 / == EINVAL /
+ * == ERANGE / != NULL）语义成立，真机读数定案。 */
+#define COMPAT_STRERROR_UNK_MAX 128   /* NetBSD strerror.c:101 同值上界 */
+/* 布局与 C sys_errlist 同构：index == errno（0 项 = "Undefined error: 0"，
+ * compat_errlist.c:52 真源原串），sys_nerr（errno-compat.c）= 表项数 = 135，
+ * 与 compat_errlist.c:153 的 sizeof 公式同形。§续-279n 定谳的边界差一：
+ * 旧实现判 `e <= sys_nerr` 且 sys_nerr=134，e=134 被当已知，而测试以
+ * sys_nerr 为「首个未知码」——i=134 处 :54/:94 首断言即败（p3 探针只测了
+ * 越界侧 135/140，恰好漏测边界，矛盾归一）。 */
+static const char *const compat_errstr[] = {
+	"Undefined error: 0", /* 0 */
+	"Operation not permitted", /* 1 */
+	"No such file or directory", /* 2 */
+	"No such process", /* 3 */
+	"Interrupted system call", /* 4 */
+	"Input/output error", /* 5 */
+	"Device not configured", /* 6 */
+	"Argument list too long", /* 7 */
+	"Exec format error", /* 8 */
+	"Bad file descriptor", /* 9 */
+	"No child processes", /* 10 */
+	"Resource deadlock avoided", /* 11 */
+	"Cannot allocate memory", /* 12 */
+	"Permission denied", /* 13 */
+	"Bad address", /* 14 */
+	"Block device required", /* 15 */
+	"Device busy", /* 16 */
+	"File exists", /* 17 */
+	"Cross-device link", /* 18 */
+	"Operation not supported by device", /* 19 */
+	"Not a directory", /* 20 */
+	"Is a directory", /* 21 */
+	"Invalid argument", /* 22 */
+	"Too many open files in system", /* 23 */
+	"Too many open files", /* 24 */
+	"Inappropriate ioctl for device", /* 25 */
+	"Text file busy", /* 26 */
+	"File too large", /* 27 */
+	"No space left on device", /* 28 */
+	"Illegal seek", /* 29 */
+	"Read-only file system", /* 30 */
+	"Too many links", /* 31 */
+	"Broken pipe", /* 32 */
+	"Numerical argument out of domain", /* 33 */
+	"Result too large or too small", /* 34 */
+	"Resource temporarily unavailable", /* 35 */
+	"Operation now in progress", /* 36 */
+	"Operation already in progress", /* 37 */
+	"Socket operation on non-socket", /* 38 */
+	"Destination address required", /* 39 */
+	"Message too long", /* 40 */
+	"Protocol wrong type for socket", /* 41 */
+	"Protocol option not available", /* 42 */
+	"Protocol not supported", /* 43 */
+	"Socket type not supported", /* 44 */
+	"Operation not supported", /* 45 */
+	"Protocol family not supported", /* 46 */
+	"Address family not supported by protocol family", /* 47 */
+	"Address already in use", /* 48 */
+	"Can't assign requested address", /* 49 */
+	"Network is down", /* 50 */
+	"Network is unreachable", /* 51 */
+	"Network dropped connection on reset", /* 52 */
+	"Software caused connection abort", /* 53 */
+	"Connection reset by peer", /* 54 */
+	"No buffer space available", /* 55 */
+	"Socket is already connected", /* 56 */
+	"Socket is not connected", /* 57 */
+	"Can't send after socket shutdown", /* 58 */
+	"Too many references: can't splice", /* 59 */
+	"Operation timed out", /* 60 */
+	"Connection refused", /* 61 */
+	"Too many levels of symbolic links", /* 62 */
+	"File name too long", /* 63 */
+	"Host is down", /* 64 */
+	"No route to host", /* 65 */
+	"Directory not empty", /* 66 */
+	"Too many processes", /* 67 */
+	"Too many users", /* 68 */
+	"Disc quota exceeded", /* 69 */
+	"Stale NFS file handle", /* 70 */
+	"Too many levels of remote in path", /* 71 */
+	"RPC struct is bad", /* 72 */
+	"RPC version wrong", /* 73 */
+	"RPC prog. not avail", /* 74 */
+	"Program version wrong", /* 75 */
+	"Bad procedure for program", /* 76 */
+	"No locks available", /* 77 */
+	"Function not implemented", /* 78 */
+	"Inappropriate file type or format", /* 79 */
+	"Given log. name not unique", /* 80 */
+	"File descriptor in bad state", /* 81 */
+	"Remote address changed", /* 82 */
+	"Can't access a needed shared lib", /* 83 */
+	"Accessing a corrupted shared lib", /* 84 */
+	".lib section in a.out corrupted", /* 85 */
+	"Attempting to link in too many libs", /* 86 */
+	"Attempting to exec a shared library", /* 87 */
+	"Function not implemented", /* 88 */
+	"No more files", /* 89 */
+	"Directory not empty", /* 90 */
+	"File or path name too long", /* 91 */
+	"Too many symbolic links", /* 92 */
+	"error", /* 93 */
+	"error", /* 94 */
+	"Operation not supported on socket", /* 95 */
+	"Protocol family not supported", /* 96 */
+	"error", /* 97 */
+	"error", /* 98 */
+	"error", /* 99 */
+	"error", /* 100 */
+	"error", /* 101 */
+	"error", /* 102 */
+	"error", /* 103 */
+	"Connection reset by peer", /* 104 */
+	"No buffer space available", /* 105 */
+	"Address family not supported by protocol family", /* 106 */
+	"Protocol wrong type for socket", /* 107 */
+	"Socket operation on non-socket", /* 108 */
+	"Protocol not available", /* 109 */
+	"Can't send after socket shutdown", /* 110 */
+	"Connection refused", /* 111 */
+	"Address already in use", /* 112 */
+	"Software caused connection abort", /* 113 */
+	"Network is unreachable", /* 114 */
+	"Network interface is not configured", /* 115 */
+	"Connection timed out", /* 116 */
+	"Host is down", /* 117 */
+	"Host is unreachable", /* 118 */
+	"Connection already in progress", /* 119 */
+	"Socket already connected", /* 120 */
+	"Destination address required", /* 121 */
+	"Message too long", /* 122 */
+	"error", /* 123 */
+	"Socket type not supported", /* 124 */
+	"Address not available", /* 125 */
+	"Connection aborted by network", /* 126 */
+	"Socket is already connected", /* 127 */
+	"Socket is not connected", /* 128 */
+	"Too many references: cannot splice", /* 129 */
+	"Too many processes", /* 130 */
+	"Too many users", /* 131 */
+	"Reserved", /* 132 */
+	"Reserved", /* 133 */
+	"Not supported", /* 134 */
+};
+
+static const char *compat_strerror_msg(int e) {
+    /* C 契约（compat_errlist.c:153 sys_nerr=表项数）：已知区间是
+     * [0, sys_nerr)，负值与 >=sys_nerr 都走调用方的 Unknown error: N 腿。 */
+    if (e >= 0 && e < sys_nerr)
+        return compat_errstr[e];
+    return NULL;                      /* 越界：调用方产 Unknown error: N */
+}
+static int compat_strerror_unk(int e, char *out, size_t n) {
+    return snprintf(out, n, "Unknown error: %d", e);
+}
+static char compat_strerror_static[COMPAT_STRERROR_UNK_MAX];
+char *strerror(int e) {
+    const char *s = compat_strerror_msg(e);
+    if (s == NULL) {
+        compat_strerror_unk(e, compat_strerror_static, sizeof compat_strerror_static);
+        errno = EINVAL;               /* C strerror.c:111 越界同置 */
+        s = compat_strerror_static;
+    }
+    return (char *)s;
+}
+/* XSI 实现：C 名 __xpg_strerror_r；errno-compat.h（本 TU 亦 -include 之外
+ * 手动保持同形）以 `#define strerror_r __xpg_strerror_r` 把所有裸名转发到此。
+ * 本 TU 的 string.h 在宏注入后才被包含的问题不存在：-include 先于一切 #include。 */
+int __xpg_strerror_r(int e, char *buf, size_t buflen) {
+    const char *s = compat_strerror_msg(e);
+    char unk[COMPAT_STRERROR_UNK_MAX];
+    if (s == NULL) {
+        compat_strerror_unk(e, unk, sizeof unk);
+        s = unk;
+    }
+    if (buflen < strlen(s) + 1)
+        return ERANGE;                /* XSI strerror_r(3) 失败码 */
+    strcpy(buf, s);
+    if (compat_strerror_msg(e) == NULL) {
+        errno = EINVAL;               /* 越界：与 strerror 同置（调用方可察） */
+        return EINVAL;
+    }
+    return 0;
+}
+
+
+/* picolibc 的 strerror_l 与 strerror 同居 libc_string_strerror.c.o：成员若被
+ * 他员拽入即与自家 strerror 强-强硬错——compat 同形接管，断掉拉入链
+ * （locale 在本环不存在，l 版即同表查询）。 */
+char *strerror_l(int e, locale_t loc) { (void)loc; return strerror(e); }

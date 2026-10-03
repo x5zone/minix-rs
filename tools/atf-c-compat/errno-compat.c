@@ -6,16 +6,16 @@
  * 的上界。缺 `sys_nerr` 会让 t_strerror 编译期报 "undeclared" → 无法链成
  * ELF → 卡在"构建/链接面"。
  *
- * 本文件只为让 t_strerror 通过【编译+链接+过 minix-elf ehdr 硬校验】。诚实边界
- * （对齐同目录 posix-stubs 里 dl 相关函数、stresep 等 "链接占位、真语义上机补" 的口径）：
- *   - 本值决定 t_strerror 里 `for (i=1;i<sys_nerr;i++)` 与
- *     `strerror(i)` 是否含 "Unknown error:" 两段的分界。要让【上机跑通】语义
- *     正确，本数须与 picolibc `strerror()` 内部错误表覆盖的最大 errno 对齐。
- *   - riscv64 上机执行本身受缺陷 (A)（fork 路径竞态）门控（见 WORKLOG §续-266~270），
- *     故此处取 BSD 惯例值 134 作链接面占位，并在 WORKLOG 登记：上机前须按实际
- *     picolibc strerror 覆盖度校准 sys_nerr（或改判据为逐条对齐 sys_errlist）。
+ * 本文件只为让 t_strerror 通过【编译+链接+过 minix-elf ehdr 硬校验】。
+ * **§续-279m 校准已落地**：真机探针 gh160 定谳 picolibc 越界码永不产 BSD 形
+ * "Unknown error: N"（空串/表洞 133），故单调数值不够——posix-stubs.c 已全
+ * 接管 strerror/strerror_r（已知 1..sys_nerr 用 picolibc 真串、表洞占位、
+ * 越界产 NetBSD 同形+EINVAL）；已知区间 = 表项 [0, sys_nerr)（与 C
+ * compat_errlist.c:153 的 `sys_nerr = 表项数` 同形，§续-279n 边界差一定谳：
+ * 旧值 134 + `e <= sys_nerr` 判据令 e=134 被当已知，而测试以 sys_nerr 为
+ * 「首个未知码」——表补 0 项后表项数 135，e∈[1,134] 已知、e≥135 未知）。
  */
 
 #include "errno-compat.h"   /* 自身声明纳入本 TU，让 const 类型/声明与定义在编译期对账（防 CodeReview P2-1 声明/定义漂移）*/
 
-const int sys_nerr = 134;
+const int sys_nerr = 135;
