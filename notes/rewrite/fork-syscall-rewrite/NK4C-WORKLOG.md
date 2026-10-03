@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-291（α 头号线索：故障地址 u64 持久驻留 PA 0x805fff48=VM 栈 walk 记录残留）**：b2/b3 dump 中 α 故障地址 0x10bc900b3c 字节级驻留内核 kdst 诊断拷贝缓冲（0x805ffb08 起=data_copy_vmcheck 的 diagbuf），紧邻字节=完整 walk 上下文（vaddr 0x7fffffffe000+帧 0x9c93d000/0x9c93e000/0x9c93d004 与 r1 GPR 逐值吻合）——**某次 DIAGCTL 把 VM 栈切片拷进了内核缓冲**：VM 崩前的 walk 曾以好 PTE 算出这些值存栈，α 崩的 a1=脱轨后拾取的栈上旧派生地址。α 成因图景收窄=「计算后未清的栈垃圾被脱轨控制流拾取」；伪帧 0xbc900000 的 1<<29 位来源=写者指纹（腐 PTE 原值全 RAM 零驻留）。§续-292 靶=①0x805fff48±0x200 跨四现场比对栈残留布局恒定性②反推 VM 栈帧归属（query/sync_slot_pte/fill-root 的返回结构）③沿「谁把 DM|伪帧存栈」追写者。方法论=故障寄存器值本身全 RAM 搜驻留即写者坐标（kdst 缓冲=天然 VM 栈切片档案）。§续-290 前文=矩阵 blocker+z 批误标勘误+观测者效应定量版（探针在场 0/19 vs 缺席 75%）。
+> **🛑 最新前沿＝§续-292（栈残留布局恒定性定谳+poison 值形状=叶组合式）**：四现场（b2-b5/hd4）0x805fff48 起 128B 布局逐字段恒定=[fault_dm_addr][child vaddr 0x7fffffffe000][frame+4][0][0|0x10][frame][pte→paddr 掩码 0x00fffffffffff000][vaddr]，切片含 VM 栈指针 0x3ffffc3bcc 与堆指针 0x1400660fe0（r1 的 x9）=**VM 栈多帧切片，由崩前最后一条 VM diagctl（fill-root，cow_exec_pf.rs:198）拷入 kdst 缓冲**。**poison 形状定谳**：fault_dm_addr=DM|伪帧|0xb3c（≡4）与叶/大页分支组合式 `pte_to_paddr(pte)|vaddr_offset`（paging.rs:317/:332）输出同构（槽读组合不可能产出此形）⇒ poison 由叶分支以瞬态腐 PTE 合成（§续-233 旧 form C 读法在值来源层复活）。α 全链=叶分支算 poison→存栈→控制流脱轨→mid-query 0x3ae10 `ld a1,0(a1)` 拾取 poison→故障。缺口=脱轨本体（ra 从何腐坏）+poison 合成点坐实。§续-293 靶=①记录布局对到 fill/query 具体栈帧（frame+4=u32 视图?）②栈 VA 定位属主函数③沿叶分支 PTE 输入回溯写者。
+>
+> **（上一前沿＝§续-291（α 头号线索：故障地址 u64 持久驻留 PA 0x805fff48=VM 栈 walk 记录残留）**：b2/b3 dump 中 α 故障地址 0x10bc900b3c 字节级驻留内核 kdst 诊断拷贝缓冲（0x805ffb08 起=data_copy_vmcheck 的 diagbuf），紧邻字节=完整 walk 上下文（vaddr 0x7fffffffe000+帧 0x9c93d000/0x9c93e000/0x9c93d004 与 r1 GPR 逐值吻合）——**某次 DIAGCTL 把 VM 栈切片拷进了内核缓冲**：VM 崩前的 walk 曾以好 PTE 算出这些值存栈，α 崩的 a1=脱轨后拾取的栈上旧派生地址。α 成因图景收窄=「计算后未清的栈垃圾被脱轨控制流拾取」；伪帧 0xbc900000 的 1<<29 位来源=写者指纹（腐 PTE 原值全 RAM 零驻留）。§续-292 靶=①0x805fff48±0x200 跨四现场比对栈残留布局恒定性②反推 VM 栈帧归属（query/sync_slot_pte/fill-root 的返回结构）③沿「谁把 DM|伪帧存栈」追写者。方法论=故障寄存器值本身全 RAM 搜驻留即写者坐标（kdst 缓冲=天然 VM 栈切片档案）。§续-290 前文=矩阵 blocker+z 批误标勘误+观测者效应定量版（探针在场 0/19 vs 缺席 75%）。
 >
 > **（上一前沿＝§续-290（QEMU 矩阵 blocker 登记+批次误标勘误+观测者效应定量版）**：①矩阵 blocker=宿主 curl 超时+容器 apt 被 fake-IP 代理拦截（198.18.x）+alpine CDN 超时+minix-ci 无 qemu——QEMU_BIN 覆盖已备网络恢复即跑；②**批次误标勘误**：z 批/hd5+ 的产物=a283p1 含探针构建（§续-283 回滚只还原源码未重建），z 批非「回滚后零扰动基线」——重归账=探针二进制 (A) 崂率 ≈0-10%；③真基线重采样=SKIP_BUILD=0 重建后 **md5=a8b7654c 与 a280r 批字节同**（rust 可复现构建实证），5/6 (A)-crash（4 α 同指纹 0x10bc900b3c+1 β）+base289 BTreeMap，同二进制崩率 ~75% 与 a280r 一致；④**观测者效应定量版（同二进制对照）=探针在场 0/19 vs 缺席 12/16≈75%**——gh74 效应干净定量，探针热路足迹几乎完全抑制 walk 竞态窗；BTreeMap 面探针无关（双二进制均现）；⑤α 指纹跨批字节级复现=**结构化成因**（伪帧 0xbc900000+0xb3c 原样反复）非随机腐坏；z1 boot-panic 真基线 0/7 或为探针二进制特有。§续-291 靶=①b2-b5 四同指纹 α 现场 deep-dive（伪帧源头搜索）②矩阵解除后执行③z1 形归因。方法论=**取证批次必须钉二进制 md5/构建 commit**。
 >
@@ -12183,3 +12185,11 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **§续-292 靶**：①以 0x805fff48±0x200 全 dump 扫描（b2-b5 四现场+hd4）比对栈残留布局恒定性；②反推 VM 栈布局定位该 walk 记录的栈帧（哪个函数的局部结构：query/sync_slot_pte/fill-root 的返回值结构？）；③沿「谁把 DM|伪帧 存栈」追写者——伪帧位的 set 者即 (A) 写者本体。
 
 **方法论**：halt-dump 分析不只查「应然结构」——故障寄存器值本身作为 u64 全 RAM 搜驻留，命中即写者/计算机的坐标（本轮 kdst 缓冲残留=意外金矿：诊断拷贝天然保存了崩前 VM 栈切片）。
+
+## §续-292（2026-10-04·栈残留布局恒定性定谳：固定结构含叶组合式形状的 poison 值；捕获窗=fill-root 诊断点）
+
+**①布局恒定性（b2-b5/hd4 四现场并排）**：0x805fff48 起 128B 布局逐字段恒定——`[0x00]=fault_dm_addr`（b 批=0x10bc900b3c/hd4=0x10bc8ffb3c，各自 boot 内一致）、`[0x08]=0x7fffffffe000`（child vaddr）、`[0x10]=frame+4`（0x9c93d004/hd4=0x9c93c004）、`[0x24]=0x10`、`[0x28]=frame`（0x9c93d000/hd4=0x9c93c000）、`[0x2c]=0x00fffffffffff000`（**pte→paddr 掩码常量**）、`[0x34]=vaddr`。且切片含 VM 栈指针（0x3ffffc3bcc/b4）与堆指针（0x1400660fe0=VM_HEAP_BASE+0x660fe0，即 r1 dump 的 x9！）——**这是 VM 栈的多帧切片**，由崩前最后一条 VM diagctl（fill-root 探针，cow_exec_pf.rs:198）的 data_copy_vmcheck 拷入 kdst 缓冲。
+
+**②poison 值形状定谳**：fault_dm_addr=DM|伪帧|0xb3c（≡4 mod 8）——与**叶/大页分支的组合式** `paddr = pte_to_paddr(pte) | (vaddr & 0xfff/0x1fffff)`（paging.rs:317/:332）输出形状同构（叶偏移非 8 对齐）；槽读组合（base+idx*8）不可能产出此形。⇒ **poison 值由叶/大页分支以瞬态腐 PTE 合成**（§续-233 旧 form C 读法在「值来源」层复活：父基址带 vaddr 低位=叶组合），后经脱轨控制流成为 0x3ae10 处 `ld` 的 a1。α 全链条=「叶分支算出 poison 指针→存栈/存寄存→控制流脱轨（ra 腐坏？）→mid-query 0x3ae10 执行 `ld a1,0(a1)` 拾取 poison→≡4 取指... 取数故障」。剩余缺口=脱轨本体（ra 从何腐坏）与 poison 合成点的坐实。
+
+**③§续-293 靶**：①反汇编 cow_exec_pf fill 路径+query，把记录布局对到具体函数的栈帧布局（`frame+4` 字段=候选 u32 视图指针/叶 pte 槽+4）；②在 fill-root 诊断点前后加栈 VA 定位（记录的 VM 栈 VA=0x3ffffc3b?? 段），反推属主函数；③沿叶分支的 PTE 输入（哪个槽的瞬态值）回溯写者——叶组合的输入=父项读值，其瞬态腐变即 (A) 本体。
