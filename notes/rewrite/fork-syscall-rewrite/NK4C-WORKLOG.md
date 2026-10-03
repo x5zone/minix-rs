@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-286（目标③ aarch64 达成态：门 rc=0 PASS——36/36 终态=34 passed+2 skipped+0 failed/broken）**：§续-285 勘误（重大反转）——「t_popcount 启动即亡+父收尸丢失」全错，d1v1 串口重读定谳 t_popcount 两世 exec 正常完成输出 `skipped: config variable "run_popcount" not set to YES/TRUE`，**skipped 是 atf 合法终态被门与取证正则双漏计**，36=34P+2S 全对账，D3b 本轮读数不存在（对账关系解除，回「gh142/143 登记、近期未再现」观察态）。机制=popcount_init 源码默认 get_config_var_wd("NO")→skip 即上游默认。修复两试：-v 注入（已撤）撞天文循环（popcountll 2.2e12 迭代 TCG ~51h 物理不可行）；正解=门判据 `^skipped` 入终态行（failed/broken 一票否决不变+PASS 行诚实分账），rc exec 行回归逐字节同旧。门读数 rc=0 PASS。方法论=归账正则必须全色计数先归账后定性/改判据先读源码默认值/门判据须与 atf 终态语义全集对齐。回归面=os/ 生产码零 diff。
+> **🛑 最新前沿＝§续-287（(A) 统一理论 v2=腐坏在翻译/视图层不在 RAM 内容——z1 boot 层新现场+全净负证据）**：z 批 4 跑（零扰动回滚后基线）：z2-z4 不崩形 text 40/40 EXACT 零指纹；**z1=exec=0 boot 期 panic**（minix-elf lib.rs:264 index OOB，parse_phdr d[3] len 3）——现场深挖=12 模块全副本（落地区/bump 池/0x9ffff000 第三副本=panic 在 server birth 相位）**字节全净**，且 ：249/:334 双守卫数学上挡死 len-3 达 ：264（Err 被 continue 吞）——静态不可能式与 α 形同 Genre。**理论 v2**：CPU 视图（取指/数据读/walk 读）瞬态与 RAM 不一致；RAM 恒净（z1 全净+hd4 text 全净同源）；候选=QEMU 软 TLB 陈旧平移（VmDm 无 flush gap 自证 present→X 在缝内；同 quantum 内 P→P 变更与 S 态自视为缝）。与全部观测自洽（插件/探针拖慢=扰动、gdb 重写代码=强制 TB 失效、快照只见净 RAM）。§续-288 靶=①riscv present→X/P→P flush 账全审（CoW 降写走 VmDm=? 头号嫌疑，对照 C kernel-mediated+sfence）②QEMU 版本变体③z1 扩样。目标③ aarch64 已于 §续-286 达成（rc=0 34P+2S）。
+>
+> **（上一前沿＝§续-286（目标③ aarch64 达成态：门 rc=0 PASS——36/36 终态=34 passed+2 skipped+0 failed/broken）**：§续-285 勘误（重大反转）——「t_popcount 启动即亡+父收尸丢失」全错，d1v1 串口重读定谳 t_popcount 两世 exec 正常完成输出 `skipped: config variable "run_popcount" not set to YES/TRUE`，**skipped 是 atf 合法终态被门与取证正则双漏计**，36=34P+2S 全对账，D3b 本轮读数不存在（对账关系解除，回「gh142/143 登记、近期未再现」观察态）。机制=popcount_init 源码默认 get_config_var_wd("NO")→skip 即上游默认。修复两试：-v 注入（已撤）撞天文循环（popcountll 2.2e12 迭代 TCG ~51h 物理不可行）；正解=门判据 `^skipped` 入终态行（failed/broken 一票否决不变+PASS 行诚实分账），rc exec 行回归逐字节同旧。门读数 rc=0 PASS。方法论=归账正则必须全色计数先归账后定性/改判据先读源码默认值/门判据须与 atf 终态语义全集对齐。回归面=os/ 生产码零 diff。
 >
 > **（上一前沿＝§续-285-b（§续-284 评审回执 PASSED 0P0/0P1/1P2，P2=叙述精度已澄清）**：评审全项 PASS=保真性（vendor cmp 字节同 md5 b2ce30c7）/抢占语义（两套 picolibc 归档全成员扫描：random/srandom 及别名成员有且仅有 libc_stdlib_{random,srandom}.c.o，srandom 成员 U _rand_next 互锁=双定义缺一不可）/壳头卫生/双腿端到端复现（尺寸逐字节一致+nm 铁证复现）。P2-1=`#undef __weak_alias` 现行两套 picolibc cdefs 均不定义该宏=**前向防御非现役机制**（shim 注释本身是准确条件式，§续-284 措辞未带条件，特此澄清算闭合）。详见文末 §续-285-b。
 >
@@ -12123,3 +12125,13 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **方法论入库（易错模式）**：①「无结果行」≠「非 passed 结果行」——取证归账正则必须全色计数（skipped:reason 也是结果行），先归账后定性，勿把统计漏计判成进程死亡（§续-285 误判即此因）；②改判据/加配置前先读源码默认值（`get_config_var_wd` 的 "NO" 决定 skip 是上游设计非缺陷）；③门判据演进必须跟 atf 语义全集对齐（terminal={P,F,B,S}），否则合法终态会被 stall 判定误吞。
 
 **回归面**：os/ 生产码零 diff（门脚本+WORKLOG only）；bash -n 过；门自身即受影响门且 PASS。xtask 17/17（撤回后 image.rs 与 HEAD 同字节）。
+
+## §续-287（2026-10-04·(A) 零扰动采现场 z 批 + z1 boot 层新现场：全 RAM 模块副本字节全净 ⇒ 统一理论 v2=腐坏在翻译/视图层不在 RAM 内容）
+
+**z 批读数**（4 跑 halt-dump，回滚后零扰动基线）：z2/z3/z4=不崩形（12 exec 满、stall 形），text 40/40 EXACT、§续-217 指纹零命中；**z1=新现场：exec=0 的 boot 期 panic**——`libs/minix-elf/src/lib.rs:264: index out of bounds: the len is 3 but the index is 3`（`parse_phdr` 的 `d[3]`，panic-message 字节重组自 kdst copy 交错流）。
+
+**z1 现场深挖（决定性负证据）**：panic 时 12 模块全副本字节级比对（`tmp/nk4a/zscan.py` + 定制普查）=**落地区（0x86000000+）12/12 OK + bump 池副本（0x821xxxxx+）12/12 OK + vm 模块第三副本（0x9ffff000=kmain relocate 产物，证 panic 发生在 server birth/relocate 相位）OK**——**物理 RAM 无一处腐坏，而解析器读到了 len-3 视图**。且 ：249/:334 双守卫（offset+entsize>len→Err / phdr_end>len→Err）数学上挡死 len-3 达 :264 的路径（Err 会被 ：363 `continue` 吞）——静态不可能式与 §续-280 α 形同Genre。
+
+**统一理论 v2（升格为主假设）**：腐坏不在 RAM 内容，在**翻译/视图层**——CPU 的取指/数据视图瞬态与 RAM 不一致（α 形=VM U 态取指、z1=S 态 boot 解析读、β 形=walk 读到的瞬态父项值可能同为视图错位而非槽内容真变）；halt/panic 时 RAM 恒净（z1 的全净 + hd4 的 text 全净同源）。候选机制=QEMU 软 TLB 陈旧平移（PTE 变更后无 sfence 被感知——`write_pte_dm` 的 VmDm 无 flush gap 注释自证 present→X 在缝内；-smp 1 下跨进程 satp 切换会 flush，缝=同 quantum 内的 present→present 变更与 S 态自视）。**与 (A) 全部观测自洽**：QEMU 插件/探针拖慢改变交错=扰动；gdb 断点重写代码=强制 TB 失效=扰动；halt/快照只见净 RAM=视图瞬态性。
+
+**下一手（§续-288 靶，按证据价值排序）**：①审 riscv 全部 present→X/P→P PTE 变更路径的 flush 账（fork CoW 降写走 VmDm=? 是头号嫌疑——对照 C 的 kernel-mediated pt 更新+sfence 语义）；②QEMU 版本变体矩阵（软 TLB 行为差=条件 2 侧解锁候选）；③z1 复现率统计（1/4 首现，扩样）；④若 ①坐实 VmDm CoW 缝 → 修法=CoW 降写改走内核腿（C 对位）+针对 P→P 变更的 flush——成修验收照 §7。
