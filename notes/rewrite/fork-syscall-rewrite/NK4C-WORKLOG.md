@@ -11826,6 +11826,10 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 验证：minix-rt `cargo test -q -p minix-rt` 全绿；check-layout all PASS（本笔诊断宽度改动不影响镜像面）。(A) 仍 open；下一步续-279=D2 二选一判别 → 套件全绿路 + D1 口径决策 + compat 真语义层（stresep/strerror）。
 
+### D2 静态审计追加两条事实（279 起点，本处登记）
+- **big 释放路径存在且形似正确**（alloc.rs free 臂：命中 big_blocks 记录→`supplier.release_pages(page, page_count)`→槽置 None）——“回收泄漏”候选收窄为：Rust 侧正常 Drop 下只剩“panic 前未来得及 free”或 supplier 自身记账两种形态；279 先补 big-free 计数探针（alloc/free 对称打点）再定。
+- **时间相关性新线索**：OOM 首次出现在 **imgrd 8MiB→16MiB 之后的首次全量 boot（gh140）**——mfs 把 imgrd 嵌为只读种子层（build.rs include_bytes），若 mfs/VM 对更大根盘有 per-block 元数据或缓冲随容量放大，182 条 big 现役记录的归因要重查（279 第一步：OOM-RT 行加 proc 号坐实“谁” OOM，再按进程静态对账）；单案时代 gh135-139（16MiB 未变前也 boot 过带套件镜像）未暴同型 OOM 的支持面有限，不下结论。
+
 
 
 
