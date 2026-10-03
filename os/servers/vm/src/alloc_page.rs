@@ -128,6 +128,14 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
     // SAFETY: `virt` is a page-aligned Direct Map VA of a freshly allocated,
     // exclusively owned physical page; no aliasing reference exists.
     unsafe {
+            // 续-311 [ARCH: riscv-vmddm]：零填走内核代零钩子（KDM 写 4096 零
+        // +sfence），绕开平移层对 DM 窗 VA 写的时序性误导；未注册态回落
+        // 直填。
+        #[cfg(all(target_arch = "riscv64", not(test)))]
+        if minix_arch::riscv64::paging::vmdm::zero_page(phys.as_u64()).is_none() {
+            core::ptr::write_bytes(virt.0 as *mut u8, 0, CLICK_SIZE);
+        }
+        #[cfg(not(all(target_arch = "riscv64", not(test))))]
         core::ptr::write_bytes(virt.0 as *mut u8, 0, CLICK_SIZE);
     }
     Ok((minix_types::PhysBytes(phys.as_u64()), virt))

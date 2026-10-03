@@ -2578,6 +2578,58 @@ fn dispatch_vmctl(
         // C: arch_do_vmctl.c:48-50 → setcr3(p, SVMCTL_PTROOT, SVMCTL_PTROOT_V)
         // (see vmctl_set_addr_space for the full 5-step C mapping and
         // the vm_running C-bug correction note)
+        // 续-311 内核代读旁路（[ARCH: riscv-vmddm]）：KDM 直读 m1p1 处
+        // u64 回填 m1p1。仅 riscv64 生产形态使用（VM 的 VmDm 读钩子）。
+        // 续-311 内核代写/零填旁路（[ARCH: riscv-vmddm] 同族）：KDM 直写
+        // m1p1 处 u64（值=m1p2）/整页零填。仅 riscv64 生产形态使用。
+        VmCtlParam::PteWrite => {
+            #[cfg(all(target_arch = "riscv64", not(test)))]
+            {
+                const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
+                let val = unsafe { msg.m_u.m_m1.m1p2 } as u64;
+                unsafe { ((KDM + pa) as *mut u64).write_volatile(val) };
+                unsafe { core::arch::asm!("sfence.vma zero, zero") };
+                KcallResult::Ok(0)
+            }
+            #[cfg(not(all(target_arch = "riscv64", not(test))))]
+            {
+                let _ = msg;
+                KcallResult::Ok(38) // ENOSYS
+            }
+        }
+        VmCtlParam::PteZero => {
+            #[cfg(all(target_arch = "riscv64", not(test)))]
+            {
+                const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
+                for i in 0..512u64 {
+                    unsafe { ((KDM + pa + i * 8) as *mut u64).write_volatile(0) };
+                }
+                unsafe { core::arch::asm!("sfence.vma zero, zero") };
+                KcallResult::Ok(0)
+            }
+            #[cfg(not(all(target_arch = "riscv64", not(test))))]
+            {
+                let _ = msg;
+                KcallResult::Ok(38) // ENOSYS
+            }
+        }
+        VmCtlParam::PteRead => {
+            #[cfg(all(target_arch = "riscv64", not(test)))]
+            {
+                const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                let pa = unsafe { msg.m_u.m_m1.m1p1 } as u64;
+                let v = unsafe { ((KDM + pa) as *const u64).read_volatile() };
+                unsafe { msg.m_u.m_m1.m1p1 = v; };
+                KcallResult::Ok(0)
+            }
+            #[cfg(not(all(target_arch = "riscv64", not(test))))]
+            {
+                let _ = msg;
+                KcallResult::Ok(ENOSYS)
+            }
+        }
         VmCtlParam::SetAddrSpace => {
             let r = vmctl_set_addr_space(proc_table, target_nr, value_raw, msg);
             nk4a_flags_mark("setaddr", proc_table, target_nr);
