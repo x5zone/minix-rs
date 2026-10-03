@@ -121,11 +121,14 @@ bash os/kernel-image/check-layout.sh all                                        
 ## 七、可复用资产（直接点火，别重造）
 
 **riscv 取证（承自前作，全部有效）**：
-- `tmp/nk4a/riscv_fingerprint.sh <tag> <port>`：零扰动同-build 裸启动现场捕获（~4-6s 到崩）；
-  定 (A) 非确定/形态分布的首选。
+- `os/qemu-tests/test-riscv64-boot-full.sh`：**首选现场工具**——它自行从当前 release 二进制重生成
+  table.bin+模块 packing，2026-10-03 实测已把新基线指纹拿在手里（崩点仍在 `pagefault in VM`，
+  sepc=0x14060 同族，共享码变更后首读；详见 WORKLOG §续-279m-close）。
+- `tmp/nk4a/riscv_fingerprint.sh <tag> <port>`：**已陈旧——本轮实测坐实**它顺序 packing 不重生
+  table.bin，模块尺寸漂移后表/实错位（报 `pfs not valid ELF`，非 (A) 新线索）。用前须先把它的
+  packing 换成 boot-full 同源再生逻辑，或直接改用 boot-full 门。
 - `tmp/nk4a/watch_store_plugin.c/.so` + `riscv_plugin_run.sh <tag>`：已修好可编；注意观测者效应。
 - `tmp/nk4a/riscv_gdb_*.sh` / `riscv_watch_*.sh` 族：gdb 断点/watchpoint 载体。
-- `os/qemu-tests/test-riscv64-boot-full.sh`：riscv 启动门（解锁前会崩在 (A)，用它锚定崩点是否迁移）。
 
 **aarch64 战役新增（§续-276..279m）**：
 - `tools/build-atf-test.sh <test.c> [arch]`：单案交叉编链（riscv64/aarch64/x86_64 三路，双 arch 零警告）；
@@ -145,9 +148,9 @@ bash os/kernel-image/check-layout.sh all                                        
 
 ## 八、本会话（riscv 优先）的建议作战序
 
-1. **先跑 `riscv_fingerprint.sh` 复基准**：确认 (A) 崩点/形态分布与 279 战役前是否一致
-   （brk 模型重写+split memtype 修复都是三架构共享码，**崩点可能已迁移**——迁移本身就是新线索，
-   对照 §三「已排除候选」重做一轮静态归因）。
+1. **先复基准（已替你做了一步）**：2026-10-03 用 boot-full 门在新共享码上拿到首读——崩点仍在
+   `pagefault in VM`（sepc=0x14060 同族，证据存 `tmp/nk4a/` 与 /tmp/rvboot_279m.log 同源串），
+   崩点未因 279m 迁移；你接手后先跑 `test-riscv64-boot-full.sh` 确认可重现，再比形态分布。
 2. **争取解锁条件 1/2**：按 §三 a2d 登记落地 riscv-gated U-safe 瞬间探针（读 l2e 且 paddr 越 RAM
    时抓 walked_root/level/idx/raw，first-N 封顶）；同轮试验非插桩确定复现（同镜像重跑 N 次比对
    指纹逐字节性——§续-279m 已有 aarch64 瞬态对照法可抄）。
