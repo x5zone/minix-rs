@@ -17,6 +17,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>   /* sysconf/_SC_PAGESIZE（sysconf 定义在本文件尾部） */
+#include "errno-compat.h"   /* 定义端也看 stresep/sysconf 原型：防跨 TU 签名
+                              * 漂移无编译器检查（CodeReview 续-279h P2；现在
+                              * flags 未开 -Wmissing-prototypes，原型可见性是
+                              * 为将来加强告警面预留） */
 
 #ifndef _UIO_VEC_
 struct iovec { void *iov_base; size_t iov_len; };
