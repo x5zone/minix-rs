@@ -2581,6 +2581,16 @@ fn dispatch_vmctl(
         VmCtlParam::SetAddrSpace => {
             let r = vmctl_set_addr_space(proc_table, target_nr, value_raw, msg);
             nk4a_flags_mark("setaddr", proc_table, target_nr);
+            // 续-306 krewalk 配套（用后即滚）：setaddr 落的 root 值——与
+            // fill-root 探针的 ptroot 对账，定案「根错配（in-code）」vs
+            // 「视图分歧（平移层）」。
+            #[cfg(all(target_arch = "riscv64", not(test)))]
+            {
+                use minix_plat::{CurrentEarlyConsole as SaConsole, EarlyConsole as _};
+                SaConsole::write_str("nk4a: setaddr-root=");
+                SaConsole::write_hex(value_raw as u64);
+                SaConsole::write_str("\n");
+            }
             r
         }
 

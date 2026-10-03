@@ -12297,3 +12297,9 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 ## §续-305-b（§续-305 保留点：根错配对比跨生命周期点，定案需 exec 时 setaddr 的 root 值——探针补一行即可）
 
 诚实保留：§续-305 的「根错配」对比 = sas-fork 的 fork 时 root(0x9dc37000) vs fill-root 的 post-exec ptroot(0x9d6e9000)——**两者合法可不同**（exec 重建地址空间=新根是新根）。C 对位：exec 时 VM 建新根并 setaddr 绑定 kernel，此后 ptroot 应=kernel 绑定值。**决定性判据 = exec 时 setaddr 传的 root 值 vs ptroot**：相等 ⇒ child 链健全但 VM 的 VmDm 读仍见 poison=视图分歧实锤（QEMU 层）；不等 ⇒ VM setaddr 传错根/handle 双轨=纯 in-code bug。而现有 setaddr 探针（syscall.rs setaddr 腿）只打 nr/flags 不打 root——**补一行 root 打印即定案**（§续-306 首步，先于一切修复动作）。另：fill 的 pte_pa(0x9c93e000) 与 krewalk 实测真实叶槽(0x9c93cff0)差 0x2000 的疑点也在此轮一并核（pte_pa 语义=叶槽还是别者，读 fill-root 探针源定义）。
+
+## §续-306（2026-10-04·setaddr-root 探针落地：12 值全部 0xffffffff8/9xxxxxxx 形=root 经 i32 符号扩展；与 ptroot 同帧（掩码后）一致性待 vmctl_set_addr_space 用法核对——§续-307 第一查）
+
+**新探针读数**（z20-z22，3/3 不崩=方差，判据采样继续）：12 条 setaddr-root 全部 `0xffffffff8xxxxxxx/0xffffffff9d6e9000` 形——root=0x9d6e9000（bit31=1）经 **i32 符号扩展**进内核（消息字段 i32）。0x800c exec 的 setaddr-root=0xffffffff9d6e9000 = fill-root ptroot 0x9d6e9000 **同帧（若内核掩码则无ancing害）**。另：y1 的 fill-root pte_pa=0x9c93d000 逐跑可变 ⇒ **pte_pa 语义=被填数据帧 PA 非叶槽地址**（§续-298-b 的 leaf_now 读数语义作废——读的是数据页首 u64，0 合法）。
+
+**§续-307 第一查**：`vmctl_set_addr_space(proc_table, target_nr, value_raw: i32, msg)` 对 value_raw 的用法——若 `as u64` 直用（不带 44 位 PPN 掩码）⇒ satp 绑了 0xffffffff9d6e9000 的垃圾 PPN=**child 在垃圾根上运行**=refault/poison/崩的本体（in-code bug 实锤，修=i32→u64 的 PA 重组）；若掩码后同帧 ⇒ 根一致，回到视图分歧分支。次查：pte_pa 语义核实（读 fill-root 探针源）+sign-extension 的其它 i32 root 消息字段扫描。
