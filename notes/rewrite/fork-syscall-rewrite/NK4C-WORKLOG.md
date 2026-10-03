@@ -12241,3 +12241,11 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **(A) 新定性（第三版，证据最全）**：fill-root 向叶槽写入映射 → 该帧被回收/复用+零填（帧生命周期 bug：仍在被引用时被 free）→ child 映射消失 → refault 循环（§续-265「已映射叶不粘/重复缺页」的机制本体）→ walk 穿过复用帧读到垃圾=瞬态 poison（=复用后新主的残留内容，解释「指纹确定」=复用内容确定）。全观测自洽：RAM-halt 恒净（复用后新主内容即 halt 现状）、§续-233 reuse-DATA 平反、§续-217 /etc/rc 串入表链、refault 循环、instrumentation 必灭（改 walk_read=改 free/fill 时序）。此前的「视图错位（QEMU 层）」假设**撤回**——krewalk v1/v2 是同义反复误读，本笔纠正。
 
 **§续-300 靶（真写者审计）**：①谁回收了 0x9c93e000——沿 free 路径（free_child_tables/exit 拆子/reclaim_pages）审计「fill 后仍在引用的帧」被 free 的条件；②fill-root 的帧从哪来（alloc 时序：fill 用的帧是否本就该 pin）；③对照 C：minix3 fill 后的页表帧 pin 语义（pagetable.c 表帧永不回池？）——**若 C 侧表帧有 pin 而我方 free 路径漏了引用计数，修法=补 refcount/pin，成修后走 §7 验收解锁 riscv 三目标**。
+
+## §续-300（2026-10-04·free 路径审计：free_pfn 全点有 IN_CACHE 守卫，但逐出守卫有结构性漏洞——残留缓存条目+refcount==1 误判=leaf_now=0 的机制；§续-301 靶=插入侧双键/漏清 IN_CACHE 腿）
+
+**审计结果**：①VM PhysAlloc=segment tree（非侵入式 freelist，「freelist 节点偏移」模型证伪）；②free_pfn 全调用点清单=exit.rs:163 ✓IN_CACHE 守卫、region/mod.rs:55（经 unmap_page pending ✓:258-262 有 `refcount==0 && !IN_CACHE` 守卫）、cow_exec_pf.rs:461 ✓（同 unmap_page pending）、dma.rs:135 ✓（独立 DMA 簿记池）、page_state.rs:41/:49 ✓（contig 回滚）、page_cache.rs:306 ✓（rmcache 自身）；③**逐出守卫结构性漏洞**：page_cache.rs free_pages(:391-396) 选 victim 条件=`frames.get(e.pfn).refcount()==1`——该判据无法区分「缓存独持 ref（合法逐出）」与「**该 pfn 已被重分配为新主（表帧），新主子的单 ref**」。一旦存在**残留缓存条目**（同 pfn 双键插入，或某条腿清 IN_CACHE 失败），逐出即连零填带释放**在用表帧**=krewalk v3 的 `leaf_now=0x0`（fill-root 刚写的叶槽被逐出零填）。
+
+**候选门（§续-301 逐条审）**：①插入侧同 pfn 双键（同帧两个 (dev,off) 键——mem_file/共享/mmap 腿把一帧插两键）；②某 ev_unreference 腿清 ref 却不清 IN_CACHE（或反之）；③fill/insert 的 IN_CACHE 置位与 refcount 增量不原子于同一分支。**修法方向（坐实后）**：逐出守卫改 `is_cached()`/IN_CACHE 所有权判别（不认裸 refcount==1），或 unmap/释放按 pfn 杀全部同 pfn 条目——成修即 (A) 的 §7 验收（b 批 α/β 指纹 6/6+0x10bc900b3c 高复现=完美的 ≥3 轮复现靶；marker+双 marker+host 全绿随后）。
+
+**方法论**：本笔把 krewalk v3 的「leaf_now=0」从现象推进到机制候选（逐出守卫误判），全靠沿 free_pfn 全点清单逐点核 IN_CACHE 守卫——**审计武器=「全调用点清单+逐点守卫核对」**（续-288 flush 账同法）。
