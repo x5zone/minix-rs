@@ -127,7 +127,7 @@ fi
 EXPECTED=$(grep -c ' ' "$PLAN")
 verdict=""
 stall_count=0
-n_pass_last=-1
+n_total_last=-1
 for _ in $(seq 1 "$TIMEOUT_BOOT"); do
     if [ -f "$SERIAL_LOG" ]; then
         if grep -qa 'kernel panic\|PANIC' "$SERIAL_LOG" 2>/dev/null; then
@@ -141,14 +141,16 @@ for _ in $(seq 1 "$TIMEOUT_BOOT"); do
             if [ "$n_fail" -gt 0 ]; then verdict="FAILED"; else verdict="PASSED"; fi
             break
         fi
-        if [ "$n_pass" -gt 0 ] || [ "$n_fail" -gt 0 ]; then
-            if [ "$n_pass_last" -eq "$n_pass" ]; then
+        if [ "$total" -gt 0 ]; then
+            # 进度信号用终集计数（CodeReview 续-278：旧版只盯 n_pass，连续
+            # 失败推进会被误判停滞）；与注释"无新结果行"语义一致。
+            if [ "$n_total_last" -eq "$total" ]; then
                 stall_count=$((stall_count + 1))
                 if [ "$stall_count" -ge 120 ]; then verdict="STALLED"; break; fi
             else
                 stall_count=0
             fi
-            n_pass_last=$n_pass
+            n_total_last=$total
         fi
     fi
     sleep 1

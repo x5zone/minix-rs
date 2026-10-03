@@ -364,6 +364,8 @@ pub fn plan(
     }
     let atf_refs: Vec<(&str, &str)> =
         atf_tests.iter().map(|(n, p)| (*n, p.as_str())).collect();
+    // 根盘容量随套件存在性放大（无套件架构逐字节同旧，CodeReview 续-278）。
+    let imgrd_blocks = if atf_tests.is_empty() { IMGRD_BLOCKS } else { IMGRD_BLOCKS_SUITE };
     actions.push(Action::Write {
         path: proto_path.clone(),
         bytes: generate_etc_proto(
@@ -376,6 +378,7 @@ pub fn plan(
             ],
             &atf_refs,
             rc_host,
+            imgrd_blocks,
         )?,
         note: "imgrd 原型文件（/etc 最小集 + /bin/{sh,echo,ls,cat} + /tests + /dev/console）",
     });
@@ -388,7 +391,7 @@ pub fn plan(
             .into_owned(),
         args: vec![
             imgrd.to_string_lossy().into_owned(),
-            IMGRD_BLOCKS.to_string(), // 块数：×4KiB = imgrd 根盘容量（见常量注）
+            imgrd_blocks.to_string(), // 块数：×4KiB，随套件存在性选值（见常量注）
             "0".into(),    // inode 数 0 = mkfs 缺省阶梯（mkfs.rs proto_header 文档）
             "4096".into(), // 块大小
             "-p".into(),
@@ -601,11 +604,13 @@ pub fn inject_rc_execs(rc_text: &str, exec_lines: &[String]) -> String {
     out
 }
 
-/// imgrd 根盘块数（× 4KiB）：续-278 首批 ATF 套件 18 个静态 ELF（每个 ~410KB
-/// 含 libc+libatf-c）+ /bin + /etc 超 8MiB，扩至 16MiB；ESP 128MiB 容得下
-/// （mfs 嵌 imgrd 后单模块 ~16.9MiB，bootface 源直拷 bump 分配无固定上限）。
-/// proto 头部与 mkfs 参数共用本常量（单点，不再两处手写 2048）。
-pub const IMGRD_BLOCKS: u32 = 4096;
+/// imgrd 根盘块数（× 4KiB）：无套件时保持旧值 2048（=8MiB，x86/riscv 装配
+/// 产物逐字节同旧，CodeReview 续-278 建议：不给未验证架构扩足迹）；首批 ATF
+/// 套件 18 个静态 ELF（每个 ~410KB 含 libc+libatf-c）超旧预算时由调用方按
+/// 套件存在性传 4096（=16MiB；ESP 128MiB 容得下，bootface 源直拷 bump 分配
+/// 无固定上限）。proto 头部与 mkfs 参数共用同一值（单点，不再两处手写）。
+pub const IMGRD_BLOCKS: u32 = 2048;
+pub const IMGRD_BLOCKS_SUITE: u32 = 4096;
 
 /// 生成 /etc 最小集的 mkfs 原型文本。
 ///
@@ -622,12 +627,15 @@ pub const IMGRD_BLOCKS: u32 = 4096;
 /// 可执行面；交叉 ELF 由 `tools/build-atf-test.sh` 产出，不在 cargo 装配链
 /// 内，故只在宿主文件存在时传入）。空表时产物逐字节同旧，不影响既有
 /// 三架构装机面。`rc_host`（续-278）Some 时 rc 条目改指该宿主路径（装配方
-/// 已把套件 exec 行注入的变体文件）；None 仍指 `etc/rc`。
+/// 已把套件 exec 行注入的变体文件）；None 仍指 `etc/rc`。`blocks` 是根盘块数
+///（调用方按套件存在性选 IMGRD_BLOCKS / IMGRD_BLOCKS_SUITE，proto 头与 mkfs
+/// 参数同源单点）。
 pub fn generate_etc_proto(
     etc_dir: &Path,
     bin_entries: &[(&str, &str)],
     atf_tests: &[(&str, &str)],
     rc_host: Option<&str>,
+    blocks: u32,
 ) -> Result<Vec<u8>> {
     // 存在性在此验证；内容由 mkfs_mfs 的 StdHost 播种时从宿主读取。
     for required in ["rc", "ttys"] {
@@ -648,7 +656,7 @@ pub fn generate_etc_proto(
          d--755 0 0\n\
          etc d--755 0 0\n\
          ",
-        IMGRD_BLOCKS
+        blocks
     ));
     proto.push_str(&format!("rc ---755 0 0 {}\n", rc_host.unwrap_or("etc/rc")));
     proto.push_str(
@@ -1038,6 +1046,7 @@ mod tests {
                 &[("sh", "target/sh"), ("echo", "target/echo")],
                 &[],
                 None,
+                super::IMGRD_BLOCKS,
             )
             .unwrap(),
         )
@@ -1050,7 +1059,7 @@ mod tests {
         );
         assert_eq!(
             lines.next().unwrap(),
-            &format!("{} 0", super::IMGRD_BLOCKS),
+            "2048 0",
             "第二行 = 块数 inode数（0 = 缺省阶梯）"
         );
         assert_eq!(
@@ -1096,6 +1105,7 @@ mod tests {
                 &[("sh", "target/sh")],
                 &[("t_memchr", "target/atf/aarch64/tests/t_memchr")],
                 None,
+                super::IMGRD_BLOCKS_SUITE,
             )
             .unwrap(),
         )
@@ -1119,7 +1129,14 @@ mod tests {
         let (layout, guard) = tempdir::create();
         std::fs::remove_file(guard.0.join("etc/rc")).unwrap();
         assert!(
-            generate_etc_proto(&layout.os_root.join("etc"), &[("sh", "target/sh")], &[], None).is_err()
+            generate_etc_proto(
+                &layout.os_root.join("etc"),
+                &[("sh", "target/sh")],
+                &[],
+                None,
+                super::IMGRD_BLOCKS,
+            )
+            .is_err()
         );
     }
 
@@ -1165,6 +1182,7 @@ mod tests {
                 &[("sh", "target/sh")],
                 &[],
                 Some("target/image/aarch64/rc.imgrd"),
+                super::IMGRD_BLOCKS,
             )
             .unwrap(),
         )
