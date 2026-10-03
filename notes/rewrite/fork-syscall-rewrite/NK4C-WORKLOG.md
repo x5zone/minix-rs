@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-279k（2026-10-03·D3 根因链完整调查，代码回滚到 279i 基线）**：三次修复尝试（handle_brk 惰性 derive／defsym __stack_size=0／sbrk→VM_BRK 抢定义）各自坐实一面墙后**全部回滚未提交**：墙一=普通 exec 链无人 set vm_region_top（C 靠 RS VM_MMAP_DATA；derive 修污染 boot 已验死），墙二=picolibc.ld .stack NOLOAD 塑进末段使 break 起点越 region 尾，墙三=sbrk 失败被 nano-malloc 16B 重试环夹收（brk×1074，比原崩更糟）。正修设计（exec 腿 set_region_top + 同批 sbrk 腿 + defsym 验证）与 D3b（子异退未唤醒父 waitpid，ESRCH 车道挂父）全部写入 §续-279k——**下次直接按其开工**。当前代码态：真机 gh151 复验 9 passed+1 failed（memcpy D1）+boot 健康+双 arch 18/18+host 1403/0。前轮：279f-h compat 真语义+P0 声明配套+D3 定性；279c-e D2 修复；278 套件化；277 上机 pipeline。
+> **🛑 最新前沿＝§续-279m（2026-10-03·D3a 堆增长腿正修落地：套件 9→29 passed，新发现并修实 split 丢 memtype 的生产级 P0）**：三处真源定谳推翻 §续-279k/l 的候选面——①C 的 `vm_region_top` 只是槽位 hint（region.c:391，只在 find_slot_range 新槽路写），**不是 break 值**；真 break 在 libc（brksize.S `_brksize=_end`）；VM 侧 brk 只有 extend 没有 shrink（break.c 全文无缩减腿，region.c:1016 低地址 no-op OK）。②普通 exec 链在 C 里**没有** HEAP_PREALLOC 腿（那是 service 启动专属，rs/request.c:779 经表驱动 minix-service 配置）——旧“墙一 C 靠 RS VM_MMAP_DATA”登记失实（全树 grep VM_MMAP_DATA 零命中）。③真机定谳我方挂点=**libsemihost 假 sbrk**（纯用户态推进自己 .data 里 brk 变量永不下陷，堆“成功”长进未映射页）+ **VirRegion::split 丢 def_memtype**（C split_region 两半 region_new 都带 vr->def_memtype，region.c:1174-1182；丢了它 PF 永死 NoMemType→SIGSEGV）。落地：brk.rs 重写为 map_region_extend_upto_v 直译（绝对断点+ AVL_LESS `<=` 前驱+resize/create 双臂）；mmap/map_phys/remap/boot 四腿补 hint 同步（C :391 parity）；posix-stubs.c 抢定义真 sbrk（VM_BRK SendRec，同 sysconf 抢占机制）；split 继承 memtype+防御门+2 host 回归测试。真机 gh159：**29 passed+5 failed（memcpy D1×1+strerror 族×4 均已知台账）+0 panic**，memset 族 7 案全过；x86 smoke PASS（boot 腿 hint 改动对 x86 零回归）、aarch64 bootmarks rc=0、VM host 535/0、双 arch 18/18 零警告。临时探针：brk 扩腿+pf-region 形状两处暂留（D3b 结案滚除）；内核 route 探针已定谳已删。下一步按优先级：strerror sys_nerr 校准→D3b（子异退唤醒父 waitpid）→D1 口径；本节点后用户已安排新 agent 攻关 (A) riscv，交接 prompt 另文件。
+>
+> **（上一前沿＝§续-279k/l·已被 279m 推翻修正，保留供溯源）**：279k 三面墙登记中：墙一“C 靠 RS VM_MMAP_DATA”失实（全树零命中，真机定谳真凶=semihost 假 sbrk+split 丢 memtype）；墙三“IPC 腿先于旧路径拆除”教训维持有效（本轮 VM 侧先行修复后才拆 bump 换 sbrk 腿）；279l 的 HEAP_PREALLOC 补腿方案未采纳（C 普通 exec 链本无此腿，补了反而背离 ground truth）。
 >
 > **（上一前沿＝§续-279d/279e）**：2048 池 x86 回归修复（target_arch 分档，真机二分坐实）+评审 P1 诚实性降级（riscv 未验证、机制未坐实标注）+x86 限点查证（bootface 假说被反证，候选收 kdst/demand-fill 预算族）+提取器 sample 修复；xtask 17/17。
 >
@@ -11903,6 +11905,56 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 > ——**本段三条断言已被 §续-279f 评审 P1-1 + gh144 复现证伪，以本注为准（保留原文供溯源）：**①“gh142 同 case 全过”不成立：旧链 sysconf=libsemihost 强定义只认 _SC_CLK_TCK，_SC_PAGESIZE=8 命不中返 -1 → t_memset 在 ATF_TP_ADD_TCS 的 `ATF_REQUIRE(page>=0)` 即终止，**memset 家族在 gh142 根本无结果行**（当时把邻位 passed 误归因给 memset）；②“随机漂移”不成立：gh143/gh144 两次同位停在 memset body（array 后）=**确定性挂**；③“与本轮改动无关”不成立：sysconf 修复首次让 memset body 真跑 malloc(4KiB)+fill+memset 大块写 → 停滞点正在新放开路径。**D3 重定性：C 测试堆页（bump .bss 1MB）逐页 demand-fill 写路径上存在确定性挂（候选 VM fill-root/anon 页供给腿，暴露型缺陷=测试工具正常工作才现形，不回退 sysconf）**。279g 二分：单案只喂 memset_nonzero N 轮计挂率 + 跳过挂案排其余案验后续族。
 >
 > 套件基线读数修正：目标③硬判据达成面 = gh142 的 **20 passed/6 failed（含 stresep/sysconf 修复前态）**；修复后理论上限再 +2（strlen_huge、stresep_basic）；D3 不除则门不稳定，D3 优先级提到 D1 口径之前。
+
+## §续-279m（2026-10-03·D3a 堆增长腿正修：真源三连推翻旧候选面，套件 9→29 passed，顺手修实 split 丢 memtype 生产级 P0）
+
+### 背景与真源阅读（本轮起点＝§续-279l 地图，但地图本身被证伪）
+
+按 279l 计划先纯阅读摸“子创建链”：C 真源 RS request.c:769-790 的 `vm_memctl(VM_RS_MEM_HEAP_PREALLOC)` 只出现在 **service 启动**流（`rs_start.rss_heap_prealloc_bytes` 源自 minix-service 表配置，全树 grep 零其他调用者）；普通 exec 链的堆根本不在 VM 侧建——继续精读：
+
+1. **brk 语义链（逐行定谳）**：libc `brksize.S` `_brksize: .long _end`（链接期起点）→ `sys/sbrk.c`/`sys/brk.c` 用户态持 break、变化才发 `VM_BRK(绝对地址)` → VM `do_brk`→`real_brk`→`map_region_extend_upto_v`（region.c:1002-1060）：roundup 页→`region_search(AVL_LESS)` 取 **vaddr<=v 的最大 region（不要求包含）**→已覆盖则 OK（:1016，**这就是 C 的全部缩减语义：不缩**）→ nextvr 拒绝跨入邻区（:1032）→ `!ev_resize` 走新 ANON region（:1038，extralen 跨 gap）；resize 腿 realloc physblocks+ev_resize（:1047-1057）。`vm_region_top` 只在 `region_find_slot_range`（:391）新槽位时写——**纯槽位放置 hint，与 break 无关**（旧模型把它当 break 用=结构性偏离，gh149 derive 污染 boot/gh150 brk 全拒都源于此）。
+2. **全树 grep `VM_MMAP_DATA` 零命中** → §续-279k 墙一的“C 靠 RS VM_MMAP_DATA 腿”登记**失实**，279l 的“补 HEAP_PREALLOC 腿”方案直接背离 ground truth，未采纳。
+3. memtype 表逐文件核 `ev_resize` 有无：anon/contig/cache 有，directphys/shared/mappedfile 无（旧注释一度把 contig 写成无——自查纠正，supports_resize 划分以表为准）。
+
+### 真机逐环定谳（取证链完整保留）
+
+- **gh152/153 对比坐实瞬态性**：gh152 boot 早期死在 `init_proc: slot already in use`——同镜像重跑 gh153 即 9 passed+boot 正常（镜像未重装，仅 boot 次数差异）；定性=装配/首 boot 窗口瞬态，登记不追（若再现再立案）。
+- **brk 失联之谜（三轮探针）**：VM 侧探针零命中→内核 route 探针也零命中（已定谳后删）→ objdump 链面揭示真相：malloc→`__malloc_sbrk_aligned`→**`sbrk`（标准 POSIX 名）**，命中的是 **libsemihost 假 sbrk**：纯用户态推进自己 .data 里的 `brk` 变量（`adrp x3,40400000; ldr x0,[x3,#88]; add; str` 无 svc），**永不下陷**；我方 `_sbrk` 根本不在链路上（旧 bump 堆能活 = 同机制假象：堆预映射在 .bss 里）。修法沿用 sysconf 同络：posix-stubs.c 抢定义 `sbrk`（命令行目标文件先于归档），真发 VM_BRK SendRec；同步删 sys-bridge.c 死 `_sbrk`（nm 实测零引用，死代码消除）。
+- **抢定义后新锚点**：gh157 首次看到真 brk IPC 抵达 VM（memset_array/return 过了）；但 memset_nonzero 仍死：`vm-pf err NoMemType fa=0x40402000`；pf-region 探针直接拉到主角形状：`va=0x40401000 len=0x2000 mt=<none> nslot=2`——**无 memtype 的 region**！溯源：exec 对 heap 段两次 mmap（先 0x2000 后 FIXED 叠 0x1000）→ `unmap_range` 头切走 `split` → **`VirRegion::split` 用 `VirRegion::new` 造两半丢了 def_memtype**（C split_region 两半都 `region_new(..., vr->def_memtype)`，region.c:1174-1182）。这是先于 D3a 存在的**生产级 P0**（任何 PF 落进 split 残段必死 SIGSEGV），非测试专属。
+
+### 落地代码（本 commit）
+
+1. **os/servers/vm/src/brk.rs 重写**：`handle_brk`/`extend_upto_v` 为 C 直译（绝对断点、AVL_LESS `<=` 前驱 helper `avl_less(_mut)` 单点、covered no-op-OK、nextvr 拒绝、resize/create 双臂由 `MemType::supports_resize()` 分支——新谓词把 C NULL-字段分支保留为可观察面而不复活死回调）；删破坏性的 `shrink_heap` 全臂（含 free_region_pages 调用路）；9 个 host 测试重写（含 covered-noop/far-neighbor/interleaved 三形状，第一轮测试形状两次放错均被真源推演纠正并留注释）。
+2. **region/vir_region.rs**：`split` 两半继承 `def_memtype`（P0 修复）+母区无 memtype 拒绝拆（防御门，C 无此形）+夹具同步+2 新测试。
+3. **memtype.rs**：新 `supports_resize()`（默认 true；directphys/shared/mappedfile=false，以 C 表为准）。
+4. **mmap.rs/map_phys.rs/ipc/dispatcher.rs（remap）/vm_server.rs（boot 段+boot 栈）**：插入腿补 `set_region_top`（C :391 hint parity，注释明确“hint 非 break”新语义）；rs.rs：`data_region_end` 提取复用+HEAP_PREALLOC 改 C 形（region_search 语义而非 region_top）+两处陈旧注释修正（step3/step5 已实现）。
+5. **tools/atf-c-compat**：posix-stubs.c 抢定义 `sbrk`（VM_BRK 绝对断点，起点 `_end`）；sys-bridge.c 删死 `_sbrk`/bump 块换位置说明注释。
+6. **临时探针（D3b 结案滚除）**：VM `nk4c: brk`（扩腿请求+前驱形状，封顶 160）、`nk4c: pf-region`（PF 失败时的故障区形状，封顶 6）；内核 route 探针已删（定谳即滚）。
+7. 顺手项：x86 smoke 脚本头部陈旧“FAILS at 3/4”声明更新为 §续-275 实况（用户提醒）；dispatcher remap 腿补 hint（C mmap.c:418-421 parity）。
+
+### 读数与诚实边界
+
+- 真机 gh159：**29 passed + 5 failed + 0 panic**（基线 gh151=9P+1F）；5 failed 全部已知：memcpy_basic（D1 NetBSD random 口径）+strerror 族×4（sys_nerr=134 校准未做，在台账）；剩余 2 案无结果行（套件尾部，D3b/慢案窗口待辨）。正式门因 5 failed 判 FAIL rc=1——**这是门的正确行为**（真语义 fail 不被掩盖），全绿需 strerror 校准+D1 口径决策。
+- brk 探针预算 160 会被大量真实扩腿请求消耗（nano-malloc 按页碎步 sbrk）；D3b 取证时如需更细视角再调封顶。
+- 未坐实项（不拿当修复依据）：gh152 瞬态 boot 死因；x86 2048 池精确限点（§续-279d 遗留）；riscv 从未在 2048 态 boot 过（§续-279e-note）。
+
+### 回归底线（本笔全跑）
+
+VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check-layout all PASS；x86 smoke **PASS**（真机，boot 腿 hint 零回归）；aarch64 bootmarks **rc=0**；双 arch 18/18 链面零警告（t_memchr 抽查 a64+riscv 双路 objdump 坐实 sbrk 真腿）；qemu 收尾清零；tracked 净（commit 后）。
+
+### 下一步（交接前优先级序）
+
+① strerror sys_nerr=134 校准（解锁 4 案）→ ② D3b（子异退唤醒父 sh waitpid，PM exit/event 链；§续-279k 登记未动）→ ③ 尾部 2 无结果行案的二分（慢 vs 挂）→ ④ D1 口径决策（预期失败清单 vs BSD random 移植）→ ⑤ 滚除全部套件期探针（pf-exit/pfa/oomrt/brk/pf-region/vmm-h）→ (A) riscv 攻坚由新 agent 按另文件的交接 prompt 推进（解锁三条件不变）。
+
+### §续-279m-b（CodeReview 修复轮，对 4994feddd；评审 PASSED，0 P0/0 P1/3 P2 全修）
+
+> 评审对等价性的六项核验（covered 用对齐 offset 与 C 用未对齐 v 严格等价（end_addr 恒页对齐）/create 腿 len=extralen/失败传 ENOMEM/nextvr 双臂/调用方影响面/hint 消费者）全过。三条 P2 落地于 c8eacdb91：
+> - **P2-1 sbrk 错误回执符号**：VM `reply_to_errno`（encode.rs:94）+ vm_server.rs:1724 回的是**正 errno**，旧 `(-m_type)` 会产非法负 errno；改正取，并把两种回执形（VM 路=正；C `_syscall`/lstat 路=负）钉进注释——后继接桥者必读。
+> - **P2-2 sbrk 回绕保护**：对位 C sbrk.c:20。
+> - **P2-3 None-memtype 路由**：`supports_resize` 对 `def_memtype==None` 改 `unwrap_or(false)`——None 是 C 不存在的形，resize 腿原地 extend 产的新页会同型 NoMemType 死；create 腿就地新建 ANON 可 fault 段才是防御正解。**副产品（易错模式入库）：防御门暴露了三处测试夹具在用生产不存在的无 memtype 形**（rs prepare×2、c18 邻区）——夹具同步 `with_memtype(ANON)`；登记模式：**测试夹具必须取真源存在的形，否则防御性收紧会把“夹具宽容”误读成“行为回归”**（本轮两处 FAILED 皆此因，非产品码错）。
+> 回归：VM host 535/0、host 4 包集 0 failed、check-layout all PASS、posix-stubs 双 arch 重编零警告。
+
+---
 
 ### 会话收官对账（2026-10-03 续-276→279b，累计 12 commit）
 - 三目标态：① x86✅ aarch64✅ riscv❌(A)；② x86✅ aarch64✅ riscv❌(A)；③ **构建面双 arch 各 18/18 + aarch64 上机 ≥12 案实证 passed（会话前：仅构建面 riscv 18/18、上机 0 案）**，全套 36 案被 D2 截断（机制候选已锁）。
