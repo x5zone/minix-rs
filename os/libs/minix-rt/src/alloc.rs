@@ -165,12 +165,15 @@ pub const MAX_BIG_BLOCKS: usize = GLOBAL_POOL_PAGES;
 pub const GLOBAL_POOL_BYTES: usize = 2048 * PAGE_BYTES; // NK4-C §续-279c MFS cache 预算轮
 
 /// x86_64 分档——§续-279c 容量轮的 x86 回归修复（真机 gh142 后补验）：
-/// 同轮全量 boot 在 x86 上 init runcom 回落 SingleUser（aarch64/riscv 同池健
-/// 康），x86 侧模块 exec/加载腿对大 .bss 段的预算约束与另两架构不同
-/// （aarch64/riscv 的 boot exec 已 §1.101 demand-fill，.bss 不占 eager 窗口；
-/// x86 同配置实测破窗口）。x86 暂无 ATF 套件需求（xtask 播种门控
-/// ATF_BOOT_LEG_READY=[aarch64]），1024 页即 §续-279c 前的基线值——x86 产物
-/// 逐字节回到旧态，回归零风险；aarch64/riscv 保留 2048（套件预算）。
+/// 同轮全量 boot 在 x86 上 init runcom 回落 SingleUser（aarch64 同池健康
+/// 有真机门读数），x86 侧加载腿对 .bss 4→8MiB 膨胀有独立预算约束——
+/// **具体限点未坐实**（279e 候选：bootface identity/DM 窗、copy_in_bytes
+/// 同源窗口；注意 §1.101 demand-fill 是 VM exec_bootproc 的架构无关
+/// 腿，x86 亦走此路，故非 demand-fill 差异所致，不得拿此充当根因）。
+/// x86 暂无 ATF 套件需求（xtask 播种门控 ATF_BOOT_LEG_READY=[aarch64]），
+/// 1024 页即 §续-279c 前的基线值——x86 产物逐字节回到旧态，回归零风险。
+/// riscv 走下方 2048 档但 boot 受 (A) 门控、**从未以 2048 池启动**：
+/// .bss 膨胀对 riscv 加载腿的影响未验证，(A) 解锁后需与 x86 同法回归。
 /// 原则解（demand-zero 运行时段或 VM-backed heap，三架构统一 2048+）在
 /// module docs 挂账，落地后删除本分档。
 #[cfg(target_arch = "x86_64")]

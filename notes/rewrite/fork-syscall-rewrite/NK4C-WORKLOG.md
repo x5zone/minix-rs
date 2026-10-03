@@ -11865,7 +11865,7 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 
 ## §续-279d（2026-10-03·279c 容量轮的 x86 回归修复：池分档 target_arch 化；本会话两处误判自纠）
 
-> 收尾回归补跑 x86 smoke（评审要点 5 的建议项）当场 FAIL：init runcom 回落 SingleUser、marker 永不出——**2048 池把 init/sh 等 .bss 撞破 x86 侧模块加载对大 .bss 段的预算约束**（aarch64/riscv 同池健康，§1.101 demand-fill 不碰 eager 窗口；x86 腿具体限点待 279e 挖 bootface/identity 窗，机制候选含 copy_in_bytes 同源窗口）。修复 = `GLOBAL_POOL_BYTES` 按 target_arch 分档（x86_64=1024 即 279c 前基线、产物逐字节回旧；非 x86=2048 保留套件预算）；真机二分坐实因果：同镜像流程、仅分档差异——x86 smoke **PASS**（rc=0）。未坐实 x86 限点前不拿“对称修窗”充当修复，分档注释已标原则解（demand-zero 段/VM-backed heap 统一 2048+）挂账。
+> 收尾回归补跑 x86 smoke（评审要点 5 的建议项）当场 FAIL：init runcom 回落 SingleUser、marker 永不出——**2048 池把 init/sh 等 .bss 撞破 x86 侧加载腿的某独立预算约束（具体限点未坐实；aarch64/riscv 同池下 aarch64 健康有真机读数，riscv 从未以 2048 boot 过属未验证，279d 评审后本句已相应降级）**。修复 = `GLOBAL_POOL_BYTES` 按 target_arch 分档（x86_64=1024 即 279c 前基线、产物逐字节回旧；非 x86=2048 保留套件预算）；真机二分坐实因果（现象层）：同镜像流程、仅分档差异——x86 smoke **PASS**（rc=0）。机制注意：§1.101 demand-fill 是 VM exec_bootproc 的**架构无关**腿（x86 亦走），故“x86 破窗因缺 demand-fill”的推断不成立，候选限 bootface identity/DM 窗族，未坐实前不充当根因（279e ①）。
 >
 > **自纠×2（诚实链）**：① §续-279c 的“B34 地雷不适用→x86 无需重跑 boot”论断只对了一半——B34 自分页面确实不适用（VM 无 alloc-global），但漏了**池尺寸同时是每模块 .bss 膨胀因子**，x86 加载腿对此有独立预算约束——**收官对账里“x86 smoke PASS”当时并未在 2048 状态下跑过**，属结论跑在证据前；② 门 STALLED 窗口 120s 对 strlen_huge 类多用例偏紧（gh142 harness 420s 内走到 swab=20 passed；279d 验后重跑在 strspn 处判 stall——同镜像同二进制，前后差异提示套件尾部有慢案/非确定性，登记 279e 调查项（慢 vs 挂：看尾部是否续吐行）。
 >
