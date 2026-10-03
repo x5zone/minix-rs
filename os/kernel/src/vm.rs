@@ -1246,11 +1246,6 @@ pub enum VmCtlParam {
     /// 单页 TLB 失效（x86 特定）。
     /// C: `VMCTL_I386_INVLPG`, arch_do_vmctl.c:60-63
     InvlPg,
-    /// 续-311 内核代读旁路（[ARCH: riscv-vmddm]，用后即滚纪律随 (A) 结案）：
-    /// 内核代读物理地址处 u64（KDM 直读）——riscv64 VmDm 窗读在特定时序
-    /// 被 QEMU 平移层误导（§续-291..310 穷举），VM 的页表槽读改经本腿由
-    /// S 态直读。无 C 对位（C 无此症状）。wire=20，pa 走 m1p1、值回 m1p1。
-    PteRead,
 }
 
 /// Parse `SVMCTL_PARAM` integer into `VmCtlParam`.
@@ -1275,7 +1270,6 @@ impl TryFrom<i32> for VmCtlParam {
             33 => Ok(VmCtlParam::BootInhibitClear),
             26 => Ok(VmCtlParam::FlushTlb),
             25 => Ok(VmCtlParam::InvlPg),
-            20 => Ok(VmCtlParam::PteRead),
             // VMCTL_NOPAGEZERO (18) and VMCTL_I386_KERNELLIMIT (19) are
             // 32-bit only and unused on 64-bit — return ENOSYS.
             _ => Err(()),
