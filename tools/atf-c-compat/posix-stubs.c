@@ -212,9 +212,12 @@ char *dlerror(void){ return (char *)"dlopen unsupported"; }
 /* BSD stresep（picolibc 无）——对位本仓 C 真源逐行移植：
  * minix3/lib/libc/string/stresep.c（BSD strsep 基 + esc 处理：命中 esc 则
  * strcpy 就地删 esc 并字面化下一字符；未转义分隔符写 NUL 断句；串尽返
- * NULL 并置 *stringp=NULL）。签名必须对齐否则调用侧按 implicit-int 截返回
- * 指针→高位丢失现野地址；__arraycount 不在此（编译期宏，存根会致零覆盖假绿）。
- * 旧占位返 NULL 的 t_stresep 假红预告（§续-271 P2-3）就此闭合。 */
+ * NULL 并置 *stringp=NULL；省 _DIAGASSERT/__weak_alias，余逐行同）。
+ * **调用侧声明配套**：picolibc 头面零声明→隐式 int 返回在 aarch64 被
+ * sxtw 截成野地址（CodeReview 续-279f P0 实测旧二进制坐实），声明已补入
+ * errno-compat.h（-include 注入通道，与 sys_nerr 同络）；修后须核
+ * `objdump -d t_stresep | grep -A1 'bl.*<stresep>'` 无 sxtw 才算闭合。
+ * 旧占位返 NULL 的 t_stresep 假红预告（§续-271 P2-3）至此定义+声明配套就位。 */
 char *stresep(char **stringp, const char *delim, int esc) {
     char *s;
     const char *spanp;
@@ -243,10 +246,16 @@ char *stresep(char **stringp, const char *delim, int esc) {
     }
 }
 
-/* sysconf：picolibc 提供 weak/default 实现（真机 gh142 定谳：strlen_huge 拿
- * 负值在 `page >= 0` 断言即 fail）。本 TU 定义抢占（group 内先于 libc.a 成员，
- * 同 stdio/write 抢定义机制）。_SC_PAGESIZE=4096（我方页尺寸单一真源
- * PAGE_BYTES 的 C 侧同值）；其余 name 报 EINVAL 败形（POSIX 语义）。 */
+/* sysconf：既有定义在 **libsemihost.a 的 sysconf.c.o，强符号**（非 weak；
+ * libc.a 内无 sysconf，nm 实测）——它只认 _SC_CLK_TCK，其余（含
+ * _SC_PAGESIZE）errno=EINVAL 返 -1，真机 gh142 定谳 strlen_huge 的
+ * `page >= 0` 断言即在此 fail。抢占机制的实相：本 TU 是**命令行目标
+ * 文件**，先于归档解析参与符号定义，libsemihost 的 sysconf.c.o 己无未定义
+ * 符号可拉它——不是“weak 可覆盖”（CodeReview 续-279f P1-2 纠正旧误记）。
+ * 若日后该成员因他符号被拉入将现强-强 multiple definition硬错（当前其仅
+ * 定义 sysconf 一符号故不炸）；届时改法：同法把 semihost 剩成员也隔掉。
+ * 代价登记：libsemihost 的 _SC_CLK_TCK 支持被遮（现 18 案无人读，进 sys/
+ * gen 目录案时复查）。_SC_PAGESIZE=4096 对位三架构 PAGE_BYTES 真源。 */
 long sysconf(int name) {
     if (name == _SC_PAGESIZE)
         return 4096;

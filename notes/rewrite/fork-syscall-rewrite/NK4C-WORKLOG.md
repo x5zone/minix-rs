@@ -10,7 +10,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-279f（2026-10-03·compat 真语义 sysconf/stresep + D3 登记）**：sysconf 抢定义（strlen_huge page<0 断言现形修复）、stresep 按本仓真源逐行移植（旧占位假红闭合）、heap 8MiB 被 picolibc ld region 拒（全尺寸需 VM brk，登记）。**D3 新缺陷**：套件非确定性 hang（停滞位置随机漂移，gh142 同镜像族同 case 全过为反证；候选 VM exec/CoW 时序族，与 (A) 同层），279g+ 单案重跑二分判慢/挂。套件硬判据基线=gh142 的 20 passed/6 failed；D3 优先级已提到 D1 之前。前轮：279c-e D2 修复+分档；278 系列套件化；277 系列上机 pipeline。
+> **🛑 最新前沿＝§续-279f（2026-10-03·compat 真语义 sysconf/stresep + 评审 P0 修复 + D3 重定性）**：sysconf 抢定义（strlen_huge 断言修复）、stresep 按本仓真源逐行移植；评审(2e989e6af) 抓 P0=**调用侧缺声明→sxtw 截返回指针**（声明已补 errno-compat.h -include 通道，objdump 复验无 sxtw）+P1×2（sysconf 抢占机制描述改事实形：libsemihost 强符号靠命令行目标文件顺序隔掉非 weak；D3 三条断言证伪）。**D3 重定性**：gh143/144 同位确定性挂=sysconf 修复后首次真跑的 memset body（malloc+大块写 .bss 堆页逐页 demand-fill）暴露的 VM 页供给腿缺陷（候选与 (A) 同层观察面），不回退工具，279g 单案二分。套件硬判据基线=gh142 的 20 passed/6 failed（memset 家族当时在注册期即终止无结果行，归属已正）。前轮：279c-e D2 修复+分档；278 套件化；277 上机 pipeline。
 >
 > **（上一前沿＝§续-279d/279e）**：2048 池 x86 回归修复（target_arch 分档，真机二分坐实）+评审 P1 诚实性降级（riscv 未验证、机制未坐实标注）+x86 限点查证（bootface 假说被反证，候选收 kdst/demand-fill 预算族）+提取器 sample 修复；xtask 17/17。
 >
@@ -11882,6 +11882,8 @@ gh72 串口按 `nk4a:` 探针计数（`alloc_page.rs` PT_SEEN/DATA_SEEN/FREED �
 > commit 2e989e6af。①sysconf 抢定义（strlen_huge 的 page<0 断言现形自 gh142，_SC_PAGESIZE=4096、其余 EINVAL）；②stresep 本仓真源 minix3/lib/libc/string/stresep.c 逐行移植（自查：先写了 NetBSD memmove 变体，发现仓内有真源后换对位版——ground truth 链执行样本）；③heap 8MiB 尝试被 picolibc ld ram region 拒（新事实：测试 ELF 链接总尺寸受 deb 脚本 8MiB region 约束，全尺寸 malloc 需 VM brk 协议，登记③后续）。
 >
 > **D3（新缺陷，未坐实）**：gh143 套件停在 memset 中段（无结果行、零 OOM/PANIC）——同镜像族在 gh142 同 case 全过，停滞位置随机漂移（gh142 过 swab、279d 停 strspn、gh143 停 memset_basic），定性=**与套件规模正相关的非确定性 hang，候选归 VM exec/CoW 时序族（与 (A) 同层观察面）**；未坐实不修，279g+ 用单案重跑二分（固定只喂同一 case N 轮计挂率）分离“慢”与“挂”。
+>
+> ——**本段三条断言已被 §续-279f 评审 P1-1 + gh144 复现证伪，以本注为准（保留原文供溯源）：**①“gh142 同 case 全过”不成立：旧链 sysconf=libsemihost 强定义只认 _SC_CLK_TCK，_SC_PAGESIZE=8 命不中返 -1 → t_memset 在 ATF_TP_ADD_TCS 的 `ATF_REQUIRE(page>=0)` 即终止，**memset 家族在 gh142 根本无结果行**（当时把邻位 passed 误归因给 memset）；②“随机漂移”不成立：gh143/gh144 两次同位停在 memset body（array 后）=**确定性挂**；③“与本轮改动无关”不成立：sysconf 修复首次让 memset body 真跑 malloc(4KiB)+fill+memset 大块写 → 停滞点正在新放开路径。**D3 重定性：C 测试堆页（bump .bss 1MB）逐页 demand-fill 写路径上存在确定性挂（候选 VM fill-root/anon 页供给腿，暴露型缺陷=测试工具正常工作才现形，不回退 sysconf）**。279g 二分：单案只喂 memset_nonzero N 轮计挂率 + 跳过挂案排其余案验后续族。
 >
 > 套件基线读数修正：目标③硬判据达成面 = gh142 的 **20 passed/6 failed（含 stresep/sysconf 修复前态）**；修复后理论上限再 +2（strlen_huge、stresep_basic）；D3 不除则门不稳定，D3 优先级提到 D1 口径之前。
 
