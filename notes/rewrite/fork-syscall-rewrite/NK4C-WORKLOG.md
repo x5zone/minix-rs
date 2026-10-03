@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-279n（含 -b 评审轮：strerror 族真语义接管+sys_nerr 边界差一修正，套件 31→33 passed，strerror ×4 台账清零）**：gh160 真机定谳 picolibc 越界码永不产 BSD 形 "Unknown error: N" → posix-stubs.c 自给表 compat_errstr 全接管 strerror/__xpg_strerror_r/strerror_l 三口（表布局与 C sys_errlist 同构 index==errno，0 项真源原串，sys_nerr=135=表项数与 compat_errlist.c:153 公式同形）；三轮链接试错定稿=errno-compat.h 在 string.h 前 `#define strerror_r __xpg_strerror_r` 宏转发（C 名必须 __xpg_strerror_r：asm 别名/独名均不满足裸名引用→multiple definition；_strerror_r 真签名 (int,int,int*) 按假原型是 UB→自给表零外呼）。**边界差一定谳**：C 契约 valid=[0,sys_nerr)，旧判 `e<=sys_nerr`+sys_nerr=134 令 e=134 被当已知→t_strerror :54/:94 在 i=134 首断言即败；p3 探针只测越界侧恰好漏测边界，矛盾归一。CodeReview PASSED 0P0/0P1，2 P2 全修（-b：表 123 项保真+__xpg_strerror_r 定义 char* 同形+GNU 调用负向契约）。真机终态 **33 passed+1 failed（唯一=t_memcpy.c:99 D1 台账）+2 无结果行（D3b 台账）**；gh152 族瞬态再现一次（门跑 32/36，同镜像复跑即复 33，登记不立案）。回归全绿：VM host 535/0、host 4 包集 0 failed、check-layout all PASS、x86 smoke PASS、aarch64 bootmarks rc=0。剩余台账=D1 口径+D3b+尾部 2 无结果行案；主攻=(A) riscv（交接 prompt `NK4C-接续PROMPT-RISCV-20261003.md`）。
+> **🛑 最新前沿＝§续-280（riscv 新基线复现+10 跑形态分类：(A) 是双机制并存——β 形真槽读（sepc=0x3ae3e，a1==stval 自洽，瞬态父 PTE 原论成立）+ α 形语义不可能形（sepc=0x3ae10/0x3aae8，off≡4 mod 8，槽读指令算术恒 8 对齐，r1 的 a1=掩码常量≠stval ⇒ **控制流脱轨/text 腐写**，非槽读）；旧 §续-268「同 build 矛盾」form C 由此破案=从来不是槽读，§续-233 对 α 族错归因）**：boot-full 门 10 跑（1 全量构建+9 SKIP_BUILD 同镜像，运行 ELF==反汇编 ELF md5 双验 a8b7654c）marker 0/10：β×2+α×4+α'×1+r4 VM BTreeMap navigate.rs unwrap panic（整数键无自定义 Ord=树节点被外部腐写）+r8 **PM** init.rs panic+r3 截断活。「裸启动必崩」不成立（崩 7/10）；条件 2 未达成（≥3 形+崩/不崩分异）。四象共一源假设：帧别名（/etc/rc 数据帧+reuse-DATA 洪水+树节点腐坏+PM 状态腐坏）。勘误=交接 prompt「sepc=0x14060」系 x19 转抄错误，日志原文 sepc=0x3ae3e。下一步=§续-281 QEMU monitor pmemsave 全 RAM dump @halt 比对 VM text 页（零扰动）裁决 text 腐写 vs 纯控制流脱轨，靶面随之重画。零生产码改动，证据盘 `tmp/nk4a/a280/`。
+>
+> **（上一前沿＝§续-279n（含 -b 评审轮：strerror 族真语义接管+sys_nerr 边界差一修正，套件 31→33 passed，strerror ×4 台账清零）**：gh160 真机定谳 picolibc 越界码永不产 BSD 形 "Unknown error: N" → posix-stubs.c 自给表 compat_errstr 全接管 strerror/__xpg_strerror_r/strerror_l 三口（表布局与 C sys_errlist 同构 index==errno，0 项真源原串，sys_nerr=135=表项数与 compat_errlist.c:153 公式同形）；三轮链接试错定稿=errno-compat.h 在 string.h 前 `#define strerror_r __xpg_strerror_r` 宏转发（C 名必须 __xpg_strerror_r：asm 别名/独名均不满足裸名引用→multiple definition；_strerror_r 真签名 (int,int,int*) 按假原型是 UB→自给表零外呼）。**边界差一定谳**：C 契约 valid=[0,sys_nerr)，旧判 `e<=sys_nerr`+sys_nerr=134 令 e=134 被当已知→t_strerror :54/:94 在 i=134 首断言即败；p3 探针只测越界侧恰好漏测边界，矛盾归一。CodeReview PASSED 0P0/0P1，2 P2 全修（-b：表 123 项保真+__xpg_strerror_r 定义 char* 同形+GNU 调用负向契约）。真机终态 **33 passed+1 failed（唯一=t_memcpy.c:99 D1 台账）+2 无结果行（D3b 台账）**；gh152 族瞬态再现一次（门跑 32/36，同镜像复跑即复 33，登记不立案）。回归全绿：VM host 535/0、host 4 包集 0 failed、check-layout all PASS、x86 smoke PASS、aarch64 bootmarks rc=0。剩余台账=D1 口径+D3b+尾部 2 无结果行案；主攻=(A) riscv（交接 prompt `NK4C-接续PROMPT-RISCV-20261003.md`）。
 >
 > **（上一前沿＝§续-279m（含 -b 评审轮与 -close 收尾：riscv 新基线崩点未迁+交接 prompt 就位，新 agent 按 `NK4C-接续PROMPT-RISCV-20261003.md` 攻关 (A)）**：三处真源定谳推翻 §续-279k/l 的候选面——①C 的 `vm_region_top` 只是槽位 hint（region.c:391，只在 find_slot_range 新槽路写），**不是 break 值**；真 break 在 libc（brksize.S `_brksize=_end`）；VM 侧 brk 只有 extend 没有 shrink（break.c 全文无缩减腿，region.c:1016 低地址 no-op OK）。②普通 exec 链在 C 里**没有** HEAP_PREALLOC 腿（那是 service 启动专属，rs/request.c:779 经表驱动 minix-service 配置）——旧“墙一 C 靠 RS VM_MMAP_DATA”登记失实（全树 grep VM_MMAP_DATA 零命中）。③真机定谳我方挂点=**libsemihost 假 sbrk**（纯用户态推进自己 .data 里 brk 变量永不下陷，堆“成功”长进未映射页）+ **VirRegion::split 丢 def_memtype**（C split_region 两半 region_new 都带 vr->def_memtype，region.c:1174-1182；丢了它 PF 永死 NoMemType→SIGSEGV）。落地：brk.rs 重写为 map_region_extend_upto_v 直译（绝对断点+ AVL_LESS `<=` 前驱+resize/create 双臂）；mmap/map_phys/remap/boot 四腿补 hint 同步（C :391 parity）；posix-stubs.c 抢定义真 sbrk（VM_BRK SendRec，同 sysconf 抢占机制）；split 继承 memtype+防御门+2 host 回归测试。真机 gh159：**29 passed+5 failed（memcpy D1×1+strerror 族×4 均已知台账）+0 panic**，memset 族 7 案全过；x86 smoke PASS（boot 腿 hint 改动对 x86 零回归）、aarch64 bootmarks rc=0、VM host 535/0、双 arch 18/18 零警告。临时探针：brk 扩腿+pf-region 形状两处暂留（D3b 结案滚除）；内核 route 探针已定谳已删。下一步按优先级：strerror sys_nerr 校准→D3b（子异退唤醒父 waitpid）→D1 口径；本节点后用户已安排新 agent 攻关 (A) riscv，交接 prompt 另文件。
 >
@@ -12008,3 +12010,25 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 
 
 
+
+## §续-280（2026-10-03·riscv 新基线复现+10 跑形态分类定谳：(A) 崩溃面是「真槽读(β)+语义不可能形(α)」双机制并存，旧 §续-268「同 build 矛盾」由此破案——form C 从来不是槽读）
+
+**作战背景**：按 `NK4C-接续PROMPT-RISCV-20261003.md` §八.1 复基准。工具=`os/qemu-tests/test-riscv64-boot-full.sh`（自带逐包构建+table.bin 同源再生；SKIP_BUILD=1 复用二进制只重生 packing=同镜像重跑载体）。本轮 10 跑：1 全量构建（a280r1）+9 SKIP_BUILD 重跑（r2-r10；r2-r6 窗口 30s，r7-r10 窗口 160s）。运行 ELF=反汇编 ELF 同一性 md5 双验（`a8b7654c0cb37ec5db7e4a5dce7be174`，release/minix-vm == mod_vm.bin）。
+
+**读数总账（10/10）**：marker 全部未达（0/10）。分形：
+- **β 形 ×2（r7/r9）+279m 基线同形**：`sepc=0x3ae3e stval=0x409c8ffb30/0beb30`（off=0xb30 ≡0 mod 8）。反汇 0x3ae3e=query17h 的**叶槽读 `ld a3,0(a1)`**；GPR dump **a1(x11)==stval**（279m 基线日志 x0b=0x409c8beb30 实证）——指令、寄存器、故障地址三者自洽=**真·槽读经腐坏父项**（l1e 持伪帧 0x9c8ff000|高位脏 bit→DM 读越窗页故障）。原 (A) 理论（瞬态父 PTE）在这一族成立。
+- **α 形 ×4（r1/r5/r6/r10）**：`sepc=0x3ae10 stval=0x10bc8ffb3c/0bc900b3c`（off=0xb3c **≡4 mod 8**）。反汇 0x3ae10=query17h 的 **L1 槽读 `ld a1,0(a1)`**——但该指令的地址算术 `((vaddr>>18)&0xFF8)|DM_BASE + (l2e<<2)&0x00FFFFFFFFFFF000` 三项恒 8 对齐（槽掩码 t0=0xFF8 低 3 位零/pte_to_paddr 形掩码低 12 位零/DM 基=2^36），**静态语义不可能产生 ≡4 mod 8 的访问**。r1 GPR dump 钉死：**x11(a1)=0x00fffffffffff000（=3ada4 的掩码常量，属 x27 的值）≠ stval**——若真执行 `ld a1,0(a1)`，故障时 a1 必等于 stval。⇒ **sepc 处执行的字节≠ELF 字节：控制流已脱轨落入 0x3ae10（腐坏返回地址/跳表/函数指针），或 VM text 页被腐写**。寄存器面自洽性（a1=掩码常量、a5=0x42428 非 DM 基——对照 279m 同位 x15=0x1000000000）支持「异上下文寄存器残留」。
+- **α' 形 ×1（r2）**：`sepc=0x3aae8`（update_flags 首槽读 `ld a3,0(a3)`）stval=0x10bc900b3c（≡4）同族矛盾（a3==stval 但前置 AND-OR-ADD 算术恒 8 对齐）——α 同机制第二位点。
+- **r4**：VM U 态 panic `called Option::unwrap() on a None value` @ **alloc collections/btree/navigate.rs**（碎片重组定谳：`ust/aryr/allo/c/s/lleo/ction/s/b/nav/igate/.rs`）——整数键 BTreeMap 无自定义 Ord，navigate unwrap None=**树节点内存被外部腐写**。
+- **r8**：**PM** `servers/pm/src/init.rs` panic（行号碎片 375、panic-msg-nonstr）—— victims 不止 VM。
+- **r3**：30s 窗口截断时仍活跃推进（11/12 exec 完成、零 fill-root、系统在服务 0x800c fork/exec 中途）——非 hang，是我窗口切短了；r2-r6 批的 30s 窗不影响崩形判定（崩都在 ~4-6s）。
+
+**无崩跑统计**：r3（截断活）+r8（PM panic 前 160s 未崩）——「裸启动必崩」旧读数已不成立，现分异为崩 7/10 + 他形 3/10。两新变量（2048 池/真 sbrk 腿）是否参与分异未隔离（诚实边界）。
+
+**破案价值**：旧 §续-268 form C（sepc=0x3abec/stval=0x10bd28cb2c，off=0xb2c ≡4）当年标「同 build 矛盾」未解——本轮 md5 钉死二进制同一性+全指令流解码后同型矛盾重现于新 build，**form C/α 族从来不是槽读**：§续-233「父表基址被写入带 vaddr 低位」对 α 族是错归因（对 β 族成立）。(A) 的取证面要重画：β=瞬态父 PTE（原论）；α/r4/r8=野生内存腐写的下游症状（腐写源可能同一：帧别名——§续-217 /etc/rc 数据帧 + ptalloc-reuse-DATA 洪水 + BTreeMap 节点腐坏 + PM init 状态腐坏，四象共一源假设）。
+
+**勘误入账**：交接 prompt/WORKLOG banner 的「sepc=0x14060」系寄存器转抄错误——279m 基线日志原文 sepc=0x3ae3e，0x14060=x19。
+
+**下一步（§续-281 靶）**：零扰动取证新工具=QEMU monitor `pmemsave` 全 RAM dump @panic-halt（gdb 晚 attach 也不必，monitor 纯宿主侧）→ python3 比对 VM text 页（0x3ae10 所在 4K vs ELF .text 同 VA 页）——直接裁决「text 腐写 vs 纯控制流脱轨」。若 text 腐坏：按 text 页 PA 反查映射链抓写者（a2d 探针与写 watchpoint 靶面随之重画到「谁腐写模块 text/树节点」）。条件 2（非插桩确定复现）本轮**未达成**（≥3 形+崩/不崩分异）。
+
+**回归底线**：本轮零生产码改动（纯取证+文档）；基线继承 §续-279n-b 复验读数。证据盘=`tmp/nk4a/a280/`（r1/r2/r4/r7/r8 五代表形串口+279m 基线副本）。
