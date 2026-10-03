@@ -143,6 +143,20 @@ pub(crate) fn vm_pt_free(phys: minix_types::PhysBytes) {
     // 页表页由分配器产出,恒页对齐;非对齐输入即调用方 bug,
     // AlignedPhysBytes::new 的 fail-fast 断言就是契约。
     let aligned = AlignedPhysBytes::new(phys.0);
+    // 续-303 表帧归还探针（用后即滚）：逐笔记录被归还的表帧 pfn——对照
+    // krewalk v3 的 leaf_now=0（fill-root 叶槽被清零假设）。CAP=400 防洪。
+    #[cfg(all(target_arch = "riscv64", not(test)))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as FOrd};
+        static PTF_LOGGED: AtomicUsize = AtomicUsize::new(0);
+        if PTF_LOGGED.load(FOrd::Relaxed) < 400 {
+            let n = PTF_LOGGED.fetch_add(1, FOrd::Relaxed);
+            let pfn = phys.0 / 4096;
+            crate::bootmark::mark(&alloc::format!(
+                "nk4c: ptfree n={n} pfn={pfn:#x}\n"
+            ));
+        }
+    }
     crate::global::page_alloc_mut().free_page(aligned);
 }
 

@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-302（逐出假设证伪：探针在场崩率保持 4/4 且 evict=0——free_pages 从未执行）**：v1-v4 读数=4/4 (A)-crash（α×3+β×1 指纹照旧）+逐出探针零命中+fill-root=3/run（refault 照旧）；探针零扰动（在从未执行的路径上）保留在场。§续-303 靶=vm_pt_free 归还探针（`nk4c: ptfree pfn` CAP=400）：0x9c93e 崩窗内被 ptfree→teardown 拆活表（追调用者）；全程无 ptfree→零填来自重分配零填（free 后 realloc 为数据帧，reuse-DATA 洪水即此）⇒ 追上一跳 free。帧生命周期审计收口。
+> **🛑 最新前沿＝§续-303（ptfree=0：表帧从未被归还——零填者收窄到「写分歧（视图层）」vs「exec unmap_range 时序」）**：w1-w3=ptfree 零命中（vm_pt_free 从未调用，表帧从未 free，重分配零填也排除）+崩率 3/3 照旧。零填者只剩①**写分歧**：fill-root 的 VmDm 写被平移层误导（写去别处=§续-217 数据腐蚀面来源，真槽保持 0，refault=「写不粘」§续-265）②**exec unmap_range 时序**（重叠拆除清掉刚 fill 的槽=纯代码 bug）。判别=崩窗串口 fill-root ×3 之间有无拆除腿。§续-304 靶=①逐行比对崩窗事件序列②写分歧实锤 ⇒ (A)=**VmDm 窗读写特定时序被平移层误导**（当前证据链终点；解锁=QEMU 变体矩阵或 VmDm 改内核代读/代写腿=§续-288 已审方向）③探针族保留至结案滚除。
+>
+> **（上一前沿＝§续-302（逐出假设证伪：探针在场崩率保持 4/4 且 evict=0——free_pages 从未执行）**：v1-v4 读数=4/4 (A)-crash（α×3+β×1 指纹照旧）+逐出探针零命中+fill-root=3/run（refault 照旧）；探针零扰动（在从未执行的路径上）保留在场。§续-303 靶=vm_pt_free 归还探针（`nk4c: ptfree pfn` CAP=400）：0x9c93e 崩窗内被 ptfree→teardown 拆活表（追调用者）；全程无 ptfree→零填来自重分配零填（free 后 realloc 为数据帧，reuse-DATA 洪水即此）⇒ 追上一跳 free。帧生命周期审计收口。
 >
 > **（上一前沿＝§续-301（插入侧审计：addcache fail-closed——静态审计未找到 stale entry 之门；§续-302=逐出探针取动态证据）**：addcache（page_cache.rs:237-276）fail-closed=pfn 已 IN_CACHE 或键已存在即 AlreadyCached 拒绝（一帧一键不变量插入侧成立）；rmcache 同步删条目+清旗标。静态审计 stale-entry 之门未找到 ⇒ 需动态证据：**§续-302=逐出探针**（free_pages 选 victim 时 bootmark 记 `nk4c: evict pfn key`——回收压力路径非 walk 热路扰动预期低；b 批 α 指纹 100% 可重复可对照：victim=0x9c93e/f 实锤逐出杀表帧，无相关性则 (A) 另寻门）。纪律同前（先测效应，抑制即回滚登记）。§续-300 的守卫漏洞修法（IN_CACHE 所有权判别）仍为候选——若探针证实逐出杀表帧，修法与证据齐备即成修。
 >
@@ -12265,3 +12267,9 @@ VM host **535/0**（+2 新测试+1 夹具改）；host 4 包集 0 failed；check
 **读数**（v1-v4，探针=free_pages victim 日志 CAP=400）：4/4 (A)-crash（α×3+β×1，指纹照旧 0x10bc900b3c/0x409c8feb30-变体）+ **evict=0（四跑全程逐出探针零命中=free_pages 根本没跑过）**+ fill-root=3/run（refault 循环照旧）。**逐出杀表帧假设证伪**——leaf_now=0 的零填者不是页缓存逐出。探针本身零扰动（代码在从未执行的路径上）——保留在场。
 
 **§续-303 靶**：表帧归还探针——`vm_pt_free`（pt_alloc::register_free 钩子，alloc_page.rs:136）加 `nk4c: ptfree pfn=%x`（CAP=400）：若 0x9c93e/0x9c93d 在崩窗内被 ptfree → teardown/free_child_tables 在 child 活着时拆了它的表（谁调用+为何）；若全程无 ptfree → 叶槽的零填来自**重分配零填**（帧被 free 后 realloc 为数据帧、alloc 零填抹掉旧 PTE——reuse-DATA 洪水即此）⇒ 追「谁 free 了它」的上一跳。两条路都指向帧生命周期审计的收口。
+
+## §续-303（2026-10-04·ptfree=0：表帧从未被归还——零填者收窄到「写分歧（视图层）」vs「exec unmap_range 时序」）
+
+**读数**（w1-w3）：ptfree=0（三跑全程 vm_pt_free 零调用=表帧从未被 free）+ 崩率 3/3 照旧（β×2 同指纹 + update_flags 形变体）。**帧归还腿排除**——0x9c93e000 从未进过 free 列表，重分配零填假设也排除。leaf_now=0 的零填者只剩：①**写分歧**：fill-root 的 VmDm 写被平移层误导（写去别处=污染他处，§续-217 /etc/rc 串入他帧的来源！），真槽从未被写（保持 boot 期 0）——refault 循环=「写不粘」的直接表现（§续-265）；②**exec unmap_range 时序**：fill 后的重叠拆除腿清掉刚写的槽（纯代码 bug）。判别实验=串口里 fill-root ×3 之间有无 unmap/拆除探针。
+
+**§续-304 靶**：①逐行比对崩窗串口（fill-root ×3 之间的事件序列，找 unmap 拆除腿）；②若序列里无拆除 → 写分歧实锤 ⇒ (A)=**VM 的 VmDm 窗写/读在特定时序被平移层误导**——这是当前证据链能支撑的终点；解锁路径=QEMU 变体矩阵（网络恢复）或 VmDm 读写改内核代读/代写腿（§续-288 已审方向，架构对位 C 的 kernel-mediated）。③krewalk/evict/ptfree 探针族保留至 (A) 结案一并滚除。
