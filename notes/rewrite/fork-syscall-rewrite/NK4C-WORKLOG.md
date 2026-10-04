@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-318（table 同源修复生效：pfs failed 消失+exec=12 全序列+(A) 崩消失；160s 未达 marker=代读慢化或下游卡点）**：f9/f10（table 同源重生成+全旁路）=exec=12+pf=0+panic=0——boot 镜像读取恢复（table resync 生效）、(A) 崩窗已过；尾部 sa-call/rm-fallback 活跃。判读两可性=崩消失=旁路有效或崩窗未到，需长窗（600s）≥5 跑判读；marker 零=①代读海量 trap 慢化②下游卡点。§续-319 靶=①600s 长窗 ≥3 跑②marker 现身=§7 启动③长窗仍 stall=定位卡点相位+评 PteReadBuf 批量腿/混合模式。
+> **🛑 最新前沿＝§续-319（600s 长窗判读：全旁路下 (A) walk 崩 0/3 消失——新前沿=RS boot.rs panic(L2)+stall(L1/L3)，marker 仍 0）**：L1/L3=exec=12/pf=0/panic=0/600s 无 marker（stall）；**L2=exec=11/pf=0/RS SIGSEGV**（kill tgt=0xa sig=0xb）→ rs/src/boot.rs panic（:4e6=1254 碎片）+**cr2=0x4000833660（非已知窗族=RS 内野指针）**。对照=无旁路 ~75%/读旁路 100%/全旁路 **0/3**——**(A) walk 崩被内核代读写消除**（§续-310 视图分歧源=VmDm 槽读被绕开）。marker 0=①② riscv 下一层阻塞=RS panic+stall。§续-320 靶=①rs/src/boot.rs:1254 定位（对照 cr2 VA 族判野指针源）②L1/L3 stall 相位（尾部 sa-call 活跃=非死锁是慢或等）③修 RS panic 看 marker④PteReadBuf 批量腿评优（若 stall=代读慢化）。
+>
+> **（上一前沿＝§续-318（table 同源修复生效：pfs failed 消失+exec=12 全序列+(A) 崩消失；160s 未达 marker=代读慢化或下游卡点）**：f9/f10（table 同源重生成+全旁路）=exec=12+pf=0+panic=0——boot 镜像读取恢复（table resync 生效）、(A) 崩窗已过；尾部 sa-call/rm-fallback 活跃。判读两可性=崩消失=旁路有效或崩窗未到，需长窗（600s）≥5 跑判读；marker 零=①代读海量 trap 慢化②下游卡点。§续-319 靶=①600s 长窗 ≥3 跑②marker 现身=§7 启动③长窗仍 stall=定位卡点相位+评 PteReadBuf 批量腿/混合模式。
 >
 > **（上一前沿＝§续-316（elfchk 首战：boot 表 KDM 直读=前 9 模块 ELF ✓ 但 pfs/mfs/init 三镜像非 ELF——第二产物新鲜度缺口，table 同源重生成已修）**：elfchk（boot 表直析版，首版 handoff VA 内核态未映射 scause 0xd 踩坑改 TABLE_PA 直析）读数=magic ✓+ds..vm 九模块 7f454c46 ✓+**pfs/mfs/init 首字节非 ELF**（00 5f 5a / 00 a0 03 00 / "rle\0"——表 path 残留形状）；表 len=旧值。自反疑点=halt-dump 工具也不写 table.bin——表内 pa/len=旧布局、工具 LOADER_ARGS=新布局 ⇒ QEMU loader 按新序装载 ✓ 但 elfchk 读旧表坐标可能自错位（pfs failed 真因另寻）。**§续-317 靶=①工具补 table.bin 同源重生成（base 序列/mod bins/表单一真源化）→ 重跑 elfchk：三镜像转 ELF 则 pfs failed 消失、旁路判读恢复纯净②产物新鲜度断言升格（串口 md5==REL+mod bins==REL+table==mod bins 重算）③仍崩→回视图分歧分支**。
 >
@@ -12419,3 +12421,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **判读的两可性（诚实登记）**：崩消失 = 旁路有效或崩窗未到（方差/慢化后移）——判据采样需长窗（TIMEOUT_BOOT=600）+次数（≥5）；marker 仍零=①内核代读的海量 trap 慢化（每 VmDm 槽读一次 kernel-call——一次 walk 3 次 trap，fill 路径千次级）②下游另有卡点。慢化假设的判别=看 600s 长窗是否出 marker。
 
 **§续-319 靶**：①TIMEOUT_BOOT=600 长窗采样 ≥3 跑（崩率+marker+时长）；②若 marker 现身=§7 验收启动（≥3 轮独立复现证无崩+双 marker+host 全绿）；③若长窗仍 stall=定位卡点相位（sa-call/rm-fallback 之后的下一相位），评估「代读批量腿 PteReadBuf」（一次 kernel-call 拷回整页槽=消 trap 风暴）或代读腿的按需启停（boot 后期切回直读的混合模式——需先证 QEMU 误导只在特定时序窗）。
+
+## §续-319（2026-10-04·600s 长窗判读：全旁路下 (A) walk 崩 0/3 消失——新前沿=RS boot.rs panic(L2)+stall(L1/L3)，marker 仍 0；§续-320=RS panic 定位+stall 相位）
+
+**读数**（L1-L3，600s 窗）：L1/L3=exec=12、pf=0、panic=0、600s 无 marker（stall 形）；**L2=exec=11、pf=0、RS SIGSEGV**（`kill tgt=0xa sig=0xb`）→ rs/src/boot.rs panic 处理器打印（PF servers/rs/src/boot.rs:4e6 碎片）——**cr2=0x4000833660（非已知窗口族）**。对照崩率：无旁路 ~75%（b 批 5/6）、读旁路 100%（krd 3/3）、全旁路 **0/3**——**(A) walk 崩被内核代读写消除**（旁路有效），但 marker 仍 0=下一层阻塞（RS panic/stall）。
+
+**判读**：①(A) 的 walk 崩形已消除（§续-310 穷举的视图分歧源=VmDm 槽读被内核代读绕开）；②新前沿两层=RS boot.rs panic（cr2=0x4000833660 非已知窗族=RS 内野指针/未映射访问）+L1/L3 的 600s stall（代读慢化 or 下游卡点——L1/L3 的尾部 sa-call 活跃=非死锁是慢或等）。③marker 0=三终目标①的 riscv marker 仍未达成。
+
+**§续-320 靶**：①L2 的 RS panic 定位（rs/src/boot.rs:0x4e6=1254 行附近的 unwrap/索引，对照 cr2=0x4000833660 的 VA 族判定野指针来源）；②L1/L3 stall 相位定位（sa-call 之后系统在等谁——600s 串口的尾部活动归账）；③修 RS panic 后看 marker 是否现身；④PteReadBuf 批量腿评优（若 stall=代读慢化）。
