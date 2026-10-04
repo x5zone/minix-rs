@@ -12943,3 +12943,9 @@ riscv_halt_dump.sh（-monitor unix + 120s 定窗 pmemsave 512MB）连跑 hd46-hd
 **模块区 diff 工具链验证就绪**（健康对照 hd49）：table.bin 解析（MNXBOOT1+16×(path64+pa+len)）→ pmemsave RAM（BASE=0x80000000）→ 12 模块装载区对 mod_*.bin 逐字节比对=**全 EXACT**。panic 现场捕获流程已闭环：下次 minix-elf OOB 即刻 diff 拿腐蚀指纹+落点。
 
 **本次点火读数补充**：hd49 健康跑中 `kdst copy len=0x4a/0xc0` 等正常值在位（与 doomed 跑的 len=1 异常对照成立）。
+
+## §续-348 受控对照第一轮：monitor 不抑制腐蚀（boot_probe+monitor 也 CORRUPT）；halt-dump 4/4 幸存的可复现差异待归因
+
+boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻结逻辑后：**run1（monitor 在场）探针完整跑完 3072 C 行且 RESULT=2713eb45…（CORRUPT）**——monitor 在场不抑制腐蚀器，halt-dump 的 3/3 幸存非 monitor 保护效应。halt-dump 第 4 跑（hd50）仍幸存：**配置差异 4/4 vs ~50% 可复现但归因未定**（样本 4v6 不显著；两工具命令行差异清单待逐项对照——已知差异仅 monitor 形态与轮询/退出方式；run1 的 ~40 分钟超慢推进 vs 平常 4-8 分钟为并发负载混杂，弱信号存疑）。运行事故与改进：SIGTERM 未能终止挂死 QEMU（驱动改 kill -9 兜底）；外层循环覆写了 run1 的 482KB 完整串口（C 序列判据丢失，RESULT 值已录）——驱动改用带时间戳的串口文件名防覆写。**OOB 现场未再出现**（minix-elf panic 3 次集中在更早批次），下次出现即用已验证的模块区 diff 流程拿指纹。
+
+**下一步**：①两工具 QEMU 命令行逐项 diff + 受控 A/B（唯一变量法）定位「幸存差异」的真变量；②boot_probe 改造（kill -9 兜底+时间戳串口名+轮询与 guest 生命周期等长）；③继续 halt-dump 循环直至 OOB——模块区 diff 流程已验证（hd49 十二模块全 EXACT）。
