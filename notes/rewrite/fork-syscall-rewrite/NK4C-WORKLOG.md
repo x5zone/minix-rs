@@ -10,6 +10,8 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
+> **🛑 最新前沿＝§续-338（定案+修复+验证：rc 循环真根因＝exec 栈顶 `0x7fff_ffff_f000` 超出 Sv39 可寻址上限（≥2^38）＝非规范地址**，CPU 对它的每次访问必然 store page fault——与页表内容/root/sfence 全无关；guest 侧软件走表都不查地址规范性，所以现场自洽到「架构上不可能」。修复＝`minix_types::USER_STACK_TOP` 单一权威（riscv64=`0x3f_ffff_f000`）＋boot-shim 两 builder＋VFS exec 缺省值接入。**干预验证：p7b `halt-detect=2`＝riscv64 首次打出 `minix-rs rc: minimal boot script marker`**（exec=13/no-region=0/kill=0/panic=0），p5 故障族由 `0x7ffff...` 迁移为 `0x3fffff8/9/a...` 普通按需填页。旧账修正：§续-337「四要素」是本缺陷现场（不是矛盾）；H9「QEMU softmmu 分歧」在 rc 循环上消解；版本矩阵 1800s 大窗新读数=8.2.10/9.2.4 均 exec=12/走表崩 0/no-region 1（客侧缺陷跨版本同形）；「(A) 对任何改动敏感」＝非规范地址决定谁先踩到它。§续-339 靶=①门+回归+≥3 轮复现入账 ②三目标②riscv 命令面 ③NS5-B kerninfo 读腿接线。方法论：先算地址规范性再怀疑页表/模拟器；软件走表≠硬件走表；跨架构地址常量必须类型层分架构。
+
 > **🛑 最新前沿＝§续-325（身份修正+矛盾收口：kill 的是 rc(0x800c,slot 0xc) 本身；PTE 有效却反复故障——VM region 簿记与页表链脱节=最后卡点）**：身份修正=kill tgt=0xc=slot 0xc+endpoint 0x800c+state=exiting=**rc shell 本身**（§续-323/324 的「init」称呼纠正）。矛盾收口=M1 dump 证 rc 链三级全 V、叶 PTE=0x2724f4df（全旗标→PA 0x9c93d000 完全有效）——硬件页表映射存在可写可执行，但 rc 对同页 0x7fffffffef90 反复故障、VM 回 noaddr、kernel 杀之 ⇒ **页表硬件视图与 VM region 簿记脱节**（fill-root 直写叶 PTE 绕过 slot 簿记）。§续-326 靶=①VM handle_pagefault 对 va 的簿记查询审计②修=fill 腿补 slot 簿记或 noaddr 判定查硬件链兜底③修后 marker→§7→riscv 三目标→Phase E。
 >
 > **（上一前沿＝§续-324（M1 读数反转：fill-root 链三级全 V 完整健全——「fill 写不落」证伪；kill 的是 init(0xc) 非 rc，init 根值待查——身份已修正为 rc）**：M1 dump 叶槽分析=fill-root 链 l2e/l1e/l0e 三级全 V（0x2724f001→0x2724ec01→0x2724f4df）叶 PTE→PA 0x9c93d000，叶槽现值 0=数据页内容合法（pte_pa=数据帧 PA 语义 §续-308）——「fill 写不落/叶槽被清」证伪。**关键澄清=kill tgt=0xc=init≠rc(0x800c)**——fill-root 链是 rc 的，init 另一根；init 根值=setaddr-root 探针尾行待查。§续-325 靶=①init(0xc) 根值提取→走 init 根链读 0x7fffffffef90 叶槽现值②init 栈页 fill 腿是否存在（FR_N<3 封顶可能没印 init 的 fill）③修复后 marker 判读。
@@ -12654,3 +12656,65 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **④形态漂移**：w5/w6 的 rc root=0x9d6e7000≠p6c 的 0x9d6e8000（每 boot 帧分配不同=正常）；k1x 构建（fw 探针）下 fill-root 消失+rc 直接 exiting=代码改动敏感第 N 次实证。
 
 **§续-338 靶（下一 session）**：①QEMU 版本矩阵补充实验——8.2.10 慢化归因（vm_pt_alloc 的 DM 窗写慢化在 QEMU 哪条路径——perf/trace）+ 9.2.4/10.0.13 同测（若新版本只是慢不是死，加大窗口可判读 (A) 在新版本下是否消失=版本依赖性实锤）；②QEMU 8.2.2 源码定点读（helper_tlb_flush/tlb_flush 的 cputlb.c 实现——确认全刷语义与 softmmu 结构）；③GPT Q4 的 guest 侧 falsification（rc 栈内容帧 0x9c93c000 是否被 reuse-DATA 回收复用=栈内容被破坏的候选——数据帧与栈内容混用的 region 簿记审计）。
+
+## §续-338（2026-10-04·定案：rc 循环的真根因=exec 栈顶落在 Sv39 不可寻址区；修复后 riscv64 首次打出 boot marker——三目标①解锁）
+
+**一句话**：rc 的 26 次「PTE 有效却反复 store fault」不是页表问题、不是 QEMU 问题，而是**栈顶地址本身在 Sv39 下不可翻译**——`0x7fff_ffff_f000` 超出 Sv39 用户空间上限（`0x3f_ffff_ffff`），CPU 按架构规定必然对它的每一次访问报 store page fault，页表内容是什么都不影响；guest 侧的全部软件走表（VM 的 walk_read、内核 KDM 爬链、VM 的 pt.query）都不做地址规范性检查，所以现场看起来「一切正常」。
+
+### ① 侦察：把 w5/w6 的现场读全（上一 session 的断点）
+
+上一 session 断在「w5 里 fill-root 的 ptroot 与 p5 的 satp root 对账」。本次补齐，结论：
+
+- `fill-root va=0x7fffffffe000 ptroot=0x9d6e7000 pte_pa=0x9c93c000`（串口里被交织损坏成 `"  4a: fillt oo ..."`——**解析陷阱一：行内交织+前导空格**，先前按整串匹配 `nk4a: fill-root` 计数为 0，实际探针有输出）↔ `p5 root=0x9d6e7000` 逐字相同 ✓；`pte_pa`（数据页 PA）与 p5 走链末级叶项解出的 PA 相同 ✓。⇒ **填充用的根与 CPU satp 的根是同一张，填充页与 walk 解出的页是同一帧**。
+- 故障结构（w5/w6/V8210/V924 一致，32 条 p5 封顶）：**前 6 次**是 rc 旧地址空间的普通 CoW（fa=0x3ffffc5cc0/0x4dab8/0x2dadc/0x50020/0x4f080，叶项低 10 位 0xD3=**只读**、U 态存储 → 合法缺页）；**后 26 次**是新栈页 fa=0x7fffffffef90，叶项 0xDF（含 W）却仍故障。p6f 实测：sepc=0x16d9e（用户码区）、**sstatus.SPP=0（陷阱来自 U 态）**、sp=0x7fffffffef98——U 态存储 + 可写 U 叶项 + 根一致，**架构上不可能故障**。
+
+### ② 定案：Sv39 地址规范性（canonicality）
+
+QEMU 8.2.10 源码 `target/riscv/cpu_helper.c:get_physical_address` 的第一道门（`first_stage` 分支）：
+
+```c
+mask  = (1L << (TARGET_LONG_BITS - (va_bits - 1))) - 1;   /* va_bits=39 → 0x3FFFFFF */
+masked_msbs = (addr >> (va_bits - 1)) & mask;             /* = (addr >> 38) 低 26 位 */
+if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
+```
+
+即 Sv39 要求位 63:39 全等于位 38。`0x7fffffffef90 >> 38 = 0x1ff` ⇒ 既非 0 也非全 1 ⇒ **任何页表都救不了它**。`python3` 复核：`0x7fffffffef90`/`0x7fffffffe000`/栈 region `[0x7fffffbff000,0x7ffffffff000)` 全部非规范；而 `0x3ffffc5cc0`（旧 rc 栈）、`0x3fffffefe0`、`0x10bd28cb2c`（VM 窗）均规范。CPU 的行为完全正确——**故障地址是罪魁，不是页表**。
+
+### ③ 代码溯源与修复（3 文件 + 1 单一权威常量）
+
+- VFS 的 exec 入口把栈顶硬编码为 x86-64 风格值，注释自陈读半未接线（NS5-B）：`os/servers/vfs/src/main_loop.rs` 的 `const DEFAULT_USER_SP: u64 = 0x7fff_ffff_f000`。C 真源是 `minix_get_user_sp()`（`minix3/minix/lib/libc/sys/kernel_utils.c:39-62`，读 kerninfo 页 `kui_user_sp`，legacy 回退 `kinfo->user_sp`）；本重写不发布 legacy `kinfo`，故缺省值必须自带且**按架构取规范值**。
+- 启动腿本来就是对的：`os/boot-shim/src/opensbi_helpers.rs`（riscv64）用 `0x0000_003f_ffff_f000`，这正是服务器们能跑的原因（它们的栈在 `0x3fff...`）。**只有 exec 腿用了 48 位风格值**——于是「boot 进程正常、exec 出来的进程死」这个形就解释通了。
+- 修复：在 `os/libs/minix-types/src/types/boot.rs` 新增单一权威常量 `USER_STACK_TOP`（riscv64=`0x3f_ffff_f000`，其余=`0x7fff_ffff_f000`，文档写明 Sv39 规范性与本案史），`boot-shim` 两处 builder 与 VFS exec 缺省值全部改用它（值不变者行为不变）。
+
+### ④ 干预验证（决定性）
+
+- `tmp/nk4a/riscv_halt_dump.sh p7b`：**`halt-detect=2`＝串口打出 `minix-rs rc: minimal boot script marker`**；exec=13、no-region=0、kill=0、panic=0；p5 故障族从 `0x7ffff...` 迁移到 `0x3fffff8/9/a...`（新栈的**普通按需填页**，每页一次）；全日志 `0x7fffff` 族零命中。
+- 门（`test-riscv64-boot-full.sh`）：见下方验收记录。
+
+### ⑤ 旧证据的重新对账（不越权的修正）
+
+- **§续-337「同 fault 闭合四要素」其实是本缺陷的现场**：RAM 页表全 V、root 一致、sfence 全刷都成立——正因为它们与故障无关。非规范地址下 CPU **必然** fault，四要素「钉死」的是 guest 视图的自洽，不是矛盾。
+- **H9（QEMU softmmu 与 RAM 分歧）在 rc 循环这条症状上消解**：不需要任何模拟器缺陷。版本矩阵新读数（1800s 大窗：8.2.10/9.2.4 均 exec=12、walk 崩 0、no-region=1）也对上——**客侧缺陷跨 QEMU 版本同形**，这正是「模拟器 bug」最不可能的形态。新版本不是「死」只是慢（600s 窗不够），先前「版本矩阵不可判读」的结论据此修正。
+- **(A) 原始 walk 崩**（VM 自身 `Riscv64Paging::query` ← `sync_slot_pte`，)`sepc=0x3abec/stval=0x10BD28CB2C`）**与本次缺陷的关系未定**：当前构建 + 修复后不再出现，但其历史走表 VA 是规范的 `0x3FFFFDFB2C` 族，不能据此认定同因。若后续再现，按新判据（先查地址规范性）重开。
+- 「(A) 对任何代码改动都敏感」获得新解释：**非规范栈顶决定了「进程何时踩到它」**——任何代码/布局变化都可能改变第一个踩到非规范地址的进程与时机，于是形态漂移。
+
+### ⑥ 方法论（可迁移）
+
+1. 「PTE 有效 + CPU 仍 fault」这类**架构上不可能**的矛盾，第一步先算**地址规范性**（canonicality），再怀疑页表与模拟器——本案全套 in-guest 自检都漏这一项，因为软件走表按位取索引、天然不看高位。
+2. **软件走表 ≠ 硬件走表**：guest 侧任何「我自己走一遍都对」的自证，都无法替代硬件语义（规范性、A/D、权限位组合），取证时要把两者的语义差列成清单。
+3. **跨架构共享的地址常量必须在类型层分架构**：48 位 LP64 风格值搬到 Sv39 就是死值；单一权威常量（本案 `minix_types::USER_STACK_TOP`）是防复发的结构性手段。
+4. 串口取证解析必须容忍**行内交织与前导空格**（本案 `"  4a: fillt oo"` 差点让决定性证据被计为「零输出」）。
+
+### ⑦ 验收与回归（实测记录）
+
+- **正式门** `os/qemu-tests/test-riscv64-boot-full.sh`：`### TEST_RESULT: PASS riscv64 full boot (marker reached) ###`（TIMEOUT_BOOT=400）。
+- **独立复跑（§7「≥3 轮全链」）**：①halt-dump p7b：`halt-detect=2`、exec=13/no-region=0/kill=0/panic=0、3765 行；②正式门（重建后）marker ✓；③halt-dump p7d：同样 `halt-detect=2`、exec=13/no-region=0/kill=0/panic=0、3765 行（与 p7b 同形）。三次均 `0x7fffff` 族零命中。
+- **回归底线**：host 四包集 **1403 passed / 0 failed**（baseline 同）；`minix-vm` 535/0 + `minix-vfs` 538/0；`boot-shim` 测试 ok；`check-layout.sh all` = **CHECK-LAYOUT=PASS（all）**；x86 smoke = **PASS（18-stage 命令输出可见）**；aarch64 bootmarks = **PASS**。
+- **探针状态**：本 session 为判别 SPP 新增 p5 行 `sepc=/sst=/sp=` 三字段（已完成使命；与既有探针族一并归 Phase E 滚除）。
+- **事后插曲（诚实记录）**：第三次复跑首试（p7c）在宿主被 x86/aarch64 两条回归线占满时进行——300s 窗只推进到 exec=9 且 dump 未落盘，属**宿主负载下的窗口截断**，非形态回退；空载重跑（p7d）即恢复 marker 同形。教训：**判读 QEMU 窗口类实验前先清空宿主负载**。
+
+
+### ⑧ 下一步
+
+- 三目标①（riscv marker）已解锁 → ②18-stage 命令面 riscv 腿、③atf-c riscv 上机（`ATF_BOOT_LEG_READY` 加 "riscv64"）依次推进。
+- NS5-B（kerninfo `minix_get_user_sp` 读腿）仍开放：本次只修了缺省值的规范性；把 VFS 的读腿接上（minix-rt 的 kerninfo 页查询）是后续独立一笔。

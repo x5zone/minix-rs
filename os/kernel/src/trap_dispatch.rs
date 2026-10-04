@@ -2105,6 +2105,20 @@ unsafe fn riscv64_pagefault_body(
             P5Console::write_hex(ppn << 12);
             P5Console::write_str(" ec=");
             P5Console::write_hex(errcode as u64);
+            // §续-338 判别探针（用后即滚）：故障来源态——sepc 落点 +
+            // sstatus.SPP(bit8)/SUM(bit18) + 中断时 sp（frame.gpr[2]）。
+            // 判读树：SPP=0 且 sepc 落用户码区 ⇒ 用户压栈触发（CPU 走表
+            // 与 RAM 分歧）；SPP=1 ⇒ 内核代用户内存访问（SUM=0 时对 U 页
+            // 的 S 态存储是架构合法故障，属 guest 侧缺陷）。
+            let sst: u64;
+            // SAFETY: 读 CSR，无副作用。
+            unsafe { core::arch::asm!("csrr {}, sstatus", out(reg) sst) };
+            P5Console::write_str(" sepc=");
+            P5Console::write_hex(frame.sepc);
+            P5Console::write_str(" sst=");
+            P5Console::write_hex(sst);
+            P5Console::write_str(" sp=");
+            P5Console::write_hex(frame.gpr[2]);
             P5Console::write_str("\n");
             // §续-337 核心判据（GPT P1/P2 要求的同 fault 闭合）：用本次
             // fault 的 satp root 走三级链读叶 PTE——26 次 refault 中叶值

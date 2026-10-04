@@ -1129,11 +1129,16 @@ impl VfsState {
                         frame_len,
                         ps_str,
                     }) => {
-                        // 栈顶生产源是 kerninfo `user_sp`（C exec.c:205 经
-                        // `minix_get_user_sp`，kernel_utils.c:40-60）；读半
+                        // 栈顶生产源是 kerninfo `user_sp`（C exec.c:217 经
+                        // `minix_get_user_sp`，kernel_utils.c:39-62）；读半
                         // 归 E-KERNINFO 波次，暂以 boot 契约缺省值供缝
                         // （已登记 new_edge3 NS5-B）。
-                        const DEFAULT_USER_SP: u64 = 0x7fff_ffff_f000;
+                        // §续-338 修正：缺省值必须落在本架构的规范用户
+                        // 地址范围内——riscv64/Sv39 用 48 位风格的
+                        // 0x7fff_ffff_f000 会产出非规范地址，用户程序首次
+                        // 栈存储即 store page fault 死循环（(A) 的 rc 循环
+                        // 根因）。单一权威见 `minix_types::USER_STACK_TOP`。
+                        const DEFAULT_USER_SP: u64 = minix_types::USER_STACK_TOP;
                         let kernel = minix_sys::syscall::DirectKernelCallTransport;
                         let ipc = minix_sys::ipc::DirectTrapTransport;
                         let result = crate::exec_worker::pm_exec(

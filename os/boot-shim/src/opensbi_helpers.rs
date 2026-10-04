@@ -477,8 +477,9 @@ pub fn build_kernel_info(
         kern_phys_base,
         kern_size,
         free_upper_idx: None,
-        // riscv64 Sv39 user address space top (2^38 - 1 aligned to page).
-        user_sp: VirBytes(0x0000_003f_ffff_f000),
+        // Per-arch user stack top; the single authority is
+        // `minix_types::USER_STACK_TOP` (Sv39 top on riscv64).
+        user_sp: VirBytes(minix_types::USER_STACK_TOP),
         kern_stack_top: VirBytes(kern_virt_base.0 as u64 + kern_size as u64),
         syscall_entry: VirBytes(kern_virt_base.0),
         boot_modules,

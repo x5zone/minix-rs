@@ -116,6 +116,35 @@ impl HandoffModule {
     };
 }
 
+/// Top of the initial user stack, per architecture.
+///
+/// C: `USR_STACKTOP` = `USR_DATATOP` (`minix3/minix/kernel/const.h:32-43`;
+/// i386 `0xF0000000`) is the kernel's stack-top constant; it reaches
+/// userland as `kinfo.user_sp` (pre_init.c:156) and drives both the boot
+/// processes' initial stacks (main.c:391-411) and the exec path
+/// (`minix_get_user_sp`, kernel_utils.c:39-62). The rewrite's LP64
+/// adaptation pins a page-aligned top inside each architecture's canonical
+/// user range:
+///
+/// - x86_64 / aarch64 (48-bit user VA): `0x7fff_ffff_f000` — the classic
+///   LP64 user top, unchanged since the first boot legs.
+/// - riscv64 (Sv39, 38-bit user VA): `0x3f_ffff_f000` — one page below the
+///   Sv39 user top (`0x3f_ffff_ffff`). A 48-bit-style top is NOT canonical
+///   under Sv39 (bits 63:39 must equal bit 38), so the CPU takes a store
+///   page fault on the very first user stack access no matter what the
+///   page tables contain; in-guest software page-table walks do not check
+///   canonicality, so nothing on the guest side notices. History and full
+///   evidence: `notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`.
+///
+/// This is the single authority: the boot shims publish it as
+/// `KernelInfo::user_sp` and the exec path uses it as the boot-contract
+/// fallback while the kerninfo read leg (NS5-B) is unwired.
+#[cfg(target_arch = "riscv64")]
+pub const USER_STACK_TOP: u64 = 0x0000_003f_ffff_f000;
+/// x86_64 / aarch64 / host builds — see the riscv64 arm above.
+#[cfg(not(target_arch = "riscv64"))]
+pub const USER_STACK_TOP: u64 = 0x7fff_ffff_f000;
+
 /// Kernel → VM boot handoff page (one-way, one-shot).
 ///
 /// The kernel fills this struct in a dedicated frame before scheduling VM
