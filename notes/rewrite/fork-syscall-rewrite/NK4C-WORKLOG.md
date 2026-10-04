@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-340（三目标③ riscv ATF 上机腿落地：套件在 riscv64 真机跑起来）**——接线三件套=①`tools/build-atf-test.sh` 出生腿 case 扩到 `aarch64|riscv64`（riscv 入口 stub 早已备好，此前只差放行；单案反汇实测 Entry=我方 `_start`）②`os/xtask` 新增 `atf-face` 子命令（`image.rs::atf_face`+`collect_atf_face` 单源重构，给不走 UEFI 盘形的 riscv 产出同源 `rc.imgrd`+`atf-plan.txt`；`ATF_BOOT_LEG_READY` 加 riscv64；xtask 测试 17/0）③新门 `os/qemu-tests/test-atf-riscv64.sh`（配方同 boot-full，判据同 aarch64 的终集计数+一票否决；点火前 `rm -f` 防水）。**首批读数=run1 9 例（8 passed+1 failed）/run2 23 例（21 passed+1 failed+1 skipped，30 分钟窗，推进到 t_strerror）**；**唯一失败=t_memcpy（riscv 独有）**，已排除：random 真源两架构同链（`nm -S` 同尺寸 trampoline）、memcpy 两架构都是字节循环（非 riscv `memcpy-asm.S`）——下一会话用「给测试打本地补丁打印 `result` 实测值 vs 宿主离线 MD5 `7b405d24…`」二分。门窗口 3600s（实测 1.5-2 分钟/例，探针洪流拖慢；Phase E 后回收）。三目标台账：①marker x86/aarch64/riscv ✅；②命令面三架构 ✅；③ATF=aarch64 ✅（34p+2s）/riscv **实跑中，全绿差 t_memcpy 一项**。
+> **🛑 最新前沿＝§续-342（t_memcpy(riscv) 定案：计算层完全洗清，真机分歧＝跨 boot 漂移的非确定性内存污染——目标③剩余阻塞与旧台账复核（(A)/bit38 残影）合并为同一工作项）**：三级判据链=①裸机腿（新方法：qemu-system-riscv64 + picolibc 自带 crt0 + semihosting 裸跑，与失败二进制同批 md5.o/random.o 对象 + runTest 逐行复刻 + 忠实缓冲身份结构）**3/3 逐位 MATCH**（md5=7b405d24，与宿主 x86 全同——riscv64-unknown-elf-gcc 13.2 -Os 代码生成、BSD random 流、picolibc memcpy 字节循环、我方 md5.c 全部排除）；②上机单案探针腿（t_memcpy_probe.c：逐对 P 态+RB 栈写读回+RESULT）：run1 前 4 对逐位一致、(1,2) 起歧；run2 从 (0,1)（纯 .bss 对）即歧且 RB 通过——**分歧 pair 跨 boot 漂移＝非确定性**；③同一镜像 4 次点火 2 次异常崩（VM boot.rs:453 reconcile 读到 ASCII "asyncm" 垃圾 deducted 末值 / 内核 unwrap panic + sh cannot fork）＝系统级不稳。判决：t_memcpy 是污染传感器非独立 bug（唯一做全量内容 MD5 对账的案，先于其他案暴露）；裸机 3/3 排除 QEMU 环境/编译器/库，污染在我方 S 态栈（VM 分页/簿记层）。**目标③ riscv 全绿改由「污染根因修复」解锁**（具体候选修已在台账：§续-300 逐出守卫 IN_CACHE 所有权判别、§续-325 fill 腿补 slot 簿记——§续-349 升格为 blocker）。方法论三注：探针打印消费被测随机流必须重播种（本探针首个版本自污染出假 MISMATCH，§续-283 check 因恰好重播种而 MATCH——对照假差异的活教材）；RISC-V semihosting 魔法序列必须未压缩 ebreak（c.ebreak 不触发 QEMU 拦截）；`stdout` 定义在 libsemihost iob.c.o，链接需 --start-group。负结果澄清：w-finw 探针去重键 (va_page,pa_page) 跨进程共享，同 VA 多帧是进程更替正常形态，不能当 refault 实锤读。单案装配侧 ENOSYS 异常（精简 imgrd 触发 /bin/sh exec 回 ENOSYS=78）在全量播种后不复现，未归因，open。产物=tmp/nk4a/tmemcpy_bisect/（探针源+boot_probe.sh+machine_run{1,2}.log+reference_baremetal.txt）。
+>
+> **（上一前沿＝§续-340（三目标③ riscv ATF 上机腿落地：套件在 riscv64 真机跑起来）**——接线三件套=①`tools/build-atf-test.sh` 出生腿 case 扩到 `aarch64|riscv64`（riscv 入口 stub 早已备好，此前只差放行；单案反汇实测 Entry=我方 `_start`）②`os/xtask` 新增 `atf-face` 子命令（`image.rs::atf_face`+`collect_atf_face` 单源重构，给不走 UEFI 盘形的 riscv 产出同源 `rc.imgrd`+`atf-plan.txt`；`ATF_BOOT_LEG_READY` 加 riscv64；xtask 测试 17/0）③新门 `os/qemu-tests/test-atf-riscv64.sh`（配方同 boot-full，判据同 aarch64 的终集计数+一票否决；点火前 `rm -f` 防水）。**首批读数=run1 9 例（8 passed+1 failed）/run2 23 例（21 passed+1 failed+1 skipped，30 分钟窗，推进到 t_strerror）**；**唯一失败=t_memcpy（riscv 独有）**，已排除：random 真源两架构同链（`nm -S` 同尺寸 trampoline）、memcpy 两架构都是字节循环（非 riscv `memcpy-asm.S`）——下一会话用「给测试打本地补丁打印 `result` 实测值 vs 宿主离线 MD5 `7b405d24…`」二分。门窗口 3600s（实测 1.5-2 分钟/例，探针洪流拖慢；Phase E 后回收）。三目标台账：①marker x86/aarch64/riscv ✅；②命令面三架构 ✅；③ATF=aarch64 ✅（34p+2s）/riscv **实跑中，全绿差 t_memcpy 一项**。
 >
 > **（上一前沿＝§续-339（三目标② riscv 命令面达成：新门 ——marker + `ls /bin` 四项列表 + `cat /etc/rc` 全量回显走 VFS IPC 路径；判据固化两处形态教训：marker 首次命中可能落在 `cat` 回显行内（改用全日志判据＋容错按序正则）、`/tests/*: not found` 不进判据（目标③ 后形态会变）。**CodeReview 修复轮 §续-339b：P1=复用 WORK 目录时旧 serial.log 可假绿（修=点火前 `rm -f`，同族同修 ATF 门）；P2×5 分类落地。** 三目标②现状=x86 ✅/aarch64 ✅/**riscv64 ✅**。下一轮靶=§续-340 目标③ riscv ATF 上机（xtask `atf-face` 子命令 + `build-atf-test.sh` riscv 出生腿启用 + `test-atf-riscv64.sh`；首跑已见 9 例终态＝8 passed + 1 failed（t_memcpy＝已知 D1 台账，与 aarch64 同），长窗完整判读在途）。
 >
@@ -12809,3 +12811,65 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 4. 门脚本补两条防假绿护栏：①非 SKIP 路径钉分母完整性——`atf-plan` 必须覆盖 **18 个套件 prog**（否则 `EXPECTED` 随残缺产物自缩、可对残缺集判 PASS）；②SKIP 复用路径加 mtime 链校验（`rc.imgrd` ≤ `imgrd.img`、最新 `t_*` ≤ `imgrd.img`、`imgrd.img` ≤ `kernel`）——同 339b 的"陈旧证据"失效模式在本门的镜像层再收一次口。护栏实测：当前产物链 23:44:21(t_bm) < 23:44:32(rc) < 23:44:55(imgrd) < 23:45:02(kernel) 通过。
 
 **验证**：`cargo test -p xtask` 17/0；`atf-face --dry-run` 输出与解析约定一致（rc.execs=36、21 条 tests.*）；`bash -n` 通过。
+
+## §续-341（T13 跨架构地址常量静态清扫交付：三架构判据表 + 全库三层扫描 + 发现 A1–A13 + 修复排序——纯审计零生产码改动）
+
+**编号对账**：开工时主线程在制 §续-340 未提交（git status 证），取 341；写本条前重查，主线程已提交 340/340b/交接 prompt（f26726061），341 无撞号。本任务即交接 prompt 开放项清单里的「T13 地址语义清扫」。
+
+**交付物**：`notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md`（三架构判据表/扫描方法/发现清单/豁免清单/覆盖率对账/修复排序）+ `tools/address-constant-scan.py`（可复跑扫描器，字节级读取防 ugrep 吞输出）。生产代码零改动（`git diff HEAD --stat -- os/` 为空）。
+
+**判据表锚点（全部第一手取证）**：x86-64 四级（`pte.rs` PML4_ENTRIES=512 + 全仓 LA57 零命中；QEMU `target/i386/monitor.c:39` addr_canonical 按 CR4.LA57 分支；违规真机 #GP 非 #PF，QEMU TCG 数据通路不模拟——translate.c 规范性零命中）；aarch64 边界可编程（`os/arch/src/arm64/paging.rs:543-560` enable() 实写 T0SZ=16/T1SZ=16 ⇒ 用户半区 2^48、TTBR1 基址 0xFFFF_0000_0000_0000；QEMU `target/arm/ptw.c:1687`「The gap between the two regions is a Translation fault」）；riscv Sv39（QEMU `cpu_helper.c:896-898` masked_msbs 门 + `tlb.rs` SV39_MODE=8）。SDM 精确节号一处 [待验证]（卷册级已给）。
+
+**发现 13 项（高危 3 / 中危 4 / 低危 6）**：A1 mmap.rs MMAP_TOP=2^41（riscv 越界，first-fit 需 ~252GiB 分配史今不可达；注释自陈 48-bit canonical 即成因）；A2 dispatcher.rs REMAP_MMAP_TOP=2^41 第二份拷贝（「same range」靠注释维持）；**A3 = 本轮最重要新发现：mmap/remap 的 hint/MAP_FIXED 路径完全无用户半区上界校验**（`mmap.rs:267-278`——任意页对齐地址照收，riscv 上一条带提示 mmap 即复现 §10.11 同型故障，无需分配史；内核侧 ipc.rs:419 有现成正确形态可对照）；A4 ipc.rs aarch64 USER_ADDRESS_SPACE_LIMIT=2^47 与 TCR 推导 2^48 不一致+注释「TTBR1 region base」错误（保守方向无症状）；A5 vm/boot.rs BootParams::simple 未 cfg(test) 门控+内嵌 x86 栈顶（生产零调用方）；A6 vm_server.rs mock 布局回退 x86 形状（v5 handoff 下不可达，riscv 形状若被消费即错）；A7 region_map.rs riscv-gated 探针配 x86 阈值 0x7fff_0000_0000（Sv39 下恒死=死探针）；A8 cow_exec_pf.rs 同族阈值；A9 测试夹具 user_sp 硬编码族（精确 token 62 行=本体/文档 2+生产注释 7+A5 行 1+cfg(test) 52，另 0x0000_ 变体 32 行含 qemu-tests 测试内核 23 归 E5）；A10 exec_worker.rs:1509 测试硬编码（338b 原型现存样本）；A11 pte_walk.rs x86 前提断言（已自陈架构，登记）；A12 注释层 x86 心智模型残留（含 vm_server.rs「生产 user_sp=0x7ffffffff000」过时表述）；A13 KDM 常量探针内 7 处本地复制。豁免五类（PA/内核高半区/测试夹具/非地址巧合/qemu-tests）逐类给理由。
+
+**扫描口径**：LITERAL 507 / SHIFT 83 / FAMILY 256 / CONST 2295（过滤 92 人工分类）；文档 §6 逐通道对账零静默。主线程 340b 提交后复跑扫描四通道计数零漂移。
+
+**修复排序（只建议未动手，详见文档 §7）**：R1=minix_types 落 USER_VA_LIMIT 分架构权威（栈顶/ipc 限/mmap 顶全从它导出+编译期断言）；R2=mmap/remap hint/FIXED 入口加上界校验（唯一「一条 guest 调用即触发」的口，随 R1 同笔）；R3=A5/A6/A9/A10 夹具收敛；R4=A7/A8/A13 探针滚除车+A12 注释同 diff；R5=权威断言按架构分钉（x86 2^47/aarch64 2^48/riscv 2^38，现非 riscv 分支统一 2^48 对 x86 偏松）。
+
+**验收**：doc-style-lint --diff 零 error（SL-5 一处按假设性推理改写后清零）；正文无日期；提交只含文档+脚本（WORKLOG 本条不随提交，防混入主线程热文件内容——主线程 340 已提交后此项风险已消，仍按约定 WORKLOG 留工作树）。
+
+## §续-342 t_memcpy(riscv) 定案：计算层洗清 + 真机分歧＝非确定性内存污染（三级判据链）
+
+**任务**（交接 prompt §一.1 第一优先）：t_memcpy 是 riscv64 ATF 套件唯一 failed（`t_memcpy.c:99 strcmp(result, goodResult) != 0`，期望 MD5 `7b405d24bc03195474c70ddae9e1f8fb`；aarch64 同案已过）。处方=本地补丁打印 result 二分。
+
+### 腿 1：裸机对账（新方法，qemu-system semihosting 裸跑，分钟级）
+
+qemu-user 未装，改用 `qemu-system-riscv64 -machine virt -bios none -semihosting-config enable=on,target=native -kernel <elf>` 直接裸跑 picolibc（自带 crt0，不经我方内核/加载器）。关键装配经验（三坑）：①RISC-V semihosting 魔法序列（`slli zero,zero,0x1f; ebreak; srai zero,zero,7`）**必须未压缩**——汇编器默认 RVC 会把 ebreak 编成 `c.ebreak`(0x9002)，QEMU 的 trans_ebreak 按未压缩 0x00100073 精确匹配，压缩形态不触发拦截（裸探针 hello 用 `.option norvc` 修出 "hello semihost"）；②`stdout` 符号定义在 libsemihost.a 的 `iob.c.o`，仅 printf/putchar 引用不足以拉入该成员，链接必须 `-Wl,--start-group libsemihost.a -lc -Wl,--end-group`（ATF 门同款 group 形态的原因所在）；③裸 `_start` 未初始化 gp 时 `la` 被松弛成 gp 相对寻址、指向垃圾——最小探针的 SYS_EXIT 参数块读失败即此（探针瑕疵非平台问题）。
+
+对账程序 `check_bare.c`：与失败二进制**同批对象文件**（`os/target/atf/riscv64/tests/{md5,random}.o`，build-atf-test.sh 同旗标编译件）+ runTest 逐行复刻（t_memcpy.c:56-76）+ 忠实缓冲身份结构（bss1/bss2 全局 + auto1/auto2 栈块经 start[] 分发 12 有序对，t_memcpy.c:43-100 全同形）。读数（qemu-system 裸机）：**3/3 逐位 MATCH**，md5=7b405d24，12 对累积态与宿主 x86 构建逐位全同。
+
+**自污染教训（方法论）**：探针首个版本在 main 开头打印 5 个 random() 值「验流」却未重播种——MD5 流被推进 5 个值，跑出**可复现的假 MISMATCH**（d5c041a6），且 riscv/宿主两环境逐位一致地「错」（反而证明了编译件跨架构一致性）。§续-283 的 host check 恰好因加了二次 srandom 而 MATCH。修正（打印后重播种）后真 MATCH。**对照实验里「诊断打印污染被测流」与 gh74 观察者效应同族，取证探针必须先测自身扰动。**
+
+连带修正 §续-340 的一处表述：riscv 的 memcpy **正是** `memcpy-asm.S.o`（armap 实测），只是它本身就是 `lb/sb` 前向逐字节循环（0x16B，无字/向量优化）——「非 memcpy-asm.S 成员」的说法按实测更正；两架构 memcpy 形状等同的结论不变。
+
+### 腿 2：上机单案探针（t_memcpy_probe.c，tmp/ 本地补丁纪律）
+
+探针设计：逐对打印 MD5 累积态（P 行）+ 栈写读回校验（RB 行，判据采集在 printf 之前）+ RESULT 全值 + PTRS。装配：`build-atf-test.sh tmp/.../t_memcpy_probe.c riscv64`（新名不覆盖原产物）+ rc_probe.imgrd（p1/p2/p3 哨兵+单案 exec）+ 全量播种 proto（18 案+4 bin——**精简播种会触发 /bin/sh exec 回 ENOSYS=78 的未归因异常，见下**）+ `boot_probe.sh`（门脚本 Stage 4-5 配方驱动，含防假绿 rm -f 与 'panicked' 判据补丁）。
+
+读数对照裸机参考：
+- **run1**：P(0,1)/P(0,2)/P(0,3)/P(1,0) 四对**逐位一致**（含 auto1 首次参与的 (0,2)——「栈首触」不是分歧判据）；**P(1,2) 起全部分歧**，RESULT=400c7373…；RB 通过；auto1=0x3fffffecf0（§续-338 修复后新栈顶区）。
+- **run2**（同镜像同二进制）：**P(0,1)（纯 .bss 对）即歧**，RESULT=2d1d1f4d…，RB 通过，auto1 漂到 0x3fffffec70（+0x80 帧差）。
+
+**分歧 pair 跨 boot 漂移 + 同镜像点火结果不稳定 ⇒ 非确定性**。
+
+### 腿 3：系统级不稳旁证（同一镜像 4 次点火）
+
+- 点火 1（run1）：完整跑通（污染只伤 MD5）。
+- 点火 2：VM `boot.rs:453 reconcile: free [0x80600000,0x82000000) overlaps deducted [0x0,0x6d636e797361)`——deducted 末值=ASCII "asyncm"，**模块布局与 run1 完全相同**（imgrd 定长 4096 块，内容差仅 32B），启动期读到瞬态垃圾；同 boot `nk4a: kdst copy len=1` 异常（run1 同行 len=0x2f）。
+- 点火 3：rc 起来（marker+p1/p2/p3 过）后内核 `Option::unwrap()` panic + `sh: cannot fork`，探针未跑到；同窗 `nk4a: vmmL` 探针显示栈 region [0x3fffbff000,0x400000) 正常在册。
+- 点火 4（run2）：完整跑通，分歧从 (0,1)。
+
+### 判决与影响
+
+1. **计算层完全洗清**：random.o/md5.o/memcpy(picolibc 字节循环)/runTest 在 riscv64 编译件下平内存执行逐位正确（3/3），随机流在前 4 对逐位一致进一步排除 random。
+2. **真机分歧＝跨 boot 漂移的非确定性内存污染**，打击面随 boot 变化（run1 栈区、run2 纯 .bss 对、点火 2 VM boot 数据、点火 3 内核 unwrap）——单一机制多面孔。
+3. **t_memcpy 是传感器不是 bug**：全套件唯一做长程全量内容 MD5 对账的案，其他案只断言返回值，污染先在这里定量显形。aarch64 无此现象 ⇒ riscv64 特有。
+4. **目标③ riscv 全绿的解锁条件改写**：不是修测试，是修「riscv64 非确定性内存污染」——即旧台账复核（§续-349）的 (A)/bit38 家族残影。两条线合并为同一工作项，升格为 blocker。具体候选修已在台账有设计：§续-300 逐出守卫 IN_CACHE 所有权判别（free_pages victim 判别不了「缓存独持 ref vs 新主单 ref」，可能逐出在用表帧→reuse-DATA 洪水）、§续-325 fill 腿补 slot 簿记（fill-root 直写叶 PTE 绕过 VM region 簿记）。
+5. **负结果澄清**：`w-finw`（kernel_call_finish 回执直写探针，syscall.rs:3965）去重键=(site,va_page,pa_page)**跨进程全局共享**——同 VA 多帧是进程更替（每次 exec 换栈帧）的正常形态，run1 的「11 填 11 帧」不能当 refault 实锤读。
+6. **open 未归因**：精简 imgrd（仅 1 测试文件+2 bin）点火时 init `can't exec /bin/sh for /etc/rc: ENOSYS`（本仓 ENOSYS=78 非 Linux 38）；全量播种后不复现。装配敏感性与污染是否同根未知。
+
+### 下一步（§续-343 起）
+
+目标③ riscv 改道：§续-343/344 的「全绿跑/aarch64 回归」推迟到污染修复之后（避免烧 3600s 窗跑统计性失败的门）；先攻污染根因（§续-349 升格）：以 §续-300 逐出守卫修为第一候选（有具体设计+判别性读数），fill 簿记（§续-325 靶②）备选；每步用本探针（裸机 MATCH 基线+机上 P 序列）做改前改后的定量对账。
+
+产物（全部 tmp/，不入库）：`tmp/nk4a/tmemcpy_bisect/`——check_bare.c/check_bare_v2.c（裸机对账+孪生）、t_memcpy_probe.c（上机探针 v1/v2）、boot_probe.sh（点火驱动）、reference_baremetal.txt（12 对参考态）、machine_run1.log/machine_run2.log（真机串口存档）、bare_{1,2,3}.txt（裸机三跑）、hello.S（semihosting 最小探针）。
