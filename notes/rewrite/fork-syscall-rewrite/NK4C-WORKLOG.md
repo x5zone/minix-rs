@@ -12485,3 +12485,9 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **身份修正**：kill tgt=0xc = slot 0xc + endpoint 0x800c + pf-inrct state=exiting = **rc shell 本身**（§续-323/324 的「init」称呼纠正）。**矛盾收口**：M1 dump 证 rc 的链三级全 V、叶 PTE=0x2724f4df（V|R|W|X|U|G|A|D 全旗标→PA 0x9c93d000 完全有效）——**硬件页表层面映射存在且可写可执行**，但 rc 对同页 0x7fffffffef90 反复页故障、VM 回 noaddr、kernel 杀之。⇒ **页表硬件视图与 VM region 簿记脱节**：VM 的 handle_pagefault 在 region 簿记里找不到该 VA 的可解析映射（noaddr）——fill-root 直写叶 PTE 绕过了 region/slot 簿记（fill 直写 PTE 但 slot 簿记未记），后续故障时 VM 的簿记查询路径返回未映射。
 
 **§续-326 靶（真根因收口）**：①VM handle_pagefault 对 va=0x7fffffffe000 的簿记查询路径审计（region.find 为什么 noaddr——fill-root 直写 PTE 时 slot 簿记是否记了 Mapped）；②修=fill 腿补 slot 簿记（或 noaddr 判定改查硬件链兜底）；③修后 rc 不再 refault → marker 现身 → §7（≥3 轮+双 marker+host）→ riscv 三目标 → Phase E。
+
+## §续-326（2026-10-04·fill 簿记审计：fill 腿 map/update_flags+walk-flip/wb-FAIL 全 ✓ 簿记健全——noaddr 来自**下一次故障**的 regions.find_mut→None（"no-region" 出口）；§续-327=第二故障的 region 查询失败归因）
+
+**审计结果**：fill 腿（handle_pagefault→fill）的簿记**健全**——map/update_flags/remap 走 region 槽（physblocks=Mapped）+walk-flip 静默（紧邻两 walk 一致）+pte-wb-FAIL 静默（写回验证通过）——fill 后 PTE 与槽簿记双记 ✓。**noaddr 的真出口=下一次故障的 `regions.find_mut(va)`→None（"no-region" 探针，vm_server.rs:1477）**——即 fill 之后的**第二次故障**，VM 在 region 簿记里找不到该 VA 的 region。候选=①exec 重建在 fill 与第二故障之间替换了 regions（旧 regions 指针失效）②slot 状态翻转（get_active 对第二故障返回不同视图）③memreq 腿与 PF 消息腿的 proc 解析路径差异。
+
+**§续-327 靶**：①第二故障的 no-region 出口加诊断（打 target/slot/regions.len）→ 定位 regions 查询失败的精确条件；②对照 memreq 腿（get_active）与 PF 消息腿（proc 解析）的 region 表实例同一性；③坐实后修（region 表实例统一/状态保持）→ rc 不再 refault → marker → §7 → riscv 三目标 → Phase E。
