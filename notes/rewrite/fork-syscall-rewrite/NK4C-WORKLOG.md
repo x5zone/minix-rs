@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-319（600s 长窗判读：全旁路下 (A) walk 崩 0/3 消失——新前沿=RS boot.rs panic(L2)+stall(L1/L3)，marker 仍 0）**：L1/L3=exec=12/pf=0/panic=0/600s 无 marker（stall）；**L2=exec=11/pf=0/RS SIGSEGV**（kill tgt=0xa sig=0xb）→ rs/src/boot.rs panic（:4e6=1254 碎片）+**cr2=0x4000833660（非已知窗族=RS 内野指针）**。对照=无旁路 ~75%/读旁路 100%/全旁路 **0/3**——**(A) walk 崩被内核代读写消除**（§续-310 视图分歧源=VmDm 槽读被绕开）。marker 0=①② riscv 下一层阻塞=RS panic+stall。§续-320 靶=①rs/src/boot.rs:1254 定位（对照 cr2 VA 族判野指针源）②L1/L3 stall 相位（尾部 sa-call 活跃=非死锁是慢或等）③修 RS panic 看 marker④PteReadBuf 批量腿评优（若 stall=代读慢化）。
+> **🛑 最新前沿＝§续-320（RS panic 定位：主死者=MFS 页故障 0x4000833660→VM noaddr→SIGSEGV；RS panic=次生 :1254；L1/L3 stall=活而慢/等）**：rs/src/boot.rs:1254=catch_boot_init_ready 的 unexpected-reply panic（C main.c:799-801 对位）=次生；时序=pf-exit noaddr cr2=0x4000833660→kill tgt=0xa(=MFS，§续-279a 同族) SIGSEGV→RS 收到错误消息→:1254。**主死者=MFS**：VA 0x4000833660=L2[16] 野区（256GB+8.6MiB——非 DM/堆/链接区），形状嫌疑=基指针 0x4000000000+bss 偏移 0x833660（≈mfs bss 尺寸族）。L1/L3 stall=尾部 sa-call 活跃=活而慢/等非死锁。§续-321 靶=①MFS 故障 VA 属性审计（0x4000000000 基从何来）②L1/L3 的 mfs/pfs 行归账③修复二选一=MFS 野指针 in-code 修 vs PteReadBuf 批量腿。
+>
+> **（上一前沿＝§续-319（600s 长窗判读：全旁路下 (A) walk 崩 0/3 消失——新前沿=RS boot.rs panic(L2)+stall(L1/L3)，marker 仍 0）**：L1/L3=exec=12/pf=0/panic=0/600s 无 marker（stall）；**L2=exec=11/pf=0/RS SIGSEGV**（kill tgt=0xa sig=0xb）→ rs/src/boot.rs panic（:4e6=1254 碎片）+**cr2=0x4000833660（非已知窗族=RS 内野指针）**。对照=无旁路 ~75%/读旁路 100%/全旁路 **0/3**——**(A) walk 崩被内核代读写消除**（§续-310 视图分歧源=VmDm 槽读被绕开）。marker 0=①② riscv 下一层阻塞=RS panic+stall。§续-320 靶=①rs/src/boot.rs:1254 定位（对照 cr2 VA 族判野指针源）②L1/L3 stall 相位（尾部 sa-call 活跃=非死锁是慢或等）③修 RS panic 看 marker④PteReadBuf 批量腿评优（若 stall=代读慢化）。
 >
 > **（上一前沿＝§续-318（table 同源修复生效：pfs failed 消失+exec=12 全序列+(A) 崩消失；160s 未达 marker=代读慢化或下游卡点）**：f9/f10（table 同源重生成+全旁路）=exec=12+pf=0+panic=0——boot 镜像读取恢复（table resync 生效）、(A) 崩窗已过；尾部 sa-call/rm-fallback 活跃。判读两可性=崩消失=旁路有效或崩窗未到，需长窗（600s）≥5 跑判读；marker 零=①代读海量 trap 慢化②下游卡点。§续-319 靶=①600s 长窗 ≥3 跑②marker 现身=§7 启动③长窗仍 stall=定位卡点相位+评 PteReadBuf 批量腿/混合模式。
 >
@@ -12429,3 +12431,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **判读**：①(A) 的 walk 崩形已消除（§续-310 穷举的视图分歧源=VmDm 槽读被内核代读绕开）；②新前沿两层=RS boot.rs panic（cr2=0x4000833660 非已知窗族=RS 内野指针/未映射访问）+L1/L3 的 600s stall（代读慢化 or 下游卡点——L1/L3 的尾部 sa-call 活跃=非死锁是慢或等）。③marker 0=三终目标①的 riscv marker 仍未达成。
 
 **§续-320 靶**：①L2 的 RS panic 定位（rs/src/boot.rs:0x4e6=1254 行附近的 unwrap/索引，对照 cr2=0x4000833660 的 VA 族判定野指针来源）；②L1/L3 stall 相位定位（sa-call 之后系统在等谁——600s 串口的尾部活动归账）；③修 RS panic 后看 marker 是否现身；④PteReadBuf 批量腿评优（若 stall=代读慢化）。
+
+## §续-320（2026-10-04·RS panic 定位：主死者=MFS（0xa 页故障 0x4000833660→VM noaddr→SIGSEGV），RS panic=次生（:1254 catch_boot_init_ready 收到错误消息）；L1/L3 stall=活而慢/等非死锁）
+
+**①RS panic 定位**：rs/src/boot.rs:1254 = `catch_boot_init_ready` 的 `panic!("unexpected reply from service: {m:?}")`（m_type≠RS_INIT 分支，C main.c:799-801 对位）——**次生**：时序=pf-exit noaddr cr2=0x4000833660 → kill tgt=0xa(=MFS，§续-279a 同族) SIGSEGV → RS 等 MFS 的 RS_INIT 回复收到错误消息 → :1254 panic。**主死者=MFS**：页故障 VA 0x4000833660（256GB+8.6MiB——非 DM 窗 L2[4]、非堆窗 L2[80]、非模块链接区 L2[0]——L2[16] 野区）→ VM noaddr → SIGSEGV。MFS 野访问的 VA 形状嫌疑=基指针错位（0x4000000000 基+bss 偏移 0x833660≈MFS bss 尺寸族）——in-code/corruption 待分。
+
+**②L1/L3 stall 相位**：600s 尾部 sa-call/rm-fallback 持续活跃（非死锁）——exec=12 后系统在跑但 rc 不完成：活而慢（代读 trap 风暴）或活而等（某服务未 init 完成）。L2 的 MFS 死亡提示 stall 形跑里 MFS 可能也死了/卡了（无 panic 记录=静默卡）。
+
+**§续-321 靶**：①MFS 页故障 VA 0x4000833660 的属性审计（L2[16] 野区——对照 mfs 二进制段布局：0x4000833660 = 0x4000000000+0x833660，0x833660≈mfs bss 尺寸 ⇒ 基指针 0x4000000000 从何来）；②stall 判别：L1/L3 600s 串口的 mfs/pfs 相关行归账（mfs 死没死/卡哪）；③修复方向二选一——MFS 野指针 in-code 修 vs 内核代读慢化的 PteReadBuf 批量腿。
