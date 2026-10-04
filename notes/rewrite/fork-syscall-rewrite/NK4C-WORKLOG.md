@@ -16,6 +16,8 @@
 >
 > **（上一前沿＝§续-323（600s×4 判读稳定：exec=12+pf=0+panic=0 4/4=(A) 崩零复发，旁路有效性确认；新卡点=init(0xc) 页故障 0x7fffffffef90→SIGSEGV——rc 链最后一步）**：M1-M4（600s 窗，全旁路+table 同源）4/4=exec=12+pf=0+panic=0——(A) walk 崩零复发（对照无旁路 ~75%），旁路有效性确认；marker 仍 0/4。新卡点恒定=M1-M4 全部 pf-exit noaddr cr2=0x7fffffffef90→kill tgt=0xc SIGSEGV——0xc=init（exec endpt=0x800c 的 rc/init 链最后一步）在其栈 VA 0x7fffffffef90 页故障→rc 链断→marker 永不现身；cr2 与 fill-root 的 va=0x7fffffffe000 同族高栈=init 栈页的映射/写入问题（fill-root refault 循环同源）。§续-324 靶=①init 的 0x7fffffffef90 故障归因——krewalk 扩展走 init 的 ptroot 链读叶槽现值（同 §续-298-b 法，对象换 init）②判读=叶槽 0 ⇒ fill 写不落⇒与 fill-root 写腿同修③修复后 marker 判读。
 >
+> > **🛑 最新前沿＝§续-337（同 fault 闭合达成：w5/w6 实时走链=叶 PTE 0x2724f0df 全旗标有效，rc 仍 store fault——(A) 症候四要素钉死）**：①QEMU 源码审计点 1 定谳=trans_sfence_vma→gen_helper_tlb_flush 无参数全刷（8.2.x 简化不看 rs1/rs2）+helper_tlb_flush=权限检查后 tlb_flush(cs)——**QEMU sfence 语义无缺陷**；②同 fault 闭合=w5/w6 的 rc 每次故障时内核实时走链（satp root=0x9d6e7000 每boot不同✓+l2/l1/l0 三级全 V+叶 0x2724f0df 全旗标→PA 0x9c93c000）+ec=0x3 store fault 恒定——**RAM 页表正确+sfence 全刷执行+CPU 仍 fault**；③GPT 同 fault 闭合要求达成，剩余=QEMU softmmu 与 RAM 一致性（Q1-Q3）或未知 guest 机制（Q4）；④新线索=rc 早期 fa=0x3ffffc5cc0=VM 内核栈区（exec 参数区残留）。§续-338 靶=①版本矩阵补充（8.2.10 慢化归因+新版本加大窗判 (A) 版本依赖性）②QEMU 8.2.2 cputlb.c 定点读③GPT Q4 falsification（rc 栈内容帧 0x9c93c000 被 reuse-DATA 回收复用候选）。
+>
 > > **🛑 最新前沿＝§续-336（sfence-exec 探针确认执行但 refault 不变+形态漂移再现+GPT 二轮意见落地）**：①S1/S2 确认 sfence 在 finish_and_restore 执行（CAP=8 被早期 fault 消耗）但 R 批 refault 26 次不变——QEMU softmmu 对 sfence 的响应与 RISC-V 规范（x0,x0=全地址空间失效）不符或 fault 机制非 TLB 陈旧——**QEMU 源码定点审计时机成熟**（用户已装 8.2.10/9.2.4 源码树 ~/src/qemu/）；②k1x/k2x（含 KDM 走链探针）形态漂移：fill-root 消失、rc 直接 exiting——(A) 对代码改动敏感第三次实证；③BUG 文档第 10 章已按 GPT 二轮意见重组（4fb462d61 954 行自包含版：H9 拆五支/统一机制降级/PteReadBuf 结论收口/版本矩阵改独立发现/10.9 新问题清单 Q1-Q4）；④§续-330「破案」撤回（跨 run 生命周期伪差）。§续-337 靶=①QEMU 源码定点审计（~/src/qemu/qemu-8.2.10 grep helper_sfence_vma/satp write/tlb_flush 四点）②冻结构建用零扰动手段③PteReadBuf 从 §续-313 5bbece7d2 补丁恢复（修 valid 位图）。
 >
 > > **🛑 最新前沿＝§续-335（双重突破：sfence 判读排除 TLB 假设+findmut-flip 开火+重试×8 成修部分有效）**：①成修前后 rc 同 fa 故障频率逐字节相同（26 次）——TLB 假设排除，26 次 refault=程序逻辑真实重试；②findmut-flip 开火（J3/J4）=find_mut range 返回 None 后紧随重试命中——同一 VA 连续只读查询 None→Some 翻转、中间无写者=平移层不一致最直接实证（§续-159 键序破坏根因）；J1 的 no-region 分支 iter dump=4 region 全正常含栈 region；③重试×8 成修=**G1 完全通过 no-region 关**（retry-hit 治愈），G2 PF 腿治愈后 memreq 腿深坏窗/G3 8 次全 None；marker 仍 0。§续-336 靶=①G2/G3 残留 no-region 路径甄别②深坏窗测量调参③marker 判读。方法论=sfence 判读（频率对比）/翻转判据（最小充分证据）/重试×N=摆动正确缓解。
@@ -12640,3 +12642,15 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **③GPT 二轮意见全部落地**：BUG 文档第 10 章重组（4fb462d61，954 行自包含版）——H9 拆五支（A 旧 NP 未清/B satp 后失效缺失/C VmDm 窗 stale/D heap-stack stale/E guest ordering）、「统一机制」降级为「候选机制」、PteReadBuf 结论收口（「两种代码修改都改变启动结果=对布局/时序高度敏感」）、版本矩阵改「独立发现」（10.0.13+OpenSBI standalone 正常，勿写成 firmware regression）。
 
 **§续-337 靶（下一 session）**：①**QEMU 源码定点审计**（用户已可 sudo 装：源码树在 ~/src/qemu/qemu-8.2.10——grep `helper_sfence_vma`/`satp write`/`tlb_flush` 的 riscv 路径，只看四个点）；②形态漂移对策=冻结构建用零扰动手段（halt-dump/monitor dump 已有 16 份 RAM 库）；③PteReadBuf 代码在 git stash（从 §续-313 5bbece7d2 的补丁恢复）；④rc 用户态硬件 walk vs 内核 KDM 读分歧的最终裁决=QEMU 层 `riscv_cpu_tlb_fill` 的 PTE 直读路径分析。
+
+## §续-337（2026-10-04·同 fault 闭合达成：w5/w6 实时走链=叶 PTE 0x2724f0df 全旗标有效，rc 仍 store fault——(A) 症候四要素钉死）
+
+**①QEMU 源码审计点 1 定谳**（~/src/qemu/qemu-8.2.10）：`trans_sfence_vma`（trans_privileged.c.inc:119）→ `gen_helper_tlb_flush(tcg_env)` **无参数**（8.2.x 简化：任何 sfence.vma 不看 rs1/rs2 全刷）；`helper_tlb_flush`（op_helper.c:383）= 权限检查后 `tlb_flush(cs)`（当前 hart 全量）。**QEMU 8.2.x 的 sfence 语义=全量 flush，无 ASID/VA 细粒度——实现无缺陷**。
+
+**②同 fault 闭合数据**（w5/w6，p5+走链合并输出）：rc(0xc) 每次故障时（内核 trap 分支实时读）——satp root=0x9d6e7000（每 boot 帧分配不同 ✓）+ 走链 l2=0x2724ec01/l1=0x2724e801/**l0=0x2724f0df（V|R|W|X|U|G|A|D 全旗标→PA 0x9c93c000）**+ ec=0x3（store fault P|W 形）恒定。**RAM 页表完全正确 + sfence 全刷执行 + CPU 仍 store fault**——GPT 的「同一次 fault 完整闭合」要求达成，剩余解释空间=QEMU softmmu 与 RAM 的一致性（Q1-Q3）或未知 guest 机制（Q4）。
+
+**③errcode 判读**：ec=0x3 恒定=P|W 形状（riscv64_pf_error_code 的 x86 风格转换）——store fault 确认（非取指/非 load）。且 rc 早期 fault 的 fa=0x3ffffc5cc0=VM 内核栈区（exec 参数区残留线索，§续-325 登记）。
+
+**④形态漂移**：w5/w6 的 rc root=0x9d6e7000≠p6c 的 0x9d6e8000（每 boot 帧分配不同=正常）；k1x 构建（fw 探针）下 fill-root 消失+rc 直接 exiting=代码改动敏感第 N 次实证。
+
+**§续-338 靶（下一 session）**：①QEMU 版本矩阵补充实验——8.2.10 慢化归因（vm_pt_alloc 的 DM 窗写慢化在 QEMU 哪条路径——perf/trace）+ 9.2.4/10.0.13 同测（若新版本只是慢不是死，加大窗口可判读 (A) 在新版本下是否消失=版本依赖性实锤）；②QEMU 8.2.2 源码定点读（helper_tlb_flush/tlb_flush 的 cputlb.c 实现——确认全刷语义与 softmmu 结构）；③GPT Q4 的 guest 侧 falsification（rc 栈内容帧 0x9c93c000 是否被 reuse-DATA 回收复用=栈内容被破坏的候选——数据帧与栈内容混用的 region 簿记审计）。

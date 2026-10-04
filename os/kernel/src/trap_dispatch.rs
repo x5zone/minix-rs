@@ -2106,6 +2106,40 @@ unsafe fn riscv64_pagefault_body(
             P5Console::write_str(" ec=");
             P5Console::write_hex(errcode as u64);
             P5Console::write_str("\n");
+            // §续-337 核心判据（GPT P1/P2 要求的同 fault 闭合）：用本次
+            // fault 的 satp root 走三级链读叶 PTE——26 次 refault 中叶值
+            // 序列直接裁决「RAM 中叶 PTE 循环期间到底是什么」。
+            if ppn << 12 >= 0x8000_0000 {
+                const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                let kdm = |pa: u64| unsafe {
+                    ((KDM + pa) as *const u64).read_volatile()
+                };
+                let mut pa = ppn << 12;
+                let mut ok = true;
+                for sh in [30u64, 21, 12] {
+                    let idx = (fault_addr >> sh) & 511;
+                    let slot = pa + idx * 8;
+                    if slot < 0x8000_0000 || slot >= 0xA000_0000 {
+                        P5Console::write_str(" p5walk oor slot=");
+                        P5Console::write_hex(slot);
+                        ok = false;
+                        break;
+                    }
+                    let v = kdm(slot);
+                    P5Console::write_str(" l");
+                    P5Console::write_hex(if sh == 30 { 2 } else if sh == 21 { 1 } else { 0 });
+                    P5Console::write_str("=");
+                    P5Console::write_hex(v);
+                    if v & 1 == 0 { ok = false; break; }
+                    pa = ((v >> 10) & 0xF_FFFF_F) << 12;
+                }
+                if ok {
+                    let leaf = kdm(pa);
+                    P5Console::write_str(" leaf=");
+                    P5Console::write_hex(leaf);
+                }
+                P5Console::write_str("\n");
+            }
         }
     }
     // User code runs without the BKL (resched-thunk convention: unlock
