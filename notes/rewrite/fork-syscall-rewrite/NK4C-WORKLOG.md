@@ -12505,3 +12505,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **判读**（H1-H3，600s 窗，全旁路+table 同源）：exec=12/pf=0/panic=0/marker=0——rc 对已填页仍 refault→SIGSEGV→杀→stall（4/4 恒定）。**根因铁证**：同 run 内 setaddr-root=0xffffffff9d6e9000（×2，fix25 掩码后=0x9d6e9000=kernel 绑定的 rc 根）vs fill-root ptroot=**0x9d6e8000**——**相邻页=两个不同的根表**！fill-root 往 0x9d6e8000 的链写 PTE（写读验证 ✓ 因为写读都在同一错误句柄上自洽），但 rc 的 CPU satp=0x9d6e9000 走的是另一棵树——写入永不生效=refault 永续。**§续-165 双句柄判据精确开火**（「若此处印 0x9dc39000 族=双句柄实锤」——当时预测的族号偏差 16 页不影响判定逻辑）。
 
 **§续-329 靶（成修）**：①定位句柄分叉点：exec 路径的 root 分配（vm_handoff/exec_bootproc 的 root page alloc）→ VM 内部谁持 0x9d6e8000 谁持 0x9d6e9000（两个 VmProc entry？两代 exec root？）；②修=句柄单源化（setaddr 的 root 与 VM 内部 pt.root_paddr 必须同帧）；③§7=marker 现身+≥3 轮无 refault+双 marker+host。
+
+## §续-330（2026-10-04·§续-305「破案」撤回：M1 内 setaddr root=0x9d6e8000 与 fill-root ptroot=0x9d6e8000 **一致**——无双句柄；此前跨 run 比对是生命周期伪差；(A) 回到「PTE 有效但 rc 仍故障」的未解态）
+
+**§续-305 破案撤回**：M1 内部对账=setaddr-root=0xffffffff9d6e8000（fix25 掩码后=0x9d6e8000）**与 fill-root ptroot=0x9d6e8000 一致**——无双句柄！§续-305 的「0x9d6e9000 vs 0x9d6e8000」对比跨了 run（0x9d6e9000 来自 z21 的 a8b 时代构建，0x9d6e8000 来自 M1 的 eed 构建）——**不同 run 的帧分配不同**=生命周期伪差。§续-328/329 的「双句柄实锤」同样撤回。
+
+**(A) 回到未解态**：M1 内 root 一致 ✓+链健全 ✓+PTE 有效 ✓+fill 簿记健全 ✓——但 rc 仍对同页 0x7fffffffef90 反复故障→VM noaddr→杀。矛盾=**「PTE 有效但 rc 的 CPU 仍故障」**——这回到了视图分歧（§续-310 穷举的结论：VmDm 读被误导），但内核代读写旁路已消除 walk 崩（§续-319）而 rc 的用户态访问（硬件 walk 非 VmDm）仍故障。
+
+**§续-331 靶（rc 用户态硬件 walk 视角）**：①rc 的 CPU 硬件 walk 与内核 KDM 软读的分歧=QEMU softmmu 层——分析 QEMU softmmu TLB 对 rc 根表的缓存时序（fill-root 写 PTE→KDM 写 sfence→但 rc 的 U 态 TLB 何时刷新？——sfence 在内核态执行，flush 的是当前 hart 的全部 TLB ✓ 应含 rc 的旧项——除非 QEMU 的 sfence 实现有偏差）；②QEMU 版本变体矩阵=终极判据；③PteReadBuf 批量腿=慢化缓解。
