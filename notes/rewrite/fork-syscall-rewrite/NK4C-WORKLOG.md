@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-339（三目标② riscv 命令面达成：新门 `os/qemu-tests/test-cmd-smoke-riscv64.sh` PASS**——marker + `ls /bin` 四项列表 + `cat /etc/rc` 全量回显走 VFS IPC 路径；判据固化两处形态教训：marker 首次命中可能落在 `cat` 回显行内（改用全日志判据＋容错按序正则）、`/tests/*: not found` 不进判据（目标③ 后形态会变）。三目标②现状=x86 ✅/aarch64 ✅/**riscv64 ✅**。下一轮靶=目标③ riscv ATF 上机（`ATF_BOOT_LEG_READY` 加 "riscv64"＋按 aarch64 门派生 `test-atf-riscv64.sh`）。
+> **🛑 最新前沿＝§续-340（三目标③ riscv ATF 上机腿落地：套件在 riscv64 真机跑起来）**——接线三件套=①`tools/build-atf-test.sh` 出生腿 case 扩到 `aarch64|riscv64`（riscv 入口 stub 早已备好，此前只差放行；单案反汇实测 Entry=我方 `_start`）②`os/xtask` 新增 `atf-face` 子命令（`image.rs::atf_face`+`collect_atf_face` 单源重构，给不走 UEFI 盘形的 riscv 产出同源 `rc.imgrd`+`atf-plan.txt`；`ATF_BOOT_LEG_READY` 加 riscv64；xtask 测试 17/0）③新门 `os/qemu-tests/test-atf-riscv64.sh`（配方同 boot-full，判据同 aarch64 的终集计数+一票否决；点火前 `rm -f` 防水）。**首批读数=run1 9 例（8 passed+1 failed）/run2 23 例（21 passed+1 failed+1 skipped，30 分钟窗，推进到 t_strerror）**；**唯一失败=t_memcpy（riscv 独有）**，已排除：random 真源两架构同链（`nm -S` 同尺寸 trampoline）、memcpy 两架构都是字节循环（非 riscv `memcpy-asm.S`）——下一会话用「给测试打本地补丁打印 `result` 实测值 vs 宿主离线 MD5 `7b405d24…`」二分。门窗口 3600s（实测 1.5-2 分钟/例，探针洪流拖慢；Phase E 后回收）。三目标台账：①marker x86/aarch64/riscv ✅；②命令面三架构 ✅；③ATF=aarch64 ✅（34p+2s）/riscv **实跑中，全绿差 t_memcpy 一项**。
+>
+> **（上一前沿＝§续-339（三目标② riscv 命令面达成：新门 ——marker + `ls /bin` 四项列表 + `cat /etc/rc` 全量回显走 VFS IPC 路径；判据固化两处形态教训：marker 首次命中可能落在 `cat` 回显行内（改用全日志判据＋容错按序正则）、`/tests/*: not found` 不进判据（目标③ 后形态会变）。**CodeReview 修复轮 §续-339b：P1=复用 WORK 目录时旧 serial.log 可假绿（修=点火前 `rm -f`，同族同修 ATF 门）；P2×5 分类落地。** 三目标②现状=x86 ✅/aarch64 ✅/**riscv64 ✅**。下一轮靶=§续-340 目标③ riscv ATF 上机（xtask `atf-face` 子命令 + `build-atf-test.sh` riscv 出生腿启用 + `test-atf-riscv64.sh`；首跑已见 9 例终态＝8 passed + 1 failed（t_memcpy＝已知 D1 台账，与 aarch64 同），长窗完整判读在途）。
 >
 > **（上一前沿＝§续-338（定案+修复+验证：rc 循环真根因＝exec 栈顶 `0x7fff_ffff_f000` 超出 Sv39 可寻址上限（≥2^38）＝非规范地址**，CPU 对它的每次访问必然 store page fault——与页表内容/root/sfence 全无关；guest 侧软件走表都不查地址规范性，所以现场自洽到「架构上不可能」。修复＝`minix_types::USER_STACK_TOP` 单一权威（riscv64=`0x3f_ffff_f000`）＋boot-shim 两 builder＋VFS exec 缺省值接入。**CodeReview 修复轮 §续-338b：P0=boot-shim `--features test-all` 两断言在宿主编译下回归（改接线断言＋编译期不变式，已回 27/0）；P2×4 全部落地（C 锚点写全/常量文档改 `cfg!` 形/探针读帧内 sstatus 快照/登记 `MMAP_TOP=2^41` 为后续目标）**。**干预验证：p7b `halt-detect=2`＝riscv64 首次打出 `minix-rs rc: minimal boot script marker`**（exec=13/no-region=0/kill=0/panic=0），p5 故障族由 `0x7ffff...` 迁移为 `0x3fffff8/9/a...` 普通按需填页；修复轮后 p7e 复验同形（3765 行）。旧账修正：§续-337「四要素」是本缺陷现场（不是矛盾）；H9「QEMU softmmu 分歧」在 rc 循环上消解；版本矩阵 1800s 大窗新读数=8.2.10/9.2.4 均 exec=12/走表崩 0/no-region 1（客侧缺陷跨版本同形）；「(A) 对任何改动敏感」＝非规范地址决定谁先踩到它。§续-339 靶=①三目标②riscv 命令面 ③NS5-B kerninfo 读腿接线 ④MMAP_TOP 分架构。方法论：先算地址规范性再怀疑页表/模拟器；软件走表≠硬件走表；跨架构地址常量必须类型层分架构；共享常量的既有断言必须按目标重审。）
 
@@ -12771,3 +12773,27 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 **方法论（本轮新增）**：
 1. **固定路径的日志/证据文件必须在每轮开始前删除**——"复用工作目录"的便利与"读到上一轮证据"的假绿是同一枚硬币的两面；修复成本一行，漏掉则整条绿门不可信。
 2. **同一错误模式要在同族脚本中一次收口**：本门的 P1 在新写的 ATF 门里同样存在（同一作者同一模板），修复必须跨脚本做，而不是只修被评审的那一个文件。
+
+## §续-340（2026-10-05·三目标③ riscv ATF 上机腿落地：套件在 riscv64 真机跑起来——首批读数 21 passed + 1 failed（t_memcpy，D1 家族）+ 1 skipped（t_popcount，与 aarch64 同）/23 例终态于 30 分钟窗；接线三件套=xtask `atf-face` + `build-atf-test.sh` riscv 出生腿 + 新门 `test-atf-riscv64.sh`）
+
+**背景**：目标③（586 个 minix3 ATF C 测试上机）此前只有 aarch64 腿（§续-286：34 passed + 2 skipped + 0 failed）。riscv 腿被两件事门住：①§续-338 的 exec 栈顶缺陷（已修）；②ATF ELF 的出生链——riscv 腿一直链 picolibc 默认 crt0（sp 切 ELF 内 .stack + `main(0,NULL)`，§续-277 定谳为坏），自定义出生腿（`-nostartfiles` + `startup-minix.c`）只在 aarch64 启用。
+
+**本笔三件（接线，非全绿）**：
+
+1. **`tools/build-atf-test.sh`**：出生腿 case 从 `aarch64)` 扩为 `aarch64|riscv64)`——`startup-minix.c` 的 riscv 入口 stub（`call startup_c_main`，a0=ps_strings）早已备好，此前只差放行。2026-10-05 实测：riscv 单案（t_memchr）链接后 `Entry = 我方 _start`、ET_EXEC、过 minix-elf ehdr 硬校验；全套件 18 案 + p1/p2/p3 一次构建通过。
+2. **`os/xtask`：新增 `atf-face` 子命令**（`image.rs::atf_face` + `collect_atf_face` 单源重构）——riscv64 的启动形不经 UEFI 盘形装配（`xtask image --arch riscv64` honest bail），但 ATF 面需要的两件产物必须与 aarch64 同源：`rc.imgrd`（`/tests/<prog> <tc>` 注入 `exit 0` 前）+ `atf-plan.txt`（门的期望数唯一真源）。重构把 `plan()` 的 ATF 段抽成 `collect_atf_face` 共用；`ATF_BOOT_LEG_READY` 白名单加 "riscv64"（出生腿已就绪）。dry-run 输出 36 条 exec 行 / 21 个 prog（18 案 + 3 探针）。`cargo test -p xtask` 17/0。
+3. **`os/qemu-tests/test-atf-riscv64.sh`**（新门）：装配配方同 boot-full/cmd-smoke（逐包构建 → `atf-face` → imgrd 播 /tests + rc 变体（4096 块）→ mfs/kernel-image → table+dtb → OpenSBI 直载），判据逻辑与 `test-atf-aarch64.sh` 同源（终集计数 = passed+failed+broken+skipped，failed/broken 一票否决，停滞 120 轮判 STALLED）；并自带 §续-339b 的"点火前 `rm -f` 日志"防线。
+
+**首批读数（两次运行，同一构建）**：
+- run1（420s 窗）：9 例终态 = 8 passed + **1 failed：`t_memcpy.c:99 strcmp(result, goodResult) != 0`** + 0 skipped。
+- run2（1800s 窗）：23 例终态 = 21 passed + 1 failed（同一条 t_memcpy）+ 1 skipped（t_popcount，与 aarch64 的 2 skip 同族；riscv 上 run_popcount 默认门控）。推进到 t_strerror 段。
+- **结论**：riscv ATF 上机腿**通了**（出生链、ps_strings、SYS_DIAGCTL stdio 桥、PM exit、VFS lstat 往返全部实跑），与 aarch64 的差距收敛到**单条 t_memcpy**。
+
+**t_memcpy（riscv 独有）的已排除项（下一会话用"打印 result"二分收口）**：
+- 两架构二进制都链**我方的 BSD random 真源**（§续-283 修复；`nm -S` 实测 `random`/`srandom` 为同尺寸 trampoline，非 picolibc LCG）——随机序不是分歧点。
+- 两架构 `memcpy` 都是**字节循环**（反汇编实测；非 picolibc 的 riscv `memcpy-asm.S` 成员）——memcpy 实现不是分歧点。
+- aarch64 历史（`tmp/nk4a/atf-gh161..163`）在同一行 `t_memcpy.c:99` 失败过，修 D1/strerror 后转绿——riscv 侧属**同族但另有分支**（next：给测试打本地补丁打印 `result` 实际值，与宿主离线对账 MD5 `7b405d24…` 比对）。
+
+**节奏与门参数**：riscv 上机约 1.5-2 分钟/例（探针洪流拖慢串口，`ptalloc-reuse-DATA` 每例 ~百行）；36 例全绿在 1800s 内到 23/36，门窗口按 60 分钟给足（3600s），Phase E 滚除探针后回收。
+
+**三目标台账（本笔后）**：①三架构 marker=x86 ✅/aarch64 ✅/riscv ✅（§续-338）；②18-stage 命令面=x86 ✅/aarch64 ✅/riscv ✅（§续-339）；③ATF 上机=aarch64 ✅（§续-286）/riscv **接线完成、实跑中**（21 passed+1 failed+1 skipped / 23 例，全绿差 t_memcpy 一项）。

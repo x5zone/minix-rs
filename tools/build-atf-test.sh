@@ -105,12 +105,13 @@ name="$(basename "$TEST" .c)"
 # 上机出生链（启动腿）：picolibc 默认 crt0 把 sp 切进 ELF 内 .stack 且
 # main(0,NULL)（atf tp_main 解引用 argv[0] 必死），需 -nostartfiles 换
 # startup-minix.c 的自定义 _start（从内核 ps_strings 取 argc/argv，对位
-# minix-rt 出生 ABI）。当前仅 aarch64 腿启用（上机目标）；riscv 腿沿用
-# 默认 crt0（其出生链上机受 (A) 门控，解锁后一并切换）。
+# minix-rt 出生 ABI）。aarch64 腿于 §续-277 启用；riscv 腿在 (A) 栈顶缺陷
+# 修复（§续-338）后同形启用——两架构入口 stub 均在 startup-minix.c 内
+# （riscv 无 TLS 寄存器步骤，见该文件 riscv 分支注释）。
 STARTUP_O=()
 LINK_EXTRA=()
 case "$ARCH" in
-    aarch64)
+    aarch64|riscv64)
         "$CC" -c -Os "${MC[@]}" "${SYS[@]}" -I"$COMPAT" "$COMPAT/startup-minix.c" -o "$BUILD/startup-minix.o"
         STARTUP_O=("$BUILD/startup-minix.o")
         LINK_EXTRA=(-nostartfiles) ;;

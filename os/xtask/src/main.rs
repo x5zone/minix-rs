@@ -74,6 +74,16 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
+    /// 生成 ATF 上机面（rc 变体 + atf-plan.txt）——给不走 UEFI 盘形装配的
+    /// 架构（riscv64 OpenSBI 直载）播种；用例表/注入规则与 `image` 同源
+    AtfFace {
+        /// 目标架构（aarch64 / riscv64）
+        #[arg(long, default_value = "riscv64")]
+        arch: String,
+        /// 只打印不落盘
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -102,6 +112,10 @@ fn main() -> anyhow::Result<()> {
         } => {
             let arch = image::Arch::parse(&arch)?;
             qemu::run(arch, img.as_deref(), serial.as_deref(), dry_run)
+        }
+        Commands::AtfFace { arch, dry_run } => {
+            let arch = image::Arch::parse(&arch)?;
+            image::atf_face(arch, dry_run)
         }
     }
 }

@@ -299,43 +299,15 @@ pub fn plan(
     // tools/build-atf-test.sh 产出），文件存在才播；首案 t_memchr（纯内存面，
     // 不依赖 fork/exec/VFS 桥）+ p1/p2/p3 上机二分探针（tools/atf-c-compat/probes/，
     // 分别验裸桥/stdio/malloc 腿）。盘上落 /tests/<name>，rc 尾段 exec。
-    // 架构门（CodeReview 续-277b P1-2）：只给“自定义出生腿已就绪”的架构播——
-    // 当前仅 aarch64（build-atf-test.sh 的 -nostartfiles+startup-minix.c 只在该
-    // 腿启用；riscv 腿仍链 picolibc 默认 crt0，其 sp 切 ELF 内 .stack+main(0,NULL)
-    // 已被 §续-277 定谳为坏），riscv 解锁出生腿后把 slug 加进白名单即放行。
-    const ATF_BOOT_LEG_READY: &[&str] = &["aarch64"];
-    let atf_test_rel = |name: &str| format!("target/atf/{}/tests/{name}", arch.slug());
-    let mut atf_tests: Vec<(&str, String)> = Vec::new();
-    // 续-278：套件面 exec 行（注进 rc 变体）与门 manifest（"prog tc" 逐行）。
-    let mut rc_execs: Vec<String> = Vec::new();
-    let mut atf_plan: Vec<String> = Vec::new();
-    if ATF_BOOT_LEG_READY.contains(&arch.slug()) {
-        for (prog, src_rel) in ATF_SUITE {
-            let elf = layout.os_root.join(atf_test_rel(prog));
-            if !elf.is_file() {
-                continue;
-            }
-            let src = layout.os_root.join("..").join(src_rel);
-            let src_text = std::fs::read_to_string(&src)
-                .unwrap_or_else(|e| panic!("ATF 套件 {prog}：读源 {} 失败：{e}", src.display()));
-            let tcs = extract_atf_tc_names(&src_text);
-            assert!(
-                !tcs.is_empty(),
-                "ATF 套件 {prog}：{} 未提取到任何 `ATF_TC(name);`——声明面与提取器漂移，拒绝静默装配",
-                src.display()
-            );
-            atf_tests.push((prog, atf_test_rel(prog)));
-            for tc in &tcs {
-                rc_execs.push(format!("/tests/{prog} {tc}"));
-                atf_plan.push(format!("{prog} {tc}"));
-            }
-        }
-        for name in ["p1", "p2", "p3"] {
-            if layout.os_root.join(atf_test_rel(name)).is_file() {
-                atf_tests.push((name, atf_test_rel(name)));
-            }
-        }
-    }
+    // 单源：用例表/rc 注入规则 = [`collect_atf_face`]（`xtask atf-face` 子命令
+    // 同源消费——riscv64 不走 UEFI 盘形装配，用该子命令拿同一套 rc 变体+manifest）。
+    let (atf_tests, rc_execs) = collect_atf_face(arch, layout)?;
+    // 门 manifest（"prog tc" 逐行）= rc exec 行去掉 `/tests/` 前缀（同一序列，
+    // 不做第二份拼接，防两处漂移）。
+    let atf_plan: Vec<String> = rc_execs
+        .iter()
+        .map(|line| line.trim_start_matches("/tests/").to_string())
+        .collect();
     // rc 变体：套件 exec 行注进 `exit 0` 之前（os/etc/rc 保持静态哨兵面，
     // 套件面单源在 ATF_SUITE+minix3 C 源）。
     let rc_variant_rel = format!("target/image/{}/rc.imgrd", arch.slug());
@@ -363,7 +335,7 @@ pub fn plan(
         });
     }
     let atf_refs: Vec<(&str, &str)> =
-        atf_tests.iter().map(|(n, p)| (*n, p.as_str())).collect();
+        atf_tests.iter().map(|(n, p)| (n.as_str(), p.as_str())).collect();
     // 根盘容量随套件存在性放大（无套件架构逐字节同旧，CodeReview 续-278）。
     let imgrd_blocks = if atf_tests.is_empty() { IMGRD_BLOCKS } else { IMGRD_BLOCKS_SUITE };
     actions.push(Action::Write {
@@ -611,6 +583,115 @@ pub fn inject_rc_execs(rc_text: &str, exec_lines: &[String]) -> String {
 /// 无固定上限）。proto 头部与 mkfs 参数共用同一值（单点，不再两处手写）。
 pub const IMGRD_BLOCKS: u32 = 2048;
 pub const IMGRD_BLOCKS_SUITE: u32 = 4096;
+
+/// 自定义出生腿（`-nostartfiles` + startup-minix.c）已放行的架构白名单。
+/// riscv64 于 §续-338（exec 栈顶 Sv39 规范地址修复）后与 aarch64 同形启用——
+/// 此前 riscv 腿链 picolibc 默认 crt0（sp 切 ELF 内 .stack + main(0,NULL)），
+/// §续-277 已定谳为坏。
+const ATF_BOOT_LEG_READY: &[&str] = &["aarch64", "riscv64"];
+
+/// 收集一台架构的 ATF 上机面（单源）：返回
+/// `(tests[(prog, host-rel-path)], rc_exec_lines)`。
+///
+/// 用例表来自 [`ATF_SUITE`]（18 案清单）并对每个 prog 从 minix3 C 源提取
+/// `ATF_TC(name)` 声明——提取为空即拒绝静默装配。`p1/p2/p3` 桥面哨兵无条件
+/// 追加（存在才播）。`plan()`（UEFI 盘形装配）与 [`atf_face()`]（非 UEFI 启动
+/// 形的产物面）共用本函数，保证 rc 注入序列与 manifest 永远同源。
+fn collect_atf_face(arch: Arch, layout: &Layout) -> Result<(Vec<(String, String)>, Vec<String>)> {
+    let mut tests: Vec<(String, String)> = Vec::new();
+    let mut rc_execs: Vec<String> = Vec::new();
+    if !ATF_BOOT_LEG_READY.contains(&arch.slug()) {
+        return Ok((tests, rc_execs));
+    }
+    let atf_test_rel = |name: &str| format!("target/atf/{}/tests/{name}", arch.slug());
+    for (prog, src_rel) in ATF_SUITE {
+        let elf = layout.os_root.join(atf_test_rel(prog));
+        if !elf.is_file() {
+            continue;
+        }
+        let src = layout.os_root.join("..").join(src_rel);
+        let src_text = std::fs::read_to_string(&src)
+            .unwrap_or_else(|e| panic!("ATF 套件 {prog}：读源 {} 失败：{e}", src.display()));
+        let tcs = extract_atf_tc_names(&src_text);
+        assert!(
+            !tcs.is_empty(),
+            "ATF 套件 {prog}：{} 未提取到任何 `ATF_TC(name);`——声明面与提取器漂移，拒绝静默装配",
+            src.display()
+        );
+        tests.push((prog.to_string(), atf_test_rel(prog)));
+        for tc in &tcs {
+            rc_execs.push(format!("/tests/{prog} {tc}"));
+        }
+    }
+    for name in ["p1", "p2", "p3"] {
+        if layout.os_root.join(atf_test_rel(name)).is_file() {
+            tests.push((name.to_string(), atf_test_rel(name)));
+        }
+    }
+    Ok((tests, rc_execs))
+}
+
+/// 生成 ATF 上机面产物（不依赖 UEFI 盘形装配）。
+///
+/// riscv64 的启动形是 OpenSBI 直载 + BootFileTable（见
+/// `os/qemu-tests/test-riscv64-boot-full.sh`），不经 `xtask image` 的 ESP 盘形；
+/// 但 ATF 套件面需要的两件单源产物必须与 aarch64 完全同源：
+///   - `target/image/<arch>/rc.imgrd`：`os/etc/rc` + `/tests/<prog> <tc>` exec 行
+///     （注在 `exit 0` 前，规则=[`inject_rc_execs`]）；
+///   - `target/image/<arch>/atf-plan.txt`：`prog tc` 逐行 manifest（门的期望
+///     数唯一真源）。
+///
+/// stdout 每行打印一个待播种 prog 名——调用方据此把 `/tests/<prog>` 播进
+/// imgrd（riscv 装配脚本的 proto 生成用）。
+pub fn atf_face(arch: Arch, dry_run: bool) -> Result<()> {
+    if !ATF_BOOT_LEG_READY.contains(&arch.slug()) {
+        bail!(
+            "{} 未在 ATF 出生腿白名单内（ATF_BOOT_LEG_READY）——先放行该架构的 \
+             -nostartfiles 出生腿",
+            arch.slug()
+        );
+    }
+    let layout = Layout::from_env();
+    let (tests, rc_execs) = collect_atf_face(arch, &layout)?;
+    let image_dir = layout.target_root.join("image").join(arch.slug());
+    if rc_execs.is_empty() {
+        bail!(
+            "{} 无任何 ATF 套件产物（target/atf/{}/tests 为空？）——先跑 \
+             tools/build-atf-test.sh",
+            arch.slug(),
+            arch.slug()
+        );
+    }
+    let base = std::fs::read_to_string(layout.os_root.join("etc/rc"))
+        .context("读 os/etc/rc 失败")?;
+    let rc_variant = inject_rc_execs(&base, &rc_execs);
+    let mut plan = rc_execs
+        .iter()
+        .map(|l| l.trim_start_matches("/tests/").to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    plan.push('\n');
+    if dry_run {
+        println!("📦 ATF 面上机计划（dry-run，{arch:?}）：");
+    } else {
+        std::fs::create_dir_all(&image_dir)
+            .with_context(|| format!("创建 {} 失败", image_dir.display()))?;
+        std::fs::write(image_dir.join("rc.imgrd"), rc_variant.as_bytes())
+            .with_context(|| format!("写 {}", image_dir.join("rc.imgrd").display()))?;
+        std::fs::write(image_dir.join("atf-plan.txt"), plan.as_bytes())
+            .with_context(|| format!("写 {}", image_dir.join("atf-plan.txt").display()))?;
+        println!(
+            "✅ ATF 面就绪：{} + {}",
+            image_dir.join("rc.imgrd").display(),
+            image_dir.join("atf-plan.txt").display()
+        );
+    }
+    println!("rc.execs={}", rc_execs.len());
+    for (prog, rel) in &tests {
+        println!("tests.{prog}={rel}");
+    }
+    Ok(())
+}
 
 /// 生成 /etc 最小集的 mkfs 原型文本。
 ///
