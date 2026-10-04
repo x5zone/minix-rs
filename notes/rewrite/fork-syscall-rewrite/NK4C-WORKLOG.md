@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-344（T13 R1+R2 同笔落地：USER_VA_LIMIT 分架构权威 + mmap/remap 用户半区上界校验，审计 13 项中唯一 guest 一条调用即触发的口子闭合）**：①`minix_types::USER_VA_LIMIT` 上线（x86=2^47/aarch64=2^48/riscv=2^38）+per-arch 断言分钉（x86 收紧替换原非 riscv 统一 2^48 松口径）；②arm64 `TCR_T0SZ=16` 提取并与 USER_VA_LIMIT 编译期交叉断言（任一侧漂移即编译失败）；③A4=kernel ipc.rs 私有三分支删除改 use 权威（aarch64 2^47→2^48 归位，错误注释更正）；④A1/A2=MMAP_TOP 派生式（riscv 封顶 2^38，窗/栈重叠由 find_slot overlap 兜底）+REMAP 第二份字面量删除改 use 单源；⑤A3/R2=check_user_range（checked_add+双侧上界）接入 MAP_FIXED/hint/remap-target 三口；越界 hint 拒绝而非静默回退=fail-closed 取舍（Linux 会回退，偏差已记录）。语义取舍记录：limit 注入式纯函数使宿主测试覆盖双架构族值。验证=host 四包+vm 536/0（新测试）+vfs 538/0+boot-shim 27/0+check-layout all+x86 smoke+aarch64 bootmarks rc=0+riscv boot-full 全 PASS；复扫=2^41 独立字面量清零（唯一残留=派生比较点本体）。R3/A5-A6-A9-A10 与 R4/A7-A8-A13 按 §7 排序留后续笔。审计文档 §8 修复轮注记落档。
+> **🛑 最新前沿＝§续-345（T13 R3 小口径 A5+A6 + 续-344 评审闭环 PASS-with-P2）**：①续-344 CodeReview 回执=PASS-with-P2 无 P0/P1（7 项逐核：值-分页事实一致性/交叉断言效力/aarch64 加宽无新增暴露（逐页 U 位门兜底）/find_slot 结构性兜底成立/语义与完整性复扫全过）——P2（两新分支缺全链路测试）+N1（remap 复用单一实现）+N3（T1SZ==T0SZ 注释）已随 §续-344b 落地（test_mmap_fixed_out_of_range_rejected_without_unmap 钉「校验先于 unmap」次序性质+test_mmap_hint_out_of_range_rejected；check_user_range 提 pub(crate) 单一实现；N2 else 兜底无钉=不修，workspace 仅三 target 纯潜在项）；vm 538/0（净增 2）；②A5=BootParams::simple 加 #[cfg(test)] 门+栈顶引 USER_STACK_TOP 权威（VmServer::new 同门，唯一调用方本就 cfg(test)，生产入口 new_with_boot_params 不变）；③A6=mock 布局回退加 riscv64 guest 硬失败（真 handoff 恒 v5，走到回退=版本逻辑已破）。验证=vm 538/0+riscv guest 构建 0 error+riscv boot-full PASS。R3 余量=A9/A10（夹具 user_sp 族 57 行+exec_worker 测试字面量）大面留后续笔；R4 随 Phase E。
+>
+> **（上一前沿＝§续-344（T13 R1+R2 同笔落地：USER_VA_LIMIT 分架构权威 + mmap/remap 用户半区上界校验，审计 13 项中唯一 guest 一条调用即触发的口子闭合）**：①`minix_types::USER_VA_LIMIT` 上线（x86=2^47/aarch64=2^48/riscv=2^38）+per-arch 断言分钉（x86 收紧替换原非 riscv 统一 2^48 松口径）；②arm64 `TCR_T0SZ=16` 提取并与 USER_VA_LIMIT 编译期交叉断言（任一侧漂移即编译失败）；③A4=kernel ipc.rs 私有三分支删除改 use 权威（aarch64 2^47→2^48 归位，错误注释更正）；④A1/A2=MMAP_TOP 派生式（riscv 封顶 2^38，窗/栈重叠由 find_slot overlap 兜底）+REMAP 第二份字面量删除改 use 单源；⑤A3/R2=check_user_range（checked_add+双侧上界）接入 MAP_FIXED/hint/remap-target 三口；越界 hint 拒绝而非静默回退=fail-closed 取舍（Linux 会回退，偏差已记录）。语义取舍记录：limit 注入式纯函数使宿主测试覆盖双架构族值。验证=host 四包+vm 536/0（新测试）+vfs 538/0+boot-shim 27/0+check-layout all+x86 smoke+aarch64 bootmarks rc=0+riscv boot-full 全 PASS；复扫=2^41 独立字面量清零（唯一残留=派生比较点本体）。R3/A5-A6-A9-A10 与 R4/A7-A8-A13 按 §7 排序留后续笔。审计文档 §8 修复轮注记落档。）
 >
 > **（上一前沿＝§续-343（污染根因第一轮排除法：三候选排除/缓解，收窄到 riscv 分页层与 QEMU riscv 交互）**：①§续-300 逐出守卫洞**排除**——run1/run2 真机串口 `nk4c: evict` 行数=0，污染现场逐出路径从未触发，盲修省一轮；②VmDm 写/零填**已内核化非嫌犯**——vmdm 三钩子（read/write/zero）由 VM 注册（bootmark.rs:35-37），PTE 写+整页零填走 KDM 直写+sfence，§续-288 的 flush 缝在该路径已闭合；③污染时序**纯用户态计算窗**——run1 全部 12 条 P 行连续落盘（6697-6708），计算期间零内核可见活动（无 syscall/probe），打击发生在无内核参与的窗口；④架构收窄——aarch64 同 VM 上层全套件 36/36 干净 ⇒ 嫌犯面=arch/src/riscv64 分页层（walk/fill/DM 窗算术）+ kernel riscv 陷阱路径 + QEMU riscv softmmu 交互（in-RAM 错址写家族：错址写不 fault、静默腐蚀，与 bit38 可见 fault 族同源不同相）。下一步=内核侧污染时刻快照工具（探针 P 行为进程内探测器，缺内核侧同窗证据）；每候选修以裸机 MATCH 基线+机上 P 序列做改前改后对账。
 >
@@ -12904,3 +12906,15 @@ qemu-user 未装，改用 `qemu-system-riscv64 -machine virt -bios none -semihos
 7. **验证**：host 四包（types/arch/kernel/vm）0 failed、vm 536/0（净增 1=新测试）、vfs 538/0、boot-shim test-all 27/0、check-layout all PASS、x86 cmd-smoke PASS、aarch64 bootmarks rc=0 PASS、riscv boot-full PASS（marker reached）。riscv guest 侧 minix-vm/minix-types/kernel-image(fw-riscv64-none) 构建 0 error（per-target 常量分支编译验证）。复扫 `address-constant-scan.py`：2^41 独立字面量清零（唯一残留=mmap.rs:217 派生比较点=封顶语义本体）；REMAP/USER_ADDRESS_SPACE_LIMIT 字面量清零。clippy 触及文件零新告警（boot.rs:183 is_multiple_of 机械清理顺手）。审计文档 §8 修复轮注记落档（含复扫口径与「§6 计数系交付时点快照不回改」的声明）。
 
 **下一步**：R3（A5/A6/A9/A10 夹具与注释层）→ NS5-B → Phase E（R4 搭车）；污染根因（§续-343 收窄面）继续并行取证。
+
+## §续-345 续-344 评审闭环（PASS-with-P2→修复轮 344b）+ T13 R3 小口径（A5+A6）
+
+**续-344 CodeReview 回执**（独立复核，含独立复跑测试）：7 项逐核全 PASS——值与分页事实一致（x86 四级无 LA57/aarch64 T0SZ=16/riscv Sv39 三方锚点）；TCR 交叉断言有效力（两侧独立常量，漂移即编译失败）；aarch64 加宽无新增暴露（bound 之外还有逐页 U 位门 ipc.rs:435/480，内核映射不带 U，[2^47,2^48) 无用户映射加宽后行为不变）；MMAP_TOP 派生式的窗/栈重叠由 find_slot gap-clamp 结构性兜底（region_map.rs:207-259「永不返回落入既有 region 的地址」+insert 二道 find_overlap）；语义（checked_add/先校验后 unmap/含端边界/完整性复扫「入口无绕过」全收敛）逐项过。**裁决 PASS-with-P2**。
+
+**续-344b 修复轮**：P2=两条全链路测试（越界 MAP_FIXED 钉「校验先于 unmap」次序性质——既有窗内映射拒绝后完好；越界 hint 拒绝不回退）；N1=check_user_range 提 pub(crate) 供 remap 复用；N3=T1SZ 槽位注释声明恒等意图。N2 裁决不修（未预见 target 无钉=纯潜在，workspace 仅三 target）。vm 538/0。
+
+**A5**：`BootParams::simple` 加 `#[cfg(test)]` 门（生产误用=符号不存在编译期拦截）+栈顶字面量改引 `minix_types::USER_STACK_TOP`（宿主测试按宿主架构取值——顺带消除了「测试断言别的架构的值」的 A10 同族土壤）；`VmServer::new` 同门（唯一调用方 vm_server.rs:2745 本就 cfg(test)，生产入口 `new_with_boot_params` 不变）。
+
+**A6**：mock 布局回退（handoff<v3）加 riscv64 guest 硬失败 `panic!`（mock 形状 dm_vbase=0xFFFF_8000_0000_0000 在 Sv39 非规范；真 handoff 恒 v5 携带真布局，走到回退=handoff 版本逻辑已破）；cfg 分裂保持宿主测试回退可用。
+
+验证：vm 宿主 538/0、riscv guest 构建 0 error、riscv boot-full PASS（marker reached）。**R3 余量**=A9（夹具 user_sp 族 57 行机械替换）+A10（exec_worker 测试字面量）——大面机械活，留后续笔与 Phase E 同窗推进；**R4**（A7/A8/A13）随 Phase E 探针滚除搭车。
