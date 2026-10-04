@@ -12513,3 +12513,24 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **(A) 回到未解态**：M1 内 root 一致 ✓+链健全 ✓+PTE 有效 ✓+fill 簿记健全 ✓——但 rc 仍对同页 0x7fffffffef90 反复故障→VM noaddr→杀。矛盾=**「PTE 有效但 rc 的 CPU 仍故障」**——这回到了视图分歧（§续-310 穷举的结论：VmDm 读被误导），但内核代读写旁路已消除 walk 崩（§续-319）而 rc 的用户态访问（硬件 walk 非 VmDm）仍故障。
 
 **§续-331 靶（rc 用户态硬件 walk 视角）**：①rc 的 CPU 硬件 walk 与内核 KDM 软读的分歧=QEMU softmmu 层——分析 QEMU softmmu TLB 对 rc 根表的缓存时序（fill-root 写 PTE→KDM 写 sfence→但 rc 的 U 态 TLB 何时刷新？——sfence 在内核态执行，flush 的是当前 hart 的全部 TLB ✓ 应含 rc 的旧项——除非 QEMU 的 sfence 实现有偏差）；②QEMU 版本变体矩阵=终极判据；③PteReadBuf 批量腿=慢化缓解。
+
+## §续-331（2026-10-04·session 交接纪要：(A) 穷举收口至 QEMU softmmu 层——全部 in-code 门关闭，旁路有效性确认（walk 崩 0/N），剩余=QEMU 层取证（网络 block）或 QEMU 变体（同）；确定收益已清（D1 清账+table 同源+旁路消除 walk 崩）；下一 session 从 §续-331 三靶或确定收益继续）
+
+**session 累计 62 笔提交**（§续-280..331）。当前态=**目标③ aarch64 ✅**（rc=0 36/36 终态）；**目标①② riscv 未解**——(A) 穷举收口至 QEMU softmmu 层（全部 in-code 门关闭），旁路（内核代读写）已实证消除 (A) walk 崩（0/N vs 无旁路 ~75%）但引出 trap 风暴慢化（160s 窗 rc 跑不完）。
+
+**(A) 穷举矩阵终表**（全部已关闭的门）：
+- ✅root 一致（fix25 掩码/同帧/同构建）
+- ✅链 RAM 健全（krewalk x2：l2e→l1e→l0e→叶 PTE 完整 RWXU）
+- ✅fill 写落地（walk-flip/pte-wb-FAIL 静默=写读自洽）
+- ✅fill 簿记（slot=Mapped+refcount 一致）
+- ✅无双句柄（setaddr root=fill ptroot 同帧同构建）
+- ✅无 free/evict/ptfree/拆除四腿
+- ✅无区域查询失败（no-region 探针零命中）
+- ✅非 VmDm 槽访问层（四腿全内核化仍崩→已回滚）
+- ❌未关闭=QEMU softmmu TLB/TCG 平移层——in-guest 取证已到边界
+
+**§续-331 三靶**：①QEMU softmmu 分析——sfence.vma zero,zero 在内核态执行 flush 全 hart TLB ✓ 理论上含 rc 旧项——除非 QEMU 8.2.2 riscv softmmu 的 sfence 实现有偏差（tlb_flush 范围/ASID 处理/gva vs gpa 翻译缓存分离——需 QEMU 源码级分析或 -d tlbfault 跟踪）②QEMU 版本变体=终极判据（9.x softmmu 重写若消除=实锤+解锁路径=在 9.x 上跑 riscv 全链，证据随版本标注）③PteReadBuf 批量腿=慢化缓解（非修复，是让 marker 有机会在合理时间内现身）。
+
+**确定收益已清**：D1 ✅（§续-284 random 接管 33→34）/D3b ✅（§续-313① pfs failed 消失）/aarch64 门 ✅（§续-286 rc=0）。剩余非 (A) 工作=aarch64 套件扩样（超 36 案的未来增量）+Phase E 探针滚除（等 riscv 三目标达成后）。
+
+**下一 session 首选行动**：①网络恢复→QEMU 变体矩阵（§续-290 blocker 解除→9.x 直通或排除）；②网络仍断→QEMU 8.2.2 sfence 行为源码分析（`apt-get source qemu`→tcg/riscv/sbi helper 路径——需网络）；③两路均堵→PteReadBuf 批量腿落地（消 trap 风暴，让 rc 有机会在 600s 内跑完→marker 可能现身——即使 (A) 未修，旁路+批量腿的组合可能足以让 boot 完成，因为 poison 读路径已消失（读已内核化），慢化是唯一剩余问题）。
