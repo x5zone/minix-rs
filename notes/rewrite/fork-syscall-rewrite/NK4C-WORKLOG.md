@@ -12540,3 +12540,9 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **M1 崩窗序列精读**（noaddr 仅 1 条）：fill-root(va=0x7fffffffe000)×1 → mrr Ok → **exec endpt=0x800c 完成**（rc 起来了）→ fill-root ×2（**rc 的后续 fault 被 do-memory 服务**，同一 va 同一 pte_pa——refault 确认）→ **sa-call 活跃 + rm-fallback addr=0x7fffffffef90 持续出现** → `pf-exit noaddr cr2=0x7fffffffef90` → kill tgt=0xc → csig。⇒ rc 的栈页 0x7fffffffe000 被 fill-root 成功映射（PTE 有效 krewalk 实证），rc 跑了一段时间，然后对**同页内** 0x7fffffffef90 再次故障 → VM 回 noaddr。**页已映射但 VM 查不到**=region/slot 簿记与 PTE 脱节（fill-root 的 fill 走 handle_pagefault→map 路径已更新 slot ✓ 但**后续的 unmap/clear 操作可能清了 slot 而 PTE 残留**——或反向：slot 在但 region.find 因某种条件跳过）。
 
 **§续-327 靶（精确归因）**：①读 handle_pagefault 对 va 的完整查找链（region.find → slot 查 → get_slot）——找出「PTE 有效但 VM 查不到」的精确分支；②fill-root 的 fill 走 handle_memory_once→unmap_page+map_page——unmap_page 清 slot 后 map_page 重设——但**中间**的 PTE 写是否原子（page walk 可能在 unmap 和 map 之间发生→看到 NP→fill→再 unmap=循环）；③对照 C 的 pagefaults.c handle_memory_once——C 是否有同样的 unmap+map 窗口。
+
+## §续-327（2026-10-04·no-region PF 归因实锤：regions.find_mut(0x7fffffffef90) 返回 None——region 在 fill 后被移除；§续-328=谁移除了它）
+
+**实锤**（q1）：`nk4c: no-region pf va=0x7fffffffef90` — handle_pagefault 的 regions.find_mut 对该 VA 返回 None。fill-root 曾成功找到 region 并写入叶 PTE（fill-root 探针开火 ✓），**之后 region 被移除**——下一次 fault 时 find_mut=None。q2 无此行（方差/时序）。pfs failed 在新 table 下也消失（f9/f10 同因）。no-region 探针在 memreq 腿零命中（§续-327 早期探针在 memreq 路径）而 PF 路径本次开火=两条腿到达时 region 状态不同。
+
+**§续-328 靶（谁移除了 region）**：①VM 的 region 移除路径全扫（unmap_range/munmap/exec_rebuild/sas-clear——谁在 rc 运行中移除了栈 region）；②在 region_map.rs 的 remove/移除路径加探针（被移除的 region 的 va 范围+调用方）→ 崩时抓移除者；③坐实后修复（移除条件/引用计数）→ marker → §7。
