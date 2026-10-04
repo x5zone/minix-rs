@@ -36,6 +36,7 @@ done
 for _n in ds rs pm sched vfs memory tty mib vm pfs mfs init; do
     case "$_n" in
         memory) _f=minix-driver-memory ;;
+        tty)    _f=minix-driver-tty ;;
         pfs)    _f=minix-fs-pfs ;;
         mfs)    _f=minix-fs-mfs ;;
         *)      _f=minix-$_n ;;
@@ -78,15 +79,33 @@ PYEOF
 
 rm -f "$SERIAL" "$RAMF" "$MON"
 # shellcheck disable=SC2086
-setsid "$QEMU_BIN" \
-    -machine virt -smp "$SMP_N" -m 512M -bios default \
-    -kernel "$REL/kernel" \
-    -dtb "$IMG/qemu.dtb" \
-    -device "loader,addr=$TABLE_PA,file=$IMG/table.bin,force-raw=on" \
-    $LOADER_ARGS \
-    -serial "file:$SERIAL" -display none -no-reboot \
-    -monitor "unix:$MON,server,nowait" &
-QPID=$!
+if [ -n "${DOCKER_IMG:-}" ]; then
+    # 容器内路径映射：宿主 /home/xzhao/github/minix-rs → 容器 /work
+    C_SERIAL="${SERIAL//\/\/home\/xzhao\/github\/minix-rs//work}"
+    C_SERIAL="${SERIAL/\/home\/xzhao\/github\/minix-rs//work}"
+    C_MON="${MON/\/home\/xzhao\/github\/minix-rs//work}"
+    C_REL="${REL/\/home\/xzhao\/github\/minix-rs//work}"
+    C_IMG="${IMG/\/home\/xzhao\/github\/minix-rs//work}"
+    setsid docker exec -i minix-rs-qemu-10.0.13 qemu-system-riscv64 \
+        -machine virt -smp "$SMP_N" -m 512M -bios default \
+        -kernel "$C_REL/kernel" \
+        -dtb "$C_IMG/qemu.dtb" \
+        -device "loader,addr=$TABLE_PA,file=$C_IMG/table.bin,force-raw=on" \
+        $LOADER_ARGS \
+        -serial "file:$C_SERIAL" -display none -no-reboot \
+        -monitor "unix:$C_MON,server,nowait" &
+    QPID=$!
+else
+    setsid "$QEMU_BIN" \
+        -machine virt -smp "$SMP_N" -m 512M -bios default \
+        -kernel "$REL/kernel" \
+        -dtb "$IMG/qemu.dtb" \
+        -device "loader,addr=$TABLE_PA,file=$IMG/table.bin,force-raw=on" \
+        $LOADER_ARGS \
+        -serial "file:$SERIAL" -display none -no-reboot \
+        -monitor "unix:$MON,server,nowait" &
+    QPID=$!
+fi
 echo "qemu pid=$QPID tag=$TAG"
 
 hit=0

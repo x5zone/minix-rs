@@ -902,3 +902,24 @@ cat /tmp/qemu-src/qemu-8.2.2+ds/plugins/qemu-plugins.symbols
 | P2 | **krewalk 全扩展**：pfvm 冷路径读 ptroot 链全 512 槽 + root[256] dump（§续-322 判据）——不加 VM 侧探针（观测者效应），纯 kernel 侧冷路径 | root[256] 内容=poison 槽判据 |
 | P3 | **RS panic 分析**（§续-320 主死者=MFS 野访问 bit38 族）：MFS 的 0x4000833660 故障是否也是 QEMU 平移层工件（用变体矩阵判读） | MFS/pfs/init 三镜像非 ELF 也可能是 QEMU 层工件 |
 | P4 | riscv 三目标解锁后 → Phase E 探针滚除 + 三终目标当前态证据 | |
+
+### 10.8 QEMU 版本矩阵实验结果（§续-334，2026-10-04）
+
+**版本阶梯已就位**（用户提供）：8.2.2=宿主 apt / 8.2.10+9.2.4=官方源码编译 / 10.0.13=docker rust:trixie。
+
+| 版本 | 内嵌 OpenSBI | boot 推进 | (A) 判读 |
+| --- | --- | --- | --- |
+| 8.2.2 | v1.3 | 8s 完成（~75% (A) 崩） | **基线可判读** |
+| 8.2.10 | v1.3.1 | relocate 后卡死（600s 只走 22 pfn，~1000 倍慢） | 不可判读 |
+| 9.2.4 | v1.3.1 | 同卡 | 不可判读 |
+| 10.0.13 | v1.6 | **OpenSBI 本身 15s 不完**（2870 字节后停） | 不可判读 |
+
+**结论**：所有 >8.2.2 的版本连内嵌固件都跑不完——riscv64 TCG 存在版本间重大行为/性能差异，版本矩阵对 (A) 判读不可行。OpenSBI 解耦实验（8.2.10 + 8.2.2 的 v1.3 固件）仍卡——排除固件变量，卡点在 QEMU 本体。
+
+**慢化归因判别**：把 bootmark 打印降频 1/16 后推进速率不变——排除 mark/trap 风暴；慢在 **vm_pt_alloc 循环本身**（DM 窗写 4096B/页在 8.2.10+ 下极慢——softmmu 对大 DM 窗线性写的 TLB 效率回归）。
+
+**P0.5 实验（GPT 方向，satp 对账）**：rc(0xc) fault 时 satp = MODE 8 / **ASID 0** / PPN 0x9d6e8 → root=0x9d6e8000 = **与 fill-root ptroot 一致** ✓；rc 对 fa=0x7fffffffef90 反复故障 26 次（CAP 内）；no-region 那次 fault 的 p5 行同 root ✓。**CPU 用对了根**——GPT 问题的直接答案。
+
+**§续-334 成修尝试（riscv 恢复点 sfence）**：finish_and_restore 的故障页 flush 原为 x86_64 独占（invlpg）——riscv64 补 `sfence.vma zero, zero`（§续-334，提交在案）。**结果：no-region 仍 1/3 出现，marker 仍 0**——恢复点 flush 不足以消除（符合预期：no-region 是 VM 簿记层的间歇返回 None，非 TLB 层）。
+
+**当前定性（穷举终态确认）**：①(A) walk 崩与 rc refault 循环=同一 QEMU 8.2.2 softmmu 视图/平移层症候群；②全旁路可消除 walk 崩但引出 no-region 间歇（VM BTreeMap 视图偶发被误导）；③版本矩阵被新版本 TCG 回归堵死；④修复路径剩余=QEMU 源码定点分析（sfence/TLB 语义，需装源码）或等 QEMU 社区修复。

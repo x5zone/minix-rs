@@ -77,7 +77,11 @@ pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTa
                     "nk4a: ptalloc-DUP pfn={pfn:#x}\n"
                 ));
             }
-            if DATA_SEEN[word].load(AtomicOrd::Relaxed) & bit != 0 {
+            // §续-334 判别实验（8.2.10 慢化归因，用后还原）：打印降频 1/16
+            static SLOW_N: core::sync::atomic::AtomicUsize =
+                core::sync::atomic::AtomicUsize::new(0);
+            if DATA_SEEN[word].load(AtomicOrd::Relaxed) & bit != 0
+                && SLOW_N.fetch_add(1, AtomicOrd::Relaxed) % 16 == 0 {
                 // 续-153b：受害者身份鉴别——清零前 dump 首 24 字节
                 // （前 48 次门控，防日志洪流；内容分类：全零=清零式
                 // 释放路径、堆元数据/BTree 节点=活数据被覆写、文件

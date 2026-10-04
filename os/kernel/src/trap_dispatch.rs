@@ -2073,6 +2073,41 @@ unsafe fn riscv64_pagefault_body(
         Console::write_str("\n");
         panic!("pagefault in VM");
     }
+    // §续-334 P0.5 探针（GPT 建议，用后即滚）：非 VM 进程页故障时打印
+    // satp 全量（MODE/ASID/PPN 拆分）——「PTE 有效但 CPU 仍故障」的
+    // satp 对账：CPU 当时真的在用 fill-root 那张根吗？ASID 是多少？
+    // 封顶 32 防洪流。
+    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as P5Ord};
+        use minix_plat::{CurrentEarlyConsole as P5Console, EarlyConsole as _};
+        static P5_N: AtomicUsize = AtomicUsize::new(0);
+        // §续-327 修正：只观测 rc(0xc) 的 fault（CAP=32 被早期 demand-fill
+        // 吃光导致 rc 的 fault 未被观测——p5b 实证）。
+        if cur_nr.0 == 0xc && P5_N.fetch_add(1, P5Ord::Relaxed) < 32 {
+            let satp: u64;
+            // SAFETY: 读 CSR，无副作用。
+            unsafe { core::arch::asm!("csrr {}, satp", out(reg) satp) };
+            let mode = satp >> 60;
+            let asid = (satp >> 44) & 0xFFFF;
+            let ppn = satp & 0xF_FFFF_FFFF;
+            P5Console::write_str("nk4c: p5 nr=");
+            P5Console::write_hex(cur_nr.0 as u64);
+            P5Console::write_str(" fa=");
+            P5Console::write_hex(fault_addr);
+            P5Console::write_str(" mode=");
+            P5Console::write_hex(mode);
+            P5Console::write_str(" asid=");
+            P5Console::write_hex(asid);
+            P5Console::write_str(" ppn=");
+            P5Console::write_hex(ppn);
+            P5Console::write_str(" root=");
+            P5Console::write_hex(ppn << 12);
+            P5Console::write_str(" ec=");
+            P5Console::write_hex(errcode as u64);
+            P5Console::write_str("\n");
+        }
+    }
     // User code runs without the BKL (resched-thunk convention: unlock
     // before PARK_RESCHEDULE, the thunk re-acquires).
     let ipc_bkl = crate::smp::bkl_lock_or_inherit();

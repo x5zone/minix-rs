@@ -195,10 +195,11 @@ pub(crate) fn sync_slot_pte(
             if FR_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
                 use minix_arch::paging::Paging as _;
                 crate::bootmark::mark(&alloc::format!(
-                    "nk4a: fill-root va={:#x} ptroot={:#x} pte_pa={:#x}\n",
+                    "nk4a: fill-root va={:#x} ptroot={:#x} pte_pa={:#x} map={:#x}\n",
                     vaddr.0,
                     pt.root_paddr().0,
-                    paddr.0
+                    paddr.0,
+                    region as *const _ as usize
                 ));
             }
         }

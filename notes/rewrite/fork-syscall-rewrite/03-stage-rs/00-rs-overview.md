@@ -4,7 +4,7 @@
 > **源码**: `minix3/minix/servers/rs/`（8 个 .c，6307 行）+ `minix3/minix/include/minix/{com,rs,sef,ipc_filter}.h`（RS 协议面）
 > **Rust 模块**: `os/servers/rs/` 全部（`lib.rs`/`main.rs` + `table`/`boot`/`sef`/`dispatch`/`service_slot`/`process_table`/`privilege`/`access`/`ipc_mask`/`monitor`/`slot`/`exec`/`service_create`/`publish`/`ready`/`request`/`query`/`recovery`/`live_update`/`state` 子模块，按本文档导航表逐篇落地）
 > **前置**: 无（`01-stage-kernel/09-vm-boot-protocol.md` 提供 boot 链背景）
-> **说明**: 本文档是 03-stage-rs 全部 21 篇文档的导航枢纽：回答 RS 是什么、在 boot 链的哪个位置、启动主线如何组织、服务生命周期次主线如何贯穿、21 篇文档如何按位置可回答性编排，以及覆盖契约（8 个 .c / 15 个消息类型 / 16 位 r_flags / 13 个 SF_* / RSS_*·SEF_* 标志面）。
+> **说明**: 本文档是 03-stage-rs 全部 22 篇文档的导航枢纽：回答 RS 是什么、在 boot 链的哪个位置、启动主线如何组织、服务生命周期次主线如何贯穿、22 篇文档如何按位置可回答性编排，以及覆盖契约（8 个 .c / 15 个消息类型 / 16 位 r_flags / 13 个 SF_* / RSS_*·SEF_* 标志面）。
 
 ---
 
@@ -178,7 +178,7 @@ kernel 启动 RS（root sysproc，boot_image 中 RS_PROC_NR 紧随 DS，table.c:
 
 ### 3.1 生命周期的语义单元划分
 
-次主线把 21 篇文档中的 10 篇串成一条因果链，每篇回答"服务旅程的哪一站"：
+次主线把 22 篇文档中的 10 篇串成一条因果链，每篇回答"服务旅程的哪一站"：
 
 | 站 | 文档 | 回答的问题 |
 |----|------|-----------|
@@ -200,9 +200,9 @@ Minix3 的可靠性模型：**系统服务崩溃不应导致整个系统崩溃**
 
 ## 4. 文档导航
 
-### 4.0 21 篇文档总览
+### 4.0 22 篇文档总览
 
-按 `plan.md §2` 的编号规则（`NN-短横线语义名.md`；`00-` 总览、`99-` 全局概念），7 个阶段 21 篇：
+按 `plan.md §2` 的编号规则（`NN-短横线语义名.md`；`00-` 总览、`99-` 全局概念），7 个阶段主线 + 1 篇跨服务全局基建（`20`）共 22 篇：
 
 | 阶段 | 编号 | 文档 | 语义模块 | C 源码 |
 |------|------|------|---------|--------|
@@ -226,11 +226,12 @@ Minix3 的可靠性模型：**系统服务崩溃不应导致整个系统崩溃**
 | 6 | 17 | `17-rs-state-data.md` | rupdater/sys_pids/instance/r_prev_rp·r_next_rp 链、update 状态数据结构 | `update.c`、`type.h:30-42`、`glo.h` |
 | 6 | 18 | `18-rs-self-lifecycle.md` | RS 自身：SEF LU 回调、SEF_INIT_*、srv_fork 自升级、SEF_RS_UPDATE_SELF、重启链 | `main.c:436-590`、`update.c:230-366`、`utility.c:387-412`、`minix3/minix/servers/rs/manager.c:clone_service（L760，工具生成）`、`lib/libsys/sef*.c` |
 | 7 外部接口与全局 | 19 | `19-rs-external-interfaces.md` | 全部外部 syscall 签名与消息映射（sys_privctl/sys_getimage/sched_*/vm_*/DS/mapdriver/PCI/libexec/SEF） | `lib/libsys/*.c`、`include/minix/{com,ipc,sef}.h` |
+| 7（参考线） | 20 | `20-rs-sef-framework.md` | SEF 框架本体：出生握手（`sef_startup`/`process_init`/回报三形态）与收信拦截（出生/探针/热更新准备/信号/覆盖统计/故障注入六类）——跨服务共享库在本 stage 的唯一权威讲述点 | `minix3/minix/lib/libsys/sef*.c`、`include/minix/sef.h` |
 | 7 | 99 | `99-rs-global-concepts.md` | const.h 常量全表、RS_RQ_BASE 消息类型、RSS_*/SF_*/SEF_*/IPCF_*/SYS_PRIV_* 标志、错误表 | `const.h`、`rs.h`、`sef.h`、`ipc_filter.h`、`com.h` |
 
 ### 4.1 依赖关系（阅读顺序）
 
-21 篇文档的依赖是**严格的线性**（编号即顺序），每篇的前置依赖：
+22 篇文档的依赖是**严格的线性**（编号即顺序），每篇的前置依赖（`20` 是例外：属参考线，前置 00/06/12，不被主线任何一篇依赖）：
 
 ```
 00
@@ -252,7 +253,7 @@ Minix3 的可靠性模型：**系统服务崩溃不应导致整个系统崩溃**
                                                                         19 ──► 99
 ```
 
-例外（导航骨架文档豁免）：`01` 作为"映射 02~18 锚点"的导航骨架，允许前向引用机制归属（只标注不展开，`01` §2.2 声明豁免）；`19`/`99` 允许引用 `lib/libsys` 等外部实现（`plan.md §3.3` 唯一例外）。
+例外（导航骨架文档豁免）：`01` 作为"映射 02~18 锚点"的导航骨架，允许前向引用机制归属（只标注不展开，`01` §2.2 声明豁免）；`19`/`99` 允许引用 `lib/libsys` 等外部实现（`plan.md §3.3`）；`20` 作为 SEF 框架本体的权威讲述点，是 `lib/libsys/sef*.c` 的第三个合法引用方（只限框架机制叙述，syscall 动词签名仍归 `19`，常量定义仍归 `99`）。
 
 ### 4.2 与其他 stage 的交叉引用
 

@@ -3813,6 +3813,21 @@ fn finish_and_restore(
             core::arch::asm!("invlpg [{0}]", in(reg) va, options(nostack, preserves_flags));
         }
     }
+    // NK4-C §续-334（(A) 成修）：riscv64 的同一恢复点 flush——fill-root 写
+    // PTE 走 VmDm 直写（无 sfence，write_pte_dm 只对 KernelDm 门控 flush），
+    // 被恢复进程的 TLB 里缓存着 fill 前的旧 NP 平移；恢复后 CPU 重跑同
+    // 指令仍命中旧 NP ⇒ 反复 fault 循环（§续-319 长窗 + §续-327 P0.5：
+    // satp root 与 fill ptroot 一致、RAM PTE 有效、CPU 仍故障 26 次）。
+    // sfence.vma zero, zero = 全地址空间全 VA 刷新（RISC-V Priv ISA），
+    // 此刻本 hart 即将切回被恢复进程，语义与 x86 invlpg 等价且更宽。
+    #[cfg(target_arch = "riscv64")]
+    if fault_flush_va.is_some() {
+        // SAFETY: sfence.vma is a privileged instruction; the kernel is at
+        // S-mode and the fence has no memory operand side effects.
+        unsafe {
+            core::arch::asm!("sfence.vma zero, zero", options(nostack, preserves_flags));
+        }
+    }
     // SAFETY: all `TrapReturnArch::restore_to_user` preconditions hold:
     // - the picked process's address space is active (switch_address_space
     //   ran before the misc/quantum stages);
