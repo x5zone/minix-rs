@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-345（T13 R3 小口径 A5+A6 + 续-344 评审闭环 PASS-with-P2）**：①续-344 CodeReview 回执=PASS-with-P2 无 P0/P1（7 项逐核：值-分页事实一致性/交叉断言效力/aarch64 加宽无新增暴露（逐页 U 位门兜底）/find_slot 结构性兜底成立/语义与完整性复扫全过）——P2（两新分支缺全链路测试）+N1（remap 复用单一实现）+N3（T1SZ==T0SZ 注释）已随 §续-344b 落地（test_mmap_fixed_out_of_range_rejected_without_unmap 钉「校验先于 unmap」次序性质+test_mmap_hint_out_of_range_rejected；check_user_range 提 pub(crate) 单一实现；N2 else 兜底无钉=不修，workspace 仅三 target 纯潜在项）；vm 538/0（净增 2）；②A5=BootParams::simple 加 #[cfg(test)] 门+栈顶引 USER_STACK_TOP 权威（VmServer::new 同门，唯一调用方本就 cfg(test)，生产入口 new_with_boot_params 不变）；③A6=mock 布局回退加 riscv64 guest 硬失败（真 handoff 恒 v5，走到回退=版本逻辑已破）。验证=vm 538/0+riscv guest 构建 0 error+riscv boot-full PASS。R3 余量=A9/A10（夹具 user_sp 族 57 行+exec_worker 测试字面量）大面留后续笔；R4 随 Phase E。
+> **🛑 最新前沿＝§续-346（污染取证第二轮：腐蚀器画像收敛——guest 侧、跨 QEMU 版本、位置随机的低频字节级腐蚀，minix-elf 不可达 panic ×3 + kdst len=1 先导签名）**：v3 判别器（每 (i,j) 三路 XOR：流/b1/b2，3072 检查点）+v4 尾窗可见性 6 次点火读数——①run4 **全计算程纯**（3072 组校验和逐位一致=流与缓冲全程未损）却 strcmp 失败=腐蚀可打中 MD5End→strcmp 尾窗（.data 尾部 result/mc 族）；②9.2.4 下两跑两失败脸谱（minix-elf OOB / pf-exit noaddr cr=0x7ffff48b124e6 **>2^38 非规范野地址**）=与 8.2.2 同族 ⇒ **腐蚀器在我方 guest 软件、与 QEMU 版本无关**；③minix-elf lib.rs:264「len=3 索 [3]」不可达 panic ×3（z1 历史+run3+run5；parse_phdr 边界检查 entsize≥56 数学封死，源自 09-23 未改二进制同代）且**三次全部以 `nk4a: kdst copy len=1` 先导**（健康跑=0x2f）——**len 字段本身是被腐蚀的源**（调度器入口首次跨空间拷贝的长度读到腐值）⇒ 腐蚀早在出生期就已命中 boot 参数/模块区。画像：单腐蚀过程、命中位置随机、速率≈每数秒 guest 时间一次、脸谱=被击中的数据结构（boot 参数长字段/模块 ELF 镜像/VM handoff/user .data 尾窗）。下一步（决定性、工具在位）：minix-elf OOB panic 时 **QEMU 尚存活（-no-reboot 挂死）→ riscv_halt_dump.sh pmemsave 全 RAM → 12 模块镜像对 REL 逐字节 diff → 腐蚀字节指纹+落点**；辅以 boot handoff/args 区早期金丝雀。
+>
+> **（上一前沿＝§续-345（T13 R3 小口径 A5+A6 + 续-344 评审闭环 PASS-with-P2）**：①续-344 CodeReview 回执=PASS-with-P2 无 P0/P1（7 项逐核：值-分页事实一致性/交叉断言效力/aarch64 加宽无新增暴露（逐页 U 位门兜底）/find_slot 结构性兜底成立/语义与完整性复扫全过）——P2（两新分支缺全链路测试）+N1（remap 复用单一实现）+N3（T1SZ==T0SZ 注释）已随 §续-344b 落地（test_mmap_fixed_out_of_range_rejected_without_unmap 钉「校验先于 unmap」次序性质+test_mmap_hint_out_of_range_rejected；check_user_range 提 pub(crate) 单一实现；N2 else 兜底无钉=不修，workspace 仅三 target 纯潜在项）；vm 538/0（净增 2）；②A5=BootParams::simple 加 #[cfg(test)] 门+栈顶引 USER_STACK_TOP 权威（VmServer::new 同门，唯一调用方本就 cfg(test)，生产入口 new_with_boot_params 不变）；③A6=mock 布局回退加 riscv64 guest 硬失败（真 handoff 恒 v5，走到回退=版本逻辑已破）。验证=vm 538/0+riscv guest 构建 0 error+riscv boot-full PASS。R3 余量=A9/A10（夹具 user_sp 族 57 行+exec_worker 测试字面量）大面留后续笔；R4 随 Phase E。
 >
 > **（上一前沿＝§续-344（T13 R1+R2 同笔落地：USER_VA_LIMIT 分架构权威 + mmap/remap 用户半区上界校验，审计 13 项中唯一 guest 一条调用即触发的口子闭合）**：①`minix_types::USER_VA_LIMIT` 上线（x86=2^47/aarch64=2^48/riscv=2^38）+per-arch 断言分钉（x86 收紧替换原非 riscv 统一 2^48 松口径）；②arm64 `TCR_T0SZ=16` 提取并与 USER_VA_LIMIT 编译期交叉断言（任一侧漂移即编译失败）；③A4=kernel ipc.rs 私有三分支删除改 use 权威（aarch64 2^47→2^48 归位，错误注释更正）；④A1/A2=MMAP_TOP 派生式（riscv 封顶 2^38，窗/栈重叠由 find_slot overlap 兜底）+REMAP 第二份字面量删除改 use 单源；⑤A3/R2=check_user_range（checked_add+双侧上界）接入 MAP_FIXED/hint/remap-target 三口；越界 hint 拒绝而非静默回退=fail-closed 取舍（Linux 会回退，偏差已记录）。语义取舍记录：limit 注入式纯函数使宿主测试覆盖双架构族值。验证=host 四包+vm 536/0（新测试）+vfs 538/0+boot-shim 27/0+check-layout all+x86 smoke+aarch64 bootmarks rc=0+riscv boot-full 全 PASS；复扫=2^41 独立字面量清零（唯一残留=派生比较点本体）。R3/A5-A6-A9-A10 与 R4/A7-A8-A13 按 §7 排序留后续笔。审计文档 §8 修复轮注记落档。）
 >
@@ -12918,3 +12920,18 @@ qemu-user 未装，改用 `qemu-system-riscv64 -machine virt -bios none -semihos
 **A6**：mock 布局回退（handoff<v3）加 riscv64 guest 硬失败 `panic!`（mock 形状 dm_vbase=0xFFFF_8000_0000_0000 在 Sv39 非规范；真 handoff 恒 v5 携带真布局，走到回退=handoff 版本逻辑已破）；cfg 分裂保持宿主测试回退可用。
 
 验证：vm 宿主 538/0、riscv guest 构建 0 error、riscv boot-full PASS（marker reached）。**R3 余量**=A9（夹具 user_sp 族 57 行机械替换）+A10（exec_worker 测试字面量）——大面机械活，留后续笔与 Phase E 同窗推进；**R4**（A7/A8/A13）随 Phase E 探针滚除搭车。
+
+## §续-346 污染取证第二轮：判别器+跨版本对照，腐蚀器画像收敛
+
+**v3 判别器**（t_memcpy_probe 每内层块三路 XOR 校验和：random 流/b1/b2，12 对×256=3072 检查点；裸机孪生出参考）与 **v4 尾窗可见性**（MC 前态/RESULT/ADDRS/CMPV）共 6 次点火（5×8.2.2 + 2×9.2.4，其中 4 次完整跑）：
+
+1. **run4（8.2.2，完整跑）**：3072 组 sx/b1/b2 校验和与裸机**逐位全同**（流+缓冲全程纯）但 strcmp 失败——腐蚀落在 MD5End→strcmp 尾窗（result/mc 所在 .data 尾）。判定器读数：流与缓冲可以全程无恙，腐蚀是**位置随机**的独立事件。
+2. **跨 QEMU 版本**：9.2.4 两跑两败（minix-elf OOB / pf-exit noaddr cr=0x7ffff48b124e6——**>2^38 的非规范野地址**，§10.11 同族签名）⇒ 腐蚀器在我方 guest 软件，非 QEMU 8.2.2 TCG 特有。QEMU_BIN 覆盖已加入 boot_probe.sh。
+3. **minix-elf lib.rs:264 不可达 panic ×3**（历史 z1+run3+run5）：`parse_phdr` 的边界检查（:246 entsize≥56 + :249 offset+entsize≤len）数学上封死 d[3] 且 d.len()==3 的形态；源自 09-23 未改、二进制同代（排 §续-312 产物陈旧）。三次全部以 `nk4a: kdst copy len=1` 先导（健康跑 len=0x2f，pa 恒 0x805ffac0）——**该 len 是从（已）被腐蚀的源字段读出的**，即腐蚀在调度器入口首次跨空间拷贝之前就已命中 boot 参数/模块区。
+4. **boot 抽奖统计**：近 8 次点火 4 次出生期/早期失败（脸谱=minix-elf OOB×2、reconcile 垃圾、unwrap+fork、ENOSYS rc×1——run6 证明 ENOSYS 与装配无关，是不稳定面之一）、4 次跑通（其中 3 次 t_memcpy 污染、1 次未及读数）。速率画像≈**每数秒 guest 时间一次、位置随机**。
+
+**画像结论**：单一腐蚀过程（野写），命中位置随机、命中率与 guest 运行时间相关；脸谱=被击中的结构。这统一解释：出生期失败 lottery、t_memcpy 必败（计算窗最长）、boot-full 短跑常过、aarch64 干净（同代码不同分页/拷贝路径）。
+
+**下一步（决定性且工具在位）**：minix-elf OOB panic 时 QEMU 因 -no-reboot 挂死仍存活——立刻 `riscv_halt_dump.sh` pmemsave 全 RAM，把 12 模块镜像区对 REL 产物逐字节 diff：**拿到腐蚀字节指纹+精确落点**（哪些字节、什么形状、落在哪个结构），从「知道被腐蚀」升级到「看到腐蚀结果」；辅以 boot handoff/args 区早期金丝雀与首次 kdst copy 前置校验（len≠0x2f 即现场打印+挂死等 dump）。
+
+产物：machine_run{3..8}.log（含 run7/run8=9.2.4）、check_bare_v{3,4}*.c、cbv{3,4}.txt（3072 检查点参考）。
