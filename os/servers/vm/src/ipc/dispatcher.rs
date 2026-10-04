@@ -1160,14 +1160,18 @@ fn dispatch_remap_impl(
     // (C: mmap.c:412-415 — `if(da) map_page_region(dvmp, da, 0, ...) else map_page_region(dvmp, VM_MMAPBASE, VM_MMAPTOP, ...)`)
     //
     // T13 审计 A3/R2：显式目标此前无任何用户半区上界校验（可达口子
-    // 之二）——目标区间整体越出 `USER_VA_LIMIT` 即拒（checked_add 防
-    // 回绕读成「fits」，形态同 kernel 侧 user_copy_range_mapped 第 1 步）。
+    // 之二）——校验复用 mmap 的 `check_user_range`（续-344b N1：单一
+    // 实现，checked_add 防回绕读成「fits」，形态同 kernel
+    // user_copy_range_mapped 第 1 步）。
     let (minv, maxv) = if request.target.0 != 0 {
-        match request.target.0.checked_add(aligned_len.0) {
-            Some(end)
-                if request.target.0 < minix_types::USER_VA_LIMIT
-                    && end <= minix_types::USER_VA_LIMIT => {}
-            _ => return VmReply::Error(VmError::InvalidAddress),
+        if crate::mmap::check_user_range(
+            minix_types::USER_VA_LIMIT,
+            request.target.0,
+            aligned_len.0,
+        )
+        .is_err()
+        {
+            return VmReply::Error(VmError::InvalidAddress);
         }
         (request.target, VirBytes(request.target.0 + aligned_len.0))
     } else {

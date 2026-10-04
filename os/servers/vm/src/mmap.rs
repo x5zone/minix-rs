@@ -235,7 +235,9 @@ const _: () = assert!(
 /// 「一条 guest 调用即触发」的口）。`limit` 由调用方传
 /// [`minix_types::USER_VA_LIMIT`]；抽成参数使宿主测试能同时覆盖
 /// x86（2^47）与 riscv（2^38）两族值（宿主测试只编译 x86 常量）。
-fn check_user_range(limit: u64, addr: u64, len: u64) -> Result<(), MmapError> {
+/// 续-344b N1：提为 `pub(crate)` 供 remap 显式 target 分支复用（单一
+/// 实现，防两份同形代码漂移）。
+pub(crate) fn check_user_range(limit: u64, addr: u64, len: u64) -> Result<(), MmapError> {
     match addr.checked_add(len) {
         Some(end) if addr < limit && end <= limit => Ok(()),
         _ => Err(MmapError::BadAddress),
@@ -1010,6 +1012,91 @@ mod tests {
                 assert!(resp.mapped_addr.0 >= MMAP_BASE && resp.mapped_addr.0 < MMAP_TOP);
             }
             other => panic!("occupied hint must fall back, got {:?}", other),
+        }
+    }
+
+    /// 续-344b P2：越界 MAP_FIXED 的全链路校验（handle_mmap →
+    /// mmap_region），钉「先校验后 unmap」的次序性质——既有窗内映射
+    /// 必须在拒绝后仍然完好。
+    #[test]
+    fn test_mmap_fixed_out_of_range_rejected_without_unmap() {
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let mut queue = VfsRequestQueue::new();
+        let slot = UserSlot::new(81);
+        let ep = init_test_process(slot);
+
+        // 既有窗内映射（拒绝后必须还在）。
+        let keep = VmMmapIn {
+            caller: ep,
+            forwhom: Endpoint::NONE,
+            addr: VirBytes(0x0000_0001_0000_4000),
+            length: VirBytes(0x1000),
+            prot: ProtFlags::READ.bits() | ProtFlags::WRITE.bits(),
+            flags: MmapFlags::PRIVATE.bits() | MmapFlags::ANONYMOUS.bits(),
+            fd: -1,
+            offset: 0,
+        };
+        handle_mmap(table, &mut page_alloc, &mut frames, &mut queue, &keep).unwrap();
+
+        // 越界 MAP_FIXED：addr 恰在下界（== 用户半区上界，宿主 x86
+        // limit=2^47）——`addr < limit` 严格比较必须拒。
+        let req = VmMmapIn {
+            caller: ep,
+            forwhom: Endpoint::NONE,
+            addr: VirBytes(minix_types::USER_VA_LIMIT),
+            length: VirBytes(0x1000),
+            prot: ProtFlags::READ.bits() | ProtFlags::WRITE.bits(),
+            flags: MmapFlags::FIXED.bits() | MmapFlags::PRIVATE.bits() | MmapFlags::ANONYMOUS.bits(),
+            fd: -1,
+            offset: 0,
+        };
+        match handle_mmap(table, &mut page_alloc, &mut frames, &mut queue, &req) {
+            Err(MmapError::BadAddress) => {}
+            other => panic!("out-of-range MAP_FIXED must be BadAddress, got {:?}", other),
+        }
+
+        // 次序性质：既有映射未被越界请求拆除。
+        let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
+        assert!(
+            active
+                .regions()
+                .find_overlap(
+                    VirBytes(0x0000_0001_0000_4000),
+                    VirBytes(0x0000_0001_0000_5000)
+                )
+                .is_some(),
+            "existing in-window region must survive a rejected out-of-range MAP_FIXED"
+        );
+    }
+
+    /// 续-344b P2：越界 hint 的全链路拒绝（handle_mmap → mmap_region）。
+    #[test]
+    fn test_mmap_hint_out_of_range_rejected() {
+        let table = VmProcTable::get_global();
+        let mut page_alloc = make_page_alloc();
+        let mut frames = make_frames();
+        let mut queue = VfsRequestQueue::new();
+        let slot = UserSlot::new(82);
+        let ep = init_test_process(slot);
+
+        // 对齐 hint、end 越上界（limit-2页 处起 2 页 → end = limit）。
+        // `end <= limit` 含端：故意取 end 恰好压线之上（hint=limit-0x1000,
+        // len=0x2000 → end=limit+0x1000 > limit）必须拒，且不回退窗口。
+        let req = VmMmapIn {
+            caller: ep,
+            forwhom: Endpoint::NONE,
+            addr: VirBytes(minix_types::USER_VA_LIMIT - 0x1000),
+            length: VirBytes(0x2000),
+            prot: ProtFlags::READ.bits() | ProtFlags::WRITE.bits(),
+            flags: MmapFlags::PRIVATE.bits() | MmapFlags::ANONYMOUS.bits(),
+            fd: -1,
+            offset: 0,
+        };
+        match handle_mmap(table, &mut page_alloc, &mut frames, &mut queue, &req) {
+            Err(MmapError::BadAddress) => {}
+            other => panic!("out-of-range hint must be BadAddress, got {:?}", other),
         }
     }
 
