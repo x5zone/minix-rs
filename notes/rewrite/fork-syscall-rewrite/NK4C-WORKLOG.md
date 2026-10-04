@@ -12534,3 +12534,9 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **确定收益已清**：D1 ✅（§续-284 random 接管 33→34）/D3b ✅（§续-313① pfs failed 消失）/aarch64 门 ✅（§续-286 rc=0）。剩余非 (A) 工作=aarch64 套件扩样（超 36 案的未来增量）+Phase E 探针滚除（等 riscv 三目标达成后）。
 
 **下一 session 首选行动**：①网络恢复→QEMU 变体矩阵（§续-290 blocker 解除→9.x 直通或排除）；②网络仍断→QEMU 8.2.2 sfence 行为源码分析（`apt-get source qemu`→tcg/riscv/sbi helper 路径——需网络）；③两路均堵→PteReadBuf 批量腿落地（消 trap 风暴，让 rc 有机会在 600s 内跑完→marker 可能现身——即使 (A) 未修，旁路+批量腿的组合可能足以让 boot 完成，因为 poison 读路径已消失（读已内核化），慢化是唯一剩余问题）。
+
+## §续-320②（2026-10-04·M1 崩窗序列精确定位：rc exec 成功→运行→同一页再次故障→VM noaddr→杀——「页已映射但 VM 簿记说不映射」=region/页表脱节实锤；§续-326 审计已启动但需深入 handle_memory_once 的 slot 写入路径）
+
+**M1 崩窗序列精读**（noaddr 仅 1 条）：fill-root(va=0x7fffffffe000)×1 → mrr Ok → **exec endpt=0x800c 完成**（rc 起来了）→ fill-root ×2（**rc 的后续 fault 被 do-memory 服务**，同一 va 同一 pte_pa——refault 确认）→ **sa-call 活跃 + rm-fallback addr=0x7fffffffef90 持续出现** → `pf-exit noaddr cr2=0x7fffffffef90` → kill tgt=0xc → csig。⇒ rc 的栈页 0x7fffffffe000 被 fill-root 成功映射（PTE 有效 krewalk 实证），rc 跑了一段时间，然后对**同页内** 0x7fffffffef90 再次故障 → VM 回 noaddr。**页已映射但 VM 查不到**=region/slot 簿记与 PTE 脱节（fill-root 的 fill 走 handle_pagefault→map 路径已更新 slot ✓ 但**后续的 unmap/clear 操作可能清了 slot 而 PTE 残留**——或反向：slot 在但 region.find 因某种条件跳过）。
+
+**§续-327 靶（精确归因）**：①读 handle_pagefault 对 va 的完整查找链（region.find → slot 查 → get_slot）——找出「PTE 有效但 VM 查不到」的精确分支；②fill-root 的 fill 走 handle_memory_once→unmap_page+map_page——unmap_page 清 slot 后 map_page 重设——但**中间**的 PTE 写是否原子（page walk 可能在 unmap 和 map 之间发生→看到 NP→fill→再 unmap=循环）；③对照 C 的 pagefaults.c handle_memory_once——C 是否有同样的 unmap+map 窗口。
