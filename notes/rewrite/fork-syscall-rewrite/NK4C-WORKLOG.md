@@ -12546,3 +12546,7 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **实锤**（q1）：`nk4c: no-region pf va=0x7fffffffef90` — handle_pagefault 的 regions.find_mut 对该 VA 返回 None。fill-root 曾成功找到 region 并写入叶 PTE（fill-root 探针开火 ✓），**之后 region 被移除**——下一次 fault 时 find_mut=None。q2 无此行（方差/时序）。pfs failed 在新 table 下也消失（f9/f10 同因）。no-region 探针在 memreq 腿零命中（§续-327 早期探针在 memreq 路径）而 PF 路径本次开火=两条腿到达时 region 状态不同。
 
 **§续-328 靶（谁移除了 region）**：①VM 的 region 移除路径全扫（unmap_range/munmap/exec_rebuild/sas-clear——谁在 rc 运行中移除了栈 region）；②在 region_map.rs 的 remove/移除路径加探针（被移除的 region 的 va 范围+调用方）→ 崩时抓移除者；③坐实后修复（移除条件/引用计数）→ marker → §7。
+
+## §续-328（2026-10-04·region-rm 探针零命中——无显式 region 移除；find_mut=None 须为 clear() 全清或 find_mut 导航 bug；§续-329=探针移至 clear() + find_mut 导航审计）
+
+**读数**（h10/h11）：h10=exec=12/pf=0/region-rm=0/panic=0（稳定 stall）；h11=exec=0/panic=3（早期崩——不同形）。region-rm 探针（va>0x7fff0000000 门控）**零命中**=栈 region 从未被 `remove()` 显式移除。⇒ `regions.find_mut(0x7fffffffef90)→None` 的原因收窄至：①`clear()` 全清（exec 重建路径调用——需探针确认时序）②find_mut 的 BTreeMap 区间导航 bug（regions 有重叠/边界异常时 range 查询可能跳过）③region 本身不存在（fill-root 的 region.find 成功证明当时存在——除非后来被 clear）。**§续-329 靶**=①clear() 探针（何时被调用+调用方）②find_mut 的区间导航审计（region_map.rs:92——BTreeMap range 查询对重叠/边界 region 的行为）③root[256] dump（§续-322 判据）。
