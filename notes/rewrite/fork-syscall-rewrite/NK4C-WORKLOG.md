@@ -12797,3 +12797,15 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 **节奏与门参数**：riscv 上机约 1.5-2 分钟/例（探针洪流拖慢串口，`ptalloc-reuse-DATA` 每例 ~百行）；36 例全绿在 1800s 内到 23/36，门窗口按 60 分钟给足（3600s），Phase E 滚除探针后回收。
 
 **三目标台账（本笔后）**：①三架构 marker=x86 ✅/aarch64 ✅/riscv ✅（§续-338）；②18-stage 命令面=x86 ✅/aarch64 ✅/riscv ✅（§续-339）；③ATF 上机=aarch64 ✅（§续-286）/riscv **接线完成、实跑中**（21 passed+1 failed+1 skipped / 23 例，全绿差 t_memcpy 一项）。
+
+## §续-340b（2026-10-05·CodeReview 修复轮（ATF 上机腿）：P2×4 全落地；复审=PASS 无 P0/P1）
+
+**评审对象**：`66058491f`（§续-340）。结论=**PASS**（无 P0/P1，4 条 P2）。评审同时独立验证了重构等价性（按旧格式重建 36 行 manifest 与新派生逐字一致；rc.imgrd 36 条注入顺序与 `exit 0` 位置一致）、riscv 出生腿产物（21/21 ELF `Entry == _start`）、影响面（`image --arch x86_64/aarch64` 的 ATF 行为与既有产物 md5 不变；riscv 在 `collect_atf_face` 之前照旧 honest bail）。
+
+**P2 全落地**：
+1. `collect_atf_face` 去掉装饰性 `Result`（失败全走 panic/assert，属装配面事故非可恢复 IO），返回新结构 `AtfFace{tests, rc_execs}`——同时消掉 `clippy::type_complexity`（`xtask check -D warnings` 会升级为 error 的门）。
+2. `atf_face` 文档改为**精确 stdout 契约**：`rc.execs=<N>` + 逐行 `tests.<prog>=<host-rel-path>`（调用方 `test-atf-riscv64.sh` 的两条 sed 解析即按此写）。
+3. 门脚本删除不可达的"plan 首列回退"分支（且它会漏播 p1/p2/p3）——Stage 2 在非 SKIP 路径必跑 atf-face，log 必非空。
+4. 门脚本补两条防假绿护栏：①非 SKIP 路径钉分母完整性——`atf-plan` 必须覆盖 **18 个套件 prog**（否则 `EXPECTED` 随残缺产物自缩、可对残缺集判 PASS）；②SKIP 复用路径加 mtime 链校验（`rc.imgrd` ≤ `imgrd.img`、最新 `t_*` ≤ `imgrd.img`、`imgrd.img` ≤ `kernel`）——同 339b 的"陈旧证据"失效模式在本门的镜像层再收一次口。护栏实测：当前产物链 23:44:21(t_bm) < 23:44:32(rc) < 23:44:55(imgrd) < 23:45:02(kernel) 通过。
+
+**验证**：`cargo test -p xtask` 17/0；`atf-face --dry-run` 输出与解析约定一致（rc.execs=36、21 条 tests.*）；`bash -n` 通过。

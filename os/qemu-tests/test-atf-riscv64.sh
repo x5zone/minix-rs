@@ -90,17 +90,17 @@ fi
 EXPECTED=$(grep -c ' ' "$PLAN")
 [ "$EXPECTED" -gt 0 ] || fail "$PLAN 无有效条目"
 
-# 套件 prog 清单（从 atf-face 的 tests.<prog>=<rel> 行解析；非 xtask 重跑路径
-# 回退为对 plan 去重取首字段）。
-if [ -s "$WORK/atf_face.log" ]; then
-    mapfile -t TEST_PROGS < <(sed -n 's/^tests\.\([^=]*\)=.*/\1/p' "$WORK/atf_face.log")
-    mapfile -t TEST_RELS  < <(sed -n 's/^tests\.[^=]*=//p' "$WORK/atf_face.log")
-else
-    mapfile -t TEST_PROGS < <(awk '{print $1}' "$PLAN" | sort -u)
-    TEST_RELS=()
-    for p in "${TEST_PROGS[@]}"; do TEST_RELS+=("target/atf/riscv64/tests/$p"); done
-fi
-[ "${#TEST_PROGS[@]}" -gt 0 ] || fail "套件 prog 清单为空"
+# 套件 prog 清单（从 atf-face 的 tests.<prog>=<rel> 行解析；rel 是相对 os/ 的
+# 宿主路径，直接进 imgrd proto）。Stage 2 在非 SKIP 路径必跑 atf-face，此处
+# 必然非空——不再保留"plan 首列回退"（CodeReview 续-340b P2-3：该分支不可达，
+# 且会漏播 p1/p2/p3 探针）。
+mapfile -t TEST_PROGS < <(sed -n 's/^tests\.\([^=]*\)=.*/\1/p' "$WORK/atf_face.log")
+mapfile -t TEST_RELS  < <(sed -n 's/^tests\.[^=]*=//p' "$WORK/atf_face.log")
+[ "${#TEST_PROGS[@]}" -gt 0 ] || fail "套件 prog 清单为空（atf-face 输出缺失/格式漂移）"
+# 分母完整性（CodeReview 续-340b P2-4）：套件面必须 18 个 ATF prog 齐全，
+# 否则 EXPECTED 自派生会随残缺产物缩小、门可能对残缺集判 PASS。
+SUITE_PROGS=$(awk '{print $1}' "$PLAN" | sort -u | wc -l)
+[ "$SUITE_PROGS" = "18" ] || fail "atf-plan 只覆盖 $SUITE_PROGS 个套件 prog（期望 18：ATF_SUITE 清单）——套件产物不齐"
 
 if [ "${RS_ATF_SKIP_BUILD:-0}" != "1" ]; then
     echo "== Stage 3: 逐包构建 12 模块 + 命令 + imgrd（含 /tests + rc 变体）=="
@@ -133,6 +133,19 @@ if [ "${RS_ATF_SKIP_BUILD:-0}" != "1" ]; then
 fi
 
 [ -x "$REL/kernel" ] || fail "kernel-image 缺失：$REL/kernel"
+# SKIP 复用路径的新鲜度护栏（CodeReview 续-340b P2-4，aarch64 兄弟门同款）：
+# imgrd 必须新于 rc 变体与最新套件 ELF（否则 /tests 或 rc 注入是旧面），
+# kernel 必须新于 imgrd（mfs 内嵌 imgrd，build.rs 靠 imgrd 触发重建）。
+if [ "${RS_ATF_SKIP_BUILD:-0}" = "1" ]; then
+    imgrd="$IMG/imgrd.img"
+    [ -f "$imgrd" ] || fail "RS_ATF_SKIP_BUILD=1 但 $imgrd 缺失"
+    [ "$imgrd" -nt "$IMG/rc.imgrd" ] || fail "$imgrd 不新于 rc.imgrd —— 先跑一次完整装配"
+    newest_elf=$(ls -t "$ROOT"/target/atf/riscv64/tests/t_* 2>/dev/null | head -1)
+    if [ -n "$newest_elf" ] && [ "$newest_elf" -nt "$imgrd" ]; then
+        fail "$newest_elf 新于 $imgrd —— 镜像装配在套件构建之前（SKIP 模式请先全量跑一次）"
+    fi
+    [ "$REL/kernel" -nt "$imgrd" ] || fail "$REL/kernel 不新于 $imgrd —— mfs 未随 imgrd 重建"
+fi
 # 诊断检查（CodeReview 续-339b P2-4，与 boot-full 同款）：12 模块缺件要在
 # 装配前显式失败——否则 QEMU 装载阶段才以错位形态暴露，难归因。
 MOD_COUNT=$(ls "$REL"/minix-{ds,rs,pm,sched,vfs,driver-memory,driver-tty,mib,vm,fs-pfs,fs-mfs,init} 2>/dev/null | wc -l)

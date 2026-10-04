@@ -301,7 +301,7 @@ pub fn plan(
     // 分别验裸桥/stdio/malloc 腿）。盘上落 /tests/<name>，rc 尾段 exec。
     // 单源：用例表/rc 注入规则 = [`collect_atf_face`]（`xtask atf-face` 子命令
     // 同源消费——riscv64 不走 UEFI 盘形装配，用该子命令拿同一套 rc 变体+manifest）。
-    let (atf_tests, rc_execs) = collect_atf_face(arch, layout)?;
+    let AtfFace { tests: atf_tests, rc_execs } = collect_atf_face(arch, layout);
     // 门 manifest（"prog tc" 逐行）= rc exec 行去掉 `/tests/` 前缀（同一序列，
     // 不做第二份拼接，防两处漂移）。
     let atf_plan: Vec<String> = rc_execs
@@ -590,18 +590,33 @@ pub const IMGRD_BLOCKS_SUITE: u32 = 4096;
 /// §续-277 已定谳为坏。
 const ATF_BOOT_LEG_READY: &[&str] = &["aarch64", "riscv64"];
 
-/// 收集一台架构的 ATF 上机面（单源）：返回
-/// `(tests[(prog, host-rel-path)], rc_exec_lines)`。
+/// ATF 上机面的收集结果（[`collect_atf_face`] 的返回结构）。
+///
+/// 独立结构而非元组：两个字段语义不同（播种清单 vs rc 注入序列），且元组形式
+/// 会触发 `clippy::type_complexity`（`xtask check` 以 `-D warnings` 跑），
+/// CodeReview 续-340b P2-1 采纳。
+struct AtfFace {
+    /// `(prog, 宿主相对路径)` —— `/tests/<prog>` 的 imgrd 播种清单（含 p1/p2/p3
+    /// 桥面哨兵，存在才播）。
+    tests: Vec<(String, String)>,
+    /// `/tests/<prog> <tc>` exec 行（rc 变体注入序列；atf-plan 由其去
+    /// `/tests/` 前缀派生，不做第二份拼接）。
+    rc_execs: Vec<String>,
+}
+
+/// 收集一台架构的 ATF 上机面（单源）。
 ///
 /// 用例表来自 [`ATF_SUITE`]（18 案清单）并对每个 prog 从 minix3 C 源提取
-/// `ATF_TC(name)` 声明——提取为空即拒绝静默装配。`p1/p2/p3` 桥面哨兵无条件
-/// 追加（存在才播）。`plan()`（UEFI 盘形装配）与 [`atf_face()`]（非 UEFI 启动
-/// 形的产物面）共用本函数，保证 rc 注入序列与 manifest 永远同源。
-fn collect_atf_face(arch: Arch, layout: &Layout) -> Result<(Vec<(String, String)>, Vec<String>)> {
+/// `ATF_TC(name)` 声明——提取为空即拒绝静默装配（panic 而非 Err：这是装配面
+/// 的"声明与提取器漂移"事故，必须响到人能看见，不是可恢复的 IO 失败）。
+/// `p1/p2/p3` 桥面哨兵无条件追加（存在才播）。`plan()`（UEFI 盘形装配）与
+/// [`atf_face()`]（非 UEFI 启动形的产物面）共用本函数，保证 rc 注入序列与
+/// manifest 永远同源。
+fn collect_atf_face(arch: Arch, layout: &Layout) -> AtfFace {
     let mut tests: Vec<(String, String)> = Vec::new();
     let mut rc_execs: Vec<String> = Vec::new();
     if !ATF_BOOT_LEG_READY.contains(&arch.slug()) {
-        return Ok((tests, rc_execs));
+        return AtfFace { tests, rc_execs };
     }
     let atf_test_rel = |name: &str| format!("target/atf/{}/tests/{name}", arch.slug());
     for (prog, src_rel) in ATF_SUITE {
@@ -628,7 +643,7 @@ fn collect_atf_face(arch: Arch, layout: &Layout) -> Result<(Vec<(String, String)
             tests.push((name.to_string(), atf_test_rel(name)));
         }
     }
-    Ok((tests, rc_execs))
+    AtfFace { tests, rc_execs }
 }
 
 /// 生成 ATF 上机面产物（不依赖 UEFI 盘形装配）。
@@ -641,8 +656,11 @@ fn collect_atf_face(arch: Arch, layout: &Layout) -> Result<(Vec<(String, String)
 ///   - `target/image/<arch>/atf-plan.txt`：`prog tc` 逐行 manifest（门的期望
 ///     数唯一真源）。
 ///
-/// stdout 每行打印一个待播种 prog 名——调用方据此把 `/tests/<prog>` 播进
-/// imgrd（riscv 装配脚本的 proto 生成用）。
+/// stdout 契约（调用方 `os/qemu-tests/test-atf-riscv64.sh` 按此解析）：
+///   - `rc.execs=<N>` 一行（注入的 exec 行数）；
+///   - 每个待播种项一行 `tests.<prog>=<host-rel-path>`（rel 是相对 `os/` 的宿主
+///     路径，供 proto 生成写 `/tests/<prog>` 的源文件）；
+///   - `--dry-run` 时只打印、不落盘。
 pub fn atf_face(arch: Arch, dry_run: bool) -> Result<()> {
     if !ATF_BOOT_LEG_READY.contains(&arch.slug()) {
         bail!(
@@ -652,7 +670,7 @@ pub fn atf_face(arch: Arch, dry_run: bool) -> Result<()> {
         );
     }
     let layout = Layout::from_env();
-    let (tests, rc_execs) = collect_atf_face(arch, &layout)?;
+    let AtfFace { tests, rc_execs } = collect_atf_face(arch, &layout);
     let image_dir = layout.target_root.join("image").join(arch.slug());
     if rc_execs.is_empty() {
         bail!(
