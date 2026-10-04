@@ -2261,12 +2261,12 @@ impl VmServer {
                 // §续-327 归因探针（用后即滚）：no-region 时打 region 计
                 // 数与 fault va——区分「region 被拆除」vs「从未 mapped」。
                 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4c: no-region pf va={:#x} map={:#x} n={}\n",
-                    fault_addr.0,
-                    regions as *const _ as usize,
-                    regions.len()
-                ));
+                {
+                    crate::bootmark::mark(&alloc::format!(
+                        "nk4c: no-region pf va={:#x} n={}\n", fault_addr.0, regions.len()
+                    ));
+
+                }
                 pf_exit!("noaddr");
                 self.pf_fail_segv(proc_endpoint);
                 return VmReply::Error(VmError::InvalidAddress);

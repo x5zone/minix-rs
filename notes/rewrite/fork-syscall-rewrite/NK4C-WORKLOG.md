@@ -16,6 +16,8 @@
 >
 > **（上一前沿＝§续-323（600s×4 判读稳定：exec=12+pf=0+panic=0 4/4=(A) 崩零复发，旁路有效性确认；新卡点=init(0xc) 页故障 0x7fffffffef90→SIGSEGV——rc 链最后一步）**：M1-M4（600s 窗，全旁路+table 同源）4/4=exec=12+pf=0+panic=0——(A) walk 崩零复发（对照无旁路 ~75%），旁路有效性确认；marker 仍 0/4。新卡点恒定=M1-M4 全部 pf-exit noaddr cr2=0x7fffffffef90→kill tgt=0xc SIGSEGV——0xc=init（exec endpt=0x800c 的 rc/init 链最后一步）在其栈 VA 0x7fffffffef90 页故障→rc 链断→marker 永不现身；cr2 与 fill-root 的 va=0x7fffffffe000 同族高栈=init 栈页的映射/写入问题（fill-root refault 循环同源）。§续-324 靶=①init 的 0x7fffffffef90 故障归因——krewalk 扩展走 init 的 ptroot 链读叶槽现值（同 §续-298-b 法，对象换 init）②判读=叶槽 0 ⇒ fill 写不落⇒与 fill-root 写腿同修③修复后 marker 判读。
 >
+> > **🛑 最新前沿＝§续-335（双重突破：sfence 判读排除 TLB 假设+findmut-flip 开火+重试×8 成修部分有效）**：①成修前后 rc 同 fa 故障频率逐字节相同（26 次）——TLB 假设排除，26 次 refault=程序逻辑真实重试；②findmut-flip 开火（J3/J4）=find_mut range 返回 None 后紧随重试命中——同一 VA 连续只读查询 None→Some 翻转、中间无写者=平移层不一致最直接实证（§续-159 键序破坏根因）；J1 的 no-region 分支 iter dump=4 region 全正常含栈 region；③重试×8 成修=**G1 完全通过 no-region 关**（retry-hit 治愈），G2 PF 腿治愈后 memreq 腿深坏窗/G3 8 次全 None；marker 仍 0。§续-336 靶=①G2/G3 残留 no-region 路径甄别②深坏窗测量调参③marker 判读。方法论=sfence 判读（频率对比）/翻转判据（最小充分证据）/重试×N=摆动正确缓解。
+>
 > > **🛑 最新前沿＝§续-322（bit38 常量定性：全部故障形=1<<38+合法低位（L2[256]）；1<<38=4×VM_DM_BASE；boot_pt_alloc 零填 512 ✓；判据=root[256] 崩时 dump）**：α/β/MFS 全部故障 VA=0x4000000000+各自合法低位——恒定单一位移非随机。L2[256]。候选收窄=①1<<38 为基的映射/计算（DM_BASE×4 移位错位形）②walk 层级错位（root[256] 槽）③VM 自根堆窗=L2[80]≠。boot_pt_alloc 零填 512 ✓——root[256] poison=运行期写入。§续-323 靶=①krewalk 扩 root 全 512 槽 dump（崩时 root[256] 非 0=poison 槽实锤）②1<<38 生产代码全扫③root[256]=0 而 CPU 仍访 ⇒ QEMU TB 层终实锤（变体矩阵升唯一路径）。
 >
 > > **🛑 最新前沿＝§续-321①②（MFS 故障 VA 分解=bit38 高位+合法镜像内偏移——与 (A) 族同构跨进程复现；RS panic=次生确认）**：0x4000833660 = **0x4000000000 + 0x833660**——0x833660 落在 MFS 自身镜像 .data 区（.data 起 0x830360+0x3300，镜像跨 0x1000000-0x1052000+）⇒ **合法镜像内偏移 + bit38 高位垃圾**——与 (A) 族（α stval 0x409c8ffb30=0x4000000000+0x9c8ffb30）完全同构！bit38 高位跨进程（VM walk 与 MFS 用户访问）跨时间复现=同一上游源；L2 索引=VA[38:30]=256（bit38 单置）无映射→故障。RS panic=次生（修 MFS 自消）。§续-322 靶=①bit38 源头追缉（PTE PPN 高位漏掩 vs 指针算术错位）②MFS 故障时 krewalk（需 MFS root 值）③三架构对照（x86 smoke/aarch64 健康=若 riscv 独有=平移层，若三架构=上层共享 bug）。
@@ -12614,3 +12616,15 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **当前态**：os/ = §续-331 HEAD（15422a68d）= 内核代读旁路在场（X1/X2 exec=12 稳定复现 ✓），全部实验代码已丢弃，探针族+工具+数据盘完整。
 
 **下一 session 首选**：①复测网络（`curl -sI https://deb.debian.org`）→ 恢复则 QEMU 9.x 变体矩阵（docker debian:trixie 装 qemu-system-misc + QEMU_BIN 环境变量指向容器内二进制 + 宿主 bind-mount 跑 halt-dump）②仍断→QEMU 8.2.2 行为归档（把 sfence/TLB 分析工单写为文档）→ 转确定收益（aarch64 套件扩样/RS panic 分析）。
+
+## §续-335（2026-10-04·双重突破：①sfence 判读排除 TLB 假设（前后 fa 分布逐字节相同 26 次）；②findmut-flip 开火+重试×8 成修部分有效（G1 治愈/G2-G3 深坏窗残留））
+
+**①sfence 判读**：成修前后 rc 同 fa（0x7fffffffef90）故障频率逐字节相同（p6c/p6d=26，R1-R3=26）——**sfence 无影响，TLB 假设排除**。rc 的 26 次 refault 是**程序逻辑真实重试**（每次 fault→fill→重试），第 27 次 VM 报 no-region。
+
+**②findmut-flip 开火**（J3/J4 各 1 次）：region_map.rs 的 find_mut range 查询返回 None 后，**紧随的重试命中**——同一 VA 连续两次只读查询、中间无写者、结果 None→Some 翻转。**平移层不一致的最直接实证**（§续-159 键序不变量破坏的根因）。且 J1 的 no-region 分支里 iter dump 看到 4 个 region 全部正常（含栈 region 0x7fffffbff000-0x7ffffffff000）——数学上 find_mut 必中却返回 None。
+
+**③重试×8 成修**（region_map.rs find_mut，range None 时重试 8 次）：**G1 完全通过 no-region 关**（retry-hit=1 治愈，no-region=0）；G2 的 PF 腿治愈后 memreq 腿遇深坏窗；G3 为 8 次全 None 深坏窗。marker 仍 0（rc 过关后另有卡点或 G2/G3 被杀）。
+
+**§续-336 靶**：①G2/G3 残留 no-region 的路径甄别（PF 腿 retry-hit 治愈后 memreq 腿独立触发？retry 在 region_map.rs 内应全局生效）；②深坏窗的持续时间测量（retry 间隔+上限调参）；③marker 判读。
+
+**方法论**：①「sfence 判读」=成修前后同 fa 故障频率对比——频率不变=TLB 假设排除；②「翻转判据」=同一 VA 连续只读查询结果不同、中间无写者=平移层不一致的最小充分证据；③重试×N 是视图摆动的正确缓解形态（坏窗自愈可穿越）。

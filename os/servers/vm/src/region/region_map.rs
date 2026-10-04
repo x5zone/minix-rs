@@ -99,6 +99,29 @@ impl RegionMap {
         if let Some(key) = key {
             return self.regions.get_mut(&key);
         }
+        // §续-334 成修：视图摆动缓解——range None 时重试至多 8 次（J 批
+        // 实测=同一 VA 连续读结果 None→Some 翻转且 iter 稍后必恢复=坏视图
+        // 自愈；重试穿越坏窗）。若 8 次全 None 才真返回 None。判读探针 CAP8。
+        #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+        {
+            static FMF_N: core::sync::atomic::AtomicUsize =
+                core::sync::atomic::AtomicUsize::new(0);
+            for _ in 0..8 {
+                let retry = self
+                    .regions
+                    .range(..=addr)
+                    .next_back()
+                    .filter(|(_, r)| r.contains_addr(addr))
+                    .map(|(k, _)| *k);
+                if let Some(key) = retry {
+                    if FMF_N.load(core::sync::atomic::Ordering::Relaxed) < 8 {
+                        FMF_N.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                        crate::bootmark::mark("nk4c: findmut-retry-hit\n");
+                    }
+                    return self.regions.get_mut(&key);
+                }
+            }
+        }
         // 续-160（防御性重建）：range 派 None 而 iter 可见 → pop_first 全量
         // 重灌（按当前键值重排 = 结构合法化）；重建打点入库不掩盖。重建后
         // 用 iter 同款线性查找定位（find_slot 语义等价）。
