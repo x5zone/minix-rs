@@ -32,6 +32,7 @@
 #   P14 gate+  RTS 裸 set/clear 绕过 rts_set/rts_unset（F10d 家族；基线对账）
 #   P15 gate   vendored 依赖源码防线（.dockercargo 跟踪 0 + gitignore 条目；d6f176451 事故）
 #   P16 gate   trap 腿消息物化调用在位（minix-sys commit_message_to_memory；§1.120续-22 事故）
+#   P17 report 构建缓存/取证产物跟踪防线（os/target_smp+os/tmp 跟踪计数；C-66 实测 145 文件）
 # 带 "+" 的检查基线豁免（tools/pattern-gate-baseline.txt，key=检查名|路径|cksum）。
 
 set -u
@@ -509,6 +510,23 @@ check_p16() {
   return 0
 }
 
+# --------------------------------------------------------------- P17 构建缓存/取证产物跟踪防线（report 式，不阻断）
+# 事故：C-66 实测 os/ 树内 147 个实验工件被跟踪（os/target_smp 122 个 cargo 缓存 + os/tmp 23 个
+# 取证串口 + 零引用 .bin）——文本残渣扫描（P15/.review 对账）对非文本工件形态全盲；586MB 串口
+# blob 入史阻断 push 为同族先例（new_laptop_migrate GIT取证会话记录）。清理归 NK4-C 收线批次，
+# 本检查 report 式给可见性，转强制门待清零后另行启用。
+check_p17() {
+  local root="$1" n=0 m=0
+  if ! git -C "$root" rev-parse --git-dir >/dev/null 2>&1; then
+    skip P17 "非 git 仓库（self-test 沙箱）"
+    return 0
+  fi
+  n=$(git -C "$root" ls-files 'os/target_smp/' 2>/dev/null | wc -l)
+  m=$(git -C "$root" ls-files 'os/tmp/' 2>/dev/null | wc -l)
+  printf '[P17] REPORT 构建缓存/取证件跟踪防线: os/target_smp %s + os/tmp %s 个被跟踪文件（清理待 NK4-C 收线；本检查不阻断）\n' "$n" "$m"
+  return 0
+}
+
 # --------------------------------------------------------------- 自测（正反例判别矩阵）
 ST_FAIL=0
 st_expect() { # 用例名 期望子串（固定串匹配） 实际输出
@@ -637,6 +655,9 @@ YAML
     printf '  [case] %-22s FAIL 期望恰 1 命中实得 %s\n' "P12-archfn" "$out"; ST_FAIL=$((ST_FAIL+1))
   fi
 
+  # --- P17（report 式：git 沙箱 SKIP、真树 REPORT）---
+  out=$(check_p17 "$F"); st_expect "P17-skip" "[P17] SKIP" "$out"
+
   rm -f "$F/.p11_tokens" "$F/.p13_tokens"
   echo "----"
   if [ "$ST_FAIL" -gt 0 ]; then
@@ -667,6 +688,7 @@ check_p12 "$ROOT"
 check_p14 "$ROOT"
 check_p15 "$ROOT"
 check_p16 "$ROOT"
+check_p17 "$ROOT"
 
 if [ "$DO_DIFF" -eq 1 ]; then
   added=$(diff_added_lines "$ROOT" "$RANGE")
