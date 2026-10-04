@@ -12949,3 +12949,18 @@ riscv_halt_dump.sh（-monitor unix + 120s 定窗 pmemsave 512MB）连跑 hd46-hd
 boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻结逻辑后：**run1（monitor 在场）探针完整跑完 3072 C 行且 RESULT=2713eb45…（CORRUPT）**——monitor 在场不抑制腐蚀器，halt-dump 的 3/3 幸存非 monitor 保护效应。halt-dump 第 4 跑（hd50）仍幸存：**配置差异 4/4 vs ~50% 可复现但归因未定**（样本 4v6 不显著；两工具命令行差异清单待逐项对照——已知差异仅 monitor 形态与轮询/退出方式；run1 的 ~40 分钟超慢推进 vs 平常 4-8 分钟为并发负载混杂，弱信号存疑）。运行事故与改进：SIGTERM 未能终止挂死 QEMU（驱动改 kill -9 兜底）；外层循环覆写了 run1 的 482KB 完整串口（C 序列判据丢失，RESULT 值已录）——驱动改用带时间戳的串口文件名防覆写。**OOB 现场未再出现**（minix-elf panic 3 次集中在更早批次），下次出现即用已验证的模块区 diff 流程拿指纹。
 
 **下一步**：①两工具 QEMU 命令行逐项 diff + 受控 A/B（唯一变量法）定位「幸存差异」的真变量；②boot_probe 改造（kill -9 兜底+时间戳串口名+轮询与 guest 生命周期等长）；③继续 halt-dump 循环直至 OOB——模块区 diff 流程已验证（hd49 十二模块全 EXACT）。
+
+## §续-349 判别器命中：腐蚀=小型精准写（mc 全局中招、流/缓冲/同页 randtbl 全程纯净）——统一理论=内核代写路径的 riscv 软件走表偶发错 PA
+
+交错 A/B（同一时间窗）：halt-dump 6 连跑零出生失败 vs boot_probe 立即 CORRUPT（run A：monitor 在场，RESULT=0ecef203，CMPV=-7）。「配置差异」假设下 halt-dump 0/10 出生失败若按 50% 率概率 0.1%——但失败率也可能随宿主负载时变（腐蚀是时序竞态），交错采样才能定案；本轮证据倾向**窗口与流量差异**（halt-dump 在 marker 即退、暴露短）而非配置。
+
+**判别器决定性读数（run A，3072 检查点+P 序列+MC 终态）**：
+1. 随机流 XOR：3072 点**全程无分歧**；
+2. b1/b2 缓冲 XOR：**全程无分歧**；
+3. MC 终态（MD5End 前）：**完全不同**（1b460056… vs 裸机 b5976365…）；
+4. P 序列：P(0,1)/P(0,2) 与裸机逐位一致，**P(0,3) 起全 DIFF**——mc 在 pair(0,3) 计算窗内被击中；
+5. mc 与 randtbl 同页（0x80200108 vs 0x80200000，相距 264B）而 randtbl（流状态）全程未被击中 ⇒ **小型精准写**（数字节，非页级零填/拷贝）。
+
+**统一理论（当前最强）**：腐蚀器=内核代写路径（finw 回执直写 syscall.rs:3942 区段、跨空间拷贝 vm.rs cross_space_copy/kdst、exec 镜像拷贝）的 **riscv 软件走表（CurrentPteWalk::walk）偶发返回错 PA** → 小块消息写落到错误物理帧=随机位置的小腐蚀；速率∝内核代写流量（探针洪流=高频 SYS_DIAGCTL=高频 finw/kdst——解释 ATF 慢且必败、boot-full 短跑常过）；aarch64 干净=走表实现不同；野 VA 脸谱（>2^38 pf、kdst len=1、minix-elf OOB）=同一错 PA/错长度读写的不同受害者。历史旁证：§续-292 的 poison=&0x7fffffff 掩码形、§续-293 「poison PTE=错粒度叶 PTE」——走表层的错值形态早有目击。
+
+**下一步（宿主可测优先，不需真机抽奖）**：①walk_read 宿主对抗测试——它只吃表字节，构造对抗性 PTE 形态（表指针/叶旗标组合、边界 idx、V 位无 RWX、huge 形保留位）与参考实现逐位对账，找偶发错 PA 的输入形状；②finw 路径双走表验证探针（两次独立走表比对 PA+写后经 KDM 回读比对）；③若①复现错形=纯宿主修复+单测闭环，再上真机对账。
