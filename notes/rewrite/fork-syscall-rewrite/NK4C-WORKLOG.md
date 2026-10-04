@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-321①②（MFS 故障 VA 分解=bit38 高位+合法镜像内偏移——与 (A) 族同构跨进程复现；RS panic=次生确认）**：0x4000833660 = **0x4000000000 + 0x833660**——0x833660 落在 MFS 自身镜像 .data 区（.data 起 0x830360+0x3300，镜像跨 0x1000000-0x1052000+）⇒ **合法镜像内偏移 + bit38 高位垃圾**——与 (A) 族（α stval 0x409c8ffb30=0x4000000000+0x9c8ffb30）完全同构！bit38 高位跨进程（VM walk 与 MFS 用户访问）跨时间复现=同一上游源；L2 索引=VA[38:30]=256（bit38 单置）无映射→故障。RS panic=次生（修 MFS 自消）。§续-322 靶=①bit38 源头追缉（PTE PPN 高位漏掩 vs 指针算术错位）②MFS 故障时 krewalk（需 MFS root 值）③三架构对照（x86 smoke/aarch64 健康=若 riscv 独有=平移层，若三架构=上层共享 bug）。
+> **🛑 最新前沿＝§续-322（bit38 常量定性：全部故障形=1<<38+合法低位（L2[256]）；1<<38=4×VM_DM_BASE；boot_pt_alloc 零填 512 ✓；判据=root[256] 崩时 dump）**：α/β/MFS 全部故障 VA=0x4000000000+各自合法低位——恒定单一位移非随机。L2[256]。候选收窄=①1<<38 为基的映射/计算（DM_BASE×4 移位错位形）②walk 层级错位（root[256] 槽）③VM 自根堆窗=L2[80]≠。boot_pt_alloc 零填 512 ✓——root[256] poison=运行期写入。§续-323 靶=①krewalk 扩 root 全 512 槽 dump（崩时 root[256] 非 0=poison 槽实锤）②1<<38 生产代码全扫③root[256]=0 而 CPU 仍访 ⇒ QEMU TB 层终实锤（变体矩阵升唯一路径）。
+>
+> > **🛑 最新前沿＝§续-321①②（MFS 故障 VA 分解=bit38 高位+合法镜像内偏移——与 (A) 族同构跨进程复现；RS panic=次生确认）**：0x4000833660 = **0x4000000000 + 0x833660**——0x833660 落在 MFS 自身镜像 .data 区（.data 起 0x830360+0x3300，镜像跨 0x1000000-0x1052000+）⇒ **合法镜像内偏移 + bit38 高位垃圾**——与 (A) 族（α stval 0x409c8ffb30=0x4000000000+0x9c8ffb30）完全同构！bit38 高位跨进程（VM walk 与 MFS 用户访问）跨时间复现=同一上游源；L2 索引=VA[38:30]=256（bit38 单置）无映射→故障。RS panic=次生（修 MFS 自消）。§续-322 靶=①bit38 源头追缉（PTE PPN 高位漏掩 vs 指针算术错位）②MFS 故障时 krewalk（需 MFS root 值）③三架构对照（x86 smoke/aarch64 健康=若 riscv 独有=平移层，若三架构=上层共享 bug）。
 >
 > **（上一前沿＝§续-320（RS panic 定位：主死者=MFS 页故障 0x4000833660→VM noaddr→SIGSEGV；RS panic=次生 :1254；L1/L3 stall=活而慢/等）**：rs/src/boot.rs:1254=catch_boot_init_ready 的 unexpected-reply panic（C main.c:799-801 对位）=次生；时序=pf-exit noaddr cr2=0x4000833660→kill tgt=0xa(=MFS，§续-279a 同族) SIGSEGV→RS 收到错误消息→:1254。**主死者=MFS**：VA 0x4000833660=L2[16] 野区（256GB+8.6MiB——非 DM/堆/链接区），形状嫌疑=基指针 0x4000000000+bss 偏移 0x833660（≈mfs bss 尺寸族）。L1/L3 stall=尾部 sa-call 活跃=活而慢/等非死锁。§续-321 靶=①MFS 故障 VA 属性审计（0x4000000000 基从何来）②L1/L3 的 mfs/pfs 行归账③修复二选一=MFS 野指针 in-code 修 vs PteReadBuf 批量腿。
 >
