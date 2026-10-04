@@ -1,6 +1,6 @@
 P12|os/boot-shim/src/lib.rs:142|2700712658
 P12|os/kernel/src/lib.rs:304|1585844490
-P12|os/kernel/src/trap_dispatch.rs:975|2629652441
+P12|os/kernel/src/lib.rs:3842|3874602391
 P14|os/kernel/src/clock.rs|175725238
 P14|os/kernel/src/clock.rs|597921436
 P14|os/kernel/src/grant.rs|1305843057
@@ -115,4 +115,3 @@ P8|os/drivers/tty/tty/src/service.rs
 P8|os/kernel-image/riscv64.ld
 P8|os/libs/minix-boot/src/handoff.rs
 P8|os/libs/minix-sys/build.rs
-P8|os/servers/vm/src/bootmark.rs
