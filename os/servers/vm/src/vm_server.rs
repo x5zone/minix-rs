@@ -203,6 +203,12 @@ pub struct VmServer {
 }
 
 impl VmServer {
+    /// Test-facing constructor over [`BootParams::simple`].
+    ///
+    /// T13 审计 A5 同门：生产入口是
+    /// [`Self::new_with_boot_params`]（真 boot 契约）；`new()` 只服务
+    /// 宿主测试，编译期门控防止生产误用 mock 形状的 boot 参数。
+    #[cfg(test)]
     pub fn new(total_pages: usize, free_regions: &[BootMemRegion]) -> Self {
         Self::new_with_boot_params(BootParams::simple(total_pages, free_regions))
     }
@@ -616,6 +622,12 @@ impl VmServer {
         // `BootParams::simple`) keeps the historical mock constants.
         let layout = self.kernel_layout.unwrap_or_else(|| {
             audit_log!("[VM BOOT] handoff lacks kernel layout (version < 3) — mock constants in use");
+            // T13 审计 A6：mock 形状是 x86 的（dm_vbase=0xFFFF_8000_0000_0000
+            // 在 Sv39 非规范）——riscv64 guest 上真 handoff 恒 v5 携带真布局，
+            // 走到本回退说明 handoff 版本逻辑已破，硬失败而非静默套错形状。
+            #[cfg(all(target_arch = "riscv64", not(test)))]
+            panic!("handoff lacks kernel layout on riscv64 — a real handoff is v5 and carries it");
+            #[cfg(not(all(target_arch = "riscv64", not(test))))]
             minix_types::KernelLayout::new(
                 0xFFFF_FFFF_8000_0000, // kernel_text_vbase (mock)
                 0x100_0000,            // kernel_text_pbase (16 MiB, mock)

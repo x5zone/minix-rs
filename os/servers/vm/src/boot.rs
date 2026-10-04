@@ -126,7 +126,11 @@ impl<'a> BootParams<'a> {
     /// Single-region boot params with no modules and no boot processes.
     ///
     /// Intended for unit tests that only exercise allocator/dispatch
-    /// paths. Production code must use real boot parameters.
+    /// paths. Production code must use real boot parameters — T13 审计
+    /// A5：此前无 `#[cfg(test)]` 门且内嵌 x86 栈顶字面量，靠注释维持
+    /// 「仅测试」约定；现编译期门控（生产误用=符号不存在）且栈顶引
+    /// `minix_types::USER_STACK_TOP` 权威（宿主测试按宿主架构取值）。
+    #[cfg(test)]
     pub fn simple(total_pages: usize, free_regions: &'a [BootMemRegion]) -> Self {
         Self {
             // Fake-but-valid root: these tests never exercise adoption.
@@ -140,9 +144,10 @@ impl<'a> BootParams<'a> {
             is_first_time: true,
             kernel_layout: None,
             // Test-only constructor: a plausible stack top the boot-path
-            // tests can build frames against (matches the x86-64 value
-            // the kernel reports; see kernel lib.rs boot-proc tables).
-            user_sp: VirBytes(0x7fff_ffff_f000),
+            // tests can build frames against — the single-authority value
+            // the kernel reports for this target (kernel lib.rs boot-proc
+            // tables).
+            user_sp: VirBytes(minix_types::USER_STACK_TOP),
         }
     }
 
