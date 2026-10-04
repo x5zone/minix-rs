@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-324（M1 读数反转：fill-root 链（rc 根 0x9d6e8000）三级全 V 完整健全——「fill 写不落」证伪；kill 的是 init(0xc) 非 rc，init 根值待查）**：M1 dump 叶槽分析=fill-root 链 l2e/l1e/l0e 三级全 V（0x2724f001→0x2724ec01→0x2724f4df）叶 PTE→PA 0x9c93d000，叶槽现值 0=数据页内容合法（pte_pa=数据帧 PA 语义 §续-308）——「fill 写不落/叶槽被清」证伪。**关键澄清=kill tgt=0xc=init≠rc(0x800c)**——fill-root 链是 rc 的，init 另一根；init 根值=setaddr-root 探针尾行待查。§续-325 靶=①init(0xc) 根值提取→走 init 根链读 0x7fffffffef90 叶槽现值②init 栈页 fill 腿是否存在（FR_N<3 封顶可能没印 init 的 fill）③修复后 marker 判读。
+> **🛑 最新前沿＝§续-325（身份修正+矛盾收口：kill 的是 rc(0x800c,slot 0xc) 本身；PTE 有效却反复故障——VM region 簿记与页表链脱节=最后卡点）**：身份修正=kill tgt=0xc=slot 0xc+endpoint 0x800c+state=exiting=**rc shell 本身**（§续-323/324 的「init」称呼纠正）。矛盾收口=M1 dump 证 rc 链三级全 V、叶 PTE=0x2724f4df（全旗标→PA 0x9c93d000 完全有效）——硬件页表映射存在可写可执行，但 rc 对同页 0x7fffffffef90 反复故障、VM 回 noaddr、kernel 杀之 ⇒ **页表硬件视图与 VM region 簿记脱节**（fill-root 直写叶 PTE 绕过 slot 簿记）。§续-326 靶=①VM handle_pagefault 对 va 的簿记查询审计②修=fill 腿补 slot 簿记或 noaddr 判定查硬件链兜底③修后 marker→§7→riscv 三目标→Phase E。
+>
+> **（上一前沿＝§续-324（M1 读数反转：fill-root 链三级全 V 完整健全——「fill 写不落」证伪；kill 的是 init(0xc) 非 rc，init 根值待查——身份已修正为 rc）**：M1 dump 叶槽分析=fill-root 链 l2e/l1e/l0e 三级全 V（0x2724f001→0x2724ec01→0x2724f4df）叶 PTE→PA 0x9c93d000，叶槽现值 0=数据页内容合法（pte_pa=数据帧 PA 语义 §续-308）——「fill 写不落/叶槽被清」证伪。**关键澄清=kill tgt=0xc=init≠rc(0x800c)**——fill-root 链是 rc 的，init 另一根；init 根值=setaddr-root 探针尾行待查。§续-325 靶=①init(0xc) 根值提取→走 init 根链读 0x7fffffffef90 叶槽现值②init 栈页 fill 腿是否存在（FR_N<3 封顶可能没印 init 的 fill）③修复后 marker 判读。
 >
 > **（上一前沿＝§续-323（600s×4 判读稳定：exec=12+pf=0+panic=0 4/4=(A) 崩零复发，旁路有效性确认；新卡点=init(0xc) 页故障 0x7fffffffef90→SIGSEGV——rc 链最后一步）**：M1-M4（600s 窗，全旁路+table 同源）4/4=exec=12+pf=0+panic=0——(A) walk 崩零复发（对照无旁路 ~75%），旁路有效性确认；marker 仍 0/4。新卡点恒定=M1-M4 全部 pf-exit noaddr cr2=0x7fffffffef90→kill tgt=0xc SIGSEGV——0xc=init（exec endpt=0x800c 的 rc/init 链最后一步）在其栈 VA 0x7fffffffef90 页故障→rc 链断→marker 永不现身；cr2 与 fill-root 的 va=0x7fffffffe000 同族高栈=init 栈页的映射/写入问题（fill-root refault 循环同源）。§续-324 靶=①init 的 0x7fffffffef90 故障归因——krewalk 扩展走 init 的 ptroot 链读叶槽现值（同 §续-298-b 法，对象换 init）②判读=叶槽 0 ⇒ fill 写不落⇒与 fill-root 写腿同修③修复后 marker 判读。
 >
@@ -12477,3 +12479,9 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **M1 dump 叶槽分析**（ptroot=0x9d6e8000=fill-root 印的 rc 根）：va=0x7fffffffe000 链=l2e(0x9d6e8ff8)=0x2724f001→l1e(0x9c93cff8)=0x2724ec01→l0e(0x9c93bff0)=0x2724f4df——**三级全 V 完整健全**；叶 PTE→PA 0x9c93d000，叶槽现值 0=**数据页内容合法**（pte_pa=数据帧 PA 语义，§续-308）——「fill 写不落/叶槽被清」证伪。**关键澄清**：kill tgt=0xc=**init**≠rc(0x800c)——fill-root 的链是 rc 的，init 是另一进程另一根；init 的根值=setaddr-root 探针最后行待查（§续-325 首步）。
 
 **§续-325 靶**：①init(0xc) 的根值提取（setaddr-root 探针尾行/M1 dump 的内核 proc 表）→ 走 init 根链读 0x7fffffffef90 叶槽现值——判 init 栈映射缺失/损坏；②init 栈页的 fill 腿是否存在（init 的 exec 是 rc 里 exec 的——fill-root 探针 FR_N<3 封顶可能没印 init 的 fill）；③修复后 marker 判读。
+
+## §续-325（2026-10-04·身份修正+矛盾收口：kill 的是 rc(0x800c,slot 0xc) 本身；**PTE 有效却反复故障**——VM region 簿记与页表链脱节=最后卡点；§续-326=VM noaddr 判定路径审计）
+
+**身份修正**：kill tgt=0xc = slot 0xc + endpoint 0x800c + pf-inrct state=exiting = **rc shell 本身**（§续-323/324 的「init」称呼纠正）。**矛盾收口**：M1 dump 证 rc 的链三级全 V、叶 PTE=0x2724f4df（V|R|W|X|U|G|A|D 全旗标→PA 0x9c93d000 完全有效）——**硬件页表层面映射存在且可写可执行**，但 rc 对同页 0x7fffffffef90 反复页故障、VM 回 noaddr、kernel 杀之。⇒ **页表硬件视图与 VM region 簿记脱节**：VM 的 handle_pagefault 在 region 簿记里找不到该 VA 的可解析映射（noaddr）——fill-root 直写叶 PTE 绕过了 region/slot 簿记（fill 直写 PTE 但 slot 簿记未记），后续故障时 VM 的簿记查询路径返回未映射。
+
+**§续-326 靶（真根因收口）**：①VM handle_pagefault 对 va=0x7fffffffe000 的簿记查询路径审计（region.find 为什么 noaddr——fill-root 直写 PTE 时 slot 簿记是否记了 Mapped）；②修=fill 腿补 slot 簿记（或 noaddr 判定改查硬件链兜底）；③修后 rc 不再 refault → marker 现身 → §7（≥3 轮+双 marker+host）→ riscv 三目标 → Phase E。
