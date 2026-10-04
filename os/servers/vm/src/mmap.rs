@@ -205,11 +205,42 @@ pub(crate) enum MmapResult {
 //   VM_MMAPTOP = VM_STACKTOP - DEFAULT_STACK_LIMIT
 //   VM_MMAPBASE = VM_MMAPTOP / 2  (or VM_PAGE_SIZE in non-MAGIC builds)
 //
-// In minix-rs (64-bit), the address space is 48-bit canonical user
-// space ([ARCH: A-6]: 32-bit scarcity → 64-bit headroom). We reserve a
-// generous range far from brk/stack:
+// In minix-rs (64-bit), the mmap window is a fixed generous range far
+// from brk/stack ([ARCH: A-6]: 32-bit scarcity → 64-bit headroom), but
+// its top is capped by the per-architecture user-half limit
+// (`minix_types::USER_VA_LIMIT`) — T13 审计 A1 的修复：此前无条件
+// 2^41 的窗口顶在 Sv39（用户半区 2^38）越界，依赖「first-fit 需
+// ~252GiB 分配史才可达」的动态巧合而非结构性保证。窗口与栈区在
+// region 树里的重叠由 find_slot 的 overlap 检查兜底，搜索窗只需是
+// 上界安全的超集。
 pub(crate) const MMAP_BASE: u64 = 0x0000_0001_0000_0000;
-pub(crate) const MMAP_TOP: u64  = 0x0000_0200_0000_0000;
+pub(crate) const MMAP_TOP: u64 = if minix_types::USER_VA_LIMIT < 0x0000_0200_0000_0000 {
+    minix_types::USER_VA_LIMIT
+} else {
+    0x0000_0200_0000_0000
+};
+
+const _: () = assert!(
+    MMAP_BASE < MMAP_TOP && MMAP_TOP <= minix_types::USER_VA_LIMIT,
+    "mmap window must be a non-empty subrange of the user half"
+);
+
+/// Reject an `addr..addr+len` range that leaves the user half — the same
+/// `checked_add` + double-sided bound shape as the kernel-side user copy
+/// check (`os/kernel/src/ipc.rs` `user_copy_range_mapped` step 1: a wrap
+/// must not read as "fits").
+///
+/// T13 审计 A3/R2：mmap 的 MAP_FIXED 与 hint 分支此前完全无用户半区
+/// 上界校验——一条带提示的 guest 调用即可触发（13 项发现里唯一
+/// 「一条 guest 调用即触发」的口）。`limit` 由调用方传
+/// [`minix_types::USER_VA_LIMIT`]；抽成参数使宿主测试能同时覆盖
+/// x86（2^47）与 riscv（2^38）两族值（宿主测试只编译 x86 常量）。
+fn check_user_range(limit: u64, addr: u64, len: u64) -> Result<(), MmapError> {
+    match addr.checked_add(len) {
+        Some(end) if addr < limit && end <= limit => Ok(()),
+        _ => Err(MmapError::BadAddress),
+    }
+}
 
 fn roundup_page(len: u64) -> u64 {
     (len + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
@@ -249,6 +280,8 @@ fn mmap_region(
         if !addr.0.is_multiple_of(PAGE_SIZE) {
             return Err(MmapError::BadAddress);
         }
+        // T13 R2：MAP_FIXED 目标也必须整体落在用户半区（A3 的口子之一）。
+        check_user_range(minix_types::USER_VA_LIMIT, addr.0, len.0)?;
         // C mmap.c:60-68 — unmap whatever occupies [addr, addr+len).
         crate::munmap::unmap_range(active, page_alloc, frames, vfs_queue, addr, len)
             .map_err(|_| MmapError::OutOfMemory)?;
@@ -260,6 +293,9 @@ fn mmap_region(
     // hint" — the C side would honor them exactly, but region slots are
     // page-aligned by construction in minix-rs (doc 20 §3.6).
     if addr.0 != 0 && addr.0.is_multiple_of(PAGE_SIZE) {
+        // T13 R2：hint 同样整体落在用户半区（A3 的口子之二）；越界
+        // 提示不静默回退窗口，直接拒——回退会让 guest 以为 hint 生效。
+        check_user_range(minix_types::USER_VA_LIMIT, addr.0, len.0)?;
         let end = VirBytes(addr.0 + len.0);
         if active.regions().find_overlap(addr, end).is_none() {
             return Ok(addr);
@@ -643,6 +679,38 @@ mod tests {
     use crate::phys_mem::{BitmapAllocator, PhysAlloc};
     use crate::region::PAGE_SIZE as REGION_PAGE_SIZE;
     use minix_types::{PhysBytes, UserSlot};
+
+    /// T13 R2：用户半区上界校验的双架构族值覆盖（宿主测试只编译
+    /// x86 常量，riscv 族值经注入的 limit 参数覆盖）。
+    #[test]
+    fn test_check_user_range_both_arch_families() {
+        let x86_limit: u64 = 1 << 47;
+        let riscv_limit: u64 = 1 << 38;
+        let page: u64 = 0x1000;
+
+        // 窗口内 OK（两族各验一对）。
+        assert_eq!(check_user_range(x86_limit, page, page), Ok(()));
+        assert_eq!(check_user_range(riscv_limit, page, page), Ok(()));
+        // 下界穿透（addr ≥ limit）即拒。
+        assert_eq!(check_user_range(x86_limit, x86_limit, page), Err(MmapError::BadAddress));
+        assert_eq!(check_user_range(riscv_limit, riscv_limit, page), Err(MmapError::BadAddress));
+        // 上界穿透（addr+len > limit）即拒——riscv 族用审计 A1 的
+        // 2^41 hint 复现：2^41 在 Sv39 越界，此前静默建 region。
+        assert_eq!(
+            check_user_range(riscv_limit, 0x0000_0200_0000_0000 - page, page * 2),
+            Err(MmapError::BadAddress)
+        );
+        // x86 族同地址合法（2^41 < 2^47）——证明值差异来自 limit 注入
+        // 而非常量误用。
+        assert_eq!(check_user_range(x86_limit, 0x0000_0200_0000_0000 - page, page * 2), Ok(()));
+        // 回绕（checked_add）不读成 fits。
+        assert_eq!(
+            check_user_range(x86_limit, u64::MAX - page / 2, page),
+            Err(MmapError::BadAddress)
+        );
+        // 产线常量自洽：MMAP 窗口整体落在用户半区内。
+        assert!(MMAP_TOP <= minix_types::USER_VA_LIMIT && MMAP_BASE < MMAP_TOP);
+    }
 
     fn make_frames() -> PageFrames {
         PageFrames::new(PhysBytes(256 * REGION_PAGE_SIZE as u64))

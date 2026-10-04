@@ -224,3 +224,14 @@ rg -n "0x3f_ffff|0x3fffff" os/ -t rust
 5. **R5（登记项）**：A11 维持现状并保持架构显式标注惯例；权威常量断言按架构分钉（A4 附带注记）。
 
 修复后复跑 `python3 tools/address-constant-scan.py os`，期望：LITERAL 通道中 `MMAP_TOP`/`REMAP_MMAP_TOP` 的 2^41 条目消失、A5/A9 族的 `0x7fff_ffff_f000` 条目收敛到权威常量本体与 wire 语义注释；本档第 6 节的通道计数随之更新。
+
+## §8 修复轮落地注记（NK4C 续-344，R1+R2 同笔）
+
+按 §7 建议落地 R1+R2（一笔）；修复后复扫与本节由修复轮补记：
+
+- **R1 落地**：`minix_types::USER_VA_LIMIT` 上线（x86_64=2^47 / aarch64=2^48 / riscv64=2^38），per-arch 编译期断言分钉（R5 附带项一并：x86 收紧到 2^47，替换原「非 riscv 统一 <2^48」松口径）。`USER_STACK_TOP` 增 `< USER_VA_LIMIT` 上界断言。aarch64 侧在 `os/arch/src/arm64/paging.rs` 提取 `TCR_T0SZ=16` 常量、TCR 编程值与 `USER_VA_LIMIT` 互为编译期交叉断言（任一侧漂移即编译失败）。
+- **A4 修复**：`os/kernel/src/ipc.rs` 私有三分支 `USER_ADDRESS_SPACE_LIMIT` 删除，改 `use minix_types::USER_VA_LIMIT as USER_ADDRESS_SPACE_LIMIT`——aarch64 从 2^47（保守窄）归位 TCR 推导的 2^48，错误注释（「TTBR1 region base」）一并更正。kernel 侧用户拷贝检查的接受面随之加宽到 TCR 事实边界（该区间为 canonical 用户半区，无映射 VA 的行为不变=走表失败 EFAULT）。
+- **A1/A2 修复**：`MMAP_TOP` 改派生式（`minix_types::USER_VA_LIMIT < 2^41` 时取 USER_VA_LIMIT，否则维持 2^41 宽松窗）——riscv 窗口顶收到 2^38，越界窗结构性消除；与栈区搜索窗重叠由 find_slot 的 region overlap 检查兜底（窗口是上界安全的超集，语义不变）。`REMAP_MMAP_*` 第二份字面量删除，`use` 引 `crate::mmap::{MMAP_BASE, MMAP_TOP}`。
+- **A3 修复（R2）**：`mmap.rs` 新增 `check_user_range(limit, addr, len)`（checked_add + 双侧上界，形态同 kernel `user_copy_range_mapped` 第 1 步），MAP_FIXED 与 hint 两分支接入；`dispatcher.rs` remap 显式 target 分支同形校验（越界 `VmError::InvalidAddress`）。语义取舍：越界 hint **拒绝而非静默回退窗口**（Linux 非 FIXED hint 会回退；此处按审计 fail-closed 取舍，越界提示视为调用方 bug）。
+- **复扫**（`python3 tools/address-constant-scan.py os`）：2^41 独立字面量清零——唯一残留 `mmap.rs:217` 为派生比较点（封顶语义本体，非权威副本）；`REMAP_MMAP_*` 字面量清零；`USER_ADDRESS_SPACE_LIMIT` 三分支清零（ipc.rs 归 `use`）。§6 的四通道计数系交付时点快照，本笔后小幅漂移（净减 5 处），不回改 §6 原始记录。
+- **验证**：host 四包 + vm 536/0（新增 `test_check_user_range_both_arch_families`：x86/riscv 双族值注入覆盖，含 2^41-hint 在 riscv 族被拒/在 x86 族合法的对照断言）+ vfs 538/0 + boot-shim test-all 27/0 + check-layout all PASS + x86 cmd-smoke PASS + aarch64 bootmarks PASS（rc=0）+ riscv boot-full PASS（marker reached）。A5/A6/A9/A10（R3）与 A7/A8/A13（R4）未动，按 §7 排序留给后续笔。

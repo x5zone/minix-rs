@@ -3412,7 +3412,7 @@ mod tests {
             let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
             let region = active.regions().find_overlap(
                 VirBytes(0x0000_0001_0000_0000),
-                VirBytes(0x0000_0200_0000_0000),
+                VirBytes(crate::mmap::MMAP_TOP),
             ).expect("file region must exist after mmap_file_cont");
             assert!(!region.flags.contains(crate::region::VrFlags::ANON));
             assert!(matches!(

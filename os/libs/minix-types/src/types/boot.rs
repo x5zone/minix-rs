@@ -149,18 +149,58 @@ pub const USER_STACK_TOP: u64 = if cfg!(target_arch = "riscv64") {
     0x7fff_ffff_f000
 };
 
+/// One past the last valid user virtual address — the user-half limit.
+///
+/// Derivation per architecture (T13 地址常量审计 R1：
+/// `notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md` §1/§3):
+///
+/// - x86_64 (four-level paging, LA57 absent): the user half is
+///   `[0, 2^47)`; `2^47` is the PML4[256] kernel-half base. A canonical
+///   address at or above `2^47` is kernel space.
+/// - aarch64 (programmable boundary): the TCR_EL1 programmed in
+///   `os/arch/src/arm64/paging.rs` uses `T0SZ=16`, so the user half is
+///   `[0, 2^48)`; TTBR1 maps `[2^48, 2^64)`. That file cross-asserts this
+///   constant against the same shift (`TCR_T0SZ`), so the two cannot drift.
+/// - riscv64 (Sv39): the user half is `[0, 2^38)`; bit 38 is the first
+///   VA bit that must equal bit 63 (canonicality — QEMU
+///   `target/riscv/cpu_helper.c` masked_msbs gate). The §续-338 defect
+///   class was exactly a user address above this limit.
+///
+/// This is the single authority for the user-half bound: the kernel-side
+/// user-copy checks, the VM mmap window top, and every new per-arch
+/// address decision derive from (or assert against) this constant. The
+/// `cfg!`-form keeps this documentation visible on every target.
+pub const USER_VA_LIMIT: u64 = if cfg!(target_arch = "riscv64") {
+    1u64 << 38
+} else if cfg!(target_arch = "aarch64") {
+    1u64 << 48
+} else {
+    1u64 << 47
+};
+
 // Compile-time invariants: a wrong value here is the §续-338 defect class
 // (an untranslatable user address), so pin it at build time on every target.
-const _: () = assert!(USER_STACK_TOP % 4096 == 0, "USER_STACK_TOP must be page-aligned");
+const _: () = assert!(USER_STACK_TOP.is_multiple_of(4096), "USER_STACK_TOP must be page-aligned");
+const _: () = assert!(USER_STACK_TOP < USER_VA_LIMIT, "USER_STACK_TOP must stay in the user half");
 #[cfg(target_arch = "riscv64")]
 const _: () = assert!(
     USER_STACK_TOP < (1u64 << 38),
     "USER_STACK_TOP must be Sv39-canonical for riscv64 (below 2^38, the user half)"
 );
-#[cfg(not(target_arch = "riscv64"))]
+#[cfg(target_arch = "riscv64")]
 const _: () = assert!(
-    USER_STACK_TOP < (1u64 << 48),
-    "USER_STACK_TOP must be 48-bit-canonical (below 2^48)"
+    USER_VA_LIMIT == (1u64 << 38),
+    "USER_VA_LIMIT must be exactly the Sv39 user-half bound (2^38)"
+);
+#[cfg(target_arch = "aarch64")]
+const _: () = assert!(
+    USER_VA_LIMIT == (1u64 << 48),
+    "aarch64 USER_VA_LIMIT must match TCR T0SZ=16 (2^48); the paging module cross-asserts this"
+);
+#[cfg(target_arch = "x86_64")]
+const _: () = assert!(
+    USER_VA_LIMIT == (1u64 << 47),
+    "x86_64 USER_VA_LIMIT must be the PML4[256] kernel-half base (2^47)"
 );
 
 /// Kernel → VM boot handoff page (one-way, one-shot).

@@ -366,12 +366,13 @@ pub struct KernelUserCopy;
 /// (usermapped_glo_ipc.S). The flat shared-page-table model has no
 /// segment limit, so the bound must be checked explicitly before any
 /// user-buffer access.
-#[cfg(target_arch = "x86_64")]
-const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000; // PML4[256] base
-#[cfg(target_arch = "aarch64")]
-const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_8000_0000_0000; // TTBR1 region base
-#[cfg(target_arch = "riscv64")]
-const USER_ADDRESS_SPACE_LIMIT: u64 = 0x0000_0040_0000_0000; // Sv39 VPN[2]=256
+///
+/// T13 R1：单一权威 = `minix_types::USER_VA_LIMIT`（x86_64=2^47
+/// PML4[256] 基址；aarch64=2^48 由 TCR T0SZ=16 推导、arch 模块交叉断言；
+/// riscv64=2^38 Sv39 用户半区上界）。此前 aarch64 分支私有值 2^47 与
+/// TCR 推导的 2^48 不一致（保守方向，审计 A4），且注释「TTBR1 region
+/// base」表述错误——两处一并由权威常量接管。
+use minix_types::USER_VA_LIMIT as USER_ADDRESS_SPACE_LIMIT;
 
 /// Validate a user buffer range for a kernel-side user copy, software-walk
 /// first so the access can no longer fault.

@@ -1086,9 +1086,10 @@ fn query_rusage_error_to_vm_error(e: query::QueryError) -> VmError {
 
 /// Mmap address range for remap operations.
 /// C: `VM_MMAPBASE` / `VM_MMAPTOP` (computed at boot in minix3).
-/// In 64-bit minix-rs, we use the same range as `handle_mmap`.
-const REMAP_MMAP_BASE: u64 = 0x0000_0001_0000_0000;
-const REMAP_MMAP_TOP: u64  = 0x0000_0200_0000_0000;
+/// In 64-bit minix-rs, the same range as `handle_mmap` — T13 审计 A2：
+/// 此前这里是 2^41 的第二份字面量拷贝，「same range」约定只靠注释
+/// 维持；现改为单一真源（含 per-arch 用户半区封顶，riscv 收到 2^38）。
+use crate::mmap::{MMAP_BASE as REMAP_MMAP_BASE, MMAP_TOP as REMAP_MMAP_TOP};
 
 /// Page-align a length value, matching C's `size += VM_PAGE_SIZE - size % VM_PAGE_SIZE`.
 fn align_up_page(len: u64) -> u64 {
@@ -1157,7 +1158,17 @@ fn dispatch_remap_impl(
 
     // Step 6: Determine destination address range
     // (C: mmap.c:412-415 — `if(da) map_page_region(dvmp, da, 0, ...) else map_page_region(dvmp, VM_MMAPBASE, VM_MMAPTOP, ...)`)
+    //
+    // T13 审计 A3/R2：显式目标此前无任何用户半区上界校验（可达口子
+    // 之二）——目标区间整体越出 `USER_VA_LIMIT` 即拒（checked_add 防
+    // 回绕读成「fits」，形态同 kernel 侧 user_copy_range_mapped 第 1 步）。
     let (minv, maxv) = if request.target.0 != 0 {
+        match request.target.0.checked_add(aligned_len.0) {
+            Some(end)
+                if request.target.0 < minix_types::USER_VA_LIMIT
+                    && end <= minix_types::USER_VA_LIMIT => {}
+            _ => return VmReply::Error(VmError::InvalidAddress),
+        }
         (request.target, VirBytes(request.target.0 + aligned_len.0))
     } else {
         (VirBytes(REMAP_MMAP_BASE), VirBytes(REMAP_MMAP_TOP))

@@ -540,14 +540,23 @@ impl Paging for AArch64Paging {
             // UEFI firmware configures TCR for its own page tables; we must
             // reconfigure it for ours (same granule/size is typical but not
             // guaranteed by the UEFI spec).
-            let tcr: u64 = (16 << 0)
+            //
+            // T13 R1 交叉断言锚点：`minix_types::USER_VA_LIMIT`（aarch64
+            // 分支 = 2^48）就是从同一个 T0SZ 推导的——本模块与常量任一侧
+            // 漂移都会在编译期失败。
+            const TCR_T0SZ: u64 = 16;
+            const _: () = assert!(
+                minix_types::USER_VA_LIMIT == 1u64 << (64 - TCR_T0SZ),
+                "USER_VA_LIMIT (aarch64) must derive from TCR_T0SZ"
+            );
+            let tcr: u64 = (TCR_T0SZ << 0)
                 | (0 << 6)
                 | (0 << 7)
                 | (1 << 8)
                 | (1 << 10)
                 | (3 << 12)
                 | (0 << 14)
-                | (16 << 16)
+                | (TCR_T0SZ << 16)
                 | (0 << 22)
                 | (0 << 23)
                 | (1 << 24)
