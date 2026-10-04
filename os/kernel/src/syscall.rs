@@ -3294,6 +3294,51 @@ fn dispatch_diagctl(
                         if let Some(p) = find_hex_field(&diagbuf[..len], b"pte_pa=") {
                             crate::trap_dispatch::LAST_FILL_LEAF_PA.store(p, core::sync::atomic::Ordering::Relaxed);
                         }
+                        // §续-336 KDM 走链对账（用后即滚）：fill 写后立即从
+                        // 内核视角走 ptroot 链读叶 PTE——判「VmDm 写落错帧」
+                        // vs「QEMU walk 视角不一致」。va 从消息里提。
+                        #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+                        {
+                            use minix_plat::{CurrentEarlyConsole as FwConsole, EarlyConsole as _};
+                            const KDM: u64 = 0xFFFF_FFC0_4000_0000;
+                            if let Some(va) = find_hex_field(&diagbuf[..len], b"va=") {
+                                let root = find_hex_field(&diagbuf[..len], b"ptroot=").unwrap_or(0);
+                                if root >= 0x8000_0000 {
+                                    let kdm = |pa: u64| unsafe {
+                                        ((KDM + pa) as *const u64).read_volatile()
+                                    };
+                                    let mut pa = root;
+                                    let mut lvl = 2u8;
+                                    let mut ok = true;
+                                    let mut leaf_val: u64 = 0;
+                                    for sh in [30u64, 21, 12] {
+                                        let idx = (va >> sh) & 511;
+                                        let slot = pa + idx * 8;
+                                        if slot < 0x8000_0000 || slot >= 0xA000_0000 {
+                                            ok = false;
+                                            break;
+                                        }
+                                        let v = kdm(slot);
+                                        FwConsole::write_str("nk4c: fw lvl=");
+                                        FwConsole::write_hex(lvl as u64);
+                                        FwConsole::write_str(" slot=");
+                                        FwConsole::write_hex(slot);
+                                        FwConsole::write_str(" pte=");
+                                        FwConsole::write_hex(v);
+                                        FwConsole::write_str("\n");
+                                        if v & 1 == 0 { ok = false; break; }
+                                        if sh == 12 { leaf_val = v; }
+                                        pa = ((v >> 10) & 0xF_FFFF_F) << 12;
+                                        lvl -= 1;
+                                    }
+                                    FwConsole::write_str("nk4c: fw done ok=");
+                                    FwConsole::write_hex(ok as u64);
+                                    FwConsole::write_str(" leaf=");
+                                    FwConsole::write_hex(leaf_val);
+                                    FwConsole::write_str("\n");
+                                }
+                            }
+                        }
                     }
                     // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
                     // the kmess ring is the C kputc accumulation half —

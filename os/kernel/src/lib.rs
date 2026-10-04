@@ -3822,6 +3822,20 @@ fn finish_and_restore(
     // 此刻本 hart 即将切回被恢复进程，语义与 x86 invlpg 等价且更宽。
     #[cfg(target_arch = "riscv64")]
     if fault_flush_va.is_some() {
+        // §续-336 判别探针（用后即滚）：确认 sfence 真的在 refault 循环里
+        // 被执行——执行了但 rc 仍 fault=QEMU 层实锤；没执行=成修位置错误。
+        #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+        {
+            use core::sync::atomic::{AtomicUsize, Ordering as SOrd};
+            use minix_plat::{CurrentEarlyConsole as SfConsole, EarlyConsole as _};
+            static SF_N: AtomicUsize = AtomicUsize::new(0);
+            if SF_N.load(SOrd::Relaxed) < 8 {
+                SF_N.fetch_add(1, SOrd::Relaxed);
+                SfConsole::write_str("nk4c: sfence-exec va=");
+                SfConsole::write_hex(fault_flush_va.unwrap_or(0));
+                SfConsole::write_str("\n");
+            }
+        }
         // SAFETY: sfence.vma is a privileged instruction; the kernel is at
         // S-mode and the fence has no memory operand side effects.
         unsafe {

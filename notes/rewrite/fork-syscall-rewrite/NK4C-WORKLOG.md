@@ -16,6 +16,8 @@
 >
 > **（上一前沿＝§续-323（600s×4 判读稳定：exec=12+pf=0+panic=0 4/4=(A) 崩零复发，旁路有效性确认；新卡点=init(0xc) 页故障 0x7fffffffef90→SIGSEGV——rc 链最后一步）**：M1-M4（600s 窗，全旁路+table 同源）4/4=exec=12+pf=0+panic=0——(A) walk 崩零复发（对照无旁路 ~75%），旁路有效性确认；marker 仍 0/4。新卡点恒定=M1-M4 全部 pf-exit noaddr cr2=0x7fffffffef90→kill tgt=0xc SIGSEGV——0xc=init（exec endpt=0x800c 的 rc/init 链最后一步）在其栈 VA 0x7fffffffef90 页故障→rc 链断→marker 永不现身；cr2 与 fill-root 的 va=0x7fffffffe000 同族高栈=init 栈页的映射/写入问题（fill-root refault 循环同源）。§续-324 靶=①init 的 0x7fffffffef90 故障归因——krewalk 扩展走 init 的 ptroot 链读叶槽现值（同 §续-298-b 法，对象换 init）②判读=叶槽 0 ⇒ fill 写不落⇒与 fill-root 写腿同修③修复后 marker 判读。
 >
+> > **🛑 最新前沿＝§续-336（sfence-exec 探针确认执行但 refault 不变+形态漂移再现+GPT 二轮意见落地）**：①S1/S2 确认 sfence 在 finish_and_restore 执行（CAP=8 被早期 fault 消耗）但 R 批 refault 26 次不变——QEMU softmmu 对 sfence 的响应与 RISC-V 规范（x0,x0=全地址空间失效）不符或 fault 机制非 TLB 陈旧——**QEMU 源码定点审计时机成熟**（用户已装 8.2.10/9.2.4 源码树 ~/src/qemu/）；②k1x/k2x（含 KDM 走链探针）形态漂移：fill-root 消失、rc 直接 exiting——(A) 对代码改动敏感第三次实证；③BUG 文档第 10 章已按 GPT 二轮意见重组（4fb462d61 954 行自包含版：H9 拆五支/统一机制降级/PteReadBuf 结论收口/版本矩阵改独立发现/10.9 新问题清单 Q1-Q4）；④§续-330「破案」撤回（跨 run 生命周期伪差）。§续-337 靶=①QEMU 源码定点审计（~/src/qemu/qemu-8.2.10 grep helper_sfence_vma/satp write/tlb_flush 四点）②冻结构建用零扰动手段③PteReadBuf 从 §续-313 5bbece7d2 补丁恢复（修 valid 位图）。
+>
 > > **🛑 最新前沿＝§续-335（双重突破：sfence 判读排除 TLB 假设+findmut-flip 开火+重试×8 成修部分有效）**：①成修前后 rc 同 fa 故障频率逐字节相同（26 次）——TLB 假设排除，26 次 refault=程序逻辑真实重试；②findmut-flip 开火（J3/J4）=find_mut range 返回 None 后紧随重试命中——同一 VA 连续只读查询 None→Some 翻转、中间无写者=平移层不一致最直接实证（§续-159 键序破坏根因）；J1 的 no-region 分支 iter dump=4 region 全正常含栈 region；③重试×8 成修=**G1 完全通过 no-region 关**（retry-hit 治愈），G2 PF 腿治愈后 memreq 腿深坏窗/G3 8 次全 None；marker 仍 0。§续-336 靶=①G2/G3 残留 no-region 路径甄别②深坏窗测量调参③marker 判读。方法论=sfence 判读（频率对比）/翻转判据（最小充分证据）/重试×N=摆动正确缓解。
 >
 > > **🛑 最新前沿＝§续-322（bit38 常量定性：全部故障形=1<<38+合法低位（L2[256]）；1<<38=4×VM_DM_BASE；boot_pt_alloc 零填 512 ✓；判据=root[256] 崩时 dump）**：α/β/MFS 全部故障 VA=0x4000000000+各自合法低位——恒定单一位移非随机。L2[256]。候选收窄=①1<<38 为基的映射/计算（DM_BASE×4 移位错位形）②walk 层级错位（root[256] 槽）③VM 自根堆窗=L2[80]≠。boot_pt_alloc 零填 512 ✓——root[256] poison=运行期写入。§续-323 靶=①krewalk 扩 root 全 512 槽 dump（崩时 root[256] 非 0=poison 槽实锤）②1<<38 生产代码全扫③root[256]=0 而 CPU 仍访 ⇒ QEMU TB 层终实锤（变体矩阵升唯一路径）。
@@ -12628,3 +12630,13 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **§续-336 靶**：①G2/G3 残留 no-region 的路径甄别（PF 腿 retry-hit 治愈后 memreq 腿独立触发？retry 在 region_map.rs 内应全局生效）；②深坏窗的持续时间测量（retry 间隔+上限调参）；③marker 判读。
 
 **方法论**：①「sfence 判读」=成修前后同 fa 故障频率对比——频率不变=TLB 假设排除；②「翻转判据」=同一 VA 连续只读查询结果不同、中间无写者=平移层不一致的最小充分证据；③重试×N 是视图摆动的正确缓解形态（坏窗自愈可穿越）。
+
+## §续-336（2026-10-04·sfence-exec 探针确认执行+形态漂移再现+GPT 二轮意见落地收官）
+
+**①sfence-exec 探针**（S1/S2）：sfence 在 finish_and_restore 确认执行（CAP=8 被早期 fault 消耗：va=0x29524/0x3fffffea70/0x2f1b2=各服务进程）——**sfence 执行了但 refault 26 次不变（R 批）=QEMU softmmu 对 sfence 的响应与预期不符（或 fault 机制非 TLB 陈旧）**。GPT 上轮引用的 RISC-V 规范（sfence x0,x0=全地址空间失效）与实测行为冲突——进入 QEMU 源码定点审计的时机成熟。
+
+**②形态漂移再现**（k1x/k2x，含 KDM 走链探针的构建）：fill-root 消失、rc exec 后直接 exiting 被杀——(A) 对代码改动敏感第三次实证（每次改内核=形态重洗）。KDM 走链探针未获数据。
+
+**③GPT 二轮意见全部落地**：BUG 文档第 10 章重组（4fb462d61，954 行自包含版）——H9 拆五支（A 旧 NP 未清/B satp 后失效缺失/C VmDm 窗 stale/D heap-stack stale/E guest ordering）、「统一机制」降级为「候选机制」、PteReadBuf 结论收口（「两种代码修改都改变启动结果=对布局/时序高度敏感」）、版本矩阵改「独立发现」（10.0.13+OpenSBI standalone 正常，勿写成 firmware regression）。
+
+**§续-337 靶（下一 session）**：①**QEMU 源码定点审计**（用户已可 sudo 装：源码树在 ~/src/qemu/qemu-8.2.10——grep `helper_sfence_vma`/`satp write`/`tlb_flush` 的 riscv 路径，只看四个点）；②形态漂移对策=冻结构建用零扰动手段（halt-dump/monitor dump 已有 16 份 RAM 库）；③PteReadBuf 代码在 git stash（从 §续-313 5bbece7d2 的补丁恢复）；④rc 用户态硬件 walk vs 内核 KDM 读分歧的最终裁决=QEMU 层 `riscv_cpu_tlb_fill` 的 PTE 直读路径分析。
