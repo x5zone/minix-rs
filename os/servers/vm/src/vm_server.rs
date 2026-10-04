@@ -1480,7 +1480,17 @@ impl VmServer {
             let region = match regions.find_mut(minix_types::VirBytes(va)) {
                 Some(r) => r,
                 // 续-169 探针（用后即滚）：ok=0 出口定性。
+                // §续-327 补充归因（用后即滚）：no-region 时打 slot 的
+                // region 计数与首尾 region 界——定位 fill 后第二故障的
+                // regions 查询失败精确条件（exec 重建替换 vs slot 翻转）。
                 None => {
+                    #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
+                    crate::bootmark::mark(&alloc::format!(
+                        "nk4a: no-region detail target={} slot={} va={:#x}\n",
+                        req.target.0,
+                        slot.0,
+                        va
+                    ));
                     #[cfg(not(feature = "mock"))]
                     Self::hm_fail("no-region", req, va, table);
                     return false;

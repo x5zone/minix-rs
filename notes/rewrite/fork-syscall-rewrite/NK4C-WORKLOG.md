@@ -12491,3 +12491,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **审计结果**：fill 腿（handle_pagefault→fill）的簿记**健全**——map/update_flags/remap 走 region 槽（physblocks=Mapped）+walk-flip 静默（紧邻两 walk 一致）+pte-wb-FAIL 静默（写回验证通过）——fill 后 PTE 与槽簿记双记 ✓。**noaddr 的真出口=下一次故障的 `regions.find_mut(va)`→None（"no-region" 探针，vm_server.rs:1477）**——即 fill 之后的**第二次故障**，VM 在 region 簿记里找不到该 VA 的 region。候选=①exec 重建在 fill 与第二故障之间替换了 regions（旧 regions 指针失效）②slot 状态翻转（get_active 对第二故障返回不同视图）③memreq 腿与 PF 消息腿的 proc 解析路径差异。
 
 **§续-327 靶**：①第二故障的 no-region 出口加诊断（打 target/slot/regions.len）→ 定位 regions 查询失败的精确条件；②对照 memreq 腿（get_active）与 PF 消息腿（proc 解析）的 region 表实例同一性；③坐实后修（region 表实例统一/状态保持）→ rc 不再 refault → marker → §7 → riscv 三目标 → Phase E。
+
+## §续-327（2026-10-04·no-region 探针零命中——noaddr 非出自 no-region 出口；g1-g3=稳定 stall 形=内核代读 trap 风暴慢化；§续-328=600s 长窗判慢化）
+
+**判读反转**：no-region detail 探针（g1-g3）**零命中**——「noaddr 来自 regions.find_mut→None」假设证伪。g1-g3 = exec=12、pf=0、panic=0、no-region=0、marker=0——**稳定 stall 形**：系统活而慢（尾部 sa-call 持续=事件循环在跑），rc 的 refault 循环消失（fill-root ×2 后不再故障）。
+
+**新定性**：fill/簿记/region 全链审计后 **rc 的 refault 已消失**（g1-g3 无 refault 迹象）——剩余 = **内核代读的 trap 风暴慢化**（每 VmDm 槽读一次 kernel-call，一次 walk 3 次，全系统 walk 千次级——160s 窗不够 rc 跑完）或真卡点。判别=600s 长窗：出 marker=纯慢化（§7 走起）；仍无=真卡点（PteReadBuf 批量腿消 trap）。
+
+**§续-328 靶**：①600s 长窗 ×3 跑（代读在场）判 marker；②marker 现身→§7（≥3 轮独立复现证无崩+双 marker+host）；③仍 stall→PteReadBuf 批量腿（内核一次拷回整页槽，消 trap 风暴）落地后再判。
