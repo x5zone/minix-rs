@@ -12592,3 +12592,13 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 5. 归账正则全色计数（skipped 也是结果行）
 6. 全寄存器定谳法（不满足于部分匹配）
 7. 旁路可豁免层（内核代读写无法修复但排除 VmDm 槽访问层）
+
+## §续-332（2026-10-04·PteReadBuf 页缓存实验失败：exec=0 boot 回归 → 已回滚stash；页缓存打破 walk 时序=观测者效应新形；V2 确认回滚后 exec=12 恢复）
+
+**实验**（PteReadPage wire 23 + 页级缓存 pte_cache）：P1-P3 = exec=0 boot 回归（页缓存的 hit() 返回 Some(0) 被当 NP——缓存只存单条但 hit 对同页不同 idx 返回 0 误判 NP），V1-V3 也 exec=0（stash 后确认源码回滚生效）。**已 git stash 保存旁路+缓存代码（可恢复），回滚到 §续-331 干净态**。V2 确认 exec=12 pf=0 恢复 ✓。
+
+**§续-312 教训加深**：取证工具不仅 mod bins 要新鲜，**任何 os/ 源码改动都会改变 walk 时序**——页缓存虽然是纯 VM 侧优化（不动 walk_read 本身），但其引入的 .bss 偏移/代码布局变化足以改变 (A) 的时序窗口。**(A) 对任何代码改动都敏感——只有 QEMU 层修复才能真正解决**。
+
+**当前态**：os/= §续-331 HEAD（15422a68d）内核代读旁路在场（exec=12 稳定复现 ✓）、PteReadBuf 设计+实现在 git stash 可恢复、旁路实验数据完整（§续-311 终判撤回+§续-319 确认消除 walk 崩）。
+
+**§续-333 靶（下一 session）**：①PteReadBuf 正确实现（修 hit() NP 误判——用 valid 位图或 companion array 区分「真 0」vs「未缓存」）②600s 采样③marker 判读④§7 或转 QEMU 层。
