@@ -10,7 +10,10 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-338（定案+修复+验证：rc 循环真根因＝exec 栈顶 `0x7fff_ffff_f000` 超出 Sv39 可寻址上限（≥2^38）＝非规范地址**，CPU 对它的每次访问必然 store page fault——与页表内容/root/sfence 全无关；guest 侧软件走表都不查地址规范性，所以现场自洽到「架构上不可能」。修复＝`minix_types::USER_STACK_TOP` 单一权威（riscv64=`0x3f_ffff_f000`）＋boot-shim 两 builder＋VFS exec 缺省值接入。**CodeReview 修复轮 §续-338b：P0=boot-shim `--features test-all` 两断言在宿主编译下回归（改接线断言＋编译期不变式，已回 27/0）；P2×4 全部落地（C 锚点写全/常量文档改 `cfg!` 形/探针读帧内 sstatus 快照/登记 `MMAP_TOP=2^41` 为后续目标）**。**干预验证：p7b `halt-detect=2`＝riscv64 首次打出 `minix-rs rc: minimal boot script marker`**（exec=13/no-region=0/kill=0/panic=0），p5 故障族由 `0x7ffff...` 迁移为 `0x3fffff8/9/a...` 普通按需填页；修复轮后 p7e 复验同形（3765 行）。旧账修正：§续-337「四要素」是本缺陷现场（不是矛盾）；H9「QEMU softmmu 分歧」在 rc 循环上消解；版本矩阵 1800s 大窗新读数=8.2.10/9.2.4 均 exec=12/走表崩 0/no-region 1（客侧缺陷跨版本同形）；「(A) 对任何改动敏感」＝非规范地址决定谁先踩到它。§续-339 靶=①三目标②riscv 命令面 ③NS5-B kerninfo 读腿接线 ④MMAP_TOP 分架构。方法论：先算地址规范性再怀疑页表/模拟器；软件走表≠硬件走表；跨架构地址常量必须类型层分架构；共享常量的既有断言必须按目标重审。
+> **🛑 最新前沿＝§续-339（三目标② riscv 命令面达成：新门 `os/qemu-tests/test-cmd-smoke-riscv64.sh` PASS**——marker + `ls /bin` 四项列表 + `cat /etc/rc` 全量回显走 VFS IPC 路径；判据固化两处形态教训：marker 首次命中可能落在 `cat` 回显行内（改用全日志判据＋容错按序正则）、`/tests/*: not found` 不进判据（目标③ 后形态会变）。三目标②现状=x86 ✅/aarch64 ✅/**riscv64 ✅**。下一轮靶=目标③ riscv ATF 上机（`ATF_BOOT_LEG_READY` 加 "riscv64"＋按 aarch64 门派生 `test-atf-riscv64.sh`）。
+>
+> **（上一前沿＝§续-338（定案+修复+验证：rc 循环真根因＝exec 栈顶 `0x7fff_ffff_f000` 超出 Sv39 可寻址上限（≥2^38）＝非规范地址**，CPU 对它的每次访问必然 store page fault——与页表内容/root/sfence 全无关；guest 侧软件走表都不查地址规范性，所以现场自洽到「架构上不可能」。修复＝`minix_types::USER_STACK_TOP` 单一权威（riscv64=`0x3f_ffff_f000`）＋boot-shim 两 builder＋VFS exec 缺省值接入。**CodeReview 修复轮 §续-338b：P0=boot-shim `--features test-all` 两断言在宿主编译下回归（改接线断言＋编译期不变式，已回 27/0）；P2×4 全部落地（C 锚点写全/常量文档改 `cfg!` 形/探针读帧内 sstatus 快照/登记 `MMAP_TOP=2^41` 为后续目标）**。**干预验证：p7b `halt-detect=2`＝riscv64 首次打出 `minix-rs rc: minimal boot script marker`**（exec=13/no-region=0/kill=0/panic=0），p5 故障族由 `0x7ffff...` 迁移为 `0x3fffff8/9/a...` 普通按需填页；修复轮后 p7e 复验同形（3765 行）。旧账修正：§续-337「四要素」是本缺陷现场（不是矛盾）；H9「QEMU softmmu 分歧」在 rc 循环上消解；版本矩阵 1800s 大窗新读数=8.2.10/9.2.4 均 exec=12/走表崩 0/no-region 1（客侧缺陷跨版本同形）；「(A) 对任何改动敏感」＝非规范地址决定谁先踩到它。§续-339 靶=①三目标②riscv 命令面 ③NS5-B kerninfo 读腿接线 ④MMAP_TOP 分架构。方法论：先算地址规范性再怀疑页表/模拟器；软件走表≠硬件走表；跨架构地址常量必须类型层分架构；共享常量的既有断言必须按目标重审。）
+
 
 > **🛑 最新前沿＝§续-325（身份修正+矛盾收口：kill 的是 rc(0x800c,slot 0xc) 本身；PTE 有效却反复故障——VM region 簿记与页表链脱节=最后卡点）**：身份修正=kill tgt=0xc=slot 0xc+endpoint 0x800c+state=exiting=**rc shell 本身**（§续-323/324 的「init」称呼纠正）。矛盾收口=M1 dump 证 rc 链三级全 V、叶 PTE=0x2724f4df（全旗标→PA 0x9c93d000 完全有效）——硬件页表映射存在可写可执行，但 rc 对同页 0x7fffffffef90 反复故障、VM 回 noaddr、kernel 杀之 ⇒ **页表硬件视图与 VM region 簿记脱节**（fill-root 直写叶 PTE 绕过 slot 簿记）。§续-326 靶=①VM handle_pagefault 对 va 的簿记查询审计②修=fill 腿补 slot 簿记或 noaddr 判定查硬件链兜底③修后 marker→§7→riscv 三目标→Phase E。
 >
@@ -12737,3 +12740,17 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 1. **把「按架构取值的常量」接入共享 crate 后，必须同步审计**所有以「某个具体架构的取值」为前提的既有断言**——`< 2^39` 这类断言在宿主编译下测的是另一个架构的值（§续-338b P0 的原型）。
 2. 文档在 `#[cfg]` 选择分支上的丢失是 Cargo 文档的静默效应：**共享常量的解释性文档要挂在不随 cfg 消失的位置**（`cfg!` 表达式形）。
 3. 探针取「故障时刻」的量，优先读**陷阱帧内快照**而非实时 CSR（快照语义被 trap_stub 契约钉死，且不受插入点之后任何代码影响）。
+
+## §续-339（2026-10-04·三目标② riscv 命令面达成：新门 `test-cmd-smoke-riscv64.sh` 建立并 PASS——marker + `ls /bin` 列表 + `cat /etc/rc` 全量回显走 VFS IPC 路径）
+
+**背景**：目标②（18-stage 命令面）此前只有 x86（`test-cmd-smoke.sh`）与 aarch64（`test-cmd-smoke-aarch64.sh`）两条门；riscv 腿被 §续-338 的栈顶缺陷门住。修复后先做**实测**（手工 QEMU + 240s 观察窗）确认命令面真的跑完：marker 之后依次出现 `/bin` 列表四项（`cat`/`echo`/`ls`/`sh`）、`cat /etc/rc` 的完整回显（`#!/bin/sh` + 脚本体）、rc 脚本的 `/tests/p1..p3` 段（riscv 尚无 ATF 套件，报 `sh: /tests/p1: not found`）与 `exit 0`。
+
+**新增门**：`os/qemu-tests/test-cmd-smoke-riscv64.sh`（约 190 行）——把 `test-riscv64-boot-full.sh` 的装配配方（逐包构建/imgrd 播种/mfs 重建/kernel-image/table.bin+qemu.dtb 同源重生成）与 aarch64 兄弟门的判据结构合起来，出口码 0/1/2（PASS/FAIL/SKIP），`RS64_SMOKE_SKIP_BUILD=1` 支持复用产物本地快跑。
+
+**判据的两处形态教训（首个版本失败过，已固化为注释与实现）**：
+1. **marker 的首次命中可能落在 `cat /etc/rc` 的回显行内**（绿跑的 echo 输出行被协议行交织切碎时，纯字节 find 只能命中 `cat` 里的那一次）——因此「marker 之后切片」这套 aarch64 判据在 riscv 上不稳健。改为**全日志**判据：marker（任一次出现即可，脚本序保证 cat 在 echo/ls 之后）+ `ls /bin` 四项**按序**裸行（容错正则，允许协议行穿插）+ `cat` 回显（`#!/bin/sh` 与 `minix-rs /etc/rc` 两条串）。
+2. **`/tests/*: not found` 不进判据**：那是 rc 的 ATF 段，目标③ 落地后形态会变（届时这里应出现测试输出行）——门只锚定命令面本身，避免把「ATF 尚未上机」写死成期望值。
+
+**判据离线回归**：新判据逻辑先在两份既有形态串口（probe 形=echo 行未被切碎；gate 形=marker 只命中 cat 行）上离线验证均 PASS，再上机——上机结果 `RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump — on the VFS IPC path)`，exit 0。
+
+**三目标②现状**：x86 ✅ / aarch64 ✅ / **riscv64 ✅**（本门）。目标③（ATF 上机）riscv 腿待接：`tools/build-atf-test.sh` 已支持 riscv64 交叉编链，`os/xtask/src/image.rs` 的 `ATF_BOOT_LEG_READY` 架构门加上 "riscv64" 并按 aarch64 门派生 `test-atf-riscv64.sh` 即可——下一轮靶。
