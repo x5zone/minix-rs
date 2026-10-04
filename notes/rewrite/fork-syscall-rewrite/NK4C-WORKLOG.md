@@ -12449,3 +12449,7 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **②RS panic=次生确认**：时序=MFS 野访问→VM noaddr→kill MFS SIGSEGV→RS（reincarnation）catch_boot_init_ready 等 MFS 的 RS_INIT 收到错误消息→:1254 panic（C main.c:799-801 对位）——修 MFS 则 RS panic 自消。
 
 **§续-322 靶（bit38 源头追缉）**：①bit38=VA[38]——L2 索引字段的最高位：来源候选=页表遍历中 PTE 的 PPN 高位漏掩（对位 §续-311 前 α 分析的 PTE bit36/PPN[26] 族）或指针算术的进位/符号错位；②**MFS 故障时的 krewalk**（走 MFS 的 root=ptroot 对照）——需 L2 崩现场的 MFS root 值；③对照 x86/aarch64：bit38 形是否出现（若唯一 riscv=平移层，若三架构=上层共享 bug）——x86 smoke/aarch64 套件健康=三架构对照的现成数据。
+
+## §续-321③（2026-10-04·三架构对照初查：现有 x86/aarch64 串口归档中 0x40008 族 fault 记录零命中——bit38 形目前 riscv64 独有，平移层嫌疑维持；三架构终判待 aarch64 长跑套件的全量 fault 行复查）
+
+初查（tmp/nk4a 归档串口的 0x40008 族+fault 行扫描）=零命中；x86-t36-final-2 的 fault 行=0（该串口=PASS 终态无故障）。终判前提=aarch64 长跑套件的全量 fault 行复查（现归档为 PASS 终态片段非全量）——登记 §续-322 复查步骤。当前结论维持：bit38 形 riscv64 独有（平移层嫌疑维持），但终判需三架构全量数据。
