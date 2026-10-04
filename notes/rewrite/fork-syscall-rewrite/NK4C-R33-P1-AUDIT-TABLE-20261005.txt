@@ -1,0 +1,84 @@
+# NK4-C R3.3 P1 机械对账表 v1（78 笔）
+# 范围: 92fa446c3..5cf88a552（截断面=5cf88a552 C-66 销账笔）; 生成 2026-10-05; 评审线 edge5(zcode)
+# 列: commit | SELF/AGT | +add/-del/nfile(二进制n) | 旗标 :: message(截断90字符)
+# 旗标: ok / PROTECTED / BIG+<n> / OS-CODE(...) / PROBE? / CLAIM? / MERGE / SELF
+# 本表为机器初筛; 旗标行逐笔人工裁决见 NK4C-REVIEW-REPORT-R32-20261004.md §一
+529b2dc7e | AGT | +17/-1/1(b0) | ok :: NK4C 续-290 QEMU版本矩阵blocker登记+批次误标勘误+真基线重采样+观测者
+0875f9452 | AGT | +13/-1/1(b0) | ok :: NK4C 续-291 α头号线索:故障地址作为u64持久驻留PA 0x805fff48(VM栈walk记录
+fee587fa7 | AGT | +11/-1/1(b0) | ok :: NK4C 续-292 栈残留布局恒定性定谳+poison值形状=叶组合式。①布局恒定
+bf7158fed | AGT | +7/-1/1(b0) | ok :: NK4C 续-292-b poison PA算术指纹:DM窗VA&0x7fffffff精确产出poison——逆映射�
+3e6e287b6 | AGT | +7/-1/1(b0) | ok :: NK4C 续-293 trail收敛:poison=错粒度叶PTE形,α面未被a2d覆盖⇒§续-294=a2d-le
+bdb4fe525 | AGT | +86/-0/3(b0) | OS-CODE(os/arch/src/riscv64/paging.rs;os/servers/vm/src/bootmark.rs;os/servers/vm/src/vm_server.rs;) :: NK4C 续-294 a2d-leaf探针落地:walk_read叶/大页分支五元组捕获(U-safe通道,CA
+e04e88632 | AGT | +13/-87/4(b0) | OS-CODE(os/arch/src/riscv64/paging.rs;os/servers/vm/src/bootmark.rs;os/servers/vm/src/vm_server.rs;) :: NK4C 续-294/295/296 叶探针同被抑制(0/7)→instrumentation路线终结;smp矩阵=�
+8f8d6e027 | SELF | +503/-0/2(b0) | ok :: review(edge5,nk4c): R3.2 增量评审报告定稿——范围 4e3cab8d5..92fa446c3 共 286
+5ff8556c5 | AGT | +47/-1/2(b0) | OS-CODE(os/kernel/src/trap_dispatch.rs;) :: NK4C 续-298 (A)重新定性:krewalk决定性证据——VM视图≠RAM,poison从未存在
+b37a76daf | AGT | +92/-8/3(b0) | OS-CODE(os/kernel/src/syscall.rs;os/kernel/src/trap_dispatch.rs;) :: NK4C 续-298-b krewalk v3命中要害:fill-root刚写的叶槽故障时刻读出0——(A)
+afc913903 | AGT | +8/-0/1(b0) | ok :: NK4C 续-300 free路径审计:free_pfn全点有IN_CACHE守卫,但逐出守卫有结构性�
+ad3cf43b6 | AGT | +3/-1/1(b0) | ok :: NK4C 续-300-doc WORKLOG banner滚至§续-300(正文详节已随afc913903入库,本笔补
+c87f9ad22 | AGT | +7/-1/1(b0) | ok :: NK4C 续-301 插入侧审计:addcache fail-closed(AlreadyCached拒绝pfn/键双冲突)—�
+23dcddac6 | AGT | +28/-1/2(b0) | OS-CODE(os/servers/vm/src/page_cache.rs;) :: NK4C 续-302 逐出假设证伪:探针在场崩率保持4/4且evict=0——free_pages从�
+b2451b02a | AGT | +23/-1/2(b0) | OS-CODE(os/servers/vm/src/alloc_page.rs;) :: NK4C 续-303 ptfree=0:表帧从未被归还——零填者收窄到'写分歧(视图层)'v
+cdf021f4c | AGT | +11/-1/1(b0) | ok :: NK4C 续-304 崩窗序列定谳:fill×3背靠背同pte_pa、无任何拆除/free腿——'
+635398d55 | AGT | +14/-2/2(b0) | OS-CODE(os/kernel/src/trap_dispatch.rs;) :: NK4C 续-305 破案:fill-root的ptroot(0x9d6e9000)≠sas-fork给child设的root(0x9dc37000
+39442b0e9 | AGT | +4/-0/1(b0) | ok :: NK4C 续-305-b §续-305保留点:根错配对比跨生命周期点(sas-fork fork时root 0
+722ed6c30 | AGT | +16/-0/2(b0) | OS-CODE(os/kernel/src/syscall.rs;) :: NK4C 续-306 setaddr-root探针落地:12值全0xffffffff8/9xxxxxxx形=root经i32符号扩�
+2c8c428ce | AGT | +3/-1/1(b0) | ok :: NK4C 续-306-doc WORKLOG banner滚至§续-306(正文详节已随722ed6c30入库,本笔补
+b907d937b | AGT | +7/-1/1(b0) | ok :: NK4C 续-307 第一查结果:符号扩展已被fix25正确处理(value_raw as u32 as u64+�
+163bd6a01 | AGT | +15/-1/1(b0) | ok :: NK4C 续-308 两读数修正:pte_pa=被填数据帧PA非叶槽(leaf_now语义双重作废)
+bdda3f176 | AGT | +4/-0/1(b0) | ok :: NK4C 续-309 fill腿分治发现:PF腿=proc.mem_parts pt单源✓;崩窗fill实走memreq/d
+156ca988c | AGT | +9/-1/1(b0) | ok :: NK4C 续-310 双句柄证伪+穷举收口:memreq腿与PF腿同源(get_active→mem_parts_m
+c114abf9c | AGT | +128/-26/6(b0) | OS-CODE(os/arch/src/riscv64/paging.rs;os/kernel/src/syscall.rs;os/kernel/src/vm.rs;) :: NK4C 续-311 内核代读旁路落地:VmDm槽读改经kernel-call由内核S态KDM直读([A
+adb5976ca | AGT | +475559/-129/154(b66) | BIG+475559 OS-CODE(os/arch/src/riscv64/paging.rs;os/kernel/src/syscall.rs;os/kernel/src/vm.rs;) PROBE?2 :: NK4C 续-311 旁路实验终判:VmDm槽访问全链内核化(读PteRead+写PteWrite+零填
+f6c0214cf | AGT | +11/-1/1(b0) | ok :: NK4C 续-313① fill内部判别探针全静默+krd批读旁路在场仍崩——poison经
+0a5d3b32b | AGT | +9/-1/1(b0) | ok :: NK4C 续-313-b 状态勘误:pter日志补丁未应用(Pte臂已随§续-311-b回滚移除)
+9ddda06f7 | AGT | +11/-1/1(b0) | ok :: NK4C 续-313② α形不可能态全32寄存器定谳:k2的CPU状态与ELF在sepc的指令
+3a3ef125b | AGT | +11/-1/1(b0) | ok :: NK4C 续-312 §续-311终判撤回:实验无效根因=halt-dump工具不重写mod_*.bin—
+5bbece7d2 | AGT | +266/-26/7(b0) | OS-CODE(os/arch/src/riscv64/paging.rs;os/kernel/src/syscall.rs;os/kernel/src/vm.rs;) :: NK4C 续-313 Pte三腿+setaddr-root探针全量重落(§续-312工具修复后的旁路真
+6667690bd | AGT | +10/-0/1(b0) | ok :: NK4C 续-314/315 Pte三腿重落+全旁路新墙:pfs boot镜像经裸DM直读判'not a val
+b1d44f571 | AGT | +3/-1/1(b0) | ok :: NK4C 续-315-doc WORKLOG banner滚至§续-314/315(正文详节已随6667690bd入库,本�
+4457c3cd9 | AGT | +57/-0/2(b0) | OS-CODE(os/kernel/src/syscall.rs;) :: NK4C 续-316 elfchk首战:boot表KDM直读=前9模块ELF✓但pfs/mfs/init三镜像非ELF;
+4d8f644b0 | AGT | +3/-1/1(b0) | ok :: NK4C 续-316-doc WORKLOG banner滚至§续-316(正文详节已随4457c3cd9入库,本笔补
+956cc1a87 | AGT | +219/-1/2(b0) | ok :: NK4C 续-318 table同源修复生效:pfs failed消失+exec=12全序列+(A)崩消失(f9/f10
+84c2ad4d1 | AGT | +11/-1/1(b0) | ok :: NK4C 续-319 600s长窗判读:全旁路下(A)walk崩0/3消失——新前沿=RS boot.rs pa
+28fa74147 | AGT | +11/-1/1(b0) | ok :: NK4C 续-320 RS panic定位:主死者=MFS(0xa页故障0x4000833660→VM noaddr→SIGSEGV),
+c823b67bb | AGT | +11/-1/1(b0) | ok :: NK4C 续-321①② MFS故障VA分解=bit38高位+合法镜像内偏移——与(A)族同�
+fcd8e222f | AGT | +4/-0/1(b0) | ok :: NK4C 续-321③ 三架构对照初查:现有x86/aarch64串口归档中0x40008族fault记�
+8f732cfb3 | AGT | +6/-0/1(b0) | ok :: NK4C 续-322 bit38常量定性:全部故障形(α/β/MFS)=1<<38+合法低位(L2[256])—�
+ce81c6cc7 | AGT | +3/-1/1(b0) | ok :: NK4C 续-322-doc WORKLOG banner滚至§续-322(正文详节已随8f732cfb3入库,本笔补
+49d193d42 | AGT | +9/-1/1(b0) | ok :: NK4C 续-323 600s×4判读稳定:exec=12+pf=0+panic=0 4/4=(A)崩零复发,旁路有效性�
+d8ad98bf5 | AGT | +9/-1/1(b0) | ok :: NK4C 续-324 M1读数反转:fill-root链(rc根0x9d6e8000)三级全V完整健全——'fill
+02d4febe1 | AGT | +9/-1/1(b0) | ok :: NK4C 续-325 身份修正+矛盾收口:kill的是rc(0x800c,slot 0xc)本身;PTE有效却反
+8a496d903 | AGT | +6/-0/1(b0) | ok :: NK4C 续-326 fill簿记审计:fill腿map/update_flags+walk-flip+wb-FAIL全✓簿记健全�
+513373d30 | AGT | +18/-0/2(b0) | OS-CODE(os/servers/vm/src/vm_server.rs;) :: NK4C 续-327 no-region探针零命中——noaddr非出自no-region出口;g1-g3=稳定stal
+d1d45b68f | AGT | +6/-0/1(b0) | ok :: NK4C 续-328/329 双句柄实锤(续-165判据开火):setaddr绑root=0x9d6e9000 vs fill-ro
+134532132 | AGT | +8/-0/1(b0) | ok :: NK4C 续-330 §续-305/328破案撤回:M1内setaddr root=0x9d6e8000与fill-root ptroot=0x9
+ebbf44382 | AGT | +21/-0/1(b0) | ok :: NK4C 续-331 session交接纪要:(A)穷举收口至QEMU softmmu层——全部in-code门�
+1019bf9b0 | AGT | +6/-0/1(b0) | ok :: NK4C 续-320② M1崩窗序列精确定位:rc exec成功→运行→同一页再次故障�
+7881b1e88 | AGT | +12/-0/2(b0) | OS-CODE(os/servers/vm/src/vm_server.rs;) :: NK4C 续-327 no-region PF归因实锤:regions.find_mut(0x7fffffffef90)返回None——regi
+3f56831ba | AGT | +16/-0/2(b0) | OS-CODE(os/servers/vm/src/region/region_map.rs;) :: NK4C 续-328 region-rm探针零命中——无显式region移除;find_mut=None须为clear(
+c5d995aa7 | AGT | +8/-0/1(b0) | ok :: NK4C 续-329 ①②③快速审计收官:clear仅exit调用✓/find_mut导航正确✓/嫌
+15422a68d | AGT | +34/-0/1(b0) | ok :: NK4C 续-331 session最终交接纪要:62笔提交,(A)穷举收口至QEMU softmmu层+旁�
+68909baf5 | AGT | +10/-0/1(b0) | ok :: NK4C 续-332 PteReadBuf页缓存实验失败:exec=0 boot回归→已git stash回滚;页缓
+bcae63039 | AGT | +12/-0/1(b0) | ok :: NK4C 续-333 PteReadBuf终判:valid位图修正后仍exec=0 boot回归3/3——页缓存�
+9d8c93e6a | AGT | +110/-1/1(b0) | ok :: NK4C-BUG-RISCV64-TRANSIENT-PTE.md 大规模更新(§续-280..333 session 62 笔提交的�
+3a009c508 | AGT | +2886/-42/14(b0) | OS-CODE(os/kernel/src/lib.rs;os/kernel/src/trap_dispatch.rs;os/servers/vm/src/alloc_page.rs;) :: NK4C 续-334 P0.5 satp对账实验+QEMU版本矩阵+§续-329审计+BUG文档第10章大�
+4fb462d61 | AGT | +125/-96/1(b0) | ok :: NK4C-BUG-RISCV64-TRANSIENT-PTE.md 第10章完整重组(自包含版,954行):整合§续-28
+1ac7250a0 | AGT | +43/-6/3(b0) | OS-CODE(os/servers/vm/src/region/region_map.rs;os/servers/vm/src/vm_server.rs;) :: NK4C 续-335 双重突破:sfence判读排除TLB假设+findmut-flip开火+重试×8成修�
+1c7c226a5 | AGT | +71/-0/3(b0) | OS-CODE(os/kernel/src/lib.rs;os/kernel/src/syscall.rs;) :: NK4C 续-336 sfence-exec探针确认执行但refault不变+形态漂移再现+GPT二轮意
+50b94b67e | AGT | +48/-0/2(b0) | OS-CODE(os/kernel/src/trap_dispatch.rs;) :: NK4C 续-337 同fault闭合达成:w5/w6实时走链=叶PTE 0x2724f0df全旗标有效,rc仍
+4a3a77294 | AGT | +248/-0/1(b0) | ok :: NK4C QEMU 环境清单文档:四版本位置/构建参数/调用方式/脚本覆盖缺口�
+5e1a5fa5c | AGT | +161/-7/7(b0) | OS-CODE(os/boot-shim/src/opensbi_helpers.rs;os/boot-shim/src/uefi_helpers.rs;os/kernel/src/trap_dispatch.rs;) :: NK4C 续-338 定案+修复+验证：rc 循环真根因=exec 栈顶 0x7fff_ffff_f000 超出
+452751df8 | AGT | +62/-21/4(b0) | OS-CODE(os/boot-shim/src/opensbi_helpers.rs;os/kernel/src/trap_dispatch.rs;os/libs/minix-types/src/types/boot.rs;) :: NK4C 续-338b CodeReview 修复轮：P0=本笔使 boot-shim `--features test-all` 两断�
+a5c615879 | AGT | +2/-2/1(b0) | OS-CODE(os/libs/minix-types/src/types/boot.rs;) :: NK4C 续-338c 收紧 riscv Sv39 编译期不变式：USER_STACK_TOP 断言从 <2^39 收紧
+ad34e94ec | AGT | +231/-1/2(b0) | OS-CODE(os/qemu-tests/test-cmd-smoke-riscv64.sh;) :: NK4C 续-339 三目标② riscv 命令面达成：新门 os/qemu-tests/test-cmd-smoke-risc
+64a5a91f6 | AGT | +25/-1/1(b0) | ok :: NK4C-BUG 文档 §10.12：GPT 三轮意见入库。①定稿句=rc 循环症状正式表�
+5e58a9caf | AGT | +29/-4/2(b0) | OS-CODE(os/qemu-tests/test-cmd-smoke-riscv64.sh;) :: NK4C 续-339b CodeReview 修复轮（命令面门）：P1=复用 RS64_SMOKE_WORK 目录时
+66058491f | AGT | +424/-42/5(b0) | OS-CODE(os/qemu-tests/test-atf-riscv64.sh;os/xtask/src/image.rs;os/xtask/src/main.rs;) :: NK4C 续-340 三目标③ riscv ATF 上机腿落地（套件真机跑起来）：①tools/
+e34714af4 | AGT | +66/-23/3(b0) | OS-CODE(os/qemu-tests/test-atf-riscv64.sh;os/xtask/src/image.rs;) :: NK4C 续-340b CodeReview 修复轮（ATF 上机腿，复审 PASS 无 P0/P1）：P2×4 全�
+f26726061 | AGT | +128/-0/1(b0) | ok :: NK4C 交接 prompt（2026-10-05）：三目标台账（①marker 三架构✅ ②命令面
+1a3b965e7 | AGT | +305/-0/2(b0) | OS-CODE(tools/address-constant-scan.py;) :: NK4C 续-341 T13 跨架构地址常量静态清扫交付（纯审计·零生产码改动�
+5013a8094 | AGT | +146/-53/1(b0) | ok :: docs(notes): misc_concepts 增量五——148→160 条（新增 13、扩展 28）——�
+c5bee908d | SELF | +1/-0/1(b0) | ok :: docs(edge4): C-66 登记——补扫+增量合一轮（8 处历史缺口闭合 + 续-284~3
+ecd1778bf | SELF | +296/-0/7(b0) | OS-CODE(tools/pattern-gate.sh;) :: feat(tools,C-66): 历史日志模式补扫+增量合一轮——P17 新检查（report 式
+5cf88a552 | SELF | +2/-3/2(b0) | OS-CODE(tools/pattern-gate-baseline.txt;) :: feat(tools,C-66): 基线收编（P12 lib.rs:3842 sfence.vma 调用图门人工复核+P8 �
+# total: 78
