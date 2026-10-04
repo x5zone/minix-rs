@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-323（600s×4 判读稳定：exec=12+pf=0+panic=0 4/4=(A) 崩零复发，旁路有效性确认；新卡点=init(0xc) 页故障 0x7fffffffef90→SIGSEGV——rc 链最后一步）**：M1-M4（600s 窗，全旁路+table 同源）4/4=exec=12+pf=0+panic=0——(A) walk 崩零复发（对照无旁路 ~75%），旁路有效性确认；marker 仍 0/4。新卡点恒定=M1-M4 全部 pf-exit noaddr cr2=0x7fffffffef90→kill tgt=0xc SIGSEGV——0xc=init（exec endpt=0x800c 的 rc/init 链最后一步）在其栈 VA 0x7fffffffef90 页故障→rc 链断→marker 永不现身；cr2 与 fill-root 的 va=0x7fffffffe000 同族高栈=init 栈页的映射/写入问题（fill-root refault 循环同源）。§续-324 靶=①init 的 0x7fffffffef90 故障归因——krewalk 扩展走 init 的 ptroot 链读叶槽现值（同 §续-298-b 法，对象换 init）②判读=叶槽 0 ⇒ fill 写不落⇒与 fill-root 写腿同修③修复后 marker 判读。
+> **🛑 最新前沿＝§续-324（M1 读数反转：fill-root 链（rc 根 0x9d6e8000）三级全 V 完整健全——「fill 写不落」证伪；kill 的是 init(0xc) 非 rc，init 根值待查）**：M1 dump 叶槽分析=fill-root 链 l2e/l1e/l0e 三级全 V（0x2724f001→0x2724ec01→0x2724f4df）叶 PTE→PA 0x9c93d000，叶槽现值 0=数据页内容合法（pte_pa=数据帧 PA 语义 §续-308）——「fill 写不落/叶槽被清」证伪。**关键澄清=kill tgt=0xc=init≠rc(0x800c)**——fill-root 链是 rc 的，init 另一根；init 根值=setaddr-root 探针尾行待查。§续-325 靶=①init(0xc) 根值提取→走 init 根链读 0x7fffffffef90 叶槽现值②init 栈页 fill 腿是否存在（FR_N<3 封顶可能没印 init 的 fill）③修复后 marker 判读。
+>
+> **（上一前沿＝§续-323（600s×4 判读稳定：exec=12+pf=0+panic=0 4/4=(A) 崩零复发，旁路有效性确认；新卡点=init(0xc) 页故障 0x7fffffffef90→SIGSEGV——rc 链最后一步）**：M1-M4（600s 窗，全旁路+table 同源）4/4=exec=12+pf=0+panic=0——(A) walk 崩零复发（对照无旁路 ~75%），旁路有效性确认；marker 仍 0/4。新卡点恒定=M1-M4 全部 pf-exit noaddr cr2=0x7fffffffef90→kill tgt=0xc SIGSEGV——0xc=init（exec endpt=0x800c 的 rc/init 链最后一步）在其栈 VA 0x7fffffffef90 页故障→rc 链断→marker 永不现身；cr2 与 fill-root 的 va=0x7fffffffe000 同族高栈=init 栈页的映射/写入问题（fill-root refault 循环同源）。§续-324 靶=①init 的 0x7fffffffef90 故障归因——krewalk 扩展走 init 的 ptroot 链读叶槽现值（同 §续-298-b 法，对象换 init）②判读=叶槽 0 ⇒ fill 写不落⇒与 fill-root 写腿同修③修复后 marker 判读。
 >
 > > **🛑 最新前沿＝§续-322（bit38 常量定性：全部故障形=1<<38+合法低位（L2[256]）；1<<38=4×VM_DM_BASE；boot_pt_alloc 零填 512 ✓；判据=root[256] 崩时 dump）**：α/β/MFS 全部故障 VA=0x4000000000+各自合法低位——恒定单一位移非随机。L2[256]。候选收窄=①1<<38 为基的映射/计算（DM_BASE×4 移位错位形）②walk 层级错位（root[256] 槽）③VM 自根堆窗=L2[80]≠。boot_pt_alloc 零填 512 ✓——root[256] poison=运行期写入。§续-323 靶=①krewalk 扩 root 全 512 槽 dump（崩时 root[256] 非 0=poison 槽实锤）②1<<38 生产代码全扫③root[256]=0 而 CPU 仍访 ⇒ QEMU TB 层终实锤（变体矩阵升唯一路径）。
 >
@@ -12469,3 +12471,9 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **判读**（M1-M4，600s 窗，全旁路+table 同源）：4/4=exec=12 全序列+pf=0+panic=0——**(A) walk 崩零复发**（对照无旁路 ~75%），旁路有效性确认。marker 仍 0/4。**新卡点恒定**：M1-M4 全部=`pf-exit noaddr cr2=0x7fffffffef90`→`kill tgt=0xc SIGSEGV`——**0xc=init**（exec endpt=0x800c 的 rc/init 链最后一步）在其栈 VA 0x7fffffffef90 页故障→SIGSEGV→rc 链断→marker 永不现身。cr2=0x7fffffffef90 = init 栈区（与 fill-root 的 va=0x7fffffffe000 同族高栈）——**init 栈页的映射/写入问题**（与此前 fill-root refault 循环同源——fill 写入后 child 仍读不到=同一根因的 init 面）。
 
 **§续-324 靶**：①init 的 0x7fffffffef90 故障归因——krewalk 扩展走 init 的 ptroot 链（fill-root 的 ptroot=0x9d6e8000 族）读叶槽现值（同 §续-298-b 方法，对象换 init）；②判读=叶槽 0 ⇒ fill 写不落（写分歧/映射错位）⇒ 与 fill-root 写腿同修；③修复后 marker 判读。
+
+## §续-324（2026-10-04·M1 读数反转：fill-root 链（rc=0x800c 根 0x9d6e8000）三级全 V 完整健全——「fill 写不落」证伪；kill 的是 init(0xc) 非 rc，init 根值待查=§续-325）
+
+**M1 dump 叶槽分析**（ptroot=0x9d6e8000=fill-root 印的 rc 根）：va=0x7fffffffe000 链=l2e(0x9d6e8ff8)=0x2724f001→l1e(0x9c93cff8)=0x2724ec01→l0e(0x9c93bff0)=0x2724f4df——**三级全 V 完整健全**；叶 PTE→PA 0x9c93d000，叶槽现值 0=**数据页内容合法**（pte_pa=数据帧 PA 语义，§续-308）——「fill 写不落/叶槽被清」证伪。**关键澄清**：kill tgt=0xc=**init**≠rc(0x800c)——fill-root 的链是 rc 的，init 是另一进程另一根；init 的根值=setaddr-root 探针最后行待查（§续-325 首步）。
+
+**§续-325 靶**：①init(0xc) 的根值提取（setaddr-root 探针尾行/M1 dump 的内核 proc 表）→ 走 init 根链读 0x7fffffffef90 叶槽现值——判 init 栈映射缺失/损坏；②init 栈页的 fill 腿是否存在（init 的 exec 是 rc 里 exec 的——fill-root 探针 FR_N<3 封顶可能没印 init 的 fill）；③修复后 marker 判读。
