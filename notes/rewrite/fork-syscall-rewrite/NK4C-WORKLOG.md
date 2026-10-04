@@ -12499,3 +12499,9 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **新定性**：fill/簿记/region 全链审计后 **rc 的 refault 已消失**（g1-g3 无 refault 迹象）——剩余 = **内核代读的 trap 风暴慢化**（每 VmDm 槽读一次 kernel-call，一次 walk 3 次，全系统 walk 千次级——160s 窗不够 rc 跑完）或真卡点。判别=600s 长窗：出 marker=纯慢化（§7 走起）；仍无=真卡点（PteReadBuf 批量腿消 trap）。
 
 **§续-328 靶**：①600s 长窗 ×3 跑（代读在场）判 marker；②marker 现身→§7（≥3 轮独立复现证无崩+双 marker+host）；③仍 stall→PteReadBuf 批量腿（内核一次拷回整页槽，消 trap 风暴）落地后再判。
+
+## §续-328（2026-10-04·双句柄实锤（续-165 判据开火）：setaddr 绑 root=0x9d6e9000 vs fill-root ptroot=0x9d6e8000——相邻页两根表；§续-329=句柄分叉点定位+单源化成修）
+
+**判读**（H1-H3，600s 窗，全旁路+table 同源）：exec=12/pf=0/panic=0/marker=0——rc 对已填页仍 refault→SIGSEGV→杀→stall（4/4 恒定）。**根因铁证**：同 run 内 setaddr-root=0xffffffff9d6e9000（×2，fix25 掩码后=0x9d6e9000=kernel 绑定的 rc 根）vs fill-root ptroot=**0x9d6e8000**——**相邻页=两个不同的根表**！fill-root 往 0x9d6e8000 的链写 PTE（写读验证 ✓ 因为写读都在同一错误句柄上自洽），但 rc 的 CPU satp=0x9d6e9000 走的是另一棵树——写入永不生效=refault 永续。**§续-165 双句柄判据精确开火**（「若此处印 0x9dc39000 族=双句柄实锤」——当时预测的族号偏差 16 页不影响判定逻辑）。
+
+**§续-329 靶（成修）**：①定位句柄分叉点：exec 路径的 root 分配（vm_handoff/exec_bootproc 的 root page alloc）→ VM 内部谁持 0x9d6e8000 谁持 0x9d6e9000（两个 VmProc entry？两代 exec root？）；②修=句柄单源化（setaddr 的 root 与 VM 内部 pt.root_paddr 必须同帧）；③§7=marker 现身+≥3 轮无 refault+双 marker+host。
