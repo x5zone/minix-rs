@@ -36,15 +36,15 @@ TIMEOUT_BOOT="${TIMEOUT_BOOT:-420}"
 TIMEOUT_T4="${TIMEOUT_T4:-240}"
 T4_MARKER="${RS64_T4_MARKER:-rc: minimal boot script marker}"
 WORK="${RS64_SMOKE_WORK:-$(mktemp -d /tmp/cmd_smoke_rs64.XXXXXX)}"
-mkdir -p "$WORK" || fail "工作目录不可建：$WORK"
-TABLE_PA=0x85000000
-MODULE_BASE=0x86000000
-
 cleanup() { [ -n "${RS64_SMOKE_WORK:-}" ] || rm -rf "$WORK"; }
 trap cleanup EXIT
 
 skip() { echo "SKIP: $1"; exit 2; }
 fail() { echo "FAIL: $1"; exit 1; }
+
+mkdir -p "$WORK" || fail "工作目录不可建：$WORK"
+TABLE_PA=0x85000000
+MODULE_BASE=0x86000000
 
 command -v qemu-system-riscv64 &>/dev/null || skip "qemu-system-riscv64 not found"
 command -v fdtput &>/dev/null || skip "fdtput not found (device-tree-compiler)"
@@ -86,6 +86,10 @@ if [ "${RS64_SMOKE_SKIP_BUILD:-0}" != "1" ]; then
 fi
 
 [ -x "$REL/kernel" ] || fail "kernel-image 缺失：$REL/kernel（先跑一次构建或去掉 RS64_SMOKE_SKIP_BUILD）"
+# 诊断检查（CodeReview 续-339b P2-4，与 boot-full 同款）：12 模块缺件要在
+# 装配前显式失败——否则 QEMU 装载阶段才以错位形态暴露，难归因。
+MOD_COUNT=$(ls "$REL"/minix-{ds,rs,pm,sched,vfs,driver-memory,driver-tty,mib,vm,fs-pfs,fs-mfs,init} 2>/dev/null | wc -l)
+[ "$MOD_COUNT" = "12" ] || fail "12 模块不齐（实得 $MOD_COUNT）"
 
 echo "== Stage 4: 拼 BootFileTable + 生成 DTB(chosen) + QEMU loader 参数 =="
 BASE_DTB="$IMG/base.dtb"; QEMU_DTB="$IMG/qemu.dtb"; TABLE_BIN="$IMG/table.bin"
@@ -134,6 +138,10 @@ TABLE_BIN="$IMG/table.bin"
 
 SERIAL_LOG="$WORK/serial.log"
 echo "== Stage 5: OpenSBI 直载点火（-kernel=镜像, -dtb=chosen, loader=表+12模块）=="
+# 代码审阅 P1（续-339b）：先删旧日志再点火——`RS64_SMOKE_WORK` 复用目录时，
+# 上一轮的 serial.log 会让本轮在 0.1s 内凭旧证据假绿（QEMU 未启动/未截断日志
+# 的窗口）；test-riscv64-boot-full.sh:136 已有同款 `rm -f` 先例。
+rm -f "$SERIAL_LOG"
 # shellcheck disable=SC2086
 qemu-system-riscv64 \
     -machine virt -smp 1 -m 512M -bios default \

@@ -12754,3 +12754,20 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 **判据离线回归**：新判据逻辑先在两份既有形态串口（probe 形=echo 行未被切碎；gate 形=marker 只命中 cat 行）上离线验证均 PASS，再上机——上机结果 `RESULT: PASS (riscv64 18-stage command output — marker + ls /bin listing + cat /etc/rc dump — on the VFS IPC path)`，exit 0。
 
 **三目标②现状**：x86 ✅ / aarch64 ✅ / **riscv64 ✅**（本门）。目标③（ATF 上机）riscv 腿待接：`tools/build-atf-test.sh` 已支持 riscv64 交叉编链，`os/xtask/src/image.rs` 的 `ATF_BOOT_LEG_READY` 架构门加上 "riscv64" 并按 aarch64 门派生 `test-atf-riscv64.sh` 即可——下一轮靶。
+
+## §续-339b（2026-10-04·CodeReview 修复轮（命令面门）：P1=复用 WORK 目录时旧 serial.log 可判假绿；P2×5 分类落地；两门同修）
+
+**评审对象**：`ad34e94ec`（§续-339 的 `test-cmd-smoke-riscv64.sh`）。结论=**BLOCK（P1×1）**，另 P2×5。
+
+**P1（已修）**：门把 `SERIAL_LOG` 固定为 `$WORK/serial.log` 且启动前不删——`RS64_SMOKE_WORK` 复用目录时（该变量本就为"本地快跑复跑"设计），上一轮的串口日志会让本轮**在 0.1 秒内凭旧证据判 PASS 且完全不启动 guest**；即使用全新目录，首轮轮询也存在"QEMU 尚未建文件/截断"的窗口。修法：Stage 5 点火前 `rm -f "$SERIAL_LOG"`（兄弟脚本 `test-riscv64-boot-full.sh:136` 已有同款先例）。**同族同修 `test-atf-riscv64.sh`**（§续-340 新门，写时自带同缺陷——评审范围外主动补，属"同一错误模式跨脚本"的收口）。
+
+**P2 分类落地**：
+1. `fail` 在定义前被使用（`mkdir -p "$WORK" || fail` 早于 `fail()` 定义）→ 修正：helpers 定义整体上移，`mkdir` 守卫改内联 `echo+exit 1`（ATF 门同形自查）。
+2. `RS64_SMOKE_SKIP_BUILD=1` 的新鲜度边界：Stage 4 确实每轮从 REL 重写 12 模块 + table.bin，但 `kernel` 与 `imgrd.img` 不重建也无校验 → 在脚本头注明边界（门自身每轮重建时无此问题；`SKIP_BUILD` 是本地快跑开关）。
+3. marker 判据可被 `cat` 的源文本单独满足（echo 自身执行未被独立证明）→ **保留为有意取舍**并写清：命令面执行由 `ls /bin` 四项按序列表 + `cat` 全量回显共同证明（脚本序保证 ls/cat 在 echo 之后），强求"marker 在 dump 之前"或"计数≥2"会误杀 echo 输出行被交织切碎的合法形态（本 session 实测形态之一）。
+4. 相比 boot-full 少了 `MOD_COUNT=12` 诊断 → 补回（模块缺件时给出明确 FAIL 而非下游错位）。
+5. SKIP 前置未查 rust 工具链/target → 与两兄弟脚本同形，低优先，暂留。
+
+**方法论（本轮新增）**：
+1. **固定路径的日志/证据文件必须在每轮开始前删除**——"复用工作目录"的便利与"读到上一轮证据"的假绿是同一枚硬币的两面；修复成本一行，漏掉则整条绿门不可信。
+2. **同一错误模式要在同族脚本中一次收口**：本门的 P1 在新写的 ATF 门里同样存在（同一作者同一模板），修复必须跨脚本做，而不是只修被评审的那一个文件。
