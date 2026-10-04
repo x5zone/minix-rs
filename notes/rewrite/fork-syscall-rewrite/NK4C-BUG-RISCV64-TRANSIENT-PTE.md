@@ -800,126 +800,155 @@ cat /tmp/qemu-src/qemu-8.2.2+ds/plugins/qemu-plugins.symbols
 
 ---
 
-## 第 10 章 §续-280..333 大规模更新（2026-10-04，62 笔提交）
+---
 
-> 本章是 2026-10-03..04 一个 session 的穷举终态。它不替代第 1–9 章的任何分析——那些分析的方法论和排除结论全部有效——但它把假设空间、观测手段、和「往哪走」全部重画了。
-> 本章核心发现按影响排序：**旁路消除 walk 崩 > halt-dump 零扰动工具 > 双产物新鲜度缺口 > bit38 族跨进程同构 > α 形全寄存器不可能态 > 内核代读旁路消除 walk 崩但引出慢化**。
+## 第 10 章 §续-280..334 大规模更新（2026-10-04，70+ 笔提交）
 
-### 10.1 新工具：halt-dump 零扰动取证
+> 本章是一个完整 session 的穷举终态。它不替代第 1–9 章的任何方法论——那些排除结论全部有效——但它把假设空间、观测手段、和「往哪走」全部重画了。
+>
+> **核心结论一句话**：(A) walk 崩、rc shell 对已映射栈页的 refault 循环、VM 的 region.find_mut 间歇返回 None、MFS 对自身镜像数据段的野访问——这四类症状全部指向同一个上游：**QEMU 8.2.2 riscv64 softmmu 的视图/平移完整性问题**。guest 侧（minix-rs 代码）的全部可关闭门已关闭。
+>
+> **证据等级声明**（回应"GPT 上轮指出的 hypothesis escalation"）：本章使用「guest 侧已基本排除，进入 CPU translation / emulator boundary investigation」的表述，而**不是**「已实锤 QEMU bug」。QEMU 版本矩阵（10.6）的结果是版本行为差异，不是 bug 实锤。
 
-**发明**：`tmp/nk4a/riscv_halt_dump.sh` — 崩后（QEMU monitor `pmemsave` 全 512 MB RAM 落盘）+ python3 软件走 VM 页表比对 text 页 + 全 RAM 副本普查。**零观测者效应**（dump 时 guest 已 halt 冻结）。
+### 10.0 阅读指南（给分析者）
 
-**配套**：`tmp/nk4a/zscan.py`（text 页逐页校验）、`tmp/nk4a/modparity.py`（模块副本普查）、`tmp/nk4a/riscv_halt_dump.sh` 内置 elfchk（boot 表 KDM 直读）。
+1. 先读 10.2 的实验汇总表——它按「构建 × 结果 × 含义」三列对齐，是全部数据的浓缩。
+2. 再读 10.4 的穷举矩阵——全部 in-code 门的状态一览。
+3. 再读 10.5 的 P0.5 satp 对账数据（上一轮分析者 GPT 建议的实验，已执行完毕，结果在此）。
+4. 再读 10.6 的 QEMU 版本矩阵——为什么版本阶梯被堵死。
+5. 最后读 10.9 的「给 GPT 的新问题清单」——当前真正需要外部帮助的问题。
 
-**已修复的工具缺口**（两个产物新鲜度缺口——取证跑旧字节的根源）：
-1. halt-dump 工具不重写 mod_*.bin → REL 重建后 QEMU 装旧字节（§续-312）
-2. halt-dump 工具不重写 table.bin → elfchk 读旧坐标（§续-316）
+### 10.1 新工具与产物新鲜度缺口（两个关键修）
 
-两条都已修：每跑从 REL 重写 mod bins + table.bin 同源重生成（base 序列/MAGIC/count/16×(path64+pa+len) 单一真源化）。**方法论：「复用 Stage 4 产物」的取证工具必须自带产物新鲜度保障**。
+**halt-dump 零扰动取证工具**（`tmp/nk4a/riscv_halt_dump.sh`）：崩后 QEMU monitor `pmemsave` 全 512 MB RAM 落盘 + python3 软件走 VM 页表比对 text 页 + 全 RAM 副本普查。**零观测者效应**（dump 时 guest 已 halt 冻结）。
 
-### 10.2 关键实验结果汇总
+**两个产物新鲜度缺口**（本 session 最大的教训，取证跑旧字节的根源）：
+1. 工具不重写 mod_*.bin → REL 重建后 QEMU 装旧字节（§续-312）
+2. 工具不重写 table.bin → elfchk 读旧坐标（§续-316）
+
+两条都已修：每跑从 REL 重写 mod bins + table.bin 同源重生成。**方法论：「复用 Stage 4 产物」的取证工具必须自带产物新鲜度保障；批次必须钉「串口内容 == REL 构建产物」**。
+
+### 10.2 关键实验汇总（按构建 × 结果 × 含义）
 
 | 实验 | 构建 | 结果 | 含义 |
 | --- | --- | --- | --- |
-| halt-dump hd4（α 崩） | a8b7654c | text 40/40 EXACT + 三副本全净 | RAM 恒净， poison 不驻留 |
-| krewalk v3（§续-298-b） | a8b7654c | fill-root 链三级全 V + 叶槽现值 0=数据页合法 | rc 链健全 |
-| §续-311 旁路（读+写+零填全内核化） z60-z62 | eed1867（旁路在场） | **3/3 崩指纹照旧** | **VmDm 槽访问层豁免** |
+| halt-dump hd4（α 崩现场） | a8b7654c | text 40/40 EXACT + 三副本全净 | RAM 恒净，poison 不驻留 |
+| krewalk v3（§续-298-b） | a8b7654c | fill-root 链三级全 V + 叶槽 0=数据页合法 | rc 链健全 |
+| §续-311 旁路（读+写+零填全内核化） | eed1867 | **3/3 崩指纹照旧** | **VmDm 槽访问层豁免**（后因产物缺口撤回，§续-318 重做后结论维持） |
 | §续-318 table 同源 f9/f10 | 旁路+新 table | **exec=12 + pf=0 + panic=0** | **(A) 崩消失** |
-| §续-319 长窗 L1-L3 | 旁路+新 table | 2/3 stall + 1/3 RS panic | (A) 崩 0/3 消除 |
-| §续-306 setaddr-root z20-z22 | 旁路+新 table | 3/3 exec=12 无 marker | setaddr root=0xffffffff9d6e9000（掩码后=fill ptroot ✓） |
-| §续-313 PteReadBuf P1-P3 | 旁路+页缓存 | **exec=0 boot 回归** | 页缓存打破 walk 时序 |
-| §续-333 valid 位图 N1-N3 | 旁路+页缓存+valid 位图 | **exec=0 boot 回归** | 与位图无关——**任何代码改动都敏感** |
+| §续-319 长窗 L1-L3 | 同上 | 2/3 stall + 1/3 RS panic；**(A) 崩 0/3** | 旁路有效性确认 |
+| §续-306 setaddr-root z20-z22 | 同上 | 3/3 exec=12 无 marker；setaddr root=0x9d6e9000（掩码后=fill ptroot） | 根绑定一致 |
+| §续-313② k2 全寄存器 | a8b7654c | x0-x31 全量：状态相干但≠ELF 指令语义 | 执行流与 ELF 脱钩 |
+| §续-333 valid 位图 N1-N3 | 旁路+页缓存+位图 | **exec=0 boot 回归** | **(A) 对任何代码改动敏感** |
 
-**核心结论：旁路（内核代读+写+零填）消除了 (A) walk 崩（0/N vs 无旁路 ~75%），但引出 trap 风暴慢化（每 VmDm 槽读一次 kernel-call）。600s 窗 rc 跑不完（活而慢，非死锁——尾部 sa-call 持续）。**
+### 10.3 假设表终态
 
-### 10.3 假设表更新（第 4 章的 H1–H8 + 新增 H9/H10）
-
-| 编号 | 假设 | §续-280 前状态 | §续-333 更新 |
+| 编号 | 假设 | 状态 | 判据 |
 | --- | --- | --- | --- |
-| H1 | 分配器双发 | 已排除 | 维持排除 |
-| H2 | 引用计数漏计 | 未坐实 | 维持未坐实 |
-| H3 | 新帧未清零 | 已排除 | 维持排除 |
-| H4 | 走表算术错 | 已排除 | 维持排除 |
-| H5 | 陈旧探针 | 已排除并成修 | 维持 |
-| H6 | 别名+脏值驻留 | 已排除 | 维持排除（§续-298-b krewalk 链健全） |
-| H7 | 瞬态写者 | 主假设 | **削弱**——旁路消除了 walk 崩（0/3），瞬态写者如果存在也不在 VmDm 槽访问路径 |
-| H8 | 读者错配 | 未排除 | **加强但转向**——不是「喂错 VA/根」（M1 内已验证一致），而是「CPU 硬件 walk 与内核 KDM 软读的分歧」= QEMU softmmu 层 |
-| **H9（新）** | **QEMU softmmu TLB 陈旧平移** | 未提出 | **当前主假设**——fill-root 写 PTE 后 sfence 应刷新 QEMU TLB，但 QEMU 8.2.2 riscv64 的 sfence 实现可能不 flush 用户态 VA 的 TLB 项（或 flush 范围不足），导致 rc 的 CPU 持有陈旧 NP 平移 |
-| **H10（新）** | **QEMU TCB 缓存陈旧代码字节** | 未提出 | VM text 页 RAM 恒净（hd4+b 批实证）但 CPU 执行≠ELF 语义（§续-313② 全寄存器定谳）——QEMU TCG 的翻译缓存可能持有基于旧 RAM 内容的 TB |
+| H1 | 分配器双发 | 已排除 | 可信检测器全零（4.1） |
+| H2 | 引用计数漏计 | 未坐实 | 静态对称（4.2） |
+| H3 | 新帧未清零 | 已排除 | 整帧清零（4.3） |
+| H4 | 走表算术错 | 已排除 | 反汇编对账（4.4） |
+| H5 | 陈旧探针 | 已修 | 5.5 |
+| H6 | 别名+驻留 | 已排除 | 活体读全零（4.5） |
+| H7 | 瞬态写者 | **削弱** | 旁路消除了 walk 崩——如果写者存在也不在 VmDm 槽路径 |
+| H8 | 读者错配 | **重新定性** | 不是「喂错 VA/根」（同 run 验证一致），而是「CPU 硬件 walk 与内核 KDM 软读的分歧」 |
+| **H9** | **CPU translation state 与 RAM 的分歧（QEMU softmmu 为候选实现层）** | **当前主假设** | 全部 in-code 门关闭后剩余 |
+| **H10** | QEMU TCG 缓存旧代码字节 | **降级** | QEMU 自身有 translated-code invalidation；且症状是翻译错误非执行错误字节 |
 
-### 10.4 关键矛盾的证据链（GPT 请从这里开始分析）
+### 10.4 穷举矩阵：全部 in-code 门的状态
 
-**核心矛盾**：rc（shell）的栈页 va=0x7fffffffe000 的页表链在 RAM 中三级全 V 完整有效（krewalk x2 + M1 dump 实证），PTE=0x2724f4df（V|R|W|X|U|G|A|D 全旗标→PA 0x9c93d000），但 rc 的 CPU 仍对该页反复页故障 → VM 回 noaddr → SIGSEGV → rc 链断 → marker 永不现身。
-
-**已排除的解释**：
-- 不是 region 不存在（fill-root 的 region.find 成功 ✓）
-- 不是 PTE 未写（krewalk 读到有效 PTE ✓）
-- 不是 slot 簿记未更新（walk-flip/wb-FAIL 静默 ✓）
-- 不是双句柄（setaddr root = fill ptroot 同帧 ✓）
-- 不是 region 被 clear/remove（region-rm 探针零命中 ✓）
-- 不是 VmDm 槽读误导（四腿全内核化仍崩→已回滚 ✓）
-- 不是页缓存 bug（有/无 valid 位图都 exec=0 → 已回滚 ✓）
-
-**GPT 请分析的核心问题**：
-1. QEMU 8.2.2 riscv64 的 `sfence.vma zero, zero`（在 S 态内核的 PteWrite 臂中执行）是否确实刷新了 QEMU softmmu TLB 中**所有** VA 的平移缓存——包括**用户态 VA**（如 rc 栈页的 0x7fffffffe000）？还是只刷新了 S 态自身的平移？
-2. 如果 sfence 确实全刷了，为什么 rc 的 CPU 仍然看到旧（NP）平移？是否 QEMU softmmu 的 TLB 有**按 ASID 分桶**的缓存，而内核的 satp 写（上下文切换）没有触发正确的 ASID 级 flush？
-3. 有没有可能问题不在 QEMU 层而在**内核的上下文切换代码**——具体来说，内核从 VM 切回 rc 时，satp 写入是否确实触发了 QEMU 的 `riscv_cpu_satp_write` → `tlb_flush` 回调？（riscv64 的 satp 写在 QEMU 中通过 `riscv_csr_ops[CSR_SATP].write` 回调触发——需要确认这个回调在 TCG 模式下是否正确调用了 `tlb_flush(mmu_idx, all)`）
-4. 如果 QEMU 层确认无 bug，那么「PTE 有效 + 链健全 + fill 写落地 + CPU 仍故障」如何用一个统一的机制解释？是否需要考虑 QEMU TCG 的 TB（翻译块）缓存了基于旧页表内容的代码路径？
-
-**技术背景补充**（帮助 GPT 理解 QEMU 层）：
-- 本项目 QEMU 版本 = 8.2.2（Debian），TCG 模式（非 KVM），riscv64 target
-- 上下文切换 = 内核写 satp CSR → QEMU `riscv_cpu_satp_write` → 应触发 `tlb_flush(cs, all)`
-- VM 的 PTE 写通过 kernel-call 代理：VM trap → kernel S 态 → KDM 直写 → sfence.vma zero,zero → 返回 U 态
-- 崩溃非确定（~75% 崩率）但指纹恒定（α: 0x3ae10/0x10bc900b3c；β: 0x3ae3e/0x409c8ffb30）——**同构建同指纹**
-
-### 10.5 同期确定收益（非 (A) 工作）
-
-| 收益 | 提交 | 影响 |
+| 门 | 状态 | 验证方式 |
 | --- | --- | --- |
-| **aarch64 目标③达成** | §续-286 | rc=0（36/36 终态=34P+2S+0F/B）——table 同源+D1 random 接管+门判据修正 |
-| D1 清账 | §续-284 | random 真源接管 → 33→34 passed |
-| D3b 定性 | §续-320 | RS panic=次生（主死者=MFS 野访问 bit38 族） |
-| halt-dump 工具 | §续-291 | 零扰动全 RAM dump + 软件走页表 + text 普查 |
-| elfchk | §续-316 | boot 表 KDM 直读——**发现第二产物新鲜度缺口**（table.bin 旧布局） |
-| PteReadBuf 设计+首实现 | §续-311/313 | 页缓存 hit() NP 误判→boot 回归→已回滚（§续-332/333）——**结论=(A) 对任何代码改动都敏感** |
+| root 一致（fill ptroot == setaddr 绑定的 root == CPU satp 的 root） | ✅ 关闭 | P0.5 探针：fault 时 satp.PPN=0x9d6e8 → root=0x9d6e8000 = fill ptroot（同 run 同构建） |
+| 页表链 RAM 健全 | ✅ 关闭 | krewalk v3 + M1 dump：l2e→l1e→l0e 三级全 V，叶 PTE=0x2724f4df（全旗标→PA 0x9c93d000） |
+| fill 写落地 | ✅ 关闭 | walk-flip 静默（紧邻两 walk 一致）+ pte-wb-FAIL 静默（写回验证通过） |
+| fill 簿记 | ✅ 关闭 | map/update_flags 走 region 槽（physblocks=Mapped）+ refcount 一致 |
+| 无双句柄 | ✅ 关闭 | 同 run 内 setaddr-root == fill-root ptroot（跨 run 比对是生命周期伪差，§续-330 撤回） |
+| 无 free/evict/ptfree/拆除 | ✅ 关闭 | 四腿探针全零（§续-300/302/303） |
+| 无区域查询失败 | **间歇开启** | find_mut 间歇返回 None（§续-327 实锤 q1）——**与 (A) 同症候** |
+| 非 VmDm 槽访问层 | ✅ 关闭 | 四腿全内核化仍崩→已回滚（§续-311） |
+| 恢复点 flush | ✅ 已补 | finish_and_restore 补 riscv sfence（原为 x86_64 独占）——**no-region 仍间歇，非 TLB 层** |
+| clear() 误清 | ✅ 关闭 | 仅 exit 调用（§续-329） |
+| find_mut 导航 bug | ✅ 关闭 | range(..=addr).next_back().filter(contains) = 正确（§续-329） |
 
-### 10.6 方法论新增（第 8 章续）
+**全部关闭后剩余**：QEMU 8.2.2 softmmu 层——in-guest 取证已到边界。
 
-9. **旁路实验可豁免层**：把可疑路径整条换成内核代执行，如果症状不变 ⇒ 该层豁免。本案用此法排除了 VmDm 槽访问层（四腿全内核化仍崩）。
-10. **取证工具必须自带产物新鲜度保障**：从当前 REL 重写 mod bins + table.bin，否则 REL 重建后实验静默跑旧字节（本笔最大教训）。
-11. **取证批次必须钉「串口 md5 == REL md5」**——不仅钉 REL md5（REL 可能重建）。
-12. **探针字段语义必须读源定义**：pte_pa = 数据帧 PA 非叶槽地址。
-13. **全寄存器定谳法**：不满足于部分寄存器匹配——x0-x31 全量反解才能暴露「相干但错误」的状态。
-14. **对账必须同 run 内**：跨 run 的帧分配不同，比对无意义。
-15. **归账正则全色计数**：skipped 也是结果行；「无结果」≠「非 passed 结果」。
+### 10.5 P0.5 实验：satp 对账数据（GPT 上轮建议，已执行）
 
-### 10.7 下一步（优先级序）
+**设计**：非 VM 进程页故障时（内核 trap 分支），打印 satp 全量（MODE/ASID/PPN 拆分）+ cur_nr + fault_addr。
 
-| 优先级 | 行动 | 预期 |
-| --- | --- | --- |
-| **P0** | **QEMU 变体矩阵**——docker debian:trixie + qemu-system-misc（9.x）+ QEMU_BIN 指向容器 + 宿主 bind-mount 跑 halt-dump。若 9.x 下 (A) 消失 ⇒ QEMU 8.2.2 bug 实锤 ⇒ 在 9.x 上跑 riscv 全链（三目标解锁） | 工具已就绪（QEMU_BIN env + mod bins 同源） |
-| P1 | QEMU 8.2.2 sfence 源码分析——`apt source qemu` 或在线源码浏览 tcg/riscv 路径，确认 `sfence.vma` 的 TLB flush 语义 | 可能发现已知 bug 或 workaround |
-| P2 | **krewalk 全扩展**：pfvm 冷路径读 ptroot 链全 512 槽 + root[256] dump（§续-322 判据）——不加 VM 侧探针（观测者效应），纯 kernel 侧冷路径 | root[256] 内容=poison 槽判据 |
-| P3 | **RS panic 分析**（§续-320 主死者=MFS 野访问 bit38 族）：MFS 的 0x4000833660 故障是否也是 QEMU 平移层工件（用变体矩阵判读） | MFS/pfs/init 三镜像非 ELF 也可能是 QEMU 层工件 |
-| P4 | riscv 三目标解锁后 → Phase E 探针滚除 + 三终目标当前态证据 | |
+**结果**（p6c/p6d，各 CAP=32 条全部来自 rc slot 0xc）：
 
-### 10.8 QEMU 版本矩阵实验结果（§续-334，2026-10-04）
+```
+rc(0xc) fault 时 satp = MODE 8 (Sv39) / ASID 0 / PPN 0x9d6e8 → root = 0x9d6e8000
+     → 与 fill-root ptroot 完全一致（同 run 同构建）
+rc 对 fa=0x7fffffffef90 反复故障 26 次（CAP 内），每次内核都转发给 VM
+no-region 的那次 fault：同 root ✓
+```
 
-**版本阶梯已就位**（用户提供）：8.2.2=宿主 apt / 8.2.10+9.2.4=官方源码编译 / 10.0.13=docker rust:trixie。
+**三架构对照**：x86_64/aarch64 归档中 bit38 族 fault **零命中**——riscv64 独有（平移层嫌疑维持）。
+
+**同时发现的新线索**：rc 早期 fault 的 fa 落在 0x3ffffc5cc0（**VM 自己的内核栈区**）——VM 栈地址出现在 rc 的地址视野（可能 exec 参数区残留，待查）。
+
+### 10.6 QEMU 版本矩阵（P0 实验，结果不可用但本身是发现）
+
+**版本阶梯**：8.2.2（宿主 apt）/ 8.2.10（官方编译）/ 9.2.4（官方编译）/ 10.0.13（docker rust:trixie）。
 
 | 版本 | 内嵌 OpenSBI | boot 推进 | (A) 判读 |
 | --- | --- | --- | --- |
 | 8.2.2 | v1.3 | 8s 完成（~75% (A) 崩） | **基线可判读** |
-| 8.2.10 | v1.3.1 | relocate 后卡死（600s 只走 22 pfn，~1000 倍慢） | 不可判读 |
+| 8.2.10 | v1.3.1 | relocate 后卡死（600s 走 22 pfn，**~1000 倍慢**） | 不可判读 |
 | 9.2.4 | v1.3.1 | 同卡 | 不可判读 |
-| 10.0.13 | v1.6 | **OpenSBI 本身 15s 不完**（2870 字节后停） | 不可判读 |
+| 10.0.13 | v1.6 | **OpenSBI 自身 15s 不完**（2870 字节后停） | 不可判读 |
 
-**结论**：所有 >8.2.2 的版本连内嵌固件都跑不完——riscv64 TCG 存在版本间重大行为/性能差异，版本矩阵对 (A) 判读不可行。OpenSBI 解耦实验（8.2.10 + 8.2.2 的 v1.3 固件）仍卡——排除固件变量，卡点在 QEMU 本体。
+**解耦实验**：8.2.10 + 8.2.2 的 v1.3 固件仍卡——排除固件变量，卡点在 QEMU 本体。
+**慢化归因**：bootmark 打印降频 1/16 后推进速率不变——排除 mark/trap 风暴；慢在 **vm_pt_alloc 循环本身**（DM 窗写 4096B/页在 8.2.10+ 下极慢——softmmu 对大 DM 窗线性写的 TLB 效率回归）。
 
-**慢化归因判别**：把 bootmark 打印降频 1/16 后推进速率不变——排除 mark/trap 风暴；慢在 **vm_pt_alloc 循环本身**（DM 窗写 4096B/页在 8.2.10+ 下极慢——softmmu 对大 DM 窗线性写的 TLB 效率回归）。
+**结论**：所有 >8.2.2 的版本连内嵌固件都跑不完——riscv64 TCG 存在版本间重大行为/性能差异，**版本矩阵对 (A) 判读不可行**（GPT 的 A/B/C 三情况分析因新版本 boot 本身阻塞而无法到达）。
 
-**P0.5 实验（GPT 方向，satp 对账）**：rc(0xc) fault 时 satp = MODE 8 / **ASID 0** / PPN 0x9d6e8 → root=0x9d6e8000 = **与 fill-root ptroot 一致** ✓；rc 对 fa=0x7fffffffef90 反复故障 26 次（CAP 内）；no-region 那次 fault 的 p5 行同 root ✓。**CPU 用对了根**——GPT 问题的直接答案。
+### 10.7 PteReadBuf 两轮实验（§续-332/333）
 
-**§续-334 成修尝试（riscv 恢复点 sfence）**：finish_and_restore 的故障页 flush 原为 x86_64 独占（invlpg）——riscv64 补 `sfence.vma zero, zero`（§续-334，提交在案）。**结果：no-region 仍 1/3 出现，marker 仍 0**——恢复点 flush 不足以消除（符合预期：no-region 是 VM 簿记层的间歇返回 None，非 TLB 层）。
+**设计**：PteReadPage wire 23（内核整页 memcpy）+ VM 侧 pte_cache（页级 512 PTE 缓存，消 trap 风暴）。
 
-**当前定性（穷举终态确认）**：①(A) walk 崩与 rc refault 循环=同一 QEMU 8.2.2 softmmu 视图/平移层症候群；②全旁路可消除 walk 崩但引出 no-region 间歇（VM BTreeMap 视图偶发被误导）；③版本矩阵被新版本 TCG 回归堵死；④修复路径剩余=QEMU 源码定点分析（sfence/TLB 语义，需装源码）或等 QEMU 社区修复。
+**第一轮**（无 valid 位图）：P1-P3 **exec=0 boot 回归**——hit() 对同页未缓存 idx 返回 Some(0) 被当 NP 误判。
+**第二轮**（valid 位图修正）：N1-N3 **仍 exec=0 boot 回归**——与位图无关。
+
+**结论**：**(A) 对任何 os/ 代码改动都敏感**（两次独立实验全部回归）——不是缓存逻辑 bug，是**代码布局/时序变化本身就打破 (A) 的临界时序窗**。PteReadBuf 路线终结，代码已丢弃（git stash 有副本）。
+
+### 10.8 统一机制候选（当前最优解释）
+
+全部症状用「QEMU softmmu 平移缓存与 RAM 内容不一致」统一解释：
+
+| 症状 | 机制 |
+| --- | --- |
+| (A) walk 崩：VM 读自己页表槽读到越 RAM 值 | QEMU 平移把 VmDm 窗 VA 映到错误物理地址→读到别处数据（自然解释结构化形状：bit38/合法偏移都是**别处的合法数据**） |
+| rc refault：PTE 有效但 CPU 反复故障 | QEMU TLB 缓存了 fill 前的 NP 平移；fill 写 RAM 但 CPU 的后续 walk 命中旧缓存 |
+| no-region 间歇 | VM 读自身 BTreeMap（region 簿记）时读到错误 RAM 内容→键序/值偶发错乱 |
+| MFS 野访问 bit38 族 | 平移误导下的地址计算错位 |
+| 版本矩阵新版本慢化 | 新版本 softmmu 对大 DM 窗线性写的 TLB 效率回归（独立性能问题，非功能 bug） |
+| 旁路消除 walk 崩 | 内核代读写绕开 VmDm 平移层→读到的 RAM 必真实 |
+| instrumentation 必灭 | 任何代码改动=时序变化→打破竞态窗 |
+
+### 10.9 给分析者的新问题清单（§续-334 更新后）
+
+**上一轮 GPT 建议的 P0.5 已执行完毕**（10.5 节）：satp/ASID/root 对账全部一致——「CPU 用错了根」的解释已被数据排除。
+
+**当前真正的问题**（请分析者选择优先级）：
+
+**Q1**：QEMU 8.2.2 riscv64 的 `sfence.vma zero, zero`（S 态内核的 PteWrite 臂执行）是否确实刷新 softmmu TLB 中**所有 VA**（含用户态 VA）的平移缓存？RISC-V 规范说会全刷，但 **QEMU 的 riscv64 实现是否忠实**？（如需源码：`target/riscv/` 的 op_helper.c `helper_sfence_vma`、`cputlb.c` 的 `tlb_flush_page_bits_by_mmuidx`）
+
+**Q2**：QEMU 的 riscv64 softmmu TLB 的 lookup key 是什么？（mmu_idx + VA 页号？ASID 参与吗？）如果所有进程 ASID=0 且 satp 切换触发全量 flush，那么「rc 的 TLB 缓存旧 NP」假设是否仍然成立？
+
+**Q3**：QEMU 8.2.10+ 的 riscv64 softmmu 对**连续大范围写**（如 4096B memset 到 16 GiB DM 窗内的地址）是否有已知性能回归？（版本矩阵实测 ~1000 倍慢化）
+
+**Q4**：**非 QEMU 解释**——是否存在一个 guest 内的机制，能让「RAM PTE 有效 + CPU 反复故障 + VM 簿记间歇 None」三者同时成立而不需要 QEMU bug？例如：VM 的 regions BTreeMap 与页表使用**不同的物理帧**（簿记在堆帧，页表在分配器帧），而堆帧被平移误导但页表帧没有——**不对称误导**是否可能？
+
+### 10.10 下一步（优先级重排后）
+
+| 优先级 | 行动 | 依赖 |
+| --- | --- | --- |
+| P1 | QEMU 8.2.2 源码定点审计：只查 sfence.vma/satp write/TLB lookup/fault 缓存四个点（不通读） | 网络（apt source 或在线浏览） |
+| P2 | krewalk 全扩展：pfvm 冷路径读 root 全 512 槽 + root[256] dump（§续-322 判据） | 无依赖（纯 kernel 侧冷路径） |
+| P3 | RS panic / MFS 野访问归因（bit38 族） | 等变体矩阵或 QEMU 源码 |
+| P4 | riscv 三目标解锁 → Phase E 探针滚除 | 等 (A) 成修 |
