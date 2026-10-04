@@ -12602,3 +12602,15 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **当前态**：os/= §续-331 HEAD（15422a68d）内核代读旁路在场（exec=12 稳定复现 ✓）、PteReadBuf 设计+实现在 git stash 可恢复、旁路实验数据完整（§续-311 终判撤回+§续-319 确认消除 walk 崩）。
 
 **§续-333 靶（下一 session）**：①PteReadBuf 正确实现（修 hit() NP 误判——用 valid 位图或 companion array 区分「真 0」vs「未缓存」）②600s 采样③marker 判读④§7 或转 QEMU 层。
+
+## §续-333（2026-10-04·PteReadBuf 终判：valid 位图修正后仍 exec=0 boot 回归 3/3——页缓存方案彻底不可行，代码已丢弃回滚恢复 ✓；(A) 对任何代码改动敏感的结论二次确认；下一 session=QEMU 9.x 变体矩阵或 QEMU 源码分析）
+
+**实验终判**：valid 位图修正（区分「真 0」vs「未缓存」）后 N1-N3 **仍 exec=0 boot 回归 3/3**——页缓存方案彻底不可行，与 valid 位图无关。**回滚**（`git restore os/`）→ X1/X2 = exec=12 pf=0 panic=0 **恢复确认 ✓**（§续-331 稳定态）。
+
+**§续-332 结论二次确认**：(A) 对**任何** os/ 代码改动都敏感（两次独立实验：无位图 P1-P3、有位图 N1-N3，全部 boot 回归）——不是缓存逻辑 bug，是**代码布局/时序变化本身就打破 (A) 的临界时序窗**。PteReadBuf 路线终结（代码已丢弃）。
+
+**(A) 最终定性（穷举终态）**：QEMU 8.2.2 softmmu 层视图完整性问题——in-guest 修复空间为零（任何改动都敏感），解锁路径仅剩：①**QEMU 9.x 变体矩阵**（网络恢复后——softmmu 重写若消除=实锤+在 9.x 跑 riscv 全链）②QEMU 源码分析（`apt source qemu`→tcg/riscv sfence/TLB 路径——需网络）③**网络恢复是硬前置**。
+
+**当前态**：os/ = §续-331 HEAD（15422a68d）= 内核代读旁路在场（X1/X2 exec=12 稳定复现 ✓），全部实验代码已丢弃，探针族+工具+数据盘完整。
+
+**下一 session 首选**：①复测网络（`curl -sI https://deb.debian.org`）→ 恢复则 QEMU 9.x 变体矩阵（docker debian:trixie 装 qemu-system-misc + QEMU_BIN 环境变量指向容器内二进制 + 宿主 bind-mount 跑 halt-dump）②仍断→QEMU 8.2.2 行为归档（把 sfence/TLB 分析工单写为文档）→ 转确定收益（aarch64 套件扩样/RS panic 分析）。
