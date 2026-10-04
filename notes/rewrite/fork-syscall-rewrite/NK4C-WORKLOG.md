@@ -12935,3 +12935,11 @@ qemu-user 未装，改用 `qemu-system-riscv64 -machine virt -bios none -semihos
 **下一步（决定性且工具在位）**：minix-elf OOB panic 时 QEMU 因 -no-reboot 挂死仍存活——立刻 `riscv_halt_dump.sh` pmemsave 全 RAM，把 12 模块镜像区对 REL 产物逐字节 diff：**拿到腐蚀字节指纹+精确落点**（哪些字节、什么形状、落在哪个结构），从「知道被腐蚀」升级到「看到腐蚀结果」；辅以 boot handoff/args 区早期金丝雀与首次 kdst copy 前置校验（len≠0x2f 即现场打印+挂死等 dump）。
 
 产物：machine_run{3..8}.log（含 run7/run8=9.2.4）、check_bare_v{3,4}*.c、cbv{3,4}.txt（3072 检查点参考）。
+
+## §续-347 panic 现场捕获基建就绪：halt-dump 配置 3/3 幸存（配置敏感性新事实）+ 模块区 diff 工具链验证
+
+riscv_halt_dump.sh（-monitor unix + 120s 定窗 pmemsave 512MB）连跑 hd46-hd49：**3/3 幸存且都到 marker**——与 boot_probe.sh 的 ~50% panic 率形成反差，**同镜像同二进制、点火配置敏感性是真实变量**（两工具的 QEMU 命令行差异=monitor socket 有无；下一步做受控对照：boot_probe 加 monitor 看 panic 率是否被压掉——若 monitor 在场即稳定，腐蚀器与 QEMU monitor/IO 路径有交互，画像再收窄）。hd46-49 串口零探针行=120s 窗停在被测套件之前（dump 的是早期系统）。
+
+**模块区 diff 工具链验证就绪**（健康对照 hd49）：table.bin 解析（MNXBOOT1+16×(path64+pa+len)）→ pmemsave RAM（BASE=0x80000000）→ 12 模块装载区对 mod_*.bin 逐字节比对=**全 EXACT**。panic 现场捕获流程已闭环：下次 minix-elf OOB 即刻 diff 拿腐蚀指纹+落点。
+
+**本次点火读数补充**：hd49 健康跑中 `kdst copy len=0x4a/0xc0` 等正常值在位（与 doomed 跑的 len=1 异常对照成立）。
