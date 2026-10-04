@@ -613,8 +613,10 @@ mod tests {
             0x200000,              // bootstrap_len
             &[],                   // platform_sources (empty = no source)
         );
-        // Sv39 user-space top is below 2^38.
-        assert!(info.user_sp.0 < (1u64 << 39));
+        // 接线断言：builder 发布的必须是单一权威常量本身（宿主测试取非
+        // riscv 分支=48 位值；Sv39 取值范围由 minix_types 的编译期
+        // 不变式在 riscv64 目标上钉扎，§续-338b CodeReview P0 修正）。
+        assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP);
         assert_eq!(info.kern_phys_base, PhysBytes(DRAM_BASE));
         assert!(info.platform_sources.is_empty());
     }
@@ -707,8 +709,9 @@ mod tests {
             VirBytes(0xFFFF_FFFF_8000_0000u64 + 0x100_000)
         );
         assert_eq!(info.syscall_entry, VirBytes(0xFFFF_FFFF_8000_0000));
-        // user_sp 仍是 Sv39 顶（与入参无关）
-        assert!(info.user_sp.0 < (1u64 << 39));
+        // user_sp 是单一权威常量（与入参无关）；宿主测试取非 riscv 分支，
+        // Sv39 取值范围由 minix_types 的编译期不变式在 riscv64 上钉扎。
+        assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP);
         // module + platform_sources
         assert_eq!(info.boot_modules.len(), 0);
         assert!(info.platform_sources.is_empty());

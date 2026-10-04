@@ -120,11 +120,13 @@ impl HandoffModule {
 ///
 /// C: `USR_STACKTOP` = `USR_DATATOP` (`minix3/minix/kernel/const.h:32-43`;
 /// i386 `0xF0000000`) is the kernel's stack-top constant; it reaches
-/// userland as `kinfo.user_sp` (pre_init.c:156) and drives both the boot
-/// processes' initial stacks (main.c:391-411) and the exec path
-/// (`minix_get_user_sp`, kernel_utils.c:39-62). The rewrite's LP64
-/// adaptation pins a page-aligned top inside each architecture's canonical
-/// user range:
+/// userland as `kinfo.user_sp` (`minix3/minix/kernel/arch/i386/pre_init.c:156`)
+/// and drives both the boot processes' initial stacks
+/// (`minix3/minix/servers/vm/main.c:391-411`; kernel leg
+/// `minix3/minix/kernel/arch/i386/protect.c:408`) and the exec path
+/// (`minix_get_user_sp`, `minix3/minix/lib/libc/sys/kernel_utils.c:39-62`).
+/// The rewrite's LP64 adaptation pins a page-aligned top inside each
+/// architecture's canonical user range:
 ///
 /// - x86_64 / aarch64 (48-bit user VA): `0x7fff_ffff_f000` — the classic
 ///   LP64 user top, unchanged since the first boot legs.
@@ -138,12 +140,28 @@ impl HandoffModule {
 ///
 /// This is the single authority: the boot shims publish it as
 /// `KernelInfo::user_sp` and the exec path uses it as the boot-contract
-/// fallback while the kerninfo read leg (NS5-B) is unwired.
+/// fallback while the kerninfo read leg (NS5-B) is unwired. The
+/// `cfg!`-form keeps this documentation visible on every target (a
+/// `#[cfg]`-split pair would hide it from `cargo doc` on the other arch).
+pub const USER_STACK_TOP: u64 = if cfg!(target_arch = "riscv64") {
+    0x0000_003f_ffff_f000
+} else {
+    0x7fff_ffff_f000
+};
+
+// Compile-time invariants: a wrong value here is the §续-338 defect class
+// (an untranslatable user address), so pin it at build time on every target.
+const _: () = assert!(USER_STACK_TOP % 4096 == 0, "USER_STACK_TOP must be page-aligned");
 #[cfg(target_arch = "riscv64")]
-pub const USER_STACK_TOP: u64 = 0x0000_003f_ffff_f000;
-/// x86_64 / aarch64 / host builds — see the riscv64 arm above.
+const _: () = assert!(
+    USER_STACK_TOP < (1u64 << 39),
+    "USER_STACK_TOP must be Sv39-canonical for riscv64 (below 2^39)"
+);
 #[cfg(not(target_arch = "riscv64"))]
-pub const USER_STACK_TOP: u64 = 0x7fff_ffff_f000;
+const _: () = assert!(
+    USER_STACK_TOP < (1u64 << 48),
+    "USER_STACK_TOP must be 48-bit-canonical (below 2^48)"
+);
 
 /// Kernel → VM boot handoff page (one-way, one-shot).
 ///

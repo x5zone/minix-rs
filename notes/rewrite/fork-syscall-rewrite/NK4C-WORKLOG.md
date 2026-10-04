@@ -10,7 +10,7 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-338（定案+修复+验证：rc 循环真根因＝exec 栈顶 `0x7fff_ffff_f000` 超出 Sv39 可寻址上限（≥2^38）＝非规范地址**，CPU 对它的每次访问必然 store page fault——与页表内容/root/sfence 全无关；guest 侧软件走表都不查地址规范性，所以现场自洽到「架构上不可能」。修复＝`minix_types::USER_STACK_TOP` 单一权威（riscv64=`0x3f_ffff_f000`）＋boot-shim 两 builder＋VFS exec 缺省值接入。**干预验证：p7b `halt-detect=2`＝riscv64 首次打出 `minix-rs rc: minimal boot script marker`**（exec=13/no-region=0/kill=0/panic=0），p5 故障族由 `0x7ffff...` 迁移为 `0x3fffff8/9/a...` 普通按需填页。旧账修正：§续-337「四要素」是本缺陷现场（不是矛盾）；H9「QEMU softmmu 分歧」在 rc 循环上消解；版本矩阵 1800s 大窗新读数=8.2.10/9.2.4 均 exec=12/走表崩 0/no-region 1（客侧缺陷跨版本同形）；「(A) 对任何改动敏感」＝非规范地址决定谁先踩到它。§续-339 靶=①门+回归+≥3 轮复现入账 ②三目标②riscv 命令面 ③NS5-B kerninfo 读腿接线。方法论：先算地址规范性再怀疑页表/模拟器；软件走表≠硬件走表；跨架构地址常量必须类型层分架构。
+> **🛑 最新前沿＝§续-338（定案+修复+验证：rc 循环真根因＝exec 栈顶 `0x7fff_ffff_f000` 超出 Sv39 可寻址上限（≥2^38）＝非规范地址**，CPU 对它的每次访问必然 store page fault——与页表内容/root/sfence 全无关；guest 侧软件走表都不查地址规范性，所以现场自洽到「架构上不可能」。修复＝`minix_types::USER_STACK_TOP` 单一权威（riscv64=`0x3f_ffff_f000`）＋boot-shim 两 builder＋VFS exec 缺省值接入。**CodeReview 修复轮 §续-338b：P0=boot-shim `--features test-all` 两断言在宿主编译下回归（改接线断言＋编译期不变式，已回 27/0）；P2×4 全部落地（C 锚点写全/常量文档改 `cfg!` 形/探针读帧内 sstatus 快照/登记 `MMAP_TOP=2^41` 为后续目标）**。**干预验证：p7b `halt-detect=2`＝riscv64 首次打出 `minix-rs rc: minimal boot script marker`**（exec=13/no-region=0/kill=0/panic=0），p5 故障族由 `0x7ffff...` 迁移为 `0x3fffff8/9/a...` 普通按需填页；修复轮后 p7e 复验同形（3765 行）。旧账修正：§续-337「四要素」是本缺陷现场（不是矛盾）；H9「QEMU softmmu 分歧」在 rc 循环上消解；版本矩阵 1800s 大窗新读数=8.2.10/9.2.4 均 exec=12/走表崩 0/no-region 1（客侧缺陷跨版本同形）；「(A) 对任何改动敏感」＝非规范地址决定谁先踩到它。§续-339 靶=①三目标②riscv 命令面 ③NS5-B kerninfo 读腿接线 ④MMAP_TOP 分架构。方法论：先算地址规范性再怀疑页表/模拟器；软件走表≠硬件走表；跨架构地址常量必须类型层分架构；共享常量的既有断言必须按目标重审。
 
 > **🛑 最新前沿＝§续-325（身份修正+矛盾收口：kill 的是 rc(0x800c,slot 0xc) 本身；PTE 有效却反复故障——VM region 簿记与页表链脱节=最后卡点）**：身份修正=kill tgt=0xc=slot 0xc+endpoint 0x800c+state=exiting=**rc shell 本身**（§续-323/324 的「init」称呼纠正）。矛盾收口=M1 dump 证 rc 链三级全 V、叶 PTE=0x2724f4df（全旗标→PA 0x9c93d000 完全有效）——硬件页表映射存在可写可执行，但 rc 对同页 0x7fffffffef90 反复故障、VM 回 noaddr、kernel 杀之 ⇒ **页表硬件视图与 VM region 簿记脱节**（fill-root 直写叶 PTE 绕过 slot 簿记）。§续-326 靶=①VM handle_pagefault 对 va 的簿记查询审计②修=fill 腿补 slot 簿记或 noaddr 判定查硬件链兜底③修后 marker→§7→riscv 三目标→Phase E。
 >
@@ -12709,7 +12709,7 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 
 - **正式门** `os/qemu-tests/test-riscv64-boot-full.sh`：`### TEST_RESULT: PASS riscv64 full boot (marker reached) ###`（TIMEOUT_BOOT=400）。
 - **独立复跑（§7「≥3 轮全链」）**：①halt-dump p7b：`halt-detect=2`、exec=13/no-region=0/kill=0/panic=0、3765 行；②正式门（重建后）marker ✓；③halt-dump p7d：同样 `halt-detect=2`、exec=13/no-region=0/kill=0/panic=0、3765 行（与 p7b 同形）。三次均 `0x7fffff` 族零命中。
-- **回归底线**：host 四包集 **1403 passed / 0 failed**（baseline 同）；`minix-vm` 535/0 + `minix-vfs` 538/0；`boot-shim` 测试 ok；`check-layout.sh all` = **CHECK-LAYOUT=PASS（all）**；x86 smoke = **PASS（18-stage 命令输出可见）**；aarch64 bootmarks = **PASS**。
+- **回归底线**：host 四包集 **1403 passed / 0 failed**（baseline 同）；`minix-vm` 535/0 + `minix-vfs` 538/0；`boot-shim` 默认 feature 测试 ok——**但 `--features test-all` 有 2 个断言失败（宿主编译下新常量取非 riscv 分支），属本笔引入的回归，已由 §续-338b 修复轮改正（test-all 回到 27/0）**；`check-layout.sh all` = **CHECK-LAYOUT=PASS（all）**；x86 smoke = **PASS（18-stage 命令输出可见）**；aarch64 bootmarks = **PASS**。
 - **探针状态**：本 session 为判别 SPP 新增 p5 行 `sepc=/sst=/sp=` 三字段（已完成使命；与既有探针族一并归 Phase E 滚除）。
 - **事后插曲（诚实记录）**：第三次复跑首试（p7c）在宿主被 x86/aarch64 两条回归线占满时进行——300s 窗只推进到 exec=9 且 dump 未落盘，属**宿主负载下的窗口截断**，非形态回退；空载重跑（p7d）即恢复 marker 同形。教训：**判读 QEMU 窗口类实验前先清空宿主负载**。
 
@@ -12718,3 +12718,22 @@ if (masked_msbs != 0 && masked_msbs != mask) return TRANSLATE_FAIL;
 
 - 三目标①（riscv marker）已解锁 → ②18-stage 命令面 riscv 腿、③atf-c riscv 上机（`ATF_BOOT_LEG_READY` 加 "riscv64"）依次推进。
 - NS5-B（kerninfo `minix_get_user_sp` 读腿）仍开放：本次只修了缺省值的规范性；把 VFS 的读腿接上（minix-rt 的 kerninfo 页查询）是后续独立一笔。
+
+## §续-338b（2026-10-04·CodeReview 修复轮：P0=boot-shim test-all 两断言在宿主编译下回归；P2×4 全部落地；riscv marker 复验通过）
+
+**评审对象**：`5e1a5fa5c`（§续-338 本体）。三合一评审（完整性/正确性/影响面）结论=**BLOCK（1×P0）**，另 4 条 P2。修复轮如下。
+
+**P0（已修）**：`os/boot-shim/src/opensbi_helpers.rs` 的两个测试把「riscv64 的 user_sp < 2^39」写成无条件断言，宿主（x86_64）编译下新常量取非 riscv 分支（`0x7fff_ffff_f000`）⇒ 两断言必假 ⇒ `cargo test -p boot-shim --features test-all` **25/2**。修法（评审建议原样采纳）：两处改为**接线断言** `assert_eq!(info.user_sp.0, minix_types::USER_STACK_TOP)`；取值范围不变式上移到 `minix-types` 的**编译期 const assert**（riscv64 < 2^39、其余 < 2^48、全架构页对齐），任何目标构建即钉扎。复验：test-all **27/0**（回到 WORKLOG:9143 记录的基线）。
+
+**P2（全部落地）**：
+1. C 锚点写全：`main.c:391-411` → `minix3/minix/servers/vm/main.c:391-411`（boot 进程栈），补内核腿 `minix3/minix/kernel/arch/i386/protect.c:408`（`execi.stack_high = kinfo.user_sp`）。
+2. 常量文档在非 riscv 目标不可见 → 改为单条 `pub const USER_STACK_TOP = if cfg!(target_arch = "riscv64") { … } else { … };`，全文档对每个目标可见。
+3. 探针 `sstatus` 改读**帧内入口快照** `frame.sstatus`（trap_stub 契约：值取自 entry 时刻），删去实时 `csrr`——语义更贴合「故障时刻」，且与探针族读帧风格一致。
+4. **登记后续目标（本笔未动）**：`os/servers/vm/src/mmap.rs` 的 `MMAP_TOP = 0x0000_0200_0000_0000`（2^41）是 48 位风格布局常量，Sv39 下越过 2^38；评审确认**当前不可达**（`find_slot` first-fit 先返回栈下缺口，riscv 栈 region 现落在 `0x3f_ffbf_f000`），仅在「>~251 GiB 的无 hint 请求」时才会走到尾缺口。列入「跨架构地址常量分架构」清单，独立一笔处理。
+
+**修复轮复验**：boot-shim test-all 27/0；host `minix-types + minix-kernel` **1143/0**；riscv 全量重建（14 模块 + kernel-image）后 halt-dump p7e：**`halt-detect=2`（marker ✓）、exec=13/no-region=0/kill=0/panic=0、3765 行**、`0x7fff` 族零命中、探针新字段继续输出（帧快照生效）。
+
+**方法论（本轮新增）**：
+1. **把「按架构取值的常量」接入共享 crate 后，必须同步审计**所有以「某个具体架构的取值」为前提的既有断言**——`< 2^39` 这类断言在宿主编译下测的是另一个架构的值（§续-338b P0 的原型）。
+2. 文档在 `#[cfg]` 选择分支上的丢失是 Cargo 文档的静默效应：**共享常量的解释性文档要挂在不随 cfg 消失的位置**（`cfg!` 表达式形）。
+3. 探针取「故障时刻」的量，优先读**陷阱帧内快照**而非实时 CSR（快照语义被 trap_stub 契约钉死，且不受插入点之后任何代码影响）。
