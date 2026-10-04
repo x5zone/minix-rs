@@ -12550,3 +12550,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 ## §续-328（2026-10-04·region-rm 探针零命中——无显式 region 移除；find_mut=None 须为 clear() 全清或 find_mut 导航 bug；§续-329=探针移至 clear() + find_mut 导航审计）
 
 **读数**（h10/h11）：h10=exec=12/pf=0/region-rm=0/panic=0（稳定 stall）；h11=exec=0/panic=3（早期崩——不同形）。region-rm 探针（va>0x7fff0000000 门控）**零命中**=栈 region 从未被 `remove()` 显式移除。⇒ `regions.find_mut(0x7fffffffef90)→None` 的原因收窄至：①`clear()` 全清（exec 重建路径调用——需探针确认时序）②find_mut 的 BTreeMap 区间导航 bug（regions 有重叠/边界异常时 range 查询可能跳过）③region 本身不存在（fill-root 的 region.find 成功证明当时存在——除非后来被 clear）。**§续-329 靶**=①clear() 探针（何时被调用+调用方）②find_mut 的区间导航审计（region_map.rs:92——BTreeMap range 查询对重叠/边界 region 的行为）③root[256] dump（§续-322 判据）。
+
+## §续-329（2026-10-04·①②③快速审计收官：clear() 仅 exit 调用 ✓ / find_mut 导航正确 ✓ / 嫌疑唯一剩余=QEMU softmmu 视图层——in-code 穷举终态确认；下一 session=QEMU 变体矩阵或 PteReadBuf）
+
+**①clear() 审计**：region_map.rs:301 `clear()` 仅由 exit.rs:233 `proc.regions_mut().clear()` 调用（exit 拆终=正常），exec 路径无 clear 调用——**fill 后 region 不会被 clear 移除** ✓。
+**②find_mut 导航审计**：region_map.rs:92 `range(..=addr).next_back().filter(contains_addr)` = 正确的 BTreeMap 区间查询（非重叠 region 下无误导航）✓。
+**③结论**：①②均排除 ⇒ find_mut=None 的间歇性返回=**VM 自身 BTreeMap 的 RAM 视图被平移层误导**（读 regions BTreeMap 时读到错误数据）——与 (A) walk 崩/pte 读取分歧/α 寄存器不可调和构成**同一 QEMU softmmu 层症候群**。
+
+**§续-330 靶（终态）**：(A)=QEMU 8.2.2 softmmu 层视图完整性问题——in-code 穷举终态确认（全部门关闭）。解锁路径=①QEMU 变体矩阵（9.x 重写 softmmu）②PteReadBuf 批量腿+全内核化 DM 窗访问（消平移层依赖）③网络恢复。**Phase E 探针滚除**等 riscv marker 达成后执行。
