@@ -154,8 +154,8 @@ pub const USER_STACK_TOP: u64 = if cfg!(target_arch = "riscv64") {
 const _: () = assert!(USER_STACK_TOP % 4096 == 0, "USER_STACK_TOP must be page-aligned");
 #[cfg(target_arch = "riscv64")]
 const _: () = assert!(
-    USER_STACK_TOP < (1u64 << 39),
-    "USER_STACK_TOP must be Sv39-canonical for riscv64 (below 2^39)"
+    USER_STACK_TOP < (1u64 << 38),
+    "USER_STACK_TOP must be Sv39-canonical for riscv64 (below 2^38, the user half)"
 );
 #[cfg(not(target_arch = "riscv64"))]
 const _: () = assert!(
