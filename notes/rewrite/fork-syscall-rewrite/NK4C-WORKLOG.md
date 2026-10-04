@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-320（RS panic 定位：主死者=MFS 页故障 0x4000833660→VM noaddr→SIGSEGV；RS panic=次生 :1254；L1/L3 stall=活而慢/等）**：rs/src/boot.rs:1254=catch_boot_init_ready 的 unexpected-reply panic（C main.c:799-801 对位）=次生；时序=pf-exit noaddr cr2=0x4000833660→kill tgt=0xa(=MFS，§续-279a 同族) SIGSEGV→RS 收到错误消息→:1254。**主死者=MFS**：VA 0x4000833660=L2[16] 野区（256GB+8.6MiB——非 DM/堆/链接区），形状嫌疑=基指针 0x4000000000+bss 偏移 0x833660（≈mfs bss 尺寸族）。L1/L3 stall=尾部 sa-call 活跃=活而慢/等非死锁。§续-321 靶=①MFS 故障 VA 属性审计（0x4000000000 基从何来）②L1/L3 的 mfs/pfs 行归账③修复二选一=MFS 野指针 in-code 修 vs PteReadBuf 批量腿。
+> **🛑 最新前沿＝§续-321①②（MFS 故障 VA 分解=bit38 高位+合法镜像内偏移——与 (A) 族同构跨进程复现；RS panic=次生确认）**：0x4000833660 = **0x4000000000 + 0x833660**——0x833660 落在 MFS 自身镜像 .data 区（.data 起 0x830360+0x3300，镜像跨 0x1000000-0x1052000+）⇒ **合法镜像内偏移 + bit38 高位垃圾**——与 (A) 族（α stval 0x409c8ffb30=0x4000000000+0x9c8ffb30）完全同构！bit38 高位跨进程（VM walk 与 MFS 用户访问）跨时间复现=同一上游源；L2 索引=VA[38:30]=256（bit38 单置）无映射→故障。RS panic=次生（修 MFS 自消）。§续-322 靶=①bit38 源头追缉（PTE PPN 高位漏掩 vs 指针算术错位）②MFS 故障时 krewalk（需 MFS root 值）③三架构对照（x86 smoke/aarch64 健康=若 riscv 独有=平移层，若三架构=上层共享 bug）。
+>
+> **（上一前沿＝§续-320（RS panic 定位：主死者=MFS 页故障 0x4000833660→VM noaddr→SIGSEGV；RS panic=次生 :1254；L1/L3 stall=活而慢/等）**：rs/src/boot.rs:1254=catch_boot_init_ready 的 unexpected-reply panic（C main.c:799-801 对位）=次生；时序=pf-exit noaddr cr2=0x4000833660→kill tgt=0xa(=MFS，§续-279a 同族) SIGSEGV→RS 收到错误消息→:1254。**主死者=MFS**：VA 0x4000833660=L2[16] 野区（256GB+8.6MiB——非 DM/堆/链接区），形状嫌疑=基指针 0x4000000000+bss 偏移 0x833660（≈mfs bss 尺寸族）。L1/L3 stall=尾部 sa-call 活跃=活而慢/等非死锁。§续-321 靶=①MFS 故障 VA 属性审计（0x4000000000 基从何来）②L1/L3 的 mfs/pfs 行归账③修复二选一=MFS 野指针 in-code 修 vs PteReadBuf 批量腿。
 >
 > **（上一前沿＝§续-319（600s 长窗判读：全旁路下 (A) walk 崩 0/3 消失——新前沿=RS boot.rs panic(L2)+stall(L1/L3)，marker 仍 0）**：L1/L3=exec=12/pf=0/panic=0/600s 无 marker（stall）；**L2=exec=11/pf=0/RS SIGSEGV**（kill tgt=0xa sig=0xb）→ rs/src/boot.rs panic（:4e6=1254 碎片）+**cr2=0x4000833660（非已知窗族=RS 内野指针）**。对照=无旁路 ~75%/读旁路 100%/全旁路 **0/3**——**(A) walk 崩被内核代读写消除**（§续-310 视图分歧源=VmDm 槽读被绕开）。marker 0=①② riscv 下一层阻塞=RS panic+stall。§续-320 靶=①rs/src/boot.rs:1254 定位（对照 cr2 VA 族判野指针源）②L1/L3 stall 相位（尾部 sa-call 活跃=非死锁是慢或等）③修 RS panic 看 marker④PteReadBuf 批量腿评优（若 stall=代读慢化）。
 >
@@ -12439,3 +12441,11 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **②L1/L3 stall 相位**：600s 尾部 sa-call/rm-fallback 持续活跃（非死锁）——exec=12 后系统在跑但 rc 不完成：活而慢（代读 trap 风暴）或活而等（某服务未 init 完成）。L2 的 MFS 死亡提示 stall 形跑里 MFS 可能也死了/卡了（无 panic 记录=静默卡）。
 
 **§续-321 靶**：①MFS 页故障 VA 0x4000833660 的属性审计（L2[16] 野区——对照 mfs 二进制段布局：0x4000833660 = 0x4000000000+0x833660，0x833660≈mfs bss 尺寸 ⇒ 基指针 0x4000000000 从何来）；②stall 判别：L1/L3 600s 串口的 mfs/pfs 相关行归账（mfs 死没死/卡哪）；③修复方向二选一——MFS 野指针 in-code 修 vs 内核代读慢化的 PteReadBuf 批量腿。
+
+## §续-321①②（2026-10-04·MFS 故障 VA 分解=bit38 高位+合法镜像内偏移——与 (A) 族同构跨进程复现；RS panic=次生确认）
+
+**①MFS 故障 VA 分解**：0x4000833660 = **0x4000000000 + 0x833660**——0x833660 落在 MFS 自身镜像 .data 区（.data 起 0x830360，+0x3300；镜像跨度 0x1000000-0x1052000+，0x833660 在内）⇒ **合法镜像内偏移 + bit38 高位垃圾**——与 (A) 族（α stval 0x409c8ffb30 = 0x4000000000+0x9c8ffb30）**完全同构**！bit38 高位跨进程（VM walk 与 MFS 用户访问）、跨时间复现=同一上游源。L2 索引=VA[38:30]=256（bit38 单置）⇒ L2[256] 无映射 → 故障。
+
+**②RS panic=次生确认**：时序=MFS 野访问→VM noaddr→kill MFS SIGSEGV→RS（reincarnation）catch_boot_init_ready 等 MFS 的 RS_INIT 收到错误消息→:1254 panic（C main.c:799-801 对位）——修 MFS 则 RS panic 自消。
+
+**§续-322 靶（bit38 源头追缉）**：①bit38=VA[38]——L2 索引字段的最高位：来源候选=页表遍历中 PTE 的 PPN 高位漏掩（对位 §续-311 前 α 分析的 PTE bit36/PPN[26] 族）或指针算术的进位/符号错位；②**MFS 故障时的 krewalk**（走 MFS 的 root=ptroot 对照）——需 L2 崩现场的 MFS root 值；③对照 x86/aarch64：bit38 形是否出现（若唯一 riscv=平移层，若三架构=上层共享 bug）——x86 smoke/aarch64 套件健康=三架构对照的现成数据。
