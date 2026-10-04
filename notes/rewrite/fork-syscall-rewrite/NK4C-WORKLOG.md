@@ -12558,3 +12558,37 @@ fill 路径实为**两条腿**：①PF 驱动腿=handle_pagefault（vm_server.rs
 **③结论**：①②均排除 ⇒ find_mut=None 的间歇性返回=**VM 自身 BTreeMap 的 RAM 视图被平移层误导**（读 regions BTreeMap 时读到错误数据）——与 (A) walk 崩/pte 读取分歧/α 寄存器不可调和构成**同一 QEMU softmmu 层症候群**。
 
 **§续-330 靶（终态）**：(A)=QEMU 8.2.2 softmmu 层视图完整性问题——in-code 穷举终态确认（全部门关闭）。解锁路径=①QEMU 变体矩阵（9.x 重写 softmmu）②PteReadBuf 批量腿+全内核化 DM 窗访问（消平移层依赖）③网络恢复。**Phase E 探针滚除**等 riscv marker 达成后执行。
+
+## §续-331（2026-10-04·session 最终交接纪要：62 笔提交，(A) 穷举收口至 QEMU softmmu 层 + 内核代读旁路实证有效 + table 同源修复 + D1 清账 + aarch64 门达成）
+
+**三终目标当前态**：
+- ③ aarch64 atf-c ✅ **rc=0（36/36 终态 = 34 passed + 2 skipped + 0 failed/broken）**（§续-286）
+- ①② riscv ❌：(A) 未成修——旁路消除 walk 崩但引出 trap 风暴慢化（600s 窗 rc 跑不完）
+
+**(A) 穷举终表**（全部 in-code 门关闭）：
+✅root 一致 ✅链健全 ✅fill 写落地 ✅fill 簿记 ✅无双句柄 ✅无 free/evict/ptfree ✅无区域查询失败 ✅非 VmDm 槽访问层（四腿全内核化仍崩→已回滚）
+❌唯一未关闭 = QEMU 8.2.2 softmmu TLB/TCG 平移层——in-guest 取证已到边界
+
+**旁路实验结论**：内核代读写消除 (A) walk 崩（0/N vs 无旁路 ~75%）但每 VmDm 槽读一次 kernel-call = trap 风暴 → 系统活但 rc 跑不完（600s 窗 stall）。
+
+**下一 session 首选行动（优先级序）**：
+1. **PteReadBuf 批量腿**（一次 kernel-call 拷回整页 512 PTE，消 trap 风暴）：wire VmCtlParam::PteReadPage(23)/PteWriteBuf(24)+VM 分配 buffer frame+page-level cache——设计已就绪（§续-310），代码量~200 行
+2. QEMU 变体矩阵（网络恢复后——9.x softmmu 重写若消除=实锤+解锁路径=在 9.x 跑 riscv 全链）
+3. QEMU 8.2.2 sfence 源码分析（`apt source qemu`→tcg/riscv path）
+
+**关键工具/资产**：
+- `tmp/nk4a/riscv_halt_dump.sh`：halt-dump 采样（已修 mod bins+table 同源重生成）
+- `tmp/nk4a/zscan.py`：text 页校验
+- `tmp/nk4a/modparity.py`：模块副本普查
+- `tmp/nk4a/host_random_check/`：D1 host 对账
+- `tmp/nk4a/a280/`：16+ 份 RAM dump + 对应串口（各崩形现场）
+- 探针族：krewalk（kernel 侧）+elfchk+no-region+pter+region-rm+fill-root+sas-fork/setaddr（均用后即滚）
+
+**关键教训入库**：
+1. 旁路实验可豁免层（四腿全内核化仍崩=排除 VmDm 槽访问层）
+2. 取证批次必须钉 REL md5（mod bins 旧字节陷阱）
+3. 探针字段语义必须读源定义（pte_pa=数据帧非叶槽）
+4. 跨 run 对比=生命周期伪差
+5. 归账正则全色计数（skipped 也是结果行）
+6. 全寄存器定谳法（不满足于部分匹配）
+7. 旁路可豁免层（内核代读写无法修复但排除 VmDm 槽访问层）
