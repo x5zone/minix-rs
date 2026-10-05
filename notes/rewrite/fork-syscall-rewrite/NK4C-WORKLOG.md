@@ -13614,6 +13614,21 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **收口动作**：①双形态契约在 Cargo.toml 注释已在位（NL5③），WORKLOG 本节补记裁决；②后续任何宿主绿读数继续按本档纪律配真机门引用（§续-388/389/394/395/396 各轮均已如此成对报告）。P-ALL-10 以「裁决 + 双形态覆盖证据」收口，不改构建。
 
+## §续-399 SMP 系列第二增量：riscv64 内核接线尝试——AP 到达失败，负结果全量取证后回退 WIP（工程判据门坐实）
+
+**做了什么**：①smp_init 加 riscv64 分支（拓扑 nr_cpus>1 时逐 hart：填 AP_BOOTSTRAP_RECORD（root=crate::current_root_phys()、栈顶=per-AP 静态栈 cfg 扩到双架构、rust_entry_va=汇聚点高半 VA）→ BSP `fence rw, rw` → `Riscv64SmpArch::boot_ap(hw_id, entry_pa)` → 有界等 AP_ARRIVED（200M spin）→ 打印 `nk4c: ap-arrived hart=…`/`ap-timeout`；单 hart 配置分支静默＝ATF/cmd -smp 1 零影响）；②专用门 `os/qemu-tests/test-smp-aps-riscv64.sh`（boot-full 配方 -smp 2，双判据＝ap-arrived 为主、rc marker 为辅）；③桩内 UART 分步标记（'1'=入桩读毕记录、'2'=satp+sfence 后取指仍活、汇聚点 '3'，写 QEMU virt 16550 @0x10000000）。
+
+**三个现场发现（每个都独立成账）**：
+
+1. **门脚本 DTB 无关核**：专用门首跑 FAIL 且无任何分支打印——根因＝门脚本 dumpdtb 命令**没带 -smp**：QEMU dump 出的 DTB 只有 1 个 CPU 节点，而拓扑真值＝DTB（device_tree.rs parse_cpu_topology 数 /cpus 子节点）⇒ nr_cpus=01 ⇒ 分支惰性。修＝dumpdtb 加 -smp 2。复跑：`nk4c: smp-riscv nr_cpus=02` ✓ 分支激活、SBI hart_start 已发——**次级核未到达**（ap-timeout），且 BSP 在超时后正常续跑（降级续行语义生效）。
+2. **「WARNING: smp_init not wired」与分支共存**：该警告分支 `cfg(not(x86_64))` 在 riscv64 上仍编译执行（打印在 my 分支之前）——纯噪音但说明接线提示词过期，下轮顺手清。
+3. **'2' 字节洪流（未解）**：给汇聚点加第三枚 UART 标记（'3'，经 DM 别名写 UART——别名算式当时写错减了 KPHYS）后出现 23MB 的 '2'（0x32）字节洪流＝**AP hart 在 fault-retry 循环里反复提交桩的 marker-2 写**。机制推断：AP 桩前段（MMU off）成功执行到 satp+sfence（'1' 无洪流），MMU on 后（内核根）后续取指/存储走内核根映射——marker-2 的 sb 若在内核根下 0x10000000 无恒等映射则**不应提交**……洪流的提交性写入与「映射缺失」矛盾，指向内核根对低端设备区存在**部分/别样映射**或 stvec 残留指向 retry 型处理路径——两个假设都无法静态裁决，需要专用调试增量（桩内逐条指令级标记 / GDB 单步 / stvec 主动设置）。移除 '3' 标记后洪流是否消失本轮未复跑（编辑窗 cwd 漂移打断，见下）。
+
+**工程教训四枚（登记）**：①`li t6, (大常量) >> 12` 在 asm 里必须先算好——li 伪指令展开对 45 位值安全，但 UART 别名算式 `pa - KPHYS + KVIRT` 在 release 下触发 overflow panic（debug 断言）——常量算术用 wrapping 语义或移到 Rust 面；②Python 大字面量替换在含 CJK/全角字符的 Rust 源上失配（cat -A 核字节）——行级状态机编辑更稳；③会话 shell cwd 会在多次 `cd os` 间漂移嵌套（`os/os`）——每个编辑/构建命令前显式 `cd /home/xzhao/github/minix-rs`；④检查修复标记必须按改动实际引入的符号 grep（0x3fd 教训的复发变体）。
+
+**回退决定与现场**：WIP（smp.rs 接线分支 98 行＋门脚本）回退——**不满足合入判据**（专用门 FAIL、'2' 洪流未解、按合入纪律不上带病状态）；§续-398 已提交的桩＋汇聚点＋形状审计保留（桩内 UART 分步标记 '1'/'2' 随本轮调试加入、登记为 SMP 线专用取证、随结案滚除）。构建回归：回退后 riscv64 release 内核编译零错误。**下一增量的调试计划**（全部工具已在位）：①重跑门看移除 '3' 后洪流是否消失（区分 fault 来源）；②若洪流消失且仍无到达——GDB（`-s -S` + gdbstub）单步 AP hart 从 0x17888 桩入口起逐条核 satp 生效后的取指位址；③查内核根是否恒等映射镜像（arch_boot 建根代码读码＋gdb `x/8x` 根页）；④SD-24 红线继续尊重（AP 驻留不入调度）。
+
+
 ## §续-394 P-ALL-01 深度迁移收官批：fpu / protection / trap_entry / plat interrupt（5 测试全绿，逐文件深度迁移完成）
 
 **钉住的承重契约**（`os/arch/tests/arch_small_files_audit.rs`）：

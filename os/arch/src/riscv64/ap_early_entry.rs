@@ -48,6 +48,9 @@ pub const OPAQUE_IS_BOOTSTRAP_COOKIE: bool = true;
 /// 交接构成）。
 use crate::arch::ap_early_entry::ApBootstrap;
 
+// #[no_mangle]：桩 asm 以字面符号名 `la t2, AP_BOOTSTRAP_RECORD` 引用
+//（跨 crate 符号面），必须有未修饰的导出名。
+#[unsafe(no_mangle)]
 pub static mut AP_BOOTSTRAP_RECORD: ApBootstrap = ApBootstrap {
     logical_id: 0,
     _pad: 0,
@@ -71,7 +74,13 @@ pub fn record() -> &'static mut ApBootstrap {
 /// 符号地址按链接视图（medany＝物理）即物理地址——与 kernel-image 的
 /// 执行视图（§续-88「执行视图 = 物理基址」）一致。
 pub fn entry_start_pa() -> usize {
-    ap_early_entry_start as usize
+    // 链接视图＝高半（kernel-image riscv64.ld：VMA=0xFFFFFFC0_…，
+    // PA=0x80200000 起）；hart_start 的 start_addr 必须是**物理**地址
+    //（目标 hart MMU off 起跳）。换算 = 减 (KERNEL_VIRT - KERNEL_PHYS)。
+    const KVIRT: usize = 0xFFFF_FFC0_0000_0000 as usize;
+    const KPHYS: usize = 0x8020_0000;
+    let va = ap_early_entry_start as usize;
+    va - (KVIRT - KPHYS)
 }
 
 // ── AP 早期桩（义务清单 §3.1 的汇编体，S-4 落地）──────────────────
@@ -96,14 +105,27 @@ core::arch::global_asm!(
         ld  t3, 16(t2)                  # page_table_root_pa
         ld  t4, 24(t2)                  # kernel_stack_top_va
         ld  t5, 32(t2)                  # rust_entry_va
+        # UART step marker: 0x31 = stub entered, record fields loaded.
+        # QEMU virt 16550 THR @ 0x10000000 — device write, MMU off safe.
+        li  t0, 0x10000000
+        li  t1, 49
+        sb  t1, 0(t0)
         srli t3, t3, 12                 # PPN = pa >> 12
         li  t6, 0x8000000000000000      # SATP_MODE_SV39
         or  t3, t3, t6
         csrw satp, t3
         sfence.vma
+        # UART step marker: 0x32 = MMU on with BSP root, fetch still alive
+        # (proves the root identity-maps the image).
+        li  t0, 0x10000000
+        li  t1, 50
+        sb  t1, 0(t0)
         mv  sp, t4                      # per-AP kernel stack
-        mv  a0, t2                      # bootstrap_pa arg
-        jr  t5                          # jump to Rust convergence
+        # a0 = record HIGH VA = PA + (KVIRT - KPHYS)，MMU on 后经内核根映射
+        li  t6, (0xFFFFFFC000000000 - 0x80200000) >> 12
+        slli t6, t6, 12
+        add a0, t2, t6
+        jr  t5                          # jump to Rust convergence (high VA)
     "#,
 );
 
@@ -127,6 +149,7 @@ pub static AP_ARRIVED: core::sync::atomic::AtomicUsize =
 /// 每核运行队列/抢占下发未通电——AP 此刻「醒着但无所事事」，继续推进
 /// 会踩 P-ALL-03 红线（撤钳不先补每核队列＝进程被安到无队列的核）。
 pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
+    // a0 = 记录高半 VA（桩换算；MMU on 后经内核根可达）。
     let record = unsafe { &*(bootstrap_pa as *const ApBootstrap) };
     // 消费快照（volatile 读：防与 BSP 的潜在复写合并）。
     let _logical = unsafe { core::ptr::read_volatile(&record.logical_id) };
