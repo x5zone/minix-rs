@@ -156,7 +156,7 @@ __asm__(
      * riscv 版 picolibc.ld 只定义 __arm32/__arm64 两个 tcb_offset、没有
      * riscv 版，与「无需减」互证）。__tls_base 是 PROVIDE 符号
      *（picolibc.ld:209 `__tls_base = ADDR(.tdata)`，本仓测试全无 .tdata、
-     * 与 .tbss 同址=0x8020058），la 的 HI20/LO12 重定位引用即兑现。 */
+     * 与 .tbss 同址=0x80200058），la 的 HI20/LO12 重定位引用即兑现。 */
     ".option push\n"
     ".option norelax\n"
     "   la   t0, __tls_base\n"
