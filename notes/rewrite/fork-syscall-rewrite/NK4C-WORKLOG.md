@@ -13554,6 +13554,14 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **P-ALL-06 余量（登记精确锚点，下轮）**：①os/servers/is 的 KProcSnap 与 kernel misc.rs 的 ProcInfoStruct 双源（字段序/u64-vs-i32 时间宽度）＋SI_PROC_TAB 重复定义——收敛方向＝minix-types 单一真源，但先对 C dmp_pm.c/dmp_ds.c 的 getsysinfo wire 布局逐字段定谳（动 wire 格式需上机对账）；②riscv64_walk.rs 三处 8*0 已 §续-387 裁决、alloc.rs 模板已 §续-385 删除（本条在 TODO 里可标已闭）。
 
+## §续-391 P-ALL-06 余量定谳：KProcSnap 双源与 cdev 同为「已闭合（快照过期）」，SI_PROC_TAB 三处副本收敛到 minix-types 单一权威
+
+**KProcSnap/ProcInfoStruct 双源＝已闭合（TODO 快照过期，与 cdev 同批）**：现读 `os/libs/minix-types/src/types/proc_info.rs` 头注——该结构「lifted verbatim from os/kernel/src/misc.rs（生产者）」，文档明记「previously the IS side kept a separate KProcSnap whose field order/set/widths diverged（E-ISPROD 的 founding incident）」；kernel/src/misc.rs:378 侧注「moved to minix-types::types::proc_info — one authority」。双源已在先前 E-ISPROD 轮收敛，TODO 静态扫描时点早于该落地。且文档还记了 C-25 扩面（C 的 GET_PROCTAB 拷整个 struct proc、Rust 行是 A-4 窄行＋尾部四格追加）——**wire 布局的 C 定谳工作先前已完成**，本轮无需重做。
+
+**SI_PROC_TAB 三处副本＝真重复，收敛落地**：上游 C 只在 sysinfo.h 定义一次、各服务 include（PM misc.c:125 应答 mproc 表、VFS 应答 fproc、RS 应答 rproc——SI_PROC_TAB 是「各服务各自应答自己表」的多应答者调用号，不是内核专属）。Rust 侧 minix_types::ipc::sysinfo:83 为权威（=2，sysinfo.h:12 锚注），os/servers/pm/src/misc.rs:32 与 os/servers/rs/src/query.rs:16 各有本地 `pub const` 手抄副本——正是「手抄常量错位」陷阱家族（pm 侧历史上就错过一次：本地记 0 被 E-ISPROD 对账挖出）。落地：两文件本地副本删除，改 `pub use minix_types::{SI_CALL_STATS, SI_PROC_TAB}` / `use minix_types::{SI_PROC_TAB, SI_PROCALL_TAB, SI_PROCPUB_TAB, …}`（E-ISPROD 事故记录以注释保留在 pm 侧）；rs 侧 query 模块的 crate 内老路径（shell_request.rs 引 `crate::query::SI_*`）用 `pub use` 保持可达。**验证**：minix-rs 351 + minix-pm 420+13 宿主全绿；riscv64 目标双 crate 编译零错误。
+
+**P-ALL-06 终态对账**：switch 死契约（§续-390）✅、cdev（§续-390 定谳已闭合）✅、KProcSnap 双源（本轮定谳已闭合）✅、SI_PROC_TAB 副本（本轮收敛）✅、riscv64_walk 8*0（§续-387 裁决）✅、alloc.rs 模板（§续-385 删除）✅——**P-ALL-06 全部子项收口**。
+
 ## §续-388 P-ALL-05 三子项定谳并落地：X-7 未知 VMCTL 改 EINVAL（对齐上游）、SD-16 errno 符号全文件对齐负号契约（连修 2 个长期既有失败）、SD-17 argc 槽宽统一 LP64 全字
 
 **本轮性质**：语义对上游 C 真源对齐轮（P-ALL-05），三条各自独立定谳、一次成组提交（同属「语义与上游不一致」登记的收口，改动互不纠缠且全部宿主可验证）。

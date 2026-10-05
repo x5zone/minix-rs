@@ -10,14 +10,13 @@
 //! module owns the pure classification: which table a `SI_*` request names,
 //! the `do_lookup` name-length gate, and the `RS_SYSCTL_*` sub-type mapping.
 
+pub use minix_types::{SI_PROC_TAB, SI_PROCALL_TAB, SI_PROCPUB_TAB};
 use minix_types::{Errno, sysctl};
 
-/// C: `SI_PROC_TAB` — sysinfo.h:11.
-pub const SI_PROC_TAB: i32 = 2;
-/// C: `SI_PROCPUB_TAB` — sysinfo.h:15.
-pub const SI_PROCPUB_TAB: i32 = 11;
-/// C: `SI_PROCALL_TAB` — sysinfo.h:16.
-pub const SI_PROCALL_TAB: i32 = 12;
+// （P-ALL-06 收敛 2026-10-06：SI_PROC_TAB/SI_PROCPUB_TAB/SI_PROCALL_TAB
+// 三个本地手抄常量删除，改用 minix_types::ipc::sysinfo 的单一权威
+// （sysinfo.h 行号锚注随权威走）。上游 C 只在 sysinfo.h 定义一次、
+// 各服务 include——本地副本正是「手抄结构体/常量错位」陷阱家族。
 
 /// Which process-table the `do_getsysinfo` request names.
 ///

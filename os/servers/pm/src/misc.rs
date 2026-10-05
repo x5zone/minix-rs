@@ -26,12 +26,12 @@ pub const MAX_LOCAL_PARAMS: usize = 2;
 /// `RB_POWERDOWN` (`reboot.h`).
 pub const RB_POWERDOWN: i32 = 1 << 0;
 
-/// `SI_PROC_TAB`（`sysinfo.h:12`——C 值 2；本 crate 原本本地记作 0，
-/// 与 C 及其余服务不一致，是 E-ISPROD 对账挖出的真 bug：IS/MIB 按 C 值
-/// 发 2 会被本服务 EINVAL 拒收）。
-pub const SI_PROC_TAB: i32 = 2;
-/// `SI_CALL_STATS`（`sysinfo.h:14`——C 值 9）。
-pub const SI_CALL_STATS: i32 = 9;
+// P-ALL-06 收敛（2026-10-06）：本地 SI_PROC_TAB/SI_CALL_STATS 副本删除，
+// 改用 minix_types::ipc::sysinfo 单一权威。历史记录（E-ISPROD 对账挖出的
+// 真 bug）：本 crate 原本本地记 SI_PROC_TAB=0，与 C（sysinfo.h:12 值 2）
+// 及其余服务不一致——IS/MIB 按 C 值发 2 会被本服务 EINVAL 拒收。权威化
+// 之后此类错位在定义面上不可能复发。
+pub use minix_types::{SI_CALL_STATS, SI_PROC_TAB};
 
 /// `RUSAGE_SELF/CHILDREN` (`resource.h`).
 pub const RUSAGE_SELF: i32 = 0;
