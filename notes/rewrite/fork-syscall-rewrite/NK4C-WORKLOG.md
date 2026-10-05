@@ -13562,6 +13562,16 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **P-ALL-06 终态对账**：switch 死契约（§续-390）✅、cdev（§续-390 定谳已闭合）✅、KProcSnap 双源（本轮定谳已闭合）✅、SI_PROC_TAB 副本（本轮收敛）✅、riscv64_walk 8*0（§续-387 裁决）✅、alloc.rs 模板（§续-385 删除）✅——**P-ALL-06 全部子项收口**。
 
+## §续-392 P-ALL-01 深度迁移第二批：双架构 signal 腿宿主审计（sigcontext 用户 ABI 契约）
+
+**本轮性质**：P-ALL-01 逐文件深度迁移第二件（signal 双架构 12 枚门内测试的宿主可见面）。sigcontext 是**用户可见 ABI**（信号处理器收到的恢复上下文），价值最高故先行。
+
+**钉住的承重契约**（`os/arch/tests/arch_signal_audit.rs`，5 测试）：①SC_MAGIC 权威值 0xc0ffee1（C arch/i386/include/signal.h:115，三架构共享于 arch/signal_context.rs）——`check_magic` 以它拒收非魔数上下文，漂移＝静默接受垃圾帧；②MF_CONTEXT_SET=0x4000（proc.h:251）；③arm64 check_magic/build 的 sc_magic 读写双点整行钉住；④arm64 handler 入腿形状（LR=signreturn 经 GP_X30、X0=signo、X1=0 sf_code——用户处理器返回链的 ABI 承重面）；⑤riscv64 同契约双点。
+
+**边界**：build/restore/setup_handler 的行为断言本体无法宿主执行（函数住架构门内），本批钉的是它们的调用契约形状与魔数门——行为真值仍由门内测试在目标架构承担（真机 ATF 的 kill/信号路径实际穿过）。清单审计（arch_gated_audit）对这 12 枚的增删改继续兜底。
+
+**验证**：arch_signal_audit 5/5 绿（宿主 x86_64）。**P-ALL-01 累计对账**：86 枚中已有宿主可见面＝双腿专项 11＋paging 编码 7＋清单审计兜底 86＋signal 契约 5；余量＝boot（5+4）/exception（4+4）/fpu（3+3）/protection（2+2）/trap_entry（1+1）/plat interrupt（3+4）按同模板渐进（每文件 30-60 分钟量级，模板四件套已立：清单审计、编码钉住、腿形状钉住、契约审计）。
+
 ## §续-388 P-ALL-05 三子项定谳并落地：X-7 未知 VMCTL 改 EINVAL（对齐上游）、SD-16 errno 符号全文件对齐负号契约（连修 2 个长期既有失败）、SD-17 argc 槽宽统一 LP64 全字
 
 **本轮性质**：语义对上游 C 真源对齐轮（P-ALL-05），三条各自独立定谳、一次成组提交（同属「语义与上游不一致」登记的收口，改动互不纠缠且全部宿主可验证）。
