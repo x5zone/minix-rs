@@ -13056,3 +13056,11 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 **嫌疑重定向（时间线证据）**：探针最后完整跑=§续-342 run1/run2（C=3072、RESULT 读数、420-560s 完成），彼时 HEAD=2c13a7c9e=**T13 之前的内核**（无 USER_VA_LIMIT/mmap 校验/R3 门控）；冻结首现=§续-346 run3（minix-elf OOB），恰在 **T13 R1+R2（043c64d56）+R3（735d765cd）提交之后**。fcb8c542e 虽 boot-full PASS 但 boot-full 只验 marker（不触 p1 exec 相）。剩余嫌疑两族：①T13 内核侧改动（riscv 相关面：MMAP_TOP 2^41→2^38 派生/VM mmap 窗变化/ipc use 迁移/A6 mock riscv 硬失败——p1 exec 挂点与 VM exec/PM 链的交集待查）；②探针镜像漂移（probe v1→v4 重编译、imgrd 多轮重播、rc 变体内容变化）。
 
 **下一会话 bisect**：①checkout 2c13a7c9e 的 os/servers/os/kernel/os/libs/minix-types 三树（探针可跑的最后内核）重建跑探针——解冻=T13 族坐实→在 R1+R2/R3 内二分（先 A6 mock riscv 硬失败单点）；仍冻=镜像漂移→重建 2c13a7c9e 时代形态的探针 v1（去 C 行）对照。②并行：冻结态 monitor xp 抓 PM/VFS 各进程 status（阻塞点直读）。
+
+## §续-360 第二臂定谳：pre-T13 三树仍冻 245699——os/ 内核侧全部假设族出局（本会话代码无关），剩镜像漂移或 post-marker 相环境时序
+
+**第二臂执行**：checkout 2c13a7c9e 的 os/servers+os/kernel+os/libs/minix-types（探针最后完整跑时代的 T13 前内核）重建跑探针——**仍确定性冻结 245699**（T1 快照正常、STALL 判据正常触发）。
+
+**合并判读（§续-359+360）**：{arch 回退} × {T13 树回退} 双臂皆冻 ⇒ 冻结与本会话全部 os/ 代码改动无关（也与管理线 C-66 提交无关——它们不触 os/）。剩余解释两族：①**探针镜像漂移**（probe v1→v4 重编译 310KB ELF、imgrd 多轮重播、rc_probe 变体——§续-342 成功跑用的是 v1 探针+当时代码，现镜像=v4+多轮装配产物；t_memcpy_probe 的 v3/v4 C 行打印量 3072 行可能本身就改变执行时序）；②**post-marker 相的环境时序变化**（halt-dump 的「150s 达 marker」只证明 marker 前 phases 健康——p1 exec 相从未被 halt-dump 观察；§续-352 的 L0 撤回实验曾越过 245699=该点非绝对冻结，重试循环可能被某随机事件打破）。
+
+**下一会话 bisect（二选一收敛）**：①镜像臂——重建 §续-342 形态（probe v1 无 C 行/无 T 行，rc 结构同当时）重播跑——解冻=镜像漂移坐实（再二分 v2/v3/v4 哪个插桩引入）；②环境臂——同一镜像同时窗用 halt-dump 式「不退场改跟随」（把 halt-dump 的 poll 上限改 2400s 观察 p1 exec 相）——若 halt-dump 式点火也冻=镜像坐实、若快跑=点火参数差异（monitor socket 有无/轮询节奏）反直觉生效。③冻结态 monitor xp 直读 PM/VFS/VM 各进程 status（本轮未做，仍是零成本高信息动作）。
