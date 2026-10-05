@@ -26,11 +26,33 @@
 //!
 //! # Interrupt guarantee
 //!
-//! `sret` re-enables interrupts iff SPIE is set (and SPP is clear for a
-//! U-mode return). The impl clears SPP and sets SPIE while preparing
-//! sstatus — the riscv64 analogue of the x86-64 `IF_MASK` OR (C:
-//! `arch_finish_switch_to_user` — arch_system.c:512; Minix3 has no RISC-V
-//! port, this follows the same semantic guarantee).
+//! The leg opens by clearing `sstatus.SIE` and keeps it clear until `sret`
+//! re-establishes the enable from `SPIE` — the riscv64 twin of aarch64's
+//! first instruction `msr daifset, #0xf` (`arm64::trap_return`) and of x86's
+//! interrupts-off `switch_to` handoff.
+//!
+//! Why the mask is load-bearing here (NK4C 续-373): this leg runs in S-mode
+//! while `sstatus.SIE` may be ON — `idle_halt` enables it (`csrs sstatus,
+//! SIE; wfi`) and the trap→`sret` cycle carries that enable back into every
+//! later S-mode return, so kernel code is interruptible all the way through
+//! the scheduler loop. The moment this leg installs the USER trap vector at
+//! `stvec` (about 50 instructions before `sret`) the CPU is in S-mode with a
+//! vector that only makes sense for U-mode origins. A timer tick landing in
+//! that window takes the user leg: it swaps `sp` with `sscratch` — which this
+//! leg has just re-anchored to the kernel-stack TOP — and writes its 34-slot
+//! frame into `[top-272, top)`, the band the scheduler's own live frames
+//! occupy at this depth. The tick restores the registers it saved, but the
+//! kernel locals and return addresses that were sitting in that band are gone:
+//! precisely the corruption aarch64 documents ("silent hang after the first
+//! restore") and the shape that makes a later cross-space copy read a bogus
+//! length or destination out of the kernel's own stack.
+//!
+//! Masking here costs nothing in delivery semantics: a tick that fires while
+//! masked stays pending (`sip.STIP` set by `stimecmp`), and is taken normally
+//! once `sret` restores `SIE` from `SPIE` — so nothing is lost, only deferred
+//! past the handoff. `§续-368`'s `NK4C_CLI` experiment did not cover this: it
+//! suppresses only `SPIE` (what U-mode gets AFTER the return), never the live
+//! `SIE` of the returning S-mode leg itself.
 
 use crate::arch::trap_return::TrapReturnArch;
 use crate::riscv64::boot::Riscv64CpuContext;
@@ -43,6 +65,19 @@ const SSTATUS_SPP: u64 = 1 << 8;
 /// sstatus.SPIE — previous interrupt-enable. Set so `sret` re-enables
 /// interrupts in U-mode.
 const SSTATUS_SPIE: u64 = 1 << 5;
+
+/// sstatus.SIE — the LIVE supervisor interrupt enable (bit 1, NOT bit 5,
+/// which is the saved `SPIE` consumed by `sret`). Cleared on entry to this
+/// leg so the stack/register-file handoff cannot be interrupted through the
+/// user trap vector (`riscv64::trap_stub`'s user leg), whose frame would land
+/// on the scheduler's live kernel frames. Same bit `smp::idle_halt` sets
+/// directly for the same reason, read off in the opposite direction.
+///
+/// The bit values and the instruction order that makes this mask effective
+/// are pinned by the HOST test `arch/tests/riscv64_return_leg_pin.rs` —
+/// a `#[test]` in this module would never run, because `pub mod riscv64` is
+/// `#[cfg(target_arch = "riscv64")]` (NK4C 续-370 登记的同一陷阱).
+const SSTATUS_SIE: u64 = 1 << 1;
 
 /// riscv64 implementation marker (no state; the mode switch is a pure
 /// register/CSR operation).
@@ -67,6 +102,12 @@ impl TrapReturnArch for Riscv64TrapReturn {
         //   the module docs.
         // - The BKL has been released by the caller before this call.
         core::arch::asm!(
+            // NK4C 续-373: mask supervisor interrupts for the whole leg, mirroring
+            // aarch64's opening `msr daifset, #0xf`. `t1` is free here (the only
+            // bound inputs are a0/a1/t0) and its user value is reloaded from the
+            // context later. See the module docs for why the window is real.
+            "li t1, {sie}",
+            "csrc sstatus, t1",
             // Park the register-file pointer in t6 (its user slot is
             // gp_regs[GP_T6], loaded last as a self-referential load).
             "mv t6, a1",
@@ -151,6 +192,7 @@ impl TrapReturnArch for Riscv64TrapReturn {
             gp_off = const core::mem::offset_of!(Riscv64CpuContext, gp_regs),
             spp = const SSTATUS_SPP,
             spie = const SSTATUS_SPIE,
+            sie = const SSTATUS_SIE,
             cli_sym = sym NK4C_CLI,
             // `noreturn` documents the divergence and frees the clobber
             // set (every integer register is reloaded right before sret).
