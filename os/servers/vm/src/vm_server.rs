@@ -16,31 +16,37 @@
 //! - VFS replies → `VfsRequestQueue::handle_reply`
 //! - Page faults → `cow_exec_pf::handle_pagefault`
 
-use minix_types::{Endpoint, UserSlot, BootImage, NR_BOOT_PROCS, VmPagefaultIn, VmProcctlIn, Message, VmReply, VmError, VM_RQ_BASE};
-use crate::ipc::encode::{encode_reply_data, reply_to_errno, VmReplyForIpc};
-#[cfg(test)]
-use minix_types::VM_PROCCTL;
-#[cfg(test)]
-use minix_types::{VmForkIn, VmBrkIn, VmExitIn};
-use crate::vmproc::VmProcTable;
 use crate::alloc_page::VmPageAllocator;
-use crate::phys_mem::{PhysAlloc, PhysAllocType, BitmapAllocator, PhysAllocator, BootMemRegion, AlignedPhysBytes, bytes_to_clicks, CLICK_SIZE};
-#[cfg(feature = "buddy_alloc")]
-use crate::phys_mem::BuddyAllocator;
-#[cfg(all(feature = "buddy_alloc", not(feature = "segment_tree_alloc")))]
-use crate::phys_mem::BUDDY_THRESHOLD_PAGES;
-#[cfg(feature = "segment_tree_alloc")]
-use crate::phys_mem::SegmentTreeAllocator;
 use crate::boot::{BootParams, KernelAllocated, VM_PROC_NR};
-use crate::page_cache::PageCache;
-use crate::vfs_queue::VfsRequestQueue;
+use crate::direct_map::vm_phys_to_virt;
 use crate::ipc::dispatcher::MessageDispatcher;
+use crate::ipc::encode::{VmReplyForIpc, encode_reply_data, reply_to_errno};
 use crate::ipc::transport::IpcStatus;
+use crate::page_cache::PageCache;
 #[cfg(not(test))]
 use crate::pagetable::vm_self_map::init_vm_self_pt;
-use crate::direct_map::vm_phys_to_virt;
+#[cfg(all(feature = "buddy_alloc", not(feature = "segment_tree_alloc")))]
+use crate::phys_mem::BUDDY_THRESHOLD_PAGES;
+#[cfg(feature = "buddy_alloc")]
+use crate::phys_mem::BuddyAllocator;
+#[cfg(feature = "segment_tree_alloc")]
+use crate::phys_mem::SegmentTreeAllocator;
+use crate::phys_mem::{
+    AlignedPhysBytes, BitmapAllocator, BootMemRegion, CLICK_SIZE, PhysAlloc, PhysAllocType,
+    PhysAllocator, bytes_to_clicks,
+};
 use crate::region::PageFrames;
+use crate::vfs_queue::VfsRequestQueue;
+use crate::vmproc::VmProcTable;
 use minix_types::PhysBytes;
+#[cfg(test)]
+use minix_types::VM_PROCCTL;
+use minix_types::{
+    BootImage, Endpoint, Message, NR_BOOT_PROCS, UserSlot, VM_RQ_BASE, VmError, VmPagefaultIn,
+    VmProcctlIn, VmReply,
+};
+#[cfg(test)]
+use minix_types::{VmBrkIn, VmExitIn, VmForkIn};
 // VmContext.user_sp + install_boot_stack use VirBytes unconditionally
 // (E-BOOTFRAME); before that only test code needed it.
 use minix_types::VirBytes;
@@ -104,11 +110,11 @@ impl VmContext {
     ) -> Self {
         let gateway: alloc::rc::Rc<
             core::cell::RefCell<alloc::boxed::Box<dyn crate::kernel_gateway::KernelGateway>>,
-        > = alloc::rc::Rc::new(core::cell::RefCell::new(
-            alloc::boxed::Box::new(crate::kernel_gateway::TrapKernelGateway {
+        > = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(
+            crate::kernel_gateway::TrapKernelGateway {
                 transport: minix_sys::syscall::DirectKernelCallTransport,
-            }),
-        ));
+            },
+        )));
         // V11/T15: audit records route through this gateway (SYS_DIAGCTL).
         #[cfg(all(not(test), feature = "vm_acl_audit"))]
         crate::audit::register_gateway(gateway.clone());
@@ -138,11 +144,9 @@ impl VmContext {
                 .kernel_allocated
                 .static_bytes
                 .saturating_add(self.kernel_allocated.dynamic_bytes),
-            vm_self_bytes: self.vm_allocated_bytes
-                .saturating_add(
-                    (self.page_alloc.self_page_count() as u64)
-                        * crate::region::page_state::PAGE_SIZE,
-                ),
+            vm_self_bytes: self.vm_allocated_bytes.saturating_add(
+                (self.page_alloc.self_page_count() as u64) * crate::region::page_state::PAGE_SIZE,
+            ),
         }
     }
 }
@@ -314,11 +318,11 @@ impl VmServer {
 
         Self {
             ctx: VmContext::new(
-            page_alloc,
-            params.kernel_allocated,
-            params.vm_allocated_bytes,
-            params.user_sp,
-        ),
+                page_alloc,
+                params.kernel_allocated,
+                params.vm_allocated_bytes,
+                params.user_sp,
+            ),
             initialized: false,
             boot_procs,
             boot_extra_pages: params.extra_pages(),
@@ -341,10 +345,11 @@ impl VmServer {
         let meta_size = BitmapAllocator::metadata_size(total_pages);
         let meta_pages = bytes_to_clicks(meta_size);
 
-        let meta_region = free_regions.iter()
+        let meta_region = free_regions
+            .iter()
             .find(|r| {
                 (r.base as u64) < crate::direct_map::VM_DIRECT_MAP_SIZE
-                && r.size >= meta_pages * CLICK_SIZE
+                    && r.size >= meta_pages * CLICK_SIZE
             })
             .expect("no free region in Direct Map range large enough for allocator metadata");
 
@@ -355,9 +360,7 @@ impl VmServer {
         let meta_va = vm_phys_to_virt(AlignedPhysBytes::new(meta_phys_base as u64));
         // SAFETY: meta_va points to a valid direct-mapped physical region
         // of meta_size bytes; no aliasing references exist.
-        let metadata = unsafe {
-            core::slice::from_raw_parts_mut(meta_va.0 as *mut u8, meta_size)
-        };
+        let metadata = unsafe { core::slice::from_raw_parts_mut(meta_va.0 as *mut u8, meta_size) };
 
         let adjusted_base = meta_phys_base + meta_pages * CLICK_SIZE;
         let adjusted_size = meta_region.size.saturating_sub(meta_pages * CLICK_SIZE);
@@ -368,8 +371,7 @@ impl VmServer {
         // (~133 pages on first light, so the `PageFrames` oversize grow hit
         // PhysicalAllocFailed; fix19 forensics 2026-09-21, the vm_handoff
         // serial landmark showing `free n=10` vs a 24-page pool).
-        let mut adjusted_regions =
-            alloc::vec::Vec::with_capacity(free_regions.len());
+        let mut adjusted_regions = alloc::vec::Vec::with_capacity(free_regions.len());
         for r in free_regions {
             if r.base == meta_region.base && r.size == meta_region.size {
                 adjusted_regions.push(BootMemRegion {
@@ -381,7 +383,13 @@ impl VmServer {
             }
         }
 
-        PhysAlloc::Bitmap(BitmapAllocator::init(metadata, total_pages, &adjusted_regions, meta_phys_base as u64, meta_pages))
+        PhysAlloc::Bitmap(BitmapAllocator::init(
+            metadata,
+            total_pages,
+            &adjusted_regions,
+            meta_phys_base as u64,
+            meta_pages,
+        ))
     }
 
     /// Select the boot-time allocator backend ([ARCH: A-5]).
@@ -428,9 +436,14 @@ impl VmServer {
     fn relocate(&mut self) {
         let (total_pages, old_pa_base, old_pa_pages) = {
             let phys_alloc = self.ctx.page_alloc.phys_alloc();
-            let bitmap = phys_alloc.as_bitmap().expect("relocate: bootstrap allocator must be Bitmap");
+            let bitmap = phys_alloc
+                .as_bitmap()
+                .expect("relocate: bootstrap allocator must be Bitmap");
             let (pa_base, pa_pages) = bitmap.metadata_pa_range();
-            assert!(pa_pages > 0, "relocate: no BumpBuf metadata to relocate (already relocated?)");
+            assert!(
+                pa_pages > 0,
+                "relocate: no BumpBuf metadata to relocate (already relocated?)"
+            );
             (bitmap.total_count(), pa_base, pa_pages)
         };
 
@@ -442,9 +455,7 @@ impl VmServer {
             .expect("relocate: failed to allocate new metadata via HeapArena");
         // SAFETY: new_va points to a valid heap-arena region of meta_size bytes;
         // no aliasing references exist.
-        let new_metadata = unsafe {
-            core::slice::from_raw_parts_mut(new_va as *mut u8, meta_size)
-        };
+        let new_metadata = unsafe { core::slice::from_raw_parts_mut(new_va as *mut u8, meta_size) };
 
         let mut free_regions: alloc::vec::Vec<BootMemRegion> = alloc::vec![];
         {
@@ -468,27 +479,51 @@ impl VmServer {
         // combination. They keep the match exhaustive without making
         // `PhysAllocType` cfg-dependent; do not read them as live paths.
         let new_alloc = match alloc_type {
-            PhysAllocType::Bitmap => {
-                PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
-            }
+            PhysAllocType::Bitmap => PhysAlloc::Bitmap(BitmapAllocator::init(
+                new_metadata,
+                total_pages,
+                &free_regions,
+                0,
+                0,
+            )),
             PhysAllocType::Buddy => {
                 #[cfg(feature = "buddy_alloc")]
                 {
-                    PhysAlloc::Buddy(BuddyAllocator::init(new_metadata, total_pages, &free_regions))
+                    PhysAlloc::Buddy(BuddyAllocator::init(
+                        new_metadata,
+                        total_pages,
+                        &free_regions,
+                    ))
                 }
                 #[cfg(not(feature = "buddy_alloc"))]
                 {
-                    PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
+                    PhysAlloc::Bitmap(BitmapAllocator::init(
+                        new_metadata,
+                        total_pages,
+                        &free_regions,
+                        0,
+                        0,
+                    ))
                 }
             }
             PhysAllocType::SegmentTree => {
                 #[cfg(feature = "segment_tree_alloc")]
                 {
-                    PhysAlloc::SegmentTree(SegmentTreeAllocator::init(new_metadata, total_pages, &free_regions))
+                    PhysAlloc::SegmentTree(SegmentTreeAllocator::init(
+                        new_metadata,
+                        total_pages,
+                        &free_regions,
+                    ))
                 }
                 #[cfg(not(feature = "segment_tree_alloc"))]
                 {
-                    PhysAlloc::Bitmap(BitmapAllocator::init(new_metadata, total_pages, &free_regions, 0, 0))
+                    PhysAlloc::Bitmap(BitmapAllocator::init(
+                        new_metadata,
+                        total_pages,
+                        &free_regions,
+                        0,
+                        0,
+                    ))
                 }
             }
         };
@@ -560,7 +595,8 @@ impl VmServer {
         // former placement after init_boot_procs() was an unreachable-order
         // latent bug the fix16 forensics exposed ("page_frames not
         // initialized" panic from exec_bootproc, 2026-09-21).
-        let total_phys = PhysBytes(self.ctx.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
+        let total_phys =
+            PhysBytes(self.ctx.page_alloc.total_pages() as u64 * crate::region::PAGE_SIZE);
         self.ctx.page_frames = Some(PageFrames::new(total_phys));
 
         // V11/T30: the reclaim-retry funnel needs kernel-visible access to
@@ -621,7 +657,9 @@ impl VmServer {
         // consume it. `None` (pre-E3 handoffs, host tests via
         // `BootParams::simple`) keeps the historical mock constants.
         let layout = self.kernel_layout.unwrap_or_else(|| {
-            audit_log!("[VM BOOT] handoff lacks kernel layout (version < 3) — mock constants in use");
+            audit_log!(
+                "[VM BOOT] handoff lacks kernel layout (version < 3) — mock constants in use"
+            );
             // T13 审计 A6：mock 形状是 x86 的（dm_vbase=0xFFFF_8000_0000_0000
             // 在 Sv39 非规范）——riscv64 guest 上真 handoff 恒 v5 携带真布局，
             // 走到本回退说明 handoff 版本逻辑已破，硬失败而非静默套错形状。
@@ -687,19 +725,16 @@ impl VmServer {
             self.exec_bootproc(ip)
                 .unwrap_or_else(|e| panic!("exec_bootproc: {} failed: {e}", ip.name()));
             // NK4-A fix22 路标：boot proc 出生逐个过点（task1-close 裁决去留）
-            crate::bootmark::mark(
-                alloc::format!("nk4a: exec {} ok", ip.name()).as_str(),
-            );
+            crate::bootmark::mark(alloc::format!("nk4a: exec {} ok", ip.name()).as_str());
 
             // C: main.c:513-516 — the boot blob is consumed; free it back
             // to the allocator (page-aligned, length rounded up).
             #[cfg(not(test))]
             {
                 let pages = ip.len.div_ceil(crate::region::PAGE_SIZE) as usize;
-                self.ctx.page_alloc.free_pages(
-                    crate::phys_mem::AlignedPhysBytes::new(ip.start_addr),
-                    pages,
-                );
+                self.ctx
+                    .page_alloc
+                    .free_pages(crate::phys_mem::AlignedPhysBytes::new(ip.start_addr), pages);
             }
         }
     }
@@ -747,25 +782,22 @@ impl VmServer {
         // is physical memory owned by the boot handoff; the Direct Map
         // window makes it directly readable (no copy needed, unlike C).
         let image_len = ip.len as usize;
-        let image_va = crate::direct_map::vm_phys_to_virt(
-            crate::phys_mem::AlignedPhysBytes::new(ip.start_addr),
-        );
+        let image_va = crate::direct_map::vm_phys_to_virt(crate::phys_mem::AlignedPhysBytes::new(
+            ip.start_addr,
+        ));
         // SAFETY: [image_va, image_va+image_len) is the boot module blob the
         // kernel handed over; VM owns it exclusively (C frees it right after
         // exec_bootproc, main.c:514-516). The Direct Map window covers all
         // physical memory; the handoff guarantees page alignment.
-        let image: &[u8] = unsafe {
-            core::slice::from_raw_parts(image_va.0 as *const u8, image_len)
-        };
+        let image: &[u8] =
+            unsafe { core::slice::from_raw_parts(image_va.0 as *const u8, image_len) };
 
         // Parse + walk PT_LOAD segments (C: libexec_load_elf → elf_exec_hdr).
-        let entry = minix_elf::entry_point(image)
-            .map_err(|_| "boot image is not a valid ELF")?;
+        let entry = minix_elf::entry_point(image).map_err(|_| "boot image is not a valid ELF")?;
         // SegmentIter yields PT_LOAD segments only (p_type filter inside).
-        let segments: alloc::vec::Vec<minix_elf::LoadSegment> =
-            minix_elf::segment_iter(image)
-                .map_err(|_| "boot image phdrs unreadable")?
-                .collect();
+        let segments: alloc::vec::Vec<minix_elf::LoadSegment> = minix_elf::segment_iter(image)
+            .map_err(|_| "boot image phdrs unreadable")?
+            .collect();
 
         let frames = self
             .ctx
@@ -773,9 +805,7 @@ impl VmServer {
             .as_mut()
             .ok_or("page_frames not initialized")?;
 
-        let mut proc = table
-            .get_active(slot)
-            .ok_or("boot proc slot not active")?;
+        let mut proc = table.get_active(slot).ok_or("boot proc slot not active")?;
 
         // C: pt_bind(&vmp->vm_pt, vmp) — main.c:355, whose substance is
         // `sys_vmctl_set_addrspace(endpoint, pt_dir_phys, pdes)`
@@ -788,11 +818,10 @@ impl VmServer {
         // `pdes` (the kernel-visible PDE alias) has no meaning under the
         // Direct Map — 0 travels as `virt_root = None` (documented
         // deviation, exit.rs `handle_procctl_clear` Step-4 note).
-        let ptroot_phys =
-            <crate::pagetable::PageTable as crate::pagetable::Paging>::root_paddr(
-                proc.page_table_mut(),
-            )
-            .0;
+        let ptroot_phys = <crate::pagetable::PageTable as crate::pagetable::Paging>::root_paddr(
+            proc.page_table_mut(),
+        )
+        .0;
         // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：SetAddrSpace
         // 发送值。c33a 实锤矛盾：VM ptalloc 首批 64 个 PT 页全无
         // 0x35fd0（内核持有的 RS root），而内核 SetAddrSpace 忠实写
@@ -899,12 +928,7 @@ impl VmServer {
                 let pfn = pfn_alloc
                     .alloc_pfn()
                     .map_err(|_| "boot segment page allocation failed")?;
-                seg_vr.map_page(
-                    frames,
-                    offset,
-                    pfn,
-                    &crate::memtype::MEM_TYPE_ANON,
-                );
+                seg_vr.map_page(frames, offset, pfn, &crate::memtype::MEM_TYPE_ANON);
 
                 // Copy file bytes into the fresh physical page. Page i 覆盖
                 // [va_base+i*PS, +PS)，与 [seg.vaddr, seg.vaddr+filesz) 的
@@ -1046,9 +1070,7 @@ impl VmServer {
         let slot = table
             .vm_isokendpt(endpoint)
             .map_err(|_| "boot proc endpoint not registered")?;
-        let mut proc = table
-            .get_active(slot)
-            .ok_or("boot proc slot not active")?;
+        let mut proc = table.get_active(slot).ok_or("boot proc slot not active")?;
         proc.regions_mut()
             .insert(region)
             .map_err(|_| "boot stack region overlap")?;
@@ -1067,7 +1089,10 @@ impl VmServer {
             .page_frames
             .as_mut()
             .ok_or("page_frames not initialized")?;
-        let pfn = self.ctx.page_alloc.alloc_pfn()
+        let pfn = self
+            .ctx
+            .page_alloc
+            .alloc_pfn()
             .map_err(|_| "boot stack page allocation failed")?;
         {
             // 帧页在 region 内的偏移：region 基址是 4MiB 窗口底，帧页是
@@ -1107,9 +1132,8 @@ impl VmServer {
         // the image sits on our stack buffer; the target page is the one
         // just mapped, reachable through the DM window).
         let dst_phys = pfn as u64 * PS as u64;
-        let dst_va = crate::direct_map::vm_phys_to_virt(
-            crate::phys_mem::AlignedPhysBytes::new(dst_phys),
-        );
+        let dst_va =
+            crate::direct_map::vm_phys_to_virt(crate::phys_mem::AlignedPhysBytes::new(dst_phys));
         // 页内偏移（vsp 所在页的页基 = vsp & !PS-1），region 基址是 4MiB
         // 窗口底——用它会把帧写到页外物理内存（宿主测试实证）。
         let write_off = (vsp & (PS as u64 - 1)) as usize;
@@ -1139,14 +1163,10 @@ impl VmServer {
         gateway
             .sys_exec(endpoint, entry, vsp, 0, filled.ps_str)
             .map_err(|e| match e {
-                crate::kernel_gateway::GatewayError::Kernel(c)
-                    if c == -minix_types::EINVAL =>
-                {
+                crate::kernel_gateway::GatewayError::Kernel(c) if c == -minix_types::EINVAL => {
                     "sys_exec rejected by kernel: EINVAL"
                 }
-                crate::kernel_gateway::GatewayError::Kernel(c)
-                    if c == -minix_types::EFAULT =>
-                {
+                crate::kernel_gateway::GatewayError::Kernel(c) if c == -minix_types::EFAULT => {
                     "sys_exec rejected by kernel: EFAULT"
                 }
                 crate::kernel_gateway::GatewayError::Kernel(c)
@@ -1159,9 +1179,7 @@ impl VmServer {
                 {
                     "sys_exec rejected by kernel: EBADREQUEST"
                 }
-                crate::kernel_gateway::GatewayError::Kernel(c)
-                    if c == -minix_types::EIO =>
-                {
+                crate::kernel_gateway::GatewayError::Kernel(c) if c == -minix_types::EIO => {
                     "sys_exec rejected by kernel: EIO(stub)"
                 }
                 _ => "sys_exec rejected by kernel",
@@ -1327,7 +1345,10 @@ impl VmServer {
             // C-3 迭代8 取证：memreq 服务结果与目标范围。
             crate::bootmark::mark(&alloc::format!(
                 "nk4a: memreq target={} start={:#x} len={:#x} ok={}\n",
-                req.target.0, req.start, req.length, ok as u8
+                req.target.0,
+                req.start,
+                req.length,
+                ok as u8
             ));
             // B23（1.48）：回包 WHO 必须是「请求者」（被挂起、持有 VMREQUEST
             // 上下文的进程），不是「故障页所属空间」。C: pagefaults.c:206 —
@@ -1349,7 +1370,10 @@ impl VmServer {
             }
             let _ = serviced;
         }
-        audit_log!("[VM SIGKMEM] drain bound {} reached — kernel re-signals", MAX_MEMREQ_BATCH);
+        audit_log!(
+            "[VM SIGKMEM] drain bound {} reached — kernel re-signals",
+            MAX_MEMREQ_BATCH
+        );
     }
 
     /// C: `VMPTYPE_CHECK` arm of do_memory (pagefaults.c:311-330) —
@@ -1387,31 +1411,29 @@ impl VmServer {
             };
             while va < end {
                 let v = minix_types::VirBytes(va);
-                let present =
-                    crate::pagetable::vm_self_map::vm_self_query(v);
+                let present = crate::pagetable::vm_self_map::vm_self_query(v);
                 match present {
                     // 已映射：自身页无 CoW 场景，RW 已足（BSS/堆页恒 RW）。
-                    Some(_) => {
+                    Some(_) =>
+                    {
                         #[cfg(all(not(test), target_arch = "riscv64"))]
                         if sf_trace {
-                            crate::bootmark::mark(&alloc::format!(
-                                "nk4a: sf-hit va={:#x}\n",
-                                va
-                            ));
+                            crate::bootmark::mark(&alloc::format!("nk4a: sf-hit va={:#x}\n", va));
                         }
                     }
                     None => {
-                        match self.ctx.page_alloc.alloc_phys(
-                            1,
-                            crate::phys_mem::PageAllocFlags::empty(),
-                        ) {
+                        match self
+                            .ctx
+                            .page_alloc
+                            .alloc_phys(1, crate::phys_mem::PageAllocFlags::empty())
+                        {
                             Ok(phys) => {
                                 if crate::pagetable::vm_self_map::vm_self_mappages(
                                     v,
                                     minix_types::PhysBytes(phys.as_u64()),
                                     crate::pagetable::PageFlags::WRITABLE
-                                    | crate::pagetable::PageFlags::USER_ACCESSIBLE
-                                    | crate::pagetable::PageFlags::PRESENT,
+                                        | crate::pagetable::PageFlags::USER_ACCESSIBLE
+                                        | crate::pagetable::PageFlags::PRESENT,
                                 )
                                 .is_err()
                                 {
@@ -1461,7 +1483,13 @@ impl VmServer {
             }
         };
 
-        let VmContext { page_alloc, page_frames, page_cache, vfs_queue, .. } = &mut self.ctx;
+        let VmContext {
+            page_alloc,
+            page_frames,
+            page_cache,
+            vfs_queue,
+            ..
+        } = &mut self.ctx;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
@@ -1553,12 +1581,7 @@ impl VmServer {
 
     /// 续-169 探针（用后即滚）：handle_memory 的 ok=0 出口定性。
     #[cfg(not(feature = "mock"))]
-    fn hm_fail(
-        tag: &str,
-        req: &crate::kernel_gateway::KernelMemReq,
-        va: u64,
-        table: &VmProcTable,
-    ) {
+    fn hm_fail(tag: &str, req: &crate::kernel_gateway::KernelMemReq, va: u64, table: &VmProcTable) {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static HM_N: AtomicUsize = AtomicUsize::new(0);
         if HM_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
@@ -1651,7 +1674,9 @@ impl VmServer {
                         if rn < 16 {
                             crate::bootmark::mark(&alloc::format!(
                                 "nk4a: rcv{} src={} type={:#x}\n",
-                                rn, r.source.0, r.message.m_type
+                                rn,
+                                r.source.0,
+                                r.message.m_type
                             ));
                         }
                     }
@@ -1665,9 +1690,7 @@ impl VmServer {
                     // C-3 迭代10 取证：receive Err 的错误码（限 4 次）——
                     // 判别 VM 接收自旋的 Err 来源（EIO/EAGAIN/…）。
                     #[cfg(not(feature = "mock"))]
-                    crate::bootmark::mark(&alloc::format!(
-                        "nk4a: rcv-err {e:?}\n"
-                    ));
+                    crate::bootmark::mark(&alloc::format!("nk4a: rcv-err {e:?}\n"));
                     audit_log!("[VM IPC] ipc_receive() failed — message dropped");
                     return RunStep::ReceiveFailed;
                 }
@@ -1685,7 +1708,9 @@ impl VmServer {
         }
 
         let msg = raw_msg;
-        let rcv_sts = crate::ipc::transport::IpcStatus { flags: rcv_sts_raw.status as u32 };
+        let rcv_sts = crate::ipc::transport::IpcStatus {
+            flags: rcv_sts_raw.status as u32,
+        };
 
         // C: if(is_ipc_notify(rcv_sts)) { continue; } (main.c:126-129).
         // SEF already took the SYSTEM/RS-ping notifies; what reaches here
@@ -1741,9 +1766,10 @@ impl VmServer {
         // corrupt reply.
         match action {
             DispatchAction::Reply(reply) => {
-                let reply_for_ipc = VmReplyForIpc::new(reply)
-                    .expect("DispatchAction::Reply carries VmReply::Suspend; \
-                             dispatch_on_msg should translate to DispatchAction::Suspend");
+                let reply_for_ipc = VmReplyForIpc::new(reply).expect(
+                    "DispatchAction::Reply carries VmReply::Suspend; \
+                             dispatch_on_msg should translate to DispatchAction::Suspend",
+                );
                 // Clone once (VmReply is `Clone`) instead of cloning twice
                 // as the original code did; the wrapper owns the reply.
                 let code = reply_to_errno(reply_for_ipc.payload());
@@ -1776,13 +1802,14 @@ impl VmServer {
             self.ctx.sanity_ticks = self.ctx.sanity_ticks.wrapping_add(1);
             if self.ctx.sanity_ticks.is_multiple_of(64)
                 && let Some(frames) = self.ctx.page_frames.as_ref()
-                && let Err(mismatches) = crate::sanity::verify_refcounts(
-                    frames,
-                    VmProcTable::get_global(),
-                )
+                && let Err(mismatches) =
+                    crate::sanity::verify_refcounts(frames, VmProcTable::get_global())
             {
                 self.ctx.pagefault_errors = self.ctx.pagefault_errors.saturating_add(1);
-                audit_log!("[VM SANITY] {} refcount mismatches detected", mismatches.len());
+                audit_log!(
+                    "[VM SANITY] {} refcount mismatches detected",
+                    mismatches.len()
+                );
                 // audit_log! compiles out without vm_acl_audit; keep the
                 // mismatch list alive in every build.
                 let _ = &mismatches;
@@ -1839,8 +1866,6 @@ enum DispatchAction {
     Suspend,
     NoReply,
 }
-
-
 
 impl VmServer {
     /// Five-priority dispatch. C: main.c:137-176.
@@ -1922,7 +1947,8 @@ impl VmServer {
                     self.ctx.dropped_messages = self.ctx.dropped_messages.saturating_add(1);
                     audit_log!(
                         "[VM RS] handshake failed (gid={}): {:?} — RS_INIT dropped",
-                        init.rproctab_gid, e
+                        init.rproctab_gid,
+                        e
                     );
                     // audit_log! compiles out without the feature; keep `e`
                     // alive in every build (the variant is part of the drop
@@ -1954,7 +1980,9 @@ impl VmServer {
                 self.ctx.pagefault_errors = self.ctx.pagefault_errors.saturating_add(1);
                 audit_log!(
                     "[VM PF] pagefault failed: err={:?} endpoint={:?} vaddr={:?}",
-                    e, source, minix_types::VmPagefaultIn::decode_message(msg).vaddr
+                    e,
+                    source,
+                    minix_types::VmPagefaultIn::decode_message(msg).vaddr
                 );
                 let _ = e;
             }
@@ -1977,37 +2005,37 @@ impl VmServer {
                 None => true,
             };
             if acl_denied {
-                    // FIX (VMA-1): Previously `let _ = (c, source);` silently
-                    // dropped the ACL denial event, making production
-                    // misbehaviour unobservable. Now we record the denial
-                    // through a feature-gated audit channel:
-                    //
-                    //   * `cargo test`           → eprintln! to test stderr
-                    //   * `--features vm_acl_audit` → no_std sink
-                    //     (`audit::emit`; formats + drops, output pending
-                    //     VM ↔ syslog IPC, see 15-ipc-dispatch.md §3.7)
-                    //   * release (no feature)   → compiled out entirely
-                    //
-                    // The audit feature is intentionally off by default:
-                    // VM is `no_std`-only outside test cfg, so the audit
-                    // channel is a no_std-compatible sink until IPC-grade
-                    // logging lands (V10-P0-1).
-                    audit_log!(
-                        "[VM ACL] denied: call=0x{:x} source={:?} caller_slot={:?}",
-                        c, source, caller_slot
-                    );
-                    let _ = (c, source);
-                    // C reply semantics: main.c:145 initializes `result = ENOSYS`
-                    // ("Out of range or restricted calls return this.") and the
-                    // ACL-denied path never overwrites it — so the caller sees
-                    // ENOSYS, not the internal EPERM that `acl_check` returned.
-                    // We mirror that exactly: `AclState::acl_check` still
-                    // returns `Err(PermissionDenied)` (EPERM, = C's acl_check),
-                    // but the *reply* errno is ENOSYS (NotImplemented).
-                    return DispatchAction::Reply(
-                        VmReply::Error(VmError::NotImplemented)
-                    );
-                }
+                // FIX (VMA-1): Previously `let _ = (c, source);` silently
+                // dropped the ACL denial event, making production
+                // misbehaviour unobservable. Now we record the denial
+                // through a feature-gated audit channel:
+                //
+                //   * `cargo test`           → eprintln! to test stderr
+                //   * `--features vm_acl_audit` → no_std sink
+                //     (`audit::emit`; formats + drops, output pending
+                //     VM ↔ syslog IPC, see 15-ipc-dispatch.md §3.7)
+                //   * release (no feature)   → compiled out entirely
+                //
+                // The audit feature is intentionally off by default:
+                // VM is `no_std`-only outside test cfg, so the audit
+                // channel is a no_std-compatible sink until IPC-grade
+                // logging lands (V10-P0-1).
+                audit_log!(
+                    "[VM ACL] denied: call=0x{:x} source={:?} caller_slot={:?}",
+                    c,
+                    source,
+                    caller_slot
+                );
+                let _ = (c, source);
+                // C reply semantics: main.c:145 initializes `result = ENOSYS`
+                // ("Out of range or restricted calls return this.") and the
+                // ACL-denied path never overwrites it — so the caller sees
+                // ENOSYS, not the internal EPERM that `acl_check` returned.
+                // We mirror that exactly: `AclState::acl_check` still
+                // returns `Err(PermissionDenied)` (EPERM, = C's acl_check),
+                // but the *reply* errno is ENOSYS (NotImplemented).
+                return DispatchAction::Reply(VmReply::Error(VmError::NotImplemented));
+            }
             // C: result = vm_calls[c].vmc_func(&msg);
             let result = MessageDispatcher::dispatch_by_number(c, msg, self);
             // Execute deferred VFS callback if present (C: do_vfs_reply
@@ -2040,11 +2068,13 @@ impl VmServer {
         // 2. Register ACL for each boot service
         // C: for(i=0; i<NR_BOOT_PROCS; i++) if(rprocpub[i].in_use) map_service(&rprocpub[i]);
         for entry in rproctab.iter() {
-            if !entry.in_use { continue; }
-            let slot = table.vm_isokendpt(entry.endpoint)
+            if !entry.in_use {
+                continue;
+            }
+            let slot = table
+                .vm_isokendpt(entry.endpoint)
                 .map_err(|_| VmError::InvalidProcess)?;
-            let mut proc = table.get_active(slot)
-                .ok_or(VmError::InvalidProcess)?;
+            let mut proc = table.get_active(slot).ok_or(VmError::InvalidProcess)?;
             let is_sys = !entry.is_user;
             let mask = Some(crate::acl::AclMask::from_bits_truncate(entry.call_mask));
             // C: acl_set(&vmproc[proc_nr], rpub->vm_call_mask, !IS_RPUB_BOOT_USR(rpub))
@@ -2073,12 +2103,7 @@ impl VmServer {
     /// VMPPARAM_HANDLEMEM completes synchronously (documented deviation,
     /// 22-vm-exit.md), so this path routes to the same single-shot
     /// dispatch_procctl a fresh request would take.
-    fn handle_vfs_transid(
-        &mut self,
-        _clean_type: u32,
-        _transid: i32,
-        msg: &Message,
-    ) -> VmReply {
+    fn handle_vfs_transid(&mut self, _clean_type: u32, _transid: i32, msg: &Message) -> VmReply {
         // Decode the procctl request from the message body.
         // C: do_procctl reads VMPCTL_PARAM, VMPCTL_WHO, VMPCTL_M1,
         //    VMPCTL_LEN, VMPCTL_FLAGS from the m9 overlay (param@16/
@@ -2107,13 +2132,21 @@ impl VmServer {
     /// noaddr 出口只回 Error 不清挂起 → 全系统静默死锁，2026-09-22）。
     /// 失败仅审计不 panic（[ARCH: A-14] fail-closed 姿态，同 wro 臂旧实现）。
     fn pf_fail_segv(&mut self, proc_endpoint: Endpoint) {
-        if let Err(e) = self.ctx.gateway.borrow_mut()
+        if let Err(e) = self
+            .ctx
+            .gateway
+            .borrow_mut()
             .sys_kill(proc_endpoint, minix_types::SIGNAL_SEGMENT_VIOLATION)
         {
             let _ = &e;
             audit_log!("[VM PF] SIGSEGV delivery failed: {e:?}");
         }
-        if let Err(e) = self.ctx.gateway.borrow_mut().sys_vmctl_clear_pagefault(proc_endpoint) {
+        if let Err(e) = self
+            .ctx
+            .gateway
+            .borrow_mut()
+            .sys_vmctl_clear_pagefault(proc_endpoint)
+        {
             let _ = &e;
             audit_log!("[VM PF] clear_pagefault failed: {e:?}");
         }
@@ -2167,7 +2200,15 @@ impl VmServer {
                 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                     static INACT_N: AtomicUsize = AtomicUsize::new(0);
-                    if INACT_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
+                    // §续-382 里程碑读数（用后即滚）：旧版只放前 4 条，读不出
+                    // 「一过性」还是「活锁式反复」——两者修法完全不同（前者=谁
+                    // 解锁 caller，后者=为什么 exiting 进程还在跑用户指令）。现在：
+                    // 前 4 条照旧，之后只在总数达到 2 的幂时再打一条（≤ 2^20），
+                    // 总共最多 20 余行，不改控制流也不引入打印风暴（§续-361 教训）。
+                    let n = INACT_N.fetch_add(1, AtomicOrd::Relaxed);
+                    let total = n + 1;
+                    let milestone = n >= 4 && total <= (1 << 20) && total.is_power_of_two();
+                    if n < 4 || milestone {
                         let state = if table.get_empty(slot).is_some() {
                             "vacant"
                         } else if table.get_exiting(slot).is_some() {
@@ -2176,7 +2217,8 @@ impl VmServer {
                             "other"
                         };
                         crate::bootmark::mark(&alloc::format!(
-                            "nk4a: pf-inact req={:#x} slot={:#x} state={state}\n",
+                            "nk4a: pf-inact#{} req={:#x} slot={:#x} state={state}\n",
+                            total,
                             request.endpoint.0 as u64,
                             slot.0 as u64
                         ));
@@ -2209,9 +2251,7 @@ impl VmServer {
         // 两指针不同=同对象双 VA 映射（remap 残留）；相同=页内容真被改写
         // （并发写者）。顺带打印 seg_w 时刻 map 前 2 个 u64（键+节点头）。
         let map_ptr_a = (proc.regions() as *const _ as *const u64) as u64;
-        let head_a = unsafe {
-            core::ptr::read_volatile(map_ptr_a as *const u64)
-        };
+        let head_a = unsafe { core::ptr::read_volatile(map_ptr_a as *const u64) };
         let seg_writable = core::hint::black_box(proc.regions())
             .find(core::hint::black_box(fault_addr))
             .is_some_and(|r| r.is_writable());
@@ -2257,7 +2297,13 @@ impl VmServer {
 
         // V9-P1-3 step 1: destructure the memory context into disjoint
         // &mut fields instead of the former parts_mut() 4-tuple.
-        let VmContext { page_alloc, page_frames, page_cache, vfs_queue, .. } = &mut self.ctx;
+        let VmContext {
+            page_alloc,
+            page_frames,
+            page_cache,
+            vfs_queue,
+            ..
+        } = &mut self.ctx;
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         // G-V12-8: the fault path owns the process page table and must keep
         // it in sync with the bookkeeping slot (C: map_pf → pt_writemap).
@@ -2275,9 +2321,10 @@ impl VmServer {
                 #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
                 {
                     crate::bootmark::mark(&alloc::format!(
-                        "nk4c: no-region pf va={:#x} n={}\n", fault_addr.0, regions.len()
+                        "nk4c: no-region pf va={:#x} n={}\n",
+                        fault_addr.0,
+                        regions.len()
                     ));
-
                 }
                 pf_exit!("noaddr");
                 self.pf_fail_segv(proc_endpoint);
@@ -2293,37 +2340,42 @@ impl VmServer {
         // param 默认值就是 Direct{phys:0}，那样会把全部匿名探针误杀。
         let is_direct_region = region.is_direct();
         let service_outcome = crate::cow_exec_pf::handle_pagefault(
-            proc_endpoint, region, frames, page_alloc,
-            fault_addr, request.write, table, page_cache, vfs_queue, pt,
+            proc_endpoint,
+            region,
+            frames,
+            page_alloc,
+            fault_addr,
+            request.write,
+            table,
+            page_cache,
+            vfs_queue,
+            pt,
         );
         // C-3 F0 续修取证（task1-close 裁决删除）：填充后直读叶子物理页
         // 首 8 字节——对照 ELF 字节（RS: 48 83 e4 f0），分辨"内容没拷上/
         // 拷错页"与"内容对但 CPU 视图不同"。须在 proc 记账前用 pt（借用
         // 顺序），随后才轮到 proc 计数。
-        let probe_ok = !is_direct_region && matches!(
-            service_outcome,
-            Ok(
-                crate::cow_exec_pf::PagefaultAction::Handled
+        let probe_ok = !is_direct_region
+            && matches!(
+                service_outcome,
+                Ok(crate::cow_exec_pf::PagefaultAction::Handled
                     | crate::cow_exec_pf::PagefaultAction::MappedNewPage
-                    | crate::cow_exec_pf::PagefaultAction::CowResolved
-            )
-        );
+                    | crate::cow_exec_pf::PagefaultAction::CowResolved)
+            );
         let probe_budget = {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static PF_BYTES_N: AtomicUsize = AtomicUsize::new(0);
             PF_BYTES_N.fetch_add(1, AtomicOrd::Relaxed) < 200
         };
         if probe_ok && probe_budget {
-            let aligned = minix_types::VirBytes(
-                fault_addr.0 & !(crate::region::PAGE_SIZE as u64 - 1),
-            );
+            let aligned =
+                minix_types::VirBytes(fault_addr.0 & !(crate::region::PAGE_SIZE as u64 - 1));
             use crate::pagetable::Paging as _;
             if let Some((pa, _fl)) = pt.query(aligned) {
                 let dv = crate::direct_map::vm_phys_to_virt(
                     crate::phys_mem::AlignedPhysBytes::new(pa.0),
                 );
-                let bytes =
-                    unsafe { core::slice::from_raw_parts(dv.0 as *const u8, 8) };
+                let bytes = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, 8) };
                 let mut hex = alloc::format!("nk4a: vm-pf bytes ");
                 for b in bytes {
                     hex.push_str(&alloc::format!("{:02x}", b));
@@ -2333,9 +2385,7 @@ impl VmServer {
                 // VA 已写内容（「栈槽自零」机制）。记录 pa→首 VA，重复时
                 // 打印别名对。
                 {
-                    use core::sync::atomic::{
-                        AtomicU64, AtomicUsize, Ordering as AtomicOrd,
-                    };
+                    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
                     static SEEN_PA: AtomicUsize = AtomicUsize::new(0);
                     static SEEN: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
                     static SEEN_VA: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
@@ -2366,12 +2416,8 @@ impl VmServer {
                 // 的 8 字节（非页首）——页首全零可能是 ELF gap 的合法形状，
                 // 故障地址处的零才是「零填充错页」的直接证据。
                 let off = (fault_addr.0 - aligned.0) as usize;
-                let fbytes = unsafe {
-                    core::slice::from_raw_parts(
-                        (dv.0 + off as u64) as *const u8,
-                        8,
-                    )
-                };
+                let fbytes =
+                    unsafe { core::slice::from_raw_parts((dv.0 + off as u64) as *const u8, 8) };
                 hex.push_str(&alloc::format!("  fa={:#x} fa8=", fault_addr.0));
                 for b in fbytes {
                     hex.push_str(&alloc::format!("{:02x}", b));
@@ -2439,7 +2485,10 @@ impl VmServer {
             Err(e) => {
                 // C-3 F0 续修取证（task1-close 裁决删除）。
                 crate::bootmark::mark(&alloc::format!(
-                    "nk4a: vm-pf err {:?} ep={:#x} fa={:#x}\n", e, proc_endpoint.0, fault_addr.0
+                    "nk4a: vm-pf err {:?} ep={:#x} fa={:#x}\n",
+                    e,
+                    proc_endpoint.0,
+                    fault_addr.0
                 ));
                 // 续-279m 临时取证（结案滚除）：PF 服务失败时的故障区形状——
                 // NoMemType 主角到底长什么样（memtype 在哪条腿丢的）。
@@ -2452,9 +2501,7 @@ impl VmServer {
                         if let Ok(slot) = table.vm_isokendpt(proc_endpoint) {
                             if let Some(proc) = table.get_active(slot) {
                                 for r in proc.regions().iter() {
-                                    if r.vaddr.0 <= fault_addr.0
-                                        && fault_addr.0 < r.end_addr().0
-                                    {
+                                    if r.vaddr.0 <= fault_addr.0 && fault_addr.0 < r.end_addr().0 {
                                         crate::bootmark::mark(&alloc::format!(
                                             "nk4c: pf-region va={:#x} len={:#x} mt={} nslot={}\n",
                                             r.vaddr.0,
@@ -2711,7 +2758,10 @@ mod tests {
     #[cfg(not(any(feature = "buddy_alloc", feature = "segment_tree_alloc")))]
     #[test]
     fn test_choose_allocator_no_backend_feature_selects_bitmap() {
-        assert_eq!(VmServer::choose_allocator_type(TEST_TOTAL_PAGES), PhysAllocType::Bitmap);
+        assert_eq!(
+            VmServer::choose_allocator_type(TEST_TOTAL_PAGES),
+            PhysAllocType::Bitmap
+        );
     }
 
     #[cfg(all(feature = "buddy_alloc", not(feature = "segment_tree_alloc")))]
@@ -2737,7 +2787,10 @@ mod tests {
             VmServer::choose_allocator_type(crate::phys_mem::BUDDY_THRESHOLD_PAGES + 1),
             PhysAllocType::SegmentTree
         );
-        assert_eq!(VmServer::choose_allocator_type(TEST_TOTAL_PAGES), PhysAllocType::SegmentTree);
+        assert_eq!(
+            VmServer::choose_allocator_type(TEST_TOTAL_PAGES),
+            PhysAllocType::SegmentTree
+        );
     }
 
     const TEST_TOTAL_PAGES: usize = 256;
@@ -2750,7 +2803,10 @@ mod tests {
     }
 
     fn test_free_regions() -> [BootMemRegion; 1] {
-        [BootMemRegion { base: 0, size: TEST_TOTAL_PAGES * CLICK_SIZE }]
+        [BootMemRegion {
+            base: 0,
+            size: TEST_TOTAL_PAGES * CLICK_SIZE,
+        }]
     }
 
     fn make_test_vm_server() -> VmServer {
@@ -2786,7 +2842,10 @@ mod tests {
                 "VM_UNMAP_PHYS must be wired, not NotImplemented: {:?}",
                 result.reply
             );
-            assert!(matches!(result.reply, VmReply::Error(VmError::InvalidProcess)));
+            assert!(matches!(
+                result.reply,
+                VmReply::Error(VmError::InvalidProcess)
+            ));
         });
     }
 
@@ -2802,7 +2861,9 @@ mod tests {
 
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(60);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
             empty.activate(ep).init_regions();
@@ -2924,10 +2985,8 @@ mod tests {
 
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
@@ -2935,7 +2994,9 @@ mod tests {
             // Register a valid caller at slot 70 (endpoint encodes slot 70).
             let table = VmProcTable::get_global();
             let caller_slot = UserSlot::new(70);
-            unsafe { table.reset_slot(caller_slot); }
+            unsafe {
+                table.reset_slot(caller_slot);
+            }
             let empty = table.get_empty(caller_slot).unwrap();
             let caller_ep = Endpoint::from_generation_slot(1, 70);
             let mut caller = empty.activate(caller_ep);
@@ -2968,7 +3029,9 @@ mod tests {
             assert_eq!(sent[0].1.m_type, 0, "InfoStats reply errno must be OK(0)");
 
             reset_boot_slots();
-            unsafe { table.reset_slot(caller_slot); }
+            unsafe {
+                table.reset_slot(caller_slot);
+            }
         });
     }
 
@@ -2984,19 +3047,22 @@ mod tests {
 
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
 
             // Caller at slot 66 already past VM_WILLEXIT: IN_USE + EXITING,
             // so `get_active` yields None at the gate.
             let table = VmProcTable::get_global();
             let caller_slot = UserSlot::new(66);
-            unsafe { table.reset_slot(caller_slot); }
+            unsafe {
+                table.reset_slot(caller_slot);
+            }
             let empty = table.get_empty(caller_slot).unwrap();
             let caller_ep = Endpoint::from_generation_slot(1, 66);
             let exiting = empty.activate(caller_ep).mark_exiting();
@@ -3011,13 +3077,22 @@ mod tests {
             assert_eq!(step, RunStep::Handled);
 
             let sent = handle.sent();
-            assert_eq!(sent.len(), 1, "denied caller still gets the C-shaped ENOSYS reply");
+            assert_eq!(
+                sent.len(),
+                1,
+                "denied caller still gets the C-shaped ENOSYS reply"
+            );
             assert_eq!(sent[0].0, caller_ep, "reply goes to the caller");
-            assert_eq!(sent[0].1.m_type, minix_types::ENOSYS as i32,
-                "EXITING caller must be denied (ENOSYS), not waved through");
+            assert_eq!(
+                sent[0].1.m_type,
+                minix_types::ENOSYS as i32,
+                "EXITING caller must be denied (ENOSYS), not waved through"
+            );
 
             reset_boot_slots();
-            unsafe { table.reset_slot(caller_slot); }
+            unsafe {
+                table.reset_slot(caller_slot);
+            }
         });
     }
 
@@ -3032,10 +3107,8 @@ mod tests {
             let regions = test_free_regions();
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
@@ -3045,11 +3118,20 @@ mod tests {
             let mut msg = Message::default();
             msg.m_source = Endpoint::NONE;
             msg.m_type = 0;
-            handle.queue_receive(msg, IpcStatus { flags: 4 /* NOTIFY */ });
+            handle.queue_receive(
+                msg,
+                IpcStatus {
+                    flags: 4, /* NOTIFY */
+                },
+            );
 
             let step = server.run_once();
             assert_eq!(step, RunStep::Handled);
-            assert_eq!(server.dropped_messages(), 0, "notify must not be counted as dropped");
+            assert_eq!(
+                server.dropped_messages(),
+                0,
+                "notify must not be counted as dropped"
+            );
             assert!(handle.sent().is_empty(), "notify must not produce a reply");
 
             reset_boot_slots();
@@ -3068,17 +3150,17 @@ mod tests {
             let regions = test_free_regions();
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
 
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(71);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, 71);
             let mut active = empty.activate(ep);
@@ -3126,11 +3208,20 @@ mod tests {
             let mut notify = Message::default();
             notify.m_source = Endpoint::SYSTEM;
             notify.m_type = minix_types::NOTIFY_MESSAGE;
-            handle.queue_receive(notify, IpcStatus { flags: 4 /* NOTIFY */ });
+            handle.queue_receive(
+                notify,
+                IpcStatus {
+                    flags: 4, /* NOTIFY */
+                },
+            );
 
             let step = server.run_once();
             assert_eq!(step, RunStep::Handled);
-            assert_eq!(server.dropped_messages(), 0, "signal is handled, not dropped");
+            assert_eq!(
+                server.dropped_messages(),
+                0,
+                "signal is handled, not dropped"
+            );
             assert!(handle.sent().is_empty(), "signal must not be replied to");
 
             // 内核可观测:排空循环真的跑了(GET/REPLY/终止 GET)。
@@ -3160,10 +3251,8 @@ mod tests {
             let regions = test_free_regions();
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
@@ -3172,13 +3261,23 @@ mod tests {
             let mut ping = Message::default();
             ping.m_source = Endpoint::RS;
             ping.m_type = minix_types::NOTIFY_MESSAGE;
-            handle.queue_receive(ping, IpcStatus { flags: 4 /* NOTIFY */ });
+            handle.queue_receive(
+                ping,
+                IpcStatus {
+                    flags: 4, /* NOTIFY */
+                },
+            );
             // 后续:普通 notify(NONE 源)——sef 放行为 Call,主循环按
             // main.c:126-129 吞掉。
             let mut stray = Message::default();
             stray.m_source = Endpoint::NONE;
             stray.m_type = 0;
-            handle.queue_receive(stray, IpcStatus { flags: 4 /* NOTIFY */ });
+            handle.queue_receive(
+                stray,
+                IpcStatus {
+                    flags: 4, /* NOTIFY */
+                },
+            );
 
             let step = server.run_once();
             assert_eq!(step, RunStep::Handled);
@@ -3197,12 +3296,13 @@ mod tests {
         with_test_mock_base(|| {
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
             handle.set_should_fail(true);
 
@@ -3219,18 +3319,21 @@ mod tests {
         with_test_mock_base(|| {
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
 
             // Register a valid caller at slot 70 (endpoint encodes slot 70).
             let table = VmProcTable::get_global();
             let caller_slot = UserSlot::new(70);
-            unsafe { table.reset_slot(caller_slot); }
+            unsafe {
+                table.reset_slot(caller_slot);
+            }
             let empty = table.get_empty(caller_slot).unwrap();
             let caller_ep = Endpoint::from_generation_slot(1, 70);
             let mut caller = empty.activate(caller_ep);
@@ -3261,14 +3364,23 @@ mod tests {
                 &mut server,
             );
             match result.reply {
-                VmReply::InfoStats { dropped_messages, pagefault_errors, .. } => {
-                    assert_eq!(dropped_messages, 3, "dropped counter must surface via InfoStats");
+                VmReply::InfoStats {
+                    dropped_messages,
+                    pagefault_errors,
+                    ..
+                } => {
+                    assert_eq!(
+                        dropped_messages, 3,
+                        "dropped counter must surface via InfoStats"
+                    );
                     assert_eq!(pagefault_errors, 0);
                 }
                 other => panic!("VMIW_STATS must decode to InfoStats: {:?}", other),
             }
 
-            unsafe { table.reset_slot(caller_slot); }
+            unsafe {
+                table.reset_slot(caller_slot);
+            }
         });
     }
 
@@ -3280,19 +3392,23 @@ mod tests {
         with_test_mock_base(|| {
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
             handle.set_should_fail(true);
 
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 server.run();
             }));
-            assert!(result.is_err(), "broken transport must panic, not busy-loop");
+            assert!(
+                result.is_err(),
+                "broken transport must panic, not busy-loop"
+            );
             assert_eq!(
                 server.dropped_messages(),
                 MAX_CONSECUTIVE_RECV_FAILURES as u64,
@@ -3390,7 +3506,9 @@ mod tests {
 
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(20);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, slot.get() as i32);
             let mut active = empty.activate(ep);
@@ -3401,7 +3519,7 @@ mod tests {
                 forwhom: Endpoint::NONE,
                 addr: VirBytes(0),
                 length: VirBytes(0x1000),
-                prot: 1, // PROT_READ
+                prot: 1,       // PROT_READ
                 flags: 0x0002, // MAP_PRIVATE
                 fd: 5,
                 offset: 0,
@@ -3415,26 +3533,34 @@ mod tests {
                 ino: 42,
                 size_pages: 1,
             };
-            let state = crate::vfs_queue::VfsRequestState::FdLookup {
-                mmap: mmap_req,
-            };
+            let state = crate::vfs_queue::VfsRequestState::FdLookup { mmap: mmap_req };
 
-            crate::mmap::mmap_file_cont(&mut server, &reply, &state).expect("callback must succeed");
+            crate::mmap::mmap_file_cont(&mut server, &reply, &state)
+                .expect("callback must succeed");
 
             let active = table.get_active(table.vm_isokendpt(ep).unwrap()).unwrap();
-            let region = active.regions().find_overlap(
-                VirBytes(0x0000_0001_0000_0000),
-                VirBytes(crate::mmap::MMAP_TOP),
-            ).expect("file region must exist after mmap_file_cont");
+            let region = active
+                .regions()
+                .find_overlap(
+                    VirBytes(0x0000_0001_0000_0000),
+                    VirBytes(crate::mmap::MMAP_TOP),
+                )
+                .expect("file region must exist after mmap_file_cont");
             assert!(!region.flags.contains(crate::region::VrFlags::ANON));
             assert!(matches!(
                 region.param,
-                crate::region::VrParam::File { inited: true, offset: 0, .. }
+                crate::region::VrParam::File {
+                    inited: true,
+                    offset: 0,
+                    ..
+                }
             ));
             // read-only mapping (PROT_READ) → not writable
             assert!(!region.flags.contains(crate::region::VrFlags::WRITABLE));
 
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
         });
     }
 
@@ -3485,7 +3611,11 @@ mod tests {
             let from_kernel = IpcStatus { flags: 1 << 16 };
             let action = server.dispatch_on_msg(&msg, &from_kernel, UserSlot::new(0));
             assert!(matches!(action, DispatchAction::NoReply));
-            assert_eq!(server.pagefault_errors(), 1, "failed pagefault must be counted");
+            assert_eq!(
+                server.pagefault_errors(),
+                1,
+                "failed pagefault must be counted"
+            );
         });
     }
 
@@ -3502,7 +3632,9 @@ mod tests {
 
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(72);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, 72);
             let mut active = empty.activate(ep);
@@ -3594,7 +3726,9 @@ mod tests {
 
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(73);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, 73);
             let mut active = empty.activate(ep);
@@ -3664,7 +3798,9 @@ mod tests {
 
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(73);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, 73);
             let mut active = empty.activate(ep);
@@ -3753,19 +3889,19 @@ mod tests {
     fn test_is_vfs_fs_transid_valid() {
         // VFS_TRANSACTION_BASE = 0xB00. Any m_type with (m_type & ~0xFF) == 0xB00
         // is a VFS transid message.
-        assert!(is_vfs_fs_transid(0xB00));   // base itself
-        assert!(is_vfs_fs_transid(0xB01));   // base + 1
-        assert!(is_vfs_fs_transid(0xBFF));   // base + 0xFF
-        assert!(is_vfs_fs_transid(0xB45));   // arbitrary within range
+        assert!(is_vfs_fs_transid(0xB00)); // base itself
+        assert!(is_vfs_fs_transid(0xB01)); // base + 1
+        assert!(is_vfs_fs_transid(0xBFF)); // base + 0xFF
+        assert!(is_vfs_fs_transid(0xB45)); // arbitrary within range
     }
 
     #[test]
     fn test_is_vfs_fs_transid_invalid() {
-        assert!(!is_vfs_fs_transid(0x000));   // zero
-        assert!(!is_vfs_fs_transid(0xA00));   // wrong base
-        assert!(!is_vfs_fs_transid(0xC00));   // VM_RQ_BASE
-        assert!(!is_vfs_fs_transid(0x600));   // VFS call number
-        assert!(!is_vfs_fs_transid(0xB100));  // base shifted left
+        assert!(!is_vfs_fs_transid(0x000)); // zero
+        assert!(!is_vfs_fs_transid(0xA00)); // wrong base
+        assert!(!is_vfs_fs_transid(0xC00)); // VM_RQ_BASE
+        assert!(!is_vfs_fs_transid(0x600)); // VFS call number
+        assert!(!is_vfs_fs_transid(0xB100)); // base shifted left
     }
 
     #[test]
@@ -3836,9 +3972,9 @@ mod tests {
             // len@28/flags@32, com.h:753-757).
             let mut msg = Message::default();
             msg.m_u.m_lc_vm_procctl.param = 1; // VMPPARAM_CLEAR
-            msg.m_u.m_lc_vm_procctl.who = 0;   // VMPCTL_WHO = 0 (invalid)
-            msg.m_u.m_lc_vm_procctl.m1 = 0;    // VMPCTL_M1
-            msg.m_u.m_lc_vm_procctl.len = 0;   // VMPCTL_LEN
+            msg.m_u.m_lc_vm_procctl.who = 0; // VMPCTL_WHO = 0 (invalid)
+            msg.m_u.m_lc_vm_procctl.m1 = 0; // VMPCTL_M1
+            msg.m_u.m_lc_vm_procctl.len = 0; // VMPCTL_LEN
             msg.m_u.m_lc_vm_procctl.flags = 0; // VMPCTL_FLAGS
 
             let reply = server.handle_vfs_transid(VM_PROCCTL, 42, &msg);
@@ -3910,12 +4046,13 @@ mod tests {
 
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
 
             // Queue an FdClose via the enqueue half (V11/T10 seam).
@@ -3932,7 +4069,11 @@ mod tests {
             });
 
             // Drain: build + send to VFS over the transport.
-            let call_msg = server.ctx.vfs_queue.take_pending_vfs_call().expect("wire built");
+            let call_msg = server
+                .ctx
+                .vfs_queue
+                .take_pending_vfs_call()
+                .expect("wire built");
             server
                 .transport
                 .borrow_mut()
@@ -4040,9 +4181,9 @@ mod tests {
                 .expect("stack page materialized");
             let off_in_page = (vsp - frame_page) as usize;
             let phys_page = pfn as u64 * PS as u64;
-            let va = crate::direct_map::vm_phys_to_virt(
-                crate::phys_mem::AlignedPhysBytes::new(phys_page),
-            );
+            let va = crate::direct_map::vm_phys_to_virt(crate::phys_mem::AlignedPhysBytes::new(
+                phys_page,
+            ));
             // SAFETY: DM window covers physical memory; the bytes were just
             // written by install_boot_stack and nothing reuses the page.
             // The read starts mid-page at `off_in_page` (frame byte 0 = vsp).
@@ -4112,12 +4253,17 @@ mod tests {
         with_test_mock_base(|| {
             // C: main.c:485-491 — modules except the last entry are charged.
             let modules = [
-                BootModule { start_addr: 0x2000, len: CLICK_SIZE as u64 }, // 1 page
-                BootModule { start_addr: 0x3000, len: 1 },                  // excluded (last)
+                BootModule {
+                    start_addr: 0x2000,
+                    len: CLICK_SIZE as u64,
+                }, // 1 page
+                BootModule {
+                    start_addr: 0x3000,
+                    len: 1,
+                }, // excluded (last)
             ];
             let regions = test_free_regions();
-            let mut server =
-                VmServer::new_with_boot_params(boot_params(&regions, &[], &modules));
+            let mut server = VmServer::new_with_boot_params(boot_params(&regions, &[], &modules));
             server.init();
             // global::init() reset the total to the allocator total; the
             // single charged module adds exactly 1 page.
@@ -4135,12 +4281,13 @@ mod tests {
 
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
 
             // VM_INFO from an endpoint that is NOT registered in the
@@ -4174,12 +4321,13 @@ mod tests {
 
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
 
             // Register RS as a live caller (slot 2 ↔ RS_PROC_NR; run_once
@@ -4188,7 +4336,9 @@ mod tests {
             // is active by construction (main.c:497-520).
             let rs_table = VmProcTable::get_global();
             let rs_slot = UserSlot::new(2);
-            unsafe { rs_table.reset_slot(rs_slot); }
+            unsafe {
+                rs_table.reset_slot(rs_slot);
+            }
             let rs_empty = rs_table.get_empty(rs_slot).unwrap();
             let mut rs_proc = rs_empty.activate(Endpoint::RS);
             rs_proc.init_page_table().expect("rs pt");
@@ -4206,7 +4356,9 @@ mod tests {
             // be active before the RS_INIT arrives (C: VFS is a boot-image
             // process, main.c:497-520).
             let vfs_slot = UserSlot::new(Endpoint::VFS.0 as usize);
-            unsafe { rs_table.reset_slot(vfs_slot); }
+            unsafe {
+                rs_table.reset_slot(vfs_slot);
+            }
             let vfs_empty = rs_table.get_empty(vfs_slot).unwrap();
             let mut vfs_pre = vfs_empty.activate(Endpoint::VFS);
             vfs_pre.init_page_table().expect("vfs pt");
@@ -4215,8 +4367,7 @@ mod tests {
             // 授权捞回的是 `NR_BOOT_PROCS` 行共享快照（A-4 行宽）。
             let entry_size = core::mem::size_of::<minix_types::RprocpubSnap>();
             let table_bytes = minix_types::NR_BOOT_PROCS * entry_size;
-            *mock.borrow_mut().safecopy_payload.borrow_mut() =
-                vfs_rprocpub_entry_image();
+            *mock.borrow_mut().safecopy_payload.borrow_mut() = vfs_rprocpub_entry_image();
 
             // RS_INIT from RS_PROC_NR, carrying grant 7 (C main.c:149 shape).
             let mut msg = Message::default();
@@ -4288,12 +4439,13 @@ mod tests {
 
             let t = crate::ipc::transport::TestIpcTransport::new();
             let handle = t.handle();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
-            let mut server =
-                VmServer::new_for_test(TEST_TOTAL_PAGES, &test_free_regions(), alloc::rc::Rc::clone(&shared));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
+            let mut server = VmServer::new_for_test(
+                TEST_TOTAL_PAGES,
+                &test_free_regions(),
+                alloc::rc::Rc::clone(&shared),
+            );
             server.init();
 
             // Register RS as a live caller — without this the pre-dispatch
@@ -4302,7 +4454,9 @@ mod tests {
             // RS is a boot-image process, its slot is active by construction).
             let rs_table = VmProcTable::get_global();
             let rs_slot = UserSlot::new(2);
-            unsafe { rs_table.reset_slot(rs_slot); }
+            unsafe {
+                rs_table.reset_slot(rs_slot);
+            }
             let rs_empty = rs_table.get_empty(rs_slot).unwrap();
             let mut rs_proc = rs_empty.activate(Endpoint::RS);
             rs_proc.init_page_table().expect("rs pt");
@@ -4320,7 +4474,9 @@ mod tests {
                     _: u64,
                     _: &mut [u8],
                 ) -> Result<(), crate::kernel_gateway::GatewayError> {
-                    Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO))
+                    Err(crate::kernel_gateway::GatewayError::Kernel(
+                        -minix_types::EIO,
+                    ))
                 }
                 fn sys_safecopyfrom(
                     &mut self,
@@ -4329,38 +4485,93 @@ mod tests {
                     _offset: u64,
                     _buf: &mut [u8],
                 ) -> Result<(), crate::kernel_gateway::GatewayError> {
-                    Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO))
+                    Err(crate::kernel_gateway::GatewayError::Kernel(
+                        -minix_types::EIO,
+                    ))
                 }
-                fn sys_fork(&mut self, _: Endpoint, _: UserSlot, _: u32)
-                    -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
-                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
-                fn sys_exec(&mut self, _: Endpoint, _: u64, _: u64, _: u64, _: u64)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
-                fn sys_update(&mut self, _: Endpoint, _: Endpoint, _: u32)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
-                fn sys_kill(&mut self, _: Endpoint, _: i32)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Err(crate::kernel_gateway::GatewayError::Kernel(-minix_types::EIO)) }
-                fn sys_vmctl_memreq_get(&mut self)
-                    -> Result<Option<crate::kernel_gateway::KernelMemReq>, crate::kernel_gateway::GatewayError>
-                { Ok(None) }
-                fn sys_vmctl_memreq_reply(&mut self, _: Endpoint, _: bool)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Ok(()) }
-                fn sys_vmctl_clear_pagefault(&mut self, _: Endpoint)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Ok(()) }
-                fn sys_vmctl_boot_inhibit_clear(&mut self, _: Endpoint)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Ok(()) }
-                fn sys_vmctl_set_addrspace(&mut self, _: Endpoint, _: u64, _: u64)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Ok(()) }
-                fn diag_write(&mut self, _text: &str)
-                    -> Result<(), crate::kernel_gateway::GatewayError>
-                { Ok(()) }
+                fn sys_fork(
+                    &mut self,
+                    _: Endpoint,
+                    _: UserSlot,
+                    _: u32,
+                ) -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
+                {
+                    Err(crate::kernel_gateway::GatewayError::Kernel(
+                        -minix_types::EIO,
+                    ))
+                }
+                fn sys_exec(
+                    &mut self,
+                    _: Endpoint,
+                    _: u64,
+                    _: u64,
+                    _: u64,
+                    _: u64,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Err(crate::kernel_gateway::GatewayError::Kernel(
+                        -minix_types::EIO,
+                    ))
+                }
+                fn sys_update(
+                    &mut self,
+                    _: Endpoint,
+                    _: Endpoint,
+                    _: u32,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Err(crate::kernel_gateway::GatewayError::Kernel(
+                        -minix_types::EIO,
+                    ))
+                }
+                fn sys_kill(
+                    &mut self,
+                    _: Endpoint,
+                    _: i32,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Err(crate::kernel_gateway::GatewayError::Kernel(
+                        -minix_types::EIO,
+                    ))
+                }
+                fn sys_vmctl_memreq_get(
+                    &mut self,
+                ) -> Result<
+                    Option<crate::kernel_gateway::KernelMemReq>,
+                    crate::kernel_gateway::GatewayError,
+                > {
+                    Ok(None)
+                }
+                fn sys_vmctl_memreq_reply(
+                    &mut self,
+                    _: Endpoint,
+                    _: bool,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Ok(())
+                }
+                fn sys_vmctl_clear_pagefault(
+                    &mut self,
+                    _: Endpoint,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Ok(())
+                }
+                fn sys_vmctl_boot_inhibit_clear(
+                    &mut self,
+                    _: Endpoint,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Ok(())
+                }
+                fn sys_vmctl_set_addrspace(
+                    &mut self,
+                    _: Endpoint,
+                    _: u64,
+                    _: u64,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Ok(())
+                }
+                fn diag_write(
+                    &mut self,
+                    _text: &str,
+                ) -> Result<(), crate::kernel_gateway::GatewayError> {
+                    Ok(())
+                }
             }
             server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
                 alloc::boxed::Box::new(FailingSafecopy)
@@ -4393,9 +4604,17 @@ mod tests {
                 Some(minix_types::ESRCH),
                 "safecopy failure maps to InvalidEndpoint → ESRCH (ipc/vm.rs)"
             );
-            assert_eq!(server.dropped_messages(), 1, "failed handshake must be counted");
+            assert_eq!(
+                server.dropped_messages(),
+                1,
+                "failed handshake must be counted"
+            );
             // NK4-C B5：失败臂的出生报告同样走异步腿（与 C 首次应答一致）。
-            assert_eq!(handle.async_sends(), 1, "failure birth report must use the async leg");
+            assert_eq!(
+                handle.async_sends(),
+                1,
+                "failure birth report must use the async leg"
+            );
 
             reset_boot_slots();
         });
@@ -4412,7 +4631,13 @@ mod tests {
         assert_eq!(minix_types::NR_BOOT_PROCS, 17);
         assert_eq!(tab.entries.len(), minix_types::NR_BOOT_PROCS);
         assert!(tab.entries.iter().all(|e| !e.in_use));
-        assert_eq!(tab.entries.iter().filter(|e| e.endpoint != Endpoint::NONE).count(), 0);
+        assert_eq!(
+            tab.entries
+                .iter()
+                .filter(|e| e.endpoint != Endpoint::NONE)
+                .count(),
+            0
+        );
     }
 
     #[test]
@@ -4469,11 +4694,11 @@ mod tests {
                 self.0.kernel_call(message)
             }
         }
-        server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(
-            alloc::boxed::Box::new(crate::kernel_gateway::TrapKernelGateway {
+        server.ctx.gateway = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(
+            crate::kernel_gateway::TrapKernelGateway {
                 transport: SharedCanned(canned),
-            }),
-        ));
+            },
+        )));
     }
 
     #[test]
@@ -4483,10 +4708,8 @@ mod tests {
             let boot_procs = [vm_boot_image()];
             let regions = test_free_regions();
             let t = crate::ipc::transport::TestIpcTransport::new();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
@@ -4494,7 +4717,9 @@ mod tests {
             // Target process with a writable anonymous region.
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(71);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, 71);
             let mut active = empty.activate(ep);
@@ -4571,17 +4796,17 @@ mod tests {
             let boot_procs = [vm_boot_image()];
             let regions = test_free_regions();
             let t = crate::ipc::transport::TestIpcTransport::new();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
 
             let table = VmProcTable::get_global();
             let slot = UserSlot::new(71);
-            unsafe { table.reset_slot(slot); }
+            unsafe {
+                table.reset_slot(slot);
+            }
             let empty = table.get_empty(slot).unwrap();
             let ep = Endpoint::from_generation_slot(1, 71);
             let mut active = empty.activate(ep);
@@ -4628,10 +4853,8 @@ mod tests {
             let boot_procs = [vm_boot_image()];
             let regions = test_free_regions();
             let t = crate::ipc::transport::TestIpcTransport::new();
-            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(
-                alloc::boxed::Box::new(t)
-                    as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>,
-            ));
+            let shared = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::boxed::Box::new(t)
+                as alloc::boxed::Box<dyn crate::ipc::transport::IpcTransport>));
             let mut server =
                 VmServer::new_for_test(TEST_TOTAL_PAGES, &regions, alloc::rc::Rc::clone(&shared));
             server.init();
@@ -4640,8 +4863,8 @@ mod tests {
             // SIGKMEM routes into the drain loop: GET (raw CHECK reply; no
             // payload, so the request's own M1 fields read back) → REPLY →
             // GET → ENOENT stops the loop. Every call scripted explicitly.
-            canned.reply(1);            // VMPTYPE_CHECK
-            canned.reply(0);            // REPLY acknowledged OK
+            canned.reply(1); // VMPTYPE_CHECK
+            canned.reply(0); // REPLY acknowledged OK
             canned.reply(minix_types::ENOENT);
             let canned = alloc::rc::Rc::new(canned);
             install_canned_gateway(&mut server, alloc::rc::Rc::clone(&canned));
@@ -4662,7 +4885,9 @@ mod tests {
     /// Shared-handle delegate around [`crate::kernel_gateway::MockGateway`]:
     /// the boxed trait object in `VmContext` and the test's inspection
     /// handle point at the same concrete mock (V11/T35).
-    struct SharedMockGateway(alloc::rc::Rc<core::cell::RefCell<crate::kernel_gateway::MockGateway>>);
+    struct SharedMockGateway(
+        alloc::rc::Rc<core::cell::RefCell<crate::kernel_gateway::MockGateway>>,
+    );
 
     impl crate::kernel_gateway::KernelGateway for SharedMockGateway {
         fn sys_datacopy_from(
@@ -4684,50 +4909,75 @@ mod tests {
                 .borrow_mut()
                 .sys_safecopyfrom(granter, grant_id, offset, buf)
         }
-        fn sys_fork(&mut self, parent: Endpoint, child_slot: UserSlot, flags: u32)
-            -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError>
-        {
+        fn sys_fork(
+            &mut self,
+            parent: Endpoint,
+            child_slot: UserSlot,
+            flags: u32,
+        ) -> Result<(Endpoint, Option<u64>), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().sys_fork(parent, child_slot, flags)
         }
-        fn sys_exec(&mut self, endpt: Endpoint, ip: u64, stack: u64, name_ptr: u64, ps_str: u64)
-            -> Result<(), crate::kernel_gateway::GatewayError>
-        {
-            self.0.borrow_mut().sys_exec(endpt, ip, stack, name_ptr, ps_str)
+        fn sys_exec(
+            &mut self,
+            endpt: Endpoint,
+            ip: u64,
+            stack: u64,
+            name_ptr: u64,
+            ps_str: u64,
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
+            self.0
+                .borrow_mut()
+                .sys_exec(endpt, ip, stack, name_ptr, ps_str)
         }
-        fn sys_update(&mut self, src: Endpoint, dst: Endpoint, flags: u32)
-            -> Result<(), crate::kernel_gateway::GatewayError>
-        {
+        fn sys_update(
+            &mut self,
+            src: Endpoint,
+            dst: Endpoint,
+            flags: u32,
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().sys_update(src, dst, flags)
         }
-        fn sys_vmctl_memreq_get(&mut self)
-            -> Result<Option<crate::kernel_gateway::KernelMemReq>, crate::kernel_gateway::GatewayError>
+        fn sys_vmctl_memreq_get(
+            &mut self,
+        ) -> Result<Option<crate::kernel_gateway::KernelMemReq>, crate::kernel_gateway::GatewayError>
         {
             self.0.borrow_mut().sys_vmctl_memreq_get()
         }
-        fn sys_vmctl_memreq_reply(&mut self, target: Endpoint, ok: bool)
-            -> Result<(), crate::kernel_gateway::GatewayError>
-        {
+        fn sys_vmctl_memreq_reply(
+            &mut self,
+            target: Endpoint,
+            ok: bool,
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().sys_vmctl_memreq_reply(target, ok)
         }
-        fn sys_kill(&mut self, endpoint: Endpoint, signal: i32)
-            -> Result<(), crate::kernel_gateway::GatewayError>
-        {
+        fn sys_kill(
+            &mut self,
+            endpoint: Endpoint,
+            signal: i32,
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().sys_kill(endpoint, signal)
         }
-        fn sys_vmctl_clear_pagefault(&mut self, endpoint: Endpoint)
-            -> Result<(), crate::kernel_gateway::GatewayError>
-        {
+        fn sys_vmctl_clear_pagefault(
+            &mut self,
+            endpoint: Endpoint,
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().sys_vmctl_clear_pagefault(endpoint)
         }
-        fn sys_vmctl_boot_inhibit_clear(&mut self, endpoint: Endpoint)
-            -> Result<(), crate::kernel_gateway::GatewayError>
-        {
+        fn sys_vmctl_boot_inhibit_clear(
+            &mut self,
+            endpoint: Endpoint,
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().sys_vmctl_boot_inhibit_clear(endpoint)
         }
-        fn sys_vmctl_set_addrspace(&mut self, endpoint: Endpoint, ptroot_phys: u64, ptroot_virt: u64)
-            -> Result<(), crate::kernel_gateway::GatewayError>
-        {
-            self.0.borrow_mut().sys_vmctl_set_addrspace(endpoint, ptroot_phys, ptroot_virt)
+        fn sys_vmctl_set_addrspace(
+            &mut self,
+            endpoint: Endpoint,
+            ptroot_phys: u64,
+            ptroot_virt: u64,
+        ) -> Result<(), crate::kernel_gateway::GatewayError> {
+            self.0
+                .borrow_mut()
+                .sys_vmctl_set_addrspace(endpoint, ptroot_phys, ptroot_virt)
         }
         fn diag_write(&mut self, text: &str) -> Result<(), crate::kernel_gateway::GatewayError> {
             self.0.borrow_mut().diag_write(text)
