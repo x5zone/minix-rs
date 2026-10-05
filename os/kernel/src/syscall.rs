@@ -3983,6 +3983,16 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                         // DM 直写的目标 (va, root, pa) 去重记录，与同轮 PT 页对账。
                         #[cfg(not(feature = "mock"))]
                         crate::trap_dispatch::nk4a_user_write_probe("finw", root.0, va, pa.0);
+                        // §续-369 双走表对账扩到 finw 路径：回执直写是
+                        // per-kcall 的用户内存写（腐蚀嫌疑头位，§续-368 定位
+                        // 命中在 printf 边界）——同 (root,va) 立即重走比对，
+                        // PA 不一致=走表非确定性直击证据。
+                        #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+                        if let Some((pa2, _)) = crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va)) {
+                            if pa2.0 != pa.0 {
+                                crate::vm::nk4a_walk_reconcile(root.0, va, pa.0, pa2.0);
+                            }
+                        }
                         let chunk = core::cmp::min(bytes - off, (0x1000 - (va & 0xfff)) as usize);
                         #[cfg(not(feature = "mock"))]
                         #[cfg(target_arch = "x86_64")]

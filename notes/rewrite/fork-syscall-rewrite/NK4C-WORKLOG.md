@@ -13143,3 +13143,13 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 **与双走表零命中的关系**：对账探针装在 `lookup_range_in_table`（cross_space_copy 路径）；**finw 回执走的是 syscall.rs:3960 的独立 walk 调用点**——对账未覆盖该点。下一会话第一动作：把双走表对账扩到 finw 路径（walk 前后各走一次对账）+DIAGCTL 拷贝路径；若 finw 对账命中=坐实，若零命中且腐蚀继续=转「确定性错译」分支（对账探针盲区，需写后回读臂）。
 
 **工程状态**：关中断机制=诊断常驻（riscv64 非 mock 门控；默认 0=无行为变化；x86 与 aarch64 构建不受影响）。代码评审的两项建议级注释已修（vm.rs）；t_memcpy_cli 已入镜像清单。
+
+## §续-369 对账覆盖扩到 finw：2 跑双 PASS 零 mismatch——采样继续，判决仍待样本
+
+**实现**：finw 回执走表点（syscall.rs 约 :3980 walk_x86_64 处）加双走表对账（riscv64 非 mock 门控，同 (root,va) 立即重走，PA 不一致走 nk4a_walk_reconcile）——对账覆盖从 cross_space_copy 扩到 per-kcall 回执写路径。
+
+**读数（2 boot，cli 探针镜像）**：finw1/finw2 **双 PASS**（RESULT=7b405d24）且 walk-mismatch=0（数千 kcall×双走全一致）。腐蚀未复现（历史命中率约 30-50%，2 样本无统计力——**不构成修复证据**，GPT 第 8 章验收纪律）。
+
+**累计判据状态**：对账覆盖=cross_space_copy 首页+finw 每页；零命中累计 4 boot。剩余盲区（GPT 实验戊注记）：确定性错译（两次同错）、DIAGCTL diagbuf 拷贝路径（kernel 侧 data_copy_vmcheck，写 kernel 栈但源读是用户 VA）、Some→None 翻转。
+
+**下一会话**：①继续采样（每 boot 约 90-120 秒，目标累计 ≥10 boot 或首次 mismatch/腐蚀）；②若腐蚀再现且对账仍零命中 → 确定性错译分支：对账升级为「三方对账」=walk 返回值 + 页表内存原值（读 PTE 本身）+ 手工三级解析比对——把「walk 函数返回值」与「页表内存」解耦（区分 walk 代码错 vs 页表内存错）；③DIAGCTL 拷贝路径（data_copy_vmcheck 段）加对账/守卫。
