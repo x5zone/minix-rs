@@ -13399,6 +13399,25 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **下一会话**：①问题甲（§续-378：测试进程死亡→整机下线这条链）；②问题乙（内核打印缓冲被盖 NUL 的新指纹）；③收口三门（判据按本表 k 值现算，不抄表）；④旧债与滚除清单同前。
 
+## §续-381 问题甲查到 C 真源对照层：VM 认不出的端点 C 是 panic、我方改成拒服务，而拒之后那条等待没人解除（停摆候选机制）
+
+**本轮查到的（逐条带锚点，均为读码+源码对照，未改代码）**：
+1. 转发侧干什么：`os/kernel/src/trap_dispatch.rs::riscv64_pagefault_body` 末尾（L2256-2275）先把陷入现场存进 `cpu_context`、置 `TrapStyle::FullContext`，再调 `forward_pagefault_to_vm`，然后无条件返回 `PARK_RESCHEDULE`——即**调用者被挂在缺页等待里**。`forward_pagefault_to_vm`（同文件 L1137-1226）在 L1147 置 `RtsFlagsBits::PAGEFAULT`、L1152 记 `p_fault_addr`，然后把消息发给 VM。入队半也有（L1176-1182 把 engine 的 wake 记录全部 `enqueue_if_woken`，NK4-A C-3 的漏入队教训已盖）。
+2. 拒服务侧：`os/servers/vm/src/vm_server.rs:2153-2186`——当 `table.get_active(slot)` 拿不到（本例槽态是 `exiting`）时走 `pf_exit!("inactive")` 并回 `VmReply::Error(VmError::InvalidProcess)`，探针 INACT_N 封顶 4 次（所以串口只看到一条 `pf-inact`，**不代表只发生一次**）。
+3. C 真源对照：`minix3/minix/servers/vm/pagefaults.c:85-86`——C 在 `vm_isokendpt(ep,&p) != OK` 时直接 `panic("handle_pagefault: endpoint wrong: %d", ep)`。也就是说：**C 在这里是大声失败，我方（§续-155 起）改成了体面拒服务**；两边都不是「把调用者永久挂着」。一个已被改变的错误臂，改时只考虑了「不要杀 VM」而没同步考虑「谁来解锁 caller」——这就是现在的停摆候选位置。
+4. VM 侧的 `exiting` 是谁改的：`os/servers/vm/src/exit.rs`（本轮未逐行读）——即 VM 在内核还认为该进程可跑之前，已先把它的内存图拆了。
+
+**两处未坐实（不猜，列为下一步的两个必验点）**：
+- 甲-a：VM 回 `InvalidProcess` 后，内核的 IPC 答复处是否真的没解除 `PAGEFAULT`、没重进就绪队列？需读答复消费处（本轮未定位到函数）或在消费点加一行计数后跑门。**先量再改**，否则可能是修错层（比如真因在 `csig`/`do_exit` 侧，而答复处本就没义务接）。
+- 甲-b：为何一个 `exiting` 进程还能执行到再写一次非法地址？候选：SIGSEGV 默认动作后的退出路径上又跑了一条用户指令（信号收尾或栈上清理），而此时 VM 已拆表。需对照 C 的退出与 `vm_exit` 时序（`minix3/minix/servers/vm/exit.c`）才能定先后。**这一条不坐实就改，有可能只是把症状打叉**。
+
+**本轮为何不交代码**：上面两点只要有一点未坐实，修法就不同（甲-a 成立→内核答复处补解锁并结束该进程；甲-b 成立→VM 拆表必须推到内核真正停跑之后）。按项目铁律（动手前先核实现场、一次只改一条、症状消失不等于根因清除），本轮把定位写到可执行程度就停手，不把未经验证的改动入库。
+
+**下一会话（问题甲的具体执行清单，按序）**：①定位内核消费 VM 缺页答复的位置，读清楚 `PAGEFAULT` 位的去向（必验点甲-a）；②在答复处加一行封顶计数读数（不改语义），跑一次门到停摆，拿到「拒服务发生了 N 次而 caller 仍未解锁」的行为读数；③与 C 对照定拆表与停止运行的先后（必验点甲-b）；④只做一条最小修改，对齐 C 行为（这里是 panic，我方至少要做到「让该进程真正结束并通知父进程」而不是静默挂死）；⑤判据：同镜像重跑门能跑过第 13 个 prog（允许该案例 failed），并拿到剩余 12 案的终态读数。
+
+**本轮无代码与产物变更**（qemu=0，os/ 树净；仅本台账一笔）。
+
+
 
 
 
