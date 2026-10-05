@@ -1116,7 +1116,7 @@ pub fn smp_init() {
             let mut spins: u32 = 0;
             let mut arrived = false;
             while spins < 200_000_000 {
-                if AP_ARRIVED.load(Ordering::Acquire) > logical as usize {
+                if AP_ARRIVED.load(Ordering::Acquire) != 0 {
                     arrived = true;
                     break;
                 }
