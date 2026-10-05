@@ -392,12 +392,12 @@ pub(crate) fn walk_translate(root_paddr: u64, vaddr: u64) -> Option<(PhysBytes, 
     // foreign process's page table during IPC copies), so the kernel DM
     // channel is hardcoded — independent of any handle's pinned channel.
     match walk_read(root_paddr, vaddr, PteChannel::KernelDm) {
-        WalkResult::Leaf(_leaf_paddr, pte)
-            if pte & Sv39PteFlags::V.bits() != 0 && pte_is_leaf(pte) =>
-        {
+        WalkResult::Leaf(_leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
             // For 4KB leaf pages, the offset within the page comes from
-            // the low 12 bits of vaddr. 末级 V=1 而 RWX=0 的指针形态是
-            // 保留编码（硬件必 fault）——§续-349 修复为 fail-closed。
+            // the low 12 bits of vaddr. §续-351 注：末级 V=1,RWX=0 的指针
+            // 形态**保留旧语义**（原样返回、旗标由消费方把关）——本仓 VM
+            // 存在合法的 V=1 无权限占位 PTE（ATF 出生镜像 exec 实证），
+            // 在此 fail-closed 会挂死 exec；登记为已知偏差。
             let offset = vaddr & 0xFFF;
             Some((PhysBytes(pte_to_paddr(pte) | offset), pte_to_flags(pte)))
         }
@@ -747,12 +747,10 @@ impl Paging for Riscv64Paging {
         // 致命（gh63 定谳的真身）。wrong-root 家族早已定谳（续-116/117
         // 零命中），无生产行为影响。
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
-            // 末级指针形态（V=1,RWX=0）为保留编码——§续-349 fail-closed。
-            WalkResult::Leaf(_leaf_paddr, pte)
-                if pte & Sv39PteFlags::V.bits() != 0 && pte_is_leaf(pte) =>
-            {
+            WalkResult::Leaf(_leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
                 // For 4KB leaf pages, the offset within the page comes from
-                // the low 12 bits of vaddr.
+                // the low 12 bits of vaddr. §续-351 注：末级指针形态保留旧
+                // 语义（本仓 VM 有合法 V=1 无权限占位 PTE），同 query。
                 let offset = vaddr.0 & 0xFFF;
                 Some((PhysBytes(pte_to_paddr(pte) | offset), pte_to_flags(pte)))
             }

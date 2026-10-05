@@ -12982,3 +12982,13 @@ boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻�
 **修复**：掩码改 9 位（2MB）/18 位（1GB）+ 参考实现同修 + 新回归测试 `aligned_huge_leaf_with_high_ppn_bits_is_accepted`（2MB@0x80400000 与 1GB@0xC0000000 的合法高位 PPN 必须接受；内侧 paddr[20:12]≠0/paddr[29:12]≠0 仍拒绝）。宿主 minix-arch **252/0**。
 
 **验证**：恢复委托手术（paging.rs）+ 重建 kernel-image 0 error + **boot-full PASS（marker reached）**——252 对抗测试与 boot-full 首次同绿。x86 smoke 此前 PASS。**未竟**：t_memcpy 真机对账两次点火均因 guest 启动速度骤降（早期 4 分钟→近期 >9-25 分钟卡 rc 早期，宿主负载低=非宿主因）未取得完整读数——下一会话第一动作：TIMEOUT_PROBE=1500+ 重跑探针（委托+加固已在镜像内），看 RESULT 是否 7b405d24（若持续超慢需先查 QEMU/WSL 环境漂移）。运行工程：驱动已修（SIGKILL 兜底+时间戳串口名+OOB pmemsave）。
+
+## §续-352 L0 fail-closed 撤回 + 腐蚀作用面收敛到页表层（fail-closed 把静默腐蚀变响亮失败的实证）
+
+**L0 撤回实验**：245699 字节确定性冻结点=第一个 C/ATF 出生二进制（p1）的 exec（boot-full 的 Rust 命令 exec 全过；三跑同字节数=确定性）。撤回 query/walk_translate 的末级 V=1,RWX=0 fail-closed（恢复旧语义：原样返回、旗标由消费方把关——**本仓 VM 存在合法 V=1 无权限占位 PTE**，ATF 镜像 exec 布局走到它，旧查询返回 Some 才能继续）后，guest 越过冻结点、推进到后续阶段——L0 检查确系冻结元凶，撤回生效。
+
+**新脸谱与收敛**：撤回后 guest 推进至 RS 阶段 panic（`servers/rs/src/boot.rs` nonstr payload——早期台账的同族脸谱）。走表加固（规范性/错粒度巨叶）把「腐蚀 PTE 被误译+内核代写落随机帧=静默腐蚀（t_memcpy 错 MD5）」转变成了「拒绝→上游错误→RS panic 响亮失败」。**腐蚀器作用面收敛=页表项本身**（§续-293 的 poison=错粒度叶 PTE 形状是历史目击）：fail-closed 无法让门通过——腐蚀 PTE 在，门就响——必须找到「谁腐蚀 PTE」。
+
+**策略含义（下一会话）**：①halt-dump 冻结/panic 现场对页表页做**指纹 diff**（模块区已验证全 EXACT，页表页未验）；②t_memcpy 判别器继续作为腐蚀传感器（加固后部分腐蚀变 loud，传感器语义已变——C 线仍测静默面）；③RS panic nonstr 脸谱的表项快照与 minix-elf OOB 同权重。
+
+**当前树上语义**：委托+规范性+错粒度巨叶加固在位；L0 指针形=旧语义（已知偏差登记，测试注释同步）。boot-full 在含 L0 检查的版本 PASS 过（命令面不触 L0 占位形）；L0 撤回版未过 boot-full（本脸谱即其首次推进读数）。
