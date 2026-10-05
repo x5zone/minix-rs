@@ -1,0 +1,62 @@
+# NK4-C R3.4 P1 机械对账表 v1（56 笔）
+# 范围: 5cf88a552..ad14ced56（截断面=ad14ced56 C-67 销账笔）; 生成 2026-10-06; 评审线 edge5(zcode)
+# 列: commit | SELF/AGT | +add/-del/nfile(二进制n) | 旗标 :: message(截断90字符)
+# 旗标: ok / PROTECTED / BIG+<n> / OS-CODE(...) / PROBE? / CLAIM? / MERGE / SELF
+# 本表为机器初筛; 旗标行逐笔人工裁决见 NK4C-REVIEW-REPORT-R32-20261004.md §一
+2c13a7c9e | AGT | +65/-1/1(b0) | ok :: NK4C 续-342 t_memcpy(riscv) 定案（计算层洗清+真机分歧=非确定性内存污�
+72abcd694 | AGT | +16/-1/1(b0) | ok :: NK4C 续-343 污染根因第一轮排除法（纯审计零生产码改动）：①§续-30
+ca4d399a7 | SELF | +272/-0/2(b0) | ok :: review(edge5,nk4c): R3.3 增量评审报告定稿——范围 92fa446c3..5cf88a552 共 78 
+043c64d56 | AGT | +160/-20/7(b0) | OS-CODE(os/arch/src/arm64/paging.rs;os/kernel/src/ipc.rs;os/libs/minix-types/src/types/boot.rs;) :: NK4C 续-344 T13 R1+R2 同笔落地（USER_VA_LIMIT 分架构权威 + mmap/remap 用户半
+f777dbfdb | AGT | +17/-1/1(b0) | ok :: NK4C 续-344 WORKLOG 台账条目（banner 前沿+§续-344 详节；实现与验证细节
+735d765cd | AGT | +21/-4/2(b0) | OS-CODE(os/servers/vm/src/boot.rs;os/servers/vm/src/vm_server.rs;) :: NK4C 续-345 T13 R3 小口径（A5+A6，A9/A10 大面留后续）：①A5=BootParams::simp
+7ced6473b | AGT | +102/-8/3(b0) | OS-CODE(os/arch/src/arm64/paging.rs;os/servers/vm/src/ipc/dispatcher.rs;os/servers/vm/src/mmap.rs;) :: NK4C 续-344b CodeReview 修复轮（043c64d56 复审 PASS-with-P2，无 P0/P1；P2×1+N×
+336f46073 | AGT | +15/-1/1(b0) | ok :: NK4C 续-345 WORKLOG 台账条目（banner 前沿+§续-345 详节：续-344 评审闭环+
+5ea608889 | AGT | +18/-1/1(b0) | ok :: NK4C 续-346 污染取证第二轮（纯文档笔无代码可审）：v3 判别器（3072 
+45ba5dc0f | AGT | +8/-0/1(b0) | ok :: NK4C 续-347 panic 现场捕获基建就绪（纯文档笔）：halt-dump 配置 3/3 幸�
+8916b3068 | AGT | +6/-0/1(b0) | ok :: NK4C 续-348 受控对照第一轮（纯文档笔）：boot_probe+monitor 也 CORRUPT（ru
+bacf61ff4 | AGT | +15/-0/1(b0) | ok :: NK4C 续-349 判别器命中+统一理论（纯文档笔）：run A 判据——流 XOR 30
+3199537b0 | AGT | +425/-0/3(b0) | OS-CODE(os/arch/src/lib.rs;os/arch/src/riscv64_walk.rs;) :: NK4C 续-350 Sv39 走表纯逻辑层+对抗测试套件（8 测试宿主全绿）；委托
+fcb8c542e | AGT | +82/-88/3(b0) | OS-CODE(os/arch/src/riscv64/paging.rs;os/arch/src/riscv64_walk.rs;) :: NK4C 续-351 委托回归真因定案+修复：巨叶对齐掩码宽一位（PPN 位宽混
+bb115c20c | AGT | +18/-10/2(b0) | OS-CODE(os/arch/src/riscv64/paging.rs;) :: NK4C 续-352 L0 fail-closed 撤回+腐蚀作用面收敛到页表层：245699 字节确定
+7a54124e4 | AGT | +10/-0/1(b0) | ok :: NK4C 续-353 冻结现场 monitor 取证打通+跨快照 diff 噪声教训+同 run 双快�
+2abb24448 | AGT | +4/-0/1(b0) | ok :: NK4C 续-354 双快照首轮：T1（marker）毒形态零命中（野 PA 零/17967 可疑�
+4f5fdf7b1 | AGT | +4/-0/1(b0) | ok :: NK4C 续-353-b 补记：T2 打点可见性生效（mon.sock=1 qemu=alive）但 python 输�
+9974bf148 | AGT | +10/-0/1(b0) | ok :: NK4C 续-355 同 run 双快照 diff 首批指纹：T2 块修为 -S socket 测试（旧 -f 
+d4b0ab3c5 | AGT | +8/-0/1(b0) | ok :: NK4C 续-356 归属破案：0x9c382000=共享 RWX 数据页（T2 全 RAM 反链=15 进程 
+69fee0121 | AGT | +53/-13/4(b0) | OS-CODE(os/arch/Cargo.toml;os/arch/src/riscv64_walk.rs;os/kernel-image/Cargo.toml;) :: NK4C 续-357 A/B 定谳：走表加固无咎（OFF 内核同冻结 245699）+walk-hardenin
+6d5a90e88 | AGT | +19/-8/2(b0) | OS-CODE(os/arch/src/riscv64/paging.rs;) :: NK4C 续-358 单变量定谳：L0 非变量（恢复 fcb8c542e 的 L0 检查两处后探�
+e77815f30 | AGT | +8/-0/1(b0) | ok :: NK4C 续-359 走表变更整体回退定谳：git show fcb8c542e 的 paging.rs 覆盖（�
+9b915c837 | AGT | +8/-0/1(b0) | ok :: NK4C 续-360 第二臂定谳：checkout 2c13a7c9e 的 servers/kernel/minix-types 三树重
+c4b200323 | AGT | +165/-0/2(b0) | ok :: NK4C 续-361 镜像臂坐实+污染新刻画：probe v1 形态（仅 12 P 行）重播=全
+c5c49daba | AGT | +8/-0/1(b0) | ok :: NK4C 续-362 S8+T 轨迹三级定位：s8b boot 流头 8 值与裸机逐位一致（randtb
+990672914 | AGT | +8/-0/1(b0) | ok :: NK4C 续-363 全 64B dump 轮：机上首次全对（t64 探针 RESULT=7b405d24 与裸机�
+fe7a5acad | AGT | +8/-0/1(b0) | ok :: NK4C 续-364 ATF 门全量采样第 1 跑：FAIL——VM 页故障野 VA panic（stval=0x1
+60d191dd0 | AGT | +10/-0/1(b0) | ok :: NK4C 续-365 野 VA 位形分析+掩码审计：双形状分裂——Shape A（run8 0x7fff
+272cd572e | AGT | +8/-0/1(b0) | ok :: NK4C 续-366 Shape B 审计+写者候选头位：VA 生成点审计（栈生长/break/mmap
+fa02e515f | AGT | +68/-0/2(b0) | OS-CODE(os/kernel/src/vm.rs;) :: NK4C 续-367 双走表对账探针落地+零命中；GPT 独立审查吸收；纪律补救
+e9f118cab | AGT | +55/-2/5(b0) | OS-CODE(os/arch/src/riscv64/trap_return.rs;os/kernel/src/lib.rs;os/kernel/src/syscall.rs;) :: NK4C 续-368 实验丁执行（关中断臂）+CodeReview P2 修复：①arch trap_return.
+70ec87402 | AGT | +1/-1/1(b0) | ok :: NK4C 续-368 台账文风修复：SL-3 编号字样改叙述式（代码评审回执表述
+6daa9a7bf | AGT | +20/-0/2(b0) | OS-CODE(os/kernel/src/syscall.rs;) :: NK4C 续-369 对账覆盖扩到 finw 回执走表点（syscall.rs walk_x86_64 处 riscv64 
+585968884 | AGT | +652/-1/3(b0) | ok :: NK4C 交接 PROMPT（2026-10-05b）：核心阻塞=riscv64 非确定性内存污染收窄�
+e4c03cebb | AGT | +284/-3/3(b0) | OS-CODE(os/arch/src/riscv64/trap_stub.rs;os/arch/tests/riscv64_trap_leg_shape.rs;) :: NK4C 续-370 内核陷入腿暂存寄存器次序缺陷坐实并修复（时钟中断偷�
+378a06d15 | AGT | +214/-25/3(b0) | OS-CODE(os/arch/src/riscv64/trap_stub.rs;os/arch/tests/riscv64_trap_leg_shape.rs;) :: NK4C 续-371 评审拓出第二个同形缺陷并修复：riscv64 用户陷入腿在 sret 
+232ee7e9d | AGT | +170/-28/3(b0) | OS-CODE(os/arch/src/riscv64/trap_stub.rs;os/arch/tests/riscv64_trap_leg_shape.rs;) :: NK4C 续-372 评审修复轮（只改测试与文档，反汇编逐字相同=不改机器�
+fc8eea4e4 | AGT | +260/-6/3(b0) | OS-CODE(os/arch/src/riscv64/trap_return.rs;os/arch/tests/riscv64_return_leg_pin.rs;) :: NK4C 续-373 修第三处同族缺陷：riscv64 返回腿 restore_to_user 起手不屏蔽�
+da1a360a6 | AGT | +139/-36/4(b0) | OS-CODE(os/arch/src/riscv64/trap_return.rs;os/arch/src/riscv64/trap_stub.rs;os/arch/tests/riscv64_return_leg_pin.rs;) :: NK4C 续-374 评审修复轮：实验臂 NK4C_CLI 是空操作（§续-368「关中断仍�
+58b9c4195 | AGT | +132/-2/4(b0) | OS-CODE(os/kernel/src/lib.rs;os/kernel/src/syscall.rs;os/kernel/src/trap_dispatch.rs;) :: NK4C 续-375 陷入/返回腿进入计数遥测上线，立刻拿到两个负结果并重�
+5152f4513 | AGT | +50/-7/4(b0) | OS-CODE(os/kernel/src/lib.rs;os/kernel/src/syscall.rs;os/kernel/src/trap_dispatch.rs;) :: NK4C 续-376 第 7 个计数器把「返回腿窗口」量到 1 次/boot：消元实验取
+776e32805 | AGT | +12/-3/2(b0) | OS-CODE(os/kernel/src/trap_dispatch.rs;) :: NK4C 续-377 评审修复轮（§续-375/§续-376 回执=带建议级问题的通过，�
+df9250dce | AGT | +29/-1/1(b0) | ok :: NK4C 续-378 riscv ATF 全量门首次跑到 24/36 终态且 0 失败（t_memcpy 在内）
+02150f425 | AGT | +23/-3/1(b0) | ok :: NK4C 续-379 算学勘误：统计门槛 k 值必须现算，不得抄表。①来源：�
+7c297a7ec | AGT | +7/-5/1(b0) | ok :: NK4C 续-380 §续-378 就地勘误：症状不是「整机下线」而是「静默挂死�
+0fde7999b | AGT | +19/-0/1(b0) | ok :: NK4C 续-381 问题甲定位到 C 真源对照层（纯读码，无代码与产物变更�
+84ba9669b | AGT | +703/-434/2(b0) | OS-CODE(os/servers/vm/src/vm_server.rs;) :: NK4C 续-382 里程碑读数裁决问题甲：VM 的拒服务是一次性的（排除活�
+04bcdf7cf | AGT | +142/-1/2(b0) | ok :: NK4C 交接 PROMPT（20261005c）：换会话接手入口，十节一次给齐。①三终
+6310c7237 | AGT | +199/-17/7(b0) | OS-CODE(os/kernel/src/trap_dispatch.rs;os/servers/pm/src/event.rs;os/servers/pm/src/exit.rs;) :: NK4C 续-383 问题甲定案并修复：信号死亡的 DumpCore 载荷信号号恒 0（PM
+5ab3ee65b | AGT | +87/-22/1(b0) | ok :: docs(notes): misc_concepts 增量六——160→169 条（新增 9、扩展 20）——扫
+295201a7a | AGT | +63/-4/3(b0) | OS-CODE(os/kernel/src/trap_dispatch.rs;tools/atf-c-compat/startup-minix.c;) :: NK4C 续-384 目标③ riscv 正式判据达成（36/36 PASS）：t_strerror 确定性死�
+07ae5efed | AGT | +4/-2/2(b0) | OS-CODE(tools/atf-c-compat/startup-minix.c;) :: NK4C 收尾杂项：接续 PROMPT 加结案横幅（三终目标全部达成、两阻塞�
+49eeeed83 | SELF | +1/-0/1(b0) | ok :: docs(edge4): C-67 登记——增量轮四（续-342~384 53 笔三终收尾 + MEMORY-CORRU
+c5e3e27cd | SELF | +225/-5/7(b0) | OS-CODE(tools/pattern-gate-baseline.txt;tools/pattern-gate.sh;) :: feat(tools,C-67): 历史日志模式增量轮四——P2_TESTS +12 + P12 键格式修正�
+ad14ced56 | SELF | +1/-1/1(b0) | ok :: docs(edge4): C-67 销账——增量轮四落线（P2_TESTS 76/76 + P12 键修正 + .revie
+# total: 56
