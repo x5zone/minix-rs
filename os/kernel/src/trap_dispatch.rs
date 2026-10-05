@@ -1971,6 +1971,13 @@ pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 =
 /// 0=内核腿进入 1=用户腿·异步中断 2=用户腿·ecall 3=用户腿·页故障
 /// 4=用户腿被 S-origin 陷入走过（哨兵，修复后应恒为 0）5=restore_to_user 次数
 /// 6=其中进入时 sstatus.SIE 仍开着（=§续-373 那个窗口真的被武装了几次）
+///
+/// 口径限制（读这些数之前先看）：
+/// - 槽 1/2/3 不是用户腿进入的全量普查——浮点懒陷阱（scause=2）、非法指令等
+///   同步异常不记任何一项，所以三项相加会小于总进入次数（CodeReview on
+///   续-375/续-376：漏计的只会增加用户腿暴露面，不影响“用户腿为主”的排序方向）。
+/// - 本数组是跨 hart 的全局聚合值（不是 per-hart），所以“由 `ui` 反推时钟
+///   周期”这类换算只在单 hart 配置（`-smp 1`，本项目当前的上机门）下成立。
 #[cfg(target_arch = "riscv64")]
 pub static NK4C_LEG_COUNTS: [core::sync::atomic::AtomicU64; 7] = [
     core::sync::atomic::AtomicU64::new(0),
