@@ -298,7 +298,10 @@ core::arch::global_asm! {
     // through THIS epilogue to S-mode, and leaving stvec on the user leg
     // would route the next S timer tick (sstatus.SIE stays open under
     // SBI) through the sscratch swap: sp := sscratch - 272, the frame
-    // written over whatever user stack that points at. Pick the vector
+    // written over the band `sscratch` points at — under the `load()`
+    // invariant that is this CPU's kernel-stack top, i.e. the scheduler's
+    // own live frames at that depth (the same collision 续-373 closes on
+    // the `restore_to_user` side). Pick the vector
     // from the saved SPP instead — the kernel leg for an S-return, the
     // user leg for a U-return (the latter mirrors the old unconditional
     // `la` below; an SPP==1 return still on the kernel leg is exactly

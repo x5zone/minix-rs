@@ -26,33 +26,54 @@
 //!
 //! # Interrupt guarantee
 //!
-//! The leg opens by clearing `sstatus.SIE` and keeps it clear until `sret`
-//! re-establishes the enable from `SPIE` — the riscv64 twin of aarch64's
-//! first instruction `msr daifset, #0xf` (`arm64::trap_return`) and of x86's
-//! interrupts-off `switch_to` handoff.
+//! Setting `SPIE` here is the riscv64 analogue of the x86-64 `IF_MASK` OR
+//! (C: `arch_finish_switch_to_user` — arch_system.c:512): `sret` re-enables
+//! interrupts in U-mode iff `SPIE` is set (with `SPP` clear for a U-mode
+//! return). This impl clears SPP and re-sets SPIE while preparing sstatus.
 //!
-//! Why the mask is load-bearing here (NK4C 续-373): this leg runs in S-mode
-//! while `sstatus.SIE` may be ON — `idle_halt` enables it (`csrs sstatus,
-//! SIE; wfi`) and the trap→`sret` cycle carries that enable back into every
-//! later S-mode return, so kernel code is interruptible all the way through
-//! the scheduler loop. The moment this leg installs the USER trap vector at
-//! `stvec` (about 50 instructions before `sret`) the CPU is in S-mode with a
-//! vector that only makes sense for U-mode origins. A timer tick landing in
-//! that window takes the user leg: it swaps `sp` with `sscratch` — which this
-//! leg has just re-anchored to the kernel-stack TOP — and writes its 34-slot
-//! frame into `[top-272, top)`, the band the scheduler's own live frames
-//! occupy at this depth. The tick restores the registers it saved, but the
-//! kernel locals and return addresses that were sitting in that band are gone:
-//! precisely the corruption aarch64 documents ("silent hang after the first
-//! restore") and the shape that makes a later cross-space copy read a bogus
-//! length or destination out of the kernel's own stack.
+//! Before that, the leg opens by CLEARING `sstatus.SIE` and keeps it clear
+//! until `sret` re-establishes the enable from `SPIE` — the riscv64 twin of
+//! aarch64's first instruction `msr daifset, #0xf` (`arm64::trap_return`,
+//! whose note records the symptom it prevents). The difference that makes
+//! self-masking necessary here: i386 reloads RSP from TSS.sp0 on every
+//! CPL3→0 entry, so an interrupt during a handoff cannot land on the
+//! handoff's own stack, while riscv64 (like aarch64's EL1h model) runs on one
+//! kernel stack chosen by software — and `stvec`/`sscratch` ARE that choice.
+//!
+//! Why the mask is load-bearing (NK4C 续-373/续-374, arm condition stated
+//! exactly): the window is armed on chains that run in S-mode with `SIE` ON.
+//! That happens after `idle_halt` enables SIE (`csrs sstatus, SIE; wfi` in
+//! `riscv64::smp`) and the tick that wakes it returns to S-mode through the
+//! kernel leg, whose `sret` copies `SPIE`(=1) back into `SIE` — from then on,
+//! while the scheduler loop runs in S-mode, kernel code is interruptible. On
+//! the other main chain — U-origin trap → user leg → park → resched → this
+//! leg — `SIE` is 0 the whole way (entry cleared it and no S-mode `sret` has
+//! re-set it), and the window there is empty. The mask covers both shapes
+//! unconditionally, which is why it is placed here rather than argued per
+//! chain.
+//!
+//! When armed, this leg installs the USER trap vector at `stvec` about 50
+//! instructions before `sret`, so a tick landing in that stretch takes the
+//! user leg while still in S-mode: that leg swaps `sp` with `sscratch` —
+//! which this leg has just re-anchored to the kernel-stack TOP — and writes
+//! its 34-slot frame into `[top-272, top)`, the band the scheduler's own live
+//! frames occupy at this depth. The tick restores the registers it saved, but
+//! the kernel locals and intermediates that were sitting in that band are
+//! gone: the shape that lets a later cross-space copy read a bogus length or
+//! destination out of the kernel's own stack.
 //!
 //! Masking here costs nothing in delivery semantics: a tick that fires while
-//! masked stays pending (`sip.STIP` set by `stimecmp`), and is taken normally
-//! once `sret` restores `SIE` from `SPIE` — so nothing is lost, only deferred
-//! past the handoff. `§续-368`'s `NK4C_CLI` experiment did not cover this: it
-//! suppresses only `SPIE` (what U-mode gets AFTER the return), never the live
-//! `SIE` of the returning S-mode leg itself.
+//! masked stays pending (`sip.STIP` set by `stimecmp`) and is taken normally
+//! once `sret` restores `SIE` from `SPIE` — nothing is lost, only deferred
+//! past the handoff.
+//!
+//! The §续-368 `NK4C_CLI` experiment flag does NOT belong to this guarantee:
+//! it only ever skipped the `csrs` that SETS `SPIE`, and hardware already
+//! left `SPIE`=1 (entry stores the pre-trap enable; `sret` sets it to 1 per
+//! the privileged spec) — so that arm suppressed nothing and its "interrupts
+//! off" reading is void (CodeReview on 续-373; 续-374 now clears `SPIE`
+//! explicitly before the conditional re-set, which is what makes the flag
+//! mean what its name says).
 
 use crate::arch::trap_return::TrapReturnArch;
 use crate::riscv64::boot::Riscv64CpuContext;
@@ -137,14 +158,24 @@ impl TrapReturnArch for Riscv64TrapReturn {
             "csrw sepc, t0",
             // SPP=0 (return to U-mode) + SPIE=1 (interrupts enabled after
             // sret). `csrci`/`csrsi` take 5-bit immediates, so SPP (0x100)
-            // goes through t0. §续-368：NK4C_CLI 非零时跳过 SPIE 置位
-            // （实验丁——测试窗关中断；旗标由 DIAGCTL 魔术串置、根切换清）。
+            // goes through t0.
+            //
+            // SPIE must be CLEARED first and only then re-set when the
+            // experiment flag is off (NK4C 续-374, CodeReview on 续-373):
+            // hardware already leaves SPIE=1 — trap entry stores the pre-trap
+            // enable into it, and `sret` sets it to 1 per the privileged spec
+            // — so merely SKIPPING the `csrs`, which is all §续-368's arm did,
+            // is a no-op: `sret` would hand U-mode an enabled SIE anyway. The
+            // 续-368 "interrupts off" reading is void (those three boots are
+            // ordinary samples, not an arm); this branch is what makes the
+            // flag actually suppress U-mode delivery.
             "li t0, {spp}",
+            "csrc sstatus, t0",
+            "li t0, {spie}",
             "csrc sstatus, t0",
             "la t1, {cli_sym}",
             "ld t1, 0(t1)",
             "bnez t1, 2f",
-            "li t0, {spie}",
             "csrs sstatus, t0",
             "2:",
             // ── Named register-file fields (struct-relative offsets) ──
@@ -207,6 +238,11 @@ mod tests {
 
     #[test]
     fn sstatus_bits_are_spp_and_spie() {
+        // NOTE (NK4C 续-370 登记的同一陷阱): 宿主 `cargo test` 不编译本模块
+        // （`pub mod riscv64` 带 `#[cfg(target_arch = "riscv64")]`），所以这两条
+        // 断言只在交叉编译测试时才会跑。权威断言在宿主集成测试
+        // `arch/tests/riscv64_return_leg_pin.rs`（它额外覆盖 SSTATUS_SIE 与本腿
+        // 的指令次序），本测试只当交叉编译路径的重复保险。
         // SPP = bit 8 (previous privilege), SPIE = bit 5 (previous
         // interrupt enable) — RISC-V privileged spec, sstatus register.
         assert_eq!(SSTATUS_SPP, 0x100);

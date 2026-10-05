@@ -28,19 +28,40 @@ fn asm_instructions(src: &str) -> Vec<String> {
     let end = tail
         .find("in(\"a0\")")
         .expect("asm 块的输入操作数找不到（格式漂移？）");
-    tail[..end]
+    let out: Vec<String> = tail[..end]
         .lines()
         .filter_map(|line| {
             let body = line.trim().strip_prefix('"')?.split('"').next()?;
             let ins = body.trim();
-            if ins.is_empty() {
+            if ins.is_empty() || (ins.ends_with(':') && !ins.contains(' ')) {
                 None
             } else {
                 Some(ins.split_whitespace().collect::<Vec<_>>().join(" "))
             }
         })
-        .collect()
+        .collect();
+    // fail-closed：表外助记符当场失败（静默当作不写寄存器 = 生命期钉住有盲区）。
+    if let Some(bad) = out.iter().find(|i| {
+        i.split_whitespace()
+            .next()
+            .map(|mn| !KNOWN_MNEMONICS.contains(&mn))
+            .unwrap_or(false)
+    }) {
+        panic!("本腿出现表外助记符，钉住测试无法证明它不写首操作数：{bad}");
+    }
+    out
 }
+
+/// 本腿允许出现的助记符（fail-closed：表外就当场失败，而不是当作「不写寄存器」
+/// 静默放过——§续-373 评审回执第二条：同族的形状测试已经论证过这条纪律，两个
+/// 文件不能一个严一个松）。
+const KNOWN_MNEMONICS: &[&str] = &[
+    "li", "mv", "la", "add", "ld", "csrw", "csrc", "csrs", "bnez", "j", "sret",
+];
+
+/// 这些寄存器在本腿里只当暂存用（它们的用户值在后面才回载），所以它们出现在
+/// 回载哨兵里不算回载。
+const SCRATCH_REGS: &[&str] = &["t0", "t1", "a4"];
 
 /// 这条指令是否写了寄存器 `name`（首操作数形式）。占位符 `{..}` 不影响判定，
 /// 因为被写的都是寄存器名。
@@ -62,6 +83,22 @@ fn writes(ins: &str, name: &str) -> bool {
 
 fn pos(leg: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
     leg.iter().position(|i| pred(i))
+}
+
+fn rpos(leg: &[String], pred: impl Fn(&str) -> bool) -> Option<usize> {
+    leg.iter().rposition(|i| pred(i))
+}
+
+/// 首个「真回载」：写一个不属于暂存集的寄存器的 `ld`。拿 `ld sp,` 当唯一哨兵
+/// 不够——若有人把顺序改成先回载 a1，哨兵就会晚报（§续-373 评审回执第三条）。
+fn first_real_reload(leg: &[String]) -> Option<usize> {
+    leg.iter().position(|i| {
+        if !i.starts_with("ld ") {
+            return false;
+        }
+        let reg = i[3..].split(',').next().unwrap_or("").trim();
+        !SCRATCH_REGS.contains(&reg)
+    })
 }
 
 /// 本仓 asm 写 CSR 位段的固定套式：`li <r>, {标志}` 紧接 `csrc sstatus, <r>`。
@@ -115,8 +152,10 @@ fn return_leg_masks_interrupts_before_switching_the_vector() {
     assert_ne!(mask, spp_clear, "屏蔽与清 SPP 应当是两笔不同的写");
     let anchor =
         pos(&leg, |i| i.starts_with("csrw sscratch,")).expect("本腿必须重锚 sscratch 为内核栈顶");
-    let vector = pos(&leg, |i| i.starts_with("csrw stvec,")).expect("本腿必须把 stvec 指向用户腿");
-    let first_reload = pos(&leg, |i| i.starts_with("ld sp,")).expect("sp 的回载找不到");
+    // 钉的是**最后一次** stvec 写：若将来有人在本腿尾部再加一次换腿，早先那一次
+    // 就不再决定「返回后谁接下一个陷入」（与形状测试规则 5 同一纪律）。
+    let vector = rpos(&leg, |i| i.starts_with("csrw stvec,")).expect("本腿必须把 stvec 指向用户腿");
+    let first_reload = first_real_reload(&leg).expect("首个真回载找不到");
     let sret = pos(&leg, |i| i == "sret").expect("本腿必须以 sret 收尾");
 
     assert!(
@@ -163,7 +202,7 @@ fn controls_fire_when_the_mask_is_missing_or_misplaced() {
     // 之后，主测试的判据必须失效。
     let mut leg = asm_instructions(SRC);
     let mask = sstatus_clear(&leg, "{sie}").expect("屏蔽写必须在位");
-    let vector = pos(&leg, |i| i.starts_with("csrw stvec,")).expect("换腿写在位");
+    let vector = rpos(&leg, |i| i.starts_with("csrw stvec,")).expect("换腿写在位");
     assert!(
         mask < vector,
         "现次序应为「先屏蔽后换腿」，实测 {mask} vs {vector}"
@@ -184,7 +223,7 @@ fn controls_fire_when_the_mask_is_missing_or_misplaced() {
     // ②把屏蔽挪到换腿之后：次序判据必须翻脸。
     leg.swap(mask, vector);
     let mask_after = sstatus_clear(&leg, "{sie}").expect("换位后屏蔽写仍在，只是位置变了");
-    let vector_after = pos(&leg, |i| i.starts_with("csrw stvec,")).expect("换位后换腿写仍在");
+    let vector_after = rpos(&leg, |i| i.starts_with("csrw stvec,")).expect("换位后换腿写仍在");
     assert!(
         vector_after < mask_after,
         "换位实验失效（应当变成「换腿先于屏蔽」）：{vector_after} vs {mask_after}"
