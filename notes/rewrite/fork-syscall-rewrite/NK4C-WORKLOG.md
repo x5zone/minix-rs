@@ -13628,6 +13628,18 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **回退决定与现场**：WIP（smp.rs 接线分支 98 行＋门脚本）回退——**不满足合入判据**（专用门 FAIL、'2' 洪流未解、按合入纪律不上带病状态）；§续-398 已提交的桩＋汇聚点＋形状审计保留（桩内 UART 分步标记 '1'/'2' 随本轮调试加入、登记为 SMP 线专用取证、随结案滚除）。构建回归：回退后 riscv64 release 内核编译零错误。**下一增量的调试计划**（全部工具已在位）：①重跑门看移除 '3' 后洪流是否消失（区分 fault 来源）；②若洪流消失且仍无到达——GDB（`-s -S` + gdbstub）单步 AP hart 从 0x17888 桩入口起逐条核 satp 生效后的取指位址；③查内核根是否恒等映射镜像（arch_boot 建根代码读码＋gdb `x/8x` 根页）；④SD-24 红线继续尊重（AP 驻留不入调度）。
 
+## §续-400 SMP 系列第三增量：SBI ret=-6 定谳（OpenSBI QEMU virt＝全 hart 进 payload 模型）——riscv 接线设计变更登记（早期 hart 过滤 + 次级核停车邮箱），WIP 再回退
+
+**调试第一路结果（marker 三移除后重跑）**：'2' 洪流消失——洪源坐实＝汇聚点错误的 DM 别名 marker 三写（算式曾减 KPHYS，写进非映射区引发 fault-retry 或写穿他处）。但 A1/A2/A3 全零、ap-arrived 仍无——升级双字节标签（A1/A2 桩内直写、A3 汇聚点 DM 别名直写）后重跑，三个标记一个都没上串口 ⇒ **次级核根本没进桩**。
+
+**SBI 返回码取证（决定性）**：boot_ap 的 ret 不再丢弃、打串口——nk4c: sbi-hs ret=fffffffffffffffa = **-6 = SBI_ERR_ALREADY_AVAILABLE**（目标 hart 已在运行）。定谳：**OpenSBI v1.3 fw_dynamic 在 QEMU virt 上是「全 hart 进 payload」模型**——冷启动完成后 OpenSBI 唤醒全部 warm hart 一同跳 next_addr（payload 的 _start），并非「只起 BSP、次级核停 HSM 等 hart_start」。因此 hart 1 早已在**并行跑内核启动的自己的副本**（与 BSP 竞态穿 init——TCG 粗粒度交错下三路 -smp 2 boot 都活到 userspace，纯属侥幸），内核后段的 hart_start 自然返回 ALREADY_AVAILABLE。
+
+**设计变更登记（P-A64RV-01 riscv 半的真正完成路径）**：QEMU virt + OpenSBI 形态下，riscv64 的 AP bring-up 不能走「内核后段 hart_start」——必须在 **kernel-image _start 早期做 hart 过滤**：a0（OpenSBI 递的 hartid）不等于 boot hart ⇒ 该 hart 是次级核 ⇒ 不走 bootface/arch_boot/kmain，直接进 AP 停车路径（自旋在 per-hart 邮箱、或读 ApBootstrap 等待 BSP 根就绪后跳汇聚点——Linux _start hart filter 同款）。这同时天然消除「双 hart 竞态穿同一 init」的现状隐患（-smp 2 下双 hart 竞态跑 init 能到 userspace 是 TCG 粗粒度交错的侥幸，非设计保证）。**该变更动 kernel-image 入口 asm（_start 分道）＝SD-1 入口形态族的成员，工程量一个会话级，排 SMP 第三增量。**
+
+**本轮 WIP 处置**：kernel/src/smp.rs 的接线分支回退（git checkout HEAD）；门脚本 test-smp-aps-riscv64.sh **保留入库**（含 dumpdtb -smp 2 修正——拓扑真值=DTB 的坑已在脚本注释）＋桩标记升级（A1/A2 桩内直写、A3 汇聚点 DM 别名直写 VA=KDM_BASE+UART_PA）——门当前预期 FAIL（no ap-arrived），待停车邮箱设计落地后翻绿。
+
+**验证**：riscv64 内核镜像编译零错误（回退态）；门三跑数据链完整（401 无分支无打印 / 402 带标记三洪流 / 402b 无洪流无到达）；宿主未触及。**诚实边界**：其一，「全 hart 进 payload」由 SBI ret=-6 加 QEMU/OpenSBI 行为推断（v1.3 fw_dynamic 语义），未读 OpenSBI 源码逐行坐实——若后续发现是 DTB/配置特例，停车邮箱设计仍成立（过滤逻辑不变）；其二，「双 hart 竞态穿 init 是侥幸」未做故障注入证明，属强推断。
+
 
 ## §续-394 P-ALL-01 深度迁移收官批：fpu / protection / trap_entry / plat interrupt（5 测试全绿，逐文件深度迁移完成）
 

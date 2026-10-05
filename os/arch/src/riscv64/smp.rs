@@ -229,7 +229,20 @@ impl SmpArch for Riscv64SmpArch {
         }
         // Discard the SBI return code: the trait contract is
         // fire-and-forget, mirroring the C port's best-effort AP boot.
-        let _ = ret;
+        // NK4-C 续-400 取证（SMP 接线调试，随结案滚除）：返回码打串口——
+        // 0=成功；负数=SBI 错误（-6 ALREADY_STARTED / -5 INVALID_PARAM 等）。
+        {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            Console::write_str("nk4c: sbi-hs ret=");
+            let mut hex = [0u8; 16];
+            let mut v = ret;
+            for byte in hex.iter_mut().rev() {
+                *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                v >>= 4;
+            }
+            Console::write_str(core::str::from_utf8(&hex).unwrap_or("?"));
+            Console::write_str("\n");
+        }
     }
 
     fn current_cpu() -> u32 {

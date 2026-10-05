@@ -105,20 +105,24 @@ core::arch::global_asm!(
         ld  t3, 16(t2)                  # page_table_root_pa
         ld  t4, 24(t2)                  # kernel_stack_top_va
         ld  t5, 32(t2)                  # rust_entry_va
-        # UART step marker: 0x31 = stub entered, record fields loaded.
+        # UART step marker "A1" = stub entered, record fields loaded.
         # QEMU virt 16550 THR @ 0x10000000 — device write, MMU off safe.
         li  t0, 0x10000000
-        li  t1, 49
+        li  t1, 0x41          # 'A'
+        sb  t1, 0(t0)
+        li  t1, 0x31          # '1'
         sb  t1, 0(t0)
         srli t3, t3, 12                 # PPN = pa >> 12
         li  t6, 0x8000000000000000      # SATP_MODE_SV39
         or  t3, t3, t6
         csrw satp, t3
         sfence.vma
-        # UART step marker: 0x32 = MMU on with BSP root, fetch still alive
+        # UART step marker "A2" = MMU on with BSP root, fetch still alive
         # (proves the root identity-maps the image).
         li  t0, 0x10000000
-        li  t1, 50
+        li  t1, 0x41          # 'A'
+        sb  t1, 0(t0)
+        li  t1, 0x32          # '2'
         sb  t1, 0(t0)
         mv  sp, t4                      # per-AP kernel stack
         # a0 = record HIGH VA = PA + (KVIRT - KPHYS)，MMU on 后经内核根映射
@@ -149,6 +153,13 @@ pub static AP_ARRIVED: core::sync::atomic::AtomicUsize =
 /// 每核运行队列/抢占下发未通电——AP 此刻「醒着但无所事事」，继续推进
 /// 会踩 P-ALL-03 红线（撤钳不先补每核队列＝进程被安到无队列的核）。
 pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
+    // UART step marker "A3" = Rust convergence entered（经内核 DM 窗写
+    // UART：VA = KDM_BASE + UART_PA，krewalk 同一换算约定）。
+    unsafe {
+        let uart = (0xFFFF_FFC0_4000_0000u64 + 0x1000_0000u64) as *mut u8;
+        core::ptr::write_volatile(uart, b'A');
+        core::ptr::write_volatile(uart.add(1), b'3');
+    }
     // a0 = 记录高半 VA（桩换算；MMU on 后经内核根可达）。
     let record = unsafe { &*(bootstrap_pa as *const ApBootstrap) };
     // 消费快照（volatile 读：防与 BSP 的潜在复写合并）。
