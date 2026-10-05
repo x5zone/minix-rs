@@ -12964,3 +12964,13 @@ boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻�
 **统一理论（当前最强）**：腐蚀器=内核代写路径（finw 回执直写 syscall.rs:3942 区段、跨空间拷贝 vm.rs cross_space_copy/kdst、exec 镜像拷贝）的 **riscv 软件走表（CurrentPteWalk::walk）偶发返回错 PA** → 小块消息写落到错误物理帧=随机位置的小腐蚀；速率∝内核代写流量（探针洪流=高频 SYS_DIAGCTL=高频 finw/kdst——解释 ATF 慢且必败、boot-full 短跑常过）；aarch64 干净=走表实现不同；野 VA 脸谱（>2^38 pf、kdst len=1、minix-elf OOB）=同一错 PA/错长度读写的不同受害者。历史旁证：§续-292 的 poison=&0x7fffffff 掩码形、§续-293 「poison PTE=错粒度叶 PTE」——走表层的错值形态早有目击。
 
 **下一步（宿主可测优先，不需真机抽奖）**：①walk_read 宿主对抗测试——它只吃表字节，构造对抗性 PTE 形态（表指针/叶旗标组合、边界 idx、V 位无 RWX、huge 形保留位）与参考实现逐位对账，找偶发错 PA 的输入形状；②finw 路径双走表验证探针（两次独立走表比对 PA+写后经 KDM 回读比对）；③若①复现错形=纯宿主修复+单测闭环，再上真机对账。
+
+## §续-350 walk_read 对抗测试套件落地 + 委托手术被 A/B 拦截（确定性回归，手术件停飞待调）
+
+**落地**：`os/arch/src/riscv64_walk.rs`——Sv39 走表纯逻辑层（`walk_read_with` 吃 PTE 读取闭包，与 DM 窗/asm 解耦→宿主可测）+ 规范性检查（非规范 VA=NotPresent，对齐硬件 fault）+ 错粒度巨叶拒绝 + `paddr_to_pte/pte_to_paddr/pte_is_leaf/索引函数` 单一真源 + **8 个对抗测试**（happy 路径/各级 V=0+RWX 形态/W-only 保留叶/错粒度 2MB 与 1GB 巨叶/非规范 VA（历史栈顶 0x7fff_ffff_f000 与 run8 野地址形态）/L0 指针形态/边界索引/4000+1000 点模糊测试对独立参考实现全等）。`minix-arch` 宿主 251/0 全绿（其中 8 个新对抗测试）。lib.rs 门=`any(riscv64, test+runtime-window)`（真机随 riscv64 编译；宿主测试单编译）。
+
+**委托手术被拦**：paging.rs 的 walk_read 委托纯逻辑层后，riscv boot-full **确定性** panic 在 `kerninfo.rs:145`（kerninfo 页 VA 查询返回 None）——A/B 干净归因（HEAD 版走表=PASS，手术版=稳定 FAIL，各验一遍）。三处语义加固（规范性/错粒度巨叶/L0 指针形）按分析都不应拒绝健康内核表（规范性对 0xFFFFFFC0 区=TRUE；内核无巨页；kerninfo 叶=V|R|U 非指针形），真因未定位——**手术件停飞**：paging.rs 回退 HEAD（绿态保住，boot-full PASS 复验），完整手术版存 `/tmp/paging_surgery.rs`，纯逻辑层+测试先行入库（自包含，riscv 上无行为变化）。
+
+**方法论**：①「测试与修复同笔」救了回滚——对抗测试套件自包含可独立落地，修复委托另行走查；②宿主测试不编译 target 门控模块——riscv64 门控代码的宿主可测性需要**纯逻辑抽层**（闭包注入读取）这一结构前提；③A/B bisect（HEAD vs 手术、各验一遍）是拦截确定性回归的正确姿势。
+
+**下一步**：内核侧调试——kerninfo 失败时经 DM 直读打印 root[256]/l1e/l0e 三级表项原值（一张表项快照即可定位三候选：规范性误判/错粒度误判/ descent 走错）；定位后修纯逻辑层→251+对抗测试全绿→恢复委托→boot-full→真机探针对账。

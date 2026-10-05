@@ -26,6 +26,10 @@ pub mod x86_64;
 pub mod arm64;
 #[cfg(target_arch = "riscv64")]
 pub mod riscv64;
+// Sv39 走表纯逻辑层：真机随 riscv64 编译；宿主测试（runtime-window 默认
+// 特性）单编译，供 walk_read 对抗测试（NK4C §续-349）。
+#[cfg(any(target_arch = "riscv64", all(test, feature = "runtime-window")))]
+pub mod riscv64_walk;
 
 // ── Re-export board-level platform abstractions from minix-plat ──
 pub use minix_plat::{
