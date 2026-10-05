@@ -13583,6 +13583,17 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **自坑零枚**（模板四件套成熟：锚点串直接取自源码行、断言前先 grep -n 核对字节）。**P-ALL-01 累计**：双腿 11＋paging 7＋signal 5＋boot/exception 8＝31 枚深度钉住，另有清单审计 86 兜底；余量＝fpu（3+3）/protection（2+2）/trap_entry（1+1）/plat interrupt（3+4）——全是小文件，下一批可全清。
 
+## §续-394 P-ALL-01 深度迁移收官批：fpu / protection / trap_entry / plat interrupt（5 测试全绿，逐文件深度迁移完成）
+
+**钉住的承重契约**（`os/arch/tests/arch_small_files_audit.rs`）：
+
+- **fpu（arm64）**：`FPSIMD_SIZE=528B` 现场帧尺寸（31×16B Q 寄存器＋FPCR/FPSR＋头部）与 16B 对齐、默认全零——SD-23（Q0-Q31 从不存恢复）若未来接通保存路径，帧几何是地基。
+- **protection（双架构）**：特权级→Privilege 映射（arm64 EL1/EL0、riscv64 S_MODE/U_MODE→Kernel/User）逐腿钉住。
+- **trap_entry（双架构）**：`TrapEntryArch` bound 断言存在性（门内原烟雾测试已精简为 bound 形态，宿主同形钉住）。
+- **plat interrupt**：arm64 `TIMER_IRQ`=INTID 30（CNTPNSIRQ；QEMU virt 设备树 PPI 14+16；29=安全态/27=虚拟——错一位时钟永不到达）、双架构统计时钟 pseudo-vector 0、riscv64 PLIC `nr_irqs.min(NR_IRQ_VECTORS)` 钳位形状、riscv64 `TIMER_IRQ`=保留伪向量 0（S 态定时器 CPU 本地，claim() 读不到＝§续-376 同一观测）。
+
+**P-ALL-01 终态对账**：86 枚门内测试全部有宿主可见面——①双腿专项 11（arm64_return_leg_pin / arm64_trap_leg_shape / riscv64 两件在先）；②paging 编码 7；③signal 契约 5；④boot/exception 8；⑤本批 5；⑥清单冻结审计 2（覆盖全部 86 的增删改兜底）。**七份宿主测试文件、36 个宿主可跑测试**（arch 宿主总量 250→286）。逐文件深度迁移完成；门内测试的行为断言本体继续在目标架构上承担真值（真机门实际穿过）。
+
 ## §续-388 P-ALL-05 三子项定谳并落地：X-7 未知 VMCTL 改 EINVAL（对齐上游）、SD-16 errno 符号全文件对齐负号契约（连修 2 个长期既有失败）、SD-17 argc 槽宽统一 LP64 全字
 
 **本轮性质**：语义对上游 C 真源对齐轮（P-ALL-05），三条各自独立定谳、一次成组提交（同属「语义与上游不一致」登记的收口，改动互不纠缠且全部宿主可验证）。
