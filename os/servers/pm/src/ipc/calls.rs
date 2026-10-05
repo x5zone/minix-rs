@@ -261,7 +261,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 &mut ctl,
             ) {
                 Ok(v) => ReplyIntent::Reply(v),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_exit（forkexit.c:246-266）——返回 SUSPEND 且**永不回复**
@@ -300,7 +300,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                         ReplyIntent::Reply(0)
                     }
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_srv_kill（signal.c:204-211）——同 do_kill 的回复模式。
@@ -314,7 +314,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                         ReplyIntent::Reply(0)
                     }
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_proceventmask（event.c:179-206）——掩码更新走 EventRegistry
@@ -333,7 +333,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let req = crate::trace::PtraceReq { req: preq, pid, addr, data };
             match crate::trace::do_trace(table, caller, req, kern, transport) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_setitimer——批次 D。value/ovalue 是 `struct itimerval`
@@ -344,7 +344,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let (which, value_ptr, ovalue_ptr) = super::decode::itimer(msg);
             let mut raw = [0u8; 32];
             if let Err(e) = kern.copy_from_user(msg.m_source, value_ptr, &mut raw) {
-                return ReplyIntent::Reply(positive_errno(e));
+                return ReplyIntent::Reply(e);
             }
             let le_i64 = |b: &[u8]| i64::from_le_bytes(b.try_into().unwrap());
             let op = crate::timer::ItimerOp {
@@ -380,12 +380,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                         out[16..24].copy_from_slice(&old.it_value.tv_sec.to_le_bytes());
                         out[24..32].copy_from_slice(&old.it_value.tv_usec.to_le_bytes());
                         if let Err(e) = kern.copy_to_user(&out, msg.m_source, ovalue_ptr) {
-                            return ReplyIntent::Reply(positive_errno(e));
+                            return ReplyIntent::Reply(e);
                         }
                     }
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(positive_errno(e.to_errno())),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_sigaction（signal.c:40-86）——批次 B 余。act/oact 是
@@ -398,7 +398,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut svec = [0u8; 32];
             let act = if act_ptr != 0 {
                 if let Err(e) = kern.copy_from_user(msg.m_source, act_ptr, &mut svec) {
-                    return ReplyIntent::Reply(positive_errno(e));
+                    return ReplyIntent::Reply(e);
                 }
                 let le_u64 = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
                 Some(crate::mproc::SigAction {
@@ -421,12 +421,12 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                         out[8..16].copy_from_slice(&old.sa_mask.to_le_bytes());
                         out[24..28].copy_from_slice(&old.sa_flags.to_le_bytes());
                         if let Err(e) = kern.copy_to_user(&out, msg.m_source, oact_ptr) {
-                            return ReplyIntent::Reply(positive_errno(e));
+                            return ReplyIntent::Reply(e);
                         }
                     }
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_sigsuspend(signal.c:157-171)——存 mask/装新掩码/挂起。
@@ -475,7 +475,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     }
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_sigreturn(signal.c:173-192)——恢复掩码 + sys_sigreturn,
@@ -494,7 +494,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 }
                 // fault 载荷是 sys_sigreturn 的原始负 errno。
                 Err(crate::signal_handlers::SigReturnError::Fault(code)) => {
-                    ReplyIntent::Reply(positive_errno(code))
+                    ReplyIntent::Reply(code)
                 }
             }
         }
@@ -502,7 +502,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
         PmCall::GetPid => {
             match do_get(table, caller, GetOp::GetPid, &mut NoopGroups) {
                 Ok(r) => get_result_intent(table, caller, r),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::SetUid => {
@@ -511,13 +511,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut fwd = SysVfsForward { transport };
             match do_set(table, caller, SetOp::SetUid(id), &mut copier, &mut fwd) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::GetUid => {
             match do_get(table, caller, GetOp::GetUid, &mut NoopGroups) {
                 Ok(r) => get_result_intent(table, caller, r),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::SetGroups => {
@@ -539,10 +539,10 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                         &mut fwd,
                     ) {
                         Ok(intent) => intent,
-                        Err(e) => ReplyIntent::Reply(e.to_errno()),
+                        Err(e) => ReplyIntent::Reply(-e.to_errno()),
                     }
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::GetGroups => {
@@ -550,7 +550,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut copier = SysCopyGroups { kern, who: msg.m_source };
             match do_get(table, caller, GetOp::GetGroups { count: num, ptr: VirBytes(ptr) }, &mut copier) {
                 Ok(r) => get_result_intent(table, caller, r),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::SetGid => {
@@ -559,13 +559,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut fwd = SysVfsForward { transport };
             match do_set(table, caller, SetOp::SetGid(id), &mut copier, &mut fwd) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::GetGid => {
             match do_get(table, caller, GetOp::GetGid, &mut NoopGroups) {
                 Ok(r) => get_result_intent(table, caller, r),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::SetSid => {
@@ -573,13 +573,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut fwd = SysVfsForward { transport };
             match do_set(table, caller, SetOp::SetSid, &mut copier, &mut fwd) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::GetPgrp => {
             match do_get(table, caller, GetOp::GetPgrp, &mut NoopGroups) {
                 Ok(r) => get_result_intent(table, caller, r),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::SetEUid => {
@@ -588,7 +588,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut fwd = SysVfsForward { transport };
             match do_set(table, caller, SetOp::SetEUid(id), &mut copier, &mut fwd) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::SetEGid => {
@@ -597,20 +597,20 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut fwd = SysVfsForward { transport };
             match do_set(table, caller, SetOp::SetEGid(id), &mut copier, &mut fwd) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::IsSetUid => {
             match do_get(table, caller, GetOp::Issetugid, &mut NoopGroups) {
                 Ok(r) => get_result_intent(table, caller, r),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::GetSid => {
             let pid = super::decode::getsid(msg);
             match do_get(table, caller, GetOp::GetSid { pid }, &mut NoopGroups) {
                 Ok(r) => get_result_intent(table, caller, r),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // ===== S6 批次 E:exec 族三调用(exec.c)=====
@@ -630,7 +630,13 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut vfs_fwd = SysVfsExec { transport };
             match crate::exec::do_exec(table, caller, req, &mut vfs_fwd) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                // SD-16（P-ALL-05，2026-10-06 定谳）：C 的 PM 定义 _SYSTEM=1
+                // 使 errno 常量取负（errno.h:189 `_SIGN = -`，pm.h:4），
+                // do_exec 返回负 EPERM、main.c:106 原值进 m_type——线上
+                // 契约是负 errno（用户侧 `m_type < 0 → errno = -m_type`，
+                // compat 层实测同形）。本臂曾回正数＝线上契约漂移；对齐
+                // 为负，与 fork 臂（Reply(-to_errno())）同形。
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_newexec(pm/exec.c:64-123)——endpt@0/ptr@8,ptr 指向 VFS
@@ -640,7 +646,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let (endpoint_raw, ptr) = super::decode::exec_new(msg);
             let mut info_raw = [0u8; EXEC_INFO_COPY_SIZE];
             if let Err(e) = kern.copy_from_user(msg.m_source, ptr, &mut info_raw) {
-                return ReplyIntent::Reply(positive_errno(e));
+                return ReplyIntent::Reply(e);
             }
             let le_u64 = |b: &[u8]| u64::from_le_bytes(b.try_into().unwrap());
             let progname = {
@@ -669,7 +675,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_execrestart(pm/exec.c:130-151)——仅 RS;RS 门在
@@ -685,7 +691,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut svc = crate::ipc::vfs::ExecServices { transport, kern };
             match crate::exec::do_execrestart(table, msg.m_source, info, &mut svc) {
                 Ok(()) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // ===== S4 批次 C:时间族六调用(time.c)=====
@@ -704,7 +710,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 &mut boot,
             ) {
                 Ok(()) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_gettime(time.c:22-47)——clk 分派 REALTIME/MONOTONIC,
@@ -713,7 +719,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let (clk, _now, _sec, _nsec) = super::decode::time(msg);
             let clk = match crate::time::ClockId::try_from(clk) {
                 Ok(c) => c,
-                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+                Err(e) => return ReplyIntent::Reply(-e.to_errno()),
             };
             let src = crate::time::SysClockSource;
             match crate::time::do_gettime(&src, clk, timers.system_hz) {
@@ -731,7 +737,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_clock_getres——1e9/hz(REALTIME/MONOTONIC 同值)。
@@ -739,7 +745,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let (clk, _now, _sec, _nsec) = super::decode::time(msg);
             let clk = match crate::time::ClockId::try_from(clk) {
                 Ok(c) => c,
-                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+                Err(e) => return ReplyIntent::Reply(-e.to_errno()),
             };
             match crate::time::do_getres(clk, timers.system_hz) {
                 Ok(ts) => {
@@ -753,7 +759,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_clock_settime(time.c:71-88)——SUPER_USER 门 + MONOTONIC
@@ -762,7 +768,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let (clk, now, sec, nsec) = super::decode::time(msg);
             let clk = match crate::time::ClockId::try_from(clk) {
                 Ok(c) => c,
-                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+                Err(e) => return ReplyIntent::Reply(-e.to_errno()),
             };
             let mut ctl = crate::time::SysSetTimeCtl;
             match crate::time::do_settime(
@@ -777,7 +783,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 &mut ctl,
             ) {
                 Ok(()) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // ===== S8 批次 G:mcontext 族两调用(mcontext.c)=====
@@ -788,7 +794,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let ctl = crate::misc::SysMcontextCtl;
             match crate::misc::do_getmcontext(&ctl, Endpoint(endpt), VirBytes(ctx)) {
                 Ok(()) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         PmCall::SetMContext => {
@@ -796,7 +802,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let ctl = crate::misc::SysMcontextCtl;
             match crate::misc::do_setmcontext(&ctl, Endpoint(endpt), VirBytes(ctx)) {
                 Ok(()) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_getprocnr(misc.c:149-164)——RS 询问 pid 的 endpoint,
@@ -813,7 +819,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_getepinfo(misc.c:169-193)——凭证快照 + groups 经
@@ -840,7 +846,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(info.pid)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_sysuname(misc.c:60-96)——uname 命名空间只读半;
@@ -856,7 +862,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 &mut cpy,
             ) {
                 Ok(n) => ReplyIntent::Reply(n as i32),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_sprofile(profile.c:22-45)——sprofile feature 门控;
@@ -877,7 +883,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 &mut ctl,
             ) {
                 Ok(()) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_reboot(misc.c:198-231)——EPERM 门 → abort_flag →
@@ -894,7 +900,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             };
             match crate::misc::do_reboot(table, caller, how, &mut ctl) {
                 Ok(intent) => intent,
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_svrctl(misc.c:302-390)——IOCGROUP 门('P'/'M')+
@@ -921,7 +927,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             // struct sysgetenv{key 指针,val 指针,keylen,vallen} 32 字节拷入。
             let mut env = [0u8; 32];
             if let Err(e) = kern.copy_from_user(msg.m_source, arg, &mut env) {
-                return ReplyIntent::Reply(positive_errno(e));
+                return ReplyIntent::Reply(e);
             }
             let u64_at = |o: usize| u64::from_le_bytes(env[o..o + 8].try_into().unwrap());
             let (key_ptr, val_ptr, keylen, vallen) =
@@ -933,7 +939,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             if key_len > 0
                 && let Err(e) = kern.copy_from_user(msg.m_source, key_ptr, &mut key_buf[..key_len])
             {
-                return ReplyIntent::Reply(positive_errno(e));
+                return ReplyIntent::Reply(e);
             }
             let key = String::from_utf8_lossy(&key_buf[..key_len]).into_owned();
             let key_opt = if key.is_empty() { None } else { Some(key) };
@@ -955,14 +961,14 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                             val_ptr,
                         )
                     {
-                        return ReplyIntent::Reply(positive_errno(e));
+                        return ReplyIntent::Reply(e);
                     }
                     let mut reply = minix_types::Message::default();
                     reply.m_u.m_m1.m1i2 = vallen as i32;
                     table.procs[caller.get()].ipc.reply = Some(reply);
                     ReplyIntent::Reply(0)
                 }
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_getsysinfo(misc.c:108-144)——SUPER_USER 门,SI_* 分类,
@@ -990,7 +996,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let mut cpy = KernCopyToUser { kern, who: msg.m_source };
             let what = match crate::misc::SysInfoWhat::try_from(what) {
                 Ok(w) => w,
-                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+                Err(e) => return ReplyIntent::Reply(-e.to_errno()),
             };
             match crate::misc::do_getsysinfo(
                 table,
@@ -1002,7 +1008,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 &mut cpy,
             ) {
                 Ok(()) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
         // C: do_getrusage(misc.c:400-447)——who 0/-1 门(S4 收尾):
@@ -1012,7 +1018,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
             let (who_raw, addr) = super::decode::rusage(msg);
             let who = match crate::misc::RusageWho::try_from(who_raw) {
                 Ok(w) => w,
-                Err(e) => return ReplyIntent::Reply(e.to_errno()),
+                Err(e) => return ReplyIntent::Reply(-e.to_errno()),
             };
             let mut ctl = crate::misc::SysTimesVmCtl { transport: &mut *transport };
             let mut cpy = KernCopyToUser { kern, who: msg.m_source };
@@ -1026,7 +1032,7 @@ pub fn dispatch_pm_call<T: IpcTransport>(
                 &mut cpy,
             ) {
                 Ok(_) => ReplyIntent::Reply(0),
-                Err(e) => ReplyIntent::Reply(e.to_errno()),
+                Err(e) => ReplyIntent::Reply(-e.to_errno()),
             }
         }
     }
@@ -1287,13 +1293,7 @@ fn leak_timers() -> crate::timer::TimerFaces<'static> {
     }
 }
 
-fn positive_errno(e: i32) -> i32 {
-    if e < 0 {
-        -e
-    } else {
-        e
-    }
-}
+
 
 #[cfg(test)]
 mod tests {
@@ -1735,7 +1735,9 @@ mod tests {
                 UserSlot::new(3),
                 &msg
             ),
-            ReplyIntent::Reply(EINVAL)
+            // B16 契约（SD-16 对齐轮）：错误回执 m_type<0 = −errno
+            //（C _syscall 客户端契约，fork 臂 1.30 同款）。
+            ReplyIntent::Reply(-EINVAL)
         );
         assert!(transport.sent().is_empty());
         assert!(kern.copies.is_empty());
@@ -1767,7 +1769,7 @@ mod tests {
                 UserSlot::new(3),
                 &msg
             ),
-            ReplyIntent::Reply(minix_types::ESRCH)
+            ReplyIntent::Reply(-minix_types::ESRCH)
         );
         // 失败不落用户缓冲(C misc.c:446 的 datacopy 不可达)。
         assert!(kern.copies.is_empty());

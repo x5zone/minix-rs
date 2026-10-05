@@ -13546,6 +13546,21 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **验证**：aarch64 全量门 389 PASS（上）；minix-arch 宿主测试（含本轮 arm64 钉住 11 枚）全绿；riscv64_walk 的 clippy 豁免在宿主 --all-features 下核过（8*0 命中清零）。**诚实边界**：free_child_tables 无宿主单测（arm64 模块架构门住，宿主不编译——这正是 P-ALL-01 的已知形状；真机门是它当前的唯一验证面）；「L1/L2 块描述符跳过」分支在本内核无块映射使用（walk_alloc 只造表），属防御性对齐 Sv39 同族语义。
 
+## §续-388 P-ALL-05 三子项定谳并落地：X-7 未知 VMCTL 改 EINVAL（对齐上游）、SD-16 errno 符号全文件对齐负号契约（连修 2 个长期既有失败）、SD-17 argc 槽宽统一 LP64 全字
+
+**本轮性质**：语义对上游 C 真源对齐轮（P-ALL-05），三条各自独立定谳、一次成组提交（同属「语义与上游不一致」登记的收口，改动互不纠缠且全部宿主可验证）。
+
+**X-7（未知 VMCTL 返回值）**：上游 do_vmctl.c 的 switch 收尾落到 `arch_do_vmctl(m_ptr, p)`，其无匹配臂返回 EINVAL（i386 arch_do_vmctl.c:56 `return EINVAL`）——未知 VMCTL 一律 EINVAL，「ENOSYS 区分未识别 vs 合法未实现」的论证不成立（上游对两者一律 EINVAL）。`os/kernel/src/syscall.rs` 的未知 param 臂 ENOSYS → EINVAL，注释记定谳出处与「i386 专属 32-bit legacy 臂返 ENOSYS 是另一回事（有真源形状）」的区分。
+
+**SD-16（errno 符号交叉——比登记的深）**：上游定谳链：errno.h:189 `_SIGN` 在 `_SYSTEM` 下取 `-`，pm.h:4 定义 `_SYSTEM 1` ⇒ PM 内 EPERM=-1，handler 返回负 errno，main.c:106 `reply(who_p, result)` 原值进 m_type ⇒ **线上契约是负 errno**（用户侧 `m_type<0 → errno=-m_type`，compat 层 lstat 实测同形）。盘点 `os/servers/pm/src/ipc/calls.rs`：41 处 `Reply(e.to_errno())`（正）vs 4 处 `Reply(-…)`（负）＋一个把负 errno 翻正的 `positive_errno` 助手（8 个使用点）——两套约定在同一个文件里打架。**决定性出处**：1.30 B16（71ae0dc8b）已带真机证据定过方向（init 把 EAGAIN=11 当 child_pid；m_type<0=−errno 契约），B16 自陈「部分修」——41 个正号位点是它的未竟余量。落地：41 处机械翻负＋8 处 positive_errno 摘除（传输层 minix-sys/syscall.rs:1038 `if r < 0` 证明内核网关错误本就是负——positive_errno 是双重错）＋助手删除。**测试侧三处旧正号钉住同步修正**（calls.rs 两处 GetRUsage 期望、dispatcher Reboot EPERM）；**连带修绿 2 个长期既有失败**（run_once_integration 的 wait4 ECHILD / unwired ENOSYS 自立项起就钉着与真源相反的正数）＋kill_unknown_pid 同族一处——minix-pm 全量 420+13 首次全绿。
+
+**SD-17（argc 槽宽 4/8）**：boot 腿（arch/boot.rs）argc 槽 i32（sp=ps_strings−20）与 exec 腿（minix-sys/stack.rs）全字（sp−3*WORD）不一致。定谳要点：①消费端 startup-minix.c 只读 ps_strings 描述符（argv_str/n_argv/env_str/n_env，与 boot 写入逐字对位），argc 槽字本身无读者 ⇒ 现行行为惰性；②上游只有 i386/ARM32 的 protect.c（int 与指针同宽，两形重合），64 位无 C 真源可抄；③exec 腿已是全字。统一取 LP64 全字（ARGC_ARGV_ENVP=3*usize=24、argvstr=sp+WORD）：**顺带修复 boot 腿出生 sp 的 4-mod-8 非全字对齐**（stack_high−52→−56，SD-21 家族的 boot 腿实例）；两处测试锚点（−52→−56、argvstr 宽度）同步。
+
+**验证**：minix-kernel 830+3+3 全绿；minix-vm 538+0 全绿；minix-pm 420+13 全绿（含 2 个长期既有失败修绿）；minix-arch 250+5+6+3+4 全绿；riscv boot-full marker PASS、x86 cmd-smoke PASS（18-stage）、aarch64 bootmarks PASS——SD-17 触及 boot 腿（VM ELF 装载 sp 几何），上机三门复核无回归。qemu=0。
+
+**诚实边界**：①PM 线上负 errno 的**用户可见消费端**当前不存在（ATF 套件不经 PM errno 臂），本次对齐由 C 真源与 B16 真机证据背书而非用户行为对照；②41 处翻负只覆盖 `Reply(e.to_errno())` 字面形态，其余成功载荷（pid 等）与个别内联错误码（EINVAL 直写）经逐一过目确认无须翻转；③X-7 的 VM 侧调用方从不发未知 param（acl 白名单门），改动无现行触发面。
+
+
 
 
 

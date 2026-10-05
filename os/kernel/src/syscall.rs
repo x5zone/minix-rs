@@ -2379,10 +2379,14 @@ fn dispatch_vmctl(
     let param = match VmCtlParam::try_from(param_raw) {
         Ok(p) => p,
         Err(()) => {
-            // Unknown VMCTL param — in C this falls through to arch_do_vmctl()
-            // which returns EINVAL. Return ENOSYS for unrecognized commands
-            // to distinguish from valid-but-unimplemented (EINVAL).
-            return KcallResult::Ok(ENOSYS);
+            // X-7 对齐（P-ALL-05，2026-10-06 定谳）：C 的未知 VMCTL param
+            // 落到 switch 收尾的 arch_do_vmctl()，其无匹配臂返回 EINVAL
+            // （minix3/minix/kernel/arch/i386/arch_do_vmctl.c:56 收尾
+            // `return EINVAL`；本仓 i386 专属 VMCTL 已在 32-bit legacy
+            // 臂返回 ENOSYS——那是有真源形状的臂，与本臂不同）。此前
+            // 「ENOSYS 区分未识别 vs 合法未实现」的论证不成立：上游对
+            // 两者一律 EINVAL。
+            return KcallResult::Ok(EINVAL);
         }
     };
 

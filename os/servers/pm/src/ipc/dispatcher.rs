@@ -644,7 +644,8 @@ mod tests {
             UserSlot::new(3),
             &msg,
         );
-        assert_eq!(intent, ReplyIntent::Reply(minix_types::EPERM));
+        // B16 契约（SD-16 对齐轮）：m_type<0 = −errno。
+        assert_eq!(intent, ReplyIntent::Reply(-minix_types::EPERM));
         assert_eq!(abort_flag, 0, "EPERM 路径不得写 abort_flag");
         assert!(
             table.procs[1].state.block.ipc_blocked.is_none(),

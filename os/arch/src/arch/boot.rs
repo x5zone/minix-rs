@@ -410,10 +410,15 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     /// C: protect.c:413 (`sp -= sizeof(struct ps_strings)`).
     const PS_STRINGS_SIZE: u64 = 32;
 
-    /// The three words below ps_strings — argc, argv, envp: two
-    /// pointers + one int. C: protect.c:417.
-    const ARGC_ARGV_ENVP: u64 =
-        2 * core::mem::size_of::<usize>() as u64 + core::mem::size_of::<i32>() as u64;
+    /// The three words below ps_strings — argc, argv, envp — each one
+    /// full pointer word (SD-17 对齐轮 2026-10-06：旧值 `2*usize + i32`＝
+    /// 20B，argc 槽只有 4B 且令出生 sp 落在 4-mod-8 非全字对齐上；exec 腿
+    /// minix-sys/stack.rs 早已是 WORD 槽。上游只有 i386/ARM32 的
+    /// protect.c（int 与指针同宽故两形重合），64 位无 C 真源可抄——统一
+    /// 取 LP64 全字，与 exec 腿同形，出生 sp 回到 8 字节对齐。消费端
+    /// startup-minix.c 只读 ps_strings 描述符（字段序与下方写入逐字
+    /// 对位），argc 槽字本身无读者，改动对现行行为惰性）。
+    const ARGC_ARGV_ENVP: u64 = 3 * core::mem::size_of::<usize>() as u64;
 
     // SAFETY: `module.start` points to the VM ELF image in physical
     // memory; during boot the identity map covers this address range.
@@ -632,7 +637,7 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     // `stack_high`, and the SP is taken down a further 20 bytes (two
     // pointers + one int) so the startup code sees argc/argv/envp.
     let ps_strings = VirBytes(stack_high.0 - PS_STRINGS_SIZE); // stack_high - 32
-    let sp = VirBytes(ps_strings.0 - ARGC_ARGV_ENVP);          // stack_high - 52
+    let sp = VirBytes(ps_strings.0 - ARGC_ARGV_ENVP);          // 全字三槽，8 字节对齐
 
     // Resolve the kernel VA of the *top* stack page (`stack_high -
     // page_size`). The bootstrap allocator's frame order is
@@ -654,8 +659,8 @@ fn load_elf_into<P: Paging, A: PhysAccess>(
     unsafe {
         let frame_offset = ps_strings.0 - (stack_high.0 - page_size);
         let psp = (top_frame_kva.0 + frame_offset) as *mut u8;
-        let argvstr = sp.0 + core::mem::size_of::<i32>() as u64;     // stack_high - 48
-        let envstr = argvstr + core::mem::size_of::<usize>() as u64; // stack_high - 40
+        let argvstr = sp.0 + core::mem::size_of::<usize>() as u64;  // argc word 之后
+        let envstr = argvstr + core::mem::size_of::<usize>() as u64;
         (psp as *mut u64).write(argvstr);        // ps_argvstr
         (psp.add(8) as *mut i32).write(0);       // ps_nargvstr
         (psp.add(16) as *mut u64).write(envstr); // ps_envstr
@@ -980,7 +985,8 @@ mod tests {
 
         // Public geometry the loader contract promises.
         assert_eq!(result.ps_strings.0, user_sp.0 - 32); // stack_high - 32
-        assert_eq!(result.sp.0, user_sp.0 - 52); // stack_high - (32 + 20)
+        // stack_high - (32 ps_strings + 3 全字槽)＝SD-17 对齐后的 56
+        assert_eq!(result.sp.0, user_sp.0 - 56);
         assert!(result.allocated_bytes >= 256 * 1024);
 
         // ---- happy path through `paging.query` + `PhysAccess` ----
@@ -1013,7 +1019,7 @@ mod tests {
             // (later, outside this loader) pushes argc/argv/envp at
             // addresses below ps_strings when VM actually starts —
             // that is *not* the loader's responsibility.
-            let argvstr = result.sp.0 + core::mem::size_of::<i32>() as u64;
+            let argvstr = result.sp.0 + core::mem::size_of::<usize>() as u64;
             let envstr = argvstr + core::mem::size_of::<usize>() as u64;
             assert_eq!((psp as *const u64).read(), argvstr);
             assert_eq!((psp.add(8) as *const i32).read(), 0);
@@ -1109,8 +1115,8 @@ mod tests {
         // address spaces (C kinfo.user_sp semantics — per-address-space
         // stack placement from a shared boot value).
         assert_eq!(a.pc, b.pc);
-        assert_eq!(a.sp.0, user_sp.0 - 52);
-        assert_eq!(b.sp.0, user_sp.0 - 52);
+        assert_eq!(a.sp.0, user_sp.0 - 56);
+        assert_eq!(b.sp.0, user_sp.0 - 56);
         assert_eq!(a.ps_strings.0, user_sp.0 - 32);
         assert_eq!(b.ps_strings.0, user_sp.0 - 32);
         // Each load accounted its own root page on top of image + stack.

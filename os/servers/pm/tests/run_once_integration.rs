@@ -205,7 +205,11 @@ fn wait4_without_children_replies_echild() {
     let sent = srv.transport().sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, caller_ep);
-    assert_eq!(sent[0].1.m_type, minix_types::ECHILD);
+    // B16 契约（SD-16 对齐轮 2026-10-06）：错误回执 m_type<0 = −errno
+    // （C _syscall 客户端契约，errno.h:189 _SIGN=- 于 _SYSTEM；fork 臂
+    // 1.30 同款）。本测试此前钉正数＝钉着与真源相反的旧约定（自立项
+    // 起即红，本次随全文件符号对齐一并修正）。
+    assert_eq!(sent[0].1.m_type, -minix_types::ECHILD);
 }
 
 #[test]
@@ -226,7 +230,8 @@ fn kill_unknown_pid_replies_esrch() {
     let sent = srv.transport().sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, caller_ep);
-    assert_eq!(sent[0].1.m_type, minix_types::ESRCH);
+    // B16 契约（SD-16 对齐轮）：m_type<0 = −errno（同上）。
+    assert_eq!(sent[0].1.m_type, -minix_types::ESRCH);
 }
 
 #[test]
@@ -280,7 +285,8 @@ fn unwired_call_replies_enosys() {
     let sent = srv.transport().sent();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, caller_ep);
-    assert_eq!(sent[0].1.m_type, minix_types::ENOSYS);
+    // B16 契约（SD-16 对齐轮）：m_type<0 = −errno（同上）。
+    assert_eq!(sent[0].1.m_type, -minix_types::ENOSYS);
 }
 
 #[test]
