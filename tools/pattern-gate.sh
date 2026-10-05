@@ -173,6 +173,18 @@ P2_TESTS=(
   atf_suite_entries_have_sources_with_cases             # NK4-C 续-277 ATF 套件条目-用例对账（防夹具假绿）
   etc_proto_rc_host_override                            # NK4-C 续-277 etc/proto 宿主覆盖（测试面与生产分流）
   etc_proto_seeds_atf_tests_dir                         # NK4-C 续-277 ATF 测试目录种子
+  test_check_user_range_both_arch_families              # NK4-C T13 A1/A2 修复：用户范围校验双族值对照（limit 注入非写死）
+  test_mmap_fixed_out_of_range_rejected_without_unmap   # NK4-C T13 A2 修复：MAP_FIXED 越界拒绝且不 unmap（fail-closed）
+  test_mmap_hint_out_of_range_rejected                  # NK4-C T13 A2 修复：hint 越界拒绝（guest 可直驱的活口闭合）
+  test_sig_death_tell_vfs_carries_term_sig              # NK4-C 续-383 甲案：DumpCore 载荷信号号（step10 恒零硬编码翻案）
+  non_canonical_va_is_not_present                       # NK4-C 续-384：walker 判别族——非规范 VA 不判 present（§11.2-1 硬件前置语义）
+  misaligned_huge_leaf_is_not_present                   # NK4-C 续-384：错位巨叶不判 present（软硬双判据分歧族）
+  aligned_huge_leaf_with_high_ppn_bits_is_accepted      # NK4-C 续-384：高 PPN 位合法巨叶接受
+  l0_pointer_shape_is_not_present_semantics             # NK4-C 续-384：L0 指针形不判 present 语义
+  v0_with_rwx_set_is_not_present_at_every_level         # NK4-C 续-384：V=0+RWX 全级不判 present
+  w_without_r_is_leaf_shape_at_l0                       # NK4-C 续-384：W~R 叶形判别（aarch64 同族对照）
+  happy_4kb_path_and_offset_folding                     # NK4-C 续-384：4K 正路+偏移折叠
+  fuzz_against_reference                                # NK4-C 续-384：walker 差分模糊对账（参考独立性问题在案：§12）
 )
 check_p2() {
   local root="$1" missing=0 t hits
@@ -415,11 +427,14 @@ collect_p12() {
   done
 }
 check_p12() {
-  local root="$1" row loc key known=0 new=0
+  local root="$1" row loc rel key known=0 new=0
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     loc="${row%%|*}"
-    key="P12|$loc|${row#*|}"
+    rel="${loc%:*}"
+    # C-67 键格式修正：键=路径+内容 cksum，不含行号——交接教训⑦「基线键对行号漂移免疫」的实现
+    # 归位（此前键含行号，C-66 收编 lib.rs:3842 后函数长 6 行移到 3848 即失配重报）；内容改动仍敏感。
+    key="P12|$rel|${row#*|}"
     if baseline_has "$key"; then known=$((known+1)); detail "P12 已知(基线): $loc"
     else fail P12 "共享路径 asm/rdmsr 无架构门（基线外）: $loc"; new=$((new+1)); fi
     baseline_add "$key"

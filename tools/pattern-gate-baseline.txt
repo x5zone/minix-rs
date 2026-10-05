@@ -1,6 +1,6 @@
-P12|os/boot-shim/src/lib.rs:142|2700712658
-P12|os/kernel/src/lib.rs:304|1585844490
-P12|os/kernel/src/lib.rs:3842|3874602391
+P12|os/boot-shim/src/lib.rs|2700712658
+P12|os/kernel/src/lib.rs|1585844490
+P12|os/kernel/src/lib.rs|3874602391
 P14|os/kernel/src/clock.rs|175725238
 P14|os/kernel/src/clock.rs|597921436
 P14|os/kernel/src/grant.rs|1305843057
