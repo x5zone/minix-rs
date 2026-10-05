@@ -13088,3 +13088,11 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 **画像终稿（五次修正后收敛）**：①冻结/爬行=插桩打印量的时序副作用（§续-361）；②污染=per-boot 随机位置的写命中（命中对象不定：probe 数据段/共享页记录/模块镜像/VM boot 数据——历次脸谱各异）；③命中概率与 guest 运行时长正相关（长计算窗必中、短 boot 常免）；④aarch64 同上层零现象。t_memcpy 单案判据从「必败」修正为「概率性」——ATF 全绿门（36 案×~90 分钟窗）在当前腐蚀率下仍不可靠，但**逐案修复/重跑策略可行**。
 
 **下一会话**：①回归 ATF 门跑（36 案全量）采样腐蚀率与失败案分布——若仅 t_memcpy 族失败且重跑可过，评估门判据的合理放行形态（重跑策略 vs 腐蚀根因修复优先级裁决上交用户）；②写者追缉继续：t64 双快照（T1/T2 已修）对被腐蚀 boot 抓字节级 diff（本轮 boot 干净无指纹可抓——腐蚀 boot 的 T1/T2 才有）；③若用户裁决优先，转 NS5-B/SD 批次（腐蚀作为已知概率性缺陷登记）。
+
+## §续-364 ATF 门全量采样第 1 跑：VM 页故障野 VA panic（stval=0x1bfffe61e730）于首个终态之前——重跑策略不可行，根因追缉必要性强化
+
+**门跑读数**（RS_ATF_WORK=atf_full1，TIMEOUT_BOOT=3600）：**FAIL——kernel panic**（trap_dispatch.rs:2074 pagefault in VM halting），**零测试终态**（passed/failed/skipped 全 0）。panic 现场：`pagefault for VM sepc=0x3ba6e stval=0x1bfffe61e730`——**远超 Sv39 用户半区（2^38）的野 VA**（与 run8 的 0x7ffff48b124e6 同族）；pfvm 的 pa=stval 清 bit40（0x1beffe61e730）与 krewalk「ptroot out-of-range」=VM 自身页表根也异常。panic 前最后事件=memreq target=0x800c（exec 链）——发生在早期测试 exec 相。
+
+**采样结论（1 样本）**：36 案长窗的高暴露下腐蚀命中率≈必然（本轮命中 VM 数据结构→野 VA→panic）；「重跑策略」在此腐蚀率下不可行（每跑 60 分钟且大概率 panic）。**裁决数据支持=根因追缉优先**。
+
+**追缉素材（本轮新增）**：野 VA 家族三样本=0x7ffff48b124e6（§续-348 run8）、0x1bfffe61e730（本跑）、（+历史 bit38 族 0x4000000000+合法低位）。**共同形状学**：都是「合法用户 VA 的高位被污染成越界值」——0x1bfffe61e730 与合法栈区 VA 0x3ffffc1378（同窗 memreq 行）低位结构相似（...e61e730 vs ...c1378 无直接对应，但都落 fe/c1 段）。写者假设收窄=**对已映射用户 VA 的高位字节写**（40-47 位区域被置位）——flags/掩码类算术（如 | (x & mask) 掩码过宽）或寄存器截断。下一会话：①收集野 VA 家族全部样本做位形分析（哪些位被置/清、与合法 VA 的汉明距离）；②audit 用户 VA 生成点的掩码算术（sign-extend/掩码族——T13 审计的 A13 KDM 常量族同款手法扫描）。
