@@ -68,14 +68,23 @@
 //!
 //! # `stvec` describes the mode the CPU is about to run in
 //!
-//! Both epilogues re-point `stvec` from the saved `sstatus.SPP` before
-//! `sret` (kernel leg) or right before it (user leg), so the invariant
-//! `load()` established — the vector matches the upcoming privilege —
-//! survives every return. A kernel-leg return goes back to S-mode, where
-//! an open `sstatus.SIE` would otherwise deliver the next timer tick
-//! through the user leg's sscratch swap (the kernel never owns the
-//! user-stack register) — the tick would build its frame at
-//! `sscratch` − 272 and corrupt memory. The re-anchor closes that hole.
+//! Both epilogues re-point `stvec` AFTER writing the frame's `sstatus` (the
+//! latch: the hardware cleared `SIE` on entry, so restoring the frame value
+//! leaves the tail masked) and BEFORE any GPR reload (the vector address has
+//! to travel through a register, and after the reload every register belongs
+//! to the returning context) — so the invariant `load()` established, the
+//! vector matches the upcoming privilege, survives every return. A kernel-leg
+//! return goes back to S-mode, where an open `sstatus.SIE` would otherwise
+//! deliver the next timer tick through the user leg's sscratch swap (the
+//! kernel never owns the user-stack register) — the tick would build its
+//! frame at `sscratch` − 272 and corrupt memory. The re-anchor plus the latch
+//! ordering close that hole (both orders are pinned by the host test
+//! `arch/tests/riscv64_trap_leg_shape.rs`, rule 5).
+//!
+//! Everything above is stated for the single-hart configuration this port runs
+//! in today (`-smp 1`). When APs are brought up, `KERNEL_TRAP_STACK_BASE` and
+//! the `sscratch` invariants in this module become per-CPU concerns (see the
+//! note in `protection.rs`) and this paragraph must be re-read per hart.
 
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicPtr, Ordering};
@@ -219,8 +228,8 @@ unsafe extern "C" fn riscv64_resched_entry() -> ! {
 // Save order note: every register is stored from its architectural name
 // BEFORE any scratch use, so the legs never clobber interrupted state —
 // the scratch (t0) is only used after its own slot is saved. The frame
-// restore mirrors the saves exactly; CSR writes (sstatus/sepc) come first
-// on the way out because they read through t0.
+// restore mirrors the saves exactly; the CSR trio (sstatus/sepc/stvec) is
+// written first on the way out because all three need a scratch register.
 //
 // This ordering is LOAD-BEARING, not style (NK4C 续-370). The kernel leg
 // recovers the interrupted `sp` by arithmetically rebasing `t0`, so the
@@ -419,6 +428,14 @@ core::arch::global_asm! {
     // register it touches after that register's own `ld` is a user value
     // it destroys. Doing the `stvec` write here is free precisely because
     // t0's user value is still in memory, waiting at slot 5.
+    //
+    // The position is load-bearing in BOTH directions, and rule 5 of
+    // `arch/tests/riscv64_trap_leg_shape.rs` keeps it there: moving this
+    // write BELOW the latch (`csrw sstatus`) would re-open the window where
+    // S-mode code with `SIE` still set — `idle_halt` enables it — re-enters
+    // THIS leg, whose frame would then be built at `sscratch` − 272, i.e. on
+    // top of live kernel stack; moving it AFTER the reloads would steal a
+    // restored user register (the 续-371 bug exactly).
     //
     // The user `sp` is NOT fetched from slot 2 on this path: the parked
     // value lives in `sscratch` (the leg's own entry exchange put it there

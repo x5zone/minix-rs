@@ -6,7 +6,7 @@
 //! 本文件走 `include_str!` 读同一份源码文本做静态对账：不链接、不启动，
 //! 只在宿主测试里检查 asm 的**指令顺序**。
 //!
-//! 检查的五条形状规则（都直接源自本案踩过的坑）：
+//! 检查的六条形状规则（都直接源自本案踩过的坑）：
 //! 0. **词表 fail-closed**：腿里只允许已知助记符——表外指令无法证明它不写
 //!    首操作数，直接算违规（否则将来新增一条指令就静默绕过下面几条）。
 //! 1. **帧覆盖**：槽 1..=33 每槽恰好被 `sd` 一次——漏写一槽=返回时把一个
@@ -23,9 +23,14 @@
 //!    之后又用 t0 写 `stvec`，返回用户态时 t0 等于自己的栈指针——而本案被
 //!    击中的正是用户进程。
 //! 4. **回载覆盖**：存进帧的每个寄存器都必须从自己的槽送回。
+//! 5. **关键 CSR 写的存在与次序**：两条腿都必须先写帧里的 `sstatus`（硬件
+//!    在陷入时已清 SIE，所以那一写就是尾声的屏蔽闩）、再装 `stvec`，且装在
+//!    任何 GPR 回载之前。把向量写挪到闩之前会重新打开「S 态带 SIE=1 重入
+//!    只适用于 U-origin 的腿」的窗口（§续-371 评审回执 P2-2/P2-4），而形状
+//!    判定若不钉次序就拦不住这种「整理」。
 //!
 //! 正控制测试（`checker_fires_on_the_regression_it_exists_for` 与
-//! `four_negative_controls_make_each_rule_fire`）逐条给规则配已知坏样本，
+//! `negative_controls_make_each_rule_fire`）逐条给规则配已知坏样本，
 //! 保证解析器不是「什么都没匹配所以全绿」。
 
 /// 帧槽 ↔ 架构寄存器名。`gpr[i]` 就是 `x_i`；`sp`(x2) 是唯一从不由
@@ -91,17 +96,8 @@ fn written_reg(ins: &str) -> Option<&str> {
 
 /// `sd <reg>, <slot>*8(sp)` → (reg, slot)。
 fn stored_slot(ins: &str) -> Option<(&str, usize)> {
-    frame_op(ins, "sd")
-}
-
-/// `ld <reg>, <slot>*8(sp)` → (reg, slot)。
-fn loaded_slot(ins: &str) -> Option<(&str, usize)> {
-    frame_op(ins, "ld")
-}
-
-fn frame_op<'a>(ins: &'a str, want: &str) -> Option<(&'a str, usize)> {
     let (mn, rest) = ins.split_once(char::is_whitespace)?;
-    if mn != want {
+    if mn != "sd" {
         return None;
     }
     let mut it = rest.split(',');
@@ -118,10 +114,16 @@ fn frame_op<'a>(ins: &'a str, want: &str) -> Option<(&'a str, usize)> {
 /// `global_asm!` 的字符串字面量里，因此只取「以引号开始」的行并截到下一个
 /// 引号；伪指令（`.align`/`.globl`/`.size`）与字面量之间的 Rust 注释自然被
 /// 过滤掉。
+///
+/// 锚点故意定在**带引号的标号行**（`"riscv64_kernel_trap_vector:"`）而不是裸
+/// 标号名：否则将来有人在文档注释里写出同一个带冒号的名字，用户腿切片就会
+/// 从文件更早处开始并停在内核腿的 `sret`，五条规则全绿而真正的用户腿从未被
+/// 检查过（§续-371 评审回执 P2-5：要让锚点具有判别力，不能靠巧合）。
 fn leg_instructions(src: &str, entry: &str) -> Vec<String> {
+    let anchor = format!("\"{entry}\"");
     let at = src
-        .find(entry)
-        .unwrap_or_else(|| panic!("腿入口 {entry} 在 trap_stub 源里找不到"));
+        .find(&anchor)
+        .unwrap_or_else(|| panic!("腿入口 {anchor} 在 trap_stub 源里找不到（标号行格式漂移？）"));
     let rest = &src[at..];
     let end = rest
         .find("sret\"")
@@ -146,7 +148,7 @@ fn leg_instructions(src: &str, entry: &str) -> Vec<String> {
 }
 
 /// 形状规则的判定；返回违规清单（空=清白）。独立成函数是为了能被
-/// 「已知坏样本」正向对照。四条规则都只读指令序列，不碰硬件。
+/// 「已知坏样本」正向对照。六条规则都只读指令序列，不碰硬件。
 fn leg_shape_violations(leg: &[String]) -> Vec<String> {
     let mut bad = Vec::new();
     // 规则 0（fail-closed 词表）：未知助记符一律当可疑。
@@ -205,6 +207,67 @@ fn leg_shape_violations(leg: &[String]) -> Vec<String> {
         } else {
             // 规则 4（回载覆盖）：保存过的寄存器必须有人把它送回去。
             bad.push(format!("{name} 没有从自己槽（{slot}）回载就 sret"));
+        }
+    }
+    // 规则 5（关键 CSR 写的存在与次序，§续-371 评审回执 P2-2/P2-4）：
+    // 两条腿都靠「先写帧里的 sstatus（硬件在陷入时已清 SIE）、再装 stvec」
+    // 把尾声变成屏蔽窗口。用户腿会写 stvec 两次（进处理体前交还内核腿、
+    // 出去前换回用户腿），内核腿只写一次，所以这里钉的是**最后一次**的位置：
+    // 它必须在闩之后、任何 GPR 回载之前（否则它用的暂存寄存器已属于被打断
+    // 上下文，且 S 态带 SIE=1 重入只适用于 U-origin 腿的窗口被打开）。
+    let stvec_writes: Vec<usize> = leg
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| i.starts_with("csrw stvec"))
+        .map(|(k, _)| k)
+        .collect();
+    if stvec_writes.is_empty() {
+        bad.push("腿从未写 stvec：返回后向量与被返回特权级不再一致".to_string());
+    }
+    for (needle, why) in [
+        ("csrw sstatus, t0", "屏蔽闩（帧里的 SIE 已清）"),
+        ("csrw sepc, t0", "重执行位置"),
+    ] {
+        if !leg.iter().any(|i| i.as_str() == needle) {
+            bad.push(format!("缺少关键写 {needle}（{why}）"));
+        }
+    }
+    let sstatus_at = leg.iter().position(|i| i.as_str() == "csrw sstatus, t0");
+    let first_reload = ABI_SLOT
+        .iter()
+        .filter_map(|&(name, slot)| {
+            let own_load = format!("ld {name}, {slot}*8(sp)");
+            leg.iter().position(|i| i.as_str() == own_load)
+        })
+        .min();
+    if let Some(&v) = stvec_writes.last() {
+        if let Some(s) = sstatus_at
+            && v < s
+        {
+            bad.push(format!(
+                "最后一次 stvec 写（第 {v} 条）排在 sstatus 写（第 {s} 条）之前：屏蔽闩未先落，S 态可重入异权腿"
+            ));
+        }
+        if let Some(r) = first_reload
+            && v > r
+        {
+            bad.push(format!(
+                "最后一次 stvec 写（第 {v} 条）落在首个 GPR 回载（第 {r} 条）之后：它用的暂存寄存器已是被打断上下文的值"
+            ));
+        }
+    }
+    // 用户腿专属：进处理体之前必须先把向量交还内核腿（处理体内的故障不得
+    // 再走一次 sscratch 交换，否则会在同一个内核栈顶再叠一帧）。
+    if leg.iter().any(|i| i.starts_with("csrrw sp, sscratch")) {
+        let back = leg
+            .iter()
+            .position(|i| i.as_str() == "la t0, riscv64_kernel_trap_vector");
+        let enter = leg
+            .iter()
+            .position(|i| i.as_str() == "call riscv64_user_trap_dispatch");
+        match (back, enter) {
+            (Some(b), Some(e)) if b < e => {}
+            _ => bad.push("用户腿没在进处理体之前把 stvec 交还内核腿".to_string()),
         }
     }
     bad
@@ -280,7 +343,7 @@ fn find(leg: &[String], want: &str, why: &str) -> usize {
 }
 
 #[test]
-fn four_negative_controls_make_each_rule_fire() {
+fn negative_controls_make_each_rule_fire() {
     // 逐条给规则配一个已知坏样本（§续-371 评审回执 P2：正控制只盖住了
     // 保存侧倒序一种，其余规则一旦写错就会静默假绿）。
     let kernel = "riscv64_kernel_trap_vector:";
@@ -336,6 +399,47 @@ fn four_negative_controls_make_each_rule_fire() {
     assert!(
         bad.iter().any(|v| v.contains("s7 没有从自己槽")),
         "删掉 s7 回载后规则 4 未开火：{bad:?}"
+    );
+
+    // 规则 5a——删掉用户腿最后一次 stvec 写（出去前换回用户腿那一笔）：
+    // 剩下的只有入口处交还内核腿那一笔，它排在闩之前，规则 5 必须开火。
+    let mut leg = leg_instructions(SRC, user);
+    let writes: Vec<usize> = leg
+        .iter()
+        .enumerate()
+        .filter(|(_, i)| i.starts_with("csrw stvec"))
+        .map(|(k, _)| k)
+        .collect();
+    assert_eq!(
+        writes.len(),
+        2,
+        "用户腿应当写两次 stvec（入口交还/出去换回），实际 {writes:?}"
+    );
+    leg.remove(*writes.last().unwrap());
+    let bad = leg_shape_violations(&leg);
+    assert!(
+        bad.iter().any(|v| v.contains("排在 sstatus 写")),
+        "删掉出口 stvec 写后规则 5 未开火：{bad:?}"
+    );
+
+    // 规则 5b——把**出口那一笔** stvec 写挪到 sstatus 写之前（「把 CSR 集中到
+    // 一段」式整理就仍会长这样）：屏蔽闩未先落，S 态重入窗口被重新打开。
+    // 这里取的是最后一次（入口那笔本来就该在闩之前）。
+    let mut leg = leg_instructions(SRC, user);
+    let v = leg
+        .iter()
+        .rposition(|i| i.starts_with("csrw stvec"))
+        .expect("用户腿必须有出口 stvec 写");
+    let s = find(&leg, "csrw sstatus, t0", "用户腿必须先落屏蔽闩");
+    assert!(
+        s < v,
+        "现次序应当是闩先、出口向量后（闩 {s}，出口向量 {v}）"
+    );
+    leg.swap(s, v);
+    let bad = leg_shape_violations(&leg);
+    assert!(
+        bad.iter().any(|v| v.contains("排在 sstatus 写")),
+        "把 stvec 写换到闩之前后规则 5 未开火：{bad:?}"
     );
 
     // 规则 0——词表 fail-closed：塞一条表外指令，必须报「未知助记符」而不是静默通过。
