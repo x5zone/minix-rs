@@ -13106,3 +13106,11 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 
 **掩码算术审计（三连 grep）**：①残留 0x7fff 字面量——`minix-sys/src/stack.rs:272` USER_SP=0x7fff_ffff_f000 **实为 cfg(test) 内测试常量**（:252 门）✓ 无害；exec_worker:1509=A10 已知测试面；trap_dispatch:323-324=x86 门控哨兵（task1-close 待删项）。**riscv 生产路径零活体 48-bit 常量**。②地址截断族（as u32 as u64）——ipc.rs/syscall.rs 命中全部为 Console.write_hex 打印与 :3012 的 fix25 注记位保真转换（m1_i3 ptroot，有意为之）✓。③i32 字段 as u64——m1p1/p2 族=PA/值消息字段（bit-preserving 语义，注释在案）。
 **审计结论**：Shape A 的「48-bit 常量残留」假设在当前生产码**未找到活体**——若 Shape A 再现，来源只能是运行期写入的旧形状值（如 exec 帧里来自 PM 的栈顶字段在某个未走 §续-338 修复面的路径）或巧合。**下一会话**：①Shape A 再现时抓 sepc 上下文定位产生该 VA 的指令与数据流（monitor info registers 已可用）；②Shape B 方向=VA 生成点审计（region 栈生长/break/mmap hint 的算术族）+脏帧页池来源；③优先级仍建议：门采样再补 2-3 跑扩样本（每次都产出 stval/sepc 素材）与追缉并行。
+
+## §续-366 Shape B 审计+写者候选头位：exec 帧跨空间拷贝路径
+
+**VA 生成点审计**：栈生长（VM region 无独立栈生长算术）/break（无独立 brk 文件）/mmap hint（T13 R2 已加上界校验）三点均未见能产出「高位污染 VA」的活体算术。**转写者候选排查——exec 帧拷贝路径**（exec_worker.rs:353 收帧/:491 落帧双 sys_datacopy=内核跨空间拷贝）：帧=argv/envp/栈布局落进新进程 vsp——若 kernel cross_space_copy 的走表偶发返回错 PA，**帧字节落进错误物理帧=随机位置的进程数据段腐蚀**（帧池复用帧=probe 的 .data/共享页记录皆可能被击中）。与 §续-355 共享页记录改写、t_memcpy per-boot 数据段腐蚀、(A) 族野 VA 全部兼容——**写者候选头位=跨空间拷贝的走表偶发错 PA**（我方走表变更已排除=原始走表即有此症；aarch64 干净=走表实现不同——§续-349 统一理论原始版再次上位，触发条件为某时序/表状态）。
+
+**门采样第 2 跑**：卡 sa-call 爬行相（rc exec 链，203492 字节零终态，3600s 人为终止）——与 run3/§续-353 爬行同签名；**爬行本身再次指向拷贝路径**（某次跨空间拷贝挂起-重试循环则 exec 链每步慢 1000×）。
+
+**下一会话（判据已明确）**：①cross_space_copy/lookup_range_in_table 加「双走表对账」探针（同一 VA 两次独立 walk，PA 不一致即打印 (va,pa1,pa2,root)）——直抓走表非确定性；②审计 lookup_range_in_table 的 advance 累积算术与 huge-page 分支（对照 C virtual_copy_f 的逐窗口重走表语义）；③门采样第 3 跑前先落①（门跑贵且只出素材，探针直击更快）。
