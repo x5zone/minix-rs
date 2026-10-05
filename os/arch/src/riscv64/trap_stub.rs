@@ -218,6 +218,18 @@ unsafe extern "C" fn riscv64_resched_entry() -> ! {
 // the scratch (t0) is only used after its own slot is saved. The frame
 // restore mirrors the saves exactly; CSR writes (sstatus/sepc) come first
 // on the way out because they read through t0.
+//
+// This ordering is LOAD-BEARING, not style (NK4C 续-370). The kernel leg
+// recovers the interrupted `sp` by arithmetically rebasing `t0`, so the
+// moment `t0` is used as scratch before its own `sd` the interrupted
+// context's `t0` is gone: slot 5 would hold a stack-shaped value and the
+// `ld t0, 5*8(sp)` on the way out would hand the resumed S-mode
+// instruction a bogus `t0` — an asynchronous, per-tick register theft
+// that looks like nothing (no fault, no log). The aarch64 twin documents
+// the same rule for its scratch (`arm64::trap_stub`'s EL1BODY: "x9 is
+// saved into its slot before the first scratch use"); the shape is pinned
+// for BOTH legs by the host integration test
+// `arch/tests/riscv64_trap_leg_shape.rs::legs_save_scratch_before_using_it`.
 core::arch::global_asm! {
     ".section .text.trap_stub, \"ax\"",
 
@@ -228,11 +240,11 @@ core::arch::global_asm! {
     "riscv64_kernel_trap_vector:",
     "    addi sp, sp, -(34*8)",
     "    sd ra, 1*8(sp)",
-    "    addi t0, sp, 34*8",     // interrupted sp (pre-decrement value)
+    "    sd t0, 5*8(sp)",       // scratch first — the rebasing below owns t0
+    "    addi t0, sp, 34*8",    // interrupted sp (pre-decrement value)
     "    sd t0, 2*8(sp)",
     "    sd gp, 3*8(sp)",
     "    sd tp, 4*8(sp)",
-    "    sd t0, 5*8(sp)",
     "    sd t1, 6*8(sp)",
     "    sd t2, 7*8(sp)",
     "    sd s0, 8*8(sp)",
@@ -682,4 +694,9 @@ mod tests {
         assert_eq!(PARK_NONE, 0);
         assert_eq!(PARK_RESCHEDULE, 1);
     }
+
+    // 两腿 asm 的形状契约（帧覆盖 + scratch 纪律）由宿主集成测试
+    // `arch/tests/riscv64_trap_leg_shape.rs` 把守：本模块带
+    // `#[cfg(target_arch = "riscv64")]`，写在这里的 `#[test]` 在宿主
+    // `cargo test` 下根本不编译（=假绿），故测试不住这儿（§续-370）。
 }

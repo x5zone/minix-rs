@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-369（交接版）——核心阻塞=riscv64 非确定性内存污染（t_memcpy 概率性失败+偶发野 VA panic），已进入写者收窄末段。交接文档=「NK4C-接续PROMPT-20261005b.md」（新会话入口）；独立审查文档=「NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md」（GPT 审查，含排除分辨力边界与实验设计）。弧线压缩（§续-346..369）：①计算层洗清（裸机 semihosting 3/3 逐位对）+机上正确可达（t64 全对账跑 RESULT=7b405d24，§续-363）；②腐蚀=per-boot 随机小而准写（对象不定：probe .data/共享页记录/模块镜像/VM boot 数据），率随暴露时长升；③冻结/爬行=探针打印量时序副作用（非内核，§续-361）——探针一律用低打印形态；④本会话 os/ 代码全族排除（arch 回退臂+pre-T13 树臂皆复现，§续-359/360）；⑤GPT 三结构事实核实：单核/ASID=0/无 DMA（§续-367）；⑥实验丁（关中断 3 跑：2 对+1 中段腐）→定时器路径降权，嫌疑=per-kcall 用户内存写（finw 回执/DIAGCTL 拷贝）；⑦双走表对账（cross_space_copy+finw）4 boot 零 mismatch——盲区=确定性错译/DIAGCTL 拷贝/Some→None；⑧验收=双判据（确定性恒定+统计 k 反推，GPT 第 8 章）。**下一会话队列**：采样至 ≥10 boot→腐蚀再现且对账零命中则三方对账（walk 值/页表内存原值/手工解析解耦）→DIAGCTL 拷贝守卫→陷帧守护（丁子件二未做）→门全量重跑。工程常驻资产：WALK_HARDENING 特性门（默认关+252 对抗测试）、NK4C_CLI 关中断旗标、boot_probe.sh（双快照+STALL+时间戳串口）、探针族 v1/v2l/t03/t64/cli。
+> **🛑 最新前沿＝§续-370（坐实并修复一个真实的陷入缺陷，但它不是本案唯一写者）——核心阻塞仍是「riscv64 非确定性内存污染」。** 发现方式不是跑，是读：按交接队列第四项（给陷入帧加守护校验）动手前先读现有保存/恢复代码，在 `os/arch/src/riscv64/trap_stub.rs` 的内核腿里找到一处寄存器次序缺陷——该腿先用 t0 当暂存去算被打断的栈指针，之后才把 t0 写进它自己的帧槽，于是每一次监管态时钟中断都把被打断内核上下文的 t0 换成一个栈地址形状的值并在出口原样送回（不报异常、不留日志）。同一文件的用户腿与 64 位 ARM 的同族实现（`os/arch/src/arm64/trap_stub.rs:286` 的注释即写明「暂存寄存器先存进自己的槽再挪用」）都守住了这条纪律，只有 riscv 内核腿漏了——与本案「只有 riscv 有现象」的既有事实形状吻合。修复=一次指令换位（反汇编已确认落到机器码）+ 宿主形状对账测试（含正控制）。**判据边界：修复后第 1 次点火就再次腐蚀（result=ea6dd9fd，首个分歧对 P(1,3)，双走表对账零命中）⇒「此缺陷是唯一写者」一票否证**；可达性尚未实测（该腿在一次开机里究竟进过几次），这是下一会话第一动作。本笔同时作废 §续-368 的「中断路径降权」结论：实验丁关的是用户态返回后的中断投递，监管态 sstatus.SIE 由 `os/arch/src/riscv64/smp.rs:171` 的 idle_halt 开着，该实验对「内核态中断是否写者」没有分辨力。详见 §续-370。
+>
+> **（上一前沿＝§续-369（交接版）——核心阻塞=riscv64 非确定性内存污染（t_memcpy 概率性失败+偶发野 VA panic），已进入写者收窄末段。交接文档=「NK4C-接续PROMPT-20261005b.md」（新会话入口）；独立审查文档=「NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md」（GPT 审查，含排除分辨力边界与实验设计）。弧线压缩（§续-346..369）：①计算层洗清（裸机 semihosting 3/3 逐位对）+机上正确可达（t64 全对账跑 RESULT=7b405d24，§续-363）；②腐蚀=per-boot 随机小而准写（对象不定：probe .data/共享页记录/模块镜像/VM boot 数据），率随暴露时长升；③冻结/爬行=探针打印量时序副作用（非内核，§续-361）——探针一律用低打印形态；④本会话 os/ 代码全族排除（arch 回退臂+pre-T13 树臂皆复现，§续-359/360）；⑤GPT 三结构事实核实：单核/ASID=0/无 DMA（§续-367）；⑥实验丁（关中断 3 跑：2 对+1 中段腐）→定时器路径降权，嫌疑=per-kcall 用户内存写（finw 回执/DIAGCTL 拷贝）；⑦双走表对账（cross_space_copy+finw）4 boot 零 mismatch——盲区=确定性错译/DIAGCTL 拷贝/Some→None；⑧验收=双判据（确定性恒定+统计 k 反推，GPT 第 8 章）。**下一会话队列**：采样至 ≥10 boot→腐蚀再现且对账零命中则三方对账（walk 值/页表内存原值/手工解析解耦）→DIAGCTL 拷贝守卫→陷帧守护（丁子件二未做）→门全量重跑。工程常驻资产：WALK_HARDENING 特性门（默认关+252 对抗测试）、NK4C_CLI 关中断旗标、boot_probe.sh（双快照+STALL+时间戳串口）、探针族 v1/v2l/t03/t64/cli。
 >
 > **（上一前沿＝§续-346（污染取证第二轮：腐蚀器画像收敛——guest 侧、跨 QEMU 版本、位置随机的低频字节级腐蚀，minix-elf 不可达 panic ×3 + kdst len=1 先导签名）**：v3 判别器（每 (i,j) 三路 XOR：流/b1/b2，3072 检查点）+v4 尾窗可见性 6 次点火读数——①run4 **全计算程纯**（3072 组校验和逐位一致=流与缓冲全程未损）却 strcmp 失败=腐蚀可打中 MD5End→strcmp 尾窗（.data 尾部 result/mc 族）；②9.2.4 下两跑两失败脸谱（minix-elf OOB / pf-exit noaddr cr=0x7ffff48b124e6 **>2^38 非规范野地址**）=与 8.2.2 同族 ⇒ **腐蚀器在我方 guest 软件、与 QEMU 版本无关**；③minix-elf lib.rs:264「len=3 索 [3]」不可达 panic ×3（z1 历史+run3+run5；parse_phdr 边界检查 entsize≥56 数学封死，源自 09-23 未改二进制同代）且**三次全部以 `nk4a: kdst copy len=1` 先导**（健康跑=0x2f）——**len 字段本身是被腐蚀的源**（调度器入口首次跨空间拷贝的长度读到腐值）⇒ 腐蚀早在出生期就已命中 boot 参数/模块区。画像：单腐蚀过程、命中位置随机、速率≈每数秒 guest 时间一次、脸谱=被击中的数据结构（boot 参数长字段/模块 ELF 镜像/VM handoff/user .data 尾窗）。下一步（决定性、工具在位）：minix-elf OOB panic 时 **QEMU 尚存活（-no-reboot 挂死）→ riscv_halt_dump.sh pmemsave 全 RAM → 12 模块镜像对 REL 逐字节 diff → 腐蚀字节指纹+落点**；辅以 boot handoff/args 区早期金丝雀。
 >
@@ -13155,3 +13157,53 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 **累计判据状态**：对账覆盖=cross_space_copy 首页+finw 每页；零命中累计 4 boot。剩余盲区（GPT 实验戊注记）：确定性错译（两次同错）、DIAGCTL diagbuf 拷贝路径（kernel 侧 data_copy_vmcheck，写 kernel 栈但源读是用户 VA）、Some→None 翻转。
 
 **下一会话**：①继续采样（每 boot 约 90-120 秒，目标累计 ≥10 boot 或首次 mismatch/腐蚀）；②若腐蚀再现且对账仍零命中 → 确定性错译分支：对账升级为「三方对账」=walk 返回值 + 页表内存原值（读 PTE 本身）+ 手工三级解析比对——把「walk 函数返回值」与「页表内存」解耦（区分 walk 代码错 vs 页表内存错）；③DIAGCTL 拷贝路径（data_copy_vmcheck 段）加对账/守卫。
+
+## §续-370 坐实并修复内核陷入腿的暂存寄存器次序缺陷（时钟中断偷走被打断上下文的 t0）；修复后首 boot 即再腐蚀⇒它不是唯一写者
+
+**发现路径（读码而非跑机）**：交接队列第四项是「给陷入帧加守护校验」。动手加校验之前，先读现有保存/恢复序列看它有没有已经漏了寄存器——这一读直接命中。锚点：两条腿都在 `os/arch/src/riscv64/trap_stub.rs`（内核腿=监管态代码被打断时走的那条，用户腿=用户态代码被打断时走的那条）。
+
+**缺陷本体（改动前的指令次序，行号为改动前源码）**：
+
+```text
+addi sp, sp, -(34*8)     开帧（34 个 8 字节槽）
+sd ra, 1*8(sp)           返回地址进 1 号槽
+addi t0, sp, 34*8        ← 把 t0 当暂存，算出被打断时的栈指针
+sd t0, 2*8(sp)           把算出的栈指针放进 2 号槽
+sd gp, 3*8(sp)
+sd tp, 4*8(sp)
+sd t0, 5*8(sp)           ← t0 这时才入槽，可它已经是栈地址了
+```
+
+帧的定义写明 `gpr[i]` 就是架构寄存器 x_i（同文件 Frame layout 段 L38-L45：槽号=寄存器号），所以 5 号槽的家是 t0。次序颠倒的后果：5 号槽存的是被打断的栈指针，出口那条 `ld t0, 5*8(sp)` 把这个栈地址当 t0 还给被打断的那条内核指令。**没有异常、没有日志、页表也没错**——处理器只是老老实实把一个 8 字节值送进寄存器。该文件的注释（L216-L220）本来就写着「每个寄存器都先按架构名存好，之后才被当暂存用；暂存 t0 只在自己的槽存完才用」——注释主张的纪律在代码里不成立。本笔把这条纪律在注释里升级为「承重」（LOAD-BEARING）并写清后果。
+
+**为什么这条腿真会被走到（静态推证，尚未机测）**：
+1. `os/arch/src/riscv64/smp.rs:147-177` 的 `idle_halt()` 明确先 `csrs sstatus, SIE(bit1)` 再 `wfi`——内核主动在监管态打开中断（注释里记着这就是 §续-108/109 的定案写法：不直接开 SIE 就永远唤不醒）；
+2. 调用者 `os/kernel/src/lib.rs:3261-3378` 的 `idle()`：第 5 步（L3373）调 `idle_halt()`，单核构建同样走；
+3. RISC-V 陷入语义：进陷入时 SIE→SPIE 且 SIE 清零，`sret` 时 SIE:=SPIE。于是时钟中断把内核从 `wfi` 叫醒后，返回点还是监管态且 SIE=1——此后内核里跑的每一段代码都可被时钟打断，而每一次打断都走上面那条腿（中断投递交由 `stvec` 指向当前将要运行的特权级：内核在跑时 `stvec` 就指着内核腿，见 `os/arch/src/riscv64/trap_entry.rs:118-134` 与 `restore_to_user` 的换腿）；
+4. 腿的处理体确实做真活（重新装弹、派发 IRQ、抢 BKL、查时间片：`os/kernel/src/trap_dispatch.rs:1791` → 同文件 `riscv64_timer_arm()`），但被破坏的是**返回之后**被打断那段内核代码的一个寄存器。
+
+**跨架构对照（为什么只有 riscv 有现象）**：64 位 ARM 的同族实现把这条纪律写进注释并做到——`os/arch/src/arm64/trap_stub.rs:286`「x9 is saved into its slot before the first scratch use」，内核腿先 `stp x8, x9, [sp, #64]` 才 `mov x9, sp`；用户腿更保守，`os/arch/src/arm64/trap_stub.rs:346` 先 `stp x9, x10, [sp, #-16]!` 把两个暂存寄存器原值塞进口袋，再 `mrs x9, sp_el0` 挪用 x9。riscv 用户腿也清白（修复后同一文件 L354 的 `sd t0, 5*8(sp)` 排在任何 t0 挪用之前）。**只有 riscv 内核腿漏了**——这与「同一套上层逻辑在 aarch64 上 36 案零现象」（独立审查文档 3.5）形状吻合，也是本笔把它当缺陷而非纯洁癖的理由。
+
+**修复**：一次指令换位（把 `sd t0, 5*8(sp)` 提到 `addi t0, sp, 34*8` 之前），指令集合不变（`os/arch/src/riscv64/trap_stub.rs:243-244`）。反汇编确认落到机器码：`riscv64-unknown-elf-objdump -d os/target/riscv64gc-unknown-none-elf/release/kernel` 在 `<riscv64_kernel_trap_vector>` 处给出 `sd t0,40(sp)` @0xffffffc0000258f4 先于 `addi t0,sp,272` @0xffffffc0000258f6。
+
+**非法态封装（防御性测试）**：新增宿主集成测试 `os/arch/tests/riscv64_trap_leg_shape.rs`，对两条腿的汇编文本做两条形状判定——①帧覆盖：1..=33 每槽恰好被 `sd` 写一次；②暂存纪律：帧要携带的每个寄存器，先落进自己的槽，才允许被本腿挪用。共 3 条测试全绿，其中 `checker_fires_on_the_regression_it_exists_for` 是正控制（把顺序换回改动前，检查器必须开火——防「解析器什么都没匹配所以永远绿」），`parser_sees_both_legs_and_their_frame_slots` 正面确认解析器真数到 33 个槽。为什么测试不住在 `trap_stub.rs` 的 `#[cfg(test)]` 里：`minix-arch` 的 `pub mod riscv64` 带 `#[cfg(target_arch = "riscv64")]`（`os/arch/src/lib.rs:27-28`），宿主 `cargo test` 根本不编译那个模块——写在那里的测试永远不会跑（本笔一度就这么写，直到发现按名字根本跑不出才拆到集成测试里）。**可复用规律：架构目录内的 `#[cfg(test)]` 在宿主测试中是隐形的，新测试必须放在宿主能发现的位置（`<crate>/tests/*.rs` 或带宿主友好 cfg 门的模块）并验证它真的被跑到（名字命中）。**
+
+**判据边界（本笔不能说的事）**：
+- **修复后第 1 次点火就再腐蚀**（result=ea6dd9fd、首个分歧对 P(1,3)、双走表对账仍零命中）⇒「这个次序缺陷是概率性内存污染的唯一写者」一票否证。成立的说法只有：这是一个静态坐实、可达性推证完成、后果形状与本案多个画像兼容（小而准的写、位置不定、只在时钟能进内核的时刻发生、随内核暴露时长增加）的真实缺陷，修它是应当的，但本案写者仍未落网。
+- 混杂变量提醒：修复换了内核镜像（md5 前 12 4c3c8e0d→52ffce13），时序变了；单样本不构成任何方向的统计证据（独立审查文档第 8 章纪律）。
+- 可达性未实测——若那条腿在一次开机里从未进过，本笔就是一个正确但无关的修复。否证它只需一个计数器（下一会话首动作）。
+- 野地址两形状（Shape A/B）与本缺陷的关系未建立：若本缺陷是写者，它交出去的值形状是「内核栈地址」，而 Shape A 是用户栈形状（高 16 位 0x7ffff）、Shape B 是合法低位+散布高位，两者都不像被打断内核的 sp。本笔不改写形状账。
+- 245699 字节冻结仍按 §续-361 定性（插桩打印量时序副作用），与本笔无关。
+
+**§续-368「中断路径降权」作废（前提纠偏）**：实验丁的关中断臂（NK4C_CLI）只让 `restore_to_user` 跳过 SPIE 置位（`os/arch/src/riscv64/trap_return.rs:99-108`）——它关掉的是**返回用户态之后**用户态能否被打断；监管态的 sstatus.SIE 由 idle_halt 开着，时钟照样进内核腿。所以该实验对「内核态中断是否写者」没有分辨力，当年据以「定时器路径降权、嫌疑收窄到 per-kcall 用户内存写」的推理链里，「降权」这一环必须撑回未定。
+
+**采样现场读数（本笔新增工具+两次点火）**：
+- 新工具 `tmp/nk4a/tmemcpy_bisect/sample_boots.sh`：连续点火 + 每次自动解析（RESULT/首个分歧对/对账命中数/终态脸谱）+ 逐笔钉 kernel 与 imgrd 的 md5（§续-312 新鲜度教训）+ 抓到异常**立即停机并把 T1/T2 快照搬走**（否则被下一次点火覆盖）。台账=`sample_ledger.txt`。
+- 改动前的基线（kernel 4c3c8e0d）：sam1 PASS（RESULT=7b405d24、对账零命中）；**sam2 STALL**（125985 字节零进展，快照已存 ram_catch2_T1/T2.bin）。sam2 的真事件读法：`nk4a: panic-enter` + 页故障诊断行 `nk4a: PF servers/pm/src/i` / `nk4a: PF nit.rs` 后跟 `375` ⇒ 某进程在 `os/servers/pm/src/init.rs` 行 0x375 恐慌（该处是「启动期只应 INIT 可被用户态调度」的断言），随后 `ipcerr caller=0 err=ECALLDENIED` 与停滞；健康 boot 零 panic-enter（sam1/finw1 均为 0）⇒ 这是真异常不是噪声。
+- **两处负结果（差点被误读成腐蚀指纹，均已读码洗清）**：①`nk4a: sup k=S ...` 行的字段错位（`idx=00000150` 丢了 `0x`、`base=0x 0000…` 多出空格）——源头 `os/libs/minix-rt/src/alloc.rs:368` 的定长模板写位与字段位置不匹配，**健康 boot 一模一样出现**⇒非腐蚀信号（但确实是诊断行自己的显示错位旧债，登记）；②`PF` 路径被劈成两段——`os/libs/minix-rt/src/lib.rs:397-407` 就是按 16 字节分块逐段打印（每块都带前缀），属于设计行为⇒非腐蚀信号。
+- 修复后（kernel 52ffce13）：boot1=**CORRUPT**（result=ea6dd9fd、firstdiff=P(1,3)、mismatch=0）——采样器按设计停机并保留 ram_catch1_T1/T2.bin。
+
+**回归**：`cargo test -q -j 2 -p minix-types -p minix-arch -p minix-kernel -p minix-vm` 全绿（0 failed，含新增 3 条形状测试）；`cargo clippy -q -p minix-arch`（门默认口径）无错；riscv64 kernel-image 构建过。受影响门=riscv 单案探针（本笔就是门）；x86/aarch64 不受影响（改动在 `#[cfg(target_arch = "riscv64")]` 模块内，且新测试为宿主专用）。顺带登记：`cargo clippy --all-targets` 在 `os/arch/src/riscv64_walk.rs:312/313/369` 报 4 处 `8 * 0` 触发的 identity_op/erasing_op（旧债，与本笔无关）。
+
+**下一会话（按信息增益重排）**：①**可达性遥测**——给内核腿进入计数（riscv64 非 mock 门控、低打印：首次进入打一行 + 每 4096 次打一行），把「这条腿到底进过几次」变读数；没有它，「修了一条没跑到的路径」这种可能不可否证。②带着遥测重新采样（目标 ≥10 boot），同时按 GPT 第 8 章双判据统计腐蚀率（改动前同镜像 4 boot=1 坏；累计基线待样本）。③腐蚀+对账零命中仍持续 ⇒ 按队列转三方对账（walk 返回值/页表内存原值直读/手工三级解析）+DIAGCTL 拷贝路径守卫。④对已保留的 catch1/catch2 快照做模块区 diff 与 probe 数据页落点比对（§七工具），看被击中的对象本 boot 是谁。⑤旧债滚除候选：minix-rt 供给日志的模板写位错位（会让真腐蚀指纹混在假指纹里）。
+
