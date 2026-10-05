@@ -13142,4 +13142,4 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 
 **与双走表零命中的关系**：对账探针装在 `lookup_range_in_table`（cross_space_copy 路径）；**finw 回执走的是 syscall.rs:3960 的独立 walk 调用点**——对账未覆盖该点。下一会话第一动作：把双走表对账扩到 finw 路径（walk 前后各走一次对账）+DIAGCTL 拷贝路径；若 finw 对账命中=坐实，若零命中且腐蚀继续=转「确定性错译」分支（对账探针盲区，需写后回读臂）。
 
-**工程状态**：CLI 机制=诊断常驻（riscv64 非 mock 门控；默认 0=无行为变化；x86/aarch64 构建不受影响）。P2-1/P2-2 已修（vm.rs 注释）；t_memcpy_cli 已入 imgrd_probe.proto。
+**工程状态**：关中断机制=诊断常驻（riscv64 非 mock 门控；默认 0=无行为变化；x86 与 aarch64 构建不受影响）。代码评审的两项建议级注释已修（vm.rs）；t_memcpy_cli 已入镜像清单。
