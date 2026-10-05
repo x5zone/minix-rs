@@ -13606,6 +13606,14 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **验证**：aarch64 全量门 396 PASS + x86 cmd-smoke PASS（上）；链接期符号 fail-fast 即构建验证。**诚实边界**：其一，循环步进 8 字节到 __bss_end——若 bss 尾非 8 对齐，末次写至多越 4 字节进 2MiB 收口填充区（零值写填充＝无害，且两脚本节尾都有 ALIGN(0x200000) 收口）；其二，UEFI 路径的行为对照只经 OVMF/QEMU（真硬件 UEFI 未测）。
 
+## §续-397 P-ALL-10 定谳：mock 默认特性＝宿主测试形态的刻意设计，「摘除默认」不成立，债务以「双形态契约 + 生产覆盖」方式收口
+
+**评估结论**：TODO 方案甲（摘除 minix-kernel 的 default=mock）经现读 Cargo.toml 判为**不成立**——NL5③ 的设计注释写明：`default = ["mock"]` 是**宿主测试形态**（arch 带 runtime-window、plat 走 mock 替身），mock 替身正是让内核逻辑（830 枚测试）能在 x86_64 宿主执行的机制；摘除默认位后宿主 `cargo test -p minix-kernel` 走生产路径＝no_std/固件代码在宿主**无法链接**（不是「测试变红」而是宿主形态整体消失——TODO 的风险句「基线短期变红」低估了这一层）。生产形态按 NL5③ 本就走 `--no-default-features` + 三架构交叉编译。
+
+**「mock 假绿」的真解药＝生产形态的机器验证**，而这正是本轮已交付的覆盖面：aarch64 全量门 396 PASS 36/36 + riscv64 全量门 386/387/388 三连 PASS 36/36 + x86 cmd-smoke 18-stage + 双架构 boot marker + aarch64 bootmarks——真固件路径（真 MMU/真 UART/真异常腿/真 PM/VM/VFS 服务进程）已在**每轮改动后**跑到 36 案终态。mock 假绿的暴露面（mock 替身与生产行为分歧）被压缩到「机器门不穿过的路径」。
+
+**收口动作**：①双形态契约在 Cargo.toml 注释已在位（NL5③），WORKLOG 本节补记裁决；②后续任何宿主绿读数继续按本档纪律配真机门引用（§续-388/389/394/395/396 各轮均已如此成对报告）。P-ALL-10 以「裁决 + 双形态覆盖证据」收口，不改构建。
+
 ## §续-394 P-ALL-01 深度迁移收官批：fpu / protection / trap_entry / plat interrupt（5 测试全绿，逐文件深度迁移完成）
 
 **钉住的承重契约**（`os/arch/tests/arch_small_files_audit.rs`）：
