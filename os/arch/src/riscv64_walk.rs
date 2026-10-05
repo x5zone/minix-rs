@@ -110,7 +110,8 @@ pub fn walk_read_with<F>(read_pte: &mut F, root_paddr: u64, vaddr: u64) -> WalkR
 where
     F: FnMut(u64) -> u64,
 {
-    if !is_canonical_sv39(vaddr) {
+    // §续-356 A/B：加固默认关（旧语义），walk-hardening 特性开=fail-closed。
+    if cfg!(feature = "walk-hardening") && !is_canonical_sv39(vaddr) {
         return WalkResult::NotPresent;
     }
 
@@ -120,7 +121,7 @@ where
         return WalkResult::NotPresent;
     }
     if pte_is_leaf(l2e) {
-        if huge_leaf_misaligned(l2e, true) {
+        if cfg!(feature = "walk-hardening") && huge_leaf_misaligned(l2e, true) {
             return WalkResult::NotPresent; // 保留形态：硬件必 fault，软件对齐
         }
         return WalkResult::Huge1G(pte_to_paddr(l2e) | (vaddr & 0x3FFF_FFFF), l2e);
@@ -133,7 +134,7 @@ where
         return WalkResult::NotPresent;
     }
     if pte_is_leaf(l1e) {
-        if huge_leaf_misaligned(l1e, false) {
+        if cfg!(feature = "walk-hardening") && huge_leaf_misaligned(l1e, false) {
             return WalkResult::NotPresent;
         }
         return WalkResult::Huge2M(pte_to_paddr(l1e) | (vaddr & 0x1F_FFFF), l1e);
@@ -170,9 +171,17 @@ mod tests {
             &mut self.region[off]
         }
         /// 按物理地址读 PTE 的闭包（真机 read_pte_dm 的宿主替身）。
+        /// 区外物理地址返回 0（对齐真实内存语义：非独占地址空间）。
         fn reader(&self) -> impl FnMut(u64) -> u64 + '_ {
             let region = &*self.region;
-            move |phys: u64| region[((phys - REGION_PHYS) as usize) / 8]
+            move |phys: u64| {
+                let off = (phys.wrapping_sub(REGION_PHYS)) as usize;
+                if off % 8 == 0 && off / 8 < region.len() {
+                    region[off / 8]
+                } else {
+                    0
+                }
+            }
         }
         fn walker(&self, root: u64, va: u64) -> WalkResult {
             let mut rd = self.reader();
@@ -188,24 +197,35 @@ mod tests {
     }
 
     fn ref_walk(region: &[u64], root_phys: u64, vaddr: u64) -> RefWalk {
-        if !is_canonical_sv39(vaddr) {
+        let rd = |pa: u64| -> u64 {
+            let off = (pa.wrapping_sub(REGION_PHYS)) as usize;
+            if pa >= REGION_PHYS && off / 8 < region.len() {
+                region[off / 8]
+            } else {
+                0
+            }
+        };
+        if cfg!(feature = "walk-hardening") && !is_canonical_sv39(vaddr) {
             return RefWalk::NotPresent;
         }
         let idx = |phys: u64, level_shift: u32| -> usize {
-            (((phys - REGION_PHYS) / 8) as usize) + (((vaddr >> level_shift) & 0x1FF) as usize)
+            (((phys.wrapping_sub(REGION_PHYS)) / 8) as usize)
+                + (((vaddr >> level_shift) & 0x1FF) as usize)
         };
-        let l2e = region[idx(root_phys, L2_SHIFT)];
+        let l2e = rd(root_phys + (((vaddr >> L2_SHIFT) & 0x1FF) as u64) * 8);
         if l2e & PTE_V == 0 {
             return RefWalk::NotPresent;
         }
         if l2e & PTE_RWX_MASK != 0 {
-            if (l2e & PTE_PPN_MASK) >> 10 & ((1 << 18) - 1) != 0 {
+            if cfg!(feature = "walk-hardening")
+                && (l2e & PTE_PPN_MASK) >> 10 & ((1 << 18) - 1) != 0
+            {
                 return RefWalk::NotPresent; // 错粒度 1GB 叶
             }
             return RefWalk::Leaf { pa: pte_to_paddr(l2e) | (vaddr & 0x3FFF_FFFF) };
         }
         let l1_base = pte_to_paddr(l2e);
-        let l1e = region[idx(l1_base, L1_SHIFT)];
+        let l1e = rd(l1_base + (((vaddr >> L1_SHIFT) & 0x1FF) as u64) * 8);
         if l1e & PTE_V == 0 {
             return RefWalk::NotPresent;
         }
@@ -216,7 +236,7 @@ mod tests {
             return RefWalk::Leaf { pa: pte_to_paddr(l1e) | (vaddr & 0x1F_FFFF) };
         }
         let l0_base = pte_to_paddr(l1e);
-        let pte = region[idx(l0_base, L0_SHIFT)];
+        let pte = rd(l0_base + (((vaddr >> L0_SHIFT) & 0x1FF) as u64) * 8);
         if pte & PTE_V == 0 || pte & PTE_RWX_MASK == 0 {
             // V=0 不命中；V=1 而 RWX=0 是末级保留形态（硬件必 fault）。
             return RefWalk::NotPresent;
@@ -298,6 +318,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "walk-hardening")]
     #[test]
     fn misaligned_huge_leaf_is_not_present() {
         // 错粒度巨叶：2MB 叶 PPN[9:0]≠0 / 1GB 叶 PPN[18:0]≠0 = 保留形态，
@@ -317,6 +338,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "walk-hardening")]
     #[test]
     fn non_canonical_va_is_not_present() {
         // §续-349 头号形状：共享根表的内核半区在 root[256..512]——非规范
@@ -397,12 +419,16 @@ mod tests {
             RefWalk::Leaf { pa } => assert_eq!(pa, 0xC000_0000 | (va3 & 0x3FFF_FFFF)),
             other => panic!("合法 1GB 叶（PPN[17]=1）应被接受，得 {other:?}"),
         }
-        // 边界内侧仍拒绝：2MB 叶 paddr[20:12]≠0（paddr 0x8040_1000）。
+        // 边界内侧拒绝（错粒度）仅加固态成立；关态=旧语义（接受并折叠）。
         *s.entry_mut(l1 + 8 * 2) = paddr_to_pte(0x8040_1000) | V | R | W;
-        assert_eq!(walk_under(&s, root, va), RefWalk::NotPresent);
+        if cfg!(feature = "walk-hardening") {
+            assert_eq!(walk_under(&s, root, va), RefWalk::NotPresent);
+        }
         // 1GB 叶 paddr[29:12]≠0（paddr 0xC000_1000）。
         *s.entry_mut(root + 8 * 3) = paddr_to_pte(0xC000_1000) | V | R;
-        assert_eq!(walk_under(&s, root, va3), RefWalk::NotPresent);
+        if cfg!(feature = "walk-hardening") {
+            assert_eq!(walk_under(&s, root, va3), RefWalk::NotPresent);
+        }
     }
 
     #[test]

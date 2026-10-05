@@ -17,6 +17,9 @@ bitflags = { workspace = true }
 [features]
 default = ["runtime-window"]
 runtime-window = []
+# §续-356 A/B：Sv39 走表三加固（规范性/错粒度巨叶）的开关——默认关=旧语义。
+# 开=对保留/非法形态 fail-closed。爬行归因后定去留。
+walk-hardening = []
 x86_64 = []
 arm64 = []
 riscv64 = []

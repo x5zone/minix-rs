@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 
 [features]
+walk-hardening = ["minix-arch/walk-hardening"]
 # X-2/NK5 裸机隔离：本包 bin 是 no_std 裸机内核镜像（自带 panic_handler 与
 # global_allocator），宿主 `--workspace --bins` 必须跳过；真机构建成对传
 # `--target <triple> --features fw-<arch>-none`（与 test-kernels
