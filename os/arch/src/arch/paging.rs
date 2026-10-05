@@ -381,16 +381,13 @@ pub trait Paging {
 
     fn root_paddr(&self) -> PhysBytes;
 
-    /// Activate this page table on the current CPU.
-    ///
-    /// # Safety
-    ///
-    /// Caller must ensure:
-    /// - The page table is fully initialized (kernel mappings present)
-    /// - On SMP systems, proper TLB invalidation is performed after switch
-    /// - No stale references to the old page table's mappings are in use
-    unsafe fn switch(&self);
 
+
+    /// （P-ALL-06 2026-10-06：原 `unsafe fn switch(&self)` 成员移除——内核
+    /// 实际换根走 `TlbArch::set_active_root`（kernel/src/lib.rs:3103），
+    /// 本成员三架构零具体调用方（仅 Mock 自引用），属被取代的死契约面。
+    /// [ARCH: trait-surface refactor，无语义变化；三 impl 同批移除。]
+    ///
     /// Flush TLB entries associated with this page table.
     ///
     /// Without ASID, equivalent to a global TLB flush.
@@ -819,10 +816,6 @@ pub mod mock {
             PhysBytes(self.root_phys)
         }
 
-        unsafe fn switch(&self) {
-            ACTIVE_MOCK_TABLE.store(self.id, Ordering::SeqCst);
-        }
-
         unsafe fn flush_tlb(&self) {}
 
         unsafe fn flush_tlb_addr(&self, _vaddr: VirBytes) {}
@@ -868,7 +861,7 @@ pub mod mock {
         fn free_asid(&self, _id: MockAsid) {}
 
         unsafe fn switch_with_asid(&self, _id: MockAsid) { unsafe {
-            self.switch();
+            ACTIVE_MOCK_TABLE.store(self.id, Ordering::SeqCst);
         }}
 
         unsafe fn flush_tlb_asid(&self, _id: MockAsid) {}
@@ -941,14 +934,6 @@ pub mod mock {
             let (_, flags) = pt.query(vaddr).unwrap();
             assert!(!flags.contains(PageFlags::WRITABLE));
             assert!(flags.contains(PageFlags::PRESENT));
-        }
-
-        #[test]
-        fn test_mock_switch() {
-            let pt = MockPaging::new().unwrap();
-            unsafe {
-                pt.switch();
-            }
         }
 
         #[test]

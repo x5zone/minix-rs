@@ -769,12 +769,7 @@ impl Paging for Riscv64Paging {
         PhysBytes(self.root_paddr)
     }
 
-    unsafe fn switch(&self) {
-        unsafe {
-            let satp = (8u64 << 60) | (self.root_paddr >> 12);
-            asm!("csrw satp, {}", in(reg) satp);
-        }
-    }
+    
 
     unsafe fn flush_tlb(&self) {
         unsafe {

@@ -13546,6 +13546,14 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **验证**：aarch64 全量门 389 PASS（上）；minix-arch 宿主测试（含本轮 arm64 钉住 11 枚）全绿；riscv64_walk 的 clippy 豁免在宿主 --all-features 下核过（8*0 命中清零）。**诚实边界**：free_child_tables 无宿主单测（arm64 模块架构门住，宿主不编译——这正是 P-ALL-01 的已知形状；真机门是它当前的唯一验证面）；「L1/L2 块描述符跳过」分支在本内核无块映射使用（walk_alloc 只造表），属防御性对齐 Sv39 同族语义。
 
+## §续-390 P-ALL-06 第一件落地：Paging::switch 死契约面移除（三 impl + trait + Mock）＋ cdev 常量子项定谳为已闭合
+
+**switch 移除（定谳链）**：TODO 与交接件登记的「riscv64/paging.rs::switch 零调用方陷阱死代码」实为 **trait 必需成员**（arch/paging.rs:392 `unsafe fn switch(&self);` 无默认体）——不能只删 riscv 一端。全仓调用面复核：仅剩 os/arch/src/arch/paging.rs 内 Mock 自身（测试 fixture 的 switch_with_asid 委托 + test_mock_switch），三架构零具体调用方。**内核实路换根走 TlbArch::set_active_root**（kernel/src/lib.rs:3103，CR3/TTBR0_EL1/satp 各架构后端）——本成员是被取代的死契约面。落地＝trait 成员连同 doc 块移除、x86_64（Intel 语法 cr3 写，含 fix20 取证注释）、arm64（dsb/ttbr1_el1/isb）、riscv64（satp 位装帧）三 impl 同批移除、Mock 的 switch_with_asid 改为直写 ACTIVE_MOCK_TABLE（原经 self.switch() 委托）、test_mock_switch 删除；trait 处留 [ARCH: trait-surface refactor，无语义变化] 取代说明。**验证**：三形态内核镜像编译零错误（aarch64 RUSTFLAGS 契约、riscv64、x86_64）＋宿主 arch/kernel 全绿（249+830 等）。红线下注：`switch_with_asid`（PagingWithId，ASID 感知的新面）**保留**——它是活的接缝，与被移除的死面勿混。
+
+**cdev 常量子项定谳＝已闭合（TODO 快照过期）**：TODO 记「cdev.rs 手抄 CDEV 六常量类型漂移」——现读 cdev.rs 头部：常量已收敛到 `minix_types::types::device` 单一权威（edge E-DEVWIRE 落地），cdev.rs 经 `pub use` 消费。疑似冲突（minix-types CDEV_NONBLOCK=0x01 vs 上游 CDEV_R_BIT=0x01）经对照 com.h:938-957 消解：上游本就是**两个不同字段的同值位**（ACCESS 字段的 R_BIT vs FLAGS 字段的 NONBLOCK），minix-types 逐字段忠实镜像并带行号锚注。该子项不需要动。
+
+**P-ALL-06 余量（登记精确锚点，下轮）**：①os/servers/is 的 KProcSnap 与 kernel misc.rs 的 ProcInfoStruct 双源（字段序/u64-vs-i32 时间宽度）＋SI_PROC_TAB 重复定义——收敛方向＝minix-types 单一真源，但先对 C dmp_pm.c/dmp_ds.c 的 getsysinfo wire 布局逐字段定谳（动 wire 格式需上机对账）；②riscv64_walk.rs 三处 8*0 已 §续-387 裁决、alloc.rs 模板已 §续-385 删除（本条在 TODO 里可标已闭）。
+
 ## §续-388 P-ALL-05 三子项定谳并落地：X-7 未知 VMCTL 改 EINVAL（对齐上游）、SD-16 errno 符号全文件对齐负号契约（连修 2 个长期既有失败）、SD-17 argc 槽宽统一 LP64 全字
 
 **本轮性质**：语义对上游 C 真源对齐轮（P-ALL-05），三条各自独立定谳、一次成组提交（同属「语义与上游不一致」登记的收口，改动互不纠缠且全部宿主可验证）。

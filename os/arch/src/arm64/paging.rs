@@ -787,13 +787,7 @@ impl Paging for AArch64Paging {
         PhysBytes(self.root_paddr)
     }
 
-    unsafe fn switch(&self) {
-        unsafe {
-            asm!("dsb sy");
-            asm!("msr ttbr1_el1, {}", in(reg) self.root_paddr);
-            asm!("isb");
-        }
-    }
+    
 
     unsafe fn flush_tlb(&self) {
         unsafe {

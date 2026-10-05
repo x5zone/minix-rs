@@ -977,17 +977,7 @@ impl Paging for X86_64Paging {
         PhysBytes(self.root_paddr)
     }
 
-    unsafe fn switch(&self) {
-        // Intel syntax (asm!'s default): with `options(att_syntax)` the bare
-        // `cr3` token is NOT a register name — it assembles to a memory
-        // reference of an external symbol `cr3` and fails the link the moment
-        // this method becomes live (fix20 forensics 2026-09-21: the shim
-        // image build broke here once `split_huge`'s CR3 reload started
-        // keeping these symbols reachable). Same rationale as split_huge.
-        unsafe {
-            asm!("mov cr3, {}", in(reg) self.root_paddr, options(nostack));
-        }
-    }
+    
 
     unsafe fn flush_tlb(&self) {
         // SAFETY/-syntax: see `switch` — Intel syntax, no `att_syntax`.
