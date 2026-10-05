@@ -143,10 +143,6 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
     #[cfg(not(feature = "mock"))]
     {
         use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-        C0::write_str("nk4a: dm-cov root=");
-        C0::write_hex(root.0);
-        C0::write_str(" vm_pa_limit=");
-        C0::write_hex(vm_pa_limit);
         if let Some((base, end)) = boot_alloc::boot_alloc_region() {
             C0::write_str(" bump=[");
             C0::write_hex(base);
@@ -157,29 +153,14 @@ pub fn establish_boot_dm(kernel_info: &KernelInfo, root: PhysBytes) {
         C0::write_str("\n");
         for r in memmap_candidates(kernel_info) {
             if let Some(c) = r.clipped_to(vm_pa_limit) {
-                C0::write_str("nk4a: dm-mem [");
-                C0::write_hex(c.base);
-                C0::write_str(",");
-                C0::write_hex(c.base + c.len);
-                C0::write_str(")\n");
             }
         }
         for r in bootstrap_tree_candidates(kernel_info, root).into_iter().flatten() {
             if let Some(c) = r.clipped_to(vm_pa_limit) {
-                C0::write_str("nk4a: dm-bump [");
-                C0::write_hex(c.base);
-                C0::write_str(",");
-                C0::write_hex(c.base + c.len);
-                C0::write_str(")\n");
             }
         }
         for r in boot_module_candidates(kernel_info, root) {
             if let Some(c) = r.clipped_to(vm_pa_limit) {
-                C0::write_str("nk4a: dm-mod [");
-                C0::write_hex(c.base);
-                C0::write_str(",");
-                C0::write_hex(c.base + c.len);
-                C0::write_str(")\n");
             }
         }
     }

@@ -293,10 +293,10 @@ impl VmServer {
             minix_arch::pt_alloc::register_free(crate::alloc_page::vm_pt_free);
         }
         // 续-311 内核代读旁路：walk_read 的 VmDm 槽读改经 kernel-call 由
-        // 内核 KDM 直读（riscv-only，随 (A) 结案裁决去留）。时机对齐
+        // 内核 KDM 直读（riscv-only 生产机制，T8 探针滚除时随 vmdm_bridge 落位）。时机对齐
         // pt_alloc::register——先于任何 Paging walk。
         #[cfg(all(target_arch = "riscv64", not(test)))]
-        crate::bootmark::register_vmdm_read();
+        crate::vmdm_bridge::register_vmdm_read();
 
         // Skip init_vm_self_pt() in test builds — tests use MockPaging
         // (in-memory mapping table, no page table to initialize), while the
@@ -575,15 +575,12 @@ impl VmServer {
         // Relocation requires real page tables (vm_self_mappages); skipped in tests.
         #[cfg(not(test))]
         self.relocate();
-        // NK4-A fix22 路标（bootmark，task1-close 裁决去留）
-        crate::bootmark::mark("nk4a: relocate ok");
 
         // Phase 1: Memory detection — initialize global state with total page count.
         self.init_global_state();
 
         // Phase 2a: init_proc(VM_PROC_NR) — main.c:474.
         self.init_vm_slot();
-        crate::bootmark::mark("nk4a: vm slot ok");
 
         // Phase 2b: mem_add_total_pages() call points — main.c:485-495.
         self.account_boot_memory();
@@ -724,9 +721,6 @@ impl VmServer {
             #[cfg(not(test))]
             self.exec_bootproc(ip)
                 .unwrap_or_else(|e| panic!("exec_bootproc: {} failed: {e}", ip.name()));
-            // NK4-A fix22 路标：boot proc 出生逐个过点（task1-close 裁决去留）
-            crate::bootmark::mark(alloc::format!("nk4a: exec {} ok", ip.name()).as_str());
-
             // C: main.c:513-516 — the boot blob is consumed; free it back
             // to the allocator (page-aligned, length rounded up).
             #[cfg(not(test))]
@@ -822,17 +816,6 @@ impl VmServer {
             proc.page_table_mut(),
         )
         .0;
-        // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：SetAddrSpace
-        // 发送值。c33a 实锤矛盾：VM ptalloc 首批 64 个 PT 页全无
-        // 0x35fd0（内核持有的 RS root），而内核 SetAddrSpace 忠实写
-        // p_seg——故 0x35fd000 必是 VM 发的。本探针直接打印发送值，
-        // 裁决「VM 发错 root」vs「内核存错 root」。
-        #[cfg(not(test))]
-        crate::bootmark::mark(&alloc::format!(
-            "nk4a: sas-send ep={} root={:#x}\n",
-            ip.endpoint.0,
-            ptroot_phys
-        ));
         self.ctx
             .gateway
             .borrow_mut()
@@ -973,26 +956,6 @@ impl VmServer {
                         core::ptr::write_bytes(base_ptr, 0, head_len);
                         core::ptr::write_bytes(base_ptr.add(tail_start), 0, PS - tail_start);
                     }
-                }
-            }
-        }
-
-        // C-3 F0 续修取证（task1-close 裁决删除）：RS 入口页 not-present
-        // （err=0x14，cr2=entry=0x2246c0）——段循环后立即读回入口 PTE，
-        // 分辨"map 静默失败/写错表"（query None）还是"表在内存正确但内核
-        // 装载的 root 不符"（query Some）。
-        {
-            let mut proc = table
-                .get_active(slot)
-                .ok_or("boot proc slot not active (vmq probe)")?;
-            use crate::pagetable::Paging as _;
-            match proc.page_table_mut().query(minix_types::VirBytes(entry)) {
-                Some((pa, flags)) => {
-                    crate::bootmark::mark("nk4a: vmq entry mapped\n");
-                    let _ = (pa, flags);
-                }
-                None => {
-                    crate::bootmark::mark("nk4a: vmq entry MISSING\n");
                 }
             }
         }
@@ -1211,9 +1174,6 @@ impl VmServer {
         // (main.c:468) its empty region map — exec_bootproc's segment and
         // stack inserts depend on both. Rust: explicit init on the handle
         // (SimPaging stands in for the arch table in test builds).
-        // fix21 取证路标（NK4-A 真机挂点定位，task1-close 裁决去留）：
-        // panic 消息带上进程名与 PMM 实态（free 页数/最大连续段/VM 自持
-        // 页数），把"AllocationFailed 到底是真空闲还是状态被踩"一次问清。
         proc.init_page_table().unwrap_or_else(|e| {
             let alloc = crate::global::page_alloc_mut();
             let stats = alloc.phys_alloc().memstats();
@@ -1301,9 +1261,7 @@ impl VmServer {
     pub(crate) fn handle_signal(&mut self, signo: i32) {
         // C: "Check for known kernel signals, ignore anything else."
         if signo == Self::SIGKMEM {
-            crate::bootmark::mark("nk4a: do-memory enter\n");
             self.do_memory();
-            crate::bootmark::mark("nk4a: do-memory done\n");
         }
         // V12-P2-4: C's tail here also ran `alloc_cycle()` on a pending
         // `missing_spares` deficit (main.c:118-119) — that chain is deleted
@@ -1343,13 +1301,6 @@ impl VmServer {
 
             let ok = self.handle_kernel_memreq(&req);
             // C-3 迭代8 取证：memreq 服务结果与目标范围。
-            crate::bootmark::mark(&alloc::format!(
-                "nk4a: memreq target={} start={:#x} len={:#x} ok={}\n",
-                req.target.0,
-                req.start,
-                req.length,
-                ok as u8
-            ));
             // B23（1.48）：回包 WHO 必须是「请求者」（被挂起、持有 VMREQUEST
             // 上下文的进程），不是「故障页所属空间」。C: pagefaults.c:206 —
             // `sys_vmctl(state->requestor, VMCTL_MEMREQ_REPLY, result)`；内核
@@ -1398,29 +1349,12 @@ impl VmServer {
             let page_mask = crate::region::PAGE_SIZE as u64 - 1;
             let mut va = req.start & !page_mask;
             let end = req.start.saturating_add(req.length);
-            // 续-191 取证探针 P1（riscv64·判决边界·target==VM 自填臂）：
-            // 逐页现场——命中/新填/失败出口，定谳 resume-Fault 是不是自填
-            // 腿对 console-ecall 目标页返回 false（H1）。计数封顶 64，
-            // 失败出口（return false）不打点上限（罕见、必现形）。C-61
-            // pattern-gate 前不滚，task-close 整块删。
-            #[cfg(all(not(test), target_arch = "riscv64"))]
-            let sf_trace = {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static SF: AtomicUsize = AtomicUsize::new(0);
-                SF.fetch_add(1, AtomicOrd::Relaxed) < 64
-            };
             while va < end {
                 let v = minix_types::VirBytes(va);
                 let present = crate::pagetable::vm_self_map::vm_self_query(v);
                 match present {
                     // 已映射：自身页无 CoW 场景，RW 已足（BSS/堆页恒 RW）。
-                    Some(_) =>
-                    {
-                        #[cfg(all(not(test), target_arch = "riscv64"))]
-                        if sf_trace {
-                            crate::bootmark::mark(&alloc::format!("nk4a: sf-hit va={:#x}\n", va));
-                        }
-                    }
+                    Some(_) => {}
                     None => {
                         match self
                             .ctx
@@ -1437,30 +1371,10 @@ impl VmServer {
                                 )
                                 .is_err()
                                 {
-                                    #[cfg(all(not(test), target_arch = "riscv64"))]
-                                    crate::bootmark::mark(&alloc::format!(
-                                        "nk4a: sf-mappagesFAIL va={:#x}\n",
-                                        va
-                                    ));
                                     return false;
                                 }
-                                #[cfg(all(not(test), target_arch = "riscv64"))]
-                                if sf_trace {
-                                    crate::bootmark::mark(&alloc::format!(
-                                        "nk4a: sf-map va={:#x} phys={:#x}\n",
-                                        va,
-                                        phys.as_u64()
-                                    ));
-                                }
                             }
-                            Err(_) => {
-                                #[cfg(all(not(test), target_arch = "riscv64"))]
-                                crate::bootmark::mark(&alloc::format!(
-                                    "nk4a: sf-allocFAIL va={:#x}\n",
-                                    va
-                                ));
-                                return false;
-                            }
+                            Err(_) => return false,
                         }
                     }
                 }
@@ -1473,12 +1387,6 @@ impl VmServer {
             Ok(s) => s,
             Err(_) => {
                 audit_log!("[VM SIGKMEM] bad target endpoint {}", req.target.0);
-                #[cfg(all(not(test), target_arch = "riscv64"))]
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: sf-badept target={} start={:#x}\n",
-                    req.target.0,
-                    req.start
-                ));
                 return false;
             }
         };
@@ -1493,16 +1401,7 @@ impl VmServer {
         let frames = page_frames.as_mut().expect("page_frames not initialized");
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
-            None => {
-                #[cfg(all(not(test), target_arch = "riscv64"))]
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: sf-noactive target={} slot={} start={:#x}\n",
-                    req.target.0,
-                    slot.0,
-                    req.start
-                ));
-                return false;
-            }
+            None => return false,
         };
         // C: VMPTYPE_CHECK 的 handle_memory_start（pagefaults.c:311-330）
         // 逐页调 map_handle_memory——读故障（wrflag=false）同样保证页面
@@ -1519,22 +1418,7 @@ impl VmServer {
         while va < end {
             let region = match regions.find_mut(minix_types::VirBytes(va)) {
                 Some(r) => r,
-                // 续-169 探针（用后即滚）：ok=0 出口定性。
-                // §续-327 补充归因（用后即滚）：no-region 时打 slot 的
-                // region 计数与首尾 region 界——定位 fill 后第二故障的
-                // regions 查询失败精确条件（exec 重建替换 vs slot 翻转）。
-                None => {
-                    #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-                    crate::bootmark::mark(&alloc::format!(
-                        "nk4a: no-region detail target={} slot={} va={:#x}\n",
-                        req.target.0,
-                        slot.0,
-                        va
-                    ));
-                    #[cfg(not(feature = "mock"))]
-                    Self::hm_fail("no-region", req, va, table);
-                    return false;
-                }
+                None => return false,
             };
             match crate::cow_exec_pf::handle_pagefault(
                 req.target,
@@ -1553,24 +1437,9 @@ impl VmServer {
                 | Ok(crate::cow_exec_pf::PagefaultAction::CowResolved) => {}
                 // VFS 后备页需异步 I/O：C 在此处挂请求等 VFS 完成后再答；
                 // 本轮 fail closed（ok=0 → 内核按 Fault 处理），登记不假完成。
-                Ok(crate::cow_exec_pf::PagefaultAction::Suspended) => {
-                    #[cfg(not(feature = "mock"))]
-                    Self::hm_fail("suspended", req, va, table);
-                    return false;
-                }
-                Ok(crate::cow_exec_pf::PagefaultAction::AccessViolation) => {
-                    #[cfg(not(feature = "mock"))]
-                    Self::hm_fail("access-violation", req, va, table);
-                    return false;
-                }
-                Err(e) => {
-                    #[cfg(not(feature = "mock"))]
-                    {
-                        let tag = alloc::format!("err-{:?}", e);
-                        Self::hm_fail(&tag, req, va, table);
-                    }
-                    return false;
-                }
+                Ok(crate::cow_exec_pf::PagefaultAction::Suspended) => return false,
+                Ok(crate::cow_exec_pf::PagefaultAction::AccessViolation) => return false,
+                Err(_) => return false,
             }
             // 单页步进；region 边界由下一轮 find_mut 重查（C
             // map_handle_memory 逐页遍历同形）。
@@ -1579,33 +1448,6 @@ impl VmServer {
         true
     }
 
-    /// 续-169 探针（用后即滚）：handle_memory 的 ok=0 出口定性。
-    #[cfg(not(feature = "mock"))]
-    fn hm_fail(tag: &str, req: &crate::kernel_gateway::KernelMemReq, va: u64, table: &VmProcTable) {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static HM_N: AtomicUsize = AtomicUsize::new(0);
-        if HM_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
-            let slot = table.vm_isokendpt(req.target).ok().map(|s| s.0 as u64);
-            let state = slot
-                .and_then(|s| {
-                    let s = minix_types::UserSlot::new(s as usize);
-                    if table.get_active(s).is_some() {
-                        Some("active")
-                    } else if table.get_exiting(s).is_some() {
-                        Some("exiting")
-                    } else if table.get_empty(s).is_some() {
-                        Some("vacant")
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or("badslot");
-            crate::bootmark::mark(&alloc::format!(
-                "nk4a: hm-fail {tag} tgt={:#x} va={va:#x} slot={slot:?} state={state}\n",
-                req.target.0 as u64
-            ));
-        }
-    }
     /// Main event loop. Never returns (C: main.c:113-193).
     ///
     /// Per-iteration work lives in [`Self::run_once`] so tests can drive a
@@ -1662,26 +1504,7 @@ impl VmServer {
                 &mut |signo| pending_signo = Some(signo),
             );
             match rcv {
-                Ok(r) => {
-                    // C-3 迭代8 取证（task1-close 裁决删除）：receive 返回
-                    // 的 source/type（限 16 次）——定位 VM 的接收自旋回路的
-                    // 内容。
-                    #[cfg(not(feature = "mock"))]
-                    {
-                        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                        static RCV_LOG: AtomicUsize = AtomicUsize::new(0);
-                        let rn = RCV_LOG.fetch_add(1, AtomicOrd::Relaxed);
-                        if rn < 16 {
-                            crate::bootmark::mark(&alloc::format!(
-                                "nk4a: rcv{} src={} type={:#x}\n",
-                                rn,
-                                r.source.0,
-                                r.message.m_type
-                            ));
-                        }
-                    }
-                    r
-                }
+                Ok(r) => r,
                 // [ARCH: A-14] V9-P0-1: C panics (main.c:122-123); a
                 // user-space server must survive bad IPC — drop + audit.
                 Err(e) => {
@@ -1690,7 +1513,6 @@ impl VmServer {
                     // C-3 迭代10 取证：receive Err 的错误码（限 4 次）——
                     // 判别 VM 接收自旋的 Err 来源（EIO/EAGAIN/…）。
                     #[cfg(not(feature = "mock"))]
-                    crate::bootmark::mark(&alloc::format!("nk4a: rcv-err {e:?}\n"));
                     audit_log!("[VM IPC] ipc_receive() failed — message dropped");
                     return RunStep::ReceiveFailed;
                 }
@@ -2154,30 +1976,7 @@ impl VmServer {
 
     /// Pagefault dispatch — decodes VmPagefaultIn from Message, delegates to cow_exec_pf.
     /// C (main.c:147-156): do_pagefaults(&msg); continue;
-    // NK4-A Task A 探针（task1-close 裁决删除）：mock 门在本 crate 未声明
-    // feature（与既有 rcv 探针同款），函数级放行以零新增编译警告。
-    #[allow(unexpected_cfgs)] // 外属性：放行函数体内 mock 门 cfg
     fn dispatch_pagefault(&mut self, msg: &Message) -> VmReply {
-        // NK4-A Task A 取证（task1-close 裁决删除）：入口解出 fault 地址，
-        // 供各静默出口打印 cr2（停滞判据 = vm-pf recv 后无 bytes，需在每
-        // 个跳过 bytes 的出口定性）。
-        #[cfg(not(feature = "mock"))]
-        let pf_cr2 = minix_types::VmPagefaultIn::decode_message(msg).vaddr.0;
-        macro_rules! pf_exit {
-            ($tag:literal) => {
-                #[cfg(not(feature = "mock"))]
-                {
-                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    static PF_EXIT_LOG: AtomicUsize = AtomicUsize::new(0);
-                    if PF_EXIT_LOG.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                        crate::bootmark::mark(&alloc::format!(
-                            concat!("nk4a: pf-exit ", $tag, " cr2={:#x}\n"),
-                            pf_cr2
-                        ));
-                    }
-                }
-            };
-        }
         // minix-rs: the kernel packs vpf_addr/vpf_flags in the dedicated
         // m_vm_pagefault union member (os/kernel/src/page_fault.rs:142-166);
         // the faulting endpoint is m_source (C: pagefaults.c:242).
@@ -2185,110 +1984,28 @@ impl VmServer {
         let table = VmProcTable::get_global();
         let slot = match table.vm_isokendpt(request.endpoint) {
             Ok(s) => s,
-            Err(_) => {
-                pf_exit!("badendpt");
-                return VmReply::Error(VmError::InvalidProcess);
-            }
+            Err(_) => return VmReply::Error(VmError::InvalidProcess),
         };
+        // C: vm_isokendpt 只验 in-use；IN_USE+EXITING 的槽（已过 VM_WILLEXT
+        // 的退出中进程）get_active 取不到 → 拒服务。退出链能走完时
+        // sys_clear 会释放整个槽位，这里无需代为解锁（§续-383 定谳：
+        // 解锁必须与终止语义一起做，此处补清位属半修）。
         let mut proc = match table.get_active(slot) {
             Some(p) => p,
-            None => {
-                // 续-155 探针（用后即滚）：inactive 出口细化——打印请求
-                // 端点与槽内实际端点（嫌疑=内核转发 0xc vs exec mmap 键
-                // 0x800c 的代际编码不匹配）。
-                #[cfg(not(feature = "mock"))]
-                {
-                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    static INACT_N: AtomicUsize = AtomicUsize::new(0);
-                    // §续-382 里程碑读数（用后即滚）：旧版只放前 4 条，读不出
-                    // 「一过性」还是「活锁式反复」——两者修法完全不同（前者=谁
-                    // 解锁 caller，后者=为什么 exiting 进程还在跑用户指令）。现在：
-                    // 前 4 条照旧，之后只在总数达到 2 的幂时再打一条（≤ 2^20），
-                    // 总共最多 20 余行，不改控制流也不引入打印风暴（§续-361 教训）。
-                    let n = INACT_N.fetch_add(1, AtomicOrd::Relaxed);
-                    let total = n + 1;
-                    let milestone = n >= 4 && total <= (1 << 20) && total.is_power_of_two();
-                    if n < 4 || milestone {
-                        let state = if table.get_empty(slot).is_some() {
-                            "vacant"
-                        } else if table.get_exiting(slot).is_some() {
-                            "exiting"
-                        } else {
-                            "other"
-                        };
-                        crate::bootmark::mark(&alloc::format!(
-                            "nk4a: pf-inact#{} req={:#x} slot={:#x} state={state}\n",
-                            total,
-                            request.endpoint.0 as u64,
-                            slot.0 as u64
-                        ));
-                    }
-                }
-                pf_exit!("inactive");
-                return VmReply::Error(VmError::InvalidProcess);
-            }
+            None => return VmReply::Error(VmError::InvalidProcess),
         };
         let proc_endpoint = proc.endpoint();
         let fault_addr = request.vaddr;
-        // C-3 F0 续修取证（task1-close 裁决删除）：VM 收到转发 PF 的现场。
-        // 续-135：first-N 门控——343k 次缺页 × 每次 ~100B 串口 ≈ 探针
-        // 自身即分钟级瓶颈（gh8 实测 689k 行）；cap 后 demand-paging 全
-        // 速推进。
-        {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static PF_RECV_N: AtomicUsize = AtomicUsize::new(0);
-            if PF_RECV_N.fetch_add(1, AtomicOrd::Relaxed) < 200 {
-                crate::bootmark::mark("nk4a: vm-pf recv\n");
-            }
-        }
         // C pagefaults.c:109-119 — a write to a read-only region is not a
         // servable fault: deliver SIGSEGV to the faulting process, clear its
         // kernel pagefault suspension (RTS_PAGEFAULT), and stop. Pre-E2 the
         // trap stub answers -EIO for both calls; the failure is audited and
         // the error reply still counts the episode (G-V12-6).
-        // Read-only borrow — ends before the mem_parts_mut split below.
-        // 续-159 判别实验：seg_w 时刻与探针时刻各取 &RegionMap 指针——
-        // 两指针不同=同对象双 VA 映射（remap 残留）；相同=页内容真被改写
-        // （并发写者）。顺带打印 seg_w 时刻 map 前 2 个 u64（键+节点头）。
-        let map_ptr_a = (proc.regions() as *const _ as *const u64) as u64;
-        let head_a = unsafe { core::ptr::read_volatile(map_ptr_a as *const u64) };
-        let seg_writable = core::hint::black_box(proc.regions())
-            .find(core::hint::black_box(fault_addr))
+        let seg_writable = proc
+            .regions()
+            .find(fault_addr)
             .is_some_and(|r| r.is_writable());
         if request.write && !seg_writable {
-            // 续-156 探针（用后即滚）：wro 出口枚举该进程全部 region
-            // {va, len, flags}——一步分辨 缺失 / 边界错 / 不可写。
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static WRO_N: AtomicUsize = AtomicUsize::new(0);
-                if WRO_N.fetch_add(1, AtomicOrd::Relaxed) < 2 {
-                    let f = proc.regions().find(fault_addr);
-                    let map_ptr_b = (proc.regions() as *const _ as *const u64) as u64;
-                    crate::bootmark::mark(&alloc::format!(
-                        "nk4a: wro-dump ep={:#x} cr2={:#x} find_some={} find_w={} n={} seg_w={} ptrA={:#x} ptrB={:#x} headA={:#x}\n",
-                        proc_endpoint.0 as u64,
-                        fault_addr.0,
-                        f.is_some(),
-                        f.is_some_and(|r| r.is_writable()),
-                        proc.regions().len(),
-                        seg_writable,
-                        map_ptr_a,
-                        map_ptr_b,
-                        head_a
-                    ));
-                    proc.regions().iter().for_each(|r| {
-                        crate::bootmark::mark(&alloc::format!(
-                            "nk4a: wro-reg va={:#x} len={:#x} flags={:#x} w={}\n",
-                            r.vaddr.0,
-                            r.length.0,
-                            r.flags.bits(),
-                            r.is_writable()
-                        ));
-                    });
-                }
-            }
-            pf_exit!("wro");
             // C: pagefaults.c:112-116 — SIGSEGV + CLEAR_PAGEFAULT 收口
             // （原内联两段与 pf_fail_segv 同体，提取共用不改语义）。
             self.pf_fail_segv(proc_endpoint);
@@ -2316,17 +2033,6 @@ impl VmServer {
                 // CLEAR_PAGEFAULT 收口后才返回。旧实现只回
                 // Error(InvalidAddress)，挂起位无人清，故障进程永停
                 // RTS_PAGEFAULT（真机 c17a：cr2=0 → 全系统静默死锁）。
-                // §续-327 归因探针（用后即滚）：no-region 时打 region 计
-                // 数与 fault va——区分「region 被拆除」vs「从未 mapped」。
-                #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-                {
-                    crate::bootmark::mark(&alloc::format!(
-                        "nk4c: no-region pf va={:#x} n={}\n",
-                        fault_addr.0,
-                        regions.len()
-                    ));
-                }
-                pf_exit!("noaddr");
                 self.pf_fail_segv(proc_endpoint);
                 return VmReply::Error(VmError::InvalidAddress);
             }
@@ -2351,85 +2057,6 @@ impl VmServer {
             vfs_queue,
             pt,
         );
-        // C-3 F0 续修取证（task1-close 裁决删除）：填充后直读叶子物理页
-        // 首 8 字节——对照 ELF 字节（RS: 48 83 e4 f0），分辨"内容没拷上/
-        // 拷错页"与"内容对但 CPU 视图不同"。须在 proc 记账前用 pt（借用
-        // 顺序），随后才轮到 proc 计数。
-        let probe_ok = !is_direct_region
-            && matches!(
-                service_outcome,
-                Ok(crate::cow_exec_pf::PagefaultAction::Handled
-                    | crate::cow_exec_pf::PagefaultAction::MappedNewPage
-                    | crate::cow_exec_pf::PagefaultAction::CowResolved)
-            );
-        let probe_budget = {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static PF_BYTES_N: AtomicUsize = AtomicUsize::new(0);
-            PF_BYTES_N.fetch_add(1, AtomicOrd::Relaxed) < 200
-        };
-        if probe_ok && probe_budget {
-            let aligned =
-                minix_types::VirBytes(fault_addr.0 & !(crate::region::PAGE_SIZE as u64 - 1));
-            use crate::pagetable::Paging as _;
-            if let Some((pa, _fl)) = pt.query(aligned) {
-                let dv = crate::direct_map::vm_phys_to_virt(
-                    crate::phys_mem::AlignedPhysBytes::new(pa.0),
-                );
-                let bytes = unsafe { core::slice::from_raw_parts(dv.0 as *const u8, 8) };
-                let mut hex = alloc::format!("nk4a: vm-pf bytes ");
-                for b in bytes {
-                    hex.push_str(&alloc::format!("{:02x}", b));
-                }
-                // NK4-C 第 12 轮（task1-close 裁决删除）：PA 别名检测——
-                // 若分配器把同一物理帧发给两个 VA，后一个零填充会清掉前一个
-                // VA 已写内容（「栈槽自零」机制）。记录 pa→首 VA，重复时
-                // 打印别名对。
-                {
-                    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
-                    static SEEN_PA: AtomicUsize = AtomicUsize::new(0);
-                    static SEEN: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
-                    static SEEN_VA: [AtomicU64; 96] = [const { AtomicU64::new(0) }; 96];
-                    let n = SEEN_PA.load(AtomicOrd::Relaxed);
-                    let mut i = 0;
-                    let mut alias_va: u64 = 0;
-                    while i < n && i < 96 {
-                        if SEEN[i].load(AtomicOrd::Relaxed) == pa.0 {
-                            alias_va = SEEN_VA[i].load(AtomicOrd::Relaxed);
-                            break;
-                        }
-                        i += 1;
-                    }
-                    if alias_va != 0 {
-                        hex.push_str(&alloc::format!(
-                            "  PA-ALIAS pa={:#x} first_va={:#x} this_va={:#x}",
-                            pa.0,
-                            alias_va,
-                            aligned.0
-                        ));
-                    } else if n < 96 {
-                        SEEN[n].store(pa.0, AtomicOrd::Relaxed);
-                        SEEN_VA[n].store(aligned.0, AtomicOrd::Relaxed);
-                        SEEN_PA.store(n + 1, AtomicOrd::Relaxed);
-                    }
-                }
-                // NK4-C 第 10 轮取证（task1-close 裁决删除）：**故障地址处**
-                // 的 8 字节（非页首）——页首全零可能是 ELF gap 的合法形状，
-                // 故障地址处的零才是「零填充错页」的直接证据。
-                let off = (fault_addr.0 - aligned.0) as usize;
-                let fbytes =
-                    unsafe { core::slice::from_raw_parts((dv.0 + off as u64) as *const u8, 8) };
-                hex.push_str(&alloc::format!("  fa={:#x} fa8=", fault_addr.0));
-                for b in fbytes {
-                    hex.push_str(&alloc::format!("{:02x}", b));
-                }
-                hex.push('\n');
-                crate::bootmark::mark(&hex);
-            } else {
-                // 成功出口但页表读不到 PTE——bytes 静默缺失的另一候选
-                // （task1-close 裁决删除）。
-                pf_exit!("ok-nopte");
-            }
-        }
         match service_outcome {
             Ok(action) => {
                 // V11/T31: fault accounting. Minix3's VM has no fault
@@ -2441,7 +2068,6 @@ impl VmServer {
                 // completion). Access violations are not faults served.
                 match action {
                     crate::cow_exec_pf::PagefaultAction::Suspended => {
-                        pf_exit!("susp");
                         proc.inc_major_fault()
                     }
                     crate::cow_exec_pf::PagefaultAction::AccessViolation => {
@@ -2449,7 +2075,6 @@ impl VmServer {
                         // "pagefault not handled"：SIGSEGV + 清挂起。
                         // 旧实现只计数返回 Ok，挂起位永不清（同 noaddr
                         // 缺陷类的未观测分支）。
-                        pf_exit!("accvio");
                         self.pf_fail_segv(proc_endpoint);
                     }
                     crate::cow_exec_pf::PagefaultAction::Handled
@@ -2477,44 +2102,11 @@ impl VmServer {
                     {
                         let _ = &e;
                         audit_log!("[VM PF] clear_pagefault failed: {e:?}");
-                        pf_exit!("clrpf");
                     }
                 }
                 VmReply::Ok
             }
             Err(e) => {
-                // C-3 F0 续修取证（task1-close 裁决删除）。
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: vm-pf err {:?} ep={:#x} fa={:#x}\n",
-                    e,
-                    proc_endpoint.0,
-                    fault_addr.0
-                ));
-                // 续-279m 临时取证（结案滚除）：PF 服务失败时的故障区形状——
-                // NoMemType 主角到底长什么样（memtype 在哪条腿丢的）。
-                #[cfg(not(feature = "mock"))]
-                {
-                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    static PFR_N: AtomicUsize = AtomicUsize::new(0);
-                    if PFR_N.fetch_add(1, AtomicOrd::Relaxed) < 6 {
-                        let table = crate::vmproc::VmProcTable::get_global();
-                        if let Ok(slot) = table.vm_isokendpt(proc_endpoint) {
-                            if let Some(proc) = table.get_active(slot) {
-                                for r in proc.regions().iter() {
-                                    if r.vaddr.0 <= fault_addr.0 && fault_addr.0 < r.end_addr().0 {
-                                        crate::bootmark::mark(&alloc::format!(
-                                            "nk4c: pf-region va={:#x} len={:#x} mt={} nslot={}\n",
-                                            r.vaddr.0,
-                                            r.length.0,
-                                            r.def_memtype.map(|m| m.name()).unwrap_or("<none>"),
-                                            r.physblocks.len(),
-                                        ));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
                 // C pagefaults.c:144-151 — 服务失败同属"不可服务"终局：
                 // SIGSEGV + 清挂起（旧实现只回 Error，挂起位不清）。
                 self.pf_fail_segv(proc_endpoint);
@@ -2614,20 +2206,6 @@ fn ipc_call_rs_init(server: &mut VmServer, rproctab_gid: i32) -> Result<RprocTab
     {
         let mut gateway = server.ctx.gateway.borrow_mut();
         let res = gateway.sys_safecopyfrom(Endpoint::RS, rproctab_gid, 0, &mut buf);
-        // NK4-C B4 取证（task1-close 裁决删除）：真 errno 被下游
-        // `map_err(|_| InvalidEndpoint)` 吞掉——VM 无论内核回什么都
-        // 统一上报 ESRCH(3)，RS 侧只看到“init 失败”看不到根因。
-        // 这里把内核原始返回码 + gid + 请求字节数落串口，分辨
-        // 坏 grant / 越界拷贝 / endpoint 不存在。不改判定链。
-        #[cfg(not(feature = "mock"))]
-        if let Err(crate::kernel_gateway::GatewayError::Kernel(code)) = res {
-            crate::bootmark::mark(&alloc::format!(
-                "nk4a: vm-rswire gid={} len={} err={}\n",
-                rproctab_gid,
-                buf.len(),
-                code,
-            ));
-        }
         res.map_err(|_| VmError::InvalidEndpoint)?;
     }
     let mut tab = RprocTab::EMPTY;

@@ -1783,7 +1783,6 @@ pub fn complete_fork_setup(child: &mut KProcess, parent_is_sys_proc: bool, flags
 /// review BLOCKER, live for the first time now that aarch64 receivers can
 /// park and be woken.
 pub fn set_ipc_return_code(proc: &mut KProcess, code: i64) {
-    use minix_arch::CpuContextArch as _;
     <CurrentCpuContextArch as CpuContextArch>::set_ipc_return_reg(
         &mut proc.cpu_context,
         code as u64,
@@ -1807,15 +1806,6 @@ pub fn ipc_status_add_call(proc: &mut KProcess, call: crate::ipc::IpcCall) {
     if !proc.p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND) {
         let value = crate::ipc::ipc_status_call_to(call);
         CurrentCpuContextArch::or_ipc_status_reg(&mut proc.cpu_context, value);
-        // NK4-A Task C 第 6 轮判别（task1-close 裁决删除）：见
-        // `trap_dispatch::nk4a_rbx_probe` 的文档。
-        #[cfg(not(feature = "mock"))]
-        crate::trap_dispatch::nk4a_rbx_probe(
-            "add-call",
-            proc.p_endpoint.0 as u64,
-            minix_arch::ipc_status_register(&proc.cpu_context),
-            0,
-        );
     }
 }
 
@@ -1835,13 +1825,6 @@ pub fn ipc_status_add_flags(proc: &mut KProcess, flags: u32) {
     if !proc.p_misc_flags.is_set(MiscFlagsBits::REPLY_PEND) {
         let value = crate::ipc::ipc_status_flags(flags);
         CurrentCpuContextArch::or_ipc_status_reg(&mut proc.cpu_context, value);
-        #[cfg(not(feature = "mock"))]
-        crate::trap_dispatch::nk4a_rbx_probe(
-            "add-flags",
-            proc.p_endpoint.0 as u64,
-            minix_arch::ipc_status_register(&proc.cpu_context),
-            0,
-        );
     }
 }
 

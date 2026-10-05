@@ -354,41 +354,7 @@ impl<'a> FixedPoolSupplier<'a> {
         unsafe { self.base.add(index * PAGE_BYTES) }
     }
 
-    /// NK4-C 第 15 轮取证（task1-close 裁决删除）：池游标轨迹——每次供页
-    /// 打印（kind: S=单页 M=连续页run, 游标, 页数, 池基址）。定位
-    /// 「RS 堆池重复分配/清零覆盖泄漏表」的游标回卷点。仅真机
-    /// （kernel_trap，宿主 trap 返回 -EIO 不打印），cap 48。
-    fn nk4a_supply_log(&self, kind: u8, index: usize, pages: usize) {
-        #[cfg(not(feature = "mock"))]
-        {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static N: AtomicUsize = AtomicUsize::new(0);
-            if N.fetch_add(1, AtomicOrd::Relaxed) < 128 {
-                const HEX: &[u8; 16] = b"0123456789abcdef";
-                let mut line = *b"nk4a: sup k=S idx=0x        n=0x     base=0x                \n";
-                line[9] = kind;
-                {
-                    let mut put = |at: usize, mut v: u64, digits: usize| {
-                        let mut k = at + digits;
-                        while k > at {
-                            line[k - 1] = HEX[(v & 0xf) as usize];
-                            v >>= 4;
-                            k -= 1;
-                        }
-                    };
-                    put(18, index as u64, 8);
-                    put(29, pages as u64, 5);
-                    put(45, self.base as usize as u64, 16);
-                }
-                let _ = minix_sys::syscall::sys_diagctl_write(
-                    &minix_sys::syscall::DirectKernelCallTransport,
-                    core::str::from_utf8(&line).unwrap_or(""),
-                );
-            }
-        }
-        #[cfg(feature = "mock")]
-        let _ = (kind, index, pages);
-    }
+
 }
 
 impl PageSupplier for FixedPoolSupplier<'_> {
@@ -400,16 +366,14 @@ impl PageSupplier for FixedPoolSupplier<'_> {
             // Zero the reused page so callers always observe clean memory.
             // SAFETY: the page came from this pool and is page-sized.
             unsafe { core::ptr::write_bytes(page, 0, PAGE_BYTES) };
-            self.nk4a_supply_log(b'F', self.free_count, 1);
-            return Some(page);
+                        return Some(page);
         }
         if self.next_page < self.total_pages() {
             let page = self.page_at(self.next_page);
             self.next_page += 1;
             // SAFETY: fresh pool memory, page-sized by construction.
             unsafe { core::ptr::write_bytes(page, 0, PAGE_BYTES) };
-            self.nk4a_supply_log(b'S', self.next_page - 1, 1);
-            return Some(page);
+                        return Some(page);
         }
         None
     }
@@ -437,8 +401,7 @@ impl PageSupplier for FixedPoolSupplier<'_> {
         if self.next_page + page_count <= self.total_pages() {
             let first = self.page_at(self.next_page);
             self.next_page += page_count;
-            self.nk4a_supply_log(b'M', self.next_page - page_count, page_count);
-            // SAFETY: fresh pool memory, sized by construction.
+                        // SAFETY: fresh pool memory, sized by construction.
             unsafe { core::ptr::write_bytes(first, 0, page_count * PAGE_BYTES) };
             return Some(first);
         }
@@ -634,29 +597,8 @@ impl<S: PageSupplier> SlabAllocator<S> {
     /// of faulting later. Callers must pass the pointer back to [`free`]
     /// exactly once, or leak it deliberately with a comment.
     pub fn alloc(&mut self, size: usize) -> *mut u8 {
-        // NK4-C 第 13 轮取证（task1-close 裁决删除）：大分配日志——RS 的
-        // self=0 崩溃源自失控 memset(0x22e000, 0, 0x22e000)（len==dst 指针
-        // 值，零化整个堆池）。此处记录大分配请求的 size/ptr 以对位。本
-        // crate 零堆（无 fmt/alloc），hex 手工展开。
-        #[cfg(not(feature = "mock"))]
         if size >= 0x10000 {
             let ptr = self.alloc_big(size);
-            const HEX: &[u8; 16] = b"0123456789abcdef";
-            let mut line = *b"nk4a: rs-bigalloc size=0x        ptr=0x                \n";
-            let mut put = |at: usize, mut v: u64, digits: usize| {
-                let mut k = at + digits;
-                while k > at {
-                    line[k - 1] = HEX[(v & 0xf) as usize];
-                    v >>= 4;
-                    k -= 1;
-                }
-            };
-            put(23, size as u64, 8);
-            put(38, ptr as usize as u64, 16);
-            let _ = minix_sys::syscall::sys_diagctl_write(
-                &minix_sys::syscall::DirectKernelCallTransport,
-                core::str::from_utf8(&line).unwrap_or("nk4a: rs-bigalloc\n"),
-            );
             return if ptr.is_null() {
                 core::ptr::null_mut()
             } else {

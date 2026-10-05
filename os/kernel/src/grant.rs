@@ -318,43 +318,16 @@ pub fn verify_grant(
             CrossSpaceResult::Suspended(fault) => {
                 return VerifyGrantOutcome::Suspended(fault);
             }
-            CrossSpaceResult::Completed(Err(e)) => {
+            CrossSpaceResult::Completed(Err(_)) => {
                 // C: do_safecopy.c:126 — "hide the fact that granter has
                 // (presumably) set an invalid grant table entry by
                 // returning EPERM"
-                // NK4-C B4 取证（task1-close 裁决删除）：区分「读 grant
-                // 表页失败」这一 EPERM 腿，并把具体 VmCopyError 落串口。
-                #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-                crate::grant::nk4a_vg_probe(
-                    "readfail",
-                    granter.0 as u64,
-                    crate::grant::nk4a_vcopy_code(&e),
-                );
-                #[cfg(not(all(not(feature = "mock"), target_arch = "x86_64")))]
-                let _ = &e;
                 return VerifyGrantOutcome::Err(EPERM);
             }
             CrossSpaceResult::Completed(Ok(())) => {} // proceed
         }
 
         let g_flags = grant_entry.cp_flags();
-
-        // NK4-C B4 取证（task1-close 裁决删除）：读出 grant 表项后把决定
-        // 性状态落串口，分辨 USED|VALID / seq / access / range 哪一腿 EPERM。
-        #[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-        {
-            let _d = grant_entry.cp_direct();
-            crate::grant::nk4a_vg_probe_state(
-                granter.0 as u64,
-                grant_id as u64,
-                g_idx as u64,
-                g_flags.bits() as u64,
-                grant_entry.seq as u64,
-                _d.who_to as u64,
-                _d.len,
-                bytes,
-            );
-        }
 
         // C: do_safecopy.c:130-135 — check CPF_USED | CPF_VALID.
         let required = CpFlags::USED | CpFlags::VALID;
@@ -469,78 +442,6 @@ pub fn verify_grant(
 
     // C: do_safecopy.c:150-155 — exceeded maximum indirect depth.
     VerifyGrantOutcome::Err(ELOOP)
-}
-
-// ── NK4-C B4 取证探针（task1-close 裁决删除）──
-
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-pub(crate) fn nk4a_vcopy_code(e: &crate::vm::VmCopyError) -> u64 {
-    use crate::vm::VmCopyError::*;
-    match e {
-        SrcPageFault => 1,
-        DstPageFault => 2,
-        InvalidAddress => 3,
-        PermissionDenied => 4,
-        UnknownEndpoint => 5,
-        Domain => 6,
-    }
-}
-
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-pub(crate) fn nk4a_vg_cap_bump() -> bool {
-    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-    static VG_N: AtomicUsize = AtomicUsize::new(0);
-    VG_N.fetch_add(1, AtomicOrd::Relaxed) < 8
-}
-
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-pub(crate) fn nk4a_vg_probe(site: &str, granter: u64, grant_id: u64) {
-    if !nk4a_vg_cap_bump() {
-        return;
-    }
-    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-    C0::write_str("nk4a: vg ");
-    C0::write_str(site);
-    C0::write_str(" gr=");
-    C0::write_hex(granter);
-    C0::write_str(" gid=");
-    C0::write_hex(grant_id);
-    C0::write_str("\n");
-}
-
-#[cfg(all(not(feature = "mock"), target_arch = "x86_64"))]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn nk4a_vg_probe_state(
-    granter: u64,
-    grant_id: u64,
-    g_idx: u64,
-    g_flags: u64,
-    seq: u64,
-    who_to: u64,
-    dlen: u64,
-    bytes: u64,
-) {
-    if !nk4a_vg_cap_bump() {
-        return;
-    }
-    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-    C0::write_str("nk4a: vg st gr=");
-    C0::write_hex(granter);
-    C0::write_str(" gid=");
-    C0::write_hex(grant_id);
-    C0::write_str(" idx=");
-    C0::write_hex(g_idx);
-    C0::write_str(" fl=");
-    C0::write_hex(g_flags);
-    C0::write_str(" seq=");
-    C0::write_hex(seq);
-    C0::write_str(" wto=");
-    C0::write_hex(who_to);
-    C0::write_str(" len=");
-    C0::write_hex(dlen);
-    C0::write_str(" bts=");
-    C0::write_hex(bytes);
-    C0::write_str("\n");
 }
 
 /// Build soft fault info for CPF_TRY grants.

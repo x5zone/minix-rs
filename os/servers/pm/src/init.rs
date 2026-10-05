@@ -479,28 +479,7 @@ impl<T: IpcTransport> PmServer<T> {
                 }
                 v
             }
-            Err(e) => {
-                // NK4-C 1.10f 取证探针（task1-close 裁决删除）：receive 失败
-                // 的 errno 数值前 4 次打印——裁决 PM fail-fast panic 的真实
-                // 错误（EPERM/EDEADSRCDST/EFAULT…各对位不同根因）。
-                {
-                    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    static RERR_N: AtomicUsize = AtomicUsize::new(0);
-                    let n = RERR_N.fetch_add(1, AtomicOrd::Relaxed);
-                    if n < 4 {
-                        let text = alloc::format!(
-                            "nk4a: pm-recv-err n={} errno={}\n",
-                            n,
-                            e.errno()
-                        );
-                        let _ = minix_sys::syscall::sys_diagctl_write(
-                            &minix_sys::syscall::DirectKernelCallTransport,
-                            &text,
-                        );
-                    }
-                }
-                return RunStep::ReceiveFailed;
-            }
+            Err(_) => return RunStep::ReceiveFailed,
         };
 
         // C: main.c:65-71 — is_ipc_notify：CLOCK → expire_timers（14）。
@@ -783,22 +762,7 @@ impl<T: IpcTransport> PmServer<T> {
         let messages = self.vfs_init_messages();
         // NK4-C 1.10q 逐环仪器化（task1-close 裁决删除）：逐条 INIT 发送
         // 打点（sendnb 直写串口），与 VFS 侧握手 receive 计数对账。
-        for (idx, msg) in messages[..messages.len() - 1].iter().enumerate() {
-            let mut line = [0u8; 24];
-            line[..13].copy_from_slice(b"nk4a: pmvi k=");
-            let v = idx as u32;
-            for (i, byte) in v.to_be_bytes()[1..].iter().enumerate() {
-                let hexs = b"0123456789abcdef";
-                line[13 + i * 2] = hexs[(byte >> 4) as usize];
-                line[14 + i * 2] = hexs[(byte & 0xf) as usize];
-            }
-            line[23] = b'\n';
-            if let Ok(cs) = core::str::from_utf8(&line) {
-                let _ = minix_sys::syscall::sys_diagctl_write(
-                    &minix_sys::syscall::DirectKernelCallTransport,
-                    cs,
-                );
-            }
+        for msg in messages[..messages.len() - 1].iter() {
             self.transport
                 .send_blocking(self.params.vfs_endpoint, msg)
                 .expect("PM: can't sync up with VFS (per-process send)");
@@ -812,13 +776,6 @@ impl<T: IpcTransport> PmServer<T> {
             panic!(
                 "PM: can't sync up with VFS (final barrier) errno={}",
                 e.errno()
-            );
-        }
-        // NK4-C 1.10q：屏障过打点。
-        {
-            let _ = minix_sys::syscall::sys_diagctl_write(
-                &minix_sys::syscall::DirectKernelCallTransport,
-                "nk4a: pmvi-barrier-done\n",
             );
         }
         assert_eq!(

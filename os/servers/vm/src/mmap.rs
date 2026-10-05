@@ -319,16 +319,6 @@ pub(crate) fn handle_mmap(
     vfs_queue: &mut crate::vfs_queue::VfsRequestQueue,
     request: &VmMmapIn,
 ) -> Result<MmapResult, MmapError> {
-    // 续-153 探针（用后即滚）：VM 收到的每条 mmap 请求。
-    #[cfg(not(feature = "mock"))]
-    crate::bootmark::mark(&alloc::format!(
-        "nk4a: vmm-h DL?={} addr={:#x} len={:#x} fl={:#x} fw={:#x}\n",
-        request.flags & 0x800000 != 0,
-        request.addr.0,
-        request.length.0,
-        request.flags,
-        request.forwhom.0,
-    ));
     let flags = MmapFlags::from_bits_truncate(request.flags);
     let prot = ProtFlags::from_bits_truncate(request.prot);
 

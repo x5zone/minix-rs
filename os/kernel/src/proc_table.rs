@@ -352,15 +352,11 @@ impl ProcessTable {
             // 2=Blocked VM 忙——两者都靠下面的 enqueue 补队）。
             #[cfg(not(feature = "mock"))]
             {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                 let o: u8 = match notify_outcome {
                     crate::ipc::IpcOutcome::Delivered => 1,
                     crate::ipc::IpcOutcome::Blocked => 2,
                     crate::ipc::IpcOutcome::Error(_) => 3,
                 };
-                Console::write_str("nk4a: memreq-notify o=");
-                Console::write_hex(o as u64);
-                Console::write_str("\n");
             }
             // C mini_notify 尾部的入队半：notify 清 RTS_RECEIVING（primitive
             // clear）后必须补 enqueue，否则 VM 可调度却永不在就绪队列——
@@ -456,12 +452,6 @@ impl ProcessTable {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static RS_SET_N: AtomicUsize = AtomicUsize::new(0);
             if nr.0 == 2 && RS_SET_N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: rtsrs set fl=0x");
-                C0::write_hex(flags.bits() as u64);
-                C0::write_str(" now=0x");
-                C0::write_hex(self.get(nr).map(|p| p.p_rts_flags.get().bits()).unwrap_or(0) as u64);
-                C0::write_str("\n");
             }
         }
         if was_runnable && !is_runnable
@@ -561,10 +551,6 @@ impl ProcessTable {
             static RS_UNSET_N: AtomicUsize = AtomicUsize::new(0);
             if nr.0 == 2 && RS_UNSET_N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: rtsrs unset fl=0x");
-                C0::write_hex(flags.bits() as u64);
-                C0::write_str(" now=0x");
-                C0::write_hex(self.get(nr).map(|p| p.p_rts_flags.get().bits()).unwrap_or(0) as u64);
                 let enq = !was_runnable && is_runnable;
                 let cpu = self.get(nr).map(|p| p.p_sched.cpu.load(Ordering::Acquire)).unwrap_or(0);
                 C0::write_str(" enq=");
@@ -804,7 +790,6 @@ impl ProcessTable {
     /// `p_nextready` (meaning it's linked in a queue chain). This is a
     /// conservative check: a process that is the tail of a queue and has
     /// `p_nextready == None` will only be detected by scanning all queue heads.
-    // NK4-A 取证路标临时 pub(crate)（syscall.rs `nk4a_flags_mark`），task1-close 回收
     pub(crate) fn is_in_scheduler(&self, nr: ProcNr) -> bool {
         // C queues a process on its assigned CPU (`rp->p_cpu`, proc.c:1614),
         // so membership is checked against that CPU's ready queue only.
@@ -1261,22 +1246,12 @@ impl ProcessTable {
                     #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
                     {
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                         static RFP: AtomicUsize = AtomicUsize::new(0);
                         if RFP.fetch_add(1, AtomicOrd::Relaxed) < 16 {
                             let (ep, pdmv) = self
                                 .get(nr)
                                 .map_or((0i32, 0u64), |q| (q.p_endpoint.0, q.p_delivermsg_vir.0));
                             let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
-                            C0::write_str("nk4a: rvflt via=pmf nr=0x");
-                            C0::write_hex(nr.0 as u64);
-                            C0::write_str(" ep=0x");
-                            C0::write_hex(ep as u64);
-                            C0::write_str(" pdmv=0x");
-                            C0::write_hex(pdmv);
-                            C0::write_str(" root=0x");
-                            C0::write_hex(root);
-                            C0::write_str("\n");
                         }
                     }
                     crate::syscall_signal::cause_signal(
@@ -1332,17 +1307,6 @@ impl ProcessTable {
                             use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                             static DM0: AtomicUsize = AtomicUsize::new(0);
                             if DM0.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-                                C0::write_str("nk4a: dm0 nr=0x");
-                                C0::write_hex(r.p_nr.0 as u64);
-                                C0::write_str(" ep=0x");
-                                C0::write_hex(r.p_endpoint.0 as u64);
-                                C0::write_str(" gf=0x");
-                                C0::write_hex(r.p_getfrom_e.0 as u64);
-                                C0::write_str(" to=0x");
-                                C0::write_hex(r.p_sendto_e.0 as u64);
-                                C0::write_str(" rts=");
-                                C0::write_hex(r.p_rts_flags.get().bits() as u64);
-                                C0::write_str("\n");
                             }
                         }
                         // C: vm_suspend(rp, rp, ...) — proc.c:281-282.

@@ -973,16 +973,6 @@ impl<'a> BootInit<'a> {
         let wire = self.table.pub_wire_bytes();
         let gid = sys.grant_read(Endpoint::ANY, wire.as_ptr() as u64, wire.len() as u64)?;
         self.rinit.rproctab_gid = Some(gid as u32);
-        // NK4-C B4 取证（task1-close 裁决删除）：与 VM 侧 `vm-rswire`
-        // 探针配对——这里落 RS 实际授权的 gid 与字节数，两边
-        // 对账即可判定 VM 拷贝是否越出 grant 边界 / gid 是否一致。
-        #[cfg(not(feature = "mock"))]
-        {
-            let _ = minix_sys::syscall::sys_diagctl_write(
-                &minix_sys::syscall::DirectKernelCallTransport,
-                &alloc::format!("nk4a: rs-rswire gid={} len={}\n", gid, wire.len()),
-            );
-        }
         Ok(())
     }
 
@@ -1052,47 +1042,13 @@ impl<'a> BootInit<'a> {
     ///
     /// C: main.c:348-399. RS/VM go through `init_service` (12) directly;
     /// other services get `sched_init_proc` + `SYS_PRIV_ALLOW` first.
-    // NK4-A Task C 取证（task1-close 裁决删除）：分辨 RS null-deref 两假设
-    // ——(1) exec 期 .rodata（priv_table 表）填充错位/漏填 → endpoint 读出
-    // 垃圾；(2) self.table 基址本身为 NULL。打印切片基址+长度、每项
-    // endpoint 原值、table 基址。mock 门本 crate 未声明 feature，放行零新增警告。
-    #[allow(unexpected_cfgs)]
     fn step2_allow_run(&mut self, sys: &mut dyn KernelApi) -> Result<(), BootError> {
         let tables = self.tables;
         let mut nr_uncaught_init_srvs = 0usize;
 
-        // NK4-A Task C 取证（task1-close 裁决删除）：表基址/长度 + 每项 endpoint。
-        #[cfg(not(feature = "mock"))]
-        {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static P2_LOG: AtomicUsize = AtomicUsize::new(0);
-            if P2_LOG.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                let _ = minix_sys::syscall::sys_diagctl_write(
-                    &minix_sys::syscall::DirectKernelCallTransport,
-                    &alloc::format!(
-                        "nk4a: rs-step2 pt={:p} len={} tbl={:p}\n",
-                        tables.priv_table.as_ptr(),
-                        tables.priv_table.len(),
-                        &self.table as *const RProcTable,
-                    ),
-                );
-            }
-        }
+
 
         for priv_ in tables.priv_table {
-            // NK4-A Task C 取证（task1-close 裁决删除）：每入口 endpoint 原值。
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static P2E_LOG: AtomicUsize = AtomicUsize::new(0);
-                if P2E_LOG.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-                    let _ = minix_sys::syscall::sys_diagctl_write(
-                        &minix_sys::syscall::DirectKernelCallTransport,
-                        &alloc::format!("nk4a: rs-step2 ep={:#x} slot={}\n",
-                            priv_.endpoint.0, priv_.endpoint.slot()),
-                    );
-                }
-            }
             if priv_.endpoint.is_kernel_task() {
                 continue; // C: iskerneln skip — main.c:354-356
             }
@@ -1144,41 +1100,8 @@ impl<'a> BootInit<'a> {
             // C: sched_init_proc — main.c:376; sys_privctl(SYS_PRIV_ALLOW) — main.c:379.
             // NK4-A Task C 取证（task1-close 裁决删除）：非 RS/VM 分支逐步打点，
             // 定位把表基址算成 0 的确切子步。
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static P2S_LOG: AtomicUsize = AtomicUsize::new(0);
-                if P2S_LOG.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                    let _ = minix_sys::syscall::sys_diagctl_write(
-                        &minix_sys::syscall::DirectKernelCallTransport,
-                        &alloc::format!("nk4a: rs-pm pre-sched ep={:#x}\n", priv_.endpoint.0),
-                    );
-                }
-            }
             sys.sched_init_proc(&SchedulerConfig::boot_defaults(priv_.endpoint))?;
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static P2P_LOG: AtomicUsize = AtomicUsize::new(0);
-                if P2P_LOG.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                    let _ = minix_sys::syscall::sys_diagctl_write(
-                        &minix_sys::syscall::DirectKernelCallTransport,
-                        "nk4a: rs-pm post-sched pre-privctl\n",
-                    );
-                }
-            }
             sys.privctl(priv_.endpoint, PrivCtlOp::Allow, None)?;
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static P2A_LOG: AtomicUsize = AtomicUsize::new(0);
-                if P2A_LOG.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                    let _ = minix_sys::syscall::sys_diagctl_write(
-                        &minix_sys::syscall::DirectKernelCallTransport,
-                        "nk4a: rs-pm post-privctl pre-initsrv\n",
-                    );
-                }
-            }
 
             if priv_.flags.contains(PrivFlags::SYS_PROC) {
                 // C: init_service — main.c:387: mark initializing + send the
@@ -1260,28 +1183,6 @@ impl<'a> BootInit<'a> {
             panic!("unexpected reply from service: {m:?}");
         };
         if result != 0 {
-            // NK4-C B3 取证（task1-close 裁决删除）：C main.c:806 的
-            // `panic("...: %d", m.m_source)` 直接把失败服务号写进静态格式串，
-            // 永远可读；本端口移植成 `{m:?}` 走 `fmt::Arguments`，minix-rt 的
-            // panic handler 既取不到 `as_str()` 也 downcast 不出 `String`
-            // （真机 s20b `panic-msg-nonstr`），导致「谁 init 回非零」不可见。
-            // 这里在 panic 前用已验证可达的 SYS_DIAGCTL 串口腿显式打出
-            // m_source + result，锁定失败服务与 errno，不改判定逻辑本身。
-            #[cfg(not(feature = "mock"))]
-            {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static INITFAIL_LOG: AtomicUsize = AtomicUsize::new(0);
-                if INITFAIL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 4 {
-                    let _ = minix_sys::syscall::sys_diagctl_write(
-                        &minix_sys::syscall::DirectKernelCallTransport,
-                        &alloc::format!(
-                            "nk4a: rs-initfail src={:x} res={}\n",
-                            m.m_source.0,
-                            result,
-                        ),
-                    );
-                }
-            }
             // C: main.c:805-807 — a failed boot-time init is fatal for RS.
             panic!("unable to complete init for service: {m:?}");
         }

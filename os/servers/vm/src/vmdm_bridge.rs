@@ -1,30 +1,11 @@
-//! NK4-A 临时启动路标（fix22 二分取证）。
+//! VM 页表遍历的内核代读旁路（NK4-C 续-311，riscv 专用）。
 //!
-//! VM 在真机上 `scheduling live` 之后完全静默——panic 通道（minix-rt
-//! panic-handler → SYS_DIAGCTL）没有触发，说明 VM 不是死亡而是**卡在
-//! 某阶段内部**。SYS_DIAGCTL 是已验证可达的串口腿（fix20c 起 panic
-//! 消息直达串口），本模块复用它把 init/run 时间线切成可观测的段。
-//!
-//! 所有消息统一 `nk4a:` 前缀；task1-close 时按 HANDOFF 做去留裁决
-//! （code-excellence 死代码消除：定位完成后整模块删除，不留残余）。
+//! walk_read 的 VmDm 槽读/写/清零改经 SYS_VMCTL 内核调用由内核 KDM 直达，
+//! 绕开 QEMU 平移层对 DM 窗虚拟地址的时序性误导（§续-291..310 穷举收口）。
+//! 原与启动路标探针同居 bootmark 模块，T8 探针滚除时拆出独立成模块——
+//! 路标族已随结案清除，本机制是生产功能，去留裁决=保留。
 
-/// 向内核诊断通道发一条路标消息（fail-silent：通道本身故障时
-/// 卡点信息由后续观察决定，不在诊断代码里再叠一层故障处理）。
-pub fn mark(msg: &str) {
-    #[cfg(not(test))]
-    {
-        let _ = minix_sys::syscall::sys_diagctl_write(
-            &minix_sys::syscall::DirectKernelCallTransport,
-            msg,
-        );
-    }
-    #[cfg(test)]
-    {
-        let _ = msg;
-    }
-}
-
-// ── NK4-C 续-311 内核代读旁路 read-fn（riscv-only；随 (A) 结案裁决去留）──
+// ── NK4-C 续-311 内核代读旁路 read-fn（riscv-only 生产机制）──
 // walk_read 的 VmDm 槽读改经本 fn：SYS_VMCTL(43) + VmCtlParam::PteRead(20)，
 // pa 走 m1p1，内核 KDM 直读回填 m1p1。绕开 QEMU 平移层对 DM 窗 VA 的
 // 时序性误导（§续-291..310 穷举收口）。

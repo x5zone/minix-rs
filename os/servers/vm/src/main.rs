@@ -43,8 +43,6 @@ fn real_main() -> ! {
     #[cfg(not(test))]
     {
         use minix_vm::{VmServer, read_boot_params};
-        // NK4-A fix22 路标（bootmark.rs，task1-close 裁决去留）
-        minix_vm::bootmark::mark("nk4a: vm enter");
 
         // C: main.c:79-88 is_first_time() — fresh boot gates init_vm().
         // The kernel writes a `VmBootHandoff` page (A1 root identity + A2
@@ -55,10 +53,8 @@ fn real_main() -> ! {
         // reconciled at this consumer boundary before the allocator is
         // built (07-paging_init_design §6.0).
         let params = read_boot_params();
-        minix_vm::bootmark::mark("nk4a: params read ok");
 
         let mut server = VmServer::new_with_boot_params(params);
-        minix_vm::bootmark::mark("nk4a: server new ok");
 
         // C: main.c:101-108 — if(is_first_time()) { init_vm(); __vm_init_fresh=1; }
         //
@@ -70,7 +66,6 @@ fn real_main() -> ! {
         // `assert!(self.initialized)` (02-stage-vm/todo.md G-V12-10).
         if params.is_first_time {
             server.init();
-            minix_vm::bootmark::mark("nk4a: init done");
         } else {
             panic!(
                 "VM warm restart (is_first_time = false) is not supported: \
@@ -82,7 +77,6 @@ fn real_main() -> ! {
         // C: sef_local_startup() — the RS_INIT handshake happens inside the
         // main loop's priority-2 dispatch (rs_handshake), so no separate
         // SEF startup step is needed (see doc 01-vm-init-main §3.4).
-        minix_vm::bootmark::mark("nk4a: run enter");
         server.run();
     }
     #[cfg(test)]

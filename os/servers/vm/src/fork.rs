@@ -397,14 +397,6 @@ pub(crate) fn do_fork(
         child.page_table_mut(),
     )
     .0;
-    // 续-163 探针（用后即滚）：fork 腿 rebind 值——对齐 sas-send/sas-clear，
-    // 对账 child 两次 setaddr 的 root 归属。
-    #[cfg(not(test))]
-    crate::bootmark::mark(&alloc::format!(
-        "nk4a: sas-fork ep={} root={:#x}\n",
-        child_endpoint.0,
-        child_root_phys
-    ));
     gateway
         .sys_vmctl_set_addrspace(child_endpoint, child_root_phys, 0)
         .map_err(VmForkError::KernelCall)?;

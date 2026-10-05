@@ -263,14 +263,6 @@ pub(crate) fn handle_procctl_clear(
         proc.page_table_mut(),
     )
     .0;
-    // 续-163 探针（用后即滚）：clearproc 腿 rebind 值——对账 child 实填
-    // 链（0x9dc39000 族），裁决「后到 rebind 覆盖装好镜像的根」。
-    #[cfg(not(test))]
-    crate::bootmark::mark(&alloc::format!(
-        "nk4a: sas-clear ep={} root={:#x}\n",
-        endpoint.0,
-        new_root_phys
-    ));
     gateway
         .sys_vmctl_set_addrspace(endpoint, new_root_phys, 0)
         .map_err(|_| VmProcctlError::InternalError)?;

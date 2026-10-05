@@ -7775,33 +7775,6 @@ pub fn run() -> ! {
                 // W3 回复半：本轮分发的回复在循环尾发出（C `do_work`
                 // 尾部的 `reply(who_e, result)`）。
                 if let Some((target, reply)) = state.take_reply() {
-                    // 续-152 探针（用后即滚）：VFS 每条回复的 (target, m_type)。
-                    // 15B diagctl 安全格式。
-                    #[cfg(not(feature = "mock"))]
-                    {
-                        const HX: &[u8; 16] = b"0123456789abcdef";
-                        let mut line = [0u8; 15];
-                        line[..3].copy_from_slice(b"vr:");
-                        line[3] = HX[((target.0 >> 4) & 0xf) as usize];
-                        line[4] = HX[(target.0 & 0xf) as usize];
-                        let v = reply.m_type as u32;
-                        line[5] = b' ';
-                        line[6] = HX[((v >> 28) & 0xf) as usize];
-                        line[7] = HX[((v >> 24) & 0xf) as usize];
-                        line[8] = HX[((v >> 20) & 0xf) as usize];
-                        line[9] = HX[((v >> 16) & 0xf) as usize];
-                        line[10] = HX[((v >> 12) & 0xf) as usize];
-                        line[11] = HX[((v >> 8) & 0xf) as usize];
-                        line[12] = HX[((v >> 4) & 0xf) as usize];
-                        line[13] = HX[(v & 0xf) as usize];
-                        line[14] = b'\n';
-                        if let Ok(cs) = core::str::from_utf8(&line) {
-                            let _ = minix_sys::syscall::sys_diagctl_write(
-                                &minix_sys::syscall::DirectKernelCallTransport,
-                                cs,
-                            );
-                        }
-                    }
                     send_reply(target, reply);
                 }
                 // 臂登记的 FS 对话在这一段发出（生产传输：trap 直连 +

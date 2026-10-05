@@ -74,12 +74,6 @@ impl RegionMap {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                     static FB_N: AtomicUsize = AtomicUsize::new(0);
                     if FB_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
-                        crate::bootmark::mark(&alloc::format!(
-                            "nk4a: rm-fallback addr={:#x} n={} va={:#x}\n",
-                            addr.0,
-                            self.regions.len(),
-                            fallback.vaddr.0
-                        ));
                     }
                 }
                 return Some(fallback);
@@ -116,7 +110,6 @@ impl RegionMap {
                 if let Some(key) = retry {
                     if FMF_N.load(core::sync::atomic::Ordering::Relaxed) < 8 {
                         FMF_N.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-                        crate::bootmark::mark("nk4c: findmut-retry-hit\n");
                     }
                     return self.regions.get_mut(&key);
                 }
@@ -132,11 +125,6 @@ impl RegionMap {
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static RP_N: AtomicUsize = AtomicUsize::new(0);
             if RP_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: rm-repair addr={:#x} n={}\n",
-                    addr.0,
-                    self.regions.len()
-                ));
             }
         }
         let mut fresh = alloc::collections::BTreeMap::new();
@@ -284,18 +272,6 @@ impl RegionMap {
     }
 
     pub(crate) fn remove(&mut self, addr: VirBytes) -> Option<VirRegion> {
-        // §续-328 移除探针（用后即滚）：region 被移除时打 va 范围——
-        // 追「谁在 rc 运行中移除了栈 region」。
-        #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-        if addr.0 > 0x7fff_0000_0000 {
-            if let Some(r) = self.regions.get(&addr) {
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4c: region-rm va={:#x} end={:#x}\n",
-                    addr.0,
-                    r.end_addr().0
-                ));
-            }
-        }
         self.regions.remove(&addr)
     }
 

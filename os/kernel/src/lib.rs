@@ -909,11 +909,6 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         let (k_lo, k_hi): (u32, u32);
         // SAFETY: rdmsr of KERNEL_GS_BASE is read-only.
         unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0102u32, out("eax") k_lo, out("edx") k_hi, options(nomem, nostack)) };
-        Console::write_str("nk4a: gs0 gsbase=0x");
-        Console::write_hex(((g_hi as u64) << 32) | g_lo as u64);
-        Console::write_str(" kgsbase=0x");
-        Console::write_hex(((k_hi as u64) << 32) | k_lo as u64);
-        Console::write_str("\n");
     }
     init_protection(kernel_info);        // prot_init equivalent
     init_clock_and_interrupts();         // clock + intr + arch_init (covered in 05)
@@ -933,9 +928,6 @@ pub fn kmain(kernel_info: &KernelInfo) -> ! {
         let (g_lo, g_hi): (u32, u32);
         // SAFETY: rdmsr probe, see gs0 above.
         unsafe { core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") g_lo, out("edx") g_hi, options(nomem, nostack)) };
-        Console::write_str("nk4a: gs1 gsbase=0x");
-        Console::write_hex(((g_hi as u64) << 32) | g_lo as u64);
-        Console::write_str("\n");
     }
     // Phase B.5: kernel information page — build, user-map, publish.
     // From here on the MINIX_KERNINFO IPC call (= 6) answers OK with the
@@ -2698,22 +2690,13 @@ pub fn boot_init_timer() {
     // transient clock arch instance from the global platform descriptor
     // and call `init_timer` on it.
     use minix_arch::{ClockArch, CurrentClockArch, CurrentTimerIrqGate, TimerIrqGate};
-    use minix_platform::{platform_desc, PlatformDesc};
     use minix_types::Endpoint;
-    // NK4-C 1.10c 逐环仪器化（task1-close 裁决删除）：timer 交付链逐环
-    // 打点（PIT→8259→IOAPIC pin2→LAPIC→0x50），断环定位。
-    #[cfg(not(feature = "mock"))]
-    {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-        Console::write_str("nk4a: bit-enter\n");
-    }
+    use minix_platform::platform_desc;
     let pd = platform_desc();
     let mut clock_arch = CurrentClockArch::new(pd.timer());
     clock_arch.init_timer(crate::clock::DEFAULT_HZ, crate::clock::current_cpuid().raw());
     #[cfg(not(feature = "mock"))]
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-        Console::write_str("nk4a: pit-programmed\n");
     }
 
     // D-46 (Step 1.5.7 landed, 2026-09-06 — software half): register the
@@ -3833,13 +3816,9 @@ fn finish_and_restore(
         #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
         {
             use core::sync::atomic::{AtomicUsize, Ordering as SOrd};
-            use minix_plat::{CurrentEarlyConsole as SfConsole, EarlyConsole as _};
             static SF_N: AtomicUsize = AtomicUsize::new(0);
             if SF_N.load(SOrd::Relaxed) < 8 {
                 SF_N.fetch_add(1, SOrd::Relaxed);
-                SfConsole::write_str("nk4c: sfence-exec va=");
-                SfConsole::write_hex(fault_flush_va.unwrap_or(0));
-                SfConsole::write_str("\n");
             }
         }
         // SAFETY: sfence.vma is a privileged instruction; the kernel is at
@@ -3856,15 +3835,6 @@ fn finish_and_restore(
     //   save path);
     // - the BKL was released in step 2 (the release point C uses);
     // - we run on this CPU's kernel stack with paging enabled.
-    // NK4C 续-375 遥测：这条返回腿（§续-373 屏蔽的就是它）每走一次计一。
-    #[cfg(target_arch = "riscv64")]
-    trap_dispatch::nk4c_leg_bump(trap_dispatch::LEG_RESTORE);
-    // 续-376：进入时 SIE 还开着 = 这一趟的窗口真被武装过（屏蔽前的形状）。
-    // 不先测这个就无法判断 §续-373 修的是“每小时都在跑的路径”还是“空路径”。
-    #[cfg(target_arch = "riscv64")]
-    if trap_dispatch::nk4c_sie_open() {
-        trap_dispatch::nk4c_leg_bump(trap_dispatch::LEG_RESTORE_ARMED);
-    }
     unsafe { CurrentTrapReturnArch::restore_to_user(&frame, &ctx) }
 }
 
@@ -4143,22 +4113,12 @@ pub(crate) fn scheduler_loop(cpu: crate::proc::CpuId) -> ! {
                     #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
                     {
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                         static RFS: AtomicUsize = AtomicUsize::new(0);
                         if RFS.fetch_add(1, AtomicOrd::Relaxed) < 16 {
                             let (ep, pdmv) = table
                                 .get(picked)
                                 .map_or((0i32, 0u64), |q| (q.p_endpoint.0, q.p_delivermsg_vir.0));
                             let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
-                            C0::write_str("nk4a: rvflt via=stage3a nr=0x");
-                            C0::write_hex(picked.0 as u64);
-                            C0::write_str(" ep=0x");
-                            C0::write_hex(ep as u64);
-                            C0::write_str(" pdmv=0x");
-                            C0::write_hex(pdmv);
-                            C0::write_str(" root=0x");
-                            C0::write_hex(root);
-                            C0::write_str("\n");
                         }
                     }
                     crate::syscall_signal::cause_signal(

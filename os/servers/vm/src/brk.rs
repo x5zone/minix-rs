@@ -91,15 +91,6 @@ pub(crate) fn handle_brk(
         if pre.is_some_and(|r| r.end_addr().0 < off)
             && BRK_LOG.fetch_add(1, AtomicOrd::Relaxed) < 160
         {
-            crate::bootmark::mark(&alloc::format!(
-                "nk4c: brk ep={:#x} req={:#x} n={} pre={:#x}+{:#x} mt={}\n",
-                request.endpoint.0 as u64,
-                request.new_brk_addr.0,
-                active.regions().len(),
-                pre.map(|r| r.vaddr.0).unwrap_or(0),
-                pre.map(|r| r.length.0).unwrap_or(0),
-                pre.and_then(|r| r.def_memtype).map(|m| m.name()).unwrap_or("<none>"),
-            ));
         }
     }
 

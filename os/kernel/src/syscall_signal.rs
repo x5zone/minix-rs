@@ -184,14 +184,8 @@ pub fn dispatch_kill(
     #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
         static KT: AtomicUsize = AtomicUsize::new(0);
         if KT.fetch_add(1, AtomicOrd::Relaxed) < 32 {
-            C0::write_str("nk4a: kill tgt=0x");
-            C0::write_hex(target_nr.0 as u64);
-            C0::write_str(" sig=0x");
-            C0::write_hex(sig_nr as u64);
-            C0::write_str("\n");
         }
     }
     cause_signal(target_nr, sig_nr as u32, proc_table, priv_table);
@@ -314,9 +308,6 @@ pub(crate) fn cause_signal(
             #[cfg(not(test))]
             if sig_nr == crate::syscall_signal::SIGSEGV {
                 use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                Console::write_str("nk4a: segv-delve ep=");
-                Console::write_hex(ep.0 as u64);
-                Console::write_str(" p_fault_addr=");
                 match proc_table.get(target_nr) {
                     Some(p) => match p.p_fault_addr { Some(a) => Console::write_hex(a), None => Console::write_str("none2") },
                     None => Console::write_str("none"),
@@ -385,12 +376,6 @@ pub(crate) fn cause_signal(
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static CSIG_N: AtomicUsize = AtomicUsize::new(0);
             if CSIG_N.fetch_add(1, AtomicOrd::Relaxed) < 24 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: csig tgt=");
-                C0::write_hex(target_nr.0 as u64);
-                C0::write_str(" sig=");
-                C0::write_hex(sig_nr as u64);
-                C0::write_str("\n");
             }
         }
         // C: system.c:444 — RTS_SET(rp, RTS_SIGNALED | RTS_SIG_PENDING)

@@ -36,28 +36,6 @@ pub(crate) fn handle_pagefault(
     pt: &mut PageTable,
 ) -> Result<PagefaultAction, CowError> {
     let offset = VirBytes(fault_addr.0 - region.vaddr.0);
-
-    // NK4-C 第 32 轮取证探针（task1-close 裁决删除）：RS（ep2）缺页
-    // 进入时打印 VM 句柄里该进程页表根的物理地址。第 31 轮真机对照：
-    // 内核侧 48 条 RS 故障的层级 dump 全部 lvl1=0（RS 自己的根里 PTE
-    // 不在），而 VM 写入回读全程静默（VM 认为写成功）。本轮专打
-    // asynsend 首指令页（0x203bf0，refault 主角）——vmpt2 全量版被
-    // 启动早期 32 次填充耗尽额度，后段 refault 没采到（c32a 教训）。
-    // 内核侧对照锚点：sa0-0x2 root=0x35fd000。
-    #[cfg(not(test))]
-    if proc_endpoint.0 == 2 && fault_addr.0 == 0x203bf0 {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static P2N: AtomicUsize = AtomicUsize::new(0);
-        if P2N.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-            use minix_arch::paging::Paging as _;
-            crate::bootmark::mark(&alloc::format!(
-                "nk4a: vmpt2bf off={:#x} ptroot={:#x}\n",
-                offset.0,
-                pt.root_paddr().0
-            ));
-        }
-    }
-
     let memtype = region.def_memtype
         .ok_or(CowError::NoMemType)?;
 
@@ -116,15 +94,6 @@ pub(crate) fn sync_slot_pte(
         (region.vaddr.0 + offset.0) & !(crate::region::PAGE_SIZE as u64 - 1),
     );
     let paddr = frames.pfn_to_phys(pfn);
-    // 续-141 探针（用后即滚）：sync 时 slot pfn 带位 26 的现形。
-    #[cfg(not(feature = "mock"))]
-    if pfn >= 0xA0000 {
-        crate::bootmark::mark(&alloc::format!(
-            "nk4a: sync-big pfn={:#x} va={:#x}\n",
-            pfn,
-            vaddr.0
-        ));
-    }
     // C i386 的 P|U 天然可执行（无 NX）；x86-64 NXE 下 EXECUTABLE 必须显式
     // 给出，否则用户 text 首次取指即 #PF(err=0x15)（NK4-A C-3 真机
     // 2026-09-22：RS 入口页 PTE=NX，walk=0x5，fetch 拒绝）。B41（§1.74/
@@ -149,61 +118,6 @@ pub(crate) fn sync_slot_pte(
         Some(_) => pt.remap(vaddr, paddr, flags).map(|_| ()),
         None => pt.map(vaddr, paddr, flags),
     };
-    // 续-172 对账探针（用后即滚）：同函数紧邻两次 walk 对账——q1≠q2 即
-    // 「同 L1 内容不一致」实锤（gh47 形态）。高地址门控前 4 次。
-    #[cfg(not(test))]
-    if vaddr.0 > 0x7fff_0000_0000 {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static DW_N: AtomicUsize = AtomicUsize::new(0);
-        if DW_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
-            let q2 = pt.query(vaddr);
-            let q1 = pt.query(vaddr);
-            if q1 != q2 {
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: walk-flip va={:#x} q1={:?} q2={:?}\n",
-                    vaddr.0,
-                    q1.map(|(pa, f)| (pa.0, f.bits())),
-                    q2.map(|(pa, f)| (pa.0, f.bits()))
-                ));
-            }
-        }
-    }
-    // NK4-C 第 20 轮取证探针（task1-close 裁决删除）：写入回读验证。
-    // map/remap 报 Ok 但目标 PT 页不在 VM DM 窗口覆盖内时，写会静默
-    // 丢失（下次 walk 又见 PTE=0 → 同 VA refault 循环）。回读裁决
-    // 「写入未落地」vs「落地后被第三方清写」两个分支。
-    #[cfg(not(test))]
-    if result.is_ok() {
-        let readback = pt.query(vaddr).map(|(pa, _)| pa.0);
-        if readback != Some(paddr.0) {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static WBFAIL: AtomicUsize = AtomicUsize::new(0);
-            if WBFAIL.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: pte-wb-FAIL va={:#x} pa={:#x} read={:#?}\n",
-                    vaddr.0,
-                    paddr.0,
-                    readback
-                ));
-            }
-        }
-        // 续-165 判别探针（用后即滚）：填页句柄的 root——对账 sas-clear
-        // 的 rebind 值（0x9dc38000）；若此处印 0x9dc39000 族=双句柄实锤。
-        if vaddr.0 > 0x7fff_0000_0000 {
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static FR_N: AtomicUsize = AtomicUsize::new(0);
-            if FR_N.fetch_add(1, AtomicOrd::Relaxed) < 3 {
-                use minix_arch::paging::Paging as _;
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: fill-root va={:#x} ptroot={:#x} pte_pa={:#x} map={:#x}\n",
-                    vaddr.0,
-                    pt.root_paddr().0,
-                    paddr.0,
-                    region as *const _ as usize
-                ));
-            }
-        }
-    }
     result.map_err(CowCoreError::PageTable)
 }
 
@@ -334,16 +248,6 @@ pub(crate) fn alloc_and_map(
     // V11/T30: C alloc_mem semantics — reclaim-retry at the funnel.
     let pfn = crate::alloc_page::alloc_pfn_reclaiming(alloc)
         .map_err(|_| CowError::NoMemory)?;
-    // 续-141 探针（用后即滚）：分配值带位 26 的现形（栈页 slot pfn 污染源
-    // 候选一＝分配器本身）。
-    #[cfg(not(feature = "mock"))]
-    if pfn >= 0xA0000 {
-        crate::bootmark::mark(&alloc::format!(
-            "nk4a: alloc-big pfn={:#x}\n",
-            pfn
-        ));
-    }
-
     // C `vrallocflags` (region.c:646-658) → `PAF_CLEAR` (alloc.c:452): every
     // region not flagged `VR_UNINITIALIZED` allocates its demand pages with
     // the CLEAR bit, and `alloc_mem` `sys_memset`s the frame to zero. So a

@@ -38,9 +38,9 @@
 //!   register choice does not transfer (doc 13 §6.3 documents the ABI).
 
 use crate::syscall::KcallResult;
+use minix_arch::TrapStyle;
 use minix_arch::exception::{ExceptionArch, FaultContext};
 use minix_arch::exception_dispatcher::{ExceptionDispatcher, ExceptionOutcome, ExceptionSignal};
-use minix_arch::TrapStyle;
 #[cfg(target_arch = "x86_64")]
 use minix_arch::x86_64::exception::X86_64ExceptionFrame;
 #[cfg(target_arch = "x86_64")]
@@ -139,393 +139,8 @@ fn mirror_irq_frame_into_proc(
     }
     minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
     proc.trap_style = TrapStyle::FullContext;
-    #[cfg(not(feature = "mock"))]
-    nk4a_rbx_probe(
-        "irq-save",
-        proc.p_endpoint.0 as u64,
-        frame.rbx,
-        frame.rip,
-    );
-    #[cfg(not(feature = "mock"))]
-    {
-        nk4a_rs_trace_probe("irq", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-        nk4a_rs_anom_probe("irq", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-        nk4a_rs_leak_probe("irq", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-    }
     true
 }
-
-#[cfg(not(feature = "mock"))]
-/// NK4-A Task C 第 6 轮判别探针（task1-close 裁决删除）：内核每一次改写
-/// 某进程保存上下文里的 RBX（IPC 状态寄存器家族）都打一条 —— tag 标站点、
-/// `ep` 是目标进程 endpoint、`rbx` 是写入后读回的值、`rip` 是该上下文当前
-/// 保存的返回点（无 rip 概念的站点打 0）。
-///
-/// 判别目标：真机 c23a 实证 `finish_and_restore` 交给 RS 的
-/// `rip=0x203bf0`（`asynsend` 首指令，`push rbx` 保护之前）配对
-/// `rbx=0x0`，RS 由此永久丢失 LLVM 常驻 RBX 的 `&self.table`（反汇编
-/// 0x20d2db `mov %rbx,%rdi` 传 endpoint_slot 的 self）。本探针回答「哪一
-/// 站把 0 写进了 RS 的 ctx.rbx」，与 `pf-save`（故障入口采到的 RBX）、
-/// `pre-restore rbx=`（恢复交付值）三点闭环。
-///
-/// 只打 `rbx == 0` 的站点（否则 add-call/add-flags 在 VM 投递上每消息
-/// 一条，40 条上限会在启动前段耗尽，看不到崩溃现场）。全局限 40 条。
-pub(crate) fn nk4a_rbx_probe(tag: &str, ep: u64, rbx: u64, rip: u64) {
-    if rbx != 0 {
-        return;
-    }
-    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-    static RBX_PROBE: AtomicUsize = AtomicUsize::new(0);
-    if RBX_PROBE.fetch_add(1, AtomicOrd::Relaxed) < 40 {
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-        C0::write_str("nk4a: rbxw ");
-        C0::write_str(tag);
-        C0::write_str(" ep=");
-        C0::write_hex(ep);
-        C0::write_str(" rbx=");
-        C0::write_hex(rbx);
-        C0::write_str(" rip=");
-        C0::write_hex(rip);
-        C0::write_str("\n");
-    }
-}
-
-#[cfg(not(feature = "mock"))]
-/// NK4-B P1 第 7 轮配对轨迹探针（task1-close 裁决删除）：只看 rs
-/// （endpoint 2），在「内核存下用户寄存器组」的每个站点无条件打印
-/// `(site, rip, rbx)`，并按三元组去重、全局限 64 条。
-///
-/// 与 [`nk4a_rbx_probe`] 的分工：后者只打 `rbx == 0`、与 add-call /
-/// add-flags 共享 40 条额度；c23a/c24a 证明那套过滤在 rs 崩溃前就
-/// 被启动前段同一 refault 循环耗尽（NK4B-WORKLOG T0.4），崩溃现场的
-/// 捕获值至今未拿到。本探针靠「只看 rs + 去重」把额度留给真正不
-/// 同的 (站点, rip, rbx) 组合，用来回答一个二分：rs 的 live RBX 是在
-/// 某个存帧点之**前**就被上一轮交付写坏（则所有站点看到的都是 0），
-/// 还是在存帧→恢复之间被内核改写（则入口非 0、交付 0）。
-pub(crate) fn nk4a_rs_trace_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
-    /// rs 的端点号（c23a `pf-save ep=0x2` 实证；MINIX3 里 RS = 2 号进程）。
-    const RS_ENDPOINT: u64 = 2;
-    const CAP: usize = 64;
-    if ep != RS_ENDPOINT {
-        return;
-    }
-    use core::sync::atomic::{AtomicU64, AtomicU8, AtomicUsize, Ordering as AtomicOrd};
-    static N: AtomicUsize = AtomicUsize::new(0);
-    static SEEN_RIP: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
-    static SEEN_RBX: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
-    static SEEN_SITE: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
-    // 站点以首字节区分（pf2 / x33 / irq / sig / vms / rst 首字互不相同；
-    // 探针的 site 首字必须唯一，否则去重会合并不同站点）。
-    let site_key = site.as_bytes()[0];
-    let n = N.load(AtomicOrd::Relaxed);
-    let mut i = 0;
-    while i < n && i < CAP {
-        if SEEN_RIP[i].load(AtomicOrd::Relaxed) == rip
-            && SEEN_RBX[i].load(AtomicOrd::Relaxed) == rbx
-            && SEEN_SITE[i].load(AtomicOrd::Relaxed) == site_key
-        {
-            return;
-        }
-        i += 1;
-    }
-    if n >= CAP {
-        return;
-    }
-    SEEN_RIP[n].store(rip, AtomicOrd::Relaxed);
-    SEEN_RBX[n].store(rbx, AtomicOrd::Relaxed);
-    SEEN_SITE[n].store(site_key, AtomicOrd::Relaxed);
-    N.fetch_add(1, AtomicOrd::Relaxed);
-    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-    C0::write_str("nk4a: rs-tr ");
-    C0::write_str(site);
-    C0::write_str(" n=");
-    C0::write_hex(n as u64);
-    C0::write_str(" rbx=");
-    C0::write_hex(rbx);
-    C0::write_str(" rip=");
-    C0::write_hex(rip);
-    C0::write_str("\n");
-}
-
-#[cfg(not(feature = "mock"))]
-/// NK4-C S1 取证探针（task1-close 裁决删除）：内核未布防写点的
-/// 目标三元组 `(tag, va, root→pa)` 去重记录 —— 把每个不同页组合打
-/// 一条（上限 96），事后用 §7.3 脚本与同轮 `lvl1pa`（PT 页）对账：
-/// 命中即错页写实锤。
-///
-/// 布防对象是 §4.4 第 1 项穷举后仅剩的两条裸写通路（其余写点已有
-/// kdst/msgw）：`finw` = syscall.rs kernel_call_finish 的 errno 回执 DM
-/// 直写（p_delivermsg_vir，每次带错误码完成的系统调用必触发，正落在
-/// RS 持 CPU 的内核代执行窗口）；`viow` = pte_walk.rs copy_to_user
-///（SYS_VDEVIO/SYS_SDEVIO 结果回写）。站点首字互不相同，去重键
-/// `(site, va页, pa页)`，避免启动期重复事件吃光额度（prompt 铁律 2）。
-pub(crate) fn nk4a_user_write_probe(site: &str, root: u64, va: u64, pa: u64) {
-    const CAP: usize = 96;
-    use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrd};
-    static N: AtomicUsize = AtomicUsize::new(0);
-    static SEEN_VA: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
-    static SEEN_PA: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
-    static SEEN_SITE: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
-    let site_key = site.as_bytes()[0];
-    let va_page = va & !0xFFF;
-    let pa_page = pa & !0xFFF;
-    let n = N.load(AtomicOrd::Relaxed);
-    let mut i = 0;
-    while i < n && i < CAP {
-        if SEEN_VA[i].load(AtomicOrd::Relaxed) == va_page
-            && SEEN_PA[i].load(AtomicOrd::Relaxed) == pa_page
-            && SEEN_SITE[i].load(AtomicOrd::Relaxed) == site_key
-        {
-            return;
-        }
-        i += 1;
-    }
-    if n >= CAP {
-        // S2h 评审修复：配额触顶打一条现形标记——否则「没打印」与
-        // 「没命中」不可区分，阴性结论不可信。
-        if n == CAP {
-            N.fetch_add(1, AtomicOrd::Relaxed);
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: w-cap\n");
-        }
-        return;
-    }
-    SEEN_VA[n].store(va_page, AtomicOrd::Relaxed);
-    SEEN_PA[n].store(pa_page, AtomicOrd::Relaxed);
-    SEEN_SITE[n].store(site_key, AtomicOrd::Relaxed);
-    N.fetch_add(1, AtomicOrd::Relaxed);
-    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-    C0::write_str("nk4a: w-");
-    C0::write_str(site);
-    C0::write_str(" n=");
-    C0::write_hex(n as u64);
-    C0::write_str(" va=");
-    C0::write_hex(va);
-    C0::write_str(" root=");
-    C0::write_hex(root);
-    C0::write_str(" pa=");
-    C0::write_hex(pa);
-    C0::write_str("\n");
-}
-
-#[cfg(not(feature = "mock"))]
-#[cfg(target_arch = "x86_64")]
-/// NK4-C S2c 哨兵探针（task1-close 裁决删除）：在 RS 栈区三页
-/// （0x7fffffff9000 / a000 / c000）扫描「值等于 `self`（表地址
-/// 0x7fffffffc800）」的 u64 槽。每个内核观测点经 DM 逐页重扫，任一页
-/// 的「(条目在否, 命中数, 首命中偏移)」变化就打一条（上限 64）。
-///
-/// 选型依据：s2c 实证崩溃窗口内 c800 页的 PTE 条目与表首字全程
-/// 正常翻动，而 self 从栈 reload 后读出 0 —— 抹的是 self 存放槽的其
-/// 它栈页数据，槽偏移未知，故改为按值扫描。观测点在调用方按 RS
-/// 上下文门控；本函数只管按传入 root 读表，不做进程判定。
-pub(crate) fn nk4a_pte_watch(site: &str, root_pa: u64) {
-    const WATCH_SELF: u64 = 0x7fff_ffff_c800;
-    const PAGES: [u64; 3] = [0x7fff_ffff_9000, 0x7fff_ffff_a000, 0x7fff_ffff_c000];
-    // S2h 评审修复：64→256（s2g 时窗口已到 n=0x31，余量只剩 15 条）。
-    const CAP: usize = 256;
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
-    // 打包状态：bit63=条目不在，bits[12..22)=命中数（0xFFF=NP 哨兵），
-    // bits[0..12)=首命中槽字节偏移。
-    static LAST: [AtomicU64; 3] = [const { AtomicU64::new(u64::MAX) }; 3];
-    static N: AtomicUsize = AtomicUsize::new(0);
-    if root_pa == 0 {
-        return;
-    }
-    let rd = |pa: u64| -> u64 {
-        let v = <minix_arch::CurrentDirectMap as minix_arch::DirectMapArch>::kernel_phys_to_virt(
-            minix_types::PhysBytes(pa),
-        );
-        // SAFETY: DM 窗口覆盖全部物理内存；逐级表页都是已存在条目
-        // 指向的常驻页表页（每级先查 present 位再读）。
-        unsafe { core::ptr::read_volatile(v.0 as *const u64) }
-    };
-    let idx = |va: u64, sh: u64| (va >> sh) & 0x1FF;
-    let mut state = [0u64; 3];
-    for (si, page) in PAGES.iter().enumerate() {
-        let page = *page;
-        // x86-64 四级手动 walk（与 PF dump 同构）取该页 L1 条目。
-        let pml4e = rd(root_pa + idx(page, 39) * 8);
-        let mut frame_pa = 0u64;
-        if pml4e & 1 != 0 {
-            let pdpte = rd((pml4e & 0x000F_FFFF_FFFF_F000) + idx(page, 30) * 8);
-            // S2h 评审修复：补 PDPT 级 PS 位（1GiB 巨页不当表页下钻）。
-            if pdpte & 1 != 0 && pdpte & 0x80 == 0 {
-                let pde = rd((pdpte & 0x000F_FFFF_FFFF_F000) + idx(page, 21) * 8);
-                if pde & 1 != 0 && pde & 0x80 == 0 {
-                    let pte = rd((pde & 0x000F_FFFF_FFFF_F000) + idx(page, 12) * 8);
-                    if pte & 1 != 0 {
-                        frame_pa = pte & 0x000F_FFFF_FFFF_F000;
-                    }
-                }
-            }
-        }
-        // S2h 评审修复：表项内容已损时 frame_pa 可为任意值，对物理地址
-        // 加上界（本环境 RAM ≤ 4GiB，串口日志 memmap 实证）越界时按
-        // NP 处理——探针不能把被诊断的系统打死。
-        if frame_pa == 0 || frame_pa >= 0x1_0000_0000 {
-            state[si] = (1 << 63) | (0xFFF << 12);
-            continue;
-        }
-        let mut cnt = 0u64;
-        let mut first = 0xFFF;
-        let mut off = 0u64;
-        while off < 0x1000 {
-            if rd(frame_pa + off) == WATCH_SELF {
-                if cnt == 0 {
-                    first = off;
-                }
-                cnt += 1;
-            }
-            off += 8;
-        }
-        state[si] = (cnt << 12) | first;
-    }
-    let mut changed = false;
-    for (si, st) in state.iter().enumerate() {
-        if LAST[si].load(AtomicOrd::Relaxed) != *st {
-            LAST[si].store(*st, AtomicOrd::Relaxed);
-            changed = true;
-        }
-    }
-    if !changed {
-        return;
-    }
-    let n = N.fetch_add(1, AtomicOrd::Relaxed);
-    if n >= CAP {
-        // S2h 评审修复：触顶现形标记（仅打一次，n==CAP 那一刻）。
-        if n == CAP {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: pw-cap\n");
-        }
-        return;
-    }
-    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-    C0::write_str("nk4a: pw-");
-    C0::write_str(site);
-    C0::write_str(" n=");
-    C0::write_hex(n as u64);
-    C0::write_str(" s9=");
-    C0::write_hex(state[0]);
-    C0::write_str(" sa=");
-    C0::write_hex(state[1]);
-    C0::write_str(" sc=");
-    C0::write_hex(state[2]);
-    C0::write_str("\n");
-}
-
-#[cfg(not(feature = "mock"))]
-/// NK4-B P1 第 8 轮异常轨迹探针（task1-close 裁决删除）：只看 rs，且只打
-/// 「RBX 不可能是用户指针」的存帧/交付现场（`rbx < 0x10000`，涵盖 0 与
-/// IPC 状态值两类），按 `(site, rbx, rip)` 去重、限 48 条。
-///
-/// 为何需要它：c25a 的 [`nk4a_rs_trace_probe`]（ep==2 全量 + 去重 + 64）
-/// 仍在崩溃前耗尽（最后一条在第 2194 行，崩溃在第 3800+ 行），因为启动
-/// 期 rs 不断引入新的正常 (rip, rbx) 组合。而 c25a 已证：pf2/rst/irq
-/// 三站的 (rbx, rip) 逐对相等 → 存帧→恢复回路忠实，0 不是在内回路与
-/// 交付之间被改写。本探针把额度全留给异常类（包括 0），以拿到
-/// 崩溃那次现场及其上一个异常点。
-pub(crate) fn nk4a_rs_anom_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
-    const RS_ENDPOINT: u64 = 2;
-    const ANOM_CEILING: u64 = 0x10000;
-    const CAP: usize = 48;
-    if ep != RS_ENDPOINT || rbx >= ANOM_CEILING {
-        return;
-    }
-    use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering as AtomicOrd};
-    static N: AtomicUsize = AtomicUsize::new(0);
-    static SEEN_RIP: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
-    static SEEN_RBX: [AtomicU64; CAP] = [const { AtomicU64::new(0) }; CAP];
-    static SEEN_SITE: [AtomicU8; CAP] = [const { AtomicU8::new(0) }; CAP];
-    let site_key = site.as_bytes()[0];
-    let n = N.load(AtomicOrd::Relaxed);
-    let mut i = 0;
-    while i < n && i < CAP {
-        if SEEN_RIP[i].load(AtomicOrd::Relaxed) == rip
-            && SEEN_RBX[i].load(AtomicOrd::Relaxed) == rbx
-            && SEEN_SITE[i].load(AtomicOrd::Relaxed) == site_key
-        {
-            return;
-        }
-        i += 1;
-    }
-    if n >= CAP {
-        return;
-    }
-    SEEN_RIP[n].store(rip, AtomicOrd::Relaxed);
-    SEEN_RBX[n].store(rbx, AtomicOrd::Relaxed);
-    SEEN_SITE[n].store(site_key, AtomicOrd::Relaxed);
-    N.fetch_add(1, AtomicOrd::Relaxed);
-    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-    C0::write_str("nk4a: rs-anom ");
-    C0::write_str(site);
-    C0::write_str(" n=");
-    C0::write_hex(n as u64);
-    C0::write_str(" rbx=");
-    C0::write_hex(rbx);
-    C0::write_str(" rip=");
-    C0::write_hex(rip);
-    C0::write_str("\n");
-}
-
-#[cfg(not(feature = "mock"))]
-/// NK4-B P1 第 9 轮「第一次泄露」跃变探针（task1-close 裁决删除）：
-/// 只看 rs，与上一个采样点比较——从「指针量级」（`>= 0x10000`）跳到
-/// 「状态量级」（`< 0x10000`）时打印跃变前后的 `(site, rbx, rip)`，限 12 条。
-///
-/// 它把 c25a/c26a 的两类归因分开：若跃变发生在存帧站（pf2/irq/i33/sig/vms），
-/// 说明内核保存之前用户态的 RBX 就已经被写坏（上一个交付点才是错点）；
-/// 若跃变发生在交付站（rst），则是内核亲手把状态量交付到了一个不在
-/// 用户态保存窗口（libc/ipc_trap 的 push-pop 窗口）内的恢复点。两者对
-/// 下一步修复方向的含义不同，必须区分。
-pub(crate) fn nk4a_rs_leak_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
-    const RS_ENDPOINT: u64 = 2;
-    const POINTER_FLOOR: u64 = 0x10000;
-    const CAP: usize = 12;
-    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
-    static PREV_RBX: AtomicU64 = AtomicU64::new(POINTER_FLOOR);
-    static PREV_RIP: AtomicU64 = AtomicU64::new(0);
-    static PREV_SITE: AtomicU64 = AtomicU64::new(0);
-    static N: AtomicUsize = AtomicUsize::new(0);
-    if ep != RS_ENDPOINT {
-        return;
-    }
-    let prev = PREV_RBX.swap(rbx, AtomicOrd::Relaxed);
-    let prev_rip = PREV_RIP.swap(rip, AtomicOrd::Relaxed);
-    let prev_site = PREV_SITE.swap(site.as_bytes()[0] as u64, AtomicOrd::Relaxed) as u8;
-    if prev < POINTER_FLOOR || rbx >= POINTER_FLOOR {
-        return;
-    }
-    let n = N.fetch_add(1, AtomicOrd::Relaxed);
-    if n >= CAP {
-        return;
-    }
-    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-    C0::write_str("nk4a: rs-leak ");
-    C0::write_str(site);
-    C0::write_str(" n=");
-    C0::write_hex(n as u64);
-    C0::write_str(" from_site=");
-    C0::write_str(match prev_site {
-        b'i' => "irq",
-        b'p' => "pf2",
-        b's' => "sig",
-        b'v' => "vms",
-        b'r' => "rst",
-        b'x' => "x33",
-        _ => "other",
-    });
-    C0::write_str(" prev_rbx=");
-    C0::write_hex(prev);
-    C0::write_str(" prev_rip=");
-    C0::write_hex(prev_rip);
-    C0::write_str(" rbx=");
-    C0::write_hex(rbx);
-    C0::write_str(" rip=");
-    C0::write_hex(rip);
-    C0::write_str("\n");
-}
-
 #[cfg(target_arch = "x86_64")]
 /// A-path body: exceptions, external IRQs, IPIs, soft-int gates, spurious.
 ///
@@ -538,23 +153,6 @@ pub(crate) fn nk4a_rs_leak_probe(site: &str, ep: u64, rbx: u64, rip: u64) {
 /// stack; the stub resumes via iretq when this returns.
 pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     let vector = frame.vector as u8;
-
-    // C-3 迭代1 分段路标：每个站点独立计数（static 展开在各站点），限 4 次。
-    // 用法：nk4a_stage_mark!("pfm2") —— 串口打 "nk4a: pfm2"。
-    #[cfg(not(feature = "mock"))]
-    macro_rules! nk4a_stage_mark {
-        ($tag:literal) => {{
-            use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-            static STAGE_MARK: AtomicUsize = AtomicUsize::new(0);
-            let n = STAGE_MARK.fetch_add(1, AtomicOrd::Relaxed);
-            if n < 4 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: ");
-                C0::write_str($tag);
-                C0::write_str("\n");
-            }
-        }};
-    }
 
     // E1 trap bridge: vector 33 (IPC_VECTOR) from user mode is the IPC
     // soft-int leg (C: IPC_VECTOR_ORIG, interrupt.h:33; gate DPL=3,
@@ -631,7 +229,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             static TICK1: AtomicUsize = AtomicUsize::new(0);
             if TICK1.fetch_add(1, AtomicOrd::Relaxed) == 0 {
                 use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                Console::write_str("nk4a: tick1\n");
             }
         }
         crate::clock::local_tick(crate::current_cpu_id());
@@ -671,20 +268,12 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     && PMST_K.fetch_add(1, AtomicOrd::Relaxed) < 20
                 {
                     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                    Console::write_str("nk4a: tick k=");
-                    Console::write_hex(tick);
-                    Console::write_str(" cur=");
-                    Console::write_hex(nr.0 as u64);
-                    Console::write_str("\n");
                 }
                 if tick > 5000
                     && nr.0 == 0
                     && PMST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
                 {
                     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                    Console::write_str("nk4a: pmstall tick=");
-                    Console::write_hex(tick);
-                    Console::write_str("\n");
                     if let Some(p) = table.get(nr) {
                         crate::stacktrace::proc_stacktrace(p);
                     }
@@ -728,9 +317,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                     && GTICK_K.fetch_add(1, AtomicOrd::Relaxed) < 20
                 {
                     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                    Console::write_str("nk4a: gtick k=");
-                    Console::write_hex(g);
-                    Console::write_str("\n");
                 }
             }
             crate::clock::local_tick(crate::current_cpu_id());
@@ -759,9 +345,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
                         && GST_N.fetch_add(1, AtomicOrd::Relaxed) < 2
                     {
                         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                        Console::write_str("nk4a: pmstall2 tick=");
-                        Console::write_hex(g2);
-                        Console::write_str("\n");
                         if let Some(p) = table.get(nr) {
                             crate::stacktrace::proc_stacktrace(p);
                         }
@@ -832,8 +415,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     } else {
         unsafe { crate::smp::BklSection::assume_held() }
     };
-    #[cfg(not(feature = "mock"))]
-    nk4a_stage_mark!("pfm1-gate");
     // Per-CPU current process (C: `saved_proc = get_cpulocal_var(proc_ptr)`
     // — exception.c:186). User-origin outcomes act on it; the kernel-origin
     // path needs it too for the nested-debug legitimacy check (C reads
@@ -862,8 +443,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
     // to VM itself). Kernel-origin faults never reach that check (the
     // nested path panics first), matching C's is_nested ordering.
     let is_vm = cur_nr == Some(crate::proc::proc_nr::VM_PROC_NR);
-    #[cfg(not(feature = "mock"))]
-    nk4a_stage_mark!("pfm2-smp");
     // Nested-debug legitimacy inputs, read from the saved process state the
     // way C does (exception.c:232-234): the trace bit comes from the saved
     // PSW (`p_reg.psw & TRACEBIT`, archconst.h:120), the entry style from
@@ -879,8 +458,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             })
         })
         .unwrap_or((false, TrapStyle::NoEntry));
-    #[cfg(not(feature = "mock"))]
-    nk4a_stage_mark!("pfm3-tbl");
     // The kernel copy paths are validate-first (user-buffer range checks in
     // ipc.rs, Direct Map window checks in vm.rs), so no FaultContext slot is
     // maintained: C's `catch_pagefaults` + context-tracking replacement
@@ -895,8 +472,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
         is_traced,
         kern_trap_style,
     );
-    #[cfg(not(feature = "mock"))]
-    nk4a_stage_mark!("pfm4-hand");
 
     match outcome {
         // Spurious NMI — C prints and returns (exception.c:191-194); the
@@ -951,7 +526,6 @@ pub unsafe extern "C" fn x86_trap_dispatch_body(frame: &mut TrapFrame) {
             Console::write_hex(frame.ss);
             Console::write_str("\n");
             #[cfg(not(feature = "mock"))]
-            nk4a_stage_mark!("pfm5-dump");
             panic!(
                 "kernel exception vector {} at rip {:#x} errcode {:#x} [dispatch_body @ 0x{:x}]",
                 v.get(),
@@ -1186,14 +760,6 @@ fn forward_pagefault_to_vm(
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static ANCHOR: AtomicUsize = AtomicUsize::new(0);
         if ANCHOR.fetch_add(1, AtomicOrd::Relaxed) == 0 {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-            Console::write_str("nk4a: anchor fwd=0x");
-            Console::write_hex(forward_pagefault_to_vm as *const () as u64);
-            Console::write_str(" finish=0x");
-            Console::write_hex(crate::finish_and_restore_addr());
-            Console::write_str(" sched=0x");
-            Console::write_hex(crate::scheduler_loop_addr());
-            Console::write_str("\n");
         }
     }
     // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：出生服务器
@@ -1208,9 +774,6 @@ fn forward_pagefault_to_vm(
             && PFW_N.fetch_add(1, AtomicOrd::Relaxed) < 40
         {
             use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: pfwd nr=");
-            C0::write_hex(cur_nr.0 as u64);
-            C0::write_str(" out=");
             match &outcome {
                 crate::ipc::IpcOutcome::Delivered => C0::write_str("D"),
                 crate::ipc::IpcOutcome::Blocked => C0::write_str("B"),
@@ -1292,25 +855,6 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             .get_mut(cur_nr)
             .unwrap_or_else(|| panic!("int-33 IPC from invalid proc nr {cur_nr:?}"));
         minix_arch::save_frame_to_context(frame, &mut caller.cpu_context);
-        #[cfg(not(feature = "mock"))]
-        nk4a_rbx_probe(
-            "int33-save",
-            caller.p_endpoint.0 as u64,
-            frame.rbx,
-            frame.rip,
-        );
-        #[cfg(not(feature = "mock"))]
-        {
-            nk4a_rs_trace_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
-            nk4a_rs_anom_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
-            nk4a_rs_leak_probe("x33", caller.p_endpoint.0 as u64, frame.rbx, frame.rip);
-            // NK4-C S2c 哨兵（task1-close 裁决删除）：RS 进内核代执行入口
-            // 重读监视 PTE；与 kernel_call_finish 的出口观测夹住整个 IPC
-            // 服务窗口。LAST 状态全局，必须按 ep==2 门控避免错 root 串扰。
-            if caller.p_endpoint.0 == 2 {
-                nk4a_pte_watch("x33", caller.p_seg.phys_root.0);
-            }
-        }
         // Record the ENTRY style (C: every mpx.S soft-int entry records
         // `p_kern_trap_style`; arch_system.c:585 consumes it at
         // restore_user_context). A door-parked caller (blocked IPC)
@@ -1339,11 +883,6 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         let n = IPC_ENTRY.fetch_add(1, AtomicOrd::Relaxed);
         if n < 16 {
             use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-            Console::write_str("nk4a: ipc-entry nr=");
-            Console::write_hex(call_nr as u64);
-            Console::write_str(" caller=");
-            Console::write_hex(cur_nr.0 as u64);
-            Console::write_str("\n");
         }
     }
     if crate::ipc::IpcCall::from_raw(call_nr).is_none() {
@@ -1408,19 +947,9 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             let xn = XIN.fetch_add(1, AtomicOrd::Relaxed);
             if xn == 512 {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: x33in-cap\n");
             }
             if xn < 512 {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: x33in call=");
-                C0::write_hex(call_nr as u64);
-                C0::write_str(" r2=");
-                C0::write_hex(r2);
-                C0::write_str(" old=");
-                C0::write_hex(caller.p_delivermsg_vir.0);
-                C0::write_str(" senda=");
-                C0::write_hex(is_senda as u64);
-                C0::write_str("\n");
             }
         }
         #[cfg(not(feature = "mock"))]
@@ -1441,17 +970,6 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
             static INIT33: AtomicUsize = AtomicUsize::new(0);
             if INIT33.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-                C0::write_str("nk4a: i33-init call=");
-                C0::write_hex(call_nr as u64);
-                C0::write_str(" rbx=");
-                C0::write_hex(r2);
-                C0::write_str(" opdmv=");
-                C0::write_hex(pdmv_before.0);
-                C0::write_str(" gf=");
-                C0::write_hex(caller.p_getfrom_e.0 as u64);
-                C0::write_str(" rts=");
-                C0::write_hex(caller.p_rts_flags.get().bits() as u64);
-                C0::write_str("\n");
             }
         }
     }
@@ -1492,13 +1010,6 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
         static I33N: AtomicUsize = AtomicUsize::new(0);
         if I33N.fetch_add(1, AtomicOrd::Relaxed) < 48 {
             use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: i33-save rip=");
-            C0::write_hex(frame.rip);
-            C0::write_str(" rbx=");
-            C0::write_hex(frame.rbx);
-            C0::write_str(" rsp=");
-            C0::write_hex(frame.rsp);
-            C0::write_str("\n");
         }
     }
     msg.m_type = call_nr;
@@ -1538,8 +1049,6 @@ unsafe fn x86_ipc_dispatch_body(frame: &mut TrapFrame, cur_nr: crate::proc::Proc
             .expect("int-33 IPC: caller slot must exist")
             .cpu_context;
         minix_arch::sync_status_register_to_frame(ctx, frame);
-        #[cfg(not(feature = "mock"))]
-        nk4a_rbx_probe("int33-ret", msg.m_source.0 as u64, frame.rbx, frame.rip);
     } else {
         // Enter the scheduling loop; never returns to this frame.
         reenter_scheduler();
@@ -1637,12 +1146,6 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                     .get_mut(cur_nr)
                     .expect("syscall suspend: caller slot must exist");
                 minix_arch::save_frame_to_context(frame, &mut proc.cpu_context);
-                #[cfg(not(feature = "mock"))]
-                {
-                    nk4a_rs_trace_probe("vms", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                    nk4a_rs_anom_probe("vms", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                    nk4a_rs_leak_probe("vms", proc.p_endpoint.0 as u64, frame.rbx, frame.rip);
-                }
                 proc.trap_style = minix_arch::TrapStyle::FullContext;
                 if let Some(ctx) = proc.p_vm_suspend.as_mut() {
                     ctx.saved_m_user = Some(m_user.0);
@@ -1669,11 +1172,6 @@ pub unsafe extern "C" fn x86_syscall_dispatch_body(frame: &mut TrapFrame) {
                             )
                         })
                         .unwrap_or((false, false));
-                    Console::write_str("nk4a: sys-susp vmreq=");
-                    Console::write_str(if vmreq { "y" } else { "n" });
-                    Console::write_str(" pending=");
-                    Console::write_str(if state_pending { "y" } else { "n" });
-                    Console::write_str("\n");
                 }
                 // NK4-C 1.4 根因修复：入链 / 出队 / 通知 VM 三半不在这里做。
                 // C 的 vm_suspend（proc.c:241）对同一挂起只跑一次（其
@@ -1789,9 +1287,6 @@ fn riscv64_read_stval() -> u64 {
 /// resumes via `sret` when this returns.
 #[cfg(target_arch = "riscv64")]
 pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
-    // 续-375 遥测：内核腿（S-origin 陷入）每进入一次计一。§续-370 修的就是这条腿，
-    // 没有这个读数就只能推定它跑过。
-    nk4c_leg_bump(LEG_KERNEL);
     let scause = riscv64_read_scause();
     if scause & RISCV64_SCAUSE_INTERRUPT != 0
         && scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER
@@ -1825,22 +1320,6 @@ pub unsafe extern "C" fn riscv64_user_body(
 ) -> u64 {
     use minix_arch::riscv64::trap_stub::PARK_NONE;
     let scause = riscv64_read_scause();
-    // 续-375 遥测：用户腿按进入原因分类计数；并埋一个哨兵——这条腿假定被
-    // 打断的是 U 态（它要从 sscratch 拿用户 sp），若 `sstatus.SPP=1`（被
-    // S 态代码打断）就是「换腿先于屏蔽」那一类窗口还存在，修后应恒为 0。
-    if frame.from_kernel() {
-        nk4c_leg_bump(LEG_USER_SORIGIN);
-    }
-    if scause & RISCV64_SCAUSE_INTERRUPT != 0 {
-        nk4c_leg_bump(LEG_USER_INTR);
-    } else if scause == RISCV64_CAUSE_ECALL_UMODE {
-        nk4c_leg_bump(LEG_USER_ECALL);
-    } else if matches!(
-        scause,
-        RISCV64_CAUSE_INST_PF | RISCV64_CAUSE_LOAD_PF | RISCV64_CAUSE_STORE_PF
-    ) {
-        nk4c_leg_bump(LEG_USER_PF);
-    }
     if scause == RISCV64_CAUSE_ECALL_UMODE {
         // `ecall` does not advance sepc — step past the 4-byte
         // instruction or the sret re-executes it and the trap loops
@@ -1957,83 +1436,6 @@ pub static LAST_FILL_PTROOT: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
-
-// ── NK4C 续-375 陷入/返回腿进入计数（诊断，结案随诊断 mark 族滚除）────────
-//
-// §续-370/371/373 修了三条路径，但「这三条路径一次开机里真被走到几次」始终是
-// 推证而不是读数：全绿样本分不清「修了一条每小时都在跑的路径」与「修了一条
-// 从没跑到的路径」。这里把计数器接到已有的 printf 通道上（atf-c-compat 的
-// `_write` → SYS_DIAGCTL → 内核串口，见 tools/atf-c-compat/stdio-minix.c 的
-// 说明），探针与镜像都不用重编：探针本来就要打 `S8:`（窗口起点）和 `RESULT:`
-// （窗口终点）两行，内核在这两行后各多打一行读数——每 boot 多两行，打印量
-// 不换量级（§续-361 的观察者效应教训：插桩量本身就是变量）。
-
-/// 0=内核腿进入 1=用户腿·异步中断 2=用户腿·ecall 3=用户腿·页故障
-/// 4=用户腿被 S-origin 陷入走过（哨兵，修复后应恒为 0）5=restore_to_user 次数
-/// 6=其中进入时 sstatus.SIE 仍开着（=§续-373 那个窗口真的被武装了几次）
-///
-/// 口径限制（读这些数之前先看）：
-/// - 槽 1/2/3 不是用户腿进入的全量普查——浮点懒陷阱（scause=2）、非法指令等
-///   同步异常不记任何一项，所以三项相加会小于总进入次数（CodeReview on
-///   续-375/续-376：漏计的只会增加用户腿暴露面，不影响“用户腿为主”的排序方向）。
-/// - 本数组是跨 hart 的全局聚合值（不是 per-hart），所以“由 `ui` 反推时钟
-///   周期”这类换算只在单 hart 配置（`-smp 1`，本项目当前的上机门）下成立。
-#[cfg(target_arch = "riscv64")]
-pub static NK4C_LEG_COUNTS: [core::sync::atomic::AtomicU64; 7] = [
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-    core::sync::atomic::AtomicU64::new(0),
-];
-
-/// 计数槽位（与 `NK4C_LEG_COUNTS` 下标一致；命名而不是传裸数字，避免接错腿）。
-#[cfg(target_arch = "riscv64")]
-pub const LEG_KERNEL: usize = 0;
-#[cfg(target_arch = "riscv64")]
-pub const LEG_USER_INTR: usize = 1;
-#[cfg(target_arch = "riscv64")]
-pub const LEG_USER_ECALL: usize = 2;
-#[cfg(target_arch = "riscv64")]
-pub const LEG_USER_PF: usize = 3;
-#[cfg(target_arch = "riscv64")]
-pub const LEG_USER_SORIGIN: usize = 4;
-#[cfg(target_arch = "riscv64")]
-pub const LEG_RESTORE: usize = 5;
-#[cfg(target_arch = "riscv64")]
-pub const LEG_RESTORE_ARMED: usize = 6;
-
-/// 走一条腿就加一。Relaxed 足够：这些数只用于事后读数，不参与任何判定。
-#[cfg(target_arch = "riscv64")]
-pub fn nk4c_leg_bump(slot: usize) {
-    use core::sync::atomic::Ordering as AtomicOrd;
-    NK4C_LEG_COUNTS[slot].fetch_add(1, AtomicOrd::Relaxed);
-}
-
-/// 供 DIAGCTL 诊断臂读出（低打印：只在探针已有的两行边界上打一次）。
-#[cfg(target_arch = "riscv64")]
-pub fn nk4c_leg_counts() -> [u64; 7] {
-    use core::sync::atomic::Ordering as AtomicOrd;
-    let mut out = [0u64; 7];
-    for (slot, dst) in NK4C_LEG_COUNTS.iter().zip(out.iter_mut()) {
-        *dst = slot.load(AtomicOrd::Relaxed);
-    }
-    out
-}
-
-/// 当前 hart 的 `sstatus.SIE` 是否开着——用来区分「走了一次返回腿」与
-/// 「走了一次**可被时钟打断**的返回腿」（§续-373 的窗口只在后者上存在）。
-/// §续-374 推证过 `idle_halt` 会打开它并把使能带回 S 态；这个数是那个推证的
-/// 直接读数，不需要先把屏蔽拿掉才能测。
-#[cfg(target_arch = "riscv64")]
-pub fn nk4c_sie_open() -> bool {
-    let raw: u64;
-    // SAFETY: 读 sstatus 是纯读操作，S-mode 可用，无副作用。
-    unsafe { core::arch::asm!("csrr {}, sstatus", out(reg) raw, options(nomem, nostack)) };
-    raw & (1u64 << 1) != 0
-}
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn riscv64_pagefault_body(
@@ -2187,20 +1589,6 @@ unsafe fn riscv64_pagefault_body(
             let mode = satp >> 60;
             let asid = (satp >> 44) & 0xFFFF;
             let ppn = satp & 0xF_FFFF_FFFF;
-            P5Console::write_str("nk4c: p5 nr=");
-            P5Console::write_hex(cur_nr.0 as u64);
-            P5Console::write_str(" fa=");
-            P5Console::write_hex(fault_addr);
-            P5Console::write_str(" mode=");
-            P5Console::write_hex(mode);
-            P5Console::write_str(" asid=");
-            P5Console::write_hex(asid);
-            P5Console::write_str(" ppn=");
-            P5Console::write_hex(ppn);
-            P5Console::write_str(" root=");
-            P5Console::write_hex(ppn << 12);
-            P5Console::write_str(" ec=");
-            P5Console::write_hex(errcode as u64);
             // §续-338 判别探针（用后即滚）：故障来源态——sepc 落点 +
             // sstatus.SPP(bit8)/SUM(bit18) + 中断时 sp（frame.gpr[2]）。
             // sstatus 取帧内入口快照（trap_stub 契约：值取自 entry 时刻），
@@ -2273,7 +1661,6 @@ unsafe fn riscv64_pagefault_body(
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        use minix_plat::{CurrentEarlyConsole as Lc, EarlyConsole as _};
         static LETHAL_PF: AtomicUsize = AtomicUsize::new(0);
         let (flagged, flags) = table
             .get(cur_nr)
@@ -2288,13 +1675,6 @@ unsafe fn riscv64_pagefault_body(
         if flagged {
             let n = LETHAL_PF.fetch_add(1, AtomicOrd::Relaxed);
             if n < 2 || (n + 1).is_power_of_two() {
-                Lc::write_str("nk4c: pfwd-lethal nr=");
-                Lc::write_hex(cur_nr.0 as u64);
-                Lc::write_str(" n=");
-                Lc::write_hex((n + 1) as u64);
-                Lc::write_str(" flags=0x");
-                Lc::write_hex(flags);
-                Lc::write_str("\n");
             }
         }
     }
@@ -2304,20 +1684,8 @@ unsafe fn riscv64_pagefault_body(
     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
     {
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        use minix_plat::{CurrentEarlyConsole as Lc, EarlyConsole as _};
         static FA0_N: AtomicUsize = AtomicUsize::new(0);
         if fault_addr == 0 && FA0_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-            Lc::write_str("nk4c: fa0 nr=");
-            Lc::write_hex(cur_nr.0 as u64);
-            Lc::write_str(" ec=");
-            Lc::write_hex(errcode as u64);
-            Lc::write_str(" sepc=");
-            Lc::write_hex(frame.sepc);
-            Lc::write_str(" ra=");
-            Lc::write_hex(frame.gpr[1]);
-            Lc::write_str(" sp=");
-            Lc::write_hex(frame.gpr[2]);
-            Lc::write_str("\n");
         }
     }
     if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, fault_addr, errcode) {
@@ -2610,16 +1978,6 @@ unsafe fn riscv64_ipc_dispatch_body(
                     if IPE.fetch_add(1, AtomicOrd::Relaxed) < 16 {
                         let ep = table.get(cur_nr).map_or(0i32, |p| p.p_endpoint.0);
                         let root = crate::current_root_phys().map(|r| r.0).unwrap_or(0);
-                        C0::write_str("nk4a: ipcefault nr=0x");
-                        C0::write_hex(cur_nr.0 as u64);
-                        C0::write_str(" ep=0x");
-                        C0::write_hex(ep as u64);
-                        C0::write_str(" cn=0x");
-                        C0::write_hex(call_nr as u64);
-                        C0::write_str(" r2=0x");
-                        C0::write_hex(r2 as u64);
-                        C0::write_str(" root=0x");
-                        C0::write_hex(root);
                         // 全 a0..a7 参数窗口 dump：区分“VM 真传 null 指针”
                         // vs“trap frame GPR 槽位错位”（a1 应=gpr[11]=msg ptr）。
                         C0::write_str(" a0=0x");
@@ -2742,10 +2100,6 @@ unsafe fn riscv64_fpu_trap_body(frame: &mut minix_arch::riscv64::trap_stub::Risc
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static FTRAP_N: AtomicUsize = AtomicUsize::new(0);
         if FTRAP_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: rvfpu-trap ep=");
-            C0::write_hex(cur_nr.0 as u64);
-            C0::write_str("\n");
         }
     }
     use minix_arch::{CurrentFpuArch, FpuArch};
@@ -3299,15 +2653,6 @@ unsafe fn aarch64_pagefault_body(
                     core::sync::atomic::AtomicUsize::new(0);
                 if PFA_N.fetch_add(1, core::sync::atomic::Ordering::Relaxed) < 40 {
                     use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                    Console::write_str("nk4a: pfa ");
-                    Console::write_hex(cur_nr.0 as u64);
-                    Console::write_str(" e ");
-                    Console::write_hex(frame.elr);
-                    Console::write_str(" f ");
-                    Console::write_hex(far);
-                    Console::write_str(" l ");
-                    Console::write_hex(frame.gpr[30]);
-                    Console::write_str("\n");
                 }
             }
             if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, far, errcode) {

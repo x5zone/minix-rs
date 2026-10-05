@@ -474,33 +474,7 @@ impl RsServer {
     /// errors propagate so the caller fails closed instead of spinning.
     fn get_work(&mut self) -> Result<(minix_types::Message, dispatch::IpcStatus, Clock), Errno> {
         let got = self.kernel.receive(minix_types::Endpoint::ANY);
-        // NK4-C 1.12b 取证探针（task1-close 裁决删除）：RS 收到的每件
-        // mt+src 前 16 件（≤15B：diagctl >16B 静默丢弃）——VFS from=RS
-        // 停车后面的 RS 侧行为定位。
-        if let Ok((ref m, _, _)) = got {
-            const HEXS: &[u8; 16] = b"0123456789abcdef";
-            static RSM_N: core::sync::atomic::AtomicUsize =
-                core::sync::atomic::AtomicUsize::new(0);
-            use core::sync::atomic::Ordering as AtomicOrd;
-            if RSM_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-                let mt = m.m_type as u16 as u32;
-                let se = (m.m_source.0 & 0xff) as u32;
-                let mut line = [0u8; 15];
-                line[..9].copy_from_slice(b"nk4a: rsm");
-                line[9] = HEXS[((mt >> 8) & 0xf) as usize];
-                line[10] = HEXS[((mt >> 4) & 0xf) as usize];
-                line[11] = HEXS[(mt & 0xf) as usize];
-                line[12] = HEXS[(se >> 4) as usize];
-                line[13] = HEXS[(se & 0xf) as usize];
-                line[14] = b'\n';
-                if let Ok(cs) = core::str::from_utf8(&line) {
-                    let _ = minix_sys::syscall::sys_diagctl_write(
-                        &minix_sys::syscall::DirectKernelCallTransport,
-                        cs,
-                    );
-                }
-            }
-        }
+
         got
     }
 }

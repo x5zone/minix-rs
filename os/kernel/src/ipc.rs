@@ -567,17 +567,9 @@ impl UserCopy for KernelUserCopy {
             use core::sync::atomic::{AtomicU64, Ordering as AtomicOrd};
             static NW: AtomicU64 = AtomicU64::new(0);
             if NW.fetch_add(1, AtomicOrd::Relaxed) < 64 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
                 let pa = minix_arch::CurrentPteWalk::walk(minix_types::PhysBytes(root.0), dst)
                     .map(|(pa, _)| pa.0 & !0xFFF)
                     .unwrap_or(0);
-                C0::write_str("nk4a: msgw va=");
-                C0::write_hex(dst.0);
-                C0::write_str(" root=");
-                C0::write_hex(root.0);
-                C0::write_str(" pa=");
-                C0::write_hex(pa);
-                C0::write_str("\n");
             }
         }
         // Validate-first（同旧契约）：用户半定界 + 逐页 present/U/W 校验，
@@ -1266,19 +1258,9 @@ impl<'a> IpcEngine<'a> {
                     // 定位。
                     #[cfg(not(feature = "mock"))]
                     {
-                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                         static DD_N: AtomicUsize = AtomicUsize::new(0);
                         if DD_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                            Console::write_str("nk4a: dd2 caller=");
-                            Console::write_hex(caller_nr.0 as u64);
-                            Console::write_str(" fn=");
-                            Console::write_hex(function as u64);
-                            Console::write_str(" xp=");
-                            Console::write_hex(self.procs[target_idx].p_nr.0 as u64);
-                            Console::write_str(" xp_rts=0x");
-                            Console::write_hex(xp_rts as u64);
-                            Console::write_str("\n");
                         }
                     }
                     if (xp_rts ^ function_shifted) & RtsFlagsBits::SENDING.bits() != 0 {
@@ -1290,21 +1272,9 @@ impl<'a> IpcEngine<'a> {
                 // m_type（p_sendmsg），定位协议互撞的具体消息。
                 #[cfg(not(feature = "mock"))]
                 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                     static DD2_N: AtomicUsize = AtomicUsize::new(0);
                     if DD2_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                        Console::write_str("nk4a: dd2m caller=");
-                        Console::write_hex(caller_nr.0 as u64);
-                        Console::write_str(" dst=");
-                        Console::write_hex(dst_endpoint.0 as u64);
-                        Console::write_str(" cmt=");
-                        Console::write_hex(self.procs[caller_idx].p_sendmsg.m_type as u64);
-                        Console::write_str(" xp=");
-                        Console::write_hex(self.procs[target_idx].p_nr.0 as u64);
-                        Console::write_str(" xmt=");
-                        Console::write_hex(self.procs[target_idx].p_sendmsg.m_type as u64);
-                        Console::write_str("\n");
                     }
                 }
                 return Some(DeadlockCycle {
@@ -1362,33 +1332,6 @@ impl<'a> IpcEngine<'a> {
         // 消息不投递，发送方落入 Path B（阻塞/排队，proc.c:895→925+），
         // 即被过滤的发送者在队列中等待，与"未命中 receive"同形。
         if Self::is_willing_to_receive(&self.procs[dst_idx], caller_endpoint) {
-            // NK4-C 1.10 取证探针（task1-close 裁决删除）：Path A 直投到
-            // PM(ep 0) 的现场（src + getfrom + REPLY_PEND）——sched reply
-            // 落主循环而非停车 receive 半的定位。
-            #[cfg(not(feature = "mock"))]
-            if dst_idx == crate::proc_table::nr_to_idx(ProcNr(0)).unwrap_or(usize::MAX) {
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                static P4A_N: AtomicUsize = AtomicUsize::new(0);
-                if P4A_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                    Console::write_str("nk4a: p4a src=");
-                    Console::write_hex(caller_endpoint.0 as u64);
-                    Console::write_str(" gf=");
-                    Console::write_hex(self.procs[dst_idx].p_getfrom_e.0 as u64);
-                    Console::write_str(" rpv=");
-                    Console::write_str(
-                        if self.procs[dst_idx]
-                            .p_misc_flags
-                            .is_set(MiscFlagsBits::REPLY_PEND)
-                        {
-                            "y"
-                        } else {
-                            "n"
-                        },
-                    );
-                    Console::write_str("\n");
-                }
-            }
             // C: `copy_msg_from_user` (user path) or direct copy (FROM_KERNEL).
             let m = if !flags.contains(SendFlags::FROM_KERNEL) {
                 // User-origin send: route through UserCopy trait.
@@ -1458,52 +1401,6 @@ impl<'a> IpcEngine<'a> {
 
         // C: `if (deadlock(SEND, caller, dst_e)) return ELOCKED;` — proc.c:930-932.
         if self.detect_deadlock(IpcCall::Send, caller_nr, dst_endpoint).is_some() {
-            // NK4-C 1.10n 取证探针（task1-close 裁决删除）：ELOCKED 现场
-            // （caller/dst/被拒 send 的 m_type）。
-            #[cfg(not(feature = "mock"))]
-            {
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                static EL_N: AtomicUsize = AtomicUsize::new(0);
-                if EL_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                    Console::write_str("nk4a: elock caller=");
-                    Console::write_hex(caller_nr.0 as u64);
-                    Console::write_str(" dst=");
-                    Console::write_hex(dst_endpoint.0 as u64);
-                    Console::write_str(" mt=");
-                    Console::write_hex(msg.m_type as u64);
-                    Console::write_str(" src=");
-                    Console::write_hex(msg.m_source.0 as u64);
-                    // NK4-C 1.10t：互卡双方全量状态——PM 的 rts/getfrom、
-                    // sched 的 rts/getfrom/sendto（判定时序错位的直接证据）。
-                    if let Some(dp) = self.idx_by_endpoint(dst_endpoint) {
-                        Console::write_str(" d_rts=0x");
-                        Console::write_hex(self.procs[dp].p_rts_flags.get().bits() as u64);
-                        Console::write_str(" d_gf=0x");
-                        Console::write_hex(self.procs[dp].p_getfrom_e.0 as u64);
-                        Console::write_str(" d_sto=0x");
-                        Console::write_hex(self.procs[dp].p_sendto_e.0 as u64);
-                    }
-                    let c_gf = self.procs[caller_idx].p_getfrom_e.0 as u64;
-                    Console::write_str(" c_gf=0x");
-                    Console::write_hex(c_gf);
-                    let c_rpv = self.procs[caller_idx]
-                        .p_misc_flags
-                        .is_set(MiscFlagsBits::REPLY_PEND);
-                    Console::write_str(" c_rpv=");
-                    Console::write_str(if c_rpv { "y" } else { "n" });
-                    Console::write_str("\n");
-                    // PM 侧栈回溯：定位是 PM 哪个函数在发（cap 2 一次性）。
-                    if EL_N.load(AtomicOrd::Relaxed) <= 2
-                        && let Some(p) = crate::proc_table_with(
-                            &unsafe { crate::smp::BklSection::assume_held() },
-                        )
-                        .get(caller_nr)
-                    {
-                        crate::stacktrace::proc_stacktrace(p);
-                    }
-                }
-            }
             return IpcOutcome::Error(IpcError::Deadlock);
         }
 
@@ -1521,19 +1418,7 @@ impl<'a> IpcEngine<'a> {
         }
         self.procs[caller_idx].p_rts_flags.set(RtsFlagsBits::SENDING);
         self.procs[caller_idx].p_sendto_e = dst_endpoint;
-        // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT 发送半
-        // 停车现场：dst + pdmv（sendrec 应随后经 SENDING 门停 receive 半）。
-        #[cfg(not(feature = "mock"))]
-        if self.procs[caller_idx].p_endpoint.0 == 0xb {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: snd-init dst=");
-            C0::write_hex(dst_endpoint.0 as u64);
-            C0::write_str(" pdmv=");
-            C0::write_hex(self.procs[caller_idx].p_delivermsg_vir.0);
-            C0::write_str(" mt=");
-            C0::write_hex(msg.m_type as u64);
-            C0::write_str("\n");
-        }
+
         caller_q_push(self.procs, dst_idx, caller_idx);
         IpcOutcome::Blocked
     }
@@ -1570,8 +1455,6 @@ impl<'a> IpcEngine<'a> {
         src_endpoint: Endpoint,
     ) -> IpcOutcome {
         // C-3 迭代10 取证：引擎 receive 进入（限 8）。
-        #[cfg(not(feature = "mock"))]
-        crate::ipc::probe_mark("nk4a: rcv-eng\n");
         let caller_idx = match self.idx_of(caller_nr) {
             Some(i) => i,
             None => return IpcOutcome::Error(IpcError::DeadSrcDst),
@@ -1601,17 +1484,10 @@ impl<'a> IpcEngine<'a> {
             .p_rts_flags
             .is_set(RtsFlagsBits::SENDING)
         {
-            crate::ipc::probe_mark("nk4a: rcv-sndg\n");
             // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT 经
             // SENDING 门停车（B24 receive 半）的现场：src + pdmv。
             #[cfg(not(feature = "mock"))]
             if self.procs[caller_idx].p_endpoint.0 == 0xb {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: sndg-init src=");
-                C0::write_hex(src_endpoint.0 as u64);
-                C0::write_str(" pdmv=");
-                C0::write_hex(self.procs[caller_idx].p_delivermsg_vir.0);
-                C0::write_str("\n");
             }
             self.procs[caller_idx].p_getfrom_e = src_endpoint;
             self.procs[caller_idx]
@@ -1631,8 +1507,6 @@ impl<'a> IpcEngine<'a> {
             .is_set(MiscFlagsBits::DELIVERMSG)
         {
             // C-3 迭代10 取证：Phase 0 消费（一次性）。
-            #[cfg(not(feature = "mock"))]
-            crate::ipc::probe_mark("nk4a: rcv-p0\n");
             self.procs[caller_idx]
                 .p_misc_flags
                 .clear(MiscFlagsBits::DELIVERMSG);
@@ -1658,7 +1532,6 @@ impl<'a> IpcEngine<'a> {
             self.deliver_pending_to_user(caller_idx);
             // C: proc.c:1033 — `IPC_STATUS_ADD_CALL(caller_ptr, NOTIFY)`
             crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::Notify);
-            crate::ipc::probe_mark("nk4a: rcv-p1\n");
             return IpcOutcome::Delivered;
         }
 
@@ -1678,7 +1551,6 @@ impl<'a> IpcEngine<'a> {
             // h2 delivmt=0x714 而 buf64 m_type=0）。
             self.deliver_pending_to_user(caller_idx);
             crate::proc::ipc_status_add_call(&mut self.procs[caller_idx], IpcCall::SendA);
-            crate::ipc::probe_mark("nk4a: rcv-p2\n");
             // C: receive_done（proc.c:1113-1115）统一撤销 MF_REPLY_PEND；
             // §1.119 修复后异步臂完成 sendrec 的 receive 半也可携带置位态，
             // 与 Phase 3（L1761）同形清除，以免 REPLY_PEND 残留。
@@ -1825,7 +1697,6 @@ impl<'a> IpcEngine<'a> {
             if self.procs[sender_idx].p_misc_flags.is_set(MiscFlagsBits::SIG_DELAY) {
                 self.sig_delay_sender = Some(self.procs[sender_idx].p_nr);
             }
-            crate::ipc::probe_mark("nk4a: rcv-p3\n");
             // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：caller_q
             // drain 命中出生服务器（p_nr 1,3,4,5,6,7,9,10,11）的现场。若
             // 本探针有输出而串口无对应服务器的 vm-pf recv，即 drain 后消息
@@ -1839,14 +1710,6 @@ impl<'a> IpcEngine<'a> {
                     1 | 3 | 4 | 5 | 6 | 7 | 9 | 10 | 11
                 ) && P3_N.fetch_add(1, AtomicOrd::Relaxed) < 24
                 {
-                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                    C0::write_str("nk4a: p3drain dst=");
-                    C0::write_hex(self.procs[caller_idx].p_endpoint.0 as u64);
-                    C0::write_str(" snd=");
-                    C0::write_hex(self.procs[sender_idx].p_endpoint.0 as u64);
-                    C0::write_str(" mt=");
-                    C0::write_hex(sender_msg.m_type as u64);
-                    C0::write_str("\n");
                 }
             }
             return IpcOutcome::Delivered;
@@ -1854,8 +1717,6 @@ impl<'a> IpcEngine<'a> {
 
         // Phase 4: block. C: proc.c:1096-1110.
         // C-3 迭代10 取证：Phase 4 阻塞到达（一次性）。
-        #[cfg(not(feature = "mock"))]
-        crate::ipc::probe_mark("nk4a: rcv-p4\n");
         // NK4-C 449-livelock 取证探针（task1-close 裁决删除）：receive 停车
         // 时 caller_q 非空 = Phase 3 刚扫过全队却没取走任何条目（全部被
         // 过滤或幽灵），直接证据。健康系统停车前队列应为空。
@@ -1873,40 +1734,12 @@ impl<'a> IpcEngine<'a> {
                 }
             }
             if qlen > 0 && RBLK_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-                use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: rcvblk ep=");
-                C0::write_hex(self.procs[caller_idx].p_endpoint.0 as u64);
-                C0::write_str(" qlen=");
-                C0::write_hex(qlen as u64);
-                C0::write_str("\n");
             }
         }
         self.procs[caller_idx].p_getfrom_e = src_endpoint;
         self.procs[caller_idx]
             .p_rts_flags
             .set(RtsFlagsBits::RECEIVING);
-        // NK4-C 1.48 取证探针（c39，task1-close 裁决删除）：INIT 经 Phase 4
-        // 普通停车腿的现场：src + pdmv + rts（判「谁把 INIT 停成 gf=0」）。
-        #[cfg(not(feature = "mock"))]
-        if self.procs[caller_idx].p_endpoint.0 == 0xb {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: p4-init src=");
-            C0::write_hex(src_endpoint.0 as u64);
-            C0::write_str(" pdmv=");
-            C0::write_hex(self.procs[caller_idx].p_delivermsg_vir.0);
-            C0::write_str(" rpv=");
-            C0::write_str(
-                if self.procs[caller_idx]
-                    .p_misc_flags
-                    .is_set(MiscFlagsBits::REPLY_PEND)
-                {
-                    "y"
-                } else {
-                    "n"
-                },
-            );
-            C0::write_str("\n");
-        }
         IpcOutcome::Blocked
     }
 
@@ -1993,17 +1826,9 @@ impl<'a> IpcEngine<'a> {
         // 是否到 VFS、是否被取走。
         #[cfg(not(feature = "mock"))]
         if bitmap != 0 {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static APEND_N: AtomicUsize = AtomicUsize::new(0);
             if APEND_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                Console::write_str("nk4a: apend c=");
-                Console::write_hex(caller_nr.0 as u64);
-                Console::write_str(" bm=");
-                Console::write_hex(bitmap);
-                Console::write_str(" src=");
-                Console::write_hex(src_endpoint.0 as u64);
-                Console::write_str("\n");
             }
         }
         if bitmap == 0 {
@@ -2388,15 +2213,9 @@ impl<'a> IpcEngine<'a> {
         // （caller/count）——s18f/g 零 saent：入口未达还是循环前早退。
         #[cfg(not(feature = "mock"))]
         {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
             use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
             static SA_N: AtomicUsize = AtomicUsize::new(0);
             if SA_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
-                Console::write_str("nk4a: sa-in c=");
-                Console::write_hex(caller_nr.0 as u64);
-                Console::write_str(" n=");
-                Console::write_hex(size as u64);
-                Console::write_str("\n");
             }
         }
         // C: mini_senda — SYS_PROC check (proc.c:1331-1342).
@@ -2404,13 +2223,9 @@ impl<'a> IpcEngine<'a> {
             ($tag:expr, $val:expr) => {{
                 #[cfg(not(feature = "mock"))]
                 {
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                     static SAX_N: AtomicUsize = AtomicUsize::new(0);
                     if SAX_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
-                        Console::write_str("nk4a: sa-out ");
-                        Console::write_str($tag);
-                        Console::write_str("\n");
                     }
                 }
                 $val
@@ -2476,15 +2291,9 @@ impl<'a> IpcEngine<'a> {
                     // NK4-C 1.12 取证探针：表读失败（errno root/walk 类别）。
                     #[cfg(not(feature = "mock"))]
                     {
-                        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                         static SARE_N: AtomicUsize = AtomicUsize::new(0);
                         if SARE_N.fetch_add(1, AtomicOrd::Relaxed) < 4 {
-                            Console::write_str("nk4a: sa-readfail root=");
-                            Console::write_hex(self.procs[caller_idx].p_seg.phys_root.0);
-                            Console::write_str(" tbl=");
-                            Console::write_hex(table.0);
-                            Console::write_str("\n");
                         }
                     }
                     continue;
@@ -2555,7 +2364,6 @@ impl<'a> IpcEngine<'a> {
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                 static SAENT_N: AtomicUsize = AtomicUsize::new(0);
                 if SAENT_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-                    Console::write_str("nk4a: saent dst=");
                     match dst_idx_opt {
                         Some(di) => Console::write_hex(self.procs[di].p_endpoint.0 as u64),
                         None => Console::write_str("none"),
@@ -2850,14 +2658,8 @@ impl<'a> IpcEngine<'a> {
                 #[cfg(not(feature = "mock"))]
                 if dst_endpoint.0 == 4 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                     static S4IN_N: AtomicUsize = AtomicUsize::new(0);
                     if S4IN_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                        Console::write_str("nk4a: s4in c=");
-                        Console::write_hex(caller_nr.0 as u64);
-                        Console::write_str(" mt=");
-                        Console::write_hex(msg.m_type as u32 as u64);
-                        Console::write_str("\n");
                     }
                 }
                 self.send(
@@ -2886,19 +2688,6 @@ impl<'a> IpcEngine<'a> {
                     <minix_arch::CurrentCpuContextArch as minix_arch::CpuContextArch>::clear_ipc_status_reg(
                         &mut self.procs[ci].cpu_context,
                     );
-                    // NK4-A Task C 第 6 轮判别（task1-close 裁决删除）：
-                    // RECEIVE prologue 是「把 0 写进 ctx.rbx」的显式站点，
-                    // 只关心 RS（endpoint 2，c23a `pf-save ep=0x2` 实证），
-                    // 其余服务器每收一条都打会耗尽上限。
-                    #[cfg(not(feature = "mock"))]
-                    if self.procs[ci].p_endpoint.0 as u64 == 2 {
-                        crate::trap_dispatch::nk4a_rbx_probe(
-                            "recv-clear",
-                            self.procs[ci].p_endpoint.0 as u64,
-                            0,
-                            0,
-                        );
-                    }
                 }
                 self.receive(caller_nr, dst_endpoint)
             }
@@ -2908,14 +2697,8 @@ impl<'a> IpcEngine<'a> {
                 #[cfg(not(feature = "mock"))]
                 if dst_endpoint.0 == 4 {
                     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-                    use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                     static S4R_N: AtomicUsize = AtomicUsize::new(0);
                     if S4R_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-                        Console::write_str("nk4a: s4r c=");
-                        Console::write_hex(caller_nr.0 as u64);
-                        Console::write_str(" mt=");
-                        Console::write_hex(msg.m_type as u32 as u64);
-                        Console::write_str("\n");
                     }
                 }
                 self.sendrec(caller_nr, dst_endpoint, msg)
@@ -3058,20 +2841,7 @@ fn build_notify_message(
 ///   `MF_REPLY_PEND`) → deliver directly to `p_delivermsg` + wake dst.
 /// - Else set bit in `priv(dst).s_notify_pending` for later delivery.
 
-/// NK4-A C-3 迭代10 取证（task1-close 裁决删除）：限次一次性串口标记。
-pub(crate) fn probe_mark(msg: &str) {
-    #[cfg(not(feature = "mock"))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        use minix_plat::EarlyConsole as _;
-        static N: AtomicUsize = AtomicUsize::new(0);
-        if N.fetch_add(1, AtomicOrd::Relaxed) < 64 {
-            minix_plat::CurrentEarlyConsole::write_str(msg);
-        }
-    }
-    #[cfg(feature = "mock")]
-    let _ = msg;
-}
+
 
 pub fn mini_notify_core(
     procs: &mut [KProcess],

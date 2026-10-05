@@ -211,8 +211,6 @@ pub fn dispatch_setalarm(
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
         static SAC_N: AtomicUsize = AtomicUsize::new(0);
         if SAC_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
-            Console::write_str("nk4a: sa-call caller=");
-            Console::write_hex(caller_nr.0 as u64);
             if let Some(c) = proc_table.get(caller_nr) {
                 Console::write_str(" pid=");
                 match c.priv_id {

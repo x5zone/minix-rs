@@ -340,12 +340,6 @@ pub fn read_boot_params() -> BootParams<'static> {
                 parts
             })
             .collect();
-        crate::bootmark::mark(&alloc::format!(
-            "nk4a: root-deduct [{:#x},{:#x}) regions={}\n",
-            root_deduct_base,
-            root_deduct_end,
-            v.len()
-        ));
         alloc::boxed::Box::leak(v.into_boxed_slice())
     };
     let modules: &'static [BootModule] = {

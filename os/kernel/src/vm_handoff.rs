@@ -549,18 +549,6 @@ pub(crate) fn build_identity_windows(
     // 测试）下 console 是真实端口写，必须编译掉（同 lib.rs 路标惯例）。
     #[cfg(not(feature = "mock"))]
     {
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-        C0::write_str("nk4a: ident-windows res=");
-        C0::write_hex(kernel_info.reserved_regions().len() as u64);
-        C0::write_str(" zero=");
-        C0::write_hex(zeroed as u64);
-        C0::write_str(" low=");
-        C0::write_hex(below_floor as u64);
-        C0::write_str(" maxend=");
-        C0::write_hex(max_end);
-        C0::write_str(" n=");
-        C0::write_hex(count as u64);
-        C0::write_str("\n");
     }
     let _ = res_rejected;
 

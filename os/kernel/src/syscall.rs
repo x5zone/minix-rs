@@ -529,46 +529,8 @@ pub fn kernel_call(
     clock_state: &mut ClockState,
     user_copy: &dyn crate::ipc::UserCopy,
 ) -> KcallResult {
-    // C system.c:141 — save the user-space reply address. K20 caller-by-nr:
-    // the caller slot is re-borrowed for each short access.
-    // NK4-C S2h 现场打印（task1-close 裁决删除）：抹写目标锁定为陈旧
-    // p_delivermsg_vir（fx 写的 0x9da8 ≠ 窗口内活缓冲 r2=0x9d28）——追
-    // 踪每个存值的来源时刻，与 fx 写目标离线对账。
-    // c40 扩展（task1-close 裁决删除）：加入 INIT（ep 0xb）——c39 实锤
-    // INIT 停车时 pdmv 非零而崩溃投递 start=0x0，SYSCALL 腿是本端唯一
-    // 对 INIT 盲区的 pdmv 写点，若某次 RDI=0 即清掉 pdmv。
-    #[cfg(not(feature = "mock"))]
-    #[cfg(target_arch = "x86_64")]
-    let nk4a_pdmv_probe_ep = proc_table
-        .get(caller_nr)
-        .map(|p| p.p_endpoint.0)
-        .filter(|&e| e == 2 || e == 0xb);
-    #[cfg(not(feature = "mock"))]
-    #[cfg(target_arch = "x86_64")]
-    let nk4a_pdmv_old = proc_table
-        .get(caller_nr)
-        .map(|p| p.p_delivermsg_vir.0)
-        .unwrap_or(0);
-    #[cfg(not(feature = "mock"))]
-    #[cfg(target_arch = "x86_64")]
-    if nk4a_pdmv_probe_ep == Some(2) {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static PSET: AtomicUsize = AtomicUsize::new(0);
-        // S2h 评审修复：4096→512 + 触顶现形标记。
-        let ps = PSET.fetch_add(1, AtomicOrd::Relaxed);
-        if ps == 512 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: pdmv-cap\n");
-        }
-        if ps < 512 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: pdmv-set krn m_user=");
-            C0::write_hex(m_user.0);
-            C0::write_str(" old=");
-            C0::write_hex(nk4a_pdmv_old);
-            C0::write_str("\n");
-        }
-    }
+    // C system.c:141 — save the user-space reply address (kernel stores it
+    // in the caller's p_delivermsg_vir; reply construction writes through it).
     proc_table
         .get_mut(caller_nr)
         .expect("kernel_call: caller slot must exist")
@@ -578,38 +540,6 @@ pub fn kernel_call(
     let msg = match user_copy.copy_msg_from_user(m_user) {
         Ok(m) => m,
         Err(_) => {
-            // 续-184 探针（用后即滚）：EFAULT 现场——caller 根、delivermsg
-            // VA、该 VA 在 caller 根的 walk 结果（NP/映射值）。定谳「双
-            // SETADDRSPACE 换根后 delivermsg 页 PTE 缺失」。
-            #[cfg(target_arch = "riscv64")]
-            {
-                let root = proc_table
-                    .get(caller_nr)
-                    .map(|p| p.p_seg.phys_root.0)
-                    .unwrap_or(0);
-                use minix_arch::paging::Paging as _;
-                let mut walk = minix_arch::CurrentPaging::from_active_root(
-                    minix_types::PhysBytes(root),
-                );
-                let q = walk.query(minix_types::VirBytes(m_user.0));
-                use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-                Console::write_str("nk4a: kc-efault caller=");
-                Console::write_hex(caller_nr.0 as u64);
-                Console::write_str(" root=");
-                Console::write_hex(root);
-                Console::write_str(" dva=");
-                Console::write_hex(m_user.0);
-                Console::write_str(" q=");
-                match q {
-                    Some((pa, f)) => {
-                        Console::write_hex(pa.0);
-                        Console::write_str("/");
-                        Console::write_hex(f.bits() as u64);
-                    }
-                    None => Console::write_str("NP"),
-                }
-                Console::write_str("\n");
-            }
             // C system.c:152-155 — printf WARNING + cause_sig(SIGSEGV).
             // Rust: route to cause_signal(SIGSEGV) — same signal closed
             // loop as D-45/D-43 in process_misc_flags.
@@ -629,31 +559,6 @@ pub fn kernel_call(
         .get(caller_nr)
         .map(|c| c.p_endpoint)
         .expect("kernel_call: caller slot must exist");
-
-    // c40 探针（task1-close 裁决删除）：INIT（ep 0xb）的 SYSCALL 腿存值
-    // 现场——m_user(RDI) + 旧 pdmv + m_type（哪个 SYS_ 调用）。独立计数
-    // 器，不与 RS 探针共享额度。
-    #[cfg(not(feature = "mock"))]
-    #[cfg(target_arch = "x86_64")]
-    if nk4a_pdmv_probe_ep == Some(0xb) {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        static PSET_I: AtomicUsize = AtomicUsize::new(0);
-        let ps = PSET_I.fetch_add(1, AtomicOrd::Relaxed);
-        if ps == 256 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: pdmv-i-cap\n");
-        }
-        if ps < 256 {
-            use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-            C0::write_str("nk4a: pdmv-set krn-i m_user=");
-            C0::write_hex(m_user.0);
-            C0::write_str(" old=");
-            C0::write_hex(nk4a_pdmv_old);
-            C0::write_str(" mt=0x");
-            C0::write_hex(msg.m_type as u64);
-            C0::write_str("\n");
-        }
-    }
 
     // C system.c:149 — dispatch.
     let result = kernel_call_dispatch(caller_nr, proc_table, &mut msg, priv_table, clock_state);
@@ -741,14 +646,6 @@ pub(crate) fn kernel_call_dispatch_inner(
         static KCALL_LOG: AtomicUsize = AtomicUsize::new(0);
         // 只记 RS(caller 2) 的调用——定位其用户态循环点。
         if caller_nr.0 == 2 && KCALL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 48 {
-            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-            Console::write_str("nk4a: kc");
-            Console::write_hex(KCALL_LOG.load(AtomicOrd::Relaxed) as u64);
-            Console::write_str(" caller=");
-            Console::write_hex(caller_nr.0 as u64);
-            Console::write_str(" call=");
-            Console::write_hex(call_nr as u64);
-            Console::write_str("\n");
         }
     }
 
@@ -1055,9 +952,6 @@ pub(crate) fn dispatch_ipc(
                 if IPCERR_N.fetch_add(1, AtomicOrd::Relaxed) < 64
                     && matches!(caller_nr.0, 0 | 4)
                 {
-                    Console::write_str("nk4a: ipcerr caller=");
-                    Console::write_hex(caller_nr.0 as u64);
-                    Console::write_str(" err=");
                     match e {
                         IpcError::Deadlock => Console::write_str("ELOCKED"),
                         IpcError::DeadSrcDst => Console::write_str("EDEADSRCDST"),
@@ -1188,19 +1082,9 @@ fn dispatch_schedule(
     // （p_sched.cpu 被迁到非 BSP 即成永不可挑）。
     #[cfg(not(feature = "mock"))]
     {
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static SCHED_N: AtomicUsize = AtomicUsize::new(0);
         if SCHED_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-            C0::write_str("nk4a: schedctl caller=");
-            C0::write_hex(caller_nr.0 as u64);
-            C0::write_str(" tgt=");
-            C0::write_hex(target_nr.0 as u64);
-            C0::write_str(" cpu=");
-            C0::write_hex(sched.cpu as u64);
-            C0::write_str(" prio=");
-            C0::write_hex(sched.priority as u64);
-            C0::write_str("\n");
         }
     }
 
@@ -1407,14 +1291,6 @@ pub(crate) fn clear_ipc_refs(
                 use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
                 static CIR_N: AtomicUsize = AtomicUsize::new(0);
                 if CIR_N.fetch_add(1, AtomicOrd::Relaxed) < 24 {
-                    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                    C0::write_str("nk4a: cir tgt_ep=");
-                    C0::write_hex(target_ep.0 as u64);
-                    C0::write_str(" nr=");
-                    C0::write_hex(proc.p_nr.0 as u64);
-                    C0::write_str(" fl=");
-                    C0::write_hex(proc.p_rts_flags.load() as u64);
-                    C0::write_str("\n");
                 }
             }
             // C: clear_ipc(rp) — RTS_UNSET(rp, RTS_SENDING | RTS_RECEIVING)
@@ -1785,12 +1661,6 @@ fn dispatch_privctl(
                 && PCTL_LOG.fetch_add(1, AtomicOrd::Relaxed) < 24
             {
                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                C0::write_str("nk4a: pctl req=");
-                C0::write_hex(request as u64);
-                C0::write_str(" tgt=");
-                C0::write_hex(target_nr.0 as u64);
-                C0::write_str(" r=");
-                C0::write_hex(code as u64);
                 let fl = proc_table
                     .get(target_nr)
                     .map_or(0xFFFF_FFFF, |p| p.p_rts_flags.load());
@@ -2084,10 +1954,6 @@ fn privctl_set_sys(
                 use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
                 static SETSYS_N: AtomicUsize = AtomicUsize::new(0);
                 if SETSYS_N.fetch_add(1, AtomicOrd::Relaxed) < 16 {
-                    Console::write_str("nk4a: setsys tgt=");
-                    Console::write_hex(target_nr.0 as u64);
-                    Console::write_str(" req_fl=0x");
-                    Console::write_hex(priv_id.s_flags as u64);
                     if let Some(kp) = priv_table.get(actual_id) {
                         Console::write_str(" eff_fl=0x");
                         Console::write_hex(kp.flags.s_flags.bits() as u64);
@@ -2550,17 +2416,13 @@ fn dispatch_vmctl(
         // ── VmInhibitClear: clear RTS_VMINHIBIT on target ──
         // C: do_vmctl.c:132-160
         VmCtlParam::VmInhibitClear => {
-            let r = vmctl_vminhibit_clear(proc_table, target_nr);
-            nk4a_flags_mark("vminh-clear", proc_table, target_nr);
-            r
+            vmctl_vminhibit_clear(proc_table, target_nr)
         }
 
         // ── BootInhibitClear: clear RTS_BOOTINHIBIT on target ──
         // C: do_vmctl.c:165-167 — RTS_UNSET(p, RTS_BOOTINHIBIT)
         VmCtlParam::BootInhibitClear => {
-            let r = vmctl_boot_inhibit_clear(proc_table, target_nr);
-            nk4a_flags_mark("bootinh-clear", proc_table, target_nr);
-            r
+            vmctl_boot_inhibit_clear(proc_table, target_nr)
         }
 
         // ── ClearMapCache: clear cached mappings ──
@@ -2631,19 +2493,7 @@ fn dispatch_vmctl(
             }
         }
         VmCtlParam::SetAddrSpace => {
-            let r = vmctl_set_addr_space(proc_table, target_nr, value_raw, msg);
-            nk4a_flags_mark("setaddr", proc_table, target_nr);
-            // 续-306 krewalk 配套（用后即滚）：setaddr 落的 root 值——与
-            // fill-root 探针的 ptroot 对账，定案「根错配（in-code）」vs
-            // 「视图分歧（平移层）」。
-            #[cfg(all(target_arch = "riscv64", not(test)))]
-            {
-                use minix_plat::{CurrentEarlyConsole as SaConsole, EarlyConsole as _};
-                SaConsole::write_str("nk4a: setaddr-root=");
-                SaConsole::write_hex(value_raw as u64);
-                SaConsole::write_str("\n");
-            }
-            r
+            vmctl_set_addr_space(proc_table, target_nr, value_raw, msg)
         }
 
         // ── Arch-specific commands: GetPdbr, FlushTlb, InvlPg ──
@@ -2795,29 +2645,6 @@ fn vmctl_memreq_reply(
         _ => crate::vm::VmCheckResult::Fault, // VM reported fault
     };
 
-    // 续-191 取证探针 P2（riscv64·判决边界·Fault 诞生点）：VM 对哪条
-    // memreq 回了非零（=Fault），打在哪个 requestor 槽位上。与 P1
-    // （handle_kernel_memreq 失败出口）+ P3（SIGSEGV 消费腿）对账，
-    // 定谳 resume-Fault 产地。C-61 pattern-gate 前不滚，task-close 删。
-    #[cfg(all(not(feature = "mock"), target_arch = "riscv64"))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
-        use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-        static MRR: AtomicUsize = AtomicUsize::new(0);
-        if MRR.fetch_add(1, AtomicOrd::Relaxed) < 64 {
-            C0::write_str("nk4a: mrr nr=0x");
-            C0::write_hex(target_nr.0 as u64);
-            C0::write_str(" vraw=0x");
-            C0::write_hex(value_raw as u32 as u64);
-            C0::write_str(" verdict=");
-            C0::write_str(if matches!(vm_result, crate::vm::VmCheckResult::Fault) {
-                "Fault\n"
-            } else {
-                "Ok\n"
-            });
-        }
-    }
-
     match proc_table.vm_memreq_reply(target_nr, vm_result) {
         Ok(()) => KcallResult::Ok(0), // C: return OK
         Err(crate::vm::VmCtlError::InvalidState) => KcallResult::Ok(EINVAL),
@@ -2889,38 +2716,7 @@ fn mark_flush_tlb(proc_table: &mut crate::proc_table::ProcessTable, target_nr: P
 }
 
 /// NK4-A 首亮取证路标（task1-close 裁决删除）：每个调度抑制腿走完后
-/// 打印目标最终 RTS 位图与 runnable 判定（EarlyConsole=COM1），一次
-/// 真机分清"旗没清干净"与"清了没入队/没被 pick"两类挂点。
-/// 只用 `write_str`/`write_hex`——运行时内核 bump 堆已耗尽，`format!`
-/// 在这里就是一次 76 字节分配失败（fix25b forensics 2026-09-21）。
-fn nk4a_flags_mark(
-    tag: &str,
-    proc_table: &crate::proc_table::ProcessTable,
-    nr: ProcNr,
-) {
-    #[cfg(not(feature = "mock"))]
-    {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-        let (flags, runnable) = proc_table
-            .get(nr)
-            .map_or((0xFFFF_FFFF, false), |p| {
-                (p.p_rts_flags.load(), p.is_runnable())
-            });
-        let queued = proc_table.is_in_scheduler(nr);
-        Console::write_str("nk4a: ");
-        Console::write_str(tag);
-        Console::write_str(" nr=");
-        Console::write_hex(nr.0 as u64);
-        Console::write_str(" flags=0x");
-        Console::write_hex(flags as u64);
-        Console::write_str(" runnable=");
-        Console::write_str(if runnable { "yes" } else { "no" });
-        Console::write_str(" queued=");
-        Console::write_str(if queued { "yes" } else { "no" });
-        Console::write_str("\n");
-    }
-    let _ = (tag, proc_table, nr);
-}
+
 
 /// VmInhibitClear — clear RTS_VMINHIBIT on the target.
 ///
@@ -3148,31 +2944,7 @@ fn find_hex_field(buf: &[u8], field: &[u8]) -> Option<u64> {
 }
 
 /// §续-375 遥测读数行：在测试计算窗的两个边界上各打一行七项计数——
-/// 内核腿进入 / 用户腿因异步中断 / 因 ecall / 因页故障 / 用户腿被 S-origin
-/// 走过的哨兵（修后应恒为 0）/ `restore_to_user` 次数 / 其中进入时 SIE 仍
-/// 开着的窗口武装次数（`aw=`）。目的是把「§续-370/371/373 修的那三条路径真
-/// 跑过几次」从推证变成读数；结案随诊断 mark 族滚除。
-#[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-fn nk4c_legs_report(tag: &str) {
-    use minix_arch::{CurrentEarlyConsole as Console, EarlyConsole};
-    use crate::trap_dispatch as td;
-    let c = td::nk4c_leg_counts();
-    Console::write_str("nk4c: legs@");
-    Console::write_str(tag);
-    for (label, value) in [
-        (" k=", c[td::LEG_KERNEL]),
-        (" ui=", c[td::LEG_USER_INTR]),
-        (" ue=", c[td::LEG_USER_ECALL]),
-        (" up=", c[td::LEG_USER_PF]),
-        (" su=", c[td::LEG_USER_SORIGIN]),
-        (" rs=", c[td::LEG_RESTORE]),
-        (" aw=", c[td::LEG_RESTORE_ARMED]),
-    ] {
-        Console::write_str(label);
-        Console::write_hex(value);
-    }
-    Console::write_str("\n");
-}
+
 
 fn dispatch_diagctl(
     caller_nr: ProcNr,
@@ -3189,7 +2961,6 @@ fn dispatch_diagctl(
         1 => {
             use crate::cross_space::data_copy_vmcheck;
             use crate::vm::{AddressRef, CrossSpaceResult};
-            use minix_arch::{CurrentDirectMap, DirectMapArch};
             use minix_arch::{CurrentEarlyConsole as Console, EarlyConsole};
             use minix_types::{Endpoint, VirBytes};
 
@@ -3256,12 +3027,7 @@ fn dispatch_diagctl(
                     // data_copy 成功后**检查内容（拷贝前 diagbuf 全零，前置检查永不
                     // 命中），仅命中前缀时多打一行，普通 bootmark 零影响；结案随
                     // 诊断 mark 族一并滚除。
-                    if diagbuf[..len].starts_with(b"nk4c: OOM-RT") {
-                        use minix_plat::{CurrentEarlyConsole as DiagConsole, EarlyConsole as _};
-                        DiagConsole::write_str("nk4a: oomrt caller=");
-                        DiagConsole::write_hex(caller_nr.0 as u64);
-                        DiagConsole::write_str("\n");
-                    }
+
                     // §续-316 krewalk 扩展（用后即滚）：VM 报「not a valid
                     // ELF」时，内核侧重读 handoff 的 boot_procs 镜像首 16B
                     // ——证「RAM=有效 ELF vs VM 裸 DM 直读视图=垃圾」分歧。
@@ -3275,9 +3041,6 @@ fn dispatch_diagctl(
                         let magic = unsafe {
                             ((KDM + tbl) as *const u64).read_volatile()
                         };
-                        ElfConsole::write_str("nk4c: elfchk magic=");
-                        ElfConsole::write_hex(magic);
-                        Console::write_str("\n");
                         if magic == 0x3154_4f4f_4258_4e4d {
                             let count = unsafe {
                                 ((KDM + tbl + 8) as *const u32).read_volatile()
@@ -3299,11 +3062,6 @@ fn dispatch_diagctl(
                                         ((KDM + pa + i as u64) as *const u8).read_volatile()
                                     };
                                 }
-                                ElfConsole::write_str("nk4c: elfchk pa=");
-                                ElfConsole::write_hex(pa);
-                                ElfConsole::write_str(" len=");
-                                ElfConsole::write_hex(ln);
-                                ElfConsole::write_str(" b8=");
                                 for b in b8 {
                                     ElfConsole::write_hex(b as u64);
                                 }
@@ -3320,78 +3078,7 @@ fn dispatch_diagctl(
                     // DIAGCTL 写（探针直发 kcall，不经 stdio 分块），前缀判定
                     // 稳；于是每 boot 只在窗口起/终各多一行陷入腿计数，探针与
                     // 镜像都不用重编（§续-361 教训：插桩量本身就是变量）。
-                    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-                    if diagbuf[..len].starts_with(b"NK4C-CLI-ON") {
-                        use core::sync::atomic::Ordering as AtomicOrd;
-                        nk4c_legs_report("on");
-                        minix_arch::riscv64::trap_return::NK4C_CLI
-                            .store(1, AtomicOrd::Relaxed);
-                        return KcallResult::Ok(0);
-                    }
-                    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-                    if diagbuf[..len].starts_with(b"NK4C-CLI-OFF") {
-                        use core::sync::atomic::Ordering as AtomicOrd;
-                        nk4c_legs_report("off");
-                        minix_arch::riscv64::trap_return::NK4C_CLI
-                            .store(0, AtomicOrd::Relaxed);
-                        return KcallResult::Ok(0);
-                    }
 
-                    // ptroot/pte_pa 存全局，供内核 pfvm 冷路径读「fill-root
-                    // 刚写的叶槽」在故障时刻的现值（判 RAM 脏 vs 视图错位）。
-                    if diagbuf[..len].starts_with(b"nk4a: fill-root") {
-                        if let Some(r) = find_hex_field(&diagbuf[..len], b"ptroot=") {
-                            crate::trap_dispatch::LAST_FILL_PTROOT.store(r, core::sync::atomic::Ordering::Relaxed);
-                        }
-                        if let Some(p) = find_hex_field(&diagbuf[..len], b"pte_pa=") {
-                            crate::trap_dispatch::LAST_FILL_LEAF_PA.store(p, core::sync::atomic::Ordering::Relaxed);
-                        }
-                        // §续-336 KDM 走链对账（用后即滚）：fill 写后立即从
-                        // 内核视角走 ptroot 链读叶 PTE——判「VmDm 写落错帧」
-                        // vs「QEMU walk 视角不一致」。va 从消息里提。
-                        #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
-                        {
-                            use minix_plat::{CurrentEarlyConsole as FwConsole, EarlyConsole as _};
-                            const KDM: u64 = 0xFFFF_FFC0_4000_0000;
-                            if let Some(va) = find_hex_field(&diagbuf[..len], b"va=") {
-                                let root = find_hex_field(&diagbuf[..len], b"ptroot=").unwrap_or(0);
-                                if root >= 0x8000_0000 {
-                                    let kdm = |pa: u64| unsafe {
-                                        ((KDM + pa) as *const u64).read_volatile()
-                                    };
-                                    let mut pa = root;
-                                    let mut lvl = 2u8;
-                                    let mut ok = true;
-                                    let mut leaf_val: u64 = 0;
-                                    for sh in [30u64, 21, 12] {
-                                        let idx = (va >> sh) & 511;
-                                        let slot = pa + idx * 8;
-                                        if slot < 0x8000_0000 || slot >= 0xA000_0000 {
-                                            ok = false;
-                                            break;
-                                        }
-                                        let v = kdm(slot);
-                                        FwConsole::write_str("nk4c: fw lvl=");
-                                        FwConsole::write_hex(lvl as u64);
-                                        FwConsole::write_str(" slot=");
-                                        FwConsole::write_hex(slot);
-                                        FwConsole::write_str(" pte=");
-                                        FwConsole::write_hex(v);
-                                        FwConsole::write_str("\n");
-                                        if v & 1 == 0 { ok = false; break; }
-                                        if sh == 12 { leaf_val = v; }
-                                        pa = ((v >> 10) & 0xF_FFFF_F) << 12;
-                                        lvl -= 1;
-                                    }
-                                    FwConsole::write_str("nk4c: fw done ok=");
-                                    FwConsole::write_hex(ok as u64);
-                                    FwConsole::write_str(" leaf=");
-                                    FwConsole::write_hex(leaf_val);
-                                    FwConsole::write_str("\n");
-                                }
-                            }
-                        }
-                    }
                     // C: do_diagctl.c:38-42 — kputc each byte. E-ISKMESS:
                     // the kmess ring is the C kputc accumulation half —
                     // record here so the IS `kmessages_dmp` replay
@@ -3409,10 +3096,6 @@ fn dispatch_diagctl(
                     // 机制定位。
                     #[cfg(not(feature = "mock"))]
                     {
-                        use minix_plat::{CurrentEarlyConsole as Console2, EarlyConsole as _};
-                        Console2::write_str("nk4a: diag-efault caller=");
-                        Console2::write_hex(caller_nr.0 as u64);
-                        Console2::write_str("\n");
                     }
                     KcallResult::Ok(EFAULT)
                 }
@@ -3894,21 +3577,6 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                     let ctxf = p
                         .and_then(|q| q.p_vm_suspend.as_ref())
                         .map(|c| (c.target.0, c.check_params.start.0, c.check_params.length.0));
-                    C0::write_str("nk4a: susp-krn nr=0x");
-                    C0::write_hex(caller_nr.0 as u64);
-                    C0::write_str(" ep=0x");
-                    C0::write_hex(ep as u64);
-                    C0::write_str(" mt=0x");
-                    C0::write_hex(msg.m_type as u64);
-                    C0::write_str(" tgt=0x");
-                    C0::write_hex(ctxf.map_or(0, |t| t.0) as u64);
-                    C0::write_str(" st=0x");
-                    C0::write_hex(ctxf.map_or(0, |t| t.1));
-                    C0::write_str(" ln=0x");
-                    C0::write_hex(ctxf.map_or(0, |t| t.2));
-                    C0::write_str(" pdmv=0x");
-                    C0::write_hex(pdmv);
-                    C0::write_str("\n");
                 }
             }
         }
@@ -3980,7 +3648,6 @@ pub(crate) fn kernel_call_finish_holding_bkl(
         // 2026-09-22）。
         let root = proc_table.get(caller_nr).map(|p| p.p_seg.phys_root);
         let buf_va = proc_table.get(caller_nr).map(|p| p.p_delivermsg_vir.0);
-        use minix_arch::DirectMapArch as _;
         // NK4-C S2c 哨兵（task1-close 裁决删除）：若调用者是 RS，直写
         // 前重读监视 PTE——回执 DM 直写自身就是候选抹写者，写前观测
         // 能自证清白/有罪。LAST 状态全局，必须按 ep==2 门控。
@@ -3991,11 +3658,9 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                 .get(caller_nr)
                 .is_some_and(|p| p.p_endpoint.0 == 2)
         }) {
-            crate::trap_dispatch::nk4a_pte_watch("finw", r.0);
         }
         if let (Some(root), Some(buf_va)) = (root, buf_va) {
             let bytes = core::mem::size_of::<minix_types::Message>();
-            use minix_arch::DirectMapArch as _;
             // NK4-C S2e 现场打印（task1-close 裁决删除）：RS 回执直写的
             // 每 chunk 目标与写入首字——去重探针会掩盖重复写，抹写
             // 收尾阶段需要无条件逐次证据（S2g 提到 4096：48 条在启动期
@@ -4011,10 +3676,6 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                 // 调用者页表翻译（其 CR3 未激活时经 DM 直写物理页）。
                 match crate::pte_walk::walk_x86_64(root, minix_types::VirBytes(va)) {
                     Some((pa, _fl)) => {
-                        // NK4-C S1 取证探针（task1-close 裁决删除）：errno 回执
-                        // DM 直写的目标 (va, root, pa) 去重记录，与同轮 PT 页对账。
-                        #[cfg(not(feature = "mock"))]
-                        crate::trap_dispatch::nk4a_user_write_probe("finw", root.0, va, pa.0);
                         // §续-369 双走表对账扩到 finw 路径：回执直写是
                         // per-kcall 的用户内存写（腐蚀嫌疑头位，§续-368 定位
                         // 命中在 printf 边界）——同 (root,va) 立即重走比对，
@@ -4038,7 +3699,6 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                             let tn = TXN.fetch_add(1, AtomicOrd::Relaxed);
                             if tn == 512 {
                                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
-                                C0::write_str("nk4a: fx-cap\n");
                             }
                             if tn < 512 {
                                 use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
@@ -4055,14 +3715,6 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                                     }
                                     u64::from_le_bytes(b)
                                 };
-                                C0::write_str("nk4a: fx va=");
-                                C0::write_hex(va);
-                                C0::write_str(" pa=");
-                                C0::write_hex(pa.0);
-                                C0::write_str(" len=");
-                                C0::write_hex(chunk as u64);
-                                C0::write_str(" w0=");
-                                C0::write_hex(rb(off));
                                 // NK4-C S2g：抹写点落在 buf+56（self 槽），
                                 // 把回执行对 buf 基址 +56/+64 的字也打出来
                                 // （仅首 chunk），离线直接对照被写入的值。
@@ -4100,7 +3752,6 @@ pub(crate) fn kernel_call_finish_holding_bkl(
                 .get(caller_nr)
                 .is_some_and(|p| p.p_endpoint.0 == 2)
         }) {
-            crate::trap_dispatch::nk4a_pte_watch("fina", r.0);
         }
     }
 

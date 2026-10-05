@@ -294,16 +294,6 @@ pub fn dispatch_exec(
     // "收到真值但上下文没种上"（内核侧问题）。
     #[cfg(not(feature = "mock"))]
     {
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
-        Console::write_str("nk4a: exec endpt=");
-        Console::write_hex(endpt as u64);
-        Console::write_str(" ip=");
-        Console::write_hex(exec_msg.ip);
-        Console::write_str(" stack=");
-        Console::write_hex(exec_msg.stack);
-        Console::write_str(" ps_str=");
-        Console::write_hex(exec_msg.ps_str);
-        Console::write_str("\n");
     }
 
     // C: do_exec.c:27,30 — isokendpt(endpt, &proc_nr)
@@ -431,13 +421,6 @@ pub fn dispatch_exec(
                     &rp.cpu_context,
                     &mut probe_frame,
                 );
-                Console::write_str("nk4a: exec-store nr=");
-                Console::write_hex(target_nr.0 as u64);
-                Console::write_str(" rip=");
-                Console::write_hex(probe_frame.rip);
-                Console::write_str(" rsp=");
-                Console::write_hex(probe_frame.rsp);
-                Console::write_str("\n");
             }
         }
     }

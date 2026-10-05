@@ -113,7 +113,6 @@ pub fn alloc(size: usize) -> *mut u8 {
     #[cfg(all(not(feature = "mock"), not(test)))]
     if ptr.is_null() {
         // NK4-C 1.5c 取证：OOM 后上层若有重试会刷屏，与同 crate
-        // `nk4a_supply_log` 一致地封顶（task1-close 裁决删除）。
         use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
         static N: AtomicUsize = AtomicUsize::new(0);
         if N.fetch_add(1, AtomicOrd::Relaxed) < 32 {
@@ -371,85 +370,6 @@ mod global_tests {
 #[cfg(all(not(test), not(feature = "std"), feature = "panic-handler"))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
-    // NK4-C 1.10g 仪器化（task1-close 裁决删除）：入口零依赖直打——不经
-    // Stage 1 的 format_panic_report（其 fmt 已观测到自旋）、失败可观测。
-    // file 用原串、line 手工十六进制、message 原文（as_str 可得时）。
-    {
-        use minix_sys::syscall::{sys_diagctl_write, DirectKernelCallTransport};
-        let w = |s: &str| {
-            let r = sys_diagctl_write(&DirectKernelCallTransport, s);
-            if r.is_err() {
-                let _ = sys_diagctl_write(&DirectKernelCallTransport, "nk4a: diag-err\n");
-            }
-            r.is_ok()
-        };
-        w("nk4a: panic-enter\n");
-        // 长串分块：diagctl 对 >~16B 的写会静默丢弃（s14r/w 实测
-        // 12B 成功、file 路径失败），16 字节分块逐段写。
-        fn w_chunked(s: &str) {
-            for chunk in s.as_bytes().chunks(16) {
-                let _ = core::str::from_utf8(chunk);
-            }
-        }
-        let _ = w_chunked;
-        match info.location() {
-            Some(l) => {
-                for chunk in l.file().as_bytes().chunks(16) {
-                    // 定长栈缓冲拼前缀（panic 路径零分配）。
-                    let mut line = [0u8; 32];
-                    line[..9].copy_from_slice(b"nk4a: PF ");
-                    line[9..9 + chunk.len()].copy_from_slice(chunk);
-                    let k = 9 + chunk.len();
-                    line[k] = b'\n';
-                    if let Ok(cs2) = core::str::from_utf8(&line[..k + 1]) {
-                        let _ = w(cs2);
-                    }
-                }
-                let mut lb = [0u8; 12];
-                let mut n = l.line();
-                let mut i = lb.len();
-                loop {
-                    lb[i - 1] = b"0123456789abcdef"[(n & 0xf) as usize];
-                    i -= 1;
-                    n >>= 4;
-                    if n == 0 {
-                        break;
-                    }
-                }
-                if let Ok(s) = core::str::from_utf8(&lb[i..]) {
-                    let _ = w(s);
-                }
-                let _ = w("\n");
-            }
-            None => {
-                let _ = w("nk4a: panic-no-loc\n");
-            }
-        }
-        if let Some(m) = info.message().as_str() {
-            for chunk in m.as_bytes().chunks(16) {
-                let cs = unsafe { core::str::from_utf8_unchecked(chunk) };
-                let _ = w(cs);
-            }
-            let _ = w("\n");
-        } else {
-            let _ = w("nk4a: panic-msg-nonstr\n");
-            // 格式化 panic（expect/assert 带参数）的载荷是 alloc String：
-            // downcast 后分块前缀打印——errno/m_type 数值即在其中。
-            if let Some(p) = info.payload().downcast_ref::<alloc_crate::string::String>() {
-                for chunk in p.as_bytes().chunks(16) {
-                    let mut line = [0u8; 32];
-                    line[..9].copy_from_slice(b"nk4a: PY ");
-                    line[9..9 + chunk.len()].copy_from_slice(chunk);
-                    let k = 9 + chunk.len();
-                    line[k] = b'\n';
-                    if let Ok(cs2) = core::str::from_utf8(&line[..k + 1]) {
-                        let _ = w(cs2);
-                    }
-                }
-            }
-        }
-        w("nk4a: panic-loc-done\n");
-    }
     // Stage 1 (C: panic.c:34-46, message-then-newline): format the location
     // and message into stack memory through the crate's single formatting
     // home (see `diag::format_panic_report`). Stack memory only: no

@@ -29,102 +29,11 @@ use crate::region::{PfnAllocator, PfnAllocError, PAGE_SIZE};
 /// VA from `findhole()`, which recursed. minix-rs uses the Direct Map
 /// (`[ARCH: A-1]`): the VA is a constant offset (`VM_DIRECT_MAP_BASE + phys`),
 /// so allocation is a single non-recursive path regardless of init phase.
-/// NK4-C 第 33 轮取证探针共享位图（task1-close 裁决删除）：记录每个曾
-/// 被 vm_pt_alloc 分配的页表页 PFN（覆盖 0..32768 = 128MB 池空间）。
-/// 分配侧查重（二次从本钩子返回 = 双重分配实锤）、归还侧查归（任何把
-/// PT 页 PFN 还给分配器的路径都是 self=0 候选写者）。
-///
-/// 续-153b（扩围）：位图从 512 词（pfn<32768）扩到 10,240 词
-/// （pfn<655,360 = 全 RAM：gh29 崩坏帧 pfn≈0x9d2eb/0xbd2ca 远超旧界，
-/// 旧检测器全部漏检——续-128 已自证位图界不足）。DATA_SEEN 反向位图
-/// 记录 alloc_phys（数据消费侧）曾给的页基址，vm_pt_alloc 撞上即
-/// 「数据帧→表页」别名实锤。
-#[cfg(not(test))]
-const PT_SEEN_WORDS: usize = 10_240;
-#[cfg(not(test))]
-static PT_SEEN: [core::sync::atomic::AtomicU64; PT_SEEN_WORDS] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; PT_SEEN_WORDS];
-#[cfg(not(test))]
-static DATA_SEEN: [core::sync::atomic::AtomicU64; PT_SEEN_WORDS] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; PT_SEEN_WORDS];
-#[cfg(not(test))]
-static FREED: [core::sync::atomic::AtomicU64; PT_SEEN_WORDS] =
-    [const { core::sync::atomic::AtomicU64::new(0) }; PT_SEEN_WORDS];
-
-/// gh29 实测 RAM 顶 pfn（free_regions top=0x9fb33000 → pfn=0x9fb33）。
-/// 探针用后即滚；越界即分配器上界崩坏的直接证据。
-#[cfg(not(test))]
-const RAM_TOP_PFN: u32 = 0x9fb33;
-
 pub(crate) fn vm_pt_alloc() -> Result<(minix_types::PhysBytes, VirBytes), PageTableError> {
     // V11/T30: C pagetable.c:375 allocates page-table pages through
     // `alloc_mem` (the reclaim-retry funnel), so the Rust hook does too.
     let pfn = alloc_pfn_reclaiming(crate::global::page_alloc_mut())
         .map_err(|_| PageTableError::AllocationFailed)?;
-    // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：PT 页重复分配
-    // 检测器（共享位图见模块级 PT_SEEN）。续-153b：扩围 + DATA_SEEN
-    // 反向检测 + 越界 pfn 探针。位图在 free_pages 侧清位——命中即
-    // 「未释放就被双重给出」的活别名（合法 free→realloc 循环不误报）。
-    #[cfg(not(test))]
-    {
-        use core::sync::atomic::Ordering as AtomicOrd;
-        if (pfn as usize) < PT_SEEN_WORDS * 64 {
-            let word = pfn as usize / 64;
-            let bit = 1u64 << (pfn as usize % 64);
-            let prev = PT_SEEN[word].fetch_or(bit, AtomicOrd::Relaxed);
-            if prev & bit != 0 {
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: ptalloc-DUP pfn={pfn:#x}\n"
-                ));
-            }
-            // §续-334 判别实验（8.2.10 慢化归因，用后还原）：打印降频 1/16
-            static SLOW_N: core::sync::atomic::AtomicUsize =
-                core::sync::atomic::AtomicUsize::new(0);
-            if DATA_SEEN[word].load(AtomicOrd::Relaxed) & bit != 0
-                && SLOW_N.fetch_add(1, AtomicOrd::Relaxed) % 16 == 0 {
-                // 续-153b：受害者身份鉴别——清零前 dump 首 24 字节
-                // （前 48 次门控，防日志洪流；内容分类：全零=清零式
-                // 释放路径、堆元数据/BTree 节点=活数据被覆写、文件
-                // 字节=页缓存残留）。
-                static DUMP_N: core::sync::atomic::AtomicUsize =
-                    core::sync::atomic::AtomicUsize::new(0);
-                let n = DUMP_N.fetch_add(1, AtomicOrd::Relaxed);
-                let mut hex = [0u8; 48 + 2];
-                if n < 48 {
-                    let virt = vm_phys_to_virt(crate::phys_mem::AlignedPhysBytes::new(
-                        pfn as u64 * PAGE_SIZE,
-                    ));
-                    // SAFETY: DM 窗内 pfn*4K 起 24 字节只读快照。
-                    let bytes =
-                        unsafe { core::slice::from_raw_parts(virt.0 as *const u8, 24) };
-                    for (i, b) in bytes.iter().enumerate() {
-                        let hi = b"0123456789abcdef"[(b >> 4) as usize];
-                        let lo = b"0123456789abcdef"[(b & 0xf) as usize];
-                        hex[i * 2] = hi;
-                        hex[i * 2 + 1] = lo;
-                    }
-                    let s = core::str::from_utf8(&hex[..48]).unwrap_or("?");
-                    crate::bootmark::mark(&alloc::format!(
-                        "nk4a: ptalloc-reuse-DATA pfn={pfn:#x} n={n} b={s}\n"
-                    ));
-                } else {
-                    crate::bootmark::mark(&alloc::format!(
-                        "nk4a: ptalloc-reuse-DATA pfn={pfn:#x}\n"
-                    ));
-                }
-            }
-            FREED[word].fetch_and(!bit, AtomicOrd::Relaxed);
-        } else {
-            crate::bootmark::mark(&alloc::format!(
-                "nk4a: ptalloc-BADPFN pfn={pfn:#x}\n"
-            ));
-        }
-        if pfn >= RAM_TOP_PFN {
-            crate::bootmark::mark(&alloc::format!(
-                "nk4a: ptalloc-OOR pfn={pfn:#x}\n"
-            ));
-        }
-    }
     let phys = AlignedPhysBytes::new(pfn as u64 * PAGE_SIZE);
     let virt = vm_phys_to_virt(phys);
     // Zero-fill via the Direct Map. `Paging::walk_alloc` (x86_64/paging.rs)
@@ -155,20 +64,6 @@ pub(crate) fn vm_pt_free(phys: minix_types::PhysBytes) {
     // 页表页由分配器产出,恒页对齐;非对齐输入即调用方 bug,
     // AlignedPhysBytes::new 的 fail-fast 断言就是契约。
     let aligned = AlignedPhysBytes::new(phys.0);
-    // 续-303 表帧归还探针（用后即滚）：逐笔记录被归还的表帧 pfn——对照
-    // krewalk v3 的 leaf_now=0（fill-root 叶槽被清零假设）。CAP=400 防洪。
-    #[cfg(all(target_arch = "riscv64", not(test)))]
-    {
-        use core::sync::atomic::{AtomicUsize, Ordering as FOrd};
-        static PTF_LOGGED: AtomicUsize = AtomicUsize::new(0);
-        if PTF_LOGGED.load(FOrd::Relaxed) < 400 {
-            let n = PTF_LOGGED.fetch_add(1, FOrd::Relaxed);
-            let pfn = phys.0 / 4096;
-            crate::bootmark::mark(&alloc::format!(
-                "nk4c: ptfree n={n} pfn={pfn:#x}\n"
-            ));
-        }
-    }
     crate::global::page_alloc_mut().free_page(aligned);
 }
 
@@ -189,35 +84,6 @@ impl VmPageAllocator {
         &mut self, clicks: usize, flags: PageAllocFlags,
     ) -> Result<AlignedPhysBytes, AllocError> {
         let result = self.phys_alloc.alloc_mem(clicks, flags);
-        // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：底层分配漏斗
-        // 返回曾作 PT 页的 PFN = 双重分配实锤（本路径不走 vm_pt_alloc，
-        // DUP 检测器看不见这类重复）。续-153b：扩围到全 RAM + DATA_SEEN
-        // 登记 + 越界探针。
-        #[cfg(not(test))]
-        if let Ok(ref phys) = result {
-            use core::sync::atomic::Ordering as AtomicOrd;
-            let base_pfn = (phys.as_u64() / PAGE_SIZE) as usize;
-            for i in 0..clicks {
-                let pfn = base_pfn + i;
-                if pfn < PT_SEEN_WORDS * 64 {
-                    FREED[pfn / 64].fetch_and(!(1u64 << (pfn % 64)), AtomicOrd::Relaxed);
-                }
-            }
-            if base_pfn < PT_SEEN_WORDS * 64 {
-                let word = base_pfn / 64;
-                let bit = 1u64 << (base_pfn % 64);
-                if PT_SEEN[word].load(AtomicOrd::Relaxed) & bit != 0 {
-                    crate::bootmark::mark(&alloc::format!(
-                        "nk4a: alloc-reuse-PT pfn={base_pfn:#x} clicks={clicks}\n"
-                    ));
-                }
-                DATA_SEEN[word].fetch_or(bit, AtomicOrd::Relaxed);
-            } else {
-                crate::bootmark::mark(&alloc::format!(
-                    "nk4a: alloc-BADPFN pfn={base_pfn:#x} clicks={clicks}\n"
-                ));
-            }
-        }
         match &result {
             Ok(_) => self.stats.record_alloc(clicks),
             Err(_) => self.stats.record_failure(),
@@ -249,32 +115,6 @@ impl VmPageAllocator {
     }
 
     pub(crate) fn free_pages(&mut self, phys: AlignedPhysBytes, clicks: usize) {
-        // NK4-C 第 33 轮取证探针（task1-close 裁决删除）：任何把页表页
-        // PFN 归还分配器的路径都是 self=0 候选写者（共享位图见模块级
-        // PT_SEEN）。续-153b：扩围到全 RAM + 逐页清位（活别名语义的
-        // 另一半：释放即清，后续再分配不误报；多页释放逐页扫内部页）。
-        #[cfg(not(test))]
-        {
-            use core::sync::atomic::Ordering as AtomicOrd;
-            let base_pfn = (phys.as_u64() / PAGE_SIZE) as usize;
-            for i in 0..clicks {
-                let pfn = base_pfn + i;
-                if pfn < PT_SEEN_WORDS * 64 {
-                    let clear = !(1u64 << (pfn % 64));
-                    PT_SEEN[pfn / 64].fetch_and(clear, AtomicOrd::Relaxed);
-                    DATA_SEEN[pfn / 64].fetch_and(clear, AtomicOrd::Relaxed);
-                    // 续-153b：双重释放检测——FREED 位已置再释放即实锤
-                    // （buddy 簿记被双 free 退化→分配器把活帧当空闲
-                    // 二次发放 = 别名总根）。
-                    let prev = FREED[pfn / 64].fetch_or(1u64 << (pfn % 64), AtomicOrd::Relaxed);
-                    if prev & (1u64 << (pfn % 64)) != 0 && i < 4 {
-                        crate::bootmark::mark(&alloc::format!(
-                            "nk4a: dblfree pfn={pfn:#x} i={i} clicks={clicks}\n"
-                        ));
-                    }
-                }
-            }
-        }
         self.phys_alloc.free_mem(phys, clicks);
         self.stats.record_dealloc(clicks);
     }
