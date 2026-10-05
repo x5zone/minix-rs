@@ -13640,6 +13640,18 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **验证**：riscv64 内核镜像编译零错误（回退态）；门三跑数据链完整（401 无分支无打印 / 402 带标记三洪流 / 402b 无洪流无到达）；宿主未触及。**诚实边界**：其一，「全 hart 进 payload」由 SBI ret=-6 加 QEMU/OpenSBI 行为推断（v1.3 fw_dynamic 语义），未读 OpenSBI 源码逐行坐实——若后续发现是 DTB/配置特例，停车邮箱设计仍成立（过滤逻辑不变）；其二，「双 hart 竞态穿 init 是侥幸」未做故障注入证明，属强推断。
 
+## §续-401 SMP 接线第一路调试完成：A1/A2 双标记证实次级核进桩并通过 MMU-on——'2' 字节洪流＝桩在 fault-retry 循环反复执行（GDB 单步路线升级为主路线）
+
+**调试第二路结果（markers 1/2 升级双字节标签后重跑）**：`nk4c: ap-arrived` 仍无，但串口出现 **875 万对 A1A2 洪流**（35MB 串口）——桩的 marker-1（MMU off，记录三字段读毕）与 marker-2（satp+sfence 之后）**都在反复提交** ⇒ 次级核确实被 SBI hart_start 唤醒、确实进了桩、确实越过了 `csrw satp`+`sfence.vma`（取指在内核根下存活＝内核根恒等映射镜像或 TCG 预取余量），但**卡在桩尾的循环里反复重跑**。
+
+**洪流机制推断（待 GDB 单步证实）**：桩尾 `mv sp, t4; mv a0, t2; jr t5` 的 `jr t5`（汇聚点高 VA）如果取指 fault（内核根对汇聚点地址的映射视点与 AP 执行视图不一致），trap 走 stvec——AP hart 的 stvec 从未设置（SBI hart_start 交接态 stvec 未定义），落到地址 0 或残留向量，处理路径若 sret 回到故障点附近即形成「fault→retry」循环，且 UART 写在循环内＝每圈两次字节提交。**每圈恰好 A1A2 一对**与「marker-1 在 satp 前、marker-2 在 satp 后」的桩布局吻合：循环体覆盖两条标记。
+
+**下一增量（GDB 单步路线，工具全在位）**：①QEMU `-s -S` + gdbstub attach，`interrupt` 后单步 AP hart（gdb `set riscv.hart 1` 或逐 hart continue），核 `csrw satp` 后 PC 与特权态；②`x/8gx` 内核根页验证恒等映射存在性；③对照 OpenSBI hart_start 的交接态（a0/a1/sstatus/stvec 四件）。④若证实恒等映射缺失＝在 BSP 根建恒等映射（arch_boot 建根代码）；若恒等在而循环在汇聚点＝核对高 VA 汇聚点的引用正确性。
+
+**WIP 入库决定（纪律裁量）**：接线分支（smp.rs 89 行）＋A1/A2/A3 标记＋专用门**作为显式 WIP 提交**——理由：①三终目标门不受影响（ATF -smp 1 惰性已由 gate 388/396 复证）；②调试状态入库使下一会话可直接从 GDB 路线续作（否则需重建全部现场）；③门自身预期 FAIL 已在脚本与 WORKLOG 双重声明。**专用门当前判定：FAIL（no ap-arrived marker）——预期内，非回归。**
+
+**验证**：riscv64 内核镜像编译零错误；三跑数据链（401 无分支无打印 / 402 带 marker 三洪流 / 402b 无洪流无到达 / 405 A1A2 洪流 875 万对）；宿主 arch/kernel 全绿未复跑（本批只动 kernel smp_init riscv 分支与 kernel-image asm）。**诚实边界**：①A1A2 循环的精确机制（fault 点在 jr 后取指还是 satp 前存储）是推断，GDB 单步未做；②「内核根恒等映射镜像」未读 arch_boot 建根代码坐实；③本增量未产出门绿，SMP 第三增量未完成——登记状态而非完成状态。
+
 
 ## §续-394 P-ALL-01 深度迁移收官批：fpu / protection / trap_entry / plat interrupt（5 测试全绿，逐文件深度迁移完成）
 

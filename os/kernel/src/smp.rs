@@ -1053,15 +1053,101 @@ pub fn smp_init() {
         use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
         Console::write_str("WARNING: smp_init not wired for this architecture\n");
     }
+
+    /// NK4-C 续-400（P-A64RV-01 riscv 半内核接线 / P-RV-01 前置）：多 hart
+    /// 配置下经 SBI HSM hart_start 唤醒次级核——桩（ap_early_entry）读记录
+    /// 装 BSP 根后跳汇聚点，置 AP_ARRIVED 到达标记后 wfi 驻留。
+    ///
+    /// - 单 hart 配置静默（ATF/cmd 全部 -smp 1）：nr_cpus<=1 直接返回，
+    ///   生产行为零变化；专用门 test-smp-aps-riscv64.sh 用 -smp 2 激活
+    ///   （DTB dump 也必须 -smp 2——拓扑真值=DTB，§续-399 现场教训）。
+    /// - 串行复用：单记录逐 hart 填写→启动→有界等到达→下一个。
+    /// - SD-24 红线尊重：AP 到达即 wfi 驻留，绝不入调度——钳主核未撤，
+    ///   本接线只做「次级核真醒」的前置事实，不做进程安放。
+    /// - 降级续行（C arch_smp.c 语义）：某 hart 有界超时未到达，打印后
+    ///   继续单核推进，不阻塞启动。
+    #[cfg(target_arch = "riscv64")]
+    {
+        use minix_arch::riscv64::ap_early_entry::{
+            entry_start_pa, record as ap_record, AP_ARRIVED,
+        };
+        use minix_arch::riscv64::ap_early_entry::ap_early_entry;
+        use minix_arch::{CurrentSmpArch, SmpArch};
+        use minix_plat::EarlyConsole as _;
+        use minix_platform::{platform_desc, PlatformDesc};
+
+        let topo = platform_desc().cpu_topology();
+        if topo.nr_cpus <= 1 {
+            return;
+        }
+
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        let bsp_logical = (0..topo.nr_cpus as usize)
+            .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+            .expect("smp_init: BSP hart not found in topology") as u32;
+        smp.seed_bsp_masks(bsp_logical);
+
+        // BSP 当前根（§3.2：交给 AP 的就是 BSP 正在用的这张表）。
+        let root = crate::current_root_phys().expect("riscv64 smp_init: active root");
+        let entry_pa = entry_start_pa();
+        let convergence_va = ap_early_entry as usize;
+
+        for logical in 0..topo.nr_cpus as u32 {
+            if logical == bsp_logical {
+                continue;
+            }
+            let hw_id = topo.cpus[logical as usize].hw_id;
+            let stack_top = ap_kernel_stack_top(logical);
+
+            {
+                let r = ap_record();
+                r.logical_id = logical;
+                r._pad = 0;
+                r.hw_id = hw_id as u64;
+                r.page_table_root_pa = root.0;
+                r.kernel_stack_top_va = stack_top;
+                r.rust_entry_va = convergence_va as u64;
+            }
+            // 生产者侧栅栏：记录写入 → SBI hart_start。
+            unsafe { core::arch::asm!("fence rw, rw", options(nomem, nostack)) };
+            <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
+
+            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。
+            let mut spins: u32 = 0;
+            let mut arrived = false;
+            while spins < 200_000_000 {
+                if AP_ARRIVED.load(Ordering::Acquire) > logical as usize {
+                    arrived = true;
+                    break;
+                }
+                spins += 1;
+            }
+            if arrived {
+                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-arrived hart=");
+                let mut hex = [0u8; 16];
+                let mut v = hw_id as u64;
+                for byte in hex.iter_mut().rev() {
+                    *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                    v >>= 4;
+                }
+                minix_plat::CurrentEarlyConsole::write_str(
+                    core::str::from_utf8(&hex).unwrap_or("?"),
+                );
+                minix_plat::CurrentEarlyConsole::write_str("\n");
+            } else {
+                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-timeout\n");
+            }
+        }
+    }
 }
 
 /// Per-AP kernel stack top (static per-CPU arrays — §3.3 no_std decision).
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 const AP_KERNEL_STACK_SIZE: usize = 0x4000;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; 8] = [[0; AP_KERNEL_STACK_SIZE]; 8];
 
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 fn ap_kernel_stack_top(logical_id: u32) -> u64 {
     // SAFETY: address-only computation; no dereference.
     let base =

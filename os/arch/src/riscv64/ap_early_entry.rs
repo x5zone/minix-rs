@@ -50,6 +50,21 @@ use crate::arch::ap_early_entry::ApBootstrap;
 
 // #[no_mangle]：桩 asm 以字面符号名 `la t2, AP_BOOTSTRAP_RECORD` 引用
 //（跨 crate 符号面），必须有未修饰的导出名。
+/// 早期 hart 选举格（§续-400 定谳：OpenSBI QEMU virt＝全 hart 进 payload，
+/// 每个 hart 都带 a0=自身 hartid 进 _start——先到者当选 BSP）。0=未选；
+/// 否则=当选 hartid+1。住在 .data（loader 按 filesz 写初值 0，非 NOBITS
+/// 侥幸），no_mangle 供 kernel-image 桩 asm 字面引用与内核读取。
+#[unsafe(link_section = ".data")]
+#[unsafe(no_mangle)]
+pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// 次级核停车邮箱的 GO 格（§续-400 停车邮箱设计）：0=等待；1=记录已填、
+/// 可跳汇聚点。.data 同上（初值由 loader 写入，非 NOBITS 侥幸）。
+#[unsafe(link_section = ".data")]
+#[unsafe(no_mangle)]
+pub static AP_GO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 #[unsafe(no_mangle)]
 pub static mut AP_BOOTSTRAP_RECORD: ApBootstrap = ApBootstrap {
     logical_id: 0,
