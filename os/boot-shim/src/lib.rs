@@ -124,16 +124,20 @@ pub fn raw_serial_line(text: &str) {
 /// [`raw_serial_line`] 的单字节发射器：先等发送侧腾空（有界）再写。
 #[cfg(target_arch = "x86_64")]
 fn emit_byte(b: u8) {
-    // SAFETY: COM1（0x3F8/0x3F9）是 QEMU/PC 平台固定 I/O 资源；
-    // boot-shim 交棒后是唯一所有者。LSR bit5（THR 空）轮询保证
-    // 每个字节都进得了发送寄存器。
+    // SAFETY: COM1（0x3F8 基址）是 QEMU/PC 平台固定 I/O 资源；
+    // boot-shim 交棒后是唯一所有者。LSR（0x3FD = 基址+5）bit5＝THRE
+    //（发送保持寄存器空）：置位才写 THR，保证每个字节都进得了发送
+    // 寄存器。
     // NK4-A 取证：轮询有界（~10 万次即放弃，字节照写）——LSR
     // 异常时丢个别字节，绝不把 panic 消息整个吞掉。
+    // SD-5 / P-X86-02 勘误（2026-10-06）：旧实现读的是 0x3F9＝IER
+    //（中断使能寄存器，仅 bit0-3 有效，bit5 恒 0）——每字节空转满
+    // 上限再照写。端口勘误后 THRE 真正被等到（早期串口提速数量级）。
     unsafe {
         let mut spins: u32 = 0;
         loop {
             let lsr: u8;
-            core::arch::asm!("in al, dx", out("al") lsr, in("dx") 0x3f9u16, options(nomem, nostack));
+            core::arch::asm!("in al, dx", out("al") lsr, in("dx") 0x3fdu16, options(nomem, nostack));
             if lsr & 0x20 != 0 || spins >= 100_000 {
                 break;
             }

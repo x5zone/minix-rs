@@ -60,10 +60,19 @@ unsafe fn ser_init() { unsafe {
 /// would otherwise force Rust's name resolver to disambiguate between the trait
 /// method and a same-named free function inside the `impl` block.
 fn com1_write_byte(byte: u8) {
-    unsafe {
-        while (inb(COM1_BASE + 5) & 0x20) == 0 {}
-        outb(COM1_BASE, byte);
-    }
+    // SD-5 / P-X86-02（2026-10-06）：原实现是无界 `while (LSR.THRE==0) {}`
+    //——UART 异常（或被模拟器禁写）时内核首条输出即永久挂死。改用共享
+    // `tx_wait_then_send`（aarch64 同范式）：有界等 LSR bit5（THRE，0x3FD），
+    // 到限放行宁丢字节（与 boot-shim `emit_byte` 的 NK4-A 取证语义一致）。
+    const COM1_LSR: u16 = COM1_BASE + 5; // Line Status Register
+    const COM1_LSR_THRE: u8 = 0x20; // Transmit Holding Register Empty
+    const COM1_TX_POLL_LIMIT: u32 = 100_000;
+    crate::early_console::tx_wait_then_send(
+        byte,
+        || unsafe { inb(COM1_LSR) & COM1_LSR_THRE == 0 },
+        |b| unsafe { outb(COM1_BASE, b) },
+        COM1_TX_POLL_LIMIT,
+    );
 }
 
 /// Write a string to COM1, translating `\n` to `\r\n`.
