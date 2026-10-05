@@ -13038,3 +13038,13 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 **下一会话首测（单变量对照）**：①恢复 L0 检查（git show fcb8c542e:os/arch/src/riscv64/paging.rs 取回该两处）重跑探针×2——冻结消失=L0 撤回是真变量（诡异但照数据办）；冻结依旧=环境漂移坐实（QEMU/WSL 计时），转环境对照（同镜像在 halt-dump 驱动下重跑）。②爬行/冻结与 t_memcpy 读数解耦方案：探针 rc 裁到只 exec t_memcpy_probe（去 p1/p2/p3 减暴露窗），缩窗快取读数。
 
 **工程状态**：walk-hardening 门（默认关）+双模式测试 250/252 全绿=常驻资产；OFF=旧语义生产默认；ON=对抗语义。掩码修复（9/18 位）与规范性/巨叶加固在 ON 态保真。
+
+## §续-358 单变量定谳：L0 非变量（恢复后仍冻 245699）+ halt-dump 对照排除环境——冻结=p1 exec 相与 §续-350+ 走表变更相关
+
+**单变量结果**：恢复 fcb8c542e 的 L0 检查两处（walk_translate+query）重建后探针仍**确定性冻结 245699**——L0 撤回非变量（与 §续-352 撤回实验的「越过冻结点」合并判读：L0 检查有无都不改变冻结，§续-352 当时「越过」读数系脸谱漂移非 L0 效应）。
+
+**环境排除（决定性对照）**：riscv_halt_dump.sh 同内核同镜像同 rc **现在仍 150 秒达 marker**（halt-detect=2）——环境漂移排除（QEMU/宿主计时正常）。两驱动唯一差异=轮询时长（halt-dump 150s 即退，从未跑过 p1 exec 相；boot_probe 跑全程）。**冻结点=rc 的 p1 exec 相**（ATF 出生腿 C 二进制首个 exec）。
+
+**收敛**：p1 exec 挂起与 §续-350 起的走表变更相关（§续-340 时代同 rc 完成跑通；走表变更后 p1 exec 挂）。剩余 A/B=走表变更整体回退对照（git revert §续-350 的 walk 委托于分支，重建跑探针——若恢复快跑则按 canonicality/misaligned/delegation 三轴 bisect）；及冻结态 monitor `xp` 检查 PM/VFS/VM 各服务器阻塞点（PC 已知=scheduler_loop 空转，需查各进程 status）。
+
+**运行工程**：boot_probe 的 STALL 判据已工作（90s 零进展触发）；T2 快照修复完成（-S socket 测试+traceback）。
