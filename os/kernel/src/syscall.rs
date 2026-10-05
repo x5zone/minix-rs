@@ -3147,10 +3147,11 @@ fn find_hex_field(buf: &[u8], field: &[u8]) -> Option<u64> {
     Some(v)
 }
 
-/// §续-375 遥测读数行：在测试计算窗的两个边界上各打一行六项计数——
+/// §续-375 遥测读数行：在测试计算窗的两个边界上各打一行七项计数——
 /// 内核腿进入 / 用户腿因异步中断 / 因 ecall / 因页故障 / 用户腿被 S-origin
-/// 走过的哨兵（修后应恒为 0）/ `restore_to_user` 次数。目的是把「§续-370/371/
-/// 373 修的那三条路径真跑过几次」从推证变成读数；结案随诊断 mark 族滚除。
+/// 走过的哨兵（修后应恒为 0）/ `restore_to_user` 次数 / 其中进入时 SIE 仍
+/// 开着的窗口武装次数（`aw=`）。目的是把「§续-370/371/373 修的那三条路径真
+/// 跑过几次」从推证变成读数；结案随诊断 mark 族滚除。
 #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
 fn nk4c_legs_report(tag: &str) {
     use minix_arch::{CurrentEarlyConsole as Console, EarlyConsole};
@@ -3165,6 +3166,7 @@ fn nk4c_legs_report(tag: &str) {
         (" up=", c[td::LEG_USER_PF]),
         (" su=", c[td::LEG_USER_SORIGIN]),
         (" rs=", c[td::LEG_RESTORE]),
+        (" aw=", c[td::LEG_RESTORE_ARMED]),
     ] {
         Console::write_str(label);
         Console::write_hex(value);

@@ -3859,6 +3859,12 @@ fn finish_and_restore(
     // NK4C 续-375 遥测：这条返回腿（§续-373 屏蔽的就是它）每走一次计一。
     #[cfg(target_arch = "riscv64")]
     trap_dispatch::nk4c_leg_bump(trap_dispatch::LEG_RESTORE);
+    // 续-376：进入时 SIE 还开着 = 这一趟的窗口真被武装过（屏蔽前的形状）。
+    // 不先测这个就无法判断 §续-373 修的是“每小时都在跑的路径”还是“空路径”。
+    #[cfg(target_arch = "riscv64")]
+    if trap_dispatch::nk4c_sie_open() {
+        trap_dispatch::nk4c_leg_bump(trap_dispatch::LEG_RESTORE_ARMED);
+    }
     unsafe { CurrentTrapReturnArch::restore_to_user(&frame, &ctx) }
 }
 

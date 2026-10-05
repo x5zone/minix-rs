@@ -1970,8 +1970,10 @@ pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 =
 
 /// 0=内核腿进入 1=用户腿·异步中断 2=用户腿·ecall 3=用户腿·页故障
 /// 4=用户腿被 S-origin 陷入走过（哨兵，修复后应恒为 0）5=restore_to_user 次数
+/// 6=其中进入时 sstatus.SIE 仍开着（=§续-373 那个窗口真的被武装了几次）
 #[cfg(target_arch = "riscv64")]
-pub static NK4C_LEG_COUNTS: [core::sync::atomic::AtomicU64; 6] = [
+pub static NK4C_LEG_COUNTS: [core::sync::atomic::AtomicU64; 7] = [
+    core::sync::atomic::AtomicU64::new(0),
     core::sync::atomic::AtomicU64::new(0),
     core::sync::atomic::AtomicU64::new(0),
     core::sync::atomic::AtomicU64::new(0),
@@ -1993,6 +1995,8 @@ pub const LEG_USER_PF: usize = 3;
 pub const LEG_USER_SORIGIN: usize = 4;
 #[cfg(target_arch = "riscv64")]
 pub const LEG_RESTORE: usize = 5;
+#[cfg(target_arch = "riscv64")]
+pub const LEG_RESTORE_ARMED: usize = 6;
 
 /// 走一条腿就加一。Relaxed 足够：这些数只用于事后读数，不参与任何判定。
 #[cfg(target_arch = "riscv64")]
@@ -2003,13 +2007,25 @@ pub fn nk4c_leg_bump(slot: usize) {
 
 /// 供 DIAGCTL 诊断臂读出（低打印：只在探针已有的两行边界上打一次）。
 #[cfg(target_arch = "riscv64")]
-pub fn nk4c_leg_counts() -> [u64; 6] {
+pub fn nk4c_leg_counts() -> [u64; 7] {
     use core::sync::atomic::Ordering as AtomicOrd;
-    let mut out = [0u64; 6];
+    let mut out = [0u64; 7];
     for (slot, dst) in NK4C_LEG_COUNTS.iter().zip(out.iter_mut()) {
         *dst = slot.load(AtomicOrd::Relaxed);
     }
     out
+}
+
+/// 当前 hart 的 `sstatus.SIE` 是否开着——用来区分「走了一次返回腿」与
+/// 「走了一次**可被时钟打断**的返回腿」（§续-373 的窗口只在后者上存在）。
+/// §续-374 推证过 `idle_halt` 会打开它并把使能带回 S 态；这个数是那个推证的
+/// 直接读数，不需要先把屏蔽拿掉才能测。
+#[cfg(target_arch = "riscv64")]
+pub fn nk4c_sie_open() -> bool {
+    let raw: u64;
+    // SAFETY: 读 sstatus 是纯读操作，S-mode 可用，无副作用。
+    unsafe { core::arch::asm!("csrr {}, sstatus", out(reg) raw, options(nomem, nostack)) };
+    raw & (1u64 << 1) != 0
 }
 
 #[cfg(target_arch = "riscv64")]
