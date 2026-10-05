@@ -48,6 +48,12 @@ const SSTATUS_SPIE: u64 = 1 << 5;
 /// register/CSR operation).
 pub struct Riscv64TrapReturn;
 
+/// §续-368 实验丁旗标（riscv64 真机诊断，默认 0）：1 = 本 hart 的下一次
+/// 及后续用户返回**跳过 SPIE 置位**（sret 后 U 态中断关）。由内核
+/// `dispatch_diagctl` 的魔术串置/清；`set_active_root_tracked`（每次地址
+/// 空间切换）自动清零——粘滞窗不越过任何调度点，测试进程 abort 也安全。
+pub static NK4C_CLI: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
 impl TrapReturnArch for Riscv64TrapReturn {
     type Frame = Riscv64ExceptionFrame;
     type RegisterFile = Riscv64CpuContext;
@@ -90,11 +96,16 @@ impl TrapReturnArch for Riscv64TrapReturn {
             "csrw sepc, t0",
             // SPP=0 (return to U-mode) + SPIE=1 (interrupts enabled after
             // sret). `csrci`/`csrsi` take 5-bit immediates, so SPP (0x100)
-            // goes through t0.
+            // goes through t0. §续-368：NK4C_CLI 非零时跳过 SPIE 置位
+            // （实验丁——测试窗关中断；旗标由 DIAGCTL 魔术串置、根切换清）。
             "li t0, {spp}",
             "csrc sstatus, t0",
+            "la t1, {cli_sym}",
+            "ld t1, 0(t1)",
+            "bnez t1, 2f",
             "li t0, {spie}",
             "csrs sstatus, t0",
+            "2:",
             // ── Named register-file fields (struct-relative offsets) ──
             "ld sp, {sp_off}(t6)",   // x2 — user stack pointer
             "ld a0, {a0_off}(t6)",   // x10 — ps_strings / IPC-status carrier
@@ -140,6 +151,7 @@ impl TrapReturnArch for Riscv64TrapReturn {
             gp_off = const core::mem::offset_of!(Riscv64CpuContext, gp_regs),
             spp = const SSTATUS_SPP,
             spie = const SSTATUS_SPIE,
+            cli_sym = sym NK4C_CLI,
             // `noreturn` documents the divergence and frees the clobber
             // set (every integer register is reloaded right before sret).
             options(noreturn)

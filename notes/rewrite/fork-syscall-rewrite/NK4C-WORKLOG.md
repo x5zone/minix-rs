@@ -13133,3 +13133,13 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 - 戊补强：对账探针加写后回读臂；
 - 乙/丙：同页守护+陈旧 TLB 基线、2×2 矩阵（控制台流量×中断投递）。
 - 验收形态（GPT 第 8 章采纳）：双判据=确定性恒定判据+统计判据（k 由 (1-p)^k<1% 反推，禁用被响亮故障截断的跑当统计点）。
+
+## §续-368 实验丁执行：关中断 3 跑（2 全对 + 1 中段腐蚀）——中断路径降权，嫌疑收窄到 per-kcall 用户内存写（finw 回执/DIAGCTL 拷贝）
+
+**实现**：①arch `trap_return.rs` 新增 `NK4C_CLI: AtomicU8` 旗标 + restore_to_user 的 asm 条件跳过 SPIE 置位（`la/ld/bnez` 分支，旗标非零=sret 后 U 态中断关）；②kernel `dispatch_diagctl` 魔术串 `NK4C-CLI-ON/OFF`（riscv64 非 mock 门控，前缀匹配后直接 return 不打印）；③安全网=`set_active_root_tracked` 每次根切换清零旗标（粘滞窗不越过调度点，测试 abort/exit 安全）。探针侧 `t_memcpy_cli.c`=v2l+`cli(s,len)` 直发 kcall（不经 stdio 缓冲；trap NR=0 与 sys-bridge 同源；ON len=12/OFF len=13）。CodeReview fa02e515f 回执=PASS-with-P2（2×P2 注释补齐：零命中结论边界+去重键含 root——已落 vm.rs）。
+
+**读数（3 boot）**：cli1 **PASS**（RESULT=7b405d24）/ cli2 **PASS** / cli3 **CORRUPT**（RESULT=83a7a205）——但 cli3 的 P(0,1)..P(1,3) **五对全 MATCH**，分歧首现 **pair(2,0)**：腐蚀命中在两次 printf 之间（printf=DIAGCTL kcall=finw 回执写）。**中断路径降权**（关中断下腐蚀仍在）；**嫌疑收窄=per-kcall 的用户内存写路径**（finw 回执/DIAGCTL diagbuf 拷贝——两者都是每 kcall 经走表+DM 的用户内存访问；率∝kcall 量、printf 间命中、aarch64 实现不同、关中断不灭=同步 ecall 仍走）。四结果表对应 GPT 第 2 行变体：污染仍在（未测陷帧完整性，但定时器陷阱已排除出窗口）。
+
+**与双走表零命中的关系**：对账探针装在 `lookup_range_in_table`（cross_space_copy 路径）；**finw 回执走的是 syscall.rs:3960 的独立 walk 调用点**——对账未覆盖该点。下一会话第一动作：把双走表对账扩到 finw 路径（walk 前后各走一次对账）+DIAGCTL 拷贝路径；若 finw 对账命中=坐实，若零命中且腐蚀继续=转「确定性错译」分支（对账探针盲区，需写后回读臂）。
+
+**工程状态**：CLI 机制=诊断常驻（riscv64 非 mock 门控；默认 0=无行为变化；x86/aarch64 构建不受影响）。P2-1/P2-2 已修（vm.rs 注释）；t_memcpy_cli 已入 imgrd_probe.proto。

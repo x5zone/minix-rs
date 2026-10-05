@@ -3107,6 +3107,12 @@ pub(crate) fn set_this_cpu_root_phys(root: minix_types::PhysBytes) {
 /// Callers hold the BKL (single-writer guarantee for the mirror).
 pub(crate) fn set_active_root_tracked(root: PhysBytes) {
     use minix_arch::TlbArch;
+    // §续-368 实验丁安全网：实验旗标（关中断粘滞窗）不越过任何地址
+    // 空间切换——测试进程 abort/exit 后旗标必被清零，系统不会带关中断
+    // 状态继续调度其他进程。
+    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+    minix_arch::riscv64::trap_return::NK4C_CLI
+        .store(0, core::sync::atomic::Ordering::Relaxed);
     // SAFETY: `root` is a boot-established or VM-validated page-table
     // root (see `TlbArch::set_active_root` safety contract); the caller
     // holds the BKL, so no other CPU is concurrently switching roots.

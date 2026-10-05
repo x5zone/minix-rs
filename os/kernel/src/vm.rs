@@ -66,7 +66,12 @@ pub(crate) fn nk4a_kdst_probe(tag: &str, dst_pa: u64, len: usize) {
 
 /// §续-367 双走表对账探针：同一 (root, va) 两次独立 walk 的 PA 不一致=
 /// 走表非确定性直接证据（写者候选头位=跨空间拷贝走表偶发错 PA）。
-/// CAP=32 去重（同 (va,pa1,pa2) 只记一次）。
+/// CAP=32 去重（同 (root,va,pa1,pa2) 四元组只记一次）。
+///
+/// 判据边界（GPT 实验戊盲区注记，防「零命中=走表清白」误读）：
+/// 零命中**只排除「同一次拷贝内两次走表不一致」**，不排除
+/// ①两次都错到同一错 PA（确定性错译）②Some→None 的 mapped-ness 翻转
+/// ③首页之后的后续页（仅首页对账）。探针不报 ≠ 走表清白。
 #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
 pub(crate) fn nk4a_walk_reconcile(root: u64, va: u64, pa1: u64, pa2: u64) {
     use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};

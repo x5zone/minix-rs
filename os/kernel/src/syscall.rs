@@ -3285,6 +3285,26 @@ fn dispatch_diagctl(
                         }
                     }
                     // 续-298 krewalk 配套捕获（用后即滚）：fill-root 探针行的
+                    // §续-368 实验丁（关中断臂）魔术串：探针在测试计算窗
+                    // 口前后各发一条，内核置/清 arch 旗标（riscv64 用户返回
+                    // 处跳过 SPIE 置位）。旗标由 set_active_root_tracked
+                    // 在任何地址空间切换时自动清零——粘滞窗不越过调度点，
+                    // 测试进程 abort/exit 也安全。
+                    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+                    if diagbuf[..len].starts_with(b"NK4C-CLI-ON") {
+                        use core::sync::atomic::Ordering as AtomicOrd;
+                        minix_arch::riscv64::trap_return::NK4C_CLI
+                            .store(1, AtomicOrd::Relaxed);
+                        return KcallResult::Ok(0);
+                    }
+                    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+                    if diagbuf[..len].starts_with(b"NK4C-CLI-OFF") {
+                        use core::sync::atomic::Ordering as AtomicOrd;
+                        minix_arch::riscv64::trap_return::NK4C_CLI
+                            .store(0, AtomicOrd::Relaxed);
+                        return KcallResult::Ok(0);
+                    }
+
                     // ptroot/pte_pa 存全局，供内核 pfvm 冷路径读「fill-root
                     // 刚写的叶槽」在故障时刻的现值（判 RAM 脏 vs 视图错位）。
                     if diagbuf[..len].starts_with(b"nk4a: fill-root") {
