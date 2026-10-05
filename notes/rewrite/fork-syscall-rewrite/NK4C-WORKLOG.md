@@ -12992,3 +12992,13 @@ boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻�
 **策略含义（下一会话）**：①halt-dump 冻结/panic 现场对页表页做**指纹 diff**（模块区已验证全 EXACT，页表页未验）；②t_memcpy 判别器继续作为腐蚀传感器（加固后部分腐蚀变 loud，传感器语义已变——C 线仍测静默面）；③RS panic nonstr 脸谱的表项快照与 minix-elf OOB 同权重。
 
 **当前树上语义**：委托+规范性+错粒度巨叶加固在位；L0 指针形=旧语义（已知偏差登记，测试注释同步）。boot-full 在含 L0 检查的版本 PASS 过（命令面不触 L0 占位形）；L0 撤回版未过 boot-full（本脸谱即其首次推进读数）。
+
+## §续-353 冻结现场 monitor 取证打通 + 跨快照 diff 噪声教训 + 同 run 双快照实验设计
+
+**monitor 取证链打通**：挂起 guest 经 mon.sock `info registers` 拿到冻结点（PC=0xffffffc0000032a8=scheduler_loop，scause=0x8000000000000005=supervisor timer，全树阻塞于首个 C/ATF exec 的挂死，调度环空转打定时器中断）+ `pmemsave` 全 RAM（512MB 落 QEMU cwd）。模块区 12 模块对 REL 逐字节 **全 EXACT**（冻结态无镜像腐蚀）。
+
+**跨快照 diff 教训**：hd49（健康 halt-dump）vs frozen（探针挂起）分属**不同运行不同阶段**——6185 个表状页有差异全是合法运行态演化，噪声淹没信号；平扫全 RAM 更被代码字节淹没（29 万假命中）。**正确实验=同 run 双快照**：驱动加「marker 命中时 T1 pmemsave + STALL/RESULT 时 T2 pmemsave」，同 run 内 diff 页表页——运行态演化可控（marker 后只有 p1/p2/p3/probe 四个 exec 的增量），腐蚀指纹可分离。
+
+**观测补充**：挂起相串口仍在缓增（p4-init/vr: 探针单行缓出）=guest 非冻结而在**极慢速爬行**（~1 行/秒级 vs 健康相数千行/秒）——慢 1000× 的具体相=init MultiUser 后的 rc exec 链。缓爬+冻结点确定性+跨内核构建（加固前后）都出现——「每 syscall 变 ~1000×慢」的最简解释=**某条 per-syscall 路径进入了重试循环**（与 §续-348 的「加固把静默腐蚀变 loud→上游重试」一致：loud 失败→上游 suspend→重试→再失败）。t_memcpy 传感器读数语义随之更新：**缓爬本身即腐蚀活动的测量**（爬行速率∝腐蚀命中率）。
+
+**下一会话（设计已就绪）**：①同 run 双快照驱动（T1@marker/T2@STALL，各 512MB）+ 页表页 diff；②对照 halt-dump 短跑（验证爬行是否 run 长度相关）；③若双快照 diff 出腐蚀 PTE 指纹→写者定位；④t_memcpy 读数按缓爬修正判读（完成即读，不等快）。
