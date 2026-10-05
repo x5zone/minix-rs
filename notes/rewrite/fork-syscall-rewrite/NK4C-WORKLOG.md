@@ -13650,6 +13650,8 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **WIP 入库决定（纪律裁量）**：接线分支（smp.rs 89 行）＋A1/A2/A3 标记＋专用门**作为显式 WIP 提交**——理由：①三终目标门不受影响（ATF -smp 1 惰性已由 gate 388/396 复证）；②调试状态入库使下一会话可直接从 GDB 路线续作（否则需重建全部现场）；③门自身预期 FAIL 已在脚本与 WORKLOG 双重声明。**专用门当前判定：FAIL（no ap-arrived marker）——预期内，非回归。**
 
+**WIP 提交号**：58306e9fe（接线分支 89 行 + A1/A2 标记 + 门脚本）。**GDB 路线操作配方**：QEMU 加 `-s -S`（gdbstub 挂起等连）+ `gdb-multiarch -ex 'target remote :1234'`；riscv64 单 hart 切换用 `set $hart = 1`（QEMU riscv gdbstub 按 hart 暴露寄存器组）或逐 hart `info threads`；断点 `b *0x802227ec`（ap_early_entry_start PA）核 AP hart 是否到达；`csrw satp` 后单步核 PC 与 `sstatus.SPP`。备用：内核根页读码路径＝arch_boot 的建根函数（kernel/src/lib.rs arch_boot_impl 一族）。
+
 **验证**：riscv64 内核镜像编译零错误；三跑数据链（401 无分支无打印 / 402 带 marker 三洪流 / 402b 无洪流无到达 / 405 A1A2 洪流 875 万对）；宿主 arch/kernel 全绿未复跑（本批只动 kernel smp_init riscv 分支与 kernel-image asm）。**诚实边界**：①A1A2 循环的精确机制（fault 点在 jr 后取指还是 satp 前存储）是推断，GDB 单步未做；②「内核根恒等映射镜像」未读 arch_boot 建根代码坐实；③本增量未产出门绿，SMP 第三增量未完成——登记状态而非完成状态。
 
 
