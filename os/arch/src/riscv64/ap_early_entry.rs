@@ -56,8 +56,7 @@ use crate::arch::ap_early_entry::ApBootstrap;
 /// 侥幸），no_mangle 供 kernel-image 桩 asm 字面引用与内核读取。
 #[unsafe(link_section = ".data")]
 #[unsafe(no_mangle)]
-pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
+pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// 次级核停车邮箱的 GO 格（§续-400 停车邮箱设计）：0=等待；1=记录已填、
 /// 可跳汇聚点。.data 同上（初值由 loader 写入，非 NOBITS 侥幸）。
@@ -155,8 +154,7 @@ unsafe extern "C" {
 
 /// 汇聚点到达标记（§续-398 交付：门判据「次级核打印/可观测汇聚点到达」
 /// 的观测面）。0 = 未到；1 = 已到（fence 之后的 Rust 视图）。
-pub static AP_ARRIVED: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
+pub static AP_ARRIVED: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 /// 汇聚点——AP 从桩跳入（a0 = 记录物理位址）。
 ///
@@ -168,10 +166,14 @@ pub static AP_ARRIVED: core::sync::atomic::AtomicUsize =
 /// 每核运行队列/抢占下发未通电——AP 此刻「醒着但无所事事」，继续推进
 /// 会踩 P-ALL-03 红线（撤钳不先补每核队列＝进程被安到无队列的核）。
 pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
-    // UART step marker "A3" = Rust convergence entered（经内核 DM 窗写
-    // UART：VA = KDM_BASE + UART_PA，krewalk 同一换算约定）。
+    // UART step marker "A3" = Rust convergence entered。走恒等映射 PA 写
+    //（与桩内 A2 同路：内核根恒等映射已由 A2 上过串口实证）。不得走
+    // KDM 窗 VA——§续-403 GDB 实证：根表（BSP current_root_phys 交给 AP
+    // 的这张）不含 KDM 窗，store fault（scause=15 stval=0xffffffc050000000）；
+    // 又因 OpenSBI hart_start 交接把 stvec 设成 start_addr（＝桩入口），
+    // 一次 fault 即弹回桩起点无限洪流。
     unsafe {
-        let uart = (0xFFFF_FFC0_4000_0000u64 + 0x1000_0000u64) as *mut u8;
+        let uart = 0x1000_0000u64 as *mut u8;
         core::ptr::write_volatile(uart, b'A');
         core::ptr::write_volatile(uart.add(1), b'3');
     }
@@ -182,12 +184,10 @@ pub unsafe extern "C" fn ap_early_entry(bootstrap_pa: usize) -> ! {
     let _hw_id = unsafe { core::ptr::read_volatile(&record.hw_id) };
     let _ = (_logical, _hw_id);
     // 到达标记（Release：后续 BSP 读到 1 时，上方的快照读已完成）。
-    core::sync::atomic::AtomicUsize::store(
-        &AP_ARRIVED,
-        1,
-        core::sync::atomic::Ordering::Release,
-    );
+    core::sync::atomic::AtomicUsize::store(&AP_ARRIVED, 1, core::sync::atomic::Ordering::Release);
     loop {
-        unsafe { core::arch::asm!("wfi", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("wfi", options(nomem, nostack));
+        }
     }
 }

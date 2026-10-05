@@ -1044,9 +1044,11 @@ pub fn smp_init() {
         smp.wait_for_aps::<CurrentSmpArch>();
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    // riscv64 已有自己的接线块（下方 cfg(riscv64)），只剩 aarch64 没接——
+    // §续-403 前 riscv64 也误射此警告（cfg 范围未随接线收窄）。
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv64")))]
     {
-        // aarch64/riscv64 lanes: the bring-up preconditions (early-entry
+        // aarch64 lane: the bring-up preconditions (early-entry
         // image, per-CPU init_ap) are not wired yet — see the S-8/S-4 stub
         // inventory in this file's history. Bringing them up is those
         // lanes' own step; warning instead of silently succeeding.
@@ -1068,13 +1070,13 @@ pub fn smp_init() {
     ///   继续单核推进，不阻塞启动。
     #[cfg(target_arch = "riscv64")]
     {
-        use minix_arch::riscv64::ap_early_entry::{
-            entry_start_pa, record as ap_record, AP_ARRIVED,
-        };
         use minix_arch::riscv64::ap_early_entry::ap_early_entry;
+        use minix_arch::riscv64::ap_early_entry::{
+            AP_ARRIVED, entry_start_pa, record as ap_record,
+        };
         use minix_arch::{CurrentSmpArch, SmpArch};
         use minix_plat::EarlyConsole as _;
-        use minix_platform::{platform_desc, PlatformDesc};
+        use minix_platform::{PlatformDesc, platform_desc};
 
         let topo = platform_desc().cpu_topology();
         if topo.nr_cpus <= 1 {
