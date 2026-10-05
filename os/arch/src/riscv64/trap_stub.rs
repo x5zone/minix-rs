@@ -39,10 +39,13 @@
 //! x0 has a slot even though it is hardwired zero, so slot index equals
 //! register number; the interrupted sp travels in slot 2 for both
 //! origins), `sepc` at slot 32, `sstatus` at slot 33. Pinned by
-//! [`test_frame_layout_frozen`]. The user leg restores `sp` from slot 2
-//! and exchanges it with `sscratch` on the way out, which leaves
-//! `sscratch` holding the kernel-stack top again — the invariant
-//! `ProtectionArch::init` established.
+//! [`test_frame_layout_frozen`] plus the leg-shape contract in
+//! `arch/tests/riscv64_trap_leg_shape.rs`. On the way out the two legs
+//! differ: the kernel leg pops back to the interrupted `sp` (slot 2 is the
+//! only copy of it, since `sscratch` keeps holding the kernel-stack top),
+//! while the user leg takes the parked user `sp` back out of `sscratch`
+//! with the same exchange it entered with — slot 2 is that same value
+//! (written from `sscratch` at entry) and is not re-read on exit.
 //!
 //! # `ecall` PC semantics (minix-sys arch_trap contract)
 //!
@@ -410,12 +413,26 @@ core::arch::global_asm! {
     "    la t0, riscv64_resched_entry",
     "    jr t0",                      // -> ! (never returns here)
     "1:",
-    // Restore. The user sp (slot 2) travels out through t0 for the final
-    // sscratch exchange, so it loads after every plain GPR restore.
+    // Restore. CSR pair first (they read through t0), then stvec — the
+    // vector write ALSO goes through t0 and MUST stay ahead of the GPR
+    // reload (NK4C 续-371): the user leg returns to U-mode, so every
+    // register it touches after that register's own `ld` is a user value
+    // it destroys. Doing the `stvec` write here is free precisely because
+    // t0's user value is still in memory, waiting at slot 5.
+    //
+    // The user `sp` is NOT fetched from slot 2 on this path: the parked
+    // value lives in `sscratch` (the leg's own entry exchange put it there
+    // and nothing between then and here writes `sscratch` — the kernel leg
+    // documentedly never touches it, and `restore_to_user`, which does
+    // re-anchor it, never returns here). 续-371 removed a `ld t0, 2*8(sp)`
+    // that this exchange never consumed: it was dead AND it left the
+    // returning user context with `t0` = its own stack pointer.
     "    ld t0, 33*8(sp)",
     "    csrw sstatus, t0",
     "    ld t0, 32*8(sp)",
     "    csrw sepc, t0",
+    "    la t0, riscv64_user_trap_vector",
+    "    csrw stvec, t0",
     "    ld ra, 1*8(sp)",
     "    ld gp, 3*8(sp)",
     "    ld tp, 4*8(sp)",
@@ -446,13 +463,8 @@ core::arch::global_asm! {
     "    ld t4, 29*8(sp)",
     "    ld t5, 30*8(sp)",
     "    ld t6, 31*8(sp)",
-    // stvec back to the user leg BEFORE the GPR restore clobbers the
-    // scratch: the next trap from U-mode must land here again.
-    "    la t0, riscv64_user_trap_vector",
-    "    csrw stvec, t0",
-    "    ld t0, 2*8(sp)",        // user sp
     "    addi sp, sp, 34*8",     // pop the frame (sp = kstack top again)
-    "    csrrw sp, sscratch, sp", // sp ← user sp; sscratch ← kstack top
+    "    csrrw sp, sscratch, sp", // sp ← user sp (parked in sscratch); sscratch ← kstack top
     "    sret",
 
     // stvec Direct mode requires 4-byte alignment of the base; both legs
