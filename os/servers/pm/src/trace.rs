@@ -288,7 +288,7 @@ pub fn do_trace<T: crate::ipc::IpcTransport + ?Sized>(
                         table.procs[child.get()].state.lifecycle =
                             crate::mproc::Lifecycle::Exiting { exit_code: req.data as i8, sig_status: 0 };
                     } else {
-                        crate::exit::exit_proc(table, child, req.data as i8, false, transport, kern);
+                        crate::exit::exit_proc(table, child, req.data as i8, 0, false, transport, kern);
                     }
                     Ok(ReplyIntent::ReplyLater) // SUSPEND
                 }

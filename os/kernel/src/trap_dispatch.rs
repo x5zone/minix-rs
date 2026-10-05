@@ -2265,6 +2265,39 @@ unsafe fn riscv64_pagefault_body(
         proc.trap_style = TrapStyle::FullContext;
     }
     let priv_table = unsafe { crate::priv_table_boot_unchecked() };
+    // §续-383 判别探针（用后即滚）：本案门内现场停在「VM 拒服务后没人解锁调用者」，
+    // 但拒服务发生在 VM 侧、内核这边的状态当时看不到。这里在**送进缺页挂起之前**
+    // 检查该进程是否已经挂着致命信号（`SIGNALED` / `SIG_PENDING`）：若是，则本次
+    // 挂起与终止在赛跑，且挂上之后只能等 VM 来清缺页位——这就是死锁的形状。
+    // 读数封顶：前两条 + 之后每逢 2 的幂一条（§续-361 插桩量教训）。
+    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        use minix_plat::{CurrentEarlyConsole as Lc, EarlyConsole as _};
+        static LETHAL_PF: AtomicUsize = AtomicUsize::new(0);
+        let (flagged, flags) = table
+            .get(cur_nr)
+            .map(|p| {
+                (
+                    p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::SIGNALED)
+                        || p.p_rts_flags.is_set(crate::proc::RtsFlagsBits::SIG_PENDING),
+                    p.p_rts_flags.get().bits() as u64,
+                )
+            })
+            .unwrap_or((false, 0));
+        if flagged {
+            let n = LETHAL_PF.fetch_add(1, AtomicOrd::Relaxed);
+            if n < 2 || (n + 1).is_power_of_two() {
+                Lc::write_str("nk4c: pfwd-lethal nr=");
+                Lc::write_hex(cur_nr.0 as u64);
+                Lc::write_str(" n=");
+                Lc::write_hex((n + 1) as u64);
+                Lc::write_str(" flags=0x");
+                Lc::write_hex(flags);
+                Lc::write_str("\n");
+            }
+        }
+    }
     if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, fault_addr, errcode) {
         // C: panic("WARNING: pagefault: mini_send returned %d")
         panic!("pagefault: mini_send returned {e:?}");

@@ -482,7 +482,7 @@ impl<'a, T: IpcTransport> VfsReplyServices for PmServices<'a, T> {
         // /*dump_core*/)`：直接走二阶段退出（09 的 exit_proc 全链：sys_stop
         // → VFS_PM_EXIT → 僵尸化 → 收养链），不重读消息、不经 do_exit 的
         // 入口门。status 截断为 i8 与 C 的 exit_status 语义一致。
-        crate::exit::exit_proc(self.table, slot, status as i8, dump_core, self.transport, self.kern);
+        crate::exit::exit_proc(self.table, slot, status as i8, 0, dump_core, self.transport, self.kern);
     }
 
     fn set_core_flag(&mut self, slot: UserSlot) {

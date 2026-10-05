@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **🛑 最新前沿＝§续-382（里程碑读数裁决问题甲：拒服务是一次性的，排除活锁；caller 永挂等不到解锁）——目标③ 卡在「一个测试进程死后永久挂在缺页态」，不是卡在腐蚀。** 读数：`nk4a: pf-inact#1` 只一条（#2 里程碑未触发）⇒ VM 只拒了一次，不存在反复缺页循环；门与上轮完全一致地停在 24/36（22 passed + 2 skipped，可复现）。内核侧唯一解除 `PAGEFAULT` 的入口是 VM 主动下发 VMCTL_CLEAR_PAGEFAULT（`os/kernel/src/syscall.rs:2727-2737`，C 真源 `minix3/minix/kernel/system/do_vmctl.c:34-35` 同形且全仓无第二处），拒服务分支不发它 ⇒ 该进程永久挂着，套件推不下去（即 §续-155 把 C 的 panic 改成体面拒服务时漏了「谁解锁 caller」）。下一步已缩小到一条：查①PM 是否收到并被唤醒处理这条 SIGSEGV（`csig`→`SIGKSIG`→send_sig 入队半），②内核退出路径能否作用在 `PAGEFAULT` 已置位的进程上（C 的 do_exit 可以）。判据：同镜像重跑门跑过第 13 个 prog（允许该案例 failed）并拿到剩余 12 案终态。上一前沿＝§续-381（问题甲定位到 C 真源对照层）；再上＝§续-380（§续-378 就地勘误：静默挂死而非整机下线）。**换新会话接手时读 `NK4C-接续PROMPT-20261005c.md`（同目录）——它把目标准则、本案机制、三个已修缺陷、两个决定性读数、作废结论清单、工具配方与纪律一次给齐。**
+> **🛑 最新前沿＝§续-383（问题甲定案并修复：停摆断点不在 VM 拒服务，而在 PM 退出链一处信号号丢失；门已跑过第 13 个 prog，最终判定待门结束后登记）** 静态机制九环（C 对照锚点齐全，详见 §续-383 正文）：① t_strerror 写 VA=0（腐蚀，问题乙仍在）→ VM wro 臂成对下发 SIGSEGV+CLEAR_PAGEFAULT（`vm_server.rs` pf_fail_segv，NK4-A c17a 修复在位）→ 目标挂 `SIGNALED|SIG_PENDING`；② PM 被 SIGKSIG 唤醒（通知与入队半在位，`syscall_signal.rs:397-430`），拉取循环 endksig 后目标标志清零、重新入队；③ SIGSEGV 属 core 信号 → `sig_proc_exit` → `exit_proc(dump_core=TRUE)`；④ exit_proc step 6 vm_willexit 把 VM 槽标 EXITING；⑤ **断点**：step 8 tell_vfs 的 DumpCore 载荷 term_sig 旧码从 `lifecycle.exit_code()` 读，而 EXITING 生命周期到 step 10 才建立 ⇒ 恒 0；C 真源是 `sig_proc_exit` 先写 `mp_sigstatus=signo`（`minix3/minix/servers/pm/signal.c:552`）、`forkexit.c:354` 把它载入 VFS_PM_TERM_SIG；⑥ VFS 的 DumpCore 臂对 term_sig=0 回 Err(BadEndpoint)（守卫正确，是上游喂了 0），错误回复以 m_type=负 errno 入队（`main_loop.rs` queue_reply）；⑦ PM 的 RS 族判定 `is_vfs_pm_rs` 不认负 errno，消息落进续-149 静默丢弃臂（`pm/src/init.rs`）⇒ `exit_restart` 永不执行 ⇒ zombify / sys_clear / vm_exit 全不发生；⑧ 目标进程重跑故障指令（endksig 已使其可运行）→ VM 槽已 EXITING、拒服务不清位（pf-inact#1）→ 永挂 PAGEFAULT——但这只是表象，⑦ 才是链条断点：内核 `dispatch_clear` 本可无条件 SLOT_FREE（与 C `do_clear.c:57` 同形），只是永远没被调到；⑨ 父进程 waitpid 永等 ⇒ 套件停摆且无 panic 文案（静默丢弃本就不出声）。**修复（终止语义，红线遵守＝没有做「只补解锁」）**：`exit_proc` 增加 sig_status 参数（C mp_sigstatus 对位）、step 8 term_sig 取参数、step 10 Exiting 携带（顺带修复信号死亡 wait 状态错报：旧码 step 10 硬编码 sig_status=0，信号号全部丢失）；`sig_proc_exit` 传真信号号，其余 5 个调用方传 0。回归：`cargo test -p minix-pm` 420 过 / 0 新失败（新回归测试 test_sig_death_tell_vfs_carries_term_sig + SIGTERM 僵尸 sig_status 断言强化）；clippy 17=17 基线零新增；rustfmt 漂移计数 46/49 与 53/53（均不多于基线）。真机判据（`/tmp/atf_full384`）：死亡序列与上轮逐行同形直到 pf-inact#1，其后出现 `vr 00000985 → rv 0000 → ptalloc-reuse 页表回收` ⇒ 退出链在真机走完。**门终判：32/36（30 passed + 2 skipped）——套件跑完整个计划至 init MultiUser，门计数语义的停滞实为 t_strerror 四案死亡后无结果行**。问题甲判据（跑过第 13 个 prog、剩余各案到终态）全部达成；目标③正式判据只剩 t_strerror 的 4 个用例。pfwd-lethal 探针 0 次触发＝PM 先于第二次缺页消费了信号（赛跑以 PM 快结束）。**遗留登记三笔**：α-2＝VFS 错误回复（m_type=负 errno）不被 PM 认出、被续-149 臂吞掉，本次它是链条一环，后续应让 PM 识别 VFS 错误回复（或 VFS 以 RS 族 m_type 回错）；VM inactive 臂保持原样（C 对 exiting 进程的缺页照常服务，我方拒服务在退出链能走完时无害——sys_clear 兜底释放）；`run_once_integration` 2 失败为基线既有（-78/78、-10/10 符号断言，HEAD 工作树复证同败）。**并发边界更新**：trap_dispatch.rs 的 §续-383 判别探针（pfwd-lethal）由并发会话留置、用户手动终止该会话，本会话复核后采纳入库（封顶策略符合 §续-361 教训）；两份案卷的脏改动＝被终止会话的正当结案陈词（TRANSIENT-PTE 新增第 11 章等），本会话不提交，留待用户处置。**换新会话接手时读 `NK4C-接续PROMPT-20261005c.md`（同目录）——目标准则、本案机制、三个已修缺陷、两个决定性读数、作废结论清单、工具配方与纪律一次给齐；问题甲的最新进展以上一段与本文件 §续-383 节为准。下一笔（§续-384）的靶子：t_strerror 的确定性死亡（问题乙收窄）。**
+>
+> **（上一前沿＝§续-382（里程碑读数裁决问题甲：拒服务是一次性的，排除活锁；caller 永挂等不到解锁）——目标③ 卡在「一个测试进程死后永久挂在缺页态」，不是卡在腐蚀。** 读数：`nk4a: pf-inact#1` 只一条（#2 里程碑未触发）⇒ VM 只拒了一次，不存在反复缺页循环；门与上轮完全一致地停在 24/36（22 passed + 2 skipped，可复现）。内核侧唯一解除 `PAGEFAULT` 的入口是 VM 主动下发 VMCTL_CLEAR_PAGEFAULT（`os/kernel/src/syscall.rs:2727-2737`，C 真源 `minix3/minix/kernel/system/do_vmctl.c:34-35` 同形且全仓无第二处），拒服务分支不发它 ⇒ 该进程永久挂着，套件推不下去。下一步已缩小到一条：查①PM 是否收到并被唤醒处理这条 SIGSEGV，②内核退出路径能否作用在 `PAGEFAULT` 已置位的进程上。——两问已由 §续-383 回答：PM 收到且进入了退出链，但链条在 DumpCore 错误回复处断掉；退出路径（sys_clear）本身没问题，是没人调到它。）
 >
 > **（上一前沿＝§续-381（问题甲查到 C 真源对照层：VM 认不出的端点 C 是 panic、我方改成拒服务，而拒之后那条等待没人解除）——目标③ 由「概率性腐蚀挡路」换成「一个可定位的挂死缺陷挡路」。** 门的三处修复后读数：22 passed + 2 skipped + **0 failed**，到第 13 个 prog 前 STALLED（串口连续 120 轮无增长，门自己 kill QEMU；交接时同门是零终态 + VM 野 VA panic，§续-364）。死前序列：exec 完成 → `wro-dump ep=0x802b cr2=0x …` 写地址 0 → SIGSEGV 正常投递 → **已在 exiting 的进程再报一次页故障、VM 按出口拒绝服务** → 串口断（无 panic 文案）。同时现场里出现新留影：内核定长模板诊断行的前缀字节被 NUL 盖掉（`^@^@4a: wro-vag`）——与 §续-346「报出的字符串被剪」同族，且发生在**内核自己的打印缓冲**上。拆成两问：甲＝普通测试进程死掉为何让系统停摆（追「exiting 进程再缺页 → VM 拒服务 → 内核下一步」；判据=门能跑完 36 案终态，允许出现 failed 案例）；乙＝写 VA=0 本身（同一二进制在 aarch64 全通过，已核 stresep 与 C 真源逐行同形 ⇒ 归回指针字段被改那一族）。先修甲：它把门的可观测面从 36 案砍到 24 案，挡目标③正式判据。详见 §续-378。
 >
@@ -13434,6 +13436,51 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 **下一步（已缩小到一条可验证的问题）**：SIGSEGV 默认动作本该终止该进程——内核在 `csig` 臂只做了 `RTS_SIGNALED|SIG_PENDING` 并通知信号管理器（PM）（`os/kernel/src/syscall_signal.rs:379-421`），真正的终止要 PM 回头下发 SYS_EXIT。所以要查清两件事：①PM 是否收到并被唤醒处理了这一条（`SIGKSIG` 通知链 + `send_sig` 入队半）；②PM 发 EXIT 时，内核的退出路径能否作用在一个 `PAGEFAULT` 已置位的进程上（C 可以 do_exit 杀掉挂着任何 RTS 位的进程）。判据不变：同镜像重跑门能跑过第 13 个 prog（允许该案例 failed）并拿到剩余 12 案终态。
 
 **回归**：`cargo test -q -j 2 -p minix-vm` 538/0 全绿（mock 路径不编译该臂，新分支另经 riscv 真机构建与上机跑验证：kernel-image/minix-vm 均构建过、门实际跑到了同一停摆点并打出了 #1 行）；`rustfmt` 与 `cargo clippy -p minix-vm` 干净；doc-style-lint --diff 零 error。现 qemu=0。
+
+## §续-383 问题甲定案并修复：停摆断点＝信号死亡的 DumpCore 载荷信号号恒 0，VFS 拒服务后 PM 丢弃错误回复，退出链停在 sys_clear 之前
+
+**本轮性质**：读码定位一轮（纯静态、C 真源对照）＋一处修复（PM 信号死亡的 sigstatus 数据流）＋宿主回归测试＋真机门验证（门结束时另笔登记最终判定）。
+
+**探针来源登记**：工作树里发现一段未提交的 `os/kernel/src/trap_dispatch.rs` 判别探针（`pfwd-lethal`：缺页挂起前检查该进程是否已挂 `SIGNALED|SIG_PENDING`，读数前两条加此后每逢 2 的幂各一条）。它对应本文件尚无记录的 §续-383 编号。经查证：这是并发会话（Qoder 侧）的遗留工作，用户要求其交接后停止、其未停止而被用户手动终止（其门运行产物 `/tmp/atf_full383`，停在 7 终态，串口尾部无异常文案）。用户已明确该探针可由本会话处置。复核结论：探针形状正确（检查点在 `forward_pagefault_to_vm` 之前、借用关系成立、封顶策略符合 §续-361 插桩量教训、riscv64 且非 mock 才编译），采纳并随本轮入库。
+
+**静态定位（机制九环，全部带锚点）**——问题甲的死亡序列逐环对照 C 真源：
+
+1. t_strerror（atf-plan 第 13 个程序，端点 0x802b）启动后写 VA=0——这是腐蚀（问题乙）仍发作的留影，不是本轮修的对象。
+2. 内核缺页转发（`os/kernel/src/trap_dispatch.rs` forward_pagefault_to_vm：置 `PAGEFAULT`、记 p_fault_addr、发 VM_PAGEFAULT、PARK_RESCHEDULE）。VM 的 wro 臂（写无匹配可写区）走 `pf_fail_segv`：`sys_kill(SIGSEGV)` + `sys_vmctl_clear_pagefault` **成对下发**（`os/servers/vm/src/vm_server.rs`，NK4-A c17a 修复在位；C 真源 `minix3/minix/servers/vm/pagefaults.c:99-104` 同形）。
+3. 内核 cause_signal 置 `SIGNALED|SIG_PENDING` 并通知 PM（通知与 `enqueue_if_woken` 都在位，`os/kernel/src/syscall_signal.rs:397-430`）——**问题甲交接清单的待查点①（PM 是否被唤醒）答案为是**；佐证：VM 槽后来变成 EXITING，而全仓唯一的 exiting 标记点是 PM 退出链的 vm_willexit。
+4. 清位臂是调度感知的（清 `PAGEFAULT` 时若标志归零则重新入队，`os/kernel/src/syscall.rs:2711-2738`），但此刻 `SIGNALED|SIG_PENDING` 在挂，目标保持停车等 PM。
+5. PM 的拉取循环 `process_sigmgr_signals`（`os/servers/pm/src/signal.rs:640+`）先 getksig（清 `SIGNALED`）后 endksig（清 `SIG_PENDING`，标志归零 ⇒ 目标重新入队可运行）再 process_ksig；SIGSEGV 属 core 信号集 → `sig_proc_exit` → `exit_proc(dump_core=TRUE)`。
+6. exit_proc step 6 `vm_willexit`（`os/servers/pm/src/exit.rs`）把 VM 槽标 EXITING（VM 侧 `os/servers/vm/src/exit.rs:73-83`）。
+7. **断点**：exit_proc step 8 tell_vfs 对 dump_core 路径发 `VfsCall::DumpCore`，其 term_sig 旧码取自 `lifecycle.exit_code()`——而 EXITING 生命周期到 step 10 才建立，此处读回必然是 None ⇒ term_sig=0。C 真源的数据流是 `sig_proc_exit` 先写 `rmp->mp_sigstatus = (char) signo`（`minix3/minix/servers/pm/signal.c:552`）再进 exit_proc，`forkexit.c:354` 把 `mp_sigstatus` 载入 `VFS_PM_TERM_SIG`——信号号在进 exit_proc 之前就已确定，不依赖任何生命周期状态。
+8. VFS 的 DumpCore 臂对 `term_sig == 0` 回 `Err(BadEndpoint)`（`os/servers/vfs/src/ipc/dispatcher.rs`，守卫本身合理——term_sig=0 的 core dump 无意义，错的是上游喂了 0）；VFS 主循环对 Err 以 `queue_reply(Error(errno))` 回复，m_type=负 errno（`os/servers/vfs/src/main_loop.rs:7241-7267`）。
+9. PM 主循环对 VFS 回复的入口门是 `is_vfs_pm_rs(msg.m_type) && m_source==VFS`（`os/libs/minix-types/src/ipc/vfs.rs:178-180` 的族掩码）——负 errno 不落在 RS 族 ⇒ 消息进入续-149 的「VFS 来源非 RS 族消息静默丢弃」臂（`os/servers/pm/src/init.rs:608+`）。错误回复被无声丢弃 ⇒ `exit_restart` 永不执行 ⇒ zombify / sys_clear / vm_exit 全部不发生。
+
+**两个关键澄清（本轮裁决，纠正交接文档的侧重）**：
+
+- **内核退出路径本身没有缺陷**（交接待查点②的答案）：`dispatch_clear` 与 C `do_clear.c` 同形，无条件 `SLOT_FREE`（`os/kernel/src/syscall_process.rs:517+`），对 `PAGEFAULT` 已置位的停车进程照样释放——问题是这条路径**永远没被调到**，不是它不能作用于该状态。
+- **「exiting 进程再缺页、VM 拒服务不清位」只是停摆的表象**：它造成一次永挂 `PAGEFAULT` 的停车，但只要 PM 退出链走完，sys_clear 会把整个槽位释放，停车自然消失。C 对 exiting 进程的缺页根本不设检查（`vm_isokendpt` 只验 in-use），照样走 SIGSEGV+清位对——我方 VM 的 inactive 臂拒服务是 §续-155 的体面化偏差，在退出链能走完的前提下无害。因此修 VM 臂（补发清位）属于红线警告的「只补解锁」半修；本轮不动它。
+
+**修复内容（一处数据流，六处调用点）**：
+
+- `os/servers/pm/src/exit.rs`：`exit_proc` 增加 `sig_status: i8` 参数（C `mp_sigstatus` 的对位，语义与生命周期字段同名）；step 8 的 `term_sig: sig_status as i32`（C forkexit.c:354 同形）；step 10 构造 `Exiting` 时携带 `sig_status`（C forkexit.c:374-375 只置 EXITING 位、不动 mp_sigstatus；我方 sigstatus 寄生在生命周期里，构造时必须携带）。**顺带修复一个此前无人踩到的错报**：旧码 step 10 硬编码 `sig_status: 0`，任何信号死亡（包括 SIGTERM/SIGKILL 这类非 core 死亡）到达父进程 wait 时信号号都会被抹成 0——本套件此前 24 个终态全是正常退出与 skipped，所以从未暴露。
+- `os/servers/pm/src/signal.rs`：`sig_proc_exit` 传 `signo`（C signal.c:552 对位）；其余调用方（`do_exit`、VFS 驱动的销毁 `ipc/vfs.rs:485`、event.rs、trace.rs、两处既有测试）一律传 0。
+- 新增回归测试 `test_sig_death_tell_vfs_carries_term_sig`（SIGSEGV 干净进程死亡 → tell_vfs 载荷必须是 `DumpCore` 且 `term_sig=SIGSEGV`，且 `Exiting` 携带 `sig_status=SIGSEGV`）；既有 SIGTERM 拉取循环测试补僵尸 `sig_status` 断言。
+
+**判别实验的负结果（写下来防重走）**：真机门里 `pfwd-lethal` 探针 0 次触发——即第二次缺页发生在 PM 已消费信号（endksig 完成）之后，不存在「挂起与终止赛跑、挂上时致命标志还在」的形状。这与机制九环一致：竞态以 PM 快结束（PM 是高优先级服务器，vm_willexit 到 tell_vfs 之间不阻塞），断点不在竞态窗口，而在错误的错误回复处理。
+
+**真机判据读数（`/tmp/atf_full384`，`RS_ATF_WORK` 保留产物；门运行中，最终判定另笔）**：
+
+- 死亡序列与 §续-382 停摆轮**逐行同形**直到 `pf-inact#1`（wro-dump 四区可写、kill+csig、拒服务）——证明腐蚀脸谱未变、修复没有绕开现场而是穿过现场。
+- 拒服务之后出现本轮新序列：`vr:00 00000985` → `nk4a: rv 0000` → **ptalloc-reuse 页表回收洪流**——VM_EXIT 执行、页表帧回池，即退出链的 sys_clear 与 vm_exit 真机走完；t_strerror 死亡被完整收尾。
+- 门随即推进过第 13 个程序（**判据「跑过第 13 个 prog」达成**）。
+- **门终判**（门结束后的完整读数）：`FAIL: progress stalled at 32/36 terminal (30 passed + 2 skipped)`——门计数语义的「停滞」：套件实际**跑完了整个计划**（t_swab 是计划最后一案，其后串口见 `init-state MultiUser`），并非真挂。36 案中 32 案到达终态，缺口 = t_strerror 的 4 个用例（strerror_basic / strerror_err / strerror_r_basic / strerror_r_err，端点 0x802b-0x802e）全部启动即 SIGSEGV 死亡且不产结果行（探针封顶后静默）。与 §续-382 的 24/36 对照：当时套件挂在 t_strerror 无法继续；现在越过死亡点后剩余 8 案全部到终态——**问题甲的挂死消除，目标③的正式判据只剩 t_strerror 本身**。
+- **新洞察（下一笔的靶子）**：t_strerror 在所有已观测的 riscv 全量门里 4/4 用例全灭（§续-378 轮、本轮；§续-382 轮同样是它死在面前），而它从未产出过任何结果行——**确定性死亡**，与「非确定性内存污染」的框架矛盾。同一二进制在 aarch64 全量门通过。下一笔按「确定性缺陷」优先排查：该二进制启动路径上被确定性置零/未初始化的指针（exec 装载、auxv/environ/ps_str 布局、compat 层 strerror 的查表），随机腐蚀降为第二候选。
+
+**回归与卫生**：`cargo test -p minix-pm` 420 过 / 0 新失败（docker minix-ci:1.94，基线工作树 `/tmp/nk4c-baseline-check` 复证：`run_once_integration` 的 2 个失败在 HEAD 同样失败，非本轮引入——断言 `-78 vs 78`、`-10 vs 10` 的符号约定问题，登记为既有债务）；clippy 17=17 基线零新增；rustfmt（nightly --edition 2024 --check）漂移计数 exit.rs 46/49、signal.rs 53/53、其余三文件与基线相等（我方新增行零新增漂移，且顺手修好 3 处既有漂移）；门自建镜像（PM 修复随 12 模块交叉编译进入 riscv 镜像）。
+
+**遗留登记**：①α-2：VFS 错误回复（m_type=负 errno）不被 PM 认出——续-149 臂当初为堵 riscv 消息洪流而设，但它同时吞掉了**合法的** VFS 错误回复；任何未来 VFS 错误都会复刻本轮的静默停摆形状。修法候选：PM 对 VFS 来源的负 errno 消息按「 outstanding VFS_CALL 的错误回复」处理（fail 该调用并继续退出链），或 VFS 以 RS 族 m_type 编码错误。本轮不动（一次一轮）。②既有 2 个 run_once_integration 失败（符号约定）。③诊断码清单：pfwd-lethal（内核，用后即滚）、pf-inact 里程碑（VM，§续-382 登记）、其余 nk4a 族沿用既有登记。
+
+**并发会话边界（更新）**：两份案卷的脏改动（TRANSIENT-PTE 新增第 11 章结案陈词、MEMORY-CORRUPTION 对应同步）是被终止会话的正当文档工作，内容与其自身职责一致；本会话不提交、不改动，留待用户处置。`os/fs/mfs/src/main.rs` 仅有 touch 改 mtime、无内容差异。
 
 
 

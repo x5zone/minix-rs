@@ -310,7 +310,15 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
         let _ = kern.sys_kill(proc.endpoint(), crate::signal::SIGKILL);
         return ReplyIntent::NoReply;
     }
-    exit_proc(table, caller, trunc_status(status), false, transport, kern);
+    exit_proc(
+        table,
+        caller,
+        trunc_status(status),
+        0,
+        false,
+        transport,
+        kern,
+    );
     ReplyIntent::NoReply
 }
 
@@ -320,10 +328,18 @@ pub fn do_exit<T: crate::ipc::IpcTransport + ?Sized>(
 /// Sets `VFS_CALL` on exiting slot via `tell_vfs`, marks `EXITING`, `zombify` if
 /// `!dump_core`, `disinherit` loop (INIT adoption + `NEW_PARENT`), `SIGHUP` for
 /// session leader. Leaves `procs_in_use` unchanged (still counted).
+///
+/// `sig_status` 是 C `mp_sigstatus` 的对位（`signal.c:552`——`sig_proc_exit`
+/// 在进 `exit_proc` 之前写入终止信号号；`forkexit.c:354` 作 `VFS_PM_TERM_SIG`
+/// 随 DUMPCORE 告知 VFS，之后随 EXITING 保留到 zombify/wait）。非信号死亡
+///（`do_exit`、VFS 驱动的销毁、trace 终止）传 0。信号号必须在调用前确定：
+/// EXITING 生命周期在 step 10 才建立，若此处从 lifecycle 读回永远是 0
+///（2026-10-05 §续-383：term_sig 恒 0 → VFS 拒 DUMPCORE → 退出链停摆）。
 pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
     table: &mut ProcTable,
     slot: UserSlot,
     status: i8,
+    sig_status: i8,
     mut dump_core: bool,
     transport: &mut T,
     kern: &mut dyn KernelGateway,
@@ -420,14 +436,14 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
             // 表行上的稳定裸指针，按值协议同时消除跨异步指针稳定性问题。
             let name = table.procs[proc_nr].identity.name;
             let name_len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
+            // C: forkexit.c:354 — m.VFS_PM_TERM_SIG = rmp->mp_sigstatus。
+            // 信号号来自 sig_proc_exit 的写入（本函数 sig_status 参数），
+            // 不从 lifecycle 读：EXITING 到 step 10 才建立，读回必是 0，
+            // VFS 的 DUMPCORE 臂对 term_sig=0 拒服务（BadEndpoint），
+            // 退出链自此停摆（§续-383 死亡序列的静态根因）。
             VfsCall::DumpCore {
                 endpoint: proc_ep,
-                term_sig: table.procs[proc_nr]
-                    .state
-                    .lifecycle
-                    .exit_code()
-                    .map(|(_, s)| s as i32)
-                    .unwrap_or(0),
+                term_sig: sig_status as i32,
                 name_len: name_len as u32,
                 name,
             }
@@ -456,7 +472,14 @@ pub fn exit_proc<T: crate::ipc::IpcTransport + ?Sized>(
         // Preserve VFS_CALL (set by tell_vfs), PROC_STOPPED, TRACE_EXIT, PRIV_PROC, IN_USE
         // In Rust, IN_USE is lifecycle != Unused, VFS_CALL is BlockState, etc.
         // We just set lifecycle to Exiting, keeping other states as is
-        proc.state.lifecycle = Lifecycle::Exiting { exit_code: status, sig_status: 0 };
+        // C 只置 EXITING 位、不动 mp_sigstatus（forkexit.c:374-375）；
+        // 我方 sigstatus 字段寄生在生命周期里，构造时必须携带调用方
+        // 给定的 sig_status（信号死亡的终止信号号），否则 zombify/wait
+        // 上报的将是 0（§续-383 同源缺陷：信号死亡的 wait 状态错报）。
+        proc.state.lifecycle = Lifecycle::Exiting {
+            exit_code: status,
+            sig_status,
+        };
         // mp_exitstatus char truncation already via status param
     }
 
@@ -1127,7 +1150,15 @@ mod tests {
         let mut kern = KillRecorder::default();
         // KillRecorder 的 proc_times 恒 (30, 12)（脚本化计账值）。
 
-        exit_proc(&mut table, UserSlot::new(5), 0, false, &mut transport, &mut kern);
+        exit_proc(
+            &mut table,
+            UserSlot::new(5),
+            0,
+            0,
+            false,
+            &mut transport,
+            &mut kern,
+        );
 
         // 父进程未 wait → Zombie 持桶；wait 时桶值并入父。
         assert_eq!(table.procs[5].resources.child_utime, 30);
@@ -1140,7 +1171,15 @@ mod tests {
         running_proc(&mut table, 5, 42);
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = KillRecorder::default();
-        exit_proc(&mut table, UserSlot::new(5), 0, false, &mut transport, &mut kern);
+        exit_proc(
+            &mut table,
+            UserSlot::new(5),
+            0,
+            0,
+            false,
+            &mut transport,
+            &mut kern,
+        );
         assert!(matches!(
             table.procs[5].state.lifecycle,
             Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. } | Lifecycle::Exiting { .. }
@@ -1156,7 +1195,15 @@ mod tests {
         table.procs[5].resources.privilege = Privilege::Kernel(Credentials::default());
         let mut transport = crate::ipc::TestIpcTransport::default();
         let mut kern = KillRecorder::default();
-        exit_proc(&mut table, UserSlot::new(5), 0, true, &mut transport, &mut kern);
+        exit_proc(
+            &mut table,
+            UserSlot::new(5),
+            0,
+            0,
+            true,
+            &mut transport,
+            &mut kern,
+        );
         // dump_core is suppressed for PRIV_PROC, so should still be Zombie not waiting for core
         // In C: dump_core && PRIV_PROC → FALSE, so !dump_core → zombify
         assert!(table.procs[5].state.lifecycle.is_zombie() || matches!(table.procs[5].state.lifecycle, Lifecycle::TraceZombie { .. }));

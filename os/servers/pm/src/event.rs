@@ -64,7 +64,7 @@ impl<T: IpcTransport + ?Sized> crate::signal_flow::ExitHandler for PmEventServic
         // 进程，step 9 不触发；命中则 pre-E1 诚实 panic（C 失败语义同型）。
         let mut kern =
             crate::exit::TrapKernelGateway::new(minix_sys::syscall::DirectKernelCallTransport);
-        crate::exit::exit_proc(table, target, status, false, self.transport, &mut kern);
+        crate::exit::exit_proc(table, target, status, 0, false, self.transport, &mut kern);
     }
 }
 

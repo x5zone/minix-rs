@@ -393,8 +393,12 @@ fn sig_proc_exit<T: crate::ipc::IpcTransport + ?Sized>(
     // 内核出口（step 9 sys_clear）用生产网关：本路径目标为用户进程
     //（PRIV_PROC 在前置分支已返回），step 9 不会触发；若未来语义变化
     // 命中，pre-E1 诚实 panic（C 失败语义同型）。
-    let status = 0;
-    crate::exit::exit_proc(table, target, status as i8, is_core, transport, kern);
+    // C: signal.c:552 — rmp->mp_sigstatus = (char) signo（进 exit_proc 前写入），
+    // 随后 forkexit.c:354 作 VFS_PM_TERM_SIG 告知 VFS、forkexit.c:374 随
+    // EXITING 保留到 zombify/wait。Rust 的 sigstatus 寄生在生命周期里而
+    // EXITING 到 exit_proc step 10 才建立，故经 sig_status 参数显式携带
+    //（§续-383：原先读 lifecycle 读回恒 0 —— VFS 拒 DUMPCORE，退出链停摆）。
+    crate::exit::exit_proc(table, target, 0, signo as i8, is_core, transport, kern);
     Ok(())
 }
 
@@ -1008,6 +1012,57 @@ mod tests {
             matches!(table.procs[5].state.lifecycle, Lifecycle::Zombie { .. } | Lifecycle::TraceZombie { .. }),
             "SIGTERM ksig must terminate the clean process, got {:?}",
             table.procs[5].state.lifecycle
+        );
+        // §续-383：僵尸必须携带终止信号号（C: signal.c:552 → forkexit.c:374
+        // → zombify/wait），否则父进程 wait 把信号死亡错报成 exit 0。
+        let (_, ss) = table.procs[5].state.lifecycle.exit_code().unwrap();
+        assert_eq!(ss as i32, SIGTERM, "zombie sig_status must carry SIGTERM");
+    }
+
+    /// §续-383 回归锚点（riscv 门 t_strerror 死亡序列）：信号死亡的
+    /// tell_vfs 载荷必须携带真信号号。C: signal.c:552（sig_proc_exit 进
+    /// exit_proc 前写 mp_sigstatus）+ forkexit.c:351-354（DUMPCORE 载
+    /// TERM_SIG）。缺陷形态：term_sig 从 lifecycle 读回恒 0（EXITING 到
+    /// exit_proc step 10 才建立）→ VFS DUMPCORE 臂拒服务（BadEndpoint）
+    /// → PM 丢弃错误回复（续-149 臂）→ 退出链停摆在 sys_clear 之前
+    /// → 内核槽永挂 PAGEFAULT、套件停在 13/36。
+    #[test]
+    fn test_sig_death_tell_vfs_carries_term_sig() {
+        let mut table = ProcTable::new();
+        mk_proc(&mut table, 5, 42, 42, false);
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KsigRecorder {
+            ksig_script: Vec::new(),
+            endksig_calls: Vec::new(),
+        };
+        let res = check_sig(
+            &mut table,
+            UserSlot::new(0),
+            42,
+            crate::signal::SIGSEGV,
+            false,
+            &mut kern,
+            &mut t,
+        );
+        assert!(res.is_ok());
+        // tell_vfs 载荷：VFS_PM_DUMPCORE 且 term_sig = SIGSEGV。
+        let call = t
+            .sent()
+            .iter()
+            .find_map(|(_, m)| minix_types::VfsCall::decode(m).ok())
+            .expect("signal death must tell VFS");
+        let term_sig = match call {
+            minix_types::VfsCall::DumpCore { term_sig, .. } => term_sig,
+            other => panic!("signal death must send DumpCore, got {other:?}"),
+        };
+        assert_eq!(term_sig, crate::signal::SIGSEGV);
+        // EXITING 生命周期携带 sig_status（exit_restart zombify 的源头）。
+        assert!(table.procs[5].state.lifecycle.is_exiting());
+        let (_, ss) = table.procs[5].state.lifecycle.exit_code().unwrap();
+        assert_eq!(
+            ss as i32,
+            crate::signal::SIGSEGV,
+            "sig_status must carry the signal"
         );
     }
 
