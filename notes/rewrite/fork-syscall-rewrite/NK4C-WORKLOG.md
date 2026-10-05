@@ -13625,6 +13625,21 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **P-ALL-01 终态对账**：86 枚门内测试全部有宿主可见面——①双腿专项 11（arm64_return_leg_pin / arm64_trap_leg_shape / riscv64 两件在先）；②paging 编码 7；③signal 契约 5；④boot/exception 8；⑤本批 5；⑥清单冻结审计 2（覆盖全部 86 的增删改兜底）。**七份宿主测试文件、36 个宿主可跑测试**（arch 宿主总量 250→286）。逐文件深度迁移完成；门内测试的行为断言本体继续在目标架构上承担真值（真机门实际穿过）。
 
+## §续-398 SMP 系列第一增量：riscv64 AP 早期桩＋Rust 汇聚点落地（P-A64RV-01 riscv 半；aarch64 半与内核接线登记）
+
+**落地内容**（`os/arch/src/riscv64/ap_early_entry.rs`，骨架→实体）：
+
+- **静态记录**：`AP_BOOTSTRAP_RECORD`（arch-local 静态存储，v7 #4 形态——固件把 AP 起到镜像物理位址，记录随镜像驻留、无拷贝约束）；BSP 填充窗＝`record()`（hart_start 前独占写）。
+- **汇编桩**（`global_asm!` + `.text.ap_early_entry` 节，义务清单 §3.1 四步全实现）：`fence rw, rw` 消费侧首读栅栏 → `la` PC 相对取记录物理位址（MMU off）→ 读三字段（根页/栈顶/汇聚点链接位址）→ PPN 提取＋Sv39 模式位（bit63）→ `csrw satp`＋`sfence.vma` → `mv sp`（per-AP 栈，MMU on 后可达）→ `jr` 汇聚点链接位址。**汇编坑两枚登记**：LLVM RISC-V 集成汇编器不吃 `/* */` 块注释（仓内先例全用 `#`——按先例改后过）；asm 字符串内不得含 CJK（非 ASCII 进注释即 unexpected token）。
+- **Rust 汇聚点**：`ap_early_entry(bootstrap_pa) -> !`——记录字段 volatile 快照进局部（单镜像串行复用纪律的 riscv 形）→ **到达标记 `AP_ARRIVED`**（Release 存储＝门判据「次级核到达可观测」的观测面）→ **wfi 驻留**。
+- **accessors**：`record()`（BSP 填充）、`entry_start_pa()`（boot_ap 的 start_addr，medany 链接视图＝物理）。
+
+**驻留的诚实边界**：汇聚点驻留而非继续内核初始化＝SD-24（钳主核）未撤、每核运行队列/抢占下发未通电——AP「醒着但无所事事」，继续推进会踩 P-ALL-03 红线（撤钳不先补每核队列＝进程被安到无队列的核）。**内核接线（BSP 填记录＋SmpArch::boot_ap(hw_id, entry_start_pa()) 的 riscv 分支）登记为下一增量**——必须与专用门（非 ATF 生产路径）成对，先在确定性框架确认次级核真醒。
+
+**验证**：riscv64 内核镜像（fw-riscv64-none）编译零错误（新 `.text.ap_early_entry` 节入镜像）；宿主形状审计 `riscv64_ap_early_entry_pin.rs` 4/4 绿（fence 先于首读、satp Sv39 装载＋sfence 随后、栈/跳转寄存器 MMU on 前备妥、到达标记在案）。**自坑三枚**：LLVM RISC-V asm 不吃块注释、asm 内 CJK 注释＝unexpected token、raw string 形态的提取器按带引号行写＝空向量（debug print 定位后改裸行提取）。**诚实边界**：桩尚未被任何启动链执行（内核接线下一增量），本批验证＝编译＋形状审计；「次级核真醒」判据留待接线轮上机。
+
+**aarch64 半登记**：同族骨架（P-A64RV-01 aarch64 半）待 PSCI CPU_ON 通道的桩落地——义务清单同构（MPIDR 亲缘、TLBI 同页表切换、daif 屏蔽后跳汇聚点），排 SMP 系列第二增量。
+
 ## §续-388 P-ALL-05 三子项定谳并落地：X-7 未知 VMCTL 改 EINVAL（对齐上游）、SD-16 errno 符号全文件对齐负号契约（连修 2 个长期既有失败）、SD-17 argc 槽宽统一 LP64 全字
 
 **本轮性质**：语义对上游 C 真源对齐轮（P-ALL-05），三条各自独立定谳、一次成组提交（同属「语义与上游不一致」登记的收口，改动互不纠缠且全部宿主可验证）。
