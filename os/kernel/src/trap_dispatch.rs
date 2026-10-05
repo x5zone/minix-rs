@@ -2298,6 +2298,28 @@ unsafe fn riscv64_pagefault_body(
             }
         }
     }
+    // §续-384 判别探针（用后即滚）：t_strerror 四案全部「写 VA=0」确定性死亡
+    // （§续-383 门读数），需要崩溃现场的 sepc/ra/sp 定位到指令。fa==0 的
+    // 用户缺页是稀有事件（现役套件只有本案），封顶 8 防意外洪流。
+    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+    {
+        use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrd};
+        use minix_plat::{CurrentEarlyConsole as Lc, EarlyConsole as _};
+        static FA0_N: AtomicUsize = AtomicUsize::new(0);
+        if fault_addr == 0 && FA0_N.fetch_add(1, AtomicOrd::Relaxed) < 8 {
+            Lc::write_str("nk4c: fa0 nr=");
+            Lc::write_hex(cur_nr.0 as u64);
+            Lc::write_str(" ec=");
+            Lc::write_hex(errcode as u64);
+            Lc::write_str(" sepc=");
+            Lc::write_hex(frame.sepc);
+            Lc::write_str(" ra=");
+            Lc::write_hex(frame.gpr[1]);
+            Lc::write_str(" sp=");
+            Lc::write_hex(frame.gpr[2]);
+            Lc::write_str("\n");
+        }
+    }
     if let Err(e) = forward_pagefault_to_vm(table, priv_table, cur_nr, fault_addr, errcode) {
         // C: panic("WARNING: pagefault: mini_send returned %d")
         panic!("pagefault: mini_send returned {e:?}");

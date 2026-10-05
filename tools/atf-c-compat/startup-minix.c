@@ -148,12 +148,23 @@ __asm__(
     ".globl _start\n"
     ".type _start, @function\n"
     "_start:\n"
+    /* tp = __tls_base。§续-384 真机定谳（旧注释「riscv 版 crt0 无 TLS 寄存器
+     * 步骤」被证伪——本工具链的 picolibc riscv 对 errno 走 TLS，t_strerror
+     * 四案首笔 errno 写 `sw a4,0(tp)` 落地址 0 → SIGSEGV，12 个不碰 errno
+     * 的用例全绿所以此前不可见）：RISC-V 链接器把 TCB 偏移折进 TPREL（访问
+     * 形态 0(tp)，aarch64 则留 0x10 TCB 头偏移故需减 __arm64_tls_tcb_offset；
+     * riscv 版 picolibc.ld 只定义 __arm32/__arm64 两个 tcb_offset、没有
+     * riscv 版，与「无需减」互证）。__tls_base 是 PROVIDE 符号
+     *（picolibc.ld:209 `__tls_base = ADDR(.tdata)`，本仓测试全无 .tdata、
+     * 与 .tbss 同址=0x8020058），la 的 HI20/LO12 重定位引用即兑现。 */
+    ".option push\n"
+    ".option norelax\n"
+    "   la   t0, __tls_base\n"
+    "   mv   tp, t0\n"
+    ".option pop\n"
     "   call startup_c_main\n"    /* a0=ps_strings 按 RISC-V ABI 传参 */
     "   j    .\n"
     ".size _start, .-_start\n");
-/* riscv 版 crt0 反汇无 TLS 寄存器步骤（memcpy/memset/init_array/main 四步），
- * 与上游 machine/riscv/crt0.c 形态一致；解链后如 picolibc riscv 引入 TLS
- * 需同步此处（已按实测反汇登记）。 */
 
 #else
 #error "startup-minix.c: 未支持的架构（出生 stub 需与内核 build_cpu_context 同形）"
