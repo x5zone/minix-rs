@@ -13572,6 +13572,17 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **验证**：arch_signal_audit 5/5 绿（宿主 x86_64）。**P-ALL-01 累计对账**：86 枚中已有宿主可见面＝双腿专项 11＋paging 编码 7＋清单审计兜底 86＋signal 契约 5；余量＝boot（5+4）/exception（4+4）/fpu（3+3）/protection（2+2）/trap_entry（1+1）/plat interrupt（3+4）按同模板渐进（每文件 30-60 分钟量级，模板四件套已立：清单审计、编码钉住、腿形状钉住、契约审计）。
 
+## §续-393 P-ALL-01 深度迁移第三批：boot 出生契约 + exception 帧判定双架构宿主审计（8 测试）
+
+**钉住的承重契约**（`os/arch/tests/arch_boot_exception_audit.rs`，8 测试全绿）：
+
+- **boot 出生特权/屏蔽**（写错一位＝用户进程以内核特权出生）：arm64 INIT_TASK_PSR=0x3C5（EL1h|D|A|I|F，C earm/archconst.h:12）、INIT_PSR=0（EL0t 无屏蔽，archconst.h:11）；riscv64 INIT_TASK_SSTATUS=0x100（SPP=1，sret 回 S 态）、INIT_USER_SSTATUS=0x20（SPP=0|SPIE=1，中断开）。
+- **FPU 继承接缝**：arm64 FPEN 三断言（内核任务 FPEN=0／全用户类 FPEN=0b01／fork 子继承父使能——懒陷阱模型链断＝用户态首条 FP 指令不可恢复）；riscv64 继承测试名存在性（FS 位随 sstatus 拷贝）。
+- **exception 帧尺寸 296B 双架构冻结**（与 trap stub 34*8 帧契约对齐）。
+- **is_user_mode 判定位**：arm64 `(spsr_el1 & 0xF)==0`（M[3:0]，EL0t=0 真/EL1h=5 假双锚）、riscv64 `(sstatus & (1<<8))==0`（SPP bit8——§续-375 的 S-origin 陷入哨兵依赖同一位语义）；setter 落点（arm64 elr_el1/X0、riscv64 sepc/a0=regs[10]）与测试锚值（0xCAFE/0x1234）。
+
+**自坑零枚**（模板四件套成熟：锚点串直接取自源码行、断言前先 grep -n 核对字节）。**P-ALL-01 累计**：双腿 11＋paging 7＋signal 5＋boot/exception 8＝31 枚深度钉住，另有清单审计 86 兜底；余量＝fpu（3+3）/protection（2+2）/trap_entry（1+1）/plat interrupt（3+4）——全是小文件，下一批可全清。
+
 ## §续-388 P-ALL-05 三子项定谳并落地：X-7 未知 VMCTL 改 EINVAL（对齐上游）、SD-16 errno 符号全文件对齐负号契约（连修 2 个长期既有失败）、SD-17 argc 槽宽统一 LP64 全字
 
 **本轮性质**：语义对上游 C 真源对齐轮（P-ALL-05），三条各自独立定谳、一次成组提交（同属「语义与上游不一致」登记的收口，改动互不纠缠且全部宿主可验证）。
