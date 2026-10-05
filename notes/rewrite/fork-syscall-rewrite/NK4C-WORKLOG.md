@@ -13048,3 +13048,11 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 **收敛**：p1 exec 挂起与 §续-350 起的走表变更相关（§续-340 时代同 rc 完成跑通；走表变更后 p1 exec 挂）。剩余 A/B=走表变更整体回退对照（git revert §续-350 的 walk 委托于分支，重建跑探针——若恢复快跑则按 canonicality/misaligned/delegation 三轴 bisect）；及冻结态 monitor `xp` 检查 PM/VFS/VM 各服务器阻塞点（PC 已知=scheduler_loop 空转，需查各进程 status）。
 
 **运行工程**：boot_probe 的 STALL 判据已工作（90s 零进展触发）；T2 快照修复完成（-S socket 测试+traceback）。
+
+## §续-359 走表变更整体回退定谳：回退后仍冻 245699——走表线完全洗清，嫌疑重定向到 T13 内核改动或探针镜像漂移
+
+**回退对照**：`git show fcb8c542e:os/arch/src/riscv64/paging.rs` 覆盖当前文件（委托/加固/常量 use 全部撤出=纯 §续-351 定稿走表）重建跑探针——**仍确定性冻结 245699**。净 os/ diff（fcb8c542e..HEAD）仅 4 个 arch 文件（Cargo 特性+walk 门控+riscv64_walk 测试态），回退后运行内核=绿时代走表原版。
+
+**嫌疑重定向（时间线证据）**：探针最后完整跑=§续-342 run1/run2（C=3072、RESULT 读数、420-560s 完成），彼时 HEAD=2c13a7c9e=**T13 之前的内核**（无 USER_VA_LIMIT/mmap 校验/R3 门控）；冻结首现=§续-346 run3（minix-elf OOB），恰在 **T13 R1+R2（043c64d56）+R3（735d765cd）提交之后**。fcb8c542e 虽 boot-full PASS 但 boot-full 只验 marker（不触 p1 exec 相）。剩余嫌疑两族：①T13 内核侧改动（riscv 相关面：MMAP_TOP 2^41→2^38 派生/VM mmap 窗变化/ipc use 迁移/A6 mock riscv 硬失败——p1 exec 挂点与 VM exec/PM 链的交集待查）；②探针镜像漂移（probe v1→v4 重编译、imgrd 多轮重播、rc 变体内容变化）。
+
+**下一会话 bisect**：①checkout 2c13a7c9e 的 os/servers/os/kernel/os/libs/minix-types 三树（探针可跑的最后内核）重建跑探针——解冻=T13 族坐实→在 R1+R2/R3 内二分（先 A6 mock riscv 硬失败单点）；仍冻=镜像漂移→重建 2c13a7c9e 时代形态的探针 v1（去 C 行）对照。②并行：冻结态 monitor xp 抓 PM/VFS 各进程 status（阻塞点直读）。
