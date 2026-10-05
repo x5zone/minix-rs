@@ -170,15 +170,27 @@ core::arch::global_asm!(
 #[cfg(target_arch = "riscv64")]
 core::arch::global_asm!(
     r#"
+    .attribute arch, "rv64gc"
     .section .text.boot, "ax"
     .globl _start
     _start:
-        # NK4-C 续-88 甲案：OpenSBI 递入的是裸 RAM（NOBITS 不写），而镜像
-        # 的 bump 分配器游标/平台冻结全局就住在 .bss（NK4B M4.4 事实五），
-        # 非零垃圾让首次分配返回乱址——先清 .bss 再立栈（K10 载体先例的
-        # 形式，bgeu 无符号界判定 + 8 字节步进）。清零循环全走 `la` 松弛后
-        # 的 PC 相对引用：执行视图 = 物理基址（medany，M4.3 实测事实），
-        # 栈顶符号同样按运行位址解析，清零只会扫自己下方的镜像内区域。
+        # ── 早期 hart 选举（§续-400 定谳：OpenSBI QEMU virt＝全 hart 进
+        # payload，每个 hart 都带着 a0=自身 hartid 进 _start——谁来当 BSP
+        # 由先到者当选，其余进停车邮箱等内核发布记录）。选举格在 .data
+        #（loader 按 filesz 写过初值 0，非 NOBITS 侥幸）。amoswap.aq 给
+        # 当选者 acquire 序。
+        la t0, BOOT_HART_ELECTED
+        addi t5, a0, 1          # 存 hartid+1：hart 0 存 1，与「未选 0」恒可区分
+        amoswap.d.aq t2, t5, (t0)
+        bnez t2, park           # t2=旧值非 0 ⇒ 已有 BSP ⇒ 次级核停车路径
+
+        # ── 当选 BSP：NK4-C 续-88 甲案 .bss 清零（原注释全保留）。
+        # OpenSBI 递入的是裸 RAM（NOBITS 不写），而镜像的 bump 分配器
+        # 游标/平台冻结全局就住在 .bss（NK4B M4.4 事实五），非零垃圾让
+        # 首次分配返回乱址——先清 .bss 再立栈（K10 载体先例的形式，bgeu
+        # 无符号界判定 + 8 字节步进）。清零循环全走 `la` 松弛后的 PC 相
+        # 对引用：执行视图 = 物理基址（medany，M4.3 实测事实），栈顶符
+        # 号同样按运行位址解析，清零只会扫自己下方的镜像内区域。
         la t0, __bss_start
         la t1, __bss_end
     1:  bgeu t0, t1, 2f
@@ -197,6 +209,28 @@ core::arch::global_asm!(
         call {rust_image_main}
     3:  wfi
         j 3b
+
+    # ── 次级核停车邮箱（§续-399/400：寄存器态纯轮询，零栈、零 .bss 写）。
+    # 等 AP_GO=1（内核 smp_init 填 ApBootstrap 后 Release 发布），fence 消费，
+    # 从记录装根/栈/汇聚点，MMU on 后跳 Rust 汇聚点。 hartid 留在 a0 兜底
+    #（若未来 per-hart 邮箱化，用它索引）。
+    .align 2
+park:
+    la t0, AP_GO
+1:  ld t2, 0(t0)
+    beqz t2, 1b
+    fence rw, rw
+    la t2, AP_BOOTSTRAP_RECORD
+    ld t3, 16(t2)               # page_table_root_pa
+    ld t4, 24(t2)               # kernel_stack_top_va
+    ld t5, 32(t2)               # rust_entry_va
+    srli t3, t3, 12
+    li t6, 0x8000000000000000   # SATP_MODE_SV39
+    or t3, t3, t6
+    csrw satp, t3
+    sfence.vma
+    mv sp, t4
+    jr t5                       # 汇聚点（记录高半 VA，内核根映射）
     "#,
     rust_image_main = sym rust_image_main,
 );
