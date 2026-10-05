@@ -13522,6 +13522,20 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **诚实边界**：一，aarch64 门今日两次非本轮停滞脸谱（35/36 一次；shell 提示符卡死一次，SKIP 复用旧镜像产物），全量重建后 PASS——间歇性未定性，登记观察（疑与 SKIP 复用陈旧产物相关，未坐实）。二，「探针全清」指 nk4a/nk4c/vr: 串口诊断族；测试程序自身的合法输出（ATF WARNING/passed 行、rc marker、rt-birth 门标记）原样保留。三，NK4C_CLI asm 残余、α-2（PM 不认 VFS 错误回复）、run_once_integration 2 失败仍开放（§续-383 登记处）。
 
+## §续-386 三架构齐平专项开工（TODO-3ARCH-PARITY-20261006）：P-ALL-09 + P-X86-04 + P-A64-02 三件静态可定案项落地
+
+**本轮性质**：接手 `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`（另一会话的纯静态扫描产物，23 条 P-* 待办 + 10 条排除清单）。按其 §二排序从第一档与第四档小件做起：凡是「需上机定案」「需人裁决」的条目（P-X86-01 方案取舍、P-A64RV-01 SMP 系列、P-ALL-02 硬件错页地址来源）本轮不上手、不代决。
+
+**P-ALL-09（SD-28，门面吞构建失败）**：`os/qemu-tests/run_all.sh` 的构建循环用 `|| echo "(build failed)"` 吞退出码，且运行段「binary not found」臂连 SKIP 都不计数——构建坏了整表照绿。修：新增 `build_pkg` 帮助函数（失败记 BUILD_FAIL 计数与 FAILED_PKGS 清单）、缺二进制臂用 `pkg_build_failed` 关联归因（构建失败所致计 FAIL，包本不在清单维持 SKIP）、汇总行加 build failures 栏、退出码 `FAIL>0 || BUILD_FAIL>0` 都非零。bash -n 语法过；真实触发路径留给下次 CI 自然验证（改动本身不跑测试，只改计数与退出语义）。
+
+**P-X86-04（注释腐化，SD 关联待办关闭矛盾）**：`os/kernel/src/syscall.rs` 的 `CurrentArchSyscall` 文档写「aarch64 syscall dispatch is not yet implemented … Tracked in todo.md B-X」，而 01-stage-kernel/todo.md 已记 B-X 关闭。按 TODO 修法先读上游：`minix3/minix/include/minix/padconf.h` 是 TI OMAP（ARM32 板级）引脚配置（ARM_PAGE_SIZE、CONTROL_PADCONF_*），SYS_PADCONF 无 aarch64/riscv64 对应物可移植——**按真源，aarch64/riscv64 返回 EBADREQUEST 是正确行为而非待实现**（与排除清单第 7 条一致）。方案甲落地：注释改写为「correct by ground truth, not deferred」，删 B-X 悬案引用，并留「未来真有专属调用面时按 ArmSyscall 样式新增显式类型」的路线提示。x86_64 内核镜像编译过。
+
+**P-A64-02（aarch64 缺宿主钉住测试）＋P-ALL-01 的本批增量**：新增 `os/arch/tests/arm64_return_leg_pin.rs`（5 测试）与 `os/arch/tests/arm64_trap_leg_shape.rs`（6 测试），仿 riscv 同族的 include_str! 文本形状审计，宿主原生可跑。钉住的承重次序全部来自源码自陈的事故注释：返回腿＝首条 `msr daifset, #0xf`（§1.113 SP_EL1 重锚前的异步异常会压坏待 eret 状态）、重锚先于系统寄存器三联写（x16 双角色）、SPSR 的 bic 夹在装载与写入之间（可中断用户上下文，0x1E0=A|I|F|D）、eret 收尾且 x2 自引用回载贴邻；陷入腿＝EL0BODY 口袋先于取 sp、取 sp 先于开帧、park 分支双段退栈（帧+口袋，EL1h 单栈棘轮教训）、SP_EL0 交换回与口袋回载贴邻 eret、向量表 16 槽分组冻结、34 槽帧契约。**测试自身踩坑三枚（记入易错点）**：①asm 字符串里的 `{mask_bits}` 占位在 assert_eq! 字面量里被 Rust 当格式化插值——消息文本必须避免原样占位符；②macro_body 锚点带尾随空格不匹配（源行以 `",` 收尾）；③向量表段的右界最初取 DIAGBODY 宏（中间夹着 EL1/EL0 两宏体 126 行）——右界应为 EL1BODY。11 测试全绿。**顺带**：arm64 trap_return.rs 门内原有 2 枚纯常量断言（SPSR_MASK_BITS、GP_REGS_LEN）在宿主跑不到，本批在宿主侧补了等价断言之一（MASK_BITS），GP_REGS_LEN 已被 return 腿「x2 自引用回载=29*8」的次序断言间接钉住。
+
+**P-ALL-01 余量登记（未完项，防误读为已清）**：约 90 架构门内测试中，本轮只覆盖 arm64 两腿＋riscv 既有两文件；riscv 其余 38 枚、plat 层 7 枚、aarch64 其余约 37 枚的宿主可达化（可文本化断言迁移或逐文件静态审计）仍开放——它们多为纯逻辑断言，可仿本轮模板渐进迁移，每迁移一批宿主绿一遍。
+
+**验证**：`cargo test -p minix-arch --test arm64_return_leg_pin --test arm64_trap_leg_shape` 11/11 绿（宿主 x86_64）；kernel-image x86_64 形态编译零错误（P-X86-04 触及）；bash -n 过（P-ALL-09 触及）。**诚实边界**：P-ALL-09 的失败归类逻辑（pkg_build_failed 关联）没有单元测试，靠下次真实构建失败场景验证；三架构上机门（ATF×2 + marker×3）本轮未复跑（本轮改动不触运行时行为——注释、shell 计数、宿主测试三处，其中 run_all.sh 只在 CI 聚合入口生效）。
+
 
 
 

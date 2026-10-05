@@ -23,6 +23,12 @@ WORKSPACE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PASS=0
 FAIL=0
 SKIP=0
+# SD-28 / P-ALL-09：构建失败必须真报红。历史行为＝`|| echo "(build failed)"`
+# 吞掉退出码，下游 "binary not found, skip" 静默 return（连 SKIP 都不计数），
+# 构建坏了整表照绿。现在：构建失败记入 FAILED_PKGS，缺二进制的运行按
+# FAIL 计（不再冒充 SKIP），入口最终退出码非零。
+BUILD_FAIL=0
+FAILED_PKGS=""
 
 run_test() {
     local name="$1"
@@ -30,7 +36,15 @@ run_test() {
     local binary="$3"
 
     if [ ! -f "$binary" ]; then
-        echo "($name: binary not found, skip)"
+        # 二进制缺失分两类：构建失败所致＝FAIL（P-ALL-09）；包本身不在
+        # 本仓构建清单＝SKIP（维持旧语义）。
+        if pkg_build_failed "$(basename "$binary" | sed 's/\.efi$//')"; then
+            echo "($name: build failed, counted as FAILURE)"
+            FAIL=$((FAIL + 1))
+        else
+            echo "($name: binary not found, skip)"
+            SKIP=$((SKIP + 1))
+        fi
         return
     fi
 
@@ -49,25 +63,42 @@ run_test() {
 
 echo "=== Building test kernels ==="
 
+# 构建帮助函数：失败即记 BUILD_FAIL 并把包名挂进 FAILED_PKGS（供运行段
+# 把「缺二进制」归类为失败而非跳过）。X-2/NK5：--target 与 --features
+# 必须成对（required-features 门），缺 --features 会被静默跳过 → 下游
+# "binary not found" 全表 skip——本函数不改这条契约，只改计数诚实度。
+build_pkg() {
+    local target="$1" feat="$2" pkg="$3"
+    echo "--- $pkg ---"
+    if ! cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" \
+            --target "$target" --features "$feat" --release 2>&1; then
+        echo "(build failed: $pkg)"
+        BUILD_FAIL=$((BUILD_FAIL + 1))
+        FAILED_PKGS="$FAILED_PKGS $pkg"
+    fi
+}
+
 # ── x86_64 (UEFI) ──
-# X-2/NK5：--target 与 --features 必须成对（required-features 门），
-# 缺 --features 会被静默跳过 → 下游 "binary not found, skip" 全表 skip。
 for pkg in hello-boot test-memmap test-paging-enable test-kernel-map test-higher-half test-protection test-proc-init test-smp-topo test-smp-ap-alive test-timer-irq test-smp-aps test-smp-ipi test-smp-shutdown test-user-trap test-paging-faultloop; do
-    echo "--- x86_64: $pkg ---"
-    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target x86_64-unknown-uefi --features fw-x86-uefi --release 2>&1 || echo "(build failed)"
+    build_pkg x86_64-unknown-uefi fw-x86-uefi "$pkg"
 done
 
 # ── aarch64 (UEFI) ──
 for pkg in hello-boot-aarch64 test-memmap-aarch64 test-paging-enable-aarch64 test-kernel-map-aarch64 test-higher-half-aarch64 test-protection-aarch64 test-smp-topo-aarch64 test-rt-birth-aarch64 test-shutdown-aarch64 test-timer-irq-aarch64; do
-    echo "--- aarch64: $pkg ---"
-    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target aarch64-unknown-uefi --features fw-aarch64-uefi --release 2>&1 || echo "(build failed)"
+    build_pkg aarch64-unknown-uefi fw-aarch64-uefi "$pkg"
 done
 
 # ── riscv64 (OpenSBI, bare-metal) ──
 for pkg in hello-boot-riscv64 test-memmap-riscv64 test-paging-enable-riscv64 test-kernel-map-riscv64 test-higher-half-riscv64 test-protection-riscv64 test-smp-topo-riscv64 test-smp-ipi-riscv64 test-rt-birth-riscv64 test-shutdown-riscv64 test-timer-irq-riscv64; do
-    echo "--- riscv64: $pkg ---"
-    cargo build --manifest-path "$OS_ROOT/Cargo.toml" -p "$pkg" --target riscv64gc-unknown-none-elf --features fw-riscv64-none --release 2>&1 || echo "(build failed)"
+    build_pkg riscv64gc-unknown-none-elf fw-riscv64-none "$pkg"
 done
+
+pkg_build_failed() {
+    case " $FAILED_PKGS " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 echo ""
 echo "=== Running QEMU tests ==="
@@ -236,8 +267,11 @@ if command -v qemu-system-riscv64 &>/dev/null; then
 fi
 
 echo ""
-echo "=== All QEMU tests done: $PASS passed, $FAIL failed, $SKIP skipped ==="
+echo "=== All QEMU tests done: $PASS passed, $FAIL failed, $SKIP skipped, $BUILD_FAIL build failures ==="
+if [ "$BUILD_FAIL" -gt 0 ]; then
+    echo "build-failed packages:$FAILED_PKGS"
+fi
 
-if [ "$FAIL" -gt 0 ]; then
+if [ "$FAIL" -gt 0 ] || [ "$BUILD_FAIL" -gt 0 ]; then
     exit 1
 fi

@@ -453,20 +453,19 @@ impl ArchSyscall for DefaultSyscall {}
 /// Selected via a single `#[cfg(target_arch)]` (one location), replacing
 /// the previous 12 scattered `#[cfg]` blocks for individual stub functions.
 ///
-/// # aarch64 fallback (intentional)
+/// # aarch64 / riscv64 fallback (correct by ground truth, not deferred)
 ///
-/// `L370` matches `arm` (32-bit ARM). aarch64 falls through to the
-/// default `DefaultSyscall` (no-op impl) — **aarch64 syscall dispatch is
-/// not yet implemented**. When aarch64 support lands, insert **before**
-/// the `arm` arm:
-///
-/// ```ignore
-/// #[cfg(target_arch = "aarch64")]
-/// pub type CurrentArchSyscall = Aarch64Syscall;
-/// ```
-///
-/// Otherwise the default fallback silently applies and `ArchSyscall`
-/// calls return `BadCall` for every syscall. Tracked in todo.md B-X.
+/// `arm` matches 32-bit ARM only. aarch64 and riscv64 fall through to
+/// `DefaultSyscall`: upstream Minix3's arch-specific kernel calls are
+/// i386/ARM32 board-specific (SYS_PADCONF configures TI OMAP pad
+/// registers, `minix3/minix/include/minix/padconf.h` — there is no
+/// aarch64/riscv64 counterpart to port), so returning `EBADREQUEST` for
+/// every arch-specific call on those architectures **is the correct
+/// behavior, not a pending implementation**. (P-X86-04 注释腐化勘误
+/// 2026-10-06：旧文写「not yet implemented，见 todo.md B-X」，而
+/// B-X 已关闭——两者矛盾已按上游定谳收敛为本段。若未来某架构真有
+/// 专属调用面，按 `ArmSyscall` 的样式新增一个显式类型，而非复用
+/// `DefaultSyscall`。）
 #[cfg(target_arch = "x86_64")]
 pub type CurrentArchSyscall = X86_64Syscall;
 #[cfg(target_arch = "arm")]
