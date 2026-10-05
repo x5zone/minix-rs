@@ -1789,6 +1789,9 @@ fn riscv64_read_stval() -> u64 {
 /// resumes via `sret` when this returns.
 #[cfg(target_arch = "riscv64")]
 pub unsafe extern "C" fn riscv64_kernel_body(frame: &mut minix_arch::riscv64::trap_stub::Riscv64TrapFrame) {
+    // 续-375 遥测：内核腿（S-origin 陷入）每进入一次计一。§续-370 修的就是这条腿，
+    // 没有这个读数就只能推定它跑过。
+    nk4c_leg_bump(LEG_KERNEL);
     let scause = riscv64_read_scause();
     if scause & RISCV64_SCAUSE_INTERRUPT != 0
         && scause & !RISCV64_SCAUSE_INTERRUPT == RISCV64_CAUSE_SUPERVISOR_TIMER
@@ -1822,6 +1825,22 @@ pub unsafe extern "C" fn riscv64_user_body(
 ) -> u64 {
     use minix_arch::riscv64::trap_stub::PARK_NONE;
     let scause = riscv64_read_scause();
+    // 续-375 遥测：用户腿按进入原因分类计数；并埋一个哨兵——这条腿假定被
+    // 打断的是 U 态（它要从 sscratch 拿用户 sp），若 `sstatus.SPP=1`（被
+    // S 态代码打断）就是「换腿先于屏蔽」那一类窗口还存在，修后应恒为 0。
+    if frame.from_kernel() {
+        nk4c_leg_bump(LEG_USER_SORIGIN);
+    }
+    if scause & RISCV64_SCAUSE_INTERRUPT != 0 {
+        nk4c_leg_bump(LEG_USER_INTR);
+    } else if scause == RISCV64_CAUSE_ECALL_UMODE {
+        nk4c_leg_bump(LEG_USER_ECALL);
+    } else if matches!(
+        scause,
+        RISCV64_CAUSE_INST_PF | RISCV64_CAUSE_LOAD_PF | RISCV64_CAUSE_STORE_PF
+    ) {
+        nk4c_leg_bump(LEG_USER_PF);
+    }
     if scause == RISCV64_CAUSE_ECALL_UMODE {
         // `ecall` does not advance sepc — step past the 4-byte
         // instruction or the sret re-executes it and the trap loops
@@ -1938,6 +1957,60 @@ pub static LAST_FILL_PTROOT: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
 pub static LAST_FILL_LEAF_PA: core::sync::atomic::AtomicU64 =
     core::sync::atomic::AtomicU64::new(0);
+
+// ── NK4C 续-375 陷入/返回腿进入计数（诊断，结案随诊断 mark 族滚除）────────
+//
+// §续-370/371/373 修了三条路径，但「这三条路径一次开机里真被走到几次」始终是
+// 推证而不是读数：全绿样本分不清「修了一条每小时都在跑的路径」与「修了一条
+// 从没跑到的路径」。这里把计数器接到已有的 printf 通道上（atf-c-compat 的
+// `_write` → SYS_DIAGCTL → 内核串口，见 tools/atf-c-compat/stdio-minix.c 的
+// 说明），探针与镜像都不用重编：探针本来就要打 `S8:`（窗口起点）和 `RESULT:`
+// （窗口终点）两行，内核在这两行后各多打一行读数——每 boot 多两行，打印量
+// 不换量级（§续-361 的观察者效应教训：插桩量本身就是变量）。
+
+/// 0=内核腿进入 1=用户腿·异步中断 2=用户腿·ecall 3=用户腿·页故障
+/// 4=用户腿被 S-origin 陷入走过（哨兵，修复后应恒为 0）5=restore_to_user 次数
+#[cfg(target_arch = "riscv64")]
+pub static NK4C_LEG_COUNTS: [core::sync::atomic::AtomicU64; 6] = [
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+    core::sync::atomic::AtomicU64::new(0),
+];
+
+/// 计数槽位（与 `NK4C_LEG_COUNTS` 下标一致；命名而不是传裸数字，避免接错腿）。
+#[cfg(target_arch = "riscv64")]
+pub const LEG_KERNEL: usize = 0;
+#[cfg(target_arch = "riscv64")]
+pub const LEG_USER_INTR: usize = 1;
+#[cfg(target_arch = "riscv64")]
+pub const LEG_USER_ECALL: usize = 2;
+#[cfg(target_arch = "riscv64")]
+pub const LEG_USER_PF: usize = 3;
+#[cfg(target_arch = "riscv64")]
+pub const LEG_USER_SORIGIN: usize = 4;
+#[cfg(target_arch = "riscv64")]
+pub const LEG_RESTORE: usize = 5;
+
+/// 走一条腿就加一。Relaxed 足够：这些数只用于事后读数，不参与任何判定。
+#[cfg(target_arch = "riscv64")]
+pub fn nk4c_leg_bump(slot: usize) {
+    use core::sync::atomic::Ordering as AtomicOrd;
+    NK4C_LEG_COUNTS[slot].fetch_add(1, AtomicOrd::Relaxed);
+}
+
+/// 供 DIAGCTL 诊断臂读出（低打印：只在探针已有的两行边界上打一次）。
+#[cfg(target_arch = "riscv64")]
+pub fn nk4c_leg_counts() -> [u64; 6] {
+    use core::sync::atomic::Ordering as AtomicOrd;
+    let mut out = [0u64; 6];
+    for (slot, dst) in NK4C_LEG_COUNTS.iter().zip(out.iter_mut()) {
+        *dst = slot.load(AtomicOrd::Relaxed);
+    }
+    out
+}
 
 #[cfg(target_arch = "riscv64")]
 unsafe fn riscv64_pagefault_body(

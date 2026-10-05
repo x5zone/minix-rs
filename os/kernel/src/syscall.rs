@@ -3147,6 +3147,31 @@ fn find_hex_field(buf: &[u8], field: &[u8]) -> Option<u64> {
     Some(v)
 }
 
+/// §续-375 遥测读数行：在测试计算窗的两个边界上各打一行六项计数——
+/// 内核腿进入 / 用户腿因异步中断 / 因 ecall / 因页故障 / 用户腿被 S-origin
+/// 走过的哨兵（修后应恒为 0）/ `restore_to_user` 次数。目的是把「§续-370/371/
+/// 373 修的那三条路径真跑过几次」从推证变成读数；结案随诊断 mark 族滚除。
+#[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+fn nk4c_legs_report(tag: &str) {
+    use minix_arch::{CurrentEarlyConsole as Console, EarlyConsole};
+    use crate::trap_dispatch as td;
+    let c = td::nk4c_leg_counts();
+    Console::write_str("nk4c: legs@");
+    Console::write_str(tag);
+    for (label, value) in [
+        (" k=", c[td::LEG_KERNEL]),
+        (" ui=", c[td::LEG_USER_INTR]),
+        (" ue=", c[td::LEG_USER_ECALL]),
+        (" up=", c[td::LEG_USER_PF]),
+        (" su=", c[td::LEG_USER_SORIGIN]),
+        (" rs=", c[td::LEG_RESTORE]),
+    ] {
+        Console::write_str(label);
+        Console::write_hex(value);
+    }
+    Console::write_str("\n");
+}
+
 fn dispatch_diagctl(
     caller_nr: ProcNr,
     proc_table: &mut crate::proc_table::ProcessTable,
@@ -3284,15 +3309,19 @@ fn dispatch_diagctl(
                             }
                         }
                     }
-                    // 续-298 krewalk 配套捕获（用后即滚）：fill-root 探针行的
                     // §续-368 实验丁（关中断臂）魔术串：探针在测试计算窗
                     // 口前后各发一条，内核置/清 arch 旗标（riscv64 用户返回
                     // 处跳过 SPIE 置位）。旗标由 set_active_root_tracked
                     // 在任何地址空间切换时自动清零——粘滞窗不越过调度点，
                     // 测试进程 abort/exit 也安全。
+                    // §续-375 顺手把这两条串当遥测边界用：它们是一次整串
+                    // DIAGCTL 写（探针直发 kcall，不经 stdio 分块），前缀判定
+                    // 稳；于是每 boot 只在窗口起/终各多一行陷入腿计数，探针与
+                    // 镜像都不用重编（§续-361 教训：插桩量本身就是变量）。
                     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
                     if diagbuf[..len].starts_with(b"NK4C-CLI-ON") {
                         use core::sync::atomic::Ordering as AtomicOrd;
+                        nk4c_legs_report("on");
                         minix_arch::riscv64::trap_return::NK4C_CLI
                             .store(1, AtomicOrd::Relaxed);
                         return KcallResult::Ok(0);
@@ -3300,6 +3329,7 @@ fn dispatch_diagctl(
                     #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
                     if diagbuf[..len].starts_with(b"NK4C-CLI-OFF") {
                         use core::sync::atomic::Ordering as AtomicOrd;
+                        nk4c_legs_report("off");
                         minix_arch::riscv64::trap_return::NK4C_CLI
                             .store(0, AtomicOrd::Relaxed);
                         return KcallResult::Ok(0);

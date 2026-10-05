@@ -3856,6 +3856,9 @@ fn finish_and_restore(
     //   save path);
     // - the BKL was released in step 2 (the release point C uses);
     // - we run on this CPU's kernel stack with paging enabled.
+    // NK4C 续-375 遥测：这条返回腿（§续-373 屏蔽的就是它）每走一次计一。
+    #[cfg(target_arch = "riscv64")]
+    trap_dispatch::nk4c_leg_bump(trap_dispatch::LEG_RESTORE);
     unsafe { CurrentTrapReturnArch::restore_to_user(&frame, &ctx) }
 }
 
