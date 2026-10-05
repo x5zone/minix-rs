@@ -13114,3 +13114,22 @@ T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=ali
 **门采样第 2 跑**：卡 sa-call 爬行相（rc exec 链，203492 字节零终态，3600s 人为终止）——与 run3/§续-353 爬行同签名；**爬行本身再次指向拷贝路径**（某次跨空间拷贝挂起-重试循环则 exec 链每步慢 1000×）。
 
 **下一会话（判据已明确）**：①cross_space_copy/lookup_range_in_table 加「双走表对账」探针（同一 VA 两次独立 walk，PA 不一致即打印 (va,pa1,pa2,root)）——直抓走表非确定性；②审计 lookup_range_in_table 的 advance 累积算术与 huge-page 分支（对照 C virtual_copy_f 的逐窗口重走表语义）；③门采样第 3 跑前先落①（门跑贵且只出素材，探针直击更快）。
+
+## §续-367 双走表对账探针落地+零命中；GPT 独立审查吸收（三结构事实+实验队列重排：丁优先）；纪律补救记录
+
+**纪律补救（用户指正）**：§续-366 之后的双走表对账探针代码改动（os/kernel/src/vm.rs 新增 nk4a_walk_reconcile + lookup_range_in_table 调用点）与一次试跑**未即时记 WORKLOG、未提交**——违反迭代协议，本笔补记并代码+台账同笔提交，后续回归「一小步一记录一评审」。
+
+**双走表对账探针**：`vm.rs::nk4a_walk_reconcile(root,va,pa1,pa2)`（riscv64 非 mock 门控，C0 串口，CAP=32 去重）+ `lookup_range_in_table` 首走后立即重走比对（同一 (root,va) 两次独立 walk）。试跑（rc=t64 探针镜像）：**全程零 mismatch**（21 passed + t_memcpy 腐蚀照旧 + 若干跨空间拷贝全部双走一致）。判据强度（GPT 实验戊盲区注记采纳）：零命中**只排除「同一次拷贝内两次走表不一致」**，不排除「两次都错到同一错 PA」（确定性错译）——探针不报 ≠ 走表清白；补强方向=加写后回读对账臂（写完经 DM 读回比对源）。另观测新脸谱 `pf-exit inac`（cver2=0）。
+
+**GPT 独立审查文档吸收**（NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md，用户提供）——三条结构性事实即时核实并入账：
+1. **单核配置**（-smp 1）：跨核 TLB 陈旧整类机制在污染观测中结构不可达；
+2. **ASID 未启用**（tlb.rs 写 satp 无 ASID 位）：ASID 滥用族不存在；代价=每次切根必须全量 flush——核实**生产切换全部走 `set_active_root_tracked` → `TlbArch::set_active_root`（写 satp + `sfence.vma zero,zero`）✓**；GPT 4.3 指的 `paging.rs:switch()`（裸写 satp 无 flush）经查**riscv 生产零调用方**（仅 arch 内 mock 测试）=陷阱死代码，登记待清理（code-excellence：删或加 flush+注释）；
+3. **无自主写内存设备**（仅 loader/serial/display）：DMA 整类配置性排除。
+另核实 GPT 对排除-6 的方法论批评成立：245699 停滞=打印量混杂变量（§续-361 已自证），双臂回退对该假设无分辨力；4.1.1 四份停滞日志逐字节复核=长度全等内容各异（kdst copy pa 相邻页差一页），「字节数相同」度量的是输出体积拐点非执行位置拐点。
+
+**实验队列重排（按 GPT 第 7 章信息增益）**：
+- **丁（最优先，从未测过）**：测试窗口关 supervisor 中断投递 + 陷帧守护校验（保存后算校验、sret 前再算比对，盯 sp/ra/a0-a7/pc/sstatus）——一次开机同时回答「中断路径是否写者」（6.1：陷帧上下文保存恢复=与跨空间拷贝并列的头号候选，且本仓有 fpu_trap_body 写 frame.sstatus 的活动先例 + fpu 门控曾过两轮评审的先例教训）；
+- **甲（次优先）**：固定低打印量探针（v1 形态）双臂重测内核清白，判据=P(0,1) 逐次开机恒定性（已有三跑三值=内核侧未清白的初步信号，但需按 GPT 判据重做）；
+- 戊补强：对账探针加写后回读臂；
+- 乙/丙：同页守护+陈旧 TLB 基线、2×2 矩阵（控制台流量×中断投递）。
+- 验收形态（GPT 第 8 章采纳）：双判据=确定性恒定判据+统计判据（k 由 (1-p)^k<1% 反推，禁用被响亮故障截断的跑当统计点）。

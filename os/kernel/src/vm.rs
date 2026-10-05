@@ -64,6 +64,46 @@ pub(crate) fn nk4a_kdst_probe(tag: &str, dst_pa: u64, len: usize) {
     C0::write_str("\n");
 }
 
+/// §续-367 双走表对账探针：同一 (root, va) 两次独立 walk 的 PA 不一致=
+/// 走表非确定性直接证据（写者候选头位=跨空间拷贝走表偶发错 PA）。
+/// CAP=32 去重（同 (va,pa1,pa2) 只记一次）。
+#[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+pub(crate) fn nk4a_walk_reconcile(root: u64, va: u64, pa1: u64, pa2: u64) {
+    use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering as AtomicOrd};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    static SEEN: [[AtomicU64; 4]; 32] = [const { [const { AtomicU64::new(0) }; 4] }; 32];
+    let n = N.load(AtomicOrd::Relaxed);
+    let mut i = 0;
+    while i < n && i < 32 {
+        if SEEN[i][0].load(AtomicOrd::Relaxed) == root
+            && SEEN[i][1].load(AtomicOrd::Relaxed) == va
+            && SEEN[i][2].load(AtomicOrd::Relaxed) == pa1
+            && SEEN[i][3].load(AtomicOrd::Relaxed) == pa2
+        {
+            return;
+        }
+        i += 1;
+    }
+    if n >= 32 {
+        return;
+    }
+    SEEN[n][0].store(root, AtomicOrd::Relaxed);
+    SEEN[n][1].store(va, AtomicOrd::Relaxed);
+    SEEN[n][2].store(pa1, AtomicOrd::Relaxed);
+    SEEN[n][3].store(pa2, AtomicOrd::Relaxed);
+    N.fetch_add(1, AtomicOrd::Relaxed);
+    use minix_plat::{CurrentEarlyConsole as C0, EarlyConsole as _};
+    C0::write_str("nk4a: walk-mismatch root=");
+    C0::write_hex(root);
+    C0::write_str(" va=");
+    C0::write_hex(va);
+    C0::write_str(" pa1=");
+    C0::write_hex(pa1);
+    C0::write_str(" pa2=");
+    C0::write_hex(pa2);
+    C0::write_str("\n");
+}
+
 // ── 02-page-table-kernel types ──
 
 pub struct PageTableRef {
@@ -305,6 +345,15 @@ pub fn lookup_range_in_table<D: DirectMapArch>(
     let _ = D::KERNEL_DIRECT_MAP_BASE; // keep D used
 
     let (phys_base, _flags) = minix_arch::CurrentPteWalk::walk(root_paddr, vaddr)?;
+
+    // §续-367 双走表对账：同 (root,va) 立即重走一次，PA 不一致=走表层
+    // 非确定性（写者候选头位的直接证据）；仅 riscv64 真机构建生效。
+    #[cfg(all(target_arch = "riscv64", not(feature = "mock")))]
+    if let Some((pa2, _)) = minix_arch::CurrentPteWalk::walk(root_paddr, vaddr) {
+        if pa2.0 != phys_base.0 {
+            crate::vm::nk4a_walk_reconcile(root_paddr.0, vaddr.0, phys_base.0, pa2.0);
+        }
+    }
 
     if max_bytes == 0 {
         return Some((phys_base, 0));
