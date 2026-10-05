@@ -13006,3 +13006,7 @@ boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻�
 ## §续-354 双快照实验首轮：T1（marker）毒形态零命中——245699 冻结/爬行非「可见野表项」形态
 
 halt-dump 式 stop→pmemsave（带引号+先 stop）移植后 T1（marker 时刻 512MB）落盘成功（此前静默失败=缺 stop）；T2（STALL 时）pmemsave 仍静默失败（待修）。**T1 表状页扫描：野 PA 项零命中**（表状页识别 + PPN≥RAM_TOP 过滤；17967 个「可疑低位 PPN」经解码全是 4KB 数据叶的正常形态=过滤假阳性）。结合冻结点 245699 字节三跑确定性：爬行/冻结**不是**「表项里有可见野 PA/错粒度毒 PTE」的形态——与「重试循环」解释（loud 失败→上游 suspend→重试）或「瞬时腐蚀（快照间隔错过）」并存。下一会话：修 T2 落盘（抄 T1 的已验证实现即可，T2 现块为初版未加固）→ 同 run T1/T2 diff 页表页 → 腐蚀指纹；或直接在 STALL 现场经 monitor `xp` 检查可疑表项级联。
+
+## §续-353-b 补记：T2 打点可见性生效但 python 输出丢失（缓冲/挂起待查）+ 冻结点随 L0 撤回移动（行为学确认）
+
+T2 块加 traceback 可见性后重跑（2400s 窗）：`T2: mon.sock=1 qemu=alive` 打印在案但 T2 size/traceback 均未现（python -u 未用，缓冲或 recv 无超时挂起待查——cmd() 内才设 2s 超时，初始 recv(65536) 无超时是嫌疑）。**行为学确认**：冻结点随 L0 撤回从 245699 移到 235068（同三跑确定性）——L0 检查确在关键路径上且撤回改变了执行轨迹。T1（marker 512MB）已取得；STALL 串口（235068）在案。下一会话：T2 python 加 `-u` + 初始 recv 设超时 → 同 run 双快照 diff。
