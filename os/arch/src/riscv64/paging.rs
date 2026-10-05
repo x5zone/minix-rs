@@ -61,46 +61,32 @@ bitflags::bitflags! {
     }
 }
 
-const L2_SHIFT: u32 = 30;
-const L1_SHIFT: u32 = 21;
-const L0_SHIFT: u32 = 12;
+use crate::riscv64_walk::{L0_SHIFT, L1_SHIFT, L2_SHIFT};
+use crate::riscv64_walk::{l0_index, l1_index, l2_index, walk_read_with};
 /// Mask for the PPN field within a PTE (bits 53:10).
 /// In RISC-V Sv39, PTE[53:10] = PPN[43:0], where PPN = PA >> 12.
 /// So PTE_PPN = (PA >> 12) << 10 = PA >> 2 (since PA[11:0] = 0).
-const PTE_PPN_MASK: u64 = 0x003F_FFFF_FFFF_FC00;
+use crate::riscv64_walk::PTE_PPN_MASK;
 
 /// Convert a physical address to the PPN field in a PTE.
 /// PTE[53:10] = PPN = PA >> 12, so the PTE PPN bits = (PA >> 12) << 10 = PA >> 2.
 #[inline]
-fn paddr_to_pte(paddr: u64) -> u64 {
-    (paddr >> 2) & PTE_PPN_MASK
+pub(crate) fn paddr_to_pte(paddr: u64) -> u64 {
+    crate::riscv64_walk::paddr_to_pte(paddr)
 }
 
 /// Extract the physical address from a PTE's PPN field.
 /// PA = PPN << 12 = (PTE[53:10]) << 12 = (PTE & PTE_PPN_MASK) >> 10 << 12.
 #[inline]
-fn pte_to_paddr(pte: u64) -> u64 {
-    ((pte & PTE_PPN_MASK) >> 10) << 12
+pub(crate) fn pte_to_paddr(pte: u64) -> u64 {
+    crate::riscv64_walk::pte_to_paddr(pte)
 }
 
 /// Check whether a PTE is a leaf entry (has any of R/W/X set).
 /// In Sv39, R=W=X=0 means non-leaf (table pointer); any of R/W/X set means leaf.
 #[inline]
-fn pte_is_leaf(pte: u64) -> bool {
-    let flags = Sv39PteFlags::from_bits_truncate(pte);
-    flags.intersects(Sv39PteFlags::R | Sv39PteFlags::W | Sv39PteFlags::X)
-}
-
-fn l2_index(vaddr: u64) -> usize {
-    ((vaddr >> L2_SHIFT) & 0x1FF) as usize
-}
-
-fn l1_index(vaddr: u64) -> usize {
-    ((vaddr >> L1_SHIFT) & 0x1FF) as usize
-}
-
-fn l0_index(vaddr: u64) -> usize {
-    ((vaddr >> L0_SHIFT) & 0x1FF) as usize
+pub(crate) fn pte_is_leaf(pte: u64) -> bool {
+    crate::riscv64_walk::pte_is_leaf(pte)
 }
 
 unsafe fn read_entry(table: *mut u64, idx: usize) -> u64 {
@@ -289,17 +275,8 @@ unsafe fn write_pte_dm(paddr: u64, value: u64, vaddr_for_flush: u64, channel: Pt
 }
 
 /// Result of a read-only walk down the 3-level Sv39 page table.
-#[derive(Debug)]
-enum WalkResult {
-    /// Reached the leaf L0 page entry. Holds (leaf_pte_paddr, raw_pte).
-    Leaf(u64, u64),
-    /// Hit a 1GB leaf at L2 level. Holds (paddr, flags).
-    Huge1G(PhysBytes, PageFlags),
-    /// Hit a 2MB leaf at L1 level. Holds (paddr, flags).
-    Huge2M(PhysBytes, PageFlags),
-    /// Entry not present at some intermediate level.
-    NotPresent,
-}
+/// WalkResult 由纯逻辑层定义（巨叶附原始 PTE）：
+use crate::riscv64_walk::WalkResult;
 
 // ── NK4-C 续-311 内核代读旁路（[ARCH: riscv-vmddm]；(A) 结案时裁决去留）──
 // VM 的 VmDm 槽读在特定时序被 QEMU 平移层误导（§续-291..310 穷举收口：
@@ -392,42 +369,11 @@ pub mod vmdm {
 /// `KERNEL_DIRECT_MAP_BASE`; VM: the VM Direct Map window). Callers must
 /// not invoke this before paging is enabled.
 fn walk_read(root_paddr: u64, vaddr: u64, channel: PteChannel) -> WalkResult {
-    let i2 = l2_index(vaddr);
-    // SAFETY: channel's Direct Map active per function precondition; the L2
-    // entry address is root_paddr + i2*8, within the root page.
-    let l2e = unsafe { read_pte_dm(root_paddr + (i2 as u64) * 8, channel) };
-    if l2e & Sv39PteFlags::V.bits() == 0 {
-        return WalkResult::NotPresent;
-    }
-    // 1GB leaf: V=1 and any of R/W/X set.
-    if pte_is_leaf(l2e) {
-        let paddr = pte_to_paddr(l2e) | (vaddr & 0x3FFF_FFFF);
-        let mut flags = pte_to_flags(l2e);
-        flags |= PageFlags::HUGE_PAGE;
-        return WalkResult::Huge1G(PhysBytes(paddr), flags);
-    }
-    let l1 = pte_to_paddr(l2e);
-
-    let i1 = l1_index(vaddr);
-    // SAFETY: see above; L1 entry address is within the L1 page.
-    let l1e = unsafe { read_pte_dm(l1 + (i1 as u64) * 8, channel) };
-    if l1e & Sv39PteFlags::V.bits() == 0 {
-        return WalkResult::NotPresent;
-    }
-    // 2MB leaf: V=1 and any of R/W/X set.
-    if pte_is_leaf(l1e) {
-        let paddr = pte_to_paddr(l1e) | (vaddr & 0x1F_FFFF);
-        let mut flags = pte_to_flags(l1e);
-        flags |= PageFlags::HUGE_PAGE;
-        return WalkResult::Huge2M(PhysBytes(paddr), flags);
-    }
-    let l0 = pte_to_paddr(l1e);
-
-    let l0_idx = l0_index(vaddr);
-    let leaf_paddr = l0 + (l0_idx as u64) * 8;
-    // SAFETY: see above; L0 entry address is within the L0 page.
-    let pte = unsafe { read_pte_dm(leaf_paddr, channel) };
-    WalkResult::Leaf(leaf_paddr, pte)
+    // §续-349：走表逻辑抽到纯逻辑层 `riscv64_walk::walk_read_with`（宿主
+    // 对抗测试直驱同一实现）；本函数只提供真机的 PTE 读取闭包（Direct
+    // Map 窗口）。规范性检查/错粒度巨叶拒绝在纯逻辑层实现并对账。
+    let mut read = |pa: u64| unsafe { read_pte_dm(pa, channel) };
+    walk_read_with(&mut read, root_paddr, vaddr)
 }
 
 /// Read-only page table walk for offline VA→PA translation.
@@ -446,17 +392,20 @@ pub(crate) fn walk_translate(root_paddr: u64, vaddr: u64) -> Option<(PhysBytes, 
     // foreign process's page table during IPC copies), so the kernel DM
     // channel is hardcoded — independent of any handle's pinned channel.
     match walk_read(root_paddr, vaddr, PteChannel::KernelDm) {
-        WalkResult::Leaf(_leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
+        WalkResult::Leaf(_leaf_paddr, pte)
+            if pte & Sv39PteFlags::V.bits() != 0 && pte_is_leaf(pte) =>
+        {
             // For 4KB leaf pages, the offset within the page comes from
-            // the low 12 bits of vaddr.
+            // the low 12 bits of vaddr. 末级 V=1 而 RWX=0 的指针形态是
+            // 保留编码（硬件必 fault）——§续-349 修复为 fail-closed。
             let offset = vaddr & 0xFFF;
             Some((PhysBytes(pte_to_paddr(pte) | offset), pte_to_flags(pte)))
         }
-        WalkResult::Huge1G(paddr, flags) | WalkResult::Huge2M(paddr, flags) => {
-            // For huge pages, the offset is the low bits of vaddr
-            // below the huge-page boundary (already folded into paddr
-            // by walk_read).
-            Some((paddr, flags))
+        WalkResult::Huge1G(paddr, pte) | WalkResult::Huge2M(paddr, pte) => {
+            // Huge-page offset 已由纯逻辑层折叠；flags 从原始 PTE 重建。
+            let mut flags = pte_to_flags(pte);
+            flags |= PageFlags::HUGE_PAGE;
+            Some((PhysBytes(paddr), flags))
         }
         _ => None,
     }
@@ -798,17 +747,20 @@ impl Paging for Riscv64Paging {
         // 致命（gh63 定谳的真身）。wrong-root 家族早已定谳（续-116/117
         // 零命中），无生产行为影响。
         match walk_read(self.root_paddr, vaddr.0, self.channel) {
-            WalkResult::Leaf(_leaf_paddr, pte) if pte & Sv39PteFlags::V.bits() != 0 => {
+            // 末级指针形态（V=1,RWX=0）为保留编码——§续-349 fail-closed。
+            WalkResult::Leaf(_leaf_paddr, pte)
+                if pte & Sv39PteFlags::V.bits() != 0 && pte_is_leaf(pte) =>
+            {
                 // For 4KB leaf pages, the offset within the page comes from
                 // the low 12 bits of vaddr.
                 let offset = vaddr.0 & 0xFFF;
                 Some((PhysBytes(pte_to_paddr(pte) | offset), pte_to_flags(pte)))
             }
-            WalkResult::Huge1G(paddr, flags) | WalkResult::Huge2M(paddr, flags) => {
-                // For huge pages, the offset is the low bits of vaddr
-                // below the huge-page boundary (already folded into paddr
-                // by walk_read).
-                Some((paddr, flags))
+            WalkResult::Huge1G(paddr, pte) | WalkResult::Huge2M(paddr, pte) => {
+                // Huge-page offset 已由纯逻辑层折叠；flags 从原始 PTE 重建。
+                let mut flags = pte_to_flags(pte);
+                flags |= PageFlags::HUGE_PAGE;
+                Some((PhysBytes(paddr), flags))
             }
             _ => None,
         }

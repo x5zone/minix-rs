@@ -75,11 +75,15 @@ pub fn l0_index(vaddr: u64) -> usize {
     ((vaddr >> L0_SHIFT) & 0x1FF) as usize
 }
 
-/// 巨叶对齐检查：L2（1GB）叶要求 PPN[18:0]（pte[28:10]）为 0；
-/// L1（2MB）叶要求 PPN[9:0]（pte[18:10]）为 0。非零=保留形态。
+/// 巨叶对齐检查：L2（1GB）叶要求 PTE[27:10]（=PPN[17:0]=paddr[29:12]）
+/// 为 0；L1（2MB）叶要求 PTE[18:10]（=PPN[8:0]=paddr[20:12]）为 0。
+/// 非零=保留形态（硬件必 fault）。注意掩码宽度是 **PPN 位宽**（9/18 位）：
+/// PPN[9]=paddr[21]（2MB 页）/PPN[17]=paddr[30]（1GB 页）是合法非零位——
+/// 掩码多含一位就会把 0x80400000 这类合法 2MB 帧误判为错粒度
+/// （§续-350 委托回归真因：掩码写成了 10/19 位）。
 #[inline]
 fn huge_leaf_misaligned(pte: u64, level2: bool) -> bool {
-    let low_mask: u64 = if level2 { (1 << 19) - 1 } else { (1 << 10) - 1 };
+    let low_mask: u64 = if level2 { (1 << 18) - 1 } else { (1 << 9) - 1 };
     ((pte & PTE_PPN_MASK) >> 10) & low_mask != 0
 }
 
@@ -195,7 +199,7 @@ mod tests {
             return RefWalk::NotPresent;
         }
         if l2e & PTE_RWX_MASK != 0 {
-            if (l2e & PTE_PPN_MASK) >> 10 & ((1 << 19) - 1) != 0 {
+            if (l2e & PTE_PPN_MASK) >> 10 & ((1 << 18) - 1) != 0 {
                 return RefWalk::NotPresent; // 错粒度 1GB 叶
             }
             return RefWalk::Leaf { pa: pte_to_paddr(l2e) | (vaddr & 0x3FFF_FFFF) };
@@ -206,7 +210,7 @@ mod tests {
             return RefWalk::NotPresent;
         }
         if l1e & PTE_RWX_MASK != 0 {
-            if (l1e & PTE_PPN_MASK) >> 10 & ((1 << 10) - 1) != 0 {
+            if (l1e & PTE_PPN_MASK) >> 10 & ((1 << 9) - 1) != 0 {
                 return RefWalk::NotPresent; // 错粒度 2MB 叶
             }
             return RefWalk::Leaf { pa: pte_to_paddr(l1e) | (vaddr & 0x1F_FFFF) };
@@ -369,6 +373,36 @@ mod tests {
             RefWalk::Leaf { pa } => assert_eq!(pa & !0xFFF, 0x8200_0000),
             other => panic!("内核满角应命中，得 {other:?}"),
         }
+    }
+
+    #[test]
+    fn aligned_huge_leaf_with_high_ppn_bits_is_accepted() {
+        // §续-350 委托回归真因回归测试：2MB 叶在 paddr 0x80400000
+        // （PPN[8]=paddr[21]=1，合法）必须被接受——掩码多含 PPN[9] 会把
+        // 它误判为错粒度（真机=kernel 高半区 2MB 映射全灭→kerninfo panic）。
+        // 1GB 叶同理：paddr 0xC0000000（PPN[17]=paddr[30]=1）合法。
+        let mut s = Synth::new(4);
+        let (root, l1) = (s.page_phys(0), s.page_phys(1));
+        *s.entry_mut(root + 8 * 2) = paddr_to_pte(l1) | V; // i2=2
+        *s.entry_mut(l1 + 8 * 2) = paddr_to_pte(0x8040_0000) | V | R | W; // 2MB 叶，bit21=1
+        let va = (2 << 30) | (2 << 21) | 0x4567;
+        match walk_under(&s, root, va) {
+            RefWalk::Leaf { pa } => assert_eq!(pa, 0x8040_0000 | (va & 0x1F_FFFF)),
+            other => panic!("合法 2MB 叶（PPN[8]=1）应被接受，得 {other:?}"),
+        }
+        // 1GB 叶：paddr 0xC000_0000（PPN[17]=paddr[30]=1，合法）。
+        *s.entry_mut(root + 8 * 3) = paddr_to_pte(0xC000_0000) | V | R;
+        let va3 = (3 << 30) | 0x89AB;
+        match walk_under(&s, root, va3) {
+            RefWalk::Leaf { pa } => assert_eq!(pa, 0xC000_0000 | (va3 & 0x3FFF_FFFF)),
+            other => panic!("合法 1GB 叶（PPN[17]=1）应被接受，得 {other:?}"),
+        }
+        // 边界内侧仍拒绝：2MB 叶 paddr[20:12]≠0（paddr 0x8040_1000）。
+        *s.entry_mut(l1 + 8 * 2) = paddr_to_pte(0x8040_1000) | V | R | W;
+        assert_eq!(walk_under(&s, root, va), RefWalk::NotPresent);
+        // 1GB 叶 paddr[29:12]≠0（paddr 0xC000_1000）。
+        *s.entry_mut(root + 8 * 3) = paddr_to_pte(0xC000_1000) | V | R;
+        assert_eq!(walk_under(&s, root, va3), RefWalk::NotPresent);
     }
 
     #[test]

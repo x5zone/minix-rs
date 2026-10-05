@@ -12974,3 +12974,11 @@ boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻�
 **方法论**：①「测试与修复同笔」救了回滚——对抗测试套件自包含可独立落地，修复委托另行走查；②宿主测试不编译 target 门控模块——riscv64 门控代码的宿主可测性需要**纯逻辑抽层**（闭包注入读取）这一结构前提；③A/B bisect（HEAD vs 手术、各验一遍）是拦截确定性回归的正确姿势。
 
 **下一步**：内核侧调试——kerninfo 失败时经 DM 直读打印 root[256]/l1e/l0e 三级表项原值（一张表项快照即可定位三候选：规范性误判/错粒度误判/ descent 走错）；定位后修纯逻辑层→251+对抗测试全绿→恢复委托→boot-full→真机探针对账。
+
+## §续-351 委托回归真因定案+修复落地：巨叶对齐掩码宽一位（PPN 位宽混淆）——A/B 拦截的确定性回归闭环
+
+**真因（推演即得，无需上机）**：`huge_leaf_misaligned` 的掩码按 **pte 位位置**（10/19 位）写成，实际应按 **PPN 位宽**（移位后的 9/18 位）：2MB 叶的合法非零位是 PPN[9]=paddr[21]（如 0x8040_0000，内核高半区 2MB 映射正好在此），掩码多含 PPN[9] → 合法 2MB 叶被误判「错粒度」→ query None → kerninfo panic。1GB 叶同理多含 PPN[17]=paddr[30]。**方法论**：参考实现与被测实现同出我手——掩码误解被复制进参考，5000 点模糊对账对该形状**结构性失明**；独立参考必须来自规范原文逐条转写。
+
+**修复**：掩码改 9 位（2MB）/18 位（1GB）+ 参考实现同修 + 新回归测试 `aligned_huge_leaf_with_high_ppn_bits_is_accepted`（2MB@0x80400000 与 1GB@0xC0000000 的合法高位 PPN 必须接受；内侧 paddr[20:12]≠0/paddr[29:12]≠0 仍拒绝）。宿主 minix-arch **252/0**。
+
+**验证**：恢复委托手术（paging.rs）+ 重建 kernel-image 0 error + **boot-full PASS（marker reached）**——252 对抗测试与 boot-full 首次同绿。x86 smoke 此前 PASS。**未竟**：t_memcpy 真机对账两次点火均因 guest 启动速度骤降（早期 4 分钟→近期 >9-25 分钟卡 rc 早期，宿主负载低=非宿主因）未取得完整读数——下一会话第一动作：TIMEOUT_PROBE=1500+ 重跑探针（委托+加固已在镜像内），看 RESULT 是否 7b405d24（若持续超慢需先查 QEMU/WSL 环境漂移）。运行工程：驱动已修（SIGKILL 兜底+时间戳串口名+OOB pmemsave）。
