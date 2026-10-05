@@ -13002,3 +13002,7 @@ boot_probe.sh 加 monitor socket（unix,server,nowait）+ OOB 时 pmemsave 冻�
 **观测补充**：挂起相串口仍在缓增（p4-init/vr: 探针单行缓出）=guest 非冻结而在**极慢速爬行**（~1 行/秒级 vs 健康相数千行/秒）——慢 1000× 的具体相=init MultiUser 后的 rc exec 链。缓爬+冻结点确定性+跨内核构建（加固前后）都出现——「每 syscall 变 ~1000×慢」的最简解释=**某条 per-syscall 路径进入了重试循环**（与 §续-348 的「加固把静默腐蚀变 loud→上游重试」一致：loud 失败→上游 suspend→重试→再失败）。t_memcpy 传感器读数语义随之更新：**缓爬本身即腐蚀活动的测量**（爬行速率∝腐蚀命中率）。
 
 **下一会话（设计已就绪）**：①同 run 双快照驱动（T1@marker/T2@STALL，各 512MB）+ 页表页 diff；②对照 halt-dump 短跑（验证爬行是否 run 长度相关）；③若双快照 diff 出腐蚀 PTE 指纹→写者定位；④t_memcpy 读数按缓爬修正判读（完成即读，不等快）。
+
+## §续-354 双快照实验首轮：T1（marker）毒形态零命中——245699 冻结/爬行非「可见野表项」形态
+
+halt-dump 式 stop→pmemsave（带引号+先 stop）移植后 T1（marker 时刻 512MB）落盘成功（此前静默失败=缺 stop）；T2（STALL 时）pmemsave 仍静默失败（待修）。**T1 表状页扫描：野 PA 项零命中**（表状页识别 + PPN≥RAM_TOP 过滤；17967 个「可疑低位 PPN」经解码全是 4KB 数据叶的正常形态=过滤假阳性）。结合冻结点 245699 字节三跑确定性：爬行/冻结**不是**「表项里有可见野 PA/错粒度毒 PTE」的形态——与「重试循环」解释（loud 失败→上游 suspend→重试）或「瞬时腐蚀（快照间隔错过）」并存。下一会话：修 T2 落盘（抄 T1 的已验证实现即可，T2 现块为初版未加固）→ 同 run T1/T2 diff 页表页 → 腐蚀指纹；或直接在 STALL 现场经 monitor `xp` 检查可疑表项级联。
