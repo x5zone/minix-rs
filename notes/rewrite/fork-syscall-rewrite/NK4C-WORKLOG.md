@@ -13536,6 +13536,16 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **验证**：`cargo test -p minix-arch --test arm64_return_leg_pin --test arm64_trap_leg_shape` 11/11 绿（宿主 x86_64）；kernel-image x86_64 形态编译零错误（P-X86-04 触及）；bash -n 过（P-ALL-09 触及）。**诚实边界**：P-ALL-09 的失败归类逻辑（pkg_build_failed 关联）没有单元测试，靠下次真实构建失败场景验证；三架构上机门（ATF×2 + marker×3）本轮未复跑（本轮改动不触运行时行为——注释、shell 计数、宿主测试三处，其中 run_all.sh 只在 CI 聚合入口生效）。
 
+## §续-387 齐平专项第二件：P-A64-01 aarch64 中间页表页回收落地（真机 36/36 验证）+ P-RV-03 裁决（保留 8*0）
+
+**P-A64-01（02 阶段台账登记的 aarch64 中间页表回收余件收口）**：`os/arch/src/arm64/paging.rs` 的 `destroy` 原本只清零根 L0 并自陈「接受中间表泄漏」——与 x86_64/riscv64 已完成的同族分支不齐平。按 TODO 方案甲移植 riscv64 分支（完整闭环：解链＋归还分配器，两段缺一不可）：新增 inherent `free_child_tables(table_paddr, level)`（深度优先，`level>=3` 收口——aarch64 四级 L0→L1→L2→L3，L3 页本身是中间表要回收、但其描述符是数据页不回收）与 `pte_to_paddr`（表描述符位 [47:12]，复用本文件既有 ADDR_MASK 提取约定）。判别位：VALID(bit0) 且 TABLE(bit1) ⇒ 中间表递归＋归还；VALID 无 TABLE ⇒ 块/页（数据）跳过。destroy 双臂：未注册 free 钩子退化为只清零根（防 use-after-free 语义与旧码一致）；注册后先回收再清零再归还根页。**落位战役**：两助手先落进了 `impl Paging for` trait 块（trait 无此成员 E0407）——riscv 同族是 inherent impl 方法，移位后 `pte_to_paddr` 还需 `Self::` 限定。**真机验证**：aarch64 全量门 389 PASS 36/36（34 passed + 2 skipped，0 failed）——36 案的 fork/exec/exit 旋转全程走新回收路径，无双重释放、无停摆；RUSTFLAGS 按 xtask 契约带 `-C target-feature=-neon,-fp-armv8`（绕过 xtask 直接 cargo 构建必须自带，见 kernel-image compile_error 守卫）。
+
+**P-RV-03（8*0 裁决）**：`os/arch/src/riscv64_walk.rs` 三处 `root + 8 * 0` 按 TODO 自己的告警先读上下文——它在 `#[cfg(all(test, feature = "runtime-window"))]` 测试模块里，`8 * 0` 是刻意的 stride 可读写法（第 0 号表项 × 8B 步长，与相邻 `8 * 1`/`8 * 2` 对仗），不是无意义乘法。裁决＝不改写、保留步长文档价值，在 mod 上加 `#[allow(clippy::erasing_op, clippy::identity_op)]` 豁免并写明理由。alloc.rs 供给日志模板错位（P-RV-03 另一半）已被 §续-385 连根删除（探针本体不存在了），该项自动闭合。
+
+**P-ALL-04 状态对账**：TODO 表里「诊断探针未滚除」一条已由 §续-385 大幅清偿（八 crate 串口诊断族净删），残余＝NK4C_CLI asm 旗标（T8 残余登记）＋WALK_HARDENING 守卫（登记资产非探针）。本条后续以「NK4C_CLI asm 滚除」单列，不再按「160 处」口径追踪。
+
+**验证**：aarch64 全量门 389 PASS（上）；minix-arch 宿主测试（含本轮 arm64 钉住 11 枚）全绿；riscv64_walk 的 clippy 豁免在宿主 --all-features 下核过（8*0 命中清零）。**诚实边界**：free_child_tables 无宿主单测（arm64 模块架构门住，宿主不编译——这正是 P-ALL-01 的已知形状；真机门是它当前的唯一验证面）；「L1/L2 块描述符跳过」分支在本内核无块映射使用（walk_alloc 只造表），属防御性对齐 Sv39 同族语义。
+
 
 
 

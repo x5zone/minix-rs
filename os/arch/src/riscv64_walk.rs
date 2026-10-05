@@ -148,6 +148,10 @@ where
 }
 
 #[cfg(all(test, feature = "runtime-window"))]
+// `root + 8 * 0` 是刻意的 stride 可读写法（第 0 号表项 × 8B 步长），与
+// 相邻的 `8 * 1`/`8 * 2` 对仗；clippy 的 identity/erasing 噪声在此豁免
+// （P-RV-03 裁决：不改写、保留步长文档价值）。
+#[allow(clippy::erasing_op, clippy::identity_op)]
 mod tests {
     use super::*;
 

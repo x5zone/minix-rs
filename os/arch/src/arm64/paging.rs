@@ -207,6 +207,44 @@ fn channel_to_ptr(phys: u64, channel: PteChannel) -> *mut u64 {
     }
 }
 
+impl AArch64Paging {
+    /// Table-descriptor payload address: bits [47:12] (4 KiB granule),
+    /// same extraction the walk uses (`l1 = l0e & ADDR_MASK`). Table
+    /// descriptors never carry attribute bits below bit 12 in this port.
+    fn pte_to_paddr(pte: u64) -> u64 {
+        pte & ADDR_MASK
+    }
+
+    /// Free all page-table pages directly or transitively referenced by
+    /// `table_paddr`'s VALID+TABLE entries. `level` 0 = L0 (root), 1 = L1,
+    /// 2 = L2; a table reached at depth 3 is an L3 (leaf-table) page —
+    /// freed without recursing into it, because an L3's descriptors are
+    /// page entries (data pages owned by the region/exit path, never
+    /// touched here). Block descriptors at L1/L2 (VALID without TABLE)
+    /// are data too — skipped.
+    ///
+    /// SAFETY: Direct Map channel active; the caller guarantees the whole
+    /// tree is exclusive to this (dead) address space and no CPU walks it.
+    unsafe fn free_child_tables(&self, table_paddr: u64, level: u8) {
+        if level >= 3 {
+            return;
+        }
+        let base = channel_to_ptr(table_paddr, self.channel);
+        for i in 0..512usize {
+            // SAFETY: sequential reads within the table page, which the
+            // caller has excluded from all other access.
+            let pte = unsafe { core::ptr::read_volatile(base.add(i)) };
+            if pte & Arm64PteFlags::VALID.bits() != 0
+                && pte & Arm64PteFlags::TABLE.bits() != 0
+            {
+                let child = Self::pte_to_paddr(pte);
+                unsafe { self.free_child_tables(child, level + 1) };
+                crate::pt_alloc::free_pt_page(minix_types::PhysBytes(child));
+            }
+        }
+    }
+}
+
 /// Read a PTE at the given physical address via the Direct Map.
 ///
 /// SAFETY: the channel's Direct Map window must be active; `paddr` must be
@@ -619,16 +657,28 @@ impl Paging for AArch64Paging {
     }
 
     unsafe fn destroy(&mut self) {
-        // Full reclaim requires a free function registered with pt_alloc
-        // (currently only alloc is registered). Without free, we zero the
-        // root L0 to prevent use-after-free if the physical page is reused,
-        // and accept the intermediate-table leak.
+        // P-A64-01（V11-P2-8 余件收口，移植自 riscv64/paging.rs 的同族分支）：
+        // 未注册 free 钩子时退化为只清零根 L0（防重用后 use-after-free）；
+        // 注册后先深度优先回收全部中间表帧（L1/L2/L3），再清零并归还根页。
+        // 数据页（块/页描述符）归 region/exit 路径所有，这里绝不触碰。
         //
         // SAFETY: the handle's Direct Map channel must be active;
-        // root_paddr is the physical address of our L0 (PGD) page.
+        // root_paddr is the physical address of our L0 (PGD) page. The
+        // caller guarantees the whole tree is exclusive to this (dead)
+        // address space and no CPU walks it (single-threaded VM, same
+        // contract as the riscv64 branch).
+        if !crate::pt_alloc::is_free_registered() {
+            let ptr = channel_to_ptr(self.root_paddr, self.channel);
+            unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+            return;
+        }
+        unsafe { self.free_child_tables(self.root_paddr, 0) };
         let ptr = channel_to_ptr(self.root_paddr, self.channel);
         unsafe { core::ptr::write_bytes(ptr, 0, 512) };
+        crate::pt_alloc::free_pt_page(minix_types::PhysBytes(self.root_paddr));
     }
+
+
 
     fn map(
         &mut self,
