@@ -54,6 +54,11 @@ SECTIONS
 
     .bss ALIGN(4K) : AT(ADDR(.bss) - KERNEL_HIGH_BASE)
     {
+        /* SD-7 / P-X86-03（2026-10-06）：入口 asm 的 .bss 清零循环需要段
+           边界符号——与 riscv64.ld 同名同形（防御性对齐：UEFI boot-shim
+           的 loader 已按 memsz-filesz 清零，但 SD-1 多入口形态下未来直载
+           入口不再依赖装载者行为）。 */
+        __bss_start = .;
         /* .lbss = rustc 大 BSS 拆分节（PANIC_DIAGNOSTIC_HOOK 等），必须
            归入本节才能落在 2MiB 收口之内。 */
         *(.bss .bss.* .lbss .lbss.*)
@@ -63,6 +68,8 @@ SECTIONS
         kernel_boot_stack_bottom = .;
         . += 0x10000;    /* 64 KiB 引导栈（_start 立栈用） */
         kernel_boot_stack_top = .;
+
+        __bss_end = .;
 
         /* 镜像跨距 2MiB 收口（NK4-A 首亮实断）：boot_validate_and_prepare
            按 huge-page 阶梯选映射粒度（1GiB→2MiB，lib.rs 选块），kern_size

@@ -114,12 +114,25 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
+        // SD-7 / P-X86-03（2026-10-06）：防御性 .bss 清零，镜像 riscv64
+        // 甲案（UEFI boot-shim 的 loader 已按 memsz-filesz 清零；本循环
+        // 是 SD-1 多入口形态下的入口自持——未来直载入口不依赖装载者）。
+        // RIP 相对取运行位址：分页开启（高半映射）与恒等映射两种交接
+        // 视图下都落在正确的物理页。rdi 游标/rcx 界限在入口处无活值。
+        lea rdi, [rip + __bss_start]
+        lea rcx, [rip + __bss_end]
+    1:  cmp rdi, rcx
+        jae 2f
+        mov qword ptr [rdi], 0
+        add rdi, 8
+        jmp 1b
+    2:
         lea rsp, [rip + kernel_boot_stack_top]
         xor ebp, ebp
         call {rust_image_main}
-    2:  cli
+    3:  cli
         hlt
-        jmp 2b
+        jmp 3b
     "#,
     rust_image_main = sym rust_image_main,
 );
@@ -130,13 +143,26 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
+        // SD-7 / P-X86-03（2026-10-06）：防御性 .bss 清零，镜像 riscv64
+        // 甲案（同 x86_64 注释：loader 已清是现行 UEFI 路径事实，入口
+        // 自持为 SD-1 多入口形态）。adrp 取运行页位址（MMU 交接态下
+        // 无论恒等或高半映射都落正确物理页）。x9 游标/x10 界限无活值。
+        adrp x9, __bss_start
+        add x9, x9, :lo12:__bss_start
+        adrp x10, __bss_end
+        add x10, x10, :lo12:__bss_end
+    1:  cmp x9, x10
+        b.hs 2f
+        str xzr, [x9], #8
+        b 1b
+    2:
         adrp x9, kernel_boot_stack_top
         add x9, x9, :lo12:kernel_boot_stack_top
         mov sp, x9
         mov x29, xzr
         bl {rust_image_main}
-    2:  wfi
-        b 2b
+    3:  wfi
+        b 3b
     "#,
     rust_image_main = sym rust_image_main,
 );

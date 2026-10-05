@@ -13596,6 +13596,16 @@ sret                                  回到用户态：t0 = 用户自己的 sp
 
 **验证**：x86_64 内核镜像 + boot-shim 编译零错误；x86 cmd-smoke 修复态三轮 PASS（18-stage）；qemu=0。**诚实边界**：THRE 真等到的效果（早期串口时序）只经 QEMU 验证，真硬件 16550 的 THRE 行为未测（本项目无真硬件 x86 面）；A/B 计时含 cargo 增量构建噪声，取的是稳态背靠背值。
 
+## §续-396 P-X86-03（SD-7）落地：x86_64/aarch64 入口补防御性 .bss 清零（真机双门验证）＋ SD-7 的按路审计定谳
+
+**SD-7 的按路审计（定谳先行）**：「x86_64/aarch64 潜在未清」需按启动链分路核——其一，x86_64/aarch64 生产链＝UEFI boot-shim，其 loader（os/boot-shim/src/loader.rs:218-222）逐 PT_LOAD 按 memsz-filesz zero-fill，**BSS 已被装载者清掉**（x86_64.ld 注释「boot-shim 的 BSS 清零以末段 memsz 端点为准」在案）；其二，riscv64 门链＝OpenSBI/QEMU loader 直载（NOBITS 不写）⇒ 入口 asm 清零（§续-88 已落地）。因此 SD-7 的真实价值是**防御性对齐**（SD-1 多入口形态下，未来直载入口不依赖装载者行为），而非修现行 bug——与 TODO 自己的「潜在未清（待验证是否真有非零 .bss 依赖）」一致。
+
+**落地（TODO 方案乙精神的入口自持形态）**：其一，x86_64.ld/aarch64.ld 补 __bss_start/__bss_end（落位镜像 riscv64.ld：节首/64KiB 引导栈顶后，符号不存在时链接期即失败＝fail-fast）。其二，kernel-image/src/main.rs 两入口各补清零循环——x86_64 lea rdi/rcx（RIP 相对运行位址，分页高半与恒等两交接视图都落正确物理页）8 字节步进、aarch64 adrp+lo12 双寄存器 str xzr 步进；清零先于立栈（riscv64 次序先例——栈区本身在 .bss 内）。链接期过＝符号接通（构建即验证）。
+
+**红线测试（TODO 点名的「可能暴露零页侥幸」）**：清零循环每次 boot 实际执行——其一，x86 cmd-smoke PASS 18-stage（5.7 秒，含循环的 boot 链全程）；其二，aarch64 全量门 396 PASS 36/36（34 passed + 2 skipped，0 failed）——36 案的每次 exec 都走新入口，无越界、无错址、无时序暴露。红线未兑现＝两路此前并无被零页侥幸掩盖的时序问题（与按路审计的「装载者已清」结论互证）。
+
+**验证**：aarch64 全量门 396 PASS + x86 cmd-smoke PASS（上）；链接期符号 fail-fast 即构建验证。**诚实边界**：其一，循环步进 8 字节到 __bss_end——若 bss 尾非 8 对齐，末次写至多越 4 字节进 2MiB 收口填充区（零值写填充＝无害，且两脚本节尾都有 ALIGN(0x200000) 收口）；其二，UEFI 路径的行为对照只经 OVMF/QEMU（真硬件 UEFI 未测）。
+
 ## §续-394 P-ALL-01 深度迁移收官批：fpu / protection / trap_entry / plat interrupt（5 测试全绿，逐文件深度迁移完成）
 
 **钉住的承重契约**（`os/arch/tests/arch_small_files_audit.rs`）：
