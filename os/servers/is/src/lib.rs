@@ -164,10 +164,47 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         // The sender/type travel as locals into classify (C writes globals
         // main.c:126-129; call_nr has no vestigial state copy — the V1
         // review removed it as write-only).
-        let (caller, call_nr) = match self.transport.receive(&mut self.state.inbox) {
-            Ok(pair) => pair,
-            Err(status) => panic!("sef_receive failed!: {status}"),
+        //
+        // 信号面：C 把 handler 注册给 SEF（main.c:85），SEF 在
+        // `sef_receive_status` 内逐个信号号同调它（sef_signal.c:96-128），
+        // 所以决定不能走 `receive` 的返回值——只能跟着回调现场做。
+        // 回调里只动 `fkey`（与 `transport` 不申同一个可变借用），退出
+        // 决定与解注册告警先落在局部量上。
+        let mut shutdown = false;
+        let mut unmap_warning: Option<i32> = None;
+        let (caller, call_nr) = {
+            let IsServer {
+                transport,
+                fkey,
+                state,
+                ..
+            } = self;
+            let frame = transport.receive(&mut state.inbox, &mut |signo| {
+                let (action, warn) = signal_decision(fkey, signo);
+                if action == LifecycleAction::Shutdown {
+                    shutdown = true;
+                }
+                if let Some(status) = warn {
+                    unmap_warning = Some(status);
+                }
+            });
+            // C 的那句 printf 在 handler 内（dmp.c:63-65）；当时 transport
+            // 正被借用，告警顺延到收信返回后——二者之间 C 只剩 exit(0)，
+            // 输出顺序与可见行为都不变。
+            if let Some(status) = unmap_warning.take() {
+                transport.warn_fkey_ctl(status);
+            }
+            match frame {
+                Ok(pair) => pair,
+                Err(status) => panic!("sef_receive failed!: {status}"),
+            }
         };
+        // C: handler 里的 exit(0)（main.c:115）使那一帧永不进入分派，
+        // globals `who_e`/`callnr` 也不写——所以这里先于 `state.caller`
+        // 写回之前返回。
+        if shutdown {
+            return LifecycleAction::Shutdown;
+        }
         self.state.caller = caller;
 
         let result = match classify(call_nr, caller) {
@@ -226,7 +263,12 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     /// The main loop. C: `while (TRUE)` — main.c:44-69.
     pub fn run(&mut self) -> ! {
         loop {
-            self.step();
+            // C: SIGTERM 的退出发生在收信内部的 exit(0)（main.c:115）；
+            // 本树把退出动作留在主循环这一层（[ARCH: A-10] 的清理半段），
+            // 返回前 unmap 已做完。
+            if self.step() == LifecycleAction::Shutdown {
+                minix_sys::exit(0);
+            }
         }
     }
 
@@ -515,14 +557,33 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> SefCallbacks for IsServe
     /// (order matters — main.c:113 before :115).
     /// `[ARCH: A-10]` cleanup half.
     fn signal_handler(&mut self, signo: i32) -> LifecycleAction {
-        if signo != SIGTERM {
-            return LifecycleAction::Continue;
+        let (action, warn) = signal_decision(&mut self.fkey, signo);
+        if let Some(status) = warn {
+            self.transport.warn_fkey_ctl(status);
         }
-        // 02 seam: release the TTY observer registration. Best-effort:
-        // shutdown proceeds even if the release fails (C calls it void).
-        self.request_fkey_map(false);
-        LifecycleAction::Shutdown
+        action
     }
+}
+
+/// C: `sef_cb_signal_handler` 的实体 — main.c:107-116（由 `sef_local_startup`
+/// 在 :85 注册给 SEF，再由 `sef_receive_status` 逐号同调）。
+///
+/// 返回值是「退出决定」与「解注册失败的状态码」（C 只 printf 不改变退出
+/// 路径，dmp.c:63-65）。生产面的收信回调与测试面的
+/// [`SefCallbacks::signal_handler`] 共用这一份判定，避开两处手抄同一句
+/// `signo != SIGTERM`。
+fn signal_decision<F: FkeyCtlTransport>(
+    fkey: &mut F,
+    signo: i32,
+) -> (LifecycleAction, Option<i32>) {
+    if signo != SIGTERM {
+        return (LifecycleAction::Continue, None);
+    }
+    // 顺序照 C：先 `map_unmap_fkeys(FALSE)`（main.c:113），后 exit(0)（:115）。
+    // 注册集与 init 臂同源（HOOKS 派生），失败不阻断退出（C 是 void）。
+    let keys = HOOKS.map(|hook| hook.key);
+    let warn = map_unmap_keys(fkey, false, &keys).err().map(|e| e.status);
+    (LifecycleAction::Shutdown, warn)
 }
 
 #[cfg(test)]
@@ -539,6 +600,9 @@ mod tests {
     struct FakeTransport {
         /// Scripted (caller, call_nr) frames; pings are `None` and skipped.
         script: Vec<Option<(Endpoint, i32)>>,
+        /// 脚本化的待决信号：在同一次 `receive` 内全部交给回调（C 的 SEF
+        /// 就是在 `sef_receive_status` 里逐号调 handler）。
+        pub signals: Vec<i32>,
         startups: u32,
         pub sends: Vec<(Endpoint, i32)>,
         pub warnings: Vec<(i32, Endpoint)>,
@@ -554,6 +618,7 @@ mod tests {
         fn new(script: Vec<Option<(Endpoint, i32)>>) -> Self {
             Self {
                 script,
+                signals: Vec::new(),
                 startups: 0,
                 sends: Vec::new(),
                 warnings: Vec::new(),
@@ -571,9 +636,18 @@ mod tests {
             self.startups += 1;
         }
 
-        fn receive(&mut self, _inbox: &mut Message) -> Result<(Endpoint, i32), i32> {
+        fn receive(
+            &mut self,
+            _inbox: &mut Message,
+            on_signal: &mut dyn FnMut(i32),
+        ) -> Result<(Endpoint, i32), i32> {
             if self.fail_receive {
                 return Err(-1);
+            }
+            // 收信现场的信号投递：先逐个交给回调（与库内的形状同形），
+            // 再报本轮真正取到的帧。
+            for signo in core::mem::take(&mut self.signals) {
+                on_signal(signo);
             }
             // A-11: ping frames are answered inside sef_receive and skipped.
             while let Some(frame) = self.script.first().cloned() {
@@ -627,11 +701,17 @@ mod tests {
         pub calls: Vec<(bool, u32, u32)>,
         pub events_answer: (i32, u32, u32),
         pub map_status: i32,
+        pub unmap_status: i32,
     }
 
     impl FakeFkey {
         fn new() -> Self {
-            Self { calls: Vec::new(), events_answer: (OK, 0, 0), map_status: OK }
+            Self {
+                calls: Vec::new(),
+                events_answer: (OK, 0, 0),
+                map_status: OK,
+                unmap_status: OK,
+            }
         }
     }
 
@@ -643,6 +723,9 @@ mod tests {
             self.calls.push((req == FkeyReq::Map, fkeys, sfkeys));
             if req == FkeyReq::Map && self.map_status != OK {
                 return (self.map_status, fkeys, sfkeys);
+            }
+            if req == FkeyReq::Unmap && self.unmap_status != OK {
+                return (self.unmap_status, fkeys, sfkeys);
             }
             (OK, 0, 0)
         }
@@ -692,6 +775,51 @@ mod tests {
         assert_eq!(s.step(), LifecycleAction::Continue);
         assert!(s.transport.sends.is_empty());
         assert_eq!(s.transport.warnings, Vec::from([(0x42, Endpoint::RS)]));
+    }
+
+    #[test]
+    fn test_step_sigterm_unmaps_then_shuts_down() {
+        // C: handler 由 SEF 在收信内部调用（main.c:85），实体先
+        // map_unmap_fkeys(FALSE)（:113）再 exit(0)（:115）；那一帧永不进入
+        // 分派表。本测试钉的是接线：信号从收信回调一路跑到退出决定。
+        let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, FKEY_NOTIFY))]));
+        t.signals.push(SIGTERM);
+        let mut s = IsServer::new(t, FakeFkey::new(), FakeAcquires::ok());
+        assert_eq!(s.step(), LifecycleAction::Shutdown, "SIGTERM → 退出决定");
+        assert_eq!(s.fkey.calls.len(), 1, "SIGTERM 只解注册一次");
+        assert!(!s.fkey.calls[0].0, "是 UNMAP（main.c:113），不是 MAP");
+        assert!(s.transport.sends.is_empty(), "退出前不回应任何请求");
+        assert!(
+            s.transport.warnings.is_empty(),
+            "那一帧不落分派表，不会产生非法请求告警"
+        );
+    }
+
+    #[test]
+    fn test_step_non_term_signal_leaves_the_main_loop_running() {
+        // C: if (signo != SIGTERM) return — main.c:110；本轮收信照常继续分派。
+        let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, FKEY_NOTIFY))]));
+        t.signals.push(minix_types::SIGNAL_KERNEL_MEMORY);
+        let mut s = IsServer::new(t, FakeFkey::new(), FakeAcquires::ok());
+        assert_eq!(s.step(), LifecycleAction::Continue);
+        assert!(s.fkey.calls.is_empty(), "非 TERM 不动 TTY 观察者注册");
+    }
+
+    #[test]
+    fn test_step_sigterm_shuts_down_even_if_unmap_fails() {
+        // C: dmp.c:63-65 只 printf，main.c:115 的 exit 仍执行——失败不吞也不阻断。
+        let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, FKEY_NOTIFY))]));
+        t.signals.push(SIGTERM);
+        let mut fk = FakeFkey::new();
+        fk.unmap_status = -7;
+        let mut s = IsServer::new(t, fk, FakeAcquires::ok());
+        assert_eq!(s.step(), LifecycleAction::Shutdown);
+        assert_eq!(
+            s.transport.ctl_warnings,
+            [-7],
+            "解注册失败经诊断缝上报（C 的 printf）"
+        );
+        assert_eq!(s.fkey.calls.len(), 1, "尝试过且只一次");
     }
 
     #[test]

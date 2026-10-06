@@ -494,7 +494,7 @@ C 的 `sef_signal.c:do_sef_signal_request` 对内核通知要遍历 `SIGK_FIRST.
 | 编号 | 发现 | 证据（C 真值 ↔ 现状） | 建议与优先级 |
 |---|---|---|---|
 | T1 | 信号集未解析，服务不知道具体信号号 | C：`sef_signal.c:do_sef_signal_request` 两条臂 + `SIGKSIG` 代理循环；现状：两条臂都已落地（notify 形逐位展开、管理器形拦截后吞掉），但实机上通知位图恒空（内核 `SigSet` 仍是 64 位），空位图走一次 `SEF_SIGNAL_REQUEST_TYPE` 唤醒兜底 | 已收（解析上提到库已完成，载荷已按 C 的 16 字节 `sigset_t` 建形）。余项：内核 `SigSet` 拓宽到 128 位（跨层 wire 变更）、`SIGKSIG`/`SIGKSIGSM` 的代理循环建模、各服务接住信号号的语义验证（即 T2 与 IS / VM / PM 解锁面） |
-| T2 | 出生事件上浮后，各服务接住它的深度不一 | 现状：`sef_receive_status` 的生产调用点共 13 处（分属 9 个 crate），其中只有 VM 与 `uds`/`lwip` 的终止闩读了回调参数形状且不区分号码，其余 9 处传空闭包；`os/servers/devman` 自有的 `SefHooks::on_signal` 钩子从不被 SEF 回调（断链）；Init 事件的处理分散在各服务自己的循环 | 优先级高。逐服务对照 C 真源（哪些服务在 C 里真的 `sef_setcb_signal_handler`）填实或明写“C 未注册即忠实”；devman 断链与 `minix-fs-rt` 的 `SignalDecision`（收原始位图而非信号号）是两处形状收敛点；库里已有的 `sef_init_reply` 缺发送半助手 |
+| T2 | 出生事件上浮后，各服务接住它的深度不一 | 现状：`sef_receive_status` 的生产调用点共 13 处（分属 9 个 crate，逐处名单见 `NK4C-WORKLOG.md` §续-415 盘点表）。IS 已接线（§续-417）：`SefTransport::receive` 多一个 `on_signal` 参数，回调直达 `sef_cb_signal_handler` 的对应体，SIGTERM 先解注册再退（C `is/main.c:85,107-116`）；其余站点仍是空闭包或只置终止闩（`uds`/`lwip`/VM 硬编码 `SIGKMEM`），devman 自有的 `SefHooks::on_signal` 仍从不被 SEF 回调（断链） | 优先级高。逐服务对照 C 真源（哪些服务在 C 里真的 `sef_setcb_signal_handler`）填实或明写“C 未注册即忠实”；已接线服务把 `signal_handler` 接上退出通道（照 IS 的形状）；其余站点把回调形状收敛到信号号（`minix-fs-rt` 的 `SignalDecision` 还收原始位图，VM 还硬编码信号号），否则每个服务各自演化 |
 | T3 | `process_init` 的六段动作（§2.3.3）无统一落点 | C：清 IPC 过滤 / 建 0 号约定授权 / 调试标志短路 / 三次内核登记；现状：`os/` 下 `grep "SYS_STATE_CLEAR_IPC_FILTERS"` 与 `cpf_reload`/`senda_reload` 均无调用方 | 优先级高。登记为跨 stage 的接线缺口（属运行时与内核接缝，非本 stage 单方可修） |
 | T4 | 热更新 / 状态搬移 / 覆盖统计 / 故障注入四类拦截未建模 | 见 §3.4 | 优先级中（与 `live-update` 战役同批）；人为注入崩溃/超时能力缺失会影响 15/16 篇的恢复路径验证 |
 | T5 | 同一个 C 语义对应三套 trait（`SefCallbacks` ×2 + `SefHooks`） | `os/servers/rs/src/sef.rs:SefCallbacks`、`os/servers/is/src/sef.rs:SefCallbacks`、`os/servers/devman/src/hooks.rs:SefHooks` | 交代码卓越度裁决（合并或分层）；本文档只记录形状差异 |
@@ -624,7 +624,7 @@ loop {
 2. **信号集解析**（推自 §3.5 与 T1）：已补——给定一个带 `SIGKMEM` 与 `SIGKSIG` 的通知，服务能分别得到两个信号号（`test_notify_sigset_walks_kernel_signals_ascending` 钉升序与号码本身），低字位不算内核信号、空位图只走一次兜底也各有测试；管理器形的号码直通与“不拦截 init 及以上端点”同样已钉。剩余缺口：`SIGKSIG` 触发的代理循环（`sys_getksig`/`sys_endksig` 三段循环）仍无对位物，以及 §3.5 第一条差异——实机通知位图因 `SigSet` 仍为 64 位而恒空，展开分支目下只在宿主可驱动。
 3. **`Init` 与 `Call` 不串台**（推自 §3.2 的上浮决策）：同一条 `RS_INIT` 不应同时被当成业务请求处理；需要一个跨服务回归（选一个真实消费方，如 `os/servers/mib/src/server.rs:run_once`）而不是只在库里测。
 4. **异步腿的一次性语义**（推自 §2.3.5 第二条腿与 VM）：首条回报异步、后续回到阻塞；重写侧目前只 VM 带这个豁免，回归面应限定在 VM（归 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`）。
-5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧无等价物，需先定计（返 `EINTR` 语义还是返一个事件变体）再测；没定计前至少补一个"服务在信号处理里置停机标志、外层循环下一轮退出"的行为测试。
+5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧仍无 `sef_cancel` 等价物（库层没有「本轮不想再收」的入口），但服务侧的形状已有实例：IS 把回调里的决定当成 `LifecycleAction` 一步步传上主循环——回调置位、`step()` 提前返回、`run()` 才真的 `exit(0)`（`os/servers/is/src/lib.rs:step`/`run`，归 `notes/rewrite/fork-syscall-rewrite/08-stage-is/01-is-init-main.md` §2.8）。这带着一个必须记下的偏离：C 是在 `sef_receive_status` 内部直接 `exit(0)`，那一帧永不返回调用方；本树的 `receive` 已经返回了那一帧（携带信号的 `SYSTEM` 通知），服务必须在分派**之前**先看退出位——IS 的测试钉住了这一点（那一帧不产生回复也不产生非法请求告警）。库层要不要提供 `sef_cancel` 的等价物（返 `EINTR` 还是返一个事件变体）仍未定计；定计前至少各服务照 IS 的形状先可测。
 6. **未建模四类拦截的回归哨兵**（推自 §3.4）：当 `live-update` 战役开工时，至少要先补一个"收到 `RS_LU_PREPARE` 当前会落到 `Call` 分派表"的当前行为断言，否则将来改造时说不清"之前是怎么表现"的（这类断言只锁当前行为，不为缺失功能开证）。
 
 ---

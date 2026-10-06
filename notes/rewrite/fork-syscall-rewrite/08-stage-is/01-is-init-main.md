@@ -341,6 +341,24 @@ static void sef_cb_signal_handler(int signo)
 **先 unmap 后 exit**，反过来会泄漏 TTY 侧的观察者登记。这是"灾难预演"级
 的不变量，Rust 侧用单测锁死（§5）。
 
+**接线段（本树如何把这段跑起来）**。C 的 handler 不靠 `main` 轮询：它被
+`sef_setcb_signal_handler` 注册给 SEF（`main.c:85`），由 `sef_receive_status` 在
+收信内部逐号调用（`sef_signal.c:96-128`）。本树跟的是同一个形状：
+`SefTransport::receive` 多了一个 `on_signal: &mut dyn FnMut(i32)` 参数，生产实现
+把 `minix_sef::sef_receive_status` 的信号回调直接转交它（`os/servers/is/src/sef.rs`）。
+判定只有一份：`lib.rs:signal_decision(fkey, signo)` 返回「退出决定」与「解注册
+失败的状态码」（C 只 `printf`，`dmp.c:63-65`）；`SefCallbacks::signal_handler`
+（测试面）与 `step()` 里的收信回调（生产面）都调它，不会出现两处手抄
+`signo != SIGTERM`。退出动作落在 `run()`：`step()` 返回 `Shutdown` 时调
+`minix_sys::exit(0)`——与 C 的唯一差别是退出从「收信内部」上移到「主循环」，
+而 unmap 与退出的先后顺序不变，且那一帧永不进入分派表（C 的 `exit(0)` 也不会
+给它回包）。告警同理顺延到 `receive` 返回后：当时 `transport` 正被可变借用，
+而 C 在那句 printf 之后只剩 exit，输出顺序与可见行为都不变。
+
+这一接线之前，`signal_handler` 的判定只被单测调用，生产里没人调它——所以下面
+的 T9a/T9b/T9c 钉的不是判定（那已有 T8/T9），而是「信号能从收信回调一路走到
+退出决定」这条路径。
+
 ### 2.9 `get_work`：阻塞收 + 双写回 + panic
 
 ```c
@@ -454,7 +472,7 @@ pub trait SefCallbacks {
     fn init_fresh(&mut self, init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno>;
     fn init_restart(&mut self, init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno>;
     fn init_lu(&mut self, init_type: SefInitType, info: &SefInitInfo) -> Result<i32, Errno>;
-    fn signal_handler(&mut self, signo: i32);
+    fn signal_handler(&mut self, signo: i32) -> LifecycleAction;
 }
 ```
 
@@ -463,21 +481,33 @@ pub trait SefCallbacks {
 `sef.rs` 缺省方法注释 + 本节 + design D5 三处。
 
 传输侧（`sef_receive`/`ipc_send`/`sef_startup`）本体属 `minix-sef`/`minix-sys`，
-当前均为 stub（sef 仅 5 行占位，sys 全 `todo!()`），本篇**只消费 API**：
+本 crate 只消费它们：生产实现是 `sef.rs:SysSefTransport`（receive 经
+`minix_sef::sef_receive_status`，send/sendrec 经 `minix_sys::ipc` 的 trap 直连，
+三条 `warn_*` 与 `diag_out` 走 `SYS_DIAGCTL` 缝），测试注入 fake transport。
+早期版本的 `UnimplementedTransport`（每方法 `panic!`）作为 fail-closed 先例保留在
+文件里，但 `main.rs` 自 S23 起只装配 `SysSefTransport`：
 
 ```rust
 pub trait SefTransport {
-    fn receive(&mut self, inbox: &mut Message) -> Result<(Endpoint, i32), i32>;
-    fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32>;
     fn startup(&mut self);
+    /// `on_signal` = C 注册给 SEF 的信号处理体（main.c:85）。
+    fn receive(
+        &mut self,
+        inbox: &mut Message,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<(Endpoint, i32), i32>;
+    fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32>;
+    fn send_rec(&mut self, dest: Endpoint, reply: &mut Message) -> Result<(), i32>;
+    /* warn_illegal / warn_fkey_events / warn_fkey_ctl / diag_out，见 02・03 */
 }
 ```
 
-`receive` 返回 `(caller, call_nr)` 而非写全局量——D1 的直接推论。生产实现是
-forward reference（文件不存在时显式标注，Step 1.0g 合规），测试用 fake
-transport。对照 Redox：Redox 的 scheme server 同样把内核接线收敛到 trait
-边界之后，服务逻辑只对 trait 编程，单测永远不进内核。本篇是同一原则在
-Minix-SEF 语义下的实例化。
+`receive` 返回 `(caller, call_nr)` 而非写全局量——D1 的直接推论。信号**不能**走
+这个返回值：C 的 handler 是在 `sef_receive_status` 内部被逐号调用的
+（`sef_signal.c:96-128`），所以它只能作为参数递进去（见 §2.8 的接线段）。
+对照 Redox：Redox 的 scheme server 同样把内核接线收敛到 trait 边界之后，服务
+逻辑只对 trait 编程，单测永远不进内核。本篇是同一原则在 Minix-SEF 语义下的
+实例化。
 
 ### 3.3 D3：分类器是纯函数（dispatch.rs），02/03 留桩
 
@@ -654,6 +684,9 @@ transport 层持有，库内无 `IS_PROC_NR` 常量——全树零定义，§2.1
 | T7 | `init_restart`/`init_lu` 缺省体 | 与 `init_fresh` 同结果（STATELESS 无分支） |
 | T8 | `signal_handler(TERM≠15)` | 无 transport 调用、无状态变化 |
 | T9 | `signal_handler(15)` | 返回 Shutdown + 恰一次 unmap 请求（顺序：先 unmap 后停，§2.8） |
+| T9a | `step` 收信回调收到 SIGTERM | 返回 Shutdown + 恰一次 UNMAP（`calls[0].0 == false`）+ 零 send + 零非法请求告警（那一帧不落分派表，§2.8 接线段） |
+| T9b | `step` 收信回调收到非 TERM 号（如 71） | 返回 Continue 且 `calls` 为空（main.c:110 的忽略臂不动 TTY 注册） |
+| T9c | `step` 收信回调收到 SIGTERM 但 UNMAP 被 TTY 拒 | 仍返回 Shutdown + `warn_fkey_ctl` 恰一次（失败不吞也不阻断退出，dmp.c:63-65 + main.c:115） |
 | T10 | `step` 遇 HandleFkey | 拉取 EVENTS → 表分派执行 → `EDONTREPLY` 抑制无 send（03 起；初版 ENOSYS 回复已更新） |
 | T11a | `step` 遇 Suppress（非 notify） | send 零调用 + 告警恰一次（D4 可观测性） |
 | T11b | `step` 遇 Suppress（非 TTY notify） | send 零调用 + 告警零次（C default 分支静默，§2.3） |
@@ -661,15 +694,18 @@ transport 层持有，库内无 `IS_PROC_NR` 常量——全树零定义，§2.1
 | T13 | `startup` | transport.startup 恰一次 + init_fresh OK（boot 锚点可达） |
 | T14 | MAP 失败（TTY 拒绝） | `warn_fkey_ctl` 恰一次 + `startup` 仍 `Ok(OK)` + 无注册在案（minix3/minix/servers/is/dmp.c:map_unmap_fkeys（L63，工具生成） 通道化，V1 轮） |
 
-### 5.3 测试统计（截至 2026-09-04）
+### 5.3 测试统计（本轮接线后的复跑数）
 
-- `cargo test -p minix-is`：**41 passed, 0 failed**（`state` 1 + `dispatch` 15 +
-  `sef` 4 + `lib` 10 + `tty_fkey` 11；其中 1 个 `#[should_panic]` 锁定 receive
-  失败路径；`dispatch` 8 个与 `tty_fkey` 11 个归 02/03 §5）。
-- `cargo check -p minix-is` / `cargo clippy -p minix-is`：本 crate 零警告
- （`minix-sys` stub 的 28 个预先存在警告与本篇无关）。
-- 本节列出与本模块直接相关的 21 个行为断言（T1~T13，T5 含 4 个边界值，
-  T11 拆 a/b 两路）；
+- `cargo test -p minix-is`：**129 passed, 0 failed**（按文件：`acquire` 22 +
+  `dump_kernel` 23 + `dispatch` 16 + `lib` 16 + `dump_pm` 9 + `dump_vfs` 8 +
+  `dump_vm` 6 + `sef` 6 + `tty_fkey` 12 + `dump_ds` 5 + `dump_rs` 5 +
+  `state` 1；其中 1 个 `#[should_panic]` 锁定 receive 失败路径）。
+  本篇自身的 `lib`+`sef` 两面共 22 枚，其余归 02~10 各篇。
+- `cargo check -p minix-is` / `cargo clippy -p minix-is`：本 crate 新增代码零告警
+ （余下 `sef.rs:330` 未用导入、`dump_vfs.rs:252` 未用变量两枚是先存告警，
+  与本篇本轮无关）。
+- 本节列出与本模块直接相关的 24 个行为断言（T1~T14，T5 含 4 个边界值，
+  T11 拆 a/b 两路，T9 拆 a/b/c 三路）；
   完整清单：`rg "#\[test\]" os/servers/is/src/`。
 
 ---

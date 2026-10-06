@@ -106,7 +106,19 @@ pub trait SefTransport {
     fn startup(&mut self);
     /// Block until a message arrives; returns `(sender, call_nr)`.
     /// C: `sef_receive(ANY, &m_in)` + writeback — main.c:125-129.
-    fn receive(&mut self, inbox: &mut Message) -> Result<(Endpoint, i32), i32>;
+    ///
+    /// `on_signal` is the seam for C's registered signal handler
+    /// (`sef_setcb_signal_handler`, main.c:85): SEF calls it *inside* the
+    /// receive step — once per pending signal number
+    /// (`sef_signal.c:96-128`) — so a decision made there cannot travel
+    /// through the return value of this method. The implementation must
+    /// therefore hand every number to the callback before it reports the
+    /// frame it actually got.
+    fn receive(
+        &mut self,
+        inbox: &mut Message,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<(Endpoint, i32), i32>;
     /// Send a reply. C: `ipc_send(who, &m_out)` — main.c:143.
     fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32>;
     /// Send-and-receive. C: `ipc_sendrec` — sef_cb_init_response_rs_reply
@@ -198,18 +210,20 @@ impl SefTransport for SysSefTransport {
         // 额外动作——保留 C 的调用点形状。
     }
 
-    fn receive(&mut self, inbox: &mut Message) -> Result<(Endpoint, i32), i32> {
+    fn receive(
+        &mut self,
+        inbox: &mut Message,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<(Endpoint, i32), i32> {
         // C main.c:125-129 — sef_receive(ANY, &m_in);ping 在 SEF 层
-        // 拦截并作答(A-11:分类器永不见 ping)。
-        let recv = minix_sef::sef_receive_status(
-            &mut self.ipc,
-            Endpoint::ANY,
-            inbox,
-            &mut |_sig| {
-                // C IS 的 SYSTEM 通知面:未注册 signal handler 的默认
-                // 忽略(与 VFS 同款处置)。
-            },
-        )?;
+        // 拦截并作答（A-11:分类器永不见 ping）。信号号在同一次收信里
+        // 交给回调（C 直接在 `sef_receive_status` 内调注册的 handler，
+        // main.c:85），这里把同一个号转交给主循环提供的处理体。
+        // 一薄层 closure 是必要的：库入口按 `impl FnMut` 单态化，而本
+        // trait 为了对象安全只能收 `dyn FnMut`（不定长）。
+        let mut handoff = |signo: i32| on_signal(signo);
+        let recv =
+            minix_sef::sef_receive_status(&mut self.ipc, Endpoint::ANY, inbox, &mut handoff)?;
         Ok((recv.source, recv.message.m_type))
     }
 
@@ -263,7 +277,11 @@ impl SefTransport for UnimplementedTransport {
         panic!("IS transport: sef_startup wiring pending (01-is-init-main.md §3 D2)");
     }
 
-    fn receive(&mut self, _inbox: &mut Message) -> Result<(Endpoint, i32), i32> {
+    fn receive(
+        &mut self,
+        _inbox: &mut Message,
+        _on_signal: &mut dyn FnMut(i32),
+    ) -> Result<(Endpoint, i32), i32> {
         panic!("IS transport: sef_receive wiring pending (01-is-init-main.md §3 D2)");
     }
 
@@ -300,7 +318,7 @@ mod tests {
         // S23 片 1 的真装面。
         let mut t = super::SysSefTransport::new();
         let mut inbox = Message::default();
-        assert_eq!(t.receive(&mut inbox), Err(minix_types::EIO));
+        assert_eq!(t.receive(&mut inbox, &mut |_sig| {}), Err(minix_types::EIO));
     }
 
     #[test]
