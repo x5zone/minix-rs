@@ -25,7 +25,10 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use minix_sys::ipc::CALL_NOTIFY;
-use minix_types::{Endpoint, Message, NOTIFY_MESSAGE, RS_INIT, SIGS_SIGNAL_RECEIVED};
+use minix_types::{
+    Endpoint, INIT_PROC_NR, KERNEL_SIGNAL_FIRST, KERNEL_SIGNAL_LAST, Message, NOTIFY_MESSAGE,
+    RS_INIT, SIGS_SIGNAL_RECEIVED, sigset_contains,
+};
 
 /// Kernel/system pseudo-endpoint. C: `SYSTEM` — endpoint.h.
 pub const SYSTEM_ENDPOINT: Endpoint = Endpoint(-2);
@@ -128,9 +131,30 @@ pub fn pong_via_ipc(ipc: &mut impl SefIpc, source: Endpoint) {
 /// LU/ST campaigns and are absent from 03-stage-rs (C keeps them behind
 /// `#if INTERCEPT_SEF_LU_REQUESTS`).
 ///
-/// The `on_signal` closure receives the signal request type (always
-/// `SEF_SIGNAL_REQUEST_TYPE` today) — C surfaces it to
-/// `do_sef_signal_request` which invokes the registered signal handler.
+/// # The `on_signal` contract
+///
+/// The closure plays the role of C's registered `sef_cb_signal_handler`
+/// (`sef.h:269`), so its argument is a signal number. C's
+/// `IS_SEF_SIGNAL_REQUEST` (`sef.h:264-266`) has two halves and each one
+/// feeds the callback differently:
+///
+/// | C half | Shape | Callback argument | Message outcome |
+/// |---|---|---|---|
+/// | `is_ipc_notify && m_source == SYSTEM` (`sef.h:266`) | kernel notification, payload `m_notify.sigset` | one call per pending signal in `SIGK_FIRST..=SIGK_LAST`, ascending (`sef_signal.c:97-102`) | surfaced as [`SefEvent::Signal`] (a Rust-side choice — see the fallback note) |
+/// | `m_type == SIGS_SIGNAL_RECEIVED && m_source < INIT_PROC_NR` (`sef.h:265`) | ordinary message from a signal manager, payload `m_pm_lsys_sigs_signal.num` | one call with that signal number (`sef_signal.c:117-128`) | swallowed, like C's `continue` (`sef.c:233-236`) |
+///
+/// # The wake-up fallback
+///
+/// A `SYSTEM` notification whose bitmap holds no kernel-signal bit calls the
+/// callback once with [`SEF_SIGNAL_REQUEST_TYPE`] instead of a signal number.
+/// That is a documented deviation, not a slip: the kernel keeps pending
+/// signals in a 64-bit `SigSet`, so bits 70..=73 — the whole kernel-signal
+/// window — cannot be produced yet (its own registered limitation,
+/// `os/kernel/src/syscall_signal.rs:88-94`), while consumers act on the
+/// wake-up half of C's `send_sig`: VM decides on `pending_signo.is_some()`
+/// (`os/servers/vm/src/vm_server.rs:1522-1530`) and `uds`/`lwip` latch on
+/// any notification arriving. Once the bitmap width lands, real signal
+/// numbers flow through the same callback and the fallback stops firing.
 pub fn sef_receive_status(
     ipc: &mut impl SefIpc,
     src: Endpoint,
@@ -160,13 +184,25 @@ pub fn sef_receive_status(
             });
         }
 
-        // C sef.c:174-191 — notification classification by source.
+        // C sef.c:183-193 — notification classification by source.
         if is_ipc_notify(status) {
             if source == SYSTEM_ENDPOINT {
                 // C sef.c:183-193（通知按源改写 m_type）+ sef.c:230-238
                 // （`IS_SEF_SIGNAL_REQUEST` 命中后交 `do_sef_signal_request`）
-                // — SYSTEM → signal request。
-                on_signal(SEF_SIGNAL_REQUEST_TYPE);
+                // 的 SYSTEM 臂：载荷位图按内核信号窗口升序逐位走，每一位
+                // 命中调一次回调（sef_signal.c:96-113）。
+                let set = msg.notify_sigset();
+                let mut pending = false;
+                for signo in KERNEL_SIGNAL_FIRST..=KERNEL_SIGNAL_LAST {
+                    if sigset_contains(set, signo as u32) {
+                        on_signal(signo);
+                        pending = true;
+                    }
+                }
+                if !pending {
+                    // 窗口空命中 = 今天的生产实际路径，见上方唤醒兜底注。
+                    on_signal(SEF_SIGNAL_REQUEST_TYPE);
+                }
                 return Ok(SefReceive {
                     source,
                     message: *msg,
@@ -191,6 +227,30 @@ pub fn sef_receive_status(
                     event: SefEvent::PingInvalid,
                 });
             }
+        }
+
+        // C `IS_SEF_SIGNAL_REQUEST` 的前半（sef.h:265）：非通知形态、
+        // `m_type == SIGS_SIGNAL_RECEIVED` 且发送者是 boot 模块（端点号
+        // < INIT_PROC_NR）——即信号管理器把非终止类信号译成的那条普通
+        // 消息（PM 的译码在 pm/signal.c:470-473，RS 在 rs/main.c:699-701）。
+        // 判据取端点裸值比较，与 C 的 `m_source < INIT_PROC_NR` 同形：带
+        // 代际位的回收端点（generation > 0）在 C 里同样不 < 11，改用
+        // `slot()` 反而会放宽判定。位置放在通知带之后、Call 兜底之前：
+        // 普通 Call 只多付一次整数比较，也与 C 的 case 次序（ping/lu 在
+        // signal 之前）一致。
+        if m_type == SEF_SIGNAL_REQUEST_TYPE && source.get() < INIT_PROC_NR {
+            // C sef_signal.c:115-128：管理器形的载荷是单个号码，直接交给
+            // 回调；`do_sef_signal_request` 返回 OK 后 sef.c:233-236
+            // `continue`——这条消息被框架消费，从不进服务的分派表。不上浮
+            // 事件除了贴 C，还避开一个陷阱：`SefEvent::Signal` 的消费方读
+            // `m_notify`（如 os/fs/fs-rt/src/ipc.rs 的位图取法），而管理器
+            // 形的活跃臂是 `m_pm_lsys_sigs_signal`。
+            // `sigs_signal_num` 在 `m_type` 守卫下恒为 `Some`，`if let` 只是
+            // 把这一事实交给类型系统而不是编造一个零号。
+            if let Some(signo) = msg.sigs_signal_num() {
+                on_signal(signo);
+            }
+            continue;
         }
 
         // Ordinary message: return to the server loop (C sef.c:252-258).
@@ -394,6 +454,150 @@ mod tests {
         assert_eq!(recv.event, SefEvent::Signal(SEF_SIGNAL_REQUEST_TYPE));
         assert_eq!(recv.source, SYSTEM_ENDPOINT);
         assert!(signaled);
+    }
+
+    /// 通知形的载荷：`m_notify.sigset`（C `sef_signal.c:96` 的读法）。
+    fn system_notify_msg(sigset: minix_types::SigSetBits) -> Message {
+        let mut m = notify_msg();
+        m.m_source = SYSTEM_ENDPOINT;
+        m.m_u.m_notify = minix_types::MessNotify::new(0, 0, sigset);
+        m
+    }
+
+    /// 管理器消息形：普通（非通知）的 `SIGS_SIGNAL_RECEIVED`，载荷是单个
+    /// 号码（C `pm/signal.c:470-473`、`rs/main.c:699-701`）。
+    fn manager_signal_msg(source: Endpoint, num: i32) -> Message {
+        let mut m = Message {
+            m_source: source,
+            m_type: SIGS_SIGNAL_RECEIVED,
+            ..Message::default()
+        };
+        m.m_u.m_pm_lsys_sigs_signal = minix_types::MessPmLsysSigsSignal {
+            num,
+            _padding: [0; 52],
+        };
+        m
+    }
+
+    /// C `sef_signal.c:97-102`——SYSTEM 位图按 `SIGK_FIRST..SIGK_LAST` 升序
+    /// 遍历，每一位命中调一次回调，调的是信号号而不是请求类型。位基是
+    /// `signo-1`（`sigtypes.h:67-68`），所以 71 落 `bits[2]` 的 bit 6、
+    /// 74 落 bit 9。事件形状不变（fs-rt 一类消费方仍从消息里自取位图）。
+    #[test]
+    fn test_notify_sigset_walks_kernel_signals_ascending() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.push(4, system_notify_msg([0, 0, (1 << 6) | (1 << 9), 0]));
+
+        let mut seen = Vec::new();
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |signo| seen.push(signo),
+        )
+        .unwrap();
+        assert_eq!(seen, vec![71, 74], "两位命中＝两次回调，升序");
+        assert_eq!(
+            recv.event,
+            SefEvent::Signal(SEF_SIGNAL_REQUEST_TYPE),
+            "事件形状不随位集变化"
+        );
+    }
+
+    /// 窗口外不展开：低 64 位全置位 = 用户/系统信号 1..=64 都挂着，
+    /// 它们不是内核信号族（C 的遍历只走 71..=74），回调只能收到
+    /// 一次兜底的请求类型。
+    #[test]
+    fn test_notify_low_word_bits_are_outside_the_kernel_window() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.push(4, system_notify_msg([u32::MAX, u32::MAX, 0, 0]));
+
+        let mut seen = Vec::new();
+        sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |signo| seen.push(signo),
+        )
+        .unwrap();
+        assert_eq!(
+            seen,
+            vec![SEF_SIGNAL_REQUEST_TYPE],
+            "窗口零命中→只走一次兜底回调"
+        );
+    }
+
+    /// 生产实际路径的形状钉：内核 `SigSet` 仍是 64 位（位 70..=73 产不出），
+    /// 所以今天每一条 SYSTEM 通知都是空位图→恰好一次回调且参数是请求类型。
+    /// 这条兜底是 VM 唤醒裁决与 uds/lwip 终止闩的依赖项（函数头
+    /// 「The wake-up fallback」注）；删它就等于静默断掉那两处。
+    #[test]
+    fn test_notify_empty_sigset_wakes_the_handler_once() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.push(4, system_notify_msg([0; 4]));
+
+        let mut seen = Vec::new();
+        sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |signo| seen.push(signo),
+        )
+        .unwrap();
+        assert_eq!(seen, vec![SEF_SIGNAL_REQUEST_TYPE]);
+    }
+
+    /// C `sef.h:265` 前半 + `sef_signal.c:115-128`：管理器消息形的号码交给
+    /// 回调，消息本身被框架吞掉（`sef.c:233-236` 的 `continue`）——
+    /// 故服务看到的不是它，而是下一轮收到的普通消息；pong 与它无关。
+    #[test]
+    fn test_manager_signal_request_is_swallowed_after_the_callback() {
+        let mut ipc = CannedSefIpc::new();
+        // inbox 是 LIFO：先压普通消息，它才是最终返回值。
+        ipc.push(1, call_msg(11));
+        ipc.push(1, manager_signal_msg(Endpoint::PM, 15));
+
+        let mut seen = Vec::new();
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |signo| seen.push(signo),
+        )
+        .unwrap();
+        assert_eq!(seen, vec![15], "管理器形把载荷号码交给回调");
+        assert_eq!(
+            recv.event,
+            SefEvent::Call(11),
+            "被吞的管理器形不上浮，循环取下一条"
+        );
+        assert!(ipc.pongs.is_empty(), "信号请求不是 ping，不 pong");
+    }
+
+    /// E-1 的方向哨兵：同一号码同一消息类型，但发方不是 boot 模块（init
+    /// 的 11 槽与用户槽 20）时不得拦截——否则用户进程发给服务的合法
+    /// 0xE00 调用号会被 SEF 静默吞掉（照 `source >= INIT_PROC_NR` 写就会如此）。
+    #[test]
+    fn test_signal_request_from_init_slot_or_above_is_a_plain_call() {
+        for source in [Endpoint::INIT, Endpoint(20)] {
+            let mut ipc = CannedSefIpc::new();
+            ipc.push(1, manager_signal_msg(source, 15));
+
+            let mut seen = Vec::new();
+            let recv = sef_receive_status(
+                &mut ipc,
+                Endpoint::ANY,
+                &mut Message::default(),
+                &mut |signo| seen.push(signo),
+            )
+            .unwrap();
+            assert!(seen.is_empty(), "{source:?} 不是信号管理器");
+            assert_eq!(
+                recv.event,
+                SefEvent::Call(SIGS_SIGNAL_RECEIVED),
+                "{source:?} 发的 0xE00 是普通调用，原样上浮"
+            );
+        }
     }
 
     /// 非通知的 RS 消息:is_ipc_notify 为假,不走 ping 分类,原样上浮。
