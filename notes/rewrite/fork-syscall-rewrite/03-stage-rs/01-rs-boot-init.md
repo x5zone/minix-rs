@@ -28,7 +28,7 @@
 
 ### 1.1 核心问题：RS 的"引导自举"
 
-Minix3 的 boot 顺序（`minix3/minix/kernel/table.c:boot_image（L52，工具生成）`）把 RS 放在**第 2 个用户服务**（DS 第一、RS 紧随其后），因为所有其他用户服务（PM/VFS/SCHED/DS/...）都依赖 RS 来获得运行许可与初始化。但反过来，RS 启动时什么设施都没有：
+先说清这是哪一张序。`minix3/minix/kernel/table.c:boot_image（L52，工具生成）` 这张数组是 **登记序（模块摆放序）**：它把 DS 摆在第 1 个用户服务、RS 紧随其后（第 2），而这张序由 GRUB 交来的模块顺序硬性决定。内核表头注释把这张数组序说成 NOTIFY 投递优先级的**意图声明**（“DS 排最前以可靠地异步发布系统事件、RS 紧随其后优先处理周期 ping”），但内核里并无代码实现这句话——真实的 NOTIFY 挑选序按 proc 号升序扫描，DS 反而排在第七（六序对照见 `../00-master-plan/README.md`，登记序与执行序两层语义的展开见 `00-rs-overview.md` §1.2）。它跟“谁先启动运行”是两码事：真正决定谁先跑的是 `minix3/minix/kernel/main.c:kmain` 的 **可调度序**——除内核任务外，第一个能运行的用户服务是 **VM**，RS 作为 root system process 紧随其后（其余进程连 RS 自己都被 `RTS_VMINHIBIT` 抑制，等 VM 建好页表才放行）。RS 的独特地位来自它是“给其余 boot 成员授权放行、按需读盘加载非 boot 服务”的那个角色——PM/VFS/SCHED/DS 等确实都依赖它拿运行许可与初始化——而不是来自它在数组里排第几。但反过来，RS 启动时自己什么设施都没有：
 
 ```
 RS 需要管理服务生命周期 → 服务需要 RS 允许才能运行 → RS 必须先启动
