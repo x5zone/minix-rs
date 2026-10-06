@@ -23,7 +23,7 @@ Minix3 内核启动分为 6 个阶段（A-F），本章聚焦**阶段 C：进程
 | B | kmain / cstart | 内核进入 C 入口，初始化平台、内存、arch | 03-kmain-cstart.md |
 | **C** | **进程表初始化与 boot 进程加载** | **清空进程表/特权表 → 遍历 boot image → 加载 VM ELF** | **本文档** |
 | D | 跨空间初始化 | 确认 direct_map 就绪（废弃 freepdes/ptproc 临时窗口） | 07-cross-space-init.md |
-| E | 系统服务初始化 | RS 启动其他系统服务 | 08-system-init-boot-finish.md |
+| E | 系统服务初始化 | RS 给 boot 成员授权放行（不读镜像），并按需读盘加载非 boot 服务 | 08-system-init-boot-finish.md |
 | F | 首次切换到用户态 | 调度器选中第一个用户进程，切换 | 10-switch-to-user.md |
 
 阶段 A/B 已完成内核自身的初始化（平台探测、内存布局识别、arch 早期设置）。阶段 C 接手的是一张白板：进程表空空如也，没有任何用户态进程存在。阶段 C 的任务是**把编译时硬编码的 boot image 清单实例化为进程表中就位（但暂停）的进程**，为阶段 D/E/F 做准备。
@@ -333,7 +333,7 @@ misc_flags 与 RTS 分工：RTS 决定**可运行性**（影响调度队列）�
 | 15 | MFS | 10 | 10 |
 | 16 | INIT | 11 | 11 |
 
-**为什么 DS/RS 排在最前**——三个维度分开看：**位置**（image[] 顺序）只是 multiboot 物理摆放约定，与**加载**（boot 循环里只有 VM 被 `arch_boot_proc()` 真正解析映射，`main.c:265`）和**执行**（boot 进程全部带 RTS_PROC_STOP，顺序由 `bsp_finish_booting` 决定，§1.5/§4.8）正交。DS/RS 靠前源于 table.c 注释（L38-41）的作者意图声明——DS 保证系统事件可靠异步发布（NOTIFY）、RS 紧随处理周期性 ping——但 C 代码没有任何 assert 强制该顺序：其他进程按 endpoint 数字定位，不依赖 image[] 位置；调度优先级由 main.c:209-210 显式写 `SRV_Q` 决定；boot 循环本身原子执行。因此 image[] 顺序没有可验证的运行时影响，**minix-rs 做了显式化改进**：以 [`BOOT_MODULE_PROC_NRS[i]`](file:///os/kernel/src/proc.rs#L130-L142) 给出每个索引的 ProcNr 与 com.h 来源，读者无须数位置（详见 §4.0/§4.7）。其他 11 个模块的 ELF 运行时由 RS 经 VM exec 加载——"加载"在 boot 期只对 VM 发生一次（详见 17-syscall-process.md 与 09-vm-boot-protocol.md）。
+**为什么 DS/RS 排在最前**——三个维度分开看：**位置**（image[] 顺序）只是 multiboot 物理摆放约定，与**加载**（boot 循环里只有 VM 被 `arch_boot_proc()` 真正解析映射——该函数在 `minix3/minix/kernel/main.c:kmain` 里被无条件调用，但内部只对 `VM_PROC_NR` 做事，见 `minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc` 里的 `if(rp->p_nr == VM_PROC_NR)` 分支；其余 boot 成员的 ELF 由 VM 接手，见下）和**执行**（boot 进程全部带 RTS_PROC_STOP，顺序由 `bsp_finish_booting` 决定，§1.5/§4.8）正交。DS/RS 靠前源于 `minix3/minix/kernel/table.c:image` 表头注释的作者意图声明——DS 保证系统事件可靠异步发布（NOTIFY）、RS 紧随处理周期性 ping——但 C 代码没有任何 assert 强制该顺序：其他进程按 endpoint 数字定位，不依赖 image[] 位置；调度优先级由 `main.c:kmain` 显式写 `SRV_Q` 决定；boot 循环本身原子执行。**这条注释里最容易被当成机制的是"数组顺序 = NOTIFY 投递优先级"：内核里没有实现它**——`minix3/minix/kernel/proc.c:mini_receive` 经 `has_pending` 从低位往高位扫 `s_notify_pending` 位图，priv id 由 `minix3/minix/include/minix/priv.h:static_priv_id`（`NR_TASKS + proc_nr`）给出，所以实际按 proc 号升序，DS 排第七。因此 image[] 顺序没有可验证的运行时影响（除了模块字节摆放必须对齐），**minix-rs 做了显式化改进**：以 [`BOOT_MODULE_PROC_NRS`](file:///os/kernel/src/proc.rs#L130-L142) 给出每个索引的 ProcNr 与 com.h 来源，读者无须数位置（详见 §4.0/§4.7）。**其余 11 个模块的 ELF 在 boot 期不解析，但不是由 RS 解析——是由已经活过来的 VM 解析装载**（`minix3/minix/servers/vm/main.c:init_vm` 按数组顺序遍历 + `exec_bootproc` 装载，详见 §2.3 末段；四层划分与六张次序见 `../00-master-plan/README.md`，另见 17-syscall-process.md 与 09-vm-boot-protocol.md）。
 
 proc 号决定进程表槽位（`proc_addr(proc_nr)`）与 endpoint（gen=0 时 endpoint = proc 号，服务器间靠 endpoint 寻址），因此必须按 C proc 号落槽；Rust 侧映射表是 `BOOT_MODULE_PROC_NRS[i]`（`os/kernel/src/proc.rs:const P_STOP`）。
 
@@ -794,7 +794,7 @@ EXTERN struct priv *ppriv_addr[NR_SYS_PROCS];	/* direct slot pointers（大小 6
 1. **数组顺序 ≠ proc 号**：条目携带的 `proc_nr` 是 `com.h` 的固定值（如 DS=6、RS=2、PM=0、INIT=11），与数组顺序是两张表。boot 循环用 `proc_addr(ip->proc_nr)` 把每个条目放进正确的进程表槽位——用户态服务器之间按 proc 号寻址才不会错位（完整编号对照见 §1.4.1）。
 2. **用户态模块的二进制来自 multiboot module**：`i ≥ NR_TASKS` 的条目从 `kinfo.module_list[i − NR_TASKS]` 取 `mod_start/mod_end`（main.c:181）——image[] 只定义「谁、什么号、叫什么」，代码内容由 boot loader 摆放的 module 链表提供。
 
-**VM 是 boot 期唯一加载 ELF 的用户进程**：`arch_boot_proc()`（arch/i386/protect.c:388-455）对内核 task（`p_nr < 0`）直接返回；对 VM 构造 `exec_info`（64KB 栈、ELF 头直指 module 物理地址），以 6 个内存回调调 `libexec_load_elf` 解析 ELF 并映射进 bootstrap 页表，在栈顶布置 `ps_strings`，再由 `arch_proc_init()` 写入入口三要素（§2.1.4）；最后把 VM blob 的物理内存 `add_memmap` 回收进空闲表、清 `mod_start/mod_end = 0` 防止重复回收。其余 11 个用户模块 boot 期不加载 ELF——保持「寄存器零值 + RTS_VMINHIBIT」的占位状态，等 VM 运行后由 RS exec 重建（→ [09-vm-boot-protocol.md](./09-vm-boot-protocol.md)、[17-syscall-process.md](./17-syscall-process.md)；Rust 侧 load_vm_elf 见 §4.2）。
+**VM 是 boot 期唯一由内核亲自装载的用户进程**：`arch_boot_proc()`（`minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`）对内核 task（`p_nr < 0`）直接返回；对 VM 构造 `exec_info`（64KB 栈、ELF 头直指 module 物理地址），以 6 个内存回调调 `libexec_load_elf` 解析 ELF 并映射进 bootstrap 页表，在栈顶布置 `ps_strings`，再由 `arch_proc_init()` 写入入口三要素（§2.1.4）；最后把 VM blob 的物理内存 `add_memmap` 回收进空闲表、清 `mod_start/mod_end = 0` 防止重复回收。其余 11 个用户模块 boot 期不由内核装载 ELF——保持「寄存器零值 + RTS_VMINHIBIT」的占位状态，**等 VM 运行后由 VM 自己的 `exec_bootproc` 解析装载**（`minix3/minix/servers/vm/main.c:init_vm` 按 `kernel_boot_info.boot_procs[]` 的数组顺序遍历，即 §1.4.1 那张表的顺序：DS 第一个被铺好、RS 第二个；源码注释原话 "Any other boot process is already in memory and is set up here"），装载完由 VM 发 `VMCTL_BOOTINHIBIT_CLEAR` 解除抑制。**不是"由 RS exec 重建"**——RS 自己也是被 VM 装载的那一批（→ [09-vm-boot-protocol.md](./09-vm-boot-protocol.md)、[17-syscall-process.md](./17-syscall-process.md)；Rust 侧 load_vm_elf 见 §4.2，对应的 boot 成员装载腿见 `os/servers/vm/src/vm_server.rs:init_boot_procs`）。
 
 **boot 流程完整链路**（阶段 C 在其中的位置）——按 `minix3/minix/kernel/main.c` 源码顺序：
 

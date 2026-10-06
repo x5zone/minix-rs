@@ -24,7 +24,7 @@ VM 是页表的所有者，但它刚启动时只有 kernel 给的 bootstrap 页�
 3. VM → SYS_VMCTL(VMCTL_SETADDRSPACE): 切换 CR3 到 VM 的真实页表
 4. VM → SYS_VMCTL(VMCTL_KERN_PHYSMAP): 内核声明需映射的物理区
 5. VM → SYS_VMCTL(VMCTL_KERN_MAP_REPLY): VM 返回虚拟地址
-6. VM 为 PM/VFS/RS 等创建页表
+6. VM 为 PM/VFS/RS 等创建页表，并解析装载它们的 ELF 段（C: servers/vm/main.c:init_vm 按数组序遍历 + exec_bootproc 装载）
 7. VM → SYS_VMCTL(VMCTL_VMINHIBIT_CLEAR): 解除所有进程的 VMINHIBIT
 8. vm_running = 1（由 step3 的 SetAddrSpace 触发；详见 §3 决策"vm_running 置位时机"）
 ```
@@ -419,7 +419,9 @@ pub fn set_current_ptproc_nr(nr: crate::proc::ProcNr) {  // lib.rs:1963
 
 ### 4.9 VM ELF 加载 at boot（P9-5 / FIX-24）
 
-C 的 `arch_boot_proc()` 在 boot 期间把 VM ELF 段映射进 bootstrap 页表（protect.c:388 x86 / protect.c:115 ARM）。Rust 移植早期将非 mock 路径标为 `EntrySpec::DEFERRED`（PC=0），靠 RS 在运行时加载 VM ELF——这是不正确的，因为 VM 是 ptproc，必须在 boot 后立即可运行以服务其他 boot 进程的 VMCTL/PRIVCTL 系统调用。P9-5 落地真实 boot 期 VM ELF 加载。
+如果 boot 期不把 VM 的可执行映像真正铺进内存、只留一个空入口等运行时再补，会发生什么？VM 是页表进程，其余 boot 进程一醒过来就要向它发 VMCTL/PRIVCTL 系统调用；它若还没有代码与地址空间，整条启动链就卡在那里出不来。所以 C 的 `arch_boot_proc()` 在 boot 期间就把 VM ELF 段映射进 bootstrap 页表（x86: `minix3/minix/kernel/arch/i386/protect.c:arch_boot_proc`，ARM: `minix3/minix/kernel/arch/earm/protect.c:arch_boot_proc`；两边都用 `if(rp->p_nr == VM_PROC_NR)` 把这份活儿锁在 VM 一家），Rust 侧对应 `os/arch/src/arch/boot.rs:load_vm_elf`。
+
+这条约束还能反证一个很容易误记的说法——"其余 boot 成员可以交给 RS 在运行时加载"。若如此，得同时推翻两处代码：RS 自己就在那批成员里、它的镜像也是由 VM 铺的（`minix3/minix/servers/vm/main.c:init_vm` 遍历 + `exec_bootproc` 装载），而 RS 的 boot 循环给每个 boot 成员槽位写下的镜像副本字段恒为空（`minix3/minix/servers/rs/main.c:sef_cb_init_fresh` 里的 `rp->r_exec = NULL`）。字节 / 槽位 / 装载 / 放行四层各归谁，见 `../00-master-plan/README.md`。
 
 #### 4.9.1 CURRENT_ROOT_PHYS 内核全局
 

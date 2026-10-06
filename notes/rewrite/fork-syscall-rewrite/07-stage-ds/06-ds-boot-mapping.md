@@ -18,14 +18,17 @@
 - label 条目发布后怎么被检索——那是 08 的事。
 - 客户端怎么调发布——那是 12 的事。
 
-### 1.3 两层启动顺序
+### 1.3 三层启动顺序
 
-DS 的启动分两层，容易混：
+DS 的启动分三层，容易混（四层归因与六张次序的完整对照见 `../00-master-plan/README.md`）：
 
-1. **登记序**（`kernel/table.c:44-64`）：boot 映像里 DS 排第一个用户服务（`DS_PROC_NR` 紧跟 5 个内核任务之后、RS 之前）。这是"占位"，不是"运行"——映像按这个顺序加载，但不按这个顺序启动。
-2. **执行序**（`kernel/main.c:196,265-267`）：内核先抑制调度（`RTS_VMINHIBIT`，等 VM 建好页表），解抑后 RS 开始按依赖拉起服务，DS 是 RS 拉起的第一个可用注册面。
+1. **登记序**（`minix3/minix/kernel/table.c:image` 数组）：boot 映像里 DS 排第一个用户模块（`DS_PROC_NR` 紧跟 5 个内核任务之后、RS 之前）。这张序被硬约束的地方只有一个：模块字节在内存里的摆放必须与它一致，因为 `minix3/minix/kernel/main.c:kmain` 按 `i - NR_TASKS` 到 `kinfo.module_list[]` 取字节，数量对不上直接 panic。
+2. **装载序**（`minix3/minix/servers/vm/main.c:init_vm` 的遍历，沿用登记序 + `exec_bootproc` 装载）：DS 的 ELF 段由 **VM** 解析并铺进地址空间（DS 自己连页表能力都没有，无法把自己装进去）；**不是 RS 加载的**——RS 自己也是被 VM 装载的那一批。因为遍历就是按登记序走的，**DS 确实是第一个被铺好的用户服务**（下一个是 RS）。
+3. **放行序**（`minix3/minix/servers/rs/table.c:boot_image_priv_table`）：内核先把它们抑住（非 RS/VM 者挂 `RTS_NO_PRIV` 与 `RTS_NO_QUANTUM`，非 VM 者再挂 `RTS_VMINHIBIT` 与 `RTS_BOOTINHIBIT`，均在 `minix3/minix/kernel/main.c:kmain`）；VM 建好地址空间并解除抑制后，RS 按这张表的表内顺序逐个授权放行：跳过已在跑的 RS 与 VM，得 PM → SCHED → VFS → **DS（第四）** → tty → memory → MIB → PFS → MFS。minix-rs 把同一张表对位搬到了 `os/servers/rs/src/table.rs:BOOT_IMAGE_PRIV_TABLE`，所以"DS 第四"在本重写里同样成立。
 
-一句话：table 管"谁在映像里"，RS 管"谁先跑"。DS 能做注册中心，正因为它是 RS 拉起的第一个服务——后面的服务都要找它登记。
+注意第 2 层与第 3 层给出的两个"第几"并不矛盾：**DS 是第一个被铺好的，但是第四个拿到通行证的**。另外 `minix3/minix/kernel/table.c` 的表头注释把登记序说成 NOTIFY 投递优先级（"DS 必须排在最前以保证系统事件可靠异步发布"），内核里没有执行这句话的代码：通知的挑选走 `minix3/minix/kernel/proc.c:has_pending` 按 priv id 升序扫位图，而 priv id 等于 `NR_TASKS + proc_nr`（`minix3/minix/include/minix/priv.h:static_priv_id`），按这条序 DS 只排第七。引用该注释时只能当意图声明，不能当机制。
+
+一句话：table 管"谁在映像里、谁先被铺好"，VM 管"谁能读到自己的代码"，RS 管"谁拿到通行证"，而真正谁先跑起来还取决于内核调度与各自的服务间握手。DS 能做注册中心，不靠"最早放行"（它排在 PM/SCHED/VFS 之后），靠的是"比所有需要向它注册的服务都早"：那些服务多数是 init 跑 rc 脚本后经 RS 读盘拉起来的（`minix3/etc/usr/rc`），时序上晚了一整代。
 
 ### 1.4 清—拷—逐登三步（`sef_cb_init_fresh`，`store.c:254-279`）
 
@@ -47,7 +50,7 @@ DS 首次启动只做三件事：
 
 ### 1.6 小结
 
-两层序（table 占位，RS 拉起），三步锚（清、拷、逐登），owner 写死 `"rs"`，重启不清表。下一站 07——运行时的第一个 handler：发布。
+三层序（table 占位、VM 装载、RS 放行），三步锚（清、拷、逐登），owner 写死 `"rs"`，重启不清表。下一站 07——运行时的第一个 handler：发布。
 
 ---
 

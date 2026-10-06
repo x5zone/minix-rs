@@ -22,8 +22,8 @@
 与 `01-stage-kernel`、`02-stage-vm`、`04-stage-pm` 相同，采用**读者学习顺序 = 系统实际执行顺序**的组织原则。VFS 的启动链（`main.c`）：
 
 ```
-RS 加载 VFS（boot image，见 01-stage-kernel/06-proc-init-boot-proc.md）
-  │
+VM 装载 VFS 镜像（boot image 成员，minix3/minix/servers/vm/main.c:init_vm 按数组序遍历 + exec_bootproc 装载）
+  │  → RS 给它授权放行（minix3/minix/servers/rs/main.c:sef_cb_init_fresh 里的 sys_privctl(SYS_PRIV_SET_SYS) → sched_init_proc → SYS_PRIV_ALLOW；四层归因与六张次序见 00-master-plan/README.md 与 01-stage-kernel/06-proc-init-boot-proc.md）
   ▼  main.c:54  main()
   └─ sef_local_startup()                ← 01：SEF 回调注册（init_fresh + init_lu + lu_prepare）
        └─ sef_startup() → sef_cb_init_fresh()   main.c:393

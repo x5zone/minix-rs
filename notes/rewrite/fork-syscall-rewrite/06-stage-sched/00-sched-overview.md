@@ -17,12 +17,13 @@ SCHED 是 Minix3 的用户态调度器。要理解它为什么存在，先看它
 
 minix-rs 保留这个双层结构，把 SCHED 改写成单线程事件循环（与 VFS 的 ARCH A-1 同思路，但 SCHED 原本就无线程池，改写成本更低）。策略表 `schedproc[]` 的不变量（五进程表一致性、队列编号界内、时间片非零增）由 `03-schedproc-struct` 与 `04-schedproc-table` 专篇守卫。
 
-### 1.2 启动主线：从被 RS 加载到接到第一条消息
+### 1.2 启动主线：从被 VM 装载、被 RS 放行，到接到第一条消息
 
 SCHED 的一生按这条线走（每一站对应一篇机制文档）：
 
 ```
-RS 加载 SCHED 镜像（RS 决定何时启动它，参见 ../03-stage-rs/）
+VM 装载 SCHED 镜像（SCHED 是 boot_image 成员，minix3/minix/kernel/table.c:image 的 SCHED 条目）
+  │  RS 决定何时放行它：minix3/minix/servers/rs/main.c:sef_cb_init_fresh 里的 sched_init_proc + sys_privctl(SYS_PRIV_ALLOW)（参见 03-stage-rs/；四层归因与六张次序见 00-master-plan/README.md）
   └─ main() (main.c:22)
        └─ sef_local_startup() (main.c:111)      注册生命周期回调
        └─ sef_cb_init_fresh()                   ← 01-sched-init-main
