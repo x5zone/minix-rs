@@ -189,8 +189,8 @@ mod tests {
     #[test]
     fn test_sigset_contains_matches_c_bit_numbering() {
         let set: SigSetBits = [
-            (1 << 0) | (1 << 31), // signo 1 与 32
-            1 << 31,              // signo 64（bits[1] 的最后一位）
+            (1 << 0) | (1 << 31),                      // signo 1 与 32
+            1 << 31,                                   // signo 64（bits[1] 的最后一位）
             (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9), // 内核信号族 71..=74
             0,
         ];
@@ -214,7 +214,7 @@ mod tests {
     /// 与内核 64 位 `SigSet` 的桥:低 64 位无损落进前两个字,后两个字在生产者
     /// 拓宽之前恒零。
     #[test]
-    fn test_sigset_u64_bridge_round_trips_low_half() {
+    fn test_sigset_from_u64_fills_the_low_two_words_only() {
         let low = 0x0000_0001_8000_0001u64; // 置位的 bit: 0 / 31 / 32
         let set = sigset_from_u64(low);
         assert_eq!(set, [low as u32, (low >> 32) as u32, 0, 0]);
