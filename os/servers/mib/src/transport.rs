@@ -51,6 +51,15 @@ pub trait MibKernel {
         dir: RelayDir,
     ) -> Result<GrantId, i32>;
 
+    /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11)
+    /// — the birth protocol's paragraph-1 kernel call (clear IPC filters,
+    /// PD-34). Default answers OK so mock kernels model an accepting kernel;
+    /// the production impl wires `minix_sys::syscall::sys_statectl` over the
+    /// trap transport.
+    fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+        Ok(minix_types::OK)
+    }
+
     /// Retire a grant. C: `cpf_revoke(id)` — remote.c:441-446.
     fn grant_revoke(&mut self, grant: GrantId);
 
@@ -150,6 +159,21 @@ impl Default for SysServices {
 }
 
 impl MibKernel for SysTransport {
+    fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
+        // C `sys_statectl` 的真接线（trap 直连）：出生协议段一的生产形状。
+        let r = minix_sys::syscall::sys_statectl(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            request,
+            address,
+            length,
+        );
+        if r == minix_types::OK {
+            Ok(r)
+        } else {
+            Err(r)
+        }
+    }
+
     fn datacopy_from(&mut self, _src: Endpoint, _src_addr: u64, _buf: &mut [u8]) -> Result<(), i32> {
         Err(EIO)
     }

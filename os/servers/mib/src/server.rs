@@ -179,17 +179,33 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         // → 默认 ENOSYS（sef_init.c:324-327）。应答按 process_init 尾部
         // （sef_init.c:113-117）。
         if let minix_sef::SefEvent::Init(init_type) = rx.event {
-            let result = match init_type {
-                0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
-                _ => ENOSYS,
+            // PD-34：出生协议编排归库——段一清 IPC 过滤（经
+            // `MibKernel::statectl`，C `process_init` 第一段 sef_init.c:59-60
+            // 的 `assert(r == OK)`）、回报消息由库构造；本服务只答分派
+            // 语义（fresh+restart 注册同体 → 都 OK；LU 未注册 → 默认
+            // ENOSYS，sef_init.c:324-327）。
+            let reply = minix_sef::process_init(
+                &mut |req, addr, len| self.kernel.statectl(req, addr, len),
+                init_type,
+                &mut |t| match t {
+                    0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                    _ => ENOSYS,
+                },
+            );
+            return match reply {
+                Ok(mut reply) => {
+                    // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
+                    // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466）——非普通
+                    // send。sendrec 停在 receive(RS) 半等 RS catch 出口的 OK
+                    // 唤醒，避免 RS 的 reply 无人认领被野消费→回声投回
+                    // RS→step3 panic。
+                    let _ = self.ipc.send_rec(Endpoint::RS, &mut reply);
+                    (Turn::Handled, Incoming::Birth)
+                }
+                // C 段一 `assert(r == OK)`（sef_init.c:60）＝出生失败
+                // fail-closed；本循环的失败形状是 ReceiveFailed（计数累积）。
+                Err(_) => (Turn::ReceiveFailed, Incoming::Unknown),
             };
-            // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
-            // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466）——非普通 send。
-            // sendrec 停在 receive(RS) 半等 RS catch 出口的 OK 唤醒，避免
-            // RS 的 reply 无人认领被野消费→回声投回 RS→step3 panic。
-            let mut reply = minix_sef::sef_init_reply(result);
-            let _ = self.ipc.send_rec(Endpoint::RS, &mut reply);
-            return (Turn::Handled, Incoming::Birth);
         }
         let status = rx.status as u32;
         let incoming = triage(status_is_notify(status), msg.m_type);

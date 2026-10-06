@@ -286,6 +286,30 @@ pub fn sys_kill(
     perform_kernel_call(transport, SYS_KILL_CALL, &mut msg, |_| {})
 }
 
+/// C `sys_statectl`（libsys sys_statectl.c:3-11）：`_kernel_call(SYS_STATECTL,
+/// &m)`，载荷 `m_lsys_krn_sys_statectl.{request,address,length}`——状态控制
+/// 面（清/挂 IPC 过滤、状态表登记）。返回值即内核结果（OK 或负 errno）；
+/// C 的出生协议对第一段 `assert(r == OK)`（sef_init.c:60），调用方按各自
+/// 的 fail-closed 形状处置。请求号用 `minix_types::SYS_STATE_CLEAR_IPC_FILTERS`
+/// 等 com.h:442-446 常量。
+pub fn sys_statectl(
+    transport: &impl KernelCallTransport,
+    request: i32,
+    address: u64,
+    length: i32,
+) -> i32 {
+    let mut msg = Message::default();
+    {
+        // SAFETY: m_lsys_krn_sys_statectl 是 SYS_STATECTL 的文档化载荷布局
+        //（kernel/src/syscall_process.rs:104 读 request/address/length）。
+        let sc = unsafe { &mut msg.m_u.m_lsys_krn_sys_statectl };
+        sc.request = request;
+        sc.address = address;
+        sc.length = length;
+    }
+    perform_kernel_call(transport, minix_types::SYS_STATECTL, &mut msg, |_| {})
+}
+
 /// C: SYS_CLEAR 是内核调用 2（`kernel/src/syscall.rs` `Syscall::Clear`；
 /// C `callnr.h` `SYS_CLEAR`）。
 pub const SYS_CLEAR_CALL: i32 = 2;
@@ -1344,6 +1368,23 @@ mod tests {
         assert_eq!(sent[0].m_type, SYS_KILL_CALL);
         assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.endpt, 7);
         assert_eq!(unsafe { sent[0].m_u.m_sigcalls }.sig, 9);
+    }
+
+    #[test]
+    fn test_sys_statectl_encodes_request_address_length() {
+        // C sys_statectl.c:3-11 的载荷形状：request/address/length 三件进
+        // m_lsys_krn_sys_statectl，调用号 = minix_types::SYS_STATECTL
+        //（com.h:263，KERNEL_CALL+55 = 0x637；错号会打进别的内核调用）。
+        let canned = CannedKernelCallTransport::default();
+        let r = sys_statectl(&canned, minix_types::SYS_STATE_CLEAR_IPC_FILTERS, 0, 0);
+        assert_eq!(r, 0);
+        let sent = canned.sent.borrow();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].m_type, minix_types::SYS_STATECTL);
+        let sc = unsafe { sent[0].m_u.m_lsys_krn_sys_statectl };
+        assert_eq!(sc.request, minix_types::SYS_STATE_CLEAR_IPC_FILTERS);
+        assert_eq!(sc.address, 0);
+        assert_eq!(sc.length, 0);
     }
 
     #[test]

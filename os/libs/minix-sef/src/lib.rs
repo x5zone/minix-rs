@@ -412,6 +412,59 @@ pub fn sef_init_reply(result: i32) -> Message {
     m
 }
 
+/// The birth-protocol orchestration — C `process_init`
+/// (`sef_init.c:42-143`) as a sequence owner, not a monolith (PD-34: the
+/// linear kernel calls belong to `minix-sys`, the service's own init
+/// semantics stay with the consumer, the RS report is orchestrated here).
+///
+/// What this face owns, in C's six-paragraph order:
+///
+/// 1. **Clear the IPC filters** (`sef_init.c:59-60`,
+///    `sys_statectl(SYS_STATE_CLEAR_IPC_FILTERS, 0, 0)`) — issued through
+///    the `statectl` verb the consumer supplies (production wires
+///    `minix_sys::syscall::sys_statectl`; tests script it). Failure is the
+///    C `assert(r == OK)` — returned as `Err`, never swallowed.
+/// 2. *Registered slot* — the state-transfer grant
+///    (`cpf_grant_direct(SELF, 0, ULONG_MAX, CPF_READ)` with the
+///    `SEF_STATE_TRANSFER_GID == 0` first-grant convention,
+///    sef_init.c:62-67). Not modeled: no consumer of state transfer exists
+///    yet; inventing the grant semantics here is exactly what PD-34
+///    forbids.
+/// 3. *Registered slot* — the debug-init-flags short circuit
+///    (`SEF_INIT_CRASH/FAIL/TIMEOUT`, sef_init.c:69-89; PD-24's fault
+///    injection family). Not modeled for the same reason.
+/// 4. **Dispatch by type** — the consumer's `init` callback answers the
+///    result code (fresh/restart/LU semantics are its own; the library
+///    only carries the number).
+/// 5. **The RS report** — built here with [`sef_init_reply`] and returned;
+///    the consumer transmits it over its own reply leg (C
+///    `sef_cb_init_response`, sef_init.c:110-117).
+/// 6. *Registered slots* — init-buffer `munmap`, `cpf_reload`,
+///    `senda_reload`, `SYS_STATE_SET_STATE_TABLE` (sef_init.c:119-143):
+///    grant/senda registration lives with the services that own those
+///    tables today; the state-table call has no user-side wrapper yet.
+///    Same no-invention rule as slots 2 and 3.
+///
+/// Returns the reply message to transmit, or the kernel error from step 1.
+pub fn process_init(
+    statectl: &mut dyn FnMut(i32, u64, i32) -> Result<i32, i32>,
+    init_type: i32,
+    init: &mut dyn FnMut(i32) -> i32,
+) -> Result<Message, i32> {
+    // 段一（sef_init.c:59-60）：C `assert(r == OK)`——失败即出生失败，
+    // 返回内核 errno 由消费方 fail-closed，不吞。
+    let r = statectl(minix_types::SYS_STATE_CLEAR_IPC_FILTERS, 0, 0)?;
+    if r != minix_types::OK {
+        return Err(r);
+    }
+    // 段四（:91-108）：按类型分派——消费者语义，库只携号码与结果。
+    let result = init(init_type);
+    // 段五（:110-117）：回报编排——消息在此构造（m_type = RS_INIT、
+    // m_rs_init.result），发送走消费方的回报腿（B9b：sendrec 停在
+    // receive(RS) 半）。
+    Ok(sef_init_reply(result))
+}
+
 /// Buffered SEF receive: keeps the IPC behind a struct so tests script the
 /// transcript.
 pub struct SefLoop<I: SefIpc> {
@@ -703,6 +756,61 @@ mod tests {
     /// E-1 的方向哨兵：同一号码同一消息类型，但发方不是 boot 模块（init
     /// 的 11 槽与用户槽 20）时不得拦截——否则用户进程发给服务的合法
     /// 0xE00 调用号会被 SEF 静默吞掉（照 `source >= INIT_PROC_NR` 写就会如此）。
+    /// PD-34 编排面（C process_init — sef_init.c:42-143）：段一清过滤
+    /// 过后按类型分派，回报消息由库构造、result 透传。
+    #[test]
+    fn test_process_init_fresh_clears_filters_and_builds_reply() {
+        let calls = core::cell::RefCell::new(alloc::vec::Vec::new());
+        let reply = process_init(
+            &mut |req, addr, len| {
+                calls.borrow_mut().push((req, addr, len));
+                Ok(minix_types::OK)
+            },
+            0, // SEF_INIT_FRESH
+            &mut |t| {
+                assert_eq!(t, 0);
+                minix_types::OK
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            calls.borrow().as_slice(),
+            &[(minix_types::SYS_STATE_CLEAR_IPC_FILTERS, 0, 0)],
+            "段一恰一次：SYS_STATE_CLEAR_IPC_FILTERS(0,0)"
+        );
+        assert_eq!(reply.m_type, minix_types::RS_INIT);
+        assert_eq!(reply.rs_init_result(), Some(minix_types::OK));
+    }
+
+    #[test]
+    fn test_process_init_lu_refusal_travels_to_the_reply() {
+        // 消费者语义（LU 未建模 → ENOSYS）原样进回报——库不代答。
+        let reply = process_init(
+            &mut |_req, _addr, _len| Ok(minix_types::OK),
+            1, // SEF_INIT_LU
+            &mut |_t| minix_types::ENOSYS,
+        )
+        .unwrap();
+        assert_eq!(reply.rs_init_result(), Some(minix_types::ENOSYS));
+    }
+
+    #[test]
+    fn test_process_init_filter_failure_fails_the_birth() {
+        // C 段一 `assert(r == OK)`（sef_init.c:60）：清过滤失败＝出生
+        // 失败——init 回调不得被调（顺序证明），内核 errno 原样上抛。
+        let init_called = core::cell::Cell::new(false);
+        let r = process_init(
+            &mut |_req, _addr, _len| Err(minix_types::EPERM),
+            0,
+            &mut |_t| {
+                init_called.set(true);
+                minix_types::OK
+            },
+        );
+        assert_eq!(r.unwrap_err(), minix_types::EPERM);
+        assert!(!init_called.get(), "段一失败则分派不得到达");
+    }
+
     /// PD-27 逃生门（C `sef_cancel` — sef.c:291-297 + sef.c:161-162）：
     /// 管理器形拦截里回调请求取消 → 库的 `continue` 到循环顶被收口成
     /// `Err(EINTR)`，帧不上浮；不再阻塞在下一收——§续-418 登记的死锁雷
