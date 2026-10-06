@@ -439,7 +439,7 @@ impl IpcBoundary for SysBoundary {
             forwhom: caller.0,
             _pad: 0,
             addr,
-            _padding: [0; 44],
+            _padding: [0; 40],
         };
         let _ = syscall::perform_taskcall(
             &self.ipc,

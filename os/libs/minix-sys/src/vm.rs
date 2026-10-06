@@ -1298,7 +1298,7 @@ mod tests {
                 forwhom: 12,
                 _pad: 0,
                 addr: 0x0000_0001_4000_0000, // MMAP 窗口内(>4GiB)
-                _padding: [0; 44],
+                _padding: [0; 40],
             };
         }
         let arm = unsafe { msg.m_u.m_lc_vm_shm_unmap };
@@ -1412,7 +1412,7 @@ pub fn shm_unmap_via(
         forwhom: forwhom.0,
         _pad: 0,
         addr,
-        _padding: [0; 44],
+        _padding: [0; 40],
     };
     let reply = perform_taskcall(transport, vm_endpoint(), VM_CALL_SHARED_UNMAP, &mut message)?;
     if reply < 0 {

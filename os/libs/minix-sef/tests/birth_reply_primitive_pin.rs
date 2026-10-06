@@ -33,22 +33,26 @@ fn read_server(rel: &str, name: &str) -> String {
 }
 
 /// Birth 臂切片：从锚点起，到下一个 handler 边界或文件尾。
-fn reply_leg_after<'a>(src: &'a str, anchor: &str, name: &str) -> &'a str {
+/// `window`＝切片行数（默认 6：C sef_init.c:113-117 的形状是「构造 →
+/// 立即 response」，回报腿与 builder 之间不隔其他语句；走 PD-34 编排面
+/// 的站点例外——消息由库构造、腿在 match 之后，窗口放宽并注明）。
+fn reply_leg_after<'a>(src: &'a str, anchor: &str, name: &str, window: usize) -> &'a str {
     let zone = src
         .split(anchor)
         .nth(1)
         .unwrap_or_else(|| panic!("{} 缺锚点 {}", name, anchor));
-    // 回报腿与 builder 之间不隔其他语句（C sef_init.c:113-117 的形状：
-    // 构造 → 立即 response）。取紧邻 6 行作窗口，防扫进别 handler。
-    let lines: Vec<&str> = zone.lines().take(6).collect();
+    let lines: Vec<&str> = zone.lines().take(window).collect();
     &zone[..lines.iter().map(|l| l.len() + 1).sum()]
 }
 
-const GENERAL_SERVICE_BIRTH_SITES: &[(&str, &str)] = &[
-    ("servers/is/src/lib.rs", "IS"),
-    ("servers/mib/src/server.rs", "MIB"),
-    ("servers/ds/src/server.rs", "DS"),
-    ("servers/ipc-server/src/server.rs", "IPC"),
+/// (路径, 名, 锚点, 窗口行数)。MIB 走 PD-34 编排面（§续-431）：回报消息
+/// 由 `minix_sef::process_init` 构造，腿在 match 之后——锚点换成编排面
+/// 入口、窗口放宽到 14；其余站点维持「构造→立即 response」的 6 行窗。
+const GENERAL_SERVICE_BIRTH_SITES: &[(&str, &str, &str, usize)] = &[
+    ("servers/is/src/lib.rs", "IS", "sef_init_reply", 6),
+    ("servers/mib/src/server.rs", "MIB", "minix_sef::process_init(", 22),
+    ("servers/ds/src/server.rs", "DS", "sef_init_reply", 6),
+    ("servers/ipc-server/src/server.rs", "IPC", "sef_init_reply", 6),
 ];
 
 #[test]
@@ -56,9 +60,9 @@ fn birth_reply_leg_is_sendrec_for_general_services() {
     // 一般服务（IS/MIB/DS/IPC）的出生回报腿必须是 `send_rec(Endpoint::RS`
     // ——C 默认回调 sef_cb_init_response_rs_reply = ipc_sendrec（sef_init.c:
     // 463）。用 `asynsend` 是 VM 特例漂移。
-    for (rel, name) in GENERAL_SERVICE_BIRTH_SITES {
+    for (rel, name, anchor, window) in GENERAL_SERVICE_BIRTH_SITES {
         let src = read_server(rel, name);
-        let arm = reply_leg_after(&src, "sef_init_reply", name);
+        let arm = reply_leg_after(&src, anchor, name, *window);
         // 形状契约：原语必须是 send_rec（C ipc_sendrec 同形），去往
         // RS——显式 Endpoint::RS（IS/MIB）或 caller（DS：Birth 臂的
         // caller 恒为 RS，由上层的 m_source==RS 判定保证）皆可。

@@ -204,7 +204,7 @@ impl VfsPmInit {
             m7i5: 0,
             m7p1: 0,
             m7p2: 0,
-            _padding: [0; 20],
+            _padding: [0; 16],
         };
         // 联合体构造（仅指定一个成员）与成员写入均为安全操作。
         Message {
@@ -517,11 +517,14 @@ impl VfsCall {
             m7i5: i5,
             m7p1: p1,
             m7p2: p2,
-            _padding: [0; 20],
+            _padding: [0; 16],
         };
         // DumpCore 的按值名字走载荷尾 40..56（pad 上半，见 variant 文档）。
         if let Self::DumpCore { name, .. } = self {
-            m7._padding[4..20].copy_from_slice(name);
+            // 名字 16 字节落 pad 全段 [0..16]＝载荷绝对 [40..56]（C 的DumpCore
+            // 按值名形状）；旧布局 [4..20] 越界到 60，是 P-ALL-12 病灶的
+            // 一部分——PD-20 收口后恰好在协议边界内。
+            m7._padding[0..16].copy_from_slice(name);
         }
         Message {
             m_source: Endpoint::NONE,
@@ -582,7 +585,7 @@ impl VfsCall {
                 name_len: m7.m7i3 as u32,
                 name: {
                     let mut name = [0u8; 16];
-                    name.copy_from_slice(&m7._padding[4..20]);
+                    name.copy_from_slice(&m7._padding[0..16]);
                     name
                 },
             },
@@ -727,7 +730,7 @@ impl VfsReply {
                     m7i5: 0,
                     m7p1: 0,
                     m7p2: 0,
-                    _padding: [0; 20],
+                    _padding: [0; 16],
                 },
             },
         };
@@ -992,8 +995,9 @@ mod vfs_call_reply_tests {
     }
 
     /// C-6（OQ-5 裁决）：DumpCore 按值名字的字节位——名字落载荷尾
-    /// 40..56（`_padding[4..20]`）、长度落 m7_i3、指针槽 m7_p1 恒零
-    /// （C 的 m7_p1 指针 + VFS safecopy fetch 由按值携带取代）。
+    /// 40..56（`_padding[0..16]` 全段；PD-20 收口后恰在 56 字节协议边界
+    /// 内，旧布局 [4..20]=绝对 44..60 越界）、长度落 m7_i3、指针槽
+    /// m7_p1 恒零（C 的 m7_p1 指针 + VFS safecopy fetch 由按值携带取代）。
     #[test]
     fn test_vfs_call_dumpcore_by_value_name_layout() {
         let mut name = [0u8; 16];
@@ -1008,9 +1012,9 @@ mod vfs_call_reply_tests {
         let m7 = unsafe { &msg.m_u.m_m7 };
         assert_eq!(m7.m7i3, 9, "name_len 必须编码到 m7_i3");
         assert_eq!(m7.m7p1, 0, "指针槽必须清零（按值协议不再用 m7_p1）");
-        assert_eq!(&m7._padding[0..4], &[0; 4], "载荷 36..40 保留零");
-        assert_eq!(&m7._padding[4..13], b"getty.bin");
-        assert_eq!(m7._padding[13], 0, "名字 NUL 填充");
+        assert_eq!(&m7._padding[0..9], b"getty.bin", "名字落载荷绝对 40..49");
+        assert_eq!(m7._padding[9], 0, "名字 NUL 填充");
+        assert_eq!(&m7._padding[10..16], &[0; 6], "名字后补零到协议边界 56");
         assert_eq!(
             VfsCall::decode(&msg).unwrap(),
             VfsCall::DumpCore {

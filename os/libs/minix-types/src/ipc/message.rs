@@ -851,7 +851,7 @@ pub struct MessageM7 {
     /// C: `m7_p2` (payload offset 28, `char *` on i386).
     pub m7p2: u64,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 20],
+    pub _padding: [u8; 16],
 }
 
 // ── Kernel-specific message types ──
@@ -1223,7 +1223,7 @@ pub struct MessLsysKrnSysTrace {
     /// Trace data. C: `long int data` (64-bit).
     pub data: i64,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 40],
+    pub _padding: [u8; 32],
 }
 
 /// SYS_GETINFO message payload.
@@ -1745,7 +1745,7 @@ pub struct MessLsysKrnSysMcontext {
     /// Pointer to machine context. C: `vir_bytes ctx_ptr` (64-bit).
     pub ctx_ptr: u64,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 48],
+    pub _padding: [u8; 40],
 }
 
 /// SYS_EXEC message payload.
@@ -2563,7 +2563,7 @@ pub struct MessLcVmShmUnmap {
     /// 挂 MMAP 窗口,≥4GiB 地址经 u32 恒截断,与 vmmcp block 同类)。
     pub addr: u64,
     /// Padding to 56 bytes (C: union payload size).
-    pub _padding: [u8; 44],
+    pub _padding: [u8; 40],
 }
 
 impl Default for MessLcVmShmUnmap {
@@ -2572,7 +2572,7 @@ impl Default for MessLcVmShmUnmap {
             forwhom: 0,
             _pad: 0,
             addr: 0,
-            _padding: [0; 44],
+            _padding: [0; 40],
         }
     }
 }
@@ -3155,7 +3155,7 @@ pub struct MessLsysGetsysinfo {
     pub where_: u64,
     /// C: `size_t size` — expected byte size.
     pub size: u64,
-    _pad2: [u8; 44],
+    _pad2: [u8; 32],
 }
 
 impl Default for MessLsysGetsysinfo {
@@ -3165,7 +3165,7 @@ impl Default for MessLsysGetsysinfo {
             _pad: [0; 4],
             where_: 0,
             size: 0,
-            _pad2: [0; 44],
+            _pad2: [0; 32],
         }
     }
 }
@@ -3184,7 +3184,7 @@ pub struct MessLsysFiCtl {
     pub size: u64,
     /// C: `int subtype` — `RS_FI_CRASH` (com.h:492).
     pub subtype: i32,
-    _pad2: [u8; 44],
+    _pad2: [u8; 36],
 }
 
 impl Default for MessLsysFiCtl {
@@ -3194,7 +3194,7 @@ impl Default for MessLsysFiCtl {
             _pad: [0; 4],
             size: 0,
             subtype: 0,
-            _pad2: [0; 44],
+            _pad2: [0; 36],
         }
     }
 }
@@ -3207,7 +3207,7 @@ impl MessLsysFiCtl {
             _pad: [0; 4],
             size: size as u64,
             subtype,
-            _pad2: [0; 44],
+            _pad2: [0; 36],
         }
     }
 }
@@ -4321,13 +4321,459 @@ mod signal_request_accessor_tests {
 /// tracked as `P-ALL-12` in
 /// `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`
 /// (C pins every payload member at 56 bytes via `_ASSERT_MSG_SIZE`).
+
+// P-ALL-12 / PD-20 定稿形态：全成员严格相等 56（C ipc.h 每个载荷成员的
+// `_ASSERT_MSG_SIZE` 在 i386 上全为 56；本仓 LP64 布局以调 padding 保持
+// 56）。此块是三层断言链的内层——成员全 56 ∧ MessageUnion 56 ∧ Message
+// 64；`test_message_total_size_pinned` 钉外两层。新增/修改载荷成员必须
+// 过这一关，`<=` 会默许成员被裁小而协议不变量静默破坏。
+#[test]
+fn test_every_union_member_is_exactly_56_bytes() {
+    assert!(
+        core::mem::size_of::<MessageM1>() == MESSAGE_PAYLOAD_SIZE,
+        "m_m1 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessageM2>() == MESSAGE_PAYLOAD_SIZE,
+        "m_m2 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessageM3>() == MESSAGE_PAYLOAD_SIZE,
+        "m_m3 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessageM4>() == MESSAGE_PAYLOAD_SIZE,
+        "m_m4 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessageM5>() == MESSAGE_PAYLOAD_SIZE,
+        "m_m5 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessageM7>() == MESSAGE_PAYLOAD_SIZE,
+        "m_m7 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysCopy>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_copy must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysUmap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_umap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKernSafecopy>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_kern_safecopy must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessRsInit>() == MESSAGE_PAYLOAD_SIZE,
+        "m_rs_init must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessRsReq>() == MESSAGE_PAYLOAD_SIZE,
+        "m_rs_req must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessRsUpdate>() == MESSAGE_PAYLOAD_SIZE,
+        "m_rs_update must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysGetsysinfo>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_getsysinfo must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessDsReq>() == MESSAGE_PAYLOAD_SIZE,
+        "m_ds_req must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessDsReply>() == MESSAGE_PAYLOAD_SIZE,
+        "m_ds_reply must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysFiCtl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_fi_ctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysMemset>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_memset must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessSysSafememset>() == MESSAGE_PAYLOAD_SIZE,
+        "m_sys_safememset must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysVumap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_vumap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKernVsafecopy>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_kern_vsafecopy must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessKrnLsysSysUmap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_krn_lsys_sys_umap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessKrnLsysSysVumap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_krn_lsys_sys_vumap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessKrnLsysSysGetwhoami>() == MESSAGE_PAYLOAD_SIZE,
+        "m_krn_lsys_sys_getwhoami must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessSigcalls>() == MESSAGE_PAYLOAD_SIZE,
+        "m_sigcalls must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysStatectl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_statectl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSchedctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_schedctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysTrace>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_trace must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysGetinfo>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_getinfo must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysIrqctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_irqctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSchedule>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_schedule must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessKrnLsysSchedule>() == MESSAGE_PAYLOAD_SIZE,
+        "m_krn_lsys_schedule must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysSchedSchedulingStart>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_sched_scheduling_start must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysSchedSchedulingStop>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_sched_scheduling_stop must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmSchedSchedulingSetNice>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_sched_scheduling_set_nice must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessSchedLsysSchedulingStart>() == MESSAGE_PAYLOAD_SIZE,
+        "m_sched_lsys_scheduling_start must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysMcontext>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_mcontext must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysExec>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_exec must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysFork>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_fork must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessKrnLsysSysFork>() == MESSAGE_PAYLOAD_SIZE,
+        "m_krn_lsys_sys_fork must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysTimes>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_times must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessKrnLsysSysTimes>() == MESSAGE_PAYLOAD_SIZE,
+        "m_krn_lsys_sys_times must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysSetalarm>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_setalarm must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysTtyFkeyCtl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_tty_fkey_ctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessTtyLsysFkeyCtl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_tty_lsys_fkey_ctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysStime>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_stime must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysSettime>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_settime must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysSetgrant>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_setgrant must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysDiagctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_diagctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysDevio>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_devio must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessKrnLsysSysDevio>() == MESSAGE_PAYLOAD_SIZE,
+        "m_krn_lsys_sys_devio must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysSdevio>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_sdevio must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysVdevio>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_vdevio must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnReadbios>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_readbios must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysKrnSysSprof>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_krn_sys_sprof must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessVmPagefault>() == MESSAGE_PAYLOAD_SIZE,
+        "m_vm_pagefault must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcVmBrk>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_vm_brk must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessMmap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_mmap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessVmVfsMmap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_vm_vfs_mmap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysVmMapPhys>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_vm_map_phys must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcVmGetphys>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_vm_getphys must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysVmGetref>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_vm_getref must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysVmInfo>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_vm_info must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysVmRusage>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_vm_rusage must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysVmUpdate>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_vm_update must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysVmVmremap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_vm_vmremap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysVmUnmapPhys>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_vm_unmap_phys must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcVmShmUnmap>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_vm_shm_unmap must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcVmProcctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_vm_procctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessVmVfsReply>() == MESSAGE_PAYLOAD_SIZE,
+        "m_vm_vfs_reply must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessVmVfsCall>() == MESSAGE_PAYLOAD_SIZE,
+        "m_vm_vfs_call must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysPmGetepinfo>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_pm_getepinfo must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmLsysGetepinfo>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_lsys_getepinfo must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysPmGetprocnr>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_pm_getprocnr must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmLsysGetprocnr>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_lsys_getprocnr must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessRsPmExecRestart>() == MESSAGE_PAYLOAD_SIZE,
+        "m_rs_pm_exec_restart must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessVmmcp>() == MESSAGE_PAYLOAD_SIZE,
+        "m_vmmcp must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessVmmcpReply>() == MESSAGE_PAYLOAD_SIZE,
+        "m_vmmcp_reply must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysPmProceventmask>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_pm_proceventmask must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmLsysProcEvent>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_lsys_proc_event must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmLsysSigsSignal>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_lsys_sigs_signal must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysPmSrvFork>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_pm_srv_fork must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcPmExit>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_pm_exit must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcPmWait4>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_pm_wait4 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmLcWait4>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_lc_wait4 must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcPmPtrace>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_pm_ptrace must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmLcPtrace>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_lc_ptrace must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcPmKill>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_pm_kill must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcPmSig>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_pm_sig must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcPmSigset>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_pm_sigset must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessPmLcSigset>() == MESSAGE_PAYLOAD_SIZE,
+        "m_pm_lc_sigset must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcPmReboot>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_pm_reboot must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessRsPmSrvKill>() == MESSAGE_PAYLOAD_SIZE,
+        "m_rs_pm_srv_kill must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcMibSysctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_mib_sysctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessMibLcSysctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_mib_lc_sysctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysMibRegister>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_mib_register must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLsysMibReply>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lsys_mib_reply must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessMibLsysCall>() == MESSAGE_PAYLOAD_SIZE,
+        "m_mib_lsys_call must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessMibLsysInfo>() == MESSAGE_PAYLOAD_SIZE,
+        "m_mib_lsys_info must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcIpcSemget>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_ipc_semget must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcIpcSemctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_ipc_semctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcIpcSemop>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_ipc_semop must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcIpcShmget>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_ipc_shmget must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcIpcShmat>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_ipc_shmat must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcIpcShmdt>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_ipc_shmdt must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLcIpcShmctl>() == MESSAGE_PAYLOAD_SIZE,
+        "m_lc_ipc_shmctl must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessInputLinputdriverInputConf>() == MESSAGE_PAYLOAD_SIZE,
+        "m_input_linputdriver_input_conf must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessInputLinputdriverSetleds>() == MESSAGE_PAYLOAD_SIZE,
+        "m_input_linputdriver_setleds must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessInputTtyEvent>() == MESSAGE_PAYLOAD_SIZE,
+        "m_input_tty_event must be exactly 56"
+    );
+    assert!(
+        core::mem::size_of::<MessLinputdriverInputEvent>() == MESSAGE_PAYLOAD_SIZE,
+        "m_linputdriver_input_event must be exactly 56"
+    );
+}
+
 #[test]
 fn test_message_total_size_pinned() {
-    assert_eq!(core::mem::size_of::<Message>(), 80);
-    // The union's largest member is 72 bytes (`MessLsysGetsysinfo`), not the
-    // nominal 56-byte payload constant — pinning both facts keeps the
-    // distinction visible (and keeps the P-ALL-12 overshoot measurable).
-    assert_eq!(core::mem::size_of::<MessageUnion>(), 72);
+    // PD-20 定稿后的目标三层：Message 64（C 的 `message` = 头 8 + 载荷 56，
+    // ipc.h 的 `_ASSERT_MSG_SIZE` 族锚定）、MessageUnion 56、常量 56。内层
+    // 全成员断言见 `test_every_union_member_is_exactly_56_bytes`。
+    assert_eq!(core::mem::size_of::<Message>(), 64);
+    assert_eq!(core::mem::size_of::<MessageUnion>(), 56);
     assert_eq!(MESSAGE_PAYLOAD_SIZE, 56);
 }
 
