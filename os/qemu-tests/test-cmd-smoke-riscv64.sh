@@ -94,7 +94,8 @@ MOD_COUNT=$(ls "$REL"/minix-{ds,rs,pm,sched,vfs,driver-memory,driver-tty,mib,vm,
 echo "== Stage 4: 拼 BootFileTable + 生成 DTB(chosen) + QEMU loader 参数 =="
 BASE_DTB="$IMG/base.dtb"; QEMU_DTB="$IMG/qemu.dtb"; TABLE_BIN="$IMG/table.bin"
 rm -f "$BASE_DTB" "$QEMU_DTB" "$TABLE_BIN"
-timeout 10 qemu-system-riscv64 -machine virt -m 512M -display none -bios default \
+# 拓扑真值=DTB：dump 必须 -smp 2（与点火同参；缺省 1 CPU ⇒ smp_init 多核分支惰性，§续-399 现场教训）
+timeout 10 qemu-system-riscv64 -machine virt -smp 2 -m 512M -display none -bios default \
     -machine dumpdtb="$BASE_DTB" >/dev/null 2>&1 || true
 [ -f "$BASE_DTB" ] || fail "dumpdtb 未产出"
 fdtput -p -t x "$BASE_DTB" /chosen opensbi,boot-file-table "$TABLE_PA" || fail "fdtput 注入失败"
@@ -144,7 +145,7 @@ echo "== Stage 5: OpenSBI 直载点火（-kernel=镜像, -dtb=chosen, loader=表
 rm -f "$SERIAL_LOG"
 # shellcheck disable=SC2086
 qemu-system-riscv64 \
-    -machine virt -smp 1 -m 512M -bios default \
+    -machine virt -smp 2 -m 512M -bios default \
     -kernel "$REL/kernel" \
     -dtb "$QEMU_DTB" \
     -device "loader,addr=$TABLE_PA,file=$TABLE_BIN,force-raw=on" \
