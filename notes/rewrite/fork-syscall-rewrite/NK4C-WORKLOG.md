@@ -13815,3 +13815,13 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 ③意外收获（NONE 哨兵）：builder 走 `Message::default()` ⇒ m_source=**Endpoint::NONE**（derive Default=NONE，非 memset 0）——比 C 的 0 更防炸：0 是 PM 的有效端点、NONE 显式无效，混进未盖章路径立刻暴露。新断言 `test_sef_init_reply_carries_result` 补 `m_source == Endpoint::NONE` 形状锚＋防误改注释（「改动此断言前先读 T6 定谳」），首版断言 Endpoint(0) 被测试当场打回（left=Endpoint(31743)=NONE）——测试先于结论纠正了作者，TDD 纪律的正例。
 
 ④回归：minix-sef 8/0、minix-kernel --lib 830/0（docker minix-ci:1.94，-m 2g -j 1）；rustfmt 清零；doc-style-lint --diff 零 error。T6 状态＝[待验证]→已结（P-ALL-08 六 T 中的静态可结项再落一格）。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
+
+## §续-409 P-ALL-08 T7 结案（形状审计型增量）：出生应答原语形状钉进 CI——一般服务回报腿=send_rec（C ipc_sendrec 同形）、VM 特例=asynsend（C rs_asynsend）、builder 形状三断言，防「易复发」复发
+
+①契约链（C 真源定谳）：出生回报腿原语两种并存——默认 `SEF_CB_INIT_RESPONSE_DEFAULT = sef_cb_init_response_rs_reply`（sef.h:90）＝`ipc_sendrec(RS_PROC_NR, m)`（sef_init.c:458-466，同步阻塞 sendrec）；VM 特例 `rs_asynsend(rp,&m,0)`（utility.c:62，vm/main.c:225-229 换回调 asynsend3 一次）。我方现状四服务+VM **已全部对齐**（is/mib 显式 Endpoint::RS、ds/ipc-server 用 Birth 臂 caller——由上层 m_source==RS 判定保证；vm 用 asynsend），本轮零生产改动、纯审计入库。
+
+②交付＝`libs/minix-sef/tests/birth_reply_primitive_pin.rs` 三测试：①一般服务回报腿（四个 crate 逐一源码扫描）：原语必须 send_rec、显式去往 RS（Endpoint::RS 或 caller）、禁 asynsend/sendnb；②VM 特例：RS_INIT 回报必须 asynsend(RS_PROC_NR, sef_init_reply(...))；③T7+T6 联合锚：builder 三断言（SEF_INIT_REQUEST_TYPE/m_rs_init.result 载荷/禁手填 m_source）。审计范式对位 riscv64_ap_early_entry_pin.rs（源码扫描 pin 测试）。
+
+③审计自身的两课（防御性测试写作素材）：①臂窗口必须贴回报腿（builder 后紧邻 6 行）——首个版本切到下一 handler 边界，把 MIB 别 handler 的 sendnb 文档与调用扫进来假红；②「形状断言要按真实形状族写宽」——DS 用 caller 而非 Endpoint::RS 是语义等价形（Birth 臂 caller 恒为 RS），断言先写窄了被测试打回，收窄窗口后再放宽到「Endpoint::RS 或 caller」两形并留锚注释。测试写作与被测代码同受 fix-guard 纪律约束。
+
+④回归：minix-sef 8 lib＋3 pin 全绿、minix-kernel --lib 830/0（docker minix-ci:1.94，-m 2g -j 1）；rustfmt 清零；doc-style-lint --diff 零 error。T7 状态＝Open→结（形状钉住；P-ALL-08 静态可结项 T6/T7 双落）。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
