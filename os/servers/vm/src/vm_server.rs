@@ -1241,26 +1241,23 @@ impl VmServer {
     /// `alloc_page::alloc_pfn_reclaiming` since V11/T30. The counter is
     /// cleared here so the next failure re-arms the hook — the loop always
     /// gets a fresh replenishment attempt per pressure episode.
-    /// C: `SIGKMEM` (minix3/sys/sys/signal.h:271) — kernel memory request
-    /// pending. Rust 侧 SYSTEM notify 即其唤醒半(sigset 半为 no-op,
-    /// 见 os/kernel/src/proc_table.rs vm_enqueue_and_notify_vm 契约)。
-    pub(crate) const SIGKMEM: i32 = 71;
-
     /// Kernel-signal dispatch — the body of C's `sef_cb_signal_handler`
-    /// (main.c:733-749).
+    /// (main.c:731-749).
     ///
-    /// C registers the handler with SEF at startup; since V14-P2-1 the
-    /// arrival path is the shared `minix_sef::sef_receive_status`
-    /// classification (run_once), which dispatches per set bit of the
-    /// SYSTEM notify's sigset — the E1 trap layer carries the notify to
-    /// this loop.
+    /// C 那一臂只认一个号：`switch (signo) { case SIGKMEM: do_memory(); }`
+    ///（`minix3/minix/servers/vm/main.c:733-739`；SIGKMEM=71，
+    /// `minix3/sys/sys/signal.h:271`，号码的单一权威在 `minix-types`）。其余
+    /// 号一律忽略。本树 SYSTEM 通知即 C `send_sig(VM, SIGKMEM)` 的唤醒半
+    /// （sigset 半因内核 `SigSet` 宽度而无效，见
+    /// `os/kernel/src/proc_table.rs:vm_enqueue_and_notify_vm` 契约），所以
+    /// 到达这里的号码先经 [`VmServer::effective_kernel_signal`] 换算。
     ///
     /// C tail (main.c:744-748): after handling, a pending spare-page
     /// deficit triggers `alloc_cycle()`; `pt_clearmapcache()` has no
     /// counterpart (map cache eliminated, [ARCH: A-1]).
     pub(crate) fn handle_signal(&mut self, signo: i32) {
         // C: "Check for known kernel signals, ignore anything else."
-        if signo == Self::SIGKMEM {
+        if signo == minix_types::SIGNAL_KERNEL_MEMORY {
             self.do_memory();
         }
         // V12-P2-4: C's tail here also ran `alloc_cycle()` on a pending
@@ -1268,6 +1265,25 @@ impl VmServer {
         // (no producer; the spare-pool mechanism it served is structurally
         // eliminated by the Direct Map, [ARCH: A-1], and allocation-time
         // reclaim lives in `alloc_pfn_reclaiming` since V11/T30).
+    }
+
+    /// 把 `sef_receive_status` 交给回调的号码算成「该按哪个内核信号处理」。
+    ///
+    /// 两种形状都要认：C 的 notify 臂逐位展开后递的是真信号号（71..=74），
+    /// 而本树内核的 `SigSet` 仍是 64 位、那四位永远发不出来，所以空位图
+    /// 走的是 `minix-sef` 的唤醒兜底、递的是 `SEF_SIGNAL_REQUEST_TYPE`
+    /// （见 `os/libs/minix-sef/src/lib.rs` 的「The wake-up fallback」段）。
+    /// 兜底值等于说「目前只能知道有事」：VM 能收到的 `SYSTEM` 通知
+    /// 只可能来自 `vm_enqueue_and_notify_vm`（即 C 的 `send_sig(VM,
+    /// SIGKMEM)`），所以它按 SIGKMEM 处理；而真信号号进来时一律按号分派
+    /// （拿 SIGKSIG=74 当 SIGKMEM 用就是今天的形状在位宽拓宽后会错的那一步）。
+    pub(crate) fn effective_kernel_signal(arrived: Option<i32>) -> Option<i32> {
+        match arrived {
+            // 唤醒兜底：无号可用，按唯一可能的来源处理。
+            Some(minix_sef::SEF_SIGNAL_REQUEST_TYPE) => Some(minix_types::SIGNAL_KERNEL_MEMORY),
+            // 真信号号（或库未递任何东西）：原样交出。
+            other => other,
+        }
     }
 
     /// C: `do_memory()` (pagefaults.c:294-339) — drain the kernel's pending
@@ -1524,8 +1540,10 @@ impl VmServer {
         // no-op(SIGKMEM=71 超出 64 位 SigSet,os/kernel/src/proc_table.rs
         // vm_enqueue_and_notify_vm 契约),VM 经 MEMREQ_GET 探测细节而不
         // 读信号号;SIGKSIG 信号管理器家族 VM 不消费。
-        if pending_signo.is_some() {
-            self.handle_signal(VmServer::SIGKMEM);
+        // 号码换算只在一处（effective_kernel_signal）：今天递来的都是
+        // 唤醒兜底值，按 SIGKMEM 走；位宽拓宽后真号直接按号分派。
+        if let Some(signo) = Self::effective_kernel_signal(pending_signo) {
+            self.handle_signal(signo);
             return RunStep::Handled;
         }
 
@@ -4425,6 +4443,30 @@ mod tests {
     }
 
     #[test]
+    fn test_effective_kernel_signal_maps_the_wakeup_fallback() {
+        // 两种送达形状的分岔（§续-414 的兜底与位宽拓宽后的真号）：
+        // 兜底值只能按「唯一可能的来源」= SIGKMEM 处理；真号一律原样交出，
+        // 不再被当成 SIGKMEM（那条错分岔就是本函数存在的理由）。
+        use minix_sef::SEF_SIGNAL_REQUEST_TYPE;
+        use minix_types::{SIGNAL_KERNEL_MEMORY, SIGNAL_KERNEL_PENDING};
+        assert_eq!(
+            VmServer::effective_kernel_signal(Some(SEF_SIGNAL_REQUEST_TYPE)),
+            Some(SIGNAL_KERNEL_MEMORY),
+            "今天的生产路径：空位图→唤醒兜底值→按 SIGKMEM 处理"
+        );
+        assert_eq!(
+            VmServer::effective_kernel_signal(Some(SIGNAL_KERNEL_MEMORY)),
+            Some(SIGNAL_KERNEL_MEMORY)
+        );
+        assert_eq!(
+            VmServer::effective_kernel_signal(Some(SIGNAL_KERNEL_PENDING)),
+            Some(SIGNAL_KERNEL_PENDING),
+            "真号按号分派：不得把 74 当 71 用"
+        );
+        assert_eq!(VmServer::effective_kernel_signal(None), None);
+    }
+
+    #[test]
     fn test_handle_signal_routes_sigkmem_only() {
         with_test_mock_base(|| {
             reset_boot_slots();
@@ -4450,7 +4492,15 @@ mod tests {
             // Unknown signal → no kernel interaction (C ignores the rest).
             server.handle_signal(0);
             assert_eq!(canned.calls.get(), 0);
-            server.handle_signal(VmServer::SIGKMEM);
+            // 另一个真内核信号号（SIGKSIG=74）也不得误走排空环——那正是
+            // 唤醒兜底按号分派后新获得的那道区分。
+            server.handle_signal(minix_types::SIGNAL_KERNEL_PENDING);
+            assert_eq!(
+                canned.calls.get(),
+                0,
+                "non-SIGKMEM kernel signal is ignored"
+            );
+            server.handle_signal(minix_types::SIGNAL_KERNEL_MEMORY);
             let sent = canned.sent.borrow();
             assert_eq!(sent.len(), 3, "GET, REPLY, terminating GET");
             {
