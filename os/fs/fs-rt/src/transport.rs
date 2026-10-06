@@ -85,20 +85,10 @@ pub fn serve<D: minix_fs::driver::FsDriver>(
 /// consuming a further message.
 pub type SignalDecision = Box<dyn FnMut(i32) -> SignalAction>;
 
-/// What a file server makes of one signal number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignalAction {
-    /// Keep serving. C: a handler that returns without touching the flags —
-    /// including the library default for services that register nothing.
-    Ignore,
-    /// Leave the loop now. C: `fsdriver_terminate()` (`fsdriver.c:68-74`).
-    Terminate,
-    /// Flush the file system, then leave the loop. C: `fs_sync()` before
-    /// `fsdriver_terminate()` (`mfs/main.c:75-77`). The flush itself belongs
-    /// to the driver (its `synchronized` hook), so the runtime performs it
-    /// when it sees this answer.
-    SyncThenTerminate,
-}
+/// What a file server makes of one signal number — re-exported from
+/// [`minix_sef`] (PD-25: one vocabulary definition lives with the SEF
+/// contract; the FS runtime and its four servers consume it unchanged).
+pub use minix_sef::SignalAction;
 
 /// What the birth callback is being asked to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

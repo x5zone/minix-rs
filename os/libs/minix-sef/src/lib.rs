@@ -159,6 +159,30 @@ impl SefCancel {
     }
 }
 
+/// What a service answers when one delivered signal number asks for a
+/// decision — the shared three-state vocabulary of the signal axis (PD-25:
+/// one definition here; consumers keep their own trait shapes, this is the
+/// common semantics).
+///
+/// C's handlers all reduce to one of these three answers: keep serving (a
+/// handler that returns — or the library default `sef_cb_signal_handler_null`
+/// for services that register nothing, sef.h:287), stop now
+/// (`fsdriver_terminate()`, fsdriver.c:68-74 — `running = FALSE` +
+/// `sef_cancel`), or flush-then-stop (`fs_sync()` before terminate,
+/// mfs/main.c:75-77 — the flush belongs to whichever layer owns the mounted
+/// state).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalAction {
+    /// Keep serving.
+    Ignore,
+    /// Leave the receive loop now.
+    Terminate,
+    /// Flush whatever state this service owns, then leave. The flush belongs
+    /// to the layer holding that state (a file server's `synchronized` hook),
+    /// so the loop performs it when it sees this answer.
+    SyncThenTerminate,
+}
+
 /// C `do_sef_signal_request`'s kernel-notification half
 /// (`sef_signal.c:94-113`): walk `SIGK_FIRST..=SIGK_LAST` in ascending order
 /// and call the handler once per pending signal.

@@ -627,6 +627,22 @@ loop {
 5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧仍无 `sef_cancel` 等价物（库层没有「本轮不想再收」的入口），但服务侧的形状已有实例：IS 把回调里的决定当成 `LifecycleAction` 一步步传上主循环——回调置位、`step()` 提前返回、`run()` 才真的 `exit(0)`（`os/servers/is/src/lib.rs:step`/`run`，归 `notes/rewrite/fork-syscall-rewrite/08-stage-is/01-is-init-main.md` §2.8）。这带着一个必须记下的偏离：C 是在 `sef_receive_status` 内部直接 `exit(0)`，那一帧永不返回调用方；本树的 `receive` 已经返回了那一帧（携带信号的 `SYSTEM` 通知），服务必须在分派**之前**先看退出位——IS 的测试钉住了这一点（那一帧不产生回复也不产生非法请求告警）。该未定计已由 PD-27 定案并落地（§续-428）：库层返 `EINTR`（`SefCancel` 令牌，循环顶检查），uds/lwip/fs-rt/ipc/IS 五服务已接「收到中断→检查退出标志→退出」的同拍形状。ipc 与 RS 已按同族形状落地（ipc：回调报三态 `SignalStep`、主循环持退出权，§续-424；RS：`get_work` 吞信号帧后在交还前应用判定，§续-425），三实例形状一致——决定不能走返回值，只能由回调把状态带上主循环。
 6. **未建模四类拦截的回归哨兵**（推自 §3.4）：当 `live-update` 战役开工时，至少要先补一个"收到 `RS_LU_PREPARE` 当前会落到 `Call` 分派表"的当前行为断言，否则将来改造时说不清"之前是怎么表现"的（这类断言只锁当前行为，不为缺失功能开证）。
 
+### 5.3 三套 trait 的逐方法同构表（PD-25 的交付物）
+
+C 的回调注册面是 `sef.h` 的 `sef_cb_*` 函数指针族；重写侧它分散在 rs 的 `SefCallbacks`（全回调集）、devman 的 `SefHooks`（本审计后仅 init 一轴）、fs-rt 的 `ServerHooks`（信号三态决策＋init）与各服务器收信点的 `on_signal` 闭包里。逐方法对表（对表本身即 PD-25 要求的前置物；「同构才合并」的裁定按轴进行）：
+
+| C 回调 | rs `SefCallbacks` | devman `SefHooks` | fs-rt `ServerHooks`/闭包 | 同构判定 |
+|---|---|---|---|---|
+| `sef_cb_init_fresh_t` | `init_fresh` | `init_server`（fresh-only，restart 走 STATEFUL 空体） | `init` 回调（`InitKind::Fresh`） | 语义同构（fresh 出生），参数与错误模型各异——不合并类型 |
+| `sef_cb_init_restart_t` | `init_restart` | （STATEFUL 空体，vtreefs.c:58） | `InitKind::Restart` → 诚实拒 `ENOSYS` | 语义分歧（rs 真 restart，其余拒）——不同构 |
+| `sef_cb_init_lu_t` 及热更五件套 | `init_lu`/`lu_*` 族 | 无 | 无 | 仅 rs 有消费者——留在 rs 子集视图（随 PD-24 延后建模） |
+| `sef_cb_init_response_t` / `sef_cb_lu_response_t` | `init_response`/`lu_response` | 无（出生回报在各传输层） | 无（`sef_init_reply` 库根半＋服务发送半） | 语义同构（回报腿）但调用者形状各异——不合并 |
+| `sef_cb_signal_handler_t` | `signal_handler`（SIGCHLD/SIGTERM） | 已删（§续-429；语义在传输层锁存） | `SignalDecision: FnMut(i32) -> SignalAction` | **语义同构、参数形状不同构**（裸 i32 分派 vs 三态词表）——按冻结决议统一的是「`on_signal` 契约名＋`SignalAction` 三态词汇表（现居 `minix_sef`），不是 trait 类型 |
+| `sef_cb_signal_manager_t` | `signal_manager`（代内核逐目标转发） | 无 | 无 | 仅 rs——RS 专属族保持边界 |
+| `sef_cb_signal_manager_null` 等预置空实现 | （库默认即空） | （同） | （同） | 库默认面，无 Rust trait 对应 |
+
+裁定记录：三套 trait **不**合并为一个超级 trait——方法集互为子集、信号轴参数形状不同（i32 分派与三态词表各有消费者）；统一的是语义层：`on_signal` 是信号轴的统一契约名，`SignalAction{Ignore, Terminate, SyncThenTerminate}` 是该轴的唯一三态词表（定义在 `minix_sef`，fs-rt re-export，§续-430），每个回调的 C 锚点与语义规范散见各实现文档。这条「语义统一≠类型统一」即 PD-25 冻结文本与 PD-33 公理的共同结论。
+
 ---
 
 ## 6. 参见
