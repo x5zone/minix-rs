@@ -1072,7 +1072,7 @@ pub fn smp_init() {
     {
         use minix_arch::riscv64::ap_early_entry::ap_early_entry;
         use minix_arch::riscv64::ap_early_entry::{
-            AP_ARRIVED, entry_start_pa, record as ap_record,
+            AP_ARRIVED, BOOT_HART_ELECTED, entry_start_pa, record as ap_record,
         };
         use minix_arch::{CurrentSmpArch, SmpArch};
         use minix_plat::EarlyConsole as _;
@@ -1084,8 +1084,24 @@ pub fn smp_init() {
         }
 
         let smp = unsafe { crate::smp_state_boot_unchecked() };
+        // BSP 身份＝选举真值优先（§续-404）：kernel-image _start 的 amoswap
+        // 选举格存当选 hartid+1（§续-400），它才是真正在跑本内核的 hart。
+        // DTB bsp_id 只是拓扑槽位标注——§续-403 ③ 实证两者可以不一致
+        // （hart 1 当选时按 bsp_id=0 推会 hart_start 到自己，SBI ret=-6，
+        // 次级核永远起不来）。选举格为 0（异常形态：本内核未经 _start
+        // 选举启动）才回退 bsp_id 槽位；两路都找不到则诚实 panic（C
+        // arch_smp.c 同位是寄存器读 cpuid，无此歧义面）。
+        let elected_hw = BOOT_HART_ELECTED.load(Ordering::Acquire);
+        let bsp_hw = if elected_hw != 0 {
+            elected_hw - 1
+        } else {
+            topo.bsp_id as u64
+        };
         let bsp_logical = (0..topo.nr_cpus as usize)
-            .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+            .find(|&i| topo.cpus[i].hw_id == bsp_hw)
+            .or_else(|| {
+                (0..topo.nr_cpus as usize).find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+            })
             .expect("smp_init: BSP hart not found in topology") as u32;
         smp.seed_bsp_masks(bsp_logical);
 
