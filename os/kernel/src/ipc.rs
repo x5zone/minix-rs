@@ -22,7 +22,7 @@
 //! C source: `minix3/minix/kernel/proc.c:263-294, 479-597, 599-698, 703-768,
 //! 870-962, 967-1117, 1122-1167, 1200-1326, 1331-1346`.
 
-use minix_types::{Endpoint, Message, MessNotify, VirBytes};
+use minix_types::{Endpoint, MessNotify, Message, VirBytes, sigset_from_u64};
 #[cfg(not(test))]
 use minix_arch::PteWalkArch;
 use crate::proc::{KProcess, ProcNr, RtsFlagsBits, MiscFlagsBits, NONE_PROC_NR, proc_nr};
@@ -2811,6 +2811,9 @@ fn build_notify_message(
         }
         NotifySource::System => {
             // C: m_notify.sigset = priv(dst)->s_sig_pending; clear it.
+            // 内核的 `SigSet` 仍是 64 位(`proc.rs::SigSet`),所以只有低两字
+            // 会有值;位 70..73 即内核信号族 71..=74 要等 `SigSet` 本身拓宽
+            // 后才能住进 `bits[2]`(跨层 wire 项,已登记)。
             if let Some(dst_priv_id) = procs[dst_idx].priv_id
                 && let Some(dst_priv) = priv_table.get_mut(dst_priv_id) {
                     sigset = dst_priv.signals.s_sig_pending.get();
@@ -2826,7 +2829,8 @@ fn build_notify_message(
     // SAFETY: MessNotify is #[repr(C)] and fits within MESSAGE_PAYLOAD_SIZE
     // (compile-time asserted in notify.rs). We're writing to a zeroed
     // MessageUnion, so all fields are valid.
-    procs[dst_idx].p_delivermsg.m_u.m_notify = MessNotify::new(timestamp, interrupts, sigset);
+    procs[dst_idx].p_delivermsg.m_u.m_notify =
+        MessNotify::new(timestamp, interrupts, sigset_from_u64(sigset));
 }
 
 /// Core notification logic — shared by `IpcEngine::notify` (syscall path)

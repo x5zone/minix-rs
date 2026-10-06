@@ -12,7 +12,8 @@ use super::vm::{MessLcVmGetphys, MessLsysVmGetref, MessLsysVmInfo, MessLsysVmRus
 // in [`crate::ipc::pm`] (single definition, union + client decoder).
 use super::pm::{
     MessLcPmReboot, MessLcPmSig, MessLcPmSigset, MessLsysPmGetepinfo, MessLsysPmGetprocnr,
-    MessPmLsysGetepinfo, MessPmLsysGetprocnr, MessPmLcSigset, MessRsPmExecRestart,
+    MessPmLcSigset, MessPmLsysGetepinfo, MessPmLsysGetprocnr, MessPmLsysSigsSignal,
+    MessRsPmExecRestart,
 };
 
 /// Message payload size (bytes).
@@ -238,6 +239,9 @@ pub union MessageUnion {
     pub m_lsys_pm_proceventmask: MessLsysPmProceventmask,
     /// PM: process event (PM → subscriber). C: `mess_pm_lsys_proc_event` — ipc.h:1800-1813
     pub m_pm_lsys_proc_event: MessPmLsysProcEvent,
+    /// PM/RS 信号管理器转发的信号号（信号管理器 → 目标服务）。
+    /// C: `mess_pm_lsys_sigs_signal` — ipc.h:1815-1819，union 成员 :2611
+    pub m_pm_lsys_sigs_signal: MessPmLsysSigsSignal,
     /// PM: srv_fork params (RS → PM). C: `mess_lsys_pm_srv_fork` — ipc.h:1422-1428
     pub m_lsys_pm_srv_fork: MessLsysPmSrvFork,
     /// PM: exit status (user → PM). C: `mess_lc_pm_exit` — ipc.h:445-451
@@ -406,6 +410,45 @@ impl Message {
         } else {
             None
         }
+    }
+
+    /// The signal-manager form of a signal request — C:
+    /// `m_ptr->m_pm_lsys_sigs_signal.num` (`sef_signal.c:117`, the payload
+    /// the manager fills at `pm/signal.c:472` / `rs/main.c:700`).
+    ///
+    /// `None` when `m_type` is not `SIGS_SIGNAL_RECEIVED`: the kernel-signal
+    /// form of the same request carries a bitmap in the notification payload
+    /// instead ([`Message::notify_sigset`]), never this field. See
+    /// [`Message::rs_init_result`] for why the union read is centralized
+    /// here (the receiving libraries stay zero-`unsafe`).
+    #[inline]
+    pub fn sigs_signal_num(&self) -> Option<i32> {
+        if self.m_type == crate::SIGS_SIGNAL_RECEIVED {
+            // SAFETY: `m_type == SIGS_SIGNAL_RECEIVED` tags the union arm in
+            // use; the arm is plain-old-data (`MessPmLsysSigsSignal`), so
+            // the read is sound.
+            Some(unsafe { self.m_u.m_pm_lsys_sigs_signal.num })
+        } else {
+            None
+        }
+    }
+
+    /// The notification payload's pending-signal bitmap — C:
+    /// `m_ptr->m_notify.sigset` (`sef_signal.c:96`, filled by the kernel's
+    /// `BuildNotifyMessage` for a `SYSTEM` source only — `ipc.h:1717`).
+    ///
+    /// The caller must have established that this message is a delivered
+    /// notification from `SYSTEM` (C's `is_ipc_notify(status) &&
+    /// m_source == SYSTEM`, `sef.h:266`) — the same precondition the SEF
+    /// loop's signal arm already checks, and the reason the read is not
+    /// guarded by `m_type` alone. Walk it with
+    /// [`crate::ipc::notify::sigset_contains`] (bit `signo - 1`).
+    #[inline]
+    pub fn notify_sigset(&self) -> crate::ipc::notify::SigSetBits {
+        // SAFETY: the caller has tagged the union arm by establishing the
+        // notification delivery from SYSTEM; the arm is plain-old-data
+        // (`MessNotify`), so the read itself is sound.
+        unsafe { self.m_u.m_notify.sigset }
     }
 
     /// The generic RS control-request payload — C: `m.m_rs_req.addr`/`len`
@@ -3962,6 +4005,7 @@ mod tests {
         assert_eq!(reply.flags, 0);
     }
 
+    #[test]
     fn test_sched_message_layouts() {
         // C: ipc.h `_ASSERT_MSG_SIZE` — every payload is 56 bytes.
         assert_eq!(size_of::<MessLsysSchedSchedulingStart>(), 56);
@@ -4213,6 +4257,45 @@ mod rs_accessor_tests {
         assert_eq!(m.rs_req_payload(), Some((0x1234, 42)));
         m.m_type = crate::RS_INIT;
         assert_eq!(m.rs_req_payload(), None);
+    }
+}
+
+#[cfg(test)]
+mod signal_request_accessor_tests {
+    use super::*;
+    use crate::ipc::notify::SigSetBits;
+
+    /// 管理器消息形:`SIGS_SIGNAL_RECEIVED` 携带单号码(C `sef_signal.c:117`
+    /// 读 `m_pm_lsys_sigs_signal.num`),其余 m_type 一律拒答(两形不串台)。
+    #[test]
+    fn test_sigs_signal_num_accessor() {
+        let mut m = Message {
+            m_source: crate::Endpoint::PM,
+            m_type: crate::SIGS_SIGNAL_RECEIVED,
+            m_u: Default::default(),
+        };
+        assert_eq!(m.sigs_signal_num(), Some(0)); // 默认臂 = 零值
+        m.m_u.m_pm_lsys_sigs_signal.num = crate::SIGNAL_TERMINATE;
+        assert_eq!(m.sigs_signal_num(), Some(crate::SIGNAL_TERMINATE));
+        m.m_type = crate::RS_INIT; // 错臂 → None
+        assert_eq!(m.sigs_signal_num(), None);
+    }
+
+    /// 通知形位图:16 字节(C `sigset_t`)能容下内核信号族的字(bit 70..73),
+    /// 访问器往返无损。
+    #[test]
+    fn test_notify_sigset_accessor_round_trip() {
+        let mut m = Message {
+            m_source: crate::Endpoint::SYSTEM,
+            m_type: crate::NOTIFY_MESSAGE,
+            m_u: Default::default(),
+        };
+        assert_eq!(m.notify_sigset(), [0u32; 4]);
+        let set: SigSetBits = [0, 0, 1 << 6, 0]; // signo 71 — bit(signo-1)
+        m.m_u.m_notify.sigset = set;
+        assert_eq!(m.notify_sigset(), set);
+        assert!(crate::sigset_contains(m.notify_sigset(), 71));
+        assert!(!crate::sigset_contains(m.notify_sigset(), 70));
     }
 }
 

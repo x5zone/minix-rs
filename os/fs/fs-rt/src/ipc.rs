@@ -29,7 +29,10 @@ pub enum Receipt {
     /// bitmap is the notification payload's `sigset` (C sef.c:222-226 reads
     /// `m_notify.sigset`; the dispatcher walks one bit per kernel signal).
     Signal {
-        /// Pending kernel-signal bitmap.
+        /// Pending kernel-signal bitmap — the low 64 bits of C's 16-byte
+        /// `sigset_t`. Kernel signals 71..=74 live above this window
+        /// (`bits[2]`); they are walked by `minix-sef`'s signal arm, and the
+        /// hook's own shape converges with the signal-chain batch.
         pending: u64,
     },
 }
@@ -77,12 +80,16 @@ impl RtIpc for SysRtIpc {
         let mut sef = SeIpcAdapter;
         let recv = minix_sef::sef_receive_status(&mut sef, src, msg, &mut |_| {});
         match recv {
-            // SAFETY: the notification arm is the active union member for
-            // SYSTEM notifications (the SEF layer guaranteed the source).
+            // The signal arm is only reached after `minix-sef` has
+            // established `is_ipc_notify(status) && source == SYSTEM`, which
+            // is what makes the notification payload the active union arm —
+            // the union read itself lives in `Message::notify_sigset`
+            // (C do_sef_signal_request reads `m_ptr->m_notify.sigset`,
+            // sef_signal.c:96).
             Ok(r) => match r.event {
-                SefEvent::Signal(_) => {
-                    Ok(Receipt::Signal { pending: unsafe { msg.m_u.m_notify.sigset } })
-                }
+                SefEvent::Signal(_) => Ok(Receipt::Signal {
+                    pending: minix_types::sigset_to_u64(msg.notify_sigset()),
+                }),
                 _ => Ok(Receipt::Call { status: r.status }),
             },
             Err(e) => Err(e),

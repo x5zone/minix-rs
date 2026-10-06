@@ -88,6 +88,40 @@ pub const SIGNAL_USER_2: i32 = 31;
 /// Power fail or restart. C: `SIGPWR 32` (`signal.h:84`).
 pub const SIGNAL_POWER: i32 = 32;
 
+// ── Kernel signals ──
+//
+// A separate family above the POSIX range: the kernel raises these at a
+// service through a notification from `SYSTEM`, and the numbering decides
+// the order a service walks them in (higher-priority first — the C header
+// says so at `signal.h:260`). They are never delivered to a user
+// process, which is why the user-space table above stops at 32.
+
+/// Kernel memory request pending. C: `SIGKMEM 71` (`signal.h:271`).
+pub const SIGNAL_KERNEL_MEMORY: i32 = 71;
+/// New kernel message. C: `SIGKMESS 72` (`signal.h:272`).
+pub const SIGNAL_KERNEL_MESSAGE: i32 = 72;
+/// Kernel signal pending for the signal manager itself. C: `SIGKSIGSM 73`
+/// (`signal.h:273`).
+pub const SIGNAL_KERNEL_MANAGER_SELF: i32 = 73;
+/// Kernel signal pending for someone else, to be pulled by the signal
+/// manager. C: `SIGKSIG 74` (`signal.h:274`).
+pub const SIGNAL_KERNEL_PENDING: i32 = 74;
+
+/// First kernel signal. C: `SIGK_FIRST` = `SIGKMEM` (`signal.h:276`).
+pub const KERNEL_SIGNAL_FIRST: i32 = SIGNAL_KERNEL_MEMORY;
+/// Last kernel signal. C: `SIGK_LAST` = `SIGKSIG` (`signal.h:277` — its own
+/// comment warns that the signal-set width must cover this range; see
+/// [`crate::ipc::notify::SigSetBits`], which is 128 bits like C's
+/// `sigset_t`, while the kernel's own `SigSet` is still 64).
+pub const KERNEL_SIGNAL_LAST: i32 = SIGNAL_KERNEL_PENDING;
+
+/// Reports whether a number is in the kernel-signal family.
+///
+/// C: `IS_SIGK(signo)` — `signal.h:278`.
+pub const fn is_kernel_signal(signo: i32) -> bool {
+    signo >= KERNEL_SIGNAL_FIRST && signo <= KERNEL_SIGNAL_LAST
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +143,29 @@ mod tests {
         assert!(is_valid_signal_number(31));
         assert!(!is_valid_signal_number(-1));
         assert!(!is_valid_signal_number(64));
+    }
+
+    /// C 绝对值 pin：内核信号族（signal.h:271-277）。这四个号码决定通知
+    /// 载荷位图必须覆盖到第 74 位，也与内核侧 `syscall_signal.rs` 的同名
+    /// 常量互证（那处是 `u32`，本处是消息与回调用的 `i32`）。
+    #[test]
+    fn test_kernel_signal_numbers_match_c_header() {
+        assert_eq!(SIGNAL_KERNEL_MEMORY, 71); // signal.h:271
+        assert_eq!(SIGNAL_KERNEL_MESSAGE, 72); // signal.h:272
+        assert_eq!(SIGNAL_KERNEL_MANAGER_SELF, 73); // signal.h:273
+        assert_eq!(SIGNAL_KERNEL_PENDING, 74); // signal.h:274
+        assert_eq!(KERNEL_SIGNAL_FIRST, SIGNAL_KERNEL_MEMORY); // signal.h:276
+        assert_eq!(KERNEL_SIGNAL_LAST, SIGNAL_KERNEL_PENDING); // signal.h:277
+    }
+
+    /// C: `IS_SIGK` 的区间边界（signal.h:278）——相邻的 SIGSNDELAY=70 与
+    /// 族外的 75 都不属于内核信号族。
+    #[test]
+    fn test_is_kernel_signal_window_bounds() {
+        assert!(is_kernel_signal(71));
+        assert!(is_kernel_signal(74));
+        assert!(!is_kernel_signal(70)); // SIGSNDELAY — signal.h:264
+        assert!(!is_kernel_signal(75));
+        assert!(!is_kernel_signal(1)); // 用户信号不在此族
     }
 }

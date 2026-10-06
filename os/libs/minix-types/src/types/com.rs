@@ -71,6 +71,16 @@ pub const NR_TASKS: usize = 5;
 /// Corresponds to Minix3's `LAST_SPECIAL_PROC_NR` (init process).
 pub const LAST_SPECIAL_PROC_NR: usize = 11;
 
+/// The init process slot, in endpoint-comparison form.
+///
+/// C: `INIT_PROC_NR` — `com.h:72`, defined as `((endpoint_t)
+/// LAST_SPECIAL_PROC_NR)`: the same truth as [`LAST_SPECIAL_PROC_NR`],
+/// spelled for comparisons against a message's sender. A sender below this
+/// number is a boot module — the signal managers live there (PM is slot 0),
+/// which is exactly the half of C's `IS_SEF_SIGNAL_REQUEST` that
+/// `minix-sef` reproduces (`sef.h:265`).
+pub const INIT_PROC_NR: i32 = LAST_SPECIAL_PROC_NR as i32;
+
 /// Number of boot modules.
 ///
 /// Corresponds to Minix3's `NR_BOOT_MODULES` = `INIT_PROC_NR + 1`.
@@ -309,6 +319,15 @@ pub const PMEF_EXECNAMELEN1: usize = 1024;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// C 绝对值 pin：init 槽号与它的端点形态同源（com.h:70-72）。
+    #[test]
+    fn test_init_proc_nr_matches_last_special() {
+        assert_eq!(LAST_SPECIAL_PROC_NR, 11); // com.h:70
+        assert_eq!(INIT_PROC_NR, 11); // com.h:72
+        assert_eq!(INIT_PROC_NR as usize, LAST_SPECIAL_PROC_NR);
+        assert_eq!(NR_BOOT_MODULES, 12); // com.h:74 = INIT_PROC_NR + 1
+    }
 
     #[test]
     fn test_sys_state_opcodes() {

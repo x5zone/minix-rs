@@ -364,6 +364,22 @@ impl MessPmLcSigset {
     }
 }
 
+/// 信号管理器把“已收到的信号”转发给目标服务的载荷。
+///
+/// C: `mess_pm_lsys_sigs_signal` — `ipc.h:1815-1819`（`int num` +
+/// 52 字节 padding = 56）。发送方是信号管理器（PM 为服务代理：
+/// `pm/signal.c:470-473`；RS 同理：`rs/main.c:699-701`），消息类型是
+/// `SIGS_SIGNAL_RECEIVED`，接收方的 SEF 把这一个号码交给它的信号回调
+/// （`sef_signal.c:115-128`）。它与通知载荷里的位图是信号请求的两种形状：
+/// 位图形来自内核 `SYSTEM`，本形来自信号管理器。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessPmLsysSigsSignal {
+    /// 被转发的信号号。C: `int num`。
+    pub num: i32,
+    /// Padding to 56 bytes (C: union payload size)。
+    pub _padding: [u8; 52],
+}
 
 #[cfg(test)]
 mod sig_wire_tests {
@@ -402,6 +418,15 @@ mod sig_wire_tests {
         assert_eq!(offset_of!(MessLcPmSigset, ctx), 8);
         assert_eq!(offset_of!(MessLcPmSigset, set), 16);
         assert_eq!(offset_of!(MessLcPmSigset, _padding), 32);
+    }
+
+    /// 布局见证:MessPmLsysSigsSignal 56 字节,`num` 落在偏移 0
+    ///(C `int num` 是结构体首个字段 — ipc.h:1815-1819)。
+    #[test]
+    fn test_mess_pm_lsys_sigs_signal_layout() {
+        assert_eq!(size_of::<MessPmLsysSigsSignal>(), 56);
+        assert_eq!(offset_of!(MessPmLsysSigsSignal, num), 0); // ipc.h:1816
+        assert_eq!(offset_of!(MessPmLsysSigsSignal, _padding), 4); // ipc.h:1818
     }
 }
 

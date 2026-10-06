@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§续-411（minix-vm 宿主测试面断链收口：§续-390 移除 `Paging::switch` 死契约面时漏了 cfg(test) 软件模拟器 `SimPaging`，`cargo test -p minix-vm --lib` 自那轮起编译失败——本轮删死面一笔恢复 538/0，并把「移除类改动必须跑 `cargo check --workspace --tests`」写进每笔验证串）** 下一前沿＝P-ALL-08 T1 落地（配方见 §续-410；开工前已按 C 真源核出配方三处待纠偏：管理器形判据应为 `m_source < INIT_PROC_NR`（sef.h:265，§续-410 写反）、SIGK 位在 128 位 `sigset_t` 的 bit 70..73 而通知载荷当前是 `u64`（位集展开在生产不可达，须先定载荷形态）、`sys_getksig/sys_endksig` 其实已有 minix-sys 封装与 PM 拉取循环（§续-410 ③ 说法需纠正）。本会话总交付：三架构 SMP 线收口（§续-403 riscv 洪流根因修复＋门绿 e4b46a5aa、§续-404 选举彩票收口 2cd48d539、§续-405 aarch64 半生产形状 a6a78d37b、§续-406 直核门四连绿 ff1e69a10）＋P-RV-01 riscv 多核门双 PASS（§续-407 38514a26a，ATF 36/36＋cmd-smoke 18 阶段在 -smp 2）＋P-ALL-08 T6/T7 双结（§续-408 e612e62d5 定谳、§续-409 c8d7ba87d 形状审计）＋T1 勘察（§续-410）。接手入口＝「NK4C-接续PROMPT-20261006q.md」（同目录）。qemu=0。
+> **✅ 最新前沿＝§续-412（P-ALL-08 T1 第一笔＝线形与常量，运行时行为零变化：通知载荷按 C `sigset_t` 建成 16 字节四字形态（`SigSetBits=[u32;4]`，偏移逐字节对位 ipc.h:1715-1718，`Message`=80／`MessageUnion`=72 两条既有尺寸 pin 原值通过）＋内核信号族常量 71..=74＋信号管理器形载荷 `MessPmLsysSigsSignal` 与集中化访问器 `sigs_signal_num`/`notify_sigset`（minix-sef 维持零 unsafe）＋`INIT_PROC_NR: i32=11`；接手件三处事实纠偏定谳（E-1 判据方向应为 `m_source < INIT_PROC_NR`，sef.h:265；E-2 配方 `1<<74` 与 u64 载荷相抵且位基是 signo-1；E-3 `sys_getksig/sys_endksig` 实已有 minix-sys 封装与 PM 拉取循环）＋台账 TODO-3ARCH-PARITY-20261006.md 入库＋minix-types 一条从不运行的假测试补上 `#[test]`（319→320）。下一笔＝§续-413 minix-sef 双形态派发（notify 位集展开＋管理器臂拦截）。验证：types 320/0、sef 8 lib＋3 pin 旧断言未改、fs-rt 27/0、vm 538/0、pm 420/0、rs 351/13、kernel --lib 830/0、check --workspace --tests 零错误、clippy 对基线零新增、fmt 逐文件漂移相等或下降、doc-style-lint --diff 零 error、qemu=0。**
+>
+> **（上一前沿＝§续-411（minix-vm 宿主测试面断链收口：§续-390 移除 `Paging::switch` 死契约面时漏了 cfg(test) 软件模拟器 `SimPaging`，`cargo test -p minix-vm --lib` 自那轮起编译失败——一笔删死面恢复 538/0，并把「移除类改动必须跑 `cargo check --workspace --tests`」写进每笔验证串）** 撞见方式＝§续-412 要改通知载荷形状，消费方逐 crate 宿主测试是唯一能证明零签名破坏的闸。qemu=0。
 >
 > **（上一前沿＝§续-410（T1 勘察完成＝交接前最后一笔：信号请求双形态 C 语义全链钉死＋落地配方定稿，正文即接手件；§续-403..409 七增量已在库）** 本会话总交付：三架构 SMP 线收口（§续-403 riscv 洪流根因修复＋门绿 e4b46a5aa、§续-404 选举彩票收口 2cd48d539、§续-405 aarch64 半生产形状 a6a78d37b、§续-406 直核门四连绿 ff1e69a10）＋P-RV-01 riscv 多核门双 PASS（§续-407 38514a26a，ATF 36/36＋cmd-smoke 18 阶段在 -smp 2）＋P-ALL-08 T6/T7 双结（§续-408 e612e62d5 定谳、§续-409 c8d7ba87d 形状审计）。接手入口＝「NK4C-接续PROMPT-20261006q.md」（同目录）。qemu=0。
 >
@@ -13852,3 +13854,28 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 ④改动一笔（纯删死面，零语义）：`os/servers/vm/src/pagetable/sim.rs` 删 `unsafe fn switch` 实现、`switch_count` 字段与其初始化，计数器 doc 行的触发者从 `enable()/switch()` 改为 `enable()/flush_tlb()`（`flush_tlb`/`flush_tlb_addr` 仍是 trait 成员，保留）。
 
 ⑤验证：`cargo test -q -j 1 -p minix-vm --lib` → 538/0（该 crate 宿主测试面恢复可用）；`cargo check -q -j 1 --workspace --tests` 零错误；fmt 该文件漂移计数 5→5（既有漂移未碰，我方区间零新增）；qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
+
+## §续-412 P-ALL-08 T1 第一笔（线形与常量，运行时行为零变化）：通知载荷按 C `sigset_t` 建成 16 字节四字形态＋内核信号族常量＋信号管理器形载荷与集中化访问器；接手件三处事实纠偏定谳（判据方向、位宽、sigmgr 内核调用面）
+
+①动手前先复核接手件（§续-410 配方与接续 PROMPT §三.1），撞出三处与真源相抵的事实，按「Minix3 C 源 > 设计文档 > Rust 代码」优先链定谳并全部带锚：
+- **E-1 判据方向**：配方写管理器消息形为 `source>=INIT_PROC_NR`，真源 `minix3/minix/include/minix/sef.h:264-266` 逐字是 `m_type == SIGS_SIGNAL_RECEIVED && m_source < INIT_PROC_NR`。照原文写会双向错：init(11) 与用户进程（槽号 ≥11）发给服务的合法 0xE00 调用号被 SEF 当信号吞掉，而真信号管理器 PM（槽 0）反被漏判。下一笔的实现取 `<`。
+- **E-2 位宽**：配方要「notify 形带 `sigset=1<<74` 断言展开出 [74]」，而当时载荷是 `u64`——`1u64 << 74` 越界（debug 构建直接 panic），且 C `sigismember` 的位基是 `signo-1`（`minix3/sys/sys/sigtypes.h:67-68`），SIGKSIG=74 落在 bit 73、SIGKMEM=71 落在 bit 70，全都超出 u64 的 bit 0..63。python 复核：`1<<74 < 1<<64` 为假、`74-1 > 63` 为真。这是「纸上数字必须机器复核」纪律第四次兑现（§续-379/§续-403①/§续-406 同族）。
+- **E-3 sigmgr 内核调用面**：§续-410 ③ 写 `sys_getksig/endksig` 「在我方框架无对应物」，实际封装已在 `os/libs/minix-sys/src/syscall.rs:417/434`、内核分派已接线（`os/kernel/src/syscall.rs:678`），PM 的 `process_sigmgr_signals` 更是真在 `os/servers/pm/src/init.rs:516-520` 被 SYSTEM 通知触发。缺口的真实形状是「载荷位宽＋SEF 侧建模」，不是「内核调用面为零」——T2 的靶单据此重画。
+- 附带 **E-4**：`os/fs/fs-rt/src/transport.rs` 的 `SignalDecision` 文档声明第二条缺口是「`sys_getksig`/`sys_endksig` 的 minix-sys 封装尚不存在（且原文把名字误写成 `sys_getkenv`）」，同属过期事实，本笔一并纠正。
+
+②形状选型（三案对比后取 C 字宽同源案）：把 `MessNotify.sigset` 从 `u64` 改为 `SigSetBits = [u32; 4]`，另两案弃——（甲）保持 `u64`：内核信号位无处落脚，配方的正例测试根本写不出来，位集遍历会退化成永不可达死支；（乙）`[u64; 2]`：与内核 `SigSet(u64)` 桥接少一次拆分，但偏离 C `sigset_t` 的字宽。取 `[u32; 4]` 的理由：与 `minix3/sys/sys/sigtypes.h:60-61`（`__uint32_t __bits[4]`）逐字同形，且与本仓既有 sigset 建模同源（`os/libs/minix-types/src/ipc/pm.rs:344` 的 `MessLcPmSigset.set`、`:355` 的 `MessPmLcSigset.set` 都是 `[u32; 4]`）。总长仍 56 字节，`Message`=80／`MessageUnion`=72 两条既有尺寸 pin 原值通过（`message.rs:4271-4276`），偏移逐字节对位 C `mess_notify`（`ipc.h:1715-1718`）——新增布局见证测试锁死 0/8/16/32 四个偏移与 `size_of` 双重判据。
+
+③落地清单（八文件，全为线形与常量，无派发逻辑改动）：
+- `os/libs/minix-types/src/types/signal.rs`：内核信号族常量四枚＋首末边界＋`is_kernel_signal`（对位 `IS_SIGK`，signal.h:278），描述式命名（SIGNAL_KERNEL_MEMORY/MESSAGE/MANAGER_SELF/PENDING）而 C 短名进锚点；族注释写明「号码决定服务侧处理次序」（signal.h:260）与「绝不投递给用户进程」。测试含 signal.h:271-277 绝对值 pin 与区间边界（70/75/1 三枚反例）。
+- `os/libs/minix-types/src/ipc/notify.rs`：`SigSetBits` 类型别名＋`sigset_contains`（C `__sigismember` 的 word/bit 拆分，越界与 signo==0 一律答 `false`——通知载荷按不可信输入处理，不像 C 那样裸索引）＋`sigset_from_u64`/`sigset_to_u64` 两座桥（内核 `SigSet(u64)` 只填低两字，高两字待位宽拓宽项）＋`SigSetBits` 布局 pin。
+- `os/libs/minix-types/src/types/com.rs`：`INIT_PROC_NR: i32 = 11`（C `com.h:72` 的端点形态），测试与既有 `LAST_SPECIAL_PROC_NR`（:70）互等并 pin `NR_BOOT_MODULES=12`。
+- `os/libs/minix-types/src/ipc/pm.rs`：`MessPmLsysSigsSignal { num: i32, _padding: [u8; 52] }`（`ipc.h:1815-1819`）＋布局见证。
+- `os/libs/minix-types/src/ipc/message.rs`：`MessageUnion` 新增 `m_pm_lsys_sigs_signal` 臂（紧邻 `m_pm_lsys_proc_event`，C `ipc.h:2611`）＋集中化访问器 `sigs_signal_num()`（守卫 `m_type == SIGS_SIGNAL_RECEIVED`，与 `rs_init_type` 同形）与 `notify_sigset()`（前提由调用方确立：`is_ipc_notify && source == SYSTEM`）＋两形不串台测试。unsafe 只落 minix-types 一处，minix-sef 维持零 unsafe。
+- `os/kernel/src/ipc.rs`：唯一写点 `build_notify_message` 改经 `sigset_from_u64`，并在 SYSTEM 臂注写「内核 `SigSet` 仍是 64 位，位 70..73 要等其本身拓宽才住进 `bits[2]`」。
+- `os/fs/fs-rt/src/ipc.rs`＋`transport.rs`：位图读改走 `Message::notify_sigset()`（消掉一处 `unsafe`），`Receipt::Signal { pending }` 仍取低 64 位并写明内核信号族在此窗口之上；`SignalDecision` 文档两条缺口按 E-2/E-4 重写。
+- 顺手清：`message.rs:4008` 的 `test_sched_message_layouts` 缺 `#[test]` 属性（编译器的 `is never used` 告警暴露＝一条从不运行的假测试），补属性后 minix-types lib 测试 319→320。同族残留登记：`test_nreqs_and_is_fs_rq_gate` 同样缺属性、`types/sysctl_abi.rs:569` 的未用导入——非本笔靶，列后续。
+- 台账入库：`notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`（417 行）随本笔 `git add`。§续-407 已把它当判据引用却长期未跟踪＝引用完整性缺口；入库前 `tools/doc-style-lint.sh <该文件>` 实测 error 级 0 命中。
+
+④诚实边界（本笔不宣称的任何事）：**运行时行为零变化**——派发侧（notify 位集展开、管理器臂拦截）全在下一笔，本笔只把「线形与号码」备好；载荷拓宽后内核写侧仍只产低两字，故真机上 71..74 位仍不会出现，位宽拓宽（`SigSet(u64)`→128 位，牵动 GET_PROCTAB/GET_PRIVTAB/notify/GETKSIG 与 PM 镜像）仍是已登记的跨层项，不在本笔偷跑；`Message` 结构是 Rust 侧内部线形（`notify.rs` 头注既有定夺：不与 C 追求字节级兼容），本笔选择 16 字节只为给内核信号位落脚，不宣称跨语言 ABI。
+
+⑤验证：宿主（docker minix-ci:1.94，-m 2g -j 1）minix-types 320/0、minix-sef 8 lib＋3 pin（旧断言一字未改＝回归锚成立）、minix-fs-rt 27/0、minix-vm 538/0（§续-411 恢复后可跑）、minix-pm 420/0、minix-rs 351/13、minix-kernel --lib 830/0、`cargo check --workspace --tests` 零错误；clippy 与基线对账零新增（`unnecessary unsafe` 17 枚全在既有测试文件，我方两处 union 访问器未被标记——union 读必需）；fmt 对账逐文件 HEAD/NOW 计数相等或下降（kernel ipc.rs 101→101、pm.rs 5→5、transport.rs 9→9、sim.rs 5→5、fs-rt ipc.rs 3→2、message.rs 5→4）；qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。

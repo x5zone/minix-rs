@@ -59,17 +59,18 @@ pub fn serve<D: minix_fs::driver::FsDriver>(
 /// C shape: `do_sef_signal_request` (sef_signal.c:88-) walks the kernel
 /// signal range `SIGK_FIRST..=SIGK_LAST` (71..=74,
 /// `sys/sys/signal.h:276-277`) and calls the registered handler once per
-/// pending signal. Two pieces of that channel are pending elsewhere and
-/// are **not** faked here:
-/// - the bitmap width — the C `sigset_t` covers kernel signals 71..=74,
-///   while `minix-types`' notification payload carries a `u64` (its own
-///   documented `SigSet` decision), so this runtime hands the **raw
-///   bitmap** to the hook instead of walking bits it cannot see;
+/// pending signal. Two pieces of that channel are not this runtime's job:
+/// - the walk itself: the notification payload now carries C's 16-byte
+///   `sigset_t` verbatim (`minix_types::SigSetBits`), so kernel signals
+///   71..=74 have a home (`bits[2]`), but the per-signal walk belongs to
+///   `minix-sef`'s signal arm, not here — this hook still receives the raw
+///   low 64 bits, and converging its shape to a signal number is the
+///   signal-chain batch;
 /// - process signals (SIGTERM and friends) reach the C handler through the
-///   signal-manager pull (`sys_getkenv`/`sys_endksig`), whose minix-sys
-///   wrappers do not exist yet — the tracked gap means a server wired
-///   today cannot yet honor SIGTERM's sync-then-terminate the way
-///   `main.c:70-78` does.
+///   signal manager's pull (`sys_getksig`/`sys_endksig`, whose minix-sys
+///   wrappers exist at `minix_sys::syscall::sys_getksig`/`sys_endksig`);
+///   no FS driver registers a signal handler in C either, so the hooks
+///   built here answer `false`.
 ///
 /// The hook receives the raw bitmap and returns `true` to terminate.
 pub type SignalDecision = Box<dyn FnMut(u64) -> bool>;
@@ -306,7 +307,7 @@ mod tests {
         let mut m = Message::default();
         // SAFETY(test): the notification arm is the active one for SYSTEM
         // notifications.
-        m.m_u.m_notify.sigset = sigset;
+        m.m_u.m_notify.sigset = minix_types::sigset_from_u64(sigset);
         m.m_source = Endpoint::from_generation_slot(0, 0); // SYSTEM
         m
     }
@@ -315,7 +316,8 @@ mod tests {
     fn test_signal_walk_and_terminate_on_sigterm() {
         // A non-terminating bitmap lets the loop continue to the next
         // scripted delivery; the hook saw the bitmap verbatim.
-        // Deliveries: one kernel signal (bit 71), then an ordinary message
+        // Deliveries: one SYSTEM notification carrying bit 7 in the low word
+        // (signo 8 — C bit numbering is `signo - 1`), then an ordinary message
         // from a non-VFS endpoint (repeats forever, but the loop returns on
         // it as `Other`).
         let m = system_signal(0x80);
@@ -332,10 +334,10 @@ mod tests {
 
     #[test]
     fn test_terminate_decision_cancels_receive() {
-        let m = system_signal(0x100);
-        // The hook returns true only for 15 — never in the kernel range —
-        // so drive the terminate path through a pending 72 with a hook that
-        // says yes: rebuild with a permissive hook instead.
+        let m = system_signal(0x100); // 低字 bit 8 → signo 9
+        // The scripted hook answers "terminate" unconditionally, so the
+        // receive loop returns `Cancelled` instead of waiting for the next
+        // delivery (the C `fsdriver_terminate` face, fsdriver.c:67-73).
         let ipc = ScriptedRtIpc::new(vec![(Receipt::Signal { pending: 0x100 }, m)]);
         let mut rt = FsRt::new(
             ipc,
