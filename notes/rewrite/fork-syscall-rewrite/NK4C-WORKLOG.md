@@ -13906,7 +13906,7 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 
 ③**旧错锚纠正（评审顺带查出，本轮一并清）**：`sef.c:222-226` 这个锚在 Rust 侧被当作「SYSTEM → signal 请求」的出处引用了四处（`os/libs/minix-sef/src/lib.rs:66/:165/:372`＋`os/fs/fs-rt/src/ipc.rs:29`），而 `sef.c:219-228` 是 live-update 拦截块；真锚是 `sef.c:183-193`（通知按源改写 m_type，`case SYSTEM: m_type = SEF_SIGNAL_REQUEST_TYPE`）＋`sef.c:230-238`（`IS_SEF_SIGNAL_REQUEST` 命中后交 `do_sef_signal_request`），位图读取在 `sef_signal.c:96`。四处全部改双段锚。**行号锚也是纸上数字**：本轮我自己新写的两处锚（`message.rs:4271-4276` 实为 `test_message_total_size_pinned` 之外的新访问器测试，正解 4311-4317；`drivers/utility/log.c:115` 路径不存在，正解 `drivers/system/log/log.c:115`）同样被复核打回——落盘前必须 `grep -n` 实测，不能凭「记得在附近」。§续-412 正文这两处已就地修正。
 
-④**无消费方的新面挂归属**（评审要求判定「下一笔即用」还是「投机 API」）：`is_kernel_signal` 与 `SIGNAL_KERNEL_MESSAGE` 都不在下一笔范国内——前者的 C 侧唯一读者是默认信号回调 `sef_cb_signal_handler_posix_default`（`sef_signal.c:182-201`，:196 用 `IS_SIGK` 判「内核信号不触发终止」），后者的读者在驱动侧（内核投递见 `kernel/system.c:480`、`do_diagctl.c:56`；消费见 `drivers/system/log/log.c:115`、`drivers/tty/tty/tty.c:456`）。两者的 doc 各挂批次归属，避免沦为无人认领的 pub 面；其余新件（`sigset_contains`/`sigs_signal_num`/`notify_sigset`/`INIT_PROC_NR`/`MessPmLsysSigsSignal`）已确认是下一笔的直接依赖。
+④**无消费方的新面挂归属**（评审要求判定「下一笔即用」还是「投机 API」）：`is_kernel_signal` 与 `SIGNAL_KERNEL_MESSAGE` 都不在下一笔范围内——前者的 C 侧唯一读者是默认信号回调 `sef_cb_signal_handler_posix_default`（`sef_signal.c:182-201`，:196 用 `IS_SIGK` 判「内核信号不触发终止」），后者的读者在驱动侧（内核投递见 `kernel/system.c:480`、`do_diagctl.c:56`；消费见 `drivers/system/log/log.c:115`、`drivers/tty/tty/tty.c:456`）。两者的 doc 各挂批次归属，避免沦为无人认领的 pub 面；其余新件（`sigset_contains`/`sigs_signal_num`/`notify_sigset`/`INIT_PROC_NR`/`MessPmLsysSigsSignal`）已确认是下一笔的直接依赖。
 
 ⑤**非法态封堵一处**：`Message::notify_sigset` 加通知带 `debug_assert`（判定式照 C `is_notify` 的无符号回绕语义 `(m_type - NOTIFY_MESSAGE) as u32 < 0x100`，锚 `com.h:93`；内核填该臂时恒写 `m_type = NOTIFY_MESSAGE`，见 `os/kernel/src/ipc.rs:2793`）。原语本身读 `[u32;4]` 不可能产生非法位模式，所以这不是 soundness 洞而是误用响应：被非通知消息调用时从「静默拿到位图垃圾」变成宿主测试当场响铃。
 
@@ -13973,7 +13973,7 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 
 ④`if let Some(signo) = msg.sigs_signal_num()` 的取舍（评审列 P2 偏好项）：保持现状。理由已写在臂的注释里——守卫使 `Some` 恒成立，用 `if let` 是把这条不变式交给类型系统，换成 `unwrap`/直接取值反而要为「万一 None」编造一个零号；C 那边 `signo = m_ptr->m_pm_lsys_sigs_signal.num` 无分支是因为 C 没有 `Option`。
 
-⑤另记一笔自律（过程痕迹只进本日志，不进正文）：台账初稿里混进了几个形近与输入法噪声字（跨写成跳、「形制」写成「形弌」、「且」写成「呷」、「槽」写成「桦」、一句「正对」实为「正面冲突」），以及本段自己又生出一个「陷阱」。逐个回改后固定跑一张可疑字表（`grep` 全文扫描，命中清零），并把这条手法写进⑥的验证串——零代码那笔也要跑；这是已登记的「中文技术文档形近字陷阱」的又一次现场复现。另一件现场坑：`TODO-3ARCH-PARITY-20261006.md` 入库时就是 **CRLF 行尾**，用文本模式整文件读写（python `read_text`/`write_text`）会把它全文刷成 LF，`git diff` 立刻变成 847 行跳动；已按二进制换回 CRLF（本轮该文件 diff 回到 11 行），后续改这个文件要么用 SearchReplace（保留原行尾），要么写完就换回 CRLF。
+⑤另记一笔自律（过程痕迹只进本日志，不进正文）：台账初稿里混进了几个形近与输入法噪声字（跳应为跨、形弌应为形制、呷应为且、桦应为槽、「正对」应为「正面冲突」），回改过程中本段自己又生出三个（锈、锰、铜钉，三处都应为「锚」；另有一个「癕」应为「写」）。处置＝逐个回改后固定跑一张可疑字表（`grep` 全文扫描，命中清零），并把这道扫描写进⑥的验证串——零代码那笔也要跑。已登记的「中文技术文档形近字陷阱」再一次现场复现，且本轮多了一条：**回改本身会生成新错字**，所以扫描必须在回改之后重跑一次，不能只改不查。另记一件现场坑：`TODO-3ARCH-PARITY-20261006.md` 入库时就是 **CRLF 行尾**，用文本模式整文件读写（python `read_text`/`write_text`）会把它全文刷成 LF，`git diff` 立刻变成 847 行跳动；已按二进制换回 CRLF（该文件 diff 回到 11 行）。后续改这个文件要么用保留行尾的编辑工具，要么写完就换回 CRLF。
 
 ⑥验证：本笔只动一处注释（`test_message_total_size_pinned` 的 doc 与一条内注，断言值 80/72/56 未动）与三份文档，宿主复跑 `minix-types --lib` = 320/0（含该尺寸 pin）；`cargo check --workspace --tests` 零错误；一次性探测测试文件已删除（`os/libs/minix-types/tests/` 不复存在，`git status` 仅剩文档与本笔注释改动）；`bash tools/doc-style-lint.sh --diff` 零 error；可疑字表扫描零命中；qemu 按 `ps -eo comm` 计 0。下一前沿＝T2 第一靶 `os/servers/is`（C `is/main.c:85` 注册了 `sef_cb_signal_handler`，而我方 `is/src/sef.rs:204` 传空闭包）；`P-ALL-12` 的结构体修法另起批次（要带三架构上机对账），不夹在回执轮里做。
 
