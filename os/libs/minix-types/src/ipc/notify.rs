@@ -196,11 +196,12 @@ mod tests {
     /// 那一段;越界的号码一律答 `false`,不索引数组之外。
     #[test]
     fn test_sigset_contains_matches_c_bit_numbering() {
-        let mut set = [0u32; SIGSET_WORDS];
-        set[0] = 1 << 0; // signo 1
-        set[0] = set[0] | (1 << 31); // signo 32
-        set[1] = 1 << 31; // signo 64
-        set[2] = (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9); // 71..=74
+        let set: SigSetBits = [
+            (1 << 0) | (1 << 31), // signo 1 与 32
+            1 << 31,              // signo 64（bits[1] 的最后一位）
+            (1 << 6) | (1 << 7) | (1 << 8) | (1 << 9), // 内核信号族 71..=74
+            0,
+        ];
         assert!(sigset_contains(set, 1));
         assert!(sigset_contains(set, 32));
         assert!(sigset_contains(set, 64));

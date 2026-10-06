@@ -12,6 +12,8 @@
 # 已知局限（有意的，基线收纳误报）：
 #   - 多行注释、宏展开内的 unsafe、字符串字面量里的 "unsafe" 均可能误报
 #   - 不追求零误报；误报通过基线收纳，不特判
+#   - --diff 的辩护判定需要前 5 行上下文：命中行会按工作树补读 CTX（因此对已提交的
+#     RANGE 跑 --diff 时，若那几行后来被改过，辩护可能读到新内容——与 --report 同一局限）
 #
 # 用法：
 #   tools/unsafe-audit.sh --report                     # 全量统计 + 裸 unsafe 清单
@@ -117,6 +119,7 @@ collect_with_context() {
 collect() { # 输出 rg -n 风格流
   if [ "$MODE" = "diff" ]; then
     # 只检查新增/修改行：git diff -U0 的 + 行，保留原行号
+    local tmp_hits; tmp_hits="$(mktemp)"
     { git diff -U0 "$RANGE" -- 'os/**/*.rs'; git diff -U0 --cached -- 'os/**/*.rs'; } \
     | awk '
         /^\+\+\+ b\// { file = substr($2, 3); next }
@@ -130,7 +133,22 @@ collect() { # 输出 rg -n 风格流
         }
         /^[^-+ ]/ { next }
         /^ / { ln++ }
-      '
+      ' > "$tmp_hits"
+    # 为每条命中补前 5 行上下文（与 report 模式同一判定；不补则「辩护在上一行」的
+    # 合法 union 读必被判裸——集中化访问器一类改动会被增量门假红）
+    while IFS= read -r row; do
+      [ -n "$row" ] || continue
+      f="${row%%:*}"; rest="${row#*:}"; l="${rest%%:*}"
+      [ -f "$f" ] || continue
+      start=$(( l > 5 ? l - 5 : 1 ))
+      end=$(( l - 1 ))
+      if [ "$end" -ge "$start" ]; then
+        awk -v f="$f" -v s="$start" -v e="$end" \
+          'NR >= s && NR <= e { printf "CTX\t%s:%d\t%s\n", f, NR, $0 }' "$f"
+      fi
+    done < "$tmp_hits"
+    cat "$tmp_hits"
+    rm -f "$tmp_hits"
   else
     # 收集 unsafe 行 + 其前 5 行上下文（辩护判定需要上下文行，但上下文行不计入 unsafe 统计）
     collect_with_context

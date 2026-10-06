@@ -63,7 +63,8 @@ pub const SEF_INIT_REQUEST_TYPE: i32 = RS_INIT;
 pub enum SefEvent {
     /// An ordinary message for the server loop (the vast majority).
     Call(i32),
-    /// SYSTEM notification → signal request (C sef.c:222-226; the server
+    /// SYSTEM notification → signal request (C classifies a notification by
+    /// source at sef.c:183-193 and intercepts it at sef.c:230-238; the server
     /// dispatches its registered signal handler).
     Signal(i32),
     /// RS birth request with `RS_INIT` (C sef.c:196-206, `IS_SEF_INIT_REQUEST`
@@ -162,7 +163,9 @@ pub fn sef_receive_status(
         // C sef.c:174-191 — notification classification by source.
         if is_ipc_notify(status) {
             if source == SYSTEM_ENDPOINT {
-                // C sef.c:222-226 — SYSTEM → signal request.
+                // C sef.c:183-193（通知按源改写 m_type）+ sef.c:230-238
+                // （`IS_SEF_SIGNAL_REQUEST` 命中后交 `do_sef_signal_request`）
+                // — SYSTEM → signal request。
                 on_signal(SEF_SIGNAL_REQUEST_TYPE);
                 return Ok(SefReceive {
                     source,
@@ -369,8 +372,8 @@ mod tests {
         let _ = pong_count;
     }
 
-    /// C sef.c:222-226 — SYSTEM 通知 = 信号请求,作为 Signal 事件上浮
-    /// (服务器分派自己的 signal handler)。
+    /// C sef.c:183-193 + sef.c:230-238 — SYSTEM 通知 = 信号请求,作为 Signal
+    /// 事件上浮(服务器分派自己的 signal handler)。
     #[test]
     fn test_system_notification_surfaces_signal() {
         let mut ipc = CannedSefIpc::new();

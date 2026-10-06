@@ -26,10 +26,11 @@ pub struct SimPaging {
     root: u64,
     /// vaddr → (paddr, flags), keyed by page base.
     entries: BTreeMap<u64, (u64, PageFlags)>,
-    /// Set by `enable()` / `flush_tlb()` (recorded, not enforced). `Cell`
-    /// because the trait methods take `&self` (hardware MMU ops don't need
-    /// `&mut` either).
-    pub enabled_count: core::cell::Cell<u32>,
+    /// TLB 刷除次数——由 `flush_tlb()` / `flush_tlb_addr()` 累加（只记录，
+    /// 不强制任何硬件效果）。`Cell` 是因为 trait 方法收 `&self`（硬件 MMU
+    /// 操作同样不需要 `&mut`）。本字段也无读方：保留是因为它是桩体唯一
+    /// 可观察的硬件动作计数，接入方（V11/T21 以 `SimPaging` 替真页表的
+    /// 用例）一旦断言刷除次数即直接消费它。
     pub flush_count: core::cell::Cell<u32>,
 }
 
@@ -39,7 +40,6 @@ impl SimPaging {
         Self {
             root: 0xCAFE_0000,
             entries: BTreeMap::new(),
-            enabled_count: core::cell::Cell::new(0),
             flush_count: core::cell::Cell::new(0),
         }
     }

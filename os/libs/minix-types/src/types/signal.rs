@@ -99,6 +99,12 @@ pub const SIGNAL_POWER: i32 = 32;
 /// Kernel memory request pending. C: `SIGKMEM 71` (`signal.h:271`).
 pub const SIGNAL_KERNEL_MEMORY: i32 = 71;
 /// New kernel message. C: `SIGKMESS 72` (`signal.h:272`).
+///
+/// 消费方归属登记：这一号由内核投递（`minix3/minix/kernel/system.c:480`、
+/// `kernel/system/do_diagctl.c:56`），读者在驱动侧的信号回调
+/// （`minix3/minix/drivers/system/log/log.c:115`、`drivers/tty/tty/tty.c:456`）；
+/// 不在 P-ALL-08 T1/T2 的 SEF 侧范围内——本枚只是把族表补全，
+/// 接入批次＝驱动信号面（与 `SIGNAL_KERNEL_MANAGER_SELF` 同批）。
 pub const SIGNAL_KERNEL_MESSAGE: i32 = 72;
 /// Kernel signal pending for the signal manager itself. C: `SIGKSIGSM 73`
 /// (`signal.h:273`).
@@ -118,6 +124,13 @@ pub const KERNEL_SIGNAL_LAST: i32 = SIGNAL_KERNEL_PENDING;
 /// Reports whether a number is in the kernel-signal family.
 ///
 /// C: `IS_SIGK(signo)` — `signal.h:278`.
+///
+/// 消费方归属登记：C 侧唯一读者是默认信号回调
+/// `sef_cb_signal_handler_posix_default`（`sef_signal.c:182-201`，其在 :196 用
+/// `IS_SIGK` 判定「内核信号不触发终止」）；SEF 收信侧的遍历走
+/// `KERNEL_SIGNAL_FIRST..=KERNEL_SIGNAL_LAST` 区间本身（`sef_signal.c:97`），
+/// 不调这个谓词——本枚是族表的完整镜像，接入批次＝默认回调与服务侧
+/// 信号语义验证（P-ALL-08 T2）。
 pub const fn is_kernel_signal(signo: i32) -> bool {
     signo >= KERNEL_SIGNAL_FIRST && signo <= KERNEL_SIGNAL_LAST
 }

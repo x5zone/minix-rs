@@ -26,13 +26,16 @@ pub enum Receipt {
         status: i32,
     },
     /// A SYSTEM notification: the kernel's signal request. The pending
-    /// bitmap is the notification payload's `sigset` (C sef.c:222-226 reads
-    /// `m_notify.sigset`; the dispatcher walks one bit per kernel signal).
+    /// bitmap is the notification payload's `sigset` (C classifies the
+    /// notification by source at `sef.c:184-187` and reads the bitmap at
+    /// `sef_signal.c:96`; the dispatcher walks one bit per kernel signal).
     Signal {
         /// Pending kernel-signal bitmap — the low 64 bits of C's 16-byte
         /// `sigset_t`. Kernel signals 71..=74 live above this window
-        /// (`bits[2]`); they are walked by `minix-sef`'s signal arm, and the
-        /// hook's own shape converges with the signal-chain batch.
+        /// (`bits[2]`) and today have no consumer at all: the per-signal
+        /// walk is a to-be-wired item of `minix-sef`'s signal arm
+        /// (P-ALL-08 T1), and this hook's own shape converges with the
+        /// signal-chain batch.
         pending: u64,
     },
 }

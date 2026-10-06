@@ -62,10 +62,10 @@ pub fn serve<D: minix_fs::driver::FsDriver>(
 /// pending signal. Two pieces of that channel are not this runtime's job:
 /// - the walk itself: the notification payload now carries C's 16-byte
 ///   `sigset_t` verbatim (`minix_types::SigSetBits`), so kernel signals
-///   71..=74 have a home (`bits[2]`), but the per-signal walk belongs to
-///   `minix-sef`'s signal arm, not here — this hook still receives the raw
-///   low 64 bits, and converging its shape to a signal number is the
-///   signal-chain batch;
+///   71..=74 have a home (`bits[2]`) — but nothing walks it yet: the
+///   per-signal walk is a to-be-wired item of `minix-sef`'s signal arm
+///   (P-ALL-08 T1). This hook still receives the raw low 64 bits, and
+///   converging its shape to a signal number is the signal-chain batch;
 /// - process signals (SIGTERM and friends) reach the C handler through the
 ///   signal manager's pull (`sys_getksig`/`sys_endksig`, whose minix-sys
 ///   wrappers exist at `minix_sys::syscall::sys_getksig`/`sys_endksig`);
