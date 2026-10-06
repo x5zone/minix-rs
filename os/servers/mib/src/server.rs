@@ -150,8 +150,15 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         // are ponged (notify) and swallowed inside `sef_receive_status`,
         // never reaching the triage below. C: mib main.c:443 reads with
         // `sef_receive_status`; SYSTEM notifies surface as SefEvent::Signal
-        // (MIB registers no signal handler — ignored, same as C's
-        // `is_ipc_notify` refusal at main.c:449-454).
+        // and the empty closure is faithful: MIB registers no signal
+        // handler anywhere in `minix3/minix/servers/mib/`, so the library
+        // default `sef_cb_signal_handler_null` (sef.h:287 +
+        // sef_signal.c:156-158) consumes them inside the SEF intercept
+        // (sef.c:187 rewrite, sef.c:231-235 continue) — silently, before
+        // the loop ever sees them. The loop-side `is_ipc_notify` refusal
+        // (main.c:449-454) is a different path: it only catches
+        // foreign-source notifications (CLOCK et al.) that the classifier
+        // leaves untouched.
         let rx = match minix_sef::sef_receive_status(
             &mut self.ipc,
             Endpoint::ANY,

@@ -7663,6 +7663,9 @@ pub fn run() -> ! {
     // 每条 VFS_PM_INIT 填一个 fproc 槽,endpoint==NONE 终止。
     loop {
         let mut msg = Message::default();
+        // 握手段的空信号闭包与稳态同据（见下方稳态循环内的注释）：C VFS
+        // 不注册 signal handler，SYSTEM 通知由库默认空 handler 吞掉，
+        // 握手期与稳态期同一条 SEF 拦截臂，闭包无号可用。
         let recv = minix_sef::sef_receive_status(&mut ipc, Endpoint::PM, &mut msg, &mut |_| {})
             .unwrap_or_else(|e| panic!("vfs: handshake receive failed: {e}"));
         // NONE 终止符也经 step:状态机在此完成 PmHandshake→InitTables
@@ -7698,6 +7701,8 @@ pub fn run() -> ! {
     // 收是 C 同序而非忙等。
     let mut boot_msg = Message::default();
     loop {
+        // 会合段空信号闭包同据（稳态循环内注释）：C VFS 未注册 handler，
+        // SEF 拦截臂先于本循环消费信号请求，闭包无号可用。
         let recv =
             minix_sef::sef_receive_status(&mut ipc, Endpoint::RS, &mut boot_msg, &mut |_| {})
                 .unwrap_or_else(|e| panic!("vfs: boot rendezvous receive failed: {e}"));
@@ -7765,7 +7770,12 @@ pub fn run() -> ! {
         // C main.c:601-602 — sef_receive(ANY):ping 拦截在 SEF 层完成。
         let mut msg = Message::default();
         let recv = minix_sef::sef_receive_status(&mut ipc, Endpoint::ANY, &mut msg, &mut |_| {
-            // C VFS 未注册 signal handler(main.c:374-388)——库默认忽略面。
+            // C VFS 未注册 signal handler——main.c:374-388 的 sef_local_startup
+            // 只登记 init 与 LU 回调，全目录 grep `sef_setcb_signal_handler`
+            // 零命中，库默认值即空函数 `sef_cb_signal_handler_null`
+            //（sef.h:287 ＋ sef_signal.c:156-158）：SYSTEM 通知在库内被改写成
+            // 信号请求（sef.c:187）、空 handler 消费后框架 `continue`
+            //（sef.c:231-235），主循环对信号面无可观察行为——空闭包即忠实。
         })
         .unwrap_or_else(|e| panic!("vfs: receive failed: {e}"));
         match recv.event {

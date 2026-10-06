@@ -180,7 +180,16 @@ impl<K: KernelIpc> MinixTransport<K> {
         &mut self.kernel
     }
 
-    /// 收一条消息（SEF 语义：ping 透明、信号回调）。
+    /// 收一条消息（SEF 语义：ping 透明；信号请求在库内拦截后交回调）。
+    ///
+    /// 信号闭包为空是忠实形状：C 的 devman（`minix3/minix/servers/devman/`）
+    /// 全目录不注册 signal handler（grep `sef_setcb_signal_handler` 零命中），
+    /// 库默认值 `sef_cb_signal_handler_null`（sef.h:287 ＋
+    /// sef_signal.c:156-158）本就无所事事——SEF 拦截臂（sef.c:187、
+    /// sef.c:231-235）消费掉信号请求后主循环无可观察行为。注意这与本
+    /// crate 自有的 `SefHooks::on_signal`（hooks.rs）是两回事：后者从不被
+    /// SEF 收信路径回调（断链），接上还是删除属语义取舍，已登记待人
+    /// 裁决，裁决前保持现状。
     fn receive_message(&mut self, msg: &mut Message) -> Option<i32> {
         let mut bridge = SefBridge(&mut self.kernel);
         match minix_sef::sef_receive_status(&mut bridge, Endpoint::ANY, msg, &mut |_| {}) {

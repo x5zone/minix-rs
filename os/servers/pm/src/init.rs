@@ -482,6 +482,17 @@ impl<T: IpcTransport> PmServer<T> {
             Err(_) => return RunStep::ReceiveFailed,
         };
 
+        // 信号面（T2 明证）：C 的 PM 不注册 signal handler（servers/pm/
+        // 全目录 grep `sef_setcb_signal_handler` 零命中），故 C 里 PM 收到
+        // 的 SYSTEM 通知全数被 SEF 拦截臂改写（sef.c:187）并以库默认空
+        // handler 消费、框架 `continue`（sef.h:287 ＋ sef_signal.c:156-158
+        // ＋ sef.c:231-235）——C 主循环的 is_ipc_notify 臂只见 CLOCK。本树
+        // transport 是裸 trap 收（不走 SEF 分类器），SYSTEM 通知上浮到
+        // 下方 notify 臂并被用作拉取循环触发器——该偏离已在 SYSTEM 臂的
+        // [ARCH] 注登记。管理器形（SIGS_SIGNAL_RECEIVED 消息）本树同样不
+        // 拦截，会落三路分派；今天无发方能把它递给 PM（RS 的
+        // signal_manager 无生产调用者，PM 自身发送臂卡 asynsend3 重试表
+        // ＝批次 H），故该差不可达。
         // C: main.c:65-71 — is_ipc_notify：CLOCK → expire_timers（14）。
         // 通知是异步信号（时钟 tick / 内核中断），不是请求消息，跳过
         // endpoint 验证直接 continue。

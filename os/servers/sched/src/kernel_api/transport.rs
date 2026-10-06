@@ -162,13 +162,19 @@ impl minix_sef::SefIpc for SefIpcAdapter {
 ///
 /// `SefEvent::Signal` 在这里吞掉，因为 SCHED 没有注册信号处理程序——C 的
 /// `sef_receive_status` 对无处理程序的服务同样是吞（处理结果 OK →
-/// `continue`）。
+/// `continue`）。证据链：`minix3/minix/servers/sched/` 全目录 grep
+/// `sef_setcb_signal_handler` 零命中；未注册时库默认值就是空函数
+/// `sef_cb_signal_handler_null`（sef.h:287 `SEF_CB_SIGNAL_HANDLER_DEFAULT`，
+/// 实体 sef_signal.c:156-158 空函数体），故 SYSTEM 通知在库内被改写成信号
+/// 请求（sef.c:187）后由空 handler 消费、框架 `continue`（sef.c:231-235），
+/// 主循环对信号面无可观察行为——这里的空闭包与该行为逐一等价。
 ///
 /// **出生面**（S42 批二收口；此前 RS_INIT 浮进分发表换来 no_sys 回复，
 /// RS 的 boot 期 catch 永久阻塞——S25/S27 登记的挂点）：C `sef_startup`
-/// 阻塞等 RS 的 init 请求（sef.c:103-111 `IS_SEF_INIT_REQUEST`，
-/// sef.h:33-34 按 type+source 判定、与投递方式无关），回调完工后回
-/// `RS_INIT+result`（process_init 尾部，sef_init.c:115-121）。Rust 侧
+/// 阻塞等 RS 的 init 请求（sef.c:125-131 do-while 收到
+/// `IS_SEF_INIT_REQUEST` 才出；sef.h:33-34 按 type+source 判定、与投递
+/// 方式无关；主循环臂 sef.c:197-203 再拦），回调完工后回
+/// `RS_INIT+result`（process_init 尾部，sef_init.c:113-121）。Rust 侧
 /// sched 的 init 工作——`sys_getmachine` + `init_scheduling`——已在
 /// main 于循环前完成（等价 C `sef_cb_init_fresh` main.c:126-136 的
 /// 完工语义，devman「构造期已建」同型），应答因此发生在首次收包：
