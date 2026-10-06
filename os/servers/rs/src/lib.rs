@@ -182,6 +182,30 @@ pub struct ServerState<'a> {
     pub update: live_update::UpdateState,
 }
 
+/// `KernelApi` → `minix_sef::SefIpc` 适配（devman 的 `SefBridge` 同款一族）。
+///
+/// 通知时间戳由 `IpcApi::receive` 的实现方在守卫内提取（trap_api 的
+/// `m_notify` 臂读取），经 `Cell` 交给调用方——SEF 分类器内部会循环吞帧，
+/// cell 里留下的恰好是最终送达那一条的时间戳，与直收 `IpcApi::receive`
+/// 的返回值同值。
+struct SefKernelBridge<'a> {
+    kernel: &'a mut dyn KernelApi,
+    stamp: &'a core::cell::Cell<Clock>,
+}
+
+impl minix_sef::SefIpc for SefKernelBridge<'_> {
+    fn receive(&mut self, src: Endpoint, msg: &mut minix_types::Message) -> Result<i32, i32> {
+        let (m, sts, stamp) = self.kernel.receive(src).map_err(|e| e.to_i32())?;
+        *msg = m;
+        self.stamp.set(stamp);
+        Ok(sts.flags as i32)
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        self.kernel.notify(dest).map_err(|e| e.to_i32())
+    }
+}
+
 impl RsServer {
     /// Creates the server with the boot tables.
     ///
@@ -472,10 +496,58 @@ impl RsServer {
     /// C: `get_work()` — main.c:826-833 (06). Delegates to the
     /// `KernelApi::receive` seam (18) — the production face is the 19 wiring;
     /// errors propagate so the caller fails closed instead of spinning.
+    ///
+    /// 信号面（T2 接线）：C 的 `get_work` 体是 `sef_receive_status(ANY)`
+    /// （main.c:831），信号请求在库内拦截、号码交注册的 handler
+    /// （main.c:631-641：SIGCHLD→do_sigchld、SIGTERM→do_shutdown）后吞帧。
+    /// 本树经 `SefKernelBridge` 走同一条库腿；闭包只把号码记入待决缓冲，
+    /// `receive` 返回后、消息交还调用方前逐个应用（C 的 handler 在拦截点
+    /// 执行，其效果先于下一帧到达——这里先于本帧分派，序不变）。退出晚
+    /// 一拍的残余与 §续-418 红线同族（库层逃生门未定计），发方链未通电
+    /// 时不可达。
     fn get_work(&mut self) -> Result<(minix_types::Message, dispatch::IpcStatus, Clock), Errno> {
-        let got = self.kernel.receive(minix_types::Endpoint::ANY);
-
-        got
+        loop {
+            let stamp = core::cell::Cell::new(0);
+            let mut pending: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
+            let mut msg = minix_types::Message::default();
+            let recv = {
+                let mut bridge = SefKernelBridge {
+                    kernel: self.kernel.as_mut(),
+                    stamp: &stamp,
+                };
+                // 一薄层闭包是必需的：库入口按 `impl FnMut` 单态化，不定长
+                // `dyn FnMut` 直传撞 E0277（§续-417 同坑）。
+                let mut handoff = |signo: i32| pending.push(signo);
+                minix_sef::sef_receive_status(
+                    &mut bridge,
+                    minix_types::Endpoint::ANY,
+                    &mut msg,
+                    &mut handoff,
+                )
+                .map_err(Errno::from_i32)?
+            };
+            // C sef.c:231-235——被拦截的信号帧 `continue`，永不回到主循环。
+            // 库的契约把 notify 形的信号帧以 `SefEvent::Signal` 交还消费方
+            //（消费方各自跳过），RS 作为接线侧在此吞掉：handler 已在回调
+            // 里跑过，帧不上浮，循环继续收下一条（与管理器形库内 `continue`
+            // 的可观察行为对齐）。
+            if matches!(recv.event, minix_sef::SefEvent::Signal(_)) {
+                continue;
+            }
+            // bridge 已 drop：kernel 的可变借用归还，handler 可以动全服务。
+            // C 的 handler 在拦截点执行，其效果先于下一帧到达；这里先于本帧
+            // 交还调用方应用，序不变。
+            for signo in pending.drain(..) {
+                self.signal_handler(signo);
+            }
+            return Ok((
+                recv.message,
+                dispatch::IpcStatus {
+                    flags: recv.status as u32,
+                },
+                stamp.into_inner(),
+            ));
+        }
     }
 }
 
@@ -2296,6 +2368,82 @@ mod signal_handler_tests {
         // C: main.c:641 — switch 无 default：未知信号静默忽略。
         let mut server = booted();
         server.signal_handler(9999);
+        let state = server.state.as_ref().unwrap();
+        assert!(!state.shutting_down);
+    }
+
+    /// Manager-form signal envelope (C: the signal manager translates a
+    /// signal into `SIGS_SIGNAL_RECEIVED` with `num` — main.c:699-701); the
+    /// SEF classifier hands the single number to the registered handler and
+    /// swallows the frame (sef_signal.c:115-128, sef.c:231-235).
+    fn manager_signal_envelope(
+        signo: i32,
+    ) -> (minix_types::Message, crate::dispatch::IpcStatus, Clock) {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::SIGS_SIGNAL_RECEIVED,
+            m_u: Default::default(),
+        };
+        m.m_u.m_pm_lsys_sigs_signal.num = signo;
+        (m, crate::dispatch::IpcStatus { flags: 0 }, 0)
+    }
+
+    /// SYSTEM notify envelope with an empty bitmap — the shape the kernel
+    /// can actually produce today (SigSet width limit), which the library's
+    /// wake-up fallback turns into exactly one callback carrying
+    /// `SEF_SIGNAL_REQUEST_TYPE`.
+    fn system_notify_envelope() -> (minix_types::Message, crate::dispatch::IpcStatus, Clock) {
+        let mut m = minix_types::Message {
+            m_source: Endpoint::SYSTEM,
+            m_type: minix_types::NOTIFY_MESSAGE,
+            m_u: Default::default(),
+        };
+        m.m_u.m_notify.sigset = [0, 0, 0, 0];
+        (m, crate::dispatch::IpcStatus { flags: 4 }, 0)
+    }
+
+    #[test]
+    fn test_get_work_applies_manager_sigterm_before_delivery() {
+        // C 控制流：handler 在拦截点执行（main.c:631-641），被吞帧之后的
+        // 下一条到达时其效果已落。这里 SIGTERM 帧被吞、shutting_down 在
+        // CLOCK 帧交还前已置位——先于分派的顺序由这条断言钉住。
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.inbox.push(manager_signal_envelope(SIGNAL_TERMINATE));
+        mock.inbox.push(clock_envelope(99));
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let (msg, _sts, ts) = server.get_work().expect("follow-up frame delivered");
+        assert_eq!(ts, 99);
+        assert_eq!(msg.m_source, Endpoint::CLOCK);
+        let state = server.state.as_ref().unwrap();
+        assert!(state.shutting_down, "handler ran during interception");
+    }
+
+    #[test]
+    fn test_get_work_nonterm_signal_ignored_loop_carries_on() {
+        // C main.c:631-641 — SIGCHLD/SIGTERM 之外的号直接忽略；帧照吞，
+        // 下一条照常送达。
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.inbox.push(manager_signal_envelope(71));
+        mock.inbox.push(clock_envelope(7));
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let (_msg, _sts, ts) = server.get_work().expect("follow-up frame delivered");
+        assert_eq!(ts, 7);
+        let state = server.state.as_ref().unwrap();
+        assert!(!state.shutting_down);
+    }
+
+    #[test]
+    fn test_get_work_notify_fallback_reaches_handler_once() {
+        // 生产可达形状钉：SYSTEM 通知位图恒空（内核 SigSet 位宽），库的
+        // 唤醒兜底值恰达 handler 一次；RS 的 handler 对未知号忽略
+        //（main.c:641 无 default），主循环对 notify 帧无观察变化。
+        let mut mock = crate::testutil::MockKernelApi::new(60);
+        mock.inbox.push(system_notify_envelope());
+        mock.inbox.push(clock_envelope(11));
+        let mut server = booted_with(alloc::boxed::Box::new(mock));
+        let (_msg, sts, ts) = server.get_work().expect("clock frame delivered");
+        assert_eq!(ts, 11);
+        assert!(crate::dispatch::IpcStatus { flags: sts.flags }.is_notify());
         let state = server.state.as_ref().unwrap();
         assert!(!state.shutting_down);
     }

@@ -1171,6 +1171,11 @@ impl<'a> BootInit<'a> {
     ) -> Result<(), BootError> {
         use crate::service_slot::SlotMutations;
         use minix_types::RS_INIT;
+        // C 对位是 `sef_receive_status(endpoint, …)`（main.c:795），信号请求
+        // 在 boot 期同样会被 SEF 拦截；本树的裸收是有意残余——boot 机器不
+        // 持有 `RsServer` 的 handler（主循环腿的接线在 `get_work`），而
+        // handler 对 pre-boot 状态本就无操作（`state: None` 直接返回），且
+        // boot 期无信号发方。这里保持裸收，接线上移属后续裁决面。
         let (m, _ipc_status, _ts) = sys.receive(endpoint).map_err(BootError::Kernel)?;
         if m.m_type != RS_INIT {
             // C: main.c:799-801.
