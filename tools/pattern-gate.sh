@@ -185,6 +185,17 @@ P2_TESTS=(
   w_without_r_is_leaf_shape_at_l0                       # NK4-C 续-384：W~R 叶形判别（aarch64 同族对照）
   happy_4kb_path_and_offset_folding                     # NK4-C 续-384：4K 正路+偏移折叠
   fuzz_against_reference                                # NK4-C 续-384：walker 差分模糊对账（参考独立性问题在案：§12）
+  run_once_nonterm_signal_ignored_and_loop_continues    # NK4-C 续-414+ minix-sef 信号臂：非终止信号忽略续跑
+  run_once_sigterm_clean_exit_swallows_frame_and_stops  # NK4-C minix-sef：SIGTERM 清洁退出吞帧停车
+  run_once_wakeup_fallback_reaches_handler_as_request_type  # NK4-C minix-sef：唤醒回退以请求形达 handler
+  signal_term_on_fresh_service_takes_the_clean_road     # NK4-C minix-sef：新鲜服务走清洁路
+  signal_term_with_a_live_set_takes_the_warn_road       # NK4-C minix-sef：活集服务走警告路
+  test_effective_kernel_signal_maps_the_wakeup_fallback # NK4-C 内核信号窗口映射唤醒回退
+  test_get_work_applies_manager_sigterm_before_delivery # NK4-C get_work：管理器 SIGTERM 先于投递
+  test_get_work_nonterm_signal_ignored_loop_carries_on  # NK4-C get_work：非终止信号忽略续跑
+  test_get_work_notify_fallback_reaches_handler_once    # NK4-C get_work：notify 回退恰达 handler 一次
+  test_init_proc_nr_matches_last_special                # NK4-C b2d2c68b4：init proc_nr 对齐末位特殊槽
+  test_is_kernel_signal_window_bounds                   # NK4-C b2d2c68b4：内核信号窗口边界（挂归属判例）
 )
 check_p2() {
   local root="$1" missing=0 t hits

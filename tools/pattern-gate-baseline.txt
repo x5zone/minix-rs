@@ -1,6 +1,6 @@
 P12|os/boot-shim/src/lib.rs|2700712658
+P12|os/boot-shim/src/lib.rs|541744447
 P12|os/kernel/src/lib.rs|1585844490
-P12|os/kernel/src/lib.rs|3874602391
 P14|os/kernel/src/clock.rs|175725238
 P14|os/kernel/src/clock.rs|597921436
 P14|os/kernel/src/grant.rs|1305843057
@@ -107,9 +107,6 @@ P14|os/kernel/src/vm.rs|1768780743
 P14|os/kernel/src/vm.rs|2883397351
 P14|os/kernel/src/vm.rs|3222577921
 P14|os/kernel/src/vm.rs|44365345
-P7|os/qemu-tests/run_all.sh|2396527635
-P7|os/qemu-tests/run_all.sh|2581136218
-P7|os/qemu-tests/run_all.sh|3012401260
 P8|os/drivers/hid/pckbd/src/service.rs
 P8|os/drivers/tty/tty/src/service.rs
 P8|os/kernel-image/riscv64.ld
