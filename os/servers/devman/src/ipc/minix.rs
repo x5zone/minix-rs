@@ -150,6 +150,10 @@ impl<K: KernelIpc> minix_sef::SefIpc for SefBridge<'_, K> {
 /// 生产 `Transport`：一收一分类一回复，FS 面与 DEVMAN 面同循环。
 pub struct MinixTransport<K: KernelIpc> {
     kernel: K,
+    /// SIGTERM 锁存（C libvtreefs `got_signal` → `fsdriver_terminate()` 置
+    /// libfsdriver 的 `running = FALSE`，vtreefs.c:39-46 + fsdriver.c:68-74
+    /// ——`running` 正是传输循环的停止标志，Rust 对位物住本层）。
+    terminate: bool,
     /// 当前请求的 grant 与对端（`reply()` 要用：数据面写回调用方缓冲）。
     current_grant: i32,
     current_granter: Endpoint,
@@ -167,6 +171,7 @@ impl<K: KernelIpc> MinixTransport<K> {
     pub const fn new(kernel: K) -> Self {
         Self {
             kernel,
+            terminate: false,
             current_grant: 0,
             current_granter: Endpoint::NONE,
             current_transaction: 0,
@@ -182,20 +187,44 @@ impl<K: KernelIpc> MinixTransport<K> {
 
     /// 收一条消息（SEF 语义：ping 透明；信号请求在库内拦截后交回调）。
     ///
-    /// 信号闭包为空是忠实形状：C 的 devman（`minix3/minix/servers/devman/`）
-    /// 全目录不注册 signal handler（grep `sef_setcb_signal_handler` 零命中），
-    /// 库默认值 `sef_cb_signal_handler_null`（sef.h:287 ＋
-    /// sef_signal.c:156-158）本就无所事事——SEF 拦截臂（sef.c:187、
-    /// sef.c:231-235）消费掉信号请求后主循环无可观察行为。注意这与本
-    /// crate 自有的 `SefHooks::on_signal`（hooks.rs）是两回事：后者从不被
-    /// SEF 收信路径回调（断链），接上还是删除属语义取舍，已登记待人
-    /// 裁决，裁决前保持现状。
+    /// 信号面的真源锚：devman 的 C main 走 `run_vtreefs`（main.c:88），
+    /// libvtreefs 的 `sef_local_startup` 注册了 `got_signal`
+    ///（vtreefs.c:59 注册、:39-46 实体——非 SIGTERM 忽略，SIGTERM 转
+    /// `fsdriver_terminate()`）。所以「devman 没有注册 signal handler」
+    /// 是假陈述——注册发生在它链接的库里，与 procfs 同族；`servers/
+    /// devman/` 目录级 grep 查不到库的注册点，不能当注册面证据。
+    /// Rust 对位：SIGTERM 在回调里锁存 `terminate` 并取消挂起收信
+    ///（`fsdriver_terminate()` = `running=FALSE` ＋ `sef_cancel`，
+    /// fsdriver.c:68-74——PD-27 逃生门让本调用以 `Err(EINTR)` 当场返回，
+    /// 循环在 `next()` 的终止检查处停止）。
     fn receive_message(&mut self, msg: &mut Message) -> Option<i32> {
-        let mut bridge = SefBridge(&mut self.kernel);
-        match minix_sef::sef_receive_status(&mut bridge, Endpoint::ANY, msg, &mut |_| {}) {
+        let cancel = minix_sef::SefCancel::new();
+        // 拆字段借用：bridge 可变借 `kernel`，回调写 `terminate`——两个
+        // 不相交的字段，闭包与桥可并存。
+        let Self {
+            kernel, terminate, ..
+        } = self;
+        let mut bridge = SefBridge(kernel);
+        let mut on_signal = |signo: i32| {
+            // C `got_signal`（vtreefs.c:39-46）：SIGTERM 之外一律忽略。
+            if signo == minix_types::SIGNAL_TERMINATE {
+                *terminate = true;
+                cancel.cancel();
+            }
+        };
+        match minix_sef::sef_receive_status(
+            &mut bridge,
+            Endpoint::ANY,
+            msg,
+            &mut on_signal,
+            &cancel,
+        ) {
             Ok(recv) => Some(recv.status),
-            // 收包失败＝传输损坏：C `panic`（fsdriver.c:92），Rust 由
-            // 调用方（main）决定——这里返回 None 让循环退出。
+            // `Err(EINTR)`＝逃生门的干净停止：终止决定已在回调里锁存，
+            // C 的对应物是 `fsdriver_terminate()` 之后的循环退出而非损坏。
+            // 其余收包失败＝传输损坏：C `panic`（fsdriver.c:92），Rust 由
+            // 调用方（main）决定——这里同样返回 None 让循环退出。
+            Err(minix_types::EINTR) => None,
             Err(_) => None,
         }
     }
@@ -267,6 +296,11 @@ fn read_i64(raw: &[u8], at: usize) -> i64 {
 impl<K: KernelIpc> Transport for MinixTransport<K> {
     fn next(&mut self) -> Option<Incoming> {
         loop {
+            // C `while (running)`（fsdriver.c 的循环条件，running 由
+            // `fsdriver_terminate()` 清零）：终止后不再收发，循环停止。
+            if self.terminate {
+                return None;
+            }
             let mut msg = Message::default();
             let status = self.receive_message(&mut msg)?;
             let notify = minix_sef::is_ipc_notify(status);
@@ -463,7 +497,7 @@ fn reply_msg(status: i32, transaction: u32) -> Message {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vtreefs::{Ino, Transport as _};
+    use crate::vtreefs::{Ino, Transport};
     use alloc::collections::VecDeque;
 
     /// 脚本化内核面：收包队列 + 记录发送 + 可注入的 safecopy 失败。
@@ -681,6 +715,38 @@ mod tests {
     }
 
     /// 收包失败＝传输损坏：`next()` 给 None 让循环退出（调用方决定 panic）。
+    /// 管理器形信号帧（C：信号管理器把号码译成 `SIGS_SIGNAL_RECEIVED`
+    /// 携 `num`——pm/signal.c:470-473、rs/main.c:699-701）。union 字段写
+    /// 是 safe 的（只有读才 unsafe）；`m_type` 标签选中载荷臂。
+    fn manager_signal_msg(signo: i32) -> Message {
+        let mut m = Message {
+            m_source: Endpoint::PM,
+            m_type: minix_types::SIGS_SIGNAL_RECEIVED,
+            ..Message::default()
+        };
+        m.m_u.m_pm_lsys_sigs_signal.num = signo;
+        m
+    }
+
+    #[test]
+    fn test_manager_sigterm_latches_terminate_and_stops_loop() {
+        // devman 的信号面真源：C 走 run_vtreefs（main.c:88），libvtreefs
+        // 注册 `got_signal`（vtreefs.c:59/:39-46）——SIGTERM 转
+        // `fsdriver_terminate()`（置 running=FALSE ＋ sef_cancel，
+        // fsdriver.c:68-74）。本树对位：管理器形 SIGTERM 在回调里锁存
+        // `terminate` 并取消挂起收信，`next()` 在终止检查处返回 None——
+        // 循环停止、后续帧不再服务（PD-27 逃生门让收信当场以 EINTR 返回）。
+        let mut k = ScriptedKernel::default();
+        k.inbox
+            .push_back((manager_signal_msg(minix_types::SIGNAL_TERMINATE), 0));
+        // 取消后若库继续收，队列为空 → 夹具回 EIO——若逃生门失效，这条
+        // EIO 会被旧 `Err(_)` 臂同样折成 None，所以用 `terminate` 锁存位
+        // 区分「干净停止」与「损坏停止」。
+        let mut transport = MinixTransport::new(k);
+        assert_eq!(transport.next(), None, "SIGTERM 后循环停止");
+        assert!(transport.terminate, "锁存置位（干净停止而非损坏）");
+    }
+
     #[test]
     fn test_receive_failure_ends_loop() {
         let mut t = MinixTransport::new(ScriptedKernel::default());
@@ -755,7 +821,7 @@ mod tests {
     /// 类型与来源（C `IS_SEF_INIT_REQUEST`，sef.h:33-34）。
     #[test]
     fn test_rs_init_from_other_source_not_intercepted() {
-        let mut fake = Message {
+        let fake = Message {
             m_type: minix_types::RS_INIT,
             m_source: Endpoint(5), // 非 RS
             ..Message::default()

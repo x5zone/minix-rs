@@ -7,7 +7,7 @@
 //! inode, and hand both to `run_vtreefs`. This module models exactly those
 //! three things with Rust types; the VTreeFS internals live in 02's module.
 
-use minix_types::{Errno, SIGNAL_TERMINATE};
+use minix_types::Errno;
 use crate::server::Server;
 
 // ── Constants (C sources annotated; 99-devm-global-concepts is upstream) ──
@@ -96,36 +96,37 @@ pub enum SefLifecycle {
     Startup,
 }
 
-/// Minimal SEF contract devman needs (fresh init + signal).
+/// Minimal SEF contract devman needs: fresh init only. The signal half of
+/// C's registration set (`vtreefs.c:59` registers `got_signal`) lives on
+/// the transport, whose stop flag is what `fsdriver_terminate()` actually
+/// clears (`fsdriver.c:68-74`) — the trait method this once carried was a
+/// dead link (nothing called it) and was removed (PD-26 的删一半；C 语义
+/// 由传输层忠实承接，见 `ipc::minix::MinixTransport`）。
 /// [ARCH:A-7] C `panic("init_inodes failed")` becomes explicit
 /// `Err(ENOMEM)`; the caller decides fail-fast.
 pub trait SefHooks {
     fn init_server(&mut self) -> Result<(), Errno>;
-    fn on_signal(&mut self, sig: i32);
 }
 
 /// Production SEF hooks (E-ISWIRE) — the callbacks C main.c:77-80 fills
 /// and libvtreefs's `sef_local_startup` (vtreefs.c:52-62) registers:
 /// `init_server` = `init_hook` (fresh init: rebuild the framework + tree
 /// from the stored config via [`Server::new`]); restart is registered as
-/// `SEF_CB_INIT_RESTART_STATEFUL` (vtreefs.c:57) — state survives the RS
+/// `SEF_CB_INIT_RESTART_STATEFUL` (vtreefs.c:58) — state survives the RS
 /// image restore, so the restart callback body is empty and this hook is
-/// only ever invoked for the fresh case. `on_signal` = `got_signal`
-/// (vtreefs.c:39-46): everything but SIGTERM is ignored; SIGTERM latches
-/// [`terminate`] as the event loop's clean-stop flag
-/// (`fsdriver_terminate`).
+/// only ever invoked for the fresh case. The signal registration
+/// (`got_signal`, vtreefs.c:39-46/59) lands on the transport's stop latch
+/// (`ipc::minix::MinixTransport::terminate`), not on this trait.
 pub struct DevmanSef {
     config: ServerConfig,
     /// The framework + device-tree state (rebuilt by [`Self::init_server`]).
     pub server: Server,
-    /// SIGTERM latch — the event loop's exit flag.
-    pub terminate: bool,
 }
 
 impl DevmanSef {
     /// Fresh-boot assembly: config + first `Server` (C main.c:82-89).
     pub fn new(config: ServerConfig) -> Result<Self, Errno> {
-        Ok(Self { server: Server::new(&config)?, config, terminate: false })
+        Ok(Self { server: Server::new(&config)?, config })
     }
 }
 
@@ -133,13 +134,6 @@ impl SefHooks for DevmanSef {
     fn init_server(&mut self) -> Result<(), Errno> {
         self.server = Server::new(&self.config)?;
         Ok(())
-    }
-
-    fn on_signal(&mut self, sig: i32) {
-        // C: got_signal (vtreefs.c:39-46) — SIGTERM only.
-        if sig == SIGNAL_TERMINATE {
-            self.terminate = true;
-        }
     }
 }
 
@@ -179,29 +173,17 @@ mod tests {
             self.sequence.push(SefLifecycle::InitFresh);
             Ok(())
         }
-
-        fn on_signal(&mut self, sig: i32) {
-            // C: `got_signal` ignores everything but SIGTERM (vtreefs.c:38-46).
-            if sig == 15 {
-                self.sequence.push(SefLifecycle::SignalTerm);
-            }
-        }
     }
 
     /// Production impl (E-ISWIRE): fresh init rebuilds the Server from
-    /// the config; SIGTERM latches, other signals don't.
+    /// the config. The SIGTERM half lives on the transport latch
+    /// (`ipc::minix::MinixTransport`), not here.
     #[test]
     fn test_devman_sef_production_hooks() {
         let root = RootStat::devman_root();
         let mut sef = DevmanSef::new(ServerConfig::devman_default(root)).unwrap();
-        assert!(!sef.terminate);
         // Fresh init: rebuild is transparent (the framework re-inits).
         assert!(sef.init_server().is_ok());
-        // got_signal: SIGTERM latches the stop flag, the rest is ignored.
-        sef.on_signal(9);
-        assert!(!sef.terminate);
-        sef.on_signal(SIGNAL_TERMINATE);
-        assert!(sef.terminate);
     }
 
     /// Test double #2 (behavior: fresh init always fails).
@@ -213,8 +195,6 @@ mod tests {
         fn init_server(&mut self) -> Result<(), Errno> {
             Err(Errno::ENOMEM)
         }
-
-        fn on_signal(&mut self, _sig: i32) {}
     }
 
     #[test]
@@ -223,12 +203,7 @@ mod tests {
             sequence: alloc::vec::Vec::new(),
         };
         assert_eq!(sef.init_server(), Ok(()));
-        sef.on_signal(15);
-        sef.on_signal(1); // non-TERM ignored, like C `got_signal`
-        assert_eq!(
-            sef.sequence,
-            alloc::vec![SefLifecycle::InitFresh, SefLifecycle::SignalTerm]
-        );
+        assert_eq!(sef.sequence, alloc::vec![SefLifecycle::InitFresh]);
     }
 
     #[test]
