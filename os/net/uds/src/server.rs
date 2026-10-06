@@ -196,6 +196,9 @@ mod tests {
     /// （uds 的库是纯 `no_std` 无 allocator，测试里不引 `Vec`）。
     /// 每帧可带一个 `m_pm_lsys_sigs_signal.num`——信号管理器转发的 SIGTERM
     /// 就是那个形状（C `pm/signal.c:470-473`、`rs/main.c:699-701`）。
+    /// 脚本耗尽后收信回 `EINTR`（与生产一致：收信失败不累计到
+    /// BROKEN_BUDGET），否则 `CannedSefIpc::new()` 的默认 EFAULT 会把
+    /// 「循环正常结束」的本意伪装成错误退出（lwip 夹具同款处置）。
     struct ScriptedIpc {
         sef: CannedSefIpc,
         replies: u32,
@@ -204,6 +207,7 @@ mod tests {
     impl ScriptedIpc {
         fn new(script: &[(i32, Endpoint, i32, Option<i32>)]) -> Self {
             let mut sef = CannedSefIpc::new();
+            sef.empty_error = minix_types::EINTR;
             // CannedSefIpc 从队尾弹出，所以按到达顺序的反序压栈。
             for (status, source, m_type, signo) in script.iter().rev() {
                 let mut m = Message {
@@ -220,15 +224,6 @@ mod tests {
                 sef.push(*status, m);
             }
             Self { sef, replies: 0 }
-        }
-
-        /// 耗尽后回 `EINTR`（与生产一致：收信失败不累计到 BROKEN_BUDGET），
-        /// 否则 `CannedSefIpc::new()` 的默认 EFAULT 会把「循环正常结束」的
-        /// 本意伪装成错误退出。
-        fn drain_ok(self) -> Self {
-            let mut me = self;
-            me.sef.empty_error = minix_types::EINTR;
-            me
         }
     }
 
@@ -289,8 +284,7 @@ mod tests {
             (CALL_NOTIFY, RS, RS_INIT, None),
             (CALL_NOTIFY, SYSTEM, 0, None),
             (CALL_NOTIFY, Endpoint::CLOCK, 0, None),
-        ])
-        .drain_ok();
+        ]);
         // 额度 2：通知帧本身走意外路也要占一次（它仍是“服务过一趟”），
         // 所以留给时钟 tick 的余额得算上它。
         let mut handler = RecordingHandler {
@@ -311,9 +305,13 @@ mod tests {
     fn test_manager_sigterm_terminates_after_the_inflight_frame() {
         // 终止的真形状：管理器转发的 `SIGS_SIGNAL_RECEIVED` 携 num=SIGTERM。
         // SEF 吞掉那条消息（C `sef.c:233-236`），所以本循环先把手上那帧服务
-        // 完、下一趟循环顶才走终止路——C 同形（handler 在 receive 内部跑完，
-        // `uds_running=FALSE` 后由排水规则决定何时退）。`stop_after` 给不满，
-        // 所以退出只能由终止位造成：计数不为 1 就说明这条路没接通。
+        // 完、下一趟循环顶才走终止路。这条是本树形状，不是 C 终态：C 的
+        // `uds_signal` 在无人用套接字时直接 `sef_cancel()`（`uds.c:1357-1360`），
+        // 库在收信循环顶看到该标记就返 `EINTR`（`sef.c:161-162`），那一趟根本
+        // 收不到下一帧；本树缺那道逃生门（登记在 minix-sef 管理器臂与台账
+        // P-ALL-08 的 T2 行），故此处钉的是「吞消息后照常收下一帧」的现状。
+        // `stop_after` 给不满，所以退出只能由终止位造成：计数不为 1 就说明
+        // 这条路没接通。
         let mut ipc = ScriptedIpc::new(&[
             (CALL_NOTIFY, RS, RS_INIT, None),
             (
@@ -323,8 +321,7 @@ mod tests {
                 Some(minix_types::SIGNAL_TERMINATE),
             ),
             (CALL_NOTIFY, Endpoint::CLOCK, 0, None),
-        ])
-        .drain_ok();
+        ]);
         // 额度 1：SIGTERM 那帧被 SEF 吞掉（不计入 served），下一帧是时钟 tick；
         // 再下一趟循环顶就应当因终止位而正常返回 Ok。
         let mut handler = RecordingHandler {

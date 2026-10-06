@@ -446,8 +446,12 @@ mod tests {
     fn test_manager_sigterm_terminates_the_loop() {
         // 终止的真形状：信号管理器转发的 `SIGS_SIGNAL_RECEIVED` 携 num=SIGTERM
         // （C pm/signal.c:470-473、rs/main.c:699-701）。SEF 吞掉那条消息后
-        // 本循环收到的是下一帧，服务完它才在循环顶看到终止位——C 同形
-        // （handler 在 receive 内部跑完，那一趟请求照常处理，随后才退）。
+        // 本循环收到的是下一帧，服务完它才在循环顶看到终止位。这条是本树
+        // 形状，不是 C 终态：C 的 `got_signal` 转手叫 `netdriver_terminate()`
+        // 置 running=FALSE 并无条件 `sef_cancel()`（netdriver.c:947-949），库在
+        // 收信循环顶看到该标记就返 EINTR（sef.c:161-162），那一趟根本收不到
+        // 下一帧；本树缺那道逃生门（登记在 minix-sef 管理器臂与台账 P-ALL-08
+        // 的 T2 行），故此处钉的是「吞消息后照常收下一帧」的现状。
         // 不终止的话第 4 帧会被服务而 roads 长度变 2，所以本断言有鉴别力；
         // 两条路径都会结束，不会因脚本耗尽而活锁。
         let mut ipc = ScriptedIpc::script_signalled(&[
