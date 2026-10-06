@@ -13777,3 +13777,5 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 ④下一增量（已排，二选一）：①`virtualization=on`：EL2 存在 ⇒ PSCI 全程 TF-A，AAVMF 行为整体改变（AAVMF 转 EL2），需重验桩 EL1 系寄存器假设（target_el=2 时 QEMU 让 AP 进 EL2，桩须 EL-aware 或先 self-drop）；②SMP 门改 QEMU 直核 -kernel（绕开 UEFI，同 riscv 门形；KernelInfo 契约需直载入口——§续-402 riscv _start 形同构）。诊断资产保留至翻绿后滚：conduit/psci-on 打印＋桩 B1/B2（换字母）。
 
 ⑤回归与卫生：minix-boot 17/0、minix-platform 14/0、minix-arch 宿主 0 失败、minix-kernel --lib 830/0（docker minix-ci:1.94，-m 2g -j 1）；fmt 全清（七文件我方区间零漂移）；aarch64 门 smpa7 FAIL 如登记（ap-timeout=1、零 panic、BSP 全链健康进调度器）；riscv 半不受影响（§续-404 六连绿的代码路径未被本笔触碰；共享 trait 改动走默认方法零破坏）。qemu 收尾清零。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
+
+### §续-405 补记：①臂（virtualization=on）当轮证伪——AAVMF 转从 EL2 启动内核，kernel arch_boot 非 EL2-aware，v3 pt_alloc ok 后即静默死（serial_smpa8：1231 字节、v4 后零输出）；门旗标已回退。翻绿只剩 ② 臂：SMP 门改 QEMU 直核 -kernel（需 aarch64 直载入口＋DTB/BootFileTable 契约＝§续-88 甲案 aarch64 移植，独立增量体量）。
