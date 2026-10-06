@@ -26,11 +26,10 @@ pub struct SimPaging {
     root: u64,
     /// vaddr → (paddr, flags), keyed by page base.
     entries: BTreeMap<u64, (u64, PageFlags)>,
-    /// Set by `enable()` / `switch()` (recorded, not enforced). `Cell`
+    /// Set by `enable()` / `flush_tlb()` (recorded, not enforced). `Cell`
     /// because the trait methods take `&self` (hardware MMU ops don't need
     /// `&mut` either).
     pub enabled_count: core::cell::Cell<u32>,
-    pub switch_count: core::cell::Cell<u32>,
     pub flush_count: core::cell::Cell<u32>,
 }
 
@@ -41,7 +40,6 @@ impl SimPaging {
             root: 0xCAFE_0000,
             entries: BTreeMap::new(),
             enabled_count: core::cell::Cell::new(0),
-            switch_count: core::cell::Cell::new(0),
             flush_count: core::cell::Cell::new(0),
         }
     }
@@ -128,10 +126,6 @@ impl Paging for SimPaging {
 
     fn root_paddr(&self) -> PhysBytes {
         PhysBytes(self.root)
-    }
-
-    unsafe fn switch(&self) {
-        self.switch_count.set(self.switch_count.get() + 1);
     }
 
     unsafe fn flush_tlb(&self) {

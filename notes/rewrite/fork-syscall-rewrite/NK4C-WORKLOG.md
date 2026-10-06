@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§续-410（T1 勘察完成＝交接前最后一笔：信号请求双形态 C 语义全链钉死＋落地配方定稿，正文即接手件；§续-403..409 七增量已在库）** 本会话总交付：三架构 SMP 线收口（§续-403 riscv 洪流根因修复＋门绿 e4b46a5aa、§续-404 选举彩票收口 2cd48d539、§续-405 aarch64 半生产形状 a6a78d37b、§续-406 直核门四连绿 ff1e69a10）＋P-RV-01 riscv 多核门双 PASS（§续-407 38514a26a，ATF 36/36＋cmd-smoke 18 阶段在 -smp 2）＋P-ALL-08 T6/T7 双结（§续-408 e612e62d5 定谳、§续-409 c8d7ba87d 形状审计）。接手入口＝「NK4C-接续PROMPT-20261006q.md」（同目录）。qemu=0。
+> **✅ 最新前沿＝§续-411（minix-vm 宿主测试面断链收口：§续-390 移除 `Paging::switch` 死契约面时漏了 cfg(test) 软件模拟器 `SimPaging`，`cargo test -p minix-vm --lib` 自那轮起编译失败——本轮删死面一笔恢复 538/0，并把「移除类改动必须跑 `cargo check --workspace --tests`」写进每笔验证串）** 下一前沿＝P-ALL-08 T1 落地（配方见 §续-410；开工前已按 C 真源核出配方三处待纠偏：管理器形判据应为 `m_source < INIT_PROC_NR`（sef.h:265，§续-410 写反）、SIGK 位在 128 位 `sigset_t` 的 bit 70..73 而通知载荷当前是 `u64`（位集展开在生产不可达，须先定载荷形态）、`sys_getksig/sys_endksig` 其实已有 minix-sys 封装与 PM 拉取循环（§续-410 ③ 说法需纠正）。本会话总交付：三架构 SMP 线收口（§续-403 riscv 洪流根因修复＋门绿 e4b46a5aa、§续-404 选举彩票收口 2cd48d539、§续-405 aarch64 半生产形状 a6a78d37b、§续-406 直核门四连绿 ff1e69a10）＋P-RV-01 riscv 多核门双 PASS（§续-407 38514a26a，ATF 36/36＋cmd-smoke 18 阶段在 -smp 2）＋P-ALL-08 T6/T7 双结（§续-408 e612e62d5 定谳、§续-409 c8d7ba87d 形状审计）＋T1 勘察（§续-410）。接手入口＝「NK4C-接续PROMPT-20261006q.md」（同目录）。qemu=0。
+>
+> **（上一前沿＝§续-410（T1 勘察完成＝交接前最后一笔：信号请求双形态 C 语义全链钉死＋落地配方定稿，正文即接手件；§续-403..409 七增量已在库）** 本会话总交付：三架构 SMP 线收口（§续-403 riscv 洪流根因修复＋门绿 e4b46a5aa、§续-404 选举彩票收口 2cd48d539、§续-405 aarch64 半生产形状 a6a78d37b、§续-406 直核门四连绿 ff1e69a10）＋P-RV-01 riscv 多核门双 PASS（§续-407 38514a26a，ATF 36/36＋cmd-smoke 18 阶段在 -smp 2）＋P-ALL-08 T6/T7 双结（§续-408 e612e62d5 定谳、§续-409 c8d7ba87d 形状审计）。接手入口＝「NK4C-接续PROMPT-20261006q.md」（同目录）。qemu=0。
 >
 > **（上一前沿＝§续-407（P-RV-01 达成：riscv 多核门——ATF 全量与 cmd-smoke 提到 -smp 2 真机双 PASS（套件 36/36=34+2+0 与单核基线一致；串口 SMP 证据链 sbi-hs ret=0→A1A2→ap-arrived hart=0，§续-404 选举收口在套件链路实测工作））** 改动两门各两行（点火 -smp 1→2＋dumpdtb 补 -smp 2）——首跑 36/36 但零 SMP 标记的假多核被复核揪出：dumpdtb 无 -smp ⇒ DTB 单节点 ⇒ 拓扑真值=DTB ⇒ 接线惰性（§续-399 教训二次重演，「点火/dumpdtu 配对 -smp 必须同值」已写入门内注释）。SD-24 红线实证：AP wfi 驻留下两门全程无异常＝多核拓扑对单核调度器零干扰。诚实边界：AP 未入调度（撤钳=P-ALL-03）；-smp ≥3 未验（per-hart 邮箱边界，§续-402 登记）。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
 >
@@ -13838,3 +13840,15 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 ②落地配方（接手即做，预计一小步增量）：a) minix-types 补常量 `SIGKMEM=71..SIGKSIG=74`（sys/sys/signal.h:271-274 对表）＋`SIGS_SIGNAL_RECEIVED` 已在 event.rs:29；b) `sef_receive_status` 两处：SYSTEM notify 臂在 `on_signal` 后补位集解析（把 sigset 逐位展开为 signo 列表，SefEvent::Signal 携带或新增回调形态——**API 形状二选一需先看 on_signal 的六个消费方**）；管理器形补 `m_type==SIGS_SIGNAL_RECEIVED && source>=INIT_PROC_NR` 臂（对位 IS_SEF_SIGNAL_REQUEST 前半）；c) 宿主测试（CannedSefIpc）：notify 形带 sigset=1<<74 的消息断言展开出 [74]；管理器形单 signum 消息断言直通；bit 71..74 边界（SIGK_FIRST/LAST 对表）；d) 消费方盘点（on_signal 现有六服务调用点的空闭包/实闭包分布）顺手完成＝T2 的勘察半。
 
 ③诚实边界：本节零代码零测试；`process_sigmgr_signals` 的 sys_getksig/endksig 内核调用面在我方框架无对应物（signal manager 语义整体未建模，超出 T1 最小面，登记不做）。
+
+## §续-411 minix-vm 宿主测试面断链收口：§续-390 移除 `Paging::switch` 死契约面时漏了 cfg(test) 软件模拟器，`cargo test -p minix-vm --lib` 自那轮起编译失败（本轮跑消费方回归锚时撞见，git stash 基线复证＝预存破损非本轮引入）
+
+①发现方式＝回归锚需要：T1 要改 `MessNotify` 载荷形状，消费方逐 crate 宿主测试是唯一能证明「零签名破坏」的闸；跑 `cargo test -q -j 1 -p minix-sef -p minix-vm -p minix-pm` 时 minix-vm 直接编译失败：`error[E0407]: method 'switch' is not a member of trait 'Paging'`（`os/servers/vm/src/pagetable/sim.rs:133`）。
+
+②断链链路与锚点：§续-390（commit 55aa0eda8）按 P-ALL-06 把 `Paging::switch` 作死契约面移除——trait 成员连 doc 块（`os/arch/src/arch/paging.rs`）＋三架构 impl（x86_64/arm64/riscv64 paging.rs）＋ Mock 同批，其判据记的是「三形态内核镜像编译零错误＋宿主 arch/kernel 全绿（249+830）」。该判据没覆盖 `servers/vm` 的 lib 测试面：VM 的 cfg(test) 软件页表 `SimPaging` 仍写着 `unsafe fn switch(&self)`（对位 trait 必需成员），trait 一删，impl 就是 E0407。`switch_count` 字段的三处引用（声明 :33、初始化 :44、自增 :134）全在该文件内部、无外部读方，故删除不影响任何断言。
+
+③定谳手段（预存 vs 本轮）：`git stash push` 后在纯 HEAD 上重跑同一命令，同样报 E0407 → 破损先于本轮存在；`git stash pop` 恢复。登记教训：**移除类改动的判据必须包含 `cargo check --workspace --tests`**（或至少「凡实现该 trait 的模拟实现」清单），只看 arch/kernel 两 crate 会让服务器侧的 cfg(test) 桩悄悄腐烂——本轮之后这条已进入我的每笔验证串。
+
+④改动一笔（纯删死面，零语义）：`os/servers/vm/src/pagetable/sim.rs` 删 `unsafe fn switch` 实现、`switch_count` 字段与其初始化，计数器 doc 行的触发者从 `enable()/switch()` 改为 `enable()/flush_tlb()`（`flush_tlb`/`flush_tlb_addr` 仍是 trait 成员，保留）。
+
+⑤验证：`cargo test -q -j 1 -p minix-vm --lib` → 538/0（该 crate 宿主测试面恢复可用）；`cargo check -q -j 1 --workspace --tests` 零错误；fmt 该文件漂移计数 5→5（既有漂移未碰，我方区间零新增）；qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
