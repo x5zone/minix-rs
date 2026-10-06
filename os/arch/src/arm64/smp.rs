@@ -314,7 +314,8 @@ impl SmpArch for AArch64SmpArch {
         // invalid_params). We do not propagate it: the trait contract is
         // best-effort fire-and-forget, mirroring the C port.
         // §续-405 带回执诊断（用后即滚，riscv sbi-hs 同形）：CPU_ON 结果
-        // 不落盘＝AP 不达时无法区分「固件拒了」与「桩死了」。
+        // 不落盘＝AP 不达时无法区分「固件拒了」与「桩死了」；实参同行落盘
+        // 防「我们递错了入口」这类静态查不出的错。
         let _ = ret;
         {
             use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};

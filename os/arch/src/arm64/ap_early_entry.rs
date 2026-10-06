@@ -50,6 +50,23 @@
 
 use crate::arch::ap_early_entry::ApBootstrap;
 
+/// 早期 hart 选举格（§续-406：QEMU 直核 `-kernel` ELF＝全 CPU 进同一
+/// 入口，与 riscv fw_dynamic 同模型——kernel-image `_start` 以 LD/EXCL
+/// 选主，存 MPIDR+1；0=未选）。UEFI/boot-shim 链单 CPU 进入口，选举恒
+/// 由它赢，格语义不变。.data（loader 按 filesz 写初值 0，非 NOBITS
+/// 侥幸），no_mangle 供 kernel-image 桩 asm 字面引用与内核读取。
+#[unsafe(link_section = ".data")]
+#[unsafe(no_mangle)]
+pub static BOOT_HART_ELECTED: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// 次级核停车邮箱的 GO 格（§续-406 直核链的 AP 交付通道：内核接线填记
+/// 录后 Release 发布，停车者独占读清后跳桩；UEFI 链无人发布＝停车者不
+/// 醒，与 riscv 半的 §续-400 停车邮箱同格名同语义）。.data 同上。
+#[unsafe(link_section = ".data")]
+#[unsafe(no_mangle)]
+pub static AP_GO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
 /// Per-AP bootstrap record — arch-local static storage (v7 #4; the arm
 /// form has no <1MiB copy constraint, firmware starts the AP directly at
 /// an image physical address). BSP fills via [`record`] before
@@ -81,7 +98,10 @@ pub fn record() -> &'static mut ApBootstrap {
 /// entry_point must be physical (the AP starts with the MMU off).
 pub fn entry_start_pa() -> usize {
     const KVIRT: usize = 0xFFFF_8000_0000_0000;
-    const KPHYS: usize = 0x0402_0000;
+    // KPHYS = 0x4020_0000（aarch64.ld 的 KERNEL_PHYS_BASE）。§续-406 定谳：
+    // 曾误写 0x0402_0000（下划线错位＝差一个 0，值差 16 倍）——AP 被送进
+    // 垃圾地址 undef 死，桩/记录/通道全对也白搭。常量必须与链接脚本对表。
+    const KPHYS: usize = 0x4020_0000;
     let va = ap_early_entry_start as usize;
     va - (KVIRT - KPHYS)
 }
@@ -105,13 +125,6 @@ core::arch::global_asm!(
     .section .text.ap_early_entry, "ax"
     .globl ap_early_entry_start
     ap_early_entry_start:
-        // §续-405 带回执标记（用后即滚）：B1=MMU-off 已执行（恒等 PA 直写
-        // PL011，无需映射）；缺失=AP 根本没到桩（入口 PA/EL 问题）。
-        ldr x9, =0x09000000
-        mov x10, #0x42                  // 'B'
-        strb w10, [x9]
-        mov x10, #0x31                  // '1'
-        strb w10, [x9]
         dsb ish                         // consumer-side fence (S3.9)
         adrp x2, AP_BOOTSTRAP_RECORD
         add  x2, x2, :lo12:AP_BOOTSTRAP_RECORD
@@ -180,8 +193,10 @@ const AP_TCR: u64 = (16u64 << 0)
     | (0 << 37);
 
 /// Record PA → record high-VA delta, identical to `entry_start_pa`'s
-/// link-model constants (KVIRT − KPHYS).
-const VA_DELTA: usize = 0xFFFF_8000_0000_0000 - 0x0402_0000;
+/// link-model constants (KVIRT − KPHYS). KPHYS 同款 typo（0x0402_0000）
+/// 曾在此第二处存活：x0 被算到无效高半地址，汇聚点首读 fault，AP_ARRIVED
+/// 永不置位（§续-406 smpd9 定谳）。常量与 aarch64.ld 对表。
+const VA_DELTA: usize = 0xFFFF_8000_0000_0000 - 0x4020_0000;
 
 /// 汇聚点到达标记（门判据「次级核可观测汇聚点到达」的观测面，与 riscv
 /// 半同名同义）。0 = 未到；1 = 已到（Release 之后的 Rust 视图）。

@@ -143,6 +143,33 @@ core::arch::global_asm!(
     .section .text.boot, "ax"
     .globl _start
     _start:
+        // ── 早期 hart 选举（§续-406：QEMU 直核 `-kernel` ELF 走
+        // do_cpu_reset 的 !is_linux 臂＝全 CPU 进同一入口，与 riscv
+        // fw_dynamic 同模型）。MPIDR+1 存选举格（LD/EXCL 独占语义），
+        // 落选者停 AP_GO 邮箱。UEFI/boot-shim 链只派一个 CPU 进本入口，
+        // 选举恒由它赢——两链共用本入口，无 cfg 分叉。
+        mrs x8, mpidr_el1
+        and x8, x8, #0xffffff        // Aff2:1:0
+        add x10, x8, #1              // 存 hartid+1：与「未选 0」恒可区分
+        adrp x9, BOOT_HART_ELECTED
+        add x9, x9, :lo12:BOOT_HART_ELECTED
+    1:  ldaxr w11, [x9]
+        cbnz w11, park               // 旧值非 0 ⇒ 已有 BSP ⇒ 停车邮箱
+        stlxr w12, w10, [x9]
+        cbnz w12, 1b
+        b 4f
+    park:
+        // 等 AP_GO=1（内核 smp_init 填记录后发布），独占读清语义；
+        // 发布后跳架构桩（装根/开 MMU/跳汇聚点，全在桩内）。
+        adrp x9, AP_GO
+        add x9, x9, :lo12:AP_GO
+    2:  ldaxr w11, [x9]
+        cbz w11, 2b
+        dmb ish
+        adrp x8, {ap_stub}
+        add x8, x8, :lo12:{ap_stub}
+        br x8
+    4:
         // SD-7 / P-X86-03（2026-10-06）：防御性 .bss 清零，镜像 riscv64
         // 甲案（同 x86_64 注释：loader 已清是现行 UEFI 路径事实，入口
         // 自持为 SD-1 多入口形态）。adrp 取运行页位址（MMU 交接态下
@@ -151,11 +178,11 @@ core::arch::global_asm!(
         add x9, x9, :lo12:__bss_start
         adrp x10, __bss_end
         add x10, x10, :lo12:__bss_end
-    1:  cmp x9, x10
-        b.hs 2f
+    5:  cmp x9, x10
+        b.hs 6f
         str xzr, [x9], #8
-        b 1b
-    2:
+        b 5b
+    6:
         adrp x9, kernel_boot_stack_top
         add x9, x9, :lo12:kernel_boot_stack_top
         mov sp, x9
@@ -165,6 +192,7 @@ core::arch::global_asm!(
         b 3b
     "#,
     rust_image_main = sym rust_image_main,
+    ap_stub = sym ap_early_entry_start,
 );
 
 #[cfg(target_arch = "riscv64")]
@@ -238,6 +266,16 @@ park:
 #[cfg(target_arch = "riscv64")]
 mod bootface;
 
+#[cfg(target_arch = "aarch64")]
+mod bootface_a64;
+
+/// aarch64 架构桩物理入口符号（kernel-image 停车邮箱的跳转目标；符号
+/// 属 minix-arch 的 global_asm，本声明只为 `sym` 引用出作用域）。
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn ap_early_entry_start();
+}
+
 /// Rust 面入口（x86_64 形态；aarch64/riscv64 各有接线版见下）：横幅 +
 /// 触达锚点 + 驻留。
 ///
@@ -274,6 +312,13 @@ fn rust_image_main() -> ! {
 #[cfg(target_arch = "aarch64")]
 fn rust_image_main(handoff: *const minix_boot::BootHandoff) -> ! {
     let _kernel_entry: usize = black_box(KERNEL_ENTRY_ANCHOR as usize);
+    // §续-406 判道：直核 `-kernel`（QEMU 不设参，x0=0）走自引导面；
+    // boot-shim UEFI 链 x0=BootHandoff 物理指针走高半 resume 面。两链
+    // 共用本入口与 .text.boot（选举 asm 对 UEFI 链无害：单 CPU 恒赢）。
+    #[cfg(target_arch = "aarch64")]
+    if handoff.is_null() {
+        bootface_a64::bootface_a64();
+    }
     // 走 §1.114 的 TTBR1 高半 MMIO 别名（本镜像自己的 HIGH_MMIO_LIVE 全局），
     // 证明跨镜像高半控制台可用；resume 路径内部会再次置位（幂等）。
     early_console::use_high_mmio_window();

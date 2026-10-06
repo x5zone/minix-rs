@@ -45,6 +45,13 @@ minix-boot = { path = "../libs/minix-boot" }
 boot-shim = { path = "../boot-shim", default-features = false, features = ["opensbi"] }
 fdt = { workspace = true }
 
+# §续-406：aarch64 自引导面同车道（BootFileTable/magic/build_kernel_info
+# 来自 opensbi_helpers 的架构无关半；bump 池本面自有——opensbi_helpers 的
+# 池基是 riscv DRAM）。uefi feature 不开，理由同 riscv64 块。
+[target.'cfg(target_arch = "aarch64")'.dependencies]
+boot-shim = { path = "../boot-shim", default-features = false, features = ["opensbi"] }
+fdt = { workspace = true }
+
 # 产出物就是取件契约位的文件名：cargo 对 none 目标产无扩展名工件
 # `target/<triple>/<profile>/kernel`，xtask image() 的取件
 # 缺省路径与之对齐（os/xtask/src/image.rs kernel_elf_path）。

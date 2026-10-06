@@ -1069,7 +1069,7 @@ pub fn smp_init() {
     {
         use core::sync::atomic::Ordering;
         use minix_arch::arm64::ap_early_entry::{
-            AP_ARRIVED, ap_early_entry, entry_start_pa, record as ap_record,
+            AP_ARRIVED, BOOT_HART_ELECTED, ap_early_entry, record as ap_record,
         };
         use minix_arch::{CurrentSmpArch, SmpArch};
         use minix_plat::EarlyConsole as _;
@@ -1081,20 +1081,33 @@ pub fn smp_init() {
         }
 
         let smp = unsafe { crate::smp_state_boot_unchecked() };
-        // BSP 身份＝身份锚点（C self-skip 同形）。锚点若落在拓扑之外
-        // （异常形态）回退 bsp_id 槽位；两路皆失诚实 panic 不静默。
+        // BSP 身份＝选举真值优先（§续-406，riscv 半 §续-404 同形）：直核
+        // 链的选举格存当选 MPIDR+1（kernel-image _start LD/EXCL 选主）。
+        // 锚点/current_cpu_id 是「谁在跑本内核」的 C self-skip 语义——两
+        // 者一致时取锚点，不一致（异常形态）回退 bsp_id 槽位；皆失诚实
+        // panic。
+        let elected_hw = BOOT_HART_ELECTED.load(Ordering::Acquire);
         let self_logical = crate::current_cpu_id().index();
-        let bsp_logical = if self_logical < topo.nr_cpus as usize {
-            self_logical
+        let bsp_logical = if elected_hw != 0 {
+            let hw = elected_hw - 1;
+            (0..topo.nr_cpus as usize)
+                .find(|&i| topo.cpus[i].hw_id == hw)
+                .or_else(|| {
+                    (0..topo.nr_cpus as usize)
+                        .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+                })
+                .expect("smp_init: BSP hart not found in topology") as u32
+        } else if self_logical < topo.nr_cpus as usize {
+            self_logical as u32
         } else {
             (0..topo.nr_cpus as usize)
                 .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
-                .expect("smp_init: BSP hart not found in topology")
-        } as u32;
+                .expect("smp_init: BSP hart not found in topology") as u32
+        };
         smp.seed_bsp_masks(bsp_logical);
 
-        // PSCI 通道按 DTB `/psci/method` 设定（§续-405；Linux 同法）。
-        // 带回执打印一行（诊断资产，随门绿滚除）。
+        // PSCI 通道：DTB `/psci/method`（§续-405 管线；直核链 QEMU 生成
+        // 节为 hvc）。conduit 回执一行（诊断资产，随门绿滚除）。
         let smc = platform_desc().psci_conduit() == Some(minix_platform::PsciConduit::Smc);
         minix_arch::arm64::smp::set_psci_conduit_smc(smc);
         minix_plat::CurrentEarlyConsole::write_str("nk4c: psci conduit=");
@@ -1103,7 +1116,7 @@ pub fn smp_init() {
         // BSP 当前根（§3.2：交给 AP 的就是 BSP 正在用的这张表；aarch64
         // 桩把 TTBR0/TTBR1 钉同一根，与 paging.rs::enable 同约定）。
         let root = crate::current_root_phys().expect("aarch64 smp_init: active root");
-        let entry_pa = entry_start_pa();
+        let entry_pa = minix_arch::arm64::ap_early_entry::entry_start_pa();
         let convergence_va = ap_early_entry as usize;
 
         for logical in 0..topo.nr_cpus as u32 {
@@ -1122,14 +1135,23 @@ pub fn smp_init() {
                 r.kernel_stack_top_va = stack_top;
                 r.rust_entry_va = convergence_va as u64;
             }
-            // 生产者侧栅栏：记录写入 → PSCI CPU_ON。
+            // 生产者侧栅栏：记录写入 → PSCI CPU_ON。交付通道裁定
+            // （§续-406）：QEMU 直核 `-kernel` 的 !is_linux 臂只派
+            // first_cpu 进入口（boot.c:731 次级核走未设置的
+            // secondary_cpu_reset_hook＝保持复位 PC），停车邮箱无人消费；
+            // 直核链的次级核交付＝QEMU 内建 PSCI CPU_ON（无固件记账层，
+            // §续-405 的 UEFI 链 ret=0-但-不动 是 EDK2/TF-A 特有，且其
+            // 真根因 KPHYS 错位已在桩侧修复）。AP_GO 邮箱与选举 asm
+            // 保留：UEFI 链单 CPU 恒赢选举，邮箱无人发布＝惰性格。
             unsafe { core::arch::asm!("dmb ish", options(nomem, nostack)) };
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
 
-            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。
-            let mut spins: u32 = 0;
+            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。§续-406：
+            // u32 2 亿在 aarch64 TCG 直核链上不够（UEFI 链同形教训），扩
+            // 到 20 亿并升 u64——AP 慢到≠没到，把「迟到」从误报里救出来。
+            let mut spins: u64 = 0;
             let mut arrived = false;
-            while spins < 200_000_000 {
+            while spins < 2_000_000_000 {
                 if AP_ARRIVED.load(Ordering::Acquire) != 0 {
                     arrived = true;
                     break;
@@ -1228,10 +1250,12 @@ pub fn smp_init() {
             unsafe { core::arch::asm!("fence rw, rw", options(nomem, nostack)) };
             <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
 
-            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。
-            let mut spins: u32 = 0;
+            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。§续-406：
+            // u32 2 亿在 aarch64 TCG 直核链上不够（UEFI 链同形教训），扩
+            // 到 20 亿并升 u64——AP 慢到≠没到，把「迟到」从误报里救出来。
+            let mut spins: u64 = 0;
             let mut arrived = false;
-            while spins < 200_000_000 {
+            while spins < 2_000_000_000 {
                 if AP_ARRIVED.load(Ordering::Acquire) != 0 {
                     arrived = true;
                     break;

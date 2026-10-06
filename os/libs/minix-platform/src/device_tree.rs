@@ -444,11 +444,26 @@ impl DeviceTreeDesc {
         let mut nr_cpus = 0u32;
         let mut bsp_id = 0u32;
 
-        for cpu in fdt.cpus() {
+        // §续-406：走 all_nodes 过滤而非 `Fdt::cpus()`——后者内部
+        // `find_node("/cpus")` 在 QEMU `-kernel` 直核链重建出的 blob 上
+        // 返回 None 并 expect panic（fdt 0.1.5 find_node 对该 blob 的
+        // 既有缺陷，chosen 同症）；all_nodes 遍历无此问题。节点名 "cpu"
+        // 按 DT 规范只出现在 /cpus 下，过滤语义等价（两架构同形）。
+        for cpu in fdt.all_nodes().filter(|n| n.name.split('@').next() == Some("cpu")) {
             if (nr_cpus as usize) >= MAX_CPUS {
                 break;
             }
-            let hw_id = cpu.ids().first() as u64;
+            // §续-406：hw_id 直读 `reg` 首 cell（等价原 `Cpu::ids().first()`，
+            // 见上 all_nodes 过滤注释）。#address-cells 1/2（u32/u64 形）都认。
+            let hw_id = match cpu.properties().find(|p| p.name == "reg") {
+                Some(p) if p.value.len() == 8 => {
+                    u64::from_be_bytes(p.value.try_into().unwrap()) as u64
+                }
+                Some(p) if p.value.len() == 4 => {
+                    u32::from_be_bytes(p.value.try_into().unwrap()) as u64
+                }
+                _ => 0,
+            };
             if nr_cpus == 0 {
                 bsp_id = hw_id as u32;
             }
