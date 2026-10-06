@@ -795,12 +795,30 @@ impl SefCallbacks for RsServer {
 
         // main.c:699-701 — translate every non-termination signal into the
         // SIGS_SIGNAL_RECEIVED message (asynsend seam).
-        let fwd = minix_types::Message {
-            m_type: minix_types::SIGS_SIGNAL_RECEIVED,
-            ..Default::default()
-        };
+        let fwd = sigs_signal_message(signo);
         self.kernel.asynsend(target, &fwd)?;
         Ok(0)
+    }
+}
+
+/// 把非终止类系统信号译成信号管理器转发形态的那条消息。
+///
+/// C: `rs/main.c:699-701` —— `m.m_type = SIGS_SIGNAL_RECEIVED;` 与
+/// `m.m_pm_lsys_sigs_signal.num = signo;`（载荷 `mess_pm_lsys_sigs_signal`，
+/// `ipc.h:1815-1819`），再由 `rs_asynsend` 单向投给目标服务（不等回报）。
+/// `m_source` 故意不填：内核投递时盖发送者章（`sef_init.c:114` 的同形道理，
+/// 定谳见 §续-408 的 T6），接收侧由 `minix-sef` 的信号臂把这个号码交给它的
+/// `on_signal` 回调（C `sef_signal.c:115-128`）。
+pub(crate) fn sigs_signal_message(signo: i32) -> minix_types::Message {
+    minix_types::Message {
+        m_type: minix_types::SIGS_SIGNAL_RECEIVED,
+        m_u: minix_types::MessageUnion {
+            m_pm_lsys_sigs_signal: minix_types::MessPmLsysSigsSignal {
+                num: signo,
+                _padding: [0; 52],
+            },
+        },
+        ..Default::default()
     }
 }
 
@@ -2034,12 +2052,22 @@ mod signal_handler_tests {
         assert_eq!(server.signal_manager(Endpoint::MEM, 15), Ok(0));
 
         // Non-termination signal for the active service → forwarded via
-        // asynsend as SIGS_SIGNAL_RECEIVED (main.c:699-701).
-        let sent_before = match &server.kernel {
-            _ => 0usize, // the mock lives behind the server; observe via a
-                         // follow-up signal below instead.
-        };
-        let _ = sent_before;
+        // asynsend as SIGS_SIGNAL_RECEIVED (main.c:699-701). The mock is
+        // owned by the server (moved into `booted_vfs_kernel`), so the
+        // forwarding branch's wire shape is pinned where it is built —
+        // `sigs_signal_message` — rather than by reading a transcript.
+        let fwd = sigs_signal_message(16);
+        assert_eq!(fwd.m_type, minix_types::SIGS_SIGNAL_RECEIVED);
+        assert_eq!(
+            fwd.sigs_signal_num(),
+            Some(16),
+            "C main.c:700 填 m_pm_lsys_sigs_signal.num"
+        );
+        assert_eq!(
+            fwd.m_source,
+            Endpoint::NONE,
+            "发送者由内核投递盖章（§续-408 的 T6），构造侧留 NONE 哨兵"
+        );
         assert_eq!(server.signal_manager(Endpoint::VFS, 16), Ok(0));
 
         // Termination signal (SIGKILL=9 — SIGS_IS_TERMINATION, signal.h:284-286)
@@ -2074,11 +2102,11 @@ mod signal_handler_tests {
             Err(Errno::EDEADEPT)
         );
 
-        // The earlier non-termination forwarding left one asynsend behind:
-        // verify the seam received it with the SIGS type.
-        // (The mock is owned by the server; the forwarding branch's wire
-        // shape is additionally pinned by the SIGS_SIGNAL_RECEIVED constant
-        // test in minix-types.)
+        // The forwarding branch above ran with the shape asserted at the
+        // builder — `sigs_signal_message` is the single source of that wire
+        // form, so the seam cannot drift to a number-less 0xE00 message
+        // again (the gap this round closed: the builder used to carry only
+        // `m_type`, losing the signal number the receiver needs).
     }
 
     #[test]

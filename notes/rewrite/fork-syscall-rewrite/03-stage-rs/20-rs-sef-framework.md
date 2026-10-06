@@ -480,16 +480,21 @@ C 的六条腿里，重写侧只做了 init / ping / signal 三条。理由不�
 
 代价不是"行为不同"而是"行为缺失"：今天这套代码无法被热更新，也无法在初始化时被人为注入崩溃/失败/超时（§2.3.3 第三段那三种测试能力同步缺失）。缺失面已在 §3.6 第 T4 条登记，与 16 篇的热更新实装同批解锁。
 
-### 3.5 D5：信号面只上浮类型，不解析信号集
+### 3.5 D5：信号面的两条臂与一条唤醒兜底
 
-C 的 `sef_signal.c:do_sef_signal_request` 对内核通知要遍历 `SIGK_FIRST..SIGK_LAST` 并区分 `SIGKSIG`/`SIGKSIGSM`，后者还要靠 `sys_getksig`/`sys_endksig` 循环代理他人信号。Rust 侧的 `on_signal` 回调只收到一个常量 `SEF_SIGNAL_REQUEST_TYPE`（`os/libs/minix-sef/src/lib.rs:sef_receive_status` 的信号臂），服务器拿不到"到底是哪个信号"。这是一个**行为差异**（不是缺失，通知确实被识别了），已登记为 §3.6 第 T1 条。
+C 的 `sef_signal.c:do_sef_signal_request` 对内核通知要遍历 `SIGK_FIRST..SIGK_LAST` 并区分 `SIGKSIG`/`SIGKSIGSM`，后者还要靠 `sys_getksig`/`sys_endksig` 循环代理他人信号。重写侧的两条臂现在都在 `os/libs/minix-sef/src/lib.rs:sef_receive_status` 里：内核通知形按位升序展开，每一位命中调一次 `on_signal(signo)`；信号管理器形（普通消息携 `m_pm_lsys_sigs_signal.num`）把那个号码交给回调后本身被吞掉，与 C 的 `continue` 同形。服务拿得到的就是 C 的信号号本身，不再是统一的请求类型常量。
+
+还留着的两项差异要说明白：
+
+- **逐位展开在实机上跑不到**。C 的 `sigset_t` 是 128 位（`minix3/sys/sys/sigtypes.h:60-61`），内核信号 71..=74 落在第 3 个字；内核自己的待决信号集仍是 64 位（`os/kernel/src/proc.rs:SigSet` 与其 `os/kernel/src/syscall_signal.rs:88-94` 写明的限制），装不下那四位，所以今天送达的 `SYSTEM` 通知位图恒空。通知载荷已经按 C 的 16 字节宽建好形状（`os/libs/minix-types/src/ipc/notify.rs:SigSetBits`），差的只是生产者那一腿。
+- **因此需要一条唤醒兜底**：位图空时回调仍跑一次，参数是 `SEF_SIGNAL_REQUEST_TYPE`。C 在位图为空时一次回调都不跑，这是重写侧有意保留的偏离——服务器的信号处理目前靠“收到通知”这个事件驱动（`os/servers/vm/src/vm_server.rs` 的 `pending_signo.is_some()` 裁决与 `os/net/uds`、`os/net/lwip` 的终止闩都是这种形状），去掉兜底就会静默断掉这些路径。待位宽那一腿补齐，真信号号就能同一条回调腿流过来，兜底自然不再触发。
 
 ### 3.6 待办清单（框架侧尚未实现的语义）
 
 | 编号 | 发现 | 证据（C 真值 ↔ 现状） | 建议与优先级 |
 |---|---|---|---|
-| T1 | 信号集未解析，服务不知道具体信号号 | C：`sef_signal.c:do_sef_signal_request` 两条臂 + `SIGKSIG` 代理循环；现状：`os/libs/minix-sef/src/lib.rs:sef_receive_status` 的 `SefEvent::Signal(i32)` 里那个值恒为 `SEF_SIGNAL_REQUEST_TYPE` | 优先级高。建议把解析上提到库（传入 `&Message` 的 `m_notify.sigset`），信号管理器代理循环另建一个原语对 `sys_getksig`/`sys_endksig`。解锁面：IS / VM / PM 的信号语义验证 |
-| T2 | 出生事件上浮后，各服务接住它的深度不一 | 现状：走 `minix_sef::sef_receive_status` 的站点里，多数传的 `on_signal` 是空闭包（如 `os/servers/devman/src/ipc/minix.rs:receive_message`）；Init 事件的处理分散在各服务自己的循环 | 优先级高。建议：在库里提供"出生应答 + 回报"的共享助手对（现已有 `sef_init_reply`，缺发送半），否则 13 个消费方各自演化 |
+| T1 | 信号集未解析，服务不知道具体信号号 | C：`sef_signal.c:do_sef_signal_request` 两条臂 + `SIGKSIG` 代理循环；现状：两条臂都已落地（notify 形逐位展开、管理器形拦截后吞掉），但实机上通知位图恒空（内核 `SigSet` 仍是 64 位），空位图走一次 `SEF_SIGNAL_REQUEST_TYPE` 唤醒兜底 | 已收（解析上提到库已完成，载荷已按 C 的 16 字节 `sigset_t` 建形）。余项：内核 `SigSet` 拓宽到 128 位（跨层 wire 变更）、`SIGKSIG`/`SIGKSIGSM` 的代理循环建模、各服务接住信号号的语义验证（即 T2 与 IS / VM / PM 解锁面） |
+| T2 | 出生事件上浮后，各服务接住它的深度不一 | 现状：`sef_receive_status` 的生产调用点共 13 处（分属 9 个 crate），其中只有 VM 与 `uds`/`lwip` 的终止闩读了回调参数形状且不区分号码，其余 9 处传空闭包；`os/servers/devman` 自有的 `SefHooks::on_signal` 钩子从不被 SEF 回调（断链）；Init 事件的处理分散在各服务自己的循环 | 优先级高。逐服务对照 C 真源（哪些服务在 C 里真的 `sef_setcb_signal_handler`）填实或明写“C 未注册即忠实”；devman 断链与 `minix-fs-rt` 的 `SignalDecision`（收原始位图而非信号号）是两处形状收敛点；库里已有的 `sef_init_reply` 缺发送半助手 |
 | T3 | `process_init` 的六段动作（§2.3.3）无统一落点 | C：清 IPC 过滤 / 建 0 号约定授权 / 调试标志短路 / 三次内核登记；现状：`os/` 下 `grep "SYS_STATE_CLEAR_IPC_FILTERS"` 与 `cpf_reload`/`senda_reload` 均无调用方 | 优先级高。登记为跨 stage 的接线缺口（属运行时与内核接缝，非本 stage 单方可修） |
 | T4 | 热更新 / 状态搬移 / 覆盖统计 / 故障注入四类拦截未建模 | 见 §3.4 | 优先级中（与 `live-update` 战役同批）；人为注入崩溃/超时能力缺失会影响 15/16 篇的恢复路径验证 |
 | T5 | 同一个 C 语义对应三套 trait（`SefCallbacks` ×2 + `SefHooks`） | `os/servers/rs/src/sef.rs:SefCallbacks`、`os/servers/is/src/sef.rs:SefCallbacks`、`os/servers/devman/src/hooks.rs:SefHooks` | 交代码卓越度裁决（合并或分层）；本文档只记录形状差异 |
@@ -512,7 +517,7 @@ C 的 `sef_signal.c:do_sef_signal_request` 对内核通知要遍历 `SIGK_FIRST.
 | `sef.c:184-193` 按来源改写 `m_type` | `lib.rs:sef_receive_status` 的 `is_ipc_notify(status)` 分支 | 同（`os/libs/minix-sef/src/lib.rs:is_ipc_notify` 就是取 status 低 16 位与 `CALL_NOTIFY` 比较） |
 | `sef.c:196-206` 出生臂：**吞掉**（除 VM fresh） | `lib.rs:sef_receive_status` 的 `SefEvent::Init`：**上浮** | 不同，见 §3.2 |
 | `sef.c:208-216` 探针臂：回 pong 后 `continue` | `lib.rs:pong_via_ipc` + `continue` | 同（判定条件也同：`lib.rs:is_sef_ping_request` 要求通知 + 来源 RS + 类型 `NOTIFY_MESSAGE`） |
-| `sef.c:222-238` 信号臂：进 `do_sef_signal_request` 解析信号集 | `lib.rs:sef_receive_status` 的信号臂：调 `on_signal` 后上浮 `SefEvent::Signal` | 不同，见 §3.5 与 §3.6 T1 |
+| `sef.c:183-193` 改写后的 `SEF_SIGNAL_REQUEST_TYPE` 进入信号臂（`sef.c:230-238`）：进 `do_sef_signal_request` 解析信号集，返回 OK 即 `continue` 吞掉 | `lib.rs:sef_receive_status` 的两条臂：notify 形逐位展开后调 `on_signal(signo)` 并上浮 `SefEvent::Signal`；管理器形（普通消息携 `num`）调完回调就 `continue` | 半同：两形都解析了（§3.5）；不同：内核通知那一形重写侧上浮为事件（C 吞），位图为空时多一次带着请求类型的唤醒兜底 |
 | `sef.c:219-228` 热更新臂 / `sef.c:241-261` 覆盖统计与故障注入臂 | 无 | 缺失，见 §3.4 |
 | `sef.c:263-270` 落到 `default` 后 `break` 返回 | `lib.rs:sef_receive_status` 末尾的 `SefEvent::Call(m_type)` | 同 |
 | `sef_init.c:process_init` 尾部的回报构造 | `lib.rs:sef_init_reply` | 部分：构造了 `m_type` 与 result，未构造 `m_source`（§3.6 T6） |
@@ -587,31 +592,36 @@ loop {
 }
 ```
 
-这段里三个细节分别来自 §2.3.6 第 4 点（只有 `Call` 进分派表）、§3.2（出生事件自己应答）、§3.5（`Signal` 里拿不到信号号，所以解析责任在服务侧，而这正是 T1 要修的）。
+这段里三个细节分别来自 §2.3.6 第 4 点（只有 `Call` 进分派表）、§3.2（出生事件自己应答）、§3.5（`Signal` 背后可拿到的已经是真信号号：逐位展开与管理器形拦截都在库里跑，服务侧只需决定拿到号后做什么——那就是 T2）。
 
 ---
 
 ## 5. 测试要点
 
-> 计数口径：下列现有测试逐条经 `grep -n "fn test_" os/libs/minix-sef/src/lib.rs` 命中（共 8 个），本表是静态口径；运行时计数由 `cargo test -p minix-sef` 复核，两者不一致时以运行结果为准。
+> 计数口径：下列现有测试逐条经 `grep -n "fn test_" os/libs/minix-sef/src/lib.rs` 命中（共 13 个），本表是静态口径；运行时计数由 `cargo test -p minix-sef` 复核，两者不一致时以运行结果为准。
 
-### 5.1 库内现有八个单测各自钉住了哪条分支
+### 5.1 库内现有十三个单测各自钉住了哪条分支
 
 | 测试 | 钉住的行为 | 对应源码位置 |
 |---|---|---|
 | `test_ping_intercepted_and_swallowed` | 两条 RS 通知被吞掉并各回一次 pong，第三条普通消息原样上浮 | §2.3.7、§4.1 的探针行 |
-| `test_system_notification_surfaces_signal` | `SYSTEM` 通知上浮为 `SefEvent::Signal` 且回调被叫 | §2.3.8（只到"识别"那一层） |
+| `test_system_notification_surfaces_signal` | `SYSTEM` 通知上浮为 `SefEvent::Signal` 且回调被叫 | §2.3.8（识别那一层；解析面见下面四行） |
 | `test_rs_non_notification_is_plain_call` | 来向是 RS 但不是通知 → 不进探针分类 | §2.1 判据的"投递方式"维度 |
 | `test_receive_error_passthrough` | 收信失败直上抛错误码，不重试 | §2.3.6 的 `if(r != OK) return r` |
 | `test_rs_init_request_surfaces_init_event` | 非通知的异步投递也能识别为出生，并带上 `init_type` | §2.3.1、§3.2 |
 | `test_rs_init_wins_over_notify_band` | 判定按类型+来源、与投递方式无关，不误入探针分支 | §3.2（C 的出生判据也无通知条件） |
 | `test_rs_non_ping_notification_is_invalid` | RS 通知但类型不是 `NOTIFY_MESSAGE` → `PingInvalid` 且不回 pong | §2.3.7 判据三元组的第三维 |
-| `test_sef_init_reply_carries_result` | 回报消息携带 result，成功与 `ENOSYS` 两种都能正确装载 | §2.3.5（构造面；发送面属 T6） |
+| `test_sef_init_reply_carries_result` | 回报消息携带 result，成功与 `ENOSYS` 两种都能正确装载 | §2.3.5（构造面；发送面属 T6）|
+| `test_notify_sigset_walks_kernel_signals_ascending` | 通知位图里 `SIGKMEM`+`SIGKSIG` 两位 → 回调按升序收到 `[71, 74]`，事件形状不随位集变 | §3.5第一条臂（C `sef_signal.c:97-113`）|
+| `test_notify_low_word_bits_are_outside_the_kernel_window` | 低 64 位全置位（用户/系统信号 1..=64）不展开，只走一次兜底 | §3.5 窗口边界（C 只走 `SIGK_FIRST..SIGK_LAST`）|
+| `test_notify_empty_sigset_wakes_the_handler_once` | 空位图 → 恰好一次带着 `SEF_SIGNAL_REQUEST_TYPE` 的回调（删它就断掉 VM/`uds`/`lwip` 的唤醒路径）| §3.5 的唤醒兜底段 |
+| `test_manager_signal_request_is_swallowed_after_the_callback` | 管理器形的号码交给回调后消息被吞，服务看到的是下一条普通消息且不回 pong | §4.1 信号臂的“C 吞”那半（`sef.c:233-236`）|
+| `test_signal_request_from_init_slot_or_above_is_a_plain_call` | 同类型同载荷但发方是 init 槽或用户槽 → 不得拦截，原样上浮为 `Call` | §3.6 T1 的判据方向（C `sef.h:265` 的 `<`）|
 
 ### 5.2 需要补的测试点（由第 3、4 章的决策与缺口推导）
 
 1. **出生应答的发送原语形状**（推自 §2.3.5 与 §3.6 T7）：断言出生回报走的是"发送并等回复"而不是单向发；反面例子是只返 `Ok(())` 而不校验消息体与目标端点，那种断言永真，测不出退化。
-2. **信号集解析**（推自 §3.5 与 T1）：给定一个带 `SIGKMEM` 与 `SIGKSIG` 的通知，期望服务能分别得到两个信号号并触发代理循环；现在只能断言"收到了一个信号事件"。
+2. **信号集解析**（推自 §3.5 与 T1）：已补——给定一个带 `SIGKMEM` 与 `SIGKSIG` 的通知，服务能分别得到两个信号号（`test_notify_sigset_walks_kernel_signals_ascending` 钉升序与号码本身），低字位不算内核信号、空位图只走一次兜底也各有测试；管理器形的号码直通与“不拦截 init 及以上端点”同样已钉。剩余缺口：`SIGKSIG` 触发的代理循环（`sys_getksig`/`sys_endksig` 三段循环）仍无对位物，以及 §3.5 第一条差异——实机通知位图因 `SigSet` 仍为 64 位而恒空，展开分支目下只在宿主可驱动。
 3. **`Init` 与 `Call` 不串台**（推自 §3.2 的上浮决策）：同一条 `RS_INIT` 不应同时被当成业务请求处理；需要一个跨服务回归（选一个真实消费方，如 `os/servers/mib/src/server.rs:run_once`）而不是只在库里测。
 4. **异步腿的一次性语义**（推自 §2.3.5 第二条腿与 VM）：首条回报异步、后续回到阻塞；重写侧目前只 VM 带这个豁免，回归面应限定在 VM（归 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`）。
 5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧无等价物，需先定计（返 `EINTR` 语义还是返一个事件变体）再测；没定计前至少补一个"服务在信号处理里置停机标志、外层循环下一轮退出"的行为测试。

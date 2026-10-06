@@ -318,10 +318,15 @@ pub fn sig_proc<T: crate::ipc::IpcTransport + ?Sized>(
         if !is_termination(signo) {
             // C signal.c:468-474：非终止内核信号一律翻译成 SIGS_SIGNAL_RECEIVED
             // 消息 `asynsend3(ep, &m, AMF_NOREPLY)` 投给目标服务。Rust 侧尚未
-            // 接线：`asynsend3` 的重试表在 PM 的 IpcTransport 无等价物（sendnb
-            // 对不在 receive 的目标会 EBUSY 丢），且 `mess_pm_lsys_sigs_signal`
-            // 载荷 overlay 未入 minix-types。当前内核 ksig 只产终止类信号，此路
-            // 实际不可达——登记待信号链批次 H（04-stage-pm/todo.md §12.7）。
+            // 接线：唯一卡点是 `asynsend3` 的重试表在 PM 的 IpcTransport 无等价物
+            // （sendnb 对不在 receive 的目标会 EBUSY 丢）。载荷已不是障碍——
+            // `minix_types::MessPmLsysSigsSignal` 与 `MessageUnion` 的
+            // `m_pm_lsys_sigs_signal` 臂已在 §续-412 入库，收方（SEF 拦截臂）
+            // 也已在 §续-414 落地，接上本臂只需一个带重试的发送原语＋一个
+            // `sigs_signal_message` 形构造（RS 侧同形先例见
+            // `os/servers/rs/src/lib.rs:sigs_signal_message`）。当前内核 ksig 只产
+            // 终止类信号，此路实际不可达——登记待信号链批次 H
+            //（04-stage-pm/todo.md §12.7）。
             let _ = (target, signo);
             return Ok(());
         } else {
