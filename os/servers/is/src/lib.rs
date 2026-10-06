@@ -782,7 +782,11 @@ mod tests {
         // C: handler 由 SEF 在收信内部调用（main.c:85），实体先
         // map_unmap_fkeys(FALSE)（:113）再 exit(0)（:115）；那一帧永不进入
         // 分派表。本测试钉的是接线：信号从收信回调一路跑到退出决定。
-        let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, FKEY_NOTIFY))]));
+        // 脚本帧故意用一个可分派的非通知号（而不是真实现场的
+        // `NOTIFY_MESSAGE`）：那样的帧若不先查退出位就会落进
+        // classify 的告警臂，于是 `warnings.is_empty()` 从「恒真」变成
+        // 「能区分顺序」的铜钉——丢掉 `if shutdown` 守卫本测试就会红。
+        let mut t = FakeTransport::new(Vec::from([Some((Endpoint::SYSTEM, 0x42))]));
         t.signals.push(SIGTERM);
         let mut s = IsServer::new(t, FakeFkey::new(), FakeAcquires::ok());
         assert_eq!(s.step(), LifecycleAction::Shutdown, "SIGTERM → 退出决定");
@@ -791,7 +795,7 @@ mod tests {
         assert!(s.transport.sends.is_empty(), "退出前不回应任何请求");
         assert!(
             s.transport.warnings.is_empty(),
-            "那一帧不落分派表，不会产生非法请求告警"
+            "那一帧不落分派表（否则本帧会被当非法请求告警）"
         );
     }
 

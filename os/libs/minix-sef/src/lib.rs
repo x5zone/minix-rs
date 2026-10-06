@@ -247,6 +247,16 @@ pub fn sef_receive_status(
             // 形的活跃臂是 `m_pm_lsys_sigs_signal`。
             // `sigs_signal_num` 在 `m_type` 守卫下恒为 `Some`，`if let` 只是
             // 把这一事实交给类型系统而不是编造一个零号。
+            //
+            // 待接的雷（管理器形发方链通电前必须先定计）：C 的 handler
+            // 在需要退出时直接 `exit(0)`（如 `is/main.c:115`），永不回到
+            // 这个 `continue`；本树的回调只能记账、不能终止进程，所以
+            // 吞完信号后本循环会再次阻塞在 `ipc.receive`——若服务方的
+            // 退出决定正等在这条收信之后，它会永远等不到。库层缺的就是
+            // C 的 `sef_cancel`（`sef.c:161` 逃生门，§3.6 之外的同一族缺口），
+            // 定计前本臂仅在「发方链未通电」下安全（见
+            // `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`
+            // 的 P-ALL-08 T2 行）。
             if let Some(signo) = msg.sigs_signal_num() {
                 on_signal(signo);
             }
