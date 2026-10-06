@@ -440,20 +440,15 @@ impl Message {
     /// The caller must have established that this message is a delivered
     /// notification from `SYSTEM` (C's `is_ipc_notify(status) &&
     /// m_source == SYSTEM`, `sef.h:266`) — the same precondition the SEF
-    /// loop's signal arm already checks, and the reason the read is not
-    /// guarded by `m_type` alone. The notification band is asserted below as
-    /// a misuse tripwire (the kernel always stamps `m_type = NOTIFY_MESSAGE`
-    /// when it fills this arm — `ipc.h:1715` 与 `proc.c` 的
-    /// `BuildNotifyMessage`), since the precondition itself is not
-    /// recoverable from the message. Walk the result with
+    /// loop's signal arm already checks. That precondition lives in the
+    /// status word, not in the message, so it cannot be asserted here (an
+    /// earlier `debug_assert` on `m_type` was wrong and has been removed:
+    /// C stamps `m_type = NOTIFY_MESSAGE` when it fills this arm —
+    /// `ipc.h:1715` 与 `os/kernel/src/ipc.rs:2793` — yet the classification
+    /// never consults `m_type`). Walk the result with
     /// [`crate::ipc::notify::sigset_contains`] (bit `signo - 1`).
     #[inline]
     pub fn notify_sigset(&self) -> crate::ipc::notify::SigSetBits {
-        debug_assert!(
-            (self.m_type.wrapping_sub(crate::NOTIFY_MESSAGE) as u32) < 0x100,
-            "notify_sigset read outside the notification band: m_type = {:#x}",
-            self.m_type
-        );
         // SAFETY: the caller has tagged the union arm by establishing the
         // notification delivery from SYSTEM; the arm is plain-old-data
         // (`MessNotify`), so the read itself is sound.

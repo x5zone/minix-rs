@@ -19,7 +19,7 @@ use crate::startup::Startup;
 use alloc::vec::Vec;
 
 use minix_netdriver::socktable::SockTable;
-use minix_sef::{sef_receive_status, SefIpc};
+use minix_sef::{SefIpc, sef_receive_status};
 use minix_types::{Endpoint, Message};
 
 /// The reply verb, split off from [`SefIpc`] because only request roads
@@ -108,7 +108,10 @@ fn wait_for_init<I: SefIpc + ReplyIpc, H: NetHandler>(
         {
             return ipc.send_reply(
                 received.source,
-                &Message { m_type: minix_types::OK, ..Message::default() },
+                &Message {
+                    m_type: minix_types::OK,
+                    ..Message::default()
+                },
             );
         }
         handler.unexpected(&received.message, is_notify);
@@ -142,7 +145,16 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
         if terminated || !handler.keep_running() {
             return Ok(());
         }
-        let mut on_signal = |_: i32| terminated = true;
+        let mut on_signal = |signo: i32| {
+            // C `got_signal`（`minix3/minix/lib/libnetdriver/netdriver.c:956-963`）：
+            // `if (sig != SIGTERM) return;` 然后才 `netdriver_terminate()`。
+            // 不筛号码就是一条内核唤醒通知（今天递来的是
+            // `SEF_SIGNAL_REQUEST_TYPE`，将来是 71..=74）会把网络服务打掉，
+            // 而 C 在那种情况下继续服务。
+            if signo == minix_types::SIGNAL_TERMINATE {
+                terminated = true;
+            }
+        };
         let received = match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal) {
             Ok(received) => received,
             Err(code) if code == minix_types::EINTR => continue,
@@ -171,8 +183,8 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
             continue;
         }
 
-        let from_vfs_devices = source == Endpoint::VFS
-            && crate::bpfdev::is_filter_request(received.message.m_type);
+        let from_vfs_devices =
+            source == Endpoint::VFS && crate::bpfdev::is_filter_request(received.message.m_type);
         let m_type = received.message.m_type;
         let reply = if source == Endpoint::MIB {
             handler.management(&received.message)
@@ -212,7 +224,10 @@ pub struct KernelIpc<T: minix_sys::ipc::IpcTransport> {
 
 impl<T: minix_sys::ipc::IpcTransport> SefIpc for KernelIpc<T> {
     fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
-        self.transport.receive(src, msg).map(|status| status.0 as i32).map_err(|t| t.0)
+        self.transport
+            .receive(src, msg)
+            .map(|status| status.0 as i32)
+            .map_err(|t| t.0)
     }
 
     fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
@@ -250,13 +265,36 @@ mod tests {
         /// 按到达顺序给脚本；CannedSefIpc 从队尾弹出（`Vec::pop`），
         /// 这里先反转一次，测试里就能按到达顺序写。
         fn script(script: &[(i32, Endpoint, i32)]) -> ScriptedIpc {
+            ScriptedIpc::script_signalled(
+                &script
+                    .iter()
+                    .map(|(s, e, t)| (*s, *e, *t, None))
+                    .collect::<Vec<_>>(),
+            )
+        }
+
+        /// 同上，但每帧可带一个 `m_pm_lsys_sigs_signal.num`——信号管理器
+        /// 转发的 SIGTERM 就是那个形状（C `pm/signal.c:470-473`、
+        /// `rs/main.c:699-701`），不写它就只能测到内核通知那一形。
+        fn script_signalled(script: &[(i32, Endpoint, i32, Option<i32>)]) -> ScriptedIpc {
             ScriptedIpc {
                 sef: CannedSefIpc {
                     inbox: script
                         .iter()
                         .rev()
-                        .map(|(status, source, m_type)| {
-                            (*status, Message { m_source: *source, m_type: *m_type, ..Message::default() })
+                        .map(|(status, source, m_type, signo)| {
+                            let mut m = Message {
+                                m_source: *source,
+                                m_type: *m_type,
+                                ..Message::default()
+                            };
+                            if let Some(num) = signo {
+                                m.m_u.m_pm_lsys_sigs_signal = minix_types::MessPmLsysSigsSignal {
+                                    num: *num,
+                                    _padding: [0; 52],
+                                };
+                            }
+                            (*status, m)
                         })
                         .collect(),
                     empty_error: minix_types::EINTR,
@@ -297,7 +335,11 @@ mod tests {
     impl RecordingHandler {
         fn replyer(&mut self) -> Option<Message> {
             self.replies.push(0x1A);
-            Some(Message { m_source: Endpoint::NONE, m_type: 0x1A, ..Message::default() })
+            Some(Message {
+                m_source: Endpoint::NONE,
+                m_type: 0x1A,
+                ..Message::default()
+            })
         }
     }
 
@@ -346,7 +388,11 @@ mod tests {
         }
 
         fn unexpected(&mut self, _msg: &Message, is_notify: bool) {
-            self.roads.push(if is_notify { "unexpected-notify" } else { "unexpected" });
+            self.roads.push(if is_notify {
+                "unexpected-notify"
+            } else {
+                "unexpected"
+            });
             self.served += 1;
         }
 
@@ -359,7 +405,10 @@ mod tests {
     fn test_init_handshake_replies_ok_to_rs() {
         // RS 的 SEF_INIT 到达 → OK 回给 RS（sef_startup 的应答面）。
         let mut ipc = ScriptedIpc::script(&[(CALL_NOTIFY, RS, RS_INIT)]);
-        let mut handler = RecordingHandler { stop_after: 0, ..Default::default() };
+        let mut handler = RecordingHandler {
+            stop_after: 0,
+            ..Default::default()
+        };
         let mut table = SockTable::new();
         let mut startup = Startup::new();
         let result = run(&mut ipc, &mut handler, &mut table, &mut startup);
@@ -369,25 +418,71 @@ mod tests {
     }
 
     #[test]
-    fn test_terminating_signal_stops_the_loop() {
-        // SYSTEM 通知 = 信号请求：循环停止（C 的 running=0 语义）。
+    fn test_kernel_notify_does_not_terminate_the_loop() {
+        // C `got_signal` 的第一句就是 `if (sig != SIGTERM) return;`。SYSTEM
+        // 通知今天递来的是唤醒兜底值（不是 15），所以循环必须活着把后面的
+        // 请求照常服务完——旧形状（不筛号码）会在这里直接退出。
         let mut ipc = ScriptedIpc::script(&[
             (CALL_NOTIFY, RS, RS_INIT),
             (CALL_NOTIFY, SYSTEM, 0),
-            (0, VFS, 0x1234), // 信号之后不再分发
+            (0, MIB, 0x1234),
         ]);
-        let mut handler = RecordingHandler { stop_after: 0, ..Default::default() };
+        let mut handler = RecordingHandler {
+            stop_after: 2,
+            ..Default::default()
+        };
         let mut table = SockTable::new();
         let mut startup = Startup::new();
         let result = run(&mut ipc, &mut handler, &mut table, &mut startup);
         assert!(result.is_ok());
-        assert!(handler.roads.is_empty(), "信号后不分发");
+        assert_eq!(
+            handler.roads,
+            ["unexpected-notify", "management"],
+            "内核唤醒通知不得终止服务：通知帧走意外路后，后面的 MIB 请求必须照常被服务"
+        );
+    }
+
+    #[test]
+    fn test_manager_sigterm_terminates_the_loop() {
+        // 终止的真形状：信号管理器转发的 `SIGS_SIGNAL_RECEIVED` 携 num=SIGTERM
+        // （C pm/signal.c:470-473、rs/main.c:699-701）。SEF 吞掉那条消息后
+        // 本循环收到的是下一帧，服务完它才在循环顶看到终止位——C 同形
+        // （handler 在 receive 内部跑完，那一趟请求照常处理，随后才退）。
+        // 不终止的话第 4 帧会被服务而 roads 长度变 2，所以本断言有鉴别力；
+        // 两条路径都会结束，不会因脚本耗尽而活锁。
+        let mut ipc = ScriptedIpc::script_signalled(&[
+            (CALL_NOTIFY, RS, RS_INIT, None),
+            (
+                0,
+                Endpoint::PM,
+                minix_types::SIGS_SIGNAL_RECEIVED,
+                Some(minix_types::SIGNAL_TERMINATE),
+            ),
+            (0, Endpoint::MIB, 0x1234, None),
+            (0, Endpoint::MIB, 0x1234, None),
+        ]);
+        let mut handler = RecordingHandler {
+            stop_after: 2,
+            ..Default::default()
+        };
+        let mut table = SockTable::new();
+        let mut startup = Startup::new();
+        let result = run(&mut ipc, &mut handler, &mut table, &mut startup);
+        assert!(result.is_ok());
+        assert_eq!(
+            handler.roads,
+            ["management"],
+            "SIGTERM 后不得再服务第 4 帧（终止位生效）"
+        );
     }
 
     #[test]
     fn test_startup_gate_runs_before_first_arrival() {
         let mut ipc = ScriptedIpc::script(&[(CALL_NOTIFY, RS, RS_INIT)]);
-        let mut handler = RecordingHandler { stop_after: 0, ..Default::default() };
+        let mut handler = RecordingHandler {
+            stop_after: 0,
+            ..Default::default()
+        };
         let mut table = SockTable::new();
         let mut startup = Startup::new();
 
@@ -400,16 +495,19 @@ mod tests {
     #[test]
     fn test_roads_dispatch_and_replies_reach_sources() {
         let script = [
-            (CALL_NOTIFY, RS, RS_INIT),  // 握手
-            (0, VFS, 0x1234),            // 意外（VFS 陌生号）
-            (CALL_NOTIFY, Endpoint::CLOCK, 0),  // 时钟
-            (CALL_NOTIFY, Endpoint::DS, 0),     // 设备上下线
-            (0, MIB, 0x501),             // 管理
-            (0, VFS, 0x1900),            // SDEV 建户（is_sdev_request 判定范围）
-            (CALL_NOTIFY, Endpoint::PM, 0),     // 意外通知
+            (CALL_NOTIFY, RS, RS_INIT),        // 握手
+            (0, VFS, 0x1234),                  // 意外（VFS 陌生号）
+            (CALL_NOTIFY, Endpoint::CLOCK, 0), // 时钟
+            (CALL_NOTIFY, Endpoint::DS, 0),    // 设备上下线
+            (0, MIB, 0x501),                   // 管理
+            (0, VFS, 0x1900),                  // SDEV 建户（is_sdev_request 判定范围）
+            (CALL_NOTIFY, Endpoint::PM, 0),    // 意外通知
         ];
         let mut ipc = ScriptedIpc::script(&script);
-        let mut handler = RecordingHandler { stop_after: 6, ..Default::default() };
+        let mut handler = RecordingHandler {
+            stop_after: 6,
+            ..Default::default()
+        };
         let mut table = SockTable::new();
         let mut startup = Startup::new();
 
@@ -441,8 +539,14 @@ mod tests {
         assert!(minix_sockdriver::sdev::is_sdev_request(0x1900));
         assert!(minix_netdriver::protocol::is_net_reply(0x1A80));
         assert!(!minix_netdriver::protocol::is_net_reply(0x1900));
-        assert!(crate::bpfdev::is_filter_request(0x403), "字符范围进过滤器路");
+        assert!(
+            crate::bpfdev::is_filter_request(0x403),
+            "字符范围进过滤器路"
+        );
         assert!(crate::bpfdev::is_filter_request(0x503), "块范围进过滤器路");
-        assert!(!crate::bpfdev::is_filter_request(0x1900), "SDEV 号不属于过滤器路");
+        assert!(
+            !crate::bpfdev::is_filter_request(0x1900),
+            "SDEV 号不属于过滤器路"
+        );
     }
 }
