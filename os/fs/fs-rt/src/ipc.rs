@@ -52,6 +52,7 @@ pub trait RtIpc {
         src: minix_types::Endpoint,
         msg: &mut Message,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<Receipt, i32>;
     /// Non-blocking send of a reply or a birth report. C: `ipc_send`
     /// (`fsdriver.c:57`) — the caller sits in `sendrec` waiting, so the
@@ -90,6 +91,7 @@ impl RtIpc for SysRtIpc {
         src: minix_types::Endpoint,
         msg: &mut Message,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<Receipt, i32> {
         let mut sef = SeIpcAdapter;
         // The library's entry point monomorphizes its callback (`impl FnMut`),
@@ -97,7 +99,7 @@ impl RtIpc for SysRtIpc {
         // `dyn FnMut` — a thin closure bridges the two (IS 的同款接线，
         // `os/servers/is/src/sef.rs`).
         let mut handoff = |signo: i32| on_signal(signo);
-        let recv = minix_sef::sef_receive_status(&mut sef, src, msg, &mut handoff);
+        let recv = minix_sef::sef_receive_status(&mut sef, src, msg, &mut handoff, cancel);
         match recv {
             // The signal arm is only reached after `minix-sef` has
             // established `is_ipc_notify(status) && source == SYSTEM`, and
@@ -214,6 +216,7 @@ impl RtIpc for ScriptedRtIpc {
         _src: minix_types::Endpoint,
         msg: &mut Message,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<Receipt, i32> {
         let last = self.inbox.len().saturating_sub(1);
         let (receipt, m) = self.inbox[self.received_at.min(last)];
@@ -221,8 +224,14 @@ impl RtIpc for ScriptedRtIpc {
         *msg = m;
         if matches!(receipt, Receipt::Signal) {
             // Same walk the library runs on a real SYSTEM notification, so
-            // the scripted loop cannot drift from production shape.
+            // the scripted loop cannot drift from production shape. Same
+            // escape hatch too (PD-27): a hook that cancels turns this
+            // delivery into `Err(EINTR)` instead of a receipt, exactly what
+            // `sef_receive_status` does after a cancelled callback.
             minix_sef::dispatch_kernel_notify(msg.notify_sigset(), on_signal);
+            if cancel.is_cancelled() {
+                return Err(minix_types::EINTR);
+            }
         }
         Ok(receipt)
     }

@@ -159,11 +159,15 @@ impl<K: MibKernel, S: MibServices, I: MibIpc + minix_sef::SefIpc> Server<K, S, I
         // (main.c:449-454) is a different path: it only catches
         // foreign-source notifications (CLOCK et al.) that the classifier
         // leaves untouched.
+        // MIB 在 C 未注册 signal handler（上方注释有锚），逃生门令牌只为
+        // 满足库契约——无人取消。
+        let cancel = minix_sef::SefCancel::new();
         let rx = match minix_sef::sef_receive_status(
             &mut self.ipc,
             Endpoint::ANY,
             &mut msg,
             &mut |_sig| {},
+            &cancel,
         ) {
             Ok(rx) => rx,
             Err(_) => return (Turn::ReceiveFailed, Incoming::Unknown),

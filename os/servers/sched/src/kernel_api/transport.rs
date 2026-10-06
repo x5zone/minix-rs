@@ -185,9 +185,13 @@ fn sef_filtered_receive<S: minix_sef::SefIpc>(
     sef: &mut S,
     send_reply: &mut dyn FnMut(&mut Message) -> Result<(), i32>,
 ) -> Result<(Message, IpcStatus), i32> {
+    // SCHED 在 C 未注册 signal handler（上方文档注释有锚），逃生门令牌
+    // 只为满足库契约——无人取消。
+    let cancel = minix_sef::SefCancel::new();
     loop {
         let mut message = blank_message();
-        let recv = minix_sef::sef_receive_status(sef, Endpoint::ANY, &mut message, &mut |_| {})?;
+        let recv =
+            minix_sef::sef_receive_status(sef, Endpoint::ANY, &mut message, &mut |_| {}, &cancel)?;
         // 出生拦截先于事件分类：RS_INIT 不论以何种事件形态到达
         // （minix-sef 不产出 Init 事件，异步投递走 Call 形态）都按
         // sef.h:33-34 的 type+source 判定。

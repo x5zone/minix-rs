@@ -25,6 +25,14 @@ pub trait UdsHandler {
     /// or any socket still in use (`uds.c:1349-1365`, the drain rule).
     fn keep_running(&mut self) -> bool;
 
+    /// Whether clients are mid-request right now (C `uds_in_use > 0`,
+    /// uds.c:1358). The escape hatch consults this at signal time: C's
+    /// `uds_signal` cancels the pending receive only when nothing is in
+    /// flight — with a client mid-request the loop keeps serving it and
+    /// leaves through the drain condition instead (`sef_cancel` would
+    /// otherwise stall the drain on `EINTR` forever).
+    fn draining(&self) -> bool;
+
     /// Clock tick: the service's only notification road.
     fn notify_clock(&mut self, table: &mut SockTable, tick: &Message);
 
@@ -61,6 +69,12 @@ pub fn run<I: SefIpc + ReplyIpc, H: UdsHandler>(
     let mut msg = Message::default();
     let mut broken = 0u32;
     let mut signalled = false;
+    // 逃生门（PD-27，C `sef_cancel()` — uds.c:1360 + sef.c:161-162）：终止
+    // 决定在回调里取消挂起/下一次收信，库返 `EINTR`，下方 `Err(EINTR) =>
+    // continue` 走到循环顶的 signalled 检查——管理器形信号帧被库吞掉后
+    // 不再「吞完继续阻塞在下一收」。C 在 `uds_in_use == 0` 时才 cancel
+    //（uds.c:1359-1360），排水语义由 `keep_running` 承担。
+    let cancel = minix_sef::SefCancel::new();
     loop {
         if signalled {
             // `uds_signal`（`uds.c` 的终止信号）：置 running=0，排水规则
@@ -79,19 +93,27 @@ pub fn run<I: SefIpc + ReplyIpc, H: UdsHandler>(
             // 就会把服务打掉，而 C 在这种情况下仍然继续服务。
             if signo == minix_types::SIGNAL_TERMINATE {
                 signalled = true;
-            }
-        };
-        let received = match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal) {
-            Ok(received) => received,
-            Err(code) if code == minix_types::EINTR => continue,
-            Err(code) => {
-                broken += 1;
-                if broken >= BROKEN_BUDGET {
-                    return Err(code);
+                // C uds.c:1357-1360 — `uds_running = FALSE; if (uds_in_use ==
+                // 0) sef_cancel();`：无人用时取消挂起收信立即走，有人在途
+                // 时继续收着排空（靠 while 条件退出，不靠逃生门——逃生门
+                // 的 EINTR 会让排空永远等不到下一帧）。
+                if !handler.draining() {
+                    cancel.cancel();
                 }
-                continue;
             }
         };
+        let received =
+            match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal, &cancel) {
+                Ok(received) => received,
+                Err(code) if code == minix_types::EINTR => continue,
+                Err(code) => {
+                    broken += 1;
+                    if broken >= BROKEN_BUDGET {
+                        return Err(code);
+                    }
+                    continue;
+                }
+            };
         broken = 0;
 
         let is_notify = minix_sef::is_ipc_notify(received.status);
@@ -126,19 +148,21 @@ fn wait_for_init<I: SefIpc + ReplyIpc, H: UdsHandler>(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     let mut broken = 0u32;
+    let cancel = minix_sef::SefCancel::new(); // 握手期无信号退出路
     loop {
         let mut on_signal = |_: i32| {};
-        let received = match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal) {
-            Ok(received) => received,
-            Err(code) if code == minix_types::EINTR => continue,
-            Err(code) => {
-                broken += 1;
-                if broken >= BROKEN_BUDGET {
-                    return Err(code);
+        let received =
+            match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal, &cancel) {
+                Ok(received) => received,
+                Err(code) if code == minix_types::EINTR => continue,
+                Err(code) => {
+                    broken += 1;
+                    if broken >= BROKEN_BUDGET {
+                        return Err(code);
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
         broken = 0;
         let is_notify = minix_sef::is_ipc_notify(received.status);
         if is_notify
@@ -252,11 +276,21 @@ mod tests {
         served: u32,
         stop_after: u32,
         terminations: u32,
+        /// C `uds_in_use > 0` 的测试形：终止时有无在途客户端。
+        in_flight: bool,
+        /// C `uds_running` 的测试形：终止路已把 running 清零。
+        terminated: bool,
     }
 
     impl UdsHandler for RecordingHandler {
         fn keep_running(&mut self) -> bool {
-            self.served < self.stop_after
+            // `terminated` 对位 C `uds_running=FALSE`（终止后不再续收），
+            // 配额对位「脚本还有几帧要服务」的测试界。
+            !self.terminated && self.served < self.stop_after
+        }
+
+        fn draining(&self) -> bool {
+            self.in_flight
         }
         fn notify_clock(&mut self, _table: &mut SockTable, _tick: &Message) {
             self.clocks += 1;
@@ -268,6 +302,7 @@ mod tests {
         }
         fn on_terminate(&mut self) {
             self.terminations += 1;
+            self.terminated = true;
         }
         fn unexpected(&mut self, _msg: &Message, _is_notify: bool) {
             self.unexpected += 1;
@@ -302,16 +337,16 @@ mod tests {
     }
 
     #[test]
-    fn test_manager_sigterm_terminates_after_the_inflight_frame() {
-        // 终止的真形状：管理器转发的 `SIGS_SIGNAL_RECEIVED` 携 num=SIGTERM。
-        // SEF 吞掉那条消息（C `sef.c:233-236`），所以本循环先把手上那帧服务
-        // 完、下一趟循环顶才走终止路。这条是本树形状，不是 C 终态：C 的
-        // `uds_signal` 在无人用套接字时直接 `sef_cancel()`（`uds.c:1357-1360`），
-        // 库在收信循环顶看到该标记就返 `EINTR`（`sef.c:161-162`），那一趟根本
-        // 收不到下一帧；本树缺那道逃生门（登记在 minix-sef 管理器臂与台账
-        // P-ALL-08 的 T2 行），故此处钉的是「吞消息后照常收下一帧」的现状。
-        // `stop_after` 给不满，所以退出只能由终止位造成：计数不为 1 就说明
-        // 这条路没接通。
+    fn test_manager_sigterm_idle_cancels_the_pending_receive() {
+        // 终止的真形状（闲）：管理器转发的 `SIGS_SIGNAL_RECEIVED` 携
+        // num=SIGTERM（C pm/signal.c:470-473、rs/main.c:699-701）。C
+        // `uds_signal`（uds.c:1357-1360）：`uds_running = FALSE; if
+        // (uds_in_use == 0) sef_cancel();`——无人用套接字时取消挂起收信，
+        // 库在循环顶返 EINTR（sef.c:161-162），循环立即离开，一帧都不再
+        // 服务。PD-27 落地后本树与该 C 终态同形：回调置终止位并 cancel，
+        // `Err(EINTR) => continue` 到循环顶走终止路、keep_running 因
+        // terminated 而假、退出。若逃生门或 draining 门任一失效，库会吞帧
+        // 续收 CLOCK（clocks 变 1），本断言即红。
         let mut ipc = ScriptedIpc::new(&[
             (CALL_NOTIFY, RS, RS_INIT, None),
             (
@@ -322,15 +357,41 @@ mod tests {
             ),
             (CALL_NOTIFY, Endpoint::CLOCK, 0, None),
         ]);
-        // 额度 1：SIGTERM 那帧被 SEF 吞掉（不计入 served），下一帧是时钟 tick；
-        // 再下一趟循环顶就应当因终止位而正常返回 Ok。
         let mut handler = RecordingHandler {
             stop_after: 1,
+            in_flight: false, // 闲：uds_in_use == 0
             ..Default::default()
         };
         let mut table = SockTable::new();
         assert!(run(&mut ipc, &mut handler, &mut table).is_ok());
-        assert_eq!(handler.clocks, 1, "SIGTERM 那帧被吞，随后一帧照常服务");
+        assert_eq!(handler.clocks, 0, "闲时终止：取消挂起收信，后续帧不再服务");
+        assert_eq!(handler.terminations, 1, "终止路恰一次");
+    }
+
+    #[test]
+    fn test_manager_sigterm_with_client_in_flight_drains_first() {
+        // 终止的真形状（忙）：有在途客户端时 C 不调 sef_cancel
+        // （uds.c:1358-1360 的 `uds_in_use == 0` 门）——循环继续收着把在途
+        // 的排完，靠 while 条件退出。本树同形：不取消 → 库吞信号帧后送来
+        // 下一帧（时钟 tick）照常服务，随后循环顶走终止路退出。
+        let mut ipc = ScriptedIpc::new(&[
+            (CALL_NOTIFY, RS, RS_INIT, None),
+            (
+                0,
+                Endpoint::PM,
+                minix_types::SIGS_SIGNAL_RECEIVED,
+                Some(minix_types::SIGNAL_TERMINATE),
+            ),
+            (CALL_NOTIFY, Endpoint::CLOCK, 0, None),
+        ]);
+        let mut handler = RecordingHandler {
+            stop_after: 1,
+            in_flight: true, // 忙：uds_in_use > 0
+            ..Default::default()
+        };
+        let mut table = SockTable::new();
+        assert!(run(&mut ipc, &mut handler, &mut table).is_ok());
+        assert_eq!(handler.clocks, 1, "忙时终止：在途帧照常排空");
         assert_eq!(handler.terminations, 1, "终止路恰一次");
     }
 }

@@ -121,6 +121,44 @@ pub fn pong_via_ipc(ipc: &mut impl SefIpc, source: Endpoint) {
     let _ = ipc.notify(source);
 }
 
+/// The receiving-loop cancel token — C `sef_cancel()`'s flag, made
+/// explicit instead of a library global (`sef.c:291-297` sets
+/// `sef_self_receiving = FALSE`; the loop top at `sef.c:161-162` answers
+/// with `EINTR`).
+///
+/// A signal callback that decides the service should stop calls
+/// [`SefCancel::cancel`]; [`sef_receive_status`] then stops blocking on new
+/// frames and returns `Err(EINTR)`, so the service loop can check its own
+/// stop flag and leave (C's documented use: "exit from the main receive
+/// loop when a signal handler causes the process to want to shut down").
+/// One token per service loop; [`SefIpc`] stays untouched by it.
+pub struct SefCancel(core::cell::Cell<bool>);
+
+impl Default for SefCancel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SefCancel {
+    /// Not cancelled — the state every loop starts in.
+    pub const fn new() -> Self {
+        Self(core::cell::Cell::new(false))
+    }
+
+    /// C: `sef_cancel()` — request that the pending/next receive return
+    /// `EINTR` instead of delivering a frame. Callable from inside a signal
+    /// callback (single-threaded event loop; `Cell` needs no `UnsafeSync`).
+    pub fn cancel(&self) {
+        self.0.set(true);
+    }
+
+    /// Whether [`Self::cancel`] has been called.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.get()
+    }
+}
+
 /// C `do_sef_signal_request`'s kernel-notification half
 /// (`sef_signal.c:94-113`): walk `SIGK_FIRST..=SIGK_LAST` in ascending order
 /// and call the handler once per pending signal.
@@ -183,13 +221,35 @@ pub fn dispatch_kernel_notify(set: SigSetBits, on_signal: &mut dyn FnMut(i32)) {
 /// (`os/servers/vm/src/vm_server.rs:1522-1530`) and `uds`/`lwip` latch on
 /// any notification arriving. Once the bitmap width lands, real signal
 /// numbers flow through the same callback and the fallback stops firing.
+///
+/// # The escape hatch (`cancel`)
+///
+/// `cancel` plays the role of C's `sef_cancel()` (`sef.c:291-297`, which
+/// sets `sef_self_receiving = FALSE`) and the loop-top check
+/// (`sef.c:161-162`, `if (!sef_self_receiving) return EINTR`). A callback
+/// that decides the service should stop calls [`SefCancel::cancel`]; the
+/// library then returns `Err(EINTR)` instead of delivering another frame
+/// — the manager-shaped arm reaches that through its `continue` exactly
+/// like C, and the notify-shaped arm checks right after the callback so a
+/// cancelled frame is swallowed, not surfaced. Service loops keep C's
+/// shape: `Err(EINTR)` → loop top → check the stop flag → leave
+/// (`uds.c:1393-1396`, `fsdriver.c:88-90`).
 pub fn sef_receive_status(
     ipc: &mut impl SefIpc,
     src: Endpoint,
     msg: &mut Message,
     on_signal: &mut impl FnMut(i32),
+    cancel: &SefCancel,
 ) -> Result<SefReceive, i32> {
     loop {
+        // C sef.c:161-162 — the loop top honours a cancel from any earlier
+        // callback before blocking again: `if (!sef_self_receiving)
+        // return EINTR`. This is the escape hatch's whole mechanism (the
+        // manager arm below merely `continue`s, exactly like C's
+        // sef.c:233-236, and this check is what turns that into EINTR).
+        if cancel.is_cancelled() {
+            return Err(minix_types::EINTR);
+        }
         // C: ipc_receive(src, m_ptr, &status) — sef.c:168-172.
         let status = ipc.receive(src, msg)?;
         let m_type = msg.m_type;
@@ -220,6 +280,12 @@ pub fn sef_receive_status(
                 // 的 SYSTEM 臂：载荷位图按内核信号窗口升序逐位走，每一位
                 // 命中调一次回调（sef_signal.c:96-113）。
                 dispatch_kernel_notify(msg.notify_sigset(), on_signal);
+                // 回调里若请求了取消：C 的流程是该帧在库内被吞、循环顶返
+                // EINTR、帧永不上浮（sef.c:233-236 → :161-162）——此处照做；
+                // 未取消则维持「上浮 Signal 事件」的本库契约。
+                if cancel.is_cancelled() {
+                    return Err(minix_types::EINTR);
+                }
                 return Ok(SefReceive {
                     source,
                     message: *msg,
@@ -265,15 +331,12 @@ pub fn sef_receive_status(
             // `sigs_signal_num` 在 `m_type` 守卫下恒为 `Some`，`if let` 只是
             // 把这一事实交给类型系统而不是编造一个零号。
             //
-            // 待接的雷（管理器形发方链通电前必须先定计）：C 的 handler
-            // 在需要退出时直接 `exit(0)`（如 `is/main.c:115`），永不回到
-            // 这个 `continue`；本树的回调只能记账、不能终止进程，所以
-            // 吞完信号后本循环会再次阻塞在 `ipc.receive`——若服务方的
-            // 退出决定正等在这条收信之后，它会永远等不到。库层缺的就是
-            // C 的 `sef_cancel`（`sef.c:161` 逃生门，§3.6 之外的同一族缺口），
-            // 定计前本臂仅在「发方链未通电」下安全（见
-            // `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`
-            // 的 P-ALL-08 T2 行）。
+            // 逃生门（PD-27 已落地）：C 的 handler 需要退出时调
+            // `sef_cancel()`（如 uds.c:1360、netdriver.c:949、fsdriver.c:73）
+            // 后照常返回，循环顶的检查（sef.c:161-162）把这次 `continue`
+            // 变成 `EINTR`——服务主循环见中断、查退出标志、离开。Rust 侧
+            // 回调调 [`SefCancel::cancel`]，本臂的 `continue` 到循环顶后由
+            // 同一位置的检查收口；回调不取消时行为与 C 的吞消息逐字同形。
             if let Some(signo) = msg.sigs_signal_num() {
                 on_signal(signo);
             }
@@ -338,8 +401,9 @@ impl<I: SefIpc> SefLoop<I> {
         src: Endpoint,
         msg: &mut Message,
         on_signal: &mut impl FnMut(i32),
+        cancel: &SefCancel,
     ) -> Result<SefReceive, i32> {
-        sef_receive_status(&mut self.ipc, src, msg, on_signal)
+        sef_receive_status(&mut self.ipc, src, msg, on_signal, cancel)
     }
 }
 
@@ -444,9 +508,15 @@ mod tests {
 
         let mut pong_count = 0;
         let mut out = Message::default();
-        let recv = sef_receive_status(&mut ipc, Endpoint::ANY, &mut out, &mut |_| {
-            pong_count += 1;
-        })
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut out,
+            &mut |_| {
+                pong_count += 1;
+            },
+            &SefCancel::new(),
+        )
         .unwrap();
 
         assert_eq!(
@@ -476,6 +546,7 @@ mod tests {
             &mut |_| {
                 signaled = true;
             },
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(recv.event, SefEvent::Signal(SEF_SIGNAL_REQUEST_TYPE));
@@ -521,6 +592,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |signo| seen.push(signo),
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(seen, vec![71, 74], "两位命中＝两次回调，升序");
@@ -545,6 +617,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |signo| seen.push(signo),
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(
@@ -569,6 +642,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |signo| seen.push(signo),
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(seen, vec![SEF_SIGNAL_REQUEST_TYPE]);
@@ -590,6 +664,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |signo| seen.push(signo),
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(seen, vec![15], "管理器形把载荷号码交给回调");
@@ -604,6 +679,78 @@ mod tests {
     /// E-1 的方向哨兵：同一号码同一消息类型，但发方不是 boot 模块（init
     /// 的 11 槽与用户槽 20）时不得拦截——否则用户进程发给服务的合法
     /// 0xE00 调用号会被 SEF 静默吞掉（照 `source >= INIT_PROC_NR` 写就会如此）。
+    /// PD-27 逃生门（C `sef_cancel` — sef.c:291-297 + sef.c:161-162）：
+    /// 管理器形拦截里回调请求取消 → 库的 `continue` 到循环顶被收口成
+    /// `Err(EINTR)`，帧不上浮；不再阻塞在下一收——§续-418 登记的死锁雷
+    /// 就此拆除。
+    #[test]
+    fn test_manager_signal_with_cancel_returns_eintr() {
+        let mut ipc = CannedSefIpc::new();
+        // 夹具是 LIFO（`inbox.pop()`），先压的帧后到：普通消息先入队，
+        // 信号帧才是第一次收信到达的那条。
+        ipc.push(0, call_msg(11));
+        let mut m = call_msg(SIGS_SIGNAL_RECEIVED);
+        m.m_source = Endpoint(0); // PM
+        m.m_u.m_pm_lsys_sigs_signal.num = 15;
+        ipc.push(0, m);
+
+        let cancel = SefCancel::new();
+        let seen = core::cell::Cell::new(0);
+        let r = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {
+                seen.set(seen.get() + 1);
+                cancel.cancel();
+            },
+            &cancel,
+        );
+        assert_eq!(r.unwrap_err(), minix_types::EINTR);
+        assert_eq!(seen.get(), 1, "回调恰被叫一次");
+        assert_eq!(ipc.inbox.len(), 1, "取消发生在下一帧之前——普通消息未被消费");
+    }
+
+    /// PD-27 逃生门的 notify 形半：SYSTEM 通知的回调里取消 → 该帧在库内
+    /// 被吞（C 的拦截帧永不上浮，sef.c:233-236 → :161-162），返 `EINTR`；
+    /// 未取消时维持上浮 Signal 事件的既有契约。
+    #[test]
+    fn test_notify_signal_with_cancel_swallows_frame_and_returns_eintr() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.push(0, call_msg(11)); // LIFO：后压先到
+        let mut m = notify_msg();
+        m.m_source = SYSTEM_ENDPOINT;
+        ipc.push(4, m);
+
+        let cancel = SefCancel::new();
+        let r = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| cancel.cancel(),
+            &cancel,
+        );
+        assert_eq!(r.unwrap_err(), minix_types::EINTR);
+    }
+
+    /// 循环顶的检查先于阻塞收（C sef.c:161-162 的位置语义）：上一轮回调
+    /// 留下的取消在本轮入口就返 `EINTR`，不再向 IPC 面要消息。
+    #[test]
+    fn test_pre_cancelled_loop_returns_eintr_without_receiving() {
+        let mut ipc = CannedSefIpc::new();
+        ipc.empty_error = minix_types::EPERM; // 若库胆敢收包，必须可见地失败
+        let cancel = SefCancel::new();
+        cancel.cancel();
+        let r = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {},
+            &cancel,
+        );
+        assert_eq!(r.unwrap_err(), minix_types::EINTR);
+    }
+
     #[test]
     fn test_signal_request_from_init_slot_or_above_is_a_plain_call() {
         for source in [Endpoint::INIT, Endpoint(20)] {
@@ -616,6 +763,7 @@ mod tests {
                 Endpoint::ANY,
                 &mut Message::default(),
                 &mut |signo| seen.push(signo),
+                &SefCancel::new(),
             )
             .unwrap();
             assert!(seen.is_empty(), "{source:?} 不是信号管理器");
@@ -638,6 +786,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |_| {},
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(recv.event, SefEvent::Call(33));
@@ -654,6 +803,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |_| {},
+            &SefCancel::new(),
         );
         assert_eq!(r, Err(minix_types::EINTR));
     }
@@ -670,6 +820,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |_| {},
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(
@@ -695,6 +846,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |_| {},
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(recv.event, SefEvent::Init(0));
@@ -714,6 +866,7 @@ mod tests {
             Endpoint::ANY,
             &mut Message::default(),
             &mut |_| {},
+            &SefCancel::new(),
         )
         .unwrap();
         assert_eq!(recv.event, SefEvent::PingInvalid);

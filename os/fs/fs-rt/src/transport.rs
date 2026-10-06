@@ -78,11 +78,11 @@ pub fn serve<D: minix_fs::driver::FsDriver>(
 ///
 /// Terminating here means the loop leaves without a reply: C's
 /// `fsdriver_terminate()` clears the running flag and cancels the pending
-/// receive (`fsdriver.c:68-74`), and this runtime's stand-in for the cancel
-/// is the [`Incoming::SyncThenCancelled`]/[`Incoming::Cancelled`] return.
-/// The cancel itself is not modeled in the library yet (the `sef_cancel`
-/// gap tracked with P-ALL-08 T2), so a decision that arrives on a swallowed
-/// manager-shaped signal consumes one further message before the loop leaves.
+/// receive (`fsdriver.c:68-74`) — that cancel is the library's escape hatch
+/// ([`minix_sef::SefCancel`], PD-27): the turn cancels from inside the
+/// callback, the library answers `Err(EINTR)`, and the decision maps to the
+/// [`Incoming::SyncThenCancelled`]/[`Incoming::Cancelled`] return without
+/// consuming a further message.
 pub type SignalDecision = Box<dyn FnMut(i32) -> SignalAction>;
 
 /// What a file server makes of one signal number.
@@ -203,37 +203,49 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
             // without any receipt value. Only `ipc` and `on_signal` are
             // borrowed here, leaving the rest of the runtime untouched.
             let FsRt { ipc, on_signal, .. } = self;
+            // The escape hatch (PD-27, C `sef_cancel` — sef.c:291-297 +
+            // sef.c:161-162): a non-Ignore decision cancels the pending
+            // receive from inside the callback, so the library answers
+            // `Err(EINTR)` and the decision maps to the leaving receipt right
+            // below. C's `fsdriver_terminate()` is exactly this pair
+            // (`running = FALSE` + `sef_cancel()`, fsdriver.c:68-74).
+            let cancel = minix_sef::SefCancel::new();
             let mut decision = SignalAction::Ignore;
-            let receipt = match ipc.receive(Endpoint::ANY, &mut msg, &mut |signo| {
-                // C's bit walk does not break when the handler asks to
-                // terminate, but at most one number in a single delivery can
-                // answer anything else: the kernel window 71..=74 holds no
-                // SIGTERM, and a manager-shaped message carries exactly one
-                // number (`sef_signal.c:117`). The first non-Ignore answer is
-                // therefore the whole decision — no queue needed.
-                if decision == SignalAction::Ignore {
-                    decision = on_signal(signo);
-                }
-            }) {
+            let receipt = match ipc.receive(
+                Endpoint::ANY,
+                &mut msg,
+                &mut |signo| {
+                    // C's bit walk does not break when the handler asks to
+                    // terminate, but at most one number in a single delivery can
+                    // answer anything else: the kernel window 71..=74 holds no
+                    // SIGTERM, and a manager-shaped message carries exactly one
+                    // number (`sef_signal.c:117`). The first non-Ignore answer is
+                    // therefore the whole decision — no queue needed.
+                    if decision == SignalAction::Ignore {
+                        decision = on_signal(signo);
+                        if decision != SignalAction::Ignore {
+                            cancel.cancel();
+                        }
+                    }
+                },
+                &cancel,
+            ) {
                 Ok(r) => r,
-                // A failed receive has no recovery face in C (panic inside
-                // `sef_receive`); the loop stops rather than spinning.
+                // The escape hatch's answer: the decision (if any) was made
+                // inside the callback — map it to the leaving receipt. Any
+                // other receive failure has no recovery face in C (panic
+                // inside `sef_receive`); the loop stops rather than spinning.
+                Err(minix_types::EINTR) => match decision {
+                    SignalAction::SyncThenTerminate => return Incoming::SyncThenCancelled,
+                    _ => return Incoming::Cancelled,
+                },
                 Err(_) => return Incoming::Cancelled,
             };
-            // The decision is answered before the frame that was in hand gets
-            // dispatched, matching C: its handler terminates the process
-            // (`is/main.c:115` shape, `fsdriver_terminate` for a file server)
-            // so that delivery never reaches the task switch. Consequence of
-            // the missing `sef_cancel` (P-ALL-08 T2's registered red line):
-            // this tree has already taken that frame out of the kernel, so
-            // its sender is left without a reply — the same shape the IS and
-            // uds/lwip stations pin, and the same one a library-level escape
-            // hatch would fix for all of them at once.
-            match decision {
-                SignalAction::Terminate => return Incoming::Cancelled,
-                SignalAction::SyncThenTerminate => return Incoming::SyncThenCancelled,
-                SignalAction::Ignore => {}
-            }
+            // A decision can no longer reach here: any non-Ignore answer
+            // cancelled the receive above, and the library answered `EINTR`
+            // before surfacing another frame — the same control flow C's
+            // `fsdriver_terminate()` produces (the frame is swallowed, the
+            // loop leaves without dispatching it).
             match receipt {
                 Receipt::Signal => {
                     // The C dispatcher walked the kernel-signal bits and the

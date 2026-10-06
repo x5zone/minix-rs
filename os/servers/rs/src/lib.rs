@@ -510,6 +510,9 @@ impl RsServer {
             let stamp = core::cell::Cell::new(0);
             let mut pending: alloc::vec::Vec<i32> = alloc::vec::Vec::new();
             let mut msg = minix_types::Message::default();
+            // RS 的信号 handler 不退出进程（SIGTERM 走关机扫荡、循环继续），
+            // 逃生门令牌只为满足库契约——无人取消。
+            let cancel = minix_sef::SefCancel::new();
             let recv = {
                 let mut bridge = SefKernelBridge {
                     kernel: self.kernel.as_mut(),
@@ -523,6 +526,7 @@ impl RsServer {
                     minix_types::Endpoint::ANY,
                     &mut msg,
                     &mut handoff,
+                    &cancel,
                 )
                 .map_err(Errno::from_i32)?
             };

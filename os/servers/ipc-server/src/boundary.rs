@@ -517,6 +517,7 @@ impl EventLoopTransport for SysEventLoopTransport {
     fn receive(
         &mut self,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<(Message, IpcStatus), TransportError> {
         // SEF 分类器前置（C `sef.c:149-260` 同一契约）：ping 在库内作答，
         // 信号请求在库内拦截并把号码交给回调后吞帧（notify 形升序逐位，
@@ -528,9 +529,14 @@ impl EventLoopTransport for SysEventLoopTransport {
         // 一薄层闭包是必需的：库入口按 `impl FnMut` 单态化，而 trait 侧
         // 只能收不定长 `dyn FnMut`，直传撞 E0277（IS/§续-417 同坑）。
         let mut handoff = |signo: i32| on_signal(signo);
-        let recv =
-            minix_sef::sef_receive_status(&mut bridge, Endpoint::ANY, &mut msg, &mut handoff)
-                .map_err(|_| TransportError)?;
+        let recv = minix_sef::sef_receive_status(
+            &mut bridge,
+            Endpoint::ANY,
+            &mut msg,
+            &mut handoff,
+            cancel,
+        )
+        .map_err(|_| TransportError)?;
         let call = (recv.status & 0x3F) as u32;
         let notify = call == 4; // NOTIFY(com.h:92)
         Ok((recv.message, IpcStatus { notify, call }))

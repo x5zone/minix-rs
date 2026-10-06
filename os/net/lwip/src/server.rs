@@ -87,19 +87,21 @@ fn wait_for_init<I: SefIpc + ReplyIpc, H: NetHandler>(
 ) -> Result<(), i32> {
     let mut msg = Message::default();
     let mut broken = 0u32;
+    let cancel = minix_sef::SefCancel::new(); // 握手期无信号退出路
     loop {
         let mut on_signal = |_: i32| {};
-        let received = match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal) {
-            Ok(received) => received,
-            Err(code) if code == minix_types::EINTR => continue,
-            Err(code) => {
-                broken += 1;
-                if broken >= BROKEN_BUDGET {
-                    return Err(code);
+        let received =
+            match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal, &cancel) {
+                Ok(received) => received,
+                Err(code) if code == minix_types::EINTR => continue,
+                Err(code) => {
+                    broken += 1;
+                    if broken >= BROKEN_BUDGET {
+                        return Err(code);
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
         broken = 0;
         let is_notify = minix_sef::is_ipc_notify(received.status);
         if is_notify
@@ -141,6 +143,11 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
     let mut msg = Message::default();
     let mut broken = 0u32;
     let mut terminated = false;
+    // 逃生门（PD-27，C `sef_cancel()` — netdriver.c:949 + sef.c:161-162）：
+    // 终止决定在回调里取消挂起/下一次收信，库返 `EINTR`，下方 `Err(EINTR)
+    // => continue` 走到循环顶的 terminated 检查——管理器形信号帧被库吞掉
+    // 也不再「吞完继续阻塞在下一收」。
+    let cancel = minix_sef::SefCancel::new();
     loop {
         if terminated || !handler.keep_running() {
             return Ok(());
@@ -153,19 +160,21 @@ pub fn run<I: SefIpc + ReplyIpc, H: NetHandler>(
             // 而 C 在那种情况下继续服务。
             if signo == minix_types::SIGNAL_TERMINATE {
                 terminated = true;
+                cancel.cancel();
             }
         };
-        let received = match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal) {
-            Ok(received) => received,
-            Err(code) if code == minix_types::EINTR => continue,
-            Err(code) => {
-                broken += 1;
-                if broken >= BROKEN_BUDGET {
-                    return Err(code);
+        let received =
+            match sef_receive_status(ipc, Endpoint::ANY, &mut msg, &mut on_signal, &cancel) {
+                Ok(received) => received,
+                Err(code) if code == minix_types::EINTR => continue,
+                Err(code) => {
+                    broken += 1;
+                    if broken >= BROKEN_BUDGET {
+                        return Err(code);
+                    }
+                    continue;
                 }
-                continue;
-            }
-        };
+            };
         broken = 0;
 
         let is_notify = minix_sef::is_ipc_notify(received.status);
@@ -445,15 +454,14 @@ mod tests {
     #[test]
     fn test_manager_sigterm_terminates_the_loop() {
         // 终止的真形状：信号管理器转发的 `SIGS_SIGNAL_RECEIVED` 携 num=SIGTERM
-        // （C pm/signal.c:470-473、rs/main.c:699-701）。SEF 吞掉那条消息后
-        // 本循环收到的是下一帧，服务完它才在循环顶看到终止位。这条是本树
-        // 形状，不是 C 终态：C 的 `got_signal` 转手叫 `netdriver_terminate()`
-        // 置 running=FALSE 并无条件 `sef_cancel()`（netdriver.c:947-949），库在
-        // 收信循环顶看到该标记就返 EINTR（sef.c:161-162），那一趟根本收不到
-        // 下一帧；本树缺那道逃生门（登记在 minix-sef 管理器臂与台账 P-ALL-08
-        // 的 T2 行），故此处钉的是「吞消息后照常收下一帧」的现状。
-        // 不终止的话第 4 帧会被服务而 roads 长度变 2，所以本断言有鉴别力；
-        // 两条路径都会结束，不会因脚本耗尽而活锁。
+        // （C pm/signal.c:470-473、rs/main.c:699-701）。C 的 `got_signal`
+        // 转手叫 `netdriver_terminate()` 置 running=FALSE 并无条件
+        // `sef_cancel()`（netdriver.c:947-949），库在收信循环顶看到该标记
+        // 就返 EINTR（sef.c:161-162）——那一趟根本收不到下一帧。PD-27
+        // 落地后本树与该 C 终态同形：主循环闭包在 TERM 时置 terminated 并
+        // `cancel.cancel()`，库返 EINTR，循环顶直接离开——SIGTERM 之后
+        // 一帧都不再服务（roads 保持空）。若逃生门被拆（cancel 不生效），
+        // 库吞帧后继续收第 4 帧，roads 会变成 ["management"]，本断言即红。
         let mut ipc = ScriptedIpc::script_signalled(&[
             (CALL_NOTIFY, RS, RS_INIT, None),
             (
@@ -473,10 +481,10 @@ mod tests {
         let mut startup = Startup::new();
         let result = run(&mut ipc, &mut handler, &mut table, &mut startup);
         assert!(result.is_ok());
-        assert_eq!(
-            handler.roads,
-            ["management"],
-            "SIGTERM 后不得再服务第 4 帧（终止位生效）"
+        assert!(
+            handler.roads.is_empty(),
+            "SIGTERM 之后一帧都不再服务（逃生门生效，与 C 终态同形）：{:?}",
+            handler.roads
         );
     }
 

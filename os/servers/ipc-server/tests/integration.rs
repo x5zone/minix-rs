@@ -66,13 +66,15 @@ impl EventLoopTransport for ScriptedTransport {
     fn receive(
         &mut self,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<(Message, IpcStatus), TransportError> {
         // Same SEF classifier leg as production and the in-crate fixture —
         // no private interception copy.
         let mut msg = Message::default();
         let mut handoff = |signo: i32| on_signal(signo);
-        let recv = minix_sef::sef_receive_status(self, Endpoint::ANY, &mut msg, &mut handoff)
-            .map_err(|_| TransportError)?;
+        let recv =
+            minix_sef::sef_receive_status(self, Endpoint::ANY, &mut msg, &mut handoff, cancel)
+                .map_err(|_| TransportError)?;
         let call = (recv.status & 0x3f) as u32;
         Ok((
             recv.message,

@@ -31,6 +31,11 @@ impl minix_net_uds::server::UdsHandler for ProductionHandler {
         minix_net_uds::core::loop_keeps_running(self.running, self.sockets_in_use)
     }
 
+    fn draining(&self) -> bool {
+        // C `uds_in_use > 0`（uds.c:1358）——逃生门的取消只在无人用时发生。
+        self.sockets_in_use > 0
+    }
+
     fn notify_clock(&mut self, _table: &mut minix_netdriver::socktable::SockTable, _tick: &minix_types::Message) {}
 
     fn socket_device(

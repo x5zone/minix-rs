@@ -109,6 +109,7 @@ pub trait EventLoopTransport {
     fn receive(
         &mut self,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<(Message, IpcStatus), TransportError>;
     /// Send a reply, non-blocking (C: `ipc_sendnb` — main.c:273).
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
@@ -332,16 +333,22 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
         // RefCell makes the handler reachable without splitting the borrow
         // across the transport call.
         let exited = Cell::new(false);
-        let received = self
-            .transport
-            .borrow_mut()
-            .receive(
-                &mut |signo: i32| match self.handler.borrow_mut().handle_signal(signo) {
-                    crate::lifecycle::SignalStep::ExitClean => exited.set(true),
-                    crate::lifecycle::SignalStep::Ignored
-                    | crate::lifecycle::SignalStep::WarnedDirty => {}
-                },
-            );
+        // 逃生门（PD-27）：干净退出在回调里同时取消挂起收信（C 的
+        // `sef_exit(0)` 在 handler 内即刻终结，main.c:113——本树的退出
+        // 落在循环、但取消让 `receive` 立即以 `Err(EINTR)` 返回，退出
+        // 拍点与 C 同在这一次收信之内；`exited` 检查在错误臂之前）。
+        let cancel = minix_sef::SefCancel::new();
+        let received = self.transport.borrow_mut().receive(
+            &mut |signo: i32| match self.handler.borrow_mut().handle_signal(signo) {
+                crate::lifecycle::SignalStep::ExitClean => {
+                    exited.set(true);
+                    cancel.cancel();
+                }
+                crate::lifecycle::SignalStep::Ignored
+                | crate::lifecycle::SignalStep::WarnedDirty => {}
+            },
+            &cancel,
+        );
         if exited.get() {
             // C: `sef_exit(0)` inside the handler never returns — the
             // framework `continue` (sef.c:231-235) is unreachable after it.
@@ -565,11 +572,13 @@ mod tests {
         fn receive(
             &mut self,
             on_signal: &mut dyn FnMut(i32),
+            cancel: &minix_sef::SefCancel,
         ) -> Result<(Message, IpcStatus), TransportError> {
             let mut msg = Message::default();
             let mut handoff = |signo: i32| on_signal(signo);
-            let recv = minix_sef::sef_receive_status(self, Endpoint::ANY, &mut msg, &mut handoff)
-                .map_err(|_| TransportError)?;
+            let recv =
+                minix_sef::sef_receive_status(self, Endpoint::ANY, &mut msg, &mut handoff, cancel)
+                    .map_err(|_| TransportError)?;
             let call = (recv.status & 0x3f) as u32;
             Ok((
                 recv.message,

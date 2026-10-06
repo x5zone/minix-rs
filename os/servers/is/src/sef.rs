@@ -118,6 +118,7 @@ pub trait SefTransport {
         &mut self,
         inbox: &mut Message,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<(Endpoint, i32), i32>;
     /// Send a reply. C: `ipc_send(who, &m_out)` — main.c:143.
     fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32>;
@@ -214,6 +215,7 @@ impl SefTransport for SysSefTransport {
         &mut self,
         inbox: &mut Message,
         on_signal: &mut dyn FnMut(i32),
+        cancel: &minix_sef::SefCancel,
     ) -> Result<(Endpoint, i32), i32> {
         // C main.c:125-129 — sef_receive(ANY, &m_in);ping 在 SEF 层
         // 拦截并作答（A-11:分类器永不见 ping）。信号号在同一次收信里
@@ -222,8 +224,13 @@ impl SefTransport for SysSefTransport {
         // 一薄层 closure 是必要的：库入口按 `impl FnMut` 单态化，而本
         // trait 为了对象安全只能收 `dyn FnMut`（不定长）。
         let mut handoff = |signo: i32| on_signal(signo);
-        let recv =
-            minix_sef::sef_receive_status(&mut self.ipc, Endpoint::ANY, inbox, &mut handoff)?;
+        let recv = minix_sef::sef_receive_status(
+            &mut self.ipc,
+            Endpoint::ANY,
+            inbox,
+            &mut handoff,
+            cancel,
+        )?;
         Ok((recv.source, recv.message.m_type))
     }
 
@@ -281,6 +288,7 @@ impl SefTransport for UnimplementedTransport {
         &mut self,
         _inbox: &mut Message,
         _on_signal: &mut dyn FnMut(i32),
+        _cancel: &minix_sef::SefCancel,
     ) -> Result<(Endpoint, i32), i32> {
         panic!("IS transport: sef_receive wiring pending (01-is-init-main.md §3 D2)");
     }
@@ -318,7 +326,11 @@ mod tests {
         // S23 片 1 的真装面。
         let mut t = super::SysSefTransport::new();
         let mut inbox = Message::default();
-        assert_eq!(t.receive(&mut inbox, &mut |_sig| {}), Err(minix_types::EIO));
+        let cancel = minix_sef::SefCancel::new();
+        assert_eq!(
+            t.receive(&mut inbox, &mut |_sig| {}, &cancel),
+            Err(minix_types::EIO)
+        );
     }
 
     #[test]

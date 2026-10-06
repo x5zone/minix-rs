@@ -1510,6 +1510,9 @@ impl VmServer {
         // through to the loop below (C sef.c:149-260 wrapping main.c:113).
         let mut raw_msg = minix_types::Message::default();
         let mut pending_signo: Option<i32> = None;
+        // VM 的信号面是 SIGKMEM 唤醒（不退出），逃生门令牌只为满足库契约
+        // ——无人取消。
+        let cancel = minix_sef::SefCancel::new();
         let rcv_sts_raw = {
             let mut guard = self.transport.borrow_mut();
             let mut sef = crate::ipc::transport::SefAdapter(guard.as_mut());
@@ -1518,6 +1521,7 @@ impl VmServer {
                 minix_types::Endpoint::ANY,
                 &mut raw_msg,
                 &mut |signo| pending_signo = Some(signo),
+                &cancel,
             );
             match rcv {
                 Ok(r) => r,

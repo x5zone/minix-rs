@@ -172,6 +172,11 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
         // 决定与解注册告警先落在局部量上。
         let mut shutdown = false;
         let mut unmap_warning: Option<i32> = None;
+        // 逃生门（PD-27）：C 的 IS handler 在 SIGTERM 时 exit(0)（main.c:115）
+        // ——决定与进程终结同在拦截现场。本树的退出落在 run()，取消令牌让
+        // `receive` 在决定当场以 `Err(EINTR)` 返回，拍点对齐；下方错误臂
+        // 对「已决 shutdown 的 EINTR」返 Shutdown 而不 panic。
+        let cancel = minix_sef::SefCancel::new();
         let (caller, call_nr) = {
             let IsServer {
                 transport,
@@ -179,15 +184,20 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 state,
                 ..
             } = self;
-            let frame = transport.receive(&mut state.inbox, &mut |signo| {
-                let (action, warn) = signal_decision(fkey, signo);
-                if action == LifecycleAction::Shutdown {
-                    shutdown = true;
-                }
-                if let Some(status) = warn {
-                    unmap_warning = Some(status);
-                }
-            });
+            let frame = transport.receive(
+                &mut state.inbox,
+                &mut |signo| {
+                    let (action, warn) = signal_decision(fkey, signo);
+                    if action == LifecycleAction::Shutdown {
+                        shutdown = true;
+                        cancel.cancel();
+                    }
+                    if let Some(status) = warn {
+                        unmap_warning = Some(status);
+                    }
+                },
+                &cancel,
+            );
             // C 的那句 printf 在 handler 内（dmp.c:63-65）；当时 transport
             // 正被借用，告警顺延到收信返回后——二者之间 C 只剩 exit(0)，
             // 输出顺序与可见行为都不变。
@@ -196,6 +206,10 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
             }
             match frame {
                 Ok(pair) => pair,
+                // 逃生门的中断＝退出决定已在回调里做出（C 的 handler 此刻
+                // 已经 exit(0)，那一帧永不报给循环）——返回 Shutdown 而非
+                // 按收信失败 panic。其余错误仍是 C main.c:126-127 的 fatal。
+                Err(minix_types::EINTR) if shutdown => return LifecycleAction::Shutdown,
                 Err(status) => panic!("sef_receive failed!: {status}"),
             }
         };
@@ -640,14 +654,19 @@ mod tests {
             &mut self,
             _inbox: &mut Message,
             on_signal: &mut dyn FnMut(i32),
+            cancel: &minix_sef::SefCancel,
         ) -> Result<(Endpoint, i32), i32> {
             if self.fail_receive {
                 return Err(-1);
             }
             // 收信现场的信号投递：先逐个交给回调（与库内的形状同形），
-            // 再报本轮真正取到的帧。
+            // 再报本轮真正取到的帧；回调若取消了（PD-27 逃生门），与库
+            // 同拍地返 `Err(EINTR)` 而不再报帧。
             for signo in core::mem::take(&mut self.signals) {
                 on_signal(signo);
+            }
+            if cancel.is_cancelled() {
+                return Err(minix_types::EINTR);
             }
             // A-11: ping frames are answered inside sef_receive and skipped.
             while let Some(frame) = self.script.first().cloned() {
