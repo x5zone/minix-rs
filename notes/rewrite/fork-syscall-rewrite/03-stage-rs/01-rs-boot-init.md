@@ -120,6 +120,8 @@ SEF 的核心价值在 C 中是"统一的服务生命周期协议"；Rust 侧将
 ## 2. C 源码分析
 
 > 本文档 ground truth 为 `minix3/minix/servers/rs/main.c` 与 `minix3/minix/servers/rs/table.c`。所有行号以 grep 实证为准。
+>
+> **行尾标注说明（两种含义目前混用，读到裸数字请按上下文区分）**：复刻 C 代码行尾的 `/* 数字 */` 多数是**该行在 `minix3/` 源文件里的真实行号**（行锚，如 `/* 121 */`）；但在分派路由表里，裸数字（如 `case RS_UP … /* 13 */`）指的是**该机制归属的文档编号**（详见第 13 篇）而**非行号**；`/* 数字 — 06 */` 这种带破折号的，破折号后面一律是文档编号。（已登记：裸数字双含义是标注歧义，待统一去歧义化。）
 
 ### 2.1 main()：入口、SEF 启动、主循环骨架（main.c:38-131）
 
@@ -167,23 +169,24 @@ int main(void)
       }
       else {                                      /* 84 — 普通请求 */
           switch(call_nr) {
-          /* User requests. */
-	  case RS_UP:		result = do_up(&m);		break;   /* 13 */
-          case RS_DOWN: 	result = do_down(&m); 		break;   /* 13 */
-          case RS_REFRESH: 	result = do_refresh(&m); 	break;   /* 13 */
-          case RS_RESTART: 	result = do_restart(&m); 	break;   /* 13 */
-          case RS_SHUTDOWN: 	result = do_shutdown(&m); 	break;   /* 13 */
-          case RS_UPDATE: 	result = do_update(&m); 	break;   /* 16 */
-          case RS_CLONE: 	result = do_clone(&m); 		break;   /* 13 */
-	  case RS_UNCLONE: 	result = do_unclone(&m);	break;   /* 13 */
-          case RS_EDIT: 	result = do_edit(&m); 		break;   /* 13 */
-	  case RS_SYSCTL:	result = do_sysctl(&m);		break;   /* 14 */
-	  case RS_FI:	result = do_fi(&m);		break;   /* 14 */
-          case RS_GETSYSINFO:  result = do_getsysinfo(&m);     break;   /* 14 */
-	  case RS_LOOKUP:	result = do_lookup(&m);		break;   /* 14 */
-	  /* Ready messages. */
-	  case RS_INIT: 	result = do_init_ready(&m); 	break;   /* 12 */
-	  case RS_LU_PREPARE: 	result = do_upd_ready(&m); 	break;   /* 12/16 */
+          /* User requests —— 生命周期类操作，机制详见第 13 篇 */
+          case RS_UP:         result = do_up(&m);         break;   /* 拉起服务 */
+          case RS_DOWN:       result = do_down(&m);       break;   /* 停用服务 */
+          case RS_REFRESH:    result = do_refresh(&m);    break;   /* 刷新服务 */
+          case RS_RESTART:    result = do_restart(&m);    break;   /* 重启服务 */
+          case RS_SHUTDOWN:   result = do_shutdown(&m);   break;   /* 关闭服务 */
+          case RS_UPDATE:     result = do_update(&m);     break;   /* 例外：Live Update 接管，详见第 16 篇 */
+          case RS_CLONE:      result = do_clone(&m);      break;   /* 派生子服务 */
+          case RS_UNCLONE:    result = do_unclone(&m);    break;   /* 回收子服务 */
+          case RS_EDIT:       result = do_edit(&m);       break;   /* 改服务属性 */
+          /* 以下四项详见第 14 篇 */
+          case RS_SYSCTL:     result = do_sysctl(&m);     break;
+          case RS_FI:         result = do_fi(&m);         break;
+          case RS_GETSYSINFO: result = do_getsysinfo(&m); break;
+          case RS_LOOKUP:     result = do_lookup(&m);     break;
+          /* Ready messages —— 就绪回执，机制详见第 12 篇 */
+          case RS_INIT:       result = do_init_ready(&m); break;   /* 出生回执 */
+          case RS_LU_PREPARE: result = do_upd_ready(&m);  break;   /* 热更新就绪，兼属 12/16 */
           default: 
               printf("RS: warning: got unexpected request %d from %d\n",
                   m.m_type, m.m_source);
