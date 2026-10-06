@@ -24,6 +24,6 @@
 // These are the canonical definitions; this re-export preserves backward
 // compatibility for code that writes `minix_platform::PlatformDesc` etc.
 pub use minix_boot::platform::{
-    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, InterruptControllerDesc, PlatformDesc,
-    PlatformSource, TimerDesc, MAX_CPUS,
+    ArchMiscDesc, ConsoleDesc, CpuInfo, CpuTopology, InterruptControllerDesc, MAX_CPUS,
+    PlatformDesc, PlatformSource, PsciConduit, TimerDesc,
 };

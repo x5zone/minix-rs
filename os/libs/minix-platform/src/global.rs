@@ -12,12 +12,12 @@
 use minix_boot::KernelInfo;
 use minix_types::Frozen;
 
-use crate::desc::PlatformDesc;
-use crate::kind::parse_by_kind;
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-use crate::device_tree::DeviceTreeDesc;
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 use crate::acpi::AcpiDesc;
+use crate::desc::PlatformDesc;
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+use crate::device_tree::DeviceTreeDesc;
+use crate::kind::parse_by_kind;
 use crate::qemu_virt::QemuVirtDesc;
 
 /// Global platform context — owns the descriptor.
@@ -80,6 +80,9 @@ impl PlatformDesc for PlatformContext {
     }
     fn sswi_setip_base(&self) -> Option<usize> {
         self.desc.sswi_setip_base()
+    }
+    fn psci_conduit(&self) -> Option<crate::desc::PsciConduit> {
+        self.desc.psci_conduit()
     }
 }
 
@@ -188,6 +191,13 @@ impl PlatformDesc for PlatformDescEnum {
             #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
             Self::Acpi(d) => d.sswi_setip_base(),
             Self::QemuVirt(d) => d.sswi_setip_base(),
+        }
+    }
+    fn psci_conduit(&self) -> Option<crate::desc::PsciConduit> {
+        match self {
+            #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+            Self::DeviceTree(d) => d.psci_conduit(),
+            _ => None,
         }
     }
 }

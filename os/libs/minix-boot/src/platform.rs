@@ -272,6 +272,21 @@ pub trait PlatformDesc: Send + Sync + fmt::Debug {
     fn sswi_setip_base(&self) -> Option<usize> {
         None
     }
+    /// PSCI 调用通道（ARM64；`None`＝DTB 未声明或非 DTB 源——调用方回落
+    /// arch 默认）。Linux 同位读 DTB `/psci/method`：conduit 选错＝CPU_ON
+    /// 静默无效或以未分类异常弹回（§续-405 实证两态都见过）。
+    fn psci_conduit(&self) -> Option<PsciConduit> {
+        None
+    }
+}
+
+/// PSCI 调用通道（ARM DEN 0022D §5.1／DTB `/psci/method` 字符串）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PsciConduit {
+    /// `hvc #0`（直核 `-kernel` 引导：QEMU 内建 PSCI）。
+    Hvc,
+    /// `smc #0`（固件引导：pflash/TF-A 驻 EL3）。
+    Smc,
 }
 
 // ── Sub-descriptor traits (brand names hidden in arch/ submodules) ──

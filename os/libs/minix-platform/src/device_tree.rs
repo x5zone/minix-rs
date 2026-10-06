@@ -48,10 +48,10 @@ use core::fmt;
 // but `parse` returns `UnsupportedArch` early. The trait impl is cfg-gated
 // to arches that actually support DTB.
 
-#[cfg(target_arch = "riscv64")]
-use crate::arch::riscv64::{ClintDesc, PlicDesc, Riscv64ConsoleDesc};
 #[cfg(target_arch = "aarch64")]
 use crate::arch::aarch64::{ArmGenericTimerDesc, Gicv3Desc, MmioSerialDesc};
+#[cfg(target_arch = "riscv64")]
+use crate::arch::riscv64::{ClintDesc, PlicDesc, Riscv64ConsoleDesc};
 
 /// Parsed DTB descriptor — owns all extracted hardware parameters.
 ///
@@ -84,6 +84,8 @@ pub struct DeviceTreeDesc {
     cpu_topology: CpuTopology,
     /// Architecture miscellany.
     arch_misc: ArchMiscDesc,
+    /// PSCI 调用通道（ARM64；`None`＝DTB 无 /psci 节）。
+    psci_conduit: Option<PsciConduit>,
 }
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
@@ -131,6 +133,11 @@ impl DeviceTreeDesc {
         }
     }
 
+    /// PSCI 调用通道（`None`＝DTB 未声明）。
+    pub fn psci_conduit(&self) -> Option<PsciConduit> {
+        self.psci_conduit
+    }
+
     /// Parse a DTB from a byte slice (for tests and in-memory DTB).
     pub fn from_bytes(dtb: &[u8]) -> Result<Self, DtParseError> {
         #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
@@ -158,8 +165,25 @@ impl DeviceTreeDesc {
         let cpu_topology = Self::parse_cpu_topology(fdt);
         let arch_misc = ArchMiscDesc::default();
         let sswi_setip_base = Self::parse_sswi(fdt);
+        let psci_conduit = fdt.find_node("/psci").and_then(|n| {
+            n.property("method")
+                .and_then(|p| p.as_str())
+                .and_then(|m| match m {
+                    "hvc" => Some(PsciConduit::Hvc),
+                    "smc" => Some(PsciConduit::Smc),
+                    _ => None,
+                })
+        });
 
-        Ok(Self { ic, timer, console, cpu_topology, arch_misc, sswi_setip_base })
+        Ok(Self {
+            ic,
+            timer,
+            console,
+            cpu_topology,
+            arch_misc,
+            sswi_setip_base,
+            psci_conduit,
+        })
     }
 
     // ── Interrupt controller extraction ──
@@ -212,7 +236,11 @@ impl DeviceTreeDesc {
         // (M-mode = 0, S-mode = 1).
         let context = 1u32;
 
-        Ok(PlicDesc { plic_base, nr_irqs, context })
+        Ok(PlicDesc {
+            plic_base,
+            nr_irqs,
+            context,
+        })
     }
 
     /// ARM64: locate GICv3 node and extract distributor + redistributor bases.
@@ -247,7 +275,12 @@ impl DeviceTreeDesc {
         let gicr_stride = 0x2_0000usize;
         let nr_irqs = 64u32; // QEMU virt default; SPI count not in standard DTB prop.
 
-        Ok(Gicv3Desc { gicd_base, gicr_base, gicr_stride, nr_irqs })
+        Ok(Gicv3Desc {
+            gicd_base,
+            gicr_base,
+            gicr_stride,
+            nr_irqs,
+        })
     }
 
     // ── Timer extraction ──
@@ -307,7 +340,12 @@ impl DeviceTreeDesc {
         // Timebase frequency: `/cpus/timebase-frequency`.
         let freq = Self::parse_timebase_freq(fdt)?;
 
-        Ok(ClintDesc { mtime_addr, mtimecmp_base, mtimecmp_stride, freq })
+        Ok(ClintDesc {
+            mtime_addr,
+            mtimecmp_base,
+            mtimecmp_stride,
+            freq,
+        })
     }
 
     /// RISC-V: ACLINT MTIMER fallback — the timer half of QEMU virt's
@@ -339,7 +377,12 @@ impl DeviceTreeDesc {
             .map(|r| r.starting_address as usize)
             .ok_or(DtParseError::ClintRegMissing)?;
         let freq = Self::parse_timebase_freq(fdt)?;
-        Ok(ClintDesc { mtime_addr, mtimecmp_base, mtimecmp_stride: 8, freq })
+        Ok(ClintDesc {
+            mtime_addr,
+            mtimecmp_base,
+            mtimecmp_stride: 8,
+            freq,
+        })
     }
 
     /// `/cpus/timebase-frequency` — shared by the CLINT and ACLINT MTIMER
@@ -385,7 +428,9 @@ impl DeviceTreeDesc {
         // ARM64 QEMU virt uses PL011 UART at 0x0900_0000.
         if let Some(uart) = fdt.find_compatible(&["arm,pl011", "arm,primecell"]) {
             if let Some(base) = uart.reg().and_then(|mut r| r.next()) {
-                return Some(MmioSerialDesc { mmio_base: base.starting_address as usize });
+                return Some(MmioSerialDesc {
+                    mmio_base: base.starting_address as usize,
+                });
             }
         }
         None
@@ -438,7 +483,11 @@ impl DeviceTreeDesc {
             return CpuTopology::default();
         }
 
-        CpuTopology { nr_cpus, bsp_id, cpus }
+        CpuTopology {
+            nr_cpus,
+            bsp_id,
+            cpus,
+        }
     }
 }
 
@@ -554,8 +603,8 @@ mod tests {
     #[test]
     fn test_parse_riscv64_qemu_virt_dtb() {
         // Parse the RISC-V QEMU virt DTB. Expect PLIC + CLINT extraction.
-        let desc = DeviceTreeDesc::from_bytes(TEST_DTB)
-            .expect("DTB parse should succeed on riscv64");
+        let desc =
+            DeviceTreeDesc::from_bytes(TEST_DTB).expect("DTB parse should succeed on riscv64");
         assert_eq!(desc.source(), PlatformSource::DeviceTree);
 
         // PLIC: base 0x0C00_0000 (from `plic@c000000`).

@@ -65,6 +65,17 @@ const SCHED_SGI_INTID: u32 = 0;
 /// the full x2/x3 widths; arguments are identical otherwise.
 const PSCI_CPU_ON_64: u64 = 0xC400_0003;
 
+/// PSCI 通道选择（§续-405）：`false`＝hvc（默认，直核引导），`true`＝smc
+/// （固件引导：pflash/TF-A 驻 EL3）。内核接线在 boot_ap 前按 DTB
+/// `/psci/method` 设定；hvc 默认保持「无 DTB 设定时的旧行为」。
+static PSCI_CONDUIT_SMC: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// 接线侧设定 PSCI 通道（`true`＝smc）。必须在任何 `boot_ap` 之前调用。
+pub fn set_psci_conduit_smc(smc: bool) {
+    PSCI_CONDUIT_SMC.store(smc, core::sync::atomic::Ordering::Release);
+}
+
 /// GIC distributor base address, populated during `arch_init`.
 ///
 /// This is the only mutable global in the ARM64 SMP backend: the GIC
@@ -192,11 +203,7 @@ impl SmpArch for AArch64SmpArch {
         // the first only unmasks IRQs, the second only sleeps the CPU.
         // Safe in EL1 kernel mode.
         unsafe {
-            core::arch::asm!(
-                "msr daifclr, #2",
-                "wfi",
-                options(nomem, nostack)
-            );
+            core::arch::asm!("msr daifclr, #2", "wfi", options(nomem, nostack));
         }
     }
 
@@ -276,20 +283,51 @@ impl SmpArch for AArch64SmpArch {
         // synchronize with the incoming AP, so `nomem` is deliberately not
         // set; `nostack` is set because hvc does not access the stack. x0
         // carries the PSCI return code.
-        unsafe {
-            core::arch::asm!(
-                "hvc #0",
-                inout("x0") fid => ret,
-                in("x1") target_cpu,
-                in("x2") entry_point,
-                in("x3") context_id,
-                options(nostack),
-            );
+        // §续-405：通道按 DTB `/psci/method` 选择（内核接线经
+        // `set_psci_conduit_smc` 设定，Linux 同法读 FDT）。实证两态：
+        // hvc 在固件引导链上被静默吞掉（ret=0 假成功、AP 无踪影）；smc
+        // 打错层则以未分类异常弹回。写死任何一个都只对一种引导链成立。
+        if PSCI_CONDUIT_SMC.load(core::sync::atomic::Ordering::Acquire) {
+            unsafe {
+                core::arch::asm!(
+                    "smc #0",
+                    inout("x0") fid => ret,
+                    in("x1") target_cpu,
+                    in("x2") entry_point,
+                    in("x3") context_id,
+                    options(nostack),
+                );
+            }
+        } else {
+            unsafe {
+                core::arch::asm!(
+                    "hvc #0",
+                    inout("x0") fid => ret,
+                    in("x1") target_cpu,
+                    in("x2") entry_point,
+                    in("x3") context_id,
+                    options(nostack),
+                );
+            }
         }
         // Non-zero return indicates a PSCI error (e.g. already_on,
         // invalid_params). We do not propagate it: the trait contract is
         // best-effort fire-and-forget, mirroring the C port.
+        // §续-405 带回执诊断（用后即滚，riscv sbi-hs 同形）：CPU_ON 结果
+        // 不落盘＝AP 不达时无法区分「固件拒了」与「桩死了」。
         let _ = ret;
+        {
+            use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole as _};
+            Console::write_str("nk4c: psci-on ret=");
+            let mut hex = [0u8; 16];
+            let mut v = ret;
+            for byte in hex.iter_mut().rev() {
+                *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                v >>= 4;
+            }
+            Console::write_str(core::str::from_utf8(&hex).unwrap_or("?"));
+            Console::write_str("\n");
+        }
     }
 
     fn current_cpu() -> u32 {

@@ -1046,14 +1046,112 @@ pub fn smp_init() {
 
     // riscv64 已有自己的接线块（下方 cfg(riscv64)），只剩 aarch64 没接——
     // §续-403 前 riscv64 也误射此警告（cfg 范围未随接线收窄）。
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv64")))]
+    // 三架构（x86_64/riscv64/aarch64）各自有接线块，此警告块已无可达
+    // 目标架构——新架构接入时其接线块即职责所在，不再走全局警告。
+
+    /// NK4-C 续-405（P-A64RV-01 aarch64 半）：多 CPU 配置下经 PSCI CPU_ON
+    /// 唤醒次级核——桩（ap_early_entry）读记录装 BSP 的 TTBR/MAIR/TCR 后
+    /// 开 MMU 跳汇聚点，置 AP_ARRIVED 到达标记后 wfi 驻留。与 riscv 半的
+    /// 三点刻意差异：
+    /// - BSP 身份＝`current_cpu_id()` 身份锚点（谁在跑本内核谁就是 BSP，
+    ///   C arch_smp.c 的寄存器读 self-skip 同形）——UEFI 载体只派一个 CPU
+    ///   进 boot services，无 riscv 的全 hart 进 payload 选举问题。
+    /// - 桩无 UART 标记（§续-403② 教训：设备地址依赖根表形状不可靠），
+    ///   AP_ARRIVED 是唯一权威判据。
+    /// - 栅栏用 `dmb ish`（ARM 语义）。
+    /// - 单 CPU 配置静默：nr_cpus<=1 直接返回，生产行为零变化；专用门
+    ///   test-smp-aps-aarch64.sh 用 -smp 2 激活（拓扑真值=DTB）。
+    /// - SD-24 红线尊重：AP 到达即 wfi 驻留，绝不入调度——钳主核未撤，
+    ///   本接线只做「次级核真醒」的前置事实，不做进程安放。
+    /// - 降级续行（C arch_smp.c 语义）：某 CPU 有界超时未到达，打印后
+    ///   继续单核推进，不阻塞启动。
+    #[cfg(target_arch = "aarch64")]
     {
-        // aarch64 lane: the bring-up preconditions (early-entry
-        // image, per-CPU init_ap) are not wired yet — see the S-8/S-4 stub
-        // inventory in this file's history. Bringing them up is those
-        // lanes' own step; warning instead of silently succeeding.
-        use minix_plat::{CurrentEarlyConsole as Console, EarlyConsole};
-        Console::write_str("WARNING: smp_init not wired for this architecture\n");
+        use core::sync::atomic::Ordering;
+        use minix_arch::arm64::ap_early_entry::{
+            AP_ARRIVED, ap_early_entry, entry_start_pa, record as ap_record,
+        };
+        use minix_arch::{CurrentSmpArch, SmpArch};
+        use minix_plat::EarlyConsole as _;
+        use minix_platform::{PlatformDesc, platform_desc};
+
+        let topo = platform_desc().cpu_topology();
+        if topo.nr_cpus <= 1 {
+            return;
+        }
+
+        let smp = unsafe { crate::smp_state_boot_unchecked() };
+        // BSP 身份＝身份锚点（C self-skip 同形）。锚点若落在拓扑之外
+        // （异常形态）回退 bsp_id 槽位；两路皆失诚实 panic 不静默。
+        let self_logical = crate::current_cpu_id().index();
+        let bsp_logical = if self_logical < topo.nr_cpus as usize {
+            self_logical
+        } else {
+            (0..topo.nr_cpus as usize)
+                .find(|&i| topo.cpus[i].hw_id == topo.bsp_id as u64)
+                .expect("smp_init: BSP hart not found in topology")
+        } as u32;
+        smp.seed_bsp_masks(bsp_logical);
+
+        // PSCI 通道按 DTB `/psci/method` 设定（§续-405；Linux 同法）。
+        // 带回执打印一行（诊断资产，随门绿滚除）。
+        let smc = platform_desc().psci_conduit() == Some(minix_platform::PsciConduit::Smc);
+        minix_arch::arm64::smp::set_psci_conduit_smc(smc);
+        minix_plat::CurrentEarlyConsole::write_str("nk4c: psci conduit=");
+        minix_plat::CurrentEarlyConsole::write_str(if smc { "smc\n" } else { "hvc\n" });
+
+        // BSP 当前根（§3.2：交给 AP 的就是 BSP 正在用的这张表；aarch64
+        // 桩把 TTBR0/TTBR1 钉同一根，与 paging.rs::enable 同约定）。
+        let root = crate::current_root_phys().expect("aarch64 smp_init: active root");
+        let entry_pa = entry_start_pa();
+        let convergence_va = ap_early_entry as usize;
+
+        for logical in 0..topo.nr_cpus as u32 {
+            if logical == bsp_logical {
+                continue;
+            }
+            let hw_id = topo.cpus[logical as usize].hw_id;
+            let stack_top = ap_kernel_stack_top(logical);
+
+            {
+                let r = ap_record();
+                r.logical_id = logical;
+                r._pad = 0;
+                r.hw_id = hw_id as u64;
+                r.page_table_root_pa = root.0;
+                r.kernel_stack_top_va = stack_top;
+                r.rust_entry_va = convergence_va as u64;
+            }
+            // 生产者侧栅栏：记录写入 → PSCI CPU_ON。
+            unsafe { core::arch::asm!("dmb ish", options(nomem, nostack)) };
+            <CurrentSmpArch as SmpArch>::boot_ap(hw_id as u32, entry_pa);
+
+            // 有界等到达（AP_ARRIVED Release / 此处 Acquire）。
+            let mut spins: u32 = 0;
+            let mut arrived = false;
+            while spins < 200_000_000 {
+                if AP_ARRIVED.load(Ordering::Acquire) != 0 {
+                    arrived = true;
+                    break;
+                }
+                spins += 1;
+            }
+            if arrived {
+                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-arrived cpu=");
+                let mut hex = [0u8; 16];
+                let mut v = hw_id as u64;
+                for byte in hex.iter_mut().rev() {
+                    *byte = b"0123456789abcdef"[(v & 0xf) as usize];
+                    v >>= 4;
+                }
+                minix_plat::CurrentEarlyConsole::write_str(
+                    core::str::from_utf8(&hex).unwrap_or("?"),
+                );
+                minix_plat::CurrentEarlyConsole::write_str("\n");
+            } else {
+                minix_plat::CurrentEarlyConsole::write_str("nk4c: ap-timeout\n");
+            }
+        }
     }
 
     /// NK4-C 续-400（P-A64RV-01 riscv 半内核接线 / P-RV-01 前置）：多 hart
@@ -1160,12 +1258,24 @@ pub fn smp_init() {
 }
 
 /// Per-AP kernel stack top (static per-CPU arrays — §3.3 no_std decision).
-#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64"
+))]
 const AP_KERNEL_STACK_SIZE: usize = 0x4000;
-#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64"
+))]
 static mut AP_KERNEL_STACKS: [[u8; AP_KERNEL_STACK_SIZE]; 8] = [[0; AP_KERNEL_STACK_SIZE]; 8];
 
-#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+#[cfg(any(
+    target_arch = "x86_64",
+    target_arch = "riscv64",
+    target_arch = "aarch64"
+))]
 fn ap_kernel_stack_top(logical_id: u32) -> u64 {
     // SAFETY: address-only computation; no dereference.
     let base =
