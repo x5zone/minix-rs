@@ -28,7 +28,7 @@ pub mod shm;
 
 pub use dispatch::{Incoming, classify, proc_event_reply_type, should_reply, unknown_call_result};
 pub use events::{EventKind, ProcEvent, Subscription, SyncAction};
-pub use lifecycle::{ShutdownVerdict, Signal, shutdown_check};
+pub use lifecycle::{ShutdownVerdict, Signal, SignalStep, shutdown_check};
 pub use mib_tree::{
     InfoRoute, KERN_IPC_TABLE, KERN_SYSVIPC, KERN_SYSVIPC_SEM, KERN_SYSVIPC_SEM_INFO,
     KERN_SYSVIPC_SHM, KERN_SYSVIPC_SHM_INFO, KernIpcChild, MOUNT_PATH, route_info_query,

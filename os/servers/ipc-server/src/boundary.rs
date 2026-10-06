@@ -463,15 +463,42 @@ impl IpcBoundary for SysBoundary {
             minix_types::VirBytes(len),
         );
     }
+
+    fn warn(&self, line: &str) {
+        // C printf → 控制台;本树的控制台面是 SYS_DIAGCTL 桥(IS 的
+        // DiagWriter 同款),失败静默(C 的 printf 同样无可恢复处)。
+        let _ = syscall::sys_diagctl_write(&DirectKernelCallTransport, line);
+    }
 }
 
 // ── 生产事件循环传输 ────────────────────────────────────────────────
 
-/// 生产 `EventLoopTransport`:receive = 内核接收(ANY),reply =
-/// `ipc_sendnb`(main.c:273),async = 单槽 `senda` 的 `AMF_NOREPLY`
-/// (main.c:207-208 的 asynsend3 形状,照 input serve.rs 先例)。
+/// 生产 `EventLoopTransport`:receive = SEF 分类器前置的内核接收(ANY,
+/// `minix_sef::sef_receive_status`——ping 作答、信号请求在库内拦截交回调,
+/// 与 C `sef.c:149-260` 同一契约),reply = `ipc_sendnb`(main.c:273),
+/// async = 单槽 `senda` 的 `AMF_NOREPLY`(main.c:207-208 的 asynsend3
+/// 形状,照 input serve.rs 先例)。
 pub struct SysEventLoopTransport {
     inner: DirectTrapTransport,
+}
+
+/// `DirectTrapTransport` → [`minix_sef::SefIpc`] 适配(devman 的
+/// `SefBridge` 同款一族一行)。
+struct TrapSefBridge<'a>(&'a mut DirectTrapTransport);
+
+impl minix_sef::SefIpc for TrapSefBridge<'_> {
+    fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        // minix-sys 的 `IpcStatus` 是状态字的元组结构;错误端
+        // `TrapStatus(pub i32)` 直接展开为 errno。
+        self.0
+            .receive(src, msg)
+            .map(|sts| sts.0 as i32)
+            .map_err(|t| t.0)
+    }
+
+    fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+        self.0.notify(dest).map_err(|t| t.0)
+    }
 }
 
 impl SysEventLoopTransport {
@@ -487,15 +514,26 @@ impl Default for SysEventLoopTransport {
 }
 
 impl EventLoopTransport for SysEventLoopTransport {
-    fn receive(&mut self) -> Result<(Message, IpcStatus), TransportError> {
+    fn receive(
+        &mut self,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<(Message, IpcStatus), TransportError> {
+        // SEF 分类器前置（C `sef.c:149-260` 同一契约）：ping 在库内作答，
+        // 信号请求在库内拦截并把号码交给回调后吞帧（notify 形升序逐位，
+        // sef_signal.c:94-113；管理器形单号，:115-128）。TrapSefBridge
+        // 的一薄层是必需的：库入口按 `impl SefIpc` 泛型收，而 `inner`
+        // 是字段借用。
         let mut msg = Message::default();
-        let sts = self
-            .inner
-            .receive(Endpoint::ANY, &mut msg)
-            .map_err(|_| TransportError)?;
-        let call = sts.0 & 0x3F;
+        let mut bridge = TrapSefBridge(&mut self.inner);
+        // 一薄层闭包是必需的：库入口按 `impl FnMut` 单态化，而 trait 侧
+        // 只能收不定长 `dyn FnMut`，直传撞 E0277（IS/§续-417 同坑）。
+        let mut handoff = |signo: i32| on_signal(signo);
+        let recv =
+            minix_sef::sef_receive_status(&mut bridge, Endpoint::ANY, &mut msg, &mut handoff)
+                .map_err(|_| TransportError)?;
+        let call = (recv.status & 0x3F) as u32;
         let notify = call == 4; // NOTIFY(com.h:92)
-        Ok((msg, IpcStatus { notify, call }))
+        Ok((recv.message, IpcStatus { notify, call }))
     }
 
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {

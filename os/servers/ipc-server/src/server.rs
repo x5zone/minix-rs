@@ -97,7 +97,19 @@ pub struct TransportError;
 /// its own kernel call; the test double implements both alike.
 pub trait EventLoopTransport {
     /// Wait for the next message (C: `sef_receive_status(ANY, …)`).
-    fn receive(&mut self) -> Result<(Message, IpcStatus), TransportError>;
+    ///
+    /// Signal requests are intercepted inside the SEF classifier, never
+    /// returned here: each signal number is handed to `on_signal` at
+    /// interception time (C: `do_sef_signal_request` invokes the registered
+    /// handler inside the receive — sef_signal.c:94-113 notify form with
+    /// the kernel-window bitmap walk, :115-128 manager form with the single
+    /// number; the frame is then swallowed by the framework `continue`,
+    /// sef.c:231-235). The `(Message, IpcStatus)` this method returns is
+    /// always an ordinary arrival.
+    fn receive(
+        &mut self,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<(Message, IpcStatus), TransportError>;
     /// Send a reply, non-blocking (C: `ipc_sendnb` — main.c:273).
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError>;
     /// Send-and-receive (C: `ipc_sendrec` — sef_cb_init_response_rs_reply,
@@ -132,6 +144,13 @@ pub trait CallHandler {
     /// Handle a MIB request in place (C: `rmib_process` replies from
     /// inside the library call — main.c:250). Document 03.
     fn handle_mib(&mut self, msg: &mut Message, ipc_status: IpcStatus);
+    /// Handle one signal number delivered by the SEF interception.
+    /// C: `sef_cb_signal_handler` — main.c:101-118 (judgement in
+    /// [`crate::lifecycle`], effects here: deregister is the service's,
+    /// the process exit stays with the loop). The return value is the
+    /// handler's report; the loop only acts on
+    /// [`crate::lifecycle::SignalStep::ExitClean`].
+    fn handle_signal(&mut self, signo: i32) -> crate::lifecycle::SignalStep;
     /// End-of-cycle hook: refresh shared-memory reference counts and
     /// destroy due segments. C: `update_refcount_and_destroy` —
     /// main.c:279. Document 08.
@@ -163,6 +182,12 @@ impl CallHandler for StubHandler {
         // inside the library call, so there is nothing to return here.
     }
 
+    fn handle_signal(&mut self, _signo: i32) -> crate::lifecycle::SignalStep {
+        // The stub has no signal judgement; the production service
+        // implements the C entity (main.c:101-118) via `lifecycle`.
+        crate::lifecycle::SignalStep::Ignored
+    }
+
     fn on_cycle_end(&mut self) {
         // Document 08 lands update_refcount_and_destroy.
     }
@@ -182,6 +207,10 @@ pub enum RunStep {
     Handled,
     /// The transport reported a receive error; counted, loop continues.
     ReceiveFailed,
+    /// A signal handler decided to leave cleanly (C: `sef_exit(0)` inside
+    /// `sef_cb_signal_handler` — main.c:113). `run` exits the process;
+    /// tests drive `run_once` and observe this variant instead.
+    ExitClean,
 }
 
 /// Consecutive receive failures before `run` treats the transport as
@@ -276,6 +305,8 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
         loop {
             match self.run_once() {
                 RunStep::Handled => consecutive_failures = 0,
+                // C: `sef_exit(0)` — main.c:113 (clean-state termination).
+                RunStep::ExitClean => minix_sys::exit(0),
                 RunStep::ReceiveFailed => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
                     if consecutive_failures >= MAX_CONSECUTIVE_RECV_FAILURES {
@@ -295,8 +326,31 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
     /// VM server's) so integration tests in `tests/` can drive whole
     /// scenarios one round at a time without spawning the infinite loop.
     pub fn run_once(&self) -> RunStep {
-        // C: sef_receive_status(ANY, &m, &ipc_status) — main.c:228.
-        let (mut msg, status) = match self.transport.borrow_mut().receive() {
+        // C: sef_receive_status(ANY, &m, &ipc_status) — main.c:228. The
+        // callback runs at interception time, exactly where C invokes the
+        // registered handler inside the receive (sef_signal.c:94-128); the
+        // RefCell makes the handler reachable without splitting the borrow
+        // across the transport call.
+        let exited = Cell::new(false);
+        let received = self
+            .transport
+            .borrow_mut()
+            .receive(
+                &mut |signo: i32| match self.handler.borrow_mut().handle_signal(signo) {
+                    crate::lifecycle::SignalStep::ExitClean => exited.set(true),
+                    crate::lifecycle::SignalStep::Ignored
+                    | crate::lifecycle::SignalStep::WarnedDirty => {}
+                },
+            );
+        if exited.get() {
+            // C: `sef_exit(0)` inside the handler never returns — the
+            // framework `continue` (sef.c:231-235) is unreachable after it.
+            // Here the exit lands one receive later (the library escape
+            // hatch is the pending §5.2 item 5 decision; the sender chain
+            // is unpowered, so the residual is unreachable in production).
+            return RunStep::ExitClean;
+        }
+        let (mut msg, status) = match received {
             Ok(v) => v,
             Err(TransportError) => {
                 self.note_dropped();
@@ -444,9 +498,17 @@ mod tests {
     use minix_types::{IpcSemgetIn, PROC_EVENT};
 
     /// In-memory transport: preloaded arrivals, recorded replies.
+    ///
+    /// Receive routes through the same SEF classifier as production
+    /// (`minix_sef::sef_receive_status`) so scripted signal frames exercise
+    /// the identical interception leg the kernel delivery would — a fixture
+    /// with its own private interception would be a second copy of the
+    /// truth (fs-rt 同族纪律).
     struct TestTransport {
         arrivals: Vec<(Message, IpcStatus)>,
         replies: Vec<(Endpoint, Message)>,
+        /// RS ping pongs emitted by the classifier (`ipc.notify`).
+        pongs: Vec<Endpoint>,
         fail_next_receives: usize,
         fail_sends: bool,
     }
@@ -456,6 +518,7 @@ mod tests {
             Self {
                 arrivals: Vec::new(),
                 replies: Vec::new(),
+                pongs: Vec::new(),
                 fail_next_receives: 0,
                 fail_sends: false,
             }
@@ -475,13 +538,46 @@ mod tests {
         }
     }
 
-    impl EventLoopTransport for TestTransport {
-        fn receive(&mut self) -> Result<(Message, IpcStatus), TransportError> {
+    impl minix_sef::SefIpc for TestTransport {
+        fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
             if self.fail_next_receives > 0 {
                 self.fail_next_receives -= 1;
-                return Err(TransportError);
+                return Err(minix_types::EGENERIC);
             }
-            self.arrivals.pop().ok_or(TransportError)
+            let (m, sts) = self.arrivals.pop().ok_or(minix_types::EGENERIC)?;
+            *msg = m;
+            // Rebuild the raw status word from the parsed form; the three
+            // constructors round-trip exactly (request→0, sendrec, notify).
+            Ok(if sts.notify {
+                minix_sys::ipc::CALL_NOTIFY as i32
+            } else {
+                sts.call as i32
+            })
+        }
+
+        fn notify(&mut self, dest: Endpoint) -> Result<(), i32> {
+            self.pongs.push(dest);
+            Ok(())
+        }
+    }
+
+    impl EventLoopTransport for TestTransport {
+        fn receive(
+            &mut self,
+            on_signal: &mut dyn FnMut(i32),
+        ) -> Result<(Message, IpcStatus), TransportError> {
+            let mut msg = Message::default();
+            let mut handoff = |signo: i32| on_signal(signo);
+            let recv = minix_sef::sef_receive_status(self, Endpoint::ANY, &mut msg, &mut handoff)
+                .map_err(|_| TransportError)?;
+            let call = (recv.status & 0x3f) as u32;
+            Ok((
+                recv.message,
+                IpcStatus {
+                    notify: call == 4,
+                    call,
+                },
+            ))
         }
 
         // One body for both verbs: the test double records every outbound
@@ -507,6 +603,10 @@ mod tests {
         mibs: u32,
         cycles: u32,
         last_call: Option<IpcCall>,
+        /// Signal numbers delivered through the SEF interception, in order.
+        signals: Vec<i32>,
+        /// Canned report for the next delivered signal.
+        signal_step: crate::lifecycle::SignalStep,
     }
 
     impl RecordingHandler {
@@ -517,6 +617,8 @@ mod tests {
                 mibs: 0,
                 cycles: 0,
                 last_call: None,
+                signals: Vec::new(),
+                signal_step: crate::lifecycle::SignalStep::Ignored,
             }
         }
     }
@@ -525,6 +627,11 @@ mod tests {
         fn handle_call(&mut self, call: IpcCall, _msg: &mut Message) -> i32 {
             self.last_call = Some(call);
             self.call_result
+        }
+
+        fn handle_signal(&mut self, signo: i32) -> crate::lifecycle::SignalStep {
+            self.signals.push(signo);
+            self.signal_step
         }
 
         fn handle_proc_event(&mut self, _event: ProcEventIn) -> i32 {
@@ -563,6 +670,92 @@ mod tests {
         assert_eq!(server.run_once(), RunStep::Handled);
         assert_eq!(server.completed_cycles(), 0);
         assert_eq!(server.dropped_messages(), 0);
+    }
+
+    /// Manager-form signal delivery (C: the signal manager translates a
+    /// signal into `SIGS_SIGNAL_RECEIVED` with `num` — rs/main.c:699-701,
+    /// pm/signal.c:470-473; the SEF classifier intercepts it and hands the
+    /// single number to the handler, sef_signal.c:115-128). Union field
+    /// write is safe: the `m_type` tag selects the arm.
+    fn manager_signal_msg(signo: i32) -> Message {
+        let mut m = request_msg(Endpoint::PM, minix_types::SIGS_SIGNAL_RECEIVED);
+        m.m_u.m_pm_lsys_sigs_signal.num = signo;
+        m
+    }
+
+    /// SYSTEM notification (the kernel's signal-notify shape; the payload
+    /// bitmap is the `sigset` the classifier walks — sef_signal.c:94-113).
+    fn system_notify_msg(sigset: [u32; 4]) -> Message {
+        let mut m = request_msg(Endpoint::SYSTEM, minix_types::NOTIFY_MESSAGE);
+        m.m_u.m_notify.sigset = sigset;
+        m
+    }
+
+    #[test]
+    fn run_once_sigterm_clean_exit_swallows_frame_and_stops() {
+        // C control flow: the handler exits inside the interception
+        // (main.c:111-113); the swallowed signal frame is never dispatched
+        // and nothing after it runs. The queued call models the "next
+        // message" C would never fetch.
+        let mut transport = TestTransport::new();
+        transport.push(
+            request_msg(Endpoint(42), minix_types::IPC_SEMGET),
+            IpcStatus::request(),
+        );
+        transport.push(manager_signal_msg(15), IpcStatus::request());
+        let mut handler = RecordingHandler::new(0);
+        handler.signal_step = crate::lifecycle::SignalStep::ExitClean;
+        let server = IpcServer::new(transport, handler);
+        server.init();
+        assert_eq!(server.run_once(), RunStep::ExitClean);
+        let (transport, handler) = server.into_parts();
+        assert_eq!(handler.signals, alloc::vec![15]);
+        assert!(
+            handler.last_call.is_none(),
+            "exit short-circuits before the fetched frame is dispatched"
+        );
+        assert!(transport.replies.is_empty());
+    }
+
+    #[test]
+    fn run_once_nonterm_signal_ignored_and_loop_continues() {
+        // C main.c:105 — `if (signo != SIGTERM) return`; the frame is still
+        // swallowed (the classifier `continue`), and the loop carries on
+        // with the next arrival.
+        let mut transport = TestTransport::new();
+        transport.push(
+            request_msg(Endpoint(42), minix_types::IPC_SEMGET),
+            IpcStatus::request(),
+        );
+        transport.push(manager_signal_msg(71), IpcStatus::request());
+        let server = IpcServer::new(transport, RecordingHandler::new(0));
+        server.init();
+        assert_eq!(server.run_once(), RunStep::Handled);
+        let (_, handler) = server.into_parts();
+        assert_eq!(handler.signals, alloc::vec![71]);
+        assert_eq!(handler.last_call, Some(IpcCall::Semget));
+        assert_eq!(handler.cycles, 1);
+    }
+
+    #[test]
+    fn run_once_wakeup_fallback_reaches_handler_as_request_type() {
+        // Production-reachable shape pin: a SYSTEM notify whose bitmap the
+        // kernel cannot fill (SigSet width) surfaces once with the fallback
+        // value (minix-sef dispatch_kernel_notify zero-hit leg). The
+        // handler sees exactly that number; the frame is skipped by the
+        // notify arm; no dispatch, no reply.
+        let mut transport = TestTransport::new();
+        transport.push(system_notify_msg([0, 0, 0, 0]), IpcStatus::notification());
+        let server = IpcServer::new(transport, RecordingHandler::new(0));
+        server.init();
+        assert_eq!(server.run_once(), RunStep::Handled);
+        let (_, handler) = server.into_parts();
+        assert_eq!(
+            handler.signals,
+            alloc::vec![minix_sef::SEF_SIGNAL_REQUEST_TYPE]
+        );
+        assert!(handler.last_call.is_none());
+        assert_eq!(handler.cycles, 0);
     }
 
     #[test]

@@ -46,9 +46,41 @@ impl ScriptedTransport {
     }
 }
 
+impl minix_sef::SefIpc for ScriptedTransport {
+    fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
+        let (m, sts) = self.arrivals.pop().ok_or(minix_types::EGENERIC)?;
+        *msg = m;
+        Ok(if sts.notify {
+            minix_sys::ipc::CALL_NOTIFY as i32
+        } else {
+            sts.call as i32
+        })
+    }
+
+    fn notify(&mut self, _dest: Endpoint) -> Result<(), i32> {
+        Ok(())
+    }
+}
+
 impl EventLoopTransport for ScriptedTransport {
-    fn receive(&mut self) -> Result<(Message, IpcStatus), TransportError> {
-        self.arrivals.pop().ok_or(TransportError)
+    fn receive(
+        &mut self,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<(Message, IpcStatus), TransportError> {
+        // Same SEF classifier leg as production and the in-crate fixture —
+        // no private interception copy.
+        let mut msg = Message::default();
+        let mut handoff = |signo: i32| on_signal(signo);
+        let recv = minix_sef::sef_receive_status(self, Endpoint::ANY, &mut msg, &mut handoff)
+            .map_err(|_| TransportError)?;
+        let call = (recv.status & 0x3f) as u32;
+        Ok((
+            recv.message,
+            IpcStatus {
+                notify: call == 4,
+                call,
+            },
+        ))
     }
 
     fn send_reply(&mut self, dest: Endpoint, msg: &Message) -> Result<(), TransportError> {
@@ -97,6 +129,10 @@ impl CannedHandler {
 }
 
 impl CallHandler for CannedHandler {
+    fn handle_signal(&mut self, _signo: i32) -> minix_ipc_server::SignalStep {
+        minix_ipc_server::SignalStep::Ignored
+    }
+
     fn handle_call(&mut self, _call: IpcCall, _msg: &mut Message) -> i32 {
         self.calls += 1;
         self.code

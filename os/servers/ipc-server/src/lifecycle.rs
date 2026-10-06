@@ -60,6 +60,28 @@ pub const fn shutdown_check(sem_empty: bool, shm_empty: bool) -> ShutdownVerdict
     }
 }
 
+/// What the service did with one delivered signal number — the handler's
+/// report to the event loop.
+///
+/// C: the handler's three possible bodies (`sef_cb_signal_handler`,
+/// main.c:101-118): `return` for anything but SIGTERM (:105); the warn
+/// print at :117 with the process kept alive; `sef_exit(0)` at :113 after
+/// the MIB deregistration. The loop only acts on [`SignalStep::ExitClean`]
+/// (it owns the process exit, so tests can drive [`crate::server`]
+/// without dying); the other two are observations for tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalStep {
+    /// Non-termination signal: ignored (C: `if (signo != SIGTERM) return`
+    /// — main.c:105).
+    Ignored,
+    /// Termination with live tables: warned and stayed (C: the
+    /// `printf("IPC: exit with unclean state\n")` road — main.c:116-117).
+    WarnedDirty,
+    /// Termination with both tables empty: deregistered, exit armed
+    /// (C: `rmib_deregister` + `sef_exit(0)` — main.c:111-113).
+    ExitClean,
+}
+
 /// Restart loses all dynamic state: the set and segment tables are process
 /// memory, so a re-run starts from empty tables. There is no code path
 /// that preserves them — the note exists so nobody "optimises" one in.

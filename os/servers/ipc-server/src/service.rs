@@ -179,6 +179,10 @@ pub trait IpcBoundary {
 
     /// Release one of our mappings (C: `munmap` — shm.c:191-193).
     fn release_mapping(&self, addr: u64, len: u64);
+
+    /// One console line (C: `printf` — main.c:117's unclean-state warn).
+    /// Failure is swallowed: C's printf has no recovery either.
+    fn warn(&self, line: &str);
 }
 
 // ============================================================================
@@ -247,18 +251,27 @@ pub struct IpcService<B: IpcBoundary> {
     /// 挂载时产出的待发 MIB_REGISTER 消息(sef_cb_init_fresh 的
     /// `rmib_register` 对应物,main.c:86-93;发送挂启动通电面)。
     pub mib_registration: Option<minix_sys::rmib::RmibRegMessage>,
+    /// 干净退出时产出的待发 MIB_DEREGISTER 消息(signal handler 的
+    /// `rmib_deregister` 对应物,main.c:111-112;发送挂同一通电面,
+    /// 与 `mib_registration` 同族——C 的 rmib 库自带 asynsend3,本树
+    /// 的发送面尚未通电,消息先落此处保序)。
+    pub mib_deregistration: Option<minix_sys::rmib::RmibRegMessage>,
+    /// 已挂子树的根节点(`mib.deregister` 需要同一实例比对槽位;
+    /// C 持静态 `kern_ipc_node`,Rust 由构造期存一份克隆)。
+    kern_ipc_root: minix_sys::rmib::RmibNode,
 }
 
 impl<B: IpcBoundary> IpcService<B> {
     /// Assemble a service around a boundary. Tables start empty, the
     /// subscription off — the state a fresh `sef_cb_init_fresh` finds.
     pub fn new(boundary: B) -> Self {
-        let (mib_registration, mib) = {
+        let (mib_registration, mib, kern_ipc_root) = {
             let mut table = SubtreeTable::new();
+            let root = crate::mib_tree::build_kern_ipc_tree();
             let (_, reg) = table
-                .register(&crate::mib_tree::MOUNT_PATH, crate::mib_tree::build_kern_ipc_tree())
+                .register(&crate::mib_tree::MOUNT_PATH, root.clone())
                 .expect("kern.ipc subtree registration");
-            (Some(reg), table)
+            (Some(reg), table, root)
         };
         Self {
             boundary,
@@ -267,6 +280,8 @@ impl<B: IpcBoundary> IpcService<B> {
             subscription: Subscription::new(),
             mib,
             mib_registration,
+            mib_deregistration: None,
+            kern_ipc_root,
             shms: Box::new(ShmTable::new()),
         }
     }
@@ -822,6 +837,34 @@ impl<B: IpcBoundary> CallHandler for IpcService<B> {
         }
     }
 
+    fn handle_signal(&mut self, signo: i32) -> crate::lifecycle::SignalStep {
+        // C `sef_cb_signal_handler` — main.c:101-118. Judgement comes from
+        // `lifecycle` (already C-anchored and tested); the effects split
+        // the C handler's two halves: the MIB deregistration is ours (the
+        // send half parks next to `mib_registration` on the same deferred
+        // face), the process exit is the loop's (so tests survive).
+        use crate::lifecycle::{ShutdownVerdict, Signal, SignalStep, shutdown_check};
+        match Signal::from_raw(signo) {
+            Signal::Other => SignalStep::Ignored,
+            Signal::Terminate => match shutdown_check(self.sems.is_empty(), self.shms.is_empty()) {
+                ShutdownVerdict::ExitClean => {
+                    // C main.c:111-112 — rmib_deregister, result ignored
+                    // (the exit follows regardless; our send face is the
+                    // deferred one, ENOENT is equally non-fatal).
+                    if let Ok(msg) = self.mib.deregister(&self.kern_ipc_root) {
+                        self.mib_deregistration = Some(msg);
+                    }
+                    SignalStep::ExitClean
+                }
+                ShutdownVerdict::StayDirty => {
+                    // C main.c:116-117 — the warn road, process stays.
+                    self.boundary.warn("IPC: exit with unclean state\n");
+                    SignalStep::WarnedDirty
+                }
+            },
+        }
+    }
+
     fn handle_proc_event(&mut self, event: minix_types::ProcEventIn) -> i32 {
         // C gates the cancellation on the subscription demand
         // (main.c:203-204); with no demand there are no waiters, so the
@@ -958,6 +1001,7 @@ pub(crate) mod test_boundary {
         released: RefCell<Vec<(u64, u64)>>,
         grants: RefCell<Vec<(i32, alloc::vec::Vec<u8>)>>,
         mib_replies: RefCell<Vec<(Endpoint, Message)>>,
+        warns: RefCell<alloc::vec::Vec<alloc::string::String>>,
     }
 
     impl TestBoundary {
@@ -997,6 +1041,10 @@ pub(crate) mod test_boundary {
 
         pub fn masks(&self) -> alloc::vec::Vec<bool> {
             self.masks.borrow().clone()
+        }
+
+        pub fn warns(&self) -> alloc::vec::Vec<alloc::string::String> {
+            self.warns.borrow().clone()
         }
 
         pub fn wakeups(&self) -> alloc::vec::Vec<(Endpoint, i32)> {
@@ -1187,6 +1235,10 @@ pub(crate) mod test_boundary {
 
         fn release_mapping(&self, addr: u64, len: u64) {
             self.released.borrow_mut().push((addr, len));
+        }
+
+        fn warn(&self, line: &str) {
+            self.warns.borrow_mut().push(alloc::string::String::from(line));
         }
     }
 }
@@ -1514,5 +1566,53 @@ mod tests {
         // SAFETY: 同上——读 status。
         let arm = unsafe { &replies[0].1.m_u.m_lsys_mib_reply };
         assert_eq!(arm.status, EOPNOTSUPP);
+    }
+
+    #[test]
+    fn signal_term_on_fresh_service_takes_the_clean_road() {
+        // C main.c:111-113 — both tables empty ⇒ deregister + exit(0).
+        // The deregistration message parks on the same deferred face as
+        // the registration (send half unpowered); the loop owns the exit.
+        let mut service = IpcService::new(TestBoundary::new());
+        assert_eq!(
+            service.handle_signal(crate::lifecycle::SIGTERM),
+            crate::lifecycle::SignalStep::ExitClean
+        );
+        assert!(
+            service.mib_deregistration.is_some(),
+            "MIB_DEREGISTER parked for the send face"
+        );
+        // The subtree slot is gone locally (deregister's authoritative half).
+        assert!(service.mib.slots.iter().all(|s| s.tree.is_none()));
+        // Non-termination numbers never reach the verdict (main.c:105).
+        assert_eq!(
+            service.handle_signal(9),
+            crate::lifecycle::SignalStep::Ignored
+        );
+        assert!(service.boundary.warns().is_empty());
+    }
+
+    #[test]
+    fn signal_term_with_a_live_set_takes_the_warn_road() {
+        // C main.c:116-117 — a live table ⇒ warn and stay; the warn is the
+        // only observable (no reply, no exit), so the boundary records it.
+        let boundary = TestBoundary::new().with_creds(42, 100);
+        let mut service = IpcService::new(boundary);
+        let mut msg = semget_msg(42, 1, 1, 0o1000 | 0o666);
+        assert_eq!(service.handle_call(IpcCall::Semget, &mut msg), OK);
+        assert_eq!(
+            service.handle_signal(crate::lifecycle::SIGTERM),
+            crate::lifecycle::SignalStep::WarnedDirty
+        );
+        assert_eq!(
+            service.boundary.warns(),
+            alloc::vec![alloc::string::String::from(
+                "IPC: exit with unclean state\n"
+            )]
+        );
+        assert!(
+            service.mib_deregistration.is_none(),
+            "the dirty road keeps the subtree"
+        );
     }
 }
