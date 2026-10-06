@@ -2,7 +2,7 @@
 
 > **分类**: 启动映射 / boot 锚点
 > **源码**: `minix3/minix/servers/ds/store.c:map_service`、`kernel/table.c:44-64`、`kernel/main.c:196,265-267`、`minix3/minix/include/minix/rs.h:rprocpub`、`sef.h:44-53,85`
-> **说明**: DS 启动后做的第一件实事：清两张表，从 RS 拷来整张服务表，逐个登记为 label 条目。本文讲清这个"清—拷—逐登"三步，以及背后的两层启动顺序。
+> **说明**: DS 启动后做的第一件实事：清两张表，从 RS 拷来整张服务表，逐个登记为 label 条目。本文讲清这个"清—拷—逐登"三步，以及背后的三层启动顺序（登记序、装载序、放行序，见 §1.3）。
 
 ---
 
