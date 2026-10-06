@@ -212,8 +212,23 @@ pub fn sef_receive_status(
 /// pure builder so it needs no new [`SefIpc`] verb — each server already owns
 /// a send round trip. Mirrors the `run_birth` reply in the driver/FS
 /// runtimes (`minix-driver-rt`, `fs-rt`).
+/// P-ALL-08 T6 定谳（[待验证] 已结）：C 的 `process_init` 应答填
+/// `m.m_source = sef_self_endpoint`（libsys/sef_init.c:114），但那是
+/// **防御性形状**——内核在每条投递路径上都会把 `m_source` 盖成发送者
+/// 端点（C proc.c:1071-1075；本树 ipc.rs:1588 sendrec、:1986 senda，
+/// 各有宿主测试钉住：`test_sendrec_to_blocked_receiver_stamps_source_
+/// endpoint`、`test_senda_delivers_to_receiving_target`）。发送者用户
+/// 缓冲里的 m_source 恒被覆盖 ⇒ 本 builder 留 m_source=0 与 C 在
+/// **生产行为上零差异**；差异仅存在于 mock 传输的形状保真面，而 mock
+/// 传输按定义模拟内核行为也应盖章。故不加 self_ep 参数（is/ipc-server
+/// 的自身端点按 A-9 由 RS 注入不命名，硬编码会违反 A-9）。builder 实际
+/// 留 `m_source = Endpoint::NONE`（derive Default）——比 C 的 memset 0 更
+/// 防炸：0 是 PM 的有效端点，NONE 显式无效，混进未盖章路径立刻暴露。
 pub fn sef_init_reply(result: i32) -> Message {
-    let mut m = Message { m_type: SEF_INIT_REQUEST_TYPE, ..Message::default() };
+    let mut m = Message {
+        m_type: SEF_INIT_REQUEST_TYPE,
+        ..Message::default()
+    };
     // Union field *write* is safe (only reads need the `m_type` tag guard);
     // the active arm is `m_rs_init`, the same one the reply carries in C.
     m.m_u.m_rs_init.result = result;
@@ -253,7 +268,11 @@ pub struct CannedSefIpc {
 impl CannedSefIpc {
     /// Empty inbox, failures on EFAULT.
     pub fn new() -> Self {
-        Self { inbox: Vec::new(), empty_error: minix_types::EFAULT, pongs: Vec::new() }
+        Self {
+            inbox: Vec::new(),
+            empty_error: minix_types::EFAULT,
+            pongs: Vec::new(),
+        }
     }
 
     /// Script one incoming message with its status word.
@@ -306,7 +325,11 @@ mod tests {
     /// `m_rs_init` arm (C: RS boot async-sends `m_type = RS_INIT`; the type
     /// field is what `IS_SEF_INIT_REQUEST` + `do_sef_init_request` read).
     fn rs_init_msg(init_type: i32) -> Message {
-        let mut m = Message { m_source: RS_ENDPOINT, m_type: RS_INIT, ..Message::default() };
+        let mut m = Message {
+            m_source: RS_ENDPOINT,
+            m_type: RS_INIT,
+            ..Message::default()
+        };
         // Union field write is safe; the `RS_INIT` tag selects `m_rs_init`.
         m.m_u.m_rs_init.type_ = init_type;
         m
@@ -336,7 +359,11 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(ipc.pongs, vec![Endpoint(2), Endpoint(2)], "RS ping → pong ×2");
+        assert_eq!(
+            ipc.pongs,
+            vec![Endpoint(2), Endpoint(2)],
+            "RS ping → pong ×2"
+        );
         assert_eq!(recv.event, SefEvent::Call(11), "普通消息原样上浮");
         assert_eq!(recv.message.m_type, 11);
         let _ = pong_count;
@@ -352,9 +379,14 @@ mod tests {
         ipc.push(4, m);
 
         let mut signaled = false;
-        let recv = sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {
-            signaled = true;
-        })
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {
+                signaled = true;
+            },
+        )
         .unwrap();
         assert_eq!(recv.event, SefEvent::Signal(SEF_SIGNAL_REQUEST_TYPE));
         assert_eq!(recv.source, SYSTEM_ENDPOINT);
@@ -367,8 +399,13 @@ mod tests {
         let mut ipc = CannedSefIpc::new();
         ipc.push(1 | 2, call_msg(33));
 
-        let recv = sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {})
-            .unwrap();
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(recv.event, SefEvent::Call(33));
         assert!(ipc.pongs.is_empty());
     }
@@ -378,7 +415,12 @@ mod tests {
     fn test_receive_error_passthrough() {
         let mut ipc = CannedSefIpc::new();
         ipc.empty_error = minix_types::EINTR;
-        let r = sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {});
+        let r = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {},
+        );
         assert_eq!(r, Err(minix_types::EINTR));
     }
 
@@ -389,12 +431,23 @@ mod tests {
     fn test_rs_init_request_surfaces_init_event() {
         let mut ipc = CannedSefIpc::new();
         ipc.push(1, rs_init_msg(1)); // status 1 = 非通知；type 1 = SEF_INIT_LU
-        let recv =
-            sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {})
-                .unwrap();
-        assert_eq!(recv.event, SefEvent::Init(1), "RS_INIT → Init(init_type) 上浮");
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            recv.event,
+            SefEvent::Init(1),
+            "RS_INIT → Init(init_type) 上浮"
+        );
         assert_eq!(recv.source, RS_ENDPOINT);
-        assert!(ipc.pongs.is_empty(), "出生请求应答归服务器，SEF 不代答 pong");
+        assert!(
+            ipc.pongs.is_empty(),
+            "出生请求应答归服务器，SEF 不代答 pong"
+        );
     }
 
     /// 出生判定按 type+source、与投递方式无关（C IS_SEF_INIT_REQUEST 无
@@ -403,9 +456,13 @@ mod tests {
     fn test_rs_init_wins_over_notify_band() {
         let mut ipc = CannedSefIpc::new();
         ipc.push(4, rs_init_msg(0)); // status 通知段 (CALL_NOTIFY=4)；SEF_INIT_FRESH
-        let recv =
-            sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {})
-                .unwrap();
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(recv.event, SefEvent::Init(0));
         assert!(ipc.pongs.is_empty());
     }
@@ -418,9 +475,13 @@ mod tests {
         let mut m = call_msg(999); // RS 通知但非 ping 消息
         m.m_source = RS_ENDPOINT;
         ipc.push(4, m); // status 通知段 (CALL_NOTIFY=4)
-        let recv =
-            sef_receive_status(&mut ipc, Endpoint::ANY, &mut Message::default(), &mut |_| {})
-                .unwrap();
+        let recv = sef_receive_status(
+            &mut ipc,
+            Endpoint::ANY,
+            &mut Message::default(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(recv.event, SefEvent::PingInvalid);
         assert!(ipc.pongs.is_empty(), "无效 ping 不pong");
     }
@@ -429,7 +490,16 @@ mod tests {
     /// （C process_init 尾部 sef_init.c:113-117，经 ipc_sendrec(RS) 送出）。
     #[test]
     fn test_sef_init_reply_carries_result() {
+        // T6 形状锚：m_source 留 0 不是缺陷——内核投递盖章（ipc.rs:1588
+        // sendrec、:1986 senda）把送达值恒置为发送者端点，与 C proc.c:
+        // 1071-1075 同形；C 的 sef_init.c:114 填 sef_self_endpoint 是
+        // 被覆盖前的防御性形状。改动此断言前先读上方 T6 定谳注释。
         let ok = sef_init_reply(minix_types::OK);
+        assert_eq!(
+            ok.m_source,
+            minix_types::Endpoint::NONE,
+            "builder leaves m_source at the NONE sentinel; the kernel stamps the sender endpoint on delivery"
+        );
         assert_eq!(ok.m_type, RS_INIT);
         assert_eq!(ok.rs_init_result(), Some(minix_types::OK));
         let refused = sef_init_reply(minix_types::ENOSYS);

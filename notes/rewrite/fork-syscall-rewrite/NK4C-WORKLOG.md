@@ -13805,3 +13805,13 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 ③P-RV-01 判据对照（TODO-3ARCH-PARITY-20261006.md）：「riscv 多核门（-smp 2+ 套件与命令面）」= ATF 全量 36 案 + 命令面 18 阶段，双双在 -smp 2 真机 PASS 达成。诚实边界：AP 仍驻留（P-ALL-03 撤钳前不入调度，多核是「拓扑可见+次级核真醒」不是「并行调度」）；-smp ≥3 未验（per-hart 邮箱/记录串行复用边界，§续-402 登记）。
 
 ④回归与卫生：本笔只改两门脚本各两行，无代码改动；doc-style-lint --diff 零 error；qemu 收尾清零。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
+
+## §续-408 P-ALL-08 T6 结案（定谳型增量，零生产行为变更）：`sef_init_reply` 不填 m_source 与 C 在生产行为上零差异——内核投递盖章是权威语义，两端四路径各有宿主测试钉住；builder 文档化 T6 裁决＋NONE 哨兵形状锚
+
+①[待验证] 闭环三链：①C 真值＝`libsys/sef_init.c:114` `m.m_source = sef_self_endpoint`（process_init 应答 RS_INIT+result 前填自身端点）；②内核回填＝本树 `ipc.rs` 四处投递盖章（:1588 sendrec 同步拷贝、:1986 senda 异步投递等）与 C `proc.c:1071-1075` 同形——**发送者用户缓冲里的 m_source 恒被内核覆盖**（1.11d getuid 无回执根因的既有定谳重申）；③消费侧依赖＝RS 收 RS_INIT 按盖章后的 m_source 判来源（如 vm_server.rs:1714）。⇒ C 的填值是被覆盖前的防御性形状，Rust builder 不填在**生产行为上零差异**；[待验证] 的验证结论＝回填存在。
+
+②测试面现状盘点（本轮动手前三路径已各有锚）：sendrec 盖章＝`test_sendrec_to_blocked_receiver_stamps_source_endpoint`（C-27 真机回归反演）；senda 盖章＝`test_senda_delivers_to_receiving_target` 末行断言 m_source==Endpoint(1)。故本轮不加新测试，改把 T6 裁决写进 `sef_init_reply` 的 doc（含为什么**不加 self_ep 参数**：is/ipc-server 的自身端点按 A-9 由 RS 装载时注入、故意不命名——硬编码违反 A-9；builder 加参数会迫使两调用点违反裁决）。
+
+③意外收获（NONE 哨兵）：builder 走 `Message::default()` ⇒ m_source=**Endpoint::NONE**（derive Default=NONE，非 memset 0）——比 C 的 0 更防炸：0 是 PM 的有效端点、NONE 显式无效，混进未盖章路径立刻暴露。新断言 `test_sef_init_reply_carries_result` 补 `m_source == Endpoint::NONE` 形状锚＋防误改注释（「改动此断言前先读 T6 定谳」），首版断言 Endpoint(0) 被测试当场打回（left=Endpoint(31743)=NONE）——测试先于结论纠正了作者，TDD 纪律的正例。
+
+④回归：minix-sef 8/0、minix-kernel --lib 830/0（docker minix-ci:1.94，-m 2g -j 1）；rustfmt 清零；doc-style-lint --diff 零 error。T6 状态＝[待验证]→已结（P-ALL-08 六 T 中的静态可结项再落一格）。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
