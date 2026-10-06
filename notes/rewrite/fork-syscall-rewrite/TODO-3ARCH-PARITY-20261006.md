@@ -372,6 +372,17 @@
 - 风险与红线：`SD-3` 本体不是差距（勿把设备树与 ACPI 当不一致去修）；只修 `SD-4`/`SD-1` 的机械重叠。
 - 置信级：已坐实（均 `SD` 登记；具体入口数待逐文件确认）。
 
+### P-ALL-12 消息联合有 6 个载荷成员超出本仓自己钉住的 56 字节载荷上限，把 `Message` 撑到 80 字节并留下 16 个不落值的尾部字节
+
+- 现状（本轮用一次性探测测试逐个量出来，110 个成员全量）：`MessageUnion` = 72 字节、`Message` = 80 字节（两条断言在 `os/libs/minix-types/src/ipc/message.rs` 的 `test_message_total_size_pinned` 里），而载荷上限常量是 `MESSAGE_PAYLOAD_SIZE = 56`（同文件 :27）。**六个成员超过 56**：`MessLsysGetsysinfo` = 72、`MessageM7` = 64、`MessLsysKrnSysTrace` = 64、`MessLsysKrnSysMcontext` = 64、`MessLsysFiCtl` = 64、`MessLcVmShmUnmap` = 64。直接成因是手算 padding 错：`MessLsysGetsysinfo`（`message.rs:3155-3164`）字段共 4+4+8+8 = 24 字节，要凑 56 只需 `_pad2 = 32`，实际写的是 `[u8; 44]` ⇒ 68 字节再按 8 对齐成 72；它的 doc 注释自己写着“padding to 56 bytes”，与字段矛盾（工具生成行号另判，这句是手写的）。
+- 差距：与 C 真源直接相左——`minix3/minix/include/minix/ipc.h` 给每个载荷成员都加了 `_ASSERT_MSG_SIZE`（例：`mess_lsys_getsysinfo` 在 :1071-1072），即**所有成员恰为 56 字节**，整个 `message` 为 64；本仓 :22-26 的头注也说“we keep the same 56-byte payload size for IPC protocol compatibility”。六个越界成员就是对本仓自己那条不变量的违反。附带后果：因为 `union` 被撑到 72，而 `MessageUnion::default()` 只写 `raw: [u8; 56]`（:307/:310-316），第 56..72 字节在任何构造下都不落值；内核两处整块搬运按 `core::mem::size_of::<Message>()` 取长度（`os/kernel/src/ipc.rs:540`、:581、:595），内核→用户方向（`to_kernel = true`，:589-598）就把这 16 个不确定字节搬进用户缓冲。今天无读者（`m_u.raw` 取片均在 56 字节内，如 `os/fs/fs-rt/src/wire.rs:147`、`os/fs/mfs/src/second_level.rs:452`），所以不影响功能，但破坏「两条消息相等⇒字节相等」类对账判据的可复现性；`os/kernel/src/ipc.rs:530-532` 那句 SAFETY 注（“无 padding 读风险（全初始化）”）在此事实上措辞偏强；`test_message_total_size_pinned` 上方那段注释说“largest member is 64 bytes”也与实测 72 不符（本笔已就地改注，结构体不碰）。
+- 修法与参照：方案甲，逐成员把手算错的 `_padding` 改回“字段长度之和凑足 56”（先把六个成员的 C `_ASSERT_MSG_SIZE` 逐个对一遍再动手），同时在 `message.rs` 加一条**编译期全量断言**防复发（对每个成员 `assert!(size_of::<T>() <= MESSAGE_PAYLOAD_SIZE)`，可照 `notify.rs:106-109` 的现有写法展开）；方案乙，只改最大那一个（`MessLsysGetsysinfo`），其余 64 字节成员暂时登记——能把 `Message` 从 80 收到 72，但不变量仍不成立，且留下一堆局部修；方案丙，把 `MESSAGE_PAYLOAD_SIZE` 改成 72 承认现状——与 C 的 56/64 判例正面冲突，不采。参照：Linux 的 `union message` 由 `sizeof(message)` 统一定长且字段显式铺满；Redox 的 IPC 走带显式长度的字节串，不存在隐式尾。取舍：甲一次到位且能带上编译期守卫，但改动跨 6 个成员与其所有读写点（需逐处确认没有代码依赖那 16 字节尾部），必带三架构上机对账；乙风险小但欠一个不变量。
+- 判据：静态可判（成员尺寸逐个可量，编译期断言本身就是判据）；“不确定值是否真进过用户内存”需上机逐字节对账。
+- 影响面：消息线形卫生、尺寸不变量与对账可复现性；不挡三条终目标（两侧同用本类型，自洽）。
+- 依赖与顺序：无前置；与 `P-ALL-06`（手抄结构体错位、双源布局）同族，宜并批做；改动会连带 `os/kernel/src/ipc.rs:634`、:704 的 `16+size_of::<Message>()` 异步槽布局约定与 `minix-sys` 镜像，必须整批跑。
+- 风险与红线：改 `size_of::<Message>()` 就是改内核↔用户的搬运长度，两侧任一处算错就是踩内存；先加编译期断跑一遍看看还有多少成员报错，再决定批量范围（别先改结构后补断言）。
+- 置信级：已坐实（110 成员全量尺寸已量；越界六成员与 `_pad2` 手算错均为直接读数）；未坐实的只有「消费者是否因此看到脏字节」。
+
 ### P-RV-03 riscv64 旧债：三处 `8*0` 与分配器模板写位错位
 - 现状：`os/arch/src/riscv64_walk.rs` 三处 `8*0`（identity_op/erasing_op clippy，工具生成行号 L312/L313/L369）；`os/libs/minix-rt/src/alloc.rs:368` 供给日志模板写位错位（会把真腐蚀指纹混进假指纹）。
 - 差距：前者是 riscv 专属代码的 clippy 噪声（非行为差），但后者影响内存污染取证——是 `P-RV-02` 取证链的一个干扰项。

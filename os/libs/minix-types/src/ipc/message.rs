@@ -4316,11 +4316,22 @@ mod signal_request_accessor_tests {
 /// 512-byte stack-pressure threshold; `VmReply`'s 1560-byte warning
 /// (ipc/vm.rs) is a VM-server-side type and does not ride the kernel's
 /// syscall copy path.
+///
+/// The "72 bytes / largest member 64" reading above is stale: six payload
+/// members are wider than the nominal `MESSAGE_PAYLOAD_SIZE` (measured this
+/// round: `MessLsysGetsysinfo` = 72, `MessageM7`, `MessLsysKrnSysTrace`,
+/// `MessLsysKrnSysMcontext`, `MessLsysFiCtl`, `MessLcVmShmUnmap` = 64 each),
+/// which is what makes the union 72 and the whole message 80. The two
+/// assertions below pin today's truth; the shape violation itself is
+/// tracked as `P-ALL-12` in
+/// `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`
+/// (C pins every payload member at 56 bytes via `_ASSERT_MSG_SIZE`).
 #[test]
 fn test_message_total_size_pinned() {
     assert_eq!(core::mem::size_of::<Message>(), 80);
-    // The union's largest member is 64 bytes, not the nominal 56-byte
-    // payload constant — pinning both facts keeps the distinction visible.
+    // The union's largest member is 72 bytes (`MessLsysGetsysinfo`), not the
+    // nominal 56-byte payload constant — pinning both facts keeps the
+    // distinction visible (and keeps the P-ALL-12 overshoot measurable).
     assert_eq!(core::mem::size_of::<MessageUnion>(), 72);
     assert_eq!(MESSAGE_PAYLOAD_SIZE, 56);
 }
