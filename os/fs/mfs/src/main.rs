@@ -84,11 +84,16 @@ fn real_main() {
         let driver = minix_fs_mfs::server::MfsServer::new(
             minix_fs_rt::source::BootBlockSource::from_boot_image(BOOT_IMGRD, BOOT_BLOCK_SIZE),
         );
+        // C registers a signal handler for this server (`mfs/main.c:38`);
+        // its body (`main.c:70-78`) ignores everything but SIGTERM and, on
+        // SIGTERM, syncs the file system before asking the framework to stop
+        // (`fsdriver_terminate`, `fsdriver.c:68-74`). The decision function
+        // lives in the library so C's rule is testable outside this binary.
         // Birth: the C fresh-install sequence (vmcache flag, inode table
         // zeroing, buffer pool — main.c:47-65) is carried by the server
         // value's construction, so the callback only confirms readiness.
         let hooks = minix_fs_rt::transport::ServerHooks {
-            on_signal: Box::new(|_pending| false),
+            on_signal: Box::new(minix_fs_mfs::startup::decide_on_signal),
             init: Box::new(|_| Ok(())),
         };
         match minix_fs_rt::serve(driver, hooks) {

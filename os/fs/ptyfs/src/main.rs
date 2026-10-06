@@ -30,7 +30,9 @@ fn main() {
         // ptyfs.c:422-424) only confirms readiness; the driver value
         // already carries the empty slave table and the root record.
         let hooks = minix_fs_rt::transport::ServerHooks {
-            on_signal: Box::new(|_pending| false),
+            // C `ptyfs_signal` (`ptyfs.c:392-397`, registered `ptyfs.c:407`):
+            // SIGTERM terminates without a sync, anything else is ignored.
+            on_signal: Box::new(minix_fs_ptyfs::signal_action),
             init: Box::new(|_| Ok(())),
         };
         match minix_fs_rt::serve(server, hooks) {

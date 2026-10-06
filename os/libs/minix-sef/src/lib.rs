@@ -27,7 +27,7 @@ use alloc::vec::Vec;
 use minix_sys::ipc::CALL_NOTIFY;
 use minix_types::{
     Endpoint, INIT_PROC_NR, KERNEL_SIGNAL_FIRST, KERNEL_SIGNAL_LAST, Message, NOTIFY_MESSAGE,
-    RS_INIT, SIGS_SIGNAL_RECEIVED, sigset_contains,
+    RS_INIT, SIGS_SIGNAL_RECEIVED, SigSetBits, sigset_contains,
 };
 
 /// Kernel/system pseudo-endpoint. C: `SYSTEM` — endpoint.h.
@@ -121,6 +121,34 @@ pub fn pong_via_ipc(ipc: &mut impl SefIpc, source: Endpoint) {
     let _ = ipc.notify(source);
 }
 
+/// C `do_sef_signal_request`'s kernel-notification half
+/// (`sef_signal.c:94-113`): walk `SIGK_FIRST..=SIGK_LAST` in ascending order
+/// and call the handler once per pending signal.
+///
+/// A bitmap holding no kernel-signal bit calls the handler once with
+/// [`SEF_SIGNAL_REQUEST_TYPE`] instead of a signal number — the documented
+/// wake-up fallback described under [`sef_receive_status`]'s contract (the
+/// kernel keeps pending signals in a 64-bit `SigSet`, so bits 70..=73 cannot
+/// be produced yet).
+///
+/// This is public because a server's wiring layer sits between the library
+/// and its own hook: the file-server runtime's scripted transport has to hand
+/// its signal decision the same numbers the library would, and repeating the
+/// walk (or the fallback) there would let the two drift.
+pub fn dispatch_kernel_notify(set: SigSetBits, on_signal: &mut dyn FnMut(i32)) {
+    let mut pending = false;
+    for signo in KERNEL_SIGNAL_FIRST..=KERNEL_SIGNAL_LAST {
+        if sigset_contains(set, signo as u32) {
+            on_signal(signo);
+            pending = true;
+        }
+    }
+    if !pending {
+        // 窗口零命中 = 今天的生产实际路径，见 `sef_receive_status` 的兜底注。
+        on_signal(SEF_SIGNAL_REQUEST_TYPE);
+    }
+}
+
 /// C: `sef_receive_status` — sef.c:149-260. Loop on receive; classify
 /// notifications by source; intercept ping (reply pong, swallow); surface
 /// the birth request as [`SefEvent::Init`] and signal requests as
@@ -191,18 +219,7 @@ pub fn sef_receive_status(
                 // （`IS_SEF_SIGNAL_REQUEST` 命中后交 `do_sef_signal_request`）
                 // 的 SYSTEM 臂：载荷位图按内核信号窗口升序逐位走，每一位
                 // 命中调一次回调（sef_signal.c:96-113）。
-                let set = msg.notify_sigset();
-                let mut pending = false;
-                for signo in KERNEL_SIGNAL_FIRST..=KERNEL_SIGNAL_LAST {
-                    if sigset_contains(set, signo as u32) {
-                        on_signal(signo);
-                        pending = true;
-                    }
-                }
-                if !pending {
-                    // 窗口空命中 = 今天的生产实际路径，见上方唤醒兜底注。
-                    on_signal(SEF_SIGNAL_REQUEST_TYPE);
-                }
+                dispatch_kernel_notify(msg.notify_sigset(), on_signal);
                 return Ok(SefReceive {
                     source,
                     message: *msg,

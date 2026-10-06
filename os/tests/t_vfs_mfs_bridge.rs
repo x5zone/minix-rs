@@ -59,8 +59,9 @@ impl RtIpc for BridgeIpc<'_> {
         &mut self,
         _src: Endpoint,
         _msg: &mut Message,
+        _on_signal: &mut dyn FnMut(i32),
     ) -> Result<minix_fs_rt::ipc::Receipt, i32> {
-        Err(minix_types::EIO) // 桥不走 SEF 接收半(请求由 VFS 侧喂入)
+        Err(minix_types::EIO) // 桥不走 SEF 接收半(请求由 VFS 侧喂入)，也就没有信号号可交
     }
     fn send(&mut self, _dest: Endpoint, _msg: &Message) -> Result<(), i32> {
         Ok(())

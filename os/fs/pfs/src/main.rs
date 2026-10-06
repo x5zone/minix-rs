@@ -63,7 +63,9 @@ fn real_main() {
         // Birth: the C fresh-install sequence builds the inode table inside
         // the server value (pfs.c init half); the callback confirms ready.
         let hooks = minix_fs_rt::transport::ServerHooks {
-            on_signal: Box::new(|_pending| false),
+            // C `pfs_signal` (`pfs.c:381-388`, registered `pfs.c:416`):
+            // SIGTERM terminates without a sync, anything else is ignored.
+            on_signal: Box::new(minix_fs_pfs::signal_action),
             init: Box::new(|_| Ok(())),
         };
         match minix_fs_rt::serve(server, hooks) {

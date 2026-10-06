@@ -76,14 +76,6 @@ pub const fn sigset_from_u64(low: u64) -> SigSetBits {
     [low as u32, (low >> 32) as u32, 0, 0]
 }
 
-/// Reads back the low 64 bits of a [`SigSetBits`] — the bridge for hooks
-/// that still take a `u64` bitmap (see `minix-fs-rt`'s `SignalDecision`).
-/// Kernel signals 71..=74 live above this window; walk them with
-/// [`sigset_contains`] instead of truncating.
-pub const fn sigset_to_u64(set: SigSetBits) -> u64 {
-    (set[0] as u64) | ((set[1] as u64) << 32)
-}
-
 /// Notification message payload.
 ///
 /// C: `mess_notify` — `minix3/minix/include/minix/ipc.h:1714-1719`
@@ -219,17 +211,17 @@ mod tests {
         assert!(!sigset_contains([u32::MAX; SIGSET_WORDS], 129)); // 越界不 panic
     }
 
-    /// 与内核 64 位 `SigSet` 的桥:低 64 位往返无损,高 64 位在生产者拓宽
-    /// 之前恒零。
+    /// 与内核 64 位 `SigSet` 的桥:低 64 位无损落进前两个字,后两个字在生产者
+    /// 拓宽之前恒零。
     #[test]
     fn test_sigset_u64_bridge_round_trips_low_half() {
         let low = 0x0000_0001_8000_0001u64; // 置位的 bit: 0 / 31 / 32
         let set = sigset_from_u64(low);
-        assert_eq!(sigset_to_u64(set), low);
-        assert_eq!(set[2], 0); // u64 表达不了 bits[2..]
+        assert_eq!(set, [low as u32, (low >> 32) as u32, 0, 0]);
         assert!(sigset_contains(set, 1)); // bit 0
         assert!(sigset_contains(set, 32)); // bit 31
-        assert!(sigset_contains(set, 33)); // bit 32 → bits[1] bit 0
-        assert!(!sigset_contains(set, 71)); // 内核信号需内核先拓宽 SigSet
+        assert!(sigset_contains(set, 33)); // bit 32 落进第二个字
+        // 内核信号族要等生产者拓宽后才可见。
+        assert!(!sigset_contains(set, KERNEL_SIGNAL_FIRST as u32));
     }
 }

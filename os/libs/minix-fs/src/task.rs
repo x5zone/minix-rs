@@ -350,6 +350,12 @@ pub enum Incoming {
     /// The receive was cancelled (`fsdriver_terminate` cancels the pending
     /// receive, `fsdriver.c:71-73`); the loop leaves without replying.
     Cancelled,
+    /// Termination was decided and the file system still has to be flushed:
+    /// C's `mfs` handler runs `fs_sync()` before `fsdriver_terminate()`
+    /// (`mfs/main.c:75-77`). The flush is the driver's own job, and only this
+    /// loop holds the mounted server, so the runtime asks the loop to do it
+    /// before leaving.
+    SyncThenCancelled,
 }
 
 /// Payload carried beside the status in a reply.
@@ -416,6 +422,14 @@ pub fn run<D: FsDriver, T: FsTransport>(server: &mut Server<D>, transport: &mut 
                 server.driver.other(envelope.is_notification);
             }
             Incoming::Cancelled => break,
+            Incoming::SyncThenCancelled => {
+                // The same driver hook the `Sync` request uses
+                // (`call.rs:528`), which is C's `fs_sync()` half; its errors
+                // are not reportable here — the requester is gone and the
+                // C handler ignores them too (`mfs/main.c:75-77`).
+                server.driver.synchronized();
+                break;
+            }
             Incoming::Unserved(envelope) => {
                 let (_, transaction) = TransactionId::decode(envelope.message_type);
                 transport.reply(envelope.source, FsReply::status(ENOSYS, transaction));
@@ -1030,6 +1044,7 @@ mod tests {
     struct MountOnlyDriver {
         others: u32,
         post_calls: u32,
+        syncs: u32,
     }
 
     impl crate::driver::FsDriver for MountOnlyDriver {
@@ -1049,6 +1064,10 @@ mod tests {
 
         fn post_call(&mut self) {
             self.post_calls += 1;
+        }
+
+        fn synchronized(&mut self) {
+            self.syncs += 1;
         }
     }
 
@@ -1070,6 +1089,40 @@ mod tests {
         assert!(transport.replies.is_empty());
         // `other` is not a request: no post-call.
         assert_eq!(server.driver.post_calls, 0);
+    }
+
+    #[test]
+    fn test_sync_then_cancel_flushes_before_leaving() {
+        // C: the root file system's handler syncs before terminating
+        // (`mfs/main.c:75-77`), so the flush has to happen while this loop
+        // still owns the mounted server. Nothing is replied on the way out.
+        let mut transport = ScriptedTransport::new(vec![
+            Incoming::Other(envelope(0)),
+            Incoming::SyncThenCancelled,
+        ]);
+        let mut server: Server<MountOnlyDriver> = Server::new(MountOnlyDriver::default());
+        run(&mut server, &mut transport);
+        assert_eq!(server.driver.syncs, 1, "the driver was asked to flush once");
+        assert_eq!(
+            server.driver.others, 1,
+            "the earlier frame was still served"
+        );
+        assert!(
+            transport.replies.is_empty(),
+            "termination answers no requester"
+        );
+    }
+
+    #[test]
+    fn test_plain_cancel_does_not_flush() {
+        // The other file servers terminate without a sync (`pfs.c:381-388`,
+        // `libvtreefs/vtreefs.c:39-46`): a plain cancel must leave the
+        // driver's flush hook untouched, otherwise the sync would become a
+        // framework-wide behavior C only gave to one server.
+        let mut transport = ScriptedTransport::new(vec![Incoming::Cancelled]);
+        let mut server: Server<MountOnlyDriver> = Server::new(MountOnlyDriver::default());
+        run(&mut server, &mut transport);
+        assert_eq!(server.driver.syncs, 0);
     }
 
     #[test]

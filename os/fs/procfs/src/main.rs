@@ -28,7 +28,10 @@ fn main() {
     {
         let server = minix_fs_procfs::init(minix_fs_procfs::server::PendingProcSource);
         let hooks = minix_fs_rt::transport::ServerHooks {
-            on_signal: Box::new(|_pending| false),
+            // procfs inherits its handler from the virtual tree file system
+            // library (`libvtreefs/vtreefs.c:57`, body `vtreefs.c:39-46`):
+            // SIGTERM terminates without a sync, anything else is ignored.
+            on_signal: Box::new(minix_fs_procfs::signal_action),
             init: Box::new(|_| Ok(())),
         };
         match minix_fs_rt::serve(server, hooks) {

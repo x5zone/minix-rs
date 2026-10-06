@@ -19,10 +19,6 @@ use crate::second_level::MfsSecondLevel;
 /// from document 04 resizes later as usage figures arrive.
 pub const DEFAULT_POOL_BUFFERS: usize = 1024;
 
-/// Termination signal number (POSIX `SIGTERM`, fifteen). The handler only
-/// honors this one; anything else is ignored (`main.c:73`).
-pub const SIGNAL_TERMINATE: i32 = 15;
-
 /// Boot configuration: the two knobs the fresh-install sequence needs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootConfig {
@@ -108,23 +104,15 @@ pub fn prepare<S: BlockSource>(source: S, config: BootConfig) -> Result<ServerCo
 ///
 /// C: `sef_cb_signal_handler` (`main.c:70-78`): anything but termination is
 /// ignored; termination syncs the file system first and then asks the
-/// framework to stop. The sync itself runs through the injected callback
-/// (owned by the maintenance stage); this type only records the decision so
-/// the event loop stays testable without signals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShutdownDecision {
-    /// Ignore the signal.
-    Ignore,
-    /// Sync, then terminate.
-    SyncThenTerminate,
-}
-
-/// Decide what a signal means, without touching any state.
-pub const fn decide_on_signal(signal: i32) -> ShutdownDecision {
-    if signal == SIGNAL_TERMINATE {
-        ShutdownDecision::SyncThenTerminate
+/// framework to stop. The sync itself runs through the driver's own hook
+/// (`FsDriver::synchronized`), so this answers only the decision and the task
+/// loop performs the flush
+/// (`minix_fs::task::Incoming::SyncThenCancelled`).
+pub const fn decide_on_signal(signal: i32) -> minix_fs_rt::transport::SignalAction {
+    if signal == minix_types::SIGNAL_TERMINATE {
+        minix_fs_rt::transport::SignalAction::SyncThenTerminate
     } else {
-        ShutdownDecision::Ignore
+        minix_fs_rt::transport::SignalAction::Ignore
     }
 }
 
@@ -162,17 +150,23 @@ mod tests {
 
     #[test]
     fn test_signal_decision() {
+        use minix_fs_rt::transport::SignalAction;
         assert_eq!(
-            decide_on_signal(SIGNAL_TERMINATE),
-            ShutdownDecision::SyncThenTerminate
+            decide_on_signal(minix_types::SIGNAL_TERMINATE),
+            SignalAction::SyncThenTerminate
         );
-        assert_eq!(decide_on_signal(2), ShutdownDecision::Ignore);
-        assert_eq!(decide_on_signal(0), ShutdownDecision::Ignore);
+        // A kernel wake-up number is not a process signal: mfs keeps serving.
+        assert_eq!(decide_on_signal(2), SignalAction::Ignore);
+        assert_eq!(decide_on_signal(0), SignalAction::Ignore);
+        assert_eq!(
+            decide_on_signal(minix_types::SIGNAL_KERNEL_MEMORY),
+            SignalAction::Ignore
+        );
     }
 
     #[test]
     fn test_constants_match_c() {
         assert_eq!(DEFAULT_POOL_BUFFERS, 1024);
-        assert_eq!(SIGNAL_TERMINATE, 15);
+        assert_eq!(minix_types::SIGNAL_TERMINATE, 15);
     }
 }

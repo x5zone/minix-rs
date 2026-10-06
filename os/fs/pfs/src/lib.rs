@@ -477,16 +477,55 @@ pub fn server() -> PfsServer<FixedClock> {
 
 /// Service initialization entry: constructs the server value.
 ///
-/// The process runtime (startup handshake, privilege drop, signal wiring,
-/// event loop) belongs to the service-runtime stage and is wired in
-/// `main.rs` once that stage lands.
+/// The process runtime (startup handshake, privilege drop, event loop)
+/// belongs to the service-runtime stage and is wired in `main.rs`; the
+/// signal judgment is here because that wiring is compiled out under test
+/// builds (see [`signal_action`]).
 pub fn init() -> PfsServer<FixedClock> {
     server()
+}
+
+/// What the pipe server makes of one signal number.
+///
+/// C: `pfs_signal` (`pfs.c:381-388`, registered at `pfs.c:416`) — anything
+/// but SIGTERM returns immediately, and SIGTERM calls `fsdriver_terminate()`
+/// (`fsdriver.c:68-74`) with no sync step, unlike the root file system's
+/// handler (`mfs/main.c:75-77`).
+///
+/// A named function rather than a closure written in `main.rs`, because the
+/// binary's service body sits under `cfg(not(test))`: keeping the judgment
+/// here is what lets C's rule be tested at all.
+pub const fn signal_action(signo: i32) -> minix_fs_rt::transport::SignalAction {
+    if signo == minix_types::SIGNAL_TERMINATE {
+        minix_fs_rt::transport::SignalAction::Terminate
+    } else {
+        minix_fs_rt::transport::SignalAction::Ignore
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_signal_action_follows_pfs_signal() {
+        use minix_fs_rt::transport::SignalAction;
+        assert_eq!(
+            signal_action(minix_types::SIGNAL_TERMINATE),
+            SignalAction::Terminate
+        );
+        // C ignores everything else, kernel wake-up numbers included.
+        assert_eq!(signal_action(2), SignalAction::Ignore);
+        assert_eq!(signal_action(0), SignalAction::Ignore);
+        assert_eq!(
+            signal_action(minix_types::SIGNAL_KERNEL_MEMORY),
+            SignalAction::Ignore
+        );
+        assert_eq!(
+            signal_action(minix_types::SIGNAL_KERNEL_PENDING),
+            SignalAction::Ignore
+        );
+    }
 
     fn mounted() -> PfsServer<StepClock> {
         let mut server = PfsServer::new(StepClock::new(1_000, 10));

@@ -59,21 +59,46 @@ pub fn serve<D: minix_fs::driver::FsDriver>(
 /// C shape: `do_sef_signal_request` (sef_signal.c:88-) walks the kernel
 /// signal range `SIGK_FIRST..=SIGK_LAST` (71..=74,
 /// `sys/sys/signal.h:276-277`) and calls the registered handler once per
-/// pending signal. Two pieces of that channel are not this runtime's job:
-/// - the walk itself: the notification payload now carries C's 16-byte
-///   `sigset_t` verbatim (`minix_types::SigSetBits`), so kernel signals
-///   71..=74 have a home (`bits[2]`) — but nothing walks it yet: the
-///   per-signal walk is a to-be-wired item of `minix-sef`'s signal arm
-///   (P-ALL-08 T1). This hook still receives the raw low 64 bits, and
-///   converging its shape to a signal number is the signal-chain batch;
-/// - process signals (SIGTERM and friends) reach the C handler through the
-///   signal manager's pull (`sys_getksig`/`sys_endksig`, whose minix-sys
-///   wrappers exist at `minix_sys::syscall::sys_getksig`/`sys_endksig`);
-///   no FS driver registers a signal handler in C either, so the hooks
-///   built here answer `false`.
+/// pending signal; a signal manager delivers one process signal per message
+/// (`sef_signal.c:117-128`). Either way the handler's argument is a signal
+/// number — so this hook takes one number and answers what to do with it.
 ///
-/// The hook receives the raw bitmap and returns `true` to terminate.
-pub type SignalDecision = Box<dyn FnMut(u64) -> bool>;
+/// The file servers built on this runtime differ in one step only, and the
+/// difference is C's, not ours:
+/// - `mfs` syncs then terminates (`mfs/main.c:38` registers
+///   `sef_cb_signal_handler`, whose body `main.c:70-78` is "ignore anything
+///   but SIGTERM, then `fs_sync()`, then `fsdriver_terminate()`");
+/// - `pfs` terminates without syncing (`pfs.c:416` registers `pfs_signal`,
+///   body `pfs.c:381-388`), and `ptyfs` is the same shape
+///   (`ptyfs.c:407` + `ptyfs.c:392-397`);
+/// - `procfs` has no handler of its own because its main loop comes from the
+///   virtual tree file system library, which registers `got_signal`
+///   (`libvtreefs/vtreefs.c:57`, body `vtreefs.c:39-46`) — SIGTERM only,
+///   no sync.
+///
+/// Terminating here means the loop leaves without a reply: C's
+/// `fsdriver_terminate()` clears the running flag and cancels the pending
+/// receive (`fsdriver.c:68-74`), and this runtime's stand-in for the cancel
+/// is the [`Incoming::SyncThenCancelled`]/[`Incoming::Cancelled`] return.
+/// The cancel itself is not modeled in the library yet (the `sef_cancel`
+/// gap tracked with P-ALL-08 T2), so a decision that arrives on a swallowed
+/// manager-shaped signal consumes one further message before the loop leaves.
+pub type SignalDecision = Box<dyn FnMut(i32) -> SignalAction>;
+
+/// What a file server makes of one signal number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignalAction {
+    /// Keep serving. C: a handler that returns without touching the flags —
+    /// including the library default for services that register nothing.
+    Ignore,
+    /// Leave the loop now. C: `fsdriver_terminate()` (`fsdriver.c:68-74`).
+    Terminate,
+    /// Flush the file system, then leave the loop. C: `fs_sync()` before
+    /// `fsdriver_terminate()` (`mfs/main.c:75-77`). The flush itself belongs
+    /// to the driver (its `synchronized` hook), so the runtime performs it
+    /// when it sees this answer.
+    SyncThenTerminate,
+}
 
 /// What the birth callback is being asked to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,23 +197,49 @@ impl<I: RtIpc> FsTransport for FsRt<I> {
     fn receive(&mut self) -> Incoming {
         loop {
             let mut msg = Message::default();
-            let receipt = match self.ipc.receive(Endpoint::ANY, &mut msg) {
+            // The signal hook has to travel *into* the receive call: C runs
+            // the registered handler inside `sef_receive_status`, once per
+            // signal number (`sef_signal.c:94-128`), so a decision can arrive
+            // without any receipt value. Only `ipc` and `on_signal` are
+            // borrowed here, leaving the rest of the runtime untouched.
+            let FsRt { ipc, on_signal, .. } = self;
+            let mut decision = SignalAction::Ignore;
+            let receipt = match ipc.receive(Endpoint::ANY, &mut msg, &mut |signo| {
+                // C's bit walk does not break when the handler asks to
+                // terminate, but at most one number in a single delivery can
+                // answer anything else: the kernel window 71..=74 holds no
+                // SIGTERM, and a manager-shaped message carries exactly one
+                // number (`sef_signal.c:117`). The first non-Ignore answer is
+                // therefore the whole decision — no queue needed.
+                if decision == SignalAction::Ignore {
+                    decision = on_signal(signo);
+                }
+            }) {
                 Ok(r) => r,
                 // A failed receive has no recovery face in C (panic inside
                 // `sef_receive`); the loop stops rather than spinning.
                 Err(_) => return Incoming::Cancelled,
             };
+            // The decision is answered before the frame that was in hand gets
+            // dispatched, matching C: its handler terminates the process
+            // (`is/main.c:115` shape, `fsdriver_terminate` for a file server)
+            // so that delivery never reaches the task switch. Consequence of
+            // the missing `sef_cancel` (P-ALL-08 T2's registered red line):
+            // this tree has already taken that frame out of the kernel, so
+            // its sender is left without a reply — the same shape the IS and
+            // uds/lwip stations pin, and the same one a library-level escape
+            // hatch would fix for all of them at once.
+            match decision {
+                SignalAction::Terminate => return Incoming::Cancelled,
+                SignalAction::SyncThenTerminate => return Incoming::SyncThenCancelled,
+                SignalAction::Ignore => {}
+            }
             match receipt {
-                Receipt::Signal { pending } => {
-                    // The C dispatcher walks the kernel-signal bits and the
+                Receipt::Signal => {
+                    // The C dispatcher walked the kernel-signal bits and the
                     // handler's terminate decision corresponds to
                     // `fsdriver_terminate` cancelling the pending receive
-                    // (fsdriver.c:67-73) — the loop exits without a reply.
-                    // The bit walk itself stays with the hook (see
-                    // [`SignalDecision`] for the two pending-width gaps).
-                    if (self.on_signal)(pending) {
-                        return Incoming::Cancelled;
-                    }
+                    // (fsdriver.c:67-73) — handled above, before this point.
                     continue;
                 }
                 Receipt::Call { status } => {
@@ -282,72 +333,124 @@ mod tests {
     use minix_fs::task::RequestBody;
     use minix_types as off;
 
-    /// A runtime whose signal hook records the raw bitmaps it saw.
+    /// A runtime whose signal hook records the signal numbers it was called
+    /// with and always answers "keep serving".
     fn signal_runtime(
         ipc: ScriptedRtIpc,
     ) -> (
         FsRt<ScriptedRtIpc>,
-        alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<u64>>>,
+        alloc::rc::Rc<core::cell::RefCell<alloc::vec::Vec<i32>>>,
     ) {
         let seen = alloc::rc::Rc::new(core::cell::RefCell::new(alloc::vec::Vec::new()));
         let seen2 = seen.clone();
         let rt = FsRt::new(
             ipc,
             Endpoint::VFS,
-            Box::new(move |pending| {
-                seen2.borrow_mut().push(pending);
-                false
+            Box::new(move |signo| {
+                seen2.borrow_mut().push(signo);
+                SignalAction::Ignore
             }),
             Box::new(|_| Ok(())),
         );
         (rt, seen)
     }
 
-    fn system_signal(sigset: u64) -> Message {
+    /// A SYSTEM notification carrying `sigset` verbatim — C's 16-byte
+    /// `sigset_t` in the notification arm.
+    fn system_notify(sigset: minix_types::SigSetBits) -> Message {
         let mut m = Message::default();
         // SAFETY(test): the notification arm is the active one for SYSTEM
         // notifications.
-        m.m_u.m_notify.sigset = minix_types::sigset_from_u64(sigset);
+        m.m_u.m_notify.sigset = sigset;
         m.m_source = Endpoint::from_generation_slot(0, 0); // SYSTEM
         m
     }
 
     #[test]
-    fn test_signal_walk_and_terminate_on_sigterm() {
-        // A non-terminating bitmap lets the loop continue to the next
-        // scripted delivery; the hook saw the bitmap verbatim.
-        // Deliveries: one SYSTEM notification carrying bit 7 in the low word
-        // (signo 8 — C bit numbering is `signo - 1`), then an ordinary message
-        // from a non-VFS endpoint (repeats forever, but the loop returns on
-        // it as `Other`).
-        let m = system_signal(0x80);
+    fn test_notify_reaches_the_hook_as_a_signal_number() {
+        // A bitmap with no kernel-signal bit is the production shape today:
+        // the library hands the hook its wake-up value once, the hook answers
+        // "keep serving", and the loop moves on to the next delivery (an
+        // ordinary message from a non-VFS endpoint, returned as `Other`).
+        // Bit 7 of the low word is signo 8 — outside the kernel window, so it
+        // never reaches the hook as a number.
+        let m = system_notify(minix_types::sigset_from_u64(0x80));
         let ordinary = Message::default();
         let ipc = ScriptedRtIpc::new(vec![
-            (Receipt::Signal { pending: 0x80 }, m),
+            (Receipt::Signal, m),
             (Receipt::Call { status: 0 }, ordinary),
         ]);
         let (mut rt, seen) = signal_runtime(ipc);
         let out = FsTransport::receive(&mut rt);
-        assert!(matches!(out, Incoming::Other(_)), "a non-terminating signal keeps the loop going");
-        assert_eq!(seen.borrow().as_slice(), &[0x80], "the raw bitmap reaches the hook untouched");
+        assert!(
+            matches!(out, Incoming::Other(_)),
+            "a non-terminating signal keeps the loop going"
+        );
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[minix_sef::SEF_SIGNAL_REQUEST_TYPE],
+            "the hook gets one wake-up number, not the raw bitmap"
+        );
+    }
+
+    #[test]
+    fn test_kernel_window_signal_reaches_the_hook_by_number() {
+        // Word two, bit 6 is signo 71 (`SIGKMEM`): the shape a widened kernel
+        // producer will deliver. The hook must see the number itself, in
+        // ascending order, and one call per pending bit.
+        let m = system_notify([0, 0, 1 << 6 | 1 << 9, 0]); // signo 71 and 74
+        let ordinary = Message::default();
+        let ipc = ScriptedRtIpc::new(vec![
+            (Receipt::Signal, m),
+            (Receipt::Call { status: 0 }, ordinary),
+        ]);
+        let (mut rt, seen) = signal_runtime(ipc);
+        assert!(matches!(FsTransport::receive(&mut rt), Incoming::Other(_)));
+        assert_eq!(
+            seen.borrow().as_slice(),
+            &[
+                minix_types::SIGNAL_KERNEL_MEMORY,
+                minix_types::SIGNAL_KERNEL_PENDING
+            ],
+            "every pending kernel signal reaches the hook by number, ascending"
+        );
     }
 
     #[test]
     fn test_terminate_decision_cancels_receive() {
-        let m = system_signal(0x100); // 低字 bit 8 → signo 9
-        // The scripted hook answers "terminate" unconditionally, so the
-        // receive loop returns `Cancelled` instead of waiting for the next
-        // delivery (the C `fsdriver_terminate` face, fsdriver.c:67-73).
-        let ipc = ScriptedRtIpc::new(vec![(Receipt::Signal { pending: 0x100 }, m)]);
+        let m = system_notify(minix_types::sigset_from_u64(0x100)); // signo 9
+        // The scripted hook answers "terminate" for whatever number arrives,
+        // so the receive loop returns `Cancelled` instead of waiting for the
+        // next delivery (the C `fsdriver_terminate` face, fsdriver.c:67-73).
+        let ipc = ScriptedRtIpc::new(vec![(Receipt::Signal, m)]);
         let mut rt = FsRt::new(
             ipc,
             Endpoint::VFS,
-            Box::new(|_| true),
+            Box::new(|_| SignalAction::Terminate),
             Box::new(|_| Ok(())),
         );
         assert!(matches!(
             FsTransport::receive(&mut rt),
             Incoming::Cancelled
+        ));
+    }
+
+    #[test]
+    fn test_sync_decision_cancels_after_the_flush_request() {
+        // The `mfs` answer (`mfs/main.c:75-77`): sync first, then leave. The
+        // runtime cannot flush a driver it does not own, so it reports the
+        // order to the task loop, which holds the mounted server.
+        let m = system_notify(minix_types::sigset_from_u64(0x100));
+        let ipc = ScriptedRtIpc::new(vec![(Receipt::Signal, m)]);
+        let mut rt = FsRt::new(
+            ipc,
+            Endpoint::VFS,
+            Box::new(|_| SignalAction::SyncThenTerminate),
+            Box::new(|_| Ok(())),
+        );
+        assert!(matches!(
+            FsTransport::receive(&mut rt),
+            Incoming::SyncThenCancelled
         ));
     }
 
@@ -383,7 +486,7 @@ mod tests {
             let mut rt = FsRt::new(
                 ipc,
                 Endpoint::VFS,
-                Box::new(|_| false),
+                Box::new(|_| SignalAction::Ignore),
                 Box::new(move |_| {
                     ran2.set(true);
                     Ok(())
@@ -407,7 +510,7 @@ mod tests {
         let mut rt = FsRt::new(
             ipc,
             Endpoint::VFS,
-            Box::new(|_| false),
+            Box::new(|_| SignalAction::Ignore),
             Box::new(|_| Ok(())),
         );
         assert!(matches!(
@@ -442,7 +545,7 @@ mod tests {
         let mut rt = FsRt::new(
             ipc,
             Endpoint::VFS,
-            Box::new(|_| false),
+            Box::new(|_| SignalAction::Ignore),
             Box::new(|_| Ok(())),
         );
         match FsTransport::receive(&mut rt) {

@@ -366,9 +366,41 @@ pub fn init() -> driver::PtyfsDriver {
     driver::PtyfsDriver::new()
 }
 
+/// What the pseudo-terminal server makes of one signal number.
+///
+/// C: `ptyfs_signal` (`ptyfs.c:392-397`, registered at `ptyfs.c:407`) —
+/// SIGTERM alone calls `fsdriver_terminate()` (`fsdriver.c:68-74`); every
+/// other number, kernel wake-up included, is ignored, and there is no sync
+/// step in front of the termination.
+///
+/// A named function rather than a closure written in `main.rs`, because the
+/// binary's service body sits under `cfg(not(test))`: keeping the judgment
+/// here is what lets C's rule be tested at all.
+pub const fn signal_action(signo: i32) -> minix_fs_rt::transport::SignalAction {
+    if signo == minix_types::SIGNAL_TERMINATE {
+        minix_fs_rt::transport::SignalAction::Terminate
+    } else {
+        minix_fs_rt::transport::SignalAction::Ignore
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_signal_action_follows_ptyfs_signal() {
+        use minix_fs_rt::transport::SignalAction;
+        assert_eq!(
+            signal_action(minix_types::SIGNAL_TERMINATE),
+            SignalAction::Terminate
+        );
+        assert_eq!(signal_action(2), SignalAction::Ignore);
+        assert_eq!(
+            signal_action(minix_types::SIGNAL_KERNEL_MEMORY),
+            SignalAction::Ignore
+        );
+    }
     use table::{NodeTable, StoredNode};
 
     extern crate alloc;

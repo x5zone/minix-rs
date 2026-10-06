@@ -25,19 +25,16 @@ pub enum Receipt {
         /// Decoded status word from the receive.
         status: i32,
     },
-    /// A SYSTEM notification: the kernel's signal request. The pending
-    /// bitmap is the notification payload's `sigset` (C classifies the
-    /// notification by source at `sef.c:184-187` and reads the bitmap at
-    /// `sef_signal.c:96`; the dispatcher walks one bit per kernel signal).
-    Signal {
-        /// Pending kernel-signal bitmap — the low 64 bits of C's 16-byte
-        /// `sigset_t`. Kernel signals 71..=74 live above this window
-        /// (`bits[2]`) and today have no consumer at all: the per-signal
-        /// walk is a to-be-wired item of `minix-sef`'s signal arm
-        /// (P-ALL-08 T1), and this hook's own shape converges with the
-        /// signal-chain batch.
-        pending: u64,
-    },
+    /// A SYSTEM notification: the kernel's signal request.
+    ///
+    /// The notification carries no payload here on purpose: C's dispatcher
+    /// walks the pending bitmap and calls the registered handler once per
+    /// signal number (`do_sef_signal_request`, `sef_signal.c:94-113`), and
+    /// `minix-sef` already did that walk before this receipt was built — the
+    /// signal numbers reached the hook through [`RtIpc::receive`]'s callback
+    /// argument. Handing the raw bitmap up a second time would ask each file
+    /// server to re-implement a walk the library owns.
+    Signal,
 }
 
 /// The four verbs the runtime needs, none of them server-specific.
@@ -46,7 +43,16 @@ pub trait RtIpc {
     /// was. C: `ipc_receive(src, &m, &status)` under the SEF loop
     /// (`sef_receive_status`, sef.c:149-260 — pings answered and swallowed
     /// inside).
-    fn receive(&mut self, src: minix_types::Endpoint, msg: &mut Message) -> Result<Receipt, i32>;
+    ///
+    /// `on_signal` is the runtime's signal hook, handed down to the SEF loop
+    /// so it can be called with one signal number at a time — the shape C
+    /// gives the registered `sef_cb_signal_handler` (`sef.h:269`).
+    fn receive(
+        &mut self,
+        src: minix_types::Endpoint,
+        msg: &mut Message,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<Receipt, i32>;
     /// Non-blocking send of a reply or a birth report. C: `ipc_send`
     /// (`fsdriver.c:57`) — the caller sits in `sendrec` waiting, so the
     /// non-blocking form has the same observable effect and cannot deadlock
@@ -79,20 +85,26 @@ pub trait RtIpc {
 pub struct SysRtIpc;
 
 impl RtIpc for SysRtIpc {
-    fn receive(&mut self, src: minix_types::Endpoint, msg: &mut Message) -> Result<Receipt, i32> {
+    fn receive(
+        &mut self,
+        src: minix_types::Endpoint,
+        msg: &mut Message,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<Receipt, i32> {
         let mut sef = SeIpcAdapter;
-        let recv = minix_sef::sef_receive_status(&mut sef, src, msg, &mut |_| {});
+        // The library's entry point monomorphizes its callback (`impl FnMut`),
+        // while this trait is object-safe and can only carry the unsized
+        // `dyn FnMut` — a thin closure bridges the two (IS 的同款接线，
+        // `os/servers/is/src/sef.rs`).
+        let mut handoff = |signo: i32| on_signal(signo);
+        let recv = minix_sef::sef_receive_status(&mut sef, src, msg, &mut handoff);
         match recv {
             // The signal arm is only reached after `minix-sef` has
-            // established `is_ipc_notify(status) && source == SYSTEM`, which
-            // is what makes the notification payload the active union arm —
-            // the union read itself lives in `Message::notify_sigset`
-            // (C do_sef_signal_request reads `m_ptr->m_notify.sigset`,
-            // sef_signal.c:96).
+            // established `is_ipc_notify(status) && source == SYSTEM`, and
+            // that call has already handed every pending signal number to
+            // `on_signal` — there is nothing left for the loop to decode.
             Ok(r) => match r.event {
-                SefEvent::Signal(_) => Ok(Receipt::Signal {
-                    pending: minix_types::sigset_to_u64(msg.notify_sigset()),
-                }),
+                SefEvent::Signal(_) => Ok(Receipt::Signal),
                 _ => Ok(Receipt::Call { status: r.status }),
             },
             Err(e) => Err(e),
@@ -197,11 +209,21 @@ impl ScriptedRtIpc {
 }
 
 impl RtIpc for ScriptedRtIpc {
-    fn receive(&mut self, _src: minix_types::Endpoint, msg: &mut Message) -> Result<Receipt, i32> {
+    fn receive(
+        &mut self,
+        _src: minix_types::Endpoint,
+        msg: &mut Message,
+        on_signal: &mut dyn FnMut(i32),
+    ) -> Result<Receipt, i32> {
         let last = self.inbox.len().saturating_sub(1);
         let (receipt, m) = self.inbox[self.received_at.min(last)];
         self.received_at += 1;
         *msg = m;
+        if matches!(receipt, Receipt::Signal) {
+            // Same walk the library runs on a real SYSTEM notification, so
+            // the scripted loop cannot drift from production shape.
+            minix_sef::dispatch_kernel_notify(msg.notify_sigset(), on_signal);
+        }
         Ok(receipt)
     }
 

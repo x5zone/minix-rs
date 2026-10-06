@@ -65,3 +65,42 @@ pub fn init(
     // C slot counts: NR_TASKS thirty-two, NR_PROCS two hundred fifty-six.
     server::init(source, 32, 256)
 }
+
+/// What the process file server makes of one signal number.
+///
+/// procfs has no handler of its own in C: its main loop comes from the
+/// virtual tree file system library, which registers `got_signal`
+/// (`libvtreefs/vtreefs.c:57`, body `vtreefs.c:39-46`) — SIGTERM alone calls
+/// `fsdriver_terminate()` (`fsdriver.c:68-74`), anything else is ignored, and
+/// nothing is synced on the way out.
+///
+/// A named function rather than a closure written in `main.rs`, because the
+/// binary's service body sits under `cfg(not(test))`: keeping the judgment
+/// here is what lets C's rule be tested at all.
+pub const fn signal_action(signo: i32) -> minix_fs_rt::transport::SignalAction {
+    if signo == minix_types::SIGNAL_TERMINATE {
+        minix_fs_rt::transport::SignalAction::Terminate
+    } else {
+        minix_fs_rt::transport::SignalAction::Ignore
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signal_action_follows_vtreefs_got_signal() {
+        use minix_fs_rt::transport::SignalAction;
+        assert_eq!(
+            signal_action(minix_types::SIGNAL_TERMINATE),
+            SignalAction::Terminate
+        );
+        assert_eq!(signal_action(2), SignalAction::Ignore);
+        assert_eq!(signal_action(0), SignalAction::Ignore);
+        assert_eq!(
+            signal_action(minix_types::SIGNAL_KERNEL_MEMORY),
+            SignalAction::Ignore
+        );
+    }
+}
