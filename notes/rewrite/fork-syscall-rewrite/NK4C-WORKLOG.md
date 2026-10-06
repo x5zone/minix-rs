@@ -10,7 +10,9 @@
 
 ## 当前状态（每次 commit 前更新，一屏读完）
 
-> **✅ 最新前沿＝§续-407（P-RV-01 达成：riscv 多核门——ATF 全量与 cmd-smoke 提到 -smp 2 真机双 PASS（套件 36/36=34+2+0 与单核基线一致；串口 SMP 证据链 sbi-hs ret=0→A1A2→ap-arrived hart=0，§续-404 选举收口在套件链路实测工作））** 改动两门各两行（点火 -smp 1→2＋dumpdtb 补 -smp 2）——首跑 36/36 但零 SMP 标记的假多核被复核揪出：dumpdtb 无 -smp ⇒ DTB 单节点 ⇒ 拓扑真值=DTB ⇒ 接线惰性（§续-399 教训二次重演，「点火/dumpdtu 配对 -smp 必须同值」已写入门内注释）。SD-24 红线实证：AP wfi 驻留下两门全程无异常＝多核拓扑对单核调度器零干扰。诚实边界：AP 未入调度（撤钳=P-ALL-03）；-smp ≥3 未验（per-hart 邮箱边界，§续-402 登记）。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
+> **✅ 最新前沿＝§续-410（T1 勘察完成＝交接前最后一笔：信号请求双形态 C 语义全链钉死＋落地配方定稿，正文即接手件；§续-403..409 七增量已在库）** 本会话总交付：三架构 SMP 线收口（§续-403 riscv 洪流根因修复＋门绿 e4b46a5aa、§续-404 选举彩票收口 2cd48d539、§续-405 aarch64 半生产形状 a6a78d37b、§续-406 直核门四连绿 ff1e69a10）＋P-RV-01 riscv 多核门双 PASS（§续-407 38514a26a，ATF 36/36＋cmd-smoke 18 阶段在 -smp 2）＋P-ALL-08 T6/T7 双结（§续-408 e612e62d5 定谳、§续-409 c8d7ba87d 形状审计）。接手入口＝「NK4C-接续PROMPT-20261006q.md」（同目录）。qemu=0。
+>
+> **（上一前沿＝§续-407（P-RV-01 达成：riscv 多核门——ATF 全量与 cmd-smoke 提到 -smp 2 真机双 PASS（套件 36/36=34+2+0 与单核基线一致；串口 SMP 证据链 sbi-hs ret=0→A1A2→ap-arrived hart=0，§续-404 选举收口在套件链路实测工作））** 改动两门各两行（点火 -smp 1→2＋dumpdtb 补 -smp 2）——首跑 36/36 但零 SMP 标记的假多核被复核揪出：dumpdtb 无 -smp ⇒ DTB 单节点 ⇒ 拓扑真值=DTB ⇒ 接线惰性（§续-399 教训二次重演，「点火/dumpdtu 配对 -smp 必须同值」已写入门内注释）。SD-24 红线实证：AP wfi 驻留下两门全程无异常＝多核拓扑对单核调度器零干扰。诚实边界：AP 未入调度（撤钳=P-ALL-03）；-smp ≥3 未验（per-hart 邮箱边界，§续-402 登记）。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
 >
 > **（上一前沿＝§续-406（aarch64 SMP 门翻绿：QEMU 直核 `-kernel` 引导＋bootface_a64 自举面＋三处常量/解析修复＋FPEN 等价化——专用门四连 PASS（smpd11..14，`ap-arrived cpu=1`），riscv 门与 UEFI shim 门回归无恙）** 交付：bootface_a64.rs（DTB→memmap→BootFileTable→自有 bump 池→12 模块→arch_boot）＋`_start` 选举/停车邮箱＋x0==0 判道＋Cargo aarch64 target 注入 boot-shim/fdt＋门重写直核五段。**修复四笔各有实证**：①entry_start_pa 的 KPHYS=0x0402_0000 下划线错位（16 倍误差，AP 被送垃圾地址 undef，`-d int` 抓 ELR；「纸上常量」教训第三次重演）；②VA_DELTA 同款 typo 第二处（x0 无效高半地址、汇聚点首读 fault、AP_ARRIVED 永不置位；UART B/A 标记 BB2A 定位）；③parse_cpu_topology 绕开 fdt 0.1.5 find_node 缺陷（对 QEMU 直核重建 blob 恒 None，all_nodes/python 都能看到；两架构同形，riscv 门回归 PASS）；④FPEN 直核链等价化（arch_init 写 CPACR=0b11——续-130 的「复位 0b00 窗口安全」前提被直核链打破，SD-23 已知残差 NEON memset 在 kmain 后即 undef；UEFI 链靠 AAVMF 留 FPEN=0b11 从未暴露；本写与其逐位等价、shim 门回归 PASS）。机制锚点：QEMU `!is_linux` 臂全 CPU 进同一入口（选举语义成立）、load_elf_as clear_lma 把 e_entry 平移到 LMA（BSP 物理入口）。门读数：psci conduit=hvc、ret=0、ap-arrived cpu=1、四连 PASS。回归：riscv 门 PASS、shim 门 PASS、宿主 platform 14/0＋arch 0 失败＋kernel --lib 830/0＋boot 17/0、fmt 七文件零漂移。诚实边界：rc 全链 marker 未判（观察项）；自旋窗 u64 20 亿。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
 >
@@ -13825,3 +13827,14 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 ③审计自身的两课（防御性测试写作素材）：①臂窗口必须贴回报腿（builder 后紧邻 6 行）——首个版本切到下一 handler 边界，把 MIB 别 handler 的 sendnb 文档与调用扫进来假红；②「形状断言要按真实形状族写宽」——DS 用 caller 而非 Endpoint::RS 是语义等价形（Birth 臂 caller 恒为 RS），断言先写窄了被测试打回，收窄窗口后再放宽到「Endpoint::RS 或 caller」两形并留锚注释。测试写作与被测代码同受 fix-guard 纪律约束。
 
 ④回归：minix-sef 8 lib＋3 pin 全绿、minix-kernel --lib 830/0（docker minix-ci:1.94，-m 2g -j 1）；rustfmt 清零；doc-style-lint --diff 零 error。T7 状态＝Open→结（形状钉住；P-ALL-08 静态可结项 T6/T7 双落）。qemu=0。两份案卷与 misc_concepts.md 系文档会话在制未触碰。
+
+## §续-410 P-ALL-08 T1 勘察完成（纯读码轮，零代码改动）——信号请求双形态 C 语义全链钉死，落地配方与测试设计定稿（正文即交接件，接手可直接实施）
+
+①C 真值全链（本轮读码所得，全部带锚点）：信号请求有**两形态**——
+- **内核 notify 形**：`IS_SEF_SIGNAL_REQUEST`（sef.h:264-266）＝ `m_type == SIGS_SIGNAL_RECEIVED && m_source < INIT_PROC_NR` **或** `is_ipc_notify(status) && m_source == SYSTEM`。SYSTEM 形的载荷＝`m_notify.sigset`（sigset_t 位集），处理＝`do_sef_signal_request`（sef_signal.c:88-130）按 `SIGK_FIRST..SIGK_LAST`（sys/sys/signal.h:271-277：SIGKMEM=71、SIGKMESS=72、SIGKSIGSM=73、SIGKSIG=74）逐位 `sigismember` 遍历，命中跑 `sef_cb_signal_handler(signo)`；SIGKSIG 另触发 `process_sigmgr_signals`（sys_getksig/SIGS_FIRST..LAST=SIGS_LAST=SIGSNDELAY 遍历/sys_endksig 三段循环，signal manager 专用）、SIGKSIGSM 触发 `process_sigmgr_self_signals(set)`。
+- **管理器消息形**：`m_source` 非 SYSTEM（信号管理器发来）的 SIGS_SIGNAL_RECEIVED，载荷＝`m_pm_lsys_sigs_signal.num`（ipc.h:2611 单 signum），直接跑 handler。
+- 我方现状：`sef_receive_status` 只覆盖 SYSTEM notify 形的「事件上报」半（on_signal(SEF_SIGNAL_REQUEST_TYPE) 后交服务器分发，lib.rs:164-172），**两处缺口**＝①notify 形不解析 sigset 位集（payload 里有 `MessNotify.sigset: u64`，notify.rs:57-68，SigSet 对齐）；②管理器消息形完全未建模（SIGS_SIGNAL_RECEIVED 非 notify 的 ordinary-message 路径直接落服务器）。
+
+②落地配方（接手即做，预计一小步增量）：a) minix-types 补常量 `SIGKMEM=71..SIGKSIG=74`（sys/sys/signal.h:271-274 对表）＋`SIGS_SIGNAL_RECEIVED` 已在 event.rs:29；b) `sef_receive_status` 两处：SYSTEM notify 臂在 `on_signal` 后补位集解析（把 sigset 逐位展开为 signo 列表，SefEvent::Signal 携带或新增回调形态——**API 形状二选一需先看 on_signal 的六个消费方**）；管理器形补 `m_type==SIGS_SIGNAL_RECEIVED && source>=INIT_PROC_NR` 臂（对位 IS_SEF_SIGNAL_REQUEST 前半）；c) 宿主测试（CannedSefIpc）：notify 形带 sigset=1<<74 的消息断言展开出 [74]；管理器形单 signum 消息断言直通；bit 71..74 边界（SIGK_FIRST/LAST 对表）；d) 消费方盘点（on_signal 现有六服务调用点的空闭包/实闭包分布）顺手完成＝T2 的勘察半。
+
+③诚实边界：本节零代码零测试；`process_sigmgr_signals` 的 sys_getksig/endksig 内核调用面在我方框架无对应物（signal manager 语义整体未建模，超出 T1 最小面，登记不做）。
