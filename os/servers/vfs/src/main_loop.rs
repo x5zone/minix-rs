@@ -7721,14 +7721,37 @@ pub fn run() -> ! {
             // 循环同款。
             continue;
         };
-        // 生面应答（E-BIRTHFACE 库根半）：C process_init 尾部无条件回
-        // RS_INIT+result（sef_init.c:113-117）。LU 未建模 → 诚实 ENOSYS
-        //（主循环 Init 臂同款语义）。
-        let result = match init_type {
-            0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
-            _ => minix_types::ENOSYS,
+        // 生面应答（E-BIRTHFACE 库根半）：PD-34 编排面——段一清 IPC 过滤
+        // （C `process_init` 第一段 sef_init.c:59-60 的 `assert(r == OK)`，
+        // statectl 直连真接线）、回报消息由库构造；分派语义（fresh 实体
+        // ≡ 构造期 init_fresh；restart 重走本地重置；LU 有注册但 Rust 侧
+        // LU 机制未建模 → 诚实 ENOSYS）保持原样。rproctab 的消费结果就是
+        // 本服务的 init 结果（失败 panic ＝ C do_sef_init_request 失败
+        // 同族 fail-fast）。
+        let birth = minix_sef::process_init(
+            &mut |req, addr, len| {
+                let r = minix_sys::syscall::sys_statectl(
+                    &minix_sys::syscall::DirectKernelCallTransport,
+                    req,
+                    addr,
+                    len,
+                );
+                if r == minix_types::OK { Ok(r) } else { Err(r) }
+            },
+            init_type,
+            &mut |t| {
+                match t {
+                    0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                    _ => minix_types::ENOSYS,
+                }
+            },
+        );
+        let mut reply = match birth {
+            Ok(m) => m,
+            // C 段一 assert ＝ 出生失败 fail-closed（启动期无恢复面）。
+            Err(e) => panic!("vfs: birth statectl failed: {e}"),
         };
-        if result == 0 {
+        if reply.rs_init_result() == Some(0) {
             // restart 重走本地重置（主循环 Init 臂同款）；fresh 的重置已在
             // run() 开头做掉（≡ C init_fresh 单次执行）。
             if init_type == 2 {
@@ -7742,7 +7765,7 @@ pub fn run() -> ! {
                 )
                 .unwrap_or_else(|e| panic!("vfs: boot rproctab consumption failed: {e:?}"));
         }
-        send_birth_reply(minix_sef::sef_init_reply(result));
+        send_birth_reply(reply);
         break;
     }
 
@@ -7828,14 +7851,33 @@ pub fn run() -> ! {
             // init_restart ≡ init_fresh 亦已文档化）→ OK；LU 有注册
             //（sef_cb_init_lu）但 Rust 侧 LU 机制未建模 → 诚实 ENOSYS。
             SefEvent::Init(init_type) => {
-                let result = match init_type {
-                    0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
-                    _ => minix_types::ENOSYS,
+                // PD-34 编排面（与会合臂同据）：段一清过滤（直连真接线）、
+                // 回报由库构造；分派语义（fresh/restart → 重走本地重置 +
+                // OK；LU 未建模 → ENOSYS）保持原样。
+                let birth = minix_sef::process_init(
+                    &mut |req, addr, len| {
+                        let r = minix_sys::syscall::sys_statectl(
+                            &minix_sys::syscall::DirectKernelCallTransport,
+                            req,
+                            addr,
+                            len,
+                        );
+                        if r == minix_types::OK { Ok(r) } else { Err(r) }
+                    },
+                    init_type,
+                    &mut |t| match t {
+                        0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                        _ => minix_types::ENOSYS,
+                    },
+                );
+                let mut reply = match birth {
+                    Ok(m) => m,
+                    Err(e) => panic!("vfs: birth statectl failed: {e}"),
                 };
-                if result == 0 {
+                if reply.rs_init_result() == Some(0) {
                     state.init_fresh();
                 }
-                send_birth_reply(minix_sef::sef_init_reply(result));
+                send_birth_reply(reply);
             }
             SefEvent::PingInvalid => {}
         }
