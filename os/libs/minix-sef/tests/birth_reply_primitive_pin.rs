@@ -49,10 +49,30 @@ fn reply_leg_after<'a>(src: &'a str, anchor: &str, name: &str, window: usize) ->
 /// 由 `minix_sef::process_init` 构造，腿在 match 之后——锚点换成编排面
 /// 入口、窗口放宽到 14；其余站点维持「构造→立即 response」的 6 行窗。
 const GENERAL_SERVICE_BIRTH_SITES: &[(&str, &str, &str, usize)] = &[
-    ("servers/is/src/lib.rs", "IS", "sef_init_reply", 6),
-    ("servers/mib/src/server.rs", "MIB", "minix_sef::process_init(", 22),
-    ("servers/ds/src/server.rs", "DS", "sef_init_reply", 6),
-    ("servers/ipc-server/src/server.rs", "IPC", "sef_init_reply", 6),
+    (
+        "servers/is/src/lib.rs",
+        "IS",
+        "minix_sef::process_init(",
+        36,
+    ),
+    (
+        "servers/mib/src/server.rs",
+        "MIB",
+        "minix_sef::process_init(",
+        22,
+    ),
+    (
+        "servers/ds/src/server.rs",
+        "DS",
+        "minix_sef::process_init(",
+        22,
+    ),
+    (
+        "servers/ipc-server/src/server.rs",
+        "IPC",
+        "minix_sef::process_init(",
+        26,
+    ),
 ];
 
 #[test]
