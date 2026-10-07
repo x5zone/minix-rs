@@ -30,7 +30,8 @@ under `minix3/` is the reference for every claim.
 
 1. `rewrite-notes/README.md` — the stage index and the reading order.
 2. `rewrite-notes/00-master-plan/README.md` — why the stages run in this order, and who loads
-   whose executable image.
+   whose executable image. Only this README is maintained; the rest of that directory is
+   planning-era archive (its own header says so).
 3. `rewrite-notes/RECONSTRUCTION-PRINCIPLES.md` — what may change and what must not.
 4. `CLAUDE.md` / `AGENTS.md` — the working rules for the review workflow (ground-truth priority
    chain, directory conventions, quality gates).

@@ -14,7 +14,7 @@
 
 | 编号 | 目录 | 对应服务 | 正式文档数 |
 |---|---|---|---|
-| 00 | [00-master-plan/](00-master-plan/) | — 顶层规划与决策记录 | 15 |
+| 00 | [00-master-plan/](00-master-plan/) | — 顶层规划与决策记录（**规划期档案**：仅本目录 README 的阶段表在维护，其余 15 篇不可当现状来源，见其 README 顶部的可用性表） | 15 |
 | 01 | [01-stage-kernel/](01-stage-kernel/) | Kernel | 38 |
 | 02 | [02-stage-vm/](02-stage-vm/) | VM | 28 |
 | 03 | [03-stage-rs/](03-stage-rs/) | RS | 22 |
