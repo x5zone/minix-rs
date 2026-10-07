@@ -178,3 +178,24 @@
 
 **元门终态**：`review-gate-check.sh --strict` 9/9、`review-state-validate.py` 无 ERROR 无 WARNING、
 CI 四道门全绿、六个工具自测全 rc=0。
+
+---
+
+## 九、D12：我把别人提交的文件差点删了（自纠）
+
+跑自测后清理残留时我执行了 `rm -rf tools/.anchor-resolve-selftest`。事后 `git status` 出现
+` D tools/.anchor-resolve-selftest/*` —— 说明这些文件**是被跟踪的**：commit `1b78ee7d3`
+「WIP(stop)…历轮遗留 untracked 文件（notes/.trae/.zcode/AI-chats/tools 等）」那次批量 add
+把三个自测生成目录一起扫进了版本库。已 `git checkout --` 还原，再改为**只取消跟踪**
+（`git rm -r --cached`，磁盘保留、自测可重建），让 `.gitignore` 里 `tools/.*-selftest/` 那条规则真正生效。
+
+两条教训：
+1. **删任何东西之前先确认它是否被跟踪**——未跟踪才可删，已跟踪的删除必须是显式决策，不能是顺手清理。
+   我这次的判据本应写成"跑一次 `git ls-files <目标>` 非空就停手"。
+2. **别用 `2>/dev/null` 吞命令错误**：我第一次 `git rm -r --cached ... 2>/dev/null` 因为把不存在的
+   `tools/__pycache__` 混在同一条命令里而整体失败，我却据此以为已取消跟踪；直到 `git status` 仍显示
+   被跟踪才暴露。同一条错误我在迁移期就犯过一次（`git add` 被吞导致提交未发生）。
+
+被误跟踪的生成物清单（`git ls-files | grep selftest` 实测）：`.anchor-resolve-selftest` 4 个、
+`.anchor-migrate-selftest` 3 个、`.doc-snippet-selftest` 1 个，全部已取消跟踪；
+`minix3/**/selftest*` 与 `tools/atf-c-compat/md5_selftest.c` 是真实源码，未受影响。
