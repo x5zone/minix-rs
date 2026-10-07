@@ -16,11 +16,10 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # 维护者明确「只搬路径、不代提交」的文件（notes 迁移期间登记）
+# `2026-10-08` 待办合并与清理轮：旧结构债台账存根已删（全文已由 `STRUCTURAL-DEBT-REGISTER-20261008.md` 承担），
+# 本清单同步摘除那一条；齐平待办清单仍在制，保留登记。
 INFLIGHT=(
   "rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md"
-  # 2026-10-08 追加：结构债台账正被另一条会话重写（旧册改存根 + 新册未跟踪），
-  # 两处都不属于任何 review 批次的产出，批量 add 时必须排除。
-  "rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md"
 )
 
 if [[ "${1:-}" == "--list" ]]; then

@@ -15,16 +15,16 @@
 | 认领级 | `TODO-3ARCH-PARITY-20261006.md`（`P-*`） | 三架构 × 能力的**齐平矩阵**、排除清单、覆盖度自证格式 | `TODO-LEDGER-OPEN.md` §2 收其未闭项；`TODO-LEDGER-DONE.md` §3 收其排除清单 |
 | 编排级 | `edge_todo.md`（`E-*`）与 `new_edge4.md` §2 认领板（`C-*`）、§6 待裁决队列（`OQ-*`） | 跨阶段条目的**描述**与并线协作的持锁状态 | 本台账统一给状态；描述一律看原文件。`edge_todo.md` 被十七个内核与服务端源码按文件名引用，原地保留 |
 | 阶段级 | `rewrite-notes/{01..18}-stage-*/todo.md` 与各阶段附属台账 | 单阶段条目的修法与验收 | 本台账**不复制条目**，只在 `TODO-LEDGER-OPEN.md` §6 给一行索引 |
-| 案卷级 | `CASE-RISCV64.md`、`CASE-AARCH64.md`、`NK4C-BUG-RISCV64-TRANSIENT-PTE.md`、`ADDRESS-CONSTANT-AUDIT.md`、`PATTERN-SCAN-REPORT-20260923.md` | 单个缺陷或专项的**取证过程与判据** | 未结项按锚点引用进 OPEN，过程叙事留在案卷 |
+| 案卷级 | `CASE-RISCV64.md`、`CASE-AARCH64.md`（索引与结论卷）、`NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`（未结案卷工作现场）、`NK4C-BUG-RISCV64-TRANSIENT-PTE.md`、`ADDRESS-CONSTANT-AUDIT.md`、`PATTERN-SCAN-REPORT-20260923.md` | 单个缺陷或专项的**取证过程与判据** | 未结项按锚点引用进 OPEN，过程叙事留在案卷 |
 | 过程记录 | `NK4C-WORKLOG.md`、`REVIEW-HISTORY.md`、`SESSION-HISTORY.md` | 时间序列上发生过什么（滚动日志、评审史、会话史） | 零改写。合并卷只抽结论 |
 
 一句可执行的判据：**状态以本台账为准，描述与修法以原账本为准，裁决以 `PD-*` 为准。** 三处出现分歧时的优先序仍是项目总则那一条：C 源码的实际行为 > 设计契约 > Rust 实现 > 文档 > 分析。
 
-## §1 `coordination/` 七十六个文件的处置表
+## §1 `coordination/` 的文件处置表（已执行，实况数字）
 
-本轮处置动作分四类：**原地保留**、**并入合并卷后删除**、**移入 `concepts/`**、**折干后直接删除**。删除件的原文都在 Git 历史里，表末给出回捞方式。
+清理前 76 个文件，清理后 **28 个**：原地保留 19 个（含受保护项）＋ 本轮新增 9 个；另有 3 个知识类文件移入 `../concepts/`。共删除 54 个（评审类 19、会话类 28、案卷类 4、其余 3），全部已在本笔提交前的快照里入库，全文可回捞。
 
-### 1.1 原地保留（十五个）
+### 1.1 原地保留（十九个）
 
 | 文件 | 为什么留着 |
 |---|---|
@@ -32,13 +32,17 @@
 | `PENDING-DECISIONS-3ARCH-PARITY.md` | `PD-*` 裁决级权威，已定稿冻结；被 `prompt/review-rules/review-core-semantics.md` 引用 |
 | `TODO-3ARCH-PARITY-20261006.md` | `P-*` 认领级矩阵与排除清单；被 `tools/check-staged-inflight.sh` 与 `os/libs/minix-types/src/ipc/message.rs` 按文件名引用 |
 | `edge_todo.md` | `E-*` 跨阶段条目的描述权威；被十七个 `os/` 源码与脚本按文件名引用 |
+| `edge_todo_archive.md` | **本轮改判保留**：权威台账 `edge_todo.md` 正文里有两个链接指向它，删了就在权威文件里留断链；它体积只有一百余行 |
 | `edge1.md`、`edge2.md`、`edge3.md`、`edge4.md` | 第一轮并行分线的原始载体，也是并发纪律的原始记录；`edge2.md`、`edge4.md` 被 `os/` 代码注释引用。纪律条款已抽入 `CONCURRENT-WORK-PROTOCOL.md`，原件作为范例保留 |
 | `new_edge2.md`、`new_edge4.md` | 第二轮仍在制的线文件与认领板（仍有进行中的条目与待领项），收线后按 `CONCURRENT-WORK-PROTOCOL.md` §10 归档 |
 | `NK4C-WORKLOG.md` | 滚动工作记录，`misc_concepts.md` 与结构债台账的取证来源指针 |
-| `ADDRESS-CONSTANT-AUDIT.md` | 地址常量清扫的审计账本（发现清单加修复轮注记）；被 `os/libs/minix-types/src/types/boot.rs` 引用 |
+| `ADDRESS-CONSTANT-AUDIT.md` | 地址常量清扫的审计账本；被 `os/libs/minix-types/src/types/boot.rs` 引用 |
 | `PATTERN-SCAN-REPORT-20260923.md` | 模式扫描账本，被 `tools/pattern-gate.sh` 引用，且是 `misc_concepts.md` 的来源真源 |
 | `NK4C-OPENING-PROMPT.md` | 被 `os/kernel-image/src/bootface.rs` 当裁决源引用；余下内容已摘入 `SESSION-HISTORY.md` |
-| `NK4C-BUG-RISCV64-TRANSIENT-PTE.md` | 被 `os/libs/minix-types/src/types/boot.rs` 引用；已转历史案卷，只接受勘误。`CASE-RISCV64.md` 与之互指 |
+| `NK4C-BUG-RISCV64-TRANSIENT-PTE.md` | 被 `os/libs/minix-types/src/types/boot.rs` 引用；已转历史案卷，只接受勘误 |
+| `NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md` | **本轮改判保留（与清理方案的偏离）**：该案仍在追缴（裁决 `PD-16`），其第四章「已排除假设 + 每条手段的分辨力边界」是全仓库防返工价值最高的一段，压缩入索引卷即毁。索引与地图在 `CASE-RISCV64.md`，原件作为工作现场保留 |
+| `NK4A-TODO.md`、`NK4B-TODO.md` | 两轮任务书的阶段台账（当时条目已全闭），仍被 `PATTERN-SCAN-REPORT`、`misc_concepts.md` 与 `edge_todo.md` 当来源引用；体积不大了但仍是台账本体 |
+| `TODO-LEDGER-*`、`STAGE-KERNEL-FREEZE-READY-20261008.md`、`CONCURRENT-WORK-PROTOCOL.md`、`REVIEW-HISTORY.md`、`SESSION-HISTORY.md`、`CASE-RISCV64.md`、`CASE-AARCH64.md` | 本轮新增的九个交付物 |
 
 ### 1.2 并入 `REVIEW-HISTORY.md` 后删除（十九个）
 
@@ -46,21 +50,21 @@
 
 合并卷只保留：每轮的评审区间与快照提交、P0 与 P1 计数、**仍未闭合的发现**、该轮得出的可复用判据，以及一张"跨轮反复未修项"的追踪表。
 
-### 1.3 并入 `SESSION-HISTORY.md` 后删除（二十九个）
+### 1.3 并入 `SESSION-HISTORY.md` 后删除（二十八个）
 
-八份 `NK4C-接续PROMPT-*.md`、`NK4C-RESUME-PROMPT.md`、`NK4C-GLM53-PROMPT.md`、`NK4C-NEW-MACHINE-OPENING-PROMPT.txt`、`NK4A-QWEN-OPENING-PROMPT.md`、`NK4B-OPENING-PROMPT.md`、`HANDOFF-NK4A-boot-first-light.md`、`HANDOFF-NK4A-review-and-redo.md`、`NK4A-HANDOFF-STATUS.md`、`MISC-CONCEPTS-SESSION-HANDOFF-20260927.md`、`PATTERN-GATE-SESSION-HANDOFF-20260927.md`、`nk4c-glm-riscv-session-handoff-20261002.md`、`NK4C-MIGRATION-20260930.md`、五份 `new_todo_{HY4,deepseek,glm,muse,qwen}.md`、`NK4A-QWEN-WORKLOG.md`、`NK4B-WORKLOG.md`。
+八份 `NK4C-接续PROMPT-*.md`、`NK4C-RESUME-PROMPT.md`、`NK4C-GLM53-PROMPT.md`、`NK4C-NEW-MACHINE-OPENING-PROMPT.txt`、`NK4A-QWEN-OPENING-PROMPT.md`、`NK4B-OPENING-PROMPT.md`、`HANDOFF-NK4A-boot-first-light.md`、`HANDOFF-NK4A-review-and-redo.md`、`NK4A-HANDOFF-STATUS.md`、`MISC-CONCEPTS-SESSION-HANDOFF-20260927.md`、`PATTERN-GATE-SESSION-HANDOFF-20260927.md`、`nk4c-glm-riscv-session-handoff-20261002.md`、`NK4C-MIGRATION-20260930.md`、五份 `new_todo_{HY4,deepseek,glm,muse,qwen}.md`、`NK4A-QWEN-WORKLOG.md`、`NK4B-WORKLOG.md`、`claim-prompt.md`（它的规则部分归 `CONCURRENT-WORK-PROTOCOL.md` §11，它的会话坐标归本卷）。
 
 合并卷保留：每条任务线的推进主线与终点状态、每次交接留下的未竟项、五路独立扫描的共识与分歧归并、以及"被后续账本覆盖"的指针。`new_todo_*` 原件的价值在于独立覆盖度，其结论已归并进台账，逐条读数不再维护（`OQ-N1` 已裁定命令全集口径以规划文件为准）。
 
-### 1.4 并入案卷后删除（五个）
+### 1.4 并入案卷后删除（四个）
 
-`NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md` 与 `riscv-reviewlog.md` → `CASE-RISCV64.md`；`NK4C-BUG-AARCH64-VEC-CAP.md`、`NK4C-BUG-AARCH64-VEC-CAP-GLM.md`、`NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` → `CASE-AARCH64.md`。
+`riscv-reviewlog.md` → `CASE-RISCV64.md`（静态扫描线六轮账）；`NK4C-BUG-AARCH64-VEC-CAP.md`、`NK4C-BUG-AARCH64-VEC-CAP-GLM.md`、`NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` → `CASE-AARCH64.md`。
 
-案卷合并的取舍：现象、定性、**已排除假说及其证伪方法**、可迁移判据、结案状态与关联编号入新卷；逐轮取证对话与日志摘录不入新卷（体积占九成，Git 可回捞）。
+案卷合并的取舍：现象、定性、**已排除假说及其证伪方法**、可迁移判据、结案状态与关联编号入新卷；逐轮取证对话与日志摘录不入新卷。两处改判：未结案的 `NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md` **不并不解**（见 1.1 的改判理由）；已结案的 `NK4C-BUG-RISCV64-TRANSIENT-PTE.md` 本就因被生产代码注释引用而保留。
 
-### 1.5 折干后直接删除（四个）
+### 1.5 折干后直接删除（三个）
 
-`claim-prompt.md`（并发领用指令全文已进 `CONCURRENT-WORK-PROTOCOL.md` §11）、`new_edge1.md` 与 `new_edge3.md`（进行中的条目进 OPEN §5，所有权与前置信息进协议卷）、`edge_todo_archive.md`（其闭项已核，进 DONE）、`STRUCTURAL-DEBT-REGISTER-20260930.md`（十六行取代说明存根，指向已在位的新册；删除同一笔提交内同步摘掉 `tools/check-staged-inflight.sh` 里那条在制登记）。
+`new_edge1.md` 与 `new_edge3.md`（进行中的条目进 OPEN §5，所有权与前置信息进协议卷；`new_edge2.md` 受保护、`new_edge4.md` 为活跃认领板保留）、`STRUCTURAL-DEBT-REGISTER-20260930.md`（十六行取代说明存根，指向已在位的新册；删除同一笔提交内同步摘掉 `tools/check-staged-inflight.sh` 里那条在制登记）。`claim-prompt.md` 计入 1.3。
 
 ### 1.6 移入 `rewrite-notes/concepts/`（三个）
 
@@ -76,7 +80,7 @@
 
 `TODO-LEDGER-OPEN.md`、`TODO-LEDGER-DONE.md`、`TODO-LEDGER-INDEX.md`（本文件）、`STAGE-KERNEL-FREEZE-READY-20261008.md`、`CONCURRENT-WORK-PROTOCOL.md`、`REVIEW-HISTORY.md`、`SESSION-HISTORY.md`、`CASE-RISCV64.md`、`CASE-AARCH64.md`。
 
-**净效果**：目录内文件从 76 降到 24（保留 15 + 新增 9），知识类 3 篇移出；`rewrite-notes/concepts/` 从 6 增到 9。
+**净效果**：目录内文件从 76 降到 28（保留 19 + 新增 9），知识类 3 篇移出；`rewrite-notes/concepts/` 从 6 增到 9。
 
 ### 1.8 回捞方式
 
@@ -84,8 +88,8 @@
 
 ### 1.9 修链与遗留
 
-- 目录外指向被删文件的 **Markdown 链接形态** 只有一处（`new_edge1.md` 内指向 `NK4A-REVIEW-REPORT.md` 的链接），随该文件一并删除；其余引用全部是反引号或散文形态，`tools/notes-link-check.py` 不检这类形态，因此改链范围以本节为准。
-- 需要更新指向的正式文档：`rewrite-notes/misc/misc_concepts.md`（命中最多的引用者，约二十个待删件，其"来源"段改为指向本节的处置表）、`rewrite-notes/README.md`（目录描述与计数）。
+- 指向被删文件的 **Markdown 链接形态**：目录外零命中（全仓实测）；目录内唯一一处（已删的 `new_edge1.md` 指向 `NK4A-REVIEW-REPORT.md`）随该文件一并消失。`edge_todo.md` 正文里指向 `edge_todo_archive.md` 的两个链接，因为归档件改判保留而不受影响。其余引用全是反引号或散文形态，`tools/notes-link-check.py` 不检这类形态。
+- 需要更新指向的正式文档：`rewrite-notes/misc/misc_concepts.md`（命中最多的引用者；本轮已先把三个被移知识文档的路径改指 `concepts/`，并在头注加一行指向本节——其约二十个指向已删原件的反引号来源行**不回溯改写**，因为那是当时的取证记录）、`rewrite-notes/README.md`（目录描述与计数）。
 - 历史账本内文（`NK4C-WORKLOG.md`、`PATTERN-SCAN-REPORT-20260923.md` 等）**零改写**：它们记的是当时的事实，路径失效由本节处置表兜底。
 - 遗留一项工具面待办：`tools/anchor-suspect-baseline-c.txt` 里仍列被删案卷路径。该文件正由另一条线程修改，本轮**不代跑再生**，已登记在 `TODO-LEDGER-OPEN.md` §8。
 
