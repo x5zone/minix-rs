@@ -9,10 +9,15 @@
 
 ```
 concepts/
-├── README.md          # 本文件：概念总览
-├── endpoint.md        # Endpoint 协议：进程标识与版本控制
-├── fail-stop.md       # Fail-Stop 语义与 Panic 安全
-└── (更多概念文档)      # 后续添加
+├── README.md                    # 本文件：概念总览与子类划分
+├── endpoint.md                  # Endpoint 协议：进程标识与版本控制
+├── capability.md                # 能力与特权模型
+├── fail-stop.md                 # Fail-Stop 语义与 Panic 安全
+├── typestate.md                 # 类型状态：用类型系统守不变量
+├── drop-in-kernel-risks.md      # 内核内替换的风险面
+├── trap-boundary-message-materialization.md  # 陷入边界上的消息物化与可见性
+├── transient-fault-forensics.md              # 「只在读取那一瞬间出现」缺陷的取证方法论
+└── qemu-environments.md                      # 开发机上的多版本 QEMU 环境与重建参数
 ```
 
 ---
@@ -34,6 +39,21 @@ concepts/
 | 引导模块规范 | VFS 的路径解析 |
 
 ---
+
+## 两个子类与入库判据
+
+本目录从 `2026-10-08` 起明列两个子类，避免"知识往哪放"反复讨论：
+
+| 子类 | 收录什么 | 现有词条 |
+|---|---|---|
+| **系统核心概念** | 跨服务、跨层级的设计基元；改动会影响整个系统语义 | `endpoint.md`、`capability.md`、`fail-stop.md`、`typestate.md`、`drop-in-kernel-risks.md`、`trap-boundary-message-materialization.md` |
+| **取证方法论与环境知识** | 不绑定单个缺陷、下一次还会用到的观察手段、判据与机器参数 | `transient-fault-forensics.md`、`qemu-environments.md` |
+
+入库判据（三条同时成立才进本目录，否则归 `../misc/misc_concepts.md` 的条目或留在阶段文档）：
+
+1. **跨任务可复用**：结论不随某个缺陷结案而失效（已结案只接受勘误的案卷归 `../coordination/`）。
+2. **带凭据**：每条断言附可复跑的取证命令或源码位置，读者能自己验。
+3. **整篇成立**：内容体量与结构足以独立成篇；单点经验进知识点汇总，不拆成小页。
 
 ## 当前概念列表
 
