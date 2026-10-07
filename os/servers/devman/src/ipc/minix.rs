@@ -50,6 +50,10 @@ pub trait KernelIpc {
     fn send(&mut self, dest: Endpoint, msg: &Message) -> Result<(), i32>;
     /// 阻塞往返（C `ipc_sendrec`，bind.c:32/80）。
     fn sendrec(&mut self, dest: Endpoint, msg: &mut Message) -> Result<(), i32>;
+    /// 状态控制动词（C `sys_statectl`，libsys sys_statectl.c:3-11）——
+    /// 出生协议段一（PD-34 `process_init`）的清 IPC 过滤经此发出。
+    /// 返回内核结果码（OK 或负 errno）。
+    fn statectl(&mut self, request: i32, address: u64, length: i32) -> i32;
     /// `sys_safecopyfrom(granter, grant, off, buf)` —— 把调用方缓冲的
     /// 字节读进来（加名字/写载荷）。
     fn safecopy_from(
@@ -75,6 +79,15 @@ pub trait KernelIpc {
 pub struct SysKernel;
 
 impl KernelIpc for SysKernel {
+    fn statectl(&mut self, request: i32, address: u64, length: i32) -> i32 {
+        minix_sys::syscall::sys_statectl(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            request,
+            address,
+            length,
+        )
+    }
+
     fn receive(&mut self, src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
         use minix_sys::ipc::IpcTransport;
         match minix_sys::ipc::DirectTrapTransport.receive(src, msg) {
@@ -322,20 +335,35 @@ impl<K: KernelIpc> Transport for MinixTransport<K> {
                 // SAFETY: 出生请求的活跃 union 臂是 `m_rs_init`
                 // （m_type == RS_INIT 且来源 RS）。
                 let kind = unsafe { msg.m_u.m_rs_init.type_ };
-                let result = if kind == 0 { minix_types::OK } else { minix_types::ENOSYS };
-                let mut reply = Message {
-                    m_type: minix_types::RS_INIT,
-                    ..Message::default()
+                // PD-34：出生协议编排归库——段一清 IPC 过滤（C
+                // `process_init` 第一段 sef_init.c:59-60 的 `assert(r == OK)`，
+                // 经 `KernelIpc::statectl` 真接线）、回报消息由库构造；
+                // 分派语义（devman 的树在 `Server::new` 构造期已建，等价 C
+                // `init_hook` 的首次构建语义 → fresh OK；LU/RESTART 诚实拒
+                // `ENOSYS`）保持原样。
+                let reply = minix_sef::process_init(
+                    &mut |req, addr, len| {
+                        let r = self.kernel.statectl(req, addr, len);
+                        if r == minix_types::OK {
+                            Ok(r)
+                        } else {
+                            Err(r)
+                        }
+                    },
+                    kind,
+                    &mut |t| if t == 0 { minix_types::OK } else { minix_types::ENOSYS },
+                );
+                let mut reply = match reply {
+                    Ok(m) => m,
+                    // C 段一 assert ＝ 出生失败 fail-closed（单线程服务器
+                    // 停机，RS 按崩溃处置——与下方 init 被拒同款）。
+                    Err(_) => return None,
                 };
-                // union 字段写是 safe 的（只有读才 unsafe）；回信臂同
-                // `m_rs_init`（process_init 尾部：
-                // `m.m_type = RS_INIT; m.m_rs_init.result = result;`）。
-                reply.m_u.m_rs_init.result = result;
                 // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
                 // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466），非普通 send：
                 // 发 RS_INIT 后停在 receive(RS) 半等 RS catch 出口的 OK 唤醒。
                 let _ = self.kernel.sendrec(Endpoint::RS, &mut reply);
-                if result == minix_types::OK {
+                if reply.rs_init_result() == Some(minix_types::OK) {
                     continue; // 出生已应答，吞掉这条，服务循环继续
                 }
                 return None; // init 被拒：fail-closed 停机
@@ -515,6 +543,9 @@ mod tests {
     }
 
     impl KernelIpc for ScriptedKernel {
+        fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> i32 {
+            minix_types::OK
+        }
         fn receive(&mut self, _src: Endpoint, msg: &mut Message) -> Result<i32, i32> {
             match self.inbox.pop_front() {
                 Some((m, s)) => {

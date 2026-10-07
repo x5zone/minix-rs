@@ -469,6 +469,12 @@ impl IpcBoundary for SysBoundary {
         // DiagWriter 同款),失败静默(C 的 printf 同样无可恢复处)。
         let _ = syscall::sys_diagctl_write(&DirectKernelCallTransport, line);
     }
+
+    fn statectl(&self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
+        // C `sys_statectl` 的真接线（trap 直连）——出生协议段一。
+        let r = syscall::sys_statectl(&DirectKernelCallTransport, request, address, length);
+        if r == minix_types::OK { Ok(r) } else { Err(r) }
+    }
 }
 
 // ── 生产事件循环传输 ────────────────────────────────────────────────

@@ -183,6 +183,12 @@ pub trait IpcBoundary {
     /// One console line (C: `printf` — main.c:117's unclean-state warn).
     /// Failure is swallowed: C's printf has no recovery either.
     fn warn(&self, line: &str);
+
+    /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) —
+    /// the birth protocol's paragraph-1 kernel call (clear IPC filters,
+    /// PD-34). Production wires `minix_sys::syscall::sys_statectl` over the
+    /// trap transport; the test double models an accepting kernel.
+    fn statectl(&self, request: i32, address: u64, length: i32) -> Result<i32, i32>;
 }
 
 // ============================================================================
@@ -837,6 +843,10 @@ impl<B: IpcBoundary> CallHandler for IpcService<B> {
         }
     }
 
+    fn birth_statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
+        self.boundary.statectl(request, address, length)
+    }
+
     fn handle_signal(&mut self, signo: i32) -> crate::lifecycle::SignalStep {
         // C `sef_cb_signal_handler` — main.c:101-118. Judgement comes from
         // `lifecycle` (already C-anchored and tested); the effects split
@@ -1239,6 +1249,12 @@ pub(crate) mod test_boundary {
 
         fn warn(&self, line: &str) {
             self.warns.borrow_mut().push(alloc::string::String::from(line));
+        }
+
+        fn statectl(&self, request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+            // 测试替身模拟接受型内核；清过滤请求计数可按需断言。
+            let _ = request;
+            Ok(minix_types::OK)
         }
     }
 }

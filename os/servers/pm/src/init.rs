@@ -546,13 +546,27 @@ impl<T: IpcTransport> PmServer<T> {
             // SAFETY: m_type == RS_INIT 且源 RS → 活跃 union 臂是
             // m_rs_init（sef_init.c:193-215 unpack 同款）。
             let init_type = unsafe { msg.m_u.m_rs_init.type_ };
-            let result = match init_type {
-                0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
-                _ => minix_types::ENOSYS,
+            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
+            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，经
+            // `KernelGateway::statectl` 真接线）、回报消息由库构造；
+            // 分派语义（fresh 实体 + restart STATEFUL → 都 OK；LU 未注册
+            // → 默认 ENOSYS，sef_init.c:324-327）保持原样。
+            let birth = minix_sef::process_init(
+                &mut |req, addr, len| self.kern.statectl(req, addr, len),
+                init_type,
+                &mut |t| match t {
+                    0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                    _ => minix_types::ENOSYS,
+                },
+            );
+            let mut birth = match birth {
+                Ok(m) => m,
+                // C 段一是 assert；本树的 fail-closed 形状＝传输损坏同款
+                //（出生协议失败无恢复面）。
+                Err(e) => panic!("PM: birth statectl failed: {e}"),
             };
             // NK4-C B9b：出生回报腿 = C `sef_cb_init_response_rs_reply`
             // = `ipc_sendrec(RS, &m)`（sef_init.c:458-466），非普通 send。
-            let mut birth = minix_sef::sef_init_reply(result);
             self.transport
                 .sendrec(Endpoint::RS, &mut birth)
                 .expect("PM: can't reply RS_INIT birth report to RS");
@@ -1217,14 +1231,83 @@ mod tests {
         assert!(server.transport.sent().is_empty());
     }
 
+    /// 出生测试网关：仅 statectl 接受（PD-34 段一），其余内核 verb 不应
+    /// 被出生路触碰——panic 即测试意图漂移的响铃。宿主 trap 诚实回 -EIO
+    ///（E1 通电前不伪造成功），出生编排测试关注回报形状而非内核往返。
+    struct BirthOnlyGateway;
+    impl crate::exit::KernelGateway for BirthOnlyGateway {
+        fn statectl(&mut self, _: i32, _: u64, _: i32) -> Result<i32, i32> {
+            Ok(minix_types::OK)
+        }
+        fn sys_kill(&mut self, _: Endpoint, _: i32) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_kill")
+        }
+        fn sys_clear(&mut self, _: Endpoint) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_clear")
+        }
+        fn sys_abort(&mut self, _: i32) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_abort")
+        }
+        fn proc_times(
+            &mut self,
+            _: Endpoint,
+        ) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
+            panic!("birth test: unexpected proc_times")
+        }
+        fn copy_to_user(&mut self, _: &[u8], _: Endpoint, _: u64) -> Result<(), i32> {
+            panic!("birth test: unexpected copy_to_user")
+        }
+        fn sys_resume(&mut self, _: Endpoint) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_resume")
+        }
+        fn sys_delay_stop(&mut self, _: Endpoint) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_delay_stop")
+        }
+        fn sys_trace(&mut self, _: i32, _: Endpoint, _: u64, _: &mut i64) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_trace")
+        }
+        fn sys_vircopy(
+            &mut self,
+            _: Endpoint,
+            _: u64,
+            _: Endpoint,
+            _: u64,
+            _: u64,
+        ) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_vircopy")
+        }
+        fn copy_from_user(&mut self, _: Endpoint, _: u64, _: &mut [u8]) -> Result<(), i32> {
+            panic!("birth test: unexpected copy_from_user")
+        }
+        fn get_ksig(&mut self) -> Result<Option<(Endpoint, u64)>, i32> {
+            panic!("birth test: unexpected get_ksig")
+        }
+        fn end_ksig(&mut self, _: Endpoint, _: i32) -> Result<(), i32> {
+            panic!("birth test: unexpected end_ksig")
+        }
+        fn sys_sigsend(&mut self, _: Endpoint, _: &minix_sys::syscall::SigMsgWire) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_sigsend")
+        }
+        fn sys_diagctl_stacktrace(&mut self, _: Endpoint) -> Result<(), i32> {
+            panic!("birth test: unexpected sys_diagctl_stacktrace")
+        }
+    }
+
     #[test]
     fn test_run_once_birth_request_answers_rs_init_report() {
-        // E-BIRTHFACE（NS1）：RS_INIT from RS → 出生应答（process_init 尾部
-        // sef_init.c:113-117），不落 pm_isokendpt/dispatch 路——C 侧该请求
-        // 由 sef_local_startup 消费（main.c:56）。注册面 fresh + restart
-        // STATEFUL（main.c:118-119）→ 都 OK；LU → ENOSYS。
-        let mut server = PmServer::with_transport(test_params(), TestIpcTransport::new());
-        let mut birth = Message { m_type: minix_types::RS_INIT, ..Message::default() };
+        // E-BIRTHFACE（NS1）：RS_INIT from RS → 出生应答（PD-34 编排面：
+        // 段一 statectl → 分派 → 库构造回报），不落 pm_isokendpt/dispatch
+        // 路——C 侧该请求由 sef_local_startup 消费（main.c:56）。注册面
+        // fresh + restart STATEFUL（main.c:118-119）→ 都 OK；LU → ENOSYS。
+        let mut server = PmServer::with_kernel_gateway(
+            test_params(),
+            TestIpcTransport::new(),
+            Box::new(BirthOnlyGateway),
+        );
+        let mut birth = Message {
+            m_type: minix_types::RS_INIT,
+            ..Message::default()
+        };
         birth.m_source = Endpoint::RS;
         // Union 写安全：RS_INIT 标签选中 m_rs_init 臂。
         birth.m_u.m_rs_init.type_ = 0; // SEF_INIT_FRESH
@@ -1236,8 +1319,15 @@ mod tests {
         assert_eq!(sent[0].1.m_type, minix_types::RS_INIT);
         assert_eq!(sent[0].1.rs_init_result(), Some(0));
 
-        let mut server2 = PmServer::with_transport(test_params(), TestIpcTransport::new());
-        let mut lu = Message { m_type: minix_types::RS_INIT, ..Message::default() };
+        let mut server2 = PmServer::with_kernel_gateway(
+            test_params(),
+            TestIpcTransport::new(),
+            Box::new(BirthOnlyGateway),
+        );
+        let mut lu = Message {
+            m_type: minix_types::RS_INIT,
+            ..Message::default()
+        };
         lu.m_source = Endpoint::RS;
         lu.m_u.m_rs_init.type_ = 1; // SEF_INIT_LU
         server2.transport.queue_receive(lu, IpcStatus { flags: 1 });

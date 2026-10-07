@@ -152,6 +152,11 @@ pub trait CallHandler {
     /// handler's report; the loop only acts on
     /// [`crate::lifecycle::SignalStep::ExitClean`].
     fn handle_signal(&mut self, signo: i32) -> crate::lifecycle::SignalStep;
+    /// State-control verb for the birth protocol's paragraph-1 kernel call
+    /// (PD-34 `process_init` orchestration). The loop owns the orchestration;
+    /// the handler routes the verb to whichever face holds the kernel
+    /// (production `IpcService` forwards to its boundary).
+    fn birth_statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32>;
     /// End-of-cycle hook: refresh shared-memory reference counts and
     /// destroy due segments. C: `update_refcount_and_destroy` —
     /// main.c:279. Document 08.
@@ -187,6 +192,11 @@ impl CallHandler for StubHandler {
         // The stub has no signal judgement; the production service
         // implements the C entity (main.c:101-118) via `lifecycle`.
         crate::lifecycle::SignalStep::Ignored
+    }
+
+    fn birth_statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+        // The stub models an accepting kernel.
+        Ok(minix_types::OK)
     }
 
     fn on_cycle_end(&mut self) {
@@ -385,11 +395,28 @@ impl<T: EventLoopTransport, H: CallHandler> IpcServer<T, H> {
             // SAFETY: classify 前置检查 m_type == RS_INIT 且源 RS → 活跃
             // union 臂是 m_rs_init（sef_init.c:193-215 unpack 同款）。
             let init_type = unsafe { msg.m_u.m_rs_init.type_ };
-            let result = match init_type {
-                0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
-                _ => ENOSYS,
+            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
+            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`；经
+            // `CallHandler::birth_statectl` 到 boundary 的真接线）、回报
+            // 消息由库构造；本服务只答分派语义（fresh+restart 注册同体
+            // = sef_cb_init_fresh，main.c:128-129；LU 未注册 → 默认
+            // ENOSYS，sef_init.c:324-327）。清过滤失败＝出生失败：C 是
+            // assert，本循环的 fail-closed 形状是按传输损坏计数。
+            let birth = minix_sef::process_init(
+                &mut |req, addr, len| self.handler.borrow_mut().birth_statectl(req, addr, len),
+                init_type,
+                &mut |t| match t {
+                    0 | 2 => 0, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                    _ => ENOSYS,
+                },
+            );
+            let mut birth = match birth {
+                Ok(m) => m,
+                Err(_) => {
+                    self.note_dropped();
+                    return RunStep::ReceiveFailed;
+                }
             };
-            let mut birth = minix_sef::sef_init_reply(result);
             // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非 sendnb）。
             if self
                 .transport
@@ -641,6 +668,15 @@ mod tests {
         fn handle_signal(&mut self, signo: i32) -> crate::lifecycle::SignalStep {
             self.signals.push(signo);
             self.signal_step
+        }
+
+        fn birth_statectl(
+            &mut self,
+            _request: i32,
+            _address: u64,
+            _length: i32,
+        ) -> Result<i32, i32> {
+            Ok(minix_types::OK)
         }
 
         fn handle_proc_event(&mut self, _event: ProcEventIn) -> i32 {

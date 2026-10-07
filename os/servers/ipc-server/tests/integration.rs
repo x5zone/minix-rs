@@ -135,6 +135,10 @@ impl CallHandler for CannedHandler {
         minix_ipc_server::SignalStep::Ignored
     }
 
+    fn birth_statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+        Ok(minix_types::OK)
+    }
+
     fn handle_call(&mut self, _call: IpcCall, _msg: &mut Message) -> i32 {
         self.calls += 1;
         self.code

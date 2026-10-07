@@ -34,6 +34,15 @@ pub trait KernelGateway {
     /// 载荷；返回值 = 内核回复（OK 或负 errno）。
     fn sys_clear(&mut self, ep: Endpoint) -> Result<(), i32>;
 
+    /// C: `sys_statectl(request, address, length)`（libsys
+    /// `sys_statectl.c:3-11`）——状态控制面（清/挂 IPC 过滤、状态表登记）。
+    /// 出生协议段一（PD-34 `process_init`）经此发出清过滤请求。默认实现
+    /// 模拟接受型内核（测试替身无需逐一补写）；生产
+    /// [`TrapKernelGateway`] 走 trap 直连真接线。
+    fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+        Ok(minix_types::OK)
+    }
+
     /// C: `sys_abort(how)`（libsys `sys_abort.c:8-13`）——
     /// `_kernel_call(SYS_ABORT, &m)`，载荷 m1i1 = `how`（RB_* 位组）。
     /// 成功时机器直接停机；失败返回负 errno（C 调用方忽略）。
@@ -167,6 +176,11 @@ impl<T: minix_sys::syscall::KernelCallTransport> KernelGateway for TrapKernelGat
         } else {
             Ok(())
         }
+    }
+
+    fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
+        let r = minix_sys::syscall::sys_statectl(&self.transport, request, address, length);
+        if r < 0 { Err(r) } else { Ok(r) }
     }
 
     fn proc_times(&mut self, ep: Endpoint) -> Result<(minix_types::Clock, minix_types::Clock), i32> {
