@@ -116,7 +116,7 @@ R3.1 v2 方法复用（`git show --numstat` 四判据 + merge fallback + python 
 - **719716dab** AF-12 文案：三处锚点 off-by-one 全树改齐。
 - **atf-compat 抽样 3 组**：MD5Update 进位（与 RFC1321 回绕检测等价性数学核验）；bm.c 逐字 port（与 minix3/lib/libc/string/bm.c 全文件比对属实）；sys_nerr 边界（C errlist.awk:105 公式对账，135=表项数、[0,sys_nerr) 判域）。
 - **f797120f3** BIG 笔：notes/tmp 证据入库，os/ 零足迹。
-- **C-65 三连**：触面 tools/pattern-gate.sh+证据+notes；**P2_TESTS 43→64（+21）逐名解析对账成立**，新增 21 名与 R3.2 深审各笔测试一一对应（brk×9/split×2/PL011×4/stat 对账/lazy_fpu/atf suite）——跨线互钉良好。注：证据文件落仓库根 `evidence/20261004-c65-pattern-gate/`（R3.1 F7 同款位置偏离延续，G10 附记）。
+- **C-65 三连**：触面 tools/pattern-gate.sh+证据+notes；**P2_TESTS 43→64（+21）逐名解析对账成立**，新增 21 名与 R3.2 深审各笔测试一一对应（brk×9/split×2/PL011×4/stat 对账/lazy_fpu/atf suite）——跨线互钉良好。注：证据文件落仓库根 `tmp/evidence/20261004-c65-pattern-gate/`（R3.1 F7 同款位置偏离延续，G10 附记）。
 
 ---
 

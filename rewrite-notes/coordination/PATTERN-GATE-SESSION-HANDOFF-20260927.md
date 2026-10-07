@@ -15,7 +15,7 @@
 
 **已交付物**：`tools/pattern-gate.sh`（15 项机械检查 P1-P15）+ `tools/pattern-gate-baseline.txt`
 （存量豁免）+ `rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md`（模式目录 +
-§7/§8 增量节）+ `evidence/2026092{3,7}-c6{1,2,3}-pattern-gate/`（判别证据）。**全部已入 git。**
+§7/§8 增量节）+ `tmp/evidence/2026092{3,7}-c6{1,2,3}-pattern-gate/`（判别证据）。**全部已入 git。**
 
 ## 2. 三轮交付记录（commit 均已合入 rewrite）
 
@@ -42,7 +42,7 @@ C-NN zcode-glm → cd .wt/ 专属树 → 登记 §2 一行并 commit → 树内�
 - **基线 118 keys**（P7×3 + P8×6 + P12×3 + P14×106）。注：旧汇报里的「222/219」是中间轮含重复计数，
   以实测 118 为准。
 - **判别证据**：selftest 24 例全绿；真树负例变异（P3/P4/P5/P6/P7/P14/P15 注入违规全现形）；
-  `evidence/2026092{3,7}-c6{1,2,3}-pattern-gate/` 三套日志。
+  `tmp/evidence/2026092{3,7}-c6{1,2,3}-pattern-gate/` 三套日志。
 - **运行**：`bash tools/pattern-gate.sh`（全量）/ `--diff [RANGE]`（增量门）/ `--update-baseline` /
   `--self-test`。退出码 0/1/2。P1 仅主树有意义（.review 不入 git，worktree 下 SKIP 属预期）。
 

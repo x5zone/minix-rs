@@ -2,7 +2,7 @@
 
 > 评审对象：busy-billing agent 在 `940ad8363..cd22e2e68`（nk4a-agent-wip 分支钉存）的全部改动。
 > 评审执行：独立新会话（zcode/GLM），只读 + 验证实跑，零代码修改。
-> 证据目录：`rewrite-notes/evidence/20260921-2320/`（99 个 /tmp 日志 + tip 冒烟实录）。
+> 证据目录：`tmp/evidence/20260921-2320/`（99 个 /tmp 日志 + tip 冒烟实录）。
 > 保全分支：`nk4a-agent-wip` @ cd22e2e68（含其全部工作 + 停止令落盘 + 交接文档）。
 
 ---
@@ -158,5 +158,5 @@ lib.rs +316/-17。用户担心的"因为 bug 乱改设计"不成立。
 ## 八、方法与局限声明
 
 - 本评审为同 agent VERIFY-CHECK（grep/命令重放式，全部关键结论附实测命令与输出路径）；按规则标注验证局限：构建矩阵 V1-V7 为工具输出（L1），危险面定性为 diff 逐条人工核验（L2）。
-- 证据文件：`evidence/20260921-2320/`（smoke-at-tip-*.log = V1 庭证；run37.log/img37.log = 它最后一轮的串口与构建实录）。
+- 证据文件：`tmp/evidence/20260921-2320/`（smoke-at-tip-*.log = V1 庭证；run37.log/img37.log = 它最后一轮的串口与构建实录）。
 - 基线对照使用独立 worktree（/tmp/nk4a-baseline-wt @ 940ad8363，评审后已清理），未触碰工作树。

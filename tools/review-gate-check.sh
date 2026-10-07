@@ -148,7 +148,7 @@ done
 if [[ -z "${DOC_ROOT}" ]]; then
   echo "⛔ 在三棵树里找不到 ${STAGE}/${DOC_STEM}.md（树 = ${NOTES_TREES[*]}）" >&2
   echo "   stage 与 doc-stem 需按 2026-10-07 迁移后的布局给出；" >&2
-  echo "   旧路径对照见 rewrite-notes/MIGRATION.md 与 migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
+  echo "   旧路径对照见 rewrite-notes/MIGRATION.md 与 tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
   exit 2
 fi
 

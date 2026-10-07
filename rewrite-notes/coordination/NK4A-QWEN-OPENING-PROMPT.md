@@ -117,7 +117,7 @@ pkill -f '[q]emu-system'
 - [ ] FIXLOG 每个修复一条，含「测试（防回归）」小节；
 - [ ] 所有 commit 在 rewrite 分支本地（未 push）；
 - [ ] 真机证据 serial 日志已归档：
-      `git add -f rewrite-notes/evidence/<目录>/`
+      `git add -f tmp/evidence/<目录>/`
       （*.log 被忽略必须 -f），commit 信息说明对应轮次；
 - [ ] 最终汇报：以 Task 粒度列出 状态/根因/修法/commit/证据行，
       含未决问题与下一步建议。

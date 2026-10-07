@@ -91,7 +91,7 @@ ABI 变更是否所有构造/消费点一致、847 行新机制的容量与碎�
 1. **保全分支**：`git branch nk4a-agent-wip`（钉在它的最终 tip 上——此后
    无论 reset 还是改写，它的全部工作永可追溯）。
 2. **证据归档**：把 `/tmp` 下它的最新串口/冒烟日志（`ls -lat /tmp/*.log |
-   head` 按时间挑）复制到 `rewrite-notes/evidence/`
+   head` 按时间挑）复制到 `tmp/evidence/`
    （新建目录），文件名带采集时间。这些是易失证据。
 3. **它 tip 上的冒烟实测**：跑一次
    `SMOKE_SKIP_BOOT=0 bash os/qemu-tests/test-cmd-smoke.sh`，完整记录

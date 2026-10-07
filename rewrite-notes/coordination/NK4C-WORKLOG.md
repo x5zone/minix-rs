@@ -5106,7 +5106,7 @@ VFS 侧本轮被逐环证据**完全洗清**：路径遍历 → FS 往返 → �
 
 ### 起手：先修 commit hygiene（上一轮遗留）
 
-上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- rewrite-notes/coordination/NK4C-WORKLOG.md`（pathspec 形式仅提交 WORKLOG），使 7 个非本 agent 文件退回预暂存 A 状态、不进入本 agent 提交。新提交 `1841af3d5`（1 file changed, 41 insertions(+), 1 deletion(-)）。
+上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `tmp/migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- rewrite-notes/coordination/NK4C-WORKLOG.md`（pathspec 形式仅提交 WORKLOG），使 7 个非本 agent 文件退回预暂存 A 状态、不进入本 agent 提交。新提交 `1841af3d5`（1 file changed, 41 insertions(+), 1 deletion(-)）。
 
 ### 静态定位根因（不靠探针，直接读代码）
 
@@ -9277,7 +9277,7 @@ clippy/rustfmt Δ0·x86 镜像重建+真机两轮 marker=2/panic=0/pfVM=0。
 | F4 | P2-hygiene | kernel-image 交付边界节未更新三架构状态 + `[ARCH: boot-handoff]` 字面标注缺 | os/kernel-image/src/main.rs:17-23 | **合进续-88/89 装机面那次改动顺带补**（该文件正在改） |
 | F5 | P2-doc | 锚点行号偏移 ×3：07c9e6649 schedule.c:60-67→44-47；7a89f2b72 memory.c:606-607→607-608；58c0a51d3 region.c:646→645（结论均不受影响） | 各 commit message/doc | 登记备改，碰到对应文档时校 |
 | F6 | P2-test | 接线类修复测试缺口：e55057d1c（send_work 排水接线无回归测试）、cd613370d（service_pm 阻塞 send 行为翻转零测试 + 该笔自曝 x86 约 1/4 run 未达 marker 未深挖）、2113be7fc（trap 点物化屏障 host 结构性不可测） | 各 commit | 重写到相关域时补测；**cd613370d「未深挖」值得单独跟一条**（可能是又一 marker 阻塞） |
-| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 `evidence/`，偏离 `rewrite-notes/evidence/` 约定 | evidence/20260930-c64-pattern-gate/ | 下次整理证据目录时归位 |
+| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 `tmp/evidence/`，偏离 `tmp/evidence/` 约定 | tmp/evidence/20260930-c64-pattern-gate/ | 下次整理证据目录时归位 |
 | F8 | P2-hygiene | 7ccaf77e9 的 test-riscv64-uboot.sh 依赖预检漏 fdisk（无 fdisk 宿主应 SKIP 却 FAIL）+ dd count=28671 魔数无注释 | os/qemu-tests/test-riscv64-uboot.sh:31-34 | 续-89 装机腿碰这脚本时一起修 |
 
 **R3 遗留（§7.3 仍开、报告建议补编号，用户提示为 F9/F10）**：
@@ -14171,7 +14171,7 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
   同一个 crate 在工作区里被并入了别的 crate 启用的特性臂，实现随特性而换。
 - 迁移前对照：把 `notes/pre-migrate-20261007` 的受控源码导出到 /tmp 独立目录，
   用同一条容器命令跑，失败目标**逐条相同**（GLM 与 MiMo 各做一次；本方 `os/` 的差异只有注释行，
-  逐行核验记在 `migrate_notes_plan/EXECUTION-LOG.md` 的门 M6 一节）。
+  逐行核验记在 `tmp/migrate_notes_plan/EXECUTION-LOG.md` 的门 M6 一节）。
 
 ④待查方向（本条不动手，交下一棒）：
 

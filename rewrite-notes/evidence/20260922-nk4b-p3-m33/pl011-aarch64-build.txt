@@ -1,6 +1,0 @@
-# NK4-B P3 M3.3：PL011 节流改动后，aarch64 真目标构建（宿主 toolchain，非 docker：minix-ci:1.94 未装 aarch64-unknown-none）
-# cmd: cargo build -j 1 --target aarch64-unknown-none -p kernel-image --release --no-default-features --features fw-aarch64-none
-A64-BUILD-EXIT=0
-# cmd: cargo check -j 1 --target aarch64-unknown-none -p minix-plat（只看 early_console 是否有新告警）
-early_console 相关告警数: 0
-kernel ELF: 1203016 字节

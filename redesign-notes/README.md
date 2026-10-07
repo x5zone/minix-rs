@@ -1,11 +1,19 @@
 # 架构演进
 
-> **创建**: 2026-10-07 建档。本区是「重写定稿后才启用」的探索区。当前内容全是从旧目录
-> 重写树里的再设计子目录与旧的 notes 伞目录再设计分区原样迁过来的存量思考，**包含互相冲突的多个方案，
-> 未经评审收敛，不能当实现依据**。正在推进的重写事实以 `rewrite-notes/` 为准。
-> 目录按主题分组：`architecture/`（架构级改进与跨层、一致性类探索）、`ipc/`（Endpoint 与 IPC 协议）、
-> `fork/`（fork 语义），`vm/` 为服务是否内嵌内核地址空间这一开放问题预留。
-> 开启新的探索方向时在此新建子目录，并先把同主题的已有分析收敛一遍，避免同一问题多稿并存。
+> **创建**: 2026-10-07（目录迁移当天）建档，同日补全本索引。本区的定位来自目录迁移方案里六方的一致表述：
+> **重写稳定之后才启用的探索区**，用来放「架构应该变成什么样」的思考，而不是「现在的行为是什么」。
+>
+> 三条使用约束：
+>
+> 1. **不能当实现依据**。当前 13 篇全是从两个来源原样迁来的存量思考（旧 notes 伞目录的再设计分区 11 篇，
+>    以及重写树里再设计子目录的 2 篇），彼此之间**存在互斥方案**，也尚未与 `minix3/` 的 C 源核对过。
+>    正在推进的重写事实一律以 `rewrite-notes/` 为准。
+> 2. **允许互斥方案并存，但一个方向一个子目录**。`architecture/`（架构级改进、跨层污染、分布式一致性）、
+>    `ipc/`（Endpoint 与 IPC 协议）、`fork/`（fork 语义）、`vm/`（服务是否内进内核地址空间，暂未放文件）。
+>    开新方向时新建子目录，并且先把同主题的已有分析收敛成一处结论，避免同一问题多稿并存。
+> 3. **裁决状态要看台账**。尚待拍板的方向集中在
+>    `rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md` 与三架构对齐台账；
+>    本区文档里的结论句不代表已被采纳。
 
 本目录记录 MINIX3 架构改进的探索性思考，聚焦于现代操作系统设计方向。
 
@@ -23,15 +31,46 @@
 
 ## 文档索引
 
+### `architecture/` — 架构级改进
+
 | 文档 | 主题 | 关键内容 |
 |------|------|----------|
 | [architecture-changes.md](architecture/architecture-changes.md) | 架构变更探索 | Trusted Core Servers 内核态化、LPE Core 策略、AI 驱动调度 |
+| [improve_minix.md](architecture/improve_minix.md) | 架构改进思考（初稿） | 现代硬件挑战、架构改进方向 |
+| [improve_minix_refactored.md](architecture/improve_minix_refactored.md) | 架构改进思考（结构优化版） | 同上，重新组织后的版本 |
 | [semantic-modules.md](architecture/semantic-modules.md) | 语义模块设计 | 模块依赖图、调度核心、IPC 模块抽象 |
-| [ipc-improve.md](ipc/ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
-| [improve_minix.md](architecture/improve_minix.md) | 架构改进思考（原始） | 现代硬件挑战、架构改进方向 |
-| [improve_minix_refactored.md](architecture/improve_minix_refactored.md) | 架构改进思考（重构版） | 同上，结构优化版本 |
+| [microkernel-cohesion-design.md](architecture/microkernel-cohesion-design.md) | 微内核内聚性 | 服务边界与内聚判据 |
+| [microkernel-closure-design.md](architecture/microkernel-closure-design.md) | 架构闭包 | 依赖闭包与分层约束 |
+| [rs-cross-layer-pollution.md](architecture/rs-cross-layer-pollution.md) | 跨层污染 | 来自重写树再设计子目录的一篇 |
+| [tocutou-and-distributed-consistency.md](architecture/tocutou-and-distributed-consistency.md) | 分布式一致性探索 | 同上 |
 
-> **注意**：`improve_minix.md` 和 `improve_minix_refactored.md` 已被拆分到 `architecture-changes.md`（redesign）、`modern-hardware-and-rust.md`（rewrite）和 `learning-path.md`（study）。原始文件保留作为参考。
+### `ipc/` — Endpoint 与进程间通信
+
+| 文档 | 主题 | 关键内容 |
+|------|------|----------|
+| [endpoint_redesign.md](ipc/endpoint_redesign.md) | Endpoint 协议重设计 | endpoint 语义与生命周期 |
+| [ipc-improve.md](ipc/ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
+
+### `fork/` — fork 语义
+
+| 文档 | 主题 | 关键内容 |
+|------|------|----------|
+| [fork-redesign.md](fork/fork-redesign.md) | fork 语义重设计 | 进程复制的边界与资源继承 |
+
+### `vm/` — 预留
+
+「VM 是否内进内核地址空间」与「保持用户态服务 + 继续优化 IPC 路径」是两条互斥路线，尚未裁决，
+落点与前置说明见 [vm/README.md](vm/README.md)。
+
+### 两份逐字节相同的备份
+
+`improve_minix.md.backup` 与 `improve_minix_refactored.md.backup` 和正本 `cmp` 逐字节相同（已实测）。
+是否合并是早先待办里的旧条目，目录迁移只搬不删，留给独立任务处理。
+
+> **拆分史（保留原文是为了可追溯）**：`improve_minix.md` 与 `improve_minix_refactored.md` 早先被拆成三份，
+> 分别落到本区的 `architecture/architecture-changes.md`、重写区的
+> `rewrite-notes/misc/modern-hardware-and-rust.md`、学习区的 `study-notes/learning-path.md`；
+> 两个原始文件作为参考保留。
 
 ---
 

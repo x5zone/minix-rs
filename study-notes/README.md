@@ -17,8 +17,8 @@
 
 ## 后续处理
 
-本区共 184 个文件。是否精简（去掉 `.bak` 备份、合并重复主题、删除已被 `rewrite-notes/`
-取代的篇目）是独立任务，**不在本次目录迁移里做**：迁移的验收标准只有「内容零丢失、引用零断裂」，
+本区共 184 个文件（含本 README）。清理已在做的部分：`progress.md.backup_20260329_233603`
+已删除——它是正本更早的分叉快照（缺「核心理念」等段落，不是重复拷贝），需要回看时用 `git show` 该路径即可取回。剩下的精简（去掉 `.bak` 备份、合并重复主题、删除已被 `rewrite-notes/` 取代的篇目）仍是独立任务，**不在本次目录迁移里做**：迁移的验收标准只有「内容零丢失、引用零断裂」，
 掺进删除动作就会让验收同时需要证明「删的都是该删的」。
 需要找回本区迁移前的状态：annotated tag `notes/pre-migrate-20261007`，
-逐文件清单与 sha256 见 `migrate_notes_plan/pre-migrate-20261007/manifest.notes.disk.tsv`。
+逐文件清单与 sha256 见 `tmp/migrate_notes_plan/pre-migrate-20261007/manifest.notes.disk.tsv`。

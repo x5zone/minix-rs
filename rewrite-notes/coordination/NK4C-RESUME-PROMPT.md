@@ -69,7 +69,7 @@ sed -n '/^## 6/,/^## 7/p' rewrite-notes/coordination/NK4C-OPENING-PROMPT.md | he
 **读完必须能回答**：当前 frontier 是哪个编号？上一步的结论是什么？下一轮的第一个动作是什么？
 若答不出，**只补读 WORKLOG 中相关的那一节**（用 grep 定位节号，不要整篇读）。
 
-**不要读**：`NK4C-WORKLOG.md` 全文、`NK4C-OPENING-PROMPT.md` 全文、`.review/` 下的历史、`migrate_notes_plan/`。它们在需要时用 grep 精确定位即可。
+**不要读**：`NK4C-WORKLOG.md` 全文、`NK4C-OPENING-PROMPT.md` 全文、`.review/` 下的历史、`tmp/migrate_notes_plan/`。它们在需要时用 grep 精确定位即可。
 
 ---
 

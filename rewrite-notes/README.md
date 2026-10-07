@@ -48,8 +48,10 @@
 | [concepts/](concepts/) | 跨阶段的概念词条：capability、endpoint、fail-stop、typestate、内核内替换的风险 | 6 |
 | [misc/](misc/) | 不属于单一阶段的重写工程文档：项目规划、结构设计、纵向切片策略、语义冻结策略、内核不变量、异步消息表、SENDREC 原子性、ELF 加载、架构机制映射、现代硬件与 Rust，以及伞目录退役时归档进来的两份说明 | 16 |
 | [coordination/](coordination/) | 多会话协作的过程产物：开场与接续提示词、滚动工作记录、交接件、评审报告与审计表、待办台账、并行编排、缺陷案卷。只读为主，新内容不要写在这里 | 73 |
-| [evidence/](evidence/) | 按日期与任务命名的实验取证（串口日志、设备树、脚本输出）。审计证据，不做改写 | 276 |
+| [tmp/evidence/](tmp/evidence/) | 按日期与任务命名的实验取证（串口日志、设备树、脚本输出）。审计证据，不做改写 | 276 |
 | [archive/legacy-fork-bak/](archive/legacy-fork-bak/) | 以 fork 系统调用为主线时期的备份稿 | 40 |
+
+取证产物为什么放在 `tmp/` 而不是本树：仓库的落盘规则要求运行日志、二进制镜像、评审与工具运行证据一律进 `tmp/` 下按功能划分的子目录，见 [../prompt/agents-workflow-optim.md](../prompt/agents-workflow-optim.md)。**代价要认**：这批文件不再被 Git 跟踪，换机器或误删不可从版本库找回；迁移前的全量副本在压缩卷里（见 [MIGRATION.md](MIGRATION.md) 的回捞一节），而压缩卷本身也在 `tmp/` 内，所以它同样只有一份磁盘拷贝。
 | [MIGRATION.md](MIGRATION.md) | 迁移前后的路径对照、评审工具参数变更、已知悬空引用、旧内容回捞方法 | — |
 
 ## 从零开始的阅读路线

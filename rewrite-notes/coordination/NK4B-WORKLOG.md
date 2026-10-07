@@ -67,7 +67,7 @@ rewrite
 
 命令：`cd os && docker run --rm -v "$PWD:/work" -w /work -m 2g
 minix-ci:1.94 cargo test -j 1 -p <pkg>`（逐包，2026-09-22 实测）。
-两份存档：`evidence/20260922-nk4b-p0/host-tests-rs-rt-sys.txt` 是首次
+两份存档：`tmp/evidence/20260922-nk4b-p0/host-tests-rs-rt-sys.txt` 是首次
 运行原样输出（当时误用 `head -6` 取结果，kernel/arch/vm 三包的
 `test result:` 行被先出现的编译警告顶出窗口，只存下警告部分）；
 `host-tests-kernel-arch-vm.txt` 是为补回这三包真实计数而重跑的输出
@@ -93,7 +93,7 @@ minix-ci:1.94 cargo test -j 1 -p <pkg>`（逐包，2026-09-22 实测）。
 
 命令：`SMOKE_SKIP_BOOT=0 bash os/qemu-tests/test-cmd-smoke.sh`
 （脚本自身跑 `xtask image --arch x86_64 --release`，未加宿主 ulimit 也
-构建成功；完整 stdout 已归档 `evidence/20260922-nk4b-p0/smoke-stdout.txt`）。
+构建成功；完整 stdout 已归档 `tmp/evidence/20260922-nk4b-p0/smoke-stdout.txt`）。
 
 命令输出中的 stage 判定行（`SMOKE-EXIT=1` 为本文另外用 `echo $?`
 取到的退出码，其余为脚本 stdout 关键行，箭号为本文标注）：
@@ -147,7 +147,7 @@ Fix #9 系列）。
   SIGSEGV + 清挂起位（`febbb0c8b`，对位 C
   `minix3/minix/servers/vm/pagefaults.c:99-104/112-116/146-151`），
   新增宿主测试 1 条（VM 525→526）。**有真机证据**：c17a 定性 +
-  c18a/c18b 两次复跑死锁消除（`evidence/20260922-nk4a-taskA-c17a-c18/`）。
+  c18a/c18b 两次复跑死锁消除（`tmp/evidence/20260922-nk4a-taskA-c17a-c18/`）。
 - `os/kernel/src/trap_dispatch.rs`：tick 0xF1 臂与 IRQ 臂入口加全量存帧
   （`443624551`，对位 C `mpx.S:77/137/355/540` 的
   `SAVE_PROCESS_CTX` + `sconst.h:75-89`），新增宿主测试
@@ -160,7 +160,7 @@ Fix #9 系列）。
   irq-save/int33-save/int33-ret/pf-save）、`os/kernel/src/proc.rs`
   （add-call/add-flags）、`os/kernel/src/ipc.rs`（recv-clear）。
   commit `cb6377842`；真机产物 c23a/c24a
-  （`evidence/20260922-nk4a-taskC-c23/`、`-c24/`）。
+  （`tmp/evidence/20260922-nk4a-taskC-c23/`、`-c24/`）。
 
 声称修了什么、哪些有真机证据（逐条对照）：
 
@@ -190,7 +190,7 @@ P1 的断点、已排除项、探针未覆盖的存帧站点、第 7 轮方案�
 - 自检：fix-guard 本轮未涉及代码修改 N/A；计数不减 ✅（未改代码）；
   两次复跑 N/A（P0 只要求实测记录）；FIXLOG 本轮无修复条目，N/A；
   WORKLOG ✅；真机/测试输出已 `git add -f` 归档到
-  `evidence/20260922-nk4b-p0/`（冒烟 stdout + 六包 `test result:` 行）✅
+  `tmp/evidence/20260922-nk4b-p0/`（冒烟 stdout + 六包 `test result:` 行）✅
 
 ## P1 — x86_64 抵达 rc marker（状态：PARTIAL，取证三轮已定性到写者集合，修复需架构裁决）
 
@@ -198,7 +198,7 @@ P1 的断点、已排除项、探针未覆盖的存帧站点、第 7 轮方案�
   但怎么修属架构级裁决，不自行定案）
 - commit：探针 `3945cf5d0 debug(nk4b,p1): 第 7/8/9 轮 rs RBX 轨迹探针`、本文档与证据另一 commit
 - 真机轮次：c25a（第 7 轮）/ c26a（第 8 轮）/ c27a + c27b（第 9 轮，两次独立复跑）
-- 证据：`evidence/20260922-nk4b-p1-r7-9/`（四份串口日志 + 两份镜像构建日志）
+- 证据：`tmp/evidence/20260922-nk4b-p1-r7-9/`（四份串口日志 + 两份镜像构建日志）
 
 ### 本轮上的三个探针（均在 `os/kernel/src/trap_dispatch.rs`，全部
 `#[cfg(not(feature = "mock"))]` + 限次 + 标「task1-close 裁决删除」）
@@ -295,7 +295,7 @@ M3.1 载体现状点电）——它与本断点无关。
 
 ### 现状（一）：构建就挂——17 个编译错误，全部可归位到具体 commit
 
-首轮跑原脚本（`evidence/20260922-nk4b-p3-m31/carrier-build-before-fix.log`，
+首轮跑原脚本（`tmp/evidence/20260922-nk4b-p3-m31/carrier-build-before-fix.log`，
 696 行）：rt-birth 用户镜像构建成功，载体 `test-rt-birth-aarch64`
 （`--target aarch64-unknown-uefi --features fw-aarch64-uefi --release`）
 在依赖 `minix-kernel` lib 时报 **17 errors**，脚本以
@@ -507,7 +507,7 @@ boot-shim 装载）。放独立脚本 `os/kernel-image/check-layout.sh`：构建
 - 状态：**DONE**（判据 = 宿主产出 ELF + `readelf` 布局断言全绿；真机装载
   本里程碑不要求，也无从要求——没有任何代码把 aarch64 镜像送进 QEMU）
 - commit：见本节末「落盘」
-- 证据：`evidence/20260922-nk4b-p3-m32/`（10 份，文件名在下文逐条引用）
+- 证据：`tmp/evidence/20260922-nk4b-p3-m32/`（10 份，文件名在下文逐条引用）
 
 #### 改了哪五个文件
 
@@ -583,7 +583,7 @@ aarch64 镜像 `os/target/aarch64-unknown-none/release/kernel`（1205672 字节�
   两轮都 `serial: scheduler hand-off reached` → `FAIL: T4 marker 'rc: minimal
   boot script marker' never appeared`，`SMOKE-EXIT=1`；r2 串口尾部的终态是
   `kernel/src/trap_dispatch.rs:723:13` 的 `kernel exception vector 13` +
-  recursive panic —— 与 M3.1 归档的 `evidence/20260922-nk4b-p3-m31/serial_c28a.log:3921`
+  recursive panic —— 与 M3.1 归档的 `tmp/evidence/20260922-nk4b-p3-m31/serial_c28a.log:3921`
   同一站点，即 P1 的已知断点，**不是本里程碑引入的回退**。r1 尾部停在
   `nk4a: vm-pf recv`（PIT 抢占时序敏感，NK4A-TODO §8 记过同形抖动）。
 - 宿主回归：`host-test-counts.txt` —— minix-kernel 809 passed / 0 failed、
@@ -719,7 +719,7 @@ minix-arch 241 passed / 0 failed（与 P0 基线逐项相等）；
 
 1. **12 个装机模块全部能在 `aarch64-unknown-none` 下构建**（逐个
    `cargo build -p <pkg> --target aarch64-unknown-none --release`，全部退出码 0，
-   清单见 `evidence/…/m33-probe-modules.txt`）。否则 shim 根本打不出
+   清单见 `tmp/evidence/…/m33-probe-modules.txt`）。否则 shim 根本打不出
    「12 boot modules loaded」，本里程碑得先修模块。
 2. **内核侧 `arch_boot` 的 aarch64 实现不是桩**
    （`os/kernel/src/lib.rs:223-241`：与 x86_64 同形，走 `AArch64Paging` +
@@ -1143,7 +1143,7 @@ M3.4 剩下的实质工作 = 让 `:645` 那道 panic 变成 `:648`，即平台�
 ## M3.4 根因取证节（把上交裁决的前提从推断升级为实测）
 
 状态：**取证 DONE；M3.4 实现仍 PARTIAL（等裁决）**。代码 commit `test(nk4b,m3.4)`
-（测试内核诊断），证据目录 `evidence/20260922-nk4b-p3-m34/`。
+（测试内核诊断），证据目录 `tmp/evidence/20260922-nk4b-p3-m34/`。
 
 ### 为什么做这件事
 
@@ -1241,7 +1241,7 @@ unsafe 成立（该测试内核全文件无 `exit_boot_services`，boot services
 ## x86_64 装机面回归门（M3.2/M3.3 改完 xtask 后补做）
 
 状态：**DONE — x86_64 生产链零回归**。纯验证，无代码改动；证据
-`evidence/20260922-nk4b-p3-m34/x86-regress-smoke{,-2}.log`。
+`tmp/evidence/20260922-nk4b-p3-m34/x86-regress-smoke{,-2}.log`。
 
 ### 为什么补这一道
 
@@ -1255,7 +1255,7 @@ P1/P2 的前沿全建在这条链上——装机面被表化改坏而产物字�
 
 `SMOKE_SKIP_BOOT=0 bash os/qemu-tests/test-cmd-smoke.sh`，对照
 T0.3 在起点 commit `388252b6b` 记下的 stage 判定行 + 串口尾部 12 行
-（`evidence/20260922-nk4b-p0/smoke-stdout.txt`）。
+（`tmp/evidence/20260922-nk4b-p0/smoke-stdout.txt`）。
 
 ### 实测（两次独立复跑）
 
@@ -1302,7 +1302,7 @@ vector 13 递归 panic。**没前进也没后退**：P1 的 x86_64 rc marker 断
 | timer 中断链 | `bash os/qemu-tests/test-timer-irq-riscv64.sh` | 0 = PASS | 5 次 tick + PASS marker，NK3 那条腿仍然活着 |
 | 出生链 | `bash os/qemu-tests/test-rt-birth-riscv64.sh` | 1 = FAIL | 走到调度交接后 panic 在 `CLOCK_STATE not initialized` |
 
-证据：`evidence/20260922-nk4b-p4-m41/`（`m41-uboot-run1.log`、
+证据：`tmp/evidence/20260922-nk4b-p4-m41/`（`m41-uboot-run1.log`、
 `m41-timer-irq-run1.log`、`m41-rt-birth-run1.log`、`m41-rt-birth-run2.log`、
 `m41-build-sweep.log`、`m41-host-prereqs.log`、`m41-x86-rt-birth-control.log`）。
 
@@ -1381,7 +1381,7 @@ FAIL: guest never reached the scheduler hand-off      （EXIT=1）
 模块覆盖校验，跟 CLOCK_STATE 无关。所以「三个架构的 rt-birth 载体同时全绿」
 这个 P3/P4 隐含前提，目前一个都不满足，每个各卡一处：x86_64 卡 DM 覆盖、
 aarch64 卡平台描述符发现（= M3.4 待裁决那条 platform panic，见
-`evidence/20260922-nk4b-p3-m31/serial_a64_b1.log`）、riscv64 卡时钟初始化。
+`tmp/evidence/20260922-nk4b-p3-m31/serial_a64_b1.log`）、riscv64 卡时钟初始化。
 
 ### 事实四：构建点电 11/11 通过，其中一条是方法伪影
 
@@ -1578,7 +1578,7 @@ readelf 布局断言，不含真机装载）
 `os/xtask/src/image.rs` 一行未改（决策五）：riscv64 的 honest bail 保持，
 本节不声称装机面能装配。
 
-### 实测（四组，全部入 `evidence/20260922-nk4b-p4-m42/`）
+### 实测（四组，全部入 `tmp/evidence/20260922-nk4b-p4-m42/`）
 
 1. **riscv64 布局断言 13 条全 PASS**（`m42-check-layout-riscv64.log`）：
    入口 = `0xffffffc000000000` = `_start` 符号 = 首段 VMA；四条 PT_LOAD 的
@@ -1648,7 +1648,7 @@ CodeReview 结论：**PASSED，0 P0 / 0 P1**。评审逐条核对过的东西里
 `riscv64.ld` 本体——它是链接器输入而非纯文档，所以改完不是“校验一下
 diff”了事，而是重跑了三架构全量布局断言：`check-layout.sh all` →
 **CL-EXIT=0、39 条全 PASS、FAIL=0**（
-`evidence/20260922-nk4b-p4-m42/m42-check-layout-all-after-p2closure.log`）。
+`tmp/evidence/20260922-nk4b-p4-m42/m42-check-layout-all-after-p2closure.log`）。
 这一格同时顺手证了 L0 的“注释不算声明”机制（`ld_values()` 的 sed 锁
 `^\s*SYM = 0x…;`，注释里那行带 ` *   - ` 前缀且无分号，实测仍报「命中 1/1 处」）。
 
@@ -1702,7 +1702,7 @@ M4.3 的装载实形冲突，回来改 `_start` 而不是改判据」——本�
 `m43c`、`m43d`（改完脚本注释后）/ `m43e`、`m43f`（评审闭环后的提交态）
 六轮 EXIT=0、六份串口日志 md5 逐个相同
 （`e2e963c5ff44c0b6eccf3a2f4985c8df`）。反向判别两格（详见下一节矩阵）都
-**EXIT=1**。证据全部在 `evidence/20260922-nk4b-p4-m43/`
+**EXIT=1**。证据全部在 `tmp/evidence/20260922-nk4b-p4-m43/`
 （`m43-serial-m43{a..f}.log`、`m43-reverse-x86-{artifact,v2}.log`、
 `m43-reverse-paddr-shifted.log`、`m43-raw-paddr-shifted-manual.log`、
 `m43-exploratory-first-contact.log`、`m43-prereqs-{host,container}.log`）。
@@ -1874,7 +1874,7 @@ warning: `minix-kernel` (lib) generated 45 warnings
 字符（真实汇总行的形状是：`warning: ` 后跟反引号包住的 crate 名、再跟
 ` (lib) generated N warnings`）。换回正确模式后
 重放行重现。教训：**“复现不出”先查自己的观察手段，再改结论**——四轮实测与归档
-都在 `evidence/20260922-nk4b-p4-m44/m44-kernel-build-warming-census.log`。
+都在 `tmp/evidence/20260922-nk4b-p4-m44/m44-kernel-build-warming-census.log`。
 
 **登记为可复跑提醒**：任何人在本仓对 `minix-kernel` 做真机构建试探，必须带
 `--no-default-features`；不带得到的 372 条错是**方法伪影**，不是缺陷。
@@ -1987,7 +1987,7 @@ OpenSBI `-kernel` 直载形态下，既有测试内核**自己造交接件**—�
 - 没读 `a1`、没解 DTB、没写 riscv64 装机面（均依赖上述裁决）；
 - 事实五的 `.bss` 清零**也没动**（它不依赖裁决，但拿不出判别性断言，理由与
   登记均已写在该节）；取证输出已归档到
-  `evidence/20260922-nk4b-p4-m44/`（三份：构建输出、ELF 段表与符号、入口序列对照）；
+  `tmp/evidence/20260922-nk4b-p4-m44/`（三份：构建输出、ELF 段表与符号、入口序列对照）；
 - M4.4 的下游两项（VM handoff、首模块用户态）未勘察——它们的前置（内核进 kmain）
   未达成，勘察只会得到推论，而推论不入库为事实。
 - 本节只新增文档，不新增 commit 以外的产物；生产代码改动量 = 0。
@@ -2012,7 +2012,7 @@ bail 块 + 上方注释两段）、`hello-boot-riscv64` 表格内三处（`boot_
   用户态。已改成「两份停在分页、第三份手搬相位到用户态，但三份都绕开生产入口
   `arch_boot`」。这一条错的方向是**低估仓内已有能力**，不伤 BLOCKED 判定，但伤
   裁决质量（案「甲」的代价因此调低）。证据已归档：
-  `evidence/20260922-nk4b-p4-m44/m44-entry-sequence-compare.log`。
+  `tmp/evidence/20260922-nk4b-p4-m44/m44-entry-sequence-compare.log`。
 - **P2 不成立（实测驳回，理由见事实二那一小节）**：缓存态 cargo 确实重放 warning。
   但驳回过程中我自己差点被一条写错的 grep 模式带到相反结论，已如实记录。
 - **观察项 3 成立**：「那个文件只有 180 余行」是凭印象写的，实测
@@ -2030,7 +2030,7 @@ bail 块 + 上方注释两段）、`hello-boot-riscv64` 表格内三处（`boot_
 riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1`）
 两次独立复跑 **EXIT=0**，A1/A2/A3 全 PASS（横幅行号 57 > Next Address 行号 40）；
 两份串口日志 md5 与 M4.3 那六轮同为 `e2e963c5ff44c0b6eccf3a2f4985c8df`，即本节
-只改文档、对行为零影响——`evidence/20260922-nk4b-p4-m44/m44-serial-m44a.log`
+只改文档、对行为零影响——`tmp/evidence/20260922-nk4b-p4-m44/m44-serial-m44a.log`
 与同目录的 `m44-serial-m44b.log`。
 
 ---
@@ -2057,7 +2057,7 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
 1. **同架构同函数的真机先例**：`os/qemu-tests/test-kernels/kernel/bootstrap/
    test-timer-irq-riscv64/src/main.rs:300` 调 `minix_kernel::init_clock_and_interrupts()`，
    M4.1 实测该载体 EXIT=0（5 次 tick + PASS marker，见
-   `evidence/20260922-nk4b-p4-m41/m41-timer-irq-run1.log`）。所以 riscv64 侧这个
+   `tmp/evidence/20260922-nk4b-p4-m41/m41-timer-irq-run1.log`）。所以 riscv64 侧这个
    函数本身能跑。
 2. **同族载体的不对称**：x86_64 出生链载体
    `test-rt-birth/src/main.rs:172` 有这一行，riscv64 与 aarch64 两份没有
@@ -2088,7 +2088,7 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
 
 ### 真机验证（两次独立复跑 + 修前对照）
 
-证据：`evidence/20260922-nk4b-p4-m44-clock/`（`serial_clk1.log`、
+证据：`tmp/evidence/20260922-nk4b-p4-m44-clock/`（`serial_clk1.log`、
 `serial_clk2.log`、`clk-discriminate.log`）。
 
 | 串口日志 | `clock + controller initialized` | `CLOCK_STATE not initialized` | panic 落点 |
@@ -2104,7 +2104,7 @@ riscv64 构建 `KIMG-EXIT=0` 后，`RUN=m44a` 与 `RUN=m44b`（均 `SKIP_BUILD=1
 
 ### 事实二：新断点 = 内核读用户页需要 `sstatus.SUM`，生产侧无人置
 
-取证过程在 `evidence/20260922-nk4b-p4-m44-clock/sum-user-access-forensics.log`，
+取证过程在 `tmp/evidence/20260922-nk4b-p4-m44-clock/sum-user-access-forensics.log`，
 五步：
 
 1. **现场**：`kernel-leg trap scause=0xd stval=0x3fffffef6c sepc=0x8020d418
@@ -2197,7 +2197,7 @@ fault」：**载体的那条 `uecall_handler` 腿从第一次调度交接起就�
 ### 案丙 前置取证（本轮补齐，上一版说「丙 需先做取证才能选」——现在做完了）
 
 取证命令与输出全文在
-`evidence/20260922-nk4b-p4-m44-clock/sum-user-access-forensics.log` §12，五步：
+`tmp/evidence/20260922-nk4b-p4-m44-clock/sum-user-access-forensics.log` §12，五步：
 
 1. **路已经铺好了，只是消息面没走**：仓内跨空间拷贝的标准三步在
    `kernel/src/vm.rs:388-404`——`resolve_physical`（走页表得 PA，缺页返

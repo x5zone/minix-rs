@@ -148,7 +148,7 @@ if [[ -z "$TREE" ]]; then
     echo "❌ 文档不在三棵笔记树内: $DOC_PATH" >&2
     echo "   期望 {tree}/{stage}/{doc}.md，tree = ${NOTES_TREES[*]}" >&2
     echo "   旧布局是 notes 伞目录下的「分区/模块/阶段/文档」四节路径，2026-10-07 已退役为「树/阶段/文档」两节，" >&2
-    echo "   旧→新路径对照见 rewrite-notes/MIGRATION.md 与 migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
+    echo "   旧→新路径对照见 rewrite-notes/MIGRATION.md 与 tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
     exit 1
 fi
 

@@ -27,7 +27,7 @@ case "$STAGE_DIR" in
   notes/*)
     echo "❌ stage-dir 仍写旧布局前缀：$STAGE_DIR" >&2
     echo "   2026-10-07 notes 迁移后应为 {tree}/{stage}，tree = ${NOTES_TREES[*]}" >&2
-    echo "   旧→新对照见 rewrite-notes/MIGRATION.md 与 migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
+    echo "   旧→新对照见 rewrite-notes/MIGRATION.md 与 tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
     exit 1 ;;
 esac
 DESIGN_DIR="$STAGE_DIR/.design"

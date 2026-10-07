@@ -101,7 +101,7 @@ OS-CODE ×26 = 深审候选集；BIG ×1 = H1；PROBE? ×2 = 续-311 旁路 PteW
 
 ### 2.4 批D tools/杂项（5 项：全 PASS）
 
-- **C-66 三连**：P17 新检查（构建缓存/取证产物跟踪防线——对 H1 的同日对冲）+ 报告 §11（历史缺口 8 处闭合）+ 基线收编（P12 lib.rs:3842 sfence 门 +3）；P2_TESTS 稳定 64（逐名解析复核）；证据仍在仓库根 evidence/（F7 位置偏离延续，附记 H8）。
+- **C-66 三连**：P17 新检查（构建缓存/取证产物跟踪防线——对 H1 的同日对冲）+ 报告 §11（历史缺口 8 处闭合）+ 基线收编（P12 lib.rs:3842 sfence 门 +3）；P2_TESTS 稳定 64（逐名解析复核）；证据仍在仓库根 tmp/evidence/（F7 位置偏离延续，附记 H8）。
 - **1a3b965e7 续-341 T13 地址常量清扫**：纯审计零生产码（声明一致）；MMAP_TOP=2^41 等登记未修（声明一致）。
 - **5013a8094 misc_concepts 增量五**：148→160 条，riscv 收官叙事入库。
 - **续-290 勘误笔**：批次误标（z 批=探针二进制）诚实勘误 + 观测者效应定量（探针在场 0/19 vs 缺席 12/16≈75%）+ rust 可复现构建实证（同源 md5 一致）——诚实性样本级。
@@ -159,8 +159,8 @@ OS-CODE ×26 = 深审候选集；BIG ×1 = H1；PROBE? ×2 = 续-311 旁路 PteW
 | H4 | P2-doc(message) | 5bbece7d2 过认领 setaddr-root（实为 722ed6c30 落地，引 hash 亦错） | 5bbece7d2 |
 | H5 | P2-design | 内核 PteRead/Write/Zero 臂对 VM 传入 pa 无 RAM 界校验（KDM 任意物理读）+ KDM 常量多处本地复制（续-341 已登记同族） | syscall.rs Pte 三臂 |
 | H6 | P2-arch | 1ac7250a0 重试×8=行为变更置于探针族叙事——(A) 清场时单独裁决去留 | region_map.rs:102-123 |
-| H7 | P2-hygiene(证据) | 里程碑原始串口证据全在 /tmp（atf_rs64_run1/2、rs64_smoke_run1、cmdface.serial）——WORKLOG 只记读数；建议关键证据入库 tmp/nk4a/ 或 evidence/ | /tmp 路径清单 |
-| H8 | P2-doc | R3.2 G1-G10 无登记笔（建议按 79a1523ed 先例补登记）；cmd-smoke SKIP 路径缺镜像新鲜度校验（与 ATF 门不对称）；evidence/ 根位置偏离延续 | git log；cmd-smoke 脚本 |
+| H7 | P2-hygiene(证据) | 里程碑原始串口证据全在 /tmp（atf_rs64_run1/2、rs64_smoke_run1、cmdface.serial）——WORKLOG 只记读数；建议关键证据入库 tmp/nk4a/ 或 tmp/evidence/ | /tmp 路径清单 |
+| H8 | P2-doc | R3.2 G1-G10 无登记笔（建议按 79a1523ed 先例补登记）；cmd-smoke SKIP 路径缺镜像新鲜度校验（与 ATF 门不对称）；tmp/evidence/ 根位置偏离延续 | git log；cmd-smoke 脚本 |
 | H9 | P2-hygiene(证据来源) | atf-riscv founding 证据二进制来源未钉（run1/run2 取于续-340 提交前在制树，无 md5/commit 绑定）；clean checkout @ 5cf88a552 重建重跑 boot leg panic（scause 0x2 @ 栈区 PC）未能复现读数——违反主线自立的「批次钉 md5/构建 commit」方法论（续-290）；建议 HEAD clean 重跑钉 md5（panic=真回归且为 TRANSIENT-PTE 族活体新证据 / 通过=彩票样本入账） | /tmp/atf_rs64_run*/serial.log；§五 |
 | NIT | — | ENOSYS 常量/字面量混用；bootmark CRLF 重写噪声；p5 等探针滞留（族级台账）；T13 登记项未修（声明一致）；riscv 构建面 warning 群（unexpected cfg mock / unsafe_op_in_unsafe_fn / E0133 mutable static，boot-shim+minix-rt，存量） | 各处 |
 

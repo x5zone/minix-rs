@@ -23,7 +23,7 @@ prompt/              — review rules, skill definitions (source of truth for .c
 The three notes trees replaced the old `notes/{rewrite,study,redesign}` umbrella on 2026-10-07;
 the deprecated module layer under the rewrite area was dropped at the same time, so a canonical
 doc path is two segments deep (`rewrite-notes/01-stage-kernel/16-smp.md`).
-Old→new mapping: `rewrite-notes/MIGRATION.md` and `migrate_notes_plan/pre-migrate-20261007/path-map.tsv`.
+Old→new mapping: `rewrite-notes/MIGRATION.md` and `tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv`.
 
 ## Hidden Folder Convention（NEW 2026-07-31）
 

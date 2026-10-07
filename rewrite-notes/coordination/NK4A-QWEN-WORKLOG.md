@@ -169,7 +169,7 @@
   cap + 标「task1-close 裁决删除」），重建镜像真机复跑，分辨假设 1/2；
   据读数定性后再对照 C `minix3/minix/servers/rs/` 修复。
 - 本轮取证产物：serial_c18a/c18b 日志已归档于
-  `evidence/20260922-nk4a-taskA-c17a-c18/`（Task A commit 84347cff2）。
+  `tmp/evidence/20260922-nk4a-taskA-c17a-c18/`（Task A commit 84347cff2）。
 
 ### 第二轮取证（c19a 粗探针 + c20a 细探针，2026-09-22）
 

@@ -246,7 +246,7 @@ grep -v "vs0x" /home/xzhao/github/minix-rs/tmp/nk4a/serial_<RUN>.log | tail -60
 objdump -d /home/xzhao/github/minix-rs/os/target/image/x86_64/staging/EFI/minix/modules/rs | grep -B8 "<地址>:"
 
 # 5) 归档证据（*.log 被 gitignore，需 -f）
-git add -f rewrite-notes/evidence/<目录名>/ && git commit -m "..."
+git add -f tmp/evidence/<目录名>/ && git commit -m "..."
 ```
 
 ## §8 标准取证循环（每个新断点都走这一套）

@@ -1,7 +1,0 @@
-# 排除式（ld_const 先删含 * 的行）的副作用实测
-# 注入：把 aarch64.ld 的真声明行改成带行尾块注释（合法 .ld 写法）
-39:KERNEL_PHYS_BASE = 0x40200000;   /* 2MiB-aligned, inside QEMU virt RAM */
---- new ---
-  [L0] FAIL  aarch64.ld 声明的 KERNEL_VIRT_BASE/KERNEL_PHYS_BASE = 0xffff800000000000/0x40200000（实得 ffff800000000000/无）
---- old ---
-  [L0] PASS  aarch64.ld 声明的 KERNEL_VIRT_BASE/KERNEL_PHYS_BASE = 0xffff800000000000/0x40200000（实得 ffff800000000000/40200000）

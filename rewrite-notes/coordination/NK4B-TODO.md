@@ -159,6 +159,6 @@ Sv39 用户限界 0x0000_0040_0000_0000（user_copy_range 已按 arch 分界）�
 4. 架构级裁决上交（见 §3），不自行定案；实现级小决策自行做。
 5. 三架构任何一个的修复都按 NK4A-TODO §8 取证循环走；fix-guard 不豁免。
 6. P3/P4 每个 Milestone 独立 commit；M 未完成不冒进下一 M。
-7. 证据归档：`evidence/<YYYYMMDD>-nk4b-<说明>/`，`git add -f`。
+7. 证据归档：`tmp/evidence/<YYYYMMDD>-nk4b-<说明>/`，`git add -f`。
 8. 会话结束交付检查清单同 NK4A-QWEN-OPENING-PROMPT §5（WORKLOG/FIXLOG/
    本地 commit/证据归档/Task 粒度最终汇报）。

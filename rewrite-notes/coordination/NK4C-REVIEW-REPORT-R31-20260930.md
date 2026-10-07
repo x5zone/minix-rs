@@ -40,7 +40,7 @@
 ### 1.3 旗标行裁决（31 行全裁决，明细）
 
 - **PROTECTED ×2**：378a52370（解除 .dockercargo 跟踪，158 项全 D，根 .gitignore 补行实归属 5aa2d74f0）+ 0859580eb（merge 携带该删除）——R3 待办①收尾，**ok**。
-- **BIG ×1**：c63d4ae6d——`migrate_notes_plan/` 六份迁移笔记 + misc_concepts.md，纯文档，**ok**。
+- **BIG ×1**：c63d4ae6d——`tmp/migrate_notes_plan/` 六份迁移笔记 + misc_concepts.md，纯文档，**ok**。
 - **OS-CODE ×29**：即深审候选集（24 笔 os/ 实码 + 3 笔 tools + 2 笔 .dockercargo 重叠），归 §二。
 - **CLAIM? ×1**：9f5d9249c——shell 正则误报（message 明写"回归断言入 test_vfs_init_messages"），**ok（误报澄清）**。
 - **SELF ×4**：R3 报告三连 + 899c5fb8d 交接件，notes-only，**ok**。
@@ -103,7 +103,7 @@
 | 9f5d9249c 续-79c per-msg 断言 | **PASS** | 断言只锁纯逻辑面，与声明自洽（未声称抓运行期堆变异） |
 | 7ccaf77e9 续-77g uboot 分区盘化 | **PASS-with-NIT** | bash -n 过；NIT：依赖预检漏 fdisk（无 fdisk 宿主 FAIL 而非 SKIP，破"宿主差异记 SKIP"姿态）+ count=28671 魔数无解释（F8） |
 | 29b28f8c8 续-77f 脚本三连适配 | **PASS** | 与 77g 叠加自洽（77f 为 77g 祖先，无残迹冲突） |
-| 5aa2d74f0 / 162b1cd07 / 396f1f5db tools | 2 PASS + 1 PASS-with-NIT | 触面仅 tools/+notes/ 零生产码；P2_TESTS 计数声明 7/1/15 与 python 实数逐一吻合（20→27→28→43 单调）；selftest 证据在 notes/…/evidence/ 实存；NIT：396f1f5db 的 6 个证据文件落仓库根 `evidence/` 偏离既有约定位置（F7） |
+| 5aa2d74f0 / 162b1cd07 / 396f1f5db tools | 2 PASS + 1 PASS-with-NIT | 触面仅 tools/+notes/ 零生产码；P2_TESTS 计数声明 7/1/15 与 python 实数逐一吻合（20→27→28→43 单调）；selftest 证据在 notes/…/evidence/ 实存；NIT：396f1f5db 的 6 个证据文件落仓库根 `tmp/evidence/` 偏离既有约定位置（F7） |
 
 ---
 
@@ -157,7 +157,7 @@
 | F4 | P2-hygiene | R3 待办③持续：kernel-image 交付边界节未更新三架构状态 + `[ARCH: boot-handoff]` 字面标注缺 | os/kernel-image/src/main.rs:17-23 |
 | F5 | P2-doc | 锚点行号偏移 ×3（07c9e6649 / 7a89f2b72 / 58c0a51d3，见 §四.3） | 各 commit |
 | F6 | P2-test | 接线类修复测试缺口：e55057d1c（排水接线无测试）、cd613370d（send_reply PM 腿翻转零测试 + x86 1/4 run 未达 marker 未追）、2113be7fc（host 结构性不可测） | 各 commit |
-| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 evidence/，偏离 rewrite-notes/evidence/ 约定 | evidence/20260930-c64-pattern-gate/ |
+| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 tmp/evidence/，偏离 tmp/evidence/ 约定 | tmp/evidence/20260930-c64-pattern-gate/ |
 | F8 | P2-hygiene | 7ccaf77e9 依赖预检漏 fdisk（FAIL 应为 SKIP）+ dd count=28671 魔数无解释 | os/qemu-tests/test-riscv64-uboot.sh:31-34 |
 | NIT | — | 07c9e6649 魔数 208；2113be7fc read_volatile 触 padding 形式 UB + 逐点手工屏障脆弱性（OQ：是否改 asm memory clobber）；4cb8db458 缺 false-skip 回归针；58c0a51d3 host 无字节级清零验证；5730112ce sched_idx release 静默回退；cd613370d 单线程停摆面（注释已自证） | 见 §二 |
 

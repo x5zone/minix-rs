@@ -2,7 +2,7 @@
 
 > **创建**: 2026-10-07（迁移完成当天）。本页是永久保留的旧→新查找入口：
 > 任何会话、工具或历史产物里拿着旧路径，都能在这里查到文件现在的位置。
-> 机器可读的全量映射（2428 条逐文件）在 `migrate_notes_plan/pre-migrate-20261007/path-map.tsv`（已入 git）。
+> 机器可读的全量映射（2428 条逐文件）在 `tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv`（已入 git）。
 
 ## 一、这次迁移解决了什么
 
@@ -29,7 +29,7 @@ book/                mdBook 成品区（本次未触碰；未来只从 rewrite-n
 |---|---|---|
 | `notes/rewrite/fork-syscall-rewrite/00-master-plan/` | `rewrite-notes/00-master-plan/` | 阶段目录名与编号一律未改 |
 | `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/` … `19-stage-integration/` | `rewrite-notes/01-stage-kernel/` … `19-stage-integration/` | 同上 |
-| `notes/rewrite/fork-syscall-rewrite/evidence/` | `rewrite-notes/evidence/` | 取证日志，内容冻结未改写 |
+| `notes/rewrite/fork-syscall-rewrite/evidence/` | `tmp/evidence/` | 取证日志，内容冻结未改写 |
 | `notes/rewrite/fork-syscall-rewrite/20-redesign/` | `redesign-notes/architecture/` | 两篇换区：内容属再设计探索 |
 | `notes/rewrite/concepts/` | `rewrite-notes/concepts/` | 跨阶段概念词条 |
 | `notes/rewrite/archive_bak/` | `rewrite-notes/archive/legacy-fork-bak/` | fork 时代备份，原样保留 |
@@ -87,7 +87,7 @@ module 层退役后，评审状态目录的分组键由 `{module}` 换成 `{stag
 阶段目录曾在 fork 主线与启动顺序主线之间重排过一次。**本次迁移没有改任何阶段编号**，
 但迁移前的文档里仍散留着旧编号引用（按「迁移不顺手修内容」的纪律原样保留，属独立后续任务）：
 
-计数口径：三棵树全量（含 `evidence/`、`.design/`、`legacy-fork-bak/` 三个冻结区），按**出现次数**计，
+计数口径：三棵树全量（含 `tmp/evidence/`、`.design/`、`legacy-fork-bak/` 三个冻结区），按**出现次数**计，
 复算命令 `grep -rIo '<旧编号>' rewrite-notes redesign-notes study-notes \| wc -l`。
 本表原抄自迁移计划写作时的测量，口径未标注且已随 NK4C 战役的文档增长过期，现按实测更正。
 
@@ -105,7 +105,7 @@ module 层退役后，评审状态目录的分组键由 `{module}` 换成 `{stag
 |---|---|---|
 | `os/libs/minix-types/README.md` | `rewrite-notes/fork-syscall-plan.md` | 该文档在迁移前就不存在；`rewrite-notes/archive/legacy-fork-bak/` 里有 `fork-syscall-plan-part1.md`、`-part3.md`、`-backup.md` 等分片。现行等价文档建议判定为 `rewrite-notes/00-master-plan/01-project-overview.md`，**待人裁决**后单笔修正 |
 | 各 stage 文档 | `../01-stage-pm/…`、`../deep-analysis/…`、`../review-rules/review.md` | 旧编号与旧目录，见第五节 |
-| 迁移前既有断链 | 三棵树部分 425 行（全域 452 行，另含 `prompt/` 13、`.trae/` 12、`migrate_notes_plan/` 2） | 迁移后三棵树 373 行（全域 400 行）。三种口径下**迁移引入的新增都是 0**：原始行 425→373、去重键 288→257、独立复扫与 `broken-links.after.txt` 逐行相等。基线见 `migrate_notes_plan/pre-migrate-20261007/broken-links.before.txt`，对账方法见执行日志 Phase 3 一节 |
+| 迁移前既有断链 | 三棵树部分 425 行（全域 452 行，另含 `prompt/` 13、`.trae/` 12、`tmp/migrate_notes_plan/` 2） | 迁移后三棵树 373 行（全域 400 行）。三种口径下**迁移引入的新增都是 0**：原始行 425→373、去重键 288→257、独立复扫与 `broken-links.after.txt` 逐行相等。基线见 `tmp/migrate_notes_plan/pre-migrate-20261007/broken-links.before.txt`，对账方法见执行日志 Phase 3 一节 |
 
 | `rewrite-notes/04-stage-pm/draft/mproc-design.md:2654` | `rewrite-notes/mp-flags-analysis.md` | 迁移前该引用就指向不存在的路径（真实文件在 `archive/legacy-fork-bak/`），机械前缀替换如实保留了悬空，坏度不变 |
 | `rewrite-notes/18-stage-commands/doc_rerank_deepseek.md:2184` | `rewrite-notes/edge*.md` 通配 | 迁移前的通配能命中 `fork-syscall-rewrite/edge_todo.md`，迁移后该文件在 `coordination/` 下，通配落空。这是机械替换对「散文里的通配符」的语义极限（不是链接，链接门管不到） |
@@ -115,23 +115,55 @@ module 层退役后，评审状态目录的分组键由 `{module}` 换成 `{stag
 面向未来的指引句已就地改为新参数（`rewrite-notes/09-stage-init/plan.md`、`prompt/todo_plan.md`、
 `prompt/skill/review-coverage-skill.md` 各一处，连同 `{rw-module}` 一并收敛）。
 
+## 六b、允许保留旧路径写法的三处白名单（门 M2 的判据边界）
+
+必改域的「零残留」判据有三处例外，都是**故意保留**，审阅方复跑门 M2 时需按此排除：
+
+| 白名单文件 | 保留量 | 为什么保留 |
+|---|---|---|
+| `rewrite-notes/MIGRATION.md` | 21 行 | 本页就是旧→新对照表，不含旧路径就没有用处 |
+| `.claude/settings.local.json` | 38 行 | 历史授权命令清单，按用户裁决冻结；新命令会重新走一次授权 |
+| `prompt/agents-workflow-optim.md` | 3 行（第 19、29、125 行） | 迁移**事前**的目录结构分析、带日期的量化底数与来源标注。改掉等于抹掉当时的判据现场；该文件从 `migrate_notes_plan/` 移入 `prompt/` 后仍在被引用，故按历史记录保留 |
+
+树内另有三个历史区整片保留旧路径原文（`tmp/evidence/` 里的日志、各 stage 的 `.design/` 快照、
+`archive/legacy-fork-bak/`），实测命中数与迁移前基线逐一相等：`.design` 56、备份 8、日志类 4。
+
 ## 七、旧内容如何回捞
 
 - 迁移前全貌：annotated tag `notes/pre-migrate-20261007`（指向提交 `bb8a90e05`）
 - 被 `.gitignore` 排除、tag 保护不到的内容（`.design` 快照、`*.log` 取证日志、`.bak`/`.backup`）：
   `tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz`（sha256 记在
-  `migrate_notes_plan/pre-migrate-20261007/snapshot.sha256`）
-- 逐文件旧→新映射：`migrate_notes_plan/pre-migrate-20261007/path-map.tsv`
+  `tmp/migrate_notes_plan/pre-migrate-20261007/snapshot.sha256`）
+- 逐文件旧→新映射：`tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv`
 - 单条路径回查：`git show notes/pre-migrate-20261007:<旧路径>`；
   或直接读该文件的 git 历史：`git log --follow -- <新路径>`（改名以 rename 记录入 git，历史可续读）
-- 迁移的决策与逐动作记录：`migrate_notes_plan/EXECUTION-LOG.md`、`migrate_notes_plan/pre-migrate-20261007/00-SNAPSHOT.md`
+- 迁移的决策与逐动作记录：`tmp/migrate_notes_plan/EXECUTION-LOG.md`、`tmp/migrate_notes_plan/pre-migrate-20261007/00-SNAPSHOT.md`
+
+## 七b、收口之后的第二次搬迁（同日，按落盘规则归位）
+
+目录迁移完成后又做了一批归属清理。这一跳**不在** `path-map.tsv` 合同里，所以拿着合同反查会得到上一跳的位置，
+以本表为准：
+
+| 位置（第一跳后） | 现在 | 原因 |
+|---|---|---|
+| `rewrite-notes/evidence/`（276 件、1.28 GB，121 件已跟踪） | `tmp/evidence/`（26 个日期-主题子目录，与评审证据同处一地） | 落盘规则要求取证一律进 `tmp/evidence/`；此前同一个 pattern-gate 系列被拆成树内 c61～c63 与 `tmp/evidence/` c64～c68 两段 |
+| `migrate_notes_plan/` | `tmp/migrate_notes_plan/` | 一次性任务的计划与留档，使命结束后不再占仓库顶层；含六份方案、四份审计留档与本次交付物 |
+| `tmp/pre-migrate-snapshot-20261007/`（tar 与清单生成器） | `tmp/migrate_notes_plan/pre-migrate-snapshot-20261007/` | 与迁移留档同处一地 |
+| `new_laptop_migrate/` | `tmp/new_laptop_migrate/` | 同上，换机取证记录 |
+| `scripts/update_minix.sh` | `tools/update_minix.sh` | 单一脚本不单设顶层目录；`scripts/` 已删除 |
+| `migrate_notes_plan/agents-workflow-optim.md` | `prompt/agents-workflow-optim.md` | 它是工作流规则，属规范源目录 |
+| `study-notes/progress.md.backup_20260329_233603` | 已删除 | 正本更早的分叉快照（缺「核心理念」等段落），非重复拷贝；需要时用 `git show HEAD~1:study-notes/progress.md.backup_20260329_233603` 取回 |
+
+**跟踪状态的后果要说清**：`tmp/` 整域不入库，所以随迁移进 `tmp/` 的内容（121 件取证日志、
+249 件迁移留档与审计材料）从 Git 里消失，只保留磁盘拷贝。历史里仍在——`git show` 这些路径的
+迁移前提交可取回；但**新检出不再自带它们**。真正的长期保全要么复制到仓库外，要么放回受版本管理的路径。
 
 ## 八、本次迁移刻意没有做的事
 
 1. 没有改任何阶段编号、文件名（除第三节说明的两个改名归档项）。
 2. 没有删除任何内容文件（含 `study-notes/` 的 184 个早期笔记、`legacy-fork-bak/` 的 40 个备份、
    `redesign-notes/architecture/` 里那两个与正本逐字节相同的 `.backup`）——删除与精简是独立任务。
-3. 没有改写 `.review/`、`tmp/`、`AI-chats/`、`new_laptop_migrate/`、`.qoder/`、`migrate_notes_plan/`
+3. 没有改写 `.review/`、`tmp/`、`AI-chats/`、`new_laptop_migrate/`、`.qoder/`、`tmp/migrate_notes_plan/`
    里的旧路径字符串：它们是历史产物或历史叙述，保留原文才是证据。
 4. 没有触碰 `book/` 与 `minix3/`。
 5. 没有顺手修既有断链与旧阶段编号引用（见第六节）。

@@ -36,7 +36,7 @@ justification (§4.3). Where conclusions coincide with peer-visible directory fa
 - **In scope (rebuild objects, 33 docs):** `00-vfs-overview.md`, numbered docs
   `01`–`31`, `99-global-concepts.md`. All enter the knowledge pool (§2) and receive a
   contract (§5) or an archive decision (§6).
-- **Reference material (not rebuilt, used as evidence/boundary):** `plan.md` (553 lines),
+- **Reference material (not rebuilt, used as tmp/evidence/boundary):** `plan.md` (553 lines),
   `todo.md` (547 lines, R1/R2 architecture review + Fix campaign record), `draft/`
   (old fork-mainline material, 27 items + README), `archive/todo-R1-archive-2026-09-09.md`.
 - **Out of scope (cross-referenced only):** filesystem servers (`minix3/minix/fs/`,
