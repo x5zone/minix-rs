@@ -27,7 +27,7 @@ ok()   { printf '  OK: %s\n' "$1"; }
 echo "== lint-review-rules =="
 
 # L1. tmp_design_and_todo：活引用（不带"已删除/历史"标注且非守卫语境）应为 0
-#     守卫规则（禁止来源清单、处置策略表）与 CLAUDE.md 的 Hidden Folder Convention 文档化条目允许保留。
+#     守卫规则（禁止来源清单、处置策略表）与 `AGENTS.md` 的中间产物目录约定条目允许保留。
 l1=$(grep -rn "tmp_design" prompt/ .claude/rules .claude/skills .codex/skills .trae/skills 2>/dev/null \
      | grep -v "已删除\|历史形态\|历史案例\|历史输入\|历史均值" \
      | grep -v "禁止\|❌\|非定稿\|临时讨论池\|作为快照依据\|作为 design 依据\|design.md 不得引用\|当 design 依据" \

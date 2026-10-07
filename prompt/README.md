@@ -1,6 +1,8 @@
 # prompt/
 
-本目录包含 Minix-RS 项目的 Review 规则集及**三套** IDE/Runtime 适配产物，均由 `prompt/` 单一规则源派生：**Trae IDE**（手工复制粘贴 + `.trae/skills/`）、**Claude Code Runtime**（项目根 `CLAUDE.md` + `.claude/` 自动加载）与 **Codex CLI**（项目根 `AGENTS.md` + `.codex/` 自动加载）。三者内容同源，仅适配各自工具的加载机制与字段限制（见下方各章节）。
+本目录包含 Minix-RS 项目的 Review 规则集及**三套** IDE/Runtime 适配产物，均由 `prompt/` 单一规则源派生：**Trae IDE**（手工复制粘贴 + `.trae/skills/`）、**Claude Code Runtime**（项目根 `AGENTS.md` + `.claude/` 自动加载）与 **Codex CLI**（项目根 `AGENTS.md` + `.codex/` 自动加载）。三者内容同源，仅适配各自工具的加载机制与字段限制（见下方各章节）。
+
+> **2026-10-07 变更**：仓库根的 `CLAUDE.md` 已退役，**`AGENTS.md` 是三端共用的唯一项目指令入口**。依据是 Claude Code 的默认加载模式 `claude-md-or-agents-md`（项目没有 `CLAUDE.md` 时改用 `AGENTS.md`，加载位置与方式完全等同）与发行物内的项目指令清单（含 `AGENTS.md`、`.claude/rules`）。原 `CLAUDE.md` 独有的「Doc Code Sync 七项」已并入 `prompt/review-rules/review-doc-checklist.md` §4；`.claude/rules/fix-guard.md` 已回填规范源 `prompt/review-rules/fix-guard.md`。取证见 `prompt/EXECUTION-LOG-workflow-optim.md`。
 
 ## 目录结构
 
@@ -172,7 +174,7 @@ review-agent-ide（智能体 / 路由器 + 核心规则）
 |------|-----------|-----------------|------|
 | `.trae/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name`/`description` **不带引号**（Trae 标准格式）；**markdown 链接路径适配**（源 `prompt/skill/` 深度 2 → 派生深度 3，`../review-rules/` → `../../../prompt/review-rules/`、同目录 skill 链接 → `../{name}/SKILL.md`） | `prompt/skill/` |
 | `.codex/skills/` | `review-{name}-skill.md` → `review-{name}-skill/SKILL.md` | `name` 不带引号 + `description` **双引号包裹**（Codex 硬限制 ≤1024 字符，超长触发启动校验错误）；路径/状态段 + **markdown 链接路径适配**（同 .trae） | `prompt/skill/` + `.claude/skills/review-scan/` |
-| `.claude/skills/` | `review-scan/`（编排器 + 5 个 checks/） | 原样 | `.claude/` 独立维护（CLAUDE.md 声明派生自 prompt/，实际 review-scan 从 prompt/skill 演进） |
+| `.claude/skills/` | `review-scan/`（编排器 + 5 个 checks/） | 原样 | `.claude/` 独立维护（AGENTS.md 声明派生自 prompt/，实际 review-scan 从 prompt/skill 演进） |
 
 - **自动生成命令**（推荐，从 `prompt/skill/` 一键生成 `.trae/` + `.codex/`）：
   ```bash
@@ -255,8 +257,8 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 
 ### 项目根配置
 
-- **`CLAUDE.md`**（项目根）— Claude Code 启动时自动注入的**项目级 system prompt**。包含构建/测试命令、目录布局、执行模型分用户态/内核、编码约束（`no_std`、错误码映射 Minix3 errno、硬件抽象为 trait）、Ground Truth 优先级、文档结构（Ch1→Ch2→Ch3→Ch4+测试章节），以及 Review 系统的强制约束（Explicit Skill Invocation、Blocker Gates 证据、STATE.md 双路径、VERIFY-CHECK 强制）。
-- **`AGENTS.md`**（项目根，NEW 2026-08-14）— **Codex CLI 的项目指令入口**（Codex 不读 CLAUDE.md）。内容为 CLAUDE.md 的 Codex 适配子集 + review 工作流入口（指向 `.claude/rules/` 规范源）+ 10 个 skill 清单（带 file 路径）。详见下方「Codex CLI 适配」章节。
+- **~~`CLAUDE.md`~~（已退役，见本节顶部说明）** — 原 Claude Code 的项目级 system prompt。现在由 `AGENTS.md` 承担同一角色。包含构建/测试命令、目录布局、执行模型分用户态/内核、编码约束（`no_std`、错误码映射 Minix3 errno、硬件抽象为 trait）、Ground Truth 优先级、文档结构（Ch1→Ch2→Ch3→Ch4+测试章节），以及 Review 系统的强制约束（Explicit Skill Invocation、Blocker Gates 证据、STATE.md 双路径、VERIFY-CHECK 强制）。
+- **`AGENTS.md`**（项目根，NEW 2026-08-14；2026-10-07 起为**三端唯一入口**）— 原为 Codex CLI 的项目指令入口，现承担全部运行时的项目指令：项目简介、开工前路由表、目录布局、不变量、Review 流程骨架、任务命令入口 + review 工作流入口（指向 `.claude/rules/` 规范源）+ 10 个 skill 清单（带 file 路径）。详见下方「Codex CLI 适配」章节。
 
 ### `.claude/` 目录结构
 
@@ -286,7 +288,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 
 | 维度 | Trae IDE | Claude Code Runtime |
 |------|---------|-------------------|
-| 加载方式 | **手工复制粘贴** | **自动加载**（启动时读 CLAUDE.md / `.claude/`） |
+| 加载方式 | **手工复制粘贴** | **自动加载**（启动时读项目根 `AGENTS.md` / `.claude/`） |
 | 配置位置 | Trae IDE 内（不存项目） | **项目根 + `.claude/`**（随仓库提交） |
 | Rules 限制 | ≤ 10,000 字符（建议）/ 20,000 byte（硬上限） | 无明确字符上限（受模型 context window 约束） |
 | Agent Prompt 限制 | **≤ 10,000 字符硬上限** | 无明确上限（受 context 约束） |
@@ -312,7 +314,7 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 
 ### Claude 配置的设计意图
 
-- **`CLAUDE.md` 是入口**：Claude Code 启动时自动注入项目背景（"这是 Minix-RS，是 Minix3 的 Rust Rewrite，不是翻译，是改写，no_std，硬件抽象为 trait"）。
+- **`AGENTS.md` 是入口**：Claude Code 在项目缺少 `CLAUDE.md` 时改读 `AGENTS.md`，自动注入项目背景（"这是 Minix-RS，是 Minix3 的 Rust Rewrite，不是翻译，是改写，no_std，硬件抽象为 trait"）。
 - **`.claude/rules/` 是底线**：执行模型、禁止行为、流程——每次都加载，因为它们定义"必须遵守的约束"。
 - **`.claude/skills/` 是按需加载**：避免一次注入所有检查导致 context 占用过高；Claude 根据用户意图决定加载哪个 check。
 
@@ -320,11 +322,11 @@ Claude Code Runtime 的配置**自动加载**，与 Trae 完全不同：
 
 ## Codex CLI 适配（项目根 AGENTS.md + .codex/，NEW 2026-08-14）
 
-Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUDE.md），与 Claude 类似但存在关键机制差异。
+Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`），与 Claude 类似但存在关键机制差异。
 
 ### 加载机制
 
-- **项目指令**：项目根 `AGENTS.md` — Codex 启动时自动注入。内容为 CLAUDE.md 的 Codex 适配子集：项目简介、Build & Test 命令、目录布局、关键约束（no_std / errno 映射 / 硬件抽象 / SMP+BKL / Ground Truth 链）、**review 工作流入口（明确要求先读 `CLAUDE.md` + `.claude/rules/review-core.md` + `review-process.md` + `fix-guard.md` —— 规范源仍在 `.claude/rules/`，Codex 用 AGENTS.md 补充工具适配）**、10 个 skill 清单（带 file 路径 + when-to-use，确保自动选择）。
+- **项目指令**：项目根 `AGENTS.md` — Codex 启动时自动注入（三端共用同一份）：项目简介、Build & Test 命令、目录布局、关键约束（no_std / errno 映射 / 硬件抽象 / SMP+BKL / Ground Truth 链）、**review 工作流入口（明确要求先读 `CLAUDE.md` + `.claude/rules/review-core.md` + `review-process.md` + `fix-guard.md` —— 规范源仍在 `.claude/rules/`，Codex 用 AGENTS.md 补充工具适配）**、10 个 skill 清单（带 file 路径 + when-to-use，确保自动选择）。
 - **Skills**：`.codex/skills/{name}/SKILL.md` — Codex 自动发现。每个 skill 必须在自己命名的子文件夹，frontmatter `name` 必须等于目录名。
 
 ### Codex 字段限制（关键，来自 Codex 官方文档与社区实测）

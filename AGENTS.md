@@ -1,98 +1,86 @@
-# Minix-RS — Codex 项目指令
+# Minix-RS — 项目指令（所有 agent 共用的唯一入口）
 
-Minix3 kernel modules rewritten in Rust (x86-64, no_std). Not a translation — a semantic rewrite preserving external behavior while using Rust's type system internally.
+Minix3 kernel modules rewritten in Rust (x86-64 / ARM64 / RISC-V, no_std). Not a translation — a semantic rewrite preserving external behavior while using Rust's type system internally.
 
-> **注意**：完整规范在 `CLAUDE.md`（项目指令，check-in 到代码库）。Codex 不读取 CLAUDE.md，本文件是其 Codex 入口。**任何 review / 修复工作开始前，先读 `CLAUDE.md` + `.claude/rules/review-core.md` + `.claude/rules/review-process.md` + `.claude/rules/fix-guard.md`** —— 这些是 review 工作流的规范源，所有 review skill 都依赖它们。
+> **本文件是唯一的项目指令入口。** 各运行时的加载方式：Claude Code 在没有 `CLAUDE.md` 的项目里按
+> `claude-md-or-agents-md` 模式加载本文件与 `.claude/rules/`；Codex CLI 读本文件与 `.codex/`；
+> Trae 用 `.trae/skills/`。**规则的权威内容在 `prompt/`，派生端不得另立一套。**
+>
+> `CLAUDE.md` 已于 2026-10-07 退役：它的 323 行里唯一未见于规范源的是「Doc Code Sync 七项」，
+> 已并入 `prompt/review-rules/review-doc-checklist.md` §4；`.claude/rules/fix-guard.md` 的内容
+> 一直只在运行时端，已回填为规范源 `prompt/review-rules/fix-guard.md`。
+> 过程与取证见 `prompt/EXECUTION-LOG-workflow-optim.md`。
+
+## 开工前必读（路由表）
+
+任何 review / 修复工作开始前，按顺序读规范源。**不要凭记忆动手**，也不要引用本文件未覆盖的旧文档：
+
+| 顺序 | 文件 | 它管什么 |
+|---|---|---|
+| 1 | `prompt/review-rules/review.md` | 核心不变量：执行模型、真值优先序、P0 六分类、三档术语 |
+| 2 | `prompt/review-rules/review-process.md` | Step 0–7 全流程、Blocker Gates、Gate 证据规则、设计快照语义 |
+| 3 | `prompt/review-rules/fix-guard.md` | 修复守则（动手前 5 件事、一次一条、修后留痕） |
+| 4 | `prompt/review-rules/review-cmds.md` | 6 个任务命令入口与不可裁剪的通用强制门 |
+| 5 | `prompt/review-rules/review-patterns.md` | 模式库（含 P0 必检清单与验证命令） |
+| 6 | `prompt/README.md` | 三端同步机制：改了源必须同步哪些文件、跑哪些校验 |
+
+运行时副本 `.claude/rules/review-core.md`、`.claude/rules/review-process.md`、`.claude/rules/fix-guard.md`
+由上面三个源手工同步，内容同源。
 
 ## Build & Test
 
-- Build: `cargo build`（workspace 根在 `os/`）
-- Test: `cargo test`
-- Lint: `cargo clippy`
+- Build：`cargo build`（workspace 根在 `os/`）
+- Test：`cargo test`；Lint：`cargo clippy`
+- 权威编译门配方：docker `minix-ci:1.94` + `-m 2g -j 1`；三架构真机门见 `os/qemu-tests/README.md`
 
 ## Directory Layout
 
 ```
-minix3/              — original Minix3 C source (ground truth, do NOT modify)
-os/servers/vm/       — VM server Rust rewrite
-os/libs/minix-types/ — shared IPC types, constants, codec traits
-rewrite-notes/       — active rewrite docs: rewrite-notes/{stage}/{doc}.md (one .md per C concept)
-redesign-notes/      — future-direction exploration docs (activated once rewrite stabilizes)
-study-notes/         — early Minix3 learning notes (AI generated, NOT a fact baseline)
-book/                — mdBook output (extracted from rewrite-notes later)
-prompt/              — review rules, skill definitions (source of truth for .claude/ + .trae/ + .codex/)
-.claude/             — Claude Code runtime: rules + skills (derived from prompt/)
-.trae/               — Trae IDE skills (derived from prompt/)
-.codex/              — Codex skills (derived from prompt/skill/ + .claude/skills/)
+minix3/              — 原始 Minix3 C 源码（ground truth，禁止修改）
+os/                  — Rust 实现：内核、用户态服务器、驱动、库
+rewrite-notes/       — 活跃重写文档：rewrite-notes/{stage}/{doc}.md
+redesign-notes/      — 方向探索文档（重写稳定后启用；现存内容是未收敛的存量思考）
+study-notes/         — 早期 Minix3 学习笔记（AI 生成，不作事实基线）
+book/                — mdBook 成品区（后续从笔记树抽取）
+prompt/              — 规则与技能的唯一真相源（含本文件所路由的规范）
+.claude/ .codex/ .trae/ .agents/ — 三端运行时适配（派生自 prompt/，不手写新规则）
+tools/               — 门禁与构建脚本（路径真源：tools/notes-layout.conf）
+tmp/                 — 会话产物与取证，整域不入库（evidence/ log/ bin/ nk4a/ 等）
 ```
 
-三棵笔记树于 2026-10-07 取代了旧的 notes 伞目录，同时剥掉 rewrite 分区下那层已废弃的模块目录：
-规范路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。
-旧→新对照见 `rewrite-notes/MIGRATION.md` 与 `tmp/migrate_notes_plan/pre-migrate-20261007/path-map.tsv`。
+三棵笔记树于 2026-10-07 取代旧的 notes 伞目录，并剥掉 rewrite 分区下那层已废弃的模块目录：规范路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。旧→新逐文件对照见 `rewrite-notes/MIGRATION.md`。
 
-**Hidden Folder Convention（NEW 2026-07-31）**：`.design/` 和 `tmp_design_and_todo/` 文件夹视为中间产物，正式文档绝不引用（引用即 P0-process-violation）。正式 doc 引用应使用绝对路径到 doc、代码、C 源。
+**中间产物目录约定**：`.design/`（每篇文档的可复用设计快照）与已废弃的 `tmp_design_and_todo/` 视为中间产物，**正式文档绝不引用**（引用即 P0-process-violation）；正式文档必须自包含，引用指向文档、代码、C 源的绝对路径。会话产物（日志、镜像、评审证据）一律进 `tmp/` 的功能子目录，仓库根不允许散落文件——细则见 `prompt/agents-workflow-optim.md`。
 
 ## Key Constraints
 
 - `#![no_std]` everywhere except `#[cfg(test)]`
-- Error types must map to Minix3 errno values — no self-invented error codes
-- Hardware is abstracted behind traits — never expose CR3/PTE bits to OS layer
-- **Execution Model by module type**：用户态服务器（VM/PM/VFS 等）= 单线程事件循环，`!Send`/`!Sync`/`Rc`/`RefCell` 合理；**Kernel = SMP + BKL（Big Kernel Lock spinlock）**，共享数据需 `Arc`+`Mutex`/`Atomic`，禁止 `Rc`/`RefCell` 跨 CPU；BKL 是 spinlock：临界区内不得 sleep/schedule/IPC
-- **Ground Truth Priority Chain**：`Minix3 C source > design doc > Rust code > design/tech docs`。不确定时 grep `minix3/` 读原始 C 代码
-- **Three-tier terminology**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：doc + design + code）
+- 错误类型必须映射到 Minix3 的 errno 值，禁止自造错误码
+- 硬件通过 trait 抽象，不把 CR3/PTE 位之类暴露给 OS 语义层
+- **执行模型按模块类型区分**：用户态服务器（VM/PM/VFS 等）= 单线程事件循环，`!Send`/`!Sync`/`Rc`/`RefCell` 合理；**Kernel = SMP + BKL（自旋锁）**，共享数据需 `Arc`+`Mutex`/`Atomic`，禁止 `Rc`/`RefCell` 跨 CPU；BKL 临界区内不得 sleep / schedule / IPC
+- **⛔ 抽象语义，不描述机制（本项目的第一原则）**：区分「OS 语义对象」与「硬件承载对象」。同一层的代码拥有同一语义，不同层的差异待在该待的地方——优美不是让三个实现长得像，而是让接口根本看不见硬件差异。判据三问、边界条款（arch trait 自身可谈硬件名；启动契约不在射程内；禁止为漂亮提前改契约）见 `prompt/review-rules/review-core-semantics.md` 与模式库的对应总括模式
+- **真值优先序**：`Minix3 C 源码行为 > 设计契约 > Rust 实现 > 设计/技术文档 > AI 分析`。拿不准就去 `minix3/` 读原始 C 代码
+- **三档术语**：Rewrite（保持外部行为）/ Refactor（不改语义的重构）/ Architectural Evolution（必须三处一致标注 `[ARCH: ...]`：文档 + 设计 + 代码）
 - **P0 六类**：P0-fact / P0-code-bug / P0-design-deviation / P0-design-missing / P0-design-wrong / P0-test-missing
+- **⛔ 显式调用技能**：必须通过 Skill 工具真正调用技能，scan.md 的 Skill Invocation Log 只记实际调用；"规则已加载"不算调用
+- **⛔ Gate 证据强度分级**：L1 工具输出（A/D/E 门必需）、L2 手工 grep（B/C 可接受）、L3 推断（视为 FAIL，除非写明 `MANUAL_FALLBACK` 理由）。**没有附命令与输出的「✅ 通过」一律作废**
+- **文档与代码同步**：任何文档 review 必跑 Doc Code Sync 七项（`prompt/review-rules/review-doc-checklist.md` §4）
+- **VERIFY-CHECK 的同 agent 局限**：单 session 里验证者与被验证者是同一个模型，必须显式标注"同 agent 验证 + 已重放 grep 命令"；consistency < 90% 就写 NOT PASS，不给模糊结论；有条件时优先跨工具只读复核
 
-## Review Workflow（Codex 用）
+## Review Workflow
 
-> **⛔ 开始任何 review 前**：先读 `CLAUDE.md` + `.claude/rules/review-core.md` + `.claude/rules/review-process.md` + `.claude/rules/fix-guard.md`。这些规则文件同时约束 Claude Code / Trae / Codex 三端，内容以 `.claude/rules/` 为准。
+1. **声明 scope**：目标文件、模式（doc / code / full）、STATE.md 状态。状态目录按 `{stage}` 分组且三工具隔离：`.review/{tool}/{stage}/`（Trae 用 `scans/` 扁平结构，Claude 与 Codex 用 `{doc-stem}/` 子目录）
+2. **Step 0 硬阻断预检**（所有模式强制）：4 条 `ls {tree}/{stage}/.design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；快照缺失 → 对应 Gate FAIL → Step 0.3 嵌入生成（不中断 review、不标 N/A、不许复用他篇快照）。缺失却标 CONVERGED → P0-process-violation（模式 69）
+3. **Blocker Gates**（0 / A / B / C / D / D-6 / E / G / H）：每门必须附实际命令与输出证据；任一门失败 → scan.md 标 DRAFT，STATE.md 不更新
+4. **产出**：scan.md（单文件汇总：Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List / structure 摘要）+ structure.md（文档 review 的 12 节骨架分析）+ SYMBOLS.md（覆盖率穷举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED）
+5. **修复原则**：P0 全修完才可 CONVERGED；文档与代码保持同步；严格遵守 `prompt/review-rules/fix-guard.md`
+6. **收敛停止**（Step 7.1）：同篇 ≥5 轮强制交付 / 连续两轮新增 P1 ≤ 1 视为收敛 / 本轮成本 > 上一轮 80% 而新发现 < 20% 停止 / 首轮零发现触漏检自检（随机抽 3 项重跑，仍零发现才交付）
+7. **每次 review 必答 Step 5.7 Rule Discovery**（是否发现新模式）——规则集靠此自演进
 
-1. **声明 scope**：目标文件、模式（doc/code/full）、STATE.md 状态
-   - State 路径：`.review/trae/{stage}/STATE.md`（Trae IDE）、`.review/claude/{stage}/STATE.md`（Claude Code）、`.review/codex/{stage}/STATE.md`（Codex CLI），三工具隔离，不共享中间产物。Codex 单 session 产物放在 `.review/codex/{stage}/{doc-stem}/`，不使用 Trae 的 bagging 布局
-2. **Step 0 硬阻断预检**（所有 review 模式强制）：跑 4 条 `ls {tree}/{stage}/.design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；`outline.v*.md` / `outline-review.v*.md` / `design.v*.md` 缺失 → Gate H.6/H.1 FAIL → Step 0.3 嵌入生成（不中断 review，不标 N/A）。缺失却标 CONVERGED → P0-process-violation（模式 69 PSMD）
-3. **Blocker Gates**（0/A/B/C/D/D-6/E/G/H）：每个 Gate 必须附实际命令 + 输出证据（`gate-evidence-{X}` 块）。Gate 失败 → scan.md 标 DRAFT，STATE.md 不更新
- 4. **产出**：scan.md（单文件汇总，含 Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List）+ structure.md（doc review，12 节骨架）+ SYMBOLS.md（覆盖率枚举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED），默认写入 `.review/codex/{stage}/{doc-stem}/`
-5. **修复原则**：P0 全部修完才可 CONVERGED；doc 与 code 保持同步；遵守 fix-guard.md（修复前读目标行 ±5 行、grep 确认、单条修复、写 fix-status）
-6. **收敛停止规则**（Step 7.1）：≥5 轮强制交付 / 连续两轮新 P1 ≤ 1 视为收敛 / 成本>80% 而新发现<20% 停止 / 首次 review 0 P0/P1/P2 → 触发漏检自检（随机抽 3 项重跑，仍 0 发现才交付）
-7. **每次 review 必须回答 Step 5.7 Rule Discovery**（是否发现新模式）——规则集自演进机制
+## 任务命令与技能
 
-## Skills（10 个，见 `.codex/skills/`）
+任务一律走 6 个命令入口（规范源 `prompt/review-rules/review-cmds.md`）：`full-review`、`style-fix`、`code-excellence`、`test-audit`、`todo-fix`、`style-bible`。旧 Profile A–P / R / AG 保留为别名，对账表见该文件 §八。**通用强制门任何命令都不可裁剪**：锚点纪律门、测试名对账门、文风门、translate 防线、fix-guard、文档-代码同步。
 
-> 用法：每个 skill 在 `.codex/skills/{name}/SKILL.md`，用 `{baseDir}/.codex/skills/{name}/SKILL.md` 引用。`name` 字段必须等于目录名。
+技能清单（10 个）与调用时机见 `.codex/skills/`、`.claude/skills/`、`.trae/skills/`；源在 `prompt/skill/`。
 
-| Skill | 文件 | When to use |
-|-------|------|-------------|
-| review-scan | (file: .codex/skills/review-scan/SKILL.md) | 编排器：对 rewrite-notes/ 目录做全量 review（coverage + doc + code + patterns + excellence），写 review report + 收敛状态。用户说 "review/scan/check 一个文档目录" 时用 |
-| review-process-skill | (file: .codex/skills/review-process-skill/SKILL.md) | Review 执行流程：Step 0-7、Blocker Gates、中间产物格式。进入 review 执行阶段时用 |
-| review-core-semantics-skill | (file: .codex/skills/review-core-semantics-skill/SKILL.md) | 核心语义定义 + 行为契约表模板（8 字段）。Step 2 Diff Extraction 识别 Top 5 语义差异时用 |
-| review-doc-skill | (file: .codex/skills/review-doc-skill/SKILL.md) | 文档 Review 检查清单（Ch1 骨架 / Claims-Evidence / 概念准确性 / 文档-代码一致性等）。检查 .md 文档质量时用 |
-| review-code-skill | (file: .codex/skills/review-code-skill/SKILL.md) | 代码 Review 检查清单（Rewrite 质量 / 硬件抽象 / 类型安全 / SMP 并发 / no_std 等 15 维度）。检查 .rs 代码质量时用 |
-| review-patterns-skill | (file: .codex/skills/review-patterns-skill/SKILL.md) | 常见错误模式库（P0 必检清单 + 85 个文档/代码/测试/叙事/流程/架构抽象模式，含验证命令）。review 中对照典型错误时用 |
-| review-excellence-skill | (file: .codex/skills/review-excellence-skill/SKILL.md) | 卓越性检查（正确性 gate 通过后）：教科书级文档 + redox 级代码 |
-| review-coverage-skill | (file: .codex/skills/review-coverage-skill/SKILL.md) | 覆盖率穷举：tools/coverage-extract/ 生成 SYMBOLS.md + AI 语义判断。检查 C 源码/Rust 实现覆盖完整性时用 |
-| review-socratic-skill | (file: .codex/skills/review-socratic-skill/SKILL.md) | 苏格拉底追问：review 发现可疑点无法判定时，通过提问引导用户澄清/提供证据（13 场景话术模板） |
-| review-implementation-skill | (file: .codex/skills/review-implementation-skill/SKILL.md) | 设计→实施 验证：验证 Rust 代码正确实现 design doc + 追踪自我审查问题清单 |
-
-## 任务命令（review-cmds，2026-09-05 新增）
-
-6 个独立 cmd 是任务的一级入口（单一目标 + 明确边界 + 章节级默认范围）。规范源 `prompt/review-rules/review-cmds.md`；薄壳 skill 注册于 `.agents/skills/`（软链，ZCode 原生扫描）与 opencode.json（muse/opencode 可直呼，style-bible 为 muse 必加载）：
-
-| cmd | 用途 |
-|-----|------|
-| full-review | 文档+代码全面 review+修复+覆盖度 |
-| style-fix | 文档文风与教学性修复 |
-| code-excellence | 代码卓越度 + 死代码消除 |
-| test-audit | 测试 5 维专项（完备/自身正确/冗余/无效/虚构） |
-| todo-fix | 修一个 TODO（DEFERRED 不算修；一次一个） |
-| style-bible | 文风宪法（禁黑话/缩写/文言文；锚点纪律） |
-
-通用强制门（任何 cmd 不可裁剪）：锚点纪律门（模式 83）、测试名对账门（Gate E）、文风门、translate 防线、fix-guard、文档-代码同步。旧 Profile A-P/R/AG 保留为别名（对账表 review-cmds.md §八）；新任务一律用 cmd 入口。
-
-> **一致性约定**：`.codex/skills/` 从 `prompt/skill/`（源）和 `.claude/skills/review-scan/` 派生；除 Codex frontmatter、运行时路径和单 session 状态布局外，规则正文保持同源。源文件变更后按 `prompt/README.md` 的同步命令更新派生文件，再运行 `tools/check-review-rules.sh`。`review-agent-ide` / `review-agent-trigger` 是 Trae agent 定义（无 frontmatter），Codex 无 agent 概念，不复制。
-
-## Fix Phase（修复规范）
-
-1. 修复前重读 STATE.md Open Issues + scan.md Issue List
-2. **fix-guard.md 强制**：修复前读目标行 ±5 行（不凭记忆/报告修）、grep 确认现状、一次只修一条、修后 grep 验证 + 写 fix-status
-3. 修复顺序：P0 → P1 → P2；P0 未清不得标 CONVERGED
-4. 修后验证：`cargo test -p <crate>` 通过 + `cargo check` 无新错误 + 重跑受影响 Gate
-5. 同步更新 STATE.md（fixed → Closed Issues，带 scan/date）
+> **一致性约定**：`.trae/skills/` 与 `.codex/skills/` 由 `prompt/skill/` 经 `tools/generate-derived-skills.sh` 生成；`review-scan` 编排器与 `.claude/rules/*`、`fix-guard` 属手工同步。改完源必须跑：`tools/generate-derived-skills.sh` → `tools/check-review-rules.sh` → `tools/lint-review-rules.sh` → `tools/diff-trae-skills.sh --only-diff`，四条全绿才算改完。

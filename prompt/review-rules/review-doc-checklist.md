@@ -501,7 +501,7 @@ rg "^\s*#{2,3}\s+.*(已知|修订|元注释|自审|修复|TODO 状态)" notes/..
 
 > **目的**：doc 描述的 `pub const` 类型可能在多个 crate 中重复定义（如 DEFAULT_HZ 在 os/arch + os/kernel 两处独立定义）。doc 应显式说明**权威定义位置** + **同步约束**。
 > **触发条件**：任何 doc 描述跨 crate 共享的常量（HZ, PAGE_SIZE, NR_*, MAX_* 等）。
-> **模式参考**：Proposal #12（跨 crate const 重复定义盲点；落地状态见 [review-core.md §Review 累积改进追踪](../../CLAUDE.md)）。
+> **模式参考**：Proposal #12（跨 crate const 重复定义盲点；落地状态见 [review-core.md §Review 累积改进追踪](review-core.md)）。
 
 **检查命令**：
 ```bash
@@ -1151,6 +1151,25 @@ tools/doc-style-lint.sh --diff            # 增量：本次新增/修改行，er
 ```
 
 ---
+
+## 4. 文档与代码同步强制检查（Doc Code Sync 七项）
+
+> 归属说明：这七项此前**只**写在仓库根的 `CLAUDE.md` 里，规范源里没有对应章节——属于"派生端比源端多内容"
+> 的反向漂移。`CLAUDE.md` 退役后由本节作为唯一真相源。触发背景：01-boot-shim-bootstrap review 查出
+> 三处文档与代码不一致（虚构常量、路径错误、`static mut` 已过时），文档漂移是持续活跃的问题。
+
+| 编号 | 检查项 | 命令 | 触发条件 |
+|---|---|---|---|
+| Sync-1 | 文档代码示例含 `static mut` | `rg "static mut" {doc}.md` | 实际代码已改用 `Atomic*` / `UnsafeCell`（模式 73） |
+| Sync-2 | 文档路径与仓库实际不一致 | `find os/{dir} -name X.rs` 对照 `rg "path" {doc}.md` | 目录重组后文档未更新（模式 73 变体） |
+| Sync-3 | 虚构常量（C 源码里不存在） | `rg "{MACRO_NAME}" minix3` | 命中 0 处（模式 73 / 67） |
+| Sync-4 | 文档内部待办未走流程 | `rg "^\s*>\s*\*\*TODO" {doc}.md` | 多处 TODO 未分类（Step 0.7.2） |
+| Sync-5 | 符号锚点可解析性 | `tools/anchor-resolve.sh --check {doc}.md` | 符号 0 定义 = P0-fact；手工行号漂移归卫生项（Step 1.0） |
+| Sync-6 | 文档路径缺 workspace 前缀 | `rg "kernel/src/" {doc}.md` 对照 `rg "os/kernel/src/" {doc}.md` | 跨文档路径风格不一致（模式 74，Step 1.0c） |
+| Sync-7 | 测试数量声称偏差超 50% | 文档内 `rg "约 [0-9]+|总计.*[0-9]+"` 对照 `cargo test` 输出 | 文档少报测试数（Step 4.5a） |
+
+执行次序：Step 1.0 锚点解析 → Step 1.0b / 1.0c（本文件 §2.4b / §2.4c）→ Step 4.5a 测试数量 →
+Step 0.7.2 文档内部待办。修复次序：先 P0（安全与内存正确性）→ 文档与代码漂移 P1 → P2 → backlog。
 
 ## 附录：优先级映射
 

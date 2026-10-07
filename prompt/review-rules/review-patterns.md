@@ -1709,7 +1709,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 
 ### 模式 74: 文档路径约定漂移（Doc Path Convention Drift, NEW 2026-07-30）
 
-**定义**：文档内 Rust crate 路径引用缺 `os/` workspace 根前缀，与 CLAUDE.md `os/` 目录约定不一致（典型错误：`kernel/src/...` 应为 `os/kernel/src/...`）。常因 doc 在 `os/Cargo.toml` workspace 之外撰写，作者直觉省略 workspace 根。
+**定义**：文档内 Rust crate 路径引用缺 `os/` workspace 根前缀，与 `AGENTS.md` 目录布局的 `os/` workspace 约定不一致（典型错误：`kernel/src/...` 应为 `os/kernel/src/...`）。常因 doc 在 `os/Cargo.toml` workspace 之外撰写，作者直觉省略 workspace 根。
 
 **触发场景**：
 - doc 引用 `kernel/src/...`、`arch/src/...`、`boot-shim/src/...` 等裸路径
@@ -1733,7 +1733,7 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 **严重度**：P1（默认）/ P2（仅个别遗漏）
 
 **规则草案**：
-- (a) **Rust crate 路径必须含 `os/` workspace 根前缀**（与 CLAUDE.md 目录布局约定一致）
+- (a) **Rust crate 路径必须含 `os/` workspace 根前缀**（与 `AGENTS.md` 目录布局约定一致）
 - (b) **minix3 C 源路径用 `minix3/...` 前缀**（不带 `os/`，与 Rust 路径区分）
 - (c) **跨文档统一路径约定**——新写 doc 前**必须**比对同一 stage 早期 doc 的路径风格
 - (d) **避免双重前缀**：`os/os/...` 是 sed 批量替换的常见副作用，必须 rg 复查
@@ -2054,9 +2054,9 @@ fn ev_copy(&self, ...) -> Result<...> { ... }
         CurrentClock / qemu_virt.rs）；使用方只见 trait，架构差异全部下沉
 ```
 
-**判定信号**：arch crate 之外的 `#[cfg(target_arch)]` 行为分支（CLAUDE.md §0.6 B-X 分类法：定义 current 类型合法，选行为违规；字面量汇编内寄存器/指令名属语法硬约束，豁免）。
+**判定信号**：arch crate 之外的 `#[cfg(target_arch)]` 行为分支（`AGENTS.md` 的守卫射程条款（B-X 分类法，细则见 review-code-excellence.md）：定义 current 类型合法，选行为违规；字面量汇编内寄存器/指令名属语法硬约束，豁免）。
 **验证命令**：`rg '#\[cfg\(target_arch' {kernel_or_server_dir} --type rust -n` → 逐条按 B-X 分类法判定。
-**严重度**：P1（硬件抽象泄漏；CLAUDE.md §0.6 全量重构的种子）。
+**严重度**：P1（硬件抽象泄漏；`AGENTS.md` 守卫条款的全量重构种子）。
 **反例**：05-clock-interrupt-init.md §4.7.1 反例 4。
 
 ### 模式 83: 无锚点知识点断言（Unanchored Knowledge Claim）（NEW 2026-09-05，工作流迭代沉淀）

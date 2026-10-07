@@ -20,7 +20,7 @@
 
 | 顺序 | 文件 | 读它是为了 |
 |---|---|---|
-| 1 | `CLAUDE.md`（仓库根） | 项目约束、Hidden Folder Convention、Gate 体系 |
+| 1 | `AGENTS.md`（仓库根，三端唯一入口） | 项目约束、中间产物目录约定、Gate 体系、开工前路由表（`CLAUDE.md` 已于 2026-10-07 退役） |
 | 2 | `.claude/rules/review-core.md` | 执行模型、Ground Truth 优先级、P0 六分类 |
 | 3 | `.claude/rules/review-process.md` | Step 0-7、Gate 证据规则、同 agent 验证局限 |
 | 4 | `.claude/rules/fix-guard.md` | 修复规范（本计划要给它加第 5 条） |
@@ -140,7 +140,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 ### 0.6 兼容与回滚总则（所有任务适用）
 
-规则类改动（改 `prompt/review-rules/`、`prompt/skill/`、`.claude/rules/`，或改 `CLAUDE.md`/`AGENTS.md` 里的复述段）统一遵守三条：
+规则类改动（改 `prompt/review-rules/`、`prompt/skill/`、`.claude/rules/`，或改 `AGENTS.md` 里的复述段）统一遵守三条：
 
 1. **只对新产物生效**：新规则从它落地的那个 commit 起约束之后新产生的 review 产物；不回溯、不重跑、不迁移旧 `scan.md`/`VERIFY-CHECK.md`/`STATE.md`。OQ13 的"不回扫"与 OQ16 的"不迁移"是这条总则的特例，不是各任务自己的局部约定。
 2. **新旧并存期只警告不报错**：新工具与扩展后的门禁脚本遇到旧格式产物时只给 warning（沿用 A2 任务卡的既有执行注意）；引擎不得因旧产物直接失败。
@@ -150,7 +150,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 ### 0.7 计划生命周期
 
-- **定位**：本文件是执行期工作文件，不是长期规则。正式文档（`CLAUDE.md`、`AGENTS.md`、`prompt/README.md`、`rewrite-notes/` 下的文档）不得引用它——这与 Hidden Folder Convention 禁止正式文档引用中间产物的精神一致。
+- **定位**：本文件是执行期工作文件，不是长期规则。正式文档（`AGENTS.md`、`prompt/README.md`、`rewrite-notes/` 下的文档）不得引用它——这与 Hidden Folder Convention 禁止正式文档引用中间产物的精神一致。
 - **完成判定**：执行记录的任务状态全部为已完成（或有明确的移出范围裁定），度量对比表填齐，遗留问题逐条登记去向（修订 OQ 表 / `edge_todo.md` / `.review/BACKLOG.md`）。
 - **完成后去向**：任务全部清空后，如果本文件仍在被使用（后续改进需求继续挂在这里），就把它收敛成一份持续维护的服务层候选池——继续留在 `prompt/` 目录内，可以改名；如果不再使用，直接删除。服务层的记录只属于 `prompt/`，不得迁往 `notes/` 目录。无论哪种去向，都不允许留下一份没人维护、继续腐化的计划文件。
 - **中途停止**：保留本文件，并在执行记录写清"停在哪一个任务、下一步是什么、被什么阻塞"。恢复执行前先重跑 C2 的三个脚本，确认基线没有被其他并行会话改动。
@@ -592,7 +592,7 @@ rg -n "模式 C|关联代码" prompt/review-rules/review.md | head
 | B4.2 | Gate 0 描述 | Gate 0 锚段数量不变（9 个）；在 `§Step 0: 预检结果` 的锚段定义里补一句"该段必须含关联代码清单"。**先跑 `rg -ln "锚段\|anchor sections" prompt/ .claude/ .codex/ .trae/ CLAUDE.md` 列全清单再逐处更新**——已核实规则层 14 处（手改 9 + 派生 5）：手改 = `prompt/review-rules/review-process.md`、`prompt/skill/review-process-skill.md`、`prompt/skill/review-agent-ide.md`（字符余量只剩 249，动前先算长度）、`prompt/README.md`、`.claude/rules/review-core.md`、`.claude/rules/review-process.md`、`.claude/skills/review-scan/SKILL.md`、`.claude/skills/review-scan/checks/process.md`、`CLAUDE.md:109`（英文 "9 anchor sections"）；派生 = `.codex/skills/` 与 `.trae/skills/` 下的对应副本（`tools/generate-derived-skills.sh` 默认两端都生成，别只改 `.codex`）。**顺手修**：`prompt/README.md:22` 目录树注释写"9,739 字符，余量 261"已过期，按实测改为"9,751 字符，余量 249"（同文件 :102 表格数字已正确）。注意 `AGENTS.md` 不含 Gate 0 锚段描述，不要机械照抄旧清单 |
 | B4.3 | `prompt/skill/cmds/full-review/SKILL.md` | "执行"段补一句：Step 0 必须产出关联代码清单，Step 3.6 必须执行；"产物"段补"关联代码清单 + 代码维度结论（含无发现声明）" |
 
-**执行注意**：`CLAUDE.md`、`AGENTS.md`、`review-agent-ide.md` 里的 Gate 0 描述属于"同一事实多文件复述"，最容易漏改——任务完成标准是 `rg -ln "锚段"` 的输出文件全部打勾，而不是清单里列了几处。这是描述性同步，不是新增 Gate。
+**执行注意**：`AGENTS.md`、`review-agent-ide.md` 里的 Gate 0 描述属于"同一事实多文件复述"，最容易漏改——任务完成标准是 `rg -ln "锚段"` 的输出文件全部打勾，而不是清单里列了几处。这是描述性同步，不是新增 Gate。
 
 **验收**：
 
@@ -639,13 +639,13 @@ rg -n "关联代码清单" tools/review-gate-check.sh .claude/skills/review-scan
 | `prompt/skill/cmds/*/SKILL.md`（cmd 薄壳） | `.agents/skills/*`（软链）与 `opencode.json` | 薄壳本身是软链注册；改了 `full-review`/`style-fix` 薄壳不需要重新注册，但要在 `.agents/skills/` 下确认软链仍指向 |
 | `prompt/review-rules/*.md` | 无自动派生 | 它们是规则源；只需确认 `prompt/skill/` 适配层是否要同步（按 `prompt/README.md` 的"review-rules ↔ skill 一致性"条目人工检查） |
 | `.claude/rules/*.md` | 无自动派生（Claude/Codex 直接读） | Codex 通过 `AGENTS.md` 指向 `.claude/rules/` 规范源，无需复制 |
-| `CLAUDE.md` / `AGENTS.md` | 无派生 | 两文件含 Gate 0/累积改进表/Proposal 状态等复述内容；改动源后必须回填（B4.2、D5、E2、F1 已点名具体行） |
+| `AGENTS.md` | 无派生 | 该文件含 Gate 0、P0 六类等复述内容（`CLAUDE.md` 已退役并并入此处与规范源）；改动源后必须回填（B4.2、D5、E2、F1 已点名具体行） |
 
 **平台边界（现状核实，2026-09-16）**：当前使用中的工具目录可分四类，避免"平台一多规则就乱"的担心：
 
 - **自动派生（不存在手工副本）**：`.trae/skills/`、`.codex/skills/` 由 `tools/generate-derived-skills.sh` 从 `prompt/skill/` 生成；`.agents/skills/` 是指向 `prompt/skill/cmds/` 的软链；`opencode.json` 只登记 `.codex/skills/` 与 `prompt/skill/cmds/` 的路径。这三处改了源就跟着变，没有漂移空间。
 - **人工审读的第二源**：`.claude/rules/` 与 `.claude/skills/review-scan/`。Claude 端可以先行（先改这里再回填 `prompt/`），但回填是义务；C1 第二项实测的"源漂移审计"就是查这个。
-- **复述内容**：`CLAUDE.md`、`AGENTS.md`、`prompt/README.md` 里的计数与清单（Gate 0 锚段数量、模式总数、Proposal 状态）。这类文字没有派生脚本，靠 B4.2、D5、E2、F1 点名回填，附录 4 管模式计数。
+- **复述内容**：`AGENTS.md`、`prompt/README.md` 里的计数与清单（Gate 0 锚段数量、模式总数、Proposal 状态）。这类文字没有派生脚本，靠 B4.2、D5、E2、F1 点名回填，附录 4 管模式计数。
 - **不参与同步**：`.lingma/`（教学风格规则）、`.codebuddy/plans/`、`.zcode/plans/`（会话计划）、`.trae/documents/`（评审工作文档）当前都不含 review 规则副本，不在同步链上。将来若要在新平台使用 review 规则，先在本表登记派生方式（脚本或软链），禁止手工复制规则正文。
 
 **同步输出必含两项实测**（防"改完 skill 顶爆 Trae 上限"和"源/派生悄悄漂移"）：
