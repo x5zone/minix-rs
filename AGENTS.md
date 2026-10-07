@@ -26,8 +26,8 @@ prompt/              — review rules, skill definitions (source of truth for .c
 .codex/              — Codex skills (derived from prompt/skill/ + .claude/skills/)
 ```
 
-三棵笔记树于 2026-10-07 取代了旧的 `notes/{rewrite,study,redesign}` 伞目录，同时剥掉模块层
-`notes/rewrite/fork-syscall-rewrite/`：规范路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。
+三棵笔记树于 2026-10-07 取代了旧的 notes 伞目录，同时剥掉 rewrite 分区下那层已废弃的模块目录：
+规范路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。
 旧→新对照见 `rewrite-notes/MIGRATION.md` 与 `migrate_notes_plan/pre-migrate-20261007/path-map.tsv`。
 
 **Hidden Folder Convention（NEW 2026-07-31）**：`.design/` 和 `tmp_design_and_todo/` 文件夹视为中间产物，正式文档绝不引用（引用即 P0-process-violation）。正式 doc 引用应使用绝对路径到 doc、代码、C 源。

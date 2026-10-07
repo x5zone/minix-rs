@@ -1,96 +1,69 @@
-# Minix-RS 重构文档索引
+# rewrite-notes — 重写文档区
 
-本目录包含 Minix3 到 Rust 重构的完整设计文档，按主题分类整理。
+> **创建**: 2026-10-07（目录迁移当天）。本目录曾位于 notes 伞目录下、并比现在多一层已废弃的模块层目录名；
+> 逐条路径对照与工具参数变更见 [MIGRATION.md](MIGRATION.md)。
 
----
+这里存放 Minix3 各模块用 Rust 重写的正式设计文档：一份 C 源概念对应一篇文档，
+按服务的启动执行顺序编号成 20 个阶段目录。每篇文档都有配套的评审流水线、
+符号锚点校验与覆盖率穷举，是本仓库的一等交付物（不是草稿）。
 
-## 快速导航
+## 阶段目录一览
 
-### 🎯 项目规划（必读）
+编号就是阅读顺序，也是系统真实的启动因果顺序。权威说明（每个服务为什么排在这个位置、
+谁把它的映像装进内存）在 [00-master-plan/README.md](00-master-plan/README.md)。
 
-| 文档 | 说明 | 关键内容 |
-|------|------|----------|
-| [project-plan.md](misc/project-plan.md) | **项目完整规划** | 目录结构、crate命名、实施路线图、纵向切片策略 |
-| [vertical-slice-strategy.md](misc/vertical-slice-strategy.md) | 纵向切片策略详解 | 为什么按模块重写会失败、切片实施路径 |
-| [rewrite-strategy.md](misc/rewrite-strategy.md) | 重写策略：语义冻结 | 两阶段方法、语义等价验证、冻结清单 |
+| 编号 | 目录 | 对应服务 | 正式文档数 |
+|---|---|---|---|
+| 00 | [00-master-plan/](00-master-plan/) | — 顶层规划与决策记录 | 15 |
+| 01 | [01-stage-kernel/](01-stage-kernel/) | Kernel | 38 |
+| 02 | [02-stage-vm/](02-stage-vm/) | VM | 28 |
+| 03 | [03-stage-rs/](03-stage-rs/) | RS | 22 |
+| 04 | [04-stage-pm/](04-stage-pm/) | PM | 22 |
+| 05 | [05-stage-vfs/](05-stage-vfs/) | VFS | 33 |
+| 06 | [06-stage-sched/](06-stage-sched/) | SCHED | 16 |
+| 07 | [07-stage-ds/](07-stage-ds/) | DS | 14 |
+| 08 | [08-stage-is/](08-stage-is/) | IS | 12 |
+| 09 | [09-stage-init/](09-stage-init/) | INIT | 16 |
+| 10 | [10-stage-mib/](10-stage-mib/) | MIB | 24 |
+| 11 | [11-stage-devman/](11-stage-devman/) | DEVMAN | 15 |
+| 12 | [12-stage-input/](12-stage-input/) | INPUT | 16 |
+| 13 | [13-stage-ipc/](13-stage-ipc/) | IPC | 12 |
+| 14 | [14-stage-runtime/](14-stage-runtime/) | RUNTIME | 15 |
+| 15 | [15-stage-fs/](15-stage-fs/) | FS（mfs/pfs/procfs/ptyfs/ext2/isofs/vbfs/hgfs） | 26 |
+| 16 | [16-stage-drivers/](16-stage-drivers/) | DRIVERS | 27 |
+| 17 | [17-stage-net/](17-stage-net/) | NET（lwip + uds） | 27 |
+| 18 | [18-stage-commands/](18-stage-commands/) | COMMANDS | 26 |
+| 19 | [19-stage-integration/](19-stage-integration/) | — 跨服务集成与端到端测试 | 1 |
 
-### 🏗️ 架构设计
+阶段目录内部还可能有三类子目录，它们随所属阶段存放：
 
-| 文档 | 说明 | 关键内容 |
-|------|------|----------|
-| [project-structure.md](misc/project-structure.md) | 项目结构设计 | Workspace布局、Makefile vs xtask、构建系统 |
-| [minimal-skeleton.md](misc/minimal-skeleton.md) | 最小可运行骨架 | 第一阶段目标、简化策略、initramfs方案 |
-| [modern-hardware-and-rust.md](misc/modern-hardware-and-rust.md) | 现代硬件与Rust重构 | 设计哲学、性能理论、多核设计、IPC原子性 |
-| [arch_mapping.md](misc/arch_mapping.md) | 架构机制映射 | 硬件描述→机制抽象、Trait设计、静态分发 |
+- `draft/` — 尚未定稿的稿子，评审时不作为交付物。
+- `archive/` — 该阶段已被取代的历史稿。
+- `.design/` — 评审流程用的可复用设计快照（中间产物，正式文档不引用，已被 `.gitignore` 排除）。
 
-### 🔍 源码分析
+## 其他子区
 
-| 文档 | 说明 | 关键内容 |
-|------|------|----------|
-| [invariant.md](misc/invariant.md) | 内核不变量分析 | 进程状态不变量、IPC不变量、高危路径识别 |
-| [misc.md](misc/misc.md) | 异步消息表分析 | C语言"阴险锁"设计、Rust类型安全替代方案 |
-| [ipc-sendrec.md](misc/ipc-sendrec.md) | SENDREC原子性 | IPC语义原子性vs进程上下文原子性、信号处理问题 |
-| [elf-loader.md](misc/elf-loader.md) | ELF加载与用户态执行 | 从rootfs读取、解析ELF、建立地址空间、切换到用户态 |
+| 目录 | 是什么 | 数量 |
+|---|---|---|
+| [concepts/](concepts/) | 跨阶段的概念词条：capability、endpoint、fail-stop、typestate、内核内替换的风险 | 6 |
+| [misc/](misc/) | 不属于单一阶段的重写工程文档：项目规划、结构设计、纵向切片策略、语义冻结策略、内核不变量、异步消息表、SENDREC 原子性、ELF 加载、架构机制映射、现代硬件与 Rust，以及伞目录退役时归档进来的两份说明 | 16 |
+| [coordination/](coordination/) | 多会话协作的过程产物：开场与接续提示词、滚动工作记录、交接件、评审报告与审计表、待办台账、并行编排、缺陷案卷。只读为主，新内容不要写在这里 | 73 |
+| [evidence/](evidence/) | 按日期与任务命名的实验取证（串口日志、设备树、脚本输出）。审计证据，不做改写 | 276 |
+| [archive/legacy-fork-bak/](archive/legacy-fork-bak/) | 以 fork 系统调用为主线时期的备份稿 | 40 |
+| [MIGRATION.md](MIGRATION.md) | 迁移前后的路径对照、评审工具参数变更、已知悬空引用、旧内容回捞方法 | — |
 
-### 📋 总览
+## 从零开始的阅读路线
 
-| 文档 | 说明 | 关键内容 |
-|------|------|----------|
-| [rewrite.md](misc/rewrite.md) | Rust重构总览 | 核心目标、设计原则、文档索引、类型安全状态机 |
+1. [misc/rewrite.md](misc/rewrite.md) — 重写目标与设计原则的总述。
+2. [RECONSTRUCTION-PRINCIPLES.md](RECONSTRUCTION-PRINCIPLES.md) — 重构原则（什么可以改、什么必须保持外部行为）。
+3. [misc/project-plan.md](misc/project-plan.md) 与 [misc/vertical-slice-strategy.md](misc/vertical-slice-strategy.md) — 怎么切、为什么按纵向切片推进。
+4. [misc/rewrite-strategy.md](misc/rewrite-strategy.md) — 语义冻结的做法与验证清单。
+5. [00-master-plan/README.md](00-master-plan/README.md) — 启动顺序与目录对应关系，然后按编号进入各阶段。
 
----
+## 目录之外
 
-## 阅读建议
-
-### 第一次接触本项目？
-
-按以下顺序阅读：
-
-1. **[rewrite.md](misc/rewrite.md)** - 了解整体目标和设计原则
-2. **[project-plan.md](misc/project-plan.md)** - 了解项目结构和实施计划
-3. **[vertical-slice-strategy.md](misc/vertical-slice-strategy.md)** - 理解为什么选择纵向切片
-4. **[rewrite-strategy.md](misc/rewrite-strategy.md)** - 理解语义冻结的重要性
-
-### 准备开始编码？
-
-1. **[project-structure.md](misc/project-structure.md)** - 确认项目结构
-2. **[invariant.md](misc/invariant.md)** - 理解内核不变量，避免破坏关键假设
-3. **[arch_mapping.md](misc/arch_mapping.md)** - 了解如何用Rust trait抽象硬件
-
-### 深入理解Minix3设计？
-
-1. **[modern-hardware-and-rust.md](misc/modern-hardware-and-rust.md)** - 现代硬件视角
-2. **[ipc-sendrec.md](misc/ipc-sendrec.md)** - IPC原子性细节
-3. **[misc.md](misc/misc.md)** - 异步消息表的巧妙设计
-4. **[elf-loader.md](misc/elf-loader.md)** - 用户态执行机制
-
----
-
-## 文档关系图
-
-```
-                    rewrite.md (总览)
-                         │
-         ┌───────────────┼───────────────┐
-         │               │               │
-    project-plan   rewrite-strategy  vertical-slice
-         │               │               │
-         └───────────────┼───────────────┘
-                         │
-              project-structure
-                         │
-         ┌───────────────┼───────────────┐
-         │               │               │
-   modern-hardware    invariant     minimal-skeleton
-         │               │               │
-    arch_mapping    ipc-sendrec          │
-         │               │               │
-        misc          elf-loader         │
-```
-
----
-
-## 相关目录
-
-- `../../os/` - Rust 实现的源代码
-- `../../minix3/` - 原始 Minix3 C 代码（参考）
+- `os/` — Rust 实现的源码；每篇阶段文档的锚点指向那里的具体符号。
+- `minix3/` — 原始 Minix3 C 源码，是唯一的事实基准，不修改。
+- `redesign-notes/` — 再设计探索区，在重写定稿后启用。
+- `study-notes/` — 早期学习笔记，由 AI 生成、未经 C 源码校验，不能当事实依据引用。
+- `book/` — 电子书成品区，内容定稿后从本目录抽取。

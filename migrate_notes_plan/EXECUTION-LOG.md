@@ -463,3 +463,70 @@ Phase 6 的门禁证据单独落在 `migrate_notes_plan/pre-migrate-20261007/02-
 411 条 warning 全是死代码类告警，与迁移无因果：`os/` 的改动逐行核验只在注释与文档字符串内
 （Phase 3 的门已量过：非注释新增行仅 1 行，是 `minix-types/README.md` 的列表项）。
 为把这句话变成可核对的证据，另在迁移前 tag 的临时工作树上跑同一条命令做告警数对读，结果写进 02-VERIFY.md。
+
+---
+
+## Phase 7 · 收尾（三份入口文档 + 交付物 + 终态 tag）
+
+### 动作 7.1 三份 README 与一份存根
+
+| 文件 | 内容 | 门 |
+|---|---|---|
+| `rewrite-notes/README.md` | 重写为新入口：20 个阶段目录逐个带正式文档数、阶段内 `draft/`、`archive/`、`.design/` 三类子目录说明、五个功能区（`concepts/`、`misc/`、`coordination/`、`evidence/`、`archive/`）用途与计数、从零开始的阅读路线、与 `os/`、`minix3/`、`book/` 的关系 | 文风门 error 级 0 |
+| `redesign-notes/README.md` | 顶部加状态段：本区是重写定稿后才启用的探索区，当前内容是从两处原样迁来的存量思考，含互相冲突的方案，不能当实现依据；开新方向前先收敛同主题已有分析 | 同上 |
+| `study-notes/README.md` | 定性 + 使用规则：AI 生成、未逐篇对 C 源码校验、正式文档不引用、只可当线索；并写明精简与删除是独立任务（附理由） | 同上 |
+| `redesign-notes/vm/README.md` | 空目录存根：说明这是「VM 是否内进内核地址空间」这条未裁决路线的落点。git 不跟踪空目录，不写这份文件该目录就不存在 | 同上 |
+
+`rewrite-notes/00-master-plan/README.md` 的启动顺序表里有一行 `20 | 20-redesign/`，
+那个目录已被本次迁移移走——**这是迁移自己造成的失真**，所以改了那一行指向新位置
+（只改这一行，不顺手重写该文档的其余叙述）。
+
+### 动作 7.2 交付物清点
+
+用户要求的三件都在：
+
+1. 执行前全貌留存：`pre-migrate-20261007/00-SNAPSHOT.md` + 四份清单 + `snapshot.sha256`
+2. 执行详细日志：本文件（Phase 0 到 Phase 7 逐动作，含三处自造故障与两处越界的如实记录）
+3. 审计交接 PROMPT：`migrate_notes_plan/REVIEW-PROMPT.md`
+4. 附带：`rewrite-notes/MIGRATION.md`（入 git 的永久对照表）、`pre-migrate-20261007/02-VERIFY.md`（门禁取证）、
+   `.review/PATH-MAPPING.md`（gitignore 内本地指针）
+
+### 动作 7.3 又摔了一次同一个坑（第二次）
+
+Phase 7 提交前用 `git add -u -- rewrite-notes ...` 暂存文档改动时，
+又把维护者的在制台账 `TODO-3ARCH-PARITY-20261006.md`（未提交的 6 增 2 删）带进了暂存区——
+与 Phase 3 是同一个失误。这次靠 Phase 5 之后新加的「每次 add 之后必查暂存清单」这一步当场抓到：
+`git diff --cached --name-only | grep TODO-3ARCH` 命中 1，
+于是把索引退回迁移前 blob `beb452f4e`（工作树内容不动，改动仍留在工作树未提交）。
+教训升级为硬性步骤：**只要工作树存在他人/用户 in-progress 文件，任何 `git add -u` 或 `git add -A` 之后
+都要立刻跑一次「暂存清单里不该出现它们」的断言**，不能靠记忆。
+
+### 动作 7.4 终态 tag
+
+```bash
+git tag -a notes/post-migrate-20261007 -m "……"      # 指向 Phase 7 提交
+git diff --stat notes/pre-migrate-20261007..notes/post-migrate-20261007 -- notes | tail -1   # 旧树消失量
+```
+
+两个 tag 的对读方法是本次审计的主线：`notes/pre-migrate-20261007` 是旧布局最后状态（内容层），
+`notes/post-migrate-20261007` 是新布局第一个状态，中间六个提交分别是基线、映射表、纯移动、
+引用重写、工具与规则、锚点基线、收尾文档。
+
+---
+
+## 收口状态
+
+| 阶段 | 提交 | 一句话结果 |
+|---|---|---|
+| Phase 0 | `d29b0f191` | 全貌留存闭合（2428 = 1102 + 1325 + 1），pre-tag 与 tar 落位 |
+| Phase 1 | `5ae87f503` | 2428 条映射合同，覆盖率 100%、无碰撞、旧树零残留 |
+| Phase 2 | `e90e4173d` | 纯移动：`1102 files changed, 0 insertions(+), 0 deletions(-)`；抓到并补回 108 个静默退跟踪 |
+| Phase 3 | `c2ef81f79` | 必改域旧路径归零；相对链接重定基 138 处；新断链 0 |
+| Phase 4 | `c399d33ae` | 六脚本 + 规则三端改到新路径模型；修 doc-style-lint 静默失效 |
+| Phase 5 | `90ab7c744` | 两份锚点基线换前缀，行数 874/6609 不变 |
+| Phase 6 | 并入收尾提交 | 八道门取证落 `02-VERIFY.md`；静默失效埋点三类全抓到 |
+| Phase 7 | 本笔 | 三份 README + MIGRATION.md 修订 + 审计 PROMPT + post-tag |
+
+未做且已登记为独立任务的：旧阶段编号与迁移前既有断链（452 条基线，迁移后 257）；
+`fork-syscall-plan.md` 悬空引用的后继判定；`study-notes/` 精简；两个 `.backup` 合并；
+`evidence/` 1.2G 与 tar 卷的长期存放（建议复制到仓库外）。

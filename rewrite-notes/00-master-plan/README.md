@@ -35,7 +35,7 @@
 | 17 | `17-stage-net/` | NET | lwip + uds 双 server + libsockdriver/libsockevent/liblwip 框架 + libc socket 封装（2026-08-16 plan.md 定稿 + 26 篇最小骨架，占位 README 移入 draft/） |
 | 18 | `18-stage-commands/` | COMMANDS | games 补齐 + bin/sbin + /etc + 登录链路（2026-08-16 新建占位） |
 | 19 | `19-stage-integration/` | — | 跨服务集成、状态机、端到端测试（原 10，2026-08-14 后移；2026-08-16 顺延） |
-| 20 | `20-redesign/` | — | 设计重构记录（原 11，2026-08-14 后移；2026-08-16 顺延） |
+| 20 | — | — | 设计重构记录两篇（`rs-cross-layer-pollution.md`、`tocutou-and-distributed-consistency.md`）已随本次目录迁移移到仓库根的 `redesign-notes/architecture/`，本树不再占用 20 号编号 |
 
 > **boot 两层语义**：登记顺序（`minix3/minix/kernel/table.c:image` 数组）= 模块槽位顺序（ds→rs→pm→sched→vfs→memory→tty→mib→vm→pfs→mfs→init）；执行顺序（`minix3/minix/kernel/main.c:kmain` 仅 kernel 任务 + RS + VM 立即可调度，非 VM 者挂上 RTS_VMINHIBIT）= kernel 任务 → VM → RS → 其余。目录编号采用执行语义 + 阅读理解顺序。
 >
