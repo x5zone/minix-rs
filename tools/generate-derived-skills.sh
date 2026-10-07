@@ -97,7 +97,7 @@ generate_codex() {
     s|（独立会话 / Trae 内跨 AI 聚合）|（独立会话）|g
     # 布局树：trae/ → codex/；删除 bagging 产物（MANIFEST/AGGREGATED）
     s|`trae/`|`codex/`|g
-    s|├── trae/\{module\}/|├── codex/{module}/|g
+    s|├── trae/\{stage\}/|├── codex/{stage}/|g
     /MANIFEST-/d
     /AGGREGATED-/d
     s|# 某 AI 的 scan（bagging 输入）|# 单 session 主 scan|g

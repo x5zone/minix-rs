@@ -58,7 +58,7 @@ prompt/
     - **模式 70 CTOS** (Cross-Turn Outdated Staleness)：TODO 列表跨轮状态陈旧检测
     - **模式 71 DOG** (Decision Over-Generalization)：用户决策泛化误用检测
     - **硬阻断规则**：Step 0 启动时必须跑 4 条 `ls .design/{NN}-*.md`，缺失即 FAIL
-    - **工具**：`tools/design-coverage-check.sh {module}` 自动扫描所有 stage 缺失报告
+    - **工具**：`tools/design-coverage-check.sh {stage}` 自动扫描所有 stage 缺失报告
     - **STATE.md Resume Point 模板**：续 session 必含 `ls .design/` 预检命令
     - **scan.md Gate 0 锚段扩为 9 个**：新增 `§Step 0: 预检结果` 锚段
 
@@ -364,17 +364,17 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 
 ### 路径变量
 
-- `{module}` = rewrite 模块名 = `notes/rewrite/{module}/` 的目录名（如 `fork-syscall-rewrite`）。取目标文档所在路径中 `notes/rewrite/` 下的第一级目录名。
-- `{stage}` = 模块下的阶段子目录（如 `01-stage-kernel`），仅作 `{module}` 内分组，不替代 `{module}`。
+- `{tree}` = 目标文档所在的笔记树根：`rewrite-notes`、`redesign-notes`、`study-notes`（目录名读自 `tools/notes-layout.conf`）。
+- `{stage}` = 树根下第一级目录名（如 `01-stage-kernel`），同时是评审状态目录的分组键（`.review/{tool}/{stage}/`）。旧布局在树根与阶段之间还有一个模块层（当时取值恒为 `fork-syscall-rewrite`），该层已于 2026-10-07 目录迁移退役。
 - `{doc-stem}` = 目标文档去扩展名（如 `03-kmain-cstart`）。
 - `{agent}` = AI 模型标识（Trae 内：glm/kimi/ds/qwen/seed/...；Claude 内：m3/glm-flash）；Codex 单 session 不使用 agent 后缀。
-- **`{module}` 与覆盖率脚本 `--module` 是两个不同概念**：本路径的 `{module}` 是 rewrite 模块名；覆盖率脚本的 `--module kernel` 是 Minix3 模块名。不得混用。
+- **状态目录键 `{stage}` 与覆盖率脚本 `--module` 是两个不同概念**：前者是阶段目录名（如 `01-stage-kernel`）；后者的 `--module kernel` 是 Minix3 模块名。不得混用。
 
 ### 统一布局（项目根 `.review/` 下分 `trae/`、`claude/` 与 `codex/`）
 
 ```
 .review/
-├── trae/{module}/
+├── trae/{stage}/
 │   ├── STATE.md                              # Trae 专属，与 claude 隔离
 │   ├── VERIFY-CHECK.md                       # Trae 专属
 │   ├── session-plan.md                       # 多 session 续审计划
@@ -384,31 +384,31 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 │       ├── {doc-stem}-{agent}-SYMBOLS.md
 │       ├── MANIFEST-{doc-stem}.md            # 该 doc 所有 agent scan 清单
 │       └── AGGREGATED-{doc-stem}.md          # bagging 聚合后主 scan
-├── claude/{module}/
+├── claude/{stage}/
     ├── STATE.md                              # Claude 专属，与 trae 隔离
     ├── VERIFY-CHECK.md                       # Claude 专属
     └── {doc-stem}/{scan,structure,SYMBOLS}.md
-└── codex/{module}/
+└── codex/{stage}/
     ├── STATE.md                              # Codex 专属，与 trae/claude 隔离
     ├── VERIFY-CHECK.md                       # Codex 专属
     └── {doc-stem}/{scan,structure,SYMBOLS}.md
 ```
 
-> 采用**扁平 scans/ 结构**，不启用 `{stage}/` 子目录（`{doc-stem}` 已含 stage 编号前缀，足够区分）。
+> 采用**扁平 scans/ 结构**：状态目录本身按 `{stage}` 分组，其下不再按文档建子目录（`{doc-stem}` 已含阶段编号前缀，足够区分）。
 
 ### 双写模式（交互式修复场景）
 
 需交互式修复 review todo 时，除标准中间产物外，**额外**在被 review 文档同目录下写可读修复文档：
 
-- Trae 交互式修复文档：`notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`
-- Claude 最终报告（可选）：`notes/rewrite/{module}/{stage}/{doc-stem}-claude-report.md`
-- Codex 交互式修复报告：`notes/rewrite/{module}/{stage}/{doc-stem}-codex-report.md`
+- Trae 交互式修复文档：`{tree}/{stage}/{doc-stem}-trae-review.md`
+- Claude 最终报告（可选）：`{tree}/{stage}/{doc-stem}-claude-report.md`
+- Codex 交互式修复报告：`{tree}/{stage}/{doc-stem}-codex-report.md`
 
 修复文档/最终报告 = 标准 scan 的**可读子集 + todo 进度跟踪**（按 issue ID/位置匹配的子集关系，非 checksum 一致）。scan.md 的 Artifact Inventory 表列出标准路径和可选双写路径。
 
 ### 三工具隔离规则
 
-1. Step 0 先判断当前运行环境（Trae / Claude / Codex），读取对应 `.review/{tool}/{module}/STATE.md`。
+1. Step 0 先判断当前运行环境（Trae / Claude / Codex），读取对应 `.review/{tool}/{stage}/STATE.md`。
 2. 如果同一工具下两份 STATE.md 同时存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
 3. 每个 STATE.md 独立维护自己的 Open P0/P1/P2 列表；新增问题必须同步进 Open 列表，已修复问题移入 Closed Issues。
 4. 收敛条件必须满足：scan.md 所有维度 COMPLETE、最近 Pass 新增 P0=0/P1≤1、Gate G VERIFY-CHECK = PASS、Blocker Gates 0/A/B/C/D/D-6/E/G/H 全部通过且有 gate-evidence 附件。
@@ -421,10 +421,10 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 
 1. **必须跑 4 条 `ls`**（Step 0 启动时）：
    ```bash
-   ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md
-   ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md
-   ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md
-   ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
+   ls {tree}/{stage}/.design/{NN}-outline.v*.md
+   ls {tree}/{stage}/.design/{NN}-outline-review.v*.md
+   ls {tree}/{stage}/.design/{NN}-design.v*.md
+   ls {tree}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
    ```
    ls 输出必须写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段，9 个之一；该段必须含**关联代码清单**子小节（B4.2 2026-09-18））。
 
@@ -437,7 +437,7 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 
 3. **存在旧快照时**：仍必须执行 v2 评估（重新产出 `.v{N+1}.md`）；旧快照仅作"前人理解"参考，**不是 ground truth**。
 
-4. **工具支持**：`tools/design-coverage-check.sh {module}` 自动扫描所有 stage 的 `.design/` 目录，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
+4. **工具支持**：`tools/design-coverage-check.sh {stage}` 自动扫描所有 stage 的 `.design/` 目录，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
 
 5. **决策记录豁免**：仅一次性用户明确豁免；豁免必须登记在 STATE.md `§豁免列表` 段；**不可泛化**（**模式 71 DOG 触发**）。
 

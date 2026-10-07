@@ -81,11 +81,11 @@ python3 tools/coverage-extract/coverage-extract.py kernel <doc_dir> \
 
 # 示例
 python3 tools/coverage-extract/coverage-extract.py vm \
-  notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+  rewrite-notes/02-stage-vm \
   --rust-dir os --c-dir minix3/minix/servers/vm
 
 python3 tools/coverage-extract/coverage-extract.py kernel \
-  notes/rewrite/fork-syscall-rewrite/01-stage-kernel \
+  rewrite-notes/01-stage-kernel \
   --rust-dir os --c-dir minix3/minix/kernel \
   --doc-file 03-kmain-cstart.md \
   --semantic-map tools/coverage-extract/kernel-semantic-map.json \
@@ -213,8 +213,8 @@ python3 tools/coverage-extract/coverage-extract.py kernel \
 ### Step 3: 更新 STATE.md
 
 将覆盖率结果写入工具对应的 `STATE.md`（双路径，互不共享）：
-- **Trae** → `.review/trae/{module}/STATE.md`
-- **Claude** → `.review/claude/{module}/STATE.md`
+- **Trae** → `.review/trae/{stage}/STATE.md`
+- **Claude** → `.review/claude/{stage}/STATE.md`
 
 ```markdown
 ## Coverage Status
@@ -279,7 +279,7 @@ SYMBOLS.md 是**累积**的：
 
 ```bash
 # 更新流程
-python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall-rewrite/02-stage-vm
+python3 tools/coverage-extract/coverage-extract.py vm rewrite-notes/02-stage-vm
 # 脚本会覆盖 SYMBOLS.md，AI 需要从 STATE.md 恢复之前的语义判断
 # 建议：AI 补充的语义判断单独存入 SYMBOLS-ANNOTATED.md
 ```
@@ -330,7 +330,7 @@ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall
 
 ```bash
 # 验证文档覆盖
-rg "symbol_name" notes/rewrite/{module}/ --type md -n
+rg "symbol_name" {tree}/ --type md -n
 # 如果有结果 → 文档覆盖
 # 如果无结果 → 文档未覆盖（不要猜测"可能在其他文档"）
 

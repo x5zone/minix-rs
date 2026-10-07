@@ -1,6 +1,6 @@
 ---
 name: review-scan
-description: Scan a notes/rewrite/ directory. Execute coverage + doc + code + patterns + excellence checks across 5 domain files, write a review report with convergence status. Use when user says "review" or "scan" or "check" a directory of documentation.
+description: Scan a rewrite-notes/ directory. Execute coverage + doc + code + patterns + excellence checks across 5 domain files, write a review report with convergence status. Use when user says "review" or "scan" or "check" a directory of documentation.
 allowed-tools: Read, Grep, Glob, Bash, Write
 ---
 
@@ -62,16 +62,16 @@ Missing this section → scan.md marked DRAFT.
    - **Trae IDE** → `.review/trae/$MODULE/STATE.md` (project root `.review/`)
    - **Claude Code Runtime** → `.review/claude/$MODULE/STATE.md` (project root `.review/`)
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
-   - `$MODULE` = first directory under `notes/rewrite/` in the target doc path. This is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
+   - `$MODULE` = first directory under `rewrite-notes/` in the target doc path. This is separate from the coverage script's `--module` argument (Minix3 module name); do not mix them.
    - `$DOC_STEM` = target doc basename without extension; `$AGENT` = model id (Trae: glm/kimi/...; Claude: m3/...).
    - Use `tools/review-init.sh claude {doc-path}` to auto-compute paths and mkdir.
 4. **⛔ Step 0 硬阻断预检（NEW 2026-07-16，所有 review 模式强制，模式 69 PSMD + 71 DOG 配套）**：
    - **必须跑 4 条 `ls`**（无论何种 review 模式）：
      ```bash
-     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-outline.v*.md
-     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-outline-review.v*.md
-     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-design.v*.md
-     ls notes/rewrite/$MODULE/$STAGE/.design/$NN-design-final.v*.md  # bagging only
+     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-outline.v*.md
+     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-outline-review.v*.md
+     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-design.v*.md
+     ls rewrite-notes/$MODULE/$STAGE/.design/$NN-design-final.v*.md  # bagging only
      ```
    - **必须跑工具扫描**：
      ```bash
@@ -90,7 +90,7 @@ Missing this section → scan.md marked DRAFT.
 ## Phase 2: Coverage Enumeration (DO THIS FIRST, once for the whole directory)
 
 > Derive from the user's target:
-> - `$DOC_DIR` = the directory the user wants reviewed (e.g. `notes/rewrite/fork-syscall-rewrite/01-stage-kernel`)
+> - `$DOC_DIR` = the directory the user wants reviewed (e.g. `rewrite-notes/01-stage-kernel`)
 > - `$MINIX3_MODULE` = the Minix3 module name (e.g. `kernel`, `vm`, `pm`, `vfs`)
 > - `$C_DIR` = `minix3/minix/kernel` if `$MINIX3_MODULE == kernel`; otherwise `minix3/minix/servers/$MINIX3_MODULE`
 > - `$TARGET_DOC` = basename if the user names a single `.md` file; otherwise leave empty for module-level coverage
@@ -178,7 +178,7 @@ Phase 2.6.3 IN_DESIGN 状态（替代 DEFERRED 逃避）：
 - 月度审计：清理过期 IN_DESIGN 项
 
 Phase 2.6.4 outline 对齐检查（H.6，方案 D 新增）：
-- 检查 `notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md` 是否存在（持久化可复用快照，任一版本命中）
+- 检查 `{tree}/{stage}/.design/{NN}-outline.v*.md` 是否存在（持久化可复用快照，任一版本命中）
 - 对照 Step 0.5.3 的 outline 偏离矩阵，确认无 P0 偏离（核心概念遗漏）
 - outline 快照缺失 → Gate H.6 FAIL，建议补生成 outline（走 Step 0.3.2-0.3.3）
 
@@ -301,7 +301,7 @@ After ALL checks are done, collect findings into:
 - File: tool-specific scan path
   - Claude default: `.review/claude/$MODULE/$DOC_STEM/scan.md`
   - Trae default: `.review/trae/$MODULE/scans/$DOC_STEM-$AGENT-scan.md`
-  - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `notes/rewrite/$MODULE/$STAGE/$DOC_STEM-trae-review.md`; Claude report: `notes/rewrite/$MODULE/$STAGE/$DOC_STEM-claude-report.md`).
+  - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `rewrite-notes/$MODULE/$STAGE/$DOC_STEM-trae-review.md`; Claude report: `rewrite-notes/$MODULE/$STAGE/$DOC_STEM-claude-report.md`).
 - Format: Summary (P0=N, P1=M, P2=K) + per-domain findings + full progress checklist
 - **Must include**: Skill Invocation Log + Blocker Gates pass status WITH evidence + Artifact Inventory + Severity Reconciliation
 

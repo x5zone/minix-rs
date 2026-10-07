@@ -81,7 +81,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
 **⛔ Gate H 不允许 N/A 判定**：每篇文档都必须通过 Gate H 全部 6 项检查。不允许"本文档复用其他文档 design，Gate H N/A"——这是 P0-process-violation。若本文档无专属 design.md，必须**执行 Step 0.3 嵌入生成**（2026-07-17 变更：原"切换 Design-First 模式生成"改为"Step 0.3 嵌入生成"），而不是标 N/A 跳过。
 
 > **2026-08-15 修复 E-P2-4（允许"不适用 + 理由"例外）**：以下场景允许在 Gate H 中标"不适用 + 详细理由"，**而非默认 N/A**：
-> - **纯算法设计文档**（如 `notes/rewrite/.../04-algorithm-X.md`）：无 Rust 实现对应，仅讨论算法 → H.1 标"不适用（纯算法，无 design）"，H.2-H.6 同样标"不适用"
+> - **纯算法设计文档**（如 `rewrite-notes/.../04-algorithm-X.md`）：无 Rust 实现对应，仅讨论算法 → H.1 标"不适用（纯算法，无 design）"，H.2-H.6 同样标"不适用"
 > - **历史/概念文档**（如 Minix3 C 源码导论）：纯知识介绍，无代码 → 全部 6 项可标"不适用"
 > - **判定**：review 文档分类时显式标注 `doc_category: pure_algorithm | historical | conceptual` → 允许部分 Gate H 项标"不适用 + 理由"。**不适用 ≠ 跳过**——必须在 STATE.md 中记录理由（详见 IN_DESIGN 健康度审计）
 
@@ -165,8 +165,8 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
     - **review 阶段**：按文档行数查表（<500 行→15-30 min | 500-1000→30-60 | 1000-1500→60-90 | >1500→90-120）
     - 实际耗时与预估对比写入 scan.md，偏差 >50% 需说明原因（避免偷懒）
 - **读取状态（统一双路径，互不共享中间结果）**：
-  - **Trae IDE** → 读取 `.review/trae/{module}/STATE.md`
-  - **Claude Code Runtime** → 读取 `.review/claude/{module}/STATE.md`
+  - **Trae IDE** → 读取 `.review/trae/{stage}/STATE.md`
+  - **Claude Code Runtime** → 读取 `.review/claude/{stage}/STATE.md`
   - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。不跨工具互验；Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
   - 若同一工具下出现两份 STATE.md 且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
   - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}`，校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
@@ -176,12 +176,12 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   - **检查命令**（v2：快照是版本化的）：
     ```bash
     # 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
-    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
-    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
-    ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
-    ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
+    ls {tree}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
+    ls {tree}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
+    ls {tree}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
+    ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
     # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-    cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+    cat {tree}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
@@ -207,10 +207,10 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > **判定（新增）**：
   > 1. **必须跑 4 条 `ls`**：每次 Step 0 启动时，无论何种 review 模式，都**必须**执行：
   >    ```bash
-  >    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md
-  >    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md
-  >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md
-  >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
+  >    ls {tree}/{stage}/.design/{NN}-outline.v*.md
+  >    ls {tree}/{stage}/.design/{NN}-outline-review.v*.md
+  >    ls {tree}/{stage}/.design/{NN}-design.v*.md
+  >    ls {tree}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
   >    ```
   >    输出必须写入 scan.md `§Step 0: 预检结果` 段。
   > 2. **缺失判定 + 嵌入生成（NEW 2026-07-17）**：
@@ -220,7 +220,7 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   >    - **核心变更**：原"缺失 → 阻断 + 触发附录 C（中断）"改为"缺失 → Step 0.3 嵌入生成 → 继续 review"
   >    - 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用 03/04 design"为由跳过 — 都是模式 69 (PSMD) 触发
   > 3. **存在旧快照时**：仍必须执行 v2 评估（重新执行 Step 0.3 产出 `.v{N+1}.md`）；旧快照仅作"前人理解"参考，**不是 ground truth**。
-  > 4. **工具支持**：`tools/design-coverage-check.sh {module} --stage {stage}`（NEW）自动扫描所有 stage，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
+  > 4. **工具支持**：`tools/design-coverage-check.sh {stage}`（NEW）自动扫描所有 stage，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
   > 5. **决策记录豁免**：仅一次性用户明确豁免；豁免必须登记在 STATE.md `§豁免列表` 段；**不可泛化**（模式 71 DOG）。
 
 ### Step 0 Resume Point 模板（多 session 续审强制，NEW 2026-07-16）
@@ -230,25 +230,25 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > ```markdown
   > ## Resume Point（续 session 必读 + 必跑）
   > ### 必读文件清单（顺序）
-  > 1. `.review/trae/{module}/STATE.md`（本文件）
-  > 2. `.review/trae/{module}/scans/workflow-improvement-suggestions.md`
+  > 1. `.review/trae/{stage}/STATE.md`（本文件）
+  > 2. `.review/trae/{stage}/scans/workflow-improvement-suggestions.md`
   > 3. 外部 TODO 清单（当前形态：各 stage 的 `todo.md` / `{NN}-todo.md`；历史案例如 `tmp_design_and_todo/0108-todo-final.md`，该临时目录已删除）
-  > 4. `notes/rewrite/{module}/{stage}/{target-doc}.md`
+  > 4. `{tree}/{stage}/{target-doc}.md`
   > 5. 上一个 CONVERGED 文档的 scan
   >
   > ### 必跑预检命令（不可跳过）
   > ```bash
   > # 1. STATE 校验
-  > tools/review-state-validate.py --state .review/trae/{module}/STATE.md
+  > tools/review-state-validate.py --state .review/trae/{stage}/STATE.md
   >
   > # 2. design 预检（模式 69 PSMD 配套）
-  > ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md
-  > ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md
-  > ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md
-  > ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md
+  > ls {tree}/{stage}/.design/{NN}-outline.v*.md
+  > ls {tree}/{stage}/.design/{NN}-outline-review.v*.md
+  > ls {tree}/{stage}/.design/{NN}-design.v*.md
+  > ls {tree}/{stage}/.design/{NN}-design-final.v*.md
   >
   > # 3. design 全局扫描（可选，工具支持）
-  > tools/design-coverage-check.sh {module} --stage {stage}
+  > tools/design-coverage-check.sh {stage}
   >
   > # 4. TODO staleness check（若 TODO 数 > 5）
   > tools/todo-staleness-check.sh {todo-file}  # NEW
@@ -267,14 +267,14 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
   > **工具支持**（未来实施）：`tools/todo-staleness-check.sh {todo-file}` 自动扫描所有 TODO 的前提依赖并输出 staleness 报告。
 
 - **路径变量与统一布局**（项目根 `.review/` 下分 `trae/` 与 `claude/`）：
-  - `{module}` = rewrite 模块名 = `notes/rewrite/{module}/` 的目录名（如 `fork-syscall-rewrite`）。取目标文档所在路径中 `notes/rewrite/` 下的**第一级目录名**。
-  - `{stage}` = 模块下的阶段子目录（如 `01-stage-kernel`），仅作 `{module}` 内分组，不替代 `{module}`。
+  - `{tree}` = 目标文档所在的笔记树根：`rewrite-notes`、`redesign-notes`、`study-notes`（目录名读自 `tools/notes-layout.conf`）。
+  - `{stage}` = 树根下第一级目录名（如 `01-stage-kernel`），同时是评审状态目录的分组键（`.review/{tool}/{stage}/`）。旧布局在树根与阶段之间还有一个模块层（当时取值恒为 `fork-syscall-rewrite`），该层已于 2026-10-07 目录迁移退役。
   - `{doc-stem}` = 目标文档去扩展名（如 `03-kmain-cstart`）。
   - `{agent}` = AI 模型标识（Trae 内：glm/kimi/ds/qwen/seed/...；Claude 内：m3/glm-flash）。
-  - **统一布局**（扁平 scans/，不启用 `{stage}/` 子目录，`{doc-stem}` 已含 stage 编号前缀，足够区分）：
+  - **统一布局**（状态目录以 `{stage}` 分组；其下 `scans/` 扁平，不再按文档建子目录——`{doc-stem}` 已含阶段编号前缀，足够区分）：
     ```
     .review/                                         # 脚手架产物（每次重新生成）
-    ├── trae/{module}/
+    ├── trae/{stage}/
     │   ├── STATE.md                 # Trae 专属，与 claude 隔离
     │   ├── VERIFY-CHECK.md          # Trae 专属
     │   ├── IN_DESIGN.md             # design 中断时生成
@@ -286,21 +286,21 @@ description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 St
     │       ├── {doc-stem}-{agent}-SYMBOLS.md             # 覆盖率穷举
     │       ├── MANIFEST-{doc-stem}.md                    # 该 doc 所有 agent scan 清单
     │       └── AGGREGATED-{doc-stem}.md                  # bagging 聚合后主 scan
-    └── claude/{module}/
+    └── claude/{stage}/
         ├── STATE.md                 # Claude 专属，与 trae 隔离
         ├── VERIFY-CHECK.md          # Claude 专属
         └── {doc-stem}/{scan,structure,design-structure,SYMBOLS}.md
 
-notes/rewrite/{module}/{stage}/                     # 持久化交付物（永久保留）
+{tree}/{stage}/                     # 持久化交付物（永久保留）
 └── design/                                          # design 子目录集中存放三类持久化契约
     ├── {NN}-outline.md                                  # doc 结构契约（Gate H.6 依据）
     ├── {NN}-outline-review.md                            # outline 批准证据
     └── {NN}-design.md / {NN}-design-final.md            # code 设计契约（Gate H.1-H.5 依据）
     ```
     > **命名区分**（重要）：`-structure.md` = review 骨架（12 节）；`-design-structure.md` = design 前序（知识点全集，脚手架）。两者内容完全不同，禁止混淆。`{NN}-outline.md` 是持久化 doc 契约，不是脚手架。
-  - **双写模式**（交互式修复场景）：需交互式修复 review todo 时，除标准中间产物外，**额外**在被 review 文档同目录下写可读修复文档：Trae → `notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`；Claude → `{doc-stem}-claude-report.md`。修复文档 = 标准 scan 的可读子集 + todo 进度跟踪（按 issue ID/位置匹配的子集关系，非 checksum 一致）。
-  - **`{module}` 与覆盖率脚本 `--module` 是两个不同概念**：本路径的 `{module}` 是 rewrite 模块名；覆盖率脚本的 `--module kernel` 是 Minix3 模块名。不得混用。
-  - 推荐用 `tools/review-init.sh trae {doc-path}` 自动计算 `{module}`/`{doc-stem}` 并 mkdir 标准目录，输出 Derived Paths 表。
+  - **双写模式**（交互式修复场景）：需交互式修复 review todo 时，除标准中间产物外，**额外**在被 review 文档同目录下写可读修复文档：Trae → `{tree}/{stage}/{doc-stem}-trae-review.md`；Claude → `{doc-stem}-claude-report.md`。修复文档 = 标准 scan 的可读子集 + todo 进度跟踪（按 issue ID/位置匹配的子集关系，非 checksum 一致）。
+  - **状态目录键 `{stage}` 与覆盖率脚本 `--module` 是两个不同概念**：前者是阶段目录名（如 `01-stage-kernel`）；后者的 `--module kernel` 是 Minix3 模块名。不得混用。
+  - 推荐用 `tools/review-init.sh trae {doc-path}` 自动计算 `{tree}`/`{stage}`/`{doc-stem}` 并 mkdir 标准目录，输出 Derived Paths 表。
 
 **中间产物**：
 ```
@@ -326,7 +326,7 @@ notes/rewrite/{module}/{stage}/                     # 持久化交付物（永�
 
 | 子步骤 | 产物 | 位置 | 关键要求 |
 |--------|------|------|---------|
-| **0.3.1** design-structure.md | `{doc-stem}-{agent}-design-structure.md` | `.review/{tool}/{module}/scans/`（脚手架） | C 源码 → OS 理论 → Rust 对照；知识点全集 + 诊断 |
+| **0.3.1** design-structure.md | `{doc-stem}-{agent}-design-structure.md` | `.review/{tool}/{stage}/scans/`（脚手架） | C 源码 → OS 理论 → Rust 对照；知识点全集 + 诊断 |
 | **0.3.2** outline.md | `{NN}-outline.v{N}.md` | `design/`（持久化） | Ch1 主语 CPU/OS/机制；每小节含讲什么+知识点+教学要点；末尾附覆盖矩阵 |
 | **0.3.3** outline-review.md | `{NN}-outline-review.v{N}.md` | `design/`（持久化） | **AI 自审 4 维**：教学性/本质深度/概念覆盖/组织合理性；P0=0 自动批准 |
 | **0.3.4** design.md | `{NN}-design.v{N}.md` | `design/`（持久化） | Ch1 设计决策/Ch2 Minix3 对齐/Ch3 Rust 类型/Ch4 限制/附录差异矩阵 |
@@ -560,7 +560,7 @@ notes/rewrite/{module}/{stage}/                     # 持久化交付物（永�
 1. 逐个验证 TODO 真实性（grep/glob/read 交叉验证）：
    ```bash
    # 对每个 TODO 描述的符号/位置执行 grep
-   rg "TODO_symbol_or_pattern" notes/rewrite/{module}/{stage}/{doc}.md
+   rg "TODO_symbol_or_pattern" {tree}/{stage}/{doc}.md
    # 用 Read 验证文档/代码行号是否匹配
    ```
 2. 分类处理：
@@ -644,7 +644,7 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 
 1. **机器生成 SYMBOLS.md 骨架**（Trae IDE 输出路径硬编码为 `.review/trae/` — 不要使用 `{tool}` 变量）：
    ```bash
-   # 变量说明：{minix3-module}=Minix3 模块名(vm/pm/kernel...); {rw-module}=rewrite 模块名(notes/rewrite/ 下第一级目录); {doc-stem}=目标文档去扩展名; {agent}=模型标识
+   # 变量说明：{minix3-module}=Minix3 模块名(vm/pm/kernel...); {rw-module}=rewrite 模块名(rewrite-notes/ 下第一级目录); {doc-stem}=目标文档去扩展名; {agent}=模型标识
    # 服务器模块（vm / pm / vfs / rs / ds / inet ...）
    python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
      --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
@@ -716,11 +716,11 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 
 **Step 1.6.1**：design 存在性确认（Step 0 预检的复核）
 ```bash
-# 持久化可复用快照（位置：notes/rewrite/{module}/{stage}/.design/，保留所有历史版本）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（任意版本命中）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
+# 持久化可复用快照（位置：{tree}/{stage}/.design/，保留所有历史版本）
+ls {tree}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（任意版本命中）
+ls {tree}/{stage}/.design/{NN}-design-final.v*.md # bagging
 ```
-> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `notes/rewrite/{module}/{stage}/.design/`。
+> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `{tree}/{stage}/.design/`。
 
 **Step 1.6.2**：design ↔ code 一致性矩阵
 
@@ -748,12 +748,12 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 | **DESIGN_DIVERGED_WRONG** | design ↔ code 严重偏离（≥30%）且 design 错 | design Refactor 必须 + code Refactor |
 
 > **Gate H 最小证据要求**（6 项，方案 D 新增 H.6）：
-> - **H.1**: `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md`（非 bagging）或 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md`（bagging）命中（本目录版本通配 `.v*.md`，必须含 `{NN}-` 前缀）
+> - **H.1**: `ls {tree}/{stage}/.design/{NN}-design.v*.md`（非 bagging）或 `ls {tree}/{stage}/.design/{NN}-design-final.v*.md`（bagging）命中（本目录版本通配 `.v*.md`，必须含 `{NN}-` 前缀）
 > - **H.2**: 一致性矩阵 ≥ 5 行 + 一致性 ≥ 80%
 > - **H.3**: Minix3 对齐矩阵 ≥ 3 行 + 无 P0 缺失
 > - **H.4**: `rg "design-wrong" scan.md` 无命中
 > - **H.5**: `rg "code Refactor|design Refactor" scan.md` 明确区分两类
-> - **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离
+> - **H.6**（方案 D 新增）：`ls {tree}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离
 
 详见 [review-rules/review-process.md §Step 1.6](../../../prompt/review-rules/review-process.md)。
 
@@ -1006,14 +1006,14 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 
 **中间产物（精简版）**：
 1. 更新或创建工具对应的 `STATE.md`：
-   - Trae → `.review/trae/{module}/STATE.md`
-   - Claude → `.review/claude/{module}/STATE.md`
+   - Trae → `.review/trae/{stage}/STATE.md`
+   - Claude → `.review/claude/{stage}/STATE.md`
 2. 更新或创建 `SYMBOLS.md`（Step 1.5 机器产物）：
-   - Trae 单文档 → `.review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md`
-   - Claude 单文档 → `.review/claude/{module}/{doc-stem}/SYMBOLS.md`
+   - Trae 单文档 → `.review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md`
+   - Claude 单文档 → `.review/claude/{stage}/{doc-stem}/SYMBOLS.md`
 3. **所有维度结果写入 scan.md 单文件**（NOT 10 个维度检查文件）。
-   - Trae → `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
-   - Claude → `.review/claude/{module}/{doc-stem}/scan.md`
+   - Trae → `.review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md`
+   - Claude → `.review/claude/{stage}/{doc-stem}/scan.md`
    - **双写模式**：若需交互式修复 todo，额外在被 review 文档同目录写 `{doc-stem}-trae-review.md`（Trae）/ `{doc-stem}-claude-report.md`（Claude）。修复文档 = 标准 scan 的可读子集 + todo 进度跟踪。
 
 **Artifact Inventory**（scan.md 末尾必备，Gate 0 校验项；含双写校验）：
@@ -1021,10 +1021,10 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 ## Artifact Inventory
 | 产物 | 预期路径 | 实际存在 | 大小 | SHA256 |
 |------|---------|---------|------|--------|
-| scan.md (标准) | .review/trae/{module}/scans/{doc-stem}-{agent}-scan.md | ✅ | 12KB | abc123… |
-| structure.md | .review/trae/{module}/scans/{doc-stem}-{agent}-structure.md | ✅ | 4KB | def456… |
-| SYMBOLS.md | .review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md | ✅ | 8KB | 789xyz… |
-| 交互式修复文档（双写，Trae） | notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md | ✅ | 6KB | ghi012… |
+| scan.md (标准) | .review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md | ✅ | 12KB | abc123… |
+| structure.md | .review/trae/{stage}/scans/{doc-stem}-{agent}-structure.md | ✅ | 4KB | def456… |
+| SYMBOLS.md | .review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md | ✅ | 8KB | 789xyz… |
+| 交互式修复文档（双写，Trae） | {tree}/{stage}/{doc-stem}-trae-review.md | ✅ | 6KB | ghi012… |
 ```
 **双写校验**：修复文档/最终报告与 scan.md 不是 checksum 一致，而是"子集关系"——修复文档的每条 issue 必须能在 scan.md 中找到对应条目（按 ID/位置匹配），反向不要求。
 
@@ -1087,7 +1087,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 ```
 
 **增量 Review 策略**：
-1. Trae IDE 启动时读取 `.review/trae/{module}/STATE.md`（Claude Code Runtime 使用 `.review/claude/{module}/STATE.md`，两者隔离）
+1. Trae IDE 启动时读取 `.review/trae/{stage}/STATE.md`（Claude Code Runtime 使用 `.review/claude/{stage}/STATE.md`，两者隔离）
 2. COMPLETE 的维度→跳过（读 scan.md 对应章节总结即可，不重做）
 3. UNCHECKED 的维度→执行完整验证
 4. 代码/文档有修改→检查是否影响已 COMPLETE 维度（有影响→标记 NEEDS_RECHECK）
@@ -1150,7 +1150,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 
 #### VERIFY-CROSS（Step 5.6 原位置，收敛前）
 **执行步骤**（独立会话 / Trae 内跨 AI 聚合）：
-1. 读取 `.review/trae/{module}/STATE.md` + `scan.md` + 原始文档/代码
+1. 读取 `.review/trae/{stage}/STATE.md` + `scan.md` + 原始文档/代码
 2. **分层抽样**（2026-08-15 修复 C-P1-5：AI 无内置"随机"，用分层抽样替代）：从 scan.md 的 Issue List 中按 P0/P1/P2 比例各取头 20% + 尾 20% + 中间 20% 的已报告问题。例如 Issue List 共 20 条（P0=3, P1=12, P2=5）→ P0 取第 1 条 + 最后 1 条 = 2 条；P1 取第 1/6/12 条 = 3 条；P2 取第 1 条 = 1 条，合计 6 条（30%）。**禁止**仅抽 P0（应全层级覆盖）
 3. **反向验证**：对每个抽样问题——source evidence 是否充分？判定等级是否合理？
 4. **遗漏检查**：抽样 20% 的源码符号，验证是否都在文档/检查覆盖
@@ -1158,7 +1158,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
 6. **Blocker Gates 复验**：检查 scan.md 是否真的通过了 0/A/B/C/D/D-6/E/G/H 全部 Gate（含 gate-evidence 块）
 7. **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK。同 agent 验证时必须基于 grep 命令重放（非语义回忆），并在 VERIFY-CHECK.md 中标注"同 agent 验证，已重放 grep 命令"。
 
-**中间产物**（写入 `.review/trae/{module}/VERIFY-CHECK.md`）：
+**中间产物**（写入 `.review/trae/{stage}/VERIFY-CHECK.md`）：
 ```markdown
 ### Review Verification Result
 
@@ -1309,7 +1309,7 @@ P0 必须有代码修改项。P1 涉及设计改进→Ch3 加 TODO 段落。
 ## 工具命令速查
 
 ```bash
-# ===== {module} = vm/pm/vfs/kernel 等 =====
+# ===== 以下 {module} 指 Minix3 模块名（vm/pm/vfs/kernel 等），不是评审状态目录键 {stage} =====
 
 # 验证常量
 rg "^#define CONSTANT" minix3/minix/servers/{module}/ -n
@@ -1339,10 +1339,10 @@ ls minix3/minix/servers/{module}/*.h
 rg "^[a-z_].*\w+\(.*\)\s*$" minix3/minix/servers/{module}/FILE.c -n
 
 # 跨文档搜索
-rg "SYMBOL_NAME" notes/rewrite/{module}/ --type md -n
+rg "SYMBOL_NAME" {tree}/ --type md -n
 
 # 同目录常量重复
-rg "CONSTANT\s*=" "notes/rewrite/{module}/" --type md -n
+rg "CONSTANT\s*=" "{tree}/" --type md -n
 
 # ===== P0 必检清单命令（Gate D）=====
 

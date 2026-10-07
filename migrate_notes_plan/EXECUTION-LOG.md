@@ -322,3 +322,94 @@ rewrite-notes/coordination/NK4C-WORKLOG.md  ../../../os/kernel/src/proc.rs  → 
 - 406→503 条「迁移前即悬空」的链接清单在 `tmp/pre-migrate-snapshot-20261007/relink-report.tsv`。
   两轮之间数字变大不是回归：第二轮把「指向仓库根真实文件」的那一类从"无法解析"改判为"可重定基"，
   剩下的才留在悬空桶里。
+
+---
+
+## Phase 4 · 工具链适配 + 规则三端同步
+
+### 动作 4.1 引入唯一路径真源
+
+新增 `tools/notes-layout.conf`（25 行）：三棵树目录名 + 树别名 + 状态目录键约定说明。
+六个脚本改为 `source` 该文件，不再各自写死目录名（用户裁决：要配置文件，不要写死）。
+
+**踩到的一次自伤**：该文件由工具写入时带上了 CRLF 行尾，被 bash `source` 时报
+`line 16: $'': command not found`，四个脚本同时失灵且报的是「配置文件语法错」而不是「路径找不到」。
+处置：统一转成 LF（与本仓规范一致，抽样 `tools/doc-style-lint.sh`、`CLAUDE.md`、`prompt/review-rules/review-process.md`
+均为 LF）。同批把本会话早先写出的 `tools/notes-link-check.py`、`pre-migrate-20261007/00-SNAPSHOT.md`、
+`01-PATH-MAP.md` 三份也查出来是 CRLF 并转为 LF。教训：**新工具产出的文件要按仓库既有规范验一次行尾**，
+否则一个不可见的字节会让一个 shell 脚本整体不可用。
+
+### 动作 4.2 六个脚本的路径模型改造（三层 → 两层）
+
+| 脚本 | 改什么 | 验证命令与结果 |
+|---|---|---|
+| `tools/review-init.sh` | 按 `{tree}/{stage}/{doc}.md` 解析；`{stage}` 顶替 `{module}` 做状态目录键；省略树前缀时逐树探测；旧布局路径给出「已退役 + 对照表位置」的可读报错 | `review-init.sh claude rewrite-notes/08-stage-is/00-is-overview.md m3` → Derived Paths 表 tree=rewrite-notes、stage=08-stage-is、状态目录 `.review/claude/08-stage-is/`，并正确命中 `.design/00-design.v1.md` ✓ |
+| `tools/design-coverage-check.sh` | 第一参由 module 改为 stage 或树别名（`rewrite`/`redesign`/`study`）；`MODULE_DIR` 读 conf；JSON 键 `module` 换成 `tree`+`arg` | `01-stage-kernel` → 53 doc、36 complete；`rewrite` → 546 doc；`fork-syscall-rewrite` → exit 2 带可读报错 ✓ |
+| `tools/review-gate-check.sh` | 第二参由 module 改为 stage；在三棵树里定位 `<stage>/<doc-stem>.md`；定位失败 exit 2（不再静默报「快照缺失」） | `claude 08-stage-is 00-is-overview m3` → 设计/大纲快照均在新路径命中 ✓ |
+| `tools/design-index-update.sh` | 用法示例改 `{tree}/{stage}`；传入旧布局 `notes/...` 路径直接报错；索引标题带上所在树 | 在 `/tmp` 副本上跑 110 个快照的 stage → exit 0，DESIGN-INDEX.md 正常生成 ✓ |
+| `tools/doc-style-lint.sh` | **增量门 pathspec 由 `-- notes/rewrite` 改为三棵树**（这是六份方案都点名的静默失效点） | `--self-test` PASS；范围摘要行改为打印三棵树 ✓（埋点正向验证见 Phase 6 门 M5） |
+| `tools/check-review-rules.sh` | 字面断言 `notes/rewrite/{module}/{stage}/.design/` → `{tree}/{stage}/.design/`，与规则文本同笔修改 | `check-review-rules.sh` 输出 consistent、exit 0 ✓ |
+
+另外三处工具文本同步：`tools/coverage-extract/coverage-extract.py` 示例路径、
+`tools/pattern-gate.sh` 头部注释（六份方案都没列出的第 10 处硬编码）、
+`tools/review-state-validate.py` 与 `tools/verify-check.py` 的用法示例（`{module}` → `{stage}`）。
+
+### 动作 4.3 规则域机械重写 + 语义改写
+
+机械层：`rewrite-rules.py`（与 Phase 3 共用 path-map 派生的规则表，另加 6 条路径模型规则）
+改写 29 个文件 / 491 处。新增的四类模型规则：
+`notes/rewrite/{module}/{stage}` → `{tree}/{stage}`（208 处主干模板）、
+`.review/{trae|claude|codex|{tool}}/{module}` → `…/{stage}`（约 140 处状态目录模板）、
+`design-coverage-check.sh {module}` → `{stage}`、`# Review State: {module}` → `{stage}`。
+
+语义层（需要改句子而不是换字符串，共 7 处 + 派生副本）：
+`prompt/review-rules/review-process.md` 的 `{module}` 定义段、
+`prompt/skill/review-process-skill.md` 的路径变量段与「两个概念」段、
+`prompt/README.md` 的路径变量段、`CLAUDE.md` 的 State Management 段、`AGENTS.md` 的目录布局段、
+`.claude/rules/review-process.md` 与 `.claude/skills/review-scan/checks/process.md`（含 `.codex` 孪生副本）的英文定义句。
+
+保留不动的 `{module}` 有 152 处：它们指 Minix3 模块名（`minix3/minix/servers/{module}/`、
+`os/servers/{module}/src/`、`coverage-extract.py {module}`、`{module}-semantic-map.json`），
+与退役的路径 module 层是不同概念——这正是规则原文反复强调「不得混用」的那一对。
+两处标题注释改写为显式声明「以下 `{module}` 指 Minix3 模块名，不是评审状态目录键 `{stage}`」。
+
+### 动作 4.4 三端派生同步
+
+```bash
+bash tools/generate-derived-skills.sh        # GEN 全部 9 个 skill × trae/codex
+bash tools/generate-derived-skills.sh --check # ✅ No drift detected
+bash tools/check-review-rules.sh              # consistent，exit 0
+bash tools/lint-review-rules.sh               # 0 个失败
+bash tools/diff-trae-skills.sh --only-diff    # ✅ 全部 9 个 skill 完全同步
+```
+
+派生脚本自身的 sed 规则也有一处 `trae/{module}` → `codex/{module}` 的适配，随键名一起改为 `{stage}`。
+**这里我自己制造了一次故障**：替换时把 sed 左值的花括号转义丢了（`├── trae/{stage}/`），
+POSIX sed 把 `{` 当区间表达式定界符，报 `Invalid content of \{\}`，
+派生中途失败并让 `.codex/skills/review-code-skill/SKILL.md` 半损坏
+（`check-review-rules.sh` 随即报 name 不匹配 + description 未加引号）。
+处置：左值改回 `├── trae/\{stage\}/`，重跑生成，`--check` 与 `check-review-rules.sh` 双双回到干净。
+教训：**改工具脚本内部的正则/sed 片段时，转义层级属于语义的一部分**，
+改完必须 `bash -n` + 真跑一次派生 + 跑一致性门，不能只肉眼读。
+
+冒烟测试留下的痕迹已清理：`review-init.sh` 会创建 `.review/claude/08-stage-is/STATE.md` 骨架与
+`00-is-overview/` 子目录，测试后按 mtime 定位并删除，使该冻结目录回到只含原有 `SYMBOLS.md` 的状态。
+
+### 动作 4.5 新增两份映射文档
+
+- `rewrite-notes/MIGRATION.md`（125 行，已入 git）：这次迁移的动机、目录级与文件级对照、
+  75 个散落文件的去处、评审路径模型新旧对照（工具参数逐个列出）、阶段编号重排史、
+  已知悬空引用、旧内容回捞方法、以及「本次刻意没做的事」清单。
+  工具脚本报错文案、CLAUDE.md/AGENTS.md、`.review/PATH-MAPPING.md` 都指向这一份。
+- `.review/PATH-MAPPING.md`（26 行，在 gitignore 目录内，只作本地便利指针）：
+  说明 `.review/` 为什么冻结不改写、新旧前缀对照、新 review 的状态目录约定。
+
+### Phase 4 验收
+
+| 判据 | 命令 | 结果 |
+|---|---|---|
+| 六个脚本语法完好 | `bash -n` × 6 + `py_compile` | 全过 ✓ |
+| 三端规则一致 | `generate-derived-skills.sh --check` / `check-review-rules.sh` / `lint-review-rules.sh` / `diff-trae-skills.sh --only-diff` | 四条全绿 ✓ |
+| 工具在新布局上真能用 | review-init / review-gate-check / design-coverage-check / design-index-update / doc-style-lint / anchor-resolve / anchor-migrate / unsafe-audit 自测与真实调用 | 全部 exit 0 ✓ |
+| 门 M2 必改全域 | 全域 `notes/(rewrite\|study\|redesign)` 命中计数 | 三棵树、`os/`、`prompt/`、`.codex/`、`.trae/`、根 README 全 0；剩余 41 处全部是刻意保留项：`.claude/settings.local.json` 38（授权命令历史，按裁决冻结）+ `tools/notes-layout.conf`、`CLAUDE.md`、`AGENTS.md` 各 1（描述退役本身的句子）；`tools/anchor-*baseline.txt` 另计（Phase 5 处理）✓ |
+| 文风门 | `doc-style-lint.sh rewrite-notes/MIGRATION.md` | error 级 0 ✓ |

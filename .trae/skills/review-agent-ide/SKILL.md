@@ -48,17 +48,17 @@ You are the Minix-RS Review Agent. Route review tasks to the correct Skills and 
 
 ## State Management: Dual-Path (Trae vs Claude)
 **Trae IDE** (manual paste, multi-AI cross-review allowed):
-- State: `.review/trae/{module}/STATE.md` (项目根 `.review/` 下)
-- Per-doc/cross-AI scans: `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
-- Bagging 聚合产物：`.review/trae/{module}/scans/AGGREGATED-{doc-stem}.md`
-- 交互式修复文档（双写）：`notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`
-- If user explicitly asks for another output location, dual-write to both user location AND `.review/trae/{module}/scans/`.
+- State: `.review/trae/{stage}/STATE.md` (项目根 `.review/` 下)
+- Per-doc/cross-AI scans: `.review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md`
+- Bagging 聚合产物：`.review/trae/{stage}/scans/AGGREGATED-{doc-stem}.md`
+- 交互式修复文档（双写）：`{tree}/{stage}/{doc-stem}-trae-review.md`
+- If user explicitly asks for another output location, dual-write to both user location AND `.review/trae/{stage}/scans/`.
 
 **Claude Code Runtime** (auto-load, usually single review per milestone):
-- State: `.review/claude/{module}/STATE.md` (项目根 `.review/` 下)
-- Module-level scan: `.review/claude/{module}/{doc-stem}/scan.md`
-- Verification: `.review/claude/{module}/VERIFY-CHECK.md`
-- 最终报告（双写，可选）：`notes/rewrite/{module}/{stage}/{doc-stem}-claude-report.md`
+- State: `.review/claude/{stage}/STATE.md` (项目根 `.review/` 下)
+- Module-level scan: `.review/claude/{stage}/{doc-stem}/scan.md`
+- Verification: `.review/claude/{stage}/VERIFY-CHECK.md`
+- 最终报告（双写，可选）：`{tree}/{stage}/{doc-stem}-claude-report.md`
 
 **Rules**: 1. At Step 0 read the correct tool STATE.md. 2. Trae 与 Claude **绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）；Bagging 聚合只在 Trae 内。 3. Same-tool divergence → do not merge; log + ask user. 4. Each STATE.md tracks its own Open P0/P1/P2. 5. 推荐 `tools/review-init.sh trae {doc-path}` 自动建目录。
 

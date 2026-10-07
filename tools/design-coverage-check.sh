@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# design-coverage-check.sh — 自动扫描 {module} 的 .design/ 目录，对比 doc 编号，输出 per-doc snapshot 缺失报告
+# design-coverage-check.sh — 扫描 stage 的 .design/ 目录，对比 doc 编号，输出 per-doc snapshot 缺失报告
 # Session #12 (2026-07-16) 模式 69 (PSMD) + 模式 71 (DOG) 配套工具
+# 2026-10-07 notes 迁移：module 层（旧 fork-syscall-rewrite）退役，第一参改为 stage 或树别名，
+# 树目录名读自 tools/notes-layout.conf。
 #
 # 用法：
-#   tools/design-coverage-check.sh <module> [--stage <stage>] [--json]
+#   tools/design-coverage-check.sh <stage|树别名> [--stage <stage>] [--json] [--strict]
+#
+#   <stage>     = 树根下第一级目录名，如 01-stage-kernel、05-stage-vfs
+#   树别名   = rewrite | redesign | study（整棵树按 ^[0-9]+- 收集 stage）
 #
 # 输出：
 #   - Markdown 表格（默认）：列出每个 doc 的 snapshot 状态
@@ -15,18 +20,23 @@
 #   - 2：参数错误
 #
 # 示例：
-#   tools/design-coverage-check.sh fork-syscall-rewrite
-#   tools/design-coverage-check.sh fork-syscall-rewrite --stage 03-stage-kernel
-#   tools/design-coverage-check.sh fork-syscall-rewrite --json | jq .
+#   tools/design-coverage-check.sh 01-stage-kernel
+#   tools/design-coverage-check.sh rewrite --stage 02-stage-vm
+#   tools/design-coverage-check.sh rewrite --json | jq .
 
 set -euo pipefail
 
+SCRIPT_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=notes-layout.conf
+source "$SCRIPT_SELF_DIR/notes-layout.conf"
+
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <module> [--stage <stage>] [--json] [--strict]" >&2
+  echo "Usage: $0 <stage|树别名> [--stage <stage>] [--json] [--strict]" >&2
+  echo "  stage = 树根下第一级目录名（如 01-stage-kernel）；别名 = rewrite | redesign | study" >&2
   exit 2
 fi
 
-MODULE="$1"
+ARG="$1"
 shift
 
 STAGE_FILTER=""
@@ -42,10 +52,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Step 1: 收集所有 stage 目录
-MODULE_DIR="notes/rewrite/${MODULE}"
-if [[ ! -d "${MODULE_DIR}" ]]; then
-  echo "❌ Module directory not found: ${MODULE_DIR}" >&2
+# Step 1: 定位树根与待扫 stage 列表
+# 三种输入：树别名 → 整棵树；stage 名 → 逐树探测所在树；带 --stage → 只扫那一个 stage
+MODULE_DIR=""
+case "$ARG" in
+  "$NOTES_TREE_ALIAS_REWRITE") MODULE_DIR="$NOTES_TREE_REWRITE" ;;
+  "$NOTES_TREE_ALIAS_REDESIGN") MODULE_DIR="$NOTES_TREE_REDESIGN" ;;
+  "$NOTES_TREE_ALIAS_STUDY") MODULE_DIR="$NOTES_TREE_STUDY" ;;
+  *)
+    for t in "${NOTES_TREES[@]}"; do
+      if [[ -d "$t/$ARG" ]]; then MODULE_DIR="$t"; break; fi
+    done
+    ;;
+esac
+if [[ -z "$MODULE_DIR" ]]; then
+  echo "❌ 既不是树别名也不是 stage 目录名：$ARG" >&2
+  echo "   期望：rewrite | redesign | study | <stage 目录名>（如 01-stage-kernel）" >&2
+  echo "   旧布局的 module 参数（如 fork-syscall-rewrite）已于 2026-10-07 退役，见 rewrite-notes/MIGRATION.md" >&2
+  exit 2
+fi
+if [[ ! -d "$MODULE_DIR" ]]; then
+  echo "❌ Tree directory not found: ${MODULE_DIR}" >&2
   exit 2
 fi
 
@@ -54,6 +81,9 @@ declare -A DOCS_BY_STAGE
 
 if [[ -n "${STAGE_FILTER}" ]]; then
   STAGES=("${STAGE_FILTER}")
+elif [[ -d "$MODULE_DIR/$ARG" && "$MODULE_DIR" != "$ARG" ]]; then
+  # 单个 stage：只扫它
+  STAGES=("$ARG")
 else
   STAGES=($(ls -1 "${MODULE_DIR}" | grep -E '^[0-9]+-' || true))
 fi
@@ -88,7 +118,7 @@ MISSING_DESIGN_FINAL=0
 COMPLETE_DOCS=0
 
 # 用于 JSON 输出
-JSON_OUTPUT='{"module":"'"${MODULE}"'","stages":['
+JSON_OUTPUT='{"tree":"'"${MODULE_DIR}"'","arg":"'"${ARG}"'","stages":['
 
 FIRST_STAGE=true
 for stage in "${STAGES[@]}"; do

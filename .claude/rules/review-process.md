@@ -65,14 +65,14 @@ Missing this section → scan.md marked DRAFT.
 
 ## Step 0: Scope Declaration + State Recovery
 1. **Read correct STATE.md path** (tool-isolated, never share intermediate results between tools):
-   - **Trae IDE** → `.review/trae/{module}/STATE.md` (project root `.review/`)
-   - **Claude Code Runtime** → `.review/claude/{module}/STATE.md` (project root `.review/`)
-   - **Codex CLI** → `.review/codex/{module}/STATE.md` (project root `.review/`)
+   - **Trae IDE** → `.review/trae/{stage}/STATE.md` (project root `.review/`)
+   - **Claude Code Runtime** → `.review/claude/{stage}/STATE.md` (project root `.review/`)
+   - **Codex CLI** → `.review/codex/{stage}/STATE.md` (project root `.review/`)
    - If the **same tool** has conflicting STATE.md copies, **do not auto-merge**. Log divergence in scan.md and ask user which is authoritative.
-   - **`{module}` resolution**: use the **first directory under `notes/rewrite/`** in the target doc path. E.g. `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`. This is separate from the coverage script's `--module kernel` (Minix3 module name); do not mix them.
+   - **`{stage}` resolution**: use the **first directory under the notes tree root** (`rewrite-notes/`, `redesign-notes/`, `study-notes/`) in the target doc path. E.g. `rewrite-notes/01-stage-kernel/03-kmain-cstart.md` → `{stage}=01-stage-kernel`. `{stage}` is also the state-directory grouping key (`.review/{tool}/{stage}/`). The old module layer between the tree root and the stage (its value was always `fork-syscall-rewrite`) retired in the 2026-10-07 notes migration; see `rewrite-notes/MIGRATION.md`. `{stage}` is separate from the coverage script's `--module kernel` (Minix3 module name); do not mix them.
    - **`{doc-stem}`** = target doc basename without extension (e.g. `03-kmain-cstart`). **`{agent}`** = model id (Trae: glm/kimi/...; Claude: m3/...).
    - **STATE preflight**: run `tools/review-state-validate.py --state {state_path}` to verify referenced files exist and Open issues map to scan.md entries.
-    - **Auto-init**: use `tools/review-init.sh <tool> {doc-path}` to compute `{module}`/`{doc-stem}` and create standard directories.
+    - **Auto-init**: use `tools/review-init.sh <tool> {doc-path}` to compute `{tree}`/`{stage}`/`{doc-stem}` and create standard directories.
 2. Output:
 ```
 - Target: <file.md> + <file.rs> (if code review)
@@ -200,7 +200,7 @@ Output: structure.md path + 12-section review table + **跨章节一致性矩阵
 > **背景**：原 Step 0.7 仅针对外部 TODO 清单（历史形态为 `tmp_design_and_todo/` 下文件，该临时目录已删除），但文档正文常含 **> **TODO** 内部标记**——这些未走任何 review 流程，可能累积成 doc drift。
 
 **执行**：
-1. 扫描 doc 内部 TODO：`rg "^\s*>\s*\*\*TODO" notes/rewrite/{module}/{stage}/{doc}.md` 或 `rg "TODO（" notes/rewrite/{module}/{stage}/{doc}.md`
+1. 扫描 doc 内部 TODO：`rg "^\s*>\s*\*\*TODO" {tree}/{stage}/{doc}.md` 或 `rg "TODO（" {tree}/{stage}/{doc}.md`
 2. 对每个 TODO 标记：
    - 描述类型：跨文档去重 / 测试缺口 / 设计缺口 / 表达式修正 / 其他
    - 分类：✅ 真实（文档任务）/ ⚠️ 真实（代码任务）/ ❌ 误报（已实施但未删除标记）
@@ -217,7 +217,7 @@ Output: structure.md path + 12-section review table + **跨章节一致性矩阵
 **关联**：本次 review (01-boot-shim-bootstrap 2026-07-30) 发现 doc 内 2 处 TODO 标记未走流程。
 
 ## Step 1.5: Coverage Enumeration — Gate A
-Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{rw-module}` = rewrite module name (first dir under `notes/rewrite/`). **Claude Code Runtime output paths are hardcoded to `.review/claude/` — do NOT use a `{tool}` variable.**
+Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{rw-module}` = rewrite module name (first dir under `rewrite-notes/`). **Claude Code Runtime output paths are hardcoded to `.review/claude/` — do NOT use a `{tool}` variable.**
 ```bash
 # Module-level (servers: vm / pm / vfs / rs / ds / inet ...)
 python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
@@ -263,14 +263,14 @@ Output: SYMBOLS.md path + P0 gaps + ARCH marks.
 **Step 0 design + outline 预检**（**所有 review 模式强制，2026-07-16 扩；原"Profile R/C/I/H-K only"已废除**）：前移自 Step 1.6，**v2 可复用快照语义**：
 ```bash
 # 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
+ls {tree}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
+ls {tree}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
+ls {tree}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
+ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+cat {tree}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
 # 工具支持（NEW，Session #12 落地）
-tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫描所有 stage 缺失报告
+tools/design-coverage-check.sh {stage} [--stage {stage}]           # 自动扫描所有 stage 缺失报告
 ```
 - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
 - **无旧快照** → 首次走 Step 0.3 流程，产出 `.v1.md`。
@@ -283,7 +283,7 @@ tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫�
 > **背景**：Session #12 (06-proc-init-boot-proc) 复盘发现 — 即使 Step 0 已写"design 预检强制"，AI 仍会因"已有 CONVERGED 状态"/"incremental review"等理由**错误跳过预检**。Session #11 模式 69 (PSMD) 发现 04/05 缺快照时已记录此为 P0-process-violation，但缺少硬阻断机制。
 
 **判定**（强制）：
-1. **必须跑 4 条 `ls` + 工具扫描**：每次 Step 0 启动时**必须**执行 4 条 `ls` + `tools/design-coverage-check.sh {module}`（无论何种 review 模式）。
+1. **必须跑 4 条 `ls` + 工具扫描**：每次 Step 0 启动时**必须**执行 4 条 `ls` + `tools/design-coverage-check.sh {stage}`（无论何种 review 模式）。
 2. **缺失判定 + 嵌入生成（NEW 2026-07-17）**：
    - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **执行 Step 0.3.2 生成**（不中断 review）
    - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL**（⚠️ 2026-07-17 从 WARN 升级，根因：原 WARN 导致 AI 总跳过 outline-review）→ **执行 Step 0.3.3 生成**（AI 自审，不需用户确认）
@@ -375,10 +375,10 @@ tools/design-coverage-check.sh {module} [--stage {stage}]           # 自动扫�
 
 Step 1.6.1 design 存在性确认（Step 0 预检的复核）：
 ```bash
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（持久化可复用快照，任意版本命中）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md # bagging
+ls {tree}/{stage}/.design/{NN}-design.v*.md       # 非 bagging（持久化可复用快照，任意版本命中）
+ls {tree}/{stage}/.design/{NN}-design-final.v*.md # bagging
 ```
-> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `notes/rewrite/{module}/{stage}/.design/`。
+> **命名规则**：非 bagging 场景产物为 `{NN}-design.v{N}.md`；bagging 场景产物为 `{NN}-design-final.v{N}.md`。两者均需 `{NN}-` 前缀。位置在 `{tree}/{stage}/.design/`。
 
 Step 1.6.2 design 对齐检查（6 项）：
 1. doc/code 中的命名是否与 design 一致？（无 "我用了更合理的命名"）
@@ -550,29 +550,29 @@ At the END of every session, output:
 ## Step 5.5: State Write & Convergence
 After ALL checks are done:
 1. Write/update tool-specific STATE.md (tool-isolated, never share intermediate results):
-   - **Trae IDE** → `.review/trae/{module}/STATE.md`
-    - **Claude Code Runtime** → `.review/claude/{module}/STATE.md`
-    - **Codex CLI** → `.review/codex/{module}/STATE.md`
+   - **Trae IDE** → `.review/trae/{stage}/STATE.md`
+    - **Claude Code Runtime** → `.review/claude/{stage}/STATE.md`
+    - **Codex CLI** → `.review/codex/{stage}/STATE.md`
 2. **Sync new P0/P1/P2** from scan.md into STATE.md Open lists; move fixed issues to Closed Issues with scan/date.
 3. **All dimension results → scan.md single file** (NOT 10 dimension check files)
-   - Trae default: `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
-    - Claude default: `.review/claude/{module}/{doc-stem}/scan.md`
-    - Codex default: `.review/codex/{module}/{doc-stem}/scan.md`
-   - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`; Claude report: `notes/rewrite/{module}/{stage}/{doc-stem}-claude-report.md`).
+   - Trae default: `.review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md`
+    - Claude default: `.review/claude/{stage}/{doc-stem}/scan.md`
+    - Codex default: `.review/codex/{stage}/{doc-stem}/scan.md`
+   - If user explicitly requests another output location, **dual-write**: user-specified path + tool default path (Trae interactive fix doc: `{tree}/{stage}/{doc-stem}-trae-review.md`; Claude report: `{tree}/{stage}/{doc-stem}-claude-report.md`).
 4. Update SYMBOLS.md (Step 1.5 machine output) to matching path:
-   - Trae: `.review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md`
-    - Claude: `.review/claude/{module}/{doc-stem}/SYMBOLS.md`
-    - Codex: `.review/codex/{module}/{doc-stem}/SYMBOLS.md`
+   - Trae: `.review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md`
+    - Claude: `.review/claude/{stage}/{doc-stem}/SYMBOLS.md`
+    - Codex: `.review/codex/{stage}/{doc-stem}/SYMBOLS.md`
 5. Generate VERIFY-CHECK.md **before declaring CONVERGED**:
-   - Trae: `.review/trae/{module}/VERIFY-CHECK.md`
-    - Claude: `.review/claude/{module}/VERIFY-CHECK.md`
-    - Codex: `.review/codex/{module}/VERIFY-CHECK.md`
+   - Trae: `.review/trae/{stage}/VERIFY-CHECK.md`
+    - Claude: `.review/claude/{stage}/VERIFY-CHECK.md`
+    - Codex: `.review/codex/{stage}/VERIFY-CHECK.md`
    - **跨 agent 验证推荐**（新增，2026-07-16）：若条件允许，优先由**不同 agent** 执行 VERIFY-CHECK。同 agent 验证时必须基于 grep 命令重放（非语义回忆），并在 VERIFY-CHECK.md 中标注"同 agent 验证，已重放 grep 命令" + 验证局限说明段。
 6. Output **Artifact Inventory** and **Severity Reconciliation** tables in scan.md (Gate 0 requirements).
 
 STATE.md format:
 ```
-# Review State: {module}
+# Review State: {stage}
 - **Phase**: [concept | ref | struct | coverage | design | link | code | cross-doc | claims | verify | complete]
 - **Last completed**: <phase>
 - **Open P0/P1/P2**: N/M/K
@@ -607,7 +607,7 @@ STATE.md format:
    - **CONCERN**：抽样验证一致性 70-90% → 特定维度需重新审查
    - **FAIL**：抽样验证一致性 < 70% 或发现关键遗漏 → 整体重新审查
 
-**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{module}/VERIFY-CHECK.md`; Claude: `.review/claude/{module}/VERIFY-CHECK.md`）。VERIFY-CHECK.md 必须包含"验证局限说明"段，标注验证者（同 agent / 跨 agent）及验证方法（grep 重放 / 语义回忆）。
+**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{stage}/VERIFY-CHECK.md`; Claude: `.review/claude/{stage}/VERIFY-CHECK.md`）。VERIFY-CHECK.md 必须包含"验证局限说明"段，标注验证者（同 agent / 跨 agent）及验证方法（grep 重放 / 语义回忆）。
 
 **Multi-Agent 强制规则（NEW 2026-07-16）**：
 

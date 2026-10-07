@@ -2,7 +2,7 @@
 # pattern-gate.sh — 历史教训模式回归检查（claim/C-61-zcode-glm）
 #
 # 每项检查对应的事故出处见：
-#   notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md §4 检查映射表
+#   rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md §4 检查映射表
 # 实现范式照 tools/unsafe-audit.sh 与 tools/doc-style-lint.sh：
 #   全量模式 = 存量对账（基线外发现即 FAIL）；--diff = 增量门（额外只看新增行）；
 #   --update-baseline = 冻结当前 P7/P8/P12 存量；--self-test = 正反例判别矩阵。

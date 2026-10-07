@@ -15,10 +15,10 @@ verify-check.py — Minix-RS Review 独立验证（Gate G）辅助脚本
 
 用法:
     python3 tools/verify-check.py \
-        --scan .review/trae/{module}/scans/{doc-stem}-{agent}-scan.md \
-        --state .review/trae/{module}/STATE.md \
-        --symbols .review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md \
-        --output .review/trae/{module}/VERIFY-CHECK.md
+        --scan .review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md \
+        --state .review/trae/{stage}/STATE.md \
+        --symbols .review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md \
+        --output .review/trae/{stage}/VERIFY-CHECK.md
 
     # 仅自检模式（VERIFY-SELF，不生成文件，只输出检查结果）:
     python3 tools/verify-check.py --scan {scan.md} --self-check

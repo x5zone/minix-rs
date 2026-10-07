@@ -40,6 +40,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+# 增量门的 diff 范围读自唯一路径真源（2026-10-07 notes 迁移：旧写法把 pathspec 钉在
+# notes 伞目录的 rewrite 分区上，在新布局下命中 0 个文件 → 门不报错但也不再拦任何新增行，即静默失效）
+# shellcheck source=notes-layout.conf
+source "$SCRIPT_DIR/notes-layout.conf"
+
 STRICT=0
 MODE="files"
 RANGE="HEAD"
@@ -204,7 +209,7 @@ if [ "$MODE" = "dir" ]; then
 elif [ "$MODE" = "diff" ]; then
   while IFS=$'\t' read -r file lines; do
     DIFF_LINES["$file"]="${DIFF_LINES[$file]:-} $lines"
-  done < <( { git diff -U0 "$RANGE" -- notes/rewrite; git diff -U0 --cached -- notes/rewrite; } \
+  done < <( { git diff -U0 "$RANGE" -- "${NOTES_TREES[@]}"; git diff -U0 --cached -- "${NOTES_TREES[@]}"; } \
     | awk '
         /^\+\+\+ b\// { file = substr($2, 3); next }
         /^@@ -[0-9]+(,[0-9]+)? \+([0-9]+)(,([0-9]+))? @@/ {
@@ -224,7 +229,7 @@ elif [ "$MODE" = "diff" ]; then
       for l in ${DIFF_LINES[$f]}; do total=$((total + 1)); done
     done
   fi
-  echo "diff 范围：${#TARGETS[@]} 个文件 / $total 个新增行（RANGE=$RANGE，限 notes/rewrite；规则文件不在增量门范围）" >&2
+  echo "diff 范围：${#TARGETS[@]} 个文件 / $total 个新增行（RANGE=$RANGE，限 ${NOTES_TREES[*]}；规则文件不在增量门范围）" >&2
 fi
 
 if [ ${#TARGETS[@]} -eq 0 ]; then

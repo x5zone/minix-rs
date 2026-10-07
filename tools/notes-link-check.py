@@ -13,12 +13,12 @@ notes-link-check.py — Markdown 相对链接断链扫描（迁移前后各跑�
   4. 去掉 `#fragment` 后再解析；行号锚点（如 `...md#L78-L96`）天然被去掉。
   5. 解析基准依次尝试，命中任一即视为可解析：
        a) 相对当前文件所在目录（标准 Markdown 语义）
-       b) 相对仓库根（文档里写 `notes/rewrite/...` 这类仓库内绝对路径的存量习惯）
+       b) 相对仓库根（文档里写 `rewrite-notes/...` 这类仓库内绝对路径的存量习惯）
      两者都落空 → 记 BROKEN，输出文件行、原始目标、两种解析结果。
 
 用法：
-    python3 tools/notes-link-check.py notes/
-    python3 tools/notes-link-check.py notes/ rewrite-notes/ --output /tmp/links-before.txt
+    python3 tools/notes-link-check.py rewrite-notes/ redesign-notes/ study-notes/
+    python3 tools/notes-link-check.py rewrite-notes/ --output /tmp/links-before.txt
     python3 tools/notes-link-check.py --self-test
 
 退出码：

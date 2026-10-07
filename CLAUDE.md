@@ -12,17 +12,25 @@ Minix3 kernel modules rewritten in Rust (x86-64, no_std). Not a translation — 
 minix3/              — original Minix3 C source (ground truth, do NOT modify)
 os/servers/vm/       — VM server Rust rewrite
 os/libs/minix-types/ — shared IPC types, constants, codec traits
-notes/rewrite/       — documentation (one .md per C source concept)
+rewrite-notes/       — active rewrite documentation: rewrite-notes/{stage}/{doc}.md
+redesign-notes/      — future-direction exploration docs (activated once rewrite stabilizes)
+study-notes/         — early Minix3 learning notes (AI generated, NOT a fact baseline)
+book/                — mdBook output (extracted from rewrite-notes later)
 prompt/              — review rules, skill definitions (source of truth for .claude/)
 .claude/             — Claude Code runtime: rules + skills (derived from prompt/)
 ```
+
+The three notes trees replaced the old `notes/{rewrite,study,redesign}` umbrella on 2026-10-07;
+the module layer `notes/rewrite/fork-syscall-rewrite/` was dropped at the same time, so a canonical
+doc path is two segments deep (`rewrite-notes/01-stage-kernel/16-smp.md`).
+Old→new mapping: `rewrite-notes/MIGRATION.md` and `migrate_notes_plan/pre-migrate-20261007/path-map.tsv`.
 
 ## Hidden Folder Convention（NEW 2026-07-31）
 
 **`.design/` 和 `tmp_design_and_todo/` 文件夹视为中间产物，**正式文档绝不引用**：
 
-- **`notes/rewrite/{module}/{stage}/.design/`**：每个 doc 的可复用快照（`{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` / `{NN}-design.v*.md`）。每次 review 时 AI **重新执行** Step 0.3 流程从 C 源码独立推导，旧快照作为"前人理解参考"输入（**非 ground truth**）。**正式 doc 不引用此文件夹**。
-- **`notes/rewrite/{module}/{stage}/tmp_design_and_todo/`**：早期手动生成的"design"文件夹（多 AI 设计汇总），已**废弃**。**正式 doc 不引用此文件夹**。
+- **`{tree}/{stage}/.design/`**：每个 doc 的可复用快照（`{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` / `{NN}-design.v*.md`）。每次 review 时 AI **重新执行** Step 0.3 流程从 C 源码独立推导，旧快照作为"前人理解参考"输入（**非 ground truth**）。**正式 doc 不引用此文件夹**。
+- **`{tree}/{stage}/tmp_design_and_todo/`**：早期手动生成的"design"文件夹（多 AI 设计汇总），已**废弃**。**正式 doc 不引用此文件夹**。
 - **配置**：两文件夹均 chmod 700（隐藏）+ `.gitignore` 排除（`**/.design/` + `**/tmp_design_and_todo/`）。
 - **正式 doc 自包含**：正式 doc (00-25) 必须是**自包含**的，引用应使用绝对路径到 doc、代码、C 源——**绝不引用中间产物**。
 - **Mode 69 PSMD / Mode 71 DOG 触发**：若正式 doc 引用 `.design/` 或 `tmp_design_and_todo/`，视为 P0-process-violation。
@@ -38,9 +46,9 @@ prompt/              — review rules, skill definitions (source of truth for .c
 - **Concept abstraction (Ch1 docs)**: Concept chapters organized from architecture perspective (CPU questions/system mechanisms), NOT from code perspective (function/struct/trait names). Ch1 subject = CPU/OS, not function name. Multi-arch docs give unified abstraction first.
 
 ## Design First
-- **Design is a core deliverable**, not a byproduct of review. Each `.design/{NN}-design.md` (non-bagging) or `.design/{NN}-design-final.md` (bagging) is reviewed in **Profile R (Design-First Mode)** before any code is written against it. Design docs live in `notes/rewrite/{module}/{stage}/.design/` subdirectory.
+- **Design is a core deliverable**, not a byproduct of review. Each `.design/{NN}-design.md` (non-bagging) or `.design/{NN}-design-final.md` (bagging) is reviewed in **Profile R (Design-First Mode)** before any code is written against it. Design docs live in `{tree}/{stage}/.design/` subdirectory.
 - **方案 D v2（可复用快照，2026-07-16）**：outline.md / outline-review.md / design.md 不是"持久化交付物 / ground truth / 答案 key"，而是**可复用快照（Reusable Reference Snapshot, RRS）**——每次 review 启动时 AI **重新执行** Step 0.3 流程从 C 源码独立推导，旧快照作为**前人理解参考**输入，产出**新版本快照**（`{NN}-design.v{N+1}.md`）。理由：固化即承诺"永远正确"是错的——错误会永久传播，连正式文档都在迭代，凭什么中间产物反而是"圣旨"？
-- **Step 0 design + outline 预检** (**所有 review 模式强制，2026-07-16 扩；原"full/deep/design-first only"已废除**): at Step 0, run 4 `ls` commands + `tools/design-coverage-check.sh {module}`. Snapshots `.v*.md` existence check is mandatory for ALL review modes. Existing snapshots serve as "前人理解" reference input (NOT ground truth); AI must re-execute Step 0.3 each review, producing `.v{N+1}.md`. If no snapshot exists → **Gate H.1/H.6 FAIL → Step 0.3 嵌入生成**（不中断 review，2026-07-17 变更：原"阻断+触发附录 C"改为"Step 0.3 嵌入生成"）。不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过（**模式 69 PSMD + 71 DOG 触发**）。
+- **Step 0 design + outline 预检** (**所有 review 模式强制，2026-07-16 扩；原"full/deep/design-first only"已废除**): at Step 0, run 4 `ls` commands + `tools/design-coverage-check.sh {stage}`. Snapshots `.v*.md` existence check is mandatory for ALL review modes. Existing snapshots serve as "前人理解" reference input (NOT ground truth); AI must re-execute Step 0.3 each review, producing `.v{N+1}.md`. If no snapshot exists → **Gate H.1/H.6 FAIL → Step 0.3 嵌入生成**（不中断 review，2026-07-17 变更：原"阻断+触发附录 C"改为"Step 0.3 嵌入生成"）。不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过（**模式 69 PSMD + 71 DOG 触发**）。
 - **Forbidden snapshot sources** (P0-process-violation): `tmp_design_and_todo/`, `/tmp/`, doc §3 inline design (**circular argument**: §3 is review target, cannot be snapshot source), unprefixed `design.md`/`outline.md` (must have `{NN}-` prefix), cross-doc snapshots (e.g. `02` reusing `01-design.md`), **treating old snapshots as ground truth** (snapshots are input, not output).
 - **v2 产物区分**（方案 D 演进）：**可复用快照**（outline / outline-review / design）每次 review **重新执行 Step 0.3 流程**产出新版本（`.v{N+1}.md`），**保留所有历史版本**不覆盖——旧快照作为参考输入，新快照作为该轮 review 的依据。**脚手架产物**（structure / design-structure / SYMBOLS / VERIFY-CHECK）每次 review 重新生成，不复用。
 - **structure.md 命名区分**：`-structure.md` = review 骨架（Step 0.5 产物，12 节分析）；`-design-structure.md` = design 前序（Step 0.3.1 产物，知识点全集）。两者内容完全不同，禁止混淆。`{NN}-outline.v{N}.md` 是可复用快照（带版本号），不是脚手架。
@@ -73,7 +81,7 @@ Minix3 C source behavior > design contract > Rust implementation > design/techni
 When in doubt, grep `minix3/` and read the original C code.
 
 ## Documentation Structure
-Each doc in `notes/rewrite/` follows:
+Each doc in `rewrite-notes/` follows:
 - Ch1: Concepts & Minix3 context (concept-driven, WHY→WHAT→HOW; multi-arch unified abstraction first)
 - Ch2: Full C source analysis (functions, structs, macros)
 - Ch3: Rust design decisions (WHY, with alternatives & rationale)
@@ -150,7 +158,7 @@ Before correctness checks, generate `structure.md` (12-section skeleton analysis
 - **74 Doc Path Convention Drift** (NEW 2026-07-30): 文档 Rust crate 路径引用漏 `os/` workspace 根前缀（典型：`kernel/src/...` 应为 `os/kernel/src/...`），与 doc 01 等早期 doc 跨文档不一致 → P1。检查命令：`rg "kernel/src/" {doc}.md | wc -l` > 0（应仅匹配 minix3 C 源路径）+ `rg "os/kernel/src/" {doc}.md | wc -l` 低。修复：`sed -i 's|kernel/src/|os/kernel/src/|g'` + `sed -i 's|os/os/|os/|g'`（避免双重前缀）。详见 `.claude/rules/review-process.md §Step 1.0c` + `prompt/skill/review-patterns-skill.md §模式 74`。
 
 ### ⛔ Step 0 硬阻断（所有 review 模式强制，NEW 2026-07-16；2026-07-17 更新）
-- 每次 review 启动时**必须**执行 4 条 `ls` + `tools/design-coverage-check.sh {module}`
+- 每次 review 启动时**必须**执行 4 条 `ls` + `tools/design-coverage-check.sh {stage}`
 - `outline.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.2 嵌入生成**（不中断 review）
 - `outline-review.v*.md` 缺失 → **Gate H.6 FAIL** → **Step 0.3.3 嵌入生成**（AI 自审）
 - `design.v*.md` 缺失 → **Gate H.1 FAIL** → **Step 0.3.4 嵌入生成**（不中断 review）
@@ -289,26 +297,26 @@ See `prompt/skill/review-process-skill.md` §Step 7.1.
 Every scan.md MUST include a Skill Invocation Log table (Skill name, 调用时机, 关键产出). Missing → scan.md DRAFT.
 
 ### State Management: Dual-Path (Trae vs Claude)
-- **Trae IDE** → `.review/trae/{module}/STATE.md` (project root `.review/`, not inside `notes/`)
-  - Per-doc/cross-AI scans: `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
-  - Bagging aggregate: `.review/trae/{module}/scans/AGGREGATED-{doc-stem}.md`
-- **Claude Code Runtime** → `.review/claude/{module}/STATE.md` (project root `.review/`)
-  - Module-level scan: `.review/claude/{module}/{doc-stem}/scan.md`
-  - Verification: `.review/claude/{module}/VERIFY-CHECK.md`
+- **Trae IDE** → `.review/trae/{stage}/STATE.md` (project root `.review/`, not inside `notes/`)
+  - Per-doc/cross-AI scans: `.review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md`
+  - Bagging aggregate: `.review/trae/{stage}/scans/AGGREGATED-{doc-stem}.md`
+- **Claude Code Runtime** → `.review/claude/{stage}/STATE.md` (project root `.review/`)
+  - Module-level scan: `.review/claude/{stage}/{doc-stem}/scan.md`
+  - Verification: `.review/claude/{stage}/VERIFY-CHECK.md`
 - **No shared intermediate results** between tools: STATE/scan/SYMBOLS/structure/VERIFY-CHECK are isolated. Bagging aggregation happens only inside Trae (multi-AI scan merge). Cross-tool divergence must NOT be auto-merged; log it in scan.md and ask the user.
-- `{module}` = first directory under `notes/rewrite/` (e.g. `fork-syscall-rewrite`). `{doc-stem}` = target doc basename without extension (e.g. `03-kmain-cstart`). `{agent}` = model id (Trae: glm/kimi/...; Claude: m3/...).
-- Recommended: `tools/review-init.sh claude {doc-path}` auto-computes `{module}`/`{doc-stem}` and creates standard directories.
+- `{stage}` = first directory under the notes tree root (`rewrite-notes/`, `redesign-notes/`, `study-notes/`), e.g. `rewrite-notes/01-stage-kernel/03-kmain-cstart.md` → `{stage}=01-stage-kernel`. It is also the state-directory grouping key (`.review/{tool}/{stage}/`). The old layout had a module layer between the tree root and the stage (its value was always `fork-syscall-rewrite`); that layer retired in the 2026-10-07 notes migration — old→new mapping in `rewrite-notes/MIGRATION.md`. `{stage}` is separate from the coverage script's `--module kernel` (Minix3 module name); do not mix them. `{doc-stem}` = target doc basename without extension (e.g. `03-kmain-cstart`). `{agent}` = model id (Trae: glm/kimi/...; Claude: m3/...).
+- Recommended: `tools/review-init.sh claude {doc-path}` auto-computes `{tree}`/`{stage}`/`{doc-stem}` and creates standard directories.
 
 ### Intermediate Artifacts
 - `STATE.md` — review progress (tool-specific path, see above)
 - `SYMBOLS.md` — coverage enumeration (machine-generated + AI judgment)
-  - Trae doc-level: `.review/trae/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md`
-  - Claude doc-level: `.review/claude/{module}/{doc-stem}/SYMBOLS.md`
+  - Trae doc-level: `.review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md`
+  - Claude doc-level: `.review/claude/{stage}/{doc-stem}/SYMBOLS.md`
 - `structure.md` — skeleton analysis (doc review, 12 sections, saved alongside scan.md)
 - `scan.md` — single-file aggregation of all dimension results (NOT 10 separate check files)
-  - Trae: `.review/trae/{module}/scans/{doc-stem}-{agent}-scan.md`
-  - Claude: `.review/claude/{module}/{doc-stem}/scan.md`
-  - If user explicitly requests another output location, **dual-write** to user-specified path + tool default path (Trae interactive fix doc: `notes/rewrite/{module}/{stage}/{doc-stem}-trae-review.md`; Claude report: `{doc-stem}-claude-report.md`).
+  - Trae: `.review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md`
+  - Claude: `.review/claude/{stage}/{doc-stem}/scan.md`
+  - If user explicitly requests another output location, **dual-write** to user-specified path + tool default path (Trae interactive fix doc: `{tree}/{stage}/{doc-stem}-trae-review.md`; Claude report: `{doc-stem}-claude-report.md`).
 - `VERIFY-CHECK.md` — independent validation result (mandatory before CONVERGED)
-  - Trae: `.review/trae/{module}/VERIFY-CHECK.md`
-  - Claude: `.review/claude/{module}/VERIFY-CHECK.md`
+  - Trae: `.review/trae/{stage}/VERIFY-CHECK.md`
+  - Claude: `.review/claude/{stage}/VERIFY-CHECK.md`

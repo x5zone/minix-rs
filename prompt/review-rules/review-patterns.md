@@ -304,8 +304,8 @@ vm_allocpage 使用 pt_init_done 标志...
 ### 验证方法
 
 ```bash
-# 假设当前文档位于 notes/rewrite/fork-syscall-rewrite/02-stage-vm/
-DIR="notes/rewrite/fork-syscall-rewrite/02-stage-vm"
+# 假设当前文档位于 rewrite-notes/02-stage-vm/
+DIR="rewrite-notes/02-stage-vm"
 
 # 1. 检查同目录下常量是否多处定义
 rg "CLICK_SIZE\s*=" "$DIR" --type md -n
@@ -1453,7 +1453,7 @@ grep -c "unsafe" {CODE_FILE}
            - outline.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.2 嵌入生成
            - outline-review.v*.md 缺失 → Gate H.6 FAIL → Step 0.3.3 嵌入生成（AI 自审）
            - design.v*.md 缺失 → Gate H.1 FAIL → Step 0.3.4 嵌入生成
-         3. 工具 `tools/design-coverage-check.sh {module}` 自动扫描所有 stage 的 .design/，输出缺失报告
+         3. 工具 `tools/design-coverage-check.sh {stage}` 自动扫描所有 stage 的 .design/，输出缺失报告
          4. STATE.md Resume Point 必含 `ls .design/` 命令（避免续 session 跳过）
 ```
 
@@ -1472,7 +1472,7 @@ grep -c "unsafe" {CODE_FILE}
 
 **建议落地**：
 - [review-process.md §Step 0 硬阻断规则](../review-rules/review-process.md) NEW 2026-07-16
-- 工具：`tools/design-coverage-check.sh {module}`（Session #12 落地）
+- 工具：`tools/design-coverage-check.sh {stage}`（Session #12 落地）
 - 工具：`tools/todo-staleness-check.sh {todo-file}`（NEW，模式 70 配套）
 
 **来源案例**：
@@ -1621,11 +1621,11 @@ grep -c "unsafe" {CODE_FILE}
 **检查命令**：
 ```bash
 # 提取 §2 步骤数（grep "步骤" 关键字 + 表格行）
-rg -c "^\| \d+ \|" notes/rewrite/{module}/{stage}/{doc}.md
+rg -c "^\| \d+ \|" {tree}/{stage}/{doc}.md
 # 提取 §4 步骤数
-rg -c "^\| \d+ \|" notes/rewrite/{module}/{stage}/{doc}.md
+rg -c "^\| \d+ \|" {tree}/{stage}/{doc}.md
 # 检查差异说明表是否存在
-rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" notes/rewrite/{module}/{stage}/{doc}.md
+rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" {tree}/{stage}/{doc}.md
 ```
 
 ---
@@ -1678,13 +1678,13 @@ static BOOT_PT_END: AtomicU64 = AtomicU64::new(0);
 **检查命令**：
 ```bash
 # Doc-side 静态扫描
-rg "static mut" notes/rewrite/{module}/{stage}/{doc}.md --type md
+rg "static mut" {tree}/{stage}/{doc}.md --type md
 
 # Rust-side 实际状态（应 0 hits）
 rg "static mut" os/ -t rust --type-add 'rust:*.rs'
 
 # 路径一致性（doc 写 path1 vs 实际 path2）
-rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" notes/rewrite/{module}/{stage}/{doc}.md
+rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" {tree}/{stage}/{doc}.md
 find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.rs"
 ```
 
@@ -1742,15 +1742,15 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 ```bash
 # 路径约定检查（原 Step 1.0c；D5 收编后路径约定职责在 review-doc-checklist §2.4c，模式 74）
 rg "kernel/src/|boot-shim/src/|arch/src/|servers/vm/|servers/pm/|servers/vfs/|servers/rs/" \
-    notes/rewrite/{module}/{stage}/{doc}.md
+    {tree}/{stage}/{doc}.md
 # 应仅匹配 minix3/... 路径或 0 hits
 
 # 反向验证：os/ 前缀正确性
-rg "os/(kernel|boot-shim|arch|servers|libs)" notes/rewrite/{module}/{stage}/{doc}.md | wc -l
+rg "os/(kernel|boot-shim|arch|servers|libs)" {tree}/{stage}/{doc}.md | wc -l
 # 应与该 doc 的 Rust 路径总数接近
 
 # 双重前缀检查
-rg "os/os/" notes/rewrite/{module}/{stage}/{doc}.md
+rg "os/os/" {tree}/{stage}/{doc}.md
 # 必须 0 hits
 ```
 
@@ -1851,7 +1851,7 @@ tools/anchor-resolve.sh --check {doc}.md  # 校验符号锚点存在性（0 定�
 rg "covered in 0[0-9]|see 0[0-9]-.+\.md" os/ -t rust -n
 
 # 2. 验证当前 doc 编号是否一致
-ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+ls {tree}/{stage}/ | rg "^[0-9]+"
 
 # 3. 对每个引用，验证是否指向有效 doc
 for ref in $(rg "covered in 0[0-9]" os/ -t rust -o); do

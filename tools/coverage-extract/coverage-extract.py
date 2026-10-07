@@ -12,17 +12,17 @@ coverage-extract.py — Minix-RS 覆盖率穷举清单生成器
 
 示例（模块级，服务器）:
     python3 tools/coverage-extract/coverage-extract.py vm \
-        notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+        rewrite-notes/02-stage-vm \
         --rust-dir os --c-dir minix3/minix/servers/vm
 
 示例（模块级，内核）:
     python3 tools/coverage-extract/coverage-extract.py kernel \
-        notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+        rewrite-notes/01-stage-kernel \
         --rust-dir os --c-dir minix3/minix/kernel
 
 示例（单文档级，推荐）:
     python3 tools/coverage-extract/coverage-extract.py kernel \
-        notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+        rewrite-notes/01-stage-kernel \
         --rust-dir os --c-dir minix3/minix/kernel \
         --doc-file 03-kmain-cstart.md \
         --semantic-map tools/coverage-extract/kernel-semantic-map.json \

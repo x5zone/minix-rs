@@ -14,11 +14,11 @@ review-state-validate.py — Minix-RS Review STATE.md 预检与一致性校验
   - review-session 启动时（Step 0）
 
 用法:
-    python3 tools/review-state-validate.py --state .review/trae/{module}/STATE.md
-    python3 tools/review-state-validate.py --state .review/trae/{module}/STATE.md \
-        --scan .review/trae/{module}/scans/{doc-stem}-{agent}-scan.md
-    python3 tools/review-state-validate.py --state .review/claude/{module}/STATE.md --strict
-    python3 tools/review-state-validate.py --state .review/codex/{module}/STATE.md --strict
+    python3 tools/review-state-validate.py --state .review/trae/{stage}/STATE.md
+    python3 tools/review-state-validate.py --state .review/trae/{stage}/STATE.md \
+        --scan .review/trae/{stage}/scans/{doc-stem}-{agent}-scan.md
+    python3 tools/review-state-validate.py --state .review/claude/{stage}/STATE.md --strict
+    python3 tools/review-state-validate.py --state .review/codex/{stage}/STATE.md --strict
 
 退出码:
     0 = 全部通过
@@ -325,12 +325,12 @@ def _find_scan_md(state_path, project_root):
     """尝试从 STATE.md 路径推断 scan.md 位置。
 
     推断规则：
-      .review/trae/{module}/STATE.md
-        → .review/trae/{module}/scans/ 下最新的 *-scan.md
-      .review/claude/{module}/STATE.md
-        → .review/claude/{module}/{doc-stem}/scan.md（取第一个存在的）
-      .review/codex/{module}/STATE.md
-        → .review/codex/{module}/{doc-stem}/scan.md（取第一个存在的）
+      .review/trae/{stage}/STATE.md
+        → .review/trae/{stage}/scans/ 下最新的 *-scan.md
+      .review/claude/{stage}/STATE.md
+        → .review/claude/{stage}/{doc-stem}/scan.md（取第一个存在的）
+      .review/codex/{stage}/STATE.md
+        → .review/codex/{stage}/{doc-stem}/scan.md（取第一个存在的）
     """
     state_path = Path(state_path)
     parts = state_path.parts

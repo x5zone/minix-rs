@@ -2,7 +2,10 @@
 # review-gate-check.sh — Minix-RS Review 综合门控检查工具（C 路径 Phase 1 C.1.3）
 #
 # 用法：
-#   tools/review-gate-check.sh <tool> <module> <doc-stem> [agent] [--strict]
+#   tools/review-gate-check.sh <tool> <stage> <doc-stem> [agent] [--strict]
+#
+#   stage = 树根下第一级目录名（如 01-stage-kernel），同时是状态目录键
+#         （2026-10-07 notes 迁移：旧 module 层退役，树目录名读自 tools/notes-layout.conf）
 #
 # 检查项（每次 review 启动时自动跑）：
 #   1. design 快照完整（{NN}-design.v*.md 存在）        → Gate H.1
@@ -22,10 +25,14 @@
 
 set -euo pipefail
 
+SCRIPT_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=notes-layout.conf
+source "$SCRIPT_SELF_DIR/notes-layout.conf"
+
 if [[ $# -lt 3 ]]; then
-  echo "Usage: $0 <tool> <module> <doc-stem> [agent] [--strict]" >&2
+  echo "Usage: $0 <tool> <stage> <doc-stem> [agent] [--strict]" >&2
   echo "  tool     = trae | claude | codex" >&2
-  echo "  module   = notes/rewrite/<module>/ 下的第一级目录名（如 fork-syscall-rewrite）" >&2
+  echo "  stage    = 笔记树根下第一级目录名（如 01-stage-kernel；树 = ${NOTES_TREES[*]}）" >&2
   echo "  doc-stem = 目标文档去扩展名（如 03-kmain-cstart）" >&2
   echo "  agent    = AI 标识（默认 glm；只能放在 flag 之前）" >&2
   echo "  --strict = 任何缺失即 exit 2（默认 exit 1）" >&2
@@ -45,13 +52,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ ${#POSITIONAL[@]} -lt 3 ]]; then
-  echo "⛔ 位置参数不足，需要 tool + module + doc-stem" >&2
+  echo "⛔ 位置参数不足，需要 tool + stage + doc-stem" >&2
   exit 2
 fi
 
 set -- "${POSITIONAL[@]}"
 TOOL="$1"
-MODULE="$2"
+STAGE="$2"
 DOC_STEM="$3"
 AGENT="${4:-glm}"
 
@@ -73,8 +80,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-# 计算路径
-REVIEW_BASE=".review/${TOOL}/${MODULE}"
+# 计算路径（状态目录键 = stage）
+REVIEW_BASE=".review/${TOOL}/${STAGE}"
 SCANS_DIR="${REVIEW_BASE}/scans"
 
 # === Session #16 改进（2026-07-16，兼容历史迭代后缀）：
@@ -98,11 +105,11 @@ fi
 # 历史 fallback：早期 session 用 VERIFY-CHECK-{NN}.md（带 doc 编号后缀）；canonical 是无后缀的 VERIFY-CHECK.md（与 review-init.sh / README 一致）。
 VERIFY_NN_FILE="${REVIEW_BASE}/VERIFY-CHECK-${NN}.md"
 
-# design 目录路径：尝试推断 stage（从 notes/rewrite/{module}/ 下所有 stage 找 doc 文件）
+# design 目录路径：在三棵树里定位 <stage>/<doc-stem>.md，命中即取该 stage 的 .design/ 快照
 DESIGN_FILE=""
 OUTLINE_FILE=""
 OUTLINE_REVIEW_FILE=""
-MODULE_DIR="notes/rewrite/${MODULE}"
+DOC_ROOT=""
 
 latest_snapshot() {
   local pattern="$1"
@@ -122,10 +129,12 @@ latest_snapshot() {
   printf '%s' "$best"
 }
 
-for stage_dir in "${MODULE_DIR}"/*/; do
+for tree in "${NOTES_TREES[@]}"; do
+  stage_dir="${tree}/${STAGE}/"
   [[ ! -d "${stage_dir}" ]] && continue
   doc_file="${stage_dir}/${DOC_STEM}.md"
   if [[ -f "${doc_file}" ]]; then
+    DOC_ROOT="${tree}"
     DESIGN_DIR="${stage_dir}.design"
     DESIGN_FILE="$(latest_snapshot "${DESIGN_DIR}/${NN}-design.v*.md")"
     OUTLINE_FILE="$(latest_snapshot "${DESIGN_DIR}/${NN}-outline.v*.md")"
@@ -133,6 +142,15 @@ for stage_dir in "${MODULE_DIR}"/*/; do
     break
   fi
 done
+
+# 定位失败要说得清：旧布局的 module 参数（如 fork-syscall-rewrite）已退役，
+# 静默报「快照缺失」会把调用方引向错误的结论（以为文档没做 design）
+if [[ -z "${DOC_ROOT}" ]]; then
+  echo "⛔ 在三棵树里找不到 ${STAGE}/${DOC_STEM}.md（树 = ${NOTES_TREES[*]}）" >&2
+  echo "   stage 与 doc-stem 需按 2026-10-07 迁移后的布局给出；" >&2
+  echo "   旧路径对照见 rewrite-notes/MIGRATION.md 与 migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
+  exit 2
+fi
 
 # ===== 执行检查 =====
 CHECKS_TOTAL=0
@@ -174,7 +192,7 @@ check() {
 }
 
 echo "=== Review Gate Check ==="
-echo "tool=${TOOL} module=${MODULE} doc-stem=${DOC_STEM} agent=${AGENT} strict=${STRICT_MODE}"
+echo "tool=${TOOL} stage=${STAGE} doc-stem=${DOC_STEM} agent=${AGENT} strict=${STRICT_MODE}"
 echo ""
 
 echo "[Gate H.1] design 快照:"
@@ -281,10 +299,10 @@ echo ""
 
 if [[ ${CHECKS_FAIL} -eq 0 ]]; then
   echo "✅ ALL GATES PASS"
-  echo "GATE-CHECK: PASS tool=${TOOL} module=${MODULE} doc-stem=${DOC_STEM} checks=${CHECKS_PASS}/${CHECKS_TOTAL}"
+  echo "GATE-CHECK: PASS tool=${TOOL} stage=${STAGE} doc-stem=${DOC_STEM} checks=${CHECKS_PASS}/${CHECKS_TOTAL}"
   exit 0
 fi
-echo "GATE-CHECK: FAIL tool=${TOOL} module=${MODULE} doc-stem=${DOC_STEM} pass=${CHECKS_PASS}/${CHECKS_TOTAL}明细见上"
+echo "GATE-CHECK: FAIL tool=${TOOL} stage=${STAGE} doc-stem=${DOC_STEM} pass=${CHECKS_PASS}/${CHECKS_TOTAL}明细见上"
 
 echo "❌ FAILED CHECKS:"
 for fail in "${FAIL_LIST[@]}"; do

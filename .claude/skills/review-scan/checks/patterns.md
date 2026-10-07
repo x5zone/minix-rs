@@ -315,7 +315,7 @@ rg "kernel/src/|boot-shim/src/|arch/src/" {doc}.md | grep -v "minix3"
 rg "os/os/" {doc}.md  # 必须 0 hits
 
 # 跨文档一致性
-rg "os/kernel/src/" notes/rewrite/{module}/{stage}/0*-*.md | wc -l
+rg "os/kernel/src/" {tree}/{stage}/0*-*.md | wc -l
 ```
 
 **判定**：
@@ -385,7 +385,7 @@ rg "covered in 0[0-9]" os/ -t rust -n
 rg "see 0[0-9]-.+\.md" os/ -t rust -n
 
 # 2. 验证当前 doc 编号
-ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+ls {tree}/{stage}/ | rg "^[0-9]+"
 
 # 3. 验证目标 doc 存在
 for ref in $(rg "see [0-9]+-.+\.md" os/ -t rust -o); do

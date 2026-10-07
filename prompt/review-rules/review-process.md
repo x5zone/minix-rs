@@ -168,7 +168,7 @@
      - **2026-08-15 修复 E-P1-1（明确选择判据）**：
        - **默认路径 A（从头生成）**：除非满足以下任一条件选 C
        - **路径 C 触发条件**（**全部满足**）：(a) 文档已通过 bagging 多 AI 评审合并；(b) `{NN}-design-final.v{N}.md` 已存在；(c) 用户显式说明"沿用 bagging 产物"
-       - **判定流程**：检测 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md` → 若命中且用户确认 → 路径 C；否则 → 路径 A（从头生成）
+       - **判定流程**：检测 `ls {tree}/{stage}/.design/{NN}-design-final.v*.md` → 若命中且用户确认 → 路径 C；否则 → 路径 A（从头生成）
        - **禁止 B**：循环论证，用被审者自述作为审他的依据（已在 C.4 段强调）
 3. **Step 1.6**：design ↔ code 一致性检查（design.md 生成后）
 4. **Step 2**：design vs Minix3 本质对比
@@ -396,25 +396,25 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
     - **review 阶段**：按文档行数查表（<500 行→15-30 min | 500-1000→30-60 | 1000-1500→60-90 | >1500→90-120）
     - 实际耗时与预估对比写入 scan.md，偏差 >50% 需说明原因（避免偷懒）
 - **读取状态（统一双路径，互不共享中间结果）**：
-  - **Trae IDE** → 读取 `.review/trae/{module}/STATE.md`（项目根 `.review/` 下）
-  - **Claude Code Runtime** → 读取 `.review/claude/{module}/STATE.md`（项目根 `.review/` 下）
+  - **Trae IDE** → 读取 `.review/trae/{stage}/STATE.md`（项目根 `.review/` 下）
+  - **Claude Code Runtime** → 读取 `.review/claude/{stage}/STATE.md`（项目根 `.review/` 下）
   - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
   - 若同一工具下两份 STATE.md 同时存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
-  - **`{module}` 的确定**：取目标文档所在路径中 `notes/rewrite/` 下的**第一级目录名**。例如 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/03-kmain-cstart.md` → `{module}=fork-syscall-rewrite`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）是**两个不同概念**，不得混用。
+  - **`{stage}` 的确定**：取目标文档所在路径里笔记树根（`rewrite-notes/`、`redesign-notes/`、`study-notes/`）下的**第一级目录名**。例如 `rewrite-notes/01-stage-kernel/03-kmain-cstart.md` → `{stage}=01-stage-kernel`。它同时是评审状态目录的分组键（`.review/{tool}/{stage}/`）。旧布局在树根与阶段之间还有一个模块层目录（当时取值恒为 `fork-syscall-rewrite`），该层已于 2026-10-07 目录迁移退役，旧→新对照见 `rewrite-notes/MIGRATION.md`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）是**两个不同概念**，不得混用。
   - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}` 校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
-  - 推荐用 `tools/review-init.sh {tool} {doc-path}` 自动计算 `{module}`/`{doc-stem}` 并 mkdir 标准目录。
+  - 推荐用 `tools/review-init.sh {tool} {doc-path}` 自动计算 `{tree}`/`{stage}`/`{doc-stem}` 并 mkdir 标准目录。
 - **⛔ design + outline 预检（所有模式强制，前移自 Step 1.6）**：
   - **背景**：原流程在 Step 1.6 才检查 design 存在性，AI 已完成 Step 0/0.5/1/1.5 大量工作，沉没成本心理易导致违规找替代品（历史案例：tmp_design_and_todo/ 下的讨论稿，该目录已删除）。前移到 Step 0 让 AI 一开始就知道是日常 review 还是 Design-First。
   - **方案 D 演进（v2：可复用快照，2026-07-16）**：outline.md / outline-review.md / design.md 不是"持久化交付物 / ground truth / 答案 key"，而是**可复用快照（Reusable Reference Snapshot, RRS）**——每次 review 启动时，AI **重新执行**附录 C 流程从 C 源码独立推导，旧快照作为**前人理解参考**输入，产出**新版本快照**（`{NN}-design.v{N+1}.md`）。理由：固化即承诺"永远正确"是错的——错误会永久传播，连正式文档都在迭代，凭什么中间产物反而是"圣旨"？每轮 review 重新评估是独立 review 原则的体现。
   - **检查命令**（v2：快照是版本化的）：
     ```bash
     # 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
-     ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
-     ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
-     ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
-     ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
+     ls {tree}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
+     ls {tree}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
+     ls {tree}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
+     ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
     # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
-    cat notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+    cat {tree}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
     ```
   - **判定**（v2：每次 review 重新评估）：
     - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
@@ -443,10 +443,10 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
   > **判定（新增）**：
   > 1. **必须跑 `ls`**：每次 Step 0 启动时，**必须**执行以下 4 条 ls 命令（无论何种 review 模式）：
   >    ```bash
-   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md
-   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v*.md
-   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md
-   >    ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
+   >    ls {tree}/{stage}/.design/{NN}-outline.v*.md
+   >    ls {tree}/{stage}/.design/{NN}-outline-review.v*.md
+   >    ls {tree}/{stage}/.design/{NN}-design.v*.md
+   >    ls {tree}/{stage}/.design/{NN}-design-final.v*.md  # bagging only
   >    ```
   >    ls 输出必须写入 scan.md `§Step 0: 预检结果` 段（不可省略）。
   > 2. **缺失判定 + 嵌入生成（NEW 2026-07-17，替代原"中断去附录 C"）**：
@@ -468,7 +468,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
    >    | outline-review 快照 | `ls .design/{NN}-outline-review.v*.md` | 无 | ❌ **缺失 → Gate H.6 FAIL** → Step 0.3.3 生成（AI 自审） |
    >    | design 快照 | `ls .design/{NN}-design.v*.md` | 无 | ❌ **缺失 → Gate H.1 FAIL** → Step 0.3.4 生成 |
   >    ```
-   > 5. **工具支持**：用 `tools/design-coverage-check.sh {module}`（NEW，Session #12 落地）自动扫描所有 stage 的 `.design/` 目录，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
+   > 5. **工具支持**：用 `tools/design-coverage-check.sh {stage}`（NEW，Session #12 落地）自动扫描所有 stage 的 `.design/` 目录，输出缺失报告。Session 启动时跑此工具 → 报告写入 STATE.md `§启动预检` 段。
   > 6. **决策记录豁免**（**仅限一次性用户明确豁免**）：如 Session #11 用户决策"04/05 不回填"，**该决策仅适用于当时已 CONVERGED 的 04/05**，**不可泛化**到后续 review 的 06/07/08/...。任何"已有 CONVERGED 状态"豁免必须满足：a) 用户当时显式说"该 doc 豁免"；b) 豁免仅对该 doc 有效；c) 豁免记录在 STATE.md `§豁免列表` 段。
 
 - **关联代码清单（Step 0 产物，2026-09-18 B3.2）**：`§Step 0: 预检结果` 段（Gate 0 锚段之一）内必须含**"关联代码清单"子小节**——粘贴 `tools/doc-code-map.sh {doc}.md --check` 的输出表格（或手写等价表格），并给出结论"共 N 个文件；存在性全通过 / 缺失列表"。文档无关联代码时写"无（头部声明豁免/人工确认理由）"。full-review 入口（编号文档）此清单强制；纯 design/概念文档可写 N/A + 理由。
@@ -496,7 +496,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
 
 #### Step 0.3.1: 生成 design-structure.md（脚手架，每次重新生成）
 
-> **产物位置**：`.review/{tool}/{module}/scans/{doc-stem}-{agent}-design-structure.md`
+> **产物位置**：`.review/{tool}/{stage}/scans/{doc-stem}-{agent}-design-structure.md`
 > **命名区分**：本步骤产物是 `design-structure.md`（design 前序，知识点全集）；review Step 0.5 产物是 `structure.md`（review 骨架，12 节分析）。两者内容完全不同，禁止混淆。
 
 **输入**：C 源码 + OS 理论 + Rust 现状
@@ -511,7 +511,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
 
 #### Step 0.3.2: 生成 outline.md（持久化可复用快照，Reusable Reference Snapshot）
 
-> **产物位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-outline.v{N}.md`（**持久化**，保留所有历史版本；每轮 review 允许以新版本更新快照，旧版本作为参考输入而非 ground truth）
+> **产物位置**：`{tree}/{stage}/.design/{NN}-outline.v{N}.md`（**持久化**，保留所有历史版本；每轮 review 允许以新版本更新快照，旧版本作为参考输入而非 ground truth）
 > **首次生成**：`{NN}-outline.v1.md`；**后续 review**：`{NN}-outline.v{N+1}.md`（旧版本作参考，独立推导）
 
 > **术语说明（2026-08-15 统一）**：本节中的"持久化可复用快照"（Persisted Reusable Reference Snapshot, PRRS）是 outline / outline-review / design / design-final 四类快照的统一术语。其核心属性为：(a) **持久化**——一旦生成不删除，保留所有历史版本；(b) **可复用**——下一轮 review 可作为参考输入；(c) **允许更新**——但新版本必须基于 C 源码 + OS 理论 + Rust 代码当前状态独立推导，旧版本不被覆盖而是作为新版本并存（`.v{N}.md` 与 `.v{N+1}.md` 同时存在）；(d) **不是 ground truth**——旧快照可作"前人理解"参考，但 review 必须独立产出新版本。
@@ -540,7 +540,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
 
 #### Step 0.3.3: 生成 outline-review.md（持久化可复用快照，AI 自审）
 
-> **产物位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v{N}.md`（**持久化可复用快照**，保留所有历史版本；每轮 review 允许以新版本更新）
+> **产物位置**：`{tree}/{stage}/.design/{NN}-outline-review.v{N}.md`（**持久化可复用快照**，保留所有历史版本；每轮 review 允许以新版本更新）
 > **核心变更（2026-07-17）**：原要求"用户显式确认"改为 **AI 自审**。根因：原"用户确认"要求导致 AI 跳过 outline-review（AI 不想停下来等用户）。用户事后可挑战。
 
 对 outline.md 进行多角度 review，**必须覆盖 4 维**：
@@ -568,7 +568,7 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
 
 #### Step 0.3.4: 生成 design.md（持久化产物）
 
-> **产物位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md`（**持久化**，保留所有历史版本）
+> **产物位置**：`{tree}/{stage}/.design/{NN}-design.v{N}.md`（**持久化**，保留所有历史版本）
 > **核心变更（2026-07-17）**：原要求"用户显式确认"改为 AI 整理。用户事后可挑战。
 
 **输入**：outline.md + outline-review.md + design-structure.md
@@ -1133,7 +1133,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
    ```bash
    # 例：TODO-06-4 假设 "TODO-01-3 阻塞"，验证 TODO-01-3 当前状态
    #（历史案例：当时目录名为 03-stage-kernel、文档编号 01-kmain-cstart；现目录 01-stage-kernel、该文档编号 03）
-   rg "TODO-01-3" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/03-kmain-cstart.md -n
+   rg "TODO-01-3" rewrite-notes/01-stage-kernel/03-kmain-cstart.md -n
    # 如果对应文档没有 TODO-01-3 标记 → TODO-06-4 的前提失效
    ```
 3. **分类处理**：
@@ -1320,12 +1320,12 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 
 **Step 1.6.1**：design.md 存在性确认（已在 Step 0 预检，此处仅记录）
 ```bash
-# 持久化可复用快照（位置：notes/rewrite/{module}/{stage}/.design/，保留所有历史版本）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md         # 非 bagging（任意版本命中）
-ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
+# 持久化可复用快照（位置：{tree}/{stage}/.design/，保留所有历史版本）
+ls {tree}/{stage}/.design/{NN}-design.v*.md         # 非 bagging（任意版本命中）
+ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 ```
 > **命名规则**：
-> - 非 bagging 场景默认产物：`{NN}-design.v{N}.md`（如 `01-design.v1.md`），位置 `notes/rewrite/{module}/{stage}/.design/`
+> - 非 bagging 场景默认产物：`{NN}-design.v{N}.md`（如 `01-design.v1.md`），位置 `{tree}/{stage}/.design/`
 > - bagging 场景产物：`{NN}-design-final.v{N}.md`（多 AI 评审合并后的定稿），位置同上
 > - 两者均可作为 Gate H 依据（任一版本命中即存在），优先级：design-final 版本 > design 版本
 
@@ -1555,7 +1555,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 1. **提取关键符号**：从当前文档的 Ch1&2 中提取所有涉及的 C 符号（函数名、结构体名、宏名）
 2. **grep 跨文档搜索**：在同目录下所有 `.md` 文件中搜索这些符号
    ```bash
-   rg "SYMBOL_NAME" notes/rewrite/{module}/ --type md -n
+   rg "SYMBOL_NAME" {tree}/ --type md -n
    ```
 3. **语义归属判定**：对每个符号，根据其**语义本质**判断应归属哪个文档：
    - 如果符号的语义与当前文档主题直接相关 → 当前文档应完整覆盖（分析 + 设计 + 实现）
@@ -1647,8 +1647,8 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 
 **执行步骤**：
 1. 创建或更新工具对应的 `STATE.md`（双路径，互不共享）：
-   - Trae IDE → `.review/trae/{module}/STATE.md`（项目根 `.review/` 下）
-   - Claude Code Runtime → `.review/claude/{module}/STATE.md`（项目根 `.review/` 下）
+   - Trae IDE → `.review/trae/{stage}/STATE.md`（项目根 `.review/` 下）
+   - Claude Code Runtime → `.review/claude/{stage}/STATE.md`（项目根 `.review/` 下）
 2. 创建或更新 `SYMBOLS.md`（Step 1.5 产物）到对应路径
 3. **所有维度结果写入 scan.md 单文件**（NOT 10 个维度检查文件）。若用户显式指定输出位置（如交互式修复），双写到用户指定路径（被 review 文档同目录下 `{doc-stem}-trae-review.md` / `{doc-stem}-claude-report.md`）+ 工具默认路径（`scans/` 内）。双写校验见 Gate 0 Artifact Inventory。
 4. 将 scan.md 中**新发现 P0/P1/P2** 同步到 STATE.md 的 Open P0/P1/P2 列表；已修复问题移入 Closed Issues 段落。
@@ -1671,8 +1671,8 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 
 **检查项**（6 项，方案 D 新增 H.6）：
 - [ ] **H.1**: design 快照存在（非 bagging 默认产物）或 design-final 快照存在（bagging 场景）
-  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md`（非 bagging，持久化可复用快照）
-  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md`（bagging，持久化可复用快照）
+  - `ls {tree}/{stage}/.design/{NN}-design.v*.md`（非 bagging，持久化可复用快照）
+  - `ls {tree}/{stage}/.design/{NN}-design-final.v*.md`（bagging，持久化可复用快照）
   - `{NN}` 必须是**本文档编号**，禁止复用其他编号文档的 design（如 02 文档不得用 01-design.md）
   - 两者均缺失 → Gate H FAIL → **Step 0.3 嵌入生成**（2026-07-17 变更：原"触发 Design-First 模式"改为"Step 0.3 嵌入生成"，不切换模式）
 - [ ] **H.2**: design ↔ code 一致性 ≥ 80%（Step 1.6.2 矩阵）
@@ -1680,7 +1680,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 - [ ] **H.4**: design 无 P0-design-wrong（design 错而非实现错）
 - [ ] **H.5**：design-deviation 与 design-wrong 区分清楚（避免误判 Refactor 类型）
 - [ ] **H.6**（方案 D 新增）：outline 快照存在 + doc ↔ outline 对齐无 P0 偏离（Step 0.5.3 偏离矩阵）
-  - `ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md`（持久化 doc 结构契约，本文档编号，任一版本命中）
+  - `ls {tree}/{stage}/.design/{NN}-outline.v*.md`（持久化 doc 结构契约，本文档编号，任一版本命中）
   - Step 0.5.3 偏离矩阵中无 P0 偏离
   - outline 快照缺失 → Gate H.6 FAIL → **Step 0.3.2 嵌入生成**（2026-07-17 变更：原"触发 Design-First 模式"改为"Step 0.3.2 嵌入生成"，不切换模式）
   - 有 P0 偏离且未处置 → Gate H.6 FAIL
@@ -1688,7 +1688,7 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 **⛔ Gate H 不允许 N/A 判定**：每篇文档都必须通过 Gate H 全部 6 项检查。不允许"本文档复用其他文档 design，Gate H N/A"——这是 P0-process-violation。若本文档无专属 design.md，必须**执行 Step 0.3 嵌入生成**（2026-07-17 变更：原"切换 Design-First 模式生成"改为"Step 0.3 嵌入生成"，不切换模式），而不是标 N/A 跳过。
 
 > **2026-08-15 修复 E-P2-4（允许"不适用 + 理由"例外）**：以下场景允许在 Gate H 中标"不适用 + 详细理由"，**而非默认 N/A**：
-> - **纯算法设计文档**（如 `notes/rewrite/.../04-algorithm-X.md`）：无 Rust 实现对应，仅讨论算法 → H.1 标"不适用（纯算法，无 design）"，H.2-H.6 同样标"不适用"
+> - **纯算法设计文档**（如 `rewrite-notes/.../04-algorithm-X.md`）：无 Rust 实现对应，仅讨论算法 → H.1 标"不适用（纯算法，无 design）"，H.2-H.6 同样标"不适用"
 > - **历史/概念文档**（如 Minix3 C 源码导论）：纯知识介绍，无代码 → 全部 6 项可标"不适用"
 > - **判定**：review 文档分类时显式标注 `doc_category: pure_algorithm | historical | conceptual` → 允许部分 Gate H 项标"不适用 + 理由"。**不适用 ≠ 跳过**——必须在 STATE.md 中记录理由（详见 IN_DESIGN 健康度审计）
 
@@ -1717,12 +1717,12 @@ ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 - 两者独立，但都必须在 review 进入 Step 2 前通过
 
 **最小证据要求**：
-- **H.1**: `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md` 或 `ls notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v*.md` 必须命中（本目录版本通配 `.v*.md`，与 Step 0 预检一致；持久化可复用快照，任一版本命中即通过）
+- **H.1**: `ls {tree}/{stage}/.design/{NN}-design.v*.md` 或 `ls {tree}/{stage}/.design/{NN}-design-final.v*.md` 必须命中（本目录版本通配 `.v*.md`，与 Step 0 预检一致；持久化可复用快照，任一版本命中即通过）
 - **H.2**: 一致性矩阵输出 ≥ 5 行 + 一致性百分比 ≥ 80%（Step 1.6.2）
 - **H.3**: Minix3 对齐矩阵输出 ≥ 3 行 + 无 P0 缺失（Step 1.6.3）
 - **H.4**: `rg "design-wrong" scan.md` 无命中（或有命中但已附 design 修复计划）
 - **H.5**：`rg "code Refactor|design Refactor" scan.md` 输出明确区分两类
-- **H.6**（方案 D 新增）：`ls notes/rewrite/{module}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离（grep `rg "P0.*偏离" scan.md` 无命中）
+- **H.6**（方案 D 新增）：`ls {tree}/{stage}/.design/{NN}-outline.v*.md` 命中 + Step 0.5.3 偏离矩阵无 P0 偏离（grep `rg "P0.*偏离" scan.md` 无命中）
 
 **禁止**：
 - ❌ `find . -name "*design*.md"` 等**跨目录**通配符（易误判）——版本通配仅限本目录 `.v*.md`（与 Step 0 预检 4 条 `ls` 一致）
@@ -1742,7 +1742,7 @@ PENDING → IN_PROGRESS → CONVERGED
 **IN_DESIGN 状态判定**：
 - scan.md 中含 `## Review Status: IN_DESIGN`
 - STATE.md 中 `Open P0` 包含 design-missing/wrong
-- IN_DESIGN.md 存在（`.review/{tool}/{module}/IN_DESIGN.md`）
+- IN_DESIGN.md 存在（`.review/{tool}/{stage}/IN_DESIGN.md`）
 
 **收敛条件**（增加 IN_DESIGN 路径）：
 - 标准路径：所有 P0 修复 → CONVERGED
@@ -1841,7 +1841,7 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
    - **CONCERN**：抽样验证一致性 70-90% → 特定维度需重新审查
    - **FAIL**：抽样验证一致性 < 70% 或发现关键遗漏 → 整体重新审查
 
-**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{module}/VERIFY-CHECK.md`; Claude: `.review/claude/{module}/VERIFY-CHECK.md`）。VERIFY-CHECK.md 必须包含"验证局限说明"段，标注验证者（同 agent / 跨 agent）及验证方法（grep 重放 / 语义回忆）。
+**输出**：写入工具对应的 VERIFY-CHECK.md 路径（Trae: `.review/trae/{stage}/VERIFY-CHECK.md`; Claude: `.review/claude/{stage}/VERIFY-CHECK.md`）。VERIFY-CHECK.md 必须包含"验证局限说明"段，标注验证者（同 agent / 跨 agent）及验证方法（grep 重放 / 语义回忆）。
 
 **Multi-Agent 强制规则（NEW 2026-07-16）**：
 
@@ -2018,7 +2018,7 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
    **恢复条件**: design.md 生成并通过 Gate H
    ```
 
-2. **生成 IN_DESIGN.md**（在 `.review/{tool}/{module}/` 下）
+2. **生成 IN_DESIGN.md**（在 `.review/{tool}/{stage}/` 下）
    ```markdown
    # IN_DESIGN.md — Review 中断：等待 design
 
@@ -2121,17 +2121,17 @@ P1 问题如果涉及设计改进，必须在文档 Ch3 添加 TODO 段落描述
 
 | 类别 | 产物 | 位置 | 生命周期 |
 |------|------|------|---------|
-| 脚手架 | scan.md（草稿）| `.review/{tool}/{module}/scans/{doc-stem}-{agent}-scan.md` | 每次重新生成，CONVERGED 后可清理 |
-| 脚手架 | structure.md（review 骨架）| `.review/{tool}/{module}/scans/{doc-stem}-{agent}-structure.md` | 每次重新生成，CONVERGED 后可清理 |
-| 脚手架 | design-structure.md（design 前序）| `.review/{tool}/{module}/scans/{doc-stem}-{agent}-design-structure.md` | 每次重新生成，CONVERGED 后可清理 |
-| 脚手架 | SYMBOLS.md | `.review/{tool}/{module}/scans/{doc-stem}-{agent}-SYMBOLS.md` | 每次重新生成，CONVERGED 后可清理 |
-| 脚手架 | VERIFY-CHECK.md | `.review/{tool}/{module}/VERIFY-CHECK.md` | 每次重新生成，CONVERGED 后可清理 |
-| 脚手架 | IN_DESIGN.md | `.review/{tool}/{module}/IN_DESIGN.md` | design 解决后删除 |
-| **可复用快照** | **outline.md**（文档结构快照）| `notes/rewrite/{module}/{stage}/.design/{NN}-outline.v{N}.md` | **每轮 review 重新评估，保留所有历史版本**（`.v1.md`, `.v2.md`, ...） |
-| **可复用快照** | **outline-review.md**（快照评审记录）| `notes/rewrite/{module}/{stage}/.design/{NN}-outline-review.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
-| **可复用快照** | **design.md**（非 bagging）| `notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
-| **可复用快照** | **design-final.md**（bagging）| `notes/rewrite/{module}/{stage}/.design/{NN}-design-final.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
-| 软链（可选） | 最新版本 | `notes/rewrite/{module}/{stage}/.design/{NN}-design.md` | 指向 `.v{N}.md` 中最大 N |
+| 脚手架 | scan.md（草稿）| `.review/{tool}/{stage}/scans/{doc-stem}-{agent}-scan.md` | 每次重新生成，CONVERGED 后可清理 |
+| 脚手架 | structure.md（review 骨架）| `.review/{tool}/{stage}/scans/{doc-stem}-{agent}-structure.md` | 每次重新生成，CONVERGED 后可清理 |
+| 脚手架 | design-structure.md（design 前序）| `.review/{tool}/{stage}/scans/{doc-stem}-{agent}-design-structure.md` | 每次重新生成，CONVERGED 后可清理 |
+| 脚手架 | SYMBOLS.md | `.review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md` | 每次重新生成，CONVERGED 后可清理 |
+| 脚手架 | VERIFY-CHECK.md | `.review/{tool}/{stage}/VERIFY-CHECK.md` | 每次重新生成，CONVERGED 后可清理 |
+| 脚手架 | IN_DESIGN.md | `.review/{tool}/{stage}/IN_DESIGN.md` | design 解决后删除 |
+| **可复用快照** | **outline.md**（文档结构快照）| `{tree}/{stage}/.design/{NN}-outline.v{N}.md` | **每轮 review 重新评估，保留所有历史版本**（`.v1.md`, `.v2.md`, ...） |
+| **可复用快照** | **outline-review.md**（快照评审记录）| `{tree}/{stage}/.design/{NN}-outline-review.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
+| **可复用快照** | **design.md**（非 bagging）| `{tree}/{stage}/.design/{NN}-design.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
+| **可复用快照** | **design-final.md**（bagging）| `{tree}/{stage}/.design/{NN}-design-final.v{N}.md` | **每轮 review 重新评估，保留所有历史版本** |
+| 软链（可选） | 最新版本 | `{tree}/{stage}/.design/{NN}-design.md` | 指向 `.v{N}.md` 中最大 N |
 
 > **关键区分（v2）**：**可复用快照不是 ground truth**——它们是参考输入，每轮 review 必须独立推导。snapshot.md 仅作"前人理解"参考，新快照必须基于 C 源码 + OS 理论 + Rust 代码**当前状态**独立产出。差异矩阵（v{N} vs v{N+1}）写入 scan.md，便于追踪设计演进。
 >
@@ -2282,8 +2282,8 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" {DOC_FILE} {CODE_FILE}
 
 #### C.5 design.md 强制格式（v2）
 
-> **位置**：`notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md`（**v2 版本化**：每次 review 产出新版本，保留所有历史）
-> **前序产物位置**：`.review/{tool}/{module}/scans/`（脚手架，每次重新生成）
+> **位置**：`{tree}/{stage}/.design/{NN}-design.v{N}.md`（**v2 版本化**：每次 review 产出新版本，保留所有历史）
+> **前序产物位置**：`.review/{tool}/{stage}/scans/`（脚手架，每次重新生成）
 > **软链（可选）**：`{NN}-design.md` → `{NN}-design.v{max}.md`（方便 anchor）
 
 ```markdown
@@ -2293,8 +2293,8 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" {DOC_FILE} {CODE_FILE}
 > **版本**: v{N}（每次 review 重新评估，新版本独立推导）
 > **生成日期**: YYYY-MM-DD
 > **前序快照**: v{N-1}（参考输入，非 ground truth）
-> **位置**: notes/rewrite/{module}/{stage}/.design/{NN}-design.v{N}.md（可复用快照，保留历史）
-> **前序产物**: .review/{tool}/{module}/scans/{doc-stem}-{agent}-design-structure.md → -outline.v{N}.md → -outline-review.v{N}.md
+> **位置**: {tree}/{stage}/.design/{NN}-design.v{N}.md（可复用快照，保留历史）
+> **前序产物**: .review/{tool}/{stage}/scans/{doc-stem}-{agent}-design-structure.md → -outline.v{N}.md → -outline-review.v{N}.md
 > **来源路径**: [A. 从头生成 / C. 从 bagging 产物转化]
 
 ## Ch1. 设计决策（核心抽象）
@@ -2310,7 +2310,7 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" {DOC_FILE} {CODE_FILE}
 |---------------|------------|--------|
 | IN_DESIGN.md 待 design 覆盖概念清单 | 对应 Ch1 设计决策 | 每条概念必须在 Ch1 找到对应决策 |
 | IN_DESIGN.md 当前 review 已发现问题 | 对应 Ch2 语义对齐 | 每个 P0 在 Ch2 标注修复章节 |
-| Gate H H.1（design 快照存在）| 通过 | `ls notes/rewrite/{module}/{stage}/.design/{NN}-design.v*.md` 或 `{NN}-design-final.v*.md` 命中（持久化可复用快照）|
+| Gate H H.1（design 快照存在）| 通过 | `ls {tree}/{stage}/.design/{NN}-design.v*.md` 或 `{NN}-design-final.v*.md` 命中（持久化可复用快照）|
 | Gate H H.2（design ↔ code 一致性 ≥ 80%）| 通过 | Step 1.6.2 矩阵 |
 | Gate H H.3（design ↔ Minix3 对齐）| 通过 | Step 1.6.3 矩阵 |
 
@@ -2358,7 +2358,7 @@ grep -rnE "P0-[0-9]+(-[0-9]+)?" {DOC_FILE} {CODE_FILE}
 ## 三、Review 工具命令
 
 ```bash
-# ===== 根据文档所属模块，替换 {module} 为 vm/pm/vfs/kernel 等 =====
+# ===== 以下 {module} 指 Minix3 模块名（vm/pm/vfs/kernel 等），不是评审状态目录键 {stage} =====
 
 # 1. 验证常量定义
 rg "^#define CONSTANT" minix3/minix/servers/{module}/ -n

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# design-index-update.sh — 自动维护 notes/rewrite/{module}/{stage}/.design/DESIGN-INDEX.md
+# design-index-update.sh — 自动维护 {tree}/{stage}/.design/DESIGN-INDEX.md
 #
 # 用法: design-index-update.sh {stage-dir}
-# 例:   design-index-update.sh notes/rewrite/fork-syscall-rewrite/03-stage-kernel
+# 例:   design-index-update.sh rewrite-notes/01-stage-kernel
 #
 # 功能:
 #   1. 扫描 {stage-dir}/.design/ 下所有 *-design*.md / *-outline*.md
@@ -11,13 +11,25 @@
 
 set -euo pipefail
 
+SCRIPT_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=notes-layout.conf
+source "$SCRIPT_SELF_DIR/notes-layout.conf"
+
 if [[ $# -lt 1 ]]; then
     echo "用法: $0 {stage-dir}" >&2
-    echo "  stage-dir = notes/rewrite/{module}/{stage}" >&2
+    echo "  stage-dir = {tree}/{stage}（tree = ${NOTES_TREES[*]}）" >&2
     exit 1
 fi
 
-STAGE_DIR="$1"
+STAGE_DIR="${1%/}"
+# 旧布局已退役：给的是 notes/... 时报错而不是默默生成一份指错路的索引
+case "$STAGE_DIR" in
+  notes/*)
+    echo "❌ stage-dir 仍写旧布局前缀：$STAGE_DIR" >&2
+    echo "   2026-10-07 notes 迁移后应为 {tree}/{stage}，tree = ${NOTES_TREES[*]}" >&2
+    echo "   旧→新对照见 rewrite-notes/MIGRATION.md 与 migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
+    exit 1 ;;
+esac
 DESIGN_DIR="$STAGE_DIR/.design"
 INDEX_FILE="$DESIGN_DIR/DESIGN-INDEX.md"
 
@@ -26,9 +38,9 @@ if [[ ! -d "$DESIGN_DIR" ]]; then
     exit 1
 fi
 
-# 提取 stage 名（路径最后一段）
+# 提取 stage 名（路径最后一段）与所在树
 STAGE_NAME="$(basename "$STAGE_DIR")"
-MODULE_NAME="$(basename "$(dirname "$STAGE_DIR")")"
+TREE_NAME="$(basename "$(dirname "$STAGE_DIR")")"
 
 # 扫描所有 {NN}-*.md 文件
 DESIGN_FILES=$(ls "$DESIGN_DIR"/*-design*.md 2>/dev/null || true)
@@ -40,7 +52,7 @@ if [[ -z "$DESIGN_FILES" && -z "$OUTLINE_FILES" ]]; then
 fi
 
 {
-    echo "# DESIGN-INDEX.md — $STAGE_NAME Design 元数据索引（NEW 2026-07-16）"
+    echo "# DESIGN-INDEX.md — $TREE_NAME/$STAGE_NAME Design 元数据索引（NEW 2026-07-16）"
     echo ""
     echo "> 自动生成（tools/design-index-update.sh）。Reviewer 跨文档查 design 的统一入口。"
     echo "> 路径: $DESIGN_DIR"

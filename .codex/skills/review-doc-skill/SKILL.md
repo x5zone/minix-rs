@@ -311,8 +311,8 @@ rg "os/(kernel|boot-shim|arch|servers|libs)" {doc}.md | wc -l
 rg "os/os/" {doc}.md  # 必须 0 hits
 
 # 跨文档一致性
-rg "os/kernel/src/" notes/rewrite/{module}/{stage}/01-*.md | wc -l
-rg "os/kernel/src/" notes/rewrite/{module}/{stage}/02-*.md | wc -l
+rg "os/kernel/src/" {tree}/{stage}/01-*.md | wc -l
+rg "os/kernel/src/" {tree}/{stage}/02-*.md | wc -l
 # 同一 stage 内所有 doc 的 `os/` 前缀使用率应一致
 ```
 
@@ -484,7 +484,7 @@ rg "covered in 0[0-9]" os/ -t rust -n
 rg "see 0[0-9]-.+\.md" os/ -t rust -n
 
 # 2. 验证 doc 编号当前状态
-ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+ls {tree}/{stage}/ | rg "^[0-9]+"
 
 # 3. 验证目标 doc 是否存在
 for ref in $(rg "see [0-9]+-.+\.md" os/ -t rust -o); do

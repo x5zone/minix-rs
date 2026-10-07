@@ -133,8 +133,8 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 ## ⛔ Step 0 硬阻断（所有 review 模式强制，NEW 2026-07-16）
 
 > 每次 review 启动时**必须**执行：
-> 1. 4 条 `ls notes/rewrite/{module}/{stage}/.design/{NN}-*.v*.md`（结果写入 scan.md `§Step 0: 预检结果` 段）
-> 2. `tools/design-coverage-check.sh {module}`（自动扫描所有 stage 缺失报告）
+> 1. 4 条 `ls {tree}/{stage}/.design/{NN}-*.v*.md`（结果写入 scan.md `§Step 0: 预检结果` 段）
+> 2. `tools/design-coverage-check.sh {stage}`（自动扫描所有 stage 缺失报告）
 > 3. **缺失判定 + 嵌入生成（2026-07-17）**：`outline.v*.md` 缺失 → Gate H.6 FAIL → **Step 0.3.2 嵌入生成**；`outline-review.v*.md` 缺失 → Gate H.6 FAIL → **Step 0.3.3 嵌入生成**（AI 自审）；`design.v*.md` 缺失 → Gate H.1 FAIL → **Step 0.3.4 嵌入生成**。**不中断 review，不切换模式**（原"阻断 Step 1 + 触发 Design-First"已废除）。
 > 4. 不允许以"已有 CONVERGED 状态"/"incremental review"/"复用其他文档 design"为由跳过（**模式 69 PSMD 触发**）
 > 5. 豁免必须登记在 STATE.md `§豁免列表` 段，**不可泛化**（**模式 71 DOG 触发**）
@@ -143,8 +143,8 @@ Causal chain fabrication (X is wrong or X→Y is technically wrong) → P0 (patt
 
 ## Review Workflow
 1. Always start by declaring scope: target file, mode (doc/code/full), estimated time (optional), **STATE.md status** (see tool-isolated path below)
-2. **Read correct STATE.md path**: Trae IDE → `.review/trae/{module}/STATE.md`; Claude Code Runtime → `.review/claude/{module}/STATE.md`; Codex CLI → `.review/codex/{module}/STATE.md`. These paths are **isolated** — never share STATE/scan/SYMBOLS/structure/VERIFY-CHECK between tools. If the **same tool** has conflicting STATE.md copies, log divergence in scan.md and ask user which is authoritative.
-3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls .design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {module}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一；该段必须含关联代码清单，B4.2 2026-09-18）
+2. **Read correct STATE.md path**: Trae IDE → `.review/trae/{stage}/STATE.md`; Claude Code Runtime → `.review/claude/{stage}/STATE.md`; Codex CLI → `.review/codex/{stage}/STATE.md`. These paths are **isolated** — never share STATE/scan/SYMBOLS/structure/VERIFY-CHECK between tools. If the **same tool** has conflicting STATE.md copies, log divergence in scan.md and ask user which is authoritative.
+3. **Step 0 硬阻断预检（NEW 2026-07-16）**：跑 4 条 `ls .design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`，结果写入 scan.md `§Step 0: 预检结果` 段（Gate 0 锚段 9 个之一；该段必须含关联代码清单，B4.2 2026-09-18）
 4. Execute checks ONE AT A TIME — never batch them mentally
 5. Output a progress checklist showing each check as done/undone
 6. Collect all findings into a review report at the end

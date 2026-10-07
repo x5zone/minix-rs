@@ -2,12 +2,12 @@
 # review-init.sh — Minix-RS Review 初始化助手
 #
 # 用法: review-init.sh {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]
-# 例:   review-init.sh trae notes/rewrite/fork-syscall-rewrite/03-stage-kernel/03-kmain-cstart.md glm
-#       review-init.sh trae notes/rewrite/fork-syscall-rewrite/04-platform-discovery/04-platform-discovery.md kimi --design-policy strict --require-multi-agent
+# 例:   review-init.sh trae rewrite-notes/01-stage-kernel/03-kmain-cstart.md glm
+#       review-init.sh trae rewrite-notes/02-stage-vm/04-vmproc-struct.md kimi --design-policy strict --require-multi-agent
 #
 # 功能:
-#   1. 从 doc-path 自动计算 {module} / {stage} / {doc-stem}
-#   2. mkdir -p 对应工具的标准目录（.review/{tool}/{module}/scans/ 等）
+#   1. 从 doc-path 自动计算 {tree} / {stage} / {doc-stem}
+#   2. mkdir -p 对应工具的标准目录（.review/{tool}/{stage}/scans/ 等）
 #   3. 输出 Derived Paths 表格供 agent 在 Step 0 引用
 #   4. 若 STATE.md 已存在，运行 review-state-validate.py 预检
 #   5. 若 STATE.md 不存在，生成空 STATE.md 骨架
@@ -15,8 +15,8 @@
 #   7. **NEW 2026-07-16**: --require-multi-agent 强制验证 Gate G 必须 multi-agent
 #   8. **NEW 2026-07-16**: --size-adaptive 输出 size-adaptive round 推荐
 #
-# 路径布局（见 improve-v2 §2.1.1）:
-#   .review/trae/{module}/
+# 路径布局（2026-10-07 notes 迁移后：module 层退役，{stage} 顶替它做状态目录键）:
+#   .review/trae/{stage}/
 #       ├── STATE.md
 #       ├── VERIFY-CHECK.md
 #       ├── session-plan.md
@@ -24,16 +24,21 @@
 #           ├── {doc-stem}-{agent}-scan.md
 #           ├── {doc-stem}-{agent}-structure.md
 #           └── {doc-stem}-{agent}-SYMBOLS.md
-#   .review/claude/{module}/
+#   .review/claude/{stage}/
 #       ├── STATE.md
 #       ├── VERIFY-CHECK.md
 #       └── {doc-stem}/{scan,structure,SYMBOLS}.md
-#   .review/codex/{module}/
+#   .review/codex/{stage}/
 #       ├── STATE.md
 #       ├── VERIFY-CHECK.md
 #       └── {doc-stem}/{scan,structure,SYMBOLS}.md
+#   三棵树目录名读自 tools/notes-layout.conf（不在本脚本里写死）。
 
 set -euo pipefail
+
+SCRIPT_DIR_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=notes-layout.conf
+source "$SCRIPT_DIR_SELF/notes-layout.conf"
 
 # ===== 默认值 =====
 DESIGN_POLICY="strict"           # strict | optional | required
@@ -44,7 +49,7 @@ SIZE_ADAPTIVE="false"             # true | false
 if [[ $# -lt 2 ]]; then
     echo "用法: $0 {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]" >&2
     echo "  tool     = trae | claude | codex" >&2
-    echo "  doc-path = 相对项目根的文档路径（如 notes/rewrite/{module}/{stage}/{doc}.md）" >&2
+    echo "  doc-path = 相对项目根的文档路径（如 {tree}/{stage}/{doc}.md，tree = ${NOTES_TREES[*]}）" >&2
     echo "  agent    = AI 标识（Trae: glm/kimi/ds/qwen/seed；Claude 可省略）" >&2
     echo "  --design-policy   = strict（默认；缺失 design 记录 Gate H FAIL，继续由 review 内部 Step 0.3 嵌入生成）" >&2
     echo "                      | optional（缺失 design 仅警告，不阻断；仍须生成本编号快照）" >&2
@@ -112,8 +117,8 @@ if [[ ! -f "$DOC_PATH" ]]; then
     exit 1
 fi
 
-# 期望路径形式: notes/rewrite/{module}/{stage}/{doc-stem}.md
-# 或简化形式: {module}/{stage}/{doc-stem}.md（无 notes/rewrite 前缀）
+# 期望路径形式: {tree}/{stage}/{doc-stem}.md（tree = rewrite-notes | redesign-notes | study-notes）
+# 也接受省略树前缀的写法 {stage}/{doc-stem}.md：脚本按三棵树探测文件真实所在树后补全前缀
 DOC_PATH_NORMALIZED="$DOC_PATH"
 # 去除 ./ 前缀
 DOC_PATH_NORMALIZED="${DOC_PATH_NORMALIZED#./}"
@@ -122,35 +127,40 @@ DOC_PATH_NORMALIZED="${DOC_PATH_NORMALIZED#./}"
 DOC_FILENAME="$(basename "$DOC_PATH_NORMALIZED")"
 DOC_STEM="${DOC_FILENAME%.md}"
 
-# 提取 module 和 stage
-# 策略：若路径含 notes/rewrite/，取其后第一级目录为 module
-if [[ "$DOC_PATH_NORMALIZED" == notes/rewrite/* ]]; then
-    # 形式: notes/rewrite/{module}/{stage}/{doc}.md
-    REMAINING="${DOC_PATH_NORMALIZED#notes/rewrite/}"
-    MODULE="${REMAINING%%/*}"
-    # 去掉 module/ 后剩余
-    REMAINING_AFTER_MODULE="${REMAINING#*/}"
-    # stage 是剩余路径的第一级目录（若存在）
-    if [[ "$REMAINING_AFTER_MODULE" == */* ]]; then
-        STAGE="${REMAINING_AFTER_MODULE%%/*}"
-    else
-        STAGE=""
+# 定位所在树：前缀已写则直接用；未写则逐树探测
+TREE=""
+for _t in "${NOTES_TREES[@]}"; do
+    if [[ "$DOC_PATH_NORMALIZED" == "$_t"/* ]]; then
+        TREE="$_t"
+        break
     fi
-else
-    # 简化形式：尝试用第一级目录作 module
-    if [[ "$DOC_PATH_NORMALIZED" == */* ]]; then
-        MODULE="${DOC_PATH_NORMALIZED%%/*}"
-        REMAINING_AFTER_MODULE="${DOC_PATH_NORMALIZED#*/}"
-        if [[ "$REMAINING_AFTER_MODULE" == */* ]]; then
-            STAGE="${REMAINING_AFTER_MODULE%%/*}"
-        else
-            STAGE=""
+done
+if [[ -z "$TREE" ]]; then
+    for _t in "${NOTES_TREES[@]}"; do
+        if [[ -f "$PROJECT_ROOT/$_t/$DOC_PATH_NORMALIZED" ]]; then
+            TREE="$_t"
+            DOC_PATH_NORMALIZED="$_t/$DOC_PATH_NORMALIZED"
+            break
         fi
-    else
-        MODULE="default"
-        STAGE=""
-    fi
+    done
 fi
+if [[ -z "$TREE" ]]; then
+    echo "❌ 文档不在三棵笔记树内: $DOC_PATH" >&2
+    echo "   期望 {tree}/{stage}/{doc}.md，tree = ${NOTES_TREES[*]}" >&2
+    echo "   旧布局是 notes 伞目录下的「分区/模块/阶段/文档」四节路径，2026-10-07 已退役为「树/阶段/文档」两节，" >&2
+    echo "   旧→新路径对照见 rewrite-notes/MIGRATION.md 与 migrate_notes_plan/pre-migrate-20261007/path-map.tsv" >&2
+    exit 1
+fi
+
+# 提取 stage：树根下第一级目录就是 stage（module 层已退役）
+REL_UNDER_TREE="${DOC_PATH_NORMALIZED#$TREE/}"
+if [[ "$REL_UNDER_TREE" == */* ]]; then
+    STAGE="${REL_UNDER_TREE%%/*}"
+else
+    STAGE=""
+fi
+# 状态目录键：有 stage 用 stage；文档直接躺在树根时用树名，避免落到空目录名
+MODULE="${STAGE:-$TREE}"
 
 # ===== 构造标准路径 =====
 REVIEW_BASE=".review/$TOOL/$MODULE"
@@ -191,12 +201,12 @@ fi
 generate_state_skeleton() {
     local state_file="$1"
     local tool="$2"
-    local module="$3"
+    local stage="$3"
     cat > "$state_file" <<EOF
-# Review State: $module ($tool)
+# Review State: $stage ($tool)
 
 - **Tool**: $tool
-- **Module**: $module
+- **Stage**: $stage
 - **Phase**: init
 - **Last completed phase**: —
 - **Open P0 issues**: 0
@@ -343,8 +353,8 @@ echo ""
 echo "| 变量 | 值 |"
 echo "|------|---|"
 echo "| tool | $TOOL |"
-echo "| module | $MODULE |"
-echo "| stage | ${STAGE:-(none)} |"
+echo "| tree | $TREE |"
+echo "| stage（状态目录键） | $MODULE |"
 echo "| doc-stem | $DOC_STEM |"
 echo "| agent | ${AGENT:-(none)} |"
 echo "| doc-path | $DOC_PATH_NORMALIZED |"
@@ -380,9 +390,9 @@ COVERAGE_SCRIPT="$SCRIPT_DIR/coverage-extract/coverage-extract.py"
 if [[ -f "$COVERAGE_SCRIPT" ]]; then
     echo "=== coverage-extract.py 命令模板（Gate A）==="
     echo ""
-    # 推断 Minix3 module：kernel 或 servers/{module}。
+    # 推断 Minix3 module：kernel 或 servers/{module}。依据 stage 名里的模块词。
     MINIX3_MODULE="kernel"
-    MODULE_HINT="${MODULE} ${STAGE}"
+    MODULE_HINT="$STAGE"
     if [[ "$MODULE_HINT" == *"vm"* ]]; then
         MINIX3_MODULE="vm"
     elif [[ "$MODULE_HINT" == *"pm"* ]]; then

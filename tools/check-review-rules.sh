@@ -144,7 +144,7 @@ rg -q '所有 review 模式必检' prompt/skill/review-process-skill.md \
   || fail "source process skill does not require Gate H for all modes"
 rg -q '9 个 grep 可验锚段' prompt/skill/review-process-skill.md \
   || fail "source process skill has stale Gate 0 anchor count"
-rg -q 'notes/rewrite/\{module\}/\{stage\}/\.design/' prompt/review-rules/review-process.md \
+rg -q '\{tree\}/\{stage\}/\.design/' prompt/review-rules/review-process.md \
   || fail "source process rules do not use .design"
 
 # .claude layer validation (NEW 2026-08-15, meta-review F-B5-F14).

@@ -51,7 +51,7 @@
 - 文档头字段统一名：`Rust 实现`（`Rust 模块` 作为兼容别名接受，不强制立刻改存量）。
 - 门禁形态：不新增 Gate 字母；把"关联代码清单"并入 Gate 0 已有的 `§Step 0: 预检结果` 段，把"代码维度检查"作为新 Step 3.6 的产物 + `gate-evidence-code` 证据块。
 - 文风 lint 对存量：只报告、不阻断；对新增/修改行（`--diff`）：阻断。
-- 演练文档：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`。
+- 演练文档：`rewrite-notes/02-stage-vm/15-ipc-dispatch.md`。
 
 第二轮（工作流 D/E/F）：
 
@@ -150,7 +150,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 ### 0.7 计划生命周期
 
-- **定位**：本文件是执行期工作文件，不是长期规则。正式文档（`CLAUDE.md`、`AGENTS.md`、`prompt/README.md`、`notes/rewrite/` 下的文档）不得引用它——这与 Hidden Folder Convention 禁止正式文档引用中间产物的精神一致。
+- **定位**：本文件是执行期工作文件，不是长期规则。正式文档（`CLAUDE.md`、`AGENTS.md`、`prompt/README.md`、`rewrite-notes/` 下的文档）不得引用它——这与 Hidden Folder Convention 禁止正式文档引用中间产物的精神一致。
 - **完成判定**：执行记录的任务状态全部为已完成（或有明确的移出范围裁定），度量对比表填齐，遗留问题逐条登记去向（修订 OQ 表 / `edge_todo.md` / `.review/BACKLOG.md`）。
 - **完成后去向**：任务全部清空后，如果本文件仍在被使用（后续改进需求继续挂在这里），就把它收敛成一份持续维护的服务层候选池——继续留在 `prompt/` 目录内，可以改名；如果不再使用，直接删除。服务层的记录只属于 `prompt/`，不得迁往 `notes/` 目录。无论哪种去向，都不允许留下一份没人维护、继续腐化的计划文件。
 - **中途停止**：保留本文件，并在执行记录写清"停在哪一个任务、下一步是什么、被什么阻塞"。恢复执行前先重跑 C2 的三个脚本，确认基线没有被其他并行会话改动。
@@ -210,7 +210,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 用户的两个观察：
 
-1. **文档质量远低于出版物和一流技术博客**。`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/01~05` 是人工审阅过的文档，`02-stage-vm` 也有一部分人工审阅过；但整体仍然达不到"可以直接发出去的教程/博客"水平，未审阅的文档更需要逐字句纠正。
+1. **文档质量远低于出版物和一流技术博客**。`rewrite-notes/01-stage-kernel/01~05` 是人工审阅过的文档，`02-stage-vm` 也有一部分人工审阅过；但整体仍然达不到"可以直接发出去的教程/博客"水平，未审阅的文档更需要逐字句纠正。
 2. **`full-review` 的使用预期没有被满足**。用户常用 `full-review` 的目的，是"某个文档和它关联的 Rust 代码一块 review"；实际执行时，代码侧是否被审、审到什么程度，取决于执行 AI 的临场判断，没有硬性产物证据。
 
 ### 1.2 文档质量问题的根因（不是写作能力问题，是流程的奖励函数问题）
@@ -318,7 +318,7 @@ note: {可选：环境限制 / N/A 理由 / 工具缺口}
 
 ### A0. 判定标准（先把"什么算违规"定死）
 
-**正式文档**指 `notes/rewrite/**/*.md` 下编号文档（如 `01-boot-shim-bootstrap.md`、`15-ipc-dispatch.md`）。以下内容禁止进入正式文档正文：
+**正式文档**指 `rewrite-notes/**/*.md` 下编号文档（如 `01-boot-shim-bootstrap.md`、`15-ipc-dispatch.md`）。以下内容禁止进入正式文档正文：
 
 | 类别 | 例子 | 为什么禁止 |
 |---|---|---|
@@ -413,7 +413,7 @@ tools/doc-style-lint.sh --self-test          # 内置正/反例自测，exit 0 =
 
 ```bash
 tools/doc-style-lint.sh --self-test                       # 期望 exit 0
-tools/doc-style-lint.sh notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md
+tools/doc-style-lint.sh rewrite-notes/01-stage-kernel/15-clock-timer.md
 # 期望：报告出 SL-5（旧文档误标）等命中，exit 1
 tools/doc-style-lint.sh --diff                            # 在干净工作区期望 exit 0
 # 手工制造一处违规（改一行加 "（2026-01-01 修复）"）后重跑 --diff，期望 exit 1 且只报该行；验完还原
@@ -444,7 +444,7 @@ rg -n "doc-style-lint" .claude/rules/fix-guard.md prompt/review-rules/review-pro
 **任务**：实现完 A2 后，跑一次全量扫描，把统计结果追加到本文件 A4 末尾（允许修改本文件），并把"编辑战役"登记为 backlog。
 
 ```bash
-tools/doc-style-lint.sh --dir notes/rewrite/fork-syscall-rewrite > /tmp/doc-style-report.txt
+tools/doc-style-lint.sh --dir rewrite-notes > /tmp/doc-style-report.txt
 wc -l /tmp/doc-style-report.txt
 # 按文件聚合 top 10：
 cut -d: -f1 /tmp/doc-style-report.txt | sort | uniq -c | sort -rn | head -10
@@ -460,7 +460,7 @@ cut -d: -f1 /tmp/doc-style-report.txt | sort | uniq -c | sort -rn | head -10
 - 战役执行方式（届时候选）：每篇文档先跑 lint 出清单 → 按"事实信息移回 .review/todo、正文改写"处理 → 出修订版
 ```
 
-**验收**：本节有统计结果；不修改任何 `notes/rewrite/` 正文。
+**验收**：本节有统计结果；不修改任何 `rewrite-notes/` 正文。
 
 ### A5. 工作流 A 的验收汇总
 
@@ -550,9 +550,9 @@ tools/doc-code-map.sh DOC_PATH [--check] [--format=md|plain]
 **验收**：
 
 ```bash
-tools/doc-code-map.sh notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md
+tools/doc-code-map.sh rewrite-notes/02-stage-vm/15-ipc-dispatch.md
 # 期望：表格包含 dispatcher.rs / transport.rs / vm_server.rs 等，全部存在
-tools/doc-code-map.sh notes/rewrite/fork-syscall-rewrite/01-stage-kernel/05-clock-interrupt-init.md
+tools/doc-code-map.sh rewrite-notes/01-stage-kernel/05-clock-interrupt-init.md
 # 期望：输出"无头部字段"，若正文引用了 .rs 也列出来；用于暴露存量缺口
 # 构造一条不存在的路径，验证 --check 正确 exit 1
 ```
@@ -704,7 +704,7 @@ done
 
 1. A5、B6 的验收项全部打勾。
 2. 演练（B5）产物可查，且 issue 清单同时含文档与代码两侧内容（或明确的无发现声明）。
-3. 未修改任何 `notes/rewrite/` 存量正文（A4 统计除外），未修改 `minix3/`。
+3. 未修改任何 `rewrite-notes/` 存量正文（A4 统计除外），未修改 `minix3/`。
 
 第二轮（工作流 D/E/F）额外：
 
@@ -734,7 +734,7 @@ done
 
 1. `prompt/review-rules/review-process.md` 的 Step -0.5 增加第 5 条"QEMU 冒烟（条件触发）"：
    - 触发条件**直接复用 CI 路径清单**（`.github/workflows/qemu-tests.yml` 的 push/PR paths）：`os/kernel/**`、`os/arch/**`、`os/plat/**`、`os/libs/{minix-types,minix-boot,minix-elf,minix-platform}/**`、`os/boot-shim/**`、`os/qemu-tests/**` 中的非测试代码，或文档声称的行为依赖真实硬件路径（启动链/中断/分页/BKL）。不要自造一份更窄的目录列表。
-   - 执行：优先 `os/qemu-tests/run_qemu.sh` 跑受影响单例；无法单例时跑 `os/qemu-tests/run_all.sh`。输出尾部保存到 `.review/{tool}/{module}/{doc-stem}/logs/qemu-{YYYYMMDD}.log`。
+   - 执行：优先 `os/qemu-tests/run_qemu.sh` 跑受影响单例；无法单例时跑 `os/qemu-tests/run_all.sh`。输出尾部保存到 `.review/{tool}/{stage}/{doc-stem}/logs/qemu-{YYYYMMDD}.log`。
    - scan.md 写 `gate-evidence-qemu` 块：命令 / exit 码 / PASS 计数 / log 路径。
 2. N/A 规则：纯文档改动或只碰 `#[cfg(test)]` → 写 `gate-evidence-qemu: N/A + 一句理由`；环境缺 QEMU/固件时不允许静默 N/A，必须写"环境缺失 + 未验证项清单"并按 P1 登记（沿用既有的"工具物理不可用 → PARTIAL"原则）。
 3. `prompt/review-rules/review-cmds.md` §二 强制门追加引用；`prompt/skill/cmds/full-review/SKILL.md` 同步摘要。
@@ -794,7 +794,7 @@ tools/unsafe-audit.sh --report | tail -5          # 统计数与基线一致
 **验收**：
 
 ```bash
-python3 tools/coverage-extract/coverage-extract.py sched notes/rewrite/fork-syscall-rewrite/06-stage-sched \
+python3 tools/coverage-extract/coverage-extract.py sched rewrite-notes/06-stage-sched \
   --rust-dir os --c-dir minix3/minix/servers/sched --c-dir minix3/minix/kernel \
   --doc-file 12-kernel-interface.md --output /tmp/SYMBOLS-multi.md
 rg -c "kernel/" /tmp/SYMBOLS-multi.md      # 非零，证明 kernel 域被纳入
@@ -863,7 +863,7 @@ tools/review-gate-check.sh codex fork-syscall-rewrite 12-kernel-interface | tail
 
 ```bash
 tools/anchor-resolve.sh --self-test
-tools/anchor-resolve.sh --check notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md | tail -5
+tools/anchor-resolve.sh --check rewrite-notes/01-stage-kernel/15-clock-timer.md | tail -5
 # 期望：0 定义条数为 0；多定义条目已补限定或登记为待补
 rg -n "卫生项" prompt/review-rules/review-process.md        # Step 7.1 含卫生项条款
 # 迁移统计写入执行记录：旧行号锚点数 → 新符号锚点数 → 无法解析清单 → 首轮卫生项计数
@@ -875,7 +875,7 @@ rg -n "卫生项" prompt/review-rules/review-process.md        # Step 7.1 含卫
 
 **任务**：选一篇内核代码文档（建议 `01-stage-kernel/13-syscall-dispatch.md` 或 `01-boot-shim-bootstrap.md`）跑一轮修订后的 review，验证：QEMU 冒烟（或环境缺失声明）、unsafe 报告与基线差值、coverage 多域、锚点解析（符号锚点 0 定义）、Gate 状态表引用 `GATE-CHECK` 结论行。
 
-**验收**：5 项证据块可指认，产物写 `.review/{tool}/{module}/{doc-stem}/`；结论追加到本文件"执行记录"。
+**验收**：5 项证据块可指认，产物写 `.review/{tool}/{stage}/{doc-stem}/`；结论追加到本文件"执行记录"。
 
 ---
 
@@ -1179,7 +1179,7 @@ rg -n "非法态封堵|invalid states" prompt/review-rules/review-code-excellenc
 **验收**：
 
 ```bash
-tools/doc-snippet-extract.sh notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md | head
+tools/doc-snippet-extract.sh rewrite-notes/02-stage-vm/15-ipc-dispatch.md | head
 # 对抽取出的块逐块分类并出表；至少修 1 处未标注的反模式或漂移示例
 ```
 
@@ -1208,14 +1208,14 @@ tools/doc-snippet-extract.sh notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-i
 
 ### I1. 18-stage 命令契约表 Requires 回填（P1-1）
 
-**现状证据**：`notes/rewrite/fork-syscall-rewrite/18-stage-commands/todo.md:15,44-60`——命令契约表缺 Requires 列，读者无从知道实现一个命令缺哪个 `minix-sys` 函数；模板与示例已写入 `18-stage-commands/99-global-concepts.md` §3，逐命令回填待做。
+**现状证据**：`rewrite-notes/18-stage-commands/todo.md:15,44-60`——命令契约表缺 Requires 列，读者无从知道实现一个命令缺哪个 `minix-sys` 函数；模板与示例已写入 `18-stage-commands/99-global-concepts.md` §3，逐命令回填待做。
 
 **任务**：按 99 §3 模板逐命令回填 Requires；跨文档统计同一 API 的消费者数量，作为 14-stage-runtime 补齐顺序的依据。
 
 **验收**：
 
 ```bash
-rg -c "Requires" notes/rewrite/fork-syscall-rewrite/18-stage-commands/06-file-ops.md
+rg -c "Requires" rewrite-notes/18-stage-commands/06-file-ops.md
 # 各篇计数与 §5.2 命令归属表的命令数一致；跨文档 API 消费统计写入 18-stage todo
 ```
 
@@ -1377,13 +1377,13 @@ rg -c "Requires" notes/rewrite/fork-syscall-rewrite/18-stage-commands/06-file-op
 | 架构文档 | `os/README.md` + `os/arch/README.md` + `os/libs/*/README.md` | 架构总览/依赖图/设计理由（G3 漂移检查对象） |
 | CI | `.github/workflows/vm-tests.yml` 等 | G2 要把 clippy/doc 检查扩到全 workspace |
 | 集成测试 | `os/qemu-tests/run_all.sh` / `run_qemu.sh` | QEMU 冒烟门（D1）；PASS 标记 `### TEST_RESULT: PASS <name> ###` |
-| 正式文档 | `notes/rewrite/fork-syscall-rewrite/{stage}/{NN}-*.md` | 被审查对象；本轮不改存量正文 |
-| 状态目录 | `.review/{tool}/{module}/` | review 产物（scan/STATE/SYMBOLS/...）；D1 的 qemu log 放 `{doc-stem}/logs/` |
+| 正式文档 | `rewrite-notes/{stage}/{NN}-*.md` | 被审查对象；本轮不改存量正文 |
+| 状态目录 | `.review/{tool}/{stage}/` | review 产物（scan/STATE/SYMBOLS/...）；D1 的 qemu log 放 `{doc-stem}/logs/` |
 
 ## 附录 2：本次诊断的证据与统计命令（供执行者复核）
 
 ```bash
-cd notes/rewrite/fork-syscall-rewrite
+cd rewrite-notes
 
 # 1) review 编号统计（正式编号文档，排除 *todo*/checklist/smp_* 等过程文件；本口径只数 Vx-Py / Px-y / FIX- / R- 四类）
 for stage in 01-stage-kernel 02-stage-vm; do
@@ -1452,13 +1452,13 @@ rg -c "//.*[\x{4e00}-\x{9fff}]" os --glob '*.rs' | awk -F: '{s+=$2} END {print s
 
 ```bash
 # 11) 锚点形态普查：行号锚点 vs 符号锚点（D5 迁移基线；口径按本篇文档调整）
-rg -o "\.rs:[0-9]+" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/[0-9][0-9]-*.md | wc -l
-rg -o "\.rs:(fn|struct|enum|trait|const) " notes/rewrite/fork-syscall-rewrite/01-stage-kernel/[0-9][0-9]-*.md | wc -l
+rg -o "\.rs:[0-9]+" rewrite-notes/01-stage-kernel/[0-9][0-9]-*.md | wc -l
+rg -o "\.rs:(fn|struct|enum|trait|const) " rewrite-notes/01-stage-kernel/[0-9][0-9]-*.md | wc -l
 
 # 12) 文档 Rust 代码块普查（H3 基线）
-rg -c '^```rust' notes/rewrite/fork-syscall-rewrite/*/[0-9][0-9]-*.md | awk -F: '{s+=$2} END {print s}'
+rg -c '^```rust' rewrite-notes/*/[0-9][0-9]-*.md | awk -F: '{s+=$2} END {print s}'
 
-# 13) 复述结论档案普查（H1 基线；structure.md 在 .review/{tool}/{module}/{doc-stem}/ 或 scans/ 下）
+# 13) 复述结论档案普查（H1 基线；structure.md 在 .review/{tool}/{stage}/{doc-stem}/ 或 scans/ 下）
 rg -l "裸概念复述" .review/codex/*/*/structure.md 2>/dev/null | wc -l
 ```
 
@@ -1474,7 +1474,7 @@ rg -l "裸概念复述" .review/codex/*/*/structure.md 2>/dev/null | wc -l
 
 | 术语 | 本计划中的含义 |
 |---|---|
-| 正式文档 | `notes/rewrite/**/{NN}-*.md` 编号文档（被审对象、面向读者） |
+| 正式文档 | `rewrite-notes/**/{NN}-*.md` 编号文档（被审对象、面向读者） |
 | 过程痕迹 | review 编号/日期/修复史/写作策略元注释/流程工具术语 |
 | 关联代码 | 文档头部字段 + §3/§4 引用的 `.rs` 文件 + §5 测试文件 |
 | 增量门 | 只检查新增/修改行（`lint --diff`），不检查存量 |
@@ -1591,7 +1591,7 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 
 **2026-09-18 执行（2026-09-18 复核版——口径修正：仅正式编号文档，排除 todo/checklist/.review/.design/draft/archive；复核前的 1,524 口径含 .review/scans 过程文件，作废）**：
 
-- 复算命令：`tools/doc-style-lint.sh $(find notes/rewrite -name '[0-9][0-9]-*.md' -not -path '*/.design/*' -not -path '*/.review/*' -not -path '*/archive*' -not -path '*/draft/*' | grep -v todo | grep -v checklist | sort)`
+- 复算命令：`tools/doc-style-lint.sh $(find rewrite-notes -name '[0-9][0-9]-*.md' -not -path '*/.design/*' -not -path '*/.review/*' -not -path '*/archive*' -not -path '*/draft/*' | grep -v todo | grep -v checklist | sort)`
 - 总命中：**1,452**（SL-1=128、SL-2=27、SL-3=351、SL-4=754、SL-5=90、SL-6=4、SL-7=98），398 篇文档
 - 战役启动条件：A/B 与 H 批落地（✅ 本轮完成），抽样样章达到"教科书级"标准（H4：复述通过 + §4.1-4.5 至少 B），之后由用户决定是否启动 style-fix 逐文档战役
 - 战役执行方式（届时候选）：每篇文档先跑 lint 出清单 → 按"事实信息移回 .review/todo、正文改写"处理 → 出修订版
@@ -1606,11 +1606,11 @@ rg -n "84 个|81 个" prompt/ AGENTS.md .claude/skills/review-scan/checks/ | hea
 
 
 
-**2026-09-18 执行（tools/anchor-migrate.sh --write notes/rewrite）**：
+**2026-09-18 执行（tools/anchor-migrate.sh --write rewrite-notes）**：
 - 旧行号锚点总数：15,821（460 篇编号文档）；其中唯一可机械定位：**4,701 处已转为符号锚点**（316 个文件；迁移前后行数零变化、反引号数守恒、幂等复跑 convertible=0）
 - 裸文件名重名（如 kernel/priv.h vs include/minix/priv.h）：唯一性守卫拦截，不自动迁移
 - 无法机械解析：正式文档口径 7,401 处（唯一 token 6,602）→ 入库清单 `tools/anchor-unresolved-baseline.txt`（原 .review/ 版废弃），按卫生项批量清理
-- 迁移后符号锚点存量：全 notes/rewrite 1,667 处显式符号锚点（`path:fn/struct/...`）；校验工具 `tools/anchor-resolve.sh --check`（自测全过；2026-09-18 复核版修复四处误报类：struct/trait 继承冒号边界、C struct 分支、裸文件名 IDX 回退、抽取尾部垃圾——正式文档口径 5,888 锚点 resolved=4,982 / zero-def=307（真实漂移）/ multi-def=599）
+- 迁移后符号锚点存量：全 rewrite-notes 1,667 处显式符号锚点（`path:fn/struct/...`）；校验工具 `tools/anchor-resolve.sh --check`（自测全过；2026-09-18 复核版修复四处误报类：struct/trait 继承冒号边界、C struct 分支、裸文件名 IDX 回退、抽取尾部垃圾——正式文档口径 5,888 锚点 resolved=4,982 / zero-def=307（真实漂移）/ multi-def=599）
 - **S1 迁移语义风险（2026-09-18 复核版新增）**：L 后缀锚点是"向上就近定义"启发式产物，旧行号本身漂移时解析出的符号可能不是句子讨论的符号（正式文档 L 后缀 1,142 处，其中句意可疑 868 处，清单 `tools/anchor-suspect-baseline.txt`）——复核前不得当权威引用；Step 1.0 已加告警条款
 - 首轮卫生项计数：残留手工行号锚点 10,018 处（候选池：--stats-only 可随时重测），按 D5 卫生项条款处理——不进 P1/P2 计数、不进 weighted_new、不参与收敛判定
 

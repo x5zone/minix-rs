@@ -197,7 +197,7 @@ description: Minix-RS Review 常见错误模式。包含 §0 P0 必检清单和 
 
 **验证命令**：
 ```bash
-DIR="notes/rewrite/{module}/"
+DIR="{tree}/"
 rg "CONSTANT\s*=" "$DIR" --type md -n       # 常量是否多处定义
 rg "struct struct_name" "$DIR" --type md -n  # 结构体是否多处描述
 rg "CALL_NUMBER" "$DIR" --type md -n         # IPC 调用号是否一致
@@ -904,7 +904,7 @@ grep -nE "旧版|最初|后来|我们改成|已实现|待实现|未完成|TODO|F
 
 **检查命令**：
 ```bash
-rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" notes/rewrite/{module}/{stage}/{doc}.md
+rg "与 C .* 步的差异说明|步骤数差异|未实现步骤" {tree}/{stage}/{doc}.md
 ```
 
 **与模式 11/60 区分**：
@@ -962,13 +962,13 @@ static BOOT_PT_END: AtomicU64 = AtomicU64::new(0);
 **检查命令**：
 ```bash
 # Doc-side 静态扫描
-rg "static mut" notes/rewrite/{module}/{stage}/{doc}.md --type md
+rg "static mut" {tree}/{stage}/{doc}.md --type md
 
 # Rust-side 实际状态（应 0 hits）
 rg "static mut" os/ -t rust --type-add 'rust:*.rs'
 
 # 路径一致性（doc 写 path1 vs 实际 path2）
-rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" notes/rewrite/{module}/{stage}/{doc}.md
+rg "arch/src/(pt_alloc|paging\.rs|paging_ext)" {tree}/{stage}/{doc}.md
 find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.rs"
 ```
 
@@ -1026,15 +1026,15 @@ find os/arch/src -name "pt_alloc.rs" -o -name "paging.rs" -o -name "paging_ext.r
 ```bash
 # 路径约定检查（原 Step 1.0c；D5 收编后路径约定职责在 review-doc-checklist §2.4c，模式 74）
 rg "kernel/src/|boot-shim/src/|arch/src/|servers/vm/|servers/pm/|servers/vfs/|servers/rs/" \
-    notes/rewrite/{module}/{stage}/{doc}.md
+    {tree}/{stage}/{doc}.md
 # 应仅匹配 minix3/... 路径或 0 hits
 
 # 反向验证：os/ 前缀正确性
-rg "os/(kernel|boot-shim|arch|servers|libs)" notes/rewrite/{module}/{stage}/{doc}.md | wc -l
+rg "os/(kernel|boot-shim|arch|servers|libs)" {tree}/{stage}/{doc}.md | wc -l
 # 应与该 doc 的 Rust 路径总数接近
 
 # 双重前缀检查
-rg "os/os/" notes/rewrite/{module}/{stage}/{doc}.md
+rg "os/os/" {tree}/{stage}/{doc}.md
 # 必须 0 hits
 ```
 
@@ -1143,7 +1143,7 @@ wc -l os/libs/minix-platform/src/device_tree.rs  # 当前实际行数
 rg "covered in 0[0-9]|see 0[0-9]-.+\.md" os/ -t rust -n
 
 # 2. 验证当前 doc 编号是否一致
-ls notes/rewrite/{module}/{stage}/ | rg "^[0-9]+"
+ls {tree}/{stage}/ | rg "^[0-9]+"
 
 # 3. 对每个引用，验证是否指向有效 doc
 for ref in $(rg "covered in 0[0-9]" os/ -t rust -o); do

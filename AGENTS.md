@@ -16,12 +16,19 @@ Minix3 kernel modules rewritten in Rust (x86-64, no_std). Not a translation — 
 minix3/              — original Minix3 C source (ground truth, do NOT modify)
 os/servers/vm/       — VM server Rust rewrite
 os/libs/minix-types/ — shared IPC types, constants, codec traits
-notes/rewrite/       — documentation (one .md per C source concept)
+rewrite-notes/       — active rewrite docs: rewrite-notes/{stage}/{doc}.md (one .md per C concept)
+redesign-notes/      — future-direction exploration docs (activated once rewrite stabilizes)
+study-notes/         — early Minix3 learning notes (AI generated, NOT a fact baseline)
+book/                — mdBook output (extracted from rewrite-notes later)
 prompt/              — review rules, skill definitions (source of truth for .claude/ + .trae/ + .codex/)
 .claude/             — Claude Code runtime: rules + skills (derived from prompt/)
 .trae/               — Trae IDE skills (derived from prompt/)
 .codex/              — Codex skills (derived from prompt/skill/ + .claude/skills/)
 ```
+
+三棵笔记树于 2026-10-07 取代了旧的 `notes/{rewrite,study,redesign}` 伞目录，同时剥掉模块层
+`notes/rewrite/fork-syscall-rewrite/`：规范路径只剩两节（`rewrite-notes/01-stage-kernel/16-smp.md`）。
+旧→新对照见 `rewrite-notes/MIGRATION.md` 与 `migrate_notes_plan/pre-migrate-20261007/path-map.tsv`。
 
 **Hidden Folder Convention（NEW 2026-07-31）**：`.design/` 和 `tmp_design_and_todo/` 文件夹视为中间产物，正式文档绝不引用（引用即 P0-process-violation）。正式 doc 引用应使用绝对路径到 doc、代码、C 源。
 
@@ -40,10 +47,10 @@ prompt/              — review rules, skill definitions (source of truth for .c
 > **⛔ 开始任何 review 前**：先读 `CLAUDE.md` + `.claude/rules/review-core.md` + `.claude/rules/review-process.md` + `.claude/rules/fix-guard.md`。这些规则文件同时约束 Claude Code / Trae / Codex 三端，内容以 `.claude/rules/` 为准。
 
 1. **声明 scope**：目标文件、模式（doc/code/full）、STATE.md 状态
-   - State 路径：`.review/trae/{module}/STATE.md`（Trae IDE）、`.review/claude/{module}/STATE.md`（Claude Code）、`.review/codex/{module}/STATE.md`（Codex CLI），三工具隔离，不共享中间产物。Codex 单 session 产物放在 `.review/codex/{module}/{doc-stem}/`，不使用 Trae 的 bagging 布局
-2. **Step 0 硬阻断预检**（所有 review 模式强制）：跑 4 条 `ls notes/rewrite/{module}/{stage}/.design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {module}`；`outline.v*.md` / `outline-review.v*.md` / `design.v*.md` 缺失 → Gate H.6/H.1 FAIL → Step 0.3 嵌入生成（不中断 review，不标 N/A）。缺失却标 CONVERGED → P0-process-violation（模式 69 PSMD）
+   - State 路径：`.review/trae/{stage}/STATE.md`（Trae IDE）、`.review/claude/{stage}/STATE.md`（Claude Code）、`.review/codex/{stage}/STATE.md`（Codex CLI），三工具隔离，不共享中间产物。Codex 单 session 产物放在 `.review/codex/{stage}/{doc-stem}/`，不使用 Trae 的 bagging 布局
+2. **Step 0 硬阻断预检**（所有 review 模式强制）：跑 4 条 `ls {tree}/{stage}/.design/{NN}-*.v*.md` + `tools/design-coverage-check.sh {stage}`；`outline.v*.md` / `outline-review.v*.md` / `design.v*.md` 缺失 → Gate H.6/H.1 FAIL → Step 0.3 嵌入生成（不中断 review，不标 N/A）。缺失却标 CONVERGED → P0-process-violation（模式 69 PSMD）
 3. **Blocker Gates**（0/A/B/C/D/D-6/E/G/H）：每个 Gate 必须附实际命令 + 输出证据（`gate-evidence-{X}` 块）。Gate 失败 → scan.md 标 DRAFT，STATE.md 不更新
- 4. **产出**：scan.md（单文件汇总，含 Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List）+ structure.md（doc review，12 节骨架）+ SYMBOLS.md（覆盖率枚举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED），默认写入 `.review/codex/{module}/{doc-stem}/`
+ 4. **产出**：scan.md（单文件汇总，含 Skill Invocation Log / Blocker Gates 状态 / Step 0 预检结果 / Issue List）+ structure.md（doc review，12 节骨架）+ SYMBOLS.md（覆盖率枚举）+ VERIFY-CHECK.md（独立验证，consistency ≥ 90% 才可 CONVERGED），默认写入 `.review/codex/{stage}/{doc-stem}/`
 5. **修复原则**：P0 全部修完才可 CONVERGED；doc 与 code 保持同步；遵守 fix-guard.md（修复前读目标行 ±5 行、grep 确认、单条修复、写 fix-status）
 6. **收敛停止规则**（Step 7.1）：≥5 轮强制交付 / 连续两轮新 P1 ≤ 1 视为收敛 / 成本>80% 而新发现<20% 停止 / 首次 review 0 P0/P1/P2 → 触发漏检自检（随机抽 3 项重跑，仍 0 发现才交付）
 7. **每次 review 必须回答 Step 5.7 Rule Discovery**（是否发现新模式）——规则集自演进机制
@@ -54,7 +61,7 @@ prompt/              — review rules, skill definitions (source of truth for .c
 
 | Skill | 文件 | When to use |
 |-------|------|-------------|
-| review-scan | (file: .codex/skills/review-scan/SKILL.md) | 编排器：对 notes/rewrite/ 目录做全量 review（coverage + doc + code + patterns + excellence），写 review report + 收敛状态。用户说 "review/scan/check 一个文档目录" 时用 |
+| review-scan | (file: .codex/skills/review-scan/SKILL.md) | 编排器：对 rewrite-notes/ 目录做全量 review（coverage + doc + code + patterns + excellence），写 review report + 收敛状态。用户说 "review/scan/check 一个文档目录" 时用 |
 | review-process-skill | (file: .codex/skills/review-process-skill/SKILL.md) | Review 执行流程：Step 0-7、Blocker Gates、中间产物格式。进入 review 执行阶段时用 |
 | review-core-semantics-skill | (file: .codex/skills/review-core-semantics-skill/SKILL.md) | 核心语义定义 + 行为契约表模板（8 字段）。Step 2 Diff Extraction 识别 Top 5 语义差异时用 |
 | review-doc-skill | (file: .codex/skills/review-doc-skill/SKILL.md) | 文档 Review 检查清单（Ch1 骨架 / Claims-Evidence / 概念准确性 / 文档-代码一致性等）。检查 .md 文档质量时用 |
