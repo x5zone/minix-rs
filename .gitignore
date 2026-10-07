@@ -105,3 +105,6 @@ os/.dockercargo/
 
 # 目标③ aarch64 picolibc 免 root vendor 解包位（tools/vendor-atf-toolchain.sh 产物，可再生）
 tools/vendor/
+
+# 工具自测的临时夹具目录（跑自测时生成；不依赖 trap 清理，此处兜底避免污染工作树）
+tools/.*-selftest/

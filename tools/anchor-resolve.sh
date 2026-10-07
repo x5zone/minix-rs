@@ -281,6 +281,7 @@ EOF
   fi
   printf '%s' "$out4" | grep -q "pipe_suspend" || { echo "SELF-TEST FAIL: 夹具锚点未被抽取" >&2; exit 1; }
 
+rm -rf "$ft"   # 显式清理：下方主流程另有 trap ... EXIT 会覆盖自测里设的 trap
 echo "SELF-TEST PASS（resolved=5 含 fenced 排除, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0; 另含跨行签名识别用例）"
   trap - EXIT
 }
