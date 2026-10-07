@@ -79,7 +79,7 @@ tmp/                 — 会话产物与取证，整域不入库（evidence/ log
 
 ## 任务命令与技能
 
-任务一律走 6 个命令入口（规范源 `prompt/review-rules/review-cmds.md`）：`full-review`、`style-fix`、`code-excellence`、`test-audit`、`todo-fix`、`style-bible`。旧 Profile A–P / R / AG 保留为别名，对账表见该文件 §八。**通用强制门任何命令都不可裁剪**：锚点纪律门、测试名对账门、文风门、translate 防线、fix-guard、文档-代码同步。
+任务一律先走**决策树**再落命令：`prompt/review-rules/review-cmds.md` §一b 给「任务性质 → 命令 → 技能」的路由树（新会话第一眼该看它，别先看名字最像的技能）。6 个命令入口：`full-review`、`style-fix`、`code-excellence`、`test-audit`、`todo-fix`、`style-bible`。旧 Profile A–P / R / AG 保留为别名，对账表见该文件 §八。**通用强制门任何命令都不可裁剪**：锚点纪律门、测试名对账门、文风门、translate 防线、fix-guard、文档-代码同步。
 
 技能清单（10 个）与调用时机见 `.codex/skills/`、`.claude/skills/`、`.trae/skills/`；源在 `prompt/skill/`。
 

@@ -1,6 +1,6 @@
 ---
 name: review-coverage-skill
-description: Minix-RS 覆盖率穷举检查。使用 tools/coverage-extract/ 脚本生成 SYMBOLS.md 骨架，AI 补充语义判断（Rust对应关系、架构演进标记、语义归属、行为契约、测试覆盖）。解决覆盖率不足和跨轮次累积问题。当 Agent 需要检查 C 源码覆盖完整性、Rust 实现完整性、或生成/更新覆盖率清单时调用此 Skill。
+description: Minix-RS 覆盖率穷举检查。使用 tools/coverage-extract/ 脚本生成 SYMBOLS.md 骨架，AI 补充语义判断（Rust对应关系、架构演进标记、语义归属、行为契约、测试覆盖）。解决覆盖率不足和跨轮次累积问题。当 Agent 需要检查 C 源码覆盖完整性、Rust 实现完整性、或生成/更新覆盖率清单时调用此 Skill。 用在需要穷举核对 C 源码符号与 Rust 实现覆盖关系之时（产出 SYMBOLS.md）。
 ---
 
 # Minix-RS 覆盖率穷举检查

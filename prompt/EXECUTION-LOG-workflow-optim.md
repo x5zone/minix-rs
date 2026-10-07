@@ -259,7 +259,7 @@ optim 文档 §2 当初人工统计的前两名是 158 与 107 —— 两条独�
   自建 `code-style-lint.sh` 会与编译器与既有门三重重复 → 不写。
 - 强制证据行改指真实手段：`cargo clippy -p {crate} --lib -- -D warnings` + `tools/unsafe-audit.sh --diff`，
   源、`.claude/rules`、`.claude|.codex/skills/review-scan/checks/process.md` 四处同改。
-- `tools/todo-reference-validate.sh` → 改指**已实现**的 `tools/todo-staleness-check.sh`（职责完全一致）。
+- `tools/todo-reference-validate.sh`（该脚本从未存在）→ 改指**已实现**的 `tools/todo-staleness-check.sh`（职责完全一致）。
 - `tools/ci-doc-test-count.sh`（从未实现，且只在运行时副本里要求——又一处反向漂移）→ 改为 `cargo test` + `rg -c` 人工对比，注明 Step 4.5a。
 - G2 为何不能顺手加：`missing_docs = "warn"` 会让每个缺文档的公开项产生警告，而 CI 那条是 `-D warnings` →
   存量警告会当场把 CI 打红。必须先统计量级再按 OQ18 逐 crate 升级，配方已写进 todo_plan 的 G2 条。
@@ -269,7 +269,7 @@ optim 文档 §2 当初人工统计的前两名是 158 与 107 —— 两条独�
 不变量：规则文本里出现的 `tools/*.sh|py`，若文件不存在，**同一行必须带状态标记**
 （未实现 / 未来实施 / 从未 / 不存在 / 计划中 / 已作废 / 拟 / 建议 / 曾写作 / 未落地），否则 FAIL 并列出位置。
 首跑抓到 10 处未标注引用（含我自己在 todo_plan 里刚写的作废结论——同一行判据把它们都揪了出来），
-逐行补标注后归零。双向验证：植入 `tools/fake-ghost-check.sh` 一处引用 → `FAIL: L10 发现 1 处`、退出码 1；
+逐行补标注后归零。双向验证：植入一处指向不存在脚本的引用（临时探针名 `tools/fake-ghost-check.sh`，该脚本不存在、仅作埋点）→ `FAIL: L10 发现 1 处`、退出码 1；
 还原 → `OK`，且还原前后文件 sha256 同哈希。
 
 ### 5.5 我自己犯的两个错，记录以免被当成「审计方挑刺」
@@ -286,3 +286,23 @@ optim 文档 §2 当初人工统计的前两名是 158 与 107 —— 两条独�
 `lint-review-rules.sh` 0 失败（含新 L10）、`check-review-rules.sh` consistent、
 `generate-derived-skills.sh --check` 无漂移、`diff-trae-skills.sh --only-diff` 9/9、
 `doc-style-lint.sh --self-test` 与 `--diff`（error 级 0）通过；`bash -n` 覆盖全部 tools/*.sh。
+
+---
+
+## 六、外部成熟做法的借鉴（R4：借原则不搬结构）
+
+对照表全文写在 `prompt/agents-workflow-optim.md` 末节（含「明确拒绝的」一栏）。这里记落地与实测：
+
+| 借到的原则 | 实测缺口 | 落地 |
+|---|---|---|
+| 技能描述写**触发条件**，否则 agent 看名字以为已知、跳过完整读取 | 9 个领域技能里 **8 个是主题式**描述（`grep -m1 '^description:'` 逐一看过，只有 socratic 带「当…时」） | 8 个 description 追加「用在…之时/之前」子句；重派生后 Codex 副本 824 字符（硬限 1024）、Trae 副本同样带触发语，`--check` 无漂移 |
+| 新会话第一眼应是**任务→命令→技能决策树** | 6 个命令入口有清单但没有树；`review-cmds.md` 里只有表格 | 新增 §一b 决策树（文档/代码/测试/待办/只写不审五分支 + 判不了走苏格拉底 + 该在哪步查哪些模式两条出口），AGENTS.md 改为先指树 |
+| 引用可解析性（外部框架靠 CLI 硬绑，本仓靠门） | 已在本轮第 5 节暴露 | 除 L10 外新增 **L11 幽灵模式号**（引用的「模式 N」必须在库里有定义，61/62 空号白名单）与 **L12 技能可达性**（每个技能目录必须被入口/命令/规则引用） |
+| 未使用技能检测 | 实测 18 个技能目录全部被引用（最少 3 处）→ 当前**无死技能** | 不新建工具，改由 L12 常驻守护 |
+| 阶段产物分离 / 持久状态机 / HANDOFF | 本仓已有同构物（outline→design→structure→SYMBOLS→VERIFY-CHECK；STATE.md + Resume Point） | **不搬**：改名或加 JSON 状态文件会制造第二真源，收益为零 |
+
+L11/L12 首跑即全绿（存量干净），说明它们不会变成噪音门。L10 反而当场逮到我自己在
+本日志里写的两处不存在脚本名（探针名与 todo-reference-validate）——**门对作者本人有效**，
+这是比"门存在"更强的证据。
+
+范围声明：本轮未动 `os/` 任何代码、未动三棵树任何正式文档正文（除埋点后已完全还原的那一行）。

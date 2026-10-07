@@ -1,6 +1,6 @@
 ---
 name: review-process-skill
-description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 Step 0.5 structure.md 骨架评审、Step 3.5a 纵向链路检查、Step 3.5b 因果链抽样验证）、Blocker Gates（0/A/B/C/D/D-6/E/G/H — 2026-08-15 修复 C-P0-2 明确 Gate H 属于 Blocker Gates）、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。
+description: Minix-RS Review 执行流程。定义强制步骤 Step 0-7（含 Step 0.5 structure.md 骨架评审、Step 3.5a 纵向链路检查、Step 3.5b 因果链抽样验证）、Blocker Gates（0/A/B/C/D/D-6/E/G/H — 2026-08-15 修复 C-P0-2 明确 Gate H 属于 Blocker Gates）、每个 Step 的中间产物格式、自检清单、以及工具命令速查。当 Agent 进入 Review 执行阶段时调用此 Skill。 用在进入 review 执行阶段、需要 Step 0-7 强制流程与 Blocker Gates 证据格式之时。
 ---
 
 # Minix-RS Review 执行流程

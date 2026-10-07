@@ -130,6 +130,70 @@ else
   fail "L10 发现 $n 处幽灵工具引用（脚本不存在且同行未标注状态）"
 fi
 
+# L11. 幽灵模式号：规则文本引用的「模式 N / Pattern #N」必须在模式库里有定义。
+#      与 L10 同一类缺陷（引用不存在的东西），只是对象从脚本换成条文编号：本仓历史上出现过
+#      「通用强制门：锚点纪律门（模式 83）」这类引用，一旦编号写错或模式被合并，引用就悬空。
+#      已登记空号 61/62（合并入 60）不算违规。
+L11_OUT=$(python3 - <<'PYEOF2'
+import re
+from pathlib import Path
+lib = Path("prompt/review-rules/review-patterns.md").read_text(encoding="utf-8")
+defined = {int(n) for n in re.findall(r"^### 模式\s*([0-9]+)", lib, re.M)}
+allowed = defined | {61, 62}
+mx = max(defined)
+SCAN = ["prompt", ".claude", ".codex", ".trae", ".agents", "AGENTS.md"]
+bad = []
+for base in SCAN:
+    q = Path(base)
+    files = [q] if q.is_file() else list(q.rglob("*.md"))
+    for f in files:
+        if not f.is_file(): continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for m in re.finditer(r"(?:模式|Pattern ?#?)\s*([0-9]{1,3})", line):
+                n = int(m.group(1))
+                if n <= 60 or n > mx + 10 or n in allowed: continue
+                bad.append(f"{f}:{lineno}: 模式 {n} :: {line.strip()[:64]}")
+print("\n".join(sorted(set(bad))))
+PYEOF2
+)
+if [ -z "$L11_OUT" ]; then
+  ok "L11 无未定义的幽灵模式号引用"
+else
+  n=$(printf '%s\n' "$L11_OUT" | grep -c .)
+  printf '%s\n' "$L11_OUT" | head -8 | sed 's/^/    ✗ /' >&2
+  fail "L11 发现 $n 处幽灵模式号引用（模式库里无此编号，且不属于已登记空号 61/62）"
+fi
+
+# L12. 技能可达性：每个技能目录必须被入口、命令或规则引用至少一处（防「加了技能没人路由到」）。
+#      触发式描述（L13）解决「会不会被读」，本条解决「有没有人指到它」——两者缺一技能就是死文件。
+L12_OUT=$(python3 - <<'PYEOF2'
+from pathlib import Path
+dirs = []
+for root in (".codex/skills", ".claude/skills", "prompt/skill/cmds"):
+    q = Path(root)
+    if q.is_dir():
+        dirs += [d.name for d in q.iterdir() if d.is_dir()]
+HUBS = ["prompt/review-rules", "prompt/skill", "prompt/README.md", "AGENTS.md", "opencode.json"]
+corpus = ""
+for h in HUBS:
+    q = Path(h)
+    if q.is_file():
+        corpus += q.read_text(encoding="utf-8", errors="replace")
+    elif q.is_dir():
+        for f in q.rglob("*.md"):
+            corpus += f.read_text(encoding="utf-8", errors="replace")
+missing = [d for d in sorted(set(dirs)) if d not in corpus]
+print("\n".join(missing))
+PYEOF2
+)
+if [ -z "$L12_OUT" ]; then
+  ok "L12 所有技能目录都能被入口或规则路由到"
+else
+  printf '%s\n' "$L12_OUT" | sed 's/^/    ✗ 无人引用的技能：/' >&2
+  fail "L12 存在 $(printf '%s\n' "$L12_OUT" | grep -c .) 个技能未被任何入口/命令/规则引用"
+fi
+
 # L6. Gate 权威注册表完整性：10 个 Gate 必须都在 review-process.md 的注册表中各占一行
 registry=$(sed -n '/### Gate 权威注册表/,/^---$/p' prompt/review-rules/review-process.md)
 for g in "Gate 0" "Gate A" "Gate B" "Gate C" "Gate D" "Gate D-6" "Gate D-Impl" "Gate E" "Gate G" "Gate H"; do

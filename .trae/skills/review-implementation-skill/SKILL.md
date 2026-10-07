@@ -1,6 +1,6 @@
 ---
 name: review-implementation-skill
-description: 设计→实施 验证技能。验证 Rust 代码正确实现 design doc (e.g. 06-design.md / 06-design-final.md)；追踪 §12 自我审查问题清单；检查概念抽象是否与设计一致。
+description: 设计→实施 验证技能。验证 Rust 代码正确实现 design doc (e.g. 06-design.md / 06-design-final.md)；追踪 §12 自我审查问题清单；检查概念抽象是否与设计一致。 用在验证 Rust 代码是否忠实实现 design doc 之时，并追踪自审问题清单。
 ---
 
 # Implementation Review Skill

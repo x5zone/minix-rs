@@ -1,6 +1,6 @@
 ---
 name: review-core-semantics-skill
-description: "Minix-RS Review 核心语义定义与行为契约表模板。定义核心语义不变性原则（IPC/生命周期/错误/权限/地址空间），提供全量行为契约表（8 字段标准化）、IPC 契约表、生命周期契约表模板。在 Step 2 Diff Extraction 时调用此 Skill 识别 Top 5 语义差异（3 语义偏移 + 2 覆盖缺口）。"
+description: "Minix-RS Review 核心语义定义与行为契约表模板。定义核心语义不变性原则（IPC/生命周期/错误/权限/地址空间），提供全量行为契约表（8 字段标准化）、IPC 契约表、生命周期契约表模板。在 Step 2 Diff Extraction 时调用此 Skill 识别 Top 5 语义差异（3 语义偏移 + 2 覆盖缺口）。 用在 Step 2 差异提取判定出 Top 5 语义差异、需要写行为契约表（8 字段）之时；跨架构接口设计争议也先取本节判据。"
 ---
 
 # Minix-RS Review 核心语义定义与行为契约表
