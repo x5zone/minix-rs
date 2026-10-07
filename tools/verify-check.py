@@ -134,17 +134,25 @@ def extract_symbols_from_symbols_md(symbols_text):
     """从 SYMBOLS.md 提取符号名列表（简化版，提取 C 符号名）。"""
     # SYMBOLS.md 通常含表格，符号名在第一列或 | symbol | 形式
     # 这里用简化模式：匹配 C 函数名/结构体名
+    # 符号行的真实形态是「| `sym` | file.c:NN | ...」（coverage-extract.py 的输出带反引号）。
+    # 旧写法不接受反引号，于是整张符号清单一条都抽不到，只从汇总表里捞到一个统计行标题
+    # （如 Gaps），Gate G 的符号覆盖抽样于是静默空转 —— 报告照样写「已抽样验证」。
     symbol_pattern = re.compile(
-        r'^\|\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\|',
+        r'^\|\s*`?([A-Za-z_][A-Za-z0-9_]*)`?\s*\|\s*([^|]+)\|',
         re.MULTILINE
     )
+    HEADER_WORDS = {'Symbol', '符号', 'Name', 'Function', 'C 符号', '指标', '数值', '状态', 'Gaps', 'Rust', '路径'}
     symbols = []
     seen = set()
     for match in symbol_pattern.finditer(symbols_text):
-        sym = match.group(1)
-        if sym not in seen and sym not in ('Symbol', '符号', 'Name', 'Function', '---'):
-            seen.add(sym)
-            symbols.append(sym)
+        sym, second = match.group(1), match.group(2).strip()
+        if sym in seen or sym in HEADER_WORDS:
+            continue
+        # 第二列必须是位置引用（含 : 行号或文件后缀），否则是汇总/统计行
+        if not re.search(r'[.:]', second):
+            continue
+        seen.add(sym)
+        symbols.append(sym)
     return symbols
 
 
@@ -180,6 +188,8 @@ def generate_verify_check_md(
     gate0_missing,
     gate_evidence_results,
     sample_seed,
+    issue_ratio=0.2,
+    symbol_ratio=0.2,
 ):
     """生成 VERIFY-CHECK.md 骨架。"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -191,7 +201,7 @@ def generate_verify_check_md(
     lines.append(f"- **STATE.md**: `{state_path}`")
     lines.append(f"- **SYMBOLS.md**: `{symbols_path or '(未提供)'}`")
     lines.append(f"- **抽样种子**: {sample_seed}（可复现）")
-    lines.append(f"- **抽样比例**: 20% issues, 20% symbols")
+    lines.append(f"- **抽样比例**: {issue_ratio} issues, {symbol_ratio} symbols（与命令行参数一致）")
     lines.append(f"")
     lines.append(f"---")
     lines.append(f"")
@@ -414,6 +424,8 @@ def main():
         gate0_missing=gate0_missing,
         gate_evidence_results=gate_evidence_results,
         sample_seed=args.seed,
+        issue_ratio=args.sample_ratio,
+        symbol_ratio=args.sample_ratio,
     )
 
     if args.output:

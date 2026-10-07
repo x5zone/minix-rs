@@ -42,8 +42,8 @@ from pathlib import Path
 # 文件路径引用：匹配 `path/to/file.ext` 形式（含 .md/.py/.rs/.c/.h/.json/.sh 等）
 # 排除 URL 和明显非路径的 token
 PATH_REF_PATTERN = re.compile(
-    r'(?<![\w/])('
-    r'(?:\.review|notes|tools|prompt|minix3|os)/[A-Za-z0-9_./{}*?+-]+'
+    r'(?<![\w/-])('          # 后顾里必须含连字符，否则 rewrite-notes/… 会被从中间截成 notes/… 而误报文件不存在
+    r'(?:\.review|rewrite-notes|redesign-notes|study-notes|notes|tools|prompt|minix3|os)/[A-Za-z0-9_./{}*?+-]+'
     r'\.(?:md|py|rs|c|h|json|sh|txt|toml)'
     r')',
     re.MULTILINE

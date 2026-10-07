@@ -89,6 +89,26 @@
 | **Gate G** | VERIFY-CHECK 独立验证 | 本文件 Step 5.6 | consistency ≥ 90% PASS；CONCERN/FAIL 不得 CONVERGED |
 | **Gate H** | design/outline 门控（H.1-H.6） | 本文件 §Gate H | L2；不允许 N/A；缺快照 → Step 0.3 嵌入生成 |
 
+
+#### scan.md 的机械契约（由 `tools/verify-check.py` 强制，此前只写在脚本里，规范源未提）
+
+`tools/verify-check.py` 是 Gate G 的机械化验证器，它会**因为格式不合而拒绝判定**，因此下列形式要求属于
+硬性规范，不是风格偏好：
+
+1. **9 个必备锚段**（标题文字必须逐字一致，`## ` 级）：
+   `## Skill Invocation Log`、`## Blocker Gates Status`、`## Step 0: 预检结果`、
+   `## Step 1: C Source Ground Truth Lookup`、`## Step 1.5: Coverage Enumeration`、`## Step 2: Diff Extraction`、
+   `## Step 3.5: Precision Check`、`## Issue List`、`## Artifact Inventory`
+2. **Gate 证据块**必须是围栏块，围栏首行写 ` ```gate-evidence-{X} `（X = A/B/C/D/D-6/E/G/H），
+   且含该门的必备关键字：A 需 `coverage-extract.py` 与 `Coverage Summary`；B 需 `行为契约`。
+   （写成 `### gate-evidence-A` 标题不算，验证器只认围栏块。）
+3. **Issue List 表格首列必须是 `P[012]-标识` 形式的编号**（如 `P1-docHdrField`），第二列写 `P0/P1/P2`；
+   用 `F1`、`#3` 之类编号会让验证器提取到 0 个 issue，反向验证随即空转（抽样表一片空白却报告"已抽样"）。
+4. **Gate G 产物由该脚本生成后再填人工段**，不要手写整份 VERIFY-CHECK：
+   `python3 tools/verify-check.py --scan {scan.md} --state {STATE.md} --symbols {SYMBOLS.md} --sample-ratio 0.5 --seed N --output {VERIFY-CHECK.md}`
+   （`--seed` 必填以让抽样可复现；报告头会如实打印抽样比例与种子。）
+
+
 ---
 
 ## Review 元原则

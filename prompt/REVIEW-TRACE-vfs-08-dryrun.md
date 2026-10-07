@@ -102,3 +102,79 @@
    - `pattern-gate.sh` 全量耗时 >2 分钟，不适合进 CI（CI 里确实没放它）。
 5. **流程验证产物**：`.review/claude/05-stage-vfs/STATE.md` + `{doc-stem}/` 下 scan/structure/SYMBOLS/
    VERIFY-CHECK/anchors 底账；`review-gate-check.sh --strict` 9/9 PASS，`review-state-validate.py` PASS。
+
+---
+
+## 六、第二轮补跑：把"全部可执行的 review"真的跑完（并纠正我上一节的未证实数字）
+
+第一节到第五节只跑了流程的前半。**漏跑的检查**：行号漂移门、H3 代码块逐块审查、Gate G 的机械化验证器。
+补跑后新出四条缺陷（编号接前文，D 系列续到 D7–D9，issue 续到 F10/F11）：
+
+| 命令 | 结果 | 判定 |
+|---|---|---|
+| `tools/review-line-check.sh {doc}` | 37 项行号引用全 OK，0 漂移 | ✅ 该文档无行号漂移 |
+| `tools/doc-snippet-extract.sh {doc}` | 无输出 | 该文档只有 2 个 C 代码块、无 Rust 块 → H3 检查面为空，属正常不适配而非漏检 |
+| `tools/verify-check.py --scan scan.md …` | 首跑判**机械不合规**：9 个锚段名不匹配、`gate-evidence-*` 不是围栏块、issue 编号非 `P[012]-xxx` | ⛔ D7（见下） |
+
+**D7 / F10 · 机械契约只活在脚本里（本轮最值的流程发现）**
+`review-gate-check.sh` 只看产物文件是否存在，给我的 scan.md 判 **9/9 PASS**；
+而 `verify-check.py` 按字面锚段名与围栏格式判**机械不合规**。同一制品两个门结论相反，
+且更严格一方的判据**从未写进规范源**（`review-process.md` 里 `grep verify-check.py` 命中 0 次）。
+后果：执行者按猜测产出 scan.md，Gate G 机器验证形同虚设，元门还给绿灯。
+处置：把契约写进 `review-process.md`「scan.md 的机械契约」小节（9 个实名锚段 + ` ```gate-evidence-X ` 围栏
++ issue 首列必须 `P[012]-标识` + Gate G 产物由该脚本生成后再填人工段），并按契约重写本轮 scan.md。
+
+**D8 · 验证器的符号抽取不认反引号**：SYMBOLS.md 的符号行是 ``| `send_work` | comm.c:37 | …``，
+旧正则只认无反引号形式 → 59 个真符号**一个都没抽到**，只从汇总表捞到一个 `Gaps`，
+于是"已抽样验证符号覆盖"整段静默空转。修后同一文件抽出 59 个，抽样 20 个，真缺口 0、
+命名匹配产物 4。另修**报告把抽样比例写死成「20%」**而与命令行参数不符（自述失真）。
+
+**F11 / `P2-toolGapLabel` · Gate A 的覆盖标签会产假缺口**：✅/⚠️/❌ 按符号名匹配，
+未登记改名映射的符号（`do_work`、`service_pm`、`drv_sendrec`、`sef_cb_lu_prepare`）即使语义已由
+请求槽状态机承担也判成缺口，所以「完全缺口 117」不可直接当收敛依据；本轮收敛依据改用语义域口径
+（`Gaps (semantic): 0`），并在 scan.md 与 STATE.md 标注。
+
+**纠正我自己的未证实数字**：上一轮我在 VERIFY-CHECK 草稿里写过「符号抽样 9 个」，那是照工具首跑输出
+手推的，实际抽样是 **20** 个（`sample_symbols` 取 `max(5, len×ratio)`）。已按实测改写，并把该口径写进报告。
+这正是本仓「统计门槛数字严禁抄表，必须现算」那条纪律的又一次应验——我自己也没豁免。
+
+**Gate G 终判**：issue 抽样 5/5 一致（100%）、符号抽样 20 个真缺口 0、机械化检查 8/8 证据块齐全、
+收敛三项逐条重放 → **PASS**（附 `P2-toolGapLabel` 保留意见）。产物：
+`.review/claude/05-stage-vfs/08-worker-thread/{scan,structure,SYMBOLS,VERIFY-CHECK,08-worker-thread.anchors}.md`
+与 `.review/claude/05-stage-vfs/STATE.md`；元门 `review-gate-check.sh --strict` **9/9**，
+`review-state-validate.py` PASS，CI 四道门全绿。
+
+---
+
+## 七、第三轮：把"元门自己"也验一遍（又抓到两条，含一条我自己的产物不合规）
+
+补跑到这里，我把**验收产物的两个元门**也各自做了埋点复现，结果一好一坏：
+
+**D10 · `review-state-validate.py` 会把路径从中间截断，产假告警**
+它的 `PATH_REF_PATTERN` 负向后顾是 `(?<![\w/])`，**漏了连字符**。于是
+`` `rewrite-notes/05-stage-vfs/08-worker-thread.md` `` 被从 `notes` 处截断匹配成
+`notes/05-stage-vfs/08-worker-phase.md`… 实际抽出的是 `notes/05-stage-vfs/08-worker-thread.md`，
+该路径不存在 → 报 **ERROR: STATE.md 引用不存在的文件**。
+复现（修前）→ 抽取结果 `['notes/05-stage-vfs/…']`；修复（后顾加 `-`，并把三棵树名并列进前缀）后 →
+`['rewrite-notes/05-stage-vfs/…']`。这是本轮**第三条**"歧义/截断被当成缺失"同族缺陷，与前两条 D1 同因。
+
+**D11 · 假告警一修，真问题立刻现形：我的 STATE.md 不合模板**
+修掉 D10 后校验器报出 `缺失必备段: ['Phase Completion Log', 'Per-Doc Status', 'Session Status']`。
+也就是说此前那句"✅ PASS 无 ERROR"是**被假告警遮蔽后的误读**（我第一次跑它时它先报了别的），
+而我的 STATE.md 确实漏了模板三个段。已按模板补齐（Session Status / Per-Doc Status / Phase Completion Log，
+每段都指向 scan.md 的具体 gate-evidence 块）。修后：`✅ PASS 无 ERROR、无 WARNING`。
+
+**这一轮的自我提醒**：我在第六节纠正了自己写下的"符号抽样 9 个"（实际 20），这一节又证明
+"我看到校验器绿了"不等于"校验器查了我以为它查的东西"。流程里所有"✅"都必须在**修掉自身缺陷之后**复跑一次才算数。
+
+## 八、最终状态（三项要求逐条对账）
+
+| 要求 | 证据 |
+|---|---|
+| 一篇文档跑完全部可执行 review | Step 0/0.5/1/1.0/1.5/2/3/3.5/3.6/4.5/5/5.6/5.7/7 全部执行；产物 5 份 + 底账 1 份在 `.review/claude/05-stage-vfs/` |
+| 门挡住就先修再跑 | Gate 0（缺字段）、文风门（24 error）、Gate G 机械验证（格式不合规）、STATE 校验（缺段 + 假告警）四次挡住，全部先修后复跑通过 |
+| 若改代码要回归 | 未改 `os/` 生产代码；仍留 `cargo test -p minix-vfs --lib` = 538 passed / 0 failed 基线，另跑 `unsafe-audit --diff`、`check-rs-unwired` 均 PASS |
+| 用轨迹反向验证流程本身 | 得 11 条流程缺陷（D1–D11），其中 3 条是"假 P0/假告警"同族、4 条是"契约只活在脚本里"、4 条是工具健壮性；全部已修或登记，并把契约写回 `review-process.md` |
+
+**元门终态**：`review-gate-check.sh --strict` 9/9、`review-state-validate.py` 无 ERROR 无 WARNING、
+CI 四道门全绿、六个工具自测全 rc=0。
