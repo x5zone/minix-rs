@@ -194,6 +194,28 @@ else
   fail "L12 存在 $(printf '%s\n' "$L12_OUT" | grep -c .) 个技能未被任何入口/命令/规则引用"
 fi
 
+# L13. 模式库副本不落后于源：技能副本必须收录规则源里编号最新的模式。
+#      为什么：模式库有三份用途不同的副本——规则源（全量权威）、技能源（review 时被调用的那份）、
+#      Claude 编排器的 checks/patterns.md（按领域精选的高频子集，不承诺最新）。本轮实测踩坑：
+#      新增模式 85 只写进了规则源，技能副本仍停在 84，而 --check 只比对「派生 vs 技能源」的差异，
+#      根本看不出这种「源改了、副本没跟」的内容滞后。本条堵的就是这个缺口。
+L13_OUT=$(python3 - <<'PYEOF2'
+import re
+from pathlib import Path
+src = Path("prompt/review-rules/review-patterns.md").read_text(encoding="utf-8")
+sk = Path("prompt/skill/review-patterns-skill.md").read_text(encoding="utf-8")
+nums = sorted({int(n) for n in re.findall(r"^### 模式\s*([0-9]+)", src, re.M)})
+have = {int(n) for n in re.findall(r"^### 模式\s*([0-9]+)", sk, re.M)}
+missing = [n for n in nums[-5:] if n not in have]
+print(",".join(str(n) for n in missing))
+PYEOF2
+)
+if [ -z "$L13_OUT" ]; then
+  ok "L13 技能副本已收录规则源编号最新的 5 条模式"
+else
+  fail "L13 技能副本落后于规则源：缺模式 $L13_OUT（新增模式必须同步 prompt/skill/review-patterns-skill.md，再重派生）"
+fi
+
 # L6. Gate 权威注册表完整性：10 个 Gate 必须都在 review-process.md 的注册表中各占一行
 registry=$(sed -n '/### Gate 权威注册表/,/^---$/p' prompt/review-rules/review-process.md)
 for g in "Gate 0" "Gate A" "Gate B" "Gate C" "Gate D" "Gate D-6" "Gate D-Impl" "Gate E" "Gate G" "Gate H"; do

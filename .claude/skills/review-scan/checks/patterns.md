@@ -1,5 +1,13 @@
 # patterns: 错误模式检查（合并 doc/cross/code patterns）
 
+> **本文件的射程与边界（务必先读）**：这里是**按领域精选的高频族**，目前只收模式 73–79（文档与代码
+> 漂移、参见范围、归属、注释行号那一族），**不是全量模式库**。全量共 83 个编号模式，权威清单在
+> `prompt/review-rules/review-patterns.md`；执行 review 时若需要 P0 必检清单或其它族的模式，
+> **必须另外调用 `review-patterns-skill`**，不能因为本文件里没有就当作该模式不存在。
+> 之所以分片：技能按领域拆开是为控上下文占用，代价就是这里天然是子集——所以指路必须写死在头部。
+> 三条副本的关系（谁跟谁同步）见 `prompt/EXECUTION-LOG-workflow-optim.md` 第七节与
+> `tools/lint-review-rules.sh` 的 L13。
+
 > 本文件合并原 patterns/ 下 3 个文件：doc-patterns.md、cross-patterns.md、code-patterns.md。
 > **强制规则**：每个模式检查必须先执行 grep，再下结论。每个判定标注 evidence [DIRECT/MEDIUM/INFERRED]。
 > **⛔ Step 0 硬阻断前置（NEW 2026-07-16）**：进入本文件任何模式检查前，必须已通过 [SKILL.md Phase 1 §Step 0 硬阻断预检](../SKILL.md) + [process.md §Step 0 硬阻断规则](process.md)。**新增模式 69/70/71**（PSMD/CTOS/DOG）由本文件统一引用。
