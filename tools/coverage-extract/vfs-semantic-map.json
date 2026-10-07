@@ -18,6 +18,8 @@
 
   "unlock_filp": ["FilpTable::unlock"],
   "invalidate_filp_by_endpt": ["invalidate_by_endpoint"],
+  "invalidate_filp_by_char_major": ["invalidate_by_char_major"],
+  "invalidate_filp_by_sock_drv": ["invalidate_by_sock_drv"],
 
   "pm_setuid": ["VfsPmHandler::handle_setuid", "PmHandler::handle_setuid"],
   "pm_setgid": ["VfsPmHandler::handle_setgid", "PmHandler::handle_setgid"],
@@ -60,10 +62,16 @@
 
   "dmap_driver_match": ["driver_match"],
   "get_dmap_by_major": ["get_by_major"],
+  "get_dmap_by_endpt": ["get_by_endpt"],
   "dmap_unmap_by_endpt": ["unmap_by_endpt"],
-  "map_service": ["map_driver"],
-  "smap_unmap_by_endpt": ["smap_by_endpt"],
-  "smap_endpt_up": ["VanishNotice"],
+  "map_driver": ["map_driver"],
+  "do_mapdriver": ["check_mapper", "resolve_driver", "validate_label"],
+  "map_service": ["classify_service", "map_driver"],
+  "init_dmap": ["DmapTable::init"],
+  "dmap_endpt_up": ["recover_step", "classify_vanish"],
+  "init_smap": ["SmapTable::new"],
+  "smap_map": ["register_plan", "check_domain", "find_slot_by_label", "find_free_slot"],
+  "smap_endpt_up": ["invalidate_by_sock_drv"],
   "get_smap_by_dev": ["get_smap_by_dev"],
   "get_smap_by_endpt": ["smap_by_endpt"],
   "get_smap_by_domain": ["smap_by_domain"],
@@ -110,7 +118,8 @@
   "do_vm_call": ["lookup_answer", "dupvm_gate"],
   "do_getsysinfo": ["sysinfo_root_gate", "sysinfo_len_gate"],
   "do_fcntl": ["lock_op"],
-  "do_ioctl": ["check_domain"],
+  "do_ioctl": ["ioctl_route", "ioctl_access", "ioctl_size"],
+  "make_ioctl_grant": ["ioctl_access", "ioctl_size"],
 
   "write_elf_core_file": ["collect_regions", "plan_notes"],
   "fill_elf_header": ["plan_notes"],

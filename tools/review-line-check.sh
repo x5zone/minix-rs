@@ -15,9 +15,18 @@
 # ----------------
 # - `*.rs|*.sh|*.toml` paths: repo-root-relative, as written. Run the
 #   tool from the repository root.
-# - `*.c|*.h` bare names (`proc.c:1595` — the C ground-truth shorthand):
-#   resolved against the frozen `minix3/` tree by filename index; the C
-#   source never moves, so a hit is authoritative.
+# - `*.c|*.h` paths that carry directories (`minix3/minix/servers/rs/const.h:29`)
+#   are honored verbatim — the doc already disambiguated.
+# - bare `*.c|*.h` names (`proc.c:1595` — the C ground-truth shorthand) are
+#   resolved against the frozen `minix3/` tree by filename index. A bare name
+#   is ambiguous by construction (20× `const.h`, 27× `proto.h`): if more than
+#   one candidate can host the line, the tool reports AMBIG and FAILS instead
+#   of silently picking the top-ranked file — a silent pick is how a VFS doc's
+#   `const.h:9` (vfs/const.h:9 = `NR_WTHREADS 9`) came back "OK" from
+#
+#       minix3/minix/kernel/const.h:9   (an empty line)
+#
+#   Resolution: qualify the reference in the doc.
 #
 # What it deliberately does NOT do
 # --------------------------------
@@ -67,22 +76,30 @@ resolve_candidates() {
     echo "${CAND_CACHE[$name]}"
 }
 
-# Pick the first candidate whose line actually exists (shorthand names are
-# ambiguous — "schedule.c" lives in several servers — so the line range
-# itself disambiguates). Echoes nothing if no candidate fits.
-pick_fitting() {
-    local line="$1"
-    local c
+# Resolves a bare filename to the single candidate that can host `line`.
+# Echoes the path on success. Zero candidates → `*-MISS`; more than one →
+# `AMBIG` (the reference is not mechanically verifiable — qualify it).
+# Both failure shapes report on **stderr** (the caller captures stdout for
+# the path) and exit non-zero; the caller sets `status=1` and returns.
+resolve_unique() {
+    local doc="$1" name="$2" line="$3" kind="$4"
+    local cands="" n=0 c
     while IFS= read -r c; do
         [ -z "$c" ] && continue
-        local total
-        total=$(wc -l < "$c")
-        if [ "$line" -le "$total" ]; then
-            echo "$c"
-            return 0
+        if [ "$line" -le "$(wc -l < "$c")" ]; then
+            cands="${cands:+$cands }$c"
+            n=$((n + 1))
         fi
-    done
-    return 1
+    done < <(resolve_candidates "$name")
+    if [ "$n" -eq 0 ]; then
+        echo "$kind-MISS $name:$line (no candidate fits) (from $doc)" >&2
+        return 1
+    fi
+    if [ "$n" -gt 1 ]; then
+        echo "AMBIG $name:$line ($n candidates: $cands) — qualify the path (from $doc)" >&2
+        return 1
+    fi
+    printf '%s' "$cands"
 }
 
 check_anchor() {
@@ -100,9 +117,7 @@ check_anchor() {
                         return ;;
                     *)
                         local resolved
-                        resolved=$(resolve_candidates "$file" | pick_fitting "$line")
-                        if [ -z "$resolved" ]; then
-                            echo "MISS  $file:$line (no candidate fits) (from $doc)"
+                        if ! resolved=$(resolve_unique "$doc" "$file" "$line" rs); then
                             status=1
                             return
                         fi
@@ -110,14 +125,23 @@ check_anchor() {
                 esac
             fi ;;
         *.c|*.h)
-            local resolved
-            resolved=$(resolve_candidates "$(basename "$file")" | pick_fitting "$line")
-            if [ -z "$resolved" ]; then
-                echo "C-MISS $file:$line (no minix3/ candidate fits) (from $doc)"
-                status=1
-                return
-            fi
-            file="$resolved" ;;
+            # A path-ful reference is already disambiguated by the doc —
+            # honor it verbatim; only bare names go through the index.
+            case "$file" in
+                */*)
+                    if [ ! -f "$file" ]; then
+                        echo "NOFILE $file (from $doc)"
+                        status=1
+                        return
+                    fi ;;
+                *)
+                    local resolved
+                    if ! resolved=$(resolve_unique "$doc" "$file" "$line" C); then
+                        status=1
+                        return
+                    fi
+                    file="$resolved" ;;
+            esac ;;
         *)
             echo "SKIP  $file (non-source reference, from $doc)"
             return ;;

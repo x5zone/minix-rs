@@ -32,7 +32,7 @@
 
 `terminate_service` 用一株 30+ 分支的决策树回答这些问题。Rust 侧把它提炼为**纯决策函数**（`terminate_decision`）：输入槽位状态与策略标志，输出"做什么动作 + 要置哪些位"，动作的执行（IPC、fork、清理）全部留在调用方——这是 13/14 同款的"纯切片"边界。
 
-> **执行体落地（2026-09-07，I6/Fix #78）**：`recovery::terminate_service` 把决策驱动为效果——`InitUpdateRollback`（end_update(r_init_err, RS_REPLY) + r_init_err=ERESTART 早退）、`Refresh`/`Restart`（restart_service）、`Backoff{backoff}`（写回 r_backoff 等 07 消耗）、`CleanupAll{core_fatal,…}`（core 致命→self_terminate；全局更新 abort（ERESTART）与被调度更新 abort（EDEADSRCDST）；late reply 按 caller_request 归一；unpublish 缝；实例族 `get_service_instances` 逐个 cleanup；reincarnate 清位后 `reincarnate_service`）。信号管理器（06）的终止臂是其首个生产调用方，随后 `rs_idle_period`（utility.c:441-478：DEAD 清理 + 缺失副本补建，VM 单副本规则）。`abort_update_proc` 同轮收敛为 live_update 的组合助手（do_sysctl UPD_STOP 复用）。
+> **执行体**：`recovery::terminate_service` 把决策驱动为效果——`InitUpdateRollback`（end_update(r_init_err, RS_REPLY) + r_init_err=ERESTART 早退）、`Refresh`/`Restart`（restart_service）、`Backoff{backoff}`（写回 r_backoff 等 07 消耗）、`CleanupAll{core_fatal,…}`（core 致命→self_terminate；全局更新 abort（ERESTART）与被调度更新 abort（EDEADSRCDST）；late reply 按 caller_request 归一；unpublish 缝；实例族 `get_service_instances` 逐个 cleanup；reincarnate 清位后 `reincarnate_service`）。信号管理器（06）的终止臂是它的生产调用方，`rs_idle_period`（minix3/minix/servers/rs/utility.c:441-478：DEAD 清理 + 缺失副本补建，VM 单副本规则）在终止流程尾部补位。`abort_update_proc` 同时是 16 的 do_sysctl（UPD_STOP）复用的组合助手。
 
 ### 1.2 终止/恢复状态机图（WHAT）
 
@@ -80,58 +80,58 @@
 
 `terminate_service` 是终止处理的唯一入口。按顺序：
 
-1. **初始化失败分支**（minix3/minix/servers/rs/manager.c:terminate_service（L1069，工具生成））：
-   - `SRV_IS_UPDATING(rp)`（const.h:114：`r_flags & RS_UPDATING`）→ 更新中初始化失败 = 状态迁移失败 → `end_update(r_init_err, RS_REPLY)`（1071-1076，16）+ `r_init_err = ERESTART` + **提前 return**；
+1. **初始化失败分支**（minix3/minix/servers/rs/manager.c:terminate_service）：
+   - `SRV_IS_UPDATING(rp)`（minix3/minix/servers/rs/const.h:114：`r_flags & RS_UPDATING`）→ 更新中初始化失败 = 状态迁移失败 → `end_update(r_init_err, RS_REPLY)`（1071-1076，16）+ `r_init_err = ERESTART` + **提前 return**；
    - `SF_NO_BIN_EXP` → `RS_REFRESHING`（1084-1086，"当作刷新处理"）；
    - 其他 init 失败 → `RS_EXITING`（1090-1091，"不重启"）。
    - **注意 C 的 fall-through**：后两个分支只**置位**，然后继续往下走主决策树（1078-1091 没有 return）。
-2. **全局更新中止**（1100-1104）：`RUPDATE_IS_UPDATING()` → `abort_update_proc(ERESTART)`（16）——恢复动作前先中止进行中的更新（避免与更新服务产生依赖纠缠）。
-3. **norestart 检测**（1105-1117）：`norestart = !(RS_EXITING) && SF_NORESTART`；置 `RS_EXITING`；`SF_DET_RESTART && r_restarts < MAX_DET_RESTART`（const.h:25）→ `RS_CLEANUP_DETACH`（1108-1111）；`r_script[0] != '\0'` → `RS_CLEANUP_SCRIPT`（1114-1115）。
+2. **全局更新中止**（1099-1102）：`RUPDATE_IS_UPDATING()` → `abort_update_proc(ERESTART)`（16）——恢复动作前先中止进行中的更新（避免与更新服务产生依赖纠缠）。
+3. **norestart 检测**（1105-1117）：`norestart = !(RS_EXITING) && SF_NORESTART`；置 `RS_EXITING`；`SF_DET_RESTART && r_restarts < MAX_DET_RESTART`（minix3/minix/servers/rs/const.h:25）→ `RS_CLEANUP_DETACH`（1108-1111）；`r_script[0] != '\0'` → `RS_CLEANUP_SCRIPT`（1114-1115）。
 4. **RS_EXITING 分支**（1119-1152）：
    - `SF_CORE_SRV && !shutting_down` → **RS 自己 `_exit(1)`**（1121-1123）——核心服务死亡，整个系统无法继续；
-   - `SRV_IS_UPD_SCHEDULED(rp)`（const.h:120，读 `r_upd`）→ `abort_update_proc(EDEADSRCDST)`（1127-1129，16）；
+   - `SRV_IS_UPD_SCHEDULED(rp)`（minix3/minix/servers/rs/const.h:120，读 `r_upd`）→ `abort_update_proc(EDEADSRCDST)`（1127-1129，16）；
    - **late reply 结果**（1134-1135）：`r_caller_request == RS_DOWN` 或（`RS_REFRESH && norestart`）→ `OK`，否则 `EDEADEPT`（13 的 `RS_DOWN`/`RS_REFRESH` 调用者等这个回复）；
    - `unpublish_service(rp)`（1138，11）；
    - `get_service_instances(rp, &rps, &nr_rps)`（1141，2.7）+ 逐实例 `cleanup_service`（1143）；
    - `RS_REINCARNATE` → 清位 + `reincarnate_service(rp)`（1150-1151，2.5）。
 5. **RS_REFRESHING 分支**（1155-1157）：`restart_service(rp)`——刷新 = 以相同配置重启。
 6. **意外退出分支**（1164-1178）：
-   - `r_restarts > 0` → backoff（1165-1172）：`r_backoff = 1 << MIN(restarts, BACKOFF_BITS-2)`（`BACKOFF_BITS` = `sizeof(long)*8` = 64，const.h:50）→ 封顶 `MAX_BACKOFF`（30，const.h:51）→ `SF_USE_COPY && backoff > 1` 折叠为 1（镜像在内存里，重启便宜）→ `SF_NO_BIN_EXP` 直接 1；
+   - `r_restarts > 0` → backoff（1165-1172）：`r_backoff = 1 << MIN(restarts, BACKOFF_BITS-2)`（`BACKOFF_BITS` = `sizeof(long)*8` = 64，minix3/minix/servers/rs/const.h:50）→ 封顶 `MAX_BACKOFF`（30，minix3/minix/servers/rs/const.h:51）→ `SF_USE_COPY && backoff > 1` 折叠为 1（镜像在内存里，重启便宜）→ `SF_NO_BIN_EXP` 直接 1；
    - 首次退出 → `restart_service(rp)`（1177-1178）。
 
 ### 2.2 cleanup_service：两段式清理（minix3/minix/servers/rs/manager.c:cleanup_service_debug）
 
-C 里是 `cleanup_service` 宏（proto.h:51-52）→ `cleanup_service_debug(file, line, rp)`（minix3/minix/servers/rs/manager.c:cleanup_service_debug）。**两段式**由 `RS_DEAD` 位区分（`cleanup_service_now` 宏 proto.h:53-54 就是连调两次强制跑完两段）：
+C 里是 `cleanup_service` 宏（minix3/minix/servers/rs/proto.h:51-52）→ `cleanup_service_debug(file, line, rp)`（minix3/minix/servers/rs/manager.c:cleanup_service_debug）。**两段式**由 `RS_DEAD` 位区分（`cleanup_service_now` 宏 minix3/minix/servers/rs/proto.h:53-54 就是连调两次强制跑完两段）：
 
-**第一段（RS_DEAD 未置，minix3/minix/servers/rs/manager.c:rproc（L416，工具生成））——"标记死亡 + 解耦"**：
+**第一段（RS_DEAD 未置，minix3/minix/servers/rs/manager.c:cleanup_service_debug）——"标记死亡 + 解耦"**：
 1. 断四链（`r_next_rp`/`r_prev_rp`/`r_new_rp`/`r_old_rp`，422-436）——先摘除实例链；
 2. `r_flags |= RS_DEAD`（438）——**下次进入直接走第二段**；
 3. `sys_privctl(endpoint, SYS_PRIV_DISALLOW)` + `SYS_PRIV_CLEAR_IPC_REFS`（441-442）——内核侧禁止运行 + 清 IPC 引用；
 4. `r_flags &= ~RS_ACTIVE`（443）——不再是活动实例；
 5. `late_reply(rp, OK)`（446）——把 13 挂起的调用者放行（OK，因为退出确实是预期路径）。
 
-**第二段（RS_DEAD 已置，minix3/minix/servers/rs/manager.c:rproc（L451，工具生成））——"真清理"**：
+**第二段（RS_DEAD 已置，minix3/minix/servers/rs/manager.c:cleanup_service_debug）——"真清理"**：
 1. 读 `cleanup_script = RS_CLEANUP_SCRIPT`、`detach = RS_CLEANUP_DETACH`（451-452）；
 2. 非 detach：`sched_stop(r_scheduler, endpoint)`（461，19）+ `srv_kill(r_pid, SIGKILL)`（470，19）——让调度器放手 + 让 PM 杀掉残留进程（`r_pid == -1` 时警告跳过）；
 3. `RS_CLEANUP_SCRIPT` → 清位 + `run_script(rp)`（475-478）——跑恢复脚本；
 4. `detach` → `detach_service(rp)`（483-485，2.4）；
-5. 否则 `free_slot(rp)`（489-490）——释放槽位，**除非 `RS_REINCARNATE`**（槽位要留给 reincarnate 复用）。R18：`free_slot` 表原语已内建 `SF_USE_COPY → free_exec`（minix3/minix/servers/rs/manager.c:rproc（L2100，工具生成）），exec 镜像随槽释放（02 §3.6），非 `USE_COPY` 行由 09 的 execve 路径释放（minix3/minix/servers/rs/manager.c:rproc（L643，工具生成））。
+5. 否则 `free_slot(rp)`（489-490）——释放槽位，**除非 `RS_REINCARNATE`**（槽位要留给 reincarnate 复用）。`free_slot` 表原语已内建 `SF_USE_COPY → free_exec`（minix3/minix/servers/rs/manager.c:free_slot），exec 镜像随槽释放（02 §3.6），非 `USE_COPY` 行由 09 的 execve 路径释放（minix3/minix/servers/rs/manager.c:create_service）。
 
 ### 2.3 kill_service / crash_service：RS 主动处决（minix3/minix/servers/rs/manager.c:kill_service_debug）
 
-- `kill_service(rp, errstr, err)`（宏 proto.h:44-45 → `kill_service_debug` minix3/minix/servers/rs/manager.c:kill_service_debug）：打印错误（非停机时）→ `r_flags |= RS_EXITING`（"预期退出"）→ `crash_service_debug` 模拟崩溃 → 返回 err。**语义：崩掉服务且不允许重启**；
-- `crash_service(rp)`（宏 proto.h:48-49 → `crash_service_debug` minix3/minix/servers/rs/manager.c:crash_service_debug）：`rpub->endpoint == RS_PROC_NR` 时 **RS 自己 `exit(1)`**（392-394）；否则 `sys_kill(endpoint, SIGKILL)`（397）。
+- `kill_service(rp, errstr, err)`（宏 minix3/minix/servers/rs/proto.h:44-45 → `kill_service_debug` minix3/minix/servers/rs/manager.c:kill_service_debug）：打印错误（非停机时）→ `r_flags |= RS_EXITING`（"预期退出"）→ `crash_service_debug` 模拟崩溃 → 返回 err。**语义：崩掉服务且不允许重启**；
+- `crash_service(rp)`（宏 minix3/minix/servers/rs/proto.h:48-49 → `crash_service_debug` minix3/minix/servers/rs/manager.c:crash_service_debug）：`rpub->endpoint == RS_PROC_NR` 时 **RS 自己 `exit(1)`**（395-397）；否则 `sys_kill(endpoint, SIGKILL)`（399）。
 
 它们被 `restart_service`/`run_script` 用作"恢复失败 → 处决"的兜底（2.5/2.6 的 `kill_service(rp, "...", r)` 调用点）。
 
 ### 2.4 detach_service：降级旁路（minix3/minix/servers/rs/manager.c:detach_service_debug）
 
-`detach_service`（宏 proto.h:57-58）把服务从"系统服务"降级为**普通用户进程**（`RS_NORESTART` + `DET_RESTART` 且 restarts 超限时，2.1 的 CLEANUP_DETACH 触发）：
+`detach_service`（宏 minix3/minix/servers/rs/proto.h:57-58）把服务从"系统服务"降级为**普通用户进程**（`SF_NORESTART` + `SF_DET_RESTART` 且 restarts 超限时，2.1 的 CLEANUP_DETACH 触发）：
 
 1. 用静态计数器生成**唯一 label**：`snprintf(rpub->label, "%lu.%s", ++detach_counter, label)` + `ds_publish_label`（510-513，11）——以新 label 重新发布，避免与旧 label 冲突；
-2. 重置槽位：`r_flags = RS_IN_USE | RS_ACTIVE`（516）——**保留活动身份**；
-3. 降权：`sys_flags &= ~(SF_CORE_SRV | SF_DET_RESTART)`（517）、`r_period = 0`（518）、`dev_nr = 0`（519）、`nr_domain = 0`（520）；
-4. `sys_privctl(endpoint, SYS_PRIV_ALLOW)`（522）——允许继续运行。
+2. 重置槽位：`r_flags = RS_IN_USE | RS_ACTIVE`（520）——**保留活动身份**；
+3. 降权：`sys_flags &= ~(SF_CORE_SRV | SF_DET_RESTART)`（521）、`r_period = 0`（522）、`dev_nr = 0`（523）、`nr_domain = 0`（524）；
+4. `sys_privctl(endpoint, SYS_PRIV_ALLOW)`（525）——允许继续运行。
 
 降级后的服务不再受 RS 重启/监控管理——它是"被放生的服务"。
 
@@ -156,7 +156,9 @@ C 里是 `cleanup_service` 宏（proto.h:51-52）→ `cleanup_service_debug(file
    - 父进程（1220-1235）：`getprocnr(pid, &endpoint)` + `sys_privctl(SYS_PRIV_SET_USER)`（降权为普通用户）+ `vm_set_priv(endpoint, NULL, FALSE)` + `sys_privctl(SYS_PRIV_ALLOW)` + `vm_memctl(RS_PROC_NR, VM_RS_MEM_PIN, 0, 0)`（fork 后重钉 RS 自身内存）——每步失败都 `kill_service` 处决；
 3. 脚本的 label/reason/incarnation 参数让脚本决定"恢复成什么样"（这正是 `do_restart`（13）能回来的原因：脚本自己发 `RS_RESTART`）。
 
-> **[ARCH: A-1]** — `run_script` 的 `fork()+execle(sh)`（minix3/minix/servers/rs/manager.c:run_script（L1209，工具生成））依赖 libc fork；no_std 无 libc。外部行为保持（恢复脚本仍由 shell 执行），实现方案（委托 INIT/受限执行器，或标注 defer）随 10/15 的设计决策落地；doc 只陈述调用点与缺口。
+C 源码在父进程侧把 `vm_set_priv(endpoint, NULL, FALSE)` 连写了两遍（第二次才判返回值）——两次调用同参数，外部只有一次可见效果。Rust 侧只表达一次，属等价简化而非语义丢失。
+
+> **[ARCH: A-1]** — `run_script` 的 `fork()+execle(sh)`（minix3/minix/servers/rs/manager.c:run_script）依赖 libc fork；no_std 无 libc。外部行为保持（恢复脚本仍由 shell 执行），实现方案（委托 INIT/受限执行器，或标注 defer）随 10/15 的设计决策落地；doc 只陈述调用点与缺口。
 
 ### 2.7 get_service_instances：实例收集（minix3/minix/servers/rs/manager.c:get_service_instances）
 
@@ -168,36 +170,46 @@ C 里是 `cleanup_service` 宏（proto.h:51-52）→ `cleanup_service_debug(file
 
 ### 3.1 recovery.rs 决策与执行体
 
-与 13/14 同款：IPC/动作面（`sys_kill`/`sched_stop`/`srv_kill`/`sys_privctl`/`vm_*`/`ds_publish_label`/fork）归 19，`unpublish_service` 归 11，`clone_service`/`update_service` 归 10，`run_service` 归 12，`late_reply` 归 06，`end_update`/`abort_update_proc` 归 16；`recovery.rs` 拥有**决策树、纯计算与两相清理执行体**：
+与 13/14 同款：IPC/动作面（`sys_kill`/`sched_stop`/`srv_kill`/`sys_privctl`/`vm_*`/`ds_publish_label`/fork）归 19，`unpublish_service` 归 11，`clone_service`/`update_service` 归 10，`run_service` 归 12，`late_reply` 归 06，`end_update`/`abort_update_proc` 归 16；`recovery.rs` 拥有**纯决策面**与**执行体面**两层：
+
+**决策面**（纯函数，无表访问）：
 
 | 函数 | C 对应 | 语义 |
 |------|--------|------|
-| `cleanup_service(table, rp, kernel, run_script)`（R22a，2026-09-06） | minix3/minix/servers/rs/manager.c:cleanup_service_debug | **两相执行体**：`RS_DEAD` 未置 → 第一相（解链四指针+清邻居回链、置 `RS_DEAD`、`SYS_PRIV_DISALLOW`/`CLEAR_IPC_REFS`、清 `RS_ACTIVE`、补发 pending late reply）；已置 → 第二相（`sched_stop`+`srv_kill(SIGKILL)`——失败仅告警，与 C 一致；`RS_CLEANUP_SCRIPT` 先清位再跑脚本钩子；detach 分支保槽（`detach_service` 编排归 13）；reincarnate 不释放槽） |
+| `TerminateAction` + `TerminateDecision` | minix3/minix/servers/rs/manager.c:terminate_service | 决策输出：动作 + 变异载荷 `mutations: SlotMutations`（set/clear/字段） |
+| `terminate_decision(flags, sys_flags, restarts, has_script, shutting_down, is_updating)` | minix3/minix/servers/rs/manager.c:terminate_service | 完整决策树（6 输入 → 5 动作） |
+| `compute_backoff(restarts, no_bin_exp, use_copy)` | minix3/minix/servers/rs/manager.c:terminate_service | `1 << min(restarts, 62)` 封顶 30；`USE_COPY` 折叠；`NO_BIN_EXP` → 1 |
+| `script_reason(flags)` | minix3/minix/servers/rs/manager.c:run_script | `"restart"`/`"no-heartbeat"`/`"terminated"` |
+| `late_reply_result(caller_request, norestart)` | minix3/minix/servers/rs/manager.c:terminate_service | `RS_DOWN`/`RS_REFRESH+norestart` → `OK`；否则 `EDEADEPT` |
+| `CleanupDecision` + `cleanup_decision(flags)` | minix3/minix/servers/rs/manager.c:cleanup_service_debug | 第二段清理分类（script/detach） |
+| `MAX_DET_RESTART`/`BACKOFF_BITS`/`MAX_BACKOFF` | minix3/minix/servers/rs/const.h:25,50-51 | 常量（10/64/30） |
 
-| 函数 | C 对应 | 语义 |
+**执行体面**（把决策驱动为效果，动作钩子全部是注入缝）：
+
+| 执行体 | C 对应 | 语义 |
 |------|--------|------|
-| `TerminateAction` + `TerminateDecision` | minix3/minix/servers/rs/manager.c:terminate_service | 决策输出：动作 + 变异载荷 `mutations: SlotMutations`（set/clear/字段，R13） |
-| `terminate_decision(flags, sys_flags, restarts, has_script, shutting_down, is_updating)` | minix3/minix/servers/rs/manager.c:terminate_service（L1065，工具生成） | 完整决策树（6 输入 → 5 动作） |
-| `compute_backoff(restarts, no_bin_exp, use_copy)` | minix3/minix/servers/rs/manager.c:terminate_service（L1163，工具生成） | `1 << min(restarts, 62)` 封顶 30；`USE_COPY` 折叠；`NO_BIN_EXP` → 1 |
-| `script_reason(flags)` | minix3/minix/servers/rs/manager.c:run_script（L1195，工具生成） | `"restart"`/`"no-heartbeat"`/`"terminated"` |
-| `late_reply_result(caller_request, norestart)` | minix3/minix/servers/rs/manager.c:terminate_service（L1134，工具生成） | `RS_DOWN`/`RS_REFRESH+norestart` → `OK`；否则 `EDEADEPT` |
-| `CleanupDecision` + `cleanup_decision(flags)` | minix3/minix/servers/rs/manager.c:rproc（L451，工具生成） | 第二段清理分类（script/detach） |
-| `MAX_DET_RESTART`/`BACKOFF_BITS`/`MAX_BACKOFF` | const.h:25,50-51 | 常量（10/64/30） |
+| `terminate_service(table, upd, rp, kernel, ticks, shutting_down, effects)` | minix3/minix/servers/rs/manager.c:terminate_service | 决策驱动：先按决策载荷一次 `apply`，再为**除更新回滚外**的每条路径执行全局更新中止（C 1099-1102），随后分派动作 |
+| `cleanup_service(table, rp, kernel, run_script)` | minix3/minix/servers/rs/manager.c:cleanup_service_debug | **两相执行体**：`RS_DEAD` 未置 → 第一相（解链四指针+清邻居回链、置 `RS_DEAD`、`SYS_PRIV_DISALLOW`/`CLEAR_IPC_REFS`、清 `RS_ACTIVE`、补发 pending late reply）；已置 → 第二相（`sched_stop`+`srv_kill(SIGKILL)`——失败仅告警，与 C 一致；`RS_CLEANUP_SCRIPT` 先清位再跑脚本钩子；detach 分支保槽（`detach_service` 编排归 13）；reincarnate 不释放槽） |
+| `crash_service` / `kill_service` | minix3/minix/servers/rs/manager.c:crash_service_debug、kill_service_debug | RS 自身 → `CrashOutcome::SelfTerminate`；否则 SIGKILL。`kill_service` 置 `RS_EXITING` 后返回入参 errno |
+| `detach_service(slot, kernel, counter, ds_publish_label)` | minix3/minix/servers/rs/manager.c:detach_service_debug | 唯一 label（计数器由调用方持有）+ 复位 flags + 去核心/去监控 + `Allow` |
+| `get_service_instances` | minix3/minix/servers/rs/manager.c:get_service_instances | 实例族枚举（rp → prev → next → old → new） |
+| `reincarnate_service`（模块内私有） | minix3/minix/servers/rs/manager.c:reincarnate_service | clone_slot → 清端点索引 → `start_service(SEF_INIT_FRESH)` → restarts + 1 |
+| `rs_idle_period` | minix3/minix/servers/rs/utility.c:rs_idle_period | 空闲期 DEAD 清理 + 缺失副本补建（VM 单副本规则） |
 
 ### 3.2 TerminateAction 建模
 
 C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFRESHING`/`RS_EXITING` 后继续走主树）；Rust 把"决策"与"置位副作用"分离：
 
 - `TerminateAction` 枚举 5 个变体，**非法状态不可表达**（例如"rollback 同时 refresh"不可能构造）；
-- `TerminateDecision.mutations`（`SlotMutations`）汇总 C 决策过程中的全部槽位变异（置位/清位/字段写），由调用方一次性 `apply`——避免了 C 的"边走边置位"导致的中间态可观测性问题（06 的 late_reply 等消费者只看到终态）。**R13**：`set_flags` 只能表达置位，扩展为 `set`+`clear`+`init_err`+`backoff` 载荷后，`REINCARNATE` 的清除（minix3/minix/servers/rs/manager.c:terminate_service（L1147，工具生成））、rollback 的 `r_init_err = ERESTART`（minix3/minix/servers/rs/manager.c:terminate_service（L1075，工具生成））、backoff 分支的 `r_backoff = 1<<MIN(...)` 写入（minix3/minix/servers/rs/manager.c:terminate_service（L1163，工具生成））全部显式化。
+- `TerminateDecision.mutations`（`SlotMutations`）汇总 C 决策过程中的全部槽位变异（置位/清位/字段写），由调用方一次性 `apply`——C 的"边走边置位"会留下可被观察的中间态（06 的 late_reply 等消费者可能读到半程状态），载荷化后消费者只看到终态。载荷因此不只有 `set`：`clear` 承载 `REINCARNATE` 的清除（minix3/minix/servers/rs/manager.c:terminate_service）、`init_err` 承载 rollback 的 `r_init_err = ERESTART`、`backoff` 承载 backoff 分支的写入。
 - `CleanupAll { norestart, reincarnate, core_fatal }` 携带 EXITING 分支的三个布尔上下文，`Refresh`/`Backoff { backoff }`/`Restart` 对应另三个分支。
 
 ### 3.3 更新谓词的注入
 
 决策树读两个更新谓词，建模方式不同：
 
-- `SRV_IS_UPDATING(rp)`（const.h:114，读 `r_flags & RS_UPDATING`）——以 `is_updating` 布尔参数注入（INITIALIZING 分支的 rollback 判定，C 1071-1076）；决策层不直接读 `UPDATING` 位；
-- `SRV_IS_UPD_SCHEDULED(rp)`（const.h:120，读未建模的 `r_upd` 描述符，02 P2-3）——**不在 `terminate_decision` 内建模**：EXITING 分支的 `abort_update_proc(EDEADSRCDST)`（C 1127-1129）是 16 的动作钩子，由调用方在 `CleanupAll` 执行时接线判定（§2.1 步骤 4 只陈述调用点）。
+- `SRV_IS_UPDATING(rp)`（minix3/minix/servers/rs/const.h:114，读 `r_flags & RS_UPDATING`）——以 `is_updating` 布尔参数注入（INITIALIZING 分支的 rollback 判定，C 1071-1076）；决策层不直接读 `UPDATING` 位；
+- `SRV_IS_UPD_SCHEDULED(rp)`（minix3/minix/servers/rs/const.h:120，三合取：链非空 + 全局未在更新 + **本槽位自己的描述符非空**）——**不在 `terminate_decision` 内建模**：EXITING 分支的 `abort_update_proc(EDEADSRCDST)`（C 1126-1130）是 16 的动作钩子，由执行体在 `CleanupAll` 分派时接线判定（§2.1 步骤 4 只陈述调用点）。第三个合取决定了"退出者不是更新成员时不动更新链"，见 02 文档对 `r_upd` 描述符的建模。
 
 `terminate_decision` 的签名因此是 `(flags, sys_flags, restarts, has_script, shutting_down, is_updating)`——6 个纯输入，无表访问。
 
@@ -207,14 +219,14 @@ C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFR
 
 ### 4.1 模块结构
 
-`os/servers/rs/src/recovery.rs`：`TerminateAction`/`TerminateDecision`/`CleanupDecision` 三个类型 + `terminate_decision`/`compute_backoff`/`script_reason`/`late_reply_result`/`cleanup_decision` 五个函数 + 三个常量。模块 doc 注明动作钩子（16/06/11/19/ARCH A-1）为调用点。
+`os/servers/rs/src/recovery.rs` 分两层。**决策面**：`TerminateAction`/`TerminateDecision`/`CleanupDecision` 三个类型 + `terminate_decision`/`compute_backoff`/`script_reason`/`late_reply_result`/`cleanup_decision` 五个函数 + 三个常量。**执行体面**：`terminate_service`（决策驱动）、`cleanup_service`（两相清理）、`crash_service`/`kill_service`、`detach_service`、`get_service_instances`、`reincarnate_service`（私有）、`rs_idle_period` 七个函数，外加 `TerminateOutcome`/`CrashOutcome`/`TerminateEffects` 三个类型与 `SIGKILL` 常量。模块 doc 注明动作钩子（16/06/11/19/ARCH A-1）为调用点。
 
 ### 4.2 关键不变量
 
-1. **决策树顺序与 C 一致**（minix3/minix/servers/rs/manager.c:terminate_service（L1069，工具生成））：init 失败 → norestart → EXITING → REFRESHING → backoff/restart——顺序不可交换（例如 norestart 检测必须在 EXITING 分支之前，因为 norestart 会置 EXITING 位）。C 的全局 RUPDATE abort（1099-1102）是 16 的动作钩子，由调用方在决策前执行，不在 `terminate_decision` 内建模（§3.3）。
+1. **决策树顺序与 C 一致**（minix3/minix/servers/rs/manager.c:terminate_service）：init 失败 → norestart → EXITING → REFRESHING → backoff/restart——顺序不可交换（例如 norestart 检测必须在 EXITING 分支之前，因为 norestart 会置 EXITING 位）。C 的全局 RUPDATE abort（1099-1102）**不在** `terminate_decision` 内建模，而由执行体在决策之后、动作分派之前执行，且对除"更新回滚"外的每条路径都成立——C 只在更新中的 rollback 分支（1075）提前 return，其余路径都会走到 1099。
 2. **init 失败分支的 fall-through 语义保留**：`SF_NO_BIN_EXP` 置 `RS_REFRESHING`、其他置 `RS_EXITING` 后**继续**走主树（与 C 1078-1091 一致）；唯一提前 return 是更新中 rollback（1071-1076）。
 3. **`mutations` 汇总**：决策过程置的位（`REFRESHING`/`EXITING`/`CLEANUP_DETACH`/`CLEANUP_SCRIPT`）出现在 `mutations.set`，`InitUpdateRollback` 携带 `init_err = ERESTART`，`Backoff` 携带 `backoff = 计算值`，`CleanupAll{reincarnate:true}` 携带 `clear = REINCARNATE`——调用方一次 `apply`。
-4. **backoff 封顶**：`1 << min(restarts, 62)` 先移位再封顶 `MAX_BACKOFF`（C 顺序 minix3/minix/servers/rs/manager.c:terminate_service（L1166，工具生成））；`USE_COPY` 折叠仅在 `backoff > 1` 时（1168-1169）。
+4. **backoff 封顶**：`1 << min(restarts, 62)` 先移位再封顶 `MAX_BACKOFF`（C 顺序 minix3/minix/servers/rs/manager.c:terminate_service）；`USE_COPY` 折叠仅在 `backoff > 1` 时（1168-1169）。
 5. **`late_reply_result` 是纯函数**：不读槽位 caller_request 之外的状态，四组合（DOWN/REFRESH+norestart/REFRESH/其他）全覆盖。
 6. **`cleanup_decision` 只分类**：第一段（RS_DEAD 标记/disallow/late_reply）与第二段的执行（sched_stop/srv_kill/run_script/free_slot）都是调用方动作；`detach` 时跳过 sched_stop/srv_kill（C 455-472 的语义由调用方保证）。
 
@@ -222,24 +234,34 @@ C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFR
 
 ## 5. 测试要点
 
-`recovery.rs` 内测试（`cargo test -p minix-rs --lib recovery`，13 项）：
+`recovery.rs` 内测试（`cargo test -p minix-rs --lib recovery`）：
 
-1. `terminate_decision` init 失败 + `NO_BIN_EXP` → `Refresh` + `mutations.set` 含 `REFRESHING`（C 1078-1086 fall-through 到 1155-1157）。
-2. init 失败（其他）→ `CleanupAll` + `mutations.set` 含 `EXITING`（C 1090-1091 fall-through）。
-3. init 失败 + `is_updating` → `InitUpdateRollback` + `mutations.init_err = ERESTART`（C 1071-1076 提前 return，R13）。
-4. `NORESTART` + `DET_RESTART` + 有脚本 → `CleanupAll{norestart:true}` + 三置位（C 1105-1117）。
-5. `restarts >= MAX_DET_RESTART` → 不置 `CLEANUP_DETACH`（C 1108-1111）。
-6. `CORE_SRV` 且非 shutdown → `core_fatal:true`；shutdown 中 → false（C 1121-1123）。
-7. `REINCARNATE` → `reincarnate:true` + `mutations.clear` 含 `REINCARNATE`（C 1146-1151，R13）。
-8. `terminate_decision` backoff 分支：`mutations.backoff` 携带计算值（含 `USE_COPY` 折叠，R13）。
-9. `compute_backoff`：restarts 0/1/4/10（封顶 30）、`NO_BIN_EXP` → 1、`USE_COPY` 折叠（C 1163-1174）。
-10. `test_compute_backoff_negative_returns_1`（R16）：负 restarts clamp → 1（不继承 C 的负移位 UB）。
-11. `test_compute_backoff_properties`（E-9）：全 i32 域生成——totality、界 [1, MAX_BACKOFF]、restarts≤0 → 1、≥BACKOFF_BITS-2 → MAX_BACKOFF、no_bin_exp/use_copy 覆盖、单调不减。
-11. `script_reason` 三值（C 1195-1199）。
-12. `late_reply_result` 四组合（C 1134-1135）。
-13. `cleanup_decision` 两组合（C 451-452）。
+**决策树分支**：
 
-测试总数声明：本文档范围为 `recovery` 模块测试数（13 项，以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
+1. `test_terminate_init_failure_refresh_falls_through`：init 失败 + `NO_BIN_EXP` → `Refresh` + `mutations.set` 含 `REFRESHING`（C 1078-1086 fall-through 到 1155-1157）。
+2. `test_terminate_init_failure_exit_falls_through`：init 失败（其他）→ `CleanupAll` + `mutations.set` 含 `EXITING`（C 1090-1091 fall-through）。
+3. `test_terminate_init_failure_rollback`：init 失败 + `is_updating` → `InitUpdateRollback` + `mutations.init_err = ERESTART`（C 1071-1076 提前 return）。
+4. `test_terminate_norestart_flags`：`NORESTART` + `DET_RESTART` + 有脚本 → `CleanupAll{norestart:true}` + 三置位（C 1105-1117）。
+5. `test_terminate_detach_restart_limit`：`restarts >= MAX_DET_RESTART` → 不置 `CLEANUP_DETACH`（C 1108-1111）。
+6. `test_terminate_core_fatal`：`CORE_SRV` 且非 shutdown → `core_fatal:true`；shutdown 中 → false（C 1121-1123）。
+7. `test_terminate_reincarnate`：`REINCARNATE` → `reincarnate:true` + `mutations.clear` 含 `REINCARNATE`（C 1146-1151）。
+8. `test_terminate_backoff_writes_slot`：backoff 分支 → `mutations.backoff` 携带计算值（含 `USE_COPY` 折叠，C 1164-1173）。
+
+**执行体效果**：
+
+9. `test_terminate_unexpected_exit_aborts_running_update`：意外退出（backoff 路径）也执行全局更新中止（C 1099-1102）。
+10. `test_terminate_exiting_non_member_keeps_scheduled_update`：`SRV_IS_UPD_SCHEDULED` 的第三个合取（本槽位描述符非空，minix3/minix/servers/rs/const.h:119-120）——非成员退出不动更新链（C 1126-1130）。
+
+**纯函数**：
+
+11. `test_compute_backoff`：restarts 0/1/4/10（封顶 30）、`NO_BIN_EXP` → 1、`USE_COPY` 折叠（C 1164-1173）。
+12. `test_compute_backoff_negative_returns_1`：负 restarts clamp → 1（不继承 C 的负移位 UB）。
+13. `test_compute_backoff_properties`：全 i32 域生成——totality、界 [1, MAX_BACKOFF]、restarts≤0 → 1、≥BACKOFF_BITS-2 → MAX_BACKOFF、no_bin_exp/use_copy 覆盖、单调不减。
+14. `test_script_reason` 三值（C 1195-1199）。
+15. `test_late_reply_result` 四组合（C 1134-1135）。
+16. `test_cleanup_decision` 两组合（C 451-452）。
+
+测试总数声明：本文档范围为 `recovery` 模块测试数（16 项，以该模块 `cargo test` 输出为准）。全局 `cargo test -p minix-rs --lib` 通过数随并行模块增长（见 12 §5 的累计值约定）。
 
 ---
 
@@ -265,4 +287,4 @@ C 的决策树靠**内联置位 + fall-through**（init 失败分支置 `RS_REFR
 - `rewrite-notes/03-stage-rs/14-rs-query-requests.md` —— `RS_FI` 故障注入触发源
 - `rewrite-notes/03-stage-rs/18-rs-self-lifecycle.md` —— RS 自身死亡/rollback 特例
 - `rewrite-notes/03-stage-rs/02-rs-process-table.md` —— `ServiceInstances` 迭代器（ARCH A-3）
-- `minix3/minix/servers/rs/manager.c:kill_service_debug,1033-1052,1055-1180,1185-1243,1246-1298,1334-1352`、`proto.h:44-59`、`const.h:25,50-51,114,120` —— ground truth
+- `minix3/minix/servers/rs/manager.c:kill_service_debug,1033-1052,1055-1180,1185-1243,1246-1298,1334-1352`、`minix3/minix/servers/rs/proto.h:44-59`、`minix3/minix/servers/rs/const.h:25,50-51,114,120` —— ground truth

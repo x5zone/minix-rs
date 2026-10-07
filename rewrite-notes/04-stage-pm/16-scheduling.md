@@ -2,6 +2,8 @@
 
 本文讲清调度如何在 PM 侧以“`sched_init` 的 `INIT` 接管 + `sched_start_user` 的 `PRIV_PROC` 父继承 `INIT` + `sched_nice` 的 `KERNEL/NONE→EINVAL` 守卫 + `nice→queue` 与 `queue→nice` 的 `16:41` 线性缩放 + `do_getsetpriority` 的 `PRIO_PROCESS` 唯一支持与 `SUPER_USER` 三重及 `EACCES` 提优先限制”为完整链路，使 `nice` 的 `-20..20` 与内核队列 `0..15` 的优先级在用户态 `SCHED` 服务的三元 `maxprio/quantum/cpu` 上可区分，且 `USER_Q→0` 零点在 `sched_init` 与 `fill_boot_procs` 之间对齐。
 
+> **Rust 实现**: `os/servers/pm/src/sched.rs`（`NiceMapping`/`SchedWhich`/`Who`/`SchedCtl`/`sched_init`/`sched_start_user`/`sched_nice`/`do_getsetpriority`）、`os/servers/pm/src/init.rs`（`init_scheduling`/`sched_start`/`nice_from_queue` 的启动交接）、`os/servers/pm/src/mproc/mproc.rs`（`ProcessResources { nice, scheduler }`）、`os/servers/pm/src/mproc/fork.rs`（`fork_from` 的 Kernel 父 → SCHED 分支）、`os/servers/pm/src/ipc/{calls,vfs}.rs`（`do_getsetpriority`/`sched_start_user` 接线）、`os/libs/minix-types/src/types/com.rs`（`SCHEDULING_*` 常量）
+
 前置阅读：01-pm-init-main.md（`sef_cb_init_fresh:241` `sched_init()` 调用点与 `USER_Q`/`USR_Q` `7→0` 零点、`PmServer::init` 末步时序）、04-ipc-dispatch.md（`call_vec` 的 `PM_GETPRIORITY/SETPRIORITY` 分发与 `ReplyIntent`）、02-mproc-struct.md（`ProcessResources { nice, scheduler }` 二元 + `MinixTimer` 的 `ALARM_ON` 互斥外）。
 
 ---
@@ -13,7 +15,7 @@
 **目标读者**：已理解 `ProcTable` 的 `IN_USE && !PRIV_PROC` 扫描（01）、`call_vec` 的 `PM_GETPRIORITY/SETPRIORITY` 分发（04）、`mproc` 的 `nice/scheduler` 二元（02）的开发者；知道 `PRIO_MIN -20..PRIO_MAX 20` 与 `MAX_USER_Q 0..MIN_USER_Q 15` 的值域。
 
 > **本章不讲什么**：
-> - 内核调度器就绪队列与 `do_schedule`（`kernel/proc.c:schedule` 的 `pick_proc`）—— `rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`
+> - 内核调度器就绪队列与 `do_schedule`（`minix3/minix/kernel/proc.c:pick_proc`）—— `rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`
 > - SCHED 服务实现（`sched_start/sched_inherit/sched_stop` 的队列管理、`sched_set_nice` 的 `maxprio` 传播）—— `06-stage-sched`（`servers/sched`）
 > - VFS 侧 `VFS_PM_FORK` 的 `NEW_PARENT` 语义（`05` 已覆盖 `NEW_PARENT` 的 `reply_to_new_parent`）
 >
@@ -35,9 +37,9 @@ queue = MAX_USER_Q + (nice - PRIO_MIN) * (MIN-MAX+1) / (PRIO_MAX-PRIO_MIN+1)
 nice = (queue - USER_Q) *41/16  (main.c:284-285)
 ```
 
-`USER_Q 7` 的 `((7-7)*41/16=0)` 零点对齐 `nice 0 ↔ queue 7`（`config.h:69` `USER_Q = (MIN-MAX)/2 + MAX`），`MAX_USER_Q 0 → -17`（`(0-7)*41/16=-17` 钳 `PRIO_MIN -20` 外但 `nice_to_priority:99-100` 不钳 `PRIO` 侧而钳 `queue` 侧，`MAX` 的 `-17` 在 `get_nice_value:286-287` `PRIO_MIN` 钳 ` -20` 内）与 `MIN_USER_Q 15 → 20`（`(15-7)*41/16=20` 钳 `PRIO_MAX 20` 内）的端点截断如 `init.rs:817-824` 测试。
+`USER_Q 7` 的 `((7-7)*41/16=0)` 零点对齐 `nice 0 ↔ queue 7`（`config.h:69` `USER_Q = (MIN-MAX)/2 + MAX`），两个端点的截断到界：`MAX_USER_Q 0 → -17`（`(0-7)*41/16=-17`，落在 `PRIO_MIN -20` 之上，不触发 `get_nice_value` 的钳位）与 `MIN_USER_Q 15 → 20`（`(15-7)*41/16=20`，正好等于 `PRIO_MAX`）；`init.rs:test_nice_from_queue_default_queues` 以 `USR_Q/SRV_Q/MAX_USER_Q/MIN_USER_Q` 四个输入锁定这四点。
 
-整数截断使双射非完全可逆：`nice 0→queue 7→nice 0` 可逆，`nice 1→queue 7` 的 `(1+20)*16/41=8`? 实际 `(21*16/41=8)` 的 `queue 8 → nice (8-7)*41/16=2` 的 `1→2` 漂移为 `16:41` 非整数比的固有量化误差。
+整数截断使双射非完全可逆：`nice 0→queue 7→nice 0` 可逆；`nice 1` 经 `(1+20)*16/41=8` 落到 `queue 8`，反算 `(8-7)*41/16=2` 得 `nice 2`，`1→2` 的漂移是 `16:41` 非整数比的固有量化误差。
 
 ### 1.3 为什么 `sched_start_user` 有 `PRIV_PROC` 父继承 `INIT` 特例：`PRIV_PROC` 的调度上下文不可继承
 
@@ -52,11 +54,11 @@ if (mproc[parent].mp_flags & PRIV_PROC) {
 }
 ```
 
-系统服务经 `regular fork` 产的恢复脚本（`minix3/minix/servers/pm/forkexit.c:do_fork（L96，工具生成）` 的 `PRIV_PROC` 父调 `SCHED` 同理）不应继承 `PRIV_PROC` 父的 `NONE` 调度上下文（`RS` 等系统服务的 `mp_scheduler==NONE` 无 `maxprio/quantum`），而应继承 `INIT` 的用户策略（`INIT` 的 `mp_scheduler==KERNEL` 启动后经 `sched_init` 已为 `SCHED`，`INIT` 的 `maxprio` 为 `USER_Q` 的 `nice 0` 队列）。`fork_from` 的 `Privilege::Kernel` 父调 `SCHED` 的同源分支（`fork.rs:354-362`）与此对偶。
+系统服务经 `regular fork` 产的恢复脚本（`minix3/minix/servers/pm/forkexit.c:do_fork` 的 `PRIV_PROC` 父调 `SCHED` 同理）不应继承 `PRIV_PROC` 父的 `NONE` 调度上下文（`RS` 等系统服务的 `mp_scheduler==NONE` 无 `maxprio/quantum`），而应继承 `INIT` 的用户策略（`INIT` 的 `mp_scheduler==KERNEL` 启动后经 `sched_init` 已为 `SCHED`，`INIT` 的 `maxprio` 为 `USER_Q` 的 `nice 0` 队列）。`fork_from` 的 `Privilege::Kernel` 父调 `SCHED` 的同源分支（`os/servers/pm/src/mproc/fork.rs:fn fork_from（Kernel 父 → SCHED）`）与此对偶。
 
 ### 1.4 为什么 `sched_nice` 拒绝 `KERNEL/NONE` 调度器：能力守卫
 
-`schedule.c:98-99` `if scheduler==KERNEL||NONE→EINVAL`（`95-97` 注释“内核或未指派调度器的进程不可改 nice”）的“能力守卫”：`KERNEL`（`main.c:199` 的 `INIT` 初始 `KERNEL` 在 `sched_init` 前）的 `nice` 不由 `SCHED` 管理（内核 `proc` 的 `priority` 直接 `MAX_USER_Q`？），`NONE`（`main.c:213` 的 `RS` 等系统服务的 `mp_scheduler==NONE`）的 `nice` 无调度器可通知（`_taskcall` 无目标），用户态调度器（`SCHED`）才支持 `SCHEDULING_SET_NICE` 的 `_taskcall`（`schedule.c:105-107` `m.m_pm_sched_scheduling_set_nice.endpoint/maxprio`）。
+`schedule.c:98-99` `if scheduler==KERNEL||NONE→EINVAL`（`95-97` 注释“内核或未指派调度器的进程不可改 nice”）的“能力守卫”：`KERNEL` 调度下的进程（`main.c:199` 的 `INIT` 初始 `KERNEL`，在 `sched_init` 接管前）其优先级由内核而非用户态调度器管理，PM 不代改；`NONE`（`main.c:213` 的 `RS` 等系统服务的 `mp_scheduler==NONE`）的 `nice` 无调度器可通知（`_taskcall` 无目标）；只有用户态调度器（`SCHED`）才有 `SCHEDULING_SET_NICE` 的收信方（`schedule.c:105-107` `m.m_pm_sched_scheduling_set_nice.endpoint/maxprio`）。内核就绪队列与内核侧优先级细节见 `rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`。
 
 ### 1.5 为什么 `do_getsetpriority` 的权限是 `eff` 三重与 `EACCES` 提优先限制：读与写的非对称
 
@@ -71,15 +73,15 @@ if (mproc[parent].mp_flags & PRIV_PROC) {
 
 ### 1.6 为什么 `get_nice_value` 是 `nice_to_priority` 的逆：`USER_Q→0` 零点与截断
 
-`main.c:284-285` `nice = (queue-USER_Q)*41/16` 与 `utility.c:95` `queue = MAX_USER_Q + (nice-PRIO_MIN)*16/41` 互逆但因整数截断非完全双射（`16:41` 非整数比）：`USR_Q==SRV_Q==USER_Q==7 → nice 0` 零点对齐（`priv.h:93-95` 的 `SRV_Q/USR_Q` 皆 `USER_Q`），`MAX_USER_Q 0→-17` 的 `(0-7)*41/16=-17` 钳 `PRIO_MIN -20` 外但 `get_nice_value:286-287` `PRIO_MAX/MIN` 钳 ` -20..20` 内与 `nice_to_priority:99-100` 的 `MAX..MIN` 钳对偶。
+`main.c:284-285` `nice = (queue-USER_Q)*41/16` 与 `utility.c:95` `queue = MAX_USER_Q + (nice-PRIO_MIN)*16/41` 互逆但因整数截断非完全双射（`16:41` 非整数比）：`USR_Q==SRV_Q==USER_Q==7 → nice 0` 零点对齐（`priv.h:93-95` 的 `SRV_Q/USR_Q` 皆 `USER_Q`），`MAX_USER_Q 0→-17`（`(0-7)*41/16=-17`，在 `PRIO_MIN -20` 之上，不触发 `get_nice_value:286-287` 的 `PRIO_MAX/MIN` 钳位）与 `nice_to_priority:99-100` 的 `MAX..MIN` 队列钳位互为对偶。
 
 ### 1.7 与其他 OS 状态机的对照
 
 Rust 改写不是照抄 `MAX_USER_Q + (nice-PRIO_MIN)*16/41` 整数算式，而是在吸收工业级 OS 的成熟模式后做取舍。
 
-**Linux `setpriority/getpriority`/`nice` + `CFS`。** Linux 的 `setpriority(PRIO_PROCESS, who, prio)` 同样 `which==PRIO_PROCESS` 仅进程粒度（`kernel/sys.c:SYSC_setpriority` 的 `which!=PRIO_PROCESS→EINVAL`），`who==0→current` 否则 `find_task_by_vpid`（与 `find_proc` 同 `who==0→self`），`capable(CAP_SYS_NICE)` 的 `EPERM` 三重（`cred->euid==0` 或 `euid==target_euid` 等）与 PM 的 `eff==SUPER_USER || eff==target_eff || eff==target_real` 同源但 Linux 以 `CAP_SYS_NICE` 能力替代 `SUPER_USER` 位。Linux `nice` 的 `PRIO_MIN -20..19`（`sys/resource.h: PRIO_MAX 20` 但 `nice` 上界 `19`）与 `CFS` 的 `load_weight` 的 `sched_prio_to_weight[40]` 非线性映射（`kernel/sched/core.c: load_weight`） vs Minix3 的 `16:41` 线性缩放—— `CFS` 的非线性使 `nice -20` 的权重为 `nice 0` 的 `~30` 倍，Minix3 的线性使 `nice -20→queue 0` 的优先级为 `nice 0→queue 7` 的 `7` 级差。`getpriority` 的 `return 20 - prio` 的 `USER_PRIO` 偏移与 PM 的 `nice-PRIO_MIN` 偏移同零点平移。
+**Linux `setpriority/getpriority`/`nice` + `CFS`（外部参考）。** Linux 的 `setpriority(PRIO_PROCESS, who, prio)` 同样 `which==PRIO_PROCESS` 仅进程粒度（Linux 源码 `kernel/sys.c` 的 `SYSC_setpriority` 的 `which!=PRIO_PROCESS→EINVAL`），`who==0→current` 否则 `find_task_by_vpid`（与 `find_proc` 同 `who==0→self`），`capable(CAP_SYS_NICE)` 的 `EPERM` 三重（`cred->euid==0` 或 `euid==target_euid` 等）与 PM 的 `eff==SUPER_USER || eff==target_eff || eff==target_real` 同源但 Linux 以 `CAP_SYS_NICE` 能力替代 `SUPER_USER` 位。Linux `nice` 的 `PRIO_MIN -20..19`（`sys/resource.h: PRIO_MAX 20` 但 `nice` 上界 `19`）与 `CFS` 的 `load_weight` 的 `sched_prio_to_weight[40]` 非线性映射（Linux 源码 `kernel/sched/core.c` 的 `load_weight`） vs Minix3 的 `16:41` 线性缩放—— `CFS` 的非线性使 `nice -20` 的权重为 `nice 0` 的 `~30` 倍，Minix3 的线性使 `nice -20→queue 0` 的优先级为 `nice 0→queue 7` 的 `7` 级差。`getpriority` 的 `return 20 - prio` 的 `USER_PRIO` 偏移与 PM 的 `nice-PRIO_MIN` 偏移同零点平移。以上均为外部参考，本仓无对应 ground truth。
 
-**Redox `sched_yield` + `Scheme` 票据。** Redox 以 `context::Context { status: Runnable, sched : Sched }` + `scheme::Scheme` 的 `Park` 票据与 `sched_yield` 的协作式让渡，`nice` 的优先级经 `common/src/elf.rs` 的 `priority` 字段与 `kernel/scheme` 的 `SCHED` 队列同 `minix/sched.h` 的 `maxprio/quantum` 三元。Redox 无 `PRIV_PROC` 父继承 `INIT` 特例（`Context` 的 `parent` 无 `PRIV_PROC` 语义），Minix3 的 `71-76` 分支为 `regular fork` 的 `PRIV_PROC` 父调 `SCHED` 的配套（`fork.rs:354-362` 同理）使恢复脚本继承 `INIT` 策略。
+**Redox `sched_yield` + `Scheme` 票据（外部参考）。** Redox 以 `context::Context { status: Runnable, sched : Sched }` + `scheme::Scheme` 的 `Park` 票据与 `sched_yield` 的协作式让渡，`nice` 的优先级经 `common/src/elf.rs` 的 `priority` 字段与 `kernel/scheme` 的 `SCHED` 队列同 `minix/sched.h` 的 `maxprio/quantum` 三元（外部参考，本仓无 ground truth）。Redox 无 `PRIV_PROC` 父继承 `INIT` 特例（`Context` 的 `parent` 无 `PRIV_PROC` 语义），Minix3 的 `71-76` 分支为 `regular fork` 的 `PRIV_PROC` 父调 `SCHED` 的配套（`os/servers/pm/src/mproc/fork.rs:fn fork_from（Kernel 父 → SCHED）` 同理）使恢复脚本继承 `INIT` 策略。
 
 **`seL4` `sched_context` 显式票据。** `seL4` 的 `seL4_SchedContext_Bind` + `seL4_TCB_SetPriority` 的显式 `sched_context` 能力与 `MCP`（`Maximum Controlled Priority`）的 `EACCES` 提优先限制（`MCP < new_prio → EACCES`）与 PM 的 `target_nice > arg_pri && !super→EACCES` 同“仅 `root` 可提优先”，`seL4` 的 `Notification` 周期唤醒 vs `CLOCK notify` 的 `expire_timers` 同 `SCHED` 驱动但 `seL4` 的调度票据为显式 `capability`（`seL4_Signal`），PM 的 `nice` 为隐式 `mp_nice` 位图。
 
@@ -137,7 +139,7 @@ int sched_start_user(endpoint_t ep, struct mproc *rmp)
 }
 ```
 
-`62` 行 `nice_to_priority` 的 `maxprio` 变换与 `D4` 的 `NiceMapping::to_queue` 同算式，`71-76` 行 `PRIV_PROC` 父继承 `INIT` 分支与 `fork` 的 `PRIV_PROC` 父调 `SCHED`（`minix3/minix/servers/pm/forkexit.c:do_fork（L96，工具生成）`）同源但 `inherit_from` 为 `INIT` 端点而非调度器，`79-83` 行 `sched_inherit` 的 `maxprio` 继承使子进程优先级跟随 `nice` 而非 `USER_Q` 固定。
+`62` 行 `nice_to_priority` 的 `maxprio` 变换与 `D4` 的 `NiceMapping::to_queue` 同算式，`71-76` 行 `PRIV_PROC` 父继承 `INIT` 分支与 `fork` 的 `PRIV_PROC` 父调 `SCHED`（`minix3/minix/servers/pm/forkexit.c:do_fork`）同源但 `inherit_from` 为 `INIT` 端点而非调度器，`79-83` 行 `sched_inherit` 的 `maxprio` 继承使子进程优先级跟随 `nice` 而非 `USER_Q` 固定。
 
 ### 2.3 `sched_nice`（`schedule.c:89-112`）
 
@@ -154,7 +156,7 @@ int sched_nice(struct mproc *rmp, int nice)
 }
 ```
 
-`98-99` 行 `KERNEL/NONE→EINVAL` 守卫在 `do_getsetpriority` 的 `EACCES` 前置——先判调度器能力再判权限（`misc.c:270-271` 的 `nice>target && !super→EACCES` 需 `sched_nice` 已可 `can_nice`），`105-107` 行 `endpoint/maxprio` + `SCHEDULING_SET_NICE 5` 的 `_taskcall` 与 `SchedCtl::set_nice` 同编码（`minix/com.h: SCHEDULING_SET_NICE`）。
+`98-99` 行 `KERNEL/NONE→EINVAL` 守卫的触发点在 `do_getsetpriority` 的权限判定之后：C 在 `misc.c:260-262` 判 `EPERM` 三重、`270-271` 判 `EACCES` 提优先限制，直到 `280` 行才调 `sched_nice`，守卫属于后置能力检查（`KERNEL/NONE` 的进程即使权限足够也拿到 `EINVAL`，而不是 `EACCES`）；`105-107` 行 `endpoint/maxprio` + `SCHEDULING_SET_NICE`（`minix/com.h:806`，0xF04）的 `_taskcall` 与 `SchedCtl::set_nice` 同编码。
 
 ### 2.4 `nice_to_priority`（`utility.c:91-103`）
 
@@ -183,7 +185,7 @@ static int get_nice_value(int queue)
 }
 ```
 
-`284-285` 行 `(queue-7)*41/16` 的 `i32` 截断与钳位 `PRIO_MAX/MIN`（`-20..20`）与 `nice_to_priority:99-100` 的 `MAX..MIN` 钳对偶（`USER_Q 7→0` 零点对齐，`MAX 0→-17` 的 `(0-7)*41/16=-17` 钳 ` -20` 内与 `MIN 15→20` 的 `(8*41/16=20)` 钳 `20` 内的端点截断如 `init.rs:817-824` 测试）。
+`284-285` 行 `(queue-7)*41/16` 的 `i32` 截断与钳位 `PRIO_MAX/MIN`（`-20..20`）与 `nice_to_priority:99-100` 的 `MAX..MIN` 钳对偶（`USER_Q 7→0` 零点对齐，`MAX 0→-17` 的 `(0-7)*41/16=-17` 不触发 `-20` 下钳与 `MIN 15→20` 的 `(8*41/16=20)` 正好触及 `20` 上钳的端点截断如 `os/servers/pm/src/init.rs:fn test_nice_from_queue_default_queues` 测试）。
 
 ### 2.6 `do_getsetpriority`（`misc.c:239-286`）
 
@@ -209,7 +211,7 @@ int do_getsetpriority(void)
 ### 2.7 调度协议（`minix/sched.h:7-12` + `minix/com.h: SCHEDULING_*` + `minix/config.h:66-74`）
 
 - `sched_start(SCHED, schedulee, parent, maxprio 7, quantum 200, cpu -1, &newsched)`（`sched.h:7-12` 六参，`schedule.c:37-43` `USER_Q/USER_QUANTUM`）+ `sched_inherit(SCHED, schedulee, parent, maxprio, &newsched)`（`sched.h:10-12` 四参，`schedule.c:79-83` `maxprio` 继承）+ `sched_stop(SCHED, schedulee)`（`sched.h:7` 二参，`06-stage-sched` 的 `sched_stop` 队列清理）
-- `SCHEDULING_START 0` / `SCHEDULING_SET_NICE 5`（`minix/com.h: SCHEDULING_*`，`schedule.c:37`/`105` 的 `_taskcall` 编码）+ `m_pm_sched_scheduling_set_nice.endpoint/maxprio`（`ipc.h: ` `mess_pm_sched_scheduling_set_nice`，`schedule.c:105-106`）
+- `SCHEDULING_START`（`minix/com.h:804`，`SCHEDULING_BASE+2` = 0xF02）/ `SCHEDULING_SET_NICE`（`minix/com.h:806`，`SCHEDULING_BASE+4` = 0xF04）（`schedule.c:37`/`105` 的 `_taskcall` 编码）+ `m_pm_sched_scheduling_set_nice.endpoint/maxprio`（`ipc.h:1827` `mess_pm_sched_scheduling_set_nice`，`schedule.c:105-106`）
 - `NR_SCHED_QUEUES 16` / `MAX_USER_Q 0` / `MIN_USER_Q 15` / `USER_Q 7` / `USER_QUANTUM 200`（`config.h:66-74`）+ `PRIO_MIN -20`/`PRIO_MAX 20`（`resource.h:43-44`）
 
 ### 2.8 不变式即契约
@@ -229,12 +231,12 @@ int do_getsetpriority(void)
 
 ## 3 Rust 设计决策
 
-Rust 改写遵循“显式 `ProcTable::user_procs` 迭代器 + `inherit_parent` 一处方法 + `NiceMapping` 双射 + `SchedWhich/Who` 枚举 + `may_get/set_prio` 一处谓词 + `SchedCtl::set_nice` trait”的 8 决策，保留 C 的 `IN_USE && !PRIV_PROC` 扫描与 `16:41` 线性缩放，但以类型系统使 `PRIO_PROCESS` 判据与 `SUPER_USER` 三重显式化。以下决策对应设计契约 `.design/16-design.v1.md` 的 D1–D8。
+Rust 改写遵循“单趟遍历 `IN_USE && !PRIV_PROC` + `inherit_parent` 一处方法 + `NiceMapping` 双射 + `SchedWhich/Who` 枚举 + `may_get/set_prio` 一处谓词 + `SchedCtl::set_nice` trait”的 8 决策，保留 C 的 `IN_USE && !PRIV_PROC` 扫描与 `16:41` 线性缩放，但以类型系统使 `PRIO_PROCESS` 判据与 `SUPER_USER` 三重显式化。以下 D1–D8 对应 `16-design.v2.md` 的设计决策编号。
 
 ### D1：`sched_init` 的扫描收敛到迭代器（ARCH A-8）
 
 - **C**：`26` `for proc_nr,trmp` 扫描 + `33` 过滤。
-- **Rust**：`ProcTable::user_procs() -> impl Iterator<Item=UserSlot>`（`IN_USE && !PRIV_PROC` 过滤的 `which` 迭代器），`fn sched_init(table, sched: &mut dyn SchedCtl) -> Vec<(UserSlot, Result<(), SchedError>)>`（遍历 `user_procs`，每项 `debug_assert_eq!(slot, INIT_PROC_NR)` 后 `sched.start(SCHED, schedulee, parent, USER_Q, USER_QUANTUM, cpu=-1)`，失败 `Err` 收集后 `eprintln` 而非 `panic`，与 `44-47` 同 `printf`）。
+- **Rust**：`fn sched_init(table: &mut ProcTable, sched: &mut dyn SchedCtl) -> Vec<(UserSlot, i32)>`（单趟遍历 `IN_USE && !PRIV_PROC` 的槽，`sched.start(SCHED, schedulee, parent, USER_Q, USER_QUANTUM, cpu=-1)`，把每槽的 rv 收集进返回值，与 `44-47` 同"失败不 panic"）。生产启动路径还要求 `INIT` 槽（`assert_eq!(endpoint.slot(), INIT_PROC_NR)`）与自父断言，这两条在 `os/servers/pm/src/init.rs:fn init_scheduling` 内保留；`sched.rs` 的这一份按 `D1` 只做遍历与注入。
 
 ### D2：`sched_start_user` 的 `PRIV_PROC` 父继承收敛到 `inherit_parent`（ARCH A-8）
 
@@ -249,7 +251,7 @@ Rust 改写遵循“显式 `ProcTable::user_procs` 迭代器 + `inherit_parent` 
 ### D4：`nice ↔ queue` 的线性缩放收敛到 `NiceMapping`（ARCH A-8）
 
 - **C**：`utility.c:95-96` `queue = MAX + (nice-MIN)*16/41` + `main.c:284-285` `nice = (queue-USER_Q)*41/16`。
-- **Rust**：`struct NiceMapping { MAX_USER_Q: i32, MIN_USER_Q: i32, PRIO_MIN: i32, PRIO_MAX: i32 }` + `fn to_queue(&self, nice: i32) -> Result<u32, EINVAL>`（`nice<MIN||>MAX→EINVAL` 先于缩放，缩放后钳位 `MAX..MIN`）+ `fn to_nice(&self, queue: i32) -> i32`（`queue-USER_Q)*41/16` 的 `i32` 截断与钳位 `PRIO_MAX/MIN` 与 C 一致，`USER_Q 7→0` 零点对齐）。
+- **Rust**：`pub struct NiceMapping { max_user_q: i32, min_user_q: i32, prio_min: i32, prio_max: i32, user_q: i32 }` + `fn to_queue(&self, nice: i32) -> Result<u32, SchedError>`（`nice<MIN||>MAX→EINVAL` 先于缩放，缩放后钳位 `MAX..MIN`）+ `fn to_nice(&self, queue: i32) -> i32`（`queue-USER_Q)*41/16` 的 `i32` 截断与钳位 `PRIO_MAX/MIN` 与 C 一致，`USER_Q 7→0` 零点对齐）。
 
 ### D5：`do_getsetpriority` 的 `which/who` 收敛到枚举（ARCH A-2）
 
@@ -269,15 +271,15 @@ Rust 改写遵循“显式 `ProcTable::user_procs` 迭代器 + `inherit_parent` 
 ### D8：常量收敛到 `minix-types`（单一真相）
 
 - **C**：`resource.h:43-44` `PRIO_MIN -20/PRIO_MAX 20`、`config.h:66-74` `NR_SCHED_QUEUES 16/MAX/MIN/USER_Q/USER_QUANTUM 200`、`sched.h: SCHED_PROC_NR 4`。
-- **Rust**：`minix-types: PRIO_MIN/MAX -20/20`、`NR_SCHED_QUEUES 16`、`MAX/MIN/USER_Q`、`USER_QUANTUM 200`、`SCHED_PROC_NR 4`、`SCHEDULING_SET_NICE 5` 单一真相（`config.h:68-74` 数值锁定，测试 `test_constants_match_c`）。
+- **Rust**：`minix_types: PRIO_MIN/MAX -20/20`、`NR_SCHED_QUEUES 16`、`MAX/MIN/USER_Q`、`USER_QUANTUM 200`、`SCHED_PROC_NR 4`、`SCHEDULING_START 0xF02`/`SCHEDULING_SET_NICE 0xF04`（`config.h:68-74` 数值锁定，`os/servers/pm/src/sched.rs:fn test_constants_match_c` 与 `minix-types` 的 `com.rs:fn test_sched_messages` 各自锁定）。`SCHEDULING_*` 已在 `minix-types` 单一真相；队列常量与 `PRIO_MIN/MAX` 目前在 `sched.rs` 与 `init.rs` 各有一份，收口到 `minix-types` 是独立重构。
 
 ### ARCH 标注汇总
 
 | ARCH 项 | 本档落点 | 三处一致标注 |
 |---------|---------|-------------|
-| A-8 调度客户端 | `SchedCtl` 的 `start/inherit/set_nice`（D1/D2/D3/D7） | `sched.rs` + 本文档 §3.1/3.3/3.7 + 计划 §4 |
-| A-2 flag→枚举 | `SchedWhich/Who`（D5） | `sched.rs` + 本文档 §3.5 + 计划 §4 |
-| A-3 全局→显式 | `SchedCtl` 显式 `caller: UserSlot`（D5/D6） | `sched.rs` 注释 + 本文档 §3.5/3.6 + 计划 §4 |
+| A-8 调度客户端 | `SchedCtl` 的 `start/inherit/set_nice`（D1/D2/D3/D7） | `sched.rs` + 本文档 D1/D2/D3/D7 + plan.md §4（A-8 行） |
+| A-2 flag→枚举 | `SchedWhich/Who`（D5） | `sched.rs` + 本文档 D5 + plan.md §4（A-2 行） |
+| A-3 全局→显式 | `SchedCtl` 显式 `caller: UserSlot`（D5/D6） | `sched.rs` 注释 + 本文档 D5/D6 + plan.md §4（A-3 行） |
 
 ---
 
@@ -288,7 +290,7 @@ Rust 改写遵循“显式 `ProcTable::user_procs` 迭代器 + `inherit_parent` 
 ```
 os/servers/pm/src/
 ├── mproc/
-│   └── mproc.rs         — ProcessResources { nice, scheduler }（已存，sched_init 回填 SCHED，sched_nice 后 mp_nice=pri）
+│   └── mproc.rs         — ProcessResources { nice, scheduler }（sched_init 回填 SCHED，sched_nice 后 mp_nice=pri）
 ├── sched.rs             — NiceMapping + SchedWhich/Who + may_get/set_prio + SchedCtl trait + sched_init/sched_start_user/sched_nice/do_getsetpriority + nice_to_priority/get_nice_value 纯函数
 └── ipc/
     └── mod.rs           — （无新增，sched 的 sys 调用经 sched.rs 的 trait 注入）
@@ -297,7 +299,7 @@ os/servers/pm/src/
 ### 4.2 `sched.rs`：双射与调度交接
 
 ```rust
-pub struct NiceMapping { pub MAX_USER_Q: i32, pub MIN_USER_Q: i32, pub PRIO_MIN: i32, pub PRIO_MAX: i32 } // 0,15,-20,20
+pub struct NiceMapping { pub max_user_q: i32, pub min_user_q: i32, pub prio_min: i32, pub prio_max: i32, pub user_q: i32 }
 impl NiceMapping {
     pub fn to_queue(&self, nice: i32) -> Result<u32, SchedError> // nice<MIN||>MAX→EINVAL 先于缩放，缩放后钳位 MAX..MIN (95-96/99-100)
     pub fn to_nice(&self, queue: i32) -> i32 // (queue-USER_Q)*41/16 的 i32 截断与钳位 PRIO_MAX/MIN (284-287)
@@ -308,11 +310,11 @@ pub trait SchedCtl { fn start(&mut self, sched: Endpoint, schedulee: Endpoint, p
 pub fn sched_init(table: &mut ProcTable, sched: &mut dyn SchedCtl) -> Vec<(UserSlot, i32)>
 pub fn sched_start_user(table: &mut ProcTable, ep: Endpoint, rmp: UserSlot, sched: &mut dyn SchedCtl) -> Result<(), SchedError>
 pub fn sched_nice(table: &mut ProcTable, rmp: UserSlot, nice: i32, sched: &mut dyn SchedCtl) -> Result<(), SchedError>
-pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, who: i32, pri: i32, sched: &mut dyn SchedCtl) -> Result<i32, SchedError>
+pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, who: i32, prio: i32, is_get: bool, sched: &mut dyn SchedCtl) -> Result<i32, SchedError>
 ```
 
 - `NiceMapping::to_queue`：`if nice<MIN||>MAX→EINVAL` 先于缩放，`MAX + (nice-MIN)*16/41` 的 `i32` 缩放后 `MAX..MIN` 钳位（`99-100`），`to_nice` 的 `(queue-USER_Q)*41/16` 的 `i32` 截断与 `PRIO_MAX/MIN` 钳位（`284-287`）与 C 一致，`USER_Q 7→0` 零点对齐。
-- `sched_init`：`user_procs()` 迭代 `IN_USE && !PRIV_PROC` 的 `INIT` 单项，`assert(_ENDPOINT_P==INIT_PROC_NR)` 后 `sched.start(SCHED, schedulee, parent, USER_Q, USER_QUANTUM, cpu=-1)`，失败 `eprintln` 非 `panic`（`44-47`）。
+- `sched_init`：单趟遍历 `IN_USE && !PRIV_PROC` 的槽，`sched.start(SCHED, schedulee, parent, USER_Q, USER_QUANTUM, cpu=-1)`，rv 逐项收集，失败不 panic（`44-47`）。生产启动路径（`os/servers/pm/src/init.rs:fn init_scheduling`）在调用前保留 `INIT` 槽与自父两条断言。
 - `sched_start_user`：`NiceMapping::to_queue` 后 `inherit_parent` 的 `PRIV_PROC→INIT` 分支后 `sched.inherit` 四参继承（`71-83`）。
 - `sched_nice`：`can_nice` 守卫先于 `nice_to_priority`，`sched.set_nice` 的 `endpoint/maxprio` + `SCHEDULING_SET_NICE`（`105-107`）。
 - `do_getsetpriority`：`SchedWhich::try_from(which)` 先于 `Who::resolve(who)`，`may_get_prio` 三重先于 `GET→nice-PRIO_MIN`（`266`）与 `SET` 的 `may_set_prio` 的 `EACCES` 后于 `sched_nice`（`280`）+ `mp_nice=pri`（`284`）。
@@ -320,7 +322,7 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
 ### 4.3 `mproc/mproc.rs`：`nice/scheduler` 二元
 
 ```rust
-// ProcessResources { nice: i32, scheduler: Endpoint } // 已存
+// ProcessResources { nice: i32, scheduler: Endpoint }
 // sched_init 回填 Endpoint::SCHED，sched_nice 后 mp_nice=pri
 ```
 
@@ -328,18 +330,15 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
 
 ### 4.4 `init.rs` 接线：`sched_init` 调用点
 
-```rust
-// PmServer::init 末步 sched_init 的 SCHED 交接（init.rs:239-250）
-// PmServer::init_scheduling 已抽象为 SchedCtl::start 的 Ok(SCHED) 占位，16 落真实 start
-```
+`PmServer::init` 的第 8 步调用 `init_scheduling()`（`os/servers/pm/src/init.rs:fn init_scheduling`），它遍历进程表、对 `IN_USE` 且非 `PRIV_PROC` 的槽断言 `INIT` 与自父后，经 `sched_start()`（同文件）发 `SCHEDULING_START`（0xF02）并等待回复；回复为 `OK` 才把该槽的 `scheduler` 回填为 `SCHED`，回复为拒绝码则按 `schedule.c:44-47` 的语义只记录告警。`sched.rs` 的 `sched_init` 提供同语义的设计面实现（`SchedCtl` 注入），供单元与集成测试直接驱动。
 
-生产 `SchedCtl::start` 的 `SCHED_PROC_NR 4` 常量与 `com.h: SCHEDULING_START` 单一真相到 `minix-types`。
+生产 `SchedCtl::start` 的 `SCHED_PROC_NR 4` 常量与 `com.h: SCHEDULING_START` 统一取 `minix-types` 的单一真相。
 
 ### 4.5 不变量表
 
 | # | 不变量 | C 锚点 | Rust 表达 | 检测 |
 |---|--------|--------|-----------|------|
-| 1 | `sched_init` 仅 `INIT` | `schedule.c:33` `IN_USE && !PRIV_PROC` | `user_procs()` 迭代 `INIT` 单项 | `test_sched_init_only_init` |
+| 1 | `sched_init` 仅 `INIT` | `schedule.c:33` `IN_USE && !PRIV_PROC` | 单趟遍历过滤 + `init.rs` 的 `INIT` 断言 | `test_sched_init_only_init` |
 | 2 | `PRIV_PROC` 父继承 `INIT` | `schedule.c:71-73` | `inherit_parent` 的 `PRIV_PROC→INIT` | `test_sched_start_user_priv_parent` |
 | 3 | `KERNEL/NONE→EINVAL` | `schedule.c:98-99` | `can_nice` 守卫先于缩放 | `test_sched_nice_kernel_none_inval` |
 | 4 | `PRIO_MIN/MAX` 边界 | `utility.c:93` | `NiceMapping::to_queue` 先于缩放 | `test_nice_to_priority_bounds` |
@@ -352,16 +351,19 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
 
 ## 5 测试矩阵
 
-> 基线：`cargo test -p minix-pm --lib` 截至 2026-09-03 为 **278 passed / 0 failed**（原 264 + 本档新增 ~14：`sched.rs` 12 + `mproc/mproc.rs` 2）。结果见 `cargo test` 末段统计段（§2.4j 格式）。
+> 基线：`cargo test -p minix-pm --lib` 实测 **427 passed / 0 failed**（本篇射程内：`sched.rs` 16 个 + `init.rs` 的 `test_nice_from_queue_default_queues` 与 `test_sched_start_propagates_denied_reply_code` 2 个）。结果见 `cargo test` 末段统计段（§2.4j 格式）。
 
 ### 5.1 `sched.rs`（调度协议与双射）
 
 - `test_nice_to_priority_bounds`：`nice -20→0`/`0→7`/`20→15` 与越界 `-21/21→EINVAL`（`utility.c:93/95-96`）
 - `test_get_nice_value`：`queue 0→-17`/`7→0`/`15→20` 与钳位 `-20/20`（`main.c:284-287`）
-- `test_nice_roundtrip`：`nice 0→queue 7→nice 0` 可逆，`nice 1→queue 7→nice 0` 的量化误差（`16:41` 非整数比）
+- `test_nice_roundtrip`：`nice 0→queue 7→nice 0` 可逆，`nice 1→queue 8→nice 2` 的量化误差（`16:41` 非整数比）
 - `test_sched_init_only_init`：`IN_USE && !PRIV_PROC` 仅 `INIT` 接管（`schedule.c:33`），`PRIV_PROC` 不接管
 - `test_sched_start_user_priv_parent`：`PRIV_PROC` 父继承 `INIT`（`71-76`）vs 真实父
+- `test_sched_start_user_skips_none_and_inherits_scheduler`：`NONE` 调度器跳过内核调用、非 `SCHED` 调度器按继承值转发
 - `test_sched_nice_kernel_none_inval`：`KERNEL/NONE→EINVAL`（`98-99`）
+- `test_sched_nice_refusal_rv_is_reply_m_type`：`_taskcall` 的 rv 是回复 `m_type`，拒绝码不被读成成功（`schedule.c:108`）
+- `test_sched_init_refusal_keeps_scheduler_unset`：`SCHED` 拒绝接管时结果携带拒绝码且不回写 `mp_scheduler`（`44-47`）
 - `test_do_getsetpriority_which_inval`：`which!=PRIO_PROCESS→EINVAL`（`251-252`）
 - `test_do_getsetpriority_who_zero_self`：`who==0→Self`（`254-255`）vs `find_proc` `ESRCH`
 - `test_do_getsetpriority_eperm`：`eff!=SUPER_USER && eff!=target_eff && eff!=target_real→EPERM`（`260-262`）
@@ -369,15 +371,16 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
 - `test_do_getsetpriority_get_user_prio`：`GET→nice-PRIO_MIN` 的 `0..40` `USER_PRIO` 偏移（`266`）
 - `test_do_getsetpriority_set_updates_nice`：`SET→sched_nice→mp_nice=pri`（`280/284`）与 `SCHEDULING_SET_NICE` 编码
 - `test_constants_match_c`：锁定 `PRIO_MIN -20/PRIO_MAX 20`（`resource.h`）、`MAX_USER_Q 0/MIN_USER_Q 15/USER_Q 7`（`config.h`）、`USER_QUANTUM 200`、`SCHED_PROC_NR 4`
+- `test_scheduling_set_nice_matches_c`：`SCHEDULING_SET_NICE` 与 `minix-types` 单一真相一致且等于 `0xF04`（`com.h:806`）
 
-### 5.2 `mproc/mproc.rs`（`nice/scheduler` 二元）
+### 5.2 `init.rs`（`nice/scheduler` 二元的启动侧）
 
-- `test_nice_from_queue_default_queues`：`nice 0` + `scheduler Endpoint::NONE` 默认
-- `test_sched_init_only_init`：`sched_init` 回填 `SCHED`（`schedule.c:43`）
+- `test_nice_from_queue_default_queues`：`USR_Q/SRV_Q` 皆 `nice 0`，`MAX_USER_Q→-17`、`MIN_USER_Q→20`（`main.c:200/214/281-289`）
+- `test_sched_start_propagates_denied_reply_code`：`SCHED` 拒绝 `SCHEDULING_START` 时不假登记调度器（`libsys/sched_start.c:87`）
 
 ### 5.3 `minix-types`（常量）
 
-- `test_constants_match_c`：锁定 `PRIO_MIN/MAX` 等单一真相（`sys/resource.h`/`config.h`）
+- `test_sched_messages`：锁定 `SCHEDULING_BASE/NO_QUANTUM/START/STOP/SET_NICE/INHERIT` 为 `0xF00..0xF05`（`com.h:801-807`）
 
 测试策略：`SchedCtl` 的 `start/inherit/set_nice` 均 `TestSched` mock 可注入 `OK/EINVAL` 与 `maxprio/quantum` 计数；`NiceMapping` 的双射纯函数脱离 `ProcTable` 独立测；`do_getsetpriority` 的 `EPERM/EACCES` 双重错误在 `may_get/set_prio` 一处谓词验证。
 
@@ -393,12 +396,12 @@ pub fn do_getsetpriority(table: &mut ProcTable, caller: UserSlot, which: i32, wh
   └─► 本章（sched_init 的 INIT 接管→sched_start_user 的 PRIV_PROC 父继承 INIT→sched_nice 的 KERNEL/NONE 守卫→nice↔queue 双射→do_getsetpriority 的 EPERM/EACCES 权衡）
          │
          ├─► 05-vfs-interaction.md（VFS_PM_FORK_REPLY→sched_start_user 的 maxprio 继承，VFS 回复成功路径的调度器交接）
-         └─► 17-exec.md（do_exec 的 exec_restart 后 sched_start_user 再继承，PARTIAL_EXEC 与 TAINTED 的调度无关但共享 ProcTable 锁）
+         └─► 17-exec.md（do_exec 的 exec_restart 后 sched_start_user 再继承，PARTIAL_EXEC 与 TAINTED 的调度无关但共享同一张 ProcTable 的独占访问）
 ```
 
-`nice_to_priority` 的 `MAX + (nice-MIN)*16/41` 与 `get_nice_value` 的 `(queue-USER_Q)*41/16` 互逆但因截断非完全双射（`init.rs:817` 测试 `MAX→-17` 与 `MIN→20` 的端点截断）使 `nice 0→queue 7→nice 0` 可逆而 `nice 1→queue 7→nice 0` 的量化误差为 `16:41` 非整数比的固有。
+`nice_to_priority` 的 `MAX + (nice-MIN)*16/41` 与 `get_nice_value` 的 `(queue-USER_Q)*41/16` 互逆但因截断非完全双射（`os/servers/pm/src/init.rs:fn test_nice_from_queue_default_queues` 锁定 `MAX→-17` 与 `MIN→20` 的端点截断）使 `nice 0→queue 7→nice 0` 可逆而 `nice 1→queue 8→nice 2` 的量化误差为 `16:41` 非整数比的固有。
 
-阅读顺序提示：若想先理解“内核调度器就绪队列与 `do_schedule`”，下一站 `rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`（`kernel/proc.c:schedule` 的 `pick_proc`）；若想理解“`SCHED` 服务实现”，下一站 `06-stage-sched`（`servers/sched` 的 `sched_start/sched_set_nice` 队列管理）。
+阅读顺序提示：若想先理解“内核调度器就绪队列与 `do_schedule`”，下一站 `rewrite-notes/01-stage-kernel/11-scheduling-primitives.md`（`minix3/minix/kernel/proc.c:pick_proc`）；若想理解“`SCHED` 服务实现”，下一站 `06-stage-sched`（`servers/sched` 的 `sched_start/sched_set_nice` 队列管理）。
 
 ---
 

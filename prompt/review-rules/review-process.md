@@ -75,6 +75,8 @@
 | 1.2 | 正文禁引 `.design/`（中间产物目录；AGENTS.md 判 P0-process-violation） | doc review 全程 | `rg "\.design/" {doc}` → 0 命中 | 2026-10-08 |
 | 1.5a | 覆盖率工具数据缺口判定（映射表缺失 / `--rust-dir` 缺省 / 短名子串） | Step 1.5 | `ls tools/coverage-extract/{module}-semantic-map.json`；缺表即新建 | 2026-10-08 |
 | 5.6a | Gate G 两趟（骨架 → 回填 gate-evidence-G → 复跑自检） | Step 5.6 | 首跑 FAIL 属正常，回填后 `VERIFY-SELF PASS` | 2026-10-08 |
+| 5.6b | 多 agent 并行 review 的隔离纪律（Round 4–8 取证 R5-D1） | 并行调度时 | 只读仓库 + 各自 `.review/` 子目录 + 禁改 `tools/`/`os/`/`prompt/`；否则证据无版本锚、增量门吃他人改动 | 2026-10-08 |
+| 1.5b | `--c-dir`/`MODULE_PATHS` 与真实 C 目录核对（fs 不在 `servers/` 下；模板可能给出不存在的路径 → 0 符号假报告） | Step 1.5 | `ls` 真实目录；脚本 `MODULE_PATHS` 已补 `fs` | 2026-10-08 |
 
 > **新增规则写入方式**：在本表追加一行（id 用表内下一序号，不再新开 `#### Step` 章节），详情正文放对应主干 Step 之下或独立小节并用本表行索引。
 
@@ -536,7 +538,8 @@ grep -rnE "\.bak|tmp_design_and_todo|/tmp/" {DOC_DIR}/scan.md {DOC_DIR}/design.m
 
 #### Step 0.3.1: 生成 design-structure.md（脚手架，每次重新生成）
 
-> **产物位置**：`.review/{tool}/{stage}/scans/{doc-stem}-{agent}-design-structure.md`
+> **产物位置**：`.review/{tool}/{stage}/scans/{doc-stem}-{agent}-design-structure.md`（**trae 袋装布局**）。
+> 其他运行时按 §Step 0 运行时表的**文档级布局**：`.review/{tool}/{stage}/{doc-stem}/scans/…`（claude/codex/zcode/qoder 四家一致；由 `review-init.sh` 建目录，2026-10-08 R8-D7）
 > **命名区分**：本步骤产物是 `design-structure.md`（design 前序，知识点全集）；review Step 0.5 产物是 `structure.md`（review 骨架，12 节分析）。两者内容完全不同，禁止混淆。
 
 **输入**：C 源码 + OS 理论 + Rust 现状
@@ -1575,7 +1578,7 @@ ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 > **输入**：Step 0 产出的关联代码清单（`tools/doc-code-map.sh`）。
 > **检查维度**（按 [review-code-checklist.md](review-code-checklist.md) 执行，至少覆盖）：§1 Rewrite 质量、§2 硬件抽象、§4 执行模型/SMP、§8 命名、§13 设计-代码一致性、§14 C-Rust 语义对齐。
 > **附带证据行**（gate-evidence-code 块内的固定行）：
-> - "代码可读性增量"：`cargo clippy -p {crate} --lib -- -D warnings` 与 `tools/unsafe-audit.sh --diff` 的结果
+> - "代码可读性增量"：`cargo clippy -p {crate} --lib --no-deps -- -D warnings` 与 `tools/unsafe-audit.sh --diff` 的结果（`--no-deps` 必需：workspace 依赖的既有告警会让 `-D warnings` 恒 FAIL，2026-10-08 R8-D3）
 >   （G1 卡已于 2026-10-07 判定作废并合并：`pub` 项与模块缺文档注释属 rustc 的 `missing_docs` 射程（落点在 G2），
 >   `unsafe` 无 SAFETY 由 unsafe-audit 覆盖；新增代码可读性违规 = 正确性 P1。不得引用 `tools/code-style-lint.sh`——该脚本不存在）
 > - "非法态封堵"：清单内核心状态机的封堵结论（H2；code-excellence §16.6）
@@ -1903,7 +1906,12 @@ grep -lE "IN_DESIGN.*30 天" .review/*/IN_DESIGN.md
 | 报告 P0 数 | 推荐验证 agent | 阻断? |
 |-----------|---------------|-------|
 | 0 | 同 agent 可（带 grep 重放） | ❌ 不阻断 |
-| ≥ 1 | **必须跨 agent 验证** | ⛔ 阻断（不通过 Gate G） |
+| ≥ 1 | **优先跨 agent**；**环境只有一个 agent 时，同 agent + grep 命令重放可接受**（须在 VERIFY-CHECK.md「验证局限说明」段显式标注，AGENTS.md 同此口径） | 仅当「有第二 agent 却用了同 agent 且未标注」时阻断 |
+
+> **口径统一（2026-10-08 干跑 R4-D6 裁决）**：本节表格旧文写作「≥1 必须跨 agent」，与同节第 7 条及
+> AGENTS.md 的「VERIFY-CHECK 的同 agent 局限」段自相矛盾（单会话/单运行时根本不存在第二 agent，
+> 照字面执行只能造假或停工）。**以本行为准**：跨 agent 是首选而非绝对前提，同 agent 验证的硬要求是
+> ① 重放 grep 命令（非语义回忆）② 在 VERIFY-CHECK.md 标注局限 ③ consistency < 90% 写 NOT PASS。
 
 **触发场景**：
 - 若 review 报告 P0 ≥ 1 → Gate G VERIFY-CHECK 必须由不同 agent 二次验证

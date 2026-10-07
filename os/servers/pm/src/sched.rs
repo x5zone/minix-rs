@@ -32,8 +32,9 @@ pub const SCHED_PROC_NR: Endpoint = Endpoint(4);
 /// `PRIO_PROCESS` (`sys/resource.h: PRIO_PROCESS 0`).
 pub const PRIO_PROCESS: i32 = 0;
 
-/// `SCHEDULING_SET_NICE` (`minix/com.h: SCHEDULING_SET_NICE 5`).
-pub const SCHEDULING_SET_NICE: i32 = 5;
+/// `SCHEDULING_SET_NICE` — 单一真相取自 `minix-types`（C: `minix/com.h:806`，
+/// `SCHEDULING_BASE+4` = 0xF04）。
+pub use minix_types::SCHEDULING_SET_NICE;
 
 /// `SchedWhich` (`misc.c:251-252` `which` 仅 `PRIO_PROCESS`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -666,5 +667,13 @@ mod tests {
         assert_eq!(USER_Q, 7);
         assert_eq!(USER_QUANTUM, 200);
         assert_eq!(SCHED_PROC_NR, Endpoint(4));
+    }
+
+    /// C: `com.h:806` `SCHEDULING_SET_NICE = SCHEDULING_BASE+4` = 0xF04。
+    /// 锁住本模块的发送腿常量与 `minix-types` 单一真相一致（防再次出现本地 `=5`）。
+    #[test]
+    fn test_scheduling_set_nice_matches_c() {
+        assert_eq!(SCHEDULING_SET_NICE, minix_types::SCHEDULING_SET_NICE);
+        assert_eq!(SCHEDULING_SET_NICE, 0xF04);
     }
 }

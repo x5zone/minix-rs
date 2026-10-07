@@ -261,6 +261,7 @@ pub fn cleanup_decision(flags: RFlags) -> CleanupDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::MockKernelApi;
 
     #[test]
     fn test_compute_backoff_properties() {
@@ -522,6 +523,120 @@ mod tests {
                 script: false,
                 detach: false
             }
+        );
+    }
+
+    /// Builds a one-slot table whose slot exits unexpectedly (`restarts > 0`
+    /// → backoff, `manager.c:1164-1175`), plus a running global update.
+    fn unexpected_exit_with_running_update() -> (RProcTable, SlotId, crate::live_update::UpdateState)
+    {
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(rp);
+            s.flags.insert(RFlags::ACTIVE);
+            s.restarts = 2;
+        }
+        let mut upd = crate::live_update::UpdateState::default();
+        upd.flags
+            .insert(crate::live_update::RupdateFlags::UPDATING);
+        (table, rp, upd)
+    }
+
+    #[test]
+    fn test_terminate_unexpected_exit_aborts_running_update() {
+        // C: manager.c:1095-1102 — the global abort is not conditional on the
+        // RS_EXITING branch: an unexpected exit (here the backoff arm,
+        // manager.c:1159-1175) ends a running update all the same.
+        let (mut table, rp, mut upd) = unexpected_exit_with_running_update();
+        let mut k = MockKernelApi::new(60);
+        let mut noop_script = |_: &mut ServiceSlot| Ok(());
+        let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
+        let mut noop_unpublish = |_: SlotId| {};
+        let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
+        let out = terminate_service(
+            &mut table,
+            &mut upd,
+            rp,
+            &mut k,
+            0,
+            false,
+            &mut TerminateEffects {
+                unpublish: alloc::boxed::Box::new(&mut noop_unpublish),
+                run_script: alloc::boxed::Box::new(&mut noop_script),
+                read_exec: alloc::boxed::Box::new(&mut noop_read_exec),
+                asynsend: alloc::boxed::Box::new(&mut noop_asynsend),
+            },
+        );
+
+        assert!(!out.self_terminate);
+        // The backoff arm ran (`restarts = 2` → 1 << 2).
+        assert_eq!(table.get(rp).backoff, 4);
+        // ... and the running update was ended first.
+        assert!(
+            !upd
+                .flags
+                .contains(crate::live_update::RupdateFlags::UPDATING),
+            "an unexpected exit must abort the running update (manager.c:1099-1102)"
+        );
+    }
+
+    #[test]
+    fn test_terminate_exiting_non_member_keeps_scheduled_update() {
+        // C: const.h:119-120 — `SRV_IS_UPD_SCHEDULED(RP)` is
+        // `num_rpupds > 0 && !RUPDATE_IS_UPDATING() && r_upd.rp != NULL`.
+        // An exiting service that is *not* a member of the scheduled update
+        // must leave the chain untouched (manager.c:1126-1130).
+        let mut table = RProcTable::new();
+        let rp = table.alloc_slot().unwrap();
+        {
+            let s = table.get_mut(rp);
+            s.flags.insert(RFlags::IN_USE | RFlags::ACTIVE | RFlags::EXITING);
+            s.caller_request = minix_types::RS_DOWN;
+        }
+        // `alloc_slot` does not stamp RS_IN_USE (manager.c:2067-2083 is a
+        // pure search); claim the row before taking the member's.
+        let member = table.alloc_slot().unwrap();
+        table.get_mut(member).flags.insert(RFlags::IN_USE | RFlags::ACTIVE);
+
+        let mut upd = crate::live_update::UpdateState::default();
+        upd.chain
+            .add(crate::live_update::UpdateEntry::new(member, Endpoint::PM));
+        // The A-3 mirror of the member's own `r_upd` (live_update.rs:463):
+        // only `member` carries a descriptor, `rp` does not.
+        table.get_mut(member).upd = Some(upd.chain.get(0).clone());
+        assert_eq!(upd.chain.len(), 1, "chain staged");
+        assert!(table.get(rp).upd.is_none(), "rp is not a member");
+
+        let mut k = MockKernelApi::new(60);
+        let mut noop_script = |_: &mut ServiceSlot| Ok(());
+        let mut noop_read_exec = |_: &mut ServiceSlot| Ok(());
+        let mut noop_unpublish = |_: SlotId| {};
+        let mut noop_asynsend = |_: Endpoint, _: &crate::ready::InitMessage| Ok(());
+        let out = terminate_service(
+            &mut table,
+            &mut upd,
+            rp,
+            &mut k,
+            0,
+            false,
+            &mut TerminateEffects {
+                unpublish: alloc::boxed::Box::new(&mut noop_unpublish),
+                run_script: alloc::boxed::Box::new(&mut noop_script),
+                read_exec: alloc::boxed::Box::new(&mut noop_read_exec),
+                asynsend: alloc::boxed::Box::new(&mut noop_asynsend),
+            },
+        );
+
+        assert!(!out.self_terminate);
+        assert!(
+            table.get(rp).flags.contains(RFlags::DEAD),
+            "the exiting service still runs its own cleanup (manager.c:1141-1144)"
+        );
+        assert_eq!(
+            upd.chain.len(),
+            1,
+            "a non-member exit must not abort the scheduled update (const.h:119-120)"
         );
     }
 }
@@ -906,6 +1021,25 @@ pub fn terminate_service(
     };
     d.mutations.apply(table.get_mut(rp));
 
+    // C: manager.c:1095-1102 — end a running update before doing anything
+    // else, whatever the termination path turns out to be. The only path
+    // that never reaches this point is the init-failure rollback: C returns
+    // at manager.c:1075, before the abort.
+    if !matches!(d.action, TerminateAction::InitUpdateRollback)
+        && upd
+            .flags
+            .contains(crate::live_update::RupdateFlags::UPDATING)
+    {
+        let _ = crate::live_update::abort_update_proc(
+            upd,
+            table,
+            kernel,
+            minix_types::ERESTART,
+            ticks,
+            &mut effects.run_script,
+        );
+    }
+
     match d.action {
         // manager.c:1071-1076 — end_update(r_init_err, RS_REPLY), then
         // r_init_err = ERESTART; the rollback is this round's whole job.
@@ -963,21 +1097,6 @@ pub fn terminate_service(
             reincarnate,
             core_fatal,
         } => {
-            // manager.c:1093-1097 — end a running update before any recovery.
-            if upd
-                .flags
-                .contains(crate::live_update::RupdateFlags::UPDATING)
-            {
-                let _ = crate::live_update::abort_update_proc(
-                    upd,
-                    table,
-                    kernel,
-                    minix_types::ERESTART,
-                    ticks,
-                    &mut effects.run_script,
-                );
-            }
-
             // manager.c:1121-1126 — a core service exiting outside shutdown
             // is fatal for RS itself (`_exit(1)`).
             if core_fatal && !shutting_down {
@@ -986,9 +1105,14 @@ pub fn terminate_service(
                 };
             }
 
-            // manager.c:1128-1133 — abort a scheduled update when one of its
-            // services is exiting.
-            if !upd.chain.is_empty()
+            // C: manager.c:1126-1130 — abort a scheduled update when this
+            // service is one of its members. `SRV_IS_UPD_SCHEDULED` is
+            // `num_rpupds > 0 && !RUPDATE_IS_UPDATING() && r_upd.rp != NULL`
+            // (const.h:111/119-120) — the third conjunct is this slot's own
+            // descriptor (`slot.upd`, the A-3 mirror of `r_upd`), so a
+            // non-member exit must leave the chain alone.
+            if table.get(rp).upd.is_some()
+                && !upd.chain.is_empty()
                 && !upd
                     .flags
                     .contains(crate::live_update::RupdateFlags::UPDATING)

@@ -65,13 +65,13 @@ GATE_EVIDENCE_KEYWORDS = {
 # ===== Issue 提取模式 =====
 # 匹配 Issue List 表格行: | P1-1 | P1 | L459 | ... |
 ISSUE_ROW_PATTERN = re.compile(
-    r'^\|\s*(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\s*\|\s*(P[012])\s*\|',
+    r'^\|\s*`?(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)`?\s*\|\s*`?(P[012])`?\s*\|',
     re.MULTILINE
 )
 
 # 匹配列表项: - P1-1 / ### P1-1
 ISSUE_LIST_PATTERN = re.compile(
-    r'(?:^|\n)(?:#+\s*)?(?:-\s*)?(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b',
+    r'(?:^|\n)(?:#+\s*)?(?:-\s*)?`?(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)`?\b',
     re.MULTILINE
 )
 
@@ -116,7 +116,10 @@ def check_gate_evidence_blocks(scan_text):
             rf'```gate-evidence-{re.escape(gate)}\b(.*?)```',
             re.DOTALL
         )
-        match = block_pattern.search(scan_text)
+        # R7-D4：scan.md 正文可能「提到」gate-evidence-X（裸围栏/示例），旧实现取首个匹配，
+        # 提到即造空块 → 误判 FAIL。改为取**内容最长**的那个块（真证据块总是最长的）。
+        matches = list(block_pattern.finditer(scan_text))
+        match = max(matches, key=lambda m: len(m.group(1))) if matches else None
         if not match:
             results[gate] = {"exists": False, "keywords_ok": False, "missing_kw": keywords}
             continue

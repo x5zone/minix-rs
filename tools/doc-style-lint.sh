@@ -119,7 +119,7 @@ BEGIN {
     if (nfence == 0 && raw ~ /^[[:space:]]*(```|~~~)/) { nfence = 1; next }
     else if (nfence == 1) { if (raw ~ /^[[:space:]]*(```|~~~)/) nfence = 0; next }
   }
-  is_header_date = (raw ~ /^>[[:space:]]*\*\*(创建|重写)\*\*/)
+  is_header_date = (raw ~ /^>[[:space:]]*\*\*(创建|重写|生成日期)\*\*/)  # 2026-10-08 R5-D2：设计快照模板强制「生成日期」头行
   clean = strip_inline_code(raw)
   # awk 的 /regex/ 作实参会退化为布尔——必须用字符串动态正则（反斜杠双写）
   match_one(clean, raw, "\\<V[0-9]+-(P[0-9]+|A[0-9]+|T[0-9]+)(-[0-9]+)?\\>", "SL-1", "review 批次编号")

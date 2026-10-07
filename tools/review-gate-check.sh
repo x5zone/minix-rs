@@ -278,7 +278,8 @@ if [[ -f "${SCAN_FILE}" ]]; then
   while IFS= read -r art; do
     [[ -z "$art" || "$art" == "none" ]] && continue
     if [[ ! -e "$art" ]]; then missing_artifacts="$missing_artifacts $art"; fi
-  done < <(grep -oE '^artifact: .+' "${SCAN_FILE}" | sed 's/^artifact: //' | sed 's/[[:space:]]*$//')
+  done < <(grep -oE '^artifact: .+' "${SCAN_FILE}" | sed 's/^artifact: //' \
+    | sed 's/[[:space:]].*$//' | sed 's/（.*$//' | sed 's/[[:space:]]*$//')
   if [[ -n "$missing_artifacts" ]]; then
     SCAN_CONTENT_OK="false"
     FAIL_LIST+=("D4 | gate-evidence artifact 不存在:${missing_artifacts} | ${SCAN_FILE}")

@@ -634,6 +634,7 @@ MODULE_PATHS = {
     'vfs': 'minix3/minix/servers/vfs',
     'rs': 'minix3/minix/servers/rs',
     'ds': 'minix3/minix/servers/ds',
+    'fs': 'minix3/minix/fs',  # 2026-10-08 R8-D1：fs 服务不在 servers/ 下，缺表导致模板给出不存在的路径
     'inet': 'minix3/minix/servers/inet',
     'kernel': 'minix3/minix/kernel',
     'drivers': 'minix3/minix/drivers',

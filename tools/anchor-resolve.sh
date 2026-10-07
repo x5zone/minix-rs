@@ -103,8 +103,9 @@ resolve_rust_impl() { # FILE SIGNATURE-SUBSTRING
 }
 
 resolve_c() { # FILE NAME —— C 启发式（限定定义形态，排除注释行/宏调用/.S 宏使用）：
-  #  1) #define NAME          2) struct|enum|union 行内含 NAME
+  #  1) #define NAME          2) struct|enum|union 定义行（排除指针返回类型行与函数签名行）
   #  3) "返回类型 NAME(" 且不以 ";" 结尾；或跨行返回类型风格：NAME( 顶格且下一行以 "{" 开头
+  #  4) 结构体成员声明 <类型> NAME;、typedef 收尾行 `} NAME;`、单行 `typedef ... NAME;`
   #  .S/.asm 只认 "NAME:" 标签。NAME(...) 顶格且下一行非 "{" 视为宏调用，不算定义。
   local file="$1" name="$2"
   awk -v name="$name" '
@@ -118,12 +119,22 @@ resolve_c() { # FILE NAME —— C 启发式（限定定义形态，排除注释
         if (line ~ ("^" name ":")) { print FNR }
         next
       }
-      if (line ~ ("^(typedef[[:space:]]+)?(struct|enum|union)([^A-Za-z0-9_]|$)")) { print FNR; next }
+      if (line ~ ("^(extern[[:space:]]+)?(typedef[[:space:]]+)?(struct|enum|union)([^A-Za-z0-9_]|$)")) {
+        # 只认“定义行”，不认函数返回类型行。反例（2026-10-08 Round 4 取证）：
+        # `struct dmap *` 是 get_dmap_by_major 的返回类型，曾被当作 dmap 的第二个定义
+        # → 假 MULTI-DEF（`dmap.c:dmap` 报 22/264/317 三处）。
+        # 注意：命中的行不能整行 `next`——`struct dmap *get_dmap_by_endpt(...)` 这类
+        # “返回类型 + 函数名同行”的定义要靠下面的函数规则收，跳过会造成假 ZERO-DEF。
+        if (!(line ~ /\*[[:space:]]*$/) && !(line ~ /\(/ && line !~ /{/)) { print FNR; next }
+      }
       # 结构体/联合体成员声明：<类型> NAME;（NAME 为声明符末标识符；容忍数组与行尾注释）
       # 与 typedef 收尾行 `} NAME;`——成员名与 typedef 名是文档最常用的精确锚点形态；
       # 旧实现只索引函数/结构体/宏，把它们一律判 ZERO-DEF（假 P0，2026-10-08 取证）。
       if (line ~ ("^[[:space:]]+[A-Za-z_][A-Za-z0-9_[:space:]]*[[:space:]*]+" name "[[:space:]]*(\\[[^]]*\\])?;[[:space:]]*(/\\*.*)?$")) { print FNR; next }
       if (line ~ ("^[[:space:]]*}[[:space:]]*" name "[[:space:]]*;")) { print FNR; next }
+      # 单行 typedef：`typedef int32_t sockid_t;`（Round 4 取证：sockid_t 曾被判 ZERO-DEF；
+      # 旧实现只收 `} NAME;` 收尾形态，漏单行 typedef）。
+      if (line ~ ("^[[:space:]]*typedef[[:space:]].*[^A-Za-z0-9_]" name "[[:space:]]*;[[:space:]]*(/\\*.*)?$")) { print FNR; next }
       if (line ~ ("^[^[:space:]].*[^A-Za-z0-9_]" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/) { print FNR; next }
       if (line ~ ("^" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/) {
         # 跨行签名：Minix3 常见「返回类型单独一行 + NAME( 顶格 + 参数续行数行 + {」，
@@ -219,6 +230,9 @@ struct clock_state {
     long counter;		/* 成员：带行尾注释 */
 };
 
+/* 返回类型行不是定义：曾被当作 clock_state 的第二个定义（假 MULTI-DEF）。 */
+struct clock_state *clock_get(void);
+
 #define CLOCK_FREQ 60
 
 void clock_init(void)
@@ -233,6 +247,7 @@ EOF
 impl 限定方法 `ft/lib.rs:impl Clock::reset` 应解析。
 impl 块锚点 `ft/lib.rs:impl Clock` 应解析。
 C 函数 `ft/clock.c:clock_init` 应解析。
+C 结构体 `ft/clock.c:clock_state` 应解析（返回类型行 `struct clock_state *` 不算第二定义）。
 C 结构体成员 `ft/clock.c:counter` 应解析。
 C typedef 名 `ft/clock.c:clock_info` 应解析。
 fenced 块内的伪锚点不会被抓取：
@@ -260,8 +275,8 @@ EOF
   multi=$(echo "$out" | grep -c "MULTI-DEF" || true)
   resolved=$(echo "$out" | grep -c "→ resolved" || true)
   fenced=$(echo "$out" | grep -c "vanishing_in_fence" || true)
-  if [ "$zero" -ne 1 ] || [ "$multi" -ne 1 ] || [ "$resolved" -ne 7 ] || [ "$fenced" -ne 0 ]; then
-    echo "SELF-TEST FAIL: resolved=$resolved zero=$zero multi=$multi fenced=$fenced（期望 7/1/1/0）" >&2
+  if [ "$zero" -ne 1 ] || [ "$multi" -ne 1 ] || [ "$resolved" -ne 8 ] || [ "$fenced" -ne 0 ]; then
+    echo "SELF-TEST FAIL: resolved=$resolved zero=$zero multi=$multi fenced=$fenced（期望 8/1/1/0）" >&2
     echo "$out" >&2
     exit 1
   fi
@@ -294,7 +309,7 @@ EOF
   printf '%s' "$out4" | grep -q "pipe_suspend" || { echo "SELF-TEST FAIL: 夹具锚点未被抽取" >&2; exit 1; }
 
 rm -rf "$ft"   # 显式清理：下方主流程另有 trap ... EXIT 会覆盖自测里设的 trap
-echo "SELF-TEST PASS（resolved=5 含 fenced 排除, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0; 另含跨行签名识别用例）"
+echo "SELF-TEST PASS（resolved=8 含 fenced 排除与返回类型行反例, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0; 另含跨行签名识别用例）"
   trap - EXIT
 }
 

@@ -98,10 +98,16 @@ fi
 touch "${TMP}.hdr"
 
 # 2) §3/§4/§5 分节抽取 os/*.rs 反引号 token（无分节的文档退化为全文抽取）
+#    兜底（2026-10-08 Round 4 取证）：13~31 号文档族把 `Rust 实现` 行放在 §7 参见，且无头部字段，
+#    §3/§4/§5 抽取会得 0 → 工具报"无关联代码"（18-mount / 19-device-map 均实测）。
+#    §3-5 抽取为空时，回退到全文抽取（只影响"本来会空转"的文档，不改变已有命中的结果）。
 awk '
   /^#{1,3} [0-9]+(\.[0-9]+)?[[:space:]]/ { section = substr($2, 1, 1) }
   { if (section == "" || section == "3" || section == "4" || section == "5") print }
-\' "$DOC" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' | tr -d '`' | expand_braces >> "${TMP}.body" || true
+' "$DOC" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' | tr -d '`' | expand_braces >> "${TMP}.body" || true
+if [ ! -s "${TMP}.body" ]; then
+  grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' "$DOC" | tr -d '`' | expand_braces >> "${TMP}.body" || true
+fi
 touch "${TMP}.body"
 
 cat "${TMP}.hdr" "${TMP}.body" | sort -u > "$TMP"

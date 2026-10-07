@@ -4,6 +4,8 @@
 
 前置阅读：`18-mount.md`（设备号编解码与驱动标签的来源）、`06-vmnt-table.md`（表槽语义类比）、`01-vfs-init-main.md`（启动时的 `init_dmap/init_smap` 调用点）。
 
+> **Rust 实现**: `os/servers/vfs/src/device_map.rs`（本篇判定层：双表/注册/恢复/授权）+ `os/servers/vfs/src/open.rs`（`FileType` 复用）+ `os/servers/vfs/src/pipe.rs`（`driver_vanish_plan`）+ `os/servers/vfs/src/filedes.rs`（失效族）+ `os/libs/minix-types/src/types/errno.rs`（errno 常量表）
+
 > 本章不讲什么：
 > - `cdev_io/sdev_readwrite/bdev_*` 的驱动数据面执行—— `21-cdev.md` / `22-sdev.md` / `20-bdev.md`
 > - `invalidate_filp` 族的失效执行—— `14-filedes.md`
@@ -42,7 +44,7 @@
 
 ### 1.5 重启的两种语义
 
-“驱动回来了”有两种含义：无状态重启（新进程，旧状态全丢——驱散旧等待者、作废旧套接字）与有状态续命（同进程，旧状态还在——唤醒等待者继续）。`smap_map` 以端点变没变区分两者：变了走驱散，不变走复用。区分的代价是一次比较，混淆的代价是把旧等待者叫醒去读一个已死的状态——唤醒精确性在此即正确性。
+“驱动回来了”有两种含义：无状态重启（新进程，旧状态全丢——驱散旧等待者、作废旧套接字）与有状态续命（同进程，旧状态还在——唤醒等待者继续）。`smap_map` 以端点变没变区分两者：变了交驱散（叫醒挂起者、作废旧套接字这些动作由挂起面执行，它只决定“要不要”），不变走复用。区分的代价是一次比较，混淆的代价是把旧等待者叫醒去读一个已死的状态——唤醒精确性在此即正确性。
 
 块驱动的恢复再分两层：恢复中又坏（停服，不再试）与首次坏（标记恢复中，跑 `bdev_up`）。“恢复中”标志是重入守卫——恢复本身可能耗时，期间再坏说明驱动已无可救，先停服再说人话（打印一句）。
 
@@ -66,9 +68,9 @@
 
 ## 2 C 源码分析
 
-### 2.1 `dmap` 表结构（`dmap.h:16-25` + `dmap.h:82` + `minix3/minix/servers/vfs/dmap.c:init_dmap（L244，工具生成）`）
+### 2.1 `dmap` 表结构（`minix3/minix/servers/vfs/dmap.h:dmap` + `minix3/minix/include/minix/dmap.h:NR_DEVICES` + `minix3/minix/servers/vfs/dmap.c:init_dmap`）
 
-八字段：端点、标签（`LABEL_MAX 16` 含 NUL，见 `minix3/minix/servers/vfs/const.h:LABEL_MAX`）、选择忙/选择 filp（select 执行态，配 `SEL_RD/WR` 见 `const.h:41-42`，23 管辖）、服务线程、锁、恢复标志、tty 可见标志。表长 `NR_DEVICES 135`（见 `minix3/minix/include/minix/dmap.h:NR_DEVICES`）。CTTY 例外：major 5（`dmap.h:26`）由 VFS 自管，端点 `CTTY_ENDPT`（= `VFS_PROC_NR`，`const.h:52`），初始化直落 `"vfs"` 标签（`244-246`）。
+八字段：端点、标签（`LABEL_MAX 16` 含 NUL，见 `minix3/minix/servers/vfs/const.h:LABEL_MAX`）、选择忙/选择 filp（select 执行态，配 `SEL_RD/WR` 见 `minix3/minix/servers/vfs/const.h:SEL_RD`，23 管辖）、服务线程、锁、恢复标志、tty 可见标志。表长 `NR_DEVICES 135`（见 `minix3/minix/include/minix/dmap.h:NR_DEVICES`）。CTTY 例外：major 5（`minix3/minix/include/minix/dmap.h:CTTY_MAJOR`）由 VFS 自管，端点 `CTTY_ENDPT`（= `VFS_PROC_NR`，`minix3/minix/servers/vfs/const.h:CTTY_ENDPT`），初始化直落 `"vfs"` 标签（`244-246`）。
 
 ### 2.2 `lock_dmap/unlock_dmap` 加锁机（`minix3/minix/servers/vfs/dmap.c:lock_dmap`）
 
@@ -94,23 +96,23 @@ RS 门（`123`，余者 `EPERM`）→ 标签长度门（`132-135`）→ 拷贝�
 
 `NONE` 直返（`284`）。逐 major 查活行（`287`）：端点命中且块→恢复中又坏则停服清标志（`290-299`），否则置恢复中跑 `bdev_up` 清标志（`300-302`）；端点命中且字符→停服工人并失效 filp（`304-309`，`invalidate_filp_by_char_major`）。
 
-### 2.8 `smap` 表结构与初始化（`type.h:41-49` + `minix3/minix/servers/vfs/smap.c:init_smap`）
+### 2.8 `smap` 表结构与初始化（`minix3/minix/servers/vfs/type.h:smap` + `minix3/minix/servers/vfs/smap.c:init_smap`）
 
-六字段：序号、端点、标签、选择忙、选择 filp（见 `minix3/minix/servers/vfs/type.h:smap`），`sockid_t` 为 `int32`（`type.h:49`）。表长 8（`const.h:10`），域表长 35（`PF_MAX=AF_MAX=35`，见 `minix3/sys/sys/socket.h:PF_MAX,223`；`PF_UNSPEC=0`，`socket.h:290,176`）。初始化一基编号（`32`，零号留给 `NO_DEV` 避让）+ 端点 `NONE` + 域表清零（`26-37`）。
+六字段：序号、端点、标签、选择忙、选择 filp（见 `minix3/minix/servers/vfs/type.h:smap`），`sockid_t` 为 `int32`（`minix3/minix/servers/vfs/type.h:sockid_t`）。表长 8（`minix3/minix/servers/vfs/const.h:NR_SOCKDEVS`），域表长 35（`PF_MAX=AF_MAX=35`，见 `minix3/sys/sys/socket.h:PF_MAX` + `minix3/sys/sys/socket.h:AF_MAX`；`PF_UNSPEC=0`，见 `minix3/sys/sys/socket.h:PF_UNSPEC`）。初始化一基编号（`32`，零号留给 `NO_DEV` 避让）+ 端点 `NONE` + 域表清零（`26-37`）。
 
 ### 2.9 `smap_map` 注册机（`minix3/minix/servers/vfs/smap.c:smap_map`）
 
 域数门（`54-55`：`1..=NR_DOMAIN`，`NR_DOMAIN=8` 见 `minix3/minix/include/minix/config.h:NR_DOMAIN`）→ 同标签复用旧槽（`62-69`，重启幂等）→ 逐域校验（`75-83`：越界/`UNSPEC`/他占，各 `EINVAL`/`EBUSY`）→ 无复用则占空槽（`89-97`，满 `ENOMEM`）→ 端点变更才驱散失效（`108-120`）→ 清旧域（`122-124`，顺序先清后写）→ 落槽写域（`131-138`）。
 
-### 2.10 `smap` 查询与驱散（`minix3/minix/servers/vfs/smap.c:smap_map（L147，工具生成）`）
+### 2.10 `smap` 查询与驱散（`minix3/minix/servers/vfs/smap.c:smap_unmap_by_endpt`）
 
-`unsuspend_by_endpt`（`335-357` 处为 dmap 版，smap 版在 `147-167`）：按端点定位→先失效套接字→清端点→清域（顺序：失效先于清除，`160-166`）。`smap_endpt_up`（`173-187`）：定位即失效（上线即旧套接字作废）。`make_smap_dev`（`200-208`）：行号左移 32 拼 id，端点与 id 非负断言。`get_smap_by_dev`（`216-237`）：拆号、零号/越界/负 id 拒绝、一基回表、断言序号一致、端点空拒绝、可选回写 id。`get_smap_by_endpt`（`244-259`）：O(n) 扫描（`249` 的 TODO 诚实保留）。`get_smap_by_domain`（`265-273`）：越界空，余直返（含空）。
+`smap_unmap_by_endpt`（`147-167`）：按端点定位→先失效套接字→清端点→清域（顺序：失效先于清除，`160-166`）。挂起面的驱散另有其人：`unsuspend_by_endpt`（`minix3/minix/servers/vfs/pipe.c:unsuspend_by_endpt`，`334-357`）负责叫醒挂在死驱动上的进程（Cdev 挂起回 `EIO`、Sdev 经 smap 行匹配停尸），归 17 篇。`smap_endpt_up`（`173-187`）：定位即失效（上线即旧套接字作废）。`make_smap_dev`（`200-208`）：行号左移 32 拼 id，端点与 id 非负断言。`get_smap_by_dev`（`216-237`）：拆号、零号/越界/负 id 拒绝、一基回表、断言序号一致、端点空拒绝、可选回写 id。`get_smap_by_endpt`（`244-259`）：O(n) 扫描（`249` 的 TODO 诚实保留）。`get_smap_by_domain`（`265-273`）：越界空，余直返（含空）。
 
-### 2.11 `do_ioctl` 分派机（`device.c:18-59`）
+### 2.11 `do_ioctl` 分派机（`minix3/minix/servers/vfs/device.c:do_ioctl`）
 
 `get_filp(VNODE_READ)` 取锁（`30-31`）→ 按 `S_IFMT` 三路：块置守卫调 `bdev_ioctl` 清守卫（`35-41`）、字符调 `cdev_io(CDEV_IOCTL,…)`（`43-46`，`CDEV_IOCTL` 见 `minix3/minix/include/minix/com.h:CDEV_IOCTL`）、socket 调 `sdev_ioctl`（`48-50`）→ 余 `ENOTTY`（`52-54`）→ 解锁返回（`56-58`）。
 
-### 2.12 `make_ioctl_grant` 授权机（`device.c:65-95`）
+### 2.12 `make_ioctl_grant` 授权机（`minix3/minix/servers/vfs/device.c:make_ioctl_grant`）
 
 方向解码（`76-78`：`IOR→CPF_WRITE`、`IOW→CPF_READ`，`CPF_*` 见 `minix3/minix/include/minix/safecopies.h:CPF_READ`）→ 尺寸解码（`79-82`：`IOC_BIG` 置位走 20 位 8 移，否则 12 位 16 移，见 `minix3/sys/sys/ioccom.h:IOC_BIG`）→ 魔法授权（`89`，注释写明“即使无 I/O 也授权”，`85-88`）→ 无效 panic（`91-92`）。
 
@@ -118,56 +120,56 @@ RS 门（`123`，余者 `EPERM`）→ 标签长度门（`132-135`）→ 拷贝�
 
 ## 3 Rust 设计决策
 
-Rust 改写不是照抄三文件的直线代码，而是吸收 Linux/Redox 的设备模型后做取舍。以下决策对应 `.design/19-design.v1.md` D1-D7。
+Rust 改写不是照抄三文件的直线代码，而是吸收 Linux/Redox 的设备模型后做取舍：以下七项决策各自回答“为什么这样表达、为什么不那样表达”。
 
 ### D1 表项值化
 
 - **C**：八字段/六字段裸全局数组 + `NONE` 哨兵（`minix3/minix/servers/vfs/dmap.c:dmap`、`smap.c:15-16`）。
-- **Rust**：`DmapEntry{driver: Option<Endpoint>, label: [u8;16], recovering, servicing}` + `SmapEntry{num, endpt: Option<Endpoint>, label}` + 定长数组表（`os/servers/vfs/src/device_map.rs:const IOCPARM_MASK_BIG,301,94,319`；P2-5 已将全线裸 `i32` 端点类型化为 `Endpoint`）。
-- **为什么**：`NONE` 即 `None`（17 同例）；一基编号构造固化。锁与选择执行态不入表（表只存路由知识，执行态归 07/20/21/23）。
+- **Rust**：`DmapEntry{driver, label, recovering, servicing, seen_tty, sel_busy, sel_owner}` + `SmapEntry{num, endpt, label, sel_busy, sel_owner}` + 定长数组表（`os/servers/vfs/src/device_map.rs:struct DmapEntry` + `os/servers/vfs/src/device_map.rs:struct SmapEntry`；端点字段是 `Option<Endpoint>` 而非裸 `i32`）。
+- **为什么**：`NONE` 即 `None`（17 同例）；一基编号构造固化。锁不入表（锁的持有语义归 07 的模型）；select 执行态与 tty 可见标志与 C 同构保留在行内（回复落地时按位认领，23 消费）。
 
 ### D2 目录 trait 化
 
-- **C**：DS 查端点内嵌注册路（`minix3/minix/servers/vfs/dmap.c:do_mapdriver（L148，工具生成）`）。
-- **Rust**：`EndpointDirectory` trait（`StaticDir` 有答 vs `EmptyDir` 无答）+ `resolve_driver` 泛型（`os/servers/vfs/src/device_map.rs:fn map_driver（L231，工具生成）,265`）。
+- **C**：DS 查端点内嵌注册路（`minix3/minix/servers/vfs/dmap.c:do_mapdriver`）。
+- **Rust**：`EndpointDirectory` trait（`StaticDir` 有答 vs `EmptyDir` 无答）+ `resolve_driver` 泛型（`os/servers/vfs/src/device_map.rs:trait EndpointDirectory` + `os/servers/vfs/src/device_map.rs:fn resolve_driver`）。
 - **为什么**：DS 是外部依赖；trait 使未知标签可单测。替代方案（`HashMap` 直查）被否决：替身仍需 trait，多一层无谓。
 
 ### D3 注册纯判定
 
-- **C**：五步直线 + 副作用交织（`minix3/minix/servers/vfs/smap.c:smap_map（L54，工具生成）`）+ 双提交回滚（`minix3/minix/servers/vfs/dmap.c:do_mapdriver（L167，工具生成）`）。
-- **Rust**：`register_plan`（复用/占位/校验/副作用计划）+ `DomainCheck` 四值 + `DualCommit` 回滚位（`os/servers/vfs/src/device_map.rs:fn check_domain（L404，工具生成）,350`）。
-- **为什么**：校验与变更分离；端点变更才驱散以计划显式。双提交的逆序回滚（smap 失败拆 dmap）以回滚位显式，与 18 同例。
+- **C**：五步直线 + 副作用交织（`minix3/minix/servers/vfs/smap.c:smap_map`）+ 双提交回滚（`minix3/minix/servers/vfs/dmap.c:do_mapdriver`）。
+- **Rust**：`register_plan`（复用/占位/校验/副作用计划）+ `DomainCheck` 四值（`check_domain` 逐域判定）（`os/servers/vfs/src/device_map.rs:fn register_plan` + `os/servers/vfs/src/device_map.rs:fn check_domain`）。
+- **为什么**：校验与变更分离；端点变更才驱散以计划显式（`ReplaceSideEffects`，由事件循环消费）。双提交的逆序回滚（smap 失败拆 dmap）由事件循环按提交序执行，与 18 同例。
 
 ### D4 恢复状态机
 
-- **C**：恢复三态散在循环中（`minix3/minix/servers/vfs/dmap.c:dmap_endpt_up（L286，工具生成）`）。
-- **Rust**：`recover_step(recovering, servicing) -> RecoverVerdict::{FailoverStop, BeginRecover, Steady}` + `classify_vanish` 三分类（`os/servers/vfs/src/device_map.rs:fn make_smap_dev,521`）。
+- **C**：恢复三态散在循环中（`minix3/minix/servers/vfs/dmap.c:dmap_endpt_up`）。
+- **Rust**：`recover_step(recovering, servicing) -> RecoverVerdict::{FailoverStop, BeginRecover, Steady}` + `classify_vanish` 三分类（`os/servers/vfs/src/device_map.rs:fn recover_step` + `os/servers/vfs/src/device_map.rs:fn classify_vanish`）。
 - **为什么**：两转移（又坏停服/首坏续命）纯函数化后全覆盖；执行（停工人/清表/续命）留 08/14/20。
 
 ### D5 授权解码纯函数
 
-- **C**：宏解码内嵌授权调用（`device.c:76-82`）。
-- **Rust**：`ioctl_access`（交叉保留）+ `ioctl_size`（BIG 分流）（`os/servers/vfs/src/device_map.rs:fn recover_step（L562，工具生成）,575`）。
+- **C**：宏解码内嵌授权调用（`minix3/minix/servers/vfs/device.c:make_ioctl_grant`）。
+- **Rust**：`ioctl_access`（交叉保留）+ `ioctl_size`（BIG 分流）（`os/servers/vfs/src/device_map.rs:fn ioctl_access` + `os/servers/vfs/src/device_map.rs:fn ioctl_size`）。
 - **为什么**：交叉语义（读出配写、写入配读）是最反直觉的一点，纯函数使之可测锁定。位值全部 sync 树可验证，不编造。
 
 ### D6 控制分派复用
 
-- **C**：`S_IFMT` 三路 + `ENOTTY`（`device.c:34-54`）。
-- **Rust**：`ioctl_route(ft: FileType)` 复用 15 类型 + `BLOCK_NEEDS_GUARD` 守卫常量（`os/servers/vfs/src/device_map.rs:enum RecoverVerdict（L547，工具生成）,544`）。
+- **C**：`S_IFMT` 三路 + `ENOTTY`（`minix3/minix/servers/vfs/device.c:do_ioctl`）。
+- **Rust**：`ioctl_route(ft: FileType)` 复用 15 类型 + `BLOCK_NEEDS_GUARD` 守卫常量（`os/servers/vfs/src/device_map.rs:fn ioctl_route` + `os/servers/vfs/src/device_map.rs:const BLOCK_NEEDS_GUARD`）。
 - **为什么**：不重复定义分派（15 权威）；守卫是时序义务，以常量声明，执行归 20。
 
 ### D7 锁协议化（复用）
 
 - **C**：断言门 + 挂起取锁 + panic（`minix3/minix/servers/vfs/dmap.c:lock_dmap`）。
-- **Rust**：不断言门之外另设锁类型；`lock_guard(driver) -> Result` 将两断言类型化为 `NoDev`。
-- **为什么**：锁执行已在 07 建模；另设即第二套锁抽象（模式 24 规避）。断言的“不可能”以调用点前置检查表达。
+- **Rust**：不另设锁类型；C 的两条断言（行非空、行已映射）化为调用点前置检查——`map_driver` 的越界分支给 `MapError::NoDev`，锁本身沿用 07 的持有模型。
+- **为什么**：锁执行已在 07 建模；另设即第二套锁抽象，两套模型对同一把锁的持有语义会漂移。断言的“不可能”以调用点前置检查表达。
 
 ### ARCH 决策总表
 
 | ARCH | 落点 | 三处一致标注 |
 |------|------|-------------|
-| A-1 单线程事件循环（mthread→状态机） | mutex→持有语义（07 复用）；挂起执行留 08 | `os/servers/vfs/src/device_map.rs:const IOCPARM_MASK_BIG` + 本文档 D7 + 19 正文 §2.2 |
-| A-8 64 位类型映射 | `dev_t=u64` 套接字号 32+32 拼合 | `os/servers/vfs/src/device_map.rs:fn register_plan（L453，工具生成）,461` + 本文档 D1 + 19 正文 §1.2 |
+| A-1 单线程事件循环（mthread→状态机） | mutex→持有语义（07 复用）；挂起执行留 08 | `os/servers/vfs/src/device_map.rs:struct DmapEntry`（不含锁字段）+ 本文档 D7 + §2.2 |
+| A-8 64 位类型映射 | `dev_t=u64` 套接字号 32+32 拼合 | `os/servers/vfs/src/device_map.rs:fn make_smap_dev` + 本文档 D1 + §1.2 |
 
 ---
 
@@ -189,61 +191,65 @@ os/servers/vfs/src/
 
 | 符号 | 来源 | Rust 位置 | 行为 |
 |------|------|-----------|------|
-| `dmap` 八字段 | `dmap.h:16-25` | `os/servers/vfs/src/device_map.rs:const IOCPARM_MASK_BIG DmapEntry` | 路由四位 |
-| `NR_DEVICES` | `dmap.h:82` | `device_map.rs:19` | 135 |
-| `CTTY` 例外 | `minix3/minix/servers/vfs/dmap.c:init_dmap（L244，工具生成）` | `os/servers/vfs/src/device_map.rs:const PF_UNSPEC（L37，工具生成）,106` | 自管落定 |
-| `map_driver` | `minix3/minix/servers/vfs/dmap.c:map_driver` | `os/servers/vfs/src/device_map.rs:fn get_by_endpt（L189，工具生成）` | 增删二路 |
-| 查询三函数 | `minix3/minix/servers/vfs/dmap.c:dmap_driver_match` | `os/servers/vfs/src/device_map.rs:fn get,154,167` | 纯谓词 |
-| 驱散计数 | `minix3/minix/servers/vfs/dmap.c:dmap_unmap_by_endpt` | `os/servers/vfs/src/device_map.rs:fn map_driver（L218，工具生成）` | 精确计数 |
-| DS 接缝 | `minix3/minix/servers/vfs/dmap.c:do_mapdriver（L148，工具生成）` | `os/servers/vfs/src/device_map.rs:fn map_driver（L231，工具生成）,265` | trait 双实现 |
-| RS 门/服务分类 | `minix3/minix/servers/vfs/dmap.c:do_mapdriver（L123，工具生成）,200-225` | `os/servers/vfs/src/device_map.rs:fn lookup（L270，工具生成）,289` | 门 + 三分类 |
-| `smap` 六字段 | `type.h:41-47` | `os/servers/vfs/src/device_map.rs:enum ServiceMap（L301，工具生成）` | 一基固化 |
-| 注册机 | `minix3/minix/servers/vfs/smap.c:smap_map` | `os/servers/vfs/src/device_map.rs:impl SmapTable（L350，工具生成）,404` | 校验 + 计划 |
-| 槽位 helpers | `minix3/minix/servers/vfs/smap.c:smap_map（L62，工具生成）` | `os/servers/vfs/src/device_map.rs:fn register_plan（L433，工具生成）,446` | 复用/占位 |
-| 套接字号编解码 | `minix3/minix/servers/vfs/smap.c:smap_endpt_up（L200，工具生成）` | `os/servers/vfs/src/device_map.rs:fn register_plan（L453，工具生成）,461` | 拼合/拆分 |
-| 端点/域查询 | `minix3/minix/servers/vfs/smap.c:get_smap_by_endpt` | `os/servers/vfs/src/device_map.rs:fn find_slot_by_label,477` | O(n) 诚实 |
-| 恢复机 | `minix3/minix/servers/vfs/dmap.c:dmap_endpt_up` | `os/servers/vfs/src/device_map.rs:fn find_free_slot（L486，工具生成）,496,521` | 三态 + 分类 |
-| 控制分派 | `device.c:34-54` | `os/servers/vfs/src/device_map.rs:fn smap_by_domain（L533，工具生成）,547` | 复用 + 守卫位 |
-| 授权解码 | `device.c:76-82` | `os/servers/vfs/src/device_map.rs:fn recover_step（L562，工具生成）,575` | 交叉 + 分流 |
-| 错误族 | 三文件全文件 | `os/servers/vfs/src/device_map.rs:enum IoctlTarget（L587，工具生成）,606 MapError::to_errno` | 7 变体→errno，无自创 |
+| `dmap` 八字段 | `minix3/minix/servers/vfs/dmap.h:dmap` | `os/servers/vfs/src/device_map.rs:struct DmapEntry` | 路由四位 |
+| `NR_DEVICES` | `minix3/minix/include/minix/dmap.h:NR_DEVICES` | `os/servers/vfs/src/device_map.rs:const NR_DEVICES` | 135 |
+| `CTTY` 例外 | `minix3/minix/servers/vfs/dmap.c:init_dmap` | `os/servers/vfs/src/device_map.rs:struct DmapTable` + `os/servers/vfs/src/device_map.rs:fn map_driver` | 自管落定 |
+| `map_driver` | `minix3/minix/servers/vfs/dmap.c:map_driver` | `os/servers/vfs/src/device_map.rs:fn map_driver` | 增删二路 |
+| 查询三函数 | `minix3/minix/servers/vfs/dmap.c:dmap_driver_match` | `os/servers/vfs/src/device_map.rs:fn driver_match` + `os/servers/vfs/src/device_map.rs:fn get_by_major` + `os/servers/vfs/src/device_map.rs:fn get_by_endpt` | 纯谓词 |
+| 驱散计数 | `minix3/minix/servers/vfs/dmap.c:dmap_unmap_by_endpt` | `os/servers/vfs/src/device_map.rs:fn unmap_by_endpt` | 精确计数 |
+| DS 接缝 | `minix3/minix/servers/vfs/dmap.c:do_mapdriver` | `os/servers/vfs/src/device_map.rs:trait EndpointDirectory` + `os/servers/vfs/src/device_map.rs:fn resolve_driver` | trait 双实现 |
+| RS 门/服务分类 | `minix3/minix/servers/vfs/dmap.c:do_mapdriver` + `minix3/minix/servers/vfs/dmap.c:map_service` | `os/servers/vfs/src/device_map.rs:fn check_mapper` + `os/servers/vfs/src/device_map.rs:fn classify_service` | 门 + 三分类 |
+| `smap` 六字段 | `minix3/minix/servers/vfs/type.h:smap` | `os/servers/vfs/src/device_map.rs:struct SmapEntry` + `os/servers/vfs/src/device_map.rs:struct SmapTable` | 一基固化 |
+| 注册机 | `minix3/minix/servers/vfs/smap.c:smap_map` | `os/servers/vfs/src/device_map.rs:fn register_plan` | 校验 + 计划 |
+| 槽位 helpers | `minix3/minix/servers/vfs/smap.c:smap_map` | `os/servers/vfs/src/device_map.rs:fn find_slot_by_label` + `os/servers/vfs/src/device_map.rs:fn find_free_slot` | 复用/占位 |
+| 套接字号编解码 | `minix3/minix/servers/vfs/smap.c:make_smap_dev` + `minix3/minix/servers/vfs/smap.c:get_smap_by_dev` | `os/servers/vfs/src/device_map.rs:fn make_smap_dev` + `os/servers/vfs/src/device_map.rs:fn split_smap_dev` | 拼合/拆分 |
+| 端点/域查询 | `minix3/minix/servers/vfs/smap.c:get_smap_by_endpt` + `minix3/minix/servers/vfs/smap.c:get_smap_by_domain` | `os/servers/vfs/src/device_map.rs:fn smap_by_endpt` + `os/servers/vfs/src/device_map.rs:fn smap_by_domain` | O(n) 诚实 |
+| 恢复机 | `minix3/minix/servers/vfs/dmap.c:dmap_endpt_up` | `os/servers/vfs/src/device_map.rs:fn recover_step` + `os/servers/vfs/src/device_map.rs:fn classify_vanish` | 三态 + 分类 |
+| 控制分派 | `minix3/minix/servers/vfs/device.c:do_ioctl` | `os/servers/vfs/src/device_map.rs:fn ioctl_route` | 复用 + 守卫位 |
+| 授权解码 | `minix3/minix/servers/vfs/device.c:make_ioctl_grant` | `os/servers/vfs/src/device_map.rs:fn ioctl_access` + `os/servers/vfs/src/device_map.rs:fn ioctl_size` | 交叉 + 分流 |
+| 错误族 | 三文件全文件 | `os/servers/vfs/src/device_map.rs:enum MapError`（`to_errno` 两入口） | 7 变体→errno，无自创 |
 
 ### 4.3 不变量
 
 | 不变量 | 位置 | 守卫 | 证据 |
 |--------|------|------|------|
 | 号人互查 | `driver_match` | 三元合取 | `minix3/minix/servers/vfs/dmap.c:dmap_driver_match` |
-| 标签有界 | `validate_label` | 16 含 NUL | `minix3/minix/servers/vfs/dmap.c:map_driver（L89，工具生成）` |
-| 重启幂等 | `find_slot_by_label` | 同标签复用 | `minix3/minix/servers/vfs/smap.c:smap_map（L62，工具生成）` |
-| 授权交叉 | `ioctl_access` | 读出配写 | `device.c:76-78` |
-| 一基编号 | `SmapTable::new` | `i+1` 固化 | `minix3/minix/servers/vfs/smap.c:init_smap（L32，工具生成）` |
+| 标签有界 | `validate_label` | 16 含 NUL | `minix3/minix/servers/vfs/dmap.c:map_driver` |
+| 重启幂等 | `find_slot_by_label` | 同标签复用 | `minix3/minix/servers/vfs/smap.c:smap_map` |
+| 授权交叉 | `ioctl_access` | 读出配写 | `minix3/minix/servers/vfs/device.c:make_ioctl_grant` |
+| 一基编号 | `SmapTable::new` | `i+1` 固化 | `minix3/minix/servers/vfs/smap.c:init_smap` |
+
+### 4.4 驱动死亡级联的编排
+
+C 的“驱动消失”没有单一入口，是三处同族动作的合集：`map_driver` 的 unmap 支先做字符失效再清行（`minix3/minix/servers/vfs/dmap.c:map_driver`，`82-85`）、`dmap_endpt_up` 的 `worker_stop + invalidate` 支（`minix3/minix/servers/vfs/dmap.c:dmap_endpt_up`，`304-309`）、smap 侧三处 `invalidate_filp_by_sock_drv(sp->smap_num)`（`minix3/minix/servers/vfs/smap.c:smap_map` 与同文件的 `smap_unmap_by_endpt`/`smap_endpt_up`，`119/160/186`）；挂起面的散射在 `unsuspend_by_endpt`（`minix3/minix/servers/vfs/pipe.c:unsuspend_by_endpt`，`334-357`）：Cdev 挂起点端点匹配即 `revive(EIO)`、Sdev 挂起经 smap 行匹配即 `sdev_stop`，select 等待者另有 `select_unsuspend_by_endpt` 一面。
+
+Rust 把决策面收成两个编排函数。`driver_death_cascade`（`os/servers/vfs/src/device_map.rs:fn driver_death_cascade`）做“身份扫描 + 失效执行 + 家族分类”：按端点扫 dmap 表拿 major、扫 smap 表拿一基行号，字符家族经 `invalidate_by_char_major`（`os/servers/vfs/src/filedes.rs:fn invalidate_by_char_major`）、socket 家族经 `invalidate_by_sock_drv`（`os/servers/vfs/src/filedes.rs:fn invalidate_by_sock_drv`），产出 `CascadeOutcome { notice, char_major, sock_num, invalidated }`；块家族不出失效，`notice = RecoverBlock` 提示调用方走 `bdev_up` 恢复路径（执行归 `20-bdev.md`）。`driver_vanish_plan`（`os/servers/vfs/src/pipe.rs:fn driver_vanish_plan`）做 fproc 扫描：活槽按挂起面分类，Cdev 端点匹配 → `ReviveEio`、Sdev 经 `stop_matches` → `StopSdev`，产出 `(UserSlot, DriverWake)` 计划；第三面 select 归 select 模块。两个函数都是“计划/决策”位：复活入队、sdev 槽收尾与表清理的执行属事件循环层的编排。
 
 ---
 
 ## 5 测试要点
 
-> 基线：`cargo test -p minix-vfs --lib` 截至 2026-09-03 为 **248 passed / 0 failed**（既有 238 + 本篇新增 10；`minix-types` 独立）。
-> 本章直接影响 10 项新增。
+> 基线：`cargo test -p minix-vfs --lib` 为 **538 passed / 0 failed**（`minix-types` 独立计数）。
+> 本节列出与本模块直接相关的 14 个（`device_map.rs` 全量；完整清单：`rg "fn test_" os/servers/vfs/src/device_map.rs`）。
 
-| 测试名 | 覆盖 C 行号 | 行为 | 文件 |
+| 测试名 | 覆盖 C 位置 | 行为 | 文件 |
 |--------|-------------|------|------|
-| `test_dmap_init_and_ctty` | `minix3/minix/servers/vfs/dmap.c:init_dmap` | 清零 + CTTY 落定 + 越界空 | `os/servers/vfs/src/device_map.rs:fn ioctl_access（L625，工具生成）` |
-| `test_map_driver_lifecycle` | `minix3/minix/servers/vfs/dmap.c:map_driver,180-195,252-328` | 增删查驱散全周期 | `os/servers/vfs/src/device_map.rs:enum MapError（L643，工具生成）` |
-| `test_mapper_gate_and_directory` | `minix3/minix/servers/vfs/dmap.c:do_mapdriver（L123，工具生成）,148-160,200-225` | RS 门 + 目录双实现 + 服务分类 | `os/servers/vfs/src/device_map.rs:fn to_errno（L672，工具生成）` |
-| `test_smap_init` | `minix3/minix/servers/vfs/smap.c:init_smap` | 一基编号 + 全空 | `os/servers/vfs/src/device_map.rs:fn test_dmap_init_and_ctty（L697，工具生成）` |
-| `test_register_plan_matrix` | `minix3/minix/servers/vfs/smap.c:smap_map（L54，工具生成）` | 复用/占位/校验/副作用/满 | `os/servers/vfs/src/device_map.rs:fn test_map_driver_lifecycle（L709，工具生成）` |
-| `test_domain_checks` | `minix3/minix/servers/vfs/smap.c:smap_map（L75，工具生成）` | 四值 + 槽 helpers | `os/servers/vfs/src/device_map.rs:static PAIRS（L747，工具生成）` |
-| `test_smap_dev_codec` | `minix3/minix/servers/vfs/smap.c:smap_endpt_up（L200，工具生成）` | 拼合拆分 + 查询 | `os/servers/vfs/src/device_map.rs:fn via（L765，工具生成）` |
-| `test_recover_step_matrix` | `minix3/minix/servers/vfs/dmap.c:dmap_endpt_up` | 三态 + 三分类 | `os/servers/vfs/src/device_map.rs:fn test_register_plan_matrix（L789，工具生成）` |
-| `test_ioctl_route_and_grant` | `device.c:34-54,76-82` | 三路 + 交叉 + 分流 | `os/servers/vfs/src/device_map.rs:fn test_register_plan_matrix（L805，工具生成）` |
-| `test_errno_map_covers_device_c` | 三文件全文件 | 7 变体→errno 全映射 | `os/servers/vfs/src/device_map.rs:fn test_domain_checks` |
+| `test_dmap_init_and_ctty` | `minix3/minix/servers/vfs/dmap.c:init_dmap` | 清零 + CTTY 落定 + 越界空 | `os/servers/vfs/src/device_map.rs:fn test_dmap_init_and_ctty` |
+| `test_map_driver_lifecycle` | `minix3/minix/servers/vfs/dmap.c:map_driver` + `minix3/minix/servers/vfs/dmap.c:dmap_unmap_by_endpt` + `minix3/minix/servers/vfs/dmap.c:dmap_driver_match` | 增删查驱散全周期 | `os/servers/vfs/src/device_map.rs:fn test_map_driver_lifecycle` |
+| `test_mapper_gate_and_directory` | `minix3/minix/servers/vfs/dmap.c:do_mapdriver` + `minix3/minix/servers/vfs/dmap.c:map_service` | RS 门 + 目录双实现 + 服务分类 | `os/servers/vfs/src/device_map.rs:fn test_mapper_gate_and_directory` |
+| `test_smap_init` | `minix3/minix/servers/vfs/smap.c:init_smap` | 一基编号 + 全空 | `os/servers/vfs/src/device_map.rs:fn test_smap_init` |
+| `test_register_plan_matrix` | `minix3/minix/servers/vfs/smap.c:smap_map` | 复用/占位/校验/副作用/满 | `os/servers/vfs/src/device_map.rs:fn test_register_plan_matrix` |
+| `test_domain_checks` | `minix3/minix/servers/vfs/smap.c:smap_map` | 四值 + 槽 helpers | `os/servers/vfs/src/device_map.rs:fn test_domain_checks` |
+| `test_smap_dev_codec` | `minix3/minix/servers/vfs/smap.c:make_smap_dev` + `minix3/minix/servers/vfs/smap.c:get_smap_by_dev` | 拼合拆分 + 查询 | `os/servers/vfs/src/device_map.rs:fn test_smap_dev_codec` |
+| `test_recover_step_matrix` | `minix3/minix/servers/vfs/dmap.c:dmap_endpt_up` | 三态 + 三分类 | `os/servers/vfs/src/device_map.rs:fn test_recover_step_matrix` |
+| `test_ioctl_route_and_grant` | `minix3/minix/servers/vfs/device.c:do_ioctl` + `minix3/minix/servers/vfs/device.c:make_ioctl_grant` | 三路 + 交叉 + 分流 | `os/servers/vfs/src/device_map.rs:fn test_ioctl_route_and_grant` |
+| `test_errno_map_covers_device_c` | 三文件全文件 | 7 变体→errno 全映射 | `os/servers/vfs/src/device_map.rs:fn test_errno_map_covers_device_c` |
+| `test_death_cascade_char_invalidates_by_major` | `minix3/minix/servers/vfs/dmap.c:dmap_endpt_up` | 字符家族：按 major 全量失效 | `os/servers/vfs/src/device_map.rs:fn test_death_cascade_char_invalidates_by_major` |
+| `test_death_cascade_sock_invalidates_by_num` | `minix3/minix/servers/vfs/smap.c:smap_endpt_up` | socket 家族：按一基号失效 | `os/servers/vfs/src/device_map.rs:fn test_death_cascade_sock_invalidates_by_num` |
+| `test_death_cascade_block_is_recover_notice` | `minix3/minix/servers/vfs/dmap.c:dmap_endpt_up` | 块家族：只出恢复通知 | `os/servers/vfs/src/device_map.rs:fn test_death_cascade_block_is_recover_notice` |
+| `test_death_cascade_no_row_is_inert` | 三文件全文件 | 无行死驱动：零失效（fail-safe） | `os/servers/vfs/src/device_map.rs:fn test_death_cascade_no_row_is_inert` |
 
-测试策略：表以初始化/越界/生命周期覆盖；注册以复用/占位/校验四值/副作用/满覆盖；编解码以往返/拒绝/查询覆盖；恢复以三态/三分类覆盖；授权以交叉/分流/位值覆盖；错误以 7 变体全映射覆盖。
-
-### 5.1 测试统计（截至 2026-09-03）
-
-- `cargo test -p minix-vfs --lib`：**248 passed / 0 failed**
-- 本节列出与本模块直接相关的 10 个（子集）
-- 完整测试清单：`rg "fn test_" os/servers/vfs/src/device_map.rs`
+测试策略：表以初始化/越界/生命周期覆盖；注册以复用/占位/校验四值/副作用/满覆盖；编解码以往返/拒绝/查询覆盖；恢复以三态/三分类覆盖；授权以交叉/分流/位值覆盖；错误以 7 变体全映射覆盖；死亡级联以三家族 + 空扫描覆盖。
 
 ---
 
@@ -267,15 +273,8 @@ os/servers/vfs/src/
 
 ## 7 参见
 
-- C 源：`minix3/minix/servers/vfs/dmap.c:1-328`（`lock_dmap/unlock_dmap/map_driver/do_mapdriver/dmap_unmap_by_endpt/map_service/init_dmap/dmap_driver_match/get_dmap_by_major/dmap_endpt_up/get_dmap_by_endpt`）、`minix3/minix/servers/vfs/smap.c:1-273`（`init_smap/smap_map/smap_unmap_by_endpt/smap_endpt_up/make_smap_dev/get_smap_by_dev/get_smap_by_endpt/get_smap_by_domain`）、`minix3/minix/servers/vfs/device.c:1-95`（`do_ioctl/make_ioctl_grant`）、`minix3/minix/servers/vfs/dmap.h:__VFS_DMAP_H__（L16，工具生成）`（表结构）、`minix3/minix/include/minix/dmap.h:NONE_MAJOR,82`（`NONE_MAJOR/NR_DEVICES`）、`minix3/minix/include/minix/com.h:CDEV_IOCTL,949-950`（`CDEV_IOCTL/OP`）、`minix3/minix/include/minix/safecopies.h:CPF_READ`（`CPF_*`）、`minix3/sys/sys/ioccom.h:IOC_BIG`（尺寸位）、`minix3/sys/sys/socket.h:AF_MAX,333`（`AF_MAX/PF_MAX`）
+- C 源：`minix3/minix/servers/vfs/dmap.c:1-328`（`lock_dmap/unlock_dmap/map_driver/do_mapdriver/dmap_unmap_by_endpt/map_service/init_dmap/dmap_driver_match/get_dmap_by_major/dmap_endpt_up/get_dmap_by_endpt`）、`minix3/minix/servers/vfs/smap.c:1-273`（`init_smap/smap_map/smap_unmap_by_endpt/smap_endpt_up/make_smap_dev/get_smap_by_dev/get_smap_by_endpt/get_smap_by_domain`）、`minix3/minix/servers/vfs/device.c:1-95`（`do_ioctl/make_ioctl_grant`）、`minix3/minix/servers/vfs/dmap.h:dmap`（表结构）、`minix3/minix/include/minix/dmap.h:NONE_MAJOR` + `minix3/minix/include/minix/dmap.h:NR_DEVICES`、`minix3/minix/include/minix/com.h:CDEV_IOCTL` + `minix3/minix/include/minix/com.h:CDEV_OP_RD`、`minix3/minix/include/minix/safecopies.h:CPF_READ`（`CPF_*`）、`minix3/sys/sys/ioccom.h:IOC_BIG`（尺寸位）、`minix3/sys/sys/socket.h:AF_MAX` + `minix3/sys/sys/socket.h:PF_MAX`
 - 阶段文档：`18-mount.md`（标签来源）、`06-vmnt-table.md`（表语义类比）、`01-vfs-init-main.md`（启动调用点）、`20-bdev.md` / `21-cdev.md` / `22-sdev.md`（驱动执行）、`09-main-loop.md`（`SUSPEND` 路由）
-- Rust 实现：`os/servers/vfs/src/device_map.rs:1`（本篇判定层）、`os/servers/vfs/src/open.rs:1`（`FileType` 复用）、`os/libs/minix-types/src/types/errno.rs:const EPERM`（errno 值）
+- Rust 实现：`os/servers/vfs/src/device_map.rs`（本篇判定层）、`os/servers/vfs/src/open.rs`（`FileType` 复用）、`os/libs/minix-types/src/types/errno.rs`（errno 常量表，`EPERM` 等）
 - 内核侧：`../01-stage-kernel/18-syscall-copy.md`（标签拷贝语义）
 
----
-
-## 9 驱动死亡级联编排(S15)
-
-C 的"驱动消失"没有单一入口,是三处同族动作的合集:`map_driver` 的 unmap 支先做字符失效再清行(`dmap.c:82-85`)、`dmap_endpt_down` 的 `worker_stop + invalidate`(`dmap.c:305-311`)、smap 侧的 `invalidate_filp_by_sock_drv(sp->smap_num)`(`smap.c:119/160/186`);挂起面的散射在 `unsuspend_by_endpt`(`pipe.c:335-357`):Cdev 挂起点端点匹配即 `revive(EIO)`、Sdev 挂起经 smap 行匹配即 `sdev_stop`、select 等待者另有 `select_unsuspend_by_endpt` 一面。
-
-Rust 在 S15 把决策面收成两个编排函数。`driver_death_cascade`(`device_map.rs`)做"身份扫描 + 失效执行 + 家族分类":按端点扫 dmap 表拿 major、扫 smap 表拿一基行号,字符家族经 `invalidate_by_char_major`、socket 家族经 `invalidate_by_sock_drv`(FIXED 失效族),产出 `CascadeOutcome { notice, char_major, sock_num, invalidated }`;块家族不出失效,`notice = RecoverBlock` 提示调用方走 `bdev_up` 恢复路径(执行归 20-bdev.md)。`driver_vanish_plan`(`pipe.rs`)做 fproc 扫描:活槽按挂起面分类,Cdev 端点匹配 → `ReviveEio`、Sdev 经 `stop_matches` → `StopSdev`,产出 `(UserSlot, DriverWake)` 计划供事件循环消费;第三面 select 归 select 模块。两个函数都是"计划/决策"位,复活入队与 sdev 槽收尾的运行时编排属事件循环层。

@@ -111,6 +111,14 @@ def extract_open_issues(text):
         r'Open\s+P([012])\s+issues\s*\**\s*:\s*([^\n]*)',
         re.IGNORECASE
     )
+    # R6-D5/R7-D6：现行 STATE 模板用「## Open 项」表格而非 "Open P0 issues:" 行，
+    # 旧实现提取 0 条 → 孤儿检查静默空转。回退：扫描 ## Open 段落里的 P[012]-ID。
+    if not open_line_pattern.search(text):
+        sec = re.search(r'^##\s*Open[^\n]*\n(.*?)(?=^##\s|\Z)', text, re.M | re.S)
+        if sec:
+            for m in re.finditer(r'\b(P[012]-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*)\b', sec.group(1)):
+                issues.add(m.group(1))
+            return issues
     for match in open_line_pattern.finditer(text):
         severity = 'P' + match.group(1)
         rest = match.group(2)

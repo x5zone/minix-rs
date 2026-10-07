@@ -73,9 +73,9 @@
 
 ### 2.1 缓冲头 `struct buf` 与取值模式（`minix3/minix/include/minix/libminixfs.h:buf`）
 
-缓冲结构分数据段与头段：数据指针、双向空闲链指针、哈希链指针、设备号、块号、使用计数、二级缓存标记、块字节数、标志、关联的索引节点与文件偏移（`minix3/minix/include/minix/libminixfs.h:buf`）。使用计数是字符型（`minix3/minix/include/minix/libminixfs.h:buf（L21，工具生成）`），上限一百二十七——单线程服务器里够用了。
+缓冲头 `struct buf` 分数据段与头段：数据指针、双向空闲链指针、哈希链指针、设备号、块号、使用计数、二级缓存标记、块字节数、标志、关联的索引节点与文件偏移（`minix3/minix/include/minix/libminixfs.h:buf`）。使用计数是字符型（`lmfs_count`），上限一百二十七——单线程服务器里够用了。
 
-取值模式三个：正常（必须读盘）、免读（不读盘）、窥视（只查有无，不在报无此项）（`minix3/minix/include/minix/libminixfs.h:NORMAL`）。块输入输出三个函数声明（驱动绑定、块传输、刷设备）在第 05 篇展开。
+取值模式三个 `NORMAL`、`NO_READ`、`PEEK`（`minix3/minix/include/minix/libminixfs.h:NO_READ`）：正常（必须读盘）、免读（不读盘）、窥视（只查有无，不在报无此项）。块输入输出三个函数声明（驱动绑定、块传输、刷设备）在第 05 篇展开。
 
 ### 2.2 池与全局量（`cache.c:38-71`，`MINBUFS` 在 `cache.c:44`）
 
@@ -109,7 +109,7 @@
 
 单块读 `read_block`（`cache.c:726-777`）：超页块用聚集向量分片读，否则单次读；读不满报输入输出错并作废块（超级块读的正常文件尾不打印，安装系统时常见，`cache.c:764`）；读不够但非负也算错（`cache.c:768-769`，注释写了待重试剩余部分）。
 
-散射读写 `rw_scattered`（`cache.c:840-972`）：读要求调用方全程持有缓冲（断言在用计数，`cache.c:864-873`）；写按块号排序（`cache.c:884-885`，顺序写省寻道）；拼聚集向量做连续段传输；读失败则首块作废、余块释放（`cache.c:933-963`）；写停滞（一个没写进去）则跳出循环，注释写明脏块保留比死循环强（`cache.c:964-971`）。
+散射读写 `rw_scattered`（`cache.c:840-982`）：读要求调用方全程持有缓冲（断言在用计数，`cache.c:864-873`）；写按块号排序（`cache.c:884-885`，顺序写省寻道）；拼聚集向量做连续段传输；读失败则首块作废、余块释放（`cache.c:933-963`）；写停滞（一个没写进去）则跳出循环，注释写明脏块保留比死循环强（`cache.c:964-971`）。
 
 ### 2.8 预读 `lmfs_readahead`、`lmfs_readahead_limit`、`lmfs_prefetch`（`cache.c:987-1131`）
 
@@ -123,7 +123,7 @@
 
 全刷 `lmfs_flushall`（`cache.c:1295-1311`）：逐设备刷，顺带以零增量触发用量变更，检查挂起的重估。块大小查询 `lmfs_fs_block_size` 与二级缓存开关 `lmfs_may_use_vmcache` 是两个一行函数（`cache.c:1313-1321`）。
 
-失效 `lmfs_invalidate`（`cache.c:782-808`）：某设备所有块清内存、清设备号，通知虚拟内存清缓存（即使二级缓存关着也通知，防止错误路径残留，`cache.c:803-807`）。清内存在这里是两件事：进程堆上的块直接丢，页映射换来的块把页还给内存服务器（`munmap`）。单块释放 `lmfs_free_block`（`cache.c:613-650`）：文件系统在存储上释放某块后，先通知虚拟内存忘掉该块，再把缓存中的同名拷贝标干净加作废（钉住也照办），注释写明此处不是做删除 trim 的地方（`cache.c:644-649`）。先通知是必须的：块号会被后来的文件重新用上，旧索引节点关联留在内存服务器的缓存里，一个洞就会映射出前一个文件的残影（`cache.c:616-623`）。
+失效 `lmfs_invalidate`（`cache.c:782-808`）：某设备所有块清内存、清设备号，通知虚拟内存清缓存（即使二级缓存关着也通知，防止错误路径残留，`cache.c:803-807`）。C 的块内存只有匿名整页映射一种来源，清除内存因此只有一个动作——把映射交还内存服务器（`munmap`）；Rust 侧的块内存分两态，才有"堆内存直接丢、页映射交还二级缓存"两条路。单块释放 `lmfs_free_block`（`cache.c:613-650`）：文件系统在存储上释放某块后，先通知虚拟内存忘掉该块，再把缓存中的同名拷贝标干净加作废（钉住也照办），注释写明此处不是做删除 trim 的地方（`cache.c:644-649`）。先通知是必须的：块号会被后来的文件重新用上，旧索引节点关联留在内存服务器的缓存里，一个洞就会映射出前一个文件的残影（`cache.c:616-623`）。
 
 ### 2.10 池管理 `cache_resize`、`lmfs_set_blocksize`、`lmfs_buf_pool`（`cache.c:1192-1293`）
 
@@ -142,6 +142,8 @@
 | 块内存 | 一律 `mmap` 整页匿名内存 | 开了二级缓存则走内存服务器整页映射，否则用堆内存 | 架构演进：块内存的归属决定它能否交给内存服务器 |
 | 内存分配 | 映射分配，失败先腾再试 | 交给二级缓存面（页映射或堆），失败即上报 | 架构演进：内存管理属运行环境 |
 | 释放闲置块的打印 | 打印在用数与字节数 | 无（库不打印） | 设计决策：库保持安静，状态由调用方观测 |
+| 窥视与页缓存 | 池内未命中时继续查页缓存，命中就交页（`cache.c:443-451`） | 只查池内索引，未命中即报缺席；命中页缓存的情形由正常拿取路径承担 | 设计决策：窥视面窄化成"池内探测"，单一职责、无副作用；代价是预读探路少停一处 |
+| 用量重估触发 | 文件系统按块增量累计（`cache.c:119-161`），越过十兆带且池空闲时重估 | 以缓存写入字节数累计阈值（`note_written` 与 `write_reestimate_due`），生产接线待挂载阶段 | 设计决策：触发量换口径，阈值与纯函数可测 |
 
 ### 2.12 符号覆盖矩阵
 
@@ -150,16 +152,17 @@
 | `struct buf` | 第 2.1 节 | `Buffer` | 已覆盖 |
 | `NORMAL`、`NO_READ`、`PEEK` | 第 2.1 节 | `AcquireMode` | 已覆盖 |
 | `MINBUFS` | 第 2.2 节 | `MIN_POOL_SIZE` | 已覆盖 |
-| `LMFS_MAX_PREFETCH` | 第 2.8 节 | `MAX_PREFETCH`（六十四，与 `const.h:50` 一致） | 已覆盖 |
-| `front`、`rear`、`bufs_in_use` | 第 2.2 节 | `free_order`、`pinned` | 已覆盖 |
+| `LMFS_MAX_PREFETCH` | 第 2.8 节 | `MAX_PREFETCH`（六十四，等于 `NR_IOREQS`；`minix3/minix/include/minix/const.h:NR_IOREQS`） | 已覆盖 |
+| `front`、`rear`、`bufs_in_use` | 第 2.2 节 | `free_head`、`free_tail`、`pinned` | 已覆盖 |
 | `buf_hash`、`BUFHASH`、`buf`、`nr_bufs` | 第 2.2 节 | `index`、`slots` | 已覆盖 |
 | `fs_bufs_heuristic` | 第 2.3 节 | `suggest_pool_size` | 已覆盖 |
-| `lmfs_change_blockusage`、`lmfs_set_blockusage` | 第 2.3 节 | `set_usage` | 已覆盖 |
+| `lmfs_set_blockusage` | 第 2.3 节 | `set_usage` | 已覆盖 |
+| `lmfs_change_blockusage` | 第 2.3 节 | `note_written`、`write_reestimate_due`（触发量改为写入字节，生产接线待挂载阶段） | 部分覆盖 |
 | `lmfs_markdirty`、`lmfs_markclean`、`lmfs_isclean` | 第 2.4 节 | `mark_dirty`、`mark_clean`、`is_dirty` | 已覆盖 |
 | `get_block_ino`、`lmfs_get_block`、`lmfs_get_block_ino` | 第 2.5 节 | `acquire` | 已覆盖 |
 | `find_block` | 第 2.5 节 | 索引查询（`acquire` 内） | 已覆盖 |
 | `put_block`、`lmfs_put_block` | 第 2.6 节 | `release`、`release_slot` | 已覆盖 |
-| `rm_lru` | 第 2.6 节 | `remove_from_free` | 已覆盖 |
+| `rm_lru` | 第 2.6 节 | `list_unlink`（侵入式空闲链内部） | 已覆盖 |
 | `freeblock` | 第 2.6 节 | `evict_one` 前半 | 已覆盖 |
 | `read_block` | 第 2.7 节 | `BlockSource::read_block` | 已覆盖 |
 | `rw_scattered` | 第 2.7 节 | `BlockSource::write_block`（散射组织归第 05 篇） | 部分覆盖，组织层在第 05 篇 |
@@ -168,10 +171,10 @@
 | `lmfs_invalidate`、`lmfs_free_block` | 第 2.9 节 | `invalidate_device`、`free_block` | 已覆盖 |
 | `cache_resize`、`lmfs_set_blocksize`、`lmfs_buf_pool` | 第 2.10 节 | `with_pool`、改池函数（测试侧，生产归服务进程） | 已覆盖 |
 | `vm_map_cacheblock`、`vm_set_cacheblock`、`vm_forget_cacheblock`、`vm_clear_cache` | 第 2.5、2.6、2.9 节 | `VmCacheWire` 的四个方法（线上封装在服务进程），策略与门控在 `VmSecondLevel` | 已覆盖 |
-| `lmfs_fs_block_size`、`lmfs_may_use_vmcache`、`lmfs_setquiet` | 第 2.10 节 | `BlockSource::block_size`、`VmSecondLevel::new`/`opted_out`（静默归服务进程） | 部分覆盖：静默归服务进程 |
+| `lmfs_fs_block_size`、`lmfs_may_use_vmcache`、`lmfs_setquiet` | 第 2.2、2.10 节 | `BlockSource::block_size`、`VmSecondLevel::new`/`opted_out`（静默归服务进程） | 部分覆盖：静默归服务进程 |
 | `VMMC_*`、`VMSF_ONCE`、`VMC_NO_INODE` | 第 2.1、2.5、2.6 节 | `minix_types::vm_cache`（单一权威）+ `BufferFlags` + `BlockTag` | 已覆盖 |
-| `free_unused_blocks`、`sort_blocks` | 第 2.10 节 | 未移植 | 明确缺口：紧急腾内存属分配器职责，散射排序归第 05 篇 |
-| `lmfs_zero_block_ino` | 第 2.10 节 | 未移植 | 明确缺口：文件空洞的假偏移登记（`cache.c:658-710`）服务于缺页时的洞页交付，那条交付路径（VFS 窥视）未接通前没有消费者 |
+| `free_unused_blocks`、`sort_blocks` | 正文未展开（`minix3/minix/lib/libminixfs/cache.c:free_unused_blocks`、`cache.c:sort_blocks`） | 未移植 | 明确缺口：紧急腾内存属分配器职责，散射排序归第 05 篇 |
+| `lmfs_zero_block_ino` | 正文未展开（`minix3/minix/lib/libminixfs/cache.c:lmfs_zero_block_ino`） | 未移植 | 明确缺口：文件空洞的假偏移登记（`cache.c:658-710`）服务于缺页时的洞页交付，那条交付路径（VFS 窥视）未接通前没有消费者 |
 
 ---
 
@@ -197,7 +200,7 @@ C 把二级缓存写成两处全局量加四个直调：`may_use_vmcache` 记文
 - **策略层（`VmSecondLevel`）**——开与不开的判断加失败处理。门控照 C：允许用、且块大小是页的整数倍，两个条件同时成立才开（`cache.c:1236-1239`）。失败处理基本照 C 的三分：不支持则永久关闭、没内存则记录、其他则记录；唯一的分歧在第三种——C 在这里宕机，库改成记录故障并保住块内容。理由是故障之后数据仍然自洽：块还在池子自己的内存里，文件系统继续给出正确回答，宕机换不来安全，只换来不可观测。故障由 `fault()` 暴露，服务进程想据此退出随时可以。
 - **线材（`VmCacheWire`）**——四个调用本身，加上块内存的申请与归还。真货在服务进程里，只是一层薄转发：把设备号、字节偏移、索引节点标签、旗标字地址填进 `minix-sys` 已有的消息封装。测试替身换掉这层，池子与策略层的行为全部可测。
 
-块内存跟着一起变成两态：堆上的字节数组，或内存服务器给的整页映射。这个区分写在类型里而不是注释里，因为"能不能交给内存服务器"正是两者的分界：只有页映射能交出去（`do_setcache` 会检查来源是不是匿名内存，`mem_cache.c:257-261`），C 靠"所有块都是 `mmap` 来的"这个不变量兜底，Rust 用类型把不变量摆到明面上。
+块内存跟着一起变成两态：堆上的字节数组，或内存服务器给的整页映射。这个区分写在类型里而不是注释里，因为"能不能交给内存服务器"正是两者的分界：只有页映射能交出去（`do_setcache` 会检查来源是不是匿名内存，`minix3/minix/servers/vm/mem_cache.c:do_setcache`），C 靠"所有块都是 `mmap` 来的"这个不变量兜底，Rust 用类型把不变量摆到明面上。
 
 服务进程那一侧，二级缓存按运行时选择注入：一个策略枚举持有"关"或"内存服务器那一档"，线材装在盒子里（`Box<dyn VmCacheWire>`），于是服务进程的内部签名不必为具体传输类型再长一个类型参数，而测试能把替身装进同一个盒子。二级缓存随挂载建立、随块流量使用、随卸载收尾：卸载路径本来就调设备失效，失效里包含向内存服务器清空该设备——这条调用链在 C 里由 `libfsdriver` 的卸载处理发起（`minix3/minix/lib/libfsdriver/call.c:83-84`），Rust 由缓存库的失效一步做完，服务进程不必记得额外补一刀。
 
@@ -234,7 +237,7 @@ C 的启发式自己查虚拟内存统计。Rust 把输入（已用、总量、�
 
 ### 4.1 类型与 trait（`os/libs/minix-fs/src/cache.rs` 前一百五十行、`vm_cache.rs` 前二百行）
 
-最小池六、预取上限六十四（头文件常量六十四，有行号为证）、取值模式三变体、块键（设备加块号，可排序可哈希）、存储 trait（三方法）、缓冲结构（键、标签、待报备位、旗标字、块内存、计数）。
+最小池六、预取上限六十四（与请求向量上限 `NR_IOREQS` 同值）、取值模式三变体、块键（设备加块号，可排序可哈希）、存储 trait（三方法）、缓冲结构（键、标签、待报备位、旗标字、块内存、计数）。
 
 二级缓存那半边在 `vm_cache.rs`：旗标字 `BufferFlags`（脏、占用、失效三位加一个"有人在改旗标"位），块标签 `BlockTag`（索引节点号加文件偏移），块内存 `BlockMemory`（堆字节数组或页映射两态），策略层 `VmSecondLevel`，线材接口 `VmCacheWire`（四个调用加申请、归还页内存），以及"没有二级缓存"的空实现。常数（`VMMC_*` 四位、`VMSF_ONCE`、`VMC_NO_INODE`）住在 `minix-types`：内存服务器与文件服务器读的是同一个头文件（`minix3/minix/include/minix/vm.h`），Rust 里就该有同一个定义处。
 
@@ -264,13 +267,13 @@ C 的启发式自己查虚拟内存统计。Rust 把输入（已用、总量、�
 
 写标脏刷落盘（存储里验字节）；钉住脏块刷不掉（放下后才落）；淘汰脏受害者先写回（写计数涨一，受害者内容在存储里）。
 
-### 5.3 池与容量测试（六个）
+### 5.3 池与容量测试（十一个）
 
-建池拒收过小；满池报可重试（放一块就能进）；双重释放拒绝；单块释放摘索引（下次重读存储）；失效后重读走存储；用量总量包不住拒绝。
+建池拒收过小；满池报可重试（放一块就能进）；双重释放拒绝；单块释放摘索引（下次重读存储）；失效后重读走存储；失效后槽位容量不减；改池大小低于下限报非法、重建后容量回归；改池大小时有块被钉住报忙；一次性归还插到队首；LRU 次序随碰触更新；用量总量包不住拒绝。
 
 ### 5.4 挂钩与启发式测试（四个）
 
-预读上限在范围内；空输入保底最小；用量设置含总量包络检查；用量触发重估阈值。
+预读上限在范围内；空输入保底最小；预取在范围内选最长未缓存段；用量触发重估阈值。
 
 ### 5.5 二级缓存测试（二十七个）
 
@@ -280,8 +283,8 @@ C 的启发式自己查虚拟内存统计。Rust 把输入（已用、总量、�
 
 ### 5.6 测试统计
 
-- 本篇直接相关：四十八个（缓存本体三十二个、二级缓存十六个），全部通过。
-- 框架全 crate：`cargo test -p minix-fs` 共一百三十三个通过，零失败。
+- 本篇直接相关：四十九个（缓存本体三十三个、二级缓存十六个），全部通过。
+- 框架全 crate：`cargo test -p minix-fs` 共一百三十七个通过，零失败。
 - 完整测试清单：`rg "fn test_" os/libs/minix-fs/src/cache.rs os/libs/minix-fs/src/vm_cache.rs`。
 
 ---

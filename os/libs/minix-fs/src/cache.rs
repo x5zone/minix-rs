@@ -687,18 +687,8 @@ impl<S: BlockSource, V: SecondLevelCache> BlockCache<S, V> {
     /// may have switched it off while blocks were still registered there
     /// (C's own reasoning, `cache.c:803-807`).
     pub fn invalidate_device(&mut self, device: u64) {
-        // 空闲链上的同设备槽位先摘除（保持链结构），再清各槽位内容。
-        let mut link = self.free_head;
-        while link != NO_SLOT {
-            let next = self.slots[link].next;
-            let on_device = self.slots[link]
-                .key
-                .is_some_and(|key| key.device == device);
-            if on_device {
-                self.list_unlink(link);
-            }
-            link = next;
-        }
+        // 只清身份，不动空闲链：C 的 lmfs_invalidate 同样把块留在 LRU 链上
+        // （`cache.c:782-808`），槽位容量因此不因失效而流失。
         for slot in 0..self.slots.len() {
             let on_device = self.slots[slot]
                 .key
@@ -1375,6 +1365,34 @@ mod tests {
             .acquire(BlockKey::new(7, 2), AcquireMode::Normal)
             .unwrap();
         cache.release(slot).unwrap();
+    }
+
+    #[test]
+    fn test_invalidate_keeps_free_slots_usable() {
+        let mut cache = cache();
+        // Fill most of the pool with one device's blocks and release them:
+        // the slots are free but still carry their keys.
+        for block in 0..6u64 {
+            let slot = cache
+                .acquire(BlockKey::new(1, block), AcquireMode::Normal)
+                .unwrap();
+            cache.release(slot).unwrap();
+        }
+        cache.invalidate_device(1);
+        // Invalidation drops identities, not capacity: every slot must stay
+        // reachable, so the whole pool can be pinned again afterwards (C
+        // keeps invalidated blocks in the LRU chain, cache.c:782-808).
+        let mut held = Vec::new();
+        for block in 0..8u64 {
+            held.push(
+                cache
+                    .acquire(BlockKey::new(2, block), AcquireMode::Normal)
+                    .unwrap(),
+            );
+        }
+        for slot in held {
+            cache.release(slot).unwrap();
+        }
     }
 
     #[test]
