@@ -206,3 +206,17 @@ CI 四道门全绿、六个工具自测全 rc=0。
 被误跟踪的生成物清单（`git ls-files | grep selftest` 实测）：`.anchor-resolve-selftest` 4 个、
 `.anchor-migrate-selftest` 3 个、`.doc-snippet-selftest` 1 个，全部已取消跟踪；
 `minix3/**/selftest*` 与 `tools/atf-c-compat/md5_selftest.c` 是真实源码，未受影响。
+
+---
+
+## 十、第四条与第五条可执行检查（收口）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| Step 0.7 TODO 陈旧预检（模式 70） | `bash tools/todo-staleness-check.sh rewrite-notes/05-stage-vfs/todo.md` | `PASS (0 staleness issues)` |
+| 地址常量扫描（代码维度） | `python3 tools/address-constant-scan.py os/servers/vfs/src/{worker,main_loop}.rs` | 四类全 0（LITERAL/SHIFT/FAMILY/CONST） |
+| 未接线标记扫描 | `bash tools/check-rs-unwired.sh` | `✅ PASS: no unwired markers` |
+
+至此可执行检查全部跑完。**共 14 条流程观察**：成立并修复 D1、D3–D12 共 11 条，
+误判撤回 D2 一条（我自己没读参数表就报缺陷，已在轨迹就地更正），
+不适配说明一条（`doc-snippet-extract` 对本篇无 Rust 代码块，输出为空属正常）。
