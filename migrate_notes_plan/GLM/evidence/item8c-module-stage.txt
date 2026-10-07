@@ -1,0 +1,61 @@
+## item8c prompt/review-rules/review-process.md 的路径变量定义段
+169-       - **默认路径 A（从头生成）**：除非满足以下任一条件选 C
+170-       - **路径 C 触发条件**（**全部满足**）：(a) 文档已通过 bagging 多 AI 评审合并；(b) `{NN}-design-final.v{N}.md` 已存在；(c) 用户显式说明"沿用 bagging 产物"
+171:       - **判定流程**：检测 `ls {tree}/{stage}/.design/{NN}-design-final.v*.md` → 若命中且用户确认 → 路径 C；否则 → 路径 A（从头生成）
+172-       - **禁止 B**：循环论证，用被审者自述作为审他的依据（已在 C.4 段强调）
+173-3. **Step 1.6**：design ↔ code 一致性检查（design.md 生成后）
+174-4. **Step 2**：design vs Minix3 本质对比
+175-
+176-**跳过**：Step 0.5（structure.md 评审，design 生成阶段不评审文档骨架）/ Step 1 / 1.5 / 2.5 / 3 / 3.5 / 4 / 4.5 / 6 / 7
+177-**输出重点**：design 缺陷清单 + Refactor 触发条件
+178-**配套 Gate**：必须通过 Gate H（design 门控）
+179-
+--
+397-    - 实际耗时与预估对比写入 scan.md，偏差 >50% 需说明原因（避免偷懒）
+398-- **读取状态（统一双路径，互不共享中间结果）**：
+399:  - **Trae IDE** → 读取 `.review/trae/{stage}/STATE.md`（项目根 `.review/` 下）
+400:  - **Claude Code Runtime** → 读取 `.review/claude/{stage}/STATE.md`（项目根 `.review/` 下）
+401-  - 两套工具各自维护独立 STATE.md，**绝不共享任何中间结果**（STATE/scan/SYMBOLS/structure/VERIFY-CHECK）。Bagging 聚合只发生在 Trae 内（多 AI 的 scan 聚合）。
+402-  - 若同一工具下两份 STATE.md 同时存在且内容矛盾，**不要自动合并**，在 scan.md 中记录分歧并询问用户哪个为准。
+403:  - **`{stage}` 的确定**：取目标文档所在路径里笔记树根（`rewrite-notes/`、`redesign-notes/`、`study-notes/`）下的**第一级目录名**。例如 `rewrite-notes/01-stage-kernel/03-kmain-cstart.md` → `{stage}=01-stage-kernel`。它同时是评审状态目录的分组键（`.review/{tool}/{stage}/`）。旧布局在树根与阶段之间还有一个模块层目录（当时取值恒为 `fork-syscall-rewrite`），该层已于 2026-10-07 目录迁移退役，旧→新对照见 `rewrite-notes/MIGRATION.md`。这与覆盖率脚本 `--module kernel`（Minix3 模块名）是**两个不同概念**，不得混用。
+404-  - **STATE 预检**：Step 0 启动时运行 `tools/review-state-validate.py --state {state_path}` 校验 STATE 引用的文件是否存在、Open 列表条目能否在 scan.md 中找到对应条目。预检失败 → 在 scan.md 标注并先修复再继续。
+405:  - 推荐用 `tools/review-init.sh {tool} {doc-path}` 自动计算 `{tree}`/`{stage}`/`{doc-stem}` 并 mkdir 标准目录。
+406-- **⛔ design + outline 预检（所有模式强制，前移自 Step 1.6）**：
+407-  - **背景**：原流程在 Step 1.6 才检查 design 存在性，AI 已完成 Step 0/0.5/1/1.5 大量工作，沉没成本心理易导致违规找替代品（历史案例：tmp_design_and_todo/ 下的讨论稿，该目录已删除）。前移到 Step 0 让 AI 一开始就知道是日常 review 还是 Design-First。
+408-  - **方案 D 演进（v2：可复用快照，2026-07-16）**：outline.md / outline-review.md / design.md 不是"持久化交付物 / ground truth / 答案 key"，而是**可复用快照（Reusable Reference Snapshot, RRS）**——每次 review 启动时，AI **重新执行**附录 C 流程从 C 源码独立推导，旧快照作为**前人理解参考**输入，产出**新版本快照**（`{NN}-design.v{N+1}.md`）。理由：固化即承诺"永远正确"是错的——错误会永久传播，连正式文档都在迭代，凭什么中间产物反而是"圣旨"？每轮 review 重新评估是独立 review 原则的体现。
+409-  - **检查命令**（v2：快照是版本化的）：
+410-    ```bash
+411-    # 可复用快照（每次 review 重新评估，保留历史版本，不覆盖）
+412:     ls {tree}/{stage}/.design/{NN}-outline.v*.md        # doc 结构快照（v1, v2, ...）
+413:     ls {tree}/{stage}/.design/{NN}-outline-review.v*.md # outline 评审快照
+414:     ls {tree}/{stage}/.design/{NN}-design.v*.md         # 非 bagging code 设计快照
+415:     ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
+416-    # 跨文档查 design 统一入口（tools/design-index-update.sh 自动生成）
+417:    cat {tree}/{stage}/.design/DESIGN-INDEX.md           # 最新版本锚点（软链为可选）
+418-    ```
+419-  - **判定**（v2：每次 review 重新评估）：
+420-    - **存在旧快照** → AI 读旧快照作为"前人理解"参考输入，**但必须重新执行** Step 0.3.1-0.3.4 从 C 源码独立推导，产出 `.v{N+1}.md`。旧快照的角色是"语义参考 + 对照对象 + 反面教材"，**不是 ground truth**。
+421-    - **无旧快照** → 首次走 Step 0.3 流程，产出 `.v1.md`。
+422-    - **⛔ 禁止"复用其他文档 design"判定**：每篇文档必须有**本编号**的快照（`{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` / `{NN}-design.v*.md`，`{NN}` = 本文档编号，如 `02`）。不允许"02 文档复用 01-design.md"——快照是 per-doc 的，不是 per-module 或 per-stage 的。违反 → P0-process-violation
+423-
+424-> **2026-08-15 修复 C-P1-1（区分"快照复用"与"文档编号交叉引用"）**：
+
+## prompt/ 里残余 {module} 用法计数与抽样
+prompt/ 残余 {module} 总数: 65
+  minix-rs/prompt/review-rules/review-core-semantics.md: 16
+  minix-rs/prompt/review-rules/review-doc-checklist.md: 10
+  minix-rs/prompt/review-rules/review-process.md: 6
+  minix-rs/prompt/review-rules/review-profiles.md: 1
+  minix-rs/prompt/skill/review-core-semantics-skill.md: 12
+  minix-rs/prompt/skill/review-coverage-skill.md: 4
+  minix-rs/prompt/skill/review-doc-skill.md: 7
+  minix-rs/prompt/skill/review-process-skill.md: 9
+
+## 抽样 5 处 {module} 上下文（判断是否 Minix3 模块名概念）
+prompt/skill/review-coverage-skill.md:338:rg "symbol_name" os/servers/{module}/src/ --type rust -n
+prompt/skill/review-coverage-skill.md:365:python3 tools/coverage-extract/coverage-extract.py {module} {doc_dir} \
+prompt/skill/review-coverage-skill.md:366:  --rust-dir os --c-dir minix3/minix/servers/{module} \
+prompt/skill/review-coverage-skill.md:367:  --semantic-map tools/coverage-extract/{module}-semantic-map.json
+prompt/skill/review-doc-skill.md:170:2. 逐概念 grep 验证：`rg "CONCEPT" minix3/minix/servers/{module}/ --type c -n` + kernel/ + include/
+
+## CLAUDE.md / AGENTS.md 里 {module} 的现用语义（State Management 段）

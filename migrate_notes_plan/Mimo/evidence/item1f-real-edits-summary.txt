@@ -1,0 +1,13 @@
+changed line classification: {'insert-REAL': 7, 'replace-contract': 1358, 'replace-REAL': 15, 'block-del-REAL': 77, 'block-add-REAL': 50}
+files with REAL edits (not explained by contract transform): 9
+REAL edit line instances: 149
+detail -> /home/xzhao/github/minix-rs/migrate_notes_plan/Mimo/evidence/item1f-real-edits.txt
+    1 notes/redesign/redesign.md
+    1 notes/rewrite/README.md
+    1 notes/rewrite/concepts/endpoint.md
+    1 notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md
+    1 notes/rewrite/fork-syscall-rewrite/15-stage-fs/todo.md
+    1 notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md
+    1 notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
+    1 notes/rewrite/fork-syscall-rewrite/edge_todo.md
+    1 notes/rewrite/fork-syscall-rewrite/misc_concepts.md

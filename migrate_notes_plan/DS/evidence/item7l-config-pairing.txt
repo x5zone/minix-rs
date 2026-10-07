@@ -1,0 +1,16 @@
+--- 工作区构建的 driver-rt 测试产物 ---
+/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rtl8169-e6d368fa55fd9826
+/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rtl8139-557ea9460bd649cf
+/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rtl8139-9fae1f70e7de4dbd
+/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rtl8169-a3a1a8ab37b32b1e
+/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rt-95f9e6d027df3b0f
+--- 单包构建的产物 ---
+/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rt-ee165b612ef0427a
+--- 崩溃二进制单线程定位 ---
+
+running 14 tests
+test core::tests::test_loop_action_policy ... ok
+test core::tests::test_open_set_refuses_when_full ... ok
+test core::tests::test_open_set_tracks_and_fills ... ok
+test core::tests::test_server_announce_forgets_pre_restart_opens ... ok
+test kernel::kernel_transport_tests::test_asynsend_accumulates_without_flush ... 

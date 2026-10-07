@@ -1,0 +1,918 @@
+--- notes/redesign/redesign.md -> redesign-notes/README.md [ADD]
+-
++
+--- notes/redesign/redesign.md -> redesign-notes/README.md [ADD]
+-
++> **创建**: 2026-10-07 建档。本区是「重写定稿后才启用」的探索区。当前内容全是从旧目录
+--- notes/redesign/redesign.md -> redesign-notes/README.md [ADD]
+-
++> 重写树里的再设计子目录与旧的 notes 伞目录再设计分区原样迁过来的存量思考，**包含互相冲突的多个方案，
+--- notes/redesign/redesign.md -> redesign-notes/README.md [ADD]
+-
++> 未经评审收敛，不能当实现依据**。正在推进的重写事实以 `rewrite-notes/` 为准。
+--- notes/redesign/redesign.md -> redesign-notes/README.md [ADD]
+-
++> 目录按主题分组：`architecture/`（架构级改进与跨层、一致性类探索）、`ipc/`（Endpoint 与 IPC 协议）、
+--- notes/redesign/redesign.md -> redesign-notes/README.md [ADD]
+-
++> `fork/`（fork 语义），`vm/` 为服务是否内嵌内核地址空间这一开放问题预留。
+--- notes/redesign/redesign.md -> redesign-notes/README.md [ADD]
+-
++> 开启新的探索方向时在此新建子目录，并先把同主题的已有分析收敛一遍，避免同一问题多稿并存。
+--- notes/redesign/redesign.md -> redesign-notes/README.md [OTHER]
+-| [architecture-changes.md](architecture-changes.md) | 架构变更探索 | Trusted Core Servers 内核态化、LPE Core 策略、AI 驱动调度 |
++| [architecture-changes.md](architecture/architecture-changes.md) | 架构变更探索 | Trusted Core Servers 内核态化、LPE Core 策略、AI 驱动调度 |
+--- notes/redesign/redesign.md -> redesign-notes/README.md [OTHER]
+-| [semantic-modules.md](semantic-modules.md) | 语义模块设计 | 模块依赖图、调度核心、IPC 模块抽象 |
++| [semantic-modules.md](architecture/semantic-modules.md) | 语义模块设计 | 模块依赖图、调度核心、IPC 模块抽象 |
+--- notes/redesign/redesign.md -> redesign-notes/README.md [OTHER]
+-| [ipc-improve.md](ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
++| [ipc-improve.md](ipc/ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
+--- notes/redesign/redesign.md -> redesign-notes/README.md [OTHER]
+-| [improve_minix.md](improve_minix.md) | 架构改进思考（原始） | 现代硬件挑战、架构改进方向 |
++| [improve_minix.md](architecture/improve_minix.md) | 架构改进思考（原始） | 现代硬件挑战、架构改进方向 |
+--- notes/redesign/redesign.md -> redesign-notes/README.md [OTHER]
+-| [improve_minix_refactored.md](improve_minix_refactored.md) | 架构改进思考（重构版） | 同上，结构优化版本 |
++| [improve_minix_refactored.md](architecture/improve_minix_refactored.md) | 架构改进思考（重构版） | 同上，结构优化版本 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER]
+-# Minix-RS 重构文档索引
++# rewrite-notes — 重写文档区
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-本目录包含 Minix3 到 Rust 重构的完整设计文档，按主题分类整理。
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++> **创建**: 2026-10-07（目录迁移当天）。本目录曾位于 notes 伞目录下、并比现在多一层已废弃的模块层目录名；
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++> 逐条路径对照与工具参数变更见 [MIGRATION.md](MIGRATION.md)。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+----
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++这里存放 Minix3 各模块用 Rust 重写的正式设计文档：一份 C 源概念对应一篇文档，
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++按服务的启动执行顺序编号成 20 个阶段目录。每篇文档都有配套的评审流水线、
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++符号锚点校验与覆盖率穷举，是本仓库的一等交付物（不是草稿）。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER]
+-## 快速导航
++## 阶段目录一览
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-### 🎯 项目规划（必读）
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++编号就是阅读顺序，也是系统真实的启动因果顺序。权威说明（每个服务为什么排在这个位置、
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++谁把它的映像装进内存）在 [00-master-plan/README.md](00-master-plan/README.md)。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| 文档 | 说明 | 关键内容 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-|------|------|----------|
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [project-plan.md](project-plan.md) | **项目完整规划** | 目录结构、crate命名、实施路线图、纵向切片策略 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [vertical-slice-strategy.md](vertical-slice-strategy.md) | 纵向切片策略详解 | 为什么按模块重写会失败、切片实施路径 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [rewrite-strategy.md](rewrite-strategy.md) | 重写策略：语义冻结 | 两阶段方法、语义等价验证、冻结清单 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 编号 | 目录 | 对应服务 | 正式文档数 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++|---|---|---|---|
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 00 | [00-master-plan/](00-master-plan/) | — 顶层规划与决策记录 | 15 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 01 | [01-stage-kernel/](01-stage-kernel/) | Kernel | 38 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 02 | [02-stage-vm/](02-stage-vm/) | VM | 28 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 03 | [03-stage-rs/](03-stage-rs/) | RS | 22 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 04 | [04-stage-pm/](04-stage-pm/) | PM | 22 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 05 | [05-stage-vfs/](05-stage-vfs/) | VFS | 33 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 06 | [06-stage-sched/](06-stage-sched/) | SCHED | 16 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 07 | [07-stage-ds/](07-stage-ds/) | DS | 14 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 08 | [08-stage-is/](08-stage-is/) | IS | 12 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 09 | [09-stage-init/](09-stage-init/) | INIT | 16 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 10 | [10-stage-mib/](10-stage-mib/) | MIB | 24 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 11 | [11-stage-devman/](11-stage-devman/) | DEVMAN | 15 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 12 | [12-stage-input/](12-stage-input/) | INPUT | 16 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 13 | [13-stage-ipc/](13-stage-ipc/) | IPC | 12 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 14 | [14-stage-runtime/](14-stage-runtime/) | RUNTIME | 15 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 15 | [15-stage-fs/](15-stage-fs/) | FS（mfs/pfs/procfs/ptyfs/ext2/isofs/vbfs/hgfs） | 26 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 16 | [16-stage-drivers/](16-stage-drivers/) | DRIVERS | 27 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 17 | [17-stage-net/](17-stage-net/) | NET（lwip + uds） | 27 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 18 | [18-stage-commands/](18-stage-commands/) | COMMANDS | 26 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 19 | [19-stage-integration/](19-stage-integration/) | — 跨服务集成与端到端测试 | 1 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER]
+-### 🏗️ 架构设计
++阶段目录内部还可能有三类子目录，它们随所属阶段存放：
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| 文档 | 说明 | 关键内容 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-|------|------|----------|
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [project-structure.md](project-structure.md) | 项目结构设计 | Workspace布局、Makefile vs xtask、构建系统 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [minimal-skeleton.md](minimal-skeleton.md) | 最小可运行骨架 | 第一阶段目标、简化策略、initramfs方案 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [modern-hardware-and-rust.md](modern-hardware-and-rust.md) | 现代硬件与Rust重构 | 设计哲学、性能理论、多核设计、IPC原子性 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [arch_mapping.md](arch_mapping.md) | 架构机制映射 | 硬件描述→机制抽象、Trait设计、静态分发 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `draft/` — 尚未定稿的稿子，评审时不作为交付物。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `archive/` — 该阶段已被取代的历史稿。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `.design/` — 评审流程用的可复用设计快照（中间产物，正式文档不引用，已被 `.gitignore` 排除）。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER]
+-### 🔍 源码分析
++## 其他子区
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| 文档 | 说明 | 关键内容 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-|------|------|----------|
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [invariant.md](invariant.md) | 内核不变量分析 | 进程状态不变量、IPC不变量、高危路径识别 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [misc.md](misc.md) | 异步消息表分析 | C语言"阴险锁"设计、Rust类型安全替代方案 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [ipc-sendrec.md](ipc-sendrec.md) | SENDREC原子性 | IPC语义原子性vs进程上下文原子性、信号处理问题 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [elf-loader.md](elf-loader.md) | ELF加载与用户态执行 | 从rootfs读取、解析ELF、建立地址空间、切换到用户态 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| 目录 | 是什么 | 数量 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++|---|---|---|
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| [concepts/](concepts/) | 跨阶段的概念词条：capability、endpoint、fail-stop、typestate、内核内替换的风险 | 6 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| [misc/](misc/) | 不属于单一阶段的重写工程文档：项目规划、结构设计、纵向切片策略、语义冻结策略、内核不变量、异步消息表、SENDREC 原子性、ELF 加载、架构机制映射、现代硬件与 Rust，以及伞目录退役时归档进来的两份说明 | 16 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| [coordination/](coordination/) | 多会话协作的过程产物：开场与接续提示词、滚动工作记录、交接件、评审报告与审计表、待办台账、并行编排、缺陷案卷。只读为主，新内容不要写在这里 | 73 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| [evidence/](evidence/) | 按日期与任务命名的实验取证（串口日志、设备树、脚本输出）。审计证据，不做改写 | 276 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| [archive/legacy-fork-bak/](archive/legacy-fork-bak/) | 以 fork 系统调用为主线时期的备份稿 | 40 |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++| [MIGRATION.md](MIGRATION.md) | 迁移前后的路径对照、评审工具参数变更、已知悬空引用、旧内容回捞方法 | — |
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER]
+-### 📋 总览
++## 从零开始的阅读路线
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| 文档 | 说明 | 关键内容 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-|------|------|----------|
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-| [rewrite.md](rewrite.md) | Rust重构总览 | 核心目标、设计原则、文档索引、类型安全状态机 |
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++1. [misc/rewrite.md](misc/rewrite.md) — 重写目标与设计原则的总述。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++2. [RECONSTRUCTION-PRINCIPLES.md](RECONSTRUCTION-PRINCIPLES.md) — 重构原则（什么可以改、什么必须保持外部行为）。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++3. [misc/project-plan.md](misc/project-plan.md) 与 [misc/vertical-slice-strategy.md](misc/vertical-slice-strategy.md) — 怎么切、为什么按纵向切片推进。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++4. [misc/rewrite-strategy.md](misc/rewrite-strategy.md) — 语义冻结的做法与验证清单。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++5. [00-master-plan/README.md](00-master-plan/README.md) — 启动顺序与目录对应关系，然后按编号进入各阶段。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER]
+----
++## 目录之外
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-## 阅读建议
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-### 第一次接触本项目？
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-按以下顺序阅读：
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-1. **[rewrite.md](rewrite.md)** - 了解整体目标和设计原则
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-2. **[project-plan.md](project-plan.md)** - 了解项目结构和实施计划
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-3. **[vertical-slice-strategy.md](vertical-slice-strategy.md)** - 理解为什么选择纵向切片
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-4. **[rewrite-strategy.md](rewrite-strategy.md)** - 理解语义冻结的重要性
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-### 准备开始编码？
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-1. **[project-structure.md](project-structure.md)** - 确认项目结构
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-2. **[invariant.md](invariant.md)** - 理解内核不变量，避免破坏关键假设
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-3. **[arch_mapping.md](arch_mapping.md)** - 了解如何用Rust trait抽象硬件
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-### 深入理解Minix3设计？
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-1. **[modern-hardware-and-rust.md](modern-hardware-and-rust.md)** - 现代硬件视角
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-2. **[ipc-sendrec.md](ipc-sendrec.md)** - IPC原子性细节
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-3. **[misc.md](misc.md)** - 异步消息表的巧妙设计
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-4. **[elf-loader.md](elf-loader.md)** - 用户态执行机制
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+----
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-## 文档关系图
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-```
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-                    rewrite.md (总览)
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-                         │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         ┌───────────────┼───────────────┐
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         │               │               │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-    project-plan   rewrite-strategy  vertical-slice
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         │               │               │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         └───────────────┼───────────────┘
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-                         │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-              project-structure
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-                         │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         ┌───────────────┼───────────────┐
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         │               │               │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-   modern-hardware    invariant     minimal-skeleton
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         │               │               │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-    arch_mapping    ipc-sendrec          │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-         │               │               │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-        misc          elf-loader         │
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-```
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+----
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-## 相关目录
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-- `../../os/` - Rust 实现的源代码
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [DEL]
+-- `../../minix3/` - 原始 Minix3 C 代码（参考）
++
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `os/` — Rust 实现的源码；每篇阶段文档的锚点指向那里的具体符号。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `minix3/` — 原始 Minix3 C 源码，是唯一的事实基准，不修改。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `redesign-notes/` — 再设计探索区，在重写定稿后启用。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `study-notes/` — 早期学习笔记，由 AI 生成、未经 C 源码校验，不能当事实依据引用。
+--- notes/rewrite/README.md -> rewrite-notes/README.md [OTHER-SHAPE]
+-
++- `book/` — 电子书成品区，内容定稿后从本目录抽取。
+--- notes/rewrite/concepts/endpoint.md -> rewrite-notes/concepts/endpoint.md [OTHER]
+-详细的 Redesign 方案见 [endpoint_redesign.md](../../redesign/endpoint_redesign.md)，包含：
++详细的 Redesign 方案见 [endpoint_redesign.md](../../redesign-notes/ipc/endpoint_redesign.md)，包含：
+--- notes/rewrite/concepts/endpoint.md -> rewrite-notes/concepts/endpoint.md [OTHER]
+-*参见: [系统核心概念 README](./README.md) | [Endpoint Redesign 方案](../../redesign/endpoint_redesign.md)*
++*参见: [系统核心概念 README](./README.md) | [Endpoint Redesign 方案](../../redesign-notes/ipc/endpoint_redesign.md)*
+--- notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md -> rewrite-notes/00-master-plan/README.md [OTHER]
+-| 20 | `20-redesign/` | — | 设计重构记录（原 11，2026-08-14 后移；2026-08-16 顺延） |
++| 20 | — | — | 设计重构记录两篇（`rs-cross-layer-pollution.md`、`tocutou-and-distributed-consistency.md`）已随本次目录迁移移到仓库根的 `redesign-notes/architecture/`，本树不再占用 20 号编号 |
+--- notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md -> rewrite-notes/00-master-plan/README.md [OTHER]
+-> **注意**：上级目录 [`fork-syscall-rewrite/README.md`](../README.md) 同样基于旧主线编写，列出的目录结构（`01-stage-pm`、`03-stage-kernel` 等）、阶段映射、项目进度表均已过时，**暂不修改**（defer）。新主线目录结构以本文档"新目录结构"章节为准。
++> **注意**：上级目录 [`fork-syscall-rewrite/README.md`](../misc/legacy-fork-syscall-index.md) 同样基于旧主线编写，列出的目录结构（`01-stage-pm`、`03-stage-kernel` 等）、阶段映射、项目进度表均已过时，**暂不修改**（defer）。新主线目录结构以本文档"新目录结构"章节为准。
+--- notes/rewrite/fork-syscall-rewrite/01-stage-kernel/todo.md -> rewrite-notes/01-stage-kernel/todo.md [OTHER]
+-ptproc per-CPU → 16-smp（=本表 D-40/T-2~T-5）；C-D-1~5 → notes/TODO.md（其中 C-D-5 已随 D3 闭合）；
++ptproc per-CPU → 16-smp（=本表 D-40/T-2~T-5）；C-D-1~5 → rewrite-notes/misc/legacy-notes-todo.md（其中 C-D-5 已随 D3 闭合）；
+--- notes/rewrite/fork-syscall-rewrite/01-stage-kernel/todo.md -> rewrite-notes/01-stage-kernel/todo.md [OTHER]
+-QEMU E2E → notes/TODO.md QEMU backlog。原始 18 节全文见 git `97df4e58d^`。
++QEMU E2E → rewrite-notes/misc/legacy-notes-todo.md QEMU backlog。原始 18 节全文见 git `97df4e58d^`。
+--- notes/rewrite/fork-syscall-rewrite/02-stage-vm/archive/todo-V11-archive-2026-09-08.md -> rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md [OTHER]
+-> 状态（2026-09-06 更新，V11 轮，见 §14）：V11 轮审查完成后即进入**逐条修复 campaign**（顺序表：`notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0；修复记录：§15）。**重要更正**：P1-3 与 P1-2 的"依赖 kernel IPC 落地"依据已失效——内核侧 IPC 核心已实现（`os/kernel/src/ipc.rs`），VmContext 收敛与 transport 落地均已解除阻塞（见 §14.2 复核表与 V11-P1-1/V11-P1-2）。本轮无新增 P0；新发现 3 项 P1、8 项 P2、1 项 P3，缺口登记 G-V11-1..6。已修复：**V11-P2-6**（见 §15 Fix #19）。
++> 状态（2026-09-06 更新，V11 轮，见 §14）：V11 轮审查完成后即进入**逐条修复 campaign**（顺序表：`rewrite-notes/coordination/edge_todo.md` §0；修复记录：§15）。**重要更正**：P1-3 与 P1-2 的"依赖 kernel IPC 落地"依据已失效——内核侧 IPC 核心已实现（`os/kernel/src/ipc.rs`），VmContext 收敛与 transport 落地均已解除阻塞（见 §14.2 复核表与 V11-P1-1/V11-P1-2）。本轮无新增 P0；新发现 3 项 P1、8 项 P2、1 项 P3，缺口登记 G-V11-1..6。已修复：**V11-P2-6**（见 §15 Fix #19）。
+--- notes/rewrite/fork-syscall-rewrite/02-stage-vm/archive/todo-V11-archive-2026-09-08.md -> rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md [OTHER]
+-> 执行方式：02-stage-vm TODO 实施 campaign（顺序表见 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0，跨 stage 条目登记于同文件 E1-E5）。
++> 执行方式：02-stage-vm TODO 实施 campaign（顺序表见 `rewrite-notes/coordination/edge_todo.md` §0，跨 stage 条目登记于同文件 E1-E5）。
+--- notes/rewrite/fork-syscall-rewrite/02-stage-vm/archive/todo-V11-archive-2026-09-08.md -> rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md [OTHER]
+-> 执行方式：延续 §15 的逐条闭环模式，顺序表在 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0（T24-T36）。
++> 执行方式：延续 §15 的逐条闭环模式，顺序表在 `rewrite-notes/coordination/edge_todo.md` §0（T24-T36）。
+--- notes/rewrite/fork-syscall-rewrite/02-stage-vm/archive/todo-V12-archive-2026-09-09.md -> rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md [OTHER]
+-- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§17.4 三条增补）
++- 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§17.4 三条增补）
+--- notes/rewrite/fork-syscall-rewrite/02-stage-vm/todo.md -> rewrite-notes/02-stage-vm/todo.md [OTHER]
+-- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
++- 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
+--- notes/rewrite/fork-syscall-rewrite/03-stage-rs/20-rs-sef-framework.md -> rewrite-notes/03-stage-rs/20-rs-sef-framework.md [OTHER]
+-`ipc_sendrec` 是"发送并等回复"的合成调用：本进程发出后停在回复相位，直到 RS 处理完并回应。这正是 §1.1 那个矛盾的另一面——**出生回报是一次请求-应答，不是一条通知**。如果这里退化成单向 `ipc_send`，RS 的回应就成了没人认领的消息，会被当成新请求处理，进而产生"回声投回 RS"的错乱；本重写项目实现这条腿时踩过的具体坑与取证记录见 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 的 B9 / B9b 两节；C 真值是确定的：默认腿必须是 sendrec。
++`ipc_sendrec` 是"发送并等回复"的合成调用：本进程发出后停在回复相位，直到 RS 处理完并回应。这正是 §1.1 那个矛盾的另一面——**出生回报是一次请求-应答，不是一条通知**。如果这里退化成单向 `ipc_send`，RS 的回应就成了没人认领的消息，会被当成新请求处理，进而产生"回声投回 RS"的错乱；本重写项目实现这条腿时踩过的具体坑与取证记录见 `rewrite-notes/coordination/NK4C-WORKLOG.md` 的 B9 / B9b 两节；C 真值是确定的：默认腿必须是 sendrec。
+--- notes/rewrite/fork-syscall-rewrite/03-stage-rs/doc_rerank_qwen.md -> rewrite-notes/03-stage-rs/doc_rerank_qwen.md [OTHER]
+-  5. **出生回报三形态**：默认阻塞 `ipc_sendrec(RS_PROC_NR)`（sef_init.c:458-466）/ VM 的一次性异步 `asynsend3(RS_PROC_NR, m, AMF_NOREPLY)`（sef_init.c:471-483，避开 boot 期缺页互等）/ null；并对本项目已做过的相关缺陷记由（send 与 sendrec 之分导致野消息与 `receive` 回 EIO，见 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` B9/B9b 节）。
++  5. **出生回报三形态**：默认阻塞 `ipc_sendrec(RS_PROC_NR)`（sef_init.c:458-466）/ VM 的一次性异步 `asynsend3(RS_PROC_NR, m, AMF_NOREPLY)`（sef_init.c:471-483，避开 boot 期缺页互等）/ null；并对本项目已做过的相关缺陷记由（send 与 sendrec 之分导致野消息与 `receive` 回 EIO，见 `rewrite-notes/coordination/NK4C-WORKLOG.md` B9/B9b 节）。
+--- notes/rewrite/fork-syscall-rewrite/04-stage-pm/todo.md -> rewrite-notes/04-stage-pm/todo.md [OTHER]
+-> 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
++> 跨阶段条目：抽取判定规则与映射见 §9，登记于 `rewrite-notes/coordination/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
+--- notes/rewrite/fork-syscall-rewrite/08-stage-is/doc_rerank_muse.md -> rewrite-notes/08-stage-is/doc_rerank_muse.md [OTHER]
+-     two-level boot semantics), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-ISWIRE, E-ISPROD,
++     two-level boot semantics), `rewrite-notes/coordination/edge_todo.md` (E-ISWIRE, E-ISPROD,
+--- notes/rewrite/fork-syscall-rewrite/12-stage-input/todo.md -> rewrite-notes/12-stage-input/todo.md [OTHER]
+-> 跨 stage 条目不在此展开，登记于 [`../edge_todo.md`](../edge_todo.md)：E-INWIRE（传输接线）、E-CDRCONV（框架收敛 + minix-chardriver 常量错值）、E-TTYEVENT（TTY 消费侧）、E-PCKBDREG（pckbd 移交）。
++> 跨 stage 条目不在此展开，登记于 [`../edge_todo.md`](../coordination/edge_todo.md)：E-INWIRE（传输接线）、E-CDRCONV（框架收敛 + minix-chardriver 常量错值）、E-TTYEVENT（TTY 消费侧）、E-PCKBDREG（pckbd 移交）。
+--- notes/rewrite/fork-syscall-rewrite/13-stage-ipc/00-ipc-overview.md -> rewrite-notes/13-stage-ipc/00-ipc-overview.md [OTHER]
+-**与内核 IPC 机制的边界**：send/receive/notify 这些原语本身是 `../01-stage-kernel/12-ipc-core.md` 与 `notes/rewrite/ipc-sendrec.md` 的话题，本 stage 只做原语之上的对象管理。crate 名叫 `ipc-server`，正是为了不和内核 IPC 撞名。
++**与内核 IPC 机制的边界**：send/receive/notify 这些原语本身是 `../01-stage-kernel/12-ipc-core.md` 与 `rewrite-notes/misc/ipc-sendrec.md` 的话题，本 stage 只做原语之上的对象管理。crate 名叫 `ipc-server`，正是为了不和内核 IPC 撞名。
+--- notes/rewrite/fork-syscall-rewrite/13-stage-ipc/README.md -> rewrite-notes/13-stage-ipc/README.md [OTHER]
+-**IPC server ≠ kernel IPC 机制**：本 stage 是 SysV 信号量（semget/semctl/semop）与共享内存（shmget/shmat/shmdt/shmctl）的**用户态对象管理服务**；kernel 内 send/receive/notify 原语见 `01-stage-kernel/12-ipc-core.md` 与 `notes/rewrite/ipc-sendrec.md`（不属本 stage）。
++**IPC server ≠ kernel IPC 机制**：本 stage 是 SysV 信号量（semget/semctl/semop）与共享内存（shmget/shmat/shmdt/shmctl）的**用户态对象管理服务**；kernel 内 send/receive/notify 原语见 `01-stage-kernel/12-ipc-core.md` 与 `rewrite-notes/misc/ipc-sendrec.md`（不属本 stage）。
+--- notes/rewrite/fork-syscall-rewrite/13-stage-ipc/doc_rerank_muse.md -> rewrite-notes/13-stage-ipc/doc_rerank_muse.md [OTHER]
+-| K-002 | kernel-IPC vs server boundary (send/receive/notify excluded) | C | S | 00 §1, README, plan §1.4 | `01-stage-kernel/12-ipc-core.md`, `notes/rewrite/ipc-sendrec.md` | Which "IPC" does this stage (not) cover? |
++| K-002 | kernel-IPC vs server boundary (send/receive/notify excluded) | C | S | 00 §1, README, plan §1.4 | `01-stage-kernel/12-ipc-core.md`, `rewrite-notes/misc/ipc-sendrec.md` | Which "IPC" does this stage (not) cover? |
+--- notes/rewrite/fork-syscall-rewrite/13-stage-ipc/doc_rerank_muse.md -> rewrite-notes/13-stage-ipc/doc_rerank_muse.md [OTHER]
+--不讲什么: any mechanism (→01–11); any value table (→99); kernel primitives (→`01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`); MIB internals (→`10-stage-mib`).
++-不讲什么: any mechanism (→01–11); any value table (→99); kernel primitives (→`01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`); MIB internals (→`10-stage-mib`).
+--- notes/rewrite/fork-syscall-rewrite/13-stage-ipc/plan.md -> rewrite-notes/13-stage-ipc/plan.md [OTHER]
+-1. **概念边界易混淆**——"IPC"在 Minix3 中分两层：**kernel IPC 机制**（`kernel/proc.c` 的 send/receive/notify 原语，见 `01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`）与**用户态 IPC server**（本 stage：SysV 信号量 + 共享内存的对象管理服务）。README 已声明该边界，正式文档必须继承并展开。
++1. **概念边界易混淆**——"IPC"在 Minix3 中分两层：**kernel IPC 机制**（`kernel/proc.c` 的 send/receive/notify 原语，见 `01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`）与**用户态 IPC server**（本 stage：SysV 信号量 + 共享内存的对象管理服务）。README 已声明该边界，正式文档必须继承并展开。
+--- notes/rewrite/fork-syscall-rewrite/13-stage-ipc/plan.md -> rewrite-notes/13-stage-ipc/plan.md [OTHER]
+-| **kernel IPC 机制** | SEND/RECEIVE/NOTIFY/SENDREC 原语、阻塞/唤醒、死锁检测、通知位图 | `01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`（SENDREC 原子性）——**本 stage 不覆盖** |
++| **kernel IPC 机制** | SEND/RECEIVE/NOTIFY/SENDREC 原语、阻塞/唤醒、死锁检测、通知位图 | `01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`（SENDREC 原子性）——**本 stage 不覆盖** |
+--- notes/rewrite/fork-syscall-rewrite/14-stage-runtime/doc_rerank_muse.md -> rewrite-notes/14-stage-runtime/doc_rerank_muse.md [OTHER]
+-6. Boundary materials: `notes/rewrite/fork-syscall-rewrite/edge_todo.md` header (E-MINTYPES-RUNTIME, E-MINSYS-SCOPE, E-CMDSYSFACE, E-INITSYS, E-SYSCALL-SIGN registrations), `draft/README.md` (placeholder scope), `13-stage-ipc/00-ipc-overview.md` header (previous-stage boundary: SysV IPC objects live in ipc-server, not here).
++6. Boundary materials: `rewrite-notes/coordination/edge_todo.md` header (E-MINTYPES-RUNTIME, E-MINSYS-SCOPE, E-CMDSYSFACE, E-INITSYS, E-SYSCALL-SIGN registrations), `draft/README.md` (placeholder scope), `13-stage-ipc/00-ipc-overview.md` header (previous-stage boundary: SysV IPC objects live in ipc-server, not here).
+--- notes/rewrite/fork-syscall-rewrite/14-stage-runtime/todo.md -> rewrite-notes/14-stage-runtime/todo.md [OTHER]
+-- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
++- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../coordination/edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
+--- notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_deepseek.md -> rewrite-notes/15-stage-fs/doc_rerank_deepseek.md [OTHER]
+-- `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（1095 行，42 条）：本 stage 登记 4 条（`E-FSRUNTIME` `:897`、`E-FSBDEV` `:914`、`E-FSVMCACHE` `:931`、`E-FSCMDS` `:948`）
++- `rewrite-notes/coordination/edge_todo.md`（1095 行，42 条）：本 stage 登记 4 条（`E-FSRUNTIME` `:897`、`E-FSBDEV` `:914`、`E-FSVMCACHE` `:931`、`E-FSCMDS` `:948`）
+--- notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_muse.md -> rewrite-notes/15-stage-fs/doc_rerank_muse.md [OTHER]
+-4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (§ stage table + boot two-layer semantics), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-FSRUNTIME/E-FSBDEV/E-FSVMCACHE/E-FSCMDS registration, 2026-09-16 entry), target `plan.md` (full read, §§1-5; §4 ARCH table is design-time candidate list), target `todo.md` (V1 architecture review front matter + coverage matrices §§2.1-2.6 sampled), `draft/README.md` (placeholder scope).
++4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (§ stage table + boot two-layer semantics), `rewrite-notes/coordination/edge_todo.md` (E-FSRUNTIME/E-FSBDEV/E-FSVMCACHE/E-FSCMDS registration, 2026-09-16 entry), target `plan.md` (full read, §§1-5; §4 ARCH table is design-time candidate list), target `todo.md` (V1 architecture review front matter + coverage matrices §§2.1-2.6 sampled), `draft/README.md` (placeholder scope).
+--- notes/rewrite/fork-syscall-rewrite/16-stage-drivers/25-dma-memory-contract.md -> rewrite-notes/16-stage-drivers/25-dma-memory-contract.md [OTHER]
+-- edge 条目 E-DMABUF（`notes/rewrite/fork-syscall-rewrite/edge_todo.md`）：物理分配器契约的登记处与实现方排期。
++- edge 条目 E-DMABUF（`rewrite-notes/coordination/edge_todo.md`）：物理分配器契约的登记处与实现方排期。
+--- notes/rewrite/fork-syscall-rewrite/16-stage-drivers/doc_rerank_deepseek.md -> rewrite-notes/16-stage-drivers/doc_rerank_deepseek.md [OTHER]
+-- `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（1095 行，42 条）：本 stage 登记 3 条（`E-DEVWIRE` `:965`、`E-SDEVOWN` `:983`、`E-DMABUF` `:1001`），另有 4 条涉本 stage（`E-DMCLIENT` `:728`、`E-CDRCONV` `:772`、`E-PCKBDREG` `:806`、`E-DMWIRE` `:705`）
++- `rewrite-notes/coordination/edge_todo.md`（1095 行，42 条）：本 stage 登记 3 条（`E-DEVWIRE` `:965`、`E-SDEVOWN` `:983`、`E-DMABUF` `:1001`），另有 4 条涉本 stage（`E-DMCLIENT` `:728`、`E-CDRCONV` `:772`、`E-PCKBDREG` `:806`、`E-DMWIRE` `:705`）
+--- notes/rewrite/fork-syscall-rewrite/17-stage-net/doc_rerank_muse.md -> rewrite-notes/17-stage-net/doc_rerank_muse.md [OTHER]
+-  4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage table, line 35), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-SDEVOWN, E-DEVWIRE, E-NETSTART, E-RMIBWIRE), `17-stage-net/plan.md`, `17-stage-net/todo.md`.
++  4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage table, line 35), `rewrite-notes/coordination/edge_todo.md` (E-SDEVOWN, E-DEVWIRE, E-NETSTART, E-RMIBWIRE), `17-stage-net/plan.md`, `17-stage-net/todo.md`.
+--- notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md -> rewrite-notes/coordination/ADDRESS-CONSTANT-AUDIT.md [OTHER]
+-这份文档对 `os/` 全库做一次地址边界类常量的静态清扫，回答一个问题：**同一个「用户空间地址边界」语义，在三套硬件地址翻译规则（x86-64 四级页表、aarch64 双区域 VMSA、riscv64 Sv39）下，当前仓库里的每一处常量是否都落在合法范围内，以及是否存在「只按一种架构的心智模型写死、换一个架构就变成硬件拒绝的地址」的残留**。这个缺陷类别有一个已经定案的现实案例：VFS exec 的缺省用户栈顶 `0x7fff_ffff_f000` 在 riscv64 Sv39 下是非规范地址，CPU 在页表遍历开始之前就拒绝它，由此产生了 rc 进程反复存储页故障的整条调查（完整证据链见 `notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md` §10.11，同类风险的第 9 章 T13 登记即本审计的执行依据；§10.12 给出了「这不是偶然笔误，而是一类系统性风险」的论证）。
++这份文档对 `os/` 全库做一次地址边界类常量的静态清扫，回答一个问题：**同一个「用户空间地址边界」语义，在三套硬件地址翻译规则（x86-64 四级页表、aarch64 双区域 VMSA、riscv64 Sv39）下，当前仓库里的每一处常量是否都落在合法范围内，以及是否存在「只按一种架构的心智模型写死、换一个架构就变成硬件拒绝的地址」的残留**。这个缺陷类别有一个已经定案的现实案例：VFS exec 的缺省用户栈顶 `0x7fff_ffff_f000` 在 riscv64 Sv39 下是非规范地址，CPU 在页表遍历开始之前就拒绝它，由此产生了 rc 进程反复存储页故障的整条调查（完整证据链见 `rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md` §10.11，同类风险的第 9 章 T13 登记即本审计的执行依据；§10.12 给出了「这不是偶然笔误，而是一类系统性风险」的论证）。
+--- notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-review-and-redo.md -> rewrite-notes/coordination/HANDOFF-NK4A-review-and-redo.md [OTHER]
+-2. `notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-boot-first-light.md`
++2. `rewrite-notes/coordination/HANDOFF-NK4A-boot-first-light.md`
+--- notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-review-and-redo.md -> rewrite-notes/coordination/HANDOFF-NK4A-review-and-redo.md [OTHER]
+-4. 若存在 `notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md`
++4. 若存在 `rewrite-notes/coordination/NK4A-HANDOFF-STATUS.md`
+--- notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-review-and-redo.md -> rewrite-notes/coordination/HANDOFF-NK4A-review-and-redo.md [OTHER]
+-1. `notes/rewrite/fork-syscall-rewrite/NK4A-REVIEW-REPORT.md`（§6 报告）。
++1. `rewrite-notes/coordination/NK4A-REVIEW-REPORT.md`（§6 报告）。
+--- notes/rewrite/fork-syscall-rewrite/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md -> rewrite-notes/coordination/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md [OTHER]
+-用户指令："从 FIXLOG、WORKLOG、REVIEW 账本等文件中扫描并发现模式，萃取值得记录的知识点（易错点、重点、方法论），写入 `notes/rewrite/fork-syscall-rewrite/misc_concepts.md`（01-stage-kernel 同层级）。"——代码在迭代、日志在追加，故为**增量式常设任务**：每次执行时只扫基线之后的变化，续作节点由用户以"知识点扫描"类指令触发。
++用户指令："从 FIXLOG、WORKLOG、REVIEW 账本等文件中扫描并发现模式，萃取值得记录的知识点（易错点、重点、方法论），写入 `rewrite-notes/misc/misc_concepts.md`（01-stage-kernel 同层级）。"——代码在迭代、日志在追加，故为**增量式常设任务**：每次执行时只扫基线之后的变化，续作节点由用户以"知识点扫描"类指令触发。
+--- notes/rewrite/fork-syscall-rewrite/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md -> rewrite-notes/coordination/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md [OTHER]
+-- 文件：`notes/rewrite/fork-syscall-rewrite/misc_concepts.md`——**81 条 / 约 660 行**，六章结构（1 构建与工具链 / 2 真机调试与取证 / 3 内核与架构易错点 / 4 测试与防回归 / 5 流程与协作纪律 / 6 知识库指南针）。
++- 文件：`rewrite-notes/misc/misc_concepts.md`——**81 条 / 约 660 行**，六章结构（1 构建与工具链 / 2 真机调试与取证 / 3 内核与架构易错点 / 4 测试与防回归 / 5 流程与协作纪律 / 6 知识库指南针）。
+--- notes/rewrite/fork-syscall-rewrite/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md -> rewrite-notes/coordination/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md [OTHER]
+-1. **定基线**：`stat -c '%y' notes/rewrite/fork-syscall-rewrite/misc_concepts.md`（或看头部最后一行 `重写` 的日期）。
++1. **定基线**：`stat -c '%y' rewrite-notes/misc/misc_concepts.md`（或看头部最后一行 `重写` 的日期）。
+--- notes/rewrite/fork-syscall-rewrite/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md -> rewrite-notes/coordination/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md [OTHER]
+-notes/rewrite/fork-syscall-rewrite/misc_concepts.md（81 条，doc-style-lint 零命中），
++rewrite-notes/misc/misc_concepts.md（81 条，doc-style-lint 零命中），
+--- notes/rewrite/fork-syscall-rewrite/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md -> rewrite-notes/coordination/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md [OTHER]
+-并留下完整交接档案 notes/rewrite/fork-syscall-rewrite/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md。
++并留下完整交接档案 rewrite-notes/coordination/MISC-CONCEPTS-SESSION-HANDOFF-20260927.md。
+--- notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md -> rewrite-notes/coordination/NK4A-HANDOFF-STATUS.md [OTHER]
+-> 任务来源：`notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-boot-first-light.md` 任务1（首亮翻绿）。
++> 任务来源：`rewrite-notes/coordination/HANDOFF-NK4A-boot-first-light.md` 任务1（首亮翻绿）。
+--- notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4A-QWEN-OPENING-PROMPT.md [OTHER]
+-1. 读 `notes/rewrite/fork-syscall-rewrite/NK4A-TODO.md` 全文（任务书：
++1. 读 `rewrite-notes/coordination/NK4A-TODO.md` 全文（任务书：
+--- notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4A-QWEN-OPENING-PROMPT.md [OTHER]
+-4. 在 `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` 顶部
++4. 在 `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` 顶部
+--- notes/rewrite/fork-syscall-rewrite/NK4A-TODO.md -> rewrite-notes/coordination/NK4A-TODO.md [OTHER]
+-### 6.1 WORKLOG（`notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md`，每 Task 一节，追加）
++### 6.1 WORKLOG（`rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md`，每 Task 一节，追加）
+--- notes/rewrite/fork-syscall-rewrite/NK4B-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4B-OPENING-PROMPT.md [OTHER]
+-1. 读 `notes/rewrite/fork-syscall-rewrite/NK4B-TODO.md` 全文（本弧线的
++1. 读 `rewrite-notes/coordination/NK4B-TODO.md` 全文（本弧线的
+--- notes/rewrite/fork-syscall-rewrite/NK4B-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4B-OPENING-PROMPT.md [OTHER]
+-2. 读 `notes/rewrite/fork-syscall-rewrite/NK4A-TODO.md` 的 §5（13 条技术
++2. 读 `rewrite-notes/coordination/NK4A-TODO.md` 的 §5（13 条技术
+--- notes/rewrite/fork-syscall-rewrite/NK4B-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4B-OPENING-PROMPT.md [OTHER]
+-5. 在 `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` 写会话开场，
++5. 在 `rewrite-notes/coordination/NK4B-WORKLOG.md` 写会话开场，
+--- notes/rewrite/fork-syscall-rewrite/NK4B-TODO.md -> rewrite-notes/coordination/NK4B-TODO.md [OTHER]
+-### 7.1 WORKLOG（`notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md`，每 Task/Milestone 一节）
++### 7.1 WORKLOG（`rewrite-notes/coordination/NK4B-WORKLOG.md`，每 Task/Milestone 一节）
+--- notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md -> rewrite-notes/coordination/NK4B-WORKLOG.md [OTHER]
+-  `notes/rewrite/archive_bak/`、`notes/study/`。
++  `rewrite-notes/archive/legacy-fork-bak/`、`study-notes/`。
+--- notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md -> rewrite-notes/coordination/NK4B-WORKLOG.md [OTHER]
+-?? notes/rewrite/archive_bak/
++?? rewrite-notes/archive/legacy-fork-bak/
+--- notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md -> rewrite-notes/coordination/NK4B-WORKLOG.md [OTHER]
+-   明写 `test-rt-birth-riscv64 PASS`）、`notes/rewrite/fork-syscall-rewrite/edge1.md:33`
++   明写 `test-rt-birth-riscv64 PASS`）、`rewrite-notes/coordination/edge1.md:33`
+--- notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md -> rewrite-notes/coordination/NK4B-WORKLOG.md [OTHER]
+-   （K20 行同一句）、`notes/rewrite/fork-syscall-rewrite/edge4.md:72`
++   （K20 行同一句）、`rewrite-notes/coordination/edge4.md:72`
+--- notes/rewrite/fork-syscall-rewrite/NK4C-BUG-AARCH64-VEC-CAP.md -> rewrite-notes/coordination/NK4C-BUG-AARCH64-VEC-CAP.md [OTHER]
+-- 完整取证历史在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`
++- 完整取证历史在 `rewrite-notes/coordination/NK4C-WORKLOG.md`
+--- notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md -> rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md [OTHER]
+-> 与既有文档的分工：`notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md` 追的是「走页表时读到一个不存在的物理帧」这条旧线，其头号症状（反复启动的进程陷在同一个地址上故障）已经定案并修复；逐轮取证流水（哪次点火、串口多少行）记在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。本文只提炼机制、证据形状与判据边界，不重复时间线。**如果本文与 WORKLOG 冲突，以 WORKLOG 为准。**
++> 与既有文档的分工：`rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md` 追的是「走页表时读到一个不存在的物理帧」这条旧线，其头号症状（反复启动的进程陷在同一个地址上故障）已经定案并修复；逐轮取证流水（哪次点火、串口多少行）记在 `rewrite-notes/coordination/NK4C-WORKLOG.md`。本文只提炼机制、证据形状与判据边界，不重复时间线。**如果本文与 WORKLOG 冲突，以 WORKLOG 为准。**
+--- notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md -> rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md [OTHER]
+-| 逐轮取证流水 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` §续-342 … §续-419 |
++| 逐轮取证流水 | `rewrite-notes/coordination/NK4C-WORKLOG.md` §续-342 … §续-419 |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md -> rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md [OTHER]
+-> **一条必须说清的边界：本案的“某个具体缺陷”关完了，“那类机制”没关。** 本文标题所述的原机制——走页表时得出不该出现的物理地址——在新的开放缺陷里重新成了头号候选之一（取证记录 §续-366、§续-367）。那条线以及仍未结的残余项已全部迁到 `notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`，不要从本文拿机制结论去查那个新缺陷。
++> **一条必须说清的边界：本案的“某个具体缺陷”关完了，“那类机制”没关。** 本文标题所述的原机制——走页表时得出不该出现的物理地址——在新的开放缺陷里重新成了头号候选之一（取证记录 §续-366、§续-367）。那条线以及仍未结的残余项已全部迁到 `rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`，不要从本文拿机制结论去查那个新缺陷。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md -> rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md [OTHER]
+-> 逐轮的取证流水（哪天跑了哪个脚本、串口输出多少行）记在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`，本文不重复那份流水的时间线，只提炼其中的机制、判据与结论。
++> 逐轮的取证流水（哪天跑了哪个脚本、串口输出多少行）记在 `rewrite-notes/coordination/NK4C-WORKLOG.md`，本文不重复那份流水的时间线，只提炼其中的机制、判据与结论。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md -> rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md [OTHER]
+-| T13 | 同类地址语义常量全库清扫 | **部分完成**（余下转入技术债） | 审计交付（`notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md`，13 项发现，取证记录 §续-341）；第一、二项修复已落地（`os/libs/minix-types/src/types/boot.rs` 的栈顶与用户半区上限双权威 + 编译期不变式；`os/servers/vm/src/mmap.rs:MMAP_TOP` 改为从用户半区上限导出并断言，工具生成行号 L217-L226；§续-344、§续-345）；第三项小口径已落；第四、五项（探针滚除车、分架构断言钳位）与一处陷阱死代码（取证记录 §续-367 登记的零调用方切换入口）**仍开放** |
++| T13 | 同类地址语义常量全库清扫 | **部分完成**（余下转入技术债） | 审计交付（`rewrite-notes/coordination/ADDRESS-CONSTANT-AUDIT.md`，13 项发现，取证记录 §续-341）；第一、二项修复已落地（`os/libs/minix-types/src/types/boot.rs` 的栈顶与用户半区上限双权威 + 编译期不变式；`os/servers/vm/src/mmap.rs:MMAP_TOP` 改为从用户半区上限导出并断言，工具生成行号 L217-L226；§续-344、§续-345）；第三项小口径已落；第四、五项（探针滚除车、分架构断言钳位）与一处陷阱死代码（取证记录 §续-367 登记的零调用方切换入口）**仍开放** |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md -> rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md [OTHER]
+-**逐轮流水与决策记录**：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（本文不复制其时间线）。
++**逐轮流水与决策记录**：`rewrite-notes/coordination/NK4C-WORKLOG.md`（本文不复制其时间线）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-GLM53-PROMPT.md -> rewrite-notes/coordination/NK4C-GLM53-PROMPT.md [OTHER]
+-2. `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 文末 **§1.120续-34 / 续-34b / 续-35 交接节**（顶部「当前状态」有导读）。
++2. `rewrite-notes/coordination/NK4C-WORKLOG.md` 文末 **§1.120续-34 / 续-34b / 续-35 交接节**（顶部「当前状态」有导读）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md -> rewrite-notes/coordination/NK4C-MIGRATION-20260930.md [OTHER]
+-| riscv 接入验收全清单 | `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A |
++| riscv 接入验收全清单 | `rewrite-notes/coordination/riscv-reviewlog.md` §A |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md -> rewrite-notes/coordination/NK4C-MIGRATION-20260930.md [OTHER]
+-notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md（本机迁移交接件·权威状态），
++rewrite-notes/coordination/NK4C-MIGRATION-20260930.md（本机迁移交接件·权威状态），
+--- notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md -> rewrite-notes/coordination/NK4C-MIGRATION-20260930.md [OTHER]
+-- 迁移交接件落盘 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（本文件），
++- 迁移交接件落盘 `rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`（本文件），
+--- notes/rewrite/fork-syscall-rewrite/NK4C-NEW-MACHINE-OPENING-PROMPT.txt -> rewrite-notes/coordination/NK4C-NEW-MACHINE-OPENING-PROMPT.txt [OTHER]
+-1. notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
++1. rewrite-notes/coordination/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
+--- notes/rewrite/fork-syscall-rewrite/NK4C-NEW-MACHINE-OPENING-PROMPT.txt -> rewrite-notes/coordination/NK4C-NEW-MACHINE-OPENING-PROMPT.txt [OTHER]
+-2. notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
++2. rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
+--- notes/rewrite/fork-syscall-rewrite/NK4C-NEW-MACHINE-OPENING-PROMPT.txt -> rewrite-notes/coordination/NK4C-NEW-MACHINE-OPENING-PROMPT.txt [OTHER]
+-3. notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md 顶部「当前状态」
++3. rewrite-notes/coordination/NK4C-WORKLOG.md 顶部「当前状态」
+--- notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4C-OPENING-PROMPT.md [OTHER]
+-| 1 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` | **你的记忆文件**——已含"当前状态 + 交接来源 + 1.2→1.7 全部记录"（Task C 已修复，当前 frontier = 阶段 1.3 的 449-livelock）。先通读 |
++| 1 | `rewrite-notes/coordination/NK4C-WORKLOG.md` | **你的记忆文件**——已含"当前状态 + 交接来源 + 1.2→1.7 全部记录"（Task C 已修复，当前 frontier = 阶段 1.3 的 449-livelock）。先通读 |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4C-OPENING-PROMPT.md [OTHER]
+-| 2 | `notes/rewrite/fork-syscall-rewrite/NK4C-REVIEW-REPORT-20260923.md` | 上一轮评审报告：全量提交评审结论、进度口径重列（按计划编号）、下一步建议 |
++| 2 | `rewrite-notes/coordination/NK4C-REVIEW-REPORT-20260923.md` | 上一轮评审报告：全量提交评审结论、进度口径重列（按计划编号）、下一步建议 |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4C-OPENING-PROMPT.md [OTHER]
+-| 4 | `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §A（约 1133-1145 行） | 里程碑状态登记表（你每完成一项要更新它） |
++| 4 | `rewrite-notes/coordination/edge_todo.md` §A（约 1133-1145 行） | 里程碑状态登记表（你每完成一项要更新它） |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4C-OPENING-PROMPT.md [OTHER]
+-| 5 | `notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md` §1.3/§7 | 架构背景（VM handoff、boot 序） |
++| 5 | `rewrite-notes/coordination/NK4A-HANDOFF-STATUS.md` §1.3/§7 | 架构背景（VM handoff、boot 序） |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4C-OPENING-PROMPT.md [OTHER]
+-`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（**git-tracked**，随 commit 一起提交）。
++`rewrite-notes/coordination/NK4C-WORKLOG.md`（**git-tracked**，随 commit 一起提交）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-QEMU-ENVIRONMENTS.md -> rewrite-notes/coordination/NK4C-QEMU-ENVIRONMENTS.md [OTHER]
+-- 缺陷 (A) 的实验记录与分析：`notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`（先读第 10 章）
++- 缺陷 (A) 的实验记录与分析：`rewrite-notes/coordination/NK4C-BUG-RISCV64-TRANSIENT-PTE.md`（先读第 10 章）
+--- notes/rewrite/fork-syscall-rewrite/NK4C-QEMU-ENVIRONMENTS.md -> rewrite-notes/coordination/NK4C-QEMU-ENVIRONMENTS.md [OTHER]
+-- 取证流水账：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`
++- 取证流水账：`rewrite-notes/coordination/NK4C-WORKLOG.md`
+--- notes/rewrite/fork-syscall-rewrite/NK4C-QEMU-ENVIRONMENTS.md -> rewrite-notes/coordination/NK4C-QEMU-ENVIRONMENTS.md [OTHER]
+-- 取证方法论：`notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md`
++- 取证方法论：`rewrite-notes/coordination/riscv瞬态页表崩溃取证方法论.md`
+--- notes/rewrite/fork-syscall-rewrite/NK4C-QEMU-ENVIRONMENTS.md -> rewrite-notes/coordination/NK4C-QEMU-ENVIRONMENTS.md [OTHER]
+-- 换机迁移交接：`notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`
++- 换机迁移交接：`rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`
+--- notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md -> rewrite-notes/coordination/NK4C-RESUME-PROMPT.md [OTHER]
+-**当前所处位置**（2026-09-29 更新）：**续-50 实施轮因 turn 预算耗尽交接**（HEAD `8f6cb996e`·详见顶部🛑 banner 与 §3）。**终目标① 进度 = x86_64 单核手改命令下 marker 曾✅（§1.119续-7）/ 标准 xtask 启动器（-smp4）下未稳：boot DM 栈洞已击穿、新阻塞腿＝用户栈缺页（§3.2）/ aarch64 模式① 未克（§3.0）/ riscv64 未启动真机**（接入验收清单：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
++**当前所处位置**（2026-09-29 更新）：**续-50 实施轮因 turn 预算耗尽交接**（HEAD `8f6cb996e`·详见顶部🛑 banner 与 §3）。**终目标① 进度 = x86_64 单核手改命令下 marker 曾✅（§1.119续-7）/ 标准 xtask 启动器（-smp4）下未稳：boot DM 栈洞已击穿、新阻塞腿＝用户栈缺页（§3.2）/ aarch64 模式① 未克（§3.0）/ riscv64 未启动真机**（接入验收清单：`rewrite-notes/coordination/riscv-reviewlog.md` §A）。之后再按 §5 推进命令面 → W^X → ABI 清单 → 测试上机 → 收尾清账。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md -> rewrite-notes/coordination/NK4C-RESUME-PROMPT.md [OTHER]
+-sed -n '1,70p' notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
++sed -n '1,70p' rewrite-notes/coordination/NK4C-WORKLOG.md
+--- notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md -> rewrite-notes/coordination/NK4C-RESUME-PROMPT.md [OTHER]
+-tail -120 notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md
++tail -120 rewrite-notes/coordination/NK4C-WORKLOG.md
+--- notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md -> rewrite-notes/coordination/NK4C-RESUME-PROMPT.md [OTHER]
+-sed -n '/^## 6/,/^## 7/p' notes/rewrite/fork-syscall-rewrite/NK4C-OPENING-PROMPT.md | head -25
++sed -n '/^## 6/,/^## 7/p' rewrite-notes/coordination/NK4C-OPENING-PROMPT.md | head -25
+--- notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md -> rewrite-notes/coordination/NK4C-RESUME-PROMPT.md [OTHER]
+-3. 全链绿 → 派 CodeReview 子代理 → 通过才 `git add os/kernel/src/dm_coverage.rs notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 提交（WORKLOG 顶部前沿同步滚动）；不绿则按取证轮处置（不臆造、不硬提）。
++3. 全链绿 → 派 CodeReview 子代理 → 通过才 `git add os/kernel/src/dm_coverage.rs rewrite-notes/coordination/NK4C-WORKLOG.md` 提交（WORKLOG 顶部前沿同步滚动）；不绿则按取证轮处置（不臆造、不硬提）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md -> rewrite-notes/coordination/NK4C-RESUME-PROMPT.md [OTHER]
+-接手入口（先读后干）：notes/rewrite/fork-syscall-rewrite/NK4C-RESUME-PROMPT.md ——先执行其 §2 开工仪式，再从 §3.1 开始（工作树有一笔未提交的 DM source-4 改动·第一动作是补完它的验证链而非重写它）。**§3.1 只是第一个动作，不是任务边界；任务边界是上面三条终目标**。每轮交付后立即自行开下一轮：定性→定位（C 锚点）→修→验证链→报告→commit→下一个停点；禁止以「完成一个探测轮/取证轮」为交付停止，禁止把目标改写成更小 subset。若用户提「GLM 已修复可 review」：先按交接件 §3/续-48 A 配方核查全 ref，无新 commit 则诚实上报继续真前沿，不编造 review。
++接手入口（先读后干）：rewrite-notes/coordination/NK4C-RESUME-PROMPT.md ——先执行其 §2 开工仪式，再从 §3.1 开始（工作树有一笔未提交的 DM source-4 改动·第一动作是补完它的验证链而非重写它）。**§3.1 只是第一个动作，不是任务边界；任务边界是上面三条终目标**。每轮交付后立即自行开下一轮：定性→定位（C 锚点）→修→验证链→报告→commit→下一个停点；禁止以「完成一个探测轮/取证轮」为交付停止，禁止把目标改写成更小 subset。若用户提「GLM 已修复可 review」：先按交接件 §3/续-48 A 配方核查全 ref，无新 commit 则诚实上报继续真前沿，不编造 review。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md -> rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md [OTHER]
+-1. notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
++1. rewrite-notes/coordination/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
+--- notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md -> rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md [OTHER]
+-2. notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
++2. rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
+--- notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md -> rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md [OTHER]
+-3. notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md 顶部「当前状态」
++3. rewrite-notes/coordination/NK4C-WORKLOG.md 顶部「当前状态」
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-> **（历史·§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09665415` 提交，接手者勿重补其验证链；host 基线复核全绿（minix-kernel 827/0·arch+boot+types 569）。**目标② x86 核心达成坐实**：`tmp/nk4a/nk73b-r1.serial` 行 7526 marker 之后 `ls /bin`→`cat/echo/ls/sh`、`cat /etc/rc`→全文⇒**echo/ls/cat 三核心命令端到端全通（走真实 VFS IPC 腿）**。两大剩余前沿已深度分析：**aarch64 模式① OOM**（七假设全证伪→收敛 H7 纯数据流·rust-objdump 反查标量 store 源 GPR 生产者）；**riscv64 IPC 桥**（真正工作量＝架构级：riscv user leg asm epilogue 无条件 sret、`DispatchFn` 返回 unit、无 aarch64 PARK_RESCHEDULE 挂起-重调度机制⇒阻塞 IPC 不可实现；六步 decision-complete 配方见迁移件 §4.B，**riscv 纯实现无 Heisenbug、建议优先**）。三目标不缩小（① x86✅/aarch64❌/riscv❌·② x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。详文见文末 §1.120续-74。
++> **（历史·§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09665415` 提交，接手者勿重补其验证链；host 基线复核全绿（minix-kernel 827/0·arch+boot+types 569）。**目标② x86 核心达成坐实**：`tmp/nk4a/nk73b-r1.serial` 行 7526 marker 之后 `ls /bin`→`cat/echo/ls/sh`、`cat /etc/rc`→全文⇒**echo/ls/cat 三核心命令端到端全通（走真实 VFS IPC 腿）**。两大剩余前沿已深度分析：**aarch64 模式① OOM**（七假设全证伪→收敛 H7 纯数据流·rust-objdump 反查标量 store 源 GPR 生产者）；**riscv64 IPC 桥**（真正工作量＝架构级：riscv user leg asm epilogue 无条件 sret、`DispatchFn` 返回 unit、无 aarch64 PARK_RESCHEDULE 挂起-重调度机制⇒阻塞 IPC 不可实现；六步 decision-complete 配方见迁移件 §4.B，**riscv 纯实现无 Heisenbug、建议优先**）。三目标不缩小（① x86✅/aarch64❌/riscv❌·② x86 核心✅·③❌）。新机见迁移件 §8 prompt 直接续跑。详文见文末 §1.120续-74。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-**本 commit 文件清单**：`os/fs/mfs/build.rs`（新建）、`os/fs/mfs/src/main.rs`、`os/fs/fs-rt/src/source.rs`、`os/xtask/src/image.rs`、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
++**本 commit 文件清单**：`os/fs/mfs/build.rs`（新建）、`os/fs/mfs/src/main.rs`、`os/fs/fs-rt/src/source.rs`、`os/xtask/src/image.rs`、`rewrite-notes/coordination/NK4C-WORKLOG.md`。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-- **本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
++- **本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`rewrite-notes/coordination/NK4C-WORKLOG.md`。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（pathspec 形式仅提交 WORKLOG），使 7 个非本 agent 文件退回预暂存 A 状态、不进入本 agent 提交。新提交 `1841af3d5`（1 file changed, 41 insertions(+), 1 deletion(-)）。
++上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- rewrite-notes/coordination/NK4C-WORKLOG.md`（pathspec 形式仅提交 WORKLOG），使 7 个非本 agent 文件退回预暂存 A 状态、不进入本 agent 提交。新提交 `1841af3d5`（1 file changed, 41 insertions(+), 1 deletion(-)）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-> **riscv 前置对账就绪 = `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.14（第 1–6 轮逐轮累加：第 3 轮 D.1–D.9 8 笔债基线、第 4 轮补账债⑨–⑫（PAF_CLEAR/缓存维护/代刷腿翻案/吞错家族）、第 5 轮外部复核修正债⑩＋新立债⑬ bump 池无回收·kerninfo 责任移交、第 6 轮债⑫逐点处置表 31 站/13 文件（乙 7＋维持 23＋甲 1）且 **§D 结构债扫描线按停止规则收敛**；每债 ≥3 方案五参照系对照＋修复批次矩阵·裁决前分析零代码改动）、E 段用户预裁决记录 E.1–E.3（第 6 轮收敛后经用户授权由旁支会话代录、不经扫描轮：E.1 债② x86 迁移方案 A **半预裁**＝aarch64 方案 A 稳定 ≥10 真机轮次且 x86 无在途 boot 战役时授权直接立项迁移评估·终裁仍报用户；E.2 债① 三 boot 形态并存 **顺序预裁**＝riscv 甲案收口前不启动统一、收口后单独立项不搭车；E.3 B-D1 riscv 终态选型 **显式不预裁**＝依赖真机数据、与 E.2 终局裁决合并一次咨询。章头三纪律：预裁非终裁／与 §D 裁决归属冲突以 E 章为准、仅本章条目下补勘误不回改 §D 正文／E 章修订撤销须用户本人同意，扫描线与主线程均无权单方面改））。**侧线程另交三项移交待主线程下次触碰相应正文时一次性收口**：①NK4C-WORKLOG §1.115「债②」口径与 riscv 甲案（kernel-image 自引导、不经 BootHandoff 跨镜像交接）冲突→建议改述并加反向引用本文件 §D.2；②§1.111「未接线已知缺口」措辞→按本文件 §D.12 修正（vmctl FlushTlb/InvlPg 内核腿三架构已实现、缺口是 V13-P2-1 刷新依据在 VmDm 通道不成立）；③misc_concepts.md 教训条「多模式 grep 负结论需按模式拆分计数、禁出自 head 截断输出」（见 §D.11 自审）。**系必要非充分条件，不替代真机判据；D1–D7 决策点与 D 节各「裁决归属」条目待用户/主线程拍板后方可实施**。未来任何 riscv 轮的「前沿起点」段先查此清单对应阶段再开工——判「已就绪」的阶段可跳过探索直接真机对账，判「有缺口/需真机」的按清单索引进场。
++> **riscv 前置对账就绪 = `rewrite-notes/coordination/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.14（第 1–6 轮逐轮累加：第 3 轮 D.1–D.9 8 笔债基线、第 4 轮补账债⑨–⑫（PAF_CLEAR/缓存维护/代刷腿翻案/吞错家族）、第 5 轮外部复核修正债⑩＋新立债⑬ bump 池无回收·kerninfo 责任移交、第 6 轮债⑫逐点处置表 31 站/13 文件（乙 7＋维持 23＋甲 1）且 **§D 结构债扫描线按停止规则收敛**；每债 ≥3 方案五参照系对照＋修复批次矩阵·裁决前分析零代码改动）、E 段用户预裁决记录 E.1–E.3（第 6 轮收敛后经用户授权由旁支会话代录、不经扫描轮：E.1 债② x86 迁移方案 A **半预裁**＝aarch64 方案 A 稳定 ≥10 真机轮次且 x86 无在途 boot 战役时授权直接立项迁移评估·终裁仍报用户；E.2 债① 三 boot 形态并存 **顺序预裁**＝riscv 甲案收口前不启动统一、收口后单独立项不搭车；E.3 B-D1 riscv 终态选型 **显式不预裁**＝依赖真机数据、与 E.2 终局裁决合并一次咨询。章头三纪律：预裁非终裁／与 §D 裁决归属冲突以 E 章为准、仅本章条目下补勘误不回改 §D 正文／E 章修订撤销须用户本人同意，扫描线与主线程均无权单方面改））。**侧线程另交三项移交待主线程下次触碰相应正文时一次性收口**：①NK4C-WORKLOG §1.115「债②」口径与 riscv 甲案（kernel-image 自引导、不经 BootHandoff 跨镜像交接）冲突→建议改述并加反向引用本文件 §D.2；②§1.111「未接线已知缺口」措辞→按本文件 §D.12 修正（vmctl FlushTlb/InvlPg 内核腿三架构已实现、缺口是 V13-P2-1 刷新依据在 VmDm 通道不成立）；③misc_concepts.md 教训条「多模式 grep 负结论需按模式拆分计数、禁出自 head 截断输出」（见 §D.11 自审）。**系必要非充分条件，不替代真机判据；D1–D7 决策点与 D 节各「裁决归属」条目待用户/主线程拍板后方可实施**。未来任何 riscv 轮的「前沿起点」段先查此清单对应阶段再开工——判「已就绪」的阶段可跳过探索直接真机对账，判「有缺口/需真机」的按清单索引进场。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-**起点**：读 `tmp/nk4a/nk4c35-pt-bind-wip.patch` + 本节分析 + `notes/rewrite/fork-syscall-rewrite/NK4C-GLM53-PROMPT.md`。
++**起点**：读 `tmp/nk4a/nk4c35-pt-bind-wip.patch` + 本节分析 + `rewrite-notes/coordination/NK4C-GLM53-PROMPT.md`。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-含代码改的 commit 走 CodeReview 后方提交：`git add os/kernel/src/dm_coverage.rs notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径·不用 `-A`·不动 `AI-chats/daily.todo.md`）。提交后 HEAD 前进，续-50 的 NOT-WIRED 状态结束。
++含代码改的 commit 走 CodeReview 后方提交：`git add os/kernel/src/dm_coverage.rs rewrite-notes/coordination/NK4C-WORKLOG.md`（明确路径·不用 `-A`·不动 `AI-chats/daily.todo.md`）。提交后 HEAD 前进，续-50 的 NOT-WIRED 状态结束。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-- 本轮 WORKLOG 无生产码改 ⇒ 免 CodeReview（与续-50/51 惯例一致）；`git add notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径）。
++- 本轮 WORKLOG 无生产码改 ⇒ 免 CodeReview（与续-50/51 惯例一致）；`git add rewrite-notes/coordination/NK4C-WORKLOG.md`（明确路径）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-`git add notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径·无生产码改⇒免 CodeReview）。续-54 待用户选型后实施 per-CPU Q（或排除过滤）+ 验证链（host 826+569 只增不减 / clippy / nightly rustfmt / -smp4 真机 ≥3 轮不出双派签名且出 marker）。
++`git add rewrite-notes/coordination/NK4C-WORKLOG.md`（明确路径·无生产码改⇒免 CodeReview）。续-54 待用户选型后实施 per-CPU Q（或排除过滤）+ 验证链（host 826+569 只增不减 / clippy / nightly rustfmt / -smp4 真机 ≥3 轮不出双派签名且出 marker）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-**交付**：新建 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（迁移交接件·含新机
++**交付**：新建 `rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`（迁移交接件·含新机
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-> 来源报告：`notes/rewrite/fork-syscall-rewrite/NK4C-REVIEW-REPORT-R31-20260930.md`
++> 来源报告：`rewrite-notes/coordination/NK4C-REVIEW-REPORT-R31-20260930.md`
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-> **权威全量以文件为准**：`notes/rewrite/fork-syscall-rewrite/STRUCTURAL-DEBT-REGISTER-20260930.md`
++> **权威全量以文件为准**：`rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md`
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-- **经验沉淀落地**：新增 `notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md`（commit 9efc752bf，164 行，计划 Step8）：四条可迁移知识（Direct Map 不可跨态直接访问 / 停机借内核 DM 活体读 / QEMU riscv 硬件写观察点不可用 / 海森堡布局敏感）+ PTE 对齐不变量防御断言思路。doc-style-lint 0 error。
++- **经验沉淀落地**：新增 `rewrite-notes/coordination/riscv瞬态页表崩溃取证方法论.md`（commit 9efc752bf，164 行，计划 Step8）：四条可迁移知识（Direct Map 不可跨态直接访问 / 停机借内核 DM 活体读 / QEMU riscv 硬件写观察点不可用 / 海森堡布局敏感）+ PTE 对齐不变量防御断言思路。doc-style-lint 0 error。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-**交付物**：`notes/rewrite/fork-syscall-rewrite/ADDRESS-CONSTANT-AUDIT.md`（三架构判据表/扫描方法/发现清单/豁免清单/覆盖率对账/修复排序）+ `tools/address-constant-scan.py`（可复跑扫描器，字节级读取防 ugrep 吞输出）。生产代码零改动（`git diff HEAD --stat -- os/` 为空）。
++**交付物**：`rewrite-notes/coordination/ADDRESS-CONSTANT-AUDIT.md`（三架构判据表/扫描方法/发现清单/豁免清单/覆盖率对账/修复排序）+ `tools/address-constant-scan.py`（可复跑扫描器，字节级读取防 ugrep 吞输出）。生产代码零改动（`git diff HEAD --stat -- os/` 为空）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-**本轮性质**：接手 `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`（另一会话的纯静态扫描产物，23 条 P-* 待办 + 10 条排除清单）。按其 §二排序从第一档与第四档小件做起：凡是「需上机定案」「需人裁决」的条目（P-X86-01 方案取舍、P-A64RV-01 SMP 系列、P-ALL-02 硬件错页地址来源）本轮不上手、不代决。
++**本轮性质**：接手 `rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md`（另一会话的纯静态扫描产物，23 条 P-* 待办 + 10 条排除清单）。按其 §二排序从第一档与第四档小件做起：凡是「需上机定案」「需人裁决」的条目（P-X86-01 方案取舍、P-A64RV-01 SMP 系列、P-ALL-02 硬件错页地址来源）本轮不上手、不代决。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-- 台账入库：`notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md`（417 行）随本笔 `git add`。§续-407 已把它当判据引用却长期未跟踪＝引用完整性缺口；入库前 `tools/doc-style-lint.sh <该文件>` 实测 error 级 0 命中。
++- 台账入库：`rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md`（417 行）随本笔 `git add`。§续-407 已把它当判据引用却长期未跟踪＝引用完整性缺口；入库前 `tools/doc-style-lint.sh <该文件>` 实测 error 级 0 命中。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md [OTHER]
+-⑩本会话在此收口（应用户「选择最近的合适结束点停止」的指令）：§续-411 到 §续-422 十二节全部入库，每节都有对应的提交与一次针对该提交的回归评审（提交号见 `NK4C-接续PROMPT-20261006r.md` 第 3 节的对照表）。收口前复验三件：`git status --porcelain` 无跟踪文件改动、`ps -eo comm | grep -c "^qemu-system"` 为 0、临时 worktree 已卸除；交接件已撰写为 `notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261006r.md`（你在接什么／必读三件／增量对照／十一条纪律／机制地图／按序队列／工具配方／诚实边界／何时该停），接手者只需读顶块与该件即可接续。队列里明确留给下一步的是 T2 收尾半格（sched/mib/vfs/pm 的「C 未注册即忠实」明证化、ipc 单独对照）、T3 的 `process_init` 六段勘察，以及一次性呈报的裁决清单（含 `devman` 自有钩子接或删、`P-ALL-12` 的三案、`P-ALL-08-T4`/`T5`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03`）。
++⑩本会话在此收口（应用户「选择最近的合适结束点停止」的指令）：§续-411 到 §续-422 十二节全部入库，每节都有对应的提交与一次针对该提交的回归评审（提交号见 `NK4C-接续PROMPT-20261006r.md` 第 3 节的对照表）。收口前复验三件：`git status --porcelain` 无跟踪文件改动、`ps -eo comm | grep -c "^qemu-system"` 为 0、临时 worktree 已卸除；交接件已撰写为 `rewrite-notes/coordination/NK4C-接续PROMPT-20261006r.md`（你在接什么／必读三件／增量对照／十一条纪律／机制地图／按序队列／工具配方／诚实边界／何时该停），接手者只需读顶块与该件即可接续。队列里明确留给下一步的是 T2 收尾半格（sched/mib/vfs/pm 的「C 未注册即忠实」明证化、ipc 单独对照）、T3 的 `process_init` 六段勘察，以及一次性呈报的裁决清单（含 `devman` 自有钩子接或删、`P-ALL-12` 的三案、`P-ALL-08-T4`/`T5`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03`）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261002.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261002.md [OTHER]
+-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的权威载体）与本目录下
++> `rewrite-notes/coordination/NK4C-WORKLOG.md`（git 跟踪的权威载体）与本目录下
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261002.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261002.md [OTHER]
+-1. `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 顶部「当前状态」banner（一屏读完前沿），
++1. `rewrite-notes/coordination/NK4C-WORKLOG.md` 顶部「当前状态」banner（一屏读完前沿），
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261002.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261002.md [OTHER]
+-2. `notes/rewrite/fork-syscall-rewrite/nk4c-glm-riscv-session-handoff-20261002.md` 的 ★(A) 节
++2. `rewrite-notes/coordination/nk4c-glm-riscv-session-handoff-20261002.md` 的 ★(A) 节
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261003.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261003.md [OTHER]
+-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，本会话已推进到
++> `rewrite-notes/coordination/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，本会话已推进到
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261003.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261003.md [OTHER]
+-1. `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` **顶部「当前状态」banner**（一屏读完前沿），
++1. `rewrite-notes/coordination/NK4C-WORKLOG.md` **顶部「当前状态」banner**（一屏读完前沿），
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005.md [OTHER]
+-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=顶部 banner＝§续-340）。
++> `rewrite-notes/coordination/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=顶部 banner＝§续-340）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005b.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005b.md [OTHER]
+-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（前沿=§续-369），
++> `rewrite-notes/coordination/NK4C-WORKLOG.md`（前沿=§续-369），
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005c.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005c.md [OTHER]
+-> 取证流水在 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（顶部"当前状态"块是最新前沿，文末各节是逐轮过程）。
++> 取证流水在 `rewrite-notes/coordination/NK4C-WORKLOG.md`（顶部"当前状态"块是最新前沿，文末各节是逐轮过程）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005c.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005c.md [OTHER]
+-> 机制与证据形状的独立审查在 `notes/rewrite/fork-syscall-rewrite/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`（含排除手段的分辨力边界、九类候选排序、实验设计、验收判据）。
++> 机制与证据形状的独立审查在 `rewrite-notes/coordination/NK4C-BUG-RISCV64-MEMORY-CORRUPTION.md`（含排除手段的分辨力边界、九类候选排序、实验设计、验收判据）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005c.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005c.md [OTHER]
+-8. 探针与诊断代码都标"用后即滚"，结案时随诊断标记族一并清除；结构性旧债登记在 `notes/rewrite/fork-syscall-rewrite/STRUCTURAL-DEBT-REGISTER-20260930.md`（含 `os/arch/src/riscv64/paging.rs:switch` 这个零调用方的陷阱死代码、走表测试夹具里的三处恒零表达式、兼容层供给日志的模板写位错位）。
++8. 探针与诊断代码都标"用后即滚"，结案时随诊断标记族一并清除；结构性旧债登记在 `rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md`（含 `os/arch/src/riscv64/paging.rs:switch` 这个零调用方的陷阱死代码、走表测试夹具里的三处恒零表达式、兼容层供给日志的模板写位错位）。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261006r.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261006r.md [OTHER]
+-接手第一件事：读 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 的顶部状态块（第 13 行起，最新前沿＝§续-422），再读 §续-411 到 §续-422 十二节正文；然后按第 6 节的队列动手。
++接手第一件事：读 `rewrite-notes/coordination/NK4C-WORKLOG.md` 的顶部状态块（第 13 行起，最新前沿＝§续-422），再读 §续-411 到 §续-422 十二节正文；然后按第 6 节的队列动手。
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261006r.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261006r.md [OTHER]
+-| 工作日志 | `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` | 顶部「当前状态」块＝最新态；§续-411..422＝本任务线的全部取证与踩坑 |
++| 工作日志 | `rewrite-notes/coordination/NK4C-WORKLOG.md` | 顶部「当前状态」块＝最新态；§续-411..422＝本任务线的全部取证与踩坑 |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261006r.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261006r.md [OTHER]
+-| 平台账 | `notes/rewrite/fork-syscall-rewrite/TODO-3ARCH-PARITY-20261006.md` | `P-ALL-08` 条目的「落地进度」行（T1/T2 现在到底做到哪一步、通电前置红线）、`P-ALL-12`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03` |
++| 平台账 | `rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md` | `P-ALL-08` 条目的「落地进度」行（T1/T2 现在到底做到哪一步、通电前置红线）、`P-ALL-12`、`P-ALL-03`、`P-X86-01`、`P-ALL-02`、`P-A64-03` |
+--- notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-RISCV-20261003.md -> rewrite-notes/coordination/NK4C-接续PROMPT-RISCV-20261003.md [OTHER]
+-> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279n/-b）。
++> `rewrite-notes/coordination/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279n/-b）。
+--- notes/rewrite/fork-syscall-rewrite/PATTERN-GATE-SESSION-HANDOFF-20260927.md -> rewrite-notes/coordination/PATTERN-GATE-SESSION-HANDOFF-20260927.md [OTHER]
+-（存量豁免）+ `notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md`（模式目录 +
++（存量豁免）+ `rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md`（模式目录 +
+--- notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md -> rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md [OTHER]
+-| `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
++| `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+--- notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md -> rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md [OTHER]
+-| `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
++| `rewrite-notes/coordination/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+--- notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md -> rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md [OTHER]
+-| `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
++| `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+--- notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md -> rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md [OTHER]
+-| `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
++| `rewrite-notes/coordination/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+--- notes/rewrite/fork-syscall-rewrite/STRUCTURAL-DEBT-REGISTER-20260930.md -> rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md [OTHER]
+-deep structural-debt analysis for thirteen debts (`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`
++deep structural-debt analysis for thirteen debts (`rewrite-notes/coordination/riscv-reviewlog.md`
+--- notes/rewrite/fork-syscall-rewrite/claim-prompt.md -> rewrite-notes/coordination/claim-prompt.md [OTHER]
+-3. `notes/rewrite/fork-syscall-rewrite/new_edge4.md` §1（并发/领取/构建规则）与 §6（OQ 队列——你不得代决的事项）
++3. `rewrite-notes/coordination/new_edge4.md` §1（并发/领取/构建规则）与 §6（OQ 队列——你不得代决的事项）
+--- notes/rewrite/fork-syscall-rewrite/edge4.md -> rewrite-notes/coordination/edge4.md [OTHER]
+-   - `notes/rewrite/fork-syscall-rewrite/edge_todo.md` 与 `00-master-plan/`
++   - `rewrite-notes/coordination/edge_todo.md` 与 `00-master-plan/`
+--- notes/rewrite/fork-syscall-rewrite/edge_todo.md -> rewrite-notes/coordination/edge_todo.md [OTHER]
+-- notes/TODO.md：文件拆分整理尾项（improve_minix.md 删除或合并确认）
++- rewrite-notes/misc/legacy-notes-todo.md：文件拆分整理尾项（improve_minix.md 删除或合并确认）
+--- notes/rewrite/fork-syscall-rewrite/edge_todo.md -> rewrite-notes/coordination/edge_todo.md [OTHER]
+-- OQ：notes/study + notes/rewrite/archive_bak 是否正式收纳（33841ca07
++- OQ：study-notes + rewrite-notes/archive/legacy-fork-bak 是否正式收纳（33841ca07
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-WORKLOG.md` §1.120续-32（越界读伪影翻案）、§1.120续-16/续-24（镜像陈旧与守卫恒假）、§1.120续-15（进制混淆自造假象）、§1.120续-29（直证复核推翻栈扫描归因）；`notes/rewrite/fork-syscall-rewrite/trap-boundary-message-materialization.md` §4.4（配置剪除造成假零命中）；`NK4C-BUG-AARCH64-VEC-CAP.md` §7（会再次绊倒人的坑）；`NK4C-WORKLOG.md` §1.120续-93（打点形态门不含目标架构）、§续-142（诊断通路十六字节上界）、§续-115（封顶误读为洪流）、§续-278c（打印宽度截断）
++> 来源：`NK4C-WORKLOG.md` §1.120续-32（越界读伪影翻案）、§1.120续-16/续-24（镜像陈旧与守卫恒假）、§1.120续-15（进制混淆自造假象）、§1.120续-29（直证复核推翻栈扫描归因）；`rewrite-notes/coordination/trap-boundary-message-materialization.md` §4.4（配置剪除造成假零命中）；`NK4C-BUG-AARCH64-VEC-CAP.md` §7（会再次绊倒人的坑）；`NK4C-WORKLOG.md` §1.120续-93（打点形态门不含目标架构）、§续-142（诊断通路十六字节上界）、§续-115（封顶误读为洪流）、§续-278c（打印宽度截断）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` §6（纠缠现象分桶）；`notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md` §4.A（签名分流判别式）；`NK4C-WORKLOG.md` §续-137/续-141/续-148（多墙轮转矩阵与确定性首墙优先裁决）、§续-220（墙序探针敏感）
++> 来源：`NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` §6（纠缠现象分桶）；`rewrite-notes/coordination/NK4C-MIGRATION-20260930.md` §4.A（签名分流判别式）；`NK4C-WORKLOG.md` §续-137/续-141/续-148（多墙轮转矩阵与确定性首墙优先裁决）、§续-220（墙序探针敏感）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4B-WORKLOG.md`「P1」（三方案对比）；`NK4C-WORKLOG.md` §1.40/§1.49/§1.54（迁移落地与漏点审计）；`.review/zcode/edge1/FIXLOG.md` 迭代 22 补记（方案落地与假说证伪）；`minix3/minix/include/arch/i386/include/ipcconst.h:IPC_STATUS_REG`；`os/arch/src/x86_64/trap_stub.rs:sync_status_register_to_frame`；`os/libs/minix-sys/src/arch_trap.rs:ipc_trap`；`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §C 坑对账表（状态车道判据与寄存器所有权行）
++> 来源：`NK4B-WORKLOG.md`「P1」（三方案对比）；`NK4C-WORKLOG.md` §1.40/§1.49/§1.54（迁移落地与漏点审计）；`.review/zcode/edge1/FIXLOG.md` 迭代 22 补记（方案落地与假说证伪）；`minix3/minix/include/arch/i386/include/ipcconst.h:IPC_STATUS_REG`；`os/arch/src/x86_64/trap_stub.rs:sync_status_register_to_frame`；`os/libs/minix-sys/src/arch_trap.rs:ipc_trap`；`rewrite-notes/coordination/riscv-reviewlog.md` §C 坑对账表（状态车道判据与寄存器所有权行）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`.review/zcode/edge3/FIXLOG_archive.md`「回复符号约定」条目；`.review/zcode/edge3/FIXLOG.md`「MIB 应答正错误码」条目；`NK4A-TODO.md` §5 第 10 条；`NK4C-WORKLOG.md` §1.62（exec 错误码被吞）；`os/servers/vfs/src/main_loop.rs:finish_worker_job_value`；`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §D.13（吞错家族三问表与逐站处置）；`STRUCTURAL-DEBT-REGISTER-20260930.md` §SD-16/§SD-19（错误码专型与机械吞错门提案）
++> 来源：`.review/zcode/edge3/FIXLOG_archive.md`「回复符号约定」条目；`.review/zcode/edge3/FIXLOG.md`「MIB 应答正错误码」条目；`NK4A-TODO.md` §5 第 10 条；`NK4C-WORKLOG.md` §1.62（exec 错误码被吞）；`os/servers/vfs/src/main_loop.rs:finish_worker_job_value`；`rewrite-notes/coordination/riscv-reviewlog.md` §D.13（吞错家族三问表与逐站处置）；`STRUCTURAL-DEBT-REGISTER-20260930.md` §SD-16/§SD-19（错误码专型与机械吞错门提案）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-WORKLOG.md` §1.59–1.61、§1.92–1.95；`os/libs/minix-rt/src/alloc.rs:alloc_big/supply_pages`；`os/arch/src/arch/boot.rs:VM_STACK_SIZE`；`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §D.6（自举内存预映缺件与临时形态定性）
++> 来源：`NK4C-WORKLOG.md` §1.59–1.61、§1.92–1.95；`os/libs/minix-rt/src/alloc.rs:alloc_big/supply_pages`；`os/arch/src/arch/boot.rs:VM_STACK_SIZE`；`rewrite-notes/coordination/riscv-reviewlog.md` §D.6（自举内存预映缺件与临时形态定性）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-WORKLOG.md` §1.111、§1.113；`os/kernel/src/proc.rs:CpuContextArch`；`os/arch/src/arm64/paging.rs`；`NK4C-WORKLOG.md` §1.120续-77a（riscv 刷新指令通道门控闭合）；`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A.5；`NK4C-WORKLOG.md` §续-164（登记的残余缺口兑现：只读到可写升级时跳过刷新的前提不成立，旧译文存活使填充永不生效——内存已写而翻译未生效，两层判据缺一不可；登记在案的残余缺口在主线成修时顺手关闭，或至少让触发形态出现时能立刻对号）
++> 来源：`NK4C-WORKLOG.md` §1.111、§1.113；`os/kernel/src/proc.rs:CpuContextArch`；`os/arch/src/arm64/paging.rs`；`NK4C-WORKLOG.md` §1.120续-77a（riscv 刷新指令通道门控闭合）；`rewrite-notes/coordination/riscv-reviewlog.md` §A.5；`NK4C-WORKLOG.md` §续-164（登记的残余缺口兑现：只读到可写升级时跳过刷新的前提不成立，旧译文存活使填充永不生效——内存已写而翻译未生效，两层判据缺一不可；登记在案的残余缺口在主线成修时顺手关闭，或至少让触发形态出现时能立刻对号）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` §2/§4/§5/§7/§8；`NK4C-WORKLOG.md` §1.120续-35/续-36；os/servers/vm/src/exit.rs:handle_procctl_clear
++> 来源：`rewrite-notes/coordination/NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` §2/§4/§5/§7/§8；`NK4C-WORKLOG.md` §1.120续-35/续-36；os/servers/vm/src/exit.rs:handle_procctl_clear
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/trap-boundary-message-materialization.md` §2/§3/§5/§6/§7；`NK4C-WORKLOG.md` §1.120续-21/续-22（栈中性判别针与成修）；os/libs/minix-sys/src/ipc.rs:commit_message_to_memory；`NK4C-WORKLOG.md` §续-156~158（指纹的必要非充分：强制真实加载后读数仍不一致即内存真被改写，编译器层被排除——"同一数据两次读不一致"按单次求值合并、函数内埋点、强制真实加载三级递进，全过才归因内存层）；`STRUCTURAL-DEBT-REGISTER-20260930.md` §SD-31（逐陷阱点手工插屏障脆弱，汇编级整块内存提示更原则化，登记未决）
++> 来源：`rewrite-notes/coordination/trap-boundary-message-materialization.md` §2/§3/§5/§6/§7；`NK4C-WORKLOG.md` §1.120续-21/续-22（栈中性判别针与成修）；os/libs/minix-sys/src/ipc.rs:commit_message_to_memory；`NK4C-WORKLOG.md` §续-156~158（指纹的必要非充分：强制真实加载后读数仍不一致即内存真被改写，编译器层被排除——"同一数据两次读不一致"按单次求值合并、函数内埋点、强制真实加载三级递进，全过才归因内存层）；`STRUCTURAL-DEBT-REGISTER-20260930.md` §SD-31（逐陷阱点手工插屏障脆弱，汇编级整块内存提示更原则化，登记未决）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-WORKLOG.md` §1.120续-5（零长守卫）、§1.120续-6（排水黑洞）、§1.120续-7（回复腿语义分叉）；`notes/rewrite/fork-syscall-rewrite/trap-boundary-message-materialization.md` §4.2（三修的排水效应）；minix3/minix/kernel/arch/i386/memory.c:virtual_copy_f
++> 来源：`NK4C-WORKLOG.md` §1.120续-5（零长守卫）、§1.120续-6（排水黑洞）、§1.120续-7（回复腿语义分叉）；`rewrite-notes/coordination/trap-boundary-message-materialization.md` §4.2（三修的排水效应）；minix3/minix/kernel/arch/i386/memory.c:virtual_copy_f
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A.7（最高优先缺口集群）；`NK4C-WORKLOG.md` §1.120续-75（三件套落地与向量重锚新缺口）、§续-370/续-371/续-372/续-373（三连缺陷定谳与成修）；os/arch/src/riscv64/trap_return.rs:KERNEL_TRAP_STACK_BASE
++> 来源：`rewrite-notes/coordination/riscv-reviewlog.md` §A.7（最高优先缺口集群）；`NK4C-WORKLOG.md` §1.120续-75（三件套落地与向量重锚新缺口）、§续-370/续-371/续-372/续-373（三连缺陷定谳与成修）；os/arch/src/riscv64/trap_return.rs:KERNEL_TRAP_STACK_BASE
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A.6/§A.8；`NK4C-WORKLOG.md` §1.120续-76b（归一化纯函数与等值测试）；os/kernel/src/trap_dispatch.rs:riscv64_pf_error_code；os/arch/src/riscv64/exception.rs:is_write_fault
++> 来源：`rewrite-notes/coordination/riscv-reviewlog.md` §A.6/§A.8；`NK4C-WORKLOG.md` §1.120续-76b（归一化纯函数与等值测试）；os/kernel/src/trap_dispatch.rs:riscv64_pf_error_code；os/arch/src/riscv64/exception.rs:is_write_fault
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §D.10（管线建成、漏斗一个接头未插）；`NK4C-WORKLOG.md` §1.120续-45（清零腿落地与对目标无效的诚实记录）
++> 来源：`rewrite-notes/coordination/riscv-reviewlog.md` §D.10（管线建成、漏斗一个接头未插）；`NK4C-WORKLOG.md` §1.120续-45（清零腿落地与对目标无效的诚实记录）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §A.1/§A.3/§A.4
++> 来源：`rewrite-notes/coordination/riscv-reviewlog.md` §A.1/§A.3/§A.4
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/new_todo_HY4.md`（执行门偏离被测试固化的发现）；`new_todo_muse.md`（替身伪造模块清单的发现）；`new_todo_deepseek.md`（恒失败断言固化的发现）——三份独立诊断中两份以上命中同一机制
++> 来源：`rewrite-notes/coordination/new_todo_HY4.md`（执行门偏离被测试固化的发现）；`new_todo_muse.md`（替身伪造模块清单的发现）；`new_todo_deepseek.md`（恒失败断言固化的发现）——三份独立诊断中两份以上命中同一机制
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/edge_todo.md` 头部登记（系统调用符号冲突判例）；`.review/zcode/edge3/FIXLOG.md`「NS7」「NS7-A」两条；`.review/zcode/edge2/FIXLOG.md` 批A/批B 的如实登记段；`NK4C-WORKLOG.md` §1.120续-51（零信号架构的诚实标注）、§续-284（宿主离线对账处置序）
++> 来源：`rewrite-notes/coordination/edge_todo.md` 头部登记（系统调用符号冲突判例）；`.review/zcode/edge3/FIXLOG.md`「NS7」「NS7-A」两条；`.review/zcode/edge2/FIXLOG.md` 批A/批B 的如实登记段；`NK4C-WORKLOG.md` §1.120续-51（零信号架构的诚实标注）、§续-284（宿主离线对账处置序）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-REVIEW-REPORT-20260927-R3.md`（自审发现节）；`os/kernel/src/ipc.rs`；`NK4C-WORKLOG.md` §1.120续-73（过渡守卫登记）；`notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md` §5（真多核未还债与守卫移除条件）
++> 来源：`NK4C-REVIEW-REPORT-20260927-R3.md`（自审发现节）；`os/kernel/src/ipc.rs`；`NK4C-WORKLOG.md` §1.120续-73（过渡守卫登记）；`rewrite-notes/coordination/NK4C-MIGRATION-20260930.md` §5（真多核未还债与守卫移除条件）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`.review/trae/fork-syscall-rewrite/WORKFLOW-META-REVIEW.md` §四；`.review/trae/review-rules-meta/fix-status.md`（行号引用漂移修复条目）；`edge_todo.md`（过期前提复查行）；跨会话记忆 `doc-rerank-blueprint-verification-checklist.md`（见 6.3）；`NK4C-WORKLOG.md` §1.120续-69/续-74（过时指令核实与破除节）；`notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md` 头部（过时叙述破除）；`NK4C-WORKLOG.md` §续-279m/续-279l（继承来的补腿地图被全树检索零命中否决）、§续-280（转抄指纹回原日志核对：交接件把某寄存器值转抄成故障指针，两轮取证按错误锚点起步——引用指纹值逐字回原始串口核对并在交接件标注出处）；`NK4C-RETRO-AUDIT-20261001.md` §10 经验 1（锚点未命中先全树换路径重搜再判真伪，"路径直觉错"与"锚点造假"是两种结论）；跨会话记忆 `nk4c-t13-address-audit-state.md`（写进文档的行号一律由检索工具生成后粘贴、禁目测——复查轮实测漂移即目测行号的活教训；锚点以截断面提交为基准注明）；`riscv瞬态页表崩溃取证方法论.md` 附录（手册里"已核实"条目自身会过期，每条标核实手段，证据产物比文档新时先核对产物）；`NK4C-接续PROMPT-20261006r.md` §五（接手件纠偏要定谳回写：判据方向、锚点引错、注册面假陈述等错项在原配方处加作废标记加指向、在增量对照表逐处记录，不只在新会话内心里绕过——后来人照抄原文会双向错）
++> 来源：`.review/trae/fork-syscall-rewrite/WORKFLOW-META-REVIEW.md` §四；`.review/trae/review-rules-meta/fix-status.md`（行号引用漂移修复条目）；`edge_todo.md`（过期前提复查行）；跨会话记忆 `doc-rerank-blueprint-verification-checklist.md`（见 6.3）；`NK4C-WORKLOG.md` §1.120续-69/续-74（过时指令核实与破除节）；`rewrite-notes/coordination/NK4C-MIGRATION-20260930.md` 头部（过时叙述破除）；`NK4C-WORKLOG.md` §续-279m/续-279l（继承来的补腿地图被全树检索零命中否决）、§续-280（转抄指纹回原日志核对：交接件把某寄存器值转抄成故障指针，两轮取证按错误锚点起步——引用指纹值逐字回原始串口核对并在交接件标注出处）；`NK4C-RETRO-AUDIT-20261001.md` §10 经验 1（锚点未命中先全树换路径重搜再判真伪，"路径直觉错"与"锚点造假"是两种结论）；跨会话记忆 `nk4c-t13-address-audit-state.md`（写进文档的行号一律由检索工具生成后粘贴、禁目测——复查轮实测漂移即目测行号的活教训；锚点以截断面提交为基准注明）；`riscv瞬态页表崩溃取证方法论.md` 附录（手册里"已核实"条目自身会过期，每条标核实手段，证据产物比文档新时先核对产物）；`NK4C-接续PROMPT-20261006r.md` §五（接手件纠偏要定谳回写：判据方向、锚点引错、注册面假陈述等错项在原配方处加作废标记加指向、在增量对照表逐处记录，不只在新会话内心里绕过——后来人照抄原文会双向错）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §D.11 自审段（债⑩ fence.i 散点翻案的完整因果链：未锚定模式噪声 2960 行＋`head -8` 截断＋截断处未验证即下负结论）
++> 来源：`rewrite-notes/coordination/riscv-reviewlog.md` §D.11 自审段（债⑩ fence.i 散点翻案的完整因果链：未锚定模式噪声 2960 行＋`head -8` 截断＋截断处未验证即下负结论）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` §6/§9；`NK4C-WORKLOG.md` §1.120续-36/续-46（幽灵证伪与前提纠正）；`notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md` §3（启动器默认值）；`NK4C-REVIEW-REPORT-R33-20261005.md` §2.3/§五（奠基性证据必须钉构建来源：在制树的串口能证"跑起来过"、不能证"截断面可复现"——评审以干净检出重建重跑，读数冲突时预先写好两种结局各自的含义（真回归或彩票样本）再跑，避免事后归因）
++> 来源：`NK4C-AARCH64-EXEC-REBIND-LIVELOCK.md` §6/§9；`NK4C-WORKLOG.md` §1.120续-36/续-46（幽灵证伪与前提纠正）；`rewrite-notes/coordination/NK4C-MIGRATION-20260930.md` §3（启动器默认值）；`NK4C-REVIEW-REPORT-R33-20261005.md` §2.3/§五（奠基性证据必须钉构建来源：在制树的串口能证"跑起来过"、不能证"截断面可复现"——评审以干净检出重建重跑，读数冲突时预先写好两种结局各自的含义（真回归或彩票样本）再跑，避免事后归因）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md` §0/§3/§7；`NK4C-REVIEWER-SESSION-RECORD-20260930.md` §3/§4；跨会话记忆 `git-forensics-handoff-20260930.md`（见 6.3）；`NK4C-REVIEW-REPORT-R33-20261005.md` §2.3（关键原始证据强制入库、工作账本条目加"存证路径"字段与读数并列——原始证据只存临时目录时系统清理即断链，读数争议无法仲裁；存证文件时间戳早于提交时间可作声明真实性的机械证据）
++> 来源：`rewrite-notes/coordination/NK4C-MIGRATION-20260930.md` §0/§3/§7；`NK4C-REVIEWER-SESSION-RECORD-20260930.md` §3/§4；跨会话记忆 `git-forensics-handoff-20260930.md`（见 6.3）；`NK4C-REVIEW-REPORT-R33-20261005.md` §2.3（关键原始证据强制入库、工作账本条目加"存证路径"字段与读数并列——原始证据只存临时目录时系统清理即断链，读数争议无法仲裁；存证文件时间戳早于提交时间可作声明真实性的机械证据）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §0/§C 表汇总/§A.11；`NK4C-WORKLOG.md` §1.120续-77a（对账闭环实例）；§1.120续-89/续-90（延后缺口到达即精确路标：静态判于早期、登记附"消费点加先例锚点加到达条件"三要素，真机推进到该点直接镜像补齐一次通过）；§续-95（立"架构间语义差异"假设前先逐字比对两架构同名路径，读起来像不是证据——一步逐字比对即可证伪并诚实撤销）；§续-288/续-300（"某不变量是否被破坏"的审计武器：先枚举该写点的全部调用者再逐点核守卫，缺口即候选门；两轮复用坐实其通用性）
++> 来源：`rewrite-notes/coordination/riscv-reviewlog.md` §0/§C 表汇总/§A.11；`NK4C-WORKLOG.md` §1.120续-77a（对账闭环实例）；§1.120续-89/续-90（延后缺口到达即精确路标：静态判于早期、登记附"消费点加先例锚点加到达条件"三要素，真机推进到该点直接镜像补齐一次通过）；§续-95（立"架构间语义差异"假设前先逐字比对两架构同名路径，读起来像不是证据——一步逐字比对即可证伪并诚实撤销）；§续-288/续-300（"某不变量是否被破坏"的审计武器：先枚举该写点的全部调用者再逐点核守卫，缺口即候选门；两轮复用坐实其通用性）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §E（用户预裁决章）；`PATTERN-SCAN-REPORT-20260923.md` §10.2 条 35（C 源沉默处的自由选择强制标待决项入队并附影响面——某架构的调用状态寄存器选位是无权威背书的高价值决定，编译器版本变化即重掷骰子，不能以既成事实身份穿过所有评审）
++> 来源：`rewrite-notes/coordination/riscv-reviewlog.md` §E（用户预裁决章）；`PATTERN-SCAN-REPORT-20260923.md` §10.2 条 35（C 源沉默处的自由选择强制标待决项入队并附影响面——某架构的调用状态寄存器选位是无权威背书的高价值决定，编译器版本变化即重掷骰子，不能以既成事实身份穿过所有评审）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`NK4C-WORKLOG.md` §1.120续-51（注释断言证伪）；`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md` §D.12（设计论断依据被自家修复打破）；`NK4C-WORKLOG.md` §1.120续-29/续-66（设计行为误标与防御叙述修正）；§续-153（C 对位口口相传漂移：缺省臂语义被传成恐慌，引用 C 对位必须带行号锚定）
++> 来源：`NK4C-WORKLOG.md` §1.120续-51（注释断言证伪）；`rewrite-notes/coordination/riscv-reviewlog.md` §D.12（设计论断依据被自家修复打破）；`NK4C-WORKLOG.md` §1.120续-29/续-66（设计行为误标与防御叙述修正）；§续-153（C 对位口口相传漂移：缺省臂语义被传成恐慌，引用 C 对位必须带行号锚定）
+--- notes/rewrite/fork-syscall-rewrite/misc_concepts.md -> rewrite-notes/misc/misc_concepts.md [OTHER]
+-> 来源：`notes/rewrite/fork-syscall-rewrite/PENDING-DECISIONS-3ARCH-PARITY.md` §〇/§九/§十（组织方法与定稿约定）；跨会话记忆 `nk4c-glm-smp-handoff-20261006.md`
++> 来源：`rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md` §〇/§九/§十（组织方法与定稿约定）；跨会话记忆 `nk4c-glm-smp-handoff-20261006.md`
+--- notes/rewrite/fork-syscall-rewrite/new_edge1.md -> rewrite-notes/coordination/new_edge1.md [OTHER]
+-| NK3 | 三架构生产 trap 腿 + timer-irq 真机载体 | [edge_todo.md](edge_todo.md) E-3ARCHTRAP | riscv64 trap_vector 诊断桩（trap_entry.rs:66-78）→ 完整帧保存 + cause 分发 + 用户往返；arm64 下半 EL exc_bad_mode（:88-102）→ VBAR_EL1 全量 + SP_EL0 交换；arch 门面 install_trap_stubs/syscall_entry_va 实化（arch/lib.rs:262-263/:324-327）。配套 `test-timer-irq-{riscv64,aarch64}` 载体（notes/TODO.md L4/L5；CLINT/Generic Timer 驱动已写）。顺带修 lib.rs:247-255 过时注释（K9 已落 global_asm） | NK1 的载体经验可复用；彼此独立 | ✅ 2026-09-20（zcode_glm_1，5e588c8ca+35404d370+bd6a910cf+c1bb93c22）：riscv64 双腿 stvec（kernel 腿 S 起源建帧 / user 腿 sscratch 交换 + SP 保存；xv6 式 stvec 切换避开门脚 scratch 问题）+ SBI TIME ecall arm/re-arm；arm64 VBAR 全量 16 槽（下半 EL = SP_EL0 交换生产腿，current-EL = 中断栈建帧，class 经 x1 传 body）+ CNTP re-arm；内核四 dispatch body（timer 臂 / KERNEL_CALL 腿 / fault 诊断 panic 登记）+ irq_manager `dispatch_claimed` 拆分（GIC claim 即身份寄存器）；门面 syscall_entry_va/register_trap_dispatchers 实化 + 过时 S-8 注释改写；**真机首电修三 bug**（riscv64 S-mode PMP 写非法指令；GICR SGI/PPI 帧缺 +0x10000；GICR_IGROUPR0 未置 Group 1）。docker x86_64 787+237 全绿（基线零回归）+ 三架构 clippy 零新增；真机 PASS ×2：test-timer-irq-{riscv64,aarch64}（uptime 5 tick 全经生产 trap 腿）。遗留如实登记：异常分类（ExceptionDispatcher/页故障转发）三架构半 = E-3ARCHTRAP 解锁的下游波次；ACPI GICR 空洞见新登记 NK3-A；rt-birth 载体自供 trap 表退役 = 后续波 |
++| NK3 | 三架构生产 trap 腿 + timer-irq 真机载体 | [edge_todo.md](edge_todo.md) E-3ARCHTRAP | riscv64 trap_vector 诊断桩（trap_entry.rs:66-78）→ 完整帧保存 + cause 分发 + 用户往返；arm64 下半 EL exc_bad_mode（:88-102）→ VBAR_EL1 全量 + SP_EL0 交换；arch 门面 install_trap_stubs/syscall_entry_va 实化（arch/lib.rs:262-263/:324-327）。配套 `test-timer-irq-{riscv64,aarch64}` 载体（rewrite-notes/misc/legacy-notes-todo.md L4/L5；CLINT/Generic Timer 驱动已写）。顺带修 lib.rs:247-255 过时注释（K9 已落 global_asm） | NK1 的载体经验可复用；彼此独立 | ✅ 2026-09-20（zcode_glm_1，5e588c8ca+35404d370+bd6a910cf+c1bb93c22）：riscv64 双腿 stvec（kernel 腿 S 起源建帧 / user 腿 sscratch 交换 + SP 保存；xv6 式 stvec 切换避开门脚 scratch 问题）+ SBI TIME ecall arm/re-arm；arm64 VBAR 全量 16 槽（下半 EL = SP_EL0 交换生产腿，current-EL = 中断栈建帧，class 经 x1 传 body）+ CNTP re-arm；内核四 dispatch body（timer 臂 / KERNEL_CALL 腿 / fault 诊断 panic 登记）+ irq_manager `dispatch_claimed` 拆分（GIC claim 即身份寄存器）；门面 syscall_entry_va/register_trap_dispatchers 实化 + 过时 S-8 注释改写；**真机首电修三 bug**（riscv64 S-mode PMP 写非法指令；GICR SGI/PPI 帧缺 +0x10000；GICR_IGROUPR0 未置 Group 1）。docker x86_64 787+237 全绿（基线零回归）+ 三架构 clippy 零新增；真机 PASS ×2：test-timer-irq-{riscv64,aarch64}（uptime 5 tick 全经生产 trap 腿）。遗留如实登记：异常分类（ExceptionDispatcher/页故障转发）三架构半 = E-3ARCHTRAP 解锁的下游波次；ACPI GICR 空洞见新登记 NK3-A；rt-birth 载体自供 trap 表退役 = 后续波 |
+--- notes/rewrite/fork-syscall-rewrite/new_edge1.md -> rewrite-notes/coordination/new_edge1.md [OTHER]
+-| NK6 | X-7/X-8 + T5 内核残留（维持登记，不排期至 T5 波） | [edge_todo.md](edge_todo.md) 缺陷批 | X-7 未知 VMCTL 参数 ENOSYS vs C EINVAL（syscall.rs:2219，收敛或 [ARCH] 标注）；X-8 fork 父 FPU 卸载 no-op（proc.rs:1670）+ 非 BSP TSS sp0 占位（protection.rs:370）；riscv64 PMP entry0（notes/TODO.md） | T5 波 | 🚫→T5 |
++| NK6 | X-7/X-8 + T5 内核残留（维持登记，不排期至 T5 波） | [edge_todo.md](edge_todo.md) 缺陷批 | X-7 未知 VMCTL 参数 ENOSYS vs C EINVAL（syscall.rs:2219，收敛或 [ARCH] 标注）；X-8 fork 父 FPU 卸载 no-op（proc.rs:1670）+ 非 BSP TSS sp0 占位（protection.rs:370）；riscv64 PMP entry0（rewrite-notes/misc/legacy-notes-todo.md） | T5 波 | 🚫→T5 |
+--- notes/rewrite/fork-syscall-rewrite/new_edge1.md -> rewrite-notes/coordination/new_edge1.md [OTHER]
+-- notes/TODO.md 的 kernel 设计级清理 backlog（C-D-1~5）维持低优先登记。
++- rewrite-notes/misc/legacy-notes-todo.md 的 kernel 设计级清理 backlog（C-D-1~5）维持低优先登记。
+--- notes/rewrite/fork-syscall-rewrite/new_edge4.md -> rewrite-notes/coordination/new_edge4.md [OTHER]
+-| C-61 | 历史日志模式挖掘 → 回归检查（照规则 3 登记：tools/ 新增脚本） | `tools/pattern-gate.sh`（新增）+ `tools/pattern-gate-baseline.txt`（新增）+ `notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md`（新增）；**不修改任何既有脚本/`.rs`/os 构建面**（登记人/执行人：zcode-glm，claim/C-61-zcode-glm @ acac0ffb5；C-61 编号取自 §2 尾部 grep 实测空号） | 扫描 `.review/zcode/edge1-4` FIXLOG（含 archive/raw 底档）+ NK4A/NK4B WORKLOG + NK4A-REVIEW-REPORT/NK4-REGRESSION-REVIEW + new_edge1-4/edge_todo 账本教训，落 13 项机械检查（P1-P13：FIXLOG 完整性/防回归测试存在性清单/权威常量派生/os-tests [[test]] 对账/冒烟 marker↔emit 对账/CI 跨架构 build 门存在性/退出码吞没/CRLF/会话产物防线等；`--diff` 增量门 + baseline 存量豁免 + `--self-test` 判别矩阵）。本批不接 CI、不改 review-patterns 规则集（用户裁决）；run_all.sh 三处已知 `|| echo` 吞退出码进 baseline 待 P6 清理，不让新门出生即红。触碰前核验：`tools/claim.sh list` 无活跃 claim；三文件全为新增，与他线零 hunk 交集 | **✅ 2026-09-23 销账（zcode-glm，代码 3643c9331 / merge 1cfc59c4e）**：交付三件全为新增文件（pattern-gate.sh / baseline 21 keys / PATTERN-SCAN-REPORT 六族 34 模式目录）；验证=worktree 主树双态全绿（full PASS=10 FAIL=0、--diff PASS=12、selftest 18/18、真树变异 6 组注入全现形后复绿、doc-style-lint --diff 0 error、锚点逐条复位）；主树合并后终验 P1 首次真跑 4 份 FIXLOG 全健康。后续余量登记于 PATTERN-SCAN-REPORT §6（CI 接线、review-patterns 登记均用户裁决暂不做） |
++| C-61 | 历史日志模式挖掘 → 回归检查（照规则 3 登记：tools/ 新增脚本） | `tools/pattern-gate.sh`（新增）+ `tools/pattern-gate-baseline.txt`（新增）+ `rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md`（新增）；**不修改任何既有脚本/`.rs`/os 构建面**（登记人/执行人：zcode-glm，claim/C-61-zcode-glm @ acac0ffb5；C-61 编号取自 §2 尾部 grep 实测空号） | 扫描 `.review/zcode/edge1-4` FIXLOG（含 archive/raw 底档）+ NK4A/NK4B WORKLOG + NK4A-REVIEW-REPORT/NK4-REGRESSION-REVIEW + new_edge1-4/edge_todo 账本教训，落 13 项机械检查（P1-P13：FIXLOG 完整性/防回归测试存在性清单/权威常量派生/os-tests [[test]] 对账/冒烟 marker↔emit 对账/CI 跨架构 build 门存在性/退出码吞没/CRLF/会话产物防线等；`--diff` 增量门 + baseline 存量豁免 + `--self-test` 判别矩阵）。本批不接 CI、不改 review-patterns 规则集（用户裁决）；run_all.sh 三处已知 `|| echo` 吞退出码进 baseline 待 P6 清理，不让新门出生即红。触碰前核验：`tools/claim.sh list` 无活跃 claim；三文件全为新增，与他线零 hunk 交集 | **✅ 2026-09-23 销账（zcode-glm，代码 3643c9331 / merge 1cfc59c4e）**：交付三件全为新增文件（pattern-gate.sh / baseline 21 keys / PATTERN-SCAN-REPORT 六族 34 模式目录）；验证=worktree 主树双态全绿（full PASS=10 FAIL=0、--diff PASS=12、selftest 18/18、真树变异 6 组注入全现形后复绿、doc-style-lint --diff 0 error、锚点逐条复位）；主树合并后终验 P1 首次真跑 4 份 FIXLOG 全健康。后续余量登记于 PATTERN-SCAN-REPORT §6（CI 接线、review-patterns 登记均用户裁决暂不做） |
+--- notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md -> rewrite-notes/coordination/riscv-reviewlog.md [OTHER]
+-   `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md §D.2`。
++   `rewrite-notes/coordination/riscv-reviewlog.md §D.2`。
+--- notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md -> rewrite-notes/coordination/riscv-reviewlog.md [OTHER]
+-`notes/rewrite/fork-syscall-rewrite/misc_concepts.md`。
++`rewrite-notes/misc/misc_concepts.md`。
+--- notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md -> rewrite-notes/coordination/riscv瞬态页表崩溃取证方法论.md [OTHER]
+-缺陷 (A) 的现象（锚点：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 顶部、串口日志
++缺陷 (A) 的现象（锚点：`rewrite-notes/coordination/NK4C-WORKLOG.md` 顶部、串口日志
+--- notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md -> rewrite-notes/coordination/riscv瞬态页表崩溃取证方法论.md [OTHER]
+-- 症状与状态：`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（§续-216 到 §续-249）
++- 症状与状态：`rewrite-notes/coordination/NK4C-WORKLOG.md`（§续-216 到 §续-249）
+--- notes/rewrite/fork-syscall-rewrite/trap-boundary-message-materialization.md -> rewrite-notes/coordination/trap-boundary-message-materialization.md [OTHER]
+-`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（§1.119续-7 至 §1.120续-22）。
++`rewrite-notes/coordination/NK4C-WORKLOG.md`（§1.119续-7 至 §1.120续-22）。
+--- notes/rewrite/project-plan.md -> rewrite-notes/misc/project-plan.md [OTHER]
+-- `notes/rewrite/rewrite.md` - 重构设计思路
++- `rewrite-notes/misc/rewrite.md` - 重构设计思路
+--- notes/rewrite/project-plan.md -> rewrite-notes/misc/project-plan.md [OTHER]
+-- `notes/rewrite/rewrite-strategy.md` - 重写策略（语义冻结）
++- `rewrite-notes/misc/rewrite-strategy.md` - 重写策略（语义冻结）
+--- notes/rewrite/project-plan.md -> rewrite-notes/misc/project-plan.md [OTHER]
+-- `notes/rewrite/vertical-slice-strategy.md` - 纵向切片策略
++- `rewrite-notes/misc/vertical-slice-strategy.md` - 纵向切片策略
+--- notes/rewrite/project-structure.md -> rewrite-notes/misc/project-structure.md [OTHER]
+-- `notes/rewrite/rewrite.md` - 重构设计思路
++- `rewrite-notes/misc/rewrite.md` - 重构设计思路
+--- notes/rewrite/project-structure.md -> rewrite-notes/misc/project-structure.md [OTHER]
+-- `notes/rewrite/rewrite-strategy.md` - 重写策略（语义冻结）
++- `rewrite-notes/misc/rewrite-strategy.md` - 重写策略（语义冻结）

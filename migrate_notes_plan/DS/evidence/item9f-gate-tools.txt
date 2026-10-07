@@ -1,0 +1,24 @@
+=== 9.10 门控工具在新布局的真实调用（只读）===
+=== Review Gate Check ===
+tool=claude stage=08-stage-is doc-stem=00-is-overview agent=m3 strict=false
+
+[Gate H.1] design 快照:
+  ✅ design.md → rewrite-notes/08-stage-is/.design/00-design.v1.md
+
+[Gate H.6] outline 快照:
+  ✅ outline.md → rewrite-notes/08-stage-is/.design/00-outline.v1.md
+  ✅ outline-review.md → rewrite-notes/08-stage-is/.design/00-outline-review.v1.md
+
+[State 预检] STATE.md:
+  ❌ STATE.md MISSING → .review/claude/08-stage-is/STATE.md
+rc=141
+
+=== 9.11 覆盖率工具对树别名与 stage 的两种调用 ===
+| Missing design (H.1 FAIL) | 0 |
+
+✅ **ALL DOCS COMPLETE**: design + outline 快照齐全
+
+=== docker 进度 ===
+=== cargo check --workspace --tests -j 1 ===
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+

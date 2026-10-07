@@ -1,0 +1,100 @@
+=== line 3719 ===
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 14 tests
+....error: test failed, to rerun pass `-p minix-driver-rt --lib`
+
+Caused by:
+=== line 4109 ===
+running 6 tests
+......
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 149 tests
+.................................error: test failed, to rerun pass `-p minix-init --bin minix-init`
+
+Caused by:
+=== line 4145 ===
+
+
+running 129 tests
+acquire::kerninfo_transport_tests::test_kernel_kmess_transport_hosted_is_eio --- FAILED
+.......... 11/129
+acquire::tests::test_sys_acquires_kmessages_leg_is_live_not_fail_closed --- FAILED
+.error: test failed, to rerun pass `-p minix-is --lib`
+
+Caused by:
+=== line 4186 ===
+..................................................
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 176 tests
+....................................................................................... 87/176
+.....................................error: test failed, to rerun pass `-p minix-mib --lib`
+
+Caused by:
+=== line 4213 ===
+....................................................................................... 87/126
+.......................................
+test result: ok. 126 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+
+running 10 tests
+error: test failed, to rerun pass `-p minix-net-lwip --bin minix-net-lwip`
+
+Caused by:
+=== line 4312 ===
+
+running 354 tests
+....................................................................................... 87/354
+....................................................................................... 174/354
+....................................................................................... 261/354
+....................................................................................... 348/354
+.....error: test failed, to rerun pass `-p minix-rs --lib`
+
+Caused by:
+=== line 4323 ===
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 59 tests
+...............................................error: test failed, to rerun pass `-p minix-rt --lib`
+
+Caused by:
+=== line 4425 ===
+running 27 tests
+...........................
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 316 tests
+.......error: test failed, to rerun pass `-p minix-sys --lib`
+
+Caused by:
+=== line 4738 ===
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 538 tests
+....................................................................................... 87/538
+....................................................................................... 174/538
+.....................................error: test failed, to rerun pass `-p minix-vfs --lib`
+
+Caused by:
+=== line 4756 ===
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 539 tests
+....................................................................................... 87/539
+....................................................................................... 174/539
+..error: test failed, to rerun pass `-p minix-vm --lib`
+
+Caused by:

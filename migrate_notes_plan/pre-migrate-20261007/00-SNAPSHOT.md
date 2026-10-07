@@ -166,7 +166,7 @@ deepseek 计划里的 D14「615MB 大文件阻塞推送」议题在开窗当天�
 | `new_laptop_migrate/diseased-scan-20261007/commits.tsv` | 27192 | e0503c6b9c29 | 取证数据，冻结 |
 | `new_laptop_migrate/diseased-scan-20261007/paths.tsv` | 29996 | bc450e9032e3 | 同上 |
 | `new_laptop_migrate/diseased-scan-20261007/summary.json` | 35049 | 92f7ae146315 | 同上 |
-| `tools/atf-c-compat/probes/p7.c` | 1155 | b8da7f7b726 | 探针夹具，与迁移无关 |
+| `tools/atf-c-compat/probes/p7.c` | 1155 | b8da7f7b7276 | 探针夹具，与迁移无关 |
 | `tools/notes-link-check.py` | 8135 | e50a893a42b8 | **本次 Phase 0 新写的断链检查器**，为建立基线而生；会在 Phase 0 的入库提交里正式跟踪 |
 
 注：sha256 前 12 位一列中，带「—」的三项完整值在 `manifest.offtree.tsv` 里没有 sha256 列（该清单只记路径/字节数/mtime/git 状态），
@@ -244,19 +244,27 @@ suspect 清单的每行形如 `{doc路径}:{文档自身行号}: {代码路径}:
 所以处置方式是路径前缀机械替换 + 替换前后行数对账（874/6609 不变），不重生成
 ——重生成会连带改变锚定符号集，把尚未复核的 868 处历史债标记洗掉。这是用户裁决项。
 
-## 八、tar 快照（Git 盲区的唯一恢复源）
+## 八、tar 快照（notes 与 .review 两区 Git 盲区的唯一恢复源）
 
 ```
 位置        tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz
 体积        29583270 字节（磁盘上 29M；notes 树本身 1.3G，其中 1.2G 是压缩比极高的串口日志）
 sha256      39e68026187bc72fa9dd12672c0d0881bbda4146deb0ad7d9646ee98dcd86eb1
             （同目录留有 .sha256 文件）
-文件条目数  4183
+文件条目数  4183（数文件条目要 `tar -tzf … | grep -v '/$'`；直接 grep -c 会把目录条目一起数进去）
 覆盖        notes/ 全部 2428 个磁盘文件（含 1162 个 .design 快照、261 个 .log 含 615MB 的 serial_c9a.log、
             3 个 .bak、2 个 .backup、内嵌 .review 3 件）
             + 仓库根 .review/ 全部 1728 件
+            + 15 件未跟踪未忽略文件与 CLAUDE.md / AGENTS.md / README.md / opencode.json / .qoder/specs
+            + migrate_notes_plan/pre-migrate-20261007/ 六份清单与 tools/notes-link-check.py
+
+**卷外范围（措辞边界，审计修正）**：`manifest.offtree.tsv` 的 2530 件里有 784 件不在卷内——
+`tmp/` 409、`tools/` 308（多为 `__pycache__` 与 atf 构建产物）、`book/` 43、`os/` 22、
+`.claude/settings.local.json`、`.qoderignore`。这些都不是迁移对象，只有两件真不可再生：
+`.claude/settings.local.json`（历史授权命令，可重建）与 `tools/vendor/` 下的头文件。
+另：本清单只有路径/字节数/mtime/git态四列，**不含 sha256**，要核这些文件的内容只能靠本卷，
+而它们不在卷内——这是清单设计的天然局限，不是漏做。
             + migrate_notes_plan/pre-migrate-20261007/ 六份清单
-            + 15 件未跟踪文件与 CLAUDE.md / AGENTS.md / README.md / opencode.json / .qoder/specs
 完整性校验  tar -tzf 全卷可读通过（rc=0）；卷内 notes/ 条目 2428 与清单行数一致；
             .review/ 条目 1728 与磁盘计数一致
 恢复命令    tar -xzf tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz -C <目标目录>

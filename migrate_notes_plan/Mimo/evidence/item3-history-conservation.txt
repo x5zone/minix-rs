@@ -1,0 +1,48 @@
+### item3 改名历史与跟踪守恒
+
+== pre-tag commit ==
+bb8a90e05bb850f6230633fca6894aa48a0d524c
+bb8a90e05bb850f6230633fca6894aa48a0d524c 2026-10-07 16:28:21 +0800 chore(git-line): os 构建产物 145 件退跟踪（os/target_smp 122 + os/tmp 23，72e067dde 续-311 旁路回滚时误扫入）——磁盘保留，/os/target_smp/ 与 /os/tmp/ ignore 规则防复发
+
+== post-tag commit ==
+964e3e28e30c47950f03762f18dab622ad81d828
+
+== git log --follow 16-smp.md ==
+e90e4173d refactor(notes): 结构迁移——notes 三区搬到仓库根，剥除 fork-syscall-rewrite 包装层（纯移动，零内容改动）
+ad7a294c0 docs(01-stage): edge1 K16b——06-proc-init-boot-proc.md 瘦身 2030→1375 行（5 点处方落地，零知识损失）
+03e6bed78 docs(rules): prompt 改进计划第一批落地——D5 符号锚点迁移+H/A/B/D2 批
+7d8bb8fa1 docs(rs): I-14 B 层修复——09/16 前置声明对齐 kmain 实时序，三项核销确认
+2cc9c7e3f fix(smp): S-3c 三处固件 ABI 真 bug 修复 + 两架构 AP early stub 骨架
+
+== follow deep: 迁移前历史是否还能读到 ==
+76f5ff46c 01-stage-kernel: 16-smp 深度 full-review — 6 P1 + 5 P2 全修复（marathon round 16）
+97df4e58d 01-stage-kernel: todo.md 全部清空 + qemu-tests 编译修复 (2026-08-14)
+e1d2c4977 fork-syscall-rewrite: 按服务启动顺序重排 stage 目录 + master-plan README
+
+== 纯移动 commit shortstat ==
+
+ 1102 files changed, 0 insertions(+), 0 deletions(-)
+
+== 改名条目数(=>) ==
+177
+
+== 当前三棵树跟踪数 ==
+1105
+== pre-tag 下 notes 跟踪数 ==
+1102
+
+== pre..HEAD name-status 分布（三棵树+notes） ==
+      5 A
+      2 D
+   1100 R
+
+== 其中 D(删除) 明细 ==
+D	notes/rewrite/README.md
+D	notes/rewrite/fork-syscall-rewrite/edge3.md
+
+== A(新增) 明细 ==
+A	redesign-notes/vm/README.md
+A	rewrite-notes/MIGRATION.md
+A	rewrite-notes/README.md
+A	rewrite-notes/coordination/edge3.md
+A	study-notes/README.md

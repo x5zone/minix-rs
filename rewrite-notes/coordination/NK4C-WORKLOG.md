@@ -14145,3 +14145,45 @@ _start 选举格（BOOT_HART_ELECTED 存 hartid+1，与「未选 0」可区分�
 ## §续-439 终收口：本会话十二笔（§续-428..439）全数入库，P-ALL-08 语义面 T1-T7 无未动笔项，收口四动作复验
 
 ①收口四动作：qemu 按 `ps -eo comm` 计 0；跟踪面改动仅剩台账 TODO-3ARCH-PARITY-20261006.md（用户在制段落＋本线进度行/P-ALL-12 行，随用户批次入库）；HEAD＝本笔；临时 worktree 全卸。②台账 P-ALL-08 落地进度行补一笔执行记录（编辑不提交）：「§续-435..439 八站出生臂迁编排面（vm 异步特例保留），段一清过滤往返三架构真机激活」。③本会话十二笔总账：§续-428（062e3fd51，PD-27 逃生门）→ §续-429（4c0331ce4，PD-26 证伪改接线）→ §续-430（701e4913f，PD-25）→ §续-431（65f19258e，PD-34 丙＋甲＋mib）→ §续-433（42beace7e，PD-20 P-ALL-12 收口）→ §续-434（f816035fe，第一次收口）→ §续-435（d623591aa，一组）→ §续-436（20a1f8907，二组）→ §续-437（9450d2266，三组）→ 本笔（T7 锚统一＋终收口）。每笔一次提交＋一次回归评审＋一节 WORKLOG；真机门累计二十一门次全绿（每笔生产语义提交三把）。④完成判据对照（对交接件 §6 队列与冻结决议逐项）：T2 全站收口 ✓；T3 编排面落地＋八站迁移 ✓（vm 特例登记）；T4/T5/T7/T1/T6 ✓；PD-20/24/25/26/27/34 执行或登记 ✓；P-ALL-12 ✓。开放集全部为跨线项（SigSet 拓宽／PM 批次 H／RS sigmgr／RS boot 腿裁决面／PD-24 哨兵）或显式登记项，均有台账与 WORKLOG 锚，不属于本线未竟。⑤下会话若继续：优先级建议＝PM 批次 H（asynsend3 重试表，信号链端到端通电的最后一大块）→ RS sigmgr 拉取环 → 内核 SigSet 拓宽（E6，解锁 71..=74 真号生产）→ RS boot 收信腿裁决面；每步仍按一小步一提交一评审纪律。
+
+---
+
+## §待办登记 T-STAB-1：全量测试在工作区构建下确定性失败 11 个目标（notes 目录迁移的审计副产，与迁移无因果）
+
+①登记缘由：notes 目录迁移的验收门 M6 要比对测试面。四家独立审计（DS／GLM／MiMo／Muse）与本方
+各自复跑后结论一致——这组现象既不是抖动，也不是迁移引入的，值得单独立项。本条只登记事实与复现路径，不改代码。
+
+②现象（本方在当前 HEAD 上自取的数，宿主与容器同一集合）：
+`cargo test --workspace -j 1 --no-fail-fast` 得 4586 个用例通过、11 个测试目标失败，其中
+10 个测试进程异常退出（signal 11，SIGSEGV），1 条断言失败。
+
+- 崩溃目标：`minix-driver-rt`、`minix_init`、`minix_is`、`minix_mib`、`minix_net-lwip`（bin 形态）、
+  `minix_rs`、`minix-rt`、`minix-sys`、`minix_vfs`、`minix_vm`
+- 断言失败：`minix-ds` 的 `test_sys_kernel_hosted_reports_eio`
+  （`os/servers/ds/src/server.rs:1002`，期望 `Err(EIO)`，实得 `Err(38)` 即 `ENOSYS`）
+
+③三条对照（都是可复跑命令，用来把「与迁移无关」从推断变成实测）：
+
+- 逐个单跑全绿：`cargo test -p minix-sys --lib` 316/0、`-p minix-rt --lib` 59/0、
+  `-p minix-driver-rt --lib` 14/0、`-p minix-ds --lib` 113/0（其余七个单跑也绿，审计方各自跑过）。
+- 工作区构建与单包构建产出**两个不同的测试二进制**：工作区那个直接运行 10 次全崩（退出码 139），
+  单包那个连续多轮通过。差异来自 cargo 的特性统一（feature unification）——
+  同一个 crate 在工作区里被并入了别的 crate 启用的特性臂，实现随特性而换。
+- 迁移前对照：把 `notes/pre-migrate-20261007` 的受控源码导出到 /tmp 独立目录，
+  用同一条容器命令跑，失败目标**逐条相同**（GLM 与 MiMo 各做一次；本方 `os/` 的差异只有注释行，
+  逐行核验记在 `migrate_notes_plan/EXECUTION-LOG.md` 的门 M6 一节）。
+
+④待查方向（本条不动手，交下一棒）：
+
+- 甲（断言面，最小一步）：hosted 构建里 `SysKernel` 三个方法回 `ENOSYS` 而测试钉 `EIO`。
+  先定性质——是诚实回值漂移了，还是测试期望跟着 E1 通电前的约定过时了；
+  读 `minix-sys` 的 hosted 臂与 `server.rs:994-1005` 的注释即可定案，顺带把 `minix_is` 的两处 hosted 断言一并核。
+- 乙（崩溃面，先定性再定位）：十个二进制共用同一种崩溃形状，而这些测试都跑在 std 下，
+  优先怀疑构造期问题而非各 crate 各自的越界。取一个二进制带 `RUST_BACKTRACE=1` 单跑
+  （`minix_driver_rt` 里崩在 `kernel::kernel_transport_tests::test_asynsend_accumulates_without_flush`，
+  `os/libs/minix-driver-rt/src/kernel.rs:167`），再看其余九个是否同一栈帧：
+  同一栈帧＝共享的初始化/静态表在特性统一下的尺寸分歧；不同栈帧＝逐 crate 各自的越界，工作量大得多。
+- 丙（门形）：`cargo test --workspace` 默认 fail-fast，会在第一个崩溃处停下，掩盖后面十个；
+  若要把全量测试当门，先固定 `--no-fail-fast` 加已知失败白名单，否则新崩溃会被旧噪声吃掉。
+
+⑤验证：本笔是纯文档登记，零生产语义、零测试改动，按配方免跑真机门（可观察行为不存在变化面）。

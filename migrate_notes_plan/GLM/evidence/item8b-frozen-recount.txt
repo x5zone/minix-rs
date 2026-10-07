@@ -1,0 +1,32 @@
+## item8b 用基线同口径（4 模式含裸名）重数冻结域命中
+  .qoder/: 6 处
+  AI-chats/: 10 处
+  tmp/: 111239 处
+  new_laptop_migrate/: 71 处
+  .review/: 86907 处
+  migrate_notes_plan/: 18895 处
+  （基线 refs.before.counts.tsv 的对应行见下）
+
+## refs.before.counts.tsv 各域基线值
+path	notes/rewrite	fork-syscall-rewrite	notes/study	notes/redesign	total
+.qoder/specs/NK4C信号双形态落地_task-fc7.md	3	3	0	0	6
+.review/03-kmain-cstart/SYMBOLS.md	1	1	0	0	2
+.review/03-stage-kernel/03-kmain-cstart/SYMBOLS.md	1	1	0	0	2
+.review/03-stage-kernel/03-kmain-cstart/scan.md	4	3	0	0	7
+.review/03-stage-kernel/03-kmain-cstart/structure.md	3	3	0	0	6
+.review/03-stage-kernel/STATE.md	5	5	0	0	10
+.review/03-stage-kernel/STATE.md.claude-bak-20260617	5	5	0	0	10
+.review/03-stage-kernel/SYMBOLS-07.md	1	1	0	0	2
+.review/03-stage-kernel/SYMBOLS.md	1	1	0	0	2
+.review/03-stage-kernel/claude-review-m3-2026-06-19.md	2	2	0	0	4
+.review/04-clock-interrupt-init/SYMBOLS.md	1	1	0	0	2
+
+## .qoder/specs 与 new_laptop_migrate 的 tar↔磁盘哈希比对（冻结域内容强验证）
+冻结域比对（.qoder+new_laptop_migrate）: 相同 15 / 不同 0 / 缺失 0（期望 15/0/0）
+
+## settings.local.json 是否被迁移提交改动过
+0
+（该文件未被跟踪）
+
+## tags 是否已推远端（ls-remote，网络失败则标注 UNVERIFIED）
+远端无 notes/* tag（或网络不可达：见原始输出）

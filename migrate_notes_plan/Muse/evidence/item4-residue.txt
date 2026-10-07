@@ -1,0 +1,3 @@
+files_with_hits: 2 total_hit_lines: 61
+  40  .claude/settings.local.json
+  21  rewrite-notes/MIGRATION.md

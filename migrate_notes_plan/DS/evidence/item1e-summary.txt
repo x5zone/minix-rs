@@ -1,0 +1,7 @@
+残差文件 153：前缀替换 396 行 / 链接重定基 109 行 / 结构性 143 行
+结构性编辑最多的 25 个文件：
+     133  rewrite-notes/README.md
+       7  redesign-notes/README.md
+       1  rewrite-notes/00-master-plan/README.md
+       1  rewrite-notes/coordination/new_edge4.md
+       1  rewrite-notes/misc/project-plan.md

@@ -1,0 +1,20 @@
+== before.txt 头部 ==
+# notes-link-check 报告
+# 扫描 md 文件数：2228    断链数：452
+# 格式：相对文件路径:行号<TAB>原始目标<TAB>按文件目录解析<TAB>按仓库根解析
+
+
+== after.txt 中不在三棵树内的条目（即额外扫描域） ==
+     12 .trae
+      2 migrate_notes_plan
+     13 prompt
+小计: 27
+
+== 现状新增断链（after 全集 vs 现状三棵树，按 file:line+target） ==
+新增 = 0
+
+== 限定三棵树后的对比 ==
+after(三棵树) unique: 372
+now(三棵树) unique:    372
+新增: 0
+消失: 0

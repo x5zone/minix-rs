@@ -1,0 +1,2 @@
+SELF-TEST PASS（dry-run 4 候选 + 4 不可解析；写模式替换正确、fenced 未动、边界字符保真）
+rc=0

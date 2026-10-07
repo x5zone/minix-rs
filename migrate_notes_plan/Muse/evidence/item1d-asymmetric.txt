@@ -1,0 +1,5 @@
+12	5	redesign-notes/README.md
+10	0	redesign-notes/vm/README.md
+125	0	rewrite-notes/MIGRATION.md
+69	96	rewrite-notes/README.md
+24	0	study-notes/README.md

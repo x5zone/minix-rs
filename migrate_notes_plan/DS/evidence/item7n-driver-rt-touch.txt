@@ -1,0 +1,6 @@
+=== 迁移是否碰过 minix-driver-rt 自身 ===
+（空=未碰）
+0
+
+=== 项目文档里是否已知此测试问题 ===
+os/libs/minix-driver-rt/src/kernel.rs:167:    fn test_asynsend_accumulates_without_flush() {

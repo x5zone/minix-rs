@@ -1,0 +1,20 @@
+=== 第二遍的失败标记 ===
+3719:....error: test failed, to rerun pass `-p minix-driver-rt --lib`
+3722:  process didn't exit successfully: `/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rt-95f9e6d027df3b0f --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+
+=== 第一遍的失败标记 ===
+3719:....error: test failed, to rerun pass `-p minix-driver-rt --lib`
+3722:  process didn't exit successfully: `/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rt-95f9e6d027df3b0f --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+
+=== 第二遍用例合计 ===
+876
+
+=== 第二遍尾部 ===
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 14 tests
+....error: test failed, to rerun pass `-p minix-driver-rt --lib`
+
+Caused by:
+  process didn't exit successfully: `/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rt-95f9e6d027df3b0f --quiet` (signal: 11, SIGSEGV: invalid memory reference)

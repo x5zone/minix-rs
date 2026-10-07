@@ -1,0 +1,28 @@
+我 98 行，迁移方清单 73 行
+我有他们没有：25 行
+   + .claude/rules/review-process.md:72
+   + .claude/settings.local.json:35
+   + .claude/settings.local.json:36
+   + .claude/settings.local.json:90
+   + .claude/skills/review-scan/checks/process.md:71
+   + .codex/skills/review-coverage-skill/SKILL.md:92
+   + .codex/skills/review-process-skill/SKILL.md:271
+   + .codex/skills/review-scan/checks/process.md:70
+   + .trae/skills/review-coverage-skill/SKILL.md:92
+   + .trae/skills/review-process-skill/SKILL.md:271
+   + CLAUDE.md:307
+   + prompt/README.md:368
+   + prompt/README.md:446
+   + prompt/README.md:452
+   + prompt/review-rules/review-process.md:403
+   + prompt/skill/review-coverage-skill.md:92
+   + prompt/skill/review-process-skill.md:271
+   + prompt/todo_plan.md:617
+   + prompt/todo_plan.md:826
+   + rewrite-notes/MIGRATION.md:10
+   + rewrite-notes/MIGRATION.md:72
+   + tools/design-coverage-check.sh:4
+   + tools/design-coverage-check.sh:71
+   + tools/notes-layout.conf:11
+   + tools/review-gate-check.sh:146
+他们有我没有：0 行

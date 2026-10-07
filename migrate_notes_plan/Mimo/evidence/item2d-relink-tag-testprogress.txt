@@ -1,0 +1,37 @@
+== relink 报告行数（执行日志称 138 处） ==
+525 tmp/pre-migrate-snapshot-20261007/relink-report.tsv
+# 重定基清单（旧文本目标 → 新相对目标）
+REWRITE	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../../../minix3/minix/servers/vm/utility.c	../../minix3/minix/servers/vm/utility.c
+
+== annotated tag 元数据 ==
+tag notes/pre-migrate-20261007
+Tagger: xzhao <zx5zone@gmail.com>
+
+notes 目录迁移前基线（旧布局 fork-syscall-rewrite 的最后状态）
+
+- 布局：notes/{rewrite,study,redesign}，规范路径 notes/rewrite/fork-syscall-rewrite/{stage}/{doc}.md
+- 基线 HEAD：bb8a90e05bb850f6230633fca6894aa48a0d524c（rewrite 分支）
+- 覆盖范围：仅 git 已跟踪内容（notes 1102 件）
+- 不覆盖：被 .gitignore 忽略的 notes/.design 1162 件、notes 内 *.log 证据 155 件、.bak 3 件、
+  内嵌 .review 3 件、notes/redesign/*.backup 2 件，以及 15 件未跟踪未忽略文件
+  —— 上述内容全部收录于配套清单与 tar 快照，见 migrate_notes_plan/pre-migrate-20261007/
+  与 tmp/pre-migrate-snapshot-20261007/
+- 迁移方案源：migrate_notes_plan/migrate_*.md（6 份）
+- 对读方法：git diff notes/pre-migrate-20261007..notes/post-migrate-<date> --stat
+tagger=%(taggername) date=%(taggerdate:iso) subject=%(subject)
+
+== cargo test 进度 ==
+n 0.00s
+
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 14 tests
+....error: test failed, to rerun pass `-p minix-driver-rt --lib`
+
+Caused by:
+  process didn't exit successfully: `/home/xzhao/github/minix-rs/os/target/debug/deps/minix_driver_rt-95f9e6d027df3b0f --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+rc=101

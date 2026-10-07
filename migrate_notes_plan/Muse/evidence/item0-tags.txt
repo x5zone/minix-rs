@@ -1,0 +1,35 @@
+notes/post-migrate-20261007 964e3e28e 8c2b90438
+notes/pre-migrate-20261007 bb8a90e05 6a8f6ade6
+tag notes/pre-migrate-20261007
+Tagger: xzhao <zx5zone@gmail.com>
+
+notes 目录迁移前基线（旧布局 fork-syscall-rewrite 的最后状态）
+
+- 布局：notes/{rewrite,study,redesign}，规范路径 notes/rewrite/fork-syscall-rewrite/{stage}/{doc}.md
+- 基线 HEAD：bb8a90e05bb850f6230633fca6894aa48a0d524c（rewrite 分支）
+- 覆盖范围：仅 git 已跟踪内容（notes 1102 件）
+- 不覆盖：被 .gitignore 忽略的 notes/.design 1162 件、notes 内 *.log 证据 155 件、.bak 3 件、
+  内嵌 .review 3 件、notes/redesign/*.backup 2 件，以及 15 件未跟踪未忽略文件
+  —— 上述内容全部收录于配套清单与 tar 快照，见 migrate_notes_plan/pre-migrate-20261007/
+  与 tmp/pre-migrate-snapshot-20261007/
+- 迁移方案源：migrate_notes_plan/migrate_*.md（6 份）
+- 对读方法：git diff notes/pre-migrate-20261007..notes/post-migrate-<date> --stat
+bb8a90e05bb850f6230633fca6894aa48a0d524c chore(git-line): os 构建产物 145 件退跟踪（os/target_smp 122 + os/tmp 23，72e067dde 续-311 旁路回滚时误扫入）——磁盘保留，/os/target_smp/ 与 /os/tmp/ ignore 规则防复发 xzhao Wed Oct 7 16:28:21 2026 +0800
+tag notes/post-migrate-20261007
+Tagger: xzhao <zx5zone@gmail.com>
+
+notes 目录迁移完成后的第一个状态
+
+- 新布局：rewrite-notes/、redesign-notes/、study-notes/ 与 book/ 并列在仓库根
+  规范路径两节：{tree}/{stage}/{doc}.md（例 rewrite-notes/01-stage-kernel/16-smp.md）
+- 布局与工具契约：rewrite-notes/MIGRATION.md；唯一路径真源 tools/notes-layout.conf
+- 全量旧→新映射：migrate_notes_plan/pre-migrate-20261007/path-map.tsv（2428 条）
+- 迁移前基线：annotated tag notes/pre-migrate-20261007（指向 bb8a90e05）
+- 对读方法：
+    git diff --stat notes/pre-migrate-20261007..notes/post-migrate-20261007 | tail
+    git show --stat -M e90e4173d            # 纯移动提交（1102 files, 0 insertions, 0 deletions）
+- 审计材料：migrate_notes_plan/{EXECUTION-LOG.md,REVIEW-PROMPT.md,pre-migrate-20261007/}
+- 门禁结果：migrate_notes_plan/pre-migrate-20261007/02-VERIFY.md（八道门逐条取证）
+- 本 tag 曾先打在 3ac2e12de，因发现 tools/notes-layout.conf 漏入库（新文件未被 git add -u 带上）
+  而重打到当前提交；漏项与补交过程记在执行日志收口节
+964e3e28e30c47950f03762f18dab622ad81d828 fix(tools,migrate): 补提交 notes-layout.conf——Phase 4 漏入库的唯一路径真源 xzhao Wed Oct 7 18:33:12 2026 +0800

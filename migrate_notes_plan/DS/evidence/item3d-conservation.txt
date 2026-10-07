@@ -1,0 +1,15 @@
+=== 3h 预迁移时 .log/.out 跟踪数 vs 现在 ===
+pre-tag notes 树 .log 跟踪数: 106
+现在三棵树 .log 跟踪数: 106
+pre-tag notes 树 .out 跟踪数: 2
+现在三棵树 .out 跟踪数: 2
+
+=== 3i 三棵树当前的磁盘构成 ===
+磁盘文件: 2428
+已跟踪: 1105
+被忽略: 1322
+未跟踪未忽略: 1
+
+=== 3j edge3.md 的行数（解释相似度 27%）===
+118 rewrite-notes/coordination/edge3.md
+118

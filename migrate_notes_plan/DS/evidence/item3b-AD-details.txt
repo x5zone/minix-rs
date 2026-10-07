@@ -1,0 +1,20 @@
+=== A/D 明细 ===
+D	notes/rewrite/README.md
+D	notes/rewrite/fork-syscall-rewrite/edge3.md
+A	redesign-notes/vm/README.md
+A	rewrite-notes/MIGRATION.md
+A	rewrite-notes/README.md
+A	rewrite-notes/coordination/edge3.md
+A	study-notes/README.md
+
+=== 检查 D 的两个文件在 path-map 中的去向 ===
+--- notes/rewrite/README.md
+notes/rewrite/README.md	rewrite-notes/README.md	git-mv	R10
+--- notes/rewrite/fork-syscall-rewrite/edge3.md
+notes/rewrite/fork-syscall-rewrite/edge3.md	rewrite-notes/coordination/edge3.md	git-mv	R7
+
+=== notes/README.md 与 notes/TODO.md 的新位置在不在（内容是否被重写到失去相似度）===
+e90e4173d refactor(notes): 结构迁移——notes 三区搬到仓库根，剥除 fork-syscall-rewrite 包装层（纯移动，零内容改动）
+-rw-r--r-- 1 xzhao xzhao 28 May  7 22:20 rewrite-notes/misc/legacy-notes-root-readme.md
+e90e4173d refactor(notes): 结构迁移——notes 三区搬到仓库根，剥除 fork-syscall-rewrite 包装层（纯移动，零内容改动）
+-rw-r--r-- 1 xzhao xzhao 7521 Sep  6 23:08 rewrite-notes/misc/legacy-notes-todo.md

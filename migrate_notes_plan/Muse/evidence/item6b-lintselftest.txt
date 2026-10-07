@@ -1,0 +1,2 @@
+SELF-TEST PASS（组1 全类命中；组2 零误报；组3 合法历史默认零命中、--strict 命中 SL-5b）
+rc=0

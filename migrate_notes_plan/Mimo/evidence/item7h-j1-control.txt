@@ -1,0 +1,18 @@
+== -j1 控制实验结果 ==
+rc: rc=101
+running: 425
+FAILED result 行: 1
+....error: test failed, to rerun pass `-p minix-driver-rt --lib`
+error: test failed, to rerun pass `-p minix-ds --lib`
+.................................error: test failed, to rerun pass `-p minix-init --bin minix-init`
+.error: test failed, to rerun pass `-p minix-is --lib`
+.....................................error: test failed, to rerun pass `-p minix-mib --lib`
+error: test failed, to rerun pass `-p minix-net-lwip --bin minix-net-lwip`
+.....error: test failed, to rerun pass `-p minix-rs --lib`
+...............................................error: test failed, to rerun pass `-p minix-rt --lib`
+.......error: test failed, to rerun pass `-p minix-sys --lib`
+.....................................error: test failed, to rerun pass `-p minix-vfs --lib`
+..error: test failed, to rerun pass `-p minix-vm --lib`
+
+== 与默认并行版的失败集合对比 ==
+两次失败集合完全一致

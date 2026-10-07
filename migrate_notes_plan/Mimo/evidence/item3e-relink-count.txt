@@ -1,0 +1,17 @@
+== relink-report 按类型计数 ==
+      1 # 迁移前就指向不存在文件的链接（按裁决不顺手修）
+    503 DANGLING
+     20 REWRITE
+
+== 执行日志里 138 的出处 ==
+292:两轮合计 138 处重定基，典型形态：
+524:| Phase 3 | `c2ef81f79` | 必改域旧路径归零；相对链接重定基 138 处；新断链 0 |
+
+== relink.py 口径 ==
+56:    print(f"候选文件：{len(files)}")
+113:                print(f"❌ 行数变化：{f}", file=sys.stderr)
+117:    print(f"{'[dry-run] ' if not APPLY else ''}需重定基 {len(rewritten)} 处，已正确 {already_ok} 处，迁移前即悬空 {len(unresolved)} 处（不动）")
+118:    with open(ROOT / "tmp/pre-migrate-snapshot-20261007/relink-report.tsv", "w", encoding="utf-8") as fh:
+121:            fh.write(f"REWRITE\t{p}\t{o}\t{n}\n")
+126:        print(f"  {p}\n      {o}  →  {n}")
+127:    print(f"报告：tmp/pre-migrate-snapshot-20261007/relink-report.tsv")

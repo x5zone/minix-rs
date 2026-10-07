@@ -1,0 +1,144 @@
+文件	旧行	新行
+redesign-notes/README.md		
+redesign-notes/README.md		> **创建**: 2026-10-07 建档。本区是「重写定稿后才启用」的探索区。当前内容全是从旧目录
+redesign-notes/README.md		> 重写树里的再设计子目录与旧的 notes 伞目录再设计分区原样迁过来的存量思考，**包含互相冲突的多个方案，
+redesign-notes/README.md		> 未经评审收敛，不能当实现依据**。正在推进的重写事实以 `rewrite-notes/` 为准。
+redesign-notes/README.md		> 目录按主题分组：`architecture/`（架构级改进与跨层、一致性类探索）、`ipc/`（Endpoint 与 IPC 协议）、
+redesign-notes/README.md		> `fork/`（fork 语义），`vm/` 为服务是否内嵌内核地址空间这一开放问题预留。
+redesign-notes/README.md		> 开启新的探索方向时在此新建子目录，并先把同主题的已有分析收敛一遍，避免同一问题多稿并存。
+rewrite-notes/README.md	# Minix-RS 重构文档索引	# rewrite-notes — 重写文档区
+rewrite-notes/README.md	本目录包含 Minix3 到 Rust 重构的完整设计文档，按主题分类整理。	
+rewrite-notes/README.md		> **创建**: 2026-10-07（目录迁移当天）。本目录曾位于 notes 伞目录下、并比现在多一层已废弃的模块层目录名；
+rewrite-notes/README.md		> 逐条路径对照与工具参数变更见 [MIGRATION.md](MIGRATION.md)。
+rewrite-notes/README.md	---	
+rewrite-notes/README.md		这里存放 Minix3 各模块用 Rust 重写的正式设计文档：一份 C 源概念对应一篇文档，
+rewrite-notes/README.md		按服务的启动执行顺序编号成 20 个阶段目录。每篇文档都有配套的评审流水线、
+rewrite-notes/README.md		符号锚点校验与覆盖率穷举，是本仓库的一等交付物（不是草稿）。
+rewrite-notes/README.md	## 快速导航	## 阶段目录一览
+rewrite-notes/README.md	### 🎯 项目规划（必读）	
+rewrite-notes/README.md		编号就是阅读顺序，也是系统真实的启动因果顺序。权威说明（每个服务为什么排在这个位置、
+rewrite-notes/README.md		谁把它的映像装进内存）在 [00-master-plan/README.md](00-master-plan/README.md)。
+rewrite-notes/README.md	| 文档 | 说明 | 关键内容 |	
+rewrite-notes/README.md	|------|------|----------|	
+rewrite-notes/README.md	| [project-plan.md](project-plan.md) | **项目完整规划** | 目录结构、crate命名、实施路线图、纵向切片策略 |	
+rewrite-notes/README.md	| [vertical-slice-strategy.md](vertical-slice-strategy.md) | 纵向切片策略详解 | 为什么按模块重写会失败、切片实施路径 |	
+rewrite-notes/README.md	| [rewrite-strategy.md](rewrite-strategy.md) | 重写策略：语义冻结 | 两阶段方法、语义等价验证、冻结清单 |	
+rewrite-notes/README.md		| 编号 | 目录 | 对应服务 | 正式文档数 |
+rewrite-notes/README.md		|---|---|---|---|
+rewrite-notes/README.md		| 00 | [00-master-plan/](00-master-plan/) | — 顶层规划与决策记录 | 15 |
+rewrite-notes/README.md		| 01 | [01-stage-kernel/](01-stage-kernel/) | Kernel | 38 |
+rewrite-notes/README.md		| 02 | [02-stage-vm/](02-stage-vm/) | VM | 28 |
+rewrite-notes/README.md		| 03 | [03-stage-rs/](03-stage-rs/) | RS | 22 |
+rewrite-notes/README.md		| 04 | [04-stage-pm/](04-stage-pm/) | PM | 22 |
+rewrite-notes/README.md		| 05 | [05-stage-vfs/](05-stage-vfs/) | VFS | 33 |
+rewrite-notes/README.md		| 06 | [06-stage-sched/](06-stage-sched/) | SCHED | 16 |
+rewrite-notes/README.md		| 07 | [07-stage-ds/](07-stage-ds/) | DS | 14 |
+rewrite-notes/README.md		| 08 | [08-stage-is/](08-stage-is/) | IS | 12 |
+rewrite-notes/README.md		| 09 | [09-stage-init/](09-stage-init/) | INIT | 16 |
+rewrite-notes/README.md		| 10 | [10-stage-mib/](10-stage-mib/) | MIB | 24 |
+rewrite-notes/README.md		| 11 | [11-stage-devman/](11-stage-devman/) | DEVMAN | 15 |
+rewrite-notes/README.md		| 12 | [12-stage-input/](12-stage-input/) | INPUT | 16 |
+rewrite-notes/README.md		| 13 | [13-stage-ipc/](13-stage-ipc/) | IPC | 12 |
+rewrite-notes/README.md		| 14 | [14-stage-runtime/](14-stage-runtime/) | RUNTIME | 15 |
+rewrite-notes/README.md		| 15 | [15-stage-fs/](15-stage-fs/) | FS（mfs/pfs/procfs/ptyfs/ext2/isofs/vbfs/hgfs） | 26 |
+rewrite-notes/README.md		| 16 | [16-stage-drivers/](16-stage-drivers/) | DRIVERS | 27 |
+rewrite-notes/README.md		| 17 | [17-stage-net/](17-stage-net/) | NET（lwip + uds） | 27 |
+rewrite-notes/README.md		| 18 | [18-stage-commands/](18-stage-commands/) | COMMANDS | 26 |
+rewrite-notes/README.md		| 19 | [19-stage-integration/](19-stage-integration/) | — 跨服务集成与端到端测试 | 1 |
+rewrite-notes/README.md	### 🏗️ 架构设计	阶段目录内部还可能有三类子目录，它们随所属阶段存放：
+rewrite-notes/README.md	| 文档 | 说明 | 关键内容 |	
+rewrite-notes/README.md	|------|------|----------|	
+rewrite-notes/README.md	| [project-structure.md](project-structure.md) | 项目结构设计 | Workspace布局、Makefile vs xtask、构建系统 |	
+rewrite-notes/README.md	| [minimal-skeleton.md](minimal-skeleton.md) | 最小可运行骨架 | 第一阶段目标、简化策略、initramfs方案 |	
+rewrite-notes/README.md	| [modern-hardware-and-rust.md](modern-hardware-and-rust.md) | 现代硬件与Rust重构 | 设计哲学、性能理论、多核设计、IPC原子性 |	
+rewrite-notes/README.md	| [arch_mapping.md](arch_mapping.md) | 架构机制映射 | 硬件描述→机制抽象、Trait设计、静态分发 |	
+rewrite-notes/README.md		- `draft/` — 尚未定稿的稿子，评审时不作为交付物。
+rewrite-notes/README.md		- `archive/` — 该阶段已被取代的历史稿。
+rewrite-notes/README.md		- `.design/` — 评审流程用的可复用设计快照（中间产物，正式文档不引用，已被 `.gitignore` 排除）。
+rewrite-notes/README.md	### 🔍 源码分析	## 其他子区
+rewrite-notes/README.md	| 文档 | 说明 | 关键内容 |	
+rewrite-notes/README.md	|------|------|----------|	
+rewrite-notes/README.md	| [invariant.md](invariant.md) | 内核不变量分析 | 进程状态不变量、IPC不变量、高危路径识别 |	
+rewrite-notes/README.md	| [misc.md](misc.md) | 异步消息表分析 | C语言"阴险锁"设计、Rust类型安全替代方案 |	
+rewrite-notes/README.md	| [ipc-sendrec.md](ipc-sendrec.md) | SENDREC原子性 | IPC语义原子性vs进程上下文原子性、信号处理问题 |	
+rewrite-notes/README.md	| [elf-loader.md](elf-loader.md) | ELF加载与用户态执行 | 从rootfs读取、解析ELF、建立地址空间、切换到用户态 |	
+rewrite-notes/README.md		| 目录 | 是什么 | 数量 |
+rewrite-notes/README.md		|---|---|---|
+rewrite-notes/README.md		| [concepts/](concepts/) | 跨阶段的概念词条：capability、endpoint、fail-stop、typestate、内核内替换的风险 | 6 |
+rewrite-notes/README.md		| [misc/](misc/) | 不属于单一阶段的重写工程文档：项目规划、结构设计、纵向切片策略、语义冻结策略、内核不变量、异步消息表、SENDREC 原子性、ELF 加载、架构机制映射、现代硬件与 Rust，以及伞目录退役时归档进来的两份说明 | 16 |
+rewrite-notes/README.md		| [coordination/](coordination/) | 多会话协作的过程产物：开场与接续提示词、滚动工作记录、交接件、评审报告与审计表、待办台账、并行编排、缺陷案卷。只读为主，新内容不要写在这里 | 73 |
+rewrite-notes/README.md		| [evidence/](evidence/) | 按日期与任务命名的实验取证（串口日志、设备树、脚本输出）。审计证据，不做改写 | 276 |
+rewrite-notes/README.md		| [archive/legacy-fork-bak/](archive/legacy-fork-bak/) | 以 fork 系统调用为主线时期的备份稿 | 40 |
+rewrite-notes/README.md		| [MIGRATION.md](MIGRATION.md) | 迁移前后的路径对照、评审工具参数变更、已知悬空引用、旧内容回捞方法 | — |
+rewrite-notes/README.md	### 📋 总览	## 从零开始的阅读路线
+rewrite-notes/README.md	| 文档 | 说明 | 关键内容 |	
+rewrite-notes/README.md	|------|------|----------|	
+rewrite-notes/README.md	| [rewrite.md](rewrite.md) | Rust重构总览 | 核心目标、设计原则、文档索引、类型安全状态机 |	
+rewrite-notes/README.md		1. [misc/rewrite.md](misc/rewrite.md) — 重写目标与设计原则的总述。
+rewrite-notes/README.md		2. [RECONSTRUCTION-PRINCIPLES.md](RECONSTRUCTION-PRINCIPLES.md) — 重构原则（什么可以改、什么必须保持外部行为）。
+rewrite-notes/README.md		3. [misc/project-plan.md](misc/project-plan.md) 与 [misc/vertical-slice-strategy.md](misc/vertical-slice-strategy.md) — 怎么切、为什么按纵向切片推进。
+rewrite-notes/README.md		4. [misc/rewrite-strategy.md](misc/rewrite-strategy.md) — 语义冻结的做法与验证清单。
+rewrite-notes/README.md		5. [00-master-plan/README.md](00-master-plan/README.md) — 启动顺序与目录对应关系，然后按编号进入各阶段。
+rewrite-notes/README.md	---	## 目录之外
+rewrite-notes/README.md	## 阅读建议	
+rewrite-notes/README.md		
+rewrite-notes/README.md	### 第一次接触本项目？	
+rewrite-notes/README.md		
+rewrite-notes/README.md	按以下顺序阅读：	
+rewrite-notes/README.md		
+rewrite-notes/README.md	1. **[rewrite.md](rewrite.md)** - 了解整体目标和设计原则	
+rewrite-notes/README.md	2. **[project-plan.md](project-plan.md)** - 了解项目结构和实施计划	
+rewrite-notes/README.md	3. **[vertical-slice-strategy.md](vertical-slice-strategy.md)** - 理解为什么选择纵向切片	
+rewrite-notes/README.md	4. **[rewrite-strategy.md](rewrite-strategy.md)** - 理解语义冻结的重要性	
+rewrite-notes/README.md		
+rewrite-notes/README.md	### 准备开始编码？	
+rewrite-notes/README.md		
+rewrite-notes/README.md	1. **[project-structure.md](project-structure.md)** - 确认项目结构	
+rewrite-notes/README.md	2. **[invariant.md](invariant.md)** - 理解内核不变量，避免破坏关键假设	
+rewrite-notes/README.md	3. **[arch_mapping.md](arch_mapping.md)** - 了解如何用Rust trait抽象硬件	
+rewrite-notes/README.md		
+rewrite-notes/README.md	### 深入理解Minix3设计？	
+rewrite-notes/README.md		
+rewrite-notes/README.md	1. **[modern-hardware-and-rust.md](modern-hardware-and-rust.md)** - 现代硬件视角	
+rewrite-notes/README.md	2. **[ipc-sendrec.md](ipc-sendrec.md)** - IPC原子性细节	
+rewrite-notes/README.md	3. **[misc.md](misc.md)** - 异步消息表的巧妙设计	
+rewrite-notes/README.md	4. **[elf-loader.md](elf-loader.md)** - 用户态执行机制	
+rewrite-notes/README.md		
+rewrite-notes/README.md	---	
+rewrite-notes/README.md		
+rewrite-notes/README.md	## 文档关系图	
+rewrite-notes/README.md		
+rewrite-notes/README.md	```	
+rewrite-notes/README.md	                    rewrite.md (总览)	
+rewrite-notes/README.md	                         │	
+rewrite-notes/README.md	         ┌───────────────┼───────────────┐	
+rewrite-notes/README.md	         │               │               │	
+rewrite-notes/README.md	    project-plan   rewrite-strategy  vertical-slice	
+rewrite-notes/README.md	         │               │               │	
+rewrite-notes/README.md	         └───────────────┼───────────────┘	
+rewrite-notes/README.md	                         │	
+rewrite-notes/README.md	              project-structure	
+rewrite-notes/README.md	                         │	
+rewrite-notes/README.md	         ┌───────────────┼───────────────┐	
+rewrite-notes/README.md	         │               │               │	
+rewrite-notes/README.md	   modern-hardware    invariant     minimal-skeleton	
+rewrite-notes/README.md	         │               │               │	
+rewrite-notes/README.md	    arch_mapping    ipc-sendrec          │	
+rewrite-notes/README.md	         │               │               │	
+rewrite-notes/README.md	        misc          elf-loader         │	
+rewrite-notes/README.md	```	
+rewrite-notes/README.md		
+rewrite-notes/README.md	---	
+rewrite-notes/README.md		
+rewrite-notes/README.md	## 相关目录	
+rewrite-notes/README.md		
+rewrite-notes/README.md	- `../../os/` - Rust 实现的源代码	
+rewrite-notes/README.md	- `../../minix3/` - 原始 Minix3 C 代码（参考）	
+rewrite-notes/README.md		- `os/` — Rust 实现的源码；每篇阶段文档的锚点指向那里的具体符号。
+rewrite-notes/README.md		- `minix3/` — 原始 Minix3 C 源码，是唯一的事实基准，不修改。
+rewrite-notes/README.md		- `redesign-notes/` — 再设计探索区，在重写定稿后启用。
+rewrite-notes/README.md		- `study-notes/` — 早期学习笔记，由 AI 生成、未经 C 源码校验，不能当事实依据引用。
+rewrite-notes/README.md		- `book/` — 电子书成品区，内容定稿后从本目录抽取。
+rewrite-notes/00-master-plan/README.md	| 20 | `20-redesign/` | — | 设计重构记录（原 11，2026-08-14 后移；2026-08-16 顺延） |	| 20 | — | — | 设计重构记录两篇（`rs-cross-layer-pollution.md`、`tocutou-and-distributed-consistency.md`）已随本次目录迁移移到仓库根的 `redesign-notes/architecture/`，本树不再占用 20 号编号 |
+rewrite-notes/coordination/new_edge4.md	- 未跟踪产物：`new_todo_{deepseek,glm,HY4,muse,qwen}.md`（五路扫描留存备查，不删）；`new_edge1-4.md`（本轮工作文件）；`AI-chats/`、`notes/redesign/` 等与本轮无关。	- 未跟踪产物：`new_todo_{deepseek,glm,HY4,muse,qwen}.md`（五路扫描留存备查，不删）；`new_edge1-4.md`（本轮工作文件）；`AI-chats/`、`redesign-notes/` 等与本轮无关。
+rewrite-notes/misc/project-plan.md	/// 详见 notes/redesign/process-model.md 中的分离方案。	/// 详见 redesign-notes/process-model.md 中的分离方案。

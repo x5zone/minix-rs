@@ -1,0 +1,20 @@
+=== 迁移方清单的顶层目录分布 ===
+     73 rewrite-notes
+
+=== prompt/README.md:446 附近在迁移前是否已是这个写法 ===
+
+=== prompt/todo_plan.md:617 迁移前状态 ===
+5. 文风增量门：修复过程中任何新增/修改行通过 `doc-style-lint.sh --diff`。
+
+**范围成本控制**：先做 `scope=chapter` 的干跑（建议第 2 章或第 3 章），机制验证通过后再决定是否补 `scope=doc`。产物写入当前工具的状态目录（Codex 为 `.review/codex/fork-syscall-rewrite/15-ipc-dispatch/`；Trae/Claude 按各自路径）。
+
+**验收**：上述 5 点逐条在产物里可指认；执行者把"演练结论"追加到本文件 B5 末尾。
+
+=== prompt/skill/review-coverage-skill.md:92 迁移前状态 ===
+  notes/rewrite/fork-syscall-rewrite/01-stage-kernel \
+  --rust-dir os --c-dir minix3/minix/kernel \
+  --doc-file 03-kmain-cstart.md \
+  --semantic-map tools/coverage-extract/kernel-semantic-map.json \
+  --output .review/trae/fork-syscall-rewrite/scans/03-kmain-cstart-glm-SYMBOLS.md
+```
+

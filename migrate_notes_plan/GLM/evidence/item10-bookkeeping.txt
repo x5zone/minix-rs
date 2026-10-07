@@ -1,0 +1,13 @@
+## A6: relink-report.tsv 行数（执行日志声称两轮合计 138 处重定基）
+525 tmp/pre-migrate-snapshot-20261007/relink-report.tsv
+# 重定基清单（旧文本目标 → 新相对目标）
+REWRITE	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../../../minix3/minix/servers/vm/utility.c	../../minix3/minix/servers/vm/utility.c
+REWRITE	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../../../minix3/minix/servers/vm/fork.c	../../minix3/minix/servers/vm/fork.c
+
+## bare-mentions.txt 行数（声称 73 行裸名提及交人工判定）
+73 tmp/pre-migrate-snapshot-20261007/bare-mentions.txt
+
+## relink-report.tsv 抽样 3 条与现状对照（链接文本没变、目标已重定基）
+REWRITE	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../../../minix3/minix/servers/vm/utility.c	../../minix3/minix/servers/vm/utility.c
+REWRITE	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../../../minix3/minix/servers/vm/fork.c	../../minix3/minix/servers/vm/fork.c
+REWRITE	rewrite-notes/02-stage-vm/draft/17-vm-brk.md	../../../../../minix3/minix/servers/vm/vmproc.h	../../../minix3/minix/servers/vm/vmproc.h

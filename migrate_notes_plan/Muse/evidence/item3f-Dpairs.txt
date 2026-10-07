@@ -1,0 +1,6 @@
+DIFFER notes/rewrite/README.md
+IDENTICAL notes/rewrite/fork-syscall-rewrite/edge3.md
+CORRECTED PAIRS (path-map R10/R18):
+notes/rewrite/README.md -> rewrite-notes/README.md : IDENTICAL at move commit e90e4173d (HEAD differs due to Phase-7 documented rewrite)
+notes/rewrite/fork-syscall-rewrite/edge3.md -> rewrite-notes/coordination/edge3.md : IDENTICAL at move commit
+Conclusion: both D entries in pre..HEAD interval diff are rename-similarity artifacts; content survives.

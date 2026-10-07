@@ -1,0 +1,5 @@
+changed files: 333
+file-level classification: {'OTHER': 65, 'PREFIX': 258, 'RELINK': 10}
+line/hunk classification: {'OTHER-SHAPE': 9, 'OTHER': 172, 'PREFIX': 1102, 'RELINK': 99}
+non-contract-explained line instances: 306
+detail -> /home/xzhao/github/minix-rs/migrate_notes_plan/Mimo/evidence/item1d-other-lines.txt

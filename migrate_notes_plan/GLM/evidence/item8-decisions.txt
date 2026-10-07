@@ -1,0 +1,35 @@
+== 裁决 2/8.1: .review/ 冻结不改写 ==
+.review tar 条目: 1728
+.review 冻结比对: 相同 1728 / 不同 0 / 磁盘缺失 0（期望 1728/0/0）
+.review 含旧路径的文件数（应仍很大，未被 sed）: 1108
+.review/archive/notes-fork-syscall-rewrite-2026-09/ 文件数（期望 3）: 3
+.review/PATH-MAPPING.md 存在: True（1847 字节）
+
+== 裁决 3/5: 未跟踪件未入库 + 在制件内容未动 ==
+  未入库(正确): migrate_notes_plan/agents-workflow-optim.md
+  未入库(正确): tools/atf-c-compat/probes/p7.c
+  未入库(正确): rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md
+  new_laptop_migrate/ 共 14 件，被跟踪的（期望 0）: []
+
+== 裁决 6: study-notes 原样搬 + README 定性 ==
+study-notes/README.md 存在: True
+  开头 400 字:
+    # study-notes — 早期 Minix3 学习笔记
+    
+    > **创建**: 2026-10-07（目录迁移当天）。本区自建档起**冻结**，不再新增内容。
+    
+    这里是在动手重写之前，对着 `minix3/` 里的 C 源码做的一批学习笔记：按主题分子目录
+    （`arch/`、`boot/`、`interrupt/`、`ipc/`、`pm/`、`process/`、`services/`、`syscall/`、`vfs/`、`vm/`），
+
+== 裁决 10: redesign-notes 按主题子目录 ==
+  redesign-notes/architecture/: 存在（10 个条目）
+  redesign-notes/ipc/: 存在（2 个条目）
+  redesign-notes/fork/: 存在（1 个条目）
+  redesign-notes/vm/: 存在（1 个条目）
+
+== 裁决 12: 其余冻结域旧路径保留计数（执行日志声称 .qoder=6 / AI-chats=10 / tmp=49 / new_laptop=71） ==
+  .qoder/: 3 处
+  AI-chats/: 5 处
+  tmp/: 52238 处
+  new_laptop_migrate/: 40 处
+  .qoder/specs 任务文件存在: True

@@ -1,0 +1,28 @@
+### item6a 文风增量门活性（只读方式，不做工作树埋点）
+
+== 6a-1 内置自测 ==
+SELF-TEST PASS（组1 全类命中；组2 零误报；组3 合法历史默认零命中、--strict 命中 SL-5b）
+rc=0
+
+== 6a-2 规则引擎正向埋点（文件在 /tmp，仓库零改动） ==
+/tmp/opencode/probe-violation.md:3: [SL-4] 正文日期（头部创建/重写行豁免） :: 2026-01-01
+命中汇总：SL-4=1 | error级=1
+rc=1（1 = 抓到 error 级命中）
+
+== 6a-3 --diff 路径域活性（历史区间，证明 pathspec 指向新三棵树） ==
+rewrite-notes/17-stage-net/15-lwip-ethif.md:117: [SL-4] 正文日期（头部创建/重写行豁免） :: 2026-09-06
+rewrite-notes/10-stage-mib/22-mib-rmib-client.md:125: [SL-4] 正文日期（头部创建/重写行豁免） :: 2026-09-05
+rewrite-notes/05-stage-vfs/doc_rerank_qwen.md:6: [SL-4] 正文日期（头部创建/重写行豁免） :: 2026-09-19
+rewrite-notes/05-stage-vfs/doc_rerank_qwen.md:22: [SL-5] 修复史叙事 :: 旧文档
+rewrite-notes/05-stage-vfs/doc_rerank_qwen.md:225: [SL-3] issue 编号 :: P0-1
+rewrite-notes/05-stage-vfs/doc_rerank_qwen.md:347: [SL-3] issue 编号 :: P0-1
+rewrite-notes/05-stage-vfs/doc_rerank_qwen.md:478: [SL-5] 修复史叙事 :: 旧文档
+rewrite-notes/01-stage-kernel/03-kmain-cstart.md:795: [SL-4] 正文日期（头部创建/重写行豁免） :: 2026-07-31
+rewrite-notes/01-stage-kernel/03-kmain-cstart.md:843: [SL-5] 修复史叙事 :: 已修复
+rewrite-notes/01-stage-kernel/03-kmain-cstart.md:1031: [SL-4] 正文日期（头部创建/重写行豁免） :: 2026-08-16
+rewrite-notes/01-stage-kernel/03-kmain-cstart.md:1031: [SL-7] review 工具术语 :: Pattern #38
+命中汇总：SL-3=2799 SL-4=3908 SL-5=879 SL-6=2 SL-7=406 SL-1=983 SL-2=48 | error级=9025
+
+== 6a-4 --diff 默认区间（干净工作树，应 0 文件） ==
+diff 范围：1 个文件 / 6 个新增行（RANGE=HEAD，限 rewrite-notes redesign-notes study-notes；规则文件不在增量门范围）
+命中汇总：| error级=0

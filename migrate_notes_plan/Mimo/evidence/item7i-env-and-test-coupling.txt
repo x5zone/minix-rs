@@ -1,0 +1,34 @@
+== 环境 ==
+12
+ 21:04:18 up 6 days, 23:07,  1 user,  load average: 0.63, 1.33, 1.53
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi       4.5Gi       389Mi       3.3Mi        10Gi        11Gi
+
+== 残留进程 ==
+
+== 失败用例是否读文件系统（在 os/ 测试代码里搜 notes/ 路径引用） ==
+os/kernel/src/test_helpers.rs:4://! `rewrite-notes/01-stage-kernel/panic-in-drop.md` §1
+os/libs/minix-types/src/lib.rs:1:#![doc = include_str!("../README.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/colorchoice-1.0.5/src/lib.rs:113:#[doc = include_str!("../README.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/anstream-1.0.0/src/lib.rs:88:#[doc = include_str!("../README.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.7/src/_tutorial.rs:28:#![doc = include_str!("../examples/tutorial_builder/01_quick.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.7/src/_tutorial.rs:42:#![doc = include_str!("../examples/tutorial_builder/02_apps.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.7/src/_tutorial.rs:50:#![doc = include_str!("../examples/tutorial_builder/02_crate.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.7/src/_tutorial.rs:58:#![doc = include_str!("../examples/tutorial_builder/02_app_settings.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.7/src/_tutorial.rs:77:#![doc = include_str!("../examples/tutorial_builder/03_03_positional.md")]
+os/.dockercargo/registry/src/index.crates.io-1949cf8c6b5b557f/clap-4.6.7/src/_tutorial.rs:84:#![doc = include_str!("../examples/tutorial_builder/03_03_positional_mult.md")]
+
+== 这些 failing 测试名里 hosted 的含义 ==
+994:    fn test_sys_kernel_hosted_reports_eio() {
+995-        // S22:SysKernel 已接 minix-sys 真 wrapper(hosted 构建的
+996-        // DirectKernelCallTransport 诚实回 EIO/负值——E1 通电前不伪造
+997-        // 成功)。三方法同面。
+998-        use crate::server::{DsKernel, SysKernel};
+999-        use minix_types::{Endpoint, GrantId};
+1000-        let mut k = SysKernel;
+1001-        let mut buf = [0u8; 8];
+1002-        assert_eq!(k.safecopy_from(Endpoint(9), 3 as GrantId, &mut buf), Err(minix_types::EIO));
+1003-        assert_eq!(k.safecopy_to(Endpoint(9), 3 as GrantId, &buf), Err(minix_types::EIO));
+1004-        assert_eq!(k.data_copy_to(Endpoint(9), 0x4000, &buf), Err(minix_types::EIO));
+1005-    }
+1006-

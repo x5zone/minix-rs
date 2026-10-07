@@ -1,0 +1,64 @@
+manifest 表头: ['path', 'size_bytes', 'mtime_epoch', 'sha256', 'git_status']
+manifest 行数（不含表头）: 2428
+manifest git_status 分布: {'tracked': 1102, 'ignored': 1325, 'untracked': 1}
+path-map 表头: ['old_path', 'new_path', 'kind', 'rule']
+path-map 行数（不含表头）: 2428
+仅在 manifest 不在 path-map: 0
+仅在 path-map 不在 manifest: 0
+kind 分布: {'git-mv': 1102, 'mv-ignored': 1325, 'mv-untracked': 1}
+rule 分布: {'R1': 2, 'R10': 1, 'R11': 1, 'R12': 12, 'R13': 1, 'R15': 11, 'R17': 184, 'R18': 1, 'R19': 1, 'R3': 3, 'R4': 276, 'R5': 1814, 'R6': 1, 'R7': 74, 'R8': 6, 'R9': 40}
+新树分布: {'rewrite-notes': 2227, 'redesign-notes': 14, '.review': 3, 'study-notes': 184}
+内容对账: 一致 2095 / 缺失 0 / 不一致 333（期望 2428 / 0 / 0）
+  不一致 git-mv R13 notes/redesign/redesign.md -> redesign-notes/README.md
+  不一致 git-mv R10 notes/rewrite/README.md -> rewrite-notes/README.md
+  不一致 git-mv R8 notes/rewrite/concepts/README.md -> rewrite-notes/concepts/README.md
+  不一致 git-mv R8 notes/rewrite/concepts/endpoint.md -> rewrite-notes/concepts/endpoint.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md -> rewrite-notes/00-master-plan/README.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-todo.md -> rewrite-notes/01-stage-kernel/06-todo.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/07-cross-space-init.md -> rewrite-notes/01-stage-kernel/07-cross-space-init.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/checklist.md -> rewrite-notes/01-stage-kernel/checklist.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_HY4.md -> rewrite-notes/01-stage-kernel/doc_rerank_HY4.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_deepseek.md -> rewrite-notes/01-stage-kernel/doc_rerank_deepseek.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_glm.md -> rewrite-notes/01-stage-kernel/doc_rerank_glm.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_mimo.md -> rewrite-notes/01-stage-kernel/doc_rerank_mimo.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_muse.md -> rewrite-notes/01-stage-kernel/doc_rerank_muse.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_qwen.md -> rewrite-notes/01-stage-kernel/doc_rerank_qwen.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/endpoint_todo.md -> rewrite-notes/01-stage-kernel/endpoint_todo.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/panic-in-drop.md -> rewrite-notes/01-stage-kernel/panic-in-drop.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/01-stage-kernel/todo.md -> rewrite-notes/01-stage-kernel/todo.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md -> rewrite-notes/02-stage-vm/01-vm-init-main.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md -> rewrite-notes/02-stage-vm/02-vmproc-struct.md
+  不一致 git-mv R5 notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md -> rewrite-notes/02-stage-vm/03-vmproc-table.md
+git 跟踪数（三树 + .review 归档区）: 1105（期望 1102 + 迁移后新增）
+三树跟踪数（不含 .review 归档）: 1105
+跟踪面中不属于映射表目标的迁移后新增件: 12
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-20261002.md"
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-20261003.md"
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-20261005.md"
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-20261005b.md"
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-20261005c.md"
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-20261006q.md"
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-20261006r.md"
+  新增: "rewrite-notes/coordination/NK4C-\346\216\245\347\273\255PROMPT-RISCV-20261003.md"
+  新增: "rewrite-notes/coordination/riscv\347\236\254\346\200\201\351\241\265\350\241\250\345\264\251\346\272\203\345\217\226\350\257\201\346\226\271\346\263\225\350\256\272.md"
+  新增: redesign-notes/vm/README.md
+  新增: rewrite-notes/MIGRATION.md
+  新增: study-notes/README.md
+映射表目标中不在跟踪面的: 1335（应全部是 kind=mv-ignored/mv-untracked）
+  缺失件的 kind 分布: {'mv-ignored': 1325, 'git-mv': 9, 'mv-untracked': 1}
+  !! git-mv 类目标居然不在跟踪面 —— 静默退跟踪未修复
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261002.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261002.md
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261003.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261003.md
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005.md
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005b.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005b.md
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261005c.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261005c.md
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261006q.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261006q.md
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-20261006r.md -> rewrite-notes/coordination/NK4C-接续PROMPT-20261006r.md
+    notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-RISCV-20261003.md -> rewrite-notes/coordination/NK4C-接续PROMPT-RISCV-20261003.md
+    notes/rewrite/fork-syscall-rewrite/riscv瞬态页表崩溃取证方法论.md -> rewrite-notes/coordination/riscv瞬态页表崩溃取证方法论.md
+三棵树磁盘文件数: 2428
+磁盘上不属于映射表目标的文件: 3
+  tracked: redesign-notes/vm/README.md
+  tracked: rewrite-notes/MIGRATION.md
+  tracked: study-notes/README.md
+映射表目标（三树内）不在磁盘上的: 0

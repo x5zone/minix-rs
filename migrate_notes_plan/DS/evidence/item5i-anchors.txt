@@ -1,0 +1,13 @@
+=== 5i 锚点基线：路径列的文件是否都在 ===
+101 /tmp/anchor-files.txt
+（无 MISSING 输出即全在）
+
+=== 5j 锚点基线涉及的文档是否都属于「行数不变」类 ===
+锚点基线涉及 101 个文档；其中行数变化过的：0
+
+=== 5k 抽查 5 条锚点的文档行号有效性 ===
+rewrite-notes/02-stage-vm/07-pagetable-struct.md:505 文件行数=642 行号有效=True 该行内容: - `VM_DIRECT_MAP_SIZE` 是编译期容量声明（三架构 1GiB/2GiB/16GiB，`os/arch/src/arch/direct_map.rs:struct
+rewrite-notes/01-stage-kernel/19-syscall-signal.md:159 文件行数=931 行号有效=True 该行内容: > Rust 对应 `MessSigcalls` (`os/libs/minix-types/src/ipc/message.rs:struct MessLsysKernVsafe
+rewrite-notes/02-stage-vm/13-region-mapping.md:496 文件行数=596 行号有效=True 该行内容: - **brk**（os/servers/vm/src/brk.rs:fn grow_heap（L106，工具生成）/:109）：`extend` 增长堆顶区域（19 详述）。
+rewrite-notes/05-stage-vfs/17-pipe.md:223 文件行数=258 行号有效=True 该行内容: | `test_errno_map_covers_pipe_c` | `pipe.c` 全文件 | 5 变体→errno 全映射 | `os/servers/vfs/src/pip
+rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md:1070 文件行数=1375 行号有效=True 该行内容: │   └── RTS_SET(PROC_STOP); RTS_CLEAR(SLOT_FREE)

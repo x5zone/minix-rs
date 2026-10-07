@@ -1,0 +1,11 @@
+
+必改域旧路径总命中: 61 处，分布在 2 个文件
+  [白名单] .claude/settings.local.json: 40 处
+  [白名单] rewrite-notes/MIGRATION.md: 21 处
+白名单文件命中合计: 61（期望 MIGRATION.md + settings.local.json）
+白名单外残留: 0 处，0 个文件（期望 ≤3：notes-layout.conf/CLAUDE.md/AGENTS.md 各 1 处描述退役本身）
+
+冻结区旧路径保留计数（对照执行日志声称 evidence=4 / legacy-fork-bak=8 / .design=56）:
+  rewrite-notes/evidence: 4 个文件含旧路径（260 个文本文件）
+  rewrite-notes/archive/legacy-fork-bak: 8 个文件含旧路径（40 个文本文件）
+  rewrite-notes/**/.design/: 56 个文件含旧路径

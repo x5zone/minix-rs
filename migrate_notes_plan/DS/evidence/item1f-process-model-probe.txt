@@ -1,0 +1,27 @@
+=== path-map 里 process-model 的映射 ===
+
+=== redesign-notes 实际文件树 ===
+redesign-notes/README.md
+redesign-notes/architecture/architecture-changes.md
+redesign-notes/architecture/improve_minix.md
+redesign-notes/architecture/improve_minix.md.backup
+redesign-notes/architecture/improve_minix_refactored.md
+redesign-notes/architecture/improve_minix_refactored.md.backup
+redesign-notes/architecture/microkernel-closure-design.md
+redesign-notes/architecture/microkernel-cohesion-design.md
+redesign-notes/architecture/rs-cross-layer-pollution.md
+redesign-notes/architecture/semantic-modules.md
+redesign-notes/architecture/tocutou-and-distributed-consistency.md
+redesign-notes/fork/fork-redesign.md
+redesign-notes/ipc/endpoint_redesign.md
+redesign-notes/ipc/ipc-improve.md
+redesign-notes/vm/README.md
+
+=== 全仓引用 process-model 的地方 ===
+rewrite-notes/09-stage-init/doc_rerank_HY4.md:685:### 05-init-process-model：子进程模型、等待与退出码（新建）
+rewrite-notes/09-stage-init/doc_rerank_HY4.md:1040:| C-05 | **新建** | — | `05-init-process-model.md` | fork/waitpid/退出码在旧 04/05/09/11 四篇重复展开且无 `_exit` 总表（G-01/G-04） | K-056~K-064、K-060 | 存量抽取：旧 04 §2.4 的 wait 语义、旧 05 §2.3、旧 09 §2、旧 11 §2 的等待循环；新增：K-056、K-060、K-063（C 源码汇总 + Rust wait.rs） |
+rewrite-notes/misc/project-plan.md:597:/// 详见 redesign-notes/process-model.md 中的分离方案。
+migrate_notes_plan/DS/evidence/item1d-residual-diffs.txt:1126:  -/// 详见 notes/redesign/process-model.md 中的分离方案。
+migrate_notes_plan/DS/evidence/item1d-residual-diffs.txt:1127:  +/// 详见 redesign-notes/process-model.md 中的分离方案。
+migrate_notes_plan/DS/evidence/item1f-process-model-probe.txt:1:=== path-map 里 process-model 的映射 ===
+migrate_notes_plan/DS/evidence/item1f-process-model-probe.txt:20:=== 全仓引用 process-model 的地方 ===

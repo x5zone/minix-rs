@@ -1,0 +1,13 @@
+=== 埋点前状态快照 ===
+ M rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md
+?? migrate_notes_plan/DS/
+?? migrate_notes_plan/GLM/
+?? migrate_notes_plan/agents-workflow-optim.md
+?? new_laptop_migrate/
+?? rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md
+?? tools/atf-c-compat/probes/p7.c
+
+=== misc.md 备份与哈希 ===
+98d4906c18bc6c5eaec8ce75019db5898345b5da6c669e216b18fb9b2525773c  rewrite-notes/misc/misc.md
+ls: cannot access 'rewrite-notes/01-stage-kernel/99-probe.md': No such file or directory
+99-probe.md 不存在（好）

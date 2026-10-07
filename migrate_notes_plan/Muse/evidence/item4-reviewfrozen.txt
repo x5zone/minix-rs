@@ -1,0 +1,5 @@
+Only in .review: PATH-MAPPING.md
+Only in .review: archive
+.review/archive/notes-fork-syscall-rewrite-2026-09/03-stage-kernel/STATE.md
+.review/archive/notes-fork-syscall-rewrite-2026-09/scans/03-kmain-cstart-kimi-scan.md
+.review/archive/notes-fork-syscall-rewrite-2026-09/STATE.md

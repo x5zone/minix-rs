@@ -1,0 +1,26 @@
+### 审计时刻: 2026-10-07 19:04:53 +0800
+
+## item0.1 git status --porcelain（非未跟踪部分，期望只有 TODO-3ARCH 一处 M）
+ M rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md
+
+## item0.2 git status --porcelain -uall 未跟踪件（顶层视角）
+?? migrate_notes_plan/DS/
+?? migrate_notes_plan/GLM/
+?? migrate_notes_plan/agents-workflow-optim.md
+?? new_laptop_migrate/
+?? rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md
+?? tools/atf-c-compat/probes/p7.c
+
+## item0.3 pre-tag 提交态 vs HEAD 提交态：TODO-3ARCH 文件内容必须一致（迁移只改路径）
+提交内容一致 OK
+
+## item0.4 工作树对该文件仍有未提交改动（维护者在制，不被代提交）
+6	2	rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md
+
+## item0.5 工作树文件 sha256 vs manifest 记录（manifest: TODO=9b3152dd… PENDING=4cdde71c…）
+9b3152dd14232e2cb90de9969aa5cca86c01acbe63307bffb1646d89f043f386  rewrite-notes/coordination/TODO-3ARCH-PARITY-20261006.md
+4cdde71c37cd65078bffb5704c7fc0df8818597fbfcec659a592c631790b7a76  rewrite-notes/coordination/PENDING-DECISIONS-3ARCH-PARITY.md
+
+## item0.6 提交态（HEAD blob）sha256 —— 用于区分提交态与工作树态
+beb452f4e82e3167b0ddeb267fc74366e17f765f
+6ef43c6d2f9ee07625e066759cecb05dc3be54784ab8f886042e70c4aa29e2cd  -

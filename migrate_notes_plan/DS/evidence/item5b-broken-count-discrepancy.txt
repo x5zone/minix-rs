@@ -1,0 +1,51 @@
+=== after 报告头部与行数 ===
+# notes-link-check 报告
+# 扫描 md 文件数：2228    断链数：400
+# 格式：相对文件路径:行号<TAB>原始目标<TAB>按文件目录解析<TAB>按仓库根解析
+
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:68	../01-stage-pm/mproc-design.md	/home/xzhao/github/minix-rs/rewrite-notes/01-stage-pm/mproc-design.md	/home/xzhao/github/01-stage-pm/mproc-design.md
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:72	../deep-analysis/fork-all-layers-deep-analysis.md	/home/xzhao/github/minix-rs/rewrite-notes/deep-analysis/fork-all-layers-deep-analysis.md	/home/xzhao/github/deep-analysis/fork-all-layers-deep-analysis.md
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:80	./10-constants-reference.md	/home/xzhao/github/minix-rs/rewrite-notes/00-master-plan/10-constants-reference.md	/home/xzhao/github/minix-rs/10-constants-reference.md
+rewrite-notes/00-master-plan/04-implementation-roadmap.md:129	./06-phase1-pm-guide.md	/home/xzhao/github/minix-rs/rewrite-notes/00-master-plan/06-phase1-pm-guide.md	/home/xzhao/github/minix-rs/06-phase1-pm-guide.md
+---
+400
+400
+
+=== now 报告头部与行数 ===
+# notes-link-check 报告
+# 扫描 md 文件数：2133    断链数：373
+# 格式：相对文件路径:行号<TAB>原始目标<TAB>按文件目录解析<TAB>按仓库根解析
+
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:68	../01-stage-pm/mproc-design.md	/home/xzhao/github/minix-rs/rewrite-notes/01-stage-pm/mproc-design.md	/home/xzhao/github/01-stage-pm/mproc-design.md
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:72	../deep-analysis/fork-all-layers-deep-analysis.md	/home/xzhao/github/minix-rs/rewrite-notes/deep-analysis/fork-all-layers-deep-analysis.md	/home/xzhao/github/deep-analysis/fork-all-layers-deep-analysis.md
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:80	./10-constants-reference.md	/home/xzhao/github/minix-rs/rewrite-notes/00-master-plan/10-constants-reference.md	/home/xzhao/github/minix-rs/10-constants-reference.md
+rewrite-notes/00-master-plan/04-implementation-roadmap.md:129	./06-phase1-pm-guide.md	/home/xzhao/github/minix-rs/rewrite-notes/00-master-plan/06-phase1-pm-guide.md	/home/xzhao/github/minix-rs/06-phase1-pm-guide.md
+---
+373
+
+=== 两份报告按文件分布对比（前 20）===
+     86 study-notes/progress.md
+     17 study-notes/pm/archive/tmp_main.c.md
+     15 study-notes/pm/archive/tmp_pm.h.md
+     13 rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md
+     12 rewrite-notes/01-stage-kernel/20-syscall-device.md
+     12 prompt/skill/review-agent-trigger.md
+     12 .trae/skills/review-agent-trigger/SKILL.md
+      9 study-notes/pm/archive/tmp_utility.c.md
+      9 rewrite-notes/coordination/NK4C-WORKLOG.md
+      8 study-notes/syscall/archive/tmp_do_getinfo.c.md
+      8 study-notes/pm/archive/tmp_mproc.h.md
+      8 rewrite-notes/00-master-plan/05-phase1-pm-guide.md
+==== now ====
+     86 study-notes/progress.md
+     17 study-notes/pm/archive/tmp_main.c.md
+     15 study-notes/pm/archive/tmp_pm.h.md
+     13 rewrite-notes/01-stage-kernel/08-system-init-boot-finish.md
+     12 rewrite-notes/01-stage-kernel/20-syscall-device.md
+      9 study-notes/pm/archive/tmp_utility.c.md
+      9 rewrite-notes/coordination/NK4C-WORKLOG.md
+      8 study-notes/syscall/archive/tmp_do_getinfo.c.md
+      8 study-notes/pm/archive/tmp_mproc.h.md
+      8 rewrite-notes/00-master-plan/05-phase1-pm-guide.md
+      7 study-notes/syscall/archive/tmp_do_trace.c.md
+      7 study-notes/syscall/archive/tmp_do_mcontext.c.md

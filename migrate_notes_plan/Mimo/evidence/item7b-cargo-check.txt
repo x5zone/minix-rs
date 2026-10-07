@@ -1,0 +1,10 @@
+### item7b cargo check --workspace --tests
+warning: `minix-platform` (lib test) generated 4 warnings (4 duplicates)
+warning: `minix-usb` (lib test) generated 1 warning (run `cargo fix --lib -p minix-usb --tests` to apply 1 suggestion)
+warning: `minix-types` (lib test) generated 23 warnings (run `cargo fix --lib -p minix-types --tests` to apply 4 suggestions)
+warning: `minix-crypt` (lib test) generated 1 warning (run `cargo fix --lib -p minix-crypt --tests` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s
+rc=0
+
+warning 计数: 475
+error 计数: 0

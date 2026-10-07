@@ -1,0 +1,1133 @@
+===== git-mv notes/redesign/redesign.md -> redesign-notes/README.md ：17 行变化 =====
+  +
+  +> **创建**: 2026-10-07 建档。本区是「重写定稿后才启用」的探索区。当前内容全是从旧目录
+  +> 重写树里的再设计子目录与旧的 notes 伞目录再设计分区原样迁过来的存量思考，**包含互相冲突的多个方案，
+  +> 未经评审收敛，不能当实现依据**。正在推进的重写事实以 `rewrite-notes/` 为准。
+  +> 目录按主题分组：`architecture/`（架构级改进与跨层、一致性类探索）、`ipc/`（Endpoint 与 IPC 协议）、
+  +> `fork/`（fork 语义），`vm/` 为服务是否内嵌内核地址空间这一开放问题预留。
+  +> 开启新的探索方向时在此新建子目录，并先把同主题的已有分析收敛一遍，避免同一问题多稿并存。
+  -| [architecture-changes.md](architecture-changes.md) | 架构变更探索 | Trusted Core Servers 内核态化、LPE Core 策略、AI 驱动调度 |
+  -| [semantic-modules.md](semantic-modules.md) | 语义模块设计 | 模块依赖图、调度核心、IPC 模块抽象 |
+  -| [ipc-improve.md](ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
+  -| [improve_minix.md](improve_minix.md) | 架构改进思考（原始） | 现代硬件挑战、架构改进方向 |
+  -| [improve_minix_refactored.md](improve_minix_refactored.md) | 架构改进思考（重构版） | 同上，结构优化版本 |
+  +| [architecture-changes.md](architecture/architecture-changes.md) | 架构变更探索 | Trusted Core Servers 内核态化、LPE Core 策略、AI 驱动调度 |
+  +| [semantic-modules.md](architecture/semantic-modules.md) | 语义模块设计 | 模块依赖图、调度核心、IPC 模块抽象 |
+  +| [ipc-improve.md](ipc/ipc-improve.md) | IPC 设计改进 | BKL 反思、L4 对比、Cache 污染分析 |
+  +| [improve_minix.md](architecture/improve_minix.md) | 架构改进思考（原始） | 现代硬件挑战、架构改进方向 |
+  +| [improve_minix_refactored.md](architecture/improve_minix_refactored.md) | 架构改进思考（重构版） | 同上，结构优化版本 |
+===== git-mv notes/rewrite/README.md -> rewrite-notes/README.md ：135 行变化 =====
+  -# Minix-RS 重构文档索引
+  +# rewrite-notes — 重写文档区
+  -本目录包含 Minix3 到 Rust 重构的完整设计文档，按主题分类整理。
+  +> **创建**: 2026-10-07（目录迁移当天）。本目录曾位于 notes 伞目录下、并比现在多一层已废弃的模块层目录名；
+  +> 逐条路径对照与工具参数变更见 [MIGRATION.md](MIGRATION.md)。
+  +这里存放 Minix3 各模块用 Rust 重写的正式设计文档：一份 C 源概念对应一篇文档，
+  +按服务的启动执行顺序编号成 20 个阶段目录。每篇文档都有配套的评审流水线、
+  +符号锚点校验与覆盖率穷举，是本仓库的一等交付物（不是草稿）。
+  -## 快速导航
+  +## 阶段目录一览
+  -### 🎯 项目规划（必读）
+  +编号就是阅读顺序，也是系统真实的启动因果顺序。权威说明（每个服务为什么排在这个位置、
+  +谁把它的映像装进内存）在 [00-master-plan/README.md](00-master-plan/README.md)。
+  -| 文档 | 说明 | 关键内容 |
+  -|------|------|----------|
+  -| [project-plan.md](project-plan.md) | **项目完整规划** | 目录结构、crate命名、实施路线图、纵向切片策略 |
+  -| [vertical-slice-strategy.md](vertical-slice-strategy.md) | 纵向切片策略详解 | 为什么按模块重写会失败、切片实施路径 |
+  -| [rewrite-strategy.md](rewrite-strategy.md) | 重写策略：语义冻结 | 两阶段方法、语义等价验证、冻结清单 |
+  +| 编号 | 目录 | 对应服务 | 正式文档数 |
+  +|---|---|---|---|
+  +| 00 | [00-master-plan/](00-master-plan/) | — 顶层规划与决策记录 | 15 |
+  +| 01 | [01-stage-kernel/](01-stage-kernel/) | Kernel | 38 |
+  +| 02 | [02-stage-vm/](02-stage-vm/) | VM | 28 |
+  +| 03 | [03-stage-rs/](03-stage-rs/) | RS | 22 |
+  +| 04 | [04-stage-pm/](04-stage-pm/) | PM | 22 |
+  +| 05 | [05-stage-vfs/](05-stage-vfs/) | VFS | 33 |
+  +| 06 | [06-stage-sched/](06-stage-sched/) | SCHED | 16 |
+  +| 07 | [07-stage-ds/](07-stage-ds/) | DS | 14 |
+  +| 08 | [08-stage-is/](08-stage-is/) | IS | 12 |
+  +| 09 | [09-stage-init/](09-stage-init/) | INIT | 16 |
+  +| 10 | [10-stage-mib/](10-stage-mib/) | MIB | 24 |
+  +| 11 | [11-stage-devman/](11-stage-devman/) | DEVMAN | 15 |
+  +| 12 | [12-stage-input/](12-stage-input/) | INPUT | 16 |
+  +| 13 | [13-stage-ipc/](13-stage-ipc/) | IPC | 12 |
+  +| 14 | [14-stage-runtime/](14-stage-runtime/) | RUNTIME | 15 |
+  +| 15 | [15-stage-fs/](15-stage-fs/) | FS（mfs/pfs/procfs/ptyfs/ext2/isofs/vbfs/hgfs） | 26 |
+  +| 16 | [16-stage-drivers/](16-stage-drivers/) | DRIVERS | 27 |
+  +| 17 | [17-stage-net/](17-stage-net/) | NET（lwip + uds） | 27 |
+  +| 18 | [18-stage-commands/](18-stage-commands/) | COMMANDS | 26 |
+  +| 19 | [19-stage-integration/](19-stage-integration/) | — 跨服务集成与端到端测试 | 1 |
+  …（余 95 行）
+===== git-mv notes/rewrite/concepts/endpoint.md -> rewrite-notes/concepts/endpoint.md ：4 行变化 =====
+  -详细的 Redesign 方案见 [endpoint_redesign.md](../../redesign/endpoint_redesign.md)，包含：
+  +详细的 Redesign 方案见 [endpoint_redesign.md](../../redesign-notes/ipc/endpoint_redesign.md)，包含：
+  -*参见: [系统核心概念 README](./README.md) | [Endpoint Redesign 方案](../../redesign/endpoint_redesign.md)*
+  +*参见: [系统核心概念 README](./README.md) | [Endpoint Redesign 方案](../../redesign-notes/ipc/endpoint_redesign.md)*
+===== git-mv notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md -> rewrite-notes/00-master-plan/README.md ：4 行变化 =====
+  -| 20 | `20-redesign/` | — | 设计重构记录（原 11，2026-08-14 后移；2026-08-16 顺延） |
+  +| 20 | — | — | 设计重构记录两篇（`rs-cross-layer-pollution.md`、`tocutou-and-distributed-consistency.md`）已随本次目录迁移移到仓库根的 `redesign-notes/architecture/`，本树不再占用 20 号编号 |
+  -> **注意**：上级目录 [`fork-syscall-rewrite/README.md`](../README.md) 同样基于旧主线编写，列出的目录结构（`01-stage-pm`、`03-stage-kernel` 等）、阶段映射、项目进度表均已过时，**暂不修改**（defer）。新主线目录结构以本文档"新目录结构"章节为准。
+  +> **注意**：上级目录 [`fork-syscall-rewrite/README.md`](../misc/legacy-fork-syscall-index.md) 同样基于旧主线编写，列出的目录结构（`01-stage-pm`、`03-stage-kernel` 等）、阶段映射、项目进度表均已过时，**暂不修改**（defer）。新主线目录结构以本文档"新目录结构"章节为准。
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-todo.md -> rewrite-notes/01-stage-kernel/06-todo.md ：4 行变化 =====
+  -> **目标文件**：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md`（下文简称「06」）
+  +> **目标文件**：`rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md`（下文简称「06」）
+  -- **文档体系**：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/` 下按「阶段 + 功能」组织 32+ 篇概念文档，每篇对应一组 Minix3 内核 C 源码 / Rust 实现。用**启动主线**串联整个内核启动流程（阶段 A–F）。
+  +- **文档体系**：`rewrite-notes/01-stage-kernel/` 下按「阶段 + 功能」组织 32+ 篇概念文档，每篇对应一组 Minix3 内核 C 源码 / Rust 实现。用**启动主线**串联整个内核启动流程（阶段 A–F）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/checklist.md -> rewrite-notes/01-stage-kernel/checklist.md ：2 行变化 =====
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-kernel/{00..30,99}-*.md`（28-30 为 2026-08-12 新增：usermapped-data / kernel-debug / kernel-profile）
+  +- `rewrite-notes/03-stage-kernel/{00..30,99}-*.md`（28-30 为 2026-08-12 新增：usermapped-data / kernel-debug / kernel-profile）
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_HY4.md -> rewrite-notes/01-stage-kernel/doc_rerank_HY4.md ：2 行变化 =====
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/` |
+  +| 目标目录 | `rewrite-notes/01-stage-kernel/` |
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_deepseek.md -> rewrite-notes/01-stage-kernel/doc_rerank_deepseek.md ：4 行变化 =====
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/` |
+  +| 目标目录 | `rewrite-notes/01-stage-kernel/` |
+  -| K-193 | endpoint 是通信标识符 | 概念 | 存量 | **99 §1.1**、17 §D2 | `endpoint.h`、`notes/rewrite/concepts/endpoint.md` | 理解 IPC 寻址 |
+  +| K-193 | endpoint 是通信标识符 | 概念 | 存量 | **99 §1.1**、17 §D2 | `endpoint.h`、`rewrite-notes/concepts/endpoint.md` | 理解 IPC 寻址 |
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_glm.md -> rewrite-notes/01-stage-kernel/doc_rerank_glm.md ：6 行变化 =====
+  -- 目标目录：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`
+  +- 目标目录：`rewrite-notes/01-stage-kernel/`
+  -- `grep -roh "01-stage-kernel/...\.md" notes/rewrite/fork-syscall-rewrite/ --include="*.md"`：其它 stage 引入本目录共 **303 处**（热点：00-overview 35、06 33、18-syscall-copy 29、19-syscall-signal 19、11 19）。
+  +- `grep -roh "01-stage-kernel/...\.md" rewrite-notes/ --include="*.md"`：其它 stage 引入本目录共 **303 处**（热点：00-overview 35、06 33、18-syscall-copy 29、19-syscall-signal 19、11 19）。
+  -- 事实底线：`arch/i386/protect.c:370-377`、`arch/i386/memory.c:707-717`；`os/kernel/src/dm_coverage.rs`；`notes/rewrite/fork-syscall-rewrite/02-stage-vm/07-pagetable-struct.md` §3.2（redesign 依据，允许引用正式文档）。
+  +- 事实底线：`arch/i386/protect.c:370-377`、`arch/i386/memory.c:707-717`；`os/kernel/src/dm_coverage.rs`；`rewrite-notes/02-stage-vm/07-pagetable-struct.md` §3.2（redesign 依据，允许引用正式文档）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_mimo.md -> rewrite-notes/01-stage-kernel/doc_rerank_mimo.md ：4 行变化 =====
+  -- 执行者：mimo；日期：2026-09-23；目标目录：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`
+  +- 执行者：mimo；日期：2026-09-23；目标目录：`rewrite-notes/01-stage-kernel/`
+  -rg -n '\[[0-9]{2}-[a-z0-9_-]+\.md\]' notes/rewrite/fork-syscall-rewrite/01-stage-kernel/ -g '!doc_rerank*'
+  +rg -n '\[[0-9]{2}-[a-z0-9_-]+\.md\]' rewrite-notes/01-stage-kernel/ -g '!doc_rerank*'
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_muse.md -> rewrite-notes/01-stage-kernel/doc_rerank_muse.md ：6 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/01-stage-kernel
+  +target_dir(关注的工作目录) = rewrite-notes/01-stage-kernel
+  -- Executor: muse. Date (UTC): 2026-09-19. Target: `notes/rewrite/fork-syscall-rewrite/01-stage-kernel`.
+  +- Executor: muse. Date (UTC): 2026-09-19. Target: `rewrite-notes/01-stage-kernel`.
+  -  - `wc -l notes/rewrite/fork-syscall-rewrite/01-stage-kernel/*.md` → 44,418 total
+  +  - `wc -l rewrite-notes/01-stage-kernel/*.md` → 44,418 total
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_qwen.md -> rewrite-notes/01-stage-kernel/doc_rerank_qwen.md ：6 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/01-stage-kernel
+  +target_dir(关注的工作目录) = rewrite-notes/01-stage-kernel
+  -- 文档互引统计（`grep -rE "<docname>\.md" notes/rewrite/fork-syscall-rewrite --include='*.md'`，
+  +- 文档互引统计（`grep -rE "<docname>\.md" rewrite-notes --include='*.md'`，
+  -测量口径：`grep -rE "<旧文件名>" notes/rewrite/fork-syscall-rewrite --include='*.md'`，
+  +测量口径：`grep -rE "<旧文件名>" rewrite-notes --include='*.md'`，
+===== git-mv notes/rewrite/fork-syscall-rewrite/01-stage-kernel/endpoint_todo.md -> rewrite-notes/01-stage-kernel/endpoint_todo.md ：6 行变化 =====
+  -- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-proc-init-boot-proc.md` §2.0 第三层（讨论 256 限制的当前章节）
+  -- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-todo.md`（06 的设计历史）
+  +- `rewrite-notes/01-stage-kernel/06-proc-init-boot-proc.md` §2.0 第三层（讨论 256 限制的当前章节）
+  +- `rewrite-notes/01-stage-kernel/06-todo.md`（06 的设计历史）
+  -- `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`（本文档所在 stage）
+  +- `rewrite-notes/01-stage-kernel/`（本文档所在 stage）
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/archive/todo-V11-archive-2026-09-08.md -> rewrite-notes/02-stage-vm/archive/todo-V11-archive-2026-09-08.md ：16 行变化 =====
+  -> 状态（2026-09-06 更新，V11 轮，见 §14）：V11 轮审查完成后即进入**逐条修复 campaign**（顺序表：`notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0；修复记录：§15）。**重要更正**：P1-3 与 P1-2 的"依赖 kernel IPC 落地"依据已失效——内核侧 IPC 核心已实现（`os/kernel/src/ipc.rs`），VmContext 收敛与 transport 落地均已解除阻塞（见 §14.2 复核表与 V11-P1-1/V11-P1-2）。本轮无新增 P0；新发现 3 项 P1
+  +> 状态（2026-09-06 更新，V11 轮，见 §14）：V11 轮审查完成后即进入**逐条修复 campaign**（顺序表：`rewrite-notes/coordination/edge_todo.md` §0；修复记录：§15）。**重要更正**：P1-3 与 P1-2 的"依赖 kernel IPC 落地"依据已失效——内核侧 IPC 核心已实现（`os/kernel/src/ipc.rs`），VmContext 收敛与 transport 落地均已解除阻塞（见 §14.2 复核表与 V11-P1-1/V11-P1-2）。本轮无新增 P0；新发现 3 项 P1、8 项 P2、
+  -$ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+  +$ python3 tools/coverage-extract/coverage-extract.py vm rewrite-notes/02-stage-vm \
+  -> 执行方式：02-stage-vm TODO 实施 campaign（顺序表见 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0，跨 stage 条目登记于同文件 E1-E5）。
+  +> 执行方式：02-stage-vm TODO 实施 campaign（顺序表见 `rewrite-notes/coordination/edge_todo.md` §0，跨 stage 条目登记于同文件 E1-E5）。
+  -- **File**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`（§5.1 两张表、§5.3 行号、§5.4 统计块）
+  +- **File**: `rewrite-notes/02-stage-vm/15-ipc-dispatch.md`（§5.1 两张表、§5.3 行号、§5.4 统计块）
+  -- **Files**: `os/servers/vm/src/phys_mem/mod.rs`（删 `DefaultAllocator` 别名四个 cfg 分支 :107-125，替换为指向单一权威的注释）、`os/servers/vm/src/vm_server.rs`（`choose_allocator_type` 文档重写 + **cfg 重构**：segment-tree 判定前置、buddy 块加 `not(feature = "segment_tree_alloc")` 守卫——任何 feature 组合下函数体都无不可达代码，all-features 的 unreachabl
+  +- **Files**: `os/servers/vm/src/phys_mem/mod.rs`（删 `DefaultAllocator` 别名四个 cfg 分支 :107-125，替换为指向单一权威的注释）、`os/servers/vm/src/vm_server.rs`（`choose_allocator_type` 文档重写 + **cfg 重构**：segment-tree 判定前置、buddy 块加 `not(feature = "segment_tree_alloc")` 守卫——任何 feature 组合下函数体都无不可达代码，all-features 的 unreachabl
+  -- **Files**: `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（删 55 行蓝图文档 + no-op `cache_freepages` + `alloc_mem` 内的恒零重试环 + `test_cache_freepages_returns_zero` no-op pin 测试；代之 10 行架构注记）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/05-physical-memory.md`（5 处 DEFERRED 表述同步为已落地/判定状态）
+  +- **Files**: `os/servers/vm/src/phys_mem/bitmap_alloc.rs`（删 55 行蓝图文档 + no-op `cache_freepages` + `alloc_mem` 内的恒零重试环 + `test_cache_freepages_returns_zero` no-op pin 测试；代之 10 行架构注记）、`rewrite-notes/02-stage-vm/05-physical-memory.md`（5 处 DEFERRED 表述同步为已落地/判定状态）
+  -- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（删 `dispatch_exec_newmem` 孤儿 stub 及 60 行架构注记，代之 10 行 parity 定论注记；干线 DMA 注释改为 parity 措辞；`VmExecNewmemIn` 导入移除）、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/15-ipc-dispatch.md`（§4.1 表两行合并 + §4.5 重写）
+  +- **Files**: `os/servers/vm/src/ipc/dispatcher.rs`（删 `dispatch_exec_newmem` 孤儿 stub 及 60 行架构注记，代之 10 行 parity 定论注记；干线 DMA 注释改为 parity 措辞；`VmExecNewmemIn` 导入移除）、`rewrite-notes/02-stage-vm/15-ipc-dispatch.md`（§4.1 表两行合并 + §4.5 重写）
+  -> 执行方式：延续 §15 的逐条闭环模式，顺序表在 `notes/rewrite/fork-syscall-rewrite/edge_todo.md` §0（T24-T36）。
+  +> 执行方式：延续 §15 的逐条闭环模式，顺序表在 `rewrite-notes/coordination/edge_todo.md` §0（T24-T36）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/archive/todo-V12-archive-2026-09-09.md -> rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md ：4 行变化 =====
+  -    notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+  +    rewrite-notes/02-stage-vm \
+  -- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§17.4 三条增补）
+  +- 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§17.4 三条增补）
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/doc_rerank_HY4.md -> rewrite-notes/02-stage-vm/doc_rerank_HY4.md ：10 行变化 =====
+  -- **目标目录绝对路径**：`/home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/02-stage-vm`
+  +- **目标目录绝对路径**：`/home/xzhao/github/minix-rs/rewrite-notes/02-stage-vm`
+  -$ wc -l notes/rewrite/fork-syscall-rewrite/02-stage-vm/*.md | tail -1
+  +$ wc -l rewrite-notes/02-stage-vm/*.md | tail -1
+  -$ grep -rn "02-stage-vm" --include="*.md" notes/rewrite/fork-syscall-rewrite/ \
+  -    | grep -v "^notes/rewrite/fork-syscall-rewrite/02-stage-vm/" | wc -l
+  +$ grep -rn "02-stage-vm" --include="*.md" rewrite-notes/ \
+  +    | grep -v "^rewrite-notes/02-stage-vm/" | wc -l
+  -- **跨 stage 引用共 491 行**（`grep -rn "02-stage-vm" notes/rewrite/fork-syscall-rewrite/ | grep -v 本目录`），分布在至少 5 个目录：`16-stage-drivers/plan.md`、`16-stage-drivers/08-log-driver.md`、`16-stage-drivers/05-memory-driver.md`、`07-stage-ds/plan.md`、`01-stage-kernel/*`；
+  +- **跨 stage 引用共 491 行**（`grep -rn "02-stage-vm" rewrite-notes/ | grep -v 本目录`），分布在至少 5 个目录：`16-stage-drivers/plan.md`、`16-stage-drivers/08-log-driver.md`、`16-stage-drivers/05-memory-driver.md`、`07-stage-ds/plan.md`、`01-stage-kernel/*`；
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/doc_rerank_deepseek.md -> rewrite-notes/02-stage-vm/doc_rerank_deepseek.md ：2 行变化 =====
+  -- 目标目录：`notes/rewrite/fork-syscall-rewrite/02-stage-vm/`
+  +- 目标目录：`rewrite-notes/02-stage-vm/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/doc_rerank_glm.md -> rewrite-notes/02-stage-vm/doc_rerank_glm.md ：14 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/02-stage-vm
+  +target_dir(关注的工作目录) = rewrite-notes/02-stage-vm
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/02-stage-vm/` |
+  +| 目标目录 | `rewrite-notes/02-stage-vm/` |
+  -4. **阶段边界材料**：`notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md`（阶段划分与启动因果链）、`edge_todo.md`（E1/E2/E4/E5/E-VFSWIRE/E-RSWIRE/E-VMTLB/E-ISWIRE/E-DMABUF 等 VM 相关条目，2026-09-16 全量对账）、本目录 `plan.md`/`todo.md`（含 WONTFIX 与 defer 清单）。
+  +4. **阶段边界材料**：`rewrite-notes/00-master-plan/README.md`（阶段划分与启动因果链）、`edge_todo.md`（E1/E2/E4/E5/E-VFSWIRE/E-RSWIRE/E-VMTLB/E-ISWIRE/E-DMABUF 等 VM 相关条目，2026-09-16 全量对账）、本目录 `plan.md`/`todo.md`（含 WONTFIX 与 defer 清单）。
+  -$ ls notes/rewrite/fork-syscall-rewrite/02-stage-vm/
+  +$ ls rewrite-notes/02-stage-vm/
+  -$ wc -l notes/rewrite/fork-syscall-rewrite/02-stage-vm/[0-9]*.md
+  +$ wc -l rewrite-notes/02-stage-vm/[0-9]*.md
+  -# 1) notes/rewrite/fork-syscall-rewrite/02-stage-vm/[0-9]*.md + plan.md + todo.md + checklist.md
+  -# 2) notes/rewrite/fork-syscall-rewrite/其它 stage（97 处跨 stage）
+  +# 1) rewrite-notes/02-stage-vm/[0-9]*.md + plan.md + todo.md + checklist.md
+  +# 2) rewrite-notes/其它 stage（97 处跨 stage）
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/doc_rerank_muse.md -> rewrite-notes/02-stage-vm/doc_rerank_muse.md ：12 行变化 =====
+  -target_dir(concerned working directory) = notes/rewrite/fork-syscall-rewrite/02-stage-vm
+  +target_dir(concerned working directory) = rewrite-notes/02-stage-vm
+  -  `notes/rewrite/fork-syscall-rewrite/02-stage-vm/doc_rerank_muse.md`.
+  +  `rewrite-notes/02-stage-vm/doc_rerank_muse.md`.
+  -$ ls notes/rewrite/fork-syscall-rewrite/02-stage-vm/*.md | xargs wc -l
+  +$ ls rewrite-notes/02-stage-vm/*.md | xargs wc -l
+  -$ rg -c "02-stage-vm|01-vm|15-ipc" notes/rewrite/fork-syscall-rewrite/02-stage-vm/*.md
+  +$ rg -c "02-stage-vm|01-vm|15-ipc" rewrite-notes/02-stage-vm/*.md
+  -  13-region-mapping|05-physical-memory|01-vm-init-main" notes/rewrite/
+  +  13-region-mapping|05-physical-memory|01-vm-init-main" rewrite-notes/
+  -  "02-stage-vm" notes/rewrite/fork-syscall-rewrite/01-stage-kernel/*.md` and
+  +  "02-stage-vm" rewrite-notes/01-stage-kernel/*.md` and
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/doc_rerank_qwen.md -> rewrite-notes/02-stage-vm/doc_rerank_qwen.md ：2 行变化 =====
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/02-stage-vm` |
+  +| 目标目录 | `rewrite-notes/02-stage-vm` |
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/00-vm-overview.md -> rewrite-notes/02-stage-vm/draft/00-vm-overview.md ：2 行变化 =====
+  -- [系统核心概念](../../../concepts/README.md) — Endpoint、IPC 等全局概念
+  +- [系统核心概念](../../concepts/README.md) — Endpoint、IPC 等全局概念
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/01-vmproc-struct.md -> rewrite-notes/02-stage-vm/draft/01-vmproc-struct.md ：4 行变化 =====
+  -> **注意**: `endpoint_t` 是全局概念，定义在 `minix/endpoint.h`。详见 [Endpoint 协议](../../../concepts/endpoint.md)。
+  +> **注意**: `endpoint_t` 是全局概念，定义在 `minix/endpoint.h`。详见 [Endpoint 协议](../../concepts/endpoint.md)。
+  -> **详见**: [系统核心概念](../../../concepts/README.md) 中的相关文档。
+  +> **详见**: [系统核心概念](../../concepts/README.md) 中的相关文档。
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/17-vm-brk.md -> rewrite-notes/02-stage-vm/draft/17-vm-brk.md ：2 行变化 =====
+  -> **注意**: Minix3 的 vmproc 结构体中**没有** `vm_brk`、`vm_data_top`、`vm_stack_low` 等堆专用字段。堆顶地址隐含在数据段 vir_region 的 `vaddr + length` 中，由 `map_region_extend_upto_v` 通过 AVL 树查找区域并扩展来管理。vmproc 中与内存统计相关的字段是 `vm_total` 和 `vm_total_max`（见 [vmproc.h](../../../../../minix3/minix/servers/vm/vmproc.h)）。
+  +> **注意**: Minix3 的 vmproc 结构体中**没有** `vm_brk`、`vm_data_top`、`vm_stack_low` 等堆专用字段。堆顶地址隐含在数据段 vir_region 的 `vaddr + length` 中，由 `map_region_extend_upto_v` 通过 AVL 树查找区域并扩展来管理。vmproc 中与内存统计相关的字段是 `vm_total` 和 `vm_total_max`（见 [vmproc.h](../../../minix3/minix/servers/vm/vmproc.h)）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/draft/99-global-concepts.md -> rewrite-notes/02-stage-vm/draft/99-global-concepts.md ：4 行变化 =====
+  -- [系统核心概念 README](../../../concepts/README.md) - 概念文档总览
+  -- [Endpoint 协议详解](../../../concepts/endpoint.md) - 完整的协议规范
+  +- [系统核心概念 README](../../concepts/README.md) - 概念文档总览
+  +- [Endpoint 协议详解](../../concepts/endpoint.md) - 完整的协议规范
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/plan.md -> rewrite-notes/02-stage-vm/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/02-stage-vm/`
+  +> **范围**: `rewrite-notes/02-stage-vm/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/02-stage-vm/todo.md -> rewrite-notes/02-stage-vm/todo.md ：4 行变化 =====
+  -$ python3 tools/coverage-extract/coverage-extract.py vm notes/rewrite/fork-syscall-rewrite/02-stage-vm \
+  +$ python3 tools/coverage-extract/coverage-extract.py vm rewrite-notes/02-stage-vm \
+  -- 跨 stage 条目唯一入口：`notes/rewrite/fork-syscall-rewrite/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
+  +- 跨 stage 条目唯一入口：`rewrite-notes/coordination/edge_todo.md`（§18.4 两条增补；§19 V14-P2-1 为 VM 侧活指针，联动 E-ISWIRE / E1 / E5）
+===== git-mv notes/rewrite/fork-syscall-rewrite/03-stage-rs/20-rs-sef-framework.md -> rewrite-notes/03-stage-rs/20-rs-sef-framework.md ：50 行变化 =====
+  -> **前置**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md`（RS 是谁、boot 排第几）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md`（主循环的收信形状）、`notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md`（握手协议的另一半：RS 侧）
+  +> **前置**: `rewrite-notes/03-stage-rs/00-rs-overview.md`（RS 是谁、boot 排第几）、`rewrite-notes/03-stage-rs/06-rs-main-loop.md`（主循环的收信形状）、`rewrite-notes/03-stage-rs/12-rs-init-run.md`（握手协议的另一半：RS 侧）
+  -> - 某个具体服务注册了哪几个回调、每个回调里做了什么 → 各服务文档的首章（例如 `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md`）
+  +> - 某个具体服务注册了哪几个回调、每个回调里做了什么 → 各服务文档的首章（例如 `rewrite-notes/04-stage-pm/01-pm-init-main.md`）
+  -按 LP64（x86-64）对齐推导这个结构体的尺寸：5 个 4 字节字段占 0–19，指针要求 8 字节对齐故插入 4 字节填充，三个 8 字节量（两个指针 + 一个 `size_t`）占 24–47，最后 2 个 `int` 占 48–55，**总计 56 字节**。同一份定义在 32 位下是 40 字节（无填充、指针 4 字节）。这就是本重写项目里"结构体按 64 位重排"的判例之一（同类判断见 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/17-rs-state-data.md`）。
+  +按 LP64（x86-64）对齐推导这个结构体的尺寸：5 个 4 字节字段占 0–19，指针要求 8 字节对齐故插入 4 字节填充，三个 8 字节量（两个指针 + 一个 `size_t`）占 24–47，最后 2 个 `int` 占 48–55，**总计 56 字节**。同一份定义在 32 位下是 40 字节（无填充、指针 4 字节）。这就是本重写项目里"结构体按 64 位重排"的判例之一（同类判断见 `rewrite-notes/03-stage-rs/17-rs-state-data.md`）。
+  -**第一段：撤除 IPC 过滤。** 内核侧这一请求的处理是 `clear_ipc_filters(caller)`（`minix3/minix/kernel/system/do_statectl.c` 的 `SYS_STATE_CLEAR_IPC_FILTERS` 分支，L42，工具生成；请求号定义在 `minix3/minix/include/minix/com.h:SYS_STATE_CLEAR_IPC_FILTERS`）。过滤器的语义是"只放行匹配项，其余收不到"，挂着它就收不到全量业务消息。谁会给一个进程装过滤器？当前源码里加白名单的调用方有 VM（`minix3/minix/se
+  +**第一段：撤除 IPC 过滤。** 内核侧这一请求的处理是 `clear_ipc_filters(caller)`（`minix3/minix/kernel/system/do_statectl.c` 的 `SYS_STATE_CLEAR_IPC_FILTERS` 分支，L42，工具生成；请求号定义在 `minix3/minix/include/minix/com.h:SYS_STATE_CLEAR_IPC_FILTERS`）。过滤器的语义是"只放行匹配项，其余收不到"，挂着它就收不到全量业务消息。谁会给一个进程装过滤器？当前源码里加白名单的调用方有 VM（`minix3/minix/se
+  -`ipc_sendrec` 是"发送并等回复"的合成调用：本进程发出后停在回复相位，直到 RS 处理完并回应。这正是 §1.1 那个矛盾的另一面——**出生回报是一次请求-应答，不是一条通知**。如果这里退化成单向 `ipc_send`，RS 的回应就成了没人认领的消息，会被当成新请求处理，进而产生"回声投回 RS"的错乱；本重写项目实现这条腿时踩过的具体坑与取证记录见 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` 的 B9 / B9b 两节；C 真值是确定的：默认腿必须是 sendrec。
+  +`ipc_sendrec` 是"发送并等回复"的合成调用：本进程发出后停在回复相位，直到 RS 处理完并回应。这正是 §1.1 那个矛盾的另一面——**出生回报是一次请求-应答，不是一条通知**。如果这里退化成单向 `ipc_send`，RS 的回应就成了没人认领的消息，会被当成新请求处理，进而产生"回声投回 RS"的错乱；本重写项目实现这条腿时踩过的具体坑与取证记录见 `rewrite-notes/coordination/NK4C-WORKLOG.md` 的 B9 / B9b 两节；C 真值是确定的：默认腿必须是 sendrec。
+  -默认回调就是"回一条通知给发探针的人"，另一个现成答案 `sef_cb_ping_reply_null` 什么都不做——登记它等于自愿让 RS 以为自己死了。这一对是框架里少见的"默认即正确、显式登记才是选择"的臂。RS 多久探一次、探不到怎么处置，归 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md`。
+  +默认回调就是"回一条通知给发探针的人"，另一个现成答案 `sef_cb_ping_reply_null` 什么都不做——登记它等于自愿让 RS 以为自己死了。这一对是框架里少见的"默认即正确、显式登记才是选择"的臂。RS 多久探一次、探不到怎么处置，归 `rewrite-notes/03-stage-rs/07-rs-period-heartbeat.md`。
+  -三点性质：① 只有信号管理器进程会调用 `sys_getksig`，别的进程没有代理权；② `sys_endksig(target)` 是"投递完成"的确认，若回调中途发现目标死了（`EDEADEPT`）就**不发这个确认**，信号留在内核等下次；③ 外层 `while(TRUE)` 会一直抽干内核里的待处理信号才回到收信循环——所以一次通知可能引发多轮代理。谁充当信号管理器、PM 在这条链上的分工归 `notes/rewrite/fork-syscall-rewrite/04-stage-pm/13-signal-flow.md`；本框架只负责"抽干并回调"。
+  -
+  -库给的现成处理回调有三个极端：`sef_cb_signal_handler_null`（什么都不做）、`sef_cb_signal_handler_term`（只认 `SIGTERM`，收到就 `sef_exit(1)`，其它忽略）、`sef_cb_signal_handler_posix_default`（把可忽略的 `SIGCHLD`/`SIGWINCH`/`SIGCONT`/`SIGTSTP`/`SIGTTIN`/`SIGTTOU` 放过、其余一律终止，但**内核信号不放**，判据 `IS_SIGK`，`minix3/sys/sys/signal.h:IS_SIGK`）——因为内核信号
+  +三点性质：① 只有信号管理器进程会调用 `sys_getksig`，别的进程没有代理权；② `sys_endksig(target)` 是"投递完成"的确认，若回调中途发现目标死了（`EDEADEPT`）就**不发这个确认**，信号留在内核等下次；③ 外层 `while(TRUE)` 会一直抽干内核里的待处理信号才回到收信循环——所以一次通知可能引发多轮代理。谁充当信号管理器、PM 在这条链上的分工归 `rewrite-notes/04-stage-pm/13-signal-flow.md`；本框架只负责"抽干并回调"。
+  +
+  +库给的现成处理回调有三个极端：`sef_cb_signal_handler_null`（什么都不做）、`sef_cb_signal_handler_term`（只认 `SIGTERM`，收到就 `sef_exit(1)`，其它忽略）、`sef_cb_signal_handler_posix_default`（把可忽略的 `SIGCHLD`/`SIGWINCH`/`SIGCONT`/`SIGTSTP`/`SIGTTIN`/`SIGTTOU` 放过、其余一律终止，但**内核信号不放**，判据 `IS_SIGK`，`minix3/sys/sys/signal.h:IS_SIGK`）——因为内核信号
+  -- 热更新与状态搬移臂（§2.3.9、§2.3.10）依赖本项目的 `live-update` 战役（RS 侧开关已建模为 cargo feature，归 `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`），库内提前实现会得到一堆永不被调用的分支（死代码）。
+  +- 热更新与状态搬移臂（§2.3.9、§2.3.10）依赖本项目的 `live-update` 战役（RS 侧开关已建模为 cargo feature，归 `rewrite-notes/03-stage-rs/16-rs-live-update.md`），库内提前实现会得到一堆永不被调用的分支（死代码）。
+  -还有一个形状上的选择值得注意：返回值类型 `os/libs/minix-sef/src/lib.rs:SefReceive` 把"来源 + 消息 + 状态字 + 分类结论"打包返回，而 C 把来源与状态字写回调用方给的指针。后者的代价是调用方必须自己记住去看 `status`，前者把"分类结论"这个信息并入了类型——服务写 `match recv.event` 而不是 `if is_ipc_notify(status) && m_source == RS`。这不是风格差异：前者让"漏看状态字"这类错误在编译期就不可能出现（本项目的 VM 服务器曾因误把通知当业务请求处理踩过同类问题，归 `n
+  +还有一个形状上的选择值得注意：返回值类型 `os/libs/minix-sef/src/lib.rs:SefReceive` 把"来源 + 消息 + 状态字 + 分类结论"打包返回，而 C 把来源与状态字写回调用方给的指针。后者的代价是调用方必须自己记住去看 `status`，前者把"分类结论"这个信息并入了类型——服务写 `match recv.event` 而不是 `if is_ipc_notify(status) && m_source == RS`。这不是风格差异：前者让"漏看状态字"这类错误在编译期就不可能出现（本项目的 VM 服务器曾因误把通知当业务请求处理踩过同类问题，归 `r
+  -4. **异步腿的一次性语义**（推自 §2.3.5 第二条腿与 VM）：首条回报异步、后续回到阻塞；重写侧目前只 VM 带这个豁免，回归面应限定在 VM（归 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md`）。
+  -5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧仍无 `sef_cancel` 等价物（库层没有「本轮不想再收」的入口），但服务侧的形状已有实例：IS 把回调里的决定当成 `LifecycleAction` 一步步传上主循环——回调置位、`step()` 提前返回、`run()` 才真的 `exit(0)`（`os/servers/is/src/lib.rs:step`/`run`，归 `notes/rewrite/fork-syscall-rewrite/08-stage-is/01-is-init-main.md` §2.8）。这
+  +4. **异步腿的一次性语义**（推自 §2.3.5 第二条腿与 VM）：首条回报异步、后续回到阻塞；重写侧目前只 VM 带这个豁免，回归面应限定在 VM（归 `rewrite-notes/02-stage-vm/01-vm-init-main.md`）。
+  +5. **从信号回调里退出主循环**（推自 §2.3.6 第 1 点的 `sef_cancel`）：重写侧仍无 `sef_cancel` 等价物（库层没有「本轮不想再收」的入口），但服务侧的形状已有实例：IS 把回调里的决定当成 `LifecycleAction` 一步步传上主循环——回调置位、`step()` 提前返回、`run()` 才真的 `exit(0)`（`os/servers/is/src/lib.rs:step`/`run`，归 `rewrite-notes/08-stage-is/01-is-init-main.md` §2.8）。这带着一个必须记下的偏离：C 是在 `sef
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/00-rs-overview.md` —— RS 全局心智模型与机制归属导航
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/01-rs-boot-init.md` —— RS 自己的 `sef_local_startup` 与四步 boot（本档的上游调用点）
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/06-rs-main-loop.md` —— 主循环收信形状（理解"门口拦截"的前置）
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/07-rs-period-heartbeat.md` —— 探针与心跳的发起侧
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/12-rs-init-run.md` —— 出生握手的 RS 侧半
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/16-rs-live-update.md`、`…/17-rs-state-data.md`、`…/18-rs-self-lifecycle.md` —— 热更新的状态机、数据形状、RS 自身路径
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/19-rs-external-interfaces.md` —— libsys 动词签名面
+  -- `notes/rewrite/fork-syscall-rewrite/03-stage-rs/99-rs-global-concepts.md` —— `SEF_*` 常量的权威定义位置
+  -- `notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md` —— VM 的异步豁免与 `SIGKMEM` 使用方
+  -- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/01-pm-init-main.md` —— PM 视角的注册表与 `process_init` 路径
+  -- `notes/rewrite/fork-syscall-rewrite/04-stage-pm/13-signal-flow.md` —— 信号在 PM/内核/信号管理器之间的完整流向
+  -- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/` 与 `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/` —— 八个文件系统二进制与驱动框架的事件循环
+  +- `rewrite-notes/03-stage-rs/00-rs-overview.md` —— RS 全局心智模型与机制归属导航
+  +- `rewrite-notes/03-stage-rs/01-rs-boot-init.md` —— RS 自己的 `sef_local_startup` 与四步 boot（本档的上游调用点）
+  …（余 10 行）
+===== git-mv notes/rewrite/fork-syscall-rewrite/03-stage-rs/doc_rerank_deepseek.md -> rewrite-notes/03-stage-rs/doc_rerank_deepseek.md ：4 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/03-stage-rs
+  +target_dir(关注的工作目录) = rewrite-notes/03-stage-rs
+  -rg -l '01-rs-boot-init\.md'   --glob '!notes/rewrite/fork-syscall-rewrite/03-stage-rs/archive/**' | \
+  +rg -l '01-rs-boot-init\.md'   --glob '!rewrite-notes/03-stage-rs/archive/**' | \
+===== git-mv notes/rewrite/fork-syscall-rewrite/03-stage-rs/doc_rerank_glm.md -> rewrite-notes/03-stage-rs/doc_rerank_glm.md ：2 行变化 =====
+  -- **目标目录**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/`
+  +- **目标目录**: `rewrite-notes/03-stage-rs/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/03-stage-rs/doc_rerank_muse.md -> rewrite-notes/03-stage-rs/doc_rerank_muse.md ：2 行变化 =====
+  -- Target dir: notes/rewrite/fork-syscall-rewrite/03-stage-rs/
+  +- Target dir: rewrite-notes/03-stage-rs/
+===== git-mv notes/rewrite/fork-syscall-rewrite/03-stage-rs/doc_rerank_qwen.md -> rewrite-notes/03-stage-rs/doc_rerank_qwen.md ：10 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/03-stage-rs`
+  +- **目标目录**：`rewrite-notes/03-stage-rs`
+  -| GAP-2 | SEF 框架作为 RS 前置概念无独立归属，分散在 01 §1.3/§2.2 + 12 + 18 + 19 | K-125 分散；**本轮取证补充**：`wc -l minix3/minix/lib/libsys/sef*.c` = 2210 行（9 个 `.c`）；`grep SEF notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9]*.md` 只命中 `plan.md` 的排除/映射行，正式篇章 0 讲述；`os/libs/minix-sef/src/lib.rs`（438 行）只实现 `sef_rece
+  +| GAP-2 | SEF 框架作为 RS 前置概念无独立归属，分散在 01 §1.3/§2.2 + 12 + 18 + 19 | K-125 分散；**本轮取证补充**：`wc -l minix3/minix/lib/libsys/sef*.c` = 2210 行（9 个 `.c`）；`grep SEF rewrite-notes/14-stage-runtime/[0-9]*.md` 只命中 `plan.md` 的排除/映射行，正式篇章 0 讲述；`os/libs/minix-sef/src/lib.rs`（438 行）只实现 `sef_receive_status` 拦截核心 + pi
+  -  5. **出生回报三形态**：默认阻塞 `ipc_sendrec(RS_PROC_NR)`（sef_init.c:458-466）/ VM 的一次性异步 `asynsend3(RS_PROC_NR, m, AMF_NOREPLY)`（sef_init.c:471-483，避开 boot 期缺页互等）/ null；并对本项目已做过的相关缺陷记由（send 与 sendrec 之分导致野消息与 `receive` 回 EIO，见 `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md` B9/B9b 节）。
+  +  5. **出生回报三形态**：默认阻塞 `ipc_sendrec(RS_PROC_NR)`（sef_init.c:458-466）/ VM 的一次性异步 `asynsend3(RS_PROC_NR, m, AMF_NOREPLY)`（sef_init.c:471-483，避开 boot 期缺页互等）/ null；并对本项目已做过的相关缺陷记由（send 与 sendrec 之分导致野消息与 `receive` 回 EIO，见 `rewrite-notes/coordination/NK4C-WORKLOG.md` B9/B9b 节）。
+  -- **验收标准**：① 01 与 20 一分为二不重叠——01 只答"RS 注册哪 7 个、为何全量"，20 只答"框架怎么调它们、对端是谁、拦了什么"；② 四类拦截的每一条判据均可 `grep` 到 C 锚点；③ 分账行数与 `wc -l minix3/minix/lib/libsys/sef*.c` 一致；④ 全篇不出现"本服务初始化做了什么"（那是各机制篇的活）；⑤ GAP-5 落地后，`grep -rn "SEF" notes/rewrite/fork-syscall-rewrite/*/01-*.md` 命中处均为简述 + 指向本篇的绝对路径链接；⑥ 本篇无对 `.design/
+  +- **验收标准**：① 01 与 20 一分为二不重叠——01 只答"RS 注册哪 7 个、为何全量"，20 只答"框架怎么调它们、对端是谁、拦了什么"；② 四类拦截的每一条判据均可 `grep` 到 C 锚点；③ 分账行数与 `wc -l minix3/minix/lib/libsys/sef*.c` 一致；④ 全篇不出现"本服务初始化做了什么"（那是各机制篇的活）；⑤ GAP-5 落地后，`grep -rn "SEF" rewrite-notes/*/01-*.md` 命中处均为简述 + 指向本篇的绝对路径链接；⑥ 本篇无对 `.design/` / `doc_rerank_*` 的引
+  -| **后续批次（GAP-5）**：跨 stage 的 `01-*-init-main.md` SEF 简述化 | 实测 `SEF`/`sef_` 命中量（只计编号正式篇）：02-vm 161 / 04-pm 96 / 05-vfs 93 / 08-is 71 / 06-sched 38 / 11-devman 33 / 07-ds 30 / 13-ipc 22 / 12-input 14 / 10-mib 13 / 15-fs 12 / 16-drivers 11 / 17-net 9 / 09-init 3；**01-stage-kernel 正式篇 0 命中（无需处理）** | 框架原
+  +| **后续批次（GAP-5）**：跨 stage 的 `01-*-init-main.md` SEF 简述化 | 实测 `SEF`/`sef_` 命中量（只计编号正式篇）：02-vm 161 / 04-pm 96 / 05-vfs 93 / 08-is 71 / 06-sched 38 / 11-devman 33 / 07-ds 30 / 13-ipc 22 / 12-input 14 / 10-mib 13 / 15-fs 12 / 16-drivers 11 / 17-net 9 / 09-init 3；**01-stage-kernel 正式篇 0 命中（无需处理）** | 框架原
+===== git-mv notes/rewrite/fork-syscall-rewrite/03-stage-rs/plan.md -> rewrite-notes/03-stage-rs/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/03-stage-rs/`
+  +> **范围**: `rewrite-notes/03-stage-rs/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/03-stage-rs/todo.md -> rewrite-notes/03-stage-rs/todo.md ：6 行变化 =====
+  -$ ls notes/rewrite/fork-syscall-rewrite/03-stage-rs/.design/ | grep -c "outline.v"     # 21
+  -$ ls notes/rewrite/fork-syscall-rewrite/03-stage-rs/.design/ | grep -c "outline-review.v" # 21
+  -$ ls notes/rewrite/fork-syscall-rewrite/03-stage-rs/.design/ | grep -c "design.v"      # 21
+  +$ ls rewrite-notes/03-stage-rs/.design/ | grep -c "outline.v"     # 21
+  +$ ls rewrite-notes/03-stage-rs/.design/ | grep -c "outline-review.v" # 21
+  +$ ls rewrite-notes/03-stage-rs/.design/ | grep -c "design.v"      # 21
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/14-itimer.md -> rewrite-notes/04-stage-pm/14-itimer.md ：8 行变化 =====
+  -> - 内核 `minix_timer_t` 队列与 `TMRDIFF_MAX` 时序（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `kernel/timers.c` 队列管理）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`
+  -> - `CLOCK` 时钟源与 `system_hz` 的获取（`sys_hz`/`system_hz` 的 `libsys` 路径）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`
+  +> - 内核 `minix_timer_t` 队列与 `TMRDIFF_MAX` 时序（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `kernel/timers.c` 队列管理）—— `rewrite-notes/01-stage-kernel/15-clock-timer.md`
+  +> - `CLOCK` 时钟源与 `system_hz` 的获取（`sys_hz`/`system_hz` 的 `libsys` 路径）—— `rewrite-notes/01-stage-kernel/21-clock-device.md`
+  -阅读顺序提示：若想先理解“内核计时到期如何发信号”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）；若想理解“信号到达后如何重检”，下一站 `13-signal-flow.md` 的 `check_pending` 与 `restart_sigs`。
+  +阅读顺序提示：若想先理解“内核计时到期如何发信号”，下一站 `rewrite-notes/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）；若想理解“信号到达后如何重检”，下一站 `13-signal-flow.md` 的 `check_pending` 与 `restart_sigs`。
+  -- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`CLOCK` 时钟源与 `system_hz`）
+  +- 内核接口：`rewrite-notes/01-stage-kernel/15-clock-timer.md`（`set_timer/expire_timers/tmr_exp_time/getticks/sys_vtimer` 的 `minix_timer_t` 队列与 `TMRDIFF_MAX`）、`rewrite-notes/01-stage-kernel/21-clock-device.md`（`CLOCK` 时钟源与 `system_hz`）
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/17-exec.md -> rewrite-notes/04-stage-pm/17-exec.md ：2 行变化 =====
+  -> - 内核 `sys_exec` 的 `proc` 表 `p_reg` 重置（`p_reg` 的 `SP/PC` 重置）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/19-syscall-signal` 的 `sys_exec` 与 `19` 的 `m_context`
+  +> - 内核 `sys_exec` 的 `proc` 表 `p_reg` 重置（`p_reg` 的 `SP/PC` 重置）—— `rewrite-notes/01-stage-kernel/19-syscall-signal` 的 `sys_exec` 与 `19` 的 `m_context`
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/18-trace.md -> rewrite-notes/04-stage-pm/18-trace.md ：2 行变化 =====
+  -> - 内核 `sys_trace` 实现（`T_STOP/GET/SET` 寄存器/内存拷贝）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel` 的 `kernel/system/do_trace.c`
+  +> - 内核 `sys_trace` 实现（`T_STOP/GET/SET` 寄存器/内存拷贝）—— `rewrite-notes/01-stage-kernel` 的 `kernel/system/do_trace.c`
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/19-time.md -> rewrite-notes/04-stage-pm/19-time.md ：6 行变化 =====
+  -> - 内核 `do_settime` 的 `now==0→adjtime_delta` 渐变与 `boottime<=sec` 的 `set_boottime` 分支（`kernel/system/do_settime.c:25-52` `set_realtime/set_boottime/adjtime_delta`）—— `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`
+  +> - 内核 `do_settime` 的 `now==0→adjtime_delta` 渐变与 `boottime<=sec` 的 `set_boottime` 分支（`kernel/system/do_settime.c:25-52` `set_realtime/set_boottime/adjtime_delta`）—— `rewrite-notes/01-stage-kernel/21-clock-device.md`
+  -阅读顺序提示：若想先理解“内核侧 `settime` 如何改 `boottime/realtime`”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`kernel/system/do_settime.c:29-52` 的 `adjtime_delta/set_boottime/set_realtime`）；若想理解“定时器如何用 `ticks` 定周期”，下一站 `14-itimer.md` 的 `set_alarm(ticks)` 的 `ticks` 周期。
+  +阅读顺序提示：若想先理解“内核侧 `settime` 如何改 `boottime/realtime`”，下一站 `rewrite-notes/01-stage-kernel/21-clock-device.md`（`kernel/system/do_settime.c:29-52` 的 `adjtime_delta/set_boottime/set_realtime`）；若想理解“定时器如何用 `ticks` 定周期”，下一站 `14-itimer.md` 的 `set_alarm(ticks)` 的 `ticks` 周期。
+  -- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-clock-device.md`（`kclockinfo.{uptime,realtime,boottime}` 的三值与 `do_settime` 的 `adjtime_delta` 渐变）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/15-clock-timer.md`（`kclockinfo.hz/system_hz` 的 `DEFAULT_HZ`）
+  +- 内核接口：`rewrite-notes/01-stage-kernel/21-clock-device.md`（`kclockinfo.{uptime,realtime,boottime}` 的三值与 `do_settime` 的 `adjtime_delta` 渐变）、`rewrite-notes/01-stage-kernel/15-clock-timer.md`（`kclockinfo.hz/system_hz` 的 `DEFAULT_HZ`）
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/20-misc-queries.md -> rewrite-notes/04-stage-pm/20-misc-queries.md ：4 行变化 =====
+  -阅读顺序提示：若想先理解“内核侧 `sys_times` 如何拉取 `p_utime`”，下一站 `notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）；若想理解“`vm_getrusage` 如何填 `ru_maxrss`”，下一站 `notes/rewrite/fork-syscall-rewrite/02-stage-vm/20-vm-exit.md`（`vm_getrusage` 的地址空间扩展）。
+  +阅读顺序提示：若想先理解“内核侧 `sys_times` 如何拉取 `p_utime`”，下一站 `rewrite-notes/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）；若想理解“`vm_getrusage` 如何填 `ru_maxrss`”，下一站 `rewrite-notes/02-stage-vm/20-vm-exit.md`（`vm_getrusage` 的地址空间扩展）。
+  -- 内核接口：`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/31-fpu-context-switching.md`（`sys_get/setmcontext` 的 `mcontext_t` 句柄）
+  +- 内核接口：`rewrite-notes/01-stage-kernel/21-syscall-clock.md`（`sys_times` 的 `p_user_time/p_sys_time`）、`rewrite-notes/01-stage-kernel/31-fpu-context-switching.md`（`sys_get/setmcontext` 的 `mcontext_t` 句柄）
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/doc_rerank_HY4.md -> rewrite-notes/04-stage-pm/doc_rerank_HY4.md ：2 行变化 =====
+  -  notes/rewrite/fork-syscall-rewrite/04-stage-pm \
+  +  rewrite-notes/04-stage-pm \
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/doc_rerank_deepseek.md -> rewrite-notes/04-stage-pm/doc_rerank_deepseek.md ：2 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/04-stage-pm
+  +target_dir(关注的工作目录) = rewrite-notes/04-stage-pm
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/doc_rerank_glm.md -> rewrite-notes/04-stage-pm/doc_rerank_glm.md ：8 行变化 =====
+  -- **目标目录**: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/`
+  +- **目标目录**: `rewrite-notes/04-stage-pm/`
+  -**范围外**: 其它 stage 目录（01-stage-kernel、02-stage-vm、03-stage-rs、05-stage-vfs、06-stage-sched 等）的正文；`minix3/` 内核侧 `sys_*` 系统任务实现；`os/libs/minix-types`、`os/libs/minix-sys` 的内部实现（只取 PM 消费的接口面）；`notes/study/pm/` 早期笔记。
+  +**范围外**: 其它 stage 目录（01-stage-kernel、02-stage-vm、03-stage-rs、05-stage-vfs、06-stage-sched 等）的正文；`minix3/` 内核侧 `sys_*` 系统任务实现；`os/libs/minix-types`、`os/libs/minix-sys` 的内部实现（只取 PM 消费的接口面）；`study-notes/pm/` 早期笔记。
+  -grep -rn "04-stage-pm/[0-9][0-9]-" --include="*.md" notes/rewrite/fork-syscall-rewrite/ | grep -v "^.../04-stage-pm/" | wc -l
+  +grep -rn "04-stage-pm/[0-9][0-9]-" --include="*.md" rewrite-notes/ | grep -v "^.../04-stage-pm/" | wc -l
+  -- **建议批量修改方式**: (1) 先落新文件（B 相重建），旧文件整体归档；(2) 用 `rg -l '0[1456]-[a-z-]+\.md|99-global-concepts' notes/rewrite/fork-syscall-rewrite/ os/servers/pm/src` 生成受影响清单；(3) 按上表映射脚本化替换后逐处人工复核上下文（替换词可能是正文叙述而非引用）；(4) 跨 stage 引用单独一轮处理并在两 stage 的 todo.md 记账。
+  +- **建议批量修改方式**: (1) 先落新文件（B 相重建），旧文件整体归档；(2) 用 `rg -l '0[1456]-[a-z-]+\.md|99-global-concepts' rewrite-notes/ os/servers/pm/src` 生成受影响清单；(3) 按上表映射脚本化替换后逐处人工复核上下文（替换词可能是正文叙述而非引用）；(4) 跨 stage 引用单独一轮处理并在两 stage 的 todo.md 记账。
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/doc_rerank_muse.md -> rewrite-notes/04-stage-pm/doc_rerank_muse.md ：2 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/04-stage-pm
+  +target_dir(关注的工作目录) = rewrite-notes/04-stage-pm
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/doc_rerank_qwen.md -> rewrite-notes/04-stage-pm/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/04-stage-pm/`
+  +- **目标目录**：`rewrite-notes/04-stage-pm/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/draft/mproc-design.md -> rewrite-notes/04-stage-pm/draft/mproc-design.md ：2 行变化 =====
+  -- 状态分析：`notes/rewrite/fork-syscall-rewrite/mp-flags-analysis.md`
+  +- 状态分析：`rewrite-notes/mp-flags-analysis.md`
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/plan.md -> rewrite-notes/04-stage-pm/plan.md ：6 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/04-stage-pm/`
+  +> **范围**: `rewrite-notes/04-stage-pm/`
+  -> **对照**: `01-stage-kernel/`（讲述结构参照）、`minix3/minix/servers/pm/`（ground truth）、`os/servers/pm/src/`（Rust 实现）、`notes/study/pm/`（早期学习笔记，素材）
+  +> **对照**: `01-stage-kernel/`（讲述结构参照）、`minix3/minix/servers/pm/`（ground truth）、`os/servers/pm/src/`（Rust 实现）、`study-notes/pm/`（早期学习笔记，素材）
+  -- `notes/study/pm/` — 早期 PM 学习笔记（素材）
+  +- `study-notes/pm/` — 早期 PM 学习笔记（素材）
+===== git-mv notes/rewrite/fork-syscall-rewrite/04-stage-pm/todo.md -> rewrite-notes/04-stage-pm/todo.md ：4 行变化 =====
+  -> 跨阶段条目：抽取判定规则与映射见 §9，登记于 `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
+  +> 跨阶段条目：抽取判定规则与映射见 §9，登记于 `rewrite-notes/coordination/edge_todo.md`（E1-E9 + E-VMMCPWIRE + E-VMMOCK 等）。
+  -  notes/rewrite/fork-syscall-rewrite/04-stage-pm \
+  +  rewrite-notes/04-stage-pm \
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/archive/todo-R1-archive-2026-09-09.md -> rewrite-notes/05-stage-vfs/archive/todo-R1-archive-2026-09-09.md ：2 行变化 =====
+  -    notes/rewrite/fork-syscall-rewrite/05-stage-vfs \
+  +    rewrite-notes/05-stage-vfs \
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/doc_rerank_HY4.md -> rewrite-notes/05-stage-vfs/doc_rerank_HY4.md ：4 行变化 =====
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/05-stage-vfs/` |
+  +| 目标目录 | `rewrite-notes/05-stage-vfs/` |
+  -| stage 外 → 05 的文档引用 | 指向具体编号文档 **45 处**（热点：`22-sdev.md` 6、`14-filedes.md` 6、`18-mount.md` 4、`00-vfs-overview.md` 4、`13-path-lookup.md` 3、`02-fproc-struct.md` 3）；另有 `../05-stage-vfs` 目录级引用 25 处 | 目录级引用不动（目录名不变）；编号级引用按 §8.1 替换 | `grep -rEo "05-stage-vfs/[0-9]{2}-[a-z0-9-]+\.md" notes/rewrite/fork-sy
+  +| stage 外 → 05 的文档引用 | 指向具体编号文档 **45 处**（热点：`22-sdev.md` 6、`14-filedes.md` 6、`18-mount.md` 4、`00-vfs-overview.md` 4、`13-path-lookup.md` 3、`02-fproc-struct.md` 3）；另有 `../05-stage-vfs` 目录级引用 25 处 | 目录级引用不动（目录名不变）；编号级引用按 §8.1 替换 | `grep -rEo "05-stage-vfs/[0-9]{2}-[a-z0-9-]+\.md" rewrite-notes --inclu
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/doc_rerank_deepseek.md -> rewrite-notes/05-stage-vfs/doc_rerank_deepseek.md ：4 行变化 =====
+  -- 目标目录：`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/`
+  +- 目标目录：`rewrite-notes/05-stage-vfs/`
+  -$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" notes/rewrite/fork-syscall-rewrite/05-stage-vfs/*.md | wc -l
+  +$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" rewrite-notes/05-stage-vfs/*.md | wc -l
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/doc_rerank_glm.md -> rewrite-notes/05-stage-vfs/doc_rerank_glm.md ：2 行变化 =====
+  -目标目录 = notes/rewrite/fork-syscall-rewrite/05-stage-vfs/
+  +目标目录 = rewrite-notes/05-stage-vfs/
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/doc_rerank_muse.md -> rewrite-notes/05-stage-vfs/doc_rerank_muse.md ：6 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/05-stage-vfs/
+  +target_dir(关注的工作目录) = rewrite-notes/05-stage-vfs/
+  -$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" notes/rewrite/fork-syscall-rewrite/05-stage-vfs/*.md | wc -l
+  +$ grep -rhoE "[0-9]{2}-[a-z0-9-]+\.md" rewrite-notes/05-stage-vfs/*.md | wc -l
+  -$ grep -rn "18-syscall-copy" notes/rewrite/fork-syscall-rewrite/05-stage-vfs/*.md | wc -l
+  +$ grep -rn "18-syscall-copy" rewrite-notes/05-stage-vfs/*.md | wc -l
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/doc_rerank_qwen.md -> rewrite-notes/05-stage-vfs/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/`
+  +- **目标目录**：`rewrite-notes/05-stage-vfs/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/plan.md -> rewrite-notes/05-stage-vfs/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/05-stage-vfs/`
+  +> **范围**: `rewrite-notes/05-stage-vfs/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/05-stage-vfs/todo.md -> rewrite-notes/05-stage-vfs/todo.md ：62 行变化 =====
+  -$ ls notes/rewrite/fork-syscall-rewrite/05-stage-vfs/.design/*-outline.v*.md | wc -l   → 31
+  +$ ls rewrite-notes/05-stage-vfs/.design/*-outline.v*.md | wc -l   → 31
+  -$ python3 tools/coverage-extract/coverage-extract.py vfs notes/rewrite/fork-syscall-rewrite/05-stage-vfs \
+  +$ python3 tools/coverage-extract/coverage-extract.py vfs rewrite-notes/05-stage-vfs \
+  -- **File**：`os/servers/vfs/src/request.rs`（:6 模块注释 / :14-19 FS_BASE 常量与文档 / 测试区）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/12-request-wrappers.md`（13 处数值与锚点）。
+  +- **File**：`os/servers/vfs/src/request.rs`（:6 模块注释 / :14-19 FS_BASE 常量与文档 / 测试区）、`rewrite-notes/05-stage-vfs/12-request-wrappers.md`（13 处数值与锚点）。
+  -- **File**：`os/servers/vfs/src/request.rs`（:6/:30/:125 三处注释）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/12-request-wrappers.md`（12 处计数与 1 处虚构测试名）。
+  +- **File**：`os/servers/vfs/src/request.rs`（:6/:30/:125 三处注释）、`rewrite-notes/05-stage-vfs/12-request-wrappers.md`（12 处计数与 1 处虚构测试名）。
+  -- **File**：`os/servers/vfs/src/filedes.rs`（close_fd :166-190 + 模块注释 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（标题/intro/§1.4/小结/D4/测试表 7 处）。
+  +- **File**：`os/servers/vfs/src/filedes.rs`（close_fd :166-190 + 模块注释 + 测试）、`rewrite-notes/05-stage-vfs/14-filedes.md`（标题/intro/§1.4/小结/D4/测试表 7 处）。
+  -- **File**：`os/servers/vfs/src/filedes.rs`（copy_fd 签名与三分支 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D5/测试表）。
+  +- **File**：`os/servers/vfs/src/filedes.rs`（copy_fd 签名与三分支 + 测试）、`rewrite-notes/05-stage-vfs/14-filedes.md`（D5/测试表）。
+  -- **File**：`os/servers/vfs/src/filedes.rs`（invalidate_by_endpoint 重写 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D6/实现表）。
+  +- **File**：`os/servers/vfs/src/filedes.rs`（invalidate_by_endpoint 重写 + 测试）、`rewrite-notes/05-stage-vfs/14-filedes.md`（D6/实现表）。
+  -- **File**：`os/servers/vfs/src/filedes.rs`（家族助手 + 两新函数 + 两新测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（实现表/测试表）。
+  +- **File**：`os/servers/vfs/src/filedes.rs`（家族助手 + 两新函数 + 两新测试）、`rewrite-notes/05-stage-vfs/14-filedes.md`（实现表/测试表）。
+  -- **File**：`os/servers/vfs/src/filp.rs`（`FilpLockMode` 枚举 + get_filp 重写 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/04-filp-table.md`（实现表/测试表）。
+  +- **File**：`os/servers/vfs/src/filp.rs`（`FilpLockMode` 枚举 + get_filp 重写 + 测试矩阵）、`rewrite-notes/05-stage-vfs/04-filp-table.md`（实现表/测试表）。
+  -- **File**：`os/servers/vfs/src/ipc/dispatcher.rs`（PmError/SetGroups 臂/trait 口/3 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/10-pm-protocol.md`（D4 落地说明）。
+  +- **File**：`os/servers/vfs/src/ipc/dispatcher.rs`（PmError/SetGroups 臂/trait 口/3 测试）、`rewrite-notes/05-stage-vfs/10-pm-protocol.md`（D4 落地说明）。
+  -- **File**：`os/servers/vfs/src/select.rs`（Query 变体 + filter_step 构造 + 测试矩阵）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/23-select.md`（D3）。
+  +- **File**：`os/servers/vfs/src/select.rs`（Query 变体 + filter_step 构造 + 测试矩阵）、`rewrite-notes/05-stage-vfs/23-select.md`（D3）。
+  -- **File**：`os/servers/vfs/src/filedes.rs`（`CopyFdCtx` + copy_fd 重写 + 测试群重写）、`os/servers/vfs/src/device_map.rs`（`smap_endpt_by_dev` 助手）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D5/测试表）。
+  +- **File**：`os/servers/vfs/src/filedes.rs`（`CopyFdCtx` + copy_fd 重写 + 测试群重写）、`os/servers/vfs/src/device_map.rs`（`smap_endpt_by_dev` 助手）、`rewrite-notes/05-stage-vfs/14-filedes.md`（D5/测试表）。
+  -- **File**：`os/servers/vfs/src/sdev.rs`（`StopPlan`/`stop`/`stop_matches` + 2 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/22-sdev.md`（测试表）。
+  +- **File**：`os/servers/vfs/src/sdev.rs`（`StopPlan`/`stop`/`stop_matches` + 2 测试）、`rewrite-notes/05-stage-vfs/22-sdev.md`（测试表）。
+  -- **File**：`os/servers/vfs/src/misc.rs`（`gcov_privilege_gate` + 测试断言）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/31-misc-queries.md`（实现清单 + 守门表，行号按插入后实测重校）。
+  +- **File**：`os/servers/vfs/src/misc.rs`（`gcov_privilege_gate` + 测试断言）、`rewrite-notes/05-stage-vfs/31-misc-queries.md`（实现清单 + 守门表，行号按插入后实测重校）。
+  -- **File**：`os/servers/vfs/src/main_loop.rs`（删 63 行重复定义 → `pub use` re-export）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/11-fs-comm.md`（三处引用同步）。
+  +- **File**：`os/servers/vfs/src/main_loop.rs`（删 63 行重复定义 → `pub use` re-export）、`rewrite-notes/05-stage-vfs/11-fs-comm.md`（三处引用同步）。
+  -- **File**：`os/servers/vfs/src/filedes.rs`（定义/文档/trait 文档/测试 6 处）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/14-filedes.md`（D2/模块图/实现表/测试表/策略行 7 处）。
+  +- **File**：`os/servers/vfs/src/filedes.rs`（定义/文档/trait 文档/测试 6 处）、`rewrite-notes/05-stage-vfs/14-filedes.md`（D2/模块图/实现表/测试表/策略行 7 处）。
+  -- **File**：`os/servers/vfs/src/device_map.rs`（约 20 处签名/字段）、`os/servers/vfs/src/filp.rs`（find_by_vnode）、`os/servers/vfs/src/filedes.rs`、`os/servers/vfs/src/sdev.rs`（消费方）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/19-device-map.md`（字段表）。
+  +- **File**：`os/servers/vfs/src/device_map.rs`（约 20 处签名/字段）、`os/servers/vfs/src/filp.rs`（find_by_vnode）、`os/servers/vfs/src/filedes.rs`、`os/servers/vfs/src/sdev.rs`（消费方）、`rewrite-notes/05-stage-vfs/19-device-map.md`（字段表）。
+  -- **File**：`os/servers/vfs/src/vmnt.rs`（VmntLock 两方法 + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/06-vmnt-table.md`（§2.5 落地说明）。
+  +- **File**：`os/servers/vfs/src/vmnt.rs`（VmntLock 两方法 + 测试）、`rewrite-notes/05-stage-vfs/06-vmnt-table.md`（§2.5 落地说明）。
+  -- **File**：`os/servers/vfs/src/exec.rs`（`clo_exec` + 测试 + 模块 scope note 修正）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/25-exec.md`（D7）。
+  +- **File**：`os/servers/vfs/src/exec.rs`（`clo_exec` + 测试 + 模块 scope note 修正）、`rewrite-notes/05-stage-vfs/25-exec.md`（D7）。
+  -- **File**：`os/servers/vfs/src/stadir.rs`（`MountNames`/`mount_names` + 测试）、`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/28-stadir.md`（实现说明）、归档 C-5 条目（修正注）。
+  +- **File**：`os/servers/vfs/src/stadir.rs`（`MountNames`/`mount_names` + 测试）、`rewrite-notes/05-stage-vfs/28-stadir.md`（实现说明）、归档 C-5 条目（修正注）。
+  …（余 22 行）
+===== git-mv notes/rewrite/fork-syscall-rewrite/06-stage-sched/doc_rerank_deepseek.md -> rewrite-notes/06-stage-sched/doc_rerank_deepseek.md ：8 行变化 =====
+  -- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/06-stage-sched/`
+  +- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/06-stage-sched/`
+  -- 知识点总数：**109 条**。这个数字就是池表的行数：按篇分布为 00 篇 5 条、01 篇 6 条、02 篇 8 条、03 篇 7 条、04 篇 6 条、05 篇 8 条、06 篇 8 条、07 篇 6 条、08 篇 5 条、09 篇 6 条、10 篇 6 条、11 篇 6 条、12 篇 7 条、13 篇 8 条、14 篇 8 条、99 篇 9 条，合计 109 条；池内 K 编号无重复、无缺号。核验命令（在 `notes/rewrite/fork-syscall-rewrite/` 下执行）：`awk '/^### 2\.2/,/^### 2\.3/' 06-stage-sched
+  +- 知识点总数：**109 条**。这个数字就是池表的行数：按篇分布为 00 篇 5 条、01 篇 6 条、02 篇 8 条、03 篇 7 条、04 篇 6 条、05 篇 8 条、06 篇 8 条、07 篇 6 条、08 篇 5 条、09 篇 6 条、10 篇 6 条、11 篇 6 条、12 篇 7 条、13 篇 8 条、14 篇 8 条、99 篇 9 条，合计 109 条；池内 K 编号无重复、无缺号。核验命令（在 `rewrite-notes/` 下执行）：`awk '/^### 2\.2/,/^### 2\.3/' 06-stage-sched/doc_rerank_deepseek.
+  -说明：引用分两类——编号引用（stage 内互引、代码注释、跨 stage 文档）与内容引用（旧文把越界内容写在自己篇里、读者被引去别处）。编号引用因为 §4.0 的"不重编号"裁决一律不需要硬改，表里如实写"编号未变，无需硬改"并给出核验命令；内容引用要改指新主家，验证方式写成"重建后应变成什么样"。所有命令都在 `notes/rewrite/fork-syscall-rewrite/` 下执行，仓库根相关的命令已单独标注。
+  +说明：引用分两类——编号引用（stage 内互引、代码注释、跨 stage 文档）与内容引用（旧文把越界内容写在自己篇里、读者被引去别处）。编号引用因为 §4.0 的"不重编号"裁决一律不需要硬改，表里如实写"编号未变，无需硬改"并给出核验命令；内容引用要改指新主家，验证方式写成"重建后应变成什么样"。所有命令都在 `rewrite-notes/` 下执行，仓库根相关的命令已单独标注。
+  -| stage 内互引（旧文的"前置阅读／阶段文档／阅读顺序提示"块，涉及 15 篇共 87 处） | 编号未变，无需硬改 | 在 `notes/rewrite/fork-syscall-rewrite/` 下执行 `rg -c '0[0-9]-(sched\|priority\|start\|stop\|noquantum\|schedule\|pick\|balance)' 06-stage-sched/[0-9]*.md`，实测 15 篇共 87 处 |
+  +| stage 内互引（旧文的"前置阅读／阶段文档／阅读顺序提示"块，涉及 15 篇共 87 处） | 编号未变，无需硬改 | 在 `rewrite-notes/` 下执行 `rg -c '0[0-9]-(sched\|priority\|start\|stop\|noquantum\|schedule\|pick\|balance)' 06-stage-sched/[0-9]*.md`，实测 15 篇共 87 处 |
+===== git-mv notes/rewrite/fork-syscall-rewrite/06-stage-sched/doc_rerank_glm.md -> rewrite-notes/06-stage-sched/doc_rerank_glm.md ：6 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/06-stage-sched
+  +target_dir(关注的工作目录) = rewrite-notes/06-stage-sched
+  -- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/06-stage-sched/`。
+  +- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/06-stage-sched/`。
+  -rg -c '06-stage-sched' notes/rewrite/fork-syscall-rewrite --glob '!06-stage-sched/**'
+  +rg -c '06-stage-sched' rewrite-notes --glob '!06-stage-sched/**'
+===== git-mv notes/rewrite/fork-syscall-rewrite/06-stage-sched/doc_rerank_muse.md -> rewrite-notes/06-stage-sched/doc_rerank_muse.md ：6 行变化 =====
+  -- Target directory: `notes/rewrite/fork-syscall-rewrite/06-stage-sched/`
+  +- Target directory: `rewrite-notes/06-stage-sched/`
+  -4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage table row 06, boot two-layer semantics), `edge_todo.md` (E-SCHEDNICED, E-PREEMPTFLAG, E-SCHEDSMP, E-MINTYPES-SYS, E8, E5(e)), this stage `plan.md` + `todo.md`.
+  +4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage table row 06, boot two-layer semantics), `edge_todo.md` (E-SCHEDNICED, E-PREEMPTFLAG, E-SCHEDSMP, E-MINTYPES-SYS, E8, E5(e)), this stage `plan.md` + `todo.md`.
+  -wc -l notes/rewrite/fork-syscall-rewrite/06-stage-sched/*.md # §0.1 line counts
+  +wc -l rewrite-notes/06-stage-sched/*.md # §0.1 line counts
+===== git-mv notes/rewrite/fork-syscall-rewrite/06-stage-sched/doc_rerank_qwen.md -> rewrite-notes/06-stage-sched/doc_rerank_qwen.md ：2 行变化 =====
+  -目标目录   = notes/rewrite/fork-syscall-rewrite/06-stage-sched/
+  +目标目录   = rewrite-notes/06-stage-sched/
+===== git-mv notes/rewrite/fork-syscall-rewrite/06-stage-sched/plan.md -> rewrite-notes/06-stage-sched/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/06-stage-sched/`
+  +> **范围**: `rewrite-notes/06-stage-sched/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/07-stage-ds/doc_rerank_deepseek.md -> rewrite-notes/07-stage-ds/doc_rerank_deepseek.md ：2 行变化 =====
+  -- 目标目录：`notes/rewrite/fork-syscall-rewrite/07-stage-ds/`
+  +- 目标目录：`rewrite-notes/07-stage-ds/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/07-stage-ds/doc_rerank_glm.md -> rewrite-notes/07-stage-ds/doc_rerank_glm.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/07-stage-ds/`
+  +- **目标目录**：`rewrite-notes/07-stage-ds/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/07-stage-ds/doc_rerank_muse.md -> rewrite-notes/07-stage-ds/doc_rerank_muse.md ：4 行变化 =====
+  -- Target directory: `notes/rewrite/fork-syscall-rewrite/07-stage-ds`
+  +- Target directory: `rewrite-notes/07-stage-ds`
+  -  `notes/rewrite/fork-syscall-rewrite/07-stage-ds/doc_rerank_muse.md`.
+  +  `rewrite-notes/07-stage-ds/doc_rerank_muse.md`.
+===== git-mv notes/rewrite/fork-syscall-rewrite/07-stage-ds/doc_rerank_qwen.md -> rewrite-notes/07-stage-ds/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/07-stage-ds/`
+  +- **目标目录**：`rewrite-notes/07-stage-ds/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/07-stage-ds/plan.md -> rewrite-notes/07-stage-ds/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/07-stage-ds/`
+  +> **范围**: `rewrite-notes/07-stage-ds/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/08-stage-is/doc_rerank_deepseek.md -> rewrite-notes/08-stage-is/doc_rerank_deepseek.md ：2 行变化 =====
+  -- 目标目录：`notes/rewrite/fork-syscall-rewrite/08-stage-is/`
+  +- 目标目录：`rewrite-notes/08-stage-is/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/08-stage-is/doc_rerank_glm.md -> rewrite-notes/08-stage-is/doc_rerank_glm.md ：4 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/08-stage-is
+  +target_dir(关注的工作目录) = rewrite-notes/08-stage-is
+  -- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/08-stage-is/`。
+  +- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/08-stage-is/`。
+===== git-mv notes/rewrite/fork-syscall-rewrite/08-stage-is/doc_rerank_muse.md -> rewrite-notes/08-stage-is/doc_rerank_muse.md ：14 行变化 =====
+  -> `target_dir = notes/rewrite/fork-syscall-rewrite/08-stage-is`
+  +> `target_dir = rewrite-notes/08-stage-is`
+  -- Executor: `muse`. Date: 2026-09-20 (UTC). Target: `notes/rewrite/fork-syscall-rewrite/08-stage-is/`.
+  +- Executor: `muse`. Date: 2026-09-20 (UTC). Target: `rewrite-notes/08-stage-is/`.
+  -  5. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage order and
+  -     two-level boot semantics), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-ISWIRE, E-ISPROD,
+  +  5. Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage order and
+  +     two-level boot semantics), `rewrite-notes/coordination/edge_todo.md` (E-ISWIRE, E-ISPROD,
+  -  - `wc -l notes/rewrite/fork-syscall-rewrite/08-stage-is/*.md` → 12 docs, 3475 lines of numbered-doc
+  +  - `wc -l rewrite-notes/08-stage-is/*.md` → 12 docs, 3475 lines of numbered-doc
+  -| R-22 | Cross-stage inbound pointers to 08-stage-is (edge_todo E-IS* entries; 07-stage-ds/04-stage-pm/03-stage-rs todos; master README stage table) | Current 08 numbers/titles | Unchanged numbers + unchanged titles → no migration needed | Titles frozen by Section 4.1 precisely to zero this cost; v
+  +| R-22 | Cross-stage inbound pointers to 08-stage-is (edge_todo E-IS* entries; 07-stage-ds/04-stage-pm/03-stage-rs todos; master README stage table) | Current 08 numbers/titles | Unchanged numbers + unchanged titles → no migration needed | Titles frozen by Section 4.1 precisely to zero this cost; v
+  -*End of blueprint. Single landed file: `notes/rewrite/fork-syscall-rewrite/08-stage-is/doc_rerank_muse.md`
+  +*End of blueprint. Single landed file: `rewrite-notes/08-stage-is/doc_rerank_muse.md`
+===== git-mv notes/rewrite/fork-syscall-rewrite/08-stage-is/doc_rerank_qwen.md -> rewrite-notes/08-stage-is/doc_rerank_qwen.md ：2 行变化 =====
+  -目标目录 = notes/rewrite/fork-syscall-rewrite/08-stage-is/
+  +目标目录 = rewrite-notes/08-stage-is/
+===== git-mv notes/rewrite/fork-syscall-rewrite/08-stage-is/plan.md -> rewrite-notes/08-stage-is/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/08-stage-is/`
+  +> **范围**: `rewrite-notes/08-stage-is/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/08-stage-is/todo.md -> rewrite-notes/08-stage-is/todo.md ：4 行变化 =====
+  -- Gate A：`python3 tools/coverage-extract/coverage-extract.py is notes/rewrite/fork-syscall-rewrite/08-stage-is --rust-dir os --c-dir minix3/minix/servers/is --semantic-map tools/coverage-extract/is-semantic-map.json --output .review/claude/08-stage-is/SYMBOLS.md` → 30 个 C 符号，文档覆盖 28/30（93.3%），Rust 
+  +- Gate A：`python3 tools/coverage-extract/coverage-extract.py is rewrite-notes/08-stage-is --rust-dir os --c-dir minix3/minix/servers/is --semantic-map tools/coverage-extract/is-semantic-map.json --output .review/claude/08-stage-is/SYMBOLS.md` → 30 个 C 符号，文档覆盖 28/30（93.3%），Rust 名称匹配 8/30（26.7%，映射缺失所
+  -**验证**：`rg -n "extern crate alloc" notes/rewrite/fork-syscall-rewrite/08-stage-is/01-is-init-main.md` 修后不再声称 IS 有 alloc。
+  +**验证**：`rg -n "extern crate alloc" rewrite-notes/08-stage-is/01-is-init-main.md` 修后不再声称 IS 有 alloc。
+===== git-mv notes/rewrite/fork-syscall-rewrite/09-stage-init/doc_rerank_HY4.md -> rewrite-notes/09-stage-init/doc_rerank_HY4.md ：2 行变化 =====
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/09-stage-init/` |
+  +| 目标目录 | `rewrite-notes/09-stage-init/` |
+===== git-mv notes/rewrite/fork-syscall-rewrite/09-stage-init/doc_rerank_deepseek.md -> rewrite-notes/09-stage-init/doc_rerank_deepseek.md ：2 行变化 =====
+  -- 目标目录：`notes/rewrite/fork-syscall-rewrite/09-stage-init/`
+  +- 目标目录：`rewrite-notes/09-stage-init/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/09-stage-init/doc_rerank_glm.md -> rewrite-notes/09-stage-init/doc_rerank_glm.md ：4 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/09-stage-init
+  +target_dir(关注的工作目录) = rewrite-notes/09-stage-init
+  -- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/09-stage-init/`。
+  +- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/09-stage-init/`。
+===== git-mv notes/rewrite/fork-syscall-rewrite/09-stage-init/doc_rerank_muse.md -> rewrite-notes/09-stage-init/doc_rerank_muse.md ：6 行变化 =====
+  -target_dir(concerned working directory) = notes/rewrite/fork-syscall-rewrite/09-stage-init
+  +target_dir(concerned working directory) = rewrite-notes/09-stage-init
+  -- Executor: muse. Date (UTC): 2026-09-20. Target: `notes/rewrite/fork-syscall-rewrite/09-stage-init`.
+  +- Executor: muse. Date (UTC): 2026-09-20. Target: `rewrite-notes/09-stage-init`.
+  -- `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (95 lines): stage table row
+  +- `rewrite-notes/00-master-plan/README.md` (95 lines): stage table row
+===== git-mv notes/rewrite/fork-syscall-rewrite/09-stage-init/doc_rerank_qwen.md -> rewrite-notes/09-stage-init/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/09-stage-init/`
+  +- **目标目录**：`rewrite-notes/09-stage-init/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/09-stage-init/plan.md -> rewrite-notes/09-stage-init/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/09-stage-init/`
+  +> **范围**: `rewrite-notes/09-stage-init/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/10-stage-mib/doc_rerank_deepseek.md -> rewrite-notes/10-stage-mib/doc_rerank_deepseek.md ：24 行变化 =====
+  -- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
+  +- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/10-stage-mib/`
+  -- 验收标准：`rg -n '94 passed|101 passed|107 passed' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md` 无输出（当前 19 篇共 19 处）；各篇的模块数与分文件实测一致，总数为 152。
+  +- 验收标准：`rg -n '94 passed|101 passed|107 passed' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md` 无输出（当前 19 篇共 19 处）；各篇的模块数与分文件实测一致，总数为 152。
+  -- 原料在哪里：`rg -c '工具生成' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md` 合计 112 处，分布在 18 篇（13 篇 20 处、06 篇 15 处、08 与 22 篇各 12 处、11 篇 10 处、12 与 14 篇各 9 处、04 篇 5 处、02 篇 4 处、17 篇 3 处，其余各 1 至 2 处）；12 篇的核心符号表整表漂移，是单点最重的一处。
+  +- 原料在哪里：`rg -c '工具生成' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md` 合计 112 处，分布在 18 篇（13 篇 20 处、06 篇 15 处、08 与 22 篇各 12 处、11 篇 10 处、12 与 14 篇各 9 处、04 篇 5 处、02 篇 4 处、17 篇 3 处，其余各 1 至 2 处）；12 篇的核心符号表整表漂移，是单点最重的一处。
+  -- 验收标准：`rg -c '工具生成' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md` 全为 0；重钉的行号以 `rg -n '^函数名' 目标.c` 命中的函数头行为准。
+  +- 验收标准：`rg -c '工具生成' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md` 全为 0；重钉的行号以 `rg -n '^函数名' 目标.c` 命中的函数头行为准。
+  -| `04` 篇两处、`08` 篇一处、`13` 篇一处指向 `15 §4.4` 的 arena 承诺引用 | 编号未变，无需硬改；15 篇 §4.4 重写后仍承担"竞技场承诺单一真值" | `rg -n '15 §4\.4' notes/rewrite/fork-syscall-rewrite/10-stage-mib/0[48]-mib-*.md notes/rewrite/fork-syscall-rewrite/10-stage-mib/13-mib-*.md`（4 行） |
+  -| `17` 篇两处指向 `16` 篇与 `16 §2.1` 的引用 | 编号未变，无需硬改 | `rg -c '见 16' notes/rewrite/fork-syscall-rewrite/10-stage-mib/17-mib-proc-lwp.md`（2） |
+  -| `05` 篇指向 `10` 篇、`12` 篇指向 `06` 篇、`01` 篇指向 `04` 篇、`02` 篇指向 `01 §2.2`、`04` 篇指向 `01` 篇 | 编号未变，无需硬改 | `rg -n -e '见 10' -e '见 06' -e '见 04' -e '见 01 §2\.2' -e '同 01' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（5 行） |
+  -| 各篇裸篇号引用（例如"11 篇同规则共一条实现"） | 编号未变，无需硬改 | `rg --count-matches -o '[0-9]{2} ?篇' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（8 个文件，合计 19） |
+  -| 各篇指向 `../0N-stage-*/NN-*.md` 的跨 stage 引用 | 编号未变，无需硬改 | `rg -c '\.\./0[0-9]-stage-' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（5 个文件，合计 8） |
+  -| `00` 篇 §2/§3 的越界细节（启动时序与路径图详述） | 改指主家 `01-mib-init-main.md` 与 `10-mib-dispatch.md` | `rg -n '§3\.6' notes/rewrite/fork-syscall-rewrite/10-stage-mib/doc_rerank_deepseek.md`（越界表四行 O-01/O-04/O-07/O-08） |
+  +| `04` 篇两处、`08` 篇一处、`13` 篇一处指向 `15 §4.4` 的 arena 承诺引用 | 编号未变，无需硬改；15 篇 §4.4 重写后仍承担"竞技场承诺单一真值" | `rg -n '15 §4\.4' rewrite-notes/10-stage-mib/0[48]-mib-*.md rewrite-notes/10-stage-mib/13-mib-*.md`（4 行） |
+  +| `17` 篇两处指向 `16` 篇与 `16 §2.1` 的引用 | 编号未变，无需硬改 | `rg -c '见 16' rewrite-notes/10-stage-mib/17-mib-proc-lwp.md`（2） |
+  +| `05` 篇指向 `10` 篇、`12` 篇指向 `06` 篇、`01` 篇指向 `04` 篇、`02` 篇指向 `01 §2.2`、`04` 篇指向 `01` 篇 | 编号未变，无需硬改 | `rg -n -e '见 10' -e '见 06' -e '见 04' -e '见 01 §2\.2' -e '同 01' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（5 行） |
+  +| 各篇裸篇号引用（例如"11 篇同规则共一条实现"） | 编号未变，无需硬改 | `rg --count-matches -o '[0-9]{2} ?篇' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（8 个文件，合计 19） |
+  +| 各篇指向 `../0N-stage-*/NN-*.md` 的跨 stage 引用 | 编号未变，无需硬改 | `rg -c '\.\./0[0-9]-stage-' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（5 个文件，合计 8） |
+  +| `00` 篇 §2/§3 的越界细节（启动时序与路径图详述） | 改指主家 `01-mib-init-main.md` 与 `10-mib-dispatch.md` | `rg -n '§3\.6' rewrite-notes/10-stage-mib/doc_rerank_deepseek.md`（越界表四行 O-01/O-04/O-07/O-08） |
+  -| 各篇"工具生成"占位锚（18 篇共 112 处） | 按实测重钉为真实函数名与函数头行号 | `rg -c '工具生成' notes/rewrite/fork-syscall-rewrite/10-stage-mib/[0-9]*-mib-*.md`（18 个文件，合计 112；重钉后应为 0） |
+  +| 各篇"工具生成"占位锚（18 篇共 112 处） | 按实测重钉为真实函数名与函数头行号 | `rg -c '工具生成' rewrite-notes/10-stage-mib/[0-9]*-mib-*.md`（18 个文件，合计 112；重钉后应为 0） |
+  -| `plan.md` 与 `todo.md` 里的旧状态（"执行半待建"与"94 → 101 → 107"快照） | 由 B 相按实测同步 | `rg -n '94 → 101 → 107' notes/rewrite/fork-syscall-rewrite/10-stage-mib/plan.md`（1 行）；`rg -n '94/101/107' notes/rewrite/fork-syscall-rewrite/10-stage-mib/todo.md`（1 行） |
+  +| `plan.md` 与 `todo.md` 里的旧状态（"执行半待建"与"94 → 101 → 107"快照） | 由 B 相按实测同步 | `rg -n '94 → 101 → 107' rewrite-notes/10-stage-mib/plan.md`（1 行）；`rg -n '94/101/107' rewrite-notes/10-stage-mib/todo.md`（1 行） |
+===== git-mv notes/rewrite/fork-syscall-rewrite/10-stage-mib/doc_rerank_glm.md -> rewrite-notes/10-stage-mib/doc_rerank_glm.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
+  +- **目标目录**：`rewrite-notes/10-stage-mib/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/10-stage-mib/doc_rerank_hy4.md -> rewrite-notes/10-stage-mib/doc_rerank_hy4.md ：10 行变化 =====
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/10-stage-mib/` |
+  +| 目标目录 | `rewrite-notes/10-stage-mib/` |
+  -wc -l notes/rewrite/fork-syscall-rewrite/10-stage-mib/*.md
+  +wc -l rewrite-notes/10-stage-mib/*.md
+  -  notes/rewrite/fork-syscall-rewrite/10-stage-mib/0*.md 1*.md 2*.md 99*.md | grep -v doc_rerank | wc -l
+  +  rewrite-notes/10-stage-mib/0*.md 1*.md 2*.md 99*.md | grep -v doc_rerank | wc -l
+  -  | grep -v "^./notes/rewrite/fork-syscall-rewrite/10-stage-mib/" | wc -l   # → 100
+  +  | grep -v "^./rewrite-notes/10-stage-mib/" | wc -l   # → 100
+  -  notes/rewrite/fork-syscall-rewrite/10-stage-mib/*.md | awk -F: '{print $NF}' \
+  +  rewrite-notes/10-stage-mib/*.md | awk -F: '{print $NF}' \
+===== git-mv notes/rewrite/fork-syscall-rewrite/10-stage-mib/doc_rerank_muse.md -> rewrite-notes/10-stage-mib/doc_rerank_muse.md ：4 行变化 =====
+  -target_dir(Attention working directory) = notes/rewrite/fork-syscall-rewrite/10-stage-mib
+  +target_dir(Attention working directory) = rewrite-notes/10-stage-mib
+  -wc -l notes/rewrite/fork-syscall-rewrite/10-stage-mib/*.md   # 24 docs: 82–247 lines each (§0.4)
+  +wc -l rewrite-notes/10-stage-mib/*.md   # 24 docs: 82–247 lines each (§0.4)
+===== git-mv notes/rewrite/fork-syscall-rewrite/10-stage-mib/doc_rerank_qwen.md -> rewrite-notes/10-stage-mib/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
+  +- **目标目录**：`rewrite-notes/10-stage-mib/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/10-stage-mib/plan.md -> rewrite-notes/10-stage-mib/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/10-stage-mib/`
+  +> **范围**: `rewrite-notes/10-stage-mib/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/10-stage-mib/todo.md -> rewrite-notes/10-stage-mib/todo.md ：4 行变化 =====
+  -python3 tools/coverage-extract/coverage-extract.py mib notes/rewrite/fork-syscall-rewrite/10-stage-mib \
+  +python3 tools/coverage-extract/coverage-extract.py mib rewrite-notes/10-stage-mib \
+  -1. **承诺时点漂移（Promised-Landing Drift）候选**：同一承诺在多篇文档里的兑现时点各自演化且互相矛盾（arena：04:82/08:82 说"13 落地时"、13:112 说"15 统一建"、15:136-138 说"15 之后独立任务"）。与模式 70 CTOS（跨轮状态陈旧）同族但是**文档间**漂移。检查命令：`rg -n "arena.*(13|15)" notes/rewrite/fork-syscall-rewrite/10-stage-mib/0{4,8}-*.md 1{3,5}-*.md`。建议规则：承诺兑现时点必须单一真值（一处声明 + 他处引用
+  +1. **承诺时点漂移（Promised-Landing Drift）候选**：同一承诺在多篇文档里的兑现时点各自演化且互相矛盾（arena：04:82/08:82 说"13 落地时"、13:112 说"15 统一建"、15:136-138 说"15 之后独立任务"）。与模式 70 CTOS（跨轮状态陈旧）同族但是**文档间**漂移。检查命令：`rg -n "arena.*(13|15)" rewrite-notes/10-stage-mib/0{4,8}-*.md 1{3,5}-*.md`。建议规则：承诺兑现时点必须单一真值（一处声明 + 他处引用），跨文档承诺在接收方文档落地时回写来源方
+===== git-mv notes/rewrite/fork-syscall-rewrite/11-stage-devman/doc_rerank_HY4.md -> rewrite-notes/11-stage-devman/doc_rerank_HY4.md ：4 行变化 =====
+  -- **目标对象**：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
+  +- **目标对象**：`rewrite-notes/11-stage-devman/`
+  -  | grep -v "^./notes/rewrite/fork-syscall-rewrite/11-stage-devman/" \
+  +  | grep -v "^./rewrite-notes/11-stage-devman/" \
+===== git-mv notes/rewrite/fork-syscall-rewrite/11-stage-devman/doc_rerank_deepseek.md -> rewrite-notes/11-stage-devman/doc_rerank_deepseek.md ：10 行变化 =====
+  -- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
+  +- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/11-stage-devman/`
+  -下面把每一项展开：为什么重要、原料在哪里、归哪一篇、验收标准。7.2 再补 §3.6 那十个非 C 主题的落位，它们不算缺口，但同样是重建时不能漏的题目。本节不留悬空项，每一条都给出归属篇与可执行的验收命令。表中命令的工作目录是仓库根 `/home/xzhao/github/minix-rs`，文档类命令追加 `notes/rewrite/fork-syscall-rewrite/11-stage-devman/` 前缀。
+  +下面把每一项展开：为什么重要、原料在哪里、归哪一篇、验收标准。7.2 再补 §3.6 那十个非 C 主题的落位，它们不算缺口，但同样是重建时不能漏的题目。本节不留悬空项，每一条都给出归属篇与可执行的验收命令。表中命令的工作目录是仓库根 `/home/xzhao/github/minix-rs`，文档类命令追加 `rewrite-notes/11-stage-devman/` 前缀。
+  -| G-08 | 03 §2.7 编号失序 | 小节编号顺序断裂会让按"见 §2.7"翻页的读者落在错误位置，也破坏"编号即阅读顺序"的约定。 | `rg -n '^### 2\.[0-9]' notes/rewrite/fork-syscall-rewrite/11-stage-devman/03-devm-structs.md` 实测顺序为 2.1（33 行）、2.2（49 行）、2.3（56 行）、2.7（63 行）、2.4（67 行）、2.5（85 行）、2.6（89 行）。 | 03（§6 OP-07） | 重排后同一条命令的行号递增方向与编号递增方向一致；篇内所有"见 §2.x"
+  +| G-08 | 03 §2.7 编号失序 | 小节编号顺序断裂会让按"见 §2.7"翻页的读者落在错误位置，也破坏"编号即阅读顺序"的约定。 | `rg -n '^### 2\.[0-9]' rewrite-notes/11-stage-devman/03-devm-structs.md` 实测顺序为 2.1（33 行）、2.2（49 行）、2.3（56 行）、2.7（63 行）、2.4（67 行）、2.5（85 行）、2.6（89 行）。 | 03（§6 OP-07） | 重排后同一条命令的行号递增方向与编号递增方向一致；篇内所有"见 §2.x"引用按新编号回填。 |
+  -表列：旧引用｜新目标｜验证方式。把命令行里的 `<15 篇路径>` 替换成下面列出的 15 个文件后即可直接复制运行（工作目录为仓库根）；`<15 篇路径>` 展开为 `notes/rewrite/fork-syscall-rewrite/11-stage-devman/[01][0-9]-*.md 与 notes/rewrite/fork-syscall-rewrite/11-stage-devman/99-devm-global-concepts.md`（共 15 个文件）。
+  +表列：旧引用｜新目标｜验证方式。把命令行里的 `<15 篇路径>` 替换成下面列出的 15 个文件后即可直接复制运行（工作目录为仓库根）；`<15 篇路径>` 展开为 `rewrite-notes/11-stage-devman/[01][0-9]-*.md 与 rewrite-notes/11-stage-devman/99-devm-global-concepts.md`（共 15 个文件）。
+  -| `03-devm-structs.md` 的篇内节号引用（形如"见 §2.7"） | 编号未变，无需硬改；小节归位后按新节号回填 | `rg -n '^### 2\.[0-9]' notes/rewrite/fork-syscall-rewrite/11-stage-devman/03-devm-structs.md` → 7 行，顺序为 2.1、2.2、2.3、2.7、2.4、2.5、2.6（失序证据） |
+  +| `03-devm-structs.md` 的篇内节号引用（形如"见 §2.7"） | 编号未变，无需硬改；小节归位后按新节号回填 | `rg -n '^### 2\.[0-9]' rewrite-notes/11-stage-devman/03-devm-structs.md` → 7 行，顺序为 2.1、2.2、2.3、2.7、2.4、2.5、2.6（失序证据） |
+===== git-mv notes/rewrite/fork-syscall-rewrite/11-stage-devman/doc_rerank_glm.md -> rewrite-notes/11-stage-devman/doc_rerank_glm.md ：4 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/11-stage-devman
+  +target_dir(关注的工作目录) = rewrite-notes/11-stage-devman
+  -- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`。
+  +- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/11-stage-devman/`。
+===== git-mv notes/rewrite/fork-syscall-rewrite/11-stage-devman/doc_rerank_muse.md -> rewrite-notes/11-stage-devman/doc_rerank_muse.md ：12 行变化 =====
+  -> `notes/rewrite/fork-syscall-rewrite/11-stage-devman/`. Phase B can take each
+  +> `rewrite-notes/11-stage-devman/`. Phase B can take each
+  -  `notes/rewrite/fork-syscall-rewrite/11-stage-devman/`.
+  +  `rewrite-notes/11-stage-devman/`.
+  -  `notes/rewrite/fork-syscall-rewrite/11-stage-devman/doc_rerank_muse.md`.
+  +  `rewrite-notes/11-stage-devman/doc_rerank_muse.md`.
+  -    `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage
+  +    `rewrite-notes/00-master-plan/README.md` (stage
+  -  - `wc -l notes/rewrite/fork-syscall-rewrite/11-stage-devman/*.md` →
+  +  - `wc -l rewrite-notes/11-stage-devman/*.md` →
+  -  - `rg -l "devm-|11-stage-devman" notes/rewrite/fork-syscall-rewrite/
+  +  - `rg -l "devm-|11-stage-devman" rewrite-notes/
+===== git-mv notes/rewrite/fork-syscall-rewrite/11-stage-devman/doc_rerank_qwen.md -> rewrite-notes/11-stage-devman/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
+  +- **目标目录**：`rewrite-notes/11-stage-devman/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/11-stage-devman/plan.md -> rewrite-notes/11-stage-devman/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/11-stage-devman/`
+  +> **范围**: `rewrite-notes/11-stage-devman/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md -> rewrite-notes/12-stage-input/doc_rerank_deepseek.md ：28 行变化 =====
+  -- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+  +- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/12-stage-input/`
+  -lines = open('notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
+  +lines = open('rewrite-notes/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
+  -- 重算命令：`awk '/^## 2\./,/^## 3\./' notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md | grep -c '^| K-'` 输出 101（必须先切 §2 区段：十六篇的 §5 清单同样有以 `| K-` 起头的行，全文件直数会得到 202）；类型分布与存量、新增条数用脚本按「类型」列与「来源」列切列计数，脚本见 §0.4。
+  +- 重算命令：`awk '/^## 2\./,/^## 3\./' rewrite-notes/12-stage-input/doc_rerank_deepseek.md | grep -c '^| K-'` 输出 101（必须先切 §2 区段：十六篇的 §5 清单同样有以 `| K-` 起头的行，全文件直数会得到 202）；类型分布与存量、新增条数用脚本按「类型」列与「来源」列切列计数，脚本见 §0.4。
+  -- 验收标准：02 内每个 Rust 符号名都能在 `os/libs/minix-chardriver/src/` 或 `os/servers/input/src/` 中检索到；`rg -n 'may_park' os/ notes/rewrite/fork-syscall-rewrite/12-stage-input/` 无输出。
+  +- 验收标准：02 内每个 Rust 符号名都能在 `os/libs/minix-chardriver/src/` 或 `os/servers/input/src/` 中检索到；`rg -n 'may_park' os/ rewrite-notes/12-stage-input/` 无输出。
+  -- 验收标准：`rg -n '\.design/' notes/rewrite/fork-syscall-rewrite/12-stage-input/*.md`（排除本蓝图自身）无输出。
+  +- 验收标准：`rg -n '\.design/' rewrite-notes/12-stage-input/*.md`（排除本蓝图自身）无输出。
+  -- 验收标准：`rg -n 'Gate B|scan\.md' notes/rewrite/fork-syscall-rewrite/12-stage-input/*.md`（排除本蓝图自身）无输出。
+  +- 验收标准：`rg -n 'Gate B|scan\.md' rewrite-notes/12-stage-input/*.md`（排除本蓝图自身）无输出。
+  -| 十六篇之间的篇号互引（00 指向 09、13 指向 10 等） | 编号未变，无需硬改 | `rg -c '^### [0-9]{2}-' notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md` 输出 16；`rg -o '^### [0-9]{2}' <同文件> \| sort \| tr '\n' ' '` 输出篇号序列 00 到 14 加 99；`ls notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md \| w
+  -| 篇内知识点编号引用（§2 池编号到 §5 清单编号） | 编号未变，无需硬改 | `rg -o 'K-[0-9]{3}' notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md \| sort -u \| wc -l` 输出 101，与 `awk '/^## 2\./,/^## 3\./' <同文件> \| grep -c '^\| K-'` 的 101 相等；双向差集校验脚本见 8.3 末尾 |
+  -| 「工具生成」占位锚（01/03/05/06/07/08/09/10/11/12/14 共十一篇） | 实测 C 区间与 Rust 符号 | `rg -n '工具生成' notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md` 重建后无输出；每个 Rust 符号用 `rg -n '<符号>' os/servers/input/src/` 复核 |
+  +| 十六篇之间的篇号互引（00 指向 09、13 指向 10 等） | 编号未变，无需硬改 | `rg -c '^### [0-9]{2}-' rewrite-notes/12-stage-input/doc_rerank_deepseek.md` 输出 16；`rg -o '^### [0-9]{2}' <同文件> \| sort \| tr '\n' ' '` 输出篇号序列 00 到 14 加 99；`ls rewrite-notes/12-stage-input/[0-9][0-9]-*.md \| wc -l` 输出 16 |
+  +| 篇内知识点编号引用（§2 池编号到 §5 清单编号） | 编号未变，无需硬改 | `rg -o 'K-[0-9]{3}' rewrite-notes/12-stage-input/doc_rerank_deepseek.md \| sort -u \| wc -l` 输出 101，与 `awk '/^## 2\./,/^## 3\./' <同文件> \| grep -c '^\| K-'` 的 101 相等；双向差集校验脚本见 8.3 末尾 |
+  +| 「工具生成」占位锚（01/03/05/06/07/08/09/10/11/12/14 共十一篇） | 实测 C 区间与 Rust 符号 | `rg -n '工具生成' rewrite-notes/12-stage-input/[0-9][0-9]-*.md` 重建后无输出；每个 Rust 符号用 `rg -n '<符号>' os/servers/input/src/` 复核 |
+  -| `may_park` 等虚构符号 | 按实测符号重写（`driver.rs` 与 `protocol.rs` 内的真实名字） | `rg -n 'may_park' os/ notes/rewrite/fork-syscall-rewrite/12-stage-input/` 无输出 |
+  +| `may_park` 等虚构符号 | 按实测符号重写（`driver.rs` 与 `protocol.rs` 内的真实名字） | `rg -n 'may_park' os/ rewrite-notes/12-stage-input/` 无输出 |
+  -| 06 §3.2 的 `.design/` 引用 | 删除，改指 `input.c:107-125` 与 `os/servers/input/src/handlers.rs` | `rg -n '\.design/' notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md` 无输出 |
+  -| 07 §3.3、08 §3.4、10 §4.1 的 scan/Gate B 引用 | 删除，改指实测符号 | `rg -n 'Gate B\|scan\.md' notes/rewrite/fork-syscall-rewrite/12-stage-input/[0-9][0-9]-*.md` 无输出 |
+  +| 06 §3.2 的 `.design/` 引用 | 删除，改指 `input.c:107-125` 与 `os/servers/input/src/handlers.rs` | `rg -n '\.design/' rewrite-notes/12-stage-input/[0-9][0-9]-*.md` 无输出 |
+  +| 07 §3.3、08 §3.4、10 §4.1 的 scan/Gate B 引用 | 删除，改指实测符号 | `rg -n 'Gate B\|scan\.md' rewrite-notes/12-stage-input/[0-9][0-9]-*.md` 无输出 |
+  -| 计划侧旧状态（plan.md 与 todo.md 的阶段口径） | 由 B 相重建时同步为新现状 | B 相完成后 `rg -n 'framework\.rs\|86\|98' notes/rewrite/fork-syscall-rewrite/12-stage-input/plan.md notes/rewrite/fork-syscall-rewrite/12-stage-input/todo.md` 的命中项逐条对照 §6 变更表 |
+  +| 计划侧旧状态（plan.md 与 todo.md 的阶段口径） | 由 B 相重建时同步为新现状 | B 相完成后 `rg -n 'framework\.rs\|86\|98' rewrite-notes/12-stage-input/plan.md rewrite-notes/12-stage-input/todo.md` 的命中项逐条对照 §6 变更表 |
+  -lines = open('notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
+  +lines = open('rewrite-notes/12-stage-input/doc_rerank_deepseek.md', encoding='utf-8').read().split('\n')
+===== git-mv notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_glm.md -> rewrite-notes/12-stage-input/doc_rerank_glm.md ：4 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/12-stage-input
+  +target_dir(关注的工作目录) = rewrite-notes/12-stage-input
+  -- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/12-stage-input/`。
+  +- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/12-stage-input/`。
+===== git-mv notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_muse.md -> rewrite-notes/12-stage-input/doc_rerank_muse.md ：4 行变化 =====
+  -- Target directory: `notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+  +- Target directory: `rewrite-notes/12-stage-input/`
+  -- Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage map), `../edge_todo.md` (E-INWIRE, E-CDRCONV, E-TTYEVENT, E-PCKBDREG), `../11-stage-devman/00-devm-overview.md` (previous stage: what RS-load-group/chardriver-shared-framework concepts already exist), `../16-
+  +- Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage map), `../edge_todo.md` (E-INWIRE, E-CDRCONV, E-TTYEVENT, E-PCKBDREG), `../11-stage-devman/00-devm-overview.md` (previous stage: what RS-load-group/chardriver-shared-framework concepts already exist), `../16-stage-drivers/plan.md
+===== git-mv notes/rewrite/fork-syscall-rewrite/12-stage-input/doc_rerank_qwen.md -> rewrite-notes/12-stage-input/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+  +- **目标目录**：`rewrite-notes/12-stage-input/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/12-stage-input/plan.md -> rewrite-notes/12-stage-input/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/12-stage-input/`
+  +> **范围**: `rewrite-notes/12-stage-input/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/12-stage-input/todo.md -> rewrite-notes/12-stage-input/todo.md ：2 行变化 =====
+  -> 跨 stage 条目不在此展开，登记于 [`../edge_todo.md`](../edge_todo.md)：E-INWIRE（传输接线）、E-CDRCONV（框架收敛 + minix-chardriver 常量错值）、E-TTYEVENT（TTY 消费侧）、E-PCKBDREG（pckbd 移交）。
+  +> 跨 stage 条目不在此展开，登记于 [`../edge_todo.md`](../coordination/edge_todo.md)：E-INWIRE（传输接线）、E-CDRCONV（框架收敛 + minix-chardriver 常量错值）、E-TTYEVENT（TTY 消费侧）、E-PCKBDREG（pckbd 移交）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/13-stage-ipc/doc_rerank_HY4.md -> rewrite-notes/13-stage-ipc/doc_rerank_HY4.md ：2 行变化 =====
+  -| 目标目录 | `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/` |
+  +| 目标目录 | `rewrite-notes/13-stage-ipc/` |
+===== git-mv notes/rewrite/fork-syscall-rewrite/13-stage-ipc/doc_rerank_deepseek.md -> rewrite-notes/13-stage-ipc/doc_rerank_deepseek.md ：8 行变化 =====
+  -- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`
+  +- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/13-stage-ipc/`
+  -| 12 篇编号本身（00 到 10 加 99） | 编号未变，无需硬改 | `ls -1 /home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/13-stage-ipc/*-ipc-*.md` |
+  -| stage 内互引（例如 09 篇引 01、05、06、08） | 编号未变，无需硬改；只需核篇名仍在 | `rg -n -o '0[0-9]-ipc-[a-z-]+\.md' /home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/13-stage-ipc/0[0-9]-*.md` |
+  +| 12 篇编号本身（00 到 10 加 99） | 编号未变，无需硬改 | `ls -1 /home/xzhao/github/minix-rs/rewrite-notes/13-stage-ipc/*-ipc-*.md` |
+  +| stage 内互引（例如 09 篇引 01、05、06、08） | 编号未变，无需硬改；只需核篇名仍在 | `rg -n -o '0[0-9]-ipc-[a-z-]+\.md' /home/xzhao/github/minix-rs/rewrite-notes/13-stage-ipc/0[0-9]-*.md` |
+  -| plan.md 与 todo.md 的 B 相状态 | 改为引用本篇蓝图与实测锚点，不再引旧状态 | `rg -n -e 'plan\.md' -e 'todo\.md' /home/xzhao/github/minix-rs/notes/rewrite/fork-syscall-rewrite/13-stage-ipc/0[0-9]-*.md` |
+  +| plan.md 与 todo.md 的 B 相状态 | 改为引用本篇蓝图与实测锚点，不再引旧状态 | `rg -n -e 'plan\.md' -e 'todo\.md' /home/xzhao/github/minix-rs/rewrite-notes/13-stage-ipc/0[0-9]-*.md` |
+===== git-mv notes/rewrite/fork-syscall-rewrite/13-stage-ipc/doc_rerank_glm.md -> rewrite-notes/13-stage-ipc/doc_rerank_glm.md ：4 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/13-stage-ipc
+  +target_dir(关注的工作目录) = rewrite-notes/13-stage-ipc
+  -- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`。
+  +- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/13-stage-ipc/`。
+===== git-mv notes/rewrite/fork-syscall-rewrite/13-stage-ipc/doc_rerank_muse.md -> rewrite-notes/13-stage-ipc/doc_rerank_muse.md ：6 行变化 =====
+  -- Executor: muse. Date: 2026-09-20. Target: `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`.
+  +- Executor: muse. Date: 2026-09-20. Target: `rewrite-notes/13-stage-ipc/`.
+  -| K-002 | kernel-IPC vs server boundary (send/receive/notify excluded) | C | S | 00 §1, README, plan §1.4 | `01-stage-kernel/12-ipc-core.md`, `notes/rewrite/ipc-sendrec.md` | Which "IPC" does this stage (not) cover? |
+  +| K-002 | kernel-IPC vs server boundary (send/receive/notify excluded) | C | S | 00 §1, README, plan §1.4 | `01-stage-kernel/12-ipc-core.md`, `rewrite-notes/misc/ipc-sendrec.md` | Which "IPC" does this stage (not) cover? |
+  --不讲什么: any mechanism (→01–11); any value table (→99); kernel primitives (→`01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`); MIB internals (→`10-stage-mib`).
+  +-不讲什么: any mechanism (→01–11); any value table (→99); kernel primitives (→`01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`); MIB internals (→`10-stage-mib`).
+===== git-mv notes/rewrite/fork-syscall-rewrite/13-stage-ipc/doc_rerank_qwen.md -> rewrite-notes/13-stage-ipc/doc_rerank_qwen.md ：2 行变化 =====
+  -**审查范围**：`notes/rewrite/fork-syscall-rewrite/13-stage-ipc/` 编号文档 12 篇（00~10、99）+ `plan.md` + `todo.md` + `README.md` + `draft/`。`doc_rerank_deepseek.md` / `doc_rerank_glm.md` / `archive/` 为其他 AI 产物与历史归档，不读取不引用。
+  +**审查范围**：`rewrite-notes/13-stage-ipc/` 编号文档 12 篇（00~10、99）+ `plan.md` + `todo.md` + `README.md` + `draft/`。`doc_rerank_deepseek.md` / `doc_rerank_glm.md` / `archive/` 为其他 AI 产物与历史归档，不读取不引用。
+===== git-mv notes/rewrite/fork-syscall-rewrite/13-stage-ipc/plan.md -> rewrite-notes/13-stage-ipc/plan.md ：6 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/13-stage-ipc/`
+  +> **范围**: `rewrite-notes/13-stage-ipc/`
+  -1. **概念边界易混淆**——"IPC"在 Minix3 中分两层：**kernel IPC 机制**（`kernel/proc.c` 的 send/receive/notify 原语，见 `01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`）与**用户态 IPC server**（本 stage：SysV 信号量 + 共享内存的对象管理服务）。README 已声明该边界，正式文档必须继承并展开。
+  +1. **概念边界易混淆**——"IPC"在 Minix3 中分两层：**kernel IPC 机制**（`kernel/proc.c` 的 send/receive/notify 原语，见 `01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`）与**用户态 IPC server**（本 stage：SysV 信号量 + 共享内存的对象管理服务）。README 已声明该边界，正式文档必须继承并展开。
+  -| **kernel IPC 机制** | SEND/RECEIVE/NOTIFY/SENDREC 原语、阻塞/唤醒、死锁检测、通知位图 | `01-stage-kernel/12-ipc-core.md` + `notes/rewrite/ipc-sendrec.md`（SENDREC 原子性）——**本 stage 不覆盖** |
+  +| **kernel IPC 机制** | SEND/RECEIVE/NOTIFY/SENDREC 原语、阻塞/唤醒、死锁检测、通知位图 | `01-stage-kernel/12-ipc-core.md` + `rewrite-notes/misc/ipc-sendrec.md`（SENDREC 原子性）——**本 stage 不覆盖** |
+===== git-mv notes/rewrite/fork-syscall-rewrite/14-stage-runtime/doc_rerank_deepseek.md -> rewrite-notes/14-stage-runtime/doc_rerank_deepseek.md ：24 行变化 =====
+  -- 执行者：deepseek；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+  +- 执行者：deepseek；日期：2026-09-19；目标目录：`rewrite-notes/14-stage-runtime/`
+  -- 原料：`03-runtime-init.md:147`、`06-allocator.md:126,140`、`09-vfs-syscalls.md:147,172`、`13-constants-abi.md:94,109`；本轮复核 `rg -c '待改写' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9][0-9]-*.md` 共 7 处（旧稿写 6 处）。
+  +- 原料：`03-runtime-init.md:147`、`06-allocator.md:126,140`、`09-vfs-syscalls.md:147,172`、`13-constants-abi.md:94,109`；本轮复核 `rg -c '待改写' rewrite-notes/14-stage-runtime/[0-9][0-9]-*.md` 共 7 处（旧稿写 6 处）。
+  -- 验收：重建后 `rg -n '待改写' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9][0-9]-*.md` 无输出。
+  +- 验收：重建后 `rg -n '待改写' rewrite-notes/14-stage-runtime/[0-9][0-9]-*.md` 无输出。
+  -- 验收：`rg -n '第 09 篇' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/07-panic-output.md` 不再命中 init 语境，同段出现"第 03 篇"或"PmServer"。
+  +- 验收：`rg -n '第 09 篇' rewrite-notes/14-stage-runtime/07-panic-output.md` 不再命中 init 语境，同段出现"第 03 篇"或"PmServer"。
+  -- 验收：`rg -n '终局' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md` 的命中行不再出现 13 与 exit 并列的写法。
+  +- 验收：`rg -n '终局' rewrite-notes/14-stage-runtime/00-runtime-overview.md` 的命中行不再出现 13 与 exit 并列的写法。
+  -- 验收：`rg -n 'minix-sef' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md notes/rewrite/fork-syscall-rewrite/14-stage-runtime/03-runtime-init.md` 各命中至少一次，且本目录不新增 minix-sef 篇。
+  +- 验收：`rg -n 'minix-sef' rewrite-notes/14-stage-runtime/00-runtime-overview.md rewrite-notes/14-stage-runtime/03-runtime-init.md` 各命中至少一次，且本目录不新增 minix-sef 篇。
+  -- 验收：07 篇不再出现"旋转输出端"字样；`rg -n 'SpinSink|CaptureSink' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/07-panic-output.md` 命中。
+  +- 验收：07 篇不再出现"旋转输出端"字样；`rg -n 'SpinSink|CaptureSink' rewrite-notes/14-stage-runtime/07-panic-output.md` 命中。
+  -| 篇间互引「第 NN 篇」（十五篇之间） | 编号未变，无需硬改 | `rg -c '第 [0-9]{2} 篇' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/[0-9][0-9]-*.md` |
+  -| 07 §3.4 的"第 09 篇的 init" | 第 03 篇与 PmServer | `rg -n '第 09 篇' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/07-panic-output.md` |
+  -| 00 §2 的终局"（13 + exit）" | "（07 + exit）" | `rg -n '终局' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md` |
+  -| 00 §2 的 `qemu-tests/test-rt-birth.sh` | `os/qemu-tests/test-rt-birth.sh` | `rg -n 'qemu-tests/test-rt-birth.sh' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/00-runtime-overview.md` |
+  +| 篇间互引「第 NN 篇」（十五篇之间） | 编号未变，无需硬改 | `rg -c '第 [0-9]{2} 篇' rewrite-notes/14-stage-runtime/[0-9][0-9]-*.md` |
+  +| 07 §3.4 的"第 09 篇的 init" | 第 03 篇与 PmServer | `rg -n '第 09 篇' rewrite-notes/14-stage-runtime/07-panic-output.md` |
+  +| 00 §2 的终局"（13 + exit）" | "（07 + exit）" | `rg -n '终局' rewrite-notes/14-stage-runtime/00-runtime-overview.md` |
+  +| 00 §2 的 `qemu-tests/test-rt-birth.sh` | `os/qemu-tests/test-rt-birth.sh` | `rg -n 'qemu-tests/test-rt-birth.sh' rewrite-notes/14-stage-runtime/00-runtime-overview.md` |
+  -| `plan.md` 与 `todo.md` 的旧状态描述 | 以重建后的十五篇为准，执行阶段同步（本蓝图不改这两份文件） | `rg -c '14-stage-runtime' notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md notes/rewrite/fork-syscall-rewrite/14-stage-runtime/todo.md` |
+  +| `plan.md` 与 `todo.md` 的旧状态描述 | 以重建后的十五篇为准，执行阶段同步（本蓝图不改这两份文件） | `rg -c '14-stage-runtime' rewrite-notes/14-stage-runtime/plan.md rewrite-notes/14-stage-runtime/todo.md` |
+===== git-mv notes/rewrite/fork-syscall-rewrite/14-stage-runtime/doc_rerank_glm.md -> rewrite-notes/14-stage-runtime/doc_rerank_glm.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+  +- **目标目录**：`rewrite-notes/14-stage-runtime/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/14-stage-runtime/doc_rerank_muse.md -> rewrite-notes/14-stage-runtime/doc_rerank_muse.md ：6 行变化 =====
+  -- Target directory: `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+  +- Target directory: `rewrite-notes/14-stage-runtime/`
+  -6. Boundary materials: `notes/rewrite/fork-syscall-rewrite/edge_todo.md` header (E-MINTYPES-RUNTIME, E-MINSYS-SCOPE, E-CMDSYSFACE, E-INITSYS, E-SYSCALL-SIGN registrations), `draft/README.md` (placeholder scope), `13-stage-ipc/00-ipc-overview.md` header (previous-stage boundary: SysV IPC objects liv
+  +6. Boundary materials: `rewrite-notes/coordination/edge_todo.md` header (E-MINTYPES-RUNTIME, E-MINSYS-SCOPE, E-CMDSYSFACE, E-INITSYS, E-SYSCALL-SIGN registrations), `draft/README.md` (placeholder scope), `13-stage-ipc/00-ipc-overview.md` header (previous-stage boundary: SysV IPC objects live in ipc
+  -wc -l notes/rewrite/fork-syscall-rewrite/14-stage-runtime/0*.md 1*.md 99*.md
+  +wc -l rewrite-notes/14-stage-runtime/0*.md 1*.md 99*.md
+===== git-mv notes/rewrite/fork-syscall-rewrite/14-stage-runtime/doc_rerank_qwen.md -> rewrite-notes/14-stage-runtime/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+  +- **目标目录**：`rewrite-notes/14-stage-runtime/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/14-stage-runtime/plan.md -> rewrite-notes/14-stage-runtime/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`
+  +> **范围**: `rewrite-notes/14-stage-runtime/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/14-stage-runtime/todo.md -> rewrite-notes/14-stage-runtime/todo.md ：4 行变化 =====
+  -**契约**：plan.md §5.1（plan.md:229）将 `vm_info.c`、`vm_procctl.c`、`vm_cache.c`、`vm_getrusage.c` 明确映射到 10 篇（"VM 客户端库·用户态 ABI 子集"）。**文档现状**：`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/10-vm-syscalls.md` 对 cache/info/procctl/rusage/willexit/unmap_phys 的 grep 为**零命中**（2026-09-16 实测）——四文件族连同 `VM_VFS
+  +**契约**：plan.md §5.1（plan.md:229）将 `vm_info.c`、`vm_procctl.c`、`vm_cache.c`、`vm_getrusage.c` 明确映射到 10 篇（"VM 客户端库·用户态 ABI 子集"）。**文档现状**：`rewrite-notes/14-stage-runtime/10-vm-syscalls.md` 对 cache/info/procctl/rusage/willexit/unmap_phys 的 grep 为**零命中**（2026-09-16 实测）——四文件族连同 `VM_VFS_MMAP`、`VM_WILLEXIT` 
+  -- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
+  +- 跨 stage 条目的唯一入口是 [`../edge_todo.md`](../coordination/edge_todo.md)（E-MINTYPES-RUNTIME / E-MINSYS-SCOPE / E1 增补见彼处正文）；本文件条目修复时走 todo-fix 三段式（讲明白 → 多方案对比 → 实施）+ fix-guard + 文档-代码同步。
+===== git-mv notes/rewrite/fork-syscall-rewrite/15-stage-fs/01-fsdriver-task.md -> rewrite-notes/15-stage-fs/01-fsdriver-task.md ：10 行变化 =====
+  -> **前置**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`（主线与阶段划分）、虚拟文件系统服务侧的主循环（`notes/rewrite/fork-syscall-rewrite/05-stage-vfs/` 目录下的主循环文档）
+  +> **前置**：`rewrite-notes/15-stage-fs/plan.md`（主线与阶段划分）、虚拟文件系统服务侧的主循环（`rewrite-notes/05-stage-vfs/` 目录下的主循环文档）
+  -- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md`：阶段划分、文档边界、架构演进清单。
+  -- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/02-fsdriver-call.md`：三十一个适配器的逐个展开。
+  -- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/03-fsdriver-utility.md`：授权复制、名字校验、目录项编码、路径查找。
+  -- `notes/rewrite/fork-syscall-rewrite/15-stage-fs/99-global-concepts.md`：协议常量值的全局汇总。
+  +- `rewrite-notes/15-stage-fs/plan.md`：阶段划分、文档边界、架构演进清单。
+  +- `rewrite-notes/15-stage-fs/02-fsdriver-call.md`：三十一个适配器的逐个展开。
+  +- `rewrite-notes/15-stage-fs/03-fsdriver-utility.md`：授权复制、名字校验、目录项编码、路径查找。
+  +- `rewrite-notes/15-stage-fs/99-global-concepts.md`：协议常量值的全局汇总。
+===== git-mv notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_deepseek.md -> rewrite-notes/15-stage-fs/doc_rerank_deepseek.md ：10 行变化 =====
+  -- `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md`：阶段划分（15 号 = FS）、boot 两层语义（登记顺序 vs 执行顺序）
+  -- `notes/rewrite/fork-syscall-rewrite/edge_todo.md`（1095 行，42 条）：本 stage 登记 4 条（`E-FSRUNTIME` `:897`、`E-FSBDEV` `:914`、`E-FSVMCACHE` `:931`、`E-FSCMDS` `:948`）
+  +- `rewrite-notes/00-master-plan/README.md`：阶段划分（15 号 = FS）、boot 两层语义（登记顺序 vs 执行顺序）
+  +- `rewrite-notes/coordination/edge_todo.md`（1095 行，42 条）：本 stage 登记 4 条（`E-FSRUNTIME` `:897`、`E-FSBDEV` `:914`、`E-FSVMCACHE` `:931`、`E-FSCMDS` `:948`）
+  -$ wc -l notes/rewrite/fork-syscall-rewrite/15-stage-fs/*.md
+  +$ wc -l rewrite-notes/15-stage-fs/*.md
+  -5. **验证方式**：迁移后跑 `grep -rho "15-stage-fs/[0-9][0-9]-[a-z0-9-]*\.md" notes/rewrite/fork-syscall-rewrite/15-stage-fs/*.md | sort -u`，确认输出中的每个文件名都在新目录中存在。
+  +5. **验证方式**：迁移后跑 `grep -rho "15-stage-fs/[0-9][0-9]-[a-z0-9-]*\.md" rewrite-notes/15-stage-fs/*.md | sort -u`，确认输出中的每个文件名都在新目录中存在。
+  -**交付物**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_deepseek.md`（本文件）。
+  +**交付物**：`rewrite-notes/15-stage-fs/doc_rerank_deepseek.md`（本文件）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_glm.md -> rewrite-notes/15-stage-fs/doc_rerank_glm.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/`
+  +- **目标目录**：`rewrite-notes/15-stage-fs/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_muse.md -> rewrite-notes/15-stage-fs/doc_rerank_muse.md ：6 行变化 =====
+  -- Target directory: `notes/rewrite/fork-syscall-rewrite/15-stage-fs/`
+  +- Target directory: `rewrite-notes/15-stage-fs/`
+  -4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (§ stage table + boot two-layer semantics), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-FSRUNTIME/E-FSBDEV/E-FSVMCACHE/E-FSCMDS registration, 2026-09-16 entry), target `plan.md` (full read, §§1-5; §4 ARCH 
+  +4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (§ stage table + boot two-layer semantics), `rewrite-notes/coordination/edge_todo.md` (E-FSRUNTIME/E-FSBDEV/E-FSVMCACHE/E-FSCMDS registration, 2026-09-16 entry), target `plan.md` (full read, §§1-5; §4 ARCH table is design-time candidat
+  -- `wc -l notes/rewrite/fork-syscall-rewrite/15-stage-fs/*.md | sort -n`: 26 docs, 62 (`99`) .. 358 (`01`) lines; total 12471 incl. plan/todo. Byte sizes 3.8K (`99`) .. 36K (`01`). Mean density ~100 bytes/line: dense exposition, not long-form. No document approaches the 3000-line soft cap; length pr
+  +- `wc -l rewrite-notes/15-stage-fs/*.md | sort -n`: 26 docs, 62 (`99`) .. 358 (`01`) lines; total 12471 incl. plan/todo. Byte sizes 3.8K (`99`) .. 36K (`01`). Mean density ~100 bytes/line: dense exposition, not long-form. No document approaches the 3000-line soft cap; length pressure is absent, com
+===== git-mv notes/rewrite/fork-syscall-rewrite/15-stage-fs/doc_rerank_qwen.md -> rewrite-notes/15-stage-fs/doc_rerank_qwen.md ：2 行变化 =====
+  -目标目录 = notes/rewrite/fork-syscall-rewrite/15-stage-fs/
+  +目标目录 = rewrite-notes/15-stage-fs/
+===== git-mv notes/rewrite/fork-syscall-rewrite/15-stage-fs/plan.md -> rewrite-notes/15-stage-fs/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/15-stage-fs/`
+  +> **范围**: `rewrite-notes/15-stage-fs/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/15-stage-fs/todo.md -> rewrite-notes/15-stage-fs/todo.md ：2 行变化 =====
+  -- **Step 0 硬阻断预检**：`notes/rewrite/fork-syscall-rewrite/15-stage-fs/.design/` 下 24 组 `NN-outline.v1.md` + `NN-outline-review.v1.md` + `NN-design.v1.md` 齐备（各 24 个）；`bash tools/design-coverage-check.sh fork-syscall-rewrite/15-stage-fs` 输出 `ALL DOCS COMPLETE`，退出码 0。Gate H.6 / H.1 通过。
+  +- **Step 0 硬阻断预检**：`rewrite-notes/15-stage-fs/.design/` 下 24 组 `NN-outline.v1.md` + `NN-outline-review.v1.md` + `NN-design.v1.md` 齐备（各 24 个）；`bash tools/design-coverage-check.sh fork-syscall-rewrite/15-stage-fs` 输出 `ALL DOCS COMPLETE`，退出码 0。Gate H.6 / H.1 通过。
+===== git-mv notes/rewrite/fork-syscall-rewrite/16-stage-drivers/doc_rerank_glm.md -> rewrite-notes/16-stage-drivers/doc_rerank_glm.md ：4 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/16-stage-drivers
+  +target_dir(关注的工作目录) = rewrite-notes/16-stage-drivers
+  -- 执行者：glm；日期：2026-09-19；目标目录：`notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`。
+  +- 执行者：glm；日期：2026-09-19；目标目录：`rewrite-notes/16-stage-drivers/`。
+===== git-mv notes/rewrite/fork-syscall-rewrite/16-stage-drivers/doc_rerank_muse.md -> rewrite-notes/16-stage-drivers/doc_rerank_muse.md ：2 行变化 =====
+  ->   (full path: notes/rewrite/fork-syscall-rewrite/16-stage-drivers/)
+  +>   (full path: rewrite-notes/16-stage-drivers/)
+===== git-mv notes/rewrite/fork-syscall-rewrite/16-stage-drivers/doc_rerank_qwen.md -> rewrite-notes/16-stage-drivers/doc_rerank_qwen.md ：2 行变化 =====
+  -target_dir(关注的工作目录) = notes/rewrite/fork-syscall-rewrite/16-stage-drivers
+  +target_dir(关注的工作目录) = rewrite-notes/16-stage-drivers
+===== git-mv notes/rewrite/fork-syscall-rewrite/16-stage-drivers/plan.md -> rewrite-notes/16-stage-drivers/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/16-stage-drivers/`
+  +> **范围**: `rewrite-notes/16-stage-drivers/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/17-stage-net/doc_rerank_glm.md -> rewrite-notes/17-stage-net/doc_rerank_glm.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/17-stage-net/`
+  +- **目标目录**：`rewrite-notes/17-stage-net/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/17-stage-net/doc_rerank_muse.md -> rewrite-notes/17-stage-net/doc_rerank_muse.md ：8 行变化 =====
+  -- Executor: muse. Date: 2026-09-19 (UTC). Target directory: `notes/rewrite/fork-syscall-rewrite/17-stage-net/`. Repo root: `/home/xzhao/github/minix-rs`.
+  +- Executor: muse. Date: 2026-09-19 (UTC). Target directory: `rewrite-notes/17-stage-net/`. Repo root: `/home/xzhao/github/minix-rs`.
+  -  4. Boundary materials: `notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md` (stage table, line 35), `notes/rewrite/fork-syscall-rewrite/edge_todo.md` (E-SDEVOWN, E-DEVWIRE, E-NETSTART, E-RMIBWIRE), `17-stage-net/plan.md`, `17-stage-net/todo.md`.
+  +  4. Boundary materials: `rewrite-notes/00-master-plan/README.md` (stage table, line 35), `rewrite-notes/coordination/edge_todo.md` (E-SDEVOWN, E-DEVWIRE, E-NETSTART, E-RMIBWIRE), `17-stage-net/plan.md`, `17-stage-net/todo.md`.
+  -  - `wc -l notes/rewrite/fork-syscall-rewrite/17-stage-net/*.md` → 27 in-scope docs, 116–256 lines each (total ~4400 lines excluding other-AI blueprints); `plan.md` 460 lines; `todo.md` 78 lines.
+  +  - `wc -l rewrite-notes/17-stage-net/*.md` → 27 in-scope docs, 116–256 lines each (total ~4400 lines excluding other-AI blueprints); `plan.md` 460 lines; `todo.md` 78 lines.
+  -- Inbound refs from other stages (VFS/MIB/drivers/commands docs citing `17-stage-net/NN-…`): B phase runs `rg -l "17-stage-net/0[1-9]|17-stage-net/1[0-9]|17-stage-net/2[0-5]" notes/rewrite/` outside this dir and rewrites targets per §7.1. (Not run in R to avoid cross-AI working-tree interference; t
+  +- Inbound refs from other stages (VFS/MIB/drivers/commands docs citing `17-stage-net/NN-…`): B phase runs `rg -l "17-stage-net/0[1-9]|17-stage-net/1[0-9]|17-stage-net/2[0-5]" rewrite-notes/` outside this dir and rewrites targets per §7.1. (Not run in R to avoid cross-AI working-tree interference; t
+===== git-mv notes/rewrite/fork-syscall-rewrite/17-stage-net/doc_rerank_qwen.md -> rewrite-notes/17-stage-net/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/17-stage-net`
+  +- **目标目录**：`rewrite-notes/17-stage-net`
+===== git-mv notes/rewrite/fork-syscall-rewrite/17-stage-net/plan.md -> rewrite-notes/17-stage-net/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/17-stage-net/`
+  +> **范围**: `rewrite-notes/17-stage-net/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/18-stage-commands/doc_rerank_deepseek.md -> rewrite-notes/18-stage-commands/doc_rerank_deepseek.md ：2 行变化 =====
+  -| `18-stage-commands/todo.md` 引用 | `prompt/todo_plan.md` 3 处、`edge_todo.md` 3 处、`edge3.md` 3 处 | 不改（todo.md 原地保留）；但其中引用具体篇号的位置需替换 | `rg -n '18-stage-commands/[0-9]{2}-' prompt/ notes/rewrite/fork-syscall-rewrite/edge*.md` 逐个核对 |
+  +| `18-stage-commands/todo.md` 引用 | `prompt/todo_plan.md` 3 处、`edge_todo.md` 3 处、`edge3.md` 3 处 | 不改（todo.md 原地保留）；但其中引用具体篇号的位置需替换 | `rg -n '18-stage-commands/[0-9]{2}-' prompt/ rewrite-notes/edge*.md` 逐个核对 |
+===== git-mv notes/rewrite/fork-syscall-rewrite/18-stage-commands/doc_rerank_glm.md -> rewrite-notes/18-stage-commands/doc_rerank_glm.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/18-stage-commands/`
+  +- **目标目录**：`rewrite-notes/18-stage-commands/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/18-stage-commands/doc_rerank_muse.md -> rewrite-notes/18-stage-commands/doc_rerank_muse.md ：2 行变化 =====
+  -- Executor: muse. Date: 2026-09-20. Target: `notes/rewrite/fork-syscall-rewrite/18-stage-commands/`.
+  +- Executor: muse. Date: 2026-09-20. Target: `rewrite-notes/18-stage-commands/`.
+===== git-mv notes/rewrite/fork-syscall-rewrite/18-stage-commands/doc_rerank_qwen.md -> rewrite-notes/18-stage-commands/doc_rerank_qwen.md ：2 行变化 =====
+  -- **目标目录**：`notes/rewrite/fork-syscall-rewrite/18-stage-commands/`
+  +- **目标目录**：`rewrite-notes/18-stage-commands/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/18-stage-commands/plan.md -> rewrite-notes/18-stage-commands/plan.md ：2 行变化 =====
+  -> **范围**: `notes/rewrite/fork-syscall-rewrite/18-stage-commands/`
+  +> **范围**: `rewrite-notes/18-stage-commands/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/18-stage-commands/todo.md -> rewrite-notes/18-stage-commands/todo.md ：2 行变化 =====
+  -> 范围：`notes/rewrite/fork-syscall-rewrite/18-stage-commands/`。本文只登记文档缺口与修复去向，不修改生产代码。
+  +> 范围：`rewrite-notes/18-stage-commands/`。本文只登记文档缺口与修复去向，不修改生产代码。
+===== git-mv notes/rewrite/fork-syscall-rewrite/19-stage-integration/06-code.md -> rewrite-notes/19-stage-integration/06-code.md ：2 行变化 =====
+  -- **Same-dir docs**: `notes/rewrite/fork-syscall-rewrite/01-stage-pm/` through `06-stage-integration/`
+  +- **Same-dir docs**: `rewrite-notes/01-stage-pm/` through `06-stage-integration/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/20-redesign/tocutou-and-distributed-consistency.md -> redesign-notes/architecture/tocutou-and-distributed-consistency.md ：4 行变化 =====
+  -> - 验证逻辑：[`minix3/minix/servers/vm/utility.c#L84-L94`](../../../../minix3/minix/servers/vm/utility.c#L84-L94) `vm_isokendpt()`
+  -> - 调用点：[`minix3/minix/servers/vm/fork.c#L44-L48`](../../../../minix3/minix/servers/vm/fork.c#L44-L48) `do_fork()`
+  +> - 验证逻辑：[`minix3/minix/servers/vm/utility.c#L84-L94`](../../minix3/minix/servers/vm/utility.c#L84-L94) `vm_isokendpt()`
+  +> - 调用点：[`minix3/minix/servers/vm/fork.c#L44-L48`](../../minix3/minix/servers/vm/fork.c#L44-L48) `do_fork()`
+===== git-mv notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-boot-first-light.md -> rewrite-notes/coordination/HANDOFF-NK4A-boot-first-light.md ：2 行变化 =====
+  -`notes/rewrite/fork-syscall-rewrite/new_edge{1,2,3,4}.md`（edge1=内核/arch/boot、edge2=共享库/驱动、
+  +`rewrite-notes/new_edge{1,2,3,4}.md`（edge1=内核/arch/boot、edge2=共享库/驱动、
+===== git-mv notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-review-and-redo.md -> rewrite-notes/coordination/HANDOFF-NK4A-review-and-redo.md ：8 行变化 =====
+  -2. `notes/rewrite/fork-syscall-rewrite/HANDOFF-NK4A-boot-first-light.md`
+  +2. `rewrite-notes/coordination/HANDOFF-NK4A-boot-first-light.md`
+  -   head` 按时间挑）复制到 `notes/rewrite/fork-syscall-rewrite/evidence/`
+  +   head` 按时间挑）复制到 `rewrite-notes/evidence/`
+  -4. 若存在 `notes/rewrite/fork-syscall-rewrite/NK4A-HANDOFF-STATUS.md`
+  +4. 若存在 `rewrite-notes/coordination/NK4A-HANDOFF-STATUS.md`
+  -1. `notes/rewrite/fork-syscall-rewrite/NK4A-REVIEW-REPORT.md`（§6 报告）。
+  +1. `rewrite-notes/coordination/NK4A-REVIEW-REPORT.md`（§6 报告）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-OPENING-PROMPT.md -> rewrite-notes/coordination/NK4A-QWEN-OPENING-PROMPT.md ：6 行变化 =====
+  -1. 读 `notes/rewrite/fork-syscall-rewrite/NK4A-TODO.md` 全文（任务书：
+  +1. 读 `rewrite-notes/coordination/NK4A-TODO.md` 全文（任务书：
+  -4. 在 `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` 顶部
+  +4. 在 `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` 顶部
+  -      `git add -f notes/rewrite/fork-syscall-rewrite/evidence/<目录>/`
+  +      `git add -f rewrite-notes/evidence/<目录>/`
+===== git-mv notes/rewrite/fork-syscall-rewrite/NK4A-REVIEW-REPORT.md -> rewrite-notes/coordination/NK4A-REVIEW-REPORT.md ：2 行变化 =====
+  -> 证据目录：`notes/rewrite/fork-syscall-rewrite/evidence/20260921-2320/`（99 个 /tmp 日志 + tip 冒烟实录）。
+  +> 证据目录：`rewrite-notes/evidence/20260921-2320/`（99 个 /tmp 日志 + tip 冒烟实录）。
+===== git-mv notes/rewrite/fork-syscall-rewrite/NK4A-TODO.md -> rewrite-notes/coordination/NK4A-TODO.md ：4 行变化 =====
+  -### 6.1 WORKLOG（`notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md`，每 Task 一节，追加）
+  +### 6.1 WORKLOG（`rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md`，每 Task 一节，追加）
+  -git add -f notes/rewrite/fork-syscall-rewrite/evidence/<目录名>/ && git commit -m "..."
+  +git add -f rewrite-notes/evidence/<目录名>/ && git commit -m "..."
+===== git-mv notes/rewrite/fork-syscall-rewrite/NK4C-REVIEW-REPORT-R31-20260930.md -> rewrite-notes/coordination/NK4C-REVIEW-REPORT-R31-20260930.md ：2 行变化 =====
+  -| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 evidence/，偏离 notes/rewrite/fork-syscall-rewrite/evidence/ 约定 | evidence/20260930-c64-pattern-gate/ |
+  +| F7 | P2-hygiene | 396f1f5db 证据文件落仓库根 evidence/，偏离 rewrite-notes/evidence/ 约定 | evidence/20260930-c64-pattern-gate/ |
+===== git-mv notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md -> rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md ：8 行变化 =====
+  -notes/rewrite/fork-syscall-rewrite/
+  +rewrite-notes/
+  -1. notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
+  -2. notes/rewrite/fork-syscall-rewrite/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
+  -3. notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md 顶部「当前状态」
+  +1. rewrite-notes/coordination/NK4C-MIGRATION-20260930.md（主线权威状态：三终目标进度/两大前沿配方/主线开场 prompt）
+  +2. rewrite-notes/coordination/NK4C-REVIEWER-SESSION-RECORD-20260930.md（评审线 R3 状态、R3.1 增量协议、新机环境搭建清单）
+  +3. rewrite-notes/coordination/NK4C-WORKLOG.md 顶部「当前状态」
+===== git-mv notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md -> rewrite-notes/coordination/NK4C-WORKLOG.md ：66 行变化 =====
+  -> **（历史·§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `notes/rewrite/fork-syscall-rewrite/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09
+  +> **（历史·§1.120续-74（2026-09-30·**电脑迁移前小节点·纯取证/核实轮·无生产码改**）**：用户更换电脑，本轮把全部状态沉淀到新建迁移交接件 `rewrite-notes/coordination/NK4C-MIGRATION-20260930.md`（含新机开场 prompt·权威快照·两大前沿配方·验证链命令·文件锚点速查·环境依赖）。核实：HEAD=`beda55e02`（续-73）tracked 净；**破除 RESUME-PROMPT §3.1 过时叙述**——dm_coverage source-4 早在续-51 commit `b09665415` 
+  -**本 commit 文件清单**：`os/fs/mfs/build.rs`（新建）、`os/fs/mfs/src/main.rs`、`os/fs/fs-rt/src/source.rs`、`os/xtask/src/image.rs`、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
+  +**本 commit 文件清单**：`os/fs/mfs/build.rs`（新建）、`os/fs/mfs/src/main.rs`、`os/fs/fs-rt/src/source.rs`、`os/xtask/src/image.rs`、`rewrite-notes/coordination/NK4C-WORKLOG.md`。
+  -- **本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`。
+  +- **本 commit 文件清单**：`os/fs/mfs/src/server.rs`（新增测试）、`rewrite-notes/coordination/NK4C-WORKLOG.md`。
+  -- 诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）：报告推荐的修法**正是已落地实现**。[smp.rs:1219-1252](../../../os/kernel/src/smp.rs) 现为 `static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE)`（`-1`=空闲 / `>=0`=持有 CPU id），acquire 单条 `compare_exchange`、release 单条 `store`，注释原文即在描述报告所指的“两步 store 中间态致中断 handler 误判非继承→同 CPU 自旋死锁”窗口。
+  +- 诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）：报告推荐的修法**正是已落地实现**。[smp.rs:1219-1252](../../os/kernel/src/smp.rs) 现为 `static BKL: AtomicIsize = AtomicIsize::new(BKL_FREE)`（`-1`=空闲 / `>=0`=持有 CPU id），acquire 单条 `compare_exchange`、release 单条 `store`，注释原文即在描述报告所指的“两步 store 中间态致中断 handler 误判非继承→同 CPU 自旋死锁”窗口。§1.
+  -**B42 活锁双方**：`grep BOOT_MODULE_PROC_NRS` 于 [proc.rs:111-124](../../../os/kernel/src/proc.rs) 实锤——boot server 保留 C `com.h` 固定号（PM=0/VFS=1/**RS=2**/MEM=3/SCHED=4/TTY=5/DS=6/MIB=7/**VM=8**/PFS=9/MFS=10/INIT=11）。故 `fa=0x227980` 的 pick slot `0x2↔0x8` 乒乓 = **RS↔VM**。`0x227980` 落在 base `0x200000` 镜像内偏移 ~0
+  -
+  -**关键嫌疑（静态未证，须探针区分）**：B41 修复命中 `exec_worker.rs:928 PROT_RWX → mmap.rs:102 to_vr_flags 消费 PROT_EXEC` 这条**动态 exec 腿**。但 **RS 等 boot server 的初始地址空间并非由 `exec_worker→to_vr_flags` 装配**——boot 镜像腿在 [misc.rs](../../../os/kernel/src/misc.rs) 的 `p_seg.phys_root` 装配带 + [vm_handoff.rs](../../../os/kernel/src/vm_
+  +**B42 活锁双方**：`grep BOOT_MODULE_PROC_NRS` 于 [proc.rs:111-124](../../os/kernel/src/proc.rs) 实锤——boot server 保留 C `com.h` 固定号（PM=0/VFS=1/**RS=2**/MEM=3/SCHED=4/TTY=5/DS=6/MIB=7/**VM=8**/PFS=9/MFS=10/INIT=11）。故 `fa=0x227980` 的 pick slot `0x2↔0x8` 乒乓 = **RS↔VM**。`0x227980` 落在 base `0x200000` 镜像内偏移 ~0x27
+  +
+  +**关键嫌疑（静态未证，须探针区分）**：B41 修复命中 `exec_worker.rs:928 PROT_RWX → mmap.rs:102 to_vr_flags 消费 PROT_EXEC` 这条**动态 exec 腿**。但 **RS 等 boot server 的初始地址空间并非由 `exec_worker→to_vr_flags` 装配**——boot 镜像腿在 [misc.rs](../../os/kernel/src/misc.rs) 的 `p_seg.phys_root` 装配带 + [vm_handoff.rs](../../os/kernel/src/vm_handof
+  -**决定性读数**：`nk4a: vmpt2bf off=0x980 ptroot=0x319e000 wr=false exec=false`——VM 侧处理 RS（ep=2）在 `0x227980`（region.vaddr=`0x227000` + offset `0x980`）缺页时，该 region **`exec=false` 且 `wr=false`**（read_only、无 EXECUTABLE）。`sync_slot_pte`（[cow_exec_pf.rs:129-135](../../../os/servers/vm/src/cow_exec_pf.rs)）遂组 `P
+  +**决定性读数**：`nk4a: vmpt2bf off=0x980 ptroot=0x319e000 wr=false exec=false`——VM 侧处理 RS（ep=2）在 `0x227980`（region.vaddr=`0x227000` + offset `0x980`）缺页时，该 region **`exec=false` 且 `wr=false`**（read_only、无 EXECUTABLE）。`sync_slot_pte`（[cow_exec_pf.rs:129-135](../../os/servers/vm/src/cow_exec_pf.rs)）遂组 `Page
+  -**先处置本轮再次转发的 side-thread 只读诊断报告**（与 §1.76 同一份）：三条经核对**全部对当前码闭环，不复处理**——诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）＝报告推荐修法正是 §1.52 commit 917de5e83 已落地实现（[smp.rs:1219-1252](../../../os/kernel/src/smp.rs) 现 `static BKL: AtomicIsize`，`-1`=空闲/`>=0`=持有 CPU）；诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配
+  +**先处置本轮再次转发的 side-thread 只读诊断报告**（与 §1.76 同一份）：三条经核对**全部对当前码闭环，不复处理**——诊断一（BKL 两步写自死锁，建议合并单 `AtomicIsize`）＝报告推荐修法正是 §1.52 commit 917de5e83 已落地实现（[smp.rs:1219-1252](../../os/kernel/src/smp.rs) 现 `static BKL: AtomicIsize`，`-1`=空闲/`>=0`=持有 CPU）；诊断二（B27 birth 期页表 walk 缺 VMINHIBIT + 两次同址 leaf PTE 采样配方）＝
+  -**机制（读码坐实·算术自洽）**：`0xffffffffffffefe0` = `sign_extend_i32_to_u64(0xffffefe0)` = `(-0x1020) as u64`。合法 ps_strings `0x0000_7fff_ffff_efe0`（47 位）→ 截断入 `i32`（丢高 17 位）= `0xffff_efe0`（i32 视作 **-0x1020**）→ PM [ipc/vfs.rs:544](../../../os/servers/pm/src/ipc/vfs.rs) `VirBytes(args.newps_str as u64)` 对负 i32 
+  +**机制（读码坐实·算术自洽）**：`0xffffffffffffefe0` = `sign_extend_i32_to_u64(0xffffefe0)` = `(-0x1020) as u64`。合法 ps_strings `0x0000_7fff_ffff_efe0`（47 位）→ 截断入 `i32`（丢高 17 位）= `0xffff_efe0`（i32 视作 **-0x1020**）→ PM [ipc/vfs.rs:544](../../os/servers/pm/src/ipc/vfs.rs) `VirBytes(args.newps_str as u64)` 对负 i32 **符
+  -- [minix-types/src/ipc/vfs.rs:363](../../../os/libs/minix-types/src/ipc/vfs.rs) `VfsCall::Exec { ps_str: i32 }` → encode `m7i5`（offset16·4字节·装不下 64 位指针）/ decode 同；
+  +- [minix-types/src/ipc/vfs.rs:363](../../os/libs/minix-types/src/ipc/vfs.rs) `VfsCall::Exec { ps_str: i32 }` → encode `m7i5`（offset16·4字节·装不下 64 位指针）/ decode 同；
+  -- [vfs/src/exec_worker.rs:140/157](../../../os/servers/vfs/src/exec_worker.rs) `ExecRequest.ps_str: i32` / `ExecLoaded.newps_str: i32`，L515 `newps_str: req.ps_str` 原样带过；
+  -- PM [exec.rs / ipc/vfs.rs:72](../../../os/servers/pm/src/ipc/vfs.rs) `ExecRestartArgs.newps_str: i32` + `as u64` 符号扩展。
+  -
+  -**对照正确腿（证明修法方向成立）**：① boot 腿 [vm_server.rs:1044](../../../os/servers/vm/src/vm_server.rs) `sys_exec(endpoint, entry, vsp, 0, filled.ps_str)` 全程原生 `u64`（无 i32 往返）→ boot 全对；② RS→PM 腿 [minix-sys/src/pm.rs:800](../../../os/libs/minix-sys/src/pm.rs) `exec_restart_via(ps_str: u64)` → `MessRsPmExecRestart
+  +- [vfs/src/exec_worker.rs:140/157](../../os/servers/vfs/src/exec_worker.rs) `ExecRequest.ps_str: i32` / `ExecLoaded.newps_str: i32`，L515 `newps_str: req.ps_str` 原样带过；
+  +- PM [exec.rs / ipc/vfs.rs:72](../../os/servers/pm/src/ipc/vfs.rs) `ExecRestartArgs.newps_str: i32` + `as u64` 符号扩展。
+  +
+  +**对照正确腿（证明修法方向成立）**：① boot 腿 [vm_server.rs:1044](../../os/servers/vm/src/vm_server.rs) `sys_exec(endpoint, entry, vsp, 0, filled.ps_str)` 全程原生 `u64`（无 i32 往返）→ boot 全对；② RS→PM 腿 [minix-sys/src/pm.rs:800](../../os/libs/minix-sys/src/pm.rs) `exec_restart_via(ps_str: u64)` → `MessRsPmExecRestart { ps_
+  -**C ground truth 对质（实锤）**：设计文档 `notes/study/vm/vm-region-management.md` COW 状态转换图（L963）明写：状态 2 fork 后共享 `phys_block refcount:2 / 页表: 只读（两个进程都是）`；状态 3「进程 A 写入时」才 COW 拿私有帧。即 **C 在 fork 时把父、子双方 PTE 都置只读**。本仓 Rust `do_fork` 只保护了子、漏了父 ⇒ **内部 COW 语义未对齐 C 的正确性 bug**（非外部契约/[ARCH] 变更，无需用户裁决）。
+  +**C ground truth 对质（实锤）**：设计文档 `study-notes/vm/vm-region-management.md` COW 状态转换图（L963）明写：状态 2 fork 后共享 `phys_block refcount:2 / 页表: 只读（两个进程都是）`；状态 3「进程 A 写入时」才 COW 拿私有帧。即 **C 在 fork 时把父、子双方 PTE 都置只读**。本仓 Rust `do_fork` 只保护了子、漏了父 ⇒ **内部 COW 语义未对齐 C 的正确性 bug**（非外部契约/[ARCH] 变更，无需用户裁决）。
+  -上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- notes/rewrite/for
+  +上一轮 §1.104 提交 `05024b964` 误将 8 个文件一起提交——因为 `migrate_notes_plan/*.md`（6 个）+ `misc_concepts.md` 在会话开始即预暂存于 index（A 状态、非本 agent 产物），`git add WORKLOG.md` 后 `git commit` 把 index 里全部暂存文件一并纳入，违反「只 add 明确文件路径」约束。本轮第一步：`git reset --soft HEAD~1` 回退（不动工作树/index 内容），改用 `git commit -F <msg> -- rewrite-notes/coo
+  -> **riscv 前置对账就绪 = `notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.14（第 1–6 轮逐轮累加：第 3 轮 D.1–D.9 8 笔债基线、第 4 轮补账债⑨–⑫（PAF_CLEAR/缓存维护/代刷腿翻案/吞错家族）、第 5 轮外部复核修正债⑩＋新立债⑬ b
+  +> **riscv 前置对账就绪 = `rewrite-notes/coordination/riscv-reviewlog.md`**（侧线程静态扫描产出：A 段按 boot 阶段排的 riscv64 接入验收清单 A.0→A.13、B 段设计决策对比表 D1–D7、C 段 x86/aarch64 已付学费→riscv 同型位点坑对账、D 段 WORKLOG 结构债深度分析 D.0→D.14（第 1–6 轮逐轮累加：第 3 轮 D.1–D.9 8 笔债基线、第 4 轮补账债⑨–⑫（PAF_CLEAR/缓存维护/代刷腿翻案/吞错家族）、第 5 轮外部复核修正债⑩＋新立债⑬ bump 池无回收
+  -**起点**：读 `tmp/nk4a/nk4c35-pt-bind-wip.patch` + 本节分析 + `notes/rewrite/fork-syscall-rewrite/NK4C-GLM53-PROMPT.md`。
+  +**起点**：读 `tmp/nk4a/nk4c35-pt-bind-wip.patch` + 本节分析 + `rewrite-notes/coordination/NK4C-GLM53-PROMPT.md`。
+  -含代码改的 commit 走 CodeReview 后方提交：`git add os/kernel/src/dm_coverage.rs notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（明确路径·不用 `-A`·不动 `AI-chats/daily.todo.md`）。提交后 HEAD 前进，续-50 的 NOT-WIRED 状态结束。
+  +含代码改的 commit 走 CodeReview 后方提交：`git add os/kernel/src/dm_coverage.rs rewrite-notes/coordination/NK4C-WORKLOG.md`（明确路径·不用 `-A`·不动 `AI-chats/daily.todo.md`）。提交后 HEAD 前进，续-50 的 NOT-WIRED 状态结束。
+  …（余 26 行）
+===== git-mv notes/rewrite/fork-syscall-rewrite/NK4C-接续PROMPT-RISCV-20261003.md -> rewrite-notes/coordination/NK4C-接续PROMPT-RISCV-20261003.md ：4 行变化 =====
+  -> `notes/rewrite/fork-syscall-rewrite/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279n/-b）。
+  +> `rewrite-notes/coordination/NK4C-WORKLOG.md`（git 跟踪的活体权威载体，前沿=§续-279n/-b）。
+  -- **工作区注记**：`notes/rewrite/fork-syscall-rewrite/03-stage-rs/{00-rs-overview,doc_rerank_qwen}.md`
+  +- **工作区注记**：`rewrite-notes/03-stage-rs/{00-rs-overview,doc_rerank_qwen}.md`
+===== git-mv notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md -> rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md ：16 行变化 =====
+  -> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../../tools/pattern-gate.sh)（13 项机械检查）+
+  -> [`tools/pattern-gate-baseline.txt`](../../../tools/pattern-gate-baseline.txt)（存量豁免）。
+  +> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../tools/pattern-gate.sh)（13 项机械检查）+
+  +> [`tools/pattern-gate-baseline.txt`](../../tools/pattern-gate-baseline.txt)（存量豁免）。
+  -| `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+  -| `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+  +| `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+  +| `rewrite-notes/coordination/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+  -> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../../tools/pattern-gate.sh)（13 项机械检查）+
+  -> [`tools/pattern-gate-baseline.txt`](../../../tools/pattern-gate-baseline.txt)（存量豁免）。
+  +> 交付三件：本目录文档 + [`tools/pattern-gate.sh`](../../tools/pattern-gate.sh)（13 项机械检查）+
+  +> [`tools/pattern-gate-baseline.txt`](../../tools/pattern-gate-baseline.txt)（存量豁免）。
+  -| `notes/rewrite/fork-syscall-rewrite/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+  -| `notes/rewrite/fork-syscall-rewrite/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+  +| `rewrite-notes/coordination/NK4A-QWEN-WORKLOG.md` | 471 行 | 全文精读（Task A/B/C 六轮取证） |
+  +| `rewrite-notes/coordination/NK4B-WORKLOG.md` | 2446 行 | P0 核账 + P1 节全文精读；M3/M4 系列经 edge1 FIXLOG 补记覆盖 |
+===== git-mv notes/rewrite/fork-syscall-rewrite/STRUCTURAL-DEBT-REGISTER-20260930.md -> rewrite-notes/coordination/STRUCTURAL-DEBT-REGISTER-20260930.md ：6 行变化 =====
+  -deep structural-debt analysis for thirteen debts (`notes/rewrite/fork-syscall-rewrite/riscv-reviewlog.md`
+  +deep structural-debt analysis for thirteen debts (`rewrite-notes/coordination/riscv-reviewlog.md`
+  -the composition seams); and the per-stage design documents under `notes/rewrite/` (each stage's
+  +the composition seams); and the per-stage design documents under `rewrite-notes/` (each stage's
+  -Register sources (all under `notes/rewrite/fork-syscall-rewrite/` unless noted): `riscv-reviewlog.md`,
+  +Register sources (all under `rewrite-notes/` unless noted): `riscv-reviewlog.md`,
+===== git-mv notes/rewrite/fork-syscall-rewrite/claim-prompt.md -> rewrite-notes/coordination/claim-prompt.md ：4 行变化 =====
+  -你在 `/home/xzhao/github/minix-rs` 工作——这是 Minix3 内核模块的 Rust 语义重写（**Rewrite not Translate**：保持外部行为，内部用 Rust 类型系统重表达；x86-64/riscv64/aarch64，no_std）。总目标：**三架构 QEMU 启动 minix-rs 并运行 18-stage-commands 全部程序**。工作条目按线分账于 `notes/rewrite/fork-syscall-rewrite/new_edge1-4.md`（edge1=内核/arch、edge2=共享库/驱动、edge3=服务器/
+  +你在 `/home/xzhao/github/minix-rs` 工作——这是 Minix3 内核模块的 Rust 语义重写（**Rewrite not Translate**：保持外部行为，内部用 Rust 类型系统重表达；x86-64/riscv64/aarch64，no_std）。总目标：**三架构 QEMU 启动 minix-rs 并运行 18-stage-commands 全部程序**。工作条目按线分账于 `rewrite-notes/new_edge1-4.md`（edge1=内核/arch、edge2=共享库/驱动、edge3=服务器/FS/命令、edge4=编排台）。可能有其
+  -3. `notes/rewrite/fork-syscall-rewrite/new_edge4.md` §1（并发/领取/构建规则）与 §6（OQ 队列——你不得代决的事项）
+  +3. `rewrite-notes/coordination/new_edge4.md` §1（并发/领取/构建规则）与 §6（OQ 队列——你不得代决的事项）
+===== git-mv notes/rewrite/fork-syscall-rewrite/edge1.md -> rewrite-notes/coordination/edge1.md ：36 行变化 =====
+  -> **所有权（本线可独占修改，其他线触碰须走 edge4 认领板）**：`os/kernel/`、`os/arch/`、`os/plat/`、`os/boot-shim/`、`os/qemu-tests/`、`notes/rewrite/fork-syscall-rewrite/01-stage-kernel/`、`notes/rewrite/fork-syscall-rewrite/00-master-plan/`。
+  +> **所有权（本线可独占修改，其他线触碰须走 edge4 认领板）**：`os/kernel/`、`os/arch/`、`os/plat/`、`os/boot-shim/`、`os/qemu-tests/`、`rewrite-notes/01-stage-kernel/`、`rewrite-notes/00-master-plan/`。
+  -| K1 | E-PREEMPTFLAG 余项：enqueue Phase 3 抢占门激活 | [edge_todo.md](edge_todo.md) E-PREEMPTFLAG ｜ [06-stage-sched/todo.md §2](06-stage-sched/todo.md) | 抢占分支生产不可达（调用方全传 `current_nr=None`）。(a) current 来源改读 `CpuLocal.proc_ptr`；(b) 抢占门消费 `KPrivFlags::is_preemptible`（C proc.c:1638）。SCHED 服务器零改动 | 无（CpuLocal 
+  -| K2 | E-SCHEDSMP：SCHED cpu 下发链三环 | [edge_todo.md](edge_todo.md) E-SCHEDSMP ｜ [06-stage-sched/todo.md §3](06-stage-sched/todo.md) | (1) per-CPU Scheduler 入 CpuLocal，`sched_for_cpu` 按 cpu_id 分发；(2) `sched_proc` 补 cpu_is_ready 校验（EBADCPU）；(3) 跨 CPU 迁移接线（`schedule_migrate_proc` 已有本体，缺调用方）。SCHED 侧零改动 |
+  -| K3 | E-VMTLB 余件：SMP IPI 旗标设置完备性 | [edge_todo.md](edge_todo.md) E-VMTLB ｜ [02-stage-vm/todo.md V13-P2-1(c)](02-stage-vm/todo.md) | 机制三件套已落（pick 点判定/switch_to_user 消费/设置点）。余件 = `schedule_vminhibit` IPI 路径的旗标设置完备性 + E5 SMP 冒烟用例「fork 后父子并发写 CoW 页」设计（用例执行归 edge4） | 无 | ✅（本提交；完备性缺口实证并修复——本地臂设 VMINHIBIT
+  -| K4 | T-13 dm_coverage 测试族共享 mock 无同步 | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L411 | `os/arch` dm_coverage driver 测试共享全局 mock 无锁，并行调度确定性失败。加 `BKL_TEST_LOCK` 同型互斥（misc.rs `SPROF_TEST_LOCK` 先例）或各测试用不重叠窗口基址 | 无 | ✅ 2026-09-18（本提交；std 语境取 RAII `Mutex<()>` 序列锁，4 测试各持 guard；并行 8 线程 5/5 轮绿，自
+  -| K5 | profiling trap 入口传 PC | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) §12.3 L332 | `dispatch_sprofile` 已全实现，缺 trap 入口接线传采样 PC。原依赖 S-8/S-9 已于 2026-09-14/15 完成，**当前即可做** | 无 | ✅ 2026-09-18（本提交；C-parity 全接线：`PROFILE_CLOCK_IRQ` 常量 + `IrqManager` hook 注册/摘除 + trap 入口单发 PC 槽 + `profile_clock_
+  -| K6 | x86 AP LAPIC local timer | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L848 | per-CPU TSC 校准 + `lapic_set_timer_one_shot`（C arch_clock.c:131-139 对应）。不接则 AP 上 quantum 递减停摆——SMP 真分片的实际缺口 | 无（S-8 IDT 已就位） | ✅ 基础设施落地+真机验证（设计 §28 + LAPIC DCR/LVT/ICR 驱动（CCR:TSC 比率自校准）+ 0xF1 向量四清单对齐 
+  -| K7 | S-8 B 链 disjoint-API 重构 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L1676 | syscall 入口 caller-in-table 别名当前以 SAFETY 注释裸指针分裂表达，重构收敛 | 无 | ✅（本提交，第一阶段收敛）——两处分散裸指针逃逸收敛为单一具名构造器 `ProcessTable::caller_slot_mut<'a>`（C 真实语义的完整 SAFETY 证明集中一处 + SLOT_FREE debug 断言；两处已漂移的重复注释删除；IPC 臂前段改走
+  -| K8 | OQ-13a：GIC/PLIC claim 返回 IrqVector 演进 | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L186 | I-13 主体已闭合，余 claim→`IrqVector` 返回值演进，随 per-CPU 分发 lane（与 K1/K2 同窗顺带） | 无 | ✅ 2026-09-18（本提交；`claim() -> Option<u32>` + `complete(Option<u32>)` 类型化配对——比 OQ 原案更进一步的 `u32` 原始 claim 身份：GIC INTID 超 u
+  -| K9 | arm64/riscv64 trap 向量表链接地雷 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L1705 | 两架构 `load()` 引用的 `exc_vector_table`（arm64）/`trap_vector`（riscv64）只有 extern 声明、无 global_asm 定义，靠死代码消除掩盖。**三架构用户态目标的硬前置** | 无 | ✅（本提交；arm64 `exc_vector_table` 16×128B `.align 11` + 4 类 diag stub（ESR
+  -| K10 | riscv64 SSIE 软件中断 IPI 路径 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L871 | S-10 IPI 往返仅 x86 LAPIC 实测；riscv64 走 SSIE 路径（S-4 仅做能力准备） | K9 同批为宜 | ✅ 2026-09-19 **第四轮收口，回路真机 PASS（5/5 确定性，含 boot hart=1 场景）**。三轮病史的两个真根因：①**`csrs sstatus, 1` 编码错——sstatus.SIE 在 bit 1（0x2），bit 0 是 W
+  -| K11 | arm64/riscv64 shutdown L7 三架构验证 | [01-stage-kernel/smp_todo.md](01-stage-kernel/smp_todo.md) L1879 | 后端代码已就位（semihosting SYS_EXIT / sifive_test FINISHER_PASS），缺真机验证。**K5 期间发现**：`os/plat/src/arm64/shutdown.rs` 在 aarch64-unknown-none target 下本身编译不过（:26 noreturn asm 带 inout 输出 + :18 E0308，HEAD
+  -| K12 | test-user-trap / test-rt-birth 纳入 run_all.sh 主线 | [01-stage-kernel/smp_todo.md §26](01-stage-kernel/smp_todo.md) | 两脚本目前独立运行未入 x86 一键回归/CI。纳入即验收阶梯 T1 的 x86 半收口 | 无 | ✅ 2026-09-18（本提交；特殊协议脚本区——gdbstub 信箱/串口标记 PASS 判定 + SKIP(exit 2) 计数；test-user-trap 入构建清单；test-rt-birth 因 `include_bytes!(env!
+  +| K1 | E-PREEMPTFLAG 余项：enqueue Phase 3 抢占门激活 | [edge_todo.md](edge_todo.md) E-PREEMPTFLAG ｜ [06-stage-sched/todo.md §2](../06-stage-sched/todo.md) | 抢占分支生产不可达（调用方全传 `current_nr=None`）。(a) current 来源改读 `CpuLocal.proc_ptr`；(b) 抢占门消费 `KPrivFlags::is_preemptible`（C proc.c:1638）。SCHED 服务器零改动 | 无（CpuLoc
+  +| K2 | E-SCHEDSMP：SCHED cpu 下发链三环 | [edge_todo.md](edge_todo.md) E-SCHEDSMP ｜ [06-stage-sched/todo.md §3](../06-stage-sched/todo.md) | (1) per-CPU Scheduler 入 CpuLocal，`sched_for_cpu` 按 cpu_id 分发；(2) `sched_proc` 补 cpu_is_ready 校验（EBADCPU）；(3) 跨 CPU 迁移接线（`schedule_migrate_proc` 已有本体，缺调用方）。SCHED 侧零改
+  +| K3 | E-VMTLB 余件：SMP IPI 旗标设置完备性 | [edge_todo.md](edge_todo.md) E-VMTLB ｜ [02-stage-vm/todo.md V13-P2-1(c)](../02-stage-vm/todo.md) | 机制三件套已落（pick 点判定/switch_to_user 消费/设置点）。余件 = `schedule_vminhibit` IPI 路径的旗标设置完备性 + E5 SMP 冒烟用例「fork 后父子并发写 CoW 页」设计（用例执行归 edge4） | 无 | ✅（本提交；完备性缺口实证并修复——本地臂设 VMINHI
+  +| K4 | T-13 dm_coverage 测试族共享 mock 无同步 | [01-stage-kernel/todo.md](../01-stage-kernel/todo.md) L411 | `os/arch` dm_coverage driver 测试共享全局 mock 无锁，并行调度确定性失败。加 `BKL_TEST_LOCK` 同型互斥（misc.rs `SPROF_TEST_LOCK` 先例）或各测试用不重叠窗口基址 | 无 | ✅ 2026-09-18（本提交；std 语境取 RAII `Mutex<()>` 序列锁，4 测试各持 guard；并行 8 线程 5/5 轮
+  +| K5 | profiling trap 入口传 PC | [01-stage-kernel/todo.md](../01-stage-kernel/todo.md) §12.3 L332 | `dispatch_sprofile` 已全实现，缺 trap 入口接线传采样 PC。原依赖 S-8/S-9 已于 2026-09-14/15 完成，**当前即可做** | 无 | ✅ 2026-09-18（本提交；C-parity 全接线：`PROFILE_CLOCK_IRQ` 常量 + `IrqManager` hook 注册/摘除 + trap 入口单发 PC 槽 + `profile_clo
+  +| K6 | x86 AP LAPIC local timer | [01-stage-kernel/smp_todo.md](../01-stage-kernel/smp_todo.md) L848 | per-CPU TSC 校准 + `lapic_set_timer_one_shot`（C arch_clock.c:131-139 对应）。不接则 AP 上 quantum 递减停摆——SMP 真分片的实际缺口 | 无（S-8 IDT 已就位） | ✅ 基础设施落地+真机验证（设计 §28 + LAPIC DCR/LVT/ICR 驱动（CCR:TSC 比率自校准）+ 0xF1 向量四清单
+  +| K7 | S-8 B 链 disjoint-API 重构 | [01-stage-kernel/smp_todo.md](../01-stage-kernel/smp_todo.md) L1676 | syscall 入口 caller-in-table 别名当前以 SAFETY 注释裸指针分裂表达，重构收敛 | 无 | ✅（本提交，第一阶段收敛）——两处分散裸指针逃逸收敛为单一具名构造器 `ProcessTable::caller_slot_mut<'a>`（C 真实语义的完整 SAFETY 证明集中一处 + SLOT_FREE debug 断言；两处已漂移的重复注释删除；IPC 臂前
+  +| K8 | OQ-13a：GIC/PLIC claim 返回 IrqVector 演进 | [01-stage-kernel/todo.md](../01-stage-kernel/todo.md) L186 | I-13 主体已闭合，余 claim→`IrqVector` 返回值演进，随 per-CPU 分发 lane（与 K1/K2 同窗顺带） | 无 | ✅ 2026-09-18（本提交；`claim() -> Option<u32>` + `complete(Option<u32>)` 类型化配对——比 OQ 原案更进一步的 `u32` 原始 claim 身份：GIC INTID 
+  +| K9 | arm64/riscv64 trap 向量表链接地雷 | [01-stage-kernel/smp_todo.md](../01-stage-kernel/smp_todo.md) L1705 | 两架构 `load()` 引用的 `exc_vector_table`（arm64）/`trap_vector`（riscv64）只有 extern 声明、无 global_asm 定义，靠死代码消除掩盖。**三架构用户态目标的硬前置** | 无 | ✅（本提交；arm64 `exc_vector_table` 16×128B `.align 11` + 4 类 diag stub（
+  +| K10 | riscv64 SSIE 软件中断 IPI 路径 | [01-stage-kernel/smp_todo.md](../01-stage-kernel/smp_todo.md) L871 | S-10 IPI 往返仅 x86 LAPIC 实测；riscv64 走 SSIE 路径（S-4 仅做能力准备） | K9 同批为宜 | ✅ 2026-09-19 **第四轮收口，回路真机 PASS（5/5 确定性，含 boot hart=1 场景）**。三轮病史的两个真根因：①**`csrs sstatus, 1` 编码错——sstatus.SIE 在 bit 1（0x2），bit 0 
+  +| K11 | arm64/riscv64 shutdown L7 三架构验证 | [01-stage-kernel/smp_todo.md](../01-stage-kernel/smp_todo.md) L1879 | 后端代码已就位（semihosting SYS_EXIT / sifive_test FINISHER_PASS），缺真机验证。**K5 期间发现**：`os/plat/src/arm64/shutdown.rs` 在 aarch64-unknown-none target 下本身编译不过（:26 noreturn asm 带 inout 输出 + :18 E0308，H
+  +| K12 | test-user-trap / test-rt-birth 纳入 run_all.sh 主线 | [01-stage-kernel/smp_todo.md §26](../01-stage-kernel/smp_todo.md) | 两脚本目前独立运行未入 x86 一键回归/CI。纳入即验收阶梯 T1 的 x86 半收口 | 无 | ✅ 2026-09-18（本提交；特殊协议脚本区——gdbstub 信箱/串口标记 PASS 判定 + SKIP(exit 2) 计数；test-user-trap 入构建清单；test-rt-birth 因 `include_bytes!(e
+  -| K13 | T-10 riscv64 U-Boot 启动链（CI 环境） | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L170 | U-Boot fatload→bootelf 集成测试；需 u-boot-qemu/mkimage 工具链，本地缺 sudo 则在 CI workflow 做 | CI 环境 | ✅（本提交；`os/qemu-tests/test-riscv64-uboot.sh`（FAT+boot.scr+fatload→bootelf→TEST_RESULT 判定，缺件 SKIP(exit 2)）+ qemu
+  +| K13 | T-10 riscv64 U-Boot 启动链（CI 环境） | [01-stage-kernel/todo.md](../01-stage-kernel/todo.md) L170 | U-Boot fatload→bootelf 集成测试；需 u-boot-qemu/mkimage 工具链，本地缺 sudo 则在 CI workflow 做 | CI 环境 | ✅（本提交；`os/qemu-tests/test-riscv64-uboot.sh`（FAT+boot.scr+fatload→bootelf→TEST_RESULT 判定，缺件 SKIP(exit 2)）+ q
+  -| K14 | I-1 kernel 独立 ELF 构建（DEFERRED） | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) L183 | 需入口交接 ABI 设计 + boot-shim 终局跳转。三架构 QEMU 目标走 boot-shim 链即可达成，**维持登记不排期**，出现真实需求再立项 | 🚫 |
+  -| K15 | 15-todo-fixes 状态对账回写 | [00-master-plan/15-todo-fixes.md](00-master-plan/15-todo-fixes.md) | 阶段 2/3（VM/kernel 半）实际已按 PFN 模型实现，文档标"❌"过时——回写事实。**本文件归 edge1 独占**；阶段 4/5/6（VFS/PM）的状态结论由 edge3 经 edge4 状态板传递后由本线统一回写 | ✅（本提交；阶段 2/3 状态 ✅ + 各插"实际落地对账"节：语义全覆盖 + 落点迁址映射（PFN 分配器三实现/vmproc·region·phys_mem
+  -| K16 | 06 文档 v2.2 瘦身 + review-line-check.sh 工具 | [01-stage-kernel/06-todo.md](01-stage-kernel/06-todo.md) L579/L690 | 纯文档/工具债，两轮体检清单已给出（2028→约 1550 行）。低优先 | ✅ 2026-09-18/19（工具半 7013b7478；瘦身半——06-proc-init-boot-proc.md 2030→1375 行：1.1.4 三澄清/1.4.1 三维度/1.5.2 四步叙事压 Ch1；2.0 四注并一段、2.1.6 履历表迁 11 附录 A、2.2
+  -| K18 | 维持登记三件（不排期） | [01-stage-kernel/todo.md](01-stage-kernel/todo.md) | I-5 ACPI（物理机前提）、D-65② boot 旋钮通道（条件立项）、L1 内存序学习 backlog（doc 11/16 review 触发） | 🚫 |
+  +| K14 | I-1 kernel 独立 ELF 构建（DEFERRED） | [01-stage-kernel/todo.md](../01-stage-kernel/todo.md) L183 | 需入口交接 ABI 设计 + boot-shim 终局跳转。三架构 QEMU 目标走 boot-shim 链即可达成，**维持登记不排期**，出现真实需求再立项 | 🚫 |
+  +| K15 | 15-todo-fixes 状态对账回写 | [00-master-plan/15-todo-fixes.md](../00-master-plan/15-todo-fixes.md) | 阶段 2/3（VM/kernel 半）实际已按 PFN 模型实现，文档标"❌"过时——回写事实。**本文件归 edge1 独占**；阶段 4/5/6（VFS/PM）的状态结论由 edge3 经 edge4 状态板传递后由本线统一回写 | ✅（本提交；阶段 2/3 状态 ✅ + 各插"实际落地对账"节：语义全覆盖 + 落点迁址映射（PFN 分配器三实现/vmproc·region·phys_
+  +| K16 | 06 文档 v2.2 瘦身 + review-line-check.sh 工具 | [01-stage-kernel/06-todo.md](../01-stage-kernel/06-todo.md) L579/L690 | 纯文档/工具债，两轮体检清单已给出（2028→约 1550 行）。低优先 | ✅ 2026-09-18/19（工具半 7013b7478；瘦身半——06-proc-init-boot-proc.md 2030→1375 行：1.1.4 三澄清/1.4.1 三维度/1.5.2 四步叙事压 Ch1；2.0 四注并一段、2.1.6 履历表迁 11 附录 A、
+  +| K18 | 维持登记三件（不排期） | [01-stage-kernel/todo.md](../01-stage-kernel/todo.md) | I-5 ACPI（物理机前提）、D-65② boot 旋钮通道（条件立项）、L1 内存序学习 backlog（doc 11/16 review 触发） | 🚫 |
+===== git-mv notes/rewrite/fork-syscall-rewrite/edge2.md -> rewrite-notes/coordination/edge2.md ：18 行变化 =====
+  -> **所有权（本线可独占修改）**：`os/libs/minix-types/`、`os/libs/minix-sys/`、`os/libs/minix-rt/`、`os/libs/minix-sef/`、`os/libs/minix-chardriver/`、`os/libs/minix-blockdriver/`、`os/libs/minix-netdriver/`、`os/libs/minix-bdev/`、`os/libs/minix-driver-rt/`、`os/libs/minix-fs/`、`os/libs/minix-vtreefs/`、`os/libs/minix-sf
+  +> **所有权（本线可独占修改）**：`os/libs/minix-types/`、`os/libs/minix-sys/`、`os/libs/minix-rt/`、`os/libs/minix-sef/`、`os/libs/minix-chardriver/`、`os/libs/minix-blockdriver/`、`os/libs/minix-netdriver/`、`os/libs/minix-bdev/`、`os/libs/minix-driver-rt/`、`os/libs/minix-fs/`、`os/libs/minix-vtreefs/`、`os/libs/minix-sf
+  -| L10 | minix-sys 文件族 wrapper：open/stat/fstat/lstat/ioctl/fcntl/getdents | [14-stage-runtime/todo.md §2.2](14-stage-runtime/todo.md) ｜ [18-stage-commands/todo.md P1-1](18-stage-commands/todo.md) | 命令层硬依赖族零 wrapper 且无排期。00/99 全局概念篇已落稿（95f971f02/d1091c2b2），open 存在路径的 64 位布局裁决前提已备。解锁 18-stage 文件操作数类命令
+  +| L10 | minix-sys 文件族 wrapper：open/stat/fstat/lstat/ioctl/fcntl/getdents | [14-stage-runtime/todo.md §2.2](../14-stage-runtime/todo.md) ｜ [18-stage-commands/todo.md P1-1](../18-stage-commands/todo.md) | 命令层硬依赖族零 wrapper 且无排期。00/99 全局概念篇已落稿（95f971f02/d1091c2b2），open 存在路径的 64 位布局裁决前提已备。解锁 18-stage 文件
+  -| L12 | init P1-2 ③：panic handler 由 minix-rt 统一提供的形式 | [09-stage-init/todo.md P1-2](09-stage-init/todo.md) | 与 L11 同窗定形（init no_std 化三件裁决中唯一属共享层的一件；①HashMap 决策与 ②Arc 机械替换归 edge3 S36） | L11 | ✅ 2026-09-18 fda5a708c（形式定形：panic-handler 特性门+minix-types 注册表单点+内核启动注册；07 篇 §3.4 落稿；init 消费=开特性即得，无自有代码） |
+  +| L12 | init P1-2 ③：panic handler 由 minix-rt 统一提供的形式 | [09-stage-init/todo.md P1-2](../09-stage-init/todo.md) | 与 L11 同窗定形（init no_std 化三件裁决中唯一属共享层的一件；①HashMap 决策与 ②Arc 机械替换归 edge3 S36） | L11 | ✅ 2026-09-18 fda5a708c（形式定形：panic-handler 特性门+minix-types 注册表单点+内核启动注册；07 篇 §3.4 落稿；init 消费=开特性即得，无自有代码） 
+  -| L4 | E-CDRCONV：chardriver 框架双实现收敛 + CDEV_REPLY_BASE 错值 | [edge_todo.md](edge_todo.md) E-CDRCONV ｜ [12-stage-input/todo.md](12-stage-input/todo.md) | 方案 B：minix-chardriver 重构为消费 framework.rs 式纯函数核，`CharDriver` trait + `CharServer` 作可选表皮；修 `protocol.rs:22` CDEV_REPLY_BASE 0x500→**0x480**（C com.h:92
+  -| L5 | E-DEVWIRE：设备族线上常量单一来源 | [edge_todo.md](edge_todo.md) E-DEVWIRE ｜ [16-stage-drivers/todo.md A4/A10](16-stage-drivers/todo.md) | CDEV/BDEV/NDEV/RTCDEV/USB_RQ 常量上收 minix-types（`types/com.rs` 扩展或独立 device-protocol 模块），四框架库 re-export + com.h 逐值钉值测试；A10 钩子签名迁 `Result<usize, Errno>` 同轮。消费侧删本地副本是**跨
+  +| L4 | E-CDRCONV：chardriver 框架双实现收敛 + CDEV_REPLY_BASE 错值 | [edge_todo.md](edge_todo.md) E-CDRCONV ｜ [12-stage-input/todo.md](../12-stage-input/todo.md) | 方案 B：minix-chardriver 重构为消费 framework.rs 式纯函数核，`CharDriver` trait + `CharServer` 作可选表皮；修 `protocol.rs:22` CDEV_REPLY_BASE 0x500→**0x480**（C com.h
+  +| L5 | E-DEVWIRE：设备族线上常量单一来源 | [edge_todo.md](edge_todo.md) E-DEVWIRE ｜ [16-stage-drivers/todo.md A4/A10](../16-stage-drivers/todo.md) | CDEV/BDEV/NDEV/RTCDEV/USB_RQ 常量上收 minix-types（`types/com.rs` 扩展或独立 device-protocol 模块），四框架库 re-export + com.h 逐值钉值测试；A10 钩子签名迁 `Result<usize, Errno>` 同轮。消费侧删本地副本是
+  -| L8 | E-SDEVOWN：sdev/sockevent 归属收敛 | [edge_todo.md](edge_todo.md) E-SDEVOWN ｜ [17-stage-net/todo.md](17-stage-net/todo.md) | 方案 A：两份副本（minix-netdriver sdev.rs/sockevent.rs + vfs sdev.rs 923 行独立实现）都删，在 minix-sys 客户端域或新 `minix-sockdriver` 单点重建（新 crate → os/Cargo.toml 走 edge4 认领）。vfs 删副本 = **跨界改点 C-
+  -| L13 | 16-stage A2 收尾（net 八家）+ A7 NIC 环策略 + 死代码清单 | [16-stage-drivers/todo.md](16-stage-drivers/todo.md) | net 变体八家 stub/微策略 crate 接线收口（A2 标 ✅ 的最后半）；A7 新建 `minix-nic-policy` 或并入 minix-netdriver（四份头尾取模环算术去重）；死代码清单 §4 未勾行（netdriver 三死 fn 随 A7、usb Isochronous/Direction、vnd `_position`；OQ-3 BusControl
+  +| L8 | E-SDEVOWN：sdev/sockevent 归属收敛 | [edge_todo.md](edge_todo.md) E-SDEVOWN ｜ [17-stage-net/todo.md](../17-stage-net/todo.md) | 方案 A：两份副本（minix-netdriver sdev.rs/sockevent.rs + vfs sdev.rs 923 行独立实现）都删，在 minix-sys 客户端域或新 `minix-sockdriver` 单点重建（新 crate → os/Cargo.toml 走 edge4 认领）。vfs 删副本 = **跨界改点
+  +| L13 | 16-stage A2 收尾（net 八家）+ A7 NIC 环策略 + 死代码清单 | [16-stage-drivers/todo.md](../16-stage-drivers/todo.md) | net 变体八家 stub/微策略 crate 接线收口（A2 标 ✅ 的最后半）；A7 新建 `minix-nic-policy` 或并入 minix-netdriver（四份头尾取模环算术去重）；死代码清单 §4 未勾行（netdriver 三死 fn 随 A7、usb Isochronous/Direction、vnd `_position`；OQ-3 BusCont
+  -| L17 | G6 波次 1：驱动进程层起步（tty + pckbd + console） | [16-stage-drivers/todo.md](16-stage-drivers/todo.md) G6（原账）｜本文件补登（分线漏收） | 57 个驱动 `main.rs` 全是七行占位骨架（`init(); loop {}`；2026-09-20 复核 tty/tty、hid/pckbd 仍在位）。G6 `[P1]` 在原 stage todo 有账但未进 edge 条目，本行收编**波次 1（boot 关键/控制台链）**：①TTY 驱动进程化（事件循环 + SEF/RS 出生面 +
+  +| L17 | G6 波次 1：驱动进程层起步（tty + pckbd + console） | [16-stage-drivers/todo.md](../16-stage-drivers/todo.md) G6（原账）｜本文件补登（分线漏收） | 57 个驱动 `main.rs` 全是七行占位骨架（`init(); loop {}`；2026-09-20 复核 tty/tty、hid/pckbd 仍在位）。G6 `[P1]` 在原 stage todo 有账但未进 edge 条目，本行收编**波次 1（boot 关键/控制台链）**：①TTY 驱动进程化（事件循环 + SEF/RS 出生
+  -| L14 | E-FSBDEV：minix-fs 块层与真实块驱动接缝 | [edge_todo.md](edge_todo.md) E-FSBDEV ｜ [15-stage-fs/todo.md](15-stage-fs/todo.md) | minix-bdev 客户端 wrapper 先行（E1 已通电，Canned 可测）；fs 侧 `DeviceInfo` 真实形态（包装 bdev 传输）+ 短末块部分读写 + 聚散 I/O 落 `os/libs/minix-fs`（本线所有）。真块驱动进程参战挂 edge4 E5 族 | bdev 客户端 wrapper 无前置；DeviceI
+  +| L14 | E-FSBDEV：minix-fs 块层与真实块驱动接缝 | [edge_todo.md](edge_todo.md) E-FSBDEV ｜ [15-stage-fs/todo.md](../15-stage-fs/todo.md) | minix-bdev 客户端 wrapper 先行（E1 已通电，Canned 可测）；fs 侧 `DeviceInfo` 真实形态（包装 bdev 传输）+ 短末块部分读写 + 聚散 I/O 落 `os/libs/minix-fs`（本线所有）。真块驱动进程参战挂 edge4 E5 族 | bdev 客户端 wrapper 无前置；Devi
+===== git-mv notes/rewrite/fork-syscall-rewrite/edge3.md -> rewrite-notes/coordination/edge3.md ：76 行变化 =====
+  -> **所有权（本线可独占修改）**：`os/servers/`（vm、rs、pm、vfs、ds、is、mib、devman、input、ipc-server、sched 全部）、`os/fs/`、`os/net/`、`os/commands/`、`notes/rewrite/fork-syscall-rewrite/02-stage-vm/` ~ `13-stage-*`、`15-stage-fs/`、`17-stage-net/`、`18-stage-commands/`。
+  +> **所有权（本线可独占修改）**：`os/servers/`（vm、rs、pm、vfs、ds、is、mib、devman、input、ipc-server、sched 全部）、`os/fs/`、`os/net/`、`os/commands/`、`rewrite-notes/02-stage-vm/` ~ `13-stage-*`、`15-stage-fs/`、`17-stage-net/`、`18-stage-commands/`。
+  -| S1 | P1-3：KernelIpcTransport 生产实现 | [04-stage-pm/todo.md P1-3](04-stage-pm/todo.md) | `ipc/transport.rs:86-96` 三方法 `unimplemented!()` → 接 minix-sys 真实传输（E1 已通电） | 无 | ✅ 2026-09-19 09f6039e7（三方法委托 DirectTrapTransport；错误类型换 PM 本地 IpcTransportError 保真携带原始 errno——minix_types::IpcError 无原始载荷违反 V3-P2-6
+  -| S2 | 接线批次 A：凭证 13 调用 | [04-stage-pm/todo.md §11.1.1](04-stage-pm/todo.md) | wire（E7 A 批已落 minix-types）+ `CopyGroups` 生产实现（sys_datacopy）+ do_getepinfo groups 拷出（D-30(b)） | S1 | ✅ 2026-09-19 e56618e20（13 臂全接：decode::setid/groups/getsid raw 解码、SysCopyGroups 网关适配、SysVfsForward→tell_vfs 三段[VfsForwarde
+  -| S3 | 接线批次 B 余：sigaction 族 5 调用接线（= E-INITSYS 的 PM dispatch 臂） | [04-stage-pm/todo.md](04-stage-pm/todo.md) ｜ [edge_todo.md](edge_todo.md) E-INITSYS | `dispatch_pm_call` 补信号/uid 族 match 臂——handle_sigaction/sigprocmask 逻辑已在但未接消息解码；wire（MessLcPmSig/MessLcPmSigset）与 sys_sigreturn wrapper 均已备 | S1；解锁 
+  -| S4 | 接线批次 C：时间 6 调用 | [04-stage-pm/todo.md](04-stage-pm/todo.md) | ClockSource 生产实现；GETUPTIME 的 C 对账裁决（com.h:315-345 GET_* 家族无此号）登记 [edge4.md](edge4.md) §6 OQ | S1 | ✅ 2026-09-19（六臂全接:Stime/GetTimeOfDay/ClockGetRes/ClockGetTime/ClockSetTime[6b948e2ae]+GetRUsage 36 收尾——decode::rusage[ipc.h:510-515
+  -| S5 | 接线批次 D：itimer | [04-stage-pm/todo.md](04-stage-pm/todo.md) | TimerCtl/VTimerCtl 生产实现 + sys_datacopy 拷贝 | S1 | ✅ 2026-09-19 ee1145c0c（SysTimerCtl 本地簿记+内核时钟[C 定谳:PM 无 sys_setalarm,纯本地队列]、SysVTimerCtl 直委托、TimerFaces 穿分发表、17 号臂+decode::itimer、389+11 passed） |
+  -| S6 | 接线批次 E：exec 3 调用 | [04-stage-pm/todo.md](04-stage-pm/todo.md) | sys_exec wrapper 已备（E2）；D-16 core dump 路径契约裁决（VFS 契约重设计 + minix-types wire 成员）随批 | S1；D-16 契约裁决（edge4 §6 OQ） | ✅ 2026-09-19 06936df2d（三臂全接：Exec[SysVfsExec 五域转发]/ExecNew[exec_info 192B 拷入+reply suid,libexec.h:21-58 布局]/ExecRestar
+  -| S7 | 接线批次 F：调度 2 调用 | [04-stage-pm/todo.md](04-stage-pm/todo.md) | get/setpriority；SCHED 客户端 D-05/D-12（sched 服务器参战即可真） | S1、S27 | ✅ 2026-09-20 7ec17716c（卡C：dispatch 两臂 + 生产 MinixSchedCtl〔SCHEDULING_START/INHERIT/SET_NICE 手工组包 + PM 本地 IpcTransport〕；dispatch 级测试钉 SET→SET_NICE 发送） |
+  -| S8 | 接线批次 G 余 + D-31/D-32 | [04-stage-pm/todo.md](04-stage-pm/todo.md) | mcontext/sprof wrapper 消费、sysgetenv 结构拷入与 EFAULT 透传、D-31 诊断输出接 sys_diagctl（E2 已落）、D-32 calls_stats 计数 | S1 | ✅ 2026-09-19（八臂全接：mcontext 18/19[2696568b7]/GetProcNr 46/GetEpInfo 45+D-30(b) 拷出[7bc7f0c21]/SysUname 25/SProf 39 全载
+  -| S9 | D-02：BootParams 占位（GETMONPARAMS/GETIMAGE 双侧新建） | [04-stage-pm/todo.md D-02](04-stage-pm/todo.md) | 三方联合条目：kernel 臂（**跨界改点 C-3**）+ minix-sys wrapper + PM/RS 消费 | ~~edge1/edge2 认领排期~~ → 并入 S42 ②（C-3，edge3 线执行） | ✅ 2026-09-20 S42 批一（kernel GET_MONPARAMS 恒拷 1024 零填充真值[do_getinfo.c:143-146]，GET_I
+  -| S10 | D-05/D-12/D-17：SCHED 客户端真实化 | [04-stage-pm/todo.md](04-stage-pm/todo.md) | sched_start_user 非 KERNEL/NONE 臂、minix_sched 假 endpoint、sched_stop 假成功——SCHED 服务器通电后逐一转真 | S27 | ✅ 2026-09-20 7ec17716c（卡C 同批：fork 链 sched_start_user 真调〔SCHEDULING_INHERIT〕、exit 链 sched_stop 真发〔forkexit.c:425-441〕、bo
+  -| S11 | PM 卫生批 | [04-stage-pm/todo.md §12.3](04-stage-pm/todo.md) | `ipc/decode.rs` unsafe 单点化过渡（6 处内联解码）、44 条 field_reassign lint、plan.md 四列对照表、V3-P3-6 文档锚点校准（01-pm-init-main.md） | 无 | ✅ 2026-09-19 d18966fb7（decode 单点化 7 处（实测含 Ptrace 新增 1 处）；44 lint 清零；对照表刷新 4 行（原判 3 行，实证多 1 行 datacopy）；锚点校准由 D5 迁
+  +| S1 | P1-3：KernelIpcTransport 生产实现 | [04-stage-pm/todo.md P1-3](../04-stage-pm/todo.md) | `ipc/transport.rs:86-96` 三方法 `unimplemented!()` → 接 minix-sys 真实传输（E1 已通电） | 无 | ✅ 2026-09-19 09f6039e7（三方法委托 DirectTrapTransport；错误类型换 PM 本地 IpcTransportError 保真携带原始 errno——minix_types::IpcError 无原始载荷违反 V3-P
+  +| S2 | 接线批次 A：凭证 13 调用 | [04-stage-pm/todo.md §11.1.1](../04-stage-pm/todo.md) | wire（E7 A 批已落 minix-types）+ `CopyGroups` 生产实现（sys_datacopy）+ do_getepinfo groups 拷出（D-30(b)） | S1 | ✅ 2026-09-19 e56618e20（13 臂全接：decode::setid/groups/getsid raw 解码、SysCopyGroups 网关适配、SysVfsForward→tell_vfs 三段[VfsForwa
+  +| S3 | 接线批次 B 余：sigaction 族 5 调用接线（= E-INITSYS 的 PM dispatch 臂） | [04-stage-pm/todo.md](../04-stage-pm/todo.md) ｜ [edge_todo.md](edge_todo.md) E-INITSYS | `dispatch_pm_call` 补信号/uid 族 match 臂——handle_sigaction/sigprocmask 逻辑已在但未接消息解码；wire（MessLcPmSig/MessLcPmSigset）与 sys_sigreturn wrapper 均已备 | S1；
+  +| S4 | 接线批次 C：时间 6 调用 | [04-stage-pm/todo.md](../04-stage-pm/todo.md) | ClockSource 生产实现；GETUPTIME 的 C 对账裁决（com.h:315-345 GET_* 家族无此号）登记 [edge4.md](edge4.md) §6 OQ | S1 | ✅ 2026-09-19（六臂全接:Stime/GetTimeOfDay/ClockGetRes/ClockGetTime/ClockSetTime[6b948e2ae]+GetRUsage 36 收尾——decode::rusage[ipc.h:510-
+  +| S5 | 接线批次 D：itimer | [04-stage-pm/todo.md](../04-stage-pm/todo.md) | TimerCtl/VTimerCtl 生产实现 + sys_datacopy 拷贝 | S1 | ✅ 2026-09-19 ee1145c0c（SysTimerCtl 本地簿记+内核时钟[C 定谳:PM 无 sys_setalarm,纯本地队列]、SysVTimerCtl 直委托、TimerFaces 穿分发表、17 号臂+decode::itimer、389+11 passed） |
+  +| S6 | 接线批次 E：exec 3 调用 | [04-stage-pm/todo.md](../04-stage-pm/todo.md) | sys_exec wrapper 已备（E2）；D-16 core dump 路径契约裁决（VFS 契约重设计 + minix-types wire 成员）随批 | S1；D-16 契约裁决（edge4 §6 OQ） | ✅ 2026-09-19 06936df2d（三臂全接：Exec[SysVfsExec 五域转发]/ExecNew[exec_info 192B 拷入+reply suid,libexec.h:21-58 布局]/ExecRes
+  +| S7 | 接线批次 F：调度 2 调用 | [04-stage-pm/todo.md](../04-stage-pm/todo.md) | get/setpriority；SCHED 客户端 D-05/D-12（sched 服务器参战即可真） | S1、S27 | ✅ 2026-09-20 7ec17716c（卡C：dispatch 两臂 + 生产 MinixSchedCtl〔SCHEDULING_START/INHERIT/SET_NICE 手工组包 + PM 本地 IpcTransport〕；dispatch 级测试钉 SET→SET_NICE 发送） |
+  +| S8 | 接线批次 G 余 + D-31/D-32 | [04-stage-pm/todo.md](../04-stage-pm/todo.md) | mcontext/sprof wrapper 消费、sysgetenv 结构拷入与 EFAULT 透传、D-31 诊断输出接 sys_diagctl（E2 已落）、D-32 calls_stats 计数 | S1 | ✅ 2026-09-19（八臂全接：mcontext 18/19[2696568b7]/GetProcNr 46/GetEpInfo 45+D-30(b) 拷出[7bc7f0c21]/SysUname 25/SProf 39
+  +| S9 | D-02：BootParams 占位（GETMONPARAMS/GETIMAGE 双侧新建） | [04-stage-pm/todo.md D-02](../04-stage-pm/todo.md) | 三方联合条目：kernel 臂（**跨界改点 C-3**）+ minix-sys wrapper + PM/RS 消费 | ~~edge1/edge2 认领排期~~ → 并入 S42 ②（C-3，edge3 线执行） | ✅ 2026-09-20 S42 批一（kernel GET_MONPARAMS 恒拷 1024 零填充真值[do_getinfo.c:143-146]，GE
+  +| S10 | D-05/D-12/D-17：SCHED 客户端真实化 | [04-stage-pm/todo.md](../04-stage-pm/todo.md) | sched_start_user 非 KERNEL/NONE 臂、minix_sched 假 endpoint、sched_stop 假成功——SCHED 服务器通电后逐一转真 | S27 | ✅ 2026-09-20 7ec17716c（卡C 同批：fork 链 sched_start_user 真调〔SCHEDULING_INHERIT〕、exit 链 sched_stop 真发〔forkexit.c:425-441〕
+  +| S11 | PM 卫生批 | [04-stage-pm/todo.md §12.3](../04-stage-pm/todo.md) | `ipc/decode.rs` unsafe 单点化过渡（6 处内联解码）、44 条 field_reassign lint、plan.md 四列对照表、V3-P3-6 文档锚点校准（01-pm-init-main.md） | 无 | ✅ 2026-09-19 d18966fb7（decode 单点化 7 处（实测含 Ptrace 新增 1 处）；44 lint 清零；对照表刷新 4 行（原判 3 行，实证多 1 行 datacopy）；锚点校准由 D
+  -| S12 | W1：内核 IPC 原语真实传输激活 + 56 臂接入 | [05-stage-vfs/todo.md](05-stage-vfs/todo.md)（W1 条目）｜ plan.md §8 矩阵 | trap 桥已通 → fs_comm 窗口接真实 IpcTransport/sys_safecopy/sys_datacopy；dispatch 64 臂中 56 个对话臂从 Nosys 逐臂接入 | 无 | ✅ 2026-09-20 5d4a1af33+bf9e0fb0a+1af12f2d1+ca49a1a79+00db5b2c1+1af12f2d1（卡A 线六子项收口：**Se
+  -| S13 | W4 + W5：SEF LU/restart 接线；dmap/smap 初始化 + DS 订阅排空 | [05-stage-vfs/todo.md](05-stage-vfs/todo.md) | C-1 SEF RS 侧行、C-9 真实 DS 订阅（DsClient 已备） | S12 | ✅ 2026-09-19（W5 已落:VfsState 用 DmapTable::init 接 C init_dmap 的 CTTY 槽[main_loop]+ds_drain 排空循环[check→classify→retrieve_u32→DsUpTarget sink,misc.r
+  -| S14 | W6 + W9：根挂载 REQ_READSUPER 往返 + mfs 25 项 Pending | [05-stage-vfs/todo.md](05-stage-vfs/todo.md) ｜ [15-stage-fs/todo.md](15-stage-fs/todo.md) | C-7 readsuper 确认往返；mfs 侧 fs_lookup 等 25 项（15-stage 域内，同线） | S12；mfs 侧随 S28 | ✅ 2026-09-19（req_readsuper 往返落地:encode_readsuper[ipc.h:2111-2119 布局+REQ_
+  -| S15 | W8：驱动死亡级联 fproc 扫描编排 | [05-stage-vfs/todo.md](05-stage-vfs/todo.md) | 驱动死亡 → fproc 扫描 → 关闭句柄 | S12 | ✅ 2026-09-19（两级联编排:device_map::driver_death_cascade[身份扫描 dmap major/smap 行+字符/socket 失效执行+classify_vanish 家族分类,块走 bdev_up notice]+pipe::driver_vanish_plan[fproc 扫描:Cdev 端点匹配→ReviveEio/Sdev 经
+  -| S16 | filedes.rs:207 偏离注释残留收口 | [05-stage-vfs/todo.md L61](05-stage-vfs/todo.md) | 6 处清点余 1 处（"simplified" 注释 + 行为核实） | 无 | ✅ 2026-09-19 56cc03eb7（实测余 2 处同簇一并收口：may_suspend 注释纠错 + 末次关闭扇出事实化，368 passed） |
+  +| S12 | W1：内核 IPC 原语真实传输激活 + 56 臂接入 | [05-stage-vfs/todo.md](../05-stage-vfs/todo.md)（W1 条目）｜ plan.md §8 矩阵 | trap 桥已通 → fs_comm 窗口接真实 IpcTransport/sys_safecopy/sys_datacopy；dispatch 64 臂中 56 个对话臂从 Nosys 逐臂接入 | 无 | ✅ 2026-09-20 5d4a1af33+bf9e0fb0a+1af12f2d1+ca49a1a79+00db5b2c1+1af12f2d1（卡A 线六子项收口：*
+  +| S13 | W4 + W5：SEF LU/restart 接线；dmap/smap 初始化 + DS 订阅排空 | [05-stage-vfs/todo.md](../05-stage-vfs/todo.md) | C-1 SEF RS 侧行、C-9 真实 DS 订阅（DsClient 已备） | S12 | ✅ 2026-09-19（W5 已落:VfsState 用 DmapTable::init 接 C init_dmap 的 CTTY 槽[main_loop]+ds_drain 排空循环[check→classify→retrieve_u32→DsUpTarget sink,mis
+  +| S14 | W6 + W9：根挂载 REQ_READSUPER 往返 + mfs 25 项 Pending | [05-stage-vfs/todo.md](../05-stage-vfs/todo.md) ｜ [15-stage-fs/todo.md](../15-stage-fs/todo.md) | C-7 readsuper 确认往返；mfs 侧 fs_lookup 等 25 项（15-stage 域内，同线） | S12；mfs 侧随 S28 | ✅ 2026-09-19（req_readsuper 往返落地:encode_readsuper[ipc.h:2111-2119 布
+  +| S15 | W8：驱动死亡级联 fproc 扫描编排 | [05-stage-vfs/todo.md](../05-stage-vfs/todo.md) | 驱动死亡 → fproc 扫描 → 关闭句柄 | S12 | ✅ 2026-09-19（两级联编排:device_map::driver_death_cascade[身份扫描 dmap major/smap 行+字符/socket 失效执行+classify_vanish 家族分类,块走 bdev_up notice]+pipe::driver_vanish_plan[fproc 扫描:Cdev 端点匹配→ReviveEio/Sde
+  +| S16 | filedes.rs:207 偏离注释残留收口 | [05-stage-vfs/todo.md L61](../05-stage-vfs/todo.md) | 6 处清点余 1 处（"simplified" 注释 + 行为核实） | 无 | ✅ 2026-09-19 56cc03eb7（实测余 2 处同簇一并收口：may_suspend 注释纠错 + 末次关闭扇出事实化，368 passed） |
+  -| S17 | E-11 / E9 余：RS 侧 KernelApi 换装 + 19 号主线 handler 生产接线 | [03-stage-rs/todo.md E-11](03-stage-rs/todo.md) ｜ [edge_todo.md](edge_todo.md) E9 | minix-sys wrapper 五域面已全就绪（cbb7b9571/d18be19e1/d0abe5143）——`UnimplementedKernelApi` 换真实现 + 各 handler 接线（19-rs-external-interfaces.md 主线）。**RS 是全体服务器启动的枢纽，
+  -| S18 | E-1：RS 自升级进程面 | [03-stage-rs/todo.md E-1](03-stage-rs/todo.md) | self_lifecycle 13 切片就绪（awaiting-wiring: 18）——srv_fork 后 update_service(RS_DONTSWAP) + init_service + YIELD 链 | S17 | ✅ 2026-09-19（self_update 从 unimplemented 落地:BootInit::self_update 按 srv_fork 返回值经 self_upgrade_role 双分支——新实例腿
+  -| S19 | R40 余半 + A-6 diagctl 输出缝裁决 | [03-stage-rs/todo.md](03-stage-rs/todo.md) | 13/14 号域测试随迁 testutil；A-6 通用诊断输出缝裁决（rs_verbose 全家出口）——**S22 的前置** | 无 | ✅ 2026-09-19 1f72d8ffe（A-6 裁决落地：sys_diagctl code1 单汇点 + SysApi::diag_write + minix-sys 共享 helper，三方同构 IS/PM；R40 余半按 R40 权威文本方案 a 随 S17 触碰 handler
+  +| S17 | E-11 / E9 余：RS 侧 KernelApi 换装 + 19 号主线 handler 生产接线 | [03-stage-rs/todo.md E-11](../03-stage-rs/todo.md) ｜ [edge_todo.md](edge_todo.md) E9 | minix-sys wrapper 五域面已全就绪（cbb7b9571/d18be19e1/d0abe5143）——`UnimplementedKernelApi` 换真实现 + 各 handler 接线（19-rs-external-interfaces.md 主线）。**RS 是全体服务器启动的
+  +| S18 | E-1：RS 自升级进程面 | [03-stage-rs/todo.md E-1](../03-stage-rs/todo.md) | self_lifecycle 13 切片就绪（awaiting-wiring: 18）——srv_fork 后 update_service(RS_DONTSWAP) + init_service + YIELD 链 | S17 | ✅ 2026-09-19（self_update 从 unimplemented 落地:BootInit::self_update 按 srv_fork 返回值经 self_upgrade_role 双分支——新
+  +| S19 | R40 余半 + A-6 diagctl 输出缝裁决 | [03-stage-rs/todo.md](../03-stage-rs/todo.md) | 13/14 号域测试随迁 testutil；A-6 通用诊断输出缝裁决（rs_verbose 全家出口）——**S22 的前置** | 无 | ✅ 2026-09-19 1f72d8ffe（A-6 裁决落地：sys_diagctl code1 单汇点 + SysApi::diag_write + minix-sys 共享 helper，三方同构 IS/PM；R40 余半按 R40 权威文本方案 a 随 S17 触碰 hand
+  …（余 36 行）
+===== git-mv notes/rewrite/fork-syscall-rewrite/edge4.md -> rewrite-notes/coordination/edge4.md ：4 行变化 =====
+  -   - `notes/rewrite/fork-syscall-rewrite/edge_todo.md` 与 `00-master-plan/`
+  +   - `rewrite-notes/coordination/edge_todo.md` 与 `00-master-plan/`
+  -| 2026-09-18 | edge1 | `notes/rewrite/fork-syscall-rewrite/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
+  +| 2026-09-18 | edge1 | `rewrite-notes/00-master-plan/` | K15：15-todo-fixes.md 阶段 2/3 状态对账回写（❌→✅ + 实际落地对账节；阶段 4/5/6 待 edge3 结论传递） | ✅ 同日 |
+===== git-mv notes/rewrite/fork-syscall-rewrite/new_edge1.md -> rewrite-notes/coordination/new_edge1.md ：10 行变化 =====
+  -> **所有权（本线可独占修改，清单外触碰走 new_edge4 §2 认领板）**：`os/kernel/`、`os/arch/`、`os/plat/`、`os/boot-shim/`、`os/qemu-tests/`、`os/libs/minix-boot`（boot 交接契约库：`KernelInfo`/`BootModule`/`BootShim`/`NR_BOOT_MODULES` 等，唯一消费者全在本线 `boot-shim`/`kernel`/`arch`/`qemu-tests`——经 new_edge4 §2 C-40 确权归本线，虽物理位于 `os/libs/`）、`no
+  +> **所有权（本线可独占修改，清单外触碰走 new_edge4 §2 认领板）**：`os/kernel/`、`os/arch/`、`os/plat/`、`os/boot-shim/`、`os/qemu-tests/`、`os/libs/minix-boot`（boot 交接契约库：`KernelInfo`/`BootModule`/`BootShim`/`NR_BOOT_MODULES` 等，唯一消费者全在本线 `boot-shim`/`kernel`/`arch`/`qemu-tests`——经 new_edge4 §2 C-40 确权归本线，虽物理位于 `os/libs/`）、`re
+  -| NK2 | S-6/S-7：用户态页故障/异常转发臂接线 | [edge_todo.md](edge_todo.md) E-3ARCHTRAP ｜ [01-stage-kernel/todo.md](01-stage-kernel/todo.md) 2026-09-20 节 | trap_dispatch.rs:196-251 用户源 outcome panic；`ForwardToVm(VmPagefaultIn)` 发送臂 + faulting endpoint 填充 + `ExceptionOutcome::Signal` 消费臂（exception_dispatcher.rs:2
+  -| NK3 | 三架构生产 trap 腿 + timer-irq 真机载体 | [edge_todo.md](edge_todo.md) E-3ARCHTRAP | riscv64 trap_vector 诊断桩（trap_entry.rs:66-78）→ 完整帧保存 + cause 分发 + 用户往返；arm64 下半 EL exc_bad_mode（:88-102）→ VBAR_EL1 全量 + SP_EL0 交换；arch 门面 install_trap_stubs/syscall_entry_va 实化（arch/lib.rs:262-263/:324-327）。配套 `test-t
+  +| NK2 | S-6/S-7：用户态页故障/异常转发臂接线 | [edge_todo.md](edge_todo.md) E-3ARCHTRAP ｜ [01-stage-kernel/todo.md](../01-stage-kernel/todo.md) 2026-09-20 节 | trap_dispatch.rs:196-251 用户源 outcome panic；`ForwardToVm(VmPagefaultIn)` 发送臂 + faulting endpoint 填充 + `ExceptionOutcome::Signal` 消费臂（exception_dispatcher.r
+  +| NK3 | 三架构生产 trap 腿 + timer-irq 真机载体 | [edge_todo.md](edge_todo.md) E-3ARCHTRAP | riscv64 trap_vector 诊断桩（trap_entry.rs:66-78）→ 完整帧保存 + cause 分发 + 用户往返；arm64 下半 EL exc_bad_mode（:88-102）→ VBAR_EL1 全量 + SP_EL0 交换；arch 门面 install_trap_stubs/syscall_entry_va 实化（arch/lib.rs:262-263/:324-327）。配套 `test-t
+  -| NK6 | X-7/X-8 + T5 内核残留（维持登记，不排期至 T5 波） | [edge_todo.md](edge_todo.md) 缺陷批 | X-7 未知 VMCTL 参数 ENOSYS vs C EINVAL（syscall.rs:2219，收敛或 [ARCH] 标注）；X-8 fork 父 FPU 卸载 no-op（proc.rs:1670）+ 非 BSP TSS sp0 占位（protection.rs:370）；riscv64 PMP entry0（notes/TODO.md） | T5 波 | 🚫→T5 |
+  +| NK6 | X-7/X-8 + T5 内核残留（维持登记，不排期至 T5 波） | [edge_todo.md](edge_todo.md) 缺陷批 | X-7 未知 VMCTL 参数 ENOSYS vs C EINVAL（syscall.rs:2219，收敛或 [ARCH] 标注）；X-8 fork 父 FPU 卸载 no-op（proc.rs:1670）+ 非 BSP TSS sp0 占位（protection.rs:370）；riscv64 PMP entry0（rewrite-notes/misc/legacy-notes-todo.md） | T5 波 | 🚫→T5 |
+  -- notes/TODO.md 的 kernel 设计级清理 backlog（C-D-1~5）维持低优先登记。
+  +- rewrite-notes/misc/legacy-notes-todo.md 的 kernel 设计级清理 backlog（C-D-1~5）维持低优先登记。
+===== git-mv notes/rewrite/fork-syscall-rewrite/new_edge2.md -> rewrite-notes/coordination/new_edge2.md ：10 行变化 =====
+  -> **所有权（本线可独占修改）**：`os/libs/`（**以括号枚举为准，非整目录**：minix-types、minix-sys、minix-rt、minix-sef、minix-chardriver、minix-blockdriver、minix-netdriver、minix-bdev、minix-driver-rt、minix-fs、minix-vtreefs、minix-sffs、minix-sockdriver）、`os/drivers/`、`notes/rewrite/fork-syscall-rewrite/14-stage-runtime/`、`16-stage-dr
+  +> **所有权（本线可独占修改）**：`os/libs/`（**以括号枚举为准，非整目录**：minix-types、minix-sys、minix-rt、minix-sef、minix-chardriver、minix-blockdriver、minix-netdriver、minix-bdev、minix-driver-rt、minix-fs、minix-vtreefs、minix-sffs、minix-sockdriver）、`os/drivers/`、`rewrite-notes/14-stage-runtime/`、`16-stage-drivers/`。**注**：`os/lib
+  -| NL3 | E-RTHEAP：minix-rt 三件 | [edge_todo.md](edge_todo.md) E-RTHEAP ｜ [14-stage-runtime/todo.md](14-stage-runtime/todo.md) 2026-09-20 节 | ①VM 页供应商（alloc.rs 静态 64KiB 池 → brk/mmap 通道，选型 OQ-N4）；②panic-exit-PM（lib.rs:279-308 自旋 → 经 minix_sys::exit/PM 终止）；③sigreturn trampoline 符号（C `__sigreturn` 对位；消费方
+  -| NL4 | minix-sys 顶层 API 缺口批 | [14-stage-runtime/todo.md](14-stage-runtime/todo.md) 2026-09-20 节 ｜ [edge_todo.md](edge_todo.md) E-CMDSYSFACE 先例 | 清单（grep 零命中实证）：**pipe/pipe2（sh 硬前置，优先）**、文件操作族（mkdir/rmdir/chmod/chown/link/symlink/unlink/rename/mknod/truncate/ftruncate/utime/umask/mkfifo）、chdir/getc
+  +| NL3 | E-RTHEAP：minix-rt 三件 | [edge_todo.md](edge_todo.md) E-RTHEAP ｜ [14-stage-runtime/todo.md](../14-stage-runtime/todo.md) 2026-09-20 节 | ①VM 页供应商（alloc.rs 静态 64KiB 池 → brk/mmap 通道，选型 OQ-N4）；②panic-exit-PM（lib.rs:279-308 自旋 → 经 minix_sys::exit/PM 终止）；③sigreturn trampoline 符号（C `__sigreturn` 对位；
+  +| NL4 | minix-sys 顶层 API 缺口批 | [14-stage-runtime/todo.md](../14-stage-runtime/todo.md) 2026-09-20 节 ｜ [edge_todo.md](edge_todo.md) E-CMDSYSFACE 先例 | 清单（grep 零命中实证）：**pipe/pipe2（sh 硬前置，优先）**、文件操作族（mkdir/rmdir/chmod/chown/link/symlink/unlink/rename/mknod/truncate/ftruncate/utime/umask/mkfifo）、chdir/g
+  -| NL6 | E-MEMDRV：memory 驱动进程化 | [edge_todo.md](edge_todo.md) E-MEMDRV ｜ [16-stage-drivers/todo.md](16-stage-drivers/todo.md) 2026-09-20 节 | `os/drivers/storage/memory/src/main.rs` 7 行桩 → 进程壳（出生面照 S29/S25/S27 范式：minix-driver-rt serve + RS_INIT 应答——依赖 NL2）。库本体已真。同批：tty 自端点 NONE 消费 whoami wrapper（NL4 
+  -| NL7 | X-1：边界守卫回归修复 | [edge_todo.md](edge_todo.md) 缺陷批 X-1 ｜ [18-stage-commands/todo.md](18-stage-commands/todo.md) C-7 | 40 violations 两类：termctl stty 测试代码 minix_types 直用（守卫豁免 `#[cfg(test)]` 的裁决挂 OQ-N5）；init host.rs/execve.rs、text-games/random.rs 直用 DirectTrapTransport（改走顶层封装，缺件登记 NL4） | OQ-N5（**
+  +| NL6 | E-MEMDRV：memory 驱动进程化 | [edge_todo.md](edge_todo.md) E-MEMDRV ｜ [16-stage-drivers/todo.md](../16-stage-drivers/todo.md) 2026-09-20 节 | `os/drivers/storage/memory/src/main.rs` 7 行桩 → 进程壳（出生面照 S29/S25/S27 范式：minix-driver-rt serve + RS_INIT 应答——依赖 NL2）。库本体已真。同批：tty 自端点 NONE 消费 whoami wrapper（N
+  +| NL7 | X-1：边界守卫回归修复 | [edge_todo.md](edge_todo.md) 缺陷批 X-1 ｜ [18-stage-commands/todo.md](../18-stage-commands/todo.md) C-7 | 40 violations 两类：termctl stty 测试代码 minix_types 直用（守卫豁免 `#[cfg(test)]` 的裁决挂 OQ-N5）；init host.rs/execve.rs、text-games/random.rs 直用 DirectTrapTransport（改走顶层封装，缺件登记 NL4） | OQ-N5
+===== git-mv notes/rewrite/fork-syscall-rewrite/new_edge3.md -> rewrite-notes/coordination/new_edge3.md ：22 行变化 =====
+  -> **所有权（本线可独占修改）**：`os/servers/`（rs/vm/pm/vfs/ds/is/mib/devman/input/ipc-server/sched）、`os/fs/`（mfs/pfs/ext2/.../fs-rt）、`os/net/`、`os/commands/`、`os/etc/`、`os/xtask/`、`notes/rewrite/fork-syscall-rewrite/` 的 02/03/04/05/09/15/17/18-stage 文档。`os/Cargo.toml`、`os/qemu-tests/run_all.sh`、`edge_todo.md` 等
+  +> **所有权（本线可独占修改）**：`os/servers/`（rs/vm/pm/vfs/ds/is/mib/devman/input/ipc-server/sched）、`os/fs/`（mfs/pfs/ext2/.../fs-rt）、`os/net/`、`os/commands/`、`os/etc/`、`os/xtask/`、`rewrite-notes/` 的 02/03/04/05/09/15/17/18-stage 文档。`os/Cargo.toml`、`os/qemu-tests/run_all.sh`、`edge_todo.md` 等共享文件触碰走 new_edge4 §2 
+  -| NS3 | 【bug】PM do_exec 门错位修复 | [edge_todo.md](edge_todo.md) E-EXECFILE ｜ [04-stage-pm/todo.md](04-stage-pm/todo.md) 2026-09-20 节 | 删 do_exec 的 VFS|RS 门（exec.rs:100-116；C do_exec exec.c:38-56 无门），门保留在 ExecNew/ExecRestart 臂；翻转固化偏离的两个测试（exec.rs:331-352）；`ExecError::Perm` 语义分道（H-20）。**T3 第一阻塞 bug** | 
+  -| NS4 | VFS 根挂载编排（18-mount W 批提级） | [05-stage-vfs/todo.md](05-stage-vfs/todo.md) ｜ [edge_todo.md](edge_todo.md) E-MEMDRV/E-FSBDEV | do_init_root（main_loop.rs:517-540）真发 req_readsuper → mfs on DEV_IMGRD；root_fs_e 赋值面（mount.c:326-328 对位）；dmap/装配收尾 | new_edge2 NL6（memory 驱动）+ NS6（块源） | ✅ 2026-09-21（zc
+  -| NS5 | VFS exec worker | [edge_todo.md](edge_todo.md) E-EXECFILE ｜ [05-stage-vfs/todo.md](05-stage-vfs/todo.md) 2026-09-20 节 | ipc/dispatcher.rs:200-215 桩 → 真 worker：open + read_header（#! ESCRIPT 分支可后置）+ ELF 段装载 + PM_EXEC_NEW 载荷（wire 已备 0x906/0x986；VM→kernel 半已真）。C 对位 vfs/exec.c | NS4（有根才能 open） |
+  -| NS6 | mfs 块源装配：imgrd 内存盘 BlockSource | [edge_todo.md](edge_todo.md) E-FSBDEV 最小半 ｜ [15-stage-fs/todo.md](15-stage-fs/todo.md) 2026-09-20 节 | fs-rt/source.rs PendingBlockSource（恒 EIO）→ imgrd 内存盘实现（boot 传入基址/尺寸；对端 new_edge2 NL6）；BdevBlockSource 已在 minix-fs（bdev_bridge.rs:44-165）缺 mfs bin 消费切换 | new
+  -| NS7 | E-CONSOLE VFS 半 | [edge_todo.md](edge_todo.md) E-CONSOLE ｜ [05-stage-vfs/todo.md](05-stage-vfs/todo.md) 2026-09-20 节 | 字符设备写臂 Nosys → cdev 路由（syscalls.rs:306-307/:418-419）；dmap 补 tty 槽（device_map.rs:137-146；DS 事件填充机制已有）。驱动半归 new_edge2 NL1 | new_edge2 NL1/NL6 | ✅ 2026-09-21（zcode_glm_3，代码 af
+  -| NS8 | E-IMGPKG：镜像装机面 | [edge_todo.md](edge_todo.md) E-IMGPKG ｜ S32 ｜ [18-stage-commands/todo.md](18-stage-commands/todo.md) 2026-09-20 节 | xtask `image()`/`qemu()` 实装（build() 扩全量 + default-features=false 生产开关 + 三架构布局）；12 模块装机清单（对位 OQ-N2 裁决结果；缺件不再静默跳过，loader.rs:259-264）；/etc 最小内容（rc + /dev/console
+  -| NS9 | RS read_exec 生产化 | S42 批五登记 ｜ [03-stage-rs/todo.md](03-stage-rs/todo.md) | exec.rs:21-31 noop 注入 → 真读盘（C manager.c:1372-1420）；service up / 崩溃重启自持 | NS4+NS5（VFS 通电） | ✅ 2026-09-21（zcode_glm_3，代码 9e8b3a26c / docs 6401df884）：镜像到达面接 VFS 客户端——`exec.rs` 新增 `ExecImageIo` trait（C 四步 stat/open/read/
+  -| NS10 | PM 批次 E/G + Reboot 臂 | [04-stage-pm/todo.md](04-stage-pm/todo.md) §11.1.1 ｜ [edge_todo.md](edge_todo.md) E-EXECFILE | 批次 E（exec wire 装配，与 NS5 对接）/G（misc）；`PmCall::Reboot` 臂（catch-all ENOSYS → 最小 sys_abort 等价；init minixreboot 依赖） | NS3/NS5 | ✅ 2026-09-21（zcode_glm_3，C-6 57db7bbde / NS10 75a
+  -| NS11 | init 残余面 | [09-stage-init/todo.md](09-stage-init/todo.md) 2026-09-20 节 | main 签名 `()` → `-> i32`（main.rs:64，crt0 契约；exit code 读垃圾修复）；securitylevel（host.rs:288）/init_root（:292，随 NS4 解锁）；trampoline 填真（host.rs:296-305，等 new_edge2 NL3③） | NL3③、NS4 | ✅ 2026-09-21 zcode_glm_1（claim/NS11-zcode_gl
+  -| NS12 | 命令 freestanding 批量 + T4 判定集 | [18-stage-commands/todo.md](18-stage-commands/todo.md) ｜ [edge_todo.md](edge_todo.md) E-SVCFREE/E-EXECFILE | 65 bin 批量切 no_std 目标（echo 双 seam 模板；riscv64gc/aarch64-unknown-none 矩阵）；**sh/cat/ls 接线**（sh 前置 pipe2 = new_edge2 NL4 + NS5）；18-stage 冒烟脚本（QEMU 内执行断言输出） 
+  +| NS3 | 【bug】PM do_exec 门错位修复 | [edge_todo.md](edge_todo.md) E-EXECFILE ｜ [04-stage-pm/todo.md](../04-stage-pm/todo.md) 2026-09-20 节 | 删 do_exec 的 VFS|RS 门（exec.rs:100-116；C do_exec exec.c:38-56 无门），门保留在 ExecNew/ExecRestart 臂；翻转固化偏离的两个测试（exec.rs:331-352）；`ExecError::Perm` 语义分道（H-20）。**T3 第一阻塞 bug**
+  +| NS4 | VFS 根挂载编排（18-mount W 批提级） | [05-stage-vfs/todo.md](../05-stage-vfs/todo.md) ｜ [edge_todo.md](edge_todo.md) E-MEMDRV/E-FSBDEV | do_init_root（main_loop.rs:517-540）真发 req_readsuper → mfs on DEV_IMGRD；root_fs_e 赋值面（mount.c:326-328 对位）；dmap/装配收尾 | new_edge2 NL6（memory 驱动）+ NS6（块源） | ✅ 2026-09-21
+  +| NS5 | VFS exec worker | [edge_todo.md](edge_todo.md) E-EXECFILE ｜ [05-stage-vfs/todo.md](../05-stage-vfs/todo.md) 2026-09-20 节 | ipc/dispatcher.rs:200-215 桩 → 真 worker：open + read_header（#! ESCRIPT 分支可后置）+ ELF 段装载 + PM_EXEC_NEW 载荷（wire 已备 0x906/0x986；VM→kernel 半已真）。C 对位 vfs/exec.c | NS4（有根才能 open
+  +| NS6 | mfs 块源装配：imgrd 内存盘 BlockSource | [edge_todo.md](edge_todo.md) E-FSBDEV 最小半 ｜ [15-stage-fs/todo.md](../15-stage-fs/todo.md) 2026-09-20 节 | fs-rt/source.rs PendingBlockSource（恒 EIO）→ imgrd 内存盘实现（boot 传入基址/尺寸；对端 new_edge2 NL6）；BdevBlockSource 已在 minix-fs（bdev_bridge.rs:44-165）缺 mfs bin 消费切换 | 
+  +| NS7 | E-CONSOLE VFS 半 | [edge_todo.md](edge_todo.md) E-CONSOLE ｜ [05-stage-vfs/todo.md](../05-stage-vfs/todo.md) 2026-09-20 节 | 字符设备写臂 Nosys → cdev 路由（syscalls.rs:306-307/:418-419）；dmap 补 tty 槽（device_map.rs:137-146；DS 事件填充机制已有）。驱动半归 new_edge2 NL1 | new_edge2 NL1/NL6 | ✅ 2026-09-21（zcode_glm_3，代码
+  +| NS8 | E-IMGPKG：镜像装机面 | [edge_todo.md](edge_todo.md) E-IMGPKG ｜ S32 ｜ [18-stage-commands/todo.md](../18-stage-commands/todo.md) 2026-09-20 节 | xtask `image()`/`qemu()` 实装（build() 扩全量 + default-features=false 生产开关 + 三架构布局）；12 模块装机清单（对位 OQ-N2 裁决结果；缺件不再静默跳过，loader.rs:259-264）；/etc 最小内容（rc + /dev/cons
+  +| NS9 | RS read_exec 生产化 | S42 批五登记 ｜ [03-stage-rs/todo.md](../03-stage-rs/todo.md) | exec.rs:21-31 noop 注入 → 真读盘（C manager.c:1372-1420）；service up / 崩溃重启自持 | NS4+NS5（VFS 通电） | ✅ 2026-09-21（zcode_glm_3，代码 9e8b3a26c / docs 6401df884）：镜像到达面接 VFS 客户端——`exec.rs` 新增 `ExecImageIo` trait（C 四步 stat/open/re
+  +| NS10 | PM 批次 E/G + Reboot 臂 | [04-stage-pm/todo.md](../04-stage-pm/todo.md) §11.1.1 ｜ [edge_todo.md](edge_todo.md) E-EXECFILE | 批次 E（exec wire 装配，与 NS5 对接）/G（misc）；`PmCall::Reboot` 臂（catch-all ENOSYS → 最小 sys_abort 等价；init minixreboot 依赖） | NS3/NS5 | ✅ 2026-09-21（zcode_glm_3，C-6 57db7bbde / NS10 
+  +| NS11 | init 残余面 | [09-stage-init/todo.md](../09-stage-init/todo.md) 2026-09-20 节 | main 签名 `()` → `-> i32`（main.rs:64，crt0 契约；exit code 读垃圾修复）；securitylevel（host.rs:288）/init_root（:292，随 NS4 解锁）；trampoline 填真（host.rs:296-305，等 new_edge2 NL3③） | NL3③、NS4 | ✅ 2026-09-21 zcode_glm_1（claim/NS11-zcode
+  +| NS12 | 命令 freestanding 批量 + T4 判定集 | [18-stage-commands/todo.md](../18-stage-commands/todo.md) ｜ [edge_todo.md](edge_todo.md) E-SVCFREE/E-EXECFILE | 65 bin 批量切 no_std 目标（echo 双 seam 模板；riscv64gc/aarch64-unknown-none 矩阵）；**sh/cat/ls 接线**（sh 前置 pipe2 = new_edge2 NL4 + NS5）；18-stage 冒烟脚本（QEMU 内执行断言输
+===== git-mv notes/rewrite/fork-syscall-rewrite/new_edge4.md -> rewrite-notes/coordination/new_edge4.md ：8 行变化 =====
+  -| C-53 | NS11-B 执行的跨界触碰：MIB_SYSCTL 交换面 64 位车道三向统一（照规则 1 登记；**初登号 C-52 与 NL10 会话撞号让位**——C-52 已先落主线归 NL10/zcode_glm_2，C-47 判例，本行改号；NS11-B 代码提交信息与 FIXLOG #141 内的 "C-52" 字样均指本行） | new_edge2 面 `os/libs/minix-types/src/ipc/message.rs`（MessLcMibSysctl overlay）+ `os/libs/minix-types/src/ipc/mib.rs`（SysctlR
+  +| C-53 | NS11-B 执行的跨界触碰：MIB_SYSCTL 交换面 64 位车道三向统一（照规则 1 登记；**初登号 C-52 与 NL10 会话撞号让位**——C-52 已先落主线归 NL10/zcode_glm_2，C-47 判例，本行改号；NS11-B 代码提交信息与 FIXLOG #141 内的 "C-52" 字样均指本行） | new_edge2 面 `os/libs/minix-types/src/ipc/message.rs`（MessLcMibSysctl overlay）+ `os/libs/minix-types/src/ipc/mib.rs`（SysctlR
+  -| C-52 | NL10 执行的跨界触碰：VFS 路径臂长名 fetch 半 + doc 同步（照规则 1 登记） | new_edge3 面 `os/servers/vfs/src/path.rs`（新增 `copy_path` 共享 helper：C utility.c:17-43 双支对位——≤`OPEN_PATH_INLINE_MAX` 内联 decode、超长 `SysPathFetcher::fetch`）+ `os/servers/vfs/src/syscalls.rs`（八臂改线：open/mkdir/chdir\|chroot/unlink\|rmdir/chmod/ac
+  +| C-52 | NL10 执行的跨界触碰：VFS 路径臂长名 fetch 半 + doc 同步（照规则 1 登记） | new_edge3 面 `os/servers/vfs/src/path.rs`（新增 `copy_path` 共享 helper：C utility.c:17-43 双支对位——≤`OPEN_PATH_INLINE_MAX` 内联 decode、超长 `SysPathFetcher::fetch`）+ `os/servers/vfs/src/syscalls.rs`（八臂改线：open/mkdir/chdir\|chroot/unlink\|rmdir/chmod/ac
+  -| C-61 | 历史日志模式挖掘 → 回归检查（照规则 3 登记：tools/ 新增脚本） | `tools/pattern-gate.sh`（新增）+ `tools/pattern-gate-baseline.txt`（新增）+ `notes/rewrite/fork-syscall-rewrite/PATTERN-SCAN-REPORT-20260923.md`（新增）；**不修改任何既有脚本/`.rs`/os 构建面**（登记人/执行人：zcode-glm，claim/C-61-zcode-glm @ acac0ffb5；C-61 编号取自 §2 尾部 grep 实测空号） | 扫描
+  +| C-61 | 历史日志模式挖掘 → 回归检查（照规则 3 登记：tools/ 新增脚本） | `tools/pattern-gate.sh`（新增）+ `tools/pattern-gate-baseline.txt`（新增）+ `rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md`（新增）；**不修改任何既有脚本/`.rs`/os 构建面**（登记人/执行人：zcode-glm，claim/C-61-zcode-glm @ acac0ffb5；C-61 编号取自 §2 尾部 grep 实测空号） | 扫描 `.revie
+  -- 未跟踪产物：`new_todo_{deepseek,glm,HY4,muse,qwen}.md`（五路扫描留存备查，不删）；`new_edge1-4.md`（本轮工作文件）；`AI-chats/`、`notes/redesign/` 等与本轮无关。
+  +- 未跟踪产物：`new_todo_{deepseek,glm,HY4,muse,qwen}.md`（五路扫描留存备查，不删）；`new_edge1-4.md`（本轮工作文件）；`AI-chats/`、`redesign-notes/` 等与本轮无关。
+===== git-mv notes/rewrite/fork-syscall-rewrite/new_todo_deepseek.md -> rewrite-notes/coordination/new_todo_deepseek.md ：4 行变化 =====
+  -- plan.md §5.2（`notes/rewrite/fork-syscall-rewrite/18-stage-commands/plan.md:253-380`）列了约 327 个命令名，**261 个没有 bin**；其中首当其冲的是 `sh`、`cat`、`ls`、`cp`、`mv`、`rm`、`mkdir`、`pwd`、`test`、`chmod`、`ps`、`mount`、`date`、`sleep`。
+  +- plan.md §5.2（`rewrite-notes/18-stage-commands/plan.md:253-380`）列了约 327 个命令名，**261 个没有 bin**；其中首当其冲的是 `sh`、`cat`、`ls`、`cp`、`mv`、`rm`、`mkdir`、`pwd`、`test`、`chmod`、`ps`、`mount`、`date`、`sleep`。
+  -**扫描范围**：`os/`（kernel、arch、plat、boot-shim、servers×11、libs、fs、net、drivers×57、commands×24、qemu-tests、xtask）+ `notes/rewrite/fork-syscall-rewrite/` 的账本（edge1/2/3/4、edge_todo、18-stage todo/plan、16-stage todo）+ `minix3/` 对照（`servers/rs/main.c`、`lib/libsys/sef*.c`、`releasetools/image.functions`、`servers/
+  +**扫描范围**：`os/`（kernel、arch、plat、boot-shim、servers×11、libs、fs、net、drivers×57、commands×24、qemu-tests、xtask）+ `rewrite-notes/` 的账本（edge1/2/3/4、edge_todo、18-stage todo/plan、16-stage todo）+ `minix3/` 对照（`servers/rs/main.c`、`lib/libsys/sef*.c`、`releasetools/image.functions`、`servers/vfs/main.c`、`drivers/
+===== git-mv notes/rewrite/fork-syscall-rewrite/new_todo_qwen.md -> rewrite-notes/coordination/new_todo_qwen.md ：2 行变化 =====
+  -> **目标**：三架构（x86-64 / aarch64 / riscv64）QEMU 环境启动 minix-rs，运行 `notes/rewrite/fork-syscall-rewrite/18-stage-commands/` 覆盖的全部命令程序。
+  +> **目标**：三架构（x86-64 / aarch64 / riscv64）QEMU 环境启动 minix-rs，运行 `rewrite-notes/18-stage-commands/` 覆盖的全部命令程序。
+===== git-mv notes/rewrite/project-plan.md -> rewrite-notes/misc/project-plan.md ：8 行变化 =====
+  -/// 详见 notes/redesign/process-model.md 中的分离方案。
+  +/// 详见 redesign-notes/process-model.md 中的分离方案。
+  -- `notes/rewrite/rewrite.md` - 重构设计思路
+  -- `notes/rewrite/rewrite-strategy.md` - 重写策略（语义冻结）
+  -- `notes/rewrite/vertical-slice-strategy.md` - 纵向切片策略
+  +- `rewrite-notes/misc/rewrite.md` - 重构设计思路
+  +- `rewrite-notes/misc/rewrite-strategy.md` - 重写策略（语义冻结）
+  +- `rewrite-notes/misc/vertical-slice-strategy.md` - 纵向切片策略

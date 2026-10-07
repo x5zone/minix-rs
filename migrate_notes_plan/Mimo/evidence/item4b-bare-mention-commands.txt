@@ -1,0 +1,19 @@
+== 裸提及 56 文件中，含可执行命令形态的样例 ==
+rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md:125:| Step 0 预检（Gate H） | `tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm`：26/28 篇三件套 PASS；**00-vm-overview 与 99-global-concepts（均为 pending 骨架）缺 outline/outline-review/design** → Gate H.1/H.6 FAIL → 登记 G-V12-12，不阻断代码面审查（两篇骨架非本轮代码审查的依赖输入） |
+rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md:320:$ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm
+rewrite-notes/02-stage-vm/todo.md:254:$ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm
+rewrite-notes/MIGRATION.md:72:| 覆盖率预检参数 | `tools/design-coverage-check.sh fork-syscall-rewrite` | `tools/design-coverage-check.sh 01-stage-kernel`（或树别名 `rewrite`） |
+rewrite-notes/07-stage-ds/todo.md:35:- `tools/design-coverage-check.sh fork-syscall-rewrite --stage 07-stage-ds`：首轮 FAIL（00/99 缺六件套）→ Step 0.3 生成 → 复跑 **ALL DOCS COMPLETE**
+rewrite-notes/07-stage-ds/todo.md:236:- **Step 0**：预检 FAIL（00/99 缺 2×3 快照，H.1+H.6 CRITICAL）→ Step 0.3.2/0.3.3/0.3.4 嵌入生成六件 → `tools/design-coverage-check.sh fork-syscall-rewrite --stage 07-stage-ds` 复跑 **ALL DOCS COMPLETE**（H.1/H.6 归零）。
+rewrite-notes/13-stage-ipc/archive/todo-R1-archive-2026-09-16.md:8:> **门裁剪声明**：本轮是代码扫描轮，不产 scan.md/STATE.md，Gate 0/STATE 简化为本声明（chapter 级先例，review-cmds.md §三）；Gate B/C/D-6/H 属修复轮。适用的门：锚点纪律（本文所有事实断言带 `file:line`）、文风门（style-bible）、translate 防线、Ground Truth 链、Gate A 覆盖穷举、Gate E 测试对账（§3）。Step 0 预检现状：`tools/design-coverage-check.sh fork-syscall-rewrite --stage 13-stage-ipc` 退出码 1——00/07/08/09/10/99 六篇缺 `.design/` 快照（01-06 六篇齐）。这是既知前置状态（plan.md §6.1：00/99 篇本身 pending；01-10 已于 2026-09-05 全部 reviewed），不构成本轮阻断，理由：本轮审代码不审文档版本沿革。见 IPC-D-4。
+rewrite-notes/03-stage-rs/todo.md:247:$ bash tools/design-coverage-check.sh fork-syscall-rewrite/03-stage-rs                 # ALL DOCS COMPLETE
+rewrite-notes/09-stage-init/plan.md:170:- 每篇改写后必须走 review 工作流：Step 0 预检（4 条 `ls` + `tools/design-coverage-check.sh fork-syscall-rewrite --stage 09-stage-init`）→ Blocker Gates（0/A/B/C/D/D-6/E/G/H）→ scan 产物写入 `.review/codex/init/{NN}-{name}/`
+rewrite-notes/01-stage-kernel/.design/06-outline.v1.md:315:  python3 tools/coverage-extract/coverage-extract.py kernel notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+rewrite-notes/01-stage-kernel/.design/07-outline.v1.md:243:  python3 tools/coverage-extract/coverage-extract.py kernel notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+rewrite-notes/01-stage-kernel/.design/07-design.v1.md:240:  python3 tools/coverage-extract/coverage-extract.py kernel notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+rewrite-notes/01-stage-kernel/.design/04-outline.v1.md:215:  python3 tools/coverage-extract/coverage-extract.py kernel notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+rewrite-notes/01-stage-kernel/.design/05-outline.v1.md:250:  python3 tools/coverage-extract/coverage-extract.py kernel notes/rewrite/fork-syscall-rewrite/03-stage-kernel \
+rewrite-notes/01-stage-kernel/checklist.md:313:> **验证**: `coverage-extract.py` 三文档均 `Gaps (semantic): 0`（见 `.review/trae/fork-syscall-rewrite/scans/{28,29,30}-*-glm-SYMBOLS-verify.md`）。
+
+== 计数 ==
+45

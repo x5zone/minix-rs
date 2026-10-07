@@ -1,0 +1,21 @@
+=== 6b 断链检查器埋点 ===
+报告里 99-probe 命中数: 1
+--- 复原（删除探针）---
+ls: cannot access 'rewrite-notes/01-stage-kernel/99-probe.md': No such file or directory
+探针已删除 ✓
+
+=== 6c 规则三端一致 + 工具在新布局可用 ===
+Review source, Trae adapters, Claude runtime references, and Codex adapters are consistent.
+check-review-rules rc=0
+✅ No drift detected. All derived skills match source.
+design-coverage 01-stage-kernel rc=1
+❌ 既不是树别名也不是 stage 目录名：fork-syscall-rewrite
+   期望：rewrite | redesign | study | <stage 目录名>（如 01-stage-kernel）
+   旧布局的 module 参数（如 fork-syscall-rewrite）已于 2026-10-07 退役，见 rewrite-notes/MIGRATION.md
+（旧参数应给可读报错）
+
+=== 6c2 附加：其余四把工具自测 ===
+✅ PASS notes-link-check 自测通过
+SELF-TEST PASS（组1 全类命中；组2 零误报；组3 合法历史默认零命中、--strict 命中 SL-5b）
+SELF-TEST PASS（resolved=5 含 fenced 排除, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0）
+SELF-TEST PASS（前 5 行辩护判定正确；test 内裸归类 bare_in_test）

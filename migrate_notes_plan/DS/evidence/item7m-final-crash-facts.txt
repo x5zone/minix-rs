@@ -1,0 +1,25 @@
+=== 90 个 os/ 改动文件里是否有 driver-rt 相关 ===
+os/drivers/audio/es1371/src/lib.rs
+os/drivers/audio/sb16/src/lib.rs
+os/drivers/bus/pci/src/lib.rs
+os/drivers/clock/readclock/src/lib.rs
+os/drivers/eeprom/cat24c256/src/lib.rs
+os/drivers/hid/pckbd/src/lib.rs
+os/drivers/net/dp8390/src/lib.rs
+os/drivers/net/e1000/src/lib.rs
+os/drivers/net/lance/src/lib.rs
+os/drivers/net/rtl8139/src/lib.rs
+（无输出=没有触及 driver-rt）
+
+=== 崩溃二进制的时间戳（早于迁移开窗 17:15？）===
+2026-10-07 19:21:08.800413091 os/target/debug/deps/minix_driver_rt-95f9e6d027df3b0f
+2026-10-07 19:25:36.828359353 os/target/debug/deps/minix_driver_rt-ee165b612ef0427a
+
+=== 单线程定位（完整崩溃点）===
+/bin/bash: line 12: 4147223 Segmentation fault      (core dumped) target/debug/deps/minix_driver_rt-95f9e6d027df3b0f --test-threads=1 2>&1
+running 14 tests
+test core::tests::test_loop_action_policy ... ok
+test core::tests::test_open_set_refuses_when_full ... ok
+test core::tests::test_open_set_tracks_and_fills ... ok
+test core::tests::test_server_announce_forgets_pre_restart_opens ... ok
+test kernel::kernel_transport_tests::test_asynsend_accumulates_without_flush ... rc=139

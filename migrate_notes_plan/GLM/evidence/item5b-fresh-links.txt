@@ -1,0 +1,18 @@
+## item5.6 工具自测
+✅ PASS notes-link-check 自测通过
+rc=0
+
+## item5.7 当前三棵树新鲜扫描
+报告已写入 /tmp/glm-links-now.txt（扫描 2133 个文件，断链 373 处）
+扫描 md 文件数：2133    断链数：373
+rc=1
+373
+
+## item5.8 新鲜扫描结果 vs after.txt 的三树部分（集合级 diff）
+after.txt 三树条目: 373；新鲜扫描条目: 373
+集合逐行相等
+
+## item5.9 抽 3 条新鲜扫描的断链人工核实（读源行确认目标确实不存在）
+redesign-notes/architecture/tocutou-and-distributed-consistency.md:10	../../02-stage-vm/draft/vmproc-design.md#L78-L96	/home/xzhao/github/minix-rs/02-stage-vm/draft/vmproc-design.md	/home/xzhao/02-stage-vm/draft/vmproc-design.md
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:68	../01-stage-pm/mproc-design.md	/home/xzhao/github/minix-rs/rewrite-notes/01-stage-pm/mproc-design.md	/home/xzhao/github/01-stage-pm/mproc-design.md
+rewrite-notes/00-master-plan/03-minix3-source-audit.md:72	../deep-analysis/fork-all-layers-deep-analysis.md	/home/xzhao/github/minix-rs/rewrite-notes/deep-analysis/fork-all-layers-deep-analysis.md	/home/xzhao/github/deep-analysis/fork-all-layers-deep-analysis.md

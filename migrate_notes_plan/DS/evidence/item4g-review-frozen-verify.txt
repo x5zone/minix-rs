@@ -1,0 +1,7 @@
+.review 冻结核验：tar 卷 1728 件 vs 磁盘 1732 件
+  逐字节一致 1728 / 内容不同 0 / 磁盘缺失 0 / 磁盘新增 4
+  磁盘新增文件（迁移后新写的，预期含 PATH-MAPPING.md）：
+    + PATH-MAPPING.md
+    + archive/notes-fork-syscall-rewrite-2026-09/03-stage-kernel/STATE.md
+    + archive/notes-fork-syscall-rewrite-2026-09/STATE.md
+    + archive/notes-fork-syscall-rewrite-2026-09/scans/03-kmain-cstart-kimi-scan.md

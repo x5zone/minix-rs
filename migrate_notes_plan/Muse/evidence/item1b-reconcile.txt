@@ -1,0 +1,2 @@
+manifest cols ok, entries: 2428
+same 2095 / missing 0 / different 333

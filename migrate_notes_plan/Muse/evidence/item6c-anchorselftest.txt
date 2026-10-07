@@ -1,0 +1,2 @@
+SELF-TEST PASS（resolved=5 含 fenced 排除, ZERO-DEF=1, MULTI-DEF=1, 无锚点=exit0）
+rc=0

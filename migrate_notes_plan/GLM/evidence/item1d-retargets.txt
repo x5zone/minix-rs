@@ -1,0 +1,21 @@
+## 重定目标的存在性验证
+存在: rewrite-notes/coordination/edge_todo.md
+存在: redesign-notes/ipc/endpoint_redesign.md
+存在: rewrite-notes/misc/legacy-fork-syscall-index.md
+存在: redesign-notes/architecture/architecture-changes.md
+存在: redesign-notes/architecture/semantic-modules.md
+存在: redesign-notes/ipc/ipc-improve.md
+存在: redesign-notes/architecture/improve_minix.md
+存在: redesign-notes/architecture/improve_minix_refactored.md
+
+## endpoint_redesign.md 的映射行（path-map）
+notes/redesign/endpoint_redesign.md	redesign-notes/ipc/endpoint_redesign.md	git-mv	R15
+
+## old 文本路径 notes/redesign/endpoint_redesign.md 在 manifest 中存在（迁移前真实文件）
+1
+
+## mp-flags-analysis.md 悬空引用考证：老文本路径在 manifest 里是否存在（期望 0=迁移前就悬空）
+0
+## 新路径 rewrite-notes/mp-flags-analysis.md 磁盘是否存在（期望不存在，真实文件在 archive/legacy-fork-bak/）
+ls: cannot access 'rewrite-notes/mp-flags-analysis.md': No such file or directory
+-rw-r--r-- 1 xzhao xzhao 16896 Sep  6 23:08 rewrite-notes/archive/legacy-fork-bak/mp-flags-analysis.md

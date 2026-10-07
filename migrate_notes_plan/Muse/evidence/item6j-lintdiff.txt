@@ -1,0 +1,3 @@
+diff 范围：1 个文件 / 6 个新增行（RANGE=HEAD，限 rewrite-notes redesign-notes study-notes；规则文件不在增量门范围）
+命中汇总：| error级=0
+rc=0

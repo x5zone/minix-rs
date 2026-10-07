@@ -1,0 +1,15 @@
+tar 文件条目 4183，其中 notes/ 2428，manifest 2428
+仅在 manifest 不在 tar: 0
+仅在 tar 不在 manifest: 0
+指定代表件不在 tar 的（期望 0）: []
+抽样内容对账: 38 OK / 0 不一致 / 共 38（含 615MB 串口日志与在制两件）
+migrate_notes_plan/agents-workflow-optim.md
+  tar=04485db7f18031a0 磁盘=04485db7f18031a0 记录前缀=04485db7f180  [tar==磁盘, 前缀吻合]
+tools/atf-c-compat/probes/p7.c
+  tar=b8da7f7b72767f8d 磁盘=b8da7f7b72767f8d 记录前缀=b8da7f7b726  [tar==磁盘, !! 前缀不符]
+new_laptop_migrate/diseased-scan-20261007/commits.tsv
+  tar=e0503c6b9c294e6e 磁盘=e0503c6b9c294e6e 记录前缀=e0503c6b9c29  [tar==磁盘, 前缀吻合]
+new_laptop_migrate/diseased-scan-20261007/paths.tsv
+  tar=bc450e9032e3e590 磁盘=bc450e9032e3e590 记录前缀=bc450e9032e3  [tar==磁盘, 前缀吻合]
+new_laptop_migrate/diseased-scan-20261007/summary.json
+  tar=92f7ae146315c052 磁盘=92f7ae146315c052 记录前缀=92f7ae146315  [tar==磁盘, 前缀吻合]

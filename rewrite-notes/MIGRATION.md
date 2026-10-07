@@ -87,13 +87,17 @@ module 层退役后，评审状态目录的分组键由 `{module}` 换成 `{stag
 阶段目录曾在 fork 主线与启动顺序主线之间重排过一次。**本次迁移没有改任何阶段编号**，
 但迁移前的文档里仍散留着旧编号引用（按「迁移不顺手修内容」的纪律原样保留，属独立后续任务）：
 
-| 旧编号引用 | 现行编号 | 旧引用残留处数 |
-|---|---|---|
-| `01-stage-pm` | `04-stage-pm` | 26 |
-| `03-stage-kernel` | `01-stage-kernel` | 71 |
-| `04-stage-vfs` | `05-stage-vfs` | 6 |
-| `05-stage-sched` | `06-stage-sched` | 6 |
-| `deep-analysis/`（目录已不存在） | 内容在 `rewrite-notes/archive/legacy-fork-bak/fork-all-layers-deep-analysis.md` | 6 |
+计数口径：三棵树全量（含 `evidence/`、`.design/`、`legacy-fork-bak/` 三个冻结区），按**出现次数**计，
+复算命令 `grep -rIo '<旧编号>' rewrite-notes redesign-notes study-notes \| wc -l`。
+本表原抄自迁移计划写作时的测量，口径未标注且已随 NK4C 战役的文档增长过期，现按实测更正。
+
+| 旧编号引用 | 现行编号 | 出现次数 | 命中文件数 |
+|---|---|---|---|
+| `01-stage-pm` | `04-stage-pm` | 28 | 7 |
+| `03-stage-kernel` | `01-stage-kernel` | 76 | 38 |
+| `04-stage-vfs` | `05-stage-vfs` | 7 | 5 |
+| `05-stage-sched` | `06-stage-sched` | 7 | 4 |
+| `deep-analysis/`（目录已不存在） | 内容在 `rewrite-notes/archive/legacy-fork-bak/fork-all-layers-deep-analysis.md` | 11 | 4 |
 
 ## 六、已知悬空引用（迁移前后同样悬空，非本次造成）
 
@@ -101,7 +105,15 @@ module 层退役后，评审状态目录的分组键由 `{module}` 换成 `{stag
 |---|---|---|
 | `os/libs/minix-types/README.md` | `rewrite-notes/fork-syscall-plan.md` | 该文档在迁移前就不存在；`rewrite-notes/archive/legacy-fork-bak/` 里有 `fork-syscall-plan-part1.md`、`-part3.md`、`-backup.md` 等分片。现行等价文档建议判定为 `rewrite-notes/00-master-plan/01-project-overview.md`，**待人裁决**后单笔修正 |
 | 各 stage 文档 | `../01-stage-pm/…`、`../deep-analysis/…`、`../review-rules/review.md` | 旧编号与旧目录，见第五节 |
-| 迁移前既有断链 | 452 处（按域：notes 树 425、`prompt/` 13、`.trae/` 12、`migrate_notes_plan/` 2） | 清单见 `migrate_notes_plan/pre-migrate-20261007/broken-links.before.txt`；迁移后 257 处，**新增 0**（对账方法与结果见 `migrate_notes_plan/EXECUTION-LOG.md` Phase 3 一节） |
+| 迁移前既有断链 | 三棵树部分 425 行（全域 452 行，另含 `prompt/` 13、`.trae/` 12、`migrate_notes_plan/` 2） | 迁移后三棵树 373 行（全域 400 行）。三种口径下**迁移引入的新增都是 0**：原始行 425→373、去重键 288→257、独立复扫与 `broken-links.after.txt` 逐行相等。基线见 `migrate_notes_plan/pre-migrate-20261007/broken-links.before.txt`，对账方法见执行日志 Phase 3 一节 |
+
+| `rewrite-notes/04-stage-pm/draft/mproc-design.md:2654` | `rewrite-notes/mp-flags-analysis.md` | 迁移前该引用就指向不存在的路径（真实文件在 `archive/legacy-fork-bak/`），机械前缀替换如实保留了悬空，坏度不变 |
+| `rewrite-notes/18-stage-commands/doc_rerank_deepseek.md:2184` | `rewrite-notes/edge*.md` 通配 | 迁移前的通配能命中 `fork-syscall-rewrite/edge_todo.md`，迁移后该文件在 `coordination/` 下，通配落空。这是机械替换对「散文里的通配符」的语义极限（不是链接，链接门管不到） |
+
+散文里的陈旧命令写法（`tools/design-coverage-check.sh fork-syscall-rewrite …` 一类）在三棵树内还有若干处，
+绝大多数是历史台账对既往验收轮次的回溯记录（按裁决保留原文）；
+面向未来的指引句已就地改为新参数（`rewrite-notes/09-stage-init/plan.md`、`prompt/todo_plan.md`、
+`prompt/skill/review-coverage-skill.md` 各一处，连同 `{rw-module}` 一并收敛）。
 
 ## 七、旧内容如何回捞
 

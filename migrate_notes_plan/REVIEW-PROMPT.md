@@ -79,19 +79,28 @@ for line in (R/"migrate_notes_plan/pre-migrate-20261007/path-map.tsv").read_text
     if not f.is_file(): miss += 1; continue
     if sha(f) == pre[old]: ok += 1
     else: bad += 1; print("  不一致:", old, "→", new)
-print(f"一致 {ok} / 缺失 {miss} / 不一致 {bad}（期望 2428 / 0 / 0）")
+print(f"缺失 {miss}（期望 0）／一致 {ok}／有差异 {bad}（差异须逐条可归因，见上方三段式判据）")
 PY
 ```
 
-判据：`一致 2428 / 缺失 0 / 不一致 0`。任何一条不一致都要当场查原因（内容被改？文件没搬？搬错位置？）。
+判据（三段式，按字面执行才能得出正确结论）：
+1. **缺失必须为 0**（映射目标全部在位）。
+2. **不一致项必须逐条可归因**——本次迁移在第 3 阶段按裁决改写了必改域的引用、
+   第 7 阶段重写了三份入口文档，所以「不一致 0」这个期望本身就是错的（三家审计都指出这一点）。
+   正确的期望是：不一致项全部落在 `git-mv` 类跟踪文件里，且每一处都能由
+   「合同前缀替换 / 相对链接重定基 / 已登记的入口文档重写」解释；
+   三个冻结区（`evidence/`、任何 `.design/`、`archive/legacy-fork-bak/`）必须 0 处被改。
+   迁移方留档的实测分布可作对照：2095 全等 + 333 有差异，其中 180 由前缀替换完全解释。
+3. **纯移动边界看提交 `e90e4173d`**——那里才是 2428/2428 逐字节全等、零增删行。
 
 ### 第 2 项：清单与 tar 本身有没有被事后改动
 
 ```bash
 sha256sum -c migrate_notes_plan/pre-migrate-20261007/snapshot.sha256   # 从仓库根跑，7 项应全 OK
 sha256sum tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz  # 期望 39e68026187bc72f…
-tar -tzf tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz | grep -c '^notes/'   # 期望 2428
-tar -tzf tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz | grep -c '\.design/' # 期望 1162
+tar -tzf tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz | grep '^notes/' | grep -vc '/$'          # 期望 2428（直接 grep -c 会把 108 个目录条目数进去得 2536）
+tar -tzf tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz | grep '\.design/' | grep -vc '/$'     # 期望 1162（不筛目录得 1180）
+tar -tzf tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz | grep '^\.review/' | grep -vc '/$'     # 期望 1728
 git show notes/pre-migrate-20261007 --no-patch --format='%tagger %subject'                     # tag 应存在且指向 bb8a90e05
 ```
 
@@ -100,8 +109,8 @@ git show notes/pre-migrate-20261007 --no-patch --format='%tagger %subject'      
 ```bash
 git log --oneline --follow -- rewrite-notes/01-stage-kernel/16-smp.md | head -3
 git show --shortstat -M e90e4173d | tail -2      # 期望 1102 files changed, 0 insertions(+), 0 deletions(-)
-git show --stat -M e90e4173d | grep -c '=>'      # 纯移动 commit 里改名条目数
-git ls-files rewrite-notes redesign-notes study-notes | wc -l    # 期望 1102 = 迁移前 notes 跟踪数
+git show --name-status -M e90e4173d | grep -c '^R100'   # 期望 1102（纯移动提交处改名是 R100）
+git ls-files rewrite-notes redesign-notes study-notes | wc -l    # 期望 1105 = 迁移前 1102 + 迁移新入库的 3 份入口文档（MIGRATION.md、study-notes/README.md、redesign-notes/vm/README.md）
 git ls-files notes/pre-migrate-20261007 2>/dev/null | wc -l >/dev/null
 git ls-tree -r --name-only notes/pre-migrate-20261007 -- notes | wc -l   # 期望 1102
 ```
@@ -111,7 +120,10 @@ git ls-tree -r --name-only notes/pre-migrate-20261007 -- notes | wc -l   # 期�
 
 ```bash
 git diff --name-status -M notes/pre-migrate-20261007..HEAD -- notes rewrite-notes redesign-notes study-notes \
-  | awk '{print substr($1,1,1)}' | sort | uniq -c      # 期望只有 R，没有 D
+  | awk '{print substr($1,1,1)}' | sort | uniq -c
+  # 区间期望 1100 R + 5 A + 2 D：两条 D 是内容被授权改写后相似度掉出 git 改名阈值的展示形态
+  # （rewrite-notes/README.md 入口重写、coordination/edge3.md 引用改写），
+  # 必须逐条验证「目标在位 + git log --follow 可续读 + 移动提交 e90e4173d 处是 R100」，不得当成丢失
 ```
 
 ### 第 4 项：引用有没有漏改
@@ -216,8 +228,10 @@ P2（叙述、可读性、建议）：…
 未能核对的项与原因：…
 ```
 
-判定纪律：只要第 1 项（内容一致性）、第 3 项（跟踪数守恒）、第 4 项（引用残留）、第 6 项（门有效性）
-里任何一条不成立，就是 P0。第 7 项的偶发 SIGSEGV 除非能证明与 `os/` 改动有关，否则记 P2 观察项。
+判定纪律：只要第 1 项（内容一致性与差异可归因性）、第 3 项（跟踪数守恒）、第 4 项（引用残留）、
+第 6 项（门有效性）里任何一条不成立，就是 P0。第 7 项的全量测试失败集合经三家审计用迁移前对照实测，
+是**先于迁移存在的确定性缺陷**（宿主与容器、并行与 `-j1` 都是同一集合），
+除非能证明与 `os/` 的注释改动有关，否则记 P2 观察项，不要写成「偶发抖动」。
 审计材料位置：`migrate_notes_plan/pre-migrate-20261007/00-SNAPSHOT.md`（迁移前全貌与三圈账）、
 `migrate_notes_plan/EXECUTION-LOG.md`（逐动作与决策）、
 `migrate_notes_plan/pre-migrate-20261007/02-VERIFY.md`（门禁取证）、

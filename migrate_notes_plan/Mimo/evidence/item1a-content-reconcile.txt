@@ -1,0 +1,34 @@
+manifest entries=2428  path-map entries=2428
+manifest git_status distribution: {'tracked': 1102, 'ignored': 1325, 'untracked': 1}
+path-map kind distribution: {'git-mv': 1102, 'mv-ignored': 1325, 'mv-untracked': 1}
+duplicate new_path values: 0
+in manifest not in map: 0 []
+in map not in manifest: 0 []
+content: OK=2095 MISSING=0 CHANGED=333 (expect 2428/0/0)
+disk files in 3 trees=2428 targets=2428
+on disk but not a mapping target: 3 ['redesign-notes/vm/README.md', 'rewrite-notes/MIGRATION.md', 'study-notes/README.md']
+mapping target missing on disk: 3 ['.review/archive/notes-fork-syscall-rewrite-2026-09/03-stage-kernel/STATE.md', '.review/archive/notes-fork-syscall-rewrite-2026-09/STATE.md', '.review/archive/notes-fork-syscall-rewrite-2026-09/scans/03-kmain-cstart-kimi-scan.md']
+residue notes/rewrite: exists=False
+residue notes/study: exists=False
+residue notes/redesign: exists=False
+notes/ exists=False
+CHANGED notes/redesign/redesign.md -> redesign-notes/README.md
+CHANGED notes/rewrite/README.md -> rewrite-notes/README.md
+CHANGED notes/rewrite/concepts/README.md -> rewrite-notes/concepts/README.md
+CHANGED notes/rewrite/concepts/endpoint.md -> rewrite-notes/concepts/endpoint.md
+CHANGED notes/rewrite/fork-syscall-rewrite/00-master-plan/README.md -> rewrite-notes/00-master-plan/README.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/06-todo.md -> rewrite-notes/01-stage-kernel/06-todo.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/07-cross-space-init.md -> rewrite-notes/01-stage-kernel/07-cross-space-init.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/checklist.md -> rewrite-notes/01-stage-kernel/checklist.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_HY4.md -> rewrite-notes/01-stage-kernel/doc_rerank_HY4.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_deepseek.md -> rewrite-notes/01-stage-kernel/doc_rerank_deepseek.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_glm.md -> rewrite-notes/01-stage-kernel/doc_rerank_glm.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_mimo.md -> rewrite-notes/01-stage-kernel/doc_rerank_mimo.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_muse.md -> rewrite-notes/01-stage-kernel/doc_rerank_muse.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/doc_rerank_qwen.md -> rewrite-notes/01-stage-kernel/doc_rerank_qwen.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/endpoint_todo.md -> rewrite-notes/01-stage-kernel/endpoint_todo.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/panic-in-drop.md -> rewrite-notes/01-stage-kernel/panic-in-drop.md
+CHANGED notes/rewrite/fork-syscall-rewrite/01-stage-kernel/todo.md -> rewrite-notes/01-stage-kernel/todo.md
+CHANGED notes/rewrite/fork-syscall-rewrite/02-stage-vm/01-vm-init-main.md -> rewrite-notes/02-stage-vm/01-vm-init-main.md
+CHANGED notes/rewrite/fork-syscall-rewrite/02-stage-vm/02-vmproc-struct.md -> rewrite-notes/02-stage-vm/02-vmproc-struct.md
+CHANGED notes/rewrite/fork-syscall-rewrite/02-stage-vm/03-vmproc-table.md -> rewrite-notes/02-stage-vm/03-vmproc-table.md

@@ -1,0 +1,20 @@
+=== 1a 三圈账 ===
+三棵新树磁盘文件数: 2428
+manifest 行数(-1): 2428
+path-map 行数(-1): 2428
+
+=== 1a2 path-map 目标按顶层目录分布 ===
+      3 .review
+     14 redesign-notes
+   2227 rewrite-notes
+    184 study-notes
+
+=== 1a3 manifest 按 git_status 分布 ===
+   1325 ignored
+   1102 tracked
+      1 untracked
+
+=== 1a4 path-map 按 kind 分布 ===
+   1102 git-mv
+   1325 mv-ignored
+      1 mv-untracked

@@ -1,0 +1,25 @@
+### item6c 规则三端一致 + 工具在新布局可用（只读检查）
+
+== check-review-rules.sh ==
+Review source, Trae adapters, Claude runtime references, and Codex adapters are consistent.
+rc=0
+
+== generate-derived-skills.sh --check ==
+  OK    codex/review-socratic-skill
+
+✅ No drift detected. All derived skills match source.
+rc=0
+
+== design-coverage-check.sh 01-stage-kernel ==
+rc=1 (0 或 1 均可，2=用法错误)
+## Stage: 01-stage-kernel (.design/: ✅)
+
+| Doc | outline | outline-review | design | design-final | Status |
+|-----|---------|----------------|--------|--------------|--------|
+| 00-kernel-overview | ❌ | ❌ | ❌ | ➖ | ❌ CRITICAL (H.1+H.6 FAIL) |
+
+== design-coverage-check.sh fork-syscall-rewrite（期望可读的已退役报错） ==
+❌ 既不是树别名也不是 stage 目录名：fork-syscall-rewrite
+   期望：rewrite | redesign | study | <stage 目录名>（如 01-stage-kernel）
+   旧布局的 module 参数（如 fork-syscall-rewrite）已于 2026-10-07 退役，见 rewrite-notes/MIGRATION.md
+rc=2

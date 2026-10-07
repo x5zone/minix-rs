@@ -1,0 +1,8 @@
+旧阶段编号在必改域（三棵树，排除冻结区）的当前残留出现次数：
+  01-stage-pm: 28
+  03-stage-kernel: 29
+  04-stage-vfs: 7
+  05-stage-sched: 7
+  deep-analysis/: 5
+涉及文件数: 20
+（MIGRATION.md 第五节记的是 26/71/6/6/6 —— 口径应为出现次数）

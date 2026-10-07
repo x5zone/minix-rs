@@ -1,0 +1,36 @@
+### item5 链接与锚点
+
+== 5a 断链集合对账 ==
+迁移前断链 452 行 → 去重并映射进新坐标 288 条；迁移后 257 条
+迁移引入的新断链 = 0（期望 0）
+消失或修好 = 31 条（重定基修正 + 树变浅后反而解析成功）
+rc=0
+
+== 5b 锚点基线行数 ==
+   874 tools/anchor-suspect-baseline.txt
+  6609 tools/anchor-unresolved-baseline.txt
+  7483 total
+
+== 基线路径列是否指向真实文件 ==
+[上面无 MISSING 即通过]
+MISSING(unresolved): acl.c
+MISSING(unresolved): acl.rs
+MISSING(unresolved): acpi.c
+MISSING(unresolved): alarm.c
+MISSING(unresolved): alloc.c
+MISSING(unresolved): alloc_page.rs
+MISSING(unresolved): ansi.h
+MISSING(unresolved): arch/aarch64.rs
+MISSING(unresolved): arch/earm/memory.c
+MISSING(unresolved): arch/earm/mpx.S
+MISSING(unresolved): arch/earm/multiboot.h
+MISSING(unresolved): arch/earm/pagetable.h
+MISSING(unresolved): arch/i386/apic.c
+MISSING(unresolved): arch/i386/arch_system.c
+MISSING(unresolved): arch/i386/arch_watchdog.c
+MISSING(unresolved): arch/i386/i8259.c
+MISSING(unresolved): arch/i386/include/arch_proto.h
+MISSING(unresolved): arch/i386/include/archconst.h
+MISSING(unresolved): arch/i386/interrupt.h
+MISSING(unresolved): arch/i386/memory.c
+[无 MISSING(unresolved) 即通过]

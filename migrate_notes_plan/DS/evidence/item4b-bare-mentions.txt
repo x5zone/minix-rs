@@ -1,0 +1,51 @@
+=== 迁移方的 bare-mentions.txt 结构 ===
+rewrite-notes/00-master-plan/01-project-overview.md:230	- 原始规划文档: `fork-syscall-rewrite-bak/`
+rewrite-notes/00-master-plan/README.md:5	本目录（`fork-syscall-rewrite/`）的文档主线已调整：
+rewrite-notes/00-master-plan/README.md:146	> **注意**：上级目录 [`fork-syscall-rewrite/README.md`](../misc/legacy-fork-syscall-index.md) 同样基于旧主线编写，列出的目录结构（`01-stage-pm`、`03-stage-kernel` 等）、阶段映射、项目进度表均已过时，**暂不修
+rewrite-notes/01-stage-kernel/06-todo.md:538	> **方式**：从零开始，不读中间 scan 结果，独立从 C 源码推导 + grep 验证 + 代码 15 维度检查（CLAUDE.md + `.claude/rules/review-core.md` + `.claude/rules/review-process.md` + `.claude/rules/fix
+rewrite-notes/01-stage-kernel/checklist.md:313	> **验证**: `coverage-extract.py` 三文档均 `Gaps (semantic): 0`（见 `.review/trae/fork-syscall-rewrite/scans/{28,29,30}-*-glm-SYMBOLS-verify.md`）。
+rewrite-notes/01-stage-kernel/doc_rerank_HY4.md:98	# 4. 引用热度（排除 doc_rerank_*，统计 fork-syscall-rewrite 全树 .md）
+rewrite-notes/01-stage-kernel/doc_rerank_HY4.md:1787	| 受影响引用总数（fork-syscall-rewrite 全树 .md，排除 doc_rerank_*） | **≈ 2 400 处**（35 篇文档的命中数求和） |
+rewrite-notes/01-stage-kernel/doc_rerank_muse.md:71	  boundary `fork-syscall-rewrite/00-master-plan/README.md` + `edge_todo.md`.
+rewrite-notes/01-stage-kernel/doc_rerank_qwen.md:1239	经实测 **0 处**在 fork-syscall-rewrite 之外（范围封闭，迁移影响面仅限本树 + `os/` 代码注释）。
+rewrite-notes/01-stage-kernel/todo.md:340	> 定位：① Gate A 机器覆盖（SYMBOLS.md 已落 `.review/claude/fork-syscall-rewrite/stage01-rescan-20260909/`）
+rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md:125	| Step 0 预检（Gate H） | `tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm`：26/28 篇三件套 PASS；**00-vm-overview 与 99-global-concepts（均为 pending
+rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md:320	$ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm
+rewrite-notes/02-stage-vm/doc_rerank_muse.md:1158	  fork-syscall-rewrite/02-stage-vm/*.md` must show zero stale section numbers
+rewrite-notes/02-stage-vm/todo.md:254	$ bash tools/design-coverage-check.sh fork-syscall-rewrite --stage 02-stage-vm
+rewrite-notes/03-stage-rs/doc_rerank_glm.md:472	| K-294 | E9 接线进度:SysApi/PmApi/SchedApi-KERNEL 已闭环;余 VmApi(挂 02 T12/T13)、SCHED 分支(挂 06)、RS 侧换装(域内) | 约束 | **新增** | (无,进度在 edge_todo) | fork-syscall-rewrite/edge
+rewrite-notes/03-stage-rs/doc_rerank_glm.md:940	| 外部 stage 文档引用 03-stage-rs | 约 15 个正式文件(edge3、edge_todo、00-master-plan/README、02/04/07/09/10/12/17-stage 各 plan、07-stage-ds/06、04-stage-pm/08、13-stage-ipc/10) 
+rewrite-notes/03-stage-rs/todo.md:247	$ bash tools/design-coverage-check.sh fork-syscall-rewrite/03-stage-rs                 # ALL DOCS COMPLETE
+rewrite-notes/04-stage-pm/doc_rerank_HY4.md:303	| K-104 | E7 wire 系统化（跨阶段）与本 stage 的消费端纪律 | 跨模块契约 | 新增 | `edge_todo.md` E7 | `../fork-syscall-rewrite/edge_todo.md` | 回答"wire 类型终局在哪、现在怎么过渡" |
+rewrite-notes/04-stage-pm/todo.md:342	  --output .review/zcode/fork-syscall-rewrite/04-stage-pm-arch/SYMBOLS-v3.md
+rewrite-notes/05-stage-vfs/todo.md:88	- **Step 0 硬阻断预检**：`.design/` 四类快照计数 = outline 31 / outline-review 31 / design 31 / design-final 0（本 stage 无 design-final 属正常，coverage-check 判据为前三类）；`tools/desi
+...
+73 tmp/pre-migrate-snapshot-20261007/bare-mentions.txt
+
+=== 我实测的 98 行按文件分布（前 25）===
+   10  rewrite-notes/08-stage-is/plan.md
+    5  rewrite-notes/misc/misc_concepts.md
+    4  rewrite-notes/07-stage-ds/todo.md
+    4  rewrite-notes/08-stage-is/todo.md
+    4  rewrite-notes/06-stage-sched/plan.md
+    4  rewrite-notes/15-stage-fs/todo.md
+    3  prompt/README.md
+    3  .claude/settings.local.json
+    2  rewrite-notes/MIGRATION.md
+    2  rewrite-notes/02-stage-vm/archive/todo-V12-archive-2026-09-09.md
+    2  rewrite-notes/03-stage-rs/doc_rerank_glm.md
+    2  rewrite-notes/01-stage-kernel/doc_rerank_HY4.md
+    2  rewrite-notes/00-master-plan/README.md
+    2  rewrite-notes/coordination/PATTERN-SCAN-REPORT-20260923.md
+    2  rewrite-notes/14-stage-runtime/todo.md
+    2  rewrite-notes/16-stage-drivers/todo.md
+    2  rewrite-notes/06-stage-sched/archive/todo-V2-archive-2026-09-14.md
+    2  rewrite-notes/06-stage-sched/archive/todo-round1-archive-2026-09-06.md
+    2  rewrite-notes/10-stage-mib/todo.md
+    2  rewrite-notes/05-stage-vfs/todo.md
+    2  tools/design-coverage-check.sh
+    2  prompt/todo_plan.md
+    1  rewrite-notes/12-stage-input/plan.md
+    1  rewrite-notes/04-stage-pm/todo.md
+    1  rewrite-notes/04-stage-pm/doc_rerank_HY4.md
+合计行数: 98

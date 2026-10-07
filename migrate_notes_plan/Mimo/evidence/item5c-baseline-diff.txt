@@ -1,0 +1,9 @@
+== anchor 基线 pre vs post 差异（Phase 5 声称仅前缀替换+行数对账） ==
+--- tools/anchor-suspect-baseline.txt
+868	868	tools/anchor-suspect-baseline.txt
+(上面若无输出＝差异全是路径前缀行)
+--- tools/anchor-unresolved-baseline.txt
+1	1	tools/anchor-unresolved-baseline.txt
+-# 范围：notes/rewrite 正式编号文档（{NN}-*.md，排除 todo/checklist/.design/.review/draft/archive）
++# 范围：rewrite-notes 正式编号文档（{NN}-*.md，排除 todo/checklist/.design/.review/draft/archive）
+(上面若无输出＝差异全是路径前缀行)

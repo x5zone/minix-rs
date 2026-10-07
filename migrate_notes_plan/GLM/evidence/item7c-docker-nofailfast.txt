@@ -1,0 +1,61 @@
+
+Caused by:
+  process didn't exit successfully: `/work/os/target/debug/deps/minix_driver_rt-95f9e6d027df3b0f --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+
+running 4 tests
+....
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+--
+running 113 tests
+..................................................................................... 85/113
+server::tests::test_sys_kernel_hosted_reports_eio --- FAILED
+...........................
+failures:
+
+---- server::tests::test_sys_kernel_hosted_reports_eio stdout ----
+
+thread 'server::tests::test_sys_kernel_hosted_reports_eio' (23951) panicked at servers/ds/src/server.rs:1002:9:
+assertion `left == right` failed
+  left: Err(38)
+ right: Err(5)
+
+
+failures:
+    server::tests::test_sys_kernel_hosted_reports_eio
+
+test result: FAILED. 112 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p minix-ds --lib`
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+--
+
+Caused by:
+  process didn't exit successfully: `/work/os/target/debug/deps/minix_init-a0d243a34a23b5c8 --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+
+running 98 tests
+....................................................................................... 87/98
+...........
+test result: ok. 98 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+--
+
+running 129 tests
+acquire::kerninfo_transport_tests::test_kernel_kmess_transport_hosted_is_eio --- FAILED
+.......... 11/129
+acquire::tests::test_sys_acquires_kmessages_leg_is_live_not_fail_closed --- FAILED
+.error: test failed, to rerun pass `-p minix-is --lib`
+
+Caused by:
+  process didn't exit successfully: `/work/os/target/debug/deps/minix_is-74f5c3a561860d5b --quiet` (signal: 11, SIGSEGV: invalid memory reference)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+NOFAILFAST_RC=101

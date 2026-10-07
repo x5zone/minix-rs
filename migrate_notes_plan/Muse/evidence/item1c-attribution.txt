@@ -1,0 +1,3 @@
+n_diffs: 333
+diff-kind distribution: {'git-mv': 333}
+frozen-zone diffs: 0

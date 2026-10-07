@@ -1,0 +1,2 @@
+SELF-TEST PASS（前 5 行辩护判定正确；test 内裸归类 bare_in_test）
+rc=0

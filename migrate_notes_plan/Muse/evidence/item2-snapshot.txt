@@ -1,0 +1,8 @@
+migrate_notes_plan/pre-migrate-20261007/manifest.notes.disk.tsv: OK
+migrate_notes_plan/pre-migrate-20261007/manifest.offtree.tsv: OK
+migrate_notes_plan/pre-migrate-20261007/refs.before.counts.tsv: OK
+migrate_notes_plan/pre-migrate-20261007/broken-links.before.txt: OK
+tmp/pre-migrate-snapshot-20261007/refs.before.lines.txt: OK
+tmp/pre-migrate-snapshot-20261007/git-state.txt: OK
+tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz: OK
+rc=0

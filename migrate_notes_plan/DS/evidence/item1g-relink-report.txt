@@ -1,0 +1,108 @@
+=== manifest 是否有 notes/redesign/process-model.md ===
+0
+0 行（迁移前不存在）
+
+=== relink-report.tsv 是否存在与格式 ===
+total 35512
+drwxr-xr-x  3 xzhao xzhao     4096 Oct  7 18:28 .
+drwxr-xr-x 17 xzhao xzhao    12288 Oct  7 17:15 ..
+drwxr-xr-x  2 xzhao xzhao     4096 Oct  7 17:56 __pycache__
+-rw-r--r--  1 xzhao xzhao    14741 Oct  7 17:53 bare-mentions.txt
+-rw-r--r--  1 xzhao xzhao     1170 Oct  7 18:28 compare-links.py
+-rw-r--r--  1 xzhao xzhao     3245 Oct  7 18:31 gates.txt
+-rw-r--r--  1 xzhao xzhao     5771 Oct  7 17:17 gen-manifest.py
+-rw-r--r--  1 xzhao xzhao     7329 Oct  7 17:32 gen-path-map.py
+-rw-r--r--  1 xzhao xzhao     2423 Oct  7 17:15 git-state.txt
+-rw-r--r--  1 xzhao xzhao     6809 Oct  7 17:39 move-notes.py
+-rw-r--r--  1 xzhao xzhao     2413 Oct  7 17:27 msg-p0.txt
+-rw-r--r--  1 xzhao xzhao     2052 Oct  7 17:38 msg-p1.txt
+-rw-r--r--  1 xzhao xzhao     3121 Oct  7 17:42 msg-p2.txt
+-rw-r--r--  1 xzhao xzhao     2571 Oct  7 17:55 msg-p3.txt
+-rw-r--r--  1 xzhao xzhao 29583270 Oct  7 17:18 pre-migrate-notes-full.tar.gz
+-rw-r--r--  1 xzhao xzhao      130 Oct  7 17:19 pre-migrate-notes-full.tar.gz.sha256
+-rw-r--r--  1 xzhao xzhao  6551795 Oct  7 17:17 refs.before.lines.txt
+-rw-r--r--  1 xzhao xzhao    71285 Oct  7 17:53 relink-report.tsv
+-rw-r--r--  1 xzhao xzhao     6806 Oct  7 17:53 relink.py
+-rw-r--r--  1 xzhao xzhao     5947 Oct  7 17:46 rewrite-refs.py
+-rw-r--r--  1 xzhao xzhao     5083 Oct  7 18:10 rewrite-rules.py
+-rw-r--r--  1 xzhao xzhao    23053 Oct  7 18:11 rule-manual-items.txt
+-rw-r--r--  1 xzhao xzhao     4014 Oct  7 18:28 run-gates.sh
+-rw-r--r--  1 xzhao xzhao       14 Oct  7 17:18 tar.status
+
+=== relink-report 前 10 行 ===
+# 重定基清单（旧文本目标 → 新相对目标）
+REWRITE	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../../../minix3/minix/servers/vm/utility.c	../../minix3/minix/servers/vm/utility.c
+REWRITE	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../../../minix3/minix/servers/vm/fork.c	../../minix3/minix/servers/vm/fork.c
+REWRITE	rewrite-notes/02-stage-vm/draft/17-vm-brk.md	../../../../../minix3/minix/servers/vm/vmproc.h	../../../minix3/minix/servers/vm/vmproc.h
+REWRITE	rewrite-notes/coordination/NK4C-WORKLOG.md	../../../os/kernel/src/smp.rs	../../os/kernel/src/smp.rs
+REWRITE	rewrite-notes/coordination/NK4C-WORKLOG.md	../../../os/kernel/src/proc.rs	../../os/kernel/src/proc.rs
+REWRITE	rewrite-notes/coordination/NK4C-WORKLOG.md	../../../os/kernel/src/misc.rs	../../os/kernel/src/misc.rs
+REWRITE	rewrite-notes/coordination/NK4C-WORKLOG.md	../../../os/kernel/src/vm_handoff.rs	../../os/kernel/src/vm_handoff.rs
+REWRITE	rewrite-notes/coordination/NK4C-WORKLOG.md	../../../os/servers/vm/src/cow_exec_pf.rs	../../os/servers/vm/src/cow_exec_pf.rs
+REWRITE	rewrite-notes/coordination/NK4C-WORKLOG.md	../../../os/kernel/src/smp.rs	../../os/kernel/src/smp.rs
+
+=== relink-report 行数 ===
+525 tmp/pre-migrate-snapshot-20261007/relink-report.tsv
+=== relink-report 状态分布 ===
+      1 # 迁移前就指向不存在文件的链接（按裁决不顺手修）
+    503 DANGLING
+     20 REWRITE
+
+=== 第一列非 REWRITE 的样例 ===
+# 迁移前就指向不存在文件的链接（按裁决不顺手修）
+DANGLING	redesign-notes/README.md	architecture/architecture-changes.md	notes/redesign/architecture/architecture-changes.md
+DANGLING	redesign-notes/README.md	architecture/semantic-modules.md	notes/redesign/architecture/semantic-modules.md
+DANGLING	redesign-notes/README.md	ipc/ipc-improve.md	notes/redesign/ipc/ipc-improve.md
+DANGLING	redesign-notes/README.md	architecture/improve_minix.md	notes/redesign/architecture/improve_minix.md
+DANGLING	redesign-notes/README.md	architecture/improve_minix_refactored.md	notes/redesign/architecture/improve_minix_refactored.md
+DANGLING	redesign-notes/architecture/tocutou-and-distributed-consistency.md	../../02-stage-vm/draft/vmproc-design.md	notes/rewrite/02-stage-vm/draft/vmproc-design.md
+DANGLING	rewrite-notes/00-master-plan/03-minix3-source-audit.md	../01-stage-pm/mproc-design.md	notes/rewrite/fork-syscall-rewrite/01-stage-pm/mproc-design.md
+DANGLING	rewrite-notes/00-master-plan/03-minix3-source-audit.md	../deep-analysis/fork-all-layers-deep-analysis.md	notes/rewrite/fork-syscall-rewrite/deep-analysis/fork-all-layers-deep-analysis.md
+DANGLING	rewrite-notes/00-master-plan/03-minix3-source-audit.md	./10-constants-reference.md	notes/rewrite/fork-syscall-rewrite/00-master-plan/10-constants-reference.md
+DANGLING	rewrite-notes/00-master-plan/04-implementation-roadmap.md	./06-phase1-pm-guide.md	notes/rewrite/fork-syscall-rewrite/00-master-plan/06-phase1-pm-guide.md
+DANGLING	rewrite-notes/00-master-plan/04-implementation-roadmap.md	../01-stage-pm/README.md	notes/rewrite/fork-syscall-rewrite/01-stage-pm/README.md
+DANGLING	rewrite-notes/00-master-plan/05-phase1-pm-guide.md	../01-stage-pm/mproc-design.md	notes/rewrite/fork-syscall-rewrite/01-stage-pm/mproc-design.md
+DANGLING	rewrite-notes/00-master-plan/05-phase1-pm-guide.md	../01-stage-pm/pid-generator.md	notes/rewrite/fork-syscall-rewrite/01-stage-pm/pid-generator.md
+DANGLING	rewrite-notes/00-master-plan/05-phase1-pm-guide.md	../01-stage-pm/do-fork-impl.md	notes/rewrite/fork-syscall-rewrite/01-stage-pm/do-fork-impl.md
+
+=== relink.py 的头部说明 ===
+#!/usr/bin/env python3
+"""Phase 3 相对链接重定基（一次性工具，放 tmp/pre-migrate-snapshot-20261007/）。
+
+要解决的问题：三棵树从 4 层搬到 2 层，stage 内部的兄弟链接（../02-stage-vm/x.md）深度不变照旧可用，
+但跨出 stage 的链接（../../../concepts/README.md、../../README.md 这类）深度变了，
+文本没变而解析目标变了——最坏的一种是「链接仍然可解析，但指到了另一个文件上」，断链检查抓不到。
+
+算法（glm 附录 C 的规格，输入是映射表而不是旧树）：
+  1. 用 path-map.tsv 建两张表：old→new 与 new→old。
+  2. 对每个在范围内的新树 md 文件：由 new 路径反查它在迁移前的旧路径，得到「旧所在目录」。
+  3. 对文件里每个相对链接：按旧所在目录解析成旧绝对目标。
+     - 若该旧目标在映射表的旧路径集合里（= 它确实是被本次迁移搬走的一个真实文件）：
+       正确目标 = 映射表给它的新路径，再算出「从新所在目录出发的相对路径」；与现文本不同则改写。
+     - 若旧目标不在集合里（迁移前就指向不存在的东西）：不动，进报告，按用户裁决不顺手修历史断链。
+  4. 跳过：fenced code block 内的行、外链、纯锚点、指向 evidence/ 与 .design/ 与 legacy-fork-bak/ 之外
+     冻结区以外的一切正常处理（冻结区只是「文件本身不被改写」，指向它们的链接照样要重定基）。
+  5. 只替换括号内的目标串，保留 #fragment 尾巴；逐行替换，行数不变。
+"""
+import posixpath
+import re
+import sys
+from pathlib import Path, PurePosixPath
+
+ROOT = Path("/home/xzhao/github/minix-rs")
+MAP = ROOT / "migrate_notes_plan/pre-migrate-20261007/path-map.tsv"
+APPLY = len(sys.argv) > 1 and sys.argv[1] == "--apply"
+
+INLINE_LINK = re.compile(rb"(\]\()([^)\s#]+)(#[^)\s]*)?(\))")
+FENCE = re.compile(rb"^\s*(```|~~~)")
+EXTERNAL = (b"http://", b"https://", b"mailto:", b"ftp://", b"file://")
+
+
+def load_map():
+    old_to_new, new_to_old = {}, {}
+    for line in MAP.read_text(encoding="utf-8").splitlines()[1:]:
+        old, new, kind, rule = line.split("\t")
+        old_to_new[old] = new
+        new_to_old.setdefault(new, old)
+    return old_to_new, new_to_old
+

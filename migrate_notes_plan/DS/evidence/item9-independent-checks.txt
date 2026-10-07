@@ -1,0 +1,25 @@
+=== 9.1 三棵树空目录（期望 0）===
+0
+
+=== 9.2 嵌套同名目录（如 evidence/evidence）===
+Traceback (most recent call last):
+  File "<string>", line 4, in <module>
+IndexError: list index out of range
+
+=== 9.3 旧树 notes/ 是否彻底消失 ===
+notes/ 不存在 ✓
+0
+
+=== 9.4 notes-layout.conf 已入库且被六脚本 source ===
+tools/notes-layout.conf
+tools/design-coverage-check.sh
+tools/design-index-update.sh
+tools/doc-style-lint.sh
+tools/review-gate-check.sh
+tools/review-init.sh
+
+=== 9.5 MIGRATION.md 关键事实抽查（行数与文件）===
+125 rewrite-notes/MIGRATION.md
+redesign-notes/vm/README.md
+rewrite-notes/MIGRATION.md
+study-notes/README.md
