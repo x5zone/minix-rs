@@ -144,3 +144,59 @@ tar -czf tmp/pre-migrate-snapshot-20261007/pre-migrate-notes-full.tar.gz \
 | 在制两件未被我改动 | `git status --porcelain` | 仍是开窗时那两条 ✓ |
 
 **Phase 0 未做（按用户裁决刻意不做）**：不提交 15 件未跟踪文件、不改 `.gitignore`、不动 `minix3/`、不动 `book/`、不推远端。
+
+---
+
+## Phase 1 · 映射表（三份新树与旧树的唯一合同）
+
+### 动作 1.1 枚举迁移面
+
+**做了什么**：把 fork 树根 75 个散落文件逐个量化——字节数、被引用次数、引用来自哪个域（`os/` 代码注释锚点 vs 文档互引）。
+数据来路：从基线引用命中的逐行底账取 `file:line` 形式，再逐名回查。
+
+关键发现：**HY4 与 glm 两份方案都把 fork 树 `README.md` 安排去 `00-master-plan/README.md`，但那个目标已存在**
+（16160 字节的《总规划说明》），照做会命名碰撞或覆盖丢文件。deepseek 的改名归档方案
+（`misc/legacy-fork-syscall-index.md`）是三家里唯一可执行的一支，本次采用。
+
+### 动作 1.2 生成映射表
+
+```bash
+python3 tmp/pre-migrate-snapshot-20261007/gen-path-map.py
+# ✅ path-map.tsv 写出：2428 行（= 清单 2428 行，闭合）
+#    按 kind：git-mv=1102  mv-ignored=1325  mv-untracked=1
+#    按规则：R1=2 R3=3 R4=276 R5=1814 R6=1 R7=74 R8=6 R9=40 R10=1 R11=1 R12=12
+#            R13=1 R15=11 R17=184 R18=1 R19=1
+#    新树分布：.review=3  redesign-notes=14  rewrite-notes=2227  study-notes=184
+```
+
+生成器内置三项自检，不过就不落盘：覆盖率（未映射 0）、目标碰撞（去重后 2428 = 2428）、旧树残留（目标仍以 `notes/` 开头 0 条）。
+R14（redesign 其余文件走默认桶）命中 0，说明 12 篇全部进了显式主题判定。
+
+产出：[`pre-migrate-20261007/path-map.tsv`](pre-migrate-20261007/path-map.tsv)（机器正本）
+与 [`pre-migrate-20261007/01-PATH-MAP.md`](pre-migrate-20261007/01-PATH-MAP.md)（19 条规则 + 例外表 + 冻结白名单 + 新树终态）。
+
+### 动作 1.3 三个判断项请示用户（J1/J2/J3）
+
+| 判断项 | 候选 | 用户选定 |
+|---|---|---|
+| J1 会话过程文件的窝叫什么 | coordination / workflow / worklog / _worklog / 99-handoff-archive | **`coordination/`** |
+| J2 那 13 件案卷与专项台账 | 并入 coordination（一条规则）/ 单开 casefiles/ | **并入 `coordination/`** |
+| J3 `misc_concepts.md` 去处 | misc/ / concepts/ / coordination/ | **`rewrite-notes/misc/`** |
+
+三项均维持映射表初值，未产生变更；因此本 Phase 提交的就是定稿版本，审阅方可直接用
+`path-map.tsv` 反查任意一个旧路径。
+
+定稿校验：`path-map.tsv` sha256 = c43f82c5977b2892c4f181c3b731ceda4e899142080152438cfc5b1888ca89f1
+（审阅方可用 `sha256sum migrate_notes_plan/pre-migrate-20261007/path-map.tsv` 对读，确认 Phase 2/3 执行期间合同本身没被偷偷改过。）
+
+卫生门：本会话写这三份文档时复现了既有的「回改生成新错」模式，共三处中文噪声（「扫描」与「锚点」各被写成形近字一次，另有一处介词叠字），逐个回改后按纪律第 11 条重跑可疑字表扫描，三份新文档零命中（表源见 `NK4C-接续PROMPT-20261006r.md` 第 54 行纪律条目，本日志不复抄字表本身，以免记录行自己成了扫描命中项）。
+
+### Phase 1 验收
+
+| 判据 | 结果 |
+|---|---|
+| 覆盖率 100% | 2428 = 2428，未映射 0 ✓ |
+| 无目标碰撞 | 去重后计数相等 ✓ |
+| 旧树可完全清空 | 目标仍在 `notes/` 下的条目 0 ✓ |
+| 每条目带 kind 与 rule 列 | `git-mv`/`mv-ignored`/`mv-untracked` 三态与基线 git_status 列一一对应 ✓ |
+| 文风门 | 两份新文档 `doc-style-lint` error 级 0 ✓ |
