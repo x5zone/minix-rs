@@ -167,7 +167,7 @@ session 生命周期
 
 ### 3.6 review gate 接入
 
-- 每篇改写后必须走 review 工作流：Step 0 预检（4 条 `ls` + `tools/design-coverage-check.sh fork-syscall-rewrite --stage 09-stage-init`）→ Blocker Gates（0/A/B/C/D/D-6/E/G/H）→ scan 产物写入 `.review/codex/init/{NN}-{name}/`
+- 每篇改写后必须走 review 工作流：Step 0 预检（4 条 `ls` + `tools/design-coverage-check.sh 09-stage-init`）→ Blocker Gates（0/A/B/C/D/D-6/E/G/H）→ scan 产物写入 `.review/codex/init/{NN}-{name}/`
 - Step 0.3 嵌入生成 `{NN}-outline.v*.md` / `{NN}-outline-review.v*.md` / `{NN}-design.v*.md`（Gate H.6/H.1，不允许 N/A）
 - P0 未清不得标完成；doc 与 code 保持同步
 

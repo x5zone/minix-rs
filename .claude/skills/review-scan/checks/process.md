@@ -208,31 +208,31 @@ Output: structure.md path + 12-section review table + **跨章节一致性矩阵
 **关联**：本次 review (01-boot-shim-bootstrap 2026-07-30) 发现 doc 内 2 处 TODO 标记未走流程。
 
 ## Step 1.5: Coverage Enumeration — Gate A
-Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{rw-module}` = rewrite module name (first dir under `rewrite-notes/`). **Claude Code Runtime output paths are hardcoded to `.review/claude/` — do NOT use a `{tool}` variable.**
+Run coverage-extract.py with full args. `{minix3-module}` = Minix3 module name (vm/pm/kernel/...); `{stage}` = rewrite module name (first dir under `rewrite-notes/`). **Claude Code Runtime output paths are hardcoded to `.review/claude/` — do NOT use a `{tool}` variable.**
 ```bash
 # Module-level (servers: vm / pm / vfs / rs / ds / inet ...)
 python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
   --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
-  --output .review/claude/{rw-module}/scans/SYMBOLS.md
+  --output .review/claude/{stage}/scans/SYMBOLS.md
 
 # Module-level (kernel)
 python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
   --rust-dir os --c-dir minix3/minix/kernel \
-  --output .review/claude/{rw-module}/scans/SYMBOLS.md
+  --output .review/claude/{stage}/scans/SYMBOLS.md
 
 # Doc-specific review (recommended)
 python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
   --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
   --doc-file {target-doc}.md \
   --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
-  --output .review/claude/{rw-module}/{doc-stem}/SYMBOLS.md
+  --output .review/claude/{stage}/{doc-stem}/SYMBOLS.md
 
 # Doc-specific review (kernel)
 python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
   --rust-dir os --c-dir minix3/minix/kernel \
   --doc-file {target-doc}.md \
   --semantic-map tools/coverage-extract/kernel-semantic-map.json \
-  --output .review/claude/{rw-module}/{doc-stem}/SYMBOLS.md
+  --output .review/claude/{stage}/{doc-stem}/SYMBOLS.md
 ```
 > **Gate A evidence rule**: After running, write the command + stdout into a `gate-evidence-A` block in scan.md. Physical unavailability of the script → mark PARTIAL (≠ PASS), no Final Review.
 > **Directory creation**: The script auto-creates parent directories when `--output` is used.

@@ -469,37 +469,37 @@ Codex CLI 的配置**自动加载**（读取项目根 `AGENTS.md`，不读 CLAUD
 
 ```bash
 # 模块级（服务器模块：vm / pm / vfs / rs / ds / inet ...）
-#   注：脚本第一参数 {minix3-module} 是 Minix3 模块名；--output 路径里的 {rw-module} 是 rewrite 模块名
+#   注：脚本第一参数 {minix3-module} 是 Minix3 模块名；--output 路径里的 {stage} 是评审状态目录键（笔记树根下第一级目录名）
 python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
   --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
-  --output .review/{tool}/{rw-module}/scans/SYMBOLS.md
+  --output .review/{tool}/{stage}/scans/SYMBOLS.md
 
 # 模块级（内核：kernel）
 python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
   --rust-dir os --c-dir minix3/minix/kernel \
-  --output .review/{tool}/{rw-module}/scans/SYMBOLS.md
+  --output .review/{tool}/{stage}/scans/SYMBOLS.md
 
 # 单文档级 — 服务器模块（推荐用于 doc-specific review，避免两篇 doc 覆盖率数字相同）
 python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
   --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
   --doc-file {target-doc}.md \
   --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
-  --output .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+  --output .review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md
 
 # 单文档级 — 内核
 python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
   --rust-dir os --c-dir minix3/minix/kernel \
   --doc-file {target-doc}.md \
   --semantic-map tools/coverage-extract/kernel-semantic-map.json \
-  --output .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
-#   {tool}=trae 时 agent=glm/kimi/...；{tool}=claude 时输出到 .review/claude/{rw-module}/{doc-stem}/SYMBOLS.md
+  --output .review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md
+#   {tool}=trae 时 agent=glm/kimi/...；{tool}=claude 时输出到 .review/claude/{stage}/{doc-stem}/SYMBOLS.md
 ```
 
-> **注意**：`--c-dir` 对服务器模块是 `minix3/minix/servers/{minix3-module}`，对内核是 `minix3/minix/kernel`。命令模板中的 `{minix3-module}`（Minix3 模块名）与 `--output` 路径里的 `{rw-module}`（rewrite 模块名）是**两个不同概念**，不得混用。
+> **注意**：`--c-dir` 对服务器模块是 `minix3/minix/servers/{minix3-module}`，对内核是 `minix3/minix/kernel`。命令模板中的 `{minix3-module}`（Minix3 模块名）与 `--output` 路径里的 `{stage}`（评审状态目录键，取笔记树根下第一级目录名）是**两个不同概念**，不得混用。
 
 - **机器部分**：提取 C 源码所有函数/结构体/宏，生成 SYMBOLS.md 骨架表格
 - **AI 部分**：补充 5 项语义判断（Rust 对应、架构演进、语义归属、行为契约、测试覆盖）
-- **输出**：`.review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md`（Trae 单文档）或 `.review/claude/{rw-module}/{doc-stem}/SYMBOLS.md`（Claude 单文档）
+- **输出**：`.review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md`（Trae 单文档）或 `.review/claude/{stage}/{doc-stem}/SYMBOLS.md`（Claude 单文档）
 - **Rust 覆盖率 0% 必须解释**：检查 `--rust-dir` / `--semantic-map` 是否正确，或确实缺失实现
 
 详见 [review-process.md §Step 1.5](review-rules/review-process.md) 和 [review-coverage-skill.md](skill/review-coverage-skill.md)。

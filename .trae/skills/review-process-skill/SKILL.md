@@ -644,22 +644,22 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 
 1. **机器生成 SYMBOLS.md 骨架**（Trae IDE 输出路径硬编码为 `.review/trae/` — 不要使用 `{tool}` 变量）：
    ```bash
-   # 变量说明：{minix3-module}=Minix3 模块名(vm/pm/kernel...); {rw-module}=rewrite 模块名(rewrite-notes/ 下第一级目录); {doc-stem}=目标文档去扩展名; {agent}=模型标识
+   # 变量说明：{minix3-module}=Minix3 模块名(vm/pm/kernel...); {stage}=评审状态目录键(rewrite-notes/ 下第一级目录名); {doc-stem}=目标文档去扩展名; {agent}=模型标识
    # 服务器模块（vm / pm / vfs / rs / ds / inet ...）
    python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
      --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
      --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
      --doc-file {target-doc-name}.md \
-     --output .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+     --output .review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md
 
    # 内核
    python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
      --rust-dir os --c-dir minix3/minix/kernel \
      --semantic-map tools/coverage-extract/kernel-semantic-map.json \
      --doc-file {target-doc-name}.md \
-     --output .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+     --output .review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md
    ```
-   > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md)`。
+   > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md)`。
    - `--rust-dir os`：扫描整个 `os/` 目录，避免遗漏跨 crate 实现（如 `kmain` 在 `os/kernel/src`，`ProtectionArch` 在 `os/arch/src`）。
    - `--c-dir`：服务器模块用 `minix3/minix/servers/{minix3-module}`，内核用 `minix3/minix/kernel`。
    - `--semantic-map`：对 C→Rust 改写项目必须提供语义映射表，否则 Rust 覆盖率会严重低估。
@@ -683,7 +683,7 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 ```markdown
 ### Step 1.5 产物：覆盖率穷举（Gate A）
 
-**SYMBOLS.md**: .review/trae/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md（文档级）或 .review/trae/{rw-module}/scans/SYMBOLS.md（模块级）
+**SYMBOLS.md**: .review/trae/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md（文档级）或 .review/trae/{stage}/scans/SYMBOLS.md（模块级）
 
 | 指标 | 数值 |
 |------|------|

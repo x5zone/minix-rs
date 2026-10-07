@@ -1237,29 +1237,29 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 1. **机器生成 SYMBOLS.md 骨架**（**强制运行**，见 Gate A 强制运行规则；不允许"语义范围手动验证"代替）：
    ```bash
    # 模块级 — 服务器模块（vm / pm / vfs / rs / ds / inet ...）
-   #   注：脚本第一参数 {minix3-module} 是 Minix3 模块名；--output 路径里的 {rw-module} 是 rewrite 模块名
+   #   注：脚本第一参数 {minix3-module} 是 Minix3 模块名；--output 路径里的 {stage} 是评审状态目录键（笔记树根下第一级目录名）
    python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
      --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
-     --output .review/{tool}/{rw-module}/scans/SYMBOLS.md
+     --output .review/{tool}/{stage}/scans/SYMBOLS.md
 
    # 模块级 — 内核
    python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
      --rust-dir os --c-dir minix3/minix/kernel \
-     --output .review/{tool}/{rw-module}/scans/SYMBOLS.md
+     --output .review/{tool}/{stage}/scans/SYMBOLS.md
 
    # 单文档级（推荐 doc-specific review）— 服务器模块
    python3 tools/coverage-extract/coverage-extract.py {minix3-module} {doc_dir} \
      --rust-dir os --c-dir minix3/minix/servers/{minix3-module} \
      --doc-file {target-doc}.md \
      --semantic-map tools/coverage-extract/{minix3-module}-semantic-map.json \
-     --output .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+     --output .review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md
 
    # 单文档级 — 内核
    python3 tools/coverage-extract/coverage-extract.py kernel {doc_dir} \
      --rust-dir os --c-dir minix3/minix/kernel \
      --doc-file {target-doc}.md \
      --semantic-map tools/coverage-extract/kernel-semantic-map.json \
-     --output .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md
+     --output .review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md
    ```
    > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/.../SYMBOLS.md)`。
    脚本自动提取 C 函数/结构体/宏/枚举 + Rust pub 项 + 文档覆盖检查 + 名称匹配。
@@ -1288,7 +1288,7 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
 ```markdown
 ### Step 1.5 产物：覆盖率穷举
 
-**SYMBOLS.md**: .review/{tool}/{rw-module}/scans/SYMBOLS.md（模块级）或 .review/{tool}/{rw-module}/scans/{doc-stem}-{agent}-SYMBOLS.md（文档级）
+**SYMBOLS.md**: .review/{tool}/{stage}/scans/SYMBOLS.md（模块级）或 .review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md（文档级）
 
 | 指标 | 数值 |
 |------|------|

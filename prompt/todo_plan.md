@@ -823,7 +823,7 @@ rg -c "kernel/" /tmp/SYMBOLS-multi.md      # 非零，证明 kernel 域被纳入
 ```bash
 bash -n tools/review-gate-check.sh
 # 负例：临时移走某文档的 SYMBOLS.md → 期望 FAIL；还原 → PASS
-tools/review-gate-check.sh codex fork-syscall-rewrite 12-kernel-interface | tail -3
+tools/review-gate-check.sh codex 01-stage-kernel 12-kernel-interface | tail -3
 ```
 
 ### D5. 符号锚点迁移与卫生项分层（2026-09-18 改写，取代"行号自动化"）
