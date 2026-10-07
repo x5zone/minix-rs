@@ -122,6 +122,11 @@ pub trait SefTransport {
     ) -> Result<(Endpoint, i32), i32>;
     /// Send a reply. C: `ipc_send(who, &m_out)` — main.c:143.
     fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32>;
+    /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) —
+    /// the birth protocol's paragraph-1 kernel call (PD-34
+    /// `process_init`). Production wires the trap transport; test doubles
+    /// model an accepting kernel.
+    fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32>;
     /// Send-and-receive. C: `ipc_sendrec` — sef_cb_init_response_rs_reply
     /// (sef_init.c:458-466). NK4-C B9b: the birth-report leg parks in
     /// receive(RS) for RS's catch reply instead of a fire-and-forget send.
@@ -234,6 +239,17 @@ impl SefTransport for SysSefTransport {
         Ok((recv.source, recv.message.m_type))
     }
 
+    fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
+        // C `sys_statectl` 的 trap 直连（diag_write 同款直连先例）。
+        let r = minix_sys::syscall::sys_statectl(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            request,
+            address,
+            length,
+        );
+        if r == minix_types::OK { Ok(r) } else { Err(r) }
+    }
+
     fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32> {
         use minix_sys::ipc::IpcTransport as _;
         self.ipc.inner.send(dest, reply).map_err(|t| t.0)
@@ -295,6 +311,10 @@ impl SefTransport for UnimplementedTransport {
 
     fn send(&mut self, _dest: Endpoint, _reply: &Message) -> Result<(), i32> {
         panic!("IS transport: ipc_send wiring pending (01-is-init-main.md §3 D2)");
+    }
+
+    fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+        panic!("IS transport: sys_statectl wiring pending (01-is-init-main.md §3 D2)");
     }
 
     fn send_rec(&mut self, _dest: Endpoint, _reply: &mut Message) -> Result<(), i32> {

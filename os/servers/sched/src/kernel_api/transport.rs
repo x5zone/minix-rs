@@ -124,7 +124,17 @@ impl IpcTransport for KernelIpcTransport {
         let mut sef = SefIpcAdapter { inner: self.inner };
         let mut send_reply =
             |m: &mut Message| self.inner.sendrec(Endpoint::RS, m).map_err(trap_errno);
-        sef_filtered_receive(&mut sef, &mut send_reply)
+        // 出生协议段一（PD-34）：C `sys_statectl` 的 trap 直连真接线。
+        let mut statectl = |req: i32, addr: u64, len: i32| {
+            let r = minix_sys::syscall::sys_statectl(
+                &minix_sys::syscall::DirectKernelCallTransport,
+                req,
+                addr,
+                len,
+            );
+            if r == minix_types::OK { Ok(r) } else { Err(r) }
+        };
+        sef_filtered_receive(&mut sef, &mut send_reply, &mut statectl)
     }
 
     fn send(&self, to: Endpoint, message: &Message) -> Result<(), i32> {
@@ -184,6 +194,7 @@ impl minix_sef::SefIpc for SefIpcAdapter {
 fn sef_filtered_receive<S: minix_sef::SefIpc>(
     sef: &mut S,
     send_reply: &mut dyn FnMut(&mut Message) -> Result<(), i32>,
+    statectl: &mut dyn FnMut(i32, u64, i32) -> Result<i32, i32>,
 ) -> Result<(Message, IpcStatus), i32> {
     // SCHED 在 C 未注册 signal handler（上方文档注释有锚），逃生门令牌
     // 只为满足库契约——无人取消。
@@ -199,19 +210,25 @@ fn sef_filtered_receive<S: minix_sef::SefIpc>(
             // SAFETY: 出生请求的活跃 union 臂是 `m_rs_init`
             //（m_type == RS_INIT 且来源 RS，上面两道门已过）。
             let kind = unsafe { recv.message.m_u.m_rs_init.type_ };
-            let result = if kind == 0 {
-                minix_types::OK
-            } else {
-                minix_types::ENOSYS
+            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
+            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，statectl 动词由
+            // 调用方注入）、回报消息由库构造（≡ 旧手搓的
+            // `m.m_rs_init.result = result`）；分派语义（sched 的 init
+            // 工作已在 main 循环前完成 ≡ `sef_cb_init_fresh` 完工语义 →
+            // fresh OK；LU/RESTART 诚实拒 `ENOSYS`）保持原样。
+            let mut reply = match minix_sef::process_init(statectl, kind, &mut |t| {
+                if t == 0 {
+                    minix_types::OK
+                } else {
+                    minix_types::ENOSYS
+                }
+            }) {
+                Ok(m) => m,
+                // C 段一 assert ＝ 出生失败 fail-closed 停机。
+                Err(e) => return Err(e),
             };
-            let mut reply = blank_message();
-            reply.m_type = minix_types::RS_INIT;
-            // union 字段写是 safe 的（只有读才 unsafe）；回信臂同
-            // `m_rs_init`（process_init 尾部：`m.m_type = RS_INIT;
-            // m.m_rs_init.result = result;`）。
-            reply.m_u.m_rs_init.result = result;
             send_reply(&mut reply)?;
-            if result == minix_types::OK {
+            if reply.rs_init_result() == Some(minix_types::OK) {
                 continue; // 出生已应答，吞掉这条，主循环继续
             }
             return Err(minix_types::ENOSYS); // init 被拒：fail-closed 停机
@@ -466,8 +483,10 @@ mod sef_filter_tests {
             arrival(Endpoint::from_generation_slot(1, 2), minix_types::SCHEDULING_START, false),
         ];
         let mut sef = ScriptedSef::new(script);
+        let mut statectl = |_: i32, _: u64, _: i32| Ok(minix_types::OK);
         let (message, _status) =
-            sef_filtered_receive(&mut sef, &mut |_: &mut Message| Ok(())).expect("真调用浮出");
+            sef_filtered_receive(&mut sef, &mut |_: &mut Message| Ok(()), &mut statectl)
+                .expect("真调用浮出");
         assert_eq!(message.m_type, minix_types::SCHEDULING_START);
         assert_eq!(
             sef.notified.borrow().as_slice(),
@@ -482,7 +501,11 @@ mod sef_filter_tests {
         let mut sef = ScriptedSef::new(std::vec::Vec::new());
         assert!(
             matches!(
-                sef_filtered_receive(&mut sef, &mut |_: &mut Message| Ok(())),
+                sef_filtered_receive(
+                    &mut sef,
+                    &mut |_: &mut Message| Ok(()),
+                    &mut |_: i32, _: u64, _: i32| Ok(minix_types::OK),
+                ),
                 Err(e) if e == minix_types::EIO
             ),
             "底座断链 → Err 原样上浮"
@@ -515,7 +538,10 @@ mod sef_filter_tests {
             Ok(())
         };
         let (message, _status) =
-            sef_filtered_receive(&mut sef, &mut send).expect("业务消息浮出");
+            sef_filtered_receive(&mut sef, &mut send, &mut |_: i32, _: u64, _: i32| {
+                Ok(minix_types::OK)
+            })
+            .expect("业务消息浮出");
         assert_eq!(message.m_type, minix_types::SCHEDULING_START);
         let replies = replied.borrow();
         assert_eq!(replies.len(), 1, "出生回信恰好一条");
@@ -543,7 +569,9 @@ mod sef_filter_tests {
             replied.borrow_mut().push(*m);
             Ok(())
         };
-        let outcome = sef_filtered_receive(&mut sef, &mut send);
+        let outcome = sef_filtered_receive(&mut sef, &mut send, &mut |_: i32, _: u64, _: i32| {
+            Ok(minix_types::OK)
+        });
         assert!(
             matches!(outcome, Err(e) if e == minix_types::ENOSYS),
             "init 被拒 → Err(ENOSYS) 上浮停机"
@@ -573,7 +601,10 @@ mod sef_filter_tests {
             Ok(())
         };
         let (message, _status) =
-            sef_filtered_receive(&mut sef, &mut send).expect("非 RS 源照常上浮");
+            sef_filtered_receive(&mut sef, &mut send, &mut |_: i32, _: u64, _: i32| {
+                Ok(minix_types::OK)
+            })
+            .expect("非 RS 源照常上浮");
         assert_eq!(message.m_type, minix_types::RS_INIT);
         assert!(replied.borrow().is_empty(), "非 RS 源不触发出生应答");
     }

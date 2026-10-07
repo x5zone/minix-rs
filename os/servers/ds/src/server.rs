@@ -61,6 +61,12 @@ pub trait DsIpc {
 /// The kernel-call seam (C: `sys_safecopyfrom`/`sys_safecopyto`/
 /// `sys_datacopy`).
 pub trait DsKernel {
+    /// State-control verb (C `sys_statectl`, libsys sys_statectl.c:3-11) —
+    /// the birth protocol's paragraph-1 kernel call (PD-34). Default models
+    /// an accepting kernel; the production impl wires the trap transport.
+    fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+        Ok(minix_types::OK)
+    }
     /// Copy `buf.len()` bytes from the caller's grant (store.c:167-172 —
     /// the key ferry; :337-349 — MEM publishes).
     fn safecopy_from(
@@ -181,11 +187,24 @@ impl DsServer {
         // 默认 ENOSYS（sef_init.c:324-327）。
         if message.m_type == minix_types::RS_INIT && caller == RS_PROC_NR {
             let init_type = message.rs_init_type().unwrap_or(0);
-            let result = match init_type {
-                0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
-                _ => minix_types::ENOSYS,
+            // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
+            // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，经 DsKernel 真
+            // 接线）、回报消息由库构造；分派语义（fresh + restart
+            // STATEFUL → 都 OK；LU 未注册 → 默认 ENOSYS，
+            // sef_init.c:324-327）保持原样。
+            let reply = minix_sef::process_init(
+                &mut |req, addr, len| kernel.statectl(req, addr, len),
+                init_type,
+                &mut |t| match t {
+                    0 | 2 => OK, // SEF_INIT_FRESH / SEF_INIT_RESTART — sef.h:93-95
+                    _ => minix_types::ENOSYS,
+                },
+            );
+            let mut reply = match reply {
+                Ok(m) => m,
+                // C 段一 assert ＝ 出生失败 fail-closed（单线程服务器停机）。
+                Err(e) => panic!("ds: birth statectl failed: {e}"),
             };
-            let mut reply = minix_sef::sef_init_reply(result);
             // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
             let _ = ipc.send_rec(caller, &mut reply);
             return Step::Handled;
@@ -774,6 +793,16 @@ impl<T: SysIpcTransport> DsIpc for SysIpc<T> {
 pub struct SysKernel;
 
 impl DsKernel for SysKernel {
+    fn statectl(&mut self, request: i32, address: u64, length: i32) -> Result<i32, i32> {
+        let r = minix_sys::syscall::sys_statectl(
+            &minix_sys::syscall::DirectKernelCallTransport,
+            request,
+            address,
+            length,
+        );
+        if r == minix_types::OK { Ok(r) } else { Err(r) }
+    }
+
     fn safecopy_from(&mut self, caller: Endpoint, grant: GrantId, buf: &mut [u8]) -> Result<(), i32> {
         // C store.c:167-172 — sys_safecopyfrom(caller, grant, 0, SELF,
         // buf, len)。

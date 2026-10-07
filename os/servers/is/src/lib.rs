@@ -235,17 +235,51 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
                 // failed!"），Rust 同款 fail-fast。已自带应答，suppressing
                 // 通用回复路。
                 let init_type = unsafe { self.state.inbox.m_u.m_rs_init.type_ };
-                let kind = match init_type {
-                    0 => SefInitType::Fresh, // sef.h:93-95
-                    1 => SefInitType::Lu,
-                    _ => SefInitType::Restart,
+                // PD-34：出生协议编排归库——段一清 IPC 过滤（C `process_init`
+                // 第一段 sef_init.c:59-60 的 `assert(r == OK)`，经
+                // `SefTransport::statectl`）、回报消息由库构造；分派语义
+                // （C 注册面 fresh/LU/restart 三回调同为 sef_cb_init_fresh，
+                // main.c:80-82，[ARCH: A-10] STATELESS 已文档化）保持原样。
+                // 两个闭包各持不同字段的借用（编排面同步序：段一 → 分派）：
+                // statectl 借 transport、init 体借 fkey——注册失败的 warn
+                // 暂存到 `pending_warn`，编排面返回后、回报发送前补发（C 的
+                // warn 在 init 回调内即时打印；这里相对回报的序不变，相对
+                // 注册的序延后一行，无后续 warn 可与其交错）。
+                let IsServer {
+                    transport, fkey, ..
+                } = self;
+                let mut pending_warn: Option<i32> = None;
+                let birth_reply = minix_sef::process_init(
+                    &mut |req, addr, len| transport.statectl(req, addr, len),
+                    init_type,
+                    &mut |t| {
+                        let _kind = match t {
+                            0 => SefInitType::Fresh, // sef.h:93-95
+                            1 => SefInitType::Lu,
+                            _ => SefInitType::Restart,
+                        }; // [ARCH: A-10] STATELESS — 三型同体
+                        let keys = HOOKS.map(|hook| hook.key);
+                        if let Err(e) = map_unmap_keys(fkey, true, &keys) {
+                            pending_warn = Some(e.status);
+                        }
+                        minix_types::OK
+                    },
+                );
+                if let Some(status) = pending_warn {
+                    transport.warn_fkey_ctl(status);
+                }
+                let mut birth_reply = match birth_reply {
+                    Ok(m) => m,
+                    // C 段一 assert ＝ 出生失败一路 panic（vm/main.c:151
+                    // 同款 "do_sef_init_request failed!" 的 fail-fast 家族）。
+                    Err(e) => panic!("IS: birth statectl failed: {e}"),
                 };
-                let info = SefInitInfo::default();
-                let reply_result =
-                    self.init_fresh(kind, &info).unwrap_or_else(|e| e.to_i32());
-                let mut birth_reply = minix_sef::sef_init_reply(reply_result);
                 // NK4-C B9b：出生回报腿 = C `ipc_sendrec`（非普通 send）。
-                if self.transport.send_rec(Endpoint::RS, &mut birth_reply).is_err() {
+                if self
+                    .transport
+                    .send_rec(Endpoint::RS, &mut birth_reply)
+                    .is_err()
+                {
                     panic!("IS: can't reply RS_INIT birth report to RS");
                 }
                 EDONTREPLY
@@ -538,13 +572,20 @@ impl<T: SefTransport, F: FkeyCtlTransport, A: Acquires> IsServer<T, F, A> {
     /// diagnostic channel (C: dmp.c:63-65, routed as
     /// [`SefTransport::warn_fkey_ctl`]; the 02 caller-warns invariant).
     fn request_fkey_map(&mut self, map: bool) {
+        Self::request_fkey_map_on(&mut self.fkey, &mut self.transport, map);
+    }
+
+    /// [`Self::request_fkey_map`] 的拆字段形状——出生臂（PD-34 编排面的
+    /// init 闭包）与生命周期方法各持不同字段的借用，经由这份单一实现
+    /// 共享（两处手抄同一句注册序是本任务线登记过的病灶形状）。
+    fn request_fkey_map_on(fkey: &mut F, transport: &mut T, map: bool) {
         // The registered set is the hooks table itself (02 §2.6 "注册集合 =
         // 转储能力集合"): derive the key list by `map`, so the array length
         // travels with HOOKS' type and a table edit can never leave prefill
         // residue behind.
         let keys = HOOKS.map(|hook| hook.key);
-        if let Err(e) = map_unmap_keys(&mut self.fkey, map, &keys) {
-            self.transport.warn_fkey_ctl(e.status);
+        if let Err(e) = map_unmap_keys(fkey, map, &keys) {
+            transport.warn_fkey_ctl(e.status);
         }
     }
 }
@@ -676,6 +717,10 @@ mod tests {
                 }
             }
             panic!("fake transport: script exhausted");
+        }
+
+        fn statectl(&mut self, _request: i32, _address: u64, _length: i32) -> Result<i32, i32> {
+            Ok(minix_types::OK)
         }
 
         fn send(&mut self, dest: Endpoint, reply: &Message) -> Result<(), i32> {
