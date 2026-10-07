@@ -142,6 +142,8 @@
 
 ## §4 判据表（本轮全部现算，不抄二手计数）
 
+下表里一条命令可定案的行，已由 `tools/todo-reconcile-scan.sh` 集中成可重跑的执行器（只读，输出四列：判据名、本次读数、台账基线、判定）。**它只覆盖机器可判的那部分**：需要追调用链（证据级 `L2`）与需要真机（`待验证`）的条目它不接，输出里固定留一行 `NA` 提醒，免得把「脚本没报漂移」当成「台账已核实」。基线失配时的处置是复核后改台账，不是改脚本里的基线。
+
 | 类别 | 判据命令（只读，可重跑） | 快照 `87784ca04` 上的读数 | 能定案到什么程度 |
 |---|---|---|---|
 | 结案后探针未滚除 | `grep -rn "用后即滚" os --include=*.rs \| wc -l`；`grep -rl "用后即滚" os --include=*.rs \| wc -l` | 15 行 / 7 个文件 | 可定案（`L1`） |
@@ -184,6 +186,6 @@
 1. **只改两本台账**：翻转 `TODO-LEDGER-OPEN.md` 与 `TODO-LEDGER-DONE.md` 里的条目状态，或追加新条目。**不重编号**（沿用原始 ID 并列），**不新建 `new_todo_*.md`**（除非按 `CONCURRENT-WORK-PROTOCOL.md` 正式分线并发），**不复制阶段条目**（阶段侧只加状态注记）。
 2. **每条状态变更必须附三件套**：可重跑的核实命令与读数、核实日期、当时的快照提交号。缺任一件，视同未核实。
 3. **先查避让清单再动手**：`bash tools/check-staged-inflight.sh --list` 与 `git status --porcelain` 双查；清单内的文件属于别的线程，只读不写。
-4. **每轮收尾跑四道校验**：`python3 tools/notes-link-check.py rewrite-notes/`（与上一轮基线做集合差，新增断链必须为零）、`bash tools/todo-staleness-check.sh rewrite-notes/coordination/TODO-LEDGER-OPEN.md`、`bash tools/doc-style-lint.sh --diff`、`bash tools/check-staged-inflight.sh`。
+4. **每轮收尾跑五道校验**：`bash tools/todo-reconcile-scan.sh`（先重算可机器判据再写状态）、`python3 tools/notes-link-check.py rewrite-notes/`（与上一轮基线做集合差，新增断链必须为零）、`bash tools/todo-staleness-check.sh rewrite-notes/coordination/TODO-LEDGER-OPEN.md`、`bash tools/doc-style-lint.sh --diff`、`bash tools/check-staged-inflight.sh`。
 5. **本文件 §1 的处置表是活表**：新增文件要立刻登记进 1.1—1.6 的某一类；某类文件清零后，其合并卷的对应章节标注"已清空，可归档"。
 6. **阶段文档重生成前必读** `STAGE-KERNEL-FREEZE-READY-20261008.md`：那份文档管的是"哪些阶段文档可以安全定稿、哪些必须等代码"，与本台账互补——本台账管待办，它管冻结边界。
