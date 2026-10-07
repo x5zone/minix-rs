@@ -448,7 +448,7 @@ Output: | Ch2 location | design explanation | causal chain | each step valid? | 
 
 > full-review = "文档 + 关联 Rust 代码"一体审查（B3.1）。输入：Step 0 关联代码清单（`tools/doc-code-map.sh`）。
 > 检查维度（至少）：code-checklist §1 Rewrite 质量 / §2 硬件抽象 / §4 执行模型 SMP / §8 命名 / §13 设计-代码一致性 / §14 C-Rust 语义对齐。
-> gate-evidence-code 固定行："代码可读性增量"（`tools/code-style-lint.sh --diff`，G1/G4）+ "非法态封堵"（H2，code-excellence §16.6）+ "文档代码块审查"（H3，doc-checklist §2.4k）。
+> gate-evidence-code 固定行："代码可读性增量"（`cargo clippy -p {crate} --lib -- -D warnings` 与 `tools/unsafe-audit.sh --diff`；G1 卡已作废并合并，`tools/code-style-lint.sh` 不存在、不得引用）+ "非法态封堵"（H2）+ "非法态封堵"（H2，code-excellence §16.6）+ "文档代码块审查"（H3，doc-checklist §2.4k）。
 > gate-evidence-code 附加行："unsafe 审计"（D2）：`tools/unsafe-audit.sh --baseline tools/unsafe-baseline.txt --diff`——新增裸 unsafe = 0 才通过；块内写命令 / 裸 unsafe 总数 / 与基线差值 / 新增违规清单。
 > 产物：维度×文件×结论×证据 表 + gate-evidence-code 块；无发现也要写明"已检查、无发现"；沿用既有 P0/P1/P2 判定。
 
@@ -492,7 +492,7 @@ sed -i 's|约 110\+|464|g' {doc}.md  # 直接替换为实际数
 3. "约 N+ 个" 这种近似写法本身易过时
 
 **预防机制**（建议落地）：
-1. **CI 钩子**：`tools/ci-doc-test-count.sh` 在 CI 中跑 `cargo test --lib` + 扫描 doc §5 测试名，输出 mismatch 警告
+1. **CI 钩子**：CI 侧原计划用 `tools/ci-doc-test-count.sh`，该脚本从未实现；现在用 `cargo test` 输出与`rg -c '#\[test\]'` 计数人工对比（Step 4.5a），输出 mismatch 警告
 2. **doc 模板**：规定 doc §5 必须含 `> 截至 YYYY-MM-DD, cargo test 全通过 N 个（N + M 子集）` 格式
 3. **测试名清单**：用 `rg "^\s*fn test_"` 自动生成测试名清单，避免人工列出
 

@@ -87,6 +87,49 @@ else
   fail "L5c 编号模式总数($total) 与索引表宣称($claim)不一致——更新 review-patterns.md 头部索引与各处宣称"
 fi
 
+# L10. 幽灵工具引用：规则文本里写到的 tools/*.sh|py 若文件不存在，同一行必须带状态标记
+#      （未实现 / 未来实施 / 从未 / 不存在 / 计划中 / 已作废 / 拟 / 建议 / 曾写作 / 未落地）。
+#      为什么要有这条：本仓曾把强制证据行「代码可读性增量」指向 tools/code-style-lint.sh，
+#      而该脚本从未存在——执行 review 的 agent 拿不到证据，最自然的结局就是编一份输出出来。
+L10_OUT=$(python3 - <<'PYEOF2'
+import re, sys
+from pathlib import Path
+ROOT = Path(".")
+SCAN = ["prompt", ".claude", ".codex", ".trae", ".agents", "AGENTS.md", "README.md"]
+PAT = re.compile(r"tools/[A-Za-z0-9_-]+\.(?:sh|py)")
+MARKERS = ("未实现", "未来实施", "从未", "不存在", "计划中", "已作废", "拟", "建议", "曾写作", "未落地", "作废")
+bad = []
+files = []
+for base in SCAN:
+    q = ROOT / base
+    if q.is_file():
+        files.append(q)
+    elif q.is_dir():
+        files += [f for f in q.rglob("*") if f.is_file() and f.suffix in (".md", ".sh", ".py", ".json")]
+for f in files:
+    try:
+        text = f.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        continue
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for m in PAT.finditer(line):
+            target = ROOT / m.group(0)
+            if target.exists():
+                continue
+            window = line[max(0, m.start() - 60): m.end() + 90]
+            if not any(k in window for k in MARKERS):
+                bad.append(f"{f}:{lineno}: {m.group(0)} :: {line.strip()[:70]}")
+print("\n".join(bad))
+PYEOF2
+)
+if [ -z "$L10_OUT" ]; then
+  ok "L10 规则文本无未标注的幽灵工具引用"
+else
+  n=$(printf '%s\n' "$L10_OUT" | grep -c .)
+  printf '%s\n' "$L10_OUT" | head -10 | sed 's/^/    ✗ /' >&2
+  fail "L10 发现 $n 处幽灵工具引用（脚本不存在且同行未标注状态）"
+fi
+
 # L6. Gate 权威注册表完整性：10 个 Gate 必须都在 review-process.md 的注册表中各占一行
 registry=$(sed -n '/### Gate 权威注册表/,/^---$/p' prompt/review-rules/review-process.md)
 for g in "Gate 0" "Gate A" "Gate B" "Gate C" "Gate D" "Gate D-6" "Gate D-Impl" "Gate E" "Gate G" "Gate H"; do

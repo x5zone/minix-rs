@@ -219,3 +219,70 @@ optim 文档 §2 当初人工统计的前两名是 158 与 107 —— 两条独�
 
 `doc-style-lint.sh --self-test` PASS（含新夹具）、`anchor-migrate.sh --self-test` PASS、
 `lint-review-rules.sh` 0 失败、`check-review-rules.sh` consistent、`doc-style-lint.sh --diff` error 级 0。
+
+---
+
+## 五、todo_plan 验收补跑（R3）与迁移后路径系统核查（用户第 1、3 项）
+
+### 5.1 21 项验收汇总的补跑结论（证据已逐条写回 `prompt/todo_plan.md`）
+
+| 段 | 结论 |
+|---|---|
+| A（5 项） | **5/5 达标**。A2 用埋点实测：往 `02-higher-half-kernel.md` 追加一行五类违规 → `--diff` 报出 SL-4/SL-5/SL-6/SL-7 各 1 处、error 级 4，只命中我埋的那行；`git checkout --` 后整文件 sha256 一致 |
+| B（5 项） | **4/5 达标**；B5（端到端演练 5 点）无法复核——产物在 `.review/`，该区不入库，换环境即不可见（如实留未勾选） |
+| G（5 项） | **G1 判定作废并合并**（见 5.3）、**G2 未落地且不能顺手加**（见 5.3）、G3 达标（脚本可用；`check-command-boundary.sh` 报 14 处存量违例，属登记不改码的范围裁决）、G4 因 G1 作废而半失效已改写 |
+| H（6 项） | **H1/H2/H3 达标**（模板与脚本实测可用）；H4 的验收物是「用户认可」，按 0.2 第 2 条「任务先有触发」保持未勾选是正确状态 |
+
+统计：勾选 12 项（带命令与输出片段），9 项显式标注未闭环/作废及理由，无一悬空。
+
+### 5.2 迁移期路径检查的真实覆盖范围（回答「migrate 时是否已经检查过」）
+
+**查过**：`notes/*` 旧路径归零、`{module}`→`{stage}` 键、锚点基线前缀、三端派生一致。
+**没查过**：规则文本里对**脚本文件**与**目录**的引用是否存在。本轮补做（扫描 70 个规则/入口文件、
+抽出 1123 处路径引用）→ 58 处指向不存在的路径，分三类：
+
+| 类别 | 数量 | 处置 |
+|---|---|---|
+| 占位符与多行号写法（`minix3/minix/servers/模块/xxx.c`、`os/kernel/src/lib.rs:1170/1181/1193`） | 约 20 | 合法，不动（我的扫描脚本对「一行写多个行号」解析不足，非文档缺陷） |
+| **幽灵工具引用** | 6 个名字、10+ 处 | 全部处置，见 5.3 |
+| 落盘目录不存在（`tmp/log`、`tmp/bin`） | 2 | 预建四个约定目录 + 规则注明「重定向不会自动创建父目录，写前先建」 |
+
+### 5.3 幽灵工具引用：最危险的一类缺陷
+
+`prompt/review-rules/review-process.md` 把**强制证据行**「代码可读性增量」定义为
+`tools/code-style-lint.sh --diff` 的结果，而**该脚本从未存在**（三端副本同病）。
+执行 review 的 agent 拿不到这条证据，最自然的结局就是编一份输出——这是能直接伪造门结论的缺陷。
+
+处置（原则：合并优于新建）：
+- G1 卡作废：其拟查四项里，「`pub` 缺 `///`」「模块缺 `//!`」正是 rustc 的 `missing_docs`（属 G2 射程）；
+  「`unsafe` 无 SAFETY」已由 `tools/unsafe-audit.sh` 覆盖（`--self-test` 实测退出码 0）；注释语言项依 OQ19 本就是 warning。
+  自建 `code-style-lint.sh` 会与编译器与既有门三重重复 → 不写。
+- 强制证据行改指真实手段：`cargo clippy -p {crate} --lib -- -D warnings` + `tools/unsafe-audit.sh --diff`，
+  源、`.claude/rules`、`.claude|.codex/skills/review-scan/checks/process.md` 四处同改。
+- `tools/todo-reference-validate.sh` → 改指**已实现**的 `tools/todo-staleness-check.sh`（职责完全一致）。
+- `tools/ci-doc-test-count.sh`（从未实现，且只在运行时副本里要求——又一处反向漂移）→ 改为 `cargo test` + `rg -c` 人工对比，注明 Step 4.5a。
+- G2 为何不能顺手加：`missing_docs = "warn"` 会让每个缺文档的公开项产生警告，而 CI 那条是 `-D warnings` →
+  存量警告会当场把 CI 打红。必须先统计量级再按 OQ18 逐 crate 升级，配方已写进 todo_plan 的 G2 条。
+
+### 5.4 把这条教训固化成门：`lint-review-rules.sh` 新增 L10
+
+不变量：规则文本里出现的 `tools/*.sh|py`，若文件不存在，**同一行必须带状态标记**
+（未实现 / 未来实施 / 从未 / 不存在 / 计划中 / 已作废 / 拟 / 建议 / 曾写作 / 未落地），否则 FAIL 并列出位置。
+首跑抓到 10 处未标注引用（含我自己在 todo_plan 里刚写的作废结论——同一行判据把它们都揪了出来），
+逐行补标注后归零。双向验证：植入 `tools/fake-ghost-check.sh` 一处引用 → `FAIL: L10 发现 1 处`、退出码 1；
+还原 → `OK`，且还原前后文件 sha256 同哈希。
+
+### 5.5 我自己犯的两个错，记录以免被当成「审计方挑刺」
+
+1. **凭退出码下结论**：看到 `tools/doc-code-map.sh --help` 返回 2 就写成「不支持 `--help`」。实际它早已支持，
+   只是把「显式请求帮助」当错误处理（打 stderr、退 2）。真缺陷是退出码语义 + `todo-staleness-check.sh`
+   缺 `--help`。两处都改了，并把 todo_plan 里的措辞更正为本来的样子。
+2. **埋点脚本用了不存在的文件名**：`printf >> rewrite-notes/01-stage-kernel/02-multiboot-header.md`
+   凭空造出一个未跟踪文件留在文档树里（`git checkout` 因该路径不在索引而失败，没能兜住）。
+   已用文件工具删除并核对工作树；教训是**写文件前必须断言目标存在**，这与迁移期 108 件静默退跟踪同源。
+
+### 5.6 门
+
+`lint-review-rules.sh` 0 失败（含新 L10）、`check-review-rules.sh` consistent、
+`generate-derived-skills.sh --check` 无漂移、`diff-trae-skills.sh --only-diff` 9/9、
+`doc-style-lint.sh --self-test` 与 `--diff`（error 级 0）通过；`bash -n` 覆盖全部 tools/*.sh。

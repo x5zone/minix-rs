@@ -26,19 +26,33 @@ DOC=""
 CHECK=0
 FMT="md"
 
-usage() { echo "Usage: $0 DOC.md [--check] [--format=md|plain]" >&2; exit 2; }
+usage() {
+  # 显式请求帮助（-h/--help）→ 打到标准输出、退出码 0；参数缺失或未知选项 →  stderr、退出码 2
+  if [ "${1:-}" = "--print0" ]; then echo "Usage: $0 DOC.md [--check] [--format=md|plain]" >&2; return 2; fi
+  cat <<'HELP'
+用法：tools/doc-code-map.sh DOC.md [--check] [--format=md|plain]
+
+  DOC.md      受检文档路径（规范形态 rewrite-notes/{stage}/{doc}.md）
+  --check     额外校验清单里的路径是否真实存在；有缺失则以退出码 1 结束
+  --format    md（默认，Markdown 表格）| plain（制表符分隔，便于管道）
+  -h, --help  显示本帮助，退出码 0
+
+退出码：0 正常 ｜ 1 --check 发现不存在的路径 ｜ 2 用法错误
+HELP
+  return 0
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --check) CHECK=1; shift ;;
     --format=md) FMT="md"; shift ;;
     --format=plain) FMT="plain"; shift ;;
-    -h|--help) usage ;;
+    -h|--help) usage; exit 0 ;;
     -*) echo "Unknown option: $1" >&2; usage ;;
-    *) [ -z "$DOC" ] && DOC="$1" || { echo "多余的参数: $1" >&2; usage; }; shift ;;
+    *) [ -z "$DOC" ] && DOC="$1" || { echo "多余的参数: $1" >&2; usage --print0; exit 2; }; shift ;;
   esac
 done
-[ -n "$DOC" ] && [ -f "$DOC" ] || usage
+[ -n "$DOC" ] && [ -f "$DOC" ] || { usage --print0; exit 2; }
 
 # -------------------------------------------------- 抽取
 TMP="$(mktemp)"

@@ -1347,7 +1347,7 @@ grep -c "unsafe" {CODE_FILE}
 
 **建议落地**：
 - [review-process.md §Step 0.7.1](../review-rules/review-process.md) 新增 path existence validation 子步骤
-- 工具：`tools/todo-reference-validate.sh` 一键扫描所有 TODO file:line（未来实施）
+- 工具：`tools/todo-staleness-check.sh <todo 文件>`（**已实现**，检查待办里的 `file:line` 是否仍存在）
 - Session #8+ 每个 review 必跑 Step 0.7.1
 
 **来源案例**：

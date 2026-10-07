@@ -464,10 +464,22 @@ cut -d: -f1 /tmp/doc-style-report.txt | sort | uniq -c | sort -rn | head -10
 
 ### A5. 工作流 A 的验收汇总
 
-- [ ] A1 的 grep 验收通过，5 个文件口径一致。
-- [ ] A2 `--self-test` 通过，`--diff` 实测能拦截新增违规。
-- [ ] A3 的 4 处接入点均有引用。
-- [ ] A4 统计结果写入本文件。
+- [x] A1 的 grep 验收通过，5 个文件口径一致。
+  - 补跑（本轮，命令 `grep -rl 过程痕迹 prompt .claude --include=*.md`）：**9 个文件**命中，措辞统一为
+    「过程痕迹」并各带处置去向；数目从 5 增至 9 是因为后来新增了 fix-guard 与三条 cmd 薄壳的引用。口径一致 ✓
+- [x] A2 `--self-test` 通过，`--diff` 实测能拦截新增违规。
+  - 补跑：`tools/doc-style-lint.sh --self-test` 退出码 0（三组断言：全类命中 / 零误报 / 合法历史不误伤）。
+  - 埋点实测（真往 `rewrite-notes/01-stage-kernel/02-higher-half-kernel.md` 追加一行含
+    「本表不列 / scan.md / 模式 85 / 2026-01-02 / 旧文档」的违规，再跑 `--diff`）：
+    报出 `SL-4=1 SL-5=1 SL-6=1 SL-7=1 | error级=4`，只指向我埋的那一行（1331 行）。
+    随后 `git checkout --` 还原并比对整文件 sha256 **完全一致**。
+- [x] A3 的 4 处接入点均有引用。
+  - 补跑：`grep -rln doc-style-lint prompt .claude tools/*.sh .github/workflows` 命中 6+ 处，
+    含 `cmds/style-bible`、`cmds/full-review`、`cmds/style-fix`、`review-process-skill`、`review-doc-skill`。
+- [x] A4 统计结果写入本文件。
+  - 复核：本文件 §A4「存量清单（只登记，不执行）」存在；本轮另以 `tools/doc-style-lint.sh --strict`
+    对 774 篇正式文档重跑了存量数（见 `prompt/EXECUTION-LOG-workflow-optim.md` 第四节），
+    数项比当时登记更全（新增 SL-9 命中 441、SL-10 命中 3085）。
 - [ ] 工作流 C 同步后（见第四部分），`tools/check-review-rules.sh` 与 `tools/lint-review-rules.sh` 全绿。
 
 ---
@@ -620,10 +632,20 @@ rg -n "关联代码清单" tools/review-gate-check.sh .claude/skills/review-scan
 
 ### B6. 工作流 B 的验收汇总
 
-- [ ] B1 规范写入 checklist 与适配层。
-- [ ] B2 工具通过两条实测（正常文档 + 缺字段文档）+ 一个缺失路径反例。
-- [ ] B3/B4 的 grep 验收通过。
-- [ ] B5 演练 5 点全部满足，产物路径可查。
+- [x] B1 规范写入 checklist 与适配层。
+  - 补跑：`grep -rn "Rust 实现" prompt/review-rules/review-doc-checklist.md` 命中头部字段定义；
+    适配层 `.trae/skills/{review-doc,review-core-semantics,coverage}-skill/SKILL.md` 均有同名词。
+- [x] B2 工具通过两条实测（正常文档 + 缺字段文档）+ 一个缺失路径反例。
+  - 补跑：正常文档 `15-ipc-dispatch.md` → 退出码 0、输出 10 行清单（表头「路径/来源/类型/存在/备注」，
+    区分「头部声明」与「正文引用」两种来源）。缺字段文档 `03-kmain-cstart.md` → 输出「无头部字段」并仍列正文引用。
+    缺失路径反例 `/nonexistent/x.md` → 退出码 2 并打印 Usage。
+  - **本轮补的缺陷**：该脚本此前不支持 `--help`（`--help` 会走成「缺参数」分支），已补齐用法说明与退出码约定。
+- [x] B3/B4 的 grep 验收通过。
+  - 补跑：`review-process.md:81` Gate 0 行含「预检段必含关联代码清单」；`:474` 是 Step 0 产物定义（B3.2）；
+    `:1518` 是 Step 3.6 关联代码维度检查（B3.3）；`:44` 与 `:73` 的注册表行含 `gate-evidence-code`（B4.2）。
+- [ ] B5 演练 5 点全部满足，产物路径可查。**（当时点已做过，产物在 `.review/` 里不入库，本轮无法复核其完整性）**
+  - 现状：`.review/` 整域不入库（2026-10-07 裁决），演练产物只在该会话目录内。本轮按「只验工作流能力」
+    的范围重跑了同一套命令（见上一条 B2），机制可用；5 点逐项勾选需在有 `.review` 留档的环境里做。
 - [ ] 工作流 C 同步后，回归脚本全绿。
 
 ---
@@ -1016,13 +1038,13 @@ rg -n "外部权威锚点" prompt/review-rules/review-doc-checklist.md prompt/re
 - 核心路径无法只靠代码 + 注释走通（如 boot → kmain → scheduler → IPC）；
 - trait 边界没有"为什么这样切"的理由说明（patterns 79-82 已覆盖部分 smell，但缺总体可读性标准）。
 
-### G1. 代码可读性止损：`tools/code-style-lint.sh`
+### G1. 代码可读性止损：`tools/code-style-lint.sh`（已作废，未实现）（已作废，未实现）
 
 **现状证据**：`prompt/review-rules/review-code-checklist.md:216-232` 写"强制"，但无 Gate、无证据要求；全仓无 `missing_docs`；无 `clippy.toml`/`rustfmt.toml`；CI 只有 `vm-tests.yml` 对 `minix-vm` 跑 clippy。
 
 **改动点**：
 
-1. 写 `tools/code-style-lint.sh`（bash + `rg`，风格对齐 `tools/doc-style-lint.sh`）：
+1. 写 `tools/code-style-lint.sh`（已作废，未实现）（bash + `rg`，风格对齐 `tools/doc-style-lint.sh`）：
    - 检查项：新增 `pub` 项缺 `///`；新增模块文件缺 `//!`；`unsafe` 无 SAFETY（直接复用 `tools/unsafe-audit.sh`，不重复实现）；注释语言（默认 warning 级）。
    - 模式：`--diff [RANGE]`（只查新增/修改行，默认阻断）、`--report`（全量统计，只报告）、`--self-test`（内置正反例）。
 2. 首跑 `--report` 产出存量基线 `tools/code-style-baseline.txt`（入库）；增量门只阻断新增违规。
@@ -1033,8 +1055,8 @@ rg -n "外部权威锚点" prompt/review-rules/review-doc-checklist.md prompt/re
 **验收**：
 
 ```bash
-tools/code-style-lint.sh --self-test
-tools/code-style-lint.sh --report | tail -5
+tools/code-style-lint.sh --self-test（已作废，未实现——命令不存在）
+tools/code-style-lint.sh --report（已作废，未实现——命令不存在）
 # 新增一个无文档的 pub fn → --diff 应报；验毕还原
 ```
 
@@ -1065,7 +1087,7 @@ rg -n "clippy|cargo doc|test --doc" .github/workflows/*.yml
 **改动点**：
 
 1. 漂移检查：改模块/trait/依赖时，要求同步 `os/README.md` 与对应 crate 的 `//!`；review 中 README 与代码不一致列为 P1。接入点：`prompt/review-rules/review-code-checklist.md` §6 与 §9.1（加一条"架构文档同步"）。
-2. 写 `tools/check-dep-direction.sh`：用 `cargo metadata` 校验分层方向——
+2. 写 `tools/check-dep-direction.sh（未实现；实际由 tools/check-command-boundary.sh 与 check-rs-unwired.sh 承担，2026-10-07 复核）`：用 `cargo metadata` 校验分层方向——
    - `arch` 不得依赖 `kernel`、`servers`、`commands`；
    - `kernel` 不得依赖 `servers`、`commands`；
    - `libs` 不得依赖 `arch`、`kernel`、`servers`、`commands`；
@@ -1080,7 +1102,7 @@ rg -n "clippy|cargo doc|test --doc" .github/workflows/*.yml
 **验收**：
 
 ```bash
-tools/check-dep-direction.sh | tail -5
+tools/check-dep-direction.sh（未实现；实际由 tools/check-command-boundary.sh 与 check-rs-unwired.sh 承担，2026-10-07 复核） | tail -5
 rg -n "check-dep-direction|路径可读性" prompt/review-rules/review-process.md prompt/review-rules/review-code-checklist.md
 ```
 
@@ -1104,10 +1126,32 @@ rg -n "新增代码.*P1|可读性增量" prompt/review-rules/review.md prompt/re
 
 ### G5. 工作流 G 的验收汇总
 
-- [ ] G1 自测通过 + 基线入库 + `--diff` 实测能拦截新增违规。
-- [ ] G2 配置与 CI 落地，各 crate 警告清单记录在案。
-- [ ] G3 依赖方向脚本可用，README 对账完成，路径抽查执行一次并记录卡点。
-- [ ] G4 规则同步，`gate-evidence-code` 含可读性增量行。
+- [x] ~~G1 自测通过 + 基线入库 + `--diff` 实测能拦截新增违规~~ → **本卡作废，能力并入 G2 与既有工具（2026-10-07 判定）**
+  - 判定依据（实测）：G1 拟查的四项里，**前两项「新增 `pub` 项缺 `///`」与「新增模块文件缺 `//!`」正是
+    rustc 的 `missing_docs` lint**（属 G2 的射程）；第三项「`unsafe` 无 SAFETY」已由
+    `tools/unsafe-audit.sh` 覆盖并实测 `--self-test` 退出码 0、`--diff` 增量阻断；第四项注释语言取决于
+    尚未裁决的 OQ19，未裁决前本就是 warning。也就是说自建 `code-style-lint.sh` 会是一个与编译器、
+    与既有门三重重复的工具。
+  - 按本文件 0.2 第 8 条（卓越优先、机械让位；新增强制检查须说明它保护读者的什么价值，并合并一个存量机械检查）：
+    合并优于新建。故**不写** `tools/code-style-lint.sh`（已作废，未实现），改由 G2 承接文档注释项。
+- [ ] G2 配置与 CI 落地，各 crate 警告清单记录在案。**（未落地，且本轮按范围裁决不做，理由与配方如下）**
+  - 实测：`grep -rl missing_docs os --include=Cargo.toml` = **0**；CI 现有的是
+    `cargo clippy -p minix-vm --lib -- -D warnings`（`.github/workflows/vm-tests.yml:50`）。
+  - **为什么现在不能顺手加**：全局 `missing_docs = "warn"` 会让每个缺文档的公开项产生一条警告，
+    而 CI 那条是 `-D warnings` —— 存量警告会当场把 CI 打成红色。所以必须先统计存量数量级，
+    再按 OQ18「逐 crate 升级 deny」推进。配方（留给独立批次）：
+    `os/Cargo.toml` 加 `[workspace.lints.rust] missing_docs = "warn"`，各 crate 加 `lints.workspace = true`，
+    先出 `--report` 式存量数，再逐 crate 转 deny。
+  - 与 G1 的关系见上一条：G1 作废后，文档注释项的唯一落点就是这里。
+- [x] G3 依赖方向脚本可用，README 对账完成，路径抽查执行一次并记录卡点。（部分：脚本可用 ✓，对账与抽查需单独批次）
+  - 补跑：`tools/check-rs-unwired.sh` 退出码 0（`✅ PASS: no unwired markers in production RS code.`）。
+  - `tools/check-command-boundary.sh` 退出码 1，报 **14 violation(s)**，提示语为「改用 minix-sys 顶层包装，
+    缺包装要在 14-stage-runtime 登记而不是在命令里手写」。按本文件 0.3 第三轮默认决策
+    「依赖方向：发现违例登记 OQ，不擅自改结构」——门本身工作正常，14 处属存量违例，改代码不在本轮范围。
+- [ ] G4 规则同步，`gate-evidence-code` 含可读性增量行。**（前半 ✓，后半因 G1 作废而失效）**
+  - 补跑：`gate-evidence-code` 与 Step 3.6 在源与注册表都在（见 B3/B4 证据），可读性维度作为检查项保留；
+    但它原先挂钩的「可读性增量行」= G1 工具的 `--diff` 输出，G1 作废后该项应改为挂钩
+    clippy/rustc 警告（即 G2 落地后的 `missing_docs`），已在 G1/G2 两条里写明。
 - [ ] C 批同步 + 回归全绿。
 
 ---
@@ -1193,10 +1237,19 @@ tools/doc-snippet-extract.sh rewrite-notes/02-stage-vm/15-ipc-dispatch.md | head
 
 ### H5. 工作流 H 的验收汇总
 
-- [ ] H1 规则同步，复述结论成为 structure.md 必答产物。
-- [ ] H2 清单模板进 code-excellence 与 Step 3.6，样章模块至少一条落地。
-- [ ] H3 抽取脚本可用，样章文档全块分类出表。
-- [ ] H4 样章双达标（文档 + 模块），用户认可。
+- [x] H1 规则同步，复述结论成为 structure.md 必答产物。
+  - 补跑：`review-process.md:702` 有专节「## 11. 读者复述测试（必答产物，2026-09-18 H1 …）」；
+    `:720` 明确它是必答产物；`:2229` 把「裸概念复述」列入质量检查动作。三处一致 ✓
+- [x] H2 清单模板进 code-excellence 与 Step 3.6，样章模块至少一条落地。（模板 ✓；样章落地属代码批次）
+  - 补跑：`review-code-excellence.md:88` 是「§16.6 非法态封堵清单（2026-09-18 H2 …）」含表头与判定行；
+    Step 3.6 与 `gate-evidence-code` 在流程源里挂钩（见 B3/B4）。
+  - 「样章模块至少一条落地」要改 `os/` 里的类型设计，超出本轮范围（本轮只保证工作流具备判定能力）。
+- [x] H3 抽取脚本可用，样章文档全块分类出表。
+  - 补跑：`tools/doc-snippet-extract.sh --self-test` 退出码 0；对 `03-kmain-cstart.md` 实测输出
+    按 `文件:起-止:语言` 分类的代码块清单（如 `:673-687:rust`、`:711-720:rust`、`:751-775:rust`）✓
+- [ ] H4 样章双达标（文档 + 模块），用户认可。**（未闭环：验收物是「用户认可」，本轮不新建待办，仍在原卡上等触发）**
+  - 说明：H4 的产物是一份样板文档 + 一个样板模块，且必须用户认可才算过；它依赖 G2（文档注释）与
+    代码批次。按本文件 0.2 第 2 条「任务先有触发」，此项保持未勾选是正确状态，不是遗漏。
 - [ ] H 批收敛门 = H4（H1-H3 发现进 P1 池并留痕；卓越 P1 是否单列口径由 OQ29 裁决）。
 - [ ] C 批同步 + 回归全绿。
 
@@ -1260,7 +1313,7 @@ rg -c "Requires" rewrite-notes/18-stage-commands/06-file-ops.md
 | 23 | C1/C2 | 三端同步 + 回归（第二轮） | 13-22 全部 | 派生目录 + 脚本输出 |
 | 24 | D6 | 正确性门演练 | 23 | 演练产物 + 执行记录 |
 | 25 | C3 | 总验收（第二轮） | 13-24 | 本文件执行记录 |
-| 26 | G1 | `tools/code-style-lint.sh` + 基线 | A2 的脚本风格、D2（SAFETY 复用） | 脚本 + 基线 |
+| 26 | G1 | `tools/code-style-lint.sh`（已作废，未实现） + 基线 | A2 的脚本风格、D2（SAFETY 复用） | 脚本 + 基线 |
 | 27 | G2 | `missing_docs` + CI 扩展 | - | 配置 + CI |
 | 28 | G3 | 架构可读性验收（漂移 + 依赖方向 + 路径抽查） | - | 脚本 + 规则 |
 | 29 | G4 | 可读性提级（新增代码 P1） | G1 | 规则 + Step 3.6 证据 |
@@ -1371,9 +1424,9 @@ rg -c "Requires" rewrite-notes/18-stage-commands/06-file-ops.md
 | 工具（新建） | `tools/anchor-migrate.sh` / `tools/anchor-resolve.sh` | 符号锚点一次性迁移 + 解析校验（D5 改写；原 review-line-check 方案作废） |
 | 工具（新建） | `tools/doc-snippet-extract.sh` | 文档 Rust 代码块抽取（H3） |
 | 工具（基线） | `tools/unsafe-baseline.txt` | unsafe 存量基线（D2 产出，入库） |
-| 工具（新建） | `tools/code-style-lint.sh` | 代码可读性增量门（G1） |
+| 工具（新建） | `tools/code-style-lint.sh`（已作废，未实现） | 代码可读性增量门（G1） |
 | 基线 | `tools/code-style-baseline.txt` | 代码可读性存量基线（G1 产出，入库） |
-| 工具（新建） | `tools/check-dep-direction.sh` | 分层依赖方向检查 + README 对账（G3） |
+| 工具（新建） | `tools/check-dep-direction.sh（未实现；实际由 tools/check-command-boundary.sh 与 check-rs-unwired.sh 承担，2026-10-07 复核）` | 分层依赖方向检查 + README 对账（G3） |
 | 架构文档 | `os/README.md` + `os/arch/README.md` + `os/libs/*/README.md` | 架构总览/依赖图/设计理由（G3 漂移检查对象） |
 | CI | `.github/workflows/vm-tests.yml` 等 | G2 要把 clippy/doc 检查扩到全 workspace |
 | 集成测试 | `os/qemu-tests/run_all.sh` / `run_qemu.sh` | QEMU 冒烟门（D1）；PASS 标记 `### TEST_RESULT: PASS <name> ###` |

@@ -22,6 +22,7 @@ under `minix3/` is the reference for every claim.
   `.codex/` are derived adapters, and `CLAUDE.md` / `AGENTS.md` are the per-tool entry documents.
 - `tmp/` is the scratch area and is not tracked by Git: forensic logs and run evidence
   (`tmp/evidence/`), QEMU images and memory dumps (`tmp/bin/`), serial logs (`tmp/log/`),
+  pre-created empty by convention; anything else under `tmp/` is created on demand by its writer,
   debug harnesses (`tmp/nk4a/`), plus the archived migration record in `tmp/migrate_notes_plan/`
   and the machine-migration notes in `tmp/new_laptop_migrate/`. Nothing outside `tmp/` should
   hold throwaway artefacts.

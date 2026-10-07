@@ -1021,7 +1021,8 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 - ✅ 结论：T2 严重度 P0 → P1 降级，触发 doc §11 重写而非 code 修复
 
 **自动化建议**（未来工具）：
-- `tools/todo-reference-validate.sh` 一键扫描所有 TODO file:line → 输出 path drift 报告
+- `tools/todo-staleness-check.sh <todo 文件>` 扫描待办清单里的 `file:line` 是否仍存在 → 输出陈旧项报告
+  （本项曾写作 `tools/todo-reference-validate.sh`，该脚本从未存在；todo-staleness-check.sh 就是它的实现，2026-10-07 更正）
 - 可与 `coverage-extract.py` 配合使用，输出"已删除引用 + 已变更引用"两个清单
 
 #### Step 0.7.2: AI Claim Grep Verification（NEW 2026-07-16，模式 67 CFNOC 配套）
@@ -1521,7 +1522,9 @@ ls {tree}/{stage}/.design/{NN}-design-final.v*.md   # bagging
 > **输入**：Step 0 产出的关联代码清单（`tools/doc-code-map.sh`）。
 > **检查维度**（按 [review-code-checklist.md](review-code-checklist.md) 执行，至少覆盖）：§1 Rewrite 质量、§2 硬件抽象、§4 执行模型/SMP、§8 命名、§13 设计-代码一致性、§14 C-Rust 语义对齐。
 > **附带证据行**（gate-evidence-code 块内的固定行）：
-> - "代码可读性增量"：`tools/code-style-lint.sh --diff` 结果（G1/G4；新增代码可读性违规 = 正确性 P1）
+> - "代码可读性增量"：`cargo clippy -p {crate} --lib -- -D warnings` 与 `tools/unsafe-audit.sh --diff` 的结果
+>   （G1 卡已于 2026-10-07 判定作废并合并：`pub` 项与模块缺文档注释属 rustc 的 `missing_docs` 射程（落点在 G2），
+>   `unsafe` 无 SAFETY 由 unsafe-audit 覆盖；新增代码可读性违规 = 正确性 P1。不得引用 `tools/code-style-lint.sh`——该脚本不存在）
 > - "非法态封堵"：清单内核心状态机的封堵结论（H2；code-excellence §16.6）
 > - "unsafe 审计"：`tools/unsafe-audit.sh --baseline tools/unsafe-baseline.txt --diff`（D2：新增裸 unsafe = 0 才通过；命令 / 裸 unsafe 总数 / 与基线差值 / 新增违规清单）
 > - "文档代码块审查"：文档 Rust 块四分类表（H3；doc-checklist §2.4k）

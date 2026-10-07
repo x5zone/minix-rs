@@ -1,4 +1,17 @@
 #!/usr/bin/env bash
+
+case "${1:-}" in
+  -h|--help)
+    cat <<'HELP'
+用法：tools/todo-staleness-check.sh <todo 文件>
+
+  检查待办清单里引用的 file:line 是否仍存在、条目是否已过期，输出陈旧项清单。
+  与文档 review 的 Step 0.7 配合使用（模式 70：跨轮状态陈旧）。
+
+退出码：0 未发现陈旧项 ｜ 1 发现陈旧项（只报告，不阻断）｜ 2 用法错误
+HELP
+    exit 0 ;;
+esac
 # todo-staleness-check.sh — 扫描 TODO 清单，检测跨轮状态陈旧（模式 70 CTOS 配套）
 #
 # 功能：
