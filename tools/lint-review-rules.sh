@@ -71,12 +71,14 @@ fi
 echo "== lint-review-rules =="
 
 # L1. tmp_design_and_todo：活引用（不带"已删除/历史"标注且非守卫语境）应为 0
+#     豁免机制是两层：① 下方词表（守卫语境的自然语言特征）；② 行内标记 `<!-- 守卫语境 -->`。
+#     ② 是给「新写法被误判」留的出口——加标记比改门安全：词表一改就可能放行真违规，标记只放行那一行。
 #     守卫规则（禁止来源清单、处置策略表）与 `AGENTS.md` 的中间产物目录约定条目允许保留。
 l1=$(grep -n "tmp_design" $LINT_FILES 2>/dev/null \
      | grep -v "已删除\|历史形态\|历史案例\|历史输入\|历史均值" \
      | grep -v "禁止\|❌\|非定稿\|临时讨论池\|作为快照依据\|作为 design 依据\|design.md 不得引用\|当 design 依据" \
      | grep -v "Hidden Folder\|中间产物目录约定\|早期手动生成\|无 design/tmp_design 引用" \
-     | grep -v "§〇.临时文档规则\|grep -rnE" | wc -l || true)
+     | grep -v "§〇.临时文档规则\|grep -rnE" | grep -v "守卫语境 -->" | wc -l || true)
 if [ "$l1" -eq 0 ]; then ok "L1 tmp_design_and_todo 引用全部为守卫/已标注"; else
   fail "L1 发现 $l1 处未标注的 tmp_design_and_todo 活引用："; grep -n "tmp_design" $LINT_FILES 2>/dev/null \
     | grep -v "已删除\|历史形态\|历史案例\|历史输入\|历史均值" \
@@ -90,7 +92,7 @@ l2=$(grep -n "03-stage-kernel" $LINT_FILES 2>/dev/null \
      | grep -v "\.review/" | grep -v "历史\|现编号\|当时" | wc -l || true)
 if [ "$l2" -eq 0 ]; then ok "L2 无 03-stage-kernel 旧名活引用"; else
   fail "L2 发现 $l2 处 03-stage-kernel 旧名活引用："; grep -n "03-stage-kernel" $LINT_FILES 2>/dev/null \
-    | grep -v "\.review/" | grep -v "历史\|现编号\|当时" | sed 's/^/     /' >&2
+    | grep -v "\.review/" | grep -v "历史\|现编号\|当时\|守卫语境 -->" | sed 's/^/     /' >&2
 fi
 
 # L3. prompt/../ 残缺占位路径

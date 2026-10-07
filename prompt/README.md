@@ -4,6 +4,19 @@
 
 > **2026-10-07 变更**：仓库根的 `CLAUDE.md` 已退役，**`AGENTS.md` 是三端共用的唯一项目指令入口**。依据是 Claude Code 的默认加载模式 `claude-md-or-agents-md`（项目没有 `CLAUDE.md` 时改用 `AGENTS.md`，加载位置与方式完全等同）与发行物内的项目指令清单（含 `AGENTS.md`、`.claude/rules`）。原 `CLAUDE.md` 独有的「Doc Code Sync 七项」已并入 `prompt/review-rules/review-doc-checklist.md` §4；`.claude/rules/fix-guard.md` 已回填规范源 `prompt/review-rules/fix-guard.md`。取证见 `prompt/EXECUTION-LOG-workflow-optim.md`。
 
+## 第四类适配面：`.agents/skills/` 软链与新运行时接入
+
+除 `.claude/`、`.codex/`、`.trae/` 三端之外，仓库还有 `.agents/skills/`——它是**软链注册点**，
+不是第四套要手工同步内容：链头指向 `prompt/skill/cmds/` 下的薄壳命令，任何能扫该目录的运行时
+（ZCode 等）都从这里发现 6 个任务命令。所以判断"我的运行时走哪条路"只需两步：
+
+1. 项目指令入口：能读 `AGENTS.md` 的直接用（Claude Code 在无 `CLAUDE.md` 时按默认模式读它）；
+   不能读的，由其自身配置指向 `AGENTS.md`，**不要复制一份内容再改**。
+2. 技能与命令：由 `tools/generate-derived-skills.sh` 派生的（Trae/Codex/Claude 编排器）走派生；
+   不在这三者之列的运行时，走 `.agents/skills/` 软链，不新建内容副本。
+3. 状态目录：按 `prompt/review-rules/review-process.md` §Step 0 的**已登记运行时表**取 `{tool}`；
+   接入新运行时 = 往该表加一行，产物布局沿用 `{stage}/{doc-stem}/`，不要另造一套状态结构。
+
 ## 审阅工作区与门的扫描域（多 agent 并行审计的硬约定）
 
 独立审计方在本目录下建 `prompt/<审计方名>/`（如 `DS/`、`glm/`、`Muse/`、`mimo/`）放报告与取证。
