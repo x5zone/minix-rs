@@ -48,7 +48,7 @@ SIZE_ADAPTIVE="false"             # true | false
 # ===== 参数校验 + 解析 =====
 if [[ $# -lt 2 ]]; then
     echo "用法: $0 {tool} {doc-path} [agent] [--design-policy strict|optional|required] [--require-multi-agent] [--size-adaptive]" >&2
-    echo "  tool     = trae | claude | codex" >&2
+    echo "  tool     = trae | claude | codex | zcode | qoder" >&2
     echo "  doc-path = 相对项目根的文档路径（如 {tree}/{stage}/{doc}.md，tree = ${NOTES_TREES[*]}）" >&2
     echo "  agent    = AI 标识（Trae: glm/kimi/ds/qwen/seed；Claude 可省略）" >&2
     echo "  --design-policy   = strict（默认；缺失 design 记录 Gate H FAIL，继续由 review 内部 Step 0.3 嵌入生成）" >&2
@@ -96,8 +96,9 @@ TOOL="$1"
 DOC_PATH="$2"
 AGENT="${3:-}"
 
-if [[ "$TOOL" != "trae" && "$TOOL" != "claude" && "$TOOL" != "codex" ]]; then
-    echo "❌ tool 必须是 trae、claude 或 codex，得到: $TOOL" >&2
+# 运行时表（review-process.md §Step 0）登记五家：trae/claude/codex/zcode/qoder。
+if [[ "$TOOL" != "trae" && "$TOOL" != "claude" && "$TOOL" != "codex" && "$TOOL" != "zcode" && "$TOOL" != "qoder" ]]; then
+    echo "❌ tool 必须是 trae、claude、codex、zcode 或 qoder，得到: $TOOL" >&2
     exit 1
 fi
 

@@ -779,20 +779,19 @@ fn is_vfs_or_event_blocked(table: &ProcTable, slot: UserSlot) -> bool {
     table.procs[slot.get()].state.block.ipc_blocked.is_some()
 }
 
-/// Wait test: `wait_test` (`forkexit.c:569-588`).
+/// Wait test: `wait_test` (`forkexit.c:wait_test` 569-588).
 ///
-/// `parent_waiting && right_child` where `right_child` is pid/podgrp match.
-/// For 09, we simplify to `WAITING && parent == child.parent` (10 will refine with pidarg).
+/// `parent_waiting && right_child`——父必须正在等**这个**子（pid 精确或进程组匹配）
+/// 才交付；否则由调用方走 SIGCHLD 路径。匹配口径与 `do_wait4` 的 `pidarg` 过滤同源
+/// （`WaitState::is_waiting_for`），因此 `pidarg == 0 → -procgrp` 的归一必须在
+/// `do_wait4` 入口完成，`is_waiting_for` 只消费已归一的 `WaitTarget`。
 fn wait_test(table: &ProcTable, parent_slot: UserSlot, child_slot: UserSlot) -> bool {
     let parent = &table.procs[parent_slot.get()];
     let child = &table.procs[child_slot.get()];
-    if !parent.state.wait.waiting {
-        return false;
-    }
-    // 10's wait_test includes pidarg matching (pid, pgrp, -1). For 09 we assume -1 (any child)
-    // and check parent relationship already via guardianship.
-    let _ = child;
-    true
+    parent
+        .state
+        .wait
+        .is_waiting_for(child.identity.id.pid, child.identity.procgrp)
 }
 
 /// Tell parent: `tell_parent` (`forkexit.c:670-726`).
@@ -863,7 +862,10 @@ pub(crate) fn tell_parent<T: crate::ipc::IpcTransport + ?Sized>(
         m_type: child_pid,
         ..Default::default()
     };
-    reply_msg.m_u.m_pm_lc_wait4.status = crate::wait::w_exitcode(ec as u8 as i32, ss as u8 as i32);
+    // C forkexit.c:713 不掩码：`mp_exitstatus`/`mp_sigstatus` 是 `char`，整型提升按符号扩展
+    // （WCOREFLAG 置位时 sigstatus 为负）。掩码会让原始 status 值与 C 不同——
+    // libc 宏（WIFSIGNALED/WEXITSTATUS）会掩掉差异，但 wire 上的整数是外部可观察的。
+    reply_msg.m_u.m_pm_lc_wait4.status = crate::wait::w_exitcode(ec as i32, ss as i32);
     let _ = transport.send(parent_ep, &reply_msg);
 
     table.procs[parent_slot.get()].state.wait.waiting = false;
@@ -896,7 +898,7 @@ pub(crate) fn tell_tracer<T: crate::ipc::IpcTransport + ?Sized>(
         ..Default::default()
     };
     reply_msg.m_u.m_pm_lc_wait4.status =
-        crate::wait::w_exitcode(ec as u8 as i32, ss as u8 as i32 & 0o377);
+        crate::wait::w_exitcode(ec as i32, (ss as i32) & 0o377); // C forkexit.c:749 显式掩码 sigstatus
     let tracer_ep = table.procs[tracer_slot.get()].endpoint();
     let _ = transport.send(tracer_ep, &reply_msg);
 
@@ -1044,6 +1046,36 @@ mod tests {
             "SIGCHLD must be pending on the blocked parent"
         );
         assert!(table.procs[1].is_in_use() && !table.procs[1].is_exiting());
+    }
+
+    /// `wait_test` 的 `right_child`（`forkexit.c:wait_test` 583-587）：父在等**别的**
+    /// 子进程（`SpecificChild`）时，另一个子进程退出不得交付——C 走 SIGCHLD 路径，
+    /// 该子保持 ZOMBIE 等真父来收。回归对象：曾以"父在等待即交付"的占位实现。
+    #[test]
+    fn test_check_parent_waits_for_matching_child_only() {
+        let mut table = ProcTable::new();
+        running_proc(&mut table, 1, 100); // 父：正在等 pid 999
+        running_proc(&mut table, 2, 101); // 退出的子：pid 101 ≠ 999
+        table.procs[2].state.guardianship = Guardianship::Normal { parent: UserSlot::new(1) };
+        table.procs[2].state.lifecycle = Lifecycle::Zombie { exit_code: 0, sig_status: 0 };
+        table.procs[1].state.wait.waiting = true;
+        table.procs[1].state.wait.target = crate::mproc::WaitTarget::SpecificChild(999);
+        table.procs[1].resources.signals.mask = crate::init::sig_bit(crate::signal::SIGCHLD);
+
+        let mut t = crate::ipc::TestIpcTransport::default();
+        let mut kern = KillRecorder::default();
+        check_parent(&mut table, UserSlot::new(2), true, &mut t, &mut kern);
+
+        assert!(
+            matches!(table.procs[2].state.lifecycle, Lifecycle::Zombie { .. }),
+            "child must stay Zombie: parent waits for another pid"
+        );
+        assert!(table.procs[1].state.wait.waiting, "parent keeps waiting");
+        assert!(
+            table.procs[1].resources.signals.pending & crate::init::sig_bit(crate::signal::SIGCHLD) != 0,
+            "SIGCHLD must be delivered instead of the wait4 reply"
+        );
+        assert!(t.sent().is_empty(), "no wait4 reply may be sent");
     }
 
     /// D-13：记录 sys_kill 调用的网关 mock。

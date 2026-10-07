@@ -1,0 +1,65 @@
+{
+  "_comment": "C→Rust 语义映射表（sched 模块）。用于 coverage-extract.py 的 --semantic-map。",
+  "_note": "2026-10-08 新建（review-flow-hardening Round 3 取证：sched 模块此前无映射表，Gate A 的 Rust 侧恒 0%）。映射依据 = os/servers/sched/src 各模块实现 + 06-stage-sched 文档归属；刻意留空的 C 符号（如 reply/sef_* 由 SEF 框架吸收）显示为缺口。",
+  "main": [
+    "SchedServer::run",
+    "main"
+  ],
+  "sef_local_startup": [
+    "SchedServer::init"
+  ],
+  "sef_cb_init_fresh": [
+    "init_fresh",
+    "SchedServer::init"
+  ],
+  "accept_message": [
+    "valid::accept",
+    "Sender::from_probe",
+    "accept"
+  ],
+  "sched_isokendpt": [
+    "valid::is_ok"
+  ],
+  "sched_isemtyendpt": [
+    "valid::check_vacant"
+  ],
+  "do_noquantum": [
+    "noquantum_trust",
+    "do_noquantum"
+  ],
+  "do_stop_scheduling": [
+    "stop_scheduling"
+  ],
+  "do_start_scheduling": [
+    "start_scheduling"
+  ],
+  "do_nice": [
+    "do_nice"
+  ],
+  "init_scheduling": [
+    "init_scheduling"
+  ],
+  "balance_queues": [
+    "rebalance_one",
+    "balance_queues"
+  ],
+  "schedule_process": [
+    "schedule_process"
+  ],
+  "pick_cpu": [
+    "pick"
+  ],
+  "cpu_proc": [
+    "classify",
+    "cpu_proc"
+  ],
+  "balance_timeout": [
+    "BALANCE_TIMEOUT_SECS"
+  ],
+  "no_sys": [
+    "no_sys_verdict"
+  ],
+  "reply": [
+    "reply"
+  ]
+}

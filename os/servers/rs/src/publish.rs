@@ -69,7 +69,7 @@ pub const fn devman_result(m: &minix_types::Message) -> i32 {
 /// `pci_del_acl` failures are recorded only when the system is not shutting
 /// down (manager.c:877-882, 886-893); the devman unbind failures only log
 /// and never change the result (manager.c:897-914). `shutting_down` is
-/// injected (C reads the `shutting_down` global, glo.h:46, set by
+/// injected (C reads the `shutting_down` global, glo.h:51, set by
 /// `do_shutdown` — 13-rs-control-requests.md).
 ///
 /// C overwrites `result` on each recorded failure, so the *last* failure's

@@ -55,6 +55,31 @@ done
 [ -n "$DOC" ] && [ -f "$DOC" ] || { usage --print0; exit 2; }
 
 # -------------------------------------------------- 抽取
+# 花括号展开：`os/servers/pm/src/mproc/{wait,lifecycle,table}.rs` → 逐文件路径。
+# 不展开会让关联代码清单漏掉花括号后的全部文件（2026-10-08 干跑取证：09-pm-exit/11-rs-publish 均受影响）。
+expand_braces() {
+  local line
+  while IFS= read -r line; do
+    if [[ "$line" == *"{"*"}"* ]]; then
+      # local 同一句里的后续赋值看不到前面刚声明的变量（bash 先置空），必须分句，
+      # 否则 set -u 下 ${rest} 报 unbound。
+      local pre rest body post alt
+      pre="${line%%\{*}"
+      rest="${line#*\{}"
+      body="${rest%%\}*}"
+      post="${rest#*\}}"
+      local IFS=','
+      for alt in $body; do
+        local joined="${pre}${alt}${post}"
+        if [[ "$joined" == *"{"*"}"* ]]; then printf '%s\n' "$joined" | expand_braces
+        else printf '%s\n' "$joined"; fi
+      done
+    else
+      printf '%s\n' "$line"
+    fi
+  done
+}
+
 TMP="$(mktemp)"
 trap 'rm -f "$TMP" "${TMP}.src" "${TMP}.hdr" "${TMP}.body"' EXIT
 
@@ -68,7 +93,7 @@ if [ -n "$header_line" ]; then
   header_declared="yes"
   # 无（理由） 豁免形态
   if echo "$header_line" | grep -qE '无（|无\('; then header_exempt="yes"; fi
-  echo "$header_line" | grep -oE '`os/[A-Za-z0-9_/.-]+\.rs`' | tr -d '`' >> "${TMP}.hdr" || true
+  echo "$header_line" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' | tr -d '`' | expand_braces >> "${TMP}.hdr" || true
 fi
 touch "${TMP}.hdr"
 
@@ -76,7 +101,7 @@ touch "${TMP}.hdr"
 awk '
   /^#{1,3} [0-9]+(\.[0-9]+)?[[:space:]]/ { section = substr($2, 1, 1) }
   { if (section == "" || section == "3" || section == "4" || section == "5") print }
-\' "$DOC" | grep -oE '`os/[A-Za-z0-9_/.-]+\.rs`' | tr -d '`' >> "${TMP}.body" || true
+\' "$DOC" | grep -oE '`os/[A-Za-z0-9_/.{},-]+\.rs`' | tr -d '`' | expand_braces >> "${TMP}.body" || true
 touch "${TMP}.body"
 
 cat "${TMP}.hdr" "${TMP}.body" | sort -u > "$TMP"

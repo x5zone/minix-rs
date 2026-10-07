@@ -1142,6 +1142,14 @@ tools/doc-style-lint.sh --diff            # 增量：本次新增/修改行，er
 **正例句式**（示范，来自 PD-33 定稿措辞）：「逻辑地址空间是 OS 语义对象；x86_64 与 riscv64 用单个
 页表根承载它，aarch64 用两个根承载它——根的数量是硬件事实，不是 OS 语义。」
 
+### 3.94 正文禁引中间产物目录（强制，2026-10-08 三轮取证）
+
+- **正文（含「参见」章）禁止引用 `.design/`**——AGENTS.md 的中间产物目录约定：正式文档必须自包含，
+  引用指向文档/代码/C 源。`rg "\.design/" {doc}` 命中即 **P0-process-violation**（修法：删除引用并自包含化）。
+- 同族禁令（历史案例，此处并置）：`tmp_design_and_todo/`（该目录已删除）、`/tmp/`、`*.bak` 一律不得作依据或引用。
+- **锚点底账**：`（Lnnn，工具生成）` 属工具噪声，须移入 `.review/{tool}/{stage}/{doc-stem}.anchors.md`
+  （`tools/anchor-resolve.sh --extract {doc}` 生成）；**底账缺失的移出 = P0**。
+
 ### 3.95 锚点受众分层（强制，2026-10-07 读者体验裁决）
 
 > 判定表与四类形态的处置规则只在 `prompt/skill/cmds/style-bible/SKILL.md` 的「硬裁决：读者体验优先于

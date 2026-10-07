@@ -119,6 +119,11 @@ resolve_c() { # FILE NAME —— C 启发式（限定定义形态，排除注释
         next
       }
       if (line ~ ("^(typedef[[:space:]]+)?(struct|enum|union)([^A-Za-z0-9_]|$)")) { print FNR; next }
+      # 结构体/联合体成员声明：<类型> NAME;（NAME 为声明符末标识符；容忍数组与行尾注释）
+      # 与 typedef 收尾行 `} NAME;`——成员名与 typedef 名是文档最常用的精确锚点形态；
+      # 旧实现只索引函数/结构体/宏，把它们一律判 ZERO-DEF（假 P0，2026-10-08 取证）。
+      if (line ~ ("^[[:space:]]+[A-Za-z_][A-Za-z0-9_[:space:]]*[[:space:]*]+" name "[[:space:]]*(\\[[^]]*\\])?;[[:space:]]*(/\\*.*)?$")) { print FNR; next }
+      if (line ~ ("^[[:space:]]*}[[:space:]]*" name "[[:space:]]*;")) { print FNR; next }
       if (line ~ ("^[^[:space:]].*[^A-Za-z0-9_]" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/) { print FNR; next }
       if (line ~ ("^" name "[[:space:]]*[(]") && line !~ /;[[:space:]]*$/) {
         # 跨行签名：Minix3 常见「返回类型单独一行 + NAME( 顶格 + 参数续行数行 + {」，
@@ -205,8 +210,13 @@ EOF
   cat > "$ft/clock.c" <<'EOF'
 #include <minix.h>
 
+typedef struct {
+    int ticks;
+} clock_info;
+
 struct clock_state {
     int running;
+    long counter;		/* 成员：带行尾注释 */
 };
 
 #define CLOCK_FREQ 60
@@ -223,6 +233,8 @@ EOF
 impl 限定方法 `ft/lib.rs:impl Clock::reset` 应解析。
 impl 块锚点 `ft/lib.rs:impl Clock` 应解析。
 C 函数 `ft/clock.c:clock_init` 应解析。
+C 结构体成员 `ft/clock.c:counter` 应解析。
+C typedef 名 `ft/clock.c:clock_info` 应解析。
 fenced 块内的伪锚点不会被抓取：
 ```
 ft/lib.rs:fn vanishing_in_fence
@@ -248,8 +260,8 @@ EOF
   multi=$(echo "$out" | grep -c "MULTI-DEF" || true)
   resolved=$(echo "$out" | grep -c "→ resolved" || true)
   fenced=$(echo "$out" | grep -c "vanishing_in_fence" || true)
-  if [ "$zero" -ne 1 ] || [ "$multi" -ne 1 ] || [ "$resolved" -ne 5 ] || [ "$fenced" -ne 0 ]; then
-    echo "SELF-TEST FAIL: resolved=$resolved zero=$zero multi=$multi fenced=$fenced（期望 5/1/1/0）" >&2
+  if [ "$zero" -ne 1 ] || [ "$multi" -ne 1 ] || [ "$resolved" -ne 7 ] || [ "$fenced" -ne 0 ]; then
+    echo "SELF-TEST FAIL: resolved=$resolved zero=$zero multi=$multi fenced=$fenced（期望 7/1/1/0）" >&2
     echo "$out" >&2
     exit 1
   fi

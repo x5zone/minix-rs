@@ -31,7 +31,7 @@ source "$SCRIPT_SELF_DIR/notes-layout.conf"
 
 if [[ $# -lt 3 ]]; then
   echo "Usage: $0 <tool> <stage> <doc-stem> [agent] [--strict]" >&2
-  echo "  tool     = trae | claude | codex" >&2
+  echo "  tool     = trae | claude | codex | zcode | qoder" >&2
   echo "  stage    = 笔记树根下第一级目录名（如 01-stage-kernel；树 = ${NOTES_TREES[*]}）" >&2
   echo "  doc-stem = 目标文档去扩展名（如 03-kmain-cstart）" >&2
   echo "  agent    = AI 标识（默认 glm；只能放在 flag 之前）" >&2
@@ -62,8 +62,9 @@ STAGE="$2"
 DOC_STEM="$3"
 AGENT="${4:-glm}"
 
-if [[ "$TOOL" != "trae" && "$TOOL" != "claude" && "$TOOL" != "codex" ]]; then
-  echo "⛔ tool 必须是 trae、claude 或 codex: ${TOOL}" >&2
+# 运行时表（review-process.md §Step 0）登记五家：trae/claude/codex/zcode/qoder。
+if [[ "$TOOL" != "trae" && "$TOOL" != "claude" && "$TOOL" != "codex" && "$TOOL" != "zcode" && "$TOOL" != "qoder" ]]; then
+  echo "⛔ tool 必须是 trae、claude、codex、zcode 或 qoder: ${TOOL}" >&2
   exit 2
 fi
 

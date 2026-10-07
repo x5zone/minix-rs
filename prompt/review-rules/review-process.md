@@ -71,6 +71,10 @@
 | 1.0 | 锚点解析（符号锚点 + 卫生项分层；D5 改写收编原 1.0a~1.0g 七步行号族） | doc review，引用代码位置 | `tools/anchor-resolve.sh --check {doc}`；0 定义 → P0-fact；多定义 → 补 impl 限定；行号只允许工具派生 `（Lnnn，工具生成）` | 2026-09-18 |
 | 4.5a | 测试数量偏差检查 | doc 声称测试数 | `cargo test` 对账（>50% 偏差 → P1） | 2026-07-30 |
 | 3.6 | 关联代码维度检查（doc-code-map + 代码维度 + gate-evidence-code） | full-review 入口、编号文档 | 维度表 + gate-evidence-code 块 | 2026-09-18 |
+| 1.1 | 锚点句意复核（按侧对称：`os/` + `minix3/`；区分「符号消失」与「符号选错」） | Step 1.0 | `tools/anchor-suspect-scan.py <doc|dir> --side c|rust [--baseline …]` 出清单（含已知假阳性形态：表格行/块级锚点，由人工判）；基线 `tools/anchor-suspect-baseline-c.txt`（C 侧，2026-10-08 实测 3501 处）与 `tools/anchor-suspect-baseline.txt`（Rust 侧，历史）；错符号按 P0-fact | 2026-10-08 |
+| 1.2 | 正文禁引 `.design/`（中间产物目录；AGENTS.md 判 P0-process-violation） | doc review 全程 | `rg "\.design/" {doc}` → 0 命中 | 2026-10-08 |
+| 1.5a | 覆盖率工具数据缺口判定（映射表缺失 / `--rust-dir` 缺省 / 短名子串） | Step 1.5 | `ls tools/coverage-extract/{module}-semantic-map.json`；缺表即新建 | 2026-10-08 |
+| 5.6a | Gate G 两趟（骨架 → 回填 gate-evidence-G → 复跑自检） | Step 5.6 | 首跑 FAIL 属正常，回填后 `VERIFY-SELF PASS` | 2026-10-08 |
 
 > **新增规则写入方式**：在本表追加一行（id 用表内下一序号，不再新开 `#### Step` 章节），详情正文放对应主干 Step 之下或独立小节并用本表行索引。
 
@@ -104,7 +108,8 @@
    （写成 `### gate-evidence-A` 标题不算，验证器只认围栏块。）
 3. **Issue List 表格首列必须是 `P[012]-标识` 形式的编号**（如 `P1-docHdrField`），第二列写 `P0/P1/P2`；
    用 `F1`、`#3` 之类编号会让验证器提取到 0 个 issue，反向验证随即空转（抽样表一片空白却报告"已抽样"）。
-4. **Gate G 产物由该脚本生成后再填人工段**，不要手写整份 VERIFY-CHECK：
+4. **Gate G 是两趟**：首跑 `verify-check.py` 会因 scan.md 缺 `gate-evidence-G` 块判 `VERIFY-SELF FAIL`——这是设计使然（证据块的内容来自它自己生成的 VERIFY-CHECK）。先出骨架、回填 `gate-evidence-G`、再复跑自检即 PASS。
+5. **Gate G 产物由该脚本生成后再填人工段**，不要手写整份 VERIFY-CHECK：
    `python3 tools/verify-check.py --scan {scan.md} --state {STATE.md} --symbols {SYMBOLS.md} --sample-ratio 0.5 --seed N --output {VERIFY-CHECK.md}`
    （`--seed` 必填以让抽样可复现；报告头会如实打印抽样比例与种子。）
 
@@ -1242,7 +1247,7 @@ Step 0.3.1-0.3.4 完成后，outline / outline-review / design 全部就绪。�
 | 同名方法歧义 | 加 impl 限定 | `os/kernel/src/proc.rs:impl Proc::new` |
 | C 函数/结构体/宏 | `path:func`、`path:struct name`、`path:NAME` | `minix3/minix/kernel/proc.c:proc_init` |
 | 函数内部的具体片段 | 函数符号 + 引文片段 | `os/kernel/src/proc.rs:fn do_fork（match 分支）` |
-| 行号（可选） | 工具派生，写成 `（L123，工具生成）`；**禁止手工维护** | — |
+| 行号（可选） | **只进锚点底账**：`.review/{tool}/{stage}/{doc-stem}.anchors.md`（`tools/anchor-resolve.sh --extract {doc}` 生成）。**正式文档正文禁止出现 `（Lnnn，工具生成）`**——坐标是审查看的、讲解是读者看的（style-bible 硬裁决），SL-10 按 error 级计；移出与正文修改同一笔提交，**底账缺失的移出 = P0** | — |
 > ⚠️ **迁移产物语义告警（S1，2026-09-18）**：带 `（Lnnn，工具生成）` 后缀的锚点是迁移启发式（向上就近定义）的产物——L 是**原文档行号**（非现行号），且旧行号本身可能已漂移，解析出的符号**未必是句子讨论的符号**（错符号比错行号更隐蔽：符号看似权威）。规则：
 > 1. 迁移产物在句意复核前**不得当作权威引用**；复核清单见 `tools/anchor-suspect-baseline.txt`（符号名未出现在句中的 L 后缀锚点，正式文档 868 处）。
 > 2. 范围锚点（原 `path:N-M`）按首行启发式解析，同属需复核。
@@ -1255,10 +1260,16 @@ tools/anchor-resolve.sh --check {doc}.md        # 校验文档内全部符号锚
 tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移（默认 dry-run；工具不猜，无法解析列清单）
 ```
 
-**判定**：
-- 符号锚点解析 **0 定义** → **P0-fact**（符号消失/改名，引用断言已失效）
-- **多定义** → 要求文档补 `impl Type::method` 限定；工具不加特例
-- 残留的手工行号锚点、`（Lnnn，工具生成）` 提示过期、全角/半角、拼写、格式 → **卫生项**：scan.md 单列"卫生项"分区，只记录 + 批量修，**不进 P1/P2 计数、不进 `weighted_new`、不参与 Step 7.1 收敛判定**（唯一例外：符号锚点 0 定义按 P0-fact 处理——符号消失属正确性，不属卫生）
+**判定（先句意复核，再机械判定）**：
+- **第 0 步（强制）：句意复核**——对每个锚点问"这个符号名出现在句子里了吗？句子讨论的真是它吗？"。
+  工具只做存在性/唯一性，**不做语义**；"符号可解析"不等于"锚点指对了对象"。
+  - **按侧对称**：复核必须同时覆盖 `os/`（Rust）与 `minix3/`（C）两侧。历史基线 `tools/anchor-suspect-baseline.txt`
+    只收 `os/` 锚点（868 条），C 侧零覆盖——**C 锚点错符号没有任何工具会预警**（2026-10-08 三轮取证：
+    6 处/39 处/10 处成片存在）。
+- 符号锚点解析 **0 定义** → 先判"是符号消失/改名，还是**符号选错**"：前者 **P0-fact**；后者改锚点为真符号（同为 P0-fact，但修法不同——不是修句子，是修锚点）。
+- **多定义** → 先判"真多定义（同名多处定义，需补 `impl Type::method` 限定）"还是"**符号选错**（如锚点写成结构体类型名
+  `rproc`，句子讲的却是 `publish_service`）"。后者改真名后 `multi-def` 自消；工具不加特例。
+- 残留的手工行号锚点、全角/半角、拼写、格式 → **卫生项**：scan.md 单列"卫生项"分区，只记录 + 批量修，**不进 P1/P2 计数、不进 `weighted_new`、不参与 Step 7.1 收敛判定**（唯一例外：符号锚点 0 定义/符号选错按 P0-fact 处理——属正确性，不属卫生）
 
 **一次性迁移基线（2026-09-18 已完成）**：全仓正式文档中 4,701 处可机械恢复的行号锚点已转为符号锚点（316 个文件，行数零变化）；无法机械恢复的（目标文件消失/改名、行号漂移超出识别、裸文件名重名）保留原样并登记清单（`.review/anchor-migration-unresolved.txt`），按卫生项批量清理，不阻塞 review、不计入收敛。
 
@@ -1298,6 +1309,13 @@ tools/anchor-migrate.sh [--write] {doc|dir}     # 旧行号锚点一次性迁移
      --output .review/{tool}/{stage}/scans/{doc-stem}-{agent}-SYMBOLS.md
    ```
    > **目录创建**：脚本已修复为使用 `--output` 时自动创建父目录；若使用旧版本脚本，请先 `mkdir -p $(dirname .review/.../SYMBOLS.md)`。
+   > **`--doc-file` 只写文件名**（如 `10-pm-wait.md`，**不带目录**）。脚本已归一化（传路径会取 basename），
+   > 且未命中任何文档时**报错退出**（历史坑：静默输出"文档覆盖 0.0% + 空符号表"的假报告）。
+   > **`--rust-dir` 必须显式传**：脚本对非 vm/kernel/pm 的模块不会推断 Rust 目录，缺省会静默按"无 Rust"跑（`Found 0 Rust symbols`）。
+   > **模块无语义映射表**（`ls tools/coverage-extract/{module}-semantic-map.json` 不存在）→ 这**不是实现缺口**，
+   > 而是工具数据缺口：Rust 覆盖会恒 0%。处置 = **新建该表**（照 `rs-semantic-map.json` 的格式，C 符号 → Rust 落点），
+   > 而不是在 scan.md 里写"Rust 未实现"。2026-10-08 已补 `sched-semantic-map.json`。
+   > **短名假阳性**：文档覆盖按子串匹配，`US`、`main` 这类短符号会命中任意含该子串的文本；符号抽样里遇到短名必须人工判真伪。
    脚本自动提取 C 函数/结构体/宏/枚举 + Rust pub 项 + 文档覆盖检查 + 名称匹配。
    - `--rust-dir os`：扫描整个 `os/` 目录，避免 `kmain`/`ProtectionArch` 等跨 crate 符号遗漏。
    - `--c-dir`：服务器模块用 `minix3/minix/servers/{minix3-module}`，内核用 `minix3/minix/kernel`。

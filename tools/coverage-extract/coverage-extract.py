@@ -221,9 +221,9 @@ def extract_rust_symbols(rust_dir):
         return symbols
 
     for root, dirs, files in os.walk(rust_dir):
-        # 跳过 target 目录
-        if 'target' in dirs:
-            dirs.remove('target')
+        # 跳过 target 与隐藏目录（.dockercargo 等 vendored registry 会灌入十万级
+        # 第三方符号，见 2026-10-08 review-flow-hardening Round 1 取证）
+        dirs[:] = [d for d in dirs if d != 'target' and not d.startswith('.')]
         for fname in files:
             if not fname.endswith('.rs'):
                 continue
@@ -276,8 +276,8 @@ def extract_rust_qualified_names(rust_dir):
     )
 
     for root, dirs, files in os.walk(rust_dir):
-        if 'target' in dirs:
-            dirs.remove('target')
+        # 跳过 target 与隐藏目录（同上：.dockercargo vendored registry）
+        dirs[:] = [d for d in dirs if d != 'target' and not d.startswith('.')]
         for fname in files:
             if not fname.endswith('.rs'):
                 continue
@@ -354,6 +354,9 @@ def check_doc_coverage(symbols, doc_dir):
     # 收集所有文档内容
     doc_contents = {}
     for root, dirs, files in os.walk(doc_dir):
+        # 跳过隐藏目录：.design/ 是中间产物快照（AGENTS.md 中间产物约定），不是正式文档，
+        # 让它计入"文档覆盖"会把 coverage 灌成假绿（2026-10-08 review-flow-hardening 取证）
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
         for fname in files:
             if fname.endswith('.md'):
                 fpath = os.path.join(root, fname)
@@ -371,10 +374,15 @@ def check_doc_coverage(symbols, doc_dir):
         for name, _, _ in symbols[cat]:
             all_c_names.add(name)
 
+    # 词边界匹配：子串匹配会把 `US` 判成"文档覆盖"（命中任意含 "US" 的文本），
+    # 产假绿（2026-10-08 干跑取证）。C 标识符两侧不得再是标识符字符。
+    boundary = {n: re.compile(r'(?<![A-Za-z0-9_])' + re.escape(n) + r'(?![A-Za-z0-9_])')
+                for n in all_c_names}
     for name in all_c_names:
         coverage[name] = []
+        rx = boundary[name]
         for doc_name, content in doc_contents.items():
-            if name in content:
+            if rx.search(content):
                 coverage[name].append(doc_name)
 
     return coverage
@@ -640,10 +648,16 @@ def main():
     parser.add_argument('--rust-dir', help='Rust 源码目录路径', default=None)
     parser.add_argument('--c-dir', help='自定义 C 源码目录（覆盖 module 默认路径）', default=None)
     parser.add_argument('--semantic-map', help='C→Rust 语义映射表 JSON 文件路径', default=None)
-    parser.add_argument('--doc-file', help='只统计该文档文件（相对于 doc_dir 的路径，如 03-kmain-cstart.md）', default=None)
+    parser.add_argument('--doc-file', help='只统计该文档文件（相对 doc_dir 的文件名，如 10-pm-wait.md；也接受路径，脚本取 basename）', default=None)
     parser.add_argument('--output', help='输出文件路径（默认 .review/{tool}/{module}/scans/SYMBOLS.md）', default=None)
 
     args = parser.parse_args()
+
+    # --doc-file 归一化：允许传 doc_dir 相对路径或绝对/仓内路径，统一取 basename。
+    # 历史坑（2026-10-08）：传仓内全路径时 is_in_target_doc 恒 False，脚本静默输出
+    # 0% 文档覆盖 + 空符号表（看似"文档什么都没写"），不报错。现在归一化 + 未命中即退出。
+    if args.doc_file and os.sep in args.doc_file:
+        args.doc_file = os.path.basename(args.doc_file)
 
     # 确定 C 源码目录
     if args.c_dir:
@@ -693,6 +707,19 @@ def main():
 
     print("Checking doc coverage...", file=sys.stderr)
     doc_coverage = check_doc_coverage(c_symbols, args.doc_dir)
+
+    # --doc-file 未命中任何文档 → 立即报错退出（不允许静默输出 0% 覆盖的假报告）
+    if args.doc_file:
+        doc_names = set()
+        for root, dirs, files in os.walk(args.doc_dir):
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for fname in files:
+                if fname.endswith('.md'):
+                    doc_names.add(os.path.relpath(os.path.join(root, fname), args.doc_dir))
+        if args.doc_file not in doc_names:
+            print(f"ERROR: --doc-file '{args.doc_file}' 未命中 {args.doc_dir} 下任何 .md 文档。", file=sys.stderr)
+            print(f"       可用值（相对 doc_dir）：{sorted(doc_names)}", file=sys.stderr)
+            sys.exit(2)
 
     print("Checking Rust coverage...", file=sys.stderr)
     rust_coverage, matched_by = check_rust_coverage(c_symbols, rust_symbols, rust_qualified, semantic_map)
